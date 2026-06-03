@@ -52,7 +52,9 @@ import {
 } from './chat-pending-confirmations';
 import { isValidTenantUserId, recordTenantScopeAnomaly } from './tenant-scope-observability';
 import { logger } from '../utils/logger';
-import { isDecisionCenterGuidanceSkillEnabled, isDecisionCenterGuidanceV1Enabled, isDecisionStreakV1Enabled } from './runtime-flags';
+import { isDecisionCenterCommandBusEnabled, isDecisionCenterFatigueCapsEnabled, isDecisionCenterGuidanceSkillEnabled, isDecisionCenterGuidanceV1Enabled, isDecisionChoiceOptionsEnabled, isDecisionEvidenceFreshnessGateEnabled, isDecisionHumanReviewGateEnabled, isDecisionReconnectAffordanceEnabled, isDecisionRollbackSnapshotProtectionEnabled, isDecisionSemanticDedupEnabled, isDecisionSemanticSupersedeEnabled, isDecisionSkillCardsEnabled, isDecisionStreakV1Enabled, isDecisionTypeSuppressionEnabled } from './runtime-flags';
+import { decisionRelationshipSemantics, type DecisionRelationshipKind, type DecisionRelationshipType } from './decision-relationship-types';
+import { buildDecisionDedupKey, classifyDecisionDedup } from './decision-center-semantic-dedup';
 import type { SecretaryTodaySummaryModel } from './secretary-orchestrator';
 import { secretaryTodayLabels } from './secretary-today-copy';
 import {
@@ -72,6 +74,7 @@ import {
   type DecisionLogicV2,
   type DecisionQualityGateResult,
   type SecretaryAvailableSlot,
+  type SecretaryDecisionAdvice,
   type DecisionVisibilityScope,
   type DecisionWhatWillChange,
   type DecisionWhy,
@@ -80,6 +83,113 @@ import {
 export type DecisionClassification = 'decision' | 'notification' | 'task' | 'insight' | 'ignore';
 export type DecisionUrgency = 'urgent' | 'today' | 'this_week' | 'optional';
 export type DecisionActionStatus = 'succeeded' | 'failed' | 'blocked' | 'idempotent';
+
+// ── Layered status model (Foundation) ──────────────────────────────────────
+// The legacy flat `status` (NotificationCenterStatus) stays authoritative for
+// back-compat; these express the distinct concerns it conflated. Effective
+// statuses are COMPUTED, never persisted as the source of truth.
+/** Where the decision is in its lifecycle (distinct from the action outcome). */
+export type DecisionLifecycleStatus =
+  | 'created' | 'surfaced' | 'viewed' | 'snoozed' | 'dismissed' | 'expired' | 'superseded' | 'completed';
+/** Item-level outcome of the decision's action. Distinct from the per-execution DecisionActionStatus above. */
+export type DecisionActionOutcomeStatus =
+  | 'none' | 'started' | 'succeeded' | 'failed' | 'partially_failed' | 'rolled_back';
+/** Computed: how the client should render the item. Never persisted as source of truth. */
+export type DecisionEffectiveStatus =
+  | 'needs_action' | 'waiting_on_dependency' | 'waiting_on_system' | 'snoozed'
+  | 'in_progress' | 'completed' | 'failed_retryable' | 'failed_terminal'
+  | 'expired' | 'superseded' | 'dismissed' | 'unavailable';
+/** Computed per-action render state. */
+export interface DecisionActionEffectiveStatus {
+  actionId: string;
+  effective:
+    | 'enabled' | 'disabled_not_implemented' | 'disabled_blocked_by_dependency'
+    | 'disabled_expired' | 'disabled_superseded' | 'disabled_already_actioned' | 'disabled_missing_details'
+    // A2: an unwired sync-retry on a connection/sync_failure decision — disabled, but the client should
+    // route to connection settings (reconnect) rather than show a dead retry. Emitted only under the
+    // DECISION_RECONNECT_AFFORDANCE flag; OFF falls back to disabled_not_implemented (byte-identical).
+    | 'disabled_requires_reconnect';
+  implemented: boolean;
+  capabilityReason: string | null;
+}
+
+/** What kind of item this is, for differentiated client rendering. */
+export type DecisionKind =
+  | 'insight' | 'recommendation' | 'action_proposal' | 'choice_required'
+  | 'risk_alert' | 'blocked_action' | 'status_update';
+/** How the client should treat acting on this decision (computed; never persisted). */
+export type Actionability =
+  | 'read_only' | 'preview_available' | 'confirmation_required' | 'execute_with_undo'
+  | 'requires_human_review' | 'blocked' | 'unavailable';
+
+/** Priority tier — deliberately separate from confidence. */
+export type DecisionPriorityTier = 'critical' | 'high' | 'normal' | 'low';
+/** Multi-signal priority (separate from confidence). Computed live for now; persistence is a follow-up. */
+export interface DecisionPrioritySnapshot {
+  priorityTier: DecisionPriorityTier;
+  priorityScore: number;
+  reasonCodes: string[];
+  computedAt: string;
+  rankingVersion: number;
+}
+
+/** "Evidence strength" — confidence promoted to an explanation. label/sourceFreshness are always safe;
+ *  basis/uncertainty are privacy-gated (only when decision evidence is exposable). */
+export interface ConfidenceExplanation {
+  value: number;
+  label: 'high' | 'medium' | 'low';
+  basis: string[];
+  uncertainty: string[];
+  sourceFreshness: 'live' | 'fresh' | 'stale' | 'unknown';
+}
+
+/**
+ * Compact list/overview card (API v2). Projected from the full DecisionApiItem so list
+ * surfaces ship ~22 fields/item instead of ~70. Full item is served only on detail.
+ */
+/** Compact evidence-strength signal for the v2 list card — derived ONLY from the always-safe
+ *  confidence label + source freshness (never the privacy-gated basis/uncertainty). */
+export type EvidenceStrengthLabel = 'strong' | 'moderate' | 'weak' | 'stale' | 'unverified';
+
+export interface DecisionCardSummary {
+  schemaVersion: string;
+  decisionId: string;
+  sourceSkill: NotificationSourceSkill;
+  type: NotificationIntentType;
+  status: string;
+  effectiveStatus?: DecisionEffectiveStatus;
+  decisionKind?: DecisionKind;
+  actionability?: Actionability;
+  prioritySnapshot?: DecisionPrioritySnapshot;
+  urgency: DecisionUrgency;
+  timingLabel: string | null;
+  priorityScore: number;
+  sectionKey: DecisionTimelineSectionKey;
+  groupKey: string;
+  displayMode: DecisionFrontendDisplayMode;
+  frontendActionState: DecisionFrontendActionState;
+  impactLevel: 'low' | 'medium' | 'high';
+  safePreviewTitle: string;
+  safePreviewBody: string;
+  recommendedActionLabel: string | null;
+  primaryActionLabel: string;
+  deadlineAt: string | null;
+  expiresAt: string | null;
+  badgeContribution: boolean;
+  confidence: number;
+  /** Optional compact evidence-strength label (omitted when the item has no confidenceExplanation). */
+  evidenceStrengthLabel?: EvidenceStrengthLabel;
+}
+
+/** Paginated list envelope (API v2 cursor mode — always compact cards). nextCursor omitted when no further page. */
+export interface DecisionListResponse {
+  schemaVersion: string;
+  count: number;
+  openCount: number;
+  items: DecisionCardSummary[];
+  nextCursor?: string;
+  pageSize: number;
+}
 
 export const DECISION_OUTCOME_LEDGER_RETENTION_POLICY = Object.freeze({
   rawOutcomeRetentionDays: 180,
@@ -102,6 +212,8 @@ export interface DecisionOutcomeMetrics {
   askedNexusCount: number;
   explanationOpenCount: number;
   genericBlockedCount: number;
+  totalQualityGateEvents: number;
+  qualityGateByStatus: Record<string, number>;
   undoUsedCount: number;
   primaryActionCount: number;
   failedActionCount: number;
@@ -152,6 +264,13 @@ export interface DecisionApiItem {
   sourceSkill: NotificationSourceSkill;
   type: NotificationIntentType;
   status: string;
+  lifecycleStatus?: DecisionLifecycleStatus;
+  actionOutcomeStatus?: DecisionActionOutcomeStatus;
+  effectiveStatus?: DecisionEffectiveStatus;
+  actionEffectiveStatuses?: DecisionActionEffectiveStatus[];
+  decisionKind?: DecisionKind;
+  actionability?: Actionability;
+  prioritySnapshot?: DecisionPrioritySnapshot;
   urgency: DecisionUrgency;
   timingLabel: string | null;
   priorityScore: number;
@@ -177,6 +296,15 @@ export interface DecisionApiItem {
   actionPreview: DecisionWhatWillChange[];
   whatWillChange: DecisionWhatWillChange[];
   alternatives: DecisionAlternativeOption[];
+  /** D — structured domain choices (e.g. secretary slot picks) with tradeoffs. Optional + flag-gated:
+   *  undefined (omitted from JSON) unless DECISION_CHOICE_OPTIONS is enabled AND the decision has real
+   *  options, so existing clients see a byte-identical payload. */
+  options?: DecisionOption[];
+  /** D — skill-specific cards (content / training / finance). All optional + flag-gated (DECISION_SKILL_CARDS);
+   *  each is undefined/omitted unless enabled AND the decision has a real backing domain object. */
+  contentCard?: DecisionContentCard;
+  trainingCard?: DecisionTrainingCard;
+  financeCard?: DecisionFinanceCard;
   automationEligibility: AutomationEligibility;
   autopilotPolicy: string;
   readBackVerifier: string | null;
@@ -201,6 +329,7 @@ export interface DecisionApiItem {
   expiresAt: string | null;
   confidence: number;
   analysis: DecisionAnalysisBundle;
+  confidenceExplanation?: ConfidenceExplanation;
   riskLevel: 'low' | 'medium' | 'high';
   groupKey: string;
   sectionKey: DecisionTimelineSectionKey;
@@ -214,8 +343,18 @@ export interface DecisionApiItem {
   actions: NotificationActionButton[];
   dependsOnDecisionIds: string[];
   blockedByDecisionIds: string[];
+  /** C6: typed relationship edges to other decisions (only `blocks` is action-preventing; the rest are advisory). */
+  relationships: DecisionRelationship[];
   rollbackAvailable: boolean;
   rollbackActionId: string | null;
+}
+
+/** A typed relationship edge surfaced to the client (C6). `type` is the raw stored relationship; `kind`/`label` come from decisionRelationshipSemantics. */
+export interface DecisionRelationship {
+  decisionId: string;
+  type: string;
+  kind: DecisionRelationshipKind;
+  label: string;
 }
 
 export type DecisionExplanationStepStatus = 'done' | 'needs_user' | 'pending' | 'blocked';
@@ -271,6 +410,72 @@ export interface DecisionAlternativeOption {
   actionId: string | null;
   available: boolean;
   source: 'recipe' | 'system_default';
+}
+
+/**
+ * A structured CHOICE option for a `choice_required`-style decision (e.g. secretary "move to which slot?").
+ * Distinct from DecisionAlternativeOption (which-button): an option is a domain choice carrying its own
+ * tradeoffs + a LIGHTWEIGHT intent (which existing action + payload to invoke). It deliberately carries NO
+ * baked command preview — that goes stale — so the client requests a fresh confirmation at selection time
+ * through the normal performDecisionAction path. Additive/optional on the item (Codable-backward-compatible).
+ */
+export interface DecisionOption {
+  optionId: string;
+  title: string;
+  summary: string;
+  tradeoffs: string[];
+  recommended: boolean;
+  risk: 'low' | 'medium' | 'high';
+  /** Lightweight intent: the existing decision action this option maps to (e.g. 'choose_another_time'). */
+  actionId: string;
+  /** Optional payload the action needs at selection time (e.g. the chosen window). Not a baked preview. */
+  actionPayload?: { startAt?: string; endAt?: string };
+}
+
+/**
+ * D (content) — a skill-specific card surfacing the content pipeline state a content decision is about, so
+ * the client can render "Script · Drafted · Review required · [Approve]" instead of inferring it. Every
+ * field is read straight from the content workflow object (objectType / editorialState / approvalState /
+ * reviewRequired) — no free text — so it cannot be tainted by injected evidence. Additive/optional on the
+ * item (Codable-backward-compatible); flag-gated.
+ */
+export interface DecisionContentCard {
+  objectType: string;
+  pipelineStage: string;
+  approvalState: string;
+  reviewRequired: boolean;
+  nextActionLabel: string | null;
+}
+
+/**
+ * D (training) — a structured before/after card for a training-origin reflow decision: the current
+ * (before) and recommended (after) schedule windows, a conservative risk label derived ONLY from the
+ * agenda's structured decisionReasonCodes (never free text, so injected evidence can't move it), and undo
+ * availability. Read-only; flag-gated; undefined (no hollow card) unless the decision truly anchors a
+ * training agenda item with a real before window.
+ */
+export interface DecisionTrainingCard {
+  beforeWindowLabel: string | null;
+  afterWindowLabel: string | null;
+  beforeStartAt: string | null;
+  beforeEndAt: string | null;
+  afterStartAt: string | null;
+  afterEndAt: string | null;
+  risk: 'low' | 'medium' | 'high';
+  undoAvailable: boolean;
+}
+
+/**
+ * D (finance) — a READ-ONLY, privacy-safe card for a finance tax-event decision. Surfaces ONLY safe
+ * labels: the tax month, the payment status enum, a freshness label, and the next action. It NEVER
+ * carries any amount (tax_due / inss_due / gross_income / taxable_income) and uses no overconfident copy.
+ * Flag-gated; undefined (no hollow card) unless a real matching tax event exists.
+ */
+export interface DecisionFinanceCard {
+  taxMonth: string;
+  paymentStatus: string;
+  freshnessLabel: string;
+  nextActionLabel: string | null;
 }
 
 export interface DecisionSourceTrace {
@@ -346,6 +551,8 @@ export interface DecisionCenterOverview {
     summary: boolean;
   };
   secretaryToday: SecretaryTodaySummaryModel;
+  /** C5: present ONLY when fatigue caps are active — lets the client split `items` into pinned primary cards + a "More" bucket. */
+  fatigue?: { primaryCount: number; moreCount: number; cappedCount: number };
   items: DecisionApiItem[];
   handled: HandledByNexusItem[];
 }
@@ -578,6 +785,8 @@ export function ensureDecisionCenterTables(): void {
       ON decision_action_executions(user_id, tenant_id, decision_id, action_id);
     CREATE INDEX IF NOT EXISTS idx_notification_center_decision_home
       ON notification_center_items(user_id, tenant_id, status, priority, created_at);
+    CREATE INDEX IF NOT EXISTS idx_notification_center_active_expiry
+      ON notification_center_items(status, expires_at) WHERE expires_at IS NOT NULL;
     CREATE TABLE IF NOT EXISTS decision_dependencies (
       dependency_id TEXT PRIMARY KEY,
       decision_id TEXT NOT NULL,
@@ -654,6 +863,39 @@ export function ensureDecisionCenterTables(): void {
     );
     CREATE INDEX IF NOT EXISTS idx_decision_quality_gate_scope_created
       ON decision_quality_gate_events(user_id, tenant_id, created_at DESC);
+    CREATE TABLE IF NOT EXISTS decision_lifecycle_events (
+      event_id TEXT PRIMARY KEY,
+      decision_id TEXT NOT NULL,
+      user_id INTEGER NOT NULL,
+      tenant_id INTEGER NOT NULL,
+      event TEXT NOT NULL,
+      from_status TEXT,
+      to_status TEXT,
+      action_id TEXT,
+      reason TEXT,
+      metadata_json TEXT NOT NULL DEFAULT '{}',
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_decision_lifecycle_events_scope_created
+      ON decision_lifecycle_events(user_id, tenant_id, decision_id, created_at);
+    CREATE TABLE IF NOT EXISTS decision_metrics_daily (
+      metric_date TEXT NOT NULL,
+      tenant_id INTEGER NOT NULL,
+      source_skill TEXT NOT NULL DEFAULT '*',
+      created_count INTEGER NOT NULL DEFAULT 0,
+      surfaced_count INTEGER NOT NULL DEFAULT 0,
+      viewed_count INTEGER NOT NULL DEFAULT 0,
+      dismissed_count INTEGER NOT NULL DEFAULT 0,
+      snoozed_count INTEGER NOT NULL DEFAULT 0,
+      action_succeeded_count INTEGER NOT NULL DEFAULT 0,
+      action_failed_count INTEGER NOT NULL DEFAULT 0,
+      expired_count INTEGER NOT NULL DEFAULT 0,
+      gate_blocked_count INTEGER NOT NULL DEFAULT 0,
+      computed_at TEXT NOT NULL DEFAULT (datetime('now')),
+      PRIMARY KEY (metric_date, tenant_id, source_skill)
+    );
+    CREATE INDEX IF NOT EXISTS idx_decision_metrics_daily_tenant
+      ON decision_metrics_daily(tenant_id, metric_date);
     CREATE TABLE IF NOT EXISTS decision_queue_daily_rollups (
       user_id INTEGER NOT NULL,
       tenant_id INTEGER NOT NULL,
@@ -668,6 +910,18 @@ export function ensureDecisionCenterTables(): void {
     );
     CREATE INDEX IF NOT EXISTS idx_decision_queue_daily_rollups_scope_date
       ON decision_queue_daily_rollups(user_id, tenant_id, local_date DESC);
+    CREATE TABLE IF NOT EXISTS decision_type_suppressions (
+      user_id INTEGER NOT NULL,
+      tenant_id INTEGER NOT NULL,
+      source_skill TEXT NOT NULL,
+      type TEXT NOT NULL,
+      mode TEXT NOT NULL,
+      until TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      PRIMARY KEY (user_id, tenant_id, source_skill, type)
+    );
+    CREATE INDEX IF NOT EXISTS idx_decision_type_suppressions_scope
+      ON decision_type_suppressions(user_id, tenant_id);
   `);
   ensureColumn('handled_by_nexus_items', 'explanation_json', 'TEXT');
 }
@@ -704,6 +958,112 @@ export function evaluateDecisionEligibility(input: DecisionEligibilityPolicyInpu
   return { classification: 'ignore', reasons, apnsEligible: false, urgency };
 }
 
+/** Active decisions' dedup-key fields, used to detect semantic conflicts at creation time (B3 acting). */
+function listActiveDedupCandidates(userId: number, tenantId: number, excludeId: string): Array<{
+  decisionId: string; sourceSkill: NotificationSourceSkill; type: NotificationIntentType; relatedEntityId: string | null; dedupeKey: string | null; createdAt: string;
+}> {
+  // Active AND not-yet-expired (mirrors the A1 expiry predicate so we never link to an expired-but-unswept
+  // decision), bounded + recency-ordered so this stays cheap on the hot creation path even past the
+  // ~50-active-per-user product ceiling (recent decisions are the ones that can share a time window).
+  return getDb().prepare(`
+    SELECT items.item_id AS decisionId, items.source_skill AS sourceSkill, items.type AS type,
+           intents.related_entity_id AS relatedEntityId, items.dedupe_key AS dedupeKey, items.created_at AS createdAt
+      FROM notification_center_items items
+      LEFT JOIN notification_intents intents ON intents.intent_id = items.intent_id
+     WHERE items.user_id = ? AND items.tenant_id = ? AND items.item_id != ?
+       AND items.status IN ('unread', 'read', 'snoozed', 'failed', 'open')
+       AND (items.expires_at IS NULL OR datetime(items.expires_at) > datetime('now'))
+     ORDER BY items.created_at DESC
+     LIMIT 200
+  `).all(userId, tenantId, excludeId) as Array<{ decisionId: string; sourceSkill: NotificationSourceSkill; type: NotificationIntentType; relatedEntityId: string | null; dedupeKey: string | null; createdAt: string }>;
+}
+
+/**
+ * B3 acting (first slice): when a newly-created decision SEMANTICALLY conflicts with an existing active
+ * decision (overlapping target entity + same window, both unresolved asks), record a `conflicts_with`
+ * relationship between them. ADDITIVE + advisory — only `blocks` prevents action, so a conflict link
+ * never hides or blocks a decision; the hiding verdicts (same_recommendation / supersedes) are a
+ * deliberate later slice. Non-fatal: any failure must never break decision creation. Uses the new
+ * decision's stored created_at (DB clock) so candidate and existing windows are compared consistently.
+ */
+function linkConflictingDecisionsOnCreate(newId: string, input: NotificationIntentInput, userId: number, tenantId: number, createdAt: string): { collapsedToExistingId?: string } {
+  // B3 hiding (flag-gated, decoupled from linking): when ON, the two collapsing verdicts mutate state —
+  // newer_recommendation_supersedes_old supersedes the OLDER same-recipe decision; same_recommendation_
+  // update_existing drops the new duplicate and returns the existing (collapsedToExistingId tells the
+  // caller to return the existing item). Both NEVER touch a policy-floored or a different decision.
+  const supersedeEnabled = isDecisionSemanticSupersedeEnabled(process.env, { userId, tenantId });
+  let collapsedToExistingId: string | undefined;
+  try {
+    const candidate = buildDecisionDedupKey({
+      sourceSkill: input.sourceSkill,
+      type: input.type,
+      relatedEntityId: input.relatedEntityId == null ? null : String(input.relatedEntityId),
+      dedupeKey: input.dedupeKey ?? null,
+      createdAt,
+    });
+    for (const existing of listActiveDedupCandidates(userId, tenantId, newId)) {
+      // Per-candidate isolation: a single pairing that throws (e.g. addDecisionDependency racing a
+      // candidate that was swept/dismissed between the scan and its record check) must NOT abandon the
+      // remaining candidates — otherwise a user with several same-entity decisions would see only the
+      // ones before the failure linked. Each iteration fails independently; the outer catch still guards
+      // candidate-key building and the iterator so linking can never break decision creation.
+      try {
+        const existingKey = buildDecisionDedupKey({
+          sourceSkill: existing.sourceSkill,
+          type: existing.type,
+          relatedEntityId: existing.relatedEntityId,
+          dedupeKey: existing.dedupeKey,
+          createdAt: existing.createdAt,
+        });
+        const verdict = classifyDecisionDedup(candidate, [existingKey]).verdict;
+        // Map the dedup verdict to an ADVISORY relationship type (only `blocks` prevents action, so
+        // neither hides nor blocks a decision): a cross-skill conflict on the same entity+window =>
+        // conflicts_with (warns the user); a cross-skill, non-conflicting decision on the same
+        // entity+window => affects_same_entity (groups them for context). Written reciprocally so BOTH
+        // decisions surface the link; idempotent via addDecisionDependency's INSERT OR IGNORE.
+        const linkType: DecisionRelationshipType | null = verdict === 'conflicting_recommendation_link' ? 'conflicts_with'
+          : verdict === 'same_issue_cluster' ? 'affects_same_entity'
+          : null;
+        if (linkType) {
+          addDecisionDependency({ decisionId: newId, dependsOnDecisionId: existing.decisionId, userId, tenantId, relationship: linkType });
+          addDecisionDependency({ decisionId: existing.decisionId, dependsOnDecisionId: newId, userId, tenantId, relationship: linkType });
+        } else if (supersedeEnabled && (verdict === 'newer_recommendation_supersedes_old' || verdict === 'same_recommendation_update_existing')) {
+          // HIDING slice. The matched `existing` is the OLDER same-recipe row (listActiveDedupCandidates
+          // excludes newId and orders newest-first; the new row's createdAt is the latest by DB clock).
+          const existingRecord = getDecisionRecord(existing.decisionId, userId, tenantId);
+          if (existingRecord && isDecisionRecord(existingRecord)) {
+            const existingFloored = isDecisionItemPolicyFloored(formatDecisionItemForApi(existingRecord));
+            if (verdict === 'newer_recommendation_supersedes_old') {
+              // Supersede the OLDER decision — but NEVER a policy-floored one (fail open: keep both).
+              // (A later same-skill candidate may additionally same_recommendation-collapse this new row into
+              // a third existing one in the same pass; the result — oldest hidden, newest kept — is invariant-safe.)
+              if (!existingFloored) {
+                supersedeDecision(existingRecord, 'semantic_superseded_by_newer_recommendation');
+                addDecisionDependency({ decisionId: newId, dependsOnDecisionId: existing.decisionId, userId, tenantId, relationship: 'supersedes' });
+              }
+            } else {
+              // same_recommendation: drop the NEW duplicate and return the existing — UNLESS the new is
+              // floored and the existing is not (then fail open — never hide the floored new one).
+              const newRecord = getDecisionRecord(newId, userId, tenantId);
+              const newFloored = newRecord && isDecisionRecord(newRecord) ? isDecisionItemPolicyFloored(formatDecisionItemForApi(newRecord)) : false;
+              if (!(newFloored && !existingFloored) && newRecord && isDecisionRecord(newRecord)) {
+                supersedeDecision(newRecord, 'semantic_duplicate_of_existing');
+                collapsedToExistingId = existing.decisionId;
+                break; // the new row is now superseded — stop scanning further candidates for it
+              }
+            }
+          }
+        }
+      } catch (pairErr) {
+        logger.warn({ err: pairErr instanceof Error ? pairErr.message : String(pairErr), newId, existingId: existing.decisionId }, 'B3 conflict-linking pair failed (non-fatal; other pairs continue)');
+      }
+    }
+  } catch (err) {
+    logger.warn({ err: err instanceof Error ? err.message : String(err), newId }, 'B3 conflict-linking failed (non-fatal)');
+  }
+  return { collapsedToExistingId };
+}
+
 export async function createDecisionIntent(input: NotificationIntentInput): Promise<{ item: DecisionApiItem | null; eligibility: DecisionEligibilityResult }> {
   assertScope(input.userId, input.tenantId ?? input.userId, 'create_decision_intent', { sourceSkill: input.sourceSkill, type: input.type });
   const eligibility = evaluateDecisionEligibility({
@@ -720,6 +1080,7 @@ export async function createDecisionIntent(input: NotificationIntentInput): Prom
 
   const quality = decisionLogicForIntentInput(input).quality;
   if (!quality.safeToShowUser) {
+    // C4: a blocked decision is a distinct quality-gate outcome — always record it.
     recordDecisionQualityGateEvent(input, quality);
     return {
       item: null,
@@ -736,7 +1097,25 @@ export async function createDecisionIntent(input: NotificationIntentInput): Prom
     requiresUserAction: true,
     deliveryPolicy: input.deliveryPolicy ?? (eligibility.apnsEligible ? 'auto' : 'in_app_only'),
   });
-  const item = result.item ? getDecisionItem(result.item.itemId, input.userId, input.tenantId ?? input.userId) : null;
+  // C4: record the passing evaluation only for a genuinely new decision, not for a
+  // deduped retry of an already-active decision (which would inflate the rejection-rate denominator).
+  if (result.intent.status !== 'deduped') {
+    recordDecisionQualityGateEvent(input, quality);
+  }
+  if (result.item && result.intent.status !== 'deduped') {
+    emitDecisionLifecycleEvent({ decisionId: result.item.itemId, userId: input.userId, tenantId: input.tenantId ?? input.userId, event: 'created', toStatus: result.item.status });
+  }
+  let item = result.item ? getDecisionItem(result.item.itemId, input.userId, input.tenantId ?? input.userId, { recordExposure: false }) : null;
+  if (result.item && result.intent.status !== 'deduped') {
+    // B3 acting: flag-gated conflict-linking (advisory edges) + optional hiding slice (supersede/collapse).
+    if (item && isDecisionSemanticDedupEnabled(process.env, { userId: input.userId, tenantId: input.tenantId ?? input.userId })) {
+      const linkResult = linkConflictingDecisionsOnCreate(result.item.itemId, input, input.userId, input.tenantId ?? input.userId, item.createdAt);
+      // same_recommendation collapse: the new row was dropped — return the existing decision it folded into.
+      if (linkResult.collapsedToExistingId) {
+        item = getDecisionItem(linkResult.collapsedToExistingId, input.userId, input.tenantId ?? input.userId, { recordExposure: false });
+      }
+    }
+  }
   return { item, eligibility };
 }
 
@@ -777,7 +1156,15 @@ export function buildSkillDecisionFixtureIntent(
 export function listDecisionItems(
   userId: number,
   tenantId = userId,
-  opts: { status?: string; sourceSkill?: NotificationSourceSkill; type?: NotificationIntentType; urgency?: DecisionUrgency; limit?: number } = {},
+  opts: {
+    status?: string;
+    sourceSkill?: NotificationSourceSkill;
+    type?: NotificationIntentType;
+    urgency?: DecisionUrgency;
+    limit?: number;
+    maxLimit?: number;
+    recordExposure?: boolean;
+  } = {},
 ): DecisionApiItem[] {
   assertScope(userId, tenantId, 'list_decision_items', opts);
   ensureDecisionCenterTables();
@@ -799,7 +1186,14 @@ export function listDecisionItems(
     clauses.push('items.type = ?');
     params.push(opts.type);
   }
-  params.push(Math.min(Math.max(opts.limit ?? 80, 1), 200));
+  if (opts.status !== 'expired') {
+    // A1: keep hard-expired and future-snoozed rows out of the SQL window, not just the in-memory
+    // projection, so a backlog of stale rows cannot consume LIMIT and starve valid active decisions.
+    clauses.push("(items.expires_at IS NULL OR datetime(items.expires_at) > datetime('now'))");
+    clauses.push("(items.snoozed_until IS NULL OR datetime(items.snoozed_until) <= datetime('now'))");
+  }
+  const maxLimit = Math.min(Math.max(opts.maxLimit ?? 200, 1), 500);
+  params.push(Math.min(Math.max(opts.limit ?? 80, 1), maxLimit));
 
   const rows = getDb().prepare(`
     SELECT items.*, intents.related_entity_id, intents.related_entity_type, intents.requires_user_action,
@@ -814,14 +1208,15 @@ export function listDecisionItems(
      LIMIT ?
   `).all(...params) as any[];
 
-  return rows
+  const records = rows
     .map(mapDecisionRecord)
     .filter((item) => isDecisionRecord(item))
     .filter((item) => !supersedeIfSourceStateStale(item))
     .filter((item) => isUserFacingDecision(item, decisionLogicForRecord(item)).visible)
     .filter((item) => !isSnoozedUntilFuture(item))
-    .filter((item) => !opts.urgency || urgencyForPriority(item.priority, item.decisionDeadline, item.expiresAt) === opts.urgency)
-    .map(formatDecisionItemForApi);
+    .filter((item) => opts.status === 'expired' || !isDecisionExpired(item))
+    .filter((item) => !opts.urgency || urgencyForPriority(item.priority, item.decisionDeadline, item.expiresAt) === opts.urgency);
+  return records.map((record) => formatDecisionItemForApiWithExposure(record, { recordExposure: opts.recordExposure }));
 }
 
 function isUserFacingDecision(record: DecisionRecord, logic: DecisionLogicV2): DecisionUserFacingFilterVerdict {
@@ -872,16 +1267,35 @@ function hasMinimumVisibleGuidance(record: DecisionRecord, logic: DecisionLogicV
   return true;
 }
 
-export function getDecisionItem(decisionId: string, userId: number, tenantId = userId): DecisionApiItem | null {
+export function getDecisionItem(
+  decisionId: string,
+  userId: number,
+  tenantId = userId,
+  opts: { recordExposure?: boolean } = {},
+): DecisionApiItem | null {
   const record = getDecisionRecord(decisionId, userId, tenantId);
   if (!record || !isDecisionRecord(record)) return null;
   const logic = decisionLogicForRecord(record);
   if (!isUserFacingDecision(record, logic).visible) return null;
+  if (isDecisionExpired(record)) return null;
   if (supersedeIfSourceStateStale(record)) {
     const refreshed = getDecisionRecord(decisionId, userId, tenantId);
-    return refreshed ? formatDecisionItemForApi(refreshed) : null;
+    if (!refreshed || isDecisionExpired(refreshed)) return null;
+    return formatDecisionItemForApiWithExposure(refreshed, opts);
   }
-  return formatDecisionItemForApi(record);
+  return formatDecisionItemForApiWithExposure(record, opts);
+}
+
+/**
+ * Refresh-evidence: the explicit, audited trigger to re-derive a decision's computed fields (effectiveStatus
+ * / sourceFreshness / ranking / actionability) from CURRENT stored source state. getDecisionItem already
+ * recomputes everything on every call and re-evaluates supersession, so this is a token-zero re-read (no
+ * provider network fetch) — honest about NOT fetching fresh upstream data. Read-only; returns null if the
+ * decision is gone/expired/superseded-away.
+ */
+export function refreshDecisionItem(decisionId: string, userId: number, tenantId = userId): { item: DecisionApiItem; refreshedAt: string } | null {
+  const item = getDecisionItem(decisionId, userId, tenantId);
+  return item ? { item, refreshedAt: DateTime.utc().toISO()! } : null;
 }
 
 export function findDecisionByRelatedEntity(
@@ -908,6 +1322,7 @@ export function findDecisionByRelatedEntity(
   if (!row) return null;
   const record = mapDecisionRecord(row);
   if (!isDecisionRecord(record)) return null;
+  if (isDecisionExpired(record)) return null;
   const logic = decisionLogicForRecord(record);
   return isUserFacingDecision(record, logic).visible ? formatDecisionItemForApi(record) : null;
 }
@@ -927,9 +1342,16 @@ function buildDecisionSummaryFromSections(
 ): DecisionSummary {
   const activeItems = items.filter((item) => ['unread', 'read', 'snoozed', 'failed', 'open'].includes(item.status));
   const openItems = activeItems.filter((item) => item.status !== 'snoozed' || !item.snoozedUntil);
+  // C3: COUNTS (openCount/urgentCount/todayCount/badgeCount/gamification) are INTEGRITY reads computed on the
+  // raw open set so they stay accurate and consistent with the overview. The RENDERED fields (top pick +
+  // preview list + their derived titles/CTA) are USER-FACING, so they respect type-suppression — a muted
+  // type must never peek through previewItems/topSuggestion on ANY summary consumer (overview, /summary,
+  // portal, secretary fastpath, chat). Flag OFF => presentationItems === openItems (byte-identical). Floored
+  // decisions are never suppressed.
+  const presentationItems = applyDecisionTypeSuppression(openItems, userId, tenantId);
   const urgentCount = openItems.filter((item) => item.urgency === 'urgent').length;
   const todayCount = openItems.filter((item) => item.urgency === 'urgent' || item.urgency === 'today').length;
-  const top = openItems[0] ?? null;
+  const top = presentationItems[0] ?? null;
   const locale = userDecisionContextDefaults(userId).locale;
   const timezone = userDecisionContextDefaults(userId).timezone ?? 'UTC';
   const handledTodayCount = handled
@@ -949,7 +1371,7 @@ function buildDecisionSummaryFromSections(
     topDecisionWhy: top?.whySummary ?? top?.analysis?.whyNow ?? null,
     topSuggestion: top ? topSuggestionForItem(top) : null,
     ctaLabel: ctaLabelForSummary(openItems.length, urgentCount, top, locale),
-    previewItems: openItems.slice(0, Math.min(Math.max(limit, 0), 3)),
+    previewItems: presentationItems.slice(0, Math.min(Math.max(limit, 0), 3)),
     badgeCount: todayCount,
     gamification,
   };
@@ -1019,8 +1441,29 @@ export function getDecisionOverview(
     logDecisionOverviewSectionFailure('handled', err, userId, tenantId);
   }
 
-  const allOpenItems = openDecisionItemsForOverview(allItems);
-  const items = itemsAvailable ? allOpenItems.slice(0, limit) : [];
+  // C3: type-suppression is a PRESENTATION filter. `openItemsRaw` is the true open partition and feeds the
+  // numeric counts (openCount/staleCount) so they stay consistent with `summary.openCount` (an integrity
+  // read built from `allItems`). `allOpenItems` is the user-facing, suppression-filtered set that feeds the
+  // rendered list, the top suggestion, and the today narrative. Floored decisions are never suppressed.
+  // Flag-gated; OFF makes the two sets identical (byte-identical overview).
+  const openItemsRaw = openDecisionItemsForOverview(allItems);
+  const allOpenItems = applyDecisionTypeSuppression(openItemsRaw, userId, tenantId);
+  let items: DecisionApiItem[] = [];
+  let fatigueMeta: DecisionCenterOverview['fatigue'];
+  if (itemsAvailable) {
+    if (isDecisionCenterFatigueCapsEnabled(process.env, { userId, tenantId })) {
+      // C5: flag-gated, post-ranking selection. Floored decisions bypass the cap; non-floored items
+      // are bounded per-domain and to the visible budget. The cap reshapes the already-ranked `items`
+      // array (then honors the caller's limit); `fatigue` advertises the primary/More split + how many
+      // open decisions were capped out, so the client can render the hierarchy without re-deriving it.
+      const { primaryItems, moreItems } = applyDecisionFatigueCaps(allOpenItems);
+      items = [...primaryItems, ...moreItems].slice(0, limit);
+      const primaryCount = Math.min(primaryItems.length, items.length);
+      fatigueMeta = { primaryCount, moreCount: items.length - primaryCount, cappedCount: Math.max(allOpenItems.length - items.length, 0) };
+    } else {
+      items = allOpenItems.slice(0, limit);
+    }
+  }
   const handled = handledAvailable ? handledForSummary.slice(0, handledLimit) : [];
   let summary = emptyDecisionSummary(userId);
   if (summaryAvailable) {
@@ -1032,14 +1475,14 @@ export function getDecisionOverview(
       logDecisionOverviewSectionFailure('summary', err, userId, tenantId);
     }
   }
-  const staleCount = allOpenItems.filter((item) => item.analysis.sourceFreshness === 'stale' || item.sourceTrace?.dataFreshness === 'cached').length;
+  const staleCount = openItemsRaw.filter((item) => item.analysis.sourceFreshness === 'stale' || item.sourceTrace?.dataFreshness === 'cached').length;
   const supersededCount = allItems.filter((item) => ['superseded', 'dismissed', 'actioned'].includes(item.status)).length;
   const topSuggestion = summary.topSuggestion ?? (allOpenItems[0] ? topSuggestionForItem(allOpenItems[0]) : null);
   const language = userDecisionContextDefaults(userId).locale ?? 'en';
   const secretaryToday = buildDecisionCenterSecretaryTodaySummary(allOpenItems, handledForSummary, language);
   return {
     count: items.length,
-    openCount: allOpenItems.filter((item) => ['unread', 'read', 'failed', 'open'].includes(item.status)).length,
+    openCount: openItemsRaw.filter((item) => ['unread', 'read', 'failed', 'open'].includes(item.status)).length,
     handledCount: handled.length,
     staleCount,
     supersededCount,
@@ -1052,6 +1495,7 @@ export function getDecisionOverview(
       summary: summaryAvailable,
     },
     secretaryToday,
+    fatigue: fatigueMeta,
     items,
     handled,
   };
@@ -1511,12 +1955,178 @@ function runDecisionCenterSmokeCleanup(input: {
   return { inspected: rows.length, expired: rows.length, dryRun: false, countsByStatus, countsByVisibilityScope };
 }
 
+export interface DecisionExpirySweepResult {
+  inspected: number;
+  expired: number;
+  remaining: number;
+  batches: number;
+  durationMs: number;
+}
+
+/**
+ * Statuses that can still surface a decision to the user and therefore must be
+ * expired once their deadline passes. Matches the authoritative active set used
+ * by listDecisionItems(); 'open' is intentionally excluded (it is not a member
+ * of NotificationCenterStatus and never matches a real row).
+ */
+const DECISION_EXPIRY_ACTIVE_STATUSES = ['unread', 'read', 'failed', 'snoozed'] as const;
+
+/**
+ * Proactively expire decisions whose hard deadline (expires_at) has passed.
+ *
+ * Decision lists already hide expired items in-memory (isDecisionExpired), so
+ * this sweep is hygiene: it flips lingering active rows to 'expired' so DB
+ * state, counts, and dedup lookups stay accurate instead of waiting for the
+ * reactive flip in guardActionable() when a user taps an already-dead decision.
+ *
+ * Batched (LIMIT per pass, capped pass count) so a large backlog never runs as
+ * a single long transaction. The comparison uses SQLite datetime() on both
+ * sides so it is robust to ISO-with-Z vs 'YYYY-MM-DD HH:MM:SS' storage formats.
+ * expires_at is expected to carry an explicit zone (the codebase convention,
+ * matching the findActiveDuplicate guard in notification-orchestrator); a naive
+ * timestamp is read as UTC by datetime(), so writers should store ISO-with-Z.
+ */
+export function runDecisionExpiryJob(input: { batchSize?: number; maxBatches?: number } = {}): DecisionExpirySweepResult {
+  ensureDecisionCenterTables();
+  const start = Date.now();
+  const batchSize = Math.min(Math.max(input.batchSize ?? 500, 1), 1000);
+  const maxBatches = Math.min(Math.max(input.maxBatches ?? 20, 1), 200);
+  const db = getDb();
+  const statuses = [...DECISION_EXPIRY_ACTIVE_STATUSES];
+  const placeholders = statuses.map(() => '?').join(', ');
+  const selectExpired = db.prepare(`
+    SELECT item_id, user_id, tenant_id
+      FROM notification_center_items
+     WHERE status IN (${placeholders})
+       AND expires_at IS NOT NULL
+       AND datetime(expires_at) <= datetime('now')
+     ORDER BY expires_at ASC
+     LIMIT ?
+  `);
+  const countExpired = db.prepare(`
+    SELECT COUNT(*) AS n
+      FROM notification_center_items
+     WHERE status IN (${placeholders})
+       AND expires_at IS NOT NULL
+       AND datetime(expires_at) <= datetime('now')
+  `);
+  const update = db.prepare("UPDATE notification_center_items SET status = 'expired' WHERE item_id = ?");
+  const expireBatch = db.transaction((ids: string[]) => {
+    for (const id of ids) update.run(id);
+  });
+
+  let expired = 0;
+  let batches = 0;
+  while (batches < maxBatches) {
+    const rows = selectExpired.all(...statuses, batchSize) as Array<{ item_id: string; user_id: number; tenant_id: number }>;
+    if (rows.length === 0) break;
+    expireBatch(rows.map((row) => row.item_id));
+    for (const row of rows) {
+      emitDecisionLifecycleEvent({ decisionId: row.item_id, userId: row.user_id, tenantId: row.tenant_id, event: 'expired', toStatus: 'expired' });
+    }
+    expired += rows.length;
+    batches += 1;
+    if (rows.length < batchSize) break;
+  }
+
+  const remaining = (countExpired.get(...statuses) as { n: number }).n;
+  return { inspected: expired, expired, remaining, batches, durationMs: Date.now() - start };
+}
+
+export interface DecisionLedgerRetentionPruneResult {
+  outcomeLedgerPruned: number;
+  qualityGateEventsPruned: number;
+  outcomeLedgerRemaining: number;
+  qualityGateEventsRemaining: number;
+  /** Combined batch-pass count across BOTH tables (outcome ledger + quality-gate events), not per-table. */
+  batches: number;
+  durationMs: number;
+}
+
+/**
+ * Enforce the declared retention horizon for the Decision Center's write-heavy raw telemetry tables by
+ * age-pruning rows older than DECISION_OUTCOME_LEDGER_RETENTION_POLICY.rawOutcomeRetentionDays. Without
+ * this the policy is only declarative: decision_outcome_ledger + decision_quality_gate_events grow
+ * unbounded and getDecisionOutcomeMetrics materializes an ever-larger per-user partition on the request
+ * path (the very scan that gates the T14 dashboard at scale).
+ *
+ * GLOBAL (tenant-agnostic) age-based prune. Batched (LIMIT per pass, capped pass count) so a large
+ * backlog never runs as one long transaction. Portable batched DELETE: select a batch of primary keys
+ * matching the age predicate, then delete that batch in a transaction (SQLite has no DELETE ... LIMIT by
+ * default). The created_at predicate rides the existing (user_id, tenant_id, created_at) indexes; the
+ * datetime() comparison is robust to ISO-with-Z vs space-separated storage formats. Table + PK names
+ * are compile-time literals (not input), so the dynamic SQL carries no injection surface.
+ *
+ * Both raw tables intentionally share rawOutcomeRetentionDays (same class of raw event; the 730-day
+ * aggregateRetentionDays tier is for derived rollups, not these). No VACUUM/ANALYZE is run — a frequent
+ * cron must not take SQLite's whole-DB write lock, and freed pages are reused by the steady stream of
+ * new inserts, so disk stays flat in steady state without reclaiming on each pass.
+ */
+export function runDecisionLedgerRetentionPruneJob(
+  input: { retentionDays?: number; batchSize?: number; maxBatches?: number } = {},
+): DecisionLedgerRetentionPruneResult {
+  ensureDecisionCenterTables();
+  const start = Date.now();
+  const retentionDays = Math.max(input.retentionDays ?? DECISION_OUTCOME_LEDGER_RETENTION_POLICY.rawOutcomeRetentionDays, 1);
+  const batchSize = Math.min(Math.max(input.batchSize ?? 500, 1), 1000);
+  const maxBatches = Math.min(Math.max(input.maxBatches ?? 50, 1), 500);
+  const db = getDb();
+  const cutoff = `-${Math.floor(retentionDays)} days`;
+
+  const pruneTable = (table: string, pkColumn: string): { pruned: number; remaining: number; batches: number } => {
+    const selectOld = db.prepare(`
+      SELECT ${pkColumn} AS id FROM ${table}
+       WHERE datetime(created_at) < datetime('now', ?)
+       ORDER BY created_at ASC
+       LIMIT ?
+    `);
+    const del = db.prepare(`DELETE FROM ${table} WHERE ${pkColumn} = ?`);
+    const delBatch = db.transaction((ids: string[]) => {
+      for (const id of ids) del.run(id);
+    });
+    let pruned = 0;
+    let batches = 0;
+    while (batches < maxBatches) {
+      const rows = selectOld.all(cutoff, batchSize) as Array<{ id: string }>;
+      if (rows.length === 0) break;
+      delBatch(rows.map((row) => row.id));
+      pruned += rows.length;
+      batches += 1;
+      if (rows.length < batchSize) break;
+    }
+    const remaining = (db.prepare(`SELECT COUNT(*) AS n FROM ${table} WHERE datetime(created_at) < datetime('now', ?)`).get(cutoff) as { n: number }).n;
+    return { pruned, remaining, batches };
+  };
+
+  const outcome = pruneTable('decision_outcome_ledger', 'outcome_id');
+  const gate = pruneTable('decision_quality_gate_events', 'event_id');
+  return {
+    outcomeLedgerPruned: outcome.pruned,
+    qualityGateEventsPruned: gate.pruned,
+    outcomeLedgerRemaining: outcome.remaining,
+    qualityGateEventsRemaining: gate.remaining,
+    batches: outcome.batches + gate.batches,
+    durationMs: Date.now() - start,
+  };
+}
+
+/**
+ * Record a typed dependency edge from `decisionId` to `dependsOnDecisionId`. With the canonical
+ * `blocks` relationship the target (`dependsOnDecisionId`) blocks `decisionId`: while the target is
+ * unresolved, `decisionId` is reported in `blockedByDecisionIds` and its mutating actions are refused.
+ *
+ * Directionality matters and only `blocks` prevents action. `blocked_by` is a DISPLAY-ONLY inverse
+ * label (kind `inverse_blocked`, blocksAction=false) — writing a `blocked_by` edge blocks NOTHING; to
+ * actually block `decisionId`, store a forward `blocks` edge to its blocker as above, never a lone
+ * `blocked_by` on the decision itself. Every other type (conflicts_with / duplicate_of / related* /
+ * supersedes / caused_by / ...) is advisory (see decisionRelationshipSemantics).
+ */
 export function addDecisionDependency(input: {
   decisionId: string;
   dependsOnDecisionId: string;
   userId: number;
   tenantId?: number;
-  relationship?: 'blocks' | 'supersedes' | 'caused_by' | 'related';
+  relationship?: DecisionRelationshipType;
 }): void {
   const tenantId = input.tenantId ?? input.userId;
   assertScope(input.userId, tenantId, 'add_decision_dependency', {
@@ -1664,6 +2274,14 @@ export function getDecisionOutcomeMetrics(userId: number, tenantId = userId): De
     FROM decision_quality_gate_events
     WHERE user_id = ? AND tenant_id = ?
   `).get(userId, tenantId) as { totalQualityGateEvents: number; genericBlockedCount: number };
+  const gateStatusRows = getDb().prepare(`
+    SELECT quality_status AS status, COUNT(*) AS count
+    FROM decision_quality_gate_events
+    WHERE user_id = ? AND tenant_id = ?
+    GROUP BY quality_status
+  `).all(userId, tenantId) as Array<{ status: string; count: number }>;
+  const qualityGateByStatus: Record<string, number> = {};
+  for (const row of gateStatusRows) qualityGateByStatus[row.status] = Number(row.count ?? 0);
   const bySourceRows = getDb().prepare(`
     SELECT source_skill AS sourceSkill, COUNT(*) AS count
     FROM decision_outcome_ledger
@@ -1730,7 +2348,9 @@ export function getDecisionOutcomeMetrics(userId: number, tenantId = userId): De
     if (isDeferredOutcome(row)) bucket.deferred += 1;
     bySourceSkillOutcome[row.sourceSkill] = bucket;
   }
-  const totalDecisionQualityAttempts = totalOutcomes + Number(gateTotals.totalQualityGateEvents ?? 0);
+  // C4: every quality-gate evaluation (pass and fail) is recorded, so the gate-event
+  // count is the true denominator for the rejection rate (no double-counting outcomes).
+  const totalDecisionQualityAttempts = Number(gateTotals.totalQualityGateEvents ?? 0);
   const genericBlockedCount = Number(gateTotals.genericBlockedCount ?? 0);
   return {
     userId,
@@ -1746,6 +2366,8 @@ export function getDecisionOutcomeMetrics(userId: number, tenantId = userId): De
     askedNexusCount,
     explanationOpenCount: askedNexusCount,
     genericBlockedCount,
+    totalQualityGateEvents: Number(gateTotals.totalQualityGateEvents ?? 0),
+    qualityGateByStatus,
     undoUsedCount,
     primaryActionCount,
     failedActionCount,
@@ -1785,14 +2407,15 @@ export async function performDecisionAction(
       { reason: supersededReason },
     );
   }
-  const availableActions = actionsForRecord(record);
-  if (!availableActions.some((action) => action.id === actionId)) {
-    throw new DecisionActionError('DECISION_ACTION_NOT_ALLOWED', 'That action is not available for this decision', 400);
-  }
   const idempotencyKey = opts.idempotencyKey?.trim();
   if (!idempotencyKey) {
     throw new DecisionActionError('IDEMPOTENCY_KEY_REQUIRED', 'Decision actions require an idempotency key', 400);
   }
+  // Idempotency short-circuits BEFORE re-validating availability: a key we have already seen is replayed
+  // based on its prior outcome regardless of whether the action is still "available" now. This matters for
+  // a dynamically-surfaced action whose availability precondition is consumed by its own execution —
+  // choose_another_time stops being injected once the agenda is reflowed — so a client retry of a write
+  // that already succeeded must return the original result, not a spurious DECISION_ACTION_NOT_ALLOWED.
   const existing = getExistingExecution(decisionId, actionId, userId, tenantId, idempotencyKey);
   if (existing && existing.status === 'succeeded') {
     return idempotentActionResult(decisionId, actionId, userId, tenantId, existing);
@@ -1802,6 +2425,11 @@ export async function performDecisionAction(
   }
   if (existing && existing.status === 'failed') {
     throw new DecisionActionError(existing.error_code || 'DECISION_ACTION_FAILED', 'Prior decision action attempt failed', 409, safeParseJson(existing.result_json, {}));
+  }
+  // New attempt (unseen key): now validate that the action is actually available + actionable.
+  const availableActions = actionsForRecord(record);
+  if (!availableActions.some((action) => action.id === actionId)) {
+    throw new DecisionActionError('DECISION_ACTION_NOT_ALLOWED', 'That action is not available for this decision', 400);
   }
   guardActionable(record, actionId);
   guardDecisionDependencies(record, actionId);
@@ -1818,13 +2446,24 @@ export async function performDecisionAction(
     throw new DecisionActionError(claimed.execution.error_code || 'DECISION_ACTION_FAILED', 'Prior decision action attempt failed', 409, safeParseJson(claimed.execution.result_json, {}));
   }
 
+  emitDecisionLifecycleEvent({ decisionId, userId, tenantId, event: 'action_started', actionId });
   try {
-    const execution = await executeDecisionAction(record, action, userId, tenantId, opts.payload ?? {});
+    const execution = await executeDecisionAction(record, action, userId, tenantId, idempotencyKey, opts.payload ?? {});
     markExecutionSucceeded(claimed.execution.action_execution_id, execution.expectedEffect, execution.actualEffect);
-    const updated = getDecisionItem(decisionId, userId, tenantId);
+    // Post-action: format the just-actioned decision directly from its record. The active-inbox visibility
+    // filter (getDecisionItem → isUserFacingDecision) must NOT apply here — a successfully actioned decision
+    // belongs to handled history and must be returned as the action result even when a live re-read would
+    // hide it. This matters for actions that mutate their own source state: choose_another_time moves the
+    // agenda so the recomputed advice degrades and the filtered read would drop the decision, throwing a
+    // spurious "Decision missing" after a write that actually succeeded.
+    const updatedRecord = getDecisionRecord(decisionId, userId, tenantId);
+    const updated = updatedRecord && isDecisionRecord(updatedRecord) ? formatDecisionItemForApi(updatedRecord) : null;
     if (!updated) throw new DecisionActionError('DECISION_NOT_FOUND', 'Decision missing after action execution', 500);
     recordVerifiedDecisionAction(record, action, actionId, execution);
-    if (actionId !== 'snooze') {
+    emitDecisionLifecycleEvent({ decisionId, userId, tenantId, event: 'action_succeeded', actionId, toStatus: updated.status });
+    if (execution.readBackOk) emitDecisionLifecycleEvent({ decisionId, userId, tenantId, event: 'verified', actionId });
+    if (actionId === 'undo_reflow') emitDecisionLifecycleEvent({ decisionId, userId, tenantId, event: 'rolled_back', actionId, toStatus: updated.status });
+    if (actionId !== 'snooze' && execution.actualEffect.commandBusOutcomeRecorded !== true) {
       recordDecisionOutcome(record, {
         actionShown: action.id,
         actionTaken: actionId,
@@ -1858,6 +2497,7 @@ export async function performDecisionAction(
     );
     markExecutionFailed(claimed.execution.action_execution_id, error.code, error.details);
     markDecisionFailed(record, actionId, error.code);
+    emitDecisionLifecycleEvent({ decisionId, userId, tenantId, event: 'action_failed', actionId, reason: error.code });
     recordDecisionOutcome(record, {
       actionShown: actionId,
       actionTaken: actionId,
@@ -1882,6 +2522,7 @@ export function snoozeDecision(decisionId: string, userId: number, tenantId = us
   assertDecisionScopedUpdateApplied(update, 'snooze_decision', { decisionId, userId, tenantId });
   const item = getDecisionItem(decisionId, userId, tenantId);
   if (!item) throw new DecisionActionError('DECISION_NOT_FOUND', 'Decision not found after snooze', 404);
+  emitDecisionLifecycleEvent({ decisionId, userId, tenantId, event: 'snoozed', toStatus: item.status });
   const record = getDecisionRecord(decisionId, userId, tenantId);
   if (record) {
     recordDecisionOutcome(record, {
@@ -1895,11 +2536,22 @@ export function snoozeDecision(decisionId: string, userId: number, tenantId = us
   return item;
 }
 
-export function dismissDecision(decisionId: string, userId: number, tenantId = userId): DecisionApiItem {
+/** Closed vocabulary for dismiss feedback (C3) — never store free user text; unknown → 'other'. */
+export const DECISION_DISMISS_REASONS = ['already_handled', 'not_relevant', 'wrong_data', 'bad_timing', 'too_risky', 'duplicate', 'dont_show_type', 'other'] as const;
+export type DecisionDismissReason = typeof DECISION_DISMISS_REASONS[number];
+
+function normalizeDismissReason(reason?: string | null): DecisionDismissReason | null {
+  if (reason == null || reason.trim() === '') return null;
+  const value = reason.trim().toLowerCase();
+  return (DECISION_DISMISS_REASONS as readonly string[]).includes(value) ? (value as DecisionDismissReason) : 'other';
+}
+
+export function dismissDecision(decisionId: string, userId: number, tenantId = userId, reason?: string): DecisionApiItem {
   const item = dismissNotificationCenterItem(decisionId, userId, tenantId);
   if (!item) throw new DecisionActionError('DECISION_NOT_FOUND', 'Decision not found', 404);
   const decision = getDecisionItem(decisionId, userId, tenantId);
   if (!decision) throw new DecisionActionError('DECISION_NOT_FOUND', 'Decision not found after dismiss', 404);
+  emitDecisionLifecycleEvent({ decisionId, userId, tenantId, event: 'dismissed', toStatus: decision.status, reason: normalizeDismissReason(reason) });
   const record = getDecisionRecord(decisionId, userId, tenantId);
   if (record) {
     recordDecisionOutcome(record, {
@@ -1918,6 +2570,8 @@ export function markDecisionViewed(decisionId: string, userId: number, tenantId 
   if (!item) throw new DecisionActionError('DECISION_NOT_FOUND', 'Decision not found', 404);
   const decision = getDecisionItem(decisionId, userId, tenantId);
   if (!decision) throw new DecisionActionError('DECISION_NOT_FOUND', 'Decision not found after viewed', 404);
+  emitDecisionLifecycleEvent({ decisionId, userId, tenantId, event: 'detail_opened', toStatus: decision.status });
+  emitDecisionLifecycleEvent({ decisionId, userId, tenantId, event: 'viewed', toStatus: decision.status });
   return decision;
 }
 
@@ -2046,6 +2700,33 @@ function formatDecisionItemForApi(item: DecisionRecord): DecisionApiItem {
   const rollback = rollbackContractForRecord(item);
   const exposeDebugEvidence = shouldExposeDecisionDebugEvidence(item);
   const visibleWhatWillChange = userVisibleWhatWillChangeForApi(item, logic);
+  const effectiveStatus = computeEffectiveStatus(item, { dependencies, logic, retryAvailable: outcome.retryActions.length > 0 });
+  const decisionKind = computeDecisionKind(item, logic, dependencies, action);
+  let actionability = computeActionability(item, logic, effectiveStatus, action);
+  const rankDeadline = item.decisionDeadline ?? item.expiresAt;
+  const prioritySnapshot = rankDecisionPriority({
+    priority: item.priority,
+    sourceSkill: item.sourceSkill,
+    type: item.type,
+    status: item.status,
+    deadlineSoon: !!rankDeadline && Number.isFinite(Date.parse(rankDeadline)) && Date.parse(rankDeadline) - Date.now() <= 24 * 3_600_000,
+    riskLevel,
+    actionCount: actions.length,
+    dependencyBlocked: dependencies.blockedByDecisionIds.length > 0,
+  });
+  const analysisBundle = analysisForRecord(item, logic);
+  // F2: gate actionability on stale evidence (flag-gated; only lowers write-capable actionability so the
+  // client offers Refresh instead of acting on stale data). OFF or fresh => unchanged.
+  if (analysisBundle.sourceFreshness === 'stale'
+      && isDecisionEvidenceFreshnessGateEnabled(process.env, { userId: item.userId, tenantId: item.tenantId })) {
+    actionability = gateActionabilityForStaleEvidence(actionability);
+  }
+  // F human-review fallback: a requires_human_review decision with no live review queue is gated to
+  // unavailable (manual-only). Composes AFTER F2; both only ever lower. OFF/no-review-value => unchanged.
+  if (isDecisionHumanReviewGateEnabled(process.env, { userId: item.userId, tenantId: item.tenantId })) {
+    actionability = gateActionabilityForHumanReview(actionability, isHumanReviewQueueAvailable(process.env));
+  }
+  const confidenceExplanation = computeConfidenceExplanation(logic.confidence, logic.why, analysisBundle, exposeDebugEvidence);
   return {
     decisionId: item.itemId,
     itemId: item.itemId,
@@ -2057,6 +2738,13 @@ function formatDecisionItemForApi(item: DecisionRecord): DecisionApiItem {
     sourceSkill: item.sourceSkill,
     type: item.type,
     status: item.status,
+    lifecycleStatus: legacyStatusToLifecycle(item.status),
+    actionOutcomeStatus: actionOutcomeFromRecord(item),
+    effectiveStatus,
+    actionEffectiveStatuses: actions.map((candidate) => computeActionEffectiveStatus(item, candidate, { dependencies, logic, reconnectAffordance: isDecisionReconnectAffordanceEnabled(process.env, { userId: item.userId, tenantId: item.tenantId }) })),
+    decisionKind,
+    actionability,
+    prioritySnapshot,
     urgency,
     timingLabel: timingLabelForRecord(item, urgency),
     priorityScore: priorityScoreFor(item),
@@ -2082,6 +2770,18 @@ function formatDecisionItemForApi(item: DecisionRecord): DecisionApiItem {
     actionPreview: visibleWhatWillChange,
     whatWillChange: visibleWhatWillChange,
     alternatives: alternativesForRecord(item, logic, actions),
+    options: isDecisionChoiceOptionsEnabled(process.env, { userId: item.userId, tenantId: item.tenantId })
+      ? buildSecretaryChoiceOptions(item, logic)
+      : undefined,
+    contentCard: isDecisionSkillCardsEnabled(process.env, { userId: item.userId, tenantId: item.tenantId })
+      ? buildContentDecisionCard(item, logic, action)
+      : undefined,
+    trainingCard: isDecisionSkillCardsEnabled(process.env, { userId: item.userId, tenantId: item.tenantId })
+      ? buildTrainingDecisionCard(item, rollback)
+      : undefined,
+    financeCard: isDecisionSkillCardsEnabled(process.env, { userId: item.userId, tenantId: item.tenantId })
+      ? buildFinanceDecisionCard(item, logic, analysisBundle, action)
+      : undefined,
     automationEligibility: logic.automationEligibility,
     autopilotPolicy: logic.autopilotPolicy,
     readBackVerifier: exposeDebugEvidence ? logic.readBackVerifier : null,
@@ -2107,7 +2807,8 @@ function formatDecisionItemForApi(item: DecisionRecord): DecisionApiItem {
     deadlineAt: item.decisionDeadline,
     expiresAt: item.expiresAt,
     confidence: logic.confidence,
-    analysis: analysisForRecord(item, logic),
+    analysis: analysisBundle,
+    confidenceExplanation,
     riskLevel,
     groupKey: groupKeyForRecord(item),
     sectionKey,
@@ -2120,10 +2821,20 @@ function formatDecisionItemForApi(item: DecisionRecord): DecisionApiItem {
     snoozedUntil: item.snoozedUntil,
     actions,
     dependsOnDecisionIds: dependencies.dependsOnDecisionIds,
+    relationships: dependencies.relationships,
     blockedByDecisionIds: dependencies.blockedByDecisionIds,
     rollbackAvailable: rollback.available,
     rollbackActionId: rollback.actionId,
   };
+}
+
+function formatDecisionItemForApiWithExposure(
+  item: DecisionRecord,
+  opts: { recordExposure?: boolean } = {},
+): DecisionApiItem {
+  const apiItem = formatDecisionItemForApi(item);
+  if (opts.recordExposure !== false) recordDecisionExposure(item, apiItem);
+  return apiItem;
 }
 
 function displayModeForRecord(item: DecisionRecord, logic: DecisionLogicV2): DecisionFrontendDisplayMode {
@@ -2297,6 +3008,168 @@ function alternativesForRecord(
     });
   }
   return alternatives.slice(0, 5);
+}
+
+/**
+ * Shared (D) — the advisor's feasible slot recommendation for a SECRETARY REFLOW decision, or null when this
+ * is not a secretary reflow (carries `accept_reflow`) with candidate slots and a feasible recommendation.
+ * Pure: decisionContextForRecord + adviseSecretaryDecision are read-only and do NOT call back into
+ * actionsForRecord / decisionLogicForRecord, so this is safe to call from actionsForRecord without recursion.
+ */
+function secretaryReflowChoiceAdvice(record: DecisionRecord): SecretaryDecisionAdvice | null {
+  if (record.sourceSkill !== 'secretary') return null;
+  if (!record.actions.some((candidate) => candidate.id === 'accept_reflow')) return null;
+  const context = decisionContextForRecord(record);
+  const slots = context.candidateSlots ?? [];
+  if (slots.length === 0) return null;
+  const advice = adviseSecretaryDecision({
+    title: context.entityTitle ?? '',
+    currentStartAt: context.currentStartAt,
+    currentEndAt: context.currentEndAt,
+    availableSlots: slots,
+    reasonCodes: context.reasonCodes ?? [],
+    timezone: context.timezone,
+    locale: context.locale,
+  });
+  return advice.recommendedStartAt && advice.recommendedEndAt ? advice : null;
+}
+
+/**
+ * D (secretary choose-a-time) — surface the slot CHOICES the advisor already computes (recommended slot +
+ * ranked feasible alternatives, each a concrete window + tradeoff) as structured DecisionOptions the client
+ * can render as a choice UI. Every option maps to the (fully-wired) `choose_another_time` action with its
+ * window as the payload — a lightweight intent, NOT a baked preview (the client confirms freshly at
+ * selection time). The action is surfaced under the same flag by actionsForRecord, so the options are
+ * genuinely invokable. Returns undefined — never [] — when this is unsafe to act on or there is no feasible
+ * recommendation, so no hollow choice UI is ever shown.
+ */
+function buildSecretaryChoiceOptions(item: DecisionRecord, logic: DecisionLogicV2): DecisionOption[] | undefined {
+  if (!logic.quality.safeForFrontendAction) return undefined; // never offer actionable options on an unsafe decision
+  const advice = secretaryReflowChoiceAdvice(item);
+  if (!advice) return undefined;
+  const options: DecisionOption[] = [{
+    optionId: `${item.itemId}:opt:recommended`,
+    title: advice.bestAction,
+    summary: advice.scheduleImpact,
+    tradeoffs: advice.whyTradeoffs,
+    recommended: true,
+    risk: 'low', // schedule reflow is reversible (undo_reflow), so choosing a window is low-risk
+    actionId: 'choose_another_time',
+    actionPayload: { startAt: advice.recommendedStartAt!, endAt: advice.recommendedEndAt! },
+  }];
+  for (const alt of advice.alternatives) {
+    if (!alt.startAt || !alt.endAt) continue;
+    options.push({
+      optionId: `${item.itemId}:opt:${alt.startAt}`,
+      title: alt.label,
+      summary: alt.tradeoff,
+      tradeoffs: [alt.tradeoff],
+      recommended: false,
+      risk: 'low',
+      actionId: 'choose_another_time',
+      actionPayload: { startAt: alt.startAt, endAt: alt.endAt },
+    });
+  }
+  return options;
+}
+
+/**
+ * D (content) — surface the content pipeline state for a content decision as a structured card. Pure +
+ * read-only (getContentWorkflowObject is scope-checked by userId/tenantId). Returns undefined — never a
+ * partial card — for non-content decisions or when the backing workflow object is missing, so the field is
+ * only present when every value is real.
+ */
+function buildContentDecisionCard(
+  item: DecisionRecord,
+  logic: DecisionLogicV2,
+  primaryAction: NotificationActionButton | null,
+): DecisionContentCard | undefined {
+  if (item.sourceSkill !== 'content') return undefined;
+  const objectId = contentWorkflowObjectIdForDecision(item);
+  if (!objectId) return undefined;
+  const object = getContentWorkflowObject(item.userId, objectId, item.tenantId);
+  if (!object) return undefined;
+  return {
+    objectType: object.objectType,
+    pipelineStage: object.editorialState,
+    approvalState: object.approvalState,
+    reviewRequired: object.reviewRequired,
+    nextActionLabel: logic.primaryActionLabel || (primaryAction?.label ?? null),
+  };
+}
+
+/**
+ * Conservative training-risk label derived ONLY from the agenda's structured decisionReasonCodes (enum
+ * tokens, never free text), so injected evidence in a title/body can never move the risk. Defaults to
+ * 'low' and only escalates on explicit risk tokens — never overconfident.
+ */
+function trainingRiskFromReasonCodes(codes: string[]): 'low' | 'medium' | 'high' {
+  const set = codes.map((code) => code.toLowerCase());
+  const has = (...needles: string[]): boolean => set.some((code) => needles.some((needle) => code.includes(needle)));
+  if (has('compression', 'deload', 'conflict', 'injury', 'overreach')) return 'high';
+  if (has('peak', 'race', 'taper')) return 'medium';
+  return 'low';
+}
+
+/**
+ * D (training) — before/after window + risk + undo card for a training-origin reflow decision. Reads the
+ * anchoring secretary agenda item (owner/tenant-scoped) for the BEFORE window + structured reason codes,
+ * and the already-computed recommended window (context) for the AFTER. Pure-ish (one scoped read). Returns
+ * undefined (no hollow card) for non-training decisions, a non-training agenda, or a missing before window.
+ */
+function buildTrainingDecisionCard(
+  item: DecisionRecord,
+  rollback: { available: boolean; actionId: string | null },
+): DecisionTrainingCard | undefined {
+  // Gate on the ANCHORING AGENDA's skill, not the decision's: a training-session reflow is surfaced under
+  // sourceSkill 'secretary' (the scheduler) while the agenda is source_skill 'training'. The cheap
+  // relatedEntityType check first avoids a DB read for non-reflow decisions.
+  if (item.relatedEntityType !== 'secretary_agenda_item' || !item.relatedEntityId) return undefined;
+  const agenda = getSecretaryAgendaItemById({ agendaItemId: item.relatedEntityId, ownerUserId: item.userId, tenantId: item.tenantId });
+  if (!agenda || agenda.sourceSkill !== 'training') return undefined; // true training origin only
+  const beforeStartAt = agenda.startAt ?? null;
+  const beforeEndAt = agenda.endAt ?? null;
+  if (!beforeStartAt || !beforeEndAt) return undefined; // no hollow card without a real before window
+  const context = decisionContextForRecord(item);
+  const afterStartAt = context.recommendedStartAt ?? null;
+  const afterEndAt = context.recommendedEndAt ?? null;
+  return {
+    beforeWindowLabel: formatDecisionWindow(beforeStartAt, beforeEndAt, context.timezone, context.locale),
+    afterWindowLabel: afterStartAt && afterEndAt ? formatDecisionWindow(afterStartAt, afterEndAt, context.timezone, context.locale) : null,
+    beforeStartAt,
+    beforeEndAt,
+    afterStartAt,
+    afterEndAt,
+    risk: trainingRiskFromReasonCodes(agenda.decisionReasonCodes ?? []),
+    undoAvailable: rollback.available,
+  };
+}
+
+/**
+ * D (finance) — READ-ONLY, privacy-safe card for a finance tax-event decision. Surfaces ONLY the tax month
+ * + payment-status enum + freshness label + next action; NEVER any amount field. Same owner/tenant-scoped
+ * tax-event derivation the executor already trusts. Returns undefined (no hollow card) unless a real
+ * matching tax event exists.
+ */
+function buildFinanceDecisionCard(
+  item: DecisionRecord,
+  logic: DecisionLogicV2,
+  analysisBundle: DecisionAnalysisBundle,
+  primaryAction: NotificationActionButton | null,
+): DecisionFinanceCard | undefined {
+  if (item.sourceSkill !== 'finance') return undefined;
+  const month = item.relatedEntityType === 'finance_tax_event' ? item.relatedEntityId : null;
+  if (!month || !/^\d{4}-\d{2}$/.test(month)) return undefined; // same gate as the finance executor
+  const year = Number(month.slice(0, 4));
+  const event = getTaxEvents(item.userId, { year, tenantId: item.tenantId }).find((candidate) => candidate.month === month);
+  if (!event) return undefined; // no hollow card
+  return {
+    // Safe labels only — month + status enum + freshness; no amount/currency/due value ever.
+    taxMonth: event.month,
+    paymentStatus: event.status,
+    freshnessLabel: analysisBundle.freshnessLabel,
+    nextActionLabel: logic.primaryActionLabel || (primaryAction?.label ?? null),
+  };
 }
 
 function relatedEntitiesSafeForRecord(item: DecisionRecord, logic: DecisionLogicV2): Array<{ type: string; label: string }> {
@@ -2549,10 +3422,21 @@ function decisionContextForIntentInput(input: NotificationIntentInput): Decision
     if (agenda) return secretaryAgendaDecisionContext(agenda, supplied);
   }
   if (hasDecisionContextPayload(suppliedRaw)) return supplied;
-  if (input.sourceSkill === 'training' && /race date/i.test(`${input.title} ${input.body}`)) {
+  if (input.sourceSkill === 'training' && isMissingRaceDateRecipe(input.dedupeKey)) {
     return withUserDecisionContextDefaults(input.userId, { explicitNoRelatedEntityReason: 'training profile is the affected entity' });
   }
   return supplied;
+}
+
+/**
+ * True when a decision's dedupeKey marks it as the training "missing race date" RECIPE. Gated on the
+ * recipe (dedupeKey prefix), NOT free-text title/body — so untrusted evidence text that happens to
+ * contain the phrase "race date" can never trip race-date context/supersession handling and wrongly
+ * hide an unrelated training decision. The missing-race-date fixtures/recipe use a dedupeKey like
+ * `training:missing-race-date:<userId>:demo`.
+ */
+function isMissingRaceDateRecipe(dedupeKey: string | null | undefined): boolean {
+  return /(^|:)missing[- ]race[- ]date/i.test(dedupeKey ?? '');
 }
 
 function decisionContextForRecord(record: DecisionRecord): DecisionLogicContext {
@@ -2576,7 +3460,7 @@ function decisionContextForRecord(record: DecisionRecord): DecisionLogicContext 
       if (object) return withUserDecisionContextDefaults(record.userId, { entityTitle: object.title, sourceState: object.approvalState });
     }
   }
-  if (record.sourceSkill === 'training' && /race date/i.test(`${record.title} ${record.body} ${record.dedupeKey ?? ''}`)) {
+  if (record.sourceSkill === 'training' && isMissingRaceDateRecipe(record.dedupeKey)) {
     return withUserDecisionContextDefaults(record.userId, { explicitNoRelatedEntityReason: 'training profile is the affected entity' });
   }
   if (record.type === 'sync_failure') {
@@ -3464,6 +4348,809 @@ function isSnoozedUntilFuture(item: DecisionRecord): boolean {
   return Number.isFinite(untilMs) && untilMs > Date.now();
 }
 
+/**
+ * A decision whose hard deadline (expires_at) has already passed must never be
+ * surfaced as actionable. This uses the same Date.parse semantics as the
+ * action-time guard in guardActionable(), so the display filter and the
+ * action guard agree on "expired". A null/unparseable expires_at is treated as
+ * non-expiring (matches guardActionable, which only flips on a finite past ms).
+ */
+function isDecisionExpired(item: DecisionRecord): boolean {
+  if (!item.expiresAt) return false;
+  const expiresMs = Date.parse(item.expiresAt);
+  return Number.isFinite(expiresMs) && expiresMs <= Date.now();
+}
+
+/** Map the legacy flat status onto the lifecycle layer (read implies viewed). */
+export function legacyStatusToLifecycle(status: string): DecisionLifecycleStatus {
+  switch (status) {
+    case 'unread': return 'surfaced';
+    case 'read': return 'viewed';
+    case 'viewed': return 'viewed';
+    case 'snoozed': return 'snoozed';
+    case 'actioned': return 'completed';
+    case 'dismissed': return 'dismissed';
+    case 'expired': return 'expired';
+    case 'superseded': return 'superseded';
+    case 'failed': return 'surfaced'; // still actionable/retryable — outcome lives in actionOutcomeStatus
+    default: return 'created';
+  }
+}
+
+/** Item-level action outcome. Failed rows stay lifecycle 'surfaced' but carry a 'failed' outcome. */
+export function actionOutcomeFromRecord(record: DecisionRecord): DecisionActionOutcomeStatus {
+  switch (record.status) {
+    case 'actioned': return 'succeeded';
+    case 'failed': return 'failed';
+    default: return 'none';
+  }
+}
+
+/**
+ * Fold the legacy status + expiry + dependency state + capability into the single
+ * effective status the client renders. Precedence is deliberate (expired wins over
+ * everything; needs_action is the fallthrough). Pure — no DB writes. Expiry uses the
+ * same isDecisionExpired() helper as the action guard so display and action agree.
+ */
+export function computeEffectiveStatus(
+  record: DecisionRecord,
+  ctx: { dependencies: { blockedByDecisionIds: string[] }; logic: DecisionLogicV2; retryAvailable?: boolean },
+): DecisionEffectiveStatus {
+  if (isDecisionExpired(record) || record.status === 'expired') return 'expired';
+  if (record.status === 'superseded') return 'superseded';
+  if (record.status === 'dismissed') return 'dismissed';
+  if (record.status === 'actioned') return 'completed';
+  if (record.status === 'failed') return ctx.retryAvailable ? 'failed_retryable' : 'failed_terminal';
+  if (!ctx.logic.quality.safeToShowUser) return 'unavailable';
+  if (isSnoozedUntilFuture(record)) return 'snoozed';
+  if (ctx.dependencies.blockedByDecisionIds.length > 0) return 'waiting_on_dependency';
+  if (record.type === 'sync_failure') return 'waiting_on_system';
+  return 'needs_action';
+}
+
+/**
+ * A2 — a "reconnect-class" action is an unwired sync-retry on a connection/sync_failure decision.
+ * It has no deterministic executor (the truth table marks `retry` implemented:false), so rather than a
+ * dead retry the client should route the user to connection settings. Narrow on purpose: only the
+ * `retry` action on a `sync_failure` decision. Once a real provider-sync executor is wired, `retry`
+ * becomes implemented and this never fires — the affordance exists only to replace the fake retry.
+ */
+function isReconnectClassAction(record: DecisionRecord, action: NotificationActionButton): boolean {
+  return record.type === 'sync_failure' && action.id === 'retry';
+}
+
+/** Per-action render state: capability (truth-table implemented) + lifecycle gating. */
+export function computeActionEffectiveStatus(
+  record: DecisionRecord,
+  action: NotificationActionButton,
+  ctx: { dependencies: { blockedByDecisionIds: string[] }; logic: DecisionLogicV2; reconnectAffordance?: boolean },
+): DecisionActionEffectiveStatus {
+  const implemented = isDecisionActionExecutable(action.id);
+  const base = { actionId: action.id, implemented };
+  if (!ctx.logic.quality.safeForFrontendAction) return { ...base, effective: 'disabled_missing_details', capabilityReason: 'Decision details incomplete' };
+  if (!implemented) {
+    // A2: reframe an unwired sync-retry as a reconnect path (flag-gated). OFF => disabled_not_implemented.
+    if (ctx.reconnectAffordance && isReconnectClassAction(record, action)) {
+      return { ...base, effective: 'disabled_requires_reconnect', capabilityReason: 'Reconnect this provider in connection settings to resume syncing' };
+    }
+    return { ...base, effective: 'disabled_not_implemented', capabilityReason: `No deterministic executor wired for '${action.id}' yet` };
+  }
+  if (isDecisionExpired(record) || record.status === 'expired') return { ...base, effective: 'disabled_expired', capabilityReason: null };
+  if (record.status === 'superseded' || record.status === 'dismissed') return { ...base, effective: 'disabled_superseded', capabilityReason: null };
+  if (record.status === 'actioned') return { ...base, effective: 'disabled_already_actioned', capabilityReason: null };
+  if (ctx.dependencies.blockedByDecisionIds.length > 0) return { ...base, effective: 'disabled_blocked_by_dependency', capabilityReason: 'Blocked by another decision' };
+  return { ...base, effective: 'enabled', capabilityReason: null };
+}
+
+/** Classify the decision for differentiated client rendering. Pure; precedence is deliberate. */
+export function computeDecisionKind(
+  record: DecisionRecord,
+  logic: DecisionLogicV2,
+  deps: { blockedByDecisionIds: string[] },
+  primaryAction: NotificationActionButton | null,
+): DecisionKind {
+  if (deps.blockedByDecisionIds.length > 0) return 'blocked_action';
+  if (record.type === 'sync_failure') return 'status_update';
+  if (!record.requiresUserAction) return 'insight';
+  if (record.type === 'conflict_detected' || record.sourceSkill === 'finance') return 'risk_alert';
+  if (record.type === 'approval_required' || logic.automationEligibility === 'user_opt_in_required') return 'choice_required';
+  if (primaryAction && isDecisionActionExecutable(primaryAction.id)) return 'action_proposal';
+  return 'recommendation';
+}
+
+/** Decide how the client may act on the decision. Pure; derives from effectiveStatus + capability. */
+export function computeActionability(
+  record: DecisionRecord,
+  logic: DecisionLogicV2,
+  effectiveStatus: DecisionEffectiveStatus,
+  primaryAction: NotificationActionButton | null,
+): Actionability {
+  if (effectiveStatus === 'unavailable') return 'unavailable';
+  if (effectiveStatus === 'waiting_on_dependency') return 'blocked';
+  if (effectiveStatus === 'expired' || effectiveStatus === 'superseded' || effectiveStatus === 'dismissed' || effectiveStatus === 'completed') return 'read_only';
+  if (!record.requiresUserAction || !logic.quality.safeForFrontendAction) return 'read_only';
+  if (!primaryAction || !isDecisionActionExecutable(primaryAction.id)) return 'read_only';
+  return 'confirmation_required';
+}
+
+/**
+ * F2 — evidence-freshness gate. When a decision's evidence is STALE, downgrade a write-capable
+ * actionability to `preview_available` so the client surfaces a Refresh affordance (from the item's
+ * `sourceFreshness` signal) rather than letting the user act on stale data. Pure; this only ever LOWERS
+ * actionability — read-only / already-preview / blocked / unavailable states pass through unchanged, so
+ * it can never escalate a decision.
+ */
+export function gateActionabilityForStaleEvidence(actionability: Actionability): Actionability {
+  switch (actionability) {
+    case 'execute_with_undo':
+    case 'confirmation_required':
+    case 'requires_human_review':
+      return 'preview_available';
+    default:
+      return actionability;
+  }
+}
+
+/**
+ * True only when a live human-review queue is registered (env opt-in). No in-repo review queue exists today,
+ * so this defaults FALSE — a `requires_human_review` decision must not show a review affordance that can't be
+ * submitted. Flipping DECISION_HUMAN_REVIEW_QUEUE_AVAILABLE re-enables review once a real queue is wired.
+ */
+export function isHumanReviewQueueAvailable(env: NodeJS.ProcessEnv = process.env): boolean {
+  const raw = (env.DECISION_HUMAN_REVIEW_QUEUE_AVAILABLE ?? '').trim().toLowerCase();
+  return raw === 'true' || raw === 'on' || raw === '1';
+}
+
+/**
+ * F human-review fallback — when the review queue is down, a `requires_human_review` decision is gated to
+ * `unavailable` (manual-only). Only ever LOWERS that single value; every other actionability passes through
+ * unchanged (cannot escalate), mirroring gateActionabilityForStaleEvidence's contract.
+ */
+export function gateActionabilityForHumanReview(actionability: Actionability, queueAvailable: boolean): Actionability {
+  if (actionability === 'requires_human_review' && !queueAvailable) return 'unavailable';
+  return actionability;
+}
+
+export const DECISION_RANKING_VERSION = 1;
+
+/** Per-domain base weight: safety/finance-leaning skills rank higher at equal urgency. */
+const DOMAIN_PRIORITY_WEIGHTS: Record<string, number> = {
+  security: 1, finance: 0.9, secretary: 0.7, training: 0.7, chat: 0.6, content: 0.5, cooking: 0.4,
+};
+
+const PRIORITY_TIER_ORDER: DecisionPriorityTier[] = ['low', 'normal', 'high', 'critical'];
+
+export interface DecisionRankingInputs {
+  priority: NotificationPriority;
+  sourceSkill: string;
+  type: string;
+  status: string;
+  deadlineSoon: boolean;
+  riskLevel: 'low' | 'medium' | 'high';
+  actionCount: number;
+  dependencyBlocked: boolean;
+}
+
+/**
+ * Compute a multi-signal priority SEPARATE from confidence, then apply raise-only policy floors so
+ * finance-risk / connection-blocking / critical-deadline / training-safety can never be buried.
+ * Floor reason codes mark the item as feedback-suppression-exempt. Pure — no DB, no confidence input.
+ */
+export function rankDecisionPriority(input: DecisionRankingInputs): DecisionPrioritySnapshot {
+  const reasonCodes: string[] = [];
+  const urgency = input.priority === 'critical' ? 1 : input.priority === 'time_sensitive' ? 0.85 : input.priority === 'active' ? 0.55 : 0.25;
+  const impact = input.riskLevel === 'high' ? 1 : input.riskLevel === 'medium' ? 0.6 : 0.3;
+  const costOfDelay = input.deadlineSoon ? 0.9 : 0.3;
+  const domainPriority = DOMAIN_PRIORITY_WEIGHTS[input.sourceSkill] ?? 0.5;
+  const effortPenalty = (Math.min(Math.max(input.actionCount, 0), 4) / 4) * 0.15;
+  const snoozePenalty = input.status === 'snoozed' ? 0.25 : 0;
+  const blockedPenalty = input.dependencyBlocked ? 0.2 : 0;
+
+  const raw = (0.35 * urgency) + (0.25 * impact) + (0.2 * costOfDelay) + (0.2 * domainPriority)
+    - effortPenalty - snoozePenalty - blockedPenalty;
+  const score = Math.round(Math.max(0, Math.min(1, raw)) * 100);
+
+  if (urgency >= 0.85) reasonCodes.push('high_urgency');
+  if (impact >= 1) reasonCodes.push('high_impact');
+  if (input.deadlineSoon) reasonCodes.push('deadline_soon');
+  if (input.dependencyBlocked) reasonCodes.push('blocked_by_dependency');
+  if (input.status === 'snoozed') reasonCodes.push('snoozed');
+
+  let tier: DecisionPriorityTier = score >= 80 ? 'critical' : score >= 60 ? 'high' : score >= 35 ? 'normal' : 'low';
+  const floorTo = (floor: DecisionPriorityTier, code: string): void => {
+    if (PRIORITY_TIER_ORDER.indexOf(floor) > PRIORITY_TIER_ORDER.indexOf(tier)) tier = floor;
+    reasonCodes.push(code); // suppression-exempt marker, even if it did not raise the tier
+  };
+  if (input.priority === 'critical' || input.priority === 'time_sensitive') floorTo('critical', 'floor_critical_deadline');
+  else if (input.deadlineSoon) floorTo('high', 'floor_deadline_soon');
+  if (input.sourceSkill === 'finance' && input.riskLevel !== 'low') floorTo('high', 'floor_finance_risk');
+  if (input.type === 'sync_failure' || input.dependencyBlocked) floorTo('high', 'floor_connection_blocking');
+  if (input.sourceSkill === 'training' && input.riskLevel === 'high') floorTo('high', 'floor_training_safety');
+
+  return {
+    priorityTier: tier,
+    priorityScore: score,
+    reasonCodes: [...new Set(reasonCodes)],
+    computedAt: new Date().toISOString(),
+    rankingVersion: DECISION_RANKING_VERSION,
+  };
+}
+
+/** C5 fatigue policy — bounds on how many decisions the overview surfaces. */
+export interface DecisionFatiguePolicy {
+  /**
+   * Total visible budget the overview targets. Floored items occupy slots FIRST and are never
+   * dropped (so the result can exceed this when floored.length > visibleCap); whatever budget remains
+   * (visibleCap − floored.length, clamped at 0) bounds the NON-floored items. The cap is on the TOTAL
+   * card count — criticals count toward it — which is the point: a flood of critical items must not
+   * also drag in a full page of regular ones.
+   */
+  visibleCap: number;
+  /** Size of the pinned "primary" set; the remainder is the "More" bucket. Floored items sit at the head, so they occupy these slots first. */
+  topPrimaryCount: number;
+  /** Max NON-floored items per sourceSkill domain, so one noisy domain can't crowd out the rest. Floored items bypass this cap entirely. */
+  perDomainCap: number;
+}
+
+const DECISION_FATIGUE_DEFAULT_POLICY: DecisionFatiguePolicy = { visibleCap: 20, topPrimaryCount: 5, perDomainCap: 10 };
+
+/**
+ * True when a decision carries a non-suppressible policy floor and therefore must NEVER be hidden
+ * under "More" or capped away by fatigue logic. Detection is the floor_* reason-code marker emitted
+ * by rankDecisionPriority (pushed even when it does not raise the tier — see floorTo), with a
+ * defensive priorityTier==='critical' fallback. Pure; no DB/env access. Conservative on missing
+ * snapshot (returns false => under-floors rather than over-caps).
+ */
+export function isDecisionItemPolicyFloored(item: DecisionApiItem): boolean {
+  const snapshot = item.prioritySnapshot;
+  if (!snapshot) return false;
+  return snapshot.reasonCodes.some((code) => code.startsWith('floor_')) || snapshot.priorityTier === 'critical';
+}
+
+/**
+ * C5 fatigue selection — a PURE, post-ranking selection layer (never a re-rank): it preserves the
+ * input order and only chooses which already-ranked items to surface. Floored decisions
+ * (isDecisionItemPolicyFloored) bypass the PER-DOMAIN cap and are NEVER dropped — every floored item
+ * survives into the result even when floored.length exceeds visibleCap. They are placed at the head
+ * of the combined list in their original rank order, so they occupy the first primary slots and DO
+ * count toward the total visible budget (visibleCap). Non-floored items are then bounded per-domain
+ * (by sourceSkill) and to the REMAINING budget (visibleCap − floored.length, clamped at 0), and the
+ * combined list is split into primaryItems (the first topPrimaryCount) + moreItems. No DB/env access;
+ * exported for isolated unit testing.
+ */
+export function applyDecisionFatigueCaps(
+  rankedItems: DecisionApiItem[],
+  policy: DecisionFatiguePolicy = DECISION_FATIGUE_DEFAULT_POLICY,
+): { primaryItems: DecisionApiItem[]; moreItems: DecisionApiItem[] } {
+  const floored: DecisionApiItem[] = [];
+  const regular: DecisionApiItem[] = [];
+  for (const item of rankedItems) (isDecisionItemPolicyFloored(item) ? floored : regular).push(item);
+
+  const perDomain = new Map<string, number>();
+  const domainCapped: DecisionApiItem[] = [];
+  for (const item of regular) {
+    const key = item.sourceSkill;
+    const seen = perDomain.get(key) ?? 0;
+    if (seen >= policy.perDomainCap) continue;
+    perDomain.set(key, seen + 1);
+    domainCapped.push(item);
+  }
+
+  const regularBudget = Math.max(policy.visibleCap - floored.length, 0);
+  const combined = [...floored, ...domainCapped.slice(0, regularBudget)];
+  return {
+    primaryItems: combined.slice(0, Math.max(policy.topPrimaryCount, 0)),
+    moreItems: combined.slice(Math.max(policy.topPrimaryCount, 0)),
+  };
+}
+
+/**
+ * Promote the bare confidence number to an "evidence strength" explanation. label + sourceFreshness
+ * are always safe to surface; basis/uncertainty inherit the decision's privacy gate (they come from
+ * DecisionWhy, which can carry sensitive specifics).
+ */
+export function computeConfidenceExplanation(
+  confidence: number,
+  why: DecisionWhy,
+  analysis: Pick<DecisionAnalysisBundle, 'confidenceLabel' | 'sourceFreshness'>,
+  exposeEvidence: boolean,
+): ConfidenceExplanation {
+  const basis = exposeEvidence ? [...why.facts, ...why.rules].filter(Boolean).slice(0, 4) : [];
+  const uncertainty = exposeEvidence ? why.uncertainty.filter(Boolean).slice(0, 4) : [];
+  return {
+    value: Number((Number.isFinite(confidence) ? confidence : 0).toFixed(2)),
+    label: analysis.confidenceLabel,
+    basis,
+    uncertainty,
+    sourceFreshness: analysis.sourceFreshness,
+  };
+}
+
+/** Ordered decision lifecycle events. 'surfaced' records the first list/get exposure for an active decision. */
+export type DecisionLifecycleEvent =
+  | 'created' | 'surfaced' | 'detail_opened' | 'viewed' | 'snoozed' | 'dismissed'
+  | 'action_previewed' | 'action_started' | 'action_succeeded' | 'action_failed' | 'verified'
+  | 'expired' | 'superseded' | 'rolled_back';
+
+let decisionLifecycleEventWriteFailures = 0;
+
+/** Returns how many lifecycle-event writes have been swallowed (observability for the kill-switch path). */
+export function getDecisionLifecycleEventWriteFailures(): number {
+  return decisionLifecycleEventWriteFailures;
+}
+
+/**
+ * Append a lifecycle event. Fire-and-forget: guarded by a kill-switch
+ * (DECISION_LIFECYCLE_EVENTS_ENABLED=0) and a try/catch so a write failure can NEVER break the
+ * user action it accompanies (mirrors the recordVerifiedDecisionAction write-failure pattern).
+ */
+function emitDecisionLifecycleEvent(input: {
+  decisionId: string;
+  userId: number;
+  tenantId: number;
+  event: DecisionLifecycleEvent;
+  toStatus?: string | null;
+  actionId?: string | null;
+  reason?: string | null;
+  metadata?: Record<string, unknown>;
+}): void {
+  if (process.env.DECISION_LIFECYCLE_EVENTS_ENABLED === '0') return;
+  try {
+    getDb().prepare(`
+      INSERT INTO decision_lifecycle_events
+        (event_id, decision_id, user_id, tenant_id, event, to_status, action_id, reason, metadata_json)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      `dle_${randomUUID()}`,
+      input.decisionId,
+      input.userId,
+      input.tenantId,
+      input.event,
+      input.toStatus ?? null,
+      input.actionId ?? null,
+      input.reason ?? null,
+      JSON.stringify(input.metadata ?? {}),
+    );
+  } catch (err) {
+    decisionLifecycleEventWriteFailures += 1;
+    logger.warn({ err, decisionId: input.decisionId, event: input.event }, 'Decision lifecycle event write failed (non-fatal)');
+  }
+}
+
+function shouldEmitSurfaced(record: DecisionRecord): boolean {
+  return ['unread', 'read', 'failed', 'snoozed'].includes(record.status);
+}
+
+function recordDecisionExposure(record: DecisionRecord, item: DecisionApiItem): void {
+  emitDecisionSurfacedIfFirst(record);
+  emitDecisionActionPreviewedForVisibleActions(record, item);
+}
+
+function emitDecisionSurfacedIfFirst(record: DecisionRecord): void {
+  if (!shouldEmitSurfaced(record)) return;
+  if (process.env.DECISION_LIFECYCLE_EVENTS_ENABLED === '0') return;
+  try {
+    const existing = getDb().prepare(`
+      SELECT 1
+        FROM decision_lifecycle_events
+       WHERE decision_id = ? AND user_id = ? AND tenant_id = ? AND event = 'surfaced'
+       LIMIT 1
+    `).get(record.itemId, record.userId, record.tenantId);
+    if (existing) return;
+    emitDecisionLifecycleEvent({
+      decisionId: record.itemId,
+      userId: record.userId,
+      tenantId: record.tenantId,
+      event: 'surfaced',
+      toStatus: record.status,
+    });
+  } catch (err) {
+    decisionLifecycleEventWriteFailures += 1;
+    logger.warn({ err, decisionId: record.itemId }, 'Decision surfaced lifecycle check failed (non-fatal)');
+  }
+}
+
+function previewableActionIdsForItem(item: DecisionApiItem): string[] {
+  const enabled = new Set(
+    (item.actionEffectiveStatuses ?? [])
+      .filter((status) => status.effective === 'enabled')
+      .map((status) => status.actionId),
+  );
+  const candidates = [
+    item.recommendedAction?.id,
+    ...item.alternativeActions.map((action) => action.id),
+  ];
+  return [...new Set(candidates.filter((actionId): actionId is string => !!actionId && enabled.has(actionId)))];
+}
+
+function emitDecisionActionPreviewedForVisibleActions(record: DecisionRecord, item: DecisionApiItem): void {
+  if (!shouldEmitSurfaced(record)) return;
+  for (const actionId of previewableActionIdsForItem(item)) {
+    emitDecisionActionPreviewedIfFirst(record, actionId);
+  }
+}
+
+function emitDecisionActionPreviewedIfFirst(record: DecisionRecord, actionId: string): void {
+  if (process.env.DECISION_LIFECYCLE_EVENTS_ENABLED === '0') return;
+  try {
+    const existing = getDb().prepare(`
+      SELECT 1
+        FROM decision_lifecycle_events
+       WHERE decision_id = ? AND user_id = ? AND tenant_id = ? AND event = 'action_previewed' AND action_id = ?
+       LIMIT 1
+    `).get(record.itemId, record.userId, record.tenantId, actionId);
+    if (existing) return;
+    emitDecisionLifecycleEvent({
+      decisionId: record.itemId,
+      userId: record.userId,
+      tenantId: record.tenantId,
+      event: 'action_previewed',
+      actionId,
+      toStatus: record.status,
+    });
+  } catch (err) {
+    decisionLifecycleEventWriteFailures += 1;
+    logger.warn({ err, decisionId: record.itemId, actionId }, 'Decision action-preview lifecycle check failed (non-fatal)');
+  }
+}
+
+export interface DecisionLifecycleEventRow {
+  event: string;
+  toStatus: string | null;
+  actionId: string | null;
+  reason: string | null;
+  createdAt: string;
+}
+
+/** Read the ordered lifecycle event stream for a decision (tests + observability). */
+export function getDecisionLifecycleEvents(decisionId: string, userId: number, tenantId = userId): DecisionLifecycleEventRow[] {
+  ensureDecisionCenterTables();
+  return getDb().prepare(`
+    SELECT event, to_status AS toStatus, action_id AS actionId, reason, created_at AS createdAt
+      FROM decision_lifecycle_events
+     WHERE decision_id = ? AND user_id = ? AND tenant_id = ?
+     ORDER BY rowid ASC
+  `).all(decisionId, userId, tenantId) as DecisionLifecycleEventRow[];
+}
+
+export interface DecisionMetricsDailyRow {
+  metricDate: string;
+  tenantId: number;
+  sourceSkill: string;
+  createdCount: number;
+  surfacedCount: number;
+  viewedCount: number;
+  dismissedCount: number;
+  snoozedCount: number;
+  actionSucceededCount: number;
+  actionFailedCount: number;
+  expiredCount: number;
+  gateBlockedCount: number;
+  computedAt: string;
+}
+
+/**
+ * Aggregate one day's lifecycle events + generic-blocked quality-gate events into tenant-total
+ * rows in decision_metrics_daily so dashboards read pre-aggregated counters, never the hot tables.
+ * Idempotent (INSERT OR REPLACE per (date, tenant, '*')). Defaults to today (UTC).
+ */
+export function runDecisionMetricsRollupJob(input: { date?: string } = {}): { date: string; tenants: number } {
+  ensureDecisionCenterTables();
+  const db = getDb();
+  const date = input.date ?? DateTime.utc().toISODate() ?? '1970-01-01';
+  const eventRows = db.prepare(`
+    SELECT tenant_id AS tenantId, event, COUNT(*) AS n
+      FROM decision_lifecycle_events
+     WHERE date(created_at) = ?
+     GROUP BY tenant_id, event
+  `).all(date) as Array<{ tenantId: number; event: string; n: number }>;
+  const gateRows = db.prepare(`
+    SELECT tenant_id AS tenantId, COUNT(*) AS n
+      FROM decision_quality_gate_events
+     WHERE date(created_at) = ? AND generic_blocked = 1
+     GROUP BY tenant_id
+  `).all(date) as Array<{ tenantId: number; n: number }>;
+
+  const byTenant = new Map<number, Record<string, number>>();
+  const bucket = (tenantId: number): Record<string, number> => {
+    let row = byTenant.get(tenantId);
+    if (!row) { row = {}; byTenant.set(tenantId, row); }
+    return row;
+  };
+  for (const row of eventRows) bucket(row.tenantId)[row.event] = row.n;
+  for (const row of gateRows) bucket(row.tenantId).gate_blocked = row.n;
+
+  const upsert = db.prepare(`
+    INSERT OR REPLACE INTO decision_metrics_daily
+      (metric_date, tenant_id, source_skill, created_count, surfaced_count, viewed_count,
+       dismissed_count, snoozed_count, action_succeeded_count, action_failed_count,
+       expired_count, gate_blocked_count, computed_at)
+    VALUES (?, ?, '*', ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+  `);
+  const writeAll = db.transaction(() => {
+    for (const [tenantId, c] of byTenant) {
+      upsert.run(
+        date, tenantId,
+        c.created ?? 0, c.surfaced ?? 0, c.viewed ?? 0, c.dismissed ?? 0, c.snoozed ?? 0,
+        c.action_succeeded ?? 0, c.action_failed ?? 0, c.expired ?? 0, c.gate_blocked ?? 0,
+      );
+    }
+  });
+  writeAll();
+  return { date, tenants: byTenant.size };
+}
+
+/** Read a tenant's daily metrics row (dashboard + tests). Defaults to today (UTC). */
+export function getDecisionMetricsDaily(tenantId: number, opts: { date?: string } = {}): DecisionMetricsDailyRow | null {
+  ensureDecisionCenterTables();
+  const date = opts.date ?? DateTime.utc().toISODate() ?? '1970-01-01';
+  const row = getDb().prepare(`
+    SELECT metric_date AS metricDate, tenant_id AS tenantId, source_skill AS sourceSkill,
+           created_count AS createdCount, surfaced_count AS surfacedCount, viewed_count AS viewedCount,
+           dismissed_count AS dismissedCount, snoozed_count AS snoozedCount,
+           action_succeeded_count AS actionSucceededCount, action_failed_count AS actionFailedCount,
+           expired_count AS expiredCount, gate_blocked_count AS gateBlockedCount, computed_at AS computedAt
+      FROM decision_metrics_daily
+     WHERE metric_date = ? AND tenant_id = ? AND source_skill = '*'
+  `).get(date, tenantId) as DecisionMetricsDailyRow | undefined;
+  return row ?? null;
+}
+
+export interface DecisionReleaseGateStatus {
+  /** Active rows whose hard deadline has passed but the expiry sweep has not yet flipped them. Sweep-health signal. */
+  expiredButVisible: number;
+  /** Decisions presented as actionable whose primary action has no deterministic executor. Must be 0 (invariant tripwire). */
+  unimplementedActionableCtas: number;
+  pass: boolean;
+}
+
+/**
+ * Release-gate invariants for the Decision Center (per the plan's "expired-visible = 0 /
+ * unimplemented-primary-CTA = 0"). expiredButVisible measures sweep health (SQL sees unswept rows
+ * the in-memory list filter hides); unimplementedActionableCtas is a tripwire — computeActionability
+ * downgrades not-implemented primaries to read_only, so this is 0 unless that invariant regresses.
+ */
+export function getDecisionReleaseGateStatus(userId: number, tenantId = userId): DecisionReleaseGateStatus {
+  assertScope(userId, tenantId, 'decision_release_gate_status', {});
+  ensureDecisionCenterTables();
+  const expiredButVisible = (getDb().prepare(`
+    SELECT COUNT(*) AS n
+      FROM notification_center_items
+     WHERE user_id = ? AND tenant_id = ?
+       AND status IN ('unread', 'read', 'failed', 'snoozed')
+       AND expires_at IS NOT NULL AND datetime(expires_at) <= datetime('now')
+  `).get(userId, tenantId) as { n: number }).n;
+
+  const items = listDecisionItems(userId, tenantId, { status: 'all', limit: 200, recordExposure: false });
+  const unimplementedActionableCtas = items.filter((item) => {
+    const actionable = item.actionability != null && !['read_only', 'blocked', 'unavailable'].includes(item.actionability);
+    const primary = item.recommendedAction;
+    return Boolean(actionable && primary && !isDecisionActionExecutable(primary.id));
+  }).length;
+
+  return {
+    expiredButVisible,
+    unimplementedActionableCtas,
+    pass: expiredButVisible === 0 && unimplementedActionableCtas === 0,
+  };
+}
+
+/** Active-decision breakdowns for the operator dashboard (counts by domain / persisted type / status). */
+export interface DecisionActiveBreakdowns {
+  total: number;
+  byDomain: Record<string, number>;
+  byType: Record<string, number>;
+  byStatus: Record<string, number>;
+}
+
+/**
+ * One bounded GROUP BY over the active partition for the admin dashboard. `active` is the SAME status+expiry
+ * PREFILTER the read paths start from (status in the active set AND not past expires_at) — so the count is
+ * an upper bound on the active partition, not the fully-surfaced set (which additionally drops rows hidden
+ * by quality/visibility logic). byType is the persisted `type` column (NotificationIntentType) — NOT the computed
+ * DecisionKind (which would require formatting every row), so the field is honestly named byType. Admin +
+ * flag-gated + low-frequency, so the single GROUP BY on the indexed partition is acceptable.
+ */
+export function getDecisionActiveBreakdowns(userId: number, tenantId = userId): DecisionActiveBreakdowns {
+  assertScope(userId, tenantId, 'decision_active_breakdowns', {});
+  ensureDecisionCenterTables();
+  const rows = getDb().prepare(`
+    SELECT source_skill AS domain, type, status, COUNT(*) AS n
+      FROM notification_center_items
+     WHERE user_id = ? AND tenant_id = ?
+       AND status IN ('unread', 'read', 'failed', 'snoozed')
+       AND (expires_at IS NULL OR datetime(expires_at) > datetime('now'))
+     GROUP BY source_skill, type, status
+  `).all(userId, tenantId) as Array<{ domain: string; type: string; status: string; n: number }>;
+  const byDomain: Record<string, number> = {};
+  const byType: Record<string, number> = {};
+  const byStatus: Record<string, number> = {};
+  let total = 0;
+  for (const row of rows) {
+    total += row.n;
+    byDomain[row.domain] = (byDomain[row.domain] ?? 0) + row.n;
+    byType[row.type] = (byType[row.type] ?? 0) + row.n;
+    byStatus[row.status] = (byStatus[row.status] ?? 0) + row.n;
+  }
+  return { total, byDomain, byType, byStatus };
+}
+
+export type DecisionTypeSuppressionMode = 'dont_show_type' | 'snooze_type';
+
+export interface DecisionTypeSuppression {
+  sourceSkill: string;
+  type: string;
+  mode: DecisionTypeSuppressionMode;
+  until: string | null;
+  createdAt: string;
+}
+
+/**
+ * C3 — mute a (sourceSkill, type) recipe: permanently (dont_show_type) or until a timestamp (snooze_type).
+ * Re-suppressing the same type replaces the prior mode (PK is user+tenant+skill+type). Scoped write.
+ */
+export function suppressDecisionType(
+  userId: number,
+  tenantId: number,
+  sourceSkill: string,
+  type: string,
+  mode: DecisionTypeSuppressionMode,
+  until: string | null = null,
+): void {
+  assertScope(userId, tenantId, 'suppress_decision_type', { sourceSkill, type, mode });
+  // A snooze with no `until` would persist a row that listActiveDecisionTypeSuppressionKeys can never
+  // activate (it requires `until > now`) — a silent no-op. Reject it so the caller's intent can't be dropped.
+  if (mode === 'snooze_type' && !until) {
+    throw new DecisionActionError('VALIDATION', 'snooze_type suppression requires a non-null until timestamp', 400);
+  }
+  ensureDecisionCenterTables();
+  getDb().prepare(`
+    INSERT OR REPLACE INTO decision_type_suppressions (user_id, tenant_id, source_skill, type, mode, until, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
+  `).run(userId, tenantId, sourceSkill, type, mode, mode === 'snooze_type' ? until : null);
+}
+
+/** C3 — remove a (sourceSkill, type) suppression. */
+export function unsuppressDecisionType(userId: number, tenantId: number, sourceSkill: string, type: string): void {
+  assertScope(userId, tenantId, 'unsuppress_decision_type', { sourceSkill, type });
+  ensureDecisionCenterTables();
+  getDb().prepare(`DELETE FROM decision_type_suppressions WHERE user_id = ? AND tenant_id = ? AND source_skill = ? AND type = ?`)
+    .run(userId, tenantId, sourceSkill, type);
+}
+
+/** C3 — all suppression rows for the user (for the preferences GET; includes lapsed snoozes so the client can show state). */
+export function listDecisionTypeSuppressions(userId: number, tenantId = userId): DecisionTypeSuppression[] {
+  assertScope(userId, tenantId, 'list_decision_type_suppressions', {});
+  ensureDecisionCenterTables();
+  return getDb().prepare(`
+    SELECT source_skill AS sourceSkill, type, mode, until, created_at AS createdAt
+      FROM decision_type_suppressions WHERE user_id = ? AND tenant_id = ? ORDER BY created_at DESC
+  `).all(userId, tenantId) as DecisionTypeSuppression[];
+}
+
+/** ACTIVE suppression keys (`${sourceSkill}:${type}`): dont_show_type always; snooze_type only while until > now. */
+function listActiveDecisionTypeSuppressionKeys(userId: number, tenantId: number): Set<string> {
+  const rows = getDb().prepare(`
+    SELECT source_skill AS sourceSkill, type
+      FROM decision_type_suppressions
+     WHERE user_id = ? AND tenant_id = ?
+       AND (mode = 'dont_show_type' OR (mode = 'snooze_type' AND until IS NOT NULL AND datetime(until) > datetime('now')))
+  `).all(userId, tenantId) as Array<{ sourceSkill: string; type: string }>;
+  return new Set(rows.map((row) => `${row.sourceSkill}:${row.type}`));
+}
+
+/**
+ * C3 read-path filter (USER-FACING list + overview ONLY). Drops decisions whose (sourceSkill, type) the user
+ * has actively suppressed — EXCEPT policy-floored decisions, which are never suppressible (mirrors the C5/B3
+ * floor discipline). Flag-gated; OFF or no-suppressions returns the input unchanged. Read-only. NEVER applied
+ * to integrity/admin reads (release gate, dashboard breakdowns, summary counts) so those stay accurate.
+ */
+export function applyDecisionTypeSuppression(items: DecisionApiItem[], userId: number, tenantId: number): DecisionApiItem[] {
+  if (!isDecisionTypeSuppressionEnabled(process.env, { userId, tenantId })) return items;
+  let suppressed: Set<string>;
+  try {
+    suppressed = listActiveDecisionTypeSuppressionKeys(userId, tenantId);
+  } catch (err) {
+    // Presentation filter: a transient suppression-read fault (locked DB, table not yet self-healed) must
+    // NEVER hide the decision queue or 500 a survivable read. Fail OPEN to the full set; the preference
+    // re-applies on the next successful read. (Write paths keep throwing — a dropped write must surface.)
+    logger.warn({ err, userId, tenantId }, 'decision type-suppression read failed; showing all items (fail-open)');
+    return items;
+  }
+  if (suppressed.size === 0) return items;
+  return items.filter((item) => !suppressed.has(`${item.sourceSkill}:${item.type}`) || isDecisionItemPolicyFloored(item));
+}
+
+export interface DecisionFeedbackSignal {
+  sourceSkill: string;
+  surfaced: number;
+  dismissed: number;
+  snoozed: number;
+  actionSucceeded: number;
+  dismissRate: number;
+  dontShowTypeCount: number;
+  topDismissReasons: Array<{ reason: string; count: number }>;
+}
+
+/**
+ * Aggregate the lifecycle event stream (incl. C3a dismiss reasons) into per-source-skill feedback
+ * signals (C3b). READ-ONLY substrate for a future calibration/suppression pass — it does NOT alter
+ * ranking yet (bounded suppression is a deliberate follow-up; floored categories stay exempt). Joins
+ * events to notification_center_items for the source_skill dimension.
+ *
+ * Scope: per-user read, filtered by (user_id, tenant_id) and rides idx_decision_lifecycle_events_
+ * scope_created — bounded by the caller's own event count, never a hot-table-wide scan. The JOIN
+ * carries a redundant (user_id, tenant_id) guard as defense-in-depth so a future per-tenant item_id
+ * scheme can never bleed another tenant's source_skill in.
+ *
+ * `opts.sinceDays` bounds the window so the signal can decay (a year-old dismissal must not weigh
+ * like today's); omitted => all-time. The window uses the SQLite clock (`datetime('now')`), which
+ * is NOT affected by vi.setSystemTime — tests pin determinism by back/forward-dating event rows
+ * directly rather than moving the JS clock.
+ *
+ * `dontShowTypeCount` deliberately re-surfaces the 'dont_show_type' tally that also appears in
+ * `topDismissReasons`; it is the single strongest suppression signal and callers act on it directly
+ * without scanning the reason breakdown.
+ */
+export function getDecisionFeedbackSignals(
+  userId: number,
+  tenantId = userId,
+  opts: { sinceDays?: number } = {},
+): DecisionFeedbackSignal[] {
+  assertScope(userId, tenantId, 'decision_feedback_signals', {});
+  ensureDecisionCenterTables();
+  const db = getDb();
+  const windowClause =
+    typeof opts.sinceDays === 'number' && opts.sinceDays > 0 ? `AND e.created_at >= datetime('now', ?)` : '';
+  const windowArg: string[] = windowClause ? [`-${Math.floor(opts.sinceDays as number)} days`] : [];
+  const eventRows = db.prepare(`
+    SELECT i.source_skill AS sourceSkill, e.event AS event, COUNT(*) AS n
+      FROM decision_lifecycle_events e
+      JOIN notification_center_items i
+        ON i.item_id = e.decision_id AND i.user_id = e.user_id AND i.tenant_id = e.tenant_id
+     WHERE e.user_id = ? AND e.tenant_id = ? ${windowClause}
+     GROUP BY i.source_skill, e.event
+  `).all(userId, tenantId, ...windowArg) as Array<{ sourceSkill: string; event: string; n: number }>;
+  const reasonRows = db.prepare(`
+    SELECT i.source_skill AS sourceSkill, e.reason AS reason, COUNT(*) AS n
+      FROM decision_lifecycle_events e
+      JOIN notification_center_items i
+        ON i.item_id = e.decision_id AND i.user_id = e.user_id AND i.tenant_id = e.tenant_id
+     WHERE e.user_id = ? AND e.tenant_id = ? AND e.event = 'dismissed' AND e.reason IS NOT NULL ${windowClause}
+     GROUP BY i.source_skill, e.reason
+  `).all(userId, tenantId, ...windowArg) as Array<{ sourceSkill: string; reason: string; n: number }>;
+
+  const bySkill = new Map<string, { events: Record<string, number>; reasons: Array<{ reason: string; count: number }> }>();
+  const bucket = (skill: string): { events: Record<string, number>; reasons: Array<{ reason: string; count: number }> } => {
+    let b = bySkill.get(skill);
+    if (!b) { b = { events: {}, reasons: [] }; bySkill.set(skill, b); }
+    return b;
+  };
+  for (const row of eventRows) bucket(row.sourceSkill).events[row.event] = row.n;
+  for (const row of reasonRows) bucket(row.sourceSkill).reasons.push({ reason: row.reason, count: row.n });
+
+  return [...bySkill.entries()]
+    .map(([sourceSkill, b]) => {
+      const surfaced = b.events.surfaced ?? b.events.created ?? 0;
+      const dismissed = b.events.dismissed ?? 0;
+      return {
+        sourceSkill,
+        surfaced,
+        dismissed,
+        snoozed: b.events.snoozed ?? 0,
+        actionSucceeded: b.events.action_succeeded ?? 0,
+        // Guard the zero-denominator case (matches the file's blessed rate() convention at :~1714):
+        // a skill with dismissed>0 but surfaced=0 (lifecycle tracking enabled after creation, or
+        // post-retention pruning) must report 0, never the raw count — a rate > 1.0 would mis-fire a
+        // future "suppress if rate > 0.8" consumer on a skill that has no recorded surfacing at all.
+        dismissRate: surfaced === 0 ? 0 : Number((dismissed / surfaced).toFixed(4)),
+        dontShowTypeCount: b.reasons.find((r) => r.reason === 'dont_show_type')?.count ?? 0,
+        topDismissReasons: [...b.reasons].sort((a, c) => c.count - a.count).slice(0, 3),
+      };
+    })
+    .sort((a, c) => c.dismissed - a.dismissed);
+}
+
 function actionsForRecord(record: DecisionRecord): NotificationActionButton[] {
   const actions = [...record.actions];
   const rollback = rollbackContractForRecord(record);
@@ -3478,6 +5165,17 @@ function actionsForRecord(record: DecisionRecord): NotificationActionButton[] {
       style: 'secondary',
     });
   }
+  // D: expose the fully-wired (truth-table implemented) `choose_another_time` action on a secretary reflow
+  // that has feasible alternative slots, so the user can pick a specific window via the structured
+  // DecisionOptions. Flag-gated and pushed (not unshifted, never primary). OFF or no-feasible-slot leaves
+  // the action set byte-identical. The flag check short-circuits the advisor call when off.
+  if (
+    !actions.some((action) => action.id === 'choose_another_time')
+    && isDecisionChoiceOptionsEnabled(process.env, { userId: record.userId, tenantId: record.tenantId })
+    && secretaryReflowChoiceAdvice(record)
+  ) {
+    actions.push({ id: 'choose_another_time', label: 'Choose another time', style: 'secondary' });
+  }
   return actions;
 }
 
@@ -3491,13 +5189,22 @@ function rollbackContractForRecord(record: DecisionRecord): { available: boolean
   };
 }
 
-function dependencyStateForRecord(record: DecisionRecord): { dependsOnDecisionIds: string[]; blockedByDecisionIds: string[] } {
+function dependencyStateForRecord(record: DecisionRecord): { dependsOnDecisionIds: string[]; blockedByDecisionIds: string[]; relationships: DecisionRelationship[] } {
   const dependencies = listDecisionDependencies(record.itemId, record.userId, record.tenantId);
   const unresolved = new Set(['unread', 'read', 'failed', 'snoozed']);
   return {
     dependsOnDecisionIds: dependencies.map((dependency) => dependency.dependsOnDecisionId),
+    // C6: typed relationship edges (raw type + semantics) for the client. Read-only projection.
+    relationships: dependencies.map((dependency) => {
+      const semantics = decisionRelationshipSemantics(dependency.relationship);
+      return { decisionId: dependency.dependsOnDecisionId, type: dependency.relationship, kind: semantics.kind, label: semantics.label };
+    }),
     blockedByDecisionIds: dependencies
-      .filter((dependency) => dependency.relationship === 'blocks' && dependency.blockerStatus && unresolved.has(dependency.blockerStatus))
+      // C6: only a 'blocks' relationship prevents action (decisionRelationshipSemantics is the single
+      // source of truth). Every other typed relationship — conflicts_with / duplicate_of / related_to /
+      // requires_same_slot / affects_same_entity / alternative_to / blocked_by / supersedes / caused_by /
+      // related — is advisory and never contributes to blockedByDecisionIds.
+      .filter((dependency) => decisionRelationshipSemantics(dependency.relationship).blocksAction && dependency.blockerStatus && unresolved.has(dependency.blockerStatus))
       .map((dependency) => dependency.dependsOnDecisionId),
   };
 }
@@ -3571,7 +5278,12 @@ function idempotentActionResult(
   tenantId: number,
   execution: any,
 ): DecisionActionResult {
-  const current = getDecisionItem(decisionId, userId, tenantId);
+  // Same direct-record path as performDecisionAction's success branch: a duplicate (idempotent) replay of
+  // an action that mutated its own source state — e.g. choose_another_time moving the agenda — must return
+  // the actioned decision, not be hidden by getDecisionItem's active-inbox visibility filter (which would
+  // throw a spurious 404 on a replay of a write that already succeeded).
+  const replayRecord = getDecisionRecord(decisionId, userId, tenantId);
+  const current = replayRecord && isDecisionRecord(replayRecord) ? formatDecisionItemForApi(replayRecord) : null;
   if (!current) throw new DecisionActionError('DECISION_NOT_FOUND', 'Decision not found after idempotent action', 404);
   return {
     actionId,
@@ -3612,6 +5324,7 @@ async function executeDecisionAction(
   action: NotificationActionButton,
   userId: number,
   tenantId: number,
+  idempotencyKey: string,
   payload: Record<string, unknown>,
 ): Promise<{
   readBackOk: boolean;
@@ -3623,6 +5336,9 @@ async function executeDecisionAction(
     markNotificationCenterItemRead(record.itemId, userId, tenantId);
     return verifiedStatusEffect(record, 'read', 'Decision was marked viewed.');
   }
+
+  const commandBusExecution = await maybeExecuteDecisionActionViaCommandBus(record, action, userId, tenantId, idempotencyKey);
+  if (commandBusExecution) return commandBusExecution;
 
   if (action.id === 'dismiss' || action.id === 'reject_reflow' || action.id === 'not_now') {
     dismissNotificationCenterItem(record.itemId, userId, tenantId);
@@ -3681,6 +5397,44 @@ async function executeDecisionAction(
   throw new DecisionActionError('UNSUPPORTED_DECISION_ACTION', 'This decision action is not supported yet.', 409, { actionId: action.id });
 }
 
+async function maybeExecuteDecisionActionViaCommandBus(
+  record: DecisionRecord,
+  action: NotificationActionButton,
+  userId: number,
+  tenantId: number,
+  idempotencyKey: string,
+): Promise<{
+  readBackOk: boolean;
+  expectedEffect: Record<string, unknown>;
+  actualEffect: Record<string, unknown>;
+  message: string;
+} | null> {
+  if (!isDecisionCenterCommandBusEnabled(process.env, { userId, tenantId })) return null;
+  const item = getDecisionItem(record.itemId, userId, tenantId);
+  if (!item) throw new DecisionActionError('DECISION_NOT_FOUND', 'Decision not found before Command Bus execution', 404);
+
+  const adapter = await import('./decision-command-adapter');
+  if (!adapter.isDecisionActionBusEligible({ actionId: action.id, item })) return null;
+
+  try {
+    const result = await adapter.runDecisionActionViaCommandBus({
+      item,
+      actionId: action.id,
+      userId,
+      tenantId,
+      idempotencyKey,
+      locale: decisionContextForRecord(record).locale,
+    });
+    markDecisionAction(record.decisionLogId, action.id);
+    return result;
+  } catch (err) {
+    if (err instanceof adapter.DecisionCommandAdapterError) {
+      throw new DecisionActionError(err.code, err.message, err.status, err.details);
+    }
+    throw err;
+  }
+}
+
 function verifiedStatusEffect(record: DecisionRecord, expected: string, message: string): {
   readBackOk: boolean;
   expectedEffect: Record<string, unknown>;
@@ -3729,7 +5483,10 @@ function executeSecretaryAgendaDecision(
     throw new DecisionActionError('DECISION_RELATED_ENTITY_NOT_FOUND', 'Secretary agenda item was not found for this user.', 404);
   }
 
-  const rollback = secretaryAgendaRollbackSnapshot(agenda);
+  const rollback = secretaryAgendaRollbackSnapshot(agenda, {
+    redactExplanation: isDecisionRollbackSnapshotProtectionEnabled(process.env, { userId, tenantId })
+      && (record.privacyPolicy === 'financial' || record.privacyPolicy === 'sensitive'),
+  });
   const updates = buildSecretaryAgendaUpdates(actionId, agenda, payload);
   const agendaUpdate = getDb().prepare(`
     UPDATE secretary_agenda_items
@@ -3885,20 +5642,23 @@ function executeSecretaryReflowRollback(
   };
 }
 
-function secretaryAgendaRollbackSnapshot(agenda: SecretaryAgendaItem): Record<string, unknown> {
-  return {
-    type: 'secretary_agenda_item',
-    agendaItemId: agenda.agendaItemId,
-    previous: {
-      lifecycleState: agenda.lifecycleState,
-      decisionAction: agenda.decisionAction,
-      reasonCodes: agenda.decisionReasonCodes,
-      explanation: agenda.decisionExplanation,
-      startAt: agenda.startAt,
-      endAt: agenda.endAt,
-      scheduledSegments: agenda.scheduledSegments,
-    },
+function secretaryAgendaRollbackSnapshot(agenda: SecretaryAgendaItem, opts: { redactExplanation?: boolean } = {}): Record<string, unknown> {
+  // The machine fields below are exactly what executeSecretaryReflowRollback restores. `explanation` is the
+  // free-text display copy — the most sensitive field; B2 (redactExplanation) omits it for financial/sensitive
+  // decisions so it is not persisted in plaintext at rest. The rollback reader tolerates a missing explanation
+  // (stringOrNull -> null), so omitting it never breaks undo. OFF keeps the snapshot byte-identical.
+  const previous: Record<string, unknown> = {
+    lifecycleState: agenda.lifecycleState,
+    decisionAction: agenda.decisionAction,
+    reasonCodes: agenda.decisionReasonCodes,
+    explanation: agenda.decisionExplanation,
+    startAt: agenda.startAt,
+    endAt: agenda.endAt,
+    scheduledSegments: agenda.scheduledSegments,
   };
+  // Delete (not skip) so the OFF path keeps the original key order — byte-identical stored snapshot.
+  if (opts.redactExplanation) delete previous.explanation;
+  return { type: 'secretary_agenda_item', agendaItemId: agenda.agendaItemId, previous };
 }
 
 function buildSecretaryAgendaUpdates(
@@ -4270,7 +6030,7 @@ function sourceStateSupersessionReason(record: DecisionRecord): string | null {
     if (record.relatedEntityType === 'training_profile' && trainingRaceDatePresent(record.userId)) {
       return 'training_race_date_added_elsewhere';
     }
-    if (/race date/i.test(`${record.title} ${record.body} ${record.dedupeKey ?? ''}`) && trainingRaceDatePresent(record.userId)) {
+    if (isMissingRaceDateRecipe(record.dedupeKey) && trainingRaceDatePresent(record.userId)) {
       return 'training_race_date_added_elsewhere';
     }
   }
@@ -4301,6 +6061,7 @@ function supersedeDecision(record: DecisionRecord, reason: string): void {
     tenantId: record.tenantId,
     reason,
   });
+  emitDecisionLifecycleEvent({ decisionId: record.itemId, userId: record.userId, tenantId: record.tenantId, event: 'superseded', reason });
   if (record.decisionLogId) {
     getDb().prepare(`
       UPDATE notification_decision_logs

@@ -17,6 +17,8 @@ import type { NotificationIntentType, NotificationSourceSkill } from '../service
 import { requireOperatorTargetUser } from './admin-target-user';
 import { logPortalAdminMutation } from './admin-audit';
 import { sendPortalInternalError } from './http';
+import { buildDecisionDashboardSnapshot } from '../services/decision-dashboard';
+import { isDecisionDashboardEnabled } from '../services/runtime-flags';
 
 function parsePositiveInteger(value: unknown): number | null {
   const parsed = Number.parseInt(String(value ?? ''), 10);
@@ -160,6 +162,7 @@ function sanitizePortalDecisionItem(item: DecisionApiItem): Record<string, unkno
     })),
     dependsOnDecisionIds: item.dependsOnDecisionIds,
     blockedByDecisionIds: item.blockedByDecisionIds,
+    relationships: item.relationships,
     rollbackAvailable: item.rollbackAvailable,
     rollbackActionId: item.rollbackActionId,
   };
@@ -260,6 +263,29 @@ export function registerPortalDecisionCenterRoutes(app: Express): void {
         return;
       }
       res.json({ ok: true, tenantId, preferences: getDecisionPreferences(userId, tenantId) });
+    } catch (err) {
+      sendDecisionError(res, err);
+    }
+  });
+
+  // T14: operator dashboard snapshot (read-only aggregates; flag-gated on top of the admin guard stack).
+  app.get('/api/users/:userId/decision-center/dashboard', ...guards, (req: Request, res: Response) => {
+    try {
+      const userId = parsePositiveInteger(req.params.userId);
+      if (!userId) {
+        sendBadRequest(res, 'INVALID_USER_ID', 'invalid userId');
+        return;
+      }
+      const tenantId = resolveTenantId(req, userId);
+      if (!tenantId) {
+        sendForbiddenTenant(res);
+        return;
+      }
+      if (!isDecisionDashboardEnabled(process.env, { userId, tenantId })) {
+        res.status(501).json({ ok: false, error: { code: 'DASHBOARD_DISABLED', message: 'Decision Center dashboard is not enabled' } });
+        return;
+      }
+      res.json({ ok: true, tenantId, dashboard: buildDecisionDashboardSnapshot(userId, tenantId) });
     } catch (err) {
       sendDecisionError(res, err);
     }

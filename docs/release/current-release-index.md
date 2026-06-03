@@ -2,78 +2,66 @@
 
 Status: canonical
 Owner: release lead (Felipe)
-Last verified: 2026-05-25
+Last verified: 2026-06-03
 Update policy: update when the current RC identity, deploy-gate evidence, or canonical-doc cross-references change. Run engine/scripts/release-identity.sh --persist to refresh auto-generated identity fields.
 
-Date: 2026-05-25
+Date: 2026-06-03
 
 ## Current Status
 
 Active production package:
 
 - source branch: `main`
-- production HEAD: `0682b34b` (version-bump for 4.14.195)
-- production version: `4.14.195`
-- runtime source commits: PR #137 merge `d94c2d1a` (training bug-fix
-  triplet — cancel-orphan, two-a-day/Auto, calendar body) and PR #138
-  merge `0bae01cb` (Outlook default-enabled training calendar)
-- latest `origin/main`: `0682b34b`
+- production HEAD: `30285bb3` (version-bump for 4.14.200)
+- production version: `4.14.200`
+- runtime source commits: `c7f049e1` (Decision Center execution gates and iOS
+  smoke harness) plus `ddcf211e` (staging smoke evidence)
+- latest runtime deploy commit: `30285bb3`; post-deploy docs-only closeout may
+  sit ahead of production runtime
 - release state: `docs/release/CURRENT_RELEASE_STATE.md` (backend) and `/Users/felipedominguez/Desktop/Nexus Hub/docs/release/CURRENT_RELEASE_STATE.md` (workspace)
 - official workspace root: `/Users/felipedominguez/Desktop/Nexus Hub`
 
-Commits in this release (4.14.193 -> 4.14.195):
+Commits in this release (4.14.199 -> 4.14.200):
 
-- `d94c2d1a merge: PR #137 training bug-fix triplet (cancel-orphan + two-a-day + calendar body)`
-- `b3bfb4e8 docs(release): staging smoke evidence for d94c2d1a`
-- `fb1f844e chore: bump version to 4.14.194 [deploy]`
-- `0bae01cb merge: PR #138 Training Outlook default-enabled`
-- `e2c21415 docs(release): staging smoke evidence for 0bae01cb`
-- `0682b34b chore: bump version to 4.14.195 [deploy]`
+- `c7f049e1 feat(decision-center): add execution gates and iOS smoke harness`
+- `ddcf211e docs(release): add decision center staging smoke evidence`
+- `30285bb3 chore: bump version to 4.14.200 [deploy]`
 
 Scope:
 
-- Training bug-fix triplet (PR #137 -> 4.14.194):
-  - Cancel cascade — broadened `findMatchingSecretaryAgendaItems` to match
-    every prior `plan_version` (SQL `LIKE 'training:${planId}:%'`); added
-    `findSecretaryAgendaCalendarEventsForPlan` so the immediate-delete path
-    also enumerates Secretary-owned events without ownership rows.
-  - Two-a-day Auto — added `'auto'` to backend `twoADayPreference` enum
-    (iOS already sends this literal); explicit `'auto'` branch in
-    `resolveMaxSessionsPerDay`; hybrid `resolveWeeklyTargets` now respects
-    explicit `runSessionsPerWeek` + `strengthSessionsPerWeek` when both are
-    provided; volume enforcer sums explicit per-sport values into
-    `requestedTotal` regardless of `planSport`.
-  - Calendar event body — `sourceBodyForSecretaryCalendarEvent` hydrates
-    workout content from `description_json` and falls back to
-    `title · intensity · duration min` when sections are empty; assembly
-    puts workout content first, then a `────────────` divider, then the
-    metadata markers (markers preserved for sync).
-- Outlook default-enabled (PR #138 -> 4.14.195):
-  - `isTrainingOutlookCalendarWritesEnabled` flipped from opt-in to
-    default-on. `TRAINING_CALENDAR_OUTLOOK_DISABLED=1` retained as kill
-    switch for emergency rollback without redeploy.
-  - Validator + writer surface accepts Outlook by default; auto-target
-    `createTrainingCalendarEvent` no longer forces `'google'` — passes
-    `undefined` so `unified-calendar.createEvent` picks per the user's
-    connected providers.
-  - Tests rewritten across 5 files to pin the new default-on contract;
-    kill-switch paths preserve the original gated-path semantics.
+- Decision Center execution plan:
+  - API v2 helpers, compact list cards, cursor pagination, and v2 detail
+    wrapper behind `DECISION_API_V2_ENABLED`.
+  - Lifecycle/action/effective status layering, lifecycle events, metrics
+    tables, operator dashboard snapshot, active expiry, and scheduler expiry.
+  - Semantic dedup/supersede, relationship types, fatigue caps, type
+    suppression, refresh, reconnect, rollback-snapshot protection,
+    choice-option, skill-card, evidence-freshness, and human-review guards.
+  - Decision Center-side Command Bus adapter for the low-risk dismiss slice
+    only, behind default-off `DECISION_CENTER_COMMAND_BUS_ENABLED`; ChatV2
+    internals were intentionally not edited.
+  - iOS main `9f5649c` adds a local-backend Decision Center smoke harness and
+    routes Decision Center primary actions through the backend action route.
 
 Validated through promotion:
 
-- promote-time staging smoke (4.14.194): 17/17 passed (`staging-smoke-d94c2d1a-20260525T101747Z.json`)
-- promote-time staging smoke (4.14.195): 17/17 passed (`staging-smoke-0bae01cb-20260525T161058Z.json`)
-- deploy-time `npm run verify` (4.14.194): 718 files / 10,544 tests
-- deploy-time `npm run verify` (4.14.195): 718 files / 10,555 tests
+- backend local `npm run verify`: 812 files / 11,848 tests
+- staging smoke: 19/19 passed
+  (`staging-smoke-c7f049e1-20260603T135207Z.json`)
+- local Docker + iOS simulator smoke passed; peer rerun passed
+- deploy-time `npm run verify`: 812 files / 11,848 tests
 - final `main` pre-push gates: typecheck, full Vitest, and build passed
-  for both bumps
-- `promote-to-prod.sh` completed cleanly for both 4.14.194 and 4.14.195
-- post-deploy: PM2 `nexus-hub` and `content-engine` online after both deploys
+- `promote-to-prod.sh` completed cleanly for 4.14.200
+- post-deploy: PM2 `nexus-hub` and `content-engine` online
 - production `/health` (`api.nexushub.me/health`): HTTP 200 `status: healthy`
-  with fresh uptime after each deploy
+  with fresh uptime
+- production `/public-status`: HTTP 200 `status: ok`
+- unauthenticated `/api/v1/decisions/overview`, `/summary`, and `/handled`:
+  HTTP 401
 
 ## Previous Production Versions On This Branch
 
+- 4.14.200 (`30285bb3`) — Decision Center execution gates + iOS local smoke harness (source commit `c7f049e1`)
 - 4.14.195 (`0682b34b`) — Training Outlook calendar default-enabled (source commit `0bae01cb`)
 - 4.14.194 (`fb1f844e`) — Training bug-fix triplet: cancel-orphan + two-a-day/Auto + calendar body Stage 1 (source commit `d94c2d1a`)
 - 4.14.193 (`fb1ca66d`) — Coach Periodization v2.1 + deploy dirty-tree stop fix (source commits `99992ddc`, `256aa591`)

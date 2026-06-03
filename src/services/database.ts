@@ -191,23 +191,29 @@ function runMigrations(): void {
   }
 }
 
-function filterAlreadyAppliedAddColumnStatements(sql: string): string {
+export function filterAlreadyAppliedAddColumnStatements(
+  sql: string,
+  columnExists: (table: string, column: string) => boolean = (table, column) => {
+    const columns = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+    return columns.some((entry) => entry.name === column);
+  },
+): string {
   return sql
-    .split('\n')
-    .filter((line) => {
-      const match = line.trim().match(/^ALTER\s+TABLE\s+([A-Za-z_][\w]*)\s+ADD\s+COLUMN\s+([A-Za-z_][\w]*)\b/i);
-      if (!match) return true;
+    .split(';')
+    .map((statement, index, statements) => {
+      const suffix = index < statements.length - 1 ? ';' : '';
+      const match = statement.match(/\bALTER\s+TABLE\s+([A-Za-z_][\w]*)\s+ADD\s+COLUMN\s+([A-Za-z_][\w]*)\b/i);
+      if (!match) return `${statement}${suffix}`;
       const [, table, column] = match;
       try {
-        const columns = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
-        if (!columns.some((entry) => entry.name === column)) return true;
+        if (!columnExists(table, column)) return `${statement}${suffix}`;
         logger.warn({ table, column }, 'Migration ADD COLUMN already applied; skipping duplicate column statement');
-        return false;
+        return '';
       } catch {
-        return true;
+        return `${statement}${suffix}`;
       }
     })
-    .join('\n');
+    .join('');
 }
 
 export function closeDatabase(): void {

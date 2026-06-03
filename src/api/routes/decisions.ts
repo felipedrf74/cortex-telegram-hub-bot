@@ -7,6 +7,7 @@ import { ensureValidTenantRouteScope } from '../tenant-route-scope';
 import { secureSecretMatches } from '../secret-guards';
 import {
   buildSkillDecisionFixtureIntent,
+  applyDecisionTypeSuppression,
   createDecisionIntent,
   DecisionActionError,
   dismissDecision,
@@ -14,12 +15,17 @@ import {
   getDecisionItem,
   getDecisionPreferences,
   getDecisionSummary,
+  listDecisionTypeSuppressions,
   listHandledByNexusItems,
   listDecisionItems,
   markDecisionViewed,
+  refreshDecisionItem,
   performDecisionAction,
   snoozeDecision,
+  suppressDecisionType,
+  unsuppressDecisionType,
   updateDecisionPreferences,
+  type DecisionTypeSuppressionMode,
   type DecisionUrgency,
 } from '../../services/decision-center';
 import {
@@ -29,6 +35,10 @@ import {
   type NotificationSourceSkill,
 } from '../../services/notification-orchestrator';
 import { assertTenantScope, requireMutationScope, TenantScopeError } from '../../services/tenant-scope';
+import { buildDecisionCardSummary, resolveDecisionApiVersion } from '../decision-api-version';
+import { decodeDecisionCursor, paginateDecisions, sortDecisionsForKeyset } from '../decision-cursor';
+import type { DecisionListResponse } from '../../services/decision-center';
+import { isDecisionRefreshEnabled } from '../../services/runtime-flags';
 import { logger } from '../../utils/logger';
 
 function routeTenantId(
@@ -103,6 +113,10 @@ function positiveIntQuery(res: Response, raw: unknown, fallback: number, name: s
   return Math.min(parsed, max);
 }
 
+/** Internal read cap for v2 cursor pagination: the full active list to paginate over (cursor/pageSize bound
+ *  the page). Comfortably exceeds the ~50-active-per-user product ceiling so cursors traverse everything. */
+const DECISION_LIST_CURSOR_CAP = 500;
+
 export function decisionRoutes(): Router {
   const router = Router();
 
@@ -113,7 +127,11 @@ export function decisionRoutes(): Router {
     const tenantId = routeTenantId(authReq, res, userId, 'decisions_route');
     if (tenantId == null) return;
     const limit = parseInt(String(req.query.limit || '3'), 10);
-    sendSuccess(res, getDecisionSummary(userId, tenantId, limit));
+    const summary = getDecisionSummary(userId, tenantId, limit);
+    const { version, schemaVersion } = resolveDecisionApiVersion(authReq);
+    sendSuccess(res, version === 'v2'
+      ? { ...summary, schemaVersion, previewItems: summary.previewItems.map(buildDecisionCardSummary) }
+      : summary);
   }));
 
   router.get('/overview', asyncHandler(async (req, res: Response) => {
@@ -126,7 +144,16 @@ export function decisionRoutes(): Router {
     if (limit == null) return;
     const handledLimit = positiveIntQuery(res, req.query.handledLimit, 10, 'handledLimit', 25);
     if (handledLimit == null) return;
-    sendSuccess(res, getDecisionOverview(userId, tenantId, { limit, handledLimit }));
+    const overview = getDecisionOverview(userId, tenantId, { limit, handledLimit });
+    const { version, schemaVersion } = resolveDecisionApiVersion(authReq);
+    sendSuccess(res, version === 'v2'
+      ? {
+          ...overview,
+          schemaVersion,
+          items: overview.items.map(buildDecisionCardSummary),
+          summary: { ...overview.summary, previewItems: overview.summary.previewItems.map(buildDecisionCardSummary) },
+        }
+      : overview);
   }));
 
   router.get('/', asyncHandler(async (req, res: Response) => {
@@ -140,12 +167,49 @@ export function decisionRoutes(): Router {
     const sourceSkill = typeof req.query.sourceSkill === 'string' ? req.query.sourceSkill as NotificationSourceSkill : undefined;
     const type = typeof req.query.type === 'string' ? req.query.type as NotificationIntentType : undefined;
     const urgency = typeof req.query.urgency === 'string' ? req.query.urgency as DecisionUrgency : undefined;
-    const items = listDecisionItems(userId, tenantId, { status, sourceSkill, type, urgency, limit });
-    sendSuccess(res, {
+    const { version, schemaVersion } = resolveDecisionApiVersion(authReq);
+    // API v2 keyset cursor pagination — opt-in WITHIN v2 via ?cursor / ?pageSize. v1 and v2-without-cursor
+    // responses are byte-identical to before (this branch only triggers on an explicit cursor/pageSize param).
+    const cursorMode = version === 'v2' && (req.query.cursor !== undefined || req.query.pageSize !== undefined);
+    // In cursor mode the URL ?limit is irrelevant — the pagination universe must be the FULL active list, so
+    // read with a generous internal cap (cursor/pageSize bound the page). Otherwise a >80-item user would get
+    // nextCursor=null mid-dataset. The cap comfortably exceeds the ~50-active-per-user product ceiling.
+    const readLimit = cursorMode ? DECISION_LIST_CURSOR_CAP : limit;
+    // C3: drop user-suppressed types from the user-facing list (flag-gated; floored decisions never dropped).
+    const items = applyDecisionTypeSuppression(
+      listDecisionItems(userId, tenantId, {
+        status,
+        sourceSkill,
+        type,
+        urgency,
+        limit: readLimit,
+        ...(cursorMode ? { maxLimit: DECISION_LIST_CURSOR_CAP } : {}),
+      }),
+      userId,
+      tenantId,
+    );
+    if (cursorMode) {
+      const pageSize = positiveIntQuery(res, req.query.pageSize, 50, 'pageSize', 100);
+      if (pageSize == null) return;
+      const cursor = typeof req.query.cursor === 'string' ? decodeDecisionCursor(req.query.cursor) : null;
+      const { page, nextCursor } = paginateDecisions(sortDecisionsForKeyset(items), cursor, pageSize);
+      const response: DecisionListResponse = {
+        schemaVersion,
+        count: page.length,
+        openCount: page.filter((item) => ['unread', 'read', 'failed'].includes(item.status)).length,
+        items: page.map(buildDecisionCardSummary),
+        pageSize,
+        ...(nextCursor ? { nextCursor } : {}),
+      };
+      sendSuccess(res, response);
+      return;
+    }
+    const response = {
       count: items.length,
       openCount: items.filter((item) => ['unread', 'read', 'failed'].includes(item.status)).length,
-      items,
-    });
+      items: version === 'v2' ? items.map(buildDecisionCardSummary) : items,
+    };
+    sendSuccess(res, version === 'v2' ? { schemaVersion, ...response } : response);
   }));
 
   router.post('/intents', asyncHandler(async (req, res: Response) => {
@@ -218,6 +282,69 @@ export function decisionRoutes(): Router {
     }
   }));
 
+  // C3 type-suppression controls. The READ FILTER is flag-gated (DECISION_TYPE_SUPPRESSION_ENABLED); these
+  // write/read endpoints persist the preference regardless so it is ready when the flag flips.
+  router.get('/preferences/suppressions', asyncHandler(async (req, res: Response) => {
+    const authReq = req as unknown as AuthenticatedRequest;
+    const { userId } = authReq;
+    if (!ensureValidTenantRouteScope(res, userId, 'decisions_route_list_suppressions')) return;
+    const tenantId = routeTenantId(authReq, res, userId, 'decisions_route');
+    if (tenantId == null) return;
+    sendSuccess(res, { suppressions: listDecisionTypeSuppressions(userId, tenantId) });
+  }));
+
+  router.post('/preferences/suppress-type', asyncHandler(async (req, res: Response) => {
+    const authReq = req as unknown as AuthenticatedRequest;
+    const { userId } = authReq;
+    if (!ensureValidTenantRouteScope(res, userId, 'decisions_route_suppress_type')) return;
+    const tenantId = routeTenantId(authReq, res, userId, 'decisions_route_suppress_type', 'decision_type_suppressions');
+    if (tenantId == null) return;
+    const body = (req.body ?? {}) as { sourceSkill?: unknown; type?: unknown; mode?: unknown; untilDays?: unknown };
+    const sourceSkill = typeof body.sourceSkill === 'string' ? body.sourceSkill.trim() : '';
+    const type = typeof body.type === 'string' ? body.type.trim() : '';
+    const mode = body.mode === 'snooze_type' ? 'snooze_type' : body.mode === 'dont_show_type' ? 'dont_show_type' : null;
+    if (!sourceSkill || !type || !mode) {
+      sendError(res, 'VALIDATION', 'sourceSkill, type, and mode (dont_show_type|snooze_type) are required', 400);
+      return;
+    }
+    let until: string | null = null;
+    if (mode === 'snooze_type') {
+      const days = positiveIntQuery(res, body.untilDays ?? 7, 7, 'untilDays', 365);
+      if (days == null) return;
+      until = new Date(Date.now() + days * 24 * 60 * 60 * 1000).toISOString();
+    }
+    try {
+      suppressDecisionType(userId, tenantId, sourceSkill, type, mode as DecisionTypeSuppressionMode, until);
+    } catch (err) {
+      // Map service-layer DecisionActionError (VALIDATION / INVALID_SCOPE) to its intended 4xx instead of a
+      // 500, consistent with every other handler in this file.
+      decisionError(res, err, 'DECISION_SUPPRESS_FAILED');
+      return;
+    }
+    sendSuccess(res, { suppressions: listDecisionTypeSuppressions(userId, tenantId) }, { status: 201 });
+  }));
+
+  router.delete('/preferences/suppress-type', asyncHandler(async (req, res: Response) => {
+    const authReq = req as unknown as AuthenticatedRequest;
+    const { userId } = authReq;
+    if (!ensureValidTenantRouteScope(res, userId, 'decisions_route_unsuppress_type')) return;
+    const tenantId = routeTenantId(authReq, res, userId, 'decisions_route_unsuppress_type', 'decision_type_suppressions');
+    if (tenantId == null) return;
+    const sourceSkill = typeof req.query.sourceSkill === 'string' ? req.query.sourceSkill.trim() : '';
+    const type = typeof req.query.type === 'string' ? req.query.type.trim() : '';
+    if (!sourceSkill || !type) {
+      sendError(res, 'VALIDATION', 'sourceSkill and type query params are required', 400);
+      return;
+    }
+    try {
+      unsuppressDecisionType(userId, tenantId, sourceSkill, type);
+    } catch (err) {
+      decisionError(res, err, 'DECISION_UNSUPPRESS_FAILED');
+      return;
+    }
+    sendSuccess(res, { suppressions: listDecisionTypeSuppressions(userId, tenantId) });
+  }));
+
   router.get('/handled', asyncHandler(async (req, res: Response) => {
     const authReq = req as unknown as AuthenticatedRequest;
     const { userId } = authReq;
@@ -240,7 +367,8 @@ export function decisionRoutes(): Router {
       sendError(res, 'NOT_FOUND', 'Decision not found', 404);
       return;
     }
-    sendSuccess(res, { item });
+    const { version, schemaVersion } = resolveDecisionApiVersion(authReq);
+    sendSuccess(res, version === 'v2' ? { schemaVersion, item } : { item });
   }));
 
   router.patch('/:id/viewed', asyncHandler(async (req, res: Response) => {
@@ -254,6 +382,31 @@ export function decisionRoutes(): Router {
     } catch (err) {
       decisionError(res, err, 'DECISION_VIEW_FAILED');
     }
+  }));
+
+  // Refresh-evidence: re-derive a decision's computed fields from current stored state (token-zero, read-only).
+  // Flag-gated (DECISION_REFRESH_ENABLED, default OFF -> 404). Respects v2 card negotiation.
+  router.post('/:id/refresh', asyncHandler(async (req, res: Response) => {
+    const authReq = req as unknown as AuthenticatedRequest;
+    const { userId } = authReq;
+    if (!ensureValidTenantRouteScope(res, userId, 'decisions_route_refresh', { decisionId: req.params.id })) return;
+    const tenantId = routeTenantId(authReq, res, userId, 'decisions_route_refresh');
+    if (tenantId == null) return;
+    if (!isDecisionRefreshEnabled(process.env, { userId, tenantId })) {
+      sendError(res, 'NOT_FOUND', 'Decision refresh is not enabled', 404);
+      return;
+    }
+    const result = refreshDecisionItem(String(req.params.id || ''), userId, tenantId);
+    if (!result) {
+      sendError(res, 'DECISION_NOT_FOUND', 'Decision not found', 404);
+      return;
+    }
+    const { version, schemaVersion } = resolveDecisionApiVersion(authReq);
+    sendSuccess(res, {
+      schemaVersion,
+      item: version === 'v2' ? buildDecisionCardSummary(result.item) : result.item,
+      refreshedAt: result.refreshedAt,
+    });
   }));
 
   router.patch('/:id/snooze', asyncHandler(async (req, res: Response) => {
@@ -276,7 +429,7 @@ export function decisionRoutes(): Router {
     const tenantId = routeTenantId(authReq, res, userId, 'decisions_route_dismiss', 'notification_center_items');
     if (tenantId == null) return;
     try {
-      sendSuccess(res, { item: dismissDecision(String(req.params.id || ''), userId, tenantId) });
+      sendSuccess(res, { item: dismissDecision(String(req.params.id || ''), userId, tenantId, typeof req.body?.reason === 'string' ? req.body.reason : undefined) });
     } catch (err) {
       decisionError(res, err, 'DECISION_DISMISS_FAILED');
     }

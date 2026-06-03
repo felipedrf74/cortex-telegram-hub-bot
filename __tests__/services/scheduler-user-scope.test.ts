@@ -215,6 +215,7 @@ import {
   buildEndOfDaySummaryForUser,
   buildSharedListNotificationForUser,
   buildWeeklyReviewPayloadForUser,
+  decisionMetricsRollupDateForScheduler,
   getActiveUserIds,
   getOwnerUserIds,
   startScheduler,
@@ -281,6 +282,14 @@ describe('scheduler tenant scoping', () => {
     mockGetWeeksForPlan.mockReturnValue([]);
     mockCalculateReadiness.mockResolvedValue({ score: 80, recommendation: 'Ready', factors: {} });
     mockPersistReadinessScore.mockReturnValue(undefined);
+  });
+
+  it('computes Decision Metrics rollup date in the scheduler timezone across Lisbon DST', () => {
+    const summerMidnight = DateTime.fromISO('2026-06-03T00:15:00', { zone: 'Europe/Lisbon' }).toJSDate();
+    expect(decisionMetricsRollupDateForScheduler(summerMidnight, 'Europe/Lisbon')).toBe('2026-06-02');
+
+    const winterMidnight = DateTime.fromISO('2026-01-03T00:15:00', { zone: 'Europe/Lisbon' }).toJSDate();
+    expect(decisionMetricsRollupDateForScheduler(winterMidnight, 'Europe/Lisbon')).toBe('2026-01-02');
   });
 
   it('getActiveUserIds returns canonical tenant ids from the users table', () => {

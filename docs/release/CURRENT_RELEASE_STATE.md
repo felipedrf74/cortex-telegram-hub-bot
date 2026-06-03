@@ -2,25 +2,60 @@
 
 Status: canonical
 Owner: backend release lead (Felipe)
-Last verified: 2026-05-25
+Last verified: 2026-06-03
 Update policy: update after backend deploy or staging change. Workspace-level entry point is docs/release/CURRENT_RELEASE_STATE.md.
 
-Last updated: 2026-05-25
+Last updated: 2026-06-03
 
 ## Active Production Release
 
 - Source branch: `main`
-- Production HEAD: `0682b34b`
-- Production version: `4.14.195`
-- Source implementation commits before deploy bump: PR #137 merge
-  `d94c2d1a` (training bug-fix triplet) and PR #138 merge `0bae01cb`
-  (Outlook default-enabled).
-- Latest pushed source: `origin/main` includes the running production deploy
-  commit `0682b34b`.
-- Staging remains on the previous deploy version (`4.14.194`) until the next
-  staging deploy; the promoted functional code passed the staging smoke before
-  production.
+- Production HEAD: `30285bb3`
+- Production version: `4.14.200`
+- Source implementation commits before deploy bump: `c7f049e1` (Decision
+  Center execution gates and iOS smoke harness) and `ddcf211e` (staging smoke
+  evidence for `c7f049e1`).
+- Latest pushed runtime deploy commit: `origin/main` includes `30285bb3`.
+  Post-deploy docs-only closeout commits may sit ahead of the runtime deploy.
+- Staging remains on `4.14.199` until the next staging deploy; the promoted
+  functional code passed staging smoke before production.
 - Official workspace root: `/Users/felipedominguez/Desktop/Nexus Hub`
+
+## 2026-06-03 Decision Center Execution + iOS Smoke Production Promote
+
+- Scope: promoted the Decision Center execution plan after ChatV2 main sync,
+  without editing `src/services/chat-core-v2/**`. The release includes
+  Decision Center API v2 helpers, lifecycle/status/events, metrics/dashboard,
+  active expiry, semantic dedup/supersede, relationship types, fatigue and
+  type suppression, refresh/reconnect/choice/skill-card/freshness/human-review
+  guardrails, and the default-off Decision Center Command Bus dismiss adapter.
+- Production version: `4.14.200`.
+- Production deploy commit: `30285bb3`.
+- Source implementation/evidence commits before deploy bump: `c7f049e1`;
+  staging smoke evidence commit `ddcf211e`.
+- iOS main: `9f5649c` adds the Decision Center local-backend smoke harness and
+  aligns Decision Center primary actions with the backend action route.
+- Previous production deploy commit: `09a1c96d` (4.14.199).
+- Release validation passed before production: backend `npm run verify` passed
+  **812 test files / 11,848 tests**; focused Decision Center peer validation
+  passed; local Docker + iOS simulator smoke passed with evidence under
+  `.local/decision-center-ios-smoke/evidence/20260603-134101` and peer rerun
+  evidence under `.local/decision-center-ios-smoke/evidence/20260603-135756`;
+  staging smoke passed **19/19** at
+  `docs/release/smoke-evidence/staging-smoke-c7f049e1-20260603T135207Z.json`;
+  deploy-time verify passed **812 test files / 11,848 tests**; final `main`
+  pre-push typecheck, full Vitest, and build passed.
+- Production deploy completed through the standard `promote-to-prod.sh` path.
+  PM2 restarted `content-engine` and `nexus-hub`; both returned online.
+- Production health passed after deploy:
+  `https://api.nexushub.me/health` returned `status: healthy`,
+  `https://api.nexushub.me/public-status` returned `status: ok`, and
+  unauthenticated Decision Center overview, summary, and handled endpoints each
+  returned `401`.
+- Evidence limits: most new Decision Center behavior is default-off or scoped
+  by runtime flags until rollout approval. The iOS proof is local
+  Docker-backed simulator proof, not production APNs, TestFlight, or physical
+  device proof.
 
 ## 2026-05-25 Training Outlook Default-Enabled Production Promote
 

@@ -28,8 +28,16 @@ import {
   isContentFreshResearchDisabled,
   isContentFullLongformDisabled,
   isContentModelQualityAuditDisabled,
+  isDecisionCenterFatigueCapsEnabled,
+  isDecisionCenterCommandBusEnabled,
   isDecisionCenterGuidanceSkillEnabled,
   isDecisionCenterGuidanceV1Enabled,
+  isDecisionChoiceOptionsEnabled,
+  isDecisionHumanReviewGateEnabled,
+  isDecisionReconnectAffordanceEnabled,
+  isDecisionSemanticSupersedeEnabled,
+  isDecisionTypeSuppressionEnabled,
+  isDecisionSkillCardsEnabled,
   isAnthropicRuntimeEnabled,
   isChatCoreV2ShadowRouteHookEnabled,
   isSecretaryHaikuRoutingEnabled,
@@ -112,6 +120,22 @@ describe('runtime-flags', () => {
       DECISION_CENTER_GUIDANCE_V1_FINANCE_REVIEW_ENABLED: 'true',
       DECISION_CENTER_GUIDANCE_V1_FINANCE_REVIEW_ENABLED_TENANT_9: '0',
     }, { userId: 7, tenantId: 9 })).toBe(false);
+  });
+
+  it('keeps Decision Center Command Bus default-off with scoped opt-in', () => {
+    expect(isDecisionCenterCommandBusEnabled({})).toBe(false);
+    expect(isDecisionCenterCommandBusEnabled({ DECISION_CENTER_COMMAND_BUS_ENABLED: 'true' })).toBe(true);
+    expect(isDecisionCenterCommandBusEnabled({ DECISION_CENTER_COMMAND_BUS_ENABLED: 'on' })).toBe(true);
+    expect(isDecisionCenterCommandBusEnabled({ DECISION_CENTER_COMMAND_BUS_ENABLED: '1' })).toBe(true);
+    expect(isDecisionCenterCommandBusEnabled({ DECISION_CENTER_COMMAND_BUS_ENABLED: 'shadow' })).toBe(false);
+    expect(isDecisionCenterCommandBusEnabled({
+      DECISION_CENTER_COMMAND_BUS_ENABLED: 'false',
+      DECISION_CENTER_COMMAND_BUS_ENABLED_TENANT_9: 'enabled',
+    }, { userId: 7, tenantId: 9 })).toBe(true);
+    expect(isDecisionCenterCommandBusEnabled({
+      DECISION_CENTER_COMMAND_BUS_ENABLED: 'true',
+      DECISION_CENTER_COMMAND_BUS_ENABLED_USER_42: 'off',
+    }, { userId: 42, tenantId: 9 })).toBe(false);
   });
 
   it('parses chat hybrid planner rollout flags conservatively', () => {
@@ -233,5 +257,92 @@ describe('runtime-flags', () => {
     expect(isChatCoreV2RuntimeFlagEnabled('CHAT_CORE_V3_ENABLED', {
       CHAT_CORE_V3_ENABLED: 'true',
     })).toBe(false);
+  });
+
+  it('keeps Decision Center fatigue caps default-off with scoped opt-in (C5)', () => {
+    expect(isDecisionCenterFatigueCapsEnabled({})).toBe(false);
+    expect(isDecisionCenterFatigueCapsEnabled({ DECISION_CENTER_FATIGUE_CAPS_ENABLED: 'true' })).toBe(true);
+    expect(isDecisionCenterFatigueCapsEnabled({ DECISION_CENTER_FATIGUE_CAPS_ENABLED: 'on' })).toBe(true);
+    expect(isDecisionCenterFatigueCapsEnabled({ DECISION_CENTER_FATIGUE_CAPS_ENABLED: '1' })).toBe(true);
+    expect(isDecisionCenterFatigueCapsEnabled({ DECISION_CENTER_FATIGUE_CAPS_ENABLED: 'enabled' })).toBe(true);
+    expect(isDecisionCenterFatigueCapsEnabled({ DECISION_CENTER_FATIGUE_CAPS_ENABLED: 'yes' })).toBe(false);
+    expect(isDecisionCenterFatigueCapsEnabled({
+      DECISION_CENTER_FATIGUE_CAPS_ENABLED: 'false',
+      DECISION_CENTER_FATIGUE_CAPS_ENABLED_TENANT_9: 'true',
+    }, { userId: 7, tenantId: 9 })).toBe(true);
+    expect(isDecisionCenterFatigueCapsEnabled({
+      DECISION_CENTER_FATIGUE_CAPS_ENABLED: 'true',
+      DECISION_CENTER_FATIGUE_CAPS_ENABLED_USER_42: 'off',
+    }, { userId: 42, tenantId: 9 })).toBe(false);
+  });
+
+  it('keeps the A2 reconnect affordance default-off with scoped opt-in', () => {
+    expect(isDecisionReconnectAffordanceEnabled({})).toBe(false);
+    expect(isDecisionReconnectAffordanceEnabled({ DECISION_RECONNECT_AFFORDANCE_ENABLED: 'true' })).toBe(true);
+    expect(isDecisionReconnectAffordanceEnabled({ DECISION_RECONNECT_AFFORDANCE_ENABLED: '1' })).toBe(true);
+    expect(isDecisionReconnectAffordanceEnabled({ DECISION_RECONNECT_AFFORDANCE_ENABLED: 'yes' })).toBe(false);
+    // scoped opt-in: a tenant override flips it on for that tenant only
+    expect(isDecisionReconnectAffordanceEnabled({
+      DECISION_RECONNECT_AFFORDANCE_ENABLED: 'false',
+      DECISION_RECONNECT_AFFORDANCE_ENABLED_TENANT_9: 'true',
+    }, { userId: 7, tenantId: 9 })).toBe(true);
+    // scoped opt-out: a user override flips it off even when the global is on
+    expect(isDecisionReconnectAffordanceEnabled({
+      DECISION_RECONNECT_AFFORDANCE_ENABLED: 'true',
+      DECISION_RECONNECT_AFFORDANCE_ENABLED_USER_42: 'off',
+    }, { userId: 42, tenantId: 9 })).toBe(false);
+  });
+
+  it('keeps the D secretary choice-options surface default-off with scoped opt-in', () => {
+    expect(isDecisionChoiceOptionsEnabled({})).toBe(false);
+    expect(isDecisionChoiceOptionsEnabled({ DECISION_CHOICE_OPTIONS_ENABLED: 'true' })).toBe(true);
+    expect(isDecisionChoiceOptionsEnabled({ DECISION_CHOICE_OPTIONS_ENABLED: '1' })).toBe(true);
+    expect(isDecisionChoiceOptionsEnabled({ DECISION_CHOICE_OPTIONS_ENABLED: 'yes' })).toBe(false);
+    expect(isDecisionChoiceOptionsEnabled({
+      DECISION_CHOICE_OPTIONS_ENABLED: 'false',
+      DECISION_CHOICE_OPTIONS_ENABLED_TENANT_9: 'true',
+    }, { userId: 7, tenantId: 9 })).toBe(true);
+    expect(isDecisionChoiceOptionsEnabled({
+      DECISION_CHOICE_OPTIONS_ENABLED: 'true',
+      DECISION_CHOICE_OPTIONS_ENABLED_USER_42: 'off',
+    }, { userId: 42, tenantId: 9 })).toBe(false);
+  });
+
+  it('keeps the B3 supersede + human-review gates default-off with scoped opt-in', () => {
+    expect(isDecisionSemanticSupersedeEnabled({})).toBe(false);
+    expect(isDecisionSemanticSupersedeEnabled({ DECISION_SEMANTIC_SUPERSEDE_ENABLED: 'true' })).toBe(true);
+    expect(isDecisionSemanticSupersedeEnabled({ DECISION_SEMANTIC_SUPERSEDE_ENABLED: 'true', DECISION_SEMANTIC_SUPERSEDE_ENABLED_USER_5: 'off' }, { userId: 5, tenantId: 9 })).toBe(false);
+    expect(isDecisionHumanReviewGateEnabled({})).toBe(false);
+    expect(isDecisionHumanReviewGateEnabled({ DECISION_HUMAN_REVIEW_GATE_ENABLED: '1' })).toBe(true);
+  });
+
+  it('keeps the C3 type-suppression control default-off with scoped opt-in', () => {
+    expect(isDecisionTypeSuppressionEnabled({})).toBe(false);
+    expect(isDecisionTypeSuppressionEnabled({ DECISION_TYPE_SUPPRESSION_ENABLED: 'true' })).toBe(true);
+    expect(isDecisionTypeSuppressionEnabled({ DECISION_TYPE_SUPPRESSION_ENABLED: '1' })).toBe(true);
+    expect(isDecisionTypeSuppressionEnabled({ DECISION_TYPE_SUPPRESSION_ENABLED: 'yes' })).toBe(false);
+    expect(isDecisionTypeSuppressionEnabled({
+      DECISION_TYPE_SUPPRESSION_ENABLED: 'true',
+      DECISION_TYPE_SUPPRESSION_ENABLED_USER_5: 'off',
+    }, { userId: 5, tenantId: 9 })).toBe(false);
+    expect(isDecisionTypeSuppressionEnabled({
+      DECISION_TYPE_SUPPRESSION_ENABLED: 'false',
+      DECISION_TYPE_SUPPRESSION_ENABLED_TENANT_9: 'true',
+    }, { userId: 7, tenantId: 9 })).toBe(true);
+  });
+
+  it('keeps the D skill cards surface default-off with scoped opt-in', () => {
+    expect(isDecisionSkillCardsEnabled({})).toBe(false);
+    expect(isDecisionSkillCardsEnabled({ DECISION_SKILL_CARDS_ENABLED: 'true' })).toBe(true);
+    expect(isDecisionSkillCardsEnabled({ DECISION_SKILL_CARDS_ENABLED: '1' })).toBe(true);
+    expect(isDecisionSkillCardsEnabled({ DECISION_SKILL_CARDS_ENABLED: 'yes' })).toBe(false);
+    expect(isDecisionSkillCardsEnabled({
+      DECISION_SKILL_CARDS_ENABLED: 'false',
+      DECISION_SKILL_CARDS_ENABLED_TENANT_9: 'true',
+    }, { userId: 7, tenantId: 9 })).toBe(true);
+    expect(isDecisionSkillCardsEnabled({
+      DECISION_SKILL_CARDS_ENABLED: 'true',
+      DECISION_SKILL_CARDS_ENABLED_USER_42: 'off',
+    }, { userId: 42, tenantId: 9 })).toBe(false);
   });
 });

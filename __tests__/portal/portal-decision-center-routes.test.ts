@@ -10,6 +10,8 @@ const mocks = vi.hoisted(() => ({
   performDecisionAction: vi.fn(),
   updateDecisionPreferences: vi.fn(),
   logPortalAdminMutation: vi.fn(),
+  isDecisionDashboardEnabled: vi.fn(),
+  buildDecisionDashboardSnapshot: vi.fn(),
 }));
 
 vi.mock('../../src/api/secret-guards', () => ({
@@ -78,6 +80,15 @@ vi.mock('../../src/utils/logger', () => ({
     error: vi.fn(),
   },
   LOGGER_REDACTION_PATHS: [],
+}));
+
+vi.mock('../../src/services/decision-dashboard', () => ({
+  buildDecisionDashboardSnapshot: (...args: unknown[]) => mocks.buildDecisionDashboardSnapshot(...args),
+}));
+
+vi.mock('../../src/services/runtime-flags', async (importActual) => ({
+  ...(await importActual<typeof import('../../src/services/runtime-flags')>()),
+  isDecisionDashboardEnabled: (...args: unknown[]) => mocks.isDecisionDashboardEnabled(...args),
 }));
 
 import { registerPortalDecisionCenterRoutes } from '../../src/portal/decision-center-routes';
@@ -246,6 +257,16 @@ describe('portal Decision Center routes', () => {
       item: sampleDecision({ status: 'actioned' }),
       verification: { readBackOk: true, expectedEffect: {}, actualEffect: {}, message: 'ok' },
     });
+    mocks.isDecisionDashboardEnabled.mockReturnValue(false);
+    mocks.buildDecisionDashboardSnapshot.mockReturnValue({
+      userId: 7,
+      tenantId: 7,
+      generatedAt: '2026-05-10T10:00:00.000Z',
+      releaseGate: { expiredButVisible: 0, unimplementedActionableCtas: 0, pass: true },
+      today: null,
+      feedbackBySkill: [],
+      outcomes: { totalOutcomes: 0, decisionQualityScore: null, primaryActionRate: 0, dismissRate: 0, snoozeRate: 0, failedActionRate: 0, genericBlockedRate: 0 },
+    });
   });
 
   it('registers per-user routes behind portal admin and operator target guards', () => {
@@ -270,6 +291,35 @@ describe('portal Decision Center routes', () => {
     expect((payload.body as any).items[0].problemStatement).toBe('Open Nexus to review this decision.');
     expect(JSON.stringify(payload.body)).not.toContain('Therapy Center');
     expect(JSON.stringify(payload.body)).not.toContain('$4,200');
+  });
+
+  it('dashboard route returns 501 when the dashboard flag is off (default) and does not build a snapshot', () => {
+    const { app, routes } = makeApp();
+    registerPortalDecisionCenterRoutes(app as any);
+    const handler = routes.get('GET /api/users/:userId/decision-center/dashboard')?.[2]!;
+    const { payload, res } = makeResponse();
+    mocks.isDecisionDashboardEnabled.mockReturnValue(false);
+
+    handler({ params: { userId: '7' }, query: {} }, res);
+
+    expect(payload.statusCode).toBe(501);
+    expect((payload.body as any).error.code).toBe('DASHBOARD_DISABLED');
+    expect(mocks.buildDecisionDashboardSnapshot).not.toHaveBeenCalled();
+  });
+
+  it('dashboard route returns the composed snapshot when the flag is on', () => {
+    const { app, routes } = makeApp();
+    registerPortalDecisionCenterRoutes(app as any);
+    const handler = routes.get('GET /api/users/:userId/decision-center/dashboard')?.[2]!;
+    const { payload, res } = makeResponse();
+    mocks.isDecisionDashboardEnabled.mockReturnValue(true);
+
+    handler({ params: { userId: '7' }, query: {} }, res);
+
+    expect(payload.statusCode).toBe(200);
+    expect((payload.body as any).ok).toBe(true);
+    expect((payload.body as any).dashboard.releaseGate.pass).toBe(true);
+    expect(mocks.buildDecisionDashboardSnapshot).toHaveBeenCalledWith(7, 7);
   });
 
   it('exposes v2 portal-safe decision metadata for admin parity', () => {
