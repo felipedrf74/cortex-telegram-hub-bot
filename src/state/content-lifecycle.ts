@@ -225,11 +225,29 @@ export function summarizeCanonicalLifecycle(
     counters.rejected += Number(rejected?.c ?? 0);
 
     const accepted = db.prepare(`
-      SELECT COUNT(DISTINCT signal_id) AS c
-      FROM content_radar_feedback
-      WHERE tenant_id = ? AND owner_user_id = ?
-        AND COALESCE(scope_status, 'active') = 'active'
-        AND action = 'accept'
+      SELECT COUNT(DISTINCT f.signal_id) AS c
+      FROM content_radar_feedback f
+      WHERE f.tenant_id = ? AND f.owner_user_id = ?
+        AND COALESCE(f.scope_status, 'active') = 'active'
+        AND f.action = 'accept'
+        AND NOT EXISTS (
+          SELECT 1
+          FROM content_radar_feedback converted
+          WHERE converted.tenant_id = f.tenant_id
+            AND converted.owner_user_id = f.owner_user_id
+            AND converted.signal_id = f.signal_id
+            AND COALESCE(converted.scope_status, 'active') = 'active'
+            AND converted.action = 'create_brief'
+        )
+        AND NOT EXISTS (
+          SELECT 1
+          FROM content_topics topic
+          WHERE topic.tenant_id = f.tenant_id
+            AND topic.owner_user_id = f.owner_user_id
+            AND COALESCE(topic.scope_status, 'active') = 'active'
+            AND f.signal_topic IS NOT NULL
+            AND lower(trim(topic.title)) = lower(trim(f.signal_topic))
+        )
     `).get(resolvedTenantId, userId) as { c: number };
     counters.accepted += Number(accepted?.c ?? 0);
   } catch (err) {

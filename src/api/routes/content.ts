@@ -180,7 +180,7 @@ async function buildContentHomePayload(userId: number, tenantId: number, languag
   const reasonCodes: string[] = [];
 
   try {
-    pipeline = readContentHomePipeline(db, userId);
+    pipeline = readContentHomePipeline(db, userId, tenantId);
   } catch (err: any) {
     logger.debug({ err, userId }, 'content/home pipeline digest failed');
     lastLoadError = err?.message || 'pipeline_unavailable';
@@ -188,7 +188,7 @@ async function buildContentHomePayload(userId: number, tenantId: number, languag
   }
 
   try {
-    ideas = readContentHomeIdeas(db, userId);
+    ideas = readContentHomeIdeas(db, userId, tenantId);
   } catch (err: any) {
     logger.debug({ err, userId }, 'content/home ideas digest failed');
     lastLoadError = lastLoadError ?? (err?.message || 'ideas_unavailable');

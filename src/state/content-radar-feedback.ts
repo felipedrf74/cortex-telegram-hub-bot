@@ -11,10 +11,9 @@ import { logger } from '../utils/logger';
 // ─────────────────────────────────────────────────────────────────────
 // CONTENT-UI-O2 (2026-05-04): per-signal Radar feedback.
 //
-// Append-only feedback log. iOS posts one row per accept/reject/save/
-// create_brief action. The radar ranker can later weigh recent feedback
-// to rerank similar signals (out of scope for THIS slice — we just
-// persist the feedback so future scoring rounds can consume it).
+// Active feedback is idempotent per signal/action. Repeated taps update
+// the same active row instead of inflating ranker input. Revoke archives
+// active rows so later taps can recreate them while preserving history.
 // ─────────────────────────────────────────────────────────────────────
 
 export type ContentRadarFeedbackAction = 'accept' | 'reject' | 'save' | 'create_brief';
@@ -35,6 +34,11 @@ export interface ContentRadarFeedbackInput {
   reason?: string | null;
   signalTopic?: string | null;
   signalSummary?: string | null;
+}
+
+export interface RevokeRadarFeedbackInput {
+  signalId: string;
+  action?: ContentRadarFeedbackAction | null;
 }
 
 const VALID_ACTIONS: readonly ContentRadarFeedbackAction[] = [
@@ -75,12 +79,14 @@ export function recordRadarFeedback(
 
   ensureContentTenantScopeColumns();
   const db = getDb();
+  ensureRadarFeedbackIdempotencyIndex(db);
   const scope = contentScopeForInsert(userId, tenantId, 'user_private', 'active');
   const reason = input.reason ? String(input.reason).slice(0, 600) : null;
   const topic = input.signalTopic ? String(input.signalTopic).slice(0, 240) : null;
   const summary = input.signalSummary ? String(input.signalSummary).slice(0, 600) : null;
+  const signalId = input.signalId.trim().slice(0, 120);
 
-  const result = db.prepare(`
+  db.prepare(`
     INSERT INTO content_radar_feedback (
       user_id, tenant_id, owner_user_id, visibility_scope, lifecycle_state,
       scope_status, created_by, updated_by, audit_metadata_json,
@@ -92,6 +98,14 @@ export function recordRadarFeedback(
       @signal_id, @action, @reason, @signal_topic, @signal_summary,
       datetime('now'), datetime('now')
     )
+    ON CONFLICT(tenant_id, owner_user_id, signal_id, action)
+    WHERE scope_status = 'active'
+    DO UPDATE SET
+      reason = excluded.reason,
+      signal_topic = excluded.signal_topic,
+      signal_summary = excluded.signal_summary,
+      updated_by = excluded.updated_by,
+      updated_at = datetime('now')
   `).run({
     user_id: userId,
     tenant_id: scope.tenantId,
@@ -102,7 +116,7 @@ export function recordRadarFeedback(
     created_by: scope.createdBy,
     updated_by: scope.updatedBy,
     audit_metadata_json: scope.auditMetadataJson,
-    signal_id: input.signalId.trim().slice(0, 120),
+    signal_id: signalId,
     action: input.action,
     reason,
     signal_topic: topic,
@@ -111,9 +125,58 @@ export function recordRadarFeedback(
 
   const row = db.prepare(`
     SELECT id, signal_id, action, reason, signal_topic, signal_summary, created_at
-    FROM content_radar_feedback WHERE id = ?
-  `).get(result.lastInsertRowid) as Record<string, unknown>;
+    FROM content_radar_feedback
+    WHERE tenant_id = ?
+      AND owner_user_id = ?
+      AND signal_id = ?
+      AND action = ?
+      AND scope_status = 'active'
+    LIMIT 1
+  `).get(scope.tenantId, scope.ownerUserId, signalId, input.action) as Record<string, unknown>;
   return rowToRecord(row);
+}
+
+export function revokeRadarFeedback(
+  userId: number,
+  tenantId: number | null | undefined,
+  input: RevokeRadarFeedbackInput,
+): number {
+  if (!Number.isFinite(userId) || userId <= 0) {
+    throw new Error('revokeRadarFeedback requires a positive userId');
+  }
+  if (typeof input.signalId !== 'string' || !input.signalId.trim()) {
+    throw new Error('signalId is required');
+  }
+  if (input.action != null && !isValidRadarFeedbackAction(input.action)) {
+    throw new Error(`Invalid action: ${String(input.action)}`);
+  }
+
+  ensureContentTenantScopeColumns();
+  const db = getDb();
+  ensureRadarFeedbackIdempotencyIndex(db);
+  const resolvedTenantId = resolveContentTenantId(userId, tenantId);
+  const signalId = input.signalId.trim().slice(0, 120);
+  const where = [
+    `tenant_id = ?`,
+    `owner_user_id = ?`,
+    `signal_id = ?`,
+    `scope_status = 'active'`,
+  ];
+  const params: Array<number | string> = [resolvedTenantId, userId, signalId];
+  if (input.action) {
+    where.push('action = ?');
+    params.push(input.action);
+  }
+
+  const result = db.prepare(`
+    UPDATE content_radar_feedback
+       SET scope_status = 'archived',
+           lifecycle_state = 'revoked',
+           updated_by = ?,
+           updated_at = datetime('now')
+     WHERE ${where.join(' AND ')}
+  `).run(userId, ...params);
+  return Number(result.changes) || 0;
 }
 
 export function listRadarFeedback(
@@ -124,6 +187,7 @@ export function listRadarFeedback(
   if (!Number.isFinite(userId) || userId <= 0) return [];
   ensureContentTenantScopeColumns();
   const db = getDb();
+  ensureRadarFeedbackIdempotencyIndex(db);
   const resolvedTenantId = resolveContentTenantId(userId, tenantId);
   const limit = Math.max(1, Math.min(500, options.limit ?? 200));
 
@@ -187,4 +251,24 @@ export function radarFeedbackAggregateBySignal(
     out[sid][act] = Number(r.count) || 0;
   }
   return out;
+}
+
+function ensureRadarFeedbackIdempotencyIndex(db: any): void {
+  try {
+    db.exec(`
+      DELETE FROM content_radar_feedback
+       WHERE COALESCE(scope_status, 'active') = 'active'
+         AND id NOT IN (
+           SELECT MAX(id)
+             FROM content_radar_feedback
+            WHERE COALESCE(scope_status, 'active') = 'active'
+            GROUP BY tenant_id, owner_user_id, signal_id, action
+         );
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_content_radar_feedback_active_unique_action
+        ON content_radar_feedback(tenant_id, owner_user_id, signal_id, action)
+        WHERE scope_status = 'active';
+    `);
+  } catch (err) {
+    logger.debug({ err }, 'content-radar-feedback.idempotency-index ensure failed');
+  }
 }

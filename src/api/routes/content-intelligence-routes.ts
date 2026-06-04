@@ -134,8 +134,9 @@ function readContentIntelligenceContext(
     signalLimit,
     userId,
     7,
+    validatedTenantId,
   );
-  const radarPreferences = getContentRadarPreferences(userId);
+  const radarPreferences = getContentRadarPreferences(userId, validatedTenantId);
   const discoverySignals = filterSignalsForRadarPreferences(allDiscoverySignals, radarPreferences.topics);
   const optimizationSignals = readSignals(
     source,
@@ -143,6 +144,7 @@ function readContentIntelligenceContext(
     signalLimit,
     userId,
     14,
+    validatedTenantId,
   );
   const performanceSummary = summarizePerformanceFeedback(getPerformanceSummary(userId, 30, validatedTenantId));
 

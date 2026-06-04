@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import Database from 'better-sqlite3';
 
@@ -17,6 +19,7 @@ import {
 } from '../../src/services/content-reference-context';
 import {
   assessClaimsGrounding,
+  ensureContentReferenceProvenanceTables,
   getContentOutputProvenance,
   recordContentOutputProvenance,
   retrieveAuthorizedContentReferences,
@@ -213,6 +216,126 @@ describe('Content reference provenance integrity', () => {
     expect(context.promptBlock).toContain('Tenant A Channel');
     expect(context.promptBlock).not.toContain('Tenant A broken link');
     expect(channels.map((channel) => channel.title)).toEqual(['Tenant A Channel']);
+  });
+
+  it('treats default user-added links as grounded content references', () => {
+    addContentReferenceLink({
+      userId: 101,
+      url: 'https://tenant-a.example/default-link',
+      title: 'Tenant A default link',
+    });
+
+    const context = buildAuthorizedContentReferenceContext(101);
+
+    expect(context.promptBlock).toContain('[GROUNDED REFERENCES]');
+    expect(context.promptBlock).toContain('Tenant A default link');
+    expect(context.promptBlock.indexOf('Tenant A default link')).toBeLessThan(
+      context.promptBlock.indexOf('[INSPIRATION ONLY — DO NOT CITE]'),
+    );
+  });
+
+  it('adds healthy defaults when content reference link health columns are bootstrapped', () => {
+    testDb.exec(`
+      DROP TABLE content_reference_links;
+      CREATE TABLE content_reference_links (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER NOT NULL DEFAULT 0,
+        tenant_id INTEGER NOT NULL,
+        owner_user_id INTEGER NOT NULL,
+        visibility_scope TEXT NOT NULL DEFAULT 'user_private',
+        lifecycle_state TEXT NOT NULL DEFAULT 'active',
+        scope_status TEXT NOT NULL DEFAULT 'active',
+        url TEXT NOT NULL,
+        title TEXT,
+        source_type TEXT NOT NULL DEFAULT 'link',
+        source_metadata_json TEXT NOT NULL DEFAULT '{}',
+        created_by INTEGER NOT NULL,
+        updated_by INTEGER NOT NULL,
+        audit_metadata_json TEXT NOT NULL DEFAULT '{}',
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+    `);
+
+    ensureContentReferenceProvenanceTables(testDb);
+
+    const defaults = Object.fromEntries(
+      (testDb.prepare('PRAGMA table_info(content_reference_links)').all() as Array<{
+        name: string;
+        dflt_value: string | null;
+      }>).map((column) => [column.name, column.dflt_value]),
+    );
+    expect(defaults.extraction_status).toBe("'ready'");
+    expect(defaults.trust_level).toBe("'observed'");
+    expect(defaults.broken_status).toBe("'ok'");
+    expect(defaults.stale_status).toBe("'fresh'");
+  });
+
+  it('backfills active legacy link defaults without reviving archived links', () => {
+    testDb.exec(`
+      ALTER TABLE content_reference_links ADD COLUMN trust_level TEXT DEFAULT 'unverified';
+      ALTER TABLE content_reference_links ADD COLUMN broken_status TEXT DEFAULT 'unknown';
+      ALTER TABLE content_reference_links ADD COLUMN stale_status TEXT DEFAULT 'unknown';
+
+      INSERT INTO content_reference_links (
+        user_id, tenant_id, owner_user_id, visibility_scope, lifecycle_state, scope_status,
+        url, title, source_type, created_by, updated_by
+      )
+      VALUES
+        (101, 101, 101, 'user_private', 'active', 'active',
+          'https://tenant-a.example/legacy-active', 'Legacy active link', 'link', 101, 101),
+        (101, 101, 101, 'user_private', 'active', 'archived',
+          'https://tenant-a.example/legacy-archived', 'Legacy archived link', 'link', 101, 101);
+
+      INSERT INTO content_reference_links (
+        user_id, tenant_id, owner_user_id, visibility_scope, lifecycle_state, scope_status,
+        url, title, source_type, extraction_status, trust_level, broken_status, stale_status,
+        created_by, updated_by
+      )
+      VALUES (
+        101, 101, 101, 'user_private', 'active', 'active',
+        'https://tenant-a.example/explicit-broken', 'Explicit broken link', 'link',
+        'ready', 'curated', 'broken', 'stale', 101, 101
+      );
+    `);
+
+    testDb.exec(readFileSync(path.join(process.cwd(), 'migrations/201_content_reference_link_grounded_defaults.sql'), 'utf8'));
+
+    const rows = testDb.prepare(`
+      SELECT url, extraction_status, trust_level, broken_status, stale_status
+        FROM content_reference_links
+       ORDER BY url
+    `).all() as Array<{
+      url: string;
+      extraction_status: string;
+      trust_level: string;
+      broken_status: string;
+      stale_status: string;
+    }>;
+
+    expect(rows).toEqual([
+      {
+        url: 'https://tenant-a.example/explicit-broken',
+        extraction_status: 'ready',
+        trust_level: 'curated',
+        broken_status: 'broken',
+        stale_status: 'stale',
+      },
+      {
+        url: 'https://tenant-a.example/legacy-active',
+        extraction_status: 'ready',
+        trust_level: 'observed',
+        broken_status: 'ok',
+        stale_status: 'fresh',
+      },
+      {
+        url: 'https://tenant-a.example/legacy-archived',
+        extraction_status: 'pending',
+        trust_level: 'unverified',
+        broken_status: 'unknown',
+        stale_status: 'unknown',
+      },
+    ]);
   });
 
   it('flags unsupported claims and preserves grounded provenance for generated outputs', () => {

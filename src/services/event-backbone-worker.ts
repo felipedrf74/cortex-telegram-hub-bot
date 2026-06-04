@@ -11,6 +11,7 @@ import { enqueueJob, processPendingJobs, type JobHandler } from './background-jo
 import { processPendingEvents, type EventHandler } from './event-outbox';
 import { projectSummaryReadModelsForUser } from './app-summary-read-models';
 import { recordProductDecision } from './product-decision-log';
+import { syncContentTopicSecretaryArtifactsById } from './content-topic-secretary-sync';
 import { logger } from '../utils/logger';
 
 const PROJECTABLE_EVENT_TYPES = new Set([
@@ -40,21 +41,45 @@ export const defaultEventHandlers: EventHandler[] = [
   {
     eventType: '*',
     handle(event) {
-      if (!event.userId || !PROJECTABLE_EVENT_TYPES.has(event.eventType)) return;
-      enqueueJob({
-        tenantId: event.tenantId,
-        userId: event.userId,
-        jobType: 'project_read_models',
-        payload: {
-          eventId: event.eventId,
-          eventType: event.eventType,
-          sourceSkill: event.sourceSkill,
-        },
-        priority: 30,
-        idempotencyKey: `project_read_models:${event.eventId}`,
-        correlationId: event.correlationId,
-        causationEventId: event.eventId,
-      });
+      if (!event.userId) return;
+      if (PROJECTABLE_EVENT_TYPES.has(event.eventType)) {
+        enqueueJob({
+          tenantId: event.tenantId,
+          userId: event.userId,
+          jobType: 'project_read_models',
+          payload: {
+            eventId: event.eventId,
+            eventType: event.eventType,
+            sourceSkill: event.sourceSkill,
+          },
+          priority: 30,
+          idempotencyKey: `project_read_models:${event.eventId}`,
+          correlationId: event.correlationId,
+          causationEventId: event.eventId,
+        });
+      }
+      if (event.sourceSkill === 'content'
+        && event.entityType === 'content_topic'
+        && (event.eventType === 'content.idea.created' || event.eventType === 'content.idea.updated')) {
+        const summary = event.payload?.summary as Record<string, unknown> | undefined;
+        if (summary?.syncPending === true) {
+          enqueueJob({
+            tenantId: event.tenantId,
+            userId: event.userId,
+            jobType: 'content_topic_secretary_sync',
+            payload: {
+              topicId: Number(event.entityId),
+              language: typeof event.payload?.language === 'string' ? event.payload.language : undefined,
+              eventId: event.eventId,
+            },
+            priority: 20,
+            maxAttempts: 5,
+            idempotencyKey: `content_topic_secretary_sync:${event.tenantId}:${event.userId}:${event.entityId}:${event.eventId}`,
+            correlationId: event.correlationId,
+            causationEventId: event.eventId,
+          });
+        }
+      }
     },
   },
 ];
@@ -111,6 +136,20 @@ export const defaultJobHandlers: JobHandler[] = [
     idempotent: true,
     handle() {
       // Intentionally no provider call in local/job foundation mode.
+    },
+  },
+  {
+    jobType: 'content_topic_secretary_sync',
+    idempotent: true,
+    async handle(job) {
+      if (!job.userId) return;
+      const topicId = Number(job.payload.topicId);
+      if (!Number.isInteger(topicId) || topicId <= 0) {
+        throw new Error('content_topic_secretary_sync_topic_id_required');
+      }
+      await syncContentTopicSecretaryArtifactsById(job.userId, topicId, {
+        language: typeof job.payload.language === 'string' ? job.payload.language : undefined,
+      });
     },
   },
   {

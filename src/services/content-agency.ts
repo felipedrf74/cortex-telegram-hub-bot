@@ -675,15 +675,26 @@ export function handoffContentAgencyPackageToPipeline(input: {
   const now = new Date().toISOString();
   const topicTitle = truncate(`Agency: ${pkg.objective || pkg.brief?.goal || 'Creator package'}`, 180);
   const niche = truncate(`${pkg.platform || 'content'} · ${pkg.brief?.audience || 'target audience'}`, 160);
+  const warnings = Array.isArray(pkg.warnings) ? pkg.warnings : [];
+  const reviewRequired = Boolean(pkg.reviewRequired)
+    || warnings.length > 0
+    || pkg.quality?.status === 'warning'
+    || pkg.complianceReview?.status === 'warning';
+  const pipelineStage = reviewRequired ? 'review' : 'approved';
+  const editorialState = reviewRequired ? 'review' : 'selected';
+  const approvalState = reviewRequired ? 'pending' : 'approved';
+  const approvedBy = reviewRequired ? null : input.userId;
+  const approvedAt = reviewRequired ? null : now;
   const stageHistory = JSON.stringify([
     {
       at: now,
       action: 'content_agency_handoff',
       from: 'content_agency_package',
-      to: 'content_pipeline',
+      to: reviewRequired ? 'content_pipeline_review' : 'content_pipeline',
       agencyPackageId: pkg.id,
       qualityScore: pkg.quality?.score ?? null,
       platform: pkg.platform,
+      reviewRequired,
     },
   ]);
 
@@ -692,24 +703,29 @@ export function handoffContentAgencyPackageToPipeline(input: {
       topic_title, niche, stage, stage_history, user_id, tenant_id, owner_user_id,
       visibility_scope, scope_status, editorial_state, approval_state, review_required,
       approved_by, approved_at, source_agency_package_id, created_at, updated_at
-    ) VALUES (?, ?, 'approved', ?, ?, ?, ?, ?, 'active', 'selected', 'approved', 0, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     topicTitle,
     niche,
+    pipelineStage,
     stageHistory,
     input.userId,
     input.tenantId,
     input.userId,
     pkg.visibilityScope ?? 'user_private',
-    input.userId,
-    now,
+    editorialState,
+    approvalState,
+    reviewRequired ? 1 : 0,
+    approvedBy,
+    approvedAt,
     pkg.id,
     now,
     now,
   );
   const pipelineId = Number(result.lastInsertRowid);
   const readBack = db.prepare(`
-    SELECT id, user_id, tenant_id, owner_user_id, visibility_scope, approval_state, source_agency_package_id
+    SELECT id, user_id, tenant_id, owner_user_id, visibility_scope, approval_state,
+           review_required, approved_by, approved_at, source_agency_package_id
       FROM content_pipeline
      WHERE id = ?
        AND user_id = ?
@@ -717,17 +733,32 @@ export function handoffContentAgencyPackageToPipeline(input: {
        AND owner_user_id = ?
        AND source_agency_package_id = ?
        AND scope_status = 'active'
-       AND approval_state = 'approved'
+       AND approval_state = ?
+       AND review_required = ?
      LIMIT 1
-  `).get(pipelineId, input.userId, input.tenantId, input.userId, pkg.id) as {
+  `).get(
+    pipelineId,
+    input.userId,
+    input.tenantId,
+    input.userId,
+    pkg.id,
+    approvalState,
+    reviewRequired ? 1 : 0,
+  ) as {
     id: number;
     user_id: number;
     tenant_id: number;
     owner_user_id: number;
     visibility_scope: string;
     approval_state: string;
+    review_required: number;
+    approved_by: number | null;
+    approved_at: string | null;
     source_agency_package_id: string;
   } | undefined;
+  if (readBack && reviewRequired && (readBack.approved_by != null || readBack.approved_at != null)) {
+    throw new Error('Content agency pipeline handoff read-back failed');
+  }
   if (!readBack) {
     throw new Error('Content agency pipeline handoff read-back failed');
   }
@@ -736,8 +767,10 @@ export function handoffContentAgencyPackageToPipeline(input: {
     status: 'created',
     pipelineId: Number(readBack.id),
     blockers: [],
-    warnings: Array.isArray(pkg.warnings) ? pkg.warnings : [],
-    nextBestActions: ['Open the pipeline item, approve filming/script work, and keep the experiment metric attached.'],
+    warnings,
+    nextBestActions: reviewRequired
+      ? ['Open the pipeline item, complete editorial review, and approve only after resolving warnings.']
+      : ['Open the pipeline item, approve filming/script work, and keep the experiment metric attached.'],
     sourceTrace: [...(pkg.sourceTrace ?? []), 'content_pipeline read-back verified'],
   };
 }

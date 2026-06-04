@@ -521,7 +521,7 @@ describe('Content API — script duration presets', () => {
     expect(contentRouteSource).toContain("import { registerContentScriptRoutes } from './content-script-routes';");
     expect(contentRouteSource).toContain('registerContentScriptRoutes(router, resolveContentLanguage, ensureValidContentRouteScope);');
     expect(routeSource).toContain("import { resolveScriptTopicContext } from './content-topic-context';");
-    expect(routeSource).toContain('const scriptTopicContext = resolveScriptTopicContext(userId, req.body || {});');
+    expect(routeSource).toContain('const scriptTopicContext = resolveScriptTopicContext(userId, req.body || {}, undefined, tenantId);');
     expect(routeSource).toContain("scriptTopicContext?.niche || niche || 'general'");
     expect(routeSource).toContain('durationPreset.targetDurationSeconds,');
     expect(routeSource).toContain('scriptTopicContext,');

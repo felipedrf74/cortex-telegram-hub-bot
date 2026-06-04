@@ -7,6 +7,7 @@ import {
   formatContentEvalResultsMarkdown,
   runContentDayToDayEvaluation,
   type ContentEvalMode,
+  type ContentEvalExternalLaneEvidence,
 } from '../services/content-day-to-day-evaluation';
 import { persistContentEvalRun } from '../services/content-eval-history';
 
@@ -18,7 +19,13 @@ interface CliOptions {
   failUnder?: number;
   persistDb?: string;
   iosExtractionScore?: number;
+  iosExtractionRunId?: string;
+  iosExtractionSource?: string;
+  iosExtractionSampleCount?: number;
   realProviderSampleScore?: number;
+  realProviderSampleRunId?: string;
+  realProviderSampleSource?: string;
+  realProviderSampleCount?: number;
 }
 
 function readPackageVersion(): string {
@@ -75,9 +82,29 @@ function parseArgs(argv: string[]): CliOptions {
       const parsed = Number(next);
       if (Number.isFinite(parsed)) options.iosExtractionScore = parsed;
       i++;
+    } else if (arg === '--ios-extraction-run-id' && next) {
+      options.iosExtractionRunId = next;
+      i++;
+    } else if (arg === '--ios-extraction-source' && next) {
+      options.iosExtractionSource = next;
+      i++;
+    } else if (arg === '--ios-extraction-sample-count' && next) {
+      const parsed = Number(next);
+      if (Number.isFinite(parsed)) options.iosExtractionSampleCount = parsed;
+      i++;
     } else if (arg === '--real-provider-sample-score' && next) {
       const parsed = Number(next);
       if (Number.isFinite(parsed)) options.realProviderSampleScore = parsed;
+      i++;
+    } else if (arg === '--real-provider-sample-run-id' && next) {
+      options.realProviderSampleRunId = next;
+      i++;
+    } else if (arg === '--real-provider-sample-source' && next) {
+      options.realProviderSampleSource = next;
+      i++;
+    } else if (arg === '--real-provider-sample-count' && next) {
+      const parsed = Number(next);
+      if (Number.isFinite(parsed)) options.realProviderSampleCount = parsed;
       i++;
     } else if (arg === '--persist-db') {
       if (next && !next.startsWith('--')) {
@@ -91,6 +118,33 @@ function parseArgs(argv: string[]): CliOptions {
   return options;
 }
 
+function envNumber(name: string): number | undefined {
+  const parsed = Number(process.env[name]);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function firstNonEmpty(...values: Array<string | undefined>): string | undefined {
+  for (const value of values) {
+    const trimmed = value?.trim();
+    if (trimmed) return trimmed;
+  }
+  return undefined;
+}
+
+function buildExternalLaneEvidence(input: {
+  runId?: string;
+  source?: string;
+  sampleCount?: number;
+}): ContentEvalExternalLaneEvidence | null {
+  const runId = firstNonEmpty(input.runId);
+  const source = firstNonEmpty(input.source);
+  const sampleCount = input.sampleCount;
+  if (!runId || !source || typeof sampleCount !== 'number' || !Number.isInteger(sampleCount) || sampleCount <= 0) {
+    return null;
+  }
+  return { runId, source, sampleCount };
+}
+
 function ensureParent(filePath: string): void {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
 }
@@ -102,8 +156,18 @@ function timestamp(): string {
 function main(): void {
   const options = parseArgs(process.argv.slice(2));
   const mode = options.mode ?? parseMode(process.env.CONTENT_EVAL_MODE) ?? 'fixture';
-  const envIosExtractionScore = Number(process.env.CONTENT_EVAL_IOS_EXTRACTION_SCORE);
-  const envRealProviderSampleScore = Number(process.env.CONTENT_EVAL_REAL_PROVIDER_SAMPLE_SCORE);
+  const iosExtractionScore = options.iosExtractionScore ?? envNumber('CONTENT_EVAL_IOS_EXTRACTION_SCORE') ?? null;
+  const realProviderSampleScore = options.realProviderSampleScore ?? envNumber('CONTENT_EVAL_REAL_PROVIDER_SAMPLE_SCORE') ?? null;
+  const iosExtractionEvidence = buildExternalLaneEvidence({
+    runId: options.iosExtractionRunId ?? process.env.CONTENT_EVAL_IOS_EXTRACTION_RUN_ID,
+    source: options.iosExtractionSource ?? process.env.CONTENT_EVAL_IOS_EXTRACTION_SOURCE,
+    sampleCount: options.iosExtractionSampleCount ?? envNumber('CONTENT_EVAL_IOS_EXTRACTION_SAMPLE_COUNT'),
+  });
+  const realProviderSampleEvidence = buildExternalLaneEvidence({
+    runId: options.realProviderSampleRunId ?? process.env.CONTENT_EVAL_REAL_PROVIDER_SAMPLE_RUN_ID,
+    source: options.realProviderSampleSource ?? process.env.CONTENT_EVAL_REAL_PROVIDER_SAMPLE_SOURCE,
+    sampleCount: options.realProviderSampleCount ?? envNumber('CONTENT_EVAL_REAL_PROVIDER_SAMPLE_COUNT'),
+  });
   const outDir = options.outDir ?? 'reports/content-eval';
   const baseName = `content-eval-${timestamp()}`;
   const jsonPath = options.json ?? path.join(outDir, `${baseName}.json`);
@@ -112,8 +176,10 @@ function main(): void {
   const result = runContentDayToDayEvaluation({
     mode,
     generatedAt: new Date().toISOString(),
-    iosExtractionScore: options.iosExtractionScore ?? (Number.isFinite(envIosExtractionScore) ? envIosExtractionScore : null),
-    realProviderSampleScore: options.realProviderSampleScore ?? (Number.isFinite(envRealProviderSampleScore) ? envRealProviderSampleScore : null),
+    iosExtractionScore,
+    iosExtractionEvidence,
+    realProviderSampleScore,
+    realProviderSampleEvidence,
     engine: {
       packageVersion: readPackageVersion(),
       gitBranch: gitValue('git branch --show-current'),

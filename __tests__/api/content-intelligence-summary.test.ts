@@ -60,6 +60,7 @@ vi.mock('../../src/portal/telemetry', () => ({
 import { contentRoutes } from '../../src/api/routes/content';
 import { getOrCreateUser, setUserLanguage } from '../../src/services/user-service';
 import { setDbProvider } from '../../src/services/intelligence-bus';
+import { setContentRadarPreferences } from '../../src/services/content-radar-preferences';
 
 function applyMigrations(db: Database.Database): void {
   db.exec(`CREATE TABLE IF NOT EXISTS _migrations (id INTEGER PRIMARY KEY, filename TEXT UNIQUE, applied_at TEXT DEFAULT (datetime('now')))`);
@@ -277,14 +278,10 @@ describe('Content API — intelligence summary', () => {
   it('filters discovery counts through creator radar preferences when present', async () => {
     const user = getOrCreateUser(47003, { username: 'creator-filtered-radar' });
     setUserLanguage(user.id, 'pt-BR');
-    const recentPreferenceAt = daysAgoIso(1);
     const recentFitnessSignalAt = daysAgoIso(1);
     const recentPoliticsSignalAt = daysAgoIso(1);
 
-    testDb.prepare(`
-      INSERT INTO content_radar_preferences (user_id, topics_json, updated_at)
-      VALUES (?, ?, ?)
-    `).run(user.id, JSON.stringify(['fitness']), recentPreferenceAt);
+    setContentRadarPreferences(user.id, ['fitness']);
 
     const insertSignal = testDb.prepare(`
       INSERT INTO agent_signals (source_agent, signal_type, payload, priority, status, expires_at, created_at, consumed_by, tenant_id, user_id)

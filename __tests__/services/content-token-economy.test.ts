@@ -115,6 +115,7 @@ describe('content token economy', () => {
     expect(card.promptText).toContain('Voice card version:');
     expect(card.promptText).toContain('running creators');
     expect(card.promptText).not.toMatch(/Felipe|Operator|founder persona/i);
+    expect(card.updatedAt).not.toBe('1970-01-01T00:00:00.000Z');
   });
 
   it.each([
@@ -319,5 +320,15 @@ describe('content token economy', () => {
     expect(ledger.map((entry) => entry.support)).toEqual(expect.arrayContaining(['source_backed', 'unverified']));
     expect(novelty.repeated).toBe(true);
     expect(novelty.warnings).toEqual(expect.arrayContaining(['repeated_hook_detected', 'repeated_angle_detected']));
+  });
+
+  it('flags near-duplicate hooks even when the similarity bucket changes', () => {
+    const novelty = noveltyCheck({
+      hook: 'Stop making content no one remembers',
+      recentHooks: ['Stop making content nobody remembers'],
+    });
+
+    expect(novelty.repeated).toBe(true);
+    expect(novelty.warnings).toContain('repeated_hook_detected');
   });
 });

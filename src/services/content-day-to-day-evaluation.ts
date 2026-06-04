@@ -279,6 +279,14 @@ export interface ContentEvalLaneScores {
   criticalUserScore: number;
 }
 
+export interface ContentEvalExternalLaneEvidence {
+  runId: string;
+  source: string;
+  sampleCount: number;
+  artifactPath?: string;
+  generatedAt?: string;
+}
+
 export interface ContentEvalAggregate {
   caseCount: number;
   overallScore: number;
@@ -307,7 +315,9 @@ export interface ContentEvalRunOptions {
   mode?: ContentEvalMode;
   generatedAt?: string;
   iosExtractionScore?: number | null;
+  iosExtractionEvidence?: ContentEvalExternalLaneEvidence | null;
   realProviderSampleScore?: number | null;
+  realProviderSampleEvidence?: ContentEvalExternalLaneEvidence | null;
   engine?: {
     packageVersion?: string;
     gitBranch?: string;
@@ -1148,7 +1158,10 @@ function runCase(persona: ContentEvalPersona, scenario: ContentEvalScenario, mod
   };
 }
 
-function runtimeLaneScores(options: Pick<ContentEvalRunOptions, 'iosExtractionScore' | 'realProviderSampleScore'>): ContentEvalLaneScores {
+function runtimeLaneScores(options: Pick<
+  ContentEvalRunOptions,
+  'iosExtractionScore' | 'iosExtractionEvidence' | 'realProviderSampleScore' | 'realProviderSampleEvidence'
+>): ContentEvalLaneScores {
   const scriptSamples = [
     analyzeAndImproveScript({
       topic: 'AI creator operating system',
@@ -1212,19 +1225,35 @@ function runtimeLaneScores(options: Pick<ContentEvalRunOptions, 'iosExtractionSc
   return {
     fixtureScore: 0,
     localEngineScore: Math.min(100, localEngineScore),
-    realProviderSampleScore: normalizeExternalLaneScore(options.realProviderSampleScore),
-    iosExtractionScore: normalizeExternalLaneScore(options.iosExtractionScore),
+    realProviderSampleScore: normalizeExternalLaneScore(options.realProviderSampleScore, options.realProviderSampleEvidence),
+    iosExtractionScore: normalizeExternalLaneScore(options.iosExtractionScore, options.iosExtractionEvidence),
     scriptQualityScore,
     criticalUserScore,
   };
 }
 
-function normalizeExternalLaneScore(score: number | null | undefined): number | null {
+function normalizeExternalLaneScore(
+  score: number | null | undefined,
+  evidence: ContentEvalExternalLaneEvidence | null | undefined,
+): number | null {
   if (typeof score !== 'number' || !Number.isFinite(score)) return null;
+  if (!hasValidExternalLaneEvidence(evidence)) return null;
   return Math.max(0, Math.min(100, Math.round(score)));
 }
 
-function aggregateCases(cases: ContentEvalCaseResult[], options: Pick<ContentEvalRunOptions, 'iosExtractionScore' | 'realProviderSampleScore'>): ContentEvalAggregate {
+function hasValidExternalLaneEvidence(evidence: ContentEvalExternalLaneEvidence | null | undefined): evidence is ContentEvalExternalLaneEvidence {
+  return typeof evidence?.runId === 'string'
+    && evidence.runId.trim().length > 0
+    && typeof evidence.source === 'string'
+    && evidence.source.trim().length > 0
+    && Number.isInteger(evidence.sampleCount)
+    && evidence.sampleCount > 0;
+}
+
+function aggregateCases(cases: ContentEvalCaseResult[], options: Pick<
+  ContentEvalRunOptions,
+  'iosExtractionScore' | 'iosExtractionEvidence' | 'realProviderSampleScore' | 'realProviderSampleEvidence'
+>): ContentEvalAggregate {
   const scores = cases.map((testCase) => testCase.score);
   const fixtureScore = Math.round(scores.reduce((sum, score) => sum + score, 0) / Math.max(scores.length, 1));
   const laneScores = { ...runtimeLaneScores(options), fixtureScore };
@@ -1288,8 +1317,17 @@ export function runContentDayToDayEvaluation(options: ContentEvalRunOptions = {}
 
   const aggregate = aggregateCases(cases, options);
   const openConditions = [
+    aggregate.releaseGate === 'PASS_WITH_CONDITIONS'
+      ? 'Fixture/local deterministic evidence is a baseline only; it is not a release-passing generation gate without the required external lanes.'
+      : null,
+    options.iosExtractionScore != null && !hasValidExternalLaneEvidence(options.iosExtractionEvidence)
+      ? 'iOS visible-text extraction score was ignored because it did not include run provenance.'
+      : null,
     aggregate.laneScores.iosExtractionScore == null
       ? 'iOS visible-text extraction is not part of the default fixture run; run focused iOS extraction tests before claiming a clean PASS.'
+      : null,
+    options.realProviderSampleScore != null && !hasValidExternalLaneEvidence(options.realProviderSampleEvidence)
+      ? 'Real-provider sample score was ignored because it did not include run provenance.'
       : null,
     aggregate.laneScores.realProviderSampleScore == null
       ? 'Real provider calls are intentionally off by default; use limited real-provider samples only for representative quality checks.'
@@ -1300,7 +1338,7 @@ export function runContentDayToDayEvaluation(options: ContentEvalRunOptions = {}
   return {
     generatedAt: options.generatedAt ?? new Date().toISOString(),
     mode,
-    passed: aggregate.releaseGate !== 'FAIL',
+    passed: aggregate.releaseGate === 'PASS',
     aggregate,
     rubric: CONTENT_QUALITY_RUBRIC,
     personas: CONTENT_PERSONA_BANK,

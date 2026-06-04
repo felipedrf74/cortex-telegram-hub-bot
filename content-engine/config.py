@@ -26,20 +26,6 @@ class EngineConfig:
     searcher_timeout: float = 10.0
     pipeline_timeout: float = 30.0
 
-    # ── Scoring weights ───────────────────────────────────────────────
-    weight_relevance: float = 0.40
-    weight_virality: float = 0.30
-    weight_recency: float = 0.30
-
-    # ── Niche defaults ────────────────────────────────────────────────
-    default_niches: list[str] = field(default_factory=lambda: [
-        "fitness strength training gym trends",
-        "running cycling endurance sports",
-        "politics news trending debates Brazil",
-        "viral reaction content YouTube trends",
-        "self development motivational content",
-    ])
-
     # ── Competitor channels (YouTube channel IDs or handles) ──────────
     niche1_competitors: list[str] = field(default_factory=lambda: [
         # Hybrid athlete / fitness PT-BR channels — add yours here

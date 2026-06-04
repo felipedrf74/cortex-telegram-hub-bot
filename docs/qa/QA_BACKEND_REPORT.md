@@ -811,11 +811,11 @@ Release gate: PASS WITH CONDITIONS for the backend novelty/reuse foundation. Rou
 
 Branch: `feature/content-creation-intelligence-upgrade`
 
-Status: Additive backend cross-skill orchestration foundation. No deployment.
+Status: Historical additive backend cross-skill orchestration foundation. No deployment. Superseded by the 2026-06 content-remediation pass, which removed the orphaned runtime module/test instead of wiring cross-workstream behavior into the content-only skill.
 
 Changes validated in this addendum:
 
-- Added `src/services/content-cross-skill-orchestration.ts` with tenant-safe inbound signal consumption from Training, Cooking, Finance, Secretary, and Chat.
+- Historical note: the addendum originally added a tenant-safe inbound cross-skill consumption module for Training, Cooking, Finance, Secretary, and Chat. That module is now intentionally removed as content-only dead code; future cross-skill work must be reintroduced through explicit owning-workstream contracts.
 - Added code-level sensitive-signal policy for automatic use, summary-only use, review-required signals, and prohibited signals.
 - Cross-tenant signals are rejected before Content Radar state is created.
 - Accepted inbound signals are converted into tenant-scoped Content Radar signals with source attribution, policy metadata, and downstream implications.
@@ -826,11 +826,11 @@ Changes validated in this addendum:
 - Added outbound Content signals for Secretary scheduling intents and Chat status updates.
 - Added docs: `docs/content/cross-skill-content-orchestration.md`, `docs/content/content-skill-signal-model.md`, `docs/content/sensitive-signal-policy.md`, and `docs/content/cross-skill-content-test-matrix.md`.
 - Updated `docs/content/cross-skill-content-opportunities.md` and `docs/content/content-open-items.md`.
-- Added `__tests__/services/content-cross-skill-orchestration.test.ts` for Training milestone conversion, Secretary cadence impact, Finance constraint handling, Chat recurring questions, sensitive-signal review, cross-tenant rejection, duplicate-warning prevention, and outbound Secretary/Chat signal contracts.
+- Historical note: the original pinning test was removed with the dead module during content remediation.
 
 Validation:
 
-- `npm test -- --run __tests__/services/content-cross-skill-orchestration.test.ts` passed: 1 file / 8 tests.
+- Historical validation only: the removed cross-skill orchestration test passed when this addendum was authored.
 
 Release gate: PASS WITH CONDITIONS for the backend cross-skill orchestration foundation. Runtime hooks from source skills, sensitive-signal approval UX, iOS/portal rendering, and full local product smoke remain open.
 
@@ -1034,7 +1034,7 @@ Safe P1 fixed:
 Test evidence:
 
 ```bash
-npm test -- --run __tests__/services/content-tenant-scope.test.ts __tests__/services/content-reference-provenance.test.ts __tests__/services/content-security-red-team.test.ts __tests__/services/content-generation-quality.test.ts __tests__/services/content-editorial-workflow.test.ts __tests__/services/content-memory-profile.test.ts __tests__/services/content-radar-engine.test.ts __tests__/services/content-novelty-reuse.test.ts __tests__/services/content-domain-ontology.test.ts __tests__/services/content-cross-skill-orchestration.test.ts __tests__/services/content-day-to-day-evaluation.test.ts __tests__/services/skill-memory.test.ts __tests__/services/skill-version-registry.test.ts
+npm test -- --run __tests__/services/content-tenant-scope.test.ts __tests__/services/content-reference-provenance.test.ts __tests__/services/content-security-red-team.test.ts __tests__/services/content-generation-quality.test.ts __tests__/services/content-editorial-workflow.test.ts __tests__/services/content-memory-profile.test.ts __tests__/services/content-radar-engine.test.ts __tests__/services/content-novelty-reuse.test.ts __tests__/services/content-domain-ontology.test.ts __tests__/services/content-day-to-day-evaluation.test.ts __tests__/services/skill-memory.test.ts __tests__/services/skill-version-registry.test.ts
 npm test -- --run __tests__/api/content-home-route.test.ts __tests__/api/content-reference-routes.test.ts __tests__/api/content-learning-routes.test.ts __tests__/api/content-script-duration.test.ts __tests__/api/content-script-quota.test.ts __tests__/api/content-script-route-utils.test.ts __tests__/api/content-topic-routes.test.ts __tests__/api/content-pipeline-routes.test.ts __tests__/api/content-ideas-routes.test.ts __tests__/api/content-intelligence-routes.test.ts __tests__/api/content-generation-meta.test.ts __tests__/api/internal-routes.test.ts __tests__/api/skills-routes.test.ts __tests__/services/content-workflow-user-scope.test.ts __tests__/services/content-dedup-routing.test.ts __tests__/services/channel-learner-scope.test.ts __tests__/services/python-engine-hardening.test.ts
 npm test -- --run __tests__/services/content-dashboard-service.test.ts __tests__/services/content-learning-store.test.ts __tests__/services/content-intelligence.test.ts __tests__/services/content-home-view-state.test.ts __tests__/services/content-notifications.test.ts __tests__/services/content-topic-secretary-sync.test.ts __tests__/services/content-owner-scope.test.ts __tests__/skills/content-skill-refactor-qa-validation.test.ts __tests__/api/chat-content-refinement.test.ts __tests__/api/content-admin-write-auth.test.ts __tests__/api/content-topic-context.test.ts __tests__/api/content-learning-route-utils.test.ts __tests__/api/content-home-route-utils.test.ts __tests__/api/content-topics-recommendation.test.ts __tests__/api/content-dashboard.test.ts __tests__/api/content-intelligence-detail.test.ts __tests__/api/content-intelligence-summary.test.ts __tests__/api/content-intelligence-route-utils.test.ts __tests__/api/content-script-utils.test.ts
 npm run eval:content -- --markdown docs/content/content-eval-baseline-results.md --json reports/content-eval/content-eval-latest.json --fail-under 85

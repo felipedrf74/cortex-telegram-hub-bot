@@ -47,7 +47,7 @@ failures.
 | `npx tsc --noEmit` | PASS (exit 0) |
 | Focused 6-file content sweep (`content-script-quality.test.ts`, `content-day-to-day-evaluation.test.ts`, `content-script-route-utils.test.ts`, `chat-script-shortcut-response.test.ts`, `content-agency.test.ts`, `content-agency-routes.test.ts`) | **43/43 passing** (exactly matches Codex's claim) |
 | Eval harness DEFAULT mode (`npm run eval:content -- --fail-under 95`) | **95/100, 27/27 PASS, min 94, PASS_WITH_CONDITIONS** (exit 0) |
-| Eval harness LANE-ATTACHED (`CONTENT_EVAL_IOS_EXTRACTION_SCORE=96 CONTENT_EVAL_REAL_PROVIDER_SAMPLE_SCORE=95 …`) | **95/100, 27/27 PASS, min 94, PASS** (exit 0) |
+| Eval harness LANE-ATTACHED (`CONTENT_EVAL_IOS_EXTRACTION_SCORE=96 CONTENT_EVAL_IOS_EXTRACTION_RUN_ID=... CONTENT_EVAL_IOS_EXTRACTION_SOURCE=... CONTENT_EVAL_IOS_EXTRACTION_SAMPLE_COUNT=4 CONTENT_EVAL_REAL_PROVIDER_SAMPLE_SCORE=95 CONTENT_EVAL_REAL_PROVIDER_SAMPLE_RUN_ID=... CONTENT_EVAL_REAL_PROVIDER_SAMPLE_SOURCE=... CONTENT_EVAL_REAL_PROVIDER_SAMPLE_COUNT=5 …`) | **95/100, 27/27 PASS, min 94, PASS** (exit 0). Score-only external lanes are ignored. |
 | iOS focused tests (4 targets on iPhone 17 Pro Sim) | **4/4 PASS** (3 source-pin/decode + 1 UI extraction at 189.7s) — `** TEST SUCCEEDED **` |
 | `npm run docs:audit` | PASS (exit 0; pre-existing warnings under ceiling) |
 
@@ -88,7 +88,7 @@ All 5 declared critical-failure categories trigger gate `FAIL` via `aggregateCas
 | Six score buckets in `ContentEvalLaneScores` | `content-day-to-day-evaluation.ts:274-279` — `fixtureScore`, `localEngineScore`, `realProviderSampleScore`, `iosExtractionScore`, `scriptQualityScore`, `criticalUserScore` | ✓ matches plan |
 | `coreThresholdFailed` check | `:1250-1254` — `fixtureScore < 95 \|\| minScore < 92 \|\| localEngineScore < 94 \|\| scriptQualityScore < 94 \|\| criticalUserScore < 92` | Does NOT check iOS/provider — by design (see P2-2) |
 | Three-tier gate | `:1255-1259` — FAIL if criticalFailure/fail/coreThresholdFailed; PASS_WITH_CONDITIONS if partial OR iOS/provider lane null; PASS otherwise | ✓ Correct three-tier logic |
-| Lane env-var ingestion | `src/tools/content-evaluation-harness.ts:105-106, 115-116` reads `CONTENT_EVAL_IOS_EXTRACTION_SCORE` + `CONTENT_EVAL_REAL_PROVIDER_SAMPLE_SCORE`; CLI args `--ios-extraction-score` / `--real-provider-sample-score` also supported | ✓ PASS |
+| Lane env-var ingestion | `src/tools/content-evaluation-harness.ts` reads `CONTENT_EVAL_IOS_EXTRACTION_SCORE` + `CONTENT_EVAL_REAL_PROVIDER_SAMPLE_SCORE` only when paired with mandatory per-lane provenance: run id, source, and sample count. CLI args `--ios-extraction-score` / `--real-provider-sample-score` require the matching `--*-run-id`, `--*-source`, and `--*-sample-count` flags to convert `PASS_WITH_CONDITIONS` into `PASS`. | ✓ PASS |
 | `--fail-under` enforces exit 1 | `content-evaluation-harness.ts:153-156` sets `process.exitCode = 1` when `overallScore < failUnder` | ✓ PASS (verified by direct run; my first reading had a `${PIPESTATUS}` bug) |
 
 ### API response shape

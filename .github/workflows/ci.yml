@@ -9,10 +9,10 @@ name: CI — Risk-based parallel matrix
 # Decisions encoded here:
 #   1. lint, focused-tests, migrations, python-test, build run IN
 #      PARALLEL after install. None depend on each other.
-#   2. focused-tests uses scripts/changed-area-classifier.sh to decide
-#      between `vitest run --changed origin/main` (PRs) and full vitest
-#      (push to main). Full coverage only runs on nightly + manual.
-#   3. python-test only runs when content-engine/** changed.
+#   2. focused-tests delegates to scripts/risk-gate.sh. Main pushes are
+#      focused; full breadth lives on v* RC tags, nightly, and manual full.
+#   3. python-test runs the full content-engine pytest suite when
+#      content-engine/** changed.
 #   4. build runs unconditionally as a "does dist still build" check.
 #
 # Manual full-suite + coverage:
@@ -80,7 +80,7 @@ jobs:
           JSON="$(scripts/changed-area-classifier.sh --base "$BASE_REF" --format json)"
           echo "$JSON" > /tmp/classifier.json
           echo "$JSON"
-          MODE="$(jq -r '.vitest.mode' /tmp/classifier.json)"
+          MODE="$(jq -r '.vitest["mode"]' /tmp/classifier.json)"
           GLOBS="$(jq -r '.vitest.globs | join(" ")' /tmp/classifier.json)"
           PY="$(jq -r '.flags.pythonEngine' /tmp/classifier.json)"
           MIG="$(jq -r '.flags.migration' /tmp/classifier.json)"
@@ -174,38 +174,17 @@ jobs:
           TELEGRAM_ALLOWED_USER_IDS: '123456789'
           ANTHROPIC_API_KEY: sk-ant-test-key
           DATABASE_PATH: ':memory:'
-          MODE: ${{ needs.classify.outputs.vitest_mode }}
-          GLOBS: ${{ needs.classify.outputs.vitest_globs }}
         run: |
-          case "$MODE" in
-            full)
-              echo "▶️ Full vitest"
-              npx vitest run
-              ;;
-            changed-only)
-              if [ "${{ github.event_name }}" = "pull_request" ]; then
-                BASE="origin/${{ github.base_ref }}"
-              else
-                BASE="HEAD~1"
-              fi
-              echo "▶️ Vitest --changed $BASE"
-              npx vitest run --changed "$BASE"
-              ;;
-            focused)
-              if [ -z "$GLOBS" ]; then
-                echo "Focused mode but empty globs — falling back to full"
-                npx vitest run
-              else
-                echo "▶️ Focused vitest: $GLOBS"
-                # shellcheck disable=SC2086
-                npx vitest run $GLOBS
-              fi
-              ;;
-            *)
-              echo "Unknown mode '$MODE' — full"
-              npx vitest run
-              ;;
-          esac
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            BASE="origin/${{ github.base_ref }}"
+          else
+            BASE="HEAD~1"
+          fi
+          ARGS=(--base "$BASE" --skip-typecheck --skip-python --skip-migrations)
+          if [ "${{ github.event.inputs.mode }}" = "full" ] || [ "${{ github.event.inputs.mode }}" = "full+coverage" ]; then
+            ARGS+=(--full)
+          fi
+          scripts/risk-gate.sh "${ARGS[@]}"
 
   # ═══════════════════════════════════════════════════
   # BUILD VERIFICATION (parallel; no `needs: test`)
@@ -273,15 +252,10 @@ jobs:
             -exec python -m py_compile {} \;
           echo "✅ All Python files compile"
 
-      - name: Python content-engine tests (advisory)
-        # Advisory until 2026-06-01; flip to blocking once >= 100 cases
-        # pass across >= 24 modules and Felipe approves the gate change.
+      - name: Python content-engine tests
         run: |
           cd content-engine
-          python -m pytest tests/ -v || {
-            echo "⚠️ Python content-engine pytest is advisory during bootstrap"
-            exit 0
-          }
+          python -m pytest tests/ -v
 
   # ═══════════════════════════════════════════════════
   # SCIENCE-POLICY VERSION GATE (always — fail-closed)
@@ -318,66 +292,14 @@ jobs:
     if: needs.classify.outputs.run_migrations == 'true'
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-      - name: Verify migration sequence
+      - name: Verify migration sequence, cumulative apply, and fast-path policy
         run: |
-          node <<'NODE'
-          const fs = require('fs');
-          const files = fs.readdirSync('migrations')
-            .filter((file) => /^\d{3}_.*\.sql$/.test(file))
-            .sort();
-          const prefixes = [...new Set(files.map((file) => Number(file.slice(0, 3))))].sort((a, b) => a - b);
-          const knownHistoricalGaps = new Set([142, 143]);
-          let expected = 1;
-          for (const prefix of prefixes) {
-            while (knownHistoricalGaps.has(expected) && expected < prefix) {
-              expected += 1;
-            }
-            if (prefix !== expected) {
-              console.error(`❌ Gap in migration sequence: expected ${expected}, got ${prefix}`);
-              process.exit(1);
-            }
-            expected += 1;
-          }
-          console.log(`✅ ${prefixes.length} migration prefixes in sequence`);
-          NODE
-
-      - name: Verify migration prefix uniqueness
-        run: |
-          node <<'NODE'
-          const fs = require('fs');
-          const legacy = new Map([
-            ['008', ['008_api_cache.sql', '008_email_log.sql']],
-            ['009', ['009_api_usage_provider.sql', '009_job_history.sql']],
-            ['022', ['022_finance_tables.sql', '022_webhook_events.sql']],
-            ['023', ['023_fitness_training_plans.sql', '023_onboarding.sql']],
-            ['024', ['024_cooking_tables.sql', '024_usage_metering.sql']],
-          ]);
-          const sameMembers = (left, right) =>
-            left.length === right.length &&
-            [...left].sort().every((value, index) => value === [...right].sort()[index]);
-          const groups = new Map();
-          for (const file of fs.readdirSync('migrations').filter((name) => /^\d{3}_.*\.sql$/.test(name))) {
-            const prefix = file.slice(0, 3);
-            groups.set(prefix, [...(groups.get(prefix) || []), file]);
-          }
-          const unexpected = [...groups.entries()]
-            .filter(([, files]) => files.length > 1)
-            .filter(([prefix, files]) => !sameMembers(files, legacy.get(prefix) || []));
-          if (unexpected.length > 0) {
-            for (const [prefix, files] of unexpected) {
-              console.error(`❌ Duplicate migration prefix ${prefix}: ${files.sort().join(', ')}`);
-            }
-            process.exit(1);
-          }
-          console.log('✅ Migration prefixes are unique outside the legacy allowlist');
-          NODE
-
-      - name: Validate SQL syntax
-        run: |
-          for f in migrations/*.sql; do
-            if ! sqlite3 :memory: < "$f" 2>/dev/null; then
-              echo "⚠️  Potential issue in $f (may need tables from prior migrations)"
-            fi
-          done
-          echo "✅ Migration syntax check complete"
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            BASE="origin/${{ github.base_ref }}"
+          else
+            BASE="HEAD~1"
+          fi
+          node scripts/migration-safety-check.mjs --base "$BASE" --changed-only

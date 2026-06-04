@@ -230,7 +230,7 @@ export function getContentPerformanceAggregate(
     }
 
     const topRejected = db.prepare(`
-      SELECT COALESCE(signal_topic, signal_id) AS topic, COUNT(*) AS c
+      SELECT COALESCE(NULLIF(signal_topic, ''), NULLIF(signal_summary, ''), 'Unknown radar topic') AS topic, COUNT(*) AS c
       FROM content_radar_feedback
       WHERE tenant_id = ? AND owner_user_id = ?
         AND COALESCE(scope_status, 'active') = 'active'
@@ -245,7 +245,7 @@ export function getContentPerformanceAggregate(
     }));
 
     const topAccepted = db.prepare(`
-      SELECT COALESCE(signal_topic, signal_id) AS topic, COUNT(*) AS c
+      SELECT COALESCE(NULLIF(signal_topic, ''), NULLIF(signal_summary, ''), 'Unknown radar topic') AS topic, COUNT(*) AS c
       FROM content_radar_feedback
       WHERE tenant_id = ? AND owner_user_id = ?
         AND COALESCE(scope_status, 'active') = 'active'
@@ -342,8 +342,7 @@ export function getContentPerformanceAggregate(
       `Published content is holding attention — ${result.performance.avgRetentionLast30d}% average retention across ${result.performance.last30d} recent performance entries.`,
     );
   }
-  if (result.performance.last30d > 0 && result.performance.avgRetentionLast30d > 0
-      && result.performance.avgRetentionLast30d < 25) {
+  if (result.performance.last30d > 0 && result.performance.avgRetentionLast30d < 25) {
     result.warnings.push(
       `Recent published content is under-retaining viewers at ${result.performance.avgRetentionLast30d}% average retention. Review hooks and pacing before scaling the next batch.`,
     );

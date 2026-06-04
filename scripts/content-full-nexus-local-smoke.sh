@@ -66,7 +66,6 @@ run_content_tests() {
     __tests__/services/content-radar-engine.test.ts \
     __tests__/services/content-generation-quality.test.ts \
     __tests__/services/content-novelty-reuse.test.ts \
-    __tests__/services/content-cross-skill-orchestration.test.ts \
     __tests__/services/content-day-to-day-evaluation.test.ts \
     __tests__/services/content-eval-history.test.ts \
     __tests__/services/provider-registry-fixture-mode.test.ts \

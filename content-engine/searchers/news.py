@@ -12,18 +12,11 @@ import httpx
 
 from config import cfg
 from models.research import SearchResult
+from searchers.mock_fixtures import is_evergreen_mock_query, mock_search_result, query_slug
 
 logger = logging.getLogger("content-engine.news")
 
 NEWSAPI_ENDPOINT = "https://newsapi.org/v2/everything"
-
-EVERGREEN_MOCK_HINTS = (
-    "recovery", "recover", "interval", "training", "workout", "sleep", "hydration",
-    "protein", "nutrition", "guide", "evidence", "study", "protocol", "hill repeat",
-    "recuperação", "recuperar", "intervalos", "repetições", "treino", "sono", "hidratação", "proteína",
-    "nutrição", "guia", "evidência", "estudo", "protocolo", "desaquecimento", "subida",
-)
-
 
 class NewsSearcher:
     name = "news"
@@ -77,42 +70,45 @@ class NewsSearcher:
     # ── fallback ──────────────────────────────────────────────────────
     @staticmethod
     def _mock(query: str, max_results: int) -> list[SearchResult]:
-        now = datetime.now(timezone.utc)
-        lower = query.lower()
-        if any(hint in lower for hint in EVERGREEN_MOCK_HINTS):
+        slug = query_slug(query)
+        if is_evergreen_mock_query(query):
             return [
-                SearchResult(
+                mock_search_result(
+                    query=query,
                     title=f"[Mock] Experts on {query}: practical protocol",
-                    url=f"https://example.com/news/{query.replace(' ', '-')}",
+                    url=f"https://example.com/news/{slug}",
                     snippet=f"Mock evidence-style news result for '{query}'. Set NEWSAPI_API_KEY for real results.",
                     source="news",
-                    published_at=now - timedelta(hours=1),
+                    hours_ago=1,
                     metadata={"publisher": "Mock Health Desk", "category": "analysis"},
                 ),
-                SearchResult(
+                mock_search_result(
+                    query=query,
                     title=f"[Mock] {query}: evidence review",
-                    url=f"https://example.com/news/experts-{query.replace(' ', '-')}",
+                    url=f"https://example.com/news/experts-{slug}",
                     snippet=f"Mock expert review for {query} with practical takeaways.",
                     source="news",
-                    published_at=now - timedelta(hours=3),
+                    hours_ago=3,
                     metadata={"publisher": "Mock Science Brief", "category": "analysis"},
                 ),
             ][:max_results]
         return [
-            SearchResult(
+            mock_search_result(
+                query=query,
                 title=f"[Mock] Breaking: {query} shakes Brazil",
-                url=f"https://example.com/news/{query.replace(' ', '-')}",
+                url=f"https://example.com/news/{slug}",
                 snippet=f"Mock news result for '{query}'. Set NEWSAPI_API_KEY for real results.",
                 source="news",
-                published_at=now - timedelta(hours=1),
+                hours_ago=1,
                 metadata={"publisher": "Mock News", "category": "politics"},
             ),
-            SearchResult(
+            mock_search_result(
+                query=query,
                 title=f"[Mock] {query}: experts weigh in",
-                url=f"https://example.com/news/experts-{query.replace(' ', '-')}",
+                url=f"https://example.com/news/experts-{slug}",
                 snippet=f"Experts react to {query} — implications for Brazil.",
                 source="news",
-                published_at=now - timedelta(hours=3),
+                hours_ago=3,
                 metadata={"publisher": "Mock Herald", "category": "analysis"},
             ),
         ][:max_results]

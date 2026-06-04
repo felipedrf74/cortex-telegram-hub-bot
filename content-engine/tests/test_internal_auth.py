@@ -53,6 +53,7 @@ def test_protected_routes_accept_valid_secret_before_routing(monkeypatch):
     ("path", "payload", "expected_code"),
     [
         ("/api/v1/hooks", {"topic": "how to hack a competitor account"}, "CONTENT_UNSUPPORTED_TOPIC"),
+        ("/api/v1/script", {"topic": "how to hack a competitor account"}, "CONTENT_UNSUPPORTED_TOPIC"),
         ("/api/v1/caption", {"topic": "should I take ibuprofen for migraines"}, "CONTENT_HIGH_RISK_REVIEW_REQUIRED"),
     ],
 )
@@ -166,6 +167,68 @@ def test_report_post_installs_request_attribution_context(monkeypatch):
         "user_id": 7,
         "tenant_id": 44,
         "attribution_token": "signed-report-token",
+    }
+
+
+def test_hotnews_get_installs_empty_attribution_context(monkeypatch):
+    main = _reload_content_engine(monkeypatch, secret="valid-secret")
+    research = importlib.import_module("routers.research")
+    claude_client = importlib.import_module("services.claude_client")
+    requests = importlib.import_module("models.requests")
+    captured = {}
+
+    class FakeOrchestrator:
+        async def hot_news(self, *args, **kwargs):
+            captured["args"] = args
+            captured["kwargs"] = kwargs
+            captured["context"] = claude_client._ATTRIBUTION_CONTEXT.get()
+            return requests.HotNewsResponse(topics=[], generated_at="2026-04-24T00:00:00Z")
+
+    monkeypatch.setattr(research, "_orchestrator", FakeOrchestrator())
+    client = TestClient(main.app)
+
+    response = client.get(
+        "/api/v1/hotnews?language=en-US",
+        headers={"x-internal-secret": "valid-secret", "x-request-id": "req-hotnews-attribution"},
+    )
+
+    assert response.status_code == 200
+    assert captured["kwargs"]["language"] == "en-US"
+    assert captured["context"] == {
+        "user_id": None,
+        "tenant_id": None,
+        "attribution_token": None,
+    }
+
+
+def test_report_get_installs_empty_attribution_context(monkeypatch):
+    main = _reload_content_engine(monkeypatch, secret="valid-secret")
+    report_gen = importlib.import_module("services.learning.report_gen")
+    claude_client = importlib.import_module("services.claude_client")
+    requests = importlib.import_module("models.requests")
+    captured = {}
+
+    async def fake_generate(*args, **kwargs):
+        captured["args"] = args
+        captured["kwargs"] = kwargs
+        captured["context"] = claude_client._ATTRIBUTION_CONTEXT.get()
+        return requests.ReportResponse(period="Last 7 Days", report={"ok": True}, duration_ms=1)
+
+    monkeypatch.setattr(report_gen, "generate", fake_generate)
+    client = TestClient(main.app)
+
+    response = client.get(
+        "/api/v1/report?period=week&language=en-US",
+        headers={"x-internal-secret": "valid-secret", "x-request-id": "req-report-get-attribution"},
+    )
+
+    assert response.status_code == 200
+    assert captured["args"][0] == "week"
+    assert captured["kwargs"]["language"] == "en-US"
+    assert captured["context"] == {
+        "user_id": None,
+        "tenant_id": None,
+        "attribution_token": None,
     }
 
 

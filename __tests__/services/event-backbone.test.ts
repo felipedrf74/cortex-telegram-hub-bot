@@ -147,6 +147,37 @@ describe('event backbone foundation', () => {
     expect(JSON.stringify(first.payload)).not.toContain('mental_health');
   });
 
+  it('enqueues content topic Secretary sync jobs from pending content events', async () => {
+    emitDomainEvent({
+      tenantId: 7,
+      userId: 7,
+      sourceSkill: 'content',
+      eventType: 'content.idea.created',
+      entityType: 'content_topic',
+      entityId: 44,
+      payload: {
+        summary: { status: 'planned', syncPending: true },
+        language: 'pt-BR',
+      },
+      privacyClassification: 'private_content',
+      idempotencyKey: 'content-topic-44-sync',
+    });
+
+    await processPendingEvents(defaultEventHandlers, { limit: 5, lockOwner: 'content-sync-test' });
+
+    const jobs = claimPendingJobs(1, 'content-sync-job-test', testDb, ['content_topic_secretary_sync']);
+    expect(jobs).toHaveLength(1);
+    expect(jobs[0]).toMatchObject({
+      tenantId: 7,
+      userId: 7,
+      jobType: 'content_topic_secretary_sync',
+      payload: {
+        topicId: 44,
+        language: 'pt-BR',
+      },
+    });
+  });
+
   it('claims events with a lease and dead-letters after bounded retries', async () => {
     const event = emitDomainEvent({
       tenantId: 7,

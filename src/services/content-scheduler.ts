@@ -46,6 +46,7 @@ import {
   type TrainingWeek,
 } from './training-plans';
 import { getEvents, hasWritableCalendarForUser, type UnifiedCalendarEvent } from './unified-calendar';
+import { contentScopeForInsert } from './content-tenant-scope';
 
 // ─── Types ──────────────────────────────────────────────────────────
 
@@ -59,6 +60,11 @@ export type ContentTopicStatus =
 export interface ContentTopic {
   id: number;
   user_id: number;
+  tenant_id?: number | null;
+  owner_user_id?: number | null;
+  visibility_scope?: string | null;
+  lifecycle_state?: string | null;
+  scope_status?: string | null;
   title: string;
   notes: string | null;
   scheduled_date: string | null;   // YYYY-MM-DD, nullable
@@ -108,21 +114,52 @@ export function addTopic(
     scheduledDate?: string | null;
     scheduledAt?: string | null;
     status?: ContentTopicStatus;
+    tenantId?: number | null;
   },
 ): ContentTopic {
   const db = getDb();
-  const result = db
-    .prepare(
-      `INSERT INTO content_topics (user_id, title, notes, scheduled_date, status)
-       VALUES (?, ?, ?, ?, ?)`,
-    )
-    .run(
-      userId,
-      title,
-      opts?.notes ?? null,
-      opts?.scheduledDate ?? null,
-      opts?.status ?? 'planned',
-    );
+  const status = opts?.status ?? 'planned';
+  const scope = contentScopeForInsert(userId, opts?.tenantId, 'user_private', status);
+  const hasScopeColumns = hasColumn('content_topics', 'tenant_id')
+    && hasColumn('content_topics', 'owner_user_id')
+    && hasColumn('content_topics', 'scope_status');
+  const result = hasScopeColumns
+    ? db
+      .prepare(
+        `INSERT INTO content_topics (
+           user_id, tenant_id, owner_user_id, visibility_scope, lifecycle_state,
+           scope_status, created_by, updated_by, audit_metadata_json,
+           title, notes, scheduled_date, status
+         )
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        userId,
+        scope.tenantId,
+        scope.ownerUserId,
+        scope.visibilityScope,
+        scope.lifecycleState,
+        scope.scopeStatus,
+        scope.createdBy,
+        scope.updatedBy,
+        scope.auditMetadataJson,
+        title,
+        opts?.notes ?? null,
+        opts?.scheduledDate ?? null,
+        status,
+      )
+    : db
+      .prepare(
+        `INSERT INTO content_topics (user_id, title, notes, scheduled_date, status)
+         VALUES (?, ?, ?, ?, ?)`,
+      )
+      .run(
+        userId,
+        title,
+        opts?.notes ?? null,
+        opts?.scheduledDate ?? null,
+        status,
+      );
 
   if (opts?.scheduledAt !== undefined || hasColumn('content_topics', 'scheduled_at')) {
     try {
@@ -233,8 +270,8 @@ export function getUpcomingTopicCount(
   daysAhead: number = 14,
 ): number {
   const db = getDb();
-  const today = new Date().toISOString().slice(0, 10);
-  const future = new Date(Date.now() + daysAhead * 86_400_000).toISOString().slice(0, 10);
+  const today = DateTime.now().setZone(config.app.timezone).startOf('day');
+  const future = today.plus({ days: daysAhead });
   const result = db
     .prepare(
       `SELECT COUNT(*) as count
@@ -245,7 +282,7 @@ export function getUpcomingTopicCount(
          AND scheduled_date <= ?
          AND status NOT IN ('cancelled', 'published')`,
     )
-    .get(userId, today, future) as { count: number };
+    .get(userId, today.toISODate(), future.toISODate()) as { count: number };
   return result.count;
 }
 

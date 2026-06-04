@@ -175,6 +175,22 @@ describe('content-performance-aggregate (CONTENT-UI-O3)', () => {
     expect(a.radarFeedback.topRejectedTopics[0].count).toBe(3);
   });
 
+  it('uses signal summary instead of signal id when radar topic is missing', () => {
+    recordRadarFeedback(USER_A, USER_A, {
+      signalId: 'summary-only-1',
+      action: 'accept',
+      signalSummary: 'Summary-backed opportunity label',
+    });
+
+    const a = getContentPerformanceAggregate(USER_A, USER_A);
+
+    expect(a.radarFeedback.topAcceptedTopics[0]).toEqual({
+      topic: 'Summary-backed opportunity label',
+      count: 1,
+    });
+    expect(a.radarFeedback.topAcceptedTopics[0].topic).not.toBe('summary-only-1');
+  });
+
   it('warning fires when rejects exceed 2x accepts and reject count >= 5', () => {
     for (let i = 0; i < 6; i++) {
       recordRadarFeedback(USER_A, USER_A, { signalId: `r-${i}`, action: 'reject' });
@@ -278,6 +294,21 @@ describe('content-performance-aggregate (CONTENT-UI-O3)', () => {
     expect(a.performance.last30d).toBe(2);
     expect(a.performance.avgRetentionLast30d).toBe(19);
     expect(a.warnings.some(w => w.includes('under-retaining viewers'))).toBe(true);
+  });
+
+  it('warns when recent published performance has true zero retention', () => {
+    insertPerformance(USER_A, USER_A, {
+      title: 'Zero-retention hook test',
+      views: 800,
+      retentionPct: 0,
+      daysAgo: 1,
+    });
+
+    const a = getContentPerformanceAggregate(USER_A, USER_A);
+
+    expect(a.performance.last30d).toBe(1);
+    expect(a.performance.avgRetentionLast30d).toBe(0);
+    expect(a.warnings.some(w => w.includes('0% average retention'))).toBe(true);
   });
 
   it('User A aggregate is invisible to User B', () => {

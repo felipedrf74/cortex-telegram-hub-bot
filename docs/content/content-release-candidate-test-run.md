@@ -44,10 +44,10 @@ NODE
 Result: PASS. `content@2.0.0` remains active and `content@2.3.0-rc.1` is candidate.
 
 ```bash
-npm test -- --run __tests__/services/content-tenant-scope.test.ts __tests__/services/content-reference-provenance.test.ts __tests__/services/content-security-red-team.test.ts __tests__/services/content-generation-quality.test.ts __tests__/services/content-editorial-workflow.test.ts __tests__/services/content-memory-profile.test.ts __tests__/services/content-radar-engine.test.ts __tests__/services/content-novelty-reuse.test.ts __tests__/services/content-domain-ontology.test.ts __tests__/services/content-cross-skill-orchestration.test.ts __tests__/services/content-day-to-day-evaluation.test.ts __tests__/services/skill-memory.test.ts __tests__/services/skill-version-registry.test.ts
+npm test -- --run __tests__/services/content-tenant-scope.test.ts __tests__/services/content-reference-provenance.test.ts __tests__/services/content-security-red-team.test.ts __tests__/services/content-generation-quality.test.ts __tests__/services/content-editorial-workflow.test.ts __tests__/services/content-memory-profile.test.ts __tests__/services/content-radar-engine.test.ts __tests__/services/content-novelty-reuse.test.ts __tests__/services/content-domain-ontology.test.ts __tests__/services/content-day-to-day-evaluation.test.ts __tests__/services/skill-memory.test.ts __tests__/services/skill-version-registry.test.ts
 ```
 
-Result: PASS, 13 files / 97 tests.
+Result: PASS, 12 files / 89 tests.
 
 ```bash
 npm test -- --run __tests__/api/content-home-route.test.ts __tests__/api/content-reference-routes.test.ts __tests__/api/content-learning-routes.test.ts __tests__/api/content-script-duration.test.ts __tests__/api/content-script-quota.test.ts __tests__/api/content-script-route-utils.test.ts __tests__/api/content-topic-routes.test.ts __tests__/api/content-pipeline-routes.test.ts __tests__/api/content-ideas-routes.test.ts __tests__/api/content-intelligence-routes.test.ts __tests__/api/content-generation-meta.test.ts __tests__/api/internal-routes.test.ts __tests__/api/skills-routes.test.ts __tests__/services/content-workflow-user-scope.test.ts __tests__/services/content-dedup-routing.test.ts __tests__/services/channel-learner-scope.test.ts __tests__/services/python-engine-hardening.test.ts

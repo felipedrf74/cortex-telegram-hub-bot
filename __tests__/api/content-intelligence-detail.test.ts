@@ -61,6 +61,7 @@ import { contentRoutes } from '../../src/api/routes/content';
 import { getOrCreateUser, setUserLanguage } from '../../src/services/user-service';
 import { setDbProvider } from '../../src/services/intelligence-bus';
 import { logPerformanceFeedback } from '../../src/services/content-learning-store';
+import { setContentRadarPreferences } from '../../src/services/content-radar-preferences';
 
 function applyMigrations(db: Database.Database): void {
   db.exec(`CREATE TABLE IF NOT EXISTS _migrations (id INTEGER PRIMARY KEY, filename TEXT UNIQUE, applied_at TEXT DEFAULT (datetime('now')))`);
@@ -359,14 +360,10 @@ describe('Content API — intelligence detail', () => {
   it('applies creator radar preferences and english response language from X-Language', async () => {
     const user = getOrCreateUser(57002, { username: 'content-english-radar' });
     setUserLanguage(user.id, 'pt-BR');
-    const recentPreferenceAt = daysAgoIso(1);
     const recentFitnessSignalAt = daysAgoIso(1);
     const recentPoliticsSignalAt = daysAgoIso(1);
 
-    testDb.prepare(`
-      INSERT INTO content_radar_preferences (user_id, topics_json, updated_at)
-      VALUES (?, ?, ?)
-    `).run(user.id, JSON.stringify(['fitness', 'training consistency']), recentPreferenceAt);
+    setContentRadarPreferences(user.id, ['fitness', 'training consistency']);
 
     const insertSignal = testDb.prepare(`
       INSERT INTO agent_signals (source_agent, signal_type, payload, priority, status, expires_at, created_at, consumed_by, tenant_id, user_id)

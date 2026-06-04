@@ -14,6 +14,7 @@ import type {
   ContentObjectType,
   ContentPlatformId,
 } from './content-domain-ontology';
+import { contentBigramDice, contentTokenJaccard } from './content-text-utils';
 
 export type ContentReuseIntent =
   | 'none'
@@ -629,7 +630,7 @@ function normalizeCandidateInput(input: ContentNoveltyCandidateInput, tenantId: 
     referenceIds: normalizeIdList(input.referenceIds ?? []),
     sourceRadarSignalId: input.sourceRadarSignalId != null ? String(input.sourceRadarSignalId) : null,
     seriesId: input.seriesId != null ? String(input.seriesId) : null,
-    reuseIntent: normalizeReuseIntent(input.reuseIntent ?? (input.allowStrategicReuse ? 'revisit_with_new_angle' : 'none')),
+    reuseIntent: inferReuseIntent(input),
     originalContentId: input.originalContentId != null ? String(input.originalContentId) : null,
     transformationType: input.transformationType != null ? normalizeLabel(input.transformationType) : null,
   };
@@ -644,9 +645,16 @@ function loadComparableCandidates(db: any, userId: number, tenantId: number): Co
      WHERE ${contentDirectScopePredicate()}
        AND lifecycle_state NOT IN ('archived', 'rejected', 'deleted', 'cancelled')
      ORDER BY datetime(created_at) DESC
-     LIMIT 250
+     LIMIT 1000
   `).all(...contentScopeParams(userId, tenantId)) as any[];
   return rows.map(mapCandidateRow).filter((row) => ACTIVE_CANDIDATE_STATES.has(row.lifecycleState));
+}
+
+function inferReuseIntent(input: ContentNoveltyCandidateInput): string {
+  if (input.reuseIntent != null) return normalizeReuseIntent(input.reuseIntent);
+  if (input.originalContentId != null || input.transformationType != null) return 'repurpose';
+  if (input.allowStrategicReuse) return 'revisit_with_new_angle';
+  return 'none';
 }
 
 function scoreCandidateMatch(candidate: NormalizedCandidate, existing: ContentNoveltyCandidate): ContentNoveltyMatch {
@@ -854,46 +862,10 @@ function makeReuseId(input: ContentRepurposeInput, tenantId: number): string {
 function similarity(left: string, right: string): number {
   if (!left || !right) return 0;
   if (left === right) return 1;
-  return Math.max(tokenJaccard(left, right), bigramDice(left, right));
-}
-
-function tokenJaccard(left: string, right: string): number {
-  const a = new Set(tokens(left));
-  const b = new Set(tokens(right));
-  if (a.size === 0 || b.size === 0) return 0;
-  const intersection = [...a].filter((token) => b.has(token)).length;
-  const union = new Set([...a, ...b]).size;
-  return intersection / union;
-}
-
-function bigramDice(left: string, right: string): number {
-  const a = bigrams(left);
-  const b = bigrams(right);
-  if (a.length === 0 || b.length === 0) return 0;
-  const counts = new Map<string, number>();
-  for (const item of a) counts.set(item, (counts.get(item) ?? 0) + 1);
-  let overlap = 0;
-  for (const item of b) {
-    const count = counts.get(item) ?? 0;
-    if (count <= 0) continue;
-    counts.set(item, count - 1);
-    overlap += 1;
-  }
-  return (2 * overlap) / (a.length + b.length);
-}
-
-function bigrams(value: string): string[] {
-  const compact = value.replace(/\s+/g, ' ');
-  if (compact.length < 2) return compact ? [compact] : [];
-  const grams: string[] = [];
-  for (let i = 0; i < compact.length - 1; i += 1) grams.push(compact.slice(i, i + 2));
-  return grams;
-}
-
-function tokens(value: string): string[] {
-  return normalizeContentText(value)
-    .split(/\s+/)
-    .filter((token) => token.length >= 3 && !STOPWORDS.has(token));
+  return Math.max(
+    contentTokenJaccard(normalizeContentText(left), normalizeContentText(right), { stopwords: STOPWORDS }),
+    contentBigramDice(left, right, { includeShortGram: true }),
+  );
 }
 
 function overlapRatio(left: readonly string[], right: readonly string[]): number {

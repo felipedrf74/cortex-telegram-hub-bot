@@ -230,6 +230,23 @@ describe('content-creator-profile (CONTENT-UI-O1)', () => {
     expect(getContentCreatorProfile(USER_A, USER_A).pillars).toEqual([]);
   });
 
+  it('upsert after reset does not revive an archived profile row', () => {
+    upsertContentCreatorProfile(USER_A, USER_A, {
+      pillars: ['Pre-reset'],
+      audience: 'Pre-reset audience',
+    });
+    resetContentCreatorProfile(USER_A, USER_A);
+
+    const after = upsertContentCreatorProfile(USER_A, USER_A, {
+      pillars: ['Should not revive'],
+      audience: 'Archived profile should stay deleted',
+    });
+
+    expect(after.pillars).toEqual([]);
+    expect(after.audience).toBe('');
+    expect(getContentCreatorProfile(USER_A, USER_A).pillars).toEqual([]);
+  });
+
   it('reset only affects the same (tenant, owner); other tenant is preserved', () => {
     upsertContentCreatorProfile(USER_A, USER_A, { pillars: ['Keep'] });
     upsertContentCreatorProfile(USER_B, USER_B, { pillars: ['Untouched'] });

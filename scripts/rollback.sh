@@ -157,7 +157,12 @@ fi
 CURRENT_VERSION=$(ssh "$SERVER" "/usr/bin/node -p \"require('$REMOTE_DIR/package.json').version\"" 2>/dev/null || echo "unknown")
 echo "⚠️  This will rollback from v${CURRENT_VERSION} to ${BACKUP_NAME}"
 echo "   Pre-restore snapshot will be saved automatically."
-read -p "   Continue? (type YES to confirm) " CONFIRM
+if [ "${NEXUS_ROLLBACK_AUTO_CONFIRM:-0}" = "1" ]; then
+  echo "   NEXUS_ROLLBACK_AUTO_CONFIRM=1 — confirmation supplied by caller"
+  CONFIRM="YES"
+else
+  read -p "   Continue? (type YES to confirm) " CONFIRM
+fi
 echo ""
 
 if [ "$CONFIRM" != "YES" ]; then
@@ -255,3 +260,7 @@ else
   echo "     ssh $SERVER 'cd $REMOTE_DIR && bash scripts/restore.sh --apply <snapshot>'"
 fi
 echo "═══════════════════════════════════════════════"
+
+if [ "$HEALTH_OK" != true ]; then
+  exit 1
+fi

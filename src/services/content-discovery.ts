@@ -197,11 +197,9 @@ Remember: follow the creator configuration for audience fit, but keep the ideas 
     .filter((line) => /^#{2,3}\s+\**(?:Idea|Ideia|Id[eé]ia)\s+\d+/i.test(line))
     .map((line) => line.replace(/^#{2,3}\s+\**(?:Idea|Ideia|Id[eé]ia)\s+\d+:\s*/i, '').replace(/\*+$/g, '').trim());
 
-  // Also grab Quick-Fire Shorts section titles
-  const shortMatches = fullContent.match(/^[-•]\s+.+$/gm);
-  const quickShorts = shortMatches
-    ? shortMatches.slice(-5).map((s) => s.replace(/^[-•]\s+/, '').trim())
-    : [];
+  // Also grab Quick-Fire Shorts section titles without stealing unrelated
+  // trailing bullets from source notes or summaries.
+  const quickShorts = extractQuickFireShorts(fullContent);
 
   // Save to file
   const dir = path.join(path.dirname(config.app.databasePath), 'content-ideas');
@@ -213,7 +211,13 @@ Remember: follow the creator configuration for audience fit, but keep the ideas 
   fs.writeFileSync(filePath, fileContent, 'utf-8');
 
   // Save ideas to SQLite (unified storage)
-  const allIdeas = [...ideas, ...quickShorts];
+  const seenInBatch = new Set<string>();
+  const allIdeas = [...ideas, ...quickShorts].filter((title) => {
+    const key = normalizeDiscoveryTitle(title);
+    if (!key || seenInBatch.has(key)) return false;
+    seenInBatch.add(key);
+    return true;
+  });
   let savedCount = 0;
   for (const title of allIdeas) {
     try {
@@ -249,4 +253,30 @@ Remember: follow the creator configuration for audience fit, but keep the ideas 
     searchCount,
     provider: usedProvider,
   };
+}
+
+function extractQuickFireShorts(content: string): string[] {
+  const lines = content.split('\n');
+  const start = lines.findIndex((line) => /quick[-\s]?fire\s+shorts?/i.test(line));
+  if (start < 0) return [];
+  const bullets: string[] = [];
+  for (const line of lines.slice(start + 1)) {
+    if (/^#{1,3}\s+/.test(line) && bullets.length > 0) break;
+    const match = line.match(/^\s*[-•]\s+(.+?)\s*$/);
+    if (!match) continue;
+    const title = match[1].replace(/\*+$/g, '').trim();
+    if (title) bullets.push(title);
+    if (bullets.length >= 5) break;
+  }
+  return bullets;
+}
+
+function normalizeDiscoveryTitle(title: string): string {
+  return title
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}\s]/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
 }

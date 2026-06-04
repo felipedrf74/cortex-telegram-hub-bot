@@ -4,7 +4,7 @@ import { getDb } from '../../services/database';
 import type { AgentSignal } from '../../services/intelligence-bus';
 import type { Lang } from '../../utils/i18n';
 
-export function readContentHomePipeline(db: ReturnType<typeof getDb>, userId: number): {
+export function readContentHomePipeline(db: ReturnType<typeof getDb>, userId: number, tenantId?: number): {
   stages: {
     ideas: Array<{ title: string }>;
     scripted: Array<{ title: string }>;
@@ -13,14 +13,15 @@ export function readContentHomePipeline(db: ReturnType<typeof getDb>, userId: nu
     published: Array<{ title: string }>;
   };
 } {
+  const scope = contentHomeScopePredicate(db, 'content_ideas', userId, tenantId);
   const readStage = (stage: 'ideas' | 'scripted' | 'filmed' | 'editing' | 'published') => (
     db.prepare(
       `SELECT title
          FROM content_ideas
-        WHERE stage = ? AND user_id = ?
+        WHERE stage = ? AND ${scope.where}
         ORDER BY COALESCE(score, 0) DESC, created_at DESC
         LIMIT 20`,
-    ).all(stage, userId) as Array<{ title: string }>
+    ).all(stage, ...scope.params) as Array<{ title: string }>
   ).map((row) => ({ title: row.title }));
 
   return {
@@ -37,16 +38,49 @@ export function readContentHomePipeline(db: ReturnType<typeof getDb>, userId: nu
 export function readContentHomeIdeas(
   db: ReturnType<typeof getDb>,
   userId: number,
+  tenantId?: number,
 ): Array<{ title: string }> {
+  const scope = contentHomeScopePredicate(db, 'content_ideas', userId, tenantId);
   return (
     db.prepare(`
       SELECT title
       FROM content_ideas
-      WHERE user_id = ?
+      WHERE ${scope.where}
       ORDER BY COALESCE(score, 0) DESC, created_at DESC
       LIMIT 30
-    `).all(userId) as Array<{ title: string }>
+    `).all(...scope.params) as Array<{ title: string }>
   ).map((row) => ({ title: row.title }));
+}
+
+function contentHomeScopePredicate(
+  db: ReturnType<typeof getDb>,
+  table: string,
+  userId: number,
+  tenantId?: number,
+): { where: string; params: unknown[] } {
+  const clauses: string[] = ['user_id = ?'];
+  const params: unknown[] = [userId];
+  if (contentHomeColumnExists(db, table, 'tenant_id')) {
+    clauses.push('COALESCE(tenant_id, user_id) = ?');
+    params.push(tenantId ?? userId);
+  }
+  if (contentHomeColumnExists(db, table, 'owner_user_id')) {
+    clauses.push('COALESCE(owner_user_id, user_id) = ?');
+    params.push(userId);
+  }
+  if (contentHomeColumnExists(db, table, 'scope_status')) {
+    clauses.push("COALESCE(scope_status, 'active') = 'active'");
+  }
+  return { where: clauses.join(' AND '), params };
+}
+
+function contentHomeColumnExists(db: ReturnType<typeof getDb>, table: string, column: string): boolean {
+  try {
+    const rows = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+    return rows.some((row) => row.name === column);
+  } catch {
+    return false;
+  }
 }
 
 export function summarizeContentJobStatus(

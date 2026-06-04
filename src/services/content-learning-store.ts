@@ -764,13 +764,14 @@ export function getArtifactChain(pipelineId: number, userId: number, tenantId: n
   `).all(pipelineId, ...contentScopeParams(userId, tenantId)) as any[];
   const performance = perfRows.map(mapPerformance);
 
-  // Learned patterns (from the same niche)
+  // Learned patterns (from the same niche/category)
   const patterns = pipeline.niche
     ? db.prepare(`
         SELECT * FROM content_learned_patterns
         WHERE ${contentScopePredicate()}
+          AND LOWER(category) = LOWER(?)
         ORDER BY confidence DESC LIMIT 10
-      `).all(...contentScopeParams(userId, tenantId)).map(mapPattern) as LearnedPattern[]
+      `).all(...contentScopeParams(userId, tenantId), pipeline.niche).map(mapPattern) as LearnedPattern[]
     : [];
 
   return {

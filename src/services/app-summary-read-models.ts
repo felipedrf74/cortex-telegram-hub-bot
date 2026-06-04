@@ -244,7 +244,15 @@ function buildContentSummary(userId: number, tenantId: number, db: Database.Data
     ideasNeedingReview: pendingTopics,
     scriptsInProgress,
     scheduledThisWeek,
-    radarOpportunitiesCount: countScopedRows(db, 'content_radar_signals', userId, tenantId, 'status = ?', ['active'], 'owner_user_id'),
+    radarOpportunitiesCount: countScopedRows(
+      db,
+      'content_radar_signals',
+      userId,
+      tenantId,
+      "COALESCE(scope_status, 'active') = 'active' AND lifecycle_state IN ('detected', 'scored', 'shortlisted', 'review_required')",
+      [],
+      'owner_user_id',
+    ),
     pendingCount: pendingTopics + scriptsInProgress,
   };
 }

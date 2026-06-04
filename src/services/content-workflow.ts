@@ -254,15 +254,14 @@ export async function generateTopicCandidates(
 
   // Discovery cross-pollination (Sprint 2.4)
   let discoveryBlock = '';
+  let promotedDiscoveryIdeaIds: number[] = [];
   try {
     const eligible = getWorkflowEligibleIdeas(userId);
     if (eligible.length > 0) {
-      const ideasList = eligible.slice(0, 5).map(i => `- ${i.title}`).join('\n');
+      const promotedIdeas = eligible.slice(0, 5);
+      promotedDiscoveryIdeaIds = promotedIdeas.map((idea) => idea.id);
+      const ideasList = promotedIdeas.map(i => `- ${i.title}`).join('\n');
       discoveryBlock = `\n## Pre-Researched Ideas from Daily Discovery\nThese high-scoring ideas were found by the daily trend scanner. Consider including, modifying, or building on them:\n${ideasList}\n`;
-      // Mark promoted
-      for (const idea of eligible.slice(0, 5)) {
-        markIdeaPromoted(idea.id, userId);
-      }
     }
   } catch { /* non-critical */ }
 
@@ -378,6 +377,12 @@ export async function generateTopicCandidates(
         }
       } catch { /* allow through on error */ }
       deduped.push(c);
+    }
+
+    if (deduped.length > 0 && promotedDiscoveryIdeaIds.length > 0) {
+      for (const ideaId of promotedDiscoveryIdeaIds) {
+        markIdeaPromoted(ideaId, userId);
+      }
     }
 
     return deduped;

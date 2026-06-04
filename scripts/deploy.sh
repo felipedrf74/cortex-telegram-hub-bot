@@ -23,6 +23,8 @@ LOCAL_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 PM2="/home/dominguez/.npm-global/bin/pm2"
 NOTION_TOKEN="${NOTION_TOKEN:-}"
 NOTION_RELEASES_DB="${NOTION_RELEASES_DB:-332ad49d-23e7-8134-b413-d8d3cc3f1a4a}"
+SKIP_MODE="${NEXUS_DEPLOY_SKIP_VERIFY:-0}"
+AUDIT_LOG="${NEXUS_RELEASE_AUDIT_LOG:-$LOCAL_DIR/.local/release/override-audit.jsonl}"
 
 # release-pipeline-risk-based-optimization (2026-05-03) — Round 3:
 # --dry-run mode exercises every gate (env validation, typecheck/verify
@@ -74,8 +76,45 @@ echo ""
 # defaults to legacy behavior so accidental rollouts are safe.
 cd "$LOCAL_DIR"
 
+audit_override() {
+  local flag="$1"
+  local reason="${NEXUS_EMERGENCY_SKIP_REASON:-}"
+  mkdir -p "$(dirname "$AUDIT_LOG")"
+  node -e '
+    const fs = require("fs");
+    const entry = {
+      ts: new Date().toISOString(),
+      flag: process.argv[1],
+      reason: process.argv[2],
+      user: process.env.USER || process.env.LOGNAME || "unknown",
+      sha: process.argv[3],
+      branch: process.argv[4],
+      script: "deploy.sh",
+    };
+    fs.appendFileSync(process.argv[5], JSON.stringify(entry) + "\n");
+  ' "$flag" "$reason" "$(git rev-parse HEAD 2>/dev/null || echo unknown)" "$(git branch --show-current 2>/dev/null || echo unknown)" "$AUDIT_LOG"
+}
+
+require_emergency_reason() {
+  local flag="$1"
+  if [ -z "${NEXUS_EMERGENCY_SKIP_REASON:-}" ]; then
+    echo "❌ $flag requires NEXUS_EMERGENCY_SKIP_REASON"
+    exit 1
+  fi
+  audit_override "$flag"
+}
+
 ensure_clean_deploy_tree() {
-  if [ "${NEXUS_DEPLOY_ALLOW_DIRTY:-0}" != "1" ]; then
+  if [ "${NEXUS_DEPLOY_ALLOW_DIRTY:-0}" = "1" ]; then
+    require_emergency_reason "NEXUS_DEPLOY_ALLOW_DIRTY"
+    case "$SKIP_MODE" in
+      1|true|yes|auto-when-staged)
+        echo "❌ Dirty production deploys cannot reuse evidence or skip full verification."
+        echo "   Set NEXUS_DEPLOY_SKIP_VERIFY=0 for a dirty hotfix deploy."
+        exit 1
+        ;;
+    esac
+  else
     if [ -n "$(git status --porcelain)" ]; then
       echo "❌ Working tree has uncommitted changes. Refusing to deploy."
       echo "   Either commit, stash, or set NEXUS_DEPLOY_ALLOW_DIRTY=1 to override."
@@ -100,7 +139,15 @@ restore_deploy_generated_artifacts() {
 
 restore_deploy_generated_artifacts
 ensure_clean_deploy_tree
-SKIP_MODE="${NEXUS_DEPLOY_SKIP_VERIFY:-0}"
+
+if [ "${NEXUS_DEPLOY_SKIP_VERIFY:-0}" = "1" ] || [ "${NEXUS_DEPLOY_SKIP_VERIFY:-0}" = "true" ] || [ "${NEXUS_DEPLOY_SKIP_VERIFY:-0}" = "yes" ]; then
+  require_emergency_reason "NEXUS_DEPLOY_SKIP_VERIFY"
+fi
+
+if [ -d "$LOCAL_DIR/migrations" ]; then
+  echo "🗃️  Checking migration safety policy..."
+  node scripts/migration-safety-check.mjs --base "${NEXUS_DEPLOY_BASE_REF:-origin/main}" --changed-only
+fi
 
 run_full_verify() {
   echo "🔍 Running full validation (typecheck + tests)..."
@@ -146,17 +193,38 @@ case "$SKIP_MODE" in
     run_typecheck_only
     ;;
   auto-when-staged)
-    LOCAL_DIST_HASH="$(shasum -a 256 "$LOCAL_DIR/dist/index.js" 2>/dev/null | cut -d' ' -f1 || echo missing)"
-    STAGING_DIST_HASH="$(ssh "$SERVER" "shasum -a 256 ${STAGING_PATH:-/home/dominguez/telegram-hub-bot-staging}/dist/index.js 2>/dev/null | cut -d' ' -f1" 2>/dev/null || echo missing)"
-    if [ "$LOCAL_DIST_HASH" != "missing" ] && [ "$LOCAL_DIST_HASH" = "$STAGING_DIST_HASH" ]; then
-      echo "🔁 NEXUS_DEPLOY_SKIP_VERIFY=auto-when-staged: local↔staging dist hashes match — typecheck only"
+    if [ "${NEXUS_RELEASE_EVIDENCE_REUSE_ENABLED:-0}" != "1" ]; then
+      echo "🟡 auto-when-staged requested, but evidence reuse is still in shadow."
+      echo "   Set NEXUS_RELEASE_EVIDENCE_REUSE_ENABLED=1 only after 3 clean RCs."
+      if node scripts/release-evidence.mjs validate --json > /tmp/nexus-release-evidence-shadow.json 2>/tmp/nexus-release-evidence-shadow.err; then
+        echo "   Shadow evidence check: MATCH"
+        cat /tmp/nexus-release-evidence-shadow.json
+      else
+        echo "   Shadow evidence check: no match"
+        cat /tmp/nexus-release-evidence-shadow.err 2>/dev/null || true
+        cat /tmp/nexus-release-evidence-shadow.json 2>/dev/null || true
+      fi
+      run_full_verify
+    elif node scripts/release-evidence.mjs validate --json > /tmp/nexus-release-evidence-validate.json 2>/tmp/nexus-release-evidence-validate.err; then
+      echo "🔁 NEXUS_DEPLOY_SKIP_VERIFY=auto-when-staged: release evidence matches SHA + manifest digest — typecheck only"
+      cat /tmp/nexus-release-evidence-validate.json
       run_typecheck_only
     else
-      echo "🔁 NEXUS_DEPLOY_SKIP_VERIFY=auto-when-staged: hashes differ — full verify"
+      echo "🔁 NEXUS_DEPLOY_SKIP_VERIFY=auto-when-staged: no matching release evidence — full verify"
+      cat /tmp/nexus-release-evidence-validate.err 2>/dev/null || true
+      cat /tmp/nexus-release-evidence-validate.json 2>/dev/null || true
       run_full_verify
     fi
     ;;
   0|false|no|"")
+    if node scripts/release-evidence.mjs validate --json > /tmp/nexus-release-evidence-shadow.json 2>/tmp/nexus-release-evidence-shadow.err; then
+      echo "🟡 Release evidence shadow check: MATCH (strict deploy still runs full verify during shadow period)"
+      cat /tmp/nexus-release-evidence-shadow.json
+    else
+      echo "🟡 Release evidence shadow check: no reusable evidence yet (expected during shadow period)"
+      cat /tmp/nexus-release-evidence-shadow.err 2>/dev/null || true
+      cat /tmp/nexus-release-evidence-shadow.json 2>/dev/null || true
+    fi
     run_full_verify
     ;;
   *)
@@ -440,7 +508,13 @@ sleep 10
 HEALTH_OK=true
 
 # Content engine
-ssh "$SERVER" "curl -sf http://localhost:8100/health 2>/dev/null && echo ' ✅ Content engine OK' || echo ' ⚠️  Content engine not responding'"
+if ssh "$SERVER" "curl -sf http://localhost:8100/health 2>/dev/null" >/dev/null; then
+  echo " ✅ Content engine OK"
+else
+  echo " ❌ Content engine not responding"
+  DEPLOY_STATUS="❌ Failed"
+  HEALTH_OK=false
+fi
 
 # Portal — production may require signed portal sessions instead of legacy
 # PORTAL_TOKEN. Use the same auth strategy as staging smoke/deploy.
@@ -455,13 +529,31 @@ if [ "$PORTAL_REQUIRE_SESSION_AUTH" = "true" ]; then
     node dist/tools/portal-session-token.js --actor deploy-production@nexushub.me --scope admin --ttl-ms 600000 --json \
       | node -e \"let b=''; process.stdin.on('data', c => b += c); process.stdin.on('end', () => { const j = JSON.parse(b); process.stdout.write(j.token || ''); });\"
   " 2>/dev/null || true)
-  ssh "$SERVER" "curl -sf -H 'x-portal-session: ${PROD_SESSION:-x}' http://localhost:8200/api/snapshot 2>/dev/null | head -c 100 && echo ' ✅ Status portal OK' || echo ' ⚠️  Status portal not responding'"
+  if ssh "$SERVER" "curl -sf -H 'x-portal-session: ${PROD_SESSION:-x}' http://localhost:8200/api/snapshot 2>/dev/null | head -c 100" >/dev/null; then
+    echo " ✅ Status portal OK"
+  else
+    echo " ❌ Status portal not responding"
+    DEPLOY_STATUS="❌ Failed"
+    HEALTH_OK=false
+  fi
 else
   PORTAL_TOKEN=$(ssh "$SERVER" "grep -oP '(?<=^PORTAL_TOKEN=).+' $REMOTE_DIR/.env 2>/dev/null" || true)
   if [ -n "$PORTAL_TOKEN" ]; then
-    ssh "$SERVER" "curl -sf -H 'Authorization: Bearer $PORTAL_TOKEN' http://localhost:8200/api/snapshot 2>/dev/null | head -c 100 && echo ' ✅ Status portal OK' || echo ' ⚠️  Status portal not responding'"
+    if ssh "$SERVER" "curl -sf -H 'Authorization: Bearer $PORTAL_TOKEN' http://localhost:8200/api/snapshot 2>/dev/null | head -c 100" >/dev/null; then
+      echo " ✅ Status portal OK"
+    else
+      echo " ❌ Status portal not responding"
+      DEPLOY_STATUS="❌ Failed"
+      HEALTH_OK=false
+    fi
   else
-    ssh "$SERVER" "curl -sf http://localhost:8200/api/snapshot 2>/dev/null | head -c 100 && echo ' ✅ Status portal OK' || echo ' ⚠️  Status portal not responding'"
+    if ssh "$SERVER" "curl -sf http://localhost:8200/api/snapshot 2>/dev/null | head -c 100" >/dev/null; then
+      echo " ✅ Status portal OK"
+    else
+      echo " ❌ Status portal not responding"
+      DEPLOY_STATUS="❌ Failed"
+      HEALTH_OK=false
+    fi
   fi
 fi
 
@@ -522,3 +614,7 @@ else
   echo "  ⚠️  Deploy completed with warnings. Check services."
 fi
 echo "═══════════════════════════════════════════════"
+
+if [ "$HEALTH_OK" != true ]; then
+  exit 1
+fi

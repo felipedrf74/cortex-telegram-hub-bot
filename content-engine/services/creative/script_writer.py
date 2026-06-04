@@ -778,10 +778,10 @@ async def generate(req: ScriptRequest, orchestrator) -> ScriptResponse:
     research_route = _research_route(req, normalized_mode)
     max_tokens, max_briefs = _generation_limits(normalized_mode)
     if not research_route["allowDeepSearch"]:
-        research = await orchestrator.quick_search(req.topic, max_results=max_briefs)
+        research = await orchestrator.quick_search(req.topic, max_results=max_briefs, language=normalized_language)
         warnings.append(f"{normalized_mode.title()} mode used compact research without deep synthesis.")
     else:
-        research = await orchestrator.deep_search(req.topic, max_results=max_briefs)
+        research = await orchestrator.deep_search(req.topic, max_results=max_briefs, language=normalized_language)
     briefs = research.briefs
     if getattr(research, "degraded", False):
         degraded = True
@@ -944,7 +944,9 @@ The JSON must be valid and on a single block after `---METADATA---`. No other te
         ),
     ])
     prompt = compiled.prompt
+    budget_state = "healthy"
     if compiled.over_budget:
+        budget_state = "over_budget"
         degraded = True
         warnings.append("Prompt budget was exceeded and sections were compacted; review specificity before publishing.")
 
@@ -1023,7 +1025,7 @@ The JSON must be valid and on a single block after `---METADATA---`. No other te
     if not hook and briefs:
         hook = briefs[0].hook
     if not title_options:
-        title_options = [req.topic, f"A VERDADE sobre {req.topic}", f"REAGINDO a {req.topic}"]
+        title_options = _fallback_titles(req.topic, normalized_language)
 
     duration_ms = int((time.monotonic() - start) * 1000)
     topic_hash = hashlib.sha1(req.topic.lower().strip().encode("utf-8")).hexdigest()[:12]
@@ -1049,7 +1051,7 @@ The JSON must be valid and on a single block after `---METADATA---`. No other te
         voice_card_version=hashlib.sha1(_creator_profile_block(req).encode("utf-8")).hexdigest()[:12],
         quality_score=quality_score,
         quality_warnings=quality_warnings,
-        budget_state="healthy",
+        budget_state=budget_state,
         expand_options=_expand_options(normalized_mode),
         estimated_cost={
             "estimatedInputTokens": compiled.token_estimate,

@@ -132,13 +132,14 @@ describe('script-pipeline: cache key hardening', () => {
     expect(engineSource).toContain('cfg.cacheTtl > 0 && !forceRefresh');
   });
 
-  it('script signal reads are user-scoped instead of using global signal context', () => {
+  it('script signal reads are tenant-scoped instead of using global signal context', () => {
     const engineSource = require('fs').readFileSync(
       require('path').resolve(__dirname, '../../src/services/content-engine.ts'),
       'utf8',
     );
 
-    expect(engineSource).toContain("readSignals('script-engine', [...signalTypes], 100, userId, cfg.signalDays)");
+    expect(engineSource).toContain("readSignals('script-engine', [...signalTypes], 100, userId, cfg.signalDays, tenantId)");
+    expect(engineSource).toMatch(/readSignals\('script-engine', \[\.\.\.signalTypes\], 100, userId, cfg\.signalDays, tenantId\)/);
   });
 
   it('script engine forwards first-party topic context into the Python request', () => {

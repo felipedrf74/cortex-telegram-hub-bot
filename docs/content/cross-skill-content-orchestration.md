@@ -9,8 +9,8 @@ Content Creation now has a backend orchestration layer for consuming safe, tenan
 
 Implemented code:
 
-- `src/services/content-cross-skill-orchestration.ts`
-- `__tests__/services/content-cross-skill-orchestration.test.ts`
+- The legacy cross-skill orchestration module and pinning test were removed because the content remediation keeps cross-workstream work out of the content skill.
+- New cross-skill contracts should be designed in the owning workstreams first, then integrated through explicit content-scoped adapter tests.
 
 This builds on:
 

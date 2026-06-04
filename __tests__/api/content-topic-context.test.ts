@@ -66,7 +66,7 @@ describe('content topic context helpers', () => {
     });
   });
 
-  it('ignores cross-user pipeline payloads while preserving explicit selected id', () => {
+  it('ignores cross-user pipeline payloads without preserving unverified ids', () => {
     const context = resolveScriptTopicContext(
       7,
       { pipelineId: 99 },
@@ -80,6 +80,6 @@ describe('content topic context helpers', () => {
       }),
     );
 
-    expect(context).toEqual({ pipelineId: 99 });
+    expect(context).toBeNull();
   });
 });

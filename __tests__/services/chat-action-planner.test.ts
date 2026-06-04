@@ -67,12 +67,13 @@ import {
 } from '../../src/services/chat-action-run-store';
 import { getChatActionRegistry } from '../../src/services/chat/registry';
 import { parseNaturalLanguageCalendarEvent } from '../../src/services/calendar-natural-language-parser';
-import { buildContentAgencyPackage, ensureContentAgencyTables, persistContentAgencyArtifact } from '../../src/services/content-agency';
+import { buildContentAgencyPackage, ensureContentAgencyTables, getContentAgencyProject, persistContentAgencyArtifact } from '../../src/services/content-agency';
 import { getTopics } from '../../src/services/content-scheduler';
 import { addRecipe, generateShoppingList, getMealPlan, getRecipeById, getShoppingList, setMealPlan } from '../../src/services/cooking-chef';
 import { addTransaction, calculateAndStoreTax, getTaxEvents, getTransactions } from '../../src/services/finance-tracker';
 import { confirmTrainingSessionReflow, previewTrainingSessionReflow } from '../../src/api/routes/training-plan-calendar-sync';
 import { executeTaskWithSubtasksStep } from '../../src/services/skills/tasks/executor';
+import { executeContentAgencyStep } from '../../src/services/skills/content/executor';
 
 const FROZEN_NOW = '2026-05-14T12:00:00+01:00';
 
@@ -1957,6 +1958,7 @@ describe('ChatActionPlanner', () => {
     expect(getTopics(4201, { includeTerminal: true, limit: 5 })).toEqual(expect.arrayContaining([
       expect.objectContaining({ title: 'Filmar reel de recuperação', scheduled_date: '2026-05-18' }),
     ]));
+    expect(testDb.prepare('SELECT tenant_id FROM content_topics WHERE title = ?').get('Filmar reel de recuperação')).toEqual({ tenant_id: 4201 });
 
     const pkg = buildContentAgencyPackage({
       userId: 4201,
@@ -1992,6 +1994,131 @@ describe('ChatActionPlanner', () => {
     }, { confirmed: true });
     expect(handoffResponse.metadata.actionStatus).toBe('verified_success');
     expect(handoffResponse.text).toContain('pipeline');
+  });
+
+  it('extracts Content schedule date-time slots before executor dispatch', () => {
+    const plan = buildDeterministicChatActionPlan({
+      ...baseInput,
+      text: 'Schedule the reel about morning routines for Friday at 10am',
+      locale: 'en-US',
+      messageId: 'content-schedule-datetime',
+      nowIso: '2026-05-14T12:00:00+01:00',
+    });
+
+    expect(plan?.steps[0]).toMatchObject({
+      skill: 'content',
+      action: 'content_schedule_work',
+      requiredArgsPresent: true,
+      args: {
+        title: 'morning routines',
+      },
+    });
+    expect(String(plan?.steps[0]?.args.dateTime)).toMatch(/^2026-05-15T10:00:00(?:\.000)?\+01:00$/);
+  });
+
+  it('routes Content pipeline stage transitions before the content noun gate and keeps edit/live narrow', () => {
+    const stagePlan = buildDeterministicChatActionPlan({
+      ...baseInput,
+      text: 'Mark the recovery idea as filmed',
+      locale: 'en-US',
+      messageId: 'content-stage-without-content-noun',
+    });
+    expect(stagePlan?.steps[0]).toMatchObject({
+      skill: 'content',
+      action: 'content_pipeline_stage_transition',
+      args: {
+        topicTitle: 'recovery idea',
+        targetStage: 'filmed',
+      },
+    });
+
+    const editPlan = buildDeterministicChatActionPlan({
+      ...baseInput,
+      text: 'Edit the recovery reel title',
+      locale: 'en-US',
+      messageId: 'content-stage-edit-negative',
+    });
+    expect(editPlan?.steps[0]?.action).not.toBe('content_pipeline_stage_transition');
+
+    const livePlan = buildDeterministicChatActionPlan({
+      ...baseInput,
+      text: 'Move the launch reel live',
+      locale: 'en-US',
+      messageId: 'content-stage-live-negative',
+    });
+    expect(livePlan?.steps[0]?.action).not.toBe('content_pipeline_stage_transition');
+  });
+
+  it('persists pending Content brief specs so follow-up turns can refine the draft', async () => {
+    const deps = {
+      calendar: {
+        createEvent: vi.fn() as any,
+        getEventsForSources: vi.fn() as any,
+        hasGoogle: vi.fn(() => false),
+        hasOutlook: vi.fn(() => false),
+      },
+      taskProviderForUser: vi.fn(() => ({}) as any),
+    };
+    const first = await tryHandleChatActionPlan({
+      ...baseInput,
+      text: 'Create content about recovery routines',
+      locale: 'en-US',
+      messageId: 'content-pending-first',
+      persistRuns: true,
+    }, deps);
+
+    expect(first?.status).toBe('needs_clarification');
+    expect(first?.response.text).toMatch(/content platform/i);
+    expect(getActivePendingChatAction({
+      userId: baseInput.userId,
+      tenantId: baseInput.tenantId,
+      conversationId: baseInput.conversationId,
+      skill: 'content',
+      nowIso: FROZEN_NOW,
+    })?.missingSlots).toContain('platform');
+
+    const second = await tryHandleChatActionPlan({
+      ...baseInput,
+      text: 'Make it punchy and under 45 seconds',
+      locale: 'en-US',
+      messageId: 'content-pending-second',
+      persistRuns: true,
+    }, deps);
+
+    expect(second?.status).toBe('verified_pending');
+    const pending = getActivePendingChatAction({
+      userId: baseInput.userId,
+      tenantId: baseInput.tenantId,
+      conversationId: baseInput.conversationId,
+      skill: 'content',
+      nowIso: FROZEN_NOW,
+    });
+    expect(pending?.collectedSlots).toMatchObject({
+      objective: 'recovery routines',
+      specs: expect.arrayContaining(['punchy', 'under 45 seconds']),
+    });
+    expect(pending?.missingSlots).toContain('platform');
+  });
+
+  it('preserves user supplied source copy when executing Content rewrite', () => {
+    const input = {
+      ...baseInput,
+      userId: 4202,
+      tenantId: 4202,
+      text: 'Rewrite this caption to be punchier: Hook: the first minute after waking decides your run.',
+      locale: 'en-US',
+      messageId: 'content-rewrite-source',
+      persistRuns: false,
+    };
+    const plan = buildDeterministicChatActionPlan(input)!;
+    const result = executeContentAgencyStep(plan.steps[0]!, plan, input, false);
+
+    expect(result.status).toBe('verified_success');
+    expect(result.result).toMatchObject({ sourceTextPreserved: true });
+    const packageId = String((result.result as any).packageId);
+    const readBack = getContentAgencyProject({ userId: 4202, tenantId: 4202, id: packageId });
+    expect(readBack?.artifact?.transcriptStudy?.warnings ?? []).not.toContain('transcript_missing');
+    expect(readBack?.artifact?.transcriptStudy?.structure).toContain('hook');
   });
 
   it('routes and executes Content pipeline stage transitions with scoped read-back', async () => {

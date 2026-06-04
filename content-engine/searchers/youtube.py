@@ -7,25 +7,18 @@ so ~100 searches/day on the free tier.
 """
 
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import datetime
 
 import httpx
 
 from config import cfg
 from models.research import SearchResult
+from searchers.mock_fixtures import is_evergreen_mock_query, mock_search_result, query_slug
 
 logger = logging.getLogger("content-engine.youtube")
 
 YT_SEARCH_URL = "https://www.googleapis.com/youtube/v3/search"
 YT_VIDEOS_URL = "https://www.googleapis.com/youtube/v3/videos"
-
-EVERGREEN_MOCK_HINTS = (
-    "recovery", "recover", "interval", "training", "workout", "sleep", "hydration",
-    "protein", "nutrition", "guide", "evidence", "study", "protocol", "hill repeat",
-    "recuperação", "recuperar", "intervalos", "repetições", "treino", "sono", "hidratação", "proteína",
-    "nutrição", "guia", "evidência", "estudo", "protocolo", "desaquecimento", "subida",
-)
-
 
 class YouTubeSearcher:
     name = "youtube"
@@ -107,42 +100,46 @@ class YouTubeSearcher:
     # ── fallback ──────────────────────────────────────────────────────
     @staticmethod
     def _mock(query: str, max_results: int) -> list[SearchResult]:
-        now = datetime.now(timezone.utc)
-        lower = query.lower()
-        if any(hint in lower for hint in EVERGREEN_MOCK_HINTS):
+        video_slug = query_slug(query, separator="_", max_chars=20)
+        walk_slug = query_slug(query, separator="_", max_chars=15)
+        if is_evergreen_mock_query(query):
             return [
-                SearchResult(
+                mock_search_result(
+                    query=query,
                     title=f"[Mock] Coach breakdown: {query}",
-                    url=f"https://youtube.com/watch?v=mock_{query.replace(' ', '_')[:20]}",
+                    url=f"https://youtube.com/watch?v=mock_{video_slug}",
                     snippet=f"Mock coaching-style YouTube result for '{query}'. Set YOUTUBE_API_KEY for real results.",
                     source="youtube",
-                    published_at=now - timedelta(hours=4),
+                    hours_ago=4,
                     metadata={"view_count": 42_000, "like_count": 1_200, "channel_title": "MockCoach"},
                 ),
-                SearchResult(
+                mock_search_result(
+                    query=query,
                     title=f"[Mock] {query} — practical walkthrough",
-                    url=f"https://youtube.com/watch?v=mock_walk_{query.replace(' ', '_')[:15]}",
+                    url=f"https://youtube.com/watch?v=mock_walk_{walk_slug}",
                     snippet=f"Mock practical walkthrough for {query}.",
                     source="youtube",
-                    published_at=now - timedelta(hours=12),
+                    hours_ago=12,
                     metadata={"view_count": 58_000, "like_count": 2_400, "channel_title": "TrainingMock"},
                 ),
             ][:max_results]
         return [
-            SearchResult(
+            mock_search_result(
+                query=query,
                 title=f"[Mock] {query} — YouTube deep dive",
-                url=f"https://youtube.com/watch?v=mock_{query.replace(' ', '_')[:20]}",
+                url=f"https://youtube.com/watch?v=mock_{video_slug}",
                 snippet=f"Mock YouTube result for '{query}'. Set YOUTUBE_API_KEY for real results.",
                 source="youtube",
-                published_at=now - timedelta(hours=4),
+                hours_ago=4,
                 metadata={"view_count": 42_000, "like_count": 1_200, "channel_title": "MockChannel"},
             ),
-            SearchResult(
+            mock_search_result(
+                query=query,
                 title=f"[Mock] {query} reaction — INSANE",
-                url=f"https://youtube.com/watch?v=mock_react_{query.replace(' ', '_')[:15]}",
+                url=f"https://youtube.com/watch?v=mock_react_{walk_slug}",
                 snippet=f"Reacting to {query} — this is wild.",
                 source="youtube",
-                published_at=now - timedelta(hours=12),
+                hours_ago=12,
                 metadata={"view_count": 128_000, "like_count": 5_600, "channel_title": "ReactionMock"},
             ),
         ][:max_results]

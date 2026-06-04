@@ -1,4 +1,5 @@
 import ast
+import asyncio
 import builtins
 import importlib
 from datetime import datetime, timezone
@@ -196,6 +197,39 @@ async def test_orchestrator_deep_search_no_results_returns_degraded():
     assert response.warnings
 
 
+async def test_orchestrator_deep_search_caps_variation_concurrency_and_surfaces_timeout(monkeypatch):
+    state = {"active": 0, "max_active": 0}
+
+    class SlowSearcher:
+        name = "slow"
+
+        async def search(self, query: str, max_results: int = 5):
+            state["active"] += 1
+            state["max_active"] = max(state["max_active"], state["active"])
+            try:
+                await asyncio.sleep(0.2)
+                return [
+                    SearchResult(
+                        title=f"{query} source",
+                        url=f"https://example.test/{query.replace(' ', '-')}",
+                        snippet="scoped source",
+                        source=self.name,
+                        published_at=datetime.now(timezone.utc),
+                    )
+                ]
+            finally:
+                state["active"] -= 1
+
+    monkeypatch.setattr(orchestrator, "cfg", SimpleNamespace(pipeline_timeout=0.05))
+    subject = orchestrator.ResearchOrchestrator(searchers=[SlowSearcher()])
+
+    response = await subject.deep_search("tenant-42 launch", max_results=1)
+
+    assert state["max_active"] <= 4
+    assert response.degraded is True
+    assert any("pipeline timeout" in warning for warning in response.warnings)
+
+
 async def test_orchestrator_deep_search_ai_synthesis_uses_current_creator(monkeypatch, assert_no_founder_identity):
     captured = {}
 
@@ -311,6 +345,42 @@ async def test_script_writer_happy_path_threads_tenant_scope(monkeypatch, assert
     assert "[creator_voice_card]" in captured["prompt"]
     assert "tenant-99" not in captured["prompt"]
     assert_no_founder_identity(captured["prompt"], response.model_dump())
+
+
+async def test_script_writer_reports_over_budget_prompt_state(monkeypatch):
+    captured = {}
+    original_compile_prompt = script_writer.compile_prompt
+
+    async def fake_ask(prompt, **kwargs):
+        captured["prompt"] = prompt
+        return (
+            "tenant-42 budget script\n"
+            "---METADATA---\n"
+            '{"hook":"hook","titles":["title"],"hashtags":[],"caption":"caption","cta":"cta"}'
+        )
+
+    def fake_compile_prompt(mode, sections):
+        compiled = original_compile_prompt(mode, sections)
+        return type("FakeCompiledPrompt", (), {
+            "prompt": compiled.prompt,
+            "token_estimate": compiled.token_estimate,
+            "max_tokens": compiled.max_tokens,
+            "over_budget": True,
+            "metadata": compiled.metadata,
+        })()
+
+    monkeypatch.setattr(script_writer, "ask_claude", fake_ask)
+    monkeypatch.setattr(script_writer, "compile_prompt", fake_compile_prompt)
+
+    response = await script_writer.generate(
+        ScriptRequest(topic="tenant-42 launch", language="en-US", tenant_id=42, user_id=42),
+        ScriptOrchestrator(),
+    )
+
+    assert captured["prompt"]
+    assert response.degraded is True
+    assert response.budget_state == "over_budget"
+    assert any("Prompt budget was exceeded" in warning for warning in response.warnings)
 
 
 async def test_script_writer_standard_mode_uses_compact_research_not_deepsearch(monkeypatch):
@@ -506,3 +576,48 @@ async def test_reddit_http_fault_returns_empty(monkeypatch):
     monkeypatch.setattr(reddit.httpx, "AsyncClient", lambda *args, **kwargs: FailingClient())
 
     assert await reddit.RedditSearcher().search("tenant-42 launch") == []
+
+
+async def test_reddit_null_thumbnail_is_ignored(monkeypatch):
+    reddit = importlib.import_module("searchers.reddit")
+
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "data": {
+                    "children": [
+                        {
+                            "data": {
+                                "title": "tenant-42 reddit",
+                                "permalink": "/r/mock/comments/1",
+                                "selftext": "discussion",
+                                "created_utc": 1_700_000_000,
+                                "score": 10,
+                                "num_comments": 2,
+                                "thumbnail": None,
+                            }
+                        }
+                    ]
+                }
+            }
+
+    class FakeClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def get(self, *args, **kwargs):
+            return FakeResponse()
+
+    monkeypatch.setattr(reddit, "cfg", SimpleNamespace(fixture_mode=False, searcher_timeout=0.1))
+    monkeypatch.setattr(reddit.httpx, "AsyncClient", lambda *args, **kwargs: FakeClient())
+
+    results = await reddit.RedditSearcher().search("tenant-42 launch")
+
+    assert len(results) == 1
+    assert results[0].thumbnail_url is None

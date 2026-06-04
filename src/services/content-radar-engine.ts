@@ -15,7 +15,11 @@ import {
   type ContentWorkflowObject,
 } from './content-editorial-workflow';
 import { buildContentCreativeProfileContext } from './content-memory-profile';
-import type { ContentRegisteredReference } from './content-reference-provenance';
+import {
+  contentTokenOverlap,
+  foldContentText,
+  normalizeContentTopicText,
+} from './content-text-utils';
 
 export type ContentRadarSourceType =
   | 'book'
@@ -125,20 +129,6 @@ export interface ContentRadarConversionResult {
   reasonCodes: string[];
 }
 
-export interface ContentCrossSkillOpportunityInput {
-  userId: number;
-  tenantId?: number;
-  sourceSkill: 'training' | 'cooking' | 'finance' | 'secretary' | 'chat';
-  sourceSignalType: string;
-  topic: string;
-  summary?: string | null;
-  confidence?: number;
-  evidence?: unknown[];
-  platform?: string | null;
-  format?: string | null;
-  productionFeasibility?: number;
-}
-
 const ACTIVE_RADAR_STATES = new Set([
   'detected',
   'scored',
@@ -214,9 +204,9 @@ export function ensureContentRadarEngineTables(db: any = getDb()): void {
 }
 
 export function scoreContentOpportunity(input: ContentRadarScoreInput): ContentRadarScore {
-  const topic = fold(input.topic);
-  const contentPillars = (input.contentPillars ?? []).map(fold).filter(Boolean);
-  const audience = (input.audience ?? []).map(fold).filter(Boolean);
+  const topic = foldContentText(input.topic);
+  const contentPillars = (input.contentPillars ?? []).map(foldContentText).filter(Boolean);
+  const audience = (input.audience ?? []).map(foldContentText).filter(Boolean);
   const preferredFormats = (input.preferredFormats ?? []).map(normalizeTag).filter(Boolean);
   const dislikedFormats = (input.dislikedFormats ?? []).map(normalizeTag).filter(Boolean);
   const format = normalizeTag(input.format ?? input.platform ?? '');
@@ -243,16 +233,17 @@ export function scoreContentOpportunity(input: ContentRadarScoreInput): ContentR
       : 0.55;
 
   const weighted = (
-    relevance * 0.15
-    + sourceQuality * 0.12
-    + freshness * 0.12
-    + novelty * 0.12
-    + audienceFit * 0.1
-    + brandFit * 0.1
-    + platformFit * 0.08
-    + crossSkillRelevance * 0.08
-    + productionFeasibility * 0.08
-    + strategicValue * 0.08
+    relevance * 0.13
+    + sourceQuality * 0.11
+    + freshness * 0.1
+    + confidence * 0.1
+    + novelty * 0.11
+    + audienceFit * 0.09
+    + brandFit * 0.09
+    + platformFit * 0.07
+    + crossSkillRelevance * 0.07
+    + productionFeasibility * 0.07
+    + strategicValue * 0.06
     - duplicationRisk * 0.13
   );
   const reasonCodes = [
@@ -305,6 +296,14 @@ export function upsertContentRadarSignal(input: ContentRadarSignalInput): Conten
     tenantId,
     normalizedTopic,
     sourceReferenceId: input.sourceReferenceId,
+  });
+  const related = findRelatedRadarSignals({
+    userId: input.userId,
+    tenantId,
+    normalizedTopic,
+    sourceType: input.sourceType ?? 'manual',
+    sourceSkill: input.sourceSkill ?? null,
+    duplicateSignalIds: duplicates.map((signal) => signal.signalId),
   });
   const baseScore = scoreContentOpportunity({
     ...input,
@@ -391,7 +390,7 @@ export function upsertContentRadarSignal(input: ContentRadarSignalInput): Conten
     JSON.stringify(input.evidence ?? []),
     JSON.stringify(input.provenance ?? {}),
     JSON.stringify(duplicates.map((signal) => signal.signalId)),
-    JSON.stringify(duplicates.map((signal) => signal.signalId)),
+    JSON.stringify(related.map((signal) => signal.signalId)),
     JSON.stringify(reasonCodes),
     lifecycleState,
     reviewRequired ? 1 : 0,
@@ -405,6 +404,27 @@ export function upsertContentRadarSignal(input: ContentRadarSignalInput): Conten
 }
 
 export function retrieveContentRadarSignals(input: {
+  userId: number;
+  tenantId?: number;
+  includeInactive?: boolean;
+  limit?: number;
+  prioritized?: boolean;
+  platform?: string;
+  secretaryCapacityScore?: number;
+}): ContentRadarSignal[] {
+  if (input.prioritized !== false && !input.includeInactive) {
+    return prioritizeContentRadarSignals({
+      userId: input.userId,
+      tenantId: input.tenantId,
+      platform: input.platform,
+      secretaryCapacityScore: input.secretaryCapacityScore,
+      limit: input.limit,
+    });
+  }
+  return retrieveRawContentRadarSignals(input);
+}
+
+function retrieveRawContentRadarSignals(input: {
   userId: number;
   tenantId?: number;
   includeInactive?: boolean;
@@ -448,7 +468,13 @@ export function prioritizeContentRadarSignals(input: {
   const preferredFormats = memoryList(context.memories.find((memory) => memory.memoryKey === 'brand.preferred_formats')?.memoryValue);
   const dislikedFormats = memoryList(context.memories.find((memory) => memory.memoryKey === 'brand.disliked_formats')?.memoryValue);
   const capacity = clamp01(input.secretaryCapacityScore ?? 0.75);
-  const signals = retrieveContentRadarSignals({ userId: input.userId, tenantId: input.tenantId, limit: 100 });
+  const signals = retrieveContentRadarSignals({
+    userId: input.userId,
+    tenantId: input.tenantId,
+    limit: 100,
+    prioritized: false,
+  });
+  const feedback = loadRadarFeedbackAdjustments(input.userId, input.tenantId);
 
   return signals.map((signal) => {
     const score = scoreContentOpportunity({
@@ -469,77 +495,24 @@ export function prioritizeContentRadarSignals(input: {
       strategicValue: signal.score.strategicValue,
       sourceType: signal.sourceType,
     });
+    const adjustment = feedback.bySignal.get(signal.signalId)
+      ?? feedback.byTopic.get(normalizeTopic(signal.topic));
+    const adjustedScore = adjustment
+      ? {
+        ...score,
+        total: roundScore(clamp01(score.total + adjustment.delta)),
+        reasonCodes: [...new Set([...score.reasonCodes, ...adjustment.reasonCodes])],
+      }
+      : score;
     return {
       ...signal,
       score: capacity < 0.35
-        ? { ...score, reasonCodes: [...new Set([...score.reasonCodes, 'secretary_capacity_low'])] }
-        : score,
+        ? { ...adjustedScore, reasonCodes: [...new Set([...adjustedScore.reasonCodes, 'secretary_capacity_low'])] }
+        : adjustedScore,
     };
   })
     .sort((a, b) => b.score.total - a.score.total)
     .slice(0, Math.max(1, Math.min(50, input.limit ?? 20)));
-}
-
-export function buildRadarSignalFromReference(input: {
-  userId: number;
-  tenantId?: number;
-  reference: ContentRegisteredReference;
-  topic: string;
-  platform?: string;
-  format?: string;
-}): ContentRadarSignal {
-  if (input.reference.tenantId !== resolveContentTenantId(input.userId, input.tenantId)) {
-    throw new Error('CONTENT_RADAR_SCOPE: reference is not in the active tenant');
-  }
-  if (input.reference.visibilityScope === 'user_private' && input.reference.ownerUserId !== input.userId) {
-    throw new Error('CONTENT_RADAR_SCOPE: reference is private to another user');
-  }
-  const usableSourceQuality = input.reference.reviewRequired ? 0.35 : Math.min(input.reference.qualityScore, input.reference.confidenceScore);
-  return upsertContentRadarSignal({
-    userId: input.userId,
-    tenantId: input.tenantId,
-    sourceType: input.reference.referenceType,
-    sourceReferenceId: input.reference.referenceId,
-    sourceReferenceTitle: input.reference.title,
-    topic: input.topic,
-    summary: input.reference.sourceSummary,
-    platform: input.platform,
-    format: input.format,
-    sourceQuality: usableSourceQuality,
-    freshness: input.reference.freshnessScore,
-    confidence: input.reference.confidenceScore,
-    evidence: input.reference.sourceSnippets,
-    provenance: {
-      referenceId: input.reference.referenceId,
-      referenceType: input.reference.referenceType,
-      trustLevel: input.reference.trustLevel,
-      title: input.reference.title,
-    },
-  });
-}
-
-export function buildCrossSkillContentOpportunitySignal(input: ContentCrossSkillOpportunityInput): ContentRadarSignal {
-  const sourceType = input.sourceSkill;
-  return upsertContentRadarSignal({
-    userId: input.userId,
-    tenantId: input.tenantId,
-    sourceType,
-    sourceSkill: input.sourceSkill,
-    sourceSignalType: input.sourceSignalType,
-    topic: input.topic,
-    summary: input.summary ?? null,
-    platform: input.platform,
-    format: input.format,
-    freshness: 0.85,
-    confidence: input.confidence ?? 0.72,
-    crossSkillRelevance: 0.85,
-    productionFeasibility: input.productionFeasibility ?? 0.65,
-    evidence: input.evidence ?? [],
-    provenance: {
-      sourceSkill: input.sourceSkill,
-      sourceSignalType: input.sourceSignalType,
-    },
-  });
 }
 
 export function convertContentRadarSignal(input: {
@@ -663,6 +636,105 @@ function findDuplicateRadarSignals(input: {
   return rows.map(mapRadarSignal);
 }
 
+function findRelatedRadarSignals(input: {
+  userId: number;
+  tenantId: number;
+  normalizedTopic: string;
+  sourceType: string;
+  sourceSkill?: string | null;
+  duplicateSignalIds: string[];
+}): ContentRadarSignal[] {
+  ensureContentRadarEngineTables(getDb());
+  const duplicateSet = new Set(input.duplicateSignalIds);
+  const rows = getDb().prepare(`
+    SELECT *
+      FROM content_radar_signals
+     WHERE ${contentDirectScopePredicate()}
+       AND lifecycle_state NOT IN ('dismissed', 'expired')
+       AND normalized_topic != ?
+       AND (
+        source_type = ?
+        OR (source_skill IS NOT NULL AND source_skill = ?)
+       )
+     ORDER BY total_score DESC, updated_at DESC
+     LIMIT 10
+  `).all(
+    ...contentScopeParams(input.userId, input.tenantId),
+    input.normalizedTopic,
+    input.sourceType,
+    input.sourceSkill ?? '__none__',
+  ) as any[];
+  return rows.map(mapRadarSignal).filter((signal) => !duplicateSet.has(signal.signalId));
+}
+
+function loadRadarFeedbackAdjustments(
+  userId: number,
+  tenantId?: number,
+): {
+  bySignal: Map<string, { delta: number; reasonCodes: string[] }>;
+  byTopic: Map<string, { delta: number; reasonCodes: string[] }>;
+} {
+  const db = getDb();
+  const bySignal = new Map<string, { delta: number; reasonCodes: string[] }>();
+  const byTopic = new Map<string, { delta: number; reasonCodes: string[] }>();
+  try {
+    const rows = db.prepare(`
+      SELECT signal_id, signal_topic, action, COUNT(*) AS c
+        FROM content_radar_feedback
+       WHERE tenant_id = ? AND owner_user_id = ?
+         AND COALESCE(scope_status, 'active') = 'active'
+       GROUP BY signal_id, signal_topic, action
+    `).all(resolveContentTenantId(userId, tenantId), userId) as Array<{
+      signal_id: string;
+      signal_topic: string | null;
+      action: string;
+      c: number;
+    }>;
+    for (const row of rows) {
+      const delta = feedbackDelta(row.action) * Math.max(1, Number(row.c) || 1);
+      const reasonCodes = feedbackReasonCodes(row.action);
+      mergeFeedbackAdjustment(bySignal, String(row.signal_id), delta, reasonCodes);
+      if (row.signal_topic) mergeFeedbackAdjustment(byTopic, normalizeTopic(row.signal_topic), delta, reasonCodes);
+    }
+  } catch {
+    return { bySignal, byTopic };
+  }
+  return { bySignal, byTopic };
+}
+
+function feedbackDelta(action: string): number {
+  switch (action) {
+    case 'reject': return -0.18;
+    case 'accept': return 0.1;
+    case 'save': return 0.06;
+    case 'create_brief': return 0.14;
+    default: return 0;
+  }
+}
+
+function feedbackReasonCodes(action: string): string[] {
+  switch (action) {
+    case 'reject': return ['radar_feedback_rejected'];
+    case 'accept': return ['radar_feedback_accepted'];
+    case 'save': return ['radar_feedback_saved'];
+    case 'create_brief': return ['radar_feedback_converted'];
+    default: return [];
+  }
+}
+
+function mergeFeedbackAdjustment(
+  map: Map<string, { delta: number; reasonCodes: string[] }>,
+  key: string,
+  delta: number,
+  reasonCodes: string[],
+): void {
+  const existing = map.get(key) ?? { delta: 0, reasonCodes: [] };
+  map.set(key, {
+    delta: Math.max(-0.5, Math.min(0.5, existing.delta + delta)),
+    reasonCodes: [...new Set([...existing.reasonCodes, ...reasonCodes])],
+  });
+}
+
 function mapRadarSignal(row: any): ContentRadarSignal {
   const reasonCodes = parseJsonArray(row.reason_codes_json).filter((item): item is string => typeof item === 'string');
   return {
@@ -750,25 +822,20 @@ function makeSignalId(tenantId: number, sourceType: string, sourceReferenceId: s
 }
 
 function normalizeTopic(topic: string): string {
-  return fold(topic).replace(/[^a-z0-9]+/g, ' ').trim().replace(/\s+/g, ' ');
+  return normalizeContentTopicText(topic);
 }
 
 function normalizeTag(value: string): string {
-  return fold(value).replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+  return foldContentText(value).replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
 }
 
 function textOverlapScore(topic: string, value: string): number {
-  if (!topic || !value) return 0.5;
-  if (topic.includes(value) || value.includes(topic)) return 0.9;
-  const topicTokens = new Set(topic.split(/\s+/).filter((token) => token.length >= 3));
-  const valueTokens = value.split(/\s+/).filter((token) => token.length >= 3);
-  if (topicTokens.size === 0 || valueTokens.length === 0) return 0.5;
-  const matches = valueTokens.filter((token) => topicTokens.has(token)).length;
-  return Math.max(0.35, Math.min(0.9, matches / valueTokens.length));
-}
-
-function fold(value: string): string {
-  return value.normalize('NFD').replace(/\p{Diacritic}/gu, '').toLowerCase().trim();
+  return contentTokenOverlap(topic, value, {
+    emptyScore: 0.5,
+    containmentScore: 0.9,
+    floor: 0.35,
+    cap: 0.9,
+  });
 }
 
 function clamp01(value: number): number {

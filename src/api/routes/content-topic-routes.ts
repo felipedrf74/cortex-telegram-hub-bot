@@ -12,15 +12,17 @@ import {
   getUpcomingTopicCount,
   updateTopic,
   deleteTopic,
+  getTopicById,
   CONTENT_TOPIC_STATUSES,
   type ContentTopicStatus,
+  type ContentTopic,
 } from '../../services/content-scheduler';
 import {
   getContentRadarPreferences,
   setContentRadarPreferences,
 } from '../../services/content-radar-preferences';
 import { localizeFilmingRecommendation } from '../../services/content-intelligence';
-import { syncContentTopicSecretaryArtifacts } from '../../services/content-topic-secretary-sync';
+import { cleanupContentTopicSecretaryArtifacts } from '../../services/content-topic-secretary-sync';
 import { logger } from '../../utils/logger';
 import { runOutboxTransaction } from '../../services/event-outbox';
 import { consumeResourceBudget } from '../../services/resource-budgets';
@@ -62,15 +64,15 @@ export function registerContentTopicRoutes(
 ): void {
   /** GET /api/v1/content/radar-preferences — creator topics for Reaction Radar */
   router.get('/radar-preferences', asyncHandler(async (req, res: Response) => {
-    const { userId } = req as unknown as AuthenticatedRequest;
+    const { userId, tenantId } = req as unknown as AuthenticatedRequest;
     if (!ensureValidContentRouteScope(res, userId, 'content_route_radar_preferences_read')) return;
 
-    sendSuccess(res, getContentRadarPreferences(userId));
+    sendSuccess(res, getContentRadarPreferences(userId, tenantId));
   }));
 
   /** PUT /api/v1/content/radar-preferences — replace creator topics for Reaction Radar */
   router.put('/radar-preferences', asyncHandler(async (req, res: Response) => {
-    const { userId } = req as unknown as AuthenticatedRequest;
+    const { userId, tenantId } = req as unknown as AuthenticatedRequest;
     if (!ensureValidContentRouteScope(res, userId, 'content_route_radar_preferences_write')) return;
 
     const topics = Array.isArray(req.body?.topics) ? req.body.topics : null;
@@ -79,7 +81,7 @@ export function registerContentTopicRoutes(
       return;
     }
 
-    const preferences = setContentRadarPreferences(userId, topics);
+    const preferences = setContentRadarPreferences(userId, topics, tenantId);
     invalidateContentDerivedCaches(userId);
     sendSuccess(res, preferences);
   }));
@@ -179,9 +181,10 @@ export function registerContentTopicRoutes(
         scheduledDate: effectiveScheduledDate,
         scheduledAt: scheduledDateTime ?? null,
         status: status ?? 'planned',
+        tenantId,
       });
       const topic = runOutboxTransaction((emitDomainEvent) => {
-        const created = writeTopic();
+        const created = markTopicSecretarySyncPending(userId, writeTopic());
         emitDomainEvent({
           tenantId,
           userId,
@@ -190,17 +193,21 @@ export function registerContentTopicRoutes(
           entityType: 'content_topic',
           entityId: created.id,
           payload: {
-            summary: { status: created.status, scheduled: Boolean(created.scheduled_date ?? created.scheduled_at) },
+            summary: {
+              status: created.status,
+              scheduled: Boolean(created.scheduled_date ?? created.scheduled_at),
+              syncPending: topicNeedsSecretarySync(created),
+            },
             action: 'created',
+            language,
           },
           privacyClassification: 'private_content',
           idempotencyKey: `content.idea.created:${userId}:${created.id}`,
         });
         return created;
       });
-      const syncedTopic = await syncContentTopicSecretaryArtifacts(userId, topic, { language });
       invalidateContentDerivedCaches(userId);
-      sendSuccess(res, { topic: syncedTopic }, { status: 201 });
+      sendSuccess(res, { topic }, { status: 201 });
     } catch (err: any) {
       logger.error({ err, userId }, 'iOS content topic create failed');
       sendInternalError(res, 'Failed to create topic');
@@ -247,9 +254,22 @@ export function registerContentTopicRoutes(
     if (!consumeContentWriteBudget(res, tenantId, userId, 'content_topic_update')) return;
 
     try {
+      const existingTopic = getTopicById(userId, topicId);
+      if (!existingTopic) {
+        sendError(res, 'NOT_FOUND', 'Topic not found or not owned by user', 404);
+        return;
+      }
       const effectiveScheduledDate = scheduledDate !== undefined
         ? scheduledDate
         : datePartFromScheduledDateTime(scheduledDateTime);
+      const nextSchedule = resolveNextTopicSchedule(existingTopic, scheduledDate, scheduledDateTime);
+      if (nextSchedule.clearsSchedule && topicHasSecretaryRefs(existingTopic)) {
+        const cleanup = await cleanupContentTopicSecretaryArtifacts(userId, existingTopic);
+        if (cleanup.errors.length > 0) {
+          sendInternalError(res, 'Failed to clean up synced Secretary artifacts');
+          return;
+        }
+      }
       const mutationFingerprint = stableMutationFingerprint({
         title: title !== undefined ? title.trim() : undefined,
         notes: notes !== undefined ? (notes === null ? null : String(notes)) : undefined,
@@ -263,35 +283,45 @@ export function registerContentTopicRoutes(
         scheduled_date: effectiveScheduledDate,
         scheduled_at: scheduledDateTime !== undefined ? scheduledDateTime : undefined,
         status,
+        secretary_task_list_id: nextSchedule.clearsSchedule ? null : undefined,
+        secretary_task_list_name: nextSchedule.clearsSchedule ? null : undefined,
+        secretary_task_external_id: nextSchedule.clearsSchedule ? null : undefined,
+        calendar_event_id: nextSchedule.clearsSchedule ? null : undefined,
+        calendar_source: nextSchedule.clearsSchedule ? null : undefined,
+        secretary_sync_status: nextSchedule.hasSchedule ? 'pending' : nextSchedule.clearsSchedule ? null : undefined,
+        secretary_sync_error: nextSchedule.hasSchedule || nextSchedule.clearsSchedule ? null : undefined,
       });
       const updated = runOutboxTransaction((emitDomainEvent) => {
         const row = writeUpdate();
         if (!row) return null;
+        const topic = markTopicSecretarySyncPending(userId, row);
         emitDomainEvent({
           tenantId,
           userId,
           sourceSkill: 'content',
           eventType: 'content.idea.updated',
           entityType: 'content_topic',
-          entityId: row.id,
+          entityId: topic.id,
           payload: {
-            summary: { status: row.status, scheduled: Boolean(row.scheduled_date ?? row.scheduled_at) },
+            summary: {
+              status: topic.status,
+              scheduled: Boolean(topic.scheduled_date ?? topic.scheduled_at),
+              syncPending: topicNeedsSecretarySync(topic),
+            },
             action: 'updated',
+            language: resolveContentLanguage(req, userId),
           },
           privacyClassification: 'private_content',
-          idempotencyKey: `content.idea.updated:${userId}:${row.id}:${mutationFingerprint}`,
+          idempotencyKey: `content.idea.updated:${userId}:${topic.id}:${mutationFingerprint}`,
         });
-        return row;
+        return topic;
       });
       if (!updated) {
         sendError(res, 'NOT_FOUND', 'Topic not found or not owned by user', 404);
         return;
       }
-      const syncedTopic = await syncContentTopicSecretaryArtifacts(userId, updated, {
-        language: resolveContentLanguage(req, userId),
-      });
       invalidateContentDerivedCaches(userId);
-      sendSuccess(res, { topic: syncedTopic });
+      sendSuccess(res, { topic: updated });
     } catch (err: any) {
       logger.error({ err, userId, topicId }, 'iOS content topic update failed');
       sendInternalError(res, 'Failed to update topic');
@@ -315,6 +345,18 @@ export function registerContentTopicRoutes(
     if (!consumeContentWriteBudget(res, tenantId, userId, 'content_topic_delete')) return;
 
     try {
+      const topic = getTopicById(userId, topicId);
+      if (!topic) {
+        sendError(res, 'NOT_FOUND', 'Topic not found or not owned by user', 404);
+        return;
+      }
+      if (topicHasSecretaryRefs(topic)) {
+        const cleanup = await cleanupContentTopicSecretaryArtifacts(userId, topic);
+        if (cleanup.errors.length > 0) {
+          sendInternalError(res, 'Failed to clean up synced Secretary artifacts');
+          return;
+        }
+      }
       const writeDelete = () => deleteTopic(userId, topicId);
       const deleted = runOutboxTransaction((emitDomainEvent) => {
         const didDelete = writeDelete();
@@ -353,6 +395,49 @@ function stableMutationFingerprint(value: Record<string, unknown>): string {
     .update(JSON.stringify(value, Object.keys(value).sort()))
     .digest('hex')
     .slice(0, 16);
+}
+
+function topicNeedsSecretarySync(topic: Pick<ContentTopic, 'scheduled_date' | 'scheduled_at'>): boolean {
+  return Boolean(topic.scheduled_date ?? topic.scheduled_at);
+}
+
+function topicHasSecretaryRefs(topic: ContentTopic): boolean {
+  return Boolean(
+    (topic.secretary_task_external_id && topic.secretary_task_list_id)
+    || (topic.calendar_event_id && topic.calendar_source),
+  );
+}
+
+function markTopicSecretarySyncPending(userId: number, topic: ContentTopic): ContentTopic {
+  if (!topicNeedsSecretarySync(topic)) return topic;
+  if (topic.secretary_sync_status === 'pending' && !topic.secretary_sync_error) return topic;
+  return updateTopic(userId, topic.id, {
+    secretary_sync_status: 'pending',
+    secretary_sync_error: null,
+  }) ?? {
+    ...topic,
+    secretary_sync_status: 'pending',
+    secretary_sync_error: null,
+  };
+}
+
+function resolveNextTopicSchedule(
+  existing: ContentTopic,
+  scheduledDate: string | null | undefined,
+  scheduledDateTime: string | null | undefined,
+): { hasSchedule: boolean; clearsSchedule: boolean } {
+  const nextDate = scheduledDate !== undefined
+    ? scheduledDate
+    : scheduledDateTime !== undefined && scheduledDateTime !== null
+      ? datePartFromScheduledDateTime(scheduledDateTime)
+      : existing.scheduled_date;
+  const nextDateTime = scheduledDateTime !== undefined ? scheduledDateTime : existing.scheduled_at;
+  const hadSchedule = topicNeedsSecretarySync(existing);
+  const hasSchedule = Boolean(nextDate ?? nextDateTime);
+  return {
+    hasSchedule,
+    clearsSchedule: hadSchedule && !hasSchedule,
+  };
 }
 
 function consumeContentWriteBudget(res: Response, tenantId: number, userId: number, budgetKey: string): boolean {

@@ -52,9 +52,11 @@ vi.mock('../../src/services/unified-calendar', () => ({
   hasWritableCalendarForUser: vi.fn(() => calendarWritable),
   createEvent: vi.fn(async () => ({ id: 'evt-1', source: 'google' })),
   updateEvent: vi.fn(async () => ({ id: 'evt-existing', source: 'outlook' })),
+  deleteEvent: vi.fn(async () => undefined),
 }));
 
 vi.mock('../../src/services/content-scheduler', () => ({
+  getTopicById: vi.fn(() => null),
   updateTopic: vi.fn((_userId: number, topicId: number, updates: any) => ({
     id: topicId,
     user_id: _userId,
@@ -69,11 +71,11 @@ vi.mock('../../src/services/content-scheduler', () => ({
   })),
 }));
 
-import { syncContentTopicSecretaryArtifacts } from '../../src/services/content-topic-secretary-sync';
+import { cleanupContentTopicSecretaryArtifacts, syncContentTopicSecretaryArtifacts } from '../../src/services/content-topic-secretary-sync';
 import { invalidateCalendarCaches } from '../../src/services/cache-coherence-registry';
 import { updateTopic } from '../../src/services/content-scheduler';
 import { invalidateTaskCaches } from '../../src/services/cache-coherence-registry';
-import { createEvent, updateEvent } from '../../src/services/unified-calendar';
+import { createEvent, deleteEvent, updateEvent } from '../../src/services/unified-calendar';
 
 function topic(overrides: Partial<any> = {}) {
   return {
@@ -98,6 +100,7 @@ describe('content topic Secretary sync', () => {
     taskProvider = {
       createTask: vi.fn(async () => ({ success: true, data: { id: 'task-1', title: 'Conteúdo: Topic test' } })),
       updateTask: vi.fn(async () => ({ success: true, data: { id: 'task-existing' } })),
+      deleteTask: vi.fn(async () => ({ success: true })),
     };
   });
 
@@ -174,5 +177,25 @@ describe('content topic Secretary sync', () => {
       secretary_sync_status: 'task_synced_calendar_unavailable',
       secretary_sync_error: 'calendar_not_connected',
     }));
+  });
+
+  it('cleans up existing Secretary task and calendar artifacts', async () => {
+    const result = await cleanupContentTopicSecretaryArtifacts(77, topic({
+      secretary_task_list_id: 'list-old',
+      secretary_task_list_name: 'Content',
+      secretary_task_external_id: 'task-existing',
+      calendar_event_id: 'evt-existing',
+      calendar_source: 'outlook',
+    }));
+
+    expect(result).toEqual({ taskDeleted: true, calendarDeleted: true, errors: [] });
+    expect(taskProvider.deleteTask).toHaveBeenCalledWith('list-old', 'task-existing');
+    expect(deleteEvent).toHaveBeenCalledWith('evt-existing', 'outlook', 77);
+    expect(invalidateTaskCaches).toHaveBeenCalledWith({
+      userId: 77,
+      listIds: ['list-old'],
+      includeDerivedSurfaces: true,
+    });
+    expect(invalidateCalendarCaches).toHaveBeenCalledWith(77);
   });
 });

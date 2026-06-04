@@ -38,17 +38,29 @@ class BookDNA(BaseModel):
     personal_notes: list[str]    # initially empty
 
 
-async def _web_search(query: str, max_results: int = 5) -> list[dict]:
+def _serpapi_locale(language: str | None) -> tuple[str, str]:
+    normalized = (language or "en-US").strip().lower()
+    if normalized == "pt-br" or "brazil" in normalized or "brasil" in normalized:
+        return "pt", "br"
+    if normalized == "pt-pt" or "portugal" in normalized or "european" in normalized:
+        return "pt", "pt"
+    if normalized.startswith("pt"):
+        return "pt", "pt"
+    return "en", "us"
+
+
+async def _web_search(query: str, max_results: int = 5, language: str = "en-US") -> list[dict]:
     """Run a single SerpAPI search and return organic results."""
-    if not cfg.serpapi_api_key:
+    if not cfg.serpapi_key:
         return []
     try:
+        hl, gl = _serpapi_locale(language)
         params = {
             "q": query,
-            "api_key": cfg.serpapi_api_key,
+            "api_key": cfg.serpapi_key,
             "num": max_results,
-            "hl": "pt",
-            "gl": "br",
+            "hl": hl,
+            "gl": gl,
         }
         async with httpx.AsyncClient(timeout=15.0) as client:
             resp = await client.get(SERPAPI_URL, params=params)
@@ -107,7 +119,7 @@ async def extract_book_with_metadata(
         f'"{title}" practical application real world',
     ]
 
-    search_tasks = [_web_search(q, max_results=3) for q in queries]
+    search_tasks = [_web_search(q, max_results=3, language=language) for q in queries]
     results_lists = await asyncio.gather(*search_tasks, return_exceptions=True)
 
     # Flatten results

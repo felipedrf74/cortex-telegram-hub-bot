@@ -70,6 +70,7 @@ GATES=(
   "calendar-agenda-lifecycle|src/services/unified-calendar.ts|calendar"
   "provider-routing-fallback|src/services/provider-registry.ts|provider-"
   "migration-rollback-review|migrations/082_example.sql|MIGRATION"
+  "irreversible-migration-manual-approval|migrations/200_content_radar_phase0_rollout_guards.sql|IRREVERSIBLE_MIGRATION"
   "deploy-script-promotion-rehearsal|scripts/deploy.sh|DEPLOY"
   "hook-validation-on-feature-branch|.husky/pre-commit|HOOK"
   "ci-workflow-validation-on-PR|.github/workflows/ci.yml|CI"
@@ -119,15 +120,15 @@ for entry in "${GATES[@]}"; do
     continue
   }
 
-  # Use node for safe JSON parsing. Sentinels (MIGRATION / DEPLOY / HOOK /
-  # CI / TEST_CONFIG) are policy-only gates with no specific test glob; we
+  # Use node for safe JSON parsing. Sentinels (MIGRATION /
+  # IRREVERSIBLE_MIGRATION / DEPLOY / HOOK / CI / TEST_CONFIG) are policy-only gates with no specific test glob; we
   # accept them if the cannotSkip name fires. Other gates must have at
   # least one test route that contains the expected substring.
   result=$(node -e "
     const data = JSON.parse(process.argv[1]);
     const gate = process.argv[2];
     const expected = process.argv[3];
-    const sentinels = new Set(['MIGRATION', 'DEPLOY', 'HOOK', 'CI', 'TEST_CONFIG']);
+    const sentinels = new Set(['MIGRATION', 'IRREVERSIBLE_MIGRATION', 'DEPLOY', 'HOOK', 'CI', 'TEST_CONFIG']);
     const cannotSkipHit = (data.cannotSkip || []).includes(gate);
     const allTestRoutes = [
       ...(data.vitest && data.vitest.globs ? data.vitest.globs : []),

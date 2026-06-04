@@ -169,6 +169,25 @@ describe('content-lifecycle (CONTENT-UI-O4)', () => {
     expect(summary.hasData).toBe(true);
   });
 
+  it('does not count accepted radar signals that were converted or already have a topic', () => {
+    testDb.prepare(`
+      INSERT INTO content_topics (
+        user_id, tenant_id, owner_user_id, visibility_scope, scope_status,
+        title, status, lifecycle_state, created_at, updated_at
+      ) VALUES (?, ?, ?, 'user_private', 'active', 'Already a topic', 'planned', 'active', datetime('now'), datetime('now'))
+    `).run(USER, USER, USER);
+
+    recordRadarFeedback(USER, USER, { signalId: 'sig-active', action: 'accept', signalTopic: 'Still only accepted' });
+    recordRadarFeedback(USER, USER, { signalId: 'sig-topic', action: 'accept', signalTopic: 'Already a topic' });
+    recordRadarFeedback(USER, USER, { signalId: 'sig-converted', action: 'accept', signalTopic: 'Converted signal' });
+    recordRadarFeedback(USER, USER, { signalId: 'sig-converted', action: 'create_brief', signalTopic: 'Converted signal' });
+
+    const summary = summarizeCanonicalLifecycle(USER, USER);
+    const byStage = Object.fromEntries(summary.buckets.map(b => [b.stage, b.count]));
+    expect(byStage.accepted).toBe(1);
+    expect(byStage.suggested).toBe(1);
+  });
+
   it('returns empty summary for invalid userId', () => {
     const summary = summarizeCanonicalLifecycle(0);
     expect(summary.total).toBe(0);

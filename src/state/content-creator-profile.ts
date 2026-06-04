@@ -270,8 +270,8 @@ export function upsertContentCreatorProfile(
       language_preference   = excluded.language_preference,
       voice_examples_json   = excluded.voice_examples_json,
       updated_by            = excluded.updated_by,
-      scope_status          = 'active',
       updated_at            = datetime('now')
+    WHERE content_creator_profile.scope_status != 'archived'
   `);
 
   stmt.run({

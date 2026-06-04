@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-06-03T20:19:06.938Z",
+  "generatedAt": "2026-06-04T13:19:56.826Z",
   "source": "chat-action-registry-shadow-parity.test.ts",
   "totals": {
     "tested": 278,
@@ -2581,8 +2581,8 @@
         "planResolved": true,
         "skill": "content",
         "action": "content_schedule_work",
-        "requiredArgsPresent": false,
-        "title": "morning routines for Friday at 10am"
+        "requiredArgsPresent": true,
+        "title": "morning routines"
       },
       "parity": "match",
       "mismatchReasons": []
@@ -2598,7 +2598,7 @@
         "planResolved": true,
         "skill": "content",
         "action": "content_schedule_work",
-        "requiredArgsPresent": false,
+        "requiredArgsPresent": true,
         "title": "Friday morning"
       },
       "parity": "match",
@@ -2615,8 +2615,8 @@
         "planResolved": true,
         "skill": "content",
         "action": "content_schedule_work",
-        "requiredArgsPresent": false,
-        "title": "rotina matinal para sexta às 10h"
+        "requiredArgsPresent": true,
+        "title": "rotina matinal"
       },
       "parity": "match",
       "mismatchReasons": []
@@ -2632,7 +2632,7 @@
         "planResolved": true,
         "skill": "content",
         "action": "content_schedule_work",
-        "requiredArgsPresent": false,
+        "requiredArgsPresent": true,
         "title": "Publica este reel mañana"
       },
       "parity": "match",

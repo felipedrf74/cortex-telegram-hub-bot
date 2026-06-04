@@ -2,7 +2,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import Database from 'better-sqlite3';
 import fs from 'fs';
 import path from 'path';
-import type { ContentRegisteredReference } from '../../src/services/content-reference-provenance';
 
 const MIGRATIONS_DIR = path.resolve(__dirname, '../../migrations');
 let testDb: Database.Database;
@@ -15,8 +14,6 @@ vi.mock('../../src/services/database', () => ({
 }));
 
 import {
-  buildCrossSkillContentOpportunitySignal,
-  buildRadarSignalFromReference,
   convertContentRadarSignal,
   prioritizeContentRadarSignals,
   retrieveContentRadarSignals,
@@ -24,6 +21,7 @@ import {
   upsertContentRadarSignal,
 } from '../../src/services/content-radar-engine';
 import { upsertContentBrandProfile } from '../../src/services/content-memory-profile';
+import { recordRadarFeedback } from '../../src/state/content-radar-feedback';
 
 function applyMigrations(db: Database.Database): void {
   db.exec(`
@@ -38,39 +36,6 @@ function applyMigrations(db: Database.Database): void {
     db.exec(fs.readFileSync(path.join(MIGRATIONS_DIR, file), 'utf-8'));
     db.prepare('INSERT INTO _migrations (filename) VALUES (?)').run(file);
   }
-}
-
-function reference(overrides: Partial<ContentRegisteredReference> = {}): ContentRegisteredReference {
-  return {
-    id: 1,
-    referenceId: 'ref-book-1',
-    tenantId: 101,
-    ownerUserId: 501,
-    visibilityScope: 'user_private',
-    referenceType: 'book',
-    sourceTable: 'content_reference_registry',
-    sourcePk: '1',
-    sourceIdentifier: 'book://creator-system',
-    title: 'Creator System',
-    url: null,
-    authorSource: 'Reference Author',
-    extractionStatus: 'ready',
-    freshnessScore: 0.88,
-    trustLevel: 'curated',
-    qualityScore: 0.86,
-    confidenceScore: 0.84,
-    topicTags: ['creator systems'],
-    relatedOutputIds: [],
-    lastUsedAt: null,
-    brokenStatus: 'ok',
-    staleStatus: 'fresh',
-    sourceSummary: 'A source-backed note about building creator systems.',
-    sourceSnippets: ['Creator systems need a capture, selection, and publishing rhythm.'],
-    usableForGeneration: true,
-    reviewRequired: false,
-    rejectionReasons: [],
-    ...overrides,
-  };
 }
 
 describe('Content radar opportunity engine', () => {
@@ -180,67 +145,39 @@ describe('Content radar opportunity engine', () => {
     expect(duplicate.score.reasonCodes).toContain('high_duplicate_risk');
   });
 
-  it('builds channel-derived signals with reference provenance and channel reason codes', () => {
-    const signal = buildRadarSignalFromReference({
+  it('keeps related radar signals separate from duplicate signal ids', () => {
+    const first = upsertContentRadarSignal({
       userId: 501,
       tenantId: 101,
-      reference: reference({
-        id: 2,
-        referenceId: 'ref-channel-1',
-        referenceType: 'channel',
-        sourceIdentifier: 'https://youtube.com/@operator-channel',
-        title: 'Operator Channel',
-        sourceSummary: 'A channel pattern about founder systems videos.',
-      }),
-      topic: 'Founder systems video pattern',
-      platform: 'youtube',
-      format: 'youtube_long_form',
+      sourceType: 'manual',
+      sourceReferenceId: 'related-a',
+      topic: 'Creator operating system',
+      confidence: 0.9,
+      novelty: 0.9,
     });
-
-    expect(signal.sourceType).toBe('channel');
-    expect(signal.sourceReferenceTitle).toBe('Operator Channel');
-    expect(signal.score.reasonCodes).toContain('reference_channel_signal');
-    expect(signal.provenance).toMatchObject({ referenceId: 'ref-channel-1', referenceType: 'channel' });
-  });
-
-  it('builds book-derived signals and rejects private references owned by another user', () => {
-    const signal = buildRadarSignalFromReference({
+    const related = upsertContentRadarSignal({
       userId: 501,
       tenantId: 101,
-      reference: reference(),
-      topic: 'Capture and publish rhythm from Creator System',
-      platform: 'linkedin',
-      format: 'linkedin_post',
+      sourceType: 'manual',
+      sourceReferenceId: 'related-b',
+      topic: 'Creator capture workflow',
+      confidence: 0.9,
+      novelty: 0.9,
     });
-
-    expect(signal.sourceType).toBe('book');
-    expect(signal.score.reasonCodes).toContain('book_reference_signal');
-    expect(signal.evidence).toEqual(['Creator systems need a capture, selection, and publishing rhythm.']);
-    expect(() => buildRadarSignalFromReference({
-      userId: 502,
-      tenantId: 101,
-      reference: reference({ ownerUserId: 501, visibilityScope: 'user_private' }),
-      topic: 'Unauthorized private book signal',
-    })).toThrow(/private to another user/);
-  });
-
-  it('creates cross-skill Training milestone opportunities', () => {
-    const signal = buildCrossSkillContentOpportunitySignal({
+    const duplicate = upsertContentRadarSignal({
       userId: 501,
       tenantId: 101,
-      sourceSkill: 'training',
-      sourceSignalType: 'milestone',
-      topic: 'First 10K run breakthrough',
-      summary: 'Training logged a first 10K milestone worth turning into a story.',
-      evidence: [{ planId: 'plan_10k', sessionId: 'session_7' }],
+      sourceType: 'manual',
+      sourceReferenceId: 'related-c',
+      topic: 'Creator capture workflow',
+      confidence: 0.9,
+      novelty: 0.9,
     });
 
-    expect(signal.sourceSkill).toBe('training');
-    expect(signal.score.crossSkillRelevance).toBeGreaterThanOrEqual(0.85);
-    expect(signal.score.reasonCodes).toEqual(expect.arrayContaining([
-      'cross_skill_opportunity',
-      'cross_skill_training_milestone',
-    ]));
+    expect(related.relatedSignalIds).toContain(first.signalId);
+    expect(related.duplicateSignalIds).not.toContain(first.signalId);
+    expect(duplicate.duplicateSignalIds).toContain(related.signalId);
+    expect(duplicate.relatedSignalIds).not.toContain(related.signalId);
   });
 
   it('lets Secretary capacity reduce prioritization and explain why production is constrained', () => {
@@ -272,6 +209,103 @@ describe('Content radar opportunity engine', () => {
       'low_production_feasibility',
       'secretary_capacity_low',
     ]));
+  });
+
+  it('keeps the explicit raw retrieval path free of radar feedback adjustments', () => {
+    const strong = upsertContentRadarSignal({
+      userId: 501,
+      tenantId: 101,
+      sourceType: 'manual',
+      sourceReferenceId: 'feedback-strong',
+      topic: 'Creator systems flagship video',
+      confidence: 0.95,
+      freshness: 0.95,
+      novelty: 0.95,
+      sourceQuality: 0.95,
+      productionFeasibility: 0.95,
+      strategicValue: 0.95,
+    });
+    const softer = upsertContentRadarSignal({
+      userId: 501,
+      tenantId: 101,
+      sourceType: 'manual',
+      sourceReferenceId: 'feedback-softer',
+      topic: 'Creator systems checklist post',
+      confidence: 0.8,
+      freshness: 0.8,
+      novelty: 0.8,
+      sourceQuality: 0.8,
+      productionFeasibility: 0.8,
+      strategicValue: 0.8,
+    });
+
+    recordRadarFeedback(501, 101, {
+      signalId: strong.signalId,
+      action: 'reject',
+      signalTopic: strong.topic,
+    });
+    recordRadarFeedback(501, 101, {
+      signalId: softer.signalId,
+      action: 'accept',
+      signalTopic: softer.topic,
+    });
+
+    const raw = retrieveContentRadarSignals({ userId: 501, tenantId: 101, limit: 2, prioritized: false });
+    const prioritized = prioritizeContentRadarSignals({ userId: 501, tenantId: 101, limit: 2 });
+
+    expect(raw[0].signalId).toBe(strong.signalId);
+    expect(raw[0].score.reasonCodes).not.toContain('radar_feedback_rejected');
+    expect(prioritized[0].signalId).toBe(softer.signalId);
+    expect(prioritized[0].score.reasonCodes).toContain('radar_feedback_accepted');
+    expect(prioritized.find((signal) => signal.signalId === strong.signalId)?.score.reasonCodes)
+      .toContain('radar_feedback_rejected');
+  });
+
+  it('uses feedback-aware prioritization on the live retrieval path by default', () => {
+    const strong = upsertContentRadarSignal({
+      userId: 501,
+      tenantId: 101,
+      sourceType: 'manual',
+      sourceReferenceId: 'live-feedback-strong',
+      topic: 'Creator systems flagship live video',
+      confidence: 0.95,
+      freshness: 0.95,
+      novelty: 0.95,
+      sourceQuality: 0.95,
+      productionFeasibility: 0.95,
+      strategicValue: 0.95,
+    });
+    const weaker = upsertContentRadarSignal({
+      userId: 501,
+      tenantId: 101,
+      sourceType: 'manual',
+      sourceReferenceId: 'live-feedback-weaker',
+      topic: 'Creator systems saved checklist',
+      confidence: 0.78,
+      freshness: 0.78,
+      novelty: 0.78,
+      sourceQuality: 0.78,
+      productionFeasibility: 0.78,
+      strategicValue: 0.78,
+    });
+
+    recordRadarFeedback(501, 101, {
+      signalId: strong.signalId,
+      action: 'reject',
+      signalTopic: strong.topic,
+    });
+    recordRadarFeedback(501, 101, {
+      signalId: weaker.signalId,
+      action: 'accept',
+      signalTopic: weaker.topic,
+    });
+
+    const live = retrieveContentRadarSignals({ userId: 501, tenantId: 101, limit: 2 });
+
+    expect(live[0].signalId).toBe(weaker.signalId);
+    expect(live[0].score.reasonCodes).toContain('radar_feedback_accepted');
+    expect(live.find((signal) => signal.signalId === strong.signalId)?.score.reasonCodes)
+      .toContain('radar_feedback_rejected');
   });
 
   it('marks low-confidence signals as review-required instead of surfacing them as ready opportunities', () => {

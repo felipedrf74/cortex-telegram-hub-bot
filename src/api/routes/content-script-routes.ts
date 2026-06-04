@@ -167,7 +167,7 @@ export function registerContentScriptRoutes(
         voiceMemory = buildUserVoiceMemory(userId, (scopedUserId) => getAllKnowledge(scopedUserId, tenantId));
       } catch { /* non-critical — generate without voice if DB fails */ }
 
-      const scriptTopicContext = resolveScriptTopicContext(userId, req.body || {});
+      const scriptTopicContext = resolveScriptTopicContext(userId, req.body || {}, undefined, tenantId);
       const targetLanguage = resolveScriptTargetLanguage(language, userId, getUserLanguageById);
       const shouldForceRefresh = forceRefresh === true || regenerate === true;
       const resolvedRegenerationSeed = shouldForceRefresh

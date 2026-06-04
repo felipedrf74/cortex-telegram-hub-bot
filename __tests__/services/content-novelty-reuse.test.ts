@@ -101,6 +101,42 @@ describe('Content novelty, duplicate, and reuse controls', () => {
     expect(decision.reviewWarnings.join('\n')).toContain('new angle');
   });
 
+  it('compares beyond the 250 most recent novelty candidates', () => {
+    recordContentNoveltyCandidate({
+      userId: 501,
+      tenantId: 101,
+      artifactType: 'idea',
+      title: 'The long-lived operating system for creator teams',
+      topic: 'creator team operating system',
+      platformId: 'youtube',
+      formatId: 'youtube_long_form',
+    });
+    for (let index = 0; index < 260; index += 1) {
+      recordContentNoveltyCandidate({
+        userId: 501,
+        tenantId: 101,
+        artifactType: 'idea',
+        title: `Fresh filler idea ${index}`,
+        topic: `fresh filler topic ${index}`,
+        platformId: 'youtube',
+        formatId: 'youtube_long_form',
+      });
+    }
+
+    const duplicate = assessContentNovelty({
+      userId: 501,
+      tenantId: 101,
+      artifactType: 'idea',
+      title: 'The long-lived operating system for creator teams',
+      topic: 'creator team operating system',
+      platformId: 'youtube',
+      formatId: 'youtube_long_form',
+    });
+
+    expect(duplicate.status).toBe('duplicate');
+    expect(duplicate.matchedCandidates[0]?.title).toBe('The long-lived operating system for creator teams');
+  });
+
   it('allows intentional repurposing and records reuse provenance', () => {
     const original = recordContentNoveltyCandidate({
       userId: 501,
@@ -151,6 +187,37 @@ describe('Content novelty, duplicate, and reuse controls', () => {
     expect(decision.reasonCodes).toEqual(expect.arrayContaining(['intentional_repurpose_allowed']));
     expect(repurpose.originalContentId).toBe(original.candidateId);
     expect(listContentReuseHistory({ userId: 501, tenantId: 101, originalContentId: original.candidateId })).toHaveLength(1);
+  });
+
+  it('infers repurpose intent from lineage even when the caller omits reuseIntent', () => {
+    const original = recordContentNoveltyCandidate({
+      userId: 501,
+      tenantId: 101,
+      artifactType: 'script',
+      title: 'Founder creator operating system',
+      body: 'A long-form YouTube script about founder creator operating systems.',
+      topic: 'creator operating systems',
+      angle: 'long-form educational walkthrough',
+      platformId: 'youtube',
+      formatId: 'youtube_long_form',
+    });
+
+    const decision = assessContentNovelty({
+      userId: 501,
+      tenantId: 101,
+      artifactType: 'script',
+      title: 'Founder creator operating system',
+      topic: 'creator operating systems',
+      angle: 'short-form founder lesson',
+      platformId: 'instagram_reel',
+      formatId: 'short_form_video',
+      originalContentId: original.candidateId,
+      transformationType: 'short_form_cutdown',
+    });
+
+    expect(decision.status).toBe('allowed_reuse');
+    expect(decision.reuseAllowed).toBe(true);
+    expect(decision.strategicReuse.intent).toBe('repurpose');
   });
 
   it('does not compare against unauthorized tenant content', () => {

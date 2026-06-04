@@ -17,18 +17,25 @@ export function resolveScriptTopicContext(
   userId: number,
   raw: Record<string, unknown>,
   db: ReturnType<typeof getDb> = getDb(),
+  tenantId?: number | null,
 ): ScriptTopicContext | null {
   const context: ScriptTopicContext = {};
+  const expectedTenantId = tenantId != null && Number.isFinite(tenantId) && tenantId > 0 ? Number(tenantId) : null;
 
   const pipelineId = parseOptionalPositiveId(raw.pipelineId);
   const topicFeedbackId = parseOptionalPositiveId(raw.topicFeedbackId);
   const ideaId = parseOptionalPositiveId(raw.ideaId);
+  let pipelineAuthorized = false;
+  let topicFeedbackAuthorized = false;
+  let ideaAuthorized = false;
 
   if (pipelineId != null) {
     try {
       const row = db.prepare(`
         SELECT p.id AS pipeline_id,
                p.user_id AS pipeline_user_id,
+               p.tenant_id AS pipeline_tenant_id,
+               p.owner_user_id AS pipeline_owner_user_id,
                p.niche AS pipeline_niche,
                tf.id AS topic_feedback_id,
                tf.niche AS feedback_niche,
@@ -42,7 +49,10 @@ export function resolveScriptTopicContext(
         LIMIT 1
       `).get(pipelineId) as any;
 
-      if (row && row.pipeline_user_id === userId) {
+      if (row && row.pipeline_user_id === userId
+        && (row.pipeline_owner_user_id == null || Number(row.pipeline_owner_user_id) === userId)
+        && (expectedTenantId == null || row.pipeline_tenant_id == null || Number(row.pipeline_tenant_id) === expectedTenantId)) {
+        pipelineAuthorized = true;
         context.pipelineId = row.pipeline_id;
         context.topicFeedbackId = row.topic_feedback_id ?? context.topicFeedbackId;
         context.niche = row.feedback_niche || row.pipeline_niche || context.niche;
@@ -65,6 +75,7 @@ export function resolveScriptTopicContext(
     `).get(topicFeedbackId, userId) as any;
 
     if (row) {
+      topicFeedbackAuthorized = true;
       context.topicFeedbackId = row.id;
       context.niche = row.niche || context.niche;
       context.hookIdea = row.hook_idea || context.hookIdea;
@@ -83,6 +94,7 @@ export function resolveScriptTopicContext(
     `).get(ideaId, userId) as any;
 
     if (row) {
+      ideaAuthorized = true;
       context.ideaId = row.id;
       context.niche = row.niche || context.niche;
       context.hookIdea = row.hook_idea || context.hookIdea;
@@ -97,9 +109,9 @@ export function resolveScriptTopicContext(
   const explicitWhyNow = parseOptionalText(raw.whyNow);
   const explicitAngleTag = parseOptionalText(raw.angleTag);
 
-  if (pipelineId != null) context.pipelineId = pipelineId;
-  if (topicFeedbackId != null) context.topicFeedbackId = topicFeedbackId;
-  if (ideaId != null) context.ideaId = ideaId;
+  if (pipelineId != null && pipelineAuthorized) context.pipelineId = pipelineId;
+  if (topicFeedbackId != null && topicFeedbackAuthorized) context.topicFeedbackId = topicFeedbackId;
+  if (ideaId != null && ideaAuthorized) context.ideaId = ideaId;
   if (explicitNiche) context.niche = explicitNiche;
   if (explicitHookIdea) context.hookIdea = explicitHookIdea;
   if (explicitWhyNow) context.whyNow = explicitWhyNow;

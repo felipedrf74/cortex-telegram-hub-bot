@@ -20,6 +20,7 @@ import {
   actionToStepType,
   pickExpectedFields,
 } from '../../skills/step-builder';
+import { missingContentAgencySlots } from '../../skills/content/helpers';
 import { missingTrainingPlanSlots } from '../../skills/training/helpers';
 import { logger } from '../../../utils/logger';
 import { normalizeProvider } from '../planner/plan-utils';
@@ -78,6 +79,24 @@ export function persistStepStatus(
       action: 'training_plan_create',
       collectedSlots: args,
       missingSlots: missingTrainingPlanSlots(args),
+      riskClass: 'R1',
+      locale: input.locale || plan.locale,
+      timezone: input.timezone,
+      originatingSurface: input.channel,
+      nowIso: plan.createdAt,
+    });
+  }
+  if (status === 'needs_clarification'
+    && (step.action === 'content_brief_create' || step.action === 'content_script_create')) {
+    const args = step.args as Record<string, unknown>;
+    upsertPendingChatAction({
+      userId: input.userId,
+      tenantId: input.tenantId,
+      conversationId: input.conversationId,
+      skill: 'content',
+      action: step.action,
+      collectedSlots: args,
+      missingSlots: missingContentAgencySlots(step.action, args),
       riskClass: 'R1',
       locale: input.locale || plan.locale,
       timezone: input.timezone,

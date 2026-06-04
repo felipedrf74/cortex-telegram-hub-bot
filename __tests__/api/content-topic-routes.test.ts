@@ -3,6 +3,7 @@ import { Router, type Request, type Response } from 'express';
 import Database from 'better-sqlite3';
 
 let testDb: Database.Database;
+let topicStore: Map<number, any>;
 
 vi.mock('../../src/utils/logger', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(), trace: vi.fn(), child: vi.fn().mockReturnThis() },
@@ -48,33 +49,44 @@ vi.mock('../../src/services/content-intelligence', () => ({
 
 vi.mock('../../src/services/content-radar-preferences', () => ({
   getContentRadarPreferences: vi.fn(() => ({ topics: ['running'], updatedAt: '2026-04-24T10:00:00.000Z' })),
-  setContentRadarPreferences: vi.fn((userId: number, topics: string[]) => ({
+  setContentRadarPreferences: vi.fn((userId: number, topics: string[], tenantId?: number) => ({
     topics,
     userId,
+    tenantId,
     updatedAt: '2026-04-24T10:05:00.000Z',
   })),
 }));
 
 vi.mock('../../src/services/content-topic-secretary-sync', () => ({
-  syncContentTopicSecretaryArtifacts: vi.fn(async (_userId: number, topic: any) => ({
-    ...topic,
-    secretary_sync_status: topic.scheduled_at ? 'task_calendar_synced' : 'task_synced',
-  })),
+  cleanupContentTopicSecretaryArtifacts: vi.fn(async () => ({ taskDeleted: true, calendarDeleted: true, errors: [] })),
 }));
 
 vi.mock('../../src/services/content-scheduler', () => ({
   CONTENT_TOPIC_STATUSES: ['planned', 'drafting', 'ready', 'published', 'cancelled'],
-  addTopic: vi.fn((userId: number, title: string, opts: any) => ({
-    id: 11,
-    user_id: userId,
-    title,
-    notes: opts.notes,
-    scheduled_date: opts.scheduledDate,
-    scheduled_at: opts.scheduledAt,
-    status: opts.status,
-    created_at: '2026-04-24T10:00:00.000Z',
-    updated_at: '2026-04-24T10:00:00.000Z',
-  })),
+  addTopic: vi.fn((userId: number, title: string, opts: any) => {
+    const topic = {
+      id: 11,
+      user_id: userId,
+      tenant_id: opts.tenantId,
+      owner_user_id: userId,
+      title,
+      notes: opts.notes,
+      scheduled_date: opts.scheduledDate,
+      scheduled_at: opts.scheduledAt,
+      status: opts.status,
+      secretary_task_list_id: null,
+      secretary_task_list_name: null,
+      secretary_task_external_id: null,
+      calendar_event_id: null,
+      calendar_source: null,
+      secretary_sync_status: null,
+      secretary_sync_error: null,
+      created_at: '2026-04-24T10:00:00.000Z',
+      updated_at: '2026-04-24T10:00:00.000Z',
+    };
+    topicStore.set(topic.id, topic);
+    return topic;
+  }),
   getTopics: vi.fn(() => [
     { id: 7, title: 'Race week recap', status: 'ready', scheduled_date: '2026-04-25' },
   ]),
@@ -88,28 +100,63 @@ vi.mock('../../src/services/content-scheduler', () => ({
     trainingLoad: 'light',
     calendarLoad: 'light',
   })),
-  updateTopic: vi.fn((userId: number, topicId: number, updates: any) => ({
-    id: topicId,
-    user_id: userId,
-    title: updates.title ?? 'Race week recap',
-    notes: updates.notes ?? null,
-    scheduled_date: updates.scheduled_date ?? null,
-    scheduled_at: updates.scheduled_at ?? null,
-    status: updates.status ?? 'planned',
-    created_at: '2026-04-24T10:00:00.000Z',
-    updated_at: '2026-04-24T10:10:00.000Z',
-  })),
-  deleteTopic: vi.fn(() => true),
+  getTopicById: vi.fn((userId: number, topicId: number) => {
+    const topic = topicStore.get(topicId);
+    return topic?.user_id === userId ? topic : null;
+  }),
+  updateTopic: vi.fn((userId: number, topicId: number, updates: any) => {
+    const existing = topicStore.get(topicId) ?? {
+      id: topicId,
+      user_id: userId,
+      tenant_id: userId,
+      owner_user_id: userId,
+      title: 'Race week recap',
+      notes: null,
+      scheduled_date: '2026-04-25',
+      scheduled_at: null,
+      status: 'planned',
+      secretary_task_list_id: null,
+      secretary_task_list_name: null,
+      secretary_task_external_id: null,
+      calendar_event_id: null,
+      calendar_source: null,
+      secretary_sync_status: null,
+      secretary_sync_error: null,
+      created_at: '2026-04-24T10:00:00.000Z',
+      updated_at: '2026-04-24T10:00:00.000Z',
+    };
+    if (existing.user_id !== userId) return null;
+    const topic = {
+      ...existing,
+      title: updates.title !== undefined ? updates.title : existing.title,
+      notes: updates.notes !== undefined ? updates.notes : existing.notes,
+      scheduled_date: updates.scheduled_date !== undefined ? updates.scheduled_date : existing.scheduled_date,
+      scheduled_at: updates.scheduled_at !== undefined ? updates.scheduled_at : existing.scheduled_at,
+      status: updates.status !== undefined ? updates.status : existing.status,
+      secretary_task_list_id: updates.secretary_task_list_id !== undefined ? updates.secretary_task_list_id : existing.secretary_task_list_id,
+      secretary_task_list_name: updates.secretary_task_list_name !== undefined ? updates.secretary_task_list_name : existing.secretary_task_list_name,
+      secretary_task_external_id: updates.secretary_task_external_id !== undefined ? updates.secretary_task_external_id : existing.secretary_task_external_id,
+      calendar_event_id: updates.calendar_event_id !== undefined ? updates.calendar_event_id : existing.calendar_event_id,
+      calendar_source: updates.calendar_source !== undefined ? updates.calendar_source : existing.calendar_source,
+      secretary_sync_status: updates.secretary_sync_status !== undefined ? updates.secretary_sync_status : existing.secretary_sync_status,
+      secretary_sync_error: updates.secretary_sync_error !== undefined ? updates.secretary_sync_error : existing.secretary_sync_error,
+      updated_at: '2026-04-24T10:10:00.000Z',
+    };
+    topicStore.set(topicId, topic);
+    return topic;
+  }),
+  deleteTopic: vi.fn((_userId: number, topicId: number) => topicStore.delete(topicId)),
 }));
 
 import { registerContentTopicRoutes } from '../../src/api/routes/content-topic-routes';
 import { invalidateContentDerivedCaches } from '../../src/services/cache-coherence-registry';
 import { getContentRadarPreferences, setContentRadarPreferences } from '../../src/services/content-radar-preferences';
-import { syncContentTopicSecretaryArtifacts } from '../../src/services/content-topic-secretary-sync';
+import { cleanupContentTopicSecretaryArtifacts } from '../../src/services/content-topic-secretary-sync';
 import {
   addTopic,
   deleteTopic,
   getFilmingRecommendation,
+  getTopicById,
   getTopics,
   getUpcomingTopicCount,
   updateTopic,
@@ -200,6 +247,7 @@ async function dispatch(
 describe('content topic routes', () => {
   beforeEach(() => {
     testDb = new Database(':memory:');
+    topicStore = new Map();
     vi.clearAllMocks();
   });
 
@@ -211,12 +259,12 @@ describe('content topic routes', () => {
     const read = await dispatch('GET', '/radar-preferences', {}, 77);
     expect(read.response.statusCode).toBe(200);
     expect(read.response.body.data.topics).toEqual(['running']);
-    expect(getContentRadarPreferences).toHaveBeenCalledWith(77);
+    expect(getContentRadarPreferences).toHaveBeenCalledWith(77, 77);
     expect(read.ensureValidScope).toHaveBeenCalledWith(expect.anything(), 77, 'content_route_radar_preferences_read');
 
     const write = await dispatch('PUT', '/radar-preferences', { topics: ['hybrid', 'product'] }, 77);
     expect(write.response.statusCode).toBe(200);
-    expect(setContentRadarPreferences).toHaveBeenCalledWith(77, ['hybrid', 'product']);
+    expect(setContentRadarPreferences).toHaveBeenCalledWith(77, ['hybrid', 'product'], 77);
     expect(write.ensureValidScope).toHaveBeenCalledWith(expect.anything(), 77, 'content_route_radar_preferences_write');
     expect(invalidateContentDerivedCaches).toHaveBeenCalledWith(77);
   });
@@ -268,13 +316,13 @@ describe('content topic routes', () => {
       scheduledDate: '2026-04-25',
       scheduledAt: '2026-04-25T09:30:00',
       status: 'drafting',
+      tenantId: 77,
     });
-    expect(syncContentTopicSecretaryArtifacts).toHaveBeenCalledWith(77, expect.objectContaining({
-      title: 'Race recap',
-      scheduled_date: '2026-04-25',
-      scheduled_at: '2026-04-25T09:30:00',
-    }), { language: 'pt-BR' });
-    expect(response.body.data.topic.secretary_sync_status).toBe('task_calendar_synced');
+    expect(updateTopic).toHaveBeenCalledWith(77, 11, {
+      secretary_sync_status: 'pending',
+      secretary_sync_error: null,
+    });
+    expect(response.body.data.topic.secretary_sync_status).toBe('pending');
     expect(invalidateContentDerivedCaches).toHaveBeenCalledWith(77);
   });
 
@@ -290,12 +338,13 @@ describe('content topic routes', () => {
       scheduledDate: '2026-04-26',
       scheduledAt: null,
       status: 'planned',
+      tenantId: 77,
     });
-    expect(syncContentTopicSecretaryArtifacts).toHaveBeenCalledWith(77, expect.objectContaining({
-      scheduled_date: '2026-04-26',
-      scheduled_at: null,
-    }), { language: 'pt-BR' });
-    expect(response.body.data.topic.secretary_sync_status).toBe('task_synced');
+    expect(updateTopic).toHaveBeenCalledWith(77, 11, {
+      secretary_sync_status: 'pending',
+      secretary_sync_error: null,
+    });
+    expect(response.body.data.topic.secretary_sync_status).toBe('pending');
   });
 
   it('rejects invalid scheduledDate values before creating or updating topics', async () => {
@@ -322,10 +371,29 @@ describe('content topic routes', () => {
     expect(response.statusCode).toBe(400);
     expect(response.body.error.code).toBe('BAD_REQUEST');
     expect(addTopic).not.toHaveBeenCalled();
-    expect(syncContentTopicSecretaryArtifacts).not.toHaveBeenCalled();
   });
 
   it('updates and deletes only through scoped topic mutations', async () => {
+    topicStore.set(11, {
+      id: 11,
+      user_id: 77,
+      tenant_id: 77,
+      owner_user_id: 77,
+      title: 'Race week recap',
+      notes: null,
+      scheduled_date: '2026-04-25',
+      scheduled_at: null,
+      status: 'planned',
+      secretary_task_list_id: null,
+      secretary_task_list_name: null,
+      secretary_task_external_id: null,
+      calendar_event_id: null,
+      calendar_source: null,
+      secretary_sync_status: null,
+      secretary_sync_error: null,
+      created_at: '2026-04-24T10:00:00.000Z',
+      updated_at: '2026-04-24T10:00:00.000Z',
+    });
     const update = await dispatch('PATCH', '/topics/11', {
       title: '  Updated angle  ',
       scheduledDate: null,
@@ -339,10 +407,51 @@ describe('content topic routes', () => {
       scheduled_date: null,
       scheduled_at: undefined,
       status: undefined,
+      secretary_task_list_id: null,
+      secretary_task_list_name: null,
+      secretary_task_external_id: null,
+      calendar_event_id: null,
+      calendar_source: null,
+      secretary_sync_status: null,
+      secretary_sync_error: null,
     });
     expect(remove.response.statusCode).toBe(200);
+    expect(getTopicById).toHaveBeenCalledWith(77, 11);
     expect(deleteTopic).toHaveBeenCalledWith(77, 11);
     expect(invalidateContentDerivedCaches).toHaveBeenCalledWith(77);
+  });
+
+  it('cleans up synced Secretary artifacts before hard-deleting a topic', async () => {
+    topicStore.set(11, {
+      id: 11,
+      user_id: 77,
+      tenant_id: 77,
+      owner_user_id: 77,
+      title: 'Race week recap',
+      notes: null,
+      scheduled_date: '2026-04-25',
+      scheduled_at: '2026-04-25T09:30:00',
+      status: 'planned',
+      secretary_task_list_id: 'list-1',
+      secretary_task_list_name: 'Content',
+      secretary_task_external_id: 'task-1',
+      calendar_event_id: 'evt-1',
+      calendar_source: 'google',
+      secretary_sync_status: 'task_calendar_synced',
+      secretary_sync_error: null,
+      created_at: '2026-04-24T10:00:00.000Z',
+      updated_at: '2026-04-24T10:00:00.000Z',
+    });
+
+    const remove = await dispatch('DELETE', '/topics/11', {}, 77);
+
+    expect(remove.response.statusCode).toBe(200);
+    expect(cleanupContentTopicSecretaryArtifacts).toHaveBeenCalledWith(77, expect.objectContaining({
+      id: 11,
+      secretary_task_external_id: 'task-1',
+      calendar_event_id: 'evt-1',
+    }));
+    expect(deleteTopic).toHaveBeenCalledWith(77, 11);
   });
 
   it('refuses topic routes without a valid authenticated user scope', async () => {

@@ -611,6 +611,37 @@ describe('content-learning-store: artifact chain', () => {
     expect(chain.performance[0].views).toBe(10000);
   });
 
+  it('returns only learned patterns from the pipeline niche category', () => {
+    testDb.prepare(`
+      INSERT INTO content_pipeline (
+        topic_title, niche, stage, user_id,
+        tenant_id, owner_user_id, visibility_scope, scope_status
+      )
+      VALUES ('Pattern scoped topic', 'tech', 'scripted', 1, 1, 1, 'user_private', 'active')
+    `).run();
+    const pipelineId = (testDb.prepare('SELECT last_insert_rowid() as id').get() as any).id;
+
+    upsertLearnedPattern({
+      category: 'tech',
+      patternText: 'Use concrete implementation proof',
+      confidence: 0.6,
+      userId: 1,
+      tenantId: 1,
+    });
+    upsertLearnedPattern({
+      category: 'finance',
+      patternText: 'Lead with budget anxiety',
+      confidence: 0.95,
+      userId: 1,
+      tenantId: 1,
+    });
+
+    const chain = getArtifactChain(pipelineId, 1, 1);
+
+    expect(chain.patterns.map((pattern) => pattern.category)).toEqual(['tech']);
+    expect(chain.patterns.map((pattern) => pattern.patternText)).toEqual(['Use concrete implementation proof']);
+  });
+
   it('returns empty chain for non-existent pipeline', () => {
     const chain = getArtifactChain(99999, 1, 1);
     expect(chain.pipeline).toBeNull();

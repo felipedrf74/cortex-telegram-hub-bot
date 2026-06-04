@@ -2,6 +2,7 @@
 
 import { DateTime } from 'luxon';
 import { claimChatActionRunForExecution, updateChatActionRun, type ChatActionRunStatus } from '../../chat-action-run-store';
+import { upsertPendingChatAction } from '../../chat-action-state';
 import type { ChatActionPlan, ChatPlannerInput, ChatPlanStep } from '../../chat/types';
 import { addTopic, getTopicById } from '../../content-scheduler';
 import { buildContentAgencyPackage, ensureContentAgencyTables, getContentAgencyProject, handoffContentAgencyPackageToPipeline, persistContentAgencyArtifact } from '../../content-agency';
@@ -9,6 +10,7 @@ import { claimActionRunForStepExecution, reconciliationPendingResult, updateClai
 import { getDb } from '../../database';
 import { invalidateContentDerivedCaches } from '../../cache-coherence-registry';
 import { normalizeContentPipelineTransitionStage, type ContentPipelineTransitionStage } from './pipeline-stage';
+import { missingContentAgencySlots } from './helpers';
 
 export function executeContentAgencyStep(
   step: ChatPlanStep,
@@ -32,15 +34,42 @@ export function executeContentAgencyStep(
   if (claim && !claim.acquired && claim.row.status === 'verified_success') {
     return { step, status: 'verified_success', result: claim.row.result_json ? JSON.parse(claim.row.result_json) : { replayed: true } };
   }
+  if (claim && !claim.acquired && claim.row.status === 'verified_pending') {
+    return { step, status: 'verified_pending', result: claim.row.result_json ? JSON.parse(claim.row.result_json) : { replayed: true } };
+  }
   try {
+    const missing = missingContentAgencySlots(step.action, args);
+    if (missing.length > 0) {
+      const result = persistRuns
+        ? upsertContentPendingAction(step, plan, input, args, missing)
+        : {
+          pendingActionId: null,
+          missingSlots: missing,
+          collectedSlots: args,
+          openSurface: 'script_studio',
+          verified: false,
+        };
+      if (!updateClaimedActionRun(claim, 'verified_pending', {
+        result,
+        providerObjectId: result.pendingActionId ? String(result.pendingActionId) : undefined,
+        verification: { verified: false, reason: 'content_spec_input_required', pendingActionId: result.pendingActionId },
+      })) return reconciliationPendingResult(step, 'verified_pending');
+      return { step, status: 'verified_pending', result };
+    }
+    const isRewrite = step.action === 'content_rewrite';
+    const sourceText = typeof args.sourceText === 'string' && args.sourceText.trim()
+      ? args.sourceText.trim()
+      : null;
     const pkg = buildContentAgencyPackage({
       userId: input.userId,
       tenantId: input.tenantId,
+      transcript: isRewrite ? sourceText ?? input.text : null,
+      requestedOutput: isRewrite ? 'rewrite' : step.action === 'content_script_create' ? 'script' : 'brief',
       brief: {
         userId: input.userId,
         tenantId: input.tenantId,
-        goal: String(args.goal || args.objective || args.topic || 'Create content from chat request'),
-        objective: String(args.objective || args.topic || input.text),
+        goal: String(args.goal || args.objective || args.topic || (isRewrite ? 'Rewrite user supplied content' : 'Create content from chat request')),
+        objective: String(args.objective || args.topic || (isRewrite ? 'Rewrite the supplied content while preserving the user intent.' : input.text)),
         audience: typeof args.audience === 'string' ? args.audience : null,
         platform: typeof args.platform === 'string' ? args.platform : 'generic',
         format: typeof args.format === 'string' ? args.format : null,
@@ -56,6 +85,7 @@ export function executeContentAgencyStep(
       firstScript: pkg.scriptVariants[0] ?? null,
       quality: pkg.quality,
       verified,
+      sourceTextPreserved: isRewrite && sourceText ? !pkg.transcriptStudy.warnings.includes('transcript_missing') : undefined,
     };
     const status: ChatActionRunStatus = verified ? 'verified_success' : 'partial_success';
     if (!updateClaimedActionRun(claim, status, {
@@ -90,6 +120,7 @@ export function executeContentScheduleWorkStep(
       scheduledDate: dateTime.toISODate(),
       scheduledAt: dateTime.toISO(),
       status: 'planned',
+      tenantId: input.tenantId,
     });
     const readBack = getTopicById(input.userId, topic.id);
     const verified = Boolean(readBack && readBack.title === title && readBack.scheduled_date === dateTime.toISODate());
@@ -105,6 +136,42 @@ export function executeContentScheduleWorkStep(
     if (claim) updateChatActionRun(claim.row.id, 'failed', { error: { message: err instanceof Error ? err.message : String(err) } });
     return { step, status: 'failed', error: 'content_schedule_failed' };
   }
+}
+
+function upsertContentPendingAction(
+  step: ChatPlanStep,
+  plan: ChatActionPlan,
+  input: ChatPlannerInput,
+  args: Record<string, unknown>,
+  missing: string[],
+): {
+  pendingActionId: string;
+  missingSlots: string[];
+  collectedSlots: Record<string, unknown>;
+  openSurface: 'script_studio';
+  verified: false;
+} {
+  const pending = upsertPendingChatAction({
+    userId: input.userId,
+    tenantId: input.tenantId,
+    conversationId: input.conversationId,
+    skill: 'content',
+    action: step.action,
+    collectedSlots: args,
+    missingSlots: missing,
+    riskClass: 'R1',
+    locale: input.locale || plan.locale,
+    timezone: input.timezone,
+    originatingSurface: input.channel,
+    nowIso: plan.createdAt,
+  });
+  return {
+    pendingActionId: pending.id,
+    missingSlots: missing,
+    collectedSlots: args,
+    openSurface: 'script_studio',
+    verified: false,
+  };
 }
 
 export function executeContentPipelineHandoffStep(

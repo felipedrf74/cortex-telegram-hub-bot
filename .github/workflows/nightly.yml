@@ -75,33 +75,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Verify migration sequence + syntax
-        run: |
-          cd migrations
-          expected=1
-          for f in $(ls *.sql | sort); do
-            num=$(echo "$f" | grep -oP '^\d+')
-            num=$((10#$num))
-            while [ "$expected" -eq 142 ] || [ "$expected" -eq 143 ]; do
-              expected=$((expected + 1))
-            done
-            if [ "$num" -ne "$expected" ]; then
-              echo "❌ Gap: expected $expected, got $num ($f)"
-              exit 1
-            fi
-            expected=$((expected + 1))
-          done
-          echo "✅ $((expected - 1)) migrations in sequence"
-
-      - name: Apply migrations to a fresh in-memory DB
-        run: |
-          cd migrations
-          DB="/tmp/nightly-rehearsal.db"
-          rm -f "$DB"
-          for f in $(ls *.sql | sort); do
-            sqlite3 "$DB" < "$f" || echo "⚠️ migration $f produced an error"
-          done
-          echo "✅ Full migration rehearsal complete"
+      - name: Verify sequence, duplicates, and cumulative apply
+        run: node scripts/migration-safety-check.mjs
 
   release-doc-drift-strict:
     name: 📝 Release-doc drift (strict)

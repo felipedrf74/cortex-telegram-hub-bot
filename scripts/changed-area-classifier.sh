@@ -142,6 +142,8 @@ HAS_CI_WORKFLOW=false
 HAS_TEST_CONFIG=false
 HAS_PACKAGE_JSON=false
 HAS_NON_DOC=false
+HAS_HIGH_FAN_IN=false
+HAS_IRREVERSIBLE_MIGRATION=false
 # Closed-beta hardening (2026-05-03): attachment plumbing, model
 # routing, and explicit personalization-scope changes that the audit
 # flagged as missing dedicated routing into the security tests.
@@ -273,6 +275,28 @@ match '^\.husky/' && HAS_HOOK=true
 match '^\.github/workflows/' && HAS_CI_WORKFLOW=true
 match '^vitest\.config\.ts$|^tsconfig\.json$' && HAS_TEST_CONFIG=true
 match '^package\.json$|^package-lock\.json$' && HAS_PACKAGE_JSON=true
+match '^src/(config|index)\.ts$|^src/services/(database|db|tenant-scope)\.ts$|^src/api/router\.ts$' && HAS_HIGH_FAN_IN=true
+
+detect_irreversible_migration() {
+  local f stripped
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    case "$f" in
+      migrations/*.sql)
+        [ -f "$LOCAL_DIR/$f" ] || continue
+        stripped="$(sed -E 's/--.*$//' "$LOCAL_DIR/$f" | tr '\n' ' ')"
+        if printf '%s\n' "$stripped" | grep -Eiq '\bDROP[[:space:]]+TABLE\b|\bDROP[[:space:]]+COLUMN\b|\bALTER[[:space:]]+TABLE\b[^;]*\bRENAME\b|\bRENAME[[:space:]]+TO\b'; then
+          return 0
+        fi
+        ;;
+    esac
+  done <<<"$CHANGED"
+  return 1
+}
+
+if $HAS_MIGRATION && detect_irreversible_migration; then
+  HAS_IRREVERSIBLE_MIGRATION=true
+fi
 
 # Closed-beta hardening (2026-05-03): three new flags so the
 # security/isolation suite gets dispatched whenever the relevant
@@ -407,6 +431,7 @@ $HAS_PROMPT && CANNOT_SKIP+=("prompt-injection-defense")
 $HAS_CALENDAR && CANNOT_SKIP+=("calendar-agenda-lifecycle")
 $HAS_PROVIDER_ROUTING && CANNOT_SKIP+=("provider-routing-fallback")
 $HAS_MIGRATION && CANNOT_SKIP+=("migration-rollback-review")
+$HAS_IRREVERSIBLE_MIGRATION && CANNOT_SKIP+=("irreversible-migration-manual-approval")
 $HAS_SCIENCE_POLICY_JSON && CANNOT_SKIP+=("science-policy-version-check")
 $HAS_DEPLOY_SCRIPT && CANNOT_SKIP+=("deploy-script-promotion-rehearsal")
 $HAS_HOOK && CANNOT_SKIP+=("hook-validation-on-feature-branch")
@@ -481,6 +506,8 @@ PYTEST_GLOBS=()
 if $HAS_NON_DOC; then
   if $HAS_TEST_CONFIG || $HAS_PACKAGE_JSON; then
     VITEST_MODE="full"
+  elif $HAS_HIGH_FAN_IN; then
+    VITEST_MODE="full"
   elif $HAS_BACKEND_SRC || $HAS_BACKEND_TEST || $HAS_DEPLOY_CONFIG; then
     VITEST_MODE="focused"
     $HAS_TRAINING && VITEST_GLOBS+=("__tests__/services/training-*.test.ts" "__tests__/services/coach-kernel-*.test.ts" "__tests__/api/training-*.test.ts" "__tests__/integration/training-plan-create-cycle.test.ts")
@@ -543,6 +570,10 @@ fi
 
 if $HAS_CONTENT_PROMPT_CLEANLINESS; then
   PYTEST_GLOBS+=("content-engine/tests/test_prompt_cleanliness.py")
+fi
+
+if $HAS_PYTHON_ENGINE; then
+  PYTEST_GLOBS+=("content-engine/tests")
 fi
 
 SKIP_REASON=""
@@ -639,6 +670,8 @@ emit_json() {
   export CLAS_CI_WORKFLOW="$HAS_CI_WORKFLOW"
   export CLAS_TEST_CONFIG="$HAS_TEST_CONFIG"
   export CLAS_PACKAGE_JSON="$HAS_PACKAGE_JSON"
+  export CLAS_HIGH_FAN_IN="$HAS_HIGH_FAN_IN"
+  export CLAS_IRREVERSIBLE_MIGRATION="$HAS_IRREVERSIBLE_MIGRATION"
   export CLAS_CURRENT_VERDICT_DOC="$HAS_CURRENT_VERDICT_DOC"
   export CLAS_ATTACHMENT="$HAS_ATTACHMENT"
   export CLAS_CHAT_REASONING="$HAS_CHAT_REASONING"
@@ -722,6 +755,8 @@ const payload = {
     ciWorkflow: flag('CLAS_CI_WORKFLOW'),
     testConfig: flag('CLAS_TEST_CONFIG'),
     packageJson: flag('CLAS_PACKAGE_JSON'),
+    highFanIn: flag('CLAS_HIGH_FAN_IN'),
+    irreversibleMigration: flag('CLAS_IRREVERSIBLE_MIGRATION'),
     currentVerdictDoc: flag('CLAS_CURRENT_VERDICT_DOC'),
     attachment: flag('CLAS_ATTACHMENT'),
     chatReasoning: flag('CLAS_CHAT_REASONING'),

@@ -4,13 +4,10 @@ import crypto from 'crypto';
 import { config } from '../config';
 import { logger } from '../utils/logger';
 import { getCurrentRequestId, generateRequestId } from '../utils/request-context';
-import { maybeSaveToFile, saveContentAsDocx } from './content-file-saver';
 import type { AgentSignal } from './intelligence-bus';
 import { buildCurrentCreatorProfilePayload } from './content-engine-profile-payload';
 import { createInternalAttributionToken } from './internal-attribution';
 import { requireTenantIdParam } from './tenant-scope';
-
-export { maybeSaveToFile, saveContentAsDocx } from './content-file-saver';
 
 // ── Types mirroring Python Pydantic models ──────────────────────────
 
@@ -538,7 +535,7 @@ export async function getScript(
       // FIX: signalDays is a time window, not a count limit.
       // readSignals(consumer, types, limit, userId, maxAgeDays)
       // CONT-M1: null-coalesce in case readSignals returns null/undefined
-      const raw = readSignals('script-engine', [...signalTypes], 100, userId, cfg.signalDays) || [];
+      const raw = readSignals('script-engine', [...signalTypes], 100, userId, cfg.signalDays, tenantId) || [];
       const ranked = rankScriptSignals(raw, topic, niche, scriptContext);
       const signalLimit = mode === 'deep' ? 10 : 4;
       contextSignals = ranked.slice(0, signalLimit).map(s => ({

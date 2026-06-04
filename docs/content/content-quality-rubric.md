@@ -130,10 +130,17 @@ safe before approval.
     but iOS extraction or real-provider sampling has not been attached to that
     run.
     The harness can attach those lanes with `--ios-extraction-score` and
-    `--real-provider-sample-score`, or the matching
+    `--real-provider-sample-score`, plus mandatory provenance flags for each
+    lane: `--ios-extraction-run-id`, `--ios-extraction-source`,
+    `--ios-extraction-sample-count`, `--real-provider-sample-run-id`,
+    `--real-provider-sample-source`, and `--real-provider-sample-count`. The matching
     `CONTENT_EVAL_IOS_EXTRACTION_SCORE` and
-    `CONTENT_EVAL_REAL_PROVIDER_SAMPLE_SCORE` environment variables, when that
-    evidence was produced by a separate authorized run.
+    `CONTENT_EVAL_REAL_PROVIDER_SAMPLE_SCORE` environment variables also require
+    `CONTENT_EVAL_IOS_EXTRACTION_RUN_ID`, `CONTENT_EVAL_IOS_EXTRACTION_SOURCE`,
+    `CONTENT_EVAL_IOS_EXTRACTION_SAMPLE_COUNT`,
+    `CONTENT_EVAL_REAL_PROVIDER_SAMPLE_RUN_ID`,
+    `CONTENT_EVAL_REAL_PROVIDER_SAMPLE_SOURCE`, and
+    `CONTENT_EVAL_REAL_PROVIDER_SAMPLE_COUNT`. Score-only external lanes are ignored.
     External lane scores are clamped to `0...100`; attached lane evidence below
     `90` fails the release gate instead of merely converting the run to `PASS`.
   - `FAIL` is required for any tenant leak, hallucinated source, copied

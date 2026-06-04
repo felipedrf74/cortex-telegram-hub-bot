@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
+from types import SimpleNamespace
 from models.requests import (
     DeepSearchRequest, DeepSearchResponse, SourcesResponse, HotNewsRequest, HotNewsResponse,
     TrendingResponse, ReactionResponse,
@@ -106,7 +107,10 @@ async def hot_news(
     orch: ResearchOrchestrator = Depends(get_orchestrator),
 ) -> HotNewsResponse:
     """What's trending right now across all niches."""
-    return await orch.hot_news(creator_profile=creator_profile, language=language)
+    return await _with_ai_attribution(
+        SimpleNamespace(user_id=None, tenant_id=None, internal_attribution_token=None),
+        lambda: orch.hot_news(creator_profile=creator_profile, language=language),
+    )
 
 
 @router.post("/hotnews", response_model=HotNewsResponse)
@@ -158,6 +162,7 @@ async def generate_script(
 ) -> ScriptResponse:
     """Generate a full video script with research baked in."""
     from services.creative import script_writer
+    _creative_topic_guard(req.topic, "script")
     return await _with_ai_attribution(req, lambda: script_writer.generate(req, orch))
 
 
@@ -242,7 +247,10 @@ async def weekly_report(
 ) -> ReportResponse:
     """Weekly or monthly content performance report."""
     from services.learning import report_gen
-    return await report_gen.generate(period, creator_profile=creator_profile, language=language)
+    return await _with_ai_attribution(
+        SimpleNamespace(user_id=None, tenant_id=None, internal_attribution_token=None),
+        lambda: report_gen.generate(period, creator_profile=creator_profile, language=language),
+    )
 
 
 @router.post("/report", response_model=ReportResponse)

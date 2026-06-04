@@ -12,6 +12,7 @@ import {
 } from '../../state/content-creator-profile';
 import {
   recordRadarFeedback,
+  revokeRadarFeedback,
   listRadarFeedback,
   radarFeedbackAggregateBySignal,
   isValidRadarFeedbackAction,
@@ -156,6 +157,51 @@ export function registerContentCreatorProfileRoutes(
       feedback: items,
       aggregateBySignal: radarFeedbackAggregateBySignal(userId, tenantId),
     });
+  }));
+
+  /** DELETE /api/v1/content/radar/feedback
+   *  Body/query: { signalId: string, action?: 'accept'|'reject'|'save'|'create_brief' }
+   *  Archives active feedback rows so Undo can revoke server-side ranker input. */
+  router.delete('/radar/feedback', asyncHandler(async (req, res: Response) => {
+    const { userId, tenantId } = req as unknown as AuthenticatedRequest;
+    if (!ensureValidContentRouteScope(res, userId, 'content_radar_feedback_revoke')) return;
+
+    const body = (req.body && typeof req.body === 'object') ? req.body : {};
+    const signalIdRaw = typeof body.signalId === 'string'
+      ? body.signalId
+      : typeof req.query.signalId === 'string'
+        ? req.query.signalId
+        : '';
+    const actionRaw = typeof body.action === 'string'
+      ? body.action
+      : typeof req.query.action === 'string'
+        ? req.query.action
+        : undefined;
+    const signalId = signalIdRaw.trim();
+    if (!signalId) {
+      sendError(res, 'VALIDATION', 'signalId is required', 400);
+      return;
+    }
+    if (actionRaw !== undefined && !isValidRadarFeedbackAction(actionRaw)) {
+      sendError(res, 'VALIDATION',
+        'action must be one of accept|reject|save|create_brief', 400);
+      return;
+    }
+
+    try {
+      const revokedCount = revokeRadarFeedback(userId, tenantId, {
+        signalId,
+        action: isValidRadarFeedbackAction(actionRaw) ? actionRaw : undefined,
+      });
+      sendSuccess(res, {
+        revokedCount,
+        aggregateBySignal: radarFeedbackAggregateBySignal(userId, tenantId),
+      });
+    } catch (err) {
+      logger.warn({ err, userId, tenantId, signalId, action: actionRaw },
+        'content-radar-feedback.revoke failed');
+      sendError(res, 'INTERNAL', 'Failed to revoke radar feedback', 500);
+    }
   }));
 
   // ────────────────────────────────────────────────────────────────────

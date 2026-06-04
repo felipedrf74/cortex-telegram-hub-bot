@@ -32,6 +32,7 @@ vi.mock('../../src/config', () => ({
 
 import {
   recordRadarFeedback,
+  revokeRadarFeedback,
   listRadarFeedback,
   radarFeedbackAggregateBySignal,
   isValidRadarFeedbackAction,
@@ -114,11 +115,22 @@ describe('content-radar-feedback (CONTENT-UI-O2)', () => {
     expect(list[0].signalId).toBe('sig-1');
   });
 
-  it('records multiple feedbacks (append-only) for the same signal', () => {
-    recordRadarFeedback(USER_A, USER_A, { signalId: 'sig-2', action: 'save' });
-    recordRadarFeedback(USER_A, USER_A, { signalId: 'sig-2', action: 'accept' });
-    recordRadarFeedback(USER_A, USER_A, { signalId: 'sig-2', action: 'create_brief' });
-    expect(listRadarFeedback(USER_A, USER_A, { signalId: 'sig-2' })).toHaveLength(3);
+  it('keeps one active feedback row per signal/action and updates snapshots on retry', () => {
+    const first = recordRadarFeedback(USER_A, USER_A, {
+      signalId: 'sig-2',
+      action: 'save',
+      reason: 'first tap',
+    });
+    const second = recordRadarFeedback(USER_A, USER_A, {
+      signalId: 'sig-2',
+      action: 'save',
+      reason: 'retry with updated reason',
+    });
+
+    expect(second.id).toBe(first.id);
+    const rows = listRadarFeedback(USER_A, USER_A, { signalId: 'sig-2' });
+    expect(rows).toHaveLength(1);
+    expect(rows[0].reason).toBe('retry with updated reason');
   });
 
   // ──────── filters ────────
@@ -156,8 +168,35 @@ describe('content-radar-feedback (CONTENT-UI-O2)', () => {
     recordRadarFeedback(USER_A, USER_A, { signalId: 'sig-X', action: 'reject' });
     recordRadarFeedback(USER_A, USER_A, { signalId: 'sig-X', action: 'reject' });
     recordRadarFeedback(USER_B, USER_B, { signalId: 'sig-X', action: 'accept' });
-    expect(radarFeedbackAggregateBySignal(USER_A, USER_A)['sig-X']).toEqual({ reject: 2 });
+    expect(radarFeedbackAggregateBySignal(USER_A, USER_A)['sig-X']).toEqual({ reject: 1 });
     expect(radarFeedbackAggregateBySignal(USER_B, USER_B)['sig-X']).toEqual({ accept: 1 });
+  });
+
+  it('revokes active feedback without deleting other actions for the same signal', () => {
+    recordRadarFeedback(USER_A, USER_A, { signalId: 'sig-revoke', action: 'reject' });
+    recordRadarFeedback(USER_A, USER_A, { signalId: 'sig-revoke', action: 'save' });
+
+    expect(revokeRadarFeedback(USER_A, USER_A, {
+      signalId: 'sig-revoke',
+      action: 'reject',
+    })).toBe(1);
+
+    const active = listRadarFeedback(USER_A, USER_A, { signalId: 'sig-revoke' });
+    expect(active).toHaveLength(1);
+    expect(active[0].action).toBe('save');
+    expect(radarFeedbackAggregateBySignal(USER_A, USER_A)['sig-revoke']).toEqual({ save: 1 });
+  });
+
+  it('can recreate feedback after revoke', () => {
+    const first = recordRadarFeedback(USER_A, USER_A, { signalId: 'sig-again', action: 'accept' });
+    expect(revokeRadarFeedback(USER_A, USER_A, {
+      signalId: 'sig-again',
+      action: 'accept',
+    })).toBe(1);
+    const second = recordRadarFeedback(USER_A, USER_A, { signalId: 'sig-again', action: 'accept' });
+
+    expect(second.id).not.toBe(first.id);
+    expect(listRadarFeedback(USER_A, USER_A, { signalId: 'sig-again' })).toHaveLength(1);
   });
 
   // ──────── safety ────────

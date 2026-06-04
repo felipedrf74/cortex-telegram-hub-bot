@@ -102,7 +102,10 @@ describe('Content day-to-day evaluation harness', () => {
     expect(result.aggregate.laneScores.criticalUserScore).toBeGreaterThanOrEqual(92);
     expect(result.aggregate.releaseGate).toBe('PASS_WITH_CONDITIONS');
     expect(result.aggregate.criticalFailureCount).toBe(0);
-    expect(result.passed).toBe(true);
+    expect(result.passed).toBe(false);
+    expect(result.openConditions).toEqual(expect.arrayContaining([
+      expect.stringContaining('not a release-passing generation gate'),
+    ]));
 
     for (const testCase of result.cases) {
       expect(Object.keys(testCase.dimensionScores).sort()).toEqual(rubricIds);
@@ -118,10 +121,21 @@ describe('Content day-to-day evaluation harness', () => {
     const result = runContentDayToDayEvaluation({
       mode: 'fixture',
       iosExtractionScore: 96,
+      iosExtractionEvidence: {
+        runId: 'ios-content-extraction-20260604',
+        source: 'xcodebuild-content-ui-tests',
+        sampleCount: 4,
+      },
       realProviderSampleScore: 95,
+      realProviderSampleEvidence: {
+        runId: 'provider-content-sample-20260604',
+        source: 'limited-real-provider-eval',
+        sampleCount: 5,
+      },
     });
 
     expect(result.aggregate.releaseGate).toBe('PASS');
+    expect(result.passed).toBe(true);
     expect(result.aggregate.laneScores).toMatchObject({
       iosExtractionScore: 96,
       realProviderSampleScore: 95,
@@ -132,7 +146,17 @@ describe('Content day-to-day evaluation harness', () => {
     const result = runContentDayToDayEvaluation({
       mode: 'fixture',
       iosExtractionScore: 999,
+      iosExtractionEvidence: {
+        runId: 'ios-content-extraction-overflow',
+        source: 'xcodebuild-content-ui-tests',
+        sampleCount: 4,
+      },
       realProviderSampleScore: 999,
+      realProviderSampleEvidence: {
+        runId: 'provider-content-sample-overflow',
+        source: 'limited-real-provider-eval',
+        sampleCount: 5,
+      },
     });
 
     expect(result.aggregate.overallScore).toBeLessThanOrEqual(100);
@@ -141,11 +165,38 @@ describe('Content day-to-day evaluation harness', () => {
     expect(result.aggregate.releaseGate).toBe('PASS');
   });
 
+  it('does not allow fabricated external lane numbers to force a release PASS', () => {
+    const result = runContentDayToDayEvaluation({
+      mode: 'fixture',
+      iosExtractionScore: 100,
+      realProviderSampleScore: 100,
+    });
+
+    expect(result.aggregate.laneScores.iosExtractionScore).toBeNull();
+    expect(result.aggregate.laneScores.realProviderSampleScore).toBeNull();
+    expect(result.aggregate.releaseGate).toBe('PASS_WITH_CONDITIONS');
+    expect(result.passed).toBe(false);
+    expect(result.openConditions).toEqual(expect.arrayContaining([
+      expect.stringContaining('iOS visible-text extraction score was ignored'),
+      expect.stringContaining('Real-provider sample score was ignored'),
+    ]));
+  });
+
   it('fails when supplied external lane evidence is below the release quality floor', () => {
     const result = runContentDayToDayEvaluation({
       mode: 'fixture',
       iosExtractionScore: 70,
+      iosExtractionEvidence: {
+        runId: 'ios-content-extraction-low',
+        source: 'xcodebuild-content-ui-tests',
+        sampleCount: 4,
+      },
       realProviderSampleScore: 60,
+      realProviderSampleEvidence: {
+        runId: 'provider-content-sample-low',
+        source: 'limited-real-provider-eval',
+        sampleCount: 5,
+      },
     });
 
     expect(result.aggregate.overallScore).toBeLessThan(95);

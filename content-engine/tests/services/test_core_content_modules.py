@@ -118,7 +118,21 @@ def test_brief_builder_builds_actionable_brief_without_mock_noise():
     assert briefs[0].title == "tenant-42 Launch Plan"
     assert briefs[0].format == "YouTube"
     assert briefs[0].time_sensitive is True
+    assert briefs[0].hook.startswith("What this source suggests")
     assert "Set API_KEY" not in briefs[0].why_now
+
+
+def test_brief_builder_localizes_portuguese_fallback_copy():
+    scored = ScoredResult(
+        result=search_result(title="tenant-42 plano", snippet="", source="web"),
+        score=ScoreBreakdown(relevance=0.8, virality=0.5, recency=0.3, composite=0.7),
+    )
+
+    brief = brief_builder.build_briefs([scored], max_briefs=1, language="pt-PT")[0]
+
+    assert brief.hook.startswith("O que esta fonte sugere")
+    assert brief.title_options[1].startswith("O que esta fonte mostra")
+    assert "Fallback brief generated" not in brief.why_now
 
 
 def test_brief_builder_respects_max_briefs():
@@ -207,10 +221,92 @@ async def test_book_knowledge_no_search_results_returns_low_confidence(monkeypat
     assert dna.key_frameworks == []
 
 
+async def test_book_web_search_uses_canonical_serpapi_key(monkeypatch):
+    captured = {}
+
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "organic_results": [
+                    {
+                        "title": "Tenant research",
+                        "snippet": "Scoped source",
+                        "link": "https://example.test/book",
+                    }
+                ]
+            }
+
+    class FakeClient:
+        def __init__(self, timeout):
+            self.timeout = timeout
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def get(self, url, params):
+            captured["url"] = url
+            captured["params"] = params
+            return FakeResponse()
+
+    monkeypatch.setattr(book_knowledge, "cfg", SimpleNamespace(serpapi_key="serp-key"))
+    monkeypatch.setattr(book_knowledge.httpx, "AsyncClient", FakeClient)
+
+    results = await book_knowledge._web_search("tenant book", max_results=2)
+
+    assert captured["params"]["api_key"] == "serp-key"
+    assert captured["params"]["num"] == 2
+    assert captured["params"]["hl"] == "en"
+    assert captured["params"]["gl"] == "us"
+    assert results == [{
+        "title": "Tenant research",
+        "snippet": "Scoped source",
+        "link": "https://example.test/book",
+    }]
+
+
+async def test_book_web_search_uses_request_locale(monkeypatch):
+    captured = {}
+
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"organic_results": []}
+
+    class FakeClient:
+        def __init__(self, timeout):
+            self.timeout = timeout
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def get(self, url, params):
+            captured["params"] = params
+            return FakeResponse()
+
+    monkeypatch.setattr(book_knowledge, "cfg", SimpleNamespace(serpapi_key="serp-key"))
+    monkeypatch.setattr(book_knowledge.httpx, "AsyncClient", FakeClient)
+
+    await book_knowledge._web_search("tenant book", max_results=2, language="pt-PT")
+
+    assert captured["params"]["hl"] == "pt"
+    assert captured["params"]["gl"] == "pt"
+
+
 async def test_book_knowledge_synthesizes_search_results(monkeypatch, assert_no_founder_identity):
     captured = {}
 
-    async def fake_search(query, max_results=5):
+    async def fake_search(query, max_results=5, **_kwargs):
         return [{"title": "Tenant research", "snippet": query, "link": "https://example.test"}]
 
     async def fake_ask(prompt, **kwargs):

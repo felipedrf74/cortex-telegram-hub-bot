@@ -7,8 +7,8 @@ export type ContentPipelineTransitionStage = typeof CONTENT_PIPELINE_TRANSITION_
 const STAGE_PATTERN_BY_STAGE: Record<ContentPipelineTransitionStage, string> = {
   scripted: 'scripted|script\\s+ready|roteiro\\s+pronto|gui[oó]n\\s+listo|guion\\s+listo',
   filmed: 'filmed|filming|ready\\s+to\\s+film|filmado|filmada|gravado|gravada|filmagem|grabado|grabada',
-  editing: 'editing|edit|edited|ready\\s+to\\s+edit|edi[cç][aã]o|editar|editado|editada|edici[oó]n|editarlo',
-  published: 'published|posted|live|publicado|publicada|publicaci[oó]n',
+  editing: 'editing|edited|ready\\s+to\\s+edit|edi[cç][aã]o|editar|editado|editada|edici[oó]n|editarlo',
+  published: 'published|posted|publicado|publicada|publicaci[oó]n',
 };
 
 const STAGE_ALIASES: Array<{ stage: ContentPipelineTransitionStage; pattern: RegExp }> = CONTENT_PIPELINE_TRANSITION_STAGES.map((stage) => ({

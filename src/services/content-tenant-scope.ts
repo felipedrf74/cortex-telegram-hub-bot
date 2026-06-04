@@ -121,7 +121,7 @@ export function ensureContentTenantScopeColumns(db: any = getDb()): void {
         url TEXT NOT NULL,
         title TEXT,
         source_type TEXT NOT NULL DEFAULT 'link',
-        extraction_status TEXT NOT NULL DEFAULT 'pending',
+        extraction_status TEXT NOT NULL DEFAULT 'ready',
         source_metadata_json TEXT NOT NULL DEFAULT '{}',
         created_by INTEGER NOT NULL,
         updated_by INTEGER NOT NULL,

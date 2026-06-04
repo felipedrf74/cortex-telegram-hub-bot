@@ -311,8 +311,8 @@ describe('Python script_writer.py — JSON metadata parsing', () => {
     expect(src).toContain('def _normalize_generation_mode');
     expect(src).toContain('return normalized if normalized in {"draft", "quick", "standard", "deep"} else "draft"');
     expect(src).toContain('if not research_route["allowDeepSearch"]');
-    expect(src).toContain('research = await orchestrator.quick_search(req.topic, max_results=max_briefs)');
-    expect(src).toContain('research = await orchestrator.deep_search(req.topic, max_results=max_briefs)');
+    expect(src).toContain('research = await orchestrator.quick_search(req.topic, max_results=max_briefs, language=normalized_language)');
+    expect(src).toContain('research = await orchestrator.deep_search(req.topic, max_results=max_briefs, language=normalized_language)');
     expect(src).toContain('compile_prompt(normalized_mode');
   });
 
@@ -360,7 +360,10 @@ describe('Python orchestrator.py — evergreen query handling', () => {
   });
 
   it('adds a dedicated quick_search path for cheap shallow research', () => {
-    expect(src).toContain('async def quick_search(self, query: str, max_results: int = 3) -> DeepSearchResponse:');
+    expect(src).toContain('async def quick_search(');
+    expect(src).toContain('max_results: int = 3');
+    expect(src).toContain('language: str | None = None');
+    expect(src).toContain(') -> DeepSearchResponse:');
     expect(src).toContain('Quick mode used shallow research without AI synthesis.');
   });
 
@@ -378,22 +381,26 @@ describe('Python mock searchers — evergreen-friendly local results', () => {
   const webSrc = readPy(path.join('..', 'searchers', 'web.py'));
   const youtubeSrc = readPy(path.join('..', 'searchers', 'youtube.py'));
   const newsSrc = readPy(path.join('..', 'searchers', 'news.py'));
+  const helperSrc = readEngineFile(path.join('searchers', 'mock_fixtures.py'));
 
   it('web mock avoids hardcoded viral framing for evergreen topics', () => {
-    expect(webSrc).toContain('EVERGREEN_MOCK_HINTS');
+    expect(helperSrc).toContain('EVERGREEN_MOCK_HINTS');
+    expect(helperSrc).toContain('recuperar');
+    expect(webSrc).toContain('is_evergreen_mock_query(query)');
     expect(webSrc).toContain('evidence overview');
     expect(webSrc).toContain('Practical guide to');
-    expect(webSrc).toContain('recuperar');
   });
 
   it('youtube mock uses coaching-style evergreen titles when appropriate', () => {
-    expect(youtubeSrc).toContain('EVERGREEN_MOCK_HINTS');
+    expect(helperSrc).toContain('EVERGREEN_MOCK_HINTS');
+    expect(youtubeSrc).toContain('is_evergreen_mock_query(query)');
     expect(youtubeSrc).toContain('Coach breakdown');
     expect(youtubeSrc).toContain('practical walkthrough');
   });
 
   it('news mock uses evidence/protocol framing for evergreen topics', () => {
-    expect(newsSrc).toContain('EVERGREEN_MOCK_HINTS');
+    expect(helperSrc).toContain('EVERGREEN_MOCK_HINTS');
+    expect(newsSrc).toContain('is_evergreen_mock_query(query)');
     expect(newsSrc).toContain('practical protocol');
     expect(newsSrc).toContain('evidence review');
   });

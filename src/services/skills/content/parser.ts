@@ -8,18 +8,12 @@ import { makeStep, type StepKeyInputs } from '../step-builder';
 import { extractTopic, inferContentPlatform } from '../text-extractors';
 import type { ChatPlanStep } from '../../chat/types';
 import { parseContentPipelineStageTransition } from './pipeline-stage';
+import { extractContentScheduleDateTime, extractContentScheduleTitle } from './datetime';
 
 export function parseContentActionStep(
-  input: StepKeyInputs & { text: string },
+  input: StepKeyInputs & { text: string; timezone?: string; nowIso?: string },
   folded: string,
 ): ChatPlanStep | null {
-  // Phase 10 batch 51 (2026-05-16): Spanish content vocabulary added —
-  // contenido / guion / guión / reescribe / reescribir / publicación /
-  // campaña / programa (verb).
-  if (!/\b(content|conteudo|contenido|script|roteiro|guion|guión|brief|reel|tiktok|youtube|post|video|publicaci[oó]n|rewrite|reescreve|reescrever|reescribe[r]?|reescritura|pipeline|publica|publish|schedule|programa[r]?|caption|legenda|copy|campa[nñ]a)\b/.test(folded)) return null;
-  const platform = inferContentPlatform(folded);
-  const topic = extractTopic(input.text) || input.text.trim();
-
   const pipelineStage = parseContentPipelineStageTransition(input.text);
   if (pipelineStage.targetStage && pipelineStage.topicTitle) {
     return makeStep(input, {
@@ -31,6 +25,13 @@ export function parseContentActionStep(
       requiredArgsPresent: true,
     });
   }
+
+  // Phase 10 batch 51 (2026-05-16): Spanish content vocabulary added —
+  // contenido / guion / guión / reescribe / reescribir / publicación /
+  // campaña / programa (verb).
+  if (!/\b(content|conteudo|contenido|script|roteiro|guion|guión|brief|reel|tiktok|youtube|post|video|publicaci[oó]n|rewrite|reescreve|reescrever|reescribe[r]?|reescritura|pipeline|publica|publish|schedule|programa[r]?|caption|legenda|copy|campa[nñ]a)\b/.test(folded)) return null;
+  const platform = inferContentPlatform(folded);
+  const topic = extractTopic(input.text) || input.text.trim();
 
   // Rewrite: explicit rewrite verb with content/copy object.
   // Phase 3 batch 16: "make this shorter/longer/punchier/simpler" treated as
@@ -77,17 +78,23 @@ export function parseContentActionStep(
   // "guion"/"publicación" nouns added.
   if (/\b(schedule|agenda[r]?|publish|publica[r]?|programa[r]?|queue)\b.*\b(content|conteudo|contenido|reel|tiktok|video|post|script|roteiro|guion|guión|publicaci[oó]n)\b/.test(folded)
     || /\b(content|conteudo|contenido|video|reel|post|script|roteiro|guion|guión|publicaci[oó]n)\b.*\b(schedule|agenda[r]?|publish|publica[r]?|programa[r]?|queue)\b/.test(folded)) {
+    const dateTime = extractContentScheduleDateTime(input.text, {
+      timezone: input.timezone || 'UTC',
+      nowIso: input.nowIso,
+    });
+    const title = extractContentScheduleTitle(input.text, topic);
     return makeStep(input, {
       skill: 'content',
       action: 'content_schedule_work',
       risk: 'safe_write',
       provider: 'nexus',
-      args: { title: topic, dateTime: null, rawRequest: input.text },
-      requiredArgsPresent: false,
+      args: { title, dateTime, rawRequest: input.text },
+      requiredArgsPresent: Boolean(title && dateTime),
     });
   }
 
   if (/\b(script|roteiro|guion|guión)\b/.test(folded)) {
+    const contentPlatform = platform === 'generic' ? null : platform;
     return makeStep(input, {
       skill: 'content',
       action: 'content_script_create',
@@ -95,14 +102,15 @@ export function parseContentActionStep(
       provider: 'nexus',
       args: {
         topic,
-        platform,
+        platform: contentPlatform,
         format: platform === 'youtube' ? 'long_form_video' : platform === 'carousel' ? 'carousel' : 'short_form_video',
         objective: 'Create a usable creator script from chat.',
       },
-      requiredArgsPresent: Boolean(topic && platform !== 'generic'),
+      requiredArgsPresent: Boolean(topic && contentPlatform),
     });
   }
   if (/\b(brief|campanha|campaign|campa[nñ]a|ideia|idea|conteudo|content|contenido)\b/.test(folded)) {
+    const contentPlatform = platform === 'generic' ? null : platform;
     return makeStep(input, {
       skill: 'content',
       action: 'content_brief_create',
@@ -111,11 +119,11 @@ export function parseContentActionStep(
       args: {
         objective: topic,
         goal: topic,
-        platform,
+        platform: contentPlatform,
         format: platform === 'youtube' ? 'long_form_video' : platform === 'carousel' ? 'carousel' : 'short_form_video',
         audience: null,
       },
-      requiredArgsPresent: Boolean(topic && platform !== 'generic'),
+      requiredArgsPresent: Boolean(topic && contentPlatform),
     });
   }
   return null;

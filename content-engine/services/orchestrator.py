@@ -17,6 +17,7 @@ from searchers.reddit import RedditSearcher
 from .scorer import score_results
 from .brief_builder import build_briefs
 from services.creator_context import creator_profile_block, language_instruction
+from config import cfg
 from datetime import datetime, timezone
 
 logger = logging.getLogger("content-engine")
@@ -157,6 +158,17 @@ def _query_specific_rank(item: ScoredResult, evergreen: bool) -> float:
     return score
 
 
+def _dedupe_scored_by_url(scored: list[ScoredResult]) -> list[ScoredResult]:
+    seen_urls: set[str] = set()
+    unique_scored: list[ScoredResult] = []
+    for item in scored:
+        if item.result.url in seen_urls:
+            continue
+        seen_urls.add(item.result.url)
+        unique_scored.append(item)
+    return unique_scored
+
+
 def _creator_context(creator_profile: str | None = None, language: str | None = None) -> SimpleNamespace:
     return SimpleNamespace(creator_profile=creator_profile, language=language)
 
@@ -199,21 +211,19 @@ class ResearchOrchestrator:
             merged.extend(result)
         return merged
 
-    async def quick_search(self, query: str, max_results: int = 3) -> DeepSearchResponse:
+    async def quick_search(
+        self,
+        query: str,
+        max_results: int = 3,
+        language: str | None = None,
+    ) -> DeepSearchResponse:
         """Cheap research path for cache-miss quick mode — no AI synthesis, single fan-out, conservative briefs."""
         start = time.monotonic()
         results = await self._fan_out(query, max_per_searcher=2)
         scored = score_results(results)
+        unique_scored = _dedupe_scored_by_url(scored)
 
-        seen_urls: set[str] = set()
-        unique_scored = []
-        for item in scored:
-            if item.result.url in seen_urls:
-                continue
-            seen_urls.add(item.result.url)
-            unique_scored.append(item)
-
-        briefs = build_briefs(unique_scored, max_briefs=max_results)
+        briefs = build_briefs(unique_scored, max_briefs=max_results, language=language)
         duration_ms = int((time.monotonic() - start) * 1000)
         return DeepSearchResponse(
             query=query,
@@ -247,8 +257,25 @@ class ResearchOrchestrator:
         # Phase 1: Wide search — query + variations for depth + verification
         search_variations = _build_search_variations(query, verification_queries)
 
-        var_tasks = [self._fan_out(q, max_per_searcher=5) for q in search_variations]
-        var_results = await asyncio.gather(*var_tasks, return_exceptions=True)
+        semaphore = asyncio.Semaphore(4)
+
+        async def run_variation(q: str) -> list[SearchResult]:
+            async with semaphore:
+                return await self._fan_out(q, max_per_searcher=5)
+
+        tasks = [asyncio.create_task(run_variation(q)) for q in search_variations]
+        done, pending = await asyncio.wait(tasks, timeout=max(0.05, float(cfg.pipeline_timeout)))
+        if pending:
+            warnings.append("Search fanout hit the pipeline timeout; returning completed sources only.")
+            for task in pending:
+                task.cancel()
+            await asyncio.gather(*pending, return_exceptions=True)
+        var_results = []
+        for task in done:
+            try:
+                var_results.append(task.result())
+            except Exception as exc:
+                var_results.append(exc)
 
         all_results: list[SearchResult] = []
         for i, results in enumerate(var_results):
@@ -259,14 +286,7 @@ class ResearchOrchestrator:
 
         search_count = len(search_variations) * len(self.searchers)
         scored = score_results(all_results)
-
-        # Deduplicate by URL
-        seen_urls: set[str] = set()
-        unique_scored = []
-        for item in scored:
-            if item.result.url not in seen_urls:
-                seen_urls.add(item.result.url)
-                unique_scored.append(item)
+        unique_scored = _dedupe_scored_by_url(scored)
 
         selected_scored = sorted(
             unique_scored,
@@ -288,7 +308,7 @@ class ResearchOrchestrator:
 
         if not raw_sources:
             # Fallback to old brief builder if no results
-            briefs = build_briefs(selected_scored, max_briefs=max_results)
+            briefs = build_briefs(selected_scored, max_briefs=max_results, language=language)
             duration_ms = int((time.monotonic() - start) * 1000)
             warnings.append("No strong research sources were found; returning conservative fallback briefs.")
             return DeepSearchResponse(
@@ -363,7 +383,7 @@ Return ONLY the JSON object."""
                 raise ValueError("JSON parse failed")
         except Exception as e:
             logger.warning("AI synthesis failed, falling back to basic briefs: %s", e)
-            briefs = build_briefs(selected_scored, max_briefs=max_results)
+            briefs = build_briefs(selected_scored, max_briefs=max_results, language=language)
             duration_ms = int((time.monotonic() - start) * 1000)
             warnings.append("AI synthesis was unavailable; returning search-based fallback briefs.")
             return DeepSearchResponse(

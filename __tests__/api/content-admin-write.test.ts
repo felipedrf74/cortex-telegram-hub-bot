@@ -125,4 +125,43 @@ describe('content admin pillar tenant scope', () => {
     const row = testDb.prepare('SELECT name FROM config_pillars WHERE id = 1').get() as { name: string };
     expect(row.name).toBe('user-a');
   });
+
+  it('rejects non-string pillar names instead of throwing a 500', async () => {
+    const app = await appWithRoutes();
+    const createRes = await fetchJson(
+      app,
+      'POST',
+      '/api/v1/admin/content/pillars',
+      { userId: 20, tenantId: 20, name: { bad: true }, keywords: ['valid'] },
+    );
+    const patchRes = await fetchJson(
+      app,
+      'PATCH',
+      '/api/v1/admin/content/pillars/2?userId=20&tenantId=20',
+      { name: 123 },
+    );
+
+    expect(createRes.status).toBe(400);
+    expect(createRes.body.error.message).toContain('name (string)');
+    expect(patchRes.status).toBe(400);
+    expect(patchRes.body.error.message).toBe('name must be a non-empty string');
+  });
+
+  it('rejects client-supplied historical comparison visibility scopes outside the content allowlist', async () => {
+    const app = await appWithRoutes();
+    const res = await fetchJson(
+      app,
+      'POST',
+      '/api/v1/admin/content/historical-comparison',
+      {
+        userId: 20,
+        tenantId: 20,
+        title: 'Candidate idea',
+        visibilityScope: 'platform_internal',
+      },
+    );
+
+    expect(res.status).toBe(400);
+    expect(res.body.error.message).toContain('visibilityScope must be one of');
+  });
 });

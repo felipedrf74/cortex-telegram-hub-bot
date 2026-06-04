@@ -64,5 +64,5 @@ export function loadCreatorPromptContextForUser(
   if (!Number.isFinite(userId) || Number(userId) <= 0) {
     return buildCreatorPromptContext(null);
   }
-  return buildCreatorPromptContext(getContentCreatorProfile(Number(userId), tenantId ?? Number(userId)));
+  return buildCreatorPromptContext(getContentCreatorProfile(Number(userId), tenantId));
 }

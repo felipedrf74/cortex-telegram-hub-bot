@@ -74,7 +74,9 @@ function targetedFieldQuestion(step: ChatPlanStep, field: string, pt?: boolean):
       case 'category':
         return 'Qual é a categoria?';
       case 'packageId':
-        return 'Qual pacote de content devo usar?';
+        return 'Qual pacote de conteúdo devo usar?';
+      case 'platform':
+        return 'Qual plataforma de conteúdo devo usar?';
       default:
         return `Preciso só deste detalhe: ${fieldLabel(field, true)}.`;
     }
@@ -119,6 +121,8 @@ function targetedFieldQuestion(step: ChatPlanStep, field: string, pt?: boolean):
       return 'Which category should I use?';
     case 'packageId':
       return 'Which content package should I use?';
+    case 'platform':
+      return 'Which content platform should I use?';
     default:
       return `I need this detail: ${fieldLabel(field, false)}.`;
   }
@@ -147,7 +151,8 @@ function fieldLabel(field: string, pt?: boolean): string {
     weeklyVolumeKm: ['volume semanal em km', 'weekly mileage in km'],
     receiptId: ['recibo ou transação', 'receipt or transaction'],
     category: ['categoria', 'category'],
-    packageId: ['pacote de content', 'content package'],
+    packageId: ['pacote de conteúdo', 'content package'],
+    platform: ['plataforma de conteúdo', 'content platform'],
     date: ['data', 'date'],
     mealType: ['refeição', 'meal'],
     weekStart: ['semana', 'week'],

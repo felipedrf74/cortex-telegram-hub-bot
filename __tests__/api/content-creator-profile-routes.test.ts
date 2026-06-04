@@ -7,6 +7,7 @@ const mocks = vi.hoisted(() => ({
   resetContentCreatorProfile: vi.fn(),
   computeContentCreatorProfileCompleteness: vi.fn(),
   recordRadarFeedback: vi.fn(),
+  revokeRadarFeedback: vi.fn(),
   listRadarFeedback: vi.fn(),
   radarFeedbackAggregateBySignal: vi.fn(),
   summarizeCanonicalLifecycle: vi.fn(),
@@ -23,6 +24,7 @@ vi.mock('../../src/state/content-radar-feedback', () => ({
   isValidRadarFeedbackAction: (action: string) =>
     ['accept', 'reject', 'save', 'create_brief'].includes(action),
   recordRadarFeedback: (...args: unknown[]) => mocks.recordRadarFeedback(...args),
+  revokeRadarFeedback: (...args: unknown[]) => mocks.revokeRadarFeedback(...args),
   listRadarFeedback: (...args: unknown[]) => mocks.listRadarFeedback(...args),
   radarFeedbackAggregateBySignal: (...args: unknown[]) => mocks.radarFeedbackAggregateBySignal(...args),
 }));
@@ -130,6 +132,7 @@ describe('content creator profile routes', () => {
       action: 'create_brief',
       createdAt: '2026-05-04T22:02:00.000Z',
     });
+    mocks.revokeRadarFeedback.mockReturnValue(1);
     mocks.listRadarFeedback.mockReturnValue([
       { id: 9, signalId: 'sig-1', action: 'create_brief' },
     ]);
@@ -189,5 +192,31 @@ describe('content creator profile routes', () => {
     expect(response.statusCode).toBe(400);
     expect(response.body.error.code).toBe('VALIDATION');
     expect(mocks.recordRadarFeedback).not.toHaveBeenCalled();
+  });
+
+  it('revokes radar feedback with authenticated user and tenant scope', async () => {
+    const { response } = await dispatch('DELETE', '/radar/feedback', {
+      signalId: 'sig-1',
+      action: 'reject',
+    }, 99);
+
+    expect(response.statusCode).toBe(200);
+    expect(response.body.data.revokedCount).toBe(1);
+    expect(mocks.revokeRadarFeedback).toHaveBeenCalledWith(99, 99, {
+      signalId: 'sig-1',
+      action: 'reject',
+    });
+    expect(mocks.radarFeedbackAggregateBySignal).toHaveBeenCalledWith(99, 99);
+  });
+
+  it('rejects unknown radar feedback revoke actions before mutating state', async () => {
+    const { response } = await dispatch('DELETE', '/radar/feedback', {
+      signalId: 'sig-1',
+      action: 'publish_now',
+    }, 99);
+
+    expect(response.statusCode).toBe(400);
+    expect(response.body.error.code).toBe('VALIDATION');
+    expect(mocks.revokeRadarFeedback).not.toHaveBeenCalled();
   });
 });

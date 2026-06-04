@@ -21,6 +21,7 @@ import {
   buildContentNoveltyConstraintLines,
   type ContentNoveltyDecision,
 } from './content-novelty-reuse';
+import { contentTokenOverlap, foldContentText } from './content-text-utils';
 
 export type ContentGenerationIntent =
   | 'generate'
@@ -407,11 +408,11 @@ function buildGenerationWarnings(
 }
 
 function rankReferencesForTopic(references: ScopedContentReference[], topic: string): ScopedContentReference[] {
-  const foldedTopic = fold(topic);
+  const foldedTopic = foldContentText(topic);
   return [...references]
     .map((ref, index) => ({
       ref,
-      score: (textOverlap(foldedTopic, fold(ref.title)) * 0.5)
+      score: (contentTokenOverlap(foldedTopic, ref.title) * 0.5)
         + (ref.qualityScore * 0.25)
         + (ref.confidence * 0.2)
         + Math.max(0, 0.05 - index * 0.001),
@@ -435,7 +436,7 @@ function nextStepForWorkflow(workflowState: string | null | undefined, objectTyp
 }
 
 function classifyRefinementIntent(request: string): ContentGenerationIntent {
-  const text = fold(request);
+  const text = foldContentText(request);
   if (/\b(shorter|shorten|condense|mais curto|encurta)\b/.test(text)) return 'shorten';
   if (/\b(more direct|direto|direct|straightforward)\b/.test(text)) return 'make_more_direct';
   if (/\b(my voice|minha voz|voice|tone|tom)\b/.test(text)) return 'refine';
@@ -493,19 +494,6 @@ function average(values: number[]): number {
   const valid = values.filter((value) => Number.isFinite(value));
   if (valid.length === 0) return 0;
   return round(valid.reduce((sum, value) => sum + value, 0) / valid.length);
-}
-
-function textOverlap(a: string, b: string): number {
-  if (!a || !b) return 0;
-  if (a.includes(b) || b.includes(a)) return 1;
-  const aTokens = new Set(a.split(/\s+/).filter((token) => token.length >= 3));
-  const bTokens = b.split(/\s+/).filter((token) => token.length >= 3);
-  if (aTokens.size === 0 || bTokens.length === 0) return 0;
-  return bTokens.filter((token) => aTokens.has(token)).length / bTokens.length;
-}
-
-function fold(value: string): string {
-  return value.normalize('NFD').replace(/\p{Diacritic}/gu, '').toLowerCase().trim();
 }
 
 function round(value: number): number {

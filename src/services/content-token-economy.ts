@@ -3,6 +3,7 @@
 import crypto from 'crypto';
 import type { ScriptGenerationMode, SourceReference, ScriptResponse } from './content-engine';
 import type { DailyQuotaStatus } from './cost-guardrail';
+import { contentBigramDice, contentTokenJaccard } from './content-text-utils';
 
 export type ExtendedScriptGenerationMode = ScriptGenerationMode | 'draft';
 export type ContentBudgetState = 'healthy' | 'watch' | 'constrained' | 'exhausted';
@@ -454,7 +455,7 @@ export function buildCreatorVoiceCard(input: {
     ctaStyle: phrasesToUse.find((line) => /cta|call|chamada/i.test(line)) || 'single clear next action',
     examplesCompressed: compact,
     sourceHash,
-    updatedAt: new Date(0).toISOString(),
+    updatedAt: new Date().toISOString(),
     promptText,
   };
 }
@@ -714,14 +715,14 @@ export function noveltyCheck(input: {
   const hook = (input.hook || '').trim().toLowerCase();
   const angle = (input.angle || '').trim().toLowerCase();
   for (const recent of input.recentHooks ?? []) {
-    if (hook && similarityBucket(hook) === similarityBucket(recent)) {
+    if (hook && isSimilarNoveltyText(hook, recent)) {
       warnings.push('repeated_hook_detected');
       matchedRecentItems.push(recent);
       break;
     }
   }
   for (const recent of input.recentAngles ?? []) {
-    if (angle && similarityBucket(angle) === similarityBucket(recent)) {
+    if (angle && isSimilarNoveltyText(angle, recent)) {
       warnings.push('repeated_angle_detected');
       matchedRecentItems.push(recent);
       break;
@@ -739,6 +740,27 @@ function similarityBucket(value: string): string {
     .slice(0, 8)
     .sort()
     .join('|');
+}
+
+function isSimilarNoveltyText(left: string, right: string): boolean {
+  const normalizedLeft = normalizeNoveltyText(left);
+  const normalizedRight = normalizeNoveltyText(right);
+  if (!normalizedLeft || !normalizedRight) return false;
+  if (similarityBucket(normalizedLeft) === similarityBucket(normalizedRight)) return true;
+  return Math.max(
+    contentTokenJaccard(normalizedLeft, normalizedRight),
+    contentBigramDice(normalizedLeft, normalizedRight),
+  ) >= 0.72;
+}
+
+function normalizeNoveltyText(value: string): string {
+  return value
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^\p{L}\p{N}\s]/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
 }
 
 export function budgetStateFromQuota(quota: Pick<DailyQuotaStatus, 'over' | 'usageFraction'>): ContentBudgetState {

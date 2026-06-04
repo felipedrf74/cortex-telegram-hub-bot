@@ -137,6 +137,7 @@ export interface ContentSourceOutputLink {
 }
 
 const TABLES_WITH_SOURCE_HEALTH = ['book_library', 'content_reference_links', 'content_ref_channels'] as const;
+type TableWithSourceHealth = (typeof TABLES_WITH_SOURCE_HEALTH)[number];
 
 const REFERENCE_REGISTRY_DDL = `
   CREATE TABLE IF NOT EXISTS content_reference_registry (
@@ -216,15 +217,16 @@ export function ensureContentReferenceProvenanceTables(db: any = getDb()): void 
   if (ensured.has(db as object)) return;
   for (const table of TABLES_WITH_SOURCE_HEALTH) {
     if (!tableExists(db, table)) continue;
-    ensureColumn(db, table, 'broken_status', "TEXT DEFAULT 'unknown'");
-    ensureColumn(db, table, 'stale_status', "TEXT DEFAULT 'unknown'");
-    ensureColumn(db, table, 'extraction_status', "TEXT DEFAULT 'pending'");
+    const defaults = sourceHealthDefaults(table);
+    ensureColumn(db, table, 'broken_status', defaults.brokenStatus);
+    ensureColumn(db, table, 'stale_status', defaults.staleStatus);
+    ensureColumn(db, table, 'extraction_status', defaults.extractionStatus);
     ensureColumn(db, table, 'last_used_at', 'TEXT');
     ensureColumn(db, table, 'source_summary', 'TEXT');
     ensureColumn(db, table, 'source_snippets_json', "TEXT DEFAULT '[]'");
     ensureColumn(db, table, 'freshness_score', 'REAL DEFAULT 0.7');
     ensureColumn(db, table, 'quality_score', 'REAL DEFAULT 0.5');
-    ensureColumn(db, table, 'trust_level', "TEXT DEFAULT 'unverified'");
+    ensureColumn(db, table, 'trust_level', defaults.trustLevel);
     ensureColumn(db, table, 'topic_tags_json', "TEXT DEFAULT '[]'");
     ensureColumn(db, table, 'used_by_outputs_json', "TEXT DEFAULT '[]'");
   }
@@ -809,4 +811,26 @@ function hasColumn(db: any, table: string, column: string): boolean {
 function ensureColumn(db: any, table: string, column: string, definition: string): void {
   if (hasColumn(db, table, column)) return;
   db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+}
+
+function sourceHealthDefaults(table: TableWithSourceHealth): {
+  brokenStatus: string;
+  staleStatus: string;
+  extractionStatus: string;
+  trustLevel: string;
+} {
+  if (table === 'book_library') {
+    return {
+      brokenStatus: "TEXT DEFAULT 'ok'",
+      staleStatus: "TEXT DEFAULT 'fresh'",
+      extractionStatus: "TEXT DEFAULT 'pending'",
+      trustLevel: "TEXT DEFAULT 'curated'",
+    };
+  }
+  return {
+    brokenStatus: "TEXT DEFAULT 'ok'",
+    staleStatus: "TEXT DEFAULT 'fresh'",
+    extractionStatus: "TEXT DEFAULT 'ready'",
+    trustLevel: "TEXT DEFAULT 'observed'",
+  };
 }

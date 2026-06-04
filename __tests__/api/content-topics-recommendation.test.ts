@@ -155,6 +155,16 @@ describe('Content API — filming recommendation', () => {
     const dayAfterTomorrow = today.plus({ days: 2 });
 
     addTopic(user.id, 'VO2 recap', { scheduledDate: tomorrow.toISODate()! });
+    const topicScope = testDb.prepare(`
+      SELECT tenant_id, owner_user_id, scope_status
+      FROM content_topics
+      WHERE user_id = ? AND title = 'VO2 recap'
+    `).get(user.id) as { tenant_id: number; owner_user_id: number; scope_status: string };
+    expect(topicScope).toEqual({
+      tenant_id: user.id,
+      owner_user_id: user.id,
+      scope_status: 'active',
+    });
 
     const plan = createPlan({
       user_id: user.id,

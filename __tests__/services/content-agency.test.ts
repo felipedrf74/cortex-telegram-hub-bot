@@ -289,6 +289,52 @@ describe('Content Agency orchestrator', () => {
     ]));
   });
 
+  it('hands warning-only packages to the pipeline as pending editorial review', () => {
+    const pkg = buildContentAgencyPackage({
+      userId: 501,
+      tenantId: 101,
+      brief: {
+        userId: 501,
+        tenantId: 101,
+        goal: 'build a creator package from a thin audience setup',
+        offer: 'join the editorial sprint',
+        platform: 'YouTube Shorts',
+      },
+    });
+    expect(pkg.blockers).toEqual([]);
+    expect(pkg.reviewRequired).toBe(true);
+
+    persistContentAgencyArtifact('package', pkg);
+    const handoff = handoffContentAgencyPackageToPipeline({
+      userId: 501,
+      tenantId: 101,
+      packageId: pkg.id,
+    });
+
+    expect(handoff.status).toBe('created');
+    expect(handoff.warnings).toContain('missing_audience');
+    const row = testDb.prepare(`
+      SELECT stage, editorial_state, approval_state, review_required, approved_by, approved_at
+      FROM content_pipeline
+      WHERE source_agency_package_id = ?
+    `).get(pkg.id) as {
+      stage: string;
+      editorial_state: string;
+      approval_state: string;
+      review_required: number;
+      approved_by: number | null;
+      approved_at: string | null;
+    };
+    expect(row).toEqual({
+      stage: 'review',
+      editorial_state: 'review',
+      approval_state: 'pending',
+      review_required: 1,
+      approved_by: null,
+      approved_at: null,
+    });
+  });
+
   it('does not claim pipeline handoff success if read-back verification fails', () => {
     const pkg = buildContentAgencyPackage({
       userId: 501,

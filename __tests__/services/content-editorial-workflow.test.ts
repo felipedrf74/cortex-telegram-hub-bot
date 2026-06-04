@@ -130,6 +130,7 @@ describe('Content editorial workflow lifecycle', () => {
 
     expect(outlined).toMatchObject({ ok: true, status: 'transitioned', fromState: 'idea', toState: 'outlined' });
     expect(drafted).toMatchObject({ ok: true, status: 'transitioned', fromState: 'outlined', toState: 'drafted' });
+    expect(drafted.object?.workflowVersion).toBe(3);
     expect(listContentWorkflowEvents({ userId: 501, tenantId: 101, objectType: 'idea', objectId: idea.id })
       .map((event) => event.action))
       .toEqual(['create', 'convert_idea_to_outline', 'convert_outline_to_script']);

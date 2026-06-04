@@ -15,13 +15,13 @@ vi.mock('../../src/portal/telemetry', () => ({
 }));
 
 vi.mock('../../src/services/intelligence-bus', () => ({
-  readSignals: vi.fn((source: string, types: string[], limit: number, userId: number, days: number) => {
+  readSignals: vi.fn((source: string, types: string[], limit: number, userId: number, days: number, tenantId?: number) => {
     if (types.includes('reaction_opportunity')) {
       return [{
         id: 11,
         source_agent: source,
         signal_type: 'reaction_opportunity',
-        payload: { topic: 'marathon', title: 'Marathon angle', summary: `${limit}:${userId}:${days}` },
+        payload: { topic: 'marathon', title: 'Marathon angle', summary: `${limit}:${userId}:${days}:${tenantId}` },
         priority: 'normal',
         consumed_by: [],
         status: 'active',
@@ -38,7 +38,7 @@ vi.mock('../../src/services/intelligence-bus', () => ({
       id: 21,
       source_agent: source,
       signal_type: 'pillar_performance',
-      payload: { pillar: 'training', summary: `${limit}:${userId}:${days}` },
+      payload: { pillar: 'training', summary: `${limit}:${userId}:${days}:${tenantId}` },
       priority: 'normal',
       consumed_by: [],
       status: 'active',
@@ -161,10 +161,10 @@ function mockRes(): MockRes {
   return response;
 }
 
-function mockReq(method: string, path: string, userId: number | undefined = 41): Request {
+function mockReq(method: string, path: string, userId: number | undefined = 41, tenantId: number | undefined = userId): Request {
   return {
     userId,
-    tenantId: userId,
+    tenantId,
     method,
     url: path,
     originalUrl: path,
@@ -195,10 +195,11 @@ async function dispatch(
   path: string,
   userId: number | undefined = 41,
   ensureValidScope = makeEnsureValidScope(),
+  tenantId: number | undefined = userId,
 ): Promise<{ response: MockRes; ensureValidScope: ReturnType<typeof makeEnsureValidScope> }> {
   const router = Router();
   registerContentIntelligenceRoutes(router, () => 'pt-BR', ensureValidScope);
-  const req = mockReq('GET', path, userId);
+  const req = mockReq('GET', path, userId, tenantId);
   const res = mockRes();
 
   await new Promise<void>((resolve, reject) => {
@@ -218,7 +219,7 @@ describe('content intelligence routes', () => {
   });
 
   it('builds the backstage summary from scoped jobs, signals, voice, and knowledge state', async () => {
-    const { response, ensureValidScope } = await dispatch('/intelligence', 77);
+    const { response, ensureValidScope } = await dispatch('/intelligence', 77, makeEnsureValidScope(), 7700);
 
     expect(response.statusCode).toBe(200);
     expect(response.body.ok).toBe(true);
@@ -230,6 +231,7 @@ describe('content intelligence routes', () => {
       25,
       77,
       7,
+      7700,
     );
     expect(readSignals).toHaveBeenCalledWith(
       'ios-content-intelligence',
@@ -237,12 +239,13 @@ describe('content intelligence routes', () => {
       25,
       77,
       14,
+      7700,
     );
-    expect(getContentRadarPreferences).toHaveBeenCalledWith(77);
+    expect(getContentRadarPreferences).toHaveBeenCalledWith(77, 7700);
     expect(filterSignalsForRadarPreferences).toHaveBeenCalledWith(expect.any(Array), ['marathon']);
     expect(getVoiceDna).toHaveBeenCalledWith(undefined, 77);
     expect(getKnowledgeStats).toHaveBeenCalledWith(undefined, 77);
-    expect(getPerformanceSummary).toHaveBeenCalledWith(77, 30, 77);
+    expect(getPerformanceSummary).toHaveBeenCalledWith(77, 30, 7700);
     expect(response.body.data.discovery.activeCount).toBe(1);
     expect(response.body.data.script.status).toBe('ready');
     expect(response.body.data.optimization.status).toBe('syncing');
@@ -263,7 +266,7 @@ describe('content intelligence routes', () => {
   });
 
   it('builds the detail response with filming, desk, and preferred-topic context', async () => {
-    const { response, ensureValidScope } = await dispatch('/intelligence/detail', 88);
+    const { response, ensureValidScope } = await dispatch('/intelligence/detail', 88, makeEnsureValidScope(), 8800);
 
     expect(response.statusCode).toBe(200);
     expect(response.body.ok).toBe(true);
@@ -274,6 +277,7 @@ describe('content intelligence routes', () => {
       6,
       88,
       7,
+      8800,
     );
     expect(getFilmingRecommendation).toHaveBeenCalledWith(88);
     expect(localizeFilmingRecommendation).toHaveBeenCalledWith(expect.any(Object), 'pt-BR');

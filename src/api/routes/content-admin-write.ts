@@ -19,6 +19,7 @@ import { sendInternalError as sendApiInternalError } from '../response-helpers';
 import { requirePortalTokenByMethod } from '../secret-guards';
 import {
   contentDirectScopePredicate,
+  type ContentVisibilityScope,
   contentScopePredicate,
   contentScopeForInsert,
   contentScopeParams,
@@ -128,6 +129,15 @@ function normalizePortalChannelAddedVia(value: unknown): 'manual' | 'portal' | '
   const normalized = normalizeString(value, 64)?.toLowerCase();
   if (!normalized) return 'portal';
   if (normalized === 'manual' || normalized === 'portal' || normalized === 'bot') return normalized;
+  return null;
+}
+
+function normalizePortalVisibilityScope(value: unknown): ContentVisibilityScope | null {
+  if (value == null || value === '') return 'user_private';
+  const normalized = normalizeString(value, 64);
+  if (normalized === 'user_private' || normalized === 'tenant_shared' || normalized === 'public_published') {
+    return normalized;
+  }
   return null;
 }
 
@@ -397,15 +407,19 @@ export function contentAdminWriteRoutes(): Router {
     const caption = normalizeString(req.body?.caption, 2000);
     const topic = normalizeString(req.body?.topic, 512);
     const angle = normalizeString(req.body?.angle, 512);
+    const visibilityScope = normalizePortalVisibilityScope(req.body?.visibilityScope);
     if (![title, body, hook, caption, topic, angle].some(Boolean)) {
       return sendError(res, 'BAD_REQUEST', 'At least one candidate field is required: title, body, hook, caption, topic, or angle');
+    }
+    if (!visibilityScope) {
+      return sendError(res, 'BAD_REQUEST', 'visibilityScope must be one of user_private, tenant_shared, or public_published');
     }
 
     try {
       const candidate = {
         userId: scope.userId,
         tenantId: scope.tenantId,
-        visibilityScope: normalizeString(req.body?.visibilityScope, 64) as any,
+        visibilityScope,
         candidateId: normalizeString(req.body?.candidateId, 160) ?? undefined,
         artifactType,
         title,
@@ -567,11 +581,8 @@ export function contentAdminWriteRoutes(): Router {
       );
     }
     try {
-      const { processAllChannelScopes } = await import('../../services/channel-learner');
       const { processAllChannels } = await import('../../services/channel-learner');
-      const result = scope.userId > 0
-        ? await processAllChannels(true, scope.userId)
-        : await processAllChannelScopes(true); // force=true skips stale threshold
+      const result = await processAllChannels(true, scope.userId);
       sendSuccess(res, { result });
     } catch (err: any) {
       logger.error({ err }, 'Portal: channel relearn failed');
@@ -720,7 +731,9 @@ export function contentAdminWriteRoutes(): Router {
     const scope = resolvePortalContentScope(req, res, true);
     if (!scope) return;
     const { name, keywords, weight, language } = req.body;
-    if (!name || !keywords || !Array.isArray(keywords)) {
+    const pillarName = normalizeString(name, 120);
+    const pillarKeywords = normalizeStringList(keywords, 100);
+    if (!pillarName || !Array.isArray(keywords) || pillarKeywords.length === 0) {
       return sendError(res, 'BAD_REQUEST', 'name (string) and keywords (string[]) are required');
     }
     try {
@@ -735,10 +748,10 @@ export function contentAdminWriteRoutes(): Router {
         )
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
-        name.trim().toLowerCase(),
-        JSON.stringify(keywords),
+        pillarName.toLowerCase(),
+        JSON.stringify(pillarKeywords),
         weight ?? 1.0,
-        language ?? 'pt-BR',
+        normalizeString(language, 32) ?? 'pt-BR',
         scope.userId,
         insertScope.tenantId,
         insertScope.ownerUserId,
@@ -752,7 +765,7 @@ export function contentAdminWriteRoutes(): Router {
       sendSuccess(res, { id: info.lastInsertRowid, scope });
     } catch (err: any) {
       if (err.code === 'SQLITE_CONSTRAINT_UNIQUE') {
-        return sendError(res, 'DUPLICATE', `Pillar "${name}" already exists for this user`);
+        return sendError(res, 'DUPLICATE', `Pillar "${pillarName}" already exists for this user`);
       }
       logger.error({ err }, 'Portal: add pillar failed');
       sendInternalError(res, 'Failed to add pillar');
@@ -771,8 +784,20 @@ export function contentAdminWriteRoutes(): Router {
       const sets: string[] = ["updated_at = datetime('now')", 'updated_by = ?'];
       const params: unknown[] = [scope.userId];
 
-      if (req.body.name !== undefined) { sets.push('name = ?'); params.push(req.body.name.trim().toLowerCase()); }
-      if (req.body.keywords !== undefined) { sets.push('keywords = ?'); params.push(JSON.stringify(req.body.keywords)); }
+      if (req.body.name !== undefined) {
+        const pillarName = normalizeString(req.body.name, 120);
+        if (!pillarName) return sendError(res, 'BAD_REQUEST', 'name must be a non-empty string');
+        sets.push('name = ?');
+        params.push(pillarName.toLowerCase());
+      }
+      if (req.body.keywords !== undefined) {
+        const pillarKeywords = normalizeStringList(req.body.keywords, 100);
+        if (!Array.isArray(req.body.keywords) || pillarKeywords.length === 0) {
+          return sendError(res, 'BAD_REQUEST', 'keywords must be a non-empty string[]');
+        }
+        sets.push('keywords = ?');
+        params.push(JSON.stringify(pillarKeywords));
+      }
       if (req.body.weight !== undefined) { sets.push('weight = ?'); params.push(req.body.weight); }
       if (req.body.language !== undefined) { sets.push('language = ?'); params.push(req.body.language); }
       if (req.body.enabled !== undefined) { sets.push('enabled = ?'); params.push(req.body.enabled ? 1 : 0); }

@@ -120,6 +120,7 @@ export interface ContentWorkflowObject {
   secretaryIntentId: string | null;
   secretaryAgendaItemId: string | null;
   metadata: Record<string, unknown>;
+  workflowVersion: number;
   createdAt: string;
   updatedAt: string;
 }
@@ -172,7 +173,7 @@ export interface TransitionContentWorkflowInput extends ContentApprovalEvaluatio
 
 export interface ContentWorkflowTransitionResult {
   ok: boolean;
-  status: 'transitioned' | 'approval_required' | 'invalid_transition' | 'not_found';
+  status: 'transitioned' | 'approval_required' | 'invalid_transition' | 'not_found' | 'version_conflict';
   object: ContentWorkflowObject | null;
   fromState: ContentEditorialState | null;
   toState: ContentEditorialState | null;
@@ -606,7 +607,7 @@ export function transitionContentWorkflow(input: TransitionContentWorkflowInput)
         reason: input.reason ?? null,
       })
     : undefined;
-  db.prepare(`
+  const update = db.prepare(`
     UPDATE content_domain_objects
        SET editorial_state = ?,
            lifecycle_state = ?,
@@ -622,6 +623,7 @@ export function transitionContentWorkflow(input: TransitionContentWorkflowInput)
            updated_at = datetime('now'),
            workflow_version = workflow_version + 1
      WHERE id = ?
+       AND workflow_version = ?
   `).run(
     toState,
     toState,
@@ -637,7 +639,20 @@ export function transitionContentWorkflow(input: TransitionContentWorkflowInput)
     secretaryIntent?.intentId ?? null,
     input.actorUserId ?? input.userId,
     object.id,
+    object.workflowVersion,
   );
+  if (update.changes < 1) {
+    return {
+      ok: false,
+      status: 'version_conflict',
+      object: getContentWorkflowObject(input.userId, object.id, input.tenantId),
+      fromState,
+      toState: fromState,
+      approval,
+      reasonCodes: [...reasonCodes, 'workflow_version_conflict'],
+      secretaryIntent,
+    };
+  }
 
   approveRecordsIfConfirmed(db, object, input, approval);
   const updated = getContentWorkflowObject(input.userId, object.id, input.tenantId);
@@ -1507,6 +1522,7 @@ function mapWorkflowObject(row: any): ContentWorkflowObject {
     secretaryIntentId: row.secretary_intent_id ?? null,
     secretaryAgendaItemId: row.secretary_agenda_item_id ?? null,
     metadata: parseJsonObject(row.ontology_metadata_json),
+    workflowVersion: Number(row.workflow_version ?? 1),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };

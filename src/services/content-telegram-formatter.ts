@@ -113,7 +113,7 @@ export function formatDeepSearch(res: DeepSearchResponse): string {
         msg += `      • ${escapeHtml(p)}\n`;
       }
     }
-    msg += `   📋 <code>/genscript ${b.title.slice(0, 80)}</code>\n\n`;
+    msg += `   📋 <code>/genscript ${escapeHtml(b.title.slice(0, 80))}</code>\n\n`;
   }
 
   const sources = res.briefs[0]?.sources || [];
@@ -182,7 +182,7 @@ export function formatHotNews(res: HotNewsResponse): string {
       msg += `   💡 <i>${escapeHtml(t.content_angle)}</i>\n`;
     }
     msg += `   ${relevance} · ${escapeHtml(t.niche)}\n`;
-    msg += `   📋 <code>/deepsearch ${t.topic.slice(0, 80)}</code>\n\n`;
+    msg += `   📋 <code>/deepsearch ${escapeHtml(t.topic.slice(0, 80))}</code>\n\n`;
   }
   return msg;
 }

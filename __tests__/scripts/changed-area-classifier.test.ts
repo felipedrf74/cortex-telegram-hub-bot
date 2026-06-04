@@ -298,7 +298,6 @@ describe('changed-area-classifier engineering-excellence enrichments (2026-05-04
         [
           'ecosystem.config.js',
           'ecosystem.staging.config.js',
-          'src/config.ts',
         ].join(','),
       ],
       { encoding: 'utf8' },
@@ -481,5 +480,66 @@ describe('changed-area-classifier cannot-skip dashboard wiring (ENG-EXC-O3)', ()
     for (const gate of result.gates) {
       expect(gate.pass, `gate ${gate.gate} failed wiring`).toBe(true);
     }
+  });
+});
+
+describe('changed-area-classifier CI/CD optimization routing', () => {
+  function classify(files: string) {
+    const raw = execFileSync(
+      'bash',
+      ['scripts/changed-area-classifier.sh', '--json', '--files', files],
+      { encoding: 'utf8' },
+    );
+    return JSON.parse(raw) as {
+      flags: Record<string, boolean>;
+      vitest: { mode: string; globs: string[]; skipReason?: string | null };
+      pytest: { globs: string[] };
+      cannotSkip: string[];
+    };
+  }
+
+  it('classifies docs-only changes as skip', () => {
+    const result = classify('docs/release/example.md');
+
+    expect(result.flags.docsOnly).toBe(true);
+    expect(result.vitest.mode).toBe('skip');
+    expect(result.vitest.skipReason).toContain('docs-only');
+  });
+
+  it('classifies package/test config changes as full', () => {
+    const result = classify('package-lock.json,vitest.config.ts');
+
+    expect(result.flags.packageJson).toBe(true);
+    expect(result.flags.testConfig).toBe(true);
+    expect(result.vitest.mode).toBe('full');
+  });
+
+  it('classifies unmapped backend source as changed-only', () => {
+    const result = classify('src/misc/unmapped-helper.ts');
+
+    expect(result.flags.backendSrc).toBe(true);
+    expect(result.vitest.mode).toBe('changed-only');
+  });
+
+  it('classifies content-engine changes as full pytest', () => {
+    const result = classify('content-engine/main.py');
+
+    expect(result.flags.pythonEngine).toBe(true);
+    expect(result.pytest.globs).toContain('content-engine/tests');
+  });
+
+  it('escalates high-fan-in source changes to full Vitest', () => {
+    const result = classify('src/config.ts');
+
+    expect(result.flags.highFanIn).toBe(true);
+    expect(result.vitest.mode).toBe('full');
+  });
+
+  it('flags changed irreversible migrations for manual approval', () => {
+    const result = classify('migrations/200_content_radar_phase0_rollout_guards.sql');
+
+    expect(result.flags.migration).toBe(true);
+    expect(result.flags.irreversibleMigration).toBe(true);
+    expect(result.cannotSkip).toContain('irreversible-migration-manual-approval');
   });
 });

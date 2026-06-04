@@ -40,7 +40,41 @@ def _clean_snippet(text: str) -> str:
     return cleaned
 
 
-def build_briefs(scored: list[ScoredResult], max_briefs: int = 10) -> list[ContentBrief]:
+def _is_portuguese(language: str | None) -> bool:
+    return (language or "").strip().lower().startswith("pt")
+
+
+def _fallback_hook(short_title: str, language: str | None) -> str:
+    if _is_portuguese(language):
+        return f"O que esta fonte sugere sobre {short_title} merece um olhar crítico."
+    return f"What this source suggests about {short_title} deserves a critical look."
+
+
+def _fallback_titles(title: str, short_title: str, language: str | None) -> list[str]:
+    if _is_portuguese(language):
+        return [
+            title,
+            f"O que esta fonte mostra sobre {short_title}",
+            f"Vale a pena falar sobre {short_title} agora?",
+        ]
+    return [
+        title,
+        f"What this source shows about {short_title}",
+        f"Is {short_title} worth covering now?",
+    ]
+
+
+def _fallback_why_now(language: str | None) -> str:
+    if _is_portuguese(language):
+        return "Brief de fallback gerado com contexto limitado da fonte disponível."
+    return "Fallback brief generated from limited available source context."
+
+
+def build_briefs(
+    scored: list[ScoredResult],
+    max_briefs: int = 10,
+    language: str | None = "en-US",
+) -> list[ContentBrief]:
     """Transform top-scored results into actionable content briefs."""
     briefs: list[ContentBrief] = []
 
@@ -54,16 +88,12 @@ def build_briefs(scored: list[ScoredResult], max_briefs: int = 10) -> list[Conte
 
         brief = ContentBrief(
             title=title,
-            hook=f"O que esta fonte sugere sobre {short_title} merece um olhar crítico.",
+            hook=_fallback_hook(short_title, language),
             angle="Fallback brief based on limited source context — validate the strongest claims before recording.",
             format=fmt,
             niche=niche,
             key_points=[],
-            title_options=[
-                title,
-                f"O que esta fonte mostra sobre {short_title}",
-                f"Vale a pena falar sobre {short_title} agora?",
-            ],
+            title_options=_fallback_titles(title, short_title, language),
             sources=[
                 SourceReference(
                     title=title,
@@ -74,7 +104,7 @@ def build_briefs(scored: list[ScoredResult], max_briefs: int = 10) -> list[Conte
             ],
             score=item.score.composite,
             time_sensitive=item.score.recency >= 0.8,
-            why_now=cleaned_snippet[:200] if cleaned_snippet else "Fallback brief generated from limited available source context.",
+            why_now=cleaned_snippet[:200] if cleaned_snippet else _fallback_why_now(language),
         )
         briefs.append(brief)
 
