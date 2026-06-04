@@ -47,6 +47,7 @@ set -euo pipefail
 
 LOCAL_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 AUDIT_LOG="${NEXUS_RELEASE_AUDIT_LOG:-$LOCAL_DIR/.local/release/override-audit.jsonl}"
+DEPLOY_MUTATION_MARKER="${NEXUS_DEPLOY_MUTATION_MARKER:-/tmp/nexus-deploy-prod-mutation-started}"
 
 SKIP_SMOKE=false
 DRY_RUN=false
@@ -269,7 +270,7 @@ echo ""
 echo "📦 Promoting to production via deploy.sh..."
 echo ""
 set +e
-"$LOCAL_DIR/scripts/deploy.sh"
+NEXUS_DEPLOY_MUTATION_MARKER="$DEPLOY_MUTATION_MARKER" "$LOCAL_DIR/scripts/deploy.sh"
 DEPLOY_EXIT=$?
 set -e
 
@@ -279,13 +280,15 @@ if [ $DEPLOY_EXIT -ne 0 ]; then
   echo "  ❌ PROMOTE FAILED"
   echo "═══════════════════════════════════════════════"
   echo ""
-  if [ "${NEXUS_PROMOTE_AUTO_ROLLBACK:-1}" != "0" ]; then
-    echo "Production deploy failed. Auto-running rollback.sh latest..."
+  if [ "${NEXUS_PROMOTE_AUTO_ROLLBACK:-1}" != "0" ] && [ -f "$DEPLOY_MUTATION_MARKER" ]; then
+    echo "Production deploy failed after production mutation. Auto-running rollback.sh latest..."
     NEXUS_ROLLBACK_AUTO_CONFIRM=1 "$LOCAL_DIR/scripts/rollback.sh" latest || {
       echo "⚠️ Auto rollback failed. Manual rollback commands:"
       echo "  ./scripts/rollback.sh --dry-run latest"
       echo "  ./scripts/rollback.sh latest"
     }
+  elif [ "${NEXUS_PROMOTE_AUTO_ROLLBACK:-1}" != "0" ]; then
+    echo "Deploy failed before production mutation. Auto rollback skipped."
   else
     echo "Production deploy failed. Rollback instructions:"
     echo "  ./scripts/rollback.sh                    # list available backups"

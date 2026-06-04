@@ -6,6 +6,7 @@ cd "$ROOT"
 
 echo "🔍 Pre-commit risk gate"
 
+# Watch training-principles.json and .science-policy-hash together.
 SCIENCE_POLICY_TOUCHED="$(git diff --cached --name-only --diff-filter=ACMR | grep -E '^src/services/coach-kernel/knowledge/entities/(training-principles\.json|\.science-policy-hash)$' || true)"
 if [ "${NEXUS_PRECOMMIT_SKIP_SCIENCE_POLICY:-0}" != "1" ] && [ -n "$SCIENCE_POLICY_TOUCHED" ]; then
   echo "🧪 training-principles changed — running science-policy version check"

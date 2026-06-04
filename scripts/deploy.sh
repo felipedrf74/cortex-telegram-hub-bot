@@ -25,6 +25,7 @@ NOTION_TOKEN="${NOTION_TOKEN:-}"
 NOTION_RELEASES_DB="${NOTION_RELEASES_DB:-332ad49d-23e7-8134-b413-d8d3cc3f1a4a}"
 SKIP_MODE="${NEXUS_DEPLOY_SKIP_VERIFY:-0}"
 AUDIT_LOG="${NEXUS_RELEASE_AUDIT_LOG:-$LOCAL_DIR/.local/release/override-audit.jsonl}"
+DEPLOY_MUTATION_MARKER="${NEXUS_DEPLOY_MUTATION_MARKER:-/tmp/nexus-deploy-prod-mutation-started}"
 
 # release-pipeline-risk-based-optimization (2026-05-03) — Round 3:
 # --dry-run mode exercises every gate (env validation, typecheck/verify
@@ -75,6 +76,7 @@ echo ""
 # NEXUS_DEPLOY_SKIP_VERIFY in `.env` or shell config. The script itself
 # defaults to legacy behavior so accidental rollouts are safe.
 cd "$LOCAL_DIR"
+rm -f "$DEPLOY_MUTATION_MARKER"
 
 audit_override() {
   local flag="$1"
@@ -351,6 +353,7 @@ ensure_clean_deploy_tree
 # backup ordering produced backups WITHOUT user data — see below.)
 echo ""
 echo "🛑 Stopping services on server..."
+printf '%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$DEPLOY_MUTATION_MARKER"
 # ── Handle PM2 process rename (one-time migration) ──
 ssh "$SERVER" "export PATH=\$PATH:$(dirname $PM2) && $PM2 delete telegram-hub-bot 2>/dev/null || true"
 ssh "$SERVER" "export PATH=\$PATH:$(dirname $PM2) && $PM2 stop nexus-hub 2>/dev/null; $PM2 stop content-engine 2>/dev/null; echo '   Stopped.'"
@@ -618,3 +621,5 @@ echo "════════════════════════�
 if [ "$HEALTH_OK" != true ]; then
   exit 1
 fi
+
+rm -f "$DEPLOY_MUTATION_MARKER"
