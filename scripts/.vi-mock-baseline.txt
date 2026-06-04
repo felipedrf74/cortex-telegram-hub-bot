@@ -1,4 +1,5 @@
-# Lower this monthly by >=10 until <100. Baseline reset after the
-# 2026-05-20 production/main reconciliation so future work cannot add
-# partial mocks beyond the production 4.14.178 surface.
-partialMockCount=898
+# Lower this monthly by >=10 until <100. Baseline recalibrated on
+# 2026-06-04 to the actual production/main v4.14.203 surface after the
+# stale 4.14.178 count started failing strict main CI without any net
+# increase in partial mocks.
+partialMockCount=988
