@@ -133,23 +133,26 @@ export function registerPortalWebhookRoutes(app: Express, deps: PortalWebhookRou
     express.raw({ type: 'application/json', limit: '1mb' }),
     (req: Request, res: Response) => {
       const appSecret = routeConfig.whatsapp?.appSecret;
-      if (appSecret) {
-        const sig = req.headers['x-hub-signature-256'] as string | undefined;
-        if (!sig) {
-          res.status(403).send('Forbidden');
-          return;
-        }
-        const expected = 'sha256=' + crypto
-          .createHmac('sha256', appSecret)
-          .update(req.body as Buffer)
-          .digest('hex');
-        const sigBuf = Buffer.from(sig);
-        const expBuf = Buffer.from(expected);
-        if (sigBuf.length !== expBuf.length || !crypto.timingSafeEqual(sigBuf, expBuf)) {
-          logger.warn('WhatsApp webhook HMAC verification failed');
-          res.status(403).send('Forbidden');
-          return;
-        }
+      if (!appSecret) {
+        logger.warn('WhatsApp webhook HMAC secret is not configured');
+        res.status(403).send('Forbidden');
+        return;
+      }
+      const sig = req.headers['x-hub-signature-256'] as string | undefined;
+      if (!sig) {
+        res.status(403).send('Forbidden');
+        return;
+      }
+      const expected = 'sha256=' + crypto
+        .createHmac('sha256', appSecret)
+        .update(req.body as Buffer)
+        .digest('hex');
+      const sigBuf = Buffer.from(sig);
+      const expBuf = Buffer.from(expected);
+      if (sigBuf.length !== expBuf.length || !crypto.timingSafeEqual(sigBuf, expBuf)) {
+        logger.warn('WhatsApp webhook HMAC verification failed');
+        res.status(403).send('Forbidden');
+        return;
       }
 
       res.status(200).send('OK');
@@ -220,19 +223,23 @@ export function registerPortalWebhookRoutes(app: Express, deps: PortalWebhookRou
       const subs = registry.getSubscriptions({ provider, status: 'active' });
       const sub = subs.length > 0 ? subs[0] : null;
 
-      if (sub?.secret) {
-        const rawBody = Buffer.isBuffer(req.body) ? req.body : Buffer.from(String(req.body));
-        const valid = registry.verifySignature(
-          provider,
-          rawBody,
-          req.headers as HeaderRecord,
-          sub.secret,
-        );
-        if (!valid) {
-          logger.warn({ provider }, 'Webhook signature verification failed');
-          res.status(401).json({ ok: false, message: 'Invalid signature' });
-          return;
-        }
+      if (!sub?.secret) {
+        logger.warn({ provider }, 'Webhook signing secret is not configured');
+        res.status(401).json({ ok: false, message: 'Webhook signing secret is not configured' });
+        return;
+      }
+
+      const rawBody = Buffer.isBuffer(req.body) ? req.body : Buffer.from(String(req.body));
+      const valid = registry.verifySignature(
+        provider,
+        rawBody,
+        req.headers as HeaderRecord,
+        sub.secret,
+      );
+      if (!valid) {
+        logger.warn({ provider }, 'Webhook signature verification failed');
+        res.status(401).json({ ok: false, message: 'Invalid signature' });
+        return;
       }
 
       try {

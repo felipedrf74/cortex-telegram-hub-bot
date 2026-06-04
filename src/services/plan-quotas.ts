@@ -30,13 +30,18 @@ export type UsageLevel = 'none' | 'enhanced' | 'maximum' | 'owner';
  * heavier skills remain locked behind the paid plans.
  */
 export const FREE_DAILY_COST_CAP_USD = 0.005;
+const GLOBAL_DAILY_COST_LIMIT_USD = config.aiSafety?.globalDailyLimitUsd ?? 10;
+export const BETA_DAILY_COST_CAP_USD = Math.min(
+  1.0,
+  Math.max(0, GLOBAL_DAILY_COST_LIMIT_USD - 0.01),
+);
 
 const DEFAULT_EFFECTIVE_DAILY_COST_LIMITS: Record<BillingPlan, number> = {
   free: FREE_DAILY_COST_CAP_USD,
   pro: 0.04,
   max: 0.06,
   owner: 100,
-  beta: 100,
+  beta: BETA_DAILY_COST_CAP_USD,
 };
 
 /**

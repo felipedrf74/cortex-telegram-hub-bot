@@ -11,6 +11,7 @@ const originalEnv = {
   BACKUP_ENCRYPT: process.env.BACKUP_ENCRYPT,
   BACKUP_KEY: process.env.BACKUP_KEY,
 };
+const STAGING_IOS_JWT_SECRET = 'staging-fixture-test-secret-000000000000000000000000';
 
 function restoreEnv(): void {
   for (const [key, value] of Object.entries(originalEnv)) {
@@ -81,7 +82,7 @@ describe('authMiddleware: staging fixture production refusal', () => {
 
     process.env.NODE_ENV = 'production';
     delete process.env.STAGING;
-    process.env.IOS_API_JWT_SECRET = 'staging-fixture-test-secret';
+    process.env.IOS_API_JWT_SECRET = STAGING_IOS_JWT_SECRET;
     delete process.env.IOS_API_JWT_KEYS;
     process.env.FINANCE_ENCRYPTION_KEY = 'auth-middleware-prod-test-finance-key-32';
     process.env.BACKUP_ENCRYPT = 'true';
@@ -97,7 +98,7 @@ describe('authMiddleware: staging fixture production refusal', () => {
   });
 
   async function run(payload: Record<string, unknown>): Promise<{ admitted: boolean; res: ReturnType<typeof mockRes> }> {
-    const token = jwt.sign(payload, 'staging-fixture-test-secret', { expiresIn: '30d' as any });
+    const token = jwt.sign(payload, STAGING_IOS_JWT_SECRET, { expiresIn: '30d' as any });
     const { authMiddleware } = await import('../../../src/api/auth-middleware');
     const req = mockReq(token);
     const res = mockRes();

@@ -310,9 +310,9 @@ describe('Webhook Registry', () => {
       expect(valid).toBe(true);
     });
 
-    it('returns true when no secret configured', () => {
+    it('fails closed when no secret is configured', () => {
       const valid = verifySignature('custom', 'body', {}, '');
-      expect(valid).toBe(true);
+      expect(valid).toBe(false);
     });
 
     it('returns false when signature header is missing', () => {

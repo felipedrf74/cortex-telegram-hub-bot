@@ -182,6 +182,26 @@ describe('runtime config validation', () => {
     warnSpy.mockRestore();
   });
 
+  it('fails fast when iOS API is enabled with a weak JWT secret', async () => {
+    vi.stubEnv('IOS_API_ENABLED', 'true');
+    vi.stubEnv('IOS_API_JWT_SECRET', 'change-me');
+    vi.stubEnv('IOS_INVITE_CODE', 'invite');
+
+    await expect(loadConfigFresh()).rejects.toThrow(
+      'IOS_API_JWT_SECRET must be at least 32 bytes and cannot contain known placeholder text.',
+    );
+  });
+
+  it('fails fast when production binds the portal to a wildcard address without explicit acknowledgement', async () => {
+    applySafeProductionEnv();
+    vi.stubEnv('PORTAL_BIND', '0.0.0.0');
+    vi.stubEnv('PORTAL_PUBLIC_BIND_ACK', '');
+
+    await expect(loadConfigFresh()).rejects.toThrow(
+      'PORTAL_BIND=0.0.0.0 exposes the portal on every interface. Use 127.0.0.1 behind a tunnel/reverse proxy or set PORTAL_PUBLIC_BIND_ACK=production-public-host-reviewed.',
+    );
+  });
+
   it('allows Stripe Nexus Points to stay disabled without point price ids', async () => {
     vi.stubEnv('STRIPE_NEXUS_POINTS_ENABLED', 'false');
     vi.stubEnv('STRIPE_SECRET_KEY', '');

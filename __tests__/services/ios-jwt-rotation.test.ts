@@ -7,10 +7,13 @@ import {
 } from '../../src/services/ios-jwt';
 
 const NOW = Date.parse('2026-05-06T12:00:00.000Z');
+const LEGACY_SECRET = 'legacy-secret-00000000000000000000000000000000';
+const OLD_SECRET = 'old-secret-000000000000000000000000000000000';
+const NEW_SECRET = 'new-secret-000000000000000000000000000000000';
 
 describe('iOS JWT key rotation', () => {
   beforeEach(() => {
-    vi.stubEnv('IOS_API_JWT_SECRET', 'legacy-secret');
+    vi.stubEnv('IOS_API_JWT_SECRET', LEGACY_SECRET);
     vi.stubEnv('IOS_JWT_EXPIRY', '7d');
     vi.stubEnv('IOS_API_JWT_KEYS', '');
     vi.stubEnv('IOS_API_JWT_ACTIVE_KID', '');
@@ -37,12 +40,12 @@ describe('iOS JWT key rotation', () => {
     vi.stubEnv('IOS_API_JWT_KEYS', JSON.stringify([
       {
         kid: 'ios-api-2026-05-05',
-        secret: 'old-secret',
+        secret: OLD_SECRET,
         verifyUntil: '2026-05-07T12:00:00.000Z',
       },
       {
         kid: 'ios-api-2026-05-06',
-        secret: 'new-secret',
+        secret: NEW_SECRET,
         active: true,
       },
     ]));
@@ -52,11 +55,11 @@ describe('iOS JWT key rotation', () => {
       header: { kid?: string };
     };
     expect(newDecoded.header.kid).toBe('ios-api-2026-05-06');
-    expect(jwt.verify(newToken, 'new-secret')).toMatchObject({ userId: 7 });
+    expect(jwt.verify(newToken, NEW_SECRET)).toMatchObject({ userId: 7 });
 
     const oldToken = jwt.sign(
       { userId: 8, deviceId: 'old-device' },
-      'old-secret',
+      OLD_SECRET,
       { header: { kid: 'ios-api-2026-05-05' } },
     );
     expect(verifyIosJwt(oldToken, NOW)).toMatchObject({
@@ -69,19 +72,19 @@ describe('iOS JWT key rotation', () => {
     vi.stubEnv('IOS_API_JWT_KEYS', JSON.stringify([
       {
         kid: 'ios-api-2026-05-05',
-        secret: 'old-secret',
+        secret: OLD_SECRET,
         verifyUntil: '2026-05-05T12:00:00.000Z',
       },
       {
         kid: 'ios-api-2026-05-06',
-        secret: 'new-secret',
+        secret: NEW_SECRET,
         active: true,
       },
     ]));
 
     const oldToken = jwt.sign(
       { userId: 8, deviceId: 'old-device' },
-      'old-secret',
+      OLD_SECRET,
       { header: { kid: 'ios-api-2026-05-05' } },
     );
 
@@ -89,7 +92,7 @@ describe('iOS JWT key rotation', () => {
   });
 
   it('keeps pre-migration tokens without kid alive through the legacy secret fallback', () => {
-    const legacyToken = jwt.sign({ userId: 9, deviceId: 'legacy-device' }, 'legacy-secret');
+    const legacyToken = jwt.sign({ userId: 9, deviceId: 'legacy-device' }, LEGACY_SECRET);
 
     expect(verifyIosJwt(legacyToken, NOW)).toMatchObject({
       userId: 9,
@@ -100,11 +103,11 @@ describe('iOS JWT key rotation', () => {
   it('surfaces key status for health and runbook checks', () => {
     vi.stubEnv('IOS_API_JWT_KEYS', JSON.stringify({
       'ios-api-2026-05-05': {
-        secret: 'old-secret',
+        secret: OLD_SECRET,
         verifyUntil: '2026-05-05T12:00:00.000Z',
       },
       'ios-api-2026-05-06': {
-        secret: 'new-secret',
+        secret: NEW_SECRET,
         active: true,
       },
     }));
@@ -117,5 +120,19 @@ describe('iOS JWT key rotation', () => {
       ],
       legacyNoKidFallback: true,
     });
+  });
+
+  it('rejects weak configured keyring secrets before signing or verifying', () => {
+    vi.stubEnv('IOS_API_JWT_KEYS', JSON.stringify([
+      {
+        kid: 'ios-api-weak',
+        secret: 'stub-secret',
+        active: true,
+      },
+    ]));
+
+    expect(() => signIosJwt({ userId: 42 })).toThrow(
+      'iOS JWT secret for kid ios-api-weak must be at least 32 bytes and cannot contain known placeholder text.',
+    );
   });
 });

@@ -16,7 +16,7 @@ describe('iOS WebSocket tenant scope', () => {
   });
 
   it('signs and verifies tenantId in iOS JWT payloads', async () => {
-    process.env.IOS_API_JWT_SECRET = 'tenant-scope-secret';
+    process.env.IOS_API_JWT_SECRET = 'tenant-scope-secret-000000000000000000000000000000';
     process.env.IOS_JWT_EXPIRY = '1h';
     const { signIosJwt, verifyIosJwt } = await import('../../src/services/ios-jwt');
 

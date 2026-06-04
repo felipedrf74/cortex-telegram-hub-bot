@@ -111,7 +111,7 @@ beforeEach(async () => {
   applyMigrations(testDb);
 
   process.env.IOS_API_ENABLED = 'true';
-  process.env.IOS_API_JWT_SECRET = 'test-secret';
+  process.env.IOS_API_JWT_SECRET = 'test-secret-000000000000000000000000000000';
   process.env.IOS_INVITE_CODE = 'TEST_INVITE';
   process.env.IOS_OWNER_CODE = 'TEST_OWNER';
   process.env.OWNER_TELEGRAM_ID = '991122';

@@ -67,6 +67,7 @@ import {
   getSpendByProvider,
   type DailyQuotaStatus,
 } from '../../src/services/cost-guardrail';
+import { getEffectiveDailyCostLimitUsd } from '../../src/services/plan-quotas';
 
 describe('checkQuota', () => {
   beforeEach(() => {
@@ -487,6 +488,11 @@ describe('getSpendByProvider', () => {
 });
 
 describe('150_nexus_points_usage_limits.sql', () => {
+  it('keeps beta per-user daily cap below the global workspace daily cap', () => {
+    expect(getEffectiveDailyCostLimitUsd('beta')).toBeGreaterThan(0);
+    expect(getEffectiveDailyCostLimitUsd('beta')).toBeLessThan(10.0);
+  });
+
   it('supersedes the original plan caps with the current Pro and Max daily budgets', () => {
     const migrationSql = fs.readFileSync(
       path.join(MIGRATIONS_DIR, '150_nexus_points_usage_limits.sql'),

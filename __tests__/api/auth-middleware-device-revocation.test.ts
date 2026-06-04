@@ -25,6 +25,7 @@ import type { Request, Response, NextFunction } from 'express';
 const MIGRATIONS_DIR = path.resolve(__dirname, '../../migrations');
 
 let testDb: Database.Database;
+const TEST_IOS_JWT_SECRET = 'test-ios-secret-000000000000000000000000000000';
 
 const originalEnv = {
   STAGING: process.env.STAGING,
@@ -96,7 +97,7 @@ describe('authMiddleware: device revocation', () => {
 
     process.env.STAGING = 'true';
     process.env.IOS_API_ENABLED = 'true';
-    process.env.IOS_API_JWT_SECRET = 'test-ios-secret';
+    process.env.IOS_API_JWT_SECRET = TEST_IOS_JWT_SECRET;
     process.env.IOS_INVITE_CODE = 'LOCALBETA_TEST';
     process.env.IOS_OWNER_CODE = 'LOCALOWNER_TEST';
     process.env.OWNER_TELEGRAM_ID = '991122';
@@ -161,7 +162,7 @@ describe('authMiddleware: device revocation', () => {
 
     const token = jwt.sign(
       { userId, deviceId },
-      'test-ios-secret',
+      TEST_IOS_JWT_SECRET,
       { expiresIn: '7d' as any },
     );
 
@@ -191,7 +192,7 @@ describe('authMiddleware: device revocation', () => {
   ): Promise<MockRes & { admitted: boolean; requestTenantId?: number; requestUserId?: number }> {
     const token = jwt.sign(
       payload,
-      'test-ios-secret',
+      TEST_IOS_JWT_SECRET,
       { expiresIn: '7d' as any },
     );
 

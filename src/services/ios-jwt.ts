@@ -4,6 +4,8 @@ import jwt from 'jsonwebtoken';
 import { config } from '../config';
 
 const DEFAULT_IOS_JWT_KID = 'ios-api-current';
+const IOS_JWT_SECRET_MIN_BYTES = 32;
+const IOS_JWT_PLACEHOLDER_PATTERN = /(change[-_ ]?me|changeme|stub)/i;
 
 export interface IosJwtPayload {
   userId?: unknown;
@@ -40,7 +42,7 @@ function readJwtExpiry(): string {
 
 function normalizeKeyEntry(kid: string, value: unknown): IosJwtKeyEntry {
   if (typeof value === 'string') {
-    return { kid, secret: value };
+    return { kid, secret: assertStrongIosJwtSecret(value, kid) };
   }
   if (!value || typeof value !== 'object') {
     throw new Error(`Invalid iOS JWT key entry for kid ${kid}`);
@@ -52,10 +54,22 @@ function normalizeKeyEntry(kid: string, value: unknown): IosJwtKeyEntry {
   }
   return {
     kid,
-    secret: raw.secret,
+    secret: assertStrongIosJwtSecret(raw.secret, kid),
     active: raw.active === true,
     verifyUntil: raw.verifyUntil ?? null,
   };
+}
+
+export function assertStrongIosJwtSecret(secret: string, kid = 'IOS_API_JWT_SECRET'): string {
+  if (
+    Buffer.byteLength(secret, 'utf8') < IOS_JWT_SECRET_MIN_BYTES
+    || IOS_JWT_PLACEHOLDER_PATTERN.test(secret)
+  ) {
+    throw new Error(
+      `iOS JWT secret for kid ${kid} must be at least 32 bytes and cannot contain known placeholder text.`,
+    );
+  }
+  return secret;
 }
 
 function parseConfiguredKeys(raw: string | undefined): IosJwtKeyEntry[] {
@@ -88,12 +102,15 @@ export function getIosJwtKeyring(): IosJwtKeyring {
   const legacySecret = readLegacySecret();
   const configuredKeys = parseConfiguredKeys(process.env.IOS_API_JWT_KEYS);
   const activeKidFromEnv = process.env.IOS_API_JWT_ACTIVE_KID?.trim();
+  const validatedLegacySecret = legacySecret
+    ? assertStrongIosJwtSecret(legacySecret)
+    : legacySecret;
 
   const keys = configuredKeys.length > 0
     ? configuredKeys
     : [{
         kid: activeKidFromEnv || DEFAULT_IOS_JWT_KID,
-        secret: legacySecret,
+        secret: validatedLegacySecret,
         active: true,
       }];
 
@@ -108,7 +125,7 @@ export function getIosJwtKeyring(): IosJwtKeyring {
   return {
     activeKid: active.kid,
     activeSecret: active.secret,
-    legacySecret,
+    legacySecret: validatedLegacySecret,
     keys,
   };
 }

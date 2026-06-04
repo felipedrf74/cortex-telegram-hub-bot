@@ -130,6 +130,32 @@ export function createPasswordResetPageHandler(portalDir = __dirname) {
   };
 }
 
+export function createForgotPasswordPageHandler(portalDir = __dirname) {
+  return (_req: Request, res: Response): void => {
+    const htmlPath = path.join(portalDir, 'auth', 'forgot-password.html');
+    if (!fs.existsSync(htmlPath)) {
+      res.status(503).send('Forgot password page not deployed — run `npm run build`.');
+      return;
+    }
+
+    res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
+    res.set('Pragma', 'no-cache');
+    res.set('Expires', '0');
+    res.set('X-Frame-Options', 'DENY');
+    res.set('X-Content-Type-Options', 'nosniff');
+    res.set('Referrer-Policy', 'no-referrer');
+    res.set(
+      'Content-Security-Policy',
+      "default-src 'self'; script-src 'self' 'unsafe-inline'; "
+      + "style-src 'self' 'unsafe-inline'; img-src 'self' data:; "
+      + "connect-src 'self'; form-action 'self'; frame-ancestors 'none'; "
+      + "base-uri 'none'",
+    );
+
+    res.type('html').send(fs.readFileSync(htmlPath, 'utf-8'));
+  };
+}
+
 export function createPortalBrandAssetHandler(portalDir = __dirname) {
   return (_req: Request, res: Response): void => {
     const imagePath = path.join(portalDir, 'assets', 'nexus-mark.png');
@@ -148,6 +174,9 @@ export function registerPortalStaticRoutes(app: Express, portalDir = __dirname):
   app.get('/assets/nexus-mark.png', createPortalBrandAssetHandler(portalDir));
 
   app.get('/landing-preview', createLandingPreviewHandler(portalDir));
+
+  const serveForgotPasswordPage = createForgotPasswordPageHandler(portalDir);
+  app.get('/auth/forgot-password', serveForgotPasswordPage);
 
   const servePasswordResetPage = createPasswordResetPageHandler(portalDir);
   app.get('/auth/password-reset', servePasswordResetPage);

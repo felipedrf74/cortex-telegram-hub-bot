@@ -17,6 +17,9 @@ const IS_DEVELOPMENT = !process.env.NODE_ENV || process.env.NODE_ENV === 'develo
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 const PAYWALL_ENABLED = (process.env.PAYWALL_ENABLED ?? 'true') !== 'false';
 const PAYWALL_BYPASS_ALLOWED = IS_TEST || IS_DEVELOPMENT || IS_STAGING;
+const IOS_JWT_SECRET_MIN_BYTES = 32;
+const IOS_JWT_PLACEHOLDER_PATTERN = /(change[-_ ]?me|changeme|stub)/i;
+const PORTAL_PUBLIC_BIND_ACK_VALUE = 'production-public-host-reviewed';
 export type NotificationDeliveryMode = 'mock' | 'apns';
 
 function required(key: string): string {
@@ -93,6 +96,16 @@ function warnProductionLaunch(message: string): void {
   if (IS_PRODUCTION && message) {
     console.warn(`[production launch warning] ${message}`);
   }
+}
+
+function isUnsafePublicBind(bind: string | undefined): boolean {
+  const normalized = (bind || '').trim().toLowerCase();
+  return normalized === '0.0.0.0' || normalized === '::' || normalized === '[::]';
+}
+
+function isStrongIosJwtSecret(secret: string): boolean {
+  return Buffer.byteLength(secret, 'utf8') >= IOS_JWT_SECRET_MIN_BYTES
+    && !IOS_JWT_PLACEHOLDER_PATTERN.test(secret);
 }
 
 export const config = {
@@ -449,7 +462,7 @@ export const config = {
   portal: {
     enabled: (process.env.PORTAL_ENABLED || 'true') === 'true',
     port: optionalInt('PORTAL_PORT', 8200, { min: 1, max: 65535 }),
-    bind: process.env.PORTAL_BIND || '0.0.0.0',
+    bind: process.env.PORTAL_BIND || '127.0.0.1',
     // Legacy full-access admin bearer token. New scoped tokens can be
     // configured below for least-privilege portal usage, but this
     // remains the backward-compatible fallback if operators have not
@@ -768,8 +781,22 @@ warnProductionLaunch(
 if (config.ios.enabled && !config.ios.jwtSecret) {
   throw new Error('IOS_API_ENABLED=true but IOS_API_JWT_SECRET is not set. Set a 256-bit secret.');
 }
+if (config.ios.enabled && !isStrongIosJwtSecret(config.ios.jwtSecret)) {
+  throw new Error('IOS_API_JWT_SECRET must be at least 32 bytes and cannot contain known placeholder text.');
+}
 if (config.ios.enabled && !config.ios.inviteCode) {
   throw new Error('IOS_API_ENABLED=true but IOS_INVITE_CODE is not set.');
+}
+
+if (
+  process.env.NODE_ENV === 'production'
+  && !IS_STAGING
+  && isUnsafePublicBind(config.portal.bind)
+  && process.env.PORTAL_PUBLIC_BIND_ACK !== PORTAL_PUBLIC_BIND_ACK_VALUE
+) {
+  throw new Error(
+    `PORTAL_BIND=${config.portal.bind} exposes the portal on every interface. Use 127.0.0.1 behind a tunnel/reverse proxy or set PORTAL_PUBLIC_BIND_ACK=${PORTAL_PUBLIC_BIND_ACK_VALUE}.`,
+  );
 }
 
 if (config.stripe.nexusPoints.enabled) {

@@ -2,7 +2,7 @@
 
 Status: canonical
 Owner: backend security architect
-Last verified: 2026-05-04
+Last verified: 2026-06-04
 Update policy: update when threat model changes, when a new permanent gate
 is added, or when a new class of multi-tenant bug is shipped to production.
 Removing a gate requires owner approval.
@@ -225,7 +225,23 @@ is the gold-standard pattern. Copy that shape.
 3. **A test asserts production env never returns fixture-tagged data**
    for any app-facing route.
 
-## 10. Permanent security gates (must)
+## 10. Portal exposure and crawler files (must)
+
+1. **The portal binds to loopback by default.** `PORTAL_BIND` must stay
+   `127.0.0.1` unless the owner has explicitly reviewed a public-host
+   topology. Production refuses `0.0.0.0`, `::`, or `[::]` unless
+   `PORTAL_PUBLIC_BIND_ACK=production-public-host-reviewed` is present.
+2. **Public access goes through the tunnel/reverse proxy.** The reviewed
+   path owns TLS, WAF, cache policy, and host allowlisting; direct public
+   Node binds are for emergency owner-reviewed operations only.
+3. **Crawler control files live at the public site/edge, not the portal.**
+   The backend portal must not advertise backup artifacts such as
+   `index.html.bak`, `.env`, `.wrangler`, database dumps, or release
+   archives in `robots.txt`, `llms.txt`, static route maps, or docs. Any
+   accidental backup filename must remain unserved by the portal and edge
+   validation should confirm a 404 before launch.
+
+## 11. Permanent security gates (must)
 
 These gates run on every PR and/or nightly. **Do not remove a gate**;
 removal requires owner approval and a documented replacement.

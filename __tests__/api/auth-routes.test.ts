@@ -124,7 +124,7 @@ describe('Auth invite registration', () => {
 
     process.env.STAGING = 'true';
     process.env.IOS_API_ENABLED = 'true';
-    process.env.IOS_API_JWT_SECRET = 'test-ios-secret';
+    process.env.IOS_API_JWT_SECRET = 'test-ios-secret-000000000000000000000000000000';
     process.env.IOS_INVITE_CODE = 'LOCALBETA_TEST';
     process.env.IOS_OWNER_CODE = 'LOCALOWNER_TEST';
     process.env.OWNER_TELEGRAM_ID = '991122';
@@ -533,7 +533,10 @@ describe('Auth invite registration', () => {
     expect(activeRefresh.statusCode).toBe(200);
     expect(activeRefresh.body.ok).toBe(true);
     expect(activeRefresh.body.data.refreshToken).not.toBe(sessionB.refreshToken);
-    const decoded = jwt.verify(activeRefresh.body.data.accessToken, 'test-ios-secret') as {
+    const decoded = jwt.verify(
+      activeRefresh.body.data.accessToken,
+      'test-ios-secret-000000000000000000000000000000',
+    ) as {
       userId: number;
       deviceId: string;
     };

@@ -123,7 +123,7 @@ describe('POST /auth/logout (server-side session revocation)', () => {
 
     process.env.STAGING = 'true';
     process.env.IOS_API_ENABLED = 'true';
-    process.env.IOS_API_JWT_SECRET = 'test-ios-secret';
+    process.env.IOS_API_JWT_SECRET = 'test-ios-secret-000000000000000000000000000000';
     process.env.IOS_INVITE_CODE = 'LOCALBETA_TEST';
     process.env.IOS_OWNER_CODE = 'LOCALOWNER_TEST';
     process.env.OWNER_TELEGRAM_ID = '991122';
@@ -233,7 +233,7 @@ describe('POST /auth/logout-all (account-wide revocation)', () => {
 
     process.env.STAGING = 'true';
     process.env.IOS_API_ENABLED = 'true';
-    process.env.IOS_API_JWT_SECRET = 'test-ios-secret';
+    process.env.IOS_API_JWT_SECRET = 'test-ios-secret-000000000000000000000000000000';
     process.env.IOS_INVITE_CODE = 'LOCALBETA_TEST';
     process.env.IOS_OWNER_CODE = 'LOCALOWNER_TEST';
     process.env.OWNER_TELEGRAM_ID = '991122';

@@ -4,6 +4,7 @@ import path from 'path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   createAdminDashboardHandler,
+  createForgotPasswordPageHandler,
   createLandingPreviewHandler,
   createUserLoginHandler,
   registerPortalStaticRoutes,
@@ -83,6 +84,7 @@ describe('portal static routes', () => {
     expect(Array.from(routes.keys())).toEqual([
       '/assets/nexus-mark.png',
       '/landing-preview',
+      '/auth/forgot-password',
       '/auth/password-reset',
       '/user',
       '/login',
@@ -139,6 +141,33 @@ describe('portal static routes', () => {
     expect(payload.headers['Content-Security-Policy']).toContain('https://*.nexushub-landing.pages.dev');
     expect(payload.headers['Content-Security-Policy']).toContain("frame-ancestors 'none'");
     expect(JSON.stringify(payload)).not.toContain('PORTAL_TOKEN');
+  });
+
+  it('serves the forgot-password request page and posts to the request API', () => {
+    const dir = createTempPortalDir();
+    fs.mkdirSync(path.join(dir, 'auth'), { recursive: true });
+    fs.writeFileSync(
+      path.join(dir, 'auth', 'forgot-password.html'),
+      '<html><form><input type="email"></form><script>fetch("/api/v1/auth/password-reset/request")</script></html>',
+    );
+    const { payload, res } = makeResponse();
+
+    createForgotPasswordPageHandler(dir)({}, res);
+
+    expect(payload.statusCode).toBe(200);
+    expect(payload.contentType).toBe('html');
+    expect(payload.body).toContain('/api/v1/auth/password-reset/request');
+    expect(payload.headers['Cache-Control']).toBe('no-cache, no-store, must-revalidate');
+    expect(payload.headers['Content-Security-Policy']).toContain("form-action 'self'");
+    expect(payload.headers['Content-Security-Policy']).toContain("frame-ancestors 'none'");
+  });
+
+  it('points the user login forgot-password entry at the request page', () => {
+    const htmlPath = path.resolve(__dirname, '../../src/portal/user-login.html');
+    const html = fs.readFileSync(htmlPath, 'utf8');
+
+    expect(html).toContain('href="/auth/forgot-password"');
+    expect(html).not.toContain('href="/auth/password-reset">Forgot password?');
   });
 
   it('keeps portal Stripe Nexus Points note fields bounded and alert rendering escaped', () => {
