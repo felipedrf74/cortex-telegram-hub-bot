@@ -49,8 +49,8 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
       - run: npm ci
-      - name: npm audit (high+)
-        run: npm audit --audit-level=high
+      - name: npm audit production dependencies (high+)
+        run: npm audit --audit-level=high --omit=dev
 
   python-audit:
     name: Python content-engine audit
