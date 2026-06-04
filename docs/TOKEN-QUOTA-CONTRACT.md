@@ -33,7 +33,7 @@ overrides added, and paid 30-day Nexus Point allowances added).
 - Owner and staging-beta bypass caps internally.
 - These caps are conservative because production is Gemini-first and
   token-zero for deterministic lookups.
-- Pro at `$19.99` and Max at `$24.99` keep included AI cost below 10% of
+- Pro at `$14.99` and Max at `$19.99` keep included AI cost below 10% of
   subscription revenue before fixed costs, Apple cuts, and support overhead.
 
 ### Nexus Points

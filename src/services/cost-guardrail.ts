@@ -60,8 +60,8 @@ function todayKey(): string {
 // ~$0.0026–$0.0076. Caps are sized so that a fully-utilized month still
 // leaves room for platform fees, support, retries, and provider mix drift.
 //
-//   Pro ($19.99/mo): $0.04/day × 30 = $1.20/mo AI COGS
-//   Max ($24.99/mo): $0.06/day × 30 = $1.80/mo AI COGS
+//   Pro ($14.99/mo): $0.04/day × 30 = $1.20/mo AI COGS
+//   Max ($19.99/mo): $0.06/day × 30 = $1.80/mo AI COGS
 //
 // Typical users should land materially below cap, especially because
 // token-zero routes avoid AI spend entirely for deterministic lookups.

@@ -3865,8 +3865,8 @@ describe('Chat API routes', () => {
           },
         },
       });
-      expect(String(messageRes.body.metadata.chatCoreV2.command.payload.startDateTime)).toContain('2026-06-05T14:00:00');
-      expect(String(messageRes.body.metadata.chatCoreV2.command.payload.endDateTime)).toContain('2026-06-05T15:00:00');
+      expect(String(messageRes.body.metadata.chatCoreV2.command.payload.startDateTime)).toContain('2026-06-12T14:00:00');
+      expect(String(messageRes.body.metadata.chatCoreV2.command.payload.endDateTime)).toContain('2026-06-12T15:00:00');
       expect(messageRes.body.metadata.chatCoreV2.response.cards[0]).toMatchObject({
         type: 'calendar_change_preview_card',
         title: 'Calendar preview: weekly sync',
@@ -3885,8 +3885,8 @@ describe('Chat API routes', () => {
         kind: 'eventCard',
         eventId: null,
         title: 'weekly sync',
-        startAt: expect.stringContaining('2026-06-05T14:00:00'),
-        endAt: expect.stringContaining('2026-06-05T15:00:00'),
+        startAt: expect.stringContaining('2026-06-12T14:00:00'),
+        endAt: expect.stringContaining('2026-06-12T15:00:00'),
         location: null,
         attendees: [],
         status: 'pending',

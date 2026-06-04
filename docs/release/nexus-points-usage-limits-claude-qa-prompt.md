@@ -6,8 +6,8 @@ You are Claude Code independently reviewing the Nexus Points usage-limit and mod
 
 Implement tier daily AI budgets and purchasable Nexus Points:
 
-- Pro at `$19.99` gets `$0.04/day` included AI budget.
-- Max at `$24.99` gets `$0.06/day` included AI budget.
+- Pro at `$14.99` gets `$0.04/day` included AI budget.
+- Max at `$19.99` gets `$0.06/day` included AI budget.
 - `1 Nexus Point = $0.001` of internal AI provider cost allowance.
 - Nexus Points expire 30 days after purchase.
 - Points are consumed only after the daily included budget is exhausted.

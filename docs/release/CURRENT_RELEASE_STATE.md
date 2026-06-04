@@ -455,7 +455,7 @@ Last updated: 2026-06-04
   UptimeRobot, `api.nexushub.me/health` still 403 to ClaudeBot,
   `robots.txt` no longer carries Cloudflare Managed content and explicitly
   allows ClaudeBot, `llms.txt` starts with `# Nexus Hub` and carries the
-  current Pro `$14.99/R$69.99` and Max `$24.99/R$119.99` prices.
+  current Pro `$14.99/R$74.99` and Max `$19.99/R$99.99` prices.
 - `--include-staging` was used so `api-staging.nexushub.me/public-status` is
   on the same allowlist as production.
 - Token: Felipe-supplied Cloudflare API token with TTL through

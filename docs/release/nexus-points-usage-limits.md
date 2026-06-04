@@ -7,8 +7,8 @@ Date: 2026-05-20
 
 | Tier | Monthly price | Daily AI budget | Monthly AI allowance | AI cost % | AI-only margin |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| Pro | $19.99 | $0.04/day | $1.22/mo | 6.1% | 93.9% |
-| Max | $24.99 | $0.06/day | $1.83/mo | 7.3% | 92.7% |
+| Pro | $14.99 | $0.04/day | $1.22/mo | 8.1% | 91.9% |
+| Max | $19.99 | $0.06/day | $1.83/mo | 9.2% | 90.8% |
 
 Portal plan caps remain editable through `/api/plans/:planId`. Per-user AI budget overrides can be written through `/api/users/:userId/limits` using `daily_ai_cost_limit_usd`.
 
