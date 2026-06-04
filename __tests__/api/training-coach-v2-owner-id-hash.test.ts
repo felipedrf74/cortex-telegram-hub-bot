@@ -9,7 +9,7 @@
  * tag is non-enumerable without the secret.
  */
 import { describe, expect, it } from 'vitest';
-import { hashOwnerIdForLog } from '../../src/api/routes/training-coach-v2';
+import { hashOwnerIdForLog } from '../../src/api/routes/_ownership-audit';
 
 describe('R5 P3 — hashOwnerIdForLog (HMAC-SHA256 upgrade)', () => {
   it('is deterministic for the same input within a single process', () => {

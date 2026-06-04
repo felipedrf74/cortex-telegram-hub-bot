@@ -256,6 +256,59 @@ describe('training-plan-calendar-sync', () => {
     expect(mocks.updateEvent).not.toHaveBeenCalled();
   });
 
+  it('returns the same not-found preview result for foreign and missing sessions', async () => {
+    mocks.getSessionById.mockReturnValue({ id: 100, week_id: 70, plan_id: 7 });
+    mocks.getPlanById.mockReturnValue({ id: 7, user_id: 99, start_date: '2026-04-20T00:00:00.000Z' });
+
+    const foreign = await previewTrainingSessionReflow(42, 100, 'google', 42);
+
+    vi.clearAllMocks();
+    mocks.getSessionById.mockReturnValue(null);
+
+    const missing = await previewTrainingSessionReflow(42, 100, 'google', 42);
+
+    expect(foreign).toEqual(missing);
+    expect(foreign).toEqual({
+      status: 'not_found',
+      data: {
+        message: 'Training session not found.',
+        sessionId: 100,
+      },
+    });
+  });
+
+  it('returns the same not-found confirm result for foreign and missing sessions', async () => {
+    mocks.getSessionById.mockReturnValue({ id: 101, week_id: 71, plan_id: 8 });
+    mocks.getPlanById.mockReturnValue({ id: 8, user_id: 99, start_date: '2026-04-20T00:00:00.000Z' });
+
+    const foreign = await confirmTrainingSessionReflow({
+      userId: 42,
+      tenantId: 42,
+      sessionId: 101,
+      requestedCalendarSource: 'google',
+    });
+
+    vi.clearAllMocks();
+    mocks.getSessionById.mockReturnValue(null);
+
+    const missing = await confirmTrainingSessionReflow({
+      userId: 42,
+      tenantId: 42,
+      sessionId: 101,
+      requestedCalendarSource: 'google',
+    });
+
+    expect(foreign).toEqual(missing);
+    expect(foreign).toEqual({
+      status: 'not_found',
+      data: {
+        message: 'Training session not found.',
+        sessionId: 101,
+      },
+    });
+    expect(mocks.updateSession).not.toHaveBeenCalled();
+  });
+
   it('does not preview a reflow destination in the past for today sessions', async () => {
     vi.useFakeTimers({ now: new Date('2026-04-20T20:55:00.000Z') });
     try {

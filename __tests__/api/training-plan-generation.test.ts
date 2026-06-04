@@ -997,22 +997,5 @@ describe('generateTrainingPlanForUser', () => {
       expect(mockLoggerError).not.toHaveBeenCalled();
     });
 
-    it('handles forbidden cancellation by warning and proceeding', async () => {
-      mockCancelTrainingPlanForUser.mockResolvedValueOnce({ status: 'forbidden' });
-
-      const result = await generateTrainingPlanForUser({
-        userId: 12,
-        objective: 'Lisbon Marathon',
-        sessionsPerWeek: 5,
-        strengthSessionsPerWeek: 2,
-      });
-
-      expect(result.status).toBe('created');
-      expect(mockPersistGeneratedTrainingPlan).toHaveBeenCalledTimes(1);
-      expect(mockLoggerWarn).toHaveBeenCalledWith(
-        expect.objectContaining({ userId: 12 }),
-        expect.stringContaining('not user-owned'),
-      );
-    });
   });
 });

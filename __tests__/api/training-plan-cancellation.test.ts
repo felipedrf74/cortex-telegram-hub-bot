@@ -341,12 +341,24 @@ describe('training-plan-cancellation (hard delete)', () => {
     }));
   });
 
-  it('rejects requested plans from another tenant with uniform forbidden result', async () => {
+  it('routes requested plans from another tenant through the same no-op path', async () => {
     mocks.getPlanById.mockReturnValue({ id: 46, user_id: 12, tenant_id: 99 });
 
     const result = await cancelTrainingPlanForUser(12, 46, { tenantId: 34 });
 
-    expect(result).toEqual({ status: 'forbidden' });
+    expect(result).toEqual({
+      status: 'not_found',
+      data: {
+        cancelled: false,
+        removedEvents: 0,
+        removedSessions: 0,
+        removedWeeks: 0,
+        removedCompletions: 0,
+        removedPlans: 0,
+        totalSessions: 0,
+        message: 'No active training plan to cancel.',
+      },
+    });
     expect(mocks.deletePlanHard).not.toHaveBeenCalled();
   });
 
@@ -650,13 +662,38 @@ describe('training-plan-cancellation (hard delete)', () => {
     expect(mocks.deletePlanHard).toHaveBeenCalledWith(71, 12);
   });
 
-  it('uses requested plan id when provided and rejects cross-user cancellation', async () => {
+  it('routes foreign requested plan ids through the same no-op path as missing ids', async () => {
     mocks.getPlanById.mockReturnValue({ id: 99, user_id: 88 });
 
-    const result = await cancelTrainingPlanForUser(12, 99);
+    const foreign = await cancelTrainingPlanForUser(12, 99);
+    vi.clearAllMocks();
+    mocks.deleteEvent.mockResolvedValue({ ok: true });
+    mocks.getEvents.mockResolvedValue([]);
+    mocks.getActivePlan.mockReturnValue(null);
+    mocks.getActivePlans.mockReturnValue([]);
+    mocks.getPlanById.mockReturnValue(null);
+    mocks.getWeeksForPlan.mockReturnValue([]);
+    mocks.getSessionsForWeek.mockReturnValue([]);
+    mocks.findOwnershipsForPlan.mockReturnValue([]);
+    mocks.getTrainingCalendarEventOwners.mockReturnValue([]);
+    mocks.findSecretaryAgendaCalendarEventsForPlan.mockReturnValue([]);
 
-    expect(result).toEqual({ status: 'forbidden' });
-    expect(mocks.getPlanById).toHaveBeenCalledWith(99);
+    const missing = await cancelTrainingPlanForUser(12, 9999);
+
+    expect(foreign).toEqual(missing);
+    expect(foreign).toEqual({
+      status: 'not_found',
+      data: {
+        cancelled: false,
+        removedEvents: 0,
+        removedSessions: 0,
+        removedWeeks: 0,
+        removedCompletions: 0,
+        removedPlans: 0,
+        totalSessions: 0,
+        message: 'No active training plan to cancel.',
+      },
+    });
     expect(mocks.getActivePlan).not.toHaveBeenCalled();
     expect(mocks.deletePlanHard).not.toHaveBeenCalled();
     expect(mocks.deleteEvent).not.toHaveBeenCalled();

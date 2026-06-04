@@ -221,7 +221,9 @@ describe('classifyAcwr — Gabbett bands', () => {
     expect(classifyAcwr(0.5, thresholds)).toBe('underTraining');
     expect(classifyAcwr(1.0, thresholds)).toBe('lowRisk');
     expect(classifyAcwr(1.2, thresholds)).toBe('lowRisk');
+    expect(classifyAcwr(1.3, thresholds)).toBe('moderateRisk');
     expect(classifyAcwr(1.4, thresholds)).toBe('moderateRisk');
+    expect(classifyAcwr(1.5, thresholds)).toBe('highRisk');
     expect(classifyAcwr(2.0, thresholds)).toBe('highRisk');
   });
 

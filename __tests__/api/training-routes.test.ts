@@ -2098,6 +2098,47 @@ describe('Training API routes', () => {
     expect(mockDeleteEvent).not.toHaveBeenCalled();
   });
 
+  it('returns uniform 404 from reflow preview for foreign and missing sessions', async () => {
+    mockGetSessionById.mockReturnValue({ id: 100, week_id: 70, plan_id: 7 });
+    mockGetPlanById.mockReturnValue({ id: 7, user_id: 77, start_date: '2026-04-20T00:00:00.000Z' });
+
+    const foreign = await dispatch('POST', '/sessions/100/reflow-preview', {}, {});
+
+    mockGetSessionById.mockReturnValue(null);
+    mockGetPlanById.mockReturnValue(null);
+
+    const missing = await dispatch('POST', '/sessions/100/reflow-preview', {}, {});
+
+    expect(foreign.statusCode).toBe(404);
+    expect(missing.statusCode).toBe(404);
+    expect(foreign.body.error).toEqual(missing.body.error);
+    expect(foreign.body.error).toEqual(expect.objectContaining({
+      code: 'NOT_FOUND',
+      message: 'Training session not found.',
+    }));
+  });
+
+  it('returns uniform 404 from reflow confirm for foreign and missing sessions', async () => {
+    mockGetSessionById.mockReturnValue({ id: 101, week_id: 71, plan_id: 8 });
+    mockGetPlanById.mockReturnValue({ id: 8, user_id: 77, start_date: '2026-04-20T00:00:00.000Z' });
+
+    const foreign = await dispatch('POST', '/sessions/101/reflow-confirm', {}, {});
+
+    mockGetSessionById.mockReturnValue(null);
+    mockGetPlanById.mockReturnValue(null);
+
+    const missing = await dispatch('POST', '/sessions/101/reflow-confirm', {}, {});
+
+    expect(foreign.statusCode).toBe(404);
+    expect(missing.statusCode).toBe(404);
+    expect(foreign.body.error).toEqual(missing.body.error);
+    expect(foreign.body.error).toEqual(expect.objectContaining({
+      code: 'NOT_FOUND',
+      message: 'Training session not found.',
+    }));
+    expect(mockUpdateSession).not.toHaveBeenCalled();
+  });
+
   it('ignores generic routine walk events when resolving today training from calendar', async () => {
     // Bug fix 2026-04-28 (no-plan create-CTA): the calendar fallback in
     // getTodaySession is now gated on an active plan existing — without

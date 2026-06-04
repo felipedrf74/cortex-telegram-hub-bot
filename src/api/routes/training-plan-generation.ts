@@ -195,7 +195,6 @@ type CancellationSagaOutcome =
   | { kind: 'success'; removedEvents: number }
   | { kind: 'no_active_plan' }
   | { kind: 'external_partial'; orphanedEventCount: number }
-  | { kind: 'forbidden' }
   | { kind: 'local_delete_failed'; reason: string; activePlansRemaining: number };
 
 async function runPrePersistCancellationSaga(userId: number, tenantId: number): Promise<CancellationSagaOutcome> {
@@ -203,9 +202,6 @@ async function runPrePersistCancellationSaga(userId: number, tenantId: number): 
     const cancellation = tenantId === userId
       ? await cancelTrainingPlanForUser(userId)
       : await cancelTrainingPlanForUser(userId, undefined, { tenantId });
-    if (cancellation.status === 'forbidden') {
-      return { kind: 'forbidden' };
-    }
     if (cancellation.status === 'not_found') {
       const reconciliation = await reconcileOrphanedTrainingAgendaEvents(userId);
       if (reconciliation.failed > 0) {
@@ -699,12 +695,6 @@ export async function generateTrainingPlanForUser(
   const cancellationOutcome = await runPrePersistCancellationSaga(userId, tenantId);
 
   switch (cancellationOutcome.kind) {
-    case 'forbidden':
-      logger.warn(
-        { userId },
-        'Existing active training plan was not user-owned during replacement; continuing with new plan creation',
-      );
-      break;
     case 'external_partial':
       logger.warn(
         { userId, orphanedEventCount: cancellationOutcome.orphanedEventCount },

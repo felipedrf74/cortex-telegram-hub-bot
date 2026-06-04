@@ -22,7 +22,6 @@
  * so per-route auth is inherited.
  */
 
-import { createHmac, randomBytes } from 'node:crypto';
 import { Router, type Response, type Request } from 'express';
 import { ipKeyGenerator, rateLimit } from 'express-rate-limit';
 
@@ -78,6 +77,7 @@ import {
   deriveSafetyTriggerFromSignal,
   wireHealthSignalToSafety,
 } from '../../services/coach-kernel/safety-wiring';
+import { hashOwnerIdForLog } from './_ownership-audit';
 import { isStrictIsoDate } from '../../services/training-date-utils';
 import {
   dbRowToSession,
@@ -96,43 +96,6 @@ export { isStrictIsoDate };
  * true when the handler should continue, false when it has already
  * responded with 404.
  */
-/**
- * R4 P3 / R5 P3 — opaque correlation tag for a non-actor user id.
- *
- * Codex caught (R4 P3) that the ownership-denied warn logs included
- * the foreign plan's owner id in plaintext. R5 P3 then caught that
- * the original 24-bit FNV-1a hash over the decimal digits was
- * trivially enumerable for small sequential ids — an attacker (or
- * curious operator) reading the log could pre-compute the hash for
- * the first ~10M user ids and reverse the tag in milliseconds.
- *
- * The fix: HMAC-SHA256 keyed by a server-side secret. The secret
- * defaults to a per-process random salt when the env var isn't set
- * — that means log readers can correlate two denials in the same
- * process boot, but cannot pre-compute hashes from a wordlist of
- * user ids. Operators who need cross-process correlation can set
- * `OWNER_ID_HASH_SECRET` explicitly in env config.
- *
- * Format kept as `u#<8 hex>` (32 bits of HMAC output) — short
- * enough to stay readable in log lines, wide enough that the
- * birthday bound for accidental collision is ~65k entries (well
- * above what an ownership-denial-log review would scan).
- *
- * This tag is for *correlation*, not authentication. iOS / app code
- * must NEVER consume it as a user identifier.
- *
- * Exported so safety wiring / other v2 surfaces can reuse it.
- */
-const OWNER_ID_HASH_SECRET = (() => {
-  const fromEnv = process.env.OWNER_ID_HASH_SECRET;
-  if (typeof fromEnv === 'string' && fromEnv.length >= 16) return fromEnv;
-  // Per-process random salt. Stable for the lifetime of this Node
-  // process so two denials in the same boot produce the same tag.
-  // Operators who care about cross-process correlation set
-  // OWNER_ID_HASH_SECRET explicitly.
-  return randomBytes(32).toString('hex');
-})();
-
 /**
  * R8 P2-11 — narrow a stored HealthSignal row into the kernel's
  * HealthSignal shape, rejecting values that aren't in the closed
@@ -248,15 +211,6 @@ export function extractWeekIdFromTriggerPayload(
   }
 }
 
-export function hashOwnerIdForLog(userId: number): string {
-  if (!Number.isFinite(userId) || userId <= 0) return 'invalid';
-  // HMAC-SHA256 keyed by the server secret. We take the first 8 hex
-  // chars (32 bits) so the log line stays short — the HMAC itself
-  // is full-strength; the truncation is purely for ergonomics.
-  const mac = createHmac('sha256', OWNER_ID_HASH_SECRET).update(String(userId)).digest('hex');
-  return `u#${mac.slice(0, 8)}`;
-}
-
 /**
  * Strict YYYY-MM-DD date validator (R4 P2 fix).
  *
@@ -315,16 +269,12 @@ function resolveWeekId(req: Request, res: Response): number | null {
  *   - { planId, userId } when the plan exists AND belongs to the
  *     authenticated user.
  *   - null after `sendError` has already responded:
- *       * 404 PLAN_NOT_FOUND when the row doesn't exist.
- *       * 403 FORBIDDEN when the row exists but belongs to a
- *         different user.
+ *       * 404 PLAN_NOT_FOUND when the row is missing OR foreign-owned.
  *
- * Using a single helper guarantees the same response shape (and the
- * same "row exists" disclosure rule — we say PLAN_NOT_FOUND for
- * BOTH missing AND foreign rows in the error message, but the
- * status code differs so internal monitors can distinguish). The
- * authenticated user is read off `AuthenticatedRequest.userId`,
- * NOT the body.
+ * Using a single helper guarantees the same response shape, code,
+ * status, and message for missing and foreign rows. The internal
+ * distinction is logged for audit only. The authenticated user is
+ * read off `AuthenticatedRequest.userId`, NOT the body.
  */
 function resolveOwnedPlan(
   req: Request,

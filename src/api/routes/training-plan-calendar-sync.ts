@@ -38,6 +38,7 @@ import {
 } from '../../services/training-calendar-source';
 import { requireTenantIdParam } from '../../services/tenant-scope';
 import { withTrainingCalendarOperationLock } from '../../services/training-operation-locks';
+import { hashOwnerIdForLog } from './_ownership-audit';
 
 export type TrainingPlanCalendarSyncResult =
   | {
@@ -228,7 +229,15 @@ function resolveOwnedSessionScope(
   const session = trainingPlans.getSessionById(sessionId);
   if (!session) return null;
   const plan = trainingPlans.getPlanById(session.plan_id);
-  if (!plan || plan.user_id !== userId) return 'forbidden';
+  if (!plan || plan.user_id !== userId) {
+    if (plan) {
+      logger.warn(
+        { actor: userId, sessionId, ownerIdHash: hashOwnerIdForLog(plan.user_id), reason: 'foreign_owner' },
+        'training_reflow.ownership_denied',
+      );
+    }
+    return 'forbidden';
+  }
   const week = trainingPlans.getWeeksForPlan(plan.id).find((candidate) => candidate.id === session.week_id);
   if (!week) return null;
   const sessionDate = sessionDateFor(new Date(plan.start_date), week.week_number, session.day_of_week);
@@ -361,10 +370,7 @@ export async function previewTrainingSessionReflow(
 ): Promise<TrainingSessionReflowPreviewResult> {
   const validatedTenantId = requireTenantIdParam(tenantId, 'previewTrainingSessionReflow');
   const scope = resolveOwnedSessionScope(userId, sessionId);
-  if (scope === 'forbidden') {
-    return { status: 'forbidden', data: { message: 'This training session does not belong to the current user.', sessionId } };
-  }
-  if (!scope) {
+  if (scope === 'forbidden' || !scope) {
     return { status: 'not_found', data: { message: 'Training session not found.', sessionId } };
   }
 
@@ -566,8 +572,9 @@ async function confirmTrainingSessionReflowLocked(input: {
   }
 
   const scope = resolveOwnedSessionScope(input.userId, input.sessionId);
-  if (scope === 'forbidden') return { status: 'forbidden', data: { message: 'This training session does not belong to the current user.', sessionId: input.sessionId } };
-  if (!scope) return { status: 'not_found', data: { message: 'Training session not found.', sessionId: input.sessionId } };
+  if (scope === 'forbidden' || !scope) {
+    return { status: 'not_found', data: { message: 'Training session not found.', sessionId: input.sessionId } };
+  }
   const effectiveTenantId = tenantIdForTrainingPlan(scope.plan, validatedTenantId);
 
   const eventPayload = {

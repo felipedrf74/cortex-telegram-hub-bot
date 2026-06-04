@@ -658,8 +658,10 @@ function buildWeekProtection(
       ),
     );
   }
-  const adherencePercent = Math.round(input.weeklyAdherence * 100);
-  impacts.push(adherenceImpactLine(adherencePercent, language));
+  if (weekActiveSessionCount(input.weekSessions) > 0) {
+    const adherencePercent = Math.round(input.weeklyAdherence * 100);
+    impacts.push(adherenceImpactLine(adherencePercent, language));
+  }
   if (protectedSession && protectedSession.id !== tomorrow?.id) {
     impacts.push(
       tPT(
@@ -914,6 +916,7 @@ function buildLowAdherenceCard(
 ): LowAdherenceCoachingCardModel | null {
   if (!input.hasActivePlan) return null;
   if (state === 'noPlan' || state === 'insufficientData' || state === 'completed') return null;
+  if (weekActiveSessionCount(input.weekSessions) === 0) return null;
   if (!Number.isFinite(input.weeklyAdherence) || input.weeklyAdherence >= 0.6) return null;
 
   const percent = Math.max(0, Math.min(100, Math.round(input.weeklyAdherence * 100)));
@@ -1506,6 +1509,19 @@ function hasMeaningfulReadiness(readiness: ReadinessInput | null): boolean {
 
 function normalizeStatus(value?: string | null): string {
   return trimmed(value).toLowerCase();
+}
+
+function weekActiveSessionCount(weekSessions: WeekSessionInput[]): number {
+  return weekSessions.filter((session) => {
+    const status = normalizeStatus(session.status);
+    return status !== ''
+      && status !== 'rest'
+      && status !== 'completed'
+      && status !== 'skipped'
+      && status !== 'cancelled'
+      && status !== 'deferred'
+      && status !== 'superseded';
+  }).length;
 }
 
 function normalizedBodyBattery(value?: number | null): number | null {

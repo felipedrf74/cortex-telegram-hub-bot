@@ -129,6 +129,34 @@ describe('wireHealthSignalToSafety — typed hard-pause vs inferred warning', ()
     });
   });
 
+  it('keeps acute-injury copy for acute non-chest high pain', () => {
+    const signal = makeSignal({
+      source: 'structured_intake',
+      injuryStatus: 'acute',
+      painScore: 9,
+      painLocation: 'ankle',
+    });
+
+    expect(deriveSafetyTriggerFromSignal(signal)).toEqual({
+      source: 'structured_intake',
+      triggerType: 'acute_injury',
+    });
+  });
+
+  it('keeps non-acute non-chest high pain on worsening-localized-pain copy', () => {
+    const signal = makeSignal({
+      source: 'structured_intake',
+      injuryStatus: 'returning',
+      painScore: 9,
+      painLocation: 'ankle',
+    });
+
+    expect(deriveSafetyTriggerFromSignal(signal)).toEqual({
+      source: 'structured_intake',
+      triggerType: 'worsening_localized_pain',
+    });
+  });
+
   it('structured block findings hard-pause even when trigger derivation was omitted', () => {
     const signal = makeSignal({
       painScore: 9,

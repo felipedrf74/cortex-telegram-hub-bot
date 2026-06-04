@@ -489,10 +489,6 @@ export function registerTrainingPlanRoutes(
       }
 
       const result = await previewTrainingSessionReflow(userId, sessionId, calendarSourceValidation.source, tenantId);
-      if (result.status === 'forbidden') {
-        sendError(res, 'FORBIDDEN', result.data.message, 403, result.data);
-        return;
-      }
       if (result.status === 'not_found') {
         sendError(res, 'NOT_FOUND', result.data.message, 404, result.data);
         return;
@@ -546,10 +542,6 @@ export function registerTrainingPlanRoutes(
         proposedEndAt: typeof req.body?.proposedEndAt === 'string' ? req.body.proposedEndAt : null,
         requestedCalendarSource: calendarSourceValidation.source,
       });
-      if (result.status === 'forbidden') {
-        sendError(res, 'FORBIDDEN', result.data.message, 403, result.data);
-        return;
-      }
       if (result.status === 'not_found') {
         sendError(res, 'NOT_FOUND', result.data.message, 404, result.data);
         return;
@@ -572,19 +564,6 @@ export function registerTrainingPlanRoutes(
 
     try {
       const result = await cancelTrainingPlanForUser(userId, req.body?.planId, { tenantId });
-      if (result.status === 'forbidden') {
-        sendSuccess(res, {
-          cancelled: false,
-          removedEvents: 0,
-          removedSessions: 0,
-          removedWeeks: 0,
-          removedCompletions: 0,
-          removedPlans: 0,
-          totalSessions: 0,
-          message: 'No active training plan to cancel.',
-        });
-        return;
-      }
       if (result.status === 'not_found') {
         sendSuccess(res, result.data);
         return;

@@ -863,6 +863,18 @@ describe('R3 P1 — A4 hard-pause via structured intake', () => {
     expect(pause?.severity).toBe('medical_referral');
   });
 
+  it('wearable-inferred high pain stays warning-only and does not pause training', async () => {
+    testDb.prepare(`
+      INSERT INTO athlete_health_signals
+        (user_id, date, pain_score, pain_location, illness_symptoms_json, source, consent_scope)
+      VALUES (100, '2026-05-23', 9, 'chest', '[]', 'wearable', 'pain')
+    `).run();
+    const result = await req('GET', '/api/v1/training/plans/1/coach-analysis?weekIndex=0');
+    expect(result.status).toBe(200);
+    const actions = result.json?.data?.scenario?.actions ?? [];
+    expect(actions.find((a: any) => a.type === 'pause_training')).toBeUndefined();
+  });
+
   it('POST /health-intake/red-flag persists structured signal', async () => {
     const result = await req('POST', '/api/v1/training/health-intake/red-flag', {
       date: '2026-05-23',

@@ -264,6 +264,9 @@ export async function getTodaySession(userId: number) {
           ? undefined
           : undefined,
       });
+      // Moderate-injury auto-swap is intentionally deferred on this read model.
+      // `injuryAffectsSession` stays undefined until product opts into deriving
+      // it from structured intake for today's session.
       adaptation = adaptDtoSessionForReadiness(
         { sessionType: session.sessionType ?? null, status: session.status ?? null },
         snapshot,

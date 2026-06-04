@@ -146,6 +146,9 @@ export function deriveSafetyTriggerFromSignal(signal: {
     if (painLocation.includes('chest') || painLocation.includes('peito')) {
       return { source: 'structured_intake', triggerType: 'chest_pain' };
     }
+    if (signal.injuryStatus === 'acute') {
+      return { source: 'structured_intake', triggerType: 'acute_injury' };
+    }
     return { source: 'structured_intake', triggerType: 'worsening_localized_pain' };
   }
   if (signal.injuryStatus === 'acute') {

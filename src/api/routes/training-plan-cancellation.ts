@@ -28,6 +28,7 @@ import {
 import { isProviderEventNotFoundError } from '../../services/training-calendar-errors';
 import { deleteTrainingCalendarEventWithRetry } from '../../services/training-calendar-provider-retry';
 import { withTrainingCalendarOperationLock } from '../../services/training-operation-locks';
+import { hashOwnerIdForLog } from './_ownership-audit';
 
 /**
  * Successful plan-cancellation payload.
@@ -72,8 +73,7 @@ export interface TrainingPlanCancellationNoop {
 
 export type TrainingPlanCancellationResult =
   | { status: 'cancelled'; data: TrainingPlanCancellationSuccess }
-  | { status: 'not_found'; data: TrainingPlanCancellationNoop }
-  | { status: 'forbidden' };
+  | { status: 'not_found'; data: TrainingPlanCancellationNoop };
 
 export interface CancelTrainingPlanForUserOptions {
   tenantId?: number | null;
@@ -169,35 +169,25 @@ async function cancelTrainingPlanForUserLocked(
   const requestedPlan = hasRequestedPlan ? trainingPlans.getPlanById(parsedPlanId) : null;
   const activePlans = hasRequestedPlan
     ? []
-    : (trainingPlans.getActivePlans?.(userId) ?? []).filter((plan) => planTenantMatches(plan, tenantId));
+    : (trainingPlans.getActivePlans?.(userId, tenantId) ?? []).filter((plan) => planTenantMatches(plan, tenantId));
   const fallbackActivePlan = hasRequestedPlan || activePlans.length > 0
     ? null
-    : trainingPlans.getActivePlan(userId);
+    : trainingPlans.getActivePlan(userId, tenantId);
   const plans = hasRequestedPlan
     ? (requestedPlan ? [requestedPlan] : [])
     : (activePlans.length > 0 ? activePlans : (fallbackActivePlan && planTenantMatches(fallbackActivePlan, tenantId) ? [fallbackActivePlan] : []));
 
-  if (requestedPlan && (requestedPlan.user_id !== userId || !planTenantMatches(requestedPlan, tenantId))) {
-    return { status: 'forbidden' };
+  const foreignOwned = !!requestedPlan && (requestedPlan.user_id !== userId || !planTenantMatches(requestedPlan, tenantId));
+  if (foreignOwned) {
+    logger.warn(
+      { actor: userId, planId: parsedPlanId, ownerIdHash: hashOwnerIdForLog(requestedPlan.user_id), reason: 'foreign_owner' },
+      'training_cancel.ownership_denied',
+    );
+    return buildNoActivePlanResult(userId);
   }
 
   if (plans.length === 0) {
-    const removedEvents = await cleanupOrphanedTrainingCalendarEventsForUser(userId);
-    return {
-      status: 'not_found',
-      data: {
-        cancelled: false,
-        removedEvents,
-        removedSessions: 0,
-        removedWeeks: 0,
-        removedCompletions: 0,
-        removedPlans: 0,
-        totalSessions: 0,
-        message: removedEvents > 0
-          ? buildCancellationMessage(removedEvents, 0)
-          : 'No active training plan to cancel.',
-      },
-    };
+    return buildNoActivePlanResult(userId);
   }
 
   // Step 1 — remove calendar events first, while the plan_id linkage is
@@ -433,6 +423,25 @@ function normalizeTenantId(value: number | null | undefined, userId: number): nu
 
 function planTenantMatches(plan: trainingPlans.TrainingPlan, tenantId: number): boolean {
   return normalizeTenantId(plan.tenant_id, plan.user_id) === tenantId;
+}
+
+async function buildNoActivePlanResult(userId: number): Promise<TrainingPlanCancellationResult> {
+  const removedEvents = await cleanupOrphanedTrainingCalendarEventsForUser(userId);
+  return {
+    status: 'not_found',
+    data: {
+      cancelled: false,
+      removedEvents,
+      removedSessions: 0,
+      removedWeeks: 0,
+      removedCompletions: 0,
+      removedPlans: 0,
+      totalSessions: 0,
+      message: removedEvents > 0
+        ? buildCancellationMessage(removedEvents, 0)
+        : 'No active training plan to cancel.',
+    },
+  };
 }
 
 async function deleteCalendarDeletionTargets(
