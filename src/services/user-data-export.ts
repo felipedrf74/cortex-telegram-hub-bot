@@ -185,6 +185,7 @@ export interface FullUserExport {
   garminSessions?: Array<{ lastRefreshedAt: string | null; createdAt: string; updatedAt: string }>;
   agentSignals?: Array<{ sourceAgent: string; signalType: string; status: string; createdAt: string }>;
   encryptionMeta?: Array<{ keyVersion: number; encryptedAt: string; updatedAt: string }>;
+  legalConsents?: Array<{ documentKey: string; documentVersion: string; documentUrl: string; acceptedAt: string; source: string }>;
 }
 
 export function exportAllUserData(userId: number): FullUserExport {
@@ -239,6 +240,8 @@ export function exportAllUserData(userId: number): FullUserExport {
     'SELECT source_agent as sourceAgent, signal_type as signalType, status, created_at as createdAt FROM agent_signals WHERE user_id = ? ORDER BY created_at', userId);
   const encryptionMeta = safeAll(db,
     'SELECT key_version as keyVersion, encrypted_at as encryptedAt, updated_at as updatedAt FROM user_encryption_meta WHERE user_id = ?', userId);
+  const legalConsents = safeAll(db,
+    'SELECT document_key as documentKey, document_version as documentVersion, document_url as documentUrl, accepted_at as acceptedAt, source FROM user_legal_consents WHERE user_id = ? ORDER BY accepted_at', userId);
 
   return {
     exportedAt: new Date().toISOString(),
@@ -264,10 +267,79 @@ export function exportAllUserData(userId: number): FullUserExport {
     garminSessions,
     agentSignals,
     encryptionMeta,
+    legalConsents,
   };
 }
 
 // ── Full User Deletion (GDPR Article 17 — right to erasure) ────────
+
+export const ACCOUNT_DELETION_TABLES: Array<{ table: string; column: string }> = [
+  { table: 'conversations', column: 'user_id' },
+  { table: 'todos', column: 'user_id' },
+  { table: 'reminders', column: 'user_id' },
+  { table: 'notes', column: 'user_id' },
+  { table: 'saved_ideas', column: 'user_id' },
+  { table: 'shared_memory', column: 'user_id' },
+  { table: 'finance_transactions', column: 'user_id' },
+  { table: 'finance_tax_events', column: 'user_id' },
+  { table: 'user_encryption_meta', column: 'user_id' },
+  { table: 'onboarding_sessions', column: 'user_id' },
+  { table: 'user_profiles', column: 'user_id' },
+  { table: 'notification_device_tokens', column: 'user_id' },
+  { table: 'garmin_sessions', column: 'user_id' },
+  { table: 'garmin_user_tokens', column: 'user_id' },
+  { table: 'agent_signals', column: 'user_id' },
+  { table: 'user_oauth_tokens', column: 'user_id' },
+  { table: 'user_skill_overrides', column: 'user_id' },
+  { table: 'api_usage', column: 'user_id' },
+  { table: 'chat_action_runs', column: 'user_id' },
+  { table: 'chat_pending_actions', column: 'user_id' },
+  { table: 'chat_action_telemetry', column: 'user_id' },
+  { table: 'user_legal_consents', column: 'user_id' },
+];
+
+export interface AccountDeletionInventory {
+  userId: number;
+  generatedAt: string;
+  deletableTables: Record<string, number>;
+  retainedTables: Record<string, { reason: string }>;
+}
+
+export function getAccountDeletionInventoryForUser(userId: number): AccountDeletionInventory {
+  const db = getDb();
+  const deletableTables: Record<string, number> = {};
+  for (const { table, column } of ACCOUNT_DELETION_TABLES) {
+    try {
+      const row = db.prepare(`SELECT COUNT(*) AS count FROM ${table} WHERE ${column} = ?`).get(userId) as { count: number };
+      deletableTables[table] = row.count;
+    } catch {
+      deletableTables[table] = 0;
+    }
+  }
+  try {
+    const row = db.prepare('SELECT COUNT(*) AS count FROM kv_store WHERE key LIKE ?').get(`config:${userId}:%`) as { count: number };
+    deletableTables.kv_store_settings = row.count;
+  } catch {
+    deletableTables.kv_store_settings = 0;
+  }
+  try {
+    const row = db.prepare('SELECT COUNT(*) AS count FROM users WHERE id = ? OR telegram_id = ?').get(userId, userId) as { count: number };
+    deletableTables.users = row.count;
+  } catch {
+    deletableTables.users = 0;
+  }
+
+  return {
+    userId,
+    generatedAt: new Date().toISOString(),
+    deletableTables,
+    retainedTables: {
+      audit_trail: {
+        reason: 'Retained as legal proof of export, consent, and deletion events under GDPR Article 17(3)(e).',
+      },
+    },
+  };
+}
 
 /**
  * Delete ALL data for a user across all tables. Runs in a single transaction.
@@ -278,32 +350,8 @@ export function deleteAllUserData(userId: number): Record<string, number> {
   const db = getDb();
   const counts: Record<string, number> = {};
 
-  const tables: Array<{ table: string; column: string }> = [
-    { table: 'conversations', column: 'user_id' },
-    { table: 'todos', column: 'user_id' },
-    { table: 'reminders', column: 'user_id' },
-    { table: 'notes', column: 'user_id' },
-    { table: 'saved_ideas', column: 'user_id' },
-    { table: 'shared_memory', column: 'user_id' },
-    { table: 'finance_transactions', column: 'user_id' },
-    { table: 'finance_tax_events', column: 'user_id' },
-    { table: 'user_encryption_meta', column: 'user_id' },
-    { table: 'onboarding_sessions', column: 'user_id' },
-    { table: 'user_profiles', column: 'user_id' },
-    { table: 'notification_device_tokens', column: 'user_id' },
-    { table: 'garmin_sessions', column: 'user_id' },
-    { table: 'garmin_user_tokens', column: 'user_id' },
-    { table: 'agent_signals', column: 'user_id' },
-    { table: 'user_oauth_tokens', column: 'user_id' },
-    { table: 'user_skill_overrides', column: 'user_id' },
-    { table: 'api_usage', column: 'user_id' },
-    { table: 'chat_action_runs', column: 'user_id' },
-    { table: 'chat_pending_actions', column: 'user_id' },
-    { table: 'chat_action_telemetry', column: 'user_id' },
-  ];
-
   const deleteAll = db.transaction(() => {
-    for (const { table, column } of tables) {
+    for (const { table, column } of ACCOUNT_DELETION_TABLES) {
       try {
         const result = db.prepare(`DELETE FROM ${table} WHERE ${column} = ?`).run(userId);
         counts[table] = result.changes;

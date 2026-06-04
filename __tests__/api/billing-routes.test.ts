@@ -9,6 +9,7 @@ const mockGrantNexusPoints = vi.fn();
 const mockCreateNexusPointsCheckoutSession = vi.fn();
 const mockIsStripeNexusPointsConfigured = vi.fn(() => true);
 const mockLogAudit = vi.fn();
+const mockRecordCurrentLegalConsentForUser = vi.fn();
 
 vi.mock('../../src/services/stripe-service', async () => {
   const actual = await vi.importActual<typeof import('../../src/services/stripe-service')>('../../src/services/stripe-service');
@@ -96,6 +97,21 @@ vi.mock('../../src/services/audit-trail', () => ({
   logAudit: (...args: unknown[]) => mockLogAudit(...args),
 }));
 
+vi.mock('../../src/services/legal-consent', () => ({
+  validateCurrentLegalAcceptance: (input: any) => {
+    if (!input?.accepted || input.termsVersion !== '2026-06-04' || input.privacyVersion !== '2026-06-04') {
+      return { ok: false, reason: 'acceptedLegal is not current' };
+    }
+    return { ok: true, value: input };
+  },
+  legalConsentContextFromRequest: (_req: any, source: string) => ({
+    source,
+    locale: 'en-US',
+    documentUrl: 'https://nexushub.me/legal',
+  }),
+  recordCurrentLegalConsentForUser: (...args: unknown[]) => mockRecordCurrentLegalConsentForUser(...args),
+}));
+
 vi.mock('../../src/utils/logger', () => ({
   logger: {
     info: vi.fn(),
@@ -171,6 +187,14 @@ function buildFakeJws(payload: Record<string, unknown>): string {
   return `${header}.${body}.${sig}`;
 }
 
+function legalAcceptance() {
+  return {
+    accepted: true,
+    termsVersion: '2026-06-04',
+    privacyVersion: '2026-06-04',
+  };
+}
+
 describe('billing routes', () => {
   beforeEach(() => {
     mockHandleAppleTransaction.mockReset();
@@ -188,16 +212,30 @@ describe('billing routes', () => {
     mockIsStripeNexusPointsConfigured.mockReset();
     mockIsStripeNexusPointsConfigured.mockReturnValue(true);
     mockLogAudit.mockReset();
+    mockRecordCurrentLegalConsentForUser.mockReset();
+  });
+
+  it('rejects authenticated checkout without current legal acceptance', async () => {
+    const res = await dispatch('POST', '/checkout', { plan: 'max', currency: 'brl' }, 99);
+
+    expect(res.statusCode).toBe(400);
+    expect(res.body.error.code).toBe('LEGAL_CONSENT_REQUIRED');
+    expect(mockCreateCheckoutSessionForPlan).not.toHaveBeenCalled();
   });
 
   it('creates checkout from server-side plan/currency mapping', async () => {
     mockCreateCheckoutSessionForPlan.mockResolvedValueOnce('https://checkout.stripe.test/session');
 
-    const res = await dispatch('POST', '/checkout', { plan: 'max', currency: 'brl' }, 99);
+    const res = await dispatch('POST', '/checkout', { plan: 'max', currency: 'brl', acceptedLegal: legalAcceptance() }, 99);
 
     expect(res.statusCode).toBe(200);
     expect(res.body.ok).toBe(true);
     expect(res.body.data.url).toBe('https://checkout.stripe.test/session');
+    expect(mockRecordCurrentLegalConsentForUser).toHaveBeenCalledWith(
+      99,
+      legalAcceptance(),
+      expect.objectContaining({ source: 'billing_checkout' }),
+    );
     expect(mockCreateCheckoutSessionForPlan).toHaveBeenCalledWith(
       99,
       'max',
@@ -214,6 +252,7 @@ describe('billing routes', () => {
     const checkout = await dispatch('POST', '/checkout', {
       plan: 'pro',
       currency: 'usd',
+      acceptedLegal: legalAcceptance(),
       successUrl: 'https://evil.example/success',
       cancelUrl: 'https://www.nexushub.me/cancel',
     }, 99);

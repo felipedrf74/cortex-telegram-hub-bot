@@ -72,6 +72,7 @@ import { addTransaction, calculateAndStoreTax, markTaxPaid } from '../../src/ser
 import {
   exportUserFinanceData, deleteUserFinanceData, countUserFinanceData,
   exportAllUserData, deleteAllUserData, deleteAllUserDataForAccountDeletion,
+  getAccountDeletionInventoryForUser,
   revokeThirdPartyOAuthTokensForUser,
 } from '../../src/services/user-data-export';
 import { logAudit, getAuditTrail } from '../../src/services/audit-trail';
@@ -410,6 +411,28 @@ describe('deleteAllUserData', () => {
     expect(counts.agent_signals).toBe(1);
     expect(counts.user_encryption_meta).toBe(1);
     expect(counts.kv_store_settings).toBe(1);
+    expect(testDb.prepare('SELECT COUNT(*) as c FROM audit_trail WHERE user_id = 1').get()).toMatchObject({ c: 1 });
+  });
+
+  it('includes legal consent receipts in the deletion inventory and delete counts', () => {
+    seedUser(testDb, 1);
+    logAudit({ userId: 1, actorId: 1, action: 'export', resource: 'all' });
+    testDb.prepare(`
+      INSERT INTO user_legal_consents (
+        user_id, document_key, document_version, document_url,
+        locale, source, accepted_at
+      ) VALUES
+        (1, 'terms', '2026-06-04', 'https://nexushub.me/terms', 'en-US', 'ios_register', datetime('now')),
+        (1, 'privacy', '2026-06-04', 'https://nexushub.me/privacy', 'en-US', 'ios_register', datetime('now'))
+    `).run();
+
+    const inventory = getAccountDeletionInventoryForUser(1);
+    expect(inventory.deletableTables.user_legal_consents).toBe(2);
+    expect(inventory.retainedTables.audit_trail.reason).toContain('legal proof');
+
+    const counts = deleteAllUserData(1);
+    expect(counts.user_legal_consents).toBe(2);
+    expect(testDb.prepare('SELECT COUNT(*) as c FROM user_legal_consents WHERE user_id = 1').get()).toMatchObject({ c: 0 });
     expect(testDb.prepare('SELECT COUNT(*) as c FROM audit_trail WHERE user_id = 1').get()).toMatchObject({ c: 1 });
   });
 

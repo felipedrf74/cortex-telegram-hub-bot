@@ -86,6 +86,14 @@ async function dispatchRegisterInvite(body: any): Promise<MockRes> {
   return dispatchAuth('/register', body);
 }
 
+function legalAcceptance() {
+  return {
+    accepted: true,
+    termsVersion: '2026-06-04',
+    privacyVersion: '2026-06-04',
+  };
+}
+
 describe('Auth invite registration', () => {
   const originalEnv = {
     STAGING: process.env.STAGING,
@@ -166,6 +174,7 @@ describe('Auth invite registration', () => {
       deviceId: 'beta-device-1234',
       deviceName: 'Beta Tester',
       inviteCode: 'LOCALBETA_TEST',
+      acceptedLegal: legalAcceptance(),
     });
 
     expect(res.statusCode).toBe(201);
@@ -205,6 +214,37 @@ describe('Auth invite registration', () => {
     const days = (Date.parse(subscription.current_period_end) - Date.now()) / 86400000;
     expect(days).toBeGreaterThan(364);
     expect(days).toBeLessThanOrEqual(366);
+
+    const consents = testDb.prepare(`
+      SELECT document_key, document_version, source
+      FROM user_legal_consents
+      WHERE user_id = ?
+      ORDER BY document_key
+    `).all(res.body.data.user.id) as Array<{
+      document_key: string;
+      document_version: string;
+      source: string;
+    }>;
+    expect(consents).toEqual([
+      { document_key: 'privacy', document_version: '2026-06-04', source: 'ios_register' },
+      { document_key: 'terms', document_version: '2026-06-04', source: 'ios_register' },
+    ]);
+  });
+
+  it('requires current legal clickwrap acceptance before invite registration creates a session', async () => {
+    const res = await dispatchRegisterInvite({
+      deviceId: 'beta-device-no-legal',
+      deviceName: 'Beta Tester',
+      inviteCode: 'LOCALBETA_TEST',
+    });
+
+    expect(res.statusCode).toBe(400);
+    expect(res.body.ok).toBe(false);
+    expect(res.body.error.code).toBe('LEGAL_CONSENT_REQUIRED');
+    expect(
+      testDb.prepare('SELECT COUNT(*) AS count FROM ios_devices WHERE device_id = ?')
+        .get('beta-device-no-legal'),
+    ).toMatchObject({ count: 0 });
   });
 
   it('provisions database invite users with the invite expiration date', async () => {
@@ -218,6 +258,7 @@ describe('Auth invite registration', () => {
       deviceId: 'db-invite-device-1234',
       deviceName: 'Beta Tester',
       inviteCode: 'DB_INVITE_30D',
+      acceptedLegal: legalAcceptance(),
     });
 
     expect(res.statusCode).toBe(201);
@@ -234,6 +275,7 @@ describe('Auth invite registration', () => {
       deviceId: 'beta-device-case-test',
       deviceName: 'Beta Tester',
       inviteCode: 'Localbeta_Test',
+      acceptedLegal: legalAcceptance(),
     });
 
     expect(res.statusCode).toBe(201);
@@ -263,6 +305,7 @@ describe('Auth invite registration', () => {
       deviceId: 'owner-device-1234',
       deviceName: 'Owner iPhone',
       inviteCode: 'LOCALOWNER_TEST',
+      acceptedLegal: legalAcceptance(),
     });
 
     expect(res.statusCode).toBe(201);
@@ -289,6 +332,7 @@ describe('Auth invite registration', () => {
     const res = await dispatchAuth('/register/google/start', {
       deviceId: 'ios-device-google-start',
       deviceName: 'iPhone',
+      acceptedLegal: legalAcceptance(),
     });
 
     expect(res.statusCode).toBe(200);
@@ -308,6 +352,7 @@ describe('Auth invite registration', () => {
       deviceId: 'web-browser-device',
       deviceName: 'Nexus Web',
       flow: 'web',
+      acceptedLegal: legalAcceptance(),
     });
 
     expect(res.statusCode).toBe(200);
@@ -335,7 +380,7 @@ describe('Auth invite registration', () => {
       },
     });
 
-    const res = await dispatchAuth('/register/google/finish', { authCode });
+    const res = await dispatchAuth('/register/google/finish', { authCode, acceptedLegal: legalAcceptance() });
 
     expect(res.statusCode).toBe(201);
     expect(res.body.ok).toBe(true);
@@ -352,6 +397,7 @@ describe('Auth invite registration', () => {
       deviceId: 'web-browser-device-apple',
       deviceName: 'Nexus Web',
       flow: 'web',
+      acceptedLegal: legalAcceptance(),
     });
 
     expect(res.statusCode).toBe(503);
@@ -367,6 +413,7 @@ describe('Auth invite registration', () => {
       deviceId: 'web-browser-device-apple',
       deviceName: 'Nexus Web',
       flow: 'web',
+      acceptedLegal: legalAcceptance(),
     });
 
     expect(res.statusCode).toBe(200);
@@ -398,7 +445,7 @@ describe('Auth invite registration', () => {
       },
     });
 
-    const res = await dispatchAuth('/register/apple/finish', { authCode });
+    const res = await dispatchAuth('/register/apple/finish', { authCode, acceptedLegal: legalAcceptance() });
 
     expect(res.statusCode).toBe(201);
     expect(res.body.ok).toBe(true);
@@ -428,6 +475,7 @@ describe('Auth invite registration', () => {
     const res = await dispatchAuth('/register/google', {
       idToken: 'google-id-token',
       deviceId: 'ios-device-google-unverified',
+      acceptedLegal: legalAcceptance(),
     });
 
     expect(res.statusCode).toBe(403);
@@ -661,6 +709,7 @@ describe('Auth invite registration', () => {
       password: 'correct-horse-battery',
       firstName: 'New',
       deviceId: 'ios-device-register-missing-invite',
+      acceptedLegal: legalAcceptance(),
     });
 
     expect(res.statusCode).toBe(403);
@@ -704,6 +753,7 @@ describe('Auth invite registration', () => {
       firstName: 'Registered',
       deviceId: 'ios-device-register-duplicate',
       inviteCode: 'LOCALBETA_TEST',
+      acceptedLegal: legalAcceptance(),
     });
 
     expect(res.statusCode).toBe(400);
@@ -719,6 +769,7 @@ describe('Auth invite registration', () => {
       firstName: 'Static',
       deviceId: 'ios-device-register-static-beta',
       inviteCode: 'LOCALBETA_TEST',
+      acceptedLegal: legalAcceptance(),
     });
 
     expect(res.statusCode).toBe(201);

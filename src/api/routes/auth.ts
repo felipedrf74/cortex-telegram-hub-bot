@@ -57,6 +57,12 @@ import {
   isEmailConfigured,
 } from '../../services/email-sender';
 import { entitlementPlanToSkillTier, getEffectiveEntitlement } from '../../services/entitlement';
+import {
+  legalConsentContextFromRequest,
+  recordCurrentLegalConsentForUser,
+  validateCurrentLegalAcceptance,
+  type LegalAcceptanceInput,
+} from '../../services/legal-consent';
 import { cancelPendingChatActionsForAccountSwitch } from '../../services/chat-action-state';
 import { normalizeLangHeader } from '../../services/secretary-fastpath';
 import type { Lang } from '../../utils/i18n';
@@ -96,6 +102,26 @@ function sendInviteGateError(res: Response, language: Lang, code: 'INVITE_REQUIR
     code === 'INVITE_REQUIRED' ? 'Código de convite obrigatório' : 'Código de convite inválido',
     code === 'INVITE_REQUIRED' ? 'Código de convite obrigatório' : 'Código de convite inválido',
     code === 'INVITE_REQUIRED' ? 'Invite code is required' : 'Invalid invite code'), 403);
+}
+
+function sendLegalConsentError(res: Response, language: Lang, reason?: string): void {
+  sendError(res, 'LEGAL_CONSENT_REQUIRED', authCopy(language,
+    'Aceita os Termos e a Política de Privacidade atuais para continuar.',
+    'Aceite os Termos e a Política de Privacidade atuais para continuar.',
+    'Accept the current Terms and Privacy Policy to continue.'), 400, reason ? { reason } : undefined);
+}
+
+function requireCurrentLegalAcceptance(
+  res: Response,
+  language: Lang,
+  input: LegalAcceptanceInput | null | undefined,
+): LegalAcceptanceInput | null {
+  const validation = validateCurrentLegalAcceptance(input);
+  if (!validation.ok) {
+    sendLegalConsentError(res, language, validation.reason);
+    return null;
+  }
+  return input!;
 }
 
 function sendClosedBetaInviteError(res: Response, language: Lang, err: ClosedBetaInviteRequiredError): void {
@@ -156,7 +182,17 @@ function issueTokensAndRegisterDevice(
   req: Request, res: Response, userId: number,
   deviceId: string, deviceName: string | null,
   pushToken: string | null, user: { first_name?: string | null; last_name?: string | null; language?: string },
+  legalAcceptance?: LegalAcceptanceInput | null,
+  legalSource = 'ios_register',
 ): void {
+  if (legalAcceptance) {
+    recordCurrentLegalConsentForUser(
+      userId,
+      legalAcceptance,
+      legalConsentContextFromRequest(req, legalSource, user.language || null, deviceId),
+    );
+  }
+
   const payload = createAuthSessionAndRegisterDevice({
     userId,
     deviceId,
@@ -204,7 +240,7 @@ export function authRoutes(): Router {
    */
   router.post('/register', asyncHandler(async (req: Request, res: Response) => {
     const language = resolveAuthLanguage(req);
-    const { deviceId, deviceName, pushToken, inviteCode } = req.body;
+    const { deviceId, deviceName, pushToken, inviteCode, acceptedLegal } = req.body;
 
     if (!deviceId) {
       sendError(res, 'BAD_REQUEST', authCopy(language,
@@ -218,6 +254,8 @@ export function authRoutes(): Router {
       sendInviteGateError(res, language, inviteError);
       return;
     }
+    const legalAcceptance = requireCurrentLegalAcceptance(res, language, acceptedLegal);
+    if (!legalAcceptance) return;
 
     const inviteTarget = resolveIosInviteRegistrationTarget(inviteCode, deviceId);
     if (inviteTarget.kind === 'invalid') {
@@ -250,6 +288,8 @@ export function authRoutes(): Router {
       deviceName || null,
       pushToken || null,
       inviteTarget.user,
+      legalAcceptance,
+      'ios_register',
     );
   }));
 
@@ -415,7 +455,7 @@ export function authRoutes(): Router {
   // ── Sign in with Apple ─────────────────────────────────────────────
   router.post('/register/apple', asyncHandler(async (req: Request, res: Response) => {
     const language = resolveAuthLanguage(req);
-    const { identityToken, rawNonce, deviceId, deviceName, firstName, lastName, inviteCode } = req.body;
+    const { identityToken, rawNonce, deviceId, deviceName, firstName, lastName, inviteCode, acceptedLegal } = req.body;
     if (!identityToken || !rawNonce || !deviceId) {
       sendError(res, 'BAD_REQUEST', authCopy(language,
         'identityToken, rawNonce e deviceId são obrigatórios',
@@ -423,6 +463,8 @@ export function authRoutes(): Router {
         'identityToken, rawNonce, and deviceId are required'));
       return;
     }
+    const legalAcceptance = requireCurrentLegalAcceptance(res, language, acceptedLegal);
+    if (!legalAcceptance) return;
 
     try {
       // Decode JWT header to find the key ID (kid)
@@ -517,7 +559,7 @@ export function authRoutes(): Router {
       }
 
       consumeInviteAndGrantBeta(user.id, inviteCode);
-      issueTokensAndRegisterDevice(req, res, user.id, deviceId, deviceName || null, null, user);
+      issueTokensAndRegisterDevice(req, res, user.id, deviceId, deviceName || null, null, user, legalAcceptance, 'ios_register_apple');
     } catch (err: any) {
       if (err instanceof ClosedBetaInviteRequiredError) {
         sendClosedBetaInviteError(res, language, err);
@@ -552,7 +594,7 @@ export function authRoutes(): Router {
   // tokens must be verified against an Apple Services ID.
   router.post('/register/apple/start', asyncHandler(async (req: Request, res: Response) => {
     const language = resolveAuthLanguage(req);
-    const { deviceId, deviceName, inviteCode } = req.body;
+    const { deviceId, deviceName, inviteCode, acceptedLegal } = req.body;
     if (!deviceId) {
       sendError(res, 'BAD_REQUEST', authCopy(language,
         'deviceId é obrigatório',
@@ -560,6 +602,8 @@ export function authRoutes(): Router {
         'deviceId is required'));
       return;
     }
+    const legalAcceptance = requireCurrentLegalAcceptance(res, language, acceptedLegal);
+    if (!legalAcceptance) return;
 
     if (!appleWebSignInConfigured()) {
       sendError(res, 'NOT_CONFIGURED', authCopy(language,
@@ -580,7 +624,7 @@ export function authRoutes(): Router {
 
   router.post('/register/apple/finish', asyncHandler(async (req: Request, res: Response) => {
     const language = resolveAuthLanguage(req);
-    const { authCode } = req.body;
+    const { authCode, acceptedLegal } = req.body;
     if (!authCode) {
       sendError(res, 'BAD_REQUEST', authCopy(language,
         'authCode é obrigatório',
@@ -588,6 +632,8 @@ export function authRoutes(): Router {
         'authCode is required'));
       return;
     }
+    const legalAcceptance = requireCurrentLegalAcceptance(res, language, acceptedLegal);
+    if (!legalAcceptance) return;
 
     const payload = consumeAppleWebAuthCompletion(authCode);
     if (!payload) {
@@ -598,6 +644,11 @@ export function authRoutes(): Router {
       return;
     }
 
+    recordCurrentLegalConsentForUser(
+      payload.user.id,
+      legalAcceptance,
+      legalConsentContextFromRequest(req, 'web_register_apple', payload.user.language || null, undefined),
+    );
     sendSuccess(res, payload, { status: 201 });
   }));
 
@@ -605,7 +656,7 @@ export function authRoutes(): Router {
 
   router.post('/register/google/start', asyncHandler(async (req: Request, res: Response) => {
     const language = resolveAuthLanguage(req);
-    const { deviceId, deviceName, flow, inviteCode } = req.body;
+    const { deviceId, deviceName, flow, inviteCode, acceptedLegal } = req.body;
     if (!deviceId) {
       sendError(res, 'BAD_REQUEST', authCopy(language,
         'deviceId é obrigatório',
@@ -613,6 +664,8 @@ export function authRoutes(): Router {
         'deviceId is required'));
       return;
     }
+    const legalAcceptance = requireCurrentLegalAcceptance(res, language, acceptedLegal);
+    if (!legalAcceptance) return;
     if (!config.google.clientId || !config.google.clientSecret) {
       sendError(res, 'NOT_CONFIGURED', authCopy(language,
         'O início de sessão Google não está configurado',
@@ -643,7 +696,7 @@ export function authRoutes(): Router {
 
   router.post('/register/google/finish', asyncHandler(async (req: Request, res: Response) => {
     const language = resolveAuthLanguage(req);
-    const { authCode } = req.body;
+    const { authCode, acceptedLegal } = req.body;
     if (!authCode) {
       sendError(res, 'BAD_REQUEST', authCopy(language,
         'authCode é obrigatório',
@@ -651,6 +704,8 @@ export function authRoutes(): Router {
         'authCode is required'));
       return;
     }
+    const legalAcceptance = requireCurrentLegalAcceptance(res, language, acceptedLegal);
+    if (!legalAcceptance) return;
 
     const payload = consumeGoogleAuthCompletion(authCode);
     if (!payload) {
@@ -661,6 +716,11 @@ export function authRoutes(): Router {
       return;
     }
 
+    recordCurrentLegalConsentForUser(
+      payload.user.id,
+      legalAcceptance,
+      legalConsentContextFromRequest(req, 'web_register_google', payload.user.language || null, undefined),
+    );
     sendSuccess(res, payload, { status: 201 });
   }));
 
@@ -674,7 +734,7 @@ export function authRoutes(): Router {
   //
   router.post('/register/google', asyncHandler(async (req: Request, res: Response) => {
     const language = resolveAuthLanguage(req);
-    const { code, codeVerifier, redirectURI, idToken, deviceId, deviceName, inviteCode } = req.body;
+    const { code, codeVerifier, redirectURI, idToken, deviceId, deviceName, inviteCode, acceptedLegal } = req.body;
     if (!deviceId) {
       sendError(res, 'BAD_REQUEST', authCopy(language,
         'deviceId é obrigatório',
@@ -682,6 +742,8 @@ export function authRoutes(): Router {
         'deviceId is required'));
       return;
     }
+    const legalAcceptance = requireCurrentLegalAcceptance(res, language, acceptedLegal);
+    if (!legalAcceptance) return;
 
     try {
       let payload: any;
@@ -751,7 +813,7 @@ export function authRoutes(): Router {
       const user = resolveGoogleIdentityUser(payload, { inviteCode });
       consumeInviteAndGrantBeta(user.id, inviteCode);
 
-      issueTokensAndRegisterDevice(req, res, user.id, deviceId, deviceName || null, null, user);
+      issueTokensAndRegisterDevice(req, res, user.id, deviceId, deviceName || null, null, user, legalAcceptance, 'ios_register_google');
     } catch (err: any) {
       if (err instanceof ClosedBetaInviteRequiredError) {
         sendClosedBetaInviteError(res, language, err);
@@ -800,7 +862,7 @@ export function authRoutes(): Router {
   // ── Register with Email + Password ────────────────────────────────
   router.post('/register/email', asyncHandler(async (req: Request, res: Response) => {
     const language = resolveAuthLanguage(req);
-    const { email, password, firstName, deviceId, deviceName, inviteCode } = req.body;
+    const { email, password, firstName, deviceId, deviceName, inviteCode, acceptedLegal } = req.body;
     if (!email || !password || !firstName || !deviceId) {
       sendError(res, 'BAD_REQUEST', authCopy(language,
         'email, password, firstName e deviceId são obrigatórios',
@@ -819,6 +881,8 @@ export function authRoutes(): Router {
       sendInviteGateError(res, language, inviteError);
       return;
     }
+    const legalAcceptance = requireCurrentLegalAcceptance(res, language, acceptedLegal);
+    if (!legalAcceptance) return;
 
     // Validate email format
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
@@ -903,7 +967,7 @@ export function authRoutes(): Router {
       }
     } catch { /* email service not available — non-fatal */ }
 
-    issueTokensAndRegisterDevice(req, res, user.id, deviceId, deviceName || null, null, user);
+    issueTokensAndRegisterDevice(req, res, user.id, deviceId, deviceName || null, null, user, legalAcceptance, 'ios_register_email');
   }));
 
   // ── Login with Email + Password ───────────────────────────────────

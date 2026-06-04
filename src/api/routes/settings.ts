@@ -12,7 +12,7 @@ import { getDb } from '../../services/database';
 import { getPushPreferences, setPushPreference } from '../../services/report-document-store';
 import { registerNotificationDeviceToken } from '../../services/notification-orchestrator';
 import { isValidTenantUserId, recordTenantScopeAnomaly } from '../../services/tenant-scope-observability';
-import { deleteAllUserDataForAccountDeletion } from '../../services/user-data-export';
+import { deleteAllUserDataForAccountDeletion, getAccountDeletionInventoryForUser } from '../../services/user-data-export';
 import { logAudit } from '../../services/audit-trail';
 import {
   getProviderPreferences,
@@ -353,13 +353,14 @@ export function settingsRoutes(): Router {
     const { userId } = req as AuthenticatedRequest;
     if (!ensureValidSettingsUserScope(res, userId, 'settings_route_delete_account')) return;
     try {
+      const deletionInventory = getAccountDeletionInventoryForUser(userId);
       const tableCounts = await deleteAllUserDataForAccountDeletion(userId);
       logAudit({
         userId,
         actorId: userId,
         action: 'delete',
         resource: 'account',
-        details: { tableCounts },
+        details: { tableCounts, deletionInventory },
         ipAddress: req.ip,
       });
 

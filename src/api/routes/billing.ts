@@ -36,6 +36,12 @@ import {
   isStripeNexusPointsConfigured,
 } from '../../services/stripe-nexus-points-service';
 import { logAudit } from '../../services/audit-trail';
+import {
+  legalConsentContextFromRequest,
+  type LegalAcceptanceInput,
+  recordCurrentLegalConsentForUser,
+  validateCurrentLegalAcceptance,
+} from '../../services/legal-consent';
 
 const STRIPE_NEXUS_CHECKOUT_BODY_LIMIT_BYTES = 8 * 1024;
 const STRIPE_NEXUS_CHECKOUT_BODY_FIELDS = new Set(['packageId']);
@@ -128,10 +134,23 @@ export function billingRoutes(): Router {
       return;
     }
 
+    const acceptedLegal = req.body.acceptedLegal as LegalAcceptanceInput | null | undefined;
+    const legalAcceptance = validateCurrentLegalAcceptance(acceptedLegal);
+    if (!legalAcceptance.ok) {
+      sendError(res, 'LEGAL_CONSENT_REQUIRED', legalAcceptance.reason || 'Current legal acceptance is required', 400);
+      return;
+    }
+    const currentAcceptedLegal = acceptedLegal as LegalAcceptanceInput;
+
     const successUrl = safeCheckoutUrl(req.body.successUrl, 'https://nexushub.me/?checkout=success');
     const cancelUrl = safeCheckoutUrl(req.body.cancelUrl, 'https://nexushub.me/?checkout=canceled');
 
     try {
+      await recordCurrentLegalConsentForUser(
+        userId,
+        currentAcceptedLegal,
+        legalConsentContextFromRequest(req, 'billing_checkout'),
+      );
       const url = await createCheckoutSessionForPlan(userId, plan, currency, successUrl, cancelUrl);
       sendSuccess(res, { url });
     } catch (err: any) {

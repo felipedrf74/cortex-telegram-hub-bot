@@ -5,6 +5,7 @@ import { authMiddleware } from './auth-middleware';
 import { rateLimitMiddleware, webhookRateLimitMiddleware } from './rate-limiter';
 import { requestTimerMiddleware } from './request-timer';
 import { authRoutes } from './routes/auth';
+import { legalRoutes } from './routes/legal';
 import { chatRoutes } from './routes/chat';
 import { attachmentRoutes } from './routes/attachments';
 import { dashboardRoutes } from './routes/dashboard';
@@ -56,6 +57,8 @@ const WEBSITE_CORS_METHODS = new Set(['GET', 'POST', 'OPTIONS']);
 function isWebsiteCorsRoute(path: string): boolean {
   return path === '/auth'
     || path.startsWith('/auth/')
+    || path === '/legal'
+    || path.startsWith('/legal/')
     || path === '/billing/status'
     || path === '/billing/usage'
     || path === '/billing/nexus-points/stripe-checkout';
@@ -116,6 +119,7 @@ export function createApiRouter(): Router {
         finance: 'GET/POST/DELETE /api/v1/finance/{transactions|monthly-summary|tax/events|tax/calculate}',
         invoices: 'GET/POST/DELETE /api/v1/invoices/{vendors|scan-now|scraper-mfa-reply} — vendor config + on-demand collection',
         billing: 'GET /api/v1/billing/status, POST /api/v1/billing/{checkout|portal|apple-verify|nexus-points/stripe-checkout}',
+        legal: 'GET /api/v1/legal/current, GET /api/v1/legal/{terms|privacy}',
         plan: 'GET /api/v1/plan/{week|today}, POST /api/v1/plan/recompute — multiskill mesh (feature-flagged)',
         summaries: 'GET /api/v1/summaries/{home|week|training|content|notifications} — fast app read models',
         decisions: 'GET /api/v1/decisions/summary, GET/POST/PATCH /api/v1/decisions — user-scoped decision orchestration',
@@ -146,6 +150,7 @@ export function createApiRouter(): Router {
   // register/refresh traffic is well under 30 req/min/IP; credential
   // stuffing is capped.
   router.use('/auth', rateLimitMiddleware, authRoutes());
+  router.use('/legal', legalRoutes());
 
   // Internal service-to-service routes — Python content-engine reports
   // usage here. Authenticated by shared secret, not JWT.
