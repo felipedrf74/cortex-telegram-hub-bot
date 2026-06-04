@@ -8,7 +8,7 @@ import { logPortalAdminMutation } from './admin-audit';
 import { sendPortalInternalError } from './http';
 
 export function registerPortalInviteRoutes(app: express.Express): void {
-  app.get('/api/invite-codes', (_req: Request, res: Response) => {
+  app.get('/api/invite-codes', requirePortalAdminToken, (_req: Request, res: Response) => {
     try {
       res.json({ codes: listInviteCodes() });
     } catch (err) {

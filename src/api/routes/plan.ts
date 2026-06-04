@@ -8,7 +8,8 @@ import { config } from '../../config';
 import { composeDailyBrief } from '../../services/daily-brief-orchestrator';
 import { composeWeeklyPlan } from '../../services/weekly-plan-orchestrator';
 import { invalidatePlanningCaches } from '../../services/cache-coherence-registry';
-import { getUserById, getUserLanguageById } from '../../services/user-service';
+import { getUserLanguageById } from '../../services/user-service';
+import { entitlementPlanToSkillTier, getEffectiveEntitlement } from '../../services/entitlement';
 import { normalizeLangHeader } from '../../services/secretary-fastpath';
 import { timedAsync, type RouteTiming } from '../route-timing';
 import { sendConditionalApiSuccess } from '../conditional-cache';
@@ -100,11 +101,11 @@ export function planRoutes(): Router {
     const { userId } = req as AuthenticatedRequest;
     if (!ensureCachedRouteTenantScope(res, userId, 'plan_route_week_explain', { weekStart: req.query.weekStart ?? null })) return;
     const weekStart = typeof req.query.weekStart === 'string' ? req.query.weekStart : undefined;
-    const user = getUserById(userId);
+    const effectiveTier = entitlementPlanToSkillTier(getEffectiveEntitlement(userId).plan);
 
-    if (!user || !['max', 'owner'].includes(user.tier)) {
+    if (!['max', 'owner'].includes(effectiveTier)) {
       sendError(res, 'FORBIDDEN', 'Max tier required for explanation view', 403, {
-        plan: user?.tier ?? 'free',
+        plan: effectiveTier,
       });
       return;
     }

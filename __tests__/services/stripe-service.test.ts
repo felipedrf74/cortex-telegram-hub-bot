@@ -7,6 +7,9 @@ let testDb: Database.Database;
 const hoisted = vi.hoisted(() => ({
   loggerWarn: vi.fn(),
   loggerInfo: vi.fn(),
+  sendPaymentReceipt: vi.fn(),
+  sendPaymentFailed: vi.fn(),
+  sendCancellationConfirmation: vi.fn(),
 }));
 
 vi.mock('../../src/config', () => ({
@@ -46,12 +49,20 @@ vi.mock('../../src/utils/logger', () => ({
   LOGGER_REDACTION_PATHS: [],
 }));
 
+vi.mock('../../src/services/email-sender', () => ({
+  sendPaymentReceipt: (...args: unknown[]) => hoisted.sendPaymentReceipt(...args),
+  sendPaymentFailed: (...args: unknown[]) => hoisted.sendPaymentFailed(...args),
+  sendCancellationConfirmation: (...args: unknown[]) => hoisted.sendCancellationConfirmation(...args),
+}));
+
 function createSchema(db: Database.Database): void {
   db.exec(`
     CREATE TABLE users (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       email TEXT,
-      email_verified INTEGER NOT NULL DEFAULT 0
+      first_name TEXT,
+      email_verified INTEGER NOT NULL DEFAULT 0,
+      tier TEXT NOT NULL DEFAULT 'free'
     );
 
     CREATE TABLE subscriptions (
@@ -100,6 +111,12 @@ describe('stripe service billing reconciliation', () => {
     createSchema(testDb);
     hoisted.loggerWarn.mockReset();
     hoisted.loggerInfo.mockReset();
+    hoisted.sendPaymentReceipt.mockReset();
+    hoisted.sendPaymentReceipt.mockResolvedValue(true);
+    hoisted.sendPaymentFailed.mockReset();
+    hoisted.sendPaymentFailed.mockResolvedValue(true);
+    hoisted.sendCancellationConfirmation.mockReset();
+    hoisted.sendCancellationConfirmation.mockResolvedValue(true);
   });
 
   afterEach(() => {
@@ -162,9 +179,13 @@ describe('stripe service billing reconciliation', () => {
       customer: 'cus_unknown',
       status: 'active',
       metadata: { userId: '1' },
-      items: { data: [{ price: { id: 'price_unknown' } }] },
-      current_period_start: 1_700_000_000,
-      current_period_end: 1_700_086_400,
+      items: {
+        data: [{
+          price: { id: 'price_unknown' },
+          current_period_start: 1_700_000_000,
+          current_period_end: 1_700_086_400,
+        }],
+      },
       cancel_at_period_end: false,
     });
 
@@ -187,14 +208,95 @@ describe('stripe service billing reconciliation', () => {
       customer: 'cus_claimed',
       status: 'active',
       metadata: { source: 'website' },
-      items: { data: [{ price: { id: 'price_max_brl' } }] },
-      current_period_start: 1_700_000_000,
-      current_period_end: 1_700_086_400,
+      items: {
+        data: [{
+          price: { id: 'price_max_brl' },
+          current_period_start: 1_700_000_000,
+          current_period_end: 1_700_086_400,
+        }],
+      },
       cancel_at_period_end: false,
     });
 
     const sub = testDb.prepare('SELECT plan, period, status, provider FROM subscriptions WHERE user_id = ?').get(userId) as any;
     expect(sub).toEqual({ plan: 'max', period: 'monthly', status: 'active', provider: 'stripe' });
+  });
+
+  it('records Basil/Dahlia subscription periods from the first subscription item', async () => {
+    const { getSubscriptionStatus, handleSubscriptionUpdated } = await import('../../src/services/stripe-service');
+    const userId = Number(testDb.prepare('INSERT INTO users (email, email_verified) VALUES (?, 1)').run('period@example.com').lastInsertRowid);
+    const futurePeriodEnd = Math.floor((Date.now() + 7 * 86400000) / 1000);
+
+    handleSubscriptionUpdated({
+      id: 'sub_period',
+      customer: 'cus_period',
+      status: 'active',
+      metadata: { userId: String(userId) },
+      items: {
+        data: [{
+          price: { id: 'price_max_usd' },
+          current_period_start: 1_700_000_000,
+          current_period_end: futurePeriodEnd,
+        }],
+      },
+      cancel_at_period_end: false,
+    });
+
+    const sub = testDb.prepare('SELECT current_period_start, current_period_end FROM subscriptions WHERE user_id = ?').get(userId) as any;
+    expect(sub.current_period_start).toBe(new Date(1_700_000_000 * 1000).toISOString());
+    expect(sub.current_period_end).toBe(new Date(futurePeriodEnd * 1000).toISOString());
+    expect(getSubscriptionStatus(userId)).toMatchObject({ plan: 'max', isActive: true, isPro: true });
+
+    testDb.prepare('UPDATE subscriptions SET current_period_end = ? WHERE user_id = ?')
+      .run(new Date(Date.now() - 60_000).toISOString(), userId);
+    expect(getSubscriptionStatus(userId)).toMatchObject({ plan: 'free', status: 'expired', isActive: false });
+  });
+
+  it('revokes stale users.tier and sends cancellation email when Stripe subscription is deleted', async () => {
+    const { handleSubscriptionDeleted } = await import('../../src/services/stripe-service');
+    const userId = Number(testDb.prepare('INSERT INTO users (email, email_verified) VALUES (?, 1)').run('cancel@example.com').lastInsertRowid);
+    testDb.prepare(`
+      INSERT INTO subscriptions (
+        user_id, plan, period, status, provider, provider_subscription_id, provider_customer_id
+      ) VALUES (?, 'max', 'monthly', 'active', 'stripe', 'sub_cancel', 'cus_cancel')
+    `).run(userId);
+    testDb.prepare("UPDATE users SET tier = 'max' WHERE id = ?").run(userId);
+
+    handleSubscriptionDeleted({ id: 'sub_cancel', customer: 'cus_cancel', metadata: {} });
+
+    const sub = testDb.prepare('SELECT status, cancel_at_period_end FROM subscriptions WHERE user_id = ?').get(userId) as any;
+    const user = testDb.prepare('SELECT tier FROM users WHERE id = ?').get(userId) as any;
+    expect(sub).toMatchObject({ status: 'canceled', cancel_at_period_end: 1 });
+    expect(user.tier).toBe('free');
+    expect(hoisted.sendCancellationConfirmation).toHaveBeenCalledWith(expect.objectContaining({
+      to: 'cancel@example.com',
+      plan: 'max',
+    }));
+  });
+
+  it('marks invoice failures past_due and queues a dunning email', async () => {
+    const { handleInvoicePaymentFailed } = await import('../../src/services/stripe-service');
+    const userId = Number(testDb.prepare('INSERT INTO users (email, email_verified) VALUES (?, 1)').run('pastdue@example.com').lastInsertRowid);
+    testDb.prepare(`
+      INSERT INTO subscriptions (
+        user_id, plan, period, status, provider, provider_customer_id
+      ) VALUES (?, 'pro', 'monthly', 'active', 'stripe', 'cus_failed')
+    `).run(userId);
+
+    handleInvoicePaymentFailed({
+      id: 'in_failed',
+      customer: 'cus_failed',
+      hosted_invoice_url: 'https://billing.stripe.test/invoices/in_failed',
+    });
+
+    const sub = testDb.prepare('SELECT status FROM subscriptions WHERE user_id = ?').get(userId) as any;
+    expect(sub.status).toBe('past_due');
+    expect(hoisted.sendPaymentFailed).toHaveBeenCalledWith(expect.objectContaining({
+      to: 'pastdue@example.com',
+      invoiceId: 'in_failed',
+      hostedInvoiceUrl: 'https://billing.stripe.test/invoices/in_failed',
+      plan: 'pro',
+    }));
   });
 
   it('records Stripe webhook event IDs durably for idempotency', async () => {

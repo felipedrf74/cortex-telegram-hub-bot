@@ -255,6 +255,114 @@ export async function sendPasswordResetEmail(
   }
 }
 
+interface PaymentEmailInput {
+  to: string;
+  firstName?: string | null;
+  plan: string;
+  period?: string | null;
+  checkoutSessionId?: string | null;
+  invoiceId?: string | null;
+  hostedInvoiceUrl?: string | null;
+}
+
+function displayPlan(plan: string, period?: string | null): string {
+  const label = String(plan || 'subscription').trim().toUpperCase();
+  const cadence = period ? ` ${String(period).trim()}` : '';
+  return `${label}${cadence}`;
+}
+
+export async function sendPaymentReceipt(input: PaymentEmailInput): Promise<boolean> {
+  try {
+    const resend = getResend();
+    const from = transactionalFrom();
+    const safeFirstName = escapeHtml(input.firstName || 'there');
+    const safePlan = escapeHtml(displayPlan(input.plan, input.period));
+
+    await resend.emails.send({
+      from,
+      to: input.to,
+      subject: 'Your Nexus Hub subscription is active',
+      html: `
+        <div style="font-family: -apple-system, BlinkMacSystemFont, 'Inter', sans-serif; max-width: 520px; margin: 0 auto; padding: 40px 24px; background: #0A0A0B; color: #EDEDEF;">
+          <h1 style="font-size: 24px; font-weight: 800; margin-bottom: 12px; color: #EDEDEF;">Subscription active</h1>
+          <p style="font-size: 15px; line-height: 1.55; color: #A1A1A6;">Hi ${safeFirstName}, your Nexus Hub ${safePlan} subscription is active.</p>
+          <p style="font-size: 13px; color: #6E6E76; margin-top: 28px;">You can manage billing from your Nexus Hub account.</p>
+          <p style="font-size: 11px; color: #48484F; margin-top: 32px;">Nexus Hub · nexushub.me</p>
+        </div>
+      `,
+      text: `Your Nexus Hub ${displayPlan(input.plan, input.period)} subscription is active.`,
+    });
+
+    logger.info({ toHash: emailLogHash(input.to), checkoutSessionId: input.checkoutSessionId ?? null }, 'Payment receipt email sent');
+    return true;
+  } catch (err) {
+    logger.error({ err, toHash: emailLogHash(input.to) }, 'Failed to send payment receipt email');
+    return false;
+  }
+}
+
+export async function sendPaymentFailed(input: PaymentEmailInput): Promise<boolean> {
+  try {
+    const resend = getResend();
+    const from = transactionalFrom();
+    const safeFirstName = escapeHtml(input.firstName || 'there');
+    const safePlan = escapeHtml(displayPlan(input.plan, input.period));
+    const safeInvoiceUrl = input.hostedInvoiceUrl ? escapeHtml(input.hostedInvoiceUrl) : null;
+
+    await resend.emails.send({
+      from,
+      to: input.to,
+      subject: 'Action needed: Nexus Hub payment failed',
+      html: `
+        <div style="font-family: -apple-system, BlinkMacSystemFont, 'Inter', sans-serif; max-width: 520px; margin: 0 auto; padding: 40px 24px; background: #0A0A0B; color: #EDEDEF;">
+          <h1 style="font-size: 24px; font-weight: 800; margin-bottom: 12px; color: #EDEDEF;">Payment failed</h1>
+          <p style="font-size: 15px; line-height: 1.55; color: #A1A1A6;">Hi ${safeFirstName}, Stripe could not collect payment for your Nexus Hub ${safePlan} subscription.</p>
+          ${safeInvoiceUrl ? `<p style="margin-top: 28px;"><a href="${safeInvoiceUrl}" style="display: inline-block; background: #FF6B35; color: #0A0A0B; padding: 14px 22px; border-radius: 10px; font-weight: 800; text-decoration: none;">Update payment</a></p>` : ''}
+          <p style="font-size: 13px; color: #6E6E76; margin-top: 28px;">Your account is marked past due until the payment succeeds.</p>
+          <p style="font-size: 11px; color: #48484F; margin-top: 32px;">Nexus Hub · nexushub.me</p>
+        </div>
+      `,
+      text: `Payment failed for your Nexus Hub ${displayPlan(input.plan, input.period)} subscription.${input.hostedInvoiceUrl ? `\nUpdate payment: ${input.hostedInvoiceUrl}` : ''}`,
+    });
+
+    logger.info({ toHash: emailLogHash(input.to), invoiceId: input.invoiceId ?? null }, 'Payment failed email sent');
+    return true;
+  } catch (err) {
+    logger.error({ err, toHash: emailLogHash(input.to) }, 'Failed to send payment failed email');
+    return false;
+  }
+}
+
+export async function sendCancellationConfirmation(input: PaymentEmailInput): Promise<boolean> {
+  try {
+    const resend = getResend();
+    const from = transactionalFrom();
+    const safeFirstName = escapeHtml(input.firstName || 'there');
+    const safePlan = escapeHtml(displayPlan(input.plan, input.period));
+
+    await resend.emails.send({
+      from,
+      to: input.to,
+      subject: 'Your Nexus Hub subscription was canceled',
+      html: `
+        <div style="font-family: -apple-system, BlinkMacSystemFont, 'Inter', sans-serif; max-width: 520px; margin: 0 auto; padding: 40px 24px; background: #0A0A0B; color: #EDEDEF;">
+          <h1 style="font-size: 24px; font-weight: 800; margin-bottom: 12px; color: #EDEDEF;">Subscription canceled</h1>
+          <p style="font-size: 15px; line-height: 1.55; color: #A1A1A6;">Hi ${safeFirstName}, your Nexus Hub ${safePlan} subscription was canceled.</p>
+          <p style="font-size: 13px; color: #6E6E76; margin-top: 28px;">Your account will use the free plan unless another active grant applies.</p>
+          <p style="font-size: 11px; color: #48484F; margin-top: 32px;">Nexus Hub · nexushub.me</p>
+        </div>
+      `,
+      text: `Your Nexus Hub ${displayPlan(input.plan, input.period)} subscription was canceled.`,
+    });
+
+    logger.info({ toHash: emailLogHash(input.to) }, 'Cancellation confirmation email sent');
+    return true;
+  } catch (err) {
+    logger.error({ err, toHash: emailLogHash(input.to) }, 'Failed to send cancellation confirmation email');
+    return false;
+  }
+}
+
 export async function sendBetaWaitlistConfirmation(
   to: string,
   confirmationUrl: string,

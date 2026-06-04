@@ -3,6 +3,7 @@
 import type { Response } from 'express';
 import { checkSkillAccess } from '../../services/skill-tiers';
 import { getUserById, getUserByTelegramId } from '../../services/user-service';
+import { entitlementPlanToSkillTier, getEffectiveEntitlement } from '../../services/entitlement';
 import { logger } from '../../utils/logger';
 
 export function sendChatTierRequiredIfNeeded(
@@ -14,7 +15,11 @@ export function sendChatTierRequiredIfNeeded(
     const user = getUserById(userId) || getUserByTelegramId(userId);
     if (!user) return false;
 
-    const accessResult = checkSkillAccess({ id: user.id, tier: user.tier }, domain);
+    const entitlement = getEffectiveEntitlement(user.id);
+    const accessResult = checkSkillAccess(
+      { id: user.id, tier: entitlementPlanToSkillTier(entitlement.plan) },
+      domain,
+    );
     if (accessResult.allowed) return false;
 
     logger.info(

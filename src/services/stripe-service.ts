@@ -19,10 +19,16 @@ import { hashEmail } from '../utils/identity';
 import { logger } from '../utils/logger';
 import { isNexusPointProductId, revokeNexusPointsCredit } from './nexus-points';
 import { recordOperatorAlert } from './operator-alerts';
+import {
+  sendCancellationConfirmation,
+  sendPaymentFailed,
+  sendPaymentReceipt,
+} from './email-sender';
 
 // Stripe v17+ uses a different export shape. The namespace for types
 // is accessed via the default export's type definitions.
 type StripeInstance = InstanceType<typeof StripeLib>;
+const STRIPE_API_VERSION = '2026-03-25.dahlia' as const;
 
 // ── Types ───────────────────────────────────────────────────────────
 
@@ -136,6 +142,69 @@ function upsertStripeSubscription(input: {
   );
 }
 
+function stripeTimestampToIso(value: unknown): string | null {
+  if (value === null || value === undefined) return null;
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric) || numeric <= 0) return null;
+  return new Date(numeric * 1000).toISOString();
+}
+
+function primarySubscriptionItem(subscription: any): any | null {
+  const item = subscription?.items?.data?.[0];
+  return item && typeof item === 'object' ? item : null;
+}
+
+interface BillingEmailContext {
+  userId: number;
+  email: string | null;
+  firstName: string | null;
+  plan: string;
+  period: string;
+}
+
+function getBillingEmailContextForUser(userId: number): BillingEmailContext | null {
+  const db = getDb();
+  const row = db.prepare(`
+    SELECT
+      s.user_id AS userId,
+      s.plan,
+      s.period,
+      u.email,
+      u.first_name AS firstName
+    FROM subscriptions s
+    LEFT JOIN users u ON u.id = s.user_id
+    WHERE s.user_id = ?
+      AND s.provider = 'stripe'
+    LIMIT 1
+  `).get(userId) as BillingEmailContext | undefined;
+  return row ?? null;
+}
+
+function getBillingEmailContextForCustomer(customerId: string): BillingEmailContext | null {
+  const db = getDb();
+  const row = db.prepare(`
+    SELECT
+      s.user_id AS userId,
+      s.plan,
+      s.period,
+      u.email,
+      u.first_name AS firstName
+    FROM subscriptions s
+    LEFT JOIN users u ON u.id = s.user_id
+    WHERE s.provider_customer_id = ?
+      AND s.provider = 'stripe'
+    ORDER BY s.updated_at DESC, s.id DESC
+    LIMIT 1
+  `).get(customerId) as BillingEmailContext | undefined;
+  return row ?? null;
+}
+
+function queuePaymentEmail(kind: string, to: string, send: Promise<boolean>): void {
+  send.catch((err) => {
+    logger.warn({ err, kind, toHash: hashEmail(to, 16) }, 'Stripe payment email send failed');
+  });
+}
+
 // ── Singleton ───────────────────────────────────────────────────────
 
 let stripeClient: StripeInstance | null = null;
@@ -145,7 +214,9 @@ function getStripe(): StripeInstance {
     if (!config.stripe.secretKey) {
       throw new Error('Stripe not configured (STRIPE_SECRET_KEY missing)');
     }
-    stripeClient = new StripeLib(config.stripe.secretKey);
+    stripeClient = new StripeLib(config.stripe.secretKey, {
+      apiVersion: STRIPE_API_VERSION,
+    });
   }
   return stripeClient;
 }
@@ -383,6 +454,17 @@ export function handleCheckoutCompleted(session: any): void {
     customerId: customerId || null,
   });
 
+  const billingEmail = getBillingEmailContextForUser(resolvedUserId);
+  if (billingEmail?.email) {
+    queuePaymentEmail('receipt', billingEmail.email, sendPaymentReceipt({
+      to: billingEmail.email,
+      firstName: billingEmail.firstName,
+      plan: billingEmail.plan,
+      period: billingEmail.period,
+      checkoutSessionId: session.id,
+    }));
+  }
+
   logger.info({ userId: resolvedUserId, subscriptionId, customerId }, 'Stripe checkout completed — subscription activated');
 }
 
@@ -402,12 +484,9 @@ export function handleSubscriptionUpdated(subscription: any): void {
   const { plan, period } = resolvedPlan;
 
   const status = subscription.status; // 'active', 'past_due', 'canceled', 'trialing', etc.
-  const periodStart = subscription.current_period_start
-    ? new Date(subscription.current_period_start * 1000).toISOString()
-    : null;
-  const periodEnd = subscription.current_period_end
-    ? new Date(subscription.current_period_end * 1000).toISOString()
-    : null;
+  const primaryItem = primarySubscriptionItem(subscription);
+  const periodStart = stripeTimestampToIso(primaryItem?.current_period_start ?? subscription.current_period_start);
+  const periodEnd = stripeTimestampToIso(primaryItem?.current_period_end ?? subscription.current_period_end);
   const cancelAtEnd = subscription.cancel_at_period_end ? 1 : 0;
 
   const db = getDb();
@@ -483,13 +562,38 @@ export function handleSubscriptionDeleted(subscription: any): void {
       LIMIT 1
     `).get(subscription.id, customerId || '') as { user_id: number | null } | undefined;
     userId = row?.user_id ?? 0;
+    if (!userId) {
+      const subRow = db.prepare(`
+        SELECT user_id FROM subscriptions
+        WHERE provider = 'stripe'
+          AND (provider_subscription_id = ? OR provider_customer_id = ?)
+        ORDER BY updated_at DESC, id DESC
+        LIMIT 1
+      `).get(subscription.id, customerId || '') as { user_id: number | null } | undefined;
+      userId = subRow?.user_id ?? 0;
+    }
   }
   if (!userId) return;
 
+  const billingEmail = getBillingEmailContextForUser(userId);
   db.prepare(`
     UPDATE subscriptions SET status = 'canceled', cancel_at_period_end = 1, updated_at = datetime('now')
     WHERE user_id = ? AND provider = 'stripe'
   `).run(userId);
+  try {
+    db.prepare("UPDATE users SET tier = 'free' WHERE id = ? AND tier IN ('pro', 'max')").run(userId);
+  } catch (err) {
+    logger.warn({ err, userId }, 'Stripe subscription deleted: failed to reconcile stale users.tier');
+  }
+
+  if (billingEmail?.email) {
+    queuePaymentEmail('cancellation', billingEmail.email, sendCancellationConfirmation({
+      to: billingEmail.email,
+      firstName: billingEmail.firstName,
+      plan: billingEmail.plan,
+      period: billingEmail.period,
+    }));
+  }
 
   logger.info({ userId, subId: subscription.id }, 'Stripe subscription deleted/canceled');
 }
@@ -499,10 +603,22 @@ export function handleInvoicePaymentFailed(invoice: any): void {
   if (!customerId) return;
 
   const db = getDb();
+  const billingEmail = getBillingEmailContextForCustomer(customerId);
   db.prepare(`
     UPDATE subscriptions SET status = 'past_due', updated_at = datetime('now')
     WHERE provider_customer_id = ? AND provider = 'stripe'
   `).run(customerId);
+
+  if (billingEmail?.email) {
+    queuePaymentEmail('payment_failed', billingEmail.email, sendPaymentFailed({
+      to: billingEmail.email,
+      firstName: billingEmail.firstName,
+      plan: billingEmail.plan,
+      period: billingEmail.period,
+      invoiceId: invoice.id ?? null,
+      hostedInvoiceUrl: invoice.hosted_invoice_url ?? null,
+    }));
+  }
 
   logger.warn({ customerId, invoiceId: invoice.id }, 'Stripe invoice payment failed — subscription past_due');
 }

@@ -76,6 +76,8 @@ MEYCIQC0nMB+TnCrKHMIFv5Jv8bQ0ZPnc1QLLfZu+v/049ZSaAIhAK1GmpOwTAaw
 1b4Hjfx2J+n9Dtm7Noen9pzXXyqXEctN
 -----END CERTIFICATE-----`;
 
+const ORIGINAL_APPLE_JWS_TEST_ROOT_CERT_PEM = process.env.APPLE_JWS_TEST_ROOT_CERT_PEM;
+
 function certToX5c(certPem: string): string {
   return certPem
     .replace(/-----BEGIN CERTIFICATE-----/g, '')
@@ -176,6 +178,7 @@ async function postAppleNotification(signedPayload: string): Promise<{ status: n
 
 describe('Apple App Store Server Notifications JWS verification', () => {
   beforeEach(() => {
+    process.env.APPLE_JWS_TEST_ROOT_CERT_PEM = TEST_CERT;
     testDb = new Database(':memory:');
     testDb.exec(`
       CREATE TABLE subscriptions (
@@ -217,6 +220,11 @@ describe('Apple App Store Server Notifications JWS verification', () => {
   });
 
   afterEach(() => {
+    if (ORIGINAL_APPLE_JWS_TEST_ROOT_CERT_PEM === undefined) {
+      delete process.env.APPLE_JWS_TEST_ROOT_CERT_PEM;
+    } else {
+      process.env.APPLE_JWS_TEST_ROOT_CERT_PEM = ORIGINAL_APPLE_JWS_TEST_ROOT_CERT_PEM;
+    }
     testDb.close();
   });
 

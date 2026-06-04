@@ -56,6 +56,7 @@ import {
   sendPasswordResetEmail,
   isEmailConfigured,
 } from '../../services/email-sender';
+import { entitlementPlanToSkillTier, getEffectiveEntitlement } from '../../services/entitlement';
 import { cancelPendingChatActionsForAccountSwitch } from '../../services/chat-action-state';
 import { normalizeLangHeader } from '../../services/secretary-fastpath';
 import type { Lang } from '../../utils/i18n';
@@ -398,6 +399,7 @@ export function authRoutes(): Router {
     // gate UI on these fields. The fields are PURELY ADDITIVE — older
     // iOS clients ignore unknown fields per the iOS DTO standard
     // (`ios/docs/engineering/ios-architecture-and-swiftui-performance-standard.md`).
+    const entitlement = getEffectiveEntitlement(user.id);
     sendSuccess(res, {
       id: user.id,
       firstName: user.first_name || 'User',
@@ -405,7 +407,7 @@ export function authRoutes(): Router {
       language: user.language || 'en',
       email: user.email || null,
       emailVerified: Boolean(user.email_verified),
-      tier: user.tier || 'free',
+      tier: entitlementPlanToSkillTier(entitlement.plan),
       authProvider: user.auth_provider || null,
     });
   }));

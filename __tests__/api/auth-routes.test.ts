@@ -585,6 +585,55 @@ describe('Auth invite registration', () => {
     });
   });
 
+  it('reports /auth/me tier from canonical subscription entitlement', async () => {
+    const db = testDb;
+    const result = db.prepare(`
+      INSERT INTO users (
+        email,
+        first_name,
+        language,
+        tier,
+        auth_provider,
+        daily_cost_limit_usd
+      )
+      VALUES (?, ?, ?, 'free', ?, ?)
+    `).run(
+      'paid@example.com',
+      'Paid',
+      'en',
+      'email',
+      0.005,
+    );
+    const userId = Number(result.lastInsertRowid);
+    db.prepare(`
+      INSERT INTO subscriptions (
+        user_id,
+        plan,
+        period,
+        status,
+        provider,
+        provider_subscription_id,
+        current_period_end
+      )
+      VALUES (?, 'max', 'monthly', 'active', 'stripe', 'sub_paid', ?)
+    `).run(userId, new Date(Date.now() + 7 * 86400000).toISOString());
+
+    const res = await dispatchAuth(
+      '/me',
+      undefined,
+      {
+        method: 'GET',
+        headers: {
+          'x-test-user-id': String(userId),
+          authorization: 'Bearer test-token',
+        },
+      },
+    );
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body.data.tier).toBe('max');
+  });
+
   it('localizes email-login auth failures for Portuguese requests', async () => {
     const res = await dispatchAuth(
       '/login/email',

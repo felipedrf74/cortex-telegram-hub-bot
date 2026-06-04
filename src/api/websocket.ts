@@ -341,11 +341,16 @@ export function attachWebSocket(server: http.Server): void {
         // prompt, then close the message flow without invoking the
         // domain handler (so no tokens are spent on blocked users).
             try {
-              const { getUserByTelegramId } = require('../services/user-service');
+              const { getUserById, getUserByTelegramId } = require('../services/user-service');
               const { checkSkillAccess } = require('../services/skill-tiers');
-              const user = getUserByTelegramId(userId);
+              const { entitlementPlanToSkillTier, getEffectiveEntitlement } = require('../services/entitlement');
+              const user = getUserById(userId) || getUserByTelegramId(userId);
               if (user) {
-                const tierResult = checkSkillAccess({ id: user.id, tier: user.tier }, route.domain);
+                const entitlement = getEffectiveEntitlement(user.id);
+                const tierResult = checkSkillAccess(
+                  { id: user.id, tier: entitlementPlanToSkillTier(entitlement.plan) },
+                  route.domain,
+                );
                 if (!tierResult.allowed) {
                   logger.info(
                     { userId, tenantId, domain: route.domain, userTier: tierResult.userTier, requiredTier: tierResult.requiredTier, reason: tierResult.reason },

@@ -16,13 +16,89 @@ interface VerifyAppleJwsOptions {
   requireX5c?: boolean;
 }
 
-function toPemCertificate(derBase64: string): string {
-  const der = Buffer.from(derBase64, 'base64');
-  const body = der.toString('base64').match(/.{1,64}/g)?.join('\n');
-  if (!body) {
-    throw new Error('APPLE_JWS_EMPTY_CERTIFICATE');
+const APPLE_ROOT_CA_G3_FINGERPRINT256 = '63:34:3A:BF:B8:9A:6A:03:EB:B5:7E:9B:3F:5F:A7:BE:7C:4F:5C:75:6F:30:17:B3:A8:C4:88:C3:65:3E:91:79';
+const APPLE_ROOT_CA_G3_PEM = `-----BEGIN CERTIFICATE-----
+MIICQzCCAcmgAwIBAgIILcX8iNLFS5UwCgYIKoZIzj0EAwMwZzEbMBkGA1UEAwwS
+QXBwbGUgUm9vdCBDQSAtIEczMSYwJAYDVQQLDB1BcHBsZSBDZXJ0aWZpY2F0aW9u
+IEF1dGhvcml0eTETMBEGA1UECgwKQXBwbGUgSW5jLjELMAkGA1UEBhMCVVMwHhcN
+MTQwNDMwMTgxOTA2WhcNMzkwNDMwMTgxOTA2WjBnMRswGQYDVQQDDBJBcHBsZSBS
+b290IENBIC0gRzMxJjAkBgNVBAsMHUFwcGxlIENlcnRpZmljYXRpb24gQXV0aG9y
+aXR5MRMwEQYDVQQKDApBcHBsZSBJbmMuMQswCQYDVQQGEwJVUzB2MBAGByqGSM49
+AgEGBSuBBAAiA2IABJjpLz1AcqTtkyJygRMc3RCV8cWjTnHcFBbZDuWmBSp3ZHtf
+TjjTuxxEtX/1H7YyYl3J6YRbTzBPEVoA/VhYDKX1DyxNB0cTddqXl5dvMVztK517
+IDvYuVTZXpmkOlEKMaNCMEAwHQYDVR0OBBYEFLuw3qFYM4iapIqZ3r6966/ayySr
+MA8GA1UdEwEB/wQFMAMBAf8wDgYDVR0PAQH/BAQDAgEGMAoGCCqGSM49BAMDA2gA
+MGUCMQCD6cHEFl4aXTQY2e3v9GwOAEZLuN+yRhHFD/3meoyhpmvOwgPUnPWTxnS4
+at+qIxUCMG1mihDK1A3UT82NQz60imOlM27jbdoXt2QfyFMm+YhidDkLF1vLUagM
+6BgD56KyKA==
+-----END CERTIFICATE-----`;
+
+function parseX5cCertificate(derBase64: string): crypto.X509Certificate {
+  try {
+    return new crypto.X509Certificate(Buffer.from(derBase64, 'base64'));
+  } catch {
+    throw new Error('APPLE_JWS_INVALID_CERTIFICATE');
   }
-  return `-----BEGIN CERTIFICATE-----\n${body}\n-----END CERTIFICATE-----`;
+}
+
+function getTrustedRootCertificates(): crypto.X509Certificate[] {
+  const roots = [new crypto.X509Certificate(APPLE_ROOT_CA_G3_PEM)];
+  const testRootPem = process.env.NODE_ENV === 'test'
+    ? process.env.APPLE_JWS_TEST_ROOT_CERT_PEM
+    : undefined;
+  if (testRootPem) {
+    roots.push(new crypto.X509Certificate(testRootPem));
+  }
+  return roots;
+}
+
+function findTrustedRoot(cert: crypto.X509Certificate, trustedRoots: crypto.X509Certificate[]): crypto.X509Certificate | undefined {
+  return trustedRoots.find((root) => cert.fingerprint256 === root.fingerprint256);
+}
+
+function assertCertificateIsTimeValid(cert: crypto.X509Certificate): void {
+  const now = Date.now();
+  const validFrom = Date.parse(cert.validFrom);
+  const validTo = Date.parse(cert.validTo);
+  if (!Number.isFinite(validFrom) || !Number.isFinite(validTo) || now < validFrom || now > validTo) {
+    throw new Error('APPLE_JWS_CERTIFICATE_EXPIRED');
+  }
+}
+
+function assertAppleRootedCertificateChain(x5c: string[]): crypto.X509Certificate {
+  const providedChain = x5c.map(parseX5cCertificate);
+  const trustedRoots = getTrustedRootCertificates();
+  const bundledAppleRoot = trustedRoots[0];
+  if (bundledAppleRoot.fingerprint256 !== APPLE_ROOT_CA_G3_FINGERPRINT256) {
+    throw new Error('APPLE_JWS_UNTRUSTED_ROOT');
+  }
+  const chain = [...providedChain];
+  const providedRoot = chain[chain.length - 1];
+  if (!providedRoot || !findTrustedRoot(providedRoot, trustedRoots)) {
+    chain.push(bundledAppleRoot);
+  }
+  if (chain.length < 1) {
+    throw new Error('APPLE_JWS_INCOMPLETE_CERT_CHAIN');
+  }
+
+  const root = chain[chain.length - 1];
+  if (!findTrustedRoot(root, trustedRoots) || !root.verify(root.publicKey)) {
+    throw new Error('APPLE_JWS_UNTRUSTED_ROOT');
+  }
+
+  for (const cert of chain) {
+    assertCertificateIsTimeValid(cert);
+  }
+
+  for (let index = 0; index < chain.length - 1; index += 1) {
+    const cert = chain[index];
+    const issuer = chain[index + 1];
+    if (!cert.verify(issuer.publicKey)) {
+      throw new Error('APPLE_JWS_INVALID_CERT_CHAIN');
+    }
+  }
+
+  return chain[0];
 }
 
 export function decodeAppleJwsPayload<TPayload = Record<string, unknown>>(jws: string): TPayload {
@@ -67,14 +143,13 @@ export function verifyAppleJws<TPayload = Record<string, unknown>>(
     throw new Error('APPLE_JWS_MISSING_X5C');
   }
 
-  const certPem = toPemCertificate(x5c[0]);
-  const publicKey = crypto.createPublicKey({ key: certPem, format: 'pem' });
+  const leaf = assertAppleRootedCertificateChain(x5c as string[]);
   const signedData = `${parts[0]}.${parts[1]}`;
   const signature = Buffer.from(parts[2], 'base64url');
   const verified = crypto.verify(
     'SHA256',
     Buffer.from(signedData),
-    { key: publicKey, dsaEncoding: 'ieee-p1363' },
+    { key: leaf.publicKey, dsaEncoding: 'ieee-p1363' },
     signature,
   );
 

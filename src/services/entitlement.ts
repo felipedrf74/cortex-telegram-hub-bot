@@ -302,6 +302,12 @@ export function isSkillAllowedByEntitlement(
   return entitlement.allowedSkills.has(skillId);
 }
 
+export function entitlementPlanToSkillTier(plan: BillingPlan): 'free' | 'pro' | 'max' | 'owner' {
+  if (plan === 'owner' || plan === 'max' || plan === 'pro') return plan;
+  if (plan === 'beta') return 'max';
+  return 'free';
+}
+
 // ── Internal helpers ─────────────────────────────────────────────
 
 function freeEntitlement(opts: {

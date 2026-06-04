@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const mockGetUserById = vi.fn();
 const mockGetUserByTelegramId = vi.fn();
 const mockCheckSkillAccess = vi.fn();
+const mockGetEffectiveEntitlement = vi.fn();
 const mockLoggerInfo = vi.fn();
 const mockLoggerWarn = vi.fn();
 
@@ -15,6 +16,11 @@ vi.mock('../../src/services/user-service', () => ({
 
 vi.mock('../../src/services/skill-tiers', () => ({
   checkSkillAccess: (...args: unknown[]) => mockCheckSkillAccess(...args),
+}));
+
+vi.mock('../../src/services/entitlement', () => ({
+  getEffectiveEntitlement: (...args: unknown[]) => mockGetEffectiveEntitlement(...args),
+  entitlementPlanToSkillTier: (plan: string) => (plan === 'beta' ? 'max' : plan),
 }));
 
 vi.mock('../../src/utils/logger', () => ({
@@ -48,11 +54,13 @@ describe('chat message tier gate', () => {
     mockGetUserById.mockReset();
     mockGetUserByTelegramId.mockReset();
     mockCheckSkillAccess.mockReset();
+    mockGetEffectiveEntitlement.mockReset();
     mockLoggerInfo.mockReset();
     mockLoggerWarn.mockReset();
 
     mockGetUserById.mockReturnValue({ id: 42, tier: 'pro' });
     mockGetUserByTelegramId.mockReturnValue(null);
+    mockGetEffectiveEntitlement.mockReturnValue({ plan: 'pro' });
     mockCheckSkillAccess.mockReturnValue({
       allowed: true,
       reason: 'catalog',
@@ -81,9 +89,21 @@ describe('chat message tier gate', () => {
     expect(res.status).not.toHaveBeenCalled();
   });
 
+  it('uses subscription entitlement instead of the stale users.tier column', () => {
+    mockGetUserById.mockReturnValue({ id: 42, tier: 'free' });
+    mockGetEffectiveEntitlement.mockReturnValue({ plan: 'max' });
+
+    const res = mockRes();
+    expect(sendChatTierRequiredIfNeeded(res, 42, 'finance')).toBe(false);
+
+    expect(mockCheckSkillAccess).toHaveBeenCalledWith({ id: 42, tier: 'max' }, 'finance');
+    expect(res.status).not.toHaveBeenCalled();
+  });
+
   it('falls back to telegram id lookup when the direct user id lookup misses', () => {
     mockGetUserById.mockReturnValue(null);
     mockGetUserByTelegramId.mockReturnValue({ id: 7, tier: 'owner' });
+    mockGetEffectiveEntitlement.mockReturnValue({ plan: 'owner' });
 
     const res = mockRes();
     expect(sendChatTierRequiredIfNeeded(res, 99, 'finance')).toBe(false);

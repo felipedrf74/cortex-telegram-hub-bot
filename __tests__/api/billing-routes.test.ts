@@ -352,6 +352,33 @@ describe('billing routes', () => {
     expect(JSON.stringify(res.body.data.nexusPointsPurchase)).not.toMatch(/usd|allowance/i);
   });
 
+  it('rejects unsigned Apple transaction JWS in production mode', async () => {
+    const originalNodeEnv = process.env.NODE_ENV;
+    process.env.NODE_ENV = 'production';
+    try {
+      const jwsTransaction = buildFakeJws({
+        bundleId: 'me.nexushub.app',
+        productId: 'me.nexushub.pro.monthly',
+        transactionId: '2000000123456791',
+        originalTransactionId: '2000000123456791',
+        environment: 'Production',
+        expiresDate: Date.now() + 7 * 86400000,
+      });
+
+      const res = await dispatch('POST', '/apple-verify', { jwsTransaction }, 42);
+
+      expect(res.statusCode).toBe(403);
+      expect(res.body.error.code).toBe('INVALID_SIGNATURE');
+      expect(mockHandleAppleTransaction).not.toHaveBeenCalled();
+    } finally {
+      if (originalNodeEnv === undefined) {
+        delete process.env.NODE_ENV;
+      } else {
+        process.env.NODE_ENV = originalNodeEnv;
+      }
+    }
+  });
+
   it('creates web-only Stripe Nexus Points checkout from authenticated request scope', async () => {
     const res = await dispatch('POST', '/nexus-points/stripe-checkout', {
       packageId: 'me.nexushub.points.medium',

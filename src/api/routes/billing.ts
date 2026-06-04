@@ -288,14 +288,15 @@ export function billingRoutes(): Router {
       // ES256 signature over "header.payload". This catches any payload
       // modification after Apple signed the transaction.
       let payload: any;
+      const isProduction = process.env.NODE_ENV === 'production';
       try {
-        payload = verifyAppleJws(jwsTransaction, { requireX5c: false }).payload;
+        payload = verifyAppleJws(jwsTransaction, { requireX5c: isProduction }).payload;
         logger.debug({ userId }, 'Apple verify: JWS signature verified ✓');
       } catch (sigErr: any) {
         // Missing x5c remains non-fatal for older sandbox/Xcode receipts.
         // If Apple supplied a cert chain and signature verification failed,
         // reject instead of falling back to attacker-controlled claims.
-        if (sigErr?.message !== 'APPLE_JWS_MISSING_X5C') {
+        if (sigErr?.message !== 'APPLE_JWS_MISSING_X5C' || isProduction) {
           logger.warn({ err: sigErr?.message, userId }, 'Apple verify: signature check failed');
           sendError(res, 'INVALID_SIGNATURE', 'Apple transaction signature verification failed', 403);
           return;
@@ -322,7 +323,6 @@ export function billingRoutes(): Router {
       // In production, only accept 'Production' environment.
       // In development (NODE_ENV !== 'production'), also accept 'Sandbox' and 'Xcode'.
       const env = payload.environment || '';
-      const isProduction = process.env.NODE_ENV === 'production';
       const allowedEnvs = isProduction
         ? ['Production']
         : ['Production', 'Sandbox', 'Xcode'];
