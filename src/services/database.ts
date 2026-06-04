@@ -138,6 +138,37 @@ export function initDatabase(): Database.Database {
     logger.error({ err }, 'OAuth plaintext migration failed — investigate before next deploy');
   }
 
+  // Finance and Garmin hold user-sensitive data that is also covered by
+  // database backups. Assert encryption at boot in production and encrypt
+  // any legacy plaintext shadow columns before the app starts serving.
+  try {
+    const { assertFinanceEncryptionConfigured, encryptPlaintextFinanceRows } = require('./finance-tracker');
+    assertFinanceEncryptionConfigured();
+    const result = encryptPlaintextFinanceRows();
+    if (result.encryptedTransactions > 0 || result.encryptedTaxEvents > 0) {
+      logger.warn(result, 'Finance migration: encrypted legacy plaintext finance rows in-place');
+    } else {
+      logger.info(result, 'Finance migration: all rows already encrypted');
+    }
+  } catch (err) {
+    logger.error({ err }, 'Finance plaintext migration failed — investigate before next deploy');
+    throw err;
+  }
+
+  try {
+    const { assertGarminEncryptionConfigured, encryptPlaintextGarminTokens } = require('./garmin-session-store');
+    assertGarminEncryptionConfigured();
+    const result = encryptPlaintextGarminTokens();
+    if (result.encryptedSessions > 0 || result.encryptedUserTokens > 0) {
+      logger.warn(result, 'Garmin migration: encrypted legacy plaintext token rows in-place');
+    } else {
+      logger.info(result, 'Garmin migration: all rows already encrypted');
+    }
+  } catch (err) {
+    logger.error({ err }, 'Garmin plaintext migration failed — investigate before next deploy');
+    throw err;
+  }
+
   // Migrate owner's OAuth tokens from .env to per-user storage
   try {
     migrateOwnerTokens();

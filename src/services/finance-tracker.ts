@@ -57,6 +57,207 @@ function readEncryptedStr(encrypted: string | null, plaintext: string | null, us
   }
 }
 
+function looksEncrypted(value: string | null | undefined): boolean {
+  if (!value) return false;
+  return value.length >= 56 && /^[0-9a-f]+$/i.test(value);
+}
+
+function hasTable(table: string): boolean {
+  const row = getDb().prepare(`
+    SELECT name
+    FROM sqlite_master
+    WHERE type = 'table' AND name = ?
+  `).get(table) as { name?: string } | undefined;
+  return Boolean(row?.name);
+}
+
+function hasColumn(table: string, column: string): boolean {
+  if (!hasTable(table)) return false;
+  const columns = getDb().prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+  return columns.some((entry) => entry.name === column);
+}
+
+export function assertFinanceEncryptionConfigured(): void {
+  const { enabled, masterKey } = config.financeEncryption;
+  if (process.env.NODE_ENV === 'production' && enabled && !masterKey) {
+    throw new Error(
+      'FINANCE_ENCRYPTION_KEY is required when FINANCE_ENCRYPTION_ENABLED=true in production. Generate one with: openssl rand -hex 32',
+    );
+  }
+}
+
+export interface FinanceEncryptionBackfillResult {
+  scannedTransactions: number;
+  encryptedTransactions: number;
+  scannedTaxEvents: number;
+  encryptedTaxEvents: number;
+}
+
+export function encryptPlaintextFinanceRows(): FinanceEncryptionBackfillResult {
+  assertFinanceEncryptionConfigured();
+
+  const key = getEncryptionKey();
+  if (!key) {
+    return {
+      scannedTransactions: 0,
+      encryptedTransactions: 0,
+      scannedTaxEvents: 0,
+      encryptedTaxEvents: 0,
+    };
+  }
+
+  const db = getDb();
+  let scannedTransactions = 0;
+  let encryptedTransactions = 0;
+  let scannedTaxEvents = 0;
+  let encryptedTaxEvents = 0;
+
+  if (
+    hasColumn('finance_transactions', 'encrypted_amount')
+    && hasColumn('finance_transactions', 'encrypted_description')
+  ) {
+    const rows = db.prepare(`
+      SELECT id, user_id, amount, description, encrypted_amount, encrypted_description
+      FROM finance_transactions
+    `).all() as Array<{
+      id: number;
+      user_id: number;
+      amount: number | null;
+      description: string | null;
+      encrypted_amount: string | null;
+      encrypted_description: string | null;
+    }>;
+    scannedTransactions = rows.length;
+
+    const update = db.prepare(`
+      UPDATE finance_transactions
+      SET encrypted_amount = ?,
+          encrypted_description = ?,
+          updated_at = datetime('now')
+      WHERE id = ?
+    `);
+
+    for (const row of rows) {
+      const encryptedAmount = looksEncrypted(row.encrypted_amount)
+        ? row.encrypted_amount
+        : row.amount == null
+          ? row.encrypted_amount
+          : encryptNumber(row.amount, key, row.user_id);
+      const encryptedDescription = looksEncrypted(row.encrypted_description)
+        ? row.encrypted_description
+        : row.description
+          ? encryptValue(row.description, key, row.user_id)
+          : row.encrypted_description;
+
+      if (encryptedAmount !== row.encrypted_amount || encryptedDescription !== row.encrypted_description) {
+        update.run(encryptedAmount, encryptedDescription, row.id);
+        encryptedTransactions++;
+      }
+    }
+  }
+
+  if (
+    hasColumn('finance_tax_events', 'encrypted_gross_income')
+    && hasColumn('finance_tax_events', 'encrypted_notes')
+  ) {
+    const rows = db.prepare(`
+      SELECT id, user_id, gross_income, deductions, taxable_income, tax_due,
+             inss_due, notes, encrypted_gross_income, encrypted_deductions,
+             encrypted_taxable_income, encrypted_tax_due, encrypted_inss_due,
+             encrypted_notes
+      FROM finance_tax_events
+    `).all() as Array<{
+      id: number;
+      user_id: number;
+      gross_income: number | null;
+      deductions: number | null;
+      taxable_income: number | null;
+      tax_due: number | null;
+      inss_due: number | null;
+      notes: string | null;
+      encrypted_gross_income: string | null;
+      encrypted_deductions: string | null;
+      encrypted_taxable_income: string | null;
+      encrypted_tax_due: string | null;
+      encrypted_inss_due: string | null;
+      encrypted_notes: string | null;
+    }>;
+    scannedTaxEvents = rows.length;
+
+    const update = db.prepare(`
+      UPDATE finance_tax_events
+      SET encrypted_gross_income = ?,
+          encrypted_deductions = ?,
+          encrypted_taxable_income = ?,
+          encrypted_tax_due = ?,
+          encrypted_inss_due = ?,
+          encrypted_notes = ?,
+          updated_at = datetime('now')
+      WHERE id = ?
+    `);
+
+    for (const row of rows) {
+      const encryptedGrossIncome = looksEncrypted(row.encrypted_gross_income)
+        ? row.encrypted_gross_income
+        : row.gross_income == null
+          ? row.encrypted_gross_income
+          : encryptNumber(row.gross_income, key, row.user_id);
+      const encryptedDeductions = looksEncrypted(row.encrypted_deductions)
+        ? row.encrypted_deductions
+        : row.deductions == null
+          ? row.encrypted_deductions
+          : encryptNumber(row.deductions, key, row.user_id);
+      const encryptedTaxableIncome = looksEncrypted(row.encrypted_taxable_income)
+        ? row.encrypted_taxable_income
+        : row.taxable_income == null
+          ? row.encrypted_taxable_income
+          : encryptNumber(row.taxable_income, key, row.user_id);
+      const encryptedTaxDue = looksEncrypted(row.encrypted_tax_due)
+        ? row.encrypted_tax_due
+        : row.tax_due == null
+          ? row.encrypted_tax_due
+          : encryptNumber(row.tax_due, key, row.user_id);
+      const encryptedInssDue = looksEncrypted(row.encrypted_inss_due)
+        ? row.encrypted_inss_due
+        : row.inss_due == null
+          ? row.encrypted_inss_due
+          : encryptNumber(row.inss_due, key, row.user_id);
+      const encryptedNotes = looksEncrypted(row.encrypted_notes)
+        ? row.encrypted_notes
+        : row.notes
+          ? encryptValue(row.notes, key, row.user_id)
+          : row.encrypted_notes;
+
+      if (
+        encryptedGrossIncome !== row.encrypted_gross_income
+        || encryptedDeductions !== row.encrypted_deductions
+        || encryptedTaxableIncome !== row.encrypted_taxable_income
+        || encryptedTaxDue !== row.encrypted_tax_due
+        || encryptedInssDue !== row.encrypted_inss_due
+        || encryptedNotes !== row.encrypted_notes
+      ) {
+        update.run(
+          encryptedGrossIncome,
+          encryptedDeductions,
+          encryptedTaxableIncome,
+          encryptedTaxDue,
+          encryptedInssDue,
+          encryptedNotes,
+          row.id,
+        );
+        encryptedTaxEvents++;
+      }
+    }
+  }
+
+  return {
+    scannedTransactions,
+    encryptedTransactions,
+    scannedTaxEvents,
+    encryptedTaxEvents,
+  };
+}
+
 /** Decrypt a transaction row's encrypted fields in place. */
 function decryptTransaction(row: any): Transaction {
   if (!row) return row;

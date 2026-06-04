@@ -7,8 +7,10 @@ import {
 
 const mockUpsertGarminSession = vi.fn();
 const mockMarkGarminConnectionActive = vi.fn();
+const mockMarkGarminConnectionMfaPending = vi.fn();
 const mockClearGarminSession = vi.fn();
 const mockHasActiveGarminConnection = vi.fn();
+const mockGetGarminConnectionRecord = vi.fn();
 const mockDbGet = vi.fn();
 const mockDbRun = vi.fn();
 const mockStartGarminInteractiveLogin = vi.fn();
@@ -17,8 +19,10 @@ const mockVerifyGarminInteractiveLogin = vi.fn();
 vi.mock('../../src/services/garmin-session-store', () => ({
   upsertGarminSession: (...args: unknown[]) => mockUpsertGarminSession(...args),
   markGarminConnectionActive: (...args: unknown[]) => mockMarkGarminConnectionActive(...args),
+  markGarminConnectionMfaPending: (...args: unknown[]) => mockMarkGarminConnectionMfaPending(...args),
   clearGarminSession: (...args: unknown[]) => mockClearGarminSession(...args),
   hasActiveGarminConnection: (...args: unknown[]) => mockHasActiveGarminConnection(...args),
+  getGarminConnectionRecord: (...args: unknown[]) => mockGetGarminConnectionRecord(...args),
 }));
 
 vi.mock('../../src/services/database', () => ({
@@ -116,13 +120,16 @@ describe('Garmin auth routes', () => {
     clearTenantScopeAnomaliesForTests();
     mockUpsertGarminSession.mockReset();
     mockMarkGarminConnectionActive.mockReset();
+    mockMarkGarminConnectionMfaPending.mockReset();
     mockClearGarminSession.mockReset();
     mockHasActiveGarminConnection.mockReset();
+    mockGetGarminConnectionRecord.mockReset();
     mockDbGet.mockReset();
     mockDbRun.mockReset();
     mockStartGarminInteractiveLogin.mockReset();
     mockVerifyGarminInteractiveLogin.mockReset();
     mockHasActiveGarminConnection.mockReturnValue(true);
+    mockGetGarminConnectionRecord.mockReturnValue(null);
     mockStartGarminInteractiveLogin.mockResolvedValue({
       mfaRequired: false,
       connected: true,
@@ -136,16 +143,11 @@ describe('Garmin auth routes', () => {
   });
 
   it('returns the manual reauth flow contract without triggering login', async () => {
-    mockDbGet.mockImplementation((sql: string) => {
-      if (sql.includes('SELECT garmin_email, status, last_refresh, last_used')) {
-        return {
-          garmin_email: 'athlete@example.com',
-          status: 'needs_reauth',
-          last_refresh: '2026-04-14T08:00:00Z',
-          last_used: '2026-04-14T08:05:00Z',
-        };
-      }
-      return undefined;
+    mockGetGarminConnectionRecord.mockReturnValue({
+      garminEmail: 'athlete@example.com',
+      status: 'needs_reauth',
+      lastRefresh: '2026-04-14T08:00:00Z',
+      lastUsed: '2026-04-14T08:05:00Z',
     });
 
     const res = await dispatch('POST', '/reauth', {});
@@ -226,7 +228,7 @@ describe('Garmin auth routes', () => {
       connected: false,
       status: 'mfa_pending',
     });
-    expect(mockDbRun).toHaveBeenCalledWith(expect.stringContaining('INSERT INTO garmin_user_tokens'), 12, 'athlete@example.com');
+    expect(mockMarkGarminConnectionMfaPending).toHaveBeenCalledWith(12, 'athlete@example.com');
     expect(mockUpsertGarminSession).not.toHaveBeenCalled();
     expect(mockMarkGarminConnectionActive).not.toHaveBeenCalled();
   });
@@ -249,16 +251,11 @@ describe('Garmin auth routes', () => {
   });
 
   it('surfaces a reauth endpoint when status is needs_reauth', async () => {
-    mockDbGet.mockImplementation((sql: string) => {
-      if (sql.includes('SELECT garmin_email, status, last_refresh, last_used')) {
-        return {
-          garmin_email: 'athlete@example.com',
-          status: 'needs_reauth',
-          last_refresh: '2026-04-14T08:00:00Z',
-          last_used: '2026-04-14T08:05:00Z',
-        };
-      }
-      return undefined;
+    mockGetGarminConnectionRecord.mockReturnValue({
+      garminEmail: 'athlete@example.com',
+      status: 'needs_reauth',
+      lastRefresh: '2026-04-14T08:00:00Z',
+      lastUsed: '2026-04-14T08:05:00Z',
     });
 
     const res = await dispatch('GET', '/status');
@@ -271,16 +268,11 @@ describe('Garmin auth routes', () => {
 
   it('does not report connected when a row is active but no Garmin session material exists', async () => {
     mockHasActiveGarminConnection.mockReturnValue(false);
-    mockDbGet.mockImplementation((sql: string) => {
-      if (sql.includes('SELECT garmin_email, status, last_refresh, last_used')) {
-        return {
-          garmin_email: 'athlete@example.com',
-          status: 'active',
-          last_refresh: '2026-04-14T08:00:00Z',
-          last_used: '2026-04-14T08:05:00Z',
-        };
-      }
-      return undefined;
+    mockGetGarminConnectionRecord.mockReturnValue({
+      garminEmail: 'athlete@example.com',
+      status: 'active',
+      lastRefresh: '2026-04-14T08:00:00Z',
+      lastUsed: '2026-04-14T08:05:00Z',
     });
 
     const res = await dispatch('GET', '/status');
@@ -310,11 +302,11 @@ describe('Garmin auth routes', () => {
   });
 
   it('persists Garmin session tokens only after interactive MFA verification succeeds', async () => {
-    mockDbGet.mockImplementation((sql: string) => {
-      if (sql.includes('SELECT garmin_email FROM garmin_user_tokens')) {
-        return { garmin_email: 'athlete@example.com' };
-      }
-      return undefined;
+    mockGetGarminConnectionRecord.mockReturnValue({
+      garminEmail: 'athlete@example.com',
+      status: 'mfa_pending',
+      lastRefresh: null,
+      lastUsed: null,
     });
     mockVerifyGarminInteractiveLogin.mockResolvedValueOnce({
       email: 'athlete@example.com',
@@ -343,11 +335,11 @@ describe('Garmin auth routes', () => {
 
   it('fails honestly when MFA verification does not persist a readable Garmin session', async () => {
     mockHasActiveGarminConnection.mockReturnValue(false);
-    mockDbGet.mockImplementation((sql: string) => {
-      if (sql.includes('SELECT garmin_email FROM garmin_user_tokens')) {
-        return { garmin_email: 'athlete@example.com' };
-      }
-      return undefined;
+    mockGetGarminConnectionRecord.mockReturnValue({
+      garminEmail: 'athlete@example.com',
+      status: 'mfa_pending',
+      lastRefresh: null,
+      lastUsed: null,
     });
     mockVerifyGarminInteractiveLogin.mockResolvedValueOnce({
       email: 'athlete@example.com',
@@ -366,11 +358,11 @@ describe('Garmin auth routes', () => {
   });
 
   it('sanitizes verify failures instead of leaking Garmin MFA internals', async () => {
-    mockDbGet.mockImplementation((sql: string) => {
-      if (sql.includes('SELECT garmin_email FROM garmin_user_tokens')) {
-        return { garmin_email: 'athlete@example.com' };
-      }
-      return undefined;
+    mockGetGarminConnectionRecord.mockReturnValue({
+      garminEmail: 'athlete@example.com',
+      status: 'mfa_pending',
+      lastRefresh: null,
+      lastUsed: null,
     });
     mockVerifyGarminInteractiveLogin.mockRejectedValueOnce(
       Object.assign(new Error('garmin verify internal ticket trace'), {

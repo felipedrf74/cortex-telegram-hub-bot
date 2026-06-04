@@ -15,6 +15,21 @@ function applyMinimalConfigEnv() {
   vi.stubEnv('STAGING', 'false');
 }
 
+function applySafeProductionEnv() {
+  vi.stubEnv('NODE_ENV', 'production');
+  vi.stubEnv('STAGING', 'false');
+  vi.stubEnv('TELEGRAM_BOT_TOKEN', 'prod-token');
+  vi.stubEnv('TELEGRAM_ALLOWED_USER_IDS', '123456');
+  vi.stubEnv('FINANCE_ENCRYPTION_KEY', 'prod-finance-key-at-least-32-chars');
+  vi.stubEnv('BACKUP_ENABLED', 'true');
+  vi.stubEnv('BACKUP_ENCRYPT', 'true');
+  vi.stubEnv('BACKUP_KEY', 'prod-backup-key-at-least-32-chars');
+  vi.stubEnv('NOTIFICATION_DELIVERY_MODE', 'apns');
+  vi.stubEnv('APNS_ENABLED', 'false');
+  vi.stubEnv('OPERATOR_ALERT_WEBHOOK_URL', 'https://example.test/operator-alerts');
+  vi.stubEnv('SENTRY_DSN', 'https://public@example.test/1');
+}
+
 describe('runtime config validation', () => {
   beforeEach(() => {
     process.env = { ...ORIGINAL_ENV };
@@ -81,8 +96,7 @@ describe('runtime config validation', () => {
   });
 
   it('fails fast when production tries to boot with PAYWALL_ENABLED=false', async () => {
-    vi.stubEnv('NODE_ENV', 'production');
-    vi.stubEnv('STAGING', 'false');
+    applySafeProductionEnv();
     vi.stubEnv('PAYWALL_ENABLED', 'false');
 
     await expect(loadConfigFresh()).rejects.toThrow(
@@ -99,6 +113,73 @@ describe('runtime config validation', () => {
 
     expect(config.billing.paywallEnabled).toBe(false);
     expect(config.billing.allowUnsafePaywallBypass).toBe(true);
+  });
+
+  it('fails fast in production when finance encryption is enabled without FINANCE_ENCRYPTION_KEY', async () => {
+    applySafeProductionEnv();
+    vi.stubEnv('FINANCE_ENCRYPTION_ENABLED', 'true');
+    vi.stubEnv('FINANCE_ENCRYPTION_KEY', '');
+
+    await expect(loadConfigFresh()).rejects.toThrow(
+      'FINANCE_ENCRYPTION_KEY is required when FINANCE_ENCRYPTION_ENABLED=true in production.',
+    );
+  });
+
+  it('fails fast in production when database backups are not encrypted', async () => {
+    applySafeProductionEnv();
+    vi.stubEnv('BACKUP_ENABLED', 'true');
+    vi.stubEnv('BACKUP_ENCRYPT', 'false');
+    vi.stubEnv('BACKUP_KEY', '');
+
+    await expect(loadConfigFresh()).rejects.toThrow(
+      'BACKUP_ENABLED=true requires BACKUP_ENCRYPT=true and BACKUP_KEY in production.',
+    );
+  });
+
+  it('requires an explicit apns notification delivery mode when production APNs credentials are configured', async () => {
+    applySafeProductionEnv();
+    vi.stubEnv('NOTIFICATION_DELIVERY_MODE', '');
+    vi.stubEnv('APNS_ENABLED', 'true');
+    vi.stubEnv('APNS_TEAM_ID', 'TEAMID1234');
+    vi.stubEnv('APNS_KEY_ID', 'KEYID12345');
+    vi.stubEnv('APNS_AUTH_KEY_P8', '-----BEGIN PRIVATE KEY-----\\ntest\\n-----END PRIVATE KEY-----');
+    vi.stubEnv('APNS_BUNDLE_ID', 'me.nexushub.app');
+
+    await expect(loadConfigFresh()).rejects.toThrow(
+      'NOTIFICATION_DELIVERY_MODE=apns is required in production when APNs credentials are configured.',
+    );
+  });
+
+  it('defaults notification delivery to mock outside production and accepts explicit apns in production', async () => {
+    vi.stubEnv('NOTIFICATION_DELIVERY_MODE', '');
+
+    const local = await loadConfigFresh();
+    expect(local.config.notificationDelivery.mode).toBe('mock');
+
+    applySafeProductionEnv();
+    const production = await loadConfigFresh();
+    expect(production.config.notificationDelivery.mode).toBe('apns');
+  });
+
+  it('fails fast on invalid notification delivery modes', async () => {
+    vi.stubEnv('NOTIFICATION_DELIVERY_MODE', 'invalid-mode');
+
+    await expect(loadConfigFresh()).rejects.toThrow(
+      'Invalid NOTIFICATION_DELIVERY_MODE="invalid-mode". Expected one of: mock, apns.',
+    );
+  });
+
+  it('warns loudly in production when operator alert webhook or Sentry DSN is missing', async () => {
+    applySafeProductionEnv();
+    vi.stubEnv('OPERATOR_ALERT_WEBHOOK_URL', '');
+    vi.stubEnv('SENTRY_DSN', '');
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    await loadConfigFresh();
+
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('OPERATOR_ALERT_WEBHOOK_URL is not set'));
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('SENTRY_DSN is not set'));
+    warnSpy.mockRestore();
   });
 
   it('allows Stripe Nexus Points to stay disabled without point price ids', async () => {

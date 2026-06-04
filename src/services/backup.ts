@@ -24,6 +24,18 @@ const BACKUP_ALGORITHM = 'aes-256-gcm';
 const BACKUP_IV_LENGTH = 16;
 const BACKUP_TAG_LENGTH = 16;
 
+export function assertBackupEncryptionConfiguredForRuntime(): void {
+  if (
+    process.env.NODE_ENV === 'production'
+    && config.backup.enabled
+    && (!config.backup.encrypt || !config.backup.encryptionKey)
+  ) {
+    throw new Error(
+      'BACKUP_ENABLED=true requires BACKUP_ENCRYPT=true and BACKUP_KEY in production. Generate BACKUP_KEY with: openssl rand -hex 32',
+    );
+  }
+}
+
 // ─── Main backup function ───────────────────────────────────────────
 
 /**
@@ -37,6 +49,8 @@ const BACKUP_TAG_LENGTH = 16;
  * Returns the path to the created backup file.
  */
 export async function runDatabaseBackup(): Promise<string> {
+  assertBackupEncryptionConfiguredForRuntime();
+
   const dbPath = path.resolve(config.app.databasePath);
   if (!fs.existsSync(dbPath)) {
     throw new Error(`Database file not found: ${dbPath}`);
@@ -95,10 +109,18 @@ export async function runDatabaseBackup(): Promise<string> {
   // still returns the local path unchanged. See uploadBackupToDrive() for
   // retention + error handling. Audit ref: Weeks 2-4 off-site backup.
   try {
-    const { uploadBackupToDrive, isGoogleDriveEnabled } = require('./google-drive');
-    const { getOwnerBootstrapUserRefs } = require('./user-service');
+    const { uploadBackupToDrive, isGoogleDriveEnabled } = await import('./google-drive');
+    const { getOwnerBootstrapUserRefs } = await import('./user-service');
     const ownerUserId = getOwnerBootstrapUserRefs()[0];
     if (ownerUserId != null && isGoogleDriveEnabled(ownerUserId)) {
+      if (!finalPath.endsWith('.enc')) {
+        logger.warn(
+          { backup: path.basename(finalPath) },
+          'Refusing to upload unencrypted database backup to Google Drive',
+        );
+        return finalPath;
+      }
+
       const driveFileId = await uploadBackupToDrive(ownerUserId, finalPath, path.basename(finalPath));
       if (driveFileId) {
         logger.info(
@@ -111,7 +133,11 @@ export async function runDatabaseBackup(): Promise<string> {
         );
       }
     } else {
-      logger.debug('Google Drive not enabled — backup is local-only');
+      logger.warn(
+        config.backup.encrypt
+          ? 'Google Drive not enabled; encrypted backup is local-only'
+          : 'Google Drive not enabled; unencrypted backup is local-only',
+      );
     }
   } catch (err: any) {
     // Never fail the whole backup flow because Drive failed. Local backup

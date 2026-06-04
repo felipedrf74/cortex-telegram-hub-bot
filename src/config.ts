@@ -14,8 +14,10 @@ dotenv.config({
 const IS_STAGING = process.env.STAGING === 'true' || process.env.NODE_ENV === 'staging';
 const IS_TEST = process.env.NODE_ENV === 'test';
 const IS_DEVELOPMENT = !process.env.NODE_ENV || process.env.NODE_ENV === 'development';
+const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 const PAYWALL_ENABLED = (process.env.PAYWALL_ENABLED ?? 'true') !== 'false';
 const PAYWALL_BYPASS_ALLOWED = IS_TEST || IS_DEVELOPMENT || IS_STAGING;
+export type NotificationDeliveryMode = 'mock' | 'apns';
 
 function required(key: string): string {
   const value = process.env[key];
@@ -76,6 +78,21 @@ function optionalFloat(key: string, fallback: number, options: NumericEnvOptions
     return fallback;
   }
   return validateNumericEnv(key, raw, Number.parseFloat(raw), options);
+}
+
+function parseNotificationDeliveryMode(raw = process.env.NOTIFICATION_DELIVERY_MODE): NotificationDeliveryMode {
+  const normalized = (raw || '').trim().toLowerCase();
+  if (!normalized) return process.env.NODE_ENV === 'production' ? 'apns' : 'mock';
+  if (normalized === 'mock' || normalized === 'apns') return normalized;
+  throw new Error(
+    `Invalid NOTIFICATION_DELIVERY_MODE="${raw}". Expected one of: mock, apns.`,
+  );
+}
+
+function warnProductionLaunch(message: string): void {
+  if (IS_PRODUCTION && message) {
+    console.warn(`[production launch warning] ${message}`);
+  }
 }
 
 export const config = {
@@ -632,6 +649,11 @@ export const config = {
     // 'production' → api.push.apple.com, 'sandbox' → api.sandbox.push.apple.com
     environment: (process.env.APNS_ENVIRONMENT || 'production') as 'production' | 'sandbox',
   },
+  notificationDelivery: {
+    get mode(): NotificationDeliveryMode {
+      return parseNotificationDeliveryMode();
+    },
+  },
   // ── Stripe Billing ────────────────────────────────────────────────
   // Web checkout: users subscribe at nexushub.me, Stripe webhook writes
   // to the subscriptions table. iOS reads status via GET /billing/status.
@@ -695,6 +717,52 @@ if (!config.billing.paywallEnabled && !config.billing.allowUnsafePaywallBypass) 
     'PAYWALL_ENABLED=false is only allowed in test, development, or staging environments. Refusing unsafe startup.',
   );
 }
+
+if (IS_PRODUCTION && config.financeEncryption.enabled && !config.financeEncryption.masterKey) {
+  throw new Error(
+    'FINANCE_ENCRYPTION_KEY is required when FINANCE_ENCRYPTION_ENABLED=true in production. Generate one with: openssl rand -hex 32',
+  );
+}
+
+if (IS_PRODUCTION && config.backup.enabled && (!config.backup.encrypt || !config.backup.encryptionKey)) {
+  throw new Error(
+    'BACKUP_ENABLED=true requires BACKUP_ENCRYPT=true and BACKUP_KEY in production. Generate BACKUP_KEY with: openssl rand -hex 32',
+  );
+}
+
+const apnsCredentialsConfigured = Boolean(
+  config.apns.enabled
+  && config.apns.teamId
+  && config.apns.keyId
+  && config.apns.authKey
+  && config.apns.bundleId,
+);
+const resolvedNotificationDeliveryMode = config.notificationDelivery.mode;
+if (
+  IS_PRODUCTION
+  && apnsCredentialsConfigured
+  && (process.env.NOTIFICATION_DELIVERY_MODE || '').trim() === ''
+) {
+  throw new Error(
+    'NOTIFICATION_DELIVERY_MODE=apns is required in production when APNs credentials are configured.',
+  );
+}
+if (IS_PRODUCTION && apnsCredentialsConfigured && resolvedNotificationDeliveryMode !== 'apns') {
+  throw new Error(
+    'NOTIFICATION_DELIVERY_MODE=apns is required in production when APNs credentials are configured.',
+  );
+}
+
+warnProductionLaunch(
+  !process.env.OPERATOR_ALERT_WEBHOOK_URL
+    ? 'OPERATOR_ALERT_WEBHOOK_URL is not set; operator alerts will be persisted but not delivered to the on-call webhook.'
+    : '',
+);
+warnProductionLaunch(
+  !config.sentry.dsn
+    ? 'SENTRY_DSN is not set; production error reporting will rely on local logs only.'
+    : '',
+);
 
 // Fail-fast: iOS API enabled without a proper JWT secret is a security risk
 if (config.ios.enabled && !config.ios.jwtSecret) {

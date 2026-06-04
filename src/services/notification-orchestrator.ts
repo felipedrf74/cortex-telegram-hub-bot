@@ -14,6 +14,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { DateTime } from 'luxon';
 import { getDb } from './database';
 import { getPushTokensForUser, isApnsConfigured, sendPushNotification } from './apns-sender';
+import { config } from '../config';
 import { logger } from '../utils/logger';
 import { isValidTenantUserId, recordTenantScopeAnomaly } from './tenant-scope-observability';
 import { emitDomainEvent, runOutboxTransaction } from './event-outbox';
@@ -1577,7 +1578,9 @@ async function attemptPushDelivery(
     return persistDeliveryAttempt(intent, notificationId, 'push', 'mock', 'blocked_missing_device_token', null, 'no_active_device_token');
   }
 
-  if (process.env.NOTIFICATION_DELIVERY_MODE !== 'apns') {
+  const deliveryMode = config.notificationDelivery?.mode
+    ?? (process.env.NOTIFICATION_DELIVERY_MODE === 'apns' ? 'apns' : 'mock');
+  if (deliveryMode !== 'apns') {
     return persistDeliveryAttempt(intent, notificationId, 'push', 'mock', 'mock_sent', 'mock', null);
   }
 

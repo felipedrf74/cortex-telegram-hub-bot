@@ -7,6 +7,9 @@ const originalEnv = {
   STAGING: process.env.STAGING,
   IOS_API_JWT_SECRET: process.env.IOS_API_JWT_SECRET,
   IOS_API_JWT_KEYS: process.env.IOS_API_JWT_KEYS,
+  FINANCE_ENCRYPTION_KEY: process.env.FINANCE_ENCRYPTION_KEY,
+  BACKUP_ENCRYPT: process.env.BACKUP_ENCRYPT,
+  BACKUP_KEY: process.env.BACKUP_KEY,
 };
 
 function restoreEnv(): void {
@@ -80,6 +83,9 @@ describe('authMiddleware: staging fixture production refusal', () => {
     delete process.env.STAGING;
     process.env.IOS_API_JWT_SECRET = 'staging-fixture-test-secret';
     delete process.env.IOS_API_JWT_KEYS;
+    process.env.FINANCE_ENCRYPTION_KEY = 'auth-middleware-prod-test-finance-key-32';
+    process.env.BACKUP_ENCRYPT = 'true';
+    process.env.BACKUP_KEY = 'auth-middleware-prod-test-backup-key-32';
   });
 
   afterEach(() => {

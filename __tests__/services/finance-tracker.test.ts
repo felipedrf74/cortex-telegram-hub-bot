@@ -8,7 +8,7 @@
  * - Tax event persistence and marking as paid
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
 import fs from 'fs';
 import path from 'path';
@@ -45,6 +45,12 @@ function applyMigrations(db: Database.Database): void {
 // ── Mocks ────────────────────────────────────────────────────────
 
 let testDb: Database.Database;
+let mockConfig = {
+  financeEncryption: {
+    enabled: true,
+    masterKey: 'test-master-key-for-finance-tests!',
+  },
+};
 
 vi.mock('../../src/services/database', () => ({
   getDb: () => testDb,
@@ -64,20 +70,16 @@ vi.mock('../../src/utils/logger', () => ({
 }));
 
 vi.mock('../../src/config', () => ({
-  config: {
-    financeEncryption: {
-      enabled: true,
-      masterKey: 'test-master-key-for-finance-tests!',
-    },
-  },
+  get config() { return mockConfig; },
 }));
 
-import { vi } from 'vitest';
 import { logger } from '../../src/utils/logger';
 import {
+  assertFinanceEncryptionConfigured,
   calculateMonthlyTax,
   calculatePortugueseMonthlyTax,
   addTransaction,
+  encryptPlaintextFinanceRows,
   getTransactions,
   deleteTransaction,
   updateTransactionCategory,
@@ -145,6 +147,12 @@ describe('calculatePortugueseMonthlyTax — Portugal IRS/IVA estimate', () => {
 
 describe('Transaction CRUD', () => {
   beforeEach(() => {
+    mockConfig = {
+      financeEncryption: {
+        enabled: true,
+        masterKey: 'test-master-key-for-finance-tests!',
+      },
+    };
     testDb = createTestDb();
     applyMigrations(testDb);
   });
@@ -169,6 +177,94 @@ describe('Transaction CRUD', () => {
       amount_cents: number;
     };
     expect(row).toEqual({ amount: 5000, amount_cents: 500000 });
+  });
+
+  it('backfills encrypted shadows for legacy plaintext finance rows', () => {
+    testDb.prepare(`
+      INSERT INTO finance_transactions (
+        user_id, tenant_id, date, category, subcategory, amount, amount_cents,
+        currency, description, receipt_ref, encrypted_amount, encrypted_description
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL)
+    `).run(
+      1,
+      1,
+      '2024-06-15',
+      'expense',
+      'medical',
+      2400,
+      240000,
+      'EUR',
+      'Private appointment',
+      null,
+    );
+    testDb.prepare(`
+      INSERT INTO finance_tax_events (
+        user_id, tenant_id, month, gross_income, deductions, taxable_income,
+        tax_due, inss_due, status, notes, encrypted_gross_income,
+        encrypted_deductions, encrypted_taxable_income, encrypted_tax_due,
+        encrypted_inss_due, encrypted_notes
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, NULL, NULL)
+    `).run(
+      1,
+      1,
+      '2024-06',
+      5000,
+      500,
+      4500,
+      800,
+      0,
+      'estimated',
+      'legacy tax note',
+    );
+
+    const result = encryptPlaintextFinanceRows();
+
+    expect(result).toMatchObject({
+      scannedTransactions: 1,
+      encryptedTransactions: 1,
+      scannedTaxEvents: 1,
+      encryptedTaxEvents: 1,
+    });
+    const txRaw = testDb.prepare(`
+      SELECT encrypted_amount, encrypted_description
+      FROM finance_transactions
+      WHERE user_id = 1
+    `).get() as { encrypted_amount: string | null; encrypted_description: string | null };
+    expect(txRaw.encrypted_amount).toMatch(/^[0-9a-f]{56,}$/i);
+    expect(txRaw.encrypted_description).toMatch(/^[0-9a-f]{56,}$/i);
+    expect(txRaw.encrypted_description).not.toContain('Private appointment');
+    expect(getTransactions(1)[0]).toMatchObject({
+      amount: 2400,
+      description: 'Private appointment',
+    });
+
+    const taxRaw = testDb.prepare(`
+      SELECT encrypted_gross_income, encrypted_notes
+      FROM finance_tax_events
+      WHERE user_id = 1
+    `).get() as { encrypted_gross_income: string | null; encrypted_notes: string | null };
+    expect(taxRaw.encrypted_gross_income).toMatch(/^[0-9a-f]{56,}$/i);
+    expect(taxRaw.encrypted_notes).toMatch(/^[0-9a-f]{56,}$/i);
+    expect(taxRaw.encrypted_notes).not.toContain('legacy tax note');
+    expect(getTaxEvents(1)[0]).toMatchObject({
+      gross_income: 5000,
+      notes: 'legacy tax note',
+    });
+  });
+
+  it('fails closed in production when finance encryption is enabled without a key', () => {
+    process.env.NODE_ENV = 'production';
+    mockConfig = {
+      financeEncryption: {
+        enabled: true,
+        masterKey: '',
+      },
+    };
+
+    expect(() => assertFinanceEncryptionConfigured()).toThrow(
+      'FINANCE_ENCRYPTION_KEY is required when FINANCE_ENCRYPTION_ENABLED=true in production.',
+    );
+    delete process.env.NODE_ENV;
   });
 
   it('writes an audit row when creating a transaction', () => {
