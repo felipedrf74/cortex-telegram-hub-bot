@@ -1,6 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Request } from 'express';
 
+const mockGetUserConnections = vi.fn();
+const mockDbGet = vi.fn();
+const mockDbAll = vi.fn(() => []);
+const mockDbRun = vi.fn();
+
 interface MockRes {
   statusCode: number;
   body: any;
@@ -88,23 +93,31 @@ describe('Connections routes', () => {
         child: vi.fn().mockReturnThis(),
       },
     }));
+    mockGetUserConnections.mockReset();
+    mockGetUserConnections.mockReturnValue([
+      {
+        provider: 'google',
+        connectedAt: '2026-04-15T09:00:00Z',
+        lastReauthedAt: '2026-04-15T09:00:00Z',
+        scopes: [
+          'https://www.googleapis.com/auth/calendar',
+          'https://www.googleapis.com/auth/gmail.readonly',
+        ],
+      },
+    ]);
+    mockDbGet.mockReset();
+    mockDbGet.mockReturnValue(undefined);
+    mockDbAll.mockClear();
+    mockDbRun.mockClear();
     vi.doMock('../../src/services/oauth-store', () => ({
-      getUserConnections: vi.fn(() => [
-        {
-          provider: 'google',
-          connectedAt: '2026-04-15T09:00:00Z',
-          lastReauthedAt: '2026-04-15T09:00:00Z',
-          scopes: [
-            'https://www.googleapis.com/auth/calendar',
-            'https://www.googleapis.com/auth/gmail.readonly',
-          ],
-        },
-      ]),
+      getUserConnections: (...args: unknown[]) => mockGetUserConnections(...args),
     }));
     vi.doMock('../../src/services/database', () => ({
       getDb: vi.fn(() => ({
         prepare: vi.fn(() => ({
-          get: vi.fn(() => undefined),
+          get: (...args: unknown[]) => mockDbGet(...args),
+          all: (...args: unknown[]) => mockDbAll(...args),
+          run: (...args: unknown[]) => mockDbRun(...args),
         })),
       })),
     }));
@@ -166,11 +179,9 @@ describe('Connections routes', () => {
   });
 
   it('returns a client-safe message when the connections resolver fails unexpectedly', async () => {
-    vi.doMock('../../src/services/oauth-store', () => ({
-      getUserConnections: vi.fn(() => {
-        throw new Error('oauth_store table missing');
-      }),
-    }));
+    mockGetUserConnections.mockImplementation(() => {
+      throw new Error('oauth_store table missing');
+    });
 
     const res = await dispatchConnections(42);
 
@@ -189,7 +200,8 @@ describe('Connections routes', () => {
       connected_at: '2026-05-02T10:00:00Z',
       updated_at: '2026-05-02T10:00:00Z',
     };
-    const get = vi.fn()
+    mockDbGet.mockReset();
+    mockDbGet
       .mockReturnValueOnce(garminRow)
       .mockReturnValueOnce({ status: 'active' })
       .mockReturnValueOnce(undefined)
@@ -198,14 +210,6 @@ describe('Connections routes', () => {
       .mockReturnValueOnce({ status: 'active' })
       .mockReturnValueOnce(undefined)
       .mockReturnValueOnce({ tokens_json: '{}' });
-    vi.doMock('../../src/services/database', () => ({
-      getDb: vi.fn(() => ({
-        prepare: vi.fn(() => ({
-          get,
-          all: vi.fn(() => []),
-        })),
-      })),
-    }));
 
     const res = await dispatchConnections(42);
     const connectionProviders = res.body.data.connections.map((connection: any) => connection.provider);
@@ -285,20 +289,12 @@ describe('Connections routes', () => {
     // the legacy `connections[]` field hides this because it only adds
     // garmin when status=active. The canonical integrations[] must surface
     // revoked as a first-class state.
-    vi.doMock('../../src/services/database', () => ({
-      getDb: vi.fn(() => ({
-        prepare: vi.fn(() => ({
-          get: vi.fn(() => ({
-            garmin_email: 'felipe@example.com',
-            status: 'needs_reauth',
-            connected_at: '2026-03-01T10:00:00Z',
-            updated_at: '2026-04-20T10:00:00Z',
-          })),
-          all: vi.fn(() => []),
-          run: vi.fn(),
-        })),
-      })),
-    }));
+    mockDbGet.mockReturnValue({
+      garmin_email: 'felipe@example.com',
+      status: 'needs_reauth',
+      connected_at: '2026-03-01T10:00:00Z',
+      updated_at: '2026-04-20T10:00:00Z',
+    });
 
     const res = await dispatchConnections(42);
     const garmin = res.body.data.integrations.find((i: any) => i.provider === 'garmin');
@@ -308,20 +304,12 @@ describe('Connections routes', () => {
   });
 
   it('reflects Garmin mfa_pending as pending in integrations[]', async () => {
-    vi.doMock('../../src/services/database', () => ({
-      getDb: vi.fn(() => ({
-        prepare: vi.fn(() => ({
-          get: vi.fn(() => ({
-            garmin_email: 'felipe@example.com',
-            status: 'mfa_pending',
-            connected_at: '2026-04-20T10:00:00Z',
-            updated_at: '2026-04-20T10:00:00Z',
-          })),
-          all: vi.fn(() => []),
-          run: vi.fn(),
-        })),
-      })),
-    }));
+    mockDbGet.mockReturnValue({
+      garmin_email: 'felipe@example.com',
+      status: 'mfa_pending',
+      connected_at: '2026-04-20T10:00:00Z',
+      updated_at: '2026-04-20T10:00:00Z',
+    });
 
     const res = await dispatchConnections(42);
     const garmin = res.body.data.integrations.find((i: any) => i.provider === 'garmin');

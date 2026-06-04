@@ -6,11 +6,13 @@ const hoisted = vi.hoisted(() => ({
 }));
 
 vi.mock('resend', () => ({
-  Resend: vi.fn(() => ({
-    emails: {
-      send: (...args: unknown[]) => hoisted.send(...args),
-    },
-  })),
+  Resend: vi.fn(function ResendMock() {
+    return {
+      emails: {
+        send: (...args: unknown[]) => hoisted.send(...args),
+      },
+    };
+  }),
 }));
 
 vi.mock('../../src/config', () => ({

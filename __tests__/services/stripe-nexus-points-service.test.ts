@@ -7,11 +7,13 @@ const hoisted = vi.hoisted(() => {
   const stripeCreate = vi.fn();
   const stripeRetrieveCharge = vi.fn();
   const stripeConstructEvent = vi.fn();
-  const stripeCtor = vi.fn(() => ({
-    checkout: { sessions: { create: stripeCreate } },
-    charges: { retrieve: stripeRetrieveCharge },
-    webhooks: { constructEvent: stripeConstructEvent },
-  }));
+  const stripeCtor = vi.fn(function StripeMock() {
+    return {
+      checkout: { sessions: { create: stripeCreate } },
+      charges: { retrieve: stripeRetrieveCharge },
+      webhooks: { constructEvent: stripeConstructEvent },
+    };
+  });
   const config = {
     stripe: {
       secretKey: 'sk_test_points',

@@ -57,9 +57,11 @@ describe('ChatCoreV2 composer-mode counter + drift', () => {
   beforeEach(() => {
     _resetComposerModeCounterForTests();
     warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => true as unknown as void);
+    warnSpy.mockClear();
   });
 
   afterEach(() => {
+    _resetComposerModeCounterForTests();
     vi.restoreAllMocks();
     vi.useRealTimers();
   });

@@ -271,7 +271,7 @@ describe('handleSecretary', () => {
 
     expect(mockCallDomain).toHaveBeenCalledWith(
       'secretary',
-      undefined,
+      [],
       'Hello',
       expect.any(String),
       undefined,
