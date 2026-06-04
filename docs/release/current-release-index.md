@@ -2,63 +2,60 @@
 
 Status: canonical
 Owner: release lead (Felipe)
-Last verified: 2026-06-03
+Last verified: 2026-06-04
 Update policy: update when the current RC identity, deploy-gate evidence, or canonical-doc cross-references change. Run engine/scripts/release-identity.sh --persist to refresh auto-generated identity fields.
 
-Date: 2026-06-03
+Date: 2026-06-04
 
 ## Current Status
 
 Active production package:
 
 - source branch: `main`
-- production HEAD: `ddb8eec4` (version-bump for 4.14.201)
-- production version: `4.14.201`
-- runtime source commits: `3aac49b4` (Training remediation implementation),
-  `fde1ad3e` (main sync), `e758d6ab` (migration renumber), and `caa81a28`
-  (staging smoke evidence)
-- latest runtime deploy commit: `ddb8eec4`; post-deploy docs-only closeout may
+- production HEAD: `6438553d` (version-bump for 4.14.202)
+- production version: `4.14.202`
+- runtime source commit: `870ca09f` (Training remediation round-3 fast-follow)
+- latest runtime deploy commit: `6438553d`; post-deploy docs-only closeout may
   sit ahead of production runtime
 - release state: `docs/release/CURRENT_RELEASE_STATE.md` (backend) and `/Users/felipedominguez/Desktop/Nexus Hub/docs/release/CURRENT_RELEASE_STATE.md` (workspace)
 - official workspace root: `/Users/felipedominguez/Desktop/Nexus Hub`
 
-Commits in this release (4.14.200 -> 4.14.201):
+Commits in this release (4.14.201 -> 4.14.202):
 
-- `3aac49b4 fix(training): harden coach plan execution`
-- `fde1ad3e Merge remote-tracking branch 'origin/main' into codex/chat_improvement_goal`
-- `e758d6ab fix(migrations): renumber training agenda cleanup`
-- `caa81a28 docs(release): add training staging smoke evidence`
-- `ddb8eec4 chore: bump version to 4.14.201 [deploy]`
+- `870ca09f fix(training): harden round 3 remediation`
+- `6438553d chore: bump version to 4.14.202 [deploy]`
 
 Scope:
 
-- Training remediation:
-  - backend plan generation, coach kernel, readiness/ACWR math, safety wiring,
-    zone calculation, sport engines, route contracts, lifecycle cleanup,
-    tenant-scoped cancellation, no-oracle ownership handling, chat
-    parser/action registry, and training skill knowledge hardening.
-  - migration `199_drop_stale_training_agenda_unique_index.sql` removes a stale
-    training agenda uniqueness hazard.
-  - iOS main `c0c3f39` hardens Training decoding, home-card sanitization,
-    low-adherence visibility, two-a-day `auto`, and plan/coach UI fallbacks.
+- Training remediation round 3:
+  - backend reflow preview/confirm and plan cancel paths now return no-oracle
+    foreign-vs-missing responses, with owner hashes retained only in server
+    audit logs.
+  - cancellation active-plan reads are tenant-scoped, acute-injury safety copy
+    is preserved, ACWR and inferred-pain route boundaries are pinned, and
+    low-adherence / WeekProtection zero-session false positives are guarded.
+  - migration 199 has DB-level index/uniqueness proof.
+  - iOS main `40a885f` enforces required plan freshness markers and keeps
+    backend-validated low-adherence cards visible during cold load.
 
 Validated through promotion:
 
-- focused backend Training suites: 11 files / 260 tests
-- backend local `npm run verify`: 815 files / 11,942 tests
+- focused backend round-3 suites: 10 files / 300 tests
+- backend local `npm run verify`: 816 files / 11,951 tests
 - staging smoke: 19/19 passed
-  (`staging-smoke-e758d6ab-20260603T202437Z.json`)
-- focused iOS Training/contract suites: 128 tests
-- full iOS helper: 1,458 XCTest tests plus 10 Swift Testing cases
+  (promote-time smoke)
+- focused iOS Training/contract suites: 107 tests
+- full iOS helper: 1,461 XCTest tests plus 10 Swift Testing cases
 - final `main` pre-push gates: typecheck, full Vitest, and build passed
-- final `main` pre-push Vitest: 815 files / 11,942 tests
-- `promote-to-prod.sh` completed cleanly for 4.14.201
+- final `main` pre-push Vitest: 816 files / 11,951 tests
+- `promote-to-prod.sh` completed cleanly for 4.14.202
 - post-deploy: PM2 `nexus-hub` and `content-engine` online
-- production status portal returned version `4.14.201`
+- production status portal returned version `4.14.202`
 - production `/public-status`: HTTP 200 `status: ok`
 
 ## Previous Production Versions On This Branch
 
+- 4.14.202 (`6438553d`) — Training remediation round-3 no-oracle, safety, docs, and iOS freshness fast-follow (source commit `870ca09f`)
 - 4.14.201 (`ddb8eec4`) — Training remediation and coach/iOS contract hardening (source commit `3aac49b4`)
 - 4.14.200 (`30285bb3`) — Decision Center execution gates + iOS local smoke harness (source commit `c7f049e1`)
 - 4.14.195 (`0682b34b`) — Training Outlook calendar default-enabled (source commit `0bae01cb`)

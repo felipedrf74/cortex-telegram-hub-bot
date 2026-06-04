@@ -2,24 +2,63 @@
 
 Status: canonical
 Owner: backend release lead (Felipe)
-Last verified: 2026-06-03
+Last verified: 2026-06-04
 Update policy: update after backend deploy or staging change. Workspace-level entry point is docs/release/CURRENT_RELEASE_STATE.md.
 
-Last updated: 2026-06-03
+Last updated: 2026-06-04
 
 ## Active Production Release
 
 - Source branch: `main`
-- Production HEAD: `ddb8eec4`
-- Production version: `4.14.201`
-- Source implementation commits before deploy bump: `3aac49b4` (Training
-  implementation), `fde1ad3e` (main sync), `e758d6ab` (migration renumber), and
-  `caa81a28` (staging smoke evidence for `e758d6ab`).
-- Latest pushed runtime deploy commit: `origin/main` includes `ddb8eec4`.
+- Production HEAD: `6438553d`
+- Production version: `4.14.202`
+- Source implementation commit before deploy bump: `870ca09f` (Training
+  remediation round-3 fast-follow).
+- Latest pushed runtime deploy commit: `origin/main` includes `6438553d`.
   Post-deploy docs-only closeout commits may sit ahead of the runtime deploy.
-- Staging remains on `4.14.200` until the next staging deploy; the promoted
+- Staging remains on `4.14.201` until the next staging deploy; the promoted
   functional code passed staging smoke before production.
 - Official workspace root: `/Users/felipedominguez/Desktop/Nexus Hub`
+
+## 2026-06-04 Training Remediation Round 3 Fast-Follow Production Promote
+
+- Scope: promoted the Training remediation round-3 fast-follow. The backend now
+  closes the residual Training reflow and cancel ownership oracles, centralizes
+  owner-id audit hashing, tenant-scopes cancellation active-plan reads, preserves
+  acute-injury safety copy after the chest-pain precedence fix, pins ACWR and
+  inferred-pain route boundaries, guards low-adherence and WeekProtection
+  zero-session surfaces, and adds DB-level proof for the stale agenda index
+  migration. iOS main now enforces required Garmin freshness markers and trusts
+  backend-validated remote low-adherence cards during cold load.
+- Production version: `4.14.202`.
+- Production deploy commit: `6438553d`.
+- Source implementation commit before deploy bump: `870ca09f`.
+- iOS main: `40a885f` (`fix(training): enforce plan freshness markers`).
+- Previous production deploy commit: `ddb8eec4` (4.14.201).
+- Staging deploy passed from `main` before production; promote-time staging
+  smoke passed **19/19** before production was touched.
+- Release validation passed before production: focused backend round-3 suites
+  passed **10 files / 300 tests**; backend `npm run verify` passed typecheck,
+  science-policy pin check, and full Vitest with **816 test files / 11,951
+  tests**; focused iOS Training/contract suites passed **107 tests**; the full
+  iOS helper `scripts/ios-single-simulator-test.sh` passed **1,461 XCTest
+  tests** plus **10 Swift Testing cases**; and the final `main` pre-push gate
+  repeated typecheck, full Vitest with **816 test files / 11,951 tests**, and
+  build before pushing `6438553d`.
+- Production promotion completed through `./scripts/promote-to-prod.sh`:
+  production backup included `bot.db`, dependencies were installed, owner
+  bootstrap preflight passed, native modules rebuilt for system Node, and PM2
+  restarted `content-engine` and `nexus-hub`.
+- Production health passed after deploy: content engine returned `status: ok`,
+  the authenticated status portal returned version `4.14.202`, the bot was
+  online, and PM2 showed both production services online.
+- Known caveats: staging remains on `4.14.201` after the production version
+  bump; the promoted functional code was smoke-tested on staging before
+  production. Moderate-injury `injury_safe_swap` remains intentionally deferred
+  on the Training today read model pending product approval. No signed
+  TestFlight upload, production APNs proof, physical HealthKit/Apple Watch
+  proof, Garmin provider-state proof, or real two-account device walkthrough was
+  part of this production promote.
 
 ## 2026-06-03 Training Remediation Production Promote
 

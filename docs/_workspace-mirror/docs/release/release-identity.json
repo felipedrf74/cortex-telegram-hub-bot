@@ -1,17 +1,17 @@
 {
-  "generatedAt": "2026-06-03T20:55:20Z",
+  "generatedAt": "2026-06-04T01:20:23Z",
   "backend": {
     "path": "/Users/felipedominguez/Desktop/Nexus Hub/worktrees/confirmation-main-promote-20260523",
     "branch": "main",
-    "commit": "6f3487cd",
+    "commit": "6438553d",
     "dirtyState": "clean",
-    "packageVersion": "4.14.201",
+    "packageVersion": "4.14.202",
     "migrationCount": "190"
   },
   "ios": {
     "path": "/Users/felipedominguez/Desktop/Nexus Hub IOS/Nexus Hub",
     "branch": "main",
-    "commit": "c0c3f39",
+    "commit": "40a885f",
     "dirtyState": "clean"
   }
 }

@@ -5,7 +5,7 @@
 
 | Area | Path | Branch | Commit | Dirty state | Version | Migrations |
 | --- | --- | --- | --- | --- | --- | --- |
-| Backend | `/Users/felipedominguez/Desktop/Nexus Hub/worktrees/confirmation-main-promote-20260523` | `main` | `6f3487cd` | `clean` | `4.14.201` | `190` |
-| iOS | `/Users/felipedominguez/Desktop/Nexus Hub IOS/Nexus Hub` | `main` | `c0c3f39` | `clean` | n/a | n/a |
+| Backend | `/Users/felipedominguez/Desktop/Nexus Hub/worktrees/confirmation-main-promote-20260523` | `main` | `6438553d` | `clean` | `4.14.202` | `190` |
+| iOS | `/Users/felipedominguez/Desktop/Nexus Hub IOS/Nexus Hub` | `main` | `40a885f` | `clean` | n/a | n/a |
 
-Generated at: `2026-06-03T20:55:20Z`
+Generated at: `2026-06-04T01:20:23Z`
