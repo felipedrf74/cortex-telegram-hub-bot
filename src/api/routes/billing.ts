@@ -21,6 +21,7 @@ import {
   createPortalSession,
   handleAppleTransaction,
   claimWebsiteStripeSubscriptionForUser,
+  isAppleTransactionAlreadyClaimedError,
 } from '../../services/stripe-service';
 import { verifyAppleJws } from '../../services/apple-jws-verifier';
 import { safeCheckoutUrl } from './public-billing';
@@ -429,7 +430,20 @@ export function billingRoutes(): Router {
         return;
       }
 
-      handleAppleTransaction(userId, String(originalTransactionId), productId, expiresDate);
+      try {
+        handleAppleTransaction(userId, String(originalTransactionId), productId, expiresDate);
+      } catch (err) {
+        if (isAppleTransactionAlreadyClaimedError(err)) {
+          sendError(
+            res,
+            'APPLE_TRANSACTION_ALREADY_CLAIMED',
+            'This Apple subscription is already attached to another Nexus Hub account.',
+            409,
+          );
+          return;
+        }
+        throw err;
+      }
 
       logger.info({
         userId,

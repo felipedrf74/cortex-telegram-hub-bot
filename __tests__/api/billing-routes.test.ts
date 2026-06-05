@@ -99,7 +99,7 @@ vi.mock('../../src/services/audit-trail', () => ({
 
 vi.mock('../../src/services/legal-consent', () => ({
   validateCurrentLegalAcceptance: (input: any) => {
-    if (!input?.accepted || input.termsVersion !== '2026-06-04' || input.privacyVersion !== '2026-06-04') {
+    if (!input?.accepted || input.termsVersion !== '2026-06-05' || input.privacyVersion !== '2026-06-05') {
       return { ok: false, reason: 'acceptedLegal is not current' };
     }
     return { ok: true, value: input };
@@ -190,8 +190,8 @@ function buildFakeJws(payload: Record<string, unknown>): string {
 function legalAcceptance() {
   return {
     accepted: true,
-    termsVersion: '2026-06-04',
-    privacyVersion: '2026-06-04',
+    termsVersion: '2026-06-05',
+    privacyVersion: '2026-06-05',
   };
 }
 
@@ -321,6 +321,30 @@ describe('billing routes', () => {
     expect(res.body.error.code).toBe('VERIFICATION_FAILED');
     expect(res.body.error.message).toBe('Failed to verify Apple transaction');
     expect(JSON.stringify(res.body)).not.toContain('sqlite write exploded');
+  });
+
+  it('rejects Apple subscription transactions already claimed by another account', async () => {
+    const claimed = new Error('APPLE_TRANSACTION_ALREADY_CLAIMED');
+    claimed.name = 'AppleTransactionAlreadyClaimedError';
+    mockHandleAppleTransaction.mockImplementationOnce(() => {
+      throw claimed;
+    });
+
+    const jwsTransaction = buildFakeJws({
+      bundleId: 'me.nexushub.app',
+      productId: 'me.nexushub.pro.monthly',
+      transactionId: '2000000123456792',
+      originalTransactionId: '2000000123456792',
+      environment: 'Production',
+      expiresDate: Date.now() + 7 * 86400000,
+    });
+
+    const res = await dispatch('POST', '/apple-verify', { jwsTransaction }, 99);
+
+    expect(res.statusCode).toBe(409);
+    expect(res.body.ok).toBe(false);
+    expect(res.body.error.code).toBe('APPLE_TRANSACTION_ALREADY_CLAIMED');
+    expect(res.body.error.message).toContain('already attached');
   });
 
   it('returns Nexus Points availability in billing status', async () => {

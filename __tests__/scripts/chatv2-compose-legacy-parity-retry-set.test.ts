@@ -16,6 +16,8 @@ import {
 
 const execFileAsync = promisify(execFile);
 const repoRoot = path.resolve(__dirname, '../..');
+const CLI_PROCESS_TIMEOUT_MS = 30_000;
+const CLI_TEST_TIMEOUT_MS = CLI_PROCESS_TIMEOUT_MS + 15_000;
 
 describe('chatv2-compose-legacy-parity-retry-set CLI', () => {
   it('composes one matched comparable row per frozen sample while keeping committed rows HMAC-only', async () => {
@@ -45,7 +47,7 @@ describe('chatv2-compose-legacy-parity-retry-set CLI', () => {
       ], {
         cwd: repoRoot,
         env: { ...process.env, CHAT_V2_EVIDENCE_HMAC_SECRET: 'test-secret' },
-        timeout: 30000,
+        timeout: CLI_PROCESS_TIMEOUT_MS,
       });
 
       const result = JSON.parse(stdout) as { rows: number; warning: string };
@@ -95,7 +97,7 @@ describe('chatv2-compose-legacy-parity-retry-set CLI', () => {
       rmSync(tempDir, { recursive: true, force: true });
       rmSync(localReviewDir, { recursive: true, force: true });
     }
-  });
+  }, CLI_TEST_TIMEOUT_MS);
 
   it('requires the raw review artifact to be explicitly written under .local', async () => {
     const tempDir = mkdtempSync(path.join(tmpdir(), 'chatv2-compose-parity-'));
@@ -118,7 +120,7 @@ describe('chatv2-compose-legacy-parity-retry-set CLI', () => {
       ], {
         cwd: repoRoot,
         env: { ...process.env, CHAT_V2_EVIDENCE_HMAC_SECRET: 'test-secret' },
-        timeout: 30000,
+        timeout: CLI_PROCESS_TIMEOUT_MS,
       })).rejects.toMatchObject({
         stderr: expect.stringContaining('missing_raw_review_artifact_path'),
       });
@@ -133,14 +135,14 @@ describe('chatv2-compose-legacy-parity-retry-set CLI', () => {
       ], {
         cwd: repoRoot,
         env: { ...process.env, CHAT_V2_EVIDENCE_HMAC_SECRET: 'test-secret' },
-        timeout: 30000,
+        timeout: CLI_PROCESS_TIMEOUT_MS,
       })).rejects.toMatchObject({
         stderr: expect.stringContaining('raw_review_artifact_must_be_under_dot_local'),
       });
     } finally {
       rmSync(tempDir, { recursive: true, force: true });
     }
-  });
+  }, CLI_TEST_TIMEOUT_MS);
 
   it('rejects source runs with a different sample-HMAC set', async () => {
     const tempDir = mkdtempSync(path.join(tmpdir(), 'chatv2-compose-parity-'));
@@ -165,7 +167,7 @@ describe('chatv2-compose-legacy-parity-retry-set CLI', () => {
       ], {
         cwd: repoRoot,
         env: { ...process.env, CHAT_V2_EVIDENCE_HMAC_SECRET: 'test-secret' },
-        timeout: 30000,
+        timeout: CLI_PROCESS_TIMEOUT_MS,
       })).rejects.toMatchObject({
         stderr: expect.stringContaining('source_sample_hmac_set_mismatch'),
       });
@@ -173,7 +175,7 @@ describe('chatv2-compose-legacy-parity-retry-set CLI', () => {
       rmSync(tempDir, { recursive: true, force: true });
       rmSync(localReviewDir, { recursive: true, force: true });
     }
-  });
+  }, CLI_TEST_TIMEOUT_MS);
 
   it('rejects a retry set when any frozen sample never has a comparable match', async () => {
     const tempDir = mkdtempSync(path.join(tmpdir(), 'chatv2-compose-parity-'));
@@ -200,7 +202,7 @@ describe('chatv2-compose-legacy-parity-retry-set CLI', () => {
       ], {
         cwd: repoRoot,
         env: { ...process.env, CHAT_V2_EVIDENCE_HMAC_SECRET: 'test-secret' },
-        timeout: 30000,
+        timeout: CLI_PROCESS_TIMEOUT_MS,
       })).rejects.toMatchObject({
         stderr: expect.stringContaining('missing_comparable_matched_sample'),
       });
@@ -208,7 +210,7 @@ describe('chatv2-compose-legacy-parity-retry-set CLI', () => {
       rmSync(tempDir, { recursive: true, force: true });
       rmSync(localReviewDir, { recursive: true, force: true });
     }
-  });
+  }, CLI_TEST_TIMEOUT_MS);
 
   it('rejects retry sources with different fixture or isolation metadata', async () => {
     const tempDir = mkdtempSync(path.join(tmpdir(), 'chatv2-compose-parity-'));
@@ -235,7 +237,7 @@ describe('chatv2-compose-legacy-parity-retry-set CLI', () => {
       ], {
         cwd: repoRoot,
         env: { ...process.env, CHAT_V2_EVIDENCE_HMAC_SECRET: 'test-secret' },
-        timeout: 30000,
+        timeout: CLI_PROCESS_TIMEOUT_MS,
       })).rejects.toMatchObject({
         stderr: expect.stringContaining('source_manifest_mismatch:isolatePrompts'),
       });
@@ -243,7 +245,7 @@ describe('chatv2-compose-legacy-parity-retry-set CLI', () => {
       rmSync(tempDir, { recursive: true, force: true });
       rmSync(localReviewDir, { recursive: true, force: true });
     }
-  });
+  }, CLI_TEST_TIMEOUT_MS);
 });
 
 function writeSource(

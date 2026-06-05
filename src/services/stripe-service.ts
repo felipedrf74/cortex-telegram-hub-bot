@@ -686,6 +686,18 @@ export function claimWebsiteStripeSubscriptionForUser(userId: number): boolean {
 // signed JWS transaction. We decode the payload (trusting the Apple
 // certificate chain) and UPSERT to the same subscriptions table.
 
+export class AppleTransactionAlreadyClaimedError extends Error {
+  constructor(public readonly originalTransactionId: string) {
+    super('APPLE_TRANSACTION_ALREADY_CLAIMED');
+    this.name = 'AppleTransactionAlreadyClaimedError';
+  }
+}
+
+export function isAppleTransactionAlreadyClaimedError(err: unknown): err is AppleTransactionAlreadyClaimedError {
+  return err instanceof AppleTransactionAlreadyClaimedError
+    || (err instanceof Error && err.name === 'AppleTransactionAlreadyClaimedError');
+}
+
 export function handleAppleTransaction(
   userId: number,
   originalTransactionId: string,
@@ -695,6 +707,23 @@ export function handleAppleTransaction(
   const { plan, period } = resolveAppleProduct(productId);
 
   const db = getDb();
+  const existingOwner = db.prepare(`
+    SELECT user_id
+    FROM subscriptions
+    WHERE provider = 'apple'
+      AND provider_subscription_id = ?
+      AND user_id != ?
+    LIMIT 1
+  `).get(originalTransactionId, userId) as { user_id: number } | undefined;
+
+  if (existingOwner) {
+    logger.warn(
+      { userId, existingUserId: existingOwner.user_id, originalTransactionId, productId },
+      'Apple IAP transaction rejected because it is already attached to another account',
+    );
+    throw new AppleTransactionAlreadyClaimedError(originalTransactionId);
+  }
+
   db.prepare(`
     INSERT INTO subscriptions (user_id, plan, period, status, provider, provider_subscription_id, current_period_end, updated_at)
     VALUES (?, ?, ?, 'active', 'apple', ?, ?, datetime('now'))

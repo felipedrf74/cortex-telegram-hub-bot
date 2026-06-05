@@ -71,6 +71,8 @@ type OAuthRevocationResult = {
   statusCode?: number;
 };
 
+type RevocableProvider = OAuthProvider | 'garmin';
+
 async function postFormRevocation(url: string, body: URLSearchParams): Promise<{ statusCode: number; ok: boolean }> {
   const response = await fetch(url, {
     method: 'POST',
@@ -78,6 +80,61 @@ async function postFormRevocation(url: string, body: URLSearchParams): Promise<{
     body,
   });
   return { statusCode: response.status, ok: response.ok || (response.status >= 400 && response.status < 500) };
+}
+
+async function revokeOneThirdPartyProvider(userId: number, provider: RevocableProvider): Promise<OAuthRevocationResult> {
+  if (provider === 'garmin') {
+    // The Garmin integration in this codebase has no stable public revoke
+    // endpoint; remove the durable local session and record that this
+    // provider is local-only.
+    clearGarminSession(userId);
+    return { provider, attempted: true, status: 'local_only' };
+  }
+
+  const tokens = getTokens(userId, provider);
+  if (!tokens) {
+    return { provider, attempted: false, status: 'local_only' };
+  }
+
+  try {
+    if (provider === 'google') {
+      const token = tokens.refreshToken || tokens.accessToken;
+      const result = await postFormRevocation('https://oauth2.googleapis.com/revoke', new URLSearchParams({ token }));
+      return {
+        provider,
+        attempted: true,
+        status: result.ok ? (result.statusCode >= 400 ? 'already_revoked' : 'revoked') : 'failed',
+        statusCode: result.statusCode,
+      };
+    }
+
+    if (provider === 'outlook') {
+      const tenantId = process.env.OUTLOOK_TENANT_ID || 'common';
+      const token = tokens.refreshToken || tokens.accessToken;
+      const result = await postFormRevocation(
+        `https://login.microsoftonline.com/${tenantId}/oauth2/v2.0/logout`,
+        new URLSearchParams({ token }),
+      );
+      return {
+        provider,
+        attempted: true,
+        status: result.ok ? (result.statusCode >= 400 ? 'already_revoked' : 'revoked') : 'failed',
+        statusCode: result.statusCode,
+      };
+    }
+
+    return { provider, attempted: false, status: 'local_only' };
+  } catch (err) {
+    logger.warn({ err, userId, provider }, 'OAuth revocation failed');
+    return { provider, attempted: true, status: 'failed' };
+  }
+}
+
+export async function revokeThirdPartyOAuthTokenForProvider(
+  userId: number,
+  provider: RevocableProvider,
+): Promise<OAuthRevocationResult> {
+  return revokeOneThirdPartyProvider(userId, provider);
 }
 
 /**
@@ -93,52 +150,12 @@ export async function revokeThirdPartyOAuthTokensForUser(userId: number): Promis
   const results: OAuthRevocationResult[] = [];
 
   for (const row of rows) {
-    const provider = row.provider;
-    const tokens = getTokens(userId, provider);
-    if (!tokens) continue;
-    try {
-      if (provider === 'google') {
-        const token = tokens.refreshToken || tokens.accessToken;
-        const result = await postFormRevocation('https://oauth2.googleapis.com/revoke', new URLSearchParams({ token }));
-        results.push({
-          provider,
-          attempted: true,
-          status: result.ok ? (result.statusCode >= 400 ? 'already_revoked' : 'revoked') : 'failed',
-          statusCode: result.statusCode,
-        });
-        continue;
-      }
-
-      if (provider === 'outlook') {
-        const tenantId = process.env.OUTLOOK_TENANT_ID || 'common';
-        const token = tokens.refreshToken || tokens.accessToken;
-        const result = await postFormRevocation(
-          `https://login.microsoftonline.com/${tenantId}/oauth2/v2.0/logout`,
-          new URLSearchParams({ token }),
-        );
-        results.push({
-          provider,
-          attempted: true,
-          status: result.ok ? (result.statusCode >= 400 ? 'already_revoked' : 'revoked') : 'failed',
-          statusCode: result.statusCode,
-        });
-        continue;
-      }
-
-      results.push({ provider, attempted: false, status: 'local_only' });
-    } catch (err) {
-      logger.warn({ err, userId, provider }, 'OAuth revocation failed during account deletion');
-      results.push({ provider, attempted: true, status: 'failed' });
-    }
+    results.push(await revokeOneThirdPartyProvider(userId, row.provider));
   }
 
   const garminSession = safeGet(db, 'SELECT user_id FROM garmin_sessions WHERE user_id = ?', userId);
   if (garminSession) {
-    // The Garmin integration in this codebase has no stable public revoke
-    // endpoint; remove the durable local session before deletion and record
-    // that this provider is local-only.
-    clearGarminSession(userId);
-    results.push({ provider: 'garmin', attempted: true, status: 'local_only' });
+    results.push(await revokeOneThirdPartyProvider(userId, 'garmin'));
   }
 
   return results;
@@ -274,29 +291,91 @@ export function exportAllUserData(userId: number): FullUserExport {
 // ── Full User Deletion (GDPR Article 17 — right to erasure) ────────
 
 export const ACCOUNT_DELETION_TABLES: Array<{ table: string; column: string }> = [
+  { table: 'messages', column: 'user_id' },
   { table: 'conversations', column: 'user_id' },
   { table: 'todos', column: 'user_id' },
+  { table: 'native_tasks', column: 'user_id' },
+  { table: 'native_task_lists', column: 'user_id' },
   { table: 'reminders', column: 'user_id' },
   { table: 'notes', column: 'user_id' },
   { table: 'saved_ideas', column: 'user_id' },
   { table: 'shared_memory', column: 'user_id' },
+  { table: 'apple_health_data', column: 'user_id' },
+  { table: 'readiness_scores', column: 'user_id' },
+  { table: 'training_completions', column: 'user_id' },
+  { table: 'fitness_training_plans', column: 'user_id' },
   { table: 'finance_transactions', column: 'user_id' },
   { table: 'finance_tax_events', column: 'user_id' },
+  { table: 'invoice_filings', column: 'user_id' },
   { table: 'user_encryption_meta', column: 'user_id' },
   { table: 'onboarding_sessions', column: 'user_id' },
   { table: 'user_profiles', column: 'user_id' },
+  { table: 'ios_devices', column: 'user_id' },
   { table: 'notification_device_tokens', column: 'user_id' },
   { table: 'garmin_sessions', column: 'user_id' },
   { table: 'garmin_user_tokens', column: 'user_id' },
   { table: 'agent_signals', column: 'user_id' },
   { table: 'user_oauth_tokens', column: 'user_id' },
+  { table: 'oauth_ios_nonce_sessions', column: 'user_id' },
   { table: 'user_skill_overrides', column: 'user_id' },
   { table: 'api_usage', column: 'user_id' },
   { table: 'chat_action_runs', column: 'user_id' },
   { table: 'chat_pending_actions', column: 'user_id' },
   { table: 'chat_action_telemetry', column: 'user_id' },
   { table: 'user_legal_consents', column: 'user_id' },
+  { table: 'report_documents', column: 'user_id' },
+  { table: 'push_preferences', column: 'user_id' },
+  { table: 'content_notifications', column: 'user_id' },
+  { table: 'content_scripts', column: 'user_id' },
+  { table: 'content_performance', column: 'user_id' },
+  { table: 'content_learned_patterns', column: 'user_id' },
+  { table: 'content_pipeline', column: 'user_id' },
+  { table: 'content_topic_feedback', column: 'user_id' },
+  { table: 'content_topics', column: 'user_id' },
+  { table: 'content_knowledge', column: 'user_id' },
+  { table: 'content_ref_channels', column: 'user_id' },
+  { table: 'book_library', column: 'user_id' },
+  { table: 'subscriptions', column: 'user_id' },
+  { table: 'stripe_web_checkouts', column: 'user_id' },
 ];
+
+const ACCOUNT_DELETION_RETAINED_TABLES = new Set([
+  'audit_trail',
+  '_migrations',
+]);
+
+function accountDeletionTablesForDb(db: any): Array<{ table: string; column: string }> {
+  const tables: Array<{ table: string; column: string }> = [];
+  const seen = new Set<string>();
+  const add = (entry: { table: string; column: string }) => {
+    const key = `${entry.table}.${entry.column}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    tables.push(entry);
+  };
+
+  for (const entry of ACCOUNT_DELETION_TABLES) add(entry);
+
+  try {
+    const rows = db.prepare(`
+      SELECT name
+      FROM sqlite_master
+      WHERE type = 'table'
+        AND name NOT LIKE 'sqlite_%'
+    `).all() as Array<{ name: string }>;
+    for (const row of rows) {
+      if (!row?.name || row.name === 'users' || ACCOUNT_DELETION_RETAINED_TABLES.has(row.name)) continue;
+      const columns = db.prepare(`PRAGMA table_info(${row.name})`).all() as Array<{ name: string }>;
+      if (columns.some((column) => column.name === 'user_id')) {
+        add({ table: row.name, column: 'user_id' });
+      }
+    }
+  } catch {
+    // Keep the seeded list usable even if schema introspection fails.
+  }
+
+  return tables;
+}
 
 export interface AccountDeletionInventory {
   userId: number;
@@ -308,7 +387,7 @@ export interface AccountDeletionInventory {
 export function getAccountDeletionInventoryForUser(userId: number): AccountDeletionInventory {
   const db = getDb();
   const deletableTables: Record<string, number> = {};
-  for (const { table, column } of ACCOUNT_DELETION_TABLES) {
+  for (const { table, column } of accountDeletionTablesForDb(db)) {
     try {
       const row = db.prepare(`SELECT COUNT(*) AS count FROM ${table} WHERE ${column} = ?`).get(userId) as { count: number };
       deletableTables[table] = row.count;
@@ -351,7 +430,7 @@ export function deleteAllUserData(userId: number): Record<string, number> {
   const counts: Record<string, number> = {};
 
   const deleteAll = db.transaction(() => {
-    for (const { table, column } of ACCOUNT_DELETION_TABLES) {
+    for (const { table, column } of accountDeletionTablesForDb(db)) {
       try {
         const result = db.prepare(`DELETE FROM ${table} WHERE ${column} = ?`).run(userId);
         counts[table] = result.changes;

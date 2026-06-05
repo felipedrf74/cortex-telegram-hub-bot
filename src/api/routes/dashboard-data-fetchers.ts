@@ -13,6 +13,7 @@ import {
 } from '../../services/outlook-calendar';
 import { getUserTimezoneById } from '../../services/user-service';
 import { getAppleHealthSleepAgendaEvents } from '../../services/health-sleep-agenda';
+import { filterCalendarEventsForTrainingScope } from '../../services/training-calendar-scope';
 
 // Phase 17 hostile-QA fix (2026-05-18): 'stale' added so the dashboard
 // can distinguish "snapshot last fetch failed; serving cached data"
@@ -240,7 +241,10 @@ async function fetchCalendarForUser(userId?: number) {
       }).map((event) => mapCalendarEvent(event, 'apple_health', zone))
     : [];
 
-  const allEvents = [...allProviderEvents, ...sleepEvents].sort((a, b) => a.start.localeCompare(b.start));
+  const visibleProviderEvents = userId
+    ? filterCalendarEventsForTrainingScope(allProviderEvents, userId)
+    : allProviderEvents;
+  const allEvents = [...visibleProviderEvents, ...sleepEvents].sort((a, b) => a.start.localeCompare(b.start));
   const localHealthSources = sleepEvents.length > 0 ? 1 : 0;
   return {
     today: allEvents.filter((event) => eventOverlapsRange(event, actualStart, actualEnd, zone)),

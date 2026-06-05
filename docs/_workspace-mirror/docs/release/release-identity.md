@@ -5,7 +5,7 @@
 
 | Area | Path | Branch | Commit | Dirty state | Version | Migrations |
 | --- | --- | --- | --- | --- | --- | --- |
-| Backend | `/Users/felipedominguez/Desktop/Nexus Hub/worktrees/confirmation-main-promote-20260523` | `main` | `6438553d` | `clean` | `4.14.202` | `190` |
-| iOS | `/Users/felipedominguez/Desktop/Nexus Hub IOS/Nexus Hub` | `main` | `40a885f` | `clean` | n/a | n/a |
+| Backend | `/Users/felipedominguez/Desktop/Nexus Hub/prelaunch-worktrees/payments-integrity` | `fix/payments-integrity` | `c5497eef` | `dirty` | `4.14.204` | `192` |
+| iOS | `/Users/felipedominguez/Desktop/Nexus Hub IOS/Nexus Hub` | `fix/payments-integrity` | `c5497eef` | `dirty` | n/a | n/a |
 
-Generated at: `2026-06-04T01:20:23Z`
+Generated at: `2026-06-04T23:51:14Z`

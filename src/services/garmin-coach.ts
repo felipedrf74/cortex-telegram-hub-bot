@@ -27,11 +27,18 @@ import { completeOneShotWithFallback } from './gemini-provider';
 import { getLastCoachState } from '../domains/domain-handler';
 import { getUserTimezoneById, isOwnerUserRef } from './user-service';
 import { getDb } from './database';
+import { appleHealthJsonSelectColumns, parseAppleHealthDataJson } from './apple-health-encryption';
 
 const client = new Anthropic({
   apiKey: config.anthropic.apiKey,
   maxRetries: 3,
 });
+
+type AppleHealthCoachRow = {
+  data_type: string;
+  data_json: string;
+  encrypted_data_json?: string | null;
+};
 
 export type CoachAnalysisMeteringActor = 'user' | 'system';
 
@@ -305,16 +312,17 @@ async function tryAppleHealthFallback(userId: number | undefined, errors: string
   try {
     const db = getDb();
     const today = new Date().toISOString().slice(0, 10);
+    const healthJsonColumns = appleHealthJsonSelectColumns(db);
 
     const rows = db.prepare(
-      'SELECT data_type, data_json FROM apple_health_data WHERE user_id = ? AND date = ?'
-    ).all(userId, today) as Array<{ data_type: string; data_json: string }>;
+      `SELECT data_type, ${healthJsonColumns} FROM apple_health_data WHERE user_id = ? AND date = ?`
+    ).all(userId, today) as AppleHealthCoachRow[];
 
     if (rows.length === 0) return null;
 
     const dataMap: Record<string, any> = {};
     for (const row of rows) {
-      try { dataMap[row.data_type] = JSON.parse(row.data_json); } catch {}
+      try { dataMap[row.data_type] = parseAppleHealthDataJson(row, userId); } catch {}
     }
 
     // Build a partial GarminCoachData from Apple Health signals

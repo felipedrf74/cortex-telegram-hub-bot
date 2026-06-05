@@ -35,15 +35,15 @@ export const SUPPORT_EMAIL = 'support@nexushub.me';
 export const CURRENT_LEGAL_DOCUMENTS: Record<LegalDocumentKey, LegalDocumentMetadata> = {
   terms: {
     key: 'terms',
-    version: '2026-06-04',
-    url: 'https://nexushub.me/terms',
+    version: '2026-06-05',
+    url: 'https://nexushub.me/termos',
     title: 'Terms of Service',
     lawyerReviewRequired: true,
   },
   privacy: {
     key: 'privacy',
-    version: '2026-06-04',
-    url: 'https://nexushub.me/privacy',
+    version: '2026-06-05',
+    url: 'https://nexushub.me/privacidade',
     title: 'Privacy Policy',
     lawyerReviewRequired: true,
   },

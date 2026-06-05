@@ -621,13 +621,19 @@ export function taskRoutes(): Router {
       const listName = await resolveTaskListName(todo, listId, (req as any).userId);
       const timezone = getUserTimezoneById(userId);
 
-      const ALLOWED_FIELDS = new Set(['title', 'body', 'importance', 'status', 'dueDateTime']);
+      const ALLOWED_FIELDS = new Set(['title', 'body', 'importance', 'status', 'dueDateTime', 'recurrence']);
       const updates: Record<string, unknown> = {};
       for (const [key, value] of Object.entries(req.body)) {
         if (ALLOWED_FIELDS.has(key)) updates[key] = value;
       }
       if (Object.prototype.hasOwnProperty.call(updates, 'dueDateTime')) {
         updates.timeZone = timezone;
+      }
+      if (Object.prototype.hasOwnProperty.call(updates, 'recurrence')) {
+        const recurrenceAnchor = typeof updates.dueDateTime === 'string' ? updates.dueDateTime : new Date();
+        updates.recurrence = updates.recurrence == null
+          ? null
+          : normalizeMicrosoftRecurrence(updates.recurrence, recurrenceAnchor);
       }
 
       const result = await todo.updateTask(listId, taskId, updates, listName);
@@ -911,6 +917,7 @@ function normalizeTaskDto(
         }))
       : null,
     createdDateTime: task.createdDateTime || null,
+    recurrence: task.recurrence || null,
     syncProvider,
   };
 }

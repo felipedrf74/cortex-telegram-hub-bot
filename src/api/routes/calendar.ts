@@ -98,6 +98,7 @@ export function calendarRoutes(): Router {
         staleSeconds: RANGE_SWR_STALE,
         refreshContext: { source: 'calendar_route', operation: 'calendar_swr_refresh', userId },
         fetchFresh: () => buildEventsPayload(start, end, userId),
+        shouldServeCached: shouldServeCalendarCache,
         send: (value, meta) => {
           sendConditionalApiSuccess(res, req, normalizeCalendarEventsPayload(value), { cached: meta.cached });
         },
@@ -573,6 +574,7 @@ export function calendarRoutes(): Router {
         staleSeconds: TODAY_SWR_STALE,
         refreshContext: { source: 'calendar_route', operation: 'calendar_swr_refresh', userId },
         fetchFresh: () => buildTodayPayload(userId),
+        shouldServeCached: shouldServeCalendarCache,
         send: (value, meta) => {
           sendConditionalApiSuccess(res, req, { ...normalizeCalendarEventsPayload(value), date: todayDateString(timezone) }, { cached: meta.cached });
         },
@@ -655,6 +657,32 @@ function calendarTodayCacheKey(userId: number | undefined, date: string): string
   return typeof userId === 'number' && userId > 0
     ? routeCacheKey('u', userId, 'calendar', 'today', date)
     : routeCacheKey('calendar', 'today', date);
+}
+
+function shouldServeCalendarCache(hit: { value: any; fresh: boolean }): boolean {
+  return !payloadContainsTrainingCalendarEvent(hit.value);
+}
+
+function payloadContainsTrainingCalendarEvent(payload: any): boolean {
+  const events = Array.isArray(payload?.events) ? payload.events : [];
+  return events.some(isTrainingCalendarEventLike);
+}
+
+function isTrainingCalendarEventLike(event: any): boolean {
+  const source = String(event?.source || '').toLowerCase();
+  if (source === 'apple_health') return false;
+  const text = [
+    event?.title,
+    event?.summary,
+    event?.category,
+    Array.isArray(event?.categories) ? event.categories.join(' ') : '',
+  ]
+    .filter(Boolean)
+    .join(' ')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase();
+  return /\b(training|workout|gym|strength|run|runner|treino|corrida|academia)\b/.test(text);
 }
 
 function calendarUserTimezone(userId: number): string {

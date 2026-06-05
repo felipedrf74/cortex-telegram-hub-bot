@@ -37,6 +37,8 @@
 
 import { logger } from '../../utils/logger';
 import { getDb } from '../database';
+import { appleHealthJsonSelectColumns, encodeAppleHealthPayload, parseAppleHealthDataJson } from '../apple-health-encryption';
+import type Database from 'better-sqlite3';
 
 interface BodyBatteryInput {
   userId: number;
@@ -54,6 +56,20 @@ interface BodyBatteryResult {
   trend: 'charging' | 'draining' | 'stable';
   confidence: 'low' | 'medium' | 'high'; // Based on data availability
 }
+
+type AppleHealthJsonRow = {
+  data_json: string;
+  encrypted_data_json?: string | null;
+};
+
+type AppleHealthTypedRow = AppleHealthJsonRow & {
+  data_type: string;
+};
+
+type BodyBatteryUpsert = {
+  statement: Database.Statement;
+  hasEncryptedDataJson: boolean;
+};
 
 /**
  * Compute a synthesized Body Battery score from Apple Health data
@@ -160,12 +176,18 @@ export function computeBodyBattery(input: BodyBatteryInput): BodyBatteryResult |
 
   // ── Persist for trend tracking ─────────────────────────────
   try {
-    db.prepare(`
-      INSERT INTO apple_health_data (user_id, date, data_type, data_json, source)
-      VALUES (?, ?, 'body_battery', ?, 'computed')
-      ON CONFLICT(user_id, date, data_type)
-      DO UPDATE SET data_json = excluded.data_json, synced_at = datetime('now')
-    `).run(userId, date, JSON.stringify({ score, components: { hrv: hrvScore, rhr: rhrScore, sleep: sleepScore, activity: activityScore }, trend, confidence }));
+    const upsert = prepareBodyBatteryUpsert(db);
+    const encoded = encodeAppleHealthPayload(userId, {
+      score,
+      components: { hrv: hrvScore, rhr: rhrScore, sleep: sleepScore, activity: activityScore },
+      trend,
+      confidence,
+    });
+    const args: Array<number | string | null> = [userId, date, encoded.dataJson];
+    if (upsert.hasEncryptedDataJson) {
+      args.push(encoded.encryptedDataJson);
+    }
+    upsert.statement.run(...args);
   } catch (err) {
     logger.warn({ err }, 'Failed to persist body battery score (non-critical)');
   }
@@ -174,6 +196,48 @@ export function computeBodyBattery(input: BodyBatteryInput): BodyBatteryResult |
 }
 
 // ── Data fetchers ────────────────────────────────────────────────
+
+function prepareBodyBatteryUpsert(db: ReturnType<typeof getDb>): BodyBatteryUpsert {
+  const columns = new Set(
+    (db.prepare(`PRAGMA table_info(apple_health_data)`).all() as Array<{ name: string }>)
+      .map((row) => row.name),
+  );
+  const sourceColumn = columns.has('source_name') ? 'source_name' : columns.has('source') ? 'source' : null;
+  const hasSyncedAt = columns.has('synced_at');
+  const hasEncryptedDataJson = columns.has('encrypted_data_json');
+
+  const insertColumns = ['user_id', 'date', 'data_type', 'data_json'];
+  const insertValues = ['?', '?', `'body_battery'`, '?'];
+  if (hasEncryptedDataJson) {
+    insertColumns.push('encrypted_data_json');
+    insertValues.push('?');
+  }
+  if (sourceColumn) {
+    insertColumns.push(sourceColumn);
+    insertValues.push(`'computed'`);
+  }
+
+  const conflictTarget = sourceColumn === 'source_name'
+    ? '(user_id, data_type, date, source_name)'
+    : '(user_id, date, data_type)';
+  const updates = ['data_json = excluded.data_json'];
+  if (hasEncryptedDataJson) {
+    updates.push('encrypted_data_json = excluded.encrypted_data_json');
+  }
+  if (hasSyncedAt) {
+    updates.push(`synced_at = datetime('now')`);
+  }
+
+  return {
+    statement: db.prepare(`
+      INSERT INTO apple_health_data (${insertColumns.join(', ')})
+      VALUES (${insertValues.join(', ')})
+      ON CONFLICT${conflictTarget}
+      DO UPDATE SET ${updates.join(', ')}
+    `),
+    hasEncryptedDataJson,
+  };
+}
 
 interface DayData {
   hrv: number | null;
@@ -184,18 +248,22 @@ interface DayData {
 }
 
 function fetchDayData(db: ReturnType<typeof getDb>, userId: number, date: string): DayData {
+  const healthJsonColumns = appleHealthJsonSelectColumns(db);
   const rows = db.prepare(`
-    SELECT data_type, data_json FROM apple_health_data
-    WHERE user_id = ? AND date = ? AND data_type IN ('hrv', 'resting_hr', 'sleep', 'calories', 'steps')
-  `).all(userId, date) as Array<{ data_type: string; data_json: string }>;
+    SELECT data_type, ${healthJsonColumns} FROM apple_health_data
+    WHERE user_id = ? AND date = ? AND data_type IN ('hrv', 'resting_hr', 'resting_heart_rate', 'sleep', 'calories', 'steps')
+  `).all(userId, date) as AppleHealthTypedRow[];
 
   const result: DayData = { hrv: null, rhr: null, sleep: null, calories: null, steps: null };
   for (const row of rows) {
     try {
-      const data = JSON.parse(row.data_json);
+      const data = parseAppleHealthDataJson(row, userId);
       switch (row.data_type) {
-        case 'hrv': result.hrv = data.sdnn_ms; break;
-        case 'resting_hr': result.rhr = data.bpm; break;
+        case 'hrv': result.hrv = data.sdnn_ms ?? data.value; break;
+        case 'resting_hr':
+        case 'resting_heart_rate':
+          result.rhr = data.bpm ?? data.value;
+          break;
         case 'sleep': result.sleep = { totalMinutes: data.totalMinutes, deepMinutes: data.deepMinutes, remMinutes: data.remMinutes }; break;
         case 'calories': result.calories = data.kcal; break;
         case 'steps': result.steps = data.count; break;
@@ -212,20 +280,25 @@ interface Baseline {
 
 function fetch7DayBaseline(db: ReturnType<typeof getDb>, userId: number, date: string): Baseline {
   const startDate = subtractDays(date, 7);
+  const healthJsonColumns = appleHealthJsonSelectColumns(db);
   const hrvRows = db.prepare(`
-    SELECT data_json FROM apple_health_data
+    SELECT ${healthJsonColumns} FROM apple_health_data
     WHERE user_id = ? AND date >= ? AND date < ? AND data_type = 'hrv'
     ORDER BY date DESC
-  `).all(userId, startDate, date) as Array<{ data_json: string }>;
+  `).all(userId, startDate, date) as AppleHealthJsonRow[];
 
   const rhrRows = db.prepare(`
-    SELECT data_json FROM apple_health_data
-    WHERE user_id = ? AND date >= ? AND date < ? AND data_type = 'resting_hr'
+    SELECT ${healthJsonColumns} FROM apple_health_data
+    WHERE user_id = ? AND date >= ? AND date < ? AND data_type IN ('resting_hr', 'resting_heart_rate')
     ORDER BY date DESC
-  `).all(userId, startDate, date) as Array<{ data_json: string }>;
+  `).all(userId, startDate, date) as AppleHealthJsonRow[];
 
-  const hrvValues = hrvRows.map(r => { try { return JSON.parse(r.data_json).sdnn_ms; } catch { return null; } }).filter((v): v is number => v != null);
-  const rhrValues = rhrRows.map(r => { try { return JSON.parse(r.data_json).bpm; } catch { return null; } }).filter((v): v is number => v != null);
+  const hrvValues = hrvRows
+    .map(r => { try { const data = parseAppleHealthDataJson(r, userId); return data.sdnn_ms ?? data.value; } catch { return null; } })
+    .filter((v): v is number => typeof v === 'number');
+  const rhrValues = rhrRows
+    .map(r => { try { const data = parseAppleHealthDataJson(r, userId); return data.bpm ?? data.value; } catch { return null; } })
+    .filter((v): v is number => typeof v === 'number');
 
   return {
     avgHrv: hrvValues.length > 0 ? hrvValues.reduce((a, b) => a + b, 0) / hrvValues.length : 0,
@@ -234,12 +307,13 @@ function fetch7DayBaseline(db: ReturnType<typeof getDb>, userId: number, date: s
 }
 
 function fetchStoredScore(db: ReturnType<typeof getDb>, userId: number, date: string): number | null {
+  const healthJsonColumns = appleHealthJsonSelectColumns(db);
   const row = db.prepare(`
-    SELECT data_json FROM apple_health_data
+    SELECT ${healthJsonColumns} FROM apple_health_data
     WHERE user_id = ? AND date = ? AND data_type = 'body_battery'
-  `).get(userId, date) as { data_json: string } | undefined;
+  `).get(userId, date) as AppleHealthJsonRow | undefined;
   if (!row) return null;
-  try { return JSON.parse(row.data_json).score; } catch { return null; }
+  try { return parseAppleHealthDataJson(row, userId).score; } catch { return null; }
 }
 
 // ── Date helpers ─────────────────────────────────────────────────
