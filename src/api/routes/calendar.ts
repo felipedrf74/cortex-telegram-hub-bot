@@ -90,6 +90,7 @@ export function calendarRoutes(): Router {
 
     const { start, end } = parseRange(req.query.start as string | undefined, req.query.end as string | undefined);
     const cacheKey = calendarEventsCacheKey(userId, start, end);
+    const forceRefresh = req.query.refresh === 'true' || req.query.forceRefresh === 'true';
 
     try {
       await handleCachedRoute<any>({
@@ -98,6 +99,7 @@ export function calendarRoutes(): Router {
         staleSeconds: RANGE_SWR_STALE,
         refreshContext: { source: 'calendar_route', operation: 'calendar_swr_refresh', userId },
         fetchFresh: () => buildEventsPayload(start, end, userId),
+        shouldServeCached: forceRefresh ? () => false : undefined,
         send: (value, meta) => {
           sendConditionalApiSuccess(res, req, normalizeCalendarEventsPayload(value), { cached: meta.cached });
         },
@@ -565,6 +567,7 @@ export function calendarRoutes(): Router {
 
     const timezone = calendarUserTimezone(userId);
     const cacheKey = calendarTodayCacheKey(userId, todayDateString(timezone));
+    const forceRefresh = req.query.refresh === 'true' || req.query.forceRefresh === 'true';
 
     try {
       await handleCachedRoute<any>({
@@ -573,6 +576,7 @@ export function calendarRoutes(): Router {
         staleSeconds: TODAY_SWR_STALE,
         refreshContext: { source: 'calendar_route', operation: 'calendar_swr_refresh', userId },
         fetchFresh: () => buildTodayPayload(userId),
+        shouldServeCached: forceRefresh ? () => false : undefined,
         send: (value, meta) => {
           sendConditionalApiSuccess(res, req, { ...normalizeCalendarEventsPayload(value), date: todayDateString(timezone) }, { cached: meta.cached });
         },

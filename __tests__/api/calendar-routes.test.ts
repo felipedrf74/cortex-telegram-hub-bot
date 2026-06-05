@@ -304,6 +304,40 @@ describe('Calendar API — mutation routes', () => {
     );
   });
 
+  it('bypasses cached today events when refresh is requested', async () => {
+    mockGetCachedSWR.mockReturnValue({
+      fresh: true,
+      value: {
+        events: [
+          {
+            id: 'deleted-google-training',
+            title: 'Runner Upper Body Strength',
+            start: '2026-06-05T12:00:00.000Z',
+            end: '2026-06-05T12:48:00.000Z',
+            source: 'google',
+          },
+        ],
+        status: 'ready',
+        warningCodes: [],
+        warnings: [],
+      },
+    });
+    mockGetEventsWithDiagnostics.mockResolvedValue({
+      events: [],
+      status: 'ready',
+      warningCodes: [],
+      warnings: [],
+      sources: { configured: ['google'], fulfilled: ['google'], failed: [] },
+    });
+
+    const res = await dispatch('GET', '/today?refresh=true');
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body.cached).toBe(false);
+    expect(res.body.data.events).toEqual([]);
+    expect(mockGetEventsWithDiagnostics).toHaveBeenCalledTimes(1);
+  });
+
   it('filters training calendar events linked outside the authenticated user scope', async () => {
     mockGetEventsWithDiagnostics.mockResolvedValue({
       events: [
