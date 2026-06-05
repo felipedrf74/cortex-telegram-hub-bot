@@ -621,7 +621,7 @@ export function taskRoutes(): Router {
       const listName = await resolveTaskListName(todo, listId, (req as any).userId);
       const timezone = getUserTimezoneById(userId);
 
-      const ALLOWED_FIELDS = new Set(['title', 'body', 'importance', 'status', 'dueDateTime']);
+      const ALLOWED_FIELDS = new Set(['title', 'body', 'importance', 'status', 'dueDateTime', 'recurrence']);
       const updates: Record<string, unknown> = {};
       for (const [key, value] of Object.entries(req.body)) {
         if (ALLOWED_FIELDS.has(key)) updates[key] = value;
@@ -629,9 +629,15 @@ export function taskRoutes(): Router {
       if (Object.prototype.hasOwnProperty.call(updates, 'dueDateTime')) {
         updates.timeZone = timezone;
       }
+      if (Object.prototype.hasOwnProperty.call(updates, 'recurrence') && updates.recurrence != null) {
+        updates.recurrence = normalizeMicrosoftRecurrence(
+          updates.recurrence,
+          typeof updates.dueDateTime === 'string' ? updates.dueDateTime : new Date(),
+        );
+      }
 
       const result = await todo.updateTask(listId, taskId, updates, listName);
-      const task = await resolveMutatedTask(todo, listId, taskId, listName, result?.data || result);
+      const task = await resolveTaskDetail(todo, listId, taskId, listName, result?.data || result);
 
       invalidateTaskRouteCaches(listId, userId);
       sendSuccess(
@@ -901,6 +907,7 @@ function normalizeTaskDto(
     importance: task.importance || 'normal',
     status: task.status || 'notStarted',
     dueDateTime: task.dueDateTime?.dateTime || task.dueDateTime || null,
+    recurrence: task.recurrence || null,
     listId: task.listId || defaults?.listId || null,
     listName: task.listName || defaults?.listName || null,
     checklistItems: Array.isArray(task.checklistItems)

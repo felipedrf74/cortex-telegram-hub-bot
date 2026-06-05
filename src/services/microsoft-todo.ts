@@ -522,6 +522,7 @@ export async function updateTask(
     status?: string;
     dueDateTime?: string | null;
     reminderDateTime?: string | null;
+    recurrence?: NormalizedRecurrence | null;
     timeZone?: string;
   },
   listName?: string
@@ -548,6 +549,10 @@ export async function updateTask(
           patch.recurrence = alignedRecurrence;
         }
       }
+    }
+
+    if (data.recurrence !== undefined) {
+      patch.recurrence = data.recurrence || null;
     }
 
     if (data.reminderDateTime !== undefined) {
