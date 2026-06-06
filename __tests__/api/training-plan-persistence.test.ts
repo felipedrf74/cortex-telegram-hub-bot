@@ -1086,7 +1086,7 @@ describe('training-plan-persistence', () => {
       );
     });
 
-    it('plan-linter advisor: warns on race-week label without race date', async () => {
+    it('plan-linter advisor: blocks event-based race-week label without race date', async () => {
       const result = await persistGeneratedTrainingPlan({
         userId: 12,
         objective: 'Plan with stale taper label',
@@ -1100,6 +1100,7 @@ describe('training-plan-persistence', () => {
         normalizedPreferredStrengthTime: '12:30',
         busyWindows: [],
         // raceDate intentionally absent.
+        goalMode: 'event_based',
         planData: {
           weeks: [
             {
@@ -1113,8 +1114,9 @@ describe('training-plan-persistence', () => {
         },
       });
 
-      expect(result.lint.status).toBe('pass_with_warnings');
-      expect(result.lint.warnings.some((w) => w.ruleId === 'no_fake_taper_without_event')).toBe(true);
+      expect(result.lint.status).toBe('fail');
+      expect(result.lint.blockers.some((w) => w.ruleId === 'no_fake_taper_without_event')).toBe(true);
+      expect(result.lint.blockers.some((w) => w.ruleId === 'race_specific_plan_requires_race_date')).toBe(true);
     });
 
     it('does NOT apply the past-day floor to week 2+ (rolling 7-day envelope is correct)', async () => {
