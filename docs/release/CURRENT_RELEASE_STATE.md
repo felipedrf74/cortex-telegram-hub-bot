@@ -2,10 +2,14 @@
 
 Status: canonical
 Owner: backend release lead (Felipe)
-Last verified: 2026-06-04
+Last verified: 2026-06-06
 Update policy: update after backend deploy or staging change. Workspace-level entry point is docs/release/CURRENT_RELEASE_STATE.md.
 
-Last updated: 2026-06-04
+Last updated: 2026-06-06
+
+Only the **Active Production Release** section states the current production
+truth. Dated sections below it are historical deploy evidence and may mention
+older production versions.
 
 ## Active Production Release
 
@@ -19,6 +23,24 @@ Last updated: 2026-06-04
 - Staging remains on `4.14.201` until the next staging deploy; the promoted
   functional code passed staging smoke before production.
 - Official workspace root: `/Users/felipedominguez/Desktop/Nexus Hub`
+
+## 2026-06-06 Release Process Hardening Note
+
+- Production facts above remain the last documented production deploy state.
+- Release transport has been hardened so version preparation happens before
+  staging via `scripts/release-prep.sh`; `deploy.sh` must not create a new
+  version bump after staging evidence exists.
+- Reusable evidence now requires signed `nexus.release-evidence.v2` JSON and a
+  post-build manifest recheck before rsync. `auto-when-staged` remains
+  default-off until the signed-evidence shadow period and rollback-drill
+  requirements are satisfied.
+- The public release-evidence verifier is committed under
+  `docs/release/evidence/`; the matching private signing key is owner-managed
+  and must be installed as a GitHub Actions secret before CI evidence can pass.
+- Evidence reuse also requires current rollback drill evidence; no rollback
+  drill was performed by this process-hardening change.
+- Legacy `.github/workflows/cd-production.yml` is owner-review-only; local
+  scripts remain canonical.
 
 ## 2026-06-04 Training Remediation Round 3 Fast-Follow Production Promote
 

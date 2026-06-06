@@ -108,7 +108,30 @@ collect_changes() {
   } | sed '/^$/d' | sort -u
 }
 
-CHANGED="$(collect_changes)"
+normalize_changed_path() {
+  sed -E '
+    s#^\./##
+    s#^engine/##
+    s#^backend/##
+    s#^cortex-telegram-hub-bot/##
+  '
+}
+
+normalize_changed_paths() {
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    case "$f" in
+      *" -> "*)
+        printf '%s\n' "${f%% -> *}" "${f##* -> }"
+        ;;
+      *)
+        printf '%s\n' "$f"
+        ;;
+    esac
+  done | normalize_changed_path | sed '/^$/d' | sort -u
+}
+
+CHANGED="$(collect_changes | normalize_changed_paths)"
 CHANGED_COUNT="$(printf '%s\n' "$CHANGED" | sed '/^$/d' | wc -l | tr -d ' ')"
 
 # Classification flags
@@ -283,7 +306,10 @@ detect_irreversible_migration() {
     [ -n "$f" ] || continue
     case "$f" in
       migrations/*.sql)
-        [ -f "$LOCAL_DIR/$f" ] || continue
+        # Deleted/renamed migrations are dangerous because the target SQL is no
+        # longer available for content inspection. Fail closed into manual
+        # migration approval instead of silently treating them as harmless.
+        [ -f "$LOCAL_DIR/$f" ] || return 0
         stripped="$(sed -E 's/--.*$//' "$LOCAL_DIR/$f" | tr '\n' ' ')"
         if printf '%s\n' "$stripped" | grep -Eiq '\bDROP[[:space:]]+TABLE\b|\bDROP[[:space:]]+COLUMN\b|\bALTER[[:space:]]+TABLE\b[^;]*\bRENAME\b|\bRENAME[[:space:]]+TO\b'; then
           return 0

@@ -16,10 +16,12 @@
 # Usage:  ./scripts/deploy.sh
 # ─────────────────────────────────────────────────────
 set -euo pipefail
+umask 077
 
 SERVER="${DEPLOY_SERVER:-dominguez@serverdominguez}"
 REMOTE_DIR="${DEPLOY_PATH:-/home/dominguez/telegram-hub-bot}"
 LOCAL_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+source "$LOCAL_DIR/scripts/lib/release-gates.sh"
 PM2="/home/dominguez/.npm-global/bin/pm2"
 NOTION_TOKEN="${NOTION_TOKEN:-}"
 NOTION_RELEASES_DB="${NOTION_RELEASES_DB:-332ad49d-23e7-8134-b413-d8d3cc3f1a4a}"
@@ -77,6 +79,9 @@ echo ""
 # defaults to legacy behavior so accidental rollouts are safe.
 cd "$LOCAL_DIR"
 rm -f "$DEPLOY_MUTATION_MARKER"
+trap release_cleanup_all_locks EXIT
+release_require_git_worktree "$LOCAL_DIR"
+release_acquire_local_lock "$LOCAL_DIR" "prod-deploy"
 
 audit_override() {
   local flag="$1"
@@ -117,7 +122,13 @@ ensure_clean_deploy_tree() {
         ;;
     esac
   else
-    if [ -n "$(git status --porcelain)" ]; then
+    local status
+    if ! status="$(release_git_status_porcelain "$LOCAL_DIR")"; then
+      echo "❌ Could not read git status. Refusing to deploy."
+      echo "   Check .git/config; core.bare must be false."
+      exit 1
+    fi
+    if [ -n "$status" ]; then
       echo "❌ Working tree has uncommitted changes. Refusing to deploy."
       echo "   Either commit, stash, or set NEXUS_DEPLOY_ALLOW_DIRTY=1 to override."
       echo "   Override is sometimes correct for hotfixes, but /api/snapshot"
@@ -133,7 +144,12 @@ restore_deploy_generated_artifacts() {
   fi
 
   local shadow_parity_report="docs/release/eval-evidence/registry-shadow-parity-latest.json"
-  if [ -n "$(git status --porcelain -- "$shadow_parity_report")" ]; then
+  local status
+  if ! status="$(release_git_status_porcelain "$LOCAL_DIR" -- "$shadow_parity_report")"; then
+    echo "❌ Could not read git status for generated artifacts. Refusing to deploy."
+    exit 1
+  fi
+  if [ -n "$status" ]; then
     echo "♻️  Restoring deploy-generated shadow parity evidence"
     git restore -- "$shadow_parity_report"
   fi
@@ -190,6 +206,12 @@ run_typecheck_only() {
   fi
 }
 
+require_current_rollback_drill() {
+  echo "🧯 Checking current rollback drill evidence before release evidence reuse..."
+  node scripts/rollback-drill-check.mjs --json > /tmp/nexus-rollback-drill-check.json
+  cat /tmp/nexus-rollback-drill-check.json
+}
+
 case "$SKIP_MODE" in
   1|true|yes)
     run_typecheck_only
@@ -208,6 +230,7 @@ case "$SKIP_MODE" in
       fi
       run_full_verify
     elif node scripts/release-evidence.mjs validate --json > /tmp/nexus-release-evidence-validate.json 2>/tmp/nexus-release-evidence-validate.err; then
+      require_current_rollback_drill
       echo "🔁 NEXUS_DEPLOY_SKIP_VERIFY=auto-when-staged: release evidence matches SHA + manifest digest — typecheck only"
       cat /tmp/nexus-release-evidence-validate.json
       run_typecheck_only
@@ -241,6 +264,13 @@ ensure_clean_deploy_tree
 # ── 1. Build TypeScript locally ──────────────────────
 echo "📦 Building TypeScript..."
 npm run build 2>/dev/null && echo "   ✅ Build complete" || { echo "   ❌ Build failed — aborting"; exit 1; }
+POST_BUILD_MANIFEST_DIGEST=$(node scripts/release-artifact-manifest.mjs --digest)
+echo "   Artifact digest: $POST_BUILD_MANIFEST_DIGEST"
+if [ "$SKIP_MODE" = "auto-when-staged" ] && [ "${NEXUS_RELEASE_EVIDENCE_REUSE_ENABLED:-0}" = "1" ]; then
+  echo "🔁 Re-validating signed release evidence against post-build artifact..."
+  node scripts/release-evidence.mjs validate --expect-sha "$(git rev-parse HEAD)" --json >/tmp/nexus-release-evidence-post-build.json
+  cat /tmp/nexus-release-evidence-post-build.json
+fi
 
 # Dry-run early-exit: everything below this line touches the server, the
 # git tree, or PM2. Stop here for the rehearsal mode.
@@ -249,7 +279,7 @@ if [ "$DRY_RUN" = "1" ]; then
   echo "═══════════════════════════════════════════════"
   echo "  🟡 DRY RUN — would now do:"
   echo "       1a) ssh validate prod .env"
-  echo "       1b) npm version patch + git commit + git push"
+  echo "       1b) confirm package version already prepared by scripts/release-prep.sh"
   echo "       2)  ssh \$SERVER pm2 stop nexus-hub + content-engine"
   echo "       2b) ssh \$SERVER tar backup of dist + bot.db"
   echo "       3b) ssh \$SERVER drain port 8200"
@@ -265,10 +295,11 @@ if [ "$DRY_RUN" = "1" ]; then
   echo "  ✅ Validation/build phase passed; no server mutations performed."
   echo "  Re-run without --dry-run (or unset NEXUS_DEPLOY_DRY_RUN) to deploy."
   echo "═══════════════════════════════════════════════"
+  release_cleanup_all_locks
   exit 0
 fi
 
-# ── 1a. Validate production .env before version bump/deploy ─────────
+# ── 1a. Validate production .env before deploy ─────────
 # The Python content-engine calls the TS AI proxy for script synthesis.
 # If INTERNAL_API_SECRET or the backend URL/port is missing, script
 # generation silently degrades into fallback templates. Fail fast here.
@@ -278,6 +309,17 @@ ENV_CHECK=$(ssh "$SERVER" "
   set -e
   if [ ! -f $REMOTE_DIR/.env ]; then
     echo 'MISSING_FILE'
+    exit 0
+  fi
+  ENV_MODE=\$(stat -c '%a' $REMOTE_DIR/.env 2>/dev/null || stat -f '%Lp' $REMOTE_DIR/.env 2>/dev/null || echo unknown)
+  case \"\$ENV_MODE\" in
+    400|600) ;;
+    *) echo \"BAD_MODE:\$ENV_MODE\"; exit 0 ;;
+  esac
+  ENV_OWNER=\$(stat -c '%U' $REMOTE_DIR/.env 2>/dev/null || stat -f '%Su' $REMOTE_DIR/.env 2>/dev/null || echo unknown)
+  CURRENT_OWNER=\$(id -un)
+  if [ \"\$ENV_OWNER\" != \"\$CURRENT_OWNER\" ]; then
+    echo \"BAD_OWNER:\$ENV_OWNER:expected:\$CURRENT_OWNER\"
     exit 0
   fi
   MISSING=''
@@ -310,6 +352,14 @@ case "$ENV_CHECK" in
     echo "   ❌ No production .env file at $REMOTE_DIR/.env"
     exit 1
     ;;
+  BAD_MODE:*)
+    echo "   ❌ Production .env has unsafe permissions (${ENV_CHECK#BAD_MODE:}); require 400 or 600"
+    exit 1
+    ;;
+  BAD_OWNER:*)
+    echo "   ❌ Production .env has unsafe owner (${ENV_CHECK#BAD_OWNER:})"
+    exit 1
+    ;;
   MISSING_KEYS:*)
     echo "   ❌ Production .env is missing required keys:${ENV_CHECK#MISSING_KEYS:}"
     echo "      Add them before deploying so content scripts use the AI synthesis bridge."
@@ -327,18 +377,12 @@ case "$ENV_CHECK" in
     ;;
 esac
 
-# ── 1b. Version bump + commit (only AFTER validation) ─
-OLD_VERSION=$(node -p "require('./package.json').version" 2>/dev/null || echo "0.0.0")
-npm version patch --no-git-tag-version > /dev/null 2>&1
+# ── 1b. Version identity (release-prep owns version bumps) ─
 VERSION=$(node -p "require('./package.json').version" 2>/dev/null || echo "unknown")
-echo "📌 Version: $OLD_VERSION → $VERSION"
-git add package.json package-lock.json 2>/dev/null
-git commit -m "chore: bump version to $VERSION [deploy]" 2>/dev/null
-git push origin "$(git branch --show-current)" 2>/dev/null || {
-  echo "   ⚠️  Git push failed — deploy continues but remote is not updated"
-}
+echo "📌 Version: $VERSION"
+echo "   Version bumps are prepared before staging via scripts/release-prep.sh"
 
-COMMIT=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
+COMMIT=$(git rev-parse --short HEAD)
 DEPLOY_STATUS="✅ Success"
 
 # Last local provenance guard before production is stopped. Any generated
@@ -346,6 +390,16 @@ DEPLOY_STATUS="✅ Success"
 # still online; after this point the script must continue through rsync/start.
 restore_deploy_generated_artifacts
 ensure_clean_deploy_tree
+PRE_RSYNC_MANIFEST_DIGEST=$(node scripts/release-artifact-manifest.mjs --digest)
+if [ "$PRE_RSYNC_MANIFEST_DIGEST" != "$POST_BUILD_MANIFEST_DIGEST" ]; then
+  echo "   ❌ Artifact digest changed after build:"
+  echo "      post-build: $POST_BUILD_MANIFEST_DIGEST"
+  echo "      pre-rsync:   $PRE_RSYNC_MANIFEST_DIGEST"
+  exit 1
+fi
+
+# Acquire the remote production lock immediately before any server mutation.
+release_acquire_remote_lock "$SERVER" "$REMOTE_DIR" "prod-deploy"
 
 # ── 2. Stop services on server ───────────────────────
 # (Moved BEFORE backup so the SQLite WAL is checkpointed and bot.db is in
@@ -420,6 +474,7 @@ if command -v rsync &>/dev/null; then
     --exclude='.env.agents' \
     --exclude='.local/' \
     --exclude='.local/**' \
+    --exclude='.deploy.lock' \
     --exclude='.DS_Store' \
     --exclude='.db.sqlite' \
     --exclude='*.db' \
@@ -579,6 +634,10 @@ else
 fi
 
 ssh "$SERVER" "export PATH=\$PATH:$(dirname $PM2) && $PM2 list | grep -E 'online|stopped'"
+
+echo ""
+echo "🧭 Production readiness check..."
+"$LOCAL_DIR/scripts/deploy-readiness-check.sh" --target prod --server "$SERVER" --remote-dir "$REMOTE_DIR"
 
 # ── 9. Log to Notion Releases DB ─────────────────────
 echo ""

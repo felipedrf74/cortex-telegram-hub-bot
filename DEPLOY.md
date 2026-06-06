@@ -6,12 +6,17 @@
 ### CI Pipeline (AUTOMATIC) ✅
 - **Trigger:** Every push to `main` or `develop`, every PR
 - **Workflow:** `.github/workflows/ci.yml`
-- **Jobs:** Lint & Type Check → Tests (256 passing) → Build → Content Engine Check → Migration Check
+- **Jobs:** Lint, type check, tests, build, content-engine checks, migration
+  checks, and release gates. Keep live test counts in generated QA/release
+  artifacts, not in this runbook.
 - **Status:** GREEN — fully working
 
 ### CD Pipeline (MANUAL ONLY) ⚠️
 - **Trigger:** Manual only (`workflow_dispatch`) — NOT on push
-- **Workflow:** archived as `.github/workflows/cd-production.yml.archived`
+- **Workflow:** local scripts are canonical. A legacy
+  `.github/workflows/cd-production.yml` is still tracked for owner review, but
+  it is not the approved deployment path and must not be deleted/renamed
+  without explicit owner approval.
 - **Why archived:** hosted GitHub Actions runners cannot reach the SSH/rsync
   deploy target. The existing Cloudflare Tunnel exposes HTTPS app health routes,
   not SSH deploy transport.
@@ -22,7 +27,11 @@
 ### Release Pipeline (MANUAL) 🏷️
 - **Trigger:** Manual (`workflow_dispatch`) in GitHub Actions UI
 - **Workflow:** `.github/workflows/release.yml`
-- **Jobs:** Bump version → Update CHANGELOG → Git tag → GitHub Release → Notify Notion
+- **Jobs:** Validate already-prepared package version → Git tag the exact
+  promoted commit → GitHub Release → Notify Notion
+- **Rule:** it must not bump package versions. Run `scripts/release-prep.sh`
+  before staging so the staged artifact digest is the production artifact
+  digest.
 
 ---
 
@@ -37,7 +46,10 @@ For any change beyond a one-line typo, use the validated-promote pipeline:
 ```bash
 cd ~/Desktop/Custom\ Connectors/Cortex/cortex-telegram-hub-bot
 
-# 1. Ship the change to staging
+# 0. Prepare the versioned release commit before staging
+./scripts/release-prep.sh --patch
+
+# 1. Ship the exact release commit to staging
 ./scripts/deploy-staging.sh
 
 # 2. (Optional) Let staging soak for 5 min so cron jobs fire at least once
@@ -47,10 +59,19 @@ cd ~/Desktop/Custom\ Connectors/Cortex/cortex-telegram-hub-bot
 ./scripts/promote-to-prod.sh
 ```
 
-`promote-to-prod.sh` runs `staging-smoke.sh` first (13 automated assertions
-against the staging install: health, snapshot shape, cost-by-domain shape,
-provider stats, PM2 state, DB integrity), and only proceeds to
-`deploy.sh` if all 13 pass. See `STAGING.md` for the full staging runbook.
+`promote-to-prod.sh` checks staging/prod env-key parity, validates the
+staging artifact digest as a hard no-drift gate, runs `staging-smoke.sh`, and
+only proceeds to `deploy.sh` if all gates pass. `deploy.sh` no longer bumps
+versions during production deploy; the artifact digest checked after local
+build is rechecked immediately before rsync. See `STAGING.md` for the full
+staging runbook.
+
+Signed release evidence reuse remains shadow/default-off. Before enabling
+`NEXUS_RELEASE_EVIDENCE_REUSE_ENABLED=1`, an owner must install the GitHub
+Actions signing secret that matches
+`docs/release/evidence/release-evidence-public-key.pem`, three clean signed RCs
+must pass, and current rollback drill evidence must exist at
+`docs/release/evidence/rollback-drill-latest.json`.
 
 ### GitHub Actions Reachability Smoke
 
@@ -65,55 +86,21 @@ The self-hosted runner dependency is documented in
 secrets or revive direct hosted-runner SSH deploys without explicit owner
 approval.
 
-### Telegram Delivery Mode: Long-Polling vs Webhooks
+### Telegram Inbound Status
 
-The bot supports both delivery modes. Long-polling is the default; webhooks
-are opt-in via env var.
+Telegram inbound polling/webhooks are retired. `src/bot.ts` is outbound-only
+legacy compatibility, gated by `TELEGRAM_LEGACY_DELIVERY=true`; the process
+does not register commands, message handlers, callback queries, polling, or
+webhooks. Deploy safety still requires a single production deploy at a time
+because rsync, PM2, scheduler/cron, SQLite state, and native module rebuilds
+are singleton operations.
 
-**Long-polling (current default):**
-- The bot makes a long-running `getUpdates` request to Telegram every few seconds.
-- Pros: zero infrastructure setup, works behind any firewall, no public URL needed.
-- Cons: Holds an open connection to Telegram constantly. Only one process can poll
-  per bot token. ~1-3s message delivery latency.
+Do not reintroduce Telegram polling/webhook release steps without a new owner
+approved runbook and tests.
 
-**Webhooks (opt-in):**
-- Telegram POSTs each update to `https://api.nexushub.me/webhooks/telegram`
-  via the existing cloudflared tunnel → portal on :8200.
-- Pros: Lower latency (Telegram pushes to us instantly). No long-running
-  connection. Multiple processes COULD share the same token (though we still
-  run only one because of cron / state).
-- Cons: Requires a public HTTPS endpoint reachable from Telegram's IPs.
-
-**Switching to webhooks** (low-risk, reversible):
-
-1. Add to `.env`:
-   ```
-   TELEGRAM_WEBHOOK_URL=https://api.nexushub.me/webhooks/telegram
-   TELEGRAM_WEBHOOK_SECRET=<random 32+ char string>
-   ```
-2. Restart the bot: `./scripts/deploy.sh` (or just `pm2 restart nexus-hub` if no code changes)
-3. The bot will:
-   - Call `bot.api.deleteWebhook()` to clean any stale registration
-   - Call `bot.api.setWebhook(url, { secret_token })` to register the new one
-   - SKIP `bot.start()` (no long-polling)
-   - Mount `POST /webhooks/telegram` on the portal Express server
-4. Verify: `pm2 logs nexus-hub --nostream | grep "WEBHOOK mode"` should show the registration succeeded
-
-**Reverting to long-polling** (instant, no code rollback needed):
-
-1. Remove (or comment out) `TELEGRAM_WEBHOOK_URL` in `.env`
-2. Restart: `pm2 restart nexus-hub`
-3. The bot detects the missing env var and goes back to `bot.start()` with long-polling
-4. The webhook registration on Telegram's side becomes a no-op — Telegram falls back to allowing getUpdates
-
-The webhook code path is gated entirely on `TELEGRAM_WEBHOOK_URL` being non-empty.
-There's no migration step or DB change to undo. Setting and unsetting one env var
-is the entire toggle.
-
-**If `setWebhook()` fails at boot** (Telegram API blip, network issue), the bot
-automatically falls back to long-polling for that boot — see the try/catch in
-`src/index.ts`. So a transient Telegram outage during a deploy can't lock you
-into a half-broken webhook state.
+Old long-polling/webhook rollback notes are obsolete. Do not use
+`TELEGRAM_WEBHOOK_URL` or polling toggles as release procedures unless a future
+owner-approved Telegram inbound runbook reintroduces them with current tests.
 
 ---
 
@@ -130,14 +117,19 @@ Use it directly only when:
 - You've already validated locally and don't need the smoke-test gate
 
 It still does:
-1. Type-checks TypeScript locally
-2. Builds the project
-3. Stops PM2 services on server
-4. Rsyncs files (excludes .env, data/, logs/, node_modules/)
-5. Installs production dependencies
-6. Rebuilds native modules against system Node
-7. Starts PM2 services
-8. Runs health checks
+1. Acquires local and remote deploy locks
+2. Verifies git/worktree health and release evidence shadow status
+3. Runs full local validation unless an explicitly enabled signed-evidence path
+   is also backed by current rollback drill evidence
+4. Type-checks TypeScript locally
+5. Builds the project and records the artifact manifest digest
+6. Rechecks the artifact digest immediately before rsync
+7. Stops PM2 services on server
+8. Rsyncs files (excludes .env, data/, logs/, node_modules/)
+9. Installs production dependencies
+10. Rebuilds native modules against system Node
+11. Starts PM2 services
+12. Runs readiness, DB integrity, native module, and PM2 health checks
 
 ### Deploy Target
 - **Server:** `dominguez@serverdominguez` (resolves locally, not from cloud)
@@ -214,7 +206,8 @@ both passed integrity check with expected row counts for
 4. Felipe reviews, merges, and deploys manually via `./scripts/deploy.sh`
 
 ### Do NOT
-- Restore `.github/workflows/cd-production.yml.archived` or add deploy push triggers
+- Delete/rename `.github/workflows/cd-production.yml`, restore archived deploy
+  workflows, or add deploy push triggers without explicit owner approval
 - Try to SSH to the server from within Claude Code
 - Attempt any deployment commands — deployment is Felipe's responsibility
 - Modify `.env`, `data/`, or any server-specific configuration

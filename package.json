@@ -33,10 +33,16 @@
     "science-policy:check": "node scripts/ci/science-policy-version-check.mjs",
     "lint": "npm run typecheck",
     "verify": "npm run typecheck && npm run science-policy:check && npm run test",
+    "release:prep": "scripts/release-prep.sh",
+    "release:verify": "scripts/release-verify.sh",
+    "release:verify:container": "scripts/release-verify-container.sh",
+    "release:evidence:container": "scripts/release-evidence-container.sh",
+    "release:evidence:keygen": "node scripts/release-evidence-keygen.mjs",
+    "release:rollback-drill-check": "node scripts/rollback-drill-check.mjs",
     "precommit": "npm run verify",
-    "release:patch": "npm run verify && npm version patch",
-    "release:minor": "npm run verify && npm version minor",
-    "release:major": "npm run verify && npm version major"
+    "release:patch": "scripts/release-prep.sh --patch",
+    "release:minor": "scripts/release-prep.sh --minor",
+    "release:major": "scripts/release-prep.sh --major"
   },
   "keywords": [
     "telegram",

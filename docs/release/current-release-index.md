@@ -2,10 +2,10 @@
 
 Status: canonical
 Owner: release lead (Felipe)
-Last verified: 2026-06-04
+Last verified: 2026-06-06
 Update policy: update when the current RC identity, deploy-gate evidence, or canonical-doc cross-references change. Run engine/scripts/release-identity.sh --persist to refresh auto-generated identity fields.
 
-Date: 2026-06-04
+Date: 2026-06-06
 
 ## Current Status
 
@@ -88,6 +88,15 @@ The release-process audit remains the canonical process reference:
 
 - active process source: `docs/release/README.md`
 - proposed process: `docs/release/streamlined-release-process-v2.md`
+- signed evidence contract: `docs/release/release-evidence-contract.md`
+- release-test container: `Dockerfile.release-test` plus
+  `scripts/release-verify-container.sh` and
+  `scripts/release-evidence-container.sh`
+- rollback drill freshness gate: `scripts/rollback-drill-check.mjs`
+- version preparation now happens before staging via `scripts/release-prep.sh`;
+  production deploy must not create a new version bump after staging evidence.
+- legacy `.github/workflows/cd-production.yml` is owner-review-only; local
+  scripts remain canonical for production deployment.
 - risk matrix: `docs/release/risk-based-release-gate-matrix.md`
 - promotion checklist: `docs/release/production-promotion-checklist-v2.md`
 - identity helper: `scripts/release-identity.sh`

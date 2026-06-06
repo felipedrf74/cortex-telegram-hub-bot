@@ -20,7 +20,7 @@ _shared_env_candidates = (
 
 for _env_path in _shared_env_candidates:
     if _env_path.exists():
-        load_dotenv(_env_path, override=True)
+        load_dotenv(_env_path, override=False)
         break
 
 from fastapi import FastAPI, Request
@@ -178,6 +178,16 @@ app.include_router(books_router)
 @app.get("/health")
 async def health() -> dict:
     return {"status": "ok", "version": "0.1.0"}
+
+
+@app.get("/ready")
+async def ready() -> dict:
+    return {
+        "status": "ready",
+        "version": "0.1.0",
+        "internalAuthConfigured": bool(cfg.internal_api_secret),
+        "routers": ["research", "books"],
+    }
 
 
 if __name__ == "__main__":

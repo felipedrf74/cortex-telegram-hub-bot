@@ -49,6 +49,24 @@ def test_protected_routes_accept_valid_secret_before_routing(monkeypatch):
     assert response.headers["x-request-id"] == "req-allowed"
 
 
+def test_ready_requires_secret_and_reports_readiness(monkeypatch):
+    main = _reload_content_engine(monkeypatch, secret="valid-secret")
+    client = TestClient(main.app)
+
+    denied = client.get("/ready", headers={"x-request-id": "req-ready-denied"})
+    assert denied.status_code == 401
+
+    response = client.get(
+        "/ready",
+        headers={"x-internal-secret": "valid-secret", "x-request-id": "req-ready"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "ready"
+    assert response.json()["internalAuthConfigured"] is True
+    assert response.headers["x-request-id"] == "req-ready"
+
+
 @pytest.mark.parametrize(
     ("path", "payload", "expected_code"),
     [

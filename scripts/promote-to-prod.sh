@@ -8,8 +8,8 @@
 # balancer with zero-downtime cutover) is genuinely impossible on this
 # system today because:
 #   1. Single VPS, no load balancer
-#   2. Telegram bot has a UNIQUE long-polling lock per token — you
-#      can't run two prod bots on the same token in parallel
+#   2. Production has singleton schedulers, SQLite state, and PM2-managed
+#      runtime processes that must not be swapped concurrently
 #   3. Cron jobs would double-run if both environments were live,
 #      corrupting user data (double-charged invoices, double-sent emails)
 #
@@ -44,10 +44,15 @@
 #   ./scripts/promote-to-prod.sh --dry-run     # show what would happen
 # ─────────────────────────────────────────────────────
 set -euo pipefail
+umask 077
 
 LOCAL_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+source "$LOCAL_DIR/scripts/lib/release-gates.sh"
 AUDIT_LOG="${NEXUS_RELEASE_AUDIT_LOG:-$LOCAL_DIR/.local/release/override-audit.jsonl}"
 DEPLOY_MUTATION_MARKER="${NEXUS_DEPLOY_MUTATION_MARKER:-/tmp/nexus-deploy-prod-mutation-started}"
+trap release_cleanup_all_locks EXIT
+release_require_git_worktree "$LOCAL_DIR"
+release_acquire_local_lock "$LOCAL_DIR" "promote-to-prod"
 
 SKIP_SMOKE=false
 DRY_RUN=false
@@ -102,6 +107,7 @@ require_emergency_reason() {
 echo "🔍 Preflight checks..."
 SERVER="${DEPLOY_SERVER:-dominguez@serverdominguez}"
 STAGING_DIR="${STAGING_PATH:-/home/dominguez/telegram-hub-bot-staging}"
+PROD_DIR="${DEPLOY_PATH:-/home/dominguez/telegram-hub-bot}"
 STAGING_EXISTS=$(ssh "$SERVER" "[ -d $STAGING_DIR ] && echo yes || echo no" 2>/dev/null || echo "no")
 if [ "$STAGING_EXISTS" != "yes" ]; then
   echo "   ❌ Staging directory not found at $STAGING_DIR"
@@ -109,6 +115,12 @@ if [ "$STAGING_EXISTS" != "yes" ]; then
   exit 1
 fi
 echo "   ✅ Staging install present"
+
+if ! scripts/env-parity-check.sh --server "$SERVER" --staging-dir "$STAGING_DIR" --prod-dir "$PROD_DIR"; then
+  echo "   ❌ Staging/prod environment parity check failed"
+  exit 1
+fi
+echo "   ✅ Staging/prod env key parity checked"
 
 # Check that the local artifact manifest matches what's deployed to staging.
 # The manifest covers dist/**, migrations/**, prompts/**, package locks, PM2
@@ -124,18 +136,13 @@ if [ "$STAGING_MANIFEST_DIGEST" = "missing" ]; then
   exit 1
 fi
 if [ "$LOCAL_MANIFEST_DIGEST" != "$STAGING_MANIFEST_DIGEST" ]; then
-  echo "   ⚠️  Local and staging artifact manifests differ:"
+  echo "   ❌ Local and staging artifact manifests differ:"
   echo "        local:   $LOCAL_MANIFEST_DIGEST"
   echo "        staging: $STAGING_MANIFEST_DIGEST"
   echo ""
-  echo "   You're about to promote an artifact different from what's on staging."
-  echo "   Run ./scripts/deploy-staging.sh first to sync them, OR continue if"
-  echo "   you intentionally want to promote a different build."
-  read -p "   Continue anyway? (type YES) " CONFIRM
-  if [ "$CONFIRM" != "YES" ]; then
-    echo "❌ Promote cancelled"
-    exit 0
-  fi
+  echo "   Refusing to promote drift. Run ./scripts/deploy-staging.sh first"
+  echo "   so production receives the exact artifact that staging exercised."
+  exit 1
 else
   echo "   ✅ Local and staging artifact manifests match"
 fi
@@ -258,7 +265,6 @@ fi
 
 # ── Run the actual prod deploy ──────────────────────
 # We delegate to deploy.sh because it already does everything correctly:
-#   - npm version patch
 #   - typecheck + build
 #   - pm2 stop, backup (now includes bot.db post-QW-10)
 #   - rsync to prod path

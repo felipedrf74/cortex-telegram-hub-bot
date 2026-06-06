@@ -491,6 +491,7 @@ describe('changed-area-classifier CI/CD optimization routing', () => {
       { encoding: 'utf8' },
     );
     return JSON.parse(raw) as {
+      changedFiles: string[];
       flags: Record<string, boolean>;
       vitest: { mode: string; globs: string[]; skipReason?: string | null };
       pytest: { globs: string[] };
@@ -538,6 +539,30 @@ describe('changed-area-classifier CI/CD optimization routing', () => {
   it('flags changed irreversible migrations for manual approval', () => {
     const result = classify('migrations/200_content_radar_phase0_rollout_guards.sql');
 
+    expect(result.flags.migration).toBe(true);
+    expect(result.flags.irreversibleMigration).toBe(true);
+    expect(result.cannotSkip).toContain('irreversible-migration-manual-approval');
+  });
+
+  it('normalizes workspace-prefixed backend and migration paths', () => {
+    const result = classify('engine/src/api/routes/billing.ts,engine/migrations/203_apple_health_encrypted_payload.sql');
+
+    expect(result.changedFiles).toContain('src/api/routes/billing.ts');
+    expect(result.changedFiles).toContain('migrations/203_apple_health_encrypted_payload.sql');
+    expect(result.flags.backendSrc).toBe(true);
+    expect(result.flags.apiRoute).toBe(true);
+    expect(result.flags.migration).toBe(true);
+    expect(result.flags.appleNotificationWebhook).toBe(true);
+    expect(result.cannotSkip).toContain('migration-rollback-review');
+    expect(result.cannotSkip).toContain('apple-notifications-jws-verify');
+    expect(result.vitest.mode).toBe('focused');
+    expect(result.vitest.globs).toContain('__tests__/security/billing-apple-notifications-jws-verify.test.ts');
+  });
+
+  it('fails closed for deleted or renamed migration paths', () => {
+    const result = classify('engine/migrations/999_deleted_forward_only.sql');
+
+    expect(result.changedFiles).toContain('migrations/999_deleted_forward_only.sql');
     expect(result.flags.migration).toBe(true);
     expect(result.flags.irreversibleMigration).toBe(true);
     expect(result.cannotSkip).toContain('irreversible-migration-manual-approval');

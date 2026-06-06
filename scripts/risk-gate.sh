@@ -2,7 +2,9 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "$ROOT/scripts/lib/release-gates.sh"
 cd "$ROOT"
+release_require_git_worktree "$ROOT"
 
 BASE_REF=""
 EXPLICIT_FILES=""

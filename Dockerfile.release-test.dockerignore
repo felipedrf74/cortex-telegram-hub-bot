@@ -1,0 +1,33 @@
+# Keep release-test context complete enough to run tests, while excluding
+# secrets, local state, and bulky generated output.
+
+node_modules
+dist
+content-engine/.venv
+content-engine/.venv313
+content-engine/__pycache__
+content-engine/**/__pycache__
+
+data/*
+!data/classifier-golden-set.json
+logs
+.local
+coverage
+reports
+*.db
+*.db-journal
+*.db-wal
+*.log
+
+.env
+.env.*
+!.env.example
+!.env.local.example
+
+.git
+.claude
+.codex
+
+.DS_Store
+*.swp
+*.tmp

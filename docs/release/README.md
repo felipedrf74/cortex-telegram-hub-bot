@@ -2,10 +2,10 @@
 
 Status: canonical
 Owner: release lead (Felipe)
-Last verified: 2026-05-04
+Last verified: 2026-06-06
 Update policy: update when the release-process entrypoint structure changes.
 
-Date: 2026-05-03
+Date: 2026-06-06
 
 This folder is the active source of truth for the release process.
 
@@ -24,6 +24,29 @@ Before writing a release decision, generate current identity:
 ```bash
 scripts/release-identity.sh markdown
 ```
+
+Before staging a production candidate, prepare the versioned release commit:
+
+```bash
+scripts/release-prep.sh --patch
+```
+
+Before reusing CI release evidence, ensure it is signed v2 evidence per
+`release-evidence-contract.md`. `auto-when-staged` remains default-off until
+the shadow period and rollback-drill requirements are satisfied.
+
+Useful release-hardening commands:
+
+```bash
+npm run release:verify
+npm run release:verify:container
+npm run release:evidence:keygen
+npm run release:rollback-drill-check
+```
+
+The keygen command writes the public verifier to `docs/release/evidence/` and a
+local private key under `.local/release/`; an owner must install that private key
+as the GitHub Actions secret before signed CI evidence can pass.
 
 Before creating new markdown reports or copying old verdicts/test counts, run:
 
