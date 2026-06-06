@@ -28,15 +28,36 @@ import {
   hasWritableCalendarForUser,
   type CalendarSource,
 } from '../../services/unified-calendar';
-import { getCached, setCache } from '../../services/cache-store';
-import { invalidateCalendarCaches } from '../../services/calendar-cache-invalidator';
+import { invalidateCalendarCaches } from '../../services/cache-coherence-registry';
 import { sendSuccess, sendError, sendInternalError, asyncHandler } from '../response-helpers';
 import { getFocusBlockRecommendation } from '../../services/focus-planner';
+import {
+  buildPomodoroDescription,
+  buildPomodoroIntervals,
+  pomodoroDurationMinutes,
+  precheckFocusCalendarConflict,
+  roundUpToNextQuarterHour,
+} from '../../services/focus-blocks';
+import { resolveCalendarWritePreference } from '../../services/provider-preferences';
+import { isHomeFocusPillV1Enabled } from '../../services/runtime-flags';
 import { ensureValidTenantRouteScope } from '../tenant-route-scope';
 import { filterCalendarEventsForTrainingScope } from '../../services/training-calendar-scope';
+import { sendConditionalApiSuccess } from '../conditional-cache';
+import { handleCachedRoute, routeCacheKey } from '../route-helpers/cached-route-handler';
+import { getUserTimezoneById } from '../../services/user-service';
+import { getAppleHealthSleepAgendaEvents } from '../../services/health-sleep-agenda';
 
 const TODAY_TTL = 120; // 2 min — calendar can change mid-day from notifications
 const RANGE_TTL = 60;  // 1 min for arbitrary ranges
+const TODAY_SWR_STALE = 300;
+const RANGE_SWR_STALE = 300;
+
+// Phase 17 hostile-QA fix (2026-05-18): in-flight idempotency for
+// POST /focus-blocks to stop duplicate writes from rapid double-taps.
+const focusBlockInFlight = new Set<string>();
+function focusBlockIdempotencyKey(userId: number, tenantId: number, startIso: string, mode: string): string {
+  return `${userId}:${tenantId}:${startIso}:${mode}`;
+}
 
 export function calendarRoutes(): Router {
   const router = Router();
@@ -58,49 +79,38 @@ export function calendarRoutes(): Router {
   router.get('/events', asyncHandler(async (req, res: Response) => {
     const userId = (req as AuthenticatedRequest).userId;
     if (!hasConnectedCalendarForUser(userId)) {
-      sendSuccess(res, {
-        events: [],
-        status: 'unavailable',
-        warningCodes: ['CALENDAR_INTEGRATION_MISSING'],
-        warnings: ['No calendar integration is connected yet.'],
-      });
+      const { start, end } = parseRange(
+        req.query.start as string | undefined,
+        req.query.end as string | undefined,
+        calendarUserTimezone(userId),
+      );
+      sendSuccess(res, buildSleepOnlyCalendarPayload(userId, start, end));
       return;
     }
 
     const { start, end } = parseRange(req.query.start as string | undefined, req.query.end as string | undefined);
-    const cacheKey = userId ? `u:${userId}:calendar:events:${start}:${end}` : `calendar:events:${start}:${end}`;
-
-    const cached = getCached<any>(cacheKey);
-    if (cached) {
-      if (Array.isArray(cached)) {
-        sendSuccess(res, { events: cached, status: 'ready', warningCodes: [], warnings: [] }, { cached: true });
-      } else {
-        sendSuccess(res, cached, { cached: true });
-      }
-      return;
-    }
+    const cacheKey = calendarEventsCacheKey(userId, start, end);
+    const forceRefresh = req.query.refresh === 'true' || req.query.forceRefresh === 'true';
 
     try {
-      // CHAT-M2: pass userId so unified-calendar checks per-user Outlook tokens
-      const result = await getEventsWithDiagnostics(start, end, userId);
-      if (result.status === 'unavailable' && result.sources.configured.length > 0) {
-        sendError(res, 'CALENDAR_FETCH_FAILED', result.warnings[0] || 'Failed to fetch calendar events', 503, {
-          warningCodes: result.warningCodes,
+      await handleCachedRoute<any>({
+        cacheKey,
+        ttlSeconds: RANGE_TTL,
+        staleSeconds: RANGE_SWR_STALE,
+        refreshContext: { source: 'calendar_route', operation: 'calendar_swr_refresh', userId },
+        fetchFresh: () => buildEventsPayload(start, end, userId),
+        shouldServeCached: forceRefresh ? () => false : undefined,
+        send: (value, meta) => {
+          sendConditionalApiSuccess(res, req, normalizeCalendarEventsPayload(value), { cached: meta.cached });
+        },
+      });
+    } catch (err: any) {
+      if (err instanceof CalendarFetchError) {
+        sendError(res, 'CALENDAR_FETCH_FAILED', err.message, 503, {
+          warningCodes: err.warningCodes,
         });
         return;
       }
-
-      const visibleEvents = filterCalendarEventsForTrainingScope(result.events, userId);
-      const formatted = visibleEvents.map(formatEvent);
-      const payload = {
-        events: formatted,
-        status: result.status,
-        warningCodes: result.warningCodes,
-        warnings: result.warnings,
-      };
-      setCache(cacheKey, payload, RANGE_TTL);
-      sendSuccess(res, payload);
-    } catch (err: any) {
       logger.error({ err }, 'iOS calendar/events failed');
       sendInternalError(res, 'Failed to fetch calendar events', { code: 'CALENDAR_FETCH_FAILED' });
     }
@@ -142,6 +152,8 @@ export function calendarRoutes(): Router {
       attendees?: unknown[];
       source?: string;
       recurrence?: unknown;
+      nexusCategory?: string;
+      categories?: unknown;
     };
 
     if (!body.title || typeof body.title !== 'string' || !body.title.trim()) {
@@ -178,15 +190,30 @@ export function calendarRoutes(): Router {
     const source = body.source && allowedSources.includes(body.source as CalendarSource)
       ? (body.source as CalendarSource)
       : undefined;
+    // Phase 17 hostile-QA fix (2026-05-18): pass tenantId from AuthenticatedRequest
+    // so cross-tenant users (tenantId != userId) read their persisted preference
+    // instead of falling back to the (userId, userId) default which silently
+    // reverts to 'auto'.
+    const tenantId = (req as AuthenticatedRequest).tenantId;
+    const preferenceResolution = source ? null : resolveCalendarWritePreference(userId, tenantId);
+    const resolvedSource = source ?? preferenceResolution?.source ?? undefined;
+    if (!resolvedSource) {
+      sendError(res, 'CALENDAR_NOT_CONFIGURED', preferenceResolution?.warning || 'No calendar provider is connected', 400, {
+        warningCodes: preferenceResolution?.warningCode ? [preferenceResolution.warningCode] : ['CALENDAR_INTEGRATION_MISSING'],
+      });
+      return;
+    }
 
     try {
+      const categories = normalizeNexusCategories(body.nexusCategory, body.categories);
       const event = await createEvent(
         {
           title: body.title.trim(),
           start: start.toISOString(),
           end: end.toISOString(),
-          description: body.description?.trim() || undefined,
+          description: withNexusCategoryDescription(body.description?.trim() || undefined, categories),
           location: body.location?.trim() || undefined,
+          categories,
           attendees: Array.isArray(body.attendees)
             ? body.attendees
                 .map((value: unknown) => typeof value === 'string' ? value.trim() : '')
@@ -194,24 +221,31 @@ export function calendarRoutes(): Router {
             : undefined,
           recurrence: body.recurrence,
         },
-        source,
+        resolvedSource,
         userId,
       );
 
       invalidateCalendarCaches(userId);
 
       logger.info(
-        { userId: (req as AuthenticatedRequest).userId, eventId: event.id, source: event.source },
+        { userId: (req as AuthenticatedRequest).userId, eventId: event.id, source: event.source, categories },
         'iOS calendar event created',
       );
 
-      sendSuccess(res, { event: formatEvent(event) });
+      sendSuccess(res, {
+        event: formatEvent(event),
+        providerPreferenceWarning: preferenceResolution?.warningCode ? {
+          code: preferenceResolution.warningCode,
+          message: preferenceResolution.warning,
+          requested: preferenceResolution.requested,
+        } : null,
+      });
     } catch (err: any) {
       logger.error(
         {
           err,
           userId,
-          source,
+          source: resolvedSource,
           titleLength: typeof body.title === 'string' ? body.title.trim().length : 0,
           hasDescription: typeof body.description === 'string' && body.description.trim().length > 0,
           attendeeCount: Array.isArray(body.attendees) ? body.attendees.length : 0,
@@ -221,6 +255,177 @@ export function calendarRoutes(): Router {
         'iOS calendar event create failed',
       );
       sendInternalError(res, 'Failed to create event', { code: 'CALENDAR_CREATE_FAILED' });
+    }
+  }));
+
+  /**
+   * POST /api/v1/calendar/focus-conflict-check
+   *
+   * Direct pre-write conflict check for Home's focus/Pomodoro quick action.
+   */
+  router.post('/focus-conflict-check', asyncHandler(async (req, res: Response) => {
+    const userId = (req as AuthenticatedRequest).userId;
+    const tenantId = (req as AuthenticatedRequest).tenantId;
+    // Phase 17 hostile-QA fix (2026-05-18): 403 (not 404) when the feature
+    // flag is off — 404 means "the resource doesn't exist"; the endpoint
+    // exists, the feature is just disabled. iOS may interpret 404 as
+    // "endpoint removed" and retry against legacy paths.
+    if (!isHomeFocusPillV1Enabled(process.env, { userId, tenantId })) {
+      sendError(res, 'FEATURE_DISABLED', 'Focus quick actions are not enabled for this account.', 403);
+      return;
+    }
+    if (!hasWritableCalendarForUser(userId)) {
+      sendError(res, 'CALENDAR_NOT_CONFIGURED', 'No calendar provider is connected', 400);
+      return;
+    }
+    const timezone = calendarUserTimezone(userId);
+    const requestedSource = parseCalendarSource(req.body?.source);
+    const preferenceResolution = requestedSource ? null : resolveCalendarWritePreference(userId, tenantId);
+    const source = requestedSource ?? preferenceResolution?.source;
+    if (!source) {
+      sendError(res, 'CALENDAR_NOT_CONFIGURED', preferenceResolution?.warning || 'No calendar provider is connected', 400);
+      return;
+    }
+    const rawStart = typeof req.body?.start === 'string' ? req.body.start : null;
+    const durationMinutes = clampInt(String(req.body?.durationMinutes || ''), 30, 5, 480);
+    const blocks = clampInt(String(req.body?.pomodoroBlocks || ''), 1, 1, 8);
+    const mode = String(req.body?.mode || 'focus') === 'pomodoro' ? 'pomodoro' : 'focus';
+    const startDate = rawStart ? new Date(rawStart) : roundUpToNextQuarterHour(new Date(), timezone);
+    if (Number.isNaN(startDate.getTime())) {
+      sendError(res, 'VALIDATION', 'start must be a valid ISO timestamp', 400);
+      return;
+    }
+    const roundedStart = roundUpToNextQuarterHour(startDate, timezone);
+    const actualDuration = mode === 'pomodoro' ? pomodoroDurationMinutes(blocks) : durationMinutes;
+    const end = new Date(roundedStart.getTime() + actualDuration * 60_000);
+    const precheck = await precheckFocusCalendarConflict({
+      userId,
+      source,
+      start: roundedStart.toISOString(),
+      end: end.toISOString(),
+      timezone,
+    });
+    sendSuccess(res, {
+      ...precheck,
+      roundedStart: roundedStart.toISOString(),
+      durationMinutes: actualDuration,
+      pomodoroBlocks: mode === 'pomodoro' ? blocks : null,
+      providerPreferenceWarning: preferenceResolution?.warningCode ? {
+        code: preferenceResolution.warningCode,
+        message: preferenceResolution.warning,
+        requested: preferenceResolution.requested,
+      } : null,
+    });
+  }));
+
+  /**
+   * POST /api/v1/calendar/focus-blocks
+   *
+   * Creates a conflict-checked focus or grouped Pomodoro blocker.
+   */
+  router.post('/focus-blocks', asyncHandler(async (req, res: Response) => {
+    const userId = (req as AuthenticatedRequest).userId;
+    const tenantId = (req as AuthenticatedRequest).tenantId;
+    // Phase 17 hostile-QA fix (2026-05-18): 403 for disabled feature, real
+    // tenantId in flag scope, tenantId in preference resolver (see GET).
+    if (!isHomeFocusPillV1Enabled(process.env, { userId, tenantId })) {
+      sendError(res, 'FEATURE_DISABLED', 'Focus quick actions are not enabled for this account.', 403);
+      return;
+    }
+    if (!hasWritableCalendarForUser(userId)) {
+      sendError(res, 'CALENDAR_NOT_CONFIGURED', 'No calendar provider is connected', 400);
+      return;
+    }
+    const timezone = calendarUserTimezone(userId);
+    const mode = String(req.body?.mode || 'focus') === 'pomodoro' ? 'pomodoro' : 'focus';
+    const requestedSource = parseCalendarSource(req.body?.source);
+    const preferenceResolution = requestedSource ? null : resolveCalendarWritePreference(userId, tenantId);
+    const source = requestedSource ?? preferenceResolution?.source;
+    if (!source) {
+      sendError(res, 'CALENDAR_NOT_CONFIGURED', preferenceResolution?.warning || 'No calendar provider is connected', 400);
+      return;
+    }
+    const requestedStart = typeof req.body?.start === 'string' ? new Date(req.body.start) : new Date();
+    if (Number.isNaN(requestedStart.getTime())) {
+      sendError(res, 'VALIDATION', 'start must be a valid ISO timestamp', 400);
+      return;
+    }
+    const start = roundUpToNextQuarterHour(requestedStart, timezone);
+    const durationMinutes = clampInt(String(req.body?.durationMinutes || ''), 30, 5, 480);
+    const blocks = clampInt(String(req.body?.pomodoroBlocks || ''), 1, 1, 8);
+    const actualDuration = mode === 'pomodoro' ? pomodoroDurationMinutes(blocks) : durationMinutes;
+    const end = new Date(start.getTime() + actualDuration * 60_000);
+
+    // Phase 17 hostile-QA fix (2026-05-18): per-user, per-slot idempotency
+    // guard. Two rapid double-taps on the iOS Focus pill would otherwise
+    // race the precheck and create two events with identical start/end.
+    const idempotencyKey = focusBlockIdempotencyKey(userId, tenantId, start.toISOString(), mode);
+    if (focusBlockInFlight.has(idempotencyKey)) {
+      sendError(res, 'FOCUS_BLOCK_DUPLICATE', 'A focus block for this slot is already being created.', 409);
+      return;
+    }
+    focusBlockInFlight.add(idempotencyKey);
+    try {
+      const precheck = await precheckFocusCalendarConflict({
+        userId,
+        source,
+        start: start.toISOString(),
+        end: end.toISOString(),
+        timezone,
+      });
+      if (precheck.status !== 'clean') {
+        sendError(res, precheck.status === 'conflicted' ? 'FOCUS_SLOT_CONFLICT' : 'FOCUS_SLOT_UNAVAILABLE', precheck.warnings[0] || 'Focus block cannot be created for this slot.', 409, {
+          precheck,
+        });
+        return;
+      }
+      const intervals = mode === 'pomodoro'
+        ? buildPomodoroIntervals({ start, blocks, timezone })
+        : [];
+      const title = mode === 'pomodoro'
+        ? `Pomodoro focus (${blocks}x25)`
+        : (typeof req.body?.title === 'string' && req.body.title.trim() ? req.body.title.trim() : 'Focus time');
+      const categories = mode === 'pomodoro' ? ['pomodoro', 'focus'] : ['focus'];
+      const description = mode === 'pomodoro'
+        ? buildPomodoroDescription(intervals, timezone)
+        : withNexusCategoryDescription(typeof req.body?.description === 'string' ? req.body.description.trim() : undefined, categories);
+      // Phase 17 hostile-QA fix (2026-05-18): wrap createEvent in try/catch
+      // so a provider 401/403/5xx maps to typed CALENDAR_CREATE_FAILED
+      // instead of a generic 500. Matches POST /events at line 229.
+      let event;
+      try {
+        event = await createEvent(
+          {
+            title,
+            start: start.toISOString(),
+            end: end.toISOString(),
+            description,
+            categories,
+          },
+          source,
+          userId,
+        );
+      } catch (createErr: unknown) {
+        logger.warn(
+          { err: createErr, userId, tenantId, source, mode, start: start.toISOString(), end: end.toISOString() },
+          'Focus block calendar provider write failed',
+        );
+        sendError(res, 'CALENDAR_CREATE_FAILED', 'Calendar provider failed to create the focus block.', 502);
+        return;
+      }
+      invalidateCalendarCaches(userId);
+      sendSuccess(res, {
+        event: formatEvent(event),
+        mode,
+        pomodoroIntervals: intervals,
+        providerPreferenceWarning: preferenceResolution?.warningCode ? {
+          code: preferenceResolution.warningCode,
+          message: preferenceResolution.warning,
+          requested: preferenceResolution.requested,
+        } : null,
+      }, { status: 201 });
+    } finally {
+      focusBlockInFlight.delete(idempotencyKey);
     }
   }));
 
@@ -351,50 +556,38 @@ export function calendarRoutes(): Router {
   router.get('/today', asyncHandler(async (req, res: Response) => {
     const userId = (req as AuthenticatedRequest).userId;
     if (!hasConnectedCalendarForUser(userId)) {
+      const timezone = calendarUserTimezone(userId);
+      const { start, end } = todayRangeISO(timezone);
       sendSuccess(res, {
-        events: [],
-        date: todayDateString(),
-        status: 'unavailable',
-        warningCodes: ['CALENDAR_INTEGRATION_MISSING'],
-        warnings: ['No calendar integration is connected yet.'],
+        ...buildSleepOnlyCalendarPayload(userId, start, end),
+        date: todayDateString(timezone),
       });
       return;
     }
 
-    const cacheKey = userId ? `u:${userId}:calendar:today:${todayDateString()}` : `calendar:today:${todayDateString()}`;
-    const cached = getCached<any>(cacheKey);
-    if (cached) {
-      if (Array.isArray(cached)) {
-        sendSuccess(res, { events: cached, date: todayDateString(), status: 'ready', warningCodes: [], warnings: [] }, { cached: true });
-      } else {
-        sendSuccess(res, { ...cached, date: todayDateString() }, { cached: true });
-      }
-      return;
-    }
+    const timezone = calendarUserTimezone(userId);
+    const cacheKey = calendarTodayCacheKey(userId, todayDateString(timezone));
+    const forceRefresh = req.query.refresh === 'true' || req.query.forceRefresh === 'true';
 
     try {
-      const { start, end } = todayFetchRangeISO();
-      const actualRange = todayRangeISO();
-      // CHAT-M2: pass userId for per-user Outlook token resolution
-      const result = await getEventsWithDiagnostics(start, end, userId);
-      if (result.status === 'unavailable' && result.sources.configured.length > 0) {
-        sendError(res, 'CALENDAR_FETCH_FAILED', result.warnings[0] || 'Failed to fetch today\'s events', 503, {
-          warningCodes: result.warningCodes,
+      await handleCachedRoute<any>({
+        cacheKey,
+        ttlSeconds: TODAY_TTL,
+        staleSeconds: TODAY_SWR_STALE,
+        refreshContext: { source: 'calendar_route', operation: 'calendar_swr_refresh', userId },
+        fetchFresh: () => buildTodayPayload(userId),
+        shouldServeCached: forceRefresh ? () => false : undefined,
+        send: (value, meta) => {
+          sendConditionalApiSuccess(res, req, { ...normalizeCalendarEventsPayload(value), date: todayDateString(timezone) }, { cached: meta.cached });
+        },
+      });
+    } catch (err: any) {
+      if (err instanceof CalendarFetchError) {
+        sendError(res, 'CALENDAR_FETCH_FAILED', err.message, 503, {
+          warningCodes: err.warningCodes,
         });
         return;
       }
-      const formatted = filterCalendarEventsForTrainingScope(result.events, userId)
-        .filter((event) => eventOverlapsRange(event, actualRange.start, actualRange.end))
-        .map(formatEvent);
-      const payload = {
-        events: formatted,
-        status: result.status,
-        warningCodes: result.warningCodes,
-        warnings: result.warnings,
-      };
-      setCache(cacheKey, payload, TODAY_TTL);
-      sendSuccess(res, { ...payload, date: todayDateString() });
-    } catch (err: any) {
       logger.error({ err }, 'iOS calendar/today failed');
       sendInternalError(res, 'Failed to fetch today\'s events', { code: 'CALENDAR_FETCH_FAILED' });
     }
@@ -433,6 +626,122 @@ export function calendarRoutes(): Router {
 
 // ── Helpers ──────────────────────────────────────────────────────────
 
+class CalendarFetchError extends Error {
+  constructor(message: string, readonly warningCodes: string[]) {
+    super(message);
+  }
+}
+
+function normalizeCalendarEventsPayload(value: any): {
+  events: any[];
+  status: string;
+  warningCodes: string[];
+  warnings: string[];
+} {
+  if (Array.isArray(value)) {
+    return { events: value, status: 'ready', warningCodes: [], warnings: [] };
+  }
+  return {
+    events: Array.isArray(value?.events) ? value.events : [],
+    status: typeof value?.status === 'string' ? value.status : 'ready',
+    warningCodes: Array.isArray(value?.warningCodes) ? value.warningCodes : [],
+    warnings: Array.isArray(value?.warnings) ? value.warnings : [],
+  };
+}
+
+function calendarEventsCacheKey(userId: number | undefined, start: string, end: string): string {
+  return typeof userId === 'number' && userId > 0
+    ? routeCacheKey('u', userId, 'calendar', 'events', start, end)
+    : routeCacheKey('calendar', 'events', start, end);
+}
+
+function calendarTodayCacheKey(userId: number | undefined, date: string): string {
+  return typeof userId === 'number' && userId > 0
+    ? routeCacheKey('u', userId, 'calendar', 'today', date)
+    : routeCacheKey('calendar', 'today', date);
+}
+
+function calendarUserTimezone(userId: number): string {
+  try {
+    return getUserTimezoneById(userId);
+  } catch {
+    return config.app.timezone || 'Europe/Lisbon';
+  }
+}
+
+function buildSleepOnlyCalendarPayload(userId: number, start: string, end: string): {
+  events: any[];
+  status: string;
+  warningCodes: string[];
+  warnings: string[];
+} {
+  const timezone = calendarUserTimezone(userId);
+  const sleepEvents = getAppleHealthSleepAgendaEvents({ userId, start, end, timezone }).map(formatEvent);
+  return {
+    events: sortFormattedEvents(sleepEvents),
+    status: sleepEvents.length > 0 ? 'degraded' : 'unavailable',
+    warningCodes: ['CALENDAR_INTEGRATION_MISSING'],
+    warnings: ['No calendar integration is connected yet.'],
+  };
+}
+
+async function buildEventsPayload(start: string, end: string, userId: number): Promise<{
+  events: any[];
+  status: string;
+  warningCodes: string[];
+  warnings: string[];
+}> {
+  // CHAT-M2: pass userId so unified-calendar checks per-user Outlook tokens
+  const result = await getEventsWithDiagnostics(start, end, userId);
+  if (result.status === 'unavailable' && result.sources.configured.length > 0) {
+    throw new CalendarFetchError(result.warnings[0] || 'Failed to fetch calendar events', result.warningCodes);
+  }
+
+  const timezone = calendarUserTimezone(userId);
+  const visibleEvents = filterCalendarEventsForTrainingScope(result.events, userId);
+  const sleepEvents = getAppleHealthSleepAgendaEvents({ userId, start, end, timezone });
+  return {
+    events: sortFormattedEvents([...visibleEvents.map(formatEvent), ...sleepEvents.map(formatEvent)]),
+    status: result.status === 'unavailable' && sleepEvents.length > 0 ? 'degraded' : result.status,
+    warningCodes: result.warningCodes,
+    warnings: result.warnings,
+  };
+}
+
+async function buildTodayPayload(userId: number): Promise<{
+  events: any[];
+  status: string;
+  warningCodes: string[];
+  warnings: string[];
+}> {
+  const timezone = calendarUserTimezone(userId);
+  const { start, end } = todayFetchRangeISO(timezone);
+  const actualRange = todayRangeISO(timezone);
+  const result = await getEventsWithDiagnostics(start, end, userId);
+  if (result.status === 'unavailable' && result.sources.configured.length > 0) {
+    throw new CalendarFetchError(result.warnings[0] || 'Failed to fetch today\'s events', result.warningCodes);
+  }
+  const formatted = filterCalendarEventsForTrainingScope(result.events, userId)
+    .filter((event) => eventOverlapsRange(event, actualRange.start, actualRange.end))
+    .map(formatEvent);
+  const sleepEvents = getAppleHealthSleepAgendaEvents({
+    userId,
+    start: actualRange.start,
+    end: actualRange.end,
+    timezone,
+  }).map(formatEvent);
+  return {
+    events: sortFormattedEvents([...formatted, ...sleepEvents]),
+    status: result.status === 'unavailable' && sleepEvents.length > 0 ? 'degraded' : result.status,
+    warningCodes: result.warningCodes,
+    warnings: result.warnings,
+  };
+}
+
+function sortFormattedEvents(events: any[]): any[] {
+  return events.sort((a, b) => String(a.start || '').localeCompare(String(b.start || '')));
+}
+
 /**
  * Normalize a unified calendar event into the iOS DTO shape.
  * Keeps the response stable as the underlying providers add fields.
@@ -452,6 +761,8 @@ function formatEvent(e: any) {
     end: typeof e.end === 'string' ? e.end : '',
     location: typeof e.location === 'string' && e.location.trim() ? e.location : null,
     source: parseCalendarSource(e.source) || null,
+    ...(typeof e.source === 'string' && e.source === 'apple_health' ? { source: 'apple_health' } : {}),
+    ...(typeof e.category === 'string' && e.category.trim() ? { category: e.category.trim() } : {}),
     categories: Array.isArray(e.categories) ? e.categories : null,
     color: typeof e.color === 'string' ? e.color : null,
     isAllDay: !!e.isAllDay,
@@ -465,13 +776,32 @@ function parseCalendarSource(value?: string): CalendarSource | null {
   return null;
 }
 
-function parseRange(startQ?: string, endQ?: string): { start: string; end: string } {
-  if (startQ && endQ) return { start: startQ, end: endQ };
-  return todayRangeISO();
+function normalizeNexusCategories(nexusCategory: unknown, categories: unknown): string[] | undefined {
+  const allowed = new Set(['focus', 'pomodoro', 'training', 'meal', 'meeting']);
+  const values = [
+    ...(Array.isArray(categories) ? categories : []),
+    nexusCategory,
+  ];
+  const normalized = values
+    .map((value) => typeof value === 'string' ? value.trim().toLowerCase() : '')
+    .filter((value) => allowed.has(value));
+  const unique = [...new Set(normalized)];
+  return unique.length > 0 ? unique : undefined;
 }
 
-function todayRangeISO(): { start: string; end: string } {
-  const zone = config.app.timezone || 'Europe/Lisbon';
+function withNexusCategoryDescription(description: string | undefined, categories: string[] | undefined): string | undefined {
+  if (!categories?.length) return description;
+  const tag = `Nexus category: ${categories.join(', ')}`;
+  if (description?.includes('Nexus category:')) return description;
+  return description ? `${description}\n\n${tag}` : tag;
+}
+
+function parseRange(startQ?: string, endQ?: string, zone = config.app.timezone || 'Europe/Lisbon'): { start: string; end: string } {
+  if (startQ && endQ) return { start: startQ, end: endQ };
+  return todayRangeISO(zone);
+}
+
+function todayRangeISO(zone = config.app.timezone || 'Europe/Lisbon'): { start: string; end: string } {
   const today = DateTime.now().setZone(zone);
   const start = today.startOf('day');
   const end = today.endOf('day');
@@ -481,8 +811,7 @@ function todayRangeISO(): { start: string; end: string } {
   };
 }
 
-function todayFetchRangeISO(): { start: string; end: string } {
-  const zone = config.app.timezone || 'Europe/Lisbon';
+function todayFetchRangeISO(zone = config.app.timezone || 'Europe/Lisbon'): { start: string; end: string } {
   const today = DateTime.now().setZone(zone);
   const start = today.startOf('day');
   const end = today.endOf('day');
@@ -494,8 +823,8 @@ function todayFetchRangeISO(): { start: string; end: string } {
   };
 }
 
-function todayDateString(): string {
-  return new Date().toLocaleDateString('en-CA', { timeZone: config.app.timezone });
+function todayDateString(zone = config.app.timezone || 'Europe/Lisbon'): string {
+  return new Date().toLocaleDateString('en-CA', { timeZone: zone });
 }
 
 function clampInt(

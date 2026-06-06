@@ -28,6 +28,7 @@ vi.mock('../../src/config', () => ({
 
 vi.mock('../../src/utils/logger', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
+  LOGGER_REDACTION_PATHS: [],
 }));
 
 vi.mock('../../src/utils/date-parser', () => ({
@@ -80,9 +81,17 @@ vi.mock('../../src/services/user-service', () => ({
 
 vi.mock('../../src/services/database', () => ({
   getDb: (...args: unknown[]) => mockGetDb(...args),
+  initDatabase: vi.fn(),
+  closeDatabase: vi.fn(),
+  findUnexpectedMigrationPrefixCollisions: vi.fn(() => []),
 }));
 
-import { generateCoachBriefing } from '../../src/services/garmin-coach';
+import {
+  COACH_ANALYSIS_SYSTEM_METERING_TENANT_ID,
+  COACH_ANALYSIS_SYSTEM_METERING_USER_ID,
+  generateCoachBriefing,
+  resolveCoachAnalysisMeteringScope,
+} from '../../src/services/garmin-coach';
 
 describe('garmin-coach user scoping', () => {
   beforeEach(() => {
@@ -152,9 +161,82 @@ describe('garmin-coach user scoping', () => {
     );
   });
 
+  it('attributes coach explanation LLM cost to the scoped user and tenant', async () => {
+    await generateCoachBriefing(42);
+
+    expect(resolveCoachAnalysisMeteringScope(42)).toEqual({
+      actor: 'user',
+      userId: 42,
+      tenantId: 42,
+    });
+    expect(mockTryComplete).toHaveBeenCalledTimes(1);
+    const [, , category, fallback, options] = mockTryComplete.mock.calls[0];
+    expect(category).toBe('coach_analysis');
+    expect(options).toMatchObject({ maxTokens: 2500, userId: 42, tenantId: 42 });
+
+    await fallback();
+    expect(mockTrackedCreate).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      'coach_analysis',
+      { userId: 42, tenantId: 42 },
+    );
+  });
+
+  it('preserves active tenant scope for coach explanation metering', async () => {
+    await generateCoachBriefing(77, { tenantId: 77, meteringUserId: 42 });
+
+    expect(resolveCoachAnalysisMeteringScope(42, 77)).toEqual({
+      actor: 'user',
+      userId: 42,
+      tenantId: 77,
+    });
+    const [, , category, fallback, options] = mockTryComplete.mock.calls[0];
+    expect(category).toBe('coach_analysis');
+    expect(options).toMatchObject({ maxTokens: 2500, userId: 42, tenantId: 77 });
+
+    await fallback();
+    expect(mockTrackedCreate).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      'coach_analysis',
+      { userId: 42, tenantId: 77 },
+    );
+  });
+
+  it('classifies owner-bootstrap coach analysis as a system metering actor', () => {
+    const systemScope = {
+      actor: 'system',
+      userId: COACH_ANALYSIS_SYSTEM_METERING_USER_ID,
+      tenantId: COACH_ANALYSIS_SYSTEM_METERING_TENANT_ID,
+    };
+
+    expect(resolveCoachAnalysisMeteringScope()).toEqual({
+      ...systemScope,
+    });
+    expect(resolveCoachAnalysisMeteringScope(null)).toEqual({
+      ...systemScope,
+    });
+    expect(resolveCoachAnalysisMeteringScope(0)).toEqual({
+      ...systemScope,
+    });
+    expect(resolveCoachAnalysisMeteringScope(-1)).toEqual({
+      ...systemScope,
+    });
+    expect(resolveCoachAnalysisMeteringScope(1.5)).toEqual({
+      ...systemScope,
+    });
+  });
+
   it('still allows Garmin for owner-scoped users', async () => {
     mockIsOwnerUserRef.mockReturnValue(true);
     await generateCoachBriefing(7);
-    expect(mockFetchDailyCoachData).toHaveBeenCalled();
+    expect(mockFetchDailyCoachData).toHaveBeenCalledWith({ silent: undefined });
+  });
+
+  it('passes silent Garmin mode through for scheduled coach report generation', async () => {
+    mockIsOwnerUserRef.mockReturnValue(true);
+    await generateCoachBriefing(7, { garminSilent: true });
+    expect(mockFetchDailyCoachData).toHaveBeenCalledWith({ silent: true });
   });
 });

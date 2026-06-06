@@ -59,7 +59,10 @@ export const swimmingEngine: SportEngine = {
     ];
 
     if (targetSessions >= 2) {
-      sessions.push(buildSwimSession(templateFor(templates, 'threshold_swim'), pickFresh(keyPreferences), 55, ['key_swim']));
+      const keyType: SessionType = context.phase === 'peak' && context.athlete.profile.experienceLevel !== 'novice'
+        ? 'speed_swim'
+        : 'threshold_swim';
+      sessions.push(buildSwimSession(templateFor(templates, keyType), pickFresh(keyPreferences), keyType === 'speed_swim' ? 45 : 55, ['key_swim']));
     }
     if (targetSessions >= 3) {
       sessions.push(buildSwimSession(templateFor(templates, 'aerobic_swim'), pickFresh(aerobicPreferences), 50, ['aerobic_swim']));
@@ -71,4 +74,3 @@ export const swimmingEngine: SportEngine = {
     return sessions;
   },
 };
-

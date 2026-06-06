@@ -46,6 +46,8 @@
 set -euo pipefail
 
 LOCAL_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+AUDIT_LOG="${NEXUS_RELEASE_AUDIT_LOG:-$LOCAL_DIR/.local/release/override-audit.jsonl}"
+DEPLOY_MUTATION_MARKER="${NEXUS_DEPLOY_MUTATION_MARKER:-/tmp/nexus-deploy-prod-mutation-started}"
 
 SKIP_SMOKE=false
 DRY_RUN=false
@@ -68,6 +70,34 @@ echo "  🚀 Nexus Hub Promote to Production"
 echo "═══════════════════════════════════════════════"
 echo ""
 
+audit_override() {
+  local flag="$1"
+  local reason="${NEXUS_EMERGENCY_SKIP_REASON:-}"
+  mkdir -p "$(dirname "$AUDIT_LOG")"
+  node -e '
+    const fs = require("fs");
+    const entry = {
+      ts: new Date().toISOString(),
+      flag: process.argv[1],
+      reason: process.argv[2],
+      user: process.env.USER || process.env.LOGNAME || "unknown",
+      sha: process.argv[3],
+      branch: process.argv[4],
+      script: "promote-to-prod.sh",
+    };
+    fs.appendFileSync(process.argv[5], JSON.stringify(entry) + "\n");
+  ' "$flag" "$reason" "$(git -C "$LOCAL_DIR" rev-parse HEAD 2>/dev/null || echo unknown)" "$(git -C "$LOCAL_DIR" branch --show-current 2>/dev/null || echo unknown)" "$AUDIT_LOG"
+}
+
+require_emergency_reason() {
+  local flag="$1"
+  if [ -z "${NEXUS_EMERGENCY_SKIP_REASON:-}" ]; then
+    echo "❌ $flag requires NEXUS_EMERGENCY_SKIP_REASON"
+    exit 1
+  fi
+  audit_override "$flag"
+}
+
 # ── Prerequisite check: staging exists ──────────────
 echo "🔍 Preflight checks..."
 SERVER="${DEPLOY_SERVER:-dominguez@serverdominguez}"
@@ -80,24 +110,23 @@ if [ "$STAGING_EXISTS" != "yes" ]; then
 fi
 echo "   ✅ Staging install present"
 
-# Check that the local working tree matches what's deployed to staging.
-# We compare the SHA of dist/index.js — if they differ, the operator
-# forgot to run deploy-staging.sh first and would be promoting an
-# unvalidated artifact.
-LOCAL_DIST_HASH=$(shasum -a 256 "$LOCAL_DIR/dist/index.js" 2>/dev/null | cut -d' ' -f1 || echo "missing")
-STAGING_DIST_HASH=$(ssh "$SERVER" "shasum -a 256 $STAGING_DIR/dist/index.js 2>/dev/null | cut -d' ' -f1" || echo "missing")
-if [ "$LOCAL_DIST_HASH" = "missing" ]; then
+# Check that the local artifact manifest matches what's deployed to staging.
+# The manifest covers dist/**, migrations/**, prompts/**, package locks, PM2
+# config, and Python content-engine runtime files.
+if [ ! -f "$LOCAL_DIR/dist/index.js" ]; then
   echo "   ⚠️  No local dist/index.js — building..."
-  cd "$LOCAL_DIR" && npm run build > /dev/null && LOCAL_DIST_HASH=$(shasum -a 256 dist/index.js | cut -d' ' -f1)
+  cd "$LOCAL_DIR" && npm run build > /dev/null
 fi
-if [ "$STAGING_DIST_HASH" = "missing" ]; then
-  echo "   ❌ Staging has no dist/index.js — run ./scripts/deploy-staging.sh first"
+LOCAL_MANIFEST_DIGEST=$(node "$LOCAL_DIR/scripts/release-artifact-manifest.mjs" --root "$LOCAL_DIR" --digest 2>/dev/null || echo "missing")
+STAGING_MANIFEST_DIGEST=$(ssh "$SERVER" "cd $STAGING_DIR && if [ -f scripts/release-artifact-manifest.mjs ]; then node scripts/release-artifact-manifest.mjs --digest; else echo missing; fi" 2>/dev/null || echo "missing")
+if [ "$STAGING_MANIFEST_DIGEST" = "missing" ]; then
+  echo "   ❌ Staging cannot compute release artifact manifest — run ./scripts/deploy-staging.sh first"
   exit 1
 fi
-if [ "$LOCAL_DIST_HASH" != "$STAGING_DIST_HASH" ]; then
-  echo "   ⚠️  Local and staging dist/ hashes differ:"
-  echo "        local:   $LOCAL_DIST_HASH"
-  echo "        staging: $STAGING_DIST_HASH"
+if [ "$LOCAL_MANIFEST_DIGEST" != "$STAGING_MANIFEST_DIGEST" ]; then
+  echo "   ⚠️  Local and staging artifact manifests differ:"
+  echo "        local:   $LOCAL_MANIFEST_DIGEST"
+  echo "        staging: $STAGING_MANIFEST_DIGEST"
   echo ""
   echo "   You're about to promote an artifact different from what's on staging."
   echo "   Run ./scripts/deploy-staging.sh first to sync them, OR continue if"
@@ -108,11 +137,66 @@ if [ "$LOCAL_DIST_HASH" != "$STAGING_DIST_HASH" ]; then
     exit 0
   fi
 else
-  echo "   ✅ Local and staging dist/ hashes match"
+  echo "   ✅ Local and staging artifact manifests match"
+fi
+
+if node "$LOCAL_DIR/scripts/release-evidence.mjs" validate --root "$LOCAL_DIR" --json > /tmp/nexus-promote-release-evidence.json 2>/tmp/nexus-promote-release-evidence.err; then
+  echo "   ✅ Release evidence matches local SHA + manifest digest"
+else
+  echo "   🟡 Release evidence shadow check did not match; promotion will still run strict deploy verification"
+  cat /tmp/nexus-promote-release-evidence.err 2>/dev/null || true
+  cat /tmp/nexus-promote-release-evidence.json 2>/dev/null || true
 fi
 
 # ── Smoke test gate ──────────────────────────────────
+# release-pipeline-risk-based-optimization (2026-05-03):
+# Reuse recent (≤ NEXUS_SMOKE_REUSE_MAX_AGE_S, default 1800 s = 30 min)
+# smoke-evidence JSON for the same staging git SHA. Skips one ~30 s
+# smoke run + ssh round-trips when the operator just ran staging-smoke.sh
+# manually before invoking promote-to-prod.sh (the documented workflow).
+# Disable with NEXUS_SMOKE_REUSE=0 to force a fresh smoke every time.
+EVIDENCE_DIR="$LOCAL_DIR/docs/release/smoke-evidence"
+SMOKE_REUSE_MAX_AGE_S="${NEXUS_SMOKE_REUSE_MAX_AGE_S:-1800}"
+SMOKE_REUSE_ENABLED="${NEXUS_SMOKE_REUSE:-1}"
+
+find_recent_evidence_for_hash() {
+  # Find the newest staging-smoke evidence file whose payload matches
+  # the SHA currently sitting on staging AND whose age is within
+  # the freshness window AND whose verdict is "passed".
+  if [ "$SMOKE_REUSE_ENABLED" != "1" ] || [ ! -d "$EVIDENCE_DIR" ]; then
+    return 1
+  fi
+  local now_epoch="$(date -u +%s)"
+  local found=""
+  while IFS= read -r f; do
+    [ -z "$f" ] && continue
+    [ -f "$f" ] || continue
+    local mtime_epoch
+    mtime_epoch="$(stat -f %m "$f" 2>/dev/null || stat -c %Y "$f" 2>/dev/null || echo 0)"
+    local age=$((now_epoch - mtime_epoch))
+    if [ "$age" -gt "$SMOKE_REUSE_MAX_AGE_S" ]; then
+      continue
+    fi
+    # Parse verdict + sha from evidence
+    local verdict sha
+    verdict="$(NODE_NO_WARNINGS=1 node -e "let b='';process.stdin.on('data',c=>b+=c);process.stdin.on('end',()=>{try{process.stdout.write(JSON.parse(b).verdict||'')}catch(e){}})" < "$f" 2>/dev/null)"
+    sha="$(NODE_NO_WARNINGS=1 node -e "let b='';process.stdin.on('data',c=>b+=c);process.stdin.on('end',()=>{try{process.stdout.write(JSON.parse(b).sha||'')}catch(e){}})" < "$f" 2>/dev/null)"
+    [ "$verdict" = "passed" ] || continue
+    [ -n "$sha" ] || continue
+    if [ "$sha" = "$STAGING_HEAD_SHA" ]; then
+      found="$f|$age"
+      break
+    fi
+  done < <(ls -t "$EVIDENCE_DIR"/staging-smoke-*.json 2>/dev/null)
+  [ -n "$found" ] && printf '%s' "$found"
+  [ -n "$found" ] && return 0 || return 1
+}
+
+# Capture staging head SHA for evidence matching (cheap one-shot ssh)
+STAGING_HEAD_SHA="$(ssh "$SERVER" "/usr/bin/node -p \"require('$STAGING_DIR/package.json').version\" >/dev/null 2>&1; cd $STAGING_DIR 2>/dev/null && git rev-parse --short HEAD 2>/dev/null" || echo unknown)"
+
 if [ "$SKIP_SMOKE" = true ]; then
+  require_emergency_reason "--skip-smoke"
   echo ""
   echo "⚠️  Skipping smoke test (--skip-smoke)"
   echo "   This is DANGEROUS — you're promoting unverified code to prod."
@@ -123,12 +207,30 @@ if [ "$SKIP_SMOKE" = true ]; then
   fi
 else
   echo ""
-  echo "🧪 Running staging smoke test..."
-  if ! "$LOCAL_DIR/scripts/staging-smoke.sh"; then
-    echo ""
-    echo "❌ Smoke test failed — REFUSING to promote to prod."
-    echo "   Fix the failing tests on staging first, then re-run this script."
-    exit 1
+  RECENT_EVIDENCE=""
+  if [ -n "$STAGING_HEAD_SHA" ] && [ "$STAGING_HEAD_SHA" != "unknown" ]; then
+    RECENT_EVIDENCE="$(find_recent_evidence_for_hash || true)"
+  fi
+  if [ -n "$RECENT_EVIDENCE" ]; then
+    EVIDENCE_FILE="${RECENT_EVIDENCE%|*}"
+    EVIDENCE_AGE_S="${RECENT_EVIDENCE##*|}"
+    echo "♻️  Reusing recent staging-smoke evidence (age: ${EVIDENCE_AGE_S}s, max: ${SMOKE_REUSE_MAX_AGE_S}s)"
+    echo "   $EVIDENCE_FILE"
+    echo "   verdict: passed · sha: $STAGING_HEAD_SHA"
+    echo "   Set NEXUS_SMOKE_REUSE=0 to force a fresh smoke."
+  else
+    echo "🧪 Running staging smoke test..."
+    # Promotion-time smoke is a gate, not a release-evidence authoring step.
+    # A fresh evidence file dirties the worktree and correctly triggers the
+    # deploy.sh provenance guard. Standalone staging-smoke.sh still writes
+    # evidence by default; this path defaults it off so promotion can proceed
+    # from a clean, already-committed tree.
+    if ! NEXUS_SMOKE_EVIDENCE="${NEXUS_PROMOTE_SMOKE_EVIDENCE:-0}" "$LOCAL_DIR/scripts/staging-smoke.sh"; then
+      echo ""
+      echo "❌ Smoke test failed — REFUSING to promote to prod."
+      echo "   Fix the failing tests on staging first, then re-run this script."
+      exit 1
+    fi
   fi
 fi
 
@@ -167,8 +269,10 @@ fi
 echo ""
 echo "📦 Promoting to production via deploy.sh..."
 echo ""
-"$LOCAL_DIR/scripts/deploy.sh"
+set +e
+NEXUS_DEPLOY_MUTATION_MARKER="$DEPLOY_MUTATION_MARKER" "$LOCAL_DIR/scripts/deploy.sh"
 DEPLOY_EXIT=$?
+set -e
 
 if [ $DEPLOY_EXIT -ne 0 ]; then
   echo ""
@@ -176,10 +280,21 @@ if [ $DEPLOY_EXIT -ne 0 ]; then
   echo "  ❌ PROMOTE FAILED"
   echo "═══════════════════════════════════════════════"
   echo ""
-  echo "Production deploy failed. Rollback instructions:"
-  echo "  ./scripts/rollback.sh                    # list available backups"
-  echo "  ./scripts/rollback.sh --dry-run latest   # validate the latest backup"
-  echo "  ./scripts/rollback.sh latest             # apply the latest backup"
+  if [ "${NEXUS_PROMOTE_AUTO_ROLLBACK:-1}" != "0" ] && [ -f "$DEPLOY_MUTATION_MARKER" ]; then
+    echo "Production deploy failed after production mutation. Auto-running rollback.sh latest..."
+    NEXUS_ROLLBACK_AUTO_CONFIRM=1 "$LOCAL_DIR/scripts/rollback.sh" latest || {
+      echo "⚠️ Auto rollback failed. Manual rollback commands:"
+      echo "  ./scripts/rollback.sh --dry-run latest"
+      echo "  ./scripts/rollback.sh latest"
+    }
+  elif [ "${NEXUS_PROMOTE_AUTO_ROLLBACK:-1}" != "0" ]; then
+    echo "Deploy failed before production mutation. Auto rollback skipped."
+  else
+    echo "Production deploy failed. Rollback instructions:"
+    echo "  ./scripts/rollback.sh                    # list available backups"
+    echo "  ./scripts/rollback.sh --dry-run latest   # validate the latest backup"
+    echo "  ./scripts/rollback.sh latest             # apply the latest backup"
+  fi
   exit $DEPLOY_EXIT
 fi
 

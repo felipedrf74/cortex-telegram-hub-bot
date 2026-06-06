@@ -21,10 +21,14 @@ let testDb: Database.Database;
 
 vi.mock('../../src/services/database', () => ({
   getDb: () => testDb,
+  initDatabase: vi.fn(),
+  closeDatabase: vi.fn(),
+  findUnexpectedMigrationPrefixCollisions: vi.fn(() => []),
 }));
 
 vi.mock('../../src/utils/logger', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(), trace: vi.fn(), child: vi.fn().mockReturnThis() },
+  LOGGER_REDACTION_PATHS: [],
 }));
 
 vi.mock('../../src/config', () => ({
@@ -57,6 +61,7 @@ import {
   getLearnedPatterns,
   getArtifactChain,
 } from '../../src/services/content-learning-store';
+import { buildContentCreativeProfileContext } from '../../src/services/content-memory-profile';
 
 // ═══════════════════════════════════════════════════════════════════
 // 1. Script Text Durable Storage
@@ -146,6 +151,45 @@ describe('content-learning-store: script storage', () => {
     expect(getRecentScripts(2, 30, 10)).toHaveLength(1);
     expect(getRecentScripts(1, 30, 10)[0].topic).toBe('User 1 Script');
   });
+
+  it('scripts are isolated when the same numeric user ID exists in two tenants', () => {
+    testDb.prepare(`
+      INSERT INTO content_pipeline (
+        id, topic_title, niche, stage, user_id, tenant_id, owner_user_id,
+        visibility_scope, scope_status
+      )
+      VALUES (7001, 'Tenant One Script', 'tech', 'scripted', 100, 1, 100, 'user_private', 'active')
+    `).run();
+    testDb.prepare(`
+      INSERT INTO content_pipeline (
+        id, topic_title, niche, stage, user_id, tenant_id, owner_user_id,
+        visibility_scope, scope_status
+      )
+      VALUES (7002, 'Tenant Two Script', 'tech', 'scripted', 100, 2, 100, 'user_private', 'active')
+    `).run();
+
+    storeScript({
+      pipelineId: 7001,
+      topic: 'Tenant One Script',
+      format: 'reel',
+      scriptText: 'tenant-one-only',
+      userId: 100,
+      tenantId: 1,
+    });
+    storeScript({
+      pipelineId: 7002,
+      topic: 'Tenant Two Script',
+      format: 'reel',
+      scriptText: 'tenant-two-only',
+      userId: 100,
+      tenantId: 2,
+    });
+
+    expect(getScriptByPipelineId(7001, 100, 1)?.scriptText).toBe('tenant-one-only');
+    expect(getScriptByPipelineId(7002, 100, 2)?.scriptText).toBe('tenant-two-only');
+    expect(getScriptByPipelineId(7001, 100, 2)).toBeNull();
+    expect(getScriptByPipelineId(7002, 100, 1)).toBeNull();
+  });
 });
 
 // ═══════════════════════════════════════════════════════════════════
@@ -224,12 +268,100 @@ describe('content-learning-store: performance feedback', () => {
     expect(summary2.avgViews).toBe(5000);
   });
 
+  it('feedback summaries are isolated by tenant for the same numeric user ID', () => {
+    logPerformanceFeedback({ views: 1200, retentionPct: 41, userId: 100, tenantId: 1 });
+    logPerformanceFeedback({ views: 9800, retentionPct: 88, userId: 100, tenantId: 2 });
+
+    const tenantOne = getPerformanceSummary(100, 30, 1);
+    const tenantTwo = getPerformanceSummary(100, 30, 2);
+
+    expect(tenantOne.count).toBe(1);
+    expect(tenantTwo.count).toBe(1);
+    expect(tenantOne.avgViews).toBe(1200);
+    expect(tenantTwo.avgViews).toBe(9800);
+    expect(tenantOne.entries[0].views).toBe(1200);
+    expect(tenantTwo.entries[0].views).toBe(9800);
+  });
+
   it('feedback.json is no longer needed', () => {
     // The canonical store is SQLite, not the JSON file.
     // Verify the DB path works without any JSON file.
     logPerformanceFeedback({ views: 100, retentionPct: 50, userId: 1 });
     const summary = getPerformanceSummary(1, 30);
     expect(summary.count).toBe(1);
+  });
+
+  it('turns strong performance feedback into user-scoped content memory', () => {
+    logPerformanceFeedback({
+      views: 8000,
+      retentionPct: 62,
+      likes: 450,
+      comments: 80,
+      subsGained: 14,
+      hookUsed: 'Stop losing creator ideas',
+      selectedTitle: 'Build a content operating system',
+      publishedHashtags: ['#systems', '#creatorops'],
+      analysis: { format: 'youtube' },
+      userId: 42,
+      tenantId: 42,
+    });
+
+    const context = buildContentCreativeProfileContext({ tenantId: 42, userId: 42 });
+
+    expect(context.appliedMemoryKeys).toEqual(expect.arrayContaining([
+      'performance.successful_topics',
+      'performance.successful_hooks',
+      'performance.successful_formats',
+      'performance.audience_response_signals',
+    ]));
+    expect(context.contextBlock).toContain('Build a content operating system');
+    expect(context.contextBlock).toContain('Stop losing creator ideas');
+    expect(context.contextBlock).toContain('views_high');
+    expect(context.contextBlock).toContain('retention_high');
+  });
+
+  it('turns weak performance feedback into avoid/rework memory', () => {
+    logPerformanceFeedback({
+      views: 1200,
+      retentionPct: 18,
+      likes: 4,
+      comments: 0,
+      hookUsed: 'Generic productivity hack',
+      selectedTitle: 'Daily routine hacks for busy founders',
+      publishedHashtags: ['#routine'],
+      userId: 42,
+      tenantId: 42,
+    });
+
+    const context = buildContentCreativeProfileContext({ tenantId: 42, userId: 42 });
+
+    expect(context.appliedMemoryKeys).toEqual(expect.arrayContaining([
+      'performance.weak_topics',
+      'pattern.rejected_content_patterns',
+      'performance.audience_response_signals',
+    ]));
+    expect(context.contextBlock).toContain('Daily routine hacks for busy founders');
+    expect(context.contextBlock).toContain('Generic productivity hack');
+    expect(context.contextBlock).toContain('retention_low');
+  });
+
+  it('keeps performance-derived memory scoped to the feedback user and tenant', () => {
+    logPerformanceFeedback({
+      views: 9000,
+      retentionPct: 70,
+      hookUsed: 'Private winning hook',
+      selectedTitle: 'Tenant A private winning topic',
+      userId: 42,
+      tenantId: 42,
+    });
+
+    const ownerContext = buildContentCreativeProfileContext({ tenantId: 42, userId: 42 });
+    const otherUserContext = buildContentCreativeProfileContext({ tenantId: 42, userId: 43 });
+    const otherTenantContext = buildContentCreativeProfileContext({ tenantId: 84, userId: 42 });
+
+    expect(ownerContext.contextBlock).toContain('Tenant A private winning topic');
+    expect(otherUserContext.contextBlock).not.toContain('Tenant A private winning topic');
+    expect(otherTenantContext.contextBlock).not.toContain('Tenant A private winning topic');
   });
 });
 
@@ -302,6 +434,43 @@ describe('content-learning-store: learned patterns', () => {
     expect(getLearnedPatterns(0)).toHaveLength(3);
   });
 
+  it('migration 122 removes colliding learned-pattern duplicates before creating the tenant unique index', () => {
+    const migrationDb = new Database(':memory:');
+    try {
+      migrationDb.exec(`
+        CREATE TABLE content_learned_patterns (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          category TEXT NOT NULL,
+          pattern_text TEXT NOT NULL,
+          examples JSON DEFAULT '[]',
+          confidence REAL DEFAULT 0.5,
+          frequency INTEGER DEFAULT 1,
+          source_agent TEXT,
+          first_detected_at TEXT NOT NULL DEFAULT (datetime('now')),
+          last_seen_at TEXT NOT NULL DEFAULT (datetime('now')),
+          user_id INTEGER NOT NULL DEFAULT 0,
+          tenant_id INTEGER,
+          owner_user_id INTEGER
+        );
+      `);
+      const insert = migrationDb.prepare(`
+        INSERT INTO content_learned_patterns (
+          category, pattern_text, frequency, first_detected_at, last_seen_at, user_id, tenant_id, owner_user_id
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `);
+      insert.run('voice_addition', 'duplicate tenant pattern', 1, '2026-05-01T08:00:00.000Z', '2026-05-01T08:00:00.000Z', 42, 77, 42);
+      insert.run('voice_addition', 'duplicate tenant pattern', 4, '2026-05-02T08:00:00.000Z', '2026-05-02T08:00:00.000Z', 42, 77, 42);
+
+      migrationDb.exec(fs.readFileSync(path.join(MIGRATIONS_DIR, '122_content_learned_patterns_tenant_unique.sql'), 'utf8'));
+
+      const rows = migrationDb.prepare('SELECT frequency FROM content_learned_patterns').all() as Array<{ frequency: number }>;
+      expect(rows).toEqual([{ frequency: 4 }]);
+      expect(() => insert.run('voice_addition', 'duplicate tenant pattern', 2, '2026-05-03T08:00:00.000Z', '2026-05-03T08:00:00.000Z', 42, 77, 42)).toThrow();
+    } finally {
+      migrationDb.close();
+    }
+  });
+
   it('prefers user learned patterns over system rows with the same content key', () => {
     upsertLearnedPattern({ category: 'voice_addition', patternText: 'shared pattern', userId: 0 });
     upsertLearnedPattern({ category: 'voice_addition', patternText: 'shared pattern', userId: 42 });
@@ -311,6 +480,35 @@ describe('content-learning-store: learned patterns', () => {
     expect(patterns).toHaveLength(1);
     expect(patterns[0].userId).toBe(42);
     expect(patterns[0].patternText).toBe('shared pattern');
+  });
+
+  it('keeps learned patterns tenant-scoped when the same numeric user ID appears in multiple tenants', () => {
+    upsertLearnedPattern({
+      category: 'hook_pattern',
+      patternText: 'same surface text',
+      examples: ['tenant-one-example'],
+      confidence: 0.7,
+      userId: 100,
+      tenantId: 1,
+    });
+    upsertLearnedPattern({
+      category: 'hook_pattern',
+      patternText: 'same surface text',
+      examples: ['tenant-two-example'],
+      confidence: 0.9,
+      userId: 100,
+      tenantId: 2,
+    });
+
+    const tenantOne = getLearnedPatterns(100, 'hook_pattern', 1);
+    const tenantTwo = getLearnedPatterns(100, 'hook_pattern', 2);
+
+    expect(tenantOne).toHaveLength(1);
+    expect(tenantTwo).toHaveLength(1);
+    expect(tenantOne[0].examples).toEqual(['tenant-one-example']);
+    expect(tenantTwo[0].examples).toEqual(['tenant-two-example']);
+    expect(tenantOne[0].confidence).toBe(0.7);
+    expect(tenantTwo[0].confidence).toBe(0.9);
   });
 
   it('patterns never expire (unlike bus signals)', () => {
@@ -347,15 +545,21 @@ describe('content-learning-store: artifact chain', () => {
   it('traces full chain from pipeline to script and performance', () => {
     // Create topic feedback
     testDb.prepare(`
-      INSERT INTO content_topic_feedback (topic, niche, format, sentiment, source_job, hook_idea, why_now, user_id)
-      VALUES ('AI Fitness', 'tech', 'youtube', 'approved', 'manual', 'Best hook', 'Trending now', 0)
+      INSERT INTO content_topic_feedback (
+        topic, niche, format, sentiment, source_job, hook_idea, why_now, user_id,
+        tenant_id, owner_user_id, visibility_scope, scope_status
+      )
+      VALUES ('AI Fitness', 'tech', 'youtube', 'approved', 'manual', 'Best hook', 'Trending now', 1, 1, 1, 'user_private', 'active')
     `).run();
     const feedbackId = (testDb.prepare('SELECT last_insert_rowid() as id').get() as any).id;
 
     // Create pipeline entry
     testDb.prepare(`
-      INSERT INTO content_pipeline (topic_feedback_id, topic_title, niche, stage, script_path)
-      VALUES (?, 'AI Fitness', 'tech', 'scripted', '/path/to/script.docx')
+      INSERT INTO content_pipeline (
+        topic_feedback_id, topic_title, niche, stage, script_path, user_id,
+        tenant_id, owner_user_id, visibility_scope, scope_status
+      )
+      VALUES (?, 'AI Fitness', 'tech', 'scripted', '/path/to/script.docx', 1, 1, 1, 'user_private', 'active')
     `).run(feedbackId);
     const pipelineId = (testDb.prepare('SELECT last_insert_rowid() as id').get() as any).id;
 
@@ -371,7 +575,8 @@ describe('content-learning-store: artifact chain', () => {
       hashtags: ['#ai', '#fitness'],
       caption: 'Pipeline caption',
       cta: 'Pipeline CTA',
-      userId: 0,
+      userId: 1,
+      tenantId: 1,
     });
 
     // Log performance
@@ -380,11 +585,12 @@ describe('content-learning-store: artifact chain', () => {
       views: 10000,
       retentionPct: 55,
       likes: 800,
-      userId: 0,
+      userId: 1,
+      tenantId: 1,
     });
 
     // Trace the chain
-    const chain = getArtifactChain(pipelineId);
+    const chain = getArtifactChain(pipelineId, 1, 1);
 
     expect(chain.topicFeedback).not.toBeNull();
     expect(chain.topicFeedback!.topic).toBe('AI Fitness');
@@ -405,11 +611,83 @@ describe('content-learning-store: artifact chain', () => {
     expect(chain.performance[0].views).toBe(10000);
   });
 
+  it('returns only learned patterns from the pipeline niche category', () => {
+    testDb.prepare(`
+      INSERT INTO content_pipeline (
+        topic_title, niche, stage, user_id,
+        tenant_id, owner_user_id, visibility_scope, scope_status
+      )
+      VALUES ('Pattern scoped topic', 'tech', 'scripted', 1, 1, 1, 'user_private', 'active')
+    `).run();
+    const pipelineId = (testDb.prepare('SELECT last_insert_rowid() as id').get() as any).id;
+
+    upsertLearnedPattern({
+      category: 'tech',
+      patternText: 'Use concrete implementation proof',
+      confidence: 0.6,
+      userId: 1,
+      tenantId: 1,
+    });
+    upsertLearnedPattern({
+      category: 'finance',
+      patternText: 'Lead with budget anxiety',
+      confidence: 0.95,
+      userId: 1,
+      tenantId: 1,
+    });
+
+    const chain = getArtifactChain(pipelineId, 1, 1);
+
+    expect(chain.patterns.map((pattern) => pattern.category)).toEqual(['tech']);
+    expect(chain.patterns.map((pattern) => pattern.patternText)).toEqual(['Use concrete implementation proof']);
+  });
+
   it('returns empty chain for non-existent pipeline', () => {
-    const chain = getArtifactChain(99999);
+    const chain = getArtifactChain(99999, 1, 1);
     expect(chain.pipeline).toBeNull();
     expect(chain.script).toBeNull();
     expect(chain.performance).toHaveLength(0);
+  });
+
+  it('does not expose artifact chains across user or tenant boundaries', () => {
+    testDb.prepare(`
+      INSERT INTO content_topic_feedback (
+        topic, niche, format, sentiment, source_job, hook_idea, why_now, user_id,
+        tenant_id, owner_user_id, visibility_scope, scope_status
+      )
+      VALUES ('Tenant One Idea', 'tech', 'youtube', 'approved', 'manual', 'Private hook', 'Private timing', 100, 1, 100, 'user_private', 'active')
+    `).run();
+    const feedbackId = (testDb.prepare('SELECT last_insert_rowid() as id').get() as any).id;
+
+    testDb.prepare(`
+      INSERT INTO content_pipeline (
+        topic_feedback_id, topic_title, niche, stage, script_path, user_id,
+        tenant_id, owner_user_id, visibility_scope, scope_status
+      )
+      VALUES (?, 'Tenant One Idea', 'tech', 'scripted', '/private/script.docx', 100, 1, 100, 'user_private', 'active')
+    `).run(feedbackId);
+    const pipelineId = (testDb.prepare('SELECT last_insert_rowid() as id').get() as any).id;
+
+    storeScript({
+      pipelineId,
+      topicFeedbackId: feedbackId,
+      topic: 'Tenant One Idea',
+      format: 'youtube',
+      scriptText: 'private tenant one script',
+      userId: 100,
+      tenantId: 1,
+    });
+    logPerformanceFeedback({ pipelineId, views: 4200, retentionPct: 64, userId: 100, tenantId: 1 });
+
+    const ownerChain = getArtifactChain(pipelineId, 100, 1);
+    const otherTenantChain = getArtifactChain(pipelineId, 100, 2);
+    const otherUserChain = getArtifactChain(pipelineId, 101, 1);
+
+    expect(ownerChain.pipeline).not.toBeNull();
+    expect(ownerChain.script?.scriptText).toBe('private tenant one script');
+    expect(ownerChain.performance).toHaveLength(1);
+    expect(otherTenantChain).toEqual({ idea: null, topicFeedback: null, pipeline: null, script: null, performance: [], patterns: [] });
+    expect(otherUserChain).toEqual({ idea: null, topicFeedback: null, pipeline: null, script: null, performance: [], patterns: [] });
   });
 });
 
@@ -466,7 +744,8 @@ describe('content-learning-store: structural', () => {
     // Should import getRecentScripts
     expect(agentSource).toContain('getRecentScripts');
     expect(agentSource).toContain('content-learning-store');
-    expect(agentSource).toContain('getOwnerBootstrapTarget');
+    expect(agentSource).toContain('getActiveUserTargets');
+    expect(agentSource).not.toContain('getOwnerBootstrapTarget');
     expect(agentSource).not.toContain('getRecentScripts(0');
   });
 

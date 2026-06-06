@@ -1,7 +1,7 @@
 {
   "name": "cooking",
-  "version": "1.0.0",
-  "description": "Cooking orchestration for recipes, meal plans, shopping, and fueling support",
+  "version": "1.1.0",
+  "description": "Adaptive cooking orchestration for tenant-safe meal planning, recipes, shopping, fueling, and schedule-aware prep",
   "author": "Felipe Dominguez",
   "domain": "cooking",
   "manifestVersion": 2,
@@ -28,6 +28,20 @@
       "cronJobs": []
     },
     {
+      "module_name": "pantry",
+      "description": "Tenant-scoped pantry inventory, freshness, and availability",
+      "enabled_by_default": true,
+      "tools": ["cooking_upsert_pantry_item", "cooking_get_pantry", "cooking_delete_pantry_item"],
+      "cronJobs": []
+    },
+    {
+      "module_name": "preferences",
+      "description": "User-private Cooking memory and correction handling",
+      "enabled_by_default": true,
+      "tools": ["cooking_set_preference", "cooking_get_preferences"],
+      "cronJobs": []
+    },
+    {
       "module_name": "batch-cook",
       "description": "Prep-day grouping and kitchen batching heuristics",
       "enabled_by_default": true,
@@ -49,7 +63,7 @@
       "cronJobs": []
     }
   ],
-  "requiredApiKeys": ["GEMINI_API_KEY"],
+  "requiredApiKeys": [],
   "config": {
     "stateContextTtl": 30000,
     "maxToolIterations": 4

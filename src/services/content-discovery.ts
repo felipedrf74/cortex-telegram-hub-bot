@@ -1,6 +1,6 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
-import Anthropic from '@anthropic-ai/sdk';
+import type Anthropic from '@anthropic-ai/sdk';
 import fs from 'fs';
 import path from 'path';
 import { config } from '../config';
@@ -10,10 +10,12 @@ import { trackedCreate } from '../portal/anthropic-hook';
 import { completeOneShotWithSearch, isGeminiProviderConfigured } from './gemini-provider';
 import { saveIdea } from '../state/saved-ideas';
 import { isDuplicateIdea } from './content-dedup';
-import { loadCreatorConfig } from '../utils/prompt-loader';
 import { getUserLanguage } from './user-service';
+import { isValidTenantUserId } from './tenant-scope-observability';
+import { createLazyAnthropicClient } from './anthropic-lazy-client';
+import { requireTenantIdParam } from './tenant-scope';
 
-const client = new Anthropic({ apiKey: config.anthropic.apiKey });
+const client = createLazyAnthropicClient();
 
 // Broad interest buckets — let the actual topic energy decide the mix.
 const CONTENT_NICHES = [
@@ -25,10 +27,7 @@ const CONTENT_NICHES = [
 ];
 
 function buildDiscoverySystemPrompt(language: string): string {
-  return `You are the creator's content discovery engine. Use the creator configuration below as the canonical source of audience, worldview, language defaults, and editorial fit.
-
-CREATOR CONFIG:
-${loadCreatorConfig()}
+  return `You are the authenticated creator's content discovery engine. Use only authorized creator identity, audience, references, voice, and editorial memory supplied by the request context. If those are missing, keep recommendations neutral and setup-safe instead of assuming a founder/default brand.
 
 ACTIVE OUTPUT LANGUAGE: ${language}
 
@@ -47,7 +46,7 @@ OUTPUT FORMAT — Return EXACTLY this structure:
 **Why now:** [what makes this relevant THIS WEEK — cite source when timely]
 **Format:** [YouTube / Reel / Carousel / Short]
 **Hook (first 3s):** [the exact opening line/visual]
-**Angle:** [what makes Felipe's take unique]
+**Angle:** [what makes the authenticated creator's take unique]
 **Key points:** [3-5 bullet points for the content]
 **Title options:** [3 SEO-friendly title variations]
 **Estimated virality:** [Low / Medium / High — and why]
@@ -73,13 +72,28 @@ export interface ContentDiscoveryResult {
   fullContent: string;   // the complete detailed output
   filePath: string;      // where it was saved
   searchCount: number;   // how many web searches were used
+  provider: 'gemini' | 'anthropic';
 }
 
-export async function runContentDiscovery(userId?: number): Promise<ContentDiscoveryResult> {
+export interface RunContentDiscoveryOptions {
+  userId: number;
+  tenantId?: number;
+}
+
+export async function runContentDiscovery(options: RunContentDiscoveryOptions): Promise<ContentDiscoveryResult> {
+  if (!options || typeof options !== 'object') {
+    throw new Error('userId required: content discovery must run with a positive integer user/tenant scope');
+  }
+  const { userId } = options;
+  if (!isValidTenantUserId(userId)) {
+    throw new Error('userId required: content discovery must run with a positive integer user/tenant scope');
+  }
+  const tenantId = requireTenantIdParam(options.tenantId, 'runContentDiscovery');
+
   const today = now();
   const dateStr = today.toFormat('yyyy-MM-dd');
   const dayName = today.toFormat('cccc');
-  const targetLanguage = userId ? getUserLanguage(userId) : 'pt-BR';
+  const targetLanguage = getUserLanguage(userId);
   const systemPrompt = buildDiscoverySystemPrompt(targetLanguage);
 
   const userMessage = `Today is ${dayName}, ${today.toFormat('LLLL dd, yyyy')}.
@@ -111,7 +125,7 @@ Remember: follow the creator configuration for audience fit, but keep the ideas 
         systemPrompt,
         userMessage,
         'content_discovery',
-        { maxTokens: 4096, temperature: 0.7 },
+        { maxTokens: 4096, temperature: 0.7, userId, tenantId },
       );
       fullContent = text;
       // Gemini reports sources via groundingChunks instead of a
@@ -131,7 +145,7 @@ Remember: follow the creator configuration for audience fit, but keep the ideas 
       { type: 'text', text: systemPrompt, cache_control: { type: 'ephemeral' } },
     ];
 
-    const response = await trackedCreate(client, {
+    const response = await trackedCreate(client.get(), {
       model: config.anthropic.classifierModel, // Haiku — structured templated output doesn't need Sonnet
       max_tokens: 4096,
       system: cachedSystem,
@@ -143,13 +157,13 @@ Remember: follow the creator configuration for audience fit, but keep the ideas 
           max_uses: 5,
         } as any,
       ],
-    } as any, 'content_discovery');
+    } as any, 'content_discovery', { userId, tenantId });
 
     // Handle pause_turn — Claude may need to continue after a long search session
     let finalResponse = response;
     if (response.stop_reason === 'pause_turn') {
       logger.info('Content discovery paused, continuing...');
-      finalResponse = await trackedCreate(client, {
+      finalResponse = await trackedCreate(client.get(), {
         model: config.anthropic.classifierModel,
         max_tokens: 4096,
         system: cachedSystem,
@@ -164,7 +178,7 @@ Remember: follow the creator configuration for audience fit, but keep the ideas 
             max_uses: 5,
           } as any,
         ],
-      } as any, 'content_discovery_continuation');
+      } as any, 'content_discovery_continuation', { userId, tenantId });
     }
 
     // Extract text content (skip search result blocks)
@@ -183,11 +197,9 @@ Remember: follow the creator configuration for audience fit, but keep the ideas 
     .filter((line) => /^#{2,3}\s+\**(?:Idea|Ideia|Id[eé]ia)\s+\d+/i.test(line))
     .map((line) => line.replace(/^#{2,3}\s+\**(?:Idea|Ideia|Id[eé]ia)\s+\d+:\s*/i, '').replace(/\*+$/g, '').trim());
 
-  // Also grab Quick-Fire Shorts section titles
-  const shortMatches = fullContent.match(/^[-•]\s+.+$/gm);
-  const quickShorts = shortMatches
-    ? shortMatches.slice(-5).map((s) => s.replace(/^[-•]\s+/, '').trim())
-    : [];
+  // Also grab Quick-Fire Shorts section titles without stealing unrelated
+  // trailing bullets from source notes or summaries.
+  const quickShorts = extractQuickFireShorts(fullContent);
 
   // Save to file
   const dir = path.join(path.dirname(config.app.databasePath), 'content-ideas');
@@ -199,11 +211,17 @@ Remember: follow the creator configuration for audience fit, but keep the ideas 
   fs.writeFileSync(filePath, fileContent, 'utf-8');
 
   // Save ideas to SQLite (unified storage)
-  const allIdeas = [...ideas, ...quickShorts];
+  const seenInBatch = new Set<string>();
+  const allIdeas = [...ideas, ...quickShorts].filter((title) => {
+    const key = normalizeDiscoveryTitle(title);
+    if (!key || seenInBatch.has(key)) return false;
+    seenInBatch.add(key);
+    return true;
+  });
   let savedCount = 0;
   for (const title of allIdeas) {
     try {
-      const dedup = await isDuplicateIdea(title);
+      const dedup = await isDuplicateIdea(title, undefined, userId, tenantId);
       if (dedup.isDuplicate && dedup.confidence > 0.8) {
         logger.info({ title, similarTo: dedup.similarTo }, 'Discovery idea skipped (duplicate)');
         continue;
@@ -218,8 +236,8 @@ Remember: follow the creator configuration for audience fit, but keep the ideas 
         score,
         workflowEligible: isMainIdea,
         niche: undefined,
-        userId: userId ?? 0,
-      } as any);
+        userId,
+      });
       savedCount++;
     } catch (err) {
       logger.warn({ err, title }, 'Failed to save discovery idea to DB');
@@ -233,5 +251,32 @@ Remember: follow the creator configuration for audience fit, but keep the ideas 
     fullContent,
     filePath,
     searchCount,
+    provider: usedProvider,
   };
+}
+
+function extractQuickFireShorts(content: string): string[] {
+  const lines = content.split('\n');
+  const start = lines.findIndex((line) => /quick[-\s]?fire\s+shorts?/i.test(line));
+  if (start < 0) return [];
+  const bullets: string[] = [];
+  for (const line of lines.slice(start + 1)) {
+    if (/^#{1,3}\s+/.test(line) && bullets.length > 0) break;
+    const match = line.match(/^\s*[-•]\s+(.+?)\s*$/);
+    if (!match) continue;
+    const title = match[1].replace(/\*+$/g, '').trim();
+    if (title) bullets.push(title);
+    if (bullets.length >= 5) break;
+  }
+  return bullets;
+}
+
+function normalizeDiscoveryTitle(title: string): string {
+  return title
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}\s]/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
 }

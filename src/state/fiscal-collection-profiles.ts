@@ -20,6 +20,12 @@ export interface FiscalCollectionProfileRow {
 const DEFAULT_CADENCE: FiscalCollectionCadence = 'monthly';
 const DEFAULT_PRIMARY_DAY = 28;
 
+function assertPositiveUserId(userId: number): void {
+  if (!Number.isSafeInteger(userId) || userId <= 0) {
+    throw new Error('userId required: must be a positive integer');
+  }
+}
+
 function normalizeDay(day: number | null | undefined): number | null {
   if (day == null) return null;
   const safe = Math.floor(day);
@@ -28,6 +34,7 @@ function normalizeDay(day: number | null | undefined): number | null {
 }
 
 export function getFiscalCollectionProfile(userId: number): FiscalCollectionProfileRow | null {
+  assertPositiveUserId(userId);
   const db = getDb();
   return (
     db.prepare('SELECT * FROM fiscal_collection_profiles WHERE user_id = ?').get(userId) as FiscalCollectionProfileRow | undefined
@@ -35,6 +42,7 @@ export function getFiscalCollectionProfile(userId: number): FiscalCollectionProf
 }
 
 export function getOrCreateFiscalCollectionProfile(userId: number): FiscalCollectionProfileRow {
+  assertPositiveUserId(userId);
   const existing = getFiscalCollectionProfile(userId);
   if (existing) return existing;
 
@@ -66,6 +74,7 @@ export function updateFiscalCollectionProfile(
     last_bundle_document_count?: number;
   },
 ): FiscalCollectionProfileRow {
+  assertPositiveUserId(userId);
   const current = getOrCreateFiscalCollectionProfile(userId);
 
   const cadence = patch.cadence ?? current.cadence;

@@ -1,32 +1,112 @@
-name: CI — Lint, Test, Build
+name: CI — Risk-based parallel matrix
+
+# release-pipeline-risk-based-optimization (2026-05-03):
+# Refactored from the serial `lint → test → build` chain into a parallel
+# matrix that runs typecheck, focused tests, migration check, Python
+# compile, and build concurrently. Full coverage is now driven by
+# `nightly.yml` and `workflow_dispatch`, NOT every push.
+#
+# Decisions encoded here:
+#   1. lint, focused-tests, migrations, python-test, build run IN
+#      PARALLEL after install. None depend on each other.
+#   2. focused-tests delegates to scripts/risk-gate.sh. Main pushes are
+#      focused; full breadth lives on v* RC tags, nightly, and manual full.
+#   3. python-test runs the full content-engine pytest suite when
+#      content-engine/** changed.
+#   4. build runs unconditionally as a "does dist still build" check.
+#
+# Manual full-suite + coverage:
+#   gh workflow run "CI — Risk-based parallel matrix" -f mode=full
 
 on:
   push:
     branches: [main, develop]
   pull_request:
     branches: [main, develop]
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'Test mode: focused (default for PRs), full (full vitest), full+coverage (nightly)'
+        required: false
+        default: 'focused'
+        type: choice
+        options:
+          - focused
+          - full
+          - full+coverage
 
 env:
   NODE_VERSION: '20'
 
 jobs:
   # ═══════════════════════════════════════════════════
-  # LINT & TYPE CHECK
+  # CHANGED-AREA CLASSIFIER (drives the rest)
+  # ═══════════════════════════════════════════════════
+  classify:
+    name: 🧭 Classify changes
+    runs-on: ubuntu-latest
+    outputs:
+      vitest_mode: ${{ steps.classify.outputs.vitest_mode }}
+      vitest_globs: ${{ steps.classify.outputs.vitest_globs }}
+      run_python_test: ${{ steps.classify.outputs.run_python_test }}
+      run_migrations: ${{ steps.classify.outputs.run_migrations }}
+      docs_only: ${{ steps.classify.outputs.docs_only }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # need history to diff against base
+
+      - name: Run classifier
+        id: classify
+        run: |
+          # Decide base ref based on event
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            BASE_REF="origin/${{ github.base_ref }}"
+          else
+            BASE_REF="HEAD~1"
+          fi
+          # Manual mode override
+          MODE_OVERRIDE='${{ github.event.inputs.mode }}'
+          if [ "$MODE_OVERRIDE" = "full" ] || [ "$MODE_OVERRIDE" = "full+coverage" ]; then
+            echo "Manual override mode=$MODE_OVERRIDE — full vitest"
+            echo "vitest_mode=full" >> "$GITHUB_OUTPUT"
+            echo "vitest_globs=" >> "$GITHUB_OUTPUT"
+            echo "run_python_test=true" >> "$GITHUB_OUTPUT"
+            echo "run_migrations=true" >> "$GITHUB_OUTPUT"
+            echo "docs_only=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          chmod +x scripts/changed-area-classifier.sh
+          JSON="$(scripts/changed-area-classifier.sh --base "$BASE_REF" --format json)"
+          echo "$JSON" > /tmp/classifier.json
+          echo "$JSON"
+          MODE="$(jq -r '.vitest["mode"]' /tmp/classifier.json)"
+          GLOBS="$(jq -r '.vitest.globs | join(" ")' /tmp/classifier.json)"
+          PY="$(jq -r '.flags.pythonEngine' /tmp/classifier.json)"
+          MIG="$(jq -r '.flags.migration' /tmp/classifier.json)"
+          DOCS_ONLY="$(jq -r '.flags.docsOnly' /tmp/classifier.json)"
+          echo "vitest_mode=$MODE" >> "$GITHUB_OUTPUT"
+          echo "vitest_globs=$GLOBS" >> "$GITHUB_OUTPUT"
+          echo "run_python_test=$PY" >> "$GITHUB_OUTPUT"
+          echo "run_migrations=$MIG" >> "$GITHUB_OUTPUT"
+          echo "docs_only=$DOCS_ONLY" >> "$GITHUB_OUTPUT"
+
+  # ═══════════════════════════════════════════════════
+  # LINT & TYPE CHECK (parallel — no `needs` chain)
   # ═══════════════════════════════════════════════════
   lint:
     name: 🔍 Lint & Type Check
     runs-on: ubuntu-latest
+    needs: classify
     steps:
       - uses: actions/checkout@v4
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
+      - uses: actions/setup-node@v4
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: 'npm'
 
-      - name: Install dependencies
-        run: npm ci
+      - run: npm ci
 
       - name: TypeScript type check
         run: npx tsc --noEmit
@@ -41,63 +121,90 @@ jobs:
           done
           echo "✅ All prompt files have content"
 
+      - name: vi.mock completeness lint
+        # Gating against scripts/.vi-mock-baseline.txt. Lower the baseline
+        # monthly until partial factories are effectively eliminated.
+        run: node scripts/vi-mock-completeness-lint.mjs --top --strict
+
+      - name: release-doc drift check (advisor)
+        # Verifies short SHAs in current/QA docs resolve to commits in
+        # engine + ios history. Non-gating during the soak window.
+        run: scripts/release-doc-drift-check.sh || true
+
+      - name: closed-beta identity scan (strict, gating)
+        # Catches v4.14.118-class hardcoded-founder-identity residue in
+        # runtime code (prompts, persisted-payload writers, etc.).
+        # Closed-beta-readiness-hardening (2026-05-03): promoted from
+        # advisor (`|| true`) to strict gating. Any new flagged literal
+        # in src/, prompts/, content-engine/, src/skills/ that isn't
+        # explicitly allow-listed (copyright headers, manifest authors,
+        # backward-compat reads tagged `nx-allow-identity-scan`,
+        # tests/fixtures) blocks the PR. Run locally via
+        # `./scripts/closed-beta-identity-scan.sh --strict` to
+        # reproduce.
+        run: scripts/closed-beta-identity-scan.sh --strict
+
   # ═══════════════════════════════════════════════════
-  # UNIT & INTEGRATION TESTS
+  # FOCUSED OR FULL VITEST (driven by classifier)
   # ═══════════════════════════════════════════════════
   test:
+    # Keep the check-run name stable because the main-branch ruleset
+    # requires the exact `🧪 Tests` context. The selected mode is still
+    # reported in the job logs and classifier output.
     name: 🧪 Tests
     runs-on: ubuntu-latest
-    needs: lint
+    needs: classify
+    if: needs.classify.outputs.vitest_mode != 'skip'
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
+      - uses: actions/setup-node@v4
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: 'npm'
 
-      - name: Install dependencies
-        run: npm ci
+      - run: npm ci
 
-      - name: Run unit tests
-        run: npx vitest run --reporter=verbose --coverage
+      - name: Run vitest
         env:
           NODE_ENV: test
           TELEGRAM_BOT_TOKEN: test_token
           TELEGRAM_ALLOWED_USER_IDS: '123456789'
           ANTHROPIC_API_KEY: sk-ant-test-key
           DATABASE_PATH: ':memory:'
-
-      - name: Upload coverage report
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: coverage-report
-          path: coverage/
-          retention-days: 7
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            BASE="origin/${{ github.base_ref }}"
+          else
+            BASE="HEAD~1"
+          fi
+          ARGS=(--base "$BASE" --skip-typecheck --skip-python --skip-migrations)
+          if [ "${{ github.event.inputs.mode }}" = "full" ] || [ "${{ github.event.inputs.mode }}" = "full+coverage" ]; then
+            ARGS+=(--full)
+          fi
+          scripts/risk-gate.sh "${ARGS[@]}"
 
   # ═══════════════════════════════════════════════════
-  # BUILD VERIFICATION
+  # BUILD VERIFICATION (parallel; no `needs: test`)
   # ═══════════════════════════════════════════════════
   build:
     name: 🔨 Build
     runs-on: ubuntu-latest
-    needs: test
+    needs: classify
+    if: needs.classify.outputs.docs_only != 'true'
     steps:
       - uses: actions/checkout@v4
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
+      - uses: actions/setup-node@v4
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: 'npm'
 
-      - name: Install dependencies
-        run: npm ci
+      - run: npm ci
 
-      - name: Build TypeScript
-        run: npm run build
+      - run: npm run build
 
       - name: Verify dist output
         run: |
@@ -112,17 +219,17 @@ jobs:
           retention-days: 30
 
   # ═══════════════════════════════════════════════════
-  # CONTENT ENGINE (PYTHON) TESTS
+  # PYTHON CONTENT-ENGINE (only when content-engine/** changed)
   # ═══════════════════════════════════════════════════
   python-test:
     name: 🐍 Content Engine Check
     runs-on: ubuntu-latest
-    needs: lint
+    needs: classify
+    if: needs.classify.outputs.run_python_test == 'true'
     steps:
       - uses: actions/checkout@v4
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
           cache: 'pip'
@@ -132,6 +239,9 @@ jobs:
         run: |
           cd content-engine
           pip install -r requirements.txt
+          if [ -f requirements-dev.txt ]; then
+            pip install -r requirements-dev.txt
+          fi
 
       - name: Syntax check
         run: |
@@ -142,36 +252,54 @@ jobs:
             -exec python -m py_compile {} \;
           echo "✅ All Python files compile"
 
+      - name: Python content-engine tests
+        run: |
+          cd content-engine
+          python -m pytest tests/ -v
+
   # ═══════════════════════════════════════════════════
-  # MIGRATION SAFETY CHECK
+  # SCIENCE-POLICY VERSION GATE (always — fail-closed)
+  # ═══════════════════════════════════════════════════
+  # R4 P2 fix — Codex caught that the gate only existed as a script
+  # under scripts/ci/, with no CI workflow or pre-commit hook calling
+  # it. That meant any change to training-principles.json could land
+  # without bumping `sciencePolicyVersion`, breaking the audit /
+  # reproducibility invariant. This job runs unconditionally on every
+  # push and PR (the check is millisecond-cheap) and fails the build
+  # when the JSON content hash drifts from the pinned hash without a
+  # corresponding version bump.
+  science_policy:
+    name: 🧪 Science-policy version
+    runs-on: ubuntu-latest
+    needs: classify
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Verify training-principles content hash matches pinned version
+        run: node scripts/ci/science-policy-version-check.mjs
+
+  # ═══════════════════════════════════════════════════
+  # MIGRATION SAFETY CHECK (only when migrations/** changed)
   # ═══════════════════════════════════════════════════
   migrations:
     name: 🗃️ Migration Check
     runs-on: ubuntu-latest
-    needs: lint
+    needs: classify
+    if: needs.classify.outputs.run_migrations == 'true'
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-      - name: Verify migration sequence
+      - name: Verify migration sequence, cumulative apply, and fast-path policy
         run: |
-          cd migrations
-          expected=1
-          for f in $(ls *.sql | sort); do
-            num=$(echo "$f" | grep -oP '^\d+')
-            num=$((10#$num))  # Remove leading zeros
-            if [ "$num" -ne "$expected" ]; then
-              echo "❌ Gap in migration sequence: expected $expected, got $num ($f)"
-              exit 1
-            fi
-            expected=$((expected + 1))
-          done
-          echo "✅ $((expected - 1)) migrations in sequence"
-
-      - name: Validate SQL syntax
-        run: |
-          for f in migrations/*.sql; do
-            if ! sqlite3 :memory: < "$f" 2>/dev/null; then
-              echo "⚠️  Potential issue in $f (may need tables from prior migrations)"
-            fi
-          done
-          echo "✅ Migration syntax check complete"
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            BASE="origin/${{ github.base_ref }}"
+          else
+            BASE="HEAD~1"
+          fi
+          node scripts/migration-safety-check.mjs --base "$BASE" --changed-only

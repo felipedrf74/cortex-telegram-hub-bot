@@ -8,7 +8,7 @@
  *   - Hook breakdown (first 30s: exact words, pacing, technique)
  *   - Content structure (section-by-section with timestamps)
  *   - Key moments (quotable/viral moments with timestamps)
- *   - Content ideas (inspired by this video, adapted for Felipe)
+ *   - Content ideas (inspired by this video, adapted for the authenticated creator)
  *   - Reel/Short cuts (suggested clip points with timestamps)
  *
  * Used by:
@@ -36,6 +36,18 @@ import {
   type TranscriptResult,
 } from './youtube-transcript';
 import { getDb } from './database';
+import {
+  buildCreatorPromptContext,
+  loadCreatorPromptContextForUser,
+  type CreatorPromptContext,
+} from './content-profile-prompt-context';
+import type { ContentCreatorProfile } from '../state/content-creator-profile';
+import {
+  contentScopeForInsert,
+  contentScopeParams,
+  contentScopePredicate,
+  ensureContentTenantScopeColumns,
+} from './content-tenant-scope';
 
 const client = new Anthropic({
   apiKey: config.anthropic.apiKey,
@@ -70,7 +82,7 @@ export interface ReelCut {
 
 // ─── Transcript Cache (SQLite) ───────────────────────────────────────
 
-function getCachedTranscript(videoId: string): {
+function getCachedTranscript(videoId: string, userId = 0, tenantId: number | null = userId): {
   full_text: string;
   hook_text: string;
   title: string;
@@ -80,8 +92,18 @@ function getCachedTranscript(videoId: string): {
 } | null {
   try {
     const db = getDb();
+    ensureContentTenantScopeColumns(db);
+    if (userId > 0) {
+      return db.prepare(
+        `SELECT full_text, hook_text, title, channel_name, language, duration_seconds FROM video_transcripts
+         WHERE video_id = ? AND ${contentScopePredicate()}
+         ORDER BY updated_at DESC LIMIT 1`,
+      ).get(videoId, ...contentScopeParams(userId, tenantId)) as any;
+    }
     return db.prepare(
-      'SELECT full_text, hook_text, title, channel_name, language, duration_seconds FROM video_transcripts WHERE video_id = ?',
+      `SELECT full_text, hook_text, title, channel_name, language, duration_seconds FROM video_transcripts
+       WHERE video_id = ? AND user_id = 0
+       ORDER BY updated_at DESC LIMIT 1`,
     ).get(videoId) as any;
   } catch {
     return null;
@@ -92,18 +114,30 @@ function cacheTranscript(
   transcript: TranscriptResult,
   refChannelId?: number | null,
   source = 'manual',
+  userId = 0,
+  tenantId: number | null = userId,
 ): void {
   try {
     const db = getDb();
+    ensureContentTenantScopeColumns(db);
+    const scope = contentScopeForInsert(userId, tenantId);
     db.prepare(`
       INSERT INTO video_transcripts
         (video_id, title, channel_name, language, full_text, hook_text,
          duration_seconds, is_auto_generated, segment_count, char_count,
-         ref_channel_id, source)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      ON CONFLICT(video_id) DO UPDATE SET
+         ref_channel_id, source, user_id, tenant_id, owner_user_id, visibility_scope,
+         lifecycle_state, scope_status, created_by, updated_by, audit_metadata_json)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(user_id, video_id) DO UPDATE SET
         full_text = excluded.full_text,
         hook_text = excluded.hook_text,
+        tenant_id = excluded.tenant_id,
+        owner_user_id = excluded.owner_user_id,
+        visibility_scope = excluded.visibility_scope,
+        lifecycle_state = excluded.lifecycle_state,
+        scope_status = excluded.scope_status,
+        updated_by = excluded.updated_by,
+        audit_metadata_json = excluded.audit_metadata_json,
         updated_at = datetime('now')
     `).run(
       transcript.videoId,
@@ -118,24 +152,37 @@ function cacheTranscript(
       transcript.fullText.length,
       refChannelId ?? null,
       source,
+      userId,
+      scope.tenantId,
+      scope.ownerUserId,
+      scope.visibilityScope,
+      scope.lifecycleState,
+      scope.scopeStatus,
+      scope.createdBy,
+      scope.updatedBy,
+      scope.auditMetadataJson,
     );
   } catch (err) {
     logger.warn({ err, videoId: transcript.videoId }, 'Failed to cache transcript');
   }
 }
 
-function cacheStudyResult(videoId: string, result: VideoStudyResult): void {
+function cacheStudyResult(videoId: string, result: VideoStudyResult, userId = 0, tenantId: number | null = userId): void {
   try {
     const db = getDb();
+    ensureContentTenantScopeColumns(db);
+    const scope = contentScopeForInsert(userId, tenantId);
     const transcriptRow = db.prepare(
-      'SELECT id FROM video_transcripts WHERE video_id = ?',
-    ).get(videoId) as { id: number } | undefined;
+      `SELECT id FROM video_transcripts WHERE video_id = ? AND user_id = ? ORDER BY updated_at DESC LIMIT 1`,
+    ).get(videoId, userId) as { id: number } | undefined;
 
     db.prepare(`
       INSERT INTO video_studies
         (video_id, transcript_id, study_type, analysis_json,
-         hook_analysis, structure_breakdown, key_moments, content_ideas, reel_cuts)
-      VALUES (?, ?, 'full', ?, ?, ?, ?, ?, ?)
+         hook_analysis, structure_breakdown, key_moments, content_ideas, reel_cuts,
+         user_id, tenant_id, owner_user_id, visibility_scope, lifecycle_state,
+         scope_status, created_by, updated_by, audit_metadata_json)
+      VALUES (?, ?, 'full', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       videoId,
       transcriptRow?.id ?? null,
@@ -145,6 +192,15 @@ function cacheStudyResult(videoId: string, result: VideoStudyResult): void {
       JSON.stringify(result.keyMoments),
       JSON.stringify(result.contentIdeas),
       JSON.stringify(result.reelCuts),
+      userId,
+      scope.tenantId,
+      scope.ownerUserId,
+      scope.visibilityScope,
+      scope.lifecycleState,
+      scope.scopeStatus,
+      scope.createdBy,
+      scope.updatedBy,
+      scope.auditMetadataJson,
     );
   } catch (err) {
     logger.warn({ err, videoId }, 'Failed to cache study result');
@@ -153,7 +209,16 @@ function cacheStudyResult(videoId: string, result: VideoStudyResult): void {
 
 // ─── Claude Analysis Prompts ─────────────────────────────────────────
 
-const STUDY_SYSTEM_PROMPT = `You are a world-class content strategist analyzing a YouTube video's transcript to extract actionable insights.
+export function buildVideoStudySystemPrompt(profile?: Partial<ContentCreatorProfile> | null): string {
+  const creator = buildCreatorPromptContext(profile);
+  return buildVideoStudySystemPromptFromContext(creator);
+}
+
+function buildVideoStudySystemPromptFromContext(creator: CreatorPromptContext): string {
+  return `You are a world-class content strategist analyzing a YouTube video's transcript to extract actionable insights.
+
+CREATOR CONTEXT:
+${creator.block}
 
 You will receive the video's full transcript with timestamps. Analyze it thoroughly and provide:
 
@@ -173,17 +238,17 @@ You will receive the video's full transcript with timestamps. Analyze it thoroug
 3. **KEY MOMENTS** (5-8 moments)
    - Timestamp + exact quote or paraphrase
    - Why it's notable (viral potential, strong insight, emotional peak, great one-liner)
-   - How it could be adapted for PT-BR content
+   - How it could be adapted for ${creator.language} content
 
 4. **CONTENT IDEAS** (3-5 ideas)
-   - Ideas INSPIRED by this video that Felipe could create
-   - Each with: title (PT-BR), format (YouTube/Reel/Short), hook, unique angle
-   - These should NOT be copies — they should be Felipe's take using his fitness + commentary niches
+   - Ideas INSPIRED by this video that the authenticated creator could create
+   - Each with: title in ${creator.language}, format (YouTube/Reel/Short), hook, unique angle
+   - These should NOT be copies — they should be the creator's own take using their saved pillars, audience, and brand voice
 
 5. **REEL/SHORT CUTS** (3-5 suggested clips)
    - Start timestamp → End timestamp
    - Description of the clip
-   - Suggested hook text (PT-BR) for posting as a standalone Reel/Short
+   - Suggested hook text in ${creator.language} for posting as a standalone Reel/Short
    - Estimated duration (aim for 30-60s)
 
 FORMAT: Return valid JSON:
@@ -195,7 +260,7 @@ FORMAT: Return valid JSON:
     ...
   ],
   "content_ideas": [
-    "📹 TITLE (PT-BR) — Format: YouTube — Hook: '...' — Angle: ...",
+    "📹 TITLE — Format: YouTube — Hook: '...' — Angle: ...",
     ...
   ],
   "reel_cuts": [
@@ -203,7 +268,7 @@ FORMAT: Return valid JSON:
       "startTimestamp": "2:15",
       "endTimestamp": "2:45",
       "description": "What this clip covers",
-      "hookSuggestion": "Hook text in PT-BR for posting as standalone reel",
+      "hookSuggestion": "Hook text in the target language for posting as standalone reel",
       "estimatedDuration": "30s"
     }
   ]
@@ -211,19 +276,22 @@ FORMAT: Return valid JSON:
 
 RULES:
 - Be specific — cite exact timestamps and quotes from the transcript
-- Content ideas MUST be in PT-BR (Brazilian Portuguese) for titles/hooks
+- Content ideas MUST follow the creator context language, audience, and pillars above
 - Reel cuts should be self-contained (make sense without the full video)
-- Focus on ACTIONABLE insights — what can Felipe actually use?
+- Focus on ACTIONABLE insights — what can the authenticated creator actually use?
 - If transcript is auto-generated, account for possible transcription errors`;
+}
 
 /**
  * Full video study: transcript + deep Claude analysis.
  */
 export async function studyVideo(
   videoIdOrUrl: string,
-  options?: { skipCache?: boolean },
+  options?: { skipCache?: boolean; userId?: number; tenantId?: number; creatorProfile?: Partial<ContentCreatorProfile> },
 ): Promise<VideoStudyResult> {
   const startTime = Date.now();
+  const scopedUserId = Number.isFinite(options?.userId) && Number(options?.userId) > 0 ? Number(options?.userId) : 0;
+  const scopedTenantId = Number.isFinite(options?.tenantId) && Number(options?.tenantId) > 0 ? Number(options?.tenantId) : scopedUserId;
   const videoId = extractVideoId(videoIdOrUrl);
   if (!videoId) {
     throw new Error('Invalid YouTube video URL or ID');
@@ -231,7 +299,7 @@ export async function studyVideo(
 
   // Check cache first
   if (!options?.skipCache) {
-    const cached = getCachedStudy(videoId);
+    const cached = getCachedStudy(videoId, scopedUserId, scopedTenantId);
     if (cached) {
       logger.info({ videoId }, 'Returning cached video study');
       return cached;
@@ -247,7 +315,7 @@ export async function studyVideo(
   }
 
   // Cache transcript
-  cacheTranscript(transcript, null, 'study');
+  cacheTranscript(transcript, null, 'study', scopedUserId, scopedTenantId);
 
   // Prepare transcript for Claude (truncate very long ones)
   const maxTranscriptChars = 25000; // ~7K tokens, leaves room for analysis
@@ -258,6 +326,10 @@ export async function studyVideo(
   const timestampedText = formatTranscriptTimestamped(transcript.segments);
   const hookText = getHookSection(transcript.segments, 30);
   const sections = splitIntoSections(transcript.segments);
+  const creatorContext = options?.creatorProfile
+    ? buildCreatorPromptContext(options.creatorProfile)
+    : loadCreatorPromptContextForUser(scopedUserId, scopedTenantId);
+  const studySystemPrompt = buildVideoStudySystemPromptFromContext(creatorContext);
 
   // Build context for Claude
   const prompt = `Analyze this YouTube video:
@@ -277,23 +349,23 @@ Provide the complete study analysis.`;
   // Gemini-first: gemini-2.5-flash matches Sonnet quality for structured
   // analytical breakdown of long-form transcripts at ~9× lower cost.
   const { text: studyText } = await completeOneShotWithFallback(
-    STUDY_SYSTEM_PROMPT,
+    studySystemPrompt,
     prompt,
     'video_study',
     async () => {
       const response = await trackedCreate(client, {
-        model: config.anthropic.model, // Sonnet for quality
-        max_tokens: 4096,
-        system: STUDY_SYSTEM_PROMPT,
+          model: config.anthropic.model, // Sonnet for quality
+          max_tokens: 4096,
+          system: studySystemPrompt,
         messages: [{ role: 'user', content: prompt }],
         temperature: 0.4,
-      }, 'video_study');
+      }, 'video_study', { userId: scopedUserId, tenantId: scopedTenantId });
       return response.content
         .filter((b): b is Anthropic.TextBlock => b.type === 'text')
         .map((b) => b.text)
         .join('');
     },
-    { maxTokens: 4096, temperature: 0.4 },
+    { maxTokens: 4096, temperature: 0.4, userId: scopedUserId, tenantId: scopedTenantId },
   );
 
   let text = studyText;
@@ -331,7 +403,7 @@ Provide the complete study analysis.`;
   };
 
   // Cache result
-  cacheStudyResult(videoId, result);
+  cacheStudyResult(videoId, result, scopedUserId, scopedTenantId);
 
   pushEvent({
     ts: new Date().toISOString(),
@@ -374,12 +446,19 @@ export async function getTranscript(videoIdOrUrl: string): Promise<TranscriptRes
 /**
  * Get cached study result (if exists).
  */
-function getCachedStudy(videoId: string): VideoStudyResult | null {
+function getCachedStudy(videoId: string, userId = 0, tenantId: number | null = userId): VideoStudyResult | null {
   try {
     const db = getDb();
-    const row = db.prepare(
-      'SELECT analysis_json FROM video_studies WHERE video_id = ? ORDER BY created_at DESC LIMIT 1',
-    ).get(videoId) as { analysis_json: string } | undefined;
+    ensureContentTenantScopeColumns(db);
+    const row = userId > 0
+      ? db.prepare(
+        `SELECT analysis_json FROM video_studies
+         WHERE video_id = ? AND ${contentScopePredicate()}
+         ORDER BY created_at DESC LIMIT 1`,
+      ).get(videoId, ...contentScopeParams(userId, tenantId)) as { analysis_json: string } | undefined
+      : db.prepare(
+        'SELECT analysis_json FROM video_studies WHERE video_id = ? AND user_id = 0 ORDER BY created_at DESC LIMIT 1',
+      ).get(videoId) as { analysis_json: string } | undefined;
 
     if (!row) return null;
     return JSON.parse(row.analysis_json);
@@ -401,6 +480,8 @@ export async function deepAnalyzeTopVideos(
   channelName: string,
   videos: { videoId: string; title: string; viewCount: number }[],
   topN = 5,
+  userId = 0,
+  tenantId: number | null = userId,
 ): Promise<{
   transcriptCount: number;
   deepPatterns: string;       // Formatted for injection into the pattern extraction prompt
@@ -417,7 +498,7 @@ export async function deepAnalyzeTopVideos(
   for (const v of topVideos) {
     try {
       // Check cache first
-      const cached = getCachedTranscript(v.videoId);
+      const cached = getCachedTranscript(v.videoId, userId, tenantId);
       if (cached) {
         transcripts.push({
           title: cached.title || v.title,
@@ -429,7 +510,7 @@ export async function deepAnalyzeTopVideos(
 
       const transcript = await fetchTranscript(v.videoId);
       if (transcript && transcript.fullText.length > 50) {
-        cacheTranscript(transcript, null, 'channel_analysis');
+        cacheTranscript(transcript, null, 'channel_analysis', userId, tenantId);
         transcripts.push({
           title: transcript.title,
           hookText: getHookSection(transcript.segments, 30),
@@ -551,7 +632,7 @@ function sanitizeFilename(name: string): string {
 /**
  * Save a transcript as a .docx Word file and return the file path.
  */
-export async function saveTranscriptAsDocx(transcript: TranscriptResult): Promise<string> {
+export async function saveTranscriptAsDocx(transcript: TranscriptResult, userId?: number): Promise<string> {
   const timestamped = formatTranscriptTimestamped(transcript.segments);
 
   const children: Paragraph[] = [
@@ -602,7 +683,7 @@ export async function saveTranscriptAsDocx(transcript: TranscriptResult): Promis
   const buffer = await Packer.toBuffer(doc);
   fs.writeFileSync(filePath, buffer);
 
-  uploadToDrive(filePath, filename, 'RESEARCH').catch(() => {});
+  if (userId != null) uploadToDrive(userId, filePath, filename, 'RESEARCH').catch(() => {});
 
   logger.info({ filePath, title: transcript.title }, 'Transcript saved as DOCX');
   return filePath;
@@ -611,7 +692,7 @@ export async function saveTranscriptAsDocx(transcript: TranscriptResult): Promis
 /**
  * Save a video study as a .docx Word file and return the file path.
  */
-export async function saveStudyAsDocx(result: VideoStudyResult): Promise<string> {
+export async function saveStudyAsDocx(result: VideoStudyResult, userId?: number): Promise<string> {
   const children: Paragraph[] = [
     new Paragraph({
       children: [new TextRun({ text: `Video Study: ${result.title}`, bold: true, size: 32 })],
@@ -670,7 +751,7 @@ export async function saveStudyAsDocx(result: VideoStudyResult): Promise<string>
   const buffer = await Packer.toBuffer(doc);
   fs.writeFileSync(filePath, buffer);
 
-  uploadToDrive(filePath, filename, 'IDEAS').catch(() => {});
+  if (userId != null) uploadToDrive(userId, filePath, filename, 'IDEAS').catch(() => {});
 
   logger.info({ filePath, title: result.title }, 'Video study saved as DOCX');
   return filePath;
@@ -679,7 +760,7 @@ export async function saveStudyAsDocx(result: VideoStudyResult): Promise<string>
 /**
  * Save a content script as a .docx Word file and return the file path.
  */
-export async function saveScriptAsDocx(topic: string, scriptText: string): Promise<string> {
+export async function saveScriptAsDocx(topic: string, scriptText: string, userId?: number): Promise<string> {
   const SCRIPTS_DIR = path.join(IDEAS_DIR, 'SCRIPTS');
   if (!fs.existsSync(SCRIPTS_DIR)) fs.mkdirSync(SCRIPTS_DIR, { recursive: true });
 
@@ -744,7 +825,7 @@ export async function saveScriptAsDocx(topic: string, scriptText: string): Promi
   const buffer = await Packer.toBuffer(doc);
   fs.writeFileSync(filePath, buffer);
 
-  uploadToDrive(filePath, filename, 'SCRIPTS').catch(() => {});
+  if (userId != null) uploadToDrive(userId, filePath, filename, 'SCRIPTS').catch(() => {});
 
   logger.info({ filePath, topic }, 'Script saved as DOCX');
   return filePath;

@@ -10,13 +10,40 @@ const mockLoggerDebug = vi.fn();
 const mockLoggerWarn = vi.fn();
 
 vi.mock('../../src/services/user-service', () => ({
+  // Identity-safety: iOS routes call the strict by-id helper after the
+  // May 2026 audit. Tests mock both legacy + *ById names for safety.
   getUserLanguage: (...args: unknown[]) => mockGetUserLanguage(...args),
+  getUserLanguageById: (...args: unknown[]) => mockGetUserLanguage(...args),
   setUserLanguage: (...args: unknown[]) => mockSetUserLanguage(...args),
 }));
 
 vi.mock('../../src/services/cost-guardrail', () => ({
   isUserOverDailyCap: (...args: unknown[]) => mockIsUserOverDailyCap(...args),
   buildQuotaExceededMessage: (...args: unknown[]) => mockBuildQuotaExceededMessage(...args),
+  enforceCostGuardrails: (userId: number) => {
+    const quota = mockIsUserOverDailyCap(userId);
+    const global = { totalUsd: 0, limitUsd: 100, exceeded: false };
+    if (!quota.over) return { block: false, status: 200, reason: 'ok', quota, global };
+    return {
+      block: true,
+      status: 429,
+      reason: 'daily_limit_exceeded',
+      message: mockBuildQuotaExceededMessage(quota),
+      quota,
+      global,
+      details: {
+        plan: quota.plan,
+        resetAt: quota.resetAt,
+        usageLevel: quota.usageLevel,
+        usageFraction: quota.usageFraction,
+        usagePercent: Math.round((quota.usageFraction || 0) * 100),
+        isOverLimit: quota.over,
+        boostAvailable: quota.boostAvailable,
+        nexusPointsBalance: quota.nexusPointsBalance,
+        pointsPurchaseAvailable: quota.pointsPurchaseAvailable,
+      },
+    };
+  },
 }));
 
 vi.mock('../../src/utils/logger', () => ({
@@ -24,6 +51,7 @@ vi.mock('../../src/utils/logger', () => ({
     debug: (...args: unknown[]) => mockLoggerDebug(...args),
     warn: (...args: unknown[]) => mockLoggerWarn(...args),
   },
+  LOGGER_REDACTION_PATHS: [],
 }));
 
 import {
@@ -63,7 +91,18 @@ describe('chat message request-boundary helpers', () => {
       spentUsd: 0,
       capUsd: 1,
       plan: 'pro',
+      usageLevel: 'enhanced',
+      usageFraction: 0,
       resetAt: '2026-04-25T00:00:00.000Z',
+      limitUsd: 1,
+      usedUsd: 0,
+      remainingUsd: 1,
+      planDailyLimitUsd: 1,
+      includedRemainingUsd: 1,
+      nexusPointsBalance: 0,
+      nexusPointsRemainingUsd: 0,
+      boostAvailable: true,
+      pointsPurchaseAvailable: true,
     });
     mockBuildQuotaExceededMessage.mockReturnValue('Daily AI quota reached');
   });
@@ -130,27 +169,56 @@ describe('chat message request-boundary helpers', () => {
       spentUsd: 0.2,
       capUsd: 0.1,
       plan: 'free',
+      usageLevel: 'exhausted',
+      usageFraction: 1,
       resetAt: '2026-04-25T00:00:00.000Z',
+      limitUsd: 0.1,
+      usedUsd: 0.2,
+      remainingUsd: 0,
+      planDailyLimitUsd: 0.1,
+      includedRemainingUsd: 0,
+      nexusPointsBalance: 0,
+      nexusPointsRemainingUsd: 0,
+      boostAvailable: false,
+      pointsPurchaseAvailable: false,
     });
 
     const blockedRes = mockRes();
     expect(sendChatQuotaExceededIfNeeded(blockedRes, 42, 'iOS chat blocked by quota')).toBe(true);
 
     expect(mockLoggerWarn).toHaveBeenCalledWith(
-      { userId: 42, spentUsd: 0.2, capUsd: 0.1, platform: 'ios' },
+      {
+        userId: 42,
+        reason: 'daily_limit_exceeded',
+        spentUsd: 0.2,
+        capUsd: 0.1,
+        globalTotalUsd: 0,
+        globalLimitUsd: 100,
+        platform: 'ios',
+      },
       'iOS chat blocked by quota',
     );
-    expect(blockedRes.statusCode).toBe(402);
+    expect(blockedRes.statusCode).toBe(429);
     expect(blockedRes.body).toMatchObject({
       ok: false,
       error: {
-        code: 'QUOTA_EXCEEDED',
+        code: 'daily_limit_exceeded',
         message: 'Daily AI quota reached',
         details: {
           plan: 'free',
           resetAt: '2026-04-25T00:00:00.000Z',
+          usageLevel: 'exhausted',
+          usageFraction: 1,
+          usagePercent: 100,
+          isOverLimit: true,
+          boostAvailable: false,
+          nexusPointsBalance: 0,
+          pointsPurchaseAvailable: false,
+          error: 'rate_limited',
+          retryable: true,
         },
       },
     });
+    expect(JSON.stringify(blockedRes.body.error.details)).not.toMatch(/usd|allowance/i);
   });
 });

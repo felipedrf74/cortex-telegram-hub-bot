@@ -14,13 +14,14 @@ import httpx
 
 from config import cfg
 from models.research import SearchResult
+from searchers.mock_fixtures import mock_search_result, query_slug
 
 logger = logging.getLogger("content-engine.reddit")
 
 # Niche-specific subreddits for targeted research
 NICHE_SUBREDDITS = {
-    "fitness": ["fitness", "running", "cycling", "triathlon", "carnivore", "AdvancedRunning"],
-    "commentary": ["brasil", "brasilivre", "desabafos", "futebol"],
+    "fitness": ["fitness", "running", "cycling", "triathlon", "AdvancedRunning"],
+    "commentary": ["CreatorEconomy", "youtube", "socialmedia", "OutOfTheLoop"],
 }
 ALL_SUBREDDITS = [s for subs in NICHE_SUBREDDITS.values() for s in subs]
 
@@ -32,6 +33,10 @@ class RedditSearcher:
     name = "reddit"
 
     async def search(self, query: str, max_results: int = 5) -> list[SearchResult]:
+        if cfg.fixture_mode:
+            logger.debug("Content-engine fixture mode — returning mock Reddit results")
+            return self._mock(query, max_results)
+
         params = {
             "q": query,
             "sort": "relevance",
@@ -57,6 +62,7 @@ class RedditSearcher:
 
             score = post.get("score", 0)
             num_comments = post.get("num_comments", 0)
+            thumbnail = post.get("thumbnail")
 
             results.append(SearchResult(
                 title=post.get("title", ""),
@@ -64,7 +70,7 @@ class RedditSearcher:
                 snippet=(post.get("selftext", "") or "")[:300],
                 source=self.name,
                 published_at=published,
-                thumbnail_url=post.get("thumbnail") if post.get("thumbnail", "").startswith("http") else None,
+                thumbnail_url=thumbnail if isinstance(thumbnail, str) and thumbnail.startswith("http") else None,
                 metadata={
                     "subreddit": post.get("subreddit", ""),
                     "score": score,
@@ -76,3 +82,40 @@ class RedditSearcher:
 
         logger.info("Reddit returned %d results for '%s'", len(results), query[:60])
         return results
+
+    @staticmethod
+    def _mock(query: str, max_results: int) -> list[SearchResult]:
+        discussion_slug = query_slug(query, separator="_", max_chars=24)
+        angle_slug = query_slug(query, separator="_", max_chars=18)
+        return [
+            mock_search_result(
+                query=query,
+                title=f"[Mock] Reddit discussion: {query}",
+                url=f"https://reddit.com/r/mock/comments/{discussion_slug}",
+                snippet=f"Mock Reddit discussion for '{query}'. Fixture mode avoids live Reddit calls.",
+                source="reddit",
+                hours_ago=5,
+                metadata={
+                    "subreddit": "mock",
+                    "score": 180,
+                    "num_comments": 42,
+                    "upvote_ratio": 0.91,
+                    "is_hot": False,
+                },
+            ),
+            mock_search_result(
+                query=query,
+                title=f"[Mock] Creator angle from Reddit: {query}",
+                url=f"https://reddit.com/r/mock/comments/angle_{angle_slug}",
+                snippet=f"Mock audience language for '{query}' to support fixture-only research.",
+                source="reddit",
+                hours_ago=9,
+                metadata={
+                    "subreddit": "mockcreators",
+                    "score": 96,
+                    "num_comments": 18,
+                    "upvote_ratio": 0.88,
+                    "is_hot": False,
+                },
+            ),
+        ][:max_results]

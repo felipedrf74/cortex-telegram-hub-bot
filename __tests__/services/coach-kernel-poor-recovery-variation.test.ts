@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   buildWeekPlan,
+  loadCoachKnowledge,
   sampleHybridAthlete,
   sampleMarathonAthlete,
   sampleTriathlete,
@@ -9,6 +10,9 @@ import {
   type Session,
 } from '../../src/services/coach-kernel';
 import { isActiveTrainingSession } from '../../src/services/coach-kernel/capacity-reconciliation';
+import { adaptSessionForPoorRecovery, classifyRecoveryScenario } from '../../src/services/coach-kernel/poor-recovery-variation';
+import { estimateStrengthSessionMinutes, validateSessionCoherence } from '../../src/services/coach-kernel/session-coherence';
+import type { ExercisePrescription } from '../../src/services/coach-kernel/types';
 
 function withPoorRecovery(athlete: AthleteState, overrides: Partial<AthleteState> = {}): AthleteState {
   return {
@@ -88,6 +92,42 @@ function uniqueTitles(sessions: Session[]): Set<string> {
 }
 
 describe('coach-kernel poor recovery variation', () => {
+  it('prioritizes high soreness before generic hybrid overload', () => {
+    const session: Session = {
+      id: 'run',
+      sport: 'running',
+      sessionType: 'threshold_run',
+      title: 'Threshold',
+      description: '',
+      dayOfWeek: 'tuesday',
+      durationMinutes: 60,
+      intensityZone: 'threshold',
+      fatigueCost: 'high',
+      keySession: true,
+      plannedLoad: 100,
+      tags: [],
+    };
+    const athlete = withPoorRecovery(sampleHybridAthlete, {
+      readiness: {
+        ...sampleHybridAthlete.readiness,
+        level: 'yellow',
+        score: 62,
+        soreness: 'high',
+        painFlags: [],
+      },
+    });
+
+    expect(classifyRecoveryScenario({
+      athlete,
+      session,
+      weekSessions: [
+        session,
+        { ...session, id: 'strength', sport: 'strength', sessionType: 'strength_hypertrophy', dayOfWeek: 'wednesday' },
+      ],
+      sessionIndex: 0,
+    })).toBe('high_soreness');
+  });
+
   it('varies cycling recovery sessions while preserving low-fatigue intent', () => {
     const plan = buildWeekPlan(cyclingAthlete(), '2026-06-01');
     const adjustedCycling = readinessAdjusted(plan.sessions).filter((session) => session.sport === 'cycling');
@@ -117,14 +157,21 @@ describe('coach-kernel poor recovery variation', () => {
   });
 
   it('gives poor-recovery strength weeks more than one safe fallback shape', () => {
+    const knowledge = loadCoachKnowledge();
     const plan = buildWeekPlan(strengthAthlete(), '2026-05-04');
     const strengthSessions = readinessAdjusted(plan.sessions).filter((session) => session.sport === 'strength');
+    const mobilitySessions = strengthSessions.filter((session) => session.sessionType === 'mobility');
 
     expect(strengthSessions.length).toBeGreaterThanOrEqual(3);
     expect(uniqueTitles(strengthSessions).size).toBeGreaterThanOrEqual(2);
     expect(strengthSessions.every((session) => session.fatigueCost === 'low')).toBe(true);
     expect(strengthSessions.every((session) => session.durationMinutes <= 35)).toBe(true);
-    expect(strengthSessions.filter((session) => session.sessionType === 'mobility').every((session) => !session.exercises?.length)).toBe(true);
+    expect(mobilitySessions.length).toBeGreaterThanOrEqual(1);
+    for (const session of mobilitySessions) {
+      expect(session.exercises?.length ?? 0).toBeGreaterThanOrEqual(4);
+      expect(estimateStrengthSessionMinutes({ exercises: session.exercises ?? [] }, knowledge))
+        .toBeGreaterThanOrEqual(session.durationMinutes - 2);
+    }
   });
 
   it('uses travel-aware low-burden recovery instead of pretending every constrained week can ride normally', () => {
@@ -177,6 +224,92 @@ describe('coach-kernel poor recovery variation', () => {
       .sort();
 
     expect(weekEightTitles).not.toEqual(weekNineTitles);
+  });
+
+  it('does not produce overstuffed strength_maintenance recovery sessions (time_volume_coherence regression)', () => {
+    // Pre-fix bug: strength sessions adapted for poor recovery shrunk
+    // `durationMinutes` to 20-35 min but inherited the original
+    // session's full exercise list. The eval baseline flagged this
+    // pattern as overstuffed (e.g. "Technique Strength + Mobility:
+    // claimed 20min, estimated 51min, action trimContent") and pinned
+    // time_volume_coherence at 82/100. This regression test asserts
+    // that strength_maintenance recovery sessions emerging from a
+    // typical strength athlete's poor-recovery week are coherent —
+    // either ok or, at worst, underfilled (never overstuffed).
+    const knowledge = loadCoachKnowledge();
+    const plan = buildWeekPlan(strengthAthlete(), '2026-05-04');
+    const strengthMaintenance = readinessAdjusted(plan.sessions)
+      .filter((session) => session.sport === 'strength' && session.sessionType === 'strength_maintenance');
+
+    expect(strengthMaintenance.length).toBeGreaterThanOrEqual(1);
+    for (const session of strengthMaintenance) {
+      const verdict = validateSessionCoherence(session, knowledge);
+      if (verdict.ok) continue;
+      expect(verdict.reason).not.toBe('overstuffed');
+    }
+  });
+
+  it('replaces the original hypertrophy block with catalog mobility when the variant is mobility', () => {
+    // Direct unit test on `adaptSessionForPoorRecovery`: when the
+    // chosen variant is mobility, the inherited hypertrophy list must
+    // be replaced by a catalog-grounded mobility flow. The integration
+    // variety test pins this for the buildWeekPlan path; this test pins
+    // the unit-level contract so future variant rotations cannot
+    // silently regress it.
+    const originalExercises: ExercisePrescription[] = [
+      { exerciseId: 'front_squat', name: 'Front Squat', sets: 4, reps: '8-12', restSec: 120 },
+      { exerciseId: 'bench_press', name: 'Bench Press', sets: 4, reps: '8-12', restSec: 90 },
+      { exerciseId: 'romanian_deadlift', name: 'RDL', sets: 3, reps: '10', restSec: 90 },
+      { exerciseId: 'pull_up', name: 'Pull-Up', sets: 3, reps: '8', restSec: 60 },
+      { exerciseId: 'dead_bug', name: 'Dead Bug', sets: 3, reps: '10', restSec: 60 },
+    ];
+    const original: Session = {
+      id: 'strength-1',
+      sport: 'strength',
+      sessionType: 'strength_hypertrophy',
+      title: 'Lower Body Strength A',
+      description: 'Heavy lower-body hypertrophy day.',
+      dayOfWeek: 'monday',
+      durationMinutes: 60,
+      intensityZone: 'aerobic',
+      fatigueCost: 'high',
+      keySession: true,
+      plannedLoad: 220,
+      tags: ['key_strength'],
+      exercises: originalExercises,
+    };
+    const athlete = strengthAthlete();
+    // Force the mobility variant by classifying as a scenario whose
+    // variant index lands on the mobility option. The strength
+    // variant order is: [Technique Strength, Mobility + Core Reset,
+    // Minimum-Dose Strength]. We don't strictly need to force a
+    // specific variant — instead, walk the candidates and assert the
+    // contract for whichever resolves.
+    const adaptation = adaptSessionForPoorRecovery({
+      athlete,
+      session: original,
+      weekSessions: [original],
+      sessionIndex: 2,
+    });
+
+    if (adaptation.session.sessionType === 'mobility') {
+      const knowledge = loadCoachKnowledge();
+      const originalIds = new Set(originalExercises.map((exercise) => exercise.exerciseId));
+      const mobilityExercises = adaptation.session.exercises ?? [];
+      expect(mobilityExercises.length).toBeGreaterThanOrEqual(4);
+      expect(mobilityExercises.every((exercise) => !originalIds.has(exercise.exerciseId))).toBe(true);
+      const verdict = validateSessionCoherence(adaptation.session, knowledge);
+      expect(verdict.ok).toBe(true);
+    } else if (adaptation.session.sessionType === 'strength_maintenance') {
+      // Strength_maintenance variants keep light technique work but
+      // must trim the original block to fit the shrunk duration.
+      const knowledge = loadCoachKnowledge();
+      const verdict = validateSessionCoherence(adaptation.session, knowledge);
+      if (!verdict.ok) {
+        expect(verdict.reason).not.toBe('overstuffed');
+      }
+      expect(adaptation.session.exercises?.length ?? 0).toBeLessThanOrEqual(originalExercises.length);
+    }
   });
 
   it('dedupes the recovery decision trail instead of repeating the same warning', () => {

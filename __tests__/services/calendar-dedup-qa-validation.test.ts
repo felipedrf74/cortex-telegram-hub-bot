@@ -10,6 +10,7 @@ import { describe, it, expect, vi } from 'vitest';
 
 vi.mock('../../src/utils/logger', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
+  LOGGER_REDACTION_PATHS: [],
 }));
 
 import {
@@ -177,15 +178,15 @@ describe('Calendar Dedup — QA Validation', () => {
       expect(unique?.syncedSources).toEqual(['google']);
     });
 
-    it('same source duplicates are also merged (e.g., recurring event bug)', () => {
+    it('same source duplicates are preserved so cleanup can remove real duplicate provider events', () => {
       const events = [
         makeEvent('Standup', '2024-03-15T09:00:00Z', 'google', { id: 'g1' }),
         makeEvent('Standup', '2024-03-15T09:00:00Z', 'google', { id: 'g2' }),
       ];
       const result = deduplicateEvents(events);
-      expect(result.length).toBe(1);
-      // syncedSources should still just have 'google' (Set deduplication)
-      expect(result[0].syncedSources).toEqual(['google']);
+      expect(result.length).toBe(2);
+      expect(result.map((event) => event.id)).toEqual(['g1', 'g2']);
+      expect(result.map((event) => event.syncedSources)).toEqual([['google'], ['google']]);
     });
   });
 

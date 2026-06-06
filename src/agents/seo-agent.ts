@@ -2,7 +2,7 @@
 
 /**
  * SEO Tracking Agent — monitors YouTube keyword rankings,
- * identifies opportunities, and tracks Felipe's search visibility.
+ * identifies opportunities, and tracks the authenticated creator's search visibility.
  *
  * Schedule: Weekly, Monday 06:00
  *
@@ -15,23 +15,26 @@ import { buildAgentContext } from '../services/cross-agent-learning';
 import { getDb } from '../services/database';
 import { config } from '../config';
 import { logger } from '../utils/logger';
+import { listUserScopedYoutubeChannelTargets } from '../services/youtube-channel-scope';
 
 const YOUTUBE_API_BASE = 'https://www.googleapis.com/youtube/v3';
 
 // ── Seed Keywords ────────────────────────────────────────────────────
 
 const SEED_KEYWORDS = [
-  // Fitness
-  'treino híbrido', 'atleta híbrido', 'corrida e musculação',
-  'treino de força corrida', 'dieta para treino',
-  // Politics / Economics
-  'economia austríaca', 'livre mercado brasil', 'estado é o problema',
-  'liberalismo brasil', 'impostos brasil',
-  // Self-development
-  'disciplina masculina', 'desenvolvimento pessoal homem',
-  'mentalidade vencedora',
-  // Faith
-  'fé e disciplina', 'valores cristãos homem',
+  // Setup-safe defaults only. Per-creator keywords should be added through
+  // tracked SEO keywords or saved content pillars, not founder-shaped seeds.
+  'ai automation tools',
+  'creator economy 2026',
+  'youtube growth strategy',
+  'content workflow automation',
+  'running strength training',
+  'marathon training plan',
+  'meal prep for training',
+  'wellness routine',
+  'productivity systems',
+  'small business operations',
+  'gaming creator trends',
 ];
 
 // ── Types ────────────────────────────────────────────────────────────
@@ -55,7 +58,7 @@ interface RankChange {
 // ── Core Functions ───────────────────────────────────────────────────
 
 /**
- * Search YouTube for a keyword and find Felipe's ranking position.
+ * Search YouTube for a keyword and find the authenticated creator's ranking position.
  */
 async function checkKeywordRank(keyword: string, channelId: string): Promise<KeywordRank> {
   const apiKey = config.youtube?.apiKey;
@@ -110,14 +113,14 @@ async function checkKeywordRank(keyword: string, channelId: string): Promise<Key
         topCompetitor = item.snippet?.channelTitle || '';
       }
 
-      // Found Felipe's video
+      // Found the authenticated creator's video
       if (itemChannelId === channelId) {
         position = i + 1;
         break;
       }
     }
 
-    // If Felipe's not in the results, the top result is the competitor
+    // If the authenticated creator's channel is not in the results, the top result is the competitor
     if (!topCompetitor && items.length > 0) {
       topCompetitor = items[0].snippet?.channelTitle || '';
     }
@@ -230,11 +233,23 @@ export async function runSEOAgent(): Promise<void> {
     const db = getDb();
     seedKeywordsIfEmpty();
 
-    // Get Felipe's channel ID (from reference channels or config)
-    const felipeChannelId = config.youtube?.channelId || '';
-    if (!felipeChannelId) {
-      logger.warn('SEO Agent: No YouTube channel ID configured (YOUTUBE_CHANNEL_ID). Skipping rank checks.');
+    const channelTargets = listUserScopedYoutubeChannelTargets();
+    if (channelTargets.length === 0) {
+      logger.warn('SEO Agent: no user-scoped creator YouTube channel configured. Global YOUTUBE_CHANNEL_ID is intentionally ignored.');
+      logAgentRun('seo-agent', 'skipped', 0, 0, Date.now() - start, 'No user-scoped creator YouTube channel configured');
+      return;
     }
+
+    // SEO keyword tables and content-mesh rank-change signals are currently
+    // platform-global. Until both are user/tenant scoped, fail closed rather
+    // than recording one creator's YouTube ranks where another creator can
+    // read them.
+    logger.warn(
+      { channelTargets: channelTargets.length },
+      'SEO Agent paused: user-scoped SEO rank storage/signals are not supported yet',
+    );
+    logAgentRun('seo-agent', 'skipped', 0, 0, Date.now() - start, 'User-scoped SEO rank storage/signals not supported yet');
+    return;
 
     // Get all tracked keywords
     const keywords = db.prepare('SELECT * FROM seo_keywords').all() as any[];
@@ -245,7 +260,7 @@ export async function runSEOAgent(): Promise<void> {
     // Check ranks for each keyword (with 2s delay between to avoid rate limits)
     for (let i = 0; i < keywords.length; i++) {
       const kw = keywords[i];
-      const rank = await checkKeywordRank(kw.keyword, felipeChannelId);
+      const rank = await checkKeywordRank(kw.keyword, channelTargets[0].channelId);
 
       // Store previous and update current
       db.prepare(`

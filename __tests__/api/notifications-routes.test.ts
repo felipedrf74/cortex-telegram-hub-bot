@@ -6,6 +6,19 @@ const mockGetNotifications = vi.fn();
 const mockGetUnreadCount = vi.fn();
 const mockGetRecentReports = vi.fn();
 const mockGetUnreadReportCount = vi.fn();
+const mockCreateNotificationIntent = vi.fn();
+const mockBuildSkillNotificationFixtureIntent = vi.fn();
+const mockListNotificationCenterItems = vi.fn();
+const mockGetOrCreateNotificationProfile = vi.fn();
+const mockUpdateNotificationProfile = vi.fn();
+const mockRegisterNotificationDeviceToken = vi.fn();
+const mockRevokeNotificationDeviceToken = vi.fn();
+const mockGetNotificationDecisionLog = vi.fn();
+const mockMarkNotificationCenterItemRead = vi.fn();
+const mockDismissNotificationCenterItem = vi.fn();
+const mockPerformNotificationAction = vi.fn();
+const mockGetDecisionItem = vi.fn();
+const mockPerformDecisionAction = vi.fn();
 const mockIsConnected = vi.fn();
 const mockGetUnreadEmailsForUser = vi.fn();
 const mockReadOutlookEmailForUser = vi.fn();
@@ -16,6 +29,24 @@ const mockGetOutlookEvents = vi.fn();
 const mockGetGoogleEvents = vi.fn();
 const mockListTasks = vi.fn();
 
+const decisionCenterMockTypes = vi.hoisted(() => {
+  class DecisionActionError extends Error {
+    code: string;
+    status: number;
+    details?: Record<string, unknown>;
+
+    constructor(code: string, message: string, status = 400, details?: Record<string, unknown>) {
+      super(message);
+      this.name = 'DecisionActionError';
+      this.code = code;
+      this.status = status;
+      this.details = details;
+    }
+  }
+
+  return { DecisionActionError };
+});
+
 vi.mock('../../src/services/content-notification-store', () => ({
   getNotifications: (...args: unknown[]) => mockGetNotifications(...args),
   getUnreadCount: (...args: unknown[]) => mockGetUnreadCount(...args),
@@ -25,6 +56,28 @@ vi.mock('../../src/services/report-document-store', () => ({
   getRecentReports: (...args: unknown[]) => mockGetRecentReports(...args),
   getUnreadReportCount: (...args: unknown[]) => mockGetUnreadReportCount(...args),
 }));
+
+vi.mock('../../src/services/notification-orchestrator', () => ({
+  createNotificationIntent: (...args: unknown[]) => mockCreateNotificationIntent(...args),
+  buildSkillNotificationFixtureIntent: (...args: unknown[]) => mockBuildSkillNotificationFixtureIntent(...args),
+  listNotificationCenterItems: (...args: unknown[]) => mockListNotificationCenterItems(...args),
+  getOrCreateNotificationProfile: (...args: unknown[]) => mockGetOrCreateNotificationProfile(...args),
+  updateNotificationProfile: (...args: unknown[]) => mockUpdateNotificationProfile(...args),
+  registerNotificationDeviceToken: (...args: unknown[]) => mockRegisterNotificationDeviceToken(...args),
+  revokeNotificationDeviceToken: (...args: unknown[]) => mockRevokeNotificationDeviceToken(...args),
+  getNotificationDecisionLog: (...args: unknown[]) => mockGetNotificationDecisionLog(...args),
+  markNotificationCenterItemRead: (...args: unknown[]) => mockMarkNotificationCenterItemRead(...args),
+  dismissNotificationCenterItem: (...args: unknown[]) => mockDismissNotificationCenterItem(...args),
+  performNotificationAction: (...args: unknown[]) => mockPerformNotificationAction(...args),
+}));
+
+vi.mock('../../src/services/decision-center', () => ({
+  DecisionActionError: decisionCenterMockTypes.DecisionActionError,
+  getDecisionItem: (...args: unknown[]) => mockGetDecisionItem(...args),
+  performDecisionAction: (...args: unknown[]) => mockPerformDecisionAction(...args),
+}));
+
+const DecisionActionError = decisionCenterMockTypes.DecisionActionError;
 
 vi.mock('../../src/services/oauth-store', () => ({
   isConnected: (...args: unknown[]) => mockIsConnected(...args),
@@ -62,6 +115,7 @@ vi.mock('../../src/utils/logger', () => ({
     trace: vi.fn(),
     child: vi.fn().mockReturnThis(),
   },
+  LOGGER_REDACTION_PATHS: [],
 }));
 
 import { notificationRoutes } from '../../src/api/routes/notifications';
@@ -89,7 +143,14 @@ function mockRes(onSend?: () => void): MockRes {
   return r;
 }
 
-function mockReq(method: string, path: string, query: Record<string, any> = {}, userId = 7): Request {
+function mockReq(
+  method: string,
+  path: string,
+  query: Record<string, any> = {},
+  userId = 7,
+  body: Record<string, any> = {},
+  headers: Record<string, string> = {},
+): Request {
   return {
     method,
     url: path,
@@ -98,14 +159,27 @@ function mockReq(method: string, path: string, query: Record<string, any> = {}, 
     path,
     query,
     params: {},
-    headers: {},
+    body,
+    headers,
+    header(name: string) {
+      return headers[name.toLowerCase()] ?? headers[name];
+    },
     userId,
+    tenantId: userId,
+    deviceId: 'iphone-test',
   } as any;
 }
 
-async function dispatch(method: string, path: string, query: Record<string, any> = {}, userId = 7): Promise<MockRes> {
+async function dispatch(
+  method: string,
+  path: string,
+  query: Record<string, any> = {},
+  userId = 7,
+  body: Record<string, any> = {},
+  headers: Record<string, string> = {},
+): Promise<MockRes> {
   const router = notificationRoutes();
-  const req = mockReq(method, path, query, userId);
+  const req = mockReq(method, path, query, userId, body, headers);
   let resolveResponse!: () => void;
   let rejectResponse!: (err: Error) => void;
   const responseDone = new Promise<void>((resolve, reject) => {
@@ -138,11 +212,25 @@ describe('Notification inbox routes', () => {
   beforeEach(() => {
     delete process.env.UNIFIED_INBOX_SOURCE_TIMEOUT_MS;
     delete process.env.UNIFIED_INBOX_SUMMARY_SOURCE_TIMEOUT_MS;
+    delete process.env.INTERNAL_API_SECRET;
 
     mockGetNotifications.mockReset();
     mockGetUnreadCount.mockReset();
     mockGetRecentReports.mockReset();
     mockGetUnreadReportCount.mockReset();
+    mockCreateNotificationIntent.mockReset();
+    mockBuildSkillNotificationFixtureIntent.mockReset();
+    mockListNotificationCenterItems.mockReset();
+    mockGetOrCreateNotificationProfile.mockReset();
+    mockUpdateNotificationProfile.mockReset();
+    mockRegisterNotificationDeviceToken.mockReset();
+    mockRevokeNotificationDeviceToken.mockReset();
+    mockGetNotificationDecisionLog.mockReset();
+    mockMarkNotificationCenterItemRead.mockReset();
+    mockDismissNotificationCenterItem.mockReset();
+    mockPerformNotificationAction.mockReset();
+    mockGetDecisionItem.mockReset();
+    mockPerformDecisionAction.mockReset();
     mockIsConnected.mockReset();
     mockGetUnreadEmailsForUser.mockReset();
     mockReadOutlookEmailForUser.mockReset();
@@ -158,6 +246,20 @@ describe('Notification inbox routes', () => {
     mockGetUnreadCount.mockReturnValue(0);
     mockGetRecentReports.mockReturnValue([]);
     mockGetUnreadReportCount.mockReturnValue(0);
+    mockListNotificationCenterItems.mockReturnValue([]);
+    mockGetOrCreateNotificationProfile.mockReturnValue({ pushEnabled: true });
+    mockUpdateNotificationProfile.mockImplementation((_userId, _tenantId, patch) => ({ ...patch }));
+    mockRegisterNotificationDeviceToken.mockReturnValue({
+      tokenId: 'dt_test',
+      platform: 'ios',
+      environment: 'sandbox',
+      tokenSuffix: '12345678',
+      deviceId: 'device-test',
+      lastSeenAt: '2026-05-07T10:00:00.000Z',
+    });
+    mockRevokeNotificationDeviceToken.mockReturnValue(true);
+    mockGetNotificationDecisionLog.mockReturnValue(null);
+    mockGetDecisionItem.mockReturnValue(null);
     mockIsConnected.mockReturnValue(false);
     mockGetUnreadEmailsForUser.mockResolvedValue({ count: 0, emails: [] });
     mockReadOutlookEmailForUser.mockResolvedValue(null);
@@ -167,6 +269,229 @@ describe('Notification inbox routes', () => {
     mockGetOutlookEvents.mockResolvedValue([]);
     mockGetGoogleEvents.mockResolvedValue([]);
     mockListTasks.mockReturnValue([]);
+  });
+
+  it('rejects arbitrary client-created notification intents without internal skill context', async () => {
+    const res = await dispatch('POST', '/intents', {}, 7, {
+      userId: 999,
+      tenantId: 999,
+      sourceSkill: 'security',
+      type: 'security_account',
+      priority: 'critical',
+      title: 'Fake security alert',
+      body: 'Fake alert',
+    });
+
+    expect(res.statusCode).toBe(403);
+    expect(mockCreateNotificationIntent).not.toHaveBeenCalled();
+  });
+
+  it('creates internal notification intents using authenticated scope, ignoring forged body scope', async () => {
+    process.env.INTERNAL_API_SECRET = 'test-internal-secret';
+    mockCreateNotificationIntent.mockResolvedValue({
+      intent: {
+        intentId: 'ni_route',
+        sourceSkill: 'finance',
+        type: 'reminder',
+        priority: 'active',
+        dedupeKey: 'finance:route',
+        createdAt: '2026-05-07T10:00:00.000Z',
+      },
+      item: null,
+      decisionLog: {
+        decisionLogId: 'ndl_route',
+        decision: 'blocked_missing_device_token',
+        reason: 'no active device token',
+        scheduledFor: null,
+        sentAt: null,
+      },
+      deliveryAttempts: [],
+      pushPayload: null,
+    });
+
+    const res = await dispatch(
+      'POST',
+      '/intents',
+      {},
+      7,
+      {
+        userId: 999,
+        tenantId: 999,
+        sourceSkill: 'finance',
+        type: 'reminder',
+        priority: 'active',
+        title: 'Finance reminder',
+        body: 'Finance reminder due tomorrow.',
+      },
+      { 'x-internal-secret': 'test-internal-secret' },
+    );
+
+    expect(res.statusCode).toBe(200);
+    expect(mockCreateNotificationIntent).toHaveBeenCalledWith(expect.objectContaining({
+      userId: 7,
+      tenantId: 7,
+      sourceSkill: 'finance',
+    }));
+    expect(res.body.data.decisionLog.decision).toBe('blocked_missing_device_token');
+  });
+
+  it('returns decision center sections and notification preferences', async () => {
+    mockListNotificationCenterItems.mockReturnValue([
+      {
+        itemId: 'nc_1',
+        intentId: 'ni_1',
+        decisionLogId: 'ndl_1',
+        userId: 7,
+        tenantId: 7,
+        title: 'Decision needed',
+        body: 'Open Nexus for details.',
+        safeBody: 'Decision needed.',
+        sourceSkill: 'secretary',
+        type: 'decision_required',
+        priority: 'time_sensitive',
+        status: 'unread',
+        deeplink: 'nexus://notifications/nc_1',
+        actions: [{ id: 'open_detail', label: 'Open' }],
+        dedupeKey: 'decision',
+        createdAt: '2026-05-07T10:00:00.000Z',
+        expiresAt: null,
+      },
+    ]);
+    mockGetOrCreateNotificationProfile.mockReturnValue({
+      userId: 7,
+      tenantId: 7,
+      pushEnabled: true,
+      skillPreferences: { secretary: true },
+    });
+
+    const center = await dispatch('GET', '/decision-center');
+    expect(center.statusCode).toBe(200);
+    expect(center.body.data.unreadCount).toBe(1);
+    expect(center.body.data.sections.needsDecision).toHaveLength(1);
+
+    const prefs = await dispatch('GET', '/preferences');
+    expect(prefs.statusCode).toBe(200);
+    expect(prefs.body.data.profile.pushEnabled).toBe(true);
+  });
+
+  it('registers, revokes, and actions notification center items through scoped routes', async () => {
+    mockPerformNotificationAction.mockReturnValue({
+      actionId: 'open_detail',
+      idempotent: false,
+      item: {
+        itemId: 'nc_action',
+        intentId: 'ni_action',
+        decisionLogId: 'ndl_action',
+        userId: 7,
+        tenantId: 7,
+        title: 'Open me',
+        body: 'Open Nexus.',
+        safeBody: 'Open Nexus.',
+        sourceSkill: 'system',
+        type: 'insight',
+        priority: 'active',
+        status: 'actioned',
+        deeplink: 'nexus://notifications/nc_action',
+        actions: [{ id: 'open_detail', label: 'Open' }],
+        dedupeKey: 'action',
+        createdAt: '2026-05-07T10:00:00.000Z',
+        expiresAt: null,
+      },
+    });
+
+    const token = await dispatch('POST', '/device-tokens', {}, 7, {
+      token: 'abcdef1234567890',
+      deviceId: 'iphone-7',
+    });
+    expect(token.statusCode).toBe(200);
+    expect(mockRegisterNotificationDeviceToken).toHaveBeenCalledWith(expect.objectContaining({
+      userId: 7,
+      tenantId: 7,
+      token: 'abcdef1234567890',
+    }));
+
+    const action = await dispatch('POST', '/nc_action/actions', {}, 7, { actionId: 'open_detail' });
+    expect(action.statusCode).toBe(200);
+    expect(action.body.data.item.status).toBe('actioned');
+
+    const revoke = await dispatch('DELETE', '/device-tokens/dt_test');
+    expect(revoke.statusCode).toBe(200);
+    expect(revoke.body.data.revoked).toBe(true);
+  });
+
+  it('forwards decision notification actions through the canonical Decision API path', async () => {
+    mockGetDecisionItem.mockReturnValue({
+      decisionId: 'nc_decision',
+      itemId: 'nc_decision',
+      status: 'unread',
+    });
+    mockPerformDecisionAction.mockResolvedValue({
+      actionId: 'approve_script',
+      status: 'succeeded',
+      idempotent: false,
+      item: { decisionId: 'nc_decision', status: 'actioned' },
+      verification: { readBackOk: true },
+    });
+
+    const action = await dispatch('POST', '/nc_decision/actions', {}, 7, {
+      actionId: 'approve_script',
+      idempotencyKey: 'tap-decision-1',
+      payload: { source: 'notification' },
+    });
+
+    expect(action.statusCode).toBe(200);
+    expect(action.body.data.status).toBe('succeeded');
+    expect(mockPerformDecisionAction).toHaveBeenCalledWith(
+      'nc_decision',
+      'approve_script',
+      7,
+      7,
+      {
+        idempotencyKey: 'tap-decision-1',
+        payload: { source: 'notification' },
+      },
+    );
+    expect(mockPerformNotificationAction).not.toHaveBeenCalled();
+  });
+
+  it('preserves Decision API error semantics on the legacy notification action route', async () => {
+    mockGetDecisionItem.mockReturnValue({
+      decisionId: 'nc_decision',
+      itemId: 'nc_decision',
+      status: 'unread',
+    });
+    mockPerformDecisionAction.mockRejectedValue(new DecisionActionError(
+      'IDEMPOTENCY_KEY_REQUIRED',
+      'Decision actions require an idempotency key',
+      400,
+    ));
+
+    const action = await dispatch('POST', '/nc_decision/actions', {}, 7, {
+      actionId: 'approve_script',
+    });
+
+    expect(action.statusCode).toBe(400);
+    expect(action.body.error.code).toBe('IDEMPOTENCY_KEY_REQUIRED');
+    expect(mockPerformNotificationAction).not.toHaveBeenCalled();
+  });
+
+  it('binds legacy /notifications/device-tokens registration to authenticated scope despite body injection', async () => {
+    const token = await dispatch('POST', '/device-tokens', {}, 7, {
+      token: 'abcdef1234567890',
+      userId: 999,
+      tenantId: 999,
+      deviceId: 'forged-device',
+    });
+
+    expect(token.statusCode).toBe(200);
+    expect(mockRegisterNotificationDeviceToken).toHaveBeenCalledWith(expect.objectContaining({
+      userId: 7,
+      tenantId: 7,
+      token: 'abcdef1234567890',
+    }));
+    expect(mockRegisterNotificationDeviceToken).not.toHaveBeenCalledWith(expect.objectContaining({
+      userId: 999,
+    }));
   });
 
   it('returns a unified secretary inbox with urgency ordering and degraded state on partial source failure', async () => {

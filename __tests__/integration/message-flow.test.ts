@@ -77,6 +77,24 @@ vi.mock('../../src/utils/logger', () => ({
     info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(),
     trace: vi.fn(), child: vi.fn().mockReturnThis(),
   },
+  LOGGER_REDACTION_PATHS: [],
+}));
+
+// Identity-safety (May 2026 audit): mock user-service so the domain-handler
+// chain never hits the real database resolver. Both legacy and *ById names
+// must be exposed for any caller migrated during the audit.
+vi.mock('../../src/services/user-service', () => ({
+  getUserLanguage: vi.fn(() => 'en-US'),
+  getUserLanguageById: vi.fn(() => 'en-US'),
+  getUserTimezone: vi.fn(() => 'Europe/Lisbon'),
+  getUserTimezoneById: vi.fn(() => 'Europe/Lisbon'),
+  getPreferredDisplayName: vi.fn(() => 'Test User'),
+  getPreferredDisplayNameById: vi.fn(() => 'Test User'),
+  getUserById: vi.fn((id: number) => ({ id, first_name: 'Test', tier: 'pro' })),
+  getUserByTelegramId: vi.fn(() => null),
+  resolveCanonicalUserId: vi.fn((id: number) => id),
+  getOwnerBootstrapTarget: vi.fn(() => null),
+  getOwnerBootstrapUser: vi.fn(() => null),
 }));
 
 // ─── Imports (after mocks) ─────────────────────────────────────────
@@ -310,10 +328,11 @@ describe('Integration: Claude classifier → domain handler', () => {
     expect(mockClassifyMessage).not.toHaveBeenCalled();
   });
 
-  it('active context: short follow-up phrasing prefers context over broad keyword shortcuts', async () => {
+  it('active context: short follow-up phrasing preserves context without paying for the classifier', async () => {
     // "put it on the calendar for Thursday" is an anaphoric follow-up,
-    // not a fresh secretary request. We now preserve the active context
-    // and let the classifier decide with conversation history attached.
+    // not a fresh secretary request. The router now preserves the
+    // active context directly instead of paying for a Gemini/Anthropic
+    // classifier hop — same outcome, one fewer LLM call.
     mockClassifyMessage.mockResolvedValue({
       domain: 'triathlon',
       confidence: 0.88,
@@ -325,8 +344,9 @@ describe('Integration: Claude classifier → domain handler', () => {
     };
 
     const route = await routeMessage('put it on the calendar for Thursday', activeContext);
-    expect(route.method).toBe('classifier');
+    expect(route.method).toBe('context');
     expect(route.domain).toBe('triathlon');
+    expect(mockClassifyMessage).not.toHaveBeenCalled();
   });
 });
 
@@ -559,7 +579,10 @@ describe('Integration: Full end-to-end message flow', () => {
 
     const route = await routeMessage('yes, do it', activeContext);
     expect(route.domain).toBe('triathlon');
-    expect(route.method).toBe('classifier'); // Context forces classifier path
+    // Pure follow-up — the router preserves active context directly
+    // instead of paying for a classifier hop the way it used to.
+    expect(route.method).toBe('context');
+    expect(mockClassifyMessage).not.toHaveBeenCalled();
 
     mockCallDomain.mockResolvedValue({
       text: 'Done! Updated bench press to 4×6 at 85kg.',
@@ -1031,7 +1054,10 @@ describe('Scenario: Ambiguous message → Haiku classifier → most likely domai
     expect(['secretary', 'content', 'triathlon', 'cooking', 'finance']).toContain(route.domain);
   });
 
-  it('classifier with active context routes follow-up correctly', async () => {
+  it('short Portuguese follow-up preserves active context without classifier hop', async () => {
+    // "sim, para 4 pessoas" matches CONTEXT_FOLLOW_UP_PATTERNS (sim) so
+    // the router preserves the cooking context directly. No classifier
+    // call needed — same routed domain, lower cost.
     mockClassifyMessage.mockResolvedValue({
       domain: 'cooking',
       confidence: 0.88,
@@ -1043,13 +1069,9 @@ describe('Scenario: Ambiguous message → Haiku classifier → most likely domai
     };
 
     const route = await routeMessage('sim, para 4 pessoas', activeContext);
-    expect(route.method).toBe('classifier');
+    expect(route.method).toBe('context');
     expect(route.domain).toBe('cooking');
-    expect(route.confidence).toBe(0.88);
-
-    // Verify context was passed to classifier
-    // Third/fourth args carry optional user and tenant scope.
-    expect(mockClassifyMessage).toHaveBeenCalledWith('sim, para 4 pessoas', activeContext, undefined, undefined);
+    expect(mockClassifyMessage).not.toHaveBeenCalled();
   });
 });
 

@@ -10,6 +10,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import fs from 'fs';
 import path from 'path';
+import { computeModelUsageCostUsd } from '../../src/services/model-pricing';
 
 describe('Internal Routes — structural', () => {
   const routesSrc = fs.readFileSync(
@@ -37,6 +38,19 @@ describe('Internal Routes — structural', () => {
     expect(routesSrc).toContain('jsonMode,');
   });
 
+  it('ai-complete strips body-supplied user and tenant metadata before provider usage attribution', () => {
+    expect(routesSrc).toContain('userId?: number');
+    expect(routesSrc).toContain('tenantId?: number');
+    expect(routesSrc).toContain('attributionToken?: string');
+    expect(routesSrc).toContain('verifyInternalAttributionToken');
+    expect(routesSrc).toContain('const scopedUserId = verifiedAttribution?.userId ?? 0;');
+    expect(routesSrc).toContain('const scopedTenantId = verifiedAttribution?.tenantId ?? 0;');
+    expect(routesSrc).toContain('Ignoring body-supplied internal AI attribution; billing as system usage');
+    expect(routesSrc).toContain('body scope ignored in favor of signed claims');
+    expect(routesSrc).toContain('userId: scopedUserId');
+    expect(routesSrc).toContain('tenantId: scopedTenantId');
+  });
+
   it('defines anthropic-enabled endpoint', () => {
     expect(routesSrc).toContain("router.get('/anthropic-enabled'");
   });
@@ -50,8 +64,24 @@ describe('Internal Routes — structural', () => {
     expect(routesSrc).toContain('403');
   });
 
+  it('requires loopback origin by default before internal secret auth', () => {
+    expect(routesSrc).toContain("INTERNAL_REQUIRE_LOOPBACK !== 'false'");
+    expect(routesSrc).toContain('isLoopbackRequest(req)');
+    expect(routesSrc).toContain('Internal API requires loopback origin');
+  });
+
   it('records usage via recordUsage from usage-metering', () => {
     expect(routesSrc).toContain('recordUsage');
+  });
+
+  it('report-usage uses signed attribution instead of hardcoding system billing', () => {
+    expect(routesSrc).toContain('verifyInternalAttributionToken(attributionToken, category)');
+    expect(routesSrc).toContain('category, model, tenant_id, user_id, input_tokens, output_tokens');
+    expect(routesSrc).toContain('category, model, scopedTenantId, scopedUserId');
+    expect(routesSrc).toContain('insertApiUsageFallback');
+    expect(routesSrc).toContain('recordUsage(scopedUserId');
+    expect(routesSrc).not.toContain('VALUES (?, ?, 0, ?, ?, ?, ?, ?, ?)');
+    expect(routesSrc).not.toContain('recordUsage(0, inputTokens');
   });
 
   it('pushes telemetry events', () => {
@@ -60,25 +90,18 @@ describe('Internal Routes — structural', () => {
 });
 
 describe('Internal Routes — cost computation logic', () => {
-  // Test the cost computation inline since we can't easily import the route
-  const COST_PER_MTK: Record<string, { in: number; out: number; cacheRead: number; cacheWrite: number }> = {
-    'claude-sonnet-4-6':         { in: 3.00, out: 15.00, cacheRead: 0.30, cacheWrite: 3.75 },
-    'claude-haiku-4-5-20251001': { in: 0.80, out: 4.00,  cacheRead: 0.08, cacheWrite: 1.00 },
-  };
-
   function computeCost(model: string, inputTokens: number, outputTokens: number, cacheRead = 0, cacheWrite = 0): number {
-    const rates = COST_PER_MTK[model] ?? COST_PER_MTK['claude-sonnet-4-6'];
-    return (
-      (inputTokens / 1_000_000) * rates.in +
-      (outputTokens / 1_000_000) * rates.out +
-      (cacheRead / 1_000_000) * rates.cacheRead +
-      (cacheWrite / 1_000_000) * rates.cacheWrite
-    );
+    return computeModelUsageCostUsd(model, {
+      inputTokens,
+      outputTokens,
+      cacheReadTokens: cacheRead,
+      cacheWriteTokens: cacheWrite,
+    }, 'anthropic').costUsd;
   }
 
   it('computes Haiku cost correctly', () => {
-    // 1M input × $0.80 + 1M output × $4.00 = $4.80
-    expect(computeCost('claude-haiku-4-5-20251001', 1_000_000, 1_000_000)).toBeCloseTo(4.80);
+    // 1M input × $1.00 + 1M output × $5.00 = $6.00
+    expect(computeCost('claude-haiku-4-5-20251001', 1_000_000, 1_000_000)).toBeCloseTo(6.00);
   });
 
   it('computes Sonnet cost correctly', () => {
@@ -89,13 +112,14 @@ describe('Internal Routes — cost computation logic', () => {
   it('includes cache token costs', () => {
     const withoutCache = computeCost('claude-sonnet-4-6', 500_000, 500_000);
     const withCache = computeCost('claude-sonnet-4-6', 500_000, 500_000, 100_000, 50_000);
-    expect(withCache).toBeGreaterThan(withoutCache);
+    expect(withoutCache).toBeCloseTo(9.00);
+    expect(withCache).toBeCloseTo(8.7675);
+    expect(withCache).toBeLessThan(withoutCache);
   });
 
-  it('falls back to Sonnet pricing for unknown models', () => {
+  it('charges the unresolved sentinel instead of silently falling back to another model key', () => {
     const unknown = computeCost('unknown-model', 1_000_000, 1_000_000);
-    const sonnet = computeCost('claude-sonnet-4-6', 1_000_000, 1_000_000);
-    expect(unknown).toBeCloseTo(sonnet);
+    expect(unknown).toBeCloseTo(18.00);
   });
 });
 

@@ -29,6 +29,9 @@ let testDb: Database.Database;
 
 vi.mock('../../src/services/database', () => ({
   getDb: () => testDb,
+  initDatabase: vi.fn(),
+  closeDatabase: vi.fn(),
+  findUnexpectedMigrationPrefixCollisions: vi.fn(() => []),
 }));
 
 vi.mock('../../src/utils/logger', () => ({
@@ -40,6 +43,7 @@ vi.mock('../../src/utils/logger', () => ({
     trace: vi.fn(),
     child: vi.fn().mockReturnThis(),
   },
+  LOGGER_REDACTION_PATHS: [],
 }));
 
 function applyMigrations(db: Database.Database): void {
@@ -132,6 +136,20 @@ describe('training-history — bucketing', () => {
     expect(result.lastWeekMinutesBySport.running).toBe(45);
     // Series is OLDEST FIRST: [w3, w2, w1, w0]
     expect(result.trailing4WeekMinutesBySport.running).toEqual([0, 0, 0, 45]);
+  });
+
+  it('normalizes offset timestamps to UTC in recent sessions', () => {
+    seed({ userId: 100, sessionType: 'running', daysAgo: 3, durationMin: 45, baseId: 1 });
+    testDb.prepare(`
+      UPDATE training_completions
+         SET completed_at = '2026-04-27T01:00:00+02:00'
+       WHERE session_id = 1
+    `).run();
+
+    const result = READ(100);
+
+    expect(result.recentSessions[0].completedAt).toBe('2026-04-26T23:00:00.000Z');
+    expect(result.recentSessions[0].id).toContain('2026-04-26T23:00:00.000Z');
   });
 
   it('buckets completion 8-14 days ago into week 1', () => {

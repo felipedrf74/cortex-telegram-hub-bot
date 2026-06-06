@@ -13,31 +13,28 @@ import { pushEvent } from './telemetry';
 import { logger } from '../utils/logger';
 import { withTimeout } from '../utils/timeout';
 import { getAICallTimeoutMs, isAnthropicRuntimeEnabled } from '../services/runtime-flags';
+import { computeModelUsageCostUsd, recordUnresolvedModelPricingAlert, type ModelCostResult } from '../services/model-pricing';
+import { settleNexusPointOverageForUser } from '../services/nexus-points';
+import { insertApiUsageFallback } from '../services/api-usage-fallback';
 
 // ─── Per-million-token pricing (update when Anthropic changes rates) ─
 
-const COST_PER_MTK: Record<string, { in: number; out: number; cacheRead: number; cacheWrite: number }> = {
-  'claude-sonnet-4-6':         { in: 3.00, out: 15.00, cacheRead: 0.30, cacheWrite: 3.75 },
-  'claude-haiku-4-5-20251001': { in: 0.80, out:  4.00, cacheRead: 0.08, cacheWrite: 1.00 },
-};
-
 const warnedModels = new Set<string>();
 
-function computeCost(model: string, usage: Anthropic.Usage): number {
-  const rates = COST_PER_MTK[model];
-  if (!rates) {
+function computeCost(model: string, usage: Anthropic.Usage, category?: string, userId?: number): ModelCostResult {
+  const priced = computeModelUsageCostUsd(model, {
+    inputTokens: usage.input_tokens,
+    outputTokens: usage.output_tokens,
+    cacheReadTokens: usage.cache_read_input_tokens ?? 0,
+    cacheWriteTokens: usage.cache_creation_input_tokens ?? 0,
+  }, 'anthropic');
+  if (!priced.pricingResolved) {
     if (!warnedModels.has(model)) {
       warnedModels.add(model);
-      logger.warn({ model }, 'Unknown model for cost calculation — falling back to Sonnet pricing');
+      recordUnresolvedModelPricingAlert({ provider: 'anthropic', model, category, userId });
     }
   }
-  const r = rates ?? COST_PER_MTK['claude-sonnet-4-6'];
-  return (
-    (usage.input_tokens / 1_000_000) * r.in +
-    (usage.output_tokens / 1_000_000) * r.out +
-    ((usage.cache_read_input_tokens ?? 0) / 1_000_000) * r.cacheRead +
-    ((usage.cache_creation_input_tokens ?? 0) / 1_000_000) * r.cacheWrite
-  );
+  return priced;
 }
 
 /**
@@ -121,7 +118,10 @@ export async function trackedCreate(
 
   const durationMs = Date.now() - start;
   const usage = response.usage;
-  const cost = computeCost(params.model, usage);
+  const priced = computeCost(params.model, usage, category, options?.userId ?? 0);
+  const cost = priced.costUsd;
+  const pricingStatus = priced.pricingResolved ? 'resolved' : 'unresolved';
+  let apiUsageId: number | null = null;
 
   // Persist to SQLite (non-critical — swallow errors)
   //
@@ -144,11 +144,12 @@ export async function trackedCreate(
   // behaviour changes for those paths. Calls that DO have a userId now
   // write it, enabling per-user enforcement for the first time.
   try {
-    getDb().prepare(`
+    const result = getDb().prepare(`
       INSERT INTO api_usage
         (category, model, tenant_id, user_id, input_tokens, output_tokens,
-         cache_read_tokens, cache_write_tokens, cost_usd, duration_ms)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         cache_read_tokens, cache_write_tokens, cost_usd, duration_ms,
+         provider, pricing_status, pricing_model_key)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'anthropic', ?, ?)
     `).run(
       category,
       params.model,
@@ -160,25 +161,26 @@ export async function trackedCreate(
       usage.cache_creation_input_tokens ?? 0,
       cost,
       durationMs,
+      pricingStatus,
+      priced.pricingModelKey,
     );
+    apiUsageId = Number((result as { lastInsertRowid?: number | bigint } | undefined)?.lastInsertRowid ?? 0);
   } catch (err) {
     try {
-      getDb().prepare(`
-        INSERT INTO api_usage
-          (category, model, user_id, input_tokens, output_tokens,
-           cache_read_tokens, cache_write_tokens, cost_usd, duration_ms)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `).run(
+      apiUsageId = insertApiUsageFallback(getDb(), {
         category,
-        params.model,
-        options?.userId ?? 0,
-        usage.input_tokens,
-        usage.output_tokens,
-        usage.cache_read_input_tokens ?? 0,
-        usage.cache_creation_input_tokens ?? 0,
-        cost,
+        model: params.model,
+        provider: 'anthropic',
+        tenantId: options?.tenantId ?? options?.userId ?? 0,
+        userId: options?.userId ?? 0,
+        inputTokens: usage.input_tokens,
+        outputTokens: usage.output_tokens,
+        cacheReadTokens: usage.cache_read_input_tokens ?? 0,
+        cacheWriteTokens: usage.cache_creation_input_tokens ?? 0,
+        costUsd: cost,
         durationMs,
-      );
+        pricingStatus: 'legacy',
+      });
     } catch (fallbackErr) {
       logger.warn({ err: fallbackErr }, 'Failed to record api_usage');
     }
@@ -206,6 +208,7 @@ export async function trackedCreate(
     summary: `${category}: ${totalTokens.toLocaleString()} tok, $${cost.toFixed(4)}, ${durationMs}ms`,
     durationMs,
   });
+  await settleNexusPointOverageForUser(options?.userId ?? 0, apiUsageId);
 
   return response;
 }

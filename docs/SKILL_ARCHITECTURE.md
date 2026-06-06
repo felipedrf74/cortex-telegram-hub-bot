@@ -1,5 +1,11 @@
 # Nexus Hub — Modular Skills Architecture
 
+Status: canonical
+Owner: backend skills lead (Felipe)
+Last verified: 2026-05-04
+Update policy: update when skill catalog shape, sub-skill dependency
+enforcement, or skill-manager enable/disable rules change.
+
 ## Feature Plan v1.0 · March 2026
 
 ---

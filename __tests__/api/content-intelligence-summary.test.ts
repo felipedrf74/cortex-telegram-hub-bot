@@ -43,10 +43,14 @@ let mockJobs = [
 
 vi.mock('../../src/services/database', () => ({
   getDb: () => testDb,
+  initDatabase: vi.fn(),
+  closeDatabase: vi.fn(),
+  findUnexpectedMigrationPrefixCollisions: vi.fn(() => []),
 }));
 
 vi.mock('../../src/utils/logger', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(), trace: vi.fn(), child: vi.fn().mockReturnThis() },
+  LOGGER_REDACTION_PATHS: [],
 }));
 
 vi.mock('../../src/portal/telemetry', () => ({
@@ -56,6 +60,7 @@ vi.mock('../../src/portal/telemetry', () => ({
 import { contentRoutes } from '../../src/api/routes/content';
 import { getOrCreateUser, setUserLanguage } from '../../src/services/user-service';
 import { setDbProvider } from '../../src/services/intelligence-bus';
+import { setContentRadarPreferences } from '../../src/services/content-radar-preferences';
 
 function applyMigrations(db: Database.Database): void {
   db.exec(`CREATE TABLE IF NOT EXISTS _migrations (id INTEGER PRIMARY KEY, filename TEXT UNIQUE, applied_at TEXT DEFAULT (datetime('now')))`);
@@ -108,18 +113,31 @@ function mockRes(): MockRes {
   return response;
 }
 
-function mockReq(userId: number, headers: Record<string, string> = {}): Request {
+function mockReq(
+  userId: number,
+  headers: Record<string, string> = {},
+  tenantIdOverride?: number | null | undefined,
+): Request {
   return {
     userId,
+    // 2026-05-18 follow-up QA P3-2: allow caller to override tenantId
+    // independently from userId so we can exercise the assertTenantScope
+    // catch path with a valid userId + invalid tenantId.
+    tenantId: tenantIdOverride === undefined ? userId : tenantIdOverride,
     header(name: string) {
       return headers[name.toLowerCase()] ?? headers[name] ?? undefined;
     },
   } as any;
 }
 
-async function dispatch(url: string, userId: number, headers: Record<string, string> = {}): Promise<MockRes> {
+async function dispatch(
+  url: string,
+  userId: number,
+  headers: Record<string, string> = {},
+  tenantIdOverride?: number | null | undefined,
+): Promise<MockRes> {
   const router = contentRoutes();
-  const request = mockReq(userId, headers);
+  const request = mockReq(userId, headers, tenantIdOverride);
   const parsed = new URL(url, 'http://test.local');
   (request as any).method = 'GET';
   (request as any).url = parsed.pathname + parsed.search;
@@ -209,13 +227,13 @@ describe('Content API — intelligence summary', () => {
     `).run(user.id, 'https://www.youtube.com/@felipe', 'Felipe', '2026-04-14T08:30:00.000Z');
 
     const insertSignal = testDb.prepare(`
-      INSERT INTO agent_signals (source_agent, signal_type, payload, priority, status, expires_at, created_at, consumed_by, user_id)
-      VALUES (?, ?, ?, ?, 'active', datetime('now', '+7 days'), ?, '[]', NULL)
+      INSERT INTO agent_signals (source_agent, signal_type, payload, priority, status, expires_at, created_at, consumed_by, tenant_id, user_id)
+      VALUES (?, ?, ?, ?, 'active', datetime('now', '+7 days'), ?, '[]', ?, NULL)
     `);
 
-    insertSignal.run('reaction-radar', 'reaction_opportunity', JSON.stringify({ title: 'Tariff shift explainer' }), 'urgent', recentDiscoveryAt);
-    insertSignal.run('performance-agent', 'pillar_performance', JSON.stringify({ pillar: 'training' }), 'normal', recentOptimizationAt);
-    insertSignal.run('performance-agent', 'learning_digest', JSON.stringify({ summary: 'Hooks with stronger contrast won this week.' }), 'normal', recentOptimizationAt);
+    insertSignal.run('reaction-radar', 'reaction_opportunity', JSON.stringify({ title: 'Tariff shift explainer' }), 'urgent', recentDiscoveryAt, user.id);
+    insertSignal.run('performance-agent', 'pillar_performance', JSON.stringify({ pillar: 'training' }), 'normal', recentOptimizationAt, user.id);
+    insertSignal.run('performance-agent', 'learning_digest', JSON.stringify({ summary: 'Hooks with stronger contrast won this week.' }), 'normal', recentOptimizationAt, user.id);
 
     const response = await dispatch('/intelligence', user.id);
 
@@ -260,22 +278,18 @@ describe('Content API — intelligence summary', () => {
   it('filters discovery counts through creator radar preferences when present', async () => {
     const user = getOrCreateUser(47003, { username: 'creator-filtered-radar' });
     setUserLanguage(user.id, 'pt-BR');
-    const recentPreferenceAt = daysAgoIso(1);
     const recentFitnessSignalAt = daysAgoIso(1);
     const recentPoliticsSignalAt = daysAgoIso(1);
 
-    testDb.prepare(`
-      INSERT INTO content_radar_preferences (user_id, topics_json, updated_at)
-      VALUES (?, ?, ?)
-    `).run(user.id, JSON.stringify(['fitness']), recentPreferenceAt);
+    setContentRadarPreferences(user.id, ['fitness']);
 
     const insertSignal = testDb.prepare(`
-      INSERT INTO agent_signals (source_agent, signal_type, payload, priority, status, expires_at, created_at, consumed_by, user_id)
-      VALUES (?, ?, ?, ?, 'active', datetime('now', '+7 days'), ?, '[]', NULL)
+      INSERT INTO agent_signals (source_agent, signal_type, payload, priority, status, expires_at, created_at, consumed_by, tenant_id, user_id)
+      VALUES (?, ?, ?, ?, 'active', datetime('now', '+7 days'), ?, '[]', ?, NULL)
     `);
 
-    insertSignal.run('reaction-radar', 'reaction_opportunity', JSON.stringify({ title: 'fitness reaction angle' }), 'urgent', recentFitnessSignalAt);
-    insertSignal.run('reaction-radar', 'reaction_opportunity', JSON.stringify({ title: 'politics reaction angle' }), 'urgent', recentPoliticsSignalAt);
+    insertSignal.run('reaction-radar', 'reaction_opportunity', JSON.stringify({ title: 'fitness reaction angle' }), 'urgent', recentFitnessSignalAt, user.id);
+    insertSignal.run('reaction-radar', 'reaction_opportunity', JSON.stringify({ title: 'politics reaction angle' }), 'urgent', recentPoliticsSignalAt, user.id);
 
     const response = await dispatch('/intelligence', user.id);
 
@@ -299,5 +313,44 @@ describe('Content API — intelligence summary', () => {
         }),
       ]),
     );
+  });
+
+  // ─────────────────────────────────────────────────────────────────────
+  // QA regression pin (skill-hardening 2026-05-18 follow-up, P3-2):
+  // Pin the assertTenantScope catch path (valid userId + invalid tenantId)
+  // separately from the ensureValidContentRouteScope path (invalid userId).
+  // ─────────────────────────────────────────────────────────────────────
+
+  it('returns 401 (not 500) when assertTenantScope rejects valid-user + tenantId=0', async () => {
+    const response = await dispatch('/intelligence', 42, {}, 0);
+
+    expect(response.statusCode).toBe(401);
+    expect(response.body.ok).toBe(false);
+    expect(response.body.error.code).toBe('UNAUTHORIZED');
+    // See content-intelligence-detail.test.ts: tenantId=0 categorises as
+    // 'invalid_user_scope' per the current reason-derivation logic.
+    expect(getTenantScopeAnomalies()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          layer: 'delivery',
+          operation: 'content_route_intelligence_summary',
+          userId: 42,
+        }),
+      ]),
+    );
+  });
+
+  it('returns 401 when assertTenantScope rejects valid-user + negative tenant', async () => {
+    const response = await dispatch('/intelligence', 42, {}, -7);
+
+    expect(response.statusCode).toBe(401);
+    expect(response.body.error.code).toBe('UNAUTHORIZED');
+  });
+
+  it('returns 401 when assertTenantScope rejects valid-user + undefined tenant', async () => {
+    const response = await dispatch('/intelligence', 42, {}, null);
+
+    expect(response.statusCode).toBe(401);
+    expect(response.body.error.code).toBe('UNAUTHORIZED');
   });
 });

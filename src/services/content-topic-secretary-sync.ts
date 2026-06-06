@@ -11,13 +11,14 @@
 import { DateTime } from 'luxon';
 import { config } from '../config';
 import { logger } from '../utils/logger';
-import { invalidateCalendarCaches } from './calendar-cache-invalidator';
-import { updateTopic, type ContentTopic } from './content-scheduler';
-import { invalidateTaskCaches } from './task-cache-invalidator';
+import { invalidateCalendarCaches } from './cache-coherence-registry';
+import { getTopicById, updateTopic, type ContentTopic } from './content-scheduler';
+import { invalidateTaskCaches } from './cache-coherence-registry';
 import { resolveTaskCreationList } from './task-store/task-list-resolution';
 import { getTaskProviderForUser } from './task-store/task-router';
 import {
   createEvent,
+  deleteEvent,
   hasWritableCalendarForUser,
   updateEvent,
   type CalendarSource,
@@ -27,6 +28,16 @@ type LangLike = 'pt-BR' | 'pt-PT' | 'en' | string | undefined;
 
 export interface ContentTopicSecretarySyncOptions {
   language?: LangLike;
+}
+
+export async function syncContentTopicSecretaryArtifactsById(
+  userId: number,
+  topicId: number,
+  options: ContentTopicSecretarySyncOptions = {},
+): Promise<ContentTopic | null> {
+  const topic = getTopicById(userId, topicId);
+  if (!topic) return null;
+  return syncContentTopicSecretaryArtifacts(userId, topic, options);
 }
 
 export async function syncContentTopicSecretaryArtifacts(
@@ -94,6 +105,45 @@ export async function syncContentTopicSecretaryArtifacts(
   }
 
   return updateTopic(userId, topic.id, updates) ?? topic;
+}
+
+export async function cleanupContentTopicSecretaryArtifacts(
+  userId: number,
+  topic: ContentTopic,
+): Promise<{ taskDeleted: boolean; calendarDeleted: boolean; errors: string[] }> {
+  const errors: string[] = [];
+  let taskDeleted = false;
+  let calendarDeleted = false;
+
+  if (topic.secretary_task_external_id && topic.secretary_task_list_id) {
+    const todo = getTaskProviderForUser(userId);
+    if (typeof todo.deleteTask === 'function') {
+      try {
+        const result = await todo.deleteTask(String(topic.secretary_task_list_id), String(topic.secretary_task_external_id));
+        if (result?.success === false) throw new Error(result.error || 'task_delete_failed');
+        taskDeleted = true;
+        invalidateTaskCaches({ userId, listIds: [String(topic.secretary_task_list_id)], includeDerivedSurfaces: true });
+      } catch (err) {
+        logger.warn({ err, userId, topicId: topic.id }, 'Content topic Secretary task cleanup failed');
+        errors.push('task_cleanup_failed');
+      }
+    } else {
+      errors.push('task_delete_unsupported');
+    }
+  }
+
+  if (topic.calendar_event_id && topic.calendar_source) {
+    try {
+      await deleteEvent(String(topic.calendar_event_id), topic.calendar_source as CalendarSource, userId);
+      calendarDeleted = true;
+      invalidateCalendarCaches(userId);
+    } catch (err) {
+      logger.warn({ err, userId, topicId: topic.id }, 'Content topic calendar agenda cleanup failed');
+      errors.push('calendar_cleanup_failed');
+    }
+  }
+
+  return { taskDeleted, calendarDeleted, errors };
 }
 
 async function upsertSecretaryTask(

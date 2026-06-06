@@ -81,7 +81,7 @@ const SUBSTITUTION_RULES: SubstitutionRule[] = [
     },
   },
   {
-    match: /\bromanian deadlift\b/i,
+    match: /\bromanian deadlift\b|\brdl\b/i,
     replacements: {
       garage_gym: 'Romanian Deadlift',
       home_basic: 'DB Romanian Deadlift',
@@ -257,7 +257,17 @@ function normalizeEquipmentProfile(input: TrainingEquipmentAdaptationInput): Tra
   if (normalized.includes('full commercial') || normalized.includes('full gym') || normalized === 'full_gym') return 'full_gym';
   if (normalized.includes('home gym') || normalized.includes('home_gym') || normalized.includes('basic')) return 'home_basic';
   if (normalized.includes('resistance band') || normalized === 'bands' || normalized.includes('band')) return 'bands';
-  if (normalized.includes('bodyweight')) return 'bodyweight';
+  if (
+    normalized.includes('bodyweight') ||
+    normalized.includes('no equipment') ||
+    normalized.includes('no-equipment') ||
+    normalized.includes('without equipment') ||
+    normalized.includes('sem equipamento') ||
+    normalized.includes('peso corporal') ||
+    normalized === 'none'
+  ) {
+    return 'bodyweight';
+  }
   return 'full_gym';
 }
 
@@ -387,7 +397,7 @@ function homeBasicFallbackName(name: string): string {
   if (/\bpress\b/i.test(name)) return 'DB Floor Press';
   if (/\brow\b/i.test(name) || /\bpull\b/i.test(name)) return 'One-Arm DB Row';
   if (/\bsquat\b/i.test(name) || /\bleg press\b/i.test(name)) return 'Goblet Squat';
-  if (/\bdeadlift\b|\bhinge\b/i.test(name)) return 'DB Romanian Deadlift';
+  if (/\bdeadlift\b|\brdl\b|\bhinge\b/i.test(name)) return 'DB Romanian Deadlift';
   return name;
 }
 
@@ -395,7 +405,7 @@ function bandsFallbackName(name: string): string {
   if (/\bpress\b/i.test(name)) return 'Banded Chest Press';
   if (/\brow\b|\bpull\b/i.test(name)) return 'Banded Row';
   if (/\bsquat\b|\bleg press\b/i.test(name)) return 'Banded Squat';
-  if (/\bdeadlift\b|\bhinge\b/i.test(name)) return 'Banded Romanian Deadlift';
+  if (/\bdeadlift\b|\brdl\b|\bhinge\b/i.test(name)) return 'Banded Romanian Deadlift';
   return `Banded ${name}`.replace(/\bBanded Banded\b/i, 'Banded');
 }
 
@@ -403,7 +413,7 @@ function bodyweightFallbackName(name: string): string {
   if (/\bpress\b/i.test(name)) return 'Push-Up';
   if (/\brow\b|\bpull\b/i.test(name)) return 'Prone Snow Angel';
   if (/\bsquat\b|\bleg press\b/i.test(name)) return 'Tempo Air Squat';
-  if (/\bdeadlift\b|\bhinge\b/i.test(name)) return 'Single-Leg Hip Hinge';
+  if (/\bdeadlift\b|\brdl\b|\bhinge\b/i.test(name)) return 'Single-Leg Hip Hinge';
   if (/\bcalf\b/i.test(name)) return 'Single-Leg Calf Raise';
   return name;
 }

@@ -32,9 +32,14 @@ function applyMigrations(db: Database.Database): void {
 
 let testDb: Database.Database;
 
-vi.mock('../../src/services/database', () => ({ getDb: () => testDb }));
+vi.mock('../../src/services/database', () => ({ getDb: () => testDb,
+  initDatabase: vi.fn(),
+  closeDatabase: vi.fn(),
+  findUnexpectedMigrationPrefixCollisions: vi.fn(() => []),
+}));
 vi.mock('../../src/utils/logger', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
+  LOGGER_REDACTION_PATHS: [],
 }));
 vi.mock('../../src/config', () => ({
   config: {
@@ -65,7 +70,9 @@ vi.mock('../../src/services/wearable/wearable-service', () => mockWearableServic
 import {
   scoreHrv, scoreSleep, scoreBodyBattery, scoreAcwr,
   calculateReadiness, persistReadinessScore, getRecentReadinessScores,
+  computeAcwr,
 } from '../../src/services/readiness-scorer';
+import { getCurrentContext } from '../../src/utils/request-context';
 
 // ── Unit Tests: Individual Factor Scorers ──
 
@@ -137,12 +144,87 @@ describe('readiness-scorer — factor scorers', () => {
     it('returns 50 for moderate risk (1.2-1.5)', () => {
       expect(scoreAcwr(1.3)).toBe(50);
     });
+
+    it('treats non-finite ACWR as neutral instead of high risk', () => {
+      expect(scoreAcwr(Number.NaN)).toBe(60);
+      expect(scoreAcwr(Number.POSITIVE_INFINITY)).toBe(60);
+    });
+
+    it('pins ACWR band boundaries', () => {
+      expect(scoreAcwr(0.8)).toBe(85);
+      expect(scoreAcwr(1.2)).toBe(85);
+      expect(scoreAcwr(1.2001)).toBe(50);
+      expect(scoreAcwr(1.5)).toBe(50);
+      expect(scoreAcwr(1.5001)).toBe(20);
+    });
+  });
+
+  describe('computeAcwr', () => {
+    it('uses the same UTC-calendar-day window for displayed loads and ratio inputs', () => {
+      const now = new Date('2026-06-03T12:00:00.000Z');
+      const chronicDays = Array.from({ length: 14 }, (_, index) => ({
+        startTimeGMT: `2026-05-${String(7 + index).padStart(2, '0')}T01:00:00.000Z`,
+        trainingLoad: 10,
+      }));
+      const result = computeAcwr([
+        { startTimeGMT: '2026-05-06T01:00:00.000Z', trainingLoad: 280 },
+        ...chronicDays,
+        { startTimeGMT: '2026-06-01T01:00:00.000Z', trainingLoad: 70 },
+        { startTimeGMT: '2026-06-02T01:00:00.000Z', trainingLoad: 70 },
+      ], now);
+
+      expect(result.chronicLoad).toBe(280);
+      expect(result.acuteLoad).toBe(140);
+      expect(Number.isFinite(result.acwr)).toBe(true);
+      expect(result.acwr).toBeGreaterThan(0);
+    });
   });
 });
 
 // ── Integration Tests: Composite Score ──
 
 describe('readiness-scorer — calculateReadiness', () => {
+  function seedActiveGarminSession(userId: number, email = `athlete-${userId}@example.com`): void {
+    testDb.prepare(`
+      INSERT OR REPLACE INTO garmin_user_tokens (user_id, garmin_email, tokens_json, status, updated_at)
+      VALUES (?, ?, '{}', 'active', datetime('now'))
+    `).run(userId, email);
+    testDb.prepare(`
+      INSERT OR REPLACE INTO garmin_sessions (user_id, oauth1_token_json, oauth2_token_json, last_refreshed_at)
+      VALUES (?, ?, ?, datetime('now'))
+    `).run(userId, '{"token":"oauth1"}', '{"token":"oauth2"}');
+  }
+
+  function seedAppleHealthData(
+    userId: number,
+    types: Array<'hrv' | 'sleep' | 'rhr' | 'summary'> = ['hrv', 'sleep', 'rhr', 'summary'],
+  ): void {
+    const today = new Date().toISOString().slice(0, 10);
+    const rows: Array<{ type: string; data: Record<string, unknown> }> = [];
+    if (types.includes('hrv')) rows.push({ type: 'hrv', data: { value: 60 } });
+    if (types.includes('sleep')) {
+      rows.push({
+        type: 'sleep',
+        data: { totalSleepSeconds: 28800, deepSleepSeconds: 5400, remSleepSeconds: 7200 },
+      });
+    }
+    if (types.includes('rhr')) rows.push({ type: 'resting_heart_rate', data: { value: 52 } });
+    if (types.includes('summary')) {
+      rows.push({
+        type: 'daily_summary',
+        data: { activeCalories: 120, exerciseMinutes: 20, steps: 3500 },
+      });
+    }
+
+    const insert = testDb.prepare(`
+      INSERT OR REPLACE INTO apple_health_data (user_id, data_type, date, data_json, source_name)
+      VALUES (?, ?, ?, ?, 'test')
+    `);
+    for (const row of rows) {
+      insert.run(userId, row.type, today, JSON.stringify(row.data));
+    }
+  }
+
   beforeEach(() => {
     testDb = createTestDb();
     applyMigrations(testDb);
@@ -152,10 +234,7 @@ describe('readiness-scorer — calculateReadiness', () => {
     try {
       testDb.prepare("INSERT OR IGNORE INTO users (id, first_name, tier, auth_provider, status) VALUES (1, 'Test', 'owner', 'test', 'active')").run();
       testDb.prepare("INSERT OR IGNORE INTO users (id, first_name, tier, auth_provider, status) VALUES (2, 'Connected', 'pro', 'test', 'active')").run();
-      testDb.prepare(`
-        INSERT OR REPLACE INTO garmin_user_tokens (user_id, garmin_email, tokens_json, status, updated_at)
-        VALUES (?, ?, '{}', 'active', datetime('now'))
-      `).run(1, 'owner@example.com');
+      seedActiveGarminSession(1, 'owner@example.com');
     } catch { /* table may not exist in minimal test db */ }
   });
   afterEach(() => { testDb.close(); });
@@ -239,6 +318,33 @@ describe('readiness-scorer — calculateReadiness', () => {
     expect(result.factors.trainingLoad.acwr).toBe(1);
   });
 
+  it('uses uncoupled ACWR for stable Garmin activity history', async () => {
+    const daysAgo = (days: number) => new Date(Date.now() - days * 86400000).toISOString();
+    const activities = [
+      ...Array.from({ length: 21 }, (_, index) => ({
+        activityTrainingLoad: 50,
+        startTimeLocal: daysAgo(27 - index),
+        duration: 3600,
+      })),
+      ...Array.from({ length: 7 }, (_, index) => ({
+        activityTrainingLoad: 100,
+        startTimeLocal: daysAgo(6 - index),
+        duration: 3600,
+      })),
+    ];
+    mockGarmin.getHrvData.mockResolvedValue({ hrvSummary: { lastNightAvg: 60, weeklyAvg: 60 } });
+    mockGarmin.getSleepData.mockResolvedValue({ dailySleepDTO: { sleepTimeSeconds: 28800, overallSleepScore: 90 } });
+    mockGarmin.getBodyBatteryEvents.mockResolvedValue([{ bodyBatteryLevel: 80 }]);
+    mockGarmin.getTrainingReadiness.mockResolvedValue({});
+    mockGarmin.getActivitiesByDate.mockResolvedValue(activities);
+
+    const result = await calculateReadiness(1);
+
+    expect(result.factors.trainingLoad.acuteLoad).toBe(700);
+    expect(result.factors.trainingLoad.chronicLoad).toBe(1750);
+    expect(result.factors.trainingLoad.acwr).toBe(2);
+  });
+
   it('handles missing data gracefully (uses fallback per factor)', async () => {
     mockGarmin.getHrvData.mockRejectedValue(new Error('Garmin unavailable'));
     mockGarmin.getSleepData.mockRejectedValue(new Error('timeout'));
@@ -253,10 +359,7 @@ describe('readiness-scorer — calculateReadiness', () => {
   });
 
   it('uses Garmin readiness for a non-owner user with an active Garmin connection', async () => {
-    testDb.prepare(`
-      INSERT OR REPLACE INTO garmin_user_tokens (user_id, garmin_email, tokens_json, status, updated_at)
-      VALUES (?, ?, '{}', 'active', datetime('now'))
-    `).run(2, 'connected@example.com');
+    seedActiveGarminSession(2, 'connected@example.com');
 
     mockGarmin.getHrvData.mockResolvedValue({ hrvSummary: { lastNightAvg: 68, weeklyAvg: 60 } });
     mockGarmin.getSleepData.mockResolvedValue({ dailySleepDTO: { sleepTimeSeconds: 28800, overallSleepScore: 84 } });
@@ -267,6 +370,39 @@ describe('readiness-scorer — calculateReadiness', () => {
     const result = await calculateReadiness(2);
     expect(result.score).toBeGreaterThan(0);
     expect(result.factors.bodyBattery.current).toBe(82);
+  });
+
+  it('binds Garmin readiness reads to the requested user scope', async () => {
+    seedActiveGarminSession(2, 'connected@example.com');
+
+    const scopedUserIds: Array<number | undefined> = [];
+    const captureScope = <T>(value: T) => {
+      scopedUserIds.push(getCurrentContext()?.userId);
+      return Promise.resolve(value);
+    };
+
+    mockGarmin.getHrvData.mockImplementation(() =>
+      captureScope({ hrvSummary: { lastNightAvg: 68, weeklyAvg: 60 } })
+    );
+    mockGarmin.getSleepData.mockImplementation(() =>
+      captureScope({ dailySleepDTO: { sleepTimeSeconds: 28800, overallSleepScore: 84 } })
+    );
+    mockGarmin.getBodyBatteryEvents.mockImplementation(() =>
+      captureScope([{ bodyBatteryLevel: 82 }])
+    );
+    mockGarmin.getTrainingReadiness.mockImplementation(() =>
+      captureScope({ score: 74 })
+    );
+    mockGarmin.getActivitiesByDate.mockImplementation(() =>
+      captureScope([])
+    );
+    mockGarmin.getDailySummary.mockImplementation(() =>
+      captureScope(null)
+    );
+
+    await calculateReadiness(2);
+
+    expect(scopedUserIds).toEqual([2, 2, 2, 2, 2, 2]);
   });
 
   it('falls back to neutral when Garmin is configured globally but this user is not connected', async () => {
@@ -309,6 +445,52 @@ describe('readiness-scorer — calculateReadiness', () => {
     expect(result.recommendation).toBe('full_intensity');
     expect(result.reasoning).toContain('WHOOP');
     expect(result.factors.bodyBattery.current).toBe(81);
+  });
+
+  it('uses Apple Health energy reserve when connected Garmin lacks body battery', async () => {
+    seedAppleHealthData(1);
+
+    mockGarmin.getHrvData.mockResolvedValue({ hrvSummary: { lastNightAvg: 55, weeklyAvg: 50 } });
+    mockGarmin.getSleepData.mockResolvedValue({ dailySleepDTO: { sleepTimeSeconds: 28800, overallSleepScore: 80 } });
+    mockGarmin.getBodyBatteryEvents.mockResolvedValue([]);
+    mockGarmin.getDailySummary.mockResolvedValue(null);
+    mockGarmin.getTrainingReadiness.mockResolvedValue({});
+    mockGarmin.getActivitiesByDate.mockResolvedValue([]);
+
+    const result = await calculateReadiness(1);
+    expect(result.factors.bodyBattery.current).toBeGreaterThan(0);
+    expect(result.factors.bodyBattery.morningPeak).toBeGreaterThan(0);
+    expect(result.reasoning).toContain('Apple Health filled Body Battery');
+  });
+
+  it('derives Apple Health body battery from activity-only HealthKit data', async () => {
+    mockGarmin.isGarminConfigured.mockReturnValue(false);
+    seedAppleHealthData(1, ['summary']);
+
+    const result = await calculateReadiness(1);
+    expect(result.score).toBeGreaterThan(0);
+    expect(result.reasoning).toContain('Apple Health');
+    expect(result.factors.bodyBattery.current).toBeGreaterThan(0);
+    expect(result.factors.bodyBattery.morningPeak).toBeGreaterThan(0);
+  });
+
+  it.each([
+    ['hrvOnly', ['hrv']],
+    ['sleepOnly', ['sleep']],
+    ['rhrOnly', ['rhr']],
+    ['hrvSleep', ['hrv', 'sleep']],
+    ['hrvRhr', ['hrv', 'rhr']],
+    ['sleepRhr', ['sleep', 'rhr']],
+  ] as const)('derives Apple Health body battery from partial HealthKit data: %s', async (_caseName, types) => {
+    mockGarmin.isGarminConfigured.mockReturnValue(false);
+    seedAppleHealthData(1, [...types]);
+
+    const result = await calculateReadiness(1);
+
+    expect(result.reasoning).toContain('Apple Health');
+    expect(result.factors.bodyBattery.current).toBeGreaterThan(0);
+    expect(result.factors.bodyBattery.morningPeak).toBeGreaterThan(0);
+    expect(result.factors.bodyBattery.score).toBeGreaterThan(0);
   });
 
   it('does not synthesize a fake 50 body battery when Garmin events are missing', async () => {

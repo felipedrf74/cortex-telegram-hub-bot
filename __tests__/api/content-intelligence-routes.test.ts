@@ -3,6 +3,7 @@ import { Router, type Request, type Response } from 'express';
 
 vi.mock('../../src/utils/logger', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(), trace: vi.fn(), child: vi.fn().mockReturnThis() },
+  LOGGER_REDACTION_PATHS: [],
 }));
 
 vi.mock('../../src/portal/telemetry', () => ({
@@ -14,13 +15,13 @@ vi.mock('../../src/portal/telemetry', () => ({
 }));
 
 vi.mock('../../src/services/intelligence-bus', () => ({
-  readSignals: vi.fn((source: string, types: string[], limit: number, userId: number, days: number) => {
+  readSignals: vi.fn((source: string, types: string[], limit: number, userId: number, days: number, tenantId?: number) => {
     if (types.includes('reaction_opportunity')) {
       return [{
         id: 11,
         source_agent: source,
         signal_type: 'reaction_opportunity',
-        payload: { topic: 'marathon', title: 'Marathon angle', summary: `${limit}:${userId}:${days}` },
+        payload: { topic: 'marathon', title: 'Marathon angle', summary: `${limit}:${userId}:${days}:${tenantId}` },
         priority: 'normal',
         consumed_by: [],
         status: 'active',
@@ -37,7 +38,7 @@ vi.mock('../../src/services/intelligence-bus', () => ({
       id: 21,
       source_agent: source,
       signal_type: 'pillar_performance',
-      payload: { pillar: 'training', summary: `${limit}:${userId}:${days}` },
+      payload: { pillar: 'training', summary: `${limit}:${userId}:${days}:${tenantId}` },
       priority: 'normal',
       consumed_by: [],
       status: 'active',
@@ -84,6 +85,41 @@ vi.mock('../../src/services/content-scheduler', () => ({
   })),
 }));
 
+vi.mock('../../src/services/content-learning-store', () => ({
+  getPerformanceSummary: vi.fn(() => ({
+    count: 2,
+    avgViews: 3250,
+    avgRetention: 54.5,
+    totalLikes: 420,
+    totalComments: 62,
+    totalSubsGained: 11,
+    entries: [
+      {
+        id: 91,
+        selectedTitle: 'How I would build it solo',
+        hookUsed: 'Stop losing creator ideas',
+        views: 5000,
+        retentionPct: 61,
+        likes: 340,
+        comments: 52,
+        subsGained: 10,
+        loggedAt: '2026-04-24T09:05:00.000Z',
+      },
+      {
+        id: 92,
+        selectedTitle: 'Creator systems teardown',
+        hookUsed: 'The hidden cost of messy notes',
+        views: 1500,
+        retentionPct: 48,
+        likes: 80,
+        comments: 10,
+        subsGained: 1,
+        loggedAt: '2026-04-23T09:05:00.000Z',
+      },
+    ],
+  })),
+}));
+
 vi.mock('../../src/services/content-intelligence', () => ({
   getActiveContentPillars: vi.fn(() => [{ name: 'fallback pillar', keywordCount: 1 }]),
   getContentDeskItems: vi.fn(() => [{ title: 'Race story', body: 'Use the training signal.' }]),
@@ -104,6 +140,7 @@ import {
 import { getKnowledgeStats, getVoiceDna } from '../../src/services/content-dashboard-service';
 import { getFilmingRecommendation } from '../../src/services/content-scheduler';
 import { getContentDeskItems, localizeFilmingRecommendation } from '../../src/services/content-intelligence';
+import { getPerformanceSummary } from '../../src/services/content-learning-store';
 
 interface MockRes {
   statusCode: number;
@@ -124,9 +161,10 @@ function mockRes(): MockRes {
   return response;
 }
 
-function mockReq(method: string, path: string, userId: number | undefined = 41): Request {
+function mockReq(method: string, path: string, userId: number | undefined = 41, tenantId: number | undefined = userId): Request {
   return {
     userId,
+    tenantId,
     method,
     url: path,
     originalUrl: path,
@@ -157,10 +195,11 @@ async function dispatch(
   path: string,
   userId: number | undefined = 41,
   ensureValidScope = makeEnsureValidScope(),
+  tenantId: number | undefined = userId,
 ): Promise<{ response: MockRes; ensureValidScope: ReturnType<typeof makeEnsureValidScope> }> {
   const router = Router();
   registerContentIntelligenceRoutes(router, () => 'pt-BR', ensureValidScope);
-  const req = mockReq('GET', path, userId);
+  const req = mockReq('GET', path, userId, tenantId);
   const res = mockRes();
 
   await new Promise<void>((resolve, reject) => {
@@ -180,7 +219,7 @@ describe('content intelligence routes', () => {
   });
 
   it('builds the backstage summary from scoped jobs, signals, voice, and knowledge state', async () => {
-    const { response, ensureValidScope } = await dispatch('/intelligence', 77);
+    const { response, ensureValidScope } = await dispatch('/intelligence', 77, makeEnsureValidScope(), 7700);
 
     expect(response.statusCode).toBe(200);
     expect(response.body.ok).toBe(true);
@@ -192,6 +231,7 @@ describe('content intelligence routes', () => {
       25,
       77,
       7,
+      7700,
     );
     expect(readSignals).toHaveBeenCalledWith(
       'ios-content-intelligence',
@@ -199,18 +239,34 @@ describe('content intelligence routes', () => {
       25,
       77,
       14,
+      7700,
     );
-    expect(getContentRadarPreferences).toHaveBeenCalledWith(77);
+    expect(getContentRadarPreferences).toHaveBeenCalledWith(77, 7700);
     expect(filterSignalsForRadarPreferences).toHaveBeenCalledWith(expect.any(Array), ['marathon']);
     expect(getVoiceDna).toHaveBeenCalledWith(undefined, 77);
     expect(getKnowledgeStats).toHaveBeenCalledWith(undefined, 77);
+    expect(getPerformanceSummary).toHaveBeenCalledWith(77, 30, 7700);
     expect(response.body.data.discovery.activeCount).toBe(1);
     expect(response.body.data.script.status).toBe('ready');
     expect(response.body.data.optimization.status).toBe('syncing');
+    expect(response.body.data.optimization.performanceSummary).toMatchObject({
+      count: 2,
+      avgViews: 3250,
+      avgRetention: 54.5,
+      totalLikes: 420,
+      totalComments: 62,
+      totalSubsGained: 11,
+      topEntry: {
+        id: 91,
+        title: 'How I would build it solo',
+        views: 5000,
+        retentionPct: 61,
+      },
+    });
   });
 
   it('builds the detail response with filming, desk, and preferred-topic context', async () => {
-    const { response, ensureValidScope } = await dispatch('/intelligence/detail', 88);
+    const { response, ensureValidScope } = await dispatch('/intelligence/detail', 88, makeEnsureValidScope(), 8800);
 
     expect(response.statusCode).toBe(200);
     expect(response.body.ok).toBe(true);
@@ -221,6 +277,7 @@ describe('content intelligence routes', () => {
       6,
       88,
       7,
+      8800,
     );
     expect(getFilmingRecommendation).toHaveBeenCalledWith(88);
     expect(localizeFilmingRecommendation).toHaveBeenCalledWith(expect.any(Object), 'pt-BR');
@@ -229,6 +286,14 @@ describe('content intelligence routes', () => {
     expect(response.body.data.discovery.preferredTopics).toEqual(['marathon']);
     expect(response.body.data.discovery.monitoredPillars).toEqual([{ name: 'marathon', keywordCount: 1 }]);
     expect(response.body.data.schedule.filmingRecommendation.reason).toContain('pt-BR:');
+    expect(response.body.data.optimization.performanceSummary.recentEntries).toHaveLength(2);
+    expect(response.body.data.optimization.performanceSummary.recentEntries[0]).toMatchObject({
+      id: 91,
+      title: 'How I would build it solo',
+      likes: 340,
+      comments: 52,
+      subsGained: 10,
+    });
   });
 
   it('rejects invalid authenticated scope before reading intelligence state', async () => {

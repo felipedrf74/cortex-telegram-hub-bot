@@ -48,22 +48,38 @@ vi.mock('../../src/utils/logger', () => ({
     error: vi.fn(),
     debug: vi.fn(),
   },
+  LOGGER_REDACTION_PATHS: [],
 }));
 
 // ── Mock better-sqlite3 / database module ───────────────────────────
 // The push-token lookup queries ios_devices; we stub the prepare().all()
 // chain so tests can set their own return value per-test.
-const mockPushTokensForUser: Record<number, string[]> = {};
+type MockPushTokenRow = string | { token: string; environment?: 'sandbox' | 'production'; deviceId?: string | null };
+const mockPushTokensForUser: Record<number, MockPushTokenRow[]> = {};
 const mockPushTokenDeletions: string[] = [];
+let mockPushTokenSelectError: Error | null = null;
 
 vi.mock('../../src/services/database', () => ({
   getDb: () => ({
     prepare: (sql: string) => ({
-      all: (userId: number) => {
-        if (sql.includes('SELECT DISTINCT push_token')) {
-          return (mockPushTokensForUser[userId] || []).map((t) => ({
-            push_token: t,
-          }));
+      all: (...args: unknown[]) => {
+        if (sql.includes('SELECT DISTINCT') && sql.includes('push_token')) {
+          if (mockPushTokenSelectError) throw mockPushTokenSelectError;
+          const userId = Number(args[args.length - 1]);
+          return (mockPushTokensForUser[userId] || []).map((entry) => {
+            if (typeof entry === 'string') {
+              return {
+                push_token: entry,
+                device_id: `device-${entry}`,
+                environment: mockedApnsConfig.environment,
+              };
+            }
+            return {
+              push_token: entry.token,
+              device_id: entry.deviceId ?? `device-${entry.token}`,
+              environment: entry.environment ?? mockedApnsConfig.environment,
+            };
+          });
         }
         return [];
       },
@@ -75,6 +91,9 @@ vi.mock('../../src/services/database', () => ({
       },
     }),
   }),
+  initDatabase: vi.fn(),
+  closeDatabase: vi.fn(),
+  findUnexpectedMigrationPrefixCollisions: vi.fn(() => []),
 }));
 
 // ── Mock jsonwebtoken so we don't need a real ES256 key ─────────────
@@ -102,6 +121,7 @@ let mockHttp2Responses: ScriptedResponse[] = [];
 const mockHttp2Requests: Array<{ headers: Record<string, string>; body: string }> = [];
 const mockHttp2Hosts: string[] = [];
 let mockHttp2Connected = false;
+const mockRecordOperatorAlert = vi.fn();
 
 vi.mock('node:http2', () => ({
   default: {
@@ -162,6 +182,10 @@ vi.mock('node:http2', () => ({
   },
 }));
 
+vi.mock('../../src/services/operator-alerts', () => ({
+  recordOperatorAlert: (...args: unknown[]) => mockRecordOperatorAlert(...args),
+}));
+
 // ── Import the module under test AFTER mocks are set up ────────────
 import {
   isApnsConfigured,
@@ -194,6 +218,8 @@ beforeEach(() => {
     delete mockPushTokensForUser[Number(k)];
   }
   mockPushTokenDeletions.length = 0;
+  mockPushTokenSelectError = null;
+  mockRecordOperatorAlert.mockReset();
   vi.mocked(logger.warn).mockClear();
   vi.mocked(logger.error).mockClear();
   vi.mocked(logger.info).mockClear();
@@ -253,7 +279,23 @@ describe('getPushTokensForUser', () => {
 
   it('returns all push tokens for a user with multiple devices', () => {
     mockPushTokensForUser[7] = ['tok-iphone', 'tok-ipad'];
-    expect(getPushTokensForUser(7)).toEqual(['tok-iphone', 'tok-ipad']);
+    expect(getPushTokensForUser(7)).toEqual([
+      { token: 'tok-iphone', environment: 'sandbox', deviceId: 'device-tok-iphone' },
+      { token: 'tok-ipad', environment: 'sandbox', deviceId: 'device-tok-ipad' },
+    ]);
+  });
+
+  it('returns each token with its persisted APNs environment', () => {
+    mockedApnsConfig.environment = 'production';
+    mockPushTokensForUser[8] = [
+      { token: 'tok-sandbox', environment: 'sandbox', deviceId: 'iphone-sandbox' },
+      { token: 'tok-prod', environment: 'production', deviceId: 'iphone-prod' },
+    ];
+
+    expect(getPushTokensForUser(8)).toEqual([
+      { token: 'tok-sandbox', environment: 'sandbox', deviceId: 'iphone-sandbox' },
+      { token: 'tok-prod', environment: 'production', deviceId: 'iphone-prod' },
+    ]);
   });
 
   it('fails closed on invalid tenant scope and records the anomaly', () => {
@@ -304,6 +346,30 @@ describe('sendPushNotification (happy path)', () => {
     expect(req.headers['apns-priority']).toBe('10');
   });
 
+  it('sets APNs collapse id when the payload asks for one', async () => {
+    mockPushTokensForUser[1] = ['tok-collapse'];
+    mockHttp2Responses = [{ status: 200 }];
+
+    await sendPushNotification(1, { title: 'T', body: 'B', collapseId: 'decision:nc_1' });
+
+    expect(mockHttp2Requests[0].headers['apns-collapse-id']).toBe('decision:nc_1');
+  });
+
+  it('honors each persisted token environment instead of the global config', async () => {
+    mockedApnsConfig.environment = 'production';
+    mockPushTokensForUser[1] = [
+      { token: 'sandbox-token', environment: 'sandbox' },
+      { token: 'production-token', environment: 'production' },
+    ];
+    mockHttp2Responses = [{ status: 200 }, { status: 200 }];
+
+    const result = await sendPushNotification(1, { title: 'T', body: 'B' });
+
+    expect(result.sent).toBe(2);
+    expect(mockHttp2Hosts).toContain('https://api.sandbox.push.apple.com:443');
+    expect(mockHttp2Hosts).toContain('https://api.push.apple.com:443');
+  });
+
   it('serializes the aps payload with title + body', async () => {
     mockPushTokensForUser[1] = ['tok-1'];
     mockHttp2Responses = [{ status: 200 }];
@@ -332,7 +398,7 @@ describe('sendPushNotification (happy path)', () => {
     expect(body.aps.alert.subtitle).toBe('SUB');
   });
 
-  it('includes badge, sound, threadId, category when provided', async () => {
+  it('includes badge, sound, threadId, category, and interruption level when provided', async () => {
     mockPushTokensForUser[1] = ['tok-1'];
     mockHttp2Responses = [{ status: 200 }];
 
@@ -343,6 +409,7 @@ describe('sendPushNotification (happy path)', () => {
       sound: 'default',
       threadId: 'reminders',
       category: 'REMINDER',
+      interruptionLevel: 'time-sensitive',
     });
 
     const body = JSON.parse(mockHttp2Requests[0].body);
@@ -350,6 +417,7 @@ describe('sendPushNotification (happy path)', () => {
     expect(body.aps.sound).toBe('default');
     expect(body.aps['thread-id']).toBe('reminders');
     expect(body.aps.category).toBe('REMINDER');
+    expect(body.aps['interruption-level']).toBe('time-sensitive');
   });
 
   it('merges custom data alongside aps', async () => {
@@ -427,6 +495,19 @@ describe('sendPushNotification (gating)', () => {
     expect(result.sent).toBe(0);
     expect(result.failed).toBe(0);
     expect(result.skipped).toBe(0);
+  });
+
+  it('records an operator alert when push token loading fails', async () => {
+    mockPushTokenSelectError = new Error('database unavailable');
+
+    const result = await sendPushNotification(1, { title: 'T', body: 'B' });
+
+    expect(result).toEqual({ sent: 0, failed: 0, skipped: 0, retriable: 0, unregistered: [] });
+    expect(mockRecordOperatorAlert).toHaveBeenCalledWith(expect.objectContaining({
+      source: 'apns',
+      dedupeKey: 'APNS_TOKEN_LOAD_FAILED:1',
+      metadata: expect.objectContaining({ code: 'APNS_TOKEN_LOAD_FAILED', userId: 1 }),
+    }));
   });
 });
 

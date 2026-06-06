@@ -1,7 +1,7 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
 /**
- * Performance Intelligence Agent — analyzes Felipe's YouTube channel
+ * Performance Intelligence Agent — analyzes the authenticated creator's YouTube channel
  * performance to identify what works and feed back into content creation.
  *
  * Schedule: Weekly, Sunday 06:00 (after channel relearn at 03:00)
@@ -19,6 +19,7 @@ import { buildAgentContext, writeContentFormula, formatContextForPrompt } from '
 import { getDb } from '../services/database';
 import { config } from '../config';
 import { logger } from '../utils/logger';
+import { listUserScopedYoutubeChannelTargets } from '../services/youtube-channel-scope';
 
 const YOUTUBE_API_BASE = 'https://www.googleapis.com/youtube/v3';
 
@@ -35,12 +36,11 @@ interface VideoStats {
   pillar: string;
 }
 
-async function fetchOwnChannelVideos(maxResults = 30): Promise<VideoStats[]> {
+async function fetchOwnChannelVideos(channelId: string, maxResults = 30): Promise<VideoStats[]> {
   const apiKey = config.youtube?.apiKey;
-  const channelId = config.youtube?.channelId;
 
   if (!apiKey || !channelId) {
-    logger.warn('Performance Agent: YOUTUBE_API_KEY or YOUTUBE_CHANNEL_ID not set. Skipping.');
+    logger.warn('Performance Agent: YOUTUBE_API_KEY or user-scoped creator channel not set. Skipping.');
     return [];
   }
 
@@ -109,11 +109,11 @@ async function fetchOwnChannelVideos(maxResults = 30): Promise<VideoStats[]> {
 function detectPillar(title: string): string {
   const lower = title.toLowerCase();
   const pillars: Record<string, string[]> = {
-    politics: ['política', 'governo', 'lula', 'estado', 'imposto', 'esquerda', 'direita', 'liberal'],
-    economics: ['economia', 'inflação', 'dólar', 'mercado', 'juros', 'banco', 'investimento'],
-    fitness: ['treino', 'corrida', 'musculação', 'dieta', 'academia', 'atleta', 'gym'],
-    faith: ['cristão', 'deus', 'fé', 'família', 'igreja', 'bíblia', 'valores'],
-    selfdev: ['disciplina', 'hábito', 'produtividade', 'mentalidade', 'sucesso', 'foco'],
+    technology: ['tecnologia', 'inteligência artificial', 'automação', 'software', 'produto', 'ferramenta', 'startup'],
+    creator_economy: ['criador', 'youtube', 'instagram', 'vídeo', 'shorts', 'reels', 'conteúdo', 'audiência'],
+    wellness: ['treino', 'corrida', 'nutrição', 'recuperação', 'sono', 'saúde', 'performance', 'gym'],
+    lifestyle: ['rotina', 'hábitos', 'viagem', 'organização', 'agenda', 'trabalho', 'comunidade'],
+    business: ['negócio', 'empresa', 'mercado', 'cliente', 'produto', 'operação', 'finanças'],
   };
 
   let best = 'general';
@@ -205,172 +205,27 @@ function analyzeOptimalDuration(videos: VideoStats[]): { range: string; avg_view
 
 export async function runPerformanceAgent(): Promise<void> {
   const start = Date.now();
-  let signalsProduced = 0;
-  let signalsConsumed = 0;
 
   try {
-    if (!config.youtube?.channelId) {
-      logger.warn('Performance Agent needs YOUTUBE_CHANNEL_ID in .env. Skipping.');
-      logAgentRun('performance-agent', 'skipped', 0, 0, Date.now() - start, 'YOUTUBE_CHANNEL_ID not set');
+    const channelTargets = listUserScopedYoutubeChannelTargets();
+    if (channelTargets.length === 0) {
+      logger.warn('Performance Agent: no user-scoped creator YouTube channel configured. Global YOUTUBE_CHANNEL_ID is intentionally ignored.');
+      logAgentRun('performance-agent', 'skipped', 0, 0, Date.now() - start, 'No user-scoped creator YouTube channel configured');
       return;
     }
 
-    // Fetch Felipe's recent videos
-    const videos = await fetchOwnChannelVideos(30);
-    if (videos.length === 0) {
-      logger.warn('Performance Agent: No videos found. Channel may be new or API issue.');
-      logAgentRun('performance-agent', 'skipped', 0, 0, Date.now() - start, 'No videos found');
-      return;
-    }
-
-    // Consume reference data from bus
-    const dnaSignals = readSignals('performance-agent', ['channel_dna'], 50);
-    const bookSignals = readSignals('performance-agent', ['book_knowledge'], 20);
-    signalsConsumed += dnaSignals.length + bookSignals.length;
-
-    // Cross-agent learning: consume peer signals (voice patterns, keywords)
-    const peerContext = buildAgentContext('performance-agent');
-    signalsConsumed += peerContext.signalsConsumed;
-
-    // Analysis 1: Pillar Performance
-    const pillarRankings = analyzePillarPerformance(videos);
-    if (pillarRankings.length > 0) {
-      writeSignal({
-        source_agent: 'performance-agent',
-        signal_type: 'pillar_performance',
-        payload: {
-          rankings: pillarRankings,
-          period: '30d',
-          total_videos: videos.length,
-          analyzed_at: new Date().toISOString(),
-        },
-      });
-      signalsProduced++;
-    }
-
-    // Analysis 2: Optimal Duration
-    const durationAnalysis = analyzeOptimalDuration(videos);
-    if (durationAnalysis.length > 0) {
-      writeSignal({
-        source_agent: 'performance-agent',
-        signal_type: 'retention_pattern',
-        payload: {
-          finding: 'optimal_duration',
-          data: durationAnalysis,
-          recommendation: durationAnalysis[0]
-            ? `Best performing duration: ${durationAnalysis[0].range} (avg ${durationAnalysis[0].avg_views} views)`
-            : 'Not enough data',
-          confidence: Math.min(0.9, videos.length / 30),
-          sample_size: videos.length,
-        },
-      });
-      signalsProduced++;
-    }
-
-    // Analysis 3: Top/Bottom performers for pattern learning
-    const sorted = [...videos].sort((a, b) => b.viewCount - a.viewCount);
-    const top3 = sorted.slice(0, 3);
-    const bottom3 = sorted.slice(-3);
-
-    if (top3.length > 0) {
-      writeSignal({
-        source_agent: 'performance-agent',
-        signal_type: 'hook_effectiveness',
-        payload: {
-          finding: 'top_bottom_comparison',
-          top_performers: top3.map(v => ({
-            title: v.title,
-            views: v.viewCount,
-            pillar: v.pillar,
-            engagement: v.viewCount > 0 ? Math.round((v.likeCount + v.commentCount) / v.viewCount * 1000) / 10 : 0,
-          })),
-          bottom_performers: bottom3.map(v => ({
-            title: v.title,
-            views: v.viewCount,
-            pillar: v.pillar,
-            engagement: v.viewCount > 0 ? Math.round((v.likeCount + v.commentCount) / v.viewCount * 1000) / 10 : 0,
-          })),
-          recommendation: `Top content: ${top3.map(v => v.pillar).join(', ')}. Consider more content in these pillars.`,
-          confidence: 0.7,
-          sample_size: videos.length,
-        },
-      });
-      signalsProduced++;
-    }
-
-    // Analysis 3b: Detect content formulas from top performers
-    //
-    // Include lineage metadata (sample video IDs, avg views) so
-    // downstream consumers (pipeline scheduler, script engine) can
-    // trace a validated formula back to the specific performing videos
-    // that produced it. This lets the script engine say "applying the
-    // formula from videos V1, V2 that averaged X views" instead of a
-    // bare "apply pillar Y" instruction.
-    if (top3.length >= 2 && pillarRankings.length > 0) {
-      const topPillar = pillarRankings[0];
-      if (topPillar && topPillar.avg_views > 0) {
-        const topPillarVideos = top3.filter(v => v.pillar === topPillar.pillar);
-        if (topPillarVideos.length >= 2) {
-          const sampleVideoIds = topPillarVideos
-            .map((v) => (v as any).videoId ?? (v as any).id ?? null)
-            .filter((id): id is string => typeof id === 'string')
-            .slice(0, 5);
-          const avgViewsForPillar = Math.round(
-            topPillarVideos.reduce((acc, v) => acc + (v.viewCount || 0), 0) / topPillarVideos.length,
-          );
-          writeContentFormula(
-            'performance-agent',
-            `${topPillar.pillar} content with high engagement pattern`,
-            topPillar.pillar,
-            Math.min(0.9, topPillarVideos.length / 3),
-            `${topPillarVideos.length} of top 3 videos are ${topPillar.pillar}`,
-            {
-              sampleVideoIds,
-              avgViews: avgViewsForPillar,
-            },
-          );
-          signalsProduced++;
-        }
-      }
-    }
-
-    // Analysis 4: Posting day effectiveness
-    const byDay = new Map<number, number[]>();
-    for (const v of videos) {
-      const day = new Date(v.publishedAt).getDay();
-      const existing = byDay.get(day) || [];
-      existing.push(v.viewCount);
-      byDay.set(day, existing);
-    }
-    const dayNames = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-    const dayPerformance = [...byDay.entries()]
-      .map(([day, views]) => ({
-        day: dayNames[day],
-        avg_views: Math.round(views.reduce((a, b) => a + b, 0) / views.length),
-        count: views.length,
-      }))
-      .sort((a, b) => b.avg_views - a.avg_views);
-
-    if (dayPerformance.length > 0) {
-      writeSignal({
-        source_agent: 'performance-agent',
-        signal_type: 'retention_pattern',
-        payload: {
-          finding: 'optimal_posting_day',
-          data: dayPerformance,
-          recommendation: `Best posting day: ${dayPerformance[0].day} (avg ${dayPerformance[0].avg_views} views)`,
-          confidence: Math.min(0.8, videos.length / 20),
-          sample_size: videos.length,
-        },
-      });
-      signalsProduced++;
-    }
-
-    const summary = `Performance: ${videos.length} videos analyzed. ${pillarRankings.length} pillars ranked. Best: ${pillarRankings[0]?.pillar || 'N/A'} (${pillarRankings[0]?.avg_views || 0} avg views).`;
-    logAgentRun('performance-agent', 'success', signalsProduced, signalsConsumed, Date.now() - start);
-    logger.info(summary);
+    // Content-mesh signals are currently platform-global. Until they carry
+    // user/tenant scope, do not analyze user-owned channels here; writing
+    // one user's performance metrics into global signals would leak them to
+    // every creator. This intentionally fails closed instead of falling back
+    // to YOUTUBE_CHANNEL_ID.
+    logger.warn(
+      { channelTargets: channelTargets.length },
+      'Performance Agent paused: user-scoped content performance signals are not supported yet',
+    );
+    logAgentRun('performance-agent', 'skipped', 0, 0, Date.now() - start, 'User-scoped performance signals not supported yet');
   } catch (err: any) {
-    logAgentRun('performance-agent', 'error', signalsProduced, signalsConsumed, Date.now() - start, err.message);
+    logAgentRun('performance-agent', 'error', 0, 0, Date.now() - start, err.message);
     logger.error({ err }, 'Performance Agent failed');
     throw err;
   }

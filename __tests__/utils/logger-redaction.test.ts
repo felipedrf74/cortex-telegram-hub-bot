@@ -27,4 +27,41 @@ describe('logger redaction policy', () => {
       'clientSecret',
     ]));
   });
+
+  it('redacts prompt, memory, references, and generated draft fields', () => {
+    expect(LOGGER_REDACTION_PATHS).toEqual(expect.arrayContaining([
+      'prompt',
+      'messages',
+      'context',
+      'memory',
+      'references',
+      'draft',
+      'script',
+      'voiceProfile',
+      'body.prompt',
+      'body.messages',
+      'body.context',
+      'body.references',
+      'err.response.data.prompt',
+      'err.response.data.context',
+    ]));
+  });
+
+  it('redacts calendar text fields without redacting operational identifiers', () => {
+    expect(LOGGER_REDACTION_PATHS).toEqual(expect.arrayContaining([
+      'calendar',
+      'calendarText',
+      'eventTitle',
+      'eventDescription',
+      'eventBody',
+      'body.calendarText',
+    ]));
+    expect(LOGGER_REDACTION_PATHS).not.toEqual(expect.arrayContaining([
+      'tenantId',
+      'userId',
+      'traceId',
+      'reqId',
+      'retryCount',
+    ]));
+  });
 });

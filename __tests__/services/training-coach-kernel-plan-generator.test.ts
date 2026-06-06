@@ -4,7 +4,12 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import {
   buildCoachKernelTrainingPlan,
   buildAthleteStateFromTrainingProfiles,
+  normalizeTrainingPlanDurationWeeks,
 } from '../../src/services/training-coach-kernel-plan-generator';
+import {
+  lintPlan,
+  type PlanLintSession,
+} from '../../src/services/coach-kernel/plan-linter';
 import {
   _resetCoachPlanStoreForTests,
   getWeeklyPlanCoveringDate,
@@ -14,6 +19,32 @@ import {
 describe('buildCoachKernelTrainingPlan — side effects', () => {
   beforeEach(() => {
     _resetCoachPlanStoreForTests();
+  });
+
+  it('normalizes invalid durationWeeks defensively before allocating weeks', () => {
+    expect(normalizeTrainingPlanDurationWeeks(-3)).toBe(4);
+    expect(normalizeTrainingPlanDurationWeeks(0)).toBe(4);
+    expect(normalizeTrainingPlanDurationWeeks(4.6)).toBe(5);
+    expect(normalizeTrainingPlanDurationWeeks(999)).toBe(52);
+
+    const plan = buildCoachKernelTrainingPlan({
+      userId: 99,
+      objective: 'Run base',
+      durationWeeks: -3,
+      startDate: '2026-04-13',
+      sessionsPerWeek: 4,
+      strengthSessionsPerWeek: 1,
+      preferredTime: '06:30',
+      preferredCardioTime: '06:30',
+      preferredStrengthTime: '18:00',
+      longWorkoutDay: 'Sunday',
+      notes: null,
+      fitnessProfile: null,
+      gymProfile: null,
+      runProfile: null,
+    });
+
+    expect(plan.weeks).toHaveLength(4);
   });
 
   it('records one WeeklyPlan per week in the plan registry for later guardrail lookup', () => {
@@ -78,6 +109,9 @@ describe('buildCoachKernelTrainingPlan — side effects', () => {
 
     expect(athlete.readiness.level).toBe('yellow');
     expect(athlete.readiness.score).toBe(70);
+    expect(athlete.readiness.confidence).toBe('no_data');
+    expect(athlete.readiness.dataSource).toBe('fallback');
+    expect(athlete.readiness.reasonCode).toBe('NO_READINESS_INPUT');
     expect(athlete.readiness.hrvStatus).toBeUndefined();
   });
 
@@ -126,6 +160,230 @@ describe('buildCoachKernelTrainingPlan — side effects', () => {
     expect(plan.weeks?.[0]?.sessions?.some((session) => session.sessionType === 'run')).toBe(true);
   });
 
+  it('does not invent a long run for strength-dominant plans with one aerobic support slot', () => {
+    const plan = buildCoachKernelTrainingPlan({
+      userId: 516,
+      objective: 'Muscle Building',
+      durationWeeks: 4,
+      startDate: '2026-04-26',
+      sessionsPerWeek: 6,
+      strengthSessionsPerWeek: 5,
+      preferredTime: '12:00',
+      preferredCardioTime: '07:00',
+      preferredStrengthTime: '12:00',
+      longWorkoutDay: 'Saturday',
+      notes: null,
+      fitnessProfile: {
+        experience_level: 'intermediate',
+        training_goals: 'strength and hypertrophy',
+        available_equipment: 'Full gym',
+        session_duration_minutes: '60',
+      },
+      gymProfile: {
+        training_age: '3 years',
+        primary_goal: 'Hypertrophy',
+        equipment_access: 'Full gym',
+        sessions_per_week: '5',
+        session_duration_minutes: '60',
+      },
+      runProfile: null,
+      goalMode: 'continuous',
+      trainingPriority: 'hybrid',
+      twoADayPreference: 'preferred',
+    });
+
+    const weekOneSessions = plan.weeks?.[0]?.sessions ?? [];
+    const aerobicSupport = weekOneSessions.filter((session) => session.sessionType === 'run');
+
+    expect(plan.sport).toBe('gym');
+    expect(weekOneSessions.filter((session) => session.sessionType === 'gym')).toHaveLength(5);
+    expect(aerobicSupport).toHaveLength(1);
+    expect(aerobicSupport[0]?.title).not.toMatch(/long run/i);
+    expect(aerobicSupport[0]?.workout?.some((item) => /long run/i.test(`${item.name} ${item.details ?? ''}`)) ?? false).toBe(false);
+
+    const lintResult = lintPlan({
+      now: new Date('2026-04-22T08:00:00.000Z'),
+      startDate: '2026-04-26',
+      durationWeeks: 4,
+      equipmentProfile: 'full_gym',
+      weeks: [{
+        weekNumber: 1,
+        focus: plan.weeks?.[0]?.focus,
+        sessions: weekOneSessions.map((session): PlanLintSession => {
+          const title = session.title.toLowerCase();
+          return {
+            dayOfWeek: String(session.dayOfWeek || '').toLowerCase(),
+            sessionType: String(session.sessionType || '').toLowerCase(),
+            title: session.title,
+            description: session.description,
+            durationMinutes: session.durationMinutes,
+            status: 'scheduled',
+            isLowerHeavy: /lower|squat|deadlift|quad|posterior chain/.test(title),
+            isLongRun: session.sessionType === 'long_run' || /\blong\s+run\b/i.test(session.title),
+          };
+        }),
+      }],
+    });
+    expect(lintResult.blockers.map((blocker) => blocker.ruleId)).not.toContain('no_heavy_lower_before_long_run');
+  });
+
+  it('builds marathon weeks with five distinct strength sessions when explicitly requested', () => {
+    const plan = buildCoachKernelTrainingPlan({
+      userId: 507,
+      objective: 'Marathon training with full gym strength',
+      durationWeeks: 4,
+      startDate: '2026-05-04',
+      sessionsPerWeek: 6,
+      strengthSessionsPerWeek: 5,
+      preferredTime: '12:00',
+      preferredCardioTime: '07:00',
+      preferredStrengthTime: '12:00',
+      longWorkoutDay: 'Saturday',
+      notes: 'Advanced runner and 5+ years gym. Full commercial gym. Prefer double sessions if needed.',
+      fitnessProfile: {
+        experience_level: 'advanced',
+        weekly_frequency: '6 days',
+        training_goals: 'marathon and strength',
+        injuries: 'none',
+        available_equipment: 'Full commercial gym',
+        session_duration_minutes: '60',
+      },
+      gymProfile: {
+        training_age: '5 years',
+        primary_goal: 'Hypertrophy',
+        equipment_access: 'Full commercial gym',
+        sessions_per_week: '5',
+        session_duration_minutes: '60',
+      },
+      runProfile: {
+        weekly_availability_days: '6 days',
+        weekly_mileage_km: '45',
+        easy_pace_min_per_km: '5:20',
+      },
+      currentReadiness: { score: 82 },
+      twoADayPreference: 'preferred',
+    });
+
+    const weekOneSessions = plan.weeks?.[0]?.sessions ?? [];
+    const strengthSessions = weekOneSessions.filter((session) => session.sessionType === 'gym');
+    const strengthTitles = strengthSessions.map((session) => session.title);
+
+    expect(strengthSessions).toHaveLength(5);
+    expect(new Set(strengthTitles).size).toBe(5);
+    expect(weekOneSessions.some((session) => /long run/i.test(session.title))).toBe(true);
+    expect(strengthSessions.every((session) => session.preferredStartTime === '12:00')).toBe(true);
+  });
+
+  it('uses app-supplied race date and priority intent in AthleteState goals', () => {
+    const athlete = buildAthleteStateFromTrainingProfiles({
+      userId: 508,
+      objective: 'Lisbon Marathon',
+      durationWeeks: 4,
+      startDate: '2026-05-04',
+      sessionsPerWeek: 7,
+      strengthSessionsPerWeek: 5,
+      preferredTime: '12:00',
+      preferredCardioTime: '07:00',
+      preferredStrengthTime: '12:00',
+      longWorkoutDay: 'Saturday',
+      notes: null,
+      fitnessProfile: { experience_level: 'advanced', available_equipment: 'Full commercial gym' },
+      gymProfile: { training_age: '5 years', equipment_access: 'Full commercial gym' },
+      runProfile: { weekly_mileage_km: '45' },
+      goalMode: 'event_based',
+      trainingPriority: 'running',
+      raceDate: '2026-10-18',
+    });
+
+    expect(athlete.goals.raceCalendar).toEqual([
+      expect.objectContaining({
+        date: '2026-10-18',
+        name: 'Lisbon Marathon',
+        subtype: 'marathon',
+      }),
+    ]);
+    expect(athlete.goals.priorityOrder[0]).toBe('running');
+  });
+
+  it('uses explicit triathlon modality targets when bike and swim counts are supplied', () => {
+    const athlete = buildAthleteStateFromTrainingProfiles({
+      userId: 518,
+      objective: 'Olympic triathlon build',
+      durationWeeks: 4,
+      startDate: '2026-05-04',
+      sessionsPerWeek: 7,
+      runSessionsPerWeek: 4,
+      bikeSessionsPerWeek: 3,
+      swimSessionsPerWeek: 2,
+      strengthSessionsPerWeek: 2,
+      preferredTime: '12:00',
+      preferredCardioTime: '07:00',
+      preferredStrengthTime: '12:00',
+      longWorkoutDay: 'Saturday',
+      notes: null,
+      fitnessProfile: { experience_level: 'advanced' },
+      gymProfile: null,
+      runProfile: null,
+      goalMode: 'event_based',
+      trainingPriority: 'triathlon',
+    });
+
+    expect(athlete.goals.primaryFocus).toBe('triathlon');
+    expect(athlete.goals.weeklySessionsTarget).toMatchObject({
+      running: 4,
+      cycling: 3,
+      swimming: 2,
+      strength: 2,
+    });
+  });
+
+  it('marks maintenance and return-to-training goal modes in priority order', () => {
+    const maintenanceAthlete = buildAthleteStateFromTrainingProfiles({
+      userId: 509,
+      objective: 'General Fitness',
+      durationWeeks: 4,
+      startDate: '2026-05-04',
+      sessionsPerWeek: 4,
+      strengthSessionsPerWeek: 2,
+      preferredTime: '12:00',
+      preferredCardioTime: '07:00',
+      preferredStrengthTime: '12:00',
+      longWorkoutDay: null,
+      notes: null,
+      fitnessProfile: { experience_level: 'intermediate', available_equipment: 'Full gym' },
+      gymProfile: { equipment_access: 'Full gym' },
+      runProfile: null,
+      goalMode: 'maintenance',
+      trainingPriority: 'strength',
+    });
+
+    expect(maintenanceAthlete.goals.strengthGoal).toBe('maintenance');
+    expect(maintenanceAthlete.goals.priorityOrder[0]).toBe('maintenance');
+    expect(maintenanceAthlete.goals.priorityOrder[1]).toBe('strength');
+
+    const returnAthlete = buildAthleteStateFromTrainingProfiles({
+      userId: 510,
+      objective: 'Running consistency',
+      durationWeeks: 4,
+      startDate: '2026-05-04',
+      sessionsPerWeek: 3,
+      strengthSessionsPerWeek: 1,
+      preferredTime: '12:00',
+      preferredCardioTime: '07:00',
+      preferredStrengthTime: '12:00',
+      longWorkoutDay: null,
+      notes: null,
+      fitnessProfile: { experience_level: 'intermediate', available_equipment: 'Bodyweight' },
+      gymProfile: null,
+      runProfile: { weekly_mileage_km: '15' },
+      goalMode: 'return_to_training',
+      trainingPriority: 'running',
+    });
+
+    expect(returnAthlete.goals.priorityOrder[0]).toBe('return');
+    expect(returnAthlete.goals.priorityOrder[1]).toBe('running');
+  });
+
   it('seeds AthleteState.readiness from currentReadiness when provided', () => {
     // This is the core fix for QW#2. When the route supplies real
     // wearable readiness data the planner must consume it so guardrails
@@ -159,9 +417,76 @@ describe('buildCoachKernelTrainingPlan — side effects', () => {
     expect(athlete.readiness.hrvStatus).toBe('low');
     expect(athlete.readiness.sleepHours).toBe(5.5);
     expect(athlete.readiness.energyReserve).toBe(32);
+    expect(athlete.readiness.confidence).toBe('fresh_wearable');
+    expect(athlete.readiness.dataSource).toBe('wearable');
+    expect(athlete.readiness.isStale).toBe(false);
     // The reasoning line flows through as a planner note so downstream
     // briefings can surface "why" without re-deriving from factors.
     expect(athlete.readiness.notes?.some((note) => note.includes('Low HRV'))).toBe(true);
+  });
+
+  it('surfaces stale readiness confidence instead of pretending data is fresh', () => {
+    const athlete = buildAthleteStateFromTrainingProfiles({
+      userId: 503,
+      objective: '10k base',
+      durationWeeks: 4,
+      startDate: '2026-04-13',
+      sessionsPerWeek: 4,
+      strengthSessionsPerWeek: 1,
+      preferredTime: '06:30',
+      preferredCardioTime: '06:30',
+      preferredStrengthTime: '18:00',
+      longWorkoutDay: null,
+      notes: null,
+      fitnessProfile: null,
+      gymProfile: null,
+      runProfile: null,
+      currentReadiness: {
+        score: 62,
+        confidence: 'stale_provider',
+        dataSource: 'wearable',
+        isStale: true,
+        reasonCode: 'PROVIDER_STALE',
+        reasoning: 'Last wearable sync is stale.',
+      },
+    });
+
+    expect(athlete.readiness.confidence).toBe('stale_provider');
+    expect(athlete.readiness.isStale).toBe(true);
+    expect(athlete.readiness.reasonCode).toBe('PROVIDER_STALE');
+    expect(athlete.readiness.notes?.some((note) => note.includes('provider data is stale'))).toBe(true);
+  });
+
+  it('preserves manual check-in confidence instead of upgrading it to wearable truth', () => {
+    const athlete = buildAthleteStateFromTrainingProfiles({
+      userId: 511,
+      objective: '10k base',
+      durationWeeks: 4,
+      startDate: '2026-04-13',
+      sessionsPerWeek: 4,
+      strengthSessionsPerWeek: 1,
+      preferredTime: '06:30',
+      preferredCardioTime: '06:30',
+      preferredStrengthTime: '18:00',
+      longWorkoutDay: null,
+      notes: null,
+      fitnessProfile: null,
+      gymProfile: null,
+      runProfile: null,
+      currentReadiness: {
+        score: 63,
+        confidence: 'manual_check_in',
+        dataSource: 'manual',
+        reasonCode: 'MANUAL_CHECK_IN',
+        reasoning: 'User reported tired legs after a hard work week.',
+      },
+    });
+
+    expect(athlete.readiness.score).toBe(63);
+    expect(athlete.readiness.confidence).toBe('manual_check_in');
+    expect(athlete.readiness.dataSource).toBe('manual');
+    expect(athlete.readiness.reasonCode).toBe('MANUAL_CHECK_IN');
+    expect(athlete.readiness.notes?.some((note) => note.includes('tired legs'))).toBe(true);
   });
 
   it('maps score bands onto ReadinessLevel deterministically', () => {
@@ -192,7 +517,7 @@ describe('buildCoachKernelTrainingPlan — side effects', () => {
   });
 
   it('clamps out-of-range scores and ignores non-finite inputs gracefully', () => {
-    const absurd = buildAthleteStateFromTrainingProfiles({
+    const makeWith = (score: number) => buildAthleteStateFromTrainingProfiles({
       userId: 504,
       objective: '10k base',
       durationWeeks: 1,
@@ -207,11 +532,27 @@ describe('buildCoachKernelTrainingPlan — side effects', () => {
       fitnessProfile: null,
       gymProfile: null,
       runProfile: null,
-      currentReadiness: { score: 120 }, // impossible — clamp
+      currentReadiness: { score },
     });
 
-    expect(absurd.readiness.score).toBe(100);
-    expect(absurd.readiness.level).toBe('green');
+    // Out-of-range positive — clamp to 100.
+    expect(makeWith(120).readiness.score).toBe(100);
+    expect(makeWith(120).readiness.level).toBe('green');
+
+    // Out-of-range negative — clamp to 0.
+    expect(makeWith(-25).readiness.score).toBe(0);
+    expect(makeWith(-25).readiness.level).toBe('red');
+
+    // Non-finite — fall back to neutral 70 / yellow.
+    // PR 2 §B2 acceptance: lock the generator-input-level behavior so the
+    // adapter dedupe stays safe even if a future refactor adds another
+    // caller that skips the clamp step.
+    expect(makeWith(Number.NaN).readiness.score).toBe(70);
+    expect(makeWith(Number.NaN).readiness.level).toBe('yellow');
+    expect(makeWith(Number.POSITIVE_INFINITY).readiness.score).toBe(70);
+    expect(makeWith(Number.POSITIVE_INFINITY).readiness.level).toBe('yellow');
+    expect(makeWith(Number.NEGATIVE_INFINITY).readiness.score).toBe(70);
+    expect(makeWith(Number.NEGATIVE_INFINITY).readiness.level).toBe('yellow');
   });
 
   it('exposes mid-week date lookups through the registry after plan generation', () => {
@@ -243,5 +584,59 @@ describe('buildCoachKernelTrainingPlan — side effects', () => {
     // Wednesday of week 2 — should resolve to 2026-04-20.
     const midWeek2 = getWeeklyPlanCoveringDate(101, '2026-04-22');
     expect(midWeek2?.weekStart).toBe('2026-04-20');
+  });
+
+  it('uses rolling base/build phases with scheduled deloads but no fake tapering when no event date exists', () => {
+    const plan = buildCoachKernelTrainingPlan({
+      userId: 601,
+      objective: 'General running base',
+      durationWeeks: 8,
+      startDate: '2026-05-04',
+      sessionsPerWeek: 4,
+      strengthSessionsPerWeek: 1,
+      preferredTime: '07:00',
+      preferredCardioTime: '07:00',
+      preferredStrengthTime: '12:30',
+      longWorkoutDay: 'Saturday',
+      notes: null,
+      fitnessProfile: { experience_level: 'intermediate', available_equipment: 'Dumbbells' },
+      gymProfile: { equipment_access: 'Dumbbells' },
+      runProfile: { weekly_mileage_km: '30' },
+      goalMode: 'continuous',
+    });
+
+    expect(plan.weeks?.map((week) => week.focus)).toEqual(['base', 'base', 'build', 'deload', 'build', 'build', 'build', 'deload']);
+    expect(plan.weeks?.map((week) => week.focus)).not.toContain('taper');
+    expect(plan.decisionReasons?.map((reason) => reason.code)).toContain('continuous_plan_no_taper');
+  });
+
+  it('derives base/build/peak/taper/race phases from a real event date', () => {
+    const plan = buildCoachKernelTrainingPlan({
+      userId: 602,
+      objective: 'Lisbon Marathon',
+      durationWeeks: 16,
+      startDate: '2026-05-04',
+      sessionsPerWeek: 5,
+      strengthSessionsPerWeek: 2,
+      preferredTime: '07:00',
+      preferredCardioTime: '07:00',
+      preferredStrengthTime: '12:30',
+      longWorkoutDay: 'Sunday',
+      notes: null,
+      fitnessProfile: { experience_level: 'advanced', available_equipment: 'Full gym' },
+      gymProfile: { equipment_access: 'Full gym' },
+      runProfile: { weekly_mileage_km: '45' },
+      goalMode: 'event_based',
+      raceDate: '2026-08-23',
+    });
+
+    const phases = plan.weeks?.map((week) => week.focus) ?? [];
+    expect(phases[0]).toBe('base');
+    expect(phases).toContain('build');
+    expect(phases).toContain('peak');
+    expect(phases).toContain('taper');
+    expect(phases).not.toContain('deload');
+    expect(phases[15]).toBe('race');
+    expect(plan.decisionReasons?.map((reason) => reason.code)).not.toContain('event_based_missing_race_date');
   });
 });

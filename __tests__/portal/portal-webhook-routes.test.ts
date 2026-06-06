@@ -201,6 +201,21 @@ describe('portal webhook routes', () => {
     );
   });
 
+  it('rejects WhatsApp POST webhooks when no app secret is configured', async () => {
+    const routes = captureRoutes({
+      config: createConfig({ whatsapp: { enabled: true, verifyToken: 'verify-token', appSecret: '' } }),
+      registry: createRegistry(),
+      logger: createLogger(),
+    });
+
+    const res = await invoke(findRoute(routes, 'POST', '/api/webhooks/whatsapp'), {
+      body: Buffer.from(JSON.stringify({ object: 'whatsapp_business_account', entry: [] })),
+    });
+
+    expect(res.statusCode).toBe(403);
+    expect(res.sent).toBe('Forbidden');
+  });
+
   it('handles universal webhook verification shortcuts and event persistence', async () => {
     const registry = createRegistry({
       getSubscriptions: vi.fn(() => [{ id: 7, secret: 'subscription-secret' }]),
@@ -244,6 +259,23 @@ describe('portal webhook routes', () => {
       subscription_id: 7,
     });
     expect(persisted.body).toEqual({ ok: true, eventId: 42 });
+  });
+
+  it('rejects universal webhooks when the active subscription has no secret', async () => {
+    const registry = createRegistry({
+      getSubscriptions: vi.fn(() => [{ id: 7, secret: '' }]),
+    });
+    const routes = captureRoutes({ config: createConfig(), registry, logger: createLogger() });
+
+    const res = await invoke(findRoute(routes, 'POST', '/api/webhooks/:provider'), {
+      params: { provider: 'outlook_mail' },
+      body: Buffer.from(JSON.stringify({ changeType: 'created' })),
+    });
+
+    expect(res.statusCode).toBe(401);
+    expect(res.body).toEqual({ ok: false, message: 'Webhook signing secret is not configured' });
+    expect(registry.verifySignature).not.toHaveBeenCalled();
+    expect(registry.receiveWebhookEvent).not.toHaveBeenCalled();
   });
 
   it('supports subscription mutation routes and invalidates the snapshot cache', async () => {

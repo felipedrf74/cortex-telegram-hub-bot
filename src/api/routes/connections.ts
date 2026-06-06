@@ -35,6 +35,7 @@ import {
   getIntegrationSummary,
   capabilitiesForProvider,
 } from '../../services/integration-status';
+import { hasActiveGarminConnection } from '../../services/garmin-session-store';
 
 type ConnectionAvailability = {
   provider: string;
@@ -128,7 +129,11 @@ export function connectionRoutes(): Router {
         connected_at?: string | null;
       } | undefined;
 
-      if (garmin?.status === 'active' && !connections.some((c) => c.provider === 'garmin')) {
+      if (
+        garmin?.status === 'active'
+        && hasActiveGarminConnection(userId)
+        && !connections.some((c) => c.provider === 'garmin')
+      ) {
         const connectedAt = garmin.connected_at || new Date().toISOString();
         connections.push({
           provider: 'garmin',

@@ -13,10 +13,14 @@ let mockReadinessScore: number | null = 76;
 
 vi.mock('../../src/services/database', () => ({
   getDb: () => testDb,
+  initDatabase: vi.fn(),
+  closeDatabase: vi.fn(),
+  findUnexpectedMigrationPrefixCollisions: vi.fn(() => []),
 }));
 
 vi.mock('../../src/utils/logger', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(), trace: vi.fn(), child: vi.fn().mockReturnThis() },
+  LOGGER_REDACTION_PATHS: [],
 }));
 
 vi.mock('../../src/config', () => ({
@@ -24,6 +28,10 @@ vi.mock('../../src/config', () => ({
     telegram: { allowedUserIds: [111111] },
     app: { timezone: 'Europe/Lisbon' },
     contentEngine: { enabled: false, port: 8100 },
+    anthropic: { apiKey: '' },
+    gemini: { apiKey: '', model: 'gemini-2.5-flash-lite' },
+    openai: { apiKey: '' },
+    aiSafety: { callTimeoutMs: 1000 },
   },
 }));
 
@@ -147,6 +155,16 @@ describe('Content API — filming recommendation', () => {
     const dayAfterTomorrow = today.plus({ days: 2 });
 
     addTopic(user.id, 'VO2 recap', { scheduledDate: tomorrow.toISODate()! });
+    const topicScope = testDb.prepare(`
+      SELECT tenant_id, owner_user_id, scope_status
+      FROM content_topics
+      WHERE user_id = ? AND title = 'VO2 recap'
+    `).get(user.id) as { tenant_id: number; owner_user_id: number; scope_status: string };
+    expect(topicScope).toEqual({
+      tenant_id: user.id,
+      owner_user_id: user.id,
+      scope_status: 'active',
+    });
 
     const plan = createPlan({
       user_id: user.id,

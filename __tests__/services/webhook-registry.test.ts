@@ -43,6 +43,7 @@ function applyMigrations(db: Database.Database): void {
 let testDb: Database.Database;
 vi.mock('../../src/utils/logger', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(), fatal: vi.fn() },
+  LOGGER_REDACTION_PATHS: [],
 }));
 vi.mock('../../src/portal/telemetry', () => ({
   pushEvent: vi.fn(),
@@ -309,9 +310,9 @@ describe('Webhook Registry', () => {
       expect(valid).toBe(true);
     });
 
-    it('returns true when no secret configured', () => {
+    it('fails closed when no secret is configured', () => {
       const valid = verifySignature('custom', 'body', {}, '');
-      expect(valid).toBe(true);
+      expect(valid).toBe(false);
     });
 
     it('returns false when signature header is missing', () => {

@@ -1,0 +1,421 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="color-scheme" content="dark">
+  <title>Nexus Hub - Sign in</title>
+  <style>
+    :root {
+      --bg: #070707;
+      --panel: #141414;
+      --panel-2: #1d1d1f;
+      --border: rgba(255,255,255,.11);
+      --text: #f5f5f7;
+      --muted: #a1a1a6;
+      --accent: #ff6b35;
+      --danger: #ff453a;
+      --success: #32d74b;
+      font-family: Inter, -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      color: var(--text);
+      background: radial-gradient(circle at 50% 0%, #1b1512 0, var(--bg) 42rem);
+      display: grid;
+      place-items: center;
+      padding: 32px 16px;
+    }
+    .shell { width: min(960px, 100%); display: grid; grid-template-columns: 1fr 420px; gap: 28px; align-items: center; }
+    .brand { display: inline-flex; align-items: center; gap: 12px; font-weight: 700; margin-bottom: 28px; }
+    .mark { width: 38px; height: 38px; object-fit: contain; filter: drop-shadow(0 0 14px rgba(255,107,53,.38)); }
+    h1 { margin: 0 0 16px; font-size: clamp(38px, 7vw, 72px); line-height: .95; letter-spacing: -0.04em; }
+    p { margin: 0; color: var(--muted); line-height: 1.55; font-size: 16px; max-width: 54ch; }
+    .card { background: color-mix(in srgb, var(--panel) 94%, transparent); border: 1px solid var(--border); border-radius: 20px; padding: 24px; box-shadow: 0 24px 80px rgba(0,0,0,.35); }
+    .tabs { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; padding: 4px; border-radius: 14px; background: var(--panel-2); margin-bottom: 18px; }
+    .tab { border: 0; border-radius: 11px; color: var(--muted); background: transparent; padding: 10px; font-weight: 700; cursor: pointer; }
+    .tab.active { background: rgba(255,255,255,.08); color: var(--text); }
+    label { display: block; margin: 14px 0 7px; color: var(--muted); font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: .08em; }
+    input { width: 100%; border: 1px solid var(--border); border-radius: 12px; background: #0d0d0e; color: var(--text); padding: 13px 14px; font: inherit; }
+    input:focus { outline: 2px solid color-mix(in srgb, var(--accent) 45%, transparent); border-color: var(--accent); }
+    button.primary, button.oauth, a.button {
+      width: 100%;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+      border: 0;
+      border-radius: 12px;
+      padding: 13px 14px;
+      font-weight: 800;
+      cursor: pointer;
+      text-decoration: none;
+    }
+    button.primary { background: var(--accent); color: #fff; margin-top: 18px; }
+    button.oauth, a.button { background: var(--panel-2); color: var(--text); border: 1px solid var(--border); margin-top: 10px; }
+    button:disabled { opacity: .6; cursor: not-allowed; }
+    .divider { display: flex; align-items: center; gap: 12px; color: var(--muted); font-size: 12px; margin: 18px 0 8px; }
+    .divider::before, .divider::after { content: ""; height: 1px; background: var(--border); flex: 1; }
+    .message { min-height: 24px; margin-top: 14px; color: var(--muted); font-size: 14px; }
+    .message.error { color: var(--danger); }
+    .message.ok { color: var(--success); }
+    .small { margin-top: 14px; font-size: 13px; color: var(--muted); }
+    .small a { color: var(--text); }
+    .signed-in { display: none; }
+    .points-panel { margin-top: 18px; padding-top: 18px; border-top: 1px solid var(--border); }
+    .points-head { display:flex; justify-content:space-between; gap:12px; align-items:flex-start; margin-bottom:12px; }
+    .points-title { font-weight:800; }
+    .points-balance { color:#ff9d7c; font-weight:800; white-space:nowrap; }
+    .points-grid { display:grid; gap:10px; }
+    .point-card { display:grid; grid-template-columns:1fr auto; gap:12px; align-items:center; padding:12px; border:1px solid var(--border); border-radius:14px; background:#0d0d0e; }
+    .point-meta { display:grid; gap:3px; }
+    .point-name { font-weight:800; }
+    .point-detail { color:var(--muted); font-size:13px; }
+    button.point-buy { width:auto; margin:0; padding:10px 12px; border-radius:10px; }
+    .pill { display: inline-flex; padding: 5px 9px; border-radius: 999px; background: rgba(255,107,53,.14); color: #ff9d7c; font-size: 12px; font-weight: 800; margin-top: 14px; }
+    @media (max-width: 820px) { .shell { grid-template-columns: 1fr; } .intro { text-align: left; } }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <section class="intro">
+      <div class="brand"><img class="mark" src="/assets/nexus-mark.png" alt="" aria-hidden="true"><span>Nexus Hub</span></div>
+      <h1>Your account, not an operator token.</h1>
+      <p>Use this page to sign in with the same account method you configured in Nexus. Admin tools still require the separate operator portal token.</p>
+      <span class="pill">Closed beta web sign-in</span>
+    </section>
+
+    <section class="card" aria-label="Nexus account sign in">
+      <div id="login-panel">
+        <div class="tabs" role="tablist" aria-label="Sign in mode">
+          <button class="tab active" id="tab-email" type="button">Email</button>
+          <button class="tab" id="tab-provider" type="button">Apple / Google</button>
+        </div>
+
+        <form id="email-form">
+          <label for="email">Email</label>
+          <input id="email" name="email" type="email" autocomplete="email" required>
+          <label for="password">Password</label>
+          <input id="password" name="password" type="password" autocomplete="current-password" required>
+          <button class="primary" id="email-submit" type="submit">Sign in</button>
+          <div class="small"><a href="/auth/forgot-password">Forgot password?</a></div>
+        </form>
+
+        <div id="provider-panel" style="display:none">
+          <button class="oauth" id="google-btn" type="button">Continue with Google</button>
+          <button class="oauth" id="apple-btn" type="button">Continue with Apple</button>
+          <div class="small">Apple and Google open secure provider pages and return here. If a provider is not configured yet, the page will show a setup message.</div>
+        </div>
+
+        <div class="message" id="message" aria-live="polite"></div>
+      </div>
+
+      <div class="signed-in" id="signed-in-panel">
+        <h2 style="margin:0 0 8px">Signed in</h2>
+        <p id="signed-in-copy">Your Nexus account session is active in this browser tab.</p>
+        <div class="points-panel" id="points-panel" aria-label="Nexus Points purchase">
+          <div class="points-head">
+            <div>
+              <div class="points-title">Nexus Points</div>
+              <div class="point-detail">Valid for 30 days after purchase.</div>
+            </div>
+            <div class="points-balance" id="points-balance">Loading…</div>
+          </div>
+          <div class="points-grid" id="points-packages"></div>
+          <div class="message" id="points-message" aria-live="polite"></div>
+        </div>
+        <a class="button" href="me.nexushub.app://">Open iOS app</a>
+        <button class="oauth" id="sign-out-btn" type="button">Sign out</button>
+      </div>
+    </section>
+  </main>
+
+  <script>
+  (function() {
+    const ACCESS_KEY = 'nexus_web_access_token_v1';
+    const REFRESH_KEY = 'nexus_web_refresh_token_v1';
+    const DEVICE_KEY = 'nexus_web_device_id_v1';
+    const message = document.getElementById('message');
+    const emailForm = document.getElementById('email-form');
+    const providerPanel = document.getElementById('provider-panel');
+    const loginPanel = document.getElementById('login-panel');
+    const signedInPanel = document.getElementById('signed-in-panel');
+    const pointsBalance = document.getElementById('points-balance');
+    const pointsPackages = document.getElementById('points-packages');
+    const pointsMessage = document.getElementById('points-message');
+    const API_BASE = window.NEXUS_API_BASE || ((location.hostname === 'nexushub.me' || location.hostname === 'www.nexushub.me') ? 'https://api.nexushub.me' : '');
+
+    function apiPath(path) {
+      return API_BASE + path;
+    }
+
+    function setMessage(text, kind) {
+      message.textContent = text || '';
+      message.className = 'message ' + (kind || '');
+    }
+    function setPointsMessage(text, kind) {
+      pointsMessage.textContent = text || '';
+      pointsMessage.className = 'message ' + (kind || '');
+    }
+    function getDeviceId() {
+      try {
+        let value = localStorage.getItem(DEVICE_KEY);
+        if (!value) {
+          value = 'web-' + crypto.randomUUID();
+          localStorage.setItem(DEVICE_KEY, value);
+        }
+        return value;
+      } catch {
+        return 'web-' + Math.random().toString(36).slice(2) + Date.now();
+      }
+    }
+    function saveSession(payload) {
+      sessionStorage.setItem(ACCESS_KEY, payload.accessToken || '');
+      sessionStorage.setItem(REFRESH_KEY, payload.refreshToken || '');
+      renderSignedIn(payload.user);
+    }
+    function clearSession() {
+      sessionStorage.removeItem(ACCESS_KEY);
+      sessionStorage.removeItem(REFRESH_KEY);
+    }
+    function authHeaders() {
+      const token = sessionStorage.getItem(ACCESS_KEY);
+      return token ? { Authorization: 'Bearer ' + token } : {};
+    }
+    async function readError(res) {
+      try {
+        const body = await res.json();
+        return body?.error?.message || body?.message || body?.error?.code || 'Sign-in failed';
+      } catch {
+        return 'Sign-in failed';
+      }
+    }
+    function renderSignedIn(user) {
+      const name = [user?.firstName, user?.lastName].filter(Boolean).join(' ') || user?.email || 'your account';
+      document.getElementById('signed-in-copy').textContent = 'Signed in as ' + name + '. Use the iOS app for the full Nexus experience.';
+      loginPanel.style.display = 'none';
+      signedInPanel.style.display = 'block';
+      loadBillingStatus();
+    }
+    async function hydrateExistingSession() {
+      const token = sessionStorage.getItem(ACCESS_KEY);
+      if (!token) return;
+      const res = await fetch(apiPath('/api/v1/auth/me'), { headers: authHeaders() });
+      if (!res.ok) {
+        clearSession();
+        return;
+      }
+      const body = await res.json();
+      renderSignedIn(body.data?.user || body.user || {});
+    }
+    function renderPackage(pkg) {
+      const priceLabel = Number.isFinite(Number(pkg.priceUsd))
+        ? '$' + Number(pkg.priceUsd).toFixed(0)
+        : String(pkg.label || 'Boost');
+      return '<div class="point-card">' +
+        '<div class="point-meta">' +
+          '<div class="point-name">' + priceLabel + ' · ' + Number(pkg.points).toLocaleString() + ' NP</div>' +
+          '<div class="point-detail">Adds ' + Number(pkg.points).toLocaleString() + ' Nexus Points</div>' +
+        '</div>' +
+        '<button class="primary point-buy" type="button" data-package-id="' + pkg.productId + '">Buy</button>' +
+      '</div>';
+    }
+    async function loadBillingStatus() {
+      pointsBalance.textContent = 'Loading…';
+      pointsPackages.innerHTML = '';
+      setPointsMessage('');
+      try {
+        const res = await fetch(apiPath('/api/v1/billing/status'), { headers: authHeaders() });
+        if (!res.ok) {
+          setPointsMessage(await readError(res), 'error');
+          pointsBalance.textContent = 'Unavailable';
+          return;
+        }
+        const body = await res.json();
+        const data = body.data || body;
+        pointsBalance.textContent = Number(data.nexusPointsBalance || 0).toLocaleString(undefined, { maximumFractionDigits: 2 }) + ' NP';
+        const packages = Array.isArray(data.nexusPointPackages) ? data.nexusPointPackages : [];
+        pointsPackages.innerHTML = packages.map(renderPackage).join('');
+        pointsPackages.querySelectorAll('button[data-package-id]').forEach((button) => {
+          button.addEventListener('click', () => buyNexusPoints(button.dataset.packageId, button));
+        });
+      } catch {
+        pointsBalance.textContent = 'Unavailable';
+        setPointsMessage('Could not load Nexus Points packages.', 'error');
+      }
+    }
+    async function buyNexusPoints(packageId, button) {
+      if (!packageId) return;
+      button.disabled = true;
+      setPointsMessage('Opening secure checkout...');
+      try {
+        const res = await fetch(apiPath('/api/v1/billing/nexus-points/stripe-checkout'), {
+          method: 'POST',
+          headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+          body: JSON.stringify({ packageId }),
+        });
+        if (!res.ok) {
+          setPointsMessage(await readError(res), 'error');
+          return;
+        }
+        const body = await res.json();
+        const checkoutUrl = body.data?.checkoutUrl || body.checkoutUrl;
+        if (!checkoutUrl) {
+          setPointsMessage('Checkout URL was not returned.', 'error');
+          return;
+        }
+        location.href = checkoutUrl;
+      } catch {
+        setPointsMessage('Network error. Try again in a moment.', 'error');
+      } finally {
+        button.disabled = false;
+      }
+    }
+
+    document.getElementById('tab-email').addEventListener('click', () => {
+      document.getElementById('tab-email').classList.add('active');
+      document.getElementById('tab-provider').classList.remove('active');
+      emailForm.style.display = '';
+      providerPanel.style.display = 'none';
+      setMessage('');
+    });
+    document.getElementById('tab-provider').addEventListener('click', () => {
+      document.getElementById('tab-provider').classList.add('active');
+      document.getElementById('tab-email').classList.remove('active');
+      emailForm.style.display = 'none';
+      providerPanel.style.display = '';
+      setMessage('');
+    });
+
+    emailForm.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      const btn = document.getElementById('email-submit');
+      btn.disabled = true;
+      setMessage('Checking credentials...');
+      try {
+        const res = await fetch(apiPath('/api/v1/auth/login/email'), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            email: document.getElementById('email').value.trim(),
+            password: document.getElementById('password').value,
+            deviceId: getDeviceId(),
+            deviceName: 'Nexus Web',
+          }),
+        });
+        if (!res.ok) {
+          setMessage(await readError(res), 'error');
+          return;
+        }
+        const body = await res.json();
+        saveSession(body.data || body);
+        setMessage('', 'ok');
+      } catch {
+        setMessage('Network error. Try again in a moment.', 'error');
+      } finally {
+        btn.disabled = false;
+      }
+    });
+
+    document.getElementById('google-btn').addEventListener('click', async () => {
+      const btn = document.getElementById('google-btn');
+      btn.disabled = true;
+      setMessage('Opening Google...');
+      try {
+        const res = await fetch(apiPath('/api/v1/auth/register/google/start'), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ deviceId: getDeviceId(), deviceName: 'Nexus Web', flow: 'web' }),
+        });
+        if (!res.ok) {
+          setMessage(await readError(res), 'error');
+          return;
+        }
+        const body = await res.json();
+        location.href = body.data?.url || body.url;
+      } catch {
+        setMessage('Network error. Try again in a moment.', 'error');
+      } finally {
+        btn.disabled = false;
+      }
+    });
+
+    document.getElementById('apple-btn').addEventListener('click', async () => {
+      const btn = document.getElementById('apple-btn');
+      btn.disabled = true;
+      setMessage('Opening Apple...');
+      try {
+        const res = await fetch(apiPath('/api/v1/auth/register/apple/start'), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ deviceId: getDeviceId(), deviceName: 'Nexus Web', flow: 'web' }),
+        });
+        if (!res.ok) {
+          setMessage(await readError(res), 'error');
+          return;
+        }
+        const body = await res.json();
+        location.href = body.data?.url || body.url;
+      } catch {
+        setMessage('Network error. Try again in a moment.', 'error');
+      } finally {
+        btn.disabled = false;
+      }
+    });
+
+    document.getElementById('sign-out-btn').addEventListener('click', () => {
+      clearSession();
+      location.href = '/user';
+    });
+
+    async function finishProviderIfNeeded() {
+      const params = new URLSearchParams(location.search);
+      const checkout = params.get('nexusPointsCheckout');
+      if (checkout === 'success') {
+        history.replaceState(null, '', location.pathname);
+        setMessage('Nexus Points checkout received. Your balance updates after Stripe confirms payment.', '');
+        return;
+      }
+      if (checkout === 'canceled') {
+        history.replaceState(null, '', location.pathname);
+        setMessage('Nexus Points checkout canceled.', '');
+        return;
+      }
+      const googleAuthCode = params.get('googleAuthCode');
+      const appleAuthCode = params.get('appleAuthCode');
+      const error = params.get('error');
+      if (error) {
+        history.replaceState(null, '', location.pathname);
+        setMessage(error, 'error');
+        return;
+      }
+      const provider = appleAuthCode ? 'Apple' : 'Google';
+      const authCode = appleAuthCode || googleAuthCode;
+      if (!authCode) return;
+      history.replaceState(null, '', location.pathname);
+      setMessage('Finishing ' + provider + ' sign-in...');
+      const endpoint = appleAuthCode
+        ? '/api/v1/auth/register/apple/finish'
+        : '/api/v1/auth/register/google/finish';
+      const res = await fetch(apiPath(endpoint), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ authCode }),
+      });
+      if (!res.ok) {
+        setMessage(await readError(res), 'error');
+        return;
+      }
+      const body = await res.json();
+      saveSession(body.data || body);
+    }
+
+    finishProviderIfNeeded().then(hydrateExistingSession).catch(() => {
+      setMessage('Could not restore the web session. Please sign in again.', 'error');
+    });
+  })();
+  </script>
+</body>
+</html>

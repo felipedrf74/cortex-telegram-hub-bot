@@ -22,10 +22,14 @@ let testDb: Database.Database;
 
 vi.mock('../../src/services/database', () => ({
   getDb: () => testDb,
+  initDatabase: vi.fn(),
+  closeDatabase: vi.fn(),
+  findUnexpectedMigrationPrefixCollisions: vi.fn(() => []),
 }));
 
 vi.mock('../../src/utils/logger', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(), trace: vi.fn(), child: vi.fn().mockReturnThis() },
+  LOGGER_REDACTION_PATHS: [],
 }));
 
 vi.mock('../../src/config', () => ({
@@ -79,8 +83,8 @@ describe('content-dashboard-service: books', () => {
 
   it('returns books with correct shape', () => {
     testDb.prepare(`
-      INSERT INTO book_library (title, author, core_thesis, extraction_status, times_referenced)
-      VALUES ('The Road to Serfdom', 'F.A. Hayek', 'Central planning leads to tyranny', 'extracted', 5)
+      INSERT INTO book_library (title, author, core_thesis, extraction_status, times_referenced, user_id, owner_scope)
+      VALUES ('The Road to Serfdom', 'F.A. Hayek', 'Central planning leads to tyranny', 'extracted', 5, 0, 'system')
     `).run();
 
     const result = getBooks();
@@ -94,9 +98,9 @@ describe('content-dashboard-service: books', () => {
   });
 
   it('aggregates extracted and pending counts', () => {
-    testDb.prepare(`INSERT INTO book_library (title, author, extraction_status) VALUES ('A', 'X', 'extracted')`).run();
-    testDb.prepare(`INSERT INTO book_library (title, author, extraction_status) VALUES ('B', 'Y', 'extracted')`).run();
-    testDb.prepare(`INSERT INTO book_library (title, author, extraction_status) VALUES ('C', 'Z', 'pending')`).run();
+    testDb.prepare(`INSERT INTO book_library (title, author, extraction_status, user_id, owner_scope) VALUES ('A', 'X', 'extracted', 0, 'system')`).run();
+    testDb.prepare(`INSERT INTO book_library (title, author, extraction_status, user_id, owner_scope) VALUES ('B', 'Y', 'extracted', 0, 'system')`).run();
+    testDb.prepare(`INSERT INTO book_library (title, author, extraction_status, user_id, owner_scope) VALUES ('C', 'Z', 'pending', 0, 'system')`).run();
 
     const result = getBooks();
     expect(result.total).toBe(3);
@@ -136,8 +140,8 @@ describe('content-dashboard-service: voice DNA', () => {
 
   it('returns voice DNA with human-readable labels', () => {
     testDb.prepare(`
-      INSERT INTO content_knowledge (category, synthesized_text, source_channels, version)
-      VALUES ('hook_style', 'Bold questions as openers', '["@channelA"]', 1)
+      INSERT INTO content_knowledge (category, synthesized_text, source_channels, version, user_id, owner_scope)
+      VALUES ('hook_style', 'Bold questions as openers', '["@channelA"]', 1, 0, 'system')
     `).run();
 
     const voiceDna = getVoiceDna();
@@ -150,8 +154,8 @@ describe('content-dashboard-service: voice DNA', () => {
 
   it('handles unknown categories gracefully', () => {
     testDb.prepare(`
-      INSERT INTO content_knowledge (category, synthesized_text, source_channels, version)
-      VALUES ('custom_cat', 'Custom data', '[]', 1)
+      INSERT INTO content_knowledge (category, synthesized_text, source_channels, version, user_id, owner_scope)
+      VALUES ('custom_cat', 'Custom data', '[]', 1, 0, 'system')
     `).run();
 
     const voiceDna = getVoiceDna();
@@ -229,12 +233,12 @@ describe('content-dashboard-service: knowledge stats', () => {
 
   it('returns category stats and channel count', () => {
     testDb.prepare(`
-      INSERT INTO content_knowledge (category, synthesized_text, source_channels)
-      VALUES ('hook_style', 'text', '["a","b"]')
+      INSERT INTO content_knowledge (category, synthesized_text, source_channels, user_id, owner_scope)
+      VALUES ('hook_style', 'text', '["a","b"]', 0, 'system')
     `).run();
     testDb.prepare(`
-      INSERT INTO content_ref_channels (channel_url, status, user_id)
-      VALUES ('https://youtube.com/@test', 'active', 0)
+      INSERT INTO content_ref_channels (channel_url, status, user_id, owner_scope)
+      VALUES ('https://youtube.com/@test', 'active', 0, 'system')
     `).run();
 
     const stats = getKnowledgeStats();
@@ -333,6 +337,17 @@ describe('content-dashboard-service: no raw SQL duplication', () => {
     expect(sprintSection).not.toContain("signal_type = 'content_sprint_mode'");
   });
 
+  it('legacy portal content mutations are disabled in favor of scoped v1 routes', () => {
+    const source = fs.readFileSync(
+      portalContentRoutesPath,
+      'utf8',
+    );
+    expect(source).toContain('SCOPED_V1_REQUIRED');
+    expect(source).toContain('/api/v1/admin/content');
+    expect(source).not.toContain('addAndAnalyzeChannel(url');
+    expect(source).not.toContain('handleAddBookFromPortal(title');
+  });
+
   it('content-dashboard.ts uses getBooks from service', () => {
     const source = fs.readFileSync(
       path.resolve(__dirname, '../../src/api/routes/content-dashboard.ts'),
@@ -381,8 +396,8 @@ describe('content-dashboard-service: contract consistency', () => {
 
   it('getBooks returns BookSummary shape matching portal contract', () => {
     testDb.prepare(`
-      INSERT INTO book_library (title, author, extraction_status)
-      VALUES ('Test Book', 'Author', 'extracted')
+      INSERT INTO book_library (title, author, extraction_status, user_id, owner_scope)
+      VALUES ('Test Book', 'Author', 'extracted', 0, 'system')
     `).run();
 
     const result = getBooks();
@@ -401,8 +416,8 @@ describe('content-dashboard-service: contract consistency', () => {
 
   it('getVoiceDna returns VoiceDnaEntry shape matching portal contract', () => {
     testDb.prepare(`
-      INSERT INTO content_knowledge (category, synthesized_text, source_channels, version)
-      VALUES ('hook_style', 'text', '[]', 1)
+      INSERT INTO content_knowledge (category, synthesized_text, source_channels, version, user_id, owner_scope)
+      VALUES ('hook_style', 'text', '[]', 1, 0, 'system')
     `).run();
 
     const dna = getVoiceDna();

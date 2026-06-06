@@ -10,17 +10,18 @@ import type {
   EquipmentAccess,
   Goals,
   RaceEvent,
-  ReadinessLevel,
   ReadinessSnapshot,
   NormalizedTrainingProfile,
   Session,
   Sport,
   TrainingDecisionReason,
+  TrainingDecisionReasonCode,
   TrainingHistory,
   TrainingProfileQuality,
   WeeklyPlan,
 } from './coach-kernel/types';
 import { DAY_ORDER } from './coach-kernel/utils';
+import { scoreToReadinessLevel } from './coach-kernel/readiness-snapshot-adapter';
 import { recordWeeklyPlan } from './coach-plan-registry';
 import type { CoordinatedTrainingPlan, CoordinatedTrainingSession, CoordinatedTrainingWeek } from './training-plan-coordination';
 import {
@@ -32,6 +33,20 @@ import {
 } from './training-profile-model';
 import { logger } from '../utils/logger';
 
+export const MIN_TRAINING_PLAN_DURATION_WEEKS = 1;
+export const MAX_TRAINING_PLAN_DURATION_WEEKS = 52;
+
+export function normalizeTrainingPlanDurationWeeks(raw: unknown, fallback = 4): number {
+  const resolved = Number(raw);
+  const candidate = Number.isFinite(resolved) && resolved > 0
+    ? Math.round(resolved)
+    : fallback;
+  return Math.max(
+    MIN_TRAINING_PLAN_DURATION_WEEKS,
+    Math.min(MAX_TRAINING_PLAN_DURATION_WEEKS, candidate),
+  );
+}
+
 /** Current readiness measurements used to seed the planner's
  *  `AthleteState.readiness`. When provided the generator uses these real
  *  values (from `calculateReadiness`) instead of a hardcoded yellow/orange
@@ -40,6 +55,15 @@ import { logger } from '../utils/logger';
 export interface CoachKernelReadinessInput {
   /** 0..100 composite score from `calculateReadiness`. */
   score: number;
+  /**
+   * Honest confidence/source label used by coach explanations. Fresh
+   * wearable data may influence load; stale/no-data branches must be
+   * surfaced as degraded rather than pretending precision.
+   */
+  confidence?: ReadinessSnapshot['confidence'];
+  dataSource?: ReadinessSnapshot['dataSource'];
+  isStale?: boolean;
+  reasonCode?: string | null;
   /** Hours slept last night if known — the readiness-scorer exposes this
    *  via `factors.sleep.durationHours`. Leave undefined to keep the
    *  planner's default. */
@@ -51,7 +75,20 @@ export interface CoachKernelReadinessInput {
   energyReserve?: number;
   /** One-line reasoning from the scorer, surfaced as a planner note. */
   reasoning?: string | null;
+  /**
+   * ISO timestamp anchoring how fresh the underlying wearable data is.
+   * Mirrors `ReadinessResult.capturedAt` (`src/services/readiness-scorer.ts`).
+   * The kernel itself ignores this for plan generation; the field is
+   * propagated through `fetchCurrentReadinessForPlan` and consumed
+   * downstream by the persistence layer to compute
+   * `readinessSnapshotAgeHours` for the D4
+   * `load_monitoring_multiple_signal_check` lint rule.
+   */
+  capturedAt?: string;
 }
+
+export type TrainingGoalMode = 'event_based' | 'continuous' | 'maintenance' | 'return_to_training';
+export type TrainingPriority = Sport | 'triathlon' | 'hybrid';
 
 export interface CoachKernelTrainingPlanInput {
   userId: number;
@@ -59,6 +96,9 @@ export interface CoachKernelTrainingPlanInput {
   durationWeeks: number;
   startDate: string;
   sessionsPerWeek: number;
+  runSessionsPerWeek?: number | null;
+  bikeSessionsPerWeek?: number | null;
+  swimSessionsPerWeek?: number | null;
   strengthSessionsPerWeek: number;
   preferredTime: string;
   preferredCardioTime: string;
@@ -91,7 +131,10 @@ export interface CoachKernelTrainingPlanInput {
    * When omitted, the generator behaves exactly as before
    * (`'optional'` semantics) — additive change only.
    */
-  twoADayPreference?: 'never' | 'optional' | 'preferred' | null;
+  twoADayPreference?: 'never' | 'optional' | 'preferred' | 'auto' | null;
+  goalMode?: TrainingGoalMode | null;
+  trainingPriority?: TrainingPriority | null;
+  raceDate?: string | null;
   recentlyAskedFollowUpIds?: string[] | null;
   resolvedFollowUpIds?: string[] | null;
 }
@@ -141,6 +184,10 @@ const SESSION_TYPE_LABEL_MAP: Record<Session['sessionType'], string> = {
 };
 
 export function buildCoachKernelTrainingPlan(input: CoachKernelTrainingPlanInput): CoordinatedTrainingPlan {
+  input = {
+    ...input,
+    durationWeeks: normalizeTrainingPlanDurationWeeks(input.durationWeeks),
+  };
   const athlete = buildAthleteStateFromTrainingProfiles(input);
   let rollingAthlete = athlete;
   const rawWeeklyPlans: WeeklyPlan[] = [];
@@ -153,10 +200,14 @@ export function buildCoachKernelTrainingPlan(input: CoachKernelTrainingPlanInput
       durationWeeks: input.durationWeeks,
       weekStart,
       races: athlete.goals.raceCalendar,
+      goalMode: input.goalMode,
+      experienceLevel: rollingAthlete.profile.experienceLevel,
     });
 
+    const weekReadiness = readinessForPlannedWeek(rollingAthlete.readiness, weekNumber);
     const weekAthlete: AthleteState = {
       ...rollingAthlete,
+      readiness: weekReadiness,
       currentBlock: {
         ...rollingAthlete.currentBlock,
         phase,
@@ -176,13 +227,56 @@ export function buildCoachKernelTrainingPlan(input: CoachKernelTrainingPlanInput
     return convertWeeklyPlanToLegacyWeek(weeklyPlan, weekNumber);
   });
 
+  // TR-EC-QA-O1 + TR-EC-QA-O2 (2026-05-03 hostile QA closeout):
+  // Goal-mode reasons are derived from the RAW resolveWeeklyTargets
+  // output (NOT the shaped targets on `athlete.goals`). Re-derive
+  // primary focus + raw targets here for the reason collector — the
+  // helpers are pure so the duplicate work is cheap, and dedupe at
+  // line 203 collapses any duplicates that survive.
+  const reasonPrimaryFocus = resolvePrimaryFocusWithSource(
+    input.objective,
+    input.sessionsPerWeek,
+    input.strengthSessionsPerWeek,
+  ).value;
+  const reasonRawTargets = resolveWeeklyTargets(reasonPrimaryFocus, input);
+  const goalModeReasons = collectGoalModeDecisionReasons({
+    input,
+    rawTargets: reasonRawTargets,
+    raceCalendar: athlete.goals.raceCalendar,
+  });
+
   return {
     planName: `${input.objective.trim()} — Coach Plan`,
     sport: legacyPlanSport(athlete.goals.primaryFocus),
     periodization: 'block',
     weeks,
     profileQuality: trainingPlanProfileQuality(athlete.profileQuality),
-    decisionReasons: dedupeTrainingDecisionReasons(rawWeeklyPlans.flatMap((plan) => plan.decisionReasons ?? [])),
+    decisionReasons: dedupeTrainingDecisionReasons([
+      ...goalModeReasons,
+      ...rawWeeklyPlans.flatMap((plan) => plan.decisionReasons ?? []),
+    ]),
+  };
+}
+
+function readinessForPlannedWeek(
+  readiness: AthleteState['readiness'],
+  weekNumber: number,
+): AthleteState['readiness'] {
+  if (weekNumber <= 1) return readiness;
+  const hasMaterialPain = (readiness.painFlags ?? []).some((flag) =>
+    flag.severity === 'moderate' || flag.severity === 'high'
+  );
+  if (hasMaterialPain) return readiness;
+  if (readiness.level !== 'red' && readiness.level !== 'orange') return readiness;
+
+  return {
+    ...readiness,
+    level: 'yellow',
+    score: Math.max(readiness.score ?? 0, 70),
+    notes: Array.from(new Set([
+      ...(readiness.notes ?? []),
+      'Future weeks use neutral readiness until new recovery data arrives.',
+    ])),
   };
 }
 
@@ -219,8 +313,27 @@ export function buildAthleteStateFromTrainingProfiles(input: CoachKernelTraining
       : 'Primary-focus resolver fell back to hybrid — objective string was empty; weekly targets, race calendar, and priority order will all use the hybrid default');
   }
   const primaryFocus = primaryFocusResolution.value;
-  const weeklyTargets = resolveWeeklyTargets(primaryFocus, input);
-  const raceCalendar = resolveRaceCalendar(primaryFocus, input.objective, input.runProfile);
+  const rawWeeklyTargets = resolveWeeklyTargets(primaryFocus, input);
+  const raceCalendar = resolveRaceCalendar(primaryFocus, input.objective, input.runProfile, input.raceDate);
+  // TR-EC-QA-O1 + TR-EC-QA-O2 (2026-05-03 hostile QA closeout):
+  // Apply goalMode-aware shaping. Before this pass goalMode was
+  // accept-and-echo: maintenance only relabeled priorityOrder and
+  // strengthGoal but did NOT throttle weekly volume. The shaping pass
+  // now enforces deterministic caps (60% scale capped at 4 for
+  // maintenance, 50% scale capped at 3 for return_to_training) AND
+  // emits structured TrainingDecisionReasons for every goal-mode
+  // signal — including continuous_plan_no_taper (so the user sees the
+  // continuous mode actively prevented a fake taper) and
+  // event_based_missing_race_date (so the user sees that picking
+  // event_based without a date is incomplete intent).
+  // `applyGoalModeVolumeShaping` is also called by
+  // `collectGoalModeDecisionReasons` to populate decisionReasons. The
+  // function is pure + idempotent under its own output, so emitting
+  // both inside the AthleteState build (for shaped targets) and again
+  // at the kernel level (for reasons) is safe — the dedupe pass at
+  // line 198 collapses any duplicates.
+  const { targets: weeklyTargets } =
+    applyGoalModeVolumeShaping(rawWeeklyTargets, input, raceCalendar);
   const constraints = resolveConstraints(input.fitnessProfile, input.runProfile, input.notes);
 
   // Slice 3.J (Layer 1, audit follow-up): emit a structured warning
@@ -377,13 +490,18 @@ export function buildAthleteStateFromTrainingProfiles(input: CoachKernelTraining
       : 'Strength-goal resolver fell back to athletic — no primary_goal data on profile; planner will use the generic athletic prescription template');
   }
 
-  const priorityOrder = resolvePriorityOrder(primaryFocus);
+  const resolvedStrengthGoal: NonNullable<Goals['strengthGoal']> =
+    input.goalMode === 'maintenance'
+      ? 'maintenance'
+      : strengthGoalResolution.value;
+  const priorityOrder = resolvePriorityOrder(primaryFocus, input.goalMode, input.trainingPriority);
+  const modalityPriorityOrder = priorityOrder.filter(isModalityPriority);
   const maxSessionsPerDay = resolveMaxSessionsPerDay(input.twoADayPreference, weeklyTargets);
   const normalizedTrainingProfile = extractNormalizedTrainingProfile(input, {
     primaryFocus,
-    priorityOrder,
+    priorityOrder: modalityPriorityOrder,
     weeklyTargets,
-    strengthGoal: strengthGoalResolution.value,
+    strengthGoal: resolvedStrengthGoal,
     raceCalendar,
     equipment,
     equipmentSource: equipmentResolution.source === 'fallback' ? 'fallback' : 'provided',
@@ -412,7 +530,7 @@ export function buildAthleteStateFromTrainingProfiles(input: CoachKernelTraining
     goals: {
       primaryFocus,
       secondaryFocus: weeklyTargets.strength ? 'strength' : undefined,
-      strengthGoal: strengthGoalResolution.value,
+      strengthGoal: resolvedStrengthGoal,
       raceCalendar,
       priorityOrder,
       weeklySessionsTarget: weeklyTargets,
@@ -439,6 +557,8 @@ export function buildAthleteStateFromTrainingProfiles(input: CoachKernelTraining
         durationWeeks: input.durationWeeks,
         weekStart: input.startDate,
         races: raceCalendar,
+        goalMode: input.goalMode,
+        experienceLevel: experienceResolution.value,
       }),
       weekIndex: 1,
       totalWeeks: input.durationWeeks,
@@ -481,6 +601,12 @@ function buildReadinessSnapshot(input: CoachKernelTrainingPlanInput, constraints
   const notes = compact([
     hasHighInjury ? 'Injury-aware progression enabled.' : null,
     typeof input.notes === 'string' && input.notes.trim().length > 0 ? input.notes.trim() : null,
+    input.currentReadiness?.confidence === 'no_data'
+      ? 'Readiness confidence: no fresh wearable/manual data; using conservative defaults.'
+      : null,
+    input.currentReadiness?.isStale === true
+      ? 'Readiness confidence: provider data is stale; avoid aggressive progression.'
+      : null,
     typeof input.currentReadiness?.reasoning === 'string' && input.currentReadiness.reasoning.trim().length > 0
       ? `Readiness: ${input.currentReadiness.reasoning.trim()}`
       : null,
@@ -492,6 +618,10 @@ function buildReadinessSnapshot(input: CoachKernelTrainingPlanInput, constraints
       capturedAt: new Date().toISOString(),
       level: scoreToReadinessLevel(score, hasHighInjury),
       score,
+      confidence: input.currentReadiness.confidence ?? 'fresh_wearable',
+      dataSource: input.currentReadiness.dataSource ?? 'wearable',
+      isStale: input.currentReadiness.isStale === true,
+      reasonCode: input.currentReadiness.reasonCode ?? undefined,
       sleepHours: input.currentReadiness.sleepHours,
       hrvStatus: input.currentReadiness.hrvStatus,
       energyReserve: input.currentReadiness.energyReserve,
@@ -506,6 +636,10 @@ function buildReadinessSnapshot(input: CoachKernelTrainingPlanInput, constraints
     capturedAt: new Date().toISOString(),
     level: hasHighInjury ? 'orange' : 'yellow',
     score: hasHighInjury ? 58 : 70,
+    confidence: 'no_data',
+    dataSource: 'fallback',
+    isStale: false,
+    reasonCode: 'NO_READINESS_INPUT',
     painFlags,
     notes,
   };
@@ -516,16 +650,11 @@ function clampReadinessScore(score: number): number {
   return Math.max(0, Math.min(100, Math.round(score)));
 }
 
-/** Map a composite readiness score (0..100) onto the planner's discrete
- *  level. High-severity injuries can't return green regardless of score —
- *  the planner treats them as a ceiling. */
-function scoreToReadinessLevel(score: number, hasHighInjury: boolean): ReadinessLevel {
-  if (hasHighInjury && score > 65) return 'orange';
-  if (score >= 80) return 'green';
-  if (score >= 60) return 'yellow';
-  if (score >= 40) return 'orange';
-  return 'red';
-}
+// `scoreToReadinessLevel` is now sourced from
+// `./coach-kernel/readiness-snapshot-adapter` — the adapter version is the
+// canonical mapping and additionally treats non-finite scores as the neutral
+// yellow level. The plan generator only ever calls it with a clamped finite
+// score (see `clampReadinessScore` above), so behavior is preserved.
 
 /**
  * Vocabulary table for the objective-string matcher. Order matters
@@ -680,34 +809,74 @@ function matchObjectiveKeyword(lower: string): { discipline: CoachingDiscipline;
   return null;
 }
 
-function resolveWeeklyTargets(
+/**
+ * Resolve the per-sport weekly session counts for a given primary
+ * focus + user-provided session/strength preferences.
+ *
+ * **Exported (May 2 2026)** so the May-2 marathon-minimum + strength-
+ * cap expansion is directly testable. Internal callers continue to
+ * use it via the same signature.
+ *
+ * Caps: strength 0–6 (was 0–4 before May 2, bumped to allow advanced
+ * lifters who explicitly request 5+ strength sessions). Marathon
+ * focus enforces a minimum of 4 running sessions/week (1 long +
+ * 1 quality + 2 supports — the standard marathon-prep skeleton).
+ */
+export function resolveWeeklyTargets(
   primaryFocus: CoachingDiscipline,
   input: CoachKernelTrainingPlanInput,
 ): Goals['weeklySessionsTarget'] {
   const total = clamp(Math.max(3, Math.min(7, input.sessionsPerWeek)), 3, 7);
-  const strength = clamp(Math.max(0, Math.min(4, input.strengthSessionsPerWeek)), 0, 4);
+  // May 2 2026 (Felipe-reported): strength cap was 4 sessions/week,
+  // silently capping advanced lifters who explicitly request 5+
+  // strength sessions (with marathon prep on top, that's a totally
+  // reasonable load for someone with 5+ years of gym experience).
+  // Bumped cap to 6 — downstream guardrails (capacity-reconciliation,
+  // session-coherence) still adjust if the resulting load is
+  // unsustainable for the user's recovery state. The cap remains
+  // because runaway values (10/week) would break the planner's
+  // session-spacing math, but 5–6 is now allowed for users who
+  // know what they're doing.
+  const STRENGTH_CAP = 6;
+  const strength = clamp(Math.max(0, Math.min(STRENGTH_CAP, input.strengthSessionsPerWeek)), 0, STRENGTH_CAP);
+  const requestedRunning = optionalSessionTarget(input.runSessionsPerWeek, 0, 7);
+  const requestedCycling = optionalSessionTarget(input.bikeSessionsPerWeek, 0, 7);
+  const requestedSwimming = optionalSessionTarget(input.swimSessionsPerWeek, 0, 7);
 
   switch (primaryFocus) {
     case 'triathlon': {
       const strengthTarget = Math.min(strength, 2);
       const enduranceTotal = Math.max(5, total);
-      const running = clamp(Math.round(enduranceTotal * 0.4), 3, 4);
-      const cycling = clamp(Math.round(enduranceTotal * 0.35), 2, 3);
-      const swimming = clamp(Math.max(2, enduranceTotal - running - cycling), 2, 3);
+      const defaultRunning = clamp(Math.round(enduranceTotal * 0.4), 3, 4);
+      const defaultCycling = clamp(Math.round(enduranceTotal * 0.35), 2, 3);
+      const defaultSwimming = clamp(Math.max(2, enduranceTotal - defaultRunning - defaultCycling), 2, 3);
+      const running = requestedRunning ?? defaultRunning;
+      const cycling = requestedCycling ?? defaultCycling;
+      const swimming = requestedSwimming ?? defaultSwimming;
       return { running, cycling, swimming, strength: strengthTarget };
     }
     case 'marathon':
     case 'running': {
       const runningCap = availabilityDaysCap(input.runProfile?.weekly_availability_days);
-      const running = clamp(Math.max(2, total), 2, runningCap ?? 7);
+      // May 2 2026 (Felipe-reported): marathon prep needs at least
+      // 4 running sessions/week (1 long + 1 quality + 2 supports).
+      // The prior min of 2 was sufficient for casual jogging but
+      // produced under-volume marathon plans. For "running" focus
+      // (non-marathon, e.g. 5K/10K casual) the legacy minimum of
+      // 2 still applies — marathon-specific minimum is gated on
+      // primaryFocus.
+      const minRunning = primaryFocus === 'marathon' ? 4 : 2;
+      const running = requestedRunning != null
+        ? clamp(Math.max(minRunning, requestedRunning), minRunning, runningCap ?? 7)
+        : clamp(Math.max(minRunning, total), minRunning, runningCap ?? 7);
       return { running, strength: strength };
     }
     case 'cycling':
-      return { cycling: total, strength: strength };
+      return { cycling: requestedCycling ?? total, strength: strength };
     case 'swimming':
-      return { swimming: total, strength: strength };
+      return { swimming: requestedSwimming ?? total, strength: strength };
     case 'strength': {
-      const strengthTarget = Math.min(strength || Math.min(total, 4), total, 4);
+      const strengthTarget = Math.min(strength || Math.min(total, STRENGTH_CAP), total, STRENGTH_CAP);
       const aerobicSupport = Math.max(0, total - strengthTarget);
       return aerobicSupport > 0
         ? { running: aerobicSupport, strength: strengthTarget }
@@ -715,6 +884,24 @@ function resolveWeeklyTargets(
     }
     case 'hybrid':
     default: {
+      // 2026-05-25 Bug #2 fix — when the user explicitly sets BOTH
+      // `runSessionsPerWeek` AND a non-zero `strengthSessionsPerWeek`
+      // (iOS exposes both as separate dials in the New Plan screen),
+      // respect their per-sport asks directly. Pre-fix the hybrid
+      // branch silently rewrote `(strength=5, running=5)` to
+      // `(strength=4, running=2)` based on `sessionsPerWeek=6`,
+      // which made the user-reported "5 gym + 5 run" volume
+      // impossible to schedule and prevented two-a-day days from
+      // ever being generated. The per-sport caps still apply
+      // (STRENGTH_CAP=6, runningCap=7) and downstream guardrails
+      // still reduce sessions when recovery state can't support
+      // the load. Only fall through to the legacy inferred
+      // volume-split when one or both per-sport values are absent
+      // (e.g. legacy clients that only set `sessionsPerWeek`).
+      if (requestedRunning != null && strength > 0) {
+        const runningTarget = clamp(requestedRunning, 0, 7);
+        return { running: runningTarget, strength };
+      }
       const strengthTarget = Math.max(1, Math.min(strength || 2, total - 2));
       const running = clamp(total - strengthTarget, 2, 5);
       return { running, strength: strengthTarget };
@@ -722,12 +909,24 @@ function resolveWeeklyTargets(
   }
 }
 
+function optionalSessionTarget(value: unknown, min: number, max: number): number | null {
+  if (value == null) return null;
+  const numeric = typeof value === 'number' ? value : typeof value === 'string' ? Number(value) : NaN;
+  if (!Number.isFinite(numeric)) return null;
+  return clamp(Math.round(numeric), min, max);
+}
+
 function resolveRaceCalendar(
   primaryFocus: CoachingDiscipline,
   objective: string,
   runProfile?: Record<string, any> | null,
+  requestRaceDate?: string | null,
 ): RaceEvent[] {
-  const raceDate = normalizeRaceDate(runProfile?.target_race_date);
+  const raceDate = normalizeRaceDate(requestRaceDate)
+    ?? normalizeRaceDate(runProfile?.target_race_date)
+    ?? normalizeRaceDate(runProfile?.targetRaceDate)
+    ?? normalizeRaceDate(runProfile?.race_date)
+    ?? normalizeRaceDate(runProfile?.raceDate);
   if (!raceDate) return [];
 
   const subtype = normalizeRaceSubtype(runProfile?.target_race, objective);
@@ -929,24 +1128,87 @@ function matchEquipmentKeywords(raw: string): { value: EquipmentAccess; matchedK
   const lower = raw.toLowerCase();
   const matchedKeywords: string[] = [];
 
+  // ── Full / commercial gym vocabulary ──────────────────────
   const hasFullGym = lower.includes('full gym');
   if (hasFullGym) matchedKeywords.push('full gym');
   const hasFullCommercial = lower.includes('full commercial');
   if (hasFullCommercial) matchedKeywords.push('full commercial');
+  // Slice 3.J expansion (May 2 2026, Felipe-reported): users with
+  // legitimate full-gym access were silently downgraded to
+  // FALLBACK_EQUIPMENT_ACCESS (no barbell, no dumbbells) when their
+  // profile string didn't include "full gym" or "full commercial".
+  // Real-world strings observed during onboarding: "commercial gym",
+  // "fitness center", "Crossfit box", "fully equipped", "academia"
+  // (Portuguese for any gym), "ginásio" (Portuguese-PT). All of
+  // these imply barbell + dumbbell access in practice.
+  const hasCommercialGym = lower.includes('commercial gym') || lower.includes('commercial-gym');
+  if (hasCommercialGym) matchedKeywords.push('commercial gym');
+  const hasFitnessCenter = lower.includes('fitness center') || lower.includes('fitness centre') || lower.includes('fitness club');
+  if (hasFitnessCenter) matchedKeywords.push('fitness center');
+  const hasFullyEquipped = lower.includes('fully equipped') || lower.includes('fully-equipped') || lower.includes('well equipped') || lower.includes('well-equipped');
+  if (hasFullyEquipped) matchedKeywords.push('fully equipped');
+  const hasCompleteGym = lower.includes('complete gym') || lower.includes('complete-gym');
+  if (hasCompleteGym) matchedKeywords.push('complete gym');
+  const hasCrossfit = lower.includes('crossfit') || lower.includes('cross-fit') || lower.includes('cross fit');
+  if (hasCrossfit) matchedKeywords.push('crossfit');
+  // "gym membership", "gym member", "gym access" — common phrasing
+  // when a user is describing what they have, not where they train.
+  const hasGymMembership = /\bgym\s+(membership|member|access|subscription)\b/.test(lower);
+  if (hasGymMembership) matchedKeywords.push('gym membership');
+  // Portuguese (pt-BR / pt-PT) — Felipe is a pt user. "Academia"
+  // in pt-BR and "ginásio" in pt-PT both mean a commercial gym
+  // facility (barbells + dumbbells + machines). The accent-stripped
+  // variant `ginasio` covers users who don't type the diacritic.
+  // "Academia completa" / "ginásio completo" are the explicit
+  // "full" variants.
+  const hasAcademiaCompleta = lower.includes('academia completa') || lower.includes('ginásio completo') || lower.includes('ginasio completo');
+  if (hasAcademiaCompleta) matchedKeywords.push('academia completa');
+  // Word-boundary check on plain "academia"/"ginásio" so we don't
+  // false-match phrases like "academia matemática" or part-of-word
+  // matches. Tests pin every recognized variant.
+  const hasAcademia = /\bacademia\b/.test(lower) || /\bgin[áa]sio\b/.test(lower);
+  if (hasAcademia) matchedKeywords.push('academia');
+
+  // ── Home / garage / partial vocabulary (existing) ─────────
   const hasGarageGym = lower.includes('garage');
   if (hasGarageGym) matchedKeywords.push('garage');
   const hasHomeGym = lower.includes('home gym');
   if (hasHomeGym) matchedKeywords.push('home gym');
   const hasBasic = lower.includes('basic');
   if (hasBasic) matchedKeywords.push('basic');
-  const hasBodyweightOnly = lower.includes('bodyweight');
+
+  // ── Bodyweight / resistance vocabulary ────────────────────
+  // Includes pt-BR/pt-PT variants for users describing minimal
+  // setups in their native language.
+  const hasBodyweightOnly = lower.includes('bodyweight')
+    || lower.includes('body weight')
+    || lower.includes('peso corporal')
+    || lower.includes('sem equipamento')
+    || lower.includes('no equipment');
   if (hasBodyweightOnly) matchedKeywords.push('bodyweight');
-  const hasBands = lower.includes('band');
+  const hasBands = lower.includes('band')
+    || lower.includes('elástico')
+    || lower.includes('elastico')
+    || lower.includes('faixa');
   if (hasBands) matchedKeywords.push('band');
 
-  // Capability derivation matches the pre-slice-3.J behavior so
-  // sample-athlete tests stay green.
-  const isFullCommercialOrGym = hasFullGym || hasFullCommercial;
+  // Capability derivation. Any recognized "real gym" vocabulary
+  // (commercial / full / Crossfit / fitness-center / fully-equipped
+  // / academia[-completa] / ginásio[-completo] / gym-membership)
+  // implies barbell + dumbbell access — those facilities have
+  // them by definition. Garage gyms typically have barbells too;
+  // home/basic gyms have dumbbells but not always barbells.
+  const isFullCommercialOrGym =
+    hasFullGym ||
+    hasFullCommercial ||
+    hasCommercialGym ||
+    hasFitnessCenter ||
+    hasFullyEquipped ||
+    hasCompleteGym ||
+    hasCrossfit ||
+    hasGymMembership ||
+    hasAcademia ||
+    hasAcademiaCompleta;
   const hasHomeBasic = hasHomeGym || hasBasic;
 
   return {
@@ -1144,7 +1406,15 @@ const STRENGTH_GOAL_KEYWORDS: ReadonlyArray<{
   keyword: string;
   goal: NonNullable<Goals['strengthGoal']>;
 }> = [
+  // Order matters: substrings are checked via `includes`, so more-specific
+  // tokens must appear before the substrings they contain (e.g. 'hybrid'
+  // before 'strength', 'powerlifting' before 'strength').
   { pattern: 'hypertrophy', keyword: 'hypertrophy', goal: 'hypertrophy' },
+  // 'hybrid' added 2026-05-23 (Layer-3 goal→split mapping audit closeout):
+  // routes athletes pursuing concurrent endurance + strength to a Full×N
+  // posterior-chain + single-leg + carry-emphasis prescription template
+  // that protects key endurance sessions.
+  { pattern: 'hybrid', keyword: 'hybrid', goal: 'hybrid' },
   { pattern: 'powerlifting', keyword: 'powerlifting', goal: 'max_strength' },
   { pattern: 'strength', keyword: 'strength', goal: 'max_strength' },
   { pattern: 'support', keyword: 'support', goal: 'maintenance' },
@@ -1253,7 +1523,20 @@ function pickStrengthGoalString(raw: unknown): string | null {
   return trimmed.length === 0 ? null : trimmed;
 }
 
-function resolvePriorityOrder(primaryFocus: CoachingDiscipline): Goals['priorityOrder'] {
+function resolvePriorityOrder(
+  primaryFocus: CoachingDiscipline,
+  goalMode?: TrainingGoalMode | null,
+  trainingPriority?: TrainingPriority | null,
+): Goals['priorityOrder'] {
+  const base = resolveBasePriorityOrder(primaryFocus);
+  const priorityLead = priorityToOrderToken(trainingPriority);
+  const reordered = priorityLead ? [priorityLead, ...base.filter((item) => item !== priorityLead)] : base;
+  if (goalMode === 'maintenance') return ['maintenance', ...reordered.filter((item) => item !== 'maintenance')];
+  if (goalMode === 'return_to_training') return ['return', ...reordered.filter((item) => item !== 'return')];
+  return reordered;
+}
+
+function resolveBasePriorityOrder(primaryFocus: CoachingDiscipline): Goals['priorityOrder'] {
   switch (primaryFocus) {
     case 'triathlon':
       return ['running', 'cycling', 'swimming', 'strength'];
@@ -1270,6 +1553,28 @@ function resolvePriorityOrder(primaryFocus: CoachingDiscipline): Goals['priority
     default:
       return ['strength', 'running'];
   }
+}
+
+function priorityToOrderToken(priority?: TrainingPriority | null): Goals['priorityOrder'][number] | null {
+  switch (priority) {
+    case 'running':
+    case 'cycling':
+    case 'swimming':
+    case 'strength':
+      return priority;
+    case 'triathlon':
+      return 'running';
+    case 'hybrid':
+    default:
+      return null;
+  }
+}
+
+function isModalityPriority(value: Goals['priorityOrder'][number]): value is Sport | 'strength' {
+  return value === 'running' ||
+    value === 'cycling' ||
+    value === 'swimming' ||
+    value === 'strength';
 }
 
 function resolveWeeklyMinutesTarget(
@@ -1432,6 +1737,7 @@ function matchExperienceFromString(
   if (typeof raw !== 'string') return null;
   const normalized = raw.trim().toLowerCase();
   if (normalized.length === 0) return null;
+  // ── Original vocabulary (preserved verbatim, same precedence) ──
   if (normalized.includes('advanced')) return { value: 'advanced', matchedKeyword: 'advanced' };
   if (normalized.includes('5+')) return { value: 'advanced', matchedKeyword: '5+' };
   if (normalized.includes('intermediate')) return { value: 'intermediate', matchedKeyword: 'intermediate' };
@@ -1440,6 +1746,52 @@ function matchExperienceFromString(
   if (normalized.includes('novice')) return { value: 'novice', matchedKeyword: 'novice' };
   if (normalized.includes('beginner')) return { value: 'novice', matchedKeyword: 'beginner' };
   if (normalized.includes('<1')) return { value: 'novice', matchedKeyword: '<1' };
+  // ── EXPANSION (May 2 2026, Felipe-reported) ──
+  // Felipe (3+ years running, 5+ years gym) was being treated as
+  // novice because his profile string didn't match any of the
+  // tokens above. Expanded with English synonyms for each level
+  // plus Portuguese (pt-BR / pt-PT) variants since Felipe is a
+  // pt user. New explicit-token recognitions:
+  //   advanced     ← experienced, veteran, expert,
+  //                  experiente, veterano, avançado, avancado
+  //   intermediate ← intermediário, intermediario
+  //   novice       ← iniciante, principiante, novato
+  // Portuguese variants checked FIRST so they win when their
+  // accent-stripped form is a substring of an English token
+  // (e.g. "veterano".includes("veteran") would match the English
+  // path first). Order matters: longer/more-specific PT tokens
+  // before shorter EN.
+  if (normalized.includes('experiente')) return { value: 'advanced', matchedKeyword: 'experiente' };
+  if (normalized.includes('veterano')) return { value: 'advanced', matchedKeyword: 'veterano' };
+  if (normalized.includes('experienced')) return { value: 'advanced', matchedKeyword: 'experienced' };
+  if (normalized.includes('veteran')) return { value: 'advanced', matchedKeyword: 'veteran' };
+  if (normalized.includes('expert')) return { value: 'advanced', matchedKeyword: 'expert' };
+  if (normalized.includes('avançado') || normalized.includes('avancado')) {
+    return { value: 'advanced', matchedKeyword: 'avançado' };
+  }
+  if (normalized.includes('intermediário') || normalized.includes('intermediario')) {
+    return { value: 'intermediate', matchedKeyword: 'intermediário' };
+  }
+  if (normalized.includes('iniciante')) return { value: 'novice', matchedKeyword: 'iniciante' };
+  if (normalized.includes('principiante')) return { value: 'novice', matchedKeyword: 'principiante' };
+  if (normalized.includes('novato')) return { value: 'novice', matchedKeyword: 'novato' };
+  // Numeric year patterns: "5 years", "10 anos", "3 yrs", "5 ano".
+  // Caught AFTER explicit tokens so phrases like "advanced (5
+  // years)" keep their explicit-token precedence. Maps:
+  //   ≥5 years → advanced       (matches gym lifters with deep base)
+  //   1–4 years → intermediate  (mid-cycle athletes)
+  //   <1 year  → novice         (true beginners)
+  // Word-boundary (`\b`) on the unit so "5 years" matches but
+  // "5yearbookofficial" doesn't.
+  const yearMatch = normalized.match(/(\d{1,2})\s*\+?\s*(?:years?|anos?|yrs?)\b/);
+  if (yearMatch) {
+    const years = parseInt(yearMatch[1], 10);
+    if (Number.isFinite(years)) {
+      if (years >= 5) return { value: 'advanced', matchedKeyword: `${years}+ years` };
+      if (years >= 1) return { value: 'intermediate', matchedKeyword: `${years} years` };
+      return { value: 'novice', matchedKeyword: `<1 year (${years})` };
+    }
+  }
   // Unrecognized vocabulary — let the caller fall through to the
   // `'fallback' / 'missing'` path so the audit-trail log captures
   // the new word and we can absorb it into this list later.
@@ -1459,7 +1811,11 @@ function resolveWeekPhase(args: {
   durationWeeks: number;
   weekStart: string;
   races: RaceEvent[];
+  goalMode?: TrainingGoalMode | null;
+  experienceLevel?: AthleteState['profile']['experienceLevel'];
 }): BlockPhase {
+  if (args.goalMode === 'maintenance') return 'maintenance';
+
   const nextRace = [...args.races]
     .map((race) => ({
       ...race,
@@ -1472,11 +1828,32 @@ function resolveWeekPhase(args: {
     if (nextRace.diffDays <= 7) return 'race';
     if (nextRace.diffDays <= 21) return 'taper';
     if (nextRace.diffDays <= 42) return 'peak';
+    if (nextRace.diffDays <= 98) return 'build';
+    return 'base';
   }
 
-  if (args.weekNumber === args.durationWeeks) return 'deload';
+  if (args.goalMode === 'return_to_training') {
+    if (args.weekNumber <= 2) return 'base';
+    return shouldScheduleDeloadWeek(args) ? 'deload' : 'build';
+  }
+
   if (args.weekNumber <= 2) return 'base';
+  if (shouldScheduleDeloadWeek(args)) return 'deload';
   return 'build';
+}
+
+function shouldScheduleDeloadWeek(args: {
+  weekNumber: number;
+  durationWeeks: number;
+  experienceLevel?: AthleteState['profile']['experienceLevel'];
+}): boolean {
+  if (args.durationWeeks < 4 || args.weekNumber < 4) return false;
+  const cadence = args.experienceLevel === 'novice'
+    ? 5
+    : args.experienceLevel === 'advanced'
+      ? 3
+      : 4;
+  return args.weekNumber % cadence === 0;
 }
 
 function rollAthleteStateForward(athlete: AthleteState, weeklyPlan: WeeklyPlan): AthleteState {
@@ -1489,6 +1866,12 @@ function rollAthleteStateForward(athlete: AthleteState, weeklyPlan: WeeklyPlan):
 
   return {
     ...athlete,
+    currentBlock: {
+      ...athlete.currentBlock,
+      lastDeloadWeekIndex: weeklyPlan.phase === 'deload'
+        ? athlete.currentBlock.weekIndex
+        : athlete.currentBlock.lastDeloadWeekIndex,
+    },
     trainingHistory: {
       lastWeekMinutesBySport: {
         ...athlete.trainingHistory.lastWeekMinutesBySport,
@@ -1552,6 +1935,179 @@ function dedupeTrainingDecisionReasons(reasons: TrainingDecisionReason[]): Train
     output.push(reason);
   }
   return output;
+}
+
+// TR-EC-QA-O1 (2026-05-03 hostile QA closeout):
+// Maintenance volume cap. A user who picks "Maintenance" should not
+// receive 7 sessions/week regardless of what they typed in the
+// stepper — that defeats the maintenance intent. Apply a deterministic
+// scale + hard cap so the plan honors the goal-mode label.
+//
+// Constants chosen for closed beta:
+//   maintenance      → 60% of requested, capped at 4 total
+//   return_to_training → 50% of requested, capped at 3 total
+//
+// The shaping happens AFTER `resolveWeeklyTargets` so the per-modality
+// proportions (running:strength split, etc.) are preserved; we just
+// scale the totals down. If the resolver returned ≤ the cap already,
+// the targets pass through unchanged.
+const MAINTENANCE_SCALE = 0.6;
+const MAINTENANCE_TOTAL_CAP = 4;
+const RETURN_TO_TRAINING_SCALE = 0.5;
+const RETURN_TO_TRAINING_TOTAL_CAP = 3;
+
+export function applyGoalModeVolumeShaping(
+  rawTargets: Goals['weeklySessionsTarget'],
+  input: CoachKernelTrainingPlanInput,
+  raceCalendar: RaceEvent[],
+): { targets: Goals['weeklySessionsTarget']; decisionReasons: TrainingDecisionReason[] } {
+  const reasons: TrainingDecisionReason[] = [];
+  const goalMode = input.goalMode ?? null;
+
+  // Sum the per-modality counts to compute the total volume.
+  const sumTargets = (t: Goals['weeklySessionsTarget']): number =>
+    Object.values(t).reduce<number>((sum, v) => sum + (v ?? 0), 0);
+
+  // No throttling for non-volume-shaping modes — but signals are still
+  // emitted in `collectGoalModeDecisionReasons`.
+  if (goalMode !== 'maintenance' && goalMode !== 'return_to_training') {
+    return { targets: rawTargets, decisionReasons: reasons };
+  }
+
+  const scale = goalMode === 'maintenance' ? MAINTENANCE_SCALE : RETURN_TO_TRAINING_SCALE;
+  const cap = goalMode === 'maintenance' ? MAINTENANCE_TOTAL_CAP : RETURN_TO_TRAINING_TOTAL_CAP;
+
+  const rawTotal = sumTargets(rawTargets);
+  if (rawTotal <= cap) {
+    // Already at or below the cap; no throttling needed.
+    return { targets: rawTargets, decisionReasons: reasons };
+  }
+
+  // Scale each modality proportionally, then cap the total. We round
+  // each modality first, then trim the highest-volume one if the sum
+  // overshoots after rounding.
+  const scaled: Goals['weeklySessionsTarget'] = {};
+  let runningTotal = 0;
+  for (const [sport, count] of Object.entries(rawTargets) as Array<[Sport, number | undefined]>) {
+    if (!count || count <= 0) continue;
+    // Strength stays at minimum 1 if it was originally requested in
+    // either maintenance or return-to-training (otherwise the user
+    // loses their gym work entirely).
+    const minForSport = sport === 'strength' && count > 0 ? 1 : 0;
+    const scaledCount = Math.max(minForSport, Math.round(count * scale));
+    if (scaledCount > 0) {
+      scaled[sport] = scaledCount;
+      runningTotal += scaledCount;
+    }
+  }
+
+  // Hard cap on total: trim the highest-count non-strength modality
+  // (we keep the strength minimum as a recovery anchor).
+  while (runningTotal > cap) {
+    const candidates = (Object.entries(scaled) as Array<[Sport, number]>)
+      .filter(([sport, _count]) => sport !== 'strength')
+      .sort(([, a], [, b]) => b - a);
+    if (candidates.length === 0) break;
+    const [sport] = candidates[0];
+    scaled[sport] = (scaled[sport] ?? 0) - 1;
+    if ((scaled[sport] ?? 0) <= 0) delete scaled[sport];
+    runningTotal -= 1;
+  }
+
+  const reasonCode: TrainingDecisionReasonCode =
+    goalMode === 'maintenance' ? 'maintenance_volume_capped' : 'return_to_training_volume_capped';
+  const reasonText =
+    goalMode === 'maintenance'
+      ? `Plan volume capped at ${cap} sessions/week because Goal Mode is "Maintenance" (you requested ${rawTotal}). Maintenance prioritises consistency over progression.`
+      : `Plan volume capped at ${cap} sessions/week because Goal Mode is "Return to training" (you requested ${rawTotal}). The coach ramps up gradually after a layoff to protect against re-injury.`;
+
+  reasons.push({
+    code: reasonCode,
+    text: reasonText,
+    severity: 'notice',
+    affectedEntity: { type: 'week' },
+    sourceConstraint: { type: 'volume', label: goalMode },
+    before: { weeklyTargets: rawTargets, totalSessions: rawTotal },
+    after: { weeklyTargets: scaled, totalSessions: runningTotal, cap },
+    preservedIntent: 'goal_mode_volume_alignment',
+    evidence: [`requested=${rawTotal}`, `cap=${cap}`, `scale=${scale}`, `goalMode=${goalMode}`],
+  });
+
+  // Mark raceCalendar in evidence if present so downstream readers can
+  // see the planner kept any race date despite shaping.
+  if (raceCalendar.length > 0) {
+    reasons[0].evidence!.push(`raceDate=${raceCalendar[0].date}`);
+  }
+
+  return { targets: scaled, decisionReasons: reasons };
+}
+
+// TR-EC-QA-O2 (2026-05-03 hostile QA closeout):
+// Goal-mode reason collector. Codex's prior pass plumbed goalMode
+// through but never emitted user-actionable signal when the field
+// was inert. The collector now surfaces:
+//   • maintenance/return_to_training cap (volume_capped reason from
+//     applyGoalModeVolumeShaping — passed through)
+//   • continuous + no-taper assertion (continuous_plan_no_taper) so
+//     the iOS banner can confirm the coach intentionally avoided a
+//     taper week
+//   • event_based + no raceDate (event_based_missing_race_date) so
+//     the iOS create-plan flow can prompt the user to add the date
+function collectGoalModeDecisionReasons(args: {
+  input: CoachKernelTrainingPlanInput;
+  rawTargets: Goals['weeklySessionsTarget'];
+  raceCalendar: RaceEvent[];
+}): TrainingDecisionReason[] {
+  const { input, rawTargets, raceCalendar } = args;
+  const out: TrainingDecisionReason[] = [];
+  const goalMode = input.goalMode ?? null;
+
+  // Re-emit the shaping reason from the RAW resolveWeeklyTargets output
+  // (not the already-shaped targets — passing the post-shape result
+  // would short-circuit the cap-detection because the targets would
+  // already be ≤ cap). The helper is pure + cheap so re-running it is
+  // safe; dedupe at line 198 collapses any duplicate.
+  const shaping = applyGoalModeVolumeShaping(rawTargets, input, raceCalendar);
+  out.push(...shaping.decisionReasons);
+
+  // Continuous plan — emit a reassuring signal that no fake taper
+  // will be applied. The kernel `resolveWeekPhase` derives phase from
+  // race calendar, so a continuous plan with empty raceCalendar will
+  // never produce a 'taper' or 'race' phase. The decisionReason
+  // documents this for users who might wonder why their plan looks
+  // flat across weeks.
+  if (goalMode === 'continuous') {
+    out.push({
+      code: 'continuous_plan_no_taper',
+      text: 'Continuous mode — the coach maintains build/recovery cycles instead of a race taper. Your plan stays balanced week-over-week.',
+      severity: 'info',
+      affectedEntity: { type: 'week' },
+      sourceConstraint: { type: 'volume', label: 'continuous' },
+      preservedIntent: 'no_fake_taper_without_event',
+      evidence: ['goalMode=continuous'],
+    });
+  }
+
+  // Event-based without a race date — the request shape is
+  // incomplete. The plan-linter rule
+  // `race_specific_plan_requires_race_date` already catches the
+  // most-egregious case (race-typed objective without date), but
+  // the goal-mode signal is more direct: the user explicitly said
+  // "event-based" without supplying a date. Surface as a warning
+  // so iOS can prompt for the missing input on the same screen.
+  if (goalMode === 'event_based' && raceCalendar.length === 0) {
+    out.push({
+      code: 'event_based_missing_race_date',
+      text: 'You picked Event-based mode but no race date is set. Add a race date so the coach can structure build, peak, and taper around your event.',
+      severity: 'warning',
+      affectedEntity: { type: 'week' },
+      sourceConstraint: { type: 'volume', label: 'event_based' },
+      preservedIntent: 'race_specific_plan_requires_race_date',
+      evidence: ['goalMode=event_based', 'raceCalendar=empty'],
+    });
+  }
+
+  return out;
 }
 
 function legacyPlanSport(primaryFocus: CoachingDiscipline): CoordinatedTrainingPlan['sport'] {
@@ -1647,11 +2203,18 @@ function totalTargetSessions(targets: Goals['weeklySessionsTarget']): number {
 /**
  * Slice 2.B — explicit two-a-day routing.
  *
- * Three-state preference maps to the planner's `maxSessionsPerDay`:
+ * Four-state preference maps to the planner's `maxSessionsPerDay`:
  *   - `'preferred'`: always allow 2 sessions/day. The planner will use
  *     the existing `preferredCardioTime` / `preferredStrengthTime` split
  *     (e.g. 07:00 cardio + 18:00 strength) to space the day's two
  *     sessions adequately.
+ *   - `'auto'` (2026-05-25 — Bug #2 fix): explicit "let the planner
+ *     decide" — same volume-based heuristic as the legacy `'optional'`
+ *     branch (2/day when strength is in the mix AND total weekly
+ *     sessions ≥ 5), but surfaced as a first-class named branch so
+ *     analytics and decision-reason logging can distinguish
+ *     "user asked auto" from "client sent nothing." iOS sends this
+ *     literal string when the user picks the "Auto" chip.
  *   - `'optional'` or `null` / `undefined`: keep the existing volume-
  *     based inference — 2/day only when strength is in the mix AND
  *     total weekly sessions ≥ 5. This is the default so callers that
@@ -1661,11 +2224,14 @@ function totalTargetSessions(targets: Goals['weeklySessionsTarget']): number {
  *     compressed via the guardrail layer.
  */
 export function resolveMaxSessionsPerDay(
-  preference: 'never' | 'optional' | 'preferred' | null | undefined,
+  preference: 'never' | 'optional' | 'preferred' | 'auto' | null | undefined,
   weeklyTargets: Goals['weeklySessionsTarget'],
 ): number {
   if (preference === 'preferred') return 2;
   if (preference === 'never') return 1;
+  if (preference === 'auto') {
+    return weeklyTargets.strength && totalTargetSessions(weeklyTargets) >= 5 ? 2 : 1;
+  }
   // optional / nullish — fall back to the volume-based inference that
   // was the existing default before slice 2.B added the explicit field.
   return weeklyTargets.strength && totalTargetSessions(weeklyTargets) >= 5 ? 2 : 1;

@@ -9,6 +9,7 @@ vi.mock('../../src/utils/logger', () => ({
   logger: {
     error: hoisted.loggerError,
   },
+  LOGGER_REDACTION_PATHS: [],
 }));
 
 function makeResponse() {

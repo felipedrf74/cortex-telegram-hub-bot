@@ -21,6 +21,9 @@ let testDb: Database.Database;
 
 vi.mock('../../src/services/database', () => ({
   getDb: () => testDb,
+  initDatabase: vi.fn(),
+  closeDatabase: vi.fn(),
+  findUnexpectedMigrationPrefixCollisions: vi.fn(() => []),
 }));
 
 // ─── Mock config (inline to avoid hoisting issues) ──────────────────
@@ -56,6 +59,7 @@ vi.mock('../../src/utils/logger', () => ({
     info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(),
     trace: vi.fn(), child: vi.fn().mockReturnThis(),
   },
+  LOGGER_REDACTION_PATHS: [],
 }));
 
 // ─── Imports ─────────────────────────────────────────────────────────
@@ -352,6 +356,11 @@ describe('model-config', () => {
         expect(MODEL_OPTIONS[provider].chat.length).toBeGreaterThan(0);
         expect(MODEL_OPTIONS[provider].classifier.length).toBeGreaterThan(0);
       }
+    });
+
+    it('exposes the runtime OpenAI nano default in both portal pickers', () => {
+      expect(MODEL_OPTIONS.openai.chat).toContain('gpt-5.4-nano');
+      expect(MODEL_OPTIONS.openai.classifier).toContain('gpt-5.4-nano');
     });
   });
 

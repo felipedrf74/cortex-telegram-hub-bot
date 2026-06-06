@@ -11,18 +11,35 @@ import { getDb } from './database';
 import { logger } from '../utils/logger';
 
 export type AuditAction =
+  | 'create'
+  | 'update'
   | 'export'
   | 'delete'
   | 'access'
+  | 'mutation_scope'
   | 'encrypt'
   | 'decrypt'
+  | 'billing.nexus_points.checkout_started'
+  | 'nexus_points.transfer'
   /**
    * Portal admin mutation — founder grant/revoke, user tier change,
    * skill override, plan-config edit. Added 2026-04-21 so Felipe (or
    * any future ops role) has a replayable log of every privileged
    * admin action that could change a user's entitlement.
    */
-  | 'admin_mutation';
+  | 'admin_mutation'
+  /**
+   * 2026-05-18 (skill-hardening QA P0-4): fiscal-record-impacting actions
+   * wired into `src/api/routes/invoices.ts`. Portuguese tax retention
+   * rules require an audit row for every fiscal mutation. These cover the
+   * 5 invoice routes that previously had no `audit_trail` wiring.
+   */
+  | 'fiscal_profile_update'
+  | 'fiscal_bundle_send'
+  | 'invoice_vendor_create'
+  | 'invoice_vendor_disable'
+  | 'invoice_scan_on_demand'
+  | 'invoice_scraper_mfa_reply';
 
 export interface AuditEntry {
   userId: number;

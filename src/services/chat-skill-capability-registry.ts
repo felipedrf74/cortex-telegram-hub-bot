@@ -1,0 +1,279 @@
+// Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
+//
+// Phase 13 batch 69 (2026-05-16): per-skill metadata merged into the
+// action registry's `SKILL_METADATA` table. This file now imports the
+// shared metadata for the 9 overlapping skills (everything except
+// 'owner_admin' and 'chat' — those stay inline because they're not
+// part of `ChatActionSkill`). The routing helpers (`inferSkillFromText`,
+// `inferIntent`, etc.) stay here because they consume the broader
+// `NexusChatOwnerSkill` type.
+
+import type { DomainName } from '../domains/types';
+import type { NexusChatActionability, NexusChatOwnerSkill, NexusChatRiskLevel } from './chat-answer-contract';
+import { SKILL_METADATA, type ChatActionSkill } from './chat/registry';
+
+export interface ChatSkillCapability {
+  skill: NexusChatOwnerSkill;
+  displayName: string;
+  readableFacts: string[];
+  executableActions: string[];
+  requiredFields: string[];
+  confirmationPolicy: 'never' | 'high_risk' | 'external_write' | 'always';
+  verifier: 'none' | 'read_back' | 'provider_read_back' | 'decision_outcome';
+  fallbackPolicy: 'deterministic_summary' | 'clarify' | 'decision_center' | 'provider_degraded' | 'blocked';
+  privacyPolicy: 'safe_preview' | 'private_detail' | 'sensitive_redacted' | 'owner_admin_only';
+  responseCardType: string;
+  latencyBudgetMs: number;
+}
+
+export interface ChatSkillCapabilityResolution {
+  ownerSkill: NexusChatOwnerSkill;
+  intent: string;
+  actionability: NexusChatActionability;
+  riskLevel: NexusChatRiskLevel;
+  capability: ChatSkillCapability;
+  involvedSkills: NexusChatOwnerSkill[];
+}
+
+// Phase 13 batch 69: maps `NexusChatOwnerSkill` ('secretary') to the
+// corresponding `ChatActionSkill` ('secretary_calendar') so we can pull
+// per-skill metadata from the action registry's SKILL_METADATA table.
+const SHARED_METADATA_SKILL: Partial<Record<NexusChatOwnerSkill, ChatActionSkill>> = {
+  secretary: 'secretary_calendar',
+  tasks: 'tasks',
+  training: 'training',
+  cooking: 'cooking',
+  finance: 'finance',
+  content: 'content',
+  decision_center: 'decision_center',
+  connections: 'connections',
+  notifications: 'notifications',
+};
+
+function metadataFor(skill: NexusChatOwnerSkill) {
+  const mapped = SHARED_METADATA_SKILL[skill];
+  return mapped ? SKILL_METADATA[mapped] : null;
+}
+
+// Phase 13 batch 69: capability rows now read displayName / responseCardType /
+// latencyBudgetMs / privacyPolicy from the shared SKILL_METADATA table.
+// Capability-specific fields (readableFacts, executableActions, requiredFields,
+// confirmationPolicy, verifier, fallbackPolicy) stay inline because they have
+// no per-action counterpart in the action registry.
+function buildCapability(
+  skill: NexusChatOwnerSkill,
+  capabilitySpecific: Pick<ChatSkillCapability,
+    'readableFacts' | 'executableActions' | 'requiredFields'
+    | 'confirmationPolicy' | 'verifier' | 'fallbackPolicy'>,
+  inlineMetadata?: Pick<ChatSkillCapability, 'displayName' | 'responseCardType' | 'latencyBudgetMs' | 'privacyPolicy'>,
+): ChatSkillCapability {
+  const shared = metadataFor(skill);
+  return {
+    skill,
+    displayName: shared?.displayName ?? inlineMetadata?.displayName ?? skill,
+    responseCardType: shared?.responseCardType ?? inlineMetadata?.responseCardType ?? 'answer',
+    latencyBudgetMs: shared?.latencyBudgetMs ?? inlineMetadata?.latencyBudgetMs ?? 3000,
+    privacyPolicy: shared?.privacyPolicy ?? inlineMetadata?.privacyPolicy ?? 'safe_preview',
+    ...capabilitySpecific,
+  };
+}
+
+const CAPABILITIES: ChatSkillCapability[] = [
+  buildCapability('secretary', {
+    readableFacts: ['calendar.events', 'agenda.items', 'availability.windows', 'schedule.conflicts'],
+    executableActions: ['schedule_event', 'move_event', 'retry_calendar_sync', 'create_agenda_item'],
+    requiredFields: ['title', 'startAt'],
+    confirmationPolicy: 'external_write',
+    verifier: 'provider_read_back',
+    fallbackPolicy: 'provider_degraded',
+  }),
+  buildCapability('tasks', {
+    readableFacts: ['task.lists', 'task.items', 'task.provider_sync'],
+    executableActions: ['create_task', 'update_task', 'complete_task', 'create_recurring_task'],
+    requiredFields: ['title'],
+    confirmationPolicy: 'high_risk',
+    verifier: 'read_back',
+    fallbackPolicy: 'provider_degraded',
+  }),
+  buildCapability('training', {
+    readableFacts: ['training.today', 'training.week', 'training.plan', 'training.readiness'],
+    executableActions: ['explain_session', 'move_workout', 'replace_exercise', 'request_coach_analysis'],
+    requiredFields: ['sessionOrPlanReference'],
+    confirmationPolicy: 'external_write',
+    verifier: 'read_back',
+    fallbackPolicy: 'decision_center',
+  }),
+  buildCapability('cooking', {
+    readableFacts: ['recipe.advice', 'meal.plan', 'grocery.list', 'fueling.support', 'pantry.preferences'],
+    executableActions: ['add_meal_support', 'skip_meal_support', 'create_grocery_list'],
+    requiredFields: ['mealOrSessionReference'],
+    confirmationPolicy: 'high_risk',
+    verifier: 'read_back',
+    fallbackPolicy: 'clarify',
+  }),
+  buildCapability('finance', {
+    readableFacts: ['receipt.status', 'budget.summary', 'payment.reminders'],
+    executableActions: ['categorize_receipt', 'create_payment_reminder', 'mark_paid'],
+    requiredFields: ['financeEntityReference'],
+    confirmationPolicy: 'always',
+    verifier: 'read_back',
+    fallbackPolicy: 'clarify',
+  }),
+  buildCapability('content', {
+    readableFacts: ['script.status', 'idea.status', 'publish.window'],
+    executableActions: ['approve_script', 'request_rewrite', 'schedule_content_work'],
+    requiredFields: ['contentEntityReference'],
+    confirmationPolicy: 'high_risk',
+    verifier: 'read_back',
+    fallbackPolicy: 'deterministic_summary',
+  }),
+  buildCapability('decision_center', {
+    readableFacts: ['decision.item', 'decision.outcome', 'decision.alternatives'],
+    executableActions: ['choose_option', 'dismiss_decision', 'snooze_decision'],
+    requiredFields: ['decisionId'],
+    confirmationPolicy: 'high_risk',
+    verifier: 'decision_outcome',
+    fallbackPolicy: 'clarify',
+  }),
+  buildCapability('connections', {
+    readableFacts: ['provider.status', 'oauth.state', 'sync.health'],
+    executableActions: ['retry_sync', 'open_connection'],
+    requiredFields: ['provider'],
+    confirmationPolicy: 'never',
+    verifier: 'provider_read_back',
+    fallbackPolicy: 'provider_degraded',
+  }),
+  buildCapability('notifications', {
+    readableFacts: ['notification.intent', 'apns.status', 'preference.state'],
+    executableActions: ['explain_notification', 'update_preference'],
+    requiredFields: ['notificationReference'],
+    confirmationPolicy: 'high_risk',
+    verifier: 'read_back',
+    fallbackPolicy: 'blocked',
+  }),
+  // 'owner_admin' has no matching ChatActionSkill — keep metadata inline.
+  buildCapability('owner_admin', {
+    readableFacts: ['release.health', 'provider.ops', 'model.routing'],
+    executableActions: ['acknowledge_ops_decision'],
+    requiredFields: ['opsDecisionId'],
+    confirmationPolicy: 'always',
+    verifier: 'decision_outcome',
+    fallbackPolicy: 'blocked',
+  }, {
+    displayName: 'Owner/Admin',
+    responseCardType: 'owner_admin_action',
+    latencyBudgetMs: 2000,
+    privacyPolicy: 'owner_admin_only',
+  }),
+];
+
+const SKILL_BY_DOMAIN: Partial<Record<DomainName, NexusChatOwnerSkill>> = {
+  secretary: 'secretary',
+  triathlon: 'training',
+  cooking: 'cooking',
+  finance: 'finance',
+  content: 'content',
+};
+
+export function getChatSkillCapabilityRegistry(): ChatSkillCapability[] {
+  return CAPABILITIES.map((capability) => ({ ...capability }));
+}
+
+export function getChatSkillCapability(skill: NexusChatOwnerSkill): ChatSkillCapability {
+  return CAPABILITIES.find((capability) => capability.skill === skill) ?? fallbackCapability(skill);
+}
+
+export function resolveChatSkillCapability(input: {
+  message: string;
+  routedDomain?: DomainName;
+  involvedSkills?: string[];
+}): ChatSkillCapabilityResolution {
+  const normalized = input.message.toLowerCase();
+  const involved = new Set<NexusChatOwnerSkill>();
+  for (const skill of input.involvedSkills ?? []) {
+    const normalizedSkill = normalizeSkill(skill);
+    if (normalizedSkill) involved.add(normalizedSkill);
+  }
+  const domainOwner = input.routedDomain ? SKILL_BY_DOMAIN[input.routedDomain] : undefined;
+  if (domainOwner) involved.add(domainOwner);
+
+  const direct = inferSkillFromText(normalized);
+  if (direct) involved.add(direct);
+
+  const ownerSkill = direct ?? domainOwner ?? [...involved][0] ?? 'chat';
+  const intent = inferIntent(normalized, ownerSkill);
+  const actionability = inferActionability(normalized, intent);
+  const riskLevel = inferRiskLevel(normalized, ownerSkill, actionability);
+  const capability = getChatSkillCapability(ownerSkill);
+  return {
+    ownerSkill,
+    intent,
+    actionability,
+    riskLevel,
+    capability,
+    involvedSkills: [...new Set([ownerSkill, ...involved])],
+  };
+}
+
+function normalizeSkill(skill: string): NexusChatOwnerSkill | null {
+  const value = skill.toLowerCase().replace(/[-\s]/g, '_');
+  if (value === 'calendar') return 'secretary';
+  if (value === 'task') return 'tasks';
+  if (value === 'decision' || value === 'decision_center') return 'decision_center';
+  if (value === 'provider' || value === 'integration') return 'connections';
+  return CAPABILITIES.some((capability) => capability.skill === value) ? value as NexusChatOwnerSkill : null;
+}
+
+function inferSkillFromText(text: string): NexusChatOwnerSkill | null {
+  if (/\b(calendar|agenda|event|meeting|schedule|outlook|google|calend[aá]rio|evento|reuni[aã]o|agendar)\b/.test(text)) return 'secretary';
+  if (/\b(task|todo|to-do|tarefa|tarefas|subtask|checklist)\b/.test(text)) return 'tasks';
+  if (/\b(training|workout|run|gym|coach|race|marathon|treino|corrida|muscula[cç][aã]o|maratona)\b/.test(text)) return 'training';
+  if (/\b(meal|food|recipe|grocery|fuel|fueling|comida|receita|mercado|refei[cç][aã]o)\b/.test(text)) return 'cooking';
+  if (/\b(invoice|receipt|payment|budget|finance|fatura|recibo|pagamento|or[cç]amento)\b/.test(text)) return 'finance';
+  if (/\b(script|content|post|video|publish|roteiro|conte[uú]do|publicar)\b/.test(text)) return 'content';
+  if (/\b(decision|decide|option|choice|decis[aã]o|escolha|op[cç][aã]o)\b/.test(text)) return 'decision_center';
+  if (/\b(connection|provider|sync|oauth|garmin|strava|health|conex[aã]o|sincroniza)\b/.test(text)) return 'connections';
+  if (/\b(notification|push|apns|alert|notifica[cç][aã]o|alerta)\b/.test(text)) return 'notifications';
+  if (/\b(release|deploy|model scan|provider outage|ops|admin|production|staging)\b/.test(text)) return 'owner_admin';
+  return null;
+}
+
+function inferIntent(text: string, ownerSkill: NexusChatOwnerSkill): string {
+  if (/\b(why|explain|porque|por que|explica)\b/.test(text)) return `${ownerSkill}.explain`;
+  if (/\b(create|add|schedule|book|cria|criar|adiciona|agendar|marcar|colocar|coloca)\b/.test(text)) return `${ownerSkill}.create`;
+  if (/\b(move|reschedule|adjust|change|mover|remarcar|ajustar|alterar)\b/.test(text)) return `${ownerSkill}.adjust`;
+  if (/\b(cancel|delete|remove|apagar|cancelar|remover)\b/.test(text)) return `${ownerSkill}.destructive`;
+  if (/\b(show|list|open|what|mostra|listar|abrir|quais)\b/.test(text)) return `${ownerSkill}.read`;
+  return `${ownerSkill}.answer`;
+}
+
+function inferActionability(text: string, intent: string): NexusChatActionability {
+  if (/\b(cancel|delete|remove|apagar|cancelar|remover)\b/.test(text)) return 'preview';
+  if (/\b(create|add|schedule|book|move|reschedule|adjust|change|cria|criar|adiciona|agendar|marcar|colocar|coloca|mover|remarcar|ajustar|alterar)\b/.test(text)) return 'execute';
+  if (intent.endsWith('.read') || intent.endsWith('.explain')) return 'answer_only';
+  if (/\b(decide|choose|escolher|decidir)\b/.test(text)) return 'decision_center';
+  return 'answer_only';
+}
+
+function inferRiskLevel(text: string, ownerSkill: NexusChatOwnerSkill, actionability: NexusChatActionability): NexusChatRiskLevel {
+  if (/\b(cancel|delete|remove|clear|apagar|cancelar|remover|limpar)\b/.test(text)) return 'high';
+  if (ownerSkill === 'finance' && actionability !== 'answer_only') return 'high';
+  if (actionability === 'execute' || actionability === 'preview') return 'medium';
+  return 'low';
+}
+
+function fallbackCapability(skill: NexusChatOwnerSkill): ChatSkillCapability {
+  return {
+    skill,
+    displayName: skill,
+    readableFacts: [],
+    executableActions: [],
+    requiredFields: [],
+    confirmationPolicy: 'high_risk',
+    verifier: 'none',
+    fallbackPolicy: 'clarify',
+    privacyPolicy: 'safe_preview',
+    responseCardType: 'answer',
+    latencyBudgetMs: 3000,
+  };
+}

@@ -5,6 +5,7 @@ import {
   getSecretaryAgendaItemById,
   listSecretaryAgendaItems,
   type SecretaryAgendaItem,
+  type SecretaryAgendaLifecycleState,
   type SecretaryProviderSyncState,
 } from './secretary-scheduling-arbitrator';
 import { logger } from '../utils/logger';
@@ -66,6 +67,7 @@ export interface SecretaryAgendaProviderSyncResult {
   providerSyncState: SecretaryProviderSyncState;
   deletedDuplicateEventIds: string[];
   reasonCode: string;
+  retryAfterMs?: number | null;
 }
 
 export interface SecretaryAgendaProviderSyncScope {
@@ -74,20 +76,50 @@ export interface SecretaryAgendaProviderSyncScope {
   includeInactive?: boolean;
 }
 
+export interface SecretaryAgendaProviderSyncOptions {
+  retryBudget?: number;
+  baseBackoffMs?: number;
+  maxBackoffMs?: number;
+}
+
+const DEFAULT_PROVIDER_RETRY_BUDGET = 2;
+const DEFAULT_PROVIDER_RETRY_BASE_MS = 250;
+const DEFAULT_PROVIDER_RETRY_MAX_MS = 2_000;
+
 const ACTIVE_PROVIDER_STATES = new Set([
   'scheduled',
   'synced',
   'reflowed',
   'compressed',
+  'failed_sync',
 ]);
 
 const CLEANUP_PROVIDER_STATES = new Set([
   'canceled',
   'superseded',
-  'completed',
   'unscheduled',
   'deferred',
 ]);
+
+const FAILED_PROVIDER_SYNC_STATES = new Set<SecretaryProviderSyncState>([
+  'create_failed',
+  'update_failed',
+  'delete_failed',
+  'readback_failed',
+]);
+
+export function markCompletedSecretaryAgendaItems(now: Date = new Date()): number {
+  const result = getDb().prepare(`
+    UPDATE secretary_agenda_items
+       SET lifecycle_state = 'completed',
+           completed_at = COALESCE(completed_at, ?),
+           updated_at = ?
+     WHERE end_at IS NOT NULL
+       AND datetime(end_at) < datetime(?)
+       AND lifecycle_state IN ('scheduled', 'synced', 'reflowed', 'compressed')
+  `).run(now.toISOString(), now.toISOString(), now.toISOString());
+  return Number(result.changes ?? 0);
+}
 
 export async function syncSecretaryAgendaItemToProvider(
   scope: {
@@ -131,7 +163,7 @@ export async function syncSecretaryAgendaItemToProvider(
   }
 
   if (!agendaItem.startAt || !agendaItem.endAt) {
-    updateProviderMapping(agendaItem.agendaItemId, {
+    updateProviderMapping(agendaItem, {
       providerSyncState: 'create_failed',
     });
     return {
@@ -151,6 +183,7 @@ export async function syncSecretaryAgendaItemToProvider(
 export async function syncSecretaryAgendaItemsToProvider(
   scope: SecretaryAgendaProviderSyncScope,
   adapter: SecretaryAgendaProviderAdapter,
+  options: SecretaryAgendaProviderSyncOptions = {},
 ): Promise<SecretaryAgendaProviderSyncResult[]> {
   const items = listSecretaryAgendaItems({
     ownerUserId: scope.ownerUserId,
@@ -159,13 +192,42 @@ export async function syncSecretaryAgendaItemsToProvider(
   });
   const results: SecretaryAgendaProviderSyncResult[] = [];
   for (const item of items) {
-    results.push(await syncSecretaryAgendaItemToProvider({
+    results.push(await syncSecretaryAgendaItemToProviderWithRetry({
       agendaItemId: item.agendaItemId,
       ownerUserId: scope.ownerUserId,
       tenantId: scope.tenantId,
-    }, adapter));
+    }, adapter, options));
   }
   return results;
+}
+
+async function syncSecretaryAgendaItemToProviderWithRetry(
+  scope: {
+    agendaItemId: string;
+    ownerUserId: number;
+    tenantId: string | number;
+  },
+  adapter: SecretaryAgendaProviderAdapter,
+  options: SecretaryAgendaProviderSyncOptions,
+): Promise<SecretaryAgendaProviderSyncResult> {
+  const retryBudget = Math.max(0, options.retryBudget ?? DEFAULT_PROVIDER_RETRY_BUDGET);
+  let attempt = 0;
+  let latest = await syncSecretaryAgendaItemToProvider(scope, adapter);
+  while (isRetryableProviderSyncResult(latest) && attempt < retryBudget) {
+    const delayMs = providerRetryDelayMs(latest.retryAfterMs, attempt, options);
+    logger.warn({
+      agendaItemId: latest.agendaItemId,
+      providerSource: latest.providerSource,
+      providerSyncState: latest.providerSyncState,
+      attempt: attempt + 1,
+      retryBudget,
+      delayMs,
+    }, 'Secretary agenda provider sync retrying after transient failure');
+    await sleep(delayMs);
+    latest = await syncSecretaryAgendaItemToProvider(scope, adapter);
+    attempt += 1;
+  }
+  return latest;
 }
 
 async function upsertProviderEvent(
@@ -182,7 +244,7 @@ async function upsertProviderEvent(
       const current = await readProviderEvent(agendaItem, adapter, input);
       if (current) {
         const updated = await adapter.updateEvent(agendaItem.providerEventId, input);
-        updateProviderMapping(agendaItem.agendaItemId, {
+        updateProviderMapping(agendaItem, {
           providerEventId: updated.eventId,
           providerSource: updated.source,
           providerSyncState: 'synced',
@@ -192,7 +254,7 @@ async function upsertProviderEvent(
 
       if (canonical) {
         const updated = await adapter.updateEvent(canonical.eventId, input);
-        updateProviderMapping(agendaItem.agendaItemId, {
+        updateProviderMapping(agendaItem, {
           providerEventId: updated.eventId,
           providerSource: updated.source,
           providerSyncState: 'synced',
@@ -201,7 +263,7 @@ async function upsertProviderEvent(
       }
 
       const recreated = await adapter.createEvent(input);
-      updateProviderMapping(agendaItem.agendaItemId, {
+      updateProviderMapping(agendaItem, {
         providerEventId: recreated.eventId,
         providerSource: recreated.source,
         providerSyncState: 'synced',
@@ -211,7 +273,7 @@ async function upsertProviderEvent(
 
     if (canonical) {
       const updated = await adapter.updateEvent(canonical.eventId, input);
-      updateProviderMapping(agendaItem.agendaItemId, {
+      updateProviderMapping(agendaItem, {
         providerEventId: updated.eventId,
         providerSource: updated.source,
         providerSyncState: 'synced',
@@ -220,7 +282,7 @@ async function upsertProviderEvent(
     }
 
     const created = await adapter.createEvent(input);
-    updateProviderMapping(agendaItem.agendaItemId, {
+    updateProviderMapping(agendaItem, {
       providerEventId: created.eventId,
       providerSource: created.source,
       providerSyncState: 'synced',
@@ -230,14 +292,17 @@ async function upsertProviderEvent(
     const providerSyncState: SecretaryProviderSyncState = agendaItem.providerEventId || canonical
       ? 'update_failed'
       : 'create_failed';
-    updateProviderMapping(agendaItem.agendaItemId, { providerSyncState });
+    updateProviderMapping(agendaItem, { providerSyncState });
     logger.warn({
       err: error instanceof Error ? error.message : String(error),
       agendaItemId: agendaItem.agendaItemId,
       providerSource: adapter.source,
       providerSyncState,
     }, 'Secretary agenda provider sync failed');
-    return result(agendaItem, 'failed', agendaItem.providerEventId ?? canonical?.eventId ?? null, adapter.source, providerSyncState, deletedDuplicateEventIds, 'provider_sync_failed');
+    return {
+      ...result(agendaItem, 'failed', agendaItem.providerEventId ?? canonical?.eventId ?? null, adapter.source, providerSyncState, deletedDuplicateEventIds, 'provider_sync_failed'),
+      retryAfterMs: retryAfterMs(error),
+    };
   }
 }
 
@@ -258,18 +323,21 @@ async function cleanupProviderEvent(
       await adapter.deleteEvent(eventId, input);
       if (eventId !== agendaItem.providerEventId) deletedDuplicateEventIds.push(eventId);
     }
-    updateProviderMapping(agendaItem.agendaItemId, {
+    updateProviderMapping(agendaItem, {
       providerSyncState: 'deleted',
     });
     return result(agendaItem, idsToDelete.length > 0 ? 'deleted' : 'skipped', agendaItem.providerEventId, adapter.source, 'deleted', deletedDuplicateEventIds, idsToDelete.length > 0 ? 'provider_event_deleted' : 'no_provider_event_to_delete');
   } catch (error) {
-    updateProviderMapping(agendaItem.agendaItemId, { providerSyncState: 'delete_failed' });
+    updateProviderMapping(agendaItem, { providerSyncState: 'delete_failed' });
     logger.warn({
       err: error instanceof Error ? error.message : String(error),
       agendaItemId: agendaItem.agendaItemId,
       providerSource: adapter.source,
     }, 'Secretary agenda provider cleanup failed');
-    return result(agendaItem, 'failed', agendaItem.providerEventId, adapter.source, 'delete_failed', deletedDuplicateEventIds, 'provider_delete_failed');
+    return {
+      ...result(agendaItem, 'failed', agendaItem.providerEventId, adapter.source, 'delete_failed', deletedDuplicateEventIds, 'provider_delete_failed'),
+      retryAfterMs: retryAfterMs(error),
+    };
   }
 }
 
@@ -346,27 +414,43 @@ function toProviderEventInput(agendaItem: SecretaryAgendaItem): SecretaryProvide
 }
 
 function updateProviderMapping(
-  agendaItemId: string,
+  agendaItem: Pick<SecretaryAgendaItem, 'agendaItemId' | 'ownerUserId' | 'tenantId'>,
   patch: {
     providerEventId?: string | null;
     providerSource?: SecretaryCalendarProviderSource | null;
     providerSyncState: SecretaryProviderSyncState;
+    lifecycleState?: SecretaryAgendaLifecycleState;
   },
 ): void {
-  getDb().prepare(`
+  const lifecycleState = patch.lifecycleState
+    ?? (patch.providerSyncState === 'synced'
+      ? 'synced'
+      : FAILED_PROVIDER_SYNC_STATES.has(patch.providerSyncState)
+        ? 'failed_sync'
+        : null);
+  const result = getDb().prepare(`
     UPDATE secretary_agenda_items
     SET provider_event_id = COALESCE(?, provider_event_id),
         provider_source = COALESCE(?, provider_source),
         provider_sync_state = ?,
+        lifecycle_state = COALESCE(?, lifecycle_state),
         updated_at = ?
     WHERE agenda_item_id = ?
+      AND owner_user_id = ?
+      AND tenant_id = ?
   `).run(
     patch.providerEventId ?? null,
     patch.providerSource ?? null,
     patch.providerSyncState,
+    lifecycleState,
     new Date().toISOString(),
-    agendaItemId,
+    agendaItem.agendaItemId,
+    agendaItem.ownerUserId,
+    String(agendaItem.tenantId),
   );
+  if (result.changes === 0) {
+    throw new Error(`SECRETARY_PROVIDER_MAPPING_UPDATE_MISSED: ${agendaItem.agendaItemId}`);
+  }
 }
 
 function result(
@@ -387,6 +471,67 @@ function result(
     deletedDuplicateEventIds,
     reasonCode,
   };
+}
+
+function isRetryableProviderSyncResult(result: SecretaryAgendaProviderSyncResult): boolean {
+  return result.action === 'failed'
+    && (result.providerSyncState === 'create_failed'
+      || result.providerSyncState === 'update_failed'
+      || result.providerSyncState === 'delete_failed');
+}
+
+function providerRetryDelayMs(
+  retryAfter: number | null | undefined,
+  attempt: number,
+  options: SecretaryAgendaProviderSyncOptions,
+): number {
+  if (typeof retryAfter === 'number' && Number.isFinite(retryAfter) && retryAfter >= 0) {
+    return retryAfter;
+  }
+  const base = Math.max(0, options.baseBackoffMs ?? DEFAULT_PROVIDER_RETRY_BASE_MS);
+  const max = Math.max(base, options.maxBackoffMs ?? DEFAULT_PROVIDER_RETRY_MAX_MS);
+  return Math.min(max, base * (2 ** attempt));
+}
+
+function retryAfterMs(error: unknown): number | null {
+  const retryAfter = retryAfterHeader(error);
+  if (!retryAfter) return null;
+  const seconds = Number(retryAfter);
+  if (Number.isFinite(seconds) && seconds >= 0) return Math.round(seconds * 1000);
+  const timestamp = Date.parse(retryAfter);
+  if (!Number.isFinite(timestamp)) return null;
+  return Math.max(0, timestamp - Date.now());
+}
+
+function retryAfterHeader(error: unknown): string | null {
+  const candidate = error as {
+    retryAfter?: unknown;
+    response?: { headers?: unknown };
+    headers?: unknown;
+  } | null;
+  const direct = candidate?.retryAfter;
+  if (typeof direct === 'string' || typeof direct === 'number') return String(direct);
+  return headerValue(candidate?.response?.headers, 'retry-after')
+    ?? headerValue(candidate?.headers, 'retry-after');
+}
+
+function headerValue(headers: unknown, key: string): string | null {
+  if (!headers) return null;
+  if (typeof (headers as { get?: unknown }).get === 'function') {
+    const value = (headers as { get: (name: string) => unknown }).get(key);
+    return typeof value === 'string' || typeof value === 'number' ? String(value) : null;
+  }
+  if (typeof headers === 'object') {
+    const record = headers as Record<string, unknown>;
+    const value = record[key] ?? record[key.toLowerCase()] ?? record[key.toUpperCase()];
+    return typeof value === 'string' || typeof value === 'number' ? String(value) : null;
+  }
+  return null;
+}
+
+function sleep(ms: number): Promise<void> {
+  if (!Number.isFinite(ms) || ms <= 0) return Promise.resolve();
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function unique(values: string[]): string[] {

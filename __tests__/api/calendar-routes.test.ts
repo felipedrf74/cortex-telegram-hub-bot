@@ -10,19 +10,30 @@ const mockGetEventsWithDiagnostics = vi.fn();
 const mockCreateEvent = vi.fn();
 const mockUpdateEvent = vi.fn();
 const mockDeleteEvent = vi.fn();
+const mockGetEventsForSources = vi.fn();
 const mockIsAnyCalendarConfigured = vi.fn();
 const mockHasConnectedCalendarForUser = vi.fn();
 const mockHasWritableCalendarForUser = vi.fn();
-const mockGetCached = vi.fn();
-const mockSetCache = vi.fn();
+const mockGetCachedSWR = vi.fn();
+const mockSetCacheSWR = vi.fn();
 const mockClearCache = vi.fn();
 const mockClearCacheByPrefix = vi.fn();
 const mockGetFocusBlockRecommendation = vi.fn();
 const mockFilterCalendarEventsForTrainingScope = vi.fn();
 
+function expectCachePrefixesCleared(...prefixes: string[]) {
+  const cleared = mockClearCacheByPrefix.mock.calls.flatMap(([prefix]) => (
+    Array.isArray(prefix) ? prefix : [prefix]
+  ));
+  for (const prefix of prefixes) {
+    expect(cleared).toContain(prefix);
+  }
+}
+
 vi.mock('../../src/services/unified-calendar', () => ({
   getEvents: (...args: unknown[]) => mockGetEvents(...args),
   getEventsWithDiagnostics: (...args: unknown[]) => mockGetEventsWithDiagnostics(...args),
+  getEventsForSources: (...args: unknown[]) => mockGetEventsForSources(...args),
   createEvent: (...args: unknown[]) => mockCreateEvent(...args),
   updateEvent: (...args: unknown[]) => mockUpdateEvent(...args),
   deleteEvent: (...args: unknown[]) => mockDeleteEvent(...args),
@@ -32,8 +43,8 @@ vi.mock('../../src/services/unified-calendar', () => ({
 }));
 
 vi.mock('../../src/services/cache-store', () => ({
-  getCached: (...args: unknown[]) => mockGetCached(...args),
-  setCache: (...args: unknown[]) => mockSetCache(...args),
+  getCachedSWR: (...args: unknown[]) => mockGetCachedSWR(...args),
+  setCacheSWR: (...args: unknown[]) => mockSetCacheSWR(...args),
   clearCache: (...args: unknown[]) => mockClearCache(...args),
   clearCacheByPrefix: (...args: unknown[]) => mockClearCacheByPrefix(...args),
 }));
@@ -53,6 +64,10 @@ vi.mock('../../src/services/training-calendar-scope', () => ({
   filterCalendarEventsForTrainingScope: (...args: unknown[]) => mockFilterCalendarEventsForTrainingScope(...args),
 }));
 
+vi.mock('../../src/services/health-sleep-agenda', () => ({
+  getAppleHealthSleepAgendaEvents: vi.fn(() => []),
+}));
+
 vi.mock('../../src/utils/logger', () => ({
   logger: {
     info: vi.fn(),
@@ -62,6 +77,7 @@ vi.mock('../../src/utils/logger', () => ({
     trace: vi.fn(),
     child: vi.fn().mockReturnThis(),
   },
+  LOGGER_REDACTION_PATHS: [],
 }));
 
 import { calendarRoutes } from '../../src/api/routes/calendar';
@@ -69,9 +85,10 @@ import { calendarRoutes } from '../../src/api/routes/calendar';
 interface MockRes {
   statusCode: number;
   body: any;
+  headers: Record<string, string>;
   status(code: number): MockRes;
   json(body: any): MockRes;
-  setHeader(): MockRes;
+  setHeader(name: string, value: string): MockRes;
   end(): MockRes;
 }
 
@@ -79,9 +96,10 @@ function mockRes(): MockRes {
   const response: MockRes = {
     statusCode: 200,
     body: null,
+    headers: {},
     status(code: number) { response.statusCode = code; return response; },
     json(body: any) { response.body = body; return response; },
-    setHeader() { return response; },
+    setHeader(name: string, value: string) { response.headers[name] = value; return response; },
     end() { return response; },
   };
   return response;
@@ -100,6 +118,7 @@ function mockReq(method: string, url: string, body?: Record<string, unknown>, us
     headers: {},
     body: body ?? {},
     userId,
+    tenantId: userId,
   } as any;
 }
 
@@ -127,20 +146,21 @@ describe('Calendar API — mutation routes', () => {
     clearTenantScopeAnomaliesForTests();
     mockGetEvents.mockReset();
     mockGetEventsWithDiagnostics.mockReset();
+    mockGetEventsForSources.mockReset();
     mockCreateEvent.mockReset();
     mockUpdateEvent.mockReset();
     mockDeleteEvent.mockReset();
     mockIsAnyCalendarConfigured.mockReset();
     mockHasConnectedCalendarForUser.mockReset();
     mockHasWritableCalendarForUser.mockReset();
-    mockGetCached.mockReset();
-    mockSetCache.mockReset();
+    mockGetCachedSWR.mockReset();
+    mockSetCacheSWR.mockReset();
     mockClearCache.mockReset();
     mockClearCacheByPrefix.mockReset();
     mockGetFocusBlockRecommendation.mockReset();
     mockFilterCalendarEventsForTrainingScope.mockReset();
 
-    mockGetCached.mockReturnValue(null);
+    mockGetCachedSWR.mockReturnValue(null);
     mockIsAnyCalendarConfigured.mockReturnValue(true);
     mockHasConnectedCalendarForUser.mockReturnValue(true);
     mockHasWritableCalendarForUser.mockReturnValue(true);
@@ -151,6 +171,7 @@ describe('Calendar API — mutation routes', () => {
       warnings: [],
       sources: { configured: ['google'], fulfilled: ['google'], failed: [] },
     });
+    mockGetEventsForSources.mockResolvedValue([]);
     mockFilterCalendarEventsForTrainingScope.mockImplementation((events) => events);
   });
 
@@ -193,6 +214,128 @@ describe('Calendar API — mutation routes', () => {
       source: 'outlook',
       color: '#8E44AD',
     });
+  });
+
+  it('serves cached calendar events without touching the provider and honors If-None-Match', async () => {
+    mockGetCachedSWR.mockReturnValue({
+      fresh: true,
+      value: {
+        events: [
+          {
+            id: 'cached-evt',
+            title: 'Cached block',
+            start: '2026-04-19T16:00:00.000Z',
+            end: '2026-04-19T16:30:00.000Z',
+            source: 'outlook',
+          },
+        ],
+        status: 'ready',
+        warningCodes: [],
+        warnings: [],
+        sources: { configured: ['outlook'], fulfilled: ['outlook'], failed: [] },
+      },
+    });
+
+    const first = await dispatch('GET', '/events?start=2026-04-19T00:00:00.000Z&end=2026-04-20T00:00:00.000Z');
+    const secondReq = mockReq('GET', '/events?start=2026-04-19T00:00:00.000Z&end=2026-04-20T00:00:00.000Z');
+    (secondReq as any).headers = { 'if-none-match': first.headers.ETag };
+    (secondReq as any).header = (name: string) => (secondReq as any).headers[name.toLowerCase()] ?? (secondReq as any).headers[name];
+    const router = calendarRoutes();
+    const second = mockRes();
+    await new Promise<void>((resolve) => {
+      (router as any).handle(secondReq, second, (err: any) => {
+        if (err) throw err;
+        resolve();
+      });
+      setImmediate(resolve);
+    });
+
+    expect(first.statusCode).toBe(200);
+    expect(first.body.cached).toBe(true);
+    expect(first.body.data.events[0].id).toBe('cached-evt');
+    expect(first.headers.ETag).toBeTruthy();
+    expect(second.statusCode).toBe(304);
+    expect(mockGetEventsWithDiagnostics).not.toHaveBeenCalled();
+  });
+
+  it('serves stale today events immediately and refreshes them in the background', async () => {
+    const today = new Date().toLocaleDateString('en-CA', { timeZone: 'Europe/Lisbon' });
+    mockGetCachedSWR.mockReturnValueOnce({
+      fresh: false,
+      value: {
+        events: [],
+        status: 'ready',
+        warningCodes: [],
+        warnings: [],
+        sources: { configured: ['outlook'], fulfilled: ['outlook'], failed: [] },
+      },
+    });
+    mockGetEventsWithDiagnostics.mockResolvedValue({
+      events: [
+        {
+          id: 'refreshed-event',
+          summary: 'Refreshed',
+          start: `${today}T16:00:00.000Z`,
+          end: `${today}T16:30:00.000Z`,
+          source: 'outlook',
+        },
+      ],
+      status: 'ready',
+      warningCodes: [],
+      warnings: [],
+      sources: { configured: ['outlook'], fulfilled: ['outlook'], failed: [] },
+    });
+
+    const res = await dispatch('GET', '/today', undefined, 34);
+    await new Promise((resolve) => setImmediate(resolve));
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body.cached).toBe(true);
+    expect(res.body.data.events).toEqual([]);
+    expect(mockGetEventsWithDiagnostics).toHaveBeenCalled();
+    expect(mockSetCacheSWR).toHaveBeenCalledWith(
+      expect.stringMatching(/^u:34:calendar:today:/),
+      expect.objectContaining({
+        events: [expect.objectContaining({ id: 'refreshed-event' })],
+      }),
+      120,
+      300,
+    );
+  });
+
+  it('bypasses cached today events when refresh is requested', async () => {
+    mockGetCachedSWR.mockReturnValue({
+      fresh: true,
+      value: {
+        events: [
+          {
+            id: 'deleted-google-training',
+            title: 'Runner Upper Body Strength',
+            start: '2026-06-05T12:00:00.000Z',
+            end: '2026-06-05T12:48:00.000Z',
+            source: 'google',
+          },
+        ],
+        status: 'ready',
+        warningCodes: [],
+        warnings: [],
+      },
+    });
+    mockGetEventsWithDiagnostics.mockResolvedValue({
+      events: [],
+      status: 'ready',
+      warningCodes: [],
+      warnings: [],
+      sources: { configured: ['google'], fulfilled: ['google'], failed: [] },
+    });
+
+    const res = await dispatch('GET', '/today?refresh=true');
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body.cached).toBe(false);
+    expect(res.body.data.events).toEqual([]);
+    expect(mockGetEventsWithDiagnostics).toHaveBeenCalledTimes(1);
   });
 
   it('filters training calendar events linked outside the authenticated user scope', async () => {
@@ -386,10 +529,12 @@ describe('Calendar API — mutation routes', () => {
       new_start: '2026-04-16T09:00:00.000Z',
       new_end: '2026-04-16T10:00:00.000Z',
     }, 'outlook', 12);
-    expect(mockClearCacheByPrefix).toHaveBeenCalledWith('u:12:calendar:');
-    expect(mockClearCacheByPrefix).toHaveBeenCalledWith('calendar:');
-    expect(mockClearCacheByPrefix).toHaveBeenCalledWith('plan:week:u:12:');
-    expect(mockClearCacheByPrefix).toHaveBeenCalledWith('plan:today:u:12:');
+    expectCachePrefixesCleared(
+      'u:12:calendar:',
+      'calendar:',
+      'plan:week:u:12:',
+      'plan:today:u:12:',
+    );
   });
 
   it('rejects event updates without a valid source', async () => {
@@ -411,9 +556,11 @@ describe('Calendar API — mutation routes', () => {
     expect(res.body.ok).toBe(true);
     expect(res.body.data.deleted).toBe(true);
     expect(mockDeleteEvent).toHaveBeenCalledWith('evt-2', 'google', 12);
-    expect(mockClearCacheByPrefix).toHaveBeenCalledWith('u:12:calendar:');
-    expect(mockClearCacheByPrefix).toHaveBeenCalledWith('plan:week:u:12:');
-    expect(mockClearCacheByPrefix).toHaveBeenCalledWith('plan:today:u:12:');
+    expectCachePrefixesCleared(
+      'u:12:calendar:',
+      'plan:week:u:12:',
+      'plan:today:u:12:',
+    );
   });
 
   it('rejects deletes without a valid source query', async () => {
@@ -422,5 +569,54 @@ describe('Calendar API — mutation routes', () => {
     expect(res.statusCode).toBe(400);
     expect(res.body.error.code).toBe('VALIDATION');
     expect(mockDeleteEvent).not.toHaveBeenCalled();
+  });
+
+  it('guards duplicate in-flight focus block creates from rapid double taps', async () => {
+    let releaseCreate!: () => void;
+    mockCreateEvent.mockImplementationOnce(() => new Promise((resolve) => {
+      releaseCreate = () => resolve({
+        id: 'focus-1',
+        summary: 'Focus time',
+        start: '2026-05-18T14:00:00.000Z',
+        end: '2026-05-18T14:30:00.000Z',
+        source: 'google',
+      });
+    }));
+
+    const body = {
+      source: 'google',
+      start: '2026-05-18T14:00:00.000Z',
+      durationMinutes: 30,
+      mode: 'focus',
+    };
+    const first = dispatch('POST', '/focus-blocks', body, 12);
+    for (let i = 0; i < 5 && mockCreateEvent.mock.calls.length === 0; i += 1) {
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+
+    const duplicate = await dispatch('POST', '/focus-blocks', body, 12);
+    expect(duplicate.statusCode).toBe(409);
+    expect(duplicate.body.error.code).toBe('FOCUS_BLOCK_DUPLICATE');
+
+    releaseCreate();
+    const created = await first;
+    expect(created.statusCode).toBe(201);
+    expect(mockCreateEvent).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns a sanitized 502 when focus block provider create fails', async () => {
+    mockCreateEvent.mockRejectedValueOnce(new Error('raw upstream token refresh body'));
+
+    const res = await dispatch('POST', '/focus-blocks', {
+      source: 'google',
+      start: '2026-05-18T14:00:00.000Z',
+      durationMinutes: 30,
+      mode: 'focus',
+    }, 12);
+
+    expect(res.statusCode).toBe(502);
+    expect(res.body.error.code).toBe('CALENDAR_CREATE_FAILED');
+    expect(res.body.error.message).toBe('Calendar provider failed to create the focus block.');
+    expect(JSON.stringify(res.body)).not.toContain('raw upstream');
   });
 });

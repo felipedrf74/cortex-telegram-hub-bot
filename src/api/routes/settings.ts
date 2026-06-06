@@ -10,14 +10,29 @@ import { normalizeLangHeader } from '../../services/secretary-fastpath';
 import { setUserLanguage } from '../../services/user-service';
 import { getDb } from '../../services/database';
 import { getPushPreferences, setPushPreference } from '../../services/report-document-store';
+import { registerNotificationDeviceToken } from '../../services/notification-orchestrator';
 import { isValidTenantUserId, recordTenantScopeAnomaly } from '../../services/tenant-scope-observability';
+import { deleteAllUserDataForAccountDeletion, getAccountDeletionInventoryForUser } from '../../services/user-data-export';
+import { logAudit } from '../../services/audit-trail';
+import {
+  getProviderPreferences,
+  normalizePrimaryCalendarProvider,
+  normalizePrimaryMailProvider,
+  setProviderPreferences,
+} from '../../services/provider-preferences';
 
 function normalizeLanguageInput(language: unknown): 'pt-BR' | 'pt-PT' | 'en-US' | null {
   if (typeof language !== 'string') return null;
   const normalized = language.trim().toLowerCase();
   if (!normalized) return null;
+  // Phase 16 batch 80 (2026-05-16): settings endpoint only accepts the three
+  // fully-translated app languages. `normalizeLangHeader` now also returns
+  // 'es-ES' for `Accept-Language: es-*` on the chat surface, but the user
+  // settings page does not yet expose Spanish as a selectable preference.
   if (!normalized.startsWith('pt') && !normalized.startsWith('en')) return null;
-  return normalizeLangHeader(language);
+  const result = normalizeLangHeader(language);
+  if (result === 'pt-BR' || result === 'pt-PT' || result === 'en-US') return result;
+  return null;
 }
 
 export function settingsRoutes(): Router {
@@ -88,6 +103,61 @@ export function settingsRoutes(): Router {
     }
   });
 
+  /** GET /api/v1/settings/provider-preferences */
+  router.get('/provider-preferences', async (req, res: Response) => {
+    const { userId, tenantId } = req as AuthenticatedRequest;
+    if (!ensureValidSettingsUserScope(res, userId, 'settings_route_provider_preferences_get')) return;
+    try {
+      sendSuccess(res, getProviderPreferences(userId, tenantId));
+    } catch (err: any) {
+      logger.error({ err, userId, tenantId }, 'iOS provider preferences load failed');
+      sendInternalError(res, 'Unable to load provider preferences right now.');
+    }
+  });
+
+  /** PATCH /api/v1/settings/provider-preferences */
+  router.patch('/provider-preferences', async (req, res: Response) => {
+    const { userId, tenantId } = req as AuthenticatedRequest;
+    if (!ensureValidSettingsUserScope(res, userId, 'settings_route_provider_preferences_patch')) return;
+    const mail = Object.prototype.hasOwnProperty.call(req.body ?? {}, 'primaryMailProvider')
+      ? normalizePrimaryMailProvider(req.body?.primaryMailProvider)
+      : undefined;
+    const calendar = Object.prototype.hasOwnProperty.call(req.body ?? {}, 'primaryCalendarProvider')
+      ? normalizePrimaryCalendarProvider(req.body?.primaryCalendarProvider)
+      : undefined;
+
+    if (mail === null) {
+      sendError(res, 'VALIDATION', 'primaryMailProvider must be auto, gmail, or outlook', 400);
+      return;
+    }
+    if (calendar === null) {
+      sendError(res, 'VALIDATION', 'primaryCalendarProvider must be auto, google, or outlook', 400);
+      return;
+    }
+
+    try {
+      const preferences = setProviderPreferences(userId, tenantId, {
+        ...(mail ? { primaryMailProvider: mail } : {}),
+        ...(calendar ? { primaryCalendarProvider: calendar } : {}),
+      });
+      logAudit({
+        userId,
+        actorId: userId,
+        action: 'access',
+        resource: 'settings.provider_preferences',
+        details: {
+          primaryMailProvider: preferences.primaryMailProvider,
+          primaryCalendarProvider: preferences.primaryCalendarProvider,
+          warningCodes: preferences.warningCodes,
+        },
+      });
+      sendSuccess(res, preferences);
+    } catch (err: any) {
+      logger.error({ err, userId, tenantId }, 'iOS provider preferences update failed');
+      sendInternalError(res, 'Unable to save provider preferences right now.');
+    }
+  });
+
   /** POST /api/v1/settings/language */
   router.post('/language', async (req, res: Response) => {
     const { userId } = req as AuthenticatedRequest;
@@ -111,37 +181,24 @@ export function settingsRoutes(): Router {
 
   /** POST /api/v1/settings/push-token */
   router.post('/push-token', async (req, res: Response) => {
-    const { userId } = req as AuthenticatedRequest;
+    const { userId, tenantId } = req as AuthenticatedRequest;
     if (!ensureValidSettingsUserScope(res, userId, 'settings_route_push_token')) return;
     const deviceId = (req as AuthenticatedRequest).deviceId;
-    const { token } = req.body;
+    const { token, environment, appVersion } = req.body;
 
     try {
       if (typeof token !== 'string' || token.trim().length === 0) {
         sendError(res, 'VALIDATION', 'token is required', 400);
         return;
       }
-      const db = getDb();
-      db.exec(`
-        CREATE TABLE IF NOT EXISTS ios_devices (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
-          user_id INTEGER NOT NULL,
-          device_id TEXT NOT NULL UNIQUE,
-          device_name TEXT,
-          push_token TEXT,
-          refresh_token TEXT NOT NULL,
-          last_active_at TEXT DEFAULT (datetime('now')),
-          created_at TEXT DEFAULT (datetime('now'))
-        )
-      `);
-      db.prepare(`
-        INSERT INTO ios_devices (user_id, device_id, device_name, push_token, refresh_token, last_active_at)
-        VALUES (?, ?, NULL, ?, '', datetime('now'))
-        ON CONFLICT(device_id) DO UPDATE SET
-          user_id = excluded.user_id,
-          push_token = excluded.push_token,
-          last_active_at = datetime('now')
-      `).run(userId, deviceId, token.trim());
+      registerNotificationDeviceToken({
+        userId,
+        tenantId,
+        token: token.trim(),
+        deviceId,
+        environment: environment === 'production' ? 'production' : 'sandbox',
+        appVersion: typeof appVersion === 'string' ? appVersion : null,
+      });
       sendSuccess(res, { updated: true });
     } catch (err: any) {
       logger.error({ err }, 'iOS push-token update failed');
@@ -149,20 +206,61 @@ export function settingsRoutes(): Router {
     }
   });
 
+  /** DELETE /api/v1/settings/push-token */
+  router.delete('/push-token', async (req, res: Response) => {
+    const { userId } = req as AuthenticatedRequest;
+    if (!ensureValidSettingsUserScope(res, userId, 'settings_route_delete_push_token')) return;
+    const deviceId = (req as AuthenticatedRequest).deviceId;
+
+    try {
+      const db = getDb();
+      db.prepare(`
+        UPDATE ios_devices
+        SET push_token = NULL, last_active_at = datetime('now')
+        WHERE user_id = ? AND device_id = ?
+      `).run(userId, deviceId);
+      try {
+        db.prepare(`
+          UPDATE notification_device_tokens
+          SET revoked_at = COALESCE(revoked_at, datetime('now'))
+          WHERE user_id = ? AND revoked_at IS NULL
+        `).run(userId);
+      } catch {
+        // notification_device_tokens may not exist on older local test DBs.
+      }
+      res.status(204).send();
+    } catch (err: any) {
+      logger.error({ err }, 'iOS push-token revoke failed');
+      sendInternalError(res, 'Unable to revoke the push token right now.');
+    }
+  });
+
   /** POST /api/v1/settings/export — GDPR data export (Article 15: right of access) */
   router.post('/export', async (req, res: Response) => {
-    const { userId, tenantId = userId } = req as AuthenticatedRequest;
+    const { userId, tenantId } = req as AuthenticatedRequest;
     if (!ensureValidSettingsUserScope(res, userId, 'settings_route_export')) return;
     try {
-      const db = require('../../services/database').getDb();
+      const db = getDb();
 
       // Collect ALL user data — every table that stores user-owned content.
       // This list must stay in sync with the DELETE /account table list.
       const userData: Record<string, any> = {};
 
-      // Helper: safe query that returns [] if table doesn't exist
+      // Helper: safe query that returns [] if table doesn't exist, and surfaces
+      // real export gaps instead of silently returning an incomplete archive.
+      const exportErrors: string[] = [];
       const safeAll = (sql: string, ...params: any[]) => {
-        try { return db.prepare(sql).all(...params); } catch { return []; }
+        try {
+          return db.prepare(sql).all(...params);
+        } catch (err) {
+          const table = /\bFROM\s+([a-zA-Z0-9_]+)/i.exec(sql)?.[1] ?? 'unknown';
+          exportErrors.push(table);
+          logger.error(
+            { err, table, sql: sql.slice(0, 80) },
+            'GDPR export query failed',
+          );
+          return [];
+        }
       };
 
       // ── Core data ──
@@ -221,9 +319,27 @@ export function settingsRoutes(): Router {
 
       userData.exportedAt = new Date().toISOString();
       userData.userId = userId;
+      if (exportErrors.length > 0) {
+        userData._exportErrors = [...new Set(exportErrors)];
+      }
       userData._systemNotes = {
         sharedSeedData: 'Tables content_ref_channels, book_library, content_knowledge, and content_learned_patterns may contain explicit system-owned rows (owner_scope=system) that serve as shared reference data (e.g., default books, seed channels). These rows are not user-generated and are excluded from this export.',
       };
+
+      const tableCounts = Object.fromEntries(
+        Object.entries(userData)
+          .filter(([, value]) => Array.isArray(value))
+          .map(([key, value]) => [key, (value as unknown[]).length]),
+      );
+      logAudit({
+        userId,
+        tenantId,
+        actorId: userId,
+        action: 'export',
+        resource: 'account',
+        details: { tableCounts, exportErrors: [...new Set(exportErrors)] },
+        ipAddress: req.ip,
+      });
 
       sendSuccess(res, userData);
     } catch (err: any) {
@@ -237,49 +353,16 @@ export function settingsRoutes(): Router {
     const { userId } = req as AuthenticatedRequest;
     if (!ensureValidSettingsUserScope(res, userId, 'settings_route_delete_account')) return;
     try {
-      const db = require('../../services/database').getDb();
-
-      // Delete ALL user data from every user-facing table.
-      // This list must stay in sync with migrations that add user_id columns.
-      // Last audited: April 2026 (added content learning store + reports tables).
-      const tables = [
-        // ── Core ──
-        'ios_devices', 'messages', 'onboarding_sessions', 'user_profiles',
-        'conversations', 'todos', 'notes', 'reminders', 'shared_memory',
-        'daily_context_cache',
-        // ── Content (learning store + pipeline) ──
-        'saved_ideas', 'content_topic_feedback', 'content_ref_channels',
-        'content_knowledge', 'content_patterns', 'content_research_briefs',
-        'content_scripts', 'content_performance', 'content_learned_patterns',
-        'content_pipeline', 'content_topics', 'content_notifications',
-        'book_library', 'video_transcripts', 'video_studies',
-        // ── Reports & notifications ──
-        'report_documents', 'push_preferences',
-        // ── Finance ──
-        'invoice_filings', 'invoice_vendors', 'invoice_queue',
-        'finance_transactions', 'finance_tax_events',
-        // ── Cooking ──
-        'recipes', 'meal_plans', 'shopping_lists',
-        // ── Training & health ──
-        'fitness_training_plans', 'training_completions',
-        'native_tasks', 'native_task_lists',
-        'apple_health_data', 'readiness_scores',
-        // ── Integrations ──
-        'webhook_subscriptions', 'webhook_events',
-        'user_oauth_tokens', 'garmin_user_tokens',
-        // ── Auth & billing ──
-        'email_verification_codes', 'subscriptions',
-        // ── Telemetry (user-scoped) ──
-        'api_usage', 'audit_trail', 'client_errors',
-        'user_skill_overrides',
-      ];
-      for (const table of tables) {
-        try {
-          db.prepare(`DELETE FROM ${table} WHERE user_id = ?`).run(userId);
-        } catch { /* table may not exist or no user_id column */ }
-      }
-      // Also delete the user row itself
-      try { db.prepare('DELETE FROM users WHERE id = ?').run(userId); } catch {}
+      const deletionInventory = getAccountDeletionInventoryForUser(userId);
+      const tableCounts = await deleteAllUserDataForAccountDeletion(userId);
+      logAudit({
+        userId,
+        actorId: userId,
+        action: 'delete',
+        resource: 'account',
+        details: { tableCounts, deletionInventory },
+        ipAddress: req.ip,
+      });
 
       logger.info({ userId, platform: 'ios' }, 'Account deleted (GDPR Article 17)');
       sendSuccess(res, { deleted: true, message: 'All data has been permanently deleted.' });

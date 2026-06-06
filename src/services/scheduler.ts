@@ -1,7 +1,10 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
 import path from 'path';
+import { createHash } from 'crypto';
+import type Database from 'better-sqlite3';
 import cron from 'node-cron';
+import { DateTime } from 'luxon';
 import { Bot } from 'grammy';
 import { config } from '../config';
 import { logger } from '../utils/logger';
@@ -17,19 +20,20 @@ import { collectMonthlyInvoices, formatCollectionNotification } from './invoice-
 import { isInvoiceFilingConfigured } from './invoice-filer';
 import { collectAmazonInvoices, formatAmazonNotification, isAmazonConfigured } from './amazon-collector';
 import { collectUberInvoices, formatUberNotification, isUberConfigured } from './uber-collector';
+import { createScraperMfaInteractiveCallbacks } from './scraper-mfa-reply';
 import { getFiscalCollectionSummary, isFiscalBundleDue, sendFiscalBundleNow } from './fiscal-bundle';
 import { generateCoachBriefing } from './garmin-coach';
 import { isGarminConfigured, keepAlive as garminKeepAlive, ensureAuthenticated as garminEnsureAuth } from './garmin';
 import { registerJob, wrapJob, recordGarminRefresh, setJobFailureNotifier, setJobEnabledChecker, getJobMap, seedJobLastRunFromHistory } from '../portal/telemetry';
-import { sendPushNotification } from './apns-sender';
+import { createNotificationIntent, releaseDueNotificationDeliveries } from './notification-orchestrator';
 import { isCronJobEnabled } from '../skills/skill-manager';
 import { CronExpressionParser } from 'cron-parser';
 import { flushQueue, getPendingCount } from './invoice-queue';
 import { setLastCoachState } from '../domains/domain-handler';
-import { setLastActiveDomain } from '../bot';
+import { setLastActiveDomain } from '../api/routes/chat-message-context';
 import { addToConversation } from '../state/conversation';
 import { processAllChannelScopes, seedDefaultChannels } from './channel-learner';
-import { sendTopicCandidates, sendWeeklyPackage } from './content-workflow';
+import { generateAndStoreTopicCandidates, generateWeeklyPackage } from './content-workflow';
 import { runPipelineAgent } from '../agents/pipeline-agent';
 import { runSEOAgent, seedKeywordsIfEmpty } from '../agents/seo-agent';
 import { runReactionRadar } from '../agents/reaction-radar-agent';
@@ -38,7 +42,7 @@ import { runVoiceEvolutionAgent } from '../agents/voice-evolution-agent';
 import { expireStaleSignals } from './intelligence-bus';
 import { seedBooksIfEmpty } from '../commands/books';
 import { runAutoresearch, getScheduledTarget } from './autoresearch';
-import { getUserLanguage } from './user-service';
+import { getPreferredDisplayNameById, getUserLanguageById } from './user-service';
 import { runDatabaseBackup, weeklyRestoreTest } from './backup';
 import { getDb } from './database';
 import { listActiveFiscalCollectionProfiles } from '../state/fiscal-collection-profiles';
@@ -48,10 +52,54 @@ import { getTaskProviderForUser } from './task-store/task-router';
 import { storeAndPushReport } from './report-document-store';
 import { isTelegramLegacyDeliveryEnabled } from './runtime-flags';
 import { processDueOperatorAlertDeliveries, recordOperatorAlert } from './operator-alerts';
+import { runEventBackboneOnce } from './event-backbone-worker';
+import { runEventBackboneCleanup } from '../tools/event-backbone-cleanup';
+import { expireStalePendingChatActionsForJob } from './chat-action-state';
+import { pruneCompletedChatActionRuns, reapZombieChatActionRuns } from './chat-action-run-store';
+import { processChatActionFixerJobs } from './chat-action-fixer-worker';
+import { runGarminTenantIsolationWatcher } from './garmin-tenant-isolation-watcher';
+import {
+  runDecisionCenterSmokeCleanupJob,
+  runDecisionExpiryJob,
+  runDecisionHandledHistoryBackfillJob,
+  runDecisionLedgerRetentionPruneJob,
+  runDecisionMetricsRollupJob,
+  runDecisionSourceStateSupersessionJob,
+} from './decision-center';
+import { resolveChatCoreV2ActivationConfig } from './chat-core-v2/activation-flags';
+import {
+  computeChatCoreV2AutoRevertMetrics,
+  getActiveChatCoreV2TenantIds,
+} from './chat-core-v2/metrics-aggregator';
+import { evaluateChatCoreV2AutoRevertPolicy } from './chat-core-v2/auto-revert-policy';
+import { applyAutoRevertDecision } from './chat-core-v2/auto-revert-executor';
+import { recordChatCoreV2GateCheck } from './chat-core-v2/gate-metrics-store';
+import { expireOldNexusPointCredits } from './nexus-points';
+import { getActivePlan, getCurrentWeek, getWeeklyAdherence, computeAdjustmentRecommendation, updateWeekAdjustment, getWeeksForPlan } from './training-plans';
+import { calculateReadiness, persistReadinessScore } from './readiness-scorer';
 
 interface ActiveUserTarget {
   tenantId: number;
   telegramId: number | null;
+}
+
+let remindersJobInFlight = false;
+
+export function decisionMetricsRollupDateForScheduler(now = new Date(), timezone = config.app.timezone): string {
+  return DateTime.fromJSDate(now).setZone(timezone).minus({ days: 1 }).toISODate() ?? '1970-01-01';
+}
+
+/**
+ * Opaque, non-reversible token for a tenant id, used only in the Chat Core v2
+ * auto-revert eval log line so operators can correlate without leaking raw ids.
+ */
+function opaqueChatV2TenantToken(tenantId: string): string {
+  const salt =
+    process.env.CHAT_CORE_V2_SHADOW_ROUTE_HMAC_SECRET ||
+    process.env.CHAT_CORE_V2_WRITE_INTENT_HASH_SECRET ||
+    process.env.CLASSIFY_SHADOW_HASH_SECRET ||
+    'chat_core_v2_auto_revert_eval_token_salt@1';
+  return createHash('sha256').update(`${salt}:tenant:${tenantId}`).digest('hex').slice(0, 16);
 }
 
 /**
@@ -112,7 +160,7 @@ function getOwnerUserIds(): number[] {
   }
 
   const ownerTarget = getOwnerBootstrapTarget();
-  return ownerTarget ? [ownerTarget.telegramId] : [];
+  return ownerTarget?.telegramId != null ? [ownerTarget.telegramId] : [];
 }
 
 export { getActiveUserIds, getOwnerUserIds };
@@ -150,6 +198,151 @@ function getActiveUserTargets(): ActiveUserTarget[] {
 
   const ownerTarget = getOwnerBootstrapTarget();
   return ownerTarget ? [ownerTarget] : [];
+}
+
+export async function runContentTopicCronForActiveUsers(
+  format: 'reel' | 'youtube',
+  sourceJob: 'tuesday_reels' | 'thursday_youtube' | string,
+): Promise<void> {
+  for (const target of getActiveUserTargets()) {
+    try {
+      await runWithContext({ source: `cron:${sourceJob}`, userId: target.tenantId }, async () => {
+        await generateAndStoreTopicCandidates(target.tenantId, format, sourceJob, target.tenantId);
+      });
+    } catch (err) {
+      logger.error({ err, userId: target.tenantId, tenantId: target.tenantId, sourceJob, format }, 'Content topic cron failed');
+    }
+  }
+}
+
+export async function runWeeklyContentPackageCronForActiveUsers(): Promise<void> {
+  for (const target of getActiveUserTargets()) {
+    try {
+      await runWithContext({ source: 'cron:friday_weekly', userId: target.tenantId }, async () => {
+        await generateWeeklyPackage(target.tenantId, target.tenantId);
+      });
+    } catch (err) {
+      logger.error({ err, userId: target.tenantId, tenantId: target.tenantId }, 'Friday weekly content package failed');
+    }
+  }
+}
+
+/**
+ * Chat Core v2 shadow data-retention sweep.
+ *
+ * Each table is swept independently so a missing migration/table never blocks
+ * the rest of the cleanup. Logs contain counts only, never row contents.
+ */
+export function runChatCoreV2ShadowDataRetention(
+  db: Database.Database = getDb(),
+  nowIso: string = new Date().toISOString(),
+): Record<string, number> {
+  const deleted: Record<string, number> = {};
+
+  const stanza = (table: string, run: () => number): void => {
+    try {
+      const changes = run();
+      deleted[table] = changes;
+      if (changes > 0) {
+        logger.info({ table, deleted: changes }, 'Chat Core v2 retention cleanup');
+      }
+    } catch (err) {
+      logger.warn(
+        { err: err instanceof Error ? err.message : String(err), table },
+        'Chat Core v2 retention cleanup failed for table (skipped)',
+      );
+    }
+  };
+
+  stanza('chat_v2_replay_bundles', () =>
+    db.prepare(
+      `DELETE FROM chat_v2_replay_bundles WHERE expires_at IS NOT NULL AND expires_at < ?`,
+    ).run(nowIso).changes,
+  );
+
+  stanza('chat_v2_canary_turn_log', () =>
+    db.prepare(
+      `DELETE FROM chat_v2_canary_turn_log WHERE expires_at IS NOT NULL AND expires_at < ?`,
+    ).run(nowIso).changes,
+  );
+
+  stanza('chat_v2_command_events', () =>
+    db.prepare(
+      `DELETE FROM chat_v2_command_events WHERE created_at < datetime(?, '-90 days')`,
+    ).run(nowIso).changes,
+  );
+
+  stanza('chat_v2_trace_spans', () =>
+    db.prepare(
+      `DELETE FROM chat_v2_trace_spans
+       WHERE expires_at IS NOT NULL
+         AND expires_at < ?
+         AND retention_policy NOT IN ('legal_required')`,
+    ).run(nowIso).changes,
+  );
+
+  stanza('chat_v2_online_eval_samples', () =>
+    db.prepare(
+      `DELETE FROM chat_v2_online_eval_samples WHERE created_at < datetime(?, '-90 days')`,
+    ).run(nowIso).changes,
+  );
+
+  stanza('chat_v2_auto_revert_decisions', () =>
+    db.prepare(
+      `DELETE FROM chat_v2_auto_revert_decisions WHERE decided_at < datetime(?, '-365 days')`,
+    ).run(nowIso).changes,
+  );
+
+  stanza('chat_v2_memory_items', () =>
+    db.prepare(
+      `DELETE FROM chat_v2_memory_items WHERE expires_at IS NOT NULL AND expires_at < ?`,
+    ).run(nowIso).changes,
+  );
+
+  stanza('chat_v2_human_reviews', () =>
+    db.prepare(
+      `DELETE FROM chat_v2_human_reviews
+       WHERE status IN ('approved', 'denied', 'changes_requested', 'cancelled', 'expired')
+         AND COALESCE(decided_at, requested_at) < datetime(?, '-90 days')`,
+    ).run(nowIso).changes,
+  );
+
+  return deleted;
+}
+
+/**
+ * Chat Core v2 automated shadow gate-check. Read-only beyond one safe audit
+ * row; never mutates runtime flags or routes.
+ */
+export function runChatCoreV2GateCheck(db: Database.Database = getDb()): {
+  gateMet: boolean;
+  shadowRowCount: number;
+  logRowId: number;
+} | null {
+  try {
+    const { report, logRowId } = recordChatCoreV2GateCheck(db);
+    logger.info(
+      {
+        event: 'chat_core_v2_gate_check',
+        gateMet: report.gateCanPromote,
+        meetsMinRows: report.shadow.meetsMinRows,
+        meetsSchemaValidity: report.shadow.meetsSchemaValidity,
+        meetsSafeShape: report.shadow.meetsSafeShape,
+        shadowRowCount: report.shadow.rowCount,
+        recallMeetsTarget: report.recallMeetsTarget,
+        recallBoundToSyntheticSeed: report.recallBoundToSyntheticSeed,
+        logRowId,
+      },
+      'Chat Core v2 shadow gate check',
+    );
+    return { gateMet: report.gateCanPromote, shadowRowCount: report.shadow.rowCount, logRowId };
+  } catch (err) {
+    logger.warn(
+      { event: 'chat_core_v2_gate_check_failed', err: err instanceof Error ? err.message : String(err) },
+      'Chat Core v2 shadow gate check failed (skipped)',
+    );
+    return null;
+  }
 }
 
 function buildTrainingSectionForSessions(sessions: any[]): string {
@@ -534,6 +727,14 @@ export async function buildSharedListNotificationForUser(userId: number): Promis
   return message || null;
 }
 
+function safeHtmlNotificationBody(message: string): string {
+  return message
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 500);
+}
+
 export async function buildConflictAlertForUser(userId: number): Promise<string | null> {
   if (!hasConnectedCalendarForUser(userId)) return null;
 
@@ -648,8 +849,10 @@ export function startScheduler(bot?: any): void {
   registerJob('uber_collection',    'Uber Collection',       '30 9 1 * *',      'invoices');
   registerJob('fossa_email',        'Fossa Email',           '30 7 * * 1',      'secretary');
   registerJob('conflict_detection', 'Conflict Detection',    '30 19 * * *',     'secretary');
+  registerJob('secretary_agenda_sync', 'Secretary Agenda → Calendar Sync', '*/5 * * * *', 'secretary');
   registerJob('garmin_keepalive',   'Garmin Keep-Alive',     '*/30 * * * *',    'triathlon');
   registerJob('garmin_coach',       'Garmin Coach',          coachCron,         'triathlon');
+  registerJob('garmin_tenant_isolation_watcher', 'Garmin Tenant Isolation Watcher', '45 6 * * *', 'triathlon');
   registerJob('invoice_queue',      'Invoice Queue Flush',   '*/15 * * * *',    'invoices');
   registerJob('channel_relearn',   'Channel Re-Learn',      '0 3 * * 0',       'content');
   registerJob('tuesday_reels',     'Tuesday Reel Topics',   '0 9 * * 2',       'content');
@@ -669,6 +872,23 @@ export function startScheduler(bot?: any): void {
   registerJob('task_sync',        'Task Provider Sync',     '*/15 * * * *',    'system');
   registerJob('daily_context',    'Daily Context Builder',  '0 5 * * *',       'system');
   registerJob('operator_alert_delivery', 'Operator Alert Delivery', '* * * * *', 'system');
+  registerJob('decision_source_supersession', 'Decision Source Supersession', '*/15 * * * *', 'system');
+  registerJob('decision_handled_history_backfill', 'Decision Handled History Backfill', '22,52 * * * *', 'system');
+  registerJob('decision_expiry', 'Decision Expiry Sweep', '*/10 * * * *', 'system');
+  registerJob('decision_metrics_rollup', 'Decision Metrics Daily Rollup', '15 0 * * *', 'system');
+  registerJob('decision_ledger_retention_prune', 'Decision Ledger Retention Prune', '40 4 * * *', 'system');
+  registerJob('chat_action_plan_expiry', 'Chat Action Plan Expiry', '15 * * * *', 'system');
+  registerJob('chat_action_fixer_worker', 'Chat Action Fixer Worker', '* * * * *', 'system');
+  registerJob('event_backbone_worker', 'Event Backbone Worker', '* * * * *', 'system');
+  registerJob('event_backbone_cleanup', 'Event Backbone Cleanup', '10 0 * * *', 'system');
+  registerJob('nexus_points_expiry', 'Nexus Points Expiry Sweep', '0 4 * * *', 'system');
+  if (resolveChatCoreV2ActivationConfig(process.env).mode !== 'off' && isChatCoreV2AutoRevertEvalCronEnabled(process.env)) {
+    registerJob('chat_v2_auto_revert_eval', 'Chat Core v2 Auto-Revert Eval', '*/5 * * * *', 'system');
+  }
+  if (resolveChatCoreV2ActivationConfig(process.env).mode !== 'off') {
+    registerJob('chat_v2_gate_check', 'Chat Core v2 Shadow Gate Check', '37 * * * *', 'system');
+  }
+  registerJob('classify_shadow_prune', 'Classify Shadow Retention Prune', '17 4 * * *', 'system');
 
   // Seed lastRunAt from DB so the DST watchdog doesn't re-fire jobs after a restart
   seedJobLastRunFromHistory();
@@ -680,29 +900,50 @@ export function startScheduler(bot?: any): void {
   // This eliminates ~6,700 wasted rows/week observed in production at 1
   // active user — see audit P0-2.
   cron.schedule('* * * * *', wrapJob('reminders', async () => {
-    const dueReminders = getDueReminders();
-    if (dueReminders.length === 0) return 'skipped';
-    for (const reminder of dueReminders) {
-      const targetUserId = (reminder as any).user_id as number;
-      try {
-        let msg = `⏰ <b>Reminder:</b> ${escapeHtml(reminder.message)}`;
-        if (reminder.recurring) msg += `\n<i>(Recurring: ${reminder.recurring})</i>`;
-        await safeSend(targetUserId, msg, { parse_mode: 'HTML' });
-      } catch (err) {
-        logger.error({ err, userId: targetUserId }, 'Failed to send reminder');
+    if (remindersJobInFlight) {
+      logger.warn({ job: 'reminders' }, 'Skipping reminder cron tick because previous tick is still running');
+      return 'skipped';
+    }
+
+    remindersJobInFlight = true;
+    try {
+      const dueReminders = getDueReminders();
+      if (dueReminders.length === 0) return 'skipped';
+      for (const reminder of dueReminders) {
+        const targetUserId = (reminder as any).user_id as number;
+        try {
+          let msg = `⏰ <b>Reminder:</b> ${escapeHtml(reminder.message)}`;
+          if (reminder.recurring) msg += `\n<i>(Recurring: ${reminder.recurring})</i>`;
+          await safeSend(targetUserId, msg, { parse_mode: 'HTML' });
+        } catch (err) {
+          logger.error({ err, userId: targetUserId }, 'Failed to send reminder');
+        }
+        // Parallel iOS notification. The Secretary Notification Orchestrator
+        // decides push vs in-app vs quiet-hours/digest; scheduler only emits
+        // the intent.
+        await createNotificationIntent({
+          userId: targetUserId,
+          tenantId: targetUserId,
+          sourceSkill: 'secretary',
+          type: 'reminder',
+          priority: 'active',
+          relatedEntityId: reminder.id,
+          relatedEntityType: 'reminder',
+          title: 'Reminder',
+          body: reminder.message,
+          sensitiveBody: reminder.message,
+          actionButtons: [
+            { id: 'mark_done', label: 'Done', style: 'primary' },
+            { id: 'snooze', label: 'Snooze', style: 'secondary' },
+          ],
+          deeplink: `nexus://notifications/reminder-${reminder.id}`,
+          dedupeKey: `secretary:reminder:${targetUserId}:${reminder.id}`,
+          privacyPolicy: 'sensitive',
+        });
+        markReminderFired(reminder.id);
       }
-      // Parallel iOS push. sendPushNotification already no-ops cleanly when
-      // APNs isn't configured and swallows its own errors, so we don't wrap
-      // it in try/catch — failures are logged inside the sender.
-      await sendPushNotification(targetUserId, {
-        title: 'Reminder',
-        body: reminder.message,
-        sound: 'default',
-        threadId: 'reminders',
-        category: 'REMINDER',
-        data: { reminderId: reminder.id, type: 'reminder' },
-      });
-      markReminderFired(reminder.id);
+    } finally {
+      remindersJobInFlight = false;
     }
   }));
 
@@ -767,14 +1008,40 @@ export function startScheduler(bot?: any): void {
     if ((currentHour >= 22 || currentHour < 7) && currentMinute % 15 !== 0) return;
 
     for (const target of getActiveUserTargets()) {
-      if (!target.telegramId) continue;
       const message = await buildSharedListNotificationForUser(target.tenantId);
       if (!message) continue;
 
+      const signature = createHash('sha256').update(message).digest('hex').slice(0, 16);
       try {
-        await safeSend(target.telegramId, message, { parse_mode: 'HTML' });
+        await createNotificationIntent({
+          userId: target.tenantId,
+          tenantId: target.tenantId,
+          sourceSkill: 'secretary',
+          type: 'missed_item',
+          priority: 'active',
+          relatedEntityId: `shared-list:${target.tenantId}:${signature}`,
+          relatedEntityType: 'shared_task_list',
+          title: 'Shared list update',
+          body: 'New shared tasks need your attention.',
+          sensitiveBody: safeHtmlNotificationBody(message),
+          actionButtons: [{ id: 'open_detail', label: 'Open tasks', style: 'primary' }],
+          deeplink: 'nexus://notifications/shared-list',
+          quietHoursPolicy: 'respect',
+          dedupeKey: `secretary:shared_list:${target.tenantId}:${startOfDay(now())}:${signature}`,
+          requiresUserAction: false,
+          deliveryPolicy: 'auto',
+          privacyPolicy: 'sensitive',
+        });
       } catch (err) {
-        logger.error({ err, userId: target.telegramId, tenantId: target.tenantId }, 'Failed to send shared list notification');
+        logger.error({ err, tenantId: target.tenantId }, 'Failed to create shared list notification intent');
+      }
+
+      if (target.telegramId) {
+        try {
+          await safeSend(target.telegramId, message, { parse_mode: 'HTML' });
+        } catch (err) {
+          logger.error({ err, userId: target.telegramId, tenantId: target.tenantId }, 'Failed to send shared list notification');
+        }
       }
     }
   }), { timezone: tz });
@@ -797,14 +1064,16 @@ export function startScheduler(bot?: any): void {
       { table: 'job_history',       days: 30, tsCol: 'ts' },
       { table: 'error_log',         days: 60, tsCol: 'ts' },
       { table: 'client_errors',     days: 90, tsCol: 'ts' },
+      { table: 'api_usage',         days: 180, tsCol: 'ts' },
+      { table: 'email_log',         days: 60, tsCol: 'ts' },
     ];
     for (const { table, days, tsCol } of retentionTargets) {
       try {
         const { getDb } = require('./database');
         const db = getDb();
         const result = db
-          .prepare(`DELETE FROM ${table} WHERE ${tsCol} < datetime('now', '-${days} days')`)
-          .run();
+          .prepare(`DELETE FROM ${table} WHERE ${tsCol} < datetime('now', '-' || ? || ' days')`)
+          .run(days);
         if (result.changes > 0) {
           logger.info({ table, days, deleted: result.changes }, 'Retention cleanup');
         }
@@ -841,6 +1110,8 @@ export function startScheduler(bot?: any): void {
     } catch (err) {
       logger.warn({ err }, 'Retention cleanup failed for audit_trail');
     }
+
+    runChatCoreV2ShadowDataRetention();
   }), { timezone: tz });
 
   // ── Unified task store: per-provider sync (every 15 min) ───────────
@@ -897,6 +1168,108 @@ export function startScheduler(bot?: any): void {
       }
     } catch (err) {
       logger.warn({ err }, 'Task sync cron failed (sync engine may not be loaded yet)');
+    }
+  }), { timezone: tz });
+
+  // ── Secretary agenda → calendar sync (every 5 min) ────────────────
+  // Closes the orphaned-selectedSlot gap: arbitrator persists an agenda item
+  // with selectedSlot but no cron previously pushed it to Google/Outlook.
+  // Per-user fan-out picks the user's connected calendar source(s) via
+  // hasConnectedCalendarForUser; runs the unified-calendar adapter against
+  // the agenda store. Wave 1 batch cap is 50 items/user/run with the
+  // existing provider_sync_state state machine (see
+  // secretary-agenda-provider-sync.ts:97 for the state enum). Outlook
+  // rate limits aggressively, so retry budget is per-item not per-tick.
+  // Wave 2 escalation: raise to */15 + isCronJobEnabled gate if 429s spike.
+  cron.schedule('*/5 * * * *', wrapJob('secretary_agenda_sync', async () => {
+    try {
+      const { syncSecretaryAgendaItemsToProvider } = require('./secretary-agenda-provider-sync');
+      const { createUnifiedCalendarSecretaryProviderAdapter } = require('./secretary-unified-calendar-provider-adapter');
+      const { reconcileOrphanedTrainingAgendaEvents } = require('./training-agenda-reconciliation');
+      const googleCal = require('./google-calendar');
+      const outlookCal = require('./outlook-calendar');
+      const users = getActiveUserIds();
+      if (users.length === 0) return 'skipped';
+
+      const PER_USER_CAP = 50;
+      const CONCURRENCY = 4;
+      let syncedTotal = 0;
+      let readbackFailedTotal = 0;
+      let reconciledTrainingAgendaTotal = 0;
+
+      // Per-user fan-out with bounded concurrency. Outlook + Google rate-limit
+      // at the request layer (429 with Retry-After), so we keep concurrency low.
+      // Each user's failure is isolated by the inner try/catch.
+      for (let i = 0; i < users.length; i += CONCURRENCY) {
+        const batch = users.slice(i, i + CONCURRENCY);
+        const settled = await Promise.allSettled(
+          batch.map(async (userId) => {
+            const sources: Array<'google' | 'outlook'> = [];
+            if (googleCal.isGoogleCalendarConfigured(userId)) sources.push('google');
+            if (outlookCal.isOutlookCalendarConfigured(userId)) sources.push('outlook');
+            if (sources.length === 0) return { userId, synced: 0, readbackFailed: 0, skipped: true };
+
+            let userSynced = 0;
+            let userReadbackFailed = 0;
+            let userReconciledTrainingAgenda = 0;
+            try {
+              const reconciliation = await reconcileOrphanedTrainingAgendaEvents(userId, userId);
+              userReconciledTrainingAgenda = reconciliation.deleted;
+              if (reconciliation.attempted > 0) {
+                logger.info(
+                  {
+                    userId,
+                    attempted: reconciliation.attempted,
+                    deleted: reconciliation.deleted,
+                    failed: reconciliation.failed,
+                  },
+                  '[scheduler] secretary_agenda_sync reconciled stale Training calendar events',
+                );
+              }
+            } catch (err) {
+              logger.warn({ err, userId }, '[scheduler] secretary_agenda_sync training reconciliation failure');
+            }
+            for (const source of sources) {
+              try {
+                const adapter = createUnifiedCalendarSecretaryProviderAdapter(source);
+                const results = await syncSecretaryAgendaItemsToProvider(
+                  { ownerUserId: userId, tenantId: userId, includeInactive: false },
+                  adapter,
+                );
+                // Bound the work this tick: take at most PER_USER_CAP results.
+                // Remaining items will be picked up next tick because
+                // `provider_sync_state` filtering inside the sync function
+                // already short-circuits already-synced rows.
+                const bounded = results.slice(0, PER_USER_CAP);
+                for (const r of bounded) {
+                  if (r.providerSyncState === 'synced') userSynced += 1;
+                  if (r.providerSyncState === 'readback_failed') userReadbackFailed += 1;
+                }
+              } catch (err) {
+                logger.warn({ err, userId, source }, '[scheduler] secretary_agenda_sync per-user/source failure');
+              }
+            }
+            return { userId, synced: userSynced, readbackFailed: userReadbackFailed, reconciledTrainingAgenda: userReconciledTrainingAgenda };
+          }),
+        );
+        for (const s of settled) {
+          if (s.status === 'fulfilled' && !s.value.skipped) {
+            syncedTotal += s.value.synced;
+            readbackFailedTotal += s.value.readbackFailed;
+            reconciledTrainingAgendaTotal += s.value.reconciledTrainingAgenda ?? 0;
+          } else if (s.status === 'rejected') {
+            logger.warn({ reason: s.reason }, '[scheduler] secretary_agenda_sync batch rejection');
+          }
+        }
+      }
+      if (syncedTotal > 0 || readbackFailedTotal > 0 || reconciledTrainingAgendaTotal > 0) {
+        logger.info(
+          { syncedTotal, readbackFailedTotal, reconciledTrainingAgendaTotal, userCount: users.length },
+          '[scheduler] secretary_agenda_sync complete',
+        );
+      }
+    } catch (err) {
+      logger.warn({ err }, '[scheduler] secretary_agenda_sync cron failed');
     }
   }), { timezone: tz });
 
@@ -996,7 +1369,19 @@ export function startScheduler(bot?: any): void {
     const prev = now().minus({ months: 1 });
     const ownerTenantIds = getOwnerTenantIds();
     for (const tenantId of ownerTenantIds) {
-      const result = await collectAmazonInvoices(tenantId, prev.year, prev.month);
+      const callbacks = createScraperMfaInteractiveCallbacks({
+        userId: tenantId,
+        tenantId,
+        source: 'amazon',
+      });
+      const result = await collectAmazonInvoices(
+        tenantId,
+        prev.year,
+        prev.month,
+        callbacks.sendMessage,
+        callbacks.sendScreenshot,
+        callbacks.waitForReply,
+      );
       const notification = formatAmazonNotification(result);
       const ownerTelegramId = getUserById(tenantId)?.telegram_id;
       if (!ownerTelegramId) continue;
@@ -1015,7 +1400,19 @@ export function startScheduler(bot?: any): void {
     const prev = now().minus({ months: 1 });
     const ownerTenantIds = getOwnerTenantIds();
     for (const tenantId of ownerTenantIds) {
-      const result = await collectUberInvoices(tenantId, prev.year, prev.month);
+      const callbacks = createScraperMfaInteractiveCallbacks({
+        userId: tenantId,
+        tenantId,
+        source: 'uber',
+      });
+      const result = await collectUberInvoices(
+        tenantId,
+        prev.year,
+        prev.month,
+        callbacks.sendMessage,
+        callbacks.sendScreenshot,
+        callbacks.waitForReply,
+      );
       const notification = formatUberNotification(result);
       const ownerTelegramId = getUserById(tenantId)?.telegram_id;
       if (!ownerTelegramId) continue;
@@ -1028,8 +1425,14 @@ export function startScheduler(bot?: any): void {
   }), { timezone: tz });
 
   // ── Bi-weekly fossa email (Monday 07:30) ───────────────────────────
+  // Identity-safety: this cron sends a single-tenant home-services request
+  // with literal owner PII (full name, address, phone, account number).
+  // Gate behind an explicit FOSSA_EMAIL_ENABLED=1 env flag in addition to
+  // OUTLOOK availability so a different tenant configuring Outlook does
+  // NOT inherit this owner-specific automation.
   const fossaTo = process.env.FOSSA_EMAIL_TO || 'smas.fossas@mun-montijo.pt';
-  if (isOutlookMailConfigured()) {
+  const fossaEnabled = (process.env.FOSSA_EMAIL_ENABLED || '').trim() === '1';
+  if (fossaEnabled && isOutlookMailConfigured()) {
     cron.schedule('30 7 * * 1', wrapJob('fossa_email', async () => {
       const today = now();
       const refDate = today.set({ year: 2026, month: 3, day: 23, hour: 0, minute: 0, second: 0, millisecond: 0 });
@@ -1065,10 +1468,47 @@ export function startScheduler(bot?: any): void {
   // ── Conflict detection (19:30) ─────────────────────────────────────
   cron.schedule('30 19 * * *', wrapJob('conflict_detection', async () => {
     for (const target of getActiveUserTargets()) {
-      if (!target.telegramId) continue;
       const message = await buildConflictAlertForUser(target.tenantId);
       if (!message) continue;
 
+      const conflictSignature = createHash('sha256')
+        .update(message.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim())
+        .digest('hex')
+        .slice(0, 16);
+
+      try {
+        await createNotificationIntent({
+          userId: target.tenantId,
+          tenantId: target.tenantId,
+          sourceSkill: 'secretary',
+          type: 'conflict_detected',
+          priority: 'time_sensitive',
+          relatedEntityId: `conflict-detection-${startOfDay()}-${conflictSignature}`,
+          relatedEntityType: 'calendar_conflict',
+          title: 'Schedule conflict detected',
+          body: 'Schedule conflict needs review.',
+          sensitiveBody: message.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim(),
+          actionButtons: [
+            { id: 'open_detail', label: 'Review', style: 'primary' },
+          ],
+          deeplink: 'nexus://secretary/conflict/daily',
+          dedupeKey: `secretary:conflict_detection:${target.tenantId}:${startOfDay()}:${conflictSignature}`,
+          requiresUserAction: true,
+          decisionDeadline: new Date(Date.now() + 3 * 3_600_000).toISOString(),
+          decisionContext: {
+            entityTitle: 'Daily schedule conflict',
+            sourceState: 'conflict_detected',
+            deadlineAt: new Date(Date.now() + 3 * 3_600_000).toISOString(),
+            explicitNoRelatedEntityReason: null,
+          },
+          quietHoursPolicy: 'allow_time_sensitive',
+          privacyPolicy: 'sensitive',
+        });
+      } catch (err) {
+        logger.warn({ err, tenantId: target.tenantId }, 'Conflict notification intent emit failed');
+      }
+
+      if (!target.telegramId) continue;
       try {
         await safeSend(target.telegramId, message, { parse_mode: 'HTML' });
       } catch (err) {
@@ -1100,7 +1540,6 @@ export function startScheduler(bot?: any): void {
         setSilentMode(true);
         logger.info('Garmin: startup keepalive — refreshing tokens immediately (silent mode)');
         const ok = await garminKeepAlive();
-        setSilentMode(false);
         recordGarminRefresh(ok);
         if (ok) {
           logger.info('Garmin: startup keepalive successful — session is live');
@@ -1109,6 +1548,9 @@ export function startScheduler(bot?: any): void {
         }
       } catch (err) {
         logger.warn({ err }, 'Garmin: startup keepalive error (non-fatal)');
+      } finally {
+        const { setSilentMode } = require('./garmin');
+        setSilentMode(false);
       }
     }, 5000); // 5s delay to let other services initialize first
   }
@@ -1137,9 +1579,6 @@ export function startScheduler(bot?: any): void {
 
   // ── Training Plan weekly auto-adjust (Sunday 19:00) ─────────────────
   cron.schedule('0 19 * * 0', wrapJob('training_plan_adjust', async () => {
-    const { getActivePlan, getCurrentWeek, getWeeklyAdherence, computeAdjustmentRecommendation, updateWeekAdjustment, getWeeksForPlan } = require('./training-plans');
-    const { calculateReadiness, persistReadinessScore } = require('./readiness-scorer');
-
     // ── Pre-authenticate Garmin silently BEFORE touching any Garmin API ──
     //
     // The cron has no interactive user to answer an MFA code, so the
@@ -1194,7 +1633,7 @@ export function startScheduler(bot?: any): void {
       let readinessRec = '';
       if (garminAvailable) {
         try {
-          const readiness = await calculateReadiness(userId);
+          const readiness = await calculateReadiness(userId, { garminSilent: true });
           persistReadinessScore(userId, readiness);
           readinessScore = readiness.score;
           readinessRec = readiness.recommendation;
@@ -1235,6 +1674,29 @@ export function startScheduler(bot?: any): void {
         } catch (err) {
           logger.error({ err, userId }, 'Failed to send training adjustment notification');
         }
+
+        try {
+          await createNotificationIntent({
+            userId,
+            tenantId: userId,
+            sourceSkill: 'training',
+            type: 'schedule_changed',
+            priority: 'active',
+            relatedEntityId: `training-plan-adjust:${plan.id}:${nextWeek.id}`,
+            relatedEntityType: 'training_week_adjustment',
+            title: 'Training week adjusted',
+            body: 'Nexus adjusted your next training week.',
+            sensitiveBody: safeHtmlNotificationBody(msg),
+            actionButtons: [{ id: 'open_detail', label: 'Open training', style: 'primary' }],
+            deeplink: `nexus://training/plan/${plan.id}`,
+            dedupeKey: `training:plan_adjust:${userId}:${plan.id}:${nextWeek.id}:${recommendation.adjustIntensity}`,
+            requiresUserAction: false,
+            deliveryPolicy: 'auto',
+            privacyPolicy: 'health',
+          });
+        } catch (err) {
+          logger.warn({ err, userId, planId: plan.id, weekId: nextWeek.id }, 'Training adjustment notification intent emit failed');
+        }
       }
 
       // ── Plan renewal check ───────────────────────────────────
@@ -1254,15 +1716,31 @@ export function startScheduler(bot?: any): void {
 
         try {
           await safeSend(userId, renewMsg, { parse_mode: 'HTML' });
-          // Send APNs notification
-          const { sendPushToUser } = require('./push-service');
-          sendPushToUser?.(userId, {
-            title: 'Plan Complete! 🔄',
-            body: `${plan.name} finished. Create your next training cycle.`,
-            data: { type: 'training_renewal', planId: String(plan.id) },
-          }).catch(() => {});
         } catch (err) {
-          logger.error({ err, userId }, 'Failed to send plan renewal notification');
+          logger.error({ err, userId }, 'Failed to send plan renewal Telegram notification');
+        }
+
+        try {
+          await createNotificationIntent({
+            userId,
+            tenantId: userId,
+            sourceSkill: 'training',
+            type: 'reminder',
+            priority: 'active',
+            relatedEntityId: `training-plan-renewal:${plan.id}`,
+            relatedEntityType: 'training_plan',
+            title: 'Training plan complete',
+            body: 'Your training plan is complete. Open Nexus to choose what comes next.',
+            sensitiveBody: safeHtmlNotificationBody(renewMsg),
+            actionButtons: [{ id: 'open_detail', label: 'Open training', style: 'primary' }],
+            deeplink: `nexus://training/plan/${plan.id}`,
+            dedupeKey: `training:plan_renewal:${userId}:${plan.id}`,
+            requiresUserAction: false,
+            deliveryPolicy: 'auto',
+            privacyPolicy: 'health',
+          });
+        } catch (err) {
+          logger.warn({ err, userId, planId: plan.id }, 'Training renewal notification intent emit failed');
         }
       }
       }); // runWithContext per-user scope end
@@ -1306,12 +1784,20 @@ export function startScheduler(bot?: any): void {
         } catch (err) {
           logger.error({ err, userId }, 'Failed to send channel relearn notification');
         }
-        await sendPushNotification(userId, {
+        await createNotificationIntent({
+          userId,
+          tenantId: userId,
+          sourceSkill: 'content',
+          type: result.failed > 0 ? 'sync_failure' : 'insight',
+          priority: result.failed > 0 ? 'active' : 'passive',
+          relatedEntityId: 'channel_relearn',
+          relatedEntityType: 'content_channel_relearn',
           title: 'Channel Re-Learn',
           body: `${result.analyzed} channels analyzed${result.failed > 0 ? `, ${result.failed} failed` : ''}${result.synthesized ? ' — knowledge updated' : ''}`,
-          threadId: 'channel_relearn',
-          category: 'BRIEFING',
-          data: { type: 'channel_relearn', analyzed: result.analyzed, failed: result.failed, synthesized: result.synthesized },
+          actionButtons: [{ id: 'open_detail', label: 'Open', style: 'primary' }],
+          deeplink: 'nexus://notifications/channel-relearn',
+          dedupeKey: `content:channel_relearn:${userId}:${startOfDay()}`,
+          privacyPolicy: 'private_content',
         });
       }
     }
@@ -1319,35 +1805,17 @@ export function startScheduler(bot?: any): void {
 
   // ── Content Workflow: Tuesday Reel Topics (09:00) ──────────────────
   cron.schedule('0 9 * * 2', wrapJob('tuesday_reels', async () => {
-    for (const userId of getOwnerUserIds()) {
-      try {
-        await sendTopicCandidates(bot, userId, 'reel', 'tuesday_reels');
-      } catch (err) {
-        logger.error({ err, userId }, 'Tuesday reel topics failed');
-      }
-    }
+    await runContentTopicCronForActiveUsers('reel', 'tuesday_reels');
   }), { timezone: tz });
 
   // ── Content Workflow: Thursday YT Topic (09:00) ───────────────────
   cron.schedule('0 9 * * 4', wrapJob('thursday_youtube', async () => {
-    for (const userId of getOwnerUserIds()) {
-      try {
-        await sendTopicCandidates(bot, userId, 'youtube', 'thursday_youtube');
-      } catch (err) {
-        logger.error({ err, userId }, 'Thursday YouTube topics failed');
-      }
-    }
+    await runContentTopicCronForActiveUsers('youtube', 'thursday_youtube');
   }), { timezone: tz });
 
   // ── Content Workflow: Friday Weekly Package (18:30) ────────────────
   cron.schedule('30 18 * * 5', wrapJob('friday_weekly', async () => {
-    for (const userId of getOwnerUserIds()) {
-      try {
-        await sendWeeklyPackage(bot, userId);
-      } catch (err) {
-        logger.error({ err, userId }, 'Friday weekly package failed');
-      }
-    }
+    await runWeeklyContentPackageCronForActiveUsers();
   }), { timezone: tz });
 
   // ── Pipeline Agent (daily 20:00) ───────────────────────────────────
@@ -1440,7 +1908,7 @@ export function startScheduler(bot?: any): void {
   cron.schedule('0 * * * *', wrapJob('expire_signals', async () => {
     const expired = expireStaleSignals();
     if (expired > 0) logger.info({ expired }, 'Expired stale intelligence bus signals');
-  }));
+  }), { timezone: tz });
 
   // Run signal expiry on startup
   expireStaleSignals();
@@ -1454,7 +1922,11 @@ export function startScheduler(bot?: any): void {
   cron.schedule('*/5 * * * *', wrapJob('integration_health', async () => {
     const { runHealthProbes } = require('./integration-health');
     await runHealthProbes();
-  }));
+  }), { timezone: tz });
+
+  cron.schedule('45 6 * * *', wrapJob('garmin_tenant_isolation_watcher', async () => {
+    await runGarminTenantIsolationWatcher();
+  }), { timezone: tz });
 
   cron.schedule('* * * * *', wrapJob('operator_alert_delivery', async () => {
     const results = await processDueOperatorAlertDeliveries(25);
@@ -1469,7 +1941,42 @@ export function startScheduler(bot?: any): void {
       },
       'Operator alert delivery cycle complete',
     );
-  }));
+  }), { timezone: tz });
+
+  cron.schedule('0 4 * * *', wrapJob('nexus_points_expiry', async () => {
+    expireOldNexusPointCredits();
+  }), { timezone: 'UTC' });
+
+  // ── Option 3 (O3-A23): classify_shadow_runs retention prune ────────
+  // Deletes shadow-eval rows older than CLASSIFY_SHADOW_RETENTION_DAYS
+  // (default 30), but preserves any row the operator manually reviewed
+  // (manually_reviewed=1) — those carry training-data value indefinitely.
+  // Runs daily at 04:17 UTC, after the nexus_points_expiry tick.
+  cron.schedule('17 4 * * *', wrapJob('classify_shadow_prune', async () => {
+    const raw = process.env.CLASSIFY_SHADOW_RETENTION_DAYS;
+    const days = (() => {
+      const n = raw ? parseInt(raw, 10) : NaN;
+      return Number.isFinite(n) && n >= 1 && n <= 365 ? n : 30;
+    })();
+    try {
+      const db = getDb();
+      const result = db.prepare(`
+        DELETE FROM classify_shadow_runs
+        WHERE ts < datetime('now', '-' || ? || ' days')
+          AND manually_reviewed = 0
+      `).run(days);
+      logger.info(
+        { deletedRows: result.changes, retentionDays: days },
+        'classify_shadow_runs pruned',
+      );
+    } catch (err) {
+      // Table may not exist on a brand-new DB before migration 171 runs.
+      logger.warn(
+        { err: err instanceof Error ? err.message : String(err), retentionDays: days },
+        'classify_shadow_prune: skipped (table missing or query failed)',
+      );
+    }
+  }), { timezone: 'UTC' });
 
   // Seed SEO keywords (only if table is empty)
   try {
@@ -1501,7 +2008,7 @@ export function startScheduler(bot?: any): void {
   const DST_SKIP_JOBS = new Set([
     'reminders', 'shared_list', 'garmin_keepalive', 'invoice_queue', 'expire_signals',
   ]);
-  cron.schedule('2,17,32,47 * * * *', async () => {
+  cron.schedule('2,17,32,47 * * * *', wrapJob('dst_watchdog', async () => {
     const jobMap = getJobMap();
     const nowMs = Date.now();
     for (const [name, status] of jobMap) {
@@ -1529,11 +2036,210 @@ export function startScheduler(bot?: any): void {
         // ignore parse errors for unusual cron expressions
       }
     }
-  });
+  }), { timezone: tz });
+
+  registerJob('notification_release', 'Notification delayed/digest release', '*/15 * * * *', 'system');
+  cron.schedule('*/15 * * * *', wrapJob('notification_release', async () => {
+    const result = await releaseDueNotificationDeliveries();
+    if (result.inspected > 0) {
+      logger.info(result, 'Notification delayed/digest release completed');
+    }
+  }), { timezone: tz });
+
+  cron.schedule('*/15 * * * *', wrapJob('decision_source_supersession', async () => {
+    const result = runDecisionSourceStateSupersessionJob();
+    if (result.supersededCount === 0) return 'skipped';
+    logger.info(result, 'Decision source-state supersession completed');
+  }), { timezone: tz });
+
+  cron.schedule('22,52 * * * *', wrapJob('decision_handled_history_backfill', async () => {
+    const result = runDecisionHandledHistoryBackfillJob({ limit: 100 });
+    if (result.backfilled === 0 && result.failed === 0) return 'skipped';
+    logger.info(result, 'Decision handled-history backfill completed');
+  }), { timezone: tz });
+
+  cron.schedule('7,37 * * * *', wrapJob('decision_center_smoke_cleanup', async () => {
+    const result = runDecisionCenterSmokeCleanupJob({ olderThanHours: 24, limit: 100 });
+    if (result.expired === 0) return 'skipped';
+    logger.info(result, 'Decision Center smoke cleanup completed');
+  }), { timezone: tz });
+
+  cron.schedule('*/10 * * * *', wrapJob('decision_expiry', async () => {
+    const result = runDecisionExpiryJob({ batchSize: 500, maxBatches: 20 });
+    if (result.expired === 0) return 'skipped';
+    logger.info(result, 'Decision expiry sweep completed');
+  }), { timezone: tz });
+
+  cron.schedule('15 0 * * *', wrapJob('decision_metrics_rollup', async () => {
+    const yesterday = decisionMetricsRollupDateForScheduler(new Date(), tz);
+    const result = runDecisionMetricsRollupJob({ date: yesterday });
+    logger.info(result, 'Decision metrics daily rollup completed');
+  }), { timezone: tz });
+
+  cron.schedule('40 4 * * *', wrapJob('decision_ledger_retention_prune', async () => {
+    const result = runDecisionLedgerRetentionPruneJob({ batchSize: 500, maxBatches: 200 });
+    if (result.outcomeLedgerPruned === 0 && result.qualityGateEventsPruned === 0) return 'skipped';
+    logger.info(result, 'Decision ledger retention prune completed');
+  }), { timezone: tz });
+
+  cron.schedule('*/2 * * * *', wrapJob('chat_action_plan_expiry', async () => {
+    const expiredPendingActions = expireStalePendingChatActionsForJob();
+    if (expiredPendingActions === 0) return 'skipped';
+    logger.info({ expiredPendingActions }, 'Expired stale pending chat actions');
+  }), { timezone: tz });
+
+  cron.schedule('*/5 * * * *', wrapJob('chat_action_run_zombie_reaper', async () => {
+    const reaped = reapZombieChatActionRuns();
+    if (reaped === 0) return 'skipped';
+    logger.warn({ reaped }, 'Reaped orphaned chat action runs stuck in executing status');
+  }), { timezone: tz });
+
+  cron.schedule('* * * * *', wrapJob('chat_action_fixer_worker', async () => {
+    const result = await processChatActionFixerJobs({
+      limit: intEnv('CHAT_ACTION_FIXER_JOB_BATCH_LIMIT', 5, 1, 25),
+      lockOwner: `chat-action-fixer:${process.pid}`,
+    });
+    const touched = result.completed + result.failed + result.deadLetter;
+    if (result.deadLetter > 0) {
+      logger.warn(result, 'Chat action fixer worker produced dead-letter rows');
+    }
+    if (touched === 0) return 'skipped';
+    logger.info(result, 'Chat action fixer worker completed');
+  }), { timezone: tz });
+
+  cron.schedule('20 0 * * *', wrapJob('chat_action_run_retention', async () => {
+    const deleted = pruneCompletedChatActionRuns();
+    if (deleted === 0) return 'skipped';
+    logger.info({ deleted, retentionDays: 90 }, 'Pruned retained chat action run summaries');
+  }), { timezone: tz });
+
+  if (resolveChatCoreV2ActivationConfig(process.env).mode !== 'off' && isChatCoreV2AutoRevertEvalCronEnabled(process.env)) {
+    cron.schedule('*/5 * * * *', wrapJob('chat_v2_auto_revert_eval', async () => {
+      let evaluated = 0;
+      let wouldRevert = 0;
+      try {
+        const db = getDb();
+        const tenantIds = getActiveChatCoreV2TenantIds(db);
+        if (tenantIds.length === 0) return 'skipped';
+
+        for (const tenantId of tenantIds) {
+          try {
+            const metrics = await computeChatCoreV2AutoRevertMetrics(db, { tenantId });
+            const decision = evaluateChatCoreV2AutoRevertPolicy(metrics);
+            evaluated += 1;
+            const isRevert = !(decision.actions.length === 1 && decision.actions[0] === 'keep_current_mode');
+            if (isRevert) wouldRevert += 1;
+            logger.info(
+              {
+                event: 'chat_core_v2_auto_revert_eval',
+                tenantToken: opaqueChatV2TenantToken(tenantId),
+                metrics: {
+                  legacyFallbackRate24h: metrics.legacyFallbackRate24h,
+                  ollamaHealthy: metrics.ollamaHealthy,
+                  schemaComplianceRate1h: metrics.schemaComplianceRate1h,
+                  perLanguageArmActive: false,
+                },
+                decision: {
+                  actions: decision.actions,
+                  reasonCodes: decision.reasonCodes,
+                  affectedLanguageCount: decision.affectedLanguages.length,
+                },
+              },
+              'Chat Core v2 auto-revert evaluation (decision applied below)',
+            );
+            await applyAutoRevertDecision(tenantId, decision, metrics, db);
+          } catch (err) {
+            logger.warn(
+              {
+                event: 'chat_core_v2_auto_revert_eval_tenant_failed',
+                tenantToken: opaqueChatV2TenantToken(tenantId),
+                err: err instanceof Error ? err.message : String(err),
+              },
+              'Chat Core v2 auto-revert evaluation failed for one tenant (loop continues)',
+            );
+          }
+        }
+        logger.info(
+          { event: 'chat_core_v2_auto_revert_eval_cycle', evaluated, wouldRevert },
+          'Chat Core v2 auto-revert evaluation cycle complete',
+        );
+      } catch (err) {
+        logger.warn(
+          { event: 'chat_core_v2_auto_revert_eval_cycle_failed', err: err instanceof Error ? err.message : String(err) },
+          'Chat Core v2 auto-revert evaluation cycle failed',
+        );
+      }
+    }), { timezone: 'UTC' });
+  }
+
+  if (resolveChatCoreV2ActivationConfig(process.env).mode !== 'off') {
+    cron.schedule('37 * * * *', wrapJob('chat_v2_gate_check', async () => {
+      runChatCoreV2GateCheck();
+    }), { timezone: 'UTC' });
+  }
+
+  cron.schedule('* * * * *', wrapJob('event_backbone_worker', async () => {
+    if (process.env.EVENT_BACKBONE_WORKER_DISABLED === '1') {
+      return 'skipped';
+    }
+
+    const result = await runEventBackboneOnce({
+      eventLimit: intEnv('EVENT_BACKBONE_EVENT_BATCH_LIMIT', 25, 1, 100),
+      jobLimit: intEnv('EVENT_BACKBONE_JOB_BATCH_LIMIT', 10, 1, 50),
+      lockOwner: `scheduler:${process.pid}`,
+    });
+    const touched =
+      result.events.processed +
+      result.events.failed +
+      result.events.deadLetter +
+      result.jobs.completed +
+      result.jobs.failed +
+      result.jobs.deadLetter;
+
+    if (result.events.deadLetter > 0 || result.jobs.deadLetter > 0) {
+      logger.warn(result, 'Event backbone worker produced dead-letter rows');
+    }
+    if (touched === 0) return 'skipped';
+    logger.info(result, 'Event backbone worker processed pending work');
+  }), { timezone: tz });
+
+  cron.schedule('10 0 * * *', wrapJob('event_backbone_cleanup', async () => {
+    if (process.env.EVENT_BACKBONE_CLEANUP_DISABLED === '1') {
+      return 'skipped';
+    }
+
+    const apply = process.env.EVENT_BACKBONE_CLEANUP_APPLY === '1';
+    const report = runEventBackboneCleanup({
+      dbPath: config.app.databasePath,
+      apply,
+      retentionDays: intEnv('EVENT_BACKBONE_RETENTION_DAYS', 30, 1, 3650),
+      protectNewest: intEnv('EVENT_BACKBONE_RETENTION_PROTECT_NEWEST', 500, 0, 100000),
+    });
+    const candidates = report.targets.reduce((sum, target) => sum + target.candidates, 0);
+    const deleted = report.targets.reduce((sum, target) => sum + target.deleted, 0);
+    if (candidates === 0 && deleted === 0) return 'skipped';
+    logger.info(
+      {
+        apply,
+        retentionDays: report.retentionDays,
+        candidates,
+        deleted,
+        targets: report.targets.map(({ table, candidates, deleted }) => ({ table, candidates, deleted })),
+      },
+      'Event backbone retention cleanup completed',
+    );
+  }), { timezone: tz });
 
   logger.info(
-    `Scheduler started: reminders, daily briefing (${config.todo.digestTime}), end-of-day (21:00), weekly (Fri 17:00), shared list (*/5), content (16:43), invoices (1st 09:00/09:15/09:30), fiscal-bundle (daily 08:10 due-check), conflict (19:30), fossa (bi-weekly Mon 07:30), garmin-keepalive (*/30), coach (${config.garmin.coachTime}), invoice-queue (*/15), channel-relearn (Sun 03:00), tue-reels (Tue 09:00), thu-youtube (Thu 09:00), fri-weekly (Fri 18:30), pipeline-agent (20:00), expire-signals (hourly), db-backup (${config.backup.time}), dst-watchdog (*/15)`
+    `Scheduler started: reminders, daily briefing (${config.todo.digestTime}), end-of-day (21:00), weekly (Fri 17:00), shared list (*/5), content (16:43), invoices (1st 09:00/09:15/09:30), fiscal-bundle (daily 08:10 due-check), conflict (19:30), fossa (bi-weekly Mon 07:30), garmin-keepalive (*/30), coach (${config.garmin.coachTime}), invoice-queue (*/15), channel-relearn (Sun 03:00), tue-reels (Tue 09:00), thu-youtube (Thu 09:00), fri-weekly (Fri 18:30), pipeline-agent (20:00), notification-release (*/15), decision-source-supersession (*/15), chat-action-plan-expiry (*/2), chat-action-run-zombie-reaper (*/5), chat-action-run-retention (00:20), event-backbone-worker (* * * * *), event-backbone-cleanup (00:10), nexus-points-expiry (04:00 UTC), expire-signals (hourly), db-backup (${config.backup.time}), dst-watchdog (*/15)`
   );
+}
+
+function intEnv(name: string, fallback: number, min: number, max: number): number {
+  const raw = process.env[name];
+  const parsed = raw ? Number.parseInt(raw, 10) : fallback;
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.max(min, Math.min(max, Math.floor(parsed)));
 }
 
 // ── Exported for portal quick actions ─────────────────────────────────
@@ -1549,7 +2255,7 @@ export async function sendCoachBriefings(bot?: any): Promise<void> {
     await runWithContext({ source: 'cron:garmin_coach', userId: target.tenantId }, async () => {
       let result;
       try {
-        result = await generateCoachBriefing(target.tenantId);
+        result = await generateCoachBriefing(target.tenantId, { garminSilent: true });
       } catch (err) {
         logger.warn({ err, userId: target.tenantId }, 'Coach briefing skipped for user');
         return;
@@ -1573,7 +2279,7 @@ export async function sendCoachBriefings(bot?: any): Promise<void> {
         let readinessData: any = null;
         try {
           const { calculateReadiness } = require('./readiness-scorer');
-          readinessData = await calculateReadiness(target.tenantId);
+          readinessData = await calculateReadiness(target.tenantId, { garminSilent: true });
         } catch { /* non-fatal */ }
 
         await storeAndPushReport({
@@ -1637,7 +2343,11 @@ export async function sendDailyBriefing(bot?: any): Promise<void> {
   };
   for (const target of getActiveUserTargets()) {
     const data = await buildDailyBriefingDataForUser(target.tenantId);
-    const msg = formatDailyBriefing(data, getUserLanguage(target.tenantId));
+    // Identity-safety: resolve display name via the strict by-id helper so
+    // the briefing greets the actual recipient and never the legacy founder
+    // default. Empty string falls through to a name-less greeting.
+    const recipientDisplayName = getPreferredDisplayNameById(target.tenantId);
+    const msg = formatDailyBriefing(data, getUserLanguageById(target.tenantId), recipientDisplayName);
     const chunks = splitMessage(msg);
 
     // ── Store durable report + push (April 2026) ────────────────────
@@ -1666,6 +2376,11 @@ export async function sendDailyBriefing(bot?: any): Promise<void> {
       }
     }
   }
+}
+
+function isChatCoreV2AutoRevertEvalCronEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  const raw = String(env.CHAT_CORE_V2_AUTO_REVERT_EVAL ?? 'true').trim().toLowerCase();
+  return raw !== '0' && raw !== 'false' && raw !== 'off' && raw !== 'no';
 }
 
 async function sendWeeklyReview(bot?: any): Promise<void> {

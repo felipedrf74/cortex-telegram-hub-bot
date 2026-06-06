@@ -29,7 +29,7 @@ import { logger } from '../utils/logger';
 
 // ─── Types ──────────────────────────────────────────────────────────
 
-export type ProviderName = 'anthropic' | 'openai' | 'gemini';
+export type ProviderName = 'anthropic' | 'openai' | 'gemini' | 'ollama';
 export type ModelRole = 'chat' | 'classifier';
 export type DomainModelRole = 'secretary' | 'triathlon' | 'content' | 'finance' | 'cooking';
 
@@ -65,7 +65,7 @@ function cacheKey(provider: ProviderName, role: AnyModelRole): string {
 const DEFAULTS: Record<string, string> = {};
 
 function captureDefaults(): void {
-  for (const provider of ['anthropic', 'openai', 'gemini'] as ProviderName[]) {
+  for (const provider of ['anthropic', 'openai', 'gemini', 'ollama'] as ProviderName[]) {
     const cfg = config[provider] as { model?: string; classifierModel?: string } | undefined;
     if (cfg) {
       DEFAULTS[cacheKey(provider, 'chat')] = cfg.model || 'unknown';
@@ -288,8 +288,8 @@ export const MODEL_OPTIONS: Record<ProviderName, { chat: string[]; classifier: s
     classifier: ['claude-haiku-4-5-20251001', 'claude-sonnet-4-6'],
   },
   openai: {
-    chat: ['gpt-5', 'gpt-5-mini', 'gpt-5.4', 'gpt-4.1-mini', 'o4-mini'],
-    classifier: ['gpt-5-nano', 'gpt-5-mini', 'gpt-4.1-nano'],
+    chat: ['gpt-5.4-nano', 'gpt-5.4-mini', 'gpt-5', 'gpt-5-mini', 'gpt-5.4', 'gpt-4.1-mini', 'o4-mini'],
+    classifier: ['gpt-5.4-nano', 'gpt-5-nano', 'gpt-5-mini', 'gpt-4.1-nano'],
   },
   gemini: {
     // Only models that exist on Google's API as of 2026-04. gemini-2.5-pro
@@ -297,6 +297,12 @@ export const MODEL_OPTIONS: Record<ProviderName, { chat: string[]; classifier: s
     // gemini-2.5-flash-lite is the cheap-fast classifier tier.
     chat: ['gemini-2.5-flash', 'gemini-2.5-pro', 'gemini-2.5-flash-lite'],
     classifier: ['gemini-2.5-flash-lite', 'gemini-2.5-flash'],
+  },
+  // Local Ollama (WO-ollama-local-llm). Both tags listed; operators flip
+  // OLLAMA_MODEL between them as a tier-1b rollback path.
+  ollama: {
+    chat: ['qwen3.6:35b-a3b-q4_K_M', 'qwen3.6:27b-q4_K_M'],
+    classifier: ['qwen3.6:35b-a3b-q4_K_M', 'qwen3.6:27b-q4_K_M'],
   },
 };
 

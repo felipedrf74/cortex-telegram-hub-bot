@@ -7,13 +7,26 @@ import { config } from '../../config';
 import { getCached, setCache, getCachedSWR, setCacheSWR, userCacheKey } from '../../services/cache-store';
 import { sendSuccess, sendError, sendInternalError } from '../response-helpers';
 import * as microsoftTodo from '../../services/microsoft-todo';
+import { getGraphClient } from '../../services/microsoft-auth';
 import { getTaskProviderForUser, resolveTaskProvider } from '../../services/task-store/task-router';
 import { resolveTaskCreationList, TaskListResolutionError } from '../../services/task-store/task-list-resolution';
-import { getOwnerBootstrapUser, getUserTimezone } from '../../services/user-service';
+import { getOwnerBootstrapUser, getUserTimezoneById } from '../../services/user-service';
 import { ensureValidTenantRouteScope } from '../tenant-route-scope';
-import { invalidateTaskCaches } from '../../services/task-cache-invalidator';
+import { assertTenantScope } from '../../services/tenant-scope';
+import { invalidateTaskCaches } from '../../services/cache-coherence-registry';
 import { normalizeMicrosoftRecurrence } from '../../services/recurrence-utils';
-import { recordSWRRefreshFailure, recordSWRRefreshSuccess } from '../../services/swr-refresh-observability';
+import { consumeResourceBudget } from '../../services/resource-budgets';
+import {
+  buildTaskWorkingSetPolicy,
+  capTaskPageSize,
+  getTaskProviderCapabilities,
+  normalizeTaskListScope,
+  statusForTaskScope,
+} from '../../services/task-working-set-policy';
+import { handleCachedRoute, routeCacheKey } from '../route-helpers/cached-route-handler';
+import { sendProviderRouteError } from '../route-helpers/provider-error-classifier';
+import { buildNexusAnswerContract } from '../../services/chat-answer-contract';
+import { safeRecordChatV2DeterministicReadEvidence } from '../../services/chat-deterministic-read-evidence';
 
 // Cache TTLs
 const LISTS_CACHE_TTL = 300;  // 5 min for list names (rarely change)
@@ -25,10 +38,6 @@ const TASKS_CACHE_TTL = 120;  // 2 min for task items (change more often)
 const LISTS_SWR_STALE = 1800;  // 30 min stale grace for lists
 const TASKS_SWR_STALE = 600;   // 10 min stale grace for individual lists
 
-// In-flight refresh tracker — prevents 50 concurrent SWR requests from
-// triggering 50 background refreshes for the same key. Each key can have
-// at most one in-flight background fetch at a time.
-const swrInFlight = new Set<string>();
 const completeTaskInFlight = new Map<string, Promise<{ task: any; alreadyCompleted: boolean }>>();
 
 export function dateKeyInAppTimezone(
@@ -54,14 +63,48 @@ export function taskDueDateKey(
   return dateKeyInAppTimezone(raw, timezone);
 }
 
-function swrRefresh(key: string, fn: () => Promise<void>): void {
-  if (swrInFlight.has(key)) return;
-  swrInFlight.add(key);
-  // Detached so the response goes out immediately.
-  fn()
-    .then(() => recordSWRRefreshSuccess(key))
-    .catch((err) => recordSWRRefreshFailure(key, err, { source: 'tasks_route', operation: 'task_swr_refresh' }))
-    .finally(() => swrInFlight.delete(key));
+function recordTasksFilteredApiReadEvidence(input: {
+  userId: number;
+  tenantId: number | undefined;
+  filter: string;
+  payload: { count?: unknown };
+  cached: boolean;
+}): void {
+  const tenantId = typeof input.tenantId === 'number' && input.tenantId > 0 ? input.tenantId : input.userId;
+  const normalizedMessage = `GET /api/v1/tasks/filtered?filter=${input.filter}`;
+  const requestId = `tasks-filtered:${tenantId}:${input.userId}:${input.filter}:${Date.now()}`;
+  const count = typeof input.payload.count === 'number' ? input.payload.count : 0;
+  safeRecordChatV2DeterministicReadEvidence({
+    tenantId,
+    userId: input.userId,
+    requestId,
+    normalizedMessage,
+    tokenZeroSurface: 'api',
+    tokenZeroPreserved: true,
+    tenantUserIsolationPassed: true,
+    response: {
+      id: requestId,
+      text: `Tasks API returned ${count} item${count === 1 ? '' : 's'}.`,
+      domain: 'tasks',
+      routeMethod: 'api',
+      metadata: {
+        chatReasoning: buildNexusAnswerContract({
+          intent: 'tasks.read',
+          ownerSkill: 'tasks',
+          routeMethod: 'api',
+          routeKind: 'local_read',
+          groundingRequirement: 'local',
+          expectedResponseShape: 'task_options',
+          language: 'en',
+          actionability: 'answer_only',
+          verificationStatus: 'not_required',
+          confidence: 1,
+          traceId: requestId,
+          fallback: input.cached ? { fallbackType: 'cached_read' } : undefined,
+        }),
+      },
+    },
+  });
 }
 
 /**
@@ -78,35 +121,6 @@ function getTodo(req?: any) {
     }
   }
   return microsoftTodo;
-}
-
-function sendTaskProviderError(
-  res: Response,
-  err: unknown,
-  operation: 'create' | 'read' | 'update' | 'delete',
-): void {
-  const raw = typeof err === 'string'
-    ? err
-    : (err && typeof err === 'object' && 'message' in err ? String((err as any).message) : '');
-  const message = raw.toLowerCase();
-  const status = typeof err === 'object' && err && 'status' in err ? Number((err as any).status) : undefined;
-
-  if (status === 401 || status === 403 || /\b(invalid_grant|unauthorized|forbidden|expired|reauth|token)\b/.test(message)) {
-    sendError(res, 'PROVIDER_AUTH_REQUIRED', 'Reconnect your task provider and try again.', 401);
-    return;
-  }
-
-  if (status === 429 || /\b(rate|quota|throttle)\b/.test(message)) {
-    sendError(res, 'PROVIDER_RATE_LIMITED', 'Your task provider is rate limited right now. Try again shortly.', 429);
-    return;
-  }
-
-  if ((status && status >= 500) || /\b(timeout|network|unavailable|temporar|econnreset|etimedout)\b/.test(message)) {
-    sendError(res, 'PROVIDER_TEMPORARY_UNAVAILABLE', 'Your task provider is temporarily unavailable. Try again shortly.', 503);
-    return;
-  }
-
-  sendInternalError(res, `Failed to ${operation} task`, { code: 'TASK_PROVIDER_FAILED' });
 }
 
 export function taskRoutes(): Router {
@@ -140,41 +154,163 @@ export function taskRoutes(): Router {
         sendError(res, 'UNAUTHORIZED', 'Authenticated user required', 401);
         return;
       }
-      const cacheKey = `u:${userId}:task-lists`;
-      const swr = getCachedSWR<any>(cacheKey);
-
-      if (swr) {
-        // Serve cached value immediately. If it's stale, trigger an async
-        // refresh so the NEXT request gets fresh data.
-        sendSuccess(res, swr.value, { cached: true });
-        if (!swr.fresh) {
-          swrRefresh(cacheKey, async () => {
-            const todo = getTodo(req);
-            const result = await todo.getLists();
-            const listsArray = result?.data || result || [];
-            const lists = Array.isArray(listsArray) ? listsArray : [];
-            const countByListId = await buildTaskCountMap(todo, lists);
-            const formatted = formatTaskLists(lists, countByListId);
-            setCacheSWR(cacheKey, { lists: formatted }, LISTS_CACHE_TTL, LISTS_SWR_STALE);
-          });
-        }
-        return;
-      }
-
-      // Cold path: nothing in cache at all — synchronous fetch.
-      const todo = getTodo(req);
-      const result = await todo.getLists();
-      const listsArray = result?.data || result || [];
-      const lists = Array.isArray(listsArray) ? listsArray : [];
-      const countByListId = await buildTaskCountMap(todo, lists);
-      const formatted = formatTaskLists(lists, countByListId);
-
-      const payload = { lists: formatted };
-      setCacheSWR(cacheKey, payload, LISTS_CACHE_TTL, LISTS_SWR_STALE);
-      sendSuccess(res, payload);
+      const cacheKey = routeCacheKey('u', userId, 'task-lists');
+      await handleCachedRoute<any>({
+        cacheKey,
+        ttlSeconds: LISTS_CACHE_TTL,
+        staleSeconds: LISTS_SWR_STALE,
+        refreshContext: { source: 'tasks_route', operation: 'task_swr_refresh', userId },
+        fetchFresh: async () => {
+          const todo = getTodo(req);
+          const result = await todo.getLists();
+          const listsArray = result?.data || result || [];
+          const lists = Array.isArray(listsArray) ? listsArray : [];
+          const countByListId = await buildTaskCountMap(todo, lists);
+          return { lists: formatTaskLists(lists, countByListId) };
+        },
+        send: (payload, meta) => sendSuccess(res, payload, { cached: meta.cached }),
+      });
     } catch (err: any) {
       logger.error({ err }, 'iOS tasks/lists failed');
       sendInternalError(res, 'Failed to fetch lists');
+    }
+  });
+
+  /**
+   * GET /api/v1/tasks/working-set — bounded app-facing snapshot.
+   *
+   * This is the first-load contract for iOS. It returns enough active task
+   * truth to paint the Tasks tab without pulling completed history into the
+   * active UI state. Historical completed tasks stay behind explicit,
+   * paginated list reads.
+   */
+  router.get('/working-set', async (req, res: Response) => {
+    // 2026-05-18 (skill-hardening QA P1-1): replaced `?? userId` fallback
+    // with assertTenantScope so a missing tenantId 401s instead of silently
+    // co-mingling tenants under the user's own scope.
+    let userId: number;
+    let tenantId: number;
+    try {
+      ({ userId, tenantId } = assertTenantScope(req as any, 'tasks_working_set'));
+    } catch (err: any) {
+      sendError(res, err?.code ?? 'UNAUTHORIZED', err?.message ?? 'Authenticated user required', err?.status ?? 401);
+      return;
+    }
+
+    const provider = resolveTaskProvider(userId);
+    const policy = buildTaskWorkingSetPolicy({
+      provider,
+      requestedPageSize: req.query.pageSize,
+      requestedCompletedPageSize: req.query.completedPageSize,
+    });
+    const budget = consumeResourceBudget({
+      tenantId,
+      userId,
+      budgetKey: 'tasks_working_set',
+      limit: 90,
+      windowSeconds: 60,
+    });
+    const cacheKey = `u:${userId}:tasks-working-set`;
+
+    if (!budget.allowed) {
+      const cached = getCachedSWR<any>(cacheKey);
+      if (cached) {
+        sendSuccess(res, {
+          ...cached.value,
+          freshness: {
+            ...(cached.value?.freshness || {}),
+            state: 'degraded',
+            reasonCodes: [
+              ...((cached.value?.freshness?.reasonCodes || []) as string[]),
+              budget.degradedReason || 'resource_budget_exceeded',
+            ],
+          },
+        }, { cached: true });
+        return;
+      }
+      sendError(res, 'RATE_LIMITED', 'Task working set is temporarily limited. Try again shortly.', 429, {
+        resetAt: budget.resetAt,
+        budgetKey: budget.budgetKey,
+      });
+      return;
+    }
+
+    try {
+      const todo = getTodo(req);
+      const result = await todo.getLists();
+      const listsArray = result?.data || result || [];
+      const rawLists = Array.isArray(listsArray) ? listsArray : [];
+      const activeSnapshot = await buildActiveTaskSnapshot(todo, rawLists, {
+        // Microsoft To Do has no efficient cross-list pending endpoint in our
+        // adapter; its getAllPendingTasks() refetches lists internally. The
+        // working-set route already has the list metadata, so use it directly
+        // to avoid a duplicate list round-trip on Felipe-sized accounts.
+        preferProviderPendingSnapshot: provider !== 'ms_todo',
+      });
+      setCache(userCacheKey(userId, 'fastpath:pending-tasks'), activeSnapshot.pendingTasks, TASKS_CACHE_TTL);
+      const lists = formatTaskLists(rawLists, activeSnapshot.countByListId);
+      const defaultList = resolveDefaultTaskList(lists);
+      const defaultListName = defaultList?.name || 'Tasks';
+      const activePageSize = policy.activePageSize;
+      const activeTasks = defaultList
+        ? activeSnapshot.pendingTasks
+          .filter((task: any) => String(task?.listId || '') === String(defaultList.id))
+          .slice(0, activePageSize)
+        : [];
+      const syncProvider = resolveTaskProvider(userId);
+      const normalizedActiveTasks = activeTasks.map((task: any) =>
+        normalizeTaskDto(task, syncProvider, { listId: defaultList?.id, listName: defaultListName })
+      );
+      const timezone = getUserTimezoneById(userId);
+      const todayStr = dateKeyInAppTimezone(new Date(), timezone) || new Date().toISOString().slice(0, 10);
+      const payload = {
+        policyVersion: policy.policyVersion,
+        provider,
+        capabilities: getTaskProviderCapabilities(provider),
+        lists,
+        activeCountsByList: Object.fromEntries(activeSnapshot.countByListId.entries()),
+        smartCounts: buildSmartCounts(activeSnapshot.pendingTasks, todayStr, timezone),
+        defaultListId: defaultList?.id || null,
+        activePage: {
+          listId: defaultList?.id || null,
+          listName: defaultListName,
+          tasks: normalizedActiveTasks,
+          pageSize: activePageSize,
+          nextCursor: null,
+          hasMore: normalizedActiveTasks.length >= activePageSize,
+        },
+        completedPolicy: policy.completedPolicy,
+        freshness: {
+          state: 'fresh',
+          generatedAt: new Date().toISOString(),
+          reasonCodes: ['active_working_set_only'],
+        },
+        nextCursors: {
+          active: null,
+          completed: null,
+        },
+      };
+      setCacheSWR(cacheKey, payload, TASKS_CACHE_TTL, TASKS_SWR_STALE);
+      setCacheSWR(`u:${userId}:task-lists`, { lists }, LISTS_CACHE_TTL, LISTS_SWR_STALE);
+      sendSuccess(res, payload);
+    } catch (err: any) {
+      const cached = getCachedSWR<any>(cacheKey);
+      if (cached) {
+        sendSuccess(res, {
+          ...cached.value,
+          freshness: {
+            ...(cached.value?.freshness || {}),
+            state: 'stale',
+            reasonCodes: [
+              ...((cached.value?.freshness?.reasonCodes || []) as string[]),
+              'provider_read_failed',
+            ],
+          },
+        }, { cached: true });
+        return;
+      }
+      logger.error({ err, userId }, 'iOS tasks/working-set failed');
+      sendInternalError(res, 'Failed to fetch task working set');
     }
   });
 
@@ -221,7 +357,7 @@ export function taskRoutes(): Router {
       sendError(res, 'UNAUTHORIZED', 'Authenticated user required', 401);
       return;
     }
-    const cacheKey = `u:${userId}:tasks-filtered:${filter}`;
+    const cacheKey = routeCacheKey('u', userId, 'tasks-filtered', filter);
     const syncProvider = resolveTaskProvider(userId);
 
     // Helper for the actual fetch+filter+cache write.
@@ -230,9 +366,7 @@ export function taskRoutes(): Router {
       const result = await todo.getAllPendingTasks();
       const allTasks = result?.data || result || [];
       if (!Array.isArray(allTasks)) {
-        const empty = { tasks: [], count: 0 };
-        setCacheSWR(cacheKey, empty, TASKS_CACHE_TTL, TASKS_SWR_STALE);
-        return empty;
+        return { tasks: [], count: 0 };
       }
 
       // Reuse the same cross-list snapshot for the chat fast-path cache so
@@ -244,7 +378,7 @@ export function taskRoutes(): Router {
 
       // Use the configured app timezone for date-only comparisons so DST
       // boundaries do not depend on the server's local clock zone.
-      const timezone = getUserTimezone(userId);
+      const timezone = getUserTimezoneById(userId);
       const todayStr = dateKeyInAppTimezone(new Date(), timezone) || new Date().toISOString().slice(0, 10);
 
       let filtered = allTasks;
@@ -263,19 +397,27 @@ export function taskRoutes(): Router {
       const tasks = filtered.map((t: any) => normalizeTaskDto(t, syncProvider));
 
       const payload = { tasks, count: tasks.length };
-      setCacheSWR(cacheKey, payload, TASKS_CACHE_TTL, TASKS_SWR_STALE);
       return payload;
     };
 
     try {
-      const swr = getCachedSWR<any>(cacheKey);
-      if (swr) {
-        sendSuccess(res, swr.value, { cached: true });
-        if (!swr.fresh) swrRefresh(cacheKey, async () => { await fetchAndCache(); });
-        return;
-      }
-      const payload = await fetchAndCache();
-      sendSuccess(res, payload);
+      await handleCachedRoute<any>({
+        cacheKey,
+        ttlSeconds: TASKS_CACHE_TTL,
+        staleSeconds: TASKS_SWR_STALE,
+        refreshContext: { source: 'tasks_route', operation: 'task_swr_refresh', userId },
+        fetchFresh: fetchAndCache,
+        send: (payload, meta) => {
+          recordTasksFilteredApiReadEvidence({
+            userId,
+            tenantId: (req as any).tenantId,
+            filter,
+            payload,
+            cached: meta.cached,
+          });
+          sendSuccess(res, payload, { cached: meta.cached });
+        },
+      });
     } catch (err: any) {
       logger.error({ err }, 'iOS tasks/filtered failed');
       sendInternalError(res, 'Failed to fetch tasks');
@@ -290,9 +432,12 @@ export function taskRoutes(): Router {
    */
   router.get('/list/:listId', async (req, res: Response) => {
     const { listId } = req.params;
-    const status = req.query.status as string | undefined;
+    const scope = normalizeTaskListScope(req.query.scope, req.query.status);
+    const status = statusForTaskScope(scope, req.query.status);
+    const pageSize = capTaskPageSize(req.query.pageSize ?? req.query.limit, scope === 'completed' ? 50 : 75, 150);
+    const completedAfter = typeof req.query.completedAfter === 'string' ? req.query.completedAfter : undefined;
     const userId = (req as any).userId;
-    const cacheKey = userId ? `u:${userId}:tasks:${listId}:${status || 'all'}` : `tasks:${listId}:${status || 'all'}`;
+    const cacheKey = routeCacheKey('u', userId, 'tasks', listId, scope, status || 'all', pageSize, completedAfter || '');
     const syncProvider = resolveTaskProvider(userId);
 
     // Helper that does the actual MS Graph fetch + cache write.
@@ -309,27 +454,48 @@ export function taskRoutes(): Router {
         } catch { listName = 'Tasks'; }
       }
 
-      const tasksResult = await todo.getTasks(listId, listName, status ? { status } : undefined);
+      const tasksResult = await todo.getTasks(
+        listId,
+        listName,
+        status ? { status, top: pageSize, completedAfter } : { top: pageSize, completedAfter },
+      );
       const tasks = tasksResult?.data || [];
 
       const formatted = (Array.isArray(tasks) ? tasks : []).map((t: any) =>
         normalizeTaskDto(t, syncProvider, { listId, listName })
       );
 
-      const payload = { listName, tasks: formatted };
-      setCacheSWR(cacheKey, payload, TASKS_CACHE_TTL, TASKS_SWR_STALE);
+      const payload = {
+        listName,
+        tasks: formatted,
+        scope,
+        pageInfo: {
+          pageSize,
+          nextCursor: null,
+          hasMore: formatted.length >= pageSize,
+        },
+      };
       return payload;
     };
 
     try {
-      const swr = getCachedSWR<any>(cacheKey);
-      if (swr) {
-        sendSuccess(res, swr.value, { cached: true });
-        if (!swr.fresh) swrRefresh(cacheKey, async () => { await fetchAndCache(); });
-        return;
-      }
-      const payload = await fetchAndCache();
-      sendSuccess(res, payload);
+      await handleCachedRoute<any>({
+        cacheKey,
+        ttlSeconds: TASKS_CACHE_TTL,
+        staleSeconds: TASKS_SWR_STALE,
+        refreshContext: { source: 'tasks_route', operation: 'task_swr_refresh', userId },
+        fetchFresh: fetchAndCache,
+        shouldServeCached: ({ value }) => !(Array.isArray(value?.tasks)
+          && value.tasks.length === 0
+          && cachedListCount(userId, listId) > 0),
+        onCachedBypass: () => {
+          logger.debug(
+            { userId, listId },
+            'tasks/list cache bypassed because task-lists cache reports items for an empty detail cache',
+          );
+        },
+        send: (payload, meta) => sendSuccess(res, payload, { cached: meta.cached }),
+      });
     } catch (err: any) {
       logger.error({ err }, 'iOS tasks/list failed');
       sendInternalError(res, 'Failed to fetch list tasks');
@@ -361,7 +527,7 @@ export function taskRoutes(): Router {
       const syncProvider = resolveTaskProvider(userId);
       const todo = getTodo(req);
       const { title, listName, dueDateTime, importance, body, recurrence } = req.body;
-      const timezone = getUserTimezone(userId);
+      const timezone = getUserTimezoneById(userId);
 
       if (!title) {
         sendError(res, 'BAD_REQUEST', 'title is required');
@@ -408,7 +574,7 @@ export function taskRoutes(): Router {
           return;
         }
         logger.error({ err: result?.error, list: resolvedListName }, 'iOS tasks create failed at MS Graph');
-        sendTaskProviderError(res, result?.error, 'create');
+        sendProviderRouteError(res, result?.error, 'create', 'task', 'TASK_PROVIDER_FAILED');
         return;
       }
 
@@ -453,9 +619,9 @@ export function taskRoutes(): Router {
       const { listId, taskId } = req.params;
       const userId = (req as any).userId;
       const listName = await resolveTaskListName(todo, listId, (req as any).userId);
-      const timezone = getUserTimezone(userId);
+      const timezone = getUserTimezoneById(userId);
 
-      const ALLOWED_FIELDS = new Set(['title', 'body', 'importance', 'status', 'dueDateTime']);
+      const ALLOWED_FIELDS = new Set(['title', 'body', 'importance', 'status', 'dueDateTime', 'recurrence']);
       const updates: Record<string, unknown> = {};
       for (const [key, value] of Object.entries(req.body)) {
         if (ALLOWED_FIELDS.has(key)) updates[key] = value;
@@ -463,9 +629,15 @@ export function taskRoutes(): Router {
       if (Object.prototype.hasOwnProperty.call(updates, 'dueDateTime')) {
         updates.timeZone = timezone;
       }
+      if (Object.prototype.hasOwnProperty.call(updates, 'recurrence') && updates.recurrence != null) {
+        updates.recurrence = normalizeMicrosoftRecurrence(
+          updates.recurrence,
+          typeof updates.dueDateTime === 'string' ? updates.dueDateTime : new Date(),
+        );
+      }
 
       const result = await todo.updateTask(listId, taskId, updates, listName);
-      const task = await resolveMutatedTask(todo, listId, taskId, listName, result?.data || result);
+      const task = await resolveTaskDetail(todo, listId, taskId, listName, result?.data || result);
 
       invalidateTaskRouteCaches(listId, userId);
       sendSuccess(
@@ -520,29 +692,39 @@ export function taskRoutes(): Router {
         return;
       }
 
-      if (resolveTaskProvider((req as any).userId) !== 'ms_todo') {
+      const todo = getTodo(req);
+      const listName = await resolveTaskListName(todo, listId, (req as any).userId);
+
+      let item;
+      if (typeof todo.updateChecklistItem === 'function') {
+        const updated = await todo.updateChecklistItem(listId, taskId, itemId, isChecked);
+        if (!updated?.success || !updated.data) {
+          sendInternalError(res, 'Failed to toggle checklist item');
+          return;
+        }
+        item = updated.data;
+      } else if (resolveTaskProvider((req as any).userId) === 'ms_todo') {
+        // MS Graph: PATCH /me/todo/lists/{listId}/tasks/{taskId}/checklistItems/{itemId}
+        const { getGraphClient } = require('../../services/microsoft-auth');
+        const client = getGraphClient(req);
+        const result = await client
+          .api(`/me/todo/lists/${listId}/tasks/${taskId}/checklistItems/${itemId}`)
+          .patch({ isChecked });
+        item = {
+          id: result?.id || itemId,
+          displayName: result?.displayName || '',
+          isChecked: result?.isChecked ?? isChecked,
+        };
+      } else {
         sendError(res, 'UNSUPPORTED', 'Checklist items are not supported by the active task provider', 400);
         return;
       }
 
-      const listName = await resolveTaskListName(getTodo(req), listId, (req as any).userId);
-
-      // MS Graph: PATCH /me/todo/lists/{listId}/tasks/{taskId}/checklistItems/{itemId}
-      const { getGraphClient } = require('../../services/microsoft-auth');
-      const client = getGraphClient(req);
-      const result = await client
-        .api(`/me/todo/lists/${listId}/tasks/${taskId}/checklistItems/${itemId}`)
-        .patch({ isChecked });
-
       invalidateTaskRouteCaches(listId, (req as any).userId);
-      const task = await resolveTaskDetail(getTodo(req), listId, taskId, listName, { id: taskId, listId, listName });
+      const task = await resolveTaskDetail(todo, listId, taskId, listName, { id: taskId, listId, listName });
 
       sendSuccess(res, {
-        item: {
-          id: result?.id || itemId,
-          displayName: result?.displayName || '',
-          isChecked: result?.isChecked ?? isChecked,
-        },
+        item,
         task: normalizeTaskDto(task, resolveTaskProvider((req as any).userId), { listId, listName }),
       });
     } catch (err: any) {
@@ -611,8 +793,7 @@ export function taskRoutes(): Router {
       //
       // TASK-M7: expanded to copy checklist items (previously lost on move)
       // and improved error handling so a partial success doesn't confuse the UI.
-      const { getGraphClient } = require('../../services/microsoft-auth');
-      const client = getGraphClient(req);
+      const client = getGraphClient();
 
       // Step 1: Read original task + checklist items in parallel
       const [original, checklistRes] = await Promise.all([
@@ -644,8 +825,23 @@ export function taskRoutes(): Router {
         );
       }
 
-      // Step 4: Delete from source list
-      await client.api(`/me/todo/lists/${listId}/tasks/${taskId}`).delete();
+      // Step 4: Delete from source list. If this half fails, roll back the
+      // copied task so Microsoft To Do does not retain both old and new rows.
+      try {
+        await client.api(`/me/todo/lists/${listId}/tasks/${taskId}`).delete();
+      } catch (deleteErr) {
+        if (newTask?.id) {
+          try {
+            await client.api(`/me/todo/lists/${targetListId}/tasks/${newTask.id}`).delete();
+          } catch (rollbackErr) {
+            logger.error(
+              { err: rollbackErr, listId, taskId, targetListId, newTaskId: newTask.id },
+              'Task move rollback failed after source delete failure',
+            );
+          }
+        }
+        throw deleteErr;
+      }
 
       invalidateTaskRouteCaches(listId, (req as any).userId);
       invalidateTaskRouteCaches(targetListId, (req as any).userId);
@@ -711,6 +907,7 @@ function normalizeTaskDto(
     importance: task.importance || 'normal',
     status: task.status || 'notStarted',
     dueDateTime: task.dueDateTime?.dateTime || task.dueDateTime || null,
+    recurrence: task.recurrence || null,
     listId: task.listId || defaults?.listId || null,
     listName: task.listName || defaults?.listName || null,
     checklistItems: Array.isArray(task.checklistItems)
@@ -796,7 +993,7 @@ export async function warmTaskCache(): Promise<void> {
         if (getCached(cacheKey)) return;
 
         try {
-          const tasksResult = await todo.getTasks(listId, listName, { status: 'notStarted' });
+          const tasksResult = await todo.getTasks(listId, listName, { status: 'active' });
           const tasks = tasksResult?.data || [];
           const taskFormatted = (Array.isArray(tasks) ? tasks : []).map((t: any) => ({
             id: t.id, title: t.title,
@@ -834,46 +1031,96 @@ function formatTaskLists(
   }));
 }
 
+function cachedListCount(userId: number | undefined, listId: string): number {
+  if (typeof userId !== 'number' || userId <= 0) return 0;
+  try {
+    const cached = getCachedSWR<{ lists?: Array<{ id?: string; taskCount?: number }> }>(
+      `u:${userId}:task-lists`,
+    );
+    const match = cached?.value?.lists?.find((list) => String(list.id) === String(listId));
+    return typeof match?.taskCount === 'number' ? match.taskCount : 0;
+  } catch {
+    return 0;
+  }
+}
+
 async function buildTaskCountMap(todo: any, lists: any[]): Promise<Map<string, number>> {
-  const fromPendingSnapshot = await readTaskCountsFromPendingSnapshot(todo);
-  if (fromPendingSnapshot) return fromPendingSnapshot;
+  const snapshot = await buildActiveTaskSnapshot(todo, lists);
+  return snapshot.countByListId;
+}
+
+async function buildActiveTaskSnapshot(
+  todo: any,
+  lists: any[],
+  options: { preferProviderPendingSnapshot?: boolean } = {},
+): Promise<{ countByListId: Map<string, number>; pendingTasks: any[] }> {
+  const pendingTasks = options.preferProviderPendingSnapshot !== false
+    ? await readPendingTaskSnapshot(todo)
+    : null;
+  if (pendingTasks) {
+    return {
+      pendingTasks,
+      countByListId: pendingTasks.reduce((map: Map<string, number>, task: any) => {
+        const listId = String(task?.listId || '');
+        if (!listId) return map;
+        map.set(listId, (map.get(listId) || 0) + 1);
+        return map;
+      }, new Map<string, number>()),
+    };
+  }
 
   const countByListId = new Map<string, number>();
   const perList = await Promise.allSettled(
     lists.map(async (list: any) => {
       const listId = String(list.id || '');
       const listName = list.displayName || list.name || 'Tasks';
-      const tasksResult = await todo.getTasks(listId, listName, { status: 'notStarted' });
+      const tasksResult = await todo.getTasks(listId, listName, { status: 'active' });
       const tasks = Array.isArray(tasksResult?.data) ? tasksResult.data : [];
-      return { listId, count: tasks.length };
+      return { listId, tasks };
     }),
   );
 
+  const allPending: any[] = [];
   for (const result of perList) {
     if (result.status !== 'fulfilled') continue;
-    countByListId.set(result.value.listId, result.value.count);
+    countByListId.set(result.value.listId, result.value.tasks.length);
+    allPending.push(...result.value.tasks);
   }
 
-  return countByListId;
+  return { countByListId, pendingTasks: allPending };
 }
 
-async function readTaskCountsFromPendingSnapshot(todo: any): Promise<Map<string, number> | null> {
+async function readPendingTaskSnapshot(todo: any): Promise<any[] | null> {
   if (typeof todo?.getAllPendingTasks !== 'function') return null;
 
   try {
     const pendingResult = await todo.getAllPendingTasks();
     const pendingTasks = Array.isArray(pendingResult?.data) ? pendingResult.data : null;
     if (!pendingTasks) return null;
-
-    return pendingTasks.reduce((map: Map<string, number>, task: any) => {
-      const listId = String(task?.listId || '');
-      if (!listId) return map;
-      map.set(listId, (map.get(listId) || 0) + 1);
-      return map;
-    }, new Map<string, number>());
+    return pendingTasks;
   } catch {
     return null;
   }
+}
+
+function resolveDefaultTaskList(lists: Array<{ id: string; name: string; taskCount: number }>) {
+  return lists.find((list) => /^(tasks|tarefas|inbox)$/i.test(String(list.name || '').trim()))
+    || lists[0]
+    || null;
+}
+
+function buildSmartCounts(tasks: any[], todayStr: string, timezone: string): { dueToday: number; overdue: number } {
+  const dueTodayIds = new Set<string>();
+  const overdueIds = new Set<string>();
+  for (const task of tasks) {
+    if (String(task?.status || '').toLowerCase() === 'completed') continue;
+    const dueStr = taskDueDateKey(task, timezone);
+    if (!dueStr) continue;
+    const id = String(task?.id || `${task?.title || 'task'}:${dueStr}`);
+    if (dueStr === todayStr) dueTodayIds.add(id);
+    if (dueStr < todayStr) overdueIds.add(id);
+  }
+  return { dueToday: dueTodayIds.size, overdue: overdueIds.size };
 }
 
 /**
@@ -988,7 +1235,7 @@ async function findTaskCreatedDespiteProviderFailure(
   if (typeof todo?.getTasks !== 'function') return null;
 
   try {
-    const result = await todo.getTasks(listId, listName, { status: 'notStarted' });
+    const result = await todo.getTasks(listId, listName, { status: 'active' });
     const tasks = Array.isArray(result?.data) ? result.data : [];
     const wantedTitle = target.title.trim().toLowerCase();
     return tasks.find((task: any) => {

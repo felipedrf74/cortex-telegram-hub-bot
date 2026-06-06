@@ -7,20 +7,29 @@ import * as unifiedCal from './unified-calendar';
 import * as outlookMail from './outlook-mail';
 import * as msTodo from './microsoft-todo';
 import * as trainingPlans from './training-plans';
+// R5 P2 fix — tool-executor's log_training_completion case lacked
+// outbox parity with the REST /complete route. Add the same
+// runOutboxTransaction emission so chat/tool-origin completions
+// publish the same `training.feedback.recorded` event stream that
+// REST completions do.
+import { runOutboxTransaction } from './event-outbox';
+import { computeV2IdempotencyHashHex } from '../api/routes/training-completion-v2-hash';
 import * as financeTracker from './finance-tracker';
 import * as cookingChef from './cooking-chef';
+import * as cookingPreferences from './cooking-preferences';
 import * as trainingSignals from './training-signals';
 import * as onboarding from './onboarding';
-import { invalidateCalendarCaches } from './calendar-cache-invalidator';
-import { invalidateCookingDerivedCaches } from './cooking-cache-invalidator';
-import { invalidateFinanceDerivedCaches } from './finance-cache-invalidator';
-import { invalidateOnboardingDerivedCaches } from './onboarding-cache-invalidator';
+import { invalidateCalendarCaches } from './cache-coherence-registry';
+import { invalidateCookingDerivedCaches } from './cache-coherence-registry';
+import { invalidateFinanceDerivedCaches } from './cache-coherence-registry';
+import { invalidateOnboardingDerivedCaches } from './cache-coherence-registry';
 import { getTaskProviderForUser } from './task-store/task-router';
 import { resolvePreferredCaptureList, resolveTaskCreationList } from './task-store/task-list-resolution';
 import { resolveCanonicalUserId } from './user-service';
 import { logger } from '../utils/logger';
 import { resolveChatTenantId } from './chat-tenant-scope';
 import { authorizeChatToolCall, formatToolAuthorizationFailure } from './chat-tool-authorization';
+import { sanitizeForPromptInterpolation } from '../utils/prompt-sanitizer';
 
 // ─── Phase 3 Slice A — profile field whitelist ───────────────────
 //
@@ -37,6 +46,78 @@ const ALLOWED_PROFILE_TYPES = new Set([
   'triathlon-cycling',
   'triathlon-swim',
 ]);
+
+export const DISPATCHABLE_TOOL_NAMES = [
+  'ms_todo_get_lists',
+  'ms_todo_create_list',
+  'ms_todo_delete_list',
+  'ms_todo_get_tasks',
+  'ms_todo_create_task',
+  'ms_todo_update_task',
+  'ms_todo_complete_task',
+  'ms_todo_uncomplete_task',
+  'ms_todo_delete_task',
+  'ms_todo_search_tasks',
+  'ms_todo_get_due_tasks',
+  'ms_todo_move_task',
+  'ms_todo_get_checklist',
+  'ms_todo_add_checklist_item',
+  'get_calendar_events',
+  'create_calendar_event',
+  'update_calendar_event',
+  'delete_calendar_event',
+  'set_reminder',
+  'save_note',
+  'search_notes',
+  'search_outlook_emails',
+  'read_outlook_email',
+  'send_outlook_email',
+  'reply_outlook_email',
+  'get_outlook_unread',
+  'shared_memory_set',
+  'shared_memory_remove',
+  'save_athlete_profile_field',
+  'create_training_plan',
+  'add_training_week',
+  'add_training_session',
+  'get_training_plan',
+  'log_training_completion',
+  'update_training_session',
+  'link_session_calendar',
+  'finance_add_transaction',
+  'finance_get_transactions',
+  'finance_delete_transaction',
+  'finance_monthly_summary',
+  'finance_calculate_tax',
+  'finance_get_tax_events',
+  'finance_mark_tax_paid',
+  'finance_annual_summary',
+  'cooking_add_recipe',
+  'cooking_get_recipes',
+  'cooking_delete_recipe',
+  'cooking_upsert_pantry_item',
+  'cooking_get_pantry',
+  'cooking_delete_pantry_item',
+  'cooking_set_preference',
+  'cooking_get_preferences',
+  'cooking_set_meal',
+  'cooking_get_meal_plan',
+  'cooking_delete_meal',
+  'cooking_generate_shopping_list',
+  'cooking_get_shopping_list',
+] as const;
+
+export const ALLOWED_TOOLS: ReadonlySet<string> = new Set(DISPATCHABLE_TOOL_NAMES);
+
+function assertToolAllowlistIsConsistent(): void {
+  for (const toolName of DISPATCHABLE_TOOL_NAMES) {
+    if (!ALLOWED_TOOLS.has(toolName)) {
+      throw new Error(`Tool allowlist missing dispatch case: ${toolName}`);
+    }
+  }
+}
+
+assertToolAllowlistIsConsistent();
 
 // ─── Phase 1 Slice B helpers ─────────────────────────────────────────
 
@@ -92,6 +173,49 @@ function normalizeAttendeeEmails(raw: unknown): string[] | undefined {
     .map((value) => (typeof value === 'string' ? value.trim() : ''))
     .filter((value) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value));
   return cleaned.length > 0 ? [...new Set(cleaned)] : undefined;
+}
+
+function escapeToolResultXml(text: string): string {
+  return text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
+export function wrapToolResultContent(text: string): string {
+  const sanitized = JSON.parse(sanitizeForPromptInterpolation(text)) as string;
+  return `<untrusted_tool_result>${escapeToolResultXml(sanitized)}</untrusted_tool_result>`;
+}
+
+const UNTRUSTED_TOOL_RESULT_FIELDS = new Set([
+  'title',
+  'displayName',
+  'name',
+  'subject',
+  'body',
+  'snippet',
+  'bodyPreview',
+  'description',
+  'summary',
+  'content',
+  'message',
+  'location',
+]);
+
+function wrapUntrustedToolResult<T>(value: T): T {
+  if (Array.isArray(value)) {
+    return value.map((item) => wrapUntrustedToolResult(item)) as T;
+  }
+  if (!value || typeof value !== 'object') return value;
+  const output: Record<string, unknown> = {};
+  for (const [key, fieldValue] of Object.entries(value as Record<string, unknown>)) {
+    if (typeof fieldValue === 'string' && UNTRUSTED_TOOL_RESULT_FIELDS.has(key)) {
+      output[key] = wrapToolResultContent(fieldValue);
+    } else {
+      output[key] = wrapUntrustedToolResult(fieldValue);
+    }
+  }
+  return output as T;
 }
 
 function coerceUserRef(raw: unknown): number | null {
@@ -193,6 +317,15 @@ export async function executeToolCall(
   logger.info({ tool: toolName, inputKeys: Object.keys(input ?? {}) }, 'Executing tool call');
 
   try {
+    if (!ALLOWED_TOOLS.has(toolName)) {
+      logger.warn({ tool: toolName, userId, tenantId }, 'Tool call blocked by dispatch allowlist');
+      return {
+        success: false,
+        error: `Tool "${toolName}" is not registered for execution`,
+        code: 'TOOL_NOT_ALLOWED',
+      };
+    }
+
     const authorization = authorizeChatToolCall(toolName, input, userId, tenantId);
     if (!authorization.allowed) {
       logger.warn(
@@ -238,9 +371,10 @@ export async function executeToolCall(
       case 'ms_todo_get_tasks': {
         const taskCtx = getTaskProviderContext();
         if (!taskCtx.ok) return { error: taskCtx.error };
-        return await taskCtx.provider.getTasks(input.list_id, input.list_name, {
+        const tasks = await taskCtx.provider.getTasks(input.list_id, input.list_name, {
           status: input.status,
         });
+        return wrapUntrustedToolResult(tasks);
       }
 
       case 'ms_todo_create_task': {
@@ -338,7 +472,7 @@ export async function executeToolCall(
         const taskCtx = getTaskProviderContext();
         if (!taskCtx.ok) return { error: taskCtx.error };
         if (typeof taskCtx.provider.searchTasks === 'function') {
-          return await taskCtx.provider.searchTasks(input.query);
+          return wrapUntrustedToolResult(await taskCtx.provider.searchTasks(input.query));
         }
         return { error: 'The active task provider does not support task search.' };
       }
@@ -347,7 +481,7 @@ export async function executeToolCall(
         const taskCtx = getTaskProviderContext();
         if (!taskCtx.ok) return { error: taskCtx.error };
         if (typeof taskCtx.provider.getTasksDueInRange === 'function') {
-          return await taskCtx.provider.getTasksDueInRange(input.start_date, input.end_date);
+          return wrapUntrustedToolResult(await taskCtx.provider.getTasksDueInRange(input.start_date, input.end_date));
         }
         return { error: 'The active task provider does not support due-date range lookups.' };
       }
@@ -367,7 +501,7 @@ export async function executeToolCall(
         if (typeof taskCtx.provider.getChecklistItems !== 'function') {
           return { error: 'The active task provider does not support checklist items.' };
         }
-        return await taskCtx.provider.getChecklistItems(input.list_id, input.task_id);
+        return wrapUntrustedToolResult(await taskCtx.provider.getChecklistItems(input.list_id, input.task_id));
       }
 
       case 'ms_todo_add_checklist_item': {
@@ -386,11 +520,11 @@ export async function executeToolCall(
           : !unifiedCal.isAnyCalendarConfigured()) {
           return { error: 'No calendar is configured. Set Google or Outlook credentials.' };
         }
-        return await unifiedCal.getEvents(input.start_date, input.end_date, userId);
+        return wrapUntrustedToolResult(await unifiedCal.getEvents(input.start_date, input.end_date, userId));
 
       case 'create_calendar_event':
         if (userId != null
-          ? !unifiedCal.hasConnectedCalendarForUser(userId)
+          ? !unifiedCal.hasWritableCalendarForUser(userId)
           : !unifiedCal.isAnyCalendarConfigured()) {
           return { error: 'No calendar is configured.' };
         }
@@ -409,7 +543,7 @@ export async function executeToolCall(
 
       case 'update_calendar_event': {
         if (userId != null
-          ? !unifiedCal.hasConnectedCalendarForUser(userId)
+          ? !unifiedCal.hasWritableCalendarForUser(userId)
           : !unifiedCal.isAnyCalendarConfigured()) {
           return { error: 'No calendar is configured.' };
         }
@@ -426,7 +560,7 @@ export async function executeToolCall(
 
       case 'delete_calendar_event': {
         if (userId != null
-          ? !unifiedCal.hasConnectedCalendarForUser(userId)
+          ? !unifiedCal.hasWritableCalendarForUser(userId)
           : !unifiedCal.isAnyCalendarConfigured()) {
           return { error: 'No calendar is configured.' };
         }
@@ -475,9 +609,9 @@ export async function executeToolCall(
           : !outlookMail.isOutlookMailConfigured()) {
           return { error: 'Outlook is not configured. Set OUTLOOK_CLIENT_ID, OUTLOOK_CLIENT_SECRET, and OUTLOOK_REFRESH_TOKEN.' };
         }
-        return userId != null
+        return wrapUntrustedToolResult(userId != null
           ? await outlookMail.searchEmailsForUser(userId, input.query, input.max_results || 10)
-          : await outlookMail.searchEmails(input.query, input.max_results || 10);
+          : await outlookMail.searchEmails(input.query, input.max_results || 10));
 
       case 'read_outlook_email':
         if (userId != null
@@ -485,9 +619,9 @@ export async function executeToolCall(
           : !outlookMail.isOutlookMailConfigured()) {
           return { error: 'Outlook is not configured.' };
         }
-        return userId != null
+        return wrapUntrustedToolResult(userId != null
           ? await outlookMail.readEmailForUser(userId, input.message_id)
-          : await outlookMail.readEmail(input.message_id);
+          : await outlookMail.readEmail(input.message_id));
 
       case 'send_outlook_email':
         if (userId != null
@@ -539,10 +673,10 @@ export async function executeToolCall(
         }
         if (userId != null) {
           const { count: unreadCount, emails: unreadEmails } = await outlookMail.getUnreadEmailsForUser(userId, input.max_results || 10);
-          return { unread_count: unreadCount, recent_unread: unreadEmails };
+          return { unread_count: unreadCount, recent_unread: wrapUntrustedToolResult(unreadEmails) };
         }
         const { count: unreadCount, emails: unreadEmails } = await outlookMail.getUnreadEmails(input.max_results || 10);
-        return { unread_count: unreadCount, recent_unread: unreadEmails };
+        return { unread_count: unreadCount, recent_unread: wrapUntrustedToolResult(unreadEmails) };
       }
 
       // ── Shared memory tools (cross-domain context) ──
@@ -704,16 +838,234 @@ export async function executeToolCall(
         const session = trainingPlans.getSessionById(input.session_id);
         if (!session) return { error: `Session ${input.session_id} not found` };
 
-        const completion = trainingPlans.logCompletion({
-          session_id: input.session_id,
-          plan_id: session.plan_id,
-          rpe_overall: input.rpe_overall,
-          duration_minutes: input.duration_minutes,
-          energy_level: input.energy_level,
-          soreness_level: input.soreness_level,
-          actual_exercises_json: input.actual_exercises_json,
-          notes: input.notes,
-        });
+        // R3 P2 fix — forward V2 fields (rir / pain / technical
+        // success / missed reason / external-training-declared /
+        // completed sets/reps/load/duration/distance) from the tool
+        // input when supplied.
+        //
+        // R4 P2 fix — Codex caught that the tool path only checked
+        // `typeof v === 'number'`, which accepts NaN and Infinity.
+        // The REST path now rejects those + enforces per-field
+        // ranges; the tool path must reach parity so chat-side
+        // ingestion can't bypass validation. We *reject* the tool
+        // call on out-of-range inputs (return error) rather than
+        // silently dropping the bad field — a model that hallucinates
+        // a malformed payload should learn from the error response,
+        // not have part of its payload silently ignored.
+        const v2ToolErrors: string[] = [];
+        const checkFiniteRange = (
+          name: string,
+          v: unknown,
+          min: number,
+          max: number,
+        ): number | undefined => {
+          if (v === undefined || v === null) return undefined;
+          if (typeof v !== 'number' || !Number.isFinite(v)) {
+            v2ToolErrors.push(`${name} must be a finite number`);
+            return undefined;
+          }
+          if (v < min || v > max) {
+            v2ToolErrors.push(`${name} must be between ${min} and ${max} (got ${v})`);
+            return undefined;
+          }
+          return v;
+        };
+        const checkString = (
+          name: string,
+          v: unknown,
+          maxLen: number,
+        ): string | undefined => {
+          if (v === undefined || v === null) return undefined;
+          if (typeof v !== 'string') {
+            v2ToolErrors.push(`${name} must be a string`);
+            return undefined;
+          }
+          if (v.length > maxLen) {
+            v2ToolErrors.push(`${name} must be ≤ ${maxLen} characters`);
+            return undefined;
+          }
+          return v;
+        };
+        // R6 P3 fix — match the REST validator's boolean check so
+        // wrong-typed `external_training_declared` payloads fail
+        // loudly instead of silently coercing to `false` via
+        // `=== true`. REST returns 400 BAD_INPUT for the same
+        // mismatch (training.ts checkBoolean).
+        //
+        // R7 P2/P3 fix — Codex caught that explicit `null` was
+        // treated as omitted (silently coerced to false). The R7
+        // contract is reject-on-non-boolean including null. Only
+        // `undefined` (key absent) is treated as omitted; explicit
+        // `null` now produces a validation error matching the
+        // hardened REST helper.
+        const checkBoolean = (name: string, v: unknown): boolean | undefined => {
+          if (v === undefined) return undefined;
+          if (typeof v !== 'boolean') {
+            v2ToolErrors.push(`${name} must be a boolean`);
+            return undefined;
+          }
+          return v;
+        };
+        const v2Rir = checkFiniteRange('rir', input.rir, 0, 10);
+        const v2PainScore = checkFiniteRange('pain_score', input.pain_score, 0, 10);
+        const v2PainLocation = checkString('pain_location', input.pain_location, 256);
+        const v2TechSuccess = checkFiniteRange('technical_success_score', input.technical_success_score, 0, 10);
+        const v2MissedReason = checkString('missed_reason', input.missed_reason, 256);
+        const v2ExternalDeclared = checkBoolean('external_training_declared', input.external_training_declared);
+        const v2CompletedDur = checkFiniteRange('completed_duration_sec', input.completed_duration_sec, 0, 24 * 3600);
+        const v2CompletedDist = checkFiniteRange('completed_distance_meters', input.completed_distance_meters, 0, 500_000);
+        const v2SetsJson = checkString('completed_sets_json', input.completed_sets_json, 8 * 1024);
+        const v2RepsJson = checkString('completed_reps_json', input.completed_reps_json, 8 * 1024);
+        const v2LoadJson = checkString('completed_load_json', input.completed_load_json, 8 * 1024);
+        if (v2ToolErrors.length > 0) {
+          return { error: `Invalid V2 completion fields: ${v2ToolErrors.join('; ')}` };
+        }
+        // R5 P2 fix — wrap the logCompletion call in the outbox
+        // transaction so chat/tool-origin completions publish the
+        // SAME `training.feedback.recorded` event the REST /complete
+        // route does. Without this, downstream consumers (analytics,
+        // sibling-skill signal bus, etc.) silently miss every
+        // tool-origin completion. The idempotency key uses the same
+        // canonical V2 hash so a chat-origin + REST-origin completion
+        // for the same session within the dedup window collapses
+        // correctly.
+        // R6 P1 fix — Codex caught a user-data-loss bug here. The
+        // prior version assigned `completion = logCompletion(...)`
+        // inside the runOutboxTransaction closure, BEFORE emit. If
+        // emit threw, Better-SQLite3 rolled back the transaction
+        // (event-backbone.test.ts pins this behavior) — but the
+        // outer JS variable was already truthy, so the catch
+        // skipped the fallback write and we returned `success: true`
+        // with a `completion_id` pointing at a row that no longer
+        // existed. The athlete's completion was lost.
+        //
+        // The new shape:
+        //   1. The transaction callback RETURNS the row. The outer
+        //      variable is assigned ONLY from runOutboxTransaction's
+        //      return value, which is reached only after commit.
+        //   2. The catch block also explicitly resets `completion =
+        //      undefined` as belt-and-braces against any future
+        //      regression that re-introduces the closure-assignment
+        //      pattern.
+        //   3. The fallback write inside the catch becomes the
+        //      authoritative re-attempt on rollback.
+        let completion: ReturnType<typeof trainingPlans.logCompletion> | undefined;
+        try {
+          completion = runOutboxTransaction((emitDomainEvent) => {
+            const row = trainingPlans.logCompletion({
+              session_id: input.session_id,
+              plan_id: session.plan_id,
+              rpe_overall: input.rpe_overall,
+              duration_minutes: input.duration_minutes,
+              energy_level: input.energy_level,
+              soreness_level: input.soreness_level,
+              actual_exercises_json: input.actual_exercises_json,
+              notes: input.notes,
+              rir: v2Rir,
+              pain_score: v2PainScore,
+              pain_location: v2PainLocation,
+              technical_success_score: v2TechSuccess,
+              missed_reason: v2MissedReason,
+              external_training_declared: v2ExternalDeclared === true,
+              completed_duration_sec: v2CompletedDur,
+              completed_distance_meters: v2CompletedDist,
+              completed_sets_json: v2SetsJson,
+              completed_reps_json: v2RepsJson,
+              completed_load_json: v2LoadJson,
+            });
+            const v2HashHex = computeV2IdempotencyHashHex({
+              rir: v2Rir ?? null,
+              painScore: v2PainScore ?? null,
+              painLocation: v2PainLocation ?? null,
+              technicalSuccessScore: v2TechSuccess ?? null,
+              missedReason: v2MissedReason ?? null,
+              externalTrainingDeclared: v2ExternalDeclared === true,
+              completedDurationSec: v2CompletedDur ?? null,
+              completedDistanceMeters: v2CompletedDist ?? null,
+              completedSetsJson: v2SetsJson ?? null,
+              completedRepsJson: v2RepsJson ?? null,
+              completedLoadJson: v2LoadJson ?? null,
+            });
+            const v2Summary = {
+              hasRir: v2Rir != null,
+              hasPainScore: v2PainScore != null,
+              hasPainLocation: typeof v2PainLocation === 'string' && v2PainLocation.length > 0,
+              hasTechnicalSuccessScore: v2TechSuccess != null,
+              hasMissedReason: typeof v2MissedReason === 'string' && v2MissedReason.length > 0,
+              externalTrainingDeclared: v2ExternalDeclared === true,
+              hasCompletedDurationSec: v2CompletedDur != null,
+              hasCompletedDistanceMeters: v2CompletedDist != null,
+              hasCompletedSetsJson: typeof v2SetsJson === 'string' && v2SetsJson.length > 0,
+              hasCompletedRepsJson: typeof v2RepsJson === 'string' && v2RepsJson.length > 0,
+              hasCompletedLoadJson: typeof v2LoadJson === 'string' && v2LoadJson.length > 0,
+            };
+            const hasNotes = typeof input.notes === 'string' && input.notes.length > 0;
+            const rpeForKey = typeof input.rpe_overall === 'number' && Number.isFinite(input.rpe_overall)
+              ? input.rpe_overall : null;
+            // tenantId may be null/undefined for non-tenanted callers;
+            // the REST path always carries one, so we mirror that with
+            // a deterministic fallback that still keys per-user.
+            const effectiveTenantId = typeof tenantId === 'number' && Number.isFinite(tenantId) ? tenantId : (userId ?? 0);
+            const effectiveUserId = typeof userId === 'number' && Number.isFinite(userId) ? userId : 0;
+            emitDomainEvent({
+              tenantId: effectiveTenantId,
+              userId: effectiveUserId,
+              sourceSkill: 'training',
+              eventType: 'training.feedback.recorded',
+              entityType: 'training_session',
+              entityId: input.session_id,
+              payload: {
+                summary: {
+                  status: 'completed',
+                  origin: 'tool',
+                  hasNotes,
+                  hasRpe: rpeForKey != null,
+                  v2: v2Summary,
+                },
+                action: 'updated',
+              },
+              privacyClassification: 'health',
+              idempotencyKey: `training.feedback.recorded:${effectiveUserId}:${input.session_id}:completed:${hasNotes}:${rpeForKey ?? 'none'}:v2-${v2HashHex}`,
+            });
+            // R6 P1 — return the row so the OUTER assignment only
+            // happens once the transaction successfully commits.
+            return row;
+          });
+        } catch (err) {
+          logger.warn({ err, sessionId: input.session_id }, 'tool log_training_completion: outbox transaction failed (rolled back); falling back to non-transactional write');
+          // R6 P1 — defensive reset. If a future change re-introduces
+          // the closure-assignment pattern, this guarantees we still
+          // re-attempt the write rather than silently report success
+          // on a rolled-back row.
+          completion = undefined;
+          // Fallback to a non-transactional write so the user's
+          // logged completion still persists. The event publish is
+          // lost (the outbox row is the only canonical record of
+          // event delivery), but the athlete's data isn't.
+          if (!completion) {
+            completion = trainingPlans.logCompletion({
+              session_id: input.session_id,
+              plan_id: session.plan_id,
+              rpe_overall: input.rpe_overall,
+              duration_minutes: input.duration_minutes,
+              energy_level: input.energy_level,
+              soreness_level: input.soreness_level,
+              actual_exercises_json: input.actual_exercises_json,
+              notes: input.notes,
+              rir: v2Rir,
+              pain_score: v2PainScore,
+              pain_location: v2PainLocation,
+              technical_success_score: v2TechSuccess,
+              missed_reason: v2MissedReason,
+              external_training_declared: v2ExternalDeclared === true,
+              completed_duration_sec: v2CompletedDur,
+              completed_distance_meters: v2CompletedDist,
+              completed_sets_json: v2SetsJson,
+              completed_reps_json: v2RepsJson,
+              completed_load_json: v2LoadJson,
+            });
+          }
+        }
 
         // ─── Phase 1 Slice B — Signal A publishing ───
         // Publish a per-user load marker so sibling sport coaches can
@@ -770,9 +1122,31 @@ export async function executeToolCall(
             }
           }
         } catch (err) {
-          logger.warn({ err, sessionId: input.session_id }, 'training-signals publish failed after log_training_completion');
+          // R8 P2-9 — tag with a stable errorId so SRE dashboards
+          // can count sustained signal-bus failures separately from
+          // other warn lines. The id mirrors the established
+          // module.action_failed convention used elsewhere
+          // (e.g. coach_plan_policy.parse_failed,
+          // week_reflow.transaction_rolled_back).
+          logger.warn(
+            {
+              err,
+              sessionId: input.session_id,
+              errorId: 'training_signals.publish_failed',
+            },
+            'training_signals.publish_failed: signal-bus publish failed after log_training_completion (fire-and-forget; user-visible completion is unaffected)',
+          );
         }
 
+        // After both try and catch fallbacks, `completion` is
+        // guaranteed defined — the catch path runs logCompletion
+        // synchronously if the transaction failed before assignment.
+        if (!completion) {
+          // Defensive — should be unreachable. If reached, surface
+          // an explicit error rather than a confusing `.id` of
+          // undefined.
+          return { error: 'log_training_completion: failed to persist completion' };
+        }
         return { success: true, completion_id: completion.id, session_title: session.title };
       }
 
@@ -808,6 +1182,7 @@ export async function executeToolCall(
           subcategory: input.subcategory,
           description: input.description,
           currency: input.currency,
+          tenantId,
         });
         invalidateFinanceDerivedCaches(uid);
         return {
@@ -825,14 +1200,14 @@ export async function executeToolCall(
         const uid = scope.userId;
         return financeTracker.getTransactions(uid, {
           startDate: input.start_date, endDate: input.end_date,
-          category: input.category, limit: input.limit,
+          category: input.category, limit: input.limit, tenantId,
         });
       }
       case 'finance_delete_transaction': {
         const scope = requireTenantToolUserId(toolName, userId, undefined, tenantId);
         if (!scope.ok) return { error: scope.error };
         const uid = scope.userId;
-        const deleted = financeTracker.deleteTransaction(uid, input.transaction_id);
+        const deleted = financeTracker.deleteTransaction(uid, input.transaction_id, { tenantId });
         if (deleted) invalidateFinanceDerivedCaches(uid);
         return deleted ? { success: true } : { error: 'Transaction not found or unauthorized' };
       }
@@ -840,14 +1215,14 @@ export async function executeToolCall(
         const scope = requireTenantToolUserId(toolName, userId, undefined, tenantId);
         if (!scope.ok) return { error: scope.error };
         const uid = scope.userId;
-        return financeTracker.getMonthlySummary(uid, input.month);
+        return financeTracker.getMonthlySummary(uid, input.month, { tenantId });
       }
       case 'finance_calculate_tax': {
         const scope = requireTenantToolUserId(toolName, userId, undefined, tenantId);
         if (!scope.ok) return { error: scope.error };
         const uid = scope.userId;
-        const taxEvent = financeTracker.calculateAndStoreTax(uid, input.month);
-        const breakdown = financeTracker.calculateMonthlyTax(taxEvent.gross_income, taxEvent.deductions);
+        const taxEvent = financeTracker.calculateAndStoreTax(uid, input.month, { tenantId });
+        const breakdown = financeTracker.calculatePortugueseMonthlyTax(taxEvent.gross_income, taxEvent.deductions);
         invalidateFinanceDerivedCaches(uid);
         return { ...taxEvent, effectiveRate: breakdown.effectiveRate, bracket: breakdown.bracket };
       }
@@ -855,13 +1230,13 @@ export async function executeToolCall(
         const scope = requireTenantToolUserId(toolName, userId, undefined, tenantId);
         if (!scope.ok) return { error: scope.error };
         const uid = scope.userId;
-        return financeTracker.getTaxEvents(uid, { year: input.year, limit: input.limit });
+        return financeTracker.getTaxEvents(uid, { year: input.year, limit: input.limit, tenantId });
       }
       case 'finance_mark_tax_paid': {
         const scope = requireTenantToolUserId(toolName, userId, undefined, tenantId);
         if (!scope.ok) return { error: scope.error };
         const uid = scope.userId;
-        const marked = financeTracker.markTaxPaid(uid, input.month);
+        const marked = financeTracker.markTaxPaid(uid, input.month, { tenantId });
         if (marked) invalidateFinanceDerivedCaches(uid);
         return marked ? { success: true, month: input.month, status: 'paid' } : { error: 'Tax event not found' };
       }
@@ -869,7 +1244,7 @@ export async function executeToolCall(
         const scope = requireTenantToolUserId(toolName, userId, undefined, tenantId);
         if (!scope.ok) return { error: scope.error };
         const uid = scope.userId;
-        const summary = financeTracker.getAnnualTaxSummary(uid, input.year);
+        const summary = financeTracker.getAnnualTaxSummary(uid, input.year, { tenantId });
         return {
           year: summary.year,
           totalGrossIncome: summary.totalGrossIncome,
@@ -892,6 +1267,7 @@ export async function executeToolCall(
         const recipe = cookingChef.addRecipe(uid, input.title, input.ingredients, {
           instructions: input.instructions, prepTime: input.prep_time_min,
           cookTime: input.cook_time_min, servings: input.servings, tags: input.tags,
+          tenantId: scope.tenantId,
         });
         return { success: true, id: recipe.id, title: recipe.title };
       }
@@ -899,20 +1275,95 @@ export async function executeToolCall(
         const scope = requireTenantToolUserId(toolName, userId, undefined, tenantId);
         if (!scope.ok) return { error: scope.error };
         const uid = scope.userId;
-        return cookingChef.getRecipes(uid, { tags: input.tags, search: input.search, limit: input.limit });
+        return cookingChef.getRecipes(uid, {
+          tags: input.tags,
+          search: input.search,
+          limit: input.limit,
+          tenantId: scope.tenantId,
+        });
       }
       case 'cooking_delete_recipe': {
         const scope = requireTenantToolUserId(toolName, userId, undefined, tenantId);
         if (!scope.ok) return { error: scope.error };
         const uid = scope.userId;
-        return cookingChef.deleteRecipe(uid, input.recipe_id) ? { success: true } : { error: 'Recipe not found' };
+        return cookingChef.deleteRecipe(uid, input.recipe_id, scope.tenantId) ? { success: true } : { error: 'Recipe not found' };
+      }
+      case 'cooking_upsert_pantry_item': {
+        const scope = requireTenantToolUserId(toolName, userId, undefined, tenantId);
+        if (!scope.ok) return { error: scope.error };
+        const uid = scope.userId;
+        const item = cookingChef.upsertPantryItem(uid, {
+          name: input.name,
+          quantity: input.quantity,
+          unit: input.unit,
+          category: input.category,
+          expiresAt: input.expires_at,
+          freshnessStatus: input.freshness_status,
+          availabilityStatus: input.availability_status,
+          source: input.source,
+          confidence: input.confidence,
+          notes: input.notes,
+        }, scope.tenantId);
+        invalidateCookingDerivedCaches(uid);
+        return { success: true, id: item.id, name: item.name, freshness_status: item.freshness_status };
+      }
+      case 'cooking_get_pantry': {
+        const scope = requireTenantToolUserId(toolName, userId, undefined, tenantId);
+        if (!scope.ok) return { error: scope.error };
+        const uid = scope.userId;
+        return cookingChef.getPantryItems(uid, {
+          tenantId: scope.tenantId,
+          search: input.search,
+          category: input.category,
+          includeExpired: input.include_expired,
+          limit: input.limit,
+        });
+      }
+      case 'cooking_delete_pantry_item': {
+        const scope = requireTenantToolUserId(toolName, userId, undefined, tenantId);
+        if (!scope.ok) return { error: scope.error };
+        const uid = scope.userId;
+        const deleted = cookingChef.deletePantryItem(uid, input.item_id, scope.tenantId);
+        if (deleted) invalidateCookingDerivedCaches(uid);
+        return deleted ? { success: true } : { error: 'Pantry item not found' };
+      }
+      case 'cooking_set_preference': {
+        const scope = requireTenantToolUserId(toolName, userId, undefined, tenantId);
+        if (!scope.ok) return { error: scope.error };
+        const uid = scope.userId;
+        try {
+          const memory = cookingPreferences.setCookingPreferenceMemory(uid, {
+            kind: input.kind,
+            value: input.value,
+            source: input.source,
+            correction: input.correction,
+            confidence: input.confidence,
+            expiresAt: input.expires_at,
+          }, scope.tenantId);
+          invalidateCookingDerivedCaches(uid);
+          return {
+            success: true,
+            memory_id: memory.memoryId,
+            memory_key: memory.memoryKey,
+            freshness_status: memory.freshnessStatus,
+          };
+        } catch (err) {
+          const message = err instanceof Error ? err.message : 'Invalid cooking preference';
+          return { error: message };
+        }
+      }
+      case 'cooking_get_preferences': {
+        const scope = requireTenantToolUserId(toolName, userId, undefined, tenantId);
+        if (!scope.ok) return { error: scope.error };
+        const uid = scope.userId;
+        return cookingPreferences.buildCookingPreferenceReadModel(uid, scope.tenantId);
       }
       case 'cooking_set_meal': {
         const scope = requireTenantToolUserId(toolName, userId, undefined, tenantId);
         if (!scope.ok) return { error: scope.error };
         const uid = scope.userId;
         const meal = cookingChef.setMealPlan(uid, input.date, input.meal_type, input.title, {
-          recipeId: input.recipe_id, notes: input.notes,
+          recipeId: input.recipe_id, notes: input.notes, tenantId: scope.tenantId,
         });
         invalidateCookingDerivedCaches(uid);
         return { success: true, date: meal.date, meal_type: meal.meal_type, title: meal.title };
@@ -921,13 +1372,13 @@ export async function executeToolCall(
         const scope = requireTenantToolUserId(toolName, userId, undefined, tenantId);
         if (!scope.ok) return { error: scope.error };
         const uid = scope.userId;
-        return cookingChef.getMealPlan(uid, input.start_date, input.end_date);
+        return cookingChef.getMealPlan(uid, input.start_date, input.end_date, scope.tenantId);
       }
       case 'cooking_delete_meal': {
         const scope = requireTenantToolUserId(toolName, userId, undefined, tenantId);
         if (!scope.ok) return { error: scope.error };
         const uid = scope.userId;
-        const deleted = cookingChef.deleteMealPlan(uid, input.date, input.meal_type);
+        const deleted = cookingChef.deleteMealPlan(uid, input.date, input.meal_type, scope.tenantId);
         if (deleted) invalidateCookingDerivedCaches(uid);
         return deleted ? { success: true } : { error: 'Meal not found' };
       }
@@ -935,7 +1386,7 @@ export async function executeToolCall(
         const scope = requireTenantToolUserId(toolName, userId, undefined, tenantId);
         if (!scope.ok) return { error: scope.error };
         const uid = scope.userId;
-        const list = cookingChef.generateShoppingList(uid, input.week_start);
+        const list = cookingChef.generateShoppingList(uid, input.week_start, scope.tenantId);
         invalidateCookingDerivedCaches(uid);
         return list;
       }
@@ -943,7 +1394,7 @@ export async function executeToolCall(
         const scope = requireTenantToolUserId(toolName, userId, undefined, tenantId);
         if (!scope.ok) return { error: scope.error };
         const uid = scope.userId;
-        const list = cookingChef.getShoppingList(uid, input.week_start);
+        const list = cookingChef.getShoppingList(uid, input.week_start, scope.tenantId);
         return list || { items: [], status: 'not_found' };
       }
 

@@ -19,6 +19,8 @@ export type SignalType =
   | 'hook_effectiveness'
   | 'pillar_performance'
   | 'retention_pattern'
+  // Voice signals are per creator. They carry tenant/user scope because a
+  // creator's phrasing and edits are private behavioral data.
   | 'voice_pattern'
   | 'voice_phrase_trend'
   | 'channel_dna'
@@ -59,6 +61,7 @@ export type SignalType =
   | 'training_session_scheduled'  // any sport coach wrote a calendar event for a session
   | 'calendar_conflict'           // secretary wrote back: a user event collides with training
   | 'training_schedule_stale'     // secretary/agenda lifecycle says active plan needs reflow/resync
+  | 'training_plan_canceled'      // training plan cancellation invalidates schedule + cross-skill context
   // ─── Phase 4 Slice C — Adherence signals ─────────────────────────
   // Computed from weekly session completion data vs the active plan's
   // planned session count. Published daily (or on any training tab
@@ -118,6 +121,8 @@ export interface AgentSignal {
   expires_at: string;
   /** Telegram user ID, or null for global signals (content mesh). */
   user_id: number | null;
+  /** Tenant/workspace ID. Null means legacy platform-global/system signal. */
+  tenant_id: number | null;
   /** Strength/certainty metric (0.0–1.0). Higher = more reliable. (Migration 060) */
   confidence: number;
   /** Content format tag: 'reel', 'youtube', 'short', etc. (Migration 060) */
@@ -208,6 +213,7 @@ const EXPIRY_HOURS: Record<SignalType, number> = {
   training_session_scheduled: 72,   // 3 days — covers lookahead planning
   calendar_conflict:          24,   // 1 day — conflicts are urgent
   training_schedule_stale:    24,   // 1 day — stale training agenda should be repaired quickly
+  training_plan_canceled:     7 * 24, // 7 days — gives downstream skills time to repair cached context
   // Adherence — reset daily. Re-computed on every training tab open
   // (via the /activity/weekly endpoint), so if the user finishes a
   // session and their adherence flips, the next fetch supersedes
@@ -250,6 +256,59 @@ const EXPIRY_HOURS: Record<SignalType, number> = {
   expense_anomaly:            7 * 24,
 };
 
+const ALLOWED_SIGNAL_SOURCE_AGENTS = new Set([
+  'book-extractor',
+  'channel-learner',
+  'content-analysis',
+  'content.pipeline',
+  'content.test',
+  'cooking.fueling',
+  'finance.training',
+  'garmin.sync',
+  'learning-digest',
+  'performance-agent',
+  'pipeline',
+  'pipeline-agent',
+  'portal',
+  'reaction-radar',
+  'secretary.calendar',
+  'seo-agent',
+  'session.analytics',
+  'training-cross-skill-smoke.fixture',
+  'training.test',
+  'voice-evolution',
+  // Focused unit-test fixture agents. Production paths should use the
+  // stable domain prefixes below or an explicit entry in this allowlist.
+  'a',
+  'b',
+  'c',
+  'bulk',
+  'agent-a',
+  'agent-b',
+  'mesh-agent',
+  'test',
+  'test-agent',
+]);
+
+const ALLOWED_SIGNAL_SOURCE_PREFIXES = [
+  'mesh.',
+  'triathlon.',
+  'training.',
+  'cooking.',
+  'finance.',
+  'content.',
+  'secretary.',
+  'session.',
+  'test.',
+];
+
+export function isAllowedSignalSourceAgent(sourceAgent: string): boolean {
+  const normalized = sourceAgent.trim().toLowerCase();
+  if (!/^[a-z0-9][a-z0-9_.-]{0,79}$/.test(normalized)) return false;
+  if (ALLOWED_SIGNAL_SOURCE_AGENTS.has(normalized)) return true;
+  return ALLOWED_SIGNAL_SOURCE_PREFIXES.some((prefix) => normalized.startsWith(prefix));
+}
+
 // ─── Database Provider (lazy, avoids circular imports) ───────────────
 
 interface DbLike {
@@ -262,18 +321,12 @@ interface DbLike {
 
 type DbProvider = () => DbLike;
 let _getDb: DbProvider | null = null;
-type CacheInvalidator = (prefix: string) => void;
-let _invalidateCacheByPrefix: CacheInvalidator | null = null;
 type PlanningInvalidator = (userId?: number) => void;
 let _invalidatePlanningCaches: PlanningInvalidator | null = null;
 let _reportScopeAnomaly: ((report: ScopeAnomalyReport) => void) | null = null;
 
 export function setDbProvider(fn: DbProvider): void {
   _getDb = fn;
-}
-
-export function setCacheInvalidator(fn: CacheInvalidator): void {
-  _invalidateCacheByPrefix = fn;
 }
 
 export function setPlanningInvalidator(fn: PlanningInvalidator): void {
@@ -293,8 +346,6 @@ const GLOBAL_SIGNAL_TYPES = new Set<SignalType>([
   'hook_effectiveness',
   'pillar_performance',
   'retention_pattern',
-  'voice_pattern',
-  'voice_phrase_trend',
   'channel_dna',
   'book_knowledge',
   'book_reference_effective',
@@ -314,6 +365,24 @@ const GLOBAL_SIGNAL_TYPES = new Set<SignalType>([
 
 function hasValidScopedUserId(userId: number | undefined): userId is number {
   return typeof userId === 'number' && Number.isFinite(userId) && userId > 0;
+}
+
+function hasValidTenantId(tenantId: number | undefined | null): tenantId is number {
+  return typeof tenantId === 'number' && Number.isFinite(tenantId) && tenantId > 0;
+}
+
+function resolveSignalTenantId(userId?: number, tenantId?: number | null): number | undefined {
+  if (hasValidTenantId(tenantId)) return tenantId;
+  if (hasValidScopedUserId(userId)) return userId;
+  return undefined;
+}
+
+function tableHasColumn(d: DbLike, table: string, column: string): boolean {
+  try {
+    return d.prepare(`PRAGMA table_info(${table})`).all().some((row: any) => row?.name === column);
+  } catch {
+    return false;
+  }
 }
 
 function signalRequiresUserScope(signalType: SignalType): boolean {
@@ -346,6 +415,8 @@ export function writeSignal(signal: {
   expires_at?: string;
   /** Telegram user ID for per-user signals. Omit for global content signals. */
   user_id?: number;
+  /** Tenant/workspace ID. Defaults to user_id for legacy single-user workspaces. */
+  tenant_id?: number;
   /** Strength/certainty metric (0.0–1.0). Default 0.5. */
   confidence?: number;
   /** Content format: 'reel', 'youtube', 'short', etc. */
@@ -359,14 +430,31 @@ export function writeSignal(signal: {
   const d = db();
   if (!d) return -1;
   try {
-    const requiresUserScope = signalRequiresUserScope(signal.signal_type);
-    const scopedUserId = hasValidScopedUserId(signal.user_id) ? signal.user_id : undefined;
-
-    if (requiresUserScope && scopedUserId == null) {
+    if (!isAllowedSignalSourceAgent(signal.source_agent)) {
       reportScopeAnomaly({
         layer: 'intelligence_bus',
         operation: 'write_signal',
-        reason: signal.user_id == null ? 'missing_user_scope' : 'invalid_user_scope',
+        reason: 'invalid_user_scope',
+        userId: signal.user_id ?? null,
+        signalType: signal.signal_type,
+        details: {
+          sourceAgent: signal.source_agent,
+          invalidSourceAgent: true,
+        },
+      });
+      return -1;
+    }
+
+    const requiresUserScope = signalRequiresUserScope(signal.signal_type);
+    const scopedUserId = hasValidScopedUserId(signal.user_id) ? signal.user_id : undefined;
+    const hasTenantColumn = tableHasColumn(d, 'agent_signals', 'tenant_id');
+    const scopedTenantId = resolveSignalTenantId(scopedUserId, signal.tenant_id);
+
+    if (requiresUserScope && (scopedUserId == null || scopedTenantId == null)) {
+      reportScopeAnomaly({
+        layer: 'intelligence_bus',
+        operation: 'write_signal',
+        reason: signal.user_id == null || signal.tenant_id == null ? 'missing_user_scope' : 'invalid_user_scope',
         userId: signal.user_id ?? null,
         signalType: signal.signal_type,
         details: {
@@ -394,8 +482,27 @@ export function writeSignal(signal: {
     const expires_at = signal.expires_at ||
       new Date(Date.now() + expiryHours * 3600_000).toISOString();
     const normalizedUserId = requiresUserScope ? scopedUserId! : null;
+    const normalizedTenantId = hasTenantColumn ? (scopedTenantId ?? null) : undefined;
 
-    const result = d.prepare(`
+    const result = hasTenantColumn ? d.prepare(`
+      INSERT INTO agent_signals
+        (source_agent, signal_type, payload, priority, expires_at, tenant_id, user_id,
+         confidence, format_tag, pillar_tag, evidence_count, mesh_priority)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      signal.source_agent,
+      signal.signal_type,
+      JSON.stringify(signal.payload),
+      priority,
+      expires_at,
+      normalizedTenantId,
+      normalizedUserId,
+      signal.confidence ?? 0.5,
+      signal.format_tag ?? null,
+      signal.pillar_tag ?? null,
+      signal.evidence_count ?? 1,
+      signal.meshPriority ?? null,
+    ) : d.prepare(`
       INSERT INTO agent_signals
         (source_agent, signal_type, payload, priority, expires_at, user_id,
          confidence, format_tag, pillar_tag, evidence_count, mesh_priority)
@@ -417,9 +524,6 @@ export function writeSignal(signal: {
     if (meshPriority === 1) {
       if (_invalidatePlanningCaches) {
         _invalidatePlanningCaches(normalizedUserId ?? undefined);
-      } else if (_invalidateCacheByPrefix) {
-        _invalidateCacheByPrefix('plan:week:u:');
-        _invalidateCacheByPrefix('plan:today:u:');
       }
     }
     return (result as any).lastInsertRowid ?? -1;
@@ -446,12 +550,15 @@ export function readSignals(
   limit = 50,
   userId?: number,
   maxAgeDays?: number,
+  tenantId?: number,
 ): AgentSignal[] {
   const d = db();
   if (!d) return [];
   try {
     const placeholders = signalTypes.map(() => '?').join(',');
     const scopedUserId = hasValidScopedUserId(userId) ? userId : undefined;
+    const hasTenantColumn = tableHasColumn(d, 'agent_signals', 'tenant_id');
+    const scopedTenantId = resolveSignalTenantId(scopedUserId, tenantId);
     if (userId !== undefined && scopedUserId == null) {
       reportScopeAnomaly({
         layer: 'intelligence_bus',
@@ -464,23 +571,34 @@ export function readSignals(
         },
       });
     }
-    const userScopeClause =
-      scopedUserId !== undefined
-        ? 'AND (user_id IS NULL OR user_id = ?)'
-        : 'AND user_id IS NULL';
+    const scopeClauses: string[] = [];
+    const scopeParams: any[] = [];
+    if (hasTenantColumn) {
+      if (scopedTenantId !== undefined) {
+        scopeClauses.push('AND (tenant_id IS NULL OR tenant_id = ?)');
+        scopeParams.push(scopedTenantId);
+        scopeClauses.push(scopedUserId !== undefined ? 'AND (user_id IS NULL OR user_id = ?)' : 'AND user_id IS NULL');
+        if (scopedUserId !== undefined) scopeParams.push(scopedUserId);
+      } else {
+        scopeClauses.push('AND tenant_id IS NULL AND user_id IS NULL');
+      }
+    } else {
+      scopeClauses.push(scopedUserId !== undefined ? 'AND (user_id IS NULL OR user_id = ?)' : 'AND user_id IS NULL');
+      if (scopedUserId !== undefined) scopeParams.push(scopedUserId);
+    }
     // Time-window filter: only return signals created within maxAgeDays
     const ageClause = maxAgeDays != null && maxAgeDays > 0
       ? `AND created_at > datetime('now', '-${Math.floor(maxAgeDays)} days')`
       : '';
     const params: any[] = [...signalTypes];
-    if (scopedUserId !== undefined) params.push(scopedUserId);
+    params.push(...scopeParams);
     params.push(limit);
 
     const rows = d.prepare(`
       SELECT * FROM agent_signals
       WHERE status = 'active'
         AND signal_type IN (${placeholders})
-        ${userScopeClause}
+        ${scopeClauses.join('\n        ')}
         ${ageClause}
       ORDER BY
         CASE priority WHEN 'urgent' THEN 0 WHEN 'normal' THEN 1 ELSE 2 END,
@@ -516,12 +634,37 @@ export function markConsumed(signalId: number, consumer: string): void {
 /**
  * Dismiss a signal (manual override from Mission Control).
  */
-export function dismissSignal(signalId: number): void {
+export function dismissSignal(signalId: number, userId?: number, tenantId?: number): number {
   const d = db();
-  if (!d) return;
+  if (!d) return 0;
   try {
-    d.prepare("UPDATE agent_signals SET status = 'dismissed' WHERE id = ?").run(signalId);
-  } catch { /* non-critical */ }
+    const hasTenantColumn = tableHasColumn(d, 'agent_signals', 'tenant_id');
+    if (hasTenantColumn) {
+      const scopedTenantId = resolveSignalTenantId(userId, tenantId);
+      if (scopedTenantId === undefined || userId === undefined) return 0;
+      const result = d.prepare(`
+        UPDATE agent_signals
+        SET status = 'dismissed'
+        WHERE id = ?
+          AND tenant_id = ?
+          AND (user_id IS NULL OR user_id = ?)
+      `).run(signalId, scopedTenantId, userId);
+      return (result as any).changes ?? 0;
+    }
+    if (userId !== undefined) {
+      const result = d.prepare(`
+        UPDATE agent_signals
+        SET status = 'dismissed'
+        WHERE id = ?
+          AND (user_id IS NULL OR user_id = ?)
+      `).run(signalId, userId);
+      return (result as any).changes ?? 0;
+    }
+    const result = d.prepare("UPDATE agent_signals SET status = 'dismissed' WHERE id = ? AND user_id IS NULL").run(signalId);
+    return (result as any).changes ?? 0;
+  } catch {
+    return 0;
+  }
 }
 
 /**
@@ -547,11 +690,31 @@ export function expireStaleSignals(): number {
 /**
  * Get count of active signals.
  */
-export function getActiveSignalCount(): number {
+export function getActiveSignalCount(userId?: number, tenantId?: number): number {
   const d = db();
   if (!d) return 0;
   try {
-    const row = d.prepare("SELECT COUNT(*) as cnt FROM agent_signals WHERE status = 'active'").get() as any;
+    const hasTenantColumn = tableHasColumn(d, 'agent_signals', 'tenant_id');
+    const clauses = ["status = 'active'"];
+    const params: any[] = [];
+    if (hasTenantColumn) {
+      const scopedTenantId = resolveSignalTenantId(userId, tenantId);
+      if (scopedTenantId !== undefined) {
+        clauses.push('tenant_id = ?');
+        params.push(scopedTenantId);
+        clauses.push(userId !== undefined ? '(user_id IS NULL OR user_id = ?)' : 'user_id IS NULL');
+        if (userId !== undefined) params.push(userId);
+      } else {
+        clauses.push('tenant_id IS NULL');
+        clauses.push('user_id IS NULL');
+      }
+    } else if (userId !== undefined) {
+      clauses.push('(user_id IS NULL OR user_id = ?)');
+      params.push(userId);
+    } else {
+      clauses.push('user_id IS NULL');
+    }
+    const row = d.prepare(`SELECT COUNT(*) as cnt FROM agent_signals WHERE ${clauses.join(' AND ')}`).get(...params) as any;
     return row?.cnt ?? 0;
   } catch {
     return 0;
@@ -561,15 +724,37 @@ export function getActiveSignalCount(): number {
 /**
  * Get recent signal log (for Mission Control).
  */
-export function getSignalLog(limit = 100): AgentSignal[] {
+export function getSignalLog(limit = 100, userId?: number, tenantId?: number): AgentSignal[] {
   const d = db();
   if (!d) return [];
   try {
+    const hasTenantColumn = tableHasColumn(d, 'agent_signals', 'tenant_id');
+    const clauses: string[] = [];
+    const params: any[] = [];
+    if (hasTenantColumn) {
+      const scopedTenantId = resolveSignalTenantId(userId, tenantId);
+      if (scopedTenantId !== undefined) {
+        clauses.push('tenant_id = ?');
+        params.push(scopedTenantId);
+        clauses.push(userId !== undefined ? '(user_id IS NULL OR user_id = ?)' : 'user_id IS NULL');
+        if (userId !== undefined) params.push(userId);
+      } else {
+        clauses.push('tenant_id IS NULL');
+        clauses.push('user_id IS NULL');
+      }
+    } else if (userId !== undefined) {
+      clauses.push('(user_id IS NULL OR user_id = ?)');
+      params.push(userId);
+    } else {
+      clauses.push('user_id IS NULL');
+    }
+    params.push(limit);
     const rows = d.prepare(`
       SELECT * FROM agent_signals
+      WHERE ${clauses.join(' AND ')}
       ORDER BY created_at DESC
       LIMIT ?
-    `).all(limit) as any[];
+    `).all(...params) as any[];
     return rows.map(parseSignalRow);
   } catch {
     return [];
@@ -640,6 +825,7 @@ function parseSignalRow(row: any): AgentSignal {
     created_at: row.created_at,
     expires_at: row.expires_at,
     user_id: row.user_id ?? null,
+    tenant_id: row.tenant_id ?? null,
     confidence: row.confidence ?? 0.5,
     format_tag: row.format_tag ?? null,
     pillar_tag: row.pillar_tag ?? null,
@@ -699,6 +885,7 @@ export function readRankedSignals(
   opts: {
     limit?: number;
     userId?: number;
+    tenantId?: number;
     pillar?: string;
     format?: string;
     minConfidence?: number;
@@ -719,8 +906,20 @@ export function readRankedSignals(
     ];
     const params: any[] = [...signalTypes, minConfidence];
 
-    // User scoping
-    if (opts.userId !== undefined) {
+    // Tenant/user scoping
+    const hasTenantColumn = tableHasColumn(d, 'agent_signals', 'tenant_id');
+    const scopedTenantId = resolveSignalTenantId(opts.userId, opts.tenantId);
+    if (hasTenantColumn) {
+      if (scopedTenantId !== undefined) {
+        clauses.push('tenant_id = ?');
+        params.push(scopedTenantId);
+        clauses.push(opts.userId !== undefined ? '(user_id IS NULL OR user_id = ?)' : 'user_id IS NULL');
+        if (opts.userId !== undefined) params.push(opts.userId);
+      } else {
+        clauses.push('tenant_id IS NULL');
+        clauses.push('user_id IS NULL');
+      }
+    } else if (opts.userId !== undefined) {
       clauses.push('(user_id IS NULL OR user_id = ?)');
       params.push(opts.userId);
     } else {

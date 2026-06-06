@@ -46,6 +46,28 @@ PASS=0
 FAIL=0
 FAILED_TESTS=()
 
+# ── Smoke-evidence JSON (release-pipeline-risk-based-optimization, 2026-05-03)
+# Every check result also goes into an in-memory array so we can emit a
+# single JSON evidence file at the end. The file is written under
+# docs/release/smoke-evidence/ (mkdir-p safe) and named with the deployed
+# SHA + UTC timestamp so promote-to-prod.sh and audits can read it
+# instead of re-running this script. Disable with NEXUS_SMOKE_EVIDENCE=0.
+EVIDENCE_RESULTS=()
+EVIDENCE_ENABLED="${NEXUS_SMOKE_EVIDENCE:-1}"
+LOCAL_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+EVIDENCE_DIR="$LOCAL_DIR/docs/release/smoke-evidence"
+SMOKE_START_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+SMOKE_HEAD_SHA="$(cd "$LOCAL_DIR" && git rev-parse --short HEAD 2>/dev/null || echo unknown)"
+SMOKE_BRANCH="$(cd "$LOCAL_DIR" && git branch --show-current 2>/dev/null || echo unknown)"
+
+evidence_record() {
+  # evidence_record <name> <status:passed|failed> [<detail>]
+  local name="$1"
+  local status="$2"
+  local detail="${3:-}"
+  EVIDENCE_RESULTS+=("$(printf '%s\t%s\t%s' "$name" "$status" "$detail")")
+}
+
 # Read staging portal auth once — saves N ssh round trips. Hardened beta
 # staging may require signed ps_ sessions, in which case the legacy
 # PORTAL_TOKEN must not be used.
@@ -104,6 +126,7 @@ test_endpoint() {
     echo "  ❌ $name — curl failed (URL not responding)"
     FAIL=$((FAIL + 1))
     FAILED_TESTS+=("$name")
+    evidence_record "$name" "failed" "curl_failed url=$url"
     return 1
   fi
 
@@ -131,11 +154,13 @@ test_endpoint() {
     local val="${check#OK:}"
     echo "  ✅ $name — $field=$val"
     PASS=$((PASS + 1))
+    evidence_record "$name" "passed" "$field=$val"
     return 0
   else
     echo "  ❌ $name — $check"
     FAIL=$((FAIL + 1))
     FAILED_TESTS+=("$name")
+    evidence_record "$name" "failed" "$check"
     if [ "$VERBOSE" = true ]; then
       echo "     Full body: $(echo "$result" | head -c 200)"
     fi
@@ -191,6 +216,7 @@ test_ios_401() {
     echo "  ❌ $name — expected 401, got $http_code"
     FAIL=$((FAIL + 1))
     FAILED_TESTS+=("$name (http $http_code)")
+    evidence_record "$name" "failed" "http_code=$http_code expected=401"
     [ "$VERBOSE" = true ] && echo "     Body: $(echo "$body" | head -c 200)"
     return 1
   fi
@@ -216,10 +242,12 @@ test_ios_401() {
   if [ "$shape" = "OK" ]; then
     echo "  ✅ $name — 401 with canonical error envelope"
     PASS=$((PASS + 1))
+    evidence_record "$name" "passed" "http_code=401 envelope=canonical"
   else
     echo "  ❌ $name — $shape"
     FAIL=$((FAIL + 1))
     FAILED_TESTS+=("$name (shape)")
+    evidence_record "$name" "failed" "envelope=$shape"
   fi
 }
 
@@ -227,6 +255,63 @@ test_ios_401 "iOS /api/v1/dashboard"     "http://localhost:8201/api/v1/dashboard
 test_ios_401 "iOS /api/v1/tasks/lists"   "http://localhost:8201/api/v1/tasks/lists"
 test_ios_401 "iOS /api/v1/training/today" "http://localhost:8201/api/v1/training/today"
 test_ios_401 "iOS /api/v1/plan/today"    "http://localhost:8201/api/v1/plan/today"
+
+# Chat route boundary smoke — added 2026-05-26 after Codex round-10 QA
+# flagged that staging-smoke did not exercise chat at all. This checks
+# the route is MOUNTED and AUTH-GATED. Spending tokens on a real chat
+# probe is left to the manual post-staging checks (CLAUDE.md deploy
+# runbook) — staging-smoke must stay cheap and deterministic. A 405
+# response is treated as acceptable for GET because the route is
+# defined for POST only; the important guarantee is "not 404 and not
+# 200-leaking-data".
+test_ios_chat_route_mounted() {
+  local url="http://localhost:8201/api/v1/chat/message"
+  local http_code
+  http_code=$(ssh "$SERVER" "curl -s -o /tmp/_smoke_chat_body -w '%{http_code}' -X POST -H 'Content-Type: application/json' -d '{}' '$url' 2>/dev/null" || echo "000")
+  local body
+  body=$(ssh "$SERVER" "cat /tmp/_smoke_chat_body 2>/dev/null" || echo "")
+
+  if [ "$http_code" = "401" ]; then
+    local shape
+    shape=$(echo "$body" | node -e "
+      let b='';
+      process.stdin.on('data',c=>b+=c);
+      process.stdin.on('end',()=>{
+        try {
+          const j=JSON.parse(b);
+          const hasError = j.error && typeof j.error.code==='string' && typeof j.error.message==='string';
+          if (j.ok === false && hasError && typeof j.timestamp === 'string') {
+            console.log('OK');
+          } else {
+            console.log('BAD_SHAPE:'+JSON.stringify(j).slice(0,80));
+          }
+        } catch(e){ console.log('NOT_JSON:'+e.message); }
+      });
+    " 2>&1)
+    if [ "$shape" = "OK" ]; then
+      echo "  ✅ iOS POST /api/v1/chat/message — 401 with canonical error envelope"
+      PASS=$((PASS + 1))
+      evidence_record "iOS chat-message route boundary" "passed" "http_code=401 envelope=canonical"
+    else
+      echo "  ❌ iOS POST /api/v1/chat/message — $shape"
+      FAIL=$((FAIL + 1))
+      FAILED_TESTS+=("iOS chat-message route (shape)")
+      evidence_record "iOS chat-message route boundary" "failed" "envelope=$shape"
+    fi
+  elif [ "$http_code" = "404" ]; then
+    echo "  ❌ iOS POST /api/v1/chat/message — route not mounted (404)"
+    FAIL=$((FAIL + 1))
+    FAILED_TESTS+=("iOS chat-message route (404 not mounted)")
+    evidence_record "iOS chat-message route boundary" "failed" "http_code=404"
+  else
+    echo "  ❌ iOS POST /api/v1/chat/message — expected 401, got $http_code"
+    FAIL=$((FAIL + 1))
+    FAILED_TESTS+=("iOS chat-message route (http $http_code)")
+    evidence_record "iOS chat-message route boundary" "failed" "http_code=$http_code expected=401"
+    [ "$VERBOSE" = true ] && echo "     Body: $(echo "$body" | head -c 200)"
+  fi
+}
+test_ios_chat_route_mounted
 
 echo ""
 echo "🏃 5/6 — Process state via PM2"
@@ -247,6 +332,7 @@ PM2_STATUS=$(ssh "$SERVER" "/home/dominguez/.npm-global/bin/pm2 jlist 2>/dev/nul
 if [[ "$PM2_STATUS" =~ ns=online && "$PM2_STATUS" =~ ce=online ]]; then
   echo "  ✅ PM2 — both staging processes online"
   PASS=$((PASS + 1))
+  evidence_record "PM2 staging processes" "passed" "$PM2_STATUS"
   if [[ "$PM2_STATUS" =~ ns_restarts=([0-9]+) ]] && [ "${BASH_REMATCH[1]}" -gt 0 ]; then
     echo "  ⚠️  nexus-hub-staging has ${BASH_REMATCH[1]} unstable restarts — investigate"
   fi
@@ -254,6 +340,237 @@ else
   echo "  ❌ PM2 — $PM2_STATUS"
   FAIL=$((FAIL + 1))
   FAILED_TESTS+=("PM2 process state")
+  evidence_record "PM2 staging processes" "failed" "$PM2_STATUS"
+fi
+
+echo ""
+echo "🏋️  Training plan preview E2E (isolated fixture seed, preview API only)"
+TRAINING_E2E_ENABLED="${NEXUS_SMOKE_TRAINING_E2E:-1}"
+if [ "$TRAINING_E2E_ENABLED" = "0" ]; then
+  echo "  ⚠️  Training plan preview E2E skipped by NEXUS_SMOKE_TRAINING_E2E=0"
+  PASS=$((PASS + 1))
+  evidence_record "training plan preview e2e" "passed" "skipped_by_kill_switch"
+else
+  TRAINING_SMOKE_RESULT=""
+  TRAINING_SMOKE_RC=0
+  TRAINING_SMOKE_RESULT=$(ssh "$SERVER" "
+    set -e
+    cd $STAGING_DIR
+    set -a
+    . ./.env
+    set +a
+    node <<'NODE'
+const Database = require('better-sqlite3');
+const { signIosJwt } = require('./dist/services/ios-jwt');
+
+const userId = Number(process.env.NEXUS_SMOKE_TRAINING_E2E_USER_ID || '1000014');
+if (!Number.isInteger(userId) || userId < 1000000 || userId > 1099999) {
+  throw new Error('NEXUS_SMOKE_TRAINING_E2E_USER_ID must be an isolated staging fixture user id in 1000000-1099999');
+}
+
+const deviceId = process.env.NEXUS_SMOKE_TRAINING_E2E_DEVICE_ID || 'training-preview-smoke-device-' + userId;
+const db = new Database(process.env.DATABASE_PATH || process.env.DB_PATH || './data/bot.db');
+const now = new Date().toISOString();
+
+function tableExists(name) {
+  return Boolean(db.prepare(\"SELECT 1 FROM sqlite_master WHERE type='table' AND name = ?\").get(name));
+}
+
+function columnsFor(name) {
+  if (!tableExists(name)) return new Set();
+  return new Set(db.prepare('PRAGMA table_info(' + name + ')').all().map((row) => row.name));
+}
+
+function insert(table, values, mode = 'INSERT OR REPLACE') {
+  const columns = columnsFor(table);
+  if (columns.size === 0) return;
+  const entries = Object.entries(values).filter(([column]) => columns.has(column));
+  if (entries.length === 0) return;
+  const names = entries.map(([column]) => column);
+  const placeholders = names.map(() => '?').join(', ');
+  db.prepare(mode + ' INTO ' + table + ' (' + names.join(', ') + ') VALUES (' + placeholders + ')')
+    .run(...entries.map(([, value]) => value));
+}
+
+db.transaction(() => {
+  insert('users', {
+    id: userId,
+    telegram_id: 910000000 + userId,
+    email: 'training-preview-smoke-' + userId + '@nexushub.test',
+    email_verified: 1,
+    username: 'training_preview_smoke_' + userId,
+    first_name: 'Training',
+    last_name: 'Smoke',
+    language: 'en-US',
+    timezone: 'Europe/Lisbon',
+    tier: 'max',
+    status: 'active',
+    auth_provider: 'email',
+    daily_message_limit: 500,
+    daily_token_limit: 1000000,
+    daily_cost_limit_usd: 25,
+    created_at: now,
+    last_active_at: now,
+  });
+  insert('ios_devices', {
+    user_id: userId,
+    device_id: deviceId,
+    device_name: 'Training Preview Smoke',
+    refresh_token: 'training-preview-smoke-refresh-' + userId,
+    refresh_token_hash: 'training-preview-smoke-refresh-hash-' + userId,
+    last_active_at: now,
+    created_at: now,
+  }, 'INSERT OR IGNORE');
+  insert('subscriptions', {
+    user_id: userId,
+    plan: 'max',
+    period: 'monthly',
+    status: 'active',
+    provider: 'founder',
+    provider_subscription_id: 'training-preview-smoke-subscription-' + userId,
+    current_period_start: now,
+    current_period_end: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
+    created_at: now,
+    updated_at: now,
+  });
+
+  const profiles = [
+    ['fitness', {
+      experience_level: 'Advanced (3+ years)',
+      weekly_frequency: '6+ days',
+      training_goals: ['Endurance', 'Strength'],
+      injuries: 'none',
+      available_equipment: 'Full gym',
+    }],
+    ['triathlon-gym', {
+      training_age: '5+ years',
+      current_split: 'Upper/Lower',
+      primary_goal: 'Support running',
+      squat_1rm_kg: 140,
+      bench_1rm_kg: 100,
+      deadlift_1rm_kg: 180,
+      sessions_per_week: '5+',
+      equipment_access: 'Full commercial gym',
+    }],
+    ['triathlon-running', {
+      weekly_mileage_km: 55,
+      longest_recent_run_km: 24,
+      easy_pace_min_per_km: '5:20',
+      target_race: 'Marathon',
+      target_race_date: '2026-10-18',
+      preferred_workouts: ['Easy runs', 'Tempo', 'Long runs'],
+      injury_history: 'none',
+      weekly_availability_days: '6+',
+    }],
+  ];
+  for (const [profileType, data] of profiles) {
+    insert('user_profiles', {
+      user_id: userId,
+      profile_type: profileType,
+      data: JSON.stringify(data),
+      updated_at: now,
+    });
+  }
+
+  insert('user_oauth_tokens', {
+    user_id: userId,
+    provider: 'outlook',
+    access_token: 'training-preview-smoke-access-token',
+    refresh_token: 'training-preview-smoke-refresh-token',
+    token_type: 'Bearer',
+    scopes: JSON.stringify([]),
+    updated_at: now,
+  });
+})();
+
+async function main() {
+  const token = signIosJwt({
+    userId,
+    deviceId,
+    staging_fixture: true,
+    fixture: 'training-plan-preview-smoke',
+  }, { expiresIn: '15m' });
+
+  const payload = {
+    objective: 'Lisbon Marathon October 2026',
+    durationWeeks: 2,
+    preferredTime: '07:00',
+    preferredCardioTime: '07:00',
+    preferredStrengthTime: '18:00',
+    sessionsPerWeek: 5,
+    runSessionsPerWeek: 5,
+    strengthSessionsPerWeek: 5,
+    startPolicy: 'today',
+    longWorkoutDay: 'Saturday',
+    goalMode: 'event_based',
+    trainingPriority: 'running',
+    raceDate: '2026-10-18',
+    twoADayPreference: 'preferred',
+    calendarSource: 'outlook',
+  };
+
+  const response = await fetch('http://localhost:8201/api/v1/training/plan/preview', {
+    method: 'POST',
+    headers: {
+      authorization: 'Bearer ' + token,
+      accept: 'application/json',
+      'content-type': 'application/json',
+      'x-language': 'en-US',
+    },
+    body: JSON.stringify(payload),
+  });
+  const text = await response.text();
+  let json = null;
+  try {
+    json = text ? JSON.parse(text) : null;
+  } catch {}
+
+  const blockerIds = (json?.data?.planLint?.blockers || []).map((blocker) => String(blocker.ruleId || blocker.code || ''));
+  const warningCodes = (json?.data?.warnings || []).map((warning) => String(warning.code || warning.ruleId || ''));
+  const ok = response.status === 200
+    && json?.ok === true
+    && json?.data?.status === 'preview'
+    && blockerIds.length === 0
+    && Array.isArray(json?.data?.phaseRoadmap)
+    && json.data.phaseRoadmap.length > 0
+    && json?.data?.weeklyTargets?.runSessionsPerWeek === 5
+    && json?.data?.weeklyTargets?.strengthSessionsPerWeek === 5;
+
+  const summary = {
+    ok,
+    httpStatus: response.status,
+    responseOk: json?.ok ?? null,
+    planStatus: json?.data?.status ?? null,
+    userId,
+    blockerIds,
+    warningCodes,
+    totalSessions: json?.data?.totalSessions ?? null,
+    calendarFetchDegraded: json?.data?.calendarFetchDegraded ?? null,
+    bodyPreview: ok ? undefined : text.slice(0, 500),
+  };
+  process.stdout.write(JSON.stringify(summary));
+  if (!ok) process.exit(1);
+}
+
+main().catch((err) => {
+  process.stdout.write(JSON.stringify({ ok: false, error: err instanceof Error ? err.message : String(err) }));
+  process.exit(1);
+});
+NODE
+  " 2>&1) || TRAINING_SMOKE_RC=$?
+
+  TRAINING_SMOKE_DETAIL="$(printf '%s' "$TRAINING_SMOKE_RESULT" | tail -c 700 | tr '\n' ' ')"
+  if [ "$TRAINING_SMOKE_RC" -eq 0 ]; then
+    echo "  ✅ Training plan preview E2E — isolated fixture seeded; blocker-free preview"
+    PASS=$((PASS + 1))
+    evidence_record "training plan preview e2e" "passed" "$TRAINING_SMOKE_DETAIL"
+  else
+    echo "  ❌ Training plan preview E2E — failed"
+    FAIL=$((FAIL + 1))
+    FAILED_TESTS+=("training plan preview e2e")
+    evidence_record "training plan preview e2e" "failed" "$TRAINING_SMOKE_DETAIL"
+    [ "$VERBOSE" = true ] && echo "     Detail: $TRAINING_SMOKE_RESULT"
+  fi
 fi
 
 echo ""
@@ -269,11 +586,212 @@ DB_CHECK=$(ssh "$SERVER" "
 if echo "$DB_CHECK" | grep -q '"integrity_check":"ok"'; then
   echo "  ✅ Staging DB integrity_check: ok"
   PASS=$((PASS + 1))
+  evidence_record "Staging DB integrity" "passed" "integrity_check=ok"
 else
   echo "  ❌ Staging DB integrity_check failed: $DB_CHECK"
   FAIL=$((FAIL + 1))
   FAILED_TESTS+=("DB integrity")
+  evidence_record "Staging DB integrity" "failed" "$DB_CHECK"
 fi
+
+# ── Classifier-driven domain appendation (release-pipeline-risk-based-
+# optimization, 2026-05-03):
+# Past this point, the 17 generic checks have all run. We additionally
+# probe for domain-specific risk based on what the changed-area
+# classifier says about the diff currently on staging vs origin/main.
+# This turns staging-smoke from "always 17 checks" into "17 generic +
+# (classifier-driven) domain checks" without changing the generic
+# pass/fail contract above.
+#
+# Classifier flags drive these probes:
+#   training/coach-kernel  → /api/v1/training/today response shape (auth-401 only)
+#   calendar               → /api/v1/training/calendar response shape (auth-401 only)
+#   cooking                → /api/v1/cooking/recipes response shape (auth-401 only)
+#   content                → /api/v1/content/ideas response shape (auth-401 only)
+#   secretary              → /api/v1/plan/today response shape (auth-401 only)
+#   migration              → migration count assertion (count > 0 in DB schema)
+#
+# All probes are auth-401 contract checks — they verify the route is
+# mounted, returns the canonical error envelope, and isn't shadowing a
+# 200 leak. They do NOT require auth tokens, do NOT mutate state, and
+# are safe on every staging install.
+#
+# Disable with NEXUS_SMOKE_DOMAIN_PROBES=0.
+DOMAIN_PROBES_ENABLED="${NEXUS_SMOKE_DOMAIN_PROBES:-1}"
+if [ "$DOMAIN_PROBES_ENABLED" = "1" ] && [ -x "$LOCAL_DIR/scripts/changed-area-classifier.sh" ]; then
+  echo ""
+  echo "🎯 Bonus — classifier-driven domain probes"
+
+  CLASSIFIER_JSON="$("$LOCAL_DIR/scripts/changed-area-classifier.sh" --base origin/main --format json 2>/dev/null || true)"
+  if [ -n "$CLASSIFIER_JSON" ]; then
+    has_flag() {
+      printf '%s' "$CLASSIFIER_JSON" \
+        | NODE_NO_WARNINGS=1 node -e "let b='';process.stdin.on('data',c=>b+=c);process.stdin.on('end',()=>{try{const j=JSON.parse(b);process.stdout.write(String(!!j.flags['$1']))}catch(_){process.stdout.write('false')}})" 2>/dev/null
+    }
+
+    if [ "$(has_flag training)" = "true" ]; then
+      test_ios_401 "domain training /api/v1/training/today" "http://localhost:8201/api/v1/training/today"
+    fi
+    if [ "$(has_flag coachKernel)" = "true" ]; then
+      test_ios_401 "domain coach /api/v1/training/coach/briefing" "http://localhost:8201/api/v1/training/coach/briefing"
+    fi
+    if [ "$(has_flag calendar)" = "true" ]; then
+      test_ios_401 "domain calendar /api/v1/training/calendar" "http://localhost:8201/api/v1/training/calendar"
+    fi
+    if [ "$(has_flag cooking)" = "true" ]; then
+      test_ios_401 "domain cooking /api/v1/cooking/recipes" "http://localhost:8201/api/v1/cooking/recipes"
+    fi
+    if [ "$(has_flag content)" = "true" ]; then
+      test_ios_401 "domain content /api/v1/content/ideas" "http://localhost:8201/api/v1/content/ideas"
+    fi
+    if [ "$(has_flag secretary)" = "true" ]; then
+      test_ios_401 "domain secretary /api/v1/plan/today" "http://localhost:8201/api/v1/plan/today"
+    fi
+    if [ "$(has_flag migration)" = "true" ]; then
+      MIG_COUNT=$(ssh "$SERVER" "cd /home/dominguez/telegram-hub-bot-staging && /usr/bin/node -e \"
+        const db = require('better-sqlite3')('data/bot.db', { readonly: true });
+        const r = db.prepare('SELECT COUNT(*) AS c FROM _migrations').get();
+        console.log(r.c);
+      \"" 2>&1 || echo "ERR")
+      if [[ "$MIG_COUNT" =~ ^[0-9]+$ ]] && [ "$MIG_COUNT" -gt 0 ]; then
+        echo "  ✅ migrations applied — count=$MIG_COUNT"
+        PASS=$((PASS + 1))
+        evidence_record "domain migration count" "passed" "applied=$MIG_COUNT"
+      else
+        echo "  ❌ migrations applied count missing: $MIG_COUNT"
+        FAIL=$((FAIL + 1))
+        FAILED_TESTS+=("migration count")
+        evidence_record "domain migration count" "failed" "$MIG_COUNT"
+      fi
+    fi
+
+    # If no domain flags were active, say so explicitly.
+    if [ "$(has_flag training)$(has_flag coachKernel)$(has_flag calendar)$(has_flag cooking)$(has_flag content)$(has_flag secretary)$(has_flag migration)" = "falsefalsefalsefalsefalsefalsefalse" ]; then
+      echo "  ℹ️ No domain probes triggered by current diff (docs-only / scripts-only)"
+    fi
+  else
+    echo "  ⚠️ classifier returned empty output — skipping domain probes"
+  fi
+fi
+
+# Cloudflare edge contract. This is opt-in until the dashboard WAF rule exists:
+# it must allow AI/monitor user-agents to /public-status, while keeping the
+# same user-agents blocked everywhere else.
+EDGE_VERIFY_ENABLED="${NEXUS_SMOKE_EDGE_VERIFY:-0}"
+# Default to the production API hostname because that is the public surface
+# external AI fetchers hit today. If/when api-staging.nexushub.me has a live
+# DNS route and matching WAF exception, override with NEXUS_SMOKE_EDGE_HOST.
+EDGE_HOST="${NEXUS_SMOKE_EDGE_HOST:-https://api.nexushub.me}"
+
+test_edge_status_ok() {
+  local name="$1"
+  local url="$2"
+  local ua="$3"
+  local http_code body body_file
+  body_file="$(mktemp)"
+  http_code=$(curl -s -A "$ua" -o "$body_file" -w '%{http_code}' --max-time 15 "$url" 2>/dev/null || echo "000")
+  body=$(cat "$body_file" 2>/dev/null || echo "")
+  rm -f "$body_file"
+
+  if [ "$http_code" != "200" ]; then
+    echo "  ❌ $name — expected 200, got $http_code (WAF allowlist missing or wrong scope)"
+    FAIL=$((FAIL + 1))
+    FAILED_TESTS+=("$name (http $http_code)")
+    evidence_record "$name" "failed" "http_code=$http_code expected=200 ua=$ua"
+    [ "$VERBOSE" = true ] && echo "     Body: $(echo "$body" | head -c 200)"
+    return 1
+  fi
+
+  if echo "$body" | grep -q '"status":"ok"'; then
+    echo "  ✅ $name — 200 with status=ok"
+    PASS=$((PASS + 1))
+    evidence_record "$name" "passed" "http_code=200 ua=$ua"
+  else
+    echo "  ❌ $name — 200 but wrong body shape (expected {\"status\":\"ok\",...})"
+    FAIL=$((FAIL + 1))
+    FAILED_TESTS+=("$name (shape)")
+    evidence_record "$name" "failed" "body_shape ua=$ua"
+    [ "$VERBOSE" = true ] && echo "     Body: $(echo "$body" | head -c 200)"
+  fi
+}
+
+test_edge_blocked() {
+  local name="$1"
+  local url="$2"
+  local ua="$3"
+  local http_code
+  http_code=$(curl -s -A "$ua" -o /dev/null -w '%{http_code}' --max-time 15 "$url" 2>/dev/null || echo "000")
+
+  if [ "$http_code" = "200" ]; then
+    echo "  ❌ $name — got 200, expected block; WAF allowlist is too broad"
+    FAIL=$((FAIL + 1))
+    FAILED_TESTS+=("$name (allowlist too broad)")
+    evidence_record "$name" "failed" "http_code=200 ua=$ua scope=too_broad"
+  else
+    echo "  ✅ $name — blocked at edge (http $http_code), allowlist is scoped"
+    PASS=$((PASS + 1))
+    evidence_record "$name" "passed" "http_code=$http_code ua=$ua scope=correct"
+  fi
+}
+
+if [ "$EDGE_VERIFY_ENABLED" = "1" ]; then
+  echo ""
+  echo "🛡  Cloudflare edge contract"
+  test_edge_status_ok "edge: ClaudeBot UA -> /public-status (allowed)" \
+    "$EDGE_HOST/public-status" "ClaudeBot/1.0 (+https://www.anthropic.com)"
+  test_edge_status_ok "edge: UptimeRobot UA -> /public-status (allowed)" \
+    "$EDGE_HOST/public-status" "Mozilla/5.0+(compatible; UptimeRobot/2.0)"
+  test_edge_blocked "edge: ClaudeBot UA -> /health (must stay blocked)" \
+    "$EDGE_HOST/health" "ClaudeBot/1.0 (+https://www.anthropic.com)"
+else
+  echo ""
+  echo "🛡  Cloudflare edge contract — skipped (set NEXUS_SMOKE_EDGE_VERIFY=1 to enable)"
+  echo "    Enable after the WAF allowlist rule is configured in the Cloudflare dashboard."
+  echo "    See: docs/runbooks/cloudflared-tunnel.md -> Edge Protection And AI Crawler Policy"
+fi
+
+# ── Smoke-evidence JSON ───────────────────────────────
+# Write a JSON file recording: branch, SHA, timestamps, per-check results.
+# Audits and `promote-to-prod.sh` can read this instead of re-running the
+# 17-check suite. Failure to write the evidence file does not change the
+# smoke pass/fail outcome — pure side effect.
+write_evidence_file() {
+  if [ "$EVIDENCE_ENABLED" != "1" ]; then
+    return
+  fi
+  mkdir -p "$EVIDENCE_DIR" 2>/dev/null || return
+  local stamp
+  stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+  local file="$EVIDENCE_DIR/staging-smoke-${SMOKE_HEAD_SHA}-${stamp}.json"
+
+  # Build a JSON via node, feeding each result line as TAB-separated.
+  local results_blob
+  results_blob="$(printf '%s\n' "${EVIDENCE_RESULTS[@]+"${EVIDENCE_RESULTS[@]}"}")"
+  printf '%s' "$results_blob" \
+    | NODE_NO_WARNINGS=1 node -e '
+      const lines = require("fs").readFileSync(0, "utf8").split("\n").filter(Boolean);
+      const checks = lines.map((l) => {
+        const [name, status, ...rest] = l.split("\t");
+        return { name, status, detail: (rest.join("\t") || null) };
+      });
+      const passed = checks.filter((c) => c.status === "passed").length;
+      const failed = checks.filter((c) => c.status === "failed").length;
+      const payload = {
+        version: "1",
+        runStartedAt: process.env.SMOKE_START_AT,
+        runCompletedAt: new Date().toISOString(),
+        branch: process.env.SMOKE_BRANCH,
+        sha: process.env.SMOKE_HEAD_SHA,
+        host: "staging",
+        verdict: failed === 0 ? "passed" : "failed",
+        totals: { passed, failed, total: checks.length },
+        checks,
+      };
+      console.log(JSON.stringify(payload, null, 2));
+    ' > "$file" 2>/dev/null \
+    && echo "  📝 Smoke evidence: $file"
+}
+export SMOKE_START_AT SMOKE_BRANCH SMOKE_HEAD_SHA
 
 # ── Summary ────────────────────────────────────────
 echo ""
@@ -281,6 +799,7 @@ echo "════════════════════════�
 TOTAL=$((PASS + FAIL))
 if [ "$FAIL" -eq 0 ]; then
   echo "  ✅ ALL $TOTAL TESTS PASSED — staging is safe to promote"
+  write_evidence_file
   echo "═══════════════════════════════════════════════"
   exit 0
 else
@@ -290,6 +809,7 @@ else
   for t in "${FAILED_TESTS[@]}"; do
     echo "    - $t"
   done
+  write_evidence_file
   echo ""
   echo "  DO NOT promote to prod until these are fixed."
   echo "═══════════════════════════════════════════════"

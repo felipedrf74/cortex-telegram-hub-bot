@@ -15,6 +15,9 @@ vi.mock('../../src/portal/snapshot-cache', () => ({
 
 vi.mock('../../src/services/database', () => ({
   getDb: (...args: unknown[]) => hoisted.getDb(...args),
+  initDatabase: vi.fn(),
+  closeDatabase: vi.fn(),
+  findUnexpectedMigrationPrefixCollisions: vi.fn(() => []),
 }));
 
 vi.mock('../../src/portal/usage-summary', () => ({
@@ -25,6 +28,7 @@ vi.mock('../../src/utils/logger', () => ({
   logger: {
     error: (...args: unknown[]) => hoisted.loggerError(...args),
   },
+  LOGGER_REDACTION_PATHS: [],
 }));
 
 import { registerPortalSnapshotRoutes } from '../../src/portal/snapshot-routes';

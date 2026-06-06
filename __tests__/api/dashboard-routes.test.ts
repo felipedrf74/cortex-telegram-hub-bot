@@ -15,6 +15,7 @@ const mockGoogleCalendarConfigured = vi.fn();
 const mockGoogleCalendarEvents = vi.fn();
 const mockOutlookCalendarConfigured = vi.fn();
 const mockOutlookCalendarEvents = vi.fn();
+const mockUnifiedCalendarEvents = vi.fn();
 const mockGetUserById = vi.fn((userId: number) => ({ id: userId, first_name: 'Felipe' }));
 const mockGetUserTimezone = vi.fn(() => 'Europe/Lisbon');
 const mockRuntimeStatus = vi.fn(() => ({
@@ -37,6 +38,12 @@ const mockGetDailyQuotaStatus = vi.fn(() => ({
   limitUsd: 0.2,
   usedUsd: 0.12,
   remainingUsd: 0.08,
+  includedRemainingUsd: 0.08,
+  nexusPointsBalance: 0,
+  nexusPointsRemainingUsd: 0,
+  nexusPointsExpiringSoon: 0,
+  totalRemainingUsd: 0.08,
+  pointsPurchaseAvailable: false,
   resetAt: '2026-04-15T00:00:00.000Z',
 }));
 const mockComposeDailyBrief = vi.fn();
@@ -49,8 +56,15 @@ vi.mock('../../src/services/cache-store', () => ({
 
 vi.mock('../../src/services/user-service', () => ({
   getUserById: (...args: unknown[]) => mockGetUserById(...args),
+  // Identity-safety: dashboard route uses the strict by-id helpers
+  // (getUserLanguageById, getPreferredDisplayNameById,
+  // getUserTimezoneById). Mocks expose both legacy and *ById names.
   getUserLanguage: () => 'pt-BR',
+  getUserLanguageById: () => 'pt-BR',
+  getPreferredDisplayName: () => 'Test User',
+  getPreferredDisplayNameById: () => 'Test User',
   getUserTimezone: (...args: unknown[]) => mockGetUserTimezone(...args),
+  getUserTimezoneById: (...args: unknown[]) => mockGetUserTimezone(...args),
 }));
 
 vi.mock('../../src/services/runtime-status', () => ({
@@ -71,6 +85,25 @@ vi.mock('../../src/services/outlook-calendar', () => ({
   getEvents: (...args: unknown[]) => mockOutlookCalendarEvents(...args),
 }));
 
+vi.mock('../../src/services/unified-calendar', () => ({
+  isAnyCalendarConfigured: vi.fn(() => true),
+  hasConnectedCalendarForUser: vi.fn(() => true),
+  hasWritableCalendarForUser: vi.fn(() => true),
+  getConfiguredSources: vi.fn(() => ['google']),
+  getEvents: (...args: unknown[]) => mockUnifiedCalendarEvents(...args),
+  getEventsWithDiagnostics: vi.fn(async () => ({
+    events: [],
+    status: 'ready',
+    sources: [],
+    diagnostics: [],
+  })),
+  createEvent: vi.fn(),
+  updateEvent: vi.fn(),
+  deleteEvent: vi.fn(),
+  eventFingerprint: vi.fn((event: any) => String(event?.id ?? event?.title ?? 'event')),
+  deduplicateEvents: vi.fn((events: any[]) => events),
+}));
+
 vi.mock('../../src/services/cost-guardrail', () => ({
   getDailyQuotaStatus: (...args: unknown[]) => mockGetDailyQuotaStatus(...args),
 }));
@@ -80,6 +113,7 @@ vi.mock('../../src/services/daily-brief-orchestrator', () => ({
 }));
 
 vi.mock('../../src/services/task-store/task-router', () => ({
+  resolveTaskProvider: vi.fn(() => 'nexus'),
   getTaskProviderForUser: () => ({
     getAllPendingTasks: (...args: unknown[]) => mockGetAllPendingTasks(...args),
   }),
@@ -92,6 +126,9 @@ vi.mock('../../src/services/database', () => ({
       get: () => ({ ok: 1 }),
     }),
   }),
+  initDatabase: vi.fn(),
+  closeDatabase: vi.fn(),
+  findUnexpectedMigrationPrefixCollisions: vi.fn(() => []),
 }));
 
 vi.mock('../../src/utils/logger', () => ({
@@ -103,10 +140,12 @@ vi.mock('../../src/utils/logger', () => ({
     trace: vi.fn(),
     child: vi.fn().mockReturnThis(),
   },
+  LOGGER_REDACTION_PATHS: [],
 }));
 
 import { dashboardRoutes } from '../../src/api/routes/dashboard';
 import {
+  fetchTraining,
   mapDashboardTask,
   queryContentPipelineCounts,
 } from '../../src/api/routes/dashboard-data-fetchers';
@@ -167,6 +206,28 @@ async function dispatch(userId = 4, headers: Record<string, string> = {}, path =
   return res;
 }
 
+async function dispatchUntilResponse(userId = 4, headers: Record<string, string> = {}, path = '/'): Promise<MockRes> {
+  const router = dashboardRoutes();
+  const req = mockReq(userId, path, headers);
+  let res!: MockRes;
+
+  await new Promise<void>((resolve, reject) => {
+    res = {
+      ...mockRes(),
+      json(body: any) { res.body = body; resolve(); return res; },
+      end() { resolve(); return res; },
+    };
+    (router as any).handle(req, res, (err: any) => {
+      if (err) {
+        reject(err);
+        return;
+      }
+    });
+  });
+
+  return res;
+}
+
 function todayAt(hour: number, minute = 0): string {
   const parts = new Intl.DateTimeFormat('en-US', {
     timeZone: 'Europe/Lisbon',
@@ -191,6 +252,7 @@ describe('Dashboard API route', () => {
     mockGoogleCalendarEvents.mockReset();
     mockOutlookCalendarConfigured.mockReset();
     mockOutlookCalendarEvents.mockReset();
+    mockUnifiedCalendarEvents.mockReset();
     mockGetUserById.mockReset();
     mockGetUserTimezone.mockReset();
     mockRuntimeStatus.mockReset();
@@ -204,6 +266,7 @@ describe('Dashboard API route', () => {
     mockGoogleCalendarEvents.mockResolvedValue([]);
     mockOutlookCalendarConfigured.mockReturnValue(false);
     mockOutlookCalendarEvents.mockResolvedValue([]);
+    mockUnifiedCalendarEvents.mockResolvedValue([]);
     mockGetUserById.mockImplementation((userId: number) => ({ id: userId, first_name: 'Felipe' }));
     mockGetUserTimezone.mockReturnValue('Europe/Lisbon');
     mockRuntimeStatus.mockReturnValue({
@@ -275,12 +338,17 @@ describe('Dashboard API route', () => {
     expect(res.body.data.training.readinessScore).toBeNull();
     expect(res.body.data.training.bodyBattery).toBeNull();
     expect(res.body.data.quota).toEqual({
-      used_usd: 0.12,
-      limit_usd: 0.2,
-      remaining_usd: 0.08,
+      usage_level: 'enhanced',
+      usage_fraction: 0.6,
+      usage_percent: 60,
+      is_over_limit: false,
+      nexus_points_balance: 0,
+      nexus_points_expiring_soon: 0,
+      points_purchase_available: false,
       plan: 'pro',
       resetAt: '2026-04-15T00:00:00.000Z',
     });
+    expect(JSON.stringify(res.body.data.quota)).not.toMatch(/usd|allowance/i);
   });
 
   it('passes calendar event colors through the dashboard payload', async () => {
@@ -466,9 +534,49 @@ describe('Dashboard API route', () => {
     expect(res.statusCode).toBe(200);
     expect(res.body.data.greeting).toBe('Bom dia, Felipe');
     expect(res.body.data.tasks.totalPending).toBe(3);
+    expect(res.body.data.quota).toMatchObject({
+      plan: 'pro',
+      resetAt: '2026-04-15T00:00:00.000Z',
+      usage_level: 'ok',
+      usage_fraction: 0.6,
+      usage_percent: 60,
+      is_over_limit: false,
+    });
+    expect(JSON.stringify(res.body.data.quota)).not.toMatch(/usd|allowance|limitUsd|usedUsd|remainingUsd/i);
 
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(mockSetCacheSWR).toHaveBeenCalled();
+  });
+
+  it('uses a 180 second fresh cache window for dashboard root and home reads', async () => {
+    await dispatch(4);
+    await dispatch(4, {}, '/home');
+
+    expect(mockSetCacheSWR).toHaveBeenCalledWith(
+      expect.stringMatching(/^dashboard:4:/),
+      expect.anything(),
+      180,
+      300,
+    );
+    expect(mockSetCacheSWR).toHaveBeenCalledWith(
+      expect.stringMatching(/^dashboard-home:4:/),
+      expect.anything(),
+      180,
+      300,
+    );
+  });
+
+  it('returns 304 for identical cached dashboard data even though cached metadata differs', async () => {
+    mockGetCachedSWR.mockReturnValueOnce(null);
+    const first = await dispatch(4);
+    expect(first.statusCode).toBe(200);
+    expect(first.headers.ETag).toBeTruthy();
+
+    mockGetCachedSWR.mockReturnValueOnce({ value: first.body.data, fresh: true });
+    const second = await dispatch(4, { 'if-none-match': first.headers.ETag });
+
+    expect(second.statusCode).toBe(304);
+    expect(second.body).toBeNull();
   });
 
   it('returns a render-ready home contract', async () => {
@@ -497,6 +605,39 @@ describe('Dashboard API route', () => {
     expect(res.body.data.coordinatedDecision.protectedLater).toBeTruthy();
     expect(res.body.data.skillQueue[0]?.domain).toBe('training');
     expect(res.body.data.skillQueue[0]?.whyNow).toBeTruthy();
+  });
+
+  it('emits Server-Timing breakdowns for uncached dashboard and home reads', async () => {
+    const dashboardRes = await dispatch(4);
+    const homeRes = await dispatch(4, {}, '/home');
+
+    expect(dashboardRes.statusCode).toBe(200);
+    expect(dashboardRes.headers['Server-Timing']).toEqual(expect.stringContaining('calendar;dur='));
+    expect(dashboardRes.headers['Server-Timing']).toEqual(expect.stringContaining('tasks;dur='));
+    expect(dashboardRes.headers['Server-Timing']).toEqual(expect.stringContaining('training;dur='));
+    expect(dashboardRes.headers['Server-Timing']).toEqual(expect.stringContaining('content;dur='));
+
+    expect(homeRes.statusCode).toBe(200);
+    expect(homeRes.headers['Server-Timing']).toEqual(expect.stringContaining('dashboard;dur='));
+    expect(homeRes.headers['Server-Timing']).toEqual(expect.stringContaining('daily_brief;dur='));
+    expect(homeRes.headers['Server-Timing']).toEqual(expect.stringContaining('home_view_state;dur='));
+  });
+
+  it('returns a partial home contract instead of waiting forever on slow providers', async () => {
+    vi.useFakeTimers();
+    mockGetAllPendingTasks.mockImplementation(() => new Promise(() => {}));
+    mockComposeDailyBrief.mockImplementation(() => new Promise(() => {}));
+
+    const pending = dispatchUntilResponse(4, {}, '/home');
+
+    await vi.advanceTimersByTimeAsync(3100);
+    const res = await pending;
+    vi.useRealTimers();
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body.ok).toBe(true);
+    expect(res.body.data.meta.reasonCodes).toContain('TASKS_UNAVAILABLE');
+    expect(res.body.data.meta.reasonCodes).toContain('DAILY_BRIEF_UNAVAILABLE');
   });
 
   it('returns a client-safe error when the home dashboard aggregation throws unexpectedly', async () => {
@@ -534,6 +675,50 @@ describe('Dashboard API route', () => {
     const homeRes = await dispatch(4, {}, '/home');
     expect(homeRes.statusCode).toBe(200);
     expect(homeRes.body.data.meta.reasonCodes).toContain('WEARABLE_INTEGRATION_MISSING');
+  });
+
+  it('starts dashboard readiness and training calendar fallback in parallel', async () => {
+    let resolveReadiness!: (value: any) => void;
+    let resolveEvents!: (value: any[]) => void;
+
+    const localCalculateReadiness = vi.fn((_userId: number) => new Promise((resolve) => {
+      resolveReadiness = resolve;
+    }));
+    const localUnifiedCalendarEvents = vi.fn((_start: string, _end: string, _userId: number) => new Promise<any[]>((resolve) => {
+      resolveEvents = resolve;
+    }));
+
+    const pending = fetchTraining(4, {
+      calculateReadiness: localCalculateReadiness,
+      getEvents: localUnifiedCalendarEvents,
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(localCalculateReadiness).toHaveBeenCalledTimes(1);
+    expect(localUnifiedCalendarEvents).toHaveBeenCalledTimes(1);
+
+    resolveReadiness({
+      score: 82,
+      factors: { bodyBattery: { current: 67 } },
+    });
+    resolveEvents([
+      {
+        id: 'training-event',
+        title: 'Strength workout',
+        start: { dateTime: todayAt(9) },
+        end: { dateTime: todayAt(10) },
+      },
+    ]);
+
+    const result = await pending;
+    expect(result.readinessScore).toBe(82);
+    expect(result.bodyBattery).toBe(67);
+    expect(result.todaySession?.type).toBe('Strength workout');
+    expect(mockSetCache).toHaveBeenCalledWith(
+      'dashboard-readiness:4',
+      expect.objectContaining({ score: 82, bodyBattery: 67 }),
+      300,
+    );
   });
 
   it('does not flag Google Calendar as unavailable when the current user has Google connected', async () => {
@@ -585,7 +770,12 @@ describe('Dashboard API route', () => {
     const res = await dispatch(4, { 'x-language': 'pt-BR' });
 
     expect(res.statusCode).toBe(200);
-    expect(res.body.data.greeting).toMatch(/^(Bom dia|Boa tarde|Boa noite)(, Felipe)?$/);
+    // Identity-safety (May 2026 audit): the greeting must NEVER hardcode
+    // "Felipe". The display-name suffix should be derived from the
+    // authenticated user's saved profile (here mocked to "Test User"),
+    // and the bare greeting is acceptable when the profile has no name.
+    expect(res.body.data.greeting).toMatch(/^(Bom dia|Boa tarde|Boa noite)(,\s+\S.*)?$/);
+    expect(res.body.data.greeting).not.toContain('Felipe');
     expect([
       'Segunda-feira',
       'Terça-feira',
@@ -659,6 +849,48 @@ describe('Dashboard API route', () => {
     expect(res.statusCode).toBe(200);
     expect(mockGetCached).toHaveBeenCalledWith('dashboard-readiness:4');
     expect(res.body.data.training.bodyBattery).toBe(57);
+  });
+
+  it('does not render cached zero body battery as a real dashboard battery value', async () => {
+    mockGetCached.mockImplementation((key: string) => {
+      if (key === 'dashboard-readiness:4') {
+        return { score: 68, bodyBattery: 0 };
+      }
+      return null;
+    });
+
+    const res = await dispatch(4);
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body.data.training.readinessScore).toBe(68);
+    expect(res.body.data.training.bodyBattery).toBeNull();
+    expect(res.body.data.training.bodyBatteryStatus).toBe('unavailable');
+    expect(res.body.data.training.warningCodes).toContain('BODY_BATTERY_UNAVAILABLE');
+  });
+
+  it('refreshes cached missing body battery so Apple Health fallback can fill it', async () => {
+    mockGetCached.mockImplementation((key: string) => {
+      if (key === 'dashboard-readiness:4') {
+        return { score: 68, bodyBattery: null };
+      }
+      return null;
+    });
+    mockCalculateReadiness.mockResolvedValue({
+      score: 68,
+      factors: { bodyBattery: { current: 64 } },
+      recommendation: 'reduce_10pct',
+      reasoning: 'Garmin readiness with Apple Health body battery fallback',
+    });
+
+    const result = await fetchTraining(4, {
+      calculateReadiness: mockCalculateReadiness,
+      getEvents: mockUnifiedCalendarEvents,
+    });
+
+    expect(mockCalculateReadiness).toHaveBeenCalledWith(4);
+    expect(result.readinessScore).toBe(68);
+    expect(result.bodyBattery).toBe(64);
+    expect(result.bodyBatteryStatus).toBe('ready');
   });
 
   it('falls back to stage-only content counts when the legacy status column is missing', () => {

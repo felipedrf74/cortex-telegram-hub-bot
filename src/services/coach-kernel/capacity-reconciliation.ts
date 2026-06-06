@@ -39,6 +39,7 @@ export function reconcileWeeklyCapacity(
 ): WeeklyCapacityReconciliation {
   const slots = buildCapacitySlots(athlete);
   const scheduledByDay: Partial<Record<DayOfWeek, number>> = {};
+  const scheduledSportsByDay: Partial<Record<DayOfWeek, Set<Session['sport']>>> = {};
   const scheduledHighFatigueDays = new Set<DayOfWeek>();
   const results: GuardrailResult[] = [];
   const decisionReasons: TrainingDecisionReason[] = [];
@@ -62,6 +63,7 @@ export function reconcileWeeklyCapacity(
       session,
       slots,
       scheduledByDay,
+      scheduledSportsByDay,
       scheduledHighFatigueDays,
     });
 
@@ -97,6 +99,9 @@ export function reconcileWeeklyCapacity(
     decisionReasons.push(...placedDecisionReasons);
     slot.usedMinutes += placed.durationMinutes;
     scheduledByDay[slot.window.dayOfWeek] = (scheduledByDay[slot.window.dayOfWeek] ?? 0) + 1;
+    const daySports = scheduledSportsByDay[slot.window.dayOfWeek] ?? new Set<Session['sport']>();
+    daySports.add(placed.sport);
+    scheduledSportsByDay[slot.window.dayOfWeek] = daySports;
     if (HIGH_FATIGUE.has(session.fatigueCost)) {
       scheduledHighFatigueDays.add(slot.window.dayOfWeek);
     }
@@ -179,12 +184,14 @@ function chooseSlot(args: {
   session: Session;
   slots: CapacitySlot[];
   scheduledByDay: Partial<Record<DayOfWeek, number>>;
+  scheduledSportsByDay: Partial<Record<DayOfWeek, Set<Session['sport']>>>;
   scheduledHighFatigueDays: Set<DayOfWeek>;
 }): CapacitySlot | null {
   const eligible = args.slots
     .filter((slot) => slotAllowsSession(slot, args.session))
     .filter((slot) => slotRemainingMinutes(slot) >= minimumExecutableMinutes(args.session, args.athlete))
     .filter((slot) => (args.scheduledByDay[slot.window.dayOfWeek] ?? 0) < args.athlete.availability.maxSessionsPerDay)
+    .filter((slot) => !(args.scheduledSportsByDay[slot.window.dayOfWeek]?.has(args.session.sport)))
     .sort((left, right) => slotScore(args.athlete, args.session, right, args.scheduledHighFatigueDays) - slotScore(args.athlete, args.session, left, args.scheduledHighFatigueDays));
 
   if (eligible.length === 0) return null;

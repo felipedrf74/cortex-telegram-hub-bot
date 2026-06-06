@@ -11,7 +11,7 @@ export type {
   InlineButton,
 } from './message-adapter';
 export { TelegramAdapter } from './telegram-adapter';
-export { WhatsAppAdapter } from './whatsapp-adapter';
-export type { WhatsAppConfig } from './whatsapp-adapter';
 export { IOSAdapter } from './ios-adapter';
 export type { CollectedMessage } from './ios-adapter';
+export { WhatsAppAdapter } from './whatsapp-adapter';
+export type { WhatsAppConfig } from './whatsapp-adapter';

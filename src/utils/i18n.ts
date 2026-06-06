@@ -11,12 +11,13 @@
  *   t('rate_limited', 'en-US', { limit: '40' }) → 'You've reached your daily limit of 40 messages.'
  */
 
-export type Lang = 'pt-BR' | 'pt-PT' | 'en-US';
+export type Lang = 'pt-BR' | 'pt-PT' | 'en-US' | 'es-ES';
 
 type MessageEntry = {
   'pt-BR': string;
   'pt-PT'?: string;
   'en-US': string;
+  'es-ES'?: string;
 };
 
 const MESSAGES: Record<string, MessageEntry> = {
@@ -301,13 +302,19 @@ export function t(key: string, lang: Lang, vars?: Record<string, string>): strin
 /**
  * Detect language from Telegram's language_code field.
  * Falls back to PT-BR (primary audience).
+ *
+ * Phase 16 batch 80 (2026-05-16): Spanish (`es-*`) now returns its own
+ * `'es-ES'` code instead of collapsing to `'pt-BR'`. The earlier collapse
+ * silently disabled every `input.locale?.startsWith('es')` branch added to
+ * the planner in Phases 10-15 for Telegram-originated traffic. iOS was
+ * unaffected because it sends `Accept-Language: es-*` directly.
  */
 export function detectLanguageFromTelegram(langCode?: string): Lang {
   if (!langCode) return 'pt-BR';
   const normalized = langCode.toLowerCase();
   if (normalized.startsWith('pt-pt') || normalized.startsWith('pt_pt')) return 'pt-PT';
   if (normalized.startsWith('pt')) return 'pt-BR';
-  if (langCode.startsWith('en')) return 'en-US';
-  if (langCode.startsWith('es')) return 'pt-BR'; // Spanish speakers → PT-BR closer
+  if (normalized.startsWith('en')) return 'en-US';
+  if (normalized.startsWith('es')) return 'es-ES';
   return 'en-US'; // Default to English for other languages
 }

@@ -7,6 +7,14 @@ import { logger } from '../../utils/logger';
 import { getLastChatActiveDomain } from './chat-message-context';
 import { isRetryableAIProviderError } from './chat-content-refinement';
 import {
+  buildNexusAnswerContract,
+  createChatLatencyTracker,
+  metadataGroundingFacts,
+} from '../../services/chat-answer-contract';
+import { applyChatFallbackPolicy } from '../../services/chat-fallback-policy';
+import { buildChatGroundingEnvelope } from '../../services/chat-grounding-layer';
+import { requireTenantIdParam } from '../../services/tenant-scope';
+import {
   persistExchange,
   syncConversationStateForShortcut,
 } from './chat-persistence';
@@ -18,14 +26,60 @@ export async function sendRetryableChatFailureResponseIfNeeded(opts: {
   tenantId?: number;
   normalizedText: string;
   chatRequestId: string;
+  /**
+   * Codex QA round 4: pass the original claimed user message id so the
+   * degraded response is persisted under the SAME id the route claimed
+   * at acceptance. Otherwise the retry on the iOS client can't find a
+   * completed assistant for `msg-user-${clientMessageId}` and loops as
+   * "in progress".
+   */
+  userMessageId?: string;
+  clientMessageId?: string;
 }): Promise<boolean> {
-  const { err, res, userId, tenantId, normalizedText, chatRequestId } = opts;
+  const { err, res, userId, tenantId, normalizedText, chatRequestId, userMessageId, clientMessageId } = opts;
   if (!isRetryableAIProviderError(err)) return false;
 
-  const degradedDomain = keywordMatch(normalizedText) || getLastChatActiveDomain(userId, Date.now(), tenantId) || 'secretary';
+  // 2026-05-18 (skill-hardening QA P1-1): require validated tenantId; the
+  // previous `?? userId` fallback could mis-attribute degraded-response
+  // events across tenants. Route layer must call assertTenantScope first.
+  const validatedTenantId = requireTenantIdParam(tenantId, 'sendRetryableChatFailureResponse');
+
+  const degradedDomain = keywordMatch(normalizedText) || getLastChatActiveDomain(userId, Date.now(), validatedTenantId) || 'secretary';
   const degraded = await buildAITemporarilyBusyResponse(degradedDomain, userId);
   const timestamp = new Date().toISOString();
   const assistantMessageId = `msg-${Date.now()}`;
+  const tracker = createChatLatencyTracker(Date.now());
+  tracker.mark('retryable_provider_failure');
+  const grounding = buildChatGroundingEnvelope({
+    message: normalizedText,
+    userId,
+    tenantId: validatedTenantId,
+    routedDomain: degraded.domain,
+  });
+  const contract = buildNexusAnswerContract({
+    intent: grounding.capability.intent,
+    ownerSkill: grounding.capability.ownerSkill,
+    routeMethod: 'degraded',
+    confidence: 0.1,
+    groundingFacts: grounding.groundingFacts,
+    missingFacts: grounding.missingFacts,
+    staleness: grounding.staleness,
+    riskLevel: grounding.capability.riskLevel,
+    actionability: 'degraded',
+    verificationStatus: 'failed',
+    fallback: {
+      fallbackType: 'degraded_response',
+      fallbackReason: 'retryable_ai_provider_failure',
+      retryable: true,
+      sourceFreshness: grounding.staleness,
+      userActionRequired: false,
+      operatorActionRequired: false,
+    },
+    userFacingSummary: degraded.text,
+    traceId: chatRequestId,
+    latency: tracker.snapshot('tier4_long_running', grounding.capability.capability.latencyBudgetMs),
+  });
+  const fallbackPolicy = applyChatFallbackPolicy(contract);
 
   logger.warn(
     { err, platform: 'ios', chatRequestId, userId, degradedDomain },
@@ -39,16 +93,25 @@ export async function sendRetryableChatFailureResponseIfNeeded(opts: {
     routeMethod: 'degraded',
     confidence: 0.1,
     buttons: null,
-    metadata: { degraded: true, retryable: true },
+    metadata: {
+      type: 'nexus_answer',
+      degraded: true,
+      retryable: true,
+      chatReasoning: fallbackPolicy.contract,
+      groundingFacts: metadataGroundingFacts(fallbackPolicy.contract.groundingFacts),
+      fallback: fallbackPolicy.contract.fallback,
+      fallbackPolicy: fallbackPolicy.policy,
+    },
     timestamp,
   };
-  if (tenantId) {
-    persistExchange(userId, `msg-user-${Date.now()}`, normalizedText, assistantMessageId, response, tenantId);
-    syncConversationStateForShortcut(userId, degraded.domain, normalizedText, degraded.text, tenantId);
-  } else {
-    persistExchange(userId, `msg-user-${Date.now()}`, normalizedText, assistantMessageId, response);
-    syncConversationStateForShortcut(userId, degraded.domain, normalizedText, degraded.text);
-  }
+  // Codex QA round 4: preserve the original claimed user-message id so
+  // iOS retry can find the completed (degraded) assistant by the same
+  // key the route claimed at acceptance. Fall back to a fresh id only
+  // when the caller didn't pass one (legacy paths).
+  const persistedUserMessageId = userMessageId
+    ?? (clientMessageId ? `msg-user-${clientMessageId}` : `msg-user-${Date.now()}`);
+  persistExchange(userId, persistedUserMessageId, normalizedText, assistantMessageId, response, validatedTenantId);
+  syncConversationStateForShortcut(userId, degraded.domain, normalizedText, degraded.text, validatedTenantId);
   res.json(response);
   return true;
 }

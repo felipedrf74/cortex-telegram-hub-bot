@@ -34,7 +34,9 @@ vi.mock('../../src/services/training-plans', () => ({
 }));
 
 vi.mock('../../src/services/user-service', () => ({
+  // Identity-safety: dashboard-data-fetchers uses the strict by-id helper.
   getUserTimezone: vi.fn(() => 'Europe/Lisbon'),
+  getUserTimezoneById: vi.fn(() => 'Europe/Lisbon'),
 }));
 
 vi.mock('../../src/services/cache-store', () => ({
@@ -58,6 +60,7 @@ vi.mock('../../src/utils/logger', () => ({
     trace: vi.fn(),
     child: vi.fn().mockReturnThis(),
   },
+  LOGGER_REDACTION_PATHS: [],
 }));
 
 import { calendarRoutes } from '../../src/api/routes/calendar';

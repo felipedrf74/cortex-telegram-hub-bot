@@ -20,14 +20,27 @@ const mockStoreAndPushReport = vi.fn();
 const mockGetDb = vi.fn();
 const mockGetOwnerBootstrapTarget = vi.fn();
 const mockGenerateCoachBriefing = vi.hoisted(() => vi.fn());
+const mockCronSchedule = vi.hoisted(() => vi.fn());
+const mockCreateNotificationIntent = vi.hoisted(() => vi.fn());
+const mockRunEventBackboneOnce = vi.hoisted(() => vi.fn());
+const mockRunEventBackboneCleanup = vi.hoisted(() => vi.fn());
+const mockRunGarminTenantIsolationWatcher = vi.hoisted(() => vi.fn());
+const mockGetActivePlan = vi.hoisted(() => vi.fn());
+const mockGetCurrentWeek = vi.hoisted(() => vi.fn());
+const mockGetWeeklyAdherence = vi.hoisted(() => vi.fn());
+const mockComputeAdjustmentRecommendation = vi.hoisted(() => vi.fn());
+const mockUpdateWeekAdjustment = vi.hoisted(() => vi.fn());
+const mockGetWeeksForPlan = vi.hoisted(() => vi.fn());
+const mockCalculateReadiness = vi.hoisted(() => vi.fn());
+const mockPersistReadinessScore = vi.hoisted(() => vi.fn());
 
 vi.mock('node-cron', () => ({
-  default: { schedule: vi.fn() },
+  default: { schedule: (...args: unknown[]) => mockCronSchedule(...args) },
 }));
 
 vi.mock('../../src/config', () => ({
   config: {
-    app: { timezone: 'Europe/Lisbon' },
+    app: { timezone: 'Europe/Lisbon', databasePath: '/tmp/nexus-test.db' },
     todo: { digestTime: '08:00', digestEnabled: true },
     garmin: { coachTime: '21:00' },
     backup: { time: '03:00' },
@@ -37,6 +50,7 @@ vi.mock('../../src/config', () => ({
 
 vi.mock('../../src/utils/logger', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
+  LOGGER_REDACTION_PATHS: [],
 }));
 
 vi.mock('../../src/state/reminders', () => ({
@@ -109,6 +123,9 @@ vi.mock('../../src/services/garmin', () => ({
   keepAlive: vi.fn(),
   ensureAuthenticated: vi.fn(),
 }));
+vi.mock('../../src/services/garmin-tenant-isolation-watcher', () => ({
+  runGarminTenantIsolationWatcher: (...args: unknown[]) => mockRunGarminTenantIsolationWatcher(...args),
+}));
 vi.mock('../../src/portal/telemetry', () => ({
   registerJob: vi.fn(),
   wrapJob: (_name: string, fn: () => unknown) => fn,
@@ -122,7 +139,7 @@ vi.mock('../../src/services/apns-sender', () => ({ sendPushNotification: vi.fn()
 vi.mock('../../src/skills/skill-manager', () => ({ isCronJobEnabled: vi.fn(() => true) }));
 vi.mock('../../src/services/invoice-queue', () => ({ flushQueue: vi.fn(), getPendingCount: vi.fn(() => 0) }));
 vi.mock('../../src/domains/domain-handler', () => ({ setLastCoachState: vi.fn() }));
-vi.mock('../../src/bot', () => ({ setLastActiveDomain: vi.fn() }));
+vi.mock('../../src/api/routes/chat-message-context', () => ({ setLastActiveDomain: vi.fn() }));
 vi.mock('../../src/state/conversation', () => ({ addToConversation: vi.fn() }));
 vi.mock('../../src/services/channel-learner', () => ({ processAllChannelScopes: vi.fn(), seedDefaultChannels: vi.fn() }));
 vi.mock('../../src/services/content-workflow', () => ({ sendTopicCandidates: vi.fn(), sendWeeklyPackage: vi.fn() }));
@@ -142,23 +159,51 @@ vi.mock('../../src/utils/request-context', () => ({
 vi.mock('../../src/services/user-service', () => ({
   getUserById: vi.fn((id: number) => ({ id, telegram_id: id + 1000 })),
   resolveCanonicalUserId: vi.fn((ref: number) => ref + 10),
+  // Identity-safety: scheduler now uses the strict by-id helpers post-audit.
   getUserLanguage: vi.fn(() => 'en'),
+  getUserLanguageById: vi.fn(() => 'en'),
+  getPreferredDisplayName: vi.fn(() => 'Test User'),
+  getPreferredDisplayNameById: vi.fn(() => 'Test User'),
+  getUserTimezone: vi.fn(() => 'Europe/Lisbon'),
+  getUserTimezoneById: vi.fn(() => 'Europe/Lisbon'),
   getOwnerBootstrapTarget: (...args: unknown[]) => mockGetOwnerBootstrapTarget(...args),
 }));
 vi.mock('../../src/services/task-store/task-router', () => ({
+  resolveTaskProvider: vi.fn(() => 'nexus'),
   getTaskProviderForUser: (...args: unknown[]) => mockGetTaskProviderForUser(...args),
 }));
 vi.mock('../../src/services/database', () => ({
   getDb: (...args: unknown[]) => mockGetDb(...args),
+  initDatabase: vi.fn(),
+  closeDatabase: vi.fn(),
+  findUnexpectedMigrationPrefixCollisions: vi.fn(() => []),
 }));
 vi.mock('../../src/services/report-document-store', () => ({
   storeAndPushReport: (...args: unknown[]) => mockStoreAndPushReport(...args),
 }));
+vi.mock('../../src/services/notification-orchestrator', () => ({
+  createNotificationIntent: (...args: unknown[]) => mockCreateNotificationIntent(...args),
+  releaseDueNotificationDeliveries: vi.fn(),
+}));
+vi.mock('../../src/services/event-backbone-worker', () => ({
+  runEventBackboneOnce: (...args: unknown[]) => mockRunEventBackboneOnce(...args),
+}));
+vi.mock('../../src/tools/event-backbone-cleanup', () => ({
+  runEventBackboneCleanup: (...args: unknown[]) => mockRunEventBackboneCleanup(...args),
+}));
 vi.mock('../../src/services/training-plans', () => ({
   getActivePlans: vi.fn(() => []),
-  getActivePlan: vi.fn(() => null),
-  getCurrentWeek: vi.fn(),
+  getActivePlan: (...args: unknown[]) => mockGetActivePlan(...args),
+  getCurrentWeek: (...args: unknown[]) => mockGetCurrentWeek(...args),
+  getWeeklyAdherence: (...args: unknown[]) => mockGetWeeklyAdherence(...args),
+  computeAdjustmentRecommendation: (...args: unknown[]) => mockComputeAdjustmentRecommendation(...args),
+  updateWeekAdjustment: (...args: unknown[]) => mockUpdateWeekAdjustment(...args),
+  getWeeksForPlan: (...args: unknown[]) => mockGetWeeksForPlan(...args),
   getSessionsForWeek: vi.fn(() => []),
+}));
+vi.mock('../../src/services/readiness-scorer', () => ({
+  calculateReadiness: (...args: unknown[]) => mockCalculateReadiness(...args),
+  persistReadinessScore: (...args: unknown[]) => mockPersistReadinessScore(...args),
 }));
 
 import * as globalMail from '../../src/services/outlook-mail';
@@ -170,13 +215,15 @@ import {
   buildEndOfDaySummaryForUser,
   buildSharedListNotificationForUser,
   buildWeeklyReviewPayloadForUser,
+  decisionMetricsRollupDateForScheduler,
   getActiveUserIds,
   getOwnerUserIds,
+  startScheduler,
   sendCoachBriefings,
   sendDailyBriefing,
 } from '../../src/services/scheduler';
 import { setLastCoachState } from '../../src/domains/domain-handler';
-import { setLastActiveDomain } from '../../src/bot';
+import { setLastActiveDomain } from '../../src/api/routes/chat-message-context';
 import { addToConversation } from '../../src/state/conversation';
 
 describe('scheduler tenant scoping', () => {
@@ -208,6 +255,18 @@ describe('scheduler tenant scoping', () => {
       })),
     });
     mockGetOwnerBootstrapTarget.mockReturnValue({ tenantId: 99, telegramId: 1999 });
+    mockCreateNotificationIntent.mockResolvedValue({ decision: 'in_app_only' });
+    mockRunEventBackboneOnce.mockResolvedValue({
+      events: { processed: 0, failed: 0, deadLetter: 0 },
+      jobs: { completed: 0, failed: 0, deadLetter: 0, skipped: 0 },
+    });
+    mockRunEventBackboneCleanup.mockReturnValue({
+      apply: false,
+      databasePath: '/tmp/nexus-test.db',
+      retentionDays: 30,
+      cutoff: '2026-04-01T00:00:00.000Z',
+      targets: [],
+    });
     mockGenerateCoachBriefing.mockResolvedValue({
       message: 'coach briefing',
       recommendations: [],
@@ -215,6 +274,22 @@ describe('scheduler tenant scoping', () => {
       dataCollectionMs: 1,
       analysisMs: 2,
     });
+    mockGetActivePlan.mockReturnValue(null);
+    mockGetCurrentWeek.mockReturnValue(null);
+    mockGetWeeklyAdherence.mockReturnValue({ completedSessions: 0, skippedSessions: 0 });
+    mockComputeAdjustmentRecommendation.mockReturnValue({ adjustIntensity: 100, reason: 'No adjustment' });
+    mockUpdateWeekAdjustment.mockReturnValue(true);
+    mockGetWeeksForPlan.mockReturnValue([]);
+    mockCalculateReadiness.mockResolvedValue({ score: 80, recommendation: 'Ready', factors: {} });
+    mockPersistReadinessScore.mockReturnValue(undefined);
+  });
+
+  it('computes Decision Metrics rollup date in the scheduler timezone across Lisbon DST', () => {
+    const summerMidnight = DateTime.fromISO('2026-06-03T00:15:00', { zone: 'Europe/Lisbon' }).toJSDate();
+    expect(decisionMetricsRollupDateForScheduler(summerMidnight, 'Europe/Lisbon')).toBe('2026-06-02');
+
+    const winterMidnight = DateTime.fromISO('2026-01-03T00:15:00', { zone: 'Europe/Lisbon' }).toJSDate();
+    expect(decisionMetricsRollupDateForScheduler(winterMidnight, 'Europe/Lisbon')).toBe('2026-01-02');
   });
 
   it('getActiveUserIds returns canonical tenant ids from the users table', () => {
@@ -362,6 +437,52 @@ describe('scheduler tenant scoping', () => {
     );
   });
 
+  it('shared list cron creates NotificationIntent for active users without requiring Telegram', async () => {
+    const todayStr = new Date().toISOString().slice(0, 10);
+    const existing = { id: 'existing', title: 'Existing shared', listName: 'Shared', dueDateTime: null };
+    const newTask = { id: 'new-for-ios', title: 'New shared task', listName: 'Shared', dueDateTime: `${todayStr}T10:00:00.000Z` };
+
+    mockGetSharedListPendingTasks.mockResolvedValue({
+      success: true,
+      data: [existing],
+    });
+    await buildSharedListNotificationForUser(11);
+    await buildSharedListNotificationForUser(22);
+
+    mockGetSharedListPendingTasks.mockResolvedValue({
+      success: true,
+      data: [existing, newTask],
+    });
+    mockCreateNotificationIntent.mockClear();
+
+    startScheduler();
+    const sharedListJob = mockCronSchedule.mock.calls.find((call) => call[0] === '*/5 * * * *')?.[1] as (() => Promise<void>) | undefined;
+    expect(sharedListJob).toBeTypeOf('function');
+
+    await sharedListJob!();
+
+    expect(mockCreateNotificationIntent).toHaveBeenCalledWith(expect.objectContaining({
+      userId: 11,
+      tenantId: 11,
+      sourceSkill: 'secretary',
+      type: 'missed_item',
+      priority: 'active',
+      relatedEntityType: 'shared_task_list',
+      title: 'Shared list update',
+      body: 'New shared tasks need your attention.',
+      sensitiveBody: expect.stringContaining('New shared task'),
+      privacyPolicy: 'sensitive',
+      requiresUserAction: false,
+    }));
+    expect(mockCreateNotificationIntent).toHaveBeenCalledWith(expect.objectContaining({
+      userId: 22,
+      tenantId: 22,
+      sourceSkill: 'secretary',
+      type: 'missed_item',
+      relatedEntityType: 'shared_task_list',
+    }));
+  });
+
   it('buildConflictAlertForUser uses scoped calendar reads and only reports overlapping events', async () => {
     mockGetEvents.mockResolvedValue([
       { summary: 'Event A', start: '2026-04-18T09:00:00.000Z', end: '2026-04-18T10:00:00.000Z' },
@@ -377,6 +498,158 @@ describe('scheduler tenant scoping', () => {
     expect(message).toContain('Event A');
     expect(message).toContain('Event B');
     expect(message).not.toContain('Event C');
+  });
+
+  it('conflict detection cron emits Secretary NotificationIntent even when Telegram is unavailable', async () => {
+    mockGetEvents.mockResolvedValue([
+      { summary: 'Event A', start: '2026-04-18T09:00:00.000Z', end: '2026-04-18T10:00:00.000Z' },
+      { summary: 'Event B', start: '2026-04-18T09:30:00.000Z', end: '2026-04-18T11:00:00.000Z' },
+    ]);
+
+    startScheduler();
+    const conflictJob = mockCronSchedule.mock.calls.find((call) => call[0] === '30 19 * * *')?.[1] as (() => Promise<void>) | undefined;
+    expect(conflictJob).toBeTypeOf('function');
+
+    await conflictJob!();
+
+    expect(mockCreateNotificationIntent).toHaveBeenCalledWith(expect.objectContaining({
+      userId: 11,
+      tenantId: 11,
+      sourceSkill: 'secretary',
+      type: 'conflict_detected',
+      priority: 'time_sensitive',
+      privacyPolicy: 'sensitive',
+      decisionDeadline: expect.any(String),
+    }));
+    expect(mockCreateNotificationIntent).toHaveBeenCalledWith(expect.objectContaining({
+      userId: 22,
+      tenantId: 22,
+      sourceSkill: 'secretary',
+      type: 'conflict_detected',
+    }));
+  });
+
+  it('training plan adjust cron emits NotificationIntent for native users after weekly adjustment', async () => {
+    mockGetActivePlan.mockReturnValue({ id: 501, name: 'Base plan', duration_weeks: 4 });
+    mockGetCurrentWeek.mockReturnValue({ id: 601, week_number: 2 });
+    mockGetWeeklyAdherence.mockReturnValue({
+      completedSessions: 3,
+      skippedSessions: 1,
+      totalSessions: 4,
+      adherenceRate: 75,
+      avgRpe: 6,
+      avgSoreness: 3,
+      avgEnergy: 7,
+    });
+    mockComputeAdjustmentRecommendation.mockReturnValue({ adjustIntensity: 80, reason: 'Adherence dipped this week' });
+    mockGetWeeksForPlan.mockReturnValue([{ id: 602, week_number: 3 }]);
+
+    startScheduler();
+    const trainingJob = mockCronSchedule.mock.calls.find((call) => call[0] === '0 19 * * 0')?.[1] as (() => Promise<void>) | undefined;
+    expect(trainingJob).toBeTypeOf('function');
+
+    await trainingJob!();
+
+    expect(mockUpdateWeekAdjustment).toHaveBeenCalledWith(602, 80, 'Adherence dipped this week');
+    expect(mockCreateNotificationIntent).toHaveBeenCalledWith(expect.objectContaining({
+      userId: 22,
+      tenantId: 22,
+      sourceSkill: 'training',
+      type: 'schedule_changed',
+      priority: 'active',
+      relatedEntityId: 'training-plan-adjust:501:602',
+      relatedEntityType: 'training_week_adjustment',
+      title: 'Training week adjusted',
+      body: 'Nexus adjusted your next training week.',
+      sensitiveBody: expect.stringContaining('Base plan'),
+      privacyPolicy: 'health',
+      requiresUserAction: false,
+    }));
+  });
+
+  it('training plan renewal cron emits NotificationIntent through the orchestrator instead of direct push only', async () => {
+    mockGetActivePlan.mockReturnValue({ id: 701, name: 'Race block', duration_weeks: 4 });
+    mockGetCurrentWeek.mockReturnValue({ id: 801, week_number: 4 });
+    mockGetWeeklyAdherence.mockReturnValue({
+      completedSessions: 4,
+      skippedSessions: 0,
+      totalSessions: 4,
+      adherenceRate: 100,
+      avgRpe: 5,
+      avgSoreness: 2,
+      avgEnergy: 8,
+    });
+    mockComputeAdjustmentRecommendation.mockReturnValue({ adjustIntensity: 100, reason: 'Maintain' });
+    mockGetWeeksForPlan.mockReturnValue([{ id: 801, week_number: 4 }]);
+
+    startScheduler();
+    const trainingJob = mockCronSchedule.mock.calls.find((call) => call[0] === '0 19 * * 0')?.[1] as (() => Promise<void>) | undefined;
+    expect(trainingJob).toBeTypeOf('function');
+
+    await trainingJob!();
+
+    expect(mockCreateNotificationIntent).toHaveBeenCalledWith(expect.objectContaining({
+      userId: 22,
+      tenantId: 22,
+      sourceSkill: 'training',
+      type: 'reminder',
+      priority: 'active',
+      relatedEntityId: 'training-plan-renewal:701',
+      relatedEntityType: 'training_plan',
+      title: 'Training plan complete',
+      body: 'Your training plan is complete. Open Nexus to choose what comes next.',
+      sensitiveBody: expect.stringContaining('Race block'),
+      privacyPolicy: 'health',
+      requiresUserAction: false,
+    }));
+  });
+
+  it('event backbone cron is wired through the scheduler with bounded batches and no-op skips', async () => {
+    startScheduler();
+    const backboneJob = mockCronSchedule.mock.calls.find((call) => call[0] === '* * * * *' && String(call[1]).includes('runEventBackboneOnce'))?.[1] as (() => Promise<unknown>) | undefined;
+    expect(backboneJob).toBeTypeOf('function');
+
+    const result = await backboneJob!();
+
+    expect(result).toBe('skipped');
+    expect(mockRunEventBackboneOnce).toHaveBeenCalledWith(expect.objectContaining({
+      eventLimit: 25,
+      jobLimit: 10,
+      lockOwner: expect.stringMatching(/^scheduler:/),
+    }));
+  });
+
+  it('event backbone cleanup runs in dry-run mode by default with configured retention', async () => {
+    mockRunEventBackboneCleanup.mockReturnValue({
+      apply: false,
+      databasePath: '/tmp/nexus-test.db',
+      retentionDays: 30,
+      cutoff: '2026-04-01T00:00:00.000Z',
+      targets: [{ table: 'event_outbox', exists: true, candidates: 2, protectedNewest: 0, deleted: 0 }],
+    });
+
+    startScheduler();
+    const cleanupJob = mockCronSchedule.mock.calls.find((call) => call[0] === '10 0 * * *')?.[1] as (() => Promise<unknown>) | undefined;
+    expect(cleanupJob).toBeTypeOf('function');
+
+    await cleanupJob!();
+
+    expect(mockRunEventBackboneCleanup).toHaveBeenCalledWith(expect.objectContaining({
+      dbPath: '/tmp/nexus-test.db',
+      apply: false,
+      retentionDays: 30,
+      protectNewest: 500,
+    }));
+  });
+
+  it('pending chat action expiry is wired through the scheduler and skips no-op runs', async () => {
+    startScheduler();
+    const expiryJob = mockCronSchedule.mock.calls.find((call) => call[0] === '*/2 * * * *')?.[1] as (() => Promise<unknown>) | undefined;
+    expect(expiryJob).toBeTypeOf('function');
+
+    const result = await expiryJob!();
+
+    expect(result).toBe('skipped');
   });
 
   it('sendDailyBriefing stores report documents under canonical tenant ids', async () => {
@@ -421,8 +694,8 @@ describe('scheduler tenant scoping', () => {
     await sendCoachBriefings();
 
     expect(mockGenerateCoachBriefing).toHaveBeenCalledTimes(2);
-    expect(mockGenerateCoachBriefing).toHaveBeenNthCalledWith(1, 11);
-    expect(mockGenerateCoachBriefing).toHaveBeenNthCalledWith(2, 22);
+    expect(mockGenerateCoachBriefing).toHaveBeenNthCalledWith(1, 11, { garminSilent: true });
+    expect(mockGenerateCoachBriefing).toHaveBeenNthCalledWith(2, 22, { garminSilent: true });
     expect(mockRunWithContext).toHaveBeenCalledWith(
       expect.objectContaining({ source: 'cron:garmin_coach', userId: 11 }),
       expect.any(Function),

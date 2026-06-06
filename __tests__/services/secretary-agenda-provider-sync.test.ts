@@ -12,6 +12,9 @@ let testDb: Database.Database;
 
 vi.mock('../../src/services/database', () => ({
   getDb: () => testDb,
+  initDatabase: vi.fn(),
+  closeDatabase: vi.fn(),
+  findUnexpectedMigrationPrefixCollisions: vi.fn(() => []),
 }));
 
 vi.mock('../../src/utils/logger', () => ({
@@ -23,6 +26,7 @@ vi.mock('../../src/utils/logger', () => ({
     trace: vi.fn(),
     child: vi.fn().mockReturnThis(),
   },
+  LOGGER_REDACTION_PATHS: [],
 }));
 
 import {
@@ -33,12 +37,15 @@ import {
   type SecretaryTimeWindow,
 } from '../../src/services/secretary-scheduling-arbitrator';
 import {
+  markCompletedSecretaryAgendaItems,
   syncSecretaryAgendaItemsToProvider,
   syncSecretaryAgendaItemToProvider,
   type SecretaryAgendaProviderAdapter,
   type SecretaryProviderEvent,
   type SecretaryProviderEventInput,
 } from '../../src/services/secretary-agenda-provider-sync';
+import { getActiveReminders, setReminder } from '../../src/state/reminders';
+import { logger } from '../../src/utils/logger';
 
 const TENANT_ID = 'tenant-calendar-lifecycle';
 const OWNER_USER_ID = 74;
@@ -59,11 +66,15 @@ class MockSecretaryProvider implements SecretaryAgendaProviderAdapter {
   updateInputs: Array<{ eventId: string; input: SecretaryProviderEventInput }> = [];
   deletedEventIds: string[] = [];
   createFailuresRemaining = 0;
+  createAttempts = 0;
+  createFailureFactory: (() => unknown) | null = null;
   private sequence = 1;
 
   async createEvent(input: SecretaryProviderEventInput): Promise<SecretaryProviderEvent> {
+    this.createAttempts += 1;
     if (this.createFailuresRemaining > 0) {
       this.createFailuresRemaining -= 1;
+      if (this.createFailureFactory) throw this.createFailureFactory();
       throw new Error('simulated provider create failure');
     }
     this.createInputs.push(input);
@@ -201,7 +212,23 @@ describe('secretary-agenda-provider-sync', () => {
     expect(stored?.providerEventId).toBe(result.providerEventId);
     expect(stored?.providerSource).toBe('google');
     expect(stored?.providerSyncState).toBe('synced');
+    expect(stored?.lifecycleState).toBe('synced');
     expect(stored?.sourceShapeHash).toHaveLength(32);
+  });
+
+  it('fails loudly when provider mapping update misses the scoped agenda row', async () => {
+    class DeletingProvider extends MockSecretaryProvider {
+      async createEvent(input: SecretaryProviderEventInput): Promise<SecretaryProviderEvent> {
+        const event = await super.createEvent(input);
+        testDb.prepare('DELETE FROM secretary_agenda_items WHERE agenda_item_id = ?').run(input.agendaItemId);
+        return event;
+      }
+    }
+    const provider = new DeletingProvider();
+    const decision = submitSecretarySchedulingIntent(intent());
+
+    await expect(syncOne(decision.agendaItem.agendaItemId, provider))
+      .rejects.toThrow(/SECRETARY_PROVIDER_MAPPING_UPDATE_MISSED/);
   });
 
   it('updates and moves an existing provider event by exact event ID', async () => {
@@ -349,6 +376,137 @@ describe('secretary-agenda-provider-sync', () => {
     expect(retried.action).toBe('created');
     expect(provider.createInputs).toHaveLength(1);
     expect(stored?.providerSyncState).toBe('synced');
+    expect(stored?.lifecycleState).toBe('synced');
+  });
+
+  it('bulk sync uses an explicit retry budget and honors Retry-After for transient failures', async () => {
+    const provider = new MockSecretaryProvider();
+    provider.createFailuresRemaining = 1;
+    provider.createFailureFactory = () => ({
+      response: {
+        headers: {
+          'retry-after': '0',
+        },
+      },
+    });
+    const decision = submitSecretarySchedulingIntent(intent({
+      intentId: 'bulk-retry-after',
+      sourceEntityId: 'session-bulk-retry',
+    }));
+
+    const results = await syncSecretaryAgendaItemsToProvider({
+      ownerUserId: OWNER_USER_ID,
+      tenantId: TENANT_ID,
+      includeInactive: false,
+    }, provider);
+    const stored = getSecretaryAgendaItemById({
+      agendaItemId: decision.agendaItem.agendaItemId,
+      ownerUserId: OWNER_USER_ID,
+      tenantId: TENANT_ID,
+    });
+
+    expect(results).toHaveLength(1);
+    expect(results[0]).toMatchObject({
+      action: 'created',
+      providerSyncState: 'synced',
+    });
+    expect(provider.createAttempts).toBe(2);
+    expect(provider.createInputs).toHaveLength(1);
+    expect(stored?.providerSyncState).toBe('synced');
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        agendaItemId: decision.agendaItem.agendaItemId,
+        providerSource: 'google',
+        retryBudget: 2,
+        delayMs: 0,
+      }),
+      'Secretary agenda provider sync retrying after transient failure',
+    );
+  });
+
+  it('marks provider sync failures as failed_sync and keeps them retryable', async () => {
+    const provider = new MockSecretaryProvider();
+    provider.createFailuresRemaining = 1;
+    const decision = submitSecretarySchedulingIntent(intent({
+      intentId: 'failed-sync-lifecycle',
+      sourceEntityId: 'session-failed-sync',
+    }));
+
+    const failed = await syncOne(decision.agendaItem.agendaItemId, provider);
+    const afterFailure = getSecretaryAgendaItemById({
+      agendaItemId: decision.agendaItem.agendaItemId,
+      ownerUserId: OWNER_USER_ID,
+      tenantId: TENANT_ID,
+    });
+
+    expect(failed.providerSyncState).toBe('create_failed');
+    expect(afterFailure?.lifecycleState).toBe('failed_sync');
+
+    const retried = await syncOne(decision.agendaItem.agendaItemId, provider);
+    const afterRetry = getSecretaryAgendaItemById({
+      agendaItemId: decision.agendaItem.agendaItemId,
+      ownerUserId: OWNER_USER_ID,
+      tenantId: TENANT_ID,
+    });
+    expect(retried.action).toBe('created');
+    expect(afterRetry?.lifecycleState).toBe('synced');
+  });
+
+  it('marks ended agenda items completed without deleting provider history', async () => {
+    const provider = new MockSecretaryProvider();
+    const decision = submitSecretarySchedulingIntent(intent({
+      intentId: 'completed-lifecycle',
+      sourceEntityId: 'session-completed',
+      preferredWindows: [
+        timeWindow('2026-05-02T09:00:00.000Z', '2026-05-02T11:00:00.000Z', 'morning'),
+      ],
+    }));
+    const created = await syncOne(decision.agendaItem.agendaItemId, provider);
+
+    const changed = markCompletedSecretaryAgendaItems(new Date('2026-05-03T00:00:00.000Z'));
+    const stored = getSecretaryAgendaItemById({
+      agendaItemId: decision.agendaItem.agendaItemId,
+      ownerUserId: OWNER_USER_ID,
+      tenantId: TENANT_ID,
+    });
+
+    expect(changed).toBeGreaterThanOrEqual(1);
+    expect(stored?.lifecycleState).toBe('completed');
+    expect(provider.events.has(created.providerEventId!)).toBe(true);
+  });
+
+  it('cancels agenda-linked reminders when an agenda item is canceled', () => {
+    testDb.exec(`
+      CREATE TABLE IF NOT EXISTS reminders (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER NOT NULL DEFAULT 0,
+        message TEXT NOT NULL,
+        remind_at TEXT NOT NULL,
+        recurring TEXT,
+        status TEXT DEFAULT 'active',
+        created_at TEXT DEFAULT (datetime('now'))
+      );
+    `);
+    const decision = submitSecretarySchedulingIntent(intent({
+      intentId: 'reminder-cancel',
+      sourceEntityId: 'session-reminder',
+    }));
+    setReminder(OWNER_USER_ID, {
+      message: 'Prep for bike session',
+      remind_at: '2026-05-04T08:30:00.000Z',
+      agenda_item_id: decision.agendaItem.agendaItemId,
+    });
+
+    expect(getActiveReminders(OWNER_USER_ID)).toHaveLength(1);
+    cancelSecretaryAgendaItem({
+      agendaItemId: decision.agendaItem.agendaItemId,
+      ownerUserId: OWNER_USER_ID,
+      tenantId: TENANT_ID,
+      reason: 'user canceled',
+      now: '2026-05-01T10:00:00.000Z',
+    });
+
+    expect(getActiveReminders(OWNER_USER_ID)).toHaveLength(0);
   });
 
   it('recreates an active agenda item when its provider event was externally deleted', async () => {

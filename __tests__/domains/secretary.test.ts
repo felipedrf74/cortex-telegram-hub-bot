@@ -57,13 +57,19 @@ vi.mock('../../src/services/unified-mail-pressure', () => ({
   }),
 }));
 vi.mock('../../src/services/user-service', () => ({
+  // Identity-safety: secretary path uses the strict by-id helpers post-audit.
   getUserLanguage: vi.fn().mockReturnValue('en-US'),
+  getUserLanguageById: vi.fn().mockReturnValue('en-US'),
   getUserTimezone: vi.fn().mockReturnValue('Europe/Lisbon'),
+  getUserTimezoneById: vi.fn().mockReturnValue('Europe/Lisbon'),
+  getPreferredDisplayName: vi.fn().mockReturnValue('Test User'),
+  getPreferredDisplayNameById: vi.fn().mockReturnValue('Test User'),
 }));
 
 const mockGetTaskProviderForUser = vi.fn();
 const mockTaskGetAllPendingTasks = vi.fn();
 vi.mock('../../src/services/task-store/task-router', () => ({
+  resolveTaskProvider: vi.fn(() => 'nexus'),
   getTaskProviderForUser: (...args: unknown[]) => mockGetTaskProviderForUser(...args),
 }));
 
@@ -120,6 +126,7 @@ vi.mock('../../src/utils/logger', () => ({
     info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(),
     trace: vi.fn(), child: vi.fn().mockReturnThis(),
   },
+  LOGGER_REDACTION_PATHS: [],
 }));
 
 // ─── Imports ─────────────────────────────────────────────────────────
@@ -264,7 +271,7 @@ describe('handleSecretary', () => {
 
     expect(mockCallDomain).toHaveBeenCalledWith(
       'secretary',
-      undefined,
+      [],
       'Hello',
       expect.any(String),
       undefined,

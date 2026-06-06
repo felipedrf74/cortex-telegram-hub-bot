@@ -6,6 +6,9 @@ vi.mock('../../src/services/database', () => ({
   getDb: () => ({
     prepare: prepareMock,
   }),
+  initDatabase: vi.fn(),
+  closeDatabase: vi.fn(),
+  findUnexpectedMigrationPrefixCollisions: vi.fn(() => []),
 }));
 
 describe('portal snapshot statements', () => {

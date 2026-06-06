@@ -33,6 +33,7 @@ vi.mock('../../src/utils/logger', () => ({
     info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(),
     trace: vi.fn(), child: vi.fn().mockReturnThis(),
   },
+  LOGGER_REDACTION_PATHS: [],
 }));
 
 import { patternMatch, keywordMatch, classifyWithClaude } from '../../src/router/classifier';
@@ -402,13 +403,18 @@ describe('REGRESSION: Three-tier cascade functions correctly', () => {
       expect(mockClassifyMessage).not.toHaveBeenCalled();
     });
 
-    it('with active content context, "deadline" follow-ups preserve content context', async () => {
+    it('with active content context, "deadline" follow-ups preserve content context without paying for the classifier', async () => {
+      // Codex QA round 1 short-circuit: when preferContext+activeContext
+      // are true and the keyword route disagrees with active context for
+      // a non-safe domain (secretary), the router preserves the active
+      // context directly instead of paying for the classifier hop.
       mockClassifyMessage.mockResolvedValue({ domain: 'content', confidence: 0.9 });
       const context = { domain: 'content' as const, lastAssistantMessage: 'Video script draft ready.' };
 
       const result = await routeMessage('when is the deadline for this?', context);
-      expect(result.method).toBe('classifier');
+      expect(result.method).toBe('context');
       expect(result.domain).toBe('content');
+      expect(mockClassifyMessage).not.toHaveBeenCalled();
     });
 
     it('explicit command still wins even with active context', async () => {
@@ -553,6 +559,8 @@ let testDb: Database.Database;
 vi.mock('../../src/services/database', () => ({
   getDb: () => testDb,
   initDatabase: vi.fn(),
+  closeDatabase: vi.fn(),
+  findUnexpectedMigrationPrefixCollisions: vi.fn(() => []),
 }));
 
 describe('REGRESSION: Conversation history per-domain isolation', () => {
@@ -849,8 +857,11 @@ describe('REGRESSION: Tool execution through skill interface', () => {
       seedDefaultSkills();
 
       const statuses = getAllSkillStatuses();
-      expect(statuses.length).toBe(5);
-      expect(statuses.map(s => s.name).sort()).toEqual(['content', 'cooking', 'finance', 'secretary', 'triathlon']);
+      expect(statuses.length).toBe(8);
+      expect(statuses.map(s => s.name).sort()).toEqual([
+        'connections', 'content', 'cooking', 'decision_center', 'finance',
+        'notifications', 'secretary', 'triathlon',
+      ]);
     });
   });
 
@@ -866,7 +877,7 @@ describe('REGRESSION: Tool execution through skill interface', () => {
       const secondCount = getAll().length;
 
       expect(firstCount).toBe(secondCount);
-      expect(firstCount).toBe(5); // secretary, triathlon, content, finance, cooking
+      expect(firstCount).toBe(8); // 5 domain skills + 3 platform skills (connections, notifications, decision_center) promoted 2026-05-15
     });
 
     it('re-seeding preserves user toggle state', async () => {
@@ -1018,7 +1029,7 @@ describe('REGRESSION: Skill config definitions are consistent', () => {
     expect(subNames).not.toContain('email');
   });
 
-  it('content v2 has 11 granular sub-skills including agent mesh', async () => {
+  it('content v2 has 12 granular sub-skills including agent mesh and creator agency', async () => {
     const { getSkillDefinition } = await import('../../src/skills/skill-config');
     const content = getSkillDefinition('content');
     const subNames = content.subSkills.map(s => s.name);
@@ -1033,8 +1044,9 @@ describe('REGRESSION: Skill config definitions are consistent', () => {
     expect(subNames).toContain('performance-intel');
     expect(subNames).toContain('pipeline-tracker');
     expect(subNames).toContain('topic-scheduler');
+    expect(subNames).toContain('creator-agency');
     expect(subNames).toContain('meme-scout');
-    expect(subNames.length).toBe(11);
+    expect(subNames.length).toBe(12);
   });
 
   it('no tool name appears in conflicting sub-skills across domains', async () => {

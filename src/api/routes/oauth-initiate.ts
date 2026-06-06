@@ -92,7 +92,7 @@ export function oauthInitiateRoutes(): Router {
  * Mirrors getOAuthUrl from oauth-flow.ts but injects the iOS state.
  */
 function getOAuthUrlWithState(provider: string, state: string): string | null {
-  const REDIRECT_BASE = process.env.OAUTH_REDIRECT_BASE || 'https://nexushub.me';
+  const REDIRECT_BASE = process.env.OAUTH_REDIRECT_BASE || 'https://api.nexushub.me';
 
   if (provider === 'google') {
     if (!config.google.clientId) return null;

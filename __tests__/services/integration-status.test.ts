@@ -31,6 +31,9 @@ let testDb: Database.Database;
 
 vi.mock('../../src/services/database', () => ({
   getDb: () => testDb,
+  initDatabase: vi.fn(),
+  closeDatabase: vi.fn(),
+  findUnexpectedMigrationPrefixCollisions: vi.fn(() => []),
 }));
 
 vi.mock('../../src/utils/logger', () => ({
@@ -42,6 +45,7 @@ vi.mock('../../src/utils/logger', () => ({
     trace: vi.fn(),
     child: vi.fn().mockReturnThis(),
   },
+  LOGGER_REDACTION_PATHS: [],
 }));
 
 vi.mock('../../src/config', () => ({
@@ -131,6 +135,20 @@ function seedGarmin(
          updated_at = datetime('now')`,
     )
     .run(userId, 'felipe@example.com', '{}', status);
+
+  if (status === 'active') {
+    testDb
+      .prepare(
+        `INSERT INTO garmin_sessions (user_id, oauth1_token_json, oauth2_token_json, last_refreshed_at)
+         VALUES (?, ?, ?, datetime('now'))
+         ON CONFLICT(user_id) DO UPDATE SET
+           oauth1_token_json = excluded.oauth1_token_json,
+           oauth2_token_json = excluded.oauth2_token_json,
+           last_refreshed_at = excluded.last_refreshed_at,
+           updated_at = datetime('now')`,
+      )
+      .run(userId, '{"token":"oauth1"}', '{"token":"oauth2"}');
+  }
 }
 
 function seedAppleHealth(userId: number, date = new Date().toISOString().slice(0, 10)): void {
@@ -280,6 +298,22 @@ describe('integration-status', () => {
 
       expect(garmin.state).toBe('connected');
       expect(garmin.capabilities).toEqual(['training', 'sleep', 'readiness']);
+    });
+
+    it('does not report Garmin connected from an active metadata row without scoped tokens', () => {
+      testDb
+        .prepare(
+          `INSERT INTO garmin_user_tokens (user_id, garmin_email, tokens_json, status)
+           VALUES (?, ?, '{}', 'active')`,
+        )
+        .run(1444, 'wrong-user@garmin.example');
+
+      const summary = getIntegrationSummary(1444);
+      const garmin = summary.providers.find((p) => p.provider === 'garmin')!;
+
+      expect(garmin.state).toBe('disconnected');
+      expect(summary.capabilities.health).toBe(false);
+      expect(isGarminActivelyIntegrated(1444)).toBe(false);
     });
 
     it('does NOT imply any email provider is connected', () => {
@@ -486,6 +520,26 @@ describe('integration-status', () => {
       const status = getProviderStatus(65, 'google');
       expect(status.state).toBe('degraded');
       expect(status.reasonCode).toBe('PROBE_FAILING');
+    });
+
+    it('does not show user-facing Google reconnect when only the global owner probe has invalid_grant', () => {
+      seedGoogle(66);
+      testDb
+        .prepare(`UPDATE user_oauth_tokens SET updated_at = ? WHERE user_id = ? AND provider = 'google'`)
+        .run('2026-05-04 10:00:00', 66);
+
+      const insertProbe = testDb.prepare(
+        `INSERT INTO integration_health (provider, status, ts, error_message)
+         VALUES ('google', 'fail', ?, ?)`,
+      );
+      insertProbe.run('2026-05-04 10:01:00', 'invalid_grant');
+      insertProbe.run('2026-05-04 10:02:00', 'invalid_grant');
+      insertProbe.run('2026-05-04 10:03:00', 'invalid_grant');
+
+      const status = getProviderStatus(66, 'google');
+      expect(status.state).toBe('connected');
+      expect(status.reasonCode).toBeUndefined();
+      expect(status.detail).toBeUndefined();
     });
   });
 

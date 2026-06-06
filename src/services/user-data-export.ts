@@ -12,6 +12,9 @@
 import { getDb } from './database';
 import { getTransactions, getTaxEvents, getAnnualTaxSummary } from './finance-tracker';
 import type { Transaction, TaxEvent, AnnualTaxSummary } from './finance-tracker';
+import { getTokens, type OAuthProvider } from './oauth-store';
+import { clearGarminSession } from './garmin-session-store';
+import { logger } from '../utils/logger';
 
 // ── Finance Export (existing) ───────────────────────────────────────
 
@@ -61,6 +64,91 @@ export function deleteUserFinanceData(userId: number): { transactionsDeleted: nu
   };
 }
 
+type OAuthRevocationResult = {
+  provider: string;
+  attempted: boolean;
+  status: 'revoked' | 'already_revoked' | 'failed' | 'local_only';
+  statusCode?: number;
+};
+
+async function postFormRevocation(url: string, body: URLSearchParams): Promise<{ statusCode: number; ok: boolean }> {
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body,
+  });
+  return { statusCode: response.status, ok: response.ok || (response.status >= 400 && response.status < 500) };
+}
+
+/**
+ * Best-effort third-party credential revocation before local erasure.
+ *
+ * 4xx responses are treated as already-revoked/invalid-token success because
+ * the provider no longer accepts the credential. Network/5xx failures are
+ * logged and tolerated so Article 17 local deletion can still proceed.
+ */
+export async function revokeThirdPartyOAuthTokensForUser(userId: number): Promise<OAuthRevocationResult[]> {
+  const db = getDb();
+  const rows = safeAll(db, 'SELECT provider FROM user_oauth_tokens WHERE user_id = ?', userId) as Array<{ provider: OAuthProvider }>;
+  const results: OAuthRevocationResult[] = [];
+
+  for (const row of rows) {
+    const provider = row.provider;
+    const tokens = getTokens(userId, provider);
+    if (!tokens) continue;
+    try {
+      if (provider === 'google') {
+        const token = tokens.refreshToken || tokens.accessToken;
+        const result = await postFormRevocation('https://oauth2.googleapis.com/revoke', new URLSearchParams({ token }));
+        results.push({
+          provider,
+          attempted: true,
+          status: result.ok ? (result.statusCode >= 400 ? 'already_revoked' : 'revoked') : 'failed',
+          statusCode: result.statusCode,
+        });
+        continue;
+      }
+
+      if (provider === 'outlook') {
+        const tenantId = process.env.OUTLOOK_TENANT_ID || 'common';
+        const token = tokens.refreshToken || tokens.accessToken;
+        const result = await postFormRevocation(
+          `https://login.microsoftonline.com/${tenantId}/oauth2/v2.0/logout`,
+          new URLSearchParams({ token }),
+        );
+        results.push({
+          provider,
+          attempted: true,
+          status: result.ok ? (result.statusCode >= 400 ? 'already_revoked' : 'revoked') : 'failed',
+          statusCode: result.statusCode,
+        });
+        continue;
+      }
+
+      results.push({ provider, attempted: false, status: 'local_only' });
+    } catch (err) {
+      logger.warn({ err, userId, provider }, 'OAuth revocation failed during account deletion');
+      results.push({ provider, attempted: true, status: 'failed' });
+    }
+  }
+
+  const garminSession = safeGet(db, 'SELECT user_id FROM garmin_sessions WHERE user_id = ?', userId);
+  if (garminSession) {
+    // The Garmin integration in this codebase has no stable public revoke
+    // endpoint; remove the durable local session before deletion and record
+    // that this provider is local-only.
+    clearGarminSession(userId);
+    results.push({ provider: 'garmin', attempted: true, status: 'local_only' });
+  }
+
+  return results;
+}
+
+export async function deleteAllUserDataForAccountDeletion(userId: number): Promise<Record<string, number>> {
+  await revokeThirdPartyOAuthTokensForUser(userId);
+  return deleteAllUserData(userId);
+}
+
 export function countUserFinanceData(userId: number): { transactions: number; taxEvents: number } {
   const db = getDb();
   const txCount = db.prepare('SELECT COUNT(*) as cnt FROM finance_transactions WHERE user_id = ?').get(userId) as { cnt: number };
@@ -93,6 +181,11 @@ export interface FullUserExport {
   finance: UserFinanceExport;
   oauthConnections: Array<{ provider: string; connectedAt: string }>;
   settings: Array<{ key: string; value: string }>;
+  notificationDeviceTokens?: Array<{ environment: string; platform: string; appVersion: string | null; lastSeenAt: string; revokedAt: string | null }>;
+  garminSessions?: Array<{ lastRefreshedAt: string | null; createdAt: string; updatedAt: string }>;
+  agentSignals?: Array<{ sourceAgent: string; signalType: string; status: string; createdAt: string }>;
+  encryptionMeta?: Array<{ keyVersion: number; encryptedAt: string; updatedAt: string }>;
+  legalConsents?: Array<{ documentKey: string; documentVersion: string; documentUrl: string; acceptedAt: string; source: string }>;
 }
 
 export function exportAllUserData(userId: number): FullUserExport {
@@ -139,6 +232,16 @@ export function exportAllUserData(userId: number): FullUserExport {
   // User settings from kv_store
   const settings = safeAll(db,
     "SELECT key, value FROM kv_store WHERE key LIKE ?", `config:${userId}:%`);
+  const notificationDeviceTokens = safeAll(db,
+    'SELECT environment, platform, app_version as appVersion, last_seen_at as lastSeenAt, revoked_at as revokedAt FROM notification_device_tokens WHERE user_id = ?', userId);
+  const garminSessions = safeAll(db,
+    'SELECT last_refreshed_at as lastRefreshedAt, created_at as createdAt, updated_at as updatedAt FROM garmin_sessions WHERE user_id = ?', userId);
+  const agentSignals = safeAll(db,
+    'SELECT source_agent as sourceAgent, signal_type as signalType, status, created_at as createdAt FROM agent_signals WHERE user_id = ? ORDER BY created_at', userId);
+  const encryptionMeta = safeAll(db,
+    'SELECT key_version as keyVersion, encrypted_at as encryptedAt, updated_at as updatedAt FROM user_encryption_meta WHERE user_id = ?', userId);
+  const legalConsents = safeAll(db,
+    'SELECT document_key as documentKey, document_version as documentVersion, document_url as documentUrl, accepted_at as acceptedAt, source FROM user_legal_consents WHERE user_id = ? ORDER BY accepted_at', userId);
 
   return {
     exportedAt: new Date().toISOString(),
@@ -160,10 +263,83 @@ export function exportAllUserData(userId: number): FullUserExport {
     finance,
     oauthConnections: oauthRows.map((c: any) => ({ provider: c.provider, connectedAt: c.created_at })),
     settings: settings.map((s: any) => ({ key: s.key.replace(`config:${userId}:`, ''), value: s.value })),
+    notificationDeviceTokens,
+    garminSessions,
+    agentSignals,
+    encryptionMeta,
+    legalConsents,
   };
 }
 
 // ── Full User Deletion (GDPR Article 17 — right to erasure) ────────
+
+export const ACCOUNT_DELETION_TABLES: Array<{ table: string; column: string }> = [
+  { table: 'conversations', column: 'user_id' },
+  { table: 'todos', column: 'user_id' },
+  { table: 'reminders', column: 'user_id' },
+  { table: 'notes', column: 'user_id' },
+  { table: 'saved_ideas', column: 'user_id' },
+  { table: 'shared_memory', column: 'user_id' },
+  { table: 'finance_transactions', column: 'user_id' },
+  { table: 'finance_tax_events', column: 'user_id' },
+  { table: 'user_encryption_meta', column: 'user_id' },
+  { table: 'onboarding_sessions', column: 'user_id' },
+  { table: 'user_profiles', column: 'user_id' },
+  { table: 'notification_device_tokens', column: 'user_id' },
+  { table: 'garmin_sessions', column: 'user_id' },
+  { table: 'garmin_user_tokens', column: 'user_id' },
+  { table: 'agent_signals', column: 'user_id' },
+  { table: 'user_oauth_tokens', column: 'user_id' },
+  { table: 'user_skill_overrides', column: 'user_id' },
+  { table: 'api_usage', column: 'user_id' },
+  { table: 'chat_action_runs', column: 'user_id' },
+  { table: 'chat_pending_actions', column: 'user_id' },
+  { table: 'chat_action_telemetry', column: 'user_id' },
+  { table: 'user_legal_consents', column: 'user_id' },
+];
+
+export interface AccountDeletionInventory {
+  userId: number;
+  generatedAt: string;
+  deletableTables: Record<string, number>;
+  retainedTables: Record<string, { reason: string }>;
+}
+
+export function getAccountDeletionInventoryForUser(userId: number): AccountDeletionInventory {
+  const db = getDb();
+  const deletableTables: Record<string, number> = {};
+  for (const { table, column } of ACCOUNT_DELETION_TABLES) {
+    try {
+      const row = db.prepare(`SELECT COUNT(*) AS count FROM ${table} WHERE ${column} = ?`).get(userId) as { count: number };
+      deletableTables[table] = row.count;
+    } catch {
+      deletableTables[table] = 0;
+    }
+  }
+  try {
+    const row = db.prepare('SELECT COUNT(*) AS count FROM kv_store WHERE key LIKE ?').get(`config:${userId}:%`) as { count: number };
+    deletableTables.kv_store_settings = row.count;
+  } catch {
+    deletableTables.kv_store_settings = 0;
+  }
+  try {
+    const row = db.prepare('SELECT COUNT(*) AS count FROM users WHERE id = ? OR telegram_id = ?').get(userId, userId) as { count: number };
+    deletableTables.users = row.count;
+  } catch {
+    deletableTables.users = 0;
+  }
+
+  return {
+    userId,
+    generatedAt: new Date().toISOString(),
+    deletableTables,
+    retainedTables: {
+      audit_trail: {
+        reason: 'Retained as legal proof of export, consent, and deletion events under GDPR Article 17(3)(e).',
+      },
+    },
+  };
+}
 
 /**
  * Delete ALL data for a user across all tables. Runs in a single transaction.
@@ -174,25 +350,8 @@ export function deleteAllUserData(userId: number): Record<string, number> {
   const db = getDb();
   const counts: Record<string, number> = {};
 
-  const tables: Array<{ table: string; column: string }> = [
-    { table: 'conversations', column: 'user_id' },
-    { table: 'todos', column: 'user_id' },
-    { table: 'reminders', column: 'user_id' },
-    { table: 'notes', column: 'user_id' },
-    { table: 'saved_ideas', column: 'user_id' },
-    { table: 'shared_memory', column: 'user_id' },
-    { table: 'finance_transactions', column: 'user_id' },
-    { table: 'finance_tax_events', column: 'user_id' },
-    { table: 'user_encryption_meta', column: 'user_id' },
-    { table: 'onboarding_sessions', column: 'user_id' },
-    { table: 'user_profiles', column: 'user_id' },
-    { table: 'user_oauth_tokens', column: 'user_id' },
-    { table: 'user_skill_overrides', column: 'user_id' },
-    { table: 'api_usage', column: 'user_id' },
-  ];
-
   const deleteAll = db.transaction(() => {
-    for (const { table, column } of tables) {
+    for (const { table, column } of ACCOUNT_DELETION_TABLES) {
       try {
         const result = db.prepare(`DELETE FROM ${table} WHERE ${column} = ?`).run(userId);
         counts[table] = result.changes;
@@ -211,7 +370,7 @@ export function deleteAllUserData(userId: number): Record<string, number> {
 
     // Delete user record last
     try {
-      const userResult = db.prepare('DELETE FROM users WHERE telegram_id = ?').run(userId);
+      const userResult = db.prepare('DELETE FROM users WHERE id = ? OR telegram_id = ?').run(userId, userId);
       counts['users'] = userResult.changes;
     } catch {
       counts['users'] = 0;

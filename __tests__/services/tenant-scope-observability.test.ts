@@ -22,6 +22,7 @@ vi.mock('../../src/utils/logger', () => ({
     trace: vi.fn(),
     child: vi.fn().mockReturnThis(),
   },
+  LOGGER_REDACTION_PATHS: [],
 }));
 
 vi.mock('../../src/services/cross-agent-learning', () => ({
@@ -106,6 +107,30 @@ describe('tenant-scope observability', () => {
     });
   });
 
+  it('rejects unregistered or malformed signal source agents before persistence', () => {
+    const signalId = writeSignal({
+      source_agent: 'evil.agent\nsource',
+      signal_type: 'low_sleep',
+      payload: { score: 35 },
+      user_id: 7,
+      tenant_id: 100,
+    });
+
+    expect(signalId).toBe(-1);
+    const row = testDb.prepare('SELECT COUNT(*) as count FROM agent_signals').get() as { count: number };
+    expect(row.count).toBe(0);
+    expect(getTenantScopeAnomalies()[0]).toMatchObject({
+      layer: 'intelligence_bus',
+      operation: 'write_signal',
+      reason: 'invalid_user_scope',
+      signalType: 'low_sleep',
+      userId: 7,
+      details: expect.objectContaining({
+        invalidSourceAgent: true,
+      }),
+    });
+  });
+
   it('records unexpected user scope on global mesh signals and normalizes them to system rows', () => {
     const signalId = writeSignal({
       source_agent: 'content.test',
@@ -115,7 +140,8 @@ describe('tenant-scope observability', () => {
     });
 
     expect(signalId).toBeGreaterThan(0);
-    const row = testDb.prepare('SELECT user_id FROM agent_signals WHERE id = ?').get(signalId) as { user_id: number | null };
+    const row = testDb.prepare('SELECT tenant_id, user_id FROM agent_signals WHERE id = ?').get(signalId) as { tenant_id: number | null; user_id: number | null };
+    expect(row.tenant_id).toBe(42);
     expect(row.user_id).toBeNull();
 
     const anomalies = getTenantScopeAnomalies();
@@ -126,6 +152,28 @@ describe('tenant-scope observability', () => {
       signalType: 'content_formula',
       userId: 42,
     });
+  });
+
+  it('partitions signal reads by tenant even for the same user id', () => {
+    writeSignal({
+      source_agent: 'training.test',
+      signal_type: 'low_sleep',
+      payload: { score: 35 },
+      user_id: 7,
+      tenant_id: 100,
+    });
+    writeSignal({
+      source_agent: 'training.test',
+      signal_type: 'low_sleep',
+      payload: { score: 91 },
+      user_id: 7,
+      tenant_id: 200,
+    });
+
+    expect(readSignals('consumer-a', ['low_sleep'], 10, 7, undefined, 100).map((signal) => signal.payload.score))
+      .toEqual([35]);
+    expect(readSignals('consumer-b', ['low_sleep'], 10, 7, undefined, 200).map((signal) => signal.payload.score))
+      .toEqual([91]);
   });
 
   it('records invalid scoped reads and falls back to global rows only', () => {

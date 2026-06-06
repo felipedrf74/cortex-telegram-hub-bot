@@ -18,6 +18,9 @@ vi.mock('../../src/services/user-service', () => ({
 
 vi.mock('../../src/services/database', () => ({
   getDb: (...args: unknown[]) => hoisted.getDb(...args),
+  initDatabase: vi.fn(),
+  closeDatabase: vi.fn(),
+  findUnexpectedMigrationPrefixCollisions: vi.fn(() => []),
 }));
 
 vi.mock('../../src/api/secret-guards', () => ({
@@ -25,6 +28,7 @@ vi.mock('../../src/api/secret-guards', () => ({
 }));
 
 vi.mock('../../src/portal/admin-audit', () => ({
+  buildPortalAdminAuditDetails: vi.fn(),
   logPortalAdminMutation: (...args: unknown[]) => hoisted.logPortalAdminMutation(...args),
 }));
 
@@ -82,22 +86,23 @@ describe('portal invite routes', () => {
     });
   });
 
-  it('registers invite routes and protects mutations with the admin token guard', () => {
+  it('registers invite routes and protects reads and mutations with the admin token guard', () => {
     const { app, routes } = makeApp();
 
     registerPortalInviteRoutes(app as any);
 
-    expect(app.get).toHaveBeenCalledWith('/api/invite-codes', expect.any(Function));
+    expect(app.get).toHaveBeenCalledWith('/api/invite-codes', hoisted.requirePortalAdminToken, expect.any(Function));
     expect(app.post).toHaveBeenCalledWith('/api/invite-codes', hoisted.requirePortalAdminToken, expect.any(Function), expect.any(Function));
     expect(app.delete).toHaveBeenCalledWith('/api/invite-codes/:code', hoisted.requirePortalAdminToken, expect.any(Function));
+    expect(routes.get('GET /api/invite-codes')?.[0]).toBe(hoisted.requirePortalAdminToken);
     expect(routes.get('POST /api/invite-codes')?.[0]).toBe(hoisted.requirePortalAdminToken);
     expect(routes.get('DELETE /api/invite-codes/:code')?.[0]).toBe(hoisted.requirePortalAdminToken);
   });
 
-  it('lists invite codes without requiring admin write scope', () => {
+  it('lists invite codes after the admin guard passes', () => {
     const { app, routes } = makeApp();
     registerPortalInviteRoutes(app as any);
-    const handler = routes.get('GET /api/invite-codes')?.[0]!;
+    const handler = routes.get('GET /api/invite-codes')?.[1]!;
     const { payload, res } = makeResponse();
 
     handler({}, res);
@@ -113,7 +118,7 @@ describe('portal invite routes', () => {
     });
     const { app, routes } = makeApp();
     registerPortalInviteRoutes(app as any);
-    const handler = routes.get('GET /api/invite-codes')?.[0]!;
+    const handler = routes.get('GET /api/invite-codes')?.[1]!;
     const { payload, res } = makeResponse();
 
     handler({}, res);

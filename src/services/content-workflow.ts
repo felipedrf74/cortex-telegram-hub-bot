@@ -1,6 +1,6 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
-import Anthropic from '@anthropic-ai/sdk';
+import type Anthropic from '@anthropic-ai/sdk';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
@@ -18,9 +18,18 @@ import { buildAngleDiversityBlock, isDuplicateIdea } from './content-dedup';
 import { getWorkflowEligibleIdeas, markIdeaPromoted } from '../state/saved-ideas';
 import { readSignals } from './intelligence-bus';
 import { loadPromptWithConfig } from '../utils/prompt-loader';
+import { sanitizeForPromptInterpolation } from '../utils/prompt-sanitizer';
 import { getUserLanguage } from './user-service';
+import { buildAuthorizedContentReferenceContext } from './content-reference-context';
+import {
+  contentScopeForInsert,
+  contentScopeParams,
+  contentScopePredicate,
+  ensureContentTenantScopeColumns,
+} from './content-tenant-scope';
+import { createLazyAnthropicClient } from './anthropic-lazy-client';
 
-const client = new Anthropic({ apiKey: config.anthropic.apiKey });
+const client = createLazyAnthropicClient();
 
 const IDEAS_DIR = path.join(os.homedir(), 'Desktop', 'IDEAS');
 
@@ -64,30 +73,78 @@ export function storeTopicCandidates(
   format: 'reel' | 'youtube',
   sourceJob: string,
   userId: number = 0,
+  tenantId: number = userId,
 ): number[] {
   const db = getDb();
+  ensureContentTenantScopeColumns(db);
   const stmt = db.prepare(
-    `INSERT INTO content_topic_feedback (topic, niche, format, sentiment, source_job, hook_idea, why_now, angle_tag, user_id)
-     VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, ?)`,
+    `INSERT INTO content_topic_feedback (
+       topic, niche, format, sentiment, source_job, hook_idea, why_now, angle_tag, user_id,
+       tenant_id, owner_user_id, visibility_scope, lifecycle_state, scope_status, created_by, updated_by, audit_metadata_json
+     )
+     VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   );
   return candidates.map((c) => {
-    const info = stmt.run(c.title, c.niche, format, sourceJob, c.hookIdea, c.whyNow, c.angleTag || null, userId);
+    const scope = contentScopeForInsert(userId, tenantId);
+    const info = stmt.run(
+      c.title,
+      c.niche,
+      format,
+      sourceJob,
+      c.hookIdea,
+      c.whyNow,
+      c.angleTag || null,
+      userId,
+      scope.tenantId,
+      scope.ownerUserId,
+      scope.visibilityScope,
+      scope.lifecycleState,
+      scope.scopeStatus,
+      scope.createdBy,
+      scope.updatedBy,
+      scope.auditMetadataJson,
+    );
     return Number(info.lastInsertRowid);
   });
 }
 
-export function updateFeedback(id: number, sentiment: 'approved' | 'skipped' | 'rejected'): void {
-  getDb().prepare(`UPDATE content_topic_feedback SET sentiment = ? WHERE id = ?`).run(sentiment, id);
+export function updateFeedback(
+  id: number,
+  sentiment: 'approved' | 'skipped' | 'rejected',
+  userId: number,
+  tenantId: number,
+): void {
+  const db = getDb();
+  ensureContentTenantScopeColumns(db);
+  db.prepare(`
+    UPDATE content_topic_feedback
+       SET sentiment = ?,
+           updated_by = ?
+     WHERE id = ?
+       AND ${contentScopePredicate()}
+  `).run(sentiment, userId, id, ...contentScopeParams(userId, tenantId));
 }
 
-export function markScriptGenerated(id: number): void {
-  getDb().prepare(`UPDATE content_topic_feedback SET script_generated = 1 WHERE id = ?`).run(id);
+export function markScriptGenerated(id: number, userId: number, tenantId: number): void {
+  const db = getDb();
+  ensureContentTenantScopeColumns(db);
+  db.prepare(`
+    UPDATE content_topic_feedback
+       SET script_generated = 1,
+           updated_by = ?
+     WHERE id = ?
+       AND ${contentScopePredicate()}
+  `).run(userId, id, ...contentScopeParams(userId, tenantId));
 }
 
-export function getTopicById(id: number): TopicCandidate & { format: string; sourceJob: string } | null {
-  const row = getDb().prepare(
-    `SELECT topic, niche, format, source_job, hook_idea, why_now FROM content_topic_feedback WHERE id = ?`,
-  ).get(id) as any;
+export function getTopicById(id: number, userId: number, tenantId: number): TopicCandidate & { format: string; sourceJob: string } | null {
+  const db = getDb();
+  ensureContentTenantScopeColumns(db);
+  const row = db.prepare(
+    `SELECT topic, niche, format, source_job, hook_idea, why_now FROM content_topic_feedback
+      WHERE id = ?
+        AND ${contentScopePredicate()}`,
+  ).get(id, ...contentScopeParams(userId, tenantId)) as any;
   if (!row) return null;
   return {
     title: row.topic,
@@ -101,16 +158,17 @@ export function getTopicById(id: number): TopicCandidate & { format: string; sou
 
 // ─── Taste Profile ──────────────────────────────────────────────────
 
-export function buildTasteProfileBlock(userId?: number): string {
+export function buildTasteProfileBlock(userId: number, tenantId: number): string {
   const db = getDb();
+  ensureContentTenantScopeColumns(db);
   const rows = db.prepare(
     `SELECT topic, niche, sentiment FROM content_topic_feedback
      WHERE sentiment IN ('approved', 'rejected')
        AND created_at > datetime('now', '-60 days')
-       ${userId != null ? 'AND user_id = ?' : ''}
+       AND ${contentScopePredicate()}
      ORDER BY created_at DESC
      LIMIT 100`,
-  ).all(...(userId != null ? [userId] : [])) as { topic: string; niche: string; sentiment: string }[];
+  ).all(...contentScopeParams(userId, tenantId)) as { topic: string; niche: string; sentiment: string }[];
 
   if (rows.length < 5) return '';
 
@@ -118,34 +176,34 @@ export function buildTasteProfileBlock(userId?: number): string {
   const rejected = rows.filter((r) => r.sentiment === 'rejected');
 
   let block = '\n\n[TASTE PROFILE — learned from past feedback]\n';
-  block += 'Use this to suggest topics Felipe is more likely to approve.\n\n';
+  block += 'Use this to suggest topics the authenticated creator is more likely to approve.\n\n';
 
   if (approved.length > 0) {
-    block += 'Topics Felipe APPROVED:\n';
+    block += 'Topics the authenticated creator APPROVED:\n';
     for (const r of approved.slice(0, 15)) {
-      block += `  • "${r.topic}" (${r.niche || 'general'})\n`;
+      block += `  • ${sanitizeForPromptInterpolation(r.topic)} (${sanitizeForPromptInterpolation(r.niche || 'general')})\n`;
     }
   }
 
   if (rejected.length > 0) {
-    block += '\nTopics Felipe REJECTED (avoid similar):\n';
+    block += '\nTopics the authenticated creator REJECTED (avoid similar):\n';
     for (const r of rejected.slice(0, 15)) {
-      block += `  • "${r.topic}" (${r.niche || 'general'})\n`;
+      block += `  • ${sanitizeForPromptInterpolation(r.topic)} (${sanitizeForPromptInterpolation(r.niche || 'general')})\n`;
     }
   }
 
   // Summary stats
   const approvedNiches = [...new Set(approved.map((r) => r.niche).filter(Boolean))];
   const rejectedNiches = [...new Set(rejected.map((r) => r.niche).filter(Boolean))];
-  block += `\nPreferred pillars: ${approvedNiches.join(', ') || 'varied'}`;
-  block += `\nAvoided pillars: ${rejectedNiches.join(', ') || 'none'}\n`;
+  block += `\nPreferred pillars: ${approvedNiches.map((niche) => sanitizeForPromptInterpolation(niche)).join(', ') || 'varied'}`;
+  block += `\nAvoided pillars: ${rejectedNiches.map((niche) => sanitizeForPromptInterpolation(niche)).join(', ') || 'none'}\n`;
 
   return block;
 }
 
 // ─── Topic Generation ───────────────────────────────────────────────
 
-function buildTopicSystemPrompt(format: 'reel' | 'youtube', isTrending: boolean, userId?: number): string {
+function buildTopicSystemPrompt(format: 'reel' | 'youtube', isTrending: boolean, userId: number, tenantId: number): string {
   const formatDesc = format === 'reel'
     ? 'Instagram Reels / YouTube Shorts (30-60 seconds each)'
     : 'YouTube videos (8-15 minutes each)';
@@ -156,8 +214,8 @@ function buildTopicSystemPrompt(format: 'reel' | 'youtube', isTrending: boolean,
 
   // userId passed explicitly — no more AsyncLocalStorage dependency.
   // This makes personalization stable across transports (iOS, Telegram, scheduler).
-  const knowledgeBlock = buildKnowledgePromptBlock(userId);
-  const tasteBlock = buildTasteProfileBlock(userId);
+  const knowledgeBlock = userId > 0 ? buildKnowledgePromptBlock(userId, tenantId) : '';
+  const tasteBlock = buildTasteProfileBlock(userId, tenantId);
 
   return loadPromptWithConfig('topic-generation', {
     FORMAT_DESC: formatDesc,
@@ -171,13 +229,14 @@ export async function generateTopicCandidates(
   format: 'reel' | 'youtube',
   count: number,
   isTrending = true,
-  userId?: number,
+  userId: number = 0,
+  tenantId: number = userId,
 ): Promise<TopicCandidate[]> {
-  const systemPrompt = buildTopicSystemPrompt(format, isTrending, userId);
+  const systemPrompt = buildTopicSystemPrompt(format, isTrending, userId, tenantId);
   const today = now();
 
   // Build enrichment blocks
-  const angleDiversity = buildAngleDiversityBlock();
+  const angleDiversity = buildAngleDiversityBlock(userId, tenantId);
 
   // Book knowledge injection (Sprint 3.2)
   let bookBlock = '';
@@ -195,23 +254,33 @@ export async function generateTopicCandidates(
 
   // Discovery cross-pollination (Sprint 2.4)
   let discoveryBlock = '';
+  let promotedDiscoveryIdeaIds: number[] = [];
   try {
     const eligible = getWorkflowEligibleIdeas(userId);
     if (eligible.length > 0) {
-      const ideasList = eligible.slice(0, 5).map(i => `- ${i.title}`).join('\n');
+      const promotedIdeas = eligible.slice(0, 5);
+      promotedDiscoveryIdeaIds = promotedIdeas.map((idea) => idea.id);
+      const ideasList = promotedIdeas.map(i => `- ${i.title}`).join('\n');
       discoveryBlock = `\n## Pre-Researched Ideas from Daily Discovery\nThese high-scoring ideas were found by the daily trend scanner. Consider including, modifying, or building on them:\n${ideasList}\n`;
-      // Mark promoted
-      for (const idea of eligible.slice(0, 5)) {
-        markIdeaPromoted(idea.id);
-      }
     }
   } catch { /* non-critical */ }
 
   const enrichment = `${angleDiversity}${bookBlock}${discoveryBlock}`;
 
+  // Identity-safety: the niche/pillar enum is no longer hardcoded in the
+  // user-message prompt. The system prompt (prompts/topic-generation.md)
+  // now instructs the model to draw the `niche` value from the
+  // authenticated creator's saved pillars in the knowledge block. The
+  // founder-shaped enum ("ai-tech, commentary, training, gaming,
+  // wild-card") was removed in v4.14.126 closed-beta hardening; it
+  // biased every authenticated user's topics into the founder's pillars
+  // and made `pillar_emoji` carry founder-shaped emojis (🤖, 🎤, 🏋️,
+  // 🎮, 🃏) regardless of who authenticated.
+  const responseShape = `Respond with a JSON array. Each object must have: "title", "niche" (use one of the creator's saved pillars from the knowledge block above; if none exist yet, use "uncategorized"), "whyNow", "hookIdea", "angle_tag", "pillar_emoji" (the emoji the creator has saved for that pillar; empty string if none), "time_sensitivity".`;
+
   const userMessage = isTrending
-    ? `Today is ${today.toFormat('cccc, LLLL dd, yyyy')}. Generate ${count} trending ${format} topic candidates for The Operator brand. Search for what's hot right now across all pillars (🤖 AI/Tech, 🎤 Commentary, 🏋️ Training, 🎮 Gaming, 🃏 Wild Card). Don't force quotas — follow what's genuinely interesting and timely.${enrichment}\n\nRespond with a JSON array. Each object must have: "title", "niche" (one of: ai-tech, commentary, training, gaming, wild-card), "whyNow", "hookIdea", "angle_tag", "pillar_emoji", "time_sensitivity".`
-    : `Generate ${count} evergreen ${format} topic candidates for The Operator brand. Timeless topics across any pillar (🤖 AI/Tech, 🎤 Commentary, 🏋️ Training, 🎮 Gaming, 🃏 Wild Card). Follow genuine interest, not quotas.${enrichment}\n\nRespond with a JSON array. Each object must have: "title", "niche" (one of: ai-tech, commentary, training, gaming, wild-card), "whyNow", "hookIdea", "angle_tag", "pillar_emoji", "time_sensitivity".`;
+    ? `Today is ${today.toFormat('cccc, LLLL dd, yyyy')}. Generate ${count} trending ${format} topic candidates for the authenticated creator/brand. Search for what's hot right now across the authorized pillars, references, taste profile, and knowledge block. Don't force quotas — follow what's genuinely interesting and timely.${enrichment}\n\n${responseShape}`
+    : `Generate ${count} evergreen ${format} topic candidates for the authenticated creator/brand. Use authorized pillars, references, taste profile, and knowledge block. Follow genuine interest, not quotas.${enrichment}\n\n${responseShape}`;
 
   // Gemini-first routing for cost reduction (cost-optimization pass).
   // Topic generation is a JSON-output task that doesn't need Anthropic-specific
@@ -237,18 +306,18 @@ export async function generateTopicCandidates(
     // Anthropic fallback — preserves the existing pause_turn handling for
     // trending mode (web search calls can pause and need a continuation).
     async () => {
-      const response = await trackedCreate(client, {
+      const response = await trackedCreate(client.get(), {
         model: config.anthropic.classifierModel, // Haiku
         max_tokens: 4096,
         system: cachedSystem,
         messages: [{ role: 'user', content: userMessage }],
         ...(tools ? { tools } : {}),
-      } as any, `content_workflow_${format}`);
+      } as any, `content_workflow_${format}`, { userId, tenantId });
 
       let finalResponse = response;
       if (response.stop_reason === 'pause_turn') {
         logger.info({ format }, 'Content workflow topic generation paused, continuing...');
-        finalResponse = await trackedCreate(client, {
+        finalResponse = await trackedCreate(client.get(), {
           model: config.anthropic.classifierModel,
           max_tokens: 4096,
           system: cachedSystem,
@@ -257,7 +326,7 @@ export async function generateTopicCandidates(
             { role: 'assistant', content: response.content as any },
           ],
           ...(tools ? { tools } : {}),
-        } as any, `content_workflow_${format}_continuation`);
+        } as any, `content_workflow_${format}_continuation`, { userId, tenantId });
       }
 
       return finalResponse.content
@@ -265,7 +334,7 @@ export async function generateTopicCandidates(
         .map((b) => b.text)
         .join('\n');
     },
-    { maxTokens: 4096 },
+    { maxTokens: 4096, userId, tenantId },
   );
 
   // For trending topics with web search, we MUST use Anthropic — Gemini's
@@ -279,7 +348,10 @@ export async function generateTopicCandidates(
   // Extract JSON array from response
   const jsonMatch = textContent.match(/\[[\s\S]*\]/);
   if (!jsonMatch) {
-    logger.warn({ format, textContent: textContent.slice(0, 500) }, 'Could not find JSON array in topic response');
+    logger.warn({
+      format,
+      responseChars: textContent.length,
+    }, 'Could not find JSON array in topic response');
     return [];
   }
 
@@ -298,13 +370,19 @@ export async function generateTopicCandidates(
     const deduped: TopicCandidate[] = [];
     for (const c of candidates) {
       try {
-        const dup = await isDuplicateIdea(c.title, c.angleTag);
+        const dup = await isDuplicateIdea(c.title, c.angleTag, userId, tenantId);
         if (dup.isDuplicate && dup.confidence > 0.8) {
           logger.info({ title: c.title, similarTo: dup.similarTo }, 'Workflow topic skipped (duplicate)');
           continue;
         }
       } catch { /* allow through on error */ }
       deduped.push(c);
+    }
+
+    if (deduped.length > 0 && promotedDiscoveryIdeaIds.length > 0) {
+      for (const ideaId of promotedDiscoveryIdeaIds) {
+        markIdeaPromoted(ideaId, userId);
+      }
     }
 
     return deduped;
@@ -352,6 +430,7 @@ export async function generateScript(
   const engineFormat = format === 'reel' ? 'Reel' : 'YouTube';
   const targetLanguage = userId > 0 ? getUserLanguage(userId) : 'pt-BR';
   const voiceMemory = buildWorkflowVoiceMemory(userId);
+  assertUsableReferencesForScriptGeneration(userId, format);
 
   const result = await getScript(
     topic.title,
@@ -403,6 +482,20 @@ export async function generateScript(
   }
 
   return result;
+}
+
+function assertUsableReferencesForScriptGeneration(userId: number, format: 'reel' | 'youtube'): void {
+  if (userId <= 0) return;
+  const requiresSourcing = format === 'youtube' || format === 'reel';
+  if (!requiresSourcing) return;
+  const context = buildAuthorizedContentReferenceContext(userId, userId);
+  const groundedReferences = context.references.filter((reference) => !reference.needsReview);
+  if (groundedReferences.length > 0) return;
+  const err = new Error(
+    'CONTENT_GENERATION_REFUSED_NO_REFERENCES: Add at least one indexed, trusted Content reference before generating sourced scripts.',
+  );
+  (err as Error & { code?: string }).code = 'CONTENT_GENERATION_REFUSED_NO_REFERENCES';
+  throw err;
 }
 
 /**
@@ -485,6 +578,7 @@ export async function generateAndStoreTopicCandidates(
   userId: number,
   format: 'reel' | 'youtube',
   sourceJob: string,
+  tenantId: number = userId,
 ): Promise<TopicCandidateResult> {
   const count = 5;
   const isTrending = sourceJob !== 'friday_weekly';
@@ -492,9 +586,9 @@ export async function generateAndStoreTopicCandidates(
     : sourceJob === 'thursday_youtube' ? 'Quinta-feira'
     : 'Sexta-feira';
 
-  const candidates = await generateTopicCandidates(format, count, isTrending, userId);
+  const candidates = await generateTopicCandidates(format, count, isTrending, userId, tenantId);
   const feedbackIds = candidates.length > 0
-    ? storeTopicCandidates(candidates, format, sourceJob, userId)
+    ? storeTopicCandidates(candidates, format, sourceJob, userId, tenantId)
     : [];
 
   return {
@@ -520,14 +614,15 @@ export interface WeeklyPackageResult {
  */
 export async function generateWeeklyPackage(
   userId: number,
+  tenantId: number = userId,
 ): Promise<WeeklyPackageResult> {
   const [ytTopics, reelTopics] = await Promise.all([
-    generateTopicCandidates('youtube', 2, false, userId),
-    generateTopicCandidates('reel', 4, false, userId),
+    generateTopicCandidates('youtube', 2, false, userId, tenantId),
+    generateTopicCandidates('reel', 4, false, userId, tenantId),
   ]);
 
-  const ytIds = ytTopics.length > 0 ? storeTopicCandidates(ytTopics, 'youtube', 'friday_weekly', userId) : [];
-  const reelIds = reelTopics.length > 0 ? storeTopicCandidates(reelTopics, 'reel', 'friday_weekly', userId) : [];
+  const ytIds = ytTopics.length > 0 ? storeTopicCandidates(ytTopics, 'youtube', 'friday_weekly', userId, tenantId) : [];
+  const reelIds = reelTopics.length > 0 ? storeTopicCandidates(reelTopics, 'reel', 'friday_weekly', userId, tenantId) : [];
 
   return {
     youtube: ytTopics.map((c, i) => ({ ...c, feedbackId: ytIds[i] ?? 0 })),

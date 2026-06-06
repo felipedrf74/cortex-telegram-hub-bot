@@ -41,9 +41,13 @@ function applyMigrations(db: Database.Database): void {
 let testDb: Database.Database;
 vi.mock('../../src/services/database', () => ({
   getDb: () => testDb,
+  initDatabase: vi.fn(),
+  closeDatabase: vi.fn(),
+  findUnexpectedMigrationPrefixCollisions: vi.fn(() => []),
 }));
 vi.mock('../../src/utils/logger', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(), fatal: vi.fn() },
+  LOGGER_REDACTION_PATHS: [],
 }));
 vi.mock('../../src/portal/telemetry', () => ({
   pushEvent: vi.fn(),
@@ -56,6 +60,7 @@ import {
   getErrorTrends,
 } from '../../src/services/error-monitor';
 import { pushEvent } from '../../src/portal/telemetry';
+import { runWithContext } from '../../src/utils/request-context';
 
 describe('Error Monitor', () => {
   beforeEach(() => {
@@ -99,6 +104,52 @@ describe('Error Monitor', () => {
       const ctx = JSON.parse(row.context);
       expect(ctx.endpoint).toBe('/api/chat');
       expect(ctx.userId).toBe(123);
+    });
+
+    it('persists request user and tenant scope on error_log rows', () => {
+      runWithContext({ source: 'http', userId: 71, tenantId: 710 }, () => {
+        captureError({
+          level: 'error',
+          source: 'api',
+          message: 'Scoped API failure',
+        }, false);
+      });
+
+      const row = testDb.prepare('SELECT user_id, tenant_id FROM error_log').get() as any;
+      expect(row.user_id).toBe(71);
+      expect(row.tenant_id).toBe(710);
+    });
+
+    it('sanitizes sensitive prompt and reference context before persistence', () => {
+      captureError({
+        level: 'warning',
+        source: 'api',
+        message: 'Provider failed token=private-token',
+        stack: 'Error: request Authorization: Bearer secretbearertoken',
+        context: {
+          endpoint: '/api/v1/content/script',
+          prompt: 'private content prompt',
+          references: [{ title: 'Tenant-private source' }],
+          memory: { voice: 'private voice' },
+          nested: { script: 'private script', retryAttempt: 1 },
+        },
+      });
+
+      const row = testDb.prepare('SELECT * FROM error_log').get() as any;
+      expect(row.message).toContain('token=[Redacted]');
+      expect(row.message).not.toContain('private-token');
+      expect(row.stack).toContain('Bearer [Redacted]');
+      expect(row.stack).not.toContain('secretbearertoken');
+
+      const ctx = JSON.parse(row.context);
+      expect(ctx.endpoint).toBe('/api/v1/content/script');
+      expect(ctx.prompt).toBe('[Redacted]');
+      expect(ctx.references).toBe('[Redacted]');
+      expect(ctx.memory).toBe('[Redacted]');
+      expect(ctx.nested.script).toBe('[Redacted]');
+      expect(ctx.nested.retryAttempt).toBe(1);
+      expect(row.context).not.toContain('Tenant-private source');
+      expect(row.context).not.toContain('private content prompt');
     });
 
     it('pushes event to telemetry ring buffer', () => {
@@ -279,6 +330,40 @@ describe('Error Monitor', () => {
       expect(names).toContain('idx_error_log_ts');
       expect(names).toContain('idx_error_log_source');
       expect(names).toContain('idx_error_log_level');
+    });
+  });
+
+  describe('Wave 1 hardening source pins', () => {
+    it('configures Sentry without default PII or replay capture', () => {
+      const source = fs.readFileSync(path.resolve(__dirname, '../../src/services/error-tracker.ts'), 'utf8');
+      expect(source).toContain('sendDefaultPii: false');
+      expect(source).toContain('replaysSessionSampleRate: 0');
+      expect(source).toContain('replaysOnErrorSampleRate: 0');
+    });
+
+    it('keeps API usage and email logs under retention with bound day parameters', () => {
+      const source = fs.readFileSync(path.resolve(__dirname, '../../src/services/scheduler.ts'), 'utf8');
+      expect(source).toContain("{ table: 'api_usage'");
+      expect(source).toContain('days: 180');
+      expect(source).toContain("{ table: 'email_log'");
+      expect(source).toContain('days: 60');
+      expect(source).toContain("datetime('now', '-' || ? || ' days')");
+    });
+
+    it('redacts email log recipient and bounds subject before persistence', () => {
+      const source = fs.readFileSync(path.resolve(__dirname, '../../src/services/outlook-mail.ts'), 'utf8');
+      expect(source).toContain("createHash('sha256')");
+      expect(source).toContain(".slice(0, 16)");
+      expect(source).toContain('trimmedSubject.slice(0, 40)');
+      expect(source).toContain('subjectSummary');
+      expect(source).toContain('.run(recipientHash, subjectSummary');
+    });
+
+    it('pins timezone and context coverage for Wave 1 scheduled jobs', () => {
+      const source = fs.readFileSync(path.resolve(__dirname, '../../src/services/scheduler.ts'), 'utf8');
+      expect(source).toMatch(/cron\.schedule\('2,17,32,47 \* \* \* \*', wrapJob\('dst_watchdog'/);
+      expect(source).toContain("timezone: tz");
+      expect((source.match(/timezone: tz/g) ?? []).length).toBeGreaterThanOrEqual(30);
     });
   });
 });

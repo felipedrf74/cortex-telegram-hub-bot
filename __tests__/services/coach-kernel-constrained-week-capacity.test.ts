@@ -220,9 +220,74 @@ describe('coach-kernel constrained week capacity reconciliation', () => {
       'session_reflowed',
       'session_compressed',
     ]));
+    const reflow = placed.decisionReasons?.find((reason) => reason.code === 'session_reflowed');
+    expect(reflow?.text).toContain('Threshold Run moved from wednesday to monday');
+    expect(reflow?.before).toMatchObject({ dayOfWeek: 'wednesday', startTime: '06:30' });
+    expect(reflow?.after).toMatchObject({ dayOfWeek: 'monday', startTime: '06:30' });
+    expect(reflow?.preservedIntent).toBe('Preserved the key running threshold run intent.');
     const compression = placed.decisionReasons?.find((reason) => reason.code === 'session_compressed');
     expect(compression?.before).toMatchObject({ durationMinutes: 45 });
     expect(compression?.after).toMatchObject({ durationMinutes: 30, capacityMinutes: 30 });
     expect(compression?.sourceConstraint).toMatchObject({ type: 'time', id: 'short-week' });
+  });
+
+  it('does not use a two-a-day allowance to stack two strength sessions in the same strength window', () => {
+    const athlete: AthleteState = {
+      ...sampleHybridAthlete,
+      goals: {
+        ...sampleHybridAthlete.goals,
+        primaryFocus: 'strength',
+        priorityOrder: ['strength'],
+        weeklySessionsTarget: { strength: 2 },
+        weeklyMinutesTarget: { strength: 90 },
+      },
+      availability: {
+        weeklyWindows: [
+          { dayOfWeek: 'saturday', start: '11:00', end: '13:00', sports: ['strength'], label: 'Saturday strength window' },
+        ],
+        preferredTimesBySport: { strength: '12:00' },
+        maxSessionsPerDay: 2,
+      },
+    };
+    const sessions: Session[] = [
+      {
+        id: 'strength-upper-b',
+        sport: 'strength',
+        sessionType: 'strength_maintenance',
+        title: 'Runner Upper Body Strength B',
+        description: 'Upper support lift.',
+        dayOfWeek: 'saturday',
+        durationMinutes: 38,
+        intensityZone: 'aerobic',
+        fatigueCost: 'medium',
+        keySession: false,
+        plannedLoad: 38,
+        tags: ['upper_body'],
+      },
+      {
+        id: 'strength-upper-a',
+        sport: 'strength',
+        sessionType: 'strength_maintenance',
+        title: 'Runner Upper Body Strength A',
+        description: 'Upper support lift.',
+        dayOfWeek: 'saturday',
+        durationMinutes: 48,
+        intensityZone: 'aerobic',
+        fatigueCost: 'medium',
+        keySession: false,
+        plannedLoad: 48,
+        tags: ['upper_body'],
+      },
+    ];
+
+    const result = reconcileWeeklyCapacity(athlete, sessions);
+    const activeStrength = result.sessions.filter((session) => session.sport === 'strength' && isActiveTrainingSession(session));
+    const unscheduledStrength = result.sessions.filter((session) => session.sport === 'strength' && session.scheduleState === 'unscheduled');
+
+    expect(activeStrength).toHaveLength(1);
+    expect(activeStrength[0].dayOfWeek).toBe('saturday');
+    expect(activeStrength[0].startTime).toBe('12:00');
+    expect(unscheduledStrength).toHaveLength(1);
+    expect(result.decisionReasons.some((reason) => reason.code === 'session_unscheduled')).toBe(true);
   });
 });

@@ -36,6 +36,7 @@ vi.mock('../../src/utils/logger', () => ({
     warn: (...args: unknown[]) => mockLoggerWarn(...args),
     error: (...args: unknown[]) => mockLoggerError(...args),
   },
+  LOGGER_REDACTION_PATHS: [],
 }));
 
 import {

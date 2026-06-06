@@ -72,10 +72,13 @@ let portalAllowLocalBypass = false;
 vi.mock('../../src/services/database', () => ({
   getDb: () => testDb,
   initDatabase: vi.fn(),
+  closeDatabase: vi.fn(),
+  findUnexpectedMigrationPrefixCollisions: vi.fn(() => []),
 }));
 
 vi.mock('../../src/utils/logger', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
+  LOGGER_REDACTION_PATHS: [],
 }));
 
 // Provide a config with togglable portal auth state. The route reads
@@ -209,8 +212,8 @@ vi.mock('../../src/services/intelligence-bus', () => ({
 function seedBooks() {
   const insert = testDb.prepare(`
     INSERT INTO book_library (title, author, core_thesis, key_frameworks,
-      pillar_mapping, extraction_status, times_referenced, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
+      pillar_mapping, extraction_status, times_referenced, created_at, user_id, owner_scope)
+    VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'), 0, 'system')
   `);
   insert.run(
     'The Law',
@@ -256,8 +259,8 @@ function seedPipeline() {
 function seedYouTube() {
   const channelInsert = testDb.prepare(`
     INSERT INTO content_ref_channels (channel_url, channel_name, status,
-      video_count_analyzed, last_analyzed_at, added_via)
-    VALUES (?, ?, ?, ?, ?, 'manual')
+      video_count_analyzed, last_analyzed_at, added_via, user_id, owner_scope)
+    VALUES (?, ?, ?, ?, ?, 'manual', 0, 'system')
   `);
   channelInsert.run('https://youtube.com/@nando', 'Nando Moura', 'active', 12, '2026-04-08T00:00:00Z');
   channelInsert.run('https://youtube.com/@renato', 'Renato 38tão', 'active', 8, '2026-04-07T00:00:00Z');
@@ -279,8 +282,8 @@ function seedYouTube() {
 
 function seedVoiceDna() {
   const insert = testDb.prepare(`
-    INSERT INTO content_knowledge (category, synthesized_text, source_channels, version, updated_at)
-    VALUES (?, ?, ?, 1, datetime('now'))
+    INSERT INTO content_knowledge (category, synthesized_text, source_channels, version, updated_at, user_id, owner_scope)
+    VALUES (?, ?, ?, 1, datetime('now'), 0, 'system')
   `);
   insert.run('hook_style', 'Open with a provocative claim, then justify it with data.', '["Nando Moura","Renato 38tão"]');
   insert.run('brand_voice', 'Direct, irreverent, heavy on rhetorical questions.', '["Nando Moura"]');

@@ -161,6 +161,19 @@ export function validatePortalAdminBetaReadiness(
     throw new Error(msg);
   }
 
+  // AUTH-O11 (closed-beta-auth-hardening, 2026-05-04): when
+  // PORTAL_BETA_HARDENED=true, refuse to boot if PORTAL_ADMIN_TOKEN
+  // is empty. Without a dedicated admin token the legacy
+  // PORTAL_TOKEN doubles as admin (via the legacy-fallback path in
+  // `enforcePortalToken`), which means a read-token leak is also an
+  // admin-token leak. Closed-beta cohorts must ship with the split
+  // tokens.
+  if (portalConfig.betaHardened && !portalConfig.adminToken) {
+    const msg = 'PORTAL_BETA_HARDENED=true but PORTAL_ADMIN_TOKEN is empty. The legacy PORTAL_TOKEN would double as admin (read-token leak = admin-token leak). Set PORTAL_ADMIN_TOKEN to a strong dedicated value before booting.';
+    logger.fatal({ adminExposureMode: mode }, msg);
+    throw new Error(msg);
+  }
+
   if (!isPortalAdminExposureBetaSafe(mode) && nodeEnv === 'production') {
     logger.warn(
       {

@@ -1,44 +1,50 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
-import crypto from 'crypto';
+import { DateTime } from 'luxon';
 import { Router, Request, Response } from 'express';
 import type { AuthenticatedRequest } from '../auth-middleware';
 import { apiSuccess, sendError, sendInternalError } from '../response-helpers';
+import { config } from '../../config';
 import { composeDailyBrief } from '../../services/daily-brief-orchestrator';
 import { composeWeeklyPlan } from '../../services/weekly-plan-orchestrator';
-import { invalidatePlanningCaches } from '../../services/plan-cache-invalidator';
-import { getUserById } from '../../services/user-service';
-import { isValidTenantUserId, recordTenantScopeAnomaly } from '../../services/tenant-scope-observability';
+import { invalidatePlanningCaches } from '../../services/cache-coherence-registry';
+import { getUserLanguageById } from '../../services/user-service';
+import { entitlementPlanToSkillTier, getEffectiveEntitlement } from '../../services/entitlement';
+import { normalizeLangHeader } from '../../services/secretary-fastpath';
+import { timedAsync, type RouteTiming } from '../route-timing';
+import { sendConditionalApiSuccess } from '../conditional-cache';
+import { ensureCachedRouteTenantScope, handleCachedRoute, routeCacheKey } from '../route-helpers/cached-route-handler';
 
-function ensureValidPlanRouteScope(
-  res: Response,
-  userId: number | undefined,
-  operation: string,
-  details?: Record<string, unknown>,
-): userId is number {
-  if (isValidTenantUserId(userId)) return true;
-  recordTenantScopeAnomaly({
-    layer: 'delivery',
-    operation,
-    reason: 'invalid_user_scope',
-    userId: typeof userId === 'number' ? userId : null,
-    details,
-  });
-  sendError(res, 'UNAUTHORIZED', 'Invalid authenticated user scope', 401);
-  return false;
-}
+const PLAN_TODAY_TTL_SECONDS = 60;
+const PLAN_TODAY_SWR_STALE_SECONDS = 300;
+const PLAN_WEEK_TTL_SECONDS = 120;
+const PLAN_WEEK_SWR_STALE_SECONDS = 600;
 
 export function planRoutes(): Router {
   const router = Router();
 
   router.get('/week', async (req: Request, res: Response) => {
     const { userId } = req as AuthenticatedRequest;
-    if (!ensureValidPlanRouteScope(res, userId, 'plan_route_week', { weekStart: req.query.weekStart ?? null })) return;
+    if (!ensureCachedRouteTenantScope(res, userId, 'plan_route_week', { weekStart: req.query.weekStart ?? null })) return;
     const weekStart = typeof req.query.weekStart === 'string' ? req.query.weekStart : undefined;
+    const language = resolvePlanLanguage(req, userId);
+    const cacheKey = planWeekRouteCacheKey(userId, weekStart, language);
 
     try {
-      const data = await composeWeeklyPlan({ userId, weekStart });
-      sendEtagged(res, req, data);
+      const timings: RouteTiming[] = [];
+      await handleCachedRoute<Awaited<ReturnType<typeof composeWeeklyPlan>>>({
+        cacheKey,
+        ttlSeconds: PLAN_WEEK_TTL_SECONDS,
+        staleSeconds: PLAN_WEEK_SWR_STALE_SECONDS,
+        refreshContext: { source: 'plan_route', operation: 'plan_swr_refresh', userId },
+        fetchFresh: () => timedAsync(timings, 'weekly_plan', () => composeWeeklyPlan({ userId, weekStart })),
+        send: (data, meta) => {
+          sendConditionalApiSuccess(res, req, data, {
+            cached: meta.cached,
+            timings: meta.cached ? [{ name: 'cache_hit', durationMs: 0 }] : timings,
+          });
+        },
+      });
     } catch (err: any) {
       sendInternalError(res, 'Unable to load the weekly plan right now.');
     }
@@ -46,12 +52,26 @@ export function planRoutes(): Router {
 
   router.get('/today', async (req: Request, res: Response) => {
     const { userId } = req as AuthenticatedRequest;
-    if (!ensureValidPlanRouteScope(res, userId, 'plan_route_today', { date: req.query.date ?? null })) return;
+    if (!ensureCachedRouteTenantScope(res, userId, 'plan_route_today', { date: req.query.date ?? null })) return;
     const date = typeof req.query.date === 'string' ? req.query.date : undefined;
+    const language = resolvePlanLanguage(req, userId);
+    const cacheKey = planTodayRouteCacheKey(userId, date, language);
 
     try {
-      const data = await composeDailyBrief({ userId, date });
-      sendEtagged(res, req, data);
+      const timings: RouteTiming[] = [];
+      await handleCachedRoute<Awaited<ReturnType<typeof composeDailyBrief>>>({
+        cacheKey,
+        ttlSeconds: PLAN_TODAY_TTL_SECONDS,
+        staleSeconds: PLAN_TODAY_SWR_STALE_SECONDS,
+        refreshContext: { source: 'plan_route', operation: 'plan_swr_refresh', userId },
+        fetchFresh: () => timedAsync(timings, 'daily_brief', () => composeDailyBrief({ userId, date, language })),
+        send: (data, meta) => {
+          sendConditionalApiSuccess(res, req, data, {
+            cached: meta.cached,
+            timings: meta.cached ? [{ name: 'cache_hit', durationMs: 0 }] : timings,
+          });
+        },
+      });
     } catch (err: any) {
       sendInternalError(res, 'Unable to load the daily plan right now.');
     }
@@ -59,7 +79,7 @@ export function planRoutes(): Router {
 
   router.post('/recompute', async (req: Request, res: Response) => {
     const { userId } = req as AuthenticatedRequest;
-    if (!ensureValidPlanRouteScope(res, userId, 'plan_route_recompute', {
+    if (!ensureCachedRouteTenantScope(res, userId, 'plan_route_recompute', {
       weekStart: req.body?.weekStart ?? null,
       date: req.body?.date ?? null,
     })) return;
@@ -79,13 +99,13 @@ export function planRoutes(): Router {
 
   router.get('/week/explain', async (req: Request, res: Response) => {
     const { userId } = req as AuthenticatedRequest;
-    if (!ensureValidPlanRouteScope(res, userId, 'plan_route_week_explain', { weekStart: req.query.weekStart ?? null })) return;
+    if (!ensureCachedRouteTenantScope(res, userId, 'plan_route_week_explain', { weekStart: req.query.weekStart ?? null })) return;
     const weekStart = typeof req.query.weekStart === 'string' ? req.query.weekStart : undefined;
-    const user = getUserById(userId);
+    const effectiveTier = entitlementPlanToSkillTier(getEffectiveEntitlement(userId).plan);
 
-    if (!user || !['max', 'owner'].includes(user.tier)) {
+    if (!['max', 'owner'].includes(effectiveTier)) {
       sendError(res, 'FORBIDDEN', 'Max tier required for explanation view', 403, {
-        plan: user?.tier ?? 'free',
+        plan: effectiveTier,
       });
       return;
     }
@@ -107,19 +127,44 @@ export function planRoutes(): Router {
   return router;
 }
 
-function sendEtagged(res: Response, req: Request, data: unknown): void {
-  const envelope = apiSuccess(data);
-  const envelopeJson = JSON.stringify({ ...envelope, timestamp: undefined });
-  const etag = `"${crypto.createHash('md5').update(envelopeJson).digest('hex')}"`;
+function resolvePlanLanguage(req: Request, userId: number): string {
+  const rawHeader = req.header?.('x-language');
+  if (rawHeader) return normalizeLangHeader(rawHeader);
+  return getUserLanguageById(userId);
+}
 
-  if (req.headers['if-none-match'] === etag) {
-    res.status(304).end();
-    return;
+function planTodayRouteCacheKey(userId: number, date: string | undefined, language: string): string {
+  const targetDate = resolveDateKey(date);
+  return routeCacheKey('plan', 'today', 'u', userId, targetDate, 'route', languageBucket(language));
+}
+
+function planWeekRouteCacheKey(userId: number, weekStart: string | undefined, language: string): string {
+  const targetWeek = resolveWeekKey(weekStart);
+  return routeCacheKey('plan', 'week', 'u', userId, targetWeek, 'route', languageBucket(language));
+}
+
+function resolveDateKey(date: string | undefined): string {
+  if (date) {
+    const parsed = DateTime.fromISO(date, { zone: config.app.timezone || 'Europe/Lisbon' });
+    if (parsed.isValid) return parsed.toISODate()!;
   }
+  return DateTime.now().setZone(config.app.timezone || 'Europe/Lisbon').toISODate()!;
+}
 
-  res.setHeader('ETag', etag);
-  res.setHeader('Cache-Control', 'private, max-age=30');
-  res.json(envelope);
+function resolveWeekKey(weekStart: string | undefined): string {
+  const zone = config.app.timezone || 'Europe/Lisbon';
+  const parsed = weekStart
+    ? DateTime.fromISO(weekStart, { zone })
+    : DateTime.now().setZone(zone);
+  const base = parsed.isValid ? parsed : DateTime.now().setZone(zone);
+  return base.startOf('week').toISODate()!;
+}
+
+function languageBucket(language: string): string {
+  const normalized = language.trim().toLowerCase();
+  if (normalized.startsWith('pt-br')) return 'pt-br';
+  if (normalized.startsWith('pt')) return 'pt';
+  return normalized || 'en';
 }
 
 function buildWeeklyExplanation(data: Awaited<ReturnType<typeof composeWeeklyPlan>>): string {

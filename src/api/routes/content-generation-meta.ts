@@ -4,14 +4,15 @@
 // object attached to all content-generation responses.
 //
 // Modes:
-//   quick    — cache-first, no deep research, cheapest path (~$0.003)
+//   draft    — cache-first structured draft pack, cheapest path
+//   quick    — cache-first, no deep research, cheap full-ish path (~$0.003)
 //   standard — balanced: research + signals + Claude ($0.01)
 //   deep     — extra research passes, longer timeout (~$0.02)
 //
 // The mode is chosen by the endpoint based on operation type.
 // iOS does NOT send a mode — the backend selects automatically.
 
-export type GenerationMode = 'quick' | 'standard' | 'deep';
+export type GenerationMode = 'draft' | 'quick' | 'standard' | 'deep';
 
 export interface GenerationMetadata {
   mode: GenerationMode;
@@ -38,6 +39,6 @@ export function buildGenerationMeta(opts: {
     cacheHit: opts.cacheHit ?? false,
     provider: opts.provider,
     durationMs: Date.now() - opts.startMs,
-    researchUsed: opts.researchUsed ?? (opts.mode !== 'quick'),
+    researchUsed: opts.researchUsed ?? !['draft', 'quick'].includes(opts.mode),
   };
 }

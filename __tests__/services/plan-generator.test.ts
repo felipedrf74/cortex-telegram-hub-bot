@@ -7,9 +7,14 @@
 
 import { describe, it, expect, vi } from 'vitest';
 
-vi.mock('../../src/services/database', () => ({ getDb: vi.fn() }));
+vi.mock('../../src/services/database', () => ({ getDb: vi.fn(),
+  initDatabase: vi.fn(),
+  closeDatabase: vi.fn(),
+  findUnexpectedMigrationPrefixCollisions: vi.fn(() => []),
+}));
 vi.mock('../../src/utils/logger', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
+  LOGGER_REDACTION_PATHS: [],
 }));
 vi.mock('../../src/config', () => ({
   config: { anthropic: { apiKey: 'test', model: 'test' }, financeEncryption: { enabled: false, masterKey: '' } },

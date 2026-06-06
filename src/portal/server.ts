@@ -13,6 +13,7 @@
  * `PORTAL_TOKEN` remains legacy-compatible only when scoped credentials are
  * absent or explicit legacy fallback is enabled.
  */
+import compression from 'compression';
 import express, { Request, Response, NextFunction } from 'express';
 import http from 'http';
 import { config } from '../config';
@@ -22,6 +23,7 @@ import { getOwnerBootstrapTarget } from '../services/user-service';
 import { logger } from '../utils/logger';
 import { generateRequestId, runWithContext } from '../utils/request-context';
 import { requirePortalTokenByMethod } from '../api/secret-guards';
+import { rateLimitMiddleware } from '../api/rate-limiter';
 import {
   getConfiguredPortalCredentials,
   validatePortalAdminBetaReadiness,
@@ -31,7 +33,10 @@ import { registerPortalAdminDataRoutes } from './admin-data-routes';
 import { registerPortalActionRoutes } from './action-routes';
 import { registerPortalChatRoutes } from './chat-routes';
 import { registerPortalContentRoutes } from './content-routes';
+import { registerPortalCookingRoutes } from './cooking-routes';
+import { registerPortalDecisionCenterRoutes } from './decision-center-routes';
 import { registerPortalDocumentRoutes } from './document-routes';
+import { registerPortalEvalHistoryRoutes } from './eval-history-routes';
 import { registerPortalFounderRoutes } from './founder-routes';
 import { registerPortalHealthRoutes } from './health-routes';
 import { registerPortalIntelligenceRoutes } from './intelligence-routes';
@@ -56,8 +61,47 @@ const startedAt = Date.now();
 
 // ─── Express App Factory ────────────────────────────────────────────
 
+export function isUnsafePublicPortalBind(bind: string | undefined): boolean {
+  const normalized = (bind || '').trim().toLowerCase();
+  return normalized === '0.0.0.0' || normalized === '::' || normalized === '[::]';
+}
+
+export function createPortalSecurityHeadersMiddleware() {
+  return (_req: Request, res: Response, next: NextFunction): void => {
+    res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+    res.setHeader('X-Frame-Options', 'DENY');
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+    res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=(), payment=()');
+    res.setHeader(
+      'Content-Security-Policy',
+      "default-src 'self'; script-src 'self' 'unsafe-inline'; "
+      + "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
+      + "font-src 'self' https://fonts.gstatic.com; img-src 'self' data: blob:; "
+      + "connect-src 'self' https://api.nexushub.me https://*.nexushub-landing.pages.dev; "
+      + "form-action 'self'; frame-ancestors 'none'; base-uri 'none'",
+    );
+    next();
+  };
+}
+
+export function createResponseCompressionMiddleware() {
+  return compression({
+    threshold: 1024,
+    level: 6,
+    filter(req: Request, res: Response) {
+      const contentType = String(res.getHeader('Content-Type') ?? '').toLowerCase();
+      if (/^(image|video|audio)\//.test(contentType)) return false;
+      if (/application\/(zip|gzip|x-gzip|pdf)/.test(contentType)) return false;
+      return compression.filter(req, res);
+    },
+  });
+}
+
 export function createPortalServer(bot?: any): http.Server {
   const app = express();
+
+  app.use(createPortalSecurityHeadersMiddleware());
 
   // ── Request logging + tracing middleware (audit QW-15 + Quarter) ───
   // Wraps every HTTP request in two layers:
@@ -114,6 +158,8 @@ export function createPortalServer(bot?: any): http.Server {
     });
   });
 
+  app.use(createResponseCompressionMiddleware());
+
   // ── Webhook router (TASK-16b + Month 2: Telegram webhooks) ─────────
   // Mounted BEFORE express.json() because the Todoist webhook needs the
   // raw bytes for HMAC verification. The router uses its own scoped
@@ -140,6 +186,17 @@ export function createPortalServer(bot?: any): http.Server {
     logger.warn({ err }, 'Waitlist router failed to mount (non-fatal)');
   }
 
+  // ── Public website checkout (landing page Stripe handoff) ──────────
+  // Mounted at root /billing so nexushub.me can start Stripe Checkout
+  // without a Nexus account session. Authenticated billing stays under
+  // /api/v1/billing and never trusts client-supplied price IDs.
+  try {
+    const { createPublicBillingRouter } = require('../api/routes/public-billing');
+    app.use('/billing', createPublicBillingRouter());
+  } catch (err) {
+    logger.warn({ err }, 'Public billing router failed to mount (non-fatal)');
+  }
+
   // ── iOS API (mounted before the global JSON parser) ──────────────────
   if (config.ios?.enabled) {
     // Initialize SQLite-backed cache store (survives restarts)
@@ -152,6 +209,15 @@ export function createPortalServer(bot?: any): http.Server {
     }
 
     const { createApiRouter } = require('../api/router');
+    app.use('/api/v1/billing/nexus-points/stripe-checkout', (req: Request, res: Response, next: NextFunction) => {
+      const rawLength = req.headers['content-length'];
+      const contentLength = Array.isArray(rawLength) ? Number(rawLength[0]) : Number(rawLength || 0);
+      if (Number.isFinite(contentLength) && contentLength > 8 * 1024) {
+        res.status(413).json({ ok: false, error: { code: 'PAYLOAD_TOO_LARGE', message: 'Request body is too large' } });
+        return;
+      }
+      next();
+    });
     // Receipt uploads send base64-encoded images, so the iOS surface needs
     // a larger JSON cap than the rest of the portal.
     app.use('/api/v1', express.json({ limit: '8mb' }), createApiRouter());
@@ -277,6 +343,19 @@ export function createPortalServer(bot?: any): http.Server {
   // actor signatures, so the on-call runbook has a single log line to check.
   validatePortalAdminBetaReadiness(config.portal);
 
+  // AUTH-O10 (closed-beta-auth-hardening, 2026-05-04): mount the IP-bucket
+  // rate limiter on portal `/api/*` (not `/api/v1/*` — iOS already mounts
+  // its own at `createApiRouter()` above). Without this, distributed
+  // brute-force against the portal token would be unbounded.
+  // The rate limiter is unauthenticated-safe (falls back to IP bucket
+  // when no userId is on the request).
+  app.use('/api', (req: Request, res: Response, next: NextFunction) => {
+    if (req.path.startsWith('/v1/') || req.path.startsWith('/v1')) {
+      return next();
+    }
+    return rateLimitMiddleware(req, res, next);
+  });
+
   app.use('/api', (req: Request, res: Response, next: NextFunction) => {
     // Skip portal auth for iOS API routes — they use their own JWT middleware
     if (req.path.startsWith('/v1/') || req.path.startsWith('/v1')) {
@@ -294,6 +373,10 @@ export function createPortalServer(bot?: any): http.Server {
   registerPortalSkillRoutes(app);
 
   registerPortalContentRoutes(app);
+
+  registerPortalCookingRoutes(app);
+
+  registerPortalDecisionCenterRoutes(app);
 
   registerPortalActionRoutes(app, bot);
 
@@ -316,6 +399,8 @@ export function createPortalServer(bot?: any): http.Server {
   registerPortalAdminDataRoutes(app);
 
   registerPortalChatRoutes(app);
+
+  registerPortalEvalHistoryRoutes(app);
 
   registerPortalUserSkillRoutes(app);
 

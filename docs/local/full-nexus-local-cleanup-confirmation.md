@@ -75,3 +75,33 @@ Cleanup complete.
 - The optional content-engine sidecar was not started.
 - Real provider calls were not enabled; `NEXUS_LOCAL_ALLOW_MODEL_CALLS=0`.
 - No staging or production services were touched.
+
+---
+
+## Cleanup Addendum — 2026-04-29 22:54
+
+Run ID: `full-nexus-local-smoke-20260429-2254`
+Local base URL: `http://127.0.0.1:8298`
+
+Cleanup verdict: `PASS`
+
+Commands/actions:
+
+- Stopped iOS app `me.nexushub.app` through XcodeBuildMCP.
+- Stopped the attached backend with `SIGINT`; backend log showed `Shutting down...`, `SQLiteStorage closed`, and `Database closed`.
+- Ran runner cleanup with `FULL_NEXUS_RESET_DB=1`, removing `/tmp/nexus-full-smoke-20260429-2254.db`.
+- Shut down simulator `A0B13967-B5DE-4E6F-897D-F1E409093F94`.
+
+Verification:
+
+| Resource | Result |
+| --- | --- |
+| Backend port `8298` | PASS - clear |
+| Default backend port `8200` | PASS - clear |
+| Content sidecar port `8102` | PASS - clear |
+| Auth file `/tmp/nexus-full-smoke-20260429-2254-auth.json` | PASS - absent |
+| DB files `/tmp/nexus-full-smoke-20260429-2254.db*` | PASS - absent |
+| Booted simulators | PASS - `0` |
+| Smoke processes | PASS - no matching smoke/backend/content/eval processes |
+
+No containers, tunnels, production services, staging services, or real provider-call loops were started by this run.

@@ -4,7 +4,9 @@ import express, { Request, Response } from 'express';
 import { countFounderSlots } from '../api/routes/waitlist';
 import { requirePortalAdminToken } from '../api/secret-guards';
 import { getDb } from '../services/database';
+import { isEmailConfigured, sendBetaInviteEmail } from '../services/email-sender';
 import { createInviteCode } from '../services/user-service';
+import { hashEmail } from '../utils/identity';
 import { logger } from '../utils/logger';
 import { logPortalAdminMutation } from './admin-audit';
 import { sendPortalInternalError } from './http';
@@ -21,7 +23,8 @@ function parseListLimit(value: unknown): number {
 }
 
 function parseExpiresInDays(value: unknown): number {
-  return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : 30;
+  const parsed = Number.parseInt(String(value ?? ''), 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 30;
 }
 
 export function registerPortalWaitlistRoutes(app: express.Express): void {
@@ -43,6 +46,7 @@ export function registerPortalWaitlistRoutes(app: express.Express): void {
 
       const rows = db.prepare(
         `SELECT id, email, intent, source, use_case, status, invite_code, founder_slot,
+                email_confirmed_at, invite_expires_at, invite_email_sent_at, email_delivery_status,
                 utm_source, utm_medium, utm_campaign, created_at, approved_at, notes
          FROM waitlist ${whereSql} ORDER BY created_at DESC LIMIT ?`,
       ).all(...args, limit) as any[];
@@ -72,7 +76,7 @@ export function registerPortalWaitlistRoutes(app: express.Express): void {
     }
   });
 
-  app.post('/api/waitlist/:id/approve', requirePortalAdminToken, express.json(), (req: Request, res: Response) => {
+  app.post('/api/waitlist/:id/approve', requirePortalAdminToken, express.json(), async (req: Request, res: Response) => {
     try {
       const id = parsePositiveInteger(req.params.id);
       if (!id) {
@@ -93,8 +97,21 @@ export function registerPortalWaitlistRoutes(app: express.Express): void {
         });
         return;
       }
+      if (!row.email_confirmed_at) {
+        res.status(400).json({
+          ok: false,
+          error: 'Email must be confirmed before approval.',
+        });
+        return;
+      }
+      if (!isEmailConfigured()) {
+        res.status(503).json({ ok: false, error: 'Email delivery is not configured.' });
+        return;
+      }
 
       const code = createInviteCode(0, 1, parseExpiresInDays(req.body?.expiresInDays));
+      const inviteRow = db.prepare('SELECT expires_at FROM invite_codes WHERE code = ?').get(code) as { expires_at: string | null } | undefined;
+      const expiresAt = inviteRow?.expires_at || new Date(Date.now() + parseExpiresInDays(req.body?.expiresInDays) * 86400000).toISOString();
 
       if (row.intent === 'founder') {
         try {
@@ -103,21 +120,39 @@ export function registerPortalWaitlistRoutes(app: express.Express): void {
         } catch { /* skill_preset column may not exist yet */ }
       }
 
+      const sent = await sendBetaInviteEmail({ to: row.email, code, expiresAt });
+      if (!sent) {
+        db.prepare('DELETE FROM invite_codes WHERE code = ?').run(code);
+        db.prepare(
+          `UPDATE waitlist
+              SET email_delivery_status = 'invite_failed',
+                  last_email_error = 'send_failed'
+            WHERE id = ?`,
+        ).run(id);
+        res.status(502).json({ ok: false, error: 'Invite email could not be sent.' });
+        return;
+      }
+
       db.prepare(
         `UPDATE waitlist SET
-           status = 'approved',
+           status = 'invited',
            invite_code = ?,
+           invite_expires_at = ?,
+           invite_email_sent_at = datetime('now'),
+           email_delivery_status = 'invite_sent',
+           last_email_error = NULL,
            approved_at = datetime('now')
          WHERE id = ?`,
-      ).run(code, id);
+      ).run(code, expiresAt, id);
 
       logPortalAdminMutation(req, 0, 'waitlist.approve', {
         waitlistId: id,
-        email: row.email,
+        emailHash: hashEmail(row.email, 16),
         intent: row.intent,
-        inviteCode: code,
+        inviteCodeSuffix: code.slice(-4),
+        inviteExpiresAt: expiresAt,
       });
-      res.json({ ok: true, code, email: row.email, intent: row.intent });
+      res.json({ ok: true, code, email: row.email, intent: row.intent, expiresAt });
     } catch (err) {
       sendPortalInternalError(res, err, 'Failed to approve waitlist entry', 'Portal: waitlist approve failed');
     }

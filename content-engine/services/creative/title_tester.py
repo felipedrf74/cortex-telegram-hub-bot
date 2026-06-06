@@ -6,24 +6,28 @@ import time
 import logging
 from models.requests import TitlesRequest, TitlesResponse
 from services.claude_client import ask_claude_json
-from services.creator_profile import get_profile
+from services.creator_context import creator_profile_block, language_instruction
+from services.creative.operation_prompt_compilers import OperationPromptInput, build_operation_metadata, compile_operation_prompt
 
 logger = logging.getLogger("content-engine.titles")
 
-SYSTEM_PROMPT = f"""You are the creator's YouTube/Instagram title specialist.
+def _build_system_prompt(req: TitlesRequest) -> str:
+    return f"""You are the creator's YouTube/Instagram title specialist.
 
-{get_profile(short=True)}
+{creator_profile_block(req)}
+
+{language_instruction(req)}
 
 STRATEGIES to use (mix them):
-- NUMBER: "5 Razões para..." / "3 Erros que..."
-- QUESTION: "Por que [TOPIC] está..." / "Será que funciona?"
+- NUMBER: List-driven title with a concrete number
+- QUESTION: Question-driven curiosity title
 - HOW_TO: "Como [ACHIEVE X] em [TIME]"
-- BOLD_CLAIM: "[TOPIC] Está MORTO" / "A Verdade sobre..."
+- BOLD_CLAIM: Strong but supportable claim
 - VS: "[A] vs [B]: Quem Ganha?"
-- STORY: "Eu Testei [TOPIC] por [TIME] e..."
-- CONTROVERSY: "PAREI de [THING] e Isto Aconteceu"
-- URGENCY: "O Que NINGUÉM Está a Dizer"
-- CONTRARIAN: Goes against mainstream — Felipe's signature
+- STORY: First-person experience when appropriate to the creator profile
+- CONTROVERSY: Contrarian framing only when topic and creator profile support it
+- URGENCY: Timely information gap
+- CONTRARIAN: Goes against mainstream — the creator's saved signature style
 
 SCORING (0-100) based on:
 - Length: YouTube ideal 50-60 chars, Instagram 30-40
@@ -36,28 +40,32 @@ SCORING (0-100) based on:
 Return ONLY a JSON array. No markdown."""
 
 
+class _NeutralPromptRequest:
+    creator_profile = None
+    brand_voice = None
+    language = "en-US"
+
+
+SYSTEM_PROMPT = _build_system_prompt(_NeutralPromptRequest())
+
+
 async def generate(req: TitlesRequest) -> TitlesResponse:
     start = time.monotonic()
 
     char_target = "50-60" if req.platform == "YouTube" else "30-40"
-    prompt = f"""Generate {req.count} title variants for Felipe's channel:
-- Topic: {req.topic}
-- Niche: {req.niche}
-- Platform: {req.platform} (ideal length: {char_target} characters)
+    compiled = compile_operation_prompt(OperationPromptInput(
+        operation="title_pack",
+        topic=req.topic,
+        language=req.language,
+        creator_profile=creator_profile_block(req),
+        user_instruction=f"Generate {req.count} titles for niche={req.niche}, platform={req.platform}.",
+        format_contract=(
+            f"Platform: {req.platform} (ideal length: {char_target} characters). "
+            'Return a JSON array with title, strategy, score, why, and char_count. Sort by score descending.'
+        ),
+    ))
 
-Titles should sound like Felipe — direct, bold, no-BS. His audience is Brazilian men 18-35.
-Titles should stay grounded in the actual topic. Do NOT force politics, training, or reaction framing when the topic points somewhere else.
-
-Return JSON array where each object has:
-- "title": the title in PT-BR
-- "strategy": which strategy was used
-- "score": 0-100 effectiveness score
-- "why": one sentence on why it works for Felipe's audience
-- "char_count": number of characters
-
-Sort by score descending."""
-
-    result = await ask_claude_json(prompt, system=SYSTEM_PROMPT)
+    result = await ask_claude_json(compiled.prompt, system=_build_system_prompt(req), max_tokens=700)
     titles = result if isinstance(result, list) else [result]
 
     duration_ms = int((time.monotonic() - start) * 1000)
@@ -65,4 +73,5 @@ Sort by score descending."""
         topic=req.topic,
         titles=titles[:req.count],
         duration_ms=duration_ms,
+        **build_operation_metadata(req, "title_pack", compiled),
     )

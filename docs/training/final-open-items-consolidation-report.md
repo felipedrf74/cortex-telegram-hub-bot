@@ -20,15 +20,15 @@ iOS rich Training payload handling is better than before and did run in the simu
 
 | # | Priority Item | Status | Evidence | Release Judgment |
 |---:|---|---|---|---|
-| 1 | Travel/constrained-week capacity reconciliation | **Complete for release gate** | `docs/training/constrained-week-capacity-reconciliation.md`; 28 focused tests; typecheck; benchmark `99/100` across 156 cases; seeded Secretary conflict staging flow passed. | Backend reconciler is implemented and staging cross-skill conflict proof now exists. Production-safe post-deploy validation remains required. |
-| 2 | Regenerated session identity with plan version + shape hash | **Complete for release gate** | `docs/training/session-identity-plan-version-shape-hash.md`; 63 focused tests; migration `082_training_session_identity_shape_hash.sql`; Google/Outlook staging provider read-back passed. | Identity model is the right shape and real provider lifecycle proof now exists. Production-safe post-deploy validation remains required. |
-| 3 | Google/Outlook staging calendar smoke | **Complete for release gate** | Google run `training-calendar-smoke-20260428165035-7ljwng`; Outlook run `training-calendar-smoke-20260428165107-7fsbbr`; both passed with cleanup. | Real staging provider proof is closed. |
+| 1 | Travel/constrained-week capacity reconciliation | **Partially complete** | `docs/training/constrained-week-capacity-reconciliation.md`; 28 focused tests; typecheck; benchmark `99/100` across 156 cases. | Backend reconciler is implemented. Product confidence remains partial until real Secretary busy windows feed the model and inactive states are surfaced/persisted as product artifacts if needed. |
+| 2 | Regenerated session identity with plan version + shape hash | **Partially complete** | `docs/training/session-identity-plan-version-shape-hash.md`; 63 focused tests; migration `082_training_session_identity_shape_hash.sql`. | Identity model is the right shape. Provider update/read-back and real Google/Outlook smoke remain required before claiming calendar reliability. |
+| 3 | Google/Outlook staging calendar smoke | **Blocked** | `docs/training/calendar-staging-smoke-results.md`; run ID `training-calendar-smoke-20260428052526-x2dxv4`; status `blocked`. | Harness exists, but no real provider proof. This remains a production trust gate. |
 | 4 | iOS simulator smoke with rich Training payloads | **Partially complete** | `docs/ios/training-rich-payload-smoke.md`; XcodeBuildMCP simulator launch passed; 28 and 58 focused tests passed. | iOS can decode/present rich states in tests and live Training opened. Screenshot-level proof for synthetic capped/reflowed/unscheduled/canceled/superseded states still needs fixture injection. |
 | 5 | Rich iOS feedback UI | **Partially complete** | `docs/ios/training-rich-feedback-ui.md`; `TrainingFeedbackPayloadTests`; focused simulator unit command succeeded. | UI sends richer additive payloads. Backend persistence/adaptation confirmation and visual smoke against staging feedback storage remain open. |
 | 6 | Poor-recovery variation | **Complete for backend beta** | `docs/training/poor-recovery-variation.md`; focused poor-recovery and guardrail tests passed. | Recovery variation is materially improved. Running-only and orange-readiness calibration remain follow-ups, not blockers. |
 | 7 | Weak-profile follow-up prompts | **Partially complete** | `docs/training/weak-profile-followup-prompts.md`; 10 profile tests, 33 focused tests, typecheck passed. | Backend exposes profile quality and targeted prompts. iOS rendering and durable prompt-resolution persistence remain open. |
 | 8 | Schedule-compression explanations | **Partially complete** | `docs/training/schedule-compression-explanations.md`; 9 focused tests; typecheck passed. | Backend emits structured decision reasons. API route serialization, iOS rendering, and staging proof remain open. |
-| 9 | Cross-skill staging smoke | **Complete for release gate** | Run `training-cross-skill-smoke-20260428164946-829lm7`; Secretary, Cooking, Finance, Content, Training milestone, and shared-context scoping passed; fixture cleanup verified. | Runtime staging confidence is closed for the release gate. |
+| 9 | Cross-skill staging smoke | **Blocked** | `docs/training/cross-skill-staging-smoke-results.md`; run ID `training-cross-skill-smoke-20260428073331-b9p9y1`; local fixtures passed, staging blocked. | Contract harness is good. Real staging user/env/data are missing, so cross-skill runtime confidence is not closed. |
 | 10 | Catalog expansion | **Complete for backend beta** | `docs/training/catalog-expansion.md`; catalog depth tests; 37 focused tests; 148 coach-kernel sweep; typecheck passed. | Domain depth is much stronger. Continued catalog growth remains expected work, not a blocker. |
 
 ## What Was Completed
@@ -56,7 +56,8 @@ iOS rich Training payload handling is better than before and did run in the simu
 
 | Blocked Gate | Blocker | Exact Missing Prerequisites |
 |---|---|---|
-| Production-predeploy DB snapshot | Must be taken immediately before rollout, not earlier. | Deployment operator must capture and verify snapshot/restore path for the production DB at release time. |
+| Google/Outlook staging calendar smoke | No staging credentials/environment in current shell. | `STAGING=true` or `NODE_ENV=staging`, `TRAINING_CALENDAR_STAGING_SMOKE=1`, `TRAINING_CALENDAR_STAGING_ALLOW_LIVE_WRITES=1`, `TRAINING_CALENDAR_STAGING_USER_ID`, `OAUTH_ENCRYPTION_KEY`, staging `DATABASE_PATH`, Google and Outlook OAuth credentials/tokens. |
+| Cross-skill staging smoke | No staging env/user/data fixture. | `STAGING=true` or `NODE_ENV=staging`, `TRAINING_CROSS_SKILL_STAGING_SMOKE=1`, `TRAINING_CROSS_SKILL_STAGING_USER_ID`, staging `DATABASE_PATH`, seeded Secretary/Cooking/Finance/Content data. |
 | Full rich iOS state visual proof | No debug-only Training fixture injection mode. | A launch argument or test harness such as `-NEXUSQATrainingFixture rich-v1` that injects rich payload fixtures into the repository layer. |
 | Rich feedback adaptation proof | Backend storage/adaptation not yet proven for every new feedback field. | Backend persistence tests and scenario tests proving future sessions change after partial/skipped/too-hard/too-long/soreness/fatigue/discomfort/substitutions. |
 
@@ -110,9 +111,9 @@ Most priority branches currently point to the same commit while the actual Train
 
 | Smoke | Result | Evidence | Production Meaning |
 |---|---|---|---|
-| Google Calendar Training lifecycle | **Passed** | `training-calendar-smoke-20260428165035-7ljwng`; provider read-back and cleanup passed. | Staging proof closed. |
-| Outlook Calendar Training lifecycle | **Passed** | `training-calendar-smoke-20260428165107-7fsbbr`; provider read-back and cleanup passed. | Staging proof closed. |
-| Cross-skill staging orchestration | **Passed** | `training-cross-skill-smoke-20260428164946-829lm7`; seeded runtime checks and cleanup passed. | Staging proof closed. |
+| Google Calendar Training lifecycle | **Blocked** | `calendar-staging-smoke-results.md` shows Google prerequisites blocked. | No real Google proof yet. |
+| Outlook Calendar Training lifecycle | **Blocked** | `calendar-staging-smoke-results.md` shows Outlook prerequisites blocked. | No real Outlook proof yet. |
+| Cross-skill staging orchestration | **Blocked** | `cross-skill-staging-smoke-results.md` local fixtures passed; staging prerequisites blocked. | No real staging cross-skill proof yet. |
 
 ## iOS Simulator Smoke Results
 
@@ -164,3 +165,4 @@ The local fixture harness proves Training can consume Secretary, Cooking, Financ
 5. Add iOS rich Training fixture injection and screenshot-level simulator smoke.
 6. Add backend rich-feedback persistence/adaptation tests.
 7. Add iOS rendering/persistence for profile follow-up prompts and schedule-compression decision reasons.
+

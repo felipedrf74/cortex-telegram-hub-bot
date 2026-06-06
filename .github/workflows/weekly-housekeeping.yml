@@ -1,0 +1,46 @@
+name: Weekly — Release pipeline housekeeping
+
+# release-pipeline-risk-based-optimization (2026-05-03) — Round 4.
+#
+# Once per week (Sundays 06:00 UTC) the housekeeping script runs:
+#   1. Prune smoke-evidence files older than 60 days
+#   2. Re-persist docs/release/release-identity.{json,md}
+#   3. Print docs:audit baseline (advisory)
+#
+# This is the lazy operator's friend: stuff that needs to happen
+# periodically but doesn't otherwise have an explicit owner.
+#
+# Manual run:
+#   gh workflow run "Weekly — Release pipeline housekeeping"
+#
+# Note: this workflow does NOT push results back to git. It runs in a
+# clean checkout, prints the result, and exits. If the prune-and-persist
+# results matter for the canonical docs, the Mac-side cron (or Felipe's
+# pre-commit hook on the next current-verdict edit) is the actual writer.
+
+on:
+  schedule:
+    - cron: '0 6 * * 0'   # Sundays 06:00 UTC
+  workflow_dispatch:
+
+jobs:
+  housekeeping:
+    name: 🧹 Housekeeping
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Run housekeeping (dry-run)
+        run: |
+          chmod +x scripts/release-pipeline-housekeeping.sh
+          scripts/release-pipeline-housekeeping.sh
+
+      - name: Show docs:audit summary
+        run: node scripts/audit-docs.mjs --json | head -200

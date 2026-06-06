@@ -6,7 +6,7 @@ Backup branch/tag: `backup/training-prod-hardening-pre-20260428-1004` / `backup-
 
 ## Executive Summary
 
-This hardening pass focused on production-critical Training blockers and the local iOS proof needed to validate the richer payloads safely before production. It did not deploy.
+This hardening pass focused only on production-critical backend Training blockers. It did not deploy and did not modify iOS code.
 
 The key behavior change is that the engine no longer silently turns impossible schedule states into active calendar events. If a constrained/travel/busy week has no valid slot, the session is kept as a real Training item with an explicit inactive state such as `unscheduled`, and calendar creation is skipped.
 
@@ -21,8 +21,6 @@ The key behavior change is that the engine no longer silently turns impossible s
 | Active count inflation | Inactive sessions could be counted as active Training work in read models. | Read-model counts exclude inactive lifecycle states. | `src/api/routes/training-read-models.ts` |
 | Profile/follow-up signal loss | The generated plan route did not return profile quality/follow-up prompts. | Route response now includes `profileQuality`. | `src/api/routes/training-plan-generation.ts`, `__tests__/api/training-routes.test.ts` |
 | Compression/decision signal loss | The generated plan route did not return structured decision reasons. | Route response now includes `decisionReasons`. | `src/api/routes/training-plan-generation.ts`, `__tests__/api/training-routes.test.ts` |
-| Missing operational kill switches | Release rollback docs could not identify a safe config-only way to pause Training generation, calendar writes, or Training-originated cross-skill signals. | Added explicit env-controlled switches for plan generation, calendar writes/sync, and cross-skill signal publishing. Defaults remain enabled; emergency disable returns route-level 503s or skips signal writes without deleting user data. | `src/services/training-operational-switches.ts`, `src/api/routes/training-plan-routes.ts`, `src/api/routes/training-calendar-event-writer.ts`, `src/services/training-signals.ts` |
-| Staging smoke false-green risk | Dry-run cross-skill/calendar smoke reports could look like successful staging proof. | Dry-run reports now mark runtime provider/staging checks as `blocked` and state that no staging proof was produced. | `src/tools/training-calendar-staging-smoke.ts`, `src/tools/training-cross-skill-staging-smoke.ts` |
 
 ## Tests Added Or Updated
 
@@ -40,31 +38,20 @@ The key behavior change is that the engine no longer silently turns impossible s
 - `__tests__/api/training-routes.test.ts`
   - plan generation serializes `profileQuality.followUpPrompts`;
   - plan generation serializes `decisionReasons`.
-- `__tests__/services/training-operational-switches.test.ts`
-  - global and per-surface Training switches default enabled and disable explicitly.
-- `__tests__/api/training-calendar-event-writer.test.ts`
-  - calendar writes stop before provider calls when disabled.
-- `__tests__/services/training-signals.test.ts`
-  - Training-originated cross-skill signal publish skips DB writes when disabled.
-- `__tests__/tools/training-calendar-staging-smoke.test.ts` and `__tests__/tools/training-cross-skill-staging-smoke.test.ts`
-  - dry-run reports cannot be mistaken for staging success.
 
 ## Validation
 
 - Focused changed suites: passed.
-- Operational-switch and staging-harness safety suites: passed, 23 tests.
 - Focused Training blocker suite: passed, 13 files / 140 tests.
-- Full backend verify: passed, 383 files / 6,001 tests.
+- Full backend verify: passed, 379 files / 5,977 tests.
 - Training eval: passed, 99/100 across 156 cases.
-- Focused iOS Training/importer suites: passed.
-- Full iOS scheme: passed after aligning dashboard hero presentation tests with the localized calendar display contract.
-- Authenticated local iOS simulator journey: passed, 43 authenticated REST calls across 19 endpoints with local runner user `2`, all HTTP 200.
-- Calendar staging smoke: Google and Outlook staging provider lifecycles passed with read-back and exact-event cleanup.
-- Cross-skill staging smoke: seeded staging runtime passed for Secretary, Cooking, Finance, Content workload, Training-to-Content milestone, and shared-context scope; fixture cleanup verified.
+- Calendar staging smoke: blocked safely due missing staging credentials/env; no writes made.
+- Cross-skill staging smoke: local fixture contracts passed; staging runtime blocked due missing env/test tenant.
 
 ## Remaining Risks
 
 - Real Google/Outlook staging read-back is still required before production calendar trust claims.
-- iOS local proof is still pre-release proof only; signed TestFlight/device and post-deploy production-safe validation remain required.
+- iOS rich-payload simulator smoke is still required before iOS release.
 - Migration rollback must be rehearsed on a staging clone.
 - Final branch must be committed and reviewed before deployment.
+

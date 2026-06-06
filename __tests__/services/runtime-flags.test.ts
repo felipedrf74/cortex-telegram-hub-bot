@@ -5,10 +5,41 @@ import {
   areGlobalInvoiceVendorsEnabled,
   canUseAnthropicRuntimeFallback,
   getAICallTimeoutMs,
+  getChatHybridPlannerMode,
+  getDomainProviderExperimentOverrides,
   getGeminiDomainAllowlist,
   getGeminiIncludeSecretaryEnvOverride,
   getGeminiRoutingEnvOverride,
+  isChatEscalationReviewerEnabled,
+  isChatBilingualEvalGateEnabled,
+  isChatContextCompilerEnabled,
+  isChatCoreV2Enabled,
+  isChatCoreV2RuntimeFlagEnabled,
+  isChatHybridPlannerEnabled,
+  isChatLlmTier1Enabled,
+  isChatLlmTier2Enabled,
+  isChatOpenSurfaceHandoffEnabled,
+  isChatQualityGateEnabled,
+  isChatResearchRouterEnabled,
+  isChatSkillResponsePolicyEnabled,
+  isChatTurnContractEnabled,
+  isContentDeepResearchDisabled,
+  isContentForceDraftOnlyEnabled,
+  isContentFreshResearchDisabled,
+  isContentFullLongformDisabled,
+  isContentModelQualityAuditDisabled,
+  isDecisionCenterFatigueCapsEnabled,
+  isDecisionCenterCommandBusEnabled,
+  isDecisionCenterGuidanceSkillEnabled,
+  isDecisionCenterGuidanceV1Enabled,
+  isDecisionChoiceOptionsEnabled,
+  isDecisionHumanReviewGateEnabled,
+  isDecisionReconnectAffordanceEnabled,
+  isDecisionSemanticSupersedeEnabled,
+  isDecisionTypeSuppressionEnabled,
+  isDecisionSkillCardsEnabled,
   isAnthropicRuntimeEnabled,
+  isChatCoreV2ShadowRouteHookEnabled,
   isSecretaryHaikuRoutingEnabled,
   isTelegramLegacyDeliveryEnabled,
 } from '../../src/services/runtime-flags';
@@ -56,11 +87,262 @@ describe('runtime-flags', () => {
     expect(
       getGeminiDomainAllowlist({ GEMINI_DOMAINS: 'triathlon, content , finance,, cooking ' }),
     ).toEqual(['triathlon', 'content', 'finance', 'cooking']);
+    expect(
+      getDomainProviderExperimentOverrides({ AI_DOMAIN_PROVIDER_OVERRIDES: 'cooking=openai, finance = openai, broken, content=gemini' }),
+    ).toEqual({ cooking: 'openai', finance: 'openai', content: 'gemini' });
   });
 
   it('treats secretary haiku routing as an explicit opt-in only', () => {
     expect(isSecretaryHaikuRoutingEnabled({ SECRETARY_HAIKU_ROUTING_ENABLED: 'true' })).toBe(true);
     expect(isSecretaryHaikuRoutingEnabled({ SECRETARY_HAIKU_ROUTING_ENABLED: 'false' })).toBe(false);
     expect(isSecretaryHaikuRoutingEnabled({})).toBe(false);
+  });
+
+  it('enables Decision Center guidance by default with scoped rollback overrides', () => {
+    expect(isDecisionCenterGuidanceV1Enabled({})).toBe(true);
+    expect(isDecisionCenterGuidanceV1Enabled({ DECISION_CENTER_GUIDANCE_V1_ENABLED: 'false' })).toBe(false);
+    expect(isDecisionCenterGuidanceV1Enabled({
+      DECISION_CENTER_GUIDANCE_V1_ENABLED: 'true',
+      DECISION_CENTER_GUIDANCE_V1_ENABLED_USER_42: 'off',
+    }, { userId: 42, tenantId: 42 })).toBe(false);
+    expect(isDecisionCenterGuidanceV1Enabled({
+      DECISION_CENTER_GUIDANCE_V1_ENABLED: 'false',
+      DECISION_CENTER_GUIDANCE_V1_ENABLED_TENANT_9: 'true',
+    }, { userId: 7, tenantId: 9 })).toBe(true);
+  });
+
+  it('allows Decision Center guidance to be rolled back per skill and scope', () => {
+    expect(isDecisionCenterGuidanceSkillEnabled('secretary', {})).toBe(true);
+    expect(isDecisionCenterGuidanceSkillEnabled('content', {
+      DECISION_CENTER_GUIDANCE_V1_CONTENT_ENABLED: 'off',
+    })).toBe(false);
+    expect(isDecisionCenterGuidanceSkillEnabled('finance-review', {
+      DECISION_CENTER_GUIDANCE_V1_FINANCE_REVIEW_ENABLED: 'true',
+      DECISION_CENTER_GUIDANCE_V1_FINANCE_REVIEW_ENABLED_TENANT_9: '0',
+    }, { userId: 7, tenantId: 9 })).toBe(false);
+  });
+
+  it('keeps Decision Center Command Bus default-off with scoped opt-in', () => {
+    expect(isDecisionCenterCommandBusEnabled({})).toBe(false);
+    expect(isDecisionCenterCommandBusEnabled({ DECISION_CENTER_COMMAND_BUS_ENABLED: 'true' })).toBe(true);
+    expect(isDecisionCenterCommandBusEnabled({ DECISION_CENTER_COMMAND_BUS_ENABLED: 'on' })).toBe(true);
+    expect(isDecisionCenterCommandBusEnabled({ DECISION_CENTER_COMMAND_BUS_ENABLED: '1' })).toBe(true);
+    expect(isDecisionCenterCommandBusEnabled({ DECISION_CENTER_COMMAND_BUS_ENABLED: 'shadow' })).toBe(false);
+    expect(isDecisionCenterCommandBusEnabled({
+      DECISION_CENTER_COMMAND_BUS_ENABLED: 'false',
+      DECISION_CENTER_COMMAND_BUS_ENABLED_TENANT_9: 'enabled',
+    }, { userId: 7, tenantId: 9 })).toBe(true);
+    expect(isDecisionCenterCommandBusEnabled({
+      DECISION_CENTER_COMMAND_BUS_ENABLED: 'true',
+      DECISION_CENTER_COMMAND_BUS_ENABLED_USER_42: 'off',
+    }, { userId: 42, tenantId: 9 })).toBe(false);
+  });
+
+  it('parses chat hybrid planner rollout flags conservatively', () => {
+    expect(getChatHybridPlannerMode({})).toBe('active');
+    expect(getChatHybridPlannerMode({ CHAT_HYBRID_PLANNER_ENABLED: 'false' })).toBe('off');
+    expect(getChatHybridPlannerMode({ CHAT_HYBRID_PLANNER_ENABLED: 'off' })).toBe('off');
+    expect(getChatHybridPlannerMode({ CHAT_HYBRID_PLANNER_ENABLED: 'shadow' })).toBe('shadow');
+    expect(getChatHybridPlannerMode({ CHAT_HYBRID_SHADOW_MODE: 'true' })).toBe('shadow');
+    expect(isChatHybridPlannerEnabled({ CHAT_HYBRID_PLANNER_ENABLED: '0' })).toBe(false);
+    expect(isChatHybridPlannerEnabled({ CHAT_HYBRID_PLANNER_ENABLED: 'shadow' })).toBe(true);
+  });
+
+  it('keeps chat LLM tiers and surface handoff independently switchable', () => {
+    expect(isChatLlmTier1Enabled({})).toBe(false);
+    expect(isChatLlmTier1Enabled({ CHAT_LLM_TIER1_ENABLED: 'true' })).toBe(true);
+    expect(isChatLlmTier2Enabled({})).toBe(true);
+    expect(isChatLlmTier2Enabled({ CHAT_LLM_TIER2_ENABLED: 'false' })).toBe(false);
+    expect(isChatEscalationReviewerEnabled({})).toBe(false);
+    expect(isChatEscalationReviewerEnabled({ CHAT_ESCALATION_REVIEWER_ENABLED: 'true' })).toBe(true);
+    expect(isChatOpenSurfaceHandoffEnabled({})).toBe(true);
+    expect(isChatOpenSurfaceHandoffEnabled({ CHAT_OPEN_SURFACE_HANDOFF_ENABLED: 'false' })).toBe(false);
+  });
+
+  it('supports scoped chat rollout overrides for owner/beta canaries', () => {
+    expect(getChatHybridPlannerMode({
+      CHAT_HYBRID_PLANNER_ENABLED: 'off',
+      CHAT_HYBRID_PLANNER_ENABLED_USER_42: 'shadow',
+    }, { userId: 42, tenantId: 99 })).toBe('shadow');
+    expect(getChatHybridPlannerMode({
+      CHAT_HYBRID_PLANNER_ENABLED: 'off',
+      CHAT_HYBRID_PLANNER_ENABLED_TENANT_99: 'active',
+    }, { userId: 41, tenantId: 99 })).toBe('active');
+    expect(isChatLlmTier1Enabled({
+      CHAT_LLM_TIER1_ENABLED: 'false',
+      CHAT_LLM_TIER1_ENABLED_TENANT_99: 'true',
+    }, { tenantId: 99 })).toBe(true);
+    expect(isChatLlmTier2Enabled({
+      CHAT_LLM_TIER2_ENABLED: 'true',
+      CHAT_LLM_TIER2_ENABLED_USER_42: 'false',
+    }, { userId: 42 })).toBe(false);
+    expect(isChatOpenSurfaceHandoffEnabled({
+      CHAT_OPEN_SURFACE_HANDOFF_ENABLED: 'true',
+      CHAT_OPEN_SURFACE_HANDOFF_ENABLED_USER_42: 'false',
+    }, { userId: 42 })).toBe(false);
+  });
+
+  it('supports scoped content cost-control kill switches', () => {
+    const env = {
+      CONTENT_FORCE_DRAFT_ONLY: 'false',
+      CONTENT_FORCE_DRAFT_ONLY_USER_42: 'true',
+      CONTENT_DISABLE_FRESH_RESEARCH: 'true',
+      CONTENT_DISABLE_DEEP_RESEARCH_TENANT_99: 'true',
+      CONTENT_DISABLE_FULL_YOUTUBE_LONGFORM: 'true',
+      CONTENT_DISABLE_MODEL_QUALITY_AUDIT_USER_42: 'true',
+    };
+
+    expect(isContentForceDraftOnlyEnabled(env, { userId: 42, tenantId: 1 })).toBe(true);
+    expect(isContentForceDraftOnlyEnabled(env, { userId: 7, tenantId: 1 })).toBe(false);
+    expect(isContentFreshResearchDisabled(env, { userId: 7, tenantId: 1 })).toBe(true);
+    expect(isContentDeepResearchDisabled(env, { userId: 7, tenantId: 99 })).toBe(true);
+    expect(isContentFullLongformDisabled(env, { userId: 7, tenantId: 1 })).toBe(true);
+    expect(isContentModelQualityAuditDisabled(env, { userId: 42, tenantId: 1 })).toBe(true);
+  });
+
+  it('keeps chat reliability rollout flags on by default with scoped rollback support', () => {
+    expect(isChatTurnContractEnabled({})).toBe(true);
+    expect(isChatSkillResponsePolicyEnabled({})).toBe(true);
+    expect(isChatContextCompilerEnabled({})).toBe(true);
+    expect(isChatResearchRouterEnabled({})).toBe(true);
+    expect(isChatQualityGateEnabled({})).toBe(true);
+    expect(isChatBilingualEvalGateEnabled({})).toBe(true);
+
+    expect(isChatTurnContractEnabled({ CHAT_TURN_CONTRACT_ENABLED: 'false' })).toBe(false);
+    expect(isChatResearchRouterEnabled({
+      CHAT_RESEARCH_ROUTER_ENABLED: 'true',
+      CHAT_RESEARCH_ROUTER_ENABLED_USER_42: 'false',
+    }, { userId: 42, tenantId: 99 })).toBe(false);
+    expect(isChatQualityGateEnabled({
+      CHAT_QUALITY_GATE_ENABLED: 'true',
+      CHAT_QUALITY_GATE_ENABLED_TENANT_99: 'false',
+    }, { userId: 42, tenantId: 99 })).toBe(false);
+  });
+
+  it('keeps Chat Core v2 shadow route hook default-off with scoped opt-in', () => {
+    expect(isChatCoreV2ShadowRouteHookEnabled({})).toBe(false);
+    expect(isChatCoreV2ShadowRouteHookEnabled({ CHAT_CORE_V2_SHADOW_ROUTE_HOOK_ENABLED: 'true' })).toBe(true);
+    expect(isChatCoreV2ShadowRouteHookEnabled({ CHAT_CORE_V2_SHADOW_ROUTE_HOOK_ENABLED: 'shadow' })).toBe(true);
+    expect(isChatCoreV2ShadowRouteHookEnabled({
+      CHAT_CORE_V2_SHADOW_ROUTE_HOOK_ENABLED: 'false',
+      CHAT_CORE_V2_SHADOW_ROUTE_HOOK_ENABLED_TENANT_9: '1',
+    }, { userId: 7, tenantId: 9 })).toBe(true);
+    expect(isChatCoreV2ShadowRouteHookEnabled({
+      CHAT_CORE_V2_SHADOW_ROUTE_HOOK_ENABLED: 'true',
+      CHAT_CORE_V2_SHADOW_ROUTE_HOOK_ENABLED_USER_42: 'off',
+    }, { userId: 42, tenantId: 9 })).toBe(false);
+  });
+
+  it('keeps Chat Core v2 live capability flags default-off with scoped opt-in', () => {
+    expect(isChatCoreV2Enabled({})).toBe(false);
+    expect(isChatCoreV2Enabled({ CHAT_CORE_V2_ENABLED: 'true' })).toBe(true);
+    expect(isChatCoreV2Enabled({ CHAT_CORE_V2_ENABLED: 'on' })).toBe(true);
+    expect(isChatCoreV2Enabled({ CHAT_CORE_V2_ENABLED: 'enabled' })).toBe(true);
+    expect(isChatCoreV2Enabled({ CHAT_CORE_V2_ENABLED: 'shadow' })).toBe(false);
+    expect(isChatCoreV2Enabled({
+      CHAT_CORE_V2_ENABLED: 'false',
+      CHAT_CORE_V2_ENABLED_TENANT_9: '1',
+    }, { userId: 7, tenantId: 9 })).toBe(true);
+    expect(isChatCoreV2Enabled({
+      CHAT_CORE_V2_ENABLED: 'true',
+      CHAT_CORE_V2_ENABLED_USER_42: 'off',
+    }, { userId: 42, tenantId: 9 })).toBe(false);
+
+    expect(isChatCoreV2RuntimeFlagEnabled('CHAT_CORE_V2_ENABLED', {
+      CHAT_CORE_V2_ENABLED: '1',
+    })).toBe(true);
+    expect(isChatCoreV2RuntimeFlagEnabled('chat_core_v2_tasks_enabled', {
+      CHAT_CORE_V2_TASKS_ENABLED: 'true',
+    })).toBe(true);
+    expect(isChatCoreV2RuntimeFlagEnabled('CHAT_CORE_V3_ENABLED', {
+      CHAT_CORE_V3_ENABLED: 'true',
+    })).toBe(false);
+  });
+
+  it('keeps Decision Center fatigue caps default-off with scoped opt-in (C5)', () => {
+    expect(isDecisionCenterFatigueCapsEnabled({})).toBe(false);
+    expect(isDecisionCenterFatigueCapsEnabled({ DECISION_CENTER_FATIGUE_CAPS_ENABLED: 'true' })).toBe(true);
+    expect(isDecisionCenterFatigueCapsEnabled({ DECISION_CENTER_FATIGUE_CAPS_ENABLED: 'on' })).toBe(true);
+    expect(isDecisionCenterFatigueCapsEnabled({ DECISION_CENTER_FATIGUE_CAPS_ENABLED: '1' })).toBe(true);
+    expect(isDecisionCenterFatigueCapsEnabled({ DECISION_CENTER_FATIGUE_CAPS_ENABLED: 'enabled' })).toBe(true);
+    expect(isDecisionCenterFatigueCapsEnabled({ DECISION_CENTER_FATIGUE_CAPS_ENABLED: 'yes' })).toBe(false);
+    expect(isDecisionCenterFatigueCapsEnabled({
+      DECISION_CENTER_FATIGUE_CAPS_ENABLED: 'false',
+      DECISION_CENTER_FATIGUE_CAPS_ENABLED_TENANT_9: 'true',
+    }, { userId: 7, tenantId: 9 })).toBe(true);
+    expect(isDecisionCenterFatigueCapsEnabled({
+      DECISION_CENTER_FATIGUE_CAPS_ENABLED: 'true',
+      DECISION_CENTER_FATIGUE_CAPS_ENABLED_USER_42: 'off',
+    }, { userId: 42, tenantId: 9 })).toBe(false);
+  });
+
+  it('keeps the A2 reconnect affordance default-off with scoped opt-in', () => {
+    expect(isDecisionReconnectAffordanceEnabled({})).toBe(false);
+    expect(isDecisionReconnectAffordanceEnabled({ DECISION_RECONNECT_AFFORDANCE_ENABLED: 'true' })).toBe(true);
+    expect(isDecisionReconnectAffordanceEnabled({ DECISION_RECONNECT_AFFORDANCE_ENABLED: '1' })).toBe(true);
+    expect(isDecisionReconnectAffordanceEnabled({ DECISION_RECONNECT_AFFORDANCE_ENABLED: 'yes' })).toBe(false);
+    // scoped opt-in: a tenant override flips it on for that tenant only
+    expect(isDecisionReconnectAffordanceEnabled({
+      DECISION_RECONNECT_AFFORDANCE_ENABLED: 'false',
+      DECISION_RECONNECT_AFFORDANCE_ENABLED_TENANT_9: 'true',
+    }, { userId: 7, tenantId: 9 })).toBe(true);
+    // scoped opt-out: a user override flips it off even when the global is on
+    expect(isDecisionReconnectAffordanceEnabled({
+      DECISION_RECONNECT_AFFORDANCE_ENABLED: 'true',
+      DECISION_RECONNECT_AFFORDANCE_ENABLED_USER_42: 'off',
+    }, { userId: 42, tenantId: 9 })).toBe(false);
+  });
+
+  it('keeps the D secretary choice-options surface default-off with scoped opt-in', () => {
+    expect(isDecisionChoiceOptionsEnabled({})).toBe(false);
+    expect(isDecisionChoiceOptionsEnabled({ DECISION_CHOICE_OPTIONS_ENABLED: 'true' })).toBe(true);
+    expect(isDecisionChoiceOptionsEnabled({ DECISION_CHOICE_OPTIONS_ENABLED: '1' })).toBe(true);
+    expect(isDecisionChoiceOptionsEnabled({ DECISION_CHOICE_OPTIONS_ENABLED: 'yes' })).toBe(false);
+    expect(isDecisionChoiceOptionsEnabled({
+      DECISION_CHOICE_OPTIONS_ENABLED: 'false',
+      DECISION_CHOICE_OPTIONS_ENABLED_TENANT_9: 'true',
+    }, { userId: 7, tenantId: 9 })).toBe(true);
+    expect(isDecisionChoiceOptionsEnabled({
+      DECISION_CHOICE_OPTIONS_ENABLED: 'true',
+      DECISION_CHOICE_OPTIONS_ENABLED_USER_42: 'off',
+    }, { userId: 42, tenantId: 9 })).toBe(false);
+  });
+
+  it('keeps the B3 supersede + human-review gates default-off with scoped opt-in', () => {
+    expect(isDecisionSemanticSupersedeEnabled({})).toBe(false);
+    expect(isDecisionSemanticSupersedeEnabled({ DECISION_SEMANTIC_SUPERSEDE_ENABLED: 'true' })).toBe(true);
+    expect(isDecisionSemanticSupersedeEnabled({ DECISION_SEMANTIC_SUPERSEDE_ENABLED: 'true', DECISION_SEMANTIC_SUPERSEDE_ENABLED_USER_5: 'off' }, { userId: 5, tenantId: 9 })).toBe(false);
+    expect(isDecisionHumanReviewGateEnabled({})).toBe(false);
+    expect(isDecisionHumanReviewGateEnabled({ DECISION_HUMAN_REVIEW_GATE_ENABLED: '1' })).toBe(true);
+  });
+
+  it('keeps the C3 type-suppression control default-off with scoped opt-in', () => {
+    expect(isDecisionTypeSuppressionEnabled({})).toBe(false);
+    expect(isDecisionTypeSuppressionEnabled({ DECISION_TYPE_SUPPRESSION_ENABLED: 'true' })).toBe(true);
+    expect(isDecisionTypeSuppressionEnabled({ DECISION_TYPE_SUPPRESSION_ENABLED: '1' })).toBe(true);
+    expect(isDecisionTypeSuppressionEnabled({ DECISION_TYPE_SUPPRESSION_ENABLED: 'yes' })).toBe(false);
+    expect(isDecisionTypeSuppressionEnabled({
+      DECISION_TYPE_SUPPRESSION_ENABLED: 'true',
+      DECISION_TYPE_SUPPRESSION_ENABLED_USER_5: 'off',
+    }, { userId: 5, tenantId: 9 })).toBe(false);
+    expect(isDecisionTypeSuppressionEnabled({
+      DECISION_TYPE_SUPPRESSION_ENABLED: 'false',
+      DECISION_TYPE_SUPPRESSION_ENABLED_TENANT_9: 'true',
+    }, { userId: 7, tenantId: 9 })).toBe(true);
+  });
+
+  it('keeps the D skill cards surface default-off with scoped opt-in', () => {
+    expect(isDecisionSkillCardsEnabled({})).toBe(false);
+    expect(isDecisionSkillCardsEnabled({ DECISION_SKILL_CARDS_ENABLED: 'true' })).toBe(true);
+    expect(isDecisionSkillCardsEnabled({ DECISION_SKILL_CARDS_ENABLED: '1' })).toBe(true);
+    expect(isDecisionSkillCardsEnabled({ DECISION_SKILL_CARDS_ENABLED: 'yes' })).toBe(false);
+    expect(isDecisionSkillCardsEnabled({
+      DECISION_SKILL_CARDS_ENABLED: 'false',
+      DECISION_SKILL_CARDS_ENABLED_TENANT_9: 'true',
+    }, { userId: 7, tenantId: 9 })).toBe(true);
+    expect(isDecisionSkillCardsEnabled({
+      DECISION_SKILL_CARDS_ENABLED: 'true',
+      DECISION_SKILL_CARDS_ENABLED_USER_42: 'off',
+    }, { userId: 42, tenantId: 9 })).toBe(false);
   });
 });

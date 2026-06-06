@@ -4,7 +4,7 @@
  * OAuth Flow — URL generation and code exchange for Google + Outlook.
  *
  * Handles the OAuth2 authorization code flow:
- * 1. Generate consent URL with state=userId
+ * 1. Generate consent URL with one-time state nonce bound to user+provider
  * 2. User authorizes in browser
  * 3. Callback receives code + state
  * 4. Exchange code for tokens
@@ -13,8 +13,9 @@
 import { config } from '../config';
 import { logger } from '../utils/logger';
 import type { OAuthTokens, OAuthProvider } from './oauth-store';
+import { createOAuthNonceSession } from './oauth-state-store';
 
-const REDIRECT_BASE = process.env.OAUTH_REDIRECT_BASE || 'https://nexushub.me';
+const REDIRECT_BASE = process.env.OAUTH_REDIRECT_BASE || 'https://api.nexushub.me';
 
 // ─── Google OAuth ───────────────────────────────────────────────────
 
@@ -73,9 +74,11 @@ const NOTION_TOKEN_URL = 'https://api.notion.com/v1/oauth/token';
 // ─── Public API ─────────────────────────────────────────────────────
 
 /**
- * Generate the OAuth consent URL. State contains userId for callback routing.
+ * Generate the OAuth consent URL. State contains a nonce that must be
+ * consumed by the callback before tokens are stored.
  */
 export function getOAuthUrl(provider: OAuthProvider, userId: number): string {
+  const state = `tg:${userId}:${createOAuthNonceSession(userId, provider)}`;
   if (provider === 'google') {
     const redirectUri = `${REDIRECT_BASE}/oauth/google/callback`;
     const params = new URLSearchParams({
@@ -85,7 +88,7 @@ export function getOAuthUrl(provider: OAuthProvider, userId: number): string {
       scope: GOOGLE_SCOPES.join(' '),
       access_type: 'offline',
       prompt: 'consent',
-      state: String(userId),
+      state,
     });
     return `${GOOGLE_AUTH_URL}?${params.toString()}`;
   }
@@ -98,7 +101,7 @@ export function getOAuthUrl(provider: OAuthProvider, userId: number): string {
       redirect_uri: redirectUri,
       response_type: 'code',
       scope: OUTLOOK_SCOPES.join(' '),
-      state: String(userId),
+      state,
     });
     return `https://login.microsoftonline.com/${tenantId}/oauth2/v2.0/authorize?${params.toString()}`;
   }
@@ -111,7 +114,7 @@ export function getOAuthUrl(provider: OAuthProvider, userId: number): string {
       response_type: 'code',
       scope: STRAVA_SCOPES,
       approval_prompt: 'force',
-      state: String(userId),
+      state,
     });
     return `${STRAVA_AUTH_URL}?${params.toString()}`;
   }
@@ -123,7 +126,7 @@ export function getOAuthUrl(provider: OAuthProvider, userId: number): string {
       redirect_uri: redirectUri,
       response_type: 'code',
       scope: WHOOP_SCOPES,
-      state: String(userId),
+      state,
     });
     return `${WHOOP_AUTH_URL}?${params.toString()}`;
   }
@@ -135,7 +138,7 @@ export function getOAuthUrl(provider: OAuthProvider, userId: number): string {
       redirect_uri: redirectUri,
       response_type: 'code',
       scope: FITBIT_SCOPES,
-      state: String(userId),
+      state,
     });
     return `${FITBIT_AUTH_URL}?${params.toString()}`;
   }
@@ -146,7 +149,7 @@ export function getOAuthUrl(provider: OAuthProvider, userId: number): string {
     const params = new URLSearchParams({
       client_id: config.todoist.clientId,
       scope: TODOIST_SCOPES,
-      state: String(userId),
+      state,
     });
     return `${TODOIST_AUTH_URL}?${params.toString()}`;
   }
@@ -158,7 +161,7 @@ export function getOAuthUrl(provider: OAuthProvider, userId: number): string {
       redirect_uri: redirectUri,
       response_type: 'code',
       owner: 'user',
-      state: String(userId),
+      state,
     });
     return `${NOTION_AUTH_URL}?${params.toString()}`;
   }

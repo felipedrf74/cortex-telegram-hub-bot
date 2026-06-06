@@ -53,6 +53,7 @@ export interface AgendaEventOwnership {
   plan_id: number;
   plan_version: number;
   session_id: number | null;
+  tenant_id: number;
   user_id: number;
   calendar_event_id: string;
   calendar_source: string;
@@ -68,6 +69,7 @@ export interface RecordCalendarOwnershipInput {
   planId: number;
   planVersion: number;
   sessionId: number;
+  tenantId?: number;
   userId: number;
   eventId: string;
   source: string;
@@ -105,12 +107,14 @@ export function recordCalendarOwnership(
   input: RecordCalendarOwnershipInput,
 ): RecordCalendarOwnershipResult {
   const db = getDb();
+  const tenantId = resolveTrainingOwnershipTenantId(input.userId, input.tenantId);
 
   const existing = db.prepare(`
     SELECT id FROM training_agenda_event_ownership
-    WHERE plan_id = ? AND plan_version = ? AND calendar_event_id = ? AND calendar_source = ?
+    WHERE tenant_id = ? AND plan_id = ? AND plan_version = ? AND calendar_event_id = ? AND calendar_source = ?
     LIMIT 1
   `).get(
+    tenantId,
     input.planId,
     input.planVersion,
     input.eventId,
@@ -124,13 +128,14 @@ export function recordCalendarOwnership(
   try {
     const result = db.prepare(`
       INSERT INTO training_agenda_event_ownership (
-        plan_id, plan_version, session_id, user_id,
+        plan_id, plan_version, session_id, tenant_id, user_id,
         calendar_event_id, calendar_source, session_identity_key, session_shape_hash, status
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active')
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active')
     `).run(
       input.planId,
       input.planVersion,
       input.sessionId,
+      tenantId,
       input.userId,
       input.eventId,
       input.source,
@@ -153,9 +158,10 @@ export function recordCalendarOwnership(
     if (/UNIQUE constraint failed/i.test(message)) {
       const refetched = db.prepare(`
         SELECT id FROM training_agenda_event_ownership
-        WHERE plan_id = ? AND plan_version = ? AND calendar_event_id = ? AND calendar_source = ?
+        WHERE tenant_id = ? AND plan_id = ? AND plan_version = ? AND calendar_event_id = ? AND calendar_source = ?
         LIMIT 1
       `).get(
+        tenantId,
         input.planId,
         input.planVersion,
         input.eventId,
@@ -176,9 +182,17 @@ export interface MarkOwnershipDeletedInput {
   source: string;
   reason?: string;
   status?: 'deleted' | 'orphaned';
+  tenantId?: number;
   userId?: number;
   planId?: number;
   ownershipId?: number;
+}
+
+function resolveTrainingOwnershipTenantId(userId: number, tenantId?: number | null): number {
+  const explicit = Number(tenantId);
+  if (Number.isFinite(explicit) && explicit > 0) return explicit;
+  const fallback = Number(userId);
+  return Number.isFinite(fallback) && fallback > 0 ? fallback : 0;
 }
 
 /**
@@ -215,6 +229,11 @@ export function markCalendarOwnershipDeleted(
     whereClauses.push('user_id = ?');
     values.push(Number(input.userId));
   }
+  const tenantId = resolveTrainingOwnershipTenantId(Number(input.userId ?? 0), input.tenantId);
+  if (tenantId > 0) {
+    whereClauses.push('tenant_id = ?');
+    values.push(tenantId);
+  }
   if (Number.isFinite(input.planId) && Number(input.planId) > 0) {
     whereClauses.push('plan_id = ?');
     values.push(Number(input.planId));
@@ -238,13 +257,16 @@ export function markCalendarOwnershipDeleted(
  * table — relevant when transient delete failures left active rows
  * behind that previous cancellations couldn't reach.
  */
-export function findOwnershipsForPlan(planId: number): AgendaEventOwnership[] {
+export function findOwnershipsForPlan(planId: number, tenantId?: number): AgendaEventOwnership[] {
   const db = getDb();
+  const hasTenantScope = Number.isFinite(tenantId) && Number(tenantId) > 0;
+  const params = hasTenantScope ? [planId, Number(tenantId)] : [planId];
   return db.prepare(`
     SELECT * FROM training_agenda_event_ownership
     WHERE plan_id = ?
+      ${hasTenantScope ? 'AND tenant_id = ?' : ''}
     ORDER BY plan_version DESC, id DESC
-  `).all(planId) as AgendaEventOwnership[];
+  `).all(...params) as AgendaEventOwnership[];
 }
 
 /**
@@ -253,19 +275,23 @@ export function findOwnershipsForPlan(planId: number): AgendaEventOwnership[] {
  * event delete failed transiently. Used by background reconcilers
  * and by the read paths that detect stale state.
  */
-export function findOrphanedOwnerships(userId: number): AgendaEventOwnership[] {
+export function findOrphanedOwnerships(userId: number, tenantId?: number): AgendaEventOwnership[] {
   const db = getDb();
   return db.prepare(`
     SELECT o.*
     FROM training_agenda_event_ownership o
+    LEFT JOIN fitness_training_plans ftp
+      ON ftp.id = o.plan_id
+     AND ftp.user_id = o.user_id
     LEFT JOIN training_sessions ts
       ON ts.id = o.session_id
      AND ts.plan_id = o.plan_id
     WHERE o.user_id = ?
+      AND o.tenant_id = ?
       AND o.status = 'active'
-      AND ts.id IS NULL
+      AND (ts.id IS NULL OR ftp.id IS NULL OR LOWER(COALESCE(ftp.status, 'missing')) <> 'active')
     ORDER BY o.created_at ASC
-  `).all(userId) as AgendaEventOwnership[];
+  `).all(userId, resolveTrainingOwnershipTenantId(userId, tenantId)) as AgendaEventOwnership[];
 }
 
 /**
@@ -274,15 +300,16 @@ export function findOrphanedOwnerships(userId: number): AgendaEventOwnership[] {
  * `findOrphanedOwnerships` above catches the FK-cascade aftermath
  * before a row has been marked terminal.
  */
-export function findOwnershipsNeedingReconciliation(userId: number): AgendaEventOwnership[] {
+export function findOwnershipsNeedingReconciliation(userId: number, tenantId?: number): AgendaEventOwnership[] {
   const db = getDb();
   return db.prepare(`
     SELECT *
     FROM training_agenda_event_ownership
     WHERE user_id = ?
+      AND tenant_id = ?
       AND status = 'orphaned'
     ORDER BY COALESCE(deleted_at, created_at) ASC, id ASC
-  `).all(userId) as AgendaEventOwnership[];
+  `).all(userId, resolveTrainingOwnershipTenantId(userId, tenantId)) as AgendaEventOwnership[];
 }
 
 /**
@@ -319,6 +346,56 @@ export function getPlanVersion(planId: number): number | null {
 }
 
 /**
+ * Increment a plan's `adaptation_revision`. Used on every persisted
+ * adaptive reflow within the SAME generation — week-level reflow,
+ * missed-session compensation, deload insertion, taper adjustment,
+ * scenario-driven session swap. NEVER call this on previews, warnings,
+ * or non-persisted changes; the contract is "every revision bump has
+ * exactly one ledger row in training_plan_adaptations".
+ *
+ * Two-counter semantics (plan v2.1, slice A0):
+ *
+ *   - `plan_version` (incrementPlanVersion) — heavyweight; bumps on
+ *     manual regeneration; triggers calendar supersession.
+ *   - `adaptation_revision` (this function) — lightweight; bumps on
+ *     adaptive reflows; does NOT trigger calendar supersession.
+ *
+ * Returns the new revision (>= 1), or null if the plan row doesn't
+ * exist. The ledger insert (recordAdaptation, slice A0b) is the
+ * caller's responsibility and MUST run in the same transaction as
+ * this increment to preserve the invariant.
+ */
+export function incrementAdaptationRevision(planId: number): number | null {
+  const db = getDb();
+  const result = db.prepare(`
+    UPDATE fitness_training_plans
+    SET adaptation_revision = adaptation_revision + 1, updated_at = datetime('now')
+    WHERE id = ?
+  `).run(planId);
+  if (result.changes === 0) return null;
+  const row = db.prepare(
+    'SELECT adaptation_revision FROM fitness_training_plans WHERE id = ?',
+  ).get(planId) as { adaptation_revision: number } | undefined;
+  return row?.adaptation_revision ?? null;
+}
+
+/**
+ * Get the current `adaptation_revision` for a plan. Returns 0 (the
+ * column default for plans that have never been adaptively reflowed)
+ * if found, or null if the plan row doesn't exist at all. The default
+ * of 0 — not 1 like `plan_version` — reflects that newly generated
+ * plans have NO adaptive reflows yet; the first reflow produces
+ * revision 1, the second produces 2, etc.
+ */
+export function getAdaptationRevision(planId: number): number | null {
+  const db = getDb();
+  const row = db.prepare(
+    'SELECT adaptation_revision FROM fitness_training_plans WHERE id = ?',
+  ).get(planId) as { adaptation_revision: number } | undefined;
+  return row?.adaptation_revision ?? null;
+}
+
+/**
  * Idempotency pre-check for the persistence loop: returns the
  * ownership row, if any, that already exists for this session +
  * (plan, plan_version). Used by `persistGeneratedTrainingPlan` to
@@ -329,14 +406,21 @@ export function findExistingOwnership(input: {
   planId: number;
   planVersion: number;
   sessionId: number;
+  tenantId?: number;
+  userId?: number;
 }): AgendaEventOwnership | null {
   const db = getDb();
+  const tenantId = resolveTrainingOwnershipTenantId(input.userId ?? 0, input.tenantId ?? input.userId);
+  const params = tenantId > 0
+    ? [input.planId, input.planVersion, input.sessionId, tenantId]
+    : [input.planId, input.planVersion, input.sessionId];
   const row = db.prepare(`
     SELECT * FROM training_agenda_event_ownership
     WHERE plan_id = ? AND plan_version = ? AND session_id = ? AND status = 'active'
+      ${tenantId > 0 ? 'AND tenant_id = ?' : ''}
     ORDER BY id DESC
     LIMIT 1
-  `).get(input.planId, input.planVersion, input.sessionId) as
+  `).get(...params) as
     | AgendaEventOwnership
     | undefined;
   return row ?? null;
@@ -352,6 +436,7 @@ export function findExistingOwnership(input: {
  */
 export function findReusableOwnershipBySessionIdentity(input: {
   planId: number;
+  tenantId?: number;
   userId: number;
   sessionIdentityKey: string | null | undefined;
   sessionShapeHash: string | null | undefined;
@@ -363,13 +448,14 @@ export function findReusableOwnershipBySessionIdentity(input: {
   const row = db.prepare(`
     SELECT * FROM training_agenda_event_ownership
     WHERE plan_id = ?
+      AND tenant_id = ?
       AND user_id = ?
       AND session_identity_key = ?
       AND session_shape_hash = ?
       AND status = 'active'
     ORDER BY plan_version DESC, id DESC
     LIMIT 1
-  `).get(input.planId, input.userId, identity, shape) as
+  `).get(input.planId, resolveTrainingOwnershipTenantId(input.userId, input.tenantId), input.userId, identity, shape) as
     | AgendaEventOwnership
     | undefined;
   return row ?? null;

@@ -1,6 +1,6 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Session } from '../../src/services/coach-kernel/types';
 
 const mockGetStoredPlanCoveringDate = vi.fn();
@@ -15,6 +15,10 @@ vi.mock('../../src/services/coach-kernel/planner-engine', () => ({
   adjustForFatigue: (...args: unknown[]) => mockAdjustForFatigue(...args),
 }));
 
+vi.mock('../../src/services/integration-status', () => ({
+  isGarminActivelyIntegrated: vi.fn(() => false),
+}));
+
 vi.mock('../../src/utils/logger', () => ({
   logger: {
     info: vi.fn(),
@@ -24,6 +28,7 @@ vi.mock('../../src/utils/logger', () => ({
     trace: vi.fn(),
     child: vi.fn().mockReturnThis(),
   },
+  LOGGER_REDACTION_PATHS: [],
 }));
 
 function currentDayOfWeek(): Session['dayOfWeek'] {
@@ -51,6 +56,10 @@ describe('training home payload builder', () => {
     mockGetStoredPlanCoveringDate.mockReset();
     mockAdjustForFatigue.mockReset();
     mockLoggerDebug.mockReset();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   it('keeps fallback metadata honest when upstream reads degrade', async () => {
@@ -200,6 +209,54 @@ describe('training home payload builder', () => {
       ]),
     );
     expect(payload.weekProtection?.kernelAdjustments.join('\n')).not.toContain('threshold_run');
+  });
+
+  it('uses the Training timezone to select tomorrow session for Home protection copy', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-03-29T23:30:00.000Z'));
+    const { buildTrainingHomePayload } = await import('../../src/api/routes/training-home-payload');
+
+    const payload = await buildTrainingHomePayload(12, 'en', {
+      getTodaySession: async () => ({
+        session: {
+          type: 'run',
+          sessionType: 'run',
+          status: 'planned',
+        },
+        plan: { id: 1 },
+      }),
+      getWeekPlan: async () => ({
+        plan: { id: 1 },
+        sessions: [
+          {
+            id: 'sun',
+            day: 'Sunday',
+            title: 'Sunday Recovery',
+            type: 'recovery_run',
+            status: 'planned',
+          },
+          {
+            id: 'tue',
+            day: 'Tuesday',
+            title: 'Tempo Run',
+            type: 'threshold_run',
+            status: 'planned',
+            time: '07:30',
+          },
+        ],
+        adherence: 0.75,
+      }),
+      getReadiness: async () => ({
+        score: 62,
+        factors: {},
+        recommendation: 'Keep the week steady.',
+      }),
+      buildActiveSignalsResponse: async () => ({ signals: [] }),
+      getCoachBriefingSnapshot: () => null,
+    });
+
+    expect(payload.weekProtection?.summary).toContain("tomorrow's tempo run");
+    expect(payload.weekProtection?.impactLines).toContain('Tomorrow: Tempo Run · 07:30');
   });
 
   it('skips the fatigue re-run on green or yellow readiness', async () => {

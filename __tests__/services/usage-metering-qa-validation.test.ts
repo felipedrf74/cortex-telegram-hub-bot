@@ -19,6 +19,7 @@ import fs from 'fs';
 import path from 'path';
 
 const MIGRATIONS_DIR = path.resolve(__dirname, '../../migrations');
+const SRC_DIR = path.resolve(__dirname, '../../src');
 
 function createTestDb(): Database.Database {
   const db = new Database(':memory:');
@@ -38,6 +39,96 @@ function applyMigrations(db: Database.Database): void {
     }
   }
 }
+
+describe('QA: AI background metering attribution source audit', () => {
+  function readSource(relativePath: string): string {
+    return fs.readFileSync(path.join(SRC_DIR, relativePath), 'utf-8');
+  }
+
+  it('meters user-owned background one-shot calls against the owning user instead of user_id=0', () => {
+    const expectations: Array<{ file: string; patterns: RegExp[] }> = [
+      {
+        file: 'services/garmin-coach.ts',
+        patterns: [
+          /trackedCreate\([\s\S]*'coach_analysis',\s*\{\s*userId:\s*meteringUserId,\s*tenantId:\s*meteringTenantId\s*\}/,
+          /\{\s*maxTokens:\s*2500,\s*userId:\s*meteringUserId,\s*tenantId:\s*meteringTenantId\s*\}/,
+        ],
+      },
+      {
+        file: 'agents/voice-evolution-agent.ts',
+        patterns: [
+          /'voice_evolution',\s*\{\s*userId,\s*tenantId\s*\}/,
+          /\{\s*maxTokens:\s*4096,\s*temperature:\s*0\.3,\s*userId,\s*tenantId\s*\}/,
+        ],
+      },
+      {
+        file: 'services/content-workflow.ts',
+        patterns: [
+          /`content_workflow_\$\{format\}`,\s*\{\s*userId,\s*tenantId\s*\}/,
+          /`content_workflow_\$\{format\}_continuation`,\s*\{\s*userId,\s*tenantId\s*\}/,
+          /\{\s*maxTokens:\s*4096,\s*userId,\s*tenantId\s*\}/,
+        ],
+      },
+      {
+        file: 'services/content-discovery.ts',
+        patterns: [
+          /completeOneShotWithSearch\([\s\S]*\{\s*maxTokens:\s*4096,\s*temperature:\s*0\.7,\s*userId,\s*tenantId\s*\}/,
+          /'content_discovery',\s*\{\s*userId,\s*tenantId\s*\}/,
+          /'content_discovery_continuation',\s*\{\s*userId,\s*tenantId\s*\}/,
+        ],
+      },
+      {
+        file: 'services/video-study.ts',
+        patterns: [
+          /'video_study',\s*\{\s*userId:\s*scopedUserId,\s*tenantId:\s*scopedTenantId\s*\}/,
+          /\{\s*maxTokens:\s*4096,\s*temperature:\s*0\.4,\s*userId:\s*scopedUserId,\s*tenantId:\s*scopedTenantId\s*\}/,
+        ],
+      },
+      {
+        file: 'services/invoice-filer.ts',
+        patterns: [
+          /options\?:\s*\{\s*userId\?:\s*number;\s*tenantId\?:\s*number\s*\}/,
+          /'invoice_filing',\s*options\)/,
+          /\{\s*maxTokens:\s*400,\s*temperature:\s*0,\s*userId:\s*options\?\.userId,\s*tenantId:\s*options\?\.tenantId\s*\}/,
+        ],
+      },
+      {
+        file: 'api/routes/finance.ts',
+        patterns: [
+          /analyzeInvoiceImage\([\s\S]*\{\s*userId,\s*tenantId\s*\}/,
+        ],
+      },
+      {
+        file: 'api/routes/chat-message-shortcuts.ts',
+        patterns: [
+          /tryBuildChatMessageShortcutResponse\(input:\s*\{[\s\S]*tenantId:\s*number;/,
+          /'content_chat_refine'[\s\S]*\{\s*maxTokens:\s*1200,\s*temperature:\s*0\.5,\s*userId,\s*tenantId,?\s*\}/,
+        ],
+      },
+      {
+        file: 'api/routes/chat-message-routes.ts',
+        patterns: [
+          /tryBuildChatMessageShortcutResponse\(\{[\s\S]*userId,\s*tenantId,/,
+        ],
+      },
+    ];
+
+    for (const expectation of expectations) {
+      const source = readSource(expectation.file);
+      for (const pattern of expectation.patterns) {
+        expect(source, `${expectation.file} missing ${pattern}`).toMatch(pattern);
+      }
+    }
+  });
+
+  it('documents system-owned autoresearch calls as intentionally billed to user_id=0', () => {
+    const source = readSource('services/autoresearch.ts');
+    expect(source).toContain('Autoresearch is an operator/eval workload, not an end-user chat turn.');
+    expect(source).toContain('const SYSTEM_AI_METERING_SCOPE = { userId: 0, tenantId: 0 } as const;');
+    expect(source).toMatch(/trackedCreate\([\s\S]*SYSTEM_AI_METERING_SCOPE\)/);
+    expect(source).toMatch(/completeOneShotWithFallback\([\s\S]*SYSTEM_AI_METERING_SCOPE/);
+  });
+});
 
 // ── Migration schema tests ────────────────────────────────────────
 
@@ -307,15 +398,14 @@ describe('QA: Anthropic hook metering integration', () => {
       path.resolve(__dirname, '../../src/portal/anthropic-hook.ts'), 'utf-8',
     );
     expect(hookSource).toContain('computeCost');
-    expect(hookSource).toContain('COST_PER_MTK');
+    expect(hookSource).toContain('computeModelUsageCostUsd');
   });
 
-  it('anthropic-hook includes Sonnet and Haiku pricing', () => {
+  it('anthropic-hook does not duplicate Sonnet and Haiku pricing', () => {
     const hookSource = fs.readFileSync(
       path.resolve(__dirname, '../../src/portal/anthropic-hook.ts'), 'utf-8',
     );
-    expect(hookSource).toContain('claude-sonnet');
-    expect(hookSource).toContain('claude-haiku');
+    expect(hookSource).not.toContain('COST_PER_MTK');
   });
 
   it('cost calculation includes cache read/write tokens', () => {
@@ -324,8 +414,8 @@ describe('QA: Anthropic hook metering integration', () => {
     );
     expect(hookSource).toContain('cache_read_input_tokens');
     expect(hookSource).toContain('cache_creation_input_tokens');
-    expect(hookSource).toContain('cacheRead');
-    expect(hookSource).toContain('cacheWrite');
+    expect(hookSource).toContain('cacheReadTokens');
+    expect(hookSource).toContain('cacheWriteTokens');
   });
 
   it('passes userId to recordUsage', () => {

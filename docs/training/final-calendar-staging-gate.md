@@ -1,86 +1,97 @@
 # Final Training Calendar Staging Gate
 
-Updated: 2026-04-28
-Branch: `release/training-engine-production-hardening`
-Result: **PASS**
+Updated: 2026-04-28  
+Branch: `release/training-engine-production-hardening`  
+Run ID: `training-calendar-smoke-20260428094430-r9cyiu`  
+Result: **NO-GO / BLOCKED**
 
 ## Executive Summary
 
-The final Training calendar lifecycle staging gate passed for both Google Calendar and Outlook Calendar using real staging integrations and read-back verification.
+The final Training calendar lifecycle staging gate did **not** pass.
 
-No production calendars were used. Every smoke event was created under explicit staging-only guardrails, read back from the provider, updated/regenerated according to identity semantics, deleted by exact event ID, and confirmed absent after cleanup.
+The real staging smoke harness was executed, but the process stopped at prerequisite validation because this shell has no staging env file and none of the required staging/calendar variables are configured. No provider writes were attempted, no provider reads were attempted, and no cleanup was needed.
 
-## Commands Run
+This is the correct safe behavior. The gate remains a release blocker until Google and Outlook are either:
 
-Google:
+1. validated against real staging calendars with read-back and precise cleanup; or
+2. explicitly waived by provider with owner approval.
 
-```bash
-STAGING=true \
-NODE_ENV=staging \
-TRAINING_CALENDAR_STAGING_SMOKE=1 \
-TRAINING_CALENDAR_STAGING_ALLOW_LIVE_WRITES=1 \
-TRAINING_CALENDAR_STAGING_USER_ID=1 \
-TRAINING_CALENDAR_STAGING_PROVIDERS=google \
-TRAINING_CALENDAR_STAGING_RESULTS_PATH=docs/training/final-calendar-staging-results-google.md \
-node dist/tools/training-calendar-staging-smoke.js
-```
-
-Outlook:
+## Command Run
 
 ```bash
-STAGING=true \
-NODE_ENV=staging \
-TRAINING_CALENDAR_STAGING_SMOKE=1 \
-TRAINING_CALENDAR_STAGING_ALLOW_LIVE_WRITES=1 \
-TRAINING_CALENDAR_STAGING_USER_ID=1 \
-TRAINING_CALENDAR_STAGING_PROVIDERS=outlook \
-TRAINING_CALENDAR_STAGING_RESULTS_PATH=docs/training/final-calendar-staging-results-outlook.md \
-node dist/tools/training-calendar-staging-smoke.js
+TRAINING_CALENDAR_STAGING_RESULTS_PATH=docs/training/final-calendar-staging-results.md \
+npm run smoke:training-calendar:staging
 ```
+
+The command built the backend first, then executed `dist/tools/training-calendar-staging-smoke.js`.
 
 ## Safety Outcome
 
 - Production calendars used: **no**
-- Staging calendars written: **yes, explicit staging smoke only**
+- Staging calendars written: **no**
 - Broad date-range deletion used: **no**
-- Title/date-only matching used for cleanup: **no**
+- Unrelated events deleted: **no**
 - Cleanup failures: **none**
-- Google run ID: `training-calendar-smoke-20260428165035-7ljwng`
-- Outlook run ID: `training-calendar-smoke-20260428165107-7fsbbr`
 
-## Provider Coverage
+The harness did not load the runtime calendar client because prerequisites were not satisfied.
 
-For both Google and Outlook:
+## Missing Prerequisites
 
-- `create_plan`: passed with read-back event ID.
-- `sync_update_time`: passed with same event ID and no duplicate.
-- `regenerate_same_shape`: passed with same logical event behavior.
-- `regenerate_changed_shape_create_replacement`: passed with replacement event ID.
-- `regenerate_changed_shape_delete_old`: passed with old event absent on read-back.
-- `retry_sync_no_duplicate`: passed with exactly one active current run event.
-- `replace_plan_create_new`: passed with distinct replacement plan identity.
-- `cancel_plan_delete_current`: passed with event absent on read-back.
-- `replace_plan_delete_old_scope`: passed with precise cleanup.
-- `Cleanup Failures`: `None`.
+The final run reported these missing requirements:
 
-## Harness Fixes Applied
+- `STAGING=true` or `NODE_ENV=staging`
+- `TRAINING_CALENDAR_STAGING_SMOKE=1`
+- `TRAINING_CALENDAR_STAGING_ALLOW_LIVE_WRITES=1`
+- `TRAINING_CALENDAR_STAGING_USER_ID=<staging user id>`
+- `OAUTH_ENCRYPTION_KEY`
+- `DATABASE_PATH=<staging database path>`
+- `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET`
+- `OUTLOOK_CLIENT_ID` and `OUTLOOK_CLIENT_SECRET`
 
-The first live execution exposed a smoke-harness bootstrap bug: runtime services were loaded without calling `initDatabase()`, producing `Database not initialized. Call initDatabase() first.` before provider writes.
+The local environment check also found no `.env`, `.env.staging`, `staging.env`, or `*staging*.env` file inside the backend repo search depth used for this gate.
 
-Fix:
+## Gate Coverage Intended By Harness
 
-- `src/tools/training-calendar-staging-smoke.ts` now initializes the runtime database before loading `unified-calendar` and `oauth-store`.
+The existing smoke harness is designed to validate, per provider:
 
-Validation:
+- create Training plan event;
+- read-back by event ID;
+- update/reflow event time/title;
+- same-shape regeneration update behavior;
+- changed-shape regeneration replacement behavior;
+- cancellation deletion;
+- replacement-plan identity separation;
+- retry/no-duplicate behavior;
+- precise cleanup by exact event IDs created in the run.
 
-- `npx tsc --noEmit` passed.
-- `npx vitest run __tests__/tools/training-calendar-staging-smoke.test.ts __tests__/tools/training-cross-skill-staging-smoke.test.ts __tests__/tools/training-cross-skill-staging-fixtures.test.ts` passed: 22 tests.
-- Staging deploy rebuilt and restarted staging services before the final provider runs.
+It also marks every smoke event with:
 
-## Notes
+- `[NEXUS TRAINING STAGING]` title prefix;
+- unique run ID;
+- synthetic plan ID;
+- plan version;
+- synthetic session ID;
+- session identity key;
+- session shape hash;
+- `NEXUS_TRAINING_IDENTITY` description marker.
 
-The provider read-back path uses the unified calendar reader. Because the staging user has both Google and Outlook connected, Google-only reads may still initialize Outlook token-refresh logging. This is noisy but did not cause lifecycle failure or stale cleanup.
+## Release Decision
 
-## Gate Decision
+Calendar lifecycle staging gate: **NO-GO**.
 
-Calendar lifecycle staging gate: **GO / PASS**.
+Backend unit/contract tests can prove local logic, but they do not replace real provider read-back. Production release must not claim final calendar lifecycle confidence until this gate passes against staging Google and Outlook calendars or the missing provider is explicitly waived.
+
+## Rerun Command Once Credentials Exist
+
+```bash
+npm run build
+TRAINING_CALENDAR_STAGING_ENV_FILE=/path/to/staging.env \
+TRAINING_CALENDAR_STAGING_SMOKE=1 \
+TRAINING_CALENDAR_STAGING_ALLOW_LIVE_WRITES=1 \
+TRAINING_CALENDAR_STAGING_USER_ID=<staging-user-id> \
+TRAINING_CALENDAR_STAGING_PROVIDERS=google,outlook \
+TRAINING_CALENDAR_STAGING_RESULTS_PATH=docs/training/final-calendar-staging-results.md \
+node dist/tools/training-calendar-staging-smoke.js
+```
+
+The staging user must have fresh Google and Outlook OAuth tokens in the staging database.

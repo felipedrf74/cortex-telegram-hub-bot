@@ -1,7 +1,7 @@
 from .research import SearchResult, ContentBrief, SourceReference, TrendingTopic
 from .scoring import ScoreBreakdown, ScoredResult
 from .requests import (
-    DeepSearchRequest, DeepSearchResponse, SourcesResponse, HotNewsResponse,
+    DeepSearchRequest, DeepSearchResponse, SourcesResponse, HotNewsRequest, HotNewsResponse,
     TrendingResponse, ReactionResponse,
     HooksRequest, HooksResponse,
     ScriptRequest, ScriptResponse,
@@ -13,13 +13,14 @@ from .requests import (
     SeoRequest, SeoResponse,
     RepurposeRequest, RepurposeResponse,
     FeedbackRequest, FeedbackResponse,
+    ReportRequest,
     ReportResponse,
 )
 
 __all__ = [
     "SearchResult", "ContentBrief", "SourceReference", "TrendingTopic",
     "ScoreBreakdown", "ScoredResult",
-    "DeepSearchRequest", "DeepSearchResponse", "SourcesResponse", "HotNewsResponse",
+    "DeepSearchRequest", "DeepSearchResponse", "SourcesResponse", "HotNewsRequest", "HotNewsResponse",
     "TrendingResponse", "ReactionResponse",
     "HooksRequest", "HooksResponse",
     "ScriptRequest", "ScriptResponse",
@@ -31,5 +32,6 @@ __all__ = [
     "SeoRequest", "SeoResponse",
     "RepurposeRequest", "RepurposeResponse",
     "FeedbackRequest", "FeedbackResponse",
+    "ReportRequest",
     "ReportResponse",
 ]

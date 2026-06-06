@@ -63,6 +63,7 @@ vi.mock('../../src/api/secret-guards', () => ({
 }));
 
 vi.mock('../../src/portal/admin-audit', () => ({
+  buildPortalAdminAuditDetails: vi.fn(),
   logPortalAdminMutation: (...args: unknown[]) => hoistedOps.mockLogPortalAdminMutation(...args),
 }));
 
@@ -77,6 +78,7 @@ vi.mock('../../src/utils/logger', () => ({
   logger: {
     error: (...args: unknown[]) => mockLoggerError(...args),
   },
+  LOGGER_REDACTION_PATHS: [],
 }));
 
 import { registerPortalOperationsRoutes } from '../../src/portal/operations-routes';
@@ -199,6 +201,17 @@ describe('portal operations routes', () => {
 
     expect(res.body).toEqual({ anthropic: 0, openai: 0, gemini: 0 });
     expect(mockSendPortalInternalError).not.toHaveBeenCalled();
+  });
+
+  it('passes optional user and tenant scope into spend-by-provider reads', () => {
+    mockGetSpendByProvider.mockReturnValue({ anthropic: 0.1, openai: 0, gemini: 0 });
+
+    const res = invoke('/api/spend-by-provider', {
+      req: { query: { userId: '42', tenantId: '42' } },
+    });
+
+    expect(res.body).toEqual({ anthropic: 0.1, openai: 0, gemini: 0 });
+    expect(mockGetSpendByProvider).toHaveBeenCalledWith(undefined, { userId: 42, tenantId: 42 });
   });
 
   it('returns secretary fastpath metrics and preserves the degraded fallback', () => {

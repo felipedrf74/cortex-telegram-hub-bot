@@ -16,7 +16,7 @@ import {
   getActiveSession,
   OnboardingStepMismatchError,
 } from '../../services/onboarding';
-import { invalidateOnboardingDerivedCaches } from '../../services/onboarding-cache-invalidator';
+import { invalidateOnboardingDerivedCaches } from '../../services/cache-coherence-registry';
 import { ensureValidTenantRouteScope } from '../tenant-route-scope';
 
 // ─── Phase 3 Slice C — Profile detail helpers ────────────────────

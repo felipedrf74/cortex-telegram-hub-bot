@@ -5,6 +5,7 @@ import { loadCoachKnowledge } from './knowledge-loader';
 import { trimOverstuffedStrengthSessionToDuration } from './session-coherence';
 import { cloneSessions, dayIndex, durationToLoad, isKeyEnduranceSession, isLowerBodyStrength, nextDaysFrom, sumMinutes, DAY_ORDER } from './utils';
 import { adaptSessionForPoorRecovery } from './poor-recovery-variation';
+import { getVolumeGrowthCap } from './training-principles';
 
 function compareDays(left: string, right: string): number {
   return dayIndex(left as any) - dayIndex(right as any);
@@ -85,26 +86,30 @@ function appendTechniqueNote(notes: string | undefined): string {
 
 function enforceVolumeGrowth(plan: WeeklyPlan, athlete: AthleteState): GuardrailResult[] {
   const results: GuardrailResult[] = [];
-  const limits: Record<string, number> = {
-    running: 0.08,
-    cycling: 0.12,
-    swimming: 0.15,
-    strength: 0.1,
+  const knowledge = loadCoachKnowledge();
+  const limits: Record<'running' | 'cycling' | 'swimming' | 'strength', number> = {
+    running: (getVolumeGrowthCap(knowledge.principles, 'running') ?? 8) / 100,
+    cycling: (getVolumeGrowthCap(knowledge.principles, 'cycling') ?? 12) / 100,
+    swimming: (getVolumeGrowthCap(knowledge.principles, 'swimming') ?? 15) / 100,
+    strength: (getVolumeGrowthCap(knowledge.principles, 'strength') ?? 10) / 100,
   };
 
   for (const [sport, cap] of Object.entries(limits)) {
-    const previous = athlete.trainingHistory.lastWeekMinutesBySport[sport as keyof typeof athlete.trainingHistory.lastWeekMinutesBySport] ?? 0;
+    const sportKey = sport as keyof typeof athlete.trainingHistory.lastWeekMinutesBySport;
+    const previous = athlete.trainingHistory.lastWeekMinutesBySport[sportKey] ?? 0;
+    const baseline = postDeloadVolumeBaseline(athlete, sport as keyof typeof limits, previous);
     const planned = sumMinutes(plan.sessions, sport as any);
-    if (previous <= 0 || planned <= previous * (1 + cap)) {
+    if (baseline <= 0 || planned <= baseline * (1 + cap)) {
       results.push({
         ruleId: `volume_growth_${sport}`,
         status: 'pass',
         message: `${sport} weekly volume remains inside the safe growth cap.`,
+        metadata: { previous, baseline },
       });
       continue;
     }
 
-    const allowed = Math.round(previous * (1 + cap));
+    const allowed = Math.round(baseline * (1 + cap));
     const factor = allowed / planned;
     plan.sessions = plan.sessions.map((session) => {
       if (session.sport !== sport) return session;
@@ -135,18 +140,18 @@ function enforceVolumeGrowth(plan: WeeklyPlan, athlete: AthleteState): Guardrail
       ruleId: `volume_growth_${sport}`,
       status: 'warn',
       adjusted: true,
-      message: `${sport} volume jumped too quickly (${planned}min vs ${previous}min). Non-key volume was trimmed to ${allowed}min.`,
-      metadata: { previous, planned, allowed },
+      message: `${sport} volume jumped too quickly (${planned}min vs ${baseline}min). Non-key volume was trimmed to ${allowed}min.`,
+      metadata: { previous, baseline, planned, allowed },
       decisionReasons: [sessionReason({
         code: 'volume_growth_trimmed',
-        text: `${sport} volume was reduced from ${planned} to ${allowed} minutes because the prior week was ${previous} minutes and the safe growth cap was exceeded.`,
+        text: `${sport} volume was reduced from ${planned} to ${allowed} minutes because the recent baseline was ${baseline} minutes and the safe growth cap was exceeded.`,
         severity: 'warning',
         affectedEntity: { type: 'week' },
         sourceConstraint: { type: 'volume', label: `${sport} weekly growth cap` },
-        before: { previousMinutes: previous, plannedMinutes: planned },
+        before: { previousMinutes: previous, baselineMinutes: baseline, plannedMinutes: planned },
         after: { allowedMinutes: allowed },
         preservedIntent: 'Preserved the week structure while trimming non-key volume first.',
-        evidence: [`previous_minutes=${previous}`, `planned_minutes=${planned}`, `allowed_minutes=${allowed}`],
+        evidence: [`previous_minutes=${previous}`, `baseline_minutes=${baseline}`, `planned_minutes=${planned}`, `allowed_minutes=${allowed}`],
       })],
     });
   }
@@ -154,9 +159,30 @@ function enforceVolumeGrowth(plan: WeeklyPlan, athlete: AthleteState): Guardrail
   return results;
 }
 
+function postDeloadVolumeBaseline(
+  athlete: AthleteState,
+  sport: 'running' | 'cycling' | 'swimming' | 'strength',
+  previous: number,
+): number {
+  const lastDeloadWeekIndex = athlete.currentBlock.lastDeloadWeekIndex;
+  const isFirstPostDeloadWeek = typeof lastDeloadWeekIndex === 'number'
+    && athlete.currentBlock.weekIndex === lastDeloadWeekIndex + 1;
+  if (!isFirstPostDeloadWeek) return previous;
+
+  const trailing = athlete.trainingHistory.trailing4WeekMinutesBySport[sport] ?? [];
+  const lastTrailing = trailing[trailing.length - 1];
+  const trailingMatchesPrevious = typeof lastTrailing === 'number'
+    && Number.isFinite(lastTrailing)
+    && Math.abs(lastTrailing - previous) <= Math.max(5, previous * 0.1);
+  if (!trailingMatchesPrevious) return previous;
+
+  const recentBaseline = Math.max(previous, ...trailing.filter((value) => Number.isFinite(value) && value > 0));
+  if (previous > recentBaseline * 0.75) return previous;
+  return Number.isFinite(recentBaseline) && recentBaseline > 0 ? recentBaseline : previous;
+}
+
 function enforceDeload(plan: WeeklyPlan, athlete: AthleteState): GuardrailResult[] {
   const shouldDeload = plan.phase === 'deload'
-    || (athlete.currentBlock.phase === 'build' && athlete.currentBlock.weekIndex % 4 === 0)
     || athlete.compliance.trailing14DayCompliance < 0.7
     || athlete.readiness.level === 'red'
     || athlete.readiness.painFlags.some((flag) => flag.severity !== 'low');
@@ -234,7 +260,7 @@ function enforceReadiness(plan: WeeklyPlan, athlete: AthleteState): GuardrailRes
         exercises: adaptation.session.sport !== 'strength'
           ? adaptation.session.exercises
           : adaptation.session.sessionType === 'mobility'
-            ? undefined
+            ? adaptation.session.exercises
             : techniqueStrengthExercisesForRedReadiness(session),
       };
     }

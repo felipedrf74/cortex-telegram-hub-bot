@@ -21,11 +21,17 @@ import { loadPrompt, writePrompt, getPromptPath } from '../utils/prompt-loader';
 import { getEvalTarget, getAllTargets, EvalTarget, EvalCriterion, TestInput } from './eval-criteria';
 import { trackedCreate } from '../portal/anthropic-hook';
 import { completeOneShotWithFallback } from './gemini-provider';
+import { sanitizeForPromptInterpolation } from '../utils/prompt-sanitizer';
 
 const client = new Anthropic({
   apiKey: config.anthropic.apiKey,
   maxRetries: 3,
 });
+
+// Autoresearch is an operator/eval workload, not an end-user chat turn.
+// Keep the system attribution explicit so future per-user quota audits do not
+// mistake these optimization calls for a missing user scope.
+const SYSTEM_AI_METERING_SCOPE = { userId: 0, tenantId: 0 } as const;
 
 // ─── Types ───────────────────────────────────────────────────────────
 
@@ -77,8 +83,8 @@ async function generateOutput(
   target: EvalTarget,
 ): Promise<string> {
   const userContent = testInput.stateContext
-    ? `[Current State]\n${testInput.stateContext}\n\n${testInput.userMessage}`
-    : testInput.userMessage;
+    ? `[Current State]\n${sanitizeForPromptInterpolation(testInput.stateContext)}\n\n${sanitizeForPromptInterpolation(testInput.userMessage)}`
+    : sanitizeForPromptInterpolation(testInput.userMessage);
 
   // Provider-aware: try Gemini/OpenAI first, fall back to Anthropic
   const { text } = await completeOneShotWithFallback(
@@ -91,13 +97,13 @@ async function generateOutput(
         max_tokens: target.maxTokens,
         system: prompt,
         messages: [{ role: 'user', content: userContent }],
-      }, `autoresearch_gen_${target.id}`);
+      }, `autoresearch_gen_${target.id}`, SYSTEM_AI_METERING_SCOPE);
       return response.content
         .filter((b): b is Anthropic.TextBlock => b.type === 'text')
         .map((b) => b.text)
         .join('\n');
     },
-    { maxTokens: target.maxTokens },
+    { maxTokens: target.maxTokens, ...SYSTEM_AI_METERING_SCOPE },
   );
   return text;
 }
@@ -139,13 +145,13 @@ Example: [{"id":"tool_efficiency","passed":true},{"id":"template_format","passed
         max_tokens: 512,
         system: scorerSystem,
         messages: [{ role: 'user', content: scorerUser }],
-      }, 'autoresearch_score');
+      }, 'autoresearch_score', SYSTEM_AI_METERING_SCOPE);
       return response.content
         .filter((b): b is Anthropic.TextBlock => b.type === 'text')
         .map((b) => b.text)
         .join('');
     },
-    { maxTokens: 512 },
+    { maxTokens: 512, ...SYSTEM_AI_METERING_SCOPE },
   );
 
   let text = scoreText;
@@ -239,7 +245,7 @@ async function proposeMutation(
   const weakCriterion = target.criteria.find((c) => c.id === evalResult.weakestCriterion);
   const failingExamples = evalResult.details
     .filter((d) => d.criteria.some((c) => c.criterionId === evalResult.weakestCriterion && !c.passed))
-    .map((d) => `Input: "${target.testInputs.find(t => t.id === d.inputId)?.userMessage}"\nOutput snippet: ${d.output.slice(0, 300)}`)
+    .map((d) => `Input: ${sanitizeForPromptInterpolation(target.testInputs.find(t => t.id === d.inputId)?.userMessage)}\nOutput snippet: ${sanitizeForPromptInterpolation(d.output.slice(0, 300))}`)
     .slice(0, 2)
     .join('\n---\n');
 
@@ -275,13 +281,13 @@ Return ONLY valid JSON. No markdown fences.`;
         max_tokens: 4096,
         system: mutateSystem,
         messages: [{ role: 'user', content: mutationPrompt }],
-      }, 'autoresearch_mutate');
+      }, 'autoresearch_mutate', SYSTEM_AI_METERING_SCOPE);
       return response.content
         .filter((b): b is Anthropic.TextBlock => b.type === 'text')
         .map((b) => b.text)
         .join('');
     },
-    { maxTokens: 4096 },
+    { maxTokens: 4096, ...SYSTEM_AI_METERING_SCOPE },
   );
 
   let text = mutateText;

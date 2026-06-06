@@ -26,8 +26,8 @@
       "cronJobs": []
     },
     {
-      "module_name": "brazilian-tax",
-      "description": "DARF, Carnê-Leão, and annual summary support",
+      "module_name": "portuguese-tax",
+      "description": "Portugal IRS / IVA estimates and annual summary support",
       "enabled_by_default": true,
       "tools": [
         "finance_calculate_tax",

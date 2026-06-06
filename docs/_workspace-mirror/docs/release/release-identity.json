@@ -1,0 +1,17 @@
+{
+  "generatedAt": "2026-06-04T01:20:23Z",
+  "backend": {
+    "path": "/Users/felipedominguez/Desktop/Nexus Hub/worktrees/confirmation-main-promote-20260523",
+    "branch": "main",
+    "commit": "6438553d",
+    "dirtyState": "clean",
+    "packageVersion": "4.14.202",
+    "migrationCount": "190"
+  },
+  "ios": {
+    "path": "/Users/felipedominguez/Desktop/Nexus Hub IOS/Nexus Hub",
+    "branch": "main",
+    "commit": "40a885f",
+    "dirtyState": "clean"
+  }
+}

@@ -3,8 +3,8 @@
  *
  * The chat handlers (Telegram, iOS REST, iOS WebSocket) all use the
  * same pattern: after routing a message to a domain, they check
- * `checkTierAccess({ id, tier }, route.domain)` and short-circuit when
- * the user isn't authorized. The primitive `checkTierAccess` is covered
+ * `checkSkillAccess({ id, tier }, route.domain)` and short-circuit when
+ * the user isn't authorized. The primitive `checkSkillAccess` is covered
  * in skill-tiers.test.ts — this file locks the BOUNDARY conditions
  * specifically exercised by the chat entrypoints:
  *
@@ -28,10 +28,14 @@ let testDb: Database.Database;
 
 vi.mock('../../src/services/database', () => ({
   getDb: () => testDb,
+  initDatabase: vi.fn(),
+  closeDatabase: vi.fn(),
+  findUnexpectedMigrationPrefixCollisions: vi.fn(() => []),
 }));
 
 vi.mock('../../src/utils/logger', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(), trace: vi.fn(), child: vi.fn().mockReturnThis() },
+  LOGGER_REDACTION_PATHS: [],
 }));
 
 vi.mock('../../src/config', () => ({
@@ -54,7 +58,7 @@ function applyMigrations(db: Database.Database): void {
   }
 }
 
-import { checkTierAccess, setSkillTier } from '../../src/services/skill-tiers';
+import { checkSkillAccess, setSkillTier } from '../../src/services/skill-tiers';
 import { t } from '../../src/utils/i18n';
 import { getOrCreateUser } from '../../src/services/user-service';
 
@@ -72,9 +76,9 @@ describe('Tier gate — parent domain names from RouteResult', () => {
 
   it('free user can reach secretary but NOT any other parent domain', () => {
     const free = { id: 1, tier: 'free' as const };
-    expect(checkTierAccess(free, 'secretary').allowed).toBe(true);
+    expect(checkSkillAccess(free, 'secretary').allowed).toBe(true);
     for (const domain of parents.filter(d => d !== 'secretary')) {
-      const result = checkTierAccess(free, domain);
+      const result = checkSkillAccess(free, domain);
       expect(result.allowed, `free should NOT access ${domain}`).toBe(false);
       expect(result.requiredTier).toBe('pro');
     }
@@ -83,7 +87,7 @@ describe('Tier gate — parent domain names from RouteResult', () => {
   it('pro user can reach every parent domain (including secretary)', () => {
     const pro = { id: 2, tier: 'pro' as const };
     for (const domain of parents) {
-      const result = checkTierAccess(pro, domain);
+      const result = checkSkillAccess(pro, domain);
       expect(result.allowed, `pro should access ${domain}`).toBe(true);
     }
   });
@@ -91,7 +95,7 @@ describe('Tier gate — parent domain names from RouteResult', () => {
   it('owner user can reach every parent domain', () => {
     const owner = { id: 3, tier: 'owner' as const };
     for (const domain of parents) {
-      const result = checkTierAccess(owner, domain);
+      const result = checkSkillAccess(owner, domain);
       expect(result.allowed, `owner should access ${domain}`).toBe(true);
     }
   });
@@ -99,7 +103,7 @@ describe('Tier gate — parent domain names from RouteResult', () => {
   it('max user can reach every non-owner parent domain', () => {
     const max = { id: 4, tier: 'max' as const };
     for (const domain of parents) {
-      const result = checkTierAccess(max, domain);
+      const result = checkSkillAccess(max, domain);
       expect(result.allowed, `max should access ${domain}`).toBe(true);
     }
   });
@@ -120,7 +124,7 @@ describe('Tier gate — new user signup default', () => {
     // Phase 1 default: new signups → pro
     expect(user.tier).toBe('pro');
 
-    const result = checkTierAccess({ id: user.id, tier: user.tier }, 'triathlon');
+    const result = checkSkillAccess({ id: user.id, tier: user.tier }, 'triathlon');
     expect(result.allowed).toBe(true);
     expect(result.reason).toBe('catalog');
   });
@@ -142,7 +146,7 @@ describe('Tier gate — new user signup default', () => {
     const bumped = testDb.prepare('SELECT id, tier FROM users WHERE telegram_id = ?').get(666) as any;
     expect(bumped.tier).toBe('pro');
 
-    const result = checkTierAccess({ id: bumped.id, tier: bumped.tier }, 'triathlon');
+    const result = checkSkillAccess({ id: bumped.id, tier: bumped.tier }, 'triathlon');
     expect(result.allowed).toBe(true);
   });
 });
@@ -192,14 +196,14 @@ describe('Tier gate — owner-only skills', () => {
 
   it('pro user is blocked from an owner-tier skill', () => {
     setSkillTier('admin.audit', 'owner', 'Admin audit log');
-    const result = checkTierAccess({ id: 1, tier: 'pro' }, 'admin.audit');
+    const result = checkSkillAccess({ id: 1, tier: 'pro' }, 'admin.audit');
     expect(result.allowed).toBe(false);
     expect(result.requiredTier).toBe('owner');
   });
 
   it('owner user reaches the same owner-tier skill', () => {
     setSkillTier('admin.audit', 'owner');
-    const result = checkTierAccess({ id: 2, tier: 'owner' }, 'admin.audit');
+    const result = checkSkillAccess({ id: 2, tier: 'owner' }, 'admin.audit');
     expect(result.allowed).toBe(true);
   });
 });

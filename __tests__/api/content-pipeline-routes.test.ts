@@ -7,18 +7,43 @@ let testDb: Database.Database;
 
 vi.mock('../../src/services/database', () => ({
   getDb: () => testDb,
+  initDatabase: vi.fn(),
+  closeDatabase: vi.fn(),
+  findUnexpectedMigrationPrefixCollisions: vi.fn(() => []),
 }));
 
-vi.mock('../../src/services/content-cache-invalidator', () => ({
+vi.mock('../../src/services/cache-coherence-registry', () => ({
+  ...{
+    CacheCoherenceEvents: {},
+    _resetDashboardCacheInvalidationStatsForTests: vi.fn(),
+    getDashboardCacheInvalidationStats: vi.fn(),
+    invalidateCacheForEvent: vi.fn(),
+    invalidateCalendarCaches: vi.fn(),
+    invalidateContentDerivedCaches: vi.fn(),
+    invalidateCookingDerivedCaches: vi.fn(),
+    invalidateDashboardCaches: vi.fn(),
+    invalidateDashboardCoordinationCaches: vi.fn(),
+    invalidateDashboardHomeCaches: vi.fn(),
+    invalidateDashboardReadinessCaches: vi.fn(),
+    invalidateDashboardRootCaches: vi.fn(),
+    invalidateExecutiveBriefCaches: vi.fn(),
+    invalidateFinanceDerivedCaches: vi.fn(),
+    invalidateIntegrationDerivedCaches: vi.fn(),
+    invalidateOnboardingDerivedCaches: vi.fn(),
+    invalidatePlanningCaches: vi.fn(),
+    invalidateTaskCaches: vi.fn(),
+    invalidateTrainingDerivedCaches: vi.fn(),
+  },
   invalidateContentDerivedCaches: vi.fn(),
 }));
 
 vi.mock('../../src/utils/logger', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(), trace: vi.fn(), child: vi.fn().mockReturnThis() },
+  LOGGER_REDACTION_PATHS: [],
 }));
 
 import { registerContentPipelineRoutes } from '../../src/api/routes/content-pipeline-routes';
-import { invalidateContentDerivedCaches } from '../../src/services/content-cache-invalidator';
+import { invalidateContentDerivedCaches } from '../../src/services/cache-coherence-registry';
 
 interface MockRes {
   statusCode: number;

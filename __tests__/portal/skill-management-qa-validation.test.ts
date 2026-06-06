@@ -48,6 +48,9 @@ function applyMigrations(db: Database.Database): void {
 let testDb: Database.Database;
 vi.mock('../../src/services/database', () => ({
   getDb: () => testDb,
+  initDatabase: vi.fn(),
+  closeDatabase: vi.fn(),
+  findUnexpectedMigrationPrefixCollisions: vi.fn(() => []),
 }));
 
 vi.mock('../../src/utils/logger', () => ({
@@ -57,6 +60,7 @@ vi.mock('../../src/utils/logger', () => ({
     error: vi.fn(),
     debug: vi.fn(),
   },
+  LOGGER_REDACTION_PATHS: [],
 }));
 
 import * as registry from '../../src/skills/registry';
@@ -144,12 +148,15 @@ describe('Skill Management QA Validation', () => {
   // ── Boundary: all disabled ────────────────────────────────────
 
   describe('boundary: all skills disabled', () => {
-    it('can disable all five domain skills simultaneously', () => {
+    it('can disable all eight domain skills simultaneously', () => {
       disableSkill('secretary');
       disableSkill('triathlon');
       disableSkill('content');
       disableSkill('finance');
       disableSkill('cooking');
+      disableSkill('connections');
+      disableSkill('notifications');
+      disableSkill('decision_center');
 
       const skills = getAllSkillStatuses();
       for (const skill of skills) {
@@ -361,7 +368,7 @@ describe('Skill Management QA Validation', () => {
     it('calling seedDefaultSkills twice does not duplicate skills', () => {
       seedDefaultSkills(); // second call
       const skills = getAllSkillStatuses();
-      expect(skills).toHaveLength(5);
+      expect(skills).toHaveLength(8);
     });
 
     it('seeding again preserves disabled state', () => {

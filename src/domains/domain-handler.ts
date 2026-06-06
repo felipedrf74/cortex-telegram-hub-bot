@@ -11,7 +11,13 @@ import { ensureActiveProvider, getActiveProvider } from '../services/provider-re
 import { getDailyContext } from '../services/context-engine';
 import { buildSharedDecisionContext } from '../services/shared-decision-context';
 import { buildChatPromptContextBlock } from '../services/chat-context-engine';
+import { inferChatTurnContract } from '../services/chat-turn-contract';
+import { isChatContextCompilerEnabled } from '../services/runtime-flags';
 import { buildAIUnavailableResponse, canUseDirectAnthropicFallback } from './ai-unavailable';
+// Phase 13 batch 71 (2026-05-16): training intent detector moved to the
+// per-skill module (was inline regex in this file). Closes Phase 0 audit
+// MERGE-2 for domain-handler.ts.
+import { isTrainingPrescriptionIntent } from '../services/skills/training/intent-detectors';
 import {
   callDomain as callDirectAnthropicDomain,
   continueWithToolResults as continueDirectAnthropicWithToolResults,
@@ -30,6 +36,8 @@ import {
   getCardioProgression,
   formatCardioProgressionForPrompt,
 } from '../services/progression-analytics';
+import { buildCookingPreferenceReadModel } from '../services/cooking-preferences';
+import { buildCookingPreferenceMemorySummary } from '../services/cooking-intelligence';
 import type { AIToolResultMessage } from '../services/ai-provider';
 import { logger } from '../utils/logger';
 import { AITimeoutError } from '../utils/timeout';
@@ -110,9 +118,8 @@ function buildOnboardingPendingBlock(userId: number, message: string): string {
   return lines.join('\n');
 }
 
-function isTrainingPrescriptionIntent(message: string): boolean {
-  return /\b(create|build|generate|make|design|write|prescribe|give\s+me|what\s+(?:workout|session)\s+should\s+i\s+do|how\s+should\s+i\s+train|new\s+training\s+plan|training\s+plan|workout\s+plan|tempo\s+run|ftp\s+test|freestyle|deadlift|bench\s+press|squat|5x5|css|cria|crie|gera|gerar|monta|monte|faz|fa[çc]a|prescreve|prescreva|me\s+d[aá]|que\s+treino\s+devo\s+fazer|qual\s+treino\s+devo\s+fazer|como\s+devo\s+treinar|plano\s+de\s+treino)\b/i.test(message);
-}
+// Phase 13 batch 71: `isTrainingPrescriptionIntent` moved to
+// `src/services/skills/training/intent-detectors.ts` and imported above.
 
 // ─── Last Coach Briefing State (per-user, in-memory) ─────────────────
 
@@ -222,10 +229,11 @@ export async function buildSimpleStateContext(
   tenantId?: number,
 ): Promise<string> {
   const hasUserScope = typeof userId === 'number';
+  const includeScopedContext = shouldIncludeScopedStateContext(domain, hasUserScope, message);
   const parts: string[] = [];
   parts.push(`Today: ${now().toFormat('cccc, LLLL dd yyyy, HH:mm')} (Europe/Lisbon)`);
 
-  const todos = hasUserScope ? listTodos(userId, { domain, status: 'pending' }) : [];
+  const todos = includeScopedContext ? listTodos(userId!, { domain, status: 'pending' }) : [];
   if (todos.length > 0) {
     const label = domain.charAt(0).toUpperCase() + domain.slice(1);
     parts.push(`\n${label} to-dos (${todos.length}):`);
@@ -237,7 +245,7 @@ export async function buildSimpleStateContext(
   }
 
   // Inject last coach recommendations for triathlon domain
-  if (domain === 'triathlon' && userId) {
+  if (includeScopedContext && domain === 'triathlon' && userId) {
     const coachState = getLastCoachState(userId);
     if (coachState && coachState.recommendations.length > 0) {
       parts.push(`\n[COACH RECOMMENDATIONS — ${new Date(coachState.timestamp).toISOString()}]`);
@@ -271,7 +279,7 @@ export async function buildSimpleStateContext(
   }
 
   // Active training plan context for triathlon domain
-  if (domain === 'triathlon' && userId) {
+  if (includeScopedContext && domain === 'triathlon' && userId) {
     try {
       const planSummary = getActivePlanSummary(userId);
       if (planSummary) parts.push(`\n${planSummary}`);
@@ -286,7 +294,7 @@ export async function buildSimpleStateContext(
   // <athlete_profile> block the coach persona can reference directly.
   // Empty string when the user hasn't completed any — we don't add
   // noise to the prompt.
-  if (domain === 'triathlon' && userId) {
+  if (includeScopedContext && domain === 'triathlon' && userId) {
     try {
       const profileBlock = formatAthleteProfileBlock(userId);
       if (profileBlock) parts.push(`\n${profileBlock}`);
@@ -303,7 +311,7 @@ export async function buildSimpleStateContext(
   //
   // This runs AFTER the athlete_profile block so the coach sees both
   // "what you already know" and "what's still missing" in one pass.
-  if (domain === 'triathlon' && userId && message) {
+  if (includeScopedContext && domain === 'triathlon' && userId && message) {
     try {
       const onboardingBlock = buildOnboardingPendingBlock(userId, message);
       if (onboardingBlock) parts.push(`\n${onboardingBlock}`);
@@ -318,7 +326,7 @@ export async function buildSimpleStateContext(
   // plus running + cycling weekly volume. Each sport independently
   // returns empty string when the user has no data, so the block
   // only shows up for the sports the user actually trains.
-  if (domain === 'triathlon' && userId) {
+  if (includeScopedContext && domain === 'triathlon' && userId) {
     try {
       const strength = getStrengthProgression(userId, 8);
       const running = getCardioProgression(userId, 'running', 8);
@@ -365,11 +373,30 @@ export async function buildSimpleStateContext(
   }
 
   // Cross-domain shared context
-  const sharedCtx = hasUserScope ? getSharedMemorySummary(userId, tenantId) : '';
+  const sharedCtx = includeScopedContext ? getSharedMemorySummary(userId!, tenantId) : '';
   if (sharedCtx) parts.push(sharedCtx);
 
-  if (hasUserScope) {
-    const decisionCtx = await buildSharedDecisionContext(domain, userId, tenantId);
+  if (domain === 'cooking' && hasUserScope) {
+    try {
+      const cookingPreferences = buildCookingPreferenceReadModel(userId, tenantId).profile;
+      const cookingSummary = buildCookingPreferenceMemorySummary(cookingPreferences);
+      if (cookingSummary) {
+        parts.push(
+          [
+            '<cooking_safety_preferences>',
+            cookingSummary,
+            'Treat these as hard constraints for allergies and dietary restrictions. Do not suggest, cook, buy, or substitute ingredients that conflict with them.',
+            '</cooking_safety_preferences>',
+          ].join('\n'),
+        );
+      }
+    } catch (err) {
+      logger.warn({ err, userId, tenantId }, 'Cooking preference context unavailable; continuing without preference block');
+    }
+  }
+
+  if (includeScopedContext) {
+    const decisionCtx = await buildSharedDecisionContext(domain, userId!, tenantId);
     if (decisionCtx) parts.push(`\n${decisionCtx}`);
   }
 
@@ -378,25 +405,38 @@ export async function buildSimpleStateContext(
   // 5+ speculative tool calls the AI used to make to gather "what's my
   // day looking like?" before answering. Cost: ~500 tokens per message
   // instead of ~1350. See src/services/context-engine.ts.
-  if (hasUserScope) {
-    const dailyContext = getDailyContext(userId, tenantId);
+  if (includeScopedContext) {
+    const dailyContext = getDailyContext(userId!, tenantId);
     if (dailyContext) {
       parts.push('\n--- Daily Context ---\n' + dailyContext);
     }
   }
 
-  if (hasUserScope) {
+  if (includeScopedContext) {
     const promptContext = await buildChatPromptContextBlock({
       domain,
       message: message ?? '',
-      userId,
+      userId: userId!,
       tenantId,
       budgetChars: 1800,
     });
     if (promptContext) parts.push(`\n${promptContext}`);
   }
 
+  if (includeScopedContext) {
+    parts.push('\nLocal grounding rule: answer only from scoped Nexus facts listed above. If the requested local item is absent, say no matching local records were found instead of inventing it.');
+  }
+
   return parts.join('\n');
+}
+
+function shouldIncludeScopedStateContext(domain: DomainName, hasUserScope: boolean, message?: string): boolean {
+  if (!hasUserScope) return false;
+  if (!isChatContextCompilerEnabled()) return true;
+  if (!message || !message.trim()) return true;
+  if (domain === 'triathlon' && isTrainingPrescriptionIntent(message)) return true;
+  const contract = inferChatTurnContract({ message, routedDomain: domain });
+  return contract.groundingRequired !== 'none';
 }
 
 /**
@@ -415,6 +455,13 @@ export async function handleSimpleDomain(
   userId?: number,
   maxTokensOverride?: number,
   tenantId?: number,
+  // Phase K (2026-05-26): optional shape hints from the chat-message-
+  // routes layer's NexusAnswerContract. The TaskRoutingProvider's
+  // runtime hard-block reads these to decide whether to bypass Ollama
+  // for tool-or-write requests. Both undefined → bypass uses
+  // conservative defaults (e.g., finance routes to cloud when
+  // ownerSkill is missing).
+  phaseKHints?: { ownerSkill?: string; executeIntent?: boolean },
 ): Promise<DomainResponse> {
   const hasUserScope = typeof userId === 'number';
   const history = hasUserScope ? getConversationHistory(userId, domain, tenantId) : [];
@@ -445,11 +492,28 @@ export async function handleSimpleDomain(
       );
     }
 
+    // Phase K (2026-05-26): derive ownerSkill from the domain name.
+    // chat-answer-contract.ts maps domain↔ownerSkill stably:
+    //   cooking→cooking, content→content, finance→finance,
+    //   triathlon→training, secretary→secretary.
+    // Callers that have an explicit NexusAnswerContract may pass
+    // `phaseKHints.ownerSkill` to override the derived value.
+    const derivedOwnerSkill = phaseKHints?.ownerSkill
+      ?? (domain === 'triathlon' ? 'training'
+        : (domain === 'cooking' || domain === 'content' || domain === 'finance' || domain === 'secretary')
+          ? domain
+          : undefined);
+
     // Route through the provider-agnostic interface
     let result = await provider.callDomain(domain, history, message, stateContext, {
       maxTokensOverride,
       userId,
       tenantId,
+      // Phase K (2026-05-26): forward NexusAnswerContract shape hints
+      // so the TaskRoutingProvider's runtime hard-block can decide
+      // whether to bypass Ollama for tool-or-write requests.
+      ownerSkill: derivedOwnerSkill,
+      executeIntent: phaseKHints?.executeIntent,
     });
     let finalText = result.text;
 
@@ -493,6 +557,21 @@ export async function handleSimpleDomain(
         tenantId,
       });
       finalText = result.text;
+    }
+
+    // Codex QA round 5: if the loop exits at maxIterations with the
+    // model STILL requesting tools, we used to silently return
+    // finalText (often empty or stale). That hides a cap-exceeded
+    // state from the user. Surface it explicitly so iOS shows a
+    // "needs a follow-up" prompt instead of an apparently-done turn.
+    if (result.toolCalls.length > 0 && iterations >= maxIterations) {
+      logger.warn(
+        { domain, iterations, toolsUsedCount: toolsUsed.length },
+        'Tool loop exceeded maxIterations with model still requesting tools — returning partial-state notice',
+      );
+      finalText = (finalText && finalText.trim().length > 10)
+        ? `${finalText}\n\n_Nexus reached the per-turn tool cap (${maxIterations}). Some steps are still pending — ask me to continue and I'll keep going._`
+        : `Nexus ran out of tool-call iterations for this turn (${maxIterations}). I started the work but didn't finish — ask me to continue from where I left off.`;
     }
 
     finalText = normalizeReplyForUserLanguage(finalText, userId);
@@ -559,6 +638,19 @@ async function handleWithDirectCalls(
     );
     result = await continueWithToolResultsFn(domain, history, message, stateContext, toolConversation, userId, directOptions);
     finalText = result.text;
+  }
+
+  // Codex QA round 5/6: parity with the primary path — direct-calls
+  // fallback must also surface a cap-reached notice when the loop
+  // exits with the model still requesting tools.
+  if (result.toolCalls && result.toolCalls.length > 0 && iterations >= maxIterations) {
+    logger.warn(
+      { domain, iterations, toolsUsedCount: toolsUsed.length, path: 'direct-calls' },
+      'Tool loop exceeded maxIterations with model still requesting tools — returning partial-state notice',
+    );
+    finalText = (finalText && finalText.trim().length > 10)
+      ? `${finalText}\n\n_Nexus reached the per-turn tool cap (${maxIterations}). Some steps are still pending — ask me to continue and I'll keep going._`
+      : `Nexus ran out of tool-call iterations for this turn (${maxIterations}). I started the work but didn't finish — ask me to continue from where I left off.`;
   }
 
   finalText = normalizeReplyForUserLanguage(finalText, userId);

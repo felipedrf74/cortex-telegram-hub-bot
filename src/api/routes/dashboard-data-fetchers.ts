@@ -2,7 +2,7 @@
 
 import { config } from '../../config';
 import { DateTime } from 'luxon';
-import { getCached, setCache } from '../../services/cache-store';
+import { getCached, getCachedSWR, setCache } from '../../services/cache-store';
 import {
   getEvents as getGoogleCalendarEvents,
   isGoogleCalendarConfigured,
@@ -11,9 +11,14 @@ import {
   getEvents as getOutlookCalendarEvents,
   isOutlookCalendarConfigured,
 } from '../../services/outlook-calendar';
-import { getUserTimezone } from '../../services/user-service';
+import { getUserTimezoneById } from '../../services/user-service';
+import { getAppleHealthSleepAgendaEvents } from '../../services/health-sleep-agenda';
 
-export type DashboardSectionStatus = 'ready' | 'degraded' | 'unavailable';
+// Phase 17 hostile-QA fix (2026-05-18): 'stale' added so the dashboard
+// can distinguish "snapshot last fetch failed; serving cached data"
+// from fully-ready data. Secretary's all-clear gate (dashboard-home-
+// input.ts:200) treats anything != 'ready' as "still confirming".
+export type DashboardSectionStatus = 'ready' | 'stale' | 'degraded' | 'unavailable';
 
 export interface DashboardSectionHealth {
   status: DashboardSectionStatus;
@@ -21,7 +26,12 @@ export interface DashboardSectionHealth {
   warnings: string[];
 }
 
-const DASHBOARD_READINESS_CACHE_TTL = 60;
+interface FetchTrainingDeps {
+  calculateReadiness?: (userId: number) => Promise<any>;
+  getEvents?: (start: string, end: string, userId: number) => Promise<any[]>;
+}
+
+const DASHBOARD_READINESS_CACHE_TTL = 300;
 
 function dashboardReadinessCacheKeyFor(userId: number): string {
   return `dashboard-readiness:${userId}`;
@@ -125,7 +135,7 @@ export function mapCalendarEvent(e: any, source: string, timezone = config.app.t
     ...(rawStart ? { rawStart } : {}),
     ...(rawEnd ? { rawEnd } : {}),
     source,
-    category: coerceNullableString(Array.isArray(e?.categories) ? e.categories[0] : null),
+    category: coerceNullableString(e?.category ?? (Array.isArray(e?.categories) ? e.categories[0] : null)),
     color: coerceNullableString(e?.color),
     isAllDay: !!e?.isAllDay,
   };
@@ -156,7 +166,7 @@ export async function fetchCalendar(userId?: number) {
 }
 
 async function fetchCalendarForUser(userId?: number) {
-  const zone = getUserTimezone(userId);
+  const zone = getUserTimezoneById(userId);
   const today = DateTime.now().setZone(zone);
   const actualStart = today.startOf('day');
   const actualEnd = today.endOf('day');
@@ -221,13 +231,23 @@ async function fetchCalendarForUser(userId?: number) {
     }
   });
 
-  const allEvents = allProviderEvents.sort((a, b) => a.start.localeCompare(b.start));
+  const sleepEvents = userId
+    ? getAppleHealthSleepAgendaEvents({
+        userId,
+        start: actualStart.toUTC().toISO()!,
+        end: actualEnd.toUTC().toISO()!,
+        timezone: zone,
+      }).map((event) => mapCalendarEvent(event, 'apple_health', zone))
+    : [];
+
+  const allEvents = [...allProviderEvents, ...sleepEvents].sort((a, b) => a.start.localeCompare(b.start));
+  const localHealthSources = sleepEvents.length > 0 ? 1 : 0;
   return {
     today: allEvents.filter((event) => eventOverlapsRange(event, actualStart, actualEnd, zone)),
     upcoming: [],
     ...buildSectionHealth(
-      fulfilledProviders,
-      fetchers.length,
+      fulfilledProviders + localHealthSources,
+      fetchers.length + localHealthSources,
       warningCodes,
       warnings,
       'CALENDAR_UNAVAILABLE',
@@ -261,6 +281,42 @@ function parseCalendarBoundary(input: any, zone: string): DateTime {
 }
 
 export async function fetchTasks(userId: number) {
+  const cachedWorkingSet = getCachedSWR<any>(`u:${userId}:tasks-working-set`);
+  if (cachedWorkingSet?.value?.smartCounts) {
+    const snapshot = cachedWorkingSet.value;
+    const topTasks = Array.isArray(snapshot.activePage?.tasks)
+      ? snapshot.activePage.tasks.slice(0, 5).map((t: any, index: number) => mapDashboardTask(t, index))
+      : [];
+    return {
+      overdue: Number(snapshot.smartCounts.overdue || 0),
+      dueToday: Number(snapshot.smartCounts.dueToday || 0),
+      totalPending: Array.isArray(snapshot.activePage?.tasks)
+        ? Math.max(Number(snapshot.activePage.tasks.length || 0), sumActiveCounts(snapshot.activeCountsByList))
+        : sumActiveCounts(snapshot.activeCountsByList),
+      topTasks,
+      snapshot: {
+        source: 'tasks-working-set',
+        freshness: snapshot.freshness ?? null,
+        cached: true,
+      },
+      // Phase 17 hostile-QA fix (2026-05-18): propagate 'stale' as a
+      // first-class state, not collapsed into 'ready'. tasks.ts:248-256
+      // sets state='stale' on provider failure; Secretary's gate at
+      // dashboard-home-input.ts:200 must see that distinction to avoid
+      // calling a day clear while tasks are stale.
+      status: snapshot.freshness?.state === 'degraded'
+        ? 'degraded' as const
+        : snapshot.freshness?.state === 'stale'
+          ? 'stale' as const
+          : 'ready' as const,
+      warningCodes: Array.isArray(snapshot.freshness?.reasonCodes)
+        && (snapshot.freshness.state === 'degraded' || snapshot.freshness.state === 'stale')
+        ? snapshot.freshness.reasonCodes
+        : [],
+      warnings: [],
+    };
+  }
+
   const { getTaskProviderForUser } = require('../../services/task-store/task-router');
   const todo = getTaskProviderForUser(userId);
   const allTasksResult = await todo.getAllPendingTasks();
@@ -273,7 +329,7 @@ export async function fetchTasks(userId: number) {
     );
   }
 
-  const zone = getUserTimezone(userId);
+  const zone = getUserTimezoneById(userId);
   const now = new Date();
   // MS Graph stores due dates as T23:00:00 UTC for the "previous" day in European TZ.
   // Example: "due April 7" = "2026-04-06T23:00:00" in UTC = April 7 in Lisbon.
@@ -305,55 +361,65 @@ export async function fetchTasks(userId: number) {
     dueToday,
     totalPending: tasks.length,
     topTasks,
+    snapshot: {
+      source: 'provider-pending',
+      freshness: { state: 'fresh', generatedAt: new Date().toISOString(), reasonCodes: [] },
+      cached: false,
+    },
     status: 'ready' as const,
     warningCodes: [],
     warnings: [],
   };
 }
 
-export async function fetchTraining(userId: number) {
+function sumActiveCounts(value: unknown): number {
+  if (!value || typeof value !== 'object') return 0;
+  return Object.values(value as Record<string, unknown>)
+    .reduce((sum: number, count: unknown) => sum + (Number.isFinite(Number(count)) ? Number(count) : 0), 0);
+}
+
+export async function fetchTraining(userId: number, deps: FetchTrainingDeps = {}) {
   let readinessScore: number | null = null;
   let bodyBattery: number | null = null;
   let readinessStatus: DashboardSectionStatus = 'ready';
   let bodyBatteryStatus: DashboardSectionStatus = 'ready';
   const warningCodes: string[] = [];
   const warnings: string[] = [];
+  const zone = getUserTimezoneById(userId);
+  const today = DateTime.now().setZone(zone);
+  const startOfDay = today.startOf('day');
+  const endOfDay = today.endOf('day');
 
   // Provider-agnostic readiness: calculateReadiness() handles Garmin → Apple Health → neutral
   // fallback internally. No need for the dashboard to branch by provider.
   const cachedReadiness = getCached<{ score: number; bodyBattery: number | null; reasonCode?: string | null }>(
     dashboardReadinessCacheKeyFor(userId),
   );
-  if (cachedReadiness) {
-    if (isSyntheticNeutralCachedReadiness(cachedReadiness)) {
-      readinessScore = null;
-      bodyBattery = null;
-      readinessStatus = 'unavailable';
-      bodyBatteryStatus = 'unavailable';
-      warningCodes.push('WEARABLE_INTEGRATION_MISSING', 'BODY_BATTERY_UNAVAILABLE');
-      warnings.push(
-        'Wearable integration is missing, so readiness is using a neutral fallback right now.',
-        'Body Battery is unavailable right now.',
-      );
-    } else {
-      readinessScore = cachedReadiness.score;
-      bodyBattery = cachedReadiness.bodyBattery;
-    }
-    if (readinessScore == null) {
-      readinessStatus = 'unavailable';
-      warningCodes.push('READINESS_UNAVAILABLE');
-      warnings.push('Readiness data is unavailable right now.');
-    }
-    if (bodyBattery == null) {
-      bodyBatteryStatus = 'unavailable';
-      warningCodes.push('BODY_BATTERY_UNAVAILABLE');
-      warnings.push('Body Battery is unavailable right now.');
-    }
-  } else {
-    try {
-      const { calculateReadiness } = require('../../services/readiness-scorer');
+  const shouldUseCachedReadiness = cachedReadiness
+    && (cachedReadiness.bodyBattery != null || isSyntheticNeutralCachedReadiness(cachedReadiness));
+  const readinessPromise = shouldUseCachedReadiness
+    ? Promise.resolve({ source: 'cache' as const, readiness: cachedReadiness })
+    : (async () => {
+      const calculateReadiness = deps.calculateReadiness
+        ?? require('../../services/readiness-scorer').calculateReadiness;
       const readiness = await calculateReadiness(userId);
-      if (isSyntheticNeutralReadiness(readiness)) {
+      return { source: 'fresh' as const, readiness };
+    })();
+  const eventsPromise = (async () => {
+    const getEvents = deps.getEvents
+      ?? require('../../services/unified-calendar').getEvents;
+    return await getEvents(
+      startOfDay.minus({ days: 1 }).toUTC().toISO()!,
+      endOfDay.plus({ days: 1 }).toUTC().toISO()!,
+      userId,
+    );
+  })();
+
+  const [readinessResult, eventsResult] = await Promise.allSettled([readinessPromise, eventsPromise]);
+  if (readinessResult.status === 'fulfilled') {
+    const { source, readiness } = readinessResult.value;
+    if (source === 'cache') {
+      if (isSyntheticNeutralCachedReadiness(readiness)) {
         readinessScore = null;
         bodyBattery = null;
         readinessStatus = 'unavailable';
@@ -364,21 +430,36 @@ export async function fetchTraining(userId: number) {
           'Body Battery is unavailable right now.',
         );
       } else {
-        readinessScore = readiness?.score || null;
-        bodyBattery = normalizeBodyBattery(readiness?.factors?.bodyBattery?.current);
-
-        if (readinessScore == null) {
-          readinessStatus = 'unavailable';
-          warningCodes.push('READINESS_UNAVAILABLE');
-          warnings.push('Readiness data is unavailable right now.');
-        }
-        if (bodyBattery == null) {
-          bodyBatteryStatus = 'unavailable';
-          warningCodes.push('BODY_BATTERY_UNAVAILABLE');
-          warnings.push('Body Battery is unavailable right now.');
-        }
+        readinessScore = readiness.score;
+        bodyBattery = normalizeBodyBattery(readiness.bodyBattery);
       }
+    } else if (isSyntheticNeutralReadiness(readiness)) {
+      readinessScore = null;
+      bodyBattery = null;
+      readinessStatus = 'unavailable';
+      bodyBatteryStatus = 'unavailable';
+      warningCodes.push('WEARABLE_INTEGRATION_MISSING', 'BODY_BATTERY_UNAVAILABLE');
+      warnings.push(
+        'Wearable integration is missing, so readiness is using a neutral fallback right now.',
+        'Body Battery is unavailable right now.',
+      );
+    } else {
+      readinessScore = readiness?.score || null;
+      bodyBattery = normalizeBodyBattery(readiness?.factors?.bodyBattery?.current);
+    }
 
+    if (readinessScore == null) {
+      readinessStatus = 'unavailable';
+      warningCodes.push('READINESS_UNAVAILABLE');
+      warnings.push('Readiness data is unavailable right now.');
+    }
+    if (bodyBattery == null) {
+      bodyBatteryStatus = 'unavailable';
+      warningCodes.push('BODY_BATTERY_UNAVAILABLE');
+      warnings.push('Body Battery is unavailable right now.');
+    }
+
+    if (source === 'fresh') {
       setCache(
         dashboardReadinessCacheKeyFor(userId),
         {
@@ -388,15 +469,15 @@ export async function fetchTraining(userId: number) {
         },
         DASHBOARD_READINESS_CACHE_TTL,
       );
-    } catch {
-      readinessStatus = 'unavailable';
-      bodyBatteryStatus = 'unavailable';
-      warningCodes.push('READINESS_UNAVAILABLE', 'BODY_BATTERY_UNAVAILABLE');
-      warnings.push(
-        'Readiness data is unavailable right now.',
-        'Body Battery is unavailable right now.',
-      );
     }
+  } else {
+    readinessStatus = 'unavailable';
+    bodyBatteryStatus = 'unavailable';
+    warningCodes.push('READINESS_UNAVAILABLE', 'BODY_BATTERY_UNAVAILABLE');
+    warnings.push(
+      'Readiness data is unavailable right now.',
+      'Body Battery is unavailable right now.',
+    );
   }
 
   let todaySession: any = null;
@@ -406,24 +487,14 @@ export async function fetchTraining(userId: number) {
     const currentWeek = plan ? getCurrentWeek(plan.id) : null;
     const sessions = currentWeek ? getSessionsForWeek(currentWeek.id) : null;
     if (Array.isArray(sessions) && sessions.length > 0) {
-      const zone = getUserTimezone(userId);
-      const todayDow = DateTime.now().setZone(zone).toFormat('cccc');
+      const todayDow = today.toFormat('cccc');
       todaySession = sessions.find((s: any) => s?.day_of_week === todayDow) || null;
     }
   } catch {}
 
-  if (!todaySession) {
+  if (!todaySession && eventsResult.status === 'fulfilled') {
     try {
-      const zone = getUserTimezone(userId);
-      const today = DateTime.now().setZone(zone);
-      const startOfDay = today.startOf('day');
-      const endOfDay = today.endOf('day');
-      const { getEvents } = require('../../services/unified-calendar');
-      const events = await getEvents(
-        startOfDay.minus({ days: 1 }).toUTC().toISO()!,
-        endOfDay.plus({ days: 1 }).toUTC().toISO()!,
-        userId,
-      );
+      const events = eventsResult.value;
       const keywords = ['run', 'gym', 'swim', 'bike', 'cycle', 'training', 'workout', 'strength'];
       const trainingEvent = (events || []).find((e: any) => {
         if (!eventOverlapsRange(e, startOfDay, endOfDay, zone)) return false;

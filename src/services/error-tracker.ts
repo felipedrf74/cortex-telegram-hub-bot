@@ -17,6 +17,7 @@
 
 import * as Sentry from '@sentry/node';
 import { logger } from '../utils/logger';
+import { sanitizeLogValue, stringifySanitizedLogContext } from '../utils/log-sanitizer';
 
 let _initialized = false;
 
@@ -28,6 +29,42 @@ export interface ErrorTrackerConfig {
   debug?: boolean;
 }
 
+function sanitizeSentryValue<T>(value: T): T {
+  const sanitizedJson = stringifySanitizedLogContext(value);
+  if (sanitizedJson) {
+    try {
+      return JSON.parse(sanitizedJson) as T;
+    } catch {
+      // Fall through to the object sanitizer below.
+    }
+  }
+  return sanitizeLogValue(value) as T;
+}
+
+export function sanitizeSentryEvent(event: Sentry.ErrorEvent): Sentry.ErrorEvent {
+  if (event.user) {
+    delete event.user.ip_address;
+  }
+  if (event.request) {
+    if (event.request.headers) {
+      event.request.headers = sanitizeSentryValue(event.request.headers);
+    }
+    if (event.request.data != null) {
+      event.request.data = sanitizeSentryValue(event.request.data);
+    }
+    if ((event.request as any).cookies) {
+      (event.request as any).cookies = sanitizeSentryValue((event.request as any).cookies);
+    }
+  }
+  if (event.contexts) {
+    event.contexts = sanitizeSentryValue(event.contexts);
+  }
+  if (event.extra) {
+    event.extra = sanitizeSentryValue(event.extra);
+  }
+  return event;
+}
+
 /**
  * Initialize Sentry. Call once at startup before any other service init.
  * No-ops gracefully if DSN is empty (local dev without Sentry).
@@ -35,26 +72,28 @@ export interface ErrorTrackerConfig {
 export function init(cfg: ErrorTrackerConfig): void {
   if (_initialized) return;
   if (!cfg.dsn) {
-    logger.info('Sentry: no DSN configured — error tracking disabled');
+    logger.warn({ environment: cfg.environment }, 'Sentry: no DSN configured — error tracking disabled');
     return;
   }
 
-  Sentry.init({
+  const sentryOptions: Sentry.NodeOptions & {
+    replaysSessionSampleRate: number;
+    replaysOnErrorSampleRate: number;
+  } = {
     dsn: cfg.dsn,
     environment: cfg.environment,
     release: cfg.release,
     tracesSampleRate: cfg.tracesSampleRate ?? 0,
+    sendDefaultPii: false,
+    replaysSessionSampleRate: 0,
+    replaysOnErrorSampleRate: 0,
     attachStacktrace: true,
     // Keep payload small on free tier (5K errors/month)
     maxBreadcrumbs: 30,
-    beforeSend(event) {
-      // Strip PII: remove user IP if Sentry auto-attaches it
-      if (event.user) {
-        delete event.user.ip_address;
-      }
-      return event;
-    },
-  });
+    beforeSend: sanitizeSentryEvent,
+  };
+
+  Sentry.init(sentryOptions);
 
   _initialized = true;
   logger.info({ environment: cfg.environment, release: cfg.release }, 'Sentry: initialized');
@@ -63,6 +102,13 @@ export function init(cfg: ErrorTrackerConfig): void {
 /** Whether Sentry was successfully initialized with a valid DSN. */
 export function isEnabled(): boolean {
   return _initialized;
+}
+
+export function getStatus(environment: string): { enabled: boolean; environment: string } {
+  return {
+    enabled: _initialized,
+    environment,
+  };
 }
 
 /**
@@ -92,7 +138,7 @@ export function captureException(
     }
     if (context?.extra) {
       for (const [k, v] of Object.entries(context.extra)) {
-        scope.setExtra(k, v);
+        scope.setExtra(k, sanitizeSentryValue(v));
       }
     }
     Sentry.captureException(err);
@@ -114,7 +160,7 @@ export function captureMessage(
     scope.setLevel(level);
     if (extra) {
       for (const [k, v] of Object.entries(extra)) {
-        scope.setExtra(k, v);
+        scope.setExtra(k, sanitizeSentryValue(v));
       }
     }
     Sentry.captureMessage(message);

@@ -36,6 +36,50 @@ describe('coach-kernel guardrails', () => {
     expect(plan.guardrailResults.some((result) => result.ruleId === 'volume_growth_running' && result.adjusted)).toBe(true);
   });
 
+  it('allows the first post-deload week to return toward the recent baseline', () => {
+    const base = buildWeekPlan(sampleMarathonAthlete, '2026-05-11');
+    const run = base.sessions.find((session) => session.sport === 'running')!;
+    const athlete: AthleteState = {
+      ...sampleMarathonAthlete,
+      currentBlock: {
+        ...sampleMarathonAthlete.currentBlock,
+        weekIndex: 5,
+        lastDeloadWeekIndex: 4,
+      },
+      trainingHistory: {
+        ...sampleMarathonAthlete.trainingHistory,
+        lastWeekMinutesBySport: {
+          ...sampleMarathonAthlete.trainingHistory.lastWeekMinutesBySport,
+          running: 90,
+        },
+        trailing4WeekMinutesBySport: {
+          ...sampleMarathonAthlete.trainingHistory.trailing4WeekMinutesBySport,
+          running: [200, 210, 220, 90],
+        },
+      },
+    };
+    const manual: WeeklyPlan = {
+      ...base,
+      phase: 'build',
+      guardrailResults: [],
+      sessions: [
+        {
+          ...run,
+          id: 'post-deload-baseline-run',
+          durationMinutes: 210,
+          plannedLoad: 210,
+        },
+      ],
+    };
+
+    const guarded = applyGuardrails(manual, athlete);
+    const growth = guarded.guardrailResults.find((result) => result.ruleId === 'volume_growth_running');
+
+    expect(planMinutesBySport(guarded, 'running')).toBe(210);
+    expect(growth?.status).toBe('pass');
+    expect(growth?.metadata?.baseline).toBe(220);
+  });
+
   it('triggers deload when readiness is critically low', () => {
     const athlete: AthleteState = {
       ...sampleMarathonAthlete,
@@ -51,6 +95,33 @@ describe('coach-kernel guardrails', () => {
     expect(plan.phase).toBe('deload');
     expect(plan.guardrailResults.some((result) => result.ruleId === 'deload' && result.adjusted)).toBe(true);
     expect(plan.guardrailResults.some((result) => result.ruleId === 'readiness' && result.status === 'block')).toBe(true);
+  });
+
+  it('does not force a deload only because the block is on week 4', () => {
+    const athlete: AthleteState = {
+      ...sampleMarathonAthlete,
+      currentBlock: {
+        ...sampleMarathonAthlete.currentBlock,
+        phase: 'build',
+        weekIndex: 4,
+        totalWeeks: 4,
+      },
+      compliance: {
+        ...sampleMarathonAthlete.compliance,
+        trailing14DayCompliance: 0.95,
+      },
+      readiness: {
+        ...sampleMarathonAthlete.readiness,
+        level: 'green',
+        score: 86,
+        painFlags: [],
+      },
+    };
+
+    const plan = buildWeekPlan(athlete, '2026-05-25');
+
+    expect(plan.phase).toBe('build');
+    expect(plan.guardrailResults.some((result) => result.ruleId === 'deload' && result.adjusted)).toBe(false);
   });
 
   it('protects key endurance sessions from lower-body strength interference', () => {

@@ -7,6 +7,8 @@ import {
   updateAssistantMessage,
   type ChatHistoryWrite,
 } from '../../services/chat-history-store';
+import { runOutboxTransaction } from '../../services/event-outbox';
+import { requireTenantIdParam } from '../../services/tenant-scope';
 import {
   addToConversation,
   syncLastAssistantConversationMessage,
@@ -64,33 +66,63 @@ export function persistExchange(
   tenantId?: number,
   options: PersistExchangeOptions = {},
 ): void {
-  storeChatMessage({
-    ...(tenantId ? { tenantId } : {}),
-    userId,
-    messageId: userMessageId,
-    role: 'user',
-    text: userText,
-    timestamp: assistant.timestamp,
-    lifecycleState: 'sent',
-    clientMessageId: options.clientMessageId ?? null,
-    requestId: options.requestId ?? null,
-  });
-  storeChatMessage({
-    ...(tenantId ? { tenantId } : {}),
-    userId,
-    messageId: assistantMessageId,
-    role: 'assistant',
-    text: assistant.text,
-    domain: assistant.domain,
-    routeMethod: assistant.routeMethod,
-    confidence: assistant.confidence,
-    buttons: assistant.buttons,
-    metadata: assistant.metadata,
-    timestamp: assistant.timestamp,
-    lifecycleState: 'completed',
-    completedAt: assistant.timestamp,
-    retryOfMessageId: userMessageId,
-    requestId: options.requestId ?? null,
+  const writeExchange = () => {
+    storeChatMessage({
+      ...(tenantId ? { tenantId } : {}),
+      userId,
+      messageId: userMessageId,
+      role: 'user',
+      text: userText,
+      timestamp: assistant.timestamp,
+      lifecycleState: 'sent',
+      clientMessageId: options.clientMessageId ?? null,
+      requestId: options.requestId ?? null,
+    });
+    storeChatMessage({
+      ...(tenantId ? { tenantId } : {}),
+      userId,
+      messageId: assistantMessageId,
+      role: 'assistant',
+      text: assistant.text,
+      domain: assistant.domain,
+      routeMethod: assistant.routeMethod,
+      confidence: assistant.confidence,
+      buttons: assistant.buttons,
+      metadata: assistant.metadata,
+      timestamp: assistant.timestamp,
+      lifecycleState: 'completed',
+      completedAt: assistant.timestamp,
+      retryOfMessageId: userMessageId,
+      requestId: options.requestId ?? null,
+    });
+  };
+  // 2026-05-18 (skill-hardening QA P1-1): the previous `tenantId ?? userId`
+  // fallback silently co-mingled tenants. We now require a validated
+  // tenantId at the service boundary; route callers must call
+  // `assertTenantScope(req)` first and forward the result.
+  const validatedTenantId = requireTenantIdParam(tenantId, 'persistExchange');
+  runOutboxTransaction((emitDomainEvent) => {
+    writeExchange();
+    emitDomainEvent({
+      tenantId: validatedTenantId,
+      userId,
+      sourceSkill: 'chat',
+      eventType: 'chat.message.created',
+      entityType: 'chat_message',
+      entityId: assistantMessageId,
+      payload: {
+        userMessageId,
+        assistantMessageId,
+        textLength: userText.length,
+        assistantTextLength: assistant.text.length,
+        domain: assistant.domain ?? null,
+        routeMethod: assistant.routeMethod ?? null,
+      },
+      privacyClassification: 'private_content',
+      idempotencyKey: `chat.message.created:${validatedTenantId}:${userId}:${assistantMessageId}`,
+      correlationId: options.requestId ?? undefined,
+      requestId: options.requestId ?? undefined,
+    });
   });
 }
 

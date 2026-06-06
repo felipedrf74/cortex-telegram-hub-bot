@@ -42,6 +42,9 @@ const mockIsRestarting = vi.fn();
 
 vi.mock('../../src/services/database', () => ({
   getDb: () => mockGetDb(),
+  initDatabase: vi.fn(),
+  closeDatabase: vi.fn(),
+  findUnexpectedMigrationPrefixCollisions: vi.fn(() => []),
 }));
 
 vi.mock('../../src/portal/telemetry', () => ({
@@ -67,6 +70,7 @@ vi.mock('../../src/config', () => ({
 
 vi.mock('../../src/utils/logger', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
+  LOGGER_REDACTION_PATHS: [],
 }));
 
 // Mock all remaining dependencies to prevent import side effects
@@ -208,7 +212,8 @@ describe('QA: Health endpoint — response structure', () => {
   it('health tracks server availability separately from Telegram polling', async () => {
     const source = readPortalHealthRoutesSource();
     expect(source).toContain("const runtime = getRuntimeStatus();");
-    expect(source).toContain("runtime.serviceStatus === 'online' ? 'healthy' : 'degraded'");
+    expect(source).toContain('const databaseProbe = probeDatabaseHealth();');
+    expect(source).toContain("runtime.serviceStatus === 'online' && databaseProbe.status === 'connected'");
     expect(source).toContain('server: {');
     expect(source).toContain('bot: {');
   });

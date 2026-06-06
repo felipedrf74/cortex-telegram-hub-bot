@@ -21,6 +21,26 @@ const STAGE_THRESHOLDS: Record<string, number> = {
 };
 
 const STAGE_ORDER = ['approved', 'scripted', 'filming', 'editing', 'published'];
+const PIPELINE_GLOBAL_SCOPE_SQL = `
+  AND COALESCE(user_id, 0) = 0
+  AND COALESCE(tenant_id, 0) = 0
+  AND COALESCE(visibility_scope, 'platform_internal') IN ('platform_internal', 'public_published')
+  AND COALESCE(scope_status, 'active') = 'active'
+`;
+
+type PipelineReadOptions = {
+  globalOnly?: boolean;
+};
+
+function pipelineScopeSql(options?: PipelineReadOptions, alias = ''): string {
+  if (!options?.globalOnly) return '';
+  if (!alias) return PIPELINE_GLOBAL_SCOPE_SQL;
+  return PIPELINE_GLOBAL_SCOPE_SQL
+    .replace(/\buser_id\b/g, `${alias}.user_id`)
+    .replace(/\btenant_id\b/g, `${alias}.tenant_id`)
+    .replace(/\bvisibility_scope\b/g, `${alias}.visibility_scope`)
+    .replace(/\bscope_status\b/g, `${alias}.scope_status`);
+}
 
 export interface PipelineStats {
   stages: Record<string, number>;
@@ -29,12 +49,13 @@ export interface PipelineStats {
   totalActive: number;
 }
 
-export function getPipelineStats(): PipelineStats {
+export function getPipelineStats(options?: PipelineReadOptions): PipelineStats {
   const db = getDb();
+  const scopeSql = pipelineScopeSql(options);
   const stages: Record<string, number> = {};
   for (const stage of STAGE_ORDER) {
     const row = db.prepare(
-      "SELECT COUNT(*) as cnt FROM content_pipeline WHERE stage = ?"
+      `SELECT COUNT(*) as cnt FROM content_pipeline WHERE stage = ? ${scopeSql}`
     ).get(stage) as any;
     stages[stage] = row?.cnt ?? 0;
   }
@@ -47,6 +68,7 @@ export function getPipelineStats(): PipelineStats {
              AVG(julianday('now') - julianday(updated_at)) as avg_days
       FROM content_pipeline
       WHERE stage = ?
+        ${scopeSql}
         AND julianday('now') - julianday(updated_at) > ?
     `).get(stage, thresholdDays) as any;
 
@@ -63,6 +85,7 @@ export function getPipelineStats(): PipelineStats {
   const pubRow = db.prepare(`
     SELECT COUNT(*) as cnt FROM content_pipeline
     WHERE stage = 'published'
+      ${scopeSql}
       AND updated_at >= datetime('now', '-7 days')
   `).get() as any;
 
@@ -134,17 +157,31 @@ export interface PipelineOperationalMetrics {
   totalPublished: number;
 }
 
-export function getPipelineOperationalMetrics(): PipelineOperationalMetrics {
+export function getPipelineOperationalMetrics(options?: PipelineReadOptions): PipelineOperationalMetrics {
   const db = getDb();
+  const scopeSql = pipelineScopeSql(options);
+  const aliasedScopeSql = pipelineScopeSql(options, 'p');
 
   // Total counts
-  const totalRow = db.prepare('SELECT COUNT(*) as cnt FROM content_pipeline').get() as any;
+  const totalRow = db.prepare(`
+    SELECT COUNT(*) as cnt FROM content_pipeline
+    WHERE 1 = 1
+      ${scopeSql}
+  `).get() as any;
   const totalEverEntered = totalRow?.cnt ?? 0;
 
-  const pubRow = db.prepare("SELECT COUNT(*) as cnt FROM content_pipeline WHERE stage = 'published'").get() as any;
+  const pubRow = db.prepare(`
+    SELECT COUNT(*) as cnt FROM content_pipeline
+    WHERE stage = 'published'
+      ${scopeSql}
+  `).get() as any;
   const totalPublished = pubRow?.cnt ?? 0;
 
-  const scriptedRow = db.prepare("SELECT COUNT(*) as cnt FROM content_pipeline WHERE stage IN ('scripted','filming','editing','published')").get() as any;
+  const scriptedRow = db.prepare(`
+    SELECT COUNT(*) as cnt FROM content_pipeline
+    WHERE stage IN ('scripted','filming','editing','published')
+      ${scopeSql}
+  `).get() as any;
   const totalScripted = scriptedRow?.cnt ?? 0;
 
   // Conversion rates
@@ -158,7 +195,10 @@ export function getPipelineOperationalMetrics(): PipelineOperationalMetrics {
   // Average days per stage (from stage_history JSON)
   const avgDaysPerStage: Record<string, number> = {};
   const publishedItems = db.prepare(
-    "SELECT stage_history FROM content_pipeline WHERE stage = 'published' AND stage_history != '[]'",
+    `SELECT stage_history FROM content_pipeline
+      WHERE stage = 'published'
+        ${scopeSql}
+        AND stage_history != '[]'`,
   ).all() as any[];
 
   const stageDurations: Record<string, number[]> = {};
@@ -185,6 +225,7 @@ export function getPipelineOperationalMetrics(): PipelineOperationalMetrics {
            ROUND(julianday('now') - julianday(updated_at), 1) as days_stuck
     FROM content_pipeline
     WHERE stage != 'published'
+      ${scopeSql}
       AND julianday('now') - julianday(updated_at) > 3
     ORDER BY days_stuck DESC
     LIMIT 20
@@ -204,6 +245,7 @@ export function getPipelineOperationalMetrics(): PipelineOperationalMetrics {
     FROM content_pipeline p
     LEFT JOIN content_topic_feedback tf ON p.topic_feedback_id = tf.id
     WHERE p.stage != 'published'
+      ${aliasedScopeSql}
     GROUP BY fmt
   `).all() as any[];
 
@@ -218,6 +260,7 @@ export function getPipelineOperationalMetrics(): PipelineOperationalMetrics {
     const row = db.prepare(`
       SELECT COUNT(*) as cnt FROM content_pipeline
       WHERE stage = 'published'
+        ${scopeSql}
         AND updated_at >= datetime('now', '-' || ? || ' days')
         AND updated_at < datetime('now', '-' || ? || ' days')
     `).get((i + 1) * 7, i * 7) as any;
@@ -257,7 +300,7 @@ export async function runPipelineAgent(): Promise<void> {
   let signalsConsumed = 0;
 
   try {
-    const stats = getPipelineStats();
+    const stats = getPipelineStats({ globalOnly: true });
 
     // Cross-agent learning: consume keyword + hook signals to prioritize pipeline items
     const peerContext = buildAgentContext('pipeline-agent');

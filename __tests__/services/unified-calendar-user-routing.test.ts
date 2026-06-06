@@ -11,6 +11,9 @@ const mocks = vi.hoisted(() => ({
   outlookDeleteEvent: vi.fn(),
   outlookConfigured: vi.fn(),
   outlookEvents: vi.fn(),
+  fixtureConfigured: vi.fn(),
+  fixtureEvents: vi.fn(),
+  resolveCalendarWritePreference: vi.fn(),
 }));
 
 vi.mock('../../src/services/google-calendar', () => ({
@@ -29,6 +32,15 @@ vi.mock('../../src/services/outlook-calendar', () => ({
   getEvents: (...args: unknown[]) => mocks.outlookEvents(...args),
 }));
 
+vi.mock('../../src/services/staging-fixture-calendar', () => ({
+  hasStagingFixtureCalendarEventsForUser: (...args: unknown[]) => mocks.fixtureConfigured(...args),
+  getStagingFixtureCalendarEvents: (...args: unknown[]) => mocks.fixtureEvents(...args),
+}));
+
+vi.mock('../../src/services/provider-preferences', () => ({
+  resolveCalendarWritePreference: (...args: unknown[]) => mocks.resolveCalendarWritePreference(...args),
+}));
+
 vi.mock('../../src/utils/logger', () => ({
   logger: {
     info: vi.fn(),
@@ -36,12 +48,14 @@ vi.mock('../../src/utils/logger', () => ({
     error: vi.fn(),
     debug: vi.fn(),
   },
+  LOGGER_REDACTION_PATHS: [],
 }));
 
 import {
   createEvent,
   getEvents,
   getEventsWithDiagnostics,
+  hasConnectedCalendarForUser,
   updateEvent,
   deleteEvent,
 } from '../../src/services/unified-calendar';
@@ -58,9 +72,20 @@ describe('UnifiedCalendar — per-user routing for calendar writes', () => {
     mocks.outlookDeleteEvent.mockReset();
     mocks.outlookConfigured.mockReset();
     mocks.outlookEvents.mockReset();
+    mocks.fixtureConfigured.mockReset();
+    mocks.fixtureEvents.mockReset();
+    mocks.resolveCalendarWritePreference.mockReset();
 
     mocks.outlookConfigured.mockReturnValue(true);
     mocks.googleConfigured.mockReturnValue(false);
+    mocks.fixtureConfigured.mockReturnValue(false);
+    mocks.resolveCalendarWritePreference.mockReturnValue({
+      source: null,
+      requested: 'auto',
+      warningCode: 'CALENDAR_INTEGRATION_MISSING',
+      warning: 'No writable calendar provider is connected.',
+      availability: { google: false, outlook: false },
+    });
   });
 
   it('passes userId through when creating an Outlook event', async () => {
@@ -77,11 +102,11 @@ describe('UnifiedCalendar — per-user routing for calendar writes', () => {
       end: '2026-04-16T10:00:00.000Z',
     }, 'outlook', 42);
 
-    expect(mocks.outlookCreateEvent).toHaveBeenCalledWith({
+    expect(mocks.outlookCreateEvent).toHaveBeenCalledWith(expect.objectContaining({
       title: 'Coach call',
       start: '2026-04-16T09:00:00.000Z',
       end: '2026-04-16T10:00:00.000Z',
-    }, 42);
+    }), 42, undefined);
   });
 
   it('passes userId through when updating an Outlook event', async () => {
@@ -100,7 +125,7 @@ describe('UnifiedCalendar — per-user routing for calendar writes', () => {
     expect(mocks.outlookUpdateEvent).toHaveBeenCalledWith({
       event_id: 'evt-outlook-2',
       new_title: 'Updated title',
-    }, 42);
+    }, 42, undefined);
   });
 
   it('passes userId through when deleting an Outlook event', async () => {
@@ -108,7 +133,7 @@ describe('UnifiedCalendar — per-user routing for calendar writes', () => {
 
     await deleteEvent('evt-outlook-3', 'outlook', 42);
 
-    expect(mocks.outlookDeleteEvent).toHaveBeenCalledWith('evt-outlook-3', 42);
+    expect(mocks.outlookDeleteEvent).toHaveBeenCalledWith('evt-outlook-3', 42, undefined);
   });
 
   it('passes userId through when creating a Google event', async () => {
@@ -127,11 +152,40 @@ describe('UnifiedCalendar — per-user routing for calendar writes', () => {
       end: '2026-04-16T10:00:00.000Z',
     }, 'google', 42);
 
-    expect(mocks.googleCreateEvent).toHaveBeenCalledWith({
+    expect(mocks.googleCreateEvent).toHaveBeenCalledWith(expect.objectContaining({
       title: 'Strength block',
       start: '2026-04-16T09:00:00.000Z',
       end: '2026-04-16T10:00:00.000Z',
-    }, 42);
+    }), 42, undefined);
+  });
+
+  it('uses tenant-scoped provider preferences for implicit calendar writes', async () => {
+    mocks.outlookConfigured.mockReturnValue(false);
+    mocks.googleConfigured.mockReturnValue(true);
+    mocks.resolveCalendarWritePreference.mockReturnValue({
+      source: 'google',
+      requested: 'google',
+      warningCode: null,
+      warning: null,
+      availability: { google: true, outlook: false },
+    });
+    mocks.googleCreateEvent.mockResolvedValue({
+      id: 'evt-tenant-pref',
+      summary: 'Tenant preference focus',
+      start: '2026-04-16T09:00:00.000Z',
+      end: '2026-04-16T10:00:00.000Z',
+    });
+
+    await createEvent({
+      title: 'Tenant preference focus',
+      start: '2026-04-16T09:00:00.000Z',
+      end: '2026-04-16T10:00:00.000Z',
+    }, undefined, 42, { tenantId: 7 });
+
+    expect(mocks.resolveCalendarWritePreference).toHaveBeenCalledWith(42, 7);
+    expect(mocks.googleCreateEvent).toHaveBeenCalledWith(expect.objectContaining({
+      title: 'Tenant preference focus',
+    }), 42, { tenantId: 7 });
   });
 
   it('passes userId through when updating a Google event', async () => {
@@ -152,7 +206,7 @@ describe('UnifiedCalendar — per-user routing for calendar writes', () => {
     expect(mocks.googleUpdateEvent).toHaveBeenCalledWith({
       event_id: 'evt-google-2',
       new_title: 'Updated session',
-    }, 42);
+    }, 42, undefined);
   });
 
   it('passes userId through when deleting a Google event', async () => {
@@ -162,7 +216,7 @@ describe('UnifiedCalendar — per-user routing for calendar writes', () => {
 
     await deleteEvent('evt-google-3', 'google', 42);
 
-    expect(mocks.googleDeleteEvent).toHaveBeenCalledWith('evt-google-3', 42);
+    expect(mocks.googleDeleteEvent).toHaveBeenCalledWith('evt-google-3', 42, undefined);
   });
 
   it('does not fall back to owner calendar providers for an authenticated user with no connected calendar', async () => {
@@ -237,5 +291,39 @@ describe('UnifiedCalendar — per-user routing for calendar writes', () => {
       warningCodes: ['CALENDAR_INTEGRATION_MISSING'],
       sources: { configured: [], fulfilled: [], failed: [] },
     });
+  });
+
+  it('uses staging fixture calendar events as a read-only source for synthetic users', async () => {
+    mocks.googleConfigured.mockReturnValue(false);
+    mocks.outlookConfigured.mockReturnValue(false);
+    mocks.fixtureConfigured.mockImplementation((userId?: number) => userId === 1_000_001);
+    mocks.fixtureEvents.mockReturnValue([
+      {
+        id: 'staging-fixture-cal-1000001-001',
+        summary: 'Fixture calendar volume event 001',
+        start: '2026-04-27T09:00:00.000Z',
+        end: '2026-04-27T09:15:00.000Z',
+        source: 'outlook',
+      },
+    ]);
+
+    expect(hasConnectedCalendarForUser(1_000_001)).toBe(true);
+
+    const result = await getEventsWithDiagnostics(
+      '2026-04-27T00:00:00.000Z',
+      '2026-04-28T00:00:00.000Z',
+      1_000_001,
+    );
+
+    expect(result.status).toBe('ready');
+    expect(result.events).toHaveLength(1);
+    expect(result.events[0].id).toBe('staging-fixture-cal-1000001-001');
+    expect(mocks.googleEvents).not.toHaveBeenCalled();
+    expect(mocks.outlookEvents).not.toHaveBeenCalled();
+    expect(mocks.fixtureEvents).toHaveBeenCalledWith(
+      '2026-04-27T00:00:00.000Z',
+      '2026-04-28T00:00:00.000Z',
+      1_000_001,
+    );
   });
 });

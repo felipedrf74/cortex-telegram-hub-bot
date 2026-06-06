@@ -22,7 +22,12 @@ import { google, drive_v3 } from 'googleapis';
 import { config } from '../config';
 import { logger } from '../utils/logger';
 import { withTimeout } from '../utils/timeout';
-import { buildGoogleOAuth2Client, registerGoogleClientReset } from './google-auth';
+import {
+  buildGoogleOAuth2ClientForUser,
+  isGoogleConfigured,
+  registerGoogleClientReset,
+} from './google-auth';
+import { getOwnerBootstrapUserRefs } from './user-service';
 
 // Drive operations are bounded to 30s — higher than Calendar because
 // file uploads (backups, DOCX) can legitimately take longer than metadata
@@ -33,35 +38,39 @@ const DRIVE_API_TIMEOUT_MS = 30_000;
 const ROOT_FOLDER_NAME = 'Nexus Hub IDEAS';
 const SUBFOLDERS = ['RESEARCH', 'IDEAS', 'SCRIPTS', 'VISUALS', 'REPORTS'] as const;
 
-let driveClient: drive_v3.Drive | null = null;
+const driveClientsByUser = new Map<number, drive_v3.Drive>();
 
-/** Cache: "parentId/name" → Google Drive folder ID */
+/** Cache: "userId/parentId/name" → Google Drive folder ID */
 const folderIdCache = new Map<string, string>();
 
 // Reset the cached Drive client when /connect google writes a fresh token.
 // The folder ID cache is also dropped because folders are owned per-account
 // — switching tokens without invalidating would point at the wrong folders.
 registerGoogleClientReset(() => {
-  driveClient = null;
+  driveClientsByUser.clear();
   folderIdCache.clear();
 });
 
 // ── Auth ────────────────────────────────────────────────────────────
 
-function getDrive(): drive_v3.Drive {
-  if (driveClient) return driveClient;
-  // Token resolution goes through oauth-store first (encrypted + audited),
-  // env-var fallback for backward compat. See google-auth.ts.
-  const oauth2Client = buildGoogleOAuth2Client();
-  driveClient = google.drive({ version: 'v3', auth: oauth2Client });
-  return driveClient;
+function getOwnerDriveUserId(): number | null {
+  return getOwnerBootstrapUserRefs()[0] ?? null;
 }
 
-export function isGoogleDriveEnabled(): boolean {
+function getDrive(userId: number): drive_v3.Drive {
+  const cached = driveClientsByUser.get(userId);
+  if (cached) return cached;
+  const oauth2Client = buildGoogleOAuth2ClientForUser(userId);
+  const drive = google.drive({ version: 'v3', auth: oauth2Client });
+  driveClientsByUser.set(userId, drive);
+  return drive;
+}
+
+export function isGoogleDriveEnabled(userId?: number): boolean {
+  const effectiveUserId = userId ?? getOwnerDriveUserId();
   return config.googleDrive.enabled
-    && !!config.google.clientId
-    && !!config.google.clientSecret
-    && !!config.google.refreshToken;
+    && effectiveUserId != null
+    && isGoogleConfigured(effectiveUserId);
 }
 
 // ── Folder helpers ──────────────────────────────────────────────────
@@ -69,12 +78,12 @@ export function isGoogleDriveEnabled(): boolean {
 /**
  * Find or create a folder by name under a parent folder.
  */
-async function getOrCreateFolder(name: string, parentId?: string): Promise<string> {
-  const cacheKey = `${parentId || 'root'}/${name}`;
+async function getOrCreateFolder(userId: number, name: string, parentId?: string): Promise<string> {
+  const cacheKey = `${userId}/${parentId || 'root'}/${name}`;
   const cached = folderIdCache.get(cacheKey);
   if (cached) return cached;
 
-  const drive = getDrive();
+  const drive = getDrive(userId);
 
   // Search for existing folder
   const query = parentId
@@ -115,15 +124,15 @@ async function getOrCreateFolder(name: string, parentId?: string): Promise<strin
  * Resolve the root "Nexus Hub IDEAS" folder ID.
  * Uses GOOGLE_DRIVE_ROOT_FOLDER_ID env var when available to skip the API call.
  */
-async function getRootFolderId(): Promise<string> {
+async function getRootFolderId(userId: number): Promise<string> {
   // Fast path: cached in env
   if (config.googleDrive.rootFolderId) {
     const envId = config.googleDrive.rootFolderId;
-    folderIdCache.set(`root/${ROOT_FOLDER_NAME}`, envId);
+    folderIdCache.set(`${userId}/root/${ROOT_FOLDER_NAME}`, envId);
     return envId;
   }
 
-  const id = await getOrCreateFolder(ROOT_FOLDER_NAME);
+  const id = await getOrCreateFolder(userId, ROOT_FOLDER_NAME);
 
   // Log the ID so the user can persist it
   logger.info(
@@ -142,13 +151,14 @@ async function getRootFolderId(): Promise<string> {
  *
  * Call once at startup (optional) to pre-warm the cache.
  */
-export async function ensureDriveFolders(): Promise<void> {
-  if (!isGoogleDriveEnabled()) return;
+export async function ensureDriveFolders(userId?: number): Promise<void> {
+  const effectiveUserId = userId ?? getOwnerDriveUserId();
+  if (effectiveUserId == null || !isGoogleDriveEnabled(effectiveUserId)) return;
 
   try {
-    const rootId = await getRootFolderId();
-    await Promise.all(SUBFOLDERS.map((sf) => getOrCreateFolder(sf, rootId)));
-    logger.info('Google Drive folder structure verified');
+    const rootId = await getRootFolderId(effectiveUserId);
+    await Promise.all(SUBFOLDERS.map((sf) => getOrCreateFolder(effectiveUserId, sf, rootId)));
+    logger.info({ userId: effectiveUserId }, 'Google Drive folder structure verified');
   } catch (err: any) {
     logger.warn({ err: err.message }, 'Failed to verify Drive folder structure — uploads will retry lazily');
   }
@@ -163,18 +173,19 @@ export async function ensureDriveFolders(): Promise<void> {
  * @returns The Drive web-view URL, or null on failure / disabled
  */
 export async function uploadToDrive(
+  userId: number,
   localPath: string,
   filename: string,
   subfolder: string,
 ): Promise<string | null> {
-  if (!isGoogleDriveEnabled()) return null;
+  if (!isGoogleDriveEnabled(userId)) return null;
 
   try {
-    const drive = getDrive();
+    const drive = getDrive(userId);
 
     // Ensure folder structure: Nexus Hub IDEAS/<subfolder>
-    const rootId = await getRootFolderId();
-    const folderId = await getOrCreateFolder(subfolder, rootId);
+    const rootId = await getRootFolderId(userId);
+    const folderId = await getOrCreateFolder(userId, subfolder, rootId);
 
     // Upload file — uses a longer timeout because file uploads stream
     // and can legitimately take a while on large DOCX files.
@@ -196,7 +207,7 @@ export async function uploadToDrive(
     const fileId = res.data.id!;
     const webLink = res.data.webViewLink || `https://drive.google.com/file/d/${fileId}/view`;
 
-    logger.info({ filename, subfolder, fileId }, 'Uploaded to Google Drive');
+    logger.info({ userId, filename, subfolder, fileId }, 'Uploaded to Google Drive');
     return webLink;
   } catch (err: any) {
     // Don't fail the whole flow if Drive upload fails — local file is the fallback
@@ -240,19 +251,20 @@ const BACKUP_FOLDER_NAME = 'Nexus Hub Backups';
  * @param retain     How many most-recent backups to keep in Drive (default 30)
  */
 export async function uploadBackupToDrive(
+  userId: number,
   localPath: string,
   filename: string,
   retain = 30,
 ): Promise<string | null> {
-  if (!isGoogleDriveEnabled()) return null;
+  if (!isGoogleDriveEnabled(userId)) return null;
   if (!fs.existsSync(localPath)) {
     logger.warn({ localPath }, 'uploadBackupToDrive: local file not found');
     return null;
   }
 
   try {
-    const drive = getDrive();
-    const backupFolderId = await getOrCreateFolder(BACKUP_FOLDER_NAME);
+    const drive = getDrive(userId);
+    const backupFolderId = await getOrCreateFolder(userId, BACKUP_FOLDER_NAME);
 
     // Upload the tarball — backups are small (~3MB) but we give them a
     // generous timeout because network variance + re-auth can add latency.

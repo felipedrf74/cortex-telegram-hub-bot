@@ -11,6 +11,8 @@ import { config } from '../config';
 import { logger } from '../utils/logger';
 import { trackedCreate } from '../portal/anthropic-hook';
 import { completeVisionOneShotWithFallback } from './gemini-provider';
+import { sanitizeForPromptInterpolation } from '../utils/prompt-sanitizer';
+import { centsToNumber, parseUserAmount } from './money';
 
 const client = new Anthropic({
   apiKey: config.anthropic.apiKey,
@@ -126,9 +128,10 @@ VALIDATION — Cross-check the total:
 export async function analyzeInvoiceImage(
   imageBase64: string,
   mediaType: 'image/jpeg' | 'image/png' | 'image/webp',
-  caption?: string
+  caption?: string,
+  options?: { userId?: number; tenantId?: number },
 ): Promise<InvoiceAnalysisResult> {
-  const captionCtx = caption ? `\nCaption from user: "${caption}"` : '';
+  const captionCtx = caption ? `\nCaption from user: ${sanitizeForPromptInterpolation(caption)}` : '';
   const userPrompt = `Analyze this image.${captionCtx}`;
 
   let rawText: string;
@@ -149,7 +152,7 @@ export async function analyzeInvoiceImage(
           { type: 'text', text: userPrompt },
         ],
       }],
-    }, 'invoice_filing');
+    }, 'invoice_filing', options);
     rawText = response.content
       .filter((b): b is Anthropic.TextBlock => b.type === 'text')
       .map((b) => b.text)
@@ -175,13 +178,13 @@ export async function analyzeInvoiceImage(
               { type: 'text', text: userPrompt },
             ],
           }],
-        }, 'invoice_filing');
+        }, 'invoice_filing', options);
         return response.content
           .filter((b): b is Anthropic.TextBlock => b.type === 'text')
           .map((b) => b.text)
           .join('');
       },
-      { maxTokens: 400, temperature: 0 },
+      { maxTokens: 400, temperature: 0, userId: options?.userId, tenantId: options?.tenantId },
     );
     rawText = fallback.text;
     usedProvider = fallback.provider;
@@ -201,8 +204,11 @@ export async function analyzeInvoiceImage(
     // suspicious based on item count, auto-correct when possible.
     if (parsed.totalAmount && parsed.itemsSum) {
       const parseAmount = (s: string): number => {
-        const cleaned = s.replace(/[€$R£\s]/g, '').replace(',', '.');
-        return parseFloat(cleaned) || 0;
+        try {
+          return centsToNumber(parseUserAmount(s, 'EUR'));
+        } catch {
+          return 0;
+        }
       };
       const total = parseAmount(parsed.totalAmount);
       const itemSum = parseAmount(parsed.itemsSum);
@@ -220,7 +226,13 @@ export async function analyzeInvoiceImage(
 
     // Suspicious: few items but very high total (e.g., 1 item at €438)
     if (parsed.itemCount != null && parsed.itemCount <= 3 && parsed.totalAmount) {
-      const total = parseFloat(parsed.totalAmount.replace(/[€$R£\s]/g, '').replace(',', '.')) || 0;
+      const total = (() => {
+        try {
+          return centsToNumber(parseUserAmount(parsed.totalAmount, 'EUR'));
+        } catch {
+          return 0;
+        }
+      })();
       if (total > 200) {
         parsed.confidence = Math.min(parsed.confidence, 0.6);
         if (!parsed.validationNote) {
@@ -235,7 +247,7 @@ export async function analyzeInvoiceImage(
     );
     return { analysis: parsed, provider: usedProvider };
   } catch (err) {
-    logger.warn({ text, err }, 'Failed to parse invoice analysis JSON');
+    logger.warn({ err, responseChars: text.length }, 'Failed to parse invoice analysis JSON');
     return {
       analysis: {
         isInvoice: false, confidence: 0,

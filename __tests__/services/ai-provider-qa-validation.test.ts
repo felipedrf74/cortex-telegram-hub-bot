@@ -111,7 +111,10 @@ describe('FallbackProvider — argument forwarding to fallback', () => {
     const ctx = { domain: 'triathlon' as DomainName, lastAssistantMessage: 'Your pace was 5:30/km' };
     await provider.classify('how far did I run?', ctx);
 
-    expect(fallback.classify).toHaveBeenCalledWith('how far did I run?', ctx);
+    // Option 3 (O3-A11): FallbackProvider.classify forwards
+    // ClassifyOptions as a 3rd arg. With no options at the caller,
+    // it propagates as undefined.
+    expect(fallback.classify).toHaveBeenCalledWith('how far did I run?', ctx, undefined);
   });
 
   it('callDomain forwards ALL arguments to fallback', async () => {

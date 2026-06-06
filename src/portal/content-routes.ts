@@ -3,76 +3,33 @@
 import type { Express, Request, Response } from 'express';
 import { requirePortalAdminToken } from '../api/secret-guards';
 import { getBooks, getVoiceDna, toggleSprintMode } from '../services/content-dashboard-service';
-import { addAndAnalyzeChannel, synthesizeKnowledge as reSynthesizeKnowledge } from '../services/channel-learner';
-import { removeChannel as removeRefChannel } from '../state/content-references';
 import { sendPortalInternalError } from './http';
 import { clearPortalSnapshotCache } from './snapshot-cache';
 
+function sendScopedV1Required(res: Response): void {
+  res.status(410).json({
+    ok: false,
+    error: {
+      code: 'SCOPED_V1_REQUIRED',
+      message: 'Use /api/v1/admin/content with explicit userId and tenantId for Content portal mutations.',
+    },
+  });
+}
+
 export function registerPortalContentRoutes(app: Express): void {
   // POST /api/channels — add a reference channel
-  app.post('/api/channels', requirePortalAdminToken, async (req: Request, res: Response) => {
-    const { url } = req.body;
-    if (!url || typeof url !== 'string' || !url.includes('youtube.com')) {
-      res.status(400).json({ ok: false, message: 'Invalid YouTube URL' });
-      return;
-    }
-
-    try {
-      const result = await addAndAnalyzeChannel(url, 'portal');
-      clearPortalSnapshotCache();
-      res.json({
-        ok: result.analysis.success,
-        channel: {
-          id: result.channel.id,
-          name: result.channel.channel_name,
-          url: result.channel.channel_url,
-          status: result.channel.status,
-        },
-        analysis: {
-          summary: result.analysis.summary,
-          patternsFound: result.analysis.patternsFound,
-          videosAnalyzed: result.analysis.videosAnalyzed,
-          error: result.analysis.error,
-        },
-      });
-    } catch (err) {
-      sendPortalInternalError(res, err, 'Portal request failed', 'Portal: request failed');
-    }
+  app.post('/api/channels', requirePortalAdminToken, (_req: Request, res: Response) => {
+    sendScopedV1Required(res);
   });
 
   // DELETE /api/channels/:id — remove a reference channel
-  app.delete('/api/channels/:id', requirePortalAdminToken, async (req: Request, res: Response) => {
-    const id = parseInt(String(req.params.id), 10);
-    if (isNaN(id)) {
-      res.status(400).json({ ok: false, message: 'Invalid channel ID' });
-      return;
-    }
-
-    try {
-      removeRefChannel(id);
-      await reSynthesizeKnowledge();
-      clearPortalSnapshotCache();
-      res.json({ ok: true, message: 'Channel removed and knowledge re-synthesized' });
-    } catch (err) {
-      sendPortalInternalError(res, err, 'Portal request failed', 'Portal: request failed');
-    }
+  app.delete('/api/channels/:id', requirePortalAdminToken, (_req: Request, res: Response) => {
+    sendScopedV1Required(res);
   });
 
   // POST /api/books — add and extract a book
-  app.post('/api/books', requirePortalAdminToken, async (req: Request, res: Response) => {
-    try {
-      const { title, author } = req.body || {};
-      if (!title || !author) {
-        res.status(400).json({ ok: false, message: 'title and author are required' });
-        return;
-      }
-      const { handleAddBookFromPortal } = await import('../commands/books');
-      const result = await handleAddBookFromPortal(title, author);
-      clearPortalSnapshotCache();
-      res.json(result);
-    } catch (err) {
-      sendPortalInternalError(res, err, 'Portal request failed', 'Portal: request failed');
-    }
+  app.post('/api/books', requirePortalAdminToken, (_req: Request, res: Response) => {
+    sendScopedV1Required(res);
   });
 
   // GET /api/content-knowledge — voice DNA (canonical service)
@@ -115,4 +72,3 @@ export function registerPortalContentRoutes(app: Express): void {
     }
   });
 }
-

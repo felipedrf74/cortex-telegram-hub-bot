@@ -12,6 +12,9 @@ let testDb: Database.Database;
 
 vi.mock('../../src/services/database', () => ({
   getDb: () => testDb,
+  initDatabase: vi.fn(),
+  closeDatabase: vi.fn(),
+  findUnexpectedMigrationPrefixCollisions: vi.fn(() => []),
 }));
 
 vi.mock('../../src/utils/logger', () => ({
@@ -23,10 +26,12 @@ vi.mock('../../src/utils/logger', () => ({
     trace: vi.fn(),
     child: vi.fn().mockReturnThis(),
   },
+  LOGGER_REDACTION_PATHS: [],
 }));
 
 import {
   arbitrateSecretarySchedulingIntents,
+  getSecretaryAgendaItemById,
   listSecretaryAgendaItems,
   submitSecretarySchedulingIntent,
   type SecretarySchedulingIntent,
@@ -70,6 +75,16 @@ function intent(overrides: Partial<SecretarySchedulingIntent> = {}): SecretarySc
 }
 
 describe('secretary-scheduling-arbitrator', () => {
+  it('hard-fails missing tenant scope before persisting agenda rows', () => {
+    expect(() => submitSecretarySchedulingIntent(intent({ tenantId: '  ' }))).toThrow(/SECRETARY_INVALID_TENANT_SCOPE/);
+    expect(() => arbitrateSecretarySchedulingIntents([intent({ tenantId: '' })])).toThrow(/SECRETARY_INVALID_TENANT_SCOPE/);
+    expect(listSecretaryAgendaItems({
+      ownerUserId: OWNER_USER_ID,
+      tenantId: TENANT_ID,
+      includeInactive: true,
+    })).toHaveLength(0);
+  });
+
   it('schedules a Training intent through Secretary with source attribution and lifecycle state', () => {
     const decision = submitSecretarySchedulingIntent(intent(), {
       now: '2026-05-01T08:00:00.000Z',
@@ -97,6 +112,68 @@ describe('secretary-scheduling-arbitrator', () => {
       shouldRefreshSource: false,
       scheduledStart: '2026-05-04T09:00:00.000Z',
       scheduledEnd: '2026-05-04T10:00:00.000Z',
+    });
+  });
+
+  it('persists the human-readable decision explanation for iOS/support read-back', () => {
+    const decision = submitSecretarySchedulingIntent(intent({
+      intentId: 'explanation-roundtrip',
+      title: 'Explainable planning block',
+    }), {
+      now: '2026-05-01T08:00:00.000Z',
+    });
+
+    const stored = getSecretaryAgendaItemById({
+      agendaItemId: decision.agendaItem.agendaItemId,
+      ownerUserId: OWNER_USER_ID,
+      tenantId: TENANT_ID,
+    });
+
+    expect(decision.explanation).toContain('scheduled');
+    expect(stored?.decisionExplanation).toBe(decision.explanation);
+  });
+
+  it('persists selected and alternative candidate slots for Decision Center enrichment', () => {
+    const request = intent({
+      intentId: 'decision-center-candidates',
+      preferredWindows: [
+        timeWindow('2026-05-04T09:00:00.000Z', '2026-05-04T10:00:00.000Z', 'best'),
+        timeWindow('2026-05-04T10:00:00.000Z', '2026-05-04T11:00:00.000Z', 'backup'),
+      ],
+    });
+    const decision = submitSecretarySchedulingIntent(request, {
+      now: '2026-05-01T08:00:00.000Z',
+    });
+
+    expect(decision.selectedSlot).toMatchObject({
+      start: '2026-05-04T09:00:00.000Z',
+      end: '2026-05-04T10:00:00.000Z',
+    });
+    expect(decision.alternativeSlots).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        start: '2026-05-04T10:00:00.000Z',
+        end: '2026-05-04T11:00:00.000Z',
+      }),
+    ]));
+    expect(decision.agendaItem.scheduledSegments).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        start: '2026-05-04T09:00:00.000Z',
+        end: '2026-05-04T10:00:00.000Z',
+      }),
+      expect.objectContaining({
+        start: '2026-05-04T10:00:00.000Z',
+        end: '2026-05-04T11:00:00.000Z',
+      }),
+    ]));
+
+    const retry = submitSecretarySchedulingIntent(request, {
+      now: '2026-05-01T08:05:00.000Z',
+    });
+    expect(retry.agendaItem.agendaItemId).toBe(decision.agendaItem.agendaItemId);
+    expect(retry.alternativeSlots).toHaveLength(1);
+    expect(retry.alternativeSlots[0]).toMatchObject({
+      start: '2026-05-04T10:00:00.000Z',
+      end: '2026-05-04T11:00:00.000Z',
     });
   });
 

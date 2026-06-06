@@ -2,8 +2,7 @@
 
 import { logger } from '../../utils/logger';
 import {
-  deleteEvent,
-  getEvents,
+  getEventsForSources,
   type CalendarSource,
   type UnifiedCalendarEvent,
 } from '../../services/unified-calendar';
@@ -15,12 +14,21 @@ import {
   findOwnershipsForPlan,
   markCalendarOwnershipDeleted,
 } from '../../services/training-plan-lifecycle';
+import { reconcileOrphanedTrainingAgendaEvents } from '../../services/training-agenda-reconciliation';
+import {
+  cancelTrainingPlanCrossSkillDependents,
+  findSecretaryAgendaCalendarEventsForPlan,
+} from '../../services/training-plan-cancellation-cascade';
 import { getTrainingCalendarEventOwners } from '../../services/training-calendar-scope';
 import {
   buildTrainingSessionIdentityKey,
   computeTrainingSessionShapeHash,
   parseTrainingIdentityMarker,
 } from '../../services/training-session-identity';
+import { isProviderEventNotFoundError } from '../../services/training-calendar-errors';
+import { deleteTrainingCalendarEventWithRetry } from '../../services/training-calendar-provider-retry';
+import { withTrainingCalendarOperationLock } from '../../services/training-operation-locks';
+import { hashOwnerIdForLog } from './_ownership-audit';
 
 /**
  * Successful plan-cancellation payload.
@@ -65,8 +73,11 @@ export interface TrainingPlanCancellationNoop {
 
 export type TrainingPlanCancellationResult =
   | { status: 'cancelled'; data: TrainingPlanCancellationSuccess }
-  | { status: 'not_found'; data: TrainingPlanCancellationNoop }
-  | { status: 'forbidden' };
+  | { status: 'not_found'; data: TrainingPlanCancellationNoop };
+
+export interface CancelTrainingPlanForUserOptions {
+  tenantId?: number | null;
+}
 
 interface TrainingSessionForCancellation {
   id: number;
@@ -102,41 +113,81 @@ interface MatchableTrainingSessionIdentity {
   sessionShapeHash: string;
 }
 
+const cancellationLocks = new Map<string, Promise<void>>();
+const SERIAL_PROVIDER_DELETE_THRESHOLD = 20;
+const TRAINING_ORPHAN_LOOKBACK_DAYS = 14;
+const TRAINING_ORPHAN_LOOKAHEAD_DAYS = 240;
+const TRAINING_CALENDAR_SOURCES: readonly CalendarSource[] = ['google', 'outlook'];
+
+async function withTrainingCancellationLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
+  const previous = cancellationLocks.get(key) ?? Promise.resolve();
+  let releaseCurrent!: () => void;
+  const current = previous
+    .catch(() => undefined)
+    .then(() => new Promise<void>((resolve) => {
+      releaseCurrent = resolve;
+    }));
+
+  cancellationLocks.set(key, current);
+
+  await previous.catch(() => undefined);
+  try {
+    return await fn();
+  } finally {
+    releaseCurrent();
+    if (cancellationLocks.get(key) === current) {
+      cancellationLocks.delete(key);
+    }
+  }
+}
+
 export async function cancelTrainingPlanForUser(
   userId: number,
   requestedPlanId?: unknown,
+  options: CancelTrainingPlanForUserOptions = {},
+): Promise<TrainingPlanCancellationResult> {
+  const tenantId = normalizeTenantId(options.tenantId, userId);
+  return withTrainingCalendarOperationLock(
+    {
+      userId,
+      tenantId,
+      planId: typeof requestedPlanId === 'number' ? requestedPlanId : null,
+      operation: 'calendar_cancel',
+    },
+    () => withTrainingCancellationLock(`training-plan-cancel:${userId}:tenant:${tenantId}`, () =>
+      cancelTrainingPlanForUserLocked(userId, requestedPlanId, tenantId)),
+  );
+}
+
+async function cancelTrainingPlanForUserLocked(
+  userId: number,
+  requestedPlanId?: unknown,
+  tenantId: number = userId,
 ): Promise<TrainingPlanCancellationResult> {
   const parsedPlanId = Number(requestedPlanId);
   const hasRequestedPlan = Number.isFinite(parsedPlanId) && parsedPlanId > 0;
   const requestedPlan = hasRequestedPlan ? trainingPlans.getPlanById(parsedPlanId) : null;
   const activePlans = hasRequestedPlan
     ? []
-    : trainingPlans.getActivePlans?.(userId) ?? [];
+    : (trainingPlans.getActivePlans?.(userId, tenantId) ?? []).filter((plan) => planTenantMatches(plan, tenantId));
   const fallbackActivePlan = hasRequestedPlan || activePlans.length > 0
     ? null
-    : trainingPlans.getActivePlan(userId);
+    : trainingPlans.getActivePlan(userId, tenantId);
   const plans = hasRequestedPlan
     ? (requestedPlan ? [requestedPlan] : [])
-    : (activePlans.length > 0 ? activePlans : (fallbackActivePlan ? [fallbackActivePlan] : []));
+    : (activePlans.length > 0 ? activePlans : (fallbackActivePlan && planTenantMatches(fallbackActivePlan, tenantId) ? [fallbackActivePlan] : []));
 
-  if (requestedPlan && requestedPlan.user_id !== userId) {
-    return { status: 'forbidden' };
+  const foreignOwned = !!requestedPlan && (requestedPlan.user_id !== userId || !planTenantMatches(requestedPlan, tenantId));
+  if (foreignOwned) {
+    logger.warn(
+      { actor: userId, planId: parsedPlanId, ownerIdHash: hashOwnerIdForLog(requestedPlan.user_id), reason: 'foreign_owner' },
+      'training_cancel.ownership_denied',
+    );
+    return buildNoActivePlanResult(userId);
   }
 
   if (plans.length === 0) {
-    return {
-      status: 'not_found',
-      data: {
-        cancelled: false,
-        removedEvents: 0,
-        removedSessions: 0,
-        removedWeeks: 0,
-        removedCompletions: 0,
-        removedPlans: 0,
-        totalSessions: 0,
-        message: 'No active training plan to cancel.',
-      },
-    };
+    return buildNoActivePlanResult(userId);
   }
 
   // Step 1 — remove calendar events first, while the plan_id linkage is
@@ -161,10 +212,10 @@ export async function cancelTrainingPlanForUser(
     }));
     const deletionTargets = await buildCalendarDeletionTargetsForPlan(userId, plan, sessionsByWeek);
 
-    const deletionResults = await Promise.allSettled(
-      deletionTargets.map((target) => deleteEvent(target.eventId, target.source, userId)),
-    );
-    const planRemovedEvents = deletionResults.filter(result => result.status === 'fulfilled').length;
+    const deletionResults = await deleteCalendarDeletionTargets(deletionTargets, userId);
+    const planRemovedEvents = deletionResults.filter(result =>
+      result.status === 'fulfilled' || isProviderEventNotFoundError(result.reason),
+    ).length;
     removedEvents += planRemovedEvents;
 
     // Slice 4.D — record the cancellation outcome on the audit table
@@ -176,11 +227,11 @@ export async function cancelTrainingPlanForUser(
     deletionResults.forEach((result, idx) => {
       const target = deletionTargets[idx];
       if (!target) return;
-      if (result.status === 'fulfilled') {
+      if (result.status === 'fulfilled' || isProviderEventNotFoundError(result.reason)) {
         markCalendarOwnershipDeleted({
           eventId: target.eventId,
           source: target.source,
-          reason: 'plan_cancelled',
+          reason: result.status === 'fulfilled' ? 'plan_cancelled' : 'plan_cancelled_event_gone_upstream',
           status: 'deleted',
           userId,
           planId: target.planId,
@@ -206,11 +257,16 @@ export async function cancelTrainingPlanForUser(
       }, 'Some calendar events could not be deleted during plan cancellation; proceeding with local hard delete');
     }
 
+    const sessionIdsForCascade = sessionsByWeek.flatMap(({ sessions }) => sessions.map((session) => session.id));
+    const planVersionForCascade = Number((plan as any).plan_version ?? 1);
+
     // Step 2 — hard-delete the plan row. FK CASCADE removes weeks,
     // sessions, and completions atomically. The user_id scope on the
     // DELETE is defense-in-depth in case the ownership gate above is
     // ever weakened or bypassed.
-    const removal = trainingPlans.deletePlanHard(plan.id, userId);
+    const removal = tenantId === userId
+      ? trainingPlans.deletePlanHard(plan.id, userId)
+      : trainingPlans.deletePlanHard(plan.id, userId, tenantId);
 
     if (!removal.ok) {
       // The plan was found above but hard delete didn't change any
@@ -226,6 +282,26 @@ export async function cancelTrainingPlanForUser(
     removedWeeks += removal.removedWeeks;
     removedCompletions += removal.removedCompletions;
     removedPlans += removal.removedPlans;
+
+    const cascade = cancelTrainingPlanCrossSkillDependents({
+      userId,
+      tenantId: Number((plan as any).tenant_id ?? userId),
+      planId: plan.id,
+      planVersion: planVersionForCascade,
+      sessionIds: sessionIdsForCascade,
+      reason: 'training_plan_canceled',
+    });
+
+    if (cascade.canceledAgendaItems > 0 || cascade.staleMemories > 0 || cascade.signalId != null) {
+      logger.info({
+        userId,
+        planId: plan.id,
+        planVersion: planVersionForCascade,
+        canceledAgendaItems: cascade.canceledAgendaItems,
+        staleMemories: cascade.staleMemories,
+        signalId: cascade.signalId,
+      }, 'Training cancellation cascaded to Secretary agenda and downstream skill context');
+    }
   }
 
   // Step 3 — wipe every per-user coach narrative store that survives
@@ -273,6 +349,44 @@ export async function cancelTrainingPlanForUser(
     };
   }
 
+  // 2026-05-02 (Felipe-reported "agenda residues"): retry any
+  // ownership rows still flagged 'orphaned' after the deletion
+  // pass above. This catches:
+  //   - events whose external delete failed transiently in the
+  //     for-loop (network blip / 5xx) and got marked 'orphaned'
+  //   - events ORPHANED BY EARLIER cancellations that the user
+  //     never followed with a plan-creation cycle (which is where
+  //     the existing reconciler hook fires from)
+  // Without this opportunistic call, an offline/5xx hiccup during
+  // cancellation leaves stray events on the user's calendar
+  // until they happen to create a new plan. Awaited so the
+  // response payload's removedEvents count reflects the reconciled
+  // total, but errors are caught so a failing reconciliation never
+  // blocks cancellation success.
+  let reconciledExtraEvents = 0;
+  try {
+    const reconciliation = await reconcileOrphanedTrainingAgendaEvents(userId);
+    reconciledExtraEvents = reconciliation.deleted;
+    if (reconciliation.attempted > 0) {
+      logger.info(
+        {
+          userId,
+          planIds,
+          attemptedReconciled: reconciliation.attempted,
+          deletedReconciled: reconciliation.deleted,
+          failedReconciled: reconciliation.failed,
+        },
+        'Training plan cancellation reconciled orphaned calendar events',
+      );
+    }
+  } catch (err) {
+    logger.warn(
+      { err, userId, planIds },
+      'Post-cancellation orphan reconciliation failed; orphans remain in ownership table for next plan-creation cycle',
+    );
+  }
+  removedEvents += reconciledExtraEvents;
+
   logger.info({
     userId,
     planIds,
@@ -282,6 +396,7 @@ export async function cancelTrainingPlanForUser(
     removedCompletions,
     removedReports,
     clearedRegistry,
+    reconciledExtraEvents,
   }, 'Training plan cancelled and per-user coach state cleared');
 
   return {
@@ -299,6 +414,66 @@ export async function cancelTrainingPlanForUser(
       message: buildCancellationMessage(removedEvents, removedSessions),
     },
   };
+}
+
+function normalizeTenantId(value: number | null | undefined, userId: number): number {
+  const numeric = Number(value ?? userId);
+  return Number.isFinite(numeric) && numeric > 0 ? Math.trunc(numeric) : Math.trunc(userId);
+}
+
+function planTenantMatches(plan: trainingPlans.TrainingPlan, tenantId: number): boolean {
+  return normalizeTenantId(plan.tenant_id, plan.user_id) === tenantId;
+}
+
+async function buildNoActivePlanResult(userId: number): Promise<TrainingPlanCancellationResult> {
+  const removedEvents = await cleanupOrphanedTrainingCalendarEventsForUser(userId);
+  return {
+    status: 'not_found',
+    data: {
+      cancelled: false,
+      removedEvents,
+      removedSessions: 0,
+      removedWeeks: 0,
+      removedCompletions: 0,
+      removedPlans: 0,
+      totalSessions: 0,
+      message: removedEvents > 0
+        ? buildCancellationMessage(removedEvents, 0)
+        : 'No active training plan to cancel.',
+    },
+  };
+}
+
+async function deleteCalendarDeletionTargets(
+  deletionTargets: CalendarDeletionTarget[],
+  userId: number,
+): Promise<Array<PromiseSettledResult<void>>> {
+  const deleteTarget = (target: CalendarDeletionTarget) => deleteTrainingCalendarEventWithRetry(
+    target.eventId,
+    target.source,
+    userId,
+    {
+      userId,
+      planId: target.planId,
+      eventId: target.eventId,
+      source: target.source,
+    },
+  );
+
+  if (deletionTargets.length <= SERIAL_PROVIDER_DELETE_THRESHOLD) {
+    return Promise.allSettled(deletionTargets.map(deleteTarget));
+  }
+
+  const results: Array<PromiseSettledResult<void>> = [];
+  for (const target of deletionTargets) {
+    try {
+      await deleteTarget(target);
+      results.push({ status: 'fulfilled', value: undefined });
+    } catch (reason) {
+      results.push({ status: 'rejected', reason });
+    }
+  }
+  return results;
 }
 
 function buildCancellationMessage(removedEvents: number, removedSessions: number): string {
@@ -336,13 +511,34 @@ async function buildCalendarDeletionTargetsForPlan(
     }
   }
 
-  for (const ownership of findOwnershipsForPlan(plan.id)) {
+  for (const ownership of findOwnershipsForPlan(plan.id, userId)) {
     if (ownership.status === 'deleted') continue;
     if (!isCalendarSource(ownership.calendar_source)) continue;
     const key = `${ownership.calendar_source}:${ownership.calendar_event_id}`;
     targets.set(key, {
       eventId: ownership.calendar_event_id,
       source: ownership.calendar_source,
+      planId: plan.id,
+    });
+  }
+
+  // 2026-05-25 fix — Secretary-owned training calendar events live
+  // in `secretary_agenda_items.provider_event_id` and are NOT
+  // mirrored into `training_agenda_event_ownership`. Without this
+  // sweep, cancelling a plan only deletes events the training skill
+  // wrote directly; events the secretary arbitrator wrote on
+  // training's behalf were left behind, then either had to wait for
+  // the next `secretary_agenda_sync` cron tick (5 min) or sat as
+  // permanent orphans if the cancellation cascade also failed to
+  // match the agenda row (see prior `plan_version` drift fix in
+  // training-plan-cancellation-cascade.ts).
+  for (const secretaryEvent of findSecretaryAgendaCalendarEventsForPlan(plan.id, userId, plan.tenant_id ?? userId)) {
+    if (!isCalendarSource(secretaryEvent.calendar_source)) continue;
+    const key = `${secretaryEvent.calendar_source}:${secretaryEvent.calendar_event_id}`;
+    if (targets.has(key)) continue;
+    targets.set(key, {
+      eventId: secretaryEvent.calendar_event_id,
+      source: secretaryEvent.calendar_source,
       planId: plan.id,
     });
   }
@@ -356,13 +552,15 @@ async function buildCalendarDeletionTargetsForPlan(
   const sortedDates = matchableSessions
     .map((entry) => entry.sessionDate)
     .sort((left, right) => left.getTime() - right.getTime());
-  const startStr = sortedDates[0].toISOString().slice(0, 10);
-  const endStr = new Date(sortedDates[sortedDates.length - 1].getTime() + 24 * 60 * 60 * 1000)
+  const lookupStart = new Date(sortedDates[0].getTime() - 7 * 24 * 60 * 60 * 1000);
+  const lookupEnd = new Date(sortedDates[sortedDates.length - 1].getTime() + 15 * 24 * 60 * 60 * 1000);
+  const startStr = lookupStart.toISOString().slice(0, 10);
+  const endStr = lookupEnd
     .toISOString()
     .slice(0, 10);
 
   try {
-    const events = await getEvents(startStr, endStr, userId);
+    const events = await getCalendarEventsForCancellation(startStr, endStr, userId);
     for (const event of events || []) {
       const matchingSession = matchableSessions.find((entry) =>
         isMatchingGeneratedTrainingEvent(entry, plan.id, event),
@@ -384,6 +582,119 @@ async function buildCalendarDeletionTargetsForPlan(
   return [...targets.values()];
 }
 
+async function getCalendarEventsForCancellation(
+  startStr: string,
+  endStr: string,
+  userId: number,
+): Promise<UnifiedCalendarEvent[]> {
+  const settled = await Promise.allSettled(TRAINING_CALENDAR_SOURCES.map((source) =>
+    getEventsForSources(startStr, endStr, userId, [source]),
+  ));
+  const events: UnifiedCalendarEvent[] = [];
+  const failures: unknown[] = [];
+  settled.forEach((result) => {
+    if (result.status === 'fulfilled') {
+      events.push(...(result.value || []));
+    } else {
+      failures.push(result.reason);
+    }
+  });
+  if (failures.length === TRAINING_CALENDAR_SOURCES.length) {
+    throw failures[0];
+  }
+  return events;
+}
+
+async function cleanupOrphanedTrainingCalendarEventsForUser(userId: number): Promise<number> {
+  let removedEvents = 0;
+  try {
+    const reconciliation = await reconcileOrphanedTrainingAgendaEvents(userId);
+    removedEvents += reconciliation.deleted;
+  } catch (err) {
+    logger.warn({ err, userId }, 'No-plan training cancellation orphan reconciliation failed');
+  }
+
+  let markerTargets: CalendarDeletionTarget[] = [];
+  try {
+    markerTargets = await buildMarkerOrphanDeletionTargetsForUser(userId);
+  } catch (err) {
+    logger.warn({ err, userId }, 'No-plan training cancellation marker sweep failed');
+  }
+  if (markerTargets.length === 0) return removedEvents;
+
+  const deletionResults = await deleteCalendarDeletionTargets(markerTargets, userId);
+  deletionResults.forEach((result, idx) => {
+    const target = markerTargets[idx];
+    if (!target) return;
+    if (result.status === 'fulfilled' || isProviderEventNotFoundError(result.reason)) {
+      removedEvents += 1;
+      markCalendarOwnershipDeleted({
+        eventId: target.eventId,
+        source: target.source,
+        reason: result.status === 'fulfilled'
+          ? 'no_active_plan_marker_sweep'
+          : 'no_active_plan_marker_sweep_event_gone_upstream',
+        status: 'deleted',
+        userId,
+        planId: target.planId,
+      });
+    } else {
+      markCalendarOwnershipDeleted({
+        eventId: target.eventId,
+        source: target.source,
+        reason: 'no_active_plan_marker_sweep_delete_failed',
+        status: 'orphaned',
+        userId,
+        planId: target.planId,
+      });
+    }
+  });
+
+  return removedEvents;
+}
+
+async function buildMarkerOrphanDeletionTargetsForUser(userId: number): Promise<CalendarDeletionTarget[]> {
+  const lookupStart = new Date();
+  lookupStart.setDate(lookupStart.getDate() - TRAINING_ORPHAN_LOOKBACK_DAYS);
+  const lookupEnd = new Date();
+  lookupEnd.setDate(lookupEnd.getDate() + TRAINING_ORPHAN_LOOKAHEAD_DAYS);
+  const events = await getCalendarEventsForCancellation(
+    lookupStart.toISOString().slice(0, 10),
+    lookupEnd.toISOString().slice(0, 10),
+    userId,
+  );
+  const targets = new Map<string, CalendarDeletionTarget>();
+  for (const event of events) {
+    if (!event.id || !isCalendarSource(event.source)) continue;
+    const planId = trainingMarkerPlanId(event.description);
+    if (!planId) continue;
+    if (hasActiveTrainingOwner(event.id, event.source, userId)) continue;
+    const key = `${event.source}:${event.id}`;
+    targets.set(key, {
+      eventId: event.id,
+      source: event.source,
+      planId,
+    });
+  }
+  return [...targets.values()];
+}
+
+function hasActiveTrainingOwner(eventId: string, source: CalendarSource, userId: number): boolean {
+  const owners = getTrainingCalendarEventOwners(eventId, source);
+  return owners.some((owner) => owner.userId === userId && String(owner.planStatus || '').toLowerCase() === 'active');
+}
+
+function trainingMarkerPlanId(description: string | undefined): number | null {
+  const marker = parseTrainingIdentityMarker(description);
+  if (marker?.planId) return marker.planId;
+  const text = String(description || '');
+  if (!/^NEXUS_SECRETARY_SOURCE_SKILL:training$/mi.test(text)) return null;
+  const match = text.match(/^NEXUS_SECRETARY_SOURCE_INTENT:training:(\d+):(\d+):(\d+)$/mi);
+  if (!match) return null;
+  const planId = Number(match[1]);
+  return Number.isFinite(planId) && planId > 0 ? Math.trunc(planId) : null;
+}
+
 function isOwnedByAnotherTrainingPlan(
   eventId: string,
   source: CalendarSource,
@@ -401,19 +712,30 @@ function isMatchingGeneratedTrainingEvent(
 ): boolean {
   if (!event.id || !isCalendarSource(event.source)) return false;
   const marker = parseTrainingIdentityMarker(event.description);
-  if (!marker?.sessionIdentityKey || !marker?.sessionShapeHash) return false;
-  if (marker.planId !== planId) return false;
-  if (marker.sessionIdentityKey !== entry.sessionIdentityKey) return false;
-  if (marker.sessionShapeHash !== entry.sessionShapeHash) return false;
+  const identityMatched = Boolean(
+    marker?.sessionIdentityKey
+      && marker?.sessionShapeHash
+      && marker.planId === planId
+      && marker.sessionIdentityKey === entry.sessionIdentityKey
+      && marker.sessionShapeHash === entry.sessionShapeHash,
+  );
+  const secretaryIntentMatched = matchesSecretaryTrainingSourceIntent(entry, planId, event.description);
+  if (!identityMatched && !secretaryIntentMatched) return false;
+  return true;
+}
 
-  const eventStart = new Date(event.start);
-  const eventEnd = new Date(event.end);
-  if (!Number.isFinite(eventStart.getTime()) || !Number.isFinite(eventEnd.getTime())) return false;
-  if (eventStart.toISOString().slice(0, 10) !== entry.sessionDate.toISOString().slice(0, 10)) return false;
-
-  const eventDurationMinutes = Math.round((eventEnd.getTime() - eventStart.getTime()) / 60000);
-  const durationMinutes = entry.session.duration_minutes || 60;
-  return Math.abs(eventDurationMinutes - durationMinutes) <= 2;
+function matchesSecretaryTrainingSourceIntent(
+  entry: MatchableTrainingSessionIdentity,
+  planId: number,
+  description: string | undefined,
+): boolean {
+  const text = String(description || '');
+  if (!/^NEXUS_SECRETARY_SOURCE_SKILL:training$/mi.test(text)) return false;
+  const match = text.match(/^NEXUS_SECRETARY_SOURCE_INTENT:training:(\d+):(\d+):(\d+)$/mi);
+  if (!match) return false;
+  const sourcePlanId = Number(match[1]);
+  const sourceSessionId = Number(match[3]);
+  return sourcePlanId === planId && sourceSessionId === entry.session.id;
 }
 
 function buildIdentityMatchableSessions(

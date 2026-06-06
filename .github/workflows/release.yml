@@ -22,14 +22,17 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    env:
+      NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
+      NOTION_RELEASES_DB: ${{ secrets.NOTION_RELEASES_DB }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: '20'
 
@@ -89,7 +92,7 @@ jobs:
           git push origin main --follow-tags
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
           tag_name: ${{ steps.bump.outputs.tag }}
           name: ${{ steps.bump.outputs.tag }}
@@ -103,10 +106,7 @@ jobs:
           prerelease: false
 
       - name: Update Notion release log
-        if: ${{ secrets.NOTION_TOKEN != '' }}
-        env:
-          NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
-          NOTION_RELEASES_DB: ${{ secrets.NOTION_RELEASES_DB }}
+        if: ${{ env.NOTION_TOKEN != '' }}
         run: |
           curl -s -X POST "https://api.notion.com/v1/pages" \
             -H "Authorization: Bearer $NOTION_TOKEN" \

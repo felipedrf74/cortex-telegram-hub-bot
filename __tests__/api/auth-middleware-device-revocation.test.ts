@@ -25,6 +25,7 @@ import type { Request, Response, NextFunction } from 'express';
 const MIGRATIONS_DIR = path.resolve(__dirname, '../../migrations');
 
 let testDb: Database.Database;
+const TEST_IOS_JWT_SECRET = 'test-ios-secret-000000000000000000000000000000';
 
 const originalEnv = {
   STAGING: process.env.STAGING,
@@ -77,14 +78,14 @@ function mockRes(): MockRes {
   return res;
 }
 
-function mockReq(headers: Record<string, string>): Request {
+function mockReq(headers: Record<string, string>, method = 'GET', url = '/noop'): Request {
   return {
     headers,
     ip: '127.0.0.1',
     socket: { remoteAddress: '127.0.0.1' },
     header(name: string) { return headers[name.toLowerCase()]; },
-    method: 'GET',
-    url: '/noop',
+    method,
+    url,
   } as any;
 }
 
@@ -96,7 +97,7 @@ describe('authMiddleware: device revocation', () => {
 
     process.env.STAGING = 'true';
     process.env.IOS_API_ENABLED = 'true';
-    process.env.IOS_API_JWT_SECRET = 'test-ios-secret';
+    process.env.IOS_API_JWT_SECRET = TEST_IOS_JWT_SECRET;
     process.env.IOS_INVITE_CODE = 'LOCALBETA_TEST';
     process.env.IOS_OWNER_CODE = 'LOCALOWNER_TEST';
     process.env.OWNER_TELEGRAM_ID = '991122';
@@ -125,8 +126,15 @@ describe('authMiddleware: device revocation', () => {
   async function runMiddleware(
     userId: number,
     deviceId: string,
-    options: { seedDevice?: boolean; userStatus?: string } = {},
-  ): Promise<MockRes & { admitted: boolean }> {
+    options: {
+      seedDevice?: boolean;
+      userStatus?: string;
+      headers?: Record<string, string>;
+      method?: string;
+      url?: string;
+      conflictingDeviceUserId?: number;
+    } = {},
+  ): Promise<MockRes & { admitted: boolean; requestTenantId?: number; requestUserId?: number }> {
     const seedDevice = options.seedDevice !== false;
     const userStatus = options.userStatus ?? 'active';
 
@@ -138,10 +146,53 @@ describe('authMiddleware: device revocation', () => {
         'INSERT INTO ios_devices (user_id, device_id, refresh_token) VALUES (?, ?, ?)',
       ).run(userId, deviceId, `refresh-${deviceId}`);
     }
+    if (options.conflictingDeviceUserId) {
+      testDb.prepare(
+        'INSERT OR REPLACE INTO users (id, telegram_id, first_name, status) VALUES (?, ?, ?, ?)',
+      ).run(
+        options.conflictingDeviceUserId,
+        700000 + options.conflictingDeviceUserId,
+        `User${options.conflictingDeviceUserId}`,
+        'active',
+      );
+      testDb.prepare(
+        'INSERT INTO ios_devices (user_id, device_id, refresh_token) VALUES (?, ?, ?)',
+      ).run(options.conflictingDeviceUserId, deviceId, `refresh-conflict-${deviceId}`);
+    }
 
     const token = jwt.sign(
       { userId, deviceId },
-      'test-ios-secret',
+      TEST_IOS_JWT_SECRET,
+      { expiresIn: '7d' as any },
+    );
+
+    const { authMiddleware } = await import('../../src/api/auth-middleware');
+    const req = mockReq({
+      authorization: `Bearer ${token}`,
+      ...(options.headers ?? {}),
+    }, options.method, options.url);
+    const res = mockRes();
+
+    let admitted = false;
+    await new Promise<void>((resolve) => {
+      const next: NextFunction = () => { admitted = true; resolve(); };
+      authMiddleware(req, res as unknown as Response, next);
+      setImmediate(resolve);
+    });
+
+    return Object.assign(res, {
+      admitted,
+      requestTenantId: (req as any).tenantId,
+      requestUserId: (req as any).userId,
+    });
+  }
+
+  async function runMiddlewareWithRawPayload(
+    payload: Record<string, unknown>,
+  ): Promise<MockRes & { admitted: boolean; requestTenantId?: number; requestUserId?: number }> {
+    const token = jwt.sign(
+      payload,
+      TEST_IOS_JWT_SECRET,
       { expiresIn: '7d' as any },
     );
 
@@ -156,12 +207,81 @@ describe('authMiddleware: device revocation', () => {
       setImmediate(resolve);
     });
 
-    return Object.assign(res, { admitted });
+    return Object.assign(res, {
+      admitted,
+      requestTenantId: (req as any).tenantId,
+      requestUserId: (req as any).userId,
+    });
   }
 
   it('admits a request when the device row still exists', async () => {
     const res = await runMiddleware(501, 'dev-live');
     expect(res.admitted).toBe(true);
+  });
+
+  it('fails closed when the JWT userId is not a positive integer number', async () => {
+    const stringUser = await runMiddlewareWithRawPayload({
+      userId: '501',
+      deviceId: 'dev-string-user',
+    });
+    expect(stringUser.admitted).toBe(false);
+    expect(stringUser.statusCode).toBe(401);
+    expect(stringUser.body.error.code).toBe('UNAUTHORIZED');
+    expect(stringUser.body.error.message).toBe('Invalid authenticated user scope');
+
+    const fractionalUser = await runMiddlewareWithRawPayload({
+      userId: 501.5,
+      deviceId: 'dev-fractional-user',
+    });
+    expect(fractionalUser.admitted).toBe(false);
+    expect(fractionalUser.statusCode).toBe(401);
+    expect(fractionalUser.body.error.code).toBe('UNAUTHORIZED');
+    expect(fractionalUser.body.error.message).toBe('Invalid authenticated user scope');
+  });
+
+  it('admits an explicit active-tenant header only when it matches the canonical tenant', async () => {
+    const res = await runMiddleware(504, 'dev-active-tenant', {
+      headers: { 'x-nexus-active-tenant-id': '504' },
+    });
+
+    expect(res.admitted).toBe(true);
+    expect(res.requestUserId).toBe(504);
+    expect(res.requestTenantId).toBe(504);
+  });
+
+  it('fails closed when the same user tries to switch to a non-membership-backed tenant', async () => {
+    const res = await runMiddleware(505, 'dev-tenant-switch', {
+      headers: { 'x-nexus-active-tenant-id': '1505' },
+    });
+
+    expect(res.admitted).toBe(false);
+    expect(res.statusCode).toBe(403);
+    expect(res.body.error.code).toBe('FORBIDDEN');
+    expect(res.body.error.message).toBe('Active tenant switching is not enabled for this session');
+  });
+
+  it('fails closed before a Cooking POST when the active tenant header is forged', async () => {
+    const res = await runMiddleware(507, 'dev-cooking-tenant-forge', {
+      method: 'POST',
+      url: '/api/v1/cooking/recipes',
+      headers: { 'x-nexus-active-tenant-id': '1507' },
+    });
+
+    expect(res.admitted).toBe(false);
+    expect(res.statusCode).toBe(403);
+    expect(res.body.error.code).toBe('FORBIDDEN');
+    expect(res.body.error.message).toBe('Active tenant switching is not enabled for this session');
+  });
+
+  it('fails closed when the active-tenant header is malformed', async () => {
+    const res = await runMiddleware(506, 'dev-bad-active-tenant', {
+      headers: { 'x-nexus-active-tenant-id': '506abc' },
+    });
+
+    expect(res.admitted).toBe(false);
+    expect(res.statusCode).toBe(403);
+    expect(res.body.error.code).toBe('FORBIDDEN');
+    expect(res.body.error.message).toBe('Invalid active tenant scope');
   });
 
   it('rejects a request whose device has been revoked, with 401 Session has been revoked', async () => {
@@ -171,6 +291,18 @@ describe('authMiddleware: device revocation', () => {
     // /auth/logout. This is the ONLY way the middleware learns that
     // the session was revoked.
     const res = await runMiddleware(502, 'dev-revoked', { seedDevice: false });
+    expect(res.admitted).toBe(false);
+    expect(res.statusCode).toBe(401);
+    expect(res.body.error.code).toBe('UNAUTHORIZED');
+    expect(res.body.error.message).toBe('Session has been revoked');
+  });
+
+  it('rejects a stale access token after the same physical device switches to another account', async () => {
+    const res = await runMiddleware(508, 'shared-device-after-account-switch', {
+      seedDevice: false,
+      conflictingDeviceUserId: 509,
+    });
+
     expect(res.admitted).toBe(false);
     expect(res.statusCode).toBe(401);
     expect(res.body.error.code).toBe('UNAUTHORIZED');

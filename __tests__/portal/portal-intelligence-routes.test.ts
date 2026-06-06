@@ -110,10 +110,11 @@ describe('portal intelligence routes', () => {
     const route = captureRoutes().find((candidate) => candidate.method === 'GET' && candidate.path === '/api/signals');
 
     const res = invoke(route!, {
-      query: { limit: '500', type: 'voice_pattern' },
+      query: { limit: '500', type: 'voice_pattern', tenantId: '12', userId: '12' },
     });
 
-    expect(mockGetSignalLog).toHaveBeenCalledWith(200);
+    expect(mockGetSignalLog).toHaveBeenCalledWith(200, 12, 12);
+    expect(mockGetActiveSignalCount).toHaveBeenCalledWith(12, 12);
     expect(res.body).toEqual({
       ok: true,
       signals: [{ id: 2, signal_type: 'voice_pattern' }],
@@ -122,13 +123,15 @@ describe('portal intelligence routes', () => {
   });
 
   it('dismisses valid signals and clears the portal snapshot cache', () => {
+    mockDismissSignal.mockReturnValue(1);
     const route = captureRoutes().find((candidate) => candidate.method === 'POST' && candidate.path === '/api/signals/:id/dismiss');
 
     const res = invoke(route!, {
       params: { id: '42' },
+      query: { tenantId: '12', userId: '12' },
     });
 
-    expect(mockDismissSignal).toHaveBeenCalledWith(42);
+    expect(mockDismissSignal).toHaveBeenCalledWith(42, 12, 12);
     expect(mockClearPortalSnapshotCache).toHaveBeenCalledTimes(1);
     expect(res.body).toEqual({ ok: true, message: 'Signal dismissed' });
   });
@@ -144,5 +147,29 @@ describe('portal intelligence routes', () => {
     expect(res.body).toEqual({ ok: false, message: 'Invalid ID' });
     expect(mockDismissSignal).not.toHaveBeenCalled();
     expect(mockClearPortalSnapshotCache).not.toHaveBeenCalled();
+  });
+
+  it('requires tenant scope for signal reads', () => {
+    const route = captureRoutes().find((candidate) => candidate.method === 'GET' && candidate.path === '/api/signals');
+
+    const res = invoke(route!, { query: {} });
+
+    expect(res.statusCode).toBe(400);
+    expect(res.body).toMatchObject({ ok: false, error: { code: 'TENANT_SCOPE_REQUIRED' } });
+    expect(mockGetSignalLog).not.toHaveBeenCalled();
+  });
+
+  it('passes tenant scope into ranked signal reads', () => {
+    mockReadRankedSignals.mockReturnValue([]);
+    const route = captureRoutes().find((candidate) => candidate.method === 'GET' && candidate.path === '/api/signals/ranked');
+
+    const res = invoke(route!, { query: { tenantId: '77', userId: '78', limit: '5' } });
+
+    expect(res.statusCode).toBe(200);
+    expect(mockReadRankedSignals).toHaveBeenCalledWith('portal-inspector', expect.any(Array), expect.objectContaining({
+      limit: 5,
+      userId: 78,
+      tenantId: 77,
+    }));
   });
 });

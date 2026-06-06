@@ -4,10 +4,10 @@ import crypto from 'crypto';
 import { config } from '../config';
 import { logger } from '../utils/logger';
 import { getCurrentRequestId, generateRequestId } from '../utils/request-context';
-import { maybeSaveToFile, saveContentAsDocx } from './content-file-saver';
 import type { AgentSignal } from './intelligence-bus';
-
-export { maybeSaveToFile, saveContentAsDocx } from './content-file-saver';
+import { buildCurrentCreatorProfilePayload } from './content-engine-profile-payload';
+import { createInternalAttributionToken } from './internal-attribution';
+import { requireTenantIdParam } from './tenant-scope';
 
 // ── Types mirroring Python Pydantic models ──────────────────────────
 
@@ -57,8 +57,6 @@ export interface HotNewsResponse {
   generated_at: string;
 }
 
-// ── Phase 2: Visual + Social ──────────────────────────────────────────
-
 export interface TrendingResponse {
   topics: TrendingTopic[];
   niche: string;
@@ -71,8 +69,6 @@ export interface ReactionResponse {
   briefs: ContentBrief[];
   duration_ms: number;
 }
-
-// ── Phase 3: Creative Intelligence ────────────────────────────────────
 
 export interface HooksResponse {
   topic: string;
@@ -97,6 +93,19 @@ export interface ScriptResponse {
   cta?: string;
   degraded?: boolean;
   warnings?: string[];
+  generation_mode?: string;
+  cache_status?: string;
+  research_artifact_id?: string;
+  source_package_id?: string;
+  voice_card_version?: string;
+  quality_score?: number;
+  quality_warnings?: string[];
+  budget_state?: string;
+  expand_options?: Array<{ id: string; label: string; action: string }>;
+  estimated_cost?: Record<string, unknown>;
+  actual_cost?: Record<string, unknown>;
+  prompt_budget?: Record<string, unknown>;
+  research_route?: Record<string, unknown>;
 }
 
 export interface ScriptTopicContext {
@@ -129,8 +138,6 @@ export interface CaptionResponse {
   duration_ms: number;
 }
 
-// ── Phase 4: Strategic Intelligence ───────────────────────────────────
-
 export interface CompetitorResponse {
   channel: string;
   analysis: Record<string, unknown>;
@@ -155,8 +162,6 @@ export interface RepurposeResponse {
   duration_ms: number;
 }
 
-// ── Phase 5: Learning System ──────────────────────────────────────────
-
 export interface FeedbackResponse {
   status: string;
   analysis: Record<string, unknown>;
@@ -169,11 +174,7 @@ export interface ReportResponse {
   duration_ms: number;
 }
 
-// ── HTTP Client ─────────────────────────────────────────────────────
-
 const BASE_URL = `http://localhost:${config.contentEngine.port}/api/v1`;
-
-// ── Health check + Circuit Breaker ─────────────────────────────────
 
 let _lastHealthCheck = 0;
 let _isHealthy = true;
@@ -182,10 +183,6 @@ const HEALTH_CHECK_INTERVAL_MS = 60_000; // 1 minute between probes
 const CIRCUIT_BREAKER_THRESHOLD = 3;     // 3 consecutive failures → fail-fast
 const CIRCUIT_BREAKER_COOLDOWN_MS = 5 * 60_000; // 5 minutes
 
-/**
- * Check if the Python content-engine is healthy.
- * Returns cached result if checked recently.
- */
 export async function isContentEngineHealthy(): Promise<boolean> {
   if (Date.now() - _lastHealthCheck < HEALTH_CHECK_INTERVAL_MS) return _isHealthy;
   try {
@@ -202,10 +199,6 @@ export async function isContentEngineHealthy(): Promise<boolean> {
   return _isHealthy;
 }
 
-/**
- * Retry wrapper with exponential backoff.
- * Retries up to 3 times with delays: 2s, 4s, 8s.
- */
 async function withRetry<T>(fn: () => Promise<T>, maxRetries = 3): Promise<T> {
   // Circuit breaker: fail-fast if engine has been down
   if (_consecutiveFailures >= CIRCUIT_BREAKER_THRESHOLD) {
@@ -240,19 +233,7 @@ async function engineFetch<T>(path: string, options?: RequestInit, timeoutMs = 3
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
 
-  // Distributed tracing: propagate the current requestId to the Python
-  // content-engine via X-Request-Id (Quarter audit item). When this fetch
-  // happens inside a request context (Telegram message, HTTP request,
-  // or cron tick), getCurrentRequestId() returns the same ID that the
-  // upstream is logging. The Python service has matching middleware in
-  // content-engine/main.py that reads X-Request-Id and threads it through
-  // its own contextvars-backed logging filter. Result: a single grep on
-  // the requestId surfaces every log line from both services for one
-  // logical operation.
-  //
-  // If we're outside any context (rare — startup work or unwrapped
-  // background code) we still generate one so the content-engine call
-  // is traceable from the Python side at least.
+  // Propagate request tracing to the Python content-engine.
   const requestId = getCurrentRequestId() || generateRequestId();
 
   try {
@@ -262,6 +243,7 @@ async function engineFetch<T>(path: string, options?: RequestInit, timeoutMs = 3
       headers: {
         'Content-Type': 'application/json',
         'X-Request-Id': requestId,
+        'X-Internal-Secret': config.contentEngine.internalApiSecret,
         ...options?.headers,
       },
     });
@@ -276,9 +258,10 @@ async function engineFetch<T>(path: string, options?: RequestInit, timeoutMs = 3
 }
 
 export async function deepSearch(query: string, niches?: string[], maxResults = 10): Promise<DeepSearchResponse> {
+  const creatorPayload = buildCurrentCreatorProfilePayload(null, 'content_engine_deepsearch');
   return withRetry(() => engineFetch<DeepSearchResponse>('/deepsearch', {
     method: 'POST',
-    body: JSON.stringify({ query, niches: niches || [], max_results: maxResults }),
+    body: JSON.stringify({ query, niches: niches || [], max_results: maxResults, ...creatorPayload }),
   }, 180_000)); // deep search: 5 query variations + AI synthesis
 }
 
@@ -287,14 +270,16 @@ export async function getSources(query: string): Promise<SourcesResponse> {
 }
 
 export async function getHotNews(): Promise<HotNewsResponse> {
-  return engineFetch<HotNewsResponse>('/hotnews');
+  const creatorPayload = buildCurrentCreatorProfilePayload(null, 'content_engine');
+  return engineFetch<HotNewsResponse>('/hotnews', {
+    method: 'POST',
+    body: JSON.stringify(creatorPayload),
+  });
 }
 
 export function isContentEngineConfigured(): boolean {
   return config.contentEngine.enabled;
 }
-
-// ── Phase 2 API ─────────────────────────────────────────────────────
 
 export async function getTrending(niche?: string): Promise<TrendingResponse> {
   const qs = niche ? `?niche=${encodeURIComponent(niche)}` : '';
@@ -305,30 +290,28 @@ export async function getReaction(topic: string): Promise<ReactionResponse> {
   return engineFetch<ReactionResponse>(`/reaction?topic=${encodeURIComponent(topic)}`);
 }
 
-// ── Phase 3 API ─────────────────────────────────────────────────────
-
 export async function getHooks(topic: string, niche = 'general', count = 8): Promise<HooksResponse> {
+  const creatorPayload = buildCurrentCreatorProfilePayload(null, 'content_engine_hooks');
   return engineFetch<HooksResponse>('/hooks', {
     method: 'POST',
-    body: JSON.stringify({ topic, niche, count }),
+    body: JSON.stringify({ topic, niche, count, ...creatorPayload }),
   }, 45_000);
 }
 
-// ── Generation Mode Configuration ──────────────────────────────────
-//
 // Mode controls three levers: cache behavior, signal window, and timeout.
-//
+//   Draft:    compact draft pack, cache-first, no signals, 45s timeout (~70-85% cheaper)
 //   Quick:    cache-first (48h), no signals, 60s timeout  (~$0.003 cached, ~$0.005 fresh)
-//   Standard: cache 24h, 30-day signals, 180s timeout     (~$0.01-0.02)
-//   Deep:     skip cache, 90-day signals, 300s timeout     (~$0.02-0.05)
+//   Standard: cache 24h, compact signal window, 120s timeout (~$0.01-0.02)
+//   Deep:     skip cache, explicit deep research, 300s timeout (~$0.02-0.05)
 
-export type ScriptGenerationMode = 'quick' | 'standard' | 'deep';
+export type ScriptGenerationMode = 'draft' | 'quick' | 'standard' | 'deep';
 export type ScriptRenderMode = 'structured' | 'chat';
 export type ScriptStyle = 'detailed' | 'bullets';
 
 const MODE_CONFIG: Record<ScriptGenerationMode, { cacheTtl: number; signalDays: number; timeoutMs: number }> = {
+  draft:    { cacheTtl: 48 * 3600, signalDays: 0,  timeoutMs: 45_000 },
   quick:    { cacheTtl: 48 * 3600, signalDays: 0,  timeoutMs: 60_000 },
-  standard: { cacheTtl: 24 * 3600, signalDays: 30, timeoutMs: 180_000 },
+  standard: { cacheTtl: 24 * 3600, signalDays: 14, timeoutMs: 120_000 },
   deep:     { cacheTtl: 0,         signalDays: 90, timeoutMs: 300_000 },
 };
 
@@ -457,7 +440,7 @@ export function buildScriptCacheKey(
   maxDuration = 8,
   format = 'YouTube',
   targetDurationSeconds?: number | null,
-  mode: ScriptGenerationMode = 'standard',
+  mode: ScriptGenerationMode = 'draft',
   brandVoice?: string | null,
   language?: string | null,
   renderMode: ScriptRenderMode = 'structured',
@@ -465,9 +448,13 @@ export function buildScriptCacheKey(
   scriptContext?: ScriptTopicContext | null,
   scriptStyle: ScriptStyle = 'detailed',
   regenerationSeed?: string | null,
+  tenantId?: number,
 ): string {
+  const tenantKey = tenantId == null && userId == null
+    ? 'global'
+    : String(requireTenantIdParam(tenantId, 'buildScriptCacheKey'));
   const parts = [
-    'script-v7',
+    'script-v8',
     topic.toLowerCase().trim(),
     niche,
     format,
@@ -480,6 +467,7 @@ export function buildScriptCacheKey(
     `style:${normalizeScriptStyle(scriptStyle)}`,
     `ctx:${hashScriptContext(scriptContext)}`,
     `scope:${userId ?? 'global'}`,
+    `tenant:${tenantKey}`,
   ];
   const seedHash = hashRegenerationSeed(regenerationSeed);
   if (seedHash) parts.push(`regen:${seedHash}`);
@@ -488,7 +476,7 @@ export function buildScriptCacheKey(
 
 export async function getScript(
   topic: string, niche = 'general', maxDuration = 8, format = 'YouTube',
-  mode: ScriptGenerationMode = 'standard',
+  mode: ScriptGenerationMode = 'draft',
   brandVoice?: string | null,
   language = 'pt-BR',
   renderMode: ScriptRenderMode = 'structured',
@@ -499,6 +487,7 @@ export async function getScript(
   forceRefresh = false,
   regenerationSeed?: string | null,
   creatorProfile?: string | null,
+  tenantId?: number,
 ): Promise<ScriptResponse> {
   const cfg = MODE_CONFIG[mode];
   const normalizedLanguage = normalizeScriptLanguage(language);
@@ -518,6 +507,7 @@ export async function getScript(
     scriptContext,
     normalizedScriptStyle,
     regenerationSeed,
+    tenantId,
   );
 
   // ── Cache check (skip for deep mode — always generate fresh) ──
@@ -545,9 +535,9 @@ export async function getScript(
       // FIX: signalDays is a time window, not a count limit.
       // readSignals(consumer, types, limit, userId, maxAgeDays)
       // CONT-M1: null-coalesce in case readSignals returns null/undefined
-      const raw = readSignals('script-engine', [...signalTypes], 100, userId, cfg.signalDays) || [];
+      const raw = readSignals('script-engine', [...signalTypes], 100, userId, cfg.signalDays, tenantId) || [];
       const ranked = rankScriptSignals(raw, topic, niche, scriptContext);
-      const signalLimit = mode === 'deep' ? 10 : 6;
+      const signalLimit = mode === 'deep' ? 10 : 4;
       contextSignals = ranked.slice(0, signalLimit).map(s => ({
         type: s.signal_type,
         source: s.source_agent,
@@ -574,6 +564,13 @@ export async function getScript(
       // generated script reflects the user's tone, vocabulary, and style.
       brand_voice: brandVoice || undefined,
       creator_profile: creatorProfile || undefined,
+      user_id: userId ?? undefined,
+      tenant_id: tenantId ?? undefined,
+      internal_attribution_token: createInternalAttributionToken({
+        userId: userId ?? 0,
+        tenantId: tenantId ?? userId ?? 0,
+        category: `content_engine_script_${mode}`,
+      }) ?? undefined,
       force_refresh: forceRefresh || undefined,
       regeneration_seed: regenerationSeed || undefined,
     }),
@@ -592,57 +589,60 @@ export async function getScript(
 }
 
 export async function getTitles(topic: string, niche = 'general', count = 10): Promise<TitlesResponse> {
+  const creatorPayload = buildCurrentCreatorProfilePayload(null, 'content_engine');
   return engineFetch<TitlesResponse>('/titles', {
     method: 'POST',
-    body: JSON.stringify({ topic, niche, count }),
+    body: JSON.stringify({ topic, niche, count, ...creatorPayload }),
   }, 45_000);
 }
 
 export async function getThumbnail(title: string, niche = 'general'): Promise<ThumbnailResponse> {
+  const creatorPayload = buildCurrentCreatorProfilePayload(null, 'content_engine');
   return engineFetch<ThumbnailResponse>('/thumbnail', {
     method: 'POST',
-    body: JSON.stringify({ title, niche }),
+    body: JSON.stringify({ title, niche, ...creatorPayload }),
   }, 45_000);
 }
 
 export async function getCaption(topic: string, niche = 'general'): Promise<CaptionResponse> {
+  const creatorPayload = buildCurrentCreatorProfilePayload(null, 'content_engine');
   return engineFetch<CaptionResponse>('/caption', {
     method: 'POST',
-    body: JSON.stringify({ topic, niche }),
+    body: JSON.stringify({ topic, niche, ...creatorPayload }),
   }, 45_000);
 }
 
-// ── Phase 4 API ─────────────────────────────────────────────────────
-
 export async function getCompetitor(channel: string, maxVideos = 10): Promise<CompetitorResponse> {
+  const creatorPayload = buildCurrentCreatorProfilePayload(null, 'content_engine');
   return engineFetch<CompetitorResponse>('/competitor', {
     method: 'POST',
-    body: JSON.stringify({ channel, max_videos: maxVideos }),
+    body: JSON.stringify({ channel, max_videos: maxVideos, ...creatorPayload }),
   }, 60_000);
 }
 
 export async function getGaps(niche = 'fitness', maxGaps = 10): Promise<GapsResponse> {
+  const creatorPayload = buildCurrentCreatorProfilePayload(null, 'content_engine');
   return engineFetch<GapsResponse>('/gaps', {
     method: 'POST',
-    body: JSON.stringify({ niche, max_gaps: maxGaps }),
+    body: JSON.stringify({ niche, max_gaps: maxGaps, ...creatorPayload }),
   }, 60_000);
 }
 
 export async function getSeo(topic: string): Promise<SeoResponse> {
+  const creatorPayload = buildCurrentCreatorProfilePayload(null, 'content_engine');
   return engineFetch<SeoResponse>('/seo', {
     method: 'POST',
-    body: JSON.stringify({ topic }),
+    body: JSON.stringify({ topic, ...creatorPayload }),
   }, 60_000);
 }
 
 export async function getRepurpose(topic: string, originalFormat = 'YouTube'): Promise<RepurposeResponse> {
+  const creatorPayload = buildCurrentCreatorProfilePayload(null, 'content_engine');
   return engineFetch<RepurposeResponse>('/repurpose', {
     method: 'POST',
-    body: JSON.stringify({ topic, original_format: originalFormat }),
+    body: JSON.stringify({ topic, original_format: originalFormat, ...creatorPayload }),
   }, 60_000);
 }
-
-// ── Phase 5 API ─────────────────────────────────────────────────────
 
 export async function logFeedback(data: {
   video_url: string;
@@ -654,25 +654,20 @@ export async function logFeedback(data: {
   hook_used?: string;
   notes?: string;
 }): Promise<FeedbackResponse> {
+  const creatorPayload = buildCurrentCreatorProfilePayload(null, 'content_engine_feedback');
   return engineFetch<FeedbackResponse>('/feedback', {
     method: 'POST',
-    body: JSON.stringify(data),
+    body: JSON.stringify({ ...data, ...creatorPayload }),
   }, 45_000);
 }
 
 export async function getReport(period = 'week'): Promise<ReportResponse> {
-  return engineFetch<ReportResponse>(`/report?period=${encodeURIComponent(period)}`);
+  const creatorPayload = buildCurrentCreatorProfilePayload(null, 'content_engine_report');
+  return engineFetch<ReportResponse>('/report', {
+    method: 'POST',
+    body: JSON.stringify({ period, ...creatorPayload }),
+  }, 45_000);
 }
-
-// ── Telegram Formatters — MOVED ─────────────────────────────────────
-//
-// All 16 format functions (formatDeepSearch, formatScript, formatHotNews,
-// etc.) have been physically moved to content-telegram-formatter.ts
-// (April 2026). Core content services return structured response types
-// only — no Telegram HTML formatting.
-//
-// The Telegram handler imports directly from content-telegram-formatter.ts.
-// This file (content-engine.ts) is now purely a structured data service.
 
 // Re-export for any remaining backward-compat imports:
 export {
@@ -681,12 +676,3 @@ export {
   formatThumbnail, formatCaption, formatCompetitor, formatGaps, formatSeo,
   formatRepurpose, formatFeedback, formatReport,
 } from './content-telegram-formatter';
-
-// ── END OF FILE ─────────────────────────────────────────────────────
-// (The 350 LOC of inline format functions that used to be here have been
-// moved to content-telegram-formatter.ts. See git history for the
-// original implementations if needed.)
-
-// NOTE: The lines below were the old inline implementations. They have
-// been deleted. If you need them, check content-telegram-formatter.ts.
-// (end of content-engine.ts — format functions live in content-telegram-formatter.ts)

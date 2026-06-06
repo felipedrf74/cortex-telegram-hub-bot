@@ -26,6 +26,12 @@ function getDbSafe() {
   }
 }
 
+function assertPositiveUserId(userId: number): void {
+  if (!Number.isSafeInteger(userId) || userId <= 0) {
+    throw new Error('userId required: must be a positive integer');
+  }
+}
+
 export function saveCoachState(
   userId: number,
   recommendations: CoachRecommendation[],
@@ -33,6 +39,7 @@ export function saveCoachState(
   timestamp: number,
   ttlMs: number,
 ): void {
+  assertPositiveUserId(userId);
   const db = getDbSafe();
   if (!db) return;
 
@@ -65,6 +72,7 @@ export function saveCoachState(
 }
 
 export function loadCoachState(userId: number, nowMs = Date.now()): PersistedCoachState | null {
+  assertPositiveUserId(userId);
   const db = getDbSafe();
   if (!db) return null;
 
@@ -101,6 +109,7 @@ export function loadCoachState(userId: number, nowMs = Date.now()): PersistedCoa
 }
 
 export function deleteCoachState(userId: number): void {
+  assertPositiveUserId(userId);
   const db = getDbSafe();
   if (!db) return;
   db.prepare('DELETE FROM coach_states WHERE user_id = ?').run(userId);

@@ -9,6 +9,19 @@
 
 import { getDb } from './database';
 import { logger } from '../utils/logger';
+import {
+  cookingPrivateScopePredicate,
+  cookingScopeForInsert,
+  cookingScopeParams,
+  ensureCookingTenantScopeColumns,
+  resolveCookingTenantId,
+} from './cooking-tenant-scope';
+import { buildCookingPreferenceReadModel } from './cooking-preferences';
+import { matchesCookingAllergenText } from './cooking-allergen-vocabulary';
+import {
+  suggestCookingSubstitutionsForIngredient,
+  type CookingSubstitutionSuggestion,
+} from './cooking-intelligence';
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -20,7 +33,12 @@ export interface Ingredient {
 
 export interface Recipe {
   id: number;
+  tenant_id: number;
   user_id: number;
+  owner_user_id: number;
+  visibility_scope: string;
+  lifecycle_state: string;
+  scope_status: string;
   title: string;
   ingredients: Ingredient[];
   instructions: string | null;
@@ -39,7 +57,12 @@ export interface Recipe {
 
 export interface MealPlan {
   id: number;
+  tenant_id: number;
   user_id: number;
+  owner_user_id: number;
+  visibility_scope: string;
+  lifecycle_state: string;
+  scope_status: string;
   date: string;
   meal_type: string;
   recipe_id: number | null;
@@ -48,9 +71,33 @@ export interface MealPlan {
   created_at: string;
 }
 
+/**
+ * Surface-level warning attached to a meal-plan write. Hard rejections (allergy
+ * / dietary violations) still throw — `MealPlanIssue` carries the cases where
+ * the slot was persisted but the user should see a confirmation prompt before
+ * cooking. Plan §C9 (skill-hardening 2026-05-17) requires this for expired
+ * pantry items: the slot is saved, but iOS should render a "the pantry item
+ * you listed is expired — buy fresh?" interstitial.
+ */
+export interface MealPlanIssue {
+  code: 'pantry_expired';
+  ingredientName: string;
+  pantryItemId: number;
+  pantryFreshnessStatus: string;
+  pantryExpiresAt: string | null;
+  message: string;
+}
+
+export type MealPlanWriteResult = MealPlan & { issues?: MealPlanIssue[] };
+
 export interface ShoppingList {
   id: number;
+  tenant_id: number;
   user_id: number;
+  owner_user_id: number;
+  visibility_scope: string;
+  lifecycle_state: string;
+  scope_status: string;
   week_start: string;
   items: ShoppingItem[];
   status: string;
@@ -64,9 +111,104 @@ export interface ShoppingItem {
   unit: string;
   checked: boolean;
   aisle: string;
+  pantry_status?: 'needed' | 'pantry_available' | 'pantry_expired';
+  pantry_item_id?: number;
+  pantry_freshness_status?: string;
+  pantry_note?: string;
+}
+
+export interface PantryItem {
+  id: number;
+  tenant_id: number;
+  user_id: number;
+  owner_user_id: number;
+  visibility_scope: string;
+  lifecycle_state: string;
+  scope_status: string;
+  name: string;
+  normalized_name: string;
+  quantity: string | null;
+  unit: string | null;
+  category: string | null;
+  expires_at: string | null;
+  freshness_status: string;
+  availability_status: string;
+  source: string;
+  confidence: number;
+  notes: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface PantryItemInput {
+  name: string;
+  quantity?: string | null;
+  unit?: string | null;
+  category?: string | null;
+  expiresAt?: string | null;
+  freshnessStatus?: string | null;
+  availabilityStatus?: string | null;
+  source?: string | null;
+  confidence?: number | null;
+  notes?: string | null;
+}
+
+export type CookingSubstitutionReason =
+  | 'allergy'
+  | 'dietary_restriction'
+  | 'disliked_ingredient'
+  | 'expired_pantry';
+
+export interface MealPlanSubstitutionInput {
+  date: string;
+  mealType: string;
+  originalIngredient: string;
+  suggestedIngredient: string;
+  reason: CookingSubstitutionReason;
+  updateShoppingList?: boolean;
+}
+
+export interface MealPlanSubstitutionSuggestionInput {
+  date: string;
+  mealType: string;
+  originalIngredient: string;
+  reason?: CookingSubstitutionReason;
+}
+
+export interface MealPlanSubstitutionSuggestionResult {
+  found: boolean;
+  reason?: 'meal_not_found' | 'recipe_not_found' | 'ingredient_not_found';
+  meal: MealPlan | null;
+  recipe: Recipe | null;
+  suggestions: CookingSubstitutionSuggestion[];
+  originalIngredient: string;
+}
+
+export interface MealPlanSubstitutionResult {
+  applied: boolean;
+  reason?: 'meal_not_found' | 'recipe_not_found' | 'ingredient_not_found';
+  meal: MealPlan | null;
+  recipe: Recipe | null;
+  shoppingList: ShoppingList | null;
+  substitution: {
+    originalIngredient: string;
+    suggestedIngredient: string;
+    reason: CookingSubstitutionReason;
+    affectedMealId?: number;
+    affectedRecipeId?: number;
+    sourceRecipeId?: number;
+    shoppingListUpdated: boolean;
+    appliedAt: string;
+  };
 }
 
 // ── Recipe CRUD ────────────────────────────────────────────────────
+
+function getCookingDb() {
+  const db = getDb();
+  ensureCookingTenantScopeColumns(db);
+  return db;
+}
 
 export function addRecipe(
   userId: number,
@@ -83,17 +225,37 @@ export function addRecipe(
     fat?: number | null;
     carbs?: number | null;
     calories?: number | null;
+    tenantId?: number | null;
   },
 ): Recipe {
-  const db = getDb();
+  const db = getCookingDb();
+  const scope = cookingScopeForInsert(userId, opts?.tenantId, 'user_private', 'active');
+  assertAllergySafeRecipe(userId, scope.tenantId, {
+    title,
+    ingredients,
+    instructions: opts?.instructions,
+    tags: opts?.tags,
+    source: opts?.source,
+  });
   db.prepare(`
     INSERT INTO recipes (
-      user_id, title, ingredients, instructions, prep_time_min, cook_time_min,
+      tenant_id, user_id, owner_user_id, visibility_scope, lifecycle_state, scope_status,
+      created_by, updated_by, audit_metadata_json,
+      title, ingredients, instructions, prep_time_min, cook_time_min,
       servings, tags, source, protein_g, fat_g, carbs_g, calories_kcal
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
-    userId, title, JSON.stringify(ingredients),
+    scope.tenantId,
+    userId,
+    scope.ownerUserId,
+    scope.visibilityScope,
+    scope.lifecycleState,
+    scope.scopeStatus,
+    scope.createdBy,
+    scope.updatedBy,
+    scope.auditMetadataJson,
+    title, JSON.stringify(ingredients),
     opts?.instructions ?? null,
     opts?.prepTime ?? null,
     opts?.cookTime ?? null,
@@ -112,11 +274,11 @@ export function addRecipe(
 
 export function getRecipes(
   userId: number,
-  opts?: { tags?: string; search?: string; limit?: number },
+  opts?: { tags?: string; search?: string; limit?: number; tenantId?: number | null },
 ): Recipe[] {
-  const db = getDb();
-  const conditions = ['user_id = ?'];
-  const params: any[] = [userId];
+  const db = getCookingDb();
+  const conditions = [cookingPrivateScopePredicate()];
+  const params: any[] = cookingScopeParams(userId, opts?.tenantId);
 
   if (opts?.tags) {
     conditions.push("tags LIKE ?");
@@ -137,9 +299,11 @@ export function getRecipes(
   return rows.map(parseRecipe);
 }
 
-export function deleteRecipe(userId: number, recipeId: number): boolean {
-  const db = getDb();
-  const result = db.prepare('DELETE FROM recipes WHERE id = ? AND user_id = ?').run(recipeId, userId);
+export function deleteRecipe(userId: number, recipeId: number, tenantId?: number | null): boolean {
+  const db = getCookingDb();
+  const result = db.prepare(
+    `DELETE FROM recipes WHERE id = ? AND ${cookingPrivateScopePredicate()}`,
+  ).run(recipeId, ...cookingScopeParams(userId, tenantId));
   return result.changes > 0;
 }
 
@@ -147,11 +311,11 @@ export function deleteRecipe(userId: number, recipeId: number): boolean {
  * Fetch a single recipe by id, scoped to user_id. Returns null
  * if not found or owned by another user.
  */
-export function getRecipeById(userId: number, recipeId: number): Recipe | null {
-  const db = getDb();
+export function getRecipeById(userId: number, recipeId: number, tenantId?: number | null): Recipe | null {
+  const db = getCookingDb();
   const row = db.prepare(
-    'SELECT * FROM recipes WHERE id = ? AND user_id = ?',
-  ).get(recipeId, userId) as any;
+    `SELECT * FROM recipes WHERE id = ? AND ${cookingPrivateScopePredicate()}`,
+  ).get(recipeId, ...cookingScopeParams(userId, tenantId)) as any;
   return row ? parseRecipe(row) : null;
 }
 
@@ -181,8 +345,18 @@ export function updateRecipe(
     carbs?: number | null;
     calories?: number | null;
   },
+  tenantId?: number | null,
 ): Recipe | null {
-  const db = getDb();
+  const db = getCookingDb();
+  const current = getRecipeById(userId, recipeId, tenantId);
+  if (!current) return null;
+  assertAllergySafeRecipe(userId, resolveCookingTenantId(userId, tenantId), {
+    title: updates.title ?? current.title,
+    ingredients: updates.ingredients ?? current.ingredients,
+    instructions: updates.instructions === undefined ? current.instructions : updates.instructions,
+    tags: updates.tags === undefined ? current.tags : updates.tags,
+    source: updates.source === undefined ? current.source : updates.source,
+  });
 
   // Build the SET clause dynamically so we only touch fields the
   // caller actually wants to change.
@@ -240,14 +414,16 @@ export function updateRecipe(
 
   if (setParts.length > 0) {
     setParts.push("updated_at = datetime('now')");
-    const sql = `UPDATE recipes SET ${setParts.join(', ')} WHERE id = ? AND user_id = ?`;
-    params.push(recipeId, userId);
+    setParts.push('updated_by = ?');
+    params.push(userId);
+    const sql = `UPDATE recipes SET ${setParts.join(', ')} WHERE id = ? AND ${cookingPrivateScopePredicate()}`;
+    params.push(recipeId, ...cookingScopeParams(userId, tenantId));
     const result = db.prepare(sql).run(...params);
     if (result.changes === 0) return null;
     logger.info({ userId, recipeId }, 'Recipe updated');
   }
 
-  return getRecipeById(userId, recipeId);
+  return getRecipeById(userId, recipeId, tenantId);
 }
 
 // ── Meal Planning ──────────────────────────────────────────────────
@@ -257,42 +433,498 @@ export function setMealPlan(
   date: string,
   mealType: string,
   title: string,
-  opts?: { recipeId?: number; notes?: string },
-): MealPlan {
-  const db = getDb();
+  opts?: { recipeId?: number; notes?: string; tenantId?: number | null },
+): MealPlanWriteResult {
+  const db = getCookingDb();
+  const scope = cookingScopeForInsert(userId, opts?.tenantId, 'user_private', 'planned');
+  const linkedRecipe = opts?.recipeId ? getRecipeById(userId, opts.recipeId, opts?.tenantId) : null;
+  if (linkedRecipe) {
+    assertAllergySafeRecipe(userId, scope.tenantId, linkedRecipe);
+  }
+  assertAllergySafeText(userId, scope.tenantId, 'meal_plan', [
+    title,
+    opts?.notes,
+  ]);
+
+  // C9 / skill-hardening 2026-05-17: surface expired-pantry warnings to the
+  // caller. The slot still gets persisted (the user explicitly asked to
+  // schedule it); the issue list lets iOS prompt for confirmation before
+  // cook-time. Allergy/dietary violations remain hard throws above.
+  const issues: MealPlanIssue[] = [];
+  if (linkedRecipe && Array.isArray(linkedRecipe.ingredients) && linkedRecipe.ingredients.length > 0) {
+    const pantryByName = new Map(
+      getPantryItems(userId, { tenantId: opts?.tenantId, includeExpired: true, limit: 250 })
+        .map((item) => [item.normalized_name, item] as const),
+    );
+    for (const ingredient of linkedRecipe.ingredients) {
+      if (!ingredient || typeof ingredient.name !== 'string') continue;
+      const pantryMatch = pantryByName.get(normalizePantryName(ingredient.name));
+      if (pantryMatch && pantryMatch.freshness_status === 'expired') {
+        issues.push({
+          code: 'pantry_expired',
+          ingredientName: ingredient.name,
+          pantryItemId: pantryMatch.id,
+          pantryFreshnessStatus: pantryMatch.freshness_status,
+          pantryExpiresAt: pantryMatch.expires_at,
+          message: `Pantry item "${pantryMatch.name}" is expired — verify before cooking or replace from shopping list.`,
+        });
+      }
+    }
+  }
+  const existingScope = db.prepare(
+    'SELECT tenant_id FROM meal_plans WHERE tenant_id = ? AND user_id = ? AND date = ? AND meal_type = ?',
+  ).get(scope.tenantId, userId, date, mealType) as { tenant_id: number | null } | undefined;
+  if (existingScope && Number(existingScope.tenant_id) !== scope.tenantId) {
+    throw new Error('COOKING_SCOPE_CONFLICT: meal plan slot belongs to a different tenant');
+  }
   db.prepare(`
-    INSERT INTO meal_plans (user_id, date, meal_type, recipe_id, title, notes)
-    VALUES (?, ?, ?, ?, ?, ?)
-    ON CONFLICT(user_id, date, meal_type) DO UPDATE SET
+    INSERT INTO meal_plans (
+      tenant_id, user_id, owner_user_id, visibility_scope, lifecycle_state, scope_status,
+      created_by, updated_by, audit_metadata_json,
+      date, meal_type, recipe_id, title, notes
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(tenant_id, user_id, date, meal_type) DO UPDATE SET
+      tenant_id = excluded.tenant_id,
+      owner_user_id = excluded.owner_user_id,
+      visibility_scope = excluded.visibility_scope,
+      lifecycle_state = excluded.lifecycle_state,
+      scope_status = excluded.scope_status,
+      updated_by = excluded.updated_by,
+      audit_metadata_json = excluded.audit_metadata_json,
       recipe_id = excluded.recipe_id,
       title = excluded.title,
       notes = excluded.notes
-  `).run(userId, date, mealType, opts?.recipeId ?? null, title, opts?.notes ?? null);
+  `).run(
+    scope.tenantId,
+    userId,
+    scope.ownerUserId,
+    scope.visibilityScope,
+    scope.lifecycleState,
+    scope.scopeStatus,
+    scope.createdBy,
+    scope.updatedBy,
+    scope.auditMetadataJson,
+    date,
+    mealType,
+    opts?.recipeId ?? null,
+    title,
+    opts?.notes ?? null,
+  );
 
-  return db.prepare(
-    'SELECT * FROM meal_plans WHERE user_id = ? AND date = ? AND meal_type = ?',
-  ).get(userId, date, mealType) as MealPlan;
+  const persisted = db.prepare(
+    `SELECT * FROM meal_plans WHERE date = ? AND meal_type = ? AND ${cookingPrivateScopePredicate()}`,
+  ).get(date, mealType, ...cookingScopeParams(userId, opts?.tenantId)) as MealPlan;
+
+  return issues.length > 0 ? { ...persisted, issues } : persisted;
 }
 
-export function getMealPlan(userId: number, startDate: string, endDate: string): MealPlan[] {
-  const db = getDb();
+export function getMealPlan(userId: number, startDate: string, endDate: string, tenantId?: number | null): MealPlan[] {
+  const db = getCookingDb();
   return db.prepare(
-    'SELECT * FROM meal_plans WHERE user_id = ? AND date >= ? AND date <= ? ORDER BY date, meal_type',
-  ).all(userId, startDate, endDate) as MealPlan[];
+    `SELECT * FROM meal_plans WHERE ${cookingPrivateScopePredicate()} AND date >= ? AND date <= ? ORDER BY date, meal_type`,
+  ).all(...cookingScopeParams(userId, tenantId), startDate, endDate) as MealPlan[];
 }
 
-export function deleteMealPlan(userId: number, date: string, mealType: string): boolean {
-  const db = getDb();
+export function deleteMealPlan(userId: number, date: string, mealType: string, tenantId?: number | null): boolean {
+  const db = getCookingDb();
   const result = db.prepare(
-    'DELETE FROM meal_plans WHERE user_id = ? AND date = ? AND meal_type = ?',
-  ).run(userId, date, mealType);
+    `DELETE FROM meal_plans WHERE date = ? AND meal_type = ? AND ${cookingPrivateScopePredicate()}`,
+  ).run(date, mealType, ...cookingScopeParams(userId, tenantId));
+  return result.changes > 0;
+}
+
+export function applyMealPlanSubstitution(
+  userId: number,
+  input: MealPlanSubstitutionInput,
+  tenantId?: number | null,
+): MealPlanSubstitutionResult {
+  const originalIngredient = normalizeRequiredText(input.originalIngredient, 'originalIngredient');
+  const suggestedIngredient = normalizeRequiredText(input.suggestedIngredient, 'suggestedIngredient');
+  if (normalizePantryName(originalIngredient) === normalizePantryName(suggestedIngredient)) {
+    throw new Error('COOKING_SUBSTITUTION_NOOP: suggestedIngredient must differ from originalIngredient');
+  }
+  const resolvedTenantId = resolveCookingTenantId(userId, tenantId);
+  assertAllergySafeText(userId, resolvedTenantId, 'meal_plan_substitution', [suggestedIngredient]);
+
+  const meals = getMealPlan(userId, input.date, input.date, tenantId);
+  const meal = meals.find((candidate) => candidate.meal_type === input.mealType) ?? null;
+  const baseSubstitution = {
+    originalIngredient,
+    suggestedIngredient,
+    reason: input.reason,
+    shoppingListUpdated: false,
+    appliedAt: new Date().toISOString(),
+  };
+  if (!meal) {
+    return {
+      applied: false,
+      reason: 'meal_not_found',
+      meal: null,
+      recipe: null,
+      shoppingList: null,
+      substitution: baseSubstitution,
+    };
+  }
+  if (!meal.recipe_id) {
+    return {
+      applied: false,
+      reason: 'recipe_not_found',
+      meal,
+      recipe: null,
+      shoppingList: null,
+      substitution: { ...baseSubstitution, affectedMealId: meal.id },
+    };
+  }
+
+  const recipe = getRecipeById(userId, meal.recipe_id, tenantId);
+  if (!recipe) {
+    return {
+      applied: false,
+      reason: 'recipe_not_found',
+      meal,
+      recipe: null,
+      shoppingList: null,
+      substitution: { ...baseSubstitution, affectedMealId: meal.id },
+    };
+  }
+
+  let ingredientChanged = false;
+  const updatedIngredients = recipe.ingredients.map((ingredient) => {
+    if (!ingredientNameMatches(ingredient.name, originalIngredient)) return ingredient;
+    ingredientChanged = true;
+    return { ...ingredient, name: suggestedIngredient };
+  });
+
+  if (!ingredientChanged) {
+    return {
+      applied: false,
+      reason: 'ingredient_not_found',
+      meal,
+      recipe,
+      shoppingList: null,
+      substitution: {
+        ...baseSubstitution,
+        affectedMealId: meal.id,
+        affectedRecipeId: recipe.id,
+      },
+    };
+  }
+
+  const updatedRecipe = addRecipe(userId, replaceIngredientText(recipe.title, originalIngredient, suggestedIngredient), updatedIngredients, {
+    instructions: recipe.instructions == null
+      ? undefined
+      : replaceIngredientText(recipe.instructions, originalIngredient, suggestedIngredient),
+    prepTime: recipe.prep_time_min ?? undefined,
+    cookTime: recipe.cook_time_min ?? undefined,
+    servings: recipe.servings,
+    tags: recipe.tags ?? undefined,
+    source: recipe.source ?? undefined,
+    protein: recipe.protein,
+    fat: recipe.fat,
+    carbs: recipe.carbs,
+    calories: recipe.calories,
+    tenantId,
+  });
+  const updatedMeal = setMealPlan(userId, meal.date, meal.meal_type, replaceIngredientText(meal.title, originalIngredient, suggestedIngredient), {
+    recipeId: updatedRecipe.id,
+    notes: meal.notes == null ? undefined : replaceIngredientText(meal.notes, originalIngredient, suggestedIngredient),
+    tenantId,
+  });
+  const shoppingList = input.updateShoppingList === false
+    ? null
+    : generateShoppingList(userId, weekStartForDate(input.date), tenantId);
+
+  return {
+    applied: true,
+    meal: updatedMeal,
+    recipe: updatedRecipe,
+    shoppingList,
+    substitution: {
+      ...baseSubstitution,
+      affectedMealId: meal.id,
+      sourceRecipeId: recipe.id,
+      affectedRecipeId: updatedRecipe.id,
+      shoppingListUpdated: Boolean(shoppingList),
+    },
+  };
+}
+
+export function suggestMealPlanSubstitutions(
+  userId: number,
+  input: MealPlanSubstitutionSuggestionInput,
+  tenantId?: number | null,
+): MealPlanSubstitutionSuggestionResult {
+  const originalIngredient = normalizeRequiredText(input.originalIngredient, 'originalIngredient');
+  const reason = input.reason ?? 'disliked_ingredient';
+  const meals = getMealPlan(userId, input.date, input.date, tenantId);
+  const meal = meals.find((candidate) => candidate.meal_type === input.mealType) ?? null;
+  if (!meal) {
+    return {
+      found: false,
+      reason: 'meal_not_found',
+      meal: null,
+      recipe: null,
+      suggestions: [],
+      originalIngredient,
+    };
+  }
+  if (!meal.recipe_id) {
+    return {
+      found: false,
+      reason: 'recipe_not_found',
+      meal,
+      recipe: null,
+      suggestions: [],
+      originalIngredient,
+    };
+  }
+  const recipe = getRecipeById(userId, meal.recipe_id, tenantId);
+  if (!recipe) {
+    return {
+      found: false,
+      reason: 'recipe_not_found',
+      meal,
+      recipe: null,
+      suggestions: [],
+      originalIngredient,
+    };
+  }
+  const ingredient = recipe.ingredients.find((candidate) => ingredientNameMatches(candidate.name, originalIngredient));
+  if (!ingredient) {
+    return {
+      found: false,
+      reason: 'ingredient_not_found',
+      meal,
+      recipe,
+      suggestions: [],
+      originalIngredient,
+    };
+  }
+  const preferences = buildCookingPreferenceReadModel(userId, tenantId).profile;
+  return {
+    found: true,
+    meal,
+    recipe,
+    suggestions: suggestCookingSubstitutionsForIngredient(ingredient.name, reason, preferences),
+    originalIngredient: ingredient.name,
+  };
+}
+
+// ── Pantry ─────────────────────────────────────────────────────────
+
+export function upsertPantryItem(userId: number, input: PantryItemInput, tenantId?: number | null): PantryItem {
+  const db = getCookingDb();
+  const name = normalizeRequiredText(input.name, 'name');
+  const normalizedName = normalizePantryName(name);
+  const scope = cookingScopeForInsert(userId, tenantId, 'user_private', 'available');
+  const existing = db.prepare(
+    `SELECT id FROM cooking_pantry_items WHERE normalized_name = ? AND ${cookingPrivateScopePredicate()}`,
+  ).get(normalizedName, ...cookingScopeParams(userId, tenantId)) as { id: number } | undefined;
+
+  if (existing) {
+    db.prepare(`
+      UPDATE cooking_pantry_items
+      SET
+        name = ?,
+        quantity = ?,
+        unit = ?,
+        category = ?,
+        expires_at = ?,
+        freshness_status = ?,
+        availability_status = ?,
+        source = ?,
+        confidence = ?,
+        notes = ?,
+        lifecycle_state = ?,
+        updated_by = ?,
+        updated_at = datetime('now')
+      WHERE id = ? AND ${cookingPrivateScopePredicate()}
+    `).run(
+      name,
+      cleanNullableText(input.quantity),
+      cleanNullableText(input.unit),
+      cleanNullableText(input.category),
+      cleanNullableText(input.expiresAt),
+      normalizePantryFreshness(input.freshnessStatus, input.expiresAt),
+      normalizePantryAvailability(input.availabilityStatus),
+      cleanNullableText(input.source) ?? 'manual',
+      normalizeConfidence(input.confidence),
+      cleanNullableText(input.notes),
+      normalizePantryAvailability(input.availabilityStatus) === 'available' ? 'available' : 'unavailable',
+      userId,
+      existing.id,
+      ...cookingScopeParams(userId, tenantId),
+    );
+    return getPantryItemById(userId, existing.id, tenantId)!;
+  }
+
+  db.prepare(`
+    INSERT INTO cooking_pantry_items (
+      tenant_id, user_id, owner_user_id, visibility_scope, lifecycle_state, scope_status,
+      created_by, updated_by, audit_metadata_json,
+      name, normalized_name, quantity, unit, category, expires_at, freshness_status,
+      availability_status, source, confidence, notes
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    scope.tenantId,
+    userId,
+    scope.ownerUserId,
+    scope.visibilityScope,
+    scope.lifecycleState,
+    scope.scopeStatus,
+    scope.createdBy,
+    scope.updatedBy,
+    scope.auditMetadataJson,
+    name,
+    normalizedName,
+    cleanNullableText(input.quantity),
+    cleanNullableText(input.unit),
+    cleanNullableText(input.category),
+    cleanNullableText(input.expiresAt),
+    normalizePantryFreshness(input.freshnessStatus, input.expiresAt),
+    normalizePantryAvailability(input.availabilityStatus),
+    cleanNullableText(input.source) ?? 'manual',
+    normalizeConfidence(input.confidence),
+    cleanNullableText(input.notes),
+  );
+
+  const row = db.prepare(
+    `SELECT * FROM cooking_pantry_items WHERE normalized_name = ? AND ${cookingPrivateScopePredicate()}`,
+  ).get(normalizedName, ...cookingScopeParams(userId, tenantId)) as any;
+  logger.info({ userId, tenantId: scope.tenantId, pantryItemId: row?.id }, 'Cooking pantry item upserted');
+  return parsePantryItem(row);
+}
+
+export function getPantryItems(
+  userId: number,
+  opts?: {
+    tenantId?: number | null;
+    search?: string;
+    category?: string;
+    includeExpired?: boolean;
+    limit?: number;
+  },
+): PantryItem[] {
+  const db = getCookingDb();
+  const conditions = [cookingPrivateScopePredicate(), "COALESCE(availability_status, 'available') != 'removed'"];
+  const params: any[] = cookingScopeParams(userId, opts?.tenantId);
+
+  if (opts?.search?.trim()) {
+    conditions.push('(name LIKE ? OR notes LIKE ?)');
+    const search = `%${opts.search.trim()}%`;
+    params.push(search, search);
+  }
+  if (opts?.category?.trim()) {
+    conditions.push('category = ?');
+    params.push(opts.category.trim());
+  }
+  if (!opts?.includeExpired) {
+    conditions.push("COALESCE(freshness_status, 'unknown') != 'expired'");
+  }
+
+  const limit = Math.min(Math.max(Number(opts?.limit ?? 100) || 100, 1), 250);
+  params.push(limit);
+
+  const rows = db.prepare(`
+    SELECT * FROM cooking_pantry_items
+    WHERE ${conditions.join(' AND ')}
+    ORDER BY
+      CASE COALESCE(freshness_status, 'unknown')
+        WHEN 'use_soon' THEN 0
+        WHEN 'unknown' THEN 1
+        WHEN 'fresh' THEN 2
+        ELSE 3
+      END,
+      updated_at DESC,
+      name ASC
+    LIMIT ?
+  `).all(...params) as any[];
+  return rows.map(parsePantryItem);
+}
+
+export function getPantryItemById(userId: number, itemId: number, tenantId?: number | null): PantryItem | null {
+  const db = getCookingDb();
+  const row = db.prepare(
+    `SELECT * FROM cooking_pantry_items WHERE id = ? AND ${cookingPrivateScopePredicate()} AND COALESCE(availability_status, 'available') != 'removed'`,
+  ).get(itemId, ...cookingScopeParams(userId, tenantId)) as any;
+  return row ? parsePantryItem(row) : null;
+}
+
+export function updatePantryItem(
+  userId: number,
+  itemId: number,
+  updates: Partial<PantryItemInput>,
+  tenantId?: number | null,
+): PantryItem | null {
+  const db = getCookingDb();
+  const existing = getPantryItemById(userId, itemId, tenantId);
+  if (!existing) return null;
+
+  const name = updates.name !== undefined ? normalizeRequiredText(updates.name, 'name') : existing.name;
+  const setParts = [
+    'name = ?',
+    'normalized_name = ?',
+    'quantity = ?',
+    'unit = ?',
+    'category = ?',
+    'expires_at = ?',
+    'freshness_status = ?',
+    'availability_status = ?',
+    'source = ?',
+    'confidence = ?',
+    'notes = ?',
+    "updated_at = datetime('now')",
+    'updated_by = ?',
+  ];
+  const expiresAt = updates.expiresAt !== undefined ? cleanNullableText(updates.expiresAt) : existing.expires_at;
+  const availability = normalizePantryAvailability(updates.availabilityStatus ?? existing.availability_status);
+  const params = [
+    name,
+    normalizePantryName(name),
+    updates.quantity !== undefined ? cleanNullableText(updates.quantity) : existing.quantity,
+    updates.unit !== undefined ? cleanNullableText(updates.unit) : existing.unit,
+    updates.category !== undefined ? cleanNullableText(updates.category) : existing.category,
+    expiresAt,
+    normalizePantryFreshness(updates.freshnessStatus ?? existing.freshness_status, expiresAt),
+    availability,
+    updates.source !== undefined ? cleanNullableText(updates.source) ?? 'manual' : existing.source,
+    updates.confidence !== undefined ? normalizeConfidence(updates.confidence) : existing.confidence,
+    updates.notes !== undefined ? cleanNullableText(updates.notes) : existing.notes,
+    userId,
+    itemId,
+    ...cookingScopeParams(userId, tenantId),
+  ];
+
+  const result = db.prepare(`
+    UPDATE cooking_pantry_items
+    SET ${setParts.join(', ')}
+    WHERE id = ? AND ${cookingPrivateScopePredicate()}
+  `).run(...params);
+  if (result.changes === 0) return null;
+  return getPantryItemById(userId, itemId, tenantId);
+}
+
+export function deletePantryItem(userId: number, itemId: number, tenantId?: number | null): boolean {
+  const db = getCookingDb();
+  const result = db.prepare(`
+    UPDATE cooking_pantry_items
+    SET scope_status = 'deleted',
+        availability_status = 'removed',
+        lifecycle_state = 'archived',
+        updated_by = ?,
+        updated_at = datetime('now')
+    WHERE id = ? AND ${cookingPrivateScopePredicate()}
+  `).run(userId, itemId, ...cookingScopeParams(userId, tenantId));
   return result.changes > 0;
 }
 
 // ── Shopping List ──────────────────────────────────────────────────
 
-export function generateShoppingList(userId: number, weekStart: string): ShoppingList {
-  const db = getDb();
+export function generateShoppingList(userId: number, weekStart: string, tenantId?: number | null): ShoppingList {
+  const db = getCookingDb();
+  const scope = cookingScopeForInsert(userId, tenantId, 'user_private', 'active');
 
   // Calculate week end (7 days)
   const start = new Date(weekStart);
@@ -300,19 +932,25 @@ export function generateShoppingList(userId: number, weekStart: string): Shoppin
   const endDate = end.toISOString().slice(0, 10);
 
   // Get all meal plans for the week
-  const meals = getMealPlan(userId, weekStart, endDate);
+  const meals = getMealPlan(userId, weekStart, endDate, tenantId);
 
   // Aggregate ingredients from linked recipes
   const itemMap = new Map<string, ShoppingItem>();
   const quantityMap = new Map<string, NormalizedQuantity>();
-  const existing = getShoppingList(userId, weekStart);
+  const existing = getShoppingList(userId, weekStart, tenantId);
+  const pantryByName = new Map(
+    getPantryItems(userId, { tenantId, includeExpired: true, limit: 250 })
+      .map((item) => [item.normalized_name, item]),
+  );
   const checkedByKey = new Map(
     (existing?.items ?? []).map((item) => [item.name.toLowerCase(), item.checked]),
   );
 
   for (const meal of meals) {
     if (meal.recipe_id) {
-      const recipe = db.prepare('SELECT ingredients FROM recipes WHERE id = ? AND user_id = ?').get(meal.recipe_id, userId) as any;
+      const recipe = db.prepare(
+        `SELECT ingredients FROM recipes WHERE id = ? AND ${cookingPrivateScopePredicate()}`,
+      ).get(meal.recipe_id, ...cookingScopeParams(userId, tenantId)) as any;
       if (recipe) {
         const ingredients: Ingredient[] = JSON.parse(recipe.ingredients);
         for (const ing of ingredients) {
@@ -338,6 +976,7 @@ export function generateShoppingList(userId: number, weekStart: string): Shoppin
               unit: ing.unit,
               checked: checkedByKey.get(key) ?? false,
               aisle: classifyIngredientAisle(ing.name),
+              ...shoppingPantryMetadata(pantryByName.get(normalizePantryName(ing.name))),
             });
           }
         }
@@ -352,17 +991,46 @@ export function generateShoppingList(userId: number, weekStart: string): Shoppin
   });
 
   // Upsert shopping list
+  const existingScope = db.prepare(
+    'SELECT tenant_id FROM shopping_lists WHERE tenant_id = ? AND user_id = ? AND week_start = ?',
+  ).get(scope.tenantId, userId, weekStart) as { tenant_id: number | null } | undefined;
+  if (existingScope && Number(existingScope.tenant_id) !== scope.tenantId) {
+    throw new Error('COOKING_SCOPE_CONFLICT: shopping list belongs to a different tenant');
+  }
+
   db.prepare(`
-    INSERT INTO shopping_lists (user_id, week_start, items)
-    VALUES (?, ?, ?)
-    ON CONFLICT(user_id, week_start) DO UPDATE SET
+    INSERT INTO shopping_lists (
+      tenant_id, user_id, owner_user_id, visibility_scope, lifecycle_state, scope_status,
+      created_by, updated_by, audit_metadata_json, week_start, items
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(tenant_id, user_id, week_start) DO UPDATE SET
+      tenant_id = excluded.tenant_id,
+      owner_user_id = excluded.owner_user_id,
+      visibility_scope = excluded.visibility_scope,
+      lifecycle_state = excluded.lifecycle_state,
+      scope_status = excluded.scope_status,
+      updated_by = excluded.updated_by,
+      audit_metadata_json = excluded.audit_metadata_json,
       items = excluded.items,
       updated_at = datetime('now')
-  `).run(userId, weekStart, JSON.stringify(items));
+  `).run(
+    scope.tenantId,
+    userId,
+    scope.ownerUserId,
+    scope.visibilityScope,
+    scope.lifecycleState,
+    scope.scopeStatus,
+    scope.createdBy,
+    scope.updatedBy,
+    scope.auditMetadataJson,
+    weekStart,
+    JSON.stringify(items),
+  );
 
   const row = db.prepare(
-    'SELECT * FROM shopping_lists WHERE user_id = ? AND week_start = ?',
-  ).get(userId, weekStart) as any;
+    `SELECT * FROM shopping_lists WHERE week_start = ? AND ${cookingPrivateScopePredicate()}`,
+  ).get(weekStart, ...cookingScopeParams(userId, tenantId)) as any;
 
   logger.info({ userId, weekStart, itemCount: items.length }, 'Shopping list generated');
   return parseShoppingList(row);
@@ -451,11 +1119,11 @@ function appendQuantity(existing: ShoppingItem, ingredient: Ingredient): string 
   return `${left} + ${right}`;
 }
 
-export function getShoppingList(userId: number, weekStart: string): ShoppingList | null {
-  const db = getDb();
+export function getShoppingList(userId: number, weekStart: string, tenantId?: number | null): ShoppingList | null {
+  const db = getCookingDb();
   const row = db.prepare(
-    'SELECT * FROM shopping_lists WHERE user_id = ? AND week_start = ?',
-  ).get(userId, weekStart) as any;
+    `SELECT * FROM shopping_lists WHERE week_start = ? AND ${cookingPrivateScopePredicate()}`,
+  ).get(weekStart, ...cookingScopeParams(userId, tenantId)) as any;
   return row ? parseShoppingList(row) : null;
 }
 
@@ -464,9 +1132,10 @@ export function updateShoppingListItemChecked(
   weekStart: string,
   itemIndex: number,
   checked: boolean,
+  tenantId?: number | null,
 ): ShoppingList | null {
-  const db = getDb();
-  const existing = getShoppingList(userId, weekStart);
+  const db = getCookingDb();
+  const existing = getShoppingList(userId, weekStart, tenantId);
   if (!existing) {
     return null;
   }
@@ -480,11 +1149,11 @@ export function updateShoppingListItemChecked(
 
   db.prepare(`
     UPDATE shopping_lists
-    SET items = ?, updated_at = datetime('now')
-    WHERE user_id = ? AND week_start = ?
-  `).run(JSON.stringify(items), userId, weekStart);
+    SET items = ?, updated_at = datetime('now'), updated_by = ?
+    WHERE week_start = ? AND ${cookingPrivateScopePredicate()}
+  `).run(JSON.stringify(items), userId, weekStart, ...cookingScopeParams(userId, tenantId));
 
-  const updated = getShoppingList(userId, weekStart);
+  const updated = getShoppingList(userId, weekStart, tenantId);
   logger.info({ userId, weekStart, itemIndex, checked }, 'Shopping list item updated');
   return updated;
 }
@@ -519,8 +1188,183 @@ function parseShoppingList(row: any): ShoppingList {
           aisle: typeof item?.aisle === 'string' && item.aisle.trim()
             ? item.aisle
             : classifyIngredientAisle(String(item?.name ?? '')),
+          pantry_status: item?.pantry_status ?? 'needed',
         }))
       : [],
+  };
+}
+
+function parsePantryItem(row: any): PantryItem {
+  return {
+    ...row,
+    confidence: typeof row.confidence === 'number' ? row.confidence : Number(row.confidence ?? 1),
+  };
+}
+
+function normalizeRequiredText(value: unknown, field: string): string {
+  const text = String(value ?? '').trim();
+  if (!text) throw new Error(`${field} is required`);
+  return text;
+}
+
+function assertAllergySafeRecipe(
+  userId: number,
+  tenantId: number,
+  recipe: {
+    title?: string | null;
+    ingredients?: Ingredient[] | null;
+    instructions?: string | null;
+    tags?: string | null;
+    source?: string | null;
+  },
+): void {
+  const ingredientTexts = (recipe.ingredients ?? []).flatMap((ingredient) => [
+    ingredient.name,
+    ingredient.quantity,
+    ingredient.unit,
+  ]);
+  assertAllergySafeText(userId, tenantId, 'recipe', [
+    recipe.title,
+    recipe.instructions,
+    recipe.tags,
+    recipe.source,
+    ...ingredientTexts,
+  ]);
+}
+
+function assertAllergySafeText(
+  userId: number,
+  tenantId: number,
+  surface: 'recipe' | 'meal_plan' | 'meal_plan_substitution',
+  values: Array<string | null | undefined>,
+): void {
+  const allergies = buildCookingPreferenceReadModel(userId, tenantId).profile.allergies ?? [];
+  if (allergies.length === 0) return;
+
+  const haystacks = values
+    .map((value) => String(value ?? '').trim())
+    .filter(Boolean);
+  const conflict = allergies
+    .map((allergy) => String(allergy ?? '').trim())
+    .filter(Boolean)
+    .find((allergy) => haystacks.some((haystack) => matchesCookingAllergenText(allergy, haystack)));
+
+  if (conflict) {
+    throw new Error(`COOKING_SAFETY_BLOCKED: ${surface} contains allergy "${conflict}"`);
+  }
+}
+
+function ingredientNameMatches(candidate: string, originalIngredient: string): boolean {
+  const candidateName = normalizePantryName(candidate);
+  const originalName = normalizePantryName(originalIngredient);
+  return candidateName === originalName || candidateName.includes(originalName);
+}
+
+function replaceIngredientText(value: string, originalIngredient: string, suggestedIngredient: string): string {
+  let source = String(value ?? '');
+  for (const needle of replacementNeedles(originalIngredient)) {
+    const lowerSource = source.toLowerCase();
+    const lowerNeedle = needle.toLowerCase();
+    let cursor = 0;
+    let result = '';
+    let changed = false;
+    while (cursor < source.length) {
+      const index = lowerSource.indexOf(lowerNeedle, cursor);
+      if (index === -1) {
+        result += source.slice(cursor);
+        break;
+      }
+      result += source.slice(cursor, index);
+      result += suggestedIngredient;
+      cursor = index + needle.length;
+      changed = true;
+    }
+    if (changed) source = result;
+  }
+  return source;
+}
+
+function replacementNeedles(originalIngredient: string): string[] {
+  const original = String(originalIngredient ?? '').trim();
+  if (!original) return [];
+  const needles = [original];
+  if (original.toLowerCase().endsWith('s') && original.length > 1) {
+    needles.push(original.slice(0, -1));
+  } else {
+    needles.push(`${original}s`);
+  }
+  return [...new Set(needles)].sort((a, b) => b.length - a.length);
+}
+
+function weekStartForDate(date: string): string {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(date);
+  if (!match) throw new Error('COOKING_SUBSTITUTION_INVALID_DATE: date must be YYYY-MM-DD');
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const utc = new Date(Date.UTC(year, month - 1, day));
+  if (utc.getUTCFullYear() !== year || utc.getUTCMonth() !== month - 1 || utc.getUTCDate() !== day) {
+    throw new Error('COOKING_SUBSTITUTION_INVALID_DATE: date must be YYYY-MM-DD');
+  }
+  const dayOfWeek = utc.getUTCDay();
+  const mondayOffset = dayOfWeek === 0 ? -6 : 1 - dayOfWeek;
+  utc.setUTCDate(utc.getUTCDate() + mondayOffset);
+  return utc.toISOString().slice(0, 10);
+}
+
+function cleanNullableText(value: unknown): string | null {
+  if (value === undefined || value === null) return null;
+  const text = String(value).trim();
+  return text ? text : null;
+}
+
+function normalizePantryName(name: string): string {
+  return name.trim().toLowerCase().replace(/\s+/g, ' ');
+}
+
+function normalizePantryFreshness(value: unknown, expiresAt?: string | null): string {
+  const normalized = String(value ?? '').trim().toLowerCase();
+  if (['fresh', 'use_soon', 'expired', 'unknown'].includes(normalized)) return normalized;
+  if (expiresAt && /^\d{4}-\d{2}-\d{2}/.test(expiresAt)) {
+    const expiryDate = new Date(`${expiresAt.slice(0, 10)}T00:00:00.000Z`).getTime();
+    const today = new Date();
+    const todayUtc = Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate());
+    const daysUntilExpiry = Math.floor((expiryDate - todayUtc) / 86400_000);
+    if (daysUntilExpiry < 0) return 'expired';
+    if (daysUntilExpiry <= 3) return 'use_soon';
+    return 'fresh';
+  }
+  return 'unknown';
+}
+
+function normalizePantryAvailability(value: unknown): string {
+  const normalized = String(value ?? '').trim().toLowerCase();
+  if (['available', 'low_stock', 'unavailable', 'removed'].includes(normalized)) return normalized;
+  return 'available';
+}
+
+function normalizeConfidence(value: unknown): number {
+  const numberValue = Number(value ?? 1);
+  if (!Number.isFinite(numberValue)) return 1;
+  return Math.max(0, Math.min(1, numberValue));
+}
+
+function shoppingPantryMetadata(item: PantryItem | undefined): Pick<ShoppingItem, 'pantry_status' | 'pantry_item_id' | 'pantry_freshness_status' | 'pantry_note'> {
+  if (!item || item.availability_status === 'unavailable' || item.availability_status === 'removed') {
+    return { pantry_status: 'needed' };
+  }
+  if (item.freshness_status === 'expired') {
+    return {
+      pantry_status: 'pantry_expired',
+      pantry_item_id: item.id,
+      pantry_freshness_status: item.freshness_status,
+      pantry_note: 'Pantry item exists but is expired; do not use silently.',
+    };
+  }
+  return {
+    pantry_status: 'pantry_available',
+    pantry_item_id: item.id,
+    pantry_freshness_status: item.freshness_status,
   };
 }
 

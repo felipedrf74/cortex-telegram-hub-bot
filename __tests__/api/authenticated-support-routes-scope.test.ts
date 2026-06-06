@@ -26,6 +26,9 @@ vi.mock('../../src/services/database', () => ({
       run: (...args: unknown[]) => mockDbRun(...args),
     }),
   }),
+  initDatabase: vi.fn(),
+  closeDatabase: vi.fn(),
+  findUnexpectedMigrationPrefixCollisions: vi.fn(() => []),
 }));
 
 vi.mock('../../src/state/notes', () => ({
@@ -61,6 +64,7 @@ vi.mock('../../src/utils/logger', () => ({
     trace: vi.fn(),
     child: vi.fn().mockReturnThis(),
   },
+  LOGGER_REDACTION_PATHS: [],
 }));
 
 import { auditTrailRoutes } from '../../src/api/routes/audit-trail';
@@ -223,6 +227,78 @@ describe('Authenticated support routes scope guards', () => {
     expect(JSON.stringify(res.body)).not.toContain('quota ledger exploded');
   });
 
+  it('returns customer-safe qualitative usage without raw USD spend or caps', async () => {
+    mockCheckQuota.mockReturnValueOnce({
+      allowed: true,
+      exceeded: [],
+      usage: {
+        userId: 12,
+        date: '2026-06-01',
+        messageCount: 8,
+        inputTokens: 1200,
+        outputTokens: 800,
+        totalTokens: 2000,
+        apiCalls: 9,
+        costUsd: 0.08,
+      },
+      quota: {
+        userId: 12,
+        dailyMessageLimit: 20,
+        dailyTokenLimit: 10_000,
+        dailyCostLimitUsd: 0.1,
+      },
+    });
+
+    const res = await dispatch(usageRoutes, 'GET', '/', 12);
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body.data).toMatchObject({
+      date: '2026-06-01',
+      messagesUsed: 8,
+      messagesLimit: 20,
+      tokensUsed: 2000,
+      tokensLimit: 10_000,
+      usageLevel: 'near_limit',
+      usageFraction: 0.8,
+      usagePercent: 80,
+      isOverLimit: false,
+      allowed: true,
+      exceeded: [],
+    });
+    expect(JSON.stringify(res.body.data)).not.toMatch(/usd|allowance|costLimit|costUsd/i);
+  });
+
+  it('keeps usage range and today reads free of raw cost fields', async () => {
+    mockGetUsageRange.mockReturnValueOnce([{
+      userId: 12,
+      date: '2026-05-31',
+      messageCount: 4,
+      inputTokens: 500,
+      outputTokens: 250,
+      totalTokens: 750,
+      apiCalls: 5,
+      costUsd: 0.04,
+    }]);
+    mockGetDailyUsage.mockReturnValueOnce({
+      userId: 12,
+      date: '2026-06-01',
+      messageCount: 2,
+      inputTokens: 100,
+      outputTokens: 50,
+      totalTokens: 150,
+      apiCalls: 2,
+      costUsd: 0.02,
+    });
+
+    const range = await dispatch(usageRoutes, 'GET', '/range?startDate=2026-05-31&endDate=2026-06-01', 12);
+    const today = await dispatch(usageRoutes, 'GET', '/today', 12);
+
+    expect(range.statusCode).toBe(200);
+    expect(today.statusCode).toBe(200);
+    expect(JSON.stringify(range.body.data)).not.toMatch(/usd|allowance|costUsd/i);
+    expect(JSON.stringify(today.body.data)).not.toMatch(/usd|allowance|costUsd/i);
+  });
+
   it('sanitizes signals failures instead of leaking observability internals', async () => {
     mockBuildActiveSignalsResponse.mockImplementationOnce(() => {
       throw new Error('signals pipeline exploded for tenant 12');
@@ -267,6 +343,36 @@ describe('Authenticated support routes scope guards', () => {
     expect(res.body.error.code).toBe('INTERNAL');
     expect(res.body.error.message).toBe('Failed to persist client error');
     expect(JSON.stringify(res.body)).not.toContain('client_errors insert failed');
+  });
+
+  it('redacts sensitive client error payloads before persistence', async () => {
+    mockDbRun.mockReturnValueOnce({ lastInsertRowid: 42 });
+
+    const res = await dispatch(clientErrorsRoutes, 'POST', '/', 12, {
+      message: 'render failed prompt=private user prompt token=client-secret',
+      stack: 'Authorization: Bearer simulatorsecret',
+      source: 'ios',
+      level: 'error',
+      context: {
+        screen: 'Content',
+        prompt: 'private prompt context',
+        references: [{ title: 'Tenant-private reference' }],
+        voiceProfile: { tone: 'private voice' },
+      },
+    });
+
+    expect(res.statusCode).toBe(200);
+    const persistedArgs = mockDbRun.mock.calls[0];
+    expect(persistedArgs[4]).toContain('prompt=[Redacted]');
+    expect(persistedArgs[4]).toContain('token=[Redacted]');
+    expect(persistedArgs[4]).not.toContain('private user prompt');
+    expect(persistedArgs[4]).not.toContain('client-secret');
+    expect(persistedArgs[5]).toContain('Bearer [Redacted]');
+    expect(persistedArgs[5]).not.toContain('simulatorsecret');
+    expect(persistedArgs[6]).toContain('"screen":"Content"');
+    expect(persistedArgs[6]).toContain('[Redacted]');
+    expect(persistedArgs[6]).not.toContain('Tenant-private reference');
+    expect(persistedArgs[6]).not.toContain('private prompt context');
   });
 
   it('sanitizes note creation failures instead of leaking persistence internals', async () => {

@@ -2,8 +2,11 @@
 
 import { describe, expect, it } from 'vitest';
 import {
+  objectiveNeedsCyclingProfile,
   objectiveNeedsGymProfile,
   objectiveNeedsRunningProfile,
+  objectiveNeedsSwimProfile,
+  objectiveNeedsTriathlonProfiles,
   resolveObjectiveProfileRequirement,
   type ObjectiveProfileSource,
 } from '../../src/api/routes/training-profile-requirements';
@@ -28,6 +31,10 @@ describe('training profile requirements', () => {
     expect(objectiveNeedsGymProfile('força e hipertrofia')).toBe(true);
     expect(objectiveNeedsGymProfile('gym strength')).toBe(true);
     expect(objectiveNeedsGymProfile('10k running')).toBe(false);
+
+    expect(objectiveNeedsCyclingProfile('gravel cycling base')).toBe(true);
+    expect(objectiveNeedsSwimProfile('pool swim technique')).toBe(true);
+    expect(objectiveNeedsTriathlonProfiles('Olympic triathlon build')).toBe(true);
   });
 
   it('returns the running questionnaire requirement when running profile fields are missing', () => {
@@ -76,6 +83,53 @@ describe('training profile requirements', () => {
     );
 
     expect(requirement).toBeNull();
+  });
+
+  it('still requires critical missing fields after a partial sport profile exists', () => {
+    const requirement = resolveObjectiveProfileRequirement(
+      'gym strength',
+      7,
+      {
+        ...fakeProfileSource({ 'triathlon-gym': ['equipment_access'] }),
+        getProfile(_userId, questionnaireId) {
+          if (questionnaireId === 'triathlon-gym') {
+            return { data: { training_age: '1-3 years' } };
+          }
+          return null;
+        },
+      },
+    );
+
+    expect(requirement?.questionnaireId).toBe('triathlon-gym');
+    expect(requirement?.missingFields).toEqual(['equipment_access']);
+  });
+
+  it('returns cycling and swim questionnaire requirements for sport-specific objectives', () => {
+    expect(resolveObjectiveProfileRequirement(
+      'cycling FTP build',
+      7,
+      fakeProfileSource({ 'triathlon-cycling': ['ftp_watts', 'weekly_hours'] }),
+    )?.questionnaireId).toBe('triathlon-cycling');
+
+    expect(resolveObjectiveProfileRequirement(
+      'swim technique plan',
+      7,
+      fakeProfileSource({ 'triathlon-swim': ['primary_stroke', 'pool_access'] }),
+    )?.questionnaireId).toBe('triathlon-swim');
+  });
+
+  it('returns the first missing triathlon sport profile requirement in planning order', () => {
+    const requirement = resolveObjectiveProfileRequirement(
+      'Olympic triathlon build',
+      7,
+      fakeProfileSource({
+        'triathlon-running': [],
+        'triathlon-cycling': ['ftp_watts'],
+        'triathlon-swim': ['primary_stroke'],
+      }),
+    );
+
+    expect(requirement?.questionnaireId).toBe('triathlon-cycling');
   });
 
   it('does not block plan generation when the objective does not need a missing profile', () => {

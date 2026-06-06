@@ -4,7 +4,9 @@ import path from 'path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   createAdminDashboardHandler,
+  createForgotPasswordPageHandler,
   createLandingPreviewHandler,
+  createUserLoginHandler,
   registerPortalStaticRoutes,
 } from '../../src/portal/static-routes';
 
@@ -64,8 +66,29 @@ describe('portal static routes', () => {
 
     registerPortalStaticRoutes(app as any, createTempPortalDir());
 
+    // The order matters because Express resolves the FIRST matching
+    // GET handler — `/auth/password-reset` MUST be registered before
+    // any catch-all dashboard route would intercept it. Today the
+    // dashboard routes are exact-match (`/`, `/admin`, `/portal`)
+    // so order is documentation, not load-bearing — but we pin it
+    // here so a future "everything not matched goes to dashboard"
+    // refactor doesn't accidentally swallow the password-reset path.
+    //
+    // The `/auth/password-reset` mount was added 2026-05-04 as the
+    // AUTH-O2 follow-up: closes the gap where the email link from
+    // /api/v1/auth/password-reset/request had no destination.
+    //
+    // The immutable brand asset is intentionally first because it is
+    // an exact static file route and should not inherit dashboard
+    // no-store headers.
     expect(Array.from(routes.keys())).toEqual([
+      '/assets/nexus-mark.png',
       '/landing-preview',
+      '/auth/forgot-password',
+      '/auth/password-reset',
+      '/user',
+      '/login',
+      '/app',
       '/',
       '/admin',
       '/portal',
@@ -100,6 +123,75 @@ describe('portal static routes', () => {
     expect(payload.contentType).toBe('html');
     expect(payload.body).toBe('<html>landing</html>');
     expect(payload.headers['Cache-Control']).toBe('no-cache, no-store, must-revalidate');
+  });
+
+  it('serves the user login page with strict static-page headers', () => {
+    const dir = createTempPortalDir();
+    fs.writeFileSync(path.join(dir, 'user-login.html'), '<html>user login</html>');
+    const { payload, res } = makeResponse();
+
+    createUserLoginHandler(dir)({}, res);
+
+    expect(payload.statusCode).toBe(200);
+    expect(payload.contentType).toBe('html');
+    expect(payload.body).toBe('<html>user login</html>');
+    expect(payload.headers['Cache-Control']).toBe('no-cache, no-store, must-revalidate');
+    expect(payload.headers['Content-Security-Policy']).toContain("connect-src 'self'");
+    expect(payload.headers['Content-Security-Policy']).toContain('https://api.nexushub.me');
+    expect(payload.headers['Content-Security-Policy']).toContain('https://*.nexushub-landing.pages.dev');
+    expect(payload.headers['Content-Security-Policy']).toContain("frame-ancestors 'none'");
+    expect(JSON.stringify(payload)).not.toContain('PORTAL_TOKEN');
+  });
+
+  it('serves the forgot-password request page and posts to the request API', () => {
+    const dir = createTempPortalDir();
+    fs.mkdirSync(path.join(dir, 'auth'), { recursive: true });
+    fs.writeFileSync(
+      path.join(dir, 'auth', 'forgot-password.html'),
+      '<html><form><input type="email"></form><script>fetch("/api/v1/auth/password-reset/request")</script></html>',
+    );
+    const { payload, res } = makeResponse();
+
+    createForgotPasswordPageHandler(dir)({}, res);
+
+    expect(payload.statusCode).toBe(200);
+    expect(payload.contentType).toBe('html');
+    expect(payload.body).toContain('/api/v1/auth/password-reset/request');
+    expect(payload.headers['Cache-Control']).toBe('no-cache, no-store, must-revalidate');
+    expect(payload.headers['Content-Security-Policy']).toContain("form-action 'self'");
+    expect(payload.headers['Content-Security-Policy']).toContain("frame-ancestors 'none'");
+  });
+
+  it('points the user login forgot-password entry at the request page', () => {
+    const htmlPath = path.resolve(__dirname, '../../src/portal/user-login.html');
+    const html = fs.readFileSync(htmlPath, 'utf8');
+
+    expect(html).toContain('href="/auth/forgot-password"');
+    expect(html).not.toContain('href="/auth/password-reset">Forgot password?');
+  });
+
+  it('keeps portal Stripe Nexus Points note fields bounded and alert rendering escaped', () => {
+    const htmlPath = path.resolve(__dirname, '../../src/portal/portal.html');
+    const html = fs.readFileSync(htmlPath, 'utf8');
+
+    expect(html).toContain('id="slideout-points-note"');
+    expect(html).toContain('maxlength="280"');
+    expect(html).toContain("esc(a.title)");
+    expect(html).toContain("esc(a.userImpact || a.detail || '—')");
+    expect(html).toContain("esc(a.source)");
+    expect(html).toContain("esc(a.lastDeliveryError)");
+  });
+
+  it('user login page includes live Apple and Google browser sign-in flows', () => {
+    const htmlPath = path.resolve(__dirname, '../../src/portal/user-login.html');
+    const html = fs.readFileSync(htmlPath, 'utf8');
+
+    expect(html).toContain('/api/v1/auth/register/google/start');
+    expect(html).toContain('/api/v1/auth/register/google/finish');
+    expect(html).toContain('/api/v1/auth/register/apple/start');
+    expect(html).toContain('/api/v1/auth/register/apple/finish');
+    expect(html).toContain('appleAuthCode');
+    expect(html).not.toContain('Apple web sign-in is not configured for this browser page yet');
   });
 
   it('returns stable missing-file errors for build-output problems', () => {

@@ -9,11 +9,13 @@
 
 import { getDb } from './database';
 import { logger } from '../utils/logger';
+import { runWithContext } from '../utils/request-context';
 import { hasActiveGarminConnection } from './garmin-session-store';
 import {
   isGarminConfigured,
   getHrvData, getSleepData, getBodyBatteryEvents,
   getTrainingReadiness, getActivitiesByDate, getDailySummary,
+  type GarminReadOptions,
 } from './garmin';
 import {
   publishLowSleep,
@@ -27,6 +29,7 @@ import {
   extractGarminBodyBatterySnapshot,
   resolveFallbackEnergyReserve,
 } from './wearable/energy-reserve';
+import { computeLoadModelForDimension } from './coach-kernel/load-model';
 
 // ── Types ───────────────────────────────────────────────────────────
 
@@ -162,6 +165,7 @@ export function scoreBodyBattery(current: number): number {
 }
 
 export function scoreAcwr(acwr: number): number {
+  if (!Number.isFinite(acwr)) return 60;
   if (acwr > 1.5) return 20;     // injury risk — deload
   if (acwr > 1.2) return 50;     // moderate risk
   if (acwr >= 0.8) return 85;    // sweet spot
@@ -173,6 +177,14 @@ function toFiniteNumber(value: unknown): number | null {
   if (typeof value === 'string' && value.trim() !== '') {
     const parsed = Number(value);
     return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
+}
+
+function metricValue(payload: any, ...keys: string[]): number | null {
+  for (const key of keys) {
+    const value = toFiniteNumber(payload?.[key]);
+    if (value != null) return value;
   }
   return null;
 }
@@ -221,24 +233,37 @@ function estimateTrainingStress(activity: any): number {
   return 30;
 }
 
-function computeAcwr(activities: any[]): { acuteLoad: number; chronicLoad: number; acwr: number } {
-  const now = Date.now();
+export function computeAcwr(activities: any[], now: Date = new Date()): { acuteLoad: number; chronicLoad: number; acwr: number } {
   const msPerDay = 86400000;
+  const nowMs = now.getTime();
+  const todayStart = Date.UTC(
+    now.getUTCFullYear(),
+    now.getUTCMonth(),
+    now.getUTCDate(),
+  );
 
   let acuteLoad = 0;
   let chronicLoad = 0;
   const sampleDays = new Set<string>();
+  const loadByDay = new Map<string, number>();
 
   for (const a of activities) {
     const rawDate = a.startTimeLocal || a.startTimeGMT || a.beginTimestamp || a.startDate || a.start;
     const actDate = new Date(rawDate).getTime();
     if (!Number.isFinite(actDate)) continue;
-    const daysAgo = (now - actDate) / msPerDay;
-    if (daysAgo < 0 || daysAgo > 28) continue;
-    sampleDays.add(new Date(actDate).toISOString().slice(0, 10));
+    const dayKey = new Date(actDate).toISOString().slice(0, 10);
+    const dayStart = Date.UTC(
+      new Date(actDate).getUTCFullYear(),
+      new Date(actDate).getUTCMonth(),
+      new Date(actDate).getUTCDate(),
+    );
+    const daysAgo = Math.floor((todayStart - dayStart) / msPerDay);
+    if (actDate > nowMs || daysAgo < 0 || daysAgo >= 28) continue;
+    sampleDays.add(dayKey);
     const stress = estimateTrainingStress(a);
+    loadByDay.set(dayKey, (loadByDay.get(dayKey) ?? 0) + stress);
 
-    if (daysAgo <= 7) acuteLoad += stress;
+    if (daysAgo < 7) acuteLoad += stress;
     chronicLoad += stress;
   }
 
@@ -249,10 +274,22 @@ function computeAcwr(activities: any[]): { acuteLoad: number; chronicLoad: numbe
     return { acuteLoad, chronicLoad, acwr: 1.0 };
   }
 
-  // Normalize to per-day averages
-  const acuteAvg = acuteLoad / 7;
-  const chronicAvg = chronicLoad / 28;
-  const acwr = chronicAvg > 0 ? acuteAvg / chronicAvg : 1.0;
+  const daily = Array.from({ length: 28 }, (_, index) => {
+    const timestamp = todayStart - (27 - index) * msPerDay;
+    const date = new Date(timestamp).toISOString().slice(0, 10);
+    return {
+      date,
+      value: loadByDay.get(date) ?? 0,
+      confidence: 'high' as const,
+    };
+  });
+  const loadModel = computeLoadModelForDimension({
+    daily,
+    dimension: 'external',
+    ctlDays: 28,
+    atlDays: 7,
+  });
+  const acwr = loadModel.acwrUncoupled > 0 ? loadModel.acwrUncoupled : 1.0;
 
   return { acuteLoad, chronicLoad, acwr };
 }
@@ -352,7 +389,10 @@ export function deriveBodyBatteryEquivalent(
  * Reads from the apple_health_data table (populated by iOS HealthKit sync).
  * Returns the same ReadinessResult structure as the Garmin path.
  */
-async function calculateAppleHealthReadiness(userId: number): Promise<ReadinessResult | null> {
+async function calculateAppleHealthReadiness(
+  userId: number,
+  opts: { publishSignals?: boolean } = {},
+): Promise<ReadinessResult | null> {
   const db = getDb();
   const today = new Date().toISOString().slice(0, 10);
 
@@ -374,46 +414,18 @@ async function calculateAppleHealthReadiness(userId: number): Promise<ReadinessR
 
     // Read RHR (today)
     const rhrRow = db.prepare(
-      "SELECT data_json FROM apple_health_data WHERE user_id = ? AND data_type = 'resting_heart_rate' AND date = ? ORDER BY created_at DESC LIMIT 1",
+      "SELECT data_json FROM apple_health_data WHERE user_id = ? AND data_type IN ('resting_heart_rate', 'resting_hr') AND date = ? ORDER BY created_at DESC LIMIT 1",
     ).get(userId, today) as { data_json: string } | undefined;
 
     // Read RHR baseline (7-day average)
     const rhrHistory = db.prepare(
-      "SELECT data_json FROM apple_health_data WHERE user_id = ? AND data_type = 'resting_heart_rate' AND date > ? ORDER BY date DESC LIMIT 7",
+      "SELECT data_json FROM apple_health_data WHERE user_id = ? AND data_type IN ('resting_heart_rate', 'resting_hr') AND date > ? ORDER BY date DESC LIMIT 7",
     ).all(userId, subtractDays(today, 8)) as Array<{ data_json: string }>;
 
     // Read workouts for ACWR (28 days)
     const workoutRows = db.prepare(
       "SELECT data_json FROM apple_health_data WHERE user_id = ? AND data_type = 'workout' AND date > ? ORDER BY date ASC",
     ).all(userId, subtractDays(today, 29)) as Array<{ data_json: string }>;
-
-    // If no data at all, can't compute
-    if (!hrvRow && !sleepRow && !rhrRow) return null;
-
-    // ── HRV ──
-    const todayHrv = hrvRow ? (JSON.parse(hrvRow.data_json)?.value ?? 0) : 0;
-    const hrvValues = hrvHistory.map(r => JSON.parse(r.data_json)?.value ?? 0).filter((v: number) => v > 0);
-    const weeklyHrv = hrvValues.length > 0 ? hrvValues.reduce((a: number, b: number) => a + b, 0) / hrvValues.length : todayHrv;
-    const hrvTrend: 'up' | 'stable' | 'down' = todayHrv > weeklyHrv * 1.05 ? 'up' : todayHrv < weeklyHrv * 0.95 ? 'down' : 'stable';
-    const hrvScoreVal = scoreHrv(todayHrv || 60, weeklyHrv || 60);
-
-    // ── Sleep ──
-    const sleepData = sleepRow ? JSON.parse(sleepRow.data_json) : null;
-    const totalSleepMin = sleepData ? (sleepData.totalSleepSeconds ?? 0) / 60 : 0;
-    const deepSleepMin = sleepData ? (sleepData.deepSleepSeconds ?? 0) / 60 : 0;
-    const remSleepMin = sleepData ? (sleepData.remSleepSeconds ?? 0) / 60 : 0;
-    const derivedSleepScore = totalSleepMin > 0
-      ? deriveAppleHealthSleepScore(totalSleepMin, deepSleepMin, remSleepMin)
-      : 60;
-    const sleepScoreVal = scoreSleep(totalSleepMin / 60, derivedSleepScore);
-
-    // ── RHR ──
-    const todayRhr = rhrRow ? (JSON.parse(rhrRow.data_json)?.value ?? null) : null;
-    const rhrValues = rhrHistory.map(r => JSON.parse(r.data_json)?.value ?? 0).filter((v: number) => v > 0);
-    const rhrBaseline = rhrValues.length > 0 ? rhrValues.reduce((a: number, b: number) => a + b, 0) / rhrValues.length : null;
-
-    // ── Derived Body Battery ──
-    const derivedBB = deriveBodyBatteryEquivalent(derivedSleepScore, hrvScoreVal, todayRhr, rhrBaseline);
 
     const summaryRow = db.prepare(
       "SELECT data_json FROM apple_health_data WHERE user_id = ? AND data_type = 'daily_summary' AND date = ? ORDER BY created_at DESC LIMIT 1",
@@ -427,6 +439,56 @@ async function calculateAppleHealthReadiness(userId: number): Promise<ReadinessR
     const exerciseRow = db.prepare(
       "SELECT data_json FROM apple_health_data WHERE user_id = ? AND data_type = 'exercise_minutes' AND date = ? ORDER BY created_at DESC LIMIT 1",
     ).get(userId, today) as { data_json: string } | undefined;
+
+    // If Apple Health has any useful signal, still provide the energy-reserve
+    // fallback. Body Battery does not exist in HealthKit, but activity-only
+    // snapshots are enough to produce an honest conservative estimate.
+    const hasAppleHealthSignal = Boolean(
+      hrvRow
+      || sleepRow
+      || rhrRow
+      || summaryRow
+      || caloriesRow
+      || stepsRow
+      || exerciseRow
+      || workoutRows.length > 0,
+    );
+    if (!hasAppleHealthSignal) return null;
+
+    // ── HRV ──
+    const todayHrv = hrvRow ? (metricValue(JSON.parse(hrvRow.data_json), 'value', 'sdnn_ms', 'ms') ?? 0) : 0;
+    const hrvValues = hrvHistory
+      .map(r => metricValue(JSON.parse(r.data_json), 'value', 'sdnn_ms', 'ms') ?? 0)
+      .filter((v: number) => v > 0);
+    const weeklyHrv = hrvValues.length > 0 ? hrvValues.reduce((a: number, b: number) => a + b, 0) / hrvValues.length : todayHrv;
+    const hrvTrend: 'up' | 'stable' | 'down' = todayHrv > weeklyHrv * 1.05 ? 'up' : todayHrv < weeklyHrv * 0.95 ? 'down' : 'stable';
+    const hrvScoreVal = scoreHrv(todayHrv || 60, weeklyHrv || 60);
+
+    // ── Sleep ──
+    const sleepData = sleepRow ? JSON.parse(sleepRow.data_json) : null;
+    const totalSleepMin = sleepData
+      ? (metricValue(sleepData, 'totalSleepSeconds') ?? (metricValue(sleepData, 'totalMinutes') ?? 0) * 60) / 60
+      : 0;
+    const deepSleepMin = sleepData
+      ? (metricValue(sleepData, 'deepSleepSeconds') ?? (metricValue(sleepData, 'deepMinutes') ?? 0) * 60) / 60
+      : 0;
+    const remSleepMin = sleepData
+      ? (metricValue(sleepData, 'remSleepSeconds') ?? (metricValue(sleepData, 'remMinutes') ?? 0) * 60) / 60
+      : 0;
+    const derivedSleepScore = totalSleepMin > 0
+      ? deriveAppleHealthSleepScore(totalSleepMin, deepSleepMin, remSleepMin)
+      : 60;
+    const sleepScoreVal = scoreSleep(totalSleepMin / 60, derivedSleepScore);
+
+    // ── RHR ──
+    const todayRhr = rhrRow ? metricValue(JSON.parse(rhrRow.data_json), 'value', 'bpm') : null;
+    const rhrValues = rhrHistory
+      .map(r => metricValue(JSON.parse(r.data_json), 'value', 'bpm') ?? 0)
+      .filter((v: number) => v > 0);
+    const rhrBaseline = rhrValues.length > 0 ? rhrValues.reduce((a: number, b: number) => a + b, 0) / rhrValues.length : null;
+
+    // ── Derived Body Battery ──
+    const derivedBB = deriveBodyBatteryEquivalent(derivedSleepScore, hrvScoreVal, todayRhr, rhrBaseline);
 
     const summary = summaryRow ? JSON.parse(summaryRow.data_json) : null;
     const calories = caloriesRow ? JSON.parse(caloriesRow.data_json) : null;
@@ -467,21 +529,23 @@ async function calculateAppleHealthReadiness(userId: number): Promise<ReadinessR
     };
 
     const recommendation = getRecommendation(compositeScore);
-    const reasoning = buildReasoning(factors, recommendation);
+    const reasoning = `Apple Health is driving today's readiness. ${buildReasoning(factors, recommendation)}`;
 
-    // Publish signals (same as Garmin path)
-    try {
-      if (sleepScoreVal < 50 || totalSleepMin / 60 < 6) {
-        publishLowSleep({ userId, score: Math.round(sleepScoreVal), totalHours: totalSleepMin / 60 });
+    if (opts.publishSignals !== false) {
+      // Publish signals (same as Garmin path)
+      try {
+        if (sleepScoreVal < 50 || totalSleepMin / 60 < 6) {
+          publishLowSleep({ userId, score: Math.round(sleepScoreVal), totalHours: totalSleepMin / 60 });
+        }
+        if (hrvTrend === 'down' && hrvScoreVal < 50 && weeklyHrv > 0) {
+          publishLowHrv({ userId, hrv_ms: todayHrv, baseline_ms: weeklyHrv });
+        }
+        if (compositeScore < 40) {
+          publishLowReadiness({ userId, score: compositeScore, reason: reasoning });
+        }
+      } catch (err) {
+        logger.warn({ err, userId }, 'training-signals publish failed after Apple Health readiness');
       }
-      if (hrvTrend === 'down' && hrvScoreVal < 50 && weeklyHrv > 0) {
-        publishLowHrv({ userId, hrv_ms: todayHrv, baseline_ms: weeklyHrv });
-      }
-      if (compositeScore < 40) {
-        publishLowReadiness({ userId, score: compositeScore, reason: reasoning });
-      }
-    } catch (err) {
-      logger.warn({ err, userId }, 'training-signals publish failed after Apple Health readiness');
     }
 
     logger.info({ userId, score: compositeScore, provider: 'apple_health' }, 'Apple Health readiness calculated');
@@ -494,7 +558,10 @@ async function calculateAppleHealthReadiness(userId: number): Promise<ReadinessR
 
 // ── Main Calculator ─────────────────────────────────────────────────
 
-export async function calculateReadiness(userId: number): Promise<ReadinessResult> {
+export async function calculateReadiness(
+  userId: number,
+  opts: { garminSilent?: boolean } = {},
+): Promise<ReadinessResult> {
   // ── Provider priority: per-user Garmin → Apple Health → neutral ──
   // April 2026: Garmin is now a real per-user integration in iOS.
   // The old owner-only Telegram-era gate made Garmin appear connected
@@ -537,14 +604,18 @@ export async function calculateReadiness(userId: number): Promise<ReadinessResul
 
   const today = new Date().toISOString().slice(0, 10);
 
-  const [hrvResult, sleepResult, bbResult, , activitiesResult, summaryResult] = await Promise.allSettled([
-    getHrvData(today),
-    getSleepData(today),
-    getBodyBatteryEvents(today),
-    getTrainingReadiness(today),
-    getActivitiesByDate(subtractDays(today, 28), today),
-    getDailySummary(today),
-  ]);
+  const garminReadOptions: GarminReadOptions = { silent: opts.garminSilent };
+  const [hrvResult, sleepResult, bbResult, , activitiesResult, summaryResult] = await runWithContext(
+    { source: 'manual', userId },
+    () => Promise.allSettled([
+      getHrvData(today, garminReadOptions),
+      getSleepData(today, garminReadOptions),
+      getBodyBatteryEvents(today, garminReadOptions),
+      getTrainingReadiness(today, garminReadOptions),
+      getActivitiesByDate(subtractDays(today, 28), today, garminReadOptions),
+      getDailySummary(today, garminReadOptions),
+    ]),
+  );
 
   // ── Extract HRV ──
   const hrvRaw = hrvResult.status === 'fulfilled' ? hrvResult.value as any : null;
@@ -568,9 +639,29 @@ export async function calculateReadiness(userId: number): Promise<ReadinessResul
   const bbRaw = bbResult.status === 'fulfilled' ? bbResult.value as any : null;
   const summaryRaw = summaryResult.status === 'fulfilled' ? summaryResult.value as any : null;
   const bbSnapshot = extractGarminBodyBatterySnapshot(bbRaw, summaryRaw);
-  const bbCurrent = bbSnapshot.current ?? 0;
-  const bbMorningPeak = bbSnapshot.morningPeak ?? bbSnapshot.highest ?? bbCurrent;
-  const bbScore = bbSnapshot.current != null ? scoreBodyBattery(bbSnapshot.current) : 60;
+  const garminBodyBatteryCurrent = bbSnapshot.current != null && bbSnapshot.current > 0
+    ? bbSnapshot.current
+    : null;
+  const appleHealthBodyBatteryFallback = garminBodyBatteryCurrent == null
+    ? await calculateAppleHealthReadiness(userId, { publishSignals: false })
+    : null;
+  const appleHealthBattery = appleHealthBodyBatteryFallback?.factors.bodyBattery ?? null;
+  const appleHealthCurrent = appleHealthBattery?.current != null && appleHealthBattery.current > 0
+    ? appleHealthBattery.current
+    : null;
+  const appleHealthMorningPeak = appleHealthBattery?.morningPeak != null && appleHealthBattery.morningPeak > 0
+    ? appleHealthBattery.morningPeak
+    : null;
+  const garminMorningPeak = bbSnapshot.morningPeak != null && bbSnapshot.morningPeak > 0
+    ? bbSnapshot.morningPeak
+    : null;
+  const garminHighest = bbSnapshot.highest != null && bbSnapshot.highest > 0
+    ? bbSnapshot.highest
+    : null;
+  const bbCurrent = garminBodyBatteryCurrent ?? appleHealthCurrent ?? 0;
+  const bbMorningPeak = garminMorningPeak ?? garminHighest ?? appleHealthMorningPeak ?? bbCurrent;
+  const bbScore = bbCurrent > 0 ? scoreBodyBattery(bbCurrent) : 60;
+  const usedAppleHealthBodyBatteryFallback = garminBodyBatteryCurrent == null && appleHealthCurrent != null;
 
   // ── Compute ACWR from activities ──
   const activities = activitiesResult.status === 'fulfilled' ? (activitiesResult.value as any[]) ?? [] : [];
@@ -593,7 +684,9 @@ export async function calculateReadiness(userId: number): Promise<ReadinessResul
   };
 
   const recommendation = getRecommendation(compositeScore);
-  const reasoning = buildReasoning(factors, recommendation);
+  const reasoning = usedAppleHealthBodyBatteryFallback
+    ? `${buildReasoning(factors, recommendation)} Apple Health filled Body Battery because Garmin did not provide it today.`
+    : buildReasoning(factors, recommendation);
 
   // ─── Phase 1 Slice B — Signal B publishing ───
   // Fan out per-factor wellness signals so sport coaches can adapt

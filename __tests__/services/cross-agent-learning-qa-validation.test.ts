@@ -11,6 +11,8 @@ import fs from 'fs';
 import path from 'path';
 
 const MIGRATIONS_DIR = path.resolve(__dirname, '../../migrations');
+const TEST_USER_ID = 42;
+const TEST_TENANT_ID = 42;
 
 function createTestDb(): Database.Database {
   const db = new Database(':memory:');
@@ -40,9 +42,13 @@ function applyMigrations(db: Database.Database): void {
 let testDb: Database.Database;
 vi.mock('../../src/utils/logger', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(), fatal: vi.fn() },
+  LOGGER_REDACTION_PATHS: [],
 }));
 vi.mock('../../src/services/database', () => ({
   getDb: () => testDb,
+  initDatabase: vi.fn(),
+  closeDatabase: vi.fn(),
+  findUnexpectedMigrationPrefixCollisions: vi.fn(() => []),
 }));
 
 import { writeSignal, readSignals, markConsumed, setDbProvider } from '../../src/services/intelligence-bus';
@@ -89,11 +95,13 @@ describe('Cross-Agent Learning — QA Validation', () => {
       writeSignal({
         source_agent: 'voice-evolution',
         signal_type: 'voice_pattern',
+        user_id: TEST_USER_ID,
+        tenant_id: TEST_TENANT_ID,
         payload: { observation: 'Direct tone works', patterns: [{ pattern: 'imperative', frequency: 'high' }], strength: 0.8 },
         priority: 'normal',
       });
 
-      const ctx = buildAgentContext('performance-agent');
+      const ctx = buildAgentContext('performance-agent', TEST_USER_ID, TEST_TENANT_ID);
       expect(ctx.signalsConsumed).toBe(1);
       expect(ctx.voicePatterns.length).toBe(1);
       expect(ctx.voicePatterns[0].observation).toBe('Direct tone works');
@@ -140,11 +148,13 @@ describe('Cross-Agent Learning — QA Validation', () => {
       writeSignal({
         source_agent: 'voice-evolution',
         signal_type: 'voice_pattern',
+        user_id: TEST_USER_ID,
+        tenant_id: TEST_TENANT_ID,
         payload: {}, // no observation, no patterns, no strength
         priority: 'normal',
       });
 
-      const ctx = buildAgentContext('performance-agent');
+      const ctx = buildAgentContext('performance-agent', TEST_USER_ID, TEST_TENANT_ID);
       expect(ctx.voicePatterns.length).toBe(1);
       expect(ctx.voicePatterns[0].observation).toBe('');
       expect(ctx.voicePatterns[0].patterns).toEqual([]);
@@ -198,17 +208,21 @@ describe('Cross-Agent Learning — QA Validation', () => {
       writeSignal({
         source_agent: 'voice-evolution',
         signal_type: 'voice_pattern',
+        user_id: TEST_USER_ID,
+        tenant_id: TEST_TENANT_ID,
         payload: { observation: 'Weak signal', strength: 0.3 },
         priority: 'normal',
       });
       writeSignal({
         source_agent: 'voice-evolution',
         signal_type: 'voice_pattern',
+        user_id: TEST_USER_ID,
+        tenant_id: TEST_TENANT_ID,
         payload: { observation: 'Strong signal', strength: 0.8 },
         priority: 'normal',
       });
 
-      const ctx = buildAgentContext('performance-agent');
+      const ctx = buildAgentContext('performance-agent', TEST_USER_ID, TEST_TENANT_ID);
       const text = formatContextForPrompt(ctx);
       expect(text).toContain('Strong signal');
       expect(text).not.toContain('Weak signal');
@@ -258,6 +272,8 @@ describe('Cross-Agent Learning — QA Validation', () => {
       writeSignal({
         source_agent: 'voice-evolution',
         signal_type: 'voice_pattern',
+        user_id: TEST_USER_ID,
+        tenant_id: TEST_TENANT_ID,
         payload: { observation: 'Direct style', strength: 0.9 },
         priority: 'normal',
       });
@@ -268,7 +284,7 @@ describe('Cross-Agent Learning — QA Validation', () => {
         priority: 'normal',
       });
 
-      const ctx = buildAgentContext('reaction-radar');
+      const ctx = buildAgentContext('reaction-radar', TEST_USER_ID, TEST_TENANT_ID);
       const text = formatContextForPrompt(ctx);
       expect(text).toContain('Cross-Agent Learnings');
       expect(text).toContain('Voice patterns');
@@ -329,15 +345,17 @@ describe('Cross-Agent Learning — QA Validation', () => {
       writeSignal({
         source_agent: 'voice-evolution',
         signal_type: 'voice_pattern',
+        user_id: TEST_USER_ID,
+        tenant_id: TEST_TENANT_ID,
         payload: { observation: 'Confident tone', strength: 0.9 },
         priority: 'normal',
       });
 
-      const id = produceLearningDigest();
+      const id = produceLearningDigest(TEST_USER_ID, TEST_TENANT_ID);
       expect(id).toBeGreaterThan(0);
 
       // The digest should be readable
-      const digestSignals = readSignals('digest-reader', ['learning_digest'], 10);
+      const digestSignals = readSignals('digest-reader', ['learning_digest'], 10, TEST_USER_ID, undefined, TEST_TENANT_ID);
       expect(digestSignals.length).toBe(1);
       const payload = digestSignals[0].payload;
       expect(payload.topPillars.length).toBe(1);
@@ -349,6 +367,8 @@ describe('Cross-Agent Learning — QA Validation', () => {
       writeSignal({
         source_agent: 'voice-evolution',
         signal_type: 'voice_pattern',
+        user_id: TEST_USER_ID,
+        tenant_id: TEST_TENANT_ID,
         payload: { observation: 'Weak', strength: 0.4 },
         priority: 'normal',
       });
@@ -374,16 +394,18 @@ describe('Cross-Agent Learning — QA Validation', () => {
       writeSignal({
         source_agent: 'voice-evolution',
         signal_type: 'voice_pattern',
+        user_id: TEST_USER_ID,
+        tenant_id: TEST_TENANT_ID,
         payload: { observation: 'Test', strength: 0.9 },
         priority: 'normal',
       });
 
       // First read consumes the signal
-      const ctx1 = buildAgentContext('performance-agent');
+      const ctx1 = buildAgentContext('performance-agent', TEST_USER_ID, TEST_TENANT_ID);
       expect(ctx1.signalsConsumed).toBe(1);
 
       // Second read should find nothing new
-      const ctx2 = buildAgentContext('performance-agent');
+      const ctx2 = buildAgentContext('performance-agent', TEST_USER_ID, TEST_TENANT_ID);
       expect(ctx2.signalsConsumed).toBe(0);
     });
 
@@ -391,15 +413,17 @@ describe('Cross-Agent Learning — QA Validation', () => {
       writeSignal({
         source_agent: 'voice-evolution',
         signal_type: 'voice_pattern',
+        user_id: TEST_USER_ID,
+        tenant_id: TEST_TENANT_ID,
         payload: { observation: 'Test', strength: 0.9 },
         priority: 'normal',
       });
 
-      const ctx1 = buildAgentContext('performance-agent');
+      const ctx1 = buildAgentContext('performance-agent', TEST_USER_ID, TEST_TENANT_ID);
       expect(ctx1.signalsConsumed).toBe(1);
 
       // reaction-radar should also consume voice_pattern
-      const ctx2 = buildAgentContext('reaction-radar');
+      const ctx2 = buildAgentContext('reaction-radar', TEST_USER_ID, TEST_TENANT_ID);
       expect(ctx2.signalsConsumed).toBe(1);
     });
   });

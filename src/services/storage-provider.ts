@@ -79,15 +79,24 @@ export class SQLiteStorage implements StorageProvider {
       fs.mkdirSync(dir, { recursive: true });
     }
 
+    const sqlitePragmas = resolveSqlitePragmas(process.env);
+
     this.db = new Database(dbPath);
-    this.db.pragma('journal_mode = WAL');
+    this.db.pragma(`journal_mode = ${sqlitePragmas.journalMode}`);
+    this.db.pragma(`synchronous = ${sqlitePragmas.synchronous}`);
     this.db.pragma('foreign_keys = ON');
+    this.db.pragma('cache_size = -65536');
+    this.db.pragma(`mmap_size = ${sqlitePragmas.mmapSize}`);
+    this.db.pragma('temp_store = MEMORY');
+    if (sqlitePragmas.journalMode === 'WAL') {
+      this.db.pragma('wal_autocheckpoint = 1000');
+    }
     // Wait up to 5s for write locks to release before throwing SQLITE_BUSY.
     // Default is 0 (immediate fail) which is fine at 1 user but causes
     // sporadic write failures under any concurrent load.
     this.db.pragma('busy_timeout = 5000');
 
-    logger.info({ path: dbPath }, 'SQLiteStorage opened');
+    logger.info({ path: dbPath, ...sqlitePragmas }, 'SQLiteStorage opened');
   }
 
   prepare<T = any>(sql: string): PreparedStatement<T> {
@@ -130,6 +139,56 @@ export class SQLiteStorage implements StorageProvider {
     }
     return this.db;
   }
+}
+
+type SQLitePragmas = {
+  journalMode: 'WAL' | 'DELETE' | 'TRUNCATE' | 'PERSIST';
+  synchronous: 'NORMAL' | 'FULL' | 'EXTRA';
+  mmapSize: number;
+};
+
+const DEFAULT_SQLITE_PRAGMAS: SQLitePragmas = {
+  journalMode: 'WAL',
+  synchronous: 'NORMAL',
+  mmapSize: 268_435_456,
+};
+
+function resolveSqlitePragmas(env: NodeJS.ProcessEnv): SQLitePragmas {
+  return {
+    journalMode: resolveSqliteJournalMode(env.SQLITE_JOURNAL_MODE),
+    synchronous: resolveSqliteSynchronous(env.SQLITE_SYNCHRONOUS),
+    mmapSize: resolveSqliteMmapSize(env.SQLITE_MMAP_SIZE),
+  };
+}
+
+function resolveSqliteJournalMode(value: string | undefined): SQLitePragmas['journalMode'] {
+  const normalized = value?.trim().toUpperCase();
+  if (normalized === 'WAL' || normalized === 'DELETE' || normalized === 'TRUNCATE' || normalized === 'PERSIST') {
+    return normalized;
+  }
+  if (normalized) {
+    logger.warn({ configured: value }, 'Invalid SQLITE_JOURNAL_MODE; using default');
+  }
+  return DEFAULT_SQLITE_PRAGMAS.journalMode;
+}
+
+function resolveSqliteSynchronous(value: string | undefined): SQLitePragmas['synchronous'] {
+  const normalized = value?.trim().toUpperCase();
+  if (normalized === 'NORMAL' || normalized === 'FULL' || normalized === 'EXTRA') {
+    return normalized;
+  }
+  if (normalized) {
+    logger.warn({ configured: value }, 'Invalid SQLITE_SYNCHRONOUS; using default');
+  }
+  return DEFAULT_SQLITE_PRAGMAS.synchronous;
+}
+
+function resolveSqliteMmapSize(value: string | undefined): number {
+  if (value == null || value.trim() === '') return DEFAULT_SQLITE_PRAGMAS.mmapSize;
+  const parsed = Number.parseInt(value, 10);
+  if (Number.isFinite(parsed) && parsed >= 0) return parsed;
+  logger.warn({ configured: value }, 'Invalid SQLITE_MMAP_SIZE; using default');
+  return DEFAULT_SQLITE_PRAGMAS.mmapSize;
 }
 
 // ─── Singleton ──────────────────────────────────────────────────────

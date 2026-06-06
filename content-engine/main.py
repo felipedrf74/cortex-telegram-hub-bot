@@ -24,9 +24,11 @@ for _env_path in _shared_env_candidates:
         break
 
 from fastapi import FastAPI, Request
+from starlette.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 from routers.research import router as research_router
 from routers.books import router as books_router
+from config import cfg
 
 # ── Distributed tracing (Quarter audit item) ──────────────────────────
 #
@@ -91,6 +93,27 @@ class RequestIdMiddleware(BaseHTTPMiddleware):
         return response
 
 
+class InternalSecretMiddleware(BaseHTTPMiddleware):
+    """
+    Protect every content-engine route except /health with the same shared
+    internal secret used by the TypeScript backend's /api/v1/internal routes.
+    """
+
+    async def dispatch(self, request: Request, call_next):
+        if request.url.path == "/health":
+            return await call_next(request)
+
+        expected = cfg.internal_api_secret
+        provided = request.headers.get("x-internal-secret") or ""
+        if not expected or not secrets.compare_digest(provided, expected):
+            return JSONResponse(
+                status_code=401,
+                content={"error": {"code": "UNAUTHORIZED", "message": "Unauthorized"}},
+            )
+
+        return await call_next(request)
+
+
 class RequestIdFilter(logging.Filter):
     """
     Logging filter that injects the current request_id into every log
@@ -142,8 +165,10 @@ app = FastAPI(
     description="Research-powered content creation engine for the Nexus Hub Telegram bot",
 )
 
-# Mount the tracing middleware FIRST so it covers everything below it,
-# including FastAPI's routing and exception handlers.
+# Register auth before tracing because Starlette wraps middleware in reverse
+# registration order; RequestIdMiddleware must be outermost so even rejected
+# requests receive the x-request-id echo header.
+app.add_middleware(InternalSecretMiddleware)
 app.add_middleware(RequestIdMiddleware)
 
 app.include_router(research_router)

@@ -14,6 +14,14 @@ vi.mock('../../src/services/report-document-store', () => ({
   getLatestByType: (...args: unknown[]) => mockGetLatestByType(...args),
   getReportById: (...args: unknown[]) => mockGetReportById(...args),
   markReportRead: (...args: unknown[]) => mockMarkReportRead(...args),
+  isReportType: (value: unknown) => typeof value === 'string' && [
+    'morning_briefing',
+    'evening_summary',
+    'weekly_review',
+    'coach_briefing',
+    'decision_briefing',
+    'coach_phase',
+  ].includes(value),
 }));
 
 import { reportRoutes } from '../../src/api/routes/reports';
@@ -108,6 +116,46 @@ describe('Reports routes', () => {
     expect(res.body.data.count).toBe(1);
     expect(mockGetRecentReports).toHaveBeenCalledWith(7, { type: 'morning_briefing', limit: 5 });
     expect(mockGetUnreadReportCount).toHaveBeenCalledWith(7);
+  });
+
+  it('rejects invalid report type before calling the store', async () => {
+    const res = await dispatch('GET', '/', { type: 'not_a_report', limit: '5' });
+
+    expect(res.statusCode).toBe(400);
+    expect(res.body.ok).toBe(false);
+    expect(res.body.error.code).toBe('VALIDATION');
+    expect(mockGetRecentReports).not.toHaveBeenCalled();
+  });
+
+  it('rejects invalid report limits and clamps oversized valid limits', async () => {
+    const invalid = await dispatch('GET', '/', { limit: 'nope' });
+
+    expect(invalid.statusCode).toBe(400);
+    expect(invalid.body.error.code).toBe('VALIDATION');
+    expect(mockGetRecentReports).not.toHaveBeenCalled();
+
+    const partialNumeric = await dispatch('GET', '/', { limit: '20abc' });
+    expect(partialNumeric.statusCode).toBe(400);
+    expect(partialNumeric.body.error.code).toBe('VALIDATION');
+    expect(mockGetRecentReports).not.toHaveBeenCalled();
+
+    const clamped = await dispatch('GET', '/', { limit: '500' });
+    expect(clamped.statusCode).toBe(200);
+    expect(mockGetRecentReports).toHaveBeenCalledWith(7, { type: undefined, limit: 100 });
+  });
+
+  it('validates latest report type', async () => {
+    const missing = await dispatch('GET', '/latest');
+    expect(missing.statusCode).toBe(400);
+    expect(missing.body.error.code).toBe('VALIDATION');
+
+    const invalid = await dispatch('GET', '/latest', { type: 'not_a_report' });
+    expect(invalid.statusCode).toBe(400);
+    expect(invalid.body.error.code).toBe('VALIDATION');
+
+    const valid = await dispatch('GET', '/latest', { type: 'decision_briefing' });
+    expect(valid.statusCode).toBe(200);
+    expect(mockGetLatestByType).toHaveBeenCalledWith(7, 'decision_briefing');
   });
 
   it('fails closed on invalid tenant scope before listing reports', async () => {

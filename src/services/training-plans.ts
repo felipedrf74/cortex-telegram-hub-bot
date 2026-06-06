@@ -7,28 +7,17 @@
  * and weekly auto-adjustment based on completion data and wearable metrics.
  */
 
+import { DateTime } from 'luxon';
 import { getDb } from './database';
 import { logger } from '../utils/logger';
-import { createEvent as createCalendarEvent, hasWritableCalendarForUser } from './unified-calendar';
-import { publishTrainingSessionScheduled } from './training-signals';
-
-// ─── Phase 1 Slice B helper ─────────────────────────────────────────
-
-/** Map a training plan sport string to the canonical sport enum for signals. */
-function normalizeSportForSignals(sport: string): 'gym' | 'running' | 'cycling' | 'swim' | null {
-  const s = sport.toLowerCase().trim();
-  if (['gym', 'strength', 'lifting', 'weight', 'weights', 'musculacao', 'musculação'].includes(s)) return 'gym';
-  if (['run', 'running', 'corrida'].includes(s)) return 'running';
-  if (['bike', 'biking', 'cycle', 'cycling', 'ciclismo', 'pedal'].includes(s)) return 'cycling';
-  if (['swim', 'swimming', 'natacao', 'natação'].includes(s)) return 'swim';
-  return null;
-}
+import { config } from '../config';
 
 // ── Types ──────────────────────────────────────────────────────────
 
 export interface TrainingPlan {
   id: number;
   user_id: number;
+  tenant_id?: number | null;
   name: string;
   sport: string;
   goal: string | null;
@@ -101,6 +90,7 @@ export interface TrainingSession {
   id: number;
   week_id: number;
   plan_id: number;
+  tenant_id?: number | null;
   day_of_week: string;
   session_type: string;
   title: string;
@@ -158,6 +148,7 @@ export interface TrainingCompletion {
 
 export interface CreatePlanInput {
   user_id: number;
+  tenant_id?: number | null;
   name: string;
   sport: string;
   goal?: string;
@@ -211,7 +202,45 @@ export interface LogCompletionInput {
   energy_level?: number;
   soreness_level?: number;
   notes?: string;
+  // ── Slice A0c — CompletionFeedbackV2 fields. All optional;
+  //    older callers continue to work unchanged.
+  /** Finer-resolution duration (seconds). Engine falls back to duration_minutes × 60 when missing. */
+  completed_duration_sec?: number;
+  /** Distance covered in meters (running / cycling / swim). */
+  completed_distance_meters?: number;
+  /** JSON array of completed set counts per prescribed exercise. */
+  completed_sets_json?: string;
+  /** JSON array of completed reps per prescribed exercise. */
+  completed_reps_json?: string;
+  /** JSON array of completed loads (kg) per prescribed exercise. */
+  completed_load_json?: string;
+  /** Reps in reserve (Zourdos RIR scale, 0-5). */
+  rir?: number;
+  /** Pain score (0-10). Distinct from soreness — pain implies injury risk. */
+  pain_score?: number;
+  /** Free-text pain location (e.g., "left knee, medial"). Health-sensitive (A4p). */
+  pain_location?: string;
+  /** Technical success score (0-10) — "did I execute the movement well?". */
+  technical_success_score?: number;
+  /** Free-form short reason when status=skipped (illness, travel, etc.). */
+  missed_reason?: string;
+  /** Set true when athlete did an external (unlogged) training session. */
+  external_training_declared?: boolean;
 }
+
+const TRAINING_SESSION_UPDATE_COLUMNS = new Set([
+  'day_of_week',
+  'title',
+  'exercises_json',
+  'duration_minutes',
+  'intensity_text',
+  'description',
+  'status',
+  'calendar_event_id',
+  'calendar_source',
+  'session_identity_key',
+  'session_shape_hash',
+]);
 
 const DAY_NAME_MAP: Record<string, string> = {
   monday: 'Monday',
@@ -232,12 +261,13 @@ function canonicalDayOfWeek(value: string): string {
 
 export function createPlan(input: CreatePlanInput): TrainingPlan {
   const db = getDb();
+  const tenantId = input.tenant_id && input.tenant_id > 0 ? input.tenant_id : input.user_id;
   const result = db.prepare(`
     INSERT INTO fitness_training_plans
-      (user_id, name, sport, goal, duration_weeks, periodization, start_date, end_date, preferences_json)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      (user_id, tenant_id, name, sport, goal, duration_weeks, periodization, start_date, end_date, preferences_json)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
-    input.user_id, input.name, input.sport, input.goal ?? null,
+    input.user_id, tenantId, input.name, input.sport, input.goal ?? null,
     input.duration_weeks, input.periodization ?? 'linear',
     input.start_date, input.end_date, input.preferences_json ?? null,
   );
@@ -246,8 +276,33 @@ export function createPlan(input: CreatePlanInput): TrainingPlan {
     .get(result.lastInsertRowid) as TrainingPlan;
 }
 
-export function getActivePlan(userId: number): TrainingPlan | null {
+/**
+ * 2026-05-18 (skill-hardening QA P0-3): both `getActivePlan` and
+ * `getActivePlans` were querying `WHERE user_id = ? AND status = 'active'`
+ * without filtering by tenant_id, despite migration 140 adding the column.
+ * That made the tenant-id work on these tables cosmetic — cross-tenant
+ * reads were silently allowed when the caller forgot to scope.
+ *
+ * The fix is additive: tenantId remains optional for back-compat (~25
+ * existing call sites), but when provided we filter by both user_id AND
+ * tenant_id. Unscoped callers now log a warning so the remaining sites
+ * can be migrated one-by-one to thread tenantId from `assertTenantScope`.
+ * The follow-up plan should remove the optional-tenantId branch entirely
+ * once all callers are updated.
+ */
+export function getActivePlan(userId: number, tenantId?: number): TrainingPlan | null {
   const db = getDb();
+  if (typeof tenantId === 'number' && tenantId > 0) {
+    return (db.prepare(`
+      SELECT * FROM fitness_training_plans
+      WHERE user_id = ? AND tenant_id = ? AND status = 'active'
+      ORDER BY created_at DESC LIMIT 1
+    `).get(userId, tenantId) as TrainingPlan | undefined) ?? null;
+  }
+  logger.warn(
+    { userId, op: 'getActivePlan' },
+    'training.getActivePlan called without tenantId; falling back to userId-only scope (P0-3 follow-up)',
+  );
   return (db.prepare(`
     SELECT * FROM fitness_training_plans
     WHERE user_id = ? AND status = 'active'
@@ -259,9 +314,22 @@ export function getActivePlan(userId: number): TrainingPlan | null {
  * Get ALL active plans for a user — supports multi-sport planning.
  * Each plan targets a different sport (gym, running, cycling, swim).
  * Used by the cross-plan interference check and the plan renewal logic.
+ *
+ * See `getActivePlan` for the tenant_id scoping rationale.
  */
-export function getActivePlans(userId: number): TrainingPlan[] {
+export function getActivePlans(userId: number, tenantId?: number): TrainingPlan[] {
   const db = getDb();
+  if (typeof tenantId === 'number' && tenantId > 0) {
+    return db.prepare(`
+      SELECT * FROM fitness_training_plans
+      WHERE user_id = ? AND tenant_id = ? AND status = 'active'
+      ORDER BY sport, created_at DESC
+    `).all(userId, tenantId) as TrainingPlan[];
+  }
+  logger.warn(
+    { userId, op: 'getActivePlans' },
+    'training.getActivePlans called without tenantId; falling back to userId-only scope (P0-3 follow-up)',
+  );
   return db.prepare(`
     SELECT * FROM fitness_training_plans
     WHERE user_id = ? AND status = 'active'
@@ -317,6 +385,16 @@ export function updatePlanStatus(planId: number, status: TrainingPlan['status'])
   return result.changes > 0;
 }
 
+export function updatePlanPreferences(planId: number, preferencesJson: string): boolean {
+  const db = getDb();
+  const result = db.prepare(`
+    UPDATE fitness_training_plans
+    SET preferences_json = ?, updated_at = datetime('now')
+    WHERE id = ?
+  `).run(preferencesJson, planId);
+  return result.changes > 0;
+}
+
 /**
  * Hard-delete a training plan and every artifact derived from it.
  *
@@ -338,7 +416,7 @@ export function updatePlanStatus(planId: number, status: TrainingPlan['status'])
  * Returns row counts so the route can report what was actually
  * removed in the response payload (audit + UI feedback).
  */
-export function deletePlanHard(planId: number, userId: number): {
+export function deletePlanHard(planId: number, userId: number, tenantId?: number | null): {
   ok: boolean;
   removedPlans: number;
   removedWeeks: number;
@@ -357,9 +435,14 @@ export function deletePlanHard(planId: number, userId: number): {
   // Scope the DELETE to (id, user_id) so a stale planId from another
   // tenant cannot accidentally remove someone else's plan even if the
   // caller's ownership gate is bypassed in the future.
-  const result = db.prepare(`
-    DELETE FROM fitness_training_plans WHERE id = ? AND user_id = ?
-  `).run(planId, userId);
+  const scopedTenantId = Number(tenantId);
+  const result = Number.isFinite(scopedTenantId) && scopedTenantId > 0
+    ? db.prepare(`
+        DELETE FROM fitness_training_plans WHERE id = ? AND user_id = ? AND tenant_id = ?
+      `).run(planId, userId, Math.trunc(scopedTenantId))
+    : db.prepare(`
+        DELETE FROM fitness_training_plans WHERE id = ? AND user_id = ?
+      `).run(planId, userId);
 
   const removedPlans = result.changes;
   return {
@@ -393,19 +476,28 @@ export function getWeeksForPlan(planId: number): TrainingWeek[] {
   `).all(planId) as TrainingWeek[];
 }
 
-export function getCurrentWeek(planId: number): TrainingWeek | null {
+export function resolveTrainingPlanWeekNumber(
+  plan: Pick<TrainingPlan, 'start_date' | 'duration_weeks'>,
+  options: { now?: Date; timezone?: string | null } = {},
+): number {
+  const timezone = options.timezone || config.app?.timezone || 'Europe/Lisbon';
+  const start = DateTime.fromISO(plan.start_date, { zone: timezone }).startOf('day');
+  const now = DateTime.fromJSDate(options.now ?? new Date(), { zone: timezone }).startOf('day');
+  if (!start.isValid || !now.isValid) return 1;
+  const diffDays = Math.floor(now.diff(start, 'days').days);
+  const rawWeekNumber = Math.floor(diffDays / 7) + 1;
+  return Math.min(
+    Math.max(1, rawWeekNumber),
+    Math.max(1, plan.duration_weeks || 1),
+  );
+}
+
+export function getCurrentWeek(planId: number, options: { now?: Date; timezone?: string | null } = {}): TrainingWeek | null {
   const db = getDb();
   const plan = getPlanById(planId);
   if (!plan) return null;
 
-  const startDate = new Date(plan.start_date);
-  const now = new Date();
-  const diffMs = now.getTime() - startDate.getTime();
-  const rawWeekNumber = Math.floor(diffMs / (7 * 24 * 60 * 60 * 1000)) + 1;
-  const weekNumber = Math.min(
-    Math.max(1, rawWeekNumber),
-    Math.max(1, plan.duration_weeks || 1),
-  );
+  const weekNumber = resolveTrainingPlanWeekNumber(plan, options);
 
   return (db.prepare(`
     SELECT * FROM training_weeks WHERE plan_id = ? AND week_number = ?
@@ -427,15 +519,20 @@ export function updateWeekAdjustment(weekId: number, intensityPct: number, reaso
 export function createSession(input: CreateSessionInput): TrainingSession {
   const db = getDb();
   const normalizedDay = canonicalDayOfWeek(input.day_of_week);
+  const tenantId = (db.prepare('SELECT tenant_id AS tenantId FROM fitness_training_plans WHERE id = ?')
+    .get(input.plan_id) as { tenantId?: number | null } | undefined)?.tenantId ?? null;
+  if (!Number.isFinite(tenantId) || Number(tenantId) <= 0) {
+    throw new Error(`TRAINING_PLAN_TENANT_SCOPE_MISSING: ${input.plan_id}`);
+  }
   const result = db.prepare(`
     INSERT INTO training_sessions
-      (week_id, plan_id, day_of_week, session_type, title, description,
+      (week_id, plan_id, tenant_id, day_of_week, session_type, title, description,
        description_json, exercises_json, duration_minutes, intensity_text,
        calendar_event_id, calendar_source, session_identity_key, session_shape_hash,
        preferred_time_unavailable, status)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
-    input.week_id, input.plan_id, normalizedDay, input.session_type,
+    input.week_id, input.plan_id, tenantId, normalizedDay, input.session_type,
     input.title, input.description ?? null, input.description_json ?? null,
     input.exercises_json ?? null,
     input.duration_minutes ?? null, input.intensity_text ?? null,
@@ -476,6 +573,9 @@ export function updateSession(
 
   for (const [key, value] of Object.entries(updates)) {
     if (value !== undefined) {
+      if (!TRAINING_SESSION_UPDATE_COLUMNS.has(key)) {
+        throw new Error(`TRAINING_SESSION_UPDATE_INVALID_FIELD: ${key}`);
+      }
       setClauses.push(`${key} = ?`);
       values.push(value);
     }
@@ -503,21 +603,40 @@ export function linkSessionToCalendar(sessionId: number, eventId: string, source
   return updateSession(sessionId, { calendar_event_id: eventId, calendar_source: source });
 }
 
-export function getSessionByCalendarEvent(eventId: string, source?: string | null): TrainingSession | null {
+export interface TrainingSessionCalendarLookupScope {
+  userId?: number | null;
+  tenantId?: number | null;
+}
+
+export function getSessionByCalendarEvent(
+  eventId: string,
+  source?: string | null,
+  scope?: TrainingSessionCalendarLookupScope,
+): TrainingSession | null {
   const db = getDb();
-  const row = source
-    ? db.prepare(`
-      SELECT * FROM training_sessions
-      WHERE calendar_event_id = ? AND calendar_source = ?
-      ORDER BY updated_at DESC, id DESC
-      LIMIT 1
-    `).get(eventId, source)
-    : db.prepare(`
-      SELECT * FROM training_sessions
-      WHERE calendar_event_id = ?
-      ORDER BY updated_at DESC, id DESC
-      LIMIT 1
-    `).get(eventId);
+  const clauses = ['ts.calendar_event_id = ?'];
+  const values: any[] = [eventId];
+
+  if (source) {
+    clauses.push('ts.calendar_source = ?');
+    values.push(source);
+  }
+  if (scope?.userId != null) {
+    clauses.push('ftp.user_id = ?');
+    values.push(scope.userId);
+  }
+  if (scope?.tenantId != null) {
+    clauses.push('ftp.tenant_id = ?');
+    values.push(scope.tenantId);
+  }
+
+  const row = db.prepare(`
+    SELECT ts.* FROM training_sessions ts
+    JOIN fitness_training_plans ftp ON ftp.id = ts.plan_id
+    WHERE ${clauses.join(' AND ')}
+    ORDER BY ts.updated_at DESC, ts.id DESC
+    LIMIT 1
+  `).get(...values);
 
   return (row as TrainingSession | undefined) ?? null;
 }
@@ -525,11 +644,17 @@ export function getSessionByCalendarEvent(eventId: string, source?: string | nul
 export function syncSessionWithCoachRecommendation(rec: {
   eventId: string;
   source?: string | null;
+  userId?: number | null;
+  tenantId?: number | null;
+  timezone?: string | null;
   action: 'KEEP' | 'MODIFY' | 'SWAP' | 'REST';
   newTitle?: string | null;
   newStart?: string | null;
 }): boolean {
-  const session = getSessionByCalendarEvent(rec.eventId, rec.source);
+  const session = getSessionByCalendarEvent(rec.eventId, rec.source, {
+    userId: rec.userId,
+    tenantId: rec.tenantId,
+  });
   if (!session) return false;
 
   const updates: Partial<Pick<TrainingSession, 'day_of_week' | 'title' | 'status'>> = {};
@@ -541,9 +666,24 @@ export function syncSessionWithCoachRecommendation(rec: {
   if (rec.newStart) {
     const movedAt = new Date(rec.newStart);
     if (!Number.isNaN(movedAt.getTime())) {
+      // 2026-05-18 (skill-hardening QA P1-3): the previous fallback chain
+      // included a `|| 'Europe/Lisbon'` literal, which violated plan §3.7's
+      // ground rule against single-tenant locale hardcodes. The caller
+      // (`syncSessionWithCoachRecommendation`) is now responsible for
+      // passing the user's timezone via `rec.timezone`; if missing we fall
+      // back to `config.app.timezone` (the system default) and surface a
+      // warning to logs so the gap is visible to ops. We never bake the
+      // founder's TZ into the fallback chain.
+      if (!rec.timezone && !config.app.timezone) {
+        logger.warn(
+          { eventId: rec.eventId, source: rec.source },
+          'training.coach-recommendation: no user TZ + no config TZ; defaulting to UTC',
+        );
+      }
+      const timeZone = rec.timezone || config.app.timezone || 'UTC';
       updates.day_of_week = movedAt.toLocaleDateString('en-US', {
         weekday: 'long',
-        timeZone: 'Europe/Lisbon',
+        timeZone,
       });
     }
   }
@@ -559,20 +699,54 @@ export function syncSessionWithCoachRecommendation(rec: {
 
 export function logCompletion(input: LogCompletionInput): TrainingCompletion {
   const db = getDb();
+  // Slice A0c — insert both legacy migration-023 fields AND the V2
+  // CompletionFeedbackV2 columns from migration 157. All V2 fields
+  // are optional; older callers passing only legacy fields continue
+  // to work unchanged.
   const result = db.prepare(`
     INSERT INTO training_completions
       (session_id, plan_id, actual_exercises_json, rpe_overall,
-       duration_minutes, energy_level, soreness_level, notes)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+       duration_minutes, energy_level, soreness_level, notes,
+       completed_duration_sec, completed_distance_meters,
+       completed_sets_json, completed_reps_json, completed_load_json,
+       rir, pain_score, pain_location, technical_success_score,
+       missed_reason, external_training_declared)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
-    input.session_id, input.plan_id, input.actual_exercises_json ?? null,
-    input.rpe_overall ?? null, input.duration_minutes ?? null,
-    input.energy_level ?? null, input.soreness_level ?? null, input.notes ?? null,
+    input.session_id,
+    input.plan_id,
+    input.actual_exercises_json ?? null,
+    input.rpe_overall ?? null,
+    input.duration_minutes ?? null,
+    input.energy_level ?? null,
+    input.soreness_level ?? null,
+    input.notes ?? null,
+    // V2 columns:
+    input.completed_duration_sec ?? null,
+    input.completed_distance_meters ?? null,
+    input.completed_sets_json ?? null,
+    input.completed_reps_json ?? null,
+    input.completed_load_json ?? null,
+    input.rir ?? null,
+    input.pain_score ?? null,
+    input.pain_location ?? null,
+    input.technical_success_score ?? null,
+    input.missed_reason ?? null,
+    input.external_training_declared === true ? 1 : 0,
   );
   // Also mark the session as completed
   markSessionCompleted(input.session_id);
 
-  logger.info({ sessionId: input.session_id, rpe: input.rpe_overall }, 'Training session completed');
+  logger.info(
+    {
+      sessionId: input.session_id,
+      rpe: input.rpe_overall,
+      rir: input.rir,
+      painScore: input.pain_score,
+      externalDeclared: input.external_training_declared === true,
+    },
+    'Training session completed',
+  );
   return db.prepare('SELECT * FROM training_completions WHERE id = ?')
     .get(result.lastInsertRowid) as TrainingCompletion;
 }
@@ -777,111 +951,4 @@ export function getPlanStats(userId: number): {
     currentWeekAdherence: adherence,
     currentPlanName: activePlan?.name ?? null,
   };
-}
-
-// ── Calendar Blocker Creation ───────────────────────────────────────
-
-function addDays(isoDate: string, days: number): string {
-  const d = new Date(isoDate);
-  d.setDate(d.getDate() + days);
-  return d.toISOString().slice(0, 10);
-}
-
-function addMinutesToISO(isoDateTime: string, minutes: number): string {
-  const d = new Date(isoDateTime);
-  d.setMinutes(d.getMinutes() + minutes);
-  return d.toISOString().replace('Z', '').split('.')[0];
-}
-
-/**
- * Create calendar events for all sessions in a training week.
- * Uses the authenticated user's connected calendar. Skips gracefully if the
- * user has not connected a writable provider yet.
- *
- * @param weekOf - ISO Monday date, e.g., '2026-04-06'
- * @param sessions - Training sessions for the week
- * @param preferredTime - User's preferred start time, e.g., '06:00'
- */
-export async function createCalendarBlockers(
-  userId: number,
-  weekOf: string,
-  sessions: TrainingSession[],
-  preferredTime: string,
-): Promise<{ created: number; failed: number }> {
-  if (!hasWritableCalendarForUser(userId)) {
-    logger.info({ userId }, 'No writable user calendar connected — skipping blocker creation');
-    return { created: 0, failed: 0 };
-  }
-
-  // Determine which calendar to use for this user only.
-  let calendarSource: 'outlook' | 'google' | undefined;
-  try {
-    const { isConnected } = require('./oauth-store');
-    if (isConnected(userId, 'google')) calendarSource = 'google';
-    else if (isConnected(userId, 'outlook')) calendarSource = 'outlook';
-  } catch { /* oauth-store not available */ }
-
-  if (!calendarSource) {
-    logger.info({ userId }, 'No user-scoped calendar provider found for blocker creation');
-    return { created: 0, failed: 0 };
-  }
-
-  // Resolve sport once for the batch — all sessions belong to the same plan.
-  let batchSport: 'gym' | 'running' | 'cycling' | 'swim' | null = null;
-  if (sessions.length > 0) {
-    const plan = getPlanById(sessions[0].plan_id);
-    if (plan) batchSport = normalizeSportForSignals(plan.sport);
-  }
-
-  let created = 0;
-  let failed = 0;
-
-  for (const session of sessions) {
-    const dayOfWeek = typeof session.day_of_week === 'string'
-      ? parseInt(session.day_of_week, 10)
-      : (session.day_of_week as unknown as number) ?? 0;
-
-    const dayDate = addDays(weekOf, dayOfWeek);
-    const duration = session.duration_minutes || 60;
-    const startISO = `${dayDate}T${preferredTime}:00`;
-    const endISO = addMinutesToISO(startISO, duration);
-
-    try {
-      const event = await createCalendarEvent({
-        title: `🏋️ ${session.title} (${duration}min)`,
-        start: startISO,
-        end: endISO,
-        description: session.description || undefined,
-        categories: ['Green category'],
-      }, calendarSource, userId);
-
-      linkSessionToCalendar(session.id, event.id || event.summary, calendarSource);
-      created++;
-
-      // ─── Phase 1 Slice B — Signal C publishing ───
-      // Let the secretary (and sibling sport coaches) know this session
-      // now occupies a calendar slot. The secretary will cross-reference
-      // future user events against these signals to detect conflicts.
-      if (batchSport) {
-        try {
-          publishTrainingSessionScheduled({
-            userId,
-            sport: batchSport,
-            sessionId: session.id,
-            startTimeIso: new Date(startISO).toISOString(),
-            endTimeIso: new Date(endISO).toISOString(),
-            title: session.title,
-            calendarEventId: event.id || event.summary,
-          });
-        } catch (err) {
-          logger.warn({ err, sessionId: session.id }, 'publishTrainingSessionScheduled failed');
-        }
-      }
-    } catch (err) {
-      logger.warn({ err, sessionId: session.id, planId: session.plan_id, userId }, 'Failed to create calendar blocker');
-      failed++;
-    }
-  }
-
-  return { created, failed };
 }

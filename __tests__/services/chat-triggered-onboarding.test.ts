@@ -25,14 +25,39 @@ const mockInvalidateOnboardingDerivedCaches = vi.hoisted(() => vi.fn());
 
 vi.mock('../../src/services/database', () => ({
   getDb: () => testDb,
+  initDatabase: vi.fn(),
+  closeDatabase: vi.fn(),
+  findUnexpectedMigrationPrefixCollisions: vi.fn(() => []),
 }));
 
-vi.mock('../../src/services/onboarding-cache-invalidator', () => ({
+vi.mock('../../src/services/cache-coherence-registry', () => ({
+  ...{
+    CacheCoherenceEvents: {},
+    _resetDashboardCacheInvalidationStatsForTests: vi.fn(),
+    getDashboardCacheInvalidationStats: vi.fn(),
+    invalidateCacheForEvent: vi.fn(),
+    invalidateCalendarCaches: vi.fn(),
+    invalidateContentDerivedCaches: vi.fn(),
+    invalidateCookingDerivedCaches: vi.fn(),
+    invalidateDashboardCaches: vi.fn(),
+    invalidateDashboardCoordinationCaches: vi.fn(),
+    invalidateDashboardHomeCaches: vi.fn(),
+    invalidateDashboardReadinessCaches: vi.fn(),
+    invalidateDashboardRootCaches: vi.fn(),
+    invalidateExecutiveBriefCaches: vi.fn(),
+    invalidateFinanceDerivedCaches: vi.fn(),
+    invalidateIntegrationDerivedCaches: vi.fn(),
+    invalidateOnboardingDerivedCaches: vi.fn(),
+    invalidatePlanningCaches: vi.fn(),
+    invalidateTaskCaches: vi.fn(),
+    invalidateTrainingDerivedCaches: vi.fn(),
+  },
   invalidateOnboardingDerivedCaches: (...args: unknown[]) => mockInvalidateOnboardingDerivedCaches(...args),
 }));
 
 vi.mock('../../src/utils/logger', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(), trace: vi.fn(), child: vi.fn().mockReturnThis() },
+  LOGGER_REDACTION_PATHS: [],
 }));
 
 vi.mock('../../src/config', () => ({
@@ -97,10 +122,21 @@ import {
   getProfile,
   getQuestionnaire,
 } from '../../src/services/onboarding';
-import { executeToolCall } from '../../src/services/tool-executor';
+import { executeToolCall as executeToolCallRaw } from '../../src/services/tool-executor';
+import { runWithChatToolAuthorization } from '../../src/services/chat-tool-authorization';
 import { buildSimpleStateContext } from '../../src/domains/domain-handler';
 
 // ─── Helper functions ──────────────────────────────────────────────
+
+function executeToolCall(toolName: string, input: Record<string, any>, userId?: number): Promise<any> {
+  if (!userId) return executeToolCallRaw(toolName, input, userId);
+  return runWithChatToolAuthorization({
+    userId,
+    tenantId: userId,
+    confirmedDestructiveAction: true,
+    confirmationSource: 'explicit_current_turn',
+  }, () => executeToolCallRaw(toolName, input, userId, userId)) as Promise<any>;
+}
 
 describe('Phase 3 Slice A — profile field helpers', () => {
   beforeEach(() => {
@@ -228,7 +264,11 @@ describe('Phase 3 Slice A — save_athlete_profile_field tool', () => {
       field_key: 'training_age',
       value: '1-3 years',
     });
-    expect(result.error).toContain('user_id');
+    expect(result).toMatchObject({
+      success: false,
+      code: 'AUTH_REQUIRED',
+      error: 'save_athlete_profile_field requires authenticated chat authorization context',
+    });
   });
 
   it('rejects unknown profile types (whitelist enforced)', async () => {

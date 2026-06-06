@@ -6,24 +6,17 @@ Free tier: 100 searches/month.
 """
 
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import datetime
 
 import httpx
 
 from config import cfg
 from models.research import SearchResult
+from searchers.mock_fixtures import is_evergreen_mock_query, mock_search_result, query_slug
 
 logger = logging.getLogger("content-engine.web")
 
 SERPAPI_ENDPOINT = "https://serpapi.com/search.json"
-
-EVERGREEN_MOCK_HINTS = (
-    "recovery", "recover", "interval", "training", "workout", "sleep", "hydration",
-    "protein", "nutrition", "guide", "evidence", "study", "protocol", "hill repeat",
-    "recuperação", "recuperar", "intervalos", "repetições", "treino", "sono", "hidratação", "proteína",
-    "nutrição", "guia", "evidência", "estudo", "protocolo", "desaquecimento", "subida",
-)
-
 
 class WebSearcher:
     name = "web"
@@ -70,38 +63,41 @@ class WebSearcher:
     # ── fallback when no key ──────────────────────────────────────────
     @staticmethod
     def _mock(query: str, max_results: int) -> list[SearchResult]:
-        now = datetime.now(timezone.utc)
-        lower = query.lower()
-        if any(hint in lower for hint in EVERGREEN_MOCK_HINTS):
+        slug = query_slug(query)
+        if is_evergreen_mock_query(query):
             return [
-                SearchResult(
+                mock_search_result(
+                    query=query,
                     title=f"[Mock] {query} — evidence overview",
-                    url=f"https://example.com/web/{query.replace(' ', '-')}",
+                    url=f"https://example.com/web/{slug}",
                     snippet=f"Mock evidence-style web result for '{query}'. Set SERPAPI_API_KEY to get real results.",
                     source="web",
-                    published_at=now - timedelta(hours=2),
+                    hours_ago=2,
                 ),
-                SearchResult(
+                mock_search_result(
+                    query=query,
                     title=f"[Mock] Practical guide to {query}",
-                    url=f"https://example.com/web/guide-{query.replace(' ', '-')}",
+                    url=f"https://example.com/web/guide-{slug}",
                     snippet=f"Mock practical guide for '{query}' with protocol-style takeaways.",
                     source="web",
-                    published_at=now - timedelta(hours=6),
+                    hours_ago=6,
                 ),
             ][:max_results]
         return [
-            SearchResult(
+            mock_search_result(
+                query=query,
                 title=f"[Mock] {query} — trending analysis",
-                url=f"https://example.com/web/{query.replace(' ', '-')}",
+                url=f"https://example.com/web/{slug}",
                 snippet=f"Mock web result for '{query}'. Set SERPAPI_API_KEY to get real results.",
                 source="web",
-                published_at=now - timedelta(hours=2),
+                hours_ago=2,
             ),
-            SearchResult(
+            mock_search_result(
+                query=query,
                 title=f"[Mock] Why {query} is going viral",
-                url=f"https://example.com/web/viral-{query.replace(' ', '-')}",
+                url=f"https://example.com/web/viral-{slug}",
                 snippet=f"Everyone is talking about {query} today — here's why.",
                 source="web",
-                published_at=now - timedelta(hours=6),
+                hours_ago=6,
             ),
         ][:max_results]

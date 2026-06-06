@@ -59,6 +59,8 @@ describe('portal admin scope hardening', () => {
     expect(portalRouteSource).toContain("app.post('/api/users/:userId/activate', requirePortalAdminToken");
     expect(portalRouteSource).toContain("app.put('/api/users/:userId/tier', requirePortalAdminToken");
     expect(portalRouteSource).toContain("app.put('/api/users/:userId/limits', requirePortalAdminToken");
+    expect(portalRouteSource).toContain("app.get('/api/billing/nexus-points/packages', requirePortalAdminToken");
+    expect(portalRouteSource).toContain("app.post('/api/users/:userId/billing/nexus-points/stripe-checkout', requirePortalAdminToken");
     expect(portalRouteSource).toContain("app.post('/api/invite-codes', requirePortalAdminToken");
     expect(portalRouteSource).toContain("app.delete('/api/invite-codes/:code', requirePortalAdminToken");
     expect(portalRouteSource).toContain("app.put('/api/users/:userId/skills', requirePortalAdminToken");
@@ -140,6 +142,7 @@ describe('portal admin scope hardening', () => {
     expect(portalRouteSource).toContain("app.put('/api/users/:userId/skills', requirePortalAdminToken, requireOperatorTargetUser('userId')");
     expect(portalRouteSource).toContain("app.post('/api/users/:userId/skills/reset', requirePortalAdminToken, requireOperatorTargetUser('userId')");
     expect(portalRouteSource).toContain("app.get('/api/users/:userId/data-summary', requirePortalAdminToken, requireOperatorTargetUser('userId')");
+    expect(portalRouteSource).toContain("app.post('/api/users/:userId/billing/nexus-points/stripe-checkout', requirePortalAdminToken, requireOperatorTargetUser('userId')");
   });
 
   // Gap 5: the server composition root must call the beta-readiness preflight

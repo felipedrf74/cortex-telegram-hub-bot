@@ -3,10 +3,14 @@ import {
   CHAT_EVAL_PERSONAS,
   CHAT_EVAL_SCENARIOS,
   CHAT_EVAL_SCORING_DIMENSIONS,
+  CHAT_QUALITY_METRICS,
+  CHAT_HYBRID_ACTION_GATE_THRESHOLDS,
+  evaluateChatHybridActionGate,
   formatChatEvaluationResultsMarkdown,
   runChatEvaluationSuite,
   type ChatEvalScenarioId,
   type ChatEvalScoringDimension,
+  type ChatQualityMetricId,
 } from '../../src/services/chat-evaluation-harness';
 
 describe('chat evaluation harness', () => {
@@ -93,6 +97,89 @@ describe('chat evaluation harness', () => {
     }
   });
 
+  it('promotes Nexus-wide chat quality metrics without raw private payload collection', () => {
+    const metricIds = new Set(CHAT_QUALITY_METRICS.map((metric) => metric.id));
+    const expected: ChatQualityMetricId[] = [
+      'macroActionPrecision',
+      'macroSlotF1',
+      'actionRecallCoverage',
+      'verifiedMutationSuccessRate',
+      'wrongEntityRate',
+      'falseBlockRate',
+      'uiHandoffRate',
+      'costPerVerifiedSuccess',
+      'criticalRiskFalseExecutionCount',
+      'falseSuccessWithoutReadBackCount',
+      'falsePositiveOnRefusalCount',
+      'debugInternalLeakageCount',
+      'portugueseLocalizationLeakageCount',
+      'routeAccuracy',
+      'clarificationPrecision',
+      'actionSuccessRate',
+      'verifierSuccessRate',
+      'partialFailureHonesty',
+      'hallucinationRejectionCount',
+      'fallbackRateByProvider',
+      'firstStateLatencyMs',
+      'endToEndLatencyMs',
+      'modelCallAvoidanceRate',
+      'userRetryRate',
+      'userCorrectionRate',
+      'timeoutRate',
+      'staleContextRate',
+      'responseSufficiencyScore',
+    ];
+
+    for (const metricId of expected) {
+      expect(metricIds.has(metricId)).toBe(true);
+    }
+    expect(CHAT_QUALITY_METRICS).toHaveLength(expected.length);
+    expect(CHAT_QUALITY_METRICS.every((metric) => (
+      metric.privacy === 'categorical_only'
+      || metric.privacy === 'aggregate_only'
+      || metric.privacy === 'duration_only'
+      || metric.privacy === 'score_only'
+    ))).toBe(true);
+    expect(CHAT_QUALITY_METRICS.some((metric) => metric.id === 'verifierSuccessRate' && metric.source === 'chat_action_verifier')).toBe(true);
+    expect(CHAT_QUALITY_METRICS.some((metric) => metric.id === 'hallucinationRejectionCount' && metric.source === 'chat_response_quality_gate')).toBe(true);
+    expect(CHAT_QUALITY_METRICS.some((metric) => metric.id === 'macroActionPrecision' && metric.target.includes('0.98'))).toBe(true);
+  });
+
+  it('evaluates the hybrid action gate without allowing precision-only gaming', () => {
+    const passing = evaluateChatHybridActionGate({
+      macroActionPrecision: 0.985,
+      macroSlotF1: 0.975,
+      actionRecallCoverage: 0.93,
+      verifiedMutationSuccessRate: 0.982,
+      wrongEntityRate: 0.001,
+      falseBlockRate: 0.03,
+      clarificationRate: 0.2,
+      uiHandoffRate: 0.12,
+      p95LatencyMs: 2500,
+      costPerVerifiedSuccessUsd: 0.0012,
+      criticalRiskFalseExecutionCount: 0,
+      falseSuccessWithoutReadBackCount: 0,
+      falsePositiveOnRefusalCount: 0,
+      debugInternalLeakageCount: 0,
+      portugueseLocalizationLeakageCount: 0,
+    });
+    expect(passing.passed).toBe(true);
+
+    const overClarifying = evaluateChatHybridActionGate({
+      ...passing.metrics,
+      macroActionPrecision: 0.99,
+      actionRecallCoverage: 0.4,
+      clarificationRate: 0.8,
+    });
+    expect(overClarifying.passed).toBe(false);
+    expect(overClarifying.failures).toEqual(expect.arrayContaining([
+      expect.stringContaining('actionRecallCoverage'),
+      expect.stringContaining('clarificationRate'),
+    ]));
+    expect(CHAT_HYBRID_ACTION_GATE_THRESHOLDS.falseSuccessWithoutReadBackCount).toBe(0);
+    expect(CHAT_HYBRID_ACTION_GATE_THRESHOLDS.falsePositiveOnRefusalCount).toBe(0);
+  });
+
   it('runs the fixture evaluation baseline and marks live-only gates partial instead of fake pass', () => {
     const result = runChatEvaluationSuite({ generatedAt: '2026-04-29T00:00:00.000Z' });
 
@@ -102,6 +189,7 @@ describe('chat evaluation harness', () => {
     expect(result.statusCounts.fail).toBe(0);
     expect(result.statusCounts.blocked).toBe(0);
     expect(result.statusCounts.partial).toBeGreaterThanOrEqual(2);
+    expect(result.qualityMetrics).toEqual(CHAT_QUALITY_METRICS);
     expect(result.scenarios.find((scenario) => scenario.id === 'provider_fallback')?.status).toBe('partial');
     expect(result.scenarios.find((scenario) => scenario.id === 'operator_pinned_model')?.status).toBe('partial');
     expect(result.scenarios.find((scenario) => scenario.id === 'streaming_interruption')?.status).toBe('partial');
@@ -130,8 +218,12 @@ describe('chat evaluation harness', () => {
     const markdown = formatChatEvaluationResultsMarkdown(result);
 
     expect(markdown).toContain('Overall: PASS');
+    expect(markdown).toContain('## Quality Metrics Gate');
+    expect(markdown).toContain('Verifier success rate');
+    expect(markdown).toContain('raw private chat text');
     expect(markdown).toContain('Provider fallback case');
     expect(markdown).toContain('Fixture pass means');
-    expect(markdown).not.toContain('raw private');
+    expect(markdown).not.toContain('felipedrf74');
+    expect(markdown).not.toContain('vieira.jaqueline');
   });
 });

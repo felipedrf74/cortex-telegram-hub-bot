@@ -1,0 +1,72 @@
+# Nexus Hub — Node engine, multi-stage build
+#
+# Stage 1 (deps): install npm dependencies into a cacheable layer.
+# Stage 2 (build): compile TypeScript -> dist/ for the production path.
+# Stage 3 (runtime): slim final image that boots either:
+#   - `node dist/index.js` when NODE_ENV=production
+#   - `npx tsx watch src/index.ts` when NODE_ENV=development (hot reload)
+#
+# The runtime stage installs sqlite3 + curl so:
+#   - `better-sqlite3` native bindings have their toolchain
+#   - the compose healthcheck (`curl /health`) works
+#   - `local-smoke.sh` can shell in via `docker compose exec` and run
+#     `sqlite3 PRAGMA integrity_check`.
+
+# ───────────────────────────────────────────────────────────────────────────
+FROM node:20-slim AS deps
+WORKDIR /app
+
+# better-sqlite3 needs a C++ toolchain. Install only in this layer; the
+# binaries get baked into node_modules and the toolchain is discarded
+# along with this stage.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends python3 make g++ \
+ && rm -rf /var/lib/apt/lists/*
+
+COPY package.json package-lock.json ./
+RUN npm ci --no-audit --no-fund
+
+# ───────────────────────────────────────────────────────────────────────────
+FROM node:20-slim AS build
+WORKDIR /app
+COPY --from=deps /app/node_modules ./node_modules
+COPY . .
+# Compile TS -> dist/ and copy static portal HTML + knowledge base assets.
+# Build script is defined in package.json.
+RUN npm run build
+
+# ───────────────────────────────────────────────────────────────────────────
+FROM node:20-slim AS runtime
+WORKDIR /app
+
+# Runtime-only deps: curl for the healthcheck, sqlite3 for the smoke check,
+# tini as PID 1 to forward signals to Node cleanly.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends curl sqlite3 tini \
+ && rm -rf /var/lib/apt/lists/*
+
+# Pull in production node_modules + compiled output. Source is bind-mounted
+# at runtime by docker-compose.local.yml for hot reload.
+COPY --from=deps /app/node_modules ./node_modules
+COPY --from=build /app/dist ./dist
+COPY package.json package-lock.json ./
+COPY migrations ./migrations
+COPY prompts ./prompts
+COPY src ./src
+COPY tsconfig.json ./tsconfig.json
+
+# Default to development; compose overrides for prod-style runs.
+ENV NODE_ENV=development
+ENV PORT=8200
+
+EXPOSE 8200
+
+HEALTHCHECK --interval=10s --timeout=5s --start-period=30s --retries=6 \
+  CMD curl -fsS http://127.0.0.1:8200/health || exit 1
+
+# tini reaps zombie children from tsx watch / node-watch loops.
+ENTRYPOINT ["/usr/bin/tini", "--"]
+
+# Default command runs the dev hot-reload loop. Override in compose to use
+# `node dist/index.js` for a prod-style boot.
+CMD ["sh", "-c", "if [ \"$NODE_ENV\" = \"production\" ]; then node dist/index.js; else npx tsx watch src/index.ts; fi"]

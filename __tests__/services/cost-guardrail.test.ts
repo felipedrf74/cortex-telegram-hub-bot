@@ -13,10 +13,14 @@ let testDb: Database.Database;
 
 vi.mock('../../src/services/database', () => ({
   getDb: () => testDb,
+  initDatabase: vi.fn(),
+  closeDatabase: vi.fn(),
+  findUnexpectedMigrationPrefixCollisions: vi.fn(() => []),
 }));
 
 vi.mock('../../src/utils/logger', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(), trace: vi.fn(), child: vi.fn().mockReturnThis() },
+  LOGGER_REDACTION_PATHS: [],
 }));
 
 vi.mock('../../src/config', () => ({
@@ -54,7 +58,16 @@ function applyMigrations(db: Database.Database): void {
 }
 
 import { checkQuota } from '../../src/services/usage-metering';
-import { checkGlobalCostGuardrail, isUserOverDailyCap, getUserDailySpend } from '../../src/services/cost-guardrail';
+import {
+  buildQuotaExceededPayload,
+  buildQuotaUsagePayload,
+  checkGlobalCostGuardrail,
+  isUserOverDailyCap,
+  getUserDailySpend,
+  getSpendByProvider,
+  type DailyQuotaStatus,
+} from '../../src/services/cost-guardrail';
+import { getEffectiveDailyCostLimitUsd } from '../../src/services/plan-quotas';
 
 describe('checkQuota', () => {
   beforeEach(() => {
@@ -257,7 +270,7 @@ describe('isUserOverDailyCap', () => {
     expect(isUserOverDailyCap(0).callsToday).toBe(1);
   });
 
-  it('uses the active pro subscription cap of $0.20/day', () => {
+  it('uses the active pro subscription cap of $0.04/day', () => {
     testDb.prepare(`
       INSERT INTO users (id, telegram_id, first_name, tier, status, auth_provider, daily_message_limit, daily_token_limit, daily_cost_limit_usd)
       VALUES (5001, 5001, 'Pro', 'pro', 'active', 'telegram', 200, 500000, 0.2)
@@ -273,14 +286,14 @@ describe('isUserOverDailyCap', () => {
 
     const result = isUserOverDailyCap(5001);
     expect(result.plan).toBe('pro');
-    expect(result.limitUsd).toBe(0.2);
+    expect(result.limitUsd).toBe(0.04);
     expect(result.usedUsd).toBe(0.2);
     expect(result.remainingUsd).toBe(0);
     expect(result.over).toBe(true);
     expect(result.resetAt).toMatch(/T00:00:00.000Z$/);
   });
 
-  it('uses the active max subscription cap of $0.60/day', () => {
+  it('uses the active max subscription cap of $0.06/day', () => {
     testDb.prepare(`
       INSERT INTO users (id, telegram_id, first_name, tier, status, auth_provider, daily_message_limit, daily_token_limit, daily_cost_limit_usd)
       VALUES (5002, 5002, 'Max', 'max', 'active', 'telegram', 200, 500000, 0.6)
@@ -291,15 +304,120 @@ describe('isUserOverDailyCap', () => {
     `).run();
     testDb.prepare(`
       INSERT INTO api_usage (category, model, user_id, input_tokens, output_tokens, cost_usd, duration_ms)
-      VALUES ('domain_content', 'gemini-2.5-flash', 5002, 5000, 2000, 0.25, 200)
+      VALUES ('domain_content', 'gemini-2.5-flash', 5002, 5000, 2000, 0.025, 200)
     `).run();
 
     const result = isUserOverDailyCap(5002);
     expect(result.plan).toBe('max');
-    expect(result.limitUsd).toBe(0.6);
-    expect(result.usedUsd).toBe(0.25);
-    expect(result.remainingUsd).toBe(0.35);
+    expect(result.limitUsd).toBe(0.06);
+    expect(result.usedUsd).toBe(0.025);
+    expect(result.remainingUsd).toBeCloseTo(0.035, 8);
     expect(result.over).toBe(false);
+  });
+
+  it('lets an active per-user AI budget override win over the plan cap', () => {
+    testDb.prepare(`
+      INSERT INTO users (id, telegram_id, first_name, tier, status, auth_provider, daily_message_limit, daily_token_limit, daily_cost_limit_usd)
+      VALUES (5004, 5004, 'Pro Override', 'pro', 'active', 'telegram', 200, 500000, 0.04)
+    `).run();
+    testDb.prepare(`
+      INSERT INTO subscriptions (user_id, plan, period, status, provider, updated_at)
+      VALUES (5004, 'pro', 'monthly', 'active', 'stripe', datetime('now'))
+    `).run();
+    testDb.prepare(`
+      INSERT INTO user_ai_budget_overrides (user_id, daily_cost_usd, reason, expires_at, active)
+      VALUES (5004, 0.09, 'support adjustment', datetime('now', '+7 days'), 1)
+    `).run();
+    testDb.prepare(`
+      INSERT INTO api_usage (category, model, user_id, input_tokens, output_tokens, cost_usd, duration_ms)
+      VALUES ('domain_content', 'gemini-2.5-flash', 5004, 5000, 2000, 0.05, 200)
+    `).run();
+
+    const result = isUserOverDailyCap(5004);
+    expect(result.plan).toBe('pro');
+    expect(result.limitUsd).toBe(0.09);
+    expect(result.includedRemainingUsd).toBeCloseTo(0.04, 8);
+    expect(result.over).toBe(false);
+  });
+
+  it('adds Nexus Points only after the included daily budget is exhausted', () => {
+    testDb.prepare(`
+      INSERT INTO users (id, telegram_id, first_name, tier, status, auth_provider, daily_message_limit, daily_token_limit, daily_cost_limit_usd)
+      VALUES (5003, 5003, 'Pro Points', 'pro', 'active', 'telegram', 200, 500000, 0.04)
+    `).run();
+    testDb.prepare(`
+      INSERT INTO subscriptions (user_id, plan, period, status, provider, updated_at)
+      VALUES (5003, 'pro', 'monthly', 'active', 'stripe', datetime('now'))
+    `).run();
+    testDb.prepare(`
+      INSERT INTO nexus_point_credits (
+        user_id, source, provider, product_id, provider_transaction_id,
+        points_granted, points_remaining, usd_allowance_granted, usd_allowance_remaining,
+        purchased_at, expires_at, status
+      )
+      VALUES (5003, 'purchase', 'apple', 'me.nexushub.points.small', 'tx-points',
+        300, 300, 0.30, 0.30, datetime('now'), datetime('now', '+30 days'), 'active')
+    `).run();
+    testDb.prepare(`
+      INSERT INTO api_usage (category, model, user_id, input_tokens, output_tokens, cost_usd, duration_ms)
+      VALUES ('domain_content', 'gemini-2.5-flash', 5003, 5000, 2000, 0.045, 200)
+    `).run();
+
+    const result = isUserOverDailyCap(5003);
+    expect(result.includedRemainingUsd).toBe(0);
+    expect(result.nexusPointsBalance).toBe(295);
+    expect(result.nexusPointsRemainingUsd).toBeCloseTo(0.295, 8);
+    expect(result.remainingUsd).toBeCloseTo(0.295, 8);
+    expect(result.over).toBe(false);
+  });
+});
+
+describe('customer-facing quota payloads', () => {
+  it('hide raw dollar caps and expose only qualitative/percentage usage', () => {
+    const quota: DailyQuotaStatus = {
+      over: true,
+      spentUsd: 0.2,
+      capUsd: 0.1,
+      plan: 'pro',
+      usageLevel: 'exhausted',
+      usageFraction: 1,
+      callsToday: 7,
+      boostAvailable: true,
+      limitUsd: 0.1,
+      usedUsd: 0.2,
+      remainingUsd: 0,
+      planDailyLimitUsd: 0.1,
+      includedRemainingUsd: 0,
+      nexusPointsBalance: 300,
+      nexusPointsRemainingUsd: 0.3,
+      nexusPointsExpiringSoon: 20,
+      nexusPointsExpiringSoonUsd: 0.02,
+      nextCreditExpiryAt: '2026-06-02T00:00:00.000Z',
+      totalRemainingUsd: 0.3,
+      pointsPurchaseAvailable: true,
+      resetAt: '2026-06-02T00:00:00.000Z',
+    };
+
+    const usagePayload = buildQuotaUsagePayload(quota);
+    const exceededPayload = buildQuotaExceededPayload(quota);
+
+    expect(usagePayload).toMatchObject({
+      plan: 'pro',
+      usageLevel: 'exhausted',
+      usageFraction: 1,
+      usagePercent: 100,
+      isOverLimit: true,
+      boostAvailable: true,
+      nexusPointsBalance: 300,
+      nexusPointsExpiringSoon: 20,
+      pointsPurchaseAvailable: true,
+    });
+    expect(JSON.stringify(usagePayload)).not.toMatch(/usd|allowance|limitUsd|usedUsd|remainingUsd/i);
+    expect(JSON.stringify(exceededPayload)).not.toMatch(/usd|allowance|limitUsd|usedUsd|remainingUsd/i);
+    expect(usagePayload.nexusPointPackages).toEqual(expect.arrayContaining([
+      expect.objectContaining({ productId: 'me.nexushub.points.small', points: 300 }),
+    ]));
+    expect(JSON.stringify(usagePayload.nexusPointPackages)).not.toMatch(/priceUsd|usdAllowance|margin/i);
   });
 });
 
@@ -336,7 +454,7 @@ describe('getUserDailySpend', () => {
   });
 });
 
-describe('069_plan_quota_rebalance.sql', () => {
+describe('getSpendByProvider', () => {
   beforeEach(() => {
     testDb = new Database(':memory:');
     testDb.pragma('journal_mode = WAL');
@@ -347,34 +465,42 @@ describe('069_plan_quota_rebalance.sql', () => {
     testDb?.close();
   });
 
-  it('realigns stored daily_cost_limit_usd values to the current plan caps', () => {
-    testDb.prepare(`
-      INSERT INTO users (telegram_id, tier, status, auth_provider, daily_message_limit, daily_token_limit, daily_cost_limit_usd)
-      VALUES
-        (91001, 'free', 'active', 'telegram', 40, 100000, 1.0),
-        (91002, 'pro', 'active', 'telegram', 200, 500000, 0.5),
-        (91003, 'max', 'active', 'telegram', 200, 500000, 5.0),
-        (91004, 'owner', 'active', 'telegram', 0, 0, 100.0)
-    `).run();
+  it('can scope provider spend by user and tenant', () => {
+    const stmt = testDb.prepare(`
+      INSERT INTO api_usage (category, model, tenant_id, user_id, provider, input_tokens, output_tokens, cost_usd, duration_ms)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    stmt.run('domain_training', 'claude-sonnet', 7, 7, 'anthropic', 100, 50, 0.11, 10);
+    stmt.run('domain_training', 'gemini-flash', 8, 8, 'gemini', 100, 50, 0.23, 10);
+    stmt.run('domain_training', 'gpt-4.1', 7, 99, 'openai', 100, 50, 0.31, 10);
 
+    expect(getSpendByProvider(undefined, { userId: 7, tenantId: 7 })).toMatchObject({
+      anthropic: 0.11,
+      openai: 0,
+      gemini: 0,
+    });
+    expect(getSpendByProvider(undefined, { tenantId: 7 })).toMatchObject({
+      anthropic: 0.11,
+      openai: 0.31,
+      gemini: 0,
+    });
+  });
+});
+
+describe('150_nexus_points_usage_limits.sql', () => {
+  it('keeps beta per-user daily cap below the global workspace daily cap', () => {
+    expect(getEffectiveDailyCostLimitUsd('beta')).toBeGreaterThan(0);
+    expect(getEffectiveDailyCostLimitUsd('beta')).toBeLessThan(10.0);
+  });
+
+  it('supersedes the original plan caps with the current Pro and Max daily budgets', () => {
     const migrationSql = fs.readFileSync(
-      path.join(MIGRATIONS_DIR, '069_plan_quota_rebalance.sql'),
+      path.join(MIGRATIONS_DIR, '150_nexus_points_usage_limits.sql'),
       'utf8',
     );
-    testDb.exec(migrationSql);
 
-    const rows = testDb.prepare(`
-      SELECT tier, daily_cost_limit_usd
-      FROM users
-      WHERE telegram_id BETWEEN 91001 AND 91004
-      ORDER BY telegram_id
-    `).all() as Array<{ tier: string; daily_cost_limit_usd: number }>;
-
-    expect(rows).toEqual([
-      { tier: 'free', daily_cost_limit_usd: 0 },
-      { tier: 'pro', daily_cost_limit_usd: 0.2 },
-      { tier: 'max', daily_cost_limit_usd: 0.6 },
-      { tier: 'owner', daily_cost_limit_usd: 0 },
-    ]);
+    expect(migrationSql).toContain("WHEN 'pro' THEN 0.04");
+    expect(migrationSql).toContain("WHEN 'max' THEN 0.06");
+    expect(migrationSql).toContain('supersedes migrations 069 and 075');
   });
 });

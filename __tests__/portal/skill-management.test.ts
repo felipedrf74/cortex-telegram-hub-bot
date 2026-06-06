@@ -46,6 +46,9 @@ function applyMigrations(db: Database.Database): void {
 let testDb: Database.Database;
 vi.mock('../../src/services/database', () => ({
   getDb: () => testDb,
+  initDatabase: vi.fn(),
+  closeDatabase: vi.fn(),
+  findUnexpectedMigrationPrefixCollisions: vi.fn(() => []),
 }));
 
 // Mock logger
@@ -56,6 +59,7 @@ vi.mock('../../src/utils/logger', () => ({
     error: vi.fn(),
     debug: vi.fn(),
   },
+  LOGGER_REDACTION_PATHS: [],
 }));
 
 // Import after mocking
@@ -83,15 +87,18 @@ describe('Portal Skill Management', () => {
   });
 
   describe('GET /api/skills — getAllSkillStatuses()', () => {
-    it('returns all four domain skills', () => {
+    it('returns all eight domain skills', () => {
       const skills = getAllSkillStatuses();
-      expect(skills).toHaveLength(5);
+      expect(skills).toHaveLength(8);
       const names = skills.map(s => s.name);
       expect(names).toContain('secretary');
       expect(names).toContain('triathlon');
       expect(names).toContain('content');
       expect(names).toContain('finance');
       expect(names).toContain('cooking');
+      expect(names).toContain('connections');
+      expect(names).toContain('notifications');
+      expect(names).toContain('decision_center');
     });
 
     it('each skill has name, description, enabled flag, and subSkills', () => {

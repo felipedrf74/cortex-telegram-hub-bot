@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   getTrainingWeeklyAdherenceRate,
@@ -26,6 +26,10 @@ function buildDeps(overrides: Partial<TrainingSessionMutationDeps> = {}): Traini
 }
 
 describe('training-session-mutations', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it('resolves an explicit numeric session id and verifies ownership', () => {
     const deps = buildDeps();
 
@@ -39,12 +43,47 @@ describe('training-session-mutations', () => {
     });
   });
 
+  it.each(['abc', '12.5', '-1', 'Infinity', {}, 0, 12.5])(
+    'rejects malformed explicit session id %s before falling back to today',
+    (sessionId) => {
+      const deps = buildDeps();
+
+      const result = resolveTrainingMutationSession(12, sessionId, deps);
+
+      expect(result).toEqual({
+        kind: 'bad_input',
+        message: 'sessionId must be a positive integer or "today"',
+      });
+      expect(deps.getActivePlan).not.toHaveBeenCalled();
+      expect(deps.getSessionById).not.toHaveBeenCalled();
+    },
+  );
+
   it('resolves today session from the active week when sessionId is today', () => {
     const todayName = new Date().toLocaleDateString('en-US', { weekday: 'long' });
     const deps = buildDeps({
       getSessionsForWeek: vi.fn(() => [
         { id: 111, plan_id: 44, day_of_week: todayName, status: 'completed' },
         { id: 222, plan_id: 44, day_of_week: todayName, status: 'pending' },
+      ]),
+      getSessionById: vi.fn((sessionId: number) => ({ id: sessionId, plan_id: 44 })),
+    });
+
+    const result = resolveTrainingMutationSession(12, 'today', deps);
+
+    expect(result).toMatchObject({
+      kind: 'resolved',
+      rowId: 222,
+    });
+  });
+
+  it('resolves today using the Training timezone instead of the process date', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-03-29T23:30:00.000Z'));
+    const deps = buildDeps({
+      getSessionsForWeek: vi.fn(() => [
+        { id: 111, plan_id: 44, day_of_week: 'Sunday', status: 'pending' },
+        { id: 222, plan_id: 44, day_of_week: 'Monday', status: 'pending' },
       ]),
       getSessionById: vi.fn((sessionId: number) => ({ id: sessionId, plan_id: 44 })),
     });

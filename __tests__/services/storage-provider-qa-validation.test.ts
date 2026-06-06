@@ -14,7 +14,10 @@
  * Validating: src/services/storage-provider.ts
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import fs from 'fs';
+import os from 'os';
+import path from 'path';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import {
   SQLiteStorage,
   StorageProvider,
@@ -157,6 +160,52 @@ describe('QA: SQLiteStorage — edge cases', () => {
     storage.prepare('INSERT INTO test (num) VALUES (?)').run(-42);
     const row = storage.prepare<{ num: number }>('SELECT num FROM test').get();
     expect(row!.num).toBe(-42);
+  });
+});
+
+describe('QA: SQLiteStorage — configurable local pragmas', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it('uses safe explicit SQLite pragmas for Docker/local bind-mounted DBs', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'nexus-sqlite-pragmas-'));
+    const dbPath = path.join(dir, 'local.db');
+    const storage = new SQLiteStorage();
+
+    vi.stubEnv('SQLITE_JOURNAL_MODE', 'DELETE');
+    vi.stubEnv('SQLITE_SYNCHRONOUS', 'FULL');
+    vi.stubEnv('SQLITE_MMAP_SIZE', '0');
+
+    try {
+      storage.open(dbPath);
+      expect(JSON.stringify(storage.pragma('journal_mode')).toLowerCase()).toContain('delete');
+      expect(JSON.stringify(storage.pragma('synchronous'))).toContain('2');
+      expect(JSON.stringify(storage.pragma('mmap_size'))).toContain('0');
+    } finally {
+      if (storage.initialized) storage.close();
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('falls back to production defaults when unsafe/unknown pragma envs are supplied', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'nexus-sqlite-default-pragmas-'));
+    const dbPath = path.join(dir, 'local.db');
+    const storage = new SQLiteStorage();
+
+    vi.stubEnv('SQLITE_JOURNAL_MODE', 'OFF');
+    vi.stubEnv('SQLITE_SYNCHRONOUS', 'OFF');
+    vi.stubEnv('SQLITE_MMAP_SIZE', '-1');
+
+    try {
+      storage.open(dbPath);
+      expect(JSON.stringify(storage.pragma('journal_mode')).toLowerCase()).not.toContain('off');
+      expect(JSON.stringify(storage.pragma('synchronous'))).not.toContain('0');
+      expect(JSON.stringify(storage.pragma('mmap_size'))).toContain('268435456');
+    } finally {
+      if (storage.initialized) storage.close();
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 

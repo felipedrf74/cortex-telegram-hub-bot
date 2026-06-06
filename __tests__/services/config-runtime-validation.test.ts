@@ -15,6 +15,21 @@ function applyMinimalConfigEnv() {
   vi.stubEnv('STAGING', 'false');
 }
 
+function applySafeProductionEnv() {
+  vi.stubEnv('NODE_ENV', 'production');
+  vi.stubEnv('STAGING', 'false');
+  vi.stubEnv('TELEGRAM_BOT_TOKEN', 'prod-token');
+  vi.stubEnv('TELEGRAM_ALLOWED_USER_IDS', '123456');
+  vi.stubEnv('FINANCE_ENCRYPTION_KEY', 'prod-finance-key-at-least-32-chars');
+  vi.stubEnv('BACKUP_ENABLED', 'true');
+  vi.stubEnv('BACKUP_ENCRYPT', 'true');
+  vi.stubEnv('BACKUP_KEY', 'prod-backup-key-at-least-32-chars');
+  vi.stubEnv('NOTIFICATION_DELIVERY_MODE', 'apns');
+  vi.stubEnv('APNS_ENABLED', 'false');
+  vi.stubEnv('OPERATOR_ALERT_WEBHOOK_URL', 'https://example.test/operator-alerts');
+  vi.stubEnv('SENTRY_DSN', 'https://public@example.test/1');
+}
+
 describe('runtime config validation', () => {
   beforeEach(() => {
     process.env = { ...ORIGINAL_ENV };
@@ -62,6 +77,15 @@ describe('runtime config validation', () => {
     expect(config.invoices.minConfidence).toBe(0.9);
   });
 
+  it('defaults generic chat routing to OpenAI nano with Gemini fallback', async () => {
+    vi.stubEnv('AI_CHAT_PRIMARY', '');
+    vi.stubEnv('AI_CHAT_FALLBACK', '');
+
+    const { config } = await loadConfigFresh();
+
+    expect(config.providerRouting.chat).toEqual({ primary: 'openai', fallback: 'gemini' });
+  });
+
   it('exposes public waitlist IP salt through central config', async () => {
     vi.stubEnv('WAITLIST_IP_SALT', 'stable-waitlist-secret');
 
@@ -72,8 +96,7 @@ describe('runtime config validation', () => {
   });
 
   it('fails fast when production tries to boot with PAYWALL_ENABLED=false', async () => {
-    vi.stubEnv('NODE_ENV', 'production');
-    vi.stubEnv('STAGING', 'false');
+    applySafeProductionEnv();
     vi.stubEnv('PAYWALL_ENABLED', 'false');
 
     await expect(loadConfigFresh()).rejects.toThrow(
@@ -90,5 +113,146 @@ describe('runtime config validation', () => {
 
     expect(config.billing.paywallEnabled).toBe(false);
     expect(config.billing.allowUnsafePaywallBypass).toBe(true);
+  });
+
+  it('fails fast in production when finance encryption is enabled without FINANCE_ENCRYPTION_KEY', async () => {
+    applySafeProductionEnv();
+    vi.stubEnv('FINANCE_ENCRYPTION_ENABLED', 'true');
+    vi.stubEnv('FINANCE_ENCRYPTION_KEY', '');
+
+    await expect(loadConfigFresh()).rejects.toThrow(
+      'FINANCE_ENCRYPTION_KEY is required when FINANCE_ENCRYPTION_ENABLED=true in production.',
+    );
+  });
+
+  it('fails fast in production when database backups are not encrypted', async () => {
+    applySafeProductionEnv();
+    vi.stubEnv('BACKUP_ENABLED', 'true');
+    vi.stubEnv('BACKUP_ENCRYPT', 'false');
+    vi.stubEnv('BACKUP_KEY', '');
+
+    await expect(loadConfigFresh()).rejects.toThrow(
+      'BACKUP_ENABLED=true requires BACKUP_ENCRYPT=true and BACKUP_KEY in production.',
+    );
+  });
+
+  it('requires an explicit apns notification delivery mode when production APNs credentials are configured', async () => {
+    applySafeProductionEnv();
+    vi.stubEnv('NOTIFICATION_DELIVERY_MODE', '');
+    vi.stubEnv('APNS_ENABLED', 'true');
+    vi.stubEnv('APNS_TEAM_ID', 'TEAMID1234');
+    vi.stubEnv('APNS_KEY_ID', 'KEYID12345');
+    vi.stubEnv('APNS_AUTH_KEY_P8', '-----BEGIN PRIVATE KEY-----\\ntest\\n-----END PRIVATE KEY-----');
+    vi.stubEnv('APNS_BUNDLE_ID', 'me.nexushub.app');
+
+    await expect(loadConfigFresh()).rejects.toThrow(
+      'NOTIFICATION_DELIVERY_MODE=apns is required in production when APNs credentials are configured.',
+    );
+  });
+
+  it('defaults notification delivery to mock outside production and accepts explicit apns in production', async () => {
+    vi.stubEnv('NOTIFICATION_DELIVERY_MODE', '');
+
+    const local = await loadConfigFresh();
+    expect(local.config.notificationDelivery.mode).toBe('mock');
+
+    applySafeProductionEnv();
+    const production = await loadConfigFresh();
+    expect(production.config.notificationDelivery.mode).toBe('apns');
+  });
+
+  it('fails fast on invalid notification delivery modes', async () => {
+    vi.stubEnv('NOTIFICATION_DELIVERY_MODE', 'invalid-mode');
+
+    await expect(loadConfigFresh()).rejects.toThrow(
+      'Invalid NOTIFICATION_DELIVERY_MODE="invalid-mode". Expected one of: mock, apns.',
+    );
+  });
+
+  it('warns loudly in production when operator alert webhook or Sentry DSN is missing', async () => {
+    applySafeProductionEnv();
+    vi.stubEnv('OPERATOR_ALERT_WEBHOOK_URL', '');
+    vi.stubEnv('SENTRY_DSN', '');
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    await loadConfigFresh();
+
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('OPERATOR_ALERT_WEBHOOK_URL is not set'));
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('SENTRY_DSN is not set'));
+    warnSpy.mockRestore();
+  });
+
+  it('fails fast when iOS API is enabled with a weak JWT secret', async () => {
+    vi.stubEnv('IOS_API_ENABLED', 'true');
+    vi.stubEnv('IOS_API_JWT_SECRET', 'change-me');
+    vi.stubEnv('IOS_INVITE_CODE', 'invite');
+
+    await expect(loadConfigFresh()).rejects.toThrow(
+      'IOS_API_JWT_SECRET must be at least 32 bytes and cannot contain known placeholder text.',
+    );
+  });
+
+  it('fails fast when production binds the portal to a wildcard address without explicit acknowledgement', async () => {
+    applySafeProductionEnv();
+    vi.stubEnv('PORTAL_BIND', '0.0.0.0');
+    vi.stubEnv('PORTAL_PUBLIC_BIND_ACK', '');
+
+    await expect(loadConfigFresh()).rejects.toThrow(
+      'PORTAL_BIND=0.0.0.0 exposes the portal on every interface. Use 127.0.0.1 behind a tunnel/reverse proxy or set PORTAL_PUBLIC_BIND_ACK=production-public-host-reviewed.',
+    );
+  });
+
+  it('allows Stripe Nexus Points to stay disabled without point price ids', async () => {
+    vi.stubEnv('STRIPE_NEXUS_POINTS_ENABLED', 'false');
+    vi.stubEnv('STRIPE_SECRET_KEY', '');
+    vi.stubEnv('STRIPE_WEBHOOK_SECRET', '');
+
+    const { config } = await loadConfigFresh();
+
+    expect(config.stripe.nexusPoints.enabled).toBe(false);
+    expect(config.stripe.nexusPoints.priceIds.small).toBe('');
+  });
+
+  it('fails fast when Stripe Nexus Points are enabled without required env vars', async () => {
+    vi.stubEnv('STRIPE_NEXUS_POINTS_ENABLED', 'true');
+    vi.stubEnv('STRIPE_SECRET_KEY', 'sk_test');
+    vi.stubEnv('STRIPE_WEBHOOK_SECRET', '');
+    vi.stubEnv('STRIPE_PRICE_ID_POINTS_SMALL', 'price_small');
+    vi.stubEnv('STRIPE_PRICE_ID_POINTS_MEDIUM', '');
+    vi.stubEnv('STRIPE_PRICE_ID_POINTS_LARGE', 'price_large');
+    vi.stubEnv('PORTAL_ADMIN_ACTOR_SIGNATURE_SECRET', 'signed-actors');
+
+    await expect(loadConfigFresh()).rejects.toThrow(
+      'STRIPE_NEXUS_POINTS_ENABLED=true but required env vars are missing: STRIPE_WEBHOOK_SECRET, STRIPE_PRICE_ID_POINTS_MEDIUM',
+    );
+  });
+
+  it('requires signed portal actor attribution when Stripe Nexus Points are enabled', async () => {
+    vi.stubEnv('STRIPE_NEXUS_POINTS_ENABLED', 'true');
+    vi.stubEnv('STRIPE_SECRET_KEY', 'sk_test');
+    vi.stubEnv('STRIPE_WEBHOOK_SECRET', 'whsec_test');
+    vi.stubEnv('STRIPE_PRICE_ID_POINTS_SMALL', 'price_small');
+    vi.stubEnv('STRIPE_PRICE_ID_POINTS_MEDIUM', 'price_medium');
+    vi.stubEnv('STRIPE_PRICE_ID_POINTS_LARGE', 'price_large');
+    vi.stubEnv('PORTAL_ADMIN_ACTOR_SIGNATURE_SECRET', '');
+
+    await expect(loadConfigFresh()).rejects.toThrow(
+      'STRIPE_NEXUS_POINTS_ENABLED requires PORTAL_ADMIN_ACTOR_SIGNATURE_SECRET to be set so admin-issued purchases have signed attribution.',
+    );
+  });
+
+  it('refuses live Stripe secret keys outside production when Nexus Points are enabled', async () => {
+    vi.stubEnv('NODE_ENV', 'staging');
+    vi.stubEnv('STRIPE_NEXUS_POINTS_ENABLED', 'true');
+    vi.stubEnv('STRIPE_SECRET_KEY', 'sk_live_accidental');
+    vi.stubEnv('STRIPE_WEBHOOK_SECRET', 'whsec_test');
+    vi.stubEnv('STRIPE_PRICE_ID_POINTS_SMALL', 'price_small');
+    vi.stubEnv('STRIPE_PRICE_ID_POINTS_MEDIUM', 'price_medium');
+    vi.stubEnv('STRIPE_PRICE_ID_POINTS_LARGE', 'price_large');
+    vi.stubEnv('PORTAL_ADMIN_ACTOR_SIGNATURE_SECRET', 'signed-actors');
+
+    await expect(loadConfigFresh()).rejects.toThrow(
+      'STRIPE_SECRET_KEY appears to be a live key (sk_live_*) but NODE_ENV is not production.',
+    );
   });
 });

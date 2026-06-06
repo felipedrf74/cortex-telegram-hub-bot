@@ -158,7 +158,7 @@ export async function generateWeeklyPlan(input: PlanGenerationInput): Promise<Ge
   try {
     return parsePlanResponse(result.text);
   } catch (err) {
-    logger.error({ err, responsePreview: result.text.slice(0, 500) }, 'Failed to parse AI-generated plan');
+    logger.error({ err, responseChars: result.text.length }, 'Failed to parse AI-generated plan');
     throw new Error('AI returned an invalid plan structure. Try again or adjust parameters.');
   }
 }

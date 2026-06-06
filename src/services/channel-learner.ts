@@ -23,35 +23,68 @@ import { pushEvent } from '../portal/telemetry';
 import { deepAnalyzeTopVideos } from './video-study';
 import {
   addChannel,
-  getAllChannels,
+  addSystemChannel,
+  createContentReferencesAdminContext,
   getActiveChannels,
+  getSystemChannels,
   getPatternsForChannel,
   updateChannelStatus,
   upsertPatterns,
   upsertKnowledge,
+  upsertSystemKnowledge,
   PATTERN_CATEGORIES,
   type PatternCategory,
   type ContentRefChannel,
+  type ContentReferencesAccess,
 } from '../state/content-references';
 import { writeSignal } from './intelligence-bus';
 import { getDb } from './database';
+import {
+  buildCreatorPromptContext,
+  loadCreatorPromptContextForUser,
+  type CreatorPromptContext,
+} from './content-profile-prompt-context';
+import type { ContentCreatorProfile } from '../state/content-creator-profile';
+import {
+  contentScopeParams,
+  contentScopePredicate,
+  ensureContentTenantScopeColumns,
+} from './content-tenant-scope';
+import { sanitizeForPromptInterpolation } from '../utils/prompt-sanitizer';
 
 const client = new Anthropic({
   apiKey: config.anthropic.apiKey,
   maxRetries: 3,
 });
 
-const CONTENT_OWNER_SCOPE_SQL = "COALESCE(owner_scope, CASE WHEN user_id = 0 THEN 'system' ELSE 'user' END)";
+const CONTENT_LEARNER_ADMIN_CONTEXT = createContentReferencesAdminContext('channel-learner system-scope processing');
+
+type AIMeteringScope = {
+  userId?: number;
+  tenantId?: number;
+};
+
+function accessForChannel(channel: Pick<ContentRefChannel, 'user_id' | 'tenant_id'>): ContentReferencesAccess {
+  return channel.user_id && channel.user_id > 0
+    ? { userId: channel.user_id, tenantId: channel.tenant_id ?? undefined }
+    : { adminContext: CONTENT_LEARNER_ADMIN_CONTEXT };
+}
+
+function accessForUserId(userId?: number): ContentReferencesAccess {
+  return userId && userId > 0
+    ? { userId }
+    : { adminContext: CONTENT_LEARNER_ADMIN_CONTEXT };
+}
 
 function getScopeClause(userId?: number): { clause: string; params: unknown[] } {
   if (userId != null && userId > 0) {
     return {
-      clause: `${CONTENT_OWNER_SCOPE_SQL} = 'user' AND user_id = ?`,
-      params: [userId],
+      clause: contentScopePredicate(),
+      params: contentScopeParams(userId),
     };
   }
   return {
-    clause: `${CONTENT_OWNER_SCOPE_SQL} = 'system'`,
+    clause: "COALESCE(scope_status, 'quarantined') = 'active' AND COALESCE(visibility_scope, 'platform_internal') IN ('platform_internal', 'public_published') AND COALESCE(tenant_id, 0) = 0",
     params: [],
   };
 }
@@ -61,6 +94,7 @@ function getScopedChannelsForProcessing(
   userId?: number,
 ): ContentRefChannel[] {
   const db = getDb();
+  ensureContentTenantScopeColumns(db);
   const { clause, params } = getScopeClause(userId);
   return db.prepare(
     `SELECT * FROM content_ref_channels
@@ -72,10 +106,14 @@ function getScopedChannelsForProcessing(
 
 function listContentChannelUserIds(): number[] {
   const db = getDb();
+  ensureContentTenantScopeColumns(db);
   const rows = db.prepare(
     `SELECT DISTINCT user_id
        FROM content_ref_channels
-      WHERE ${CONTENT_OWNER_SCOPE_SQL} = 'user'
+      WHERE COALESCE(scope_status, CASE WHEN user_id > 0 THEN 'active' ELSE 'quarantined' END) = 'active'
+        AND COALESCE(visibility_scope, CASE WHEN user_id > 0 THEN 'user_private' ELSE 'platform_internal' END) = 'user_private'
+        AND COALESCE(tenant_id, user_id) = user_id
+        AND COALESCE(owner_user_id, user_id) = user_id
         AND user_id > 0
       ORDER BY user_id ASC`,
   ).all() as Array<{ user_id: number }>;
@@ -249,21 +287,39 @@ interface ExtractionResult {
 /**
  * Send video data to Claude for pattern extraction.
  */
-async function extractPatterns(
+export function buildChannelLearnerExtractionPrompt(
   channelName: string,
   videos: VideoData[],
+  creatorProfile?: Partial<ContentCreatorProfile> | null,
   transcriptData?: string,
-): Promise<ExtractionResult> {
+): string {
+  return buildChannelLearnerExtractionPromptFromContext(
+    channelName,
+    videos,
+    buildCreatorPromptContext(creatorProfile),
+    transcriptData,
+  );
+}
+
+function buildChannelLearnerExtractionPromptFromContext(
+  channelName: string,
+  videos: VideoData[],
+  creator: CreatorPromptContext,
+  transcriptData?: string,
+): string {
   // Build a concise video summary for Claude
   const videoSummary = videos.map((v, i) => {
     const views = v.viewCount > 1000 ? `${(v.viewCount / 1000).toFixed(1)}K` : v.viewCount;
     const likes = v.likeCount > 1000 ? `${(v.likeCount / 1000).toFixed(1)}K` : v.likeCount;
-    return `${i + 1}. "${v.title}"
+    return `${i + 1}. ${sanitizeForPromptInterpolation(v.title)}
    Views: ${views} | Likes: ${likes} | Comments: ${v.commentCount} | Duration: ${v.duration}
-   Desc: ${v.description.substring(0, 200)}${v.description.length > 200 ? '...' : ''}`;
+   Desc: ${sanitizeForPromptInterpolation(v.description.substring(0, 200))}${v.description.length > 200 ? '...' : ''}`;
   }).join('\n\n');
 
-  let prompt = `Analyze the YouTube channel "${channelName}" based on their ${videos.length} most recent videos.
+  let prompt = `Analyze the YouTube channel ${sanitizeForPromptInterpolation(channelName)} based on their ${videos.length} most recent videos.
+
+AUTHENTICATED CREATOR CONTEXT:
+${creator.block}
 
 VIDEOS:
 ${videoSummary}`;
@@ -274,12 +330,73 @@ ${videoSummary}`;
 
 TRANSCRIPTS FROM TOP-PERFORMING VIDEOS:
 (Use these to extract EXACT hook phrases, transition words, storytelling beats, and pacing patterns — not just title-level patterns)
-${transcriptData}`;
+${sanitizeForPromptInterpolation(transcriptData)}`;
   }
 
   prompt += `
 
-Extract content creation patterns across all 9 categories. Focus on what makes this creator successful — patterns that can be adapted (not copied) for a Portuguese-language fitness + commentary YouTube channel.`;
+Extract content creation patterns across all 9 categories. Focus on what makes this creator successful — patterns that can be adapted (not copied) for the authenticated creator's language, audience, pillars, and niches above.`;
+
+  return prompt;
+}
+
+export function buildChannelLearnerSynthesisPrompt(
+  creatorProfile?: Partial<ContentCreatorProfile> | null,
+): string {
+  return buildChannelLearnerSynthesisPromptFromContext(buildCreatorPromptContext(creatorProfile));
+}
+
+function buildChannelLearnerSynthesisPromptFromContext(creator: CreatorPromptContext): string {
+  return `You are a content strategy synthesizer. You receive patterns extracted from multiple successful YouTube creators. Your job: merge them into a unified, actionable knowledge base.
+
+AUTHENTICATED CREATOR CONTEXT:
+${creator.block}
+
+Rules:
+- Combine similar patterns into a single, richer description
+- Prioritize patterns that appear across MULTIPLE creators (cross-validated)
+- Keep concrete examples from each creator (attribute them)
+- Remove contradictions — if creators disagree, note both approaches
+- Write as actionable advice for the authenticated creator's language, audience, pillars, and niches
+- Be concise: each category should be 3-6 sentences max + examples
+- Output language: English for internal knowledge storage unless the creator context explicitly requires localized wording
+
+Return ONLY valid JSON:
+{
+  "categories": [
+    {
+      "category": "hook_style",
+      "synthesized_text": "Merged insight with examples...",
+      "source_channels": ["Channel A", "Channel B"]
+    }
+  ]
+}`;
+}
+
+async function extractPatterns(
+  channelName: string,
+  videos: VideoData[],
+  transcriptData?: string,
+  creatorProfile?: Partial<ContentCreatorProfile> | null,
+  meteringScope: AIMeteringScope = {},
+): Promise<ExtractionResult> {
+  return extractPatternsForCreatorContext(
+    channelName,
+    videos,
+    transcriptData,
+    buildCreatorPromptContext(creatorProfile),
+    meteringScope,
+  );
+}
+
+async function extractPatternsForCreatorContext(
+  channelName: string,
+  videos: VideoData[],
+  transcriptData: string | undefined,
+  creator: CreatorPromptContext,
+  meteringScope: AIMeteringScope = {},
+): Promise<ExtractionResult> {
+  const prompt = buildChannelLearnerExtractionPromptFromContext(channelName, videos, creator, transcriptData);
 
   // Gemini-first: gemini-2.5-flash matches Sonnet for analytical pattern
   // extraction at ~9× lower cost. Falls back to Anthropic on failure.
@@ -294,13 +411,13 @@ Extract content creation patterns across all 9 categories. Focus on what makes t
         system: loadPrompt('channel-learner'),
         messages: [{ role: 'user', content: prompt }],
         temperature: 0.3, // Lower temp for more consistent analysis
-      }, 'channel_analysis');
+      }, 'channel_analysis', meteringScope);
       return response.content
         .filter((b): b is Anthropic.TextBlock => b.type === 'text')
         .map((b) => b.text)
         .join('');
     },
-    { maxTokens: 8192, temperature: 0.3 },
+    { maxTokens: 8192, temperature: 0.3, ...meteringScope },
   );
 
   let text = rawAnalysisText;
@@ -327,31 +444,17 @@ Extract content creation patterns across all 9 categories. Focus on what makes t
 
 // ─── Synthesis (merge patterns across all channels) ──────────────────
 
-const SYNTHESIS_SYSTEM_PROMPT = `You are a content strategy synthesizer. You receive patterns extracted from multiple successful YouTube creators. Your job: merge them into a unified, actionable knowledge base.
-
-Rules:
-- Combine similar patterns into a single, richer description
-- Prioritize patterns that appear across MULTIPLE creators (cross-validated)
-- Keep concrete examples from each creator (attribute them)
-- Remove contradictions — if creators disagree, note both approaches
-- Write as actionable advice for a creator making PT-BR content about fitness + commentary
-- Be concise: each category should be 3-6 sentences max + examples
-- Output language: English (this is a system prompt, not audience-facing content)
-
-Return ONLY valid JSON:
-{
-  "categories": [
-    {
-      "category": "hook_style",
-      "synthesized_text": "Merged insight with examples...",
-      "source_channels": ["Channel A", "Channel B"]
-    }
-  ]
-}`;
-
 async function synthesizeKnowledge(userId?: number): Promise<void> {
   const scopedUserId = userId != null && userId > 0 ? userId : 0;
-  const channels = getActiveChannels(scopedUserId);
+  const creatorContext = scopedUserId > 0 ? loadCreatorPromptContextForUser(scopedUserId, scopedUserId) : buildCreatorPromptContext(null);
+  const synthesisSystemPrompt = buildChannelLearnerSynthesisPromptFromContext(creatorContext);
+  const platformChannels = getScopedChannelsForProcessing('active', undefined);
+  const userChannels = scopedUserId > 0 ? getActiveChannels(scopedUserId) : [];
+  const channelsById = new Map<number, ContentRefChannel>();
+  for (const channel of scopedUserId > 0 ? [...platformChannels, ...userChannels] : platformChannels) {
+    channelsById.set(channel.id, channel);
+  }
+  const channels = Array.from(channelsById.values());
   if (channels.length === 0) {
     logger.info({ userId: userId ?? null }, 'No active channels to synthesize knowledge from');
     return;
@@ -363,7 +466,7 @@ async function synthesizeKnowledge(userId?: number): Promise<void> {
     // Group by channel
     const byChannel = new Map<string, ReturnType<typeof getPatternsForChannel>>();
     for (const channel of channels) {
-      const patterns = getPatternsForChannel(channel.id)
+      const patterns = getPatternsForChannel(channel.id, accessForChannel(channel))
         .filter((pattern) => pattern.category === category && pattern.confidence >= 0.5);
       if (patterns.length === 0) continue;
       const name = channel.channel_name || channel.channel_url;
@@ -373,9 +476,9 @@ async function synthesizeKnowledge(userId?: number): Promise<void> {
 
     // Build context for Claude
     const context = [...byChannel.entries()].map(([name, pats]) => {
-      return `From "${name}":\n${pats.map((p) => {
+      return `From ${sanitizeForPromptInterpolation(name)}:\n${pats.map((p) => {
         const examples = JSON.parse(p.examples) as string[];
-        return `  - ${p.pattern_text} (confidence: ${p.confidence})\n    Examples: ${examples.join('; ')}`;
+        return `  - ${sanitizeForPromptInterpolation(p.pattern_text)} (confidence: ${p.confidence})\n    Examples: ${examples.map((example) => sanitizeForPromptInterpolation(example)).join('; ')}`;
       }).join('\n')}`;
     }).join('\n\n');
 
@@ -390,7 +493,11 @@ async function synthesizeKnowledge(userId?: number): Promise<void> {
         return `${p.pattern_text}\nExamples from ${channelName}: ${examples.slice(0, 3).join('; ')}`;
       }).join('\n');
 
-      upsertKnowledge(category, directText, [channelName], scopedUserId);
+      if (scopedUserId > 0) {
+        upsertKnowledge(category, directText, [channelName], scopedUserId);
+      } else {
+        upsertSystemKnowledge(category, directText, [channelName], CONTENT_LEARNER_ADMIN_CONTEXT);
+      }
       continue;
     }
 
@@ -399,25 +506,25 @@ async function synthesizeKnowledge(userId?: number): Promise<void> {
     // (~18 calls/wk avg) so cumulative savings here are meaningful even
     // though per-call cost is small.
     try {
-      const userPrompt = `Synthesize the "${category}" patterns from ${byChannel.size} creators:\n\n${context}`;
+      const userPrompt = `Synthesize the ${sanitizeForPromptInterpolation(category)} patterns from ${byChannel.size} creators:\n\n${context}`;
       const { text: synthText } = await completeOneShotWithFallback(
-        SYNTHESIS_SYSTEM_PROMPT,
+        synthesisSystemPrompt,
         userPrompt,
         'knowledge_synthesis',
         async () => {
           const response = await trackedCreate(client, {
             model: config.anthropic.classifierModel, // Haiku for synthesis (structured task)
             max_tokens: 2048,
-            system: SYNTHESIS_SYSTEM_PROMPT,
+            system: synthesisSystemPrompt,
             messages: [{ role: 'user', content: userPrompt }],
             temperature: 0.3,
-          }, 'knowledge_synthesis');
+          }, 'knowledge_synthesis', { userId: scopedUserId, tenantId: scopedUserId });
           return response.content
             .filter((b): b is Anthropic.TextBlock => b.type === 'text')
             .map((b) => b.text)
             .join('');
         },
-        { maxTokens: 2048, temperature: 0.3 },
+        { maxTokens: 2048, temperature: 0.3, userId: scopedUserId, tenantId: scopedUserId },
       );
 
       let text = synthText;
@@ -441,7 +548,16 @@ async function synthesizeKnowledge(userId?: number): Promise<void> {
 
       for (const cat of result.categories) {
         if (cat.category === category) {
-          upsertKnowledge(category as PatternCategory, cat.synthesized_text, cat.source_channels, scopedUserId);
+          if (scopedUserId > 0) {
+            upsertKnowledge(category as PatternCategory, cat.synthesized_text, cat.source_channels, scopedUserId);
+          } else {
+            upsertSystemKnowledge(
+              category as PatternCategory,
+              cat.synthesized_text,
+              cat.source_channels,
+              CONTENT_LEARNER_ADMIN_CONTEXT,
+            );
+          }
           break;
         }
       }
@@ -453,12 +569,21 @@ async function synthesizeKnowledge(userId?: number): Promise<void> {
         .map((p) => p.pattern_text)
         .join('\n');
       if (allText) {
-        upsertKnowledge(
-          category,
-          allText,
-          [...byChannel.keys()],
-          scopedUserId,
-        );
+        if (scopedUserId > 0) {
+          upsertKnowledge(
+            category,
+            allText,
+            [...byChannel.keys()],
+            scopedUserId,
+          );
+        } else {
+          upsertSystemKnowledge(
+            category,
+            allText,
+            [...byChannel.keys()],
+            CONTENT_LEARNER_ADMIN_CONTEXT,
+          );
+        }
       }
     }
   }
@@ -487,7 +612,7 @@ function writeChannelDNASignals(channels: ContentRefChannel[], userId?: number):
 
   for (const channel of channels) {
     for (const category of PATTERN_CATEGORIES) {
-      const patterns = getPatternsForChannel(channel.id)
+      const patterns = getPatternsForChannel(channel.id, accessForChannel(channel))
         .filter((p) => p.category === category && p.confidence >= 0.4);
 
       if (patterns.length === 0) continue;
@@ -542,13 +667,17 @@ export async function analyzeChannel(channelId: number): Promise<{
   error?: string;
 }> {
   const { getChannel } = await import('../state/content-references');
-  const channel = getChannel(channelId);
+  const channel = getChannel(channelId, { adminContext: CONTENT_LEARNER_ADMIN_CONTEXT });
   if (!channel) {
     return { success: false, summary: '', patternsFound: 0, videosAnalyzed: 0, error: 'Channel not found' };
   }
+  const channelAccess = accessForChannel(channel);
+  const creatorProfile = channel.user_id && channel.user_id > 0
+    ? loadCreatorPromptContextForUser(channel.user_id, channel.tenant_id ?? channel.user_id)
+    : buildCreatorPromptContext(null);
 
   logger.info({ channelId, url: channel.channel_url }, 'Starting channel analysis');
-  updateChannelStatus(channelId, 'analyzing');
+  updateChannelStatus(channelId, 'analyzing', undefined, channelAccess);
 
   try {
     // Step 1: Resolve channel
@@ -556,7 +685,7 @@ export async function analyzeChannel(channelId: number): Promise<{
     if (!resolved) {
       updateChannelStatus(channelId, 'failed', {
         error_message: 'Could not resolve YouTube channel — check URL or API key',
-      });
+      }, channelAccess);
       return {
         success: false,
         summary: '',
@@ -569,14 +698,14 @@ export async function analyzeChannel(channelId: number): Promise<{
     updateChannelStatus(channelId, 'analyzing', {
       channel_name: resolved.channelName,
       channel_id: resolved.channelId,
-    });
+    }, channelAccess);
 
     // Step 2: Fetch recent videos
     const videos = await fetchChannelVideos(resolved.channelId, 10);
     if (videos.length === 0) {
       updateChannelStatus(channelId, 'failed', {
         error_message: 'No videos found for this channel',
-      });
+      }, channelAccess);
       return {
         success: false,
         summary: '',
@@ -596,7 +725,13 @@ export async function analyzeChannel(channelId: number): Promise<{
         title: v.title,
         viewCount: v.viewCount,
       }));
-      const deep = await deepAnalyzeTopVideos(resolved.channelName, topVids, 5);
+      const deep = await deepAnalyzeTopVideos(
+        resolved.channelName,
+        topVids,
+        5,
+        channel.user_id && channel.user_id > 0 ? channel.user_id : 0,
+        channel.tenant_id ?? channel.user_id ?? 0,
+      );
       if (deep.transcriptCount > 0) {
         transcriptData = deep.deepPatterns;
         logger.info({
@@ -609,7 +744,17 @@ export async function analyzeChannel(channelId: number): Promise<{
     }
 
     // Step 3: Extract patterns via Claude (now with optional transcript data)
-    const extraction = await extractPatterns(resolved.channelName, videos, transcriptData);
+    const channelMeteringScope = {
+      userId: channel.user_id && channel.user_id > 0 ? channel.user_id : 0,
+      tenantId: channel.tenant_id ?? channel.user_id ?? 0,
+    };
+    const extraction = await extractPatternsForCreatorContext(
+      resolved.channelName,
+      videos,
+      transcriptData,
+      creatorProfile,
+      channelMeteringScope,
+    );
 
     // Step 4: Store patterns
     const validPatterns = extraction.patterns.filter(
@@ -617,14 +762,14 @@ export async function analyzeChannel(channelId: number): Promise<{
     );
 
     if (validPatterns.length > 0) {
-      upsertPatterns(channelId, validPatterns);
+      upsertPatterns(channelId, validPatterns, channelAccess);
     }
 
     // Step 5: Mark as active
     updateChannelStatus(channelId, 'active', {
       video_count_analyzed: videos.length,
       error_message: null,
-    });
+    }, channelAccess);
 
     logger.info({
       channelName: resolved.channelName,
@@ -647,7 +792,7 @@ export async function analyzeChannel(channelId: number): Promise<{
   } catch (err) {
     const message = (err as Error).message;
     logger.error({ err, channelId }, 'Channel analysis failed');
-    updateChannelStatus(channelId, 'failed', { error_message: message });
+    updateChannelStatus(channelId, 'failed', { error_message: message }, channelAccess);
     return {
       success: false,
       summary: '',
@@ -705,7 +850,7 @@ export async function processAllChannels(force = false, userId?: number): Promis
     for (const ch of stuckAnalyzing) {
       updateChannelStatus(ch.id, 'pending', {
         error_message: 'Auto-recovered from stuck analyzing state (process crash or timeout)',
-      });
+      }, accessForUserId(userId));
       logger.warn(
         { channelId: ch.id, channelName: ch.channel_name },
         'Channel was stuck in analyzing — reset to pending for retry',
@@ -720,7 +865,7 @@ export async function processAllChannels(force = false, userId?: number): Promis
     `).all(...scopeParams) as Array<{ id: number; channel_name: string | null }>;
 
     for (const ch of failedRetryable) {
-      updateChannelStatus(ch.id, 'pending', { error_message: null });
+      updateChannelStatus(ch.id, 'pending', { error_message: null }, accessForUserId(userId));
       logger.info(
         { channelId: ch.id, channelName: ch.channel_name },
         'Previously failed channel reset to pending for auto-retry',
@@ -813,21 +958,31 @@ export async function addAndAnalyzeChannel(
   channelUrl: string,
   addedVia: 'manual' | 'portal' | 'bot' = 'bot',
   userId = 0,
+  tenantId?: number,
 ): Promise<{
   channel: ContentRefChannel;
   analysis: Awaited<ReturnType<typeof analyzeChannel>>;
 }> {
-  const channel = addChannel(channelUrl, addedVia, userId);
+  const channel = userId > 0
+    ? addChannel(channelUrl, addedVia, userId, tenantId)
+    : addSystemChannel(channelUrl, addedVia, CONTENT_LEARNER_ADMIN_CONTEXT);
   const analysis = await analyzeChannel(channel.id);
 
   // Re-synthesize if analysis was successful
   if (analysis.success) {
-    await synthesizeKnowledge(userId);
+    if (tenantId == null || tenantId === userId || userId === 0) {
+      await synthesizeKnowledge(userId);
+    } else {
+      logger.warn(
+        { userId, tenantId, channelId: channel.id },
+        'Skipping channel knowledge synthesis for non-default tenant until synthesis accepts explicit tenant scope',
+      );
+    }
   }
 
   // Return fresh channel data
   const { getChannel } = await import('../state/content-references');
-  const updated = getChannel(channel.id);
+  const updated = getChannel(channel.id, accessForChannel(channel));
 
   return {
     channel: updated || channel,
@@ -860,12 +1015,12 @@ const DEFAULT_CHANNELS = getDefaultChannels();
  * Called once during bot startup.
  */
 export function seedDefaultChannels(): void {
-  const existing = getAllChannels(0);
+  const existing = getSystemChannels(CONTENT_LEARNER_ADMIN_CONTEXT);
   if (existing.length > 0) return; // Already seeded
 
   logger.info({ channels: DEFAULT_CHANNELS }, 'Seeding default content reference channels');
   for (const url of DEFAULT_CHANNELS) {
-    addChannel(url, 'manual', 0);
+    addSystemChannel(url, 'manual', CONTENT_LEARNER_ADMIN_CONTEXT);
   }
 }
 

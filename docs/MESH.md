@@ -1,5 +1,10 @@
 # Nexus Hub Multi-Skill Mesh
 
+Status: canonical
+Owner: backend architecture lead (Felipe)
+Last verified: 2026-05-04
+Update policy: update when the multi-skill mesh topology or cross-skill orchestration contract changes.
+
 ## Status
 
 This mesh layer is feature-flagged behind `NEXUS_MULTISKILL_MESH=on`.

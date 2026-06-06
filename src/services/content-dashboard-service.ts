@@ -15,12 +15,17 @@
 
 import { getDb } from './database';
 import { logger } from '../utils/logger';
+import {
+  contentScopeOrderExpr,
+  contentScopeParams,
+  contentScopePredicate,
+  ensureContentTenantScopeColumns,
+  platformOrSystemSeedContentScopePredicate,
+} from './content-tenant-scope';
 
 function db() {
   return getDb();
 }
-
-const CONTENT_OWNER_SCOPE_SQL = "COALESCE(owner_scope, CASE WHEN user_id = 0 THEN 'system' ELSE 'user' END)";
 
 function effectiveContentOwnerScope(row: { owner_scope?: string | null; user_id?: number | null }): 'system' | 'user' {
   if (row.owner_scope === 'system') return 'system';
@@ -83,24 +88,27 @@ export interface BooksOverview {
  * @param dbOverride - optional DB reference (for test environments where
  *   the module-level getDb mock may not propagate to dynamic requires)
  */
-export function getBooks(limit = 50, dbOverride?: any, userId?: number): BooksOverview {
+export function getBooks(limit = 50, dbOverride?: any, userId?: number, tenantId?: number): BooksOverview {
   const d = dbOverride || db();
+  ensureContentTenantScopeColumns(d);
   const rows = userId != null
     ? d.prepare(`
         SELECT id, title, author, core_thesis, key_frameworks, pillar_mapping,
-               extraction_status, times_referenced, created_at, user_id, owner_scope
+               extraction_status, times_referenced, created_at, user_id, owner_scope,
+               tenant_id, owner_user_id, visibility_scope, scope_status
         FROM book_library
-        WHERE ${CONTENT_OWNER_SCOPE_SQL} = 'system'
-           OR (${CONTENT_OWNER_SCOPE_SQL} = 'user' AND user_id = ?)
-        ORDER BY CASE WHEN ${CONTENT_OWNER_SCOPE_SQL} = 'user' AND user_id = ? THEN 0 ELSE 1 END,
+        WHERE ${contentScopePredicate()}
+        ORDER BY ${contentScopeOrderExpr(undefined, userId)},
                  times_referenced DESC,
                  created_at DESC
         LIMIT ?
-      `).all(userId, userId, limit * 2) as any[]
+      `).all(...contentScopeParams(userId, tenantId), limit * 2) as any[]
     : d.prepare(`
         SELECT id, title, author, core_thesis, key_frameworks, pillar_mapping,
-               extraction_status, times_referenced, created_at, user_id, owner_scope
+               extraction_status, times_referenced, created_at, user_id, owner_scope,
+               tenant_id, owner_user_id, visibility_scope, scope_status
         FROM book_library
+        WHERE ${platformOrSystemSeedContentScopePredicate()}
         ORDER BY times_referenced DESC, created_at DESC
         LIMIT ?
       `).all(limit) as any[];
@@ -167,21 +175,26 @@ export interface VoiceDnaEntry {
  * Reads from content_knowledge table (same data as getAllKnowledge()
  * in content-references.ts) with added label mapping for the dashboard.
  */
-export function getVoiceDna(dbOverride?: any, userId?: number): VoiceDnaEntry[] {
+export function getVoiceDna(dbOverride?: any, userId?: number, tenantId?: number): VoiceDnaEntry[] {
   const d = dbOverride || db();
+  ensureContentTenantScopeColumns(d);
   try {
     const rows = userId != null
       ? d.prepare(
-          `SELECT id, category, synthesized_text, source_channels, version, updated_at, user_id, owner_scope
+          `SELECT id, category, synthesized_text, source_channels, version, updated_at,
+                  user_id, owner_scope, tenant_id, owner_user_id, visibility_scope, scope_status
              FROM content_knowledge
-            WHERE ${CONTENT_OWNER_SCOPE_SQL} = 'system'
-               OR (${CONTENT_OWNER_SCOPE_SQL} = 'user' AND user_id = ?)
-            ORDER BY CASE WHEN ${CONTENT_OWNER_SCOPE_SQL} = 'user' AND user_id = ? THEN 0 ELSE 1 END,
+            WHERE ${contentScopePredicate()}
+            ORDER BY ${contentScopeOrderExpr(undefined, userId)},
                      category ASC,
                      updated_at DESC`,
-        ).all(userId, userId) as any[]
+        ).all(...contentScopeParams(userId, tenantId)) as any[]
       : d.prepare(
-          'SELECT id, category, synthesized_text, source_channels, version, updated_at, user_id, owner_scope FROM content_knowledge ORDER BY updated_at DESC',
+          `SELECT id, category, synthesized_text, source_channels, version, updated_at,
+                  user_id, owner_scope, tenant_id, owner_user_id, visibility_scope, scope_status
+             FROM content_knowledge
+            WHERE ${platformOrSystemSeedContentScopePredicate()}
+            ORDER BY updated_at DESC`,
         ).all() as any[];
 
     const deduped = new Map<string, any>();
@@ -219,10 +232,11 @@ export interface KnowledgeStats {
  * Get knowledge category stats and reference channel count.
  * Used by the dashboard's bottom-bar knowledge overview.
  */
-export function getKnowledgeStats(dbOverride?: any, userId?: number): KnowledgeStats {
+export function getKnowledgeStats(dbOverride?: any, userId?: number, tenantId?: number): KnowledgeStats {
   const d = dbOverride || db();
+  ensureContentTenantScopeColumns(d);
   try {
-    const voiceEntries = getVoiceDna(d, userId);
+    const voiceEntries = getVoiceDna(d, userId, tenantId);
     const kStats = voiceEntries.map((entry) => ({
       category: entry.category,
       updatedAt: entry.updatedAt,
@@ -232,17 +246,20 @@ export function getKnowledgeStats(dbOverride?: any, userId?: number): KnowledgeS
     const referenceChannels = userId != null
       ? dedupeScopedRows(
           d.prepare(
-            `SELECT channel_url, user_id, owner_scope
+            `SELECT channel_url, user_id, owner_scope, tenant_id, owner_user_id, visibility_scope, scope_status
                FROM content_ref_channels
-              WHERE ${CONTENT_OWNER_SCOPE_SQL} = 'system'
-                 OR (${CONTENT_OWNER_SCOPE_SQL} = 'user' AND user_id = ?)
-              ORDER BY CASE WHEN ${CONTENT_OWNER_SCOPE_SQL} = 'user' AND user_id = ? THEN 0 ELSE 1 END,
+              WHERE ${contentScopePredicate()}
+              ORDER BY ${contentScopeOrderExpr(undefined, userId)},
                        channel_url ASC`,
-          ).all(userId, userId) as any[],
+          ).all(...contentScopeParams(userId, tenantId)) as any[],
           (row) => row.channel_url,
           userId,
         ).length
-      : ((d.prepare('SELECT COUNT(*) as cnt FROM content_ref_channels').get() as any)?.cnt ?? 0);
+      : ((d.prepare(`
+          SELECT COUNT(*) as cnt
+            FROM content_ref_channels
+           WHERE ${platformOrSystemSeedContentScopePredicate()}
+        `).get() as any)?.cnt ?? 0);
 
     return {
       categories: kStats.map(r => ({

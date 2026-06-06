@@ -25,13 +25,39 @@ import { getDomainSystemPrompt } from './anthropic';
 import { trackedCreate } from '../portal/anthropic-hook';
 import { completeOneShotWithFallback } from './gemini-provider';
 import { getLastCoachState } from '../domains/domain-handler';
-import { isOwnerUserRef } from './user-service';
+import { getUserTimezoneById, isOwnerUserRef } from './user-service';
 import { getDb } from './database';
 
 const client = new Anthropic({
   apiKey: config.anthropic.apiKey,
   maxRetries: 3,
 });
+
+export type CoachAnalysisMeteringActor = 'user' | 'system';
+
+export interface CoachAnalysisMeteringScope {
+  actor: CoachAnalysisMeteringActor;
+  userId: number;
+  tenantId: number;
+}
+
+export const COACH_ANALYSIS_SYSTEM_METERING_USER_ID = 0;
+export const COACH_ANALYSIS_SYSTEM_METERING_TENANT_ID = 0;
+
+export function resolveCoachAnalysisMeteringScope(userId?: number | null, tenantId?: number | null): CoachAnalysisMeteringScope {
+  if (typeof userId === 'number' && Number.isSafeInteger(userId) && userId > 0) {
+    return {
+      actor: 'user',
+      userId,
+      tenantId: typeof tenantId === 'number' && Number.isSafeInteger(tenantId) && tenantId > 0 ? tenantId : userId,
+    };
+  }
+  return {
+    actor: 'system',
+    userId: COACH_ANALYSIS_SYSTEM_METERING_USER_ID,
+    tenantId: COACH_ANALYSIS_SYSTEM_METERING_TENANT_ID,
+  };
+}
 
 // ─── Coaching analysis prompt ─────────────────────────────────────────
 
@@ -156,13 +182,40 @@ export interface CoachApplyResult {
   appliedRecommendations: CoachRecommendation[];
 }
 
+export interface CoachBriefingOptions {
+  /**
+   * Cron/report contexts must not trigger a fresh Garmin SSO login because
+   * Garmin sends a security passcode email for each credentials login. Manual
+   * Telegram `/coach` may leave this false so the interactive MFA flow works.
+   */
+  garminSilent?: boolean;
+  /** Active tenant/data-owner scope. Defaults to `userId` for legacy callers. */
+  tenantId?: number;
+  /** Authenticated actor to charge when generating for an active tenant. */
+  meteringUserId?: number;
+}
+
+export interface CoachRecommendationApplyScope {
+  userId?: number | null;
+  tenantId?: number | null;
+}
+
 /**
  * Apply a single coach recommendation to the calendar.
  * REST recommendations intentionally keep the slot visible on the calendar
  * instead of deleting it outright so the athlete still sees the cancelled plan.
  */
-export async function applyCoachRecommendation(rec: CoachRecommendation): Promise<void> {
+export async function applyCoachRecommendation(
+  rec: CoachRecommendation,
+  scope: CoachRecommendationApplyScope = {},
+): Promise<void> {
   if (rec.action === 'KEEP') return;
+  const scopedRec = {
+    ...rec,
+    userId: scope.userId,
+    tenantId: scope.tenantId ?? scope.userId,
+    timezone: scope.userId ? getUserTimezoneById(scope.userId) : undefined,
+  };
 
   if (rec.action === 'REST') {
     await updateCalendarEvent(
@@ -173,7 +226,7 @@ export async function applyCoachRecommendation(rec: CoachRecommendation): Promis
       rec.source,
     );
     try {
-      syncSessionWithCoachRecommendation(rec);
+      syncSessionWithCoachRecommendation(scopedRec);
     } catch (err) {
       logger.warn({ err, eventId: rec.eventId }, 'Coach apply updated the calendar but failed to sync the training session state');
     }
@@ -193,7 +246,7 @@ export async function applyCoachRecommendation(rec: CoachRecommendation): Promis
   await updateCalendarEvent(updateData, rec.source);
 
   try {
-    syncSessionWithCoachRecommendation(rec);
+    syncSessionWithCoachRecommendation(scopedRec);
   } catch (err) {
     logger.warn({ err, eventId: rec.eventId }, 'Coach apply updated the calendar but failed to sync the training session state');
   }
@@ -231,7 +284,7 @@ export async function applyCoachRecommendations(
   }
 
   for (const rec of selected) {
-    await applyCoachRecommendation(rec);
+    await applyCoachRecommendation(rec, { userId, tenantId: userId });
   }
 
   return {
@@ -295,7 +348,10 @@ async function tryAppleHealthFallback(userId: number | undefined, errors: string
 
 // ─── Main coach function ──────────────────────────────────────────────
 
-export async function generateCoachBriefing(userId?: number): Promise<CoachBriefingResult> {
+export async function generateCoachBriefing(
+  userId?: number,
+  opts: CoachBriefingOptions = {},
+): Promise<CoachBriefingResult> {
   const errors: string[] = [];
   const collectStart = Date.now();
   let garminData: GarminCoachData | null = null;
@@ -307,7 +363,7 @@ export async function generateCoachBriefing(userId?: number): Promise<CoachBrief
   // data lives in apple_health_data table.
   if (canUseScopedGarmin) {
     try {
-      garminData = await fetchDailyCoachData();
+      garminData = await fetchDailyCoachData({ silent: opts.garminSilent });
       errors.push(...garminData.errors);
     } catch (err) {
       logger.error({ err }, 'Garmin data collection failed completely');
@@ -444,6 +500,18 @@ ${payloadStr}
     // matches Sonnet quality for analytical prompts of this shape.
     // Falls back to Anthropic if Gemini is not configured or fails. See
     // audit P0-8.
+    const meteringScope = resolveCoachAnalysisMeteringScope(opts.meteringUserId ?? userId, opts.tenantId ?? userId);
+    const meteringScopePayload = { userId: meteringScope.userId, tenantId: meteringScope.tenantId };
+    const meteringUserId = meteringScopePayload.userId;
+    const meteringTenantId = meteringScopePayload.tenantId;
+    const coachAnalysisMeteringOptions = { maxTokens: 2500, userId: meteringUserId, tenantId: meteringTenantId };
+    const coachAnalysisScopeBoundary = { maxTokens: 2500, userId: meteringScope.userId, tenantId: meteringScope.tenantId };
+    if (
+      coachAnalysisMeteringOptions.userId !== coachAnalysisScopeBoundary.userId ||
+      coachAnalysisMeteringOptions.tenantId !== coachAnalysisScopeBoundary.tenantId
+    ) {
+      throw new Error('Coach analysis metering scope mismatch');
+    }
     const { text: rawText, provider: analysisProvider } = await completeOneShotWithFallback(
       systemPrompt,
       userPrompt,
@@ -464,18 +532,18 @@ ${payloadStr}
             },
           ],
           messages: [{ role: 'user', content: userPrompt }],
-        }, 'coach_analysis');
+        }, 'coach_analysis', { userId: meteringUserId, tenantId: meteringTenantId });
         return response.content
           .filter((c): c is Anthropic.TextBlock => c.type === 'text')
           .map((c) => c.text)
           .join('');
       },
-      { maxTokens: 2500 },
+      { maxTokens: 2500, userId: meteringUserId, tenantId: meteringTenantId },
     );
 
     const analysisMs = Date.now() - analysisStart;
     logger.info(
-      { provider: analysisProvider, analysisMs },
+      { provider: analysisProvider, analysisMs, meteringActor: meteringScope.actor },
       `Coach analysis completed via ${analysisProvider}`,
     );
 

@@ -15,13 +15,12 @@ import {
   type SecretaryProviderEvent,
   type SecretaryProviderEventInput,
 } from './secretary-agenda-provider-sync';
+import { getSessionById, type TrainingSession } from './training-plans';
+import { stripTrainingIdentityMarker } from './training-session-identity';
+import { renderSectionsAsText, type SessionSections } from './training-session-description';
+import { logger } from '../utils/logger';
 
 const MARKER_PREFIX = 'NEXUS_SECRETARY_AGENDA_ITEM';
-const SOURCE_INTENT_PREFIX = 'NEXUS_SECRETARY_SOURCE_INTENT';
-const SOURCE_SKILL_PREFIX = 'NEXUS_SECRETARY_SOURCE_SKILL';
-const SOURCE_ENTITY_PREFIX = 'NEXUS_SECRETARY_SOURCE_ENTITY';
-const VERSION_PREFIX = 'NEXUS_SECRETARY_VERSION';
-const SHAPE_PREFIX = 'NEXUS_SECRETARY_SHAPE';
 const READBACK_PADDING_MS = 24 * 60 * 60 * 1000;
 
 export function createUnifiedCalendarSecretaryProviderAdapter(
@@ -63,25 +62,121 @@ export function createUnifiedCalendarSecretaryProviderAdapter(
       const events = await fetchSecretaryReadbackWindow(input, source);
       return events
         .filter((event) => event.source === source)
-        .filter((event) => extractSecretaryAgendaMarker(event.description) === agendaItemId)
+        .filter((event) => (
+          extractSecretaryAgendaMarker(event.description) === agendaItemId
+          || isLikelySameSecretaryEvent(event, input)
+        ))
         .map((event) => toSecretaryProviderEvent(event, input));
     },
   };
 }
 
 export function buildSecretaryCalendarDescription(input: SecretaryProviderEventInput): string {
-  const lines = [
-    `${MARKER_PREFIX}:${input.agendaItemId}`,
-    `${SOURCE_INTENT_PREFIX}:${input.sourceIntentId}`,
-    `${SOURCE_SKILL_PREFIX}:${input.sourceSkill}`,
-    `${SOURCE_ENTITY_PREFIX}:${input.sourceEntityType ?? 'unknown'}:${input.sourceEntityId ?? 'unknown'}`,
-    `${VERSION_PREFIX}:${input.version}`,
-    `${SHAPE_PREFIX}:${input.sourceShapeHash}`,
-  ];
-  if (input.decisionReasonCodes.length > 0) {
-    lines.push(`Decision reasons: ${input.decisionReasonCodes.join(', ')}`);
+  const sourceBody = sourceBodyForSecretaryCalendarEvent(input);
+  const durationMinutes = typeof input.durationMinutes === 'number' && Number.isFinite(input.durationMinutes) && input.durationMinutes > 0
+    ? input.durationMinutes
+    : null;
+  const headerLines = [
+    input.title.trim(),
+    durationMinutes ? `Duration: ${durationMinutes} min` : '',
+  ].filter(Boolean);
+  const sourceLine = userFacingSourceLine(input);
+  const sections = [
+    headerLines.join('\n'),
+    sourceBody,
+    sourceLine,
+  ]
+    .map((section) => section?.trim() ?? '')
+    .filter(Boolean);
+  return sections.join('\n\n');
+}
+
+// 2026-05-25 Bug #3 (Stage 1) — body hydration. Pre-fix this function
+// only read `session.description`. When the planner had stored a
+// session without a populated `description` (some session-type
+// branches skip the rich-text rendering step at persistence time),
+// the calendar event body collapsed to just the metadata footer —
+// the bug the user reported (screenshot showed a "Strength + Core
+// Support" event whose body was 6 lines of NEXUS_SECRETARY_* markers
+// and nothing else).
+//
+// Hydration priority (first non-empty wins):
+//   1. `session.description` — the pre-rendered plain text, what the
+//      planner historically wrote at persistence time. iOS reads this
+//      same field.
+//   2. `session.description_json` parsed + re-rendered via
+//      `renderSectionsAsText` — the typed `SessionSections` source of
+//      truth. Used when description was never written.
+//   3. Minimal fallback one-liner from `title + intensity_text +
+//      duration_minutes` — never empty when the session row exists.
+function sourceBodyForSecretaryCalendarEvent(input: SecretaryProviderEventInput): string | null {
+  if (input.sourceSkill !== 'training' || input.sourceEntityType !== 'training_session') return null;
+  const sessionId = Number(input.sourceEntityId);
+  if (!Number.isFinite(sessionId) || sessionId <= 0) return null;
+  const session = getSessionById(Math.floor(sessionId));
+  if (!session) return null;
+
+  // Priority 1: stored plain-text description.
+  const storedDescription = stripTrainingIdentityMarker(session.description ?? '').trim();
+  if (storedDescription) return storedDescription;
+
+  // Priority 2: re-render from structured sections.
+  const renderedFromSections = tryRenderSectionsFromJson(session.description_json);
+  if (renderedFromSections) return renderedFromSections;
+
+  // Priority 3: minimal fallback so the event body is never empty.
+  return buildMinimalSessionFallback(session);
+}
+
+function userFacingSourceLine(input: SecretaryProviderEventInput): string {
+  if (input.sourceSkill === 'training') return 'Source: Nexus Hub training plan.';
+  return 'Source: Nexus Hub secretary.';
+}
+
+function tryRenderSectionsFromJson(raw: string | null | undefined): string | null {
+  const trimmed = (raw ?? '').trim();
+  if (!trimmed) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(trimmed);
+  } catch (err) {
+    logger.warn({ err }, 'secretary-calendar-adapter: description_json parse failed — falling back to minimal body');
+    return null;
   }
-  return lines.join('\n');
+  if (!parsed || typeof parsed !== 'object') return null;
+  try {
+    const rendered = renderSectionsAsText(parsed as SessionSections).trim();
+    return rendered || null;
+  } catch (err) {
+    logger.warn({ err }, 'secretary-calendar-adapter: renderSectionsAsText failed — falling back to minimal body');
+    return null;
+  }
+}
+
+function buildMinimalSessionFallback(session: TrainingSession): string | null {
+  const parts: string[] = [];
+  if (session.title) parts.push(session.title);
+  if (session.intensity_text) parts.push(session.intensity_text);
+  if (typeof session.duration_minutes === 'number' && session.duration_minutes > 0) {
+    parts.push(`${session.duration_minutes} min`);
+  }
+  return parts.length > 0 ? parts.join(' · ') : null;
+}
+
+function isLikelySameSecretaryEvent(event: UnifiedCalendarEvent, input: SecretaryProviderEventInput): boolean {
+  if (!sameInstant(event.start, input.startAt) || !sameInstant(event.end, input.endAt)) return false;
+  return normalizeComparableText(event.summary) === normalizeComparableText(input.title);
+}
+
+function sameInstant(a: string | undefined, b: string | undefined): boolean {
+  if (!a || !b) return false;
+  const left = Date.parse(a);
+  const right = Date.parse(b);
+  return Number.isFinite(left) && Number.isFinite(right) && Math.abs(left - right) <= 1000;
+}
+
+function normalizeComparableText(value: string | undefined): string {
+  return (value ?? '').trim().replace(/\s+/g, ' ').toLowerCase();
 }
 
 export function extractSecretaryAgendaMarker(description: string | undefined): string | null {

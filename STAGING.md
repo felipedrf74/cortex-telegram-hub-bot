@@ -2,6 +2,20 @@
 
 > Quarter audit item: Staging environment + Blue-green deploy.
 
+> **Before you push to staging:** run the local Docker sandbox smoke
+> first. `./scripts/local-up.sh && ./scripts/local-smoke.sh` catches
+> boot regressions and broken `/api/v1/*` envelopes before they reach
+> the remote box. Full runbook: `docs/local-dev/README.md`. The local
+> sandbox is a pre-staging filter, not a replacement — staging-smoke
+> still runs as the promote-to-prod gate.
+>
+> **Hybrid chat canary flags:** per-user and per-tenant overrides such as
+> `CHAT_HYBRID_PLANNER_ENABLED_USER_<id>` and
+> `CHAT_HYBRID_PLANNER_ENABLED_TENANT_<id>` are environment-variable
+> overrides. They are scoped and safe for canaries, but not runtime-mutable;
+> changing them requires updating the staging/prod environment and restarting
+> the PM2 process.
+
 ## What Staging Is
 
 A second, isolated install of Nexus Hub running on the same VPS as production,
@@ -201,6 +215,22 @@ ssh dominguez@serverdominguez "pm2 restart nexus-hub-staging"
 ```bash
 ssh dominguez@serverdominguez "curl -sf -H 'Authorization: Bearer <staging-portal-token>' http://localhost:8201/api/cost-by-domain?days=7"
 ```
+
+### Run authenticated route-pipeline probes
+
+Use the staging fixture harness when a change needs authenticated `/api/v1`
+evidence without borrowing a real user's token. The harness creates a
+staging-only synthetic user in the reserved `1000000-1099999` range, probes
+route cache behavior, writes `/tmp/staging-probe-<timestamp>.json`, and
+cleans up after itself.
+
+```bash
+STAGING_URL=https://staging-api.nexushub.me node scripts/staging-fixture-harness.mjs --action seed
+STAGING_URL=https://staging-api.nexushub.me node scripts/staging-fixture-harness.mjs --action probe
+STAGING_URL=https://staging-api.nexushub.me node scripts/staging-fixture-harness.mjs --action cleanup
+```
+
+Full runbook: `/Users/felipedominguez/Desktop/Nexus Hub/docs/runbooks/staging-fixture-harness.md`.
 
 ### Reset staging DB
 

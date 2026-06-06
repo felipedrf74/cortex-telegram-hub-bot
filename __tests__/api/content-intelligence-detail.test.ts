@@ -43,10 +43,14 @@ let mockJobs = [
 
 vi.mock('../../src/services/database', () => ({
   getDb: () => testDb,
+  initDatabase: vi.fn(),
+  closeDatabase: vi.fn(),
+  findUnexpectedMigrationPrefixCollisions: vi.fn(() => []),
 }));
 
 vi.mock('../../src/utils/logger', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(), trace: vi.fn(), child: vi.fn().mockReturnThis() },
+  LOGGER_REDACTION_PATHS: [],
 }));
 
 vi.mock('../../src/portal/telemetry', () => ({
@@ -56,6 +60,8 @@ vi.mock('../../src/portal/telemetry', () => ({
 import { contentRoutes } from '../../src/api/routes/content';
 import { getOrCreateUser, setUserLanguage } from '../../src/services/user-service';
 import { setDbProvider } from '../../src/services/intelligence-bus';
+import { logPerformanceFeedback } from '../../src/services/content-learning-store';
+import { setContentRadarPreferences } from '../../src/services/content-radar-preferences';
 
 function applyMigrations(db: Database.Database): void {
   db.exec(`CREATE TABLE IF NOT EXISTS _migrations (id INTEGER PRIMARY KEY, filename TEXT UNIQUE, applied_at TEXT DEFAULT (datetime('now')))`);
@@ -108,18 +114,31 @@ function mockRes(): MockRes {
   return response;
 }
 
-function mockReq(userId: number, headers: Record<string, string> = {}): Request {
+function mockReq(
+  userId: number,
+  headers: Record<string, string> = {},
+  tenantIdOverride?: number | null | undefined,
+): Request {
   return {
     userId,
+    // 2026-05-18 follow-up QA P3-2: allow caller to override tenantId
+    // independently from userId so we can exercise the
+    // assertTenantScope-catch path with a valid userId + invalid tenantId.
+    tenantId: tenantIdOverride === undefined ? userId : tenantIdOverride,
     header(name: string) {
       return headers[name.toLowerCase()] ?? headers[name] ?? undefined;
     },
   } as any;
 }
 
-async function dispatch(url: string, userId: number, headers: Record<string, string> = {}): Promise<MockRes> {
+async function dispatch(
+  url: string,
+  userId: number,
+  headers: Record<string, string> = {},
+  tenantIdOverride?: number | null | undefined,
+): Promise<MockRes> {
   const router = contentRoutes();
-  const request = mockReq(userId, headers);
+  const request = mockReq(userId, headers, tenantIdOverride);
   const parsed = new URL(url, 'http://test.local');
   (request as any).method = 'GET';
   (request as any).url = parsed.pathname + parsed.search;
@@ -192,10 +211,20 @@ describe('Content API — intelligence detail', () => {
         user_id INTEGER NOT NULL DEFAULT 0
       )
     `);
+    // Closed-beta-auth-hardening (2026-05-04): the previous test seeded
+    // the `Training` pillar at user_id=0 (platform-seed bucket) and
+    // expected the response to merge it with the user-scoped `Recovery`
+    // pillar. The strict-per-user fix in
+    // `services/content-intelligence.ts` now refuses to surface
+    // user_id=0 rows for any per-user read (they were a cross-tenant
+    // leak vector — every user inherited every platform-seed pillar
+    // with weight > 1). Both pillars are now seeded per-user; the
+    // assertion below was updated to match the strict-per-user
+    // contract.
     testDb.prepare(`
       INSERT INTO config_pillars (name, keywords, weight, enabled, user_id)
-      VALUES (?, ?, ?, 1, 0)
-    `).run('Training', JSON.stringify(['run', 'ride', 'gym']), 1.2);
+      VALUES (?, ?, ?, 1, ?)
+    `).run('Training', JSON.stringify(['run', 'ride', 'gym']), 1.2, user.id);
     testDb.prepare(`
       INSERT INTO config_pillars (name, keywords, weight, enabled, user_id)
       VALUES (?, ?, ?, 1, ?)
@@ -211,8 +240,8 @@ describe('Content API — intelligence detail', () => {
     `).run(user.id, 'Tópicos prontos para esta semana', 'Há novas ideias a aguardar decisão.', '2026-04-14T09:10:00.000Z');
 
     const insertSignal = testDb.prepare(`
-      INSERT INTO agent_signals (source_agent, signal_type, payload, priority, status, expires_at, created_at, consumed_by, user_id)
-      VALUES (?, ?, ?, ?, 'active', datetime('now', '+7 days'), ?, '[]', NULL)
+      INSERT INTO agent_signals (source_agent, signal_type, payload, priority, status, expires_at, created_at, consumed_by, tenant_id, user_id)
+      VALUES (?, ?, ?, ?, 'active', datetime('now', '+7 days'), ?, '[]', ?, NULL)
     `);
 
     insertSignal.run(
@@ -220,22 +249,46 @@ describe('Content API — intelligence detail', () => {
       'reaction_opportunity',
       JSON.stringify({ title: 'Tariff shift explainer', summary: 'Macro topic is climbing fast.' }),
       'urgent',
-      recentDiscoveryAt
+      recentDiscoveryAt,
+      user.id
     );
     insertSignal.run(
       'performance-agent',
       'pillar_performance',
       JSON.stringify({ pillar: 'training', summary: 'Training is outperforming other pillars this week.' }),
       'normal',
-      recentOptimizationAt
+      recentOptimizationAt,
+      user.id
     );
     insertSignal.run(
       'performance-agent',
       'learning_digest',
       JSON.stringify({ summary: 'Hooks with stronger contrast won this week.' }),
       'normal',
-      recentOptimizationAt
+      recentOptimizationAt,
+      user.id
     );
+    logPerformanceFeedback({
+      views: 8600,
+      retentionPct: 64,
+      likes: 720,
+      comments: 80,
+      subsGained: 18,
+      selectedTitle: 'Como reconstruir consistência de treino',
+      hookUsed: 'Pare de perder consistência',
+      userId: user.id,
+      tenantId: user.id,
+    });
+    logPerformanceFeedback({
+      views: 2400,
+      retentionPct: 47,
+      likes: 190,
+      comments: 18,
+      subsGained: 4,
+      selectedTitle: 'Recuperação sem drama',
+      userId: user.id,
+      tenantId: user.id,
+    });
 
     const response = await dispatch('/intelligence/detail', user.id);
 
@@ -285,23 +338,36 @@ describe('Content API — intelligence detail', () => {
       title: 'Treino',
       summary: 'Performance de Treino: Training is outperforming other pillars this week.',
     });
+    expect(response.body.data.optimization.performanceSummary).toMatchObject({
+      count: 2,
+      avgViews: 5500,
+      avgRetention: 55.5,
+      totalLikes: 910,
+      totalComments: 98,
+      totalSubsGained: 22,
+      topEntry: {
+        title: 'Como reconstruir consistência de treino',
+        views: 8600,
+        retentionPct: 64,
+        likes: 720,
+        comments: 80,
+        subsGained: 18,
+      },
+    });
+    expect(response.body.data.optimization.performanceSummary.recentEntries).toHaveLength(2);
   });
 
   it('applies creator radar preferences and english response language from X-Language', async () => {
     const user = getOrCreateUser(57002, { username: 'content-english-radar' });
     setUserLanguage(user.id, 'pt-BR');
-    const recentPreferenceAt = daysAgoIso(1);
     const recentFitnessSignalAt = daysAgoIso(1);
     const recentPoliticsSignalAt = daysAgoIso(1);
 
-    testDb.prepare(`
-      INSERT INTO content_radar_preferences (user_id, topics_json, updated_at)
-      VALUES (?, ?, ?)
-    `).run(user.id, JSON.stringify(['fitness', 'training consistency']), recentPreferenceAt);
+    setContentRadarPreferences(user.id, ['fitness', 'training consistency']);
 
     const insertSignal = testDb.prepare(`
-      INSERT INTO agent_signals (source_agent, signal_type, payload, priority, status, expires_at, created_at, consumed_by, user_id)
-      VALUES (?, ?, ?, ?, 'active', datetime('now', '+7 days'), ?, '[]', NULL)
+      INSERT INTO agent_signals (source_agent, signal_type, payload, priority, status, expires_at, created_at, consumed_by, tenant_id, user_id)
+      VALUES (?, ?, ?, ?, 'active', datetime('now', '+7 days'), ?, '[]', ?, NULL)
     `);
 
     insertSignal.run(
@@ -309,14 +375,16 @@ describe('Content API — intelligence detail', () => {
       'reaction_opportunity',
       JSON.stringify({ title: 'fitness', summary: 'Janela de reação ativa: treino com forte gancho' }),
       'urgent',
-      recentFitnessSignalAt
+      recentFitnessSignalAt,
+      user.id
     );
     insertSignal.run(
       'reaction-radar',
       'reaction_opportunity',
       JSON.stringify({ title: 'politics', summary: 'Janela de reação ativa: debate fiscal' }),
       'urgent',
-      recentPoliticsSignalAt
+      recentPoliticsSignalAt,
+      user.id
     );
 
     const response = await dispatch('/intelligence/detail', user.id, { 'x-language': 'en-US' });
@@ -350,5 +418,51 @@ describe('Content API — intelligence detail', () => {
         }),
       ]),
     );
+  });
+
+  // ─────────────────────────────────────────────────────────────────────
+  // QA regression pin (skill-hardening 2026-05-18 follow-up, P3-2):
+  // The previous QA found that the existing "fails closed" test passes
+  // userId=0 (and mockReq sets tenantId=userId=0), which trips
+  // ensureValidContentRouteScope FIRST and never exercises the new
+  // requireContentIntelligenceScope catch block on assertTenantScope.
+  // These tests pass valid userId + invalid tenantId so the route enters
+  // the catch path and we lock in the 401-not-500 contract.
+  // ─────────────────────────────────────────────────────────────────────
+
+  it('returns 401 (not 500) when assertTenantScope rejects valid-user + invalid-tenant', async () => {
+    const response = await dispatch('/intelligence/detail', 42, {}, 0);
+
+    expect(response.statusCode).toBe(401);
+    expect(response.body.ok).toBe(false);
+    expect(response.body.error.code).toBe('UNAUTHORIZED');
+    // Note: when tenantId === 0 (invalid) but userId is valid, the existing
+    // assertTenantScope reason-derivation logic categorises this as
+    // 'invalid_user_scope' (the reason ternary only flips to
+    // 'missing_tenant_scope' when tenantId === null). Pinning the actual
+    // behavior so a future change to that ternary is visible.
+    expect(getTenantScopeAnomalies()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          layer: 'delivery',
+          operation: 'content_route_intelligence_detail',
+          userId: 42,
+        }),
+      ]),
+    );
+  });
+
+  it('returns 401 when assertTenantScope rejects valid-user + negative tenant', async () => {
+    const response = await dispatch('/intelligence/detail', 42, {}, -7);
+
+    expect(response.statusCode).toBe(401);
+    expect(response.body.error.code).toBe('UNAUTHORIZED');
+  });
+
+  it('returns 401 when assertTenantScope rejects valid-user + undefined tenant', async () => {
+    const response = await dispatch('/intelligence/detail', 42, {}, null);
+
+    expect(response.statusCode).toBe(401);
+    expect(response.body.error.code).toBe('UNAUTHORIZED');
   });
 });

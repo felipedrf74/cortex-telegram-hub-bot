@@ -5,7 +5,9 @@ import { authMiddleware } from './auth-middleware';
 import { rateLimitMiddleware, webhookRateLimitMiddleware } from './rate-limiter';
 import { requestTimerMiddleware } from './request-timer';
 import { authRoutes } from './routes/auth';
+import { legalRoutes } from './routes/legal';
 import { chatRoutes } from './routes/chat';
+import { attachmentRoutes } from './routes/attachments';
 import { dashboardRoutes } from './routes/dashboard';
 import { taskRoutes } from './routes/tasks';
 import { trainingRoutes } from './routes/training';
@@ -35,7 +37,51 @@ import { internalRoutes } from './routes/internal';
 import { planRoutes } from './routes/plan';
 import { requireEntitlement } from './entitlement-middleware';
 import { notificationRoutes } from './routes/notifications';
+import { decisionRoutes, deviceTokenRoutes } from './routes/decisions';
 import { reportRoutes } from './routes/reports';
+import { summaryRoutes } from './routes/summaries';
+import { syncRoutes } from './routes/sync';
+import { eventBackboneAdminRoutes } from './routes/event-backbone-admin';
+import { verifyAppleJws } from '../services/apple-jws-verifier';
+import { handleAppleNotification } from '../services/stripe-service';
+import { captureMessage } from '../services/error-tracker';
+import { logger } from '../utils/logger';
+
+const WEBSITE_CORS_ALLOWLIST = new Set([
+  'https://nexushub.me',
+  'https://www.nexushub.me',
+]);
+const WEBSITE_CORS_ALLOWLIST_REGEX = /^https:\/\/[a-z0-9-]+\.nexushub-landing\.pages\.dev$/;
+const WEBSITE_CORS_METHODS = new Set(['GET', 'POST', 'OPTIONS']);
+
+function isWebsiteCorsRoute(path: string): boolean {
+  return path === '/auth'
+    || path.startsWith('/auth/')
+    || path === '/legal'
+    || path.startsWith('/legal/')
+    || path === '/billing/status'
+    || path === '/billing/usage'
+    || path === '/billing/nexus-points/stripe-checkout';
+}
+
+function applyWebsiteCors(req: express.Request, res: express.Response): boolean {
+  if (!isWebsiteCorsRoute(req.path)) return false;
+  const origin = req.headers.origin;
+  if (typeof origin !== 'string') return false;
+  if (!WEBSITE_CORS_ALLOWLIST.has(origin) && !WEBSITE_CORS_ALLOWLIST_REGEX.test(origin)) {
+    return false;
+  }
+  const requestedMethod = String(req.headers['access-control-request-method'] || req.method || '').toUpperCase();
+  if (req.method === 'OPTIONS' && requestedMethod && !WEBSITE_CORS_METHODS.has(requestedMethod)) {
+    return false;
+  }
+  res.set('Access-Control-Allow-Origin', origin);
+  res.set('Vary', 'Origin');
+  res.set('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.set('Access-Control-Allow-Headers', 'Authorization, Content-Type');
+  res.set('Access-Control-Max-Age', '600');
+  return true;
+}
 
 /**
  * Creates the iOS API router.
@@ -53,6 +99,7 @@ export function createApiRouter(): Router {
       endpoints: {
         auth: 'POST /api/v1/auth/register, POST /api/v1/auth/refresh',
         chat: 'POST /api/v1/chat, GET /api/v1/chat/history',
+        attachments: 'POST /api/v1/attachments/extract — image invoice/calendar/task extraction preview',
         dashboard: 'GET /api/v1/dashboard',
         tasks: 'GET/POST/PATCH/DELETE /api/v1/tasks',
         training: 'GET /api/v1/training/*',
@@ -70,12 +117,25 @@ export function createApiRouter(): Router {
         signals: 'GET /api/v1/signals/active — active cross-skill training signals for the current user',
         cooking: 'GET/POST/DELETE /api/v1/cooking/{recipes|meal-plan|shopping-list}',
         finance: 'GET/POST/DELETE /api/v1/finance/{transactions|monthly-summary|tax/events|tax/calculate}',
-        invoices: 'GET/POST/DELETE /api/v1/invoices/{vendors|scan-now} — vendor config + on-demand collection',
-        billing: 'GET /api/v1/billing/status, POST /api/v1/billing/{checkout|portal|apple-verify}',
+        invoices: 'GET/POST/DELETE /api/v1/invoices/{vendors|scan-now|scraper-mfa-reply} — vendor config + on-demand collection',
+        billing: 'GET /api/v1/billing/status, POST /api/v1/billing/{checkout|portal|apple-verify|nexus-points/stripe-checkout}',
+        legal: 'GET /api/v1/legal/current, GET /api/v1/legal/{terms|privacy}',
         plan: 'GET /api/v1/plan/{week|today}, POST /api/v1/plan/recompute — multiskill mesh (feature-flagged)',
+        summaries: 'GET /api/v1/summaries/{home|week|training|content|notifications} — fast app read models',
+        decisions: 'GET /api/v1/decisions/summary, GET/POST/PATCH /api/v1/decisions — user-scoped decision orchestration',
+        sync: 'GET /api/v1/sync/changes?since=cursor — RAMEN-lite delta sync',
       },
       auth_note: 'POST /auth/register with inviteCode to get a JWT. Include as Authorization: Bearer <token> on all other endpoints.',
     });
+  });
+
+  router.use((req, res, next) => {
+    const corsApplied = applyWebsiteCors(req, res);
+    if (req.method === 'OPTIONS' && corsApplied) {
+      res.status(204).end();
+      return;
+    }
+    next();
   });
 
   // Public routes (no JWT required).
@@ -90,6 +150,7 @@ export function createApiRouter(): Router {
   // register/refresh traffic is well under 30 req/min/IP; credential
   // stuffing is capped.
   router.use('/auth', rateLimitMiddleware, authRoutes());
+  router.use('/legal', legalRoutes());
 
   // Internal service-to-service routes — Python content-engine reports
   // usage here. Authenticated by shared secret, not JWT.
@@ -102,6 +163,7 @@ export function createApiRouter(): Router {
   // having to register as an iOS device first.
   router.use('/admin/content-dashboard', contentDashboardRoutes());
   router.use('/admin/content', contentAdminWriteRoutes());
+  router.use('/admin/event-backbone', eventBackboneAdminRoutes());
 
   // Apple App Store Server Notifications — public (no JWT).
   // Apple sends lifecycle events (renewal, expiry, refund) server-to-server.
@@ -111,6 +173,15 @@ export function createApiRouter(): Router {
   // prevent a forged-payload flood from CPU-starving the event loop
   // BEFORE the cheap bundle-id + JWS validation rejects bad traffic.
   router.post('/billing/apple-notifications', webhookRateLimitMiddleware, express.json(), (req, res) => {
+    const rejectInvalidAppleNotification = (reason: string, error?: unknown) => {
+      logger.warn({ reason, err: error }, 'Apple notification: invalid or forged JWS rejected');
+      captureMessage('APPLE_NOTIFICATION_FORGED_OR_INVALID', 'warning', {
+        error_code: 'APPLE_NOTIFICATION_FORGED_OR_INVALID',
+        reason,
+      });
+      res.status(200).json({ handled: false, reason: 'invalid signature' });
+    };
+
     try {
       const { signedPayload } = req.body || {};
       if (!signedPayload || typeof signedPayload !== 'string') {
@@ -119,18 +190,11 @@ export function createApiRouter(): Router {
         return;
       }
 
-      // Decode the outer JWS (notification envelope)
-      const outerParts = signedPayload.split('.');
-      if (outerParts.length !== 3) {
-        res.status(200).json({ handled: false, reason: 'malformed outer JWS' });
-        return;
-      }
-
       let outerPayload: any;
       try {
-        outerPayload = JSON.parse(Buffer.from(outerParts[1], 'base64url').toString('utf8'));
-      } catch {
-        res.status(200).json({ handled: false, reason: 'invalid outer JWS payload' });
+        outerPayload = verifyAppleJws(signedPayload, { requireX5c: true }).payload;
+      } catch (err) {
+        rejectInvalidAppleNotification('invalid outer JWS', err);
         return;
       }
 
@@ -142,40 +206,15 @@ export function createApiRouter(): Router {
         return;
       }
 
-      // Validate bundle ID from the inner transaction.
-      //
-      // Hardening 2026-04-21: prior code wrapped the inner-payload
-      // parse + bundle-id check in a try/catch that SWALLOWED errors
-      // and fell through to `handleAppleNotification` on failure. An
-      // attacker sending a malformed `signedTransactionInfo` (no
-      // `bundleId` field, or invalid base64) would sail past the
-      // check. Now: if the inner JWS isn't a well-formed 3-part
-      // structure, OR the bundleId is missing, OR the bundleId
-      // doesn't match, we REJECT with 200 (Apple retry policy
-      // compliance). Crypto signature verification is still a known
-      // gap flagged to the security owner.
-      const innerParts = signedTransactionInfo.split('.');
-      if (innerParts.length !== 3) {
-        require('../utils/logger').logger.warn(
-          { notificationType },
-          'Apple notification: malformed inner JWS — rejecting',
-        );
-        res.status(200).json({ handled: false, reason: 'malformed inner JWS' });
-        return;
-      }
       let innerPayload: any;
       try {
-        innerPayload = JSON.parse(Buffer.from(innerParts[1], 'base64url').toString('utf8'));
-      } catch {
-        require('../utils/logger').logger.warn(
-          { notificationType },
-          'Apple notification: inner JWS payload not valid JSON — rejecting',
-        );
-        res.status(200).json({ handled: false, reason: 'invalid inner payload' });
+        innerPayload = verifyAppleJws(signedTransactionInfo, { requireX5c: true }).payload;
+      } catch (err) {
+        rejectInvalidAppleNotification('invalid inner transaction JWS', err);
         return;
       }
       if (!innerPayload.bundleId) {
-        require('../utils/logger').logger.warn(
+        logger.warn(
           { notificationType },
           'Apple notification: missing bundleId in inner payload — rejecting',
         );
@@ -183,7 +222,7 @@ export function createApiRouter(): Router {
         return;
       }
       if (innerPayload.bundleId !== 'me.nexushub.app') {
-        require('../utils/logger').logger.warn(
+        logger.warn(
           { bundleId: innerPayload.bundleId, notificationType },
           'Apple notification: bundle ID mismatch — rejecting',
         );
@@ -191,13 +230,12 @@ export function createApiRouter(): Router {
         return;
       }
 
-      const { handleAppleNotification } = require('../services/stripe-service');
       const processed = handleAppleNotification(notificationType, signedTransactionInfo);
 
       res.status(200).json({ handled: processed });
     } catch (err: any) {
       // Never return errors to Apple — always 200
-      require('../utils/logger').logger.error({ err }, 'Apple notification handler error');
+      logger.error({ err }, 'Apple notification handler error');
       res.status(200).json({ handled: false, reason: 'internal error' });
     }
   });
@@ -224,7 +262,7 @@ export function createApiRouter(): Router {
       const requestId = (req as any).requestId || generateRequestId();
       // Wrap the rest of the middleware chain in a context that propagates
       // through await / Promise.all / timeouts without parameter threading.
-      runWithContext({ requestId, source: 'http', userId }, () => {
+      runWithContext({ requestId, source: 'http', userId, garminSilent: true }, () => {
         next();
       });
       return; // next() called inside runInContext
@@ -232,26 +270,19 @@ export function createApiRouter(): Router {
     next();
   });
 
-  // Garmin silent mode for ALL iOS API routes. iOS users can't enter
-  // MFA codes, so if the Garmin session expires, we return an error
-  // instead of triggering an MFA email flood. The user re-authenticates
-  // via the Telegram bot (/readiness) where MFA is interactive.
-  router.use((_req, _res, next) => {
-    const { setSilentMode } = require('../services/garmin');
-    setSilentMode(true);
-    _res.on('finish', () => setSilentMode(false));
-    next();
-  });
-
-  // Chat is the ONLY route allowed to touch the AI pipeline.
+  // Chat and attachment extraction are the only app routes allowed to touch
+  // the AI pipeline. Operational skill flows below stay token-zero.
   router.use('/chat', chatRoutes());
+  router.use('/attachments', attachmentRoutes());
 
   // Aggregated home screen
   router.use('/dashboard', dashboardRoutes());
+  router.use('/summaries', summaryRoutes());
+  router.use('/sync', syncRoutes());
 
   // Token-zero data routes — direct service calls, no AI involvement.
   router.use('/tasks', taskRoutes());
-  router.use('/training', trainingRoutes());
+  router.use('/training', requireEntitlement({ skill: 'training' }), trainingRoutes());
   router.use('/calendar', calendarRoutes());
   router.use('/reminders', reminderRoutes());
   router.use('/notes', notesRoutes());
@@ -308,6 +339,10 @@ export function createApiRouter(): Router {
   // Content notification inbox — durable notifications for content events.
   // Powers the iOS notification center (unread badge, read/resolve actions).
   router.use('/notifications', notificationRoutes());
+
+  // Decision Center — action-oriented facade over durable NotificationIntents.
+  router.use('/decisions', decisionRoutes());
+  router.use('/device-tokens', deviceTokenRoutes());
 
   // Durable report documents — morning briefing, evening summary, weekly review,
   // coach briefing. Structured JSON payloads rendered natively in iOS.

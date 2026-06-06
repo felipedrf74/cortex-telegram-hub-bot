@@ -17,14 +17,17 @@
 import { getDb } from './database';
 import { config } from '../config';
 import { logger } from '../utils/logger';
+import crypto from 'crypto';
 import {
   getEffectiveDailyCostLimitUsd,
   getUsageLevelForPlan,
+  resolveBillingPlanForUser,
   type BillingPlan,
   type UsageLevel,
 } from './plan-quotas';
-import { isOwnerUserRef } from './user-service';
 import { recordOperatorAlert } from './operator-alerts';
+import { getNexusPointBalance, listNexusPointPackages, usdToPoints } from './nexus-points';
+import { getActiveUserAiBudgetOverride } from './ai-budget-overrides';
 
 // ── Telegram Alert Callback ──────────────────────────────────────
 
@@ -57,13 +60,13 @@ function todayKey(): string {
 // ~$0.0026–$0.0076. Caps are sized so that a fully-utilized month still
 // leaves room for platform fees, support, retries, and provider mix drift.
 //
-//   Pro ($25/mo): $0.20/day × 30 = $6.00/mo AI COGS
-//   Max ($45/mo): $0.60/day × 30 = $18.00/mo AI COGS
+//   Pro ($14.99/mo): $0.04/day × 30 = $1.20/mo AI COGS
+//   Max ($19.99/mo): $0.06/day × 30 = $1.80/mo AI COGS
 //
 // Typical users should land materially below cap, especially because
 // token-zero routes avoid AI spend entirely for deterministic lookups.
 // No free tier — unsubscribed users are blocked from AI entirely.
-const DEFAULT_DAILY_CAP_USD = parseFloat(process.env.PER_USER_DAILY_USD_CAP || '0.00');
+const DEFAULT_DAILY_CAP_USD = Number(process.env.PER_USER_DAILY_USD_CAP || '0.00');
 
 export interface DailyQuotaStatus {
   over: boolean;
@@ -77,6 +80,15 @@ export interface DailyQuotaStatus {
   limitUsd: number;
   usedUsd: number;
   remainingUsd: number;
+  planDailyLimitUsd: number;
+  includedRemainingUsd: number;
+  nexusPointsBalance: number;
+  nexusPointsRemainingUsd: number;
+  nexusPointsExpiringSoon: number;
+  nexusPointsExpiringSoonUsd: number;
+  nextCreditExpiryAt: string | null;
+  totalRemainingUsd: number;
+  pointsPurchaseAvailable: boolean;
   resetAt: string;
 }
 
@@ -92,67 +104,40 @@ function getQuotaResetAt(now = new Date()): string {
   )).toISOString();
 }
 
-function resolvePlanFromSubscriptionState(userId: number): BillingPlan {
-  const db = getDb();
-
-  if (!config.billing.paywallEnabled) {
-    return 'beta';
-  }
-
-  let isOwner = isOwnerUserRef(userId);
-  let userTier: string | null = null;
-
-  if (!isOwner) {
-    try {
-      const user = db.prepare(
-        'SELECT telegram_id, tier FROM users WHERE id = ?'
-      ).get(userId) as { telegram_id: number | null; tier: string | null } | undefined;
-      userTier = user?.tier ?? null;
-      if (user?.tier === 'owner') {
-        isOwner = true;
-      }
-    } catch {
-      userTier = null;
-    }
-  }
-
-  if (isOwner) {
-    return 'owner';
-  }
-
-  try {
-    const sub = db.prepare(
-      'SELECT plan, status FROM subscriptions WHERE user_id = ?'
-    ).get(userId) as { plan: string; status: string } | undefined;
-
-    if (sub && ['active', 'trialing'].includes(sub.status) && (sub.plan === 'pro' || sub.plan === 'max')) {
-      return sub.plan;
-    }
-  } catch {
-    // Fall back to the users table below.
-  }
-
-  if (userTier === 'max') return 'max';
-  if (userTier === 'pro') return 'pro';
-
-  return 'free';
-}
-
 export function getDailyQuotaStatus(userId: number): DailyQuotaStatus {
   try {
     const db = getDb();
-    const plan = resolvePlanFromSubscriptionState(userId);
-    const capUsd = getEffectiveDailyCostLimitUsd(plan as BillingPlan);
+    const plan = resolveBillingPlanForUser(userId);
+    const userOverride = getActiveUserAiBudgetOverride(userId);
+    const capUsd = userOverride?.dailyCostUsd ?? getEffectiveDailyCostLimitUsd(plan as BillingPlan);
     const usageLevel = getUsageLevelForPlan(plan as BillingPlan);
+    const nexusPoints = getNexusPointBalance(userId);
 
     const row = db.prepare(`
       SELECT COALESCE(SUM(cost_usd), 0) as total, COUNT(*) as calls
       FROM api_usage WHERE user_id = ? AND ts >= date('now')
     `).get(userId) as { total: number; calls: number };
+    let debitedTodayUsd = 0;
+    try {
+      const debitRow = db.prepare(`
+        SELECT COALESCE(SUM(usd_cost_debited), 0) AS debited
+        FROM nexus_point_debits
+        WHERE user_id = ? AND created_at >= date('now')
+      `).get(userId) as { debited: number };
+      debitedTodayUsd = debitRow.debited || 0;
+    } catch {
+      debitedTodayUsd = 0;
+    }
 
+    const includedRemainingUsd = capUsd > 0 ? Math.max(capUsd - row.total, 0) : 0;
+    const unsettledOverageUsd = Math.max(row.total - capUsd - debitedTodayUsd, 0);
+    const nexusPointsRemainingUsd = Math.max(nexusPoints.usdBalance - unsettledOverageUsd, 0);
+    const nexusPointsRemaining = Math.max(nexusPoints.pointsBalance - usdToPoints(unsettledOverageUsd), 0);
+    const totalRemainingUsd = includedRemainingUsd + nexusPointsRemainingUsd;
     const fraction = capUsd > 0 ? Math.min(row.total / capUsd, 1.0) : 1.0;
-    const over = capUsd <= 0 ? true : row.total >= capUsd;
-    const remainingUsd = capUsd > 0 ? Math.max(capUsd - row.total, 0) : 0;
+    const over = totalRemainingUsd <= 0 && row.total >= capUsd;
+    const remainingUsd = Math.max(totalRemainingUsd, 0);
+    const pointsPurchaseAvailable = plan === 'pro' || plan === 'max' || plan === 'beta';
 
     return {
       over,
@@ -165,11 +150,17 @@ export function getDailyQuotaStatus(userId: number): DailyQuotaStatus {
       limitUsd: capUsd,
       usedUsd: row.total,
       remainingUsd,
+      planDailyLimitUsd: capUsd,
+      includedRemainingUsd,
+      nexusPointsBalance: Math.round(nexusPointsRemaining * 1000) / 1000,
+      nexusPointsRemainingUsd,
+      nexusPointsExpiringSoon: nexusPoints.pointsExpiringSoon,
+      nexusPointsExpiringSoonUsd: nexusPoints.usdExpiringSoon,
+      nextCreditExpiryAt: nexusPoints.nextCreditExpiryAt,
+      totalRemainingUsd,
       resetAt: getQuotaResetAt(),
-      // AI Boost IAP product not yet configured in App Store Connect.
-      // Setting false hides the CTA button in the iOS usage meter.
-      // Re-enable when the product is live: row.total >= capUsd && plan !== 'owner'
-      boostAvailable: false,
+      boostAvailable: pointsPurchaseAvailable,
+      pointsPurchaseAvailable,
     };
   } catch {
     return {
@@ -179,18 +170,81 @@ export function getDailyQuotaStatus(userId: number): DailyQuotaStatus {
       limitUsd: DEFAULT_DAILY_CAP_USD,
       usedUsd: 0,
       remainingUsd: DEFAULT_DAILY_CAP_USD,
+      planDailyLimitUsd: DEFAULT_DAILY_CAP_USD,
+      includedRemainingUsd: DEFAULT_DAILY_CAP_USD,
+      nexusPointsBalance: 0,
+      nexusPointsRemainingUsd: 0,
+      nexusPointsExpiringSoon: 0,
+      nexusPointsExpiringSoonUsd: 0,
+      nextCreditExpiryAt: null,
+      totalRemainingUsd: DEFAULT_DAILY_CAP_USD,
+      pointsPurchaseAvailable: false,
       resetAt: getQuotaResetAt(),
     };
   }
 }
 
-export function buildQuotaExceededMessage(quota: Pick<DailyQuotaStatus, 'plan' | 'limitUsd' | 'resetAt'>): string {
+export function buildQuotaExceededMessage(quota: Pick<DailyQuotaStatus, 'plan' | 'limitUsd' | 'resetAt' | 'pointsPurchaseAvailable'>): string {
   if (quota.plan === 'free' || quota.limitUsd <= 0) {
     return 'AI access is not available on the free plan. Upgrade to Pro or Max to continue.';
   }
 
-  return `Daily AI quota reached for the ${quota.plan} plan. Resets at ${quota.resetAt}.`;
+  const points = quota.pointsPurchaseAvailable ? ' Buy Nexus Points for more AI usage, or wait for the daily reset.' : '';
+  return `Daily AI quota reached for the ${quota.plan} plan. Resets at ${quota.resetAt}.${points}`;
 }
+
+export function buildQuotaUsagePayload(quota: DailyQuotaStatus): Record<string, unknown> {
+  const usageFraction = Math.max(0, Math.min(1, quota.usageFraction));
+  return {
+    plan: quota.plan,
+    resetAt: quota.resetAt,
+    usageLevel: quota.usageLevel,
+    usageFraction,
+    usagePercent: Math.round(usageFraction * 100),
+    isOverLimit: quota.over,
+    boostAvailable: quota.boostAvailable,
+    nexusPointsBalance: quota.nexusPointsBalance,
+    nexusPointsExpiringSoon: quota.nexusPointsExpiringSoon,
+    nextCreditExpiryAt: quota.nextCreditExpiryAt,
+    pointsPurchaseAvailable: quota.pointsPurchaseAvailable,
+    nexusPointPackages: listNexusPointPackages().map((pkg) => ({
+      productId: pkg.productId,
+      label: pkg.label,
+      points: pkg.points,
+    })),
+  };
+}
+
+export function buildQuotaExceededPayload(quota: DailyQuotaStatus): Record<string, unknown> {
+  return buildQuotaUsagePayload(quota);
+}
+
+export type CostGuardrailDecision =
+  | {
+      block: false;
+      status: 200;
+      reason: 'ok';
+      global: ReturnType<typeof checkGlobalCostGuardrail>;
+      quota: DailyQuotaStatus;
+    }
+  | {
+      block: true;
+      status: 429;
+      reason: 'SERVICE_DEGRADED';
+      message: string;
+      global: ReturnType<typeof checkGlobalCostGuardrail>;
+      quota: DailyQuotaStatus;
+      details: Record<string, unknown>;
+    }
+  | {
+      block: true;
+      status: 429;
+      reason: 'daily_limit_exceeded';
+      message: string;
+      global: ReturnType<typeof checkGlobalCostGuardrail>;
+      quota: DailyQuotaStatus;
+      details: Record<string, unknown>;
+    };
 
 /**
  * Check global daily spend against configured limits.
@@ -271,6 +325,48 @@ export function isUserOverDailyCap(userId: number): DailyQuotaStatus {
   return getDailyQuotaStatus(userId);
 }
 
+export function enforceCostGuardrails(userId: number): CostGuardrailDecision {
+  const global = checkGlobalCostGuardrail();
+  const quota = isUserOverDailyCap(userId);
+
+  if (global.exceeded) {
+    return {
+      block: true,
+      status: 429,
+      reason: 'SERVICE_DEGRADED',
+      message: 'AI-backed features are temporarily degraded because the workspace daily AI budget has been reached. Token-zero reads remain available.',
+      global,
+      quota,
+      details: {
+        serviceDegraded: true,
+        ...buildQuotaExceededPayload(quota),
+      },
+    };
+  }
+
+  if (quota.over) {
+    return {
+      block: true,
+      status: 429,
+      reason: 'daily_limit_exceeded',
+      message: buildQuotaExceededMessage(quota),
+      global,
+      quota,
+      details: {
+        ...buildQuotaExceededPayload(quota),
+      },
+    };
+  }
+
+  return {
+    block: false,
+    status: 200,
+    reason: 'ok',
+    global,
+    quota,
+  };
+}
+
 // ── Per-user check+spend mutex ───────────────────────────────────
 //
 // TOCTOU fix (hardening audit follow-up 2026-04-21 pass 2):
@@ -286,16 +382,75 @@ export function isUserOverDailyCap(userId: number): DailyQuotaStatus {
 //   req C: (fresh request)    → over=false (spent=0.004)
 //   req C: writes $0.002 (spent=0.006)  ← exceeds cap $0.005
 //
-// The mutex serializes check+spend PER USER so any pending AI call
-// completes (and writes its usage row) before the next one checks
-// the cap. Across users, execution is still concurrent.
-//
-// Implementation: a Map<userId, Promise> where each new caller
-// chains on the previous tail. Node's single-threaded event loop
-// makes this lock-free; the replace-then-await ordering guarantees
-// no two callers can observe an empty chain concurrently.
+// The mutex serializes check+spend PER USER so any pending AI call completes
+// and writes its usage row before the next one checks the cap. Because PM2 can
+// run multiple Node processes, the lock is SQLite-backed instead of a
+// process-local Map. If SQLite locking is unavailable, callers fail closed.
 
-const userCostLocks = new Map<number, Promise<unknown>>();
+const SQLITE_COST_LOCK_TTL_MS = 120_000;
+const SQLITE_COST_LOCK_WAIT_MS = 30_000;
+const SQLITE_COST_LOCK_POLL_MS = 25;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function tryGetCostLockDb(): ReturnType<typeof getDb> | null {
+  try {
+    return getDb() ?? null;
+  } catch {
+    return null;
+  }
+}
+
+function ensureCostLockTable(db: ReturnType<typeof getDb>): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS cost_guardrail_locks (
+      lock_key TEXT PRIMARY KEY,
+      owner_token TEXT NOT NULL,
+      acquired_at_ms INTEGER NOT NULL,
+      expires_at_ms INTEGER NOT NULL
+    );
+  `);
+}
+
+async function acquireSqliteUserCostLock(userId: number): Promise<(() => void) | null> {
+  const db = tryGetCostLockDb();
+  if (!db) {
+    throw new Error('COST_GUARDRAIL_LOCK_UNAVAILABLE');
+  }
+
+  ensureCostLockTable(db);
+  const lockKey = `user:${userId}`;
+  const ownerToken = crypto.randomUUID();
+  const startedAt = Date.now();
+
+  while (Date.now() - startedAt < SQLITE_COST_LOCK_WAIT_MS) {
+    const nowMs = Date.now();
+    db.prepare('DELETE FROM cost_guardrail_locks WHERE lock_key = ? AND expires_at_ms <= ?')
+      .run(lockKey, nowMs);
+    const result = db.prepare(`
+      INSERT OR IGNORE INTO cost_guardrail_locks (lock_key, owner_token, acquired_at_ms, expires_at_ms)
+      VALUES (?, ?, ?, ?)
+    `).run(lockKey, ownerToken, nowMs, nowMs + SQLITE_COST_LOCK_TTL_MS);
+    if (result.changes > 0) {
+      let released = false;
+      return () => {
+        if (released) return;
+        released = true;
+        try {
+          db.prepare('DELETE FROM cost_guardrail_locks WHERE lock_key = ? AND owner_token = ?')
+            .run(lockKey, ownerToken);
+        } catch (err) {
+          logger.warn({ err, userId }, 'Cost guardrail SQLite lock release failed');
+        }
+      };
+    }
+    await sleep(SQLITE_COST_LOCK_POLL_MS);
+  }
+
+  throw new Error(`COST_GUARDRAIL_LOCK_TIMEOUT: ${lockKey}`);
+}
 
 /**
  * Run `fn` with exclusive per-user ordering against any other
@@ -324,18 +479,11 @@ export async function withUserCostLock<T>(
     // a real user's request.
     return fn();
   }
-  const prior = userCostLocks.get(userId) ?? Promise.resolve();
-  // Swallow prior errors — a previous caller's failure must not chain-
-  // fail the next caller. We care only about ordering, not outcome.
-  const next = prior.catch(() => { /* swallow */ }).then(fn);
-  userCostLocks.set(userId, next);
+  const releaseSqliteLock = await acquireSqliteUserCostLock(userId);
   try {
-    return await next;
+    return await fn();
   } finally {
-    // Clean up the entry only if no one chained onto us while we ran.
-    if (userCostLocks.get(userId) === next) {
-      userCostLocks.delete(userId);
-    }
+    releaseSqliteLock?.();
   }
 }
 
@@ -360,28 +508,14 @@ export async function acquireCostLock(userId: number): Promise<() => void> {
   if (!Number.isFinite(userId) || userId <= 0) {
     return () => { /* no-op for invalid userId */ };
   }
-  let releaseGate: () => void = () => {};
-  const gate = new Promise<void>((resolve) => { releaseGate = resolve; });
-  const prior = userCostLocks.get(userId) ?? Promise.resolve();
-  const next = prior.catch(() => { /* swallow */ }).then(() => gate);
-  userCostLocks.set(userId, next);
-  // Wait for our turn: the prior caller must release before we proceed.
-  await prior.catch(() => { /* swallow */ });
-  let released = false;
-  return () => {
-    if (released) return;
-    released = true;
-    releaseGate();
-    // Clean up if no one chained behind us while we held the lock.
-    if (userCostLocks.get(userId) === next) {
-      userCostLocks.delete(userId);
-    }
-  };
+  const releaseSqliteLock = await acquireSqliteUserCostLock(userId);
+  return releaseSqliteLock ?? (() => { /* unreachable; acquire throws on unavailable DB */ });
 }
 
 /** Test-only: drop every in-flight per-user lock. */
 export function _resetUserCostLocksForTests(): void {
-  userCostLocks.clear();
+  // Kept for backwards-compatible tests; SQLite lock rows are released by
+  // test DB teardown or explicit release functions.
 }
 
 /**
@@ -405,24 +539,37 @@ export function getUserDailySpend(userId: number): { totalUsd: number; messageCo
  * Get today's spend breakdown by provider.
  * Returns: { anthropic: number, openai: number, gemini: number }
  */
-export function getSpendByProvider(date?: string): Record<string, number> {
+export function getSpendByProvider(
+  date?: string,
+  scope: { userId?: number | null; tenantId?: number | null } = {},
+): Record<string, number> {
   try {
     const db = getDb();
     // Use parameterized query to prevent SQL injection
     const filterDate = date || new Date().toISOString().slice(0, 10);
+    const predicates = ['ts >= date(?)'];
+    const params: any[] = [filterDate];
+    if (scope.userId != null) {
+      predicates.push('user_id = ?');
+      params.push(scope.userId);
+    }
+    if (scope.tenantId != null) {
+      predicates.push('tenant_id = ?');
+      params.push(scope.tenantId);
+    }
     const rows = db.prepare(`
       SELECT COALESCE(provider, 'anthropic') as provider, COALESCE(SUM(cost_usd), 0) as total
       FROM api_usage
-      WHERE ts >= date(?)
+      WHERE ${predicates.join(' AND ')}
       GROUP BY provider
-    `).all(filterDate) as { provider: string; total: number }[];
+    `).all(...params) as { provider: string; total: number }[];
 
-    const result: Record<string, number> = { anthropic: 0, openai: 0, gemini: 0 };
+    const result: Record<string, number> = { anthropic: 0, openai: 0, gemini: 0, ollama: 0 };
     for (const row of rows) {
       result[row.provider] = row.total;
     }
     return result;
   } catch {
-    return { anthropic: 0, openai: 0, gemini: 0 };
+    return { anthropic: 0, openai: 0, gemini: 0, ollama: 0 };
   }
 }

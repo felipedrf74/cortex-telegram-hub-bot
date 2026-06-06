@@ -142,14 +142,13 @@ function overlapsRange(startMs: number, endMs: number, windows: BusyWindow[]): b
 /**
  * Result of attempting to schedule a session into a day's free time.
  *
- * `preferredTimeUnavailable: true` means the user's preferred time (and
- * the symmetric ±60/±90/±120/±150-minute candidates) all overlapped with
- * either real provider events (`busyWindows`) or other sessions already
- * placed earlier in this generation pass (`scheduledWindows`). The
- * scheduler walked the day to find ANY free window. If even the day-walk
- * failed, `noAvailableSlot` is true. Callers must not create a calendar
- * event from that fallback marker; they should persist an explicit
- * unscheduled/deferred state instead.
+ * `preferredTimeUnavailable: true` means the exact user-requested time
+ * could not be used. Nearby candidates may still produce a useful slot,
+ * but callers should surface the conflict instead of silently shifting a
+ * 12:00 preference to 12:30/13:00 and claiming the preference was
+ * honored. If even the day-walk failed, `noAvailableSlot` is true.
+ * Callers must not create a calendar event from that fallback marker;
+ * they should persist an explicit unscheduled/deferred state instead.
  */
 export interface ScheduleSessionResult {
   start: Date;
@@ -170,10 +169,12 @@ function tryWindowAt(
   durationMinutes: number,
   busyWindows: BusyWindow[],
   scheduledWindows: BusyWindow[],
+  notBefore?: Date,
 ): { start: Date; end: Date } | null {
   const start = new Date(sessionDate);
   start.setHours(Math.floor(startMinutes / 60), startMinutes % 60, 0, 0);
   const end = new Date(start.getTime() + durationMinutes * 60 * 1000);
+  if (notBefore && start.getTime() < notBefore.getTime()) return null;
   if (overlapsRange(start.getTime(), end.getTime(), busyWindows)) return null;
   if (overlapsRange(start.getTime(), end.getTime(), scheduledWindows)) return null;
   return { start, end };
@@ -185,15 +186,23 @@ export function scheduleSessionWindow(
   preferredTime: string,
   busyWindows: BusyWindow[],
   scheduledWindows: BusyWindow[],
+  options: { notBefore?: Date } = {},
 ): ScheduleSessionResult {
   // Stage 1: try the preferred time + symmetric ±1/±1.5/±2/±2.5 candidates.
-  // This is the friendly fit where the user gets close to their stated
-  // preference even if there's a meeting at the exact preferred slot.
+  // Exact preferred time is the only path that counts as "preference
+  // respected"; nearby fits are useful but must be reported as a shift.
   const candidates = candidateTimesForPreferredTime(preferredTime);
   for (const candidate of candidates) {
     const candidateMinutes = minutesFromTimeString(candidate);
-    const slot = tryWindowAt(sessionDate, candidateMinutes, durationMinutes, busyWindows, scheduledWindows);
-    if (slot) return { ...slot, preferredTimeUnavailable: false };
+    const slot = tryWindowAt(
+      sessionDate,
+      candidateMinutes,
+      durationMinutes,
+      busyWindows,
+      scheduledWindows,
+      options.notBefore,
+    );
+    if (slot) return { ...slot, preferredTimeUnavailable: candidate !== preferredTime };
   }
 
   // Stage 2: nothing in the friendly band is free. Walk the whole day in
@@ -202,7 +211,14 @@ export function scheduleSessionWindow(
   // session on top of an existing meeting because the fallback path
   // ignored busy windows entirely.
   for (let m = DAY_WALK_START_MINUTES; m + durationMinutes <= DAY_WALK_END_MINUTES; m += DAY_WALK_STEP_MINUTES) {
-    const slot = tryWindowAt(sessionDate, m, durationMinutes, busyWindows, scheduledWindows);
+    const slot = tryWindowAt(
+      sessionDate,
+      m,
+      durationMinutes,
+      busyWindows,
+      scheduledWindows,
+      options.notBefore,
+    );
     if (slot) return { ...slot, preferredTimeUnavailable: true };
   }
 

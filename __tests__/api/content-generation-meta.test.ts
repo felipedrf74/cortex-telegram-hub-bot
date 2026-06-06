@@ -12,6 +12,17 @@ describe('content generation metadata', () => {
     vi.setSystemTime(new Date('2026-04-20T12:00:01.000Z'));
 
     expect(buildGenerationMeta({
+      mode: 'draft',
+      startMs: new Date('2026-04-20T12:00:00.000Z').getTime(),
+    })).toEqual({
+      mode: 'draft',
+      cacheHit: false,
+      provider: undefined,
+      durationMs: 1000,
+      researchUsed: false,
+    });
+
+    expect(buildGenerationMeta({
       mode: 'quick',
       startMs: new Date('2026-04-20T12:00:00.000Z').getTime(),
       cacheHit: true,

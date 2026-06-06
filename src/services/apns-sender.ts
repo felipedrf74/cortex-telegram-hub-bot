@@ -55,6 +55,7 @@ import { config } from '../config';
 import { logger } from '../utils/logger';
 import { getDb } from './database';
 import { isValidTenantUserId, recordTenantScopeAnomaly } from './tenant-scope-observability';
+import { recordOperatorAlert } from './operator-alerts';
 
 // ────────────────────────────────────────────────────────────────────
 // Types
@@ -77,6 +78,16 @@ export interface PushNotificationPayload {
   threadId?: string;
   /** Notification category — maps to iOS UNNotificationCategory actions. */
   category?: string;
+  /** APNs interruption level. Keep critical out until entitlement/product policy is explicit. */
+  interruptionLevel?: 'passive' | 'active' | 'time-sensitive';
+  /** APNs collapse id. Decision pushes use decision:<decisionId> so updates replace stale alerts. */
+  collapseId?: string;
+}
+
+export interface PushTokenTarget {
+  token: string;
+  environment: 'sandbox' | 'production';
+  deviceId?: string | null;
 }
 
 export interface SendResult {
@@ -199,7 +210,7 @@ function describeMissingConfig(): string {
  * iOS devices. A user may have multiple devices (iPhone + iPad), so this
  * is plural by design. Each token is sent a push independently.
  */
-export function getPushTokensForUser(userId: number): string[] {
+export function getPushTokensForUser(userId: number): PushTokenTarget[] {
   if (!isValidTenantUserId(userId)) {
     recordTenantScopeAnomaly({
       layer: 'delivery',
@@ -214,15 +225,47 @@ export function getPushTokensForUser(userId: number): string[] {
     const db = getDb();
     const rows = db
       .prepare(
-        `SELECT DISTINCT push_token FROM ios_devices
-         WHERE user_id = ? AND push_token IS NOT NULL AND push_token != ''`,
+        `SELECT DISTINCT
+           d.push_token,
+           d.device_id,
+           COALESCE(ndt.environment, ?) AS environment
+         FROM ios_devices d
+         LEFT JOIN notification_device_tokens ndt
+           ON ndt.user_id = d.user_id
+          AND ndt.device_id = d.device_id
+          AND ndt.revoked_at IS NULL
+         WHERE d.user_id = ?
+           AND d.push_token IS NOT NULL
+           AND d.push_token != ''`,
       )
-      .all(userId) as Array<{ push_token: string }>;
-    return rows.map((r) => r.push_token);
+      .all(config.apns.environment, userId) as Array<{
+        push_token: string;
+        device_id?: string | null;
+        environment?: string | null;
+      }>;
+    return rows.map((r) => ({
+      token: r.push_token,
+      environment: r.environment === 'production' ? 'production' : 'sandbox',
+      deviceId: r.device_id ?? null,
+    }));
   } catch (err) {
     logger.error({ err, userId }, '[apns-sender] Failed to load push tokens for user');
-    return [];
+    throw err;
   }
+}
+
+function recordPushTokenLoadFailure(userId: number, err: unknown): void {
+  recordOperatorAlert({
+    severity: 'warning',
+    source: 'apns',
+    dedupeKey: `APNS_TOKEN_LOAD_FAILED:${userId}`,
+    title: 'APNs token load failed',
+    detail: 'Nexus could not load device push tokens from the database.',
+    owner: 'ops',
+    suspectedArea: 'notifications',
+    userImpact: 'Push notifications may not be delivered for this user until database token reads recover.',
+    metadata: { code: 'APNS_TOKEN_LOAD_FAILED', userId, errorName: err instanceof Error ? err.name : typeof err },
+  });
 }
 
 /**
@@ -337,6 +380,7 @@ async function dispatchOne(
   if (payload.sound !== undefined) apsPayload.sound = payload.sound;
   if (payload.threadId) apsPayload['thread-id'] = payload.threadId;
   if (payload.category) apsPayload.category = payload.category;
+  if (payload.interruptionLevel) apsPayload['interruption-level'] = payload.interruptionLevel;
 
   const body: Record<string, unknown> = { aps: apsPayload };
   if (payload.data) Object.assign(body, payload.data);
@@ -344,7 +388,7 @@ async function dispatchOne(
   const bodyStr = JSON.stringify(body);
 
   return new Promise<SingleSendOutcome>((resolve) => {
-    const req = client.request({
+    const headers: Record<string, string> = {
       ':method': 'POST',
       ':path': `/3/device/${deviceToken}`,
       authorization: `bearer ${jwtToken}`,
@@ -354,7 +398,12 @@ async function dispatchOne(
       'apns-expiration': '0',
       'content-type': 'application/json',
       'content-length': Buffer.byteLength(bodyStr).toString(),
-    });
+    };
+    if (payload.collapseId) {
+      headers['apns-collapse-id'] = payload.collapseId;
+    }
+
+    const req = client.request(headers);
 
     let responseBody = '';
     let statusCode = 0;
@@ -437,11 +486,23 @@ export async function sendPushNotification(
           'See specs/09-APNS-SETUP.md or the deploy handoff doc for setup steps.',
       );
     }
-    const tokens = getPushTokensForUser(userId);
+    let tokens: PushTokenTarget[] = [];
+    try {
+      tokens = getPushTokensForUser(userId);
+    } catch (err) {
+      recordPushTokenLoadFailure(userId, err);
+      return { sent: 0, failed: 0, skipped: 0, retriable: 0, unregistered: [] };
+    }
     return { sent: 0, failed: 0, skipped: tokens.length, retriable: 0, unregistered: [] };
   }
 
-  const tokens = getPushTokensForUser(userId);
+  let tokens: PushTokenTarget[] = [];
+  try {
+    tokens = getPushTokensForUser(userId);
+  } catch (err) {
+    recordPushTokenLoadFailure(userId, err);
+    return { sent: 0, failed: 0, skipped: 0, retriable: 0, unregistered: [] };
+  }
   if (tokens.length === 0) {
     return { sent: 0, failed: 0, skipped: 0, retriable: 0, unregistered: [] };
   }
@@ -457,10 +518,10 @@ export async function sendPushNotification(
   // Dispatch in parallel — APNs handles concurrent HTTP/2 streams natively
   // over a single connection, so there's no benefit to serializing. A user
   // usually has 1-3 devices, so the fan-out is small.
-  const outcomes = await Promise.all(tokens.map(async (token) => {
-    const primary = await dispatchOne(token, payload, config.apns.environment);
+  const outcomes = await Promise.all(tokens.map(async (target) => {
+    const primary = await dispatchOne(target.token, payload, target.environment);
     if (!shouldRetryInAlternateEnvironment(primary)) {
-      return { token, outcome: primary };
+      return { token: target.token, outcome: primary };
     }
 
     const alternateEnvironment = getAlternateEnvironment(primary.environment);
@@ -469,12 +530,12 @@ export async function sendPushNotification(
         configuredEnvironment: primary.environment,
         alternateEnvironment,
         reason: primary.reason,
-        tokenSuffix: token.slice(-8),
+        tokenSuffix: target.token.slice(-8),
       },
       '[apns-sender] Retrying APNs send against alternate environment after token mismatch',
     );
-    const retried = await dispatchOne(token, payload, alternateEnvironment);
-    return { token, outcome: retried };
+    const retried = await dispatchOne(target.token, payload, alternateEnvironment);
+    return { token: target.token, outcome: retried };
   }));
 
   for (const { token, outcome } of outcomes) {

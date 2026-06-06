@@ -1,0 +1,225 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="dark" />
+    <title>Nexus Hub — Local Cockpit</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="/style.css" />
+  </head>
+  <body>
+    <!-- ── Header ───────────────────────────────────────────────────── -->
+    <header class="cockpit-header">
+      <div class="brand">
+        <span class="brand-mark"></span>
+        <h1>Nexus Hub <span class="brand-suffix">/ cockpit</span></h1>
+      </div>
+
+      <div class="container-chips" id="container-chips" aria-live="polite">
+        <span class="chip chip--placeholder">checking…</span>
+      </div>
+
+      <div class="header-right">
+        <div class="spend-pill" id="spend-pill" title="Today's AI spend">
+          <span class="spend-label">today</span>
+          <span class="spend-value" id="spend-value">$—</span>
+          <span class="spend-cap" id="spend-cap">/ $5.00</span>
+        </div>
+      </div>
+    </header>
+
+    <!-- ── Main grid ────────────────────────────────────────────────── -->
+    <main class="cockpit-main">
+      <!-- Primary actions -->
+      <section class="panel">
+        <h2 class="panel-title">
+          <span class="panel-emoji">⚡</span>
+          Primary actions
+        </h2>
+        <div class="action-grid">
+          <button class="action-card action-card--success" data-cmd="boot">
+            <span class="action-emoji">▶️</span>
+            <span class="action-label">Boot sandbox</span>
+            <span class="action-detail">local-up.sh — start both containers</span>
+          </button>
+          <button class="action-card action-card--warning" data-cmd="stop">
+            <span class="action-emoji">🛑</span>
+            <span class="action-label">Stop sandbox</span>
+            <span class="action-detail">local-down.sh — keep data</span>
+          </button>
+          <button class="action-card action-card--info" data-cmd="smoke">
+            <span class="action-emoji">🔬</span>
+            <span class="action-label">Run smoke</span>
+            <span class="action-detail">5-check contract</span>
+          </button>
+          <button class="action-card action-card--info" data-cmd="sim">
+            <span class="action-emoji">📱</span>
+            <span class="action-label">Launch iOS Simulator</span>
+            <span class="action-detail">sim-local.sh — build &amp; install</span>
+          </button>
+          <button class="action-card action-card--warning" data-cmd="sim-stop">
+            <span class="action-emoji">⏻</span>
+            <span class="action-label">Shutdown iOS Simulator</span>
+            <span class="action-detail">sim-down.sh — free simulator memory</span>
+          </button>
+          <button class="action-card action-card--warning" data-cmd="rebuild">
+            <span class="action-emoji">🔥</span>
+            <span class="action-label">Force rebuild</span>
+            <span class="action-detail">no-cache — when Dockerfile changes</span>
+          </button>
+          <button class="action-card action-card--danger" data-cmd="reset" data-confirm="true">
+            <span class="action-emoji">💀</span>
+            <span class="action-label">Reset sandbox</span>
+            <span class="action-detail">drops DB + volumes (requires confirm)</span>
+          </button>
+        </div>
+      </section>
+
+      <!-- Diagnostics -->
+      <section class="panel">
+        <h2 class="panel-title">
+          <span class="panel-emoji">🔧</span>
+          Diagnostics
+        </h2>
+        <div class="action-grid">
+          <button class="action-card action-card--info" data-cmd="logs">
+            <span class="action-emoji">📜</span>
+            <span class="action-label">Tail container logs</span>
+            <span class="action-detail">docker compose logs -f (streaming)</span>
+          </button>
+          <button class="action-card action-card--info" data-open="backend-portal">
+            <span class="action-emoji">🚀</span>
+            <span class="action-label">Open Backend Portal</span>
+            <span class="action-detail">opens http://127.0.0.1:8200</span>
+          </button>
+          <button class="action-card action-card--info" data-cmd="mint-jwt">
+            <span class="action-emoji">🔑</span>
+            <span class="action-label">Mint dev iOS JWT</span>
+            <span class="action-detail">via full-nexus-local-engine.sh</span>
+          </button>
+          <div class="action-card action-card--info action-card--with-input">
+            <span class="action-emoji">🧪</span>
+            <span class="action-label">Focused vitest</span>
+            <input
+              type="text"
+              id="vitest-pattern"
+              class="action-input"
+              placeholder="pattern (e.g. secretary-scheduling-arbitrator)"
+              autocomplete="off"
+              spellcheck="false"
+            />
+            <button class="action-input-btn" data-cmd="vitest-run">Run</button>
+          </div>
+          <button class="action-card action-card--ghost" data-action="show-last-smoke">
+            <span class="action-emoji">📈</span>
+            <span class="action-label">Last smoke result</span>
+            <span class="action-detail" id="last-smoke-summary">no result yet</span>
+          </button>
+        </div>
+      </section>
+
+      <!-- Open helpers -->
+      <section class="panel panel--compact">
+        <h2 class="panel-title">
+          <span class="panel-emoji">📂</span>
+          Open helpers
+        </h2>
+        <div class="icon-row">
+          <button class="icon-btn" data-open="data" title="Open data/ in Finder">
+            <span class="icon-emoji">📁</span>
+            <span class="icon-label">data/</span>
+          </button>
+          <button class="icon-btn" data-open="logs" title="Open logs/ in Finder">
+            <span class="icon-emoji">📁</span>
+            <span class="icon-label">logs/</span>
+          </button>
+          <button class="icon-btn" data-open="workspace-root" title="Open repo root in Finder">
+            <span class="icon-emoji">📁</span>
+            <span class="icon-label">repo</span>
+          </button>
+          <button class="icon-btn" data-open="docker-desktop" title="Open Docker Desktop">
+            <span class="icon-emoji">🐳</span>
+            <span class="icon-label">Docker</span>
+          </button>
+        </div>
+      </section>
+
+      <!-- Git activity -->
+      <section class="panel panel--compact">
+        <h2 class="panel-title">
+          <span class="panel-emoji">🌳</span>
+          Recent activity
+          <span class="git-meta" id="git-meta"></span>
+        </h2>
+        <ul class="git-log" id="git-log">
+          <li class="git-line git-line--placeholder">…</li>
+        </ul>
+      </section>
+    </main>
+
+    <!-- ── Output panel (sticky) ────────────────────────────────────── -->
+    <section class="output-panel" id="output-panel">
+      <div class="output-header">
+        <div class="output-title">
+          <span class="output-emoji">📟</span>
+          <span id="output-title-text">Output</span>
+          <span class="output-status" id="output-status"></span>
+        </div>
+        <div class="output-controls">
+          <button class="output-btn" id="output-stop" disabled>Stop</button>
+          <button class="output-btn" id="output-clear">Clear</button>
+        </div>
+      </div>
+      <pre class="output-body" id="output-body"></pre>
+    </section>
+
+    <!-- ── Confirmation modal ───────────────────────────────────────── -->
+    <div class="modal-backdrop" id="modal-backdrop" hidden>
+      <div class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+        <div class="modal-icon">💀</div>
+        <h3 id="modal-title">Confirm destructive action</h3>
+        <p id="modal-body">
+          This will stop containers, drop named volumes, and delete the
+          local SQLite database. Continue?
+        </p>
+        <div class="modal-actions">
+          <button class="btn-ghost" id="modal-cancel">Cancel</button>
+          <button class="btn-danger" id="modal-confirm">Yes, wipe</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── JWT result modal ─────────────────────────────────────────── -->
+    <div class="modal-backdrop" id="jwt-modal-backdrop" hidden>
+      <div class="modal modal--wide" role="dialog" aria-modal="true">
+        <div class="modal-icon">🔑</div>
+        <h3>Dev iOS JWT</h3>
+        <p>Paste this into HTTPie / Postman / the iOS app for testing.</p>
+        <textarea class="jwt-text" id="jwt-text" readonly></textarea>
+        <div class="modal-actions">
+          <button class="btn-ghost" id="jwt-close">Close</button>
+          <button class="btn-primary" id="jwt-copy">Copy</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── Footer ───────────────────────────────────────────────────── -->
+    <footer class="cockpit-footer">
+      <span>cockpit v<span id="footer-version">—</span></span>
+      <span>•</span>
+      <span><span id="footer-host">—</span></span>
+      <span>•</span>
+      <span>started <span id="footer-started">—</span></span>
+      <span>•</span>
+      <a href="https://github.com/felipedrf74/cortex-telegram-hub-bot/blob/main/docs/local-dev/README.md" target="_blank" rel="noopener">runbook</a>
+    </footer>
+
+    <script src="/app.js"></script>
+  </body>
+</html>

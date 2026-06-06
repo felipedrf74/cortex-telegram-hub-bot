@@ -18,11 +18,17 @@ const mocks = vi.hoisted(() => ({
   findOwnershipsForPlan: vi.fn(),
   markCalendarOwnershipDeleted: vi.fn(),
   getTrainingCalendarEventOwners: vi.fn(),
+  cancelTrainingPlanCrossSkillDependents: vi.fn(),
+  // 2026-05-25 Bug #1 fix — buildCalendarDeletionTargetsForPlan now
+  // also reads Secretary-owned events from secretary_agenda_items.
+  // Test default: no extra events. Specific tests can override.
+  findSecretaryAgendaCalendarEventsForPlan: vi.fn(() => []),
 }));
 
 vi.mock('../../src/services/unified-calendar', () => ({
   deleteEvent: mocks.deleteEvent,
   getEvents: mocks.getEvents,
+  getEventsForSources: mocks.getEvents,
 }));
 
 vi.mock('../../src/services/training-plans', () => ({
@@ -53,6 +59,11 @@ vi.mock('../../src/services/training-plan-lifecycle', () => ({
 
 vi.mock('../../src/services/training-calendar-scope', () => ({
   getTrainingCalendarEventOwners: mocks.getTrainingCalendarEventOwners,
+}));
+
+vi.mock('../../src/services/training-plan-cancellation-cascade', () => ({
+  cancelTrainingPlanCrossSkillDependents: mocks.cancelTrainingPlanCrossSkillDependents,
+  findSecretaryAgendaCalendarEventsForPlan: mocks.findSecretaryAgendaCalendarEventsForPlan,
 }));
 
 import { cancelTrainingPlanForUser } from '../../src/api/routes/training-plan-cancellation';
@@ -101,6 +112,11 @@ describe('training-plan-cancellation (hard delete)', () => {
     mocks.getSessionsForWeek.mockReturnValue([]);
     mocks.findOwnershipsForPlan.mockReturnValue([]);
     mocks.getTrainingCalendarEventOwners.mockReturnValue([]);
+    mocks.cancelTrainingPlanCrossSkillDependents.mockReturnValue({
+      canceledAgendaItems: 0,
+      staleMemories: 0,
+      signalId: null,
+    });
     mocks.deletePlanHard.mockReturnValue({
       ok: true,
       removedPlans: 1,
@@ -151,6 +167,16 @@ describe('training-plan-cancellation (hard delete)', () => {
     expect(mocks.deleteEvent).toHaveBeenCalledWith('evt-completed', 'outlook', 12);
     expect(mocks.deleteEvent).toHaveBeenCalledWith('evt-planned', 'google', 12);
     expect(mocks.deletePlanHard).toHaveBeenCalledWith(44, 12);
+    expect(mocks.cancelTrainingPlanCrossSkillDependents).toHaveBeenCalledWith({
+      userId: 12,
+      tenantId: 12,
+      planId: 44,
+      planVersion: 1,
+      sessionIds: [321, 322, 323],
+      reason: 'training_plan_canceled',
+    });
+    expect(mocks.deletePlanHard.mock.invocationCallOrder[0])
+      .toBeLessThan(mocks.cancelTrainingPlanCrossSkillDependents.mock.invocationCallOrder[0]);
     expect(mocks.markCalendarOwnershipDeleted).toHaveBeenCalledWith({
       eventId: 'evt-completed',
       source: 'outlook',
@@ -292,6 +318,48 @@ describe('training-plan-cancellation (hard delete)', () => {
       userId: 12,
       planId: 72,
     });
+  });
+
+  it('threads explicit tenant scope through ownership and hard delete', async () => {
+    mocks.getActivePlan.mockReturnValue({ id: 45, user_id: 12, tenant_id: 34 });
+    mocks.deletePlanHard.mockReturnValue({
+      ok: true,
+      removedPlans: 1,
+      removedWeeks: 0,
+      removedSessions: 0,
+      removedCompletions: 0,
+    });
+
+    const result = await cancelTrainingPlanForUser(12, undefined, { tenantId: 34 });
+
+    expect(result.status).toBe('cancelled');
+    expect(mocks.deletePlanHard).toHaveBeenCalledWith(45, 12, 34);
+    expect(mocks.cancelTrainingPlanCrossSkillDependents).toHaveBeenCalledWith(expect.objectContaining({
+      userId: 12,
+      tenantId: 34,
+      planId: 45,
+    }));
+  });
+
+  it('routes requested plans from another tenant through the same no-op path', async () => {
+    mocks.getPlanById.mockReturnValue({ id: 46, user_id: 12, tenant_id: 99 });
+
+    const result = await cancelTrainingPlanForUser(12, 46, { tenantId: 34 });
+
+    expect(result).toEqual({
+      status: 'not_found',
+      data: {
+        cancelled: false,
+        removedEvents: 0,
+        removedSessions: 0,
+        removedWeeks: 0,
+        removedCompletions: 0,
+        removedPlans: 0,
+        totalSessions: 0,
+        message: 'No active training plan to cancel.',
+      },
+    });
+    expect(mocks.deletePlanHard).not.toHaveBeenCalled();
   });
 
   it('does not delete a title-matched calendar event owned by another active training plan', async () => {
@@ -439,6 +507,116 @@ describe('training-plan-cancellation (hard delete)', () => {
     expect(mocks.deleteEvent).toHaveBeenCalledWith('orphan-rich', 'google', 12);
   });
 
+  it('deletes duplicate events identified only by Secretary training source markers', async () => {
+    const session = {
+      id: 970,
+      day_of_week: 'Tuesday',
+      session_type: 'gym',
+      title: 'Runner Upper Body Strength A',
+      duration_minutes: 48,
+      status: 'pending',
+      calendar_event_id: null,
+      calendar_source: null,
+    };
+    mocks.getActivePlan.mockReturnValue({
+      id: 39,
+      user_id: 12,
+      start_date: '2026-05-25T00:00:00.000Z',
+    });
+    mocks.getWeeksForPlan.mockReturnValue([{ id: 3901, week_number: 1 }]);
+    mocks.getSessionsForWeek.mockReturnValue([session]);
+    mocks.getEvents.mockResolvedValue([
+      {
+        id: 'secretary-training-duplicate',
+        source: 'google',
+        summary: 'Runner Upper Body Strength A',
+        start: '2026-05-26T12:00:00.000Z',
+        end: '2026-05-26T12:48:00.000Z',
+        description: [
+          'NEXUS_SECRETARY_AGENDA_ITEM:sec_agenda_e2844d0705b15920ff14ee2d',
+          'NEXUS_SECRETARY_SOURCE_INTENT:training:39:1:970',
+          'NEXUS_SECRETARY_SOURCE_SKILL:training',
+          'NEXUS_SECRETARY_SOURCE_ENTITY:training_session:970',
+          'NEXUS_SECRETARY_VERSION:1',
+        ].join('\n'),
+      },
+    ]);
+    mocks.deletePlanHard.mockReturnValue({
+      ok: true,
+      removedPlans: 1,
+      removedWeeks: 1,
+      removedSessions: 1,
+      removedCompletions: 0,
+    });
+
+    const result = await cancelTrainingPlanForUser(12);
+
+    expect(result.status).toBe('cancelled');
+    if (result.status === 'cancelled') {
+      expect(result.data.removedEvents).toBe(1);
+    }
+    expect(mocks.deleteEvent).toHaveBeenCalledWith('secretary-training-duplicate', 'google', 12);
+  });
+
+  it('deletes matching generated training events from both Google and Outlook with provider-specific ids', async () => {
+    const session = {
+      id: 976,
+      day_of_week: 'Tuesday',
+      session_type: 'gym',
+      title: 'Runner Upper Body Strength A',
+      duration_minutes: 48,
+      status: 'pending',
+      calendar_event_id: null,
+      calendar_source: null,
+    };
+    mocks.getActivePlan.mockReturnValue({
+      id: 39,
+      user_id: 12,
+      start_date: '2026-05-25T00:00:00.000Z',
+    });
+    mocks.getWeeksForPlan.mockReturnValue([{ id: 3901, week_number: 1 }]);
+    mocks.getSessionsForWeek.mockReturnValue([session]);
+    mocks.getEvents.mockImplementation(async (_start: string, _end: string, _userId: number, sources: string[]) => {
+      if (sources.includes('google')) {
+        return [{
+          id: 'google-training-duplicate',
+          source: 'google',
+          summary: '💪 Runner Upper Body Strength A (48min)',
+          start: '2026-05-26T12:00:00.000Z',
+          end: '2026-05-26T12:48:00.000Z',
+          description: markerDescription(39, 1, 976, session),
+        }];
+      }
+      if (sources.includes('outlook')) {
+        return [{
+          id: 'outlook-training-duplicate',
+          source: 'outlook',
+          summary: '💪 Runner Upper Body Strength A (48min)',
+          start: '2026-05-26T12:00:00.000Z',
+          end: '2026-05-26T12:48:00.000Z',
+          description: markerDescription(39, 1, 976, session),
+        }];
+      }
+      return [];
+    });
+    mocks.deletePlanHard.mockReturnValue({
+      ok: true,
+      removedPlans: 1,
+      removedWeeks: 1,
+      removedSessions: 1,
+      removedCompletions: 0,
+    });
+
+    const result = await cancelTrainingPlanForUser(12);
+
+    expect(result.status).toBe('cancelled');
+    if (result.status === 'cancelled') {
+      expect(result.data.removedEvents).toBe(2);
+    }
+    expect(mocks.deleteEvent).toHaveBeenCalledWith('google-training-duplicate', 'google', 12);
+    expect(mocks.deleteEvent).toHaveBeenCalledWith('outlook-training-duplicate', 'outlook', 12);
+  });
+
   it('cancels every active plan when no specific plan id is provided', async () => {
     mocks.getActivePlans.mockReturnValue([
       { id: 70, user_id: 12, start_date: '2026-04-20T00:00:00.000Z' },
@@ -484,13 +662,38 @@ describe('training-plan-cancellation (hard delete)', () => {
     expect(mocks.deletePlanHard).toHaveBeenCalledWith(71, 12);
   });
 
-  it('uses requested plan id when provided and rejects cross-user cancellation', async () => {
+  it('routes foreign requested plan ids through the same no-op path as missing ids', async () => {
     mocks.getPlanById.mockReturnValue({ id: 99, user_id: 88 });
 
-    const result = await cancelTrainingPlanForUser(12, 99);
+    const foreign = await cancelTrainingPlanForUser(12, 99);
+    vi.clearAllMocks();
+    mocks.deleteEvent.mockResolvedValue({ ok: true });
+    mocks.getEvents.mockResolvedValue([]);
+    mocks.getActivePlan.mockReturnValue(null);
+    mocks.getActivePlans.mockReturnValue([]);
+    mocks.getPlanById.mockReturnValue(null);
+    mocks.getWeeksForPlan.mockReturnValue([]);
+    mocks.getSessionsForWeek.mockReturnValue([]);
+    mocks.findOwnershipsForPlan.mockReturnValue([]);
+    mocks.getTrainingCalendarEventOwners.mockReturnValue([]);
+    mocks.findSecretaryAgendaCalendarEventsForPlan.mockReturnValue([]);
 
-    expect(result).toEqual({ status: 'forbidden' });
-    expect(mocks.getPlanById).toHaveBeenCalledWith(99);
+    const missing = await cancelTrainingPlanForUser(12, 9999);
+
+    expect(foreign).toEqual(missing);
+    expect(foreign).toEqual({
+      status: 'not_found',
+      data: {
+        cancelled: false,
+        removedEvents: 0,
+        removedSessions: 0,
+        removedWeeks: 0,
+        removedCompletions: 0,
+        removedPlans: 0,
+        totalSessions: 0,
+        message: 'No active training plan to cancel.',
+      },
+    });
     expect(mocks.getActivePlan).not.toHaveBeenCalled();
     expect(mocks.deletePlanHard).not.toHaveBeenCalled();
     expect(mocks.deleteEvent).not.toHaveBeenCalled();
@@ -513,6 +716,35 @@ describe('training-plan-cancellation (hard delete)', () => {
       },
     });
     expect(mocks.deletePlanHard).not.toHaveBeenCalled();
+  });
+
+  it('cleans Nexus-marked orphan calendar events even when no active plan remains', async () => {
+    mocks.getEvents.mockImplementation(async (_start: string, _end: string, _userId: number, sources: string[]) => {
+      if (!sources.includes('google')) return [];
+      return [{
+        id: 'post-cancel-orphan',
+        source: 'google',
+        summary: '💪 Strength + Core Support (40min)',
+        start: '2026-05-26T07:00:00.000Z',
+        end: '2026-05-26T07:40:00.000Z',
+        description: appendTrainingIdentityMarker('Training session', {
+          planId: 88,
+          planVersion: 1,
+          sessionId: 8801,
+          sessionIdentityKey: 'plan:88|week:1|day:tuesday|type:gym|slot:1',
+          sessionShapeHash: 'shape-post-cancel',
+        }),
+      }];
+    });
+
+    const result = await cancelTrainingPlanForUser(12);
+
+    expect(result.status).toBe('not_found');
+    if (result.status === 'not_found') {
+      expect(result.data.removedEvents).toBe(1);
+      expect(result.data.message).toContain('1 scheduled workout removed');
+    }
+    expect(mocks.deleteEvent).toHaveBeenCalledWith('post-cancel-orphan', 'google', 12);
   });
 
   it('proceeds with the local hard delete when one calendar deletion fails', async () => {
@@ -542,6 +774,123 @@ describe('training-plan-cancellation (hard delete)', () => {
       expect(result.data.message).toBe('Plan cancelled. 1 scheduled workout removed from the calendar; 2 sessions cleared from the plan.');
     }
     expect(mocks.deletePlanHard).toHaveBeenCalledWith(45, 12);
+  });
+
+  it('retries provider rate limits before marking plan-owned events orphaned', async () => {
+    mocks.getActivePlan.mockReturnValue({ id: 146, user_id: 12 });
+    mocks.getWeeksForPlan.mockReturnValue([{ id: 8201 }]);
+    mocks.getSessionsForWeek.mockReturnValue([
+      { id: 1521, status: 'pending', calendar_event_id: 'evt-rate-limited', calendar_source: 'google' },
+    ]);
+    mocks.deleteEvent
+      .mockRejectedValueOnce(Object.assign(new Error('Rate Limit Exceeded'), {
+        status: 403,
+        code: 403,
+        reason: 'userRateLimitExceeded',
+        errors: [{ reason: 'userRateLimitExceeded', message: 'Rate Limit Exceeded' }],
+      }))
+      .mockResolvedValueOnce({ ok: true });
+    mocks.deletePlanHard.mockReturnValue({
+      ok: true,
+      removedPlans: 1,
+      removedWeeks: 1,
+      removedSessions: 1,
+      removedCompletions: 0,
+    });
+
+    const result = await cancelTrainingPlanForUser(12);
+
+    expect(result.status).toBe('cancelled');
+    if (result.status === 'cancelled') {
+      expect(result.data.removedEvents).toBe(1);
+      expect(result.data.message).toBe('Plan cancelled. 1 scheduled workout removed from the calendar; 1 session cleared from the plan.');
+    }
+    expect(mocks.deleteEvent).toHaveBeenCalledTimes(2);
+    expect(mocks.markCalendarOwnershipDeleted).toHaveBeenCalledWith({
+      eventId: 'evt-rate-limited',
+      source: 'google',
+      reason: 'plan_cancelled',
+      status: 'deleted',
+      userId: 12,
+      planId: 146,
+    });
+    expect(mocks.deletePlanHard).toHaveBeenCalledWith(146, 12);
+  });
+
+  it('serializes large provider deletion batches to avoid calendar rate-limit storms', async () => {
+    const sessions = Array.from({ length: 21 }, (_, idx) => ({
+      id: 9_000 + idx,
+      status: 'pending',
+      calendar_event_id: `evt-large-${idx}`,
+      calendar_source: 'google',
+    }));
+    let activeDeletes = 0;
+    let maxActiveDeletes = 0;
+
+    mocks.getActivePlan.mockReturnValue({ id: 147, user_id: 12 });
+    mocks.getWeeksForPlan.mockReturnValue([{ id: 8301 }]);
+    mocks.getSessionsForWeek.mockReturnValue(sessions);
+    mocks.deleteEvent.mockImplementation(async () => {
+      activeDeletes += 1;
+      maxActiveDeletes = Math.max(maxActiveDeletes, activeDeletes);
+      await Promise.resolve();
+      activeDeletes -= 1;
+      return { ok: true };
+    });
+    mocks.deletePlanHard.mockReturnValue({
+      ok: true,
+      removedPlans: 1,
+      removedWeeks: 1,
+      removedSessions: sessions.length,
+      removedCompletions: 0,
+    });
+
+    const result = await cancelTrainingPlanForUser(12);
+
+    expect(result.status).toBe('cancelled');
+    if (result.status === 'cancelled') {
+      expect(result.data.removedEvents).toBe(21);
+      expect(result.data.removedSessions).toBe(21);
+    }
+    expect(mocks.deleteEvent).toHaveBeenCalledTimes(21);
+    expect(maxActiveDeletes).toBe(1);
+  });
+
+  it.each([
+    ['status 404', { status: 404, message: 'Not Found' }],
+    ['status 410', { status: 410, message: 'Gone' }],
+    ['provider code', { code: 'event_not_found' }],
+    ['message only', new Error('Event not found')],
+  ])('treats provider %s during cancellation as already deleted upstream', async (_label, providerError) => {
+    mocks.getActivePlan.mockReturnValue({ id: 145, user_id: 12 });
+    mocks.getWeeksForPlan.mockReturnValue([{ id: 8101 }]);
+    mocks.getSessionsForWeek.mockReturnValue([
+      { id: 1421, status: 'pending', calendar_event_id: 'evt-gone', calendar_source: 'google' },
+    ]);
+    mocks.deleteEvent.mockRejectedValueOnce(providerError);
+    mocks.deletePlanHard.mockReturnValue({
+      ok: true,
+      removedPlans: 1,
+      removedWeeks: 1,
+      removedSessions: 1,
+      removedCompletions: 0,
+    });
+
+    const result = await cancelTrainingPlanForUser(12);
+
+    expect(result.status).toBe('cancelled');
+    if (result.status === 'cancelled') {
+      expect(result.data.removedEvents).toBe(1);
+      expect(result.data.message).toBe('Plan cancelled. 1 scheduled workout removed from the calendar; 1 session cleared from the plan.');
+    }
+    expect(mocks.markCalendarOwnershipDeleted).toHaveBeenCalledWith({
+      eventId: 'evt-gone',
+      source: 'google',
+      reason: 'plan_cancelled_event_gone_upstream',
+      status: 'deleted',
+      userId: 12,
+      planId: 145,
+    });
   });
 
   it('does not call calendar deletion for an invalid stored provider source but still hard-deletes', async () => {
@@ -595,5 +944,49 @@ describe('training-plan-cancellation (hard delete)', () => {
     expect(mocks.deleteReportsByType).not.toHaveBeenCalled();
     expect(mocks.clearStoredPlansForAthlete).not.toHaveBeenCalled();
     expect(mocks.clearLastCoachState).not.toHaveBeenCalled();
+  });
+
+  it('serializes concurrent cancellation so provider events are not deleted twice', async () => {
+    let planDeleted = false;
+    let resolveDeleteEvent!: (value: { ok: true }) => void;
+    const firstDeleteEvent = new Promise<{ ok: true }>((resolve) => {
+      resolveDeleteEvent = resolve;
+    });
+
+    mocks.getActivePlan.mockImplementation(() => (planDeleted ? null : { id: 51, user_id: 12 }));
+    mocks.getWeeksForPlan.mockReturnValue([{ id: 5101 }]);
+    mocks.getSessionsForWeek.mockReturnValue([
+      { id: 511, status: 'pending', calendar_event_id: 'evt-race', calendar_source: 'google' },
+    ]);
+    mocks.deleteEvent.mockReturnValueOnce(firstDeleteEvent);
+    mocks.deletePlanHard.mockImplementation(() => {
+      planDeleted = true;
+      return {
+        ok: true,
+        removedPlans: 1,
+        removedWeeks: 1,
+        removedSessions: 1,
+        removedCompletions: 0,
+      };
+    });
+
+    const first = cancelTrainingPlanForUser(12);
+    for (let i = 0; i < 20; i += 1) await Promise.resolve();
+    expect(mocks.deleteEvent).toHaveBeenCalledTimes(1);
+
+    const second = cancelTrainingPlanForUser(12);
+    for (let i = 0; i < 20; i += 1) await Promise.resolve();
+    expect(mocks.getActivePlan).toHaveBeenCalledTimes(1);
+    expect(mocks.deleteEvent).toHaveBeenCalledTimes(1);
+
+    resolveDeleteEvent({ ok: true });
+    const [firstResult, secondResult] = await Promise.all([first, second]);
+
+    expect(firstResult.status).toBe('cancelled');
+    expect(secondResult.status).toBe('not_found');
+    expect(mocks.getActivePlan).toHaveBeenCalledTimes(2);
+    expect(mocks.deleteEvent).toHaveBeenCalledTimes(1);
+    expect(mocks.deleteEvent).toHaveBeenCalledWith('evt-race', 'google', 12);
+    expect(mocks.deletePlanHard).toHaveBeenCalledTimes(1);
   });
 });

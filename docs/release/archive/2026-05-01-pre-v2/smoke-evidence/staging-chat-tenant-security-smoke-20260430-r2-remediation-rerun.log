@@ -1,0 +1,138 @@
+Chat tenant smoke base URL: http://127.0.0.1:8201
+PASS: Product health — local iOS API reachable
+PASS: Local test tenants seeded — Tenant A/User A=12; Tenant B/User B=13
+PASS: Chat messages accepted for both local tenants — both users can use local Chat
+PASS: User A cannot see Tenant B conversations — User A history excludes Tenant B marker
+PASS: User B cannot see Tenant A conversations — User B history excludes Tenant A marker
+PASS: User A cannot retrieve Tenant B memory through active tenant scope — active Tenant A memory excludes Tenant B rows
+PASS: Prompt construction excludes Tenant B memory — prompt context stayed inside active tenant
+PASS: Vague follow-up after tenant switch asks for clarification — tenant-boundary weak signal emitted without leaking prior tenant context
+{"level":30,"time":1777530800670,"pid":3299463,"hostname":"ServerDominguez","path":"/home/dominguez/telegram-hub-bot-staging/data/bot.db","msg":"SQLiteStorage opened"}
+{"level":40,"time":1777530800671,"pid":3299463,"hostname":"ServerDominguez","prefix":"008","files":["008_api_cache.sql","008_email_log.sql"],"msg":"Migration prefix collision: 2 files share prefix 008. Apply order is locale-dependent. Future migrations should use unique prefixes (e.g. 008a_, 008b_) or timestamp prefixes (YYYYMMDD_)."}
+{"level":40,"time":1777530800671,"pid":3299463,"hostname":"ServerDominguez","prefix":"009","files":["009_api_usage_provider.sql","009_job_history.sql"],"msg":"Migration prefix collision: 2 files share prefix 009. Apply order is locale-dependent. Future migrations should use unique prefixes (e.g. 009a_, 009b_) or timestamp prefixes (YYYYMMDD_)."}
+{"level":40,"time":1777530800671,"pid":3299463,"hostname":"ServerDominguez","prefix":"022","files":["022_finance_tables.sql","022_webhook_events.sql"],"msg":"Migration prefix collision: 2 files share prefix 022. Apply order is locale-dependent. Future migrations should use unique prefixes (e.g. 022a_, 022b_) or timestamp prefixes (YYYYMMDD_)."}
+{"level":40,"time":1777530800671,"pid":3299463,"hostname":"ServerDominguez","prefix":"023","files":["023_fitness_training_plans.sql","023_onboarding.sql"],"msg":"Migration prefix collision: 2 files share prefix 023. Apply order is locale-dependent. Future migrations should use unique prefixes (e.g. 023a_, 023b_) or timestamp prefixes (YYYYMMDD_)."}
+{"level":40,"time":1777530800671,"pid":3299463,"hostname":"ServerDominguez","prefix":"024","files":["024_cooking_tables.sql","024_usage_metering.sql"],"msg":"Migration prefix collision: 2 files share prefix 024. Apply order is locale-dependent. Future migrations should use unique prefixes (e.g. 024a_, 024b_) or timestamp prefixes (YYYYMMDD_)."}
+{"level":30,"time":1777530800672,"pid":3299463,"hostname":"ServerDominguez","count":0,"msg":"Loaded persisted settings from DB"}
+{"level":30,"time":1777530800674,"pid":3299463,"hostname":"ServerDominguez","scanned":2,"encryptedRows":0,"alreadyEncrypted":2,"msg":"OAuth migration: all rows already encrypted"}
+{"level":30,"time":1777530800675,"pid":3299463,"hostname":"ServerDominguez","msg":"Default skills seeded"}
+{"level":30,"time":1777530800676,"pid":3299463,"hostname":"ServerDominguez","path":"/home/dominguez/telegram-hub-bot-staging/data/bot.db","msg":"Database initialized"}
+{"level":30,"time":1777530801129,"pid":3299463,"hostname":"ServerDominguez","userId":12,"start":"2026-05-01T07:00:00.000Z","end":"2026-05-01T08:30:00.000Z","readinessScore":60,"trainingLoad":"unknown","calendarLoad":"light","confidence":"medium","msg":"Focus block recommendation generated"}
+{"level":30,"time":1777530801135,"pid":3299463,"hostname":"ServerDominguez","userId":12,"start":"2026-04-30T07:00:00.000Z","end":"2026-04-30T09:00:00.000Z","readinessScore":60,"trainingLoad":"unknown","calendarLoad":"light","confidence":"medium","msg":"Focus block recommendation generated"}
+{"level":30,"time":1777530801135,"pid":3299463,"hostname":"ServerDominguez","userId":12,"date":"2026-04-30","confidence":"medium","trainingLoad":"rest","calendarLoad":"light","readinessScore":60,"msg":"Content filming recommendation generated"}
+PASS: Same-user active tenant switch fails closed — active-tenant override was denied before any alternate-tenant history was exposed
+PASS: Canonical active tenant header remains allowed — canonical tenant header returned User A history without alternate tenant markers
+PASS: Prompt injection cannot reveal another tenant — prompt-injection response did not disclose Tenant B markers
+PASS: User A cannot access Tenant B attachments — attachment path stayed authenticated/scoped and disclosed no Tenant B marker
+PASS: User A cannot trigger tools on Tenant B resources — foreign scoped callback denied with 410
+PARTIAL: Admin/support diagnostics smoke — PORTAL_ADMIN_TOKEN not provided to smoke script
+PASS: Multi-tenant same-user runtime — true workspace tenant switching is not enabled; explicit active-tenant overrides now fail closed instead of being silently ignored
+PARTIAL: Provider fallback tenant safety — covered by focused local unit test command; no real provider fallback call was made in this smoke
+
+SUMMARY
+{
+  "verdict": "PASS WITH CONDITIONS",
+  "runId": "chat-tenant-mol3xnpf",
+  "baseUrl": "http://127.0.0.1:8201",
+  "userA": {
+    "userId": 12,
+    "tenantId": 12
+  },
+  "userB": {
+    "userId": 13,
+    "tenantId": 13
+  },
+  "counts": {
+    "pass": 14,
+    "partial": 2,
+    "fail": 0
+  },
+  "results": [
+    {
+      "name": "Product health",
+      "status": "PASS",
+      "note": "local iOS API reachable"
+    },
+    {
+      "name": "Local test tenants seeded",
+      "status": "PASS",
+      "note": "Tenant A/User A=12; Tenant B/User B=13"
+    },
+    {
+      "name": "Chat messages accepted for both local tenants",
+      "status": "PASS",
+      "note": "both users can use local Chat",
+      "userAStatus": 200,
+      "userBStatus": 200
+    },
+    {
+      "name": "User A cannot see Tenant B conversations",
+      "status": "PASS",
+      "note": "User A history excludes Tenant B marker"
+    },
+    {
+      "name": "User B cannot see Tenant A conversations",
+      "status": "PASS",
+      "note": "User B history excludes Tenant A marker"
+    },
+    {
+      "name": "User A cannot retrieve Tenant B memory through active tenant scope",
+      "status": "PASS",
+      "note": "active Tenant A memory excludes Tenant B rows"
+    },
+    {
+      "name": "Prompt construction excludes Tenant B memory",
+      "status": "PASS",
+      "note": "prompt context stayed inside active tenant"
+    },
+    {
+      "name": "Vague follow-up after tenant switch asks for clarification",
+      "status": "PASS",
+      "note": "tenant-boundary weak signal emitted without leaking prior tenant context"
+    },
+    {
+      "name": "Same-user active tenant switch fails closed",
+      "status": "PASS",
+      "note": "active-tenant override was denied before any alternate-tenant history was exposed",
+      "httpStatus": 403
+    },
+    {
+      "name": "Canonical active tenant header remains allowed",
+      "status": "PASS",
+      "note": "canonical tenant header returned User A history without alternate tenant markers",
+      "httpStatus": 200
+    },
+    {
+      "name": "Prompt injection cannot reveal another tenant",
+      "status": "PASS",
+      "note": "prompt-injection response did not disclose Tenant B markers",
+      "httpStatus": 200
+    },
+    {
+      "name": "User A cannot access Tenant B attachments",
+      "status": "PASS",
+      "note": "attachment path stayed authenticated/scoped and disclosed no Tenant B marker",
+      "httpStatus": 200
+    },
+    {
+      "name": "User A cannot trigger tools on Tenant B resources",
+      "status": "PASS",
+      "note": "foreign scoped callback denied with 410"
+    },
+    {
+      "name": "Admin/support diagnostics smoke",
+      "status": "PARTIAL",
+      "note": "PORTAL_ADMIN_TOKEN not provided to smoke script"
+    },
+    {
+      "name": "Multi-tenant same-user runtime",
+      "status": "PASS",
+      "note": "true workspace tenant switching is not enabled; explicit active-tenant overrides now fail closed instead of being silently ignored"
+    },
+    {
+      "name": "Provider fallback tenant safety",
+      "status": "PARTIAL",
+      "note": "covered by focused local unit test command; no real provider fallback call was made in this smoke"
+    }
+  ]
+}

@@ -9,29 +9,30 @@ import time
 import logging
 from models.requests import GapsRequest, GapsResponse
 from services.claude_client import ask_claude_json
+from services.creative.operation_prompt_compilers import OperationPromptInput, build_operation_metadata, compile_operation_prompt
 
 logger = logging.getLogger("content-engine.gaps")
 
 # Seed topics per niche to scan for gaps
 NICHE_SEED_TOPICS = {
     "fitness": [
-        "treino híbrido para iniciantes",
-        "dieta carnívora resultados",
-        "corrida e musculação juntos",
-        "treino de força para corredores",
-        "atleta híbrido rotina",
-        "carnívoro e performance esportiva",
+        "beginner hybrid training plan",
+        "strength training for runners",
+        "running and gym schedule",
+        "recovery routine for endurance athletes",
+        "meal prep for active weeks",
+        "training consistency for busy people",
     ],
     "commentary": [
-        "polêmica influencer brasil",
-        "opinião impopular cultura",
-        "reaction tendências brasil",
-        "cancelamento redes sociais",
-        "debate político análise",
+        "creator economy trends",
+        "internet culture debate",
+        "reaction to platform changes",
+        "audience trust in creators",
+        "media trend analysis",
     ],
 }
 
-SYSTEM_PROMPT = """You are a content gap analysis expert for PT-BR YouTube/Instagram.
+SYSTEM_PROMPT = """You are a content gap analysis expert for YouTube/Instagram.
 A "content gap" is a topic with HIGH search demand but LOW content supply.
 
 GAP TYPES:
@@ -45,10 +46,10 @@ For each gap, provide:
 - search_demand: "high" | "medium" | "low"
 - existing_content_quality: "none" | "low" | "medium" | "high"
 - opportunity_score: 1-10
-- suggested_angle: how Felipe should approach this differently
+- suggested_angle: how the authenticated creator should approach this differently
 - suggested_title: a title for this content
 
-Return ONLY a JSON array. Language: PT-BR."""
+Return ONLY a JSON array. Match the language implied by the requested niche/topics; do not assume a default creator identity, worldview, country, or dietary pattern."""
 
 
 async def find(req: GapsRequest, orchestrator) -> GapsResponse:
@@ -75,29 +76,42 @@ async def find(req: GapsRequest, orchestrator) -> GapsResponse:
         for s in research_summaries
     )
 
-    prompt = f"""Analyze these content research results for the "{req.niche}" niche and identify content gaps:
-
-{context}
-
-Based on this data and your knowledge of PT-BR content landscape,
-identify the top {req.max_gaps} content gaps — topics where there's demand but insufficient supply.
-
-Return JSON array of gap objects with: topic, gap_type, search_demand, existing_content_quality, opportunity_score, suggested_angle, suggested_title."""
+    compiled = compile_operation_prompt(OperationPromptInput(
+        operation="gap_insight",
+        topic=req.niche,
+        language="en-US",
+        source_summary=[
+            f"{s['topic']}: {s['result_count']} results; {', '.join(s['sample_titles'][:2])}"
+            for s in research_summaries
+        ],
+        user_instruction=f"Find top {req.max_gaps} gaps for niche={req.niche}.",
+        format_contract=(
+            f"Analyze these summarized research results for the {req.niche} niche:\n{context}\n\n"
+            "Return JSON array with topic, gap_type, search_demand, existing_content_quality, opportunity_score, suggested_angle, suggested_title."
+        ),
+    ))
 
     try:
-        gaps = await ask_claude_json(prompt, system=SYSTEM_PROMPT)
+        gaps = await ask_claude_json(compiled.prompt, system=SYSTEM_PROMPT, max_tokens=1600)
     except Exception as e:
+        # 2026-05-18 phase2-qa P2: do NOT leak the raw exception message to
+        # the client. The internal proxy error format
+        # (`f"AI proxy error {status} for category={category}"`) and any
+        # downstream provider trace must not reach iOS. Log to server, return
+        # a stable client-facing code.
         logger.error("Claude call failed in gap_finder: %s", e)
         duration_ms = int((time.monotonic() - start) * 1000)
         return GapsResponse(
             niche=req.niche,
-            gaps=[{"topic": "Analysis unavailable", "gap_type": "error", "error": str(e)}],
+            gaps=[{"topic": "Analysis unavailable", "gap_type": "error", "error": "provider_unavailable"}],
             duration_ms=duration_ms,
+            **build_operation_metadata(req, "gap_insight", compiled),
         )
 
     # Handle non-JSON / malformed response
     if isinstance(gaps, dict) and "raw" in gaps and len(gaps) == 1:
-        logger.warning("Claude returned non-JSON in gap_finder, raw: %s", str(gaps.get("raw", ""))[:200])
+        raw_len = len(str(gaps.get("raw", "")))
+        logger.warning("Claude returned non-JSON in gap_finder (%d chars)", raw_len)
         gaps_list = []
     else:
         gaps_list = gaps if isinstance(gaps, list) else [gaps]
@@ -107,4 +121,5 @@ Return JSON array of gap objects with: topic, gap_type, search_demand, existing_
         niche=req.niche,
         gaps=gaps_list[:req.max_gaps],
         duration_ms=duration_ms,
+        **build_operation_metadata(req, "gap_insight", compiled),
     )

@@ -65,6 +65,7 @@ export function analyzeTrainingFeedback(athlete: AthleteState, generatedAt: stri
     || sample.tags.has('too_long')
   ).length;
   const substitutionSignals = samples.filter((sample) => sample.tags.has('substitution')).length;
+  const hardSignalThreshold = Math.max(1, Math.ceil(sampleSize * 0.3));
 
   const adherenceClass = classifyAdherence(athlete, completionCounts, sampleSize);
   const recoveryClass = classifyRecovery(athlete, averageSoreness);
@@ -151,7 +152,7 @@ export function analyzeTrainingFeedback(athlete: AthleteState, generatedAt: stri
     });
   }
 
-  if (difficultyBias === 'too_hard') {
+  if (difficultyBias === 'too_hard' || (difficultyBias === 'too_long' && hardSignals >= hardSignalThreshold)) {
     decisions.push({
       code: 'too_hard_intensity_downshift',
       severity: 'action',
@@ -282,6 +283,8 @@ export function applyFeedbackToWeeklyPlan(plan: WeeklyPlan, analysis?: TrainingF
   let sessions = cloneSessions(plan.sessions);
   const durationMultiplier = combinedMultiplier(analysis, 'durationMultiplier');
   const intensityMultiplier = combinedMultiplier(analysis, 'intensityMultiplier');
+  const volumeMultiplier = combinedMultiplier(analysis, 'volumeMultiplier');
+  const effectiveDurationMultiplier = combineDurationAndVolumeMultipliers(durationMultiplier, volumeMultiplier);
   const shouldProgress = analysis.decisions.some((decision) =>
     decision.code === 'too_easy_progression' || decision.code === 'positive_progression'
   );
@@ -291,8 +294,8 @@ export function applyFeedbackToWeeklyPlan(plan: WeeklyPlan, analysis?: TrainingF
       .map((decision) => decision.sport as Sport),
   );
 
-  if (durationMultiplier !== 1 || intensityMultiplier < 1) {
-    sessions = sessions.map((session) => adaptSessionLoad(session, durationMultiplier, intensityMultiplier, analysis));
+  if (effectiveDurationMultiplier !== 1 || intensityMultiplier < 1) {
+    sessions = sessions.map((session) => adaptSessionLoad(session, effectiveDurationMultiplier, intensityMultiplier, analysis));
   }
 
   if (shouldProgress) {
@@ -567,6 +570,13 @@ function combinedMultiplier(
   if (values.length === 0) return 1;
   const product = values.reduce((acc, value) => acc * value, 1);
   return round(Math.max(0.55, Math.min(1.18, product)), 2);
+}
+
+function combineDurationAndVolumeMultipliers(durationMultiplier: number, volumeMultiplier: number): number {
+  if (durationMultiplier === 1) return volumeMultiplier;
+  if (volumeMultiplier === 1) return durationMultiplier;
+  if (durationMultiplier < 1 || volumeMultiplier < 1) return Math.min(durationMultiplier, volumeMultiplier);
+  return Math.max(durationMultiplier, volumeMultiplier);
 }
 
 function formatDecisionNote(decision: TrainingFeedbackDecision): string {

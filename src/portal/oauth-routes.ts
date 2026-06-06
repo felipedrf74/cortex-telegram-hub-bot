@@ -1,6 +1,7 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
 import type { Express, Request, Response } from 'express';
+import express from 'express';
 import { logger as defaultLogger } from '../utils/logger';
 import { getBotRef as defaultGetBotRef } from './telemetry';
 
@@ -21,10 +22,19 @@ interface PortalOAuthServices {
   consumeNonce: (nonce: string) => { userId: number; provider: string } | null | undefined;
   isIOSGoogleAuthState: (state: string) => boolean;
   parseIOSGoogleAuthState: (state: string) => { nonce: string } | null;
-  consumeGoogleAuthPendingSession: (nonce: string) => { deviceId: string; deviceName?: string | null } | null | undefined;
+  isWebGoogleAuthState: (state: string) => boolean;
+  parseWebGoogleAuthState: (state: string) => { nonce: string } | null;
+  consumeGoogleAuthPendingSession: (nonce: string) => { deviceId: string; deviceName?: string | null; inviteCode?: unknown } | null | undefined;
   storeGoogleAuthCompletion: (payload: unknown) => string;
   exchangeGoogleCodeForIdentity: (code: string, redirectUri: string) => Promise<unknown>;
-  resolveGoogleIdentityUser: (payload: unknown) => { id: number };
+  resolveGoogleIdentityUser: (payload: unknown, options?: { inviteCode?: unknown }) => { id: number };
+  isWebAppleAuthState: (state: string) => boolean;
+  parseWebAppleAuthState: (state: string) => { nonce: string } | null;
+  consumeAppleWebAuthPendingSession: (nonce: string) => { nonceHash: string; deviceId: string; deviceName?: string | null; inviteCode?: unknown } | null | undefined;
+  storeAppleWebAuthCompletion: (payload: unknown) => string;
+  verifyAppleWebIdentityToken: (identityToken: string, expectedNonceHash: string) => Promise<unknown>;
+  parseAppleUserHint: (rawUser: unknown) => unknown;
+  resolveAppleWebIdentityUser: (payload: unknown, profileHint?: unknown, inviteCode?: unknown) => { id: number };
   createAuthSessionAndRegisterDevice: (params: {
     userId: number;
     deviceId: string;
@@ -55,10 +65,21 @@ function loadDefaultOAuthServices(): PortalOAuthServices {
   const {
     isIOSGoogleAuthState,
     parseIOSGoogleAuthState,
+    isWebGoogleAuthState,
+    parseWebGoogleAuthState,
     consumeGoogleAuthPendingSession,
     storeGoogleAuthCompletion,
   } = require('../services/google-auth-session-store');
   const { exchangeGoogleCodeForIdentity, resolveGoogleIdentityUser } = require('../services/google-sign-in');
+  const {
+    isWebAppleAuthState,
+    parseWebAppleAuthState,
+    consumeAppleWebAuthPendingSession,
+    storeAppleWebAuthCompletion,
+    verifyAppleWebIdentityToken,
+    parseAppleUserHint,
+    resolveAppleWebIdentityUser,
+  } = require('../services/apple-web-sign-in');
   const { createAuthSessionAndRegisterDevice } = require('../services/ios-auth-session');
 
   let resetGoogleClients: (() => void) | undefined;
@@ -78,7 +99,7 @@ function loadDefaultOAuthServices(): PortalOAuthServices {
 
   let invalidateIntegrationDerivedCaches: ((userId: number, provider: string) => void) | undefined;
   try {
-    invalidateIntegrationDerivedCaches = require('../services/integration-cache-invalidator').invalidateIntegrationDerivedCaches;
+    invalidateIntegrationDerivedCaches = require('../services/cache-coherence-registry').invalidateIntegrationDerivedCaches;
   } catch { /* optional cache invalidator */ }
 
   return {
@@ -91,10 +112,19 @@ function loadDefaultOAuthServices(): PortalOAuthServices {
     consumeNonce,
     isIOSGoogleAuthState,
     parseIOSGoogleAuthState,
+    isWebGoogleAuthState,
+    parseWebGoogleAuthState,
     consumeGoogleAuthPendingSession,
     storeGoogleAuthCompletion,
     exchangeGoogleCodeForIdentity,
     resolveGoogleIdentityUser,
+    isWebAppleAuthState,
+    parseWebAppleAuthState,
+    consumeAppleWebAuthPendingSession,
+    storeAppleWebAuthCompletion,
+    verifyAppleWebIdentityToken,
+    parseAppleUserHint,
+    resolveAppleWebIdentityUser,
     createAuthSessionAndRegisterDevice,
     resetGoogleClients,
     resetMicrosoftClients,
@@ -116,43 +146,44 @@ function redirectIOSOAuth(provider: OAuthProvider, res: Response, status: 'succe
   res.redirect(`me.nexushub.app://oauth/${provider}?status=${status}${suffix}`);
 }
 
-function parseTelegramState(state: string): number {
-  return parseInt(state, 10);
+function parseNonceState(state: string, prefix: 'ios' | 'tg'): { userId: number; nonce: string } | null {
+  const parts = state.split(':');
+  if (parts.length !== 3 || parts[0] !== prefix) return null;
+  const userId = parseInt(parts[1], 10);
+  const nonce = parts[2];
+  if (!Number.isFinite(userId) || userId <= 0 || !nonce) return null;
+  return { userId, nonce };
 }
 
-function resolveIOSOAuthUser(
+function resolveOAuthUser(
   state: string,
   provider: OAuthProvider,
   services: PortalOAuthServices,
   logger: PortalOAuthLogger,
 ): { userId: number; isIOS: boolean } | { error: string } {
-  if (!services.isIOSState(state)) {
-    return { userId: parseTelegramState(state), isIOS: false };
-  }
-
-  const parsed = services.parseIOSState(state);
+  const isIOS = services.isIOSState(state);
+  const parsed = isIOS ? services.parseIOSState(state) : parseNonceState(state, 'tg');
   if (!parsed) {
     return { error: 'Invalid OAuth state' };
   }
   const nonceData = services.consumeNonce(parsed.nonce);
   if (!nonceData || nonceData.userId !== parsed.userId || nonceData.provider !== provider) {
-    if (provider === 'google' || provider === 'outlook') {
-      logger.warn(
-        {
-          flow: 'oauth_callback_nonce_mismatch',
-          provider,
-          parsedUserId: parsed.userId,
-          noncePrefix: parsed.nonce.slice(0, 8),
-          nonceFound: Boolean(nonceData),
-          nonceUserId: nonceData?.userId,
-          nonceProvider: nonceData?.provider,
-        },
-        `${provider === 'google' ? 'Google' : 'Outlook'} iOS OAuth callback rejected due to missing or mismatched nonce session`,
-      );
-    }
+    logger.warn(
+      {
+        flow: 'oauth_callback_nonce_mismatch',
+        provider,
+        origin: isIOS ? 'ios' : 'telegram',
+        parsedUserId: parsed.userId,
+        noncePrefix: parsed.nonce.slice(0, 8),
+        nonceFound: Boolean(nonceData),
+        nonceUserId: nonceData?.userId,
+        nonceProvider: nonceData?.provider,
+      },
+      'OAuth callback rejected due to missing or mismatched nonce session',
+    );
     return { error: 'Expired or invalid OAuth session' };
   }
-  return { userId: parsed.userId, isIOS: true };
+  return { userId: parsed.userId, isIOS };
 }
 
 async function notifyTelegramConnection(
@@ -200,9 +231,13 @@ async function handleIOSAwareOAuthCallback(
 
   try {
     const services = loadServices();
-    const resolved = resolveIOSOAuthUser(state, provider, services, logger);
+    const resolved = resolveOAuthUser(state, provider, services, logger);
     if ('error' in resolved) {
-      redirectIOSOAuth(provider, res, 'error', resolved.error);
+      if (state.startsWith('ios:')) {
+        redirectIOSOAuth(provider, res, 'error', resolved.error);
+        return;
+      }
+      res.status(400).send(htmlConnectionFailed(provider));
       return;
     }
 
@@ -246,7 +281,7 @@ export function registerPortalOAuthRoutes(app: Express, deps: PortalOAuthRouteDe
 
     try {
       const services = loadServices();
-      const redirectBase = env.OAUTH_REDIRECT_BASE || 'https://nexushub.me';
+      const redirectBase = env.OAUTH_REDIRECT_BASE || 'https://api.nexushub.me';
 
       if (services.isIOSGoogleAuthState(state)) {
         const parsed = services.parseIOSGoogleAuthState(state);
@@ -262,7 +297,7 @@ export function registerPortalOAuthRoutes(app: Express, deps: PortalOAuthRouteDe
         }
 
         const payload = await services.exchangeGoogleCodeForIdentity(code, `${redirectBase}/oauth/google/callback`);
-        const user = services.resolveGoogleIdentityUser(payload);
+        const user = services.resolveGoogleIdentityUser(payload, { inviteCode: pending.inviteCode });
         const authPayload = services.createAuthSessionAndRegisterDevice({
           userId: user.id,
           deviceId: pending.deviceId,
@@ -273,6 +308,34 @@ export function registerPortalOAuthRoutes(app: Express, deps: PortalOAuthRouteDe
         });
         const authCode = services.storeGoogleAuthCompletion(authPayload);
         res.redirect(`me.nexushub.app://auth/google?status=success&authCode=${encodeURIComponent(authCode)}`);
+        return;
+      }
+
+      if (services.isWebGoogleAuthState(state)) {
+        const parsed = services.parseWebGoogleAuthState(state);
+        if (!parsed) {
+          res.redirect(`/user?error=${encodeURIComponent('Invalid Google sign-in state')}`);
+          return;
+        }
+
+        const pending = services.consumeGoogleAuthPendingSession(parsed.nonce);
+        if (!pending) {
+          res.redirect(`/user?error=${encodeURIComponent('Google sign-in session expired')}`);
+          return;
+        }
+
+        const payload = await services.exchangeGoogleCodeForIdentity(code, `${redirectBase}/oauth/google/callback`);
+        const user = services.resolveGoogleIdentityUser(payload, { inviteCode: pending.inviteCode });
+        const authPayload = services.createAuthSessionAndRegisterDevice({
+          userId: user.id,
+          deviceId: pending.deviceId,
+          deviceName: pending.deviceName,
+          pushToken: null,
+          user,
+          ipAddress: (req.ip || req.socket?.remoteAddress) ?? undefined,
+        });
+        const authCode = services.storeGoogleAuthCompletion(authPayload);
+        res.redirect(`/user?googleAuthCode=${encodeURIComponent(authCode)}`);
         return;
       }
 
@@ -290,6 +353,8 @@ export function registerPortalOAuthRoutes(app: Express, deps: PortalOAuthRouteDe
       logger.error({ err }, 'Google OAuth callback failed');
       if (state.startsWith('ios-auth:')) {
         res.redirect(`me.nexushub.app://auth/google?status=error&message=${encodeURIComponent('Google sign-in failed')}`);
+      } else if (state.startsWith('web-auth:')) {
+        res.redirect(`/user?error=${encodeURIComponent('Google sign-in failed')}`);
       } else if (state.startsWith('ios:')) {
         redirectIOSOAuth('google', res, 'error', 'Connection failed');
       } else {
@@ -297,6 +362,65 @@ export function registerPortalOAuthRoutes(app: Express, deps: PortalOAuthRouteDe
       }
     }
   });
+
+  app.post(
+    '/oauth/apple/callback',
+    express.urlencoded({ extended: false, limit: '16kb' }),
+    async (req: Request, res: Response) => {
+      const state = typeof req.body?.state === 'string' ? req.body.state : '';
+      const idToken = typeof req.body?.id_token === 'string' ? req.body.id_token : '';
+      const appleError = typeof req.body?.error === 'string' ? req.body.error : '';
+
+      if (appleError) {
+        res.redirect(`/user?error=${encodeURIComponent(appleError === 'user_cancelled_authorize'
+          ? 'Apple sign-in was cancelled'
+          : 'Apple sign-in failed')}`);
+        return;
+      }
+
+      if (!state || !idToken) {
+        res.redirect(`/user?error=${encodeURIComponent('Missing Apple sign-in response')}`);
+        return;
+      }
+
+      try {
+        const services = loadServices();
+        if (!services.isWebAppleAuthState(state)) {
+          res.redirect(`/user?error=${encodeURIComponent('Invalid Apple sign-in state')}`);
+          return;
+        }
+
+        const parsed = services.parseWebAppleAuthState(state);
+        if (!parsed) {
+          res.redirect(`/user?error=${encodeURIComponent('Invalid Apple sign-in state')}`);
+          return;
+        }
+
+        const pending = services.consumeAppleWebAuthPendingSession(parsed.nonce);
+        if (!pending) {
+          res.redirect(`/user?error=${encodeURIComponent('Apple sign-in session expired')}`);
+          return;
+        }
+
+        const payload = await services.verifyAppleWebIdentityToken(idToken, pending.nonceHash);
+        const profileHint = services.parseAppleUserHint(req.body?.user);
+        const user = services.resolveAppleWebIdentityUser(payload, profileHint, pending.inviteCode);
+        const authPayload = services.createAuthSessionAndRegisterDevice({
+          userId: user.id,
+          deviceId: pending.deviceId,
+          deviceName: pending.deviceName,
+          pushToken: null,
+          user,
+          ipAddress: (req.ip || req.socket?.remoteAddress) ?? undefined,
+        });
+        const authCode = services.storeAppleWebAuthCompletion(authPayload);
+        res.redirect(`/user?appleAuthCode=${encodeURIComponent(authCode)}`);
+      } catch (err) {
+        logger.error({ err }, 'Apple web sign-in callback failed');
+        res.redirect(`/user?error=${encodeURIComponent('Apple sign-in failed')}`);
+      }
+    },
+  );
 
   app.get('/oauth/outlook/callback', async (req: Request, res: Response) => {
     await handleIOSAwareOAuthCallback(
@@ -327,9 +451,14 @@ export function registerPortalOAuthRoutes(app: Express, deps: PortalOAuthRouteDe
       return;
     }
 
-    const userId = parseTelegramState(state);
     try {
       const services = loadServices();
+      const resolved = resolveOAuthUser(state, 'fitbit', services, logger);
+      if ('error' in resolved) {
+        res.status(400).send(htmlConnectionFailed('fitbit'));
+        return;
+      }
+      const userId = resolved.userId;
       const tokens = await services.exchangeCode('fitbit', code, userId);
       services.storeTokens(userId, 'fitbit', tokens);
       invalidateProviderConnectionCaches(userId, 'fitbit', services, logger);
@@ -351,9 +480,14 @@ export function registerPortalOAuthRoutes(app: Express, deps: PortalOAuthRouteDe
       return;
     }
 
-    const userId = parseTelegramState(state);
     try {
       const services = loadServices();
+      const resolved = resolveOAuthUser(state, 'todoist', services, logger);
+      if ('error' in resolved) {
+        res.status(400).send(htmlConnectionFailed('todoist'));
+        return;
+      }
+      const userId = resolved.userId;
       const tokens = await services.exchangeCode('todoist', code, userId);
       services.storeTokens(userId, 'todoist', tokens);
       invalidateProviderConnectionCaches(userId, 'todoist', services, logger);
@@ -383,9 +517,14 @@ export function registerPortalOAuthRoutes(app: Express, deps: PortalOAuthRouteDe
       return;
     }
 
-    const userId = parseTelegramState(state);
     try {
       const services = loadServices();
+      const resolved = resolveOAuthUser(state, 'notion', services, logger);
+      if ('error' in resolved) {
+        res.status(400).send(htmlConnectionFailed('notion'));
+        return;
+      }
+      const userId = resolved.userId;
       const tokens = await services.exchangeCode('notion', code, userId);
       services.storeTokens(userId, 'notion', tokens);
       invalidateProviderConnectionCaches(userId, 'notion', services, logger);

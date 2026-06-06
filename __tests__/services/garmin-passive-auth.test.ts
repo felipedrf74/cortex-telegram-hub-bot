@@ -8,6 +8,7 @@ const mockUpsertGarminSession = vi.fn();
 const mockMarkGarminConnectionActive = vi.fn();
 const mockMigrateLegacyTokens = vi.fn();
 const mockClearGarminSession = vi.fn();
+const mockIsOwnerGarminUserId = vi.fn();
 const mockLoggerInfo = vi.fn();
 const mockLoggerWarn = vi.fn();
 const mockLoggerError = vi.fn();
@@ -31,6 +32,7 @@ vi.mock('../../src/services/garmin-session-store', () => ({
   markGarminConnectionActive: (...args: unknown[]) => mockMarkGarminConnectionActive(...args),
   migrateLegacyGarminTokensToSession: (...args: unknown[]) => mockMigrateLegacyTokens(...args),
   clearGarminSession: (...args: unknown[]) => mockClearGarminSession(...args),
+  isOwnerGarminUserId: (...args: unknown[]) => mockIsOwnerGarminUserId(...args),
 }));
 
 vi.mock('../../src/config', () => ({
@@ -60,6 +62,7 @@ vi.mock('../../src/utils/logger', () => ({
     trace: vi.fn(),
     child: vi.fn().mockReturnThis(),
   },
+  LOGGER_REDACTION_PATHS: [],
 }));
 
 vi.mock('fs', () => ({
@@ -115,6 +118,7 @@ describe('garmin passive auth safety', () => {
     mockMarkGarminConnectionActive.mockReset();
     mockMigrateLegacyTokens.mockReset();
     mockClearGarminSession.mockReset();
+    mockIsOwnerGarminUserId.mockReset();
     mockLoggerInfo.mockReset();
     mockLoggerWarn.mockReset();
     mockLoggerError.mockReset();
@@ -139,6 +143,7 @@ describe('garmin passive auth safety', () => {
       updatedAt: '2026-04-15T20:00:00Z',
     });
     mockMigrateLegacyTokens.mockReturnValue(false);
+    mockIsOwnerGarminUserId.mockReturnValue(false);
     mockExistsSync.mockReturnValue(false);
     mockMarkGarminNeedsReauth.mockResolvedValue(undefined);
     mockRefreshOauth2Token.mockRejectedValue(new Error('refresh failed'));
@@ -165,6 +170,20 @@ describe('garmin passive auth safety', () => {
     expect(mockMarkGarminNeedsReauth).toHaveBeenCalled();
   });
 
+  it('ensureAuthenticated honors request-scoped Garmin silent mode', async () => {
+    const { ensureAuthenticated } = await import('../../src/services/garmin');
+    const { runWithContext } = await import('../../src/utils/request-context');
+
+    const ok = await runWithContext(
+      { source: 'http', userId: 12, garminSilent: true },
+      () => ensureAuthenticated(),
+    );
+
+    expect(ok).toBe(false);
+    expect(mockFetchOauthConsumer).not.toHaveBeenCalled();
+    expect(mockMarkGarminNeedsReauth).toHaveBeenCalled();
+  });
+
   it('silent data reads return null instead of starting a new Garmin MFA flow', async () => {
     const { getDailySummary, setSilentMode } = await import('../../src/services/garmin');
     setSilentMode(true);
@@ -174,5 +193,116 @@ describe('garmin passive auth safety', () => {
     expect(summary).toBeNull();
     expect(mockFetchOauthConsumer).not.toHaveBeenCalled();
     expect(mockMarkGarminNeedsReauth).toHaveBeenCalled();
+  });
+
+  it('request-scoped silent data reads do not rely on process-global silent mode', async () => {
+    const { getDailySummary } = await import('../../src/services/garmin');
+    const { runWithContext } = await import('../../src/utils/request-context');
+
+    const summary = await runWithContext(
+      { source: 'http', userId: 12, garminSilent: true },
+      () => getDailySummary('2026-04-15'),
+    );
+
+    expect(summary).toBeNull();
+    expect(mockFetchOauthConsumer).not.toHaveBeenCalled();
+    expect(mockMarkGarminNeedsReauth).toHaveBeenCalled();
+  });
+
+  it('silent coach data collection never starts a Garmin MFA flow during cron or release windows', async () => {
+    const { fetchDailyCoachData } = await import('../../src/services/garmin');
+
+    const data = await fetchDailyCoachData({ silent: true });
+
+    expect(data.summary).toBeNull();
+    expect(data.activities).toEqual([]);
+    expect(mockFetchOauthConsumer).not.toHaveBeenCalled();
+    expect(mockAxiosPost).not.toHaveBeenCalled();
+    expect(mockMarkGarminNeedsReauth).toHaveBeenCalled();
+  });
+
+  it('silent data reads use silent recovery after Garmin auth errors mid-request', async () => {
+    mockGetUserSettings.mockResolvedValue({ displayName: 'Athlete' });
+    mockGarminGet.mockRejectedValue(new Error('ERROR: (401), Unauthorized, {"message":"expired"}'));
+
+    const { getDailySummary } = await import('../../src/services/garmin');
+    const { runWithContext } = await import('../../src/utils/request-context');
+
+    const summary = await runWithContext(
+      { source: 'http', userId: 12, garminSilent: true },
+      () => getDailySummary('2026-04-15'),
+    );
+
+    expect(summary).toBeNull();
+    expect(mockRefreshOauth2Token).toHaveBeenCalled();
+    expect(mockFetchOauthConsumer).not.toHaveBeenCalled();
+  });
+
+  it('request-scoped data reads do not import legacy filesystem tokens into the user connection', async () => {
+    mockGetGarminSession.mockReturnValue(null);
+    mockExistsSync.mockReturnValue(true);
+    const { getDailySummary, setSilentMode } = await import('../../src/services/garmin');
+    setSilentMode(true);
+
+    const summary = await getDailySummary('2026-04-15');
+
+    expect(summary).toBeNull();
+    const legacyTokenChecks = mockExistsSync.mock.calls.filter(([filePath]) =>
+      String(filePath).includes('oauth1_token.json') || String(filePath).includes('oauth2_token.json')
+    );
+    expect(legacyTokenChecks).toEqual([]);
+    expect(mockMigrateLegacyTokens).toHaveBeenCalledWith(12);
+    expect(mockMarkGarminConnectionActive).not.toHaveBeenCalled();
+    expect(mockFetchOauthConsumer).not.toHaveBeenCalled();
+  });
+
+  it('namespaces SSO and rate-limit persistence paths by user id', async () => {
+    const { _garminPersistencePathsForTests } = await import('../../src/services/garmin');
+
+    const userA = _garminPersistencePathsForTests(12);
+    const userB = _garminPersistencePathsForTests(34);
+
+    expect(userA.ssoCookies).toBe('/tmp/garmin-tests/12/sso_cookies.json');
+    expect(userA.rateLimit).toBe('/tmp/garmin-tests/12/rate_limit.json');
+    expect(userB.ssoCookies).toBe('/tmp/garmin-tests/34/sso_cookies.json');
+    expect(userB.rateLimit).toBe('/tmp/garmin-tests/34/rate_limit.json');
+    expect(userA).not.toEqual(userB);
+  });
+
+  it('does not write Garmin debug HTML unless GARMIN_DEBUG_DUMP is enabled', async () => {
+    delete process.env.GARMIN_DEBUG_DUMP;
+    const { _writeGarminDebugDumpForTests } = await import('../../src/services/garmin');
+
+    const path = _writeGarminDebugDumpForTests('step3', '<html>private</html>');
+
+    expect(path).toBeNull();
+    expect(mockWriteFileSync).not.toHaveBeenCalled();
+  });
+
+  it('logs Garmin read failures before returning an empty value', async () => {
+    mockGetUserSettings.mockRejectedValue(new Error('stored tokens expired'));
+    const { getDailySummary } = await import('../../src/services/garmin');
+
+    const summary = await getDailySummary('2026-04-15', { silent: true });
+
+    expect(summary).toBeNull();
+    expect(mockLoggerWarn).toHaveBeenCalledWith(
+      expect.objectContaining({ err: expect.any(Error), url: expect.stringContaining('/usersummary-service/') }),
+      'Garmin read failed, returning empty',
+    );
+  });
+
+  it('treats daily summary 403 as missing data instead of starting auth recovery', async () => {
+    mockGetUserSettings.mockResolvedValue({ displayName: 'Athlete' });
+    mockGarminGet.mockRejectedValue(new Error('ERROR: (403), Forbidden, {"message":null,"error":"ForbiddenException"}'));
+
+    const { getDailySummary } = await import('../../src/services/garmin');
+
+    const summary = await getDailySummary('2026-05-01');
+
+    expect(summary).toBeNull();
+    expect(mockRefreshOauth2Token).not.toHaveBeenCalled();
+    expect(mockMarkGarminNeedsReauth).not.toHaveBeenCalled();
+    expect(mockFetchOauthConsumer).not.toHaveBeenCalled();
   });
 });

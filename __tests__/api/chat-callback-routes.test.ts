@@ -17,12 +17,22 @@ const mockDeleteTask = vi.fn(async () => undefined);
 const mockDeleteList = vi.fn(async () => undefined);
 const mockGetTaskProviderForUser = vi.fn();
 
-vi.mock('../../src/services/user-service', () => ({
-  getUserLanguage: (...args: unknown[]) => mockGetUserLanguage(...args),
-}));
+vi.mock('../../src/services/user-service', async () => {
+  const actual = await vi.importActual<typeof import('../../src/services/user-service')>(
+    '../../src/services/user-service',
+  );
+  return {
+    ...actual,
+    // Identity-safety: chat-callback-routes uses the strict by-id helper.
+    getUserLanguage: (...args: unknown[]) => mockGetUserLanguage(...args),
+    getUserLanguageById: (...args: unknown[]) => mockGetUserLanguage(...args),
+  };
+});
 
 vi.mock('../../src/api/routes/chat-fastpath', () => ({
   tryDeterministicChatCommand: (...args: unknown[]) => mockTryDeterministicChatCommand(...args),
+  getPendingTasksCacheKey: (userId?: number, tenantId?: number) =>
+    `u:${userId ?? 'unknown'}:t:${tenantId ?? userId ?? 'unknown'}:fastpath:pending-tasks`,
 }));
 
 vi.mock('../../src/utils/callback-store', () => ({
@@ -42,6 +52,7 @@ vi.mock('../../src/api/routes/chat-persistence', () => ({
 }));
 
 vi.mock('../../src/services/task-store/task-router', () => ({
+  resolveTaskProvider: vi.fn(() => 'nexus'),
   getTaskProviderForUser: (...args: unknown[]) => mockGetTaskProviderForUser(...args),
 }));
 
@@ -49,6 +60,7 @@ vi.mock('../../src/utils/logger', () => ({
   logger: {
     error: vi.fn(),
   },
+  LOGGER_REDACTION_PATHS: [],
 }));
 
 import {

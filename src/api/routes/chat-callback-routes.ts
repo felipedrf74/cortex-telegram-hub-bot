@@ -3,12 +3,14 @@
 import { Router, Response } from 'express';
 import { AuthenticatedRequest } from '../auth-middleware';
 import { logger } from '../../utils/logger';
-import { getUserLanguage } from '../../services/user-service';
+import { getUserLanguageById } from '../../services/user-service';
 import { tryDeterministicChatCommand } from './chat-fastpath';
 import { consumeCallbackForScope, getCallbackForScope } from '../../utils/callback-store';
 import { applyCoachRecommendations } from '../../services/garmin-coach';
 import { getTaskProviderForUser } from '../../services/task-store/task-router';
 import { labelsForLanguage } from './chat-inline-buttons';
+import { buildNexusAnswerContract, type NexusChatOwnerSkill } from '../../services/chat-answer-contract';
+import { safeRecordChatV2DeterministicReadEvidence } from '../../services/chat-deterministic-read-evidence';
 import {
   buildCallbackDataRequiredError,
   buildCallbackExpiredError,
@@ -48,7 +50,7 @@ export function registerChatCallbackRoutes(
    * Handle inline button presses (equivalent to Telegram callback queries).
    */
   router.post('/callback', async (req, res: Response) => {
-    const { userId, tenantId = userId } = req as AuthenticatedRequest;
+    const { userId, tenantId } = req as AuthenticatedRequest;
     const { callbackData, messageId } = req.body;
 
     if (!ensureValidChatRouteScope(res, userId, tenantId, 'chat_route_callback', {
@@ -59,7 +61,7 @@ export function registerChatCallbackRoutes(
     }
 
     if (!callbackData) {
-      const language = getUserLanguage(userId);
+      const language = getUserLanguageById(userId);
       res.status(400).json({
         error: buildCallbackDataRequiredError(language),
       });
@@ -67,7 +69,7 @@ export function registerChatCallbackRoutes(
     }
 
     try {
-      const language = getUserLanguage(userId);
+      const language = getUserLanguageById(userId);
       const labels = labelsForLanguage(language);
 
       if (callbackData.startsWith('cmd:')) {
@@ -100,13 +102,43 @@ export function registerChatCallbackRoutes(
             timestamp,
           });
         }
+        safeRecordChatV2DeterministicReadEvidence({
+          tenantId,
+          userId,
+          requestId: typeof messageId === 'string' && messageId.trim() ? messageId : `chat-callback:${Date.now()}`,
+          normalizedMessage: command,
+          tokenZeroSurface: 'button',
+          tokenZeroPreserved: true,
+          tenantUserIsolationPassed: true,
+          response: {
+            id: typeof messageId === 'string' && messageId.trim() ? messageId : `chat-callback:${Date.now()}`,
+            text: fastPath.text,
+            domain: fastPath.domain,
+            routeMethod: 'fast-path',
+            metadata: {
+              chatReasoning: buildNexusAnswerContract({
+                intent: commandToDeterministicReadIntent(command),
+                ownerSkill: commandToOwnerSkill(command, fastPath.domain),
+                routeMethod: 'fast-path',
+                routeKind: 'local_read',
+                groundingRequirement: 'local',
+                expectedResponseShape: commandToExpectedShape(command),
+                language: language.startsWith('pt') ? 'pt' : 'en',
+                actionability: 'answer_only',
+                verificationStatus: 'not_required',
+                confidence: 1,
+                traceId: typeof messageId === 'string' && messageId.trim() ? messageId : `chat-callback:${Date.now()}`,
+              }),
+            },
+          },
+        });
 
         res.json(payload);
         return;
       }
 
       if (callbackData.startsWith('coach:')) {
-        const lang = getUserLanguage(userId);
+        const lang = getUserLanguageById(userId);
         const [, action, ref] = callbackData.split(':');
 
         if (action === 'dismiss') {
@@ -279,7 +311,7 @@ export function registerChatCallbackRoutes(
         tenantId,
         userId,
       }, 'iOS callback failed');
-      const language = getUserLanguage(userId);
+      const language = getUserLanguageById(userId);
       res.status(500).json({
         error: {
           code: 'INTERNAL',
@@ -288,4 +320,28 @@ export function registerChatCallbackRoutes(
       });
     }
   });
+}
+
+function commandToOwnerSkill(command: string, fallbackDomain: string): NexusChatOwnerSkill {
+  if (/^\/?(todo|tasks|overdue|duetoday|due_today|dueweek|due_week|alltasks|all_tasks|todosummary|todo_summary)\b/i.test(command)) return 'tasks';
+  if (/^\/?(day|today|week|calendar|agenda)\b/i.test(command)) return 'secretary';
+  if (/training|treino/i.test(command)) return 'training';
+  if (fallbackDomain === 'triathlon') return 'training';
+  if (fallbackDomain === 'secretary') return 'secretary';
+  return 'chat';
+}
+
+function commandToDeterministicReadIntent(command: string): string {
+  if (/^\/?(todo|tasks|overdue|duetoday|due_today|dueweek|due_week|alltasks|all_tasks|todosummary|todo_summary)\b/i.test(command)) return 'tasks.read';
+  if (/^\/?(day|today)\b/i.test(command)) return 'today.read';
+  if (/^\/?(week|calendar|agenda)\b/i.test(command)) return 'calendar.read';
+  if (/training|treino/i.test(command)) return 'training.read';
+  return 'chat.deterministic_read';
+}
+
+function commandToExpectedShape(command: string): 'agenda_summary' | 'task_options' | 'training_advice' | 'direct_answer' {
+  if (/^\/?(todo|tasks|overdue|duetoday|due_today|dueweek|due_week|alltasks|all_tasks|todosummary|todo_summary)\b/i.test(command)) return 'task_options';
+  if (/^\/?(day|today|week|calendar|agenda)\b/i.test(command)) return 'agenda_summary';
+  if (/training|treino/i.test(command)) return 'training_advice';
+  return 'direct_answer';
 }

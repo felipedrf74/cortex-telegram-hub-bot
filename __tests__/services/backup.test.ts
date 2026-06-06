@@ -7,8 +7,10 @@ import Database from 'better-sqlite3';
 
 // We test the exported functions directly, mocking config and logger
 vi.mock('../../src/utils/logger', () => ({
-  logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+  logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
+  LOGGER_REDACTION_PATHS: [],
 }));
+import { logger } from '../../src/utils/logger';
 
 // Dynamic config mock — override per test via `mockConfig`
 let mockConfig: any = {
@@ -24,6 +26,22 @@ vi.mock('../../src/config', () => ({
 let testSourceDb: Database.Database;
 vi.mock('../../src/services/database', () => ({
   getDb: () => testSourceDb,
+  initDatabase: vi.fn(),
+  closeDatabase: vi.fn(),
+  findUnexpectedMigrationPrefixCollisions: vi.fn(() => []),
+}));
+
+const mockUploadBackupToDrive = vi.fn();
+let mockGoogleDriveEnabled = false;
+let mockOwnerRefs: number[] = [];
+
+vi.mock('../../src/services/google-drive', () => ({
+  isGoogleDriveEnabled: vi.fn(() => mockGoogleDriveEnabled),
+  uploadBackupToDrive: (...args: unknown[]) => mockUploadBackupToDrive(...args),
+}));
+
+vi.mock('../../src/services/user-service', () => ({
+  getOwnerBootstrapUserRefs: vi.fn(() => mockOwnerRefs),
 }));
 
 import {
@@ -56,11 +74,20 @@ describe('backup service', () => {
       backup: { dir: backupDir, retentionDays: 30, enabled: true, time: '03:00', encrypt: false, encryptionKey: '' },
       telegram: { allowedUserIds: [123] },
     };
+    mockUploadBackupToDrive.mockReset();
+    mockGoogleDriveEnabled = false;
+    mockOwnerRefs = [];
+    vi.mocked(logger.info).mockClear();
+    vi.mocked(logger.warn).mockClear();
+    vi.mocked(logger.error).mockClear();
+    vi.mocked(logger.debug).mockClear();
+    delete process.env.NODE_ENV;
   });
 
   afterEach(() => {
     try { testSourceDb?.close(); } catch {}
     fs.rmSync(tmpDir, { recursive: true, force: true });
+    delete process.env.NODE_ENV;
   });
 
   // ── runDatabaseBackup (SQLite backup API) ─────────────────────────
@@ -186,6 +213,45 @@ describe('backup service', () => {
       const result = await runDatabaseBackup();
       expect(result).toMatch(/\.tar\.gz$/);
       expect(result).not.toMatch(/\.enc$/);
+    });
+
+    it('fails closed in production when backup encryption is disabled', async () => {
+      process.env.NODE_ENV = 'production';
+      mockConfig.backup.enabled = true;
+      mockConfig.backup.encrypt = false;
+      mockConfig.backup.encryptionKey = '';
+
+      await expect(runDatabaseBackup()).rejects.toThrow(
+        'BACKUP_ENABLED=true requires BACKUP_ENCRYPT=true and BACKUP_KEY in production.',
+      );
+      expect(mockUploadBackupToDrive).not.toHaveBeenCalled();
+    });
+
+    it('refuses to upload an unencrypted backup archive to Google Drive', async () => {
+      mockOwnerRefs = [123];
+      mockGoogleDriveEnabled = true;
+      mockConfig.backup.encrypt = false;
+
+      const result = await runDatabaseBackup();
+
+      expect(result).toMatch(/\.tar\.gz$/);
+      expect(result).not.toMatch(/\.enc$/);
+      expect(mockUploadBackupToDrive).not.toHaveBeenCalled();
+      expect(logger.warn).toHaveBeenCalledWith(
+        expect.objectContaining({ backup: path.basename(result) }),
+        expect.stringContaining('Refusing to upload unencrypted database backup'),
+      );
+    });
+
+    it('warns when the encrypted backup remains local-only', async () => {
+      mockConfig.backup.encrypt = true;
+      mockConfig.backup.encryptionKey = 'test-local-only-key-at-least-32chars!';
+
+      await runDatabaseBackup();
+
+      expect(logger.warn).toHaveBeenCalledWith(
+        'Google Drive not enabled; encrypted backup is local-only',
+      );
     });
 
     it('throws on decryption with wrong key', () => {

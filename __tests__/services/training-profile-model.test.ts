@@ -303,6 +303,80 @@ describe('training profile model overhaul', () => {
     expect(athlete.profileQuality?.followUpQuestions.map((question) => question.id)).toContain('injury_limitation_clarification');
   });
 
+  it('prompts for a marathon race date instead of silently producing an undated marathon build', () => {
+    const athlete = buildAthleteStateFromTrainingProfiles(baseInput({
+      userId: 91013,
+      objective: 'Marathon training',
+      sessionsPerWeek: 6,
+      strengthSessionsPerWeek: 2,
+      fitnessProfile: {
+        experience_level: 'Advanced (3+ years)',
+        weekly_frequency: '6 days',
+        training_goals: 'Marathon',
+        injuries: 'none',
+        available_equipment: 'Full gym',
+        session_duration_minutes: '60',
+      },
+      gymProfile: {
+        training_age: '5 years',
+        primary_goal: 'Strength support',
+        equipment_access: 'Full commercial gym',
+        sessions_per_week: '2',
+        session_duration_minutes: '45',
+      },
+      runProfile: {
+        target_race: 'Marathon',
+        weekly_availability_days: '6 days',
+        weekly_mileage_km: '45',
+        easy_pace_min_per_km: '5:20',
+      },
+    }));
+
+    const promptIds = athlete.profileQuality?.followUpQuestions.map((question) => question.id) ?? [];
+    const criticalKeys = athlete.profileQuality?.missingCriticalData.map((item) => item.key) ?? [];
+
+    expect(promptIds).toContain('race_date_clarification');
+    expect(criticalKeys).toContain('race_date');
+    expect(athlete.profileQuality?.planningRiskFlags).toContain('goals:race_date');
+  });
+
+  it('does not ask for race date when marathon target date is already provided', () => {
+    const athlete = buildAthleteStateFromTrainingProfiles(baseInput({
+      userId: 91014,
+      objective: 'Marathon training',
+      sessionsPerWeek: 6,
+      strengthSessionsPerWeek: 2,
+      fitnessProfile: {
+        experience_level: 'Advanced (3+ years)',
+        weekly_frequency: '6 days',
+        training_goals: 'Marathon',
+        injuries: 'none',
+        available_equipment: 'Full gym',
+        session_duration_minutes: '60',
+      },
+      gymProfile: {
+        training_age: '5 years',
+        primary_goal: 'Strength support',
+        equipment_access: 'Full commercial gym',
+        sessions_per_week: '2',
+        session_duration_minutes: '45',
+      },
+      runProfile: {
+        target_race: 'Marathon',
+        target_race_date: '2026-11-01',
+        weekly_availability_days: '6 days',
+        weekly_mileage_km: '45',
+        easy_pace_min_per_km: '5:20',
+      },
+    }));
+
+    const promptIds = athlete.profileQuality?.followUpQuestions.map((question) => question.id) ?? [];
+    const criticalKeys = athlete.profileQuality?.missingCriticalData.map((item) => item.key) ?? [];
+
+    expect(promptIds).not.toContain('race_date_clarification');
+    expect(criticalKeys).not.toContain('race_date');
+  });
+
   it('does not repeat a recently asked unresolved prompt while keeping the missing-data risk visible', () => {
     const athlete = buildAthleteStateFromTrainingProfiles(baseInput({
       userId: 91012,

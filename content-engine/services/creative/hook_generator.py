@@ -9,20 +9,22 @@ import time
 import logging
 from models.requests import HooksRequest, HooksResponse
 from services.claude_client import ask_claude_json
-from services.creator_profile import get_profile
+from services.creator_context import creator_profile_block, language_instruction
+from services.creative.operation_prompt_compilers import OperationPromptInput, build_operation_metadata, compile_operation_prompt
 
 logger = logging.getLogger("content-engine.hooks")
 
-SYSTEM_PROMPT = f"""You are The Operator's viral hook specialist. You generate scroll-stopping hooks for Felipe Dominguez's content.
+def _build_system_prompt(req: HooksRequest) -> str:
+    return f"""You are the authenticated creator's viral hook specialist. You generate scroll-stopping hooks for the authenticated creator's content.
 
-{get_profile()}
+{creator_profile_block(req)}
 
 HOOK RULES:
-- Write in Portuguese (PT-BR), casual and direct — The Operator's voice
+- {language_instruction(req)}
 - Every hook must create a CURIOSITY GAP (open loop)
 - Never start with "Olá pessoal" or "Neste vídeo" — those are anti-hooks
 - Each hook should use a different viral trigger type
-- Hooks should reflect The Operator's worldview — anti-state, pro-freedom, builds things, trains hard
+- Hooks should reflect the creator's saved brand voice and worldview from the authenticated creator memory — do NOT assume any political, religious, dietary, or ideological defaults; if the creator has not specified, keep the angle topic-driven and neutral
 - Use data, controversy, or personal experience — never empty clickbait
 - Every hook MUST include a suggested [SFX:...] marker
 - Return ONLY valid JSON, no markdown wrapping
@@ -41,7 +43,7 @@ VIRAL TRIGGER TYPES:
 - bold_claim: Makes a strong statement that demands attention
 - data_shock: Uses a surprising number or statistic
 - controversy: Challenges a popular belief or mainstream narrative
-- identity: Makes the viewer think "that's me" (targets 18-40 men)
+- identity: Makes the creator's saved target audience think "that's me"
 - urgency: Creates FOMO or time pressure
 - story: Opens a personal narrative
 - contrarian: Goes against what everyone else is saying
@@ -51,32 +53,36 @@ VIRAL TRIGGER TYPES:
 - raw_moment: Authentic unfiltered life moment"""
 
 
+class _NeutralPromptRequest:
+    creator_profile = None
+    brand_voice = None
+    language = "en-US"
+
+
+SYSTEM_PROMPT = _build_system_prompt(_NeutralPromptRequest())
+
+
 async def generate(req: HooksRequest) -> HooksResponse:
     start = time.monotonic()
     warnings: list[str] = []
 
-    prompt = f"""Generate {req.count} unique hooks for the following:
-- Topic: {req.topic}
-- Niche: {req.niche}
-- Format: {req.format}
-
-These hooks are for The Operator's audience (Portuguese-speaking men, 18-40). They should sound like Felipe — direct, confident, sometimes provocative.
-
-For each hook, provide:
-1. "text": the hook text in PT-BR (max 15 words, conversational)
-2. "trigger_type": which viral trigger it uses (use Operator Hook Formulas when applicable)
-3. "sfx": suggested SFX marker (e.g. "vine-boom", "metal-pipe", "fahhh", "record-scratch", "among-us")
-4. "edit_cue": suggested edit technique (e.g. "zoom-punch", "deadpan-stare", "speed-ramp", "text-popup")
-5. "score": estimated effectiveness 1-10
-6. "why": one sentence explaining why this hook works for The Operator's audience
-
-Return as a JSON array of objects. Example:
-[{{"text": "...", "trigger_type": "bold_claim", "sfx": "vine-boom", "edit_cue": "zoom-punch", "score": 8, "why": "..."}}]"""
+    compiled = compile_operation_prompt(OperationPromptInput(
+        operation="hook_pack",
+        topic=req.topic,
+        language=req.language,
+        creator_profile=creator_profile_block(req),
+        user_instruction=f"Generate {req.count} hooks for niche={req.niche}, format={req.format}.",
+        format_contract=(
+            'Return a JSON array of hook objects with text, trigger_type, sfx, edit_cue, score, and why. '
+            'Each hook must be max 15 words, conversational, and in the requested language.'
+        ),
+    ))
 
     result = await ask_claude_json(
-        prompt,
-        system=SYSTEM_PROMPT,
+        compiled.prompt,
+        system=_build_system_prompt(req),
         category="content_engine_hooks",
+        max_tokens=650,
     )
 
     degraded = False
@@ -102,4 +108,5 @@ Return as a JSON array of objects. Example:
         duration_ms=duration_ms,
         degraded=degraded,
         warnings=warnings,
+        **build_operation_metadata(req, "hook_pack", compiled),
     )

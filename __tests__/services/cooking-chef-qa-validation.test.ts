@@ -41,9 +41,14 @@ function applyMigrations(db: Database.Database): void {
 
 let testDb: Database.Database;
 
-vi.mock('../../src/services/database', () => ({ getDb: () => testDb }));
+vi.mock('../../src/services/database', () => ({ getDb: () => testDb,
+  initDatabase: vi.fn(),
+  closeDatabase: vi.fn(),
+  findUnexpectedMigrationPrefixCollisions: vi.fn(() => []),
+}));
 vi.mock('../../src/utils/logger', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
+  LOGGER_REDACTION_PATHS: [],
 }));
 
 import {
@@ -51,6 +56,7 @@ import {
   setMealPlan, getMealPlan, deleteMealPlan,
   generateShoppingList, getShoppingList,
 } from '../../src/services/cooking-chef';
+import { cookingPrivateScopePredicate } from '../../src/services/cooking-tenant-scope';
 import type { Ingredient } from '../../src/services/cooking-chef';
 
 // ── Migration schema integrity ────────────────────────────────────
@@ -87,28 +93,41 @@ describe('QA: Cooking migration schema', () => {
     expect(names).toContain('updated_at');
   });
 
-  it('meal_plans has UNIQUE constraint on (user_id, date, meal_type)', () => {
-    testDb.prepare("INSERT INTO meal_plans (user_id, date, meal_type, title) VALUES (1, '2024-06-15', 'dinner', 'A')").run();
+  it('meal_plans has tenant-aware UNIQUE constraint on (tenant_id, user_id, date, meal_type)', () => {
+    testDb.prepare("INSERT INTO meal_plans (tenant_id, owner_user_id, user_id, date, meal_type, title) VALUES (10, 1, 1, '2024-06-15', 'dinner', 'A')").run();
     expect(() => {
-      testDb.prepare("INSERT INTO meal_plans (user_id, date, meal_type, title) VALUES (1, '2024-06-15', 'dinner', 'B')").run();
+      testDb.prepare("INSERT INTO meal_plans (tenant_id, owner_user_id, user_id, date, meal_type, title) VALUES (10, 1, 1, '2024-06-15', 'dinner', 'B')").run();
     }).toThrow();
+    expect(() => {
+      testDb.prepare("INSERT INTO meal_plans (tenant_id, owner_user_id, user_id, date, meal_type, title) VALUES (20, 1, 1, '2024-06-15', 'dinner', 'Tenant B')").run();
+    }).not.toThrow();
   });
 
-  it('shopping_lists has UNIQUE constraint on (user_id, week_start)', () => {
-    testDb.prepare("INSERT INTO shopping_lists (user_id, week_start, items) VALUES (1, '2024-06-17', '[]')").run();
+  it('shopping_lists has tenant-aware UNIQUE constraint on (tenant_id, user_id, week_start)', () => {
+    testDb.prepare("INSERT INTO shopping_lists (tenant_id, owner_user_id, user_id, week_start, items) VALUES (10, 1, 1, '2024-06-17', '[]')").run();
     expect(() => {
-      testDb.prepare("INSERT INTO shopping_lists (user_id, week_start, items) VALUES (1, '2024-06-17', '[]')").run();
+      testDb.prepare("INSERT INTO shopping_lists (tenant_id, owner_user_id, user_id, week_start, items) VALUES (10, 1, 1, '2024-06-17', '[]')").run();
     }).toThrow();
+    expect(() => {
+      testDb.prepare("INSERT INTO shopping_lists (tenant_id, owner_user_id, user_id, week_start, items) VALUES (20, 1, 1, '2024-06-17', '[]')").run();
+    }).not.toThrow();
+  });
+
+  it('runtime private-scope predicate requires explicit tenant columns without tenant/user fallback', () => {
+    const predicate = cookingPrivateScopePredicate();
+    expect(predicate).toContain('tenant_id = ?');
+    expect(predicate).toContain('owner_user_id = ?');
+    expect(predicate).not.toMatch(/COALESCE\([^)]*tenant_id[^)]*user_id/i);
   });
 
   it('recipes.servings defaults to 1', () => {
-    testDb.prepare("INSERT INTO recipes (user_id, title, ingredients) VALUES (1, 'Test', '[]')").run();
+    testDb.prepare("INSERT INTO recipes (tenant_id, owner_user_id, user_id, title, ingredients) VALUES (1, 1, 1, 'Test', '[]')").run();
     const row = testDb.prepare('SELECT servings FROM recipes WHERE title = ?').get('Test') as any;
     expect(row.servings).toBe(1);
   });
 
   it('shopping_lists.status defaults to active', () => {
-    testDb.prepare("INSERT INTO shopping_lists (user_id, week_start, items) VALUES (1, '2024-06-17', '[]')").run();
+    testDb.prepare("INSERT INTO shopping_lists (tenant_id, owner_user_id, user_id, week_start, items) VALUES (10, 1, 1, '2024-06-17', '[]')").run();
     const row = testDb.prepare("SELECT status FROM shopping_lists WHERE week_start = '2024-06-17'").get() as any;
     expect(row.status).toBe('active');
   });
@@ -404,12 +423,8 @@ describe('QA: Cooking domain handler', () => {
   });
 
   it('cooking is listed in DefaultDomainName type', async () => {
-    // Verify the type was properly updated
-    const { DefaultDomainName } = await import('../../src/domains/types') as any;
-    // The type itself is compile-time, but we can check that bot.ts imports handleCooking
-    // by checking the cooking domain handler exists and is importable
-    const botSource = fs.readFileSync(path.resolve(__dirname, '../../src/bot.ts'), 'utf-8');
-    expect(botSource).toContain("import { handleCooking } from './domains/cooking'");
+    const typesSource = fs.readFileSync(path.resolve(__dirname, '../../src/domains/types.ts'), 'utf-8');
+    expect(typesSource).toContain("| 'cooking'");
   });
 });
 
@@ -452,13 +467,18 @@ describe('QA: Cooking prompt file', () => {
 // ── Tool definitions ──────────────────────────────────────────────
 
 describe('QA: Cooking tool definitions', () => {
-  it('all 8 cooking tools are defined in TOOLS array', async () => {
+  it('all cooking tools are defined in TOOLS array', async () => {
     const { TOOLS } = await import('../../src/services/anthropic');
     const cookingTools = TOOLS.filter((t: any) => t.name.startsWith('cooking_'));
     const expectedTools = [
       'cooking_add_recipe',
       'cooking_get_recipes',
       'cooking_delete_recipe',
+      'cooking_upsert_pantry_item',
+      'cooking_get_pantry',
+      'cooking_delete_pantry_item',
+      'cooking_set_preference',
+      'cooking_get_preferences',
       'cooking_set_meal',
       'cooking_get_meal_plan',
       'cooking_delete_meal',

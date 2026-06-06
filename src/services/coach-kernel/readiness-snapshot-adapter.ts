@@ -37,6 +37,10 @@ export interface ReadinessSnapshotInput {
   /** Composite 0-100 from `calculateReadiness`. May be `undefined` when no
    *  wearable is connected — callers should treat that as the neutral case. */
   score?: number;
+  confidence?: ReadinessSnapshot['confidence'];
+  dataSource?: ReadinessSnapshot['dataSource'];
+  isStale?: boolean;
+  reasonCode?: string;
   sleepHours?: number;
   hrvStatus?: 'low' | 'normal' | 'high';
   energyReserve?: number;
@@ -74,7 +78,7 @@ export function scoreToReadinessLevel(
   hasHighSeverityInjury: boolean,
 ): ReadinessLevel {
   if (!Number.isFinite(score)) return NEUTRAL_LEVEL;
-  if (hasHighSeverityInjury && score > 65) return 'orange';
+  if (hasHighSeverityInjury && score >= 40) return 'orange';
   if (score >= 80) return 'green';
   if (score >= 60) return 'yellow';
   if (score >= 40) return 'orange';
@@ -112,6 +116,10 @@ export function readinessResultToSnapshot(
     capturedAt: input.capturedAt ?? new Date().toISOString(),
     level,
     score,
+    confidence: input.confidence ?? (input.score == null ? 'no_data' : 'fresh_wearable'),
+    dataSource: input.dataSource ?? (input.score == null ? 'fallback' : 'wearable'),
+    isStale: input.isStale === true,
+    reasonCode: input.reasonCode,
     sleepHours: input.sleepHours,
     hrvStatus: input.hrvStatus,
     energyReserve: input.energyReserve,

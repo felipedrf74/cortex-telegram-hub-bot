@@ -209,15 +209,8 @@ a { color: inherit; text-decoration: none; }
 .brand-mark {
   width: 24px;
   height: 24px;
-  border-radius: var(--radius-md);
-  background: linear-gradient(135deg, var(--accent), var(--accent-active));
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 14px;
-  font-weight: 700;
-  color: #fff;
-  box-shadow: 0 0 16px rgba(255, 107, 53, 0.4);
+  object-fit: contain;
+  filter: drop-shadow(0 0 12px rgba(255, 107, 53, 0.38));
 }
 .brand-version {
   font-family: var(--font-mono);
@@ -1298,6 +1291,9 @@ table.legacy th {
       <input id="login-token" type="password" placeholder="Portal token" autofocus>
       <button id="login-btn" class="btn btn-primary">Sign In</button>
       <div id="login-error" class="login-error"></div>
+      <div style="margin-top:14px;font-size:12px;color:var(--text-tertiary)">
+        User account? <a href="/user" style="color:var(--accent);font-weight:700">Sign in with email, Google, or Apple</a>
+      </div>
     </div>
   </div>
 </div>
@@ -1314,7 +1310,7 @@ table.legacy th {
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M3 12h18M3 18h18"/></svg>
       </button>
       <div class="brand">
-        <div class="brand-mark">N</div>
+        <img class="brand-mark" src="/assets/nexus-mark.png" alt="" aria-hidden="true">
         <span>Nexus Hub</span>
         <span class="brand-version mono" id="app-version">v—</span>
       </div>
@@ -1375,6 +1371,16 @@ table.legacy th {
         <span class="nav-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/></svg></span>
         <span class="nav-label">Content</span>
         <span class="nav-badge mono" id="nav-content-badge"></span>
+      </a>
+      <a class="nav-item" data-nav="cooking">
+        <span class="nav-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 3v7a3 3 0 006 0V3"/><path d="M7 3v18"/><path d="M19 3v18"/><path d="M15 3h4a1 1 0 011 1v7a4 4 0 01-4 4h-1"/></svg></span>
+        <span class="nav-label">Cooking</span>
+        <span class="nav-badge mono" id="nav-cooking-badge"></span>
+      </a>
+      <a class="nav-item" data-nav="notifications">
+        <span class="nav-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 8a6 6 0 10-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9"/><path d="M13.73 21a2 2 0 01-3.46 0"/></svg></span>
+        <span class="nav-label">Notifications</span>
+        <span class="nav-badge mono" id="nav-notifications-badge"></span>
       </a>
     </nav>
 
@@ -1782,6 +1788,7 @@ table.legacy th {
             <button class="btn-sm" id="cost-range-30" onclick="loadCostByDomain(30)">30d</button>
           </div>
           <div id="cost-provider-split" style="flex:1;display:flex;gap:var(--space-3);font-size:11px;font-family:var(--font-mono)"></div>
+          <div id="cost-pricing-status" style="font-size:11px;font-family:var(--font-mono);color:var(--text-tertiary)"></div>
           <canvas id="cost-sparkline" width="180" height="32" style="opacity:0.9"></canvas>
         </div>
 
@@ -1835,17 +1842,17 @@ table.legacy th {
               <tr style="background:rgba(33,150,243,0.08)">
                 <td><span class="badge" style="background:var(--info)">Gemini</span></td>
                 <td><code>gemini-2.5-flash-lite</code></td>
-                <td class="text-right mono">$0.15</td>
-                <td class="text-right mono">$0.60</td>
+                <td class="text-right mono">$0.10</td>
+                <td class="text-right mono">$0.40</td>
                 <td>✅</td>
                 <td>✅</td>
                 <td><span class="badge badge-neutral">Classify · Other domains</span></td>
               </tr>
               <tr style="background:rgba(33,150,243,0.08)">
                 <td><span class="badge" style="background:var(--info)">Gemini</span></td>
-                <td><code>gemini-3-flash</code></td>
-                <td class="text-right mono">$0.25</td>
-                <td class="text-right mono">$1.50</td>
+                <td><code>gemini-2.5-flash</code></td>
+                <td class="text-right mono">$0.30</td>
+                <td class="text-right mono">$2.50</td>
                 <td>✅</td>
                 <td>✅</td>
                 <td><span class="badge badge-neutral">Triathlon · Content · Finance · Cooking</span></td>
@@ -1854,7 +1861,7 @@ table.legacy th {
                 <td><span class="badge" style="background:var(--info)">Gemini</span></td>
                 <td><code>gemini-2.5-flash</code></td>
                 <td class="text-right mono">$0.15</td>
-                <td class="text-right mono">$0.60</td>
+                <td class="text-right mono">$1.25</td>
                 <td>✅ Best</td>
                 <td>✅</td>
                 <td><span class="badge badge-neutral">Receipt Vision</span></td>
@@ -1862,8 +1869,8 @@ table.legacy th {
               <tr>
                 <td><span class="badge badge-success">OpenAI</span></td>
                 <td><code>gpt-5.4-mini</code></td>
-                <td class="text-right mono">$0.40</td>
-                <td class="text-right mono">$1.60</td>
+                <td class="text-right mono">$0.75</td>
+                <td class="text-right mono">$4.50</td>
                 <td>✅</td>
                 <td>✅</td>
                 <td><span class="badge badge-neutral">Receipt Verify (dual-model)</span></td>
@@ -1880,8 +1887,8 @@ table.legacy th {
               <tr style="opacity:0.6">
                 <td><span class="badge" style="background:var(--warning)">Anthropic</span></td>
                 <td><code>claude-haiku-4-5</code></td>
-                <td class="text-right mono">$0.80</td>
-                <td class="text-right mono">$4.00</td>
+                <td class="text-right mono">$1.00</td>
+                <td class="text-right mono">$5.00</td>
                 <td>✅</td>
                 <td>✅</td>
                 <td><span class="badge badge-neutral">Classifier fallback</span></td>
@@ -2013,6 +2020,37 @@ table.legacy th {
         </div>
       </div>
 
+      <!-- ────────── Tenant scope picker (2026-05-04 — content-creation-ui) ─
+        The V1 admin Content routes (/api/v1/admin/content/links,
+        /voice-dna upsert, /pillars-when-scoped) require explicit
+        user/tenant scope. This card lets the operator pick which
+        user/tenant context the Content panels operate on. The scope
+        is persisted to localStorage and attached as
+        x-nexus-user-id / x-nexus-tenant-id headers automatically
+        by `apiFetch` for any /api/v1/admin/content/* call.
+      ─────────────────────────────────────────────────────────────── -->
+      <div class="card" id="content-scope-card" style="margin-bottom:var(--space-4);border:1px solid var(--accent);background:var(--bg-elevated)">
+        <div class="card-header">
+          <div>
+            <div class="card-title">🎯 Tenant Scope</div>
+            <span class="card-subtitle" id="content-scope-subtitle">Set the user / tenant context for V1 Content admin actions. Leave both empty to operate as platform/operator (legacy behavior).</span>
+          </div>
+        </div>
+        <div style="padding:var(--space-3);display:flex;flex-wrap:wrap;gap:var(--space-2);align-items:center">
+          <label style="font-size:11px;color:var(--text-secondary);display:flex;flex-direction:column;gap:4px">
+            User ID
+            <input type="number" id="content-scope-user-id" min="0" style="width:120px;padding:6px 10px;border-radius:var(--radius-sm);border:1px solid var(--border);background:var(--bg-tertiary);color:var(--text-primary);font-size:12px" placeholder="e.g. 1">
+          </label>
+          <label style="font-size:11px;color:var(--text-secondary);display:flex;flex-direction:column;gap:4px">
+            Tenant ID
+            <input type="number" id="content-scope-tenant-id" min="0" style="width:120px;padding:6px 10px;border-radius:var(--radius-sm);border:1px solid var(--border);background:var(--bg-tertiary);color:var(--text-primary);font-size:12px" placeholder="e.g. 1">
+          </label>
+          <button class="btn btn-sm" onclick="saveContentScope()" id="content-scope-save-btn" style="margin-top:18px">Apply</button>
+          <button class="btn btn-ghost btn-sm" onclick="clearContentScope()" id="content-scope-clear-btn" style="margin-top:18px">Clear</button>
+          <span id="content-scope-status" style="margin-left:var(--space-3);margin-top:18px;font-size:11px;color:var(--text-tertiary)"></span>
+        </div>
+      </div>
+
       <!-- KPI strip -->
       <div class="grid grid-cols-4" style="margin-bottom:var(--space-4)">
         <div class="kpi-card">
@@ -2042,6 +2080,15 @@ table.legacy th {
         <div class="card-header">
           <div class="card-title">🎬 Content Pipeline</div>
           <span class="card-subtitle" id="content-pipeline-meta">—</span>
+        </div>
+        <!-- CONTENT-UI-O4: Canonical 12-bucket lifecycle band (visible
+             when scope is active; collapses when no scope is set). -->
+        <div id="content-canonical-lifecycle-card" style="display:none;padding:var(--space-3);border-bottom:1px solid var(--border)">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:var(--space-2)">
+            <div style="font-size:12px;font-weight:600">Lifecycle (12-stage canonical)</div>
+            <span style="font-size:11px;color:var(--text-tertiary)" id="content-canonical-lifecycle-meta">—</span>
+          </div>
+          <div id="content-canonical-lifecycle-band" style="display:flex;gap:6px;flex-wrap:wrap"></div>
         </div>
         <div id="content-pipeline-stages" class="grid grid-cols-auto" style="margin-bottom:var(--space-4)"></div>
         <div id="content-pipeline-recent"></div>
@@ -2125,6 +2172,65 @@ table.legacy th {
         </div>
       </div>
 
+      <!-- ──────────────────────────────────────────────────────────────────
+        Performance dashboard (CONTENT-UI-O3, 2026-05-04)
+        Read-only aggregate of topics / scripts / radar feedback for the
+        currently scoped (userId, tenantId). Renders highlights ("what's
+        working") and warnings ("what's underperforming"). Only loads
+        when scope is active.
+      ─────────────────────────────────────────────────────────────────── -->
+      <div class="card" id="content-performance-card" style="margin-bottom:var(--space-4);display:none">
+        <div class="card-header" style="display:flex;justify-content:space-between;align-items:center">
+          <div>
+            <div class="card-title">📈 Performance (scoped tenant)</div>
+            <span class="card-subtitle" id="content-performance-meta">—</span>
+          </div>
+          <button class="btn btn-ghost btn-sm" onclick="loadContentPerformance()" id="content-performance-refresh-btn">↻ Refresh</button>
+        </div>
+        <div class="grid grid-cols-4" style="padding:var(--space-3);border-bottom:1px solid var(--border)">
+          <div class="kpi-card">
+            <div class="kpi-label">Topics total</div>
+            <div class="kpi-value" id="content-perf-topics-total">—</div>
+            <div class="kpi-sub" id="content-perf-topics-sub">by status</div>
+          </div>
+          <div class="kpi-card">
+            <div class="kpi-label">Published 30d</div>
+            <div class="kpi-value" id="content-perf-published-30d">—</div>
+            <div class="kpi-sub">live cadence</div>
+          </div>
+          <div class="kpi-card">
+            <div class="kpi-label">Scripts 30d</div>
+            <div class="kpi-value" id="content-perf-scripts-30d">—</div>
+            <div class="kpi-sub" id="content-perf-scripts-sub">script velocity</div>
+          </div>
+          <div class="kpi-card">
+            <div class="kpi-label">Radar feedback</div>
+            <div class="kpi-value" id="content-perf-radar-total">—</div>
+            <div class="kpi-sub" id="content-perf-radar-sub">accept / reject</div>
+          </div>
+        </div>
+        <div class="grid grid-cols-2" style="padding:var(--space-3)">
+          <div>
+            <div class="card-subtitle" style="margin-bottom:var(--space-2);font-weight:600">✅ What's working</div>
+            <ul id="content-perf-highlights" style="margin:0;padding-left:var(--space-4);font-size:12px;color:var(--text-secondary)"></ul>
+          </div>
+          <div>
+            <div class="card-subtitle" style="margin-bottom:var(--space-2);font-weight:600">⚠️ Underperforming</div>
+            <ul id="content-perf-warnings" style="margin:0;padding-left:var(--space-4);font-size:12px;color:var(--text-secondary)"></ul>
+          </div>
+        </div>
+        <div class="grid grid-cols-2" style="padding:var(--space-3);border-top:1px solid var(--border)">
+          <div>
+            <div class="card-subtitle" style="margin-bottom:var(--space-2);font-weight:600">Top accepted topics</div>
+            <div id="content-perf-top-accepted"><div class="empty">No data yet</div></div>
+          </div>
+          <div>
+            <div class="card-subtitle" style="margin-bottom:var(--space-2);font-weight:600">Top rejected topics</div>
+            <div id="content-perf-top-rejected"><div class="empty">No data yet</div></div>
+          </div>
+        </div>
+      </div>
+
       <!-- YouTube research -->
       <div class="card" style="margin-bottom:var(--space-4)">
         <div class="card-header" style="display:flex;justify-content:space-between;align-items:center">
@@ -2170,6 +2276,247 @@ table.legacy th {
           <span class="card-subtitle">Chat slash commands with usage over the last 7 and 30 days</span>
         </div>
         <div id="content-commands-groups"><div class="empty">Loading commands…</div></div>
+      </div>
+    </section>
+
+    <!-- ════════════════════ COOKING ════════════════════ -->
+    <section class="section" data-section="cooking">
+      <div class="section-header">
+        <div>
+          <h1 class="section-title">Cooking</h1>
+          <div class="section-subtitle">Scoped preference review, pantry management, and Cooking setup diagnostics</div>
+        </div>
+        <div class="section-actions">
+          <button class="btn btn-ghost btn-sm" id="cooking-refresh-btn">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 11-3-6.7L21 8M21 3v5h-5"/></svg>
+            Refresh
+          </button>
+        </div>
+      </div>
+
+      <div class="card" style="margin-bottom:var(--space-4)">
+        <div class="card-header">
+          <div>
+            <div class="card-title">Target Scope</div>
+            <span class="card-subtitle">Portal access is backend-authorized; current operator scoping requires tenant ID to match user ID.</span>
+          </div>
+          <span class="badge badge-neutral mono" id="cooking-scope-status">No user selected</span>
+        </div>
+        <div class="grid grid-cols-4" style="gap:var(--space-3);align-items:end">
+          <div>
+            <label class="label" for="cooking-target-user-id">User ID</label>
+            <input type="number" min="1" id="cooking-target-user-id" placeholder="42" style="width:100%;padding:8px 10px;border-radius:var(--radius-sm);border:1px solid var(--border);background:var(--bg-tertiary);color:var(--text-primary)">
+          </div>
+          <div>
+            <label class="label" for="cooking-target-tenant-id">Tenant ID</label>
+            <input type="number" min="1" id="cooking-target-tenant-id" placeholder="same as user" style="width:100%;padding:8px 10px;border-radius:var(--radius-sm);border:1px solid var(--border);background:var(--bg-tertiary);color:var(--text-primary)">
+          </div>
+          <div>
+            <button class="btn btn-sm" id="cooking-load-btn" style="width:100%">Load Cooking</button>
+          </div>
+          <div>
+            <button class="btn btn-ghost btn-sm" id="cooking-clear-btn" style="width:100%">Clear</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="grid grid-cols-4" style="margin-bottom:var(--space-4)">
+        <div class="kpi-card">
+          <div class="kpi-label">Preference memories</div>
+          <div class="kpi-value" id="cooking-kpi-preferences">—</div>
+          <div class="kpi-sub" id="cooking-kpi-preferences-sub">scoped metadata</div>
+        </div>
+        <div class="kpi-card">
+          <div class="kpi-label">Pantry items</div>
+          <div class="kpi-value" id="cooking-kpi-pantry">—</div>
+          <div class="kpi-sub" id="cooking-kpi-pantry-sub">including expired</div>
+        </div>
+        <div class="kpi-card">
+          <div class="kpi-label">Allergies</div>
+          <div class="kpi-value" id="cooking-kpi-allergies">—</div>
+          <div class="kpi-sub">from read model</div>
+        </div>
+        <div class="kpi-card">
+          <div class="kpi-label">Diet rules</div>
+          <div class="kpi-value" id="cooking-kpi-diet">—</div>
+          <div class="kpi-sub">restrictions</div>
+        </div>
+      </div>
+
+      <div class="grid grid-cols-2" style="margin-bottom:var(--space-4)">
+        <div class="card">
+          <div class="card-header">
+            <div>
+              <div class="card-title">Preference Review</div>
+              <span class="card-subtitle" id="cooking-preferences-meta">Select a user to load Cooking preferences</span>
+            </div>
+          </div>
+          <div style="padding:var(--space-3);border-bottom:1px solid var(--border)">
+            <div style="display:grid;grid-template-columns:1fr 1.4fr auto auto;gap:var(--space-2);align-items:end">
+              <div>
+                <label class="label" for="cooking-preference-kind">Kind</label>
+                <select id="cooking-preference-kind" style="width:100%;padding:7px 10px;border-radius:var(--radius-sm);border:1px solid var(--border);background:var(--bg-tertiary);color:var(--text-primary)">
+                  <option value="allergy">Allergy</option>
+                  <option value="dietary_restriction">Dietary restriction</option>
+                  <option value="disliked_ingredient">Disliked ingredient</option>
+                  <option value="preferred_ingredient">Preferred ingredient</option>
+                  <option value="equipment">Equipment</option>
+                  <option value="weekday_max_prep_minutes">Weekday prep minutes</option>
+                  <option value="budget_limit">Budget limit</option>
+                  <option value="budget_currency">Budget currency</option>
+                  <option value="batch_cooking_preferred">Batch cooking preferred</option>
+                  <option value="training_day_preference">Training day preference</option>
+                  <option value="cooking_skill_level">Cooking skill level</option>
+                  <option value="grocery_preference">Grocery preference</option>
+                </select>
+              </div>
+              <div>
+                <label class="label" for="cooking-preference-value">Value</label>
+                <input type="text" id="cooking-preference-value" placeholder="peanuts, 20, true…" style="width:100%;padding:8px 10px;border-radius:var(--radius-sm);border:1px solid var(--border);background:var(--bg-tertiary);color:var(--text-primary)">
+              </div>
+              <label class="flex items-center" style="gap:6px;white-space:nowrap;padding-bottom:8px">
+                <input type="checkbox" id="cooking-preference-correction" checked>
+                <span class="text-muted" style="font-size:12px">Correction</span>
+              </label>
+              <button class="btn btn-sm" id="cooking-save-preference-btn">Save</button>
+            </div>
+          </div>
+          <div style="padding:var(--space-3);border-bottom:1px solid var(--border)">
+            <div class="text-muted" style="font-size:11px;text-transform:uppercase;letter-spacing:.04em;margin-bottom:var(--space-2)">Summary</div>
+            <div id="cooking-preferences-summary" style="font-size:12px;line-height:1.5;color:var(--text-secondary)">No preferences loaded</div>
+          </div>
+          <div id="cooking-preferences-list"><div class="empty">No Cooking preferences loaded</div></div>
+        </div>
+
+        <div class="card">
+          <div class="card-header">
+            <div>
+              <div class="card-title">Pantry Editor</div>
+              <span class="card-subtitle" id="cooking-pantry-meta">Select a user to load pantry state</span>
+            </div>
+          </div>
+          <div style="padding:var(--space-3);border-bottom:1px solid var(--border)">
+            <div style="display:grid;grid-template-columns:1.5fr .7fr .7fr 1fr;gap:var(--space-2);margin-bottom:var(--space-2)">
+              <input type="text" id="cooking-pantry-name" placeholder="Ingredient" style="padding:7px 10px;border-radius:var(--radius-sm);border:1px solid var(--border);background:var(--bg-tertiary);color:var(--text-primary)">
+              <input type="text" id="cooking-pantry-quantity" placeholder="Qty" style="padding:7px 10px;border-radius:var(--radius-sm);border:1px solid var(--border);background:var(--bg-tertiary);color:var(--text-primary)">
+              <input type="text" id="cooking-pantry-unit" placeholder="Unit" style="padding:7px 10px;border-radius:var(--radius-sm);border:1px solid var(--border);background:var(--bg-tertiary);color:var(--text-primary)">
+              <input type="text" id="cooking-pantry-category" placeholder="Category" style="padding:7px 10px;border-radius:var(--radius-sm);border:1px solid var(--border);background:var(--bg-tertiary);color:var(--text-primary)">
+            </div>
+            <div style="display:grid;grid-template-columns:1fr 1fr 1.5fr auto;gap:var(--space-2)">
+              <input type="date" id="cooking-pantry-expires-at" style="padding:7px 10px;border-radius:var(--radius-sm);border:1px solid var(--border);background:var(--bg-tertiary);color:var(--text-primary)">
+              <select id="cooking-pantry-freshness" style="padding:7px 10px;border-radius:var(--radius-sm);border:1px solid var(--border);background:var(--bg-tertiary);color:var(--text-primary)">
+                <option value="">Freshness</option>
+                <option value="fresh">Fresh</option>
+                <option value="aging">Aging</option>
+                <option value="expired">Expired</option>
+                <option value="unknown">Unknown</option>
+              </select>
+              <input type="text" id="cooking-pantry-notes" placeholder="Notes" style="padding:7px 10px;border-radius:var(--radius-sm);border:1px solid var(--border);background:var(--bg-tertiary);color:var(--text-primary)">
+              <button class="btn btn-sm" id="cooking-save-pantry-btn">Save item</button>
+            </div>
+          </div>
+          <div id="cooking-pantry-list"><div class="empty">No pantry loaded</div></div>
+        </div>
+      </div>
+
+      <div class="card" style="margin-bottom:var(--space-4)">
+        <div class="card-header">
+          <div>
+            <div class="card-title">Substitution Acceptance</div>
+            <span class="card-subtitle">Apply an already-reviewed safe substitution to a scoped meal, linked recipe, and optional shopping list.</span>
+          </div>
+          <span class="badge badge-neutral" id="cooking-substitution-status">No substitution applied</span>
+        </div>
+        <div style="padding:var(--space-3);border-bottom:1px solid var(--border)">
+          <div style="display:grid;grid-template-columns:1fr 1fr 1.1fr 1.1fr 1.2fr auto;gap:var(--space-2);align-items:end">
+            <div>
+              <label class="label" for="cooking-substitution-date">Meal date</label>
+              <input type="date" id="cooking-substitution-date" style="width:100%;padding:8px 10px;border-radius:var(--radius-sm);border:1px solid var(--border);background:var(--bg-tertiary);color:var(--text-primary)">
+            </div>
+            <div>
+              <label class="label" for="cooking-substitution-meal-type">Meal type</label>
+              <select id="cooking-substitution-meal-type" style="width:100%;padding:8px 10px;border-radius:var(--radius-sm);border:1px solid var(--border);background:var(--bg-tertiary);color:var(--text-primary)">
+                <option value="breakfast">Breakfast</option>
+                <option value="lunch">Lunch</option>
+                <option value="dinner">Dinner</option>
+                <option value="snack">Snack</option>
+              </select>
+            </div>
+            <div>
+              <label class="label" for="cooking-substitution-original">Original ingredient</label>
+              <input type="text" id="cooking-substitution-original" placeholder="peanuts" style="width:100%;padding:8px 10px;border-radius:var(--radius-sm);border:1px solid var(--border);background:var(--bg-tertiary);color:var(--text-primary)">
+            </div>
+            <div>
+              <label class="label" for="cooking-substitution-suggested">Suggested ingredient</label>
+              <input type="text" id="cooking-substitution-suggested" placeholder="sunflower seeds" style="width:100%;padding:8px 10px;border-radius:var(--radius-sm);border:1px solid var(--border);background:var(--bg-tertiary);color:var(--text-primary)">
+            </div>
+            <div>
+              <label class="label" for="cooking-substitution-reason">Reason</label>
+              <select id="cooking-substitution-reason" style="width:100%;padding:8px 10px;border-radius:var(--radius-sm);border:1px solid var(--border);background:var(--bg-tertiary);color:var(--text-primary)">
+                <option value="allergy">Allergy</option>
+                <option value="dietary_restriction">Dietary restriction</option>
+                <option value="disliked_ingredient">Disliked ingredient</option>
+                <option value="expired_pantry">Expired pantry</option>
+              </select>
+            </div>
+            <button class="btn btn-sm" id="cooking-apply-substitution-btn">Apply</button>
+          </div>
+          <label class="flex items-center" style="gap:6px;margin-top:var(--space-3);white-space:nowrap">
+            <input type="checkbox" id="cooking-substitution-update-shopping" checked>
+            <span class="text-muted" style="font-size:12px">Refresh the scoped shopping list after applying</span>
+          </label>
+        </div>
+        <div id="cooking-substitution-result" style="padding:var(--space-3);font-size:12px;color:var(--text-secondary)">
+          Use this after a candidate is reviewed for allergy, dietary, disliked-ingredient, or pantry freshness safety.
+        </div>
+      </div>
+    </section>
+
+    <!-- ════════════════════ NOTIFICATIONS ════════════════════ -->
+    <section class="section" data-section="notifications">
+      <div class="section-header">
+        <div>
+          <h1 class="section-title">Decision Center</h1>
+          <div class="section-subtitle">Secretary-orchestrated notification intents, decisions, and safe portal previews</div>
+        </div>
+      </div>
+
+      <div class="kpi-grid" style="margin-bottom:var(--space-4)">
+        <div class="kpi-card">
+          <div class="kpi-label">Unread</div>
+          <div class="kpi-value" id="notification-kpi-unread">—</div>
+          <div class="kpi-sub">active center items</div>
+        </div>
+        <div class="kpi-card">
+          <div class="kpi-label">Needs decision</div>
+          <div class="kpi-value" id="notification-kpi-decision">—</div>
+          <div class="kpi-sub">approval or conflict</div>
+        </div>
+        <div class="kpi-card">
+          <div class="kpi-label">Preferences</div>
+          <div class="kpi-value" id="notification-kpi-profiles">—</div>
+          <div class="kpi-sub">scoped profiles</div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-header">
+          <div>
+            <div class="card-title">Notification center</div>
+            <div class="card-subtitle">Portal shows privacy-safe bodies; private detail stays in the authenticated app</div>
+          </div>
+        </div>
+        <div id="notification-center-content"><div class="empty">Loading notifications…</div></div>
+      </div>
+
+      <div class="card" style="margin-top:var(--space-4)">
+        <div class="card-header">
+          <div>
+            <div class="card-title">Notification preferences</div>
+            <div class="card-subtitle">Channel and digest settings by scoped user profile</div>
+          </div>
+        </div>
+        <div id="notification-preferences-content"><div class="empty">Loading preferences…</div></div>
       </div>
     </section>
 
@@ -2475,10 +2822,59 @@ table.legacy th {
     location.reload();
   });
 
+  // ────────── Tenant scope (added 2026-05-04 — content-creation-ui slice) ──
+  //
+  // The Content Creation V1 admin routes (/api/v1/admin/content/links,
+  // /voice-dna upsert, /pillars when scoped) require an explicit
+  // user/tenant scope via x-nexus-user-id / x-nexus-tenant-id headers OR
+  // body fields. Before this slice the portal SPA sent NO scope at all,
+  // which silently caused scoped writes to be rejected.
+  //
+  // We persist the active scope to localStorage so it survives reloads,
+  // expose it as a top-of-Content-section input, and make `apiFetch`
+  // automatically attach the scope headers ONLY when the URL is a
+  // scoped content or notification route (so legacy /api/* paths keep
+  // their old behavior). Operators can clear the scope by leaving the
+  // inputs empty.
+  const SCOPE_STORAGE_KEY = 'nexus-portal-content-scope-v1';
+
+  function loadStoredScope() {
+    try {
+      const raw = localStorage.getItem(SCOPE_STORAGE_KEY);
+      if (!raw) return { userId: '', tenantId: '' };
+      const parsed = JSON.parse(raw);
+      return { userId: parsed.userId || '', tenantId: parsed.tenantId || '' };
+    } catch (_) { return { userId: '', tenantId: '' }; }
+  }
+  function persistScope(scope) {
+    try {
+      localStorage.setItem(SCOPE_STORAGE_KEY, JSON.stringify({
+        userId: scope.userId || '', tenantId: scope.tenantId || ''
+      }));
+    } catch (_) {}
+  }
+  let CONTENT_SCOPE = loadStoredScope();
+
+  function isContentScopedRoute(url) {
+    return typeof url === 'string'
+      && url.includes('/api/v1/admin/content');
+  }
+  function isNotificationScopedRoute(url) {
+    return typeof url === 'string'
+      && (
+        url.includes('/api/notifications')
+        || url.includes('/api/notification-preferences')
+      );
+  }
+
   // ────────── Fetch wrapper with auth ──────────
   async function apiFetch(url, opts = {}) {
     const headers = { ...(opts.headers || {}) };
     if (TOKEN) headers['Authorization'] = 'Bearer ' + TOKEN;
+    if (isContentScopedRoute(url) || isNotificationScopedRoute(url)) {
+      if (CONTENT_SCOPE.userId) headers['x-nexus-user-id'] = String(CONTENT_SCOPE.userId);
+      if (CONTENT_SCOPE.tenantId) headers['x-nexus-tenant-id'] = String(CONTENT_SCOPE.tenantId);
+    }
     const res = await fetch(url, { ...opts, headers });
     if (res.status === 401) {
       TOKEN = '';
@@ -2486,6 +2882,46 @@ table.legacy th {
       throw new Error('Unauthorized');
     }
     return res;
+  }
+
+  async function responseErrorMessage(res) {
+    try {
+      const body = await res.json();
+      return body?.error?.message || body?.message || body?.error || ('HTTP ' + res.status);
+    } catch (_) {
+      return 'HTTP ' + res.status;
+    }
+  }
+
+  async function apiJson(url, opts = {}) {
+    const res = await apiFetch(url, opts);
+    if (!res.ok) throw new Error(await responseErrorMessage(res));
+    return res.json();
+  }
+
+  function adminLoadErrorMessage(err) {
+    const raw = err && err.message ? err.message : String(err || 'Request failed');
+    if (raw === 'Unauthorized' || /token|session|unauthorized/i.test(raw)) {
+      return 'This section needs the current admin-capable portal credential. Sign out and sign in with the current PORTAL_ADMIN_TOKEN or operator token.';
+    }
+    return raw;
+  }
+
+  function cardErrorHtml(title, err) {
+    return '<div class="empty" style="text-align:left;max-width:620px;margin:0 auto">' +
+      '<div style="font-weight:700;color:var(--error);margin-bottom:6px">' + esc(title) + '</div>' +
+      '<div class="text-muted">' + esc(adminLoadErrorMessage(err)) + '</div>' +
+    '</div>';
+  }
+
+  function setCardError(id, title, err) {
+    const el = document.getElementById(id);
+    if (el) el.innerHTML = cardErrorHtml(title, err);
+  }
+
+  function setTableError(tbodyId, colspan, title, err) {
+    const el = document.getElementById(tbodyId);
+    if (el) el.innerHTML = '<tr><td colspan="' + colspan + '">' + cardErrorHtml(title, err) + '</td></tr>';
   }
 
   // ────────── HTML escape ──────────
@@ -2546,7 +2982,7 @@ table.legacy th {
   // ════════════════════════════════════════════════════════════
   // Navigation — hash routing between sections
   // ════════════════════════════════════════════════════════════
-  const SECTIONS = ['dashboard', 'alerts', 'users', 'ai', 'jobs', 'skills', 'content', 'settings', 'invites', 'founders', 'waitlist', 'audit'];
+  const SECTIONS = ['dashboard', 'alerts', 'users', 'ai', 'jobs', 'skills', 'content', 'cooking', 'notifications', 'settings', 'invites', 'founders', 'waitlist', 'audit'];
   let currentSection = 'dashboard';
 
   function navigateTo(section) {
@@ -2571,6 +3007,8 @@ table.legacy th {
     if (section === 'jobs') loadQuickActions();
     if (section === 'skills') loadSkillsUserSelector();
     if (section === 'content') loadContentDashboard();
+    if (section === 'cooking') renderCookingPortal();
+    if (section === 'notifications') loadNotificationPortal();
   }
 
   document.querySelectorAll('[data-nav]').forEach(el => {
@@ -3252,12 +3690,14 @@ table.legacy th {
     body.innerHTML = '<div class="empty">Loading…</div>';
 
     try {
-      const [skillsRes, summaryRes] = await Promise.all([
+      const [skillsRes, summaryRes, pointsRes] = await Promise.all([
         apiFetch('/api/users/' + user.id + '/skills'),
         apiFetch('/api/users/' + user.id + '/data-summary'),
+        apiFetch('/api/billing/nexus-points/packages').catch(() => null),
       ]);
       const skillsData = skillsRes.ok ? await skillsRes.json() : { skills: [] };
       const summary = summaryRes.ok ? await summaryRes.json() : {};
+      const pointsData = pointsRes && pointsRes.ok ? await pointsRes.json() : { packages: [], stripeEnabled: false };
 
       const tier = '<span class="tier-badge tier-' + (user.tier || 'free') + '">' + esc(user.tier || 'free') + '</span>';
       const limit = user.daily_message_limit === 0 ? '∞' : (user.daily_message_limit || 0) + '/day';
@@ -3307,6 +3747,18 @@ table.legacy th {
         '<span class="text-muted" style="font-size:12px">' + k + '</span>' +
         '<span class="mono" style="font-size:12px">' + (v ?? 0) + '</span>' +
       '</div>').join('');
+      const pointOptions = (pointsData.packages || []).map(pkg =>
+        '<option value="' + esc(pkg.productId) + '">' +
+          '$' + Number(pkg.priceUsd || 0).toFixed(0) + ' · ' + Number(pkg.points || 0).toLocaleString() + ' NP' +
+        '</option>'
+      ).join('');
+      const pointsPanel = '<div class="card-title" style="margin-bottom:var(--space-3)">Nexus Points checkout</div>' +
+        '<div style="display:grid;gap:var(--space-2);margin-bottom:var(--space-5)">' +
+          '<select id="slideout-points-package" class="input" ' + (pointsData.stripeEnabled ? '' : 'disabled') + '>' + pointOptions + '</select>' +
+          '<textarea id="slideout-points-note" class="input" rows="2" maxlength="280" placeholder="Required support note" ' + (pointsData.stripeEnabled ? '' : 'disabled') + '></textarea>' +
+          '<button class="btn btn-sm" onclick="createPortalNexusPointsCheckout(' + user.id + ')" ' + (pointsData.stripeEnabled ? '' : 'disabled') + '>Create Stripe checkout URL</button>' +
+          '<div id="slideout-points-result" class="text-muted" style="font-size:12px"></div>' +
+        '</div>';
 
       body.innerHTML =
         '<div style="display:flex;gap:var(--space-3);margin-bottom:var(--space-5)">' +
@@ -3317,7 +3769,9 @@ table.legacy th {
         '<div class="card-title" style="margin-bottom:var(--space-3)">Skill Access</div>' +
         '<div class="grid" style="gap:var(--space-3);margin-bottom:var(--space-5)">' + skillsHtml + '</div>' +
         '<div class="card-title" style="margin-bottom:var(--space-3)">Data Summary</div>' +
-        '<div>' + dataRows + '</div>';
+        '<div style="margin-bottom:var(--space-4)">' + dataRows + '</div>' +
+        pointsPanel +
+        '<button class="btn btn-sm" onclick="openCookingManagerForUser(' + user.id + ')" style="width:100%">Open Cooking setup →</button>';
     } catch (err) {
       body.innerHTML = '<div class="empty">Failed to load user details</div>';
     }
@@ -3331,6 +3785,37 @@ table.legacy th {
   document.getElementById('slideout-close').addEventListener('click', closeUserSlideout);
   document.getElementById('user-slideout-backdrop').addEventListener('click', closeUserSlideout);
   document.addEventListener('keydown', e => { if (e.key === 'Escape') closeUserSlideout(); });
+
+  async function createPortalNexusPointsCheckout(userId) {
+    const packageEl = document.getElementById('slideout-points-package');
+    const noteEl = document.getElementById('slideout-points-note');
+    const resultEl = document.getElementById('slideout-points-result');
+    const packageId = packageEl && packageEl.value;
+    const note = noteEl && noteEl.value ? noteEl.value.trim() : '';
+    if (!packageId || !note) {
+      resultEl.textContent = 'Choose a package and add a support note.';
+      return;
+    }
+    resultEl.textContent = 'Creating checkout session…';
+    try {
+      const res = await apiFetch('/api/users/' + userId + '/billing/nexus-points/stripe-checkout', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ packageId, note }),
+      });
+      const body = await res.json();
+      if (!res.ok || body.ok === false) {
+        throw new Error(body?.error?.message || body?.message || 'Checkout failed');
+      }
+      const checkoutUrl = body.checkoutUrl || body.data?.checkoutUrl;
+      resultEl.innerHTML = checkoutUrl
+        ? '<a href="' + esc(checkoutUrl) + '" target="_blank" rel="noopener">Open Stripe checkout</a>'
+        : 'Checkout created, but no URL was returned.';
+    } catch (err) {
+      resultEl.textContent = err && err.message ? err.message : 'Checkout failed';
+    }
+  }
+  window.createPortalNexusPointsCheckout = createPortalNexusPointsCheckout;
 
   document.getElementById('slideout-suspend-btn').addEventListener('click', async () => {
     if (!currentSlideoutUser) return;
@@ -3941,6 +4426,18 @@ table.legacy th {
         }).join('');
       }
 
+      const pricingEl = document.getElementById('cost-pricing-status');
+      if (pricingEl) {
+        const statuses = d.pricingStatus || [];
+        const unresolved = statuses.find(p => p.pricingStatus === 'unresolved');
+        const legacy = statuses.find(p => p.pricingStatus === 'legacy');
+        const unresolvedSpend = unresolved ? unresolved.unresolvedSpendUsd || 0 : 0;
+        const legacyRows = legacy ? legacy.rows || 0 : 0;
+        pricingEl.textContent = unresolvedSpend > 0
+          ? 'unresolved pricing $' + unresolvedSpend.toFixed(4)
+          : (legacyRows > 0 ? 'legacy pricing rows ' + legacyRows : 'pricing resolved');
+      }
+
       // ── Sparkline ─────────────────────────────────────────────
       const canvas = document.getElementById('cost-sparkline');
       if (canvas && d.dailySeries && d.dailySeries.length > 0) {
@@ -4035,13 +4532,133 @@ table.legacy th {
   };
 
   // ════════════════════════════════════════════════════════════
+  // Notification Decision Center
+  // ════════════════════════════════════════════════════════════
+	  async function loadNotificationPortal() {
+	    try {
+	      if (!CONTENT_SCOPE.userId) {
+	        document.getElementById('notification-kpi-unread').textContent = '—';
+	        document.getElementById('notification-kpi-decision').textContent = '—';
+	        document.getElementById('notification-kpi-profiles').textContent = '—';
+	        document.getElementById('notification-center-content').innerHTML =
+	          '<div class="empty">Select a user/tenant scope above to load Decision Center safely.</div>';
+	        document.getElementById('notification-preferences-content').innerHTML =
+	          '<div class="empty">Decision preferences are scoped to a selected user.</div>';
+	        return;
+	      }
+	      const userId = CONTENT_SCOPE.userId;
+	      const tenantId = CONTENT_SCOPE.tenantId || CONTENT_SCOPE.userId;
+	      const query = '?tenantId=' + encodeURIComponent(tenantId);
+	      const [summary, center, prefs] = await Promise.all([
+	        apiJson('/api/users/' + encodeURIComponent(userId) + '/decision-center/summary' + query),
+	        apiJson('/api/users/' + encodeURIComponent(userId) + '/decision-center/decisions' + query + '&limit=100&status=all'),
+	        apiJson('/api/users/' + encodeURIComponent(userId) + '/decision-center/preferences' + query),
+	      ]);
+	      const items = center.items || [];
+	      const openCount = summary.summary?.openCount ?? items.filter(i => ['unread', 'read', 'failed', 'snoozed'].includes(i.status)).length;
+	      const needsDecision = items.filter(i => ['decision_required', 'conflict_detected', 'approval_required', 'reflow_suggestion'].includes(i.type)).length;
+	      const decisionPrefs = prefs.preferences?.decisionPreferences || {};
+	      const profile = prefs.preferences?.profile || {};
+
+	      document.getElementById('notification-kpi-unread').textContent = fmtNum(openCount);
+	      document.getElementById('notification-kpi-decision').textContent = fmtNum(needsDecision);
+	      document.getElementById('notification-kpi-profiles').textContent = profile.pushEnabled ? 'push on' : 'push off';
+	      const navBadge = document.getElementById('nav-notifications-badge');
+	      if (navBadge) navBadge.textContent = openCount ? String(openCount) : '';
+
+	      const grouped = {
+	        all: items,
+        decision: items.filter(i => ['decision_required', 'reflow_suggestion'].includes(i.type)),
+        conflicts: items.filter(i => i.type === 'conflict_detected'),
+        approvals: items.filter(i => i.type === 'approval_required'),
+        training: items.filter(i => i.sourceSkill === 'training'),
+        finance: items.filter(i => i.sourceSkill === 'finance'),
+        security: items.filter(i => i.sourceSkill === 'security' || i.type === 'security_account'),
+      };
+
+      const chips = Object.entries(grouped).map(([key, rows]) =>
+        '<span class="badge ' + (rows.length ? 'badge-accent' : 'badge-neutral') + '" style="margin-right:6px;margin-bottom:6px">' +
+          esc(key) + ' · ' + rows.length +
+        '</span>'
+      ).join('');
+
+	      const rows = items.map(i => '<tr>' +
+	        '<td><span class="badge badge-neutral">' + esc(i.sourceSkill || 'system') + '</span></td>' +
+	        '<td>' +
+	          '<div style="font-weight:600">' + esc(i.title) + '</div>' +
+	          '<div class="text-muted" style="font-size:12px;line-height:1.4">' + esc(i.summary || '') + '</div>' +
+	          (i.blockedByDecisionIds && i.blockedByDecisionIds.length
+	            ? '<div class="badge badge-warning" style="margin-top:6px">blocked by ' + i.blockedByDecisionIds.length + '</div>'
+	            : '') +
+	        '</td>' +
+	        '<td><span class="badge badge-neutral">' + esc(i.type) + '</span></td>' +
+	        '<td><span class="badge ' + (i.urgency === 'urgent' ? 'badge-warning' : 'badge-neutral') + '">' + esc(i.urgency || 'optional') + '</span></td>' +
+	        '<td>' + esc(i.status) + '</td>' +
+	        '<td>' + ((i.actions || []).slice(0, 2).map(a =>
+	          '<button class="btn btn-xs" style="margin-right:4px" onclick="portalDecisionCenterAction(\'' + esc(String(i.decisionId)) + '\',\'' + esc(String(a.id)) + '\')">' + esc(a.label || a.id) + '</button>'
+	        ).join('') || '<span class="text-muted">—</span>') + '</td>' +
+	        '<td class="mono" style="font-size:11px">' + esc(i.createdAt || '—') + '</td>' +
+	      '</tr>').join('');
+
+	      document.getElementById('notification-center-content').innerHTML =
+		'<div style="margin-bottom:var(--space-3)">' + chips + '</div>' +
+	        '<div style="overflow-x:auto"><table class="data-table">' +
+	          '<thead><tr><th>Skill</th><th>Safe preview</th><th>Type</th><th>Urgency</th><th>Status</th><th>Actions</th><th>Created</th></tr></thead>' +
+	          '<tbody>' + (rows || '<tr><td colspan="7"><div class="empty">No Decision Center items</div></td></tr>') + '</tbody>' +
+	        '</table></div>';
+
+	      document.getElementById('notification-preferences-content').innerHTML =
+	        '<div style="overflow-x:auto"><table class="data-table">' +
+	          '<thead><tr><th>User</th><th>Push</th><th>Urgent push</th><th>Time-sensitive</th><th>Auto-hide resolved</th><th>Digest</th><th>Updated</th></tr></thead>' +
+	          '<tbody><tr>' +
+	            '<td class="mono">' + esc(String(userId)) + '</td>' +
+	            '<td>' + (decisionPrefs.pushEnabled ? 'on' : 'off') + '</td>' +
+	            '<td>' + (decisionPrefs.urgentDecisionPushEnabled ? 'on' : 'off') + '</td>' +
+	            '<td>' + (decisionPrefs.timeSensitiveAllowed ? 'on' : 'off') + '</td>' +
+	            '<td>' + (decisionPrefs.autoHideResolved ? 'on' : 'off') + '</td>' +
+	            '<td>' + (profile.digestPassiveItems ? 'on' : 'off') + '</td>' +
+	            '<td class="mono" style="font-size:11px">' + esc(profile.updatedAt || '—') + '</td>' +
+	          '</tr></tbody>' +
+	        '</table></div>';
+	    } catch (err) {
+	      setCardError('notification-center-content', 'Could not load Notification Center', err);
+	      setCardError('notification-preferences-content', 'Could not load notification preferences', err);
+	    }
+	  }
+
+	  window.portalDecisionCenterAction = async function(decisionId, actionId) {
+	    try {
+	      if (!CONTENT_SCOPE.userId) {
+	        showToast('Select a user scope before acting on a decision', false);
+	        return;
+	      }
+	      const tenantId = CONTENT_SCOPE.tenantId || CONTENT_SCOPE.userId;
+	      const r = await apiFetch('/api/users/' + encodeURIComponent(CONTENT_SCOPE.userId) + '/decision-center/decisions/' + encodeURIComponent(decisionId) + '/actions?tenantId=' + encodeURIComponent(tenantId), {
+	        method: 'POST',
+	        headers: { 'Content-Type': 'application/json' },
+	        body: JSON.stringify({
+	          actionId,
+	          idempotencyKey: 'portal-' + decisionId + '-' + actionId + '-' + Date.now(),
+	        }),
+	      });
+	      const d = await r.json();
+	      if (d.ok) {
+	        showToast('Decision action verified');
+	        loadNotificationPortal();
+	      } else {
+	        showToast((d.error && d.error.message) || 'Decision action failed', false);
+	      }
+	    } catch (err) {
+	      showToast('Decision action failed', false);
+	    }
+	  };
+
+  // ════════════════════════════════════════════════════════════
   // Settings
   // ════════════════════════════════════════════════════════════
   async function loadSettings() {
     try {
-      const r = await apiFetch('/api/settings');
-      if (!r.ok) return;
-      const d = await r.json();
+      const d = await apiJson('/api/settings');
       const el = document.getElementById('settings-content');
       const settings = d.settings || [];
       if (settings.length === 0) {
@@ -4095,7 +4712,9 @@ table.legacy th {
           rows +
         '</div>';
       }).join('');
-    } catch { /* silent */ }
+    } catch (err) {
+      setCardError('settings-content', 'Could not load settings', err);
+    }
   }
 
   window.updateSetting = async function(id, value) {
@@ -4129,9 +4748,7 @@ table.legacy th {
   // ════════════════════════════════════════════════════════════
   async function loadInviteCodes() {
     try {
-      const r = await apiFetch('/api/invite-codes');
-      if (!r.ok) return;
-      const d = await r.json();
+      const d = await apiJson('/api/invite-codes');
       const el = document.getElementById('invite-codes-content');
       const codes = d.codes || [];
       if (codes.length === 0) {
@@ -4160,7 +4777,9 @@ table.legacy th {
             '</td>' +
           '</tr>';
         }).join('') + '</tbody></table>';
-    } catch { /* silent */ }
+    } catch (err) {
+      setCardError('invite-codes-content', 'Could not load invite codes', err);
+    }
   }
   window.copyInvite = function(code) {
     if (navigator.clipboard) {
@@ -4192,9 +4811,7 @@ table.legacy th {
   // ════════════════════════════════════════════════════════════
   async function loadFounders() {
     try {
-      const r = await apiFetch('/api/founders');
-      if (!r.ok) return;
-      const d = await r.json();
+      const d = await apiJson('/api/founders');
       const tbody = document.getElementById('founders-tbody');
       const founders = d.founders || [];
       const badge = document.getElementById('nav-founders-count');
@@ -4215,7 +4832,9 @@ table.legacy th {
           '<td class="text-right"><button class="btn btn-xs btn-danger" onclick="removeFounder(\'' + esc(f.email) + '\')">Remove</button></td>' +
         '</tr>';
       }).join('');
-    } catch { /* silent */ }
+    } catch (err) {
+      setTableError('founders-tbody', 5, 'Could not load founders', err);
+    }
   }
   window.removeFounder = async function(email) {
     if (!confirm('Remove founder access for ' + email + '?')) return;
@@ -4256,9 +4875,7 @@ table.legacy th {
     try {
       // Reuse allUsers if the Users tab has already loaded them
       if (!allUsers || allUsers.length === 0) {
-        const r = await apiFetch('/api/users');
-        if (!r.ok) return;
-        const d = await r.json();
+        const d = await apiJson('/api/users');
         allUsers = d.users || [];
       }
       const sel = document.getElementById('audit-filter');
@@ -4280,7 +4897,9 @@ table.legacy th {
       sel.innerHTML = options.join('');
       if (currentValue) sel.value = currentValue;
       auditUsersPopulated = true;
-    } catch { /* silent */ }
+    } catch (err) {
+      throw err;
+    }
   }
 
   async function loadAuditTrail() {
@@ -4288,12 +4907,15 @@ table.legacy th {
       await populateAuditUserDropdown(false);
       const filter = (document.getElementById('audit-filter').value || '').trim();
       const url = filter ? '/api/audit-trail?userId=' + encodeURIComponent(filter) + '&limit=200' : '/api/audit-trail?limit=200';
-      const r = await apiFetch(url);
-      if (!r.ok) return;
-      const d = await r.json();
+      const d = await apiJson(url);
       allAuditEntries = d.entries || [];
       renderAuditTrail();
-    } catch { /* silent */ }
+    } catch (err) {
+      allAuditEntries = [];
+      const count = document.getElementById('audit-count-label');
+      if (count) count.textContent = '0 entries';
+      setTableError('audit-tbody', 5, 'Could not load audit trail', err);
+    }
   }
   function renderAuditTrail() {
     const tbody = document.getElementById('audit-tbody');
@@ -4354,9 +4976,7 @@ table.legacy th {
       if (status) params.set('status', status);
       if (intent) params.set('intent', intent);
       params.set('limit', '500');
-      const r = await apiFetch('/api/waitlist?' + params.toString());
-      if (!r.ok) return;
-      const d = await r.json();
+      const d = await apiJson('/api/waitlist?' + params.toString());
       if (!d.ok) return;
       allWaitlistEntries = d.entries || [];
 
@@ -4382,7 +5002,15 @@ table.legacy th {
       }
 
       renderWaitlist();
-    } catch { /* silent */ }
+    } catch (err) {
+      allWaitlistEntries = [];
+      setText('waitlist-kpi-founder', '—');
+      setText('waitlist-kpi-general', '—');
+      setText('waitlist-kpi-pending', '—');
+      setText('waitlist-kpi-signed', '—');
+      setText('waitlist-count-label', '');
+      setTableError('waitlist-tbody', 7, 'Could not load waitlist', err);
+    }
   }
 
   function setText(id, v) {
@@ -4528,11 +5156,381 @@ table.legacy th {
   });
 
   // ════════════════════════════════════════════════════════════
+  // Cooking portal manager
+  // ════════════════════════════════════════════════════════════
+  const COOKING_PREF_KINDS_NUMERIC = new Set(['weekday_max_prep_minutes', 'budget_limit']);
+  const COOKING_PREF_KINDS_BOOLEAN = new Set(['batch_cooking_preferred']);
+  let cookingPortalState = {
+    userId: null,
+    tenantId: null,
+    preferences: null,
+    pantry: [],
+    error: '',
+    loading: false,
+  };
+
+  function getCookingTarget(quiet = false) {
+    const userInput = document.getElementById('cooking-target-user-id');
+    const tenantInput = document.getElementById('cooking-target-tenant-id');
+    const userId = Number.parseInt(userInput?.value || '', 10);
+    const tenantId = Number.parseInt(tenantInput?.value || userInput?.value || '', 10);
+    if (!Number.isInteger(userId) || userId <= 0 || !Number.isInteger(tenantId) || tenantId <= 0) {
+      if (!quiet) showToast('Enter a valid Cooking user ID', false);
+      return null;
+    }
+    return { userId, tenantId };
+  }
+
+  function setCookingScopeStatus(text, kind = 'neutral') {
+    const el = document.getElementById('cooking-scope-status');
+    if (!el) return;
+    el.textContent = text;
+    el.className = 'badge mono badge-' + kind;
+  }
+
+  function updateCookingKpis() {
+    const prefs = cookingPortalState.preferences?.preferences || cookingPortalState.preferences || {};
+    const profile = prefs.profile || {};
+    const memories = prefs.memories || [];
+    const pantry = cookingPortalState.pantry || [];
+    const allergies = Array.isArray(profile.allergies) ? profile.allergies : [];
+    const restrictions = Array.isArray(profile.dietaryRestrictions) ? profile.dietaryRestrictions : [];
+    const expired = pantry.filter(item => item.freshness_status === 'expired' || item.freshnessStatus === 'expired').length;
+    const badge = document.getElementById('nav-cooking-badge');
+    if (badge) badge.textContent = (memories.length || pantry.length) ? String(memories.length + pantry.length) : '';
+    document.getElementById('cooking-kpi-preferences').textContent = fmtNum(memories.length);
+    document.getElementById('cooking-kpi-preferences-sub').textContent = memories.length ? 'metadata only' : 'scoped metadata';
+    document.getElementById('cooking-kpi-pantry').textContent = fmtNum(pantry.length);
+    document.getElementById('cooking-kpi-pantry-sub').textContent = expired ? expired + ' expired' : 'including expired';
+    document.getElementById('cooking-kpi-allergies').textContent = fmtNum(allergies.length);
+    document.getElementById('cooking-kpi-diet').textContent = fmtNum(restrictions.length);
+  }
+
+  function renderCookingPreferences() {
+    const prefs = cookingPortalState.preferences?.preferences || cookingPortalState.preferences || {};
+    const memories = prefs.memories || [];
+    const meta = document.getElementById('cooking-preferences-meta');
+    const summary = document.getElementById('cooking-preferences-summary');
+    const list = document.getElementById('cooking-preferences-list');
+    if (!cookingPortalState.userId) {
+      meta.textContent = 'Select a user to load Cooking preferences';
+      summary.textContent = 'No preferences loaded';
+      list.innerHTML = '<div class="empty">No Cooking preferences loaded</div>';
+      return;
+    }
+    if (cookingPortalState.error) {
+      meta.textContent = 'Load failed for user ' + cookingPortalState.userId + ' · tenant ' + cookingPortalState.tenantId;
+      summary.textContent = 'Cooking preferences unavailable for this scoped request';
+      list.innerHTML = '<div class="empty">Failed to load Cooking preferences</div>';
+      return;
+    }
+    meta.textContent = 'User ' + cookingPortalState.userId + ' · tenant ' + cookingPortalState.tenantId;
+    summary.textContent = prefs.summary || prefs.skillMemorySummary || 'No preference summary available';
+    if (!memories.length) {
+      list.innerHTML = '<div class="empty">No Cooking preference memories returned</div>';
+      return;
+    }
+    list.innerHTML = '<div style="overflow-x:auto"><table class="data-table">' +
+      '<thead><tr><th>Kind</th><th>Scope</th><th>Confidence</th><th>Freshness</th><th>Updated</th></tr></thead>' +
+      '<tbody>' + memories.map(memory => {
+        const key = memory.memoryKey || memory.memoryType || 'preference';
+        return '<tr>' +
+          '<td><span class="mono">' + esc(key) + '</span></td>' +
+          '<td><span class="badge badge-neutral">' + esc(memory.scope || 'unknown') + '</span></td>' +
+          '<td class="mono">' + esc(memory.confidence ?? '—') + '</td>' +
+          '<td>' + esc(memory.freshnessStatus || memory.status || '—') + '</td>' +
+          '<td class="text-muted">' + esc(memory.updatedAt ? relativeTime(memory.updatedAt) : '—') + '</td>' +
+        '</tr>';
+      }).join('') + '</tbody></table></div>';
+  }
+
+  function renderCookingPantry() {
+    const list = document.getElementById('cooking-pantry-list');
+    const meta = document.getElementById('cooking-pantry-meta');
+    const items = cookingPortalState.pantry || [];
+    if (!cookingPortalState.userId) {
+      meta.textContent = 'Select a user to load pantry state';
+      list.innerHTML = '<div class="empty">No pantry loaded</div>';
+      return;
+    }
+    if (cookingPortalState.error) {
+      meta.textContent = 'Load failed for user ' + cookingPortalState.userId + ' · tenant ' + cookingPortalState.tenantId;
+      list.innerHTML = '<div class="empty">Failed to load Cooking pantry</div>';
+      return;
+    }
+    meta.textContent = items.length + ' items · user ' + cookingPortalState.userId + ' · tenant ' + cookingPortalState.tenantId;
+    if (!items.length) {
+      list.innerHTML = '<div class="empty">No pantry items returned</div>';
+      return;
+    }
+    list.innerHTML = '<div style="overflow-x:auto"><table class="data-table">' +
+      '<thead><tr><th>Item</th><th>Quantity</th><th>Freshness</th><th>Expires</th><th></th></tr></thead>' +
+      '<tbody>' + items.map(item => {
+        const freshness = item.freshness_status || item.freshnessStatus || 'unknown';
+        const badgeClass = freshness === 'expired' ? 'badge-error' : freshness === 'aging' ? 'badge-warning' : 'badge-success';
+        const qty = [item.quantity, item.unit].filter(Boolean).join(' ') || '—';
+        return '<tr>' +
+          '<td><div style="font-weight:600">' + esc(item.name || 'Unnamed item') + '</div><div class="text-muted" style="font-size:11px">' + esc(item.category || item.availability_status || 'pantry') + '</div></td>' +
+          '<td class="mono">' + esc(qty) + '</td>' +
+          '<td><span class="badge ' + badgeClass + '">' + esc(freshness) + '</span></td>' +
+          '<td class="text-muted">' + esc(item.expires_at || item.expiresAt || '—') + '</td>' +
+          '<td class="text-right"><button class="btn btn-xs btn-danger" onclick="deleteCookingPantryItem(' + Number(item.id) + ')">Delete</button></td>' +
+        '</tr>';
+      }).join('') + '</tbody></table></div>';
+  }
+
+  function setCookingSubstitutionResult(message, kind = 'neutral') {
+    const status = document.getElementById('cooking-substitution-status');
+    const result = document.getElementById('cooking-substitution-result');
+    if (status) {
+      status.textContent = kind === 'success' ? 'Applied' : kind === 'error' ? 'Failed' : 'Ready';
+      status.className = 'badge badge-' + kind;
+    }
+    if (result) result.textContent = message;
+  }
+
+  function renderCookingPortal() {
+    if (!getCookingTarget(true) && !cookingPortalState.userId) setCookingScopeStatus('No user selected');
+    if (cookingPortalState.loading) setCookingScopeStatus('Loading…', 'neutral');
+    else if (cookingPortalState.error) setCookingScopeStatus('Load failed', 'error');
+    else if (cookingPortalState.userId) setCookingScopeStatus('User ' + cookingPortalState.userId + ' · tenant ' + cookingPortalState.tenantId, 'success');
+    updateCookingKpis();
+    renderCookingPreferences();
+    renderCookingPantry();
+  }
+
+  async function loadCookingPortal() {
+    const target = getCookingTarget();
+    if (!target) return;
+    cookingPortalState = { ...cookingPortalState, ...target, loading: true, error: '' };
+    renderCookingPortal();
+    const query = '?tenantId=' + encodeURIComponent(String(target.tenantId));
+    try {
+      const [preferencesRes, pantryRes] = await Promise.all([
+        apiFetch('/api/users/' + target.userId + '/cooking/preferences' + query),
+        apiFetch('/api/users/' + target.userId + '/cooking/pantry' + query + '&includeExpired=true&limit=250'),
+      ]);
+      const preferences = await preferencesRes.json();
+      const pantry = await pantryRes.json();
+      if (!preferencesRes.ok) throw new Error(preferences?.error?.message || 'Cooking preferences load failed');
+      if (!pantryRes.ok) throw new Error(pantry?.error?.message || 'Cooking pantry load failed');
+      cookingPortalState = {
+        ...cookingPortalState,
+        ...target,
+        preferences,
+        pantry: pantry.items || [],
+        error: '',
+        loading: false,
+      };
+      renderCookingPortal();
+    } catch (err) {
+      cookingPortalState = {
+        ...cookingPortalState,
+        ...target,
+        preferences: null,
+        pantry: [],
+        error: err?.message || 'Cooking portal load failed',
+        loading: false,
+      };
+      renderCookingPortal();
+      showToast(cookingPortalState.error, false);
+    }
+  }
+
+  function coerceCookingPreferenceValue(kind, raw) {
+    const trimmed = String(raw ?? '').trim();
+    if (COOKING_PREF_KINDS_NUMERIC.has(kind)) return Number(trimmed);
+    if (COOKING_PREF_KINDS_BOOLEAN.has(kind)) return ['true', 'yes', '1', 'on'].includes(trimmed.toLowerCase());
+    return trimmed;
+  }
+
+  async function saveCookingPreferenceFromPortal() {
+    const target = getCookingTarget();
+    if (!target) return;
+    const kind = document.getElementById('cooking-preference-kind').value;
+    const rawValue = document.getElementById('cooking-preference-value').value;
+    if (!String(rawValue || '').trim()) {
+      showToast('Enter a Cooking preference value', false);
+      return;
+    }
+    const body = {
+      tenantId: target.tenantId,
+      kind,
+      value: coerceCookingPreferenceValue(kind, rawValue),
+      correction: document.getElementById('cooking-preference-correction').checked,
+      source: 'portal_browser',
+      confidence: 0.9,
+    };
+    const btn = document.getElementById('cooking-save-preference-btn');
+    btn.disabled = true;
+    try {
+      const res = await apiFetch('/api/users/' + target.userId + '/cooking/preferences', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.error?.message || 'Preference write failed');
+      document.getElementById('cooking-preference-value').value = '';
+      showToast('Cooking preference saved');
+      await loadCookingPortal();
+    } catch (err) {
+      showToast(err?.message || 'Cooking preference write failed', false);
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  async function saveCookingPantryFromPortal() {
+    const target = getCookingTarget();
+    if (!target) return;
+    const name = document.getElementById('cooking-pantry-name').value.trim();
+    if (!name) {
+      showToast('Enter a pantry item name', false);
+      return;
+    }
+    const body = {
+      tenantId: target.tenantId,
+      name,
+      quantity: document.getElementById('cooking-pantry-quantity').value.trim(),
+      unit: document.getElementById('cooking-pantry-unit').value.trim(),
+      category: document.getElementById('cooking-pantry-category').value.trim(),
+      expiresAt: document.getElementById('cooking-pantry-expires-at').value,
+      freshnessStatus: document.getElementById('cooking-pantry-freshness').value,
+      notes: document.getElementById('cooking-pantry-notes').value.trim(),
+      confidence: 0.9,
+    };
+    const btn = document.getElementById('cooking-save-pantry-btn');
+    btn.disabled = true;
+    try {
+      const res = await apiFetch('/api/users/' + target.userId + '/cooking/pantry', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.error?.message || 'Pantry write failed');
+      ['cooking-pantry-name', 'cooking-pantry-quantity', 'cooking-pantry-unit', 'cooking-pantry-category', 'cooking-pantry-expires-at', 'cooking-pantry-freshness', 'cooking-pantry-notes'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.value = '';
+      });
+      showToast('Pantry item saved');
+      await loadCookingPortal();
+    } catch (err) {
+      showToast(err?.message || 'Pantry write failed', false);
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  async function applyCookingSubstitutionFromPortal() {
+    const target = getCookingTarget();
+    if (!target) return;
+    const date = document.getElementById('cooking-substitution-date').value;
+    const mealType = document.getElementById('cooking-substitution-meal-type').value;
+    const originalIngredient = document.getElementById('cooking-substitution-original').value.trim();
+    const suggestedIngredient = document.getElementById('cooking-substitution-suggested').value.trim();
+    const reason = document.getElementById('cooking-substitution-reason').value;
+    const updateShoppingList = document.getElementById('cooking-substitution-update-shopping').checked;
+    if (!date || !mealType || !originalIngredient || !suggestedIngredient) {
+      showToast('Enter meal date, meal type, original ingredient, and substitute', false);
+      setCookingSubstitutionResult('Missing required substitution fields.', 'error');
+      return;
+    }
+
+    const btn = document.getElementById('cooking-apply-substitution-btn');
+    btn.disabled = true;
+    setCookingSubstitutionResult('Applying substitution for user ' + target.userId + ' · tenant ' + target.tenantId + '…');
+    try {
+      const res = await apiFetch('/api/users/' + target.userId + '/cooking/meal-plan/substitutions/apply', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          tenantId: target.tenantId,
+          date,
+          mealType,
+          originalIngredient,
+          suggestedIngredient,
+          reason,
+          updateShoppingList,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.error?.message || 'Substitution apply failed');
+      const substitution = data?.result?.substitution || {};
+      const message = 'Applied ' + originalIngredient + ' → ' + suggestedIngredient +
+        ' for ' + mealType + ' on ' + date +
+        (substitution.shoppingListUpdated ? '; shopping list refreshed.' : '; shopping list unchanged.');
+      setCookingSubstitutionResult(message, 'success');
+      showToast('Cooking substitution applied');
+      await loadCookingPortal();
+    } catch (err) {
+      const message = err?.message || 'Cooking substitution apply failed';
+      setCookingSubstitutionResult(message, 'error');
+      showToast(message, false);
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  window.deleteCookingPantryItem = async function(itemId) {
+    const target = getCookingTarget();
+    if (!target || !itemId) return;
+    if (!confirm('Delete this Cooking pantry item?')) return;
+    try {
+      const res = await apiFetch('/api/users/' + target.userId + '/cooking/pantry/' + encodeURIComponent(String(itemId)), {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tenantId: target.tenantId }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.error?.message || 'Pantry delete failed');
+      showToast('Pantry item deleted');
+      await loadCookingPortal();
+    } catch (err) {
+      showToast(err?.message || 'Pantry delete failed', false);
+    }
+  };
+
+  window.openCookingManagerForUser = function(userId) {
+    const userInput = document.getElementById('cooking-target-user-id');
+    const tenantInput = document.getElementById('cooking-target-tenant-id');
+    if (userInput) userInput.value = String(userId);
+    if (tenantInput) tenantInput.value = String(userId);
+    navigateTo('cooking');
+    loadCookingPortal();
+  };
+
+  document.getElementById('cooking-refresh-btn')?.addEventListener('click', loadCookingPortal);
+  document.getElementById('cooking-load-btn')?.addEventListener('click', loadCookingPortal);
+  document.getElementById('cooking-clear-btn')?.addEventListener('click', () => {
+    ['cooking-target-user-id', 'cooking-target-tenant-id'].forEach(id => {
+      const el = document.getElementById(id);
+      if (el) el.value = '';
+    });
+    cookingPortalState = { userId: null, tenantId: null, preferences: null, pantry: [], error: '', loading: false };
+    setCookingSubstitutionResult('Use this after a candidate is reviewed for allergy, dietary, disliked-ingredient, or pantry freshness safety.');
+    renderCookingPortal();
+  });
+  document.getElementById('cooking-save-preference-btn')?.addEventListener('click', saveCookingPreferenceFromPortal);
+  document.getElementById('cooking-save-pantry-btn')?.addEventListener('click', saveCookingPantryFromPortal);
+  document.getElementById('cooking-apply-substitution-btn')?.addEventListener('click', applyCookingSubstitutionFromPortal);
+
+  // ════════════════════════════════════════════════════════════
   // Content dashboard
   // ════════════════════════════════════════════════════════════
   let contentDashboardCache = null;
 
   async function loadContentDashboard() {
+    // 2026-05-04 — Refresh the scope picker UI from persisted state
+    // before any data load so the operator can see the active scope
+    // and the dashboard data they are about to fetch matches it.
+    refreshContentScopeUI();
+    // CONTENT-UI-O3/O4 panels are scoped, first-class surfaces. Keep them
+    // independent from the legacy content-dashboard payload so a missing
+    // legacy endpoint does not hide tenant-scoped evidence.
+    loadContentPerformance().catch(() => {});
+    loadContentCanonicalLifecycle().catch(() => {});
     try {
       const r = await apiFetch('/api/v1/admin/content-dashboard');
       if (!r.ok) {
@@ -4548,6 +5546,230 @@ table.legacy th {
         '<div class="empty">Network error loading content dashboard</div>';
     }
   }
+
+  // ────────── Tenant scope UI helpers (2026-05-04) ──────────
+  function refreshContentScopeUI() {
+    const userInput = document.getElementById('content-scope-user-id');
+    const tenantInput = document.getElementById('content-scope-tenant-id');
+    const status = document.getElementById('content-scope-status');
+    if (!userInput || !tenantInput || !status) return;
+    userInput.value = CONTENT_SCOPE.userId || '';
+    tenantInput.value = CONTENT_SCOPE.tenantId || '';
+    if (CONTENT_SCOPE.userId || CONTENT_SCOPE.tenantId) {
+      status.textContent = 'Scoped to user=' + (CONTENT_SCOPE.userId || '—')
+        + ' / tenant=' + (CONTENT_SCOPE.tenantId || '—');
+      status.style.color = 'var(--accent)';
+    } else {
+      status.textContent = 'Operator/platform scope (no x-nexus-* headers)';
+      status.style.color = 'var(--text-tertiary)';
+    }
+  }
+  function saveContentScope() {
+    const userId = (document.getElementById('content-scope-user-id').value || '').trim();
+    const tenantId = (document.getElementById('content-scope-tenant-id').value || '').trim();
+    // Numeric-only sanity. Empty stays empty (clears scope).
+    if (userId && !/^\d+$/.test(userId)) {
+      showToast('User ID must be numeric', false);
+      return;
+    }
+    if (tenantId && !/^\d+$/.test(tenantId)) {
+      showToast('Tenant ID must be numeric', false);
+      return;
+    }
+    CONTENT_SCOPE = { userId, tenantId };
+    persistScope(CONTENT_SCOPE);
+    refreshContentScopeUI();
+    showToast(
+      (userId || tenantId)
+        ? 'Scope applied. Re-loading Content dashboard.'
+        : 'Scope cleared. Re-loading Content dashboard.',
+      true
+    );
+    // Reload dashboard with new scope.
+    loadContentDashboard();
+  }
+  function clearContentScope() {
+    CONTENT_SCOPE = { userId: '', tenantId: '' };
+    persistScope(CONTENT_SCOPE);
+    refreshContentScopeUI();
+    showToast('Scope cleared. Re-loading Content dashboard.', true);
+    loadContentDashboard();
+  }
+
+  // ────────── Performance panel (CONTENT-UI-O3, 2026-05-04) ──────────
+  async function loadContentPerformance() {
+    const card = document.getElementById('content-performance-card');
+    if (!card) return;
+    if (!CONTENT_SCOPE.userId) {
+      // No scope active — hide the performance card; it's tenant-only.
+      card.style.display = 'none';
+      return;
+    }
+    card.style.display = '';
+    document.getElementById('content-performance-meta').textContent = 'Loading…';
+    try {
+      const params = new URLSearchParams({
+        userId: String(CONTENT_SCOPE.userId),
+      });
+      if (CONTENT_SCOPE.tenantId) params.set('tenantId', String(CONTENT_SCOPE.tenantId));
+      const r = await apiFetch('/api/v1/admin/content/performance?' + params.toString());
+      if (!r.ok) {
+        document.getElementById('content-performance-meta').textContent =
+          'Failed to load (' + r.status + ')';
+        return;
+      }
+      const data = await r.json();
+      const perf = data && data.performance;
+      if (!perf) {
+        document.getElementById('content-performance-meta').textContent = 'No data returned';
+        return;
+      }
+      renderContentPerformance(perf);
+    } catch (err) {
+      document.getElementById('content-performance-meta').textContent =
+        'Network error loading performance';
+    }
+  }
+
+  function renderContentPerformance(perf) {
+    const meta = document.getElementById('content-performance-meta');
+    if (meta) meta.textContent = 'As of ' + (perf.generatedAt || 'now')
+      + ' · tenant=' + perf.tenantId + ' / owner=' + perf.ownerUserId;
+    setText('content-perf-topics-total', String(perf.topics.total));
+    const breakdown = Object.entries(perf.topics.byStatus || {})
+      .map(([k, v]) => k + ' ' + v).join(' · ');
+    setText('content-perf-topics-sub', breakdown || 'no topics yet');
+    setText('content-perf-published-30d', String(perf.topics.publishedLast30d));
+    setText('content-perf-scripts-30d', String(perf.scripts.last30d));
+    setText('content-perf-scripts-sub', 'total ' + perf.scripts.total);
+    const ra = perf.radarFeedback || { total: 0, byAction: { accept: 0, reject: 0 } };
+    setText('content-perf-radar-total', String(ra.total));
+    setText('content-perf-radar-sub',
+      (ra.byAction.accept || 0) + ' ✓ · ' + (ra.byAction.reject || 0) + ' ✗ · '
+      + (ra.byAction.save || 0) + ' 🔖 · ' + (ra.byAction.create_brief || 0) + ' 📝');
+
+    const hi = document.getElementById('content-perf-highlights');
+    if (hi) hi.innerHTML = (perf.highlights || []).length
+      ? perf.highlights.map(h => '<li>' + esc(h) + '</li>').join('')
+      : '<li class="empty">No highlights yet — keep publishing.</li>';
+
+    const wa = document.getElementById('content-perf-warnings');
+    if (wa) wa.innerHTML = (perf.warnings || []).length
+      ? perf.warnings.map(w => '<li>' + esc(w) + '</li>').join('')
+      : '<li class="empty">No warnings.</li>';
+
+    const accepted = (ra.topAcceptedTopics || []);
+    const acceptedHost = document.getElementById('content-perf-top-accepted');
+    if (acceptedHost) {
+      acceptedHost.innerHTML = accepted.length
+        ? '<ul style="margin:0;padding-left:var(--space-4);font-size:12px">'
+          + accepted.map(t => '<li>' + esc(t.topic) + ' <span class="text-muted">×' + t.count + '</span></li>').join('')
+          + '</ul>'
+        : '<div class="empty">No accepts yet</div>';
+    }
+    const rejected = (ra.topRejectedTopics || []);
+    const rejectedHost = document.getElementById('content-perf-top-rejected');
+    if (rejectedHost) {
+      rejectedHost.innerHTML = rejected.length
+        ? '<ul style="margin:0;padding-left:var(--space-4);font-size:12px">'
+          + rejected.map(t => '<li>' + esc(t.topic) + ' <span class="text-muted">×' + t.count + '</span></li>').join('')
+          + '</ul>'
+        : '<div class="empty">No rejects yet</div>';
+    }
+  }
+
+  function setText(id, value) {
+    const el = document.getElementById(id);
+    if (el) el.textContent = value;
+  }
+
+  // ────────── Canonical lifecycle (CONTENT-UI-O4, 2026-05-04) ──────────
+  // Renders the 12-bucket canonical lifecycle as a horizontal pill row
+  // inside the existing Content Pipeline card. Visible only when scope
+  // is active (the legacy 5-stage view is the no-scope fallback).
+  async function loadContentCanonicalLifecycle() {
+    const card = document.getElementById('content-canonical-lifecycle-card');
+    if (!card) return;
+    if (!CONTENT_SCOPE.userId) {
+      card.style.display = 'none';
+      return;
+    }
+    card.style.display = '';
+    setText('content-canonical-lifecycle-meta', 'Loading…');
+    try {
+      const params = new URLSearchParams({ userId: String(CONTENT_SCOPE.userId) });
+      if (CONTENT_SCOPE.tenantId) params.set('tenantId', String(CONTENT_SCOPE.tenantId));
+      const r = await apiFetch('/api/v1/admin/content/lifecycle?' + params.toString());
+      if (!r.ok) {
+        setText('content-canonical-lifecycle-meta', 'Failed to load (' + r.status + ')');
+        return;
+      }
+      const data = await r.json();
+      const lc = data && data.lifecycle;
+      if (!lc) {
+        setText('content-canonical-lifecycle-meta', 'No data');
+        return;
+      }
+      renderContentCanonicalLifecycle(lc);
+    } catch (err) {
+      setText('content-canonical-lifecycle-meta', 'Network error');
+    }
+  }
+
+  const CANONICAL_LIFECYCLE_TINTS = {
+    discovered: 'var(--info)',
+    suggested: 'var(--info)',
+    accepted: 'var(--success)',
+    briefing: 'var(--warning)',
+    drafting: 'var(--warning)',
+    review: 'var(--domain-content)',
+    approved: 'var(--domain-content)',
+    scheduled: 'var(--accent)',
+    published: 'var(--success)',
+    measured: 'var(--info)',
+    archived: 'var(--text-tertiary)',
+    rejected: 'var(--error)',
+  };
+
+  function renderContentCanonicalLifecycle(lc) {
+    const meta = document.getElementById('content-canonical-lifecycle-meta');
+    if (meta) meta.textContent = (lc.total || 0) + ' items · tenant=' + lc.tenantId
+      + ' / owner=' + lc.ownerUserId;
+    const band = document.getElementById('content-canonical-lifecycle-band');
+    if (!band) return;
+    const buckets = Array.isArray(lc.buckets) ? lc.buckets : [];
+    if (buckets.length === 0) {
+      band.innerHTML = '<div class="empty">No lifecycle data yet.</div>';
+      return;
+    }
+    band.innerHTML = buckets.map(b => {
+      const tint = CANONICAL_LIFECYCLE_TINTS[b.stage] || 'var(--text-secondary)';
+      const dimmed = !b.count;
+      const opacity = dimmed ? '0.45' : '1';
+      const bg = dimmed
+        ? 'rgba(150,150,150,0.06)'
+        : `color-mix(in srgb, ${tint} 14%, var(--bg-elevated))`;
+      return `
+        <div style="min-width:74px;padding:6px 10px;border-radius:8px;
+                    background:${bg};opacity:${opacity};
+                    text-align:center;font-family:var(--font-mono,inherit)">
+          <div style="font-size:16px;font-weight:700;color:${dimmed ? 'var(--text-tertiary)' : tint}">
+            ${b.count}
+          </div>
+          <div style="font-size:9px;font-weight:600;color:var(--text-secondary);margin-top:2px">
+            ${esc(b.label)}
+          </div>
+        </div>
+      `;
+    }).join('');
+  }
+
+  // The portal script runs inside an IIFE. Inline `onclick="..."` handlers
+  // resolve against `window`, so expose the Content controls they invoke.
+  window.saveContentScope = saveContentScope;
+  window.clearContentScope = clearContentScope;
+  window.loadContentPerformance = loadContentPerformance;
+  window.loadContentCanonicalLifecycle = loadContentCanonicalLifecycle;
 
   function renderContentDashboard(d) {
     if (!d || d.ok !== true) return;
@@ -5237,6 +6459,7 @@ table.legacy th {
       if (currentSection === 'invites') loadInviteCodes();
       if (currentSection === 'waitlist') loadWaitlist();
       if (currentSection === 'content') loadContentDashboard();
+      if (currentSection === 'notifications') loadNotificationPortal();
     }, 30000);
 
     // Initial section from URL hash

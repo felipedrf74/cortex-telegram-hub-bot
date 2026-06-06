@@ -117,7 +117,7 @@ describe('script-pipeline: cache key hardening', () => {
     );
 
     expect(engineSource).toContain('export function buildScriptCacheKey');
-    expect(engineSource).toContain("'script-v7'");
+    expect(engineSource).toContain("'script-v8'");
     expect(engineSource).toContain('`duration:${maxDuration}`');
     expect(engineSource).toContain('`target:${targetDurationSeconds ?? maxDuration * 60}`');
     expect(engineSource).toContain('`mode:${mode}`');
@@ -132,13 +132,14 @@ describe('script-pipeline: cache key hardening', () => {
     expect(engineSource).toContain('cfg.cacheTtl > 0 && !forceRefresh');
   });
 
-  it('script signal reads are user-scoped instead of using global signal context', () => {
+  it('script signal reads are tenant-scoped instead of using global signal context', () => {
     const engineSource = require('fs').readFileSync(
       require('path').resolve(__dirname, '../../src/services/content-engine.ts'),
       'utf8',
     );
 
-    expect(engineSource).toContain("readSignals('script-engine', [...signalTypes], 100, userId, cfg.signalDays)");
+    expect(engineSource).toContain("readSignals('script-engine', [...signalTypes], 100, userId, cfg.signalDays, tenantId)");
+    expect(engineSource).toMatch(/readSignals\('script-engine', \[\.\.\.signalTypes\], 100, userId, cfg\.signalDays, tenantId\)/);
   });
 
   it('script engine forwards first-party topic context into the Python request', () => {
@@ -168,7 +169,10 @@ describe('script-pipeline: formatScriptToText', () => {
         all: vi.fn().mockReturnValue([]),
       }),
     }),
-  }));
+    initDatabase: vi.fn(),
+  closeDatabase: vi.fn(),
+  findUnexpectedMigrationPrefixCollisions: vi.fn(() => []),
+}));
 
   vi.mock('../../src/config', () => ({
     config: {
@@ -180,7 +184,8 @@ describe('script-pipeline: formatScriptToText', () => {
 
   vi.mock('../../src/utils/logger', () => ({
     logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(), trace: vi.fn(), child: vi.fn().mockReturnThis() },
-  }));
+    LOGGER_REDACTION_PATHS: [],
+}));
 
   it('renders title options, hook, script, and sources', async () => {
     const { formatScriptToText } = await import('../../src/services/content-workflow');
@@ -317,7 +322,7 @@ describe('script-pipeline: iOS API route', () => {
     // The /script route delegates structured response shaping to
     // content-script-route-utils.ts after the route extraction pass.
     expect(routeUtilitySource).toContain('topic: result.topic');
-    expect(routeUtilitySource).toContain('script: result.script');
+    expect(routeUtilitySource).toContain('script: scriptQuality.revisedScript');
     expect(routeUtilitySource).toContain('hook: result.hook');
     expect(routeUtilitySource).toContain('titleOptions:');
     expect(routeUtilitySource).toContain('sourcesUsed:');
@@ -325,7 +330,10 @@ describe('script-pipeline: iOS API route', () => {
     expect(routeUtilitySource).toContain('renderMode,');
     expect(routeUtilitySource).toContain('durationMs:');
     expect(routeUtilitySource).toContain('degraded: result.degraded ?? false');
-    expect(routeUtilitySource).toContain('warnings: result.warnings ?? []');
+    expect(routeUtilitySource).toContain('const warnings = Array.from(new Set([');
+    expect(routeUtilitySource).toContain('...scriptQuality.complianceWarnings');
+    expect(routeUtilitySource).toContain('warnings: publicQualityWarnings');
+    expect(routeUtilitySource).toContain('sourceSummary: sourcePackage?.sourceSummaries ?? []');
   });
 
   it('iOS /script route validates topic parameter', () => {
@@ -359,17 +367,6 @@ describe('script-pipeline: iOS API route', () => {
 // ═══════════════════════════════════════════════════════════════════
 
 describe('script-pipeline: workflow approval scripts', () => {
-  it('Telegram handler still imports generateReelScript/generateYouTubeScript', () => {
-    const handlerSource = require('fs').readFileSync(
-      require('path').resolve(__dirname, '../../src/handlers/commands/content.ts'),
-      'utf8',
-    );
-
-    // Backward compat: handler still imports the deprecated wrappers
-    expect(handlerSource).toContain('generateReelScript');
-    expect(handlerSource).toContain('generateYouTubeScript');
-  });
-
   it('deprecated wrappers call generateScript internally', () => {
     const workflowSource = require('fs').readFileSync(
       require('path').resolve(__dirname, '../../src/services/content-workflow.ts'),

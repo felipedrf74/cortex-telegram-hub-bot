@@ -11,17 +11,65 @@
  * Protected by authMiddleware (JWT required).
  */
 
-import { Router, Request, Response } from 'express';
+import express, { Router, Request, Response, NextFunction } from 'express';
 import { logger } from '../../utils/logger';
 import { sendSuccess, sendError, asyncHandler } from '../response-helpers';
 import {
   isStripeConfigured,
   getSubscriptionStatus,
-  createCheckoutSession,
+  createCheckoutSessionForPlan,
   createPortalSession,
   handleAppleTransaction,
+  claimWebsiteStripeSubscriptionForUser,
 } from '../../services/stripe-service';
-import { config } from '../../config';
+import { verifyAppleJws } from '../../services/apple-jws-verifier';
+import { safeCheckoutUrl } from './public-billing';
+import { buildQuotaUsagePayload, isUserOverDailyCap } from '../../services/cost-guardrail';
+import {
+  grantNexusPoints,
+  isNexusPointProductId,
+  listNexusPointPackages,
+} from '../../services/nexus-points';
+import {
+  createNexusPointsCheckoutSession,
+  isStripeNexusPointsIdempotencyConflictError,
+  isStripeNexusPointsConfigured,
+} from '../../services/stripe-nexus-points-service';
+import { logAudit } from '../../services/audit-trail';
+import {
+  legalConsentContextFromRequest,
+  type LegalAcceptanceInput,
+  recordCurrentLegalConsentForUser,
+  validateCurrentLegalAcceptance,
+} from '../../services/legal-consent';
+
+const STRIPE_NEXUS_CHECKOUT_BODY_LIMIT_BYTES = 8 * 1024;
+const STRIPE_NEXUS_CHECKOUT_BODY_FIELDS = new Set(['packageId']);
+
+function rejectOversizedStripeNexusCheckoutBody(req: Request, res: Response, next: NextFunction): void {
+  const rawLength = req.headers['content-length'];
+  const contentLength = Array.isArray(rawLength) ? Number(rawLength[0]) : Number(rawLength || 0);
+  if (Number.isFinite(contentLength) && contentLength > STRIPE_NEXUS_CHECKOUT_BODY_LIMIT_BYTES) {
+    sendError(res, 'PAYLOAD_TOO_LARGE', 'Request body is too large', 413);
+    return;
+  }
+  next();
+}
+
+function unexpectedStripeCheckoutBodyFields(body: unknown): string[] {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return [];
+  return Object.keys(body as Record<string, unknown>)
+    .filter((key) => !STRIPE_NEXUS_CHECKOUT_BODY_FIELDS.has(key));
+}
+
+function buildBillingStatusPayload(userId: number): Record<string, unknown> {
+  const status = getSubscriptionStatus(userId);
+  const usage = isUserOverDailyCap(userId);
+  return {
+    ...status,
+    ...buildQuotaUsagePayload(usage),
+  };
+}
 
 export function billingRoutes(): Router {
   const router = Router();
@@ -33,8 +81,7 @@ export function billingRoutes(): Router {
    */
   router.get('/status', asyncHandler(async (req: Request, res: Response) => {
     const userId = (req as any).userId;
-    const status = getSubscriptionStatus(userId);
-    sendSuccess(res, status);
+    sendSuccess(res, buildBillingStatusPayload(userId));
   }));
 
   /**
@@ -51,7 +98,6 @@ export function billingRoutes(): Router {
    */
   router.get('/usage', asyncHandler(async (req: Request, res: Response) => {
     const userId = (req as any).userId;
-    const { isUserOverDailyCap } = require('../../services/cost-guardrail');
     const usage = isUserOverDailyCap(userId);
     sendSuccess(res, {
       plan: usage.plan,
@@ -60,13 +106,14 @@ export function billingRoutes(): Router {
       isOverLimit: usage.over,
       resetsAt: usage.resetAt,
       boostAvailable: usage.boostAvailable,
+      ...buildQuotaUsagePayload(usage),
     });
   }));
 
   /**
    * POST /api/v1/billing/checkout
    * Creates a Stripe Checkout Session and returns the URL.
-   * Body: { priceId: string, successUrl?: string, cancelUrl?: string }
+   * Body: { plan: 'pro'|'max', currency: 'usd'|'brl', successUrl?: string, cancelUrl?: string }
    */
   router.post('/checkout', asyncHandler(async (req: Request, res: Response) => {
     if (!isStripeConfigured()) {
@@ -75,39 +122,44 @@ export function billingRoutes(): Router {
     }
 
     const userId = (req as any).userId;
-    const { priceId } = req.body;
+    const plan = req.body.plan || 'pro';
+    const currency = req.body.currency || 'usd';
 
-    if (!priceId) {
-      sendError(res, 'BAD_REQUEST', 'priceId is required');
+    if (!['pro', 'max'].includes(String(plan).toLowerCase())) {
+      sendError(res, 'BAD_REQUEST', 'plan must be pro or max');
+      return;
+    }
+    if (!['usd', 'brl'].includes(String(currency).toLowerCase())) {
+      sendError(res, 'BAD_REQUEST', 'currency must be usd or brl');
       return;
     }
 
-    // Validate that the priceId is one of our known prices (USD + BRL + EUR)
-    const validPrices = [
-      config.stripe.priceProMonthly,
-      config.stripe.priceProYearly,
-      config.stripe.priceMaxMonthly,
-      config.stripe.priceMaxYearly,
-      config.stripe.priceProMonthlyBrl,
-      config.stripe.priceProYearlyBrl,
-      config.stripe.priceMaxMonthlyBrl,
-      config.stripe.priceMaxYearlyBrl,
-      config.stripe.priceProMonthlyEur,
-      config.stripe.priceProYearlyEur,
-      config.stripe.priceMaxMonthlyEur,
-      config.stripe.priceMaxYearlyEur,
-    ].filter(Boolean);
-
-    if (!validPrices.includes(priceId)) {
-      sendError(res, 'INVALID_PRICE', 'Unknown price ID', 400);
+    const acceptedLegal = req.body.acceptedLegal as LegalAcceptanceInput | null | undefined;
+    const legalAcceptance = validateCurrentLegalAcceptance(acceptedLegal);
+    if (!legalAcceptance.ok) {
+      sendError(res, 'LEGAL_CONSENT_REQUIRED', legalAcceptance.reason || 'Current legal acceptance is required', 400);
       return;
     }
+    const currentAcceptedLegal = acceptedLegal as LegalAcceptanceInput;
 
-    const successUrl = req.body.successUrl || 'https://nexushub.me/?checkout=success';
-    const cancelUrl = req.body.cancelUrl || 'https://nexushub.me/?checkout=canceled';
+    const successUrl = safeCheckoutUrl(req.body.successUrl, 'https://nexushub.me/?checkout=success');
+    const cancelUrl = safeCheckoutUrl(req.body.cancelUrl, 'https://nexushub.me/?checkout=canceled');
 
-    const url = await createCheckoutSession(userId, priceId, successUrl, cancelUrl);
-    sendSuccess(res, { url });
+    try {
+      await recordCurrentLegalConsentForUser(
+        userId,
+        currentAcceptedLegal,
+        legalConsentContextFromRequest(req, 'billing_checkout'),
+      );
+      const url = await createCheckoutSessionForPlan(userId, plan, currency, successUrl, cancelUrl);
+      sendSuccess(res, { url });
+    } catch (err: any) {
+      if (err?.message === 'PRICE_NOT_CONFIGURED') {
+        sendError(res, 'NOT_CONFIGURED', 'Requested Stripe price is not configured', 503);
+        return;
+      }
+      throw err;
+    }
   }));
 
   /**
@@ -122,7 +174,7 @@ export function billingRoutes(): Router {
     }
 
     const userId = (req as any).userId;
-    const returnUrl = req.body.returnUrl || 'https://nexushub.me/';
+    const returnUrl = safeCheckoutUrl(req.body.returnUrl, 'https://nexushub.me/');
 
     try {
       const url = await createPortalSession(userId, returnUrl);
@@ -134,6 +186,83 @@ export function billingRoutes(): Router {
         throw err;
       }
     }
+  }));
+
+  /**
+   * POST /api/v1/billing/claim-website-checkout
+   * Claims a website checkout created before the user signed in.
+   * Requires the Nexus email to be verified before attaching billing state.
+   */
+  router.post('/claim-website-checkout', asyncHandler(async (req: Request, res: Response) => {
+    const userId = (req as any).userId;
+    const claimed = claimWebsiteStripeSubscriptionForUser(userId);
+    if (!claimed) {
+      sendError(
+        res,
+        'NO_CLAIMABLE_SUBSCRIPTION',
+        'No claimable website subscription was found for this verified email.',
+        404,
+      );
+      return;
+    }
+    sendSuccess(res, { claimed: true });
+  }));
+
+  /**
+   * POST /api/v1/billing/nexus-points/stripe-checkout
+   * Web-only Nexus Points Checkout. Identity comes from JWT auth middleware;
+   * body-supplied identity or attribution fields are rejected by design.
+   */
+  router.post('/nexus-points/stripe-checkout', rejectOversizedStripeNexusCheckoutBody, express.json({ limit: '8kb' }), asyncHandler(async (req: Request, res: Response) => {
+    if (!isStripeNexusPointsConfigured()) {
+      sendError(res, 'STRIPE_NOT_CONFIGURED', 'Stripe Nexus Points checkout is not configured', 503);
+      return;
+    }
+
+    const unexpectedFields = unexpectedStripeCheckoutBodyFields(req.body);
+    if (unexpectedFields.length > 0) {
+      sendError(res, 'UNEXPECTED_BODY_FIELDS', 'Unexpected body fields are not allowed for Stripe Nexus Points checkout', 400, {
+        fields: unexpectedFields,
+      });
+      return;
+    }
+
+    const userId = (req as any).userId;
+    const tenantId = (req as any).tenantId || userId;
+    const packageId = String(req.body?.packageId ?? '').trim();
+    if (!isNexusPointProductId(packageId)) {
+      sendError(res, 'BAD_REQUEST', 'packageId must be a known Nexus Points package', 400);
+      return;
+    }
+
+    let session;
+    try {
+      session = await createNexusPointsCheckoutSession({
+        userId,
+        tenantId,
+        packageId,
+        source: 'web',
+      });
+    } catch (err) {
+      if (isStripeNexusPointsIdempotencyConflictError(err)) {
+        sendError(res, 'IDEMPOTENCY_CONFLICT', err.message, 409);
+        return;
+      }
+      throw err;
+    }
+    logAudit({
+      tenantId,
+      userId,
+      actorId: userId,
+      action: 'billing.nexus_points.checkout_started',
+      resource: 'billing.nexus_points.stripe_checkout',
+      details: {
+        sessionId: session.sessionId,
+        packageId,
+        source: 'web',
+      },
+    });
+    sendSuccess(res, session);
   }));
 
   /**
@@ -178,49 +307,20 @@ export function billingRoutes(): Router {
       // ES256 signature over "header.payload". This catches any payload
       // modification after Apple signed the transaction.
       let payload: any;
+      const isProduction = process.env.NODE_ENV === 'production';
       try {
-        const headerJson = Buffer.from(parts[0], 'base64url').toString('utf8');
-        const header = JSON.parse(headerJson);
-        const payloadJson = Buffer.from(parts[1], 'base64url').toString('utf8');
-        payload = JSON.parse(payloadJson);
-
-        // Verify signature if x5c chain is present (production JWS always has it)
-        if (header.x5c && Array.isArray(header.x5c) && header.x5c.length > 0) {
-          const crypto = require('crypto');
-          // x5c[0] is the leaf cert (DER-encoded, base64)
-          const leafCertDer = Buffer.from(header.x5c[0], 'base64');
-          const leafCertPem = '-----BEGIN CERTIFICATE-----\n'
-            + leafCertDer.toString('base64').match(/.{1,64}/g)!.join('\n')
-            + '\n-----END CERTIFICATE-----';
-
-          // Extract public key from the certificate
-          const pubKey = crypto.createPublicKey({ key: leafCertPem, format: 'pem' });
-
-          // The JWS signature is over "header.payload" (the first two base64url segments)
-          const signedData = parts[0] + '.' + parts[1];
-          const signature = Buffer.from(parts[2], 'base64url');
-
-          // ES256 = ECDSA with SHA-256
-          const isValid = crypto.verify(
-            'SHA256',
-            Buffer.from(signedData),
-            { key: pubKey, dsaEncoding: 'ieee-p1363' },
-            signature,
-          );
-
-          if (!isValid) {
-            logger.warn({ userId }, 'Apple verify: JWS signature verification FAILED');
-            sendError(res, 'INVALID_SIGNATURE', 'JWS signature verification failed — transaction may be tampered', 403);
-            return;
-          }
-          logger.debug({ userId }, 'Apple verify: JWS signature verified ✓');
-        }
-        // If no x5c (Xcode/sandbox test transactions may omit it), fall through to claims checks
+        payload = verifyAppleJws(jwsTransaction, { requireX5c: isProduction }).payload;
+        logger.debug({ userId }, 'Apple verify: JWS signature verified ✓');
       } catch (sigErr: any) {
-        // Signature verification failure is non-fatal for sandbox/Xcode
-        // transactions that may have a different signing format.
-        // Log the error but continue with claims-based checks.
-        logger.warn({ err: sigErr.message, userId }, 'Apple verify: signature check failed — continuing with claims validation');
+        // Missing x5c remains non-fatal for older sandbox/Xcode receipts.
+        // If Apple supplied a cert chain and signature verification failed,
+        // reject instead of falling back to attacker-controlled claims.
+        if (sigErr?.message !== 'APPLE_JWS_MISSING_X5C' || isProduction) {
+          logger.warn({ err: sigErr?.message, userId }, 'Apple verify: signature check failed');
+          sendError(res, 'INVALID_SIGNATURE', 'Apple transaction signature verification failed', 403);
+          return;
+        }
+        logger.warn({ err: sigErr.message, userId }, 'Apple verify: missing x5c — continuing with claims validation for sandbox/Xcode compatibility');
         try {
           const payloadJson = Buffer.from(parts[1], 'base64url').toString('utf8');
           payload = JSON.parse(payloadJson);
@@ -242,7 +342,6 @@ export function billingRoutes(): Router {
       // In production, only accept 'Production' environment.
       // In development (NODE_ENV !== 'production'), also accept 'Sandbox' and 'Xcode'.
       const env = payload.environment || '';
-      const isProduction = process.env.NODE_ENV === 'production';
       const allowedEnvs = isProduction
         ? ['Production']
         : ['Production', 'Sandbox', 'Xcode'];
@@ -253,7 +352,8 @@ export function billingRoutes(): Router {
       }
 
       // ── Step 4: Extract and validate required fields ──
-      const originalTransactionId = payload.originalTransactionId || payload.transactionId;
+      const transactionId = payload.transactionId || payload.originalTransactionId;
+      const originalTransactionId = payload.originalTransactionId || transactionId;
       const productId = payload.productId;
 
       if (!originalTransactionId || !productId) {
@@ -272,6 +372,7 @@ export function billingRoutes(): Router {
       const knownProducts = [
         'me.nexushub.pro.monthly', 'me.nexushub.pro.yearly',
         'me.nexushub.max.monthly', 'me.nexushub.max.yearly',
+        ...listNexusPointPackages().map((pkg) => pkg.productId),
       ];
       if (!knownProducts.includes(productId)) {
         logger.warn({ userId, productId }, 'Apple verify: unknown product ID');
@@ -284,7 +385,7 @@ export function billingRoutes(): Router {
         ? new Date(payload.expiresDate).toISOString()
         : null;
 
-      if (expiresDate) {
+      if (expiresDate && !isNexusPointProductId(productId)) {
         const expiryMs = new Date(expiresDate).getTime();
         // Allow 24h grace period for clock skew and renewal processing
         if (expiryMs < Date.now() - 86400000) {
@@ -295,6 +396,39 @@ export function billingRoutes(): Router {
       }
 
       // ── Step 7: Process the verified transaction ──
+      if (isNexusPointProductId(productId)) {
+        const grant = grantNexusPoints({
+          userId,
+          provider: 'apple',
+          providerTransactionId: String(originalTransactionId),
+          productId,
+          source: 'apple_iap',
+          metadata: {
+            transactionId: String(transactionId),
+            originalTransactionId: String(originalTransactionId),
+          },
+        });
+        logger.info({
+          userId,
+          productId,
+          transactionId,
+          granted: grant.granted,
+          creditId: grant.creditId,
+          environment: env || 'unknown',
+        }, 'Apple Nexus Points transaction verified and processed');
+
+        sendSuccess(res, {
+          ...buildBillingStatusPayload(userId),
+          nexusPointsPurchase: {
+            granted: grant.granted,
+            productId,
+            points: grant.package.points,
+            expiresInDays: 30,
+          },
+        });
+        return;
+      }
+
       handleAppleTransaction(userId, String(originalTransactionId), productId, expiresDate);
 
       logger.info({
@@ -304,8 +438,7 @@ export function billingRoutes(): Router {
         environment: env || 'unknown',
       }, 'Apple transaction verified and processed');
 
-      const status = getSubscriptionStatus(userId);
-      sendSuccess(res, status);
+      sendSuccess(res, buildBillingStatusPayload(userId));
     } catch (err: any) {
       logger.error({ err, userId }, 'Apple transaction verification failed');
       sendError(res, 'VERIFICATION_FAILED', 'Failed to verify Apple transaction', 400);

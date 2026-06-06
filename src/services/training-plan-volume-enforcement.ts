@@ -4,6 +4,10 @@ import type { CoordinatedTrainingPlan, CoordinatedTrainingSession } from './trai
 import { loadCoachKnowledge } from './coach-kernel/knowledge-loader';
 import { buildStrengthSupportVariant } from './coach-kernel/support-session-builder';
 import type { CoachKnowledgeBase } from './coach-kernel/types';
+import {
+  inferTrainingSessionIsLongRun,
+  inferTrainingSessionIsLowerHeavy,
+} from './training-session-classification';
 
 const DAY_ORDER = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'] as const;
 const DAY_LABEL: Record<string, string> = {
@@ -15,13 +19,16 @@ const DAY_LABEL: Record<string, string> = {
   saturday: 'Saturday',
   sunday: 'Sunday',
 };
+const MAX_STRENGTH_SESSIONS_PER_WEEK = 6;
 
 export interface TrainingPlanVolumeRequest {
   sessionsPerWeek: number;
+  runSessionsPerWeek?: number;
   strengthSessionsPerWeek: number;
   preferredCardioTime: string;
   preferredStrengthTime: string;
   startDate: string;
+  longWorkoutDay?: string | null;
 }
 
 export function enforceRequestedTrainingPlanVolume(
@@ -31,15 +38,38 @@ export function enforceRequestedTrainingPlanVolume(
   const cloned: CoordinatedTrainingPlan = JSON.parse(JSON.stringify(plan ?? {}));
   if (!Array.isArray(cloned.weeks)) return cloned;
 
-  const requestedTotal = clamp(Math.round(request.sessionsPerWeek || 5), 3, 7);
-  const requestedStrength = clamp(Math.round(request.strengthSessionsPerWeek || 0), 0, 4);
-  const defaultStrengthForGymPlan = String(cloned.sport || '').toLowerCase() === 'gym'
-    ? Math.min(4, requestedTotal)
+  const planSport = String(cloned.sport || '').toLowerCase();
+  const requestedPrimarySessions = planSport === 'running'
+    ? clamp(Math.round((request.runSessionsPerWeek ?? request.sessionsPerWeek) || 5), 1, 7)
+    : clamp(Math.round(request.sessionsPerWeek || 5), 3, 7);
+  const requestedStrength = clamp(Math.round(request.strengthSessionsPerWeek || 0), 0, MAX_STRENGTH_SESSIONS_PER_WEEK);
+  // 2026-05-25 Bug #2 fix — when the user provides BOTH explicit
+  // `runSessionsPerWeek` AND `strengthSessionsPerWeek`, the total
+  // active sessions for the week must be the sum, regardless of
+  // `planSport`. Pre-fix the enforcer only summed for `planSport ==
+  // 'running'` and silently dropped the strength count from the
+  // total for hybrid/gym plans, which capped weeks at the primary
+  // count and prevented true two-a-day scheduling. The math still
+  // respects MAX_STRENGTH_SESSIONS_PER_WEEK on the strength side
+  // and the existing `allowedDays.length * 2` ceiling below.
+  const hasExplicitRunRequest = typeof request.runSessionsPerWeek === 'number' && request.runSessionsPerWeek > 0;
+  const hasExplicitStrengthRequest = requestedStrength > 0;
+  const requestedTotal = (hasExplicitRunRequest && hasExplicitStrengthRequest)
+    ? clamp(Math.round(request.runSessionsPerWeek!), 1, 7) + requestedStrength
+    : planSport === 'running'
+      ? requestedPrimarySessions + requestedStrength
+      : requestedPrimarySessions;
+  const defaultStrengthForGymPlan = planSport === 'gym'
+    ? Math.min(MAX_STRENGTH_SESSIONS_PER_WEEK, requestedPrimarySessions)
     : 0;
 
   cloned.weeks = cloned.weeks.map((week) => {
     const weekNumber = typeof week.weekNumber === 'number' ? week.weekNumber : 1;
-    const allowedDays = allowedDaysForWeek(request.startDate, weekNumber);
+    const allowedDays = constrainTrainingDays(
+      allowedDaysForWeek(request.startDate, weekNumber),
+      requestedPrimarySessions,
+      request.longWorkoutDay,
+    );
     const activeTarget = Math.min(requestedTotal, Math.max(1, allowedDays.length * 2));
     const strengthTarget = Math.min(
       activeTarget,
@@ -58,6 +88,7 @@ export function enforceRequestedTrainingPlanVolume(
     // rotation shifts each week (0-based shift = weekNumber - 1).
     sessions = fillMissingStrength(sessions, strengthTarget, allowedDays, cloned.sport, request, weekNumber);
     sessions = fillMissingActiveSessions(sessions, activeTarget, allowedDays, cloned.sport, request);
+    sessions = protectHeavyLowerBeforeLongRun(sessions, request, cloned.sport, weekNumber);
 
     return {
       ...week,
@@ -73,6 +104,27 @@ function allowedDaysForWeek(startDate: string, weekNumber: number): string[] {
   const startIndex = dayIndexFromIsoDate(startDate);
   if (startIndex < 0) return [...DAY_ORDER];
   return DAY_ORDER.slice(startIndex);
+}
+
+function constrainTrainingDays(
+  allowedDays: readonly string[],
+  requestedTrainingDays: number,
+  longWorkoutDay: unknown,
+): string[] {
+  const budget = clamp(Math.round(requestedTrainingDays || 5), 1, 7);
+  const normalizedAllowed = allowedDays.filter((day) => DAY_ORDER.includes(day as typeof DAY_ORDER[number]));
+  if (normalizedAllowed.length <= budget) return [...normalizedAllowed];
+
+  const protectedLongDay = normalizeDay(longWorkoutDay);
+  const restPreference = ['sunday', 'monday', 'friday', 'thursday', 'tuesday', 'wednesday', 'saturday'];
+  const days = [...normalizedAllowed];
+  for (const restDay of restPreference) {
+    if (days.length <= budget) break;
+    if (restDay === protectedLongDay) continue;
+    const index = days.indexOf(restDay);
+    if (index >= 0) days.splice(index, 1);
+  }
+  return days.slice(0, budget);
 }
 
 function dayIndexFromIsoDate(value: string): number {
@@ -215,6 +267,148 @@ function fillMissingActiveSessions(
   return next;
 }
 
+function protectHeavyLowerBeforeLongRun(
+  sessions: CoordinatedTrainingSession[],
+  request: TrainingPlanVolumeRequest,
+  sport: string | undefined,
+  weekNumber: number,
+): CoordinatedTrainingSession[] {
+  const longRunDay = resolveLongRunDayForWeek(sessions, request.longWorkoutDay);
+  if (!longRunDay) return sessions;
+
+  const dayBeforeLongRun = previousDay(longRunDay);
+  const next = sessions.map((session) => ({ ...session }));
+
+  for (let index = 0; index < next.length; index += 1) {
+    const session = next[index];
+    if (normalizeDay(session.dayOfWeek) !== dayBeforeLongRun) continue;
+    if (!inferTrainingSessionIsLowerHeavy(session)) continue;
+
+    const swapIndex = findUpperStrengthSwapTarget(next, index, dayBeforeLongRun, longRunDay);
+    if (swapIndex >= 0) {
+      const originalDay = next[index].dayOfWeek;
+      const replacementDay = next[swapIndex].dayOfWeek;
+      next[index] = withScheduleAdjustment({
+        ...next[index],
+        dayOfWeek: replacementDay,
+      }, `Moved away from the day before the long run to avoid heavy lower-body work before ${DAY_LABEL[longRunDay]}.`);
+      next[swapIndex] = withScheduleAdjustment({
+        ...next[swapIndex],
+        dayOfWeek: originalDay,
+      }, 'Moved into the pre-long-run strength slot as an upper-body-safe replacement.');
+      continue;
+    }
+
+    next[index] = buildUpperBodyReplacementSession(next[index], sport, request, weekNumber);
+  }
+
+  return next;
+}
+
+function resolveLongRunDayForWeek(
+  sessions: CoordinatedTrainingSession[],
+  requestedLongWorkoutDay: unknown,
+): string | null {
+  const requested = normalizeDay(requestedLongWorkoutDay);
+  const longSessions = sessions
+    .map((session) => ({ session, day: normalizeDay(session.dayOfWeek) }))
+    .filter((entry): entry is { session: CoordinatedTrainingSession; day: string } =>
+      Boolean(entry.day) && inferTrainingSessionIsLongRun(entry.session)
+    );
+
+  return longSessions.find((entry) => !requested || entry.day === requested)?.day
+    ?? longSessions[0]?.day
+    ?? null;
+}
+
+function findUpperStrengthSwapTarget(
+  sessions: CoordinatedTrainingSession[],
+  offenderIndex: number,
+  dayBeforeLongRun: string,
+  longRunDay: string,
+): number {
+  const candidates = sessions
+    .map((session, index) => ({ session, index, day: normalizeDay(session.dayOfWeek) }))
+    .filter((entry): entry is { session: CoordinatedTrainingSession; index: number; day: string } =>
+      entry.index !== offenderIndex
+      && Boolean(entry.day)
+      && entry.day !== dayBeforeLongRun
+      && entry.day !== longRunDay
+      && isStrengthSession(entry.session)
+      && !inferTrainingSessionIsLowerHeavy(entry.session)
+    )
+    .sort((left, right) => {
+      const leftScore = longRunSwapScore(left.day, longRunDay);
+      const rightScore = longRunSwapScore(right.day, longRunDay);
+      if (leftScore !== rightScore) return rightScore - leftScore;
+      return daySortIndex(left.day) - daySortIndex(right.day);
+    });
+
+  return candidates[0]?.index ?? -1;
+}
+
+function longRunSwapScore(day: string, longRunDay: string): number {
+  if (day === longRunDay) return 0;
+  if (previousDay(longRunDay) === day || nextDay(longRunDay) === day) return 1;
+  return 3;
+}
+
+function buildUpperBodyReplacementSession(
+  original: CoordinatedTrainingSession,
+  sport: string | undefined,
+  request: TrainingPlanVolumeRequest,
+  weekNumber: number,
+): CoordinatedTrainingSession {
+  const knowledge = safeLoadCoachKnowledge();
+  const weekShift = Math.max(0, weekNumber - 1);
+  const upperVariant = [1, 3]
+    .map((slot) => buildStrengthSupportVariant(slot, knowledge, weekShift))
+    .find((variant) => !inferTrainingSessionIsLowerHeavy({
+      sessionType: 'gym',
+      title: variant.title,
+      exercises: variant.exercises as Array<Record<string, any>>,
+    }));
+
+  const planSport = String(sport || '').toLowerCase();
+  const replacement = upperVariant
+    ? {
+        title: planSport === 'running' ? `Runner ${upperVariant.title}` : upperVariant.title,
+        durationMinutes: upperVariant.durationMinutes,
+        exercises: upperVariant.exercises as Array<Record<string, any>>,
+      }
+    : {
+        title: planSport === 'running' ? 'Runner Upper Body Strength' : 'Upper Body Strength',
+        durationMinutes: Math.min(Math.max(original.durationMinutes || 45, 35), 50),
+        exercises: [
+          { name: 'Dumbbell Bench Press', sets: 3, reps: '8-10', rir: 2, restSec: 75 },
+          { name: 'Lat Pulldown', sets: 3, reps: '8-10', rir: 2, restSec: 75 },
+          { name: 'One-Arm Dumbbell Row', sets: 3, reps: '10 each side', rir: 2, restSec: 60 },
+          { name: 'Dead Bug', sets: 3, reps: '10 each side', rir: 3, restSec: 30 },
+        ],
+      };
+
+  return withScheduleAdjustment({
+    ...original,
+    sessionType: 'gym',
+    title: replacement.title,
+    durationMinutes: replacement.durationMinutes,
+    preferredStartTime: original.preferredStartTime ?? request.preferredStrengthTime,
+    description: 'Upper-body strength slot substituted to avoid heavy lower-body work the day before the long run.',
+    exercises: replacement.exercises,
+  }, 'Converted from lower-body strength to upper-body strength before the long run.');
+}
+
+function withScheduleAdjustment(
+  session: CoordinatedTrainingSession,
+  adjustment: string,
+): CoordinatedTrainingSession {
+  return {
+    ...session,
+    scheduleAdjustments: [...(session.scheduleAdjustments ?? []), adjustment],
+    scheduleReason: session.scheduleReason ?? adjustment,
+  };
+}
+
 function chooseInsertionDay(
   sessions: CoordinatedTrainingSession[],
   allowedDays: string[],
@@ -238,6 +432,8 @@ function chooseInsertionDay(
     });
     if (day) return day;
   }
+
+  if (kind === 'strength') return null;
 
   return candidates.find((candidate) =>
     sessions.filter((session) => normalizeDay(session.dayOfWeek) === candidate).length < 2
@@ -348,9 +544,21 @@ function countStrength(sessions: CoordinatedTrainingSession[]): number {
   return sessions.filter(isStrengthSession).length;
 }
 
-function normalizeDay(value: string | null | undefined): string | null {
+function normalizeDay(value: unknown): string | null {
   const normalized = String(value || '').trim().toLowerCase();
   return DAY_ORDER.includes(normalized as typeof DAY_ORDER[number]) ? normalized : null;
+}
+
+function previousDay(day: string): string {
+  const index = DAY_ORDER.indexOf(day as typeof DAY_ORDER[number]);
+  if (index < 0) return day;
+  return DAY_ORDER[(index + DAY_ORDER.length - 1) % DAY_ORDER.length];
+}
+
+function nextDay(day: string): string {
+  const index = DAY_ORDER.indexOf(day as typeof DAY_ORDER[number]);
+  if (index < 0) return day;
+  return DAY_ORDER[(index + 1) % DAY_ORDER.length];
 }
 
 function daySortIndex(day: string | null): number {

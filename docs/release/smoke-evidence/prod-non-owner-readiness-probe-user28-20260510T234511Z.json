@@ -1,0 +1,27 @@
+{
+  "ok": true,
+  "status": 200,
+  "userId": 28,
+  "tenantId": 28,
+  "deviceId": "58581B94-0698-4BC8-AAA7-43B099F3136C",
+  "endpoint": "/api/v1/training/readiness",
+  "body": {
+    "ok": true,
+    "data": {
+      "score": 78,
+      "factors": {
+        "sleepScore": 60,
+        "hrvStatus": "up",
+        "bodyBattery": 65,
+        "trainingLoad": "ACWR 1.00",
+        "restingHeartRate": null,
+        "stressLevel": null
+      },
+      "recommendation": "Slightly fatigued — reduce intensity by ~10%.",
+      "reasonCode": null
+    },
+    "cached": false,
+    "timestamp": "2026-05-10T23:45:13.372Z"
+  },
+  "ranAt": "2026-05-10T23:45:13.376Z"
+}

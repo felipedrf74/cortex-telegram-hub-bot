@@ -48,6 +48,14 @@ export interface NormalizedTask {
   providerData?: Record<string, unknown>;
   /** Provider-native or Nexus-normalized recurrence pattern. */
   recurrence?: unknown;
+  /** Checklist/subtask rows normalized across Microsoft To Do and Nexus native tasks. */
+  checklistItems?: NormalizedChecklistItem[];
+}
+
+export interface NormalizedChecklistItem {
+  id: string;
+  displayName: string;
+  isChecked: boolean;
 }
 
 /** Normalized project / task list. */

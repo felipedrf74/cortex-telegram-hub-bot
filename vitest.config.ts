@@ -29,10 +29,9 @@ export default defineConfig({
     },
     testTimeout: 10000,
     pool: 'forks',
-    poolOptions: {
-      forks: {
-        singleFork: true,
-      },
-    },
+    // Cap fork fan-out so the full suite remains a reliable gate on
+    // local/desktop runners. Unbounded forks can complete every assertion
+    // but still fail at shutdown with Vitest worker RPC timeouts.
+    maxWorkers: 4,
   },
 });

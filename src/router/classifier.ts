@@ -2,8 +2,12 @@
 
 import { DomainName, DefaultDomainName, ClassificationResult } from '../domains/types';
 import { classifyMessage } from '../services/anthropic';
+import { getActiveProvider } from '../services/provider-registry';
 import { getClassificationHints } from '../skills/skill-config';
 import { logger } from '../utils/logger';
+import { config } from '../config';
+import { runOllamaShadowClassification } from '../services/classify-shadow';
+import { getCurrentContext } from '../utils/request-context';
 
 export interface ConversationContext {
   domain: DomainName;
@@ -31,6 +35,15 @@ const DOMAIN_PATTERNS: Record<DefaultDomainName, RegExp[]> = {
   ],
   cooking: [
     /^\/(cook|recipe|recipes|meal|mealplan|shopping|shoppinglist|menu)\b/i,
+  ],
+  connections: [
+    /^\/(connections?|integrations?|sync|reconnect|providers?)\b/i,
+  ],
+  notifications: [
+    /^\/(notif(?:ication)?s?|alerts?|push|quiet)\b/i,
+  ],
+  decision_center: [
+    /^\/(decis(?:ion)?s?|choices?|snooze|dismiss(?:ed)?|followup)\b/i,
   ],
 };
 
@@ -200,7 +213,104 @@ export async function classifyWithClaude(
   userId?: number,
   tenantId?: number,
 ): Promise<ClassificationResult> {
-  const result = await classifyMessage(message, activeContext ?? undefined, userId, tenantId);
+  // Phase K Codex round-11 fix (F-new-4): the legacy
+  // services/anthropic.classifyMessage path uses
+  // completeOneShotWithFallback (Gemini-first → Anthropic Haiku) and
+  // never reaches the TaskRoutingProvider. That meant
+  // AI_CLASSIFY_PRIMARY=ollama had no effect on live chat
+  // classification, even though the routing config and provider were
+  // both initialized correctly.
+  //
+  // Prefer the active routing provider when available. It honors
+  // AI_CLASSIFY_PRIMARY (e.g., 'ollama') with its circuit-breaker +
+  // fallback chain (e.g., ollama → gemini → openai), and writes the
+  // expected api_usage row with provider='ollama', cost_usd=0,
+  // local_request_units=1 when Ollama serves the request.
+  //
+  // Fall back to the legacy classifyMessage path only when no routing
+  // provider is initialized (early boot, tests, scheduled jobs running
+  // before provider-registry init).
+  let result: ClassificationResult;
+  // Option 3: measure live classify duration so the shadow path can
+  // compare it to the small-model Ollama latency. Captured even when
+  // shadow is disabled (cheap; harmless).
+  const liveStart = Date.now();
+  const routingProvider = getActiveProvider();
+  if (routingProvider) {
+    try {
+      const raw = await routingProvider.classify(
+        message,
+        activeContext ?? undefined,
+        // O3-A19: explicit live source on the user-facing path so any
+        // future code that reads ClassifyOptions sees a default-safe
+        // signal (never accidentally shadow-trigger from the live path).
+        { userId, tenantId, source: 'live' },
+      );
+      // Defensive guard (Codex Mac sync round-1 fix): routing-provider
+      // implementations are typed to always return ClassificationResult
+      // or throw, but test stubs / misconfigured environments may return
+      // undefined. Treat that as a failure and fall back to the legacy
+      // classifier so callers never see `undefined.domain`.
+      if (!raw || typeof raw.domain !== 'string' || typeof raw.confidence !== 'number') {
+        throw new Error('routing-provider classify returned malformed/empty result');
+      }
+      result = raw;
+    } catch (err) {
+      // Routing-provider classify failures should not block the chat
+      // turn — log and fall through to the legacy classifier so the
+      // request keeps moving. The routing provider's circuit-breaker
+      // will mark the underlying provider as failing and route around
+      // it on the next call.
+      logger.warn(
+        { err: err instanceof Error ? err.message : String(err) },
+        'Routing-provider classify failed — falling back to legacy classifyMessage',
+      );
+      result = await classifyMessage(message, activeContext ?? undefined, userId, tenantId);
+    }
+  } else {
+    result = await classifyMessage(message, activeContext ?? undefined, userId, tenantId);
+  }
+  const liveDurationMs = Date.now() - liveStart;
+
+  // Option 3 (O3-A1): fire-and-forget Ollama shadow classify.
+  //
+  // Runs on a separate microtask so the live response returns to the
+  // caller immediately. The shadow function:
+  //   - skips if config.localLLM.classifyShadow is false
+  //   - skips if the live path is already Ollama (O3-A19, anti-recursion)
+  //   - bounds itself with AbortController timeout (O3-A18)
+  //   - never throws to this caller (the .catch swallows + logs)
+  //   - does not write api_usage / consume rate limits (O3-A12 OPTION 1)
+  //
+  // The shadow row is correlated to the live chat turn via requestId
+  // (pulled from AsyncLocalStorage if available — null otherwise).
+  if (config.localLLM?.classifyShadow) {
+    const ctx = getCurrentContext();
+    const requestId = ctx?.requestId;
+    // `geminiModel` reflects the model that the LIVE classify path used.
+    // In the current setup (AI_CLASSIFY_PRIMARY=gemini), the routing
+    // provider invokes Gemini's classifier model; pass that name so
+    // shadow rows have the baseline model recorded for diff/audit. If
+    // the live path ever becomes a different provider, this field would
+    // need to follow — but for the Option-3 shadow window, Gemini IS
+    // the live classifier (O3-A19 prevents shadow from running when
+    // Ollama is the live path), so config.gemini.classifierModel is
+    // accurate.
+    const liveModelName = config.gemini?.classifierModel ?? undefined;
+    void runOllamaShadowClassification({
+      message,
+      activeContext: activeContext ?? undefined,
+      userId,
+      tenantId,
+      requestId,
+      geminiResult: result,
+      geminiModel: liveModelName,
+      geminiDurationMs: liveDurationMs,
+    }).catch((err) =>
+      logger.warn({ err: err instanceof Error ? err.message : String(err) }, 'classify shadow failed'),
+    );
+  }
+
   if (activeContext && result.confidence < 0.6) {
     logger.warn(
       { requested: result.domain, confidence: result.confidence, fallbackDomain: activeContext.domain },
@@ -208,6 +318,6 @@ export async function classifyWithClaude(
     );
     return { domain: activeContext.domain, confidence: Math.max(result.confidence, 0.51) };
   }
-  logger.debug({ result }, 'Claude classification result');
+  logger.debug({ result }, 'Routing-provider classification result');
   return result;
 }

@@ -14,6 +14,16 @@ const mockClearCache = vi.fn();
 const mockClearCacheByPrefix = vi.fn();
 const mockLoggerError = vi.fn();
 const mockGetUserTimezone = vi.fn(() => 'Europe/Lisbon');
+const mockGetGraphClient = vi.fn();
+
+function expectCachePrefixesCleared(...prefixes: string[]) {
+  const cleared = mockClearCacheByPrefix.mock.calls.flatMap(([prefix]) => (
+    Array.isArray(prefix) ? prefix : [prefix]
+  ));
+  for (const prefix of prefixes) {
+    expect(cleared).toContain(prefix);
+  }
+}
 
 vi.mock('../../src/api/routes/../../services/task-store/task-router', () => ({
   resolveTaskProvider: (...args: unknown[]) => mockResolveTaskProvider(...args),
@@ -49,9 +59,15 @@ vi.mock('../../src/services/cache-store', () => ({
   userCacheKey: (userId: number, key: string) => `u:${userId}:${key}`,
 }));
 
+vi.mock('../../src/services/microsoft-auth', () => ({
+  getGraphClient: (...args: unknown[]) => mockGetGraphClient(...args),
+}));
+
 vi.mock('../../src/services/user-service', () => ({
+  // Identity-safety: tasks route uses the strict by-id helper post-audit.
   getOwnerBootstrapUser: vi.fn(() => null),
   getUserTimezone: (...args: unknown[]) => mockGetUserTimezone(...args),
+  getUserTimezoneById: (...args: unknown[]) => mockGetUserTimezone(...args),
 }));
 
 vi.mock('../../src/utils/logger', () => ({
@@ -63,6 +79,7 @@ vi.mock('../../src/utils/logger', () => ({
     trace: vi.fn(),
     child: vi.fn().mockReturnThis(),
   },
+  LOGGER_REDACTION_PATHS: [],
 }));
 
 import { dateKeyInAppTimezone, taskDueDateKey, taskRoutes } from '../../src/api/routes/tasks';
@@ -95,6 +112,7 @@ function mockReq(
   path: string,
   options: {
     userId?: number;
+    tenantId?: number;
     query?: Record<string, any>;
     params?: Record<string, string>;
     body?: Record<string, any>;
@@ -111,6 +129,7 @@ function mockReq(
     body: options.body || {},
     headers: {},
     userId: options.userId ?? 12,
+    tenantId: options.tenantId ?? options.userId ?? 12,
   } as any;
 }
 
@@ -168,6 +187,7 @@ describe('Task routes sync provider metadata', () => {
     mockClearCache.mockReturnValue(undefined);
     mockClearCacheByPrefix.mockReturnValue(undefined);
     mockGetUserTimezone.mockReturnValue('Europe/Lisbon');
+    mockGetGraphClient.mockReturnValue(createTaskMoveGraphClient());
     providerApi.getLists.mockResolvedValue({
       success: true,
       data: [
@@ -331,9 +351,7 @@ describe('Task routes sync provider metadata', () => {
         syncProvider: 'ms_todo',
       }),
     );
-    expect(mockClearCacheByPrefix).toHaveBeenCalledWith('dashboard-home:12:');
-    expect(mockClearCacheByPrefix).toHaveBeenCalledWith('plan:week:u:12:');
-    expect(mockClearCacheByPrefix).toHaveBeenCalledWith('plan:today:u:12:');
+    expectCachePrefixesCleared('dashboard-home:12:', 'plan:week:u:12:', 'plan:today:u:12:');
   });
 
   it('routes generic inbox task creation to the capture list before provider-default fallbacks', async () => {
@@ -426,6 +444,134 @@ describe('Task routes sync provider metadata', () => {
     ]);
   });
 
+  it('returns a bounded active working set without completed history', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-05-08T12:00:00Z'));
+
+    const completedHistory = Array.from({ length: 2500 }, (_, index) => ({
+      id: `completed-${index}`,
+      title: `Daily recurrence ${index}`,
+      status: 'completed',
+      listId: 'list-1',
+    }));
+    providerApi.getTasks.mockImplementation(async (listId: string) => ({
+      success: true,
+      data: listId === 'list-1'
+        ? [
+          { id: 'active-1', title: 'Creatine', status: 'notStarted', listId: 'list-1', listName: 'Tasks', dueDateTime: '2026-05-08T09:00:00Z' },
+          { id: 'active-2', title: 'K2', status: 'inProgress', listId: 'list-1', listName: 'Tasks', dueDateTime: '2026-05-07T09:00:00Z' },
+          ...completedHistory,
+        ].filter((task) => task.status !== 'completed')
+        : [],
+    }));
+
+    try {
+      const res = await dispatch('GET', '/working-set', {
+        query: { pageSize: '2' },
+      });
+
+      expect(res.statusCode, JSON.stringify(res.body)).toBe(200);
+      expect(res.body.data.policyVersion).toBe('task-working-set-v1');
+      expect(res.body.data.activeCountsByList).toEqual({ 'list-1': 2, 'list-2': 0 });
+      expect(res.body.data.smartCounts).toEqual({ dueToday: 1, overdue: 1 });
+      expect(res.body.data.activePage.tasks).toHaveLength(2);
+      expect(JSON.stringify(res.body.data.activePage.tasks)).not.toContain('completed-');
+      expect(providerApi.getAllPendingTasks).not.toHaveBeenCalled();
+      expect(providerApi.getLists).toHaveBeenCalledTimes(1);
+      expect(providerApi.getTasks).toHaveBeenCalledTimes(2);
+      expect(providerApi.getTasks).toHaveBeenCalledWith('list-1', 'Tasks', { status: 'active' });
+      expect(providerApi.getTasks).toHaveBeenCalledWith('list-2', 'Work', { status: 'active' });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('supports explicit active and completed scopes on list reads', async () => {
+    providerApi.getTasks.mockResolvedValueOnce({
+      success: true,
+      data: [
+        { id: 'active-1', title: 'Active', status: 'notStarted', listId: 'list-1', listName: 'Tasks' },
+      ],
+    });
+
+    const activeRes = await dispatch('GET', '/list/list-1', {
+      params: { listId: 'list-1' },
+      query: { scope: 'active', pageSize: '25', listName: 'Tasks' },
+    });
+
+    expect(activeRes.statusCode).toBe(200);
+    expect(providerApi.getTasks).toHaveBeenLastCalledWith('list-1', 'Tasks', {
+      status: 'active',
+      top: 25,
+      completedAfter: undefined,
+    });
+    expect(activeRes.body.data.scope).toBe('active');
+
+    providerApi.getTasks.mockResolvedValueOnce({
+      success: true,
+      data: [
+        { id: 'done-1', title: 'Done', status: 'completed', listId: 'list-1', listName: 'Tasks' },
+      ],
+    });
+
+    const completedRes = await dispatch('GET', '/list/list-1', {
+      params: { listId: 'list-1' },
+      query: { scope: 'completed', pageSize: '10', completedAfter: '2026-05-01T00:00:00Z', listName: 'Tasks' },
+    });
+
+    expect(completedRes.statusCode).toBe(200);
+    expect(providerApi.getTasks).toHaveBeenLastCalledWith('list-1', 'Tasks', {
+      status: 'completed',
+      top: 10,
+      completedAfter: '2026-05-01T00:00:00Z',
+    });
+    expect(completedRes.body.data.scope).toBe('completed');
+  });
+
+  it('bypasses stale empty list-detail cache when list metadata reports pending tasks', async () => {
+    mockGetCachedSWR.mockImplementation((key: string) => {
+      if (key === 'u:12:tasks:list-1:all:all:75:') {
+        return { value: { listName: 'Entrada', tasks: [] }, fresh: true };
+      }
+      if (key === 'u:12:task-lists') {
+        return { value: { lists: [{ id: 'list-1', name: 'Entrada', taskCount: 9 }] }, fresh: true };
+      }
+      return null;
+    });
+    providerApi.getTasks.mockResolvedValueOnce({
+      success: true,
+      data: [
+        {
+          id: 'task-entrada-1',
+          title: 'Family inbox item',
+          status: 'notStarted',
+          listId: 'list-1',
+          listName: 'Entrada',
+        },
+      ],
+    });
+
+    const res = await dispatch('GET', '/list/list-1', {
+      params: { listId: 'list-1' },
+      query: { listName: 'Entrada' },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(providerApi.getTasks).toHaveBeenCalledWith('list-1', 'Entrada', { top: 75, completedAfter: undefined });
+    expect(res.body.data.tasks).toEqual([
+      expect.objectContaining({ id: 'task-entrada-1', title: 'Family inbox item' }),
+    ]);
+    expect(mockSetCacheSWR).toHaveBeenCalledWith(
+      'u:12:tasks:list-1:all:all:75:',
+      expect.objectContaining({
+        listName: 'Entrada',
+        tasks: [expect.objectContaining({ id: 'task-entrada-1' })],
+      }),
+      expect.any(Number),
+      expect.any(Number),
+    );
+  });
+
   it('returns full task detail with checklist items for the task drill-down flow', async () => {
     const res = await dispatch('GET', '/list-1/task-1', {
       params: { listId: 'list-1', taskId: 'task-1' },
@@ -488,7 +634,7 @@ describe('Task routes sync provider metadata', () => {
       expect.objectContaining({ id: 'step-1' }),
       expect.objectContaining({ id: 'step-2' }),
     ]);
-    expect(mockClearCache).toHaveBeenCalledWith('u:12:tasks:list-1:all');
+    expectCachePrefixesCleared('u:12:tasks:list-1:');
   });
 
   it('normalizes update responses when the provider only returns a partial task payload', async () => {
@@ -523,6 +669,43 @@ describe('Task routes sync provider metadata', () => {
         syncProvider: 'ms_todo',
       }),
     );
+  });
+
+  it('passes recurrence updates through PATCH and includes recurrence in the response DTO', async () => {
+    const recurrence = {
+      pattern: { type: 'weekly', interval: 1, daysOfWeek: ['friday'] },
+      range: { type: 'noEnd', startDate: '2026-06-05' },
+    };
+    providerApi.getTask.mockResolvedValueOnce({
+      success: true,
+      data: {
+        id: 'task-1',
+        title: 'Inbox cleanup',
+        importance: 'normal',
+        status: 'notStarted',
+        listId: 'list-1',
+        listName: 'Tasks',
+        dueDateTime: '2026-06-05T09:00:00Z',
+        recurrence,
+      },
+    });
+
+    const res = await dispatch('PATCH', '/list-1/task-1', {
+      params: { listId: 'list-1', taskId: 'task-1' },
+      body: {
+        dueDateTime: '2026-06-05T09:00:00Z',
+        recurrence,
+      },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(providerApi.updateTask).toHaveBeenCalledWith(
+      'list-1',
+      'task-1',
+      expect.objectContaining({ recurrence }),
+      'Tasks',
+    );
+    expect(res.body.data.task.recurrence).toEqual(recurrence);
   });
 
   it('normalizes complete responses when the provider only returns completion metadata', async () => {
@@ -579,6 +762,25 @@ describe('Task routes sync provider metadata', () => {
     expect(providerApi.completeTask).not.toHaveBeenCalled();
     expect(res.body.data.alreadyCompleted).toBe(true);
     expect(res.body.data.task.status).toBe('completed');
+  });
+
+  it('rolls back copied task when Microsoft list move cannot delete the source task', async () => {
+    const calls: Array<{ method: string; path: string; body?: any }> = [];
+    mockGetGraphClient.mockReturnValue(createTaskMoveGraphClient({ calls, failSourceDelete: true }));
+
+    const res = await dispatch('POST', '/list-1/task-1/move', {
+      params: { listId: 'list-1', taskId: 'task-1' },
+      body: { targetListId: 'list-2' },
+    });
+
+    expect(res.statusCode).toBe(500);
+    expect(calls).toEqual([
+      expect.objectContaining({ method: 'GET', path: '/me/todo/lists/list-1/tasks/task-1' }),
+      expect.objectContaining({ method: 'GET', path: '/me/todo/lists/list-1/tasks/task-1/checklistItems' }),
+      expect.objectContaining({ method: 'POST', path: '/me/todo/lists/list-2/tasks' }),
+      expect.objectContaining({ method: 'DELETE', path: '/me/todo/lists/list-1/tasks/task-1' }),
+      expect.objectContaining({ method: 'DELETE', path: '/me/todo/lists/list-2/tasks/moved-task' }),
+    ]);
   });
 
   it('coalesces concurrent complete requests for the same task', async () => {
@@ -653,7 +855,7 @@ describe('Task routes sync provider metadata', () => {
 
     expect(res.statusCode).toBe(200);
     expect(providerApi.deleteList).toHaveBeenCalledWith('list-2');
-    expect(mockClearCache).toHaveBeenCalledWith('u:12:tasks:list-2:all');
+    expectCachePrefixesCleared('u:12:tasks:list-2:');
   });
 
   it('derives task due-date keys across the Lisbon DST boundary using configured timezone', () => {
@@ -807,3 +1009,46 @@ describe('Task routes sync provider metadata', () => {
     });
   });
 });
+
+function createTaskMoveGraphClient(options: {
+  calls?: Array<{ method: string; path: string; body?: any }>;
+  failSourceDelete?: boolean;
+} = {}) {
+  const calls = options.calls;
+  return {
+    api: (path: string) => {
+      const chain: any = {
+        get: async () => {
+          calls?.push({ method: 'GET', path });
+          if (path.endsWith('/checklistItems')) return { value: [] };
+          return {
+            id: 'task-1',
+            title: 'Inbox cleanup',
+            body: { content: 'Sort notes', contentType: 'text' },
+            importance: 'normal',
+            status: 'notStarted',
+            dueDateTime: { dateTime: '2026-05-11T09:00:00.0000000', timeZone: 'UTC' },
+          };
+        },
+        post: async (body: any) => {
+          calls?.push({ method: 'POST', path, body });
+          return {
+            id: 'moved-task',
+            title: body.title,
+            importance: body.importance,
+            status: body.status,
+            dueDateTime: body.dueDateTime,
+          };
+        },
+        delete: async () => {
+          calls?.push({ method: 'DELETE', path });
+          if (options.failSourceDelete && path === '/me/todo/lists/list-1/tasks/task-1') {
+            throw new Error('source delete failed');
+          }
+          return {};
+        },
+      };
+      return chain;
+    },
+  };
+}

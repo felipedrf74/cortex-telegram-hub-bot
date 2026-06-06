@@ -3,24 +3,31 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const mockGet = vi.fn();
 const mockRun = vi.fn();
 const mockExec = vi.fn();
+const mockWarn = vi.fn();
+const mockPrepare = vi.fn(() => ({
+  get: (...args: unknown[]) => mockGet(...args),
+  run: (...args: unknown[]) => mockRun(...args),
+}));
 
 vi.mock('../../src/services/database', () => ({
   getDb: () => ({
-    prepare: () => ({
-      get: (...args: unknown[]) => mockGet(...args),
-      run: (...args: unknown[]) => mockRun(...args),
-    }),
+    prepare: (...args: unknown[]) => mockPrepare(...args),
     exec: (...args: unknown[]) => mockExec(...args),
   }),
+  initDatabase: vi.fn(),
+  closeDatabase: vi.fn(),
+  findUnexpectedMigrationPrefixCollisions: vi.fn(() => []),
+  assertNoUnexpectedMigrationPrefixCollisions: vi.fn(),
 }));
 
 vi.mock('../../src/utils/logger', () => ({
   logger: {
     debug: vi.fn(),
     info: vi.fn(),
-    warn: vi.fn(),
+    warn: mockWarn,
     error: vi.fn(),
   },
+  LOGGER_REDACTION_PATHS: [],
 }));
 
 describe('cache-store observability', () => {
@@ -29,6 +36,8 @@ describe('cache-store observability', () => {
     mockGet.mockReset();
     mockRun.mockReset();
     mockExec.mockReset();
+    mockWarn.mockReset();
+    mockPrepare.mockClear();
     const { _resetCacheStoreStatsForTests } = await import('../../src/services/cache-store');
     _resetCacheStoreStatsForTests();
   });
@@ -106,6 +115,21 @@ describe('cache-store observability', () => {
     });
   });
 
+  it('clears multiple cache prefixes in one SQL statement', async () => {
+    mockRun.mockReturnValue({ changes: 4 });
+    const { clearCacheByPrefix, getCacheStoreStats } = await import('../../src/services/cache-store');
+
+    clearCacheByPrefix(['dashboard:42:', 'dashboard-home:42:', 'dashboard:42:']);
+
+    expect(mockPrepare).toHaveBeenCalledWith(
+      'DELETE FROM api_cache WHERE cache_key LIKE ? OR cache_key LIKE ?',
+    );
+    expect(mockRun).toHaveBeenCalledWith('dashboard:42:%', 'dashboard-home:42:%');
+    expect(getCacheStoreStats()).toMatchObject({
+      clearByPrefixCount: 2,
+    });
+  });
+
   it('stores an SWR monotonic freshness boundary for clock-skew-safe reads', async () => {
     mockRun.mockReturnValue({ changes: 1 });
 
@@ -120,5 +144,26 @@ describe('cache-store observability', () => {
     });
     expect(typeof envelope.freshUntilMonotonic).toBe('number');
     expect(envelope.freshUntilMonotonic).toBe(envelope.freshUntil);
+  });
+
+  it('deletes expired api_cache rows in bounded batches and warns when the safety valve fires', async () => {
+    mockRun
+      .mockReturnValueOnce({ changes: 10_000 })
+      .mockReturnValueOnce({ changes: 1 });
+
+    const { clearExpired, getCacheStoreStats } = await import('../../src/services/cache-store');
+
+    clearExpired();
+
+    expect(mockRun).toHaveBeenCalledTimes(2);
+    expect(mockRun.mock.calls[0][1]).toBe(10_000);
+    expect(mockWarn).toHaveBeenCalledWith(
+      expect.objectContaining({ cleared: 10_000, batchSize: 10_000 }),
+      'api_cache expiry cleanup safety valve fired',
+    );
+    expect(getCacheStoreStats()).toMatchObject({
+      expireSweepCount: 1,
+      expiredEntriesCleared: 10_000,
+    });
   });
 });

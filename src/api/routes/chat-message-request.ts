@@ -1,9 +1,9 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
 import { Response } from 'express';
-import { buildQuotaExceededMessage, isUserOverDailyCap } from '../../services/cost-guardrail';
+import { enforceCostGuardrails } from '../../services/cost-guardrail';
 import { normalizeLangHeader } from '../../services/secretary-fastpath';
-import { getUserLanguage, setUserLanguage } from '../../services/user-service';
+import { getUserLanguageById, setUserLanguage } from '../../services/user-service';
 import { logger } from '../../utils/logger';
 import { sendError } from '../response-helpers';
 import { normalizeChatAttachment, type ChatImageAttachment } from './chat-attachments';
@@ -46,7 +46,7 @@ export function persistChatLanguagePreference(req: HeaderReadable, userId: numbe
     if (!headerValue) return;
 
     const lang = normalizeLangHeader(headerValue);
-    const current = getUserLanguage(userId);
+    const current = getUserLanguageById(userId);
     if (current === lang) return;
 
     setUserLanguage(userId, lang);
@@ -64,19 +64,31 @@ export function sendChatQuotaExceededIfNeeded(
   userId: number,
   logMessage: string,
 ): boolean {
-  const quota = isUserOverDailyCap(userId);
-  if (!quota.over) return false;
+  const decision = enforceCostGuardrails(userId);
+  if (!decision.block) return false;
 
   logger.warn(
-    { userId, spentUsd: quota.spentUsd, capUsd: quota.capUsd, platform: 'ios' },
+    {
+      userId,
+      reason: decision.reason,
+      spentUsd: decision.quota.spentUsd,
+      capUsd: decision.quota.capUsd,
+      globalTotalUsd: decision.global.totalUsd,
+      globalLimitUsd: decision.global.limitUsd,
+      platform: 'ios',
+    },
     logMessage,
   );
   sendError(
     res,
-    'QUOTA_EXCEEDED',
-    buildQuotaExceededMessage(quota),
-    402,
-    { plan: quota.plan, resetAt: quota.resetAt },
+    decision.reason,
+    decision.message,
+    decision.status,
+    {
+      ...decision.details,
+      error: 'rate_limited',
+      retryable: true,
+    },
   );
   return true;
 }

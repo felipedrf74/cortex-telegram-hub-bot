@@ -23,14 +23,34 @@ import {
 } from '../../services/google-gmail';
 import { getEvents as getOutlookEvents } from '../../services/outlook-calendar';
 import { getEvents as getGoogleEvents } from '../../services/google-calendar';
-import { getCachedSWR, setCacheSWR } from '../../services/cache-store';
+import { resolveMailReadPreference } from '../../services/provider-preferences';
 import { logger } from '../../utils/logger';
 import { config } from '../../config';
+import { secureSecretMatches } from '../secret-guards';
 import { AITimeoutError, withTimeout } from '../../utils/timeout';
-import { isValidTenantUserId, recordTenantScopeAnomaly } from '../../services/tenant-scope-observability';
+import { isValidTenantUserId } from '../../services/tenant-scope-observability';
 import { listTasks } from '../../services/task-store/task-service';
 import type { NormalizedTask } from '../../services/task-store/types';
-import { recordSWRRefreshFailure, recordSWRRefreshSuccess } from '../../services/swr-refresh-observability';
+import { ensureCachedRouteTenantScope, handleCachedRoute, routeCacheKey } from '../route-helpers/cached-route-handler';
+import {
+  buildSkillNotificationFixtureIntent,
+  createNotificationIntent,
+  dismissNotificationCenterItem,
+  getNotificationDecisionLog,
+  getOrCreateNotificationProfile,
+  listNotificationCenterItems,
+  markNotificationCenterItemRead,
+  performNotificationAction,
+  registerNotificationDeviceToken,
+  revokeNotificationDeviceToken,
+  updateNotificationProfile,
+  type NotificationCenterStatus,
+  type NotificationCenterItem,
+  type NotificationEvaluationResult,
+  type NotificationIntentInput,
+  type NotificationSourceSkill,
+} from '../../services/notification-orchestrator';
+import { DecisionActionError, getDecisionItem, performDecisionAction } from '../../services/decision-center';
 
 type InboxItemKind = 'notification' | 'report' | 'email' | 'task' | 'event';
 type InboxAction = 'open_content' | 'open_report' | 'view_email' | 'open_tasks' | 'view_event';
@@ -43,7 +63,6 @@ const INBOX_SUMMARY_CACHE_TTL = 30;
 const INBOX_SUMMARY_SWR_STALE = 180;
 const DEFAULT_INBOX_SOURCE_TIMEOUT_MS = 3_000;
 const DEFAULT_INBOX_SUMMARY_SOURCE_TIMEOUT_MS = 2_000;
-const inboxSWRInFlight = new Set<string>();
 
 interface UnifiedInboxItem {
   kind: InboxItemKind;
@@ -139,30 +158,13 @@ async function runInboxSource<T>(
   }
 }
 
-function reportInvalidNotificationsRouteScope(
-  operation: string,
-  userId: number | undefined,
-  details?: Record<string, unknown>,
-): void {
-  recordTenantScopeAnomaly({
-    layer: 'delivery',
-    operation,
-    reason: 'invalid_user_scope',
-    userId: typeof userId === 'number' ? userId : null,
-    details,
-  });
-}
-
 function ensureValidNotificationsRouteScope(
   res: Response,
   userId: number | undefined,
   operation: string,
   details?: Record<string, unknown>,
 ): userId is number {
-  if (isValidTenantUserId(userId)) return true;
-  reportInvalidNotificationsRouteScope(operation, userId, details);
-  sendError(res, 'UNAUTHORIZED', 'Invalid authenticated user scope', 401);
-  return false;
+  return ensureCachedRouteTenantScope(res, userId, operation, details);
 }
 
 function safeIso(input: unknown, fallback = new Date()): string {
@@ -174,6 +176,95 @@ function safeIso(input: unknown, fallback = new Date()): string {
     return input.toISOString();
   }
   return fallback.toISOString();
+}
+
+function routeTenantId(req: AuthenticatedRequest, userId: number): number {
+  const candidate = (req as any).tenantId;
+  return isValidTenantUserId(candidate) ? candidate : userId;
+}
+
+function isInternalNotificationIntentRequest(req: AuthenticatedRequest): boolean {
+  const expected = process.env.INTERNAL_API_SECRET || '';
+  const provided = req.header('x-internal-secret');
+  return Boolean(expected) && secureSecretMatches(expected, provided);
+}
+
+function formatCenterItemForApi(item: NotificationCenterItem): Record<string, unknown> {
+  return {
+    itemId: item.itemId,
+    id: item.itemId,
+    intentId: item.intentId,
+    decisionLogId: item.decisionLogId,
+    title: item.title,
+    body: item.body,
+    safeBody: item.safeBody,
+    sensitiveBody: item.sensitiveBody,
+    sourceSkill: item.sourceSkill,
+    type: item.type,
+    priority: item.priority,
+    status: item.status,
+    deeplink: item.deeplink,
+    actions: item.actions,
+    dedupeKey: item.dedupeKey,
+    createdAt: item.createdAt,
+    expiresAt: item.expiresAt,
+  };
+}
+
+function formatEvaluationForApi(result: NotificationEvaluationResult): Record<string, unknown> {
+  return {
+    intent: {
+      intentId: result.intent.intentId,
+      sourceSkill: result.intent.sourceSkill,
+      type: result.intent.type,
+      priority: result.intent.priority,
+      dedupeKey: result.intent.dedupeKey,
+      createdAt: result.intent.createdAt,
+    },
+    item: result.item ? formatCenterItemForApi(result.item) : null,
+    decisionLog: {
+      decisionLogId: result.decisionLog.decisionLogId,
+      decision: result.decisionLog.decision,
+      reason: result.decisionLog.reason,
+      scheduledFor: result.decisionLog.scheduledFor,
+      sentAt: result.decisionLog.sentAt,
+    },
+    deliveryAttempts: result.deliveryAttempts.map((attempt) => ({
+      attemptId: attempt.attemptId,
+      channel: attempt.channel,
+      provider: attempt.provider,
+      status: attempt.status,
+      errorCode: attempt.errorCode,
+      sentAt: attempt.sentAt,
+    })),
+    pushPayload: result.pushPayload,
+  };
+}
+
+function notificationCenterSection(item: NotificationCenterItem): string {
+  if (item.type === 'decision_required' || item.type === 'reflow_suggestion') return 'needsDecision';
+  if (item.type === 'conflict_detected') return 'conflicts';
+  if (item.type === 'reminder' || item.type === 'missed_item') return 'reminders';
+  if (item.type === 'approval_required') return 'approvals';
+  if (item.type === 'schedule_changed') return 'scheduleChanges';
+  if (item.type === 'insight' || item.type === 'daily_digest' || item.type === 'weekly_review') return 'insights';
+  return 'history';
+}
+
+function buildDecisionCenterSections(items: NotificationCenterItem[]): Record<string, Record<string, unknown>[]> {
+  const sections: Record<string, Record<string, unknown>[]> = {
+    needsDecision: [],
+    conflicts: [],
+    reminders: [],
+    scheduleChanges: [],
+    approvals: [],
+    insights: [],
+    history: [],
+  };
+  for (const item of items) {
+    sections[notificationCenterSection(item)].push(formatCenterItemForApi(item));
+  }
+  return sections;
 }
 
 function toHumanDateTime(input: unknown): string | null {
@@ -229,16 +320,7 @@ function compareInboxItems(a: UnifiedInboxItem, b: UnifiedInboxItem): number {
   return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
 }
 
-function swrRefresh(key: string, fn: () => Promise<void>): void {
-  if (inboxSWRInFlight.has(key)) return;
-  inboxSWRInFlight.add(key);
-  fn()
-    .then(() => recordSWRRefreshSuccess(key))
-    .catch((err) => recordSWRRefreshFailure(key, err, { source: 'notifications_route', operation: 'inbox_swr_refresh' }))
-    .finally(() => inboxSWRInFlight.delete(key));
-}
-
-async function buildUnifiedInbox(userId: number, limit: number): Promise<{
+async function buildUnifiedInbox(userId: number, tenantId: number, limit: number): Promise<{
   totalUnread: number;
   count: number;
   items: UnifiedInboxItem[];
@@ -254,6 +336,11 @@ async function buildUnifiedInbox(userId: number, limit: number): Promise<{
   const todayStr = now.toISODate()!;
   const outlookConnected = isConnected(userId, 'outlook');
   const googleConnected = isConnected(userId, 'google');
+  // Phase 17 hostile-QA fix (2026-05-18): pass real tenantId from the route
+  // scope so cross-tenant users read their persisted mail preference
+  // instead of falling back to the (userId, userId) default which silently
+  // reverts to 'auto'.
+  const mailPreference = resolveMailReadPreference(userId, tenantId);
 
   const fetchers: Array<{
     key: string;
@@ -261,6 +348,37 @@ async function buildUnifiedInbox(userId: number, limit: number): Promise<{
     warning: string;
     run: () => Promise<UnifiedInboxSourceResult>;
   }> = [
+    {
+      key: 'decision-center',
+      warningCode: 'DECISION_CENTER_UNAVAILABLE',
+      warning: 'Decision Center notifications are temporarily unavailable.',
+      run: async () => {
+        const centerItems = listNotificationCenterItems(userId, userId, { status: 'all', limit });
+        const items = centerItems.map((item) => ({
+          kind: 'notification' as const,
+          id: `decision:${item.itemId}`,
+          title: item.title,
+          body: item.safeBody || item.body || null,
+          type: item.type,
+          status: item.status,
+          createdAt: safeIso(item.createdAt),
+          source: item.sourceSkill,
+          priority: item.priority === 'time_sensitive' || item.priority === 'critical'
+            ? 'high' as const
+            : item.priority === 'active'
+              ? 'medium' as const
+              : 'low' as const,
+          action: 'open_content' as const,
+          metadata: {
+            notificationId: item.itemId,
+            deeplink: item.deeplink,
+            sourceSkill: item.sourceSkill,
+            actions: item.actions,
+          },
+        }));
+        return { items, unreadCount: centerItems.filter((item) => item.status === 'unread').length };
+      },
+    },
     {
       key: 'notifications',
       warningCode: 'CONTENT_NOTIFICATIONS_UNAVAILABLE',
@@ -355,7 +473,7 @@ async function buildUnifiedInbox(userId: number, limit: number): Promise<{
     },
   ];
 
-  if (outlookConnected) {
+  if (mailPreference.sources.includes('outlook')) {
     fetchers.push(
       {
         key: 'outlook-email',
@@ -422,7 +540,7 @@ async function buildUnifiedInbox(userId: number, limit: number): Promise<{
     );
   }
 
-  if (googleConnected) {
+  if (mailPreference.sources.includes('gmail')) {
     fetchers.push(
       {
         key: 'gmail',
@@ -501,6 +619,10 @@ async function buildUnifiedInbox(userId: number, limit: number): Promise<{
   ));
   const warningCodes: string[] = [];
   const warnings: string[] = [];
+  if (mailPreference.warningCode) {
+    warningCodes.push(mailPreference.warningCode);
+    warnings.push(mailPreference.warning || 'Preferred mail provider is unavailable.');
+  }
   if (!outlookConnected && !googleConnected) {
     warningCodes.push('MAIL_INTEGRATION_MISSING');
     warnings.push('No mail integration is connected yet.');
@@ -543,19 +665,27 @@ async function buildUnifiedInbox(userId: number, limit: number): Promise<{
   };
 }
 
-async function buildUnifiedInboxSummary(userId: number): Promise<{
+async function buildUnifiedInboxSummary(userId: number, tenantId: number): Promise<{
   unreadCount: number;
   warningCodes: string[];
   warnings: string[];
 }> {
   const outlookConnected = isConnected(userId, 'outlook');
   const googleConnected = isConnected(userId, 'google');
+  // Phase 17 hostile-QA fix (2026-05-18): pass real tenantId.
+  const mailPreference = resolveMailReadPreference(userId, tenantId);
   const fetchers: Array<{
     key: string;
     warningCode: string;
     warning: string;
     run: () => Promise<number>;
   }> = [
+    {
+      key: 'decision-center',
+      warningCode: 'DECISION_CENTER_UNAVAILABLE',
+      warning: 'Decision Center notifications are temporarily unavailable.',
+      run: async () => listNotificationCenterItems(userId, userId, { status: 'unread', limit: 200 }).length,
+    },
     {
       key: 'notifications',
       warningCode: 'CONTENT_NOTIFICATIONS_UNAVAILABLE',
@@ -570,7 +700,7 @@ async function buildUnifiedInboxSummary(userId: number): Promise<{
     },
   ];
 
-  if (outlookConnected) {
+  if (mailPreference.sources.includes('outlook')) {
     fetchers.push({
       key: 'outlook-email',
       warningCode: 'OUTLOOK_MAIL_UNAVAILABLE',
@@ -582,7 +712,7 @@ async function buildUnifiedInboxSummary(userId: number): Promise<{
     });
   }
 
-  if (googleConnected) {
+  if (mailPreference.sources.includes('gmail')) {
     fetchers.push({
       key: 'gmail',
       warningCode: 'GMAIL_UNAVAILABLE',
@@ -602,6 +732,10 @@ async function buildUnifiedInboxSummary(userId: number): Promise<{
   ));
   const warningCodes: string[] = [];
   const warnings: string[] = [];
+  if (mailPreference.warningCode) {
+    warningCodes.push(mailPreference.warningCode);
+    warnings.push(mailPreference.warning || 'Preferred mail provider is unavailable.');
+  }
   if (!outlookConnected && !googleConnected) {
     warningCodes.push('MAIL_INTEGRATION_MISSING');
     warnings.push('No mail integration is connected yet.');
@@ -658,9 +792,33 @@ export function notificationRoutes(): Router {
       : getNotifications(userId, { status, type, limit });
 
     const unreadCount = getUnreadCount(userId);
+    const tenantId = routeTenantId(req as unknown as AuthenticatedRequest, userId);
+    const warnings: Array<{ code: string; message: string }> = [];
+    let centerItems: NotificationCenterItem[] = [];
+    try {
+      centerItems = listNotificationCenterItems(userId, tenantId, {
+        status: (String(req.query.centerStatus || 'all') as NotificationCenterStatus | 'all'),
+        limit,
+      });
+    } catch (err) {
+      logger.warn(
+        {
+          event: 'notification_center_source_degraded',
+          userId,
+          tenantId,
+          errorName: safeErrorName(err),
+          errorCode: safeErrorCode(err),
+        },
+        'Decision Center source degraded for notifications list',
+      );
+      warnings.push({
+        code: 'DECISION_CENTER_UNAVAILABLE',
+        message: 'Decision Center notifications are temporarily unavailable.',
+      });
+    }
 
     sendSuccess(res, {
-      unreadCount,
+      unreadCount: unreadCount + centerItems.filter((item) => item.status === 'unread').length,
       count: notifications.length,
       notifications: notifications.map((n: any) => ({
         id: n.id,
@@ -671,7 +829,221 @@ export function notificationRoutes(): Router {
         status: n.status,
         createdAt: n.createdAt,
       })),
+      items: centerItems.map(formatCenterItemForApi),
+      warnings,
     });
+  }));
+
+  /**
+   * POST /api/v1/notifications/intents
+   *
+   * Central write path for trusted skill runtimes. userId/tenantId are always
+   * derived from authentication; forged body scope is ignored. The arbitrary
+   * intent surface is internal-secret gated so iOS clients cannot fabricate
+   * security/time-sensitive intents. Local fixture routes below remain the
+   * deterministic external validation path.
+   */
+  router.post('/intents', asyncHandler(async (req, res: Response) => {
+    const authReq = req as unknown as AuthenticatedRequest;
+    const { userId } = authReq;
+    if (!ensureValidNotificationsRouteScope(res, userId, 'notifications_route_create_intent')) return;
+    if (!isInternalNotificationIntentRequest(authReq)) {
+      sendError(res, 'FORBIDDEN', 'Notification intent creation requires an internal skill context', 403);
+      return;
+    }
+    const tenantId = routeTenantId(authReq, userId);
+
+    try {
+      const body = req.body ?? {};
+      const result = await createNotificationIntent({
+        ...body,
+        userId,
+        tenantId,
+      } as NotificationIntentInput);
+      sendSuccess(res, formatEvaluationForApi(result));
+    } catch (err: any) {
+      logger.warn({ err, userId }, 'Notification intent rejected');
+      sendError(res, 'INVALID_NOTIFICATION_INTENT', 'Unable to create notification intent', 400);
+    }
+  }));
+
+  /**
+   * POST /api/v1/notifications/intents/fixtures/:sourceSkill
+   *
+   * Deterministic local/test path for skill integration validation. It still
+   * uses the authenticated user's scope and the real orchestrator.
+   */
+  router.post('/intents/fixtures/:sourceSkill', asyncHandler(async (req, res: Response) => {
+    const authReq = req as unknown as AuthenticatedRequest;
+    const { userId } = authReq;
+    if (!ensureValidNotificationsRouteScope(res, userId, 'notifications_route_fixture_intent')) return;
+    const tenantId = routeTenantId(authReq, userId);
+    const sourceSkill = String(req.params.sourceSkill || '') as NotificationSourceSkill;
+
+    try {
+      const fixture = buildSkillNotificationFixtureIntent(sourceSkill, userId, {
+        ...(req.body ?? {}),
+        tenantId,
+      });
+      const result = await createNotificationIntent(fixture);
+      sendSuccess(res, formatEvaluationForApi(result));
+    } catch (err: any) {
+      logger.warn({ err, userId, sourceSkill }, 'Notification fixture rejected');
+      sendError(res, 'INVALID_NOTIFICATION_FIXTURE', 'Unable to create notification fixture', 400);
+    }
+  }));
+
+  /**
+   * GET /api/v1/notifications/decision-center
+   */
+  router.get('/decision-center', asyncHandler(async (req, res: Response) => {
+    const authReq = req as unknown as AuthenticatedRequest;
+    const { userId } = authReq;
+    if (!ensureValidNotificationsRouteScope(res, userId, 'notifications_route_decision_center')) return;
+    const tenantId = routeTenantId(authReq, userId);
+    const status = String(req.query.status || 'all') as NotificationCenterStatus | 'all';
+    const limit = parseInt(String(req.query.limit || '80'), 10);
+    const items = listNotificationCenterItems(userId, tenantId, { status, limit });
+    sendSuccess(res, {
+      count: items.length,
+      unreadCount: items.filter((item) => item.status === 'unread').length,
+      sections: buildDecisionCenterSections(items),
+      items: items.map(formatCenterItemForApi),
+    });
+  }));
+
+  router.get('/preferences', asyncHandler(async (req, res: Response) => {
+    const authReq = req as unknown as AuthenticatedRequest;
+    const { userId } = authReq;
+    if (!ensureValidNotificationsRouteScope(res, userId, 'notifications_route_get_preferences')) return;
+    const tenantId = routeTenantId(authReq, userId);
+    sendSuccess(res, { profile: getOrCreateNotificationProfile(userId, tenantId) });
+  }));
+
+  router.put('/preferences', asyncHandler(async (req, res: Response) => {
+    const authReq = req as unknown as AuthenticatedRequest;
+    const { userId } = authReq;
+    if (!ensureValidNotificationsRouteScope(res, userId, 'notifications_route_update_preferences')) return;
+    const tenantId = routeTenantId(authReq, userId);
+    try {
+      const profile = updateNotificationProfile(userId, tenantId, req.body ?? {});
+      sendSuccess(res, { profile });
+    } catch (err: any) {
+      logger.warn({ err, userId }, 'Notification preferences rejected');
+      sendError(res, 'INVALID_NOTIFICATION_PREFERENCES', 'Unable to update notification preferences', 400);
+    }
+  }));
+
+  router.post('/device-tokens', asyncHandler(async (req, res: Response) => {
+    const authReq = req as unknown as AuthenticatedRequest;
+    const { userId } = authReq;
+    if (!ensureValidNotificationsRouteScope(res, userId, 'notifications_route_register_device_token')) return;
+    const tenantId = routeTenantId(authReq, userId);
+    try {
+      const token = registerNotificationDeviceToken({
+        userId,
+        tenantId,
+        token: String(req.body?.token || ''),
+        environment: req.body?.environment === 'production' ? 'production' : 'sandbox',
+        deviceId: typeof req.body?.deviceId === 'string' ? req.body.deviceId : authReq.deviceId,
+        appVersion: typeof req.body?.appVersion === 'string' ? req.body.appVersion : null,
+      });
+      sendSuccess(res, {
+        token: {
+          tokenId: token.tokenId,
+          platform: token.platform,
+          environment: token.environment,
+          tokenSuffix: token.tokenSuffix,
+          deviceId: token.deviceId,
+          lastSeenAt: token.lastSeenAt,
+        },
+      });
+    } catch (err: any) {
+      logger.warn({ err, userId }, 'Notification device token rejected');
+      sendError(res, 'INVALID_DEVICE_TOKEN', 'Unable to register notification device token', 400);
+    }
+  }));
+
+  router.delete('/device-tokens/:tokenId', asyncHandler(async (req, res: Response) => {
+    const authReq = req as unknown as AuthenticatedRequest;
+    const { userId } = authReq;
+    if (!ensureValidNotificationsRouteScope(res, userId, 'notifications_route_revoke_device_token')) return;
+    const tenantId = routeTenantId(authReq, userId);
+    const revoked = revokeNotificationDeviceToken(String(req.params.tokenId || ''), userId, tenantId);
+    sendSuccess(res, { revoked });
+  }));
+
+  router.get('/decision-logs/:id', asyncHandler(async (req, res: Response) => {
+    const authReq = req as unknown as AuthenticatedRequest;
+    const { userId } = authReq;
+    if (!ensureValidNotificationsRouteScope(res, userId, 'notifications_route_decision_log')) return;
+    const tenantId = routeTenantId(authReq, userId);
+    const log = getNotificationDecisionLog(String(req.params.id || ''), userId, tenantId);
+    if (!log) {
+      sendError(res, 'NOT_FOUND', 'Notification decision log not found', 404);
+      return;
+    }
+    sendSuccess(res, { log });
+  }));
+
+  router.patch('/:id/read', asyncHandler(async (req, res: Response) => {
+    const authReq = req as unknown as AuthenticatedRequest;
+    const { userId } = authReq;
+    if (!ensureValidNotificationsRouteScope(res, userId, 'notifications_route_center_mark_read')) return;
+    const tenantId = routeTenantId(authReq, userId);
+    const item = markNotificationCenterItemRead(String(req.params.id || ''), userId, tenantId);
+    if (!item) {
+      sendError(res, 'NOT_FOUND', 'Notification not found', 404);
+      return;
+    }
+    sendSuccess(res, { item: formatCenterItemForApi(item) });
+  }));
+
+  router.patch('/:id/dismiss', asyncHandler(async (req, res: Response) => {
+    const authReq = req as unknown as AuthenticatedRequest;
+    const { userId } = authReq;
+    if (!ensureValidNotificationsRouteScope(res, userId, 'notifications_route_center_dismiss')) return;
+    const tenantId = routeTenantId(authReq, userId);
+    const item = dismissNotificationCenterItem(String(req.params.id || ''), userId, tenantId);
+    if (!item) {
+      sendError(res, 'NOT_FOUND', 'Notification not found', 404);
+      return;
+    }
+    sendSuccess(res, { item: formatCenterItemForApi(item) });
+  }));
+
+  router.post('/:id/actions', asyncHandler(async (req, res: Response) => {
+    const authReq = req as unknown as AuthenticatedRequest;
+    const { userId } = authReq;
+    if (!ensureValidNotificationsRouteScope(res, userId, 'notifications_route_center_action')) return;
+    const tenantId = routeTenantId(authReq, userId);
+    const itemId = String(req.params.id || '');
+    const actionId = String(req.body?.actionId || '');
+    try {
+      const decision = getDecisionItem(itemId, userId, tenantId);
+      if (decision) {
+        const result = await performDecisionAction(itemId, actionId, userId, tenantId, {
+          idempotencyKey: typeof req.body?.idempotencyKey === 'string' ? req.body.idempotencyKey : undefined,
+          payload: typeof req.body?.payload === 'object' && req.body.payload ? req.body.payload : {},
+        });
+        sendSuccess(res, result);
+        return;
+      }
+
+      const result = performNotificationAction(itemId, actionId, userId, tenantId);
+      sendSuccess(res, {
+        actionId: result.actionId,
+        idempotent: result.idempotent,
+        item: formatCenterItemForApi(result.item),
+      });
+    } catch (err: any) {
+      if (err instanceof DecisionActionError) {
+        sendError(res, err.code, err.message, err.status, err.details);
+        return;
+      }
+      logger.warn({ err, userId }, 'Notification action rejected');
+      sendError(res, 'INVALID_NOTIFICATION_ACTION', 'Unable to apply notification action', 400);
+    }
   }));
 
   /**
@@ -683,27 +1055,20 @@ export function notificationRoutes(): Router {
    * Ordered by urgency first, recency second.
    */
   router.get('/inbox', asyncHandler(async (req, res: Response) => {
-    const { userId } = req as unknown as AuthenticatedRequest;
+    const authReq = req as unknown as AuthenticatedRequest;
+    const { userId } = authReq;
+    const tenantId = routeTenantId(authReq, userId);
     if (!ensureValidNotificationsRouteScope(res, userId, 'notifications_route_inbox')) return;
     const limit = parseInt(String(req.query.limit || '30'), 10);
-    const cacheKey = `unified-inbox:${userId}:${limit}`;
-    const cached = getCachedSWR<any>(cacheKey);
-
-    if (cached) {
-      sendSuccess(res, cached.value, { cached: true });
-
-      if (!cached.fresh) {
-        swrRefresh(cacheKey, async () => {
-          const refreshed = await buildUnifiedInbox(userId, limit);
-          setCacheSWR(cacheKey, refreshed, INBOX_CACHE_TTL, INBOX_SWR_STALE);
-        });
-      }
-      return;
-    }
-
-    const inbox = await buildUnifiedInbox(userId, limit);
-    setCacheSWR(cacheKey, inbox, INBOX_CACHE_TTL, INBOX_SWR_STALE);
-    sendSuccess(res, inbox);
+    const cacheKey = routeCacheKey('unified-inbox', userId, limit);
+    await handleCachedRoute<any>({
+      cacheKey,
+      ttlSeconds: INBOX_CACHE_TTL,
+      staleSeconds: INBOX_SWR_STALE,
+      refreshContext: { source: 'notifications_route', operation: 'inbox_swr_refresh', userId },
+      fetchFresh: () => buildUnifiedInbox(userId, tenantId, limit),
+      send: (inbox, meta) => sendSuccess(res, inbox, { cached: meta.cached }),
+    });
   }));
 
   /**
@@ -750,26 +1115,19 @@ export function notificationRoutes(): Router {
    * Unified unread count for the Home bell badge.
    */
   router.get('/unread-count', asyncHandler(async (req, res: Response) => {
-    const { userId } = req as unknown as AuthenticatedRequest;
+    const authReq = req as unknown as AuthenticatedRequest;
+    const { userId } = authReq;
+    const tenantId = routeTenantId(authReq, userId);
     if (!ensureValidNotificationsRouteScope(res, userId, 'notifications_route_unread_count')) return;
-    const cacheKey = `unified-inbox-unread:${userId}`;
-    const cached = getCachedSWR<{ unreadCount: number; warningCodes: string[]; warnings: string[] }>(cacheKey);
-
-    if (cached) {
-      sendSuccess(res, cached.value, { cached: true });
-
-      if (!cached.fresh) {
-        swrRefresh(cacheKey, async () => {
-          const refreshed = await buildUnifiedInboxSummary(userId);
-          setCacheSWR(cacheKey, refreshed, INBOX_SUMMARY_CACHE_TTL, INBOX_SUMMARY_SWR_STALE);
-        });
-      }
-      return;
-    }
-
-    const summary = await buildUnifiedInboxSummary(userId);
-    setCacheSWR(cacheKey, summary, INBOX_SUMMARY_CACHE_TTL, INBOX_SUMMARY_SWR_STALE);
-    sendSuccess(res, summary);
+    const cacheKey = routeCacheKey('unified-inbox-unread', userId);
+    await handleCachedRoute<{ unreadCount: number; warningCodes: string[]; warnings: string[] }>({
+      cacheKey,
+      ttlSeconds: INBOX_SUMMARY_CACHE_TTL,
+      staleSeconds: INBOX_SUMMARY_SWR_STALE,
+      refreshContext: { source: 'notifications_route', operation: 'inbox_swr_refresh', userId },
+      fetchFresh: () => buildUnifiedInboxSummary(userId, tenantId),
+      send: (summary, meta) => sendSuccess(res, summary, { cached: meta.cached }),
+    });
   }));
 
   /**

@@ -12,6 +12,9 @@ const mockInvalidateFinanceDerivedCaches = vi.fn();
 
 vi.mock('../../src/services/database', () => ({
   getDb: () => testDb,
+  initDatabase: vi.fn(),
+  closeDatabase: vi.fn(),
+  findUnexpectedMigrationPrefixCollisions: vi.fn(() => []),
 }));
 
 vi.mock('../../src/services/invoice-collector', () => ({
@@ -28,7 +31,28 @@ vi.mock('../../src/state/fiscal-collection-profiles', () => ({
   updateFiscalCollectionProfile: vi.fn(),
 }));
 
-vi.mock('../../src/services/finance-cache-invalidator', () => ({
+vi.mock('../../src/services/cache-coherence-registry', () => ({
+  ...{
+    CacheCoherenceEvents: {},
+    _resetDashboardCacheInvalidationStatsForTests: vi.fn(),
+    getDashboardCacheInvalidationStats: vi.fn(),
+    invalidateCacheForEvent: vi.fn(),
+    invalidateCalendarCaches: vi.fn(),
+    invalidateContentDerivedCaches: vi.fn(),
+    invalidateCookingDerivedCaches: vi.fn(),
+    invalidateDashboardCaches: vi.fn(),
+    invalidateDashboardCoordinationCaches: vi.fn(),
+    invalidateDashboardHomeCaches: vi.fn(),
+    invalidateDashboardReadinessCaches: vi.fn(),
+    invalidateDashboardRootCaches: vi.fn(),
+    invalidateExecutiveBriefCaches: vi.fn(),
+    invalidateFinanceDerivedCaches: vi.fn(),
+    invalidateIntegrationDerivedCaches: vi.fn(),
+    invalidateOnboardingDerivedCaches: vi.fn(),
+    invalidatePlanningCaches: vi.fn(),
+    invalidateTaskCaches: vi.fn(),
+    invalidateTrainingDerivedCaches: vi.fn(),
+  },
   invalidateFinanceDerivedCaches: (...args: unknown[]) =>
     mockInvalidateFinanceDerivedCaches(...args),
 }));
@@ -42,6 +66,7 @@ vi.mock('../../src/utils/logger', () => ({
     trace: vi.fn(),
     child: vi.fn().mockReturnThis(),
   },
+  LOGGER_REDACTION_PATHS: [],
 }));
 
 import { invoicesRoutes } from '../../src/api/routes/invoices';
@@ -88,10 +113,12 @@ async function dispatch(
   url: string,
   userId: number,
   body?: any,
+  tenantId = userId,
 ): Promise<MockRes> {
   const router = invoicesRoutes();
   const req = {
     userId,
+    tenantId,
     body,
     method,
     url,

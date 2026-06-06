@@ -4,8 +4,8 @@
  * Finance routes — token-zero CRUD over the finance-tracker service.
  *
  * Thin HTTP layer over `src/services/finance-tracker.ts`. Exposes
- * transactions, monthly summaries, and Brazilian tax event tracking
- * (IRPF Carnê-Leão + INSS) for the iOS Finance skill landing page.
+ * transactions, monthly summaries, and Portugal tax estimate tracking
+ * for the iOS Finance skill landing page.
  *
  * Mount point: `/api/v1/finance`
  *
@@ -23,12 +23,15 @@
  * have something to call.
  */
 
-import { Router, Response } from 'express';
+import { createHash } from 'node:crypto';
+import { Router, type Request, Response } from 'express';
 import { AuthenticatedRequest } from '../auth-middleware';
 import { logger } from '../../utils/logger';
 import { sendSuccess, sendError, sendInternalError, asyncHandler } from '../response-helpers';
 import { getDb } from '../../services/database';
-import { invalidateFinanceDerivedCaches } from '../../services/finance-cache-invalidator';
+import { emitDomainEvent, runOutboxTransaction } from '../../services/event-outbox';
+import { consumeResourceBudget } from '../../services/resource-budgets';
+import { invalidateFinanceDerivedCaches } from '../../services/cache-coherence-registry';
 import { config } from '../../config';
 import {
   addTransaction,
@@ -40,22 +43,43 @@ import {
   getTaxEvents,
   getAnnualTaxSummary,
   calculateAndStoreTax,
-  calculateMonthlyTax,
+  calculatePortugueseMonthlyTax,
   markTaxPaid,
 } from '../../services/finance-tracker';
-import { acquireCostLock, buildQuotaExceededMessage, isUserOverDailyCap } from '../../services/cost-guardrail';
+import { acquireCostLock, enforceCostGuardrails } from '../../services/cost-guardrail';
 import { analyzeInvoiceImage } from '../../services/invoice-filer';
 import { ensureValidTenantRouteScope } from '../tenant-route-scope';
+import { createNotificationIntent } from '../../services/notification-orchestrator';
+import { centsToNumber, parseUserAmount, toCents } from '../../services/money';
+import {
+  previewFinanceSchedulingIntent,
+  submitFinanceSchedulingIntent,
+} from '../../services/finance-secretary-integration';
+import { assertTenantScope, TenantScopeError } from '../../services/tenant-scope';
+
+function requireFinanceHandlerScope(req: Request, operation: string): { userId: number; tenantId: number } {
+  return assertTenantScope(req as AuthenticatedRequest, operation);
+}
 
 export function financeRoutes(): Router {
   const router = Router();
 
   router.use((req, res, next) => {
-    const { userId } = req as AuthenticatedRequest;
+    const authReq = req as AuthenticatedRequest;
+    const { userId } = authReq;
     if (!ensureValidTenantRouteScope(res as Response, userId, 'finance_route', {
       method: req.method,
       path: req.path,
     })) return;
+    try {
+      assertTenantScope(authReq, 'finance_route');
+    } catch (err) {
+      if (err instanceof TenantScopeError) {
+        sendError(res as Response, err.code, err.message, err.status);
+        return;
+      }
+      throw err;
+    }
     next();
   });
 
@@ -66,7 +90,7 @@ export function financeRoutes(): Router {
    * Returns transactions for the authenticated user, newest first.
    */
   router.get('/transactions', asyncHandler(async (req, res: Response) => {
-    const { userId } = req as AuthenticatedRequest;
+    const { userId, tenantId } = requireFinanceHandlerScope(req, 'finance_handler');
 
     const startDate = typeof req.query.from === 'string' ? req.query.from : undefined;
     const endDate = typeof req.query.to === 'string' ? req.query.to : undefined;
@@ -76,7 +100,7 @@ export function financeRoutes(): Router {
       : 50;
 
     try {
-      const txs = getTransactions(userId, { startDate, endDate, category, limit });
+      const txs = getTransactions(userId, { startDate, endDate, category, limit, tenantId });
       sendSuccess(res, { transactions: txs, count: txs.length });
     } catch (err: any) {
       logger.error({ err, userId }, 'iOS finance transactions list failed');
@@ -89,8 +113,8 @@ export function financeRoutes(): Router {
    * Body: { date, category, amount, subcategory?, description?, currency?, receiptRef? }
    */
   router.post('/transactions', asyncHandler(async (req, res: Response) => {
-    const { userId } = req as AuthenticatedRequest;
-    const { date, category, amount, subcategory, description, currency, receiptRef } = req.body;
+    const { userId, tenantId } = requireFinanceHandlerScope(req, 'finance_handler');
+    const { date, category, amount, amount_cents: amountCentsSnake, amountCents, subcategory, description, currency, receiptRef } = req.body;
 
     if (!date || typeof date !== 'string') {
       sendError(res, 'BAD_REQUEST', 'date is required (YYYY-MM-DD)');
@@ -100,20 +124,41 @@ export function financeRoutes(): Router {
       sendError(res, 'BAD_REQUEST', 'category is required');
       return;
     }
-    if (typeof amount !== 'number' || !Number.isFinite(amount)) {
-      sendError(res, 'BAD_REQUEST', 'amount must be a finite number');
+    const resolvedAmount = resolveFinanceRouteAmount(amount, amountCentsSnake ?? amountCents);
+    if (resolvedAmount == null) {
+      sendError(res, 'BAD_REQUEST', 'amount or amount_cents must be a finite money value');
       return;
     }
+    if (!consumeFinanceWriteBudget(res, tenantId, userId, 'finance_transaction_create')) return;
 
     try {
-      const tx = addTransaction(userId, date, category, amount, {
+      const writeTransaction = () => addTransaction(userId, date, category, resolvedAmount, {
         subcategory,
         description,
         currency,
         receiptRef,
+        tenantId,
+      });
+      const tx = runOutboxTransaction((emitDomainEvent) => {
+        const created = writeTransaction();
+        emitDomainEvent({
+          tenantId,
+          userId,
+          sourceSkill: 'finance',
+          eventType: 'finance.expense.created',
+          entityType: 'finance_transaction',
+          entityId: created.id,
+          payload: {
+            summary: { currency: created.currency },
+            action: 'created',
+          },
+          privacyClassification: 'financial',
+          idempotencyKey: `finance.expense.created:${tenantId}:${userId}:${created.id}`,
+        });
+        return created;
       });
       invalidateFinanceDerivedCaches(userId);
-      logger.info({ userId, txId: tx.id, category, amount }, 'iOS transaction added');
+      logger.info({ userId, txId: tx.id }, 'iOS transaction added');
       sendSuccess(res, { transaction: tx }, { status: 201 });
     } catch (err: any) {
       logger.error({ err, userId }, 'iOS finance transaction create failed');
@@ -132,9 +177,9 @@ export function financeRoutes(): Router {
    * surfaces show up later, this should move to finance-tracker.ts.
    */
   router.patch('/transactions/:id', asyncHandler(async (req, res: Response) => {
-    const { userId } = req as AuthenticatedRequest;
+    const { userId, tenantId } = requireFinanceHandlerScope(req, 'finance_handler');
     const txId = parseInt(req.params.id, 10);
-    const { date, category, subcategory, amount, currency, description, receiptRef } = req.body;
+    const { date, category, subcategory, amount, amount_cents: amountCentsSnake, amountCents, currency, description, receiptRef } = req.body;
 
     if (Number.isNaN(txId)) {
       sendError(res, 'BAD_REQUEST', 'id must be a number');
@@ -143,7 +188,7 @@ export function financeRoutes(): Router {
 
     // Reject completely-empty bodies.
     if (date === undefined && category === undefined && subcategory === undefined
-        && amount === undefined && currency === undefined && description === undefined
+        && amount === undefined && amountCentsSnake === undefined && amountCents === undefined && currency === undefined && description === undefined
         && receiptRef === undefined) {
       sendError(res, 'BAD_REQUEST', 'At least one field must be provided');
       return;
@@ -158,46 +203,69 @@ export function financeRoutes(): Router {
       sendError(res, 'BAD_REQUEST', 'category must be a non-empty string');
       return;
     }
-    if (amount !== undefined && (typeof amount !== 'number' || !Number.isFinite(amount))) {
-      sendError(res, 'BAD_REQUEST', 'amount must be a finite number');
+    const resolvedAmount = amount !== undefined || amountCentsSnake !== undefined || amountCents !== undefined
+      ? resolveFinanceRouteAmount(amount, amountCentsSnake ?? amountCents)
+      : undefined;
+    if (resolvedAmount === null) {
+      sendError(res, 'BAD_REQUEST', 'amount or amount_cents must be a finite money value');
       return;
     }
+    if (!consumeFinanceWriteBudget(res, tenantId, userId, 'finance_transaction_update')) return;
 
     try {
-      const db = getDb();
+      const updated = runOutboxTransaction((emitDomainEvent) => {
+        const db = getDb();
+        const existing = db.prepare(
+          'SELECT id FROM finance_transactions WHERE id = ? AND user_id = ?'
+        ).get(txId, userId) as { id: number } | undefined;
+        if (!existing) return null;
 
-      // Verify the row exists + is owned by this user BEFORE updating.
-      const existing = db.prepare(
-        'SELECT id FROM finance_transactions WHERE id = ? AND user_id = ?'
-      ).get(txId, userId) as { id: number } | undefined;
+        const setParts: string[] = [];
+        const params: any[] = [];
 
-      if (!existing) {
+        if (date !== undefined) { setParts.push('date = ?'); params.push(date); }
+        if (category !== undefined) { setParts.push('category = ?'); params.push(category); }
+        if (subcategory !== undefined) { setParts.push('subcategory = ?'); params.push(subcategory); }
+        if (resolvedAmount !== undefined) {
+          const amountCents = toCents(resolvedAmount);
+          setParts.push('amount = ?', 'amount_cents = ?');
+          params.push(centsToNumber(amountCents), Number(amountCents));
+        }
+        if (currency !== undefined) { setParts.push('currency = ?'); params.push(currency); }
+        if (description !== undefined) { setParts.push('description = ?'); params.push(description); }
+        if (receiptRef !== undefined) { setParts.push('receipt_ref = ?'); params.push(receiptRef); }
+
+        setParts.push("updated_at = datetime('now')");
+        params.push(txId, userId);
+
+        db.prepare(
+          `UPDATE finance_transactions SET ${setParts.join(', ')} WHERE id = ? AND user_id = ?`
+        ).run(...params);
+
+        const row = db.prepare(
+          'SELECT * FROM finance_transactions WHERE id = ? AND user_id = ?'
+        ).get(txId, userId) as any;
+        emitDomainEvent({
+          tenantId,
+          userId,
+          sourceSkill: 'finance',
+          eventType: 'finance.expense.updated',
+          entityType: 'finance_transaction',
+          entityId: txId,
+          payload: {
+            summary: { currency: row.currency },
+            action: 'updated',
+          },
+          privacyClassification: 'financial',
+          idempotencyKey: `finance.expense.updated:${tenantId}:${userId}:${txId}:${stableMutationFingerprint(req.body ?? {})}`,
+        });
+        return row;
+      });
+
+      if (!updated) {
         sendError(res, 'NOT_FOUND', 'Transaction not found or not owned by user', 404);
         return;
       }
-
-      // Build the SET clause dynamically — only touch fields the caller wants.
-      const setParts: string[] = [];
-      const params: any[] = [];
-
-      if (date !== undefined) { setParts.push('date = ?'); params.push(date); }
-      if (category !== undefined) { setParts.push('category = ?'); params.push(category); }
-      if (subcategory !== undefined) { setParts.push('subcategory = ?'); params.push(subcategory); }
-      if (amount !== undefined) { setParts.push('amount = ?'); params.push(amount); }
-      if (currency !== undefined) { setParts.push('currency = ?'); params.push(currency); }
-      if (description !== undefined) { setParts.push('description = ?'); params.push(description); }
-      if (receiptRef !== undefined) { setParts.push('receipt_ref = ?'); params.push(receiptRef); }
-
-      setParts.push("updated_at = datetime('now')");
-      params.push(txId, userId);
-
-      db.prepare(
-        `UPDATE finance_transactions SET ${setParts.join(', ')} WHERE id = ? AND user_id = ?`
-      ).run(...params);
-
-      const updated = db.prepare(
-        'SELECT * FROM finance_transactions WHERE id = ? AND user_id = ?'
-      ).get(txId, userId) as any;
 
       invalidateFinanceDerivedCaches(userId);
       logger.info({ userId, txId }, 'iOS finance transaction updated');
@@ -212,16 +280,36 @@ export function financeRoutes(): Router {
    * DELETE /api/v1/finance/transactions/:id
    */
   router.delete('/transactions/:id', asyncHandler(async (req, res: Response) => {
-    const { userId } = req as AuthenticatedRequest;
+    const { userId, tenantId } = requireFinanceHandlerScope(req, 'finance_handler');
     const txId = parseInt(req.params.id, 10);
 
     if (Number.isNaN(txId)) {
       sendError(res, 'BAD_REQUEST', 'id must be a number');
       return;
     }
+    if (!consumeFinanceWriteBudget(res, tenantId, userId, 'finance_transaction_delete')) return;
 
     try {
-      const deleted = deleteTransaction(userId, txId);
+      const writeDelete = () => deleteTransaction(userId, txId);
+      const deleted = runOutboxTransaction((emitDomainEvent) => {
+        const didDelete = writeDelete();
+        if (!didDelete) return false;
+        emitDomainEvent({
+          tenantId,
+          userId,
+          sourceSkill: 'finance',
+          eventType: 'finance.expense.deleted',
+          entityType: 'finance_transaction',
+          entityId: txId,
+          payload: {
+            summary: { deleted: true },
+            action: 'deleted',
+          },
+          privacyClassification: 'financial',
+          idempotencyKey: `finance.expense.deleted:${tenantId}:${userId}:${txId}`,
+        });
+        return true;
+      });
       if (!deleted) {
         sendError(res, 'NOT_FOUND', 'Transaction not found or not owned by user', 404);
         return;
@@ -242,7 +330,7 @@ export function financeRoutes(): Router {
    * If month is omitted, defaults to the current month.
    */
   router.get('/monthly-summary', asyncHandler(async (req, res: Response) => {
-    const { userId } = req as AuthenticatedRequest;
+    const { userId, tenantId } = requireFinanceHandlerScope(req, 'finance_handler');
     let month = typeof req.query.month === 'string' ? req.query.month : undefined;
 
     if (!month) {
@@ -257,14 +345,14 @@ export function financeRoutes(): Router {
     }
 
     try {
-      const summary = getMonthlySummary(userId, month);
-      const budgetView = getMonthlyBudgetView(userId, month);
+      const summary = getMonthlySummary(userId, month, { tenantId });
+      const budgetView = getMonthlyBudgetView(userId, month, { tenantId });
       const preferredCurrency = getPreferredCurrencyForUser(userId);
 
-      // Precompute the tax breakdown so the iOS KPI card can show it
-      // without a second round-trip. Uses the same IRPF + INSS logic
-      // the backend persists via calculateAndStoreTax.
-      const taxBreakdown = calculateMonthlyTax(summary.totalIncome, summary.totalDeductions);
+      // Precompute the Portugal tax estimate so the iOS KPI card can show it
+      // without a second round-trip. Uses the same sourced ruleset the backend
+      // persists via calculateAndStoreTax.
+      const taxBreakdown = calculatePortugueseMonthlyTax(summary.totalIncome, summary.totalDeductions);
 
       sendSuccess(res, { summary, budgetView, tax: taxBreakdown, preferredCurrency });
     } catch (err: any) {
@@ -277,17 +365,17 @@ export function financeRoutes(): Router {
 
   /**
    * GET /api/v1/finance/tax/events?year=&limit=
-   * Returns the user's persisted tax events (historical IRPF runs).
+   * Returns the user's persisted tax events (Portugal estimate runs).
    */
   router.get('/tax/events', asyncHandler(async (req, res: Response) => {
-    const { userId } = req as AuthenticatedRequest;
+    const { userId, tenantId } = requireFinanceHandlerScope(req, 'finance_handler');
     const year = req.query.year ? parseInt(String(req.query.year), 10) : undefined;
     const limit = req.query.limit
       ? Math.min(parseInt(String(req.query.limit), 10) || 12, 60)
       : 12;
 
     try {
-      const events = getTaxEvents(userId, { year, limit });
+      const events = getTaxEvents(userId, { year, limit, tenantId });
       sendSuccess(res, { events, count: events.length });
     } catch (err: any) {
       logger.error({ err, userId }, 'iOS finance tax events list failed');
@@ -297,10 +385,10 @@ export function financeRoutes(): Router {
 
   /**
    * GET /api/v1/finance/tax/annual-summary?year=
-   * Aggregated annual tax view for IRPF declaration and payment tracking.
+   * Aggregated annual Portugal tax view and payment tracking.
    */
   router.get('/tax/annual-summary', asyncHandler(async (req, res: Response) => {
-    const { userId } = req as AuthenticatedRequest;
+    const { userId, tenantId } = requireFinanceHandlerScope(req, 'finance_handler');
     const currentYear = new Date().getFullYear();
     const year = req.query.year
       ? parseInt(String(req.query.year), 10)
@@ -312,7 +400,7 @@ export function financeRoutes(): Router {
     }
 
     try {
-      const summary = getAnnualTaxSummary(userId, year);
+      const summary = getAnnualTaxSummary(userId, year, { tenantId });
       sendSuccess(res, { summary });
     } catch (err: any) {
       logger.error({ err, userId, year }, 'iOS finance annual tax summary failed');
@@ -326,7 +414,7 @@ export function financeRoutes(): Router {
    * Runs calculateAndStoreTax for the given month (defaults to current).
    */
   router.post('/tax/calculate', asyncHandler(async (req, res: Response) => {
-    const { userId } = req as AuthenticatedRequest;
+    const { userId, tenantId } = requireFinanceHandlerScope(req, 'finance_handler');
     let { month } = req.body;
 
     if (!month) {
@@ -340,9 +428,70 @@ export function financeRoutes(): Router {
     }
 
     try {
-      const event = calculateAndStoreTax(userId, month);
+      const event = calculateAndStoreTax(userId, month, { tenantId });
       invalidateFinanceDerivedCaches(userId);
-      logger.info({ userId, month, taxDue: event.tax_due }, 'iOS tax event calculated');
+      if (event.status !== 'paid' && (event.tax_due > 0 || event.inss_due > 0)) {
+        const reminderWindow = financeTaxReminderWindow(String(month));
+        if (reminderWindow) {
+          try {
+            const secretaryInput = {
+              userId,
+              tenantId,
+              kind: 'bill_reminder' as const,
+              entityId: month,
+              title: `Review tax payment for ${month}`,
+              deadline: reminderWindow.end,
+              preferredWindows: [reminderWindow],
+              durationMinutes: 15,
+              priority: 'high' as const,
+              context: 'Finance tax calculation created a payment reminder candidate. Amount details remain in Finance.',
+            };
+            const preview = previewFinanceSchedulingIntent(secretaryInput);
+            if (['scheduled', 'reflowed', 'compressed'].includes(preview.status) && preview.recommendedSlot) {
+              submitFinanceSchedulingIntent(secretaryInput);
+            } else {
+              logger.warn(
+                { userId, tenantId, month, status: preview.status, reasonCodes: preview.reasonCodes },
+                'Finance tax reminder was not placed by Secretary preview',
+              );
+            }
+          } catch (secretaryErr) {
+            logger.warn({ err: secretaryErr, userId, tenantId, month }, 'Finance Secretary reminder scheduling failed');
+          }
+        }
+        try {
+          const decisionDeadline = reminderWindow?.end ?? null;
+          await createNotificationIntent({
+            userId,
+            tenantId,
+            sourceSkill: 'finance',
+            type: 'reminder',
+            priority: 'time_sensitive',
+            relatedEntityId: month,
+            relatedEntityType: 'tax_event',
+            title: 'Finance deadline',
+            body: 'Tax payment reminder is ready.',
+            sensitiveBody: `Tax event ${month}: tax and contribution amounts are available in Finance.`,
+            actionButtons: [
+              { id: 'mark_paid', label: 'Mark paid', style: 'primary' },
+              { id: 'open_detail', label: 'Open', style: 'secondary' },
+            ],
+            deeplink: `nexus://finance/reminder/${encodeURIComponent(String(month))}`,
+            dedupeKey: `finance:tax-event:${userId}:${month}`,
+            requiresUserAction: true,
+            decisionDeadline,
+            decisionContext: {
+              entityTitle: `Tax payment for ${month}`,
+              sourceState: 'payment_due',
+              deadlineAt: decisionDeadline,
+            },
+            privacyPolicy: 'financial',
+          });
+        } catch (notificationErr) {
+          logger.warn({ err: notificationErr, userId, month }, 'Finance notification intent emit failed');
+        }
+      }
+      logger.info({ userId, month }, 'iOS tax event calculated');
       sendSuccess(res, { event });
     } catch (err: any) {
       logger.error({ err, userId, month }, 'iOS finance tax calculate failed');
@@ -355,7 +504,7 @@ export function financeRoutes(): Router {
    * Marks a persisted monthly tax event as paid.
    */
   router.post('/tax/events/:month/pay', asyncHandler(async (req, res: Response) => {
-    const { userId } = req as AuthenticatedRequest;
+    const { userId, tenantId } = requireFinanceHandlerScope(req, 'finance_handler');
     const { month } = req.params;
 
     if (!/^\d{4}-\d{2}$/.test(String(month))) {
@@ -364,13 +513,13 @@ export function financeRoutes(): Router {
     }
 
     try {
-      const updated = markTaxPaid(userId, month);
+      const updated = markTaxPaid(userId, month, { tenantId });
       if (!updated) {
         sendError(res, 'NOT_FOUND', 'Tax event not found for the requested month', 404);
         return;
       }
 
-      const event = getTaxEvents(userId, { year: parseInt(String(month).slice(0, 4), 10), limit: 24 })
+      const event = getTaxEvents(userId, { year: parseInt(String(month).slice(0, 4), 10), limit: 24, tenantId })
         .find((candidate) => candidate.month === month);
 
       if (!event) {
@@ -419,7 +568,7 @@ export function financeRoutes(): Router {
    *     merchant: string | null,
    *     date: string | null,      // YYYY-MM-DD
    *     amount: number | null,
-   *     currency: string,         // default "BRL"
+     *     currency: string,         // default "EUR" unless the user's profile says otherwise
    *     category: string | null,  // best-guess category
    *     confidence: number,       // 0-1, model confidence after server validation
    *   },
@@ -433,7 +582,7 @@ export function financeRoutes(): Router {
    * POST /transactions call is separate from this parse call.
    */
   router.post('/parse-receipt', asyncHandler(async (req, res: Response) => {
-    const { userId } = req as AuthenticatedRequest;
+    const { userId, tenantId = userId } = req as AuthenticatedRequest;
     const { imageBase64, mimeType, ocrHint } = req.body;
     const normalizedOcrHint = typeof ocrHint === 'string' && ocrHint.trim().length > 0
       ? ocrHint.trim()
@@ -494,19 +643,26 @@ export function financeRoutes(): Router {
     // Acquire the per-user lock so concurrent parse-receipt calls
     // from the same user can't both pass the cap check.
     const releaseCostLock = await acquireCostLock(userId);
-    const cap = isUserOverDailyCap(userId);
-    if (cap.over) {
+    const guardrail = enforceCostGuardrails(userId);
+    if (guardrail.block) {
       releaseCostLock();
       logger.warn(
-        { userId, spentUsd: cap.spentUsd, capUsd: cap.capUsd },
-        'iOS parse-receipt blocked by daily cost cap',
+        {
+          userId,
+          reason: guardrail.reason,
+          spentUsd: guardrail.quota.spentUsd,
+          capUsd: guardrail.quota.capUsd,
+          globalTotalUsd: guardrail.global.totalUsd,
+          globalLimitUsd: guardrail.global.limitUsd,
+        },
+        'iOS parse-receipt blocked by cost guardrail',
       );
       sendError(
         res,
-        'QUOTA_EXCEEDED',
-        `${buildQuotaExceededMessage(cap)} Try manual entry.`,
-        402,
-        { plan: cap.plan, resetAt: cap.resetAt },
+        guardrail.reason,
+        `${guardrail.message} Try manual entry.`,
+        guardrail.status,
+        guardrail.details,
       );
       return;
     }
@@ -516,6 +672,7 @@ export function financeRoutes(): Router {
         imageBase64,
         normalizeMimeType(mimeType),
         normalizedOcrHint,
+        { userId, tenantId },
       );
 
       const result = {
@@ -538,7 +695,12 @@ export function financeRoutes(): Router {
       );
 
       logger.info(
-        { userId, merchant: mergedResult.merchant, amount: mergedResult.amount, confidence: mergedResult.confidence, provider },
+        {
+          userId,
+          confidence: mergedResult.confidence,
+          provider,
+          hasOcrBackfill: Boolean(ocrFallback),
+        },
         'iOS receipt parsed',
       );
 
@@ -568,6 +730,62 @@ export function financeRoutes(): Router {
   return router;
 }
 
+function financeTaxReminderWindow(month: string): { start: string; end: string; label: string; hard: boolean } | null {
+  const match = /^(\d{4})-(\d{2})$/.exec(month);
+  if (!match) return null;
+  const year = Number(match[1]);
+  const monthNumber = Number(match[2]);
+  if (!Number.isInteger(year) || !Number.isInteger(monthNumber) || monthNumber < 1 || monthNumber > 12) return null;
+  const start = new Date(Date.UTC(year, monthNumber - 1, 20, 9, 0, 0, 0));
+  const end = new Date(Date.UTC(year, monthNumber - 1, 20, 9, 30, 0, 0));
+  return {
+    start: start.toISOString(),
+    end: end.toISOString(),
+    label: 'finance tax reminder window',
+    hard: false,
+  };
+}
+
+function stableMutationFingerprint(value: Record<string, unknown>): string {
+  return createHash('sha256')
+    .update(JSON.stringify(value, Object.keys(value).sort()))
+    .digest('hex')
+    .slice(0, 16);
+}
+
+function resolveFinanceRouteAmount(amount: unknown, amountCents: unknown): number | null {
+  if (typeof amountCents === 'number') {
+    if (!Number.isSafeInteger(amountCents)) return null;
+    return centsToNumber(amountCents);
+  }
+  if (typeof amount === 'number' && Number.isFinite(amount)) {
+    return centsToNumber(toCents(amount));
+  }
+  return null;
+}
+
+function consumeFinanceWriteBudget(res: Response, tenantId: number, userId: number, budgetKey: string): boolean {
+  const budget = consumeResourceBudget({
+    tenantId,
+    userId,
+    budgetKey,
+    limit: 60,
+    windowSeconds: 60,
+  });
+  if (budget.allowed) return true;
+  setRetryAfter(res, budget.resetAt);
+  sendError(res, 'RATE_LIMITED', 'Too many finance write requests. Try again shortly.', 429, {
+    resetAt: budget.resetAt,
+    budgetKey: budget.budgetKey,
+  });
+  return false;
+}
+
+function setRetryAfter(res: Response, resetAt: string): void {
+  const seconds = Math.max(1, Math.ceil((Date.parse(resetAt) - Date.now()) / 1000));
+  res.setHeader('Retry-After', String(Number.isFinite(seconds) ? seconds : 60));
+}
+
 function normalizeMimeType(mimeType: string): 'image/jpeg' | 'image/png' | 'image/webp' {
   const normalized = mimeType.toLowerCase();
   if (normalized === 'image/png') return 'image/png';
@@ -581,21 +799,14 @@ function parseInvoiceAmount(rawAmount: string | null | undefined): number | null
   if (!matches || matches.length === 0) return null;
 
   for (const candidate of matches.slice().reverse()) {
-    const hasComma = candidate.includes(',');
-    const hasDot = candidate.includes('.');
-
-    let normalized = candidate;
-    if (hasComma && hasDot) {
-      normalized = candidate.lastIndexOf(',') > candidate.lastIndexOf('.')
-        ? candidate.replace(/\./g, '').replace(',', '.')
-        : candidate.replace(/,/g, '');
-    } else if (hasComma) {
-      normalized = candidate.replace(',', '.');
-    }
-
-    const parsed = Number.parseFloat(normalized);
-    if (Number.isFinite(parsed) && isPlausibleReceiptAmount(parsed, candidate)) {
-      return Math.abs(parsed);
+    try {
+      const cents = parseUserAmount(candidate);
+      const parsed = Math.abs(centsToNumber(cents));
+      if (isPlausibleReceiptAmount(parsed, candidate)) {
+        return parsed;
+      }
+    } catch {
+      continue;
     }
   }
 

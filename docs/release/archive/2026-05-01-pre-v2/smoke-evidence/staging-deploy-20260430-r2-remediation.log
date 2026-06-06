@@ -1,0 +1,114 @@
+═══════════════════════════════════════════════
+  🚧 Nexus Hub Staging Deploy
+═══════════════════════════════════════════════
+   Local:  /Users/felipedominguez/Desktop/Custom Connectors/Cortex/cortex-telegram-hub-bot
+   Remote: dominguez@serverdominguez:/home/dominguez/telegram-hub-bot-staging
+
+📦 Building TypeScript...
+   ✅ Type check passed
+> @nexushub/core@4.14.106 build
+> tsc && cp src/portal/portal.html dist/portal/portal.html && cp src/portal/landing.html dist/portal/landing.html && rm -rf dist/services/coach-kernel/knowledge && mkdir -p dist/services/coach-kernel/knowledge && cp -R src/services/coach-kernel/knowledge/* dist/services/coach-kernel/knowledge/
+
+   ✅ Build complete
+
+📁 Ensuring staging directory exists...
+
+🔑 Validating staging .env...
+   ✅ All required keys present
+
+🛑 Stopping staging services (if running)...
+[PM2] Applying action stopProcessId on app [nexus-hub-staging](ids: [ 4 ])
+[PM2] [nexus-hub-staging](4) ✓
+┌────┬───────────────────────────┬─────────────┬─────────┬─────────┬──────────┬────────┬──────┬───────────┬──────────┬──────────┬──────────┬──────────┐
+│ id │ name                      │ namespace   │ version │ mode    │ pid      │ uptime │ ↺    │ status    │ cpu      │ mem      │ user     │ watching │
+├────┼───────────────────────────┼─────────────┼─────────┼─────────┼──────────┼────────┼──────┼───────────┼──────────┼──────────┼──────────┼──────────┤
+│ 0  │ content-engine            │ default     │ 4.14.1… │ fork    │ 3163570  │ 5h     │ 3    │ online    │ 0%       │ 62.4mb   │ domingu… │ disabled │
+│ 6  │ content-engine-staging    │ default     │ 4.14.1… │ fork    │ 3166118  │ 5h     │ 0    │ online    │ 0%       │ 57.2mb   │ domingu… │ disabled │
+│ 3  │ nexus-hub                 │ default     │ 4.14.1… │ fork    │ 3163579  │ 5h     │ 429  │ online    │ 0%       │ 336.4mb  │ domingu… │ disabled │
+│ 4  │ nexus-hub-staging         │ default     │ 4.14.1… │ fork    │ 0        │ 0      │ 13   │ stopped   │ 0%       │ 0b       │ domingu… │ disabled │
+└────┴───────────────────────────┴─────────────┴─────────┴─────────┴──────────┴────────┴──────┴───────────┴──────────┴──────────┴──────────┴──────────┘
+[PM2] Applying action stopProcessId on app [content-engine-staging](ids: [ 6 ])
+[PM2] [content-engine-staging](6) ✓
+┌────┬───────────────────────────┬─────────────┬─────────┬─────────┬──────────┬────────┬──────┬───────────┬──────────┬──────────┬──────────┬──────────┐
+│ id │ name                      │ namespace   │ version │ mode    │ pid      │ uptime │ ↺    │ status    │ cpu      │ mem      │ user     │ watching │
+├────┼───────────────────────────┼─────────────┼─────────┼─────────┼──────────┼────────┼──────┼───────────┼──────────┼──────────┼──────────┼──────────┤
+│ 0  │ content-engine            │ default     │ 4.14.1… │ fork    │ 3163570  │ 5h     │ 3    │ online    │ 0%       │ 62.4mb   │ domingu… │ disabled │
+│ 6  │ content-engine-staging    │ default     │ 4.14.1… │ fork    │ 0        │ 0      │ 0    │ stopped   │ 0%       │ 0b       │ domingu… │ disabled │
+│ 3  │ nexus-hub                 │ default     │ 4.14.1… │ fork    │ 3163579  │ 5h     │ 429  │ online    │ 0%       │ 336.4mb  │ domingu… │ disabled │
+│ 4  │ nexus-hub-staging         │ default     │ 4.14.1… │ fork    │ 0        │ 0      │ 13   │ stopped   │ 0%       │ 0b       │ domingu… │ disabled │
+└────┴───────────────────────────┴─────────────┴─────────┴─────────┴──────────┴────────┴──────┴───────────┴──────────┴──────────┴──────────┴──────────┘
+
+📤 Syncing files to staging...
+src/utils/log-sanitizer.ts
+src/utils/logger.ts
+
+sent 1,871,415 bytes  received 191,185 bytes  1,375,066.67 bytes/sec
+total size is 124,947,456  speedup is 60.58
+   ✅ rsync complete
+
+📥 Installing dependencies...
+Run `npm audit` for details.
+   ✅ Dependencies updated
+
+🧭 Verifying owner bootstrap on staging...
+Owner bootstrap preflight
+- strict mode: off
+- database path: ./data/bot.db
+- database exists: yes
+- explicit OWNER_TELEGRAM_ID: none
+- persisted owner telegram_id: 7807541475
+- persisted owner user id: 1
+- persisted owner row count: 1
+- startup action: none
+- result: OK
+- note: startup already has a stable owner bootstrap source
+
+🔧 Rebuilding native modules...
+rebuilt dependencies successfully
+   ✅ Native modules rebuilt
+
+🟢 Starting staging services...
+[PM2] Applying action restartProcessId on app [content-engine-staging](ids: [ 6 ])
+[PM2] [content-engine-staging](6) ✓
+[PM2] Process successfully started
+┌────┬───────────────────────────┬─────────────┬─────────┬─────────┬──────────┬────────┬──────┬───────────┬──────────┬──────────┬──────────┬──────────┐
+│ id │ name                      │ namespace   │ version │ mode    │ pid      │ uptime │ ↺    │ status    │ cpu      │ mem      │ user     │ watching │
+├────┼───────────────────────────┼─────────────┼─────────┼─────────┼──────────┼────────┼──────┼───────────┼──────────┼──────────┼──────────┼──────────┤
+│ 0  │ content-engine            │ default     │ 4.14.1… │ fork    │ 3163570  │ 5h     │ 3    │ online    │ 0%       │ 62.4mb   │ domingu… │ disabled │
+│ 6  │ content-engine-staging    │ default     │ 4.14.1… │ fork    │ 3297171  │ 0s     │ 0    │ online    │ 0%       │ 7.1mb    │ domingu… │ disabled │
+│ 3  │ nexus-hub                 │ default     │ 4.14.1… │ fork    │ 3163579  │ 5h     │ 429  │ online    │ 0%       │ 336.4mb  │ domingu… │ disabled │
+│ 4  │ nexus-hub-staging         │ default     │ 4.14.1… │ fork    │ 0        │ 0      │ 13   │ stopped   │ 0%       │ 0b       │ domingu… │ disabled │
+└────┴───────────────────────────┴─────────────┴─────────┴─────────┴──────────┴────────┴──────┴───────────┴──────────┴──────────┴──────────┴──────────┘
+[PM2] Applying action restartProcessId on app [nexus-hub-staging](ids: [ 4 ])
+[PM2] [nexus-hub-staging](4) ✓
+[PM2] Process successfully started
+┌────┬───────────────────────────┬─────────────┬─────────┬─────────┬──────────┬────────┬──────┬───────────┬──────────┬──────────┬──────────┬──────────┐
+│ id │ name                      │ namespace   │ version │ mode    │ pid      │ uptime │ ↺    │ status    │ cpu      │ mem      │ user     │ watching │
+├────┼───────────────────────────┼─────────────┼─────────┼─────────┼──────────┼────────┼──────┼───────────┼──────────┼──────────┼──────────┼──────────┤
+│ 0  │ content-engine            │ default     │ 4.14.1… │ fork    │ 3163570  │ 5h     │ 3    │ online    │ 0%       │ 62.4mb   │ domingu… │ disabled │
+│ 6  │ content-engine-staging    │ default     │ 4.14.1… │ fork    │ 3297171  │ 0s     │ 0    │ online    │ 0%       │ 41.3mb   │ domingu… │ disabled │
+│ 3  │ nexus-hub                 │ default     │ 4.14.1… │ fork    │ 3163579  │ 5h     │ 429  │ online    │ 0%       │ 336.4mb  │ domingu… │ disabled │
+│ 4  │ nexus-hub-staging         │ default     │ 4.14.1… │ fork    │ 3297180  │ 0s     │ 13   │ online    │ 0%       │ 21.9mb   │ domingu… │ disabled │
+└────┴───────────────────────────┴─────────────┴─────────┴─────────┴──────────┴────────┴──────┴───────────┴──────────┴──────────┴──────────┴──────────┘
+[PM2] Saving current process list...
+[PM2] Successfully saved in /home/dominguez/.pm2/dump.pm2
+   ✅ Staging running
+
+🏥 Health check (waiting 10s for startup)...
+ ✅ Staging content engine OK
+ ✅ Staging portal OK
+
+═══════════════════════════════════════════════
+  ✅ Staging deploy complete
+═══════════════════════════════════════════════
+
+URLs (from inside the server):
+  Staging portal:        http://localhost:8201
+  Staging content-engine: http://localhost:8101
+
+PM2 commands:
+  pm2 logs nexus-hub-staging --nostream --lines 50
+  pm2 restart nexus-hub-staging
+  pm2 stop nexus-hub-staging
+
+Production was NOT touched. To deploy to prod, run ./scripts/deploy.sh

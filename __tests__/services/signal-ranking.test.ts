@@ -22,10 +22,14 @@ let testDb: Database.Database;
 
 vi.mock('../../src/services/database', () => ({
   getDb: () => testDb,
+  initDatabase: vi.fn(),
+  closeDatabase: vi.fn(),
+  findUnexpectedMigrationPrefixCollisions: vi.fn(() => []),
 }));
 
 vi.mock('../../src/utils/logger', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(), trace: vi.fn(), child: vi.fn().mockReturnThis() },
+  LOGGER_REDACTION_PATHS: [],
 }));
 
 vi.mock('../../src/config', () => ({
@@ -96,7 +100,6 @@ import {
   writeSignal,
   readRankedSignals,
   setDbProvider,
-  setCacheInvalidator,
   setPlanningInvalidator,
 } from '../../src/services/intelligence-bus';
 
@@ -133,6 +136,8 @@ describe('signal-ranking: writeSignal with new fields', () => {
     const id = writeSignal({
       source_agent: 'test-agent',
       signal_type: 'voice_pattern',
+      user_id: 42,
+      tenant_id: 42,
       payload: { observation: 'test' },
     });
 
@@ -141,9 +146,7 @@ describe('signal-ranking: writeSignal with new fields', () => {
   });
 
   it('writes meshPriority and invalidates plan caches for priority-1 signals', () => {
-    const invalidations: string[] = [];
     const planningInvalidations: Array<number | undefined> = [];
-    setCacheInvalidator((prefix) => invalidations.push(prefix));
     setPlanningInvalidator((userId) => planningInvalidations.push(userId));
 
     const id = writeSignal({
@@ -157,7 +160,6 @@ describe('signal-ranking: writeSignal with new fields', () => {
     const row = testDb.prepare('SELECT mesh_priority FROM agent_signals WHERE id = ?').get(id) as any;
     expect(row.mesh_priority).toBe(1);
     expect(planningInvalidations).toEqual([42]);
-    expect(invalidations).toEqual([]);
   });
 });
 

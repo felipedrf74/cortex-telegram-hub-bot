@@ -17,15 +17,18 @@ import type { PatternRoute, KeywordRoute, ClassificationHint } from '../../src/s
 describe('skill-config routing', () => {
 
   describe('getPatternRoutes', () => {
-    it('returns pattern routes for all five domains', () => {
+    it('returns pattern routes for all eight domains', () => {
       const routes = getPatternRoutes();
-      expect(routes).toHaveLength(5);
+      expect(routes).toHaveLength(8);
       const domains = routes.map(r => r.domain);
       expect(domains).toContain('secretary');
       expect(domains).toContain('triathlon');
       expect(domains).toContain('content');
       expect(domains).toContain('finance');
       expect(domains).toContain('cooking');
+      expect(domains).toContain('connections');
+      expect(domains).toContain('notifications');
+      expect(domains).toContain('decision_center');
     });
 
     it('each route has at least one pattern', () => {
@@ -96,9 +99,9 @@ describe('skill-config routing', () => {
   });
 
   describe('getKeywordRoutes', () => {
-    it('returns keyword routes for all five domains', () => {
+    it('returns keyword routes for all eight domains', () => {
       const routes = getKeywordRoutes();
-      expect(routes).toHaveLength(5);
+      expect(routes).toHaveLength(8);
     });
 
     it('non-secretary domains have lower priority (checked first)', () => {
@@ -172,9 +175,9 @@ describe('skill-config routing', () => {
   });
 
   describe('getClassificationHints', () => {
-    it('returns hints for all five domains', () => {
+    it('returns hints for all eight domains', () => {
       const hints = getClassificationHints();
-      expect(hints).toHaveLength(5);
+      expect(hints).toHaveLength(8);
     });
 
     it('each hint has label, description, and examples', () => {
@@ -194,10 +197,13 @@ describe('skill-config routing', () => {
   });
 
   describe('getRegisteredDomainNames', () => {
-    it('returns all five domain names', () => {
+    it('returns all eight domain names', () => {
       const names = getRegisteredDomainNames();
-      expect(names).toEqual(expect.arrayContaining(['secretary', 'triathlon', 'content', 'finance', 'cooking']));
-      expect(names).toHaveLength(5);
+      expect(names).toEqual(expect.arrayContaining([
+        'secretary', 'triathlon', 'content', 'finance', 'cooking',
+        'connections', 'notifications', 'decision_center',
+      ]));
+      expect(names).toHaveLength(8);
     });
   });
 });
@@ -210,7 +216,7 @@ describe('dynamic routing integration with classifier', () => {
       getEnabledPatternRoutes: () => config.getPatternRoutes(),
       getEnabledKeywordRoutes: () => config.getKeywordRoutes(),
       getEnabledClassificationHints: () => config.getClassificationHints(),
-      isSkillEnabled: () => true,
+      isDomainEnabled: () => true,
     };
   });
 
@@ -223,7 +229,8 @@ describe('dynamic routing integration with classifier', () => {
       info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(),
       trace: vi.fn(), child: vi.fn().mockReturnThis(),
     },
-  }));
+    LOGGER_REDACTION_PATHS: [],
+}));
 
   it('patternMatch uses skill-config routes', async () => {
     const { patternMatch } = await import('../../src/router/classifier');
@@ -262,7 +269,8 @@ describe('dynamic routing integration with classifier', () => {
     expect(hints).toContain('scheduling');
     expect(hints).toContain('gym workouts');
     expect(hints).toContain('YouTube');
-    expect(hints).toContain('DARF');
+    expect(hints).toContain('Portugal income tax');
+    expect(hints).toContain('IVA');
     expect(hints).toContain('recipes');
   });
 });

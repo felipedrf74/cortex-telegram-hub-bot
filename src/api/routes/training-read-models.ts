@@ -264,6 +264,9 @@ export async function getTodaySession(userId: number) {
           ? undefined
           : undefined,
       });
+      // Moderate-injury auto-swap is intentionally deferred on this read model.
+      // `injuryAffectsSession` stays undefined until product opts into deriving
+      // it from structured intake for today's session.
       adaptation = adaptDtoSessionForReadiness(
         { sessionType: session.sessionType ?? null, status: session.status ?? null },
         snapshot,
@@ -348,42 +351,7 @@ export async function getWeekPlan(userId: number) {
           const linkedCalendarEvent = s.calendar_event_id
             ? calendarLookup.get(s.calendar_event_id) ?? null
             : null;
-          const verifiedCalendarEventId = linkedCalendarEvent && calendarEventMatchesSession(s, linkedCalendarEvent.event)
-            ? s.calendar_event_id
-            : null;
-          return {
-            id: s.id != null ? String(s.id) : undefined,
-            planId: s.plan_id != null ? String(s.plan_id) : undefined,
-            planVersion: plan.plan_version ?? null,
-            sessionIdentityKey: s.session_identity_key || null,
-            sessionShapeHash: s.session_shape_hash || null,
-            day: s.day_of_week || 'Monday',
-            type: s.title || humanizeSessionType(s.session_type),
-            title: s.title || humanizeSessionType(s.session_type),
-            sessionType: s.session_type || 'workout',
-            time: verifiedCalendarEventId ? linkedCalendarEvent?.time ?? null : null,
-            calendarEventId: verifiedCalendarEventId,
-            calendarSource: verifiedCalendarEventId ? s.calendar_source || null : null,
-            calendarSyncState: verifiedCalendarEventId
-              ? 'synced'
-              : s.calendar_event_id
-                ? 'stale'
-                : 'missing',
-            lifecycleState: s.status || 'pending',
-            status: normalizeTrainingStatus(s.status),
-            description: s.description || null,
-            // Structured-sections companion to `description` so iOS can
-            // render typed cards. Older rows have NULL `description_json`
-            // and iOS falls back to the plain-text `description`.
-            descriptionSections: parseDescriptionSections(s.description_json),
-            duration: s.duration_minutes || null,
-            exercises: parseExercises(s.exercises_json),
-            // Slice 1.B (coach-engine refactor) — surface the planner's
-            // "could not land at preferred time" verdict to iOS so the
-            // Week Plan shows a ⚠️ chip rather than silently letting the
-            // user discover the wrong time when a meeting overlaps.
-            preferredTimeUnavailable: Number(s.preferred_time_unavailable) === 1,
-          };
+          return buildWeekSessionDto(s, plan, linkedCalendarEvent);
         });
       }
       const adh = currentWeek ? trainingPlans.getWeeklyAdherence?.(plan.id, currentWeek.id) : null;
@@ -409,13 +377,121 @@ export async function getWeekPlan(userId: number) {
     adherence: typeof adherence === 'number' ? adherence : 0,
     completedCount: sessions.filter((s: any) => s.status === 'completed').length,
     totalCount: sessions.filter((s: any) => !isInactiveTrainingReadModelStatus(s.status)).length,
+    ...summarizeTrainingSyncState(sessions),
+  };
+}
+
+export async function getAllPlanWeeks(userId: number) {
+  const plan = trainingPlans.getActivePlan(userId);
+  if (!plan) {
+    return {
+      plan: null,
+      weeks: [],
+    };
+  }
+
+  const weeks = trainingPlans.getWeeksForPlan(plan.id);
+  const mappedWeeks = [];
+
+  for (const week of weeks) {
+    let calendarLookup: TrainingCalendarLookup = new Map();
+    try {
+      const range = currentWeekDateRange(plan.start_date, week.week_number);
+      calendarLookup = await buildCalendarEventLookup(range.start, range.end, userId);
+    } catch (err) {
+      logger.debug({ err, userId, planId: plan.id, weekNumber: week.week_number }, 'getAllPlanWeeks: calendar enrichment failed');
+    }
+
+    const sessions = trainingPlans.getSessionsForWeek(week.id).map((session: any) => {
+      const linkedCalendarEvent = session.calendar_event_id
+        ? calendarLookup.get(session.calendar_event_id) ?? null
+        : null;
+      return buildWeekSessionDto(session, plan, linkedCalendarEvent);
+    });
+    const syncSummary = summarizeTrainingSyncState(sessions);
+
+    mappedWeeks.push({
+      weekNumber: week.week_number,
+      phase: week.focus || plan.periodization || null,
+      intensityPct: typeof week.intensity_pct === 'number' ? week.intensity_pct : null,
+      adjustmentReason: week.adjustment_reason || null,
+      sessions,
+      activeSessionCount: syncSummary.activeSessionCount,
+      syncedSessionCount: syncSummary.syncedSessionCount,
+      missingSessionCount: syncSummary.missingSessionCount,
+      weekSyncStatus: syncSummary.planSyncStatus,
+    });
+  }
+
+  return {
+    plan: {
+      id: plan.id,
+      name: plan.name,
+      planVersion: plan.plan_version ?? null,
+      durationWeeks: plan.duration_weeks,
+      lifecycleState: plan.status ?? 'active',
+      startDate: plan.start_date,
+      endDate: plan.end_date,
+      periodization: plan.periodization ?? null,
+    },
+    weeks: mappedWeeks,
+  };
+}
+
+function buildWeekSessionDto(session: any, plan: any, linkedCalendarEvent: any) {
+  const verifiedCalendarEventId = session.calendar_event_id && linkedCalendarEvent && calendarEventMatchesSession(session, linkedCalendarEvent.event)
+    ? session.calendar_event_id
+    : null;
+  return {
+    id: session.id != null ? String(session.id) : undefined,
+    planId: session.plan_id != null ? String(session.plan_id) : undefined,
+    planVersion: plan.plan_version ?? null,
+    sessionIdentityKey: session.session_identity_key || null,
+    sessionShapeHash: session.session_shape_hash || null,
+    day: session.day_of_week || 'Monday',
+    type: session.title || humanizeSessionType(session.session_type),
+    title: session.title || humanizeSessionType(session.session_type),
+    sessionType: session.session_type || 'workout',
+    time: verifiedCalendarEventId ? linkedCalendarEvent?.time ?? null : null,
+    calendarEventId: verifiedCalendarEventId,
+    calendarSource: verifiedCalendarEventId ? session.calendar_source || null : null,
+    calendarSyncState: verifiedCalendarEventId
+      ? 'synced'
+      : session.calendar_event_id
+        ? 'stale'
+        : 'missing',
+    lifecycleState: session.status || 'pending',
+    status: normalizeTrainingStatus(session.status),
+    description: session.description || null,
+    descriptionSections: parseDescriptionSections(session.description_json),
+    duration: session.duration_minutes || null,
+    exercises: parseExercises(session.exercises_json),
+    preferredTimeUnavailable: Number(session.preferred_time_unavailable) === 1,
+  };
+}
+
+function summarizeTrainingSyncState(sessions: any[]) {
+  const activeSessions = sessions.filter((session) => !isInactiveTrainingReadModelStatus(session.lifecycleState ?? session.status));
+  const syncedSessionCount = activeSessions.filter((session) => session.calendarSyncState === 'synced').length;
+  const missingSessionCount = Math.max(0, activeSessions.length - syncedSessionCount);
+  const planSyncStatus = activeSessions.length === 0
+    ? 'unscheduled'
+    : syncedSessionCount === activeSessions.length
+      ? 'all_synced'
+      : syncedSessionCount > 0
+        ? 'partial'
+        : 'unsynced';
+  return {
+    planSyncStatus,
+    activeSessionCount: activeSessions.length,
+    syncedSessionCount,
+    missingSessionCount,
   };
 }
 
 function isInactiveTrainingReadModelStatus(status: unknown): boolean {
   const normalized = String(status || '').toLowerCase();
   return normalized === 'rest'
-    || normalized === 'unscheduled'
     || normalized === 'deferred'
     || normalized === 'dropped'
     || normalized === 'cancelled'
@@ -427,15 +503,10 @@ export async function getReadiness(userId: number) {
   const cached = getCached<any>(cacheKey);
   if (cached) return cached;
 
-  let score = 0;
-  let factors: any = {};
-  let recommendation: string | null = null;
-  let reasonCode: string | null = null;
-
   try {
     const readiness = await calculateReadiness(userId);
-    score = readiness?.score || 0;
-    factors = {
+    const score = readiness?.score || 0;
+    const factors = {
       sleepScore: readiness?.factors?.sleep?.score ?? readiness?.factors?.sleep?.qualityScore ?? null,
       hrvStatus: readiness?.factors?.hrv?.trend ?? null,
       bodyBattery: normalizeBodyBattery(readiness?.factors?.bodyBattery?.current),
@@ -446,13 +517,21 @@ export async function getReadiness(userId: number) {
       stressLevel: null,
     };
     const rawRec = readiness?.recommendation || '';
-    recommendation = humanizeRecommendation(rawRec, score);
-    reasonCode = typeof readiness?.reasonCode === 'string' ? readiness.reasonCode : null;
-  } catch {}
-
-  const result = { score, factors, recommendation, reasonCode };
-  setCache(cacheKey, result, READINESS_TTL);
-  return result;
+    const recommendation = humanizeRecommendation(rawRec, score);
+    const reasonCode = typeof readiness?.reasonCode === 'string' ? readiness.reasonCode : null;
+    const result = { score, factors, recommendation, reasonCode };
+    setCache(cacheKey, result, READINESS_TTL);
+    return result;
+  } catch (err) {
+    logger.debug({ err, userId }, 'getReadiness failed — returning uncached unavailable snapshot');
+    return {
+      score: 0,
+      factors: {},
+      recommendation: null,
+      reasonCode: 'READINESS_UNAVAILABLE',
+      unavailable: true,
+    };
+  }
 }
 
 export async function fetchCurrentReadinessForPlan(userId: number): Promise<CoachKernelReadinessInput | null> {
@@ -473,6 +552,10 @@ export async function fetchCurrentReadinessForPlan(userId: number): Promise<Coac
 
     return {
       score: readiness.score,
+      confidence: readiness.reasonCode === 'WEARABLE_INTEGRATION_MISSING' ? 'no_data' : 'fresh_wearable',
+      dataSource: readiness.reasonCode === 'WEARABLE_INTEGRATION_MISSING' ? 'fallback' : 'wearable',
+      isStale: false,
+      reasonCode: readiness.reasonCode ?? null,
       sleepHours,
       hrvStatus,
       energyReserve,

@@ -12,6 +12,9 @@ let testDb: Database.Database;
 
 vi.mock('../../src/services/database', () => ({
   getDb: () => testDb,
+  initDatabase: vi.fn(),
+  closeDatabase: vi.fn(),
+  findUnexpectedMigrationPrefixCollisions: vi.fn(() => []),
 }));
 
 vi.mock('../../src/config', () => ({
@@ -46,6 +49,7 @@ vi.mock('../../src/utils/logger', () => ({
     trace: vi.fn(),
     child: vi.fn().mockReturnThis(),
   },
+  LOGGER_REDACTION_PATHS: [],
 }));
 
 import { registerPortalAdminDataRoutes } from '../../src/portal/admin-data-routes';
@@ -76,21 +80,21 @@ function seedTenantRows(): void {
   userInsert.run(502, 100502, 'Tenant B');
 
   testDb.prepare(`
-    INSERT INTO finance_transactions (user_id, date, category, amount, currency, description)
-    VALUES (?, '2026-04-01', 'income', 1000, 'EUR', ?)
-  `).run(501, 'Tenant A revenue');
+    INSERT INTO finance_transactions (tenant_id, user_id, date, category, amount, currency, description)
+    VALUES (?, ?, '2026-04-01', 'income', 1000, 'EUR', ?)
+  `).run(501, 501, 'Tenant A revenue');
   testDb.prepare(`
-    INSERT INTO finance_transactions (user_id, date, category, amount, currency, description)
-    VALUES (?, '2026-04-02', 'income', 2000, 'EUR', ?)
-  `).run(502, 'Tenant B revenue');
+    INSERT INTO finance_transactions (tenant_id, user_id, date, category, amount, currency, description)
+    VALUES (?, ?, '2026-04-02', 'income', 2000, 'EUR', ?)
+  `).run(502, 502, 'Tenant B revenue');
   testDb.prepare(`
-    INSERT INTO finance_tax_events (user_id, month, gross_income, tax_due)
-    VALUES (?, '2026-04', 1000, 100)
-  `).run(501);
+    INSERT INTO finance_tax_events (tenant_id, user_id, month, gross_income, tax_due)
+    VALUES (?, ?, '2026-04', 1000, 100)
+  `).run(501, 501);
   testDb.prepare(`
-    INSERT INTO finance_tax_events (user_id, month, gross_income, tax_due)
-    VALUES (?, '2026-04', 2000, 200)
-  `).run(502);
+    INSERT INTO finance_tax_events (tenant_id, user_id, month, gross_income, tax_due)
+    VALUES (?, ?, '2026-04', 2000, 200)
+  `).run(502, 502);
   testDb.prepare(`
     INSERT INTO audit_trail (user_id, actor_id, action, resource, details)
     VALUES (?, ?, 'access', 'finance.transactions', ?)

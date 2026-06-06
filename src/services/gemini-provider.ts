@@ -23,13 +23,14 @@ import {
   FunctionCallingMode,
   SchemaType,
   type GenerateContentResult,
-} from '@google/generative-ai';
+} from './gemini-adapter';
 import {
   AIProvider,
   AICallResult,
   AIToolCall,
   AIToolResultMessage,
   CallDomainOptions,
+  ClassifyOptions,
   getModelRouting,
   normalizeCallDomainOptions,
 } from './ai-provider';
@@ -42,6 +43,11 @@ import { getDb } from './database';
 import { pushEvent } from '../portal/telemetry';
 import { withTimeout } from '../utils/timeout';
 import { getAICallTimeoutMs, isAnthropicRuntimeEnabled } from './runtime-flags';
+import { buildScopedStateContextPrefix } from './provider-state-context';
+import { getDomainModelOverride, type DomainModelRole } from './model-config';
+import { computeModelUsageCostUsd, recordUnresolvedModelPricingAlert, resolveModelPricing } from './model-pricing';
+import { settleNexusPointOverageForUser } from './nexus-points';
+import { insertApiUsageFallback } from './api-usage-fallback';
 
 // ─── Client (lazy init — only created if API key is set) ────────────
 
@@ -64,32 +70,48 @@ export function isGeminiProviderConfigured(): boolean {
 
 // ─── Cost per million tokens ────────────────────────────────────────
 
-const GEMINI_COST_PER_MTK: Record<string, { in: number; out: number }> = {
-  'gemini-3.1-pro':         { in: 2.00, out: 12.00 },
-  'gemini-3-flash':         { in: 0.50, out: 3.00 },
-  'gemini-2.5-flash':       { in: 0.30, out: 2.50 },
-  'gemini-2.5-flash-lite':  { in: 0.10, out: 0.40 },
-  'gemini-2.0-flash':       { in: 0.10, out: 0.40 },  // legacy, deprecated June 2026
-  'gemini-1.5-pro':         { in: 1.25, out: 5.00 },  // legacy
-};
-
-function computeGeminiCost(model: string, usage: { promptTokenCount: number; candidatesTokenCount: number }): number {
-  const key = Object.keys(GEMINI_COST_PER_MTK).find(k => model.startsWith(k)) ?? 'gemini-2.5-flash';
-  const rates = GEMINI_COST_PER_MTK[key];
-  return (usage.promptTokenCount / 1_000_000) * rates.in +
-         (usage.candidatesTokenCount / 1_000_000) * rates.out;
+export function resolveGeminiCostModelKey(model: string): string {
+  return resolveModelPricing(model, 'gemini')?.model ?? 'pricing-unresolved';
 }
 
-function logGeminiUsage(
+const warnedUnresolvedModels = new Set<string>();
+
+function warnUnresolvedGeminiPricing(model: string, category: string, userId: number): void {
+  const key = `${model}:${category}`;
+  if (warnedUnresolvedModels.has(key)) return;
+  warnedUnresolvedModels.add(key);
+  recordUnresolvedModelPricingAlert({ provider: 'gemini', model, category, userId });
+}
+
+export function computeGeminiCost(model: string, usage: { promptTokenCount: number; candidatesTokenCount: number; cachedContentTokenCount?: number }): number {
+  return computeModelUsageCostUsd(model, {
+    inputTokens: usage.promptTokenCount,
+    outputTokens: usage.candidatesTokenCount,
+    cacheReadTokens: usage.cachedContentTokenCount ?? 0,
+  }, 'gemini').costUsd;
+}
+
+async function logGeminiUsage(
   model: string,
   category: string,
-  usage: { promptTokenCount: number; candidatesTokenCount: number },
+  usage: { promptTokenCount: number; candidatesTokenCount: number; cachedContentTokenCount?: number },
   durationMs: number,
   userId: number = 0,
   tenantId: number = userId,
-): void {
+): Promise<void> {
+  const cacheReadTokens = usage.cachedContentTokenCount ?? 0;
+  const priced = computeModelUsageCostUsd(model, {
+    inputTokens: usage.promptTokenCount,
+    outputTokens: usage.candidatesTokenCount,
+    cacheReadTokens,
+  }, 'gemini');
+  if (!priced.pricingResolved) {
+    warnUnresolvedGeminiPricing(model, category, userId);
+  }
+  const cost = priced.costUsd;
+  const pricingStatus = priced.pricingResolved ? 'resolved' : 'unresolved';
+  let apiUsageId: number | null = null;
   try {
-    const cost = computeGeminiCost(model, usage);
     const db = getDb();
     // April 9 2026: persist `user_id` into the INSERT. Previously
     // omitted, so every Gemini row silently had user_id=0 via the
@@ -98,10 +120,11 @@ function logGeminiUsage(
     // Per-user cost enforcement (cost-guardrail.isUserOverDailyCap)
     // was effectively disabled until both INSERT statements were
     // updated.
-    db.prepare(`
-      INSERT INTO api_usage (category, model, tenant_id, user_id, input_tokens, output_tokens, cost_usd, duration_ms, provider)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'gemini')
-    `).run(category, model, tenantId, userId, usage.promptTokenCount, usage.candidatesTokenCount, cost, durationMs);
+    const result = db.prepare(`
+      INSERT INTO api_usage (category, model, tenant_id, user_id, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost_usd, duration_ms, provider, pricing_status, pricing_model_key)
+      VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, 'gemini', ?, ?)
+    `).run(category, model, tenantId, userId, usage.promptTokenCount, usage.candidatesTokenCount, cacheReadTokens, cost, durationMs, pricingStatus, priced.pricingModelKey);
+    apiUsageId = Number((result as { lastInsertRowid?: number | bigint } | undefined)?.lastInsertRowid ?? 0);
 
     pushEvent({
       ts: new Date().toISOString(),
@@ -109,14 +132,34 @@ function logGeminiUsage(
       summary: `Gemini ${model}: ${usage.promptTokenCount}+${usage.candidatesTokenCount} tokens ($${cost.toFixed(4)})`,
       durationMs,
     });
+    // April 2026 follow-up: mirror anthropic-hook's per-user metering so
+    // `usage_metering` aggregates reflect Gemini traffic (the dominant
+    // provider). Without this, checkQuota silently sees an empty table.
+    try {
+      const { recordUsage } = require('./usage-metering') as typeof import('./usage-metering');
+      recordUsage(userId, usage.promptTokenCount, usage.candidatesTokenCount, cost, false);
+    } catch (meterErr) {
+      logger.warn({ err: meterErr, userId }, 'Failed to record Gemini usage_metering');
+    }
+    await settleNexusPointOverageForUser(userId, apiUsageId);
   } catch (err) {
     try {
-      const cost = computeGeminiCost(model, usage);
       const db = getDb();
-      db.prepare(`
-        INSERT INTO api_usage (category, model, user_id, input_tokens, output_tokens, cost_usd, duration_ms, provider)
-        VALUES (?, ?, ?, ?, ?, ?, ?, 'gemini')
-      `).run(category, model, userId, usage.promptTokenCount, usage.candidatesTokenCount, cost, durationMs);
+      apiUsageId = insertApiUsageFallback(db, {
+        category,
+        model,
+        provider: 'gemini',
+        tenantId,
+        userId,
+        inputTokens: usage.promptTokenCount,
+        outputTokens: usage.candidatesTokenCount,
+        cacheReadTokens,
+        cacheWriteTokens: 0,
+        costUsd: cost,
+        durationMs,
+        pricingStatus: 'legacy',
+      });
+      await settleNexusPointOverageForUser(userId, apiUsageId);
     } catch (fallbackErr) {
       logger.warn({ err: fallbackErr }, 'Failed to log Gemini usage');
     }
@@ -136,7 +179,7 @@ function logGeminiUsage(
  * Returns plain text. Throws on Gemini errors so the caller can fall
  * back to Anthropic if it wants to.
  *
- * Default model is `config.gemini.model` (gemini-3-flash). For high-stakes
+ * Default model is `config.gemini.model` (gemini-2.5-flash). For high-stakes
  * analytical calls (e.g. coach_analysis with ~12K input tokens), this is
  * ~5.5× cheaper per call than Claude Sonnet 4.6 with comparable quality.
  */
@@ -149,6 +192,25 @@ type OneShotOptions = {
   timeoutMs?: number;
   jsonMode?: boolean;
 };
+
+const SEARCH_PROMPT_PRIVACY_PATTERNS: Array<[RegExp, string]> = [
+  [/\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi, '[redacted-email]'],
+  [/\b(?:\+?\d[\d\s().-]{7,}\d)\b/g, '[redacted-phone]'],
+  [/\b\d{3}-\d{2}-\d{4}\b/g, '[redacted-ssn]'],
+  [/\b(?:\d[ -]*?){13,19}\b/g, '[redacted-card]'],
+  [/\bBearer\s+[A-Za-z0-9._~+/=-]{8,}/gi, 'Bearer [redacted]'],
+  [/\bsk-(?:proj-)?[A-Za-z0-9_-]{12,}/gi, '[redacted-api-key]'],
+  [/\b((?:access_token|refresh_token|id_token|client_secret|api_key|token|secret|password|authorization|cookie))=([^&\s]+)/gi, '$1=[redacted]'],
+  [/(https?:\/\/[^\s?]+)\?[^ \n]+/gi, '$1?[redacted-query]'],
+];
+
+export function scrubSearchGroundingPromptForPrivacy(value: string): string {
+  let scrubbed = value;
+  for (const [pattern, replacement] of SEARCH_PROMPT_PRIVACY_PATTERNS) {
+    scrubbed = scrubbed.replace(pattern, replacement);
+  }
+  return scrubbed;
+}
 
 export async function completeOneShot(
   systemPrompt: string,
@@ -182,12 +244,13 @@ export async function completeOneShot(
 
   const usage = result.response.usageMetadata;
   if (usage) {
-    logGeminiUsage(
+    await logGeminiUsage(
       model,
       category,
       {
         promptTokenCount: usage.promptTokenCount ?? 0,
         candidatesTokenCount: usage.candidatesTokenCount ?? 0,
+        cachedContentTokenCount: usage.cachedContentTokenCount ?? 0,
       },
       durationMs,
       options?.userId ?? 0,
@@ -231,42 +294,52 @@ export async function completeOneShotWithSearch(
   const maxTokens = options?.maxTokens ?? 4096;
   const temperature = options?.temperature ?? 0.7;
   const client = getClient();
+  const safeSystemPrompt = scrubSearchGroundingPromptForPrivacy(systemPrompt);
+  const safeUserPrompt = scrubSearchGroundingPromptForPrivacy(userPrompt);
 
-  // The Google Search tool is declared via the `tools` array with a single
-  // item shaped `{ googleSearchRetrieval: {} }`. The SDK's type defs don't
-  // include this in the public Tool union yet, so we cast. An empty config
-  // object means "use default search retrieval behavior" — Google's
-  // recommendation for most use cases.
+  // The current @google/genai SDK exposes Google Search grounding through
+  // `{ googleSearch: {} }`. Keep this centralized so legacy research routes
+  // do not silently degrade when the SDK rejects an obsolete tool shape.
   const genModel = client.getGenerativeModel({
     model,
-    systemInstruction: systemPrompt,
+    systemInstruction: safeSystemPrompt,
     generationConfig: {
       maxOutputTokens: maxTokens,
       temperature,
     },
-    tools: [{ googleSearchRetrieval: {} }] as any,
+    tools: [{ googleSearch: {} }] as any,
   });
 
   const start = Date.now();
   const result = await withTimeout(
-    genModel.generateContent([{ text: userPrompt }]),
+    genModel.generateContent([{ text: safeUserPrompt }]),
     config.aiSafety.callTimeoutMs,
   );
   const durationMs = Date.now() - start;
 
   const usage = result.response.usageMetadata;
   if (usage) {
-    logGeminiUsage(
+    await logGeminiUsage(
       model,
       category,
       {
         promptTokenCount: usage.promptTokenCount ?? 0,
         candidatesTokenCount: usage.candidatesTokenCount ?? 0,
+        cachedContentTokenCount: usage.cachedContentTokenCount ?? 0,
       },
       durationMs,
       options?.userId ?? 0,
       options?.tenantId ?? options?.userId ?? 0,
     );
+  }
+
+  const finishReason = String((result.response as any).candidates?.[0]?.finishReason ?? '').trim();
+  if (finishReason && !/^stop$/i.test(finishReason)) {
+    const err = new Error(`Gemini search response incomplete: ${finishReason}`);
+    (err as any).provider = 'gemini';
+    (err as any).finishReason = finishReason;
+    (err as any).retryable = /^max_tokens$|^recitation$|^other$/i.test(finishReason);
+    throw err;
   }
 
   // Extract grounding sources (URLs) for transparency. When search was
@@ -346,12 +419,13 @@ export async function completeVisionOneShot(
 
   const usage = result.response.usageMetadata;
   if (usage) {
-    logGeminiUsage(
+    await logGeminiUsage(
       model,
       category,
       {
         promptTokenCount: usage.promptTokenCount ?? 0,
         candidatesTokenCount: usage.candidatesTokenCount ?? 0,
+        cachedContentTokenCount: usage.cachedContentTokenCount ?? 0,
       },
       durationMs,
       options?.userId ?? 0,
@@ -518,6 +592,15 @@ function toSchemaType(type: string): SchemaType {
   return map[type] || SchemaType.STRING;
 }
 
+function resolveFilteredTools(value: unknown, context: string, allowLegacyFullTools: boolean): Anthropic.Tool[] {
+  if (Array.isArray(value)) return value as Anthropic.Tool[];
+  if (allowLegacyFullTools) return TOOLS;
+  if (!Array.isArray(value)) {
+    throw new Error(`${context} requires explicit filteredTools; pass [] for no tools or TOOLS for the full set`);
+  }
+  return value as Anthropic.Tool[];
+}
+
 function convertProperties(properties: Record<string, any>): Record<string, any> {
   const result: Record<string, any> = {};
   for (const [key, prop] of Object.entries(properties)) {
@@ -536,9 +619,8 @@ function convertProperties(properties: Record<string, any>): Record<string, any>
  * Convert Anthropic-format tools to Gemini FunctionDeclarations.
  * Accepts an explicit tool array so the caller can pass a pre-filtered
  * subset (TASK-17 Layer 3) instead of always sending all 25+ tools.
- * Defaults to the full TOOLS array for backwards compatibility.
  */
-function toGeminiFunctionDeclarations(tools: Anthropic.Tool[] = TOOLS): FunctionDeclaration[] {
+function toGeminiFunctionDeclarations(tools: Anthropic.Tool[]): FunctionDeclaration[] {
   return tools.map((t) => {
     const schema = t.input_schema as any;
     return {
@@ -560,7 +642,7 @@ function toGeminiFunctionDeclarations(tools: Anthropic.Tool[] = TOOLS): Function
  * resolve it to the actual SDK model identifier here.
  *
  * Tier mapping:
- *   - heavy → config.gemini.model            (gemini-3-flash)
+ *   - heavy → config.gemini.model            (gemini-2.5-flash)
  *   - light → config.gemini.classifierModel  (gemini-2.5-flash-lite)
  *
  * When tier is omitted, falls back to getModelRouting() which returns
@@ -571,6 +653,14 @@ function resolveGeminiModel(
   domain: DomainName,
   tier?: 'heavy' | 'light',
 ): { model: string; maxTokens: number } {
+  const domainOverride = getDomainModelOverride('gemini', domain as DomainModelRole);
+  if (domainOverride) {
+    return {
+      model: domainOverride,
+      maxTokens: domain === 'secretary' ? config.gemini.secretaryMaxTokens : config.gemini.maxTokens,
+    };
+  }
+
   if (tier === 'light') {
     return {
       model: config.gemini.classifierModel,
@@ -710,9 +800,10 @@ export class GeminiProvider implements AIProvider {
 
     const usage = result.response.usageMetadata;
     if (usage) {
-      logGeminiUsage(routing.model, usageCategory, {
+      await logGeminiUsage(routing.model, usageCategory, {
         promptTokenCount: usage.promptTokenCount ?? 0,
         candidatesTokenCount: usage.candidatesTokenCount ?? 0,
+        cachedContentTokenCount: usage.cachedContentTokenCount ?? 0,
       }, durationMs, usageContext?.userId ?? 0, usageContext?.tenantId ?? usageContext?.userId ?? 0);
     }
 
@@ -724,7 +815,13 @@ export class GeminiProvider implements AIProvider {
   async classify(
     message: string,
     activeContext?: { domain: DomainName; lastAssistantMessage: string },
+    options?: ClassifyOptions,
   ): Promise<ClassificationResult> {
+    // O3-A11/F-new-6: ClassifyOptions must carry user attribution for
+    // routed classify calls. Without this, Gemini-primary classify rows
+    // silently fall back to user_id=0 / tenant_id=0.
+    const usageUserId = options?.userId ?? 0;
+    const usageTenantId = options?.tenantId ?? options?.userId ?? 0;
     try {
       let userContent = message;
       if (activeContext) {
@@ -746,10 +843,11 @@ ${message}`;
 
       const usage = result.response.usageMetadata;
       if (usage) {
-        logGeminiUsage(config.gemini.classifierModel, 'gemini_classify', {
+        await logGeminiUsage(config.gemini.classifierModel, 'gemini_classify', {
           promptTokenCount: usage.promptTokenCount ?? 0,
           candidatesTokenCount: usage.candidatesTokenCount ?? 0,
-        }, durationMs);
+          cachedContentTokenCount: usage.cachedContentTokenCount ?? 0,
+        }, durationMs, usageUserId, usageTenantId);
       }
 
       let text = extractText(result);
@@ -789,17 +887,22 @@ ${message}`;
     const opts = normalizeCallDomainOptions(optionsOrMaxTokens);
 
     // Layer 4: tier-aware model selection
-    const routing = resolveGeminiModel(domain, opts.modelTier);
+    // v2: honor options.modelOverride (set by cloud-reasoning-gate so the
+    // approved reasoning model is actually used). When undefined, fall
+    // through to the existing tier-aware routing.
+    const baseRouting = resolveGeminiModel(domain, opts.modelTier);
+    const routing = opts.modelOverride
+      ? { model: opts.modelOverride, maxTokens: baseRouting.maxTokens }
+      : baseRouting;
 
     // Phase 2 Slice A: pass currentMessage so triathlon sub-skill
     // routing picks the sport-specific coach persona prompt.
     const systemPrompt = getDomainSystemPrompt(domain, currentMessage);
     const useTools = domain === 'secretary' || domain === 'triathlon';
-    const contextPrefix = stateContext ? `[Current State]\n${stateContext}\n\n` : '';
+    const contextPrefix = buildScopedStateContextPrefix(stateContext);
 
-    // Layer 3: use the pre-filtered tool list when provided, otherwise
-    // fall back to the full TOOLS array (legacy callers)
-    const filteredTools = (opts.filteredTools as Anthropic.Tool[] | undefined) ?? TOOLS;
+    const allowLegacyFullTools = optionsOrMaxTokens == null || typeof optionsOrMaxTokens === 'number';
+    const filteredTools = resolveFilteredTools(opts.filteredTools, 'Gemini callDomain', allowLegacyFullTools);
 
     // Layer 5: history is sliced upstream by planSecretaryOptimization
     // when modelTier === 'light'. We just consume whatever the caller
@@ -851,15 +954,21 @@ ${message}`;
     // is what makes multi-step tool conversations work.
     const opts = normalizeCallDomainOptions(options);
 
-    const routing = resolveGeminiModel(domain, opts.modelTier);
+    // v2: honor options.modelOverride (set by cloud-reasoning-gate so the
+    // approved reasoning model is actually used). When undefined, fall
+    // through to the existing tier-aware routing.
+    const baseRouting = resolveGeminiModel(domain, opts.modelTier);
+    const routing = opts.modelOverride
+      ? { model: opts.modelOverride, maxTokens: baseRouting.maxTokens }
+      : baseRouting;
     // Phase 2 Slice A: same persona routing as callDomain — continuation
     // uses the same currentMessage so the classifier resolves to the
     // same coach file. Mid-turn persona swaps would break tool chains.
     const systemPrompt = getDomainSystemPrompt(domain, currentMessage);
     const useTools = domain === 'secretary' || domain === 'triathlon';
-    const contextPrefix = stateContext ? `[Current State]\n${stateContext}\n\n` : '';
+    const contextPrefix = buildScopedStateContextPrefix(stateContext);
 
-    const filteredTools = (opts.filteredTools as Anthropic.Tool[] | undefined) ?? TOOLS;
+    const filteredTools = resolveFilteredTools(opts.filteredTools, 'Gemini continueWithToolResults', options == null);
 
     const contents: Content[] = [
       ...history.map((m) => ({

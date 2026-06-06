@@ -14,8 +14,13 @@ dotenv.config({
 const IS_STAGING = process.env.STAGING === 'true' || process.env.NODE_ENV === 'staging';
 const IS_TEST = process.env.NODE_ENV === 'test';
 const IS_DEVELOPMENT = !process.env.NODE_ENV || process.env.NODE_ENV === 'development';
+const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 const PAYWALL_ENABLED = (process.env.PAYWALL_ENABLED ?? 'true') !== 'false';
 const PAYWALL_BYPASS_ALLOWED = IS_TEST || IS_DEVELOPMENT || IS_STAGING;
+const IOS_JWT_SECRET_MIN_BYTES = 32;
+const IOS_JWT_PLACEHOLDER_PATTERN = /(change[-_ ]?me|changeme|stub)/i;
+const PORTAL_PUBLIC_BIND_ACK_VALUE = 'production-public-host-reviewed';
+export type NotificationDeliveryMode = 'mock' | 'apns';
 
 function required(key: string): string {
   const value = process.env[key];
@@ -76,6 +81,31 @@ function optionalFloat(key: string, fallback: number, options: NumericEnvOptions
     return fallback;
   }
   return validateNumericEnv(key, raw, Number.parseFloat(raw), options);
+}
+
+function parseNotificationDeliveryMode(raw = process.env.NOTIFICATION_DELIVERY_MODE): NotificationDeliveryMode {
+  const normalized = (raw || '').trim().toLowerCase();
+  if (!normalized) return process.env.NODE_ENV === 'production' ? 'apns' : 'mock';
+  if (normalized === 'mock' || normalized === 'apns') return normalized;
+  throw new Error(
+    `Invalid NOTIFICATION_DELIVERY_MODE="${raw}". Expected one of: mock, apns.`,
+  );
+}
+
+function warnProductionLaunch(message: string): void {
+  if (IS_PRODUCTION && message) {
+    console.warn(`[production launch warning] ${message}`);
+  }
+}
+
+function isUnsafePublicBind(bind: string | undefined): boolean {
+  const normalized = (bind || '').trim().toLowerCase();
+  return normalized === '0.0.0.0' || normalized === '::' || normalized === '[::]';
+}
+
+function isStrongIosJwtSecret(secret: string): boolean {
+  return Buffer.byteLength(secret, 'utf8') >= IOS_JWT_SECRET_MIN_BYTES
+    && !IOS_JWT_PLACEHOLDER_PATTERN.test(secret);
 }
 
 export const config = {
@@ -150,21 +180,27 @@ export const config = {
   // ── Provider Fallback Routing ─────────────────────────────────────
   // Per-task-type primary/fallback. Values: 'anthropic' | 'openai' | 'gemini'
   //
-  // Defaults are now GEMINI-first for every task type (April 2026 cost
-  // migration). Anthropic is retained as the reliability fallback because
-  // Sonnet 4.6's tool-use chain is still more deterministic on edge cases.
+  // Defaults are mixed by task fit. Classifier and tool-use stay Gemini-first,
+  // while generic chat defaults to OpenAI GPT-5.4 nano with Gemini fallback.
   // Previous defaults had chat+toolUse primary=anthropic, which was a
-  // correct choice at the time but stale by the time the Gemini migration
-  // shipped — the env vars in prod .env (AI_*_PRIMARY=gemini) were the
-  // only thing keeping the runtime on Gemini. If an operator removes
-  // those env vars on a fresh deploy (staging first-run, for instance),
-  // the old defaults would silently revert cost back to Anthropic. This
-  // change makes the Gemini-first behavior the code default too, so the
-  // env vars are an OVERRIDE not a LIFELINE.
+  // correct choice at the time but stale by the time the Gemini migration and
+  // GPT nano review shipped. The env vars are an override, not a lifeline.
+  // Option 3 (O3-A7): minimum confidence thresholds for the classify
+  // task. When a primary classifier returns a result with confidence
+  // BELOW these thresholds, TaskRoutingProvider.classify retries via
+  // the configured fallback provider. Tool-bearing domains (secretary,
+  // triathlon) require a higher bar because misroute risk is higher.
+  // Defaults are no-op for Gemini (confidence ≈ 1.0 in practice);
+  // become active once AI_CLASSIFY_PRIMARY=ollama.
+  classifyConfidenceThresholds: {
+    minConfidence: parseFloat(process.env.OLLAMA_CLASSIFIER_MIN_CONFIDENCE || '0.65'),
+    toolDomainMinConfidence: parseFloat(process.env.OLLAMA_CLASSIFIER_TOOL_DOMAIN_MIN_CONFIDENCE || '0.80'),
+  },
   providerRouting: {
-    // April 9 2026 — fallback defaults flipped from 'anthropic' to
-    // 'openai'. Gemini stays primary (the post-cost-migration default).
-    // When Gemini fails, the router now tries GPT instead of Claude.
+    // May 2026 — generic chat uses GPT-5.4 nano by default because it is
+    // cheaper than Gemini Flash on the chat token mix and stronger on
+    // structured/instruction-following answers. Domain routing below still
+    // pins Training/Content/Finance/Cooking to their safer Gemini baselines.
     // Anthropic is only reachable when BOTH an explicit env var points
     // at it AND `ANTHROPIC_ENABLED=true` is set in the environment —
     // see `anthropic-hook.trackedCreate` for the hard gate.
@@ -173,23 +209,151 @@ export const config = {
       fallback: process.env.AI_CLASSIFY_FALLBACK || 'openai',
     },
     chat: {
-      primary: process.env.AI_CHAT_PRIMARY || 'gemini',
-      fallback: process.env.AI_CHAT_FALLBACK || 'openai',
+      primary: process.env.AI_CHAT_PRIMARY || 'openai',
+      fallback: process.env.AI_CHAT_FALLBACK || 'gemini',
     },
     toolUse: {
       primary: process.env.AI_TOOL_USE_PRIMARY || 'gemini',
       fallback: process.env.AI_TOOL_USE_FALLBACK || 'openai',
+    },
+    // ── New task types introduced by WO-ollama-local-llm ──────────
+    // `'none'`             = no fallback; surface a structured error.
+    // `'approved_cloud_reasoning'` = route through cloud-reasoning-gate.
+    scriptGeneration: {
+      primary: process.env.AI_SCRIPT_GENERATION_PRIMARY || 'ollama',
+      fallback: process.env.AI_SCRIPT_GENERATION_FALLBACK || 'none',
+    },
+    localReasoning: {
+      primary: process.env.AI_LOCAL_REASONING_PRIMARY || 'ollama',
+      fallback: process.env.AI_LOCAL_REASONING_FALLBACK || 'approved_cloud_reasoning',
     },
     circuitBreaker: {
       failureThreshold: optionalInt('AI_CB_FAILURE_THRESHOLD', 3, { min: 1 }),
       cooldownMs: optionalInt('AI_CB_COOLDOWN_MS', 60000, { min: 0 }),
     },
   },
+
+  // ── Local LLM (Ollama) — WO-ollama-local-llm ─────────────────────
+  // The provider stays dormant when OLLAMA_ENABLED=false (default). When
+  // enabled, the registry exposes the OllamaProvider; routing only kicks
+  // in once AI_CLASSIFY_PRIMARY=ollama (or scriptGeneration / localReasoning).
+  ollama: {
+    enabled: (process.env.OLLAMA_ENABLED || 'false') === 'true',
+    baseUrl: process.env.OLLAMA_BASE_URL || 'http://127.0.0.1:11434',
+    model: process.env.OLLAMA_MODEL || 'qwen3.6:35b-a3b-q4_K_M',
+    classifierModel: process.env.OLLAMA_CLASSIFIER_MODEL || process.env.OLLAMA_MODEL || 'qwen3.6:35b-a3b-q4_K_M',
+    // operationalRollbackModel is NOT used for in-process retry — it is
+    // the tag operators switch to via OLLAMA_MODEL/OLLAMA_CLASSIFIER_MODEL
+    // during a manual rollback. Pre-pulled at install time so the
+    // rollback is a one-command env flip. (Plan amendment R3-2.)
+    operationalRollbackModel: process.env.OLLAMA_OPERATIONAL_ROLLBACK_MODEL || 'qwen3.6:27b-q4_K_M',
+    maxTokens: optionalInt('OLLAMA_MAX_TOKENS', 2048, { min: 64, max: 8192 }),
+    secretaryMaxTokens: optionalInt('OLLAMA_SECRETARY_MAX_TOKENS', 4096, { min: 64, max: 8192 }),
+    // v1.1: bumped from 90s to 240s after the live smoke (2026-05-26) showed
+    // think:true cases on 35B-A3B taking 126-170s warm with truncated num_predict.
+    // v1.2 (same session): bumped 240s → 360s (6 min) after the v1.1 smoke
+    // re-run showed think:true cases NEEDING the full 4-7 min when num_predict
+    // is raised to let the model finish naturally. think:false classify (the
+    // hot path) finishes in 16-18 s warm, well inside any of these caps.
+    timeoutMs: optionalInt('OLLAMA_TIMEOUT_MS', 360000, { min: 1000, max: 600000 }),
+
+    // Per-task input/output token caps (plan A10 — conservative estimator).
+    // v1.1: scriptGenMaxOutput bumped 1800→4096 and localReasoningMaxOutput
+    // bumped 1200→3000 because Qwen3.6 think:true uses up the budget for
+    // chain-of-thought BEFORE emitting JSON content; the prior caps
+    // truncated 5/6 of the live smoke think:true cases. Classify output
+    // stays small (128) — classify uses think:false.
+    tokenCaps: {
+      classifyMaxInput: optionalInt('OLLAMA_CLASSIFY_MAX_INPUT_TOKENS', 1500, { min: 128 }),
+      classifyMaxOutput: optionalInt('OLLAMA_CLASSIFY_MAX_OUTPUT_TOKENS', 128, { min: 16 }),
+      scriptGenMaxInput: optionalInt('OLLAMA_SCRIPT_GEN_MAX_INPUT_TOKENS', 6000, { min: 256 }),
+      scriptGenMaxOutput: optionalInt('OLLAMA_SCRIPT_GEN_MAX_OUTPUT_TOKENS', 4096, { min: 256 }),
+      localReasoningMaxInput: optionalInt('OLLAMA_LOCAL_REASONING_MAX_INPUT_TOKENS', 6000, { min: 256 }),
+      localReasoningMaxOutput: optionalInt('OLLAMA_LOCAL_REASONING_MAX_OUTPUT_TOKENS', 3000, { min: 64 }),
+    },
+
+    // Bounded queue — capacity_exceeded does NOT open the circuit.
+    queue: {
+      backend: (process.env.LOCAL_LLM_QUEUE_BACKEND || 'memory') as 'memory' | 'sqlite' | 'redis',
+      classifyDepth: optionalInt('OLLAMA_QUEUE_CLASSIFY_DEPTH', 4, { min: 1, max: 32 }),
+      scriptGenDepth: optionalInt('OLLAMA_QUEUE_SCRIPT_GEN_DEPTH', 2, { min: 1, max: 16 }),
+      localReasoningDepth: optionalInt('OLLAMA_QUEUE_LOCAL_REASONING_DEPTH', 2, { min: 1, max: 16 }),
+      classifyMaxWaitMs: optionalInt('OLLAMA_QUEUE_CLASSIFY_MAX_WAIT_MS', 5000, { min: 0, max: 60000 }),
+      scriptGenMaxWaitMs: optionalInt('OLLAMA_QUEUE_SCRIPT_GEN_MAX_WAIT_MS', 30000, { min: 0, max: 300000 }),
+      localReasoningMaxWaitMs: optionalInt('OLLAMA_QUEUE_LOCAL_REASONING_MAX_WAIT_MS', 30000, { min: 0, max: 300000 }),
+      globalMaxDepth: optionalInt('LOCAL_LLM_GLOBAL_QUEUE_MAX_DEPTH', 8, { min: 1, max: 64 }),
+    },
+
+    // Call-count rate limiter — separate from cost-guardrail $ limits
+    // because Ollama calls cost $0 and would otherwise be unbounded.
+    rateLimit: {
+      perUserDaily: optionalInt('LOCAL_LLM_USER_DAILY_CALL_LIMIT', 200, { min: 0 }),
+      perUserHourly: optionalInt('LOCAL_LLM_USER_HOURLY_CALL_LIMIT', 40, { min: 0 }),
+      scriptGenPerUserDaily: optionalInt('LOCAL_LLM_SCRIPT_DAILY_CALL_LIMIT', 20, { min: 0 }),
+    },
+
+    // Artifact retention for generated scripts
+    artifacts: {
+      retentionDays: optionalInt('LOCAL_LLM_ARTIFACT_RETENTION_DAYS', 14, { min: 0, max: 365 }),
+      storePrompts: (process.env.LOCAL_LLM_STORE_PROMPTS || 'false') === 'true',
+      storeGenerated: (process.env.LOCAL_LLM_STORE_GENERATED_ARTIFACTS || 'true') === 'true',
+    },
+  },
+
+  // ── Quality + privacy gate for complex cloud reasoning fallback ──
+  cloudReasoningFallback: {
+    enabled: (process.env.CLOUD_REASONING_FALLBACK_ENABLED || 'false') === 'true',
+    provider: (process.env.CLOUD_REASONING_PROVIDER || '') as '' | 'gemini' | 'openai' | 'anthropic',
+    model: process.env.CLOUD_REASONING_MODEL || '',
+    requireApprovedModel: (process.env.CLOUD_REASONING_REQUIRE_APPROVED_MODEL || 'true') === 'true',
+    allowPreviewModels: (process.env.CLOUD_REASONING_ALLOW_PREVIEW_MODELS || 'false') === 'true',
+    approvedReasoningModels: (process.env.APPROVED_REASONING_MODELS || 'gemini-2.5-pro,claude-sonnet-4-6')
+      .split(',').map(s => s.trim()).filter(Boolean),
+    // Plan amendment R3-8: disallow list blocks flash/flash-lite/nano/mini/haiku/fast/lite/classifier
+    // even when the operator accidentally lists them in APPROVED_REASONING_MODELS.
+    disallowedSubstrings: (process.env.DISALLOWED_COMPLEX_FALLBACK_MODELS ||
+      'flash,flash-lite,nano,mini,haiku,lite,classifier,fast')
+      .split(',').map(s => s.trim().toLowerCase()).filter(Boolean),
+    onUnapproved: (process.env.CLOUD_REASONING_ON_UNAPPROVED_MODEL || 'return_local_result_with_warning') as
+      'return_local_result_with_warning' | 'fail_visibly' | 'allow',
+    privacy: {
+      mode: (process.env.CLOUD_REASONING_PRIVACY_MODE || 'redacted_only') as 'redacted_only' | 'allow_raw' | 'never',
+      allowRawPrivateData: (process.env.CLOUD_REASONING_ALLOW_RAW_PRIVATE_DATA || 'false') === 'true',
+    },
+  },
+
+  // ── Local LLM evaluation mode ────────────────────────────────────
+  localLLMEvaluation: {
+    enabled: (process.env.LOCAL_LLM_EVALUATION_MODE || 'true') === 'true',
+    showProviderMetadata: (process.env.LOCAL_LLM_SHOW_PROVIDER_METADATA || 'true') === 'true',
+    requireLocalForScriptGen: (process.env.AI_SCRIPT_GENERATION_REQUIRE_LOCAL || 'true') === 'true',
+  },
+
+  // ── Option 3: classify shadow-eval ───────────────────────────────
+  // When `classifyShadow=true`, every live Gemini classify call also
+  // fires (fire-and-forget) an Ollama classify call with the small
+  // classifier model, and the comparison is logged to
+  // `classify_shadow_runs`. The user response is NEVER blocked on the
+  // shadow path. Used to validate a future cutover from Gemini→Ollama
+  // for classify. Defaults to false; the operator opts in via env.
+  localLLM: {
+    classifyShadow: (process.env.LOCAL_LLM_CLASSIFY_SHADOW || 'false') === 'true',
+  },
+
   google: {
     clientId: process.env.GOOGLE_CLIENT_ID || '',
     clientSecret: process.env.GOOGLE_CLIENT_SECRET || '',
     refreshToken: process.env.GOOGLE_REFRESH_TOKEN || '',
     iosClientId: process.env.GOOGLE_IOS_CLIENT_ID || '',
+  },
+  appleWeb: {
+    // Sign in with Apple on the web uses an Apple Services ID as the
+    // OAuth client_id. Keep this separate from APNS_BUNDLE_ID, which is
+    // the native iOS App ID audience used by /auth/register/apple.
+    clientId: process.env.APPLE_WEB_CLIENT_ID || '',
+    redirectUri:
+      process.env.APPLE_WEB_REDIRECT_URI ||
+      `${process.env.OAUTH_REDIRECT_BASE || 'https://api.nexushub.me'}/oauth/apple/callback`,
   },
   outlook: {
     clientId: process.env.OUTLOOK_CLIENT_ID || '',
@@ -277,12 +441,13 @@ export const config = {
   // ── YouTube ────────────────────────────────────────────────────────
   youtube: {
     apiKey: process.env.YOUTUBE_API_KEY || '',
-    channelId: process.env.YOUTUBE_CHANNEL_ID || '',  // Felipe's own channel ID
+    channelId: process.env.YOUTUBE_CHANNEL_ID || '',  // configured creator channel ID
   },
   // ── Content Engine (Python microservice) ────────────────────────────
   contentEngine: {
     enabled: (process.env.CONTENT_ENGINE_ENABLED || 'false') === 'true',
     port: optionalInt('CONTENT_ENGINE_PORT', 8100, { min: 1, max: 65535 }),
+    internalApiSecret: process.env.INTERNAL_API_SECRET || '',
   },
   // ── Database Backup ─────────────────────────────────────────────────
   backup: {
@@ -297,7 +462,7 @@ export const config = {
   portal: {
     enabled: (process.env.PORTAL_ENABLED || 'true') === 'true',
     port: optionalInt('PORTAL_PORT', 8200, { min: 1, max: 65535 }),
-    bind: process.env.PORTAL_BIND || '0.0.0.0',
+    bind: process.env.PORTAL_BIND || '127.0.0.1',
     // Legacy full-access admin bearer token. New scoped tokens can be
     // configured below for least-privilege portal usage, but this
     // remains the backward-compatible fallback if operators have not
@@ -419,6 +584,7 @@ export const config = {
   waitlist: {
     ipSalt: process.env.WAITLIST_IP_SALT || '',
     warnOnEphemeralIpSalt: process.env.NODE_ENV === 'production' || IS_STAGING,
+    confirmationTtlHours: optionalInt('WAITLIST_CONFIRMATION_TTL_HOURS', 24, { min: 1 }),
   },
   // ── Health Check ──────────────────────────────────────────────────
   health: {
@@ -445,11 +611,35 @@ export const config = {
     jwtSecret: process.env.IOS_API_JWT_SECRET || '',
     jwtExpiry: process.env.IOS_JWT_EXPIRY || '7d',
     rateLimit: optionalInt('IOS_API_RATE_LIMIT', 60, { min: 1 }),
+    readRateLimit: optionalInt('IOS_API_READ_RATE_LIMIT', 300, { min: 1 }),
     inviteCode: process.env.IOS_INVITE_CODE || '',
     ownerCode: process.env.IOS_OWNER_CODE || '',
+    betaInviteExpiresDays: optionalInt('BETA_INVITE_EXPIRES_DAYS', 30, { min: 1 }),
+    staticInviteExpiresDays: optionalInt('IOS_STATIC_INVITE_EXPIRES_DAYS', 365, { min: 1 }),
   },
   mesh: {
     enabled: process.env.NEXUS_MULTISKILL_MESH === 'on',
+  },
+  // ── Coaching feature flags ────────────────────────────────────────
+  // PR 4 §D4 follow-up (2026-05-23). Coach-rule enforcement is the
+  // warning-only linter pass that surfaces five additional research-
+  // backed coach principles. Flag defaults OFF; staging flips it on
+  // first so a red-team corpus pass can measure false-positive rate
+  // before any rule is considered for promotion to blocker severity.
+  // Wired through `runPlanLintGuarded` in
+  // `src/api/routes/training-plan-persistence.ts` and read from the
+  // canonical `PlanLintInput.enableCoachRuleEnforcement` field.
+  coaching: {
+    ruleEnforcementEnabled: process.env.COACH_RULE_ENFORCEMENT === 'on',
+    // ── Coach periodization v2 feature flag ────────────────────────
+    // Per the Week-Level Adaptability + Periodization plan (v2.1,
+    // build-order week 10–11): all new C6 reflow / C2 travel / A5
+    // coach-policy routes ship behind this flag. Off by default;
+    // staging soak flips it on for ≥2 weeks; production promote only
+    // after false-positive rate per new rule < 5% AND churn rate
+    // <25%. When OFF, the new routes return 404 — the legacy
+    // training endpoints remain fully functional.
+    periodizationV2Enabled: process.env.COACH_PERIODIZATION_V2_ENABLED === 'on',
   },
   // ── Apple Push Notification Service (APNs) ────────────────────────
   // Token-based auth only (modern .p8 approach). All four env vars must
@@ -471,6 +661,11 @@ export const config = {
     authKey: process.env.APNS_AUTH_KEY_P8 || '',
     // 'production' → api.push.apple.com, 'sandbox' → api.sandbox.push.apple.com
     environment: (process.env.APNS_ENVIRONMENT || 'production') as 'production' | 'sandbox',
+  },
+  notificationDelivery: {
+    get mode(): NotificationDeliveryMode {
+      return parseNotificationDeliveryMode();
+    },
   },
   // ── Stripe Billing ────────────────────────────────────────────────
   // Web checkout: users subscribe at nexushub.me, Stripe webhook writes
@@ -494,6 +689,16 @@ export const config = {
     priceProYearlyEur: process.env.STRIPE_PRICE_PRO_YEARLY_EUR || '',
     priceMaxMonthlyEur: process.env.STRIPE_PRICE_MAX_MONTHLY_EUR || '',
     priceMaxYearlyEur: process.env.STRIPE_PRICE_MAX_YEARLY_EUR || '',
+    nexusPoints: {
+      enabled: (process.env.STRIPE_NEXUS_POINTS_ENABLED || 'false') === 'true',
+      priceIds: {
+        small: process.env.STRIPE_PRICE_ID_POINTS_SMALL || '',
+        medium: process.env.STRIPE_PRICE_ID_POINTS_MEDIUM || '',
+        large: process.env.STRIPE_PRICE_ID_POINTS_LARGE || '',
+      },
+      webSuccessUrl: process.env.STRIPE_NEXUS_POINTS_SUCCESS_URL || 'https://nexushub.me/user?nexusPointsCheckout=success',
+      webCancelUrl: process.env.STRIPE_NEXUS_POINTS_CANCEL_URL || 'https://nexushub.me/user?nexusPointsCheckout=canceled',
+    },
   },
   billing: {
     paywallEnabled: PAYWALL_ENABLED,
@@ -526,10 +731,98 @@ if (!config.billing.paywallEnabled && !config.billing.allowUnsafePaywallBypass) 
   );
 }
 
+if (IS_PRODUCTION && config.financeEncryption.enabled && !config.financeEncryption.masterKey) {
+  throw new Error(
+    'FINANCE_ENCRYPTION_KEY is required when FINANCE_ENCRYPTION_ENABLED=true in production. Generate one with: openssl rand -hex 32',
+  );
+}
+
+if (IS_PRODUCTION && config.backup.enabled && (!config.backup.encrypt || !config.backup.encryptionKey)) {
+  throw new Error(
+    'BACKUP_ENABLED=true requires BACKUP_ENCRYPT=true and BACKUP_KEY in production. Generate BACKUP_KEY with: openssl rand -hex 32',
+  );
+}
+
+const apnsCredentialsConfigured = Boolean(
+  config.apns.enabled
+  && config.apns.teamId
+  && config.apns.keyId
+  && config.apns.authKey
+  && config.apns.bundleId,
+);
+const resolvedNotificationDeliveryMode = config.notificationDelivery.mode;
+if (
+  IS_PRODUCTION
+  && apnsCredentialsConfigured
+  && (process.env.NOTIFICATION_DELIVERY_MODE || '').trim() === ''
+) {
+  throw new Error(
+    'NOTIFICATION_DELIVERY_MODE=apns is required in production when APNs credentials are configured.',
+  );
+}
+if (IS_PRODUCTION && apnsCredentialsConfigured && resolvedNotificationDeliveryMode !== 'apns') {
+  throw new Error(
+    'NOTIFICATION_DELIVERY_MODE=apns is required in production when APNs credentials are configured.',
+  );
+}
+
+warnProductionLaunch(
+  !process.env.OPERATOR_ALERT_WEBHOOK_URL
+    ? 'OPERATOR_ALERT_WEBHOOK_URL is not set; operator alerts will be persisted but not delivered to the on-call webhook.'
+    : '',
+);
+warnProductionLaunch(
+  !config.sentry.dsn
+    ? 'SENTRY_DSN is not set; production error reporting will rely on local logs only.'
+    : '',
+);
+
 // Fail-fast: iOS API enabled without a proper JWT secret is a security risk
 if (config.ios.enabled && !config.ios.jwtSecret) {
   throw new Error('IOS_API_ENABLED=true but IOS_API_JWT_SECRET is not set. Set a 256-bit secret.');
 }
+if (config.ios.enabled && !isStrongIosJwtSecret(config.ios.jwtSecret)) {
+  throw new Error('IOS_API_JWT_SECRET must be at least 32 bytes and cannot contain known placeholder text.');
+}
 if (config.ios.enabled && !config.ios.inviteCode) {
   throw new Error('IOS_API_ENABLED=true but IOS_INVITE_CODE is not set.');
+}
+
+if (
+  process.env.NODE_ENV === 'production'
+  && !IS_STAGING
+  && isUnsafePublicBind(config.portal.bind)
+  && process.env.PORTAL_PUBLIC_BIND_ACK !== PORTAL_PUBLIC_BIND_ACK_VALUE
+) {
+  throw new Error(
+    `PORTAL_BIND=${config.portal.bind} exposes the portal on every interface. Use 127.0.0.1 behind a tunnel/reverse proxy or set PORTAL_PUBLIC_BIND_ACK=${PORTAL_PUBLIC_BIND_ACK_VALUE}.`,
+  );
+}
+
+if (config.stripe.nexusPoints.enabled) {
+  const missingStripeNexusPointsEnv = [
+    ['STRIPE_SECRET_KEY', config.stripe.secretKey],
+    ['STRIPE_WEBHOOK_SECRET', config.stripe.webhookSecret],
+    ['STRIPE_PRICE_ID_POINTS_SMALL', config.stripe.nexusPoints.priceIds.small],
+    ['STRIPE_PRICE_ID_POINTS_MEDIUM', config.stripe.nexusPoints.priceIds.medium],
+    ['STRIPE_PRICE_ID_POINTS_LARGE', config.stripe.nexusPoints.priceIds.large],
+  ]
+    .filter(([, value]) => !value)
+    .map(([key]) => key);
+
+  if (missingStripeNexusPointsEnv.length > 0) {
+    throw new Error(
+      `STRIPE_NEXUS_POINTS_ENABLED=true but required env vars are missing: ${missingStripeNexusPointsEnv.join(', ')}`,
+    );
+  }
+  if (!config.portal.adminActorSignatureSecret) {
+    throw new Error(
+      'STRIPE_NEXUS_POINTS_ENABLED requires PORTAL_ADMIN_ACTOR_SIGNATURE_SECRET to be set so admin-issued purchases have signed attribution.',
+    );
+  }
+  if (process.env.NODE_ENV !== 'production' && /^sk_live_/.test(config.stripe.secretKey)) {
+    throw new Error(
+      'STRIPE_SECRET_KEY appears to be a live key (sk_live_*) but NODE_ENV is not production. Refusing to start to prevent accidental live charges in staging.',
+    );
+  }
 }

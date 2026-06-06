@@ -447,6 +447,7 @@ vi.mock('../../src/utils/logger', () => ({
     trace: vi.fn(),
     child: vi.fn().mockReturnThis(),
   },
+  LOGGER_REDACTION_PATHS: [],
 }));
 
 import { classifyMessage } from '../../src/services/anthropic';
@@ -640,6 +641,16 @@ describe('routeMessage — Three-Tier Routing Integration', () => {
       const context = { domain: 'secretary' as const, lastAssistantMessage: 'Here is your task summary.' };
 
       const result = await routeMessage('como conservo cenoura ralada na geladeira por vários dias?', context);
+      expect(result.method).toBe('keyword');
+      expect(result.domain).toBe('cooking');
+      expect(mockClassifyMessage).not.toHaveBeenCalled();
+    });
+
+    it('generic Portuguese recipe requests route to cooking without model classification', async () => {
+      mockClassifyMessage.mockResolvedValue({ domain: 'secretary', confidence: 0.91 });
+      const context = { domain: 'secretary' as const, lastAssistantMessage: 'Here is your task summary.' };
+
+      const result = await routeMessage('me indique uma receita de legumes assados para 3 pessoas', context);
       expect(result.method).toBe('keyword');
       expect(result.domain).toBe('cooking');
       expect(mockClassifyMessage).not.toHaveBeenCalled();

@@ -42,6 +42,32 @@ export function normalizeCoachRecommendation(rec: Record<string, unknown>): Coac
   };
 }
 
+export function sanitizeTrainingCoachReportText(raw: string): string {
+  const unsafePatterns = [
+    /COACH_RECS_(?:START|END)/i,
+    /\bevent[_\s-]?id\b/i,
+    /\b(?:calendar_busy_blocks|session_prescription|fueling_gap_risk|coach_decision)\b/i,
+    /\bmp\d+\b/i,
+    /\bRECOMMENDATION KEY\b/i,
+    /^(?:KEEP|MODIFY|SWAP|REST)\s*=/i,
+    /^\s*\[(?:DEBUG|TRACE|WARN|WARNING|ERROR|INFO)\]/i,
+    /^\s*(?:Google|Outlook|Microsoft(?:\s+Graph)?|Graph|Garmin|HealthKit|Apple Health)\s+(?:API|provider|sync|auth|OAuth|Calendar)?\s*[:=-]\s*(?:\d{3}|auth|error|failed|failure|unavailable|timeout|rate[- ]?limited)/i,
+    /\b(?:HTTP|status|code)\s*(?:=|:)\s*(?:4\d\d|5\d\d)\b/i,
+    /\b(?:Data|Dados|Analysis|Análise|Analise):\s*\d+(?:\.\d+)?s\b/i,
+    /^\s*[{}\[\],]+\s*$/,
+    /^\s*["'][A-Za-z0-9_\- ]+["']\s*:/,
+    /[A-Za-z0-9_-]{48,}/,
+    /<!--|-->/,
+  ];
+  return raw
+    .split(/\r?\n/)
+    .map((line) => line.replace(/\u00a0/g, ' ').trim())
+    .filter((line) => line.length > 0)
+    .filter((line) => !unsafePatterns.some((pattern) => pattern.test(line)))
+    .join('\n')
+    .trim();
+}
+
 export function restoreCoachBriefingFromLatestReport(
   userId: number,
   ttlSeconds = COACH_BRIEFING_TTL,
@@ -71,7 +97,8 @@ export function restoreCoachBriefingFromLatestReport(
     const bodyBattery = readiness?.factors?.bodyBattery?.score;
 
     return {
-      briefing: documentJson.message || report.summary || 'Coach briefing available.',
+      briefing: sanitizeTrainingCoachReportText(documentJson.message || report.summary || 'Coach briefing available.')
+        || 'Coach briefing available.',
       recommendations: Array.isArray(documentJson.recommendations)
         ? documentJson.recommendations.map((rec) => normalizeCoachRecommendation(rec as Record<string, unknown>))
         : [],
@@ -116,7 +143,7 @@ export function syncCoachStateForUser(
       : [],
   );
   const briefing = typeof payload.briefing === 'string' && payload.briefing.trim().length > 0
-    ? payload.briefing.trim()
+    ? sanitizeTrainingCoachReportText(payload.briefing.trim()) || 'Coach briefing available.'
     : 'Coach briefing available.';
 
   setLastCoachState(userId, persistedRecommendations, briefing.slice(0, 500));

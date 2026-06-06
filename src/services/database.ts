@@ -10,6 +10,58 @@ import { SQLiteStorage, setStorageProvider, clearStorageProvider } from './stora
 let db: Database.Database;
 let storage: SQLiteStorage | null = null;
 
+type MigrationPrefixCollision = {
+  prefix: string;
+  files: string[];
+};
+
+const LEGACY_MIGRATION_PREFIX_COLLISIONS: Record<string, string[]> = {
+  '008': ['008_api_cache.sql', '008_email_log.sql'],
+  '009': ['009_api_usage_provider.sql', '009_job_history.sql'],
+  '022': ['022_finance_tables.sql', '022_webhook_events.sql'],
+  '023': ['023_fitness_training_plans.sql', '023_onboarding.sql'],
+  '024': ['024_cooking_tables.sql', '024_usage_metering.sql'],
+};
+
+function sameMembers(a: readonly string[], b: readonly string[]): boolean {
+  if (a.length !== b.length) return false;
+  const left = [...a].sort();
+  const right = [...b].sort();
+  return left.every((value, index) => value === right[index]);
+}
+
+export function findUnexpectedMigrationPrefixCollisions(
+  files: readonly string[],
+): MigrationPrefixCollision[] {
+  const prefixMap = new Map<string, string[]>();
+  for (const f of files) {
+    const m = f.match(/^(\d{3})_/);
+    if (m) {
+      const prefix = m[1];
+      const list = prefixMap.get(prefix) ?? [];
+      list.push(f);
+      prefixMap.set(prefix, list);
+    }
+  }
+
+  return [...prefixMap.entries()]
+    .filter(([, list]) => list.length > 1)
+    .filter(([prefix, list]) => !sameMembers(list, LEGACY_MIGRATION_PREFIX_COLLISIONS[prefix] ?? []))
+    .map(([prefix, list]) => ({ prefix, files: [...list].sort() }));
+}
+
+export function assertNoUnexpectedMigrationPrefixCollisions(files: readonly string[]): void {
+  const collisions = findUnexpectedMigrationPrefixCollisions(files);
+  if (collisions.length === 0) return;
+
+  const details = collisions
+    .map(({ prefix, files: list }) => `${prefix}: ${list.join(', ')}`)
+    .join('; ');
+  throw new Error(
+    `Unexpected migration prefix collision(s): ${details}. Use a unique migration prefix; legacy duplicate prefixes are explicitly allowlisted only for historical files.`,
+  );
+}
+
 export function getDb(): Database.Database {
   if (!db) {
     throw new Error('Database not initialized. Call initDatabase() first.');
@@ -27,6 +79,19 @@ export function initDatabase(): Database.Database {
   db = storage.raw();
 
   runMigrations();
+
+  try {
+    const { backfillLegacyRefreshTokenHashes } = require('./ios-auth-session');
+    const result = backfillLegacyRefreshTokenHashes();
+    if (result.hashedRows > 0 || result.clearedPlaintextRows > 0) {
+      logger.warn(
+        result,
+        'iOS auth migration: hashed legacy refresh tokens and cleared plaintext',
+      );
+    }
+  } catch (err) {
+    logger.error({ err }, 'iOS auth refresh-token hash backfill failed — investigate before next deploy');
+  }
 
   // Load persisted model overrides from kv_store (after migrations create the table)
   try {
@@ -73,6 +138,37 @@ export function initDatabase(): Database.Database {
     logger.error({ err }, 'OAuth plaintext migration failed — investigate before next deploy');
   }
 
+  // Finance and Garmin hold user-sensitive data that is also covered by
+  // database backups. Assert encryption at boot in production and encrypt
+  // any legacy plaintext shadow columns before the app starts serving.
+  try {
+    const { assertFinanceEncryptionConfigured, encryptPlaintextFinanceRows } = require('./finance-tracker');
+    assertFinanceEncryptionConfigured();
+    const result = encryptPlaintextFinanceRows();
+    if (result.encryptedTransactions > 0 || result.encryptedTaxEvents > 0) {
+      logger.warn(result, 'Finance migration: encrypted legacy plaintext finance rows in-place');
+    } else {
+      logger.info(result, 'Finance migration: all rows already encrypted');
+    }
+  } catch (err) {
+    logger.error({ err }, 'Finance plaintext migration failed — investigate before next deploy');
+    throw err;
+  }
+
+  try {
+    const { assertGarminEncryptionConfigured, encryptPlaintextGarminTokens } = require('./garmin-session-store');
+    assertGarminEncryptionConfigured();
+    const result = encryptPlaintextGarminTokens();
+    if (result.encryptedSessions > 0 || result.encryptedUserTokens > 0) {
+      logger.warn(result, 'Garmin migration: encrypted legacy plaintext token rows in-place');
+    } else {
+      logger.info(result, 'Garmin migration: all rows already encrypted');
+    }
+  } catch (err) {
+    logger.error({ err }, 'Garmin plaintext migration failed — investigate before next deploy');
+    throw err;
+  }
+
   // Migrate owner's OAuth tokens from .env to per-user storage
   try {
     migrateOwnerTokens();
@@ -99,30 +195,10 @@ function runMigrations(): void {
     .filter((f) => f.endsWith('.sql'))
     .sort();
 
-  // Lint: warn on numeric prefix collisions. Apply order between two files
+  // Lint: fail on numeric prefix collisions. Apply order between two files
   // sharing the same prefix is filesystem-sort-dependent (locale, OS), so
   // collisions are silent timebombs for cross-environment schema drift.
-  // We log loudly here so future devs (and AI agents in the factory) get
-  // a flag the moment they introduce one. See audit P0-5.
-  const prefixMap = new Map<string, string[]>();
-  for (const f of files) {
-    const m = f.match(/^(\d{3})_/);
-    if (m) {
-      const prefix = m[1];
-      const list = prefixMap.get(prefix) ?? [];
-      list.push(f);
-      prefixMap.set(prefix, list);
-    }
-  }
-  const collisions = [...prefixMap.entries()].filter(([, list]) => list.length > 1);
-  if (collisions.length > 0) {
-    for (const [prefix, list] of collisions) {
-      logger.warn(
-        { prefix, files: list },
-        `Migration prefix collision: ${list.length} files share prefix ${prefix}. Apply order is locale-dependent. Future migrations should use unique prefixes (e.g. ${prefix}a_, ${prefix}b_) or timestamp prefixes (YYYYMMDD_).`,
-      );
-    }
-  }
+  assertNoUnexpectedMigrationPrefixCollisions(files);
 
   db.exec(`
     CREATE TABLE IF NOT EXISTS _migrations (
@@ -140,10 +216,35 @@ function runMigrations(): void {
   for (const file of files) {
     if (applied.has(file)) continue;
     const sql = fs.readFileSync(path.join(migrationsDir, file), 'utf-8');
-    db.exec(sql);
+    db.exec(filterAlreadyAppliedAddColumnStatements(sql));
     db.prepare('INSERT INTO _migrations (filename) VALUES (?)').run(file);
     logger.info({ migration: file }, 'Migration applied');
   }
+}
+
+export function filterAlreadyAppliedAddColumnStatements(
+  sql: string,
+  columnExists: (table: string, column: string) => boolean = (table, column) => {
+    const columns = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+    return columns.some((entry) => entry.name === column);
+  },
+): string {
+  return sql
+    .split(';')
+    .map((statement, index, statements) => {
+      const suffix = index < statements.length - 1 ? ';' : '';
+      const match = statement.match(/\bALTER\s+TABLE\s+([A-Za-z_][\w]*)\s+ADD\s+COLUMN\s+([A-Za-z_][\w]*)\b/i);
+      if (!match) return `${statement}${suffix}`;
+      const [, table, column] = match;
+      try {
+        if (!columnExists(table, column)) return `${statement}${suffix}`;
+        logger.warn({ table, column }, 'Migration ADD COLUMN already applied; skipping duplicate column statement');
+        return '';
+      } catch {
+        return `${statement}${suffix}`;
+      }
+    })
+    .join('');
 }
 
 export function closeDatabase(): void {

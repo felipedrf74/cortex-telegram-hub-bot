@@ -46,7 +46,8 @@ vi.mock('../../src/services/stripe-service', () => ({
 }));
 
 vi.mock('../../src/services/finance-tracker', () => ({
-  calculateMonthlyTax: (...args: unknown[]) => mockCalculateMonthlyTax(...args),
+  calculatePortugueseMonthlyTax: (...args: unknown[]) => mockCalculateMonthlyTax(...args),
+  calculateMonthlyTax: vi.fn(() => { throw new Error("Brazilian tax engine removed; see finance-tax-pt"); }),
   formatCurrencyAmount: (...args: unknown[]) => mockFormatCurrencyAmount(...args),
   getMonthlyBudgetView: (...args: unknown[]) => mockGetMonthlyBudgetView(...args),
   getMonthlySummary: (...args: unknown[]) => mockGetMonthlySummary(...args),

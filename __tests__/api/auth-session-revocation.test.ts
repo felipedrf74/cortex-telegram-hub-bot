@@ -123,7 +123,7 @@ describe('POST /auth/logout (server-side session revocation)', () => {
 
     process.env.STAGING = 'true';
     process.env.IOS_API_ENABLED = 'true';
-    process.env.IOS_API_JWT_SECRET = 'test-ios-secret';
+    process.env.IOS_API_JWT_SECRET = 'test-ios-secret-000000000000000000000000000000';
     process.env.IOS_INVITE_CODE = 'LOCALBETA_TEST';
     process.env.IOS_OWNER_CODE = 'LOCALOWNER_TEST';
     process.env.OWNER_TELEGRAM_ID = '991122';
@@ -171,6 +171,11 @@ describe('POST /auth/logout (server-side session revocation)', () => {
       INSERT INTO ios_devices (user_id, device_id, device_name, refresh_token)
       VALUES (?, ?, ?, ?)
     `).run(42, 'dev-foo', 'Test iPhone', 'refresh-token-xyz');
+    testDb.prepare(`
+      INSERT INTO notification_device_tokens (
+        token_id, user_id, tenant_id, platform, token_hash, token_suffix, environment, device_id, created_at
+      ) VALUES (?, ?, ?, 'ios', ?, ?, 'sandbox', ?, datetime('now'))
+    `).run('dt_logout', 42, 42, 'hash-a', 'suffix-a', 'dev-foo');
 
     const res = await dispatchAuth('/logout', {}, {
       headers: { 'x-test-user-id': '42', 'x-test-device-id': 'dev-foo' },
@@ -180,11 +185,16 @@ describe('POST /auth/logout (server-side session revocation)', () => {
     expect(res.body.ok).toBe(true);
     expect(res.body.data.signedOut).toBe(true);
     expect(res.body.data.devicesRevoked).toBe(1);
+    expect(res.body.data.notificationTokensRevoked).toBe(1);
 
     const remaining = testDb.prepare(
       'SELECT COUNT(*) AS n FROM ios_devices WHERE device_id = ?',
     ).get('dev-foo') as { n: number };
     expect(remaining.n).toBe(0);
+    const token = testDb.prepare(
+      'SELECT revoked_at FROM notification_device_tokens WHERE token_id = ?',
+    ).get('dt_logout') as { revoked_at: string | null };
+    expect(token.revoked_at).toBeTruthy();
   });
 
   it('returns 200 even when no device row exists (idempotent sign-out)', async () => {
@@ -223,7 +233,7 @@ describe('POST /auth/logout-all (account-wide revocation)', () => {
 
     process.env.STAGING = 'true';
     process.env.IOS_API_ENABLED = 'true';
-    process.env.IOS_API_JWT_SECRET = 'test-ios-secret';
+    process.env.IOS_API_JWT_SECRET = 'test-ios-secret-000000000000000000000000000000';
     process.env.IOS_INVITE_CODE = 'LOCALBETA_TEST';
     process.env.IOS_OWNER_CODE = 'LOCALOWNER_TEST';
     process.env.OWNER_TELEGRAM_ID = '991122';
@@ -266,6 +276,16 @@ describe('POST /auth/logout-all (account-wide revocation)', () => {
     testDb.prepare('INSERT INTO ios_devices (user_id, device_id, refresh_token) VALUES (?, ?, ?)').run(42, 'dev-a', 'tok-a');
     testDb.prepare('INSERT INTO ios_devices (user_id, device_id, refresh_token) VALUES (?, ?, ?)').run(42, 'dev-b', 'tok-b');
     testDb.prepare('INSERT INTO ios_devices (user_id, device_id, refresh_token) VALUES (?, ?, ?)').run(99, 'dev-other', 'tok-other');
+    testDb.prepare(`
+      INSERT INTO notification_device_tokens (
+        token_id, user_id, tenant_id, platform, token_hash, token_suffix, environment, device_id, created_at
+      ) VALUES (?, ?, ?, 'ios', ?, ?, 'sandbox', ?, datetime('now'))
+    `).run('dt_all_a', 42, 42, 'hash-a', 'suffix-a', 'dev-a');
+    testDb.prepare(`
+      INSERT INTO notification_device_tokens (
+        token_id, user_id, tenant_id, platform, token_hash, token_suffix, environment, device_id, created_at
+      ) VALUES (?, ?, ?, 'ios', ?, ?, 'sandbox', ?, datetime('now'))
+    `).run('dt_all_other', 99, 99, 'hash-o', 'suffix-o', 'dev-other');
 
     const res = await dispatchAuth('/logout-all', {}, {
       headers: { 'x-test-user-id': '42', 'x-test-device-id': 'dev-a' },
@@ -273,10 +293,18 @@ describe('POST /auth/logout-all (account-wide revocation)', () => {
 
     expect(res.statusCode).toBe(200);
     expect(res.body.data.devicesRevoked).toBe(2);
+    expect(res.body.data.notificationTokensRevoked).toBe(1);
 
     const rows = testDb.prepare(
       'SELECT user_id, device_id FROM ios_devices ORDER BY device_id',
     ).all() as { user_id: number; device_id: string }[];
     expect(rows).toEqual([{ user_id: 99, device_id: 'dev-other' }]);
+    const tokens = testDb.prepare(`
+      SELECT token_id, revoked_at FROM notification_device_tokens ORDER BY token_id
+    `).all() as { token_id: string; revoked_at: string | null }[];
+    expect(tokens).toEqual([
+      { token_id: 'dt_all_a', revoked_at: expect.any(String) as any },
+      { token_id: 'dt_all_other', revoked_at: null },
+    ]);
   });
 });

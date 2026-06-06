@@ -15,10 +15,15 @@ let testDb: Database.Database;
 
 vi.mock('../../src/services/database', () => ({
   getDb: () => testDb,
+  initDatabase: vi.fn(),
+  closeDatabase: vi.fn(),
+  findUnexpectedMigrationPrefixCollisions: vi.fn(() => []),
+  assertNoUnexpectedMigrationPrefixCollisions: vi.fn(),
 }));
 
 vi.mock('../../src/utils/logger', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(), trace: vi.fn(), child: vi.fn().mockReturnThis() },
+  LOGGER_REDACTION_PATHS: [],
 }));
 
 vi.mock('../../src/config', () => ({
@@ -51,7 +56,7 @@ import {
   setUserTier, seedOwnerUser,
   createEmailUser,
   sanitizeDisplayName, getPreferredDisplayName,
-  createInviteCode, validateAndConsumeInviteCode, listInviteCodes, deleteInviteCode,
+  createInviteCode, validateAndConsumeInviteCode, peekInviteCode, listInviteCodes, deleteInviteCode,
 } from '../../src/services/user-service';
 
 import { t, detectLanguageFromTelegram } from '../../src/utils/i18n';
@@ -80,7 +85,7 @@ describe('user-service', () => {
       expect(user.status).toBe('active');
       expect(user.daily_message_limit).toBe(200);
       expect(user.daily_token_limit).toBe(500000);
-      expect(user.daily_cost_limit_usd).toBe(0.2);
+      expect(user.daily_cost_limit_usd).toBe(0.04);
     });
 
     it('returns existing on second call', () => {
@@ -219,20 +224,15 @@ describe('user-service', () => {
   });
 
   describe('bootstrap boundary structure', () => {
-    it('bot auth and /start use the explicit owner bootstrap helper instead of raw whitelist checks', () => {
+    it('legacy Telegram factory does not reintroduce raw whitelist auth checks', () => {
       const botSource = fs.readFileSync(
         path.resolve(__dirname, '../../src/bot.ts'),
         'utf8',
       );
-      const systemSource = fs.readFileSync(
-        path.resolve(__dirname, '../../src/handlers/commands/system.ts'),
-        'utf8',
-      );
 
-      expect(botSource).toContain('isOwnerBootstrapTelegramId');
-      expect(systemSource).toContain('isOwnerBootstrapTelegramId');
       expect(botSource).not.toContain('config.telegram.allowedUserIds.includes(userId)');
-      expect(systemSource).not.toContain('config.telegram.allowedUserIds.includes(userId)');
+      expect(botSource).not.toContain('bot.command(');
+      expect(botSource).not.toContain('bot.on(');
     });
   });
 
@@ -288,7 +288,7 @@ describe('user-service', () => {
       const user = getUserByTelegramId(123)!;
       expect(user.tier).toBe('pro');
       expect(user.daily_message_limit).toBe(200);
-      expect(user.daily_cost_limit_usd).toBe(0.2);
+      expect(user.daily_cost_limit_usd).toBe(0.04);
     });
 
     it('owner tier gets unlimited (0)', () => {
@@ -303,8 +303,16 @@ describe('user-service', () => {
   describe('invite codes', () => {
     it('creates and validates a code', () => {
       const code = createInviteCode(111111);
-      expect(code).toHaveLength(8);
+      expect(code.length).toBeGreaterThanOrEqual(22);
       expect(validateAndConsumeInviteCode(code)).toEqual({ valid: true });
+    });
+
+    it('peeks expiring database invite codes without consuming them', () => {
+      const code = createInviteCode(111111, 1, 30);
+      const peeked = peekInviteCode(code);
+      expect(peeked.valid).toBe(true);
+      expect(peeked.expiresAt).toBeTruthy();
+      expect(validateAndConsumeInviteCode(code).valid).toBe(true);
     });
 
     it('code exhausted after max uses', () => {

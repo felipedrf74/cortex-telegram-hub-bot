@@ -8,8 +8,8 @@
  * place in the codebase where content data is formatted for Telegram.
  *
  * New surfaces (iOS API, portal) use the raw response types directly.
- * These formatters exist only for backward compatibility with the
- * Telegram command handler (src/handlers/commands/content.ts).
+ * These formatters exist only for archived Telegram delivery compatibility;
+ * Telegram inbound command handlers have been removed.
  *
  * @deprecated — This file will be removed when Telegram support is
  *   fully deprecated. Do NOT add new formatters here. Instead, ensure
@@ -65,6 +65,9 @@ export function formatDeepSearch(res: DeepSearchResponse): string {
     msg += `📊 <b>RESEARCH BRIEFING</b>\n`;
     msg += `━━━━━━━━━━━━━━━━━━━━━━\n\n`;
     const sections = res.briefs[0].why_now.split('\n\n');
+    // nx-allow-identity-scan: backward-compat parser for deep-search briefings stored before creator-neutral labels.
+    const legacyCreatorAnglePrefix = 'ÂNGULO DO FELIPE:';
+    const creatorAnglePrefixes = ['SEU ÂNGULO:', 'ÂNGULO DO CRIADOR:', 'ÂNGULO DA CRIADORA:', legacyCreatorAnglePrefix];
     for (const section of sections) {
       if (section.startsWith('RESUMO:')) {
         msg += `${escapeHtml(section.replace('RESUMO: ', ''))}\n\n`;
@@ -83,9 +86,10 @@ export function formatDeepSearch(res: DeepSearchResponse): string {
         const args = section.split('\n').slice(1);
         for (const a of args) msg += `${escapeHtml(a)}\n`;
         msg += '\n';
-      } else if (section.startsWith('ÂNGULO DO FELIPE:')) {
+      } else if (creatorAnglePrefixes.some((prefix) => section.startsWith(prefix))) {
+        const prefix = creatorAnglePrefixes.find((candidate) => section.startsWith(candidate)) ?? '';
         msg += `<b>🎯 SEU ÂNGULO</b>\n`;
-        msg += `<i>${escapeHtml(section.replace('ÂNGULO DO FELIPE: ', ''))}</i>\n\n`;
+        msg += `<i>${escapeHtml(section.slice(prefix.length).trim())}</i>\n\n`;
       }
     }
   }
@@ -109,7 +113,7 @@ export function formatDeepSearch(res: DeepSearchResponse): string {
         msg += `      • ${escapeHtml(p)}\n`;
       }
     }
-    msg += `   📋 <code>/genscript ${b.title.slice(0, 80)}</code>\n\n`;
+    msg += `   📋 <code>/genscript ${escapeHtml(b.title.slice(0, 80))}</code>\n\n`;
   }
 
   const sources = res.briefs[0]?.sources || [];
@@ -147,10 +151,26 @@ export function formatSources(res: SourcesResponse): string {
 }
 
 export function formatHotNews(res: HotNewsResponse): string {
+  // Identity-safety (closed-beta v4.14.126+): the niche → emoji map is  // nx-allow-identity-scan
+  // now keyed by the generic broad-content labels orchestrator.py
+  // emits when the creator has no saved pillars. The previous
+  // founder-shaped enum was removed in the closed-beta hardening pass;  // nx-allow-identity-scan
+  // it leaked the founder's pillar set — including a faith/family  // nx-allow-identity-scan
+  // ideology label — into every authenticated user's hot-news
+  // Telegram render. The fallback `'📰'` at the lookup site
+  // (`NICHE_EMOJI[t.niche] || '📰'`) handles any creator-saved-pillar
+  // label not present in this map.
   const NICHE_EMOJI: Record<string, string> = {
-    politica: '🏛', economia: '📊', fitness: '💪',
-    fe_familia: '✝️', geopolitica: '🌍', desenvolvimento: '🧠',
-    reacao: '🎬', geral: '📰',
+    technology: '🛰',
+    'creator-economy': '🎬',
+    wellness: '💪',
+    fitness: '💪',
+    lifestyle: '🌿',
+    business: '📊',
+    'current events': '📰',
+    'current-events': '📰',
+    geral: '📰',
+    general: '📰',
   };
   let msg = `🔥 <b>Hot News — Curated for You</b>\n\n`;
   for (let i = 0; i < res.topics.length; i++) {
@@ -162,7 +182,7 @@ export function formatHotNews(res: HotNewsResponse): string {
       msg += `   💡 <i>${escapeHtml(t.content_angle)}</i>\n`;
     }
     msg += `   ${relevance} · ${escapeHtml(t.niche)}\n`;
-    msg += `   📋 <code>/deepsearch ${t.topic.slice(0, 80)}</code>\n\n`;
+    msg += `   📋 <code>/deepsearch ${escapeHtml(t.topic.slice(0, 80))}</code>\n\n`;
   }
   return msg;
 }

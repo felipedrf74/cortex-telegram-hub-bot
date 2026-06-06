@@ -5,7 +5,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 const mockGetCached = vi.fn();
 const mockSetCache = vi.fn();
 const mockTryDeterministicChatCommand = vi.fn();
-const mockGetUserLanguage = vi.fn();
+const mockTrySecretaryFastpath = vi.fn();
+const mockGetUserLanguageById = vi.fn();
+const mockGetPreferredDisplayNameById = vi.fn();
 
 vi.mock('../../src/services/cache-store', () => ({
   getCached: (...args: unknown[]) => mockGetCached(...args),
@@ -14,16 +16,24 @@ vi.mock('../../src/services/cache-store', () => ({
 
 vi.mock('../../src/api/routes/chat-fastpath', () => ({
   tryDeterministicChatCommand: (...args: unknown[]) => mockTryDeterministicChatCommand(...args),
+  getPendingTasksCacheKey: (userId?: number, tenantId?: number) =>
+    `u:${userId ?? 'unknown'}:t:${tenantId ?? userId ?? 'unknown'}:fastpath:pending-tasks`,
+}));
+
+vi.mock('../../src/services/secretary-fastpath', () => ({
+  tryFastpath: (...args: unknown[]) => mockTrySecretaryFastpath(...args),
 }));
 
 vi.mock('../../src/services/user-service', () => ({
-  getUserLanguage: (...args: unknown[]) => mockGetUserLanguage(...args),
+  getUserLanguageById: (...args: unknown[]) => mockGetUserLanguageById(...args),
+  getPreferredDisplayNameById: (...args: unknown[]) => mockGetPreferredDisplayNameById(...args),
 }));
 
 import {
   getCachedChatCommandResponse,
   isCacheableChatCommand,
   maybeCacheChatCommandResponse,
+  tryBuildAuthenticatedIdentityResponse,
   tryBuildFastPathChatResponse,
   tryBuildTrainingPlanShortcutResponse,
 } from '../../src/api/routes/chat-message-local-responses';
@@ -36,8 +46,12 @@ describe('chat message local response helpers', () => {
     mockGetCached.mockReset();
     mockSetCache.mockReset();
     mockTryDeterministicChatCommand.mockReset();
-    mockGetUserLanguage.mockReset();
-    mockGetUserLanguage.mockReturnValue('en-US');
+    mockTrySecretaryFastpath.mockReset();
+    mockGetUserLanguageById.mockReset();
+    mockGetPreferredDisplayNameById.mockReset();
+    mockGetUserLanguageById.mockReturnValue('en-US');
+    mockGetPreferredDisplayNameById.mockReturnValue('');
+    mockTrySecretaryFastpath.mockResolvedValue({ matched: false });
   });
 
   afterEach(() => {
@@ -138,8 +152,81 @@ describe('chat message local response helpers', () => {
     await expect(tryBuildFastPathChatResponse('hello', 'hello', 42)).resolves.toBeNull();
   });
 
+  it('maps natural-language Secretary fast paths before the AI quota/model route', async () => {
+    mockTryDeterministicChatCommand.mockResolvedValue(null);
+    mockGetUserLanguageById.mockReturnValue('pt-PT');
+    mockTrySecretaryFastpath.mockResolvedValue({
+      matched: true,
+      patternId: 'create_calendar_event',
+      response: {
+        text: 'Pronto ✅ Agendei no Outlook:\n• 📅 16/05/2026, 09:00–13:00 — Volei Lucas',
+        domain: 'secretary',
+      },
+    });
+
+    const result = await tryBuildFastPathChatResponse(
+      'Colocar no calendario evento no proximo sabado, 16/5, das 9h as 13h. Volei Lucas',
+      'colocar no calendario evento no proximo sabado, 16/5, das 9h as 13h. volei lucas',
+      42,
+      42,
+    );
+
+    expect(mockTrySecretaryFastpath).toHaveBeenCalledWith(
+      42,
+      'Colocar no calendario evento no proximo sabado, 16/5, das 9h as 13h. Volei Lucas',
+      'pt-PT',
+      42,
+    );
+    expect(result).toMatchObject({
+      conversationDomain: 'secretary',
+      cacheable: false,
+      response: {
+        text: expect.stringContaining('Agendei no Outlook'),
+        domain: 'secretary',
+        routeMethod: 'fast-path',
+        confidence: 1,
+        buttons: null,
+        metadata: { patternId: 'create_calendar_event' },
+      },
+    });
+  });
+
+  it('answers identity questions from the authenticated user profile, not a founder prompt default', () => {
+    mockGetUserLanguageById.mockReturnValue('pt-PT');
+    mockGetPreferredDisplayNameById.mockReturnValue('Jaqueline');
+
+    const result = tryBuildAuthenticatedIdentityResponse('Quem sou eu?', 'quem sou eu?', 84);
+
+    expect(mockGetPreferredDisplayNameById).toHaveBeenCalledWith(84);
+    expect(result?.conversationDomain).toBe('secretary');
+    expect(result?.cacheable).toBe(false);
+    expect(result?.response).toMatchObject({
+      domain: 'secretary',
+      routeMethod: 'authenticated-identity',
+      confidence: 1,
+      metadata: {
+        type: 'authenticated_identity',
+        userId: 84,
+        hasDisplayName: true,
+      },
+    });
+    expect(result?.response.text).toContain('Jaqueline');
+    expect(result?.response.text).not.toContain('Felipe');
+  });
+
+  it('handles English identity questions without falling through to the model', () => {
+    mockGetUserLanguageById.mockReturnValue('en-US');
+    mockGetPreferredDisplayNameById.mockReturnValue('Jacqueline');
+
+    const result = tryBuildAuthenticatedIdentityResponse('Who am I signed in as?', 'who am i signed in as?', 85);
+
+    expect(result?.response.routeMethod).toBe('authenticated-identity');
+    expect(result?.response.text).toContain('Jacqueline');
+    expect(result?.response.text).toContain('authenticated session');
+  });
+
   it('builds localized token-zero training-plan shortcuts', () => {
-    mockGetUserLanguage.mockReturnValue('pt-PT');
+    mockGetUserLanguageById.mockReturnValue('pt-PT');
 
     const portuguese = tryBuildTrainingPlanShortcutResponse(
       'Quero criar plano de treino',
@@ -155,7 +242,7 @@ describe('chat message local response helpers', () => {
       text: expect.stringContaining('plano de treino personalizado'),
     });
 
-    mockGetUserLanguage.mockReturnValue('en-US');
+    mockGetUserLanguageById.mockReturnValue('en-US');
     const english = tryBuildTrainingPlanShortcutResponse('Create training plan', 'create training plan', 42);
     expect(english?.response.text).toContain('personalized training plan');
     expect(tryBuildTrainingPlanShortcutResponse('How is my day?', 'how is my day?', 42)).toBeNull();

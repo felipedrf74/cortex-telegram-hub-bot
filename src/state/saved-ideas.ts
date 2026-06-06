@@ -27,10 +27,10 @@ export interface SaveIdeaOptions {
   niche?: string;
   hookIdea?: string;
   whyNow?: string;
+  userId: number;
 }
 
 export function saveIdea(opts: SaveIdeaOptions): SavedIdea;
-export function saveIdea(title: string, sourceDate: string): SavedIdea;
 export function saveIdea(
   titleOrOpts: string | SaveIdeaOptions,
   sourceDateArg?: string,
@@ -39,14 +39,14 @@ export function saveIdea(
 
   // Legacy 2-arg signature
   if (typeof titleOrOpts === 'string') {
-    const result = db.prepare(
-      'INSERT INTO saved_ideas (title, source_date, user_id) VALUES (?, ?, ?)'
-    ).run(titleOrOpts, sourceDateArg!, 0);
-    return db.prepare('SELECT * FROM saved_ideas WHERE id = ?').get(result.lastInsertRowid) as SavedIdea;
+    throw new Error('userId required: use saveIdea({ title, sourceDate, userId })');
   }
 
   // New options signature
   const opts = titleOrOpts;
+  if (!Number.isSafeInteger(opts.userId) || opts.userId <= 0) {
+    throw new Error('userId required: must be a positive integer');
+  }
   const result = db.prepare(`
     INSERT INTO saved_ideas (title, source_date, source, score, workflow_eligible, angle_tag, niche, hook_idea, why_now, user_id)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -60,74 +60,105 @@ export function saveIdea(
     opts.niche || null,
     opts.hookIdea || null,
     opts.whyNow || null,
-    (opts as any).userId ?? 0,
+    opts.userId,
   );
   return db.prepare('SELECT * FROM saved_ideas WHERE id = ?').get(result.lastInsertRowid) as SavedIdea;
 }
 
-export function getSavedIdeas(status = 'saved', userId?: number): SavedIdea[] {
-  const db = getDb();
-  if (userId != null) {
-    return db.prepare(
-      'SELECT * FROM saved_ideas WHERE status = ? AND user_id = ? ORDER BY created_at DESC'
-    ).all(status, userId) as SavedIdea[];
+/**
+ * Closed-beta-auth-hardening (2026-05-04): the previous signature
+ * accepted `userId?: number`. When omitted, the query returned every
+ * user's saved ideas — a cross-tenant leak surface for any "list X
+ * for current user" route that forgot to thread userId. Same shape
+ * as the May-2026 fix on `getIdeasBySource`.
+ *
+ * Post-fix: `userId` is required. Callers MUST supply the
+ * authenticated user's id explicitly; there is no all-users
+ * variant.
+ */
+export function getSavedIdeas(status = 'saved', userId: number): SavedIdea[] {
+  if (!Number.isSafeInteger(userId) || userId <= 0) {
+    throw new Error('userId required: must be a positive integer');
   }
+  const db = getDb();
   return db.prepare(
-    'SELECT * FROM saved_ideas WHERE status = ? ORDER BY created_at DESC'
-  ).all(status) as SavedIdea[];
+    'SELECT * FROM saved_ideas WHERE status = ? AND user_id = ? ORDER BY created_at DESC'
+  ).all(status, userId) as SavedIdea[];
 }
 
-/** Get ideas by source type */
-export function getIdeasBySource(source: string, limit = 20): SavedIdea[] {
+/**
+ * Get ideas by source type, scoped to a specific user.
+ *
+ * Identity-safety (May 2026 audit): every read must be user-scoped. The
+ * legacy zero-arg variant of this function returned every user's rows for
+ * the requested source — a cross-user data leak surface even though no
+ * caller currently relies on it. The required `userId` parameter forces
+ * callers to declare scope at the type level.
+ */
+export function getIdeasBySource(source: string, userId: number, limit = 20): SavedIdea[] {
+  if (!Number.isSafeInteger(userId) || userId <= 0) {
+    throw new Error('userId required: must be a positive integer');
+  }
   const db = getDb();
   return db.prepare(
-    'SELECT * FROM saved_ideas WHERE source = ? ORDER BY created_at DESC LIMIT ?'
-  ).all(source, limit) as SavedIdea[];
+    'SELECT * FROM saved_ideas WHERE source = ? AND user_id = ? ORDER BY created_at DESC LIMIT ?'
+  ).all(source, userId, limit) as SavedIdea[];
 }
 
 /**
  * Get workflow-eligible ideas from discovery (last 7 days, not yet promoted).
  *
- * @param userId — scope to this user's ideas. If omitted, returns ideas
- *   for all users (backward compat for legacy callers). New callers
- *   MUST pass userId for proper multi-tenant isolation.
+ * Closed-beta-auth-hardening (2026-05-04): `userId` is now required.
+ * The previous optional signature returned every user's eligible
+ * ideas when omitted — a cross-tenant leak vector. Same shape as
+ * `getIdeasBySource` (May 2026 audit fix) and `getSavedIdeas`
+ * (this pass).
  */
-export function getWorkflowEligibleIdeas(userId?: number): SavedIdea[] {
+export function getWorkflowEligibleIdeas(userId: number): SavedIdea[] {
+  if (!Number.isSafeInteger(userId) || userId <= 0) {
+    throw new Error('userId required: must be a positive integer');
+  }
   const db = getDb();
-  const userClause = userId != null ? 'AND user_id = ?' : '';
-  const params: any[] = [];
-  if (userId != null) params.push(userId);
   return db.prepare(`
     SELECT * FROM saved_ideas
     WHERE workflow_eligible = 1
       AND source = 'discovery'
       AND status = 'saved'
       AND created_at > datetime('now', '-7 days')
-      ${userClause}
+      AND user_id = ?
     ORDER BY score DESC
     LIMIT 10
-  `).all(...params) as SavedIdea[];
+  `).all(userId) as SavedIdea[];
 }
 
 /** Mark an idea as promoted to workflow */
-export function markIdeaPromoted(id: number): boolean {
+export function markIdeaPromoted(id: number, userId: number): boolean {
+  if (!Number.isSafeInteger(userId) || userId <= 0) {
+    throw new Error('userId required: must be a positive integer');
+  }
   const db = getDb();
   const result = db.prepare(
-    "UPDATE saved_ideas SET status = 'promoted' WHERE id = ?"
-  ).run(id);
+    "UPDATE saved_ideas SET status = 'promoted' WHERE id = ? AND user_id = ?"
+  ).run(id, userId);
   return result.changes > 0;
 }
 
-export function markIdeaUsed(id: number): boolean {
+export function markIdeaUsed(id: number, userId: number): boolean {
+  if (!Number.isSafeInteger(userId) || userId <= 0) {
+    throw new Error('userId required: must be a positive integer');
+  }
   const db = getDb();
   const result = db.prepare(
-    "UPDATE saved_ideas SET status = 'used' WHERE id = ?"
-  ).run(id);
+    "UPDATE saved_ideas SET status = 'used' WHERE id = ? AND user_id = ?"
+  ).run(id, userId);
   return result.changes > 0;
 }
 
-export function deleteIdea(id: number): boolean {
+export function deleteIdea(id: number, userId: number): boolean {
+  if (!Number.isSafeInteger(userId) || userId <= 0) {
+    throw new Error('userId required: must be a positive integer');
+  }
   const db = getDb();
-  const result = db.prepare('DELETE FROM saved_ideas WHERE id = ?').run(id);
+  const result = db.prepare('DELETE FROM saved_ideas WHERE id = ? AND user_id = ?').run(id, userId);
   return result.changes > 0;
 }

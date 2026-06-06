@@ -20,6 +20,7 @@
  *   POST   /vendors                 — add or re-enable a custom vendor
  *   DELETE /vendors/:id             — soft-delete (disable) a custom vendor
  *   POST   /scan-now                — trigger on-demand monthly collection
+ *   POST   /scraper-mfa-reply       — submit Amazon/Uber scraper 2FA code
  *
  * Part of TASK-14 Phase 1 (foundation). Vendor management was
  * previously only accessible via Telegram commands; exposing it
@@ -31,6 +32,7 @@ import { AuthenticatedRequest } from '../auth-middleware';
 import { logger } from '../../utils/logger';
 import { sendSuccess, sendError, sendInternalError, asyncHandler } from '../response-helpers';
 import { collectMonthlyInvoices } from '../../services/invoice-collector';
+import { logAudit } from '../../services/audit-trail';
 import {
   addVendor,
   removeVendor,
@@ -43,7 +45,13 @@ import {
 } from '../../services/fiscal-bundle';
 import { updateFiscalCollectionProfile } from '../../state/fiscal-collection-profiles';
 import { ensureValidTenantRouteScope } from '../tenant-route-scope';
-import { invalidateFinanceDerivedCaches } from '../../services/finance-cache-invalidator';
+import { invalidateFinanceDerivedCaches } from '../../services/cache-coherence-registry';
+import { assertTenantScope, TenantScopeError } from '../../services/tenant-scope';
+import {
+  normalizeScraperMfaCode,
+  normalizeScraperMfaSource,
+  submitScraperMfaReply,
+} from '../../services/scraper-mfa-reply';
 
 function splitSubjectPatterns(subjectPatterns: string | null | undefined): string[] {
   const patterns = subjectPatterns
@@ -67,11 +75,21 @@ export function invoicesRoutes(): Router {
   const router = Router();
 
   router.use((req, res, next) => {
-    const { userId } = req as AuthenticatedRequest;
+    const authReq = req as AuthenticatedRequest;
+    const { userId } = authReq;
     if (!ensureValidTenantRouteScope(res as Response, userId, 'invoices_route', {
       method: req.method,
       path: req.path,
     })) return;
+    try {
+      assertTenantScope(authReq, 'invoices_route');
+    } catch (err) {
+      if (err instanceof TenantScopeError) {
+        sendError(res as Response, err.code, err.message, err.status);
+        return;
+      }
+      throw err;
+    }
     next();
   });
 
@@ -87,7 +105,7 @@ export function invoicesRoutes(): Router {
   }));
 
   router.put('/profile', asyncHandler(async (req, res: Response) => {
-    const { userId } = req as AuthenticatedRequest;
+    const { userId, tenantId } = assertTenantScope(req as any, 'invoices.profile.update');
     const { destinationEmail, cadence, primaryDay, secondaryDay, enabled } = req.body ?? {};
 
     if (destinationEmail !== undefined && destinationEmail !== null && typeof destinationEmail !== 'string') {
@@ -119,6 +137,23 @@ export function invoicesRoutes(): Router {
         secondary_day: secondaryDay,
         enabled,
       });
+      // 2026-05-18 (skill-hardening QA P0-4): every fiscal mutation must
+      // write an audit_trail row. Portuguese tax retention requires this.
+      logAudit({
+        userId,
+        tenantId,
+        actorId: userId,
+        action: 'fiscal_profile_update',
+        resource: 'fiscal_collection_profiles',
+        details: {
+          destinationEmail: destinationEmail ?? null,
+          cadence: cadence ?? null,
+          primaryDay: primaryDay ?? null,
+          secondaryDay: secondaryDay ?? null,
+          enabled: enabled ?? null,
+        },
+        ipAddress: (req as any).ip,
+      });
       invalidateFinanceDerivedCaches(userId);
       sendSuccess(res, getFiscalCollectionSummary(userId));
     } catch (err: any) {
@@ -128,13 +163,27 @@ export function invoicesRoutes(): Router {
   }));
 
   router.post('/bundle-now', asyncHandler(async (req, res: Response) => {
-    const { userId } = req as AuthenticatedRequest;
+    const { userId, tenantId } = assertTenantScope(req as any, 'invoices.bundle-now');
 
     try {
       logger.info({ userId }, 'iOS fiscal bundle send started');
       const result = await sendFiscalBundleNow(userId, {
         startAt: req.body?.startAt,
         endAt: req.body?.endAt,
+      });
+      // P0-4: audit on every bundle send — fiscal records leaving the system.
+      logAudit({
+        userId,
+        tenantId,
+        actorId: userId,
+        action: 'fiscal_bundle_send',
+        resource: 'fiscal_bundle',
+        details: {
+          startAt: req.body?.startAt ?? null,
+          endAt: req.body?.endAt ?? null,
+          ok: Boolean(result),
+        },
+        ipAddress: (req as any).ip,
       });
       invalidateFinanceDerivedCaches(userId);
       sendSuccess(res, { result });
@@ -201,8 +250,19 @@ export function invoicesRoutes(): Router {
     }
 
     try {
-      const { userId } = req as AuthenticatedRequest;
+      const { userId, tenantId } = assertTenantScope(req as any, 'invoices.vendors.create');
       const vendor = addVendor(name.trim(), senderPattern.trim(), userId, subjectPatterns);
+      // P0-4: audit vendor creation — vendor table writes affect downstream
+      // collection scope and are auditable mutations.
+      logAudit({
+        userId,
+        tenantId,
+        actorId: userId,
+        action: 'invoice_vendor_create',
+        resource: 'invoice_vendors',
+        details: { vendorId: vendor.id, name: name.trim(), senderPattern: senderPattern.trim() },
+        ipAddress: (req as any).ip,
+      });
       invalidateFinanceDerivedCaches(userId);
       logger.info({ vendorId: vendor.id, name }, 'iOS invoice vendor added');
       sendSuccess(res, { vendor }, { status: 201 });
@@ -225,12 +285,22 @@ export function invoicesRoutes(): Router {
     }
 
     try {
-      const { userId } = req as AuthenticatedRequest;
+      const { userId, tenantId } = assertTenantScope(req as any, 'invoices.vendors.delete');
       const removed = removeVendor(id, userId);
       if (!removed) {
         sendError(res, 'NOT_FOUND', 'Vendor not found', 404);
         return;
       }
+      // P0-4: audit vendor soft-delete (the function flips `enabled = 0`).
+      logAudit({
+        userId,
+        tenantId,
+        actorId: userId,
+        action: 'invoice_vendor_disable',
+        resource: 'invoice_vendors',
+        details: { vendorId: id },
+        ipAddress: (req as any).ip,
+      });
       invalidateFinanceDerivedCaches(userId);
       sendSuccess(res, { removed: true, id });
     } catch (err: any) {
@@ -252,7 +322,7 @@ export function invoicesRoutes(): Router {
    * the iOS client should show a loading state and not retry.
    */
   router.post('/scan-now', asyncHandler(async (req, res: Response) => {
-    const { userId } = req as AuthenticatedRequest;
+    const { userId, tenantId } = assertTenantScope(req as any, 'invoices.scan-now');
     const now = new Date();
     const year = Number(req.body?.year ?? now.getFullYear());
     const month = Number(req.body?.month ?? (now.getMonth() + 1));
@@ -269,6 +339,23 @@ export function invoicesRoutes(): Router {
     try {
       logger.info({ userId, year, month }, 'iOS on-demand invoice scan started');
       const result = await collectMonthlyInvoices(userId, year, month);
+      // P0-4: audit on-demand scans — they create invoice_filings rows
+      // (fiscal records) and write to external mail providers via the
+      // collector. Auditable mutation by Portuguese tax retention rules.
+      logAudit({
+        userId,
+        tenantId,
+        actorId: userId,
+        action: 'invoice_scan_on_demand',
+        resource: 'invoice_filings',
+        details: {
+          year,
+          month,
+          totalFiled: result.totalFiled,
+          totalErrors: result.totalErrors,
+        },
+        ipAddress: (req as any).ip,
+      });
       invalidateFinanceDerivedCaches(userId);
       logger.info(
         { userId, year, month, filed: result.totalFiled, errors: result.totalErrors },
@@ -278,6 +365,65 @@ export function invoicesRoutes(): Router {
     } catch (err: any) {
       logger.error({ err, userId, year, month }, 'iOS on-demand invoice scan failed');
       sendInternalError(res, 'Unable to run the invoice scan right now.');
+    }
+  }));
+
+  /**
+   * POST /api/v1/invoices/scraper-mfa-reply
+   * Body: { source: "amazon" | "uber", code: string }
+   *
+   * App-facing replacement for the legacy Telegram catch-all 2FA reply path.
+   * The code is passed only to the pending scraper waiter and is never echoed
+   * back in the response or logs.
+   */
+  router.post('/scraper-mfa-reply', asyncHandler(async (req, res: Response) => {
+    const { userId, tenantId } = assertTenantScope(req as any, 'invoices.scraper-mfa-reply');
+    const source = normalizeScraperMfaSource(req.body?.source);
+    const code = normalizeScraperMfaCode(req.body?.code);
+
+    if (!source) {
+      sendError(res, 'BAD_REQUEST', 'source must be amazon or uber');
+      return;
+    }
+    if (!code) {
+      sendError(res, 'BAD_REQUEST', 'code is required');
+      return;
+    }
+
+    try {
+      const result = submitScraperMfaReply({
+        userId,
+        tenantId,
+        source,
+        code,
+      });
+      if (!result.accepted) {
+        sendError(
+          res,
+          'SCRAPER_MFA_NO_PENDING_CHALLENGE',
+          'No pending scraper verification challenge for this account.',
+          409,
+        );
+        return;
+      }
+
+      logAudit({
+        userId,
+        tenantId,
+        actorId: userId,
+        action: 'invoice_scraper_mfa_reply',
+        resource: 'invoice_scraper_mfa',
+        details: {
+          source,
+          codeLength: code.length,
+        },
+        ipAddress: (req as any).ip,
+      });
+      logger.info({ userId, tenantId, source, codeLength: code.length }, 'iOS scraper MFA reply accepted');
+      sendSuccess(res, { accepted: true, source });
+    } catch (err: any) {
+      logger.error({ err, userId, tenantId, source }, 'iOS scraper MFA reply failed');
+      sendInternalError(res, 'Unable to submit the verification code right now.');
     }
   }));
 

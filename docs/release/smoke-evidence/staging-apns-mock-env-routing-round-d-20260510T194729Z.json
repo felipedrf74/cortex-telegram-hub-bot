@@ -1,0 +1,46 @@
+{
+  "ok": true,
+  "mode": "mock-apns-transport-no-real-push",
+  "globalEnvironment": "production",
+  "targets": [
+    {
+      "token": "round-d-sandbox-token",
+      "environment": "sandbox",
+      "deviceId": "round-d-apns-sandbox-device"
+    },
+    {
+      "token": "round-d-production-token",
+      "environment": "production",
+      "deviceId": "round-d-apns-production-device"
+    }
+  ],
+  "result": {
+    "sent": 2,
+    "failed": 0,
+    "skipped": 0,
+    "retriable": 0,
+    "unregistered": []
+  },
+  "hosts": [
+    "https://api.sandbox.push.apple.com:443",
+    "https://api.push.apple.com:443"
+  ],
+  "requests": [
+    {
+      "host": "https://api.sandbox.push.apple.com:443",
+      "path": "/3/device/round-d-sandbox-token",
+      "collapseId": "decision:round-d",
+      "topic": "me.nexushub.app"
+    },
+    {
+      "host": "https://api.push.apple.com:443",
+      "path": "/3/device/round-d-production-token",
+      "collapseId": "decision:round-d",
+      "topic": "me.nexushub.app"
+    }
+  ],
+  "cleanup": {
+    "iosDevices": 0,
+    "notificationDeviceTokens": 0
+  }
+}

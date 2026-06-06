@@ -19,6 +19,7 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { logger } from '../utils/logger';
+import { assertSafeExternalUrl } from '../security/url-guard';
 
 const execFileAsync = promisify(execFile);
 const YT_DLP_PATH = path.join(os.homedir(), '.local/bin/yt-dlp');
@@ -70,10 +71,19 @@ export function extractVideoId(input: string): string | null {
   }
 
   try {
-    const url = new URL(trimmed);
+    const url = assertSafeExternalUrl(trimmed, {
+      allowedHosts: ['youtu.be'],
+      allowedHostSuffixes: ['youtube.com', 'youtube-nocookie.com'],
+    });
 
     // youtube.com/watch?v=...
-    if (url.hostname.includes('youtube.com') && url.searchParams.has('v')) {
+    if (url.hostname === 'youtube.com' || url.hostname.endsWith('.youtube.com')) {
+      if (url.searchParams.has('v')) {
+        return url.searchParams.get('v');
+      }
+    }
+
+    if ((url.hostname === 'youtube-nocookie.com' || url.hostname.endsWith('.youtube-nocookie.com')) && url.searchParams.has('v')) {
       return url.searchParams.get('v');
     }
 
@@ -87,7 +97,13 @@ export function extractVideoId(input: string): string | null {
     if (pathMatch) return pathMatch[1];
 
   } catch {
-    // Not a valid URL — try regex on raw string
+    // Blocked/unsafe URLs should stay rejected. Only use the raw fallback for
+    // non-URL input such as a bare video ID or pasted path fragment.
+    if (/^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed)) {
+      return null;
+    }
+
+    // Not a URL — try regex on raw string.
     const idMatch = trimmed.match(/(?:v=|\/|youtu\.be\/)([a-zA-Z0-9_-]{11})/);
     if (idMatch) return idMatch[1];
   }

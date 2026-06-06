@@ -162,6 +162,51 @@ describe('MS Graph dueDateTime normalization', () => {
     expect(result.data[0].reminderDateTime).toBeUndefined();
     expect(result.data[0].completedDateTime).toBeUndefined();
   });
+
+  it('realigns recurrence on due-date PATCH instead of creating a second task', async () => {
+    const calls: Array<{ method: string; path: string; body?: any }> = [];
+    const mockClient = createMutationMockClient(calls);
+    (getGraphClient as any).mockReturnValue(mockClient);
+
+    const { updateTask } = await import('../../src/services/microsoft-todo');
+    const result = await updateTask(
+      'list-1',
+      'task-1',
+      { dueDateTime: '2026-05-12T09:00:00.000Z', timeZone: 'UTC' },
+      'Family',
+    );
+
+    expect(result.success).toBe(true);
+    const patchCall = calls.find((call) => call.method === 'PATCH');
+    expect(patchCall).toEqual(expect.objectContaining({
+      path: '/me/todo/lists/list-1/tasks/task-1',
+    }));
+    expect(patchCall?.body).toEqual(expect.objectContaining({
+      dueDateTime: { dateTime: '2026-05-12T09:00:00.000Z', timeZone: 'UTC' },
+      recurrence: {
+        pattern: { type: 'weekly', interval: 1, daysOfWeek: ['tuesday'] },
+        range: { type: 'noEnd', startDate: '2026-05-12' },
+      },
+    }));
+    expect(calls.some((call) => call.method === 'POST')).toBe(false);
+  });
+
+  it('rolls back copied Microsoft task when list move cannot delete the source task', async () => {
+    const calls: Array<{ method: string; path: string; body?: any }> = [];
+    const mockClient = createMoveRollbackMockClient(calls);
+    (getGraphClient as any).mockReturnValue(mockClient);
+
+    const { moveTask } = await import('../../src/services/microsoft-todo');
+    const result = await moveTask('source-list', 'task-1', 'target-list', 'Target');
+
+    expect(result.success).toBe(false);
+    expect(calls).toEqual([
+      expect.objectContaining({ method: 'GET', path: '/me/todo/lists/source-list/tasks/task-1' }),
+      expect.objectContaining({ method: 'POST', path: '/me/todo/lists/target-list/tasks' }),
+      expect.objectContaining({ method: 'DELETE', path: '/me/todo/lists/source-list/tasks/task-1' }),
+      expect.objectContaining({ method: 'DELETE', path: '/me/todo/lists/target-list/tasks/copied-task' }),
+    ]);
+  });
 });
 
 // ── Test helpers ────────────────────────────────────────────────────
@@ -193,6 +238,92 @@ function createMockClient(
         headers: () => chain,
         version: () => chain,
         responseType: () => chain,
+      };
+      return chain;
+    },
+  };
+}
+
+function createMutationMockClient(calls: Array<{ method: string; path: string; body?: any }>) {
+  return {
+    api: (path: string) => {
+      const chain: any = {
+        get: async () => {
+          calls.push({ method: 'GET', path });
+          if (path === '/me/todo/lists/list-1/tasks/task-1') {
+            return {
+              id: 'task-1',
+              title: 'Take supplement',
+              status: 'notStarted',
+              importance: 'normal',
+              dueDateTime: { dateTime: '2026-05-11T09:00:00.0000000', timeZone: 'UTC' },
+              recurrence: {
+                pattern: { type: 'weekly', interval: 1, daysOfWeek: ['monday'] },
+                range: { type: 'noEnd', startDate: '2026-05-11' },
+              },
+              createdDateTime: '2026-05-01T10:00:00.000Z',
+            };
+          }
+          return { value: [] };
+        },
+        patch: async (body: any) => {
+          calls.push({ method: 'PATCH', path, body });
+          return {
+            id: 'task-1',
+            title: 'Take supplement',
+            status: 'notStarted',
+            importance: 'normal',
+            dueDateTime: body.dueDateTime,
+            recurrence: body.recurrence,
+            createdDateTime: '2026-05-01T10:00:00.000Z',
+          };
+        },
+        post: async (body: any) => {
+          calls.push({ method: 'POST', path, body });
+          return {};
+        },
+        query: () => chain,
+        header: () => chain,
+        headers: () => chain,
+      };
+      return chain;
+    },
+  };
+}
+
+function createMoveRollbackMockClient(calls: Array<{ method: string; path: string; body?: any }>) {
+  return {
+    api: (path: string) => {
+      const chain: any = {
+        get: async () => {
+          calls.push({ method: 'GET', path });
+          return {
+            id: 'task-1',
+            title: 'Move me',
+            status: 'notStarted',
+            importance: 'normal',
+            dueDateTime: { dateTime: '2026-05-11T09:00:00.0000000', timeZone: 'UTC' },
+            createdDateTime: '2026-05-01T10:00:00.000Z',
+          };
+        },
+        post: async (body: any) => {
+          calls.push({ method: 'POST', path, body });
+          return {
+            id: 'copied-task',
+            title: body.title,
+            status: body.status,
+            importance: body.importance,
+            dueDateTime: body.dueDateTime,
+            createdDateTime: '2026-05-01T10:00:00.000Z',
+          };
+        },
+        delete: async () => {
+          calls.push({ method: 'DELETE', path });
+          if (path === '/me/todo/lists/source-list/tasks/task-1') {
+            throw new Error('source delete failed');
+          }
+          return {};
+        },
       };
       return chain;
     },

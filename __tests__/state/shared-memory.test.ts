@@ -5,12 +5,16 @@ let testDb: Database.Database;
 
 vi.mock('../../src/services/database', () => ({
   getDb: () => testDb,
+  initDatabase: vi.fn(),
+  closeDatabase: vi.fn(),
+  findUnexpectedMigrationPrefixCollisions: vi.fn(() => []),
 }));
 
 import {
   applySharedMemoryCorrection,
   getSharedMemory,
   getSharedMemoryByScope,
+  getSharedMemoryHistory,
   setSharedMemory,
 } from '../../src/state/shared-memory';
 
@@ -30,6 +34,25 @@ function createSharedMemoryTable(): void {
       created_at TEXT DEFAULT (datetime('now')),
       updated_at TEXT DEFAULT (datetime('now')),
       UNIQUE(tenant_id, user_id, key)
+    );
+
+    CREATE TABLE shared_memory_history (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      tenant_id INTEGER NOT NULL,
+      user_id INTEGER NOT NULL,
+      key TEXT NOT NULL,
+      previous_value TEXT NOT NULL,
+      new_value TEXT NOT NULL,
+      previous_source_domain TEXT,
+      new_source_domain TEXT NOT NULL,
+      previous_expires_at TEXT,
+      new_expires_at TEXT,
+      previous_visibility_scope TEXT,
+      new_visibility_scope TEXT NOT NULL,
+      previous_scope_status TEXT,
+      new_scope_status TEXT NOT NULL,
+      corrected_by INTEGER,
+      corrected_at TEXT DEFAULT (datetime('now'))
     );
   `);
 }
@@ -54,6 +77,47 @@ describe('shared-memory scoped Chat memory', () => {
     expect(entry.value).toBe('after work');
     expect(getSharedMemory(7, 'workout_preference', 10)).toEqual([
       expect.objectContaining({ value: 'after work', tenant_id: 10, user_id: 7 }),
+    ]);
+    expect(getSharedMemoryHistory(7, 'workout_preference', 10)).toEqual([
+      expect.objectContaining({
+        tenant_id: 10,
+        user_id: 7,
+        key: 'workout_preference',
+        previous_value: 'before work',
+        new_value: 'after work',
+        previous_source_domain: 'triathlon',
+        new_source_domain: 'triathlon',
+      }),
+    ]);
+  });
+
+  it('preserves every correction instead of destructively losing lineage', () => {
+    setSharedMemory(7, 'content_voice', 'gentle and warm', 'content', undefined, 10);
+    applySharedMemoryCorrection({
+      userId: 7,
+      tenantId: 10,
+      key: 'content_voice',
+      correctedValue: 'direct and practical',
+      sourceDomain: 'content',
+    });
+    applySharedMemoryCorrection({
+      userId: 7,
+      tenantId: 10,
+      key: 'content_voice',
+      correctedValue: 'direct, practical, no hype',
+      sourceDomain: 'content',
+    });
+
+    expect(getSharedMemory(7, 'content_voice', 10)[0].value).toBe('direct, practical, no hype');
+    expect(getSharedMemoryHistory(7, 'content_voice', 10)).toEqual([
+      expect.objectContaining({
+        previous_value: 'gentle and warm',
+        new_value: 'direct and practical',
+      }),
+      expect.objectContaining({
+        previous_value: 'direct and practical',
+        new_value: 'direct, practical, no hype',
+      }),
     ]);
   });
 
@@ -92,5 +156,22 @@ describe('shared-memory scoped Chat memory', () => {
     )).toThrow(/CHAT_MEMORY_UNSAFE/);
 
     expect(getSharedMemory(7, undefined, 10)).toEqual([]);
+  });
+
+  it('rejects modern credential-shaped values in shared Chat memory', () => {
+    const unsafeValues = [
+      ['eyJhbGciOiJIUzI1NiJ9', 'eyJzdWIiOiIxMjMifQ', 'deadbeef'].join('.'),
+      ['AKIA', 'IOSFODNN7EXAMPLE'].join(''),
+      ['AIza', 'SyA12345678901234567890123456789012'].join(''),
+      ['sk', 'live', '51ExampleSecret'].join('_'),
+      ['github', 'pat', '11AAAAAAAAAAAAAAAAAAAAAA_BBBBBBBBBBBBBBBBBBBBBB'].join('_'),
+      ['xox', 'b-1234567890-abcdefghijklmnopqrstuvwxyz'].join(''),
+      'postgres://user:password@example.com/db',
+    ];
+
+    for (const value of unsafeValues) {
+      expect(() => setSharedMemory(7, `unsafe_${unsafeValues.indexOf(value)}`, value, 'secretary', undefined, 10))
+        .toThrow(/CHAT_MEMORY_UNSAFE/);
+    }
   });
 });

@@ -50,6 +50,9 @@ let testDb: Database.Database;
 
 vi.mock('../../src/services/database', () => ({
   getDb: () => testDb,
+  initDatabase: vi.fn(),
+  closeDatabase: vi.fn(),
+  findUnexpectedMigrationPrefixCollisions: vi.fn(() => []),
 }));
 
 vi.mock('../../src/utils/logger', () => ({
@@ -59,6 +62,7 @@ vi.mock('../../src/utils/logger', () => ({
     error: vi.fn(),
     debug: vi.fn(),
   },
+  LOGGER_REDACTION_PATHS: [],
 }));
 
 // Import AFTER mocks
@@ -87,11 +91,14 @@ afterEach(() => {
 // ── /skills command: getAllSkillStatuses() ───────────────────────
 
 describe('/skills command — getAllSkillStatuses()', () => {
-  it('returns all five skills after seeding', () => {
+  it('returns all eight skills after seeding (5 domain + 3 platform skills)', () => {
     const skills = getAllSkillStatuses();
-    expect(skills).toHaveLength(5);
+    expect(skills).toHaveLength(8);
     const names = skills.map(s => s.name).sort();
-    expect(names).toEqual(['content', 'cooking', 'finance', 'secretary', 'triathlon']);
+    expect(names).toEqual([
+      'connections', 'content', 'cooking', 'decision_center', 'finance',
+      'notifications', 'secretary', 'triathlon',
+    ]);
   });
 
   it('each skill has correct structure', () => {
@@ -134,10 +141,10 @@ describe('/skills command — getAllSkillStatuses()', () => {
     ]);
   });
 
-  it('content has 11 sub-modules (v2.0.0 with granular agent sub-skills)', () => {
+  it('content has 12 sub-modules (v2.0.0 with granular agent sub-skills + creator agency)', () => {
     const skills = getAllSkillStatuses();
     const content = skills.find(s => s.name === 'content')!;
-    expect(content.subSkills).toHaveLength(11);
+    expect(content.subSkills).toHaveLength(12);
   });
 
   it('sub-skills have toolCount >= 0 (agent and persona sub-skills may have no tools)', () => {
@@ -224,13 +231,23 @@ describe('skills command — formatting data correctness', () => {
   });
 
   it('active/total tool count is computable from subSkills', () => {
+    // Platform skills (connections, notifications, decision_center, promoted
+    // 2026-05-15) intentionally ship with empty `tools: []` because their action
+    // surface is owned by the chat-action registry (executor strings dispatched
+    // server-side), not by the legacy Anthropic tool-call surface. Domain skills
+    // still have non-empty tool arrays.
+    const PLATFORM_SKILLS_WITHOUT_TOOLS = new Set(['connections', 'notifications', 'decision_center']);
     const skills = getAllSkillStatuses();
     for (const skill of skills) {
       const totalTools = skill.subSkills.reduce((sum, s) => sum + s.toolCount, 0);
       const activeTools = skill.subSkills
         .filter(s => s.enabled)
         .reduce((sum, s) => sum + s.toolCount, 0);
-      expect(totalTools).toBeGreaterThan(0);
+      if (PLATFORM_SKILLS_WITHOUT_TOOLS.has(skill.name)) {
+        expect(totalTools).toBe(0);
+      } else {
+        expect(totalTools).toBeGreaterThan(0);
+      }
       expect(activeTools).toBe(totalTools); // all enabled by default
     }
   });
@@ -255,7 +272,7 @@ describe('skills command — formatting data correctness', () => {
     testDb.exec('DELETE FROM installed_skills');
 
     const skills = getAllSkillStatuses();
-    expect(skills).toHaveLength(5);
+    expect(skills).toHaveLength(8);
     for (const skill of skills) {
       expect(skill.enabled).toBe(true); // Default to enabled when not in DB
     }

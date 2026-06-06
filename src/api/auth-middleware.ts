@@ -1,8 +1,6 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
 import { Request, Response, NextFunction } from 'express';
-import jwt from 'jsonwebtoken';
-import { config } from '../config';
 import { logger } from '../utils/logger';
 import { sendError } from './response-helpers';
 // Beta gap 3 (2026-04-24): moved from inline `require()` to a static
@@ -13,11 +11,40 @@ import { sendError } from './response-helpers';
 // `services/database` doesn't import anything in `api/*`, so a top-level
 // import is cycle-safe.
 import { getDb } from '../services/database';
+import { isValidTenantUserId, recordTenantScopeAnomaly } from '../services/tenant-scope-observability';
+import { verifyIosJwt } from '../services/ios-jwt';
+import { validateStagingFixtureJwtPayload } from '../services/staging-fixture-safety';
+import { resolveCurrentTenantIdForUser } from '../services/user-service';
 
 export interface AuthenticatedRequest extends Request {
   tenantId: number;
   userId: number;
   deviceId: string;
+}
+
+const ACTIVE_TENANT_HEADER_NAMES = [
+  'x-nexus-active-tenant-id',
+  'x-nexus-tenant-id',
+] as const;
+
+function readRequestedActiveTenant(req: Request): { header: string; raw: string; tenantId: number | null } | null {
+  for (const header of ACTIVE_TENANT_HEADER_NAMES) {
+    const rawValue = req.header?.(header) ?? req.headers[header];
+    const raw = Array.isArray(rawValue) ? rawValue[0] : rawValue;
+    if (typeof raw !== 'string' || raw.trim().length === 0) continue;
+    const trimmed = raw.trim();
+    const tenantId = /^\d+$/.test(trimmed) ? Number.parseInt(trimmed, 10) : NaN;
+    return {
+      header,
+      raw,
+      tenantId: Number.isFinite(tenantId) && tenantId > 0 ? tenantId : null,
+    };
+  }
+  return null;
+}
+
+function isValidAuthPayloadUserId(userId: unknown): userId is number {
+  return typeof userId === 'number' && Number.isInteger(userId) && isValidTenantUserId(userId);
 }
 
 /**
@@ -45,10 +72,46 @@ export function authMiddleware(req: Request, res: Response, next: NextFunction):
 
   const token = authHeader.slice(7);
   try {
-    const payload = jwt.verify(token, config.ios.jwtSecret) as {
-      userId: number;
-      deviceId: string;
-    };
+    const payload = verifyIosJwt(token);
+    const stagingFixtureSafety = validateStagingFixtureJwtPayload(payload);
+    if (!stagingFixtureSafety.ok) {
+      recordTenantScopeAnomaly({
+        layer: 'delivery',
+        operation: 'ios_auth_staging_fixture_payload',
+        reason: 'invalid_user_scope',
+        userId: typeof payload.userId === 'number' ? payload.userId : null,
+        details: {
+          reason: stagingFixtureSafety.reason,
+          hasStagingFixtureClaim: payload.staging_fixture === true,
+        },
+      });
+      logger.warn(
+        {
+          event: 'auth',
+          action: 'jwt.verify',
+          outcome: 'rejected',
+          reason: stagingFixtureSafety.reason,
+          userId: payload.userId,
+        },
+        'iOS JWT: staging fixture token rejected by runtime safety boundary',
+      );
+      sendError(res, 'UNAUTHORIZED', 'Invalid staging fixture token', 401);
+      return;
+    }
+
+    if (!isValidAuthPayloadUserId(payload.userId)) {
+      recordTenantScopeAnomaly({
+        layer: 'delivery',
+        operation: 'ios_auth_jwt_payload',
+        reason: payload.userId == null ? 'missing_user_scope' : 'invalid_user_scope',
+        userId: typeof payload.userId === 'number' ? payload.userId : null,
+        details: {
+          userIdType: typeof payload.userId,
+        },
+      });
+      sendError(res, 'UNAUTHORIZED', 'Invalid authenticated user scope', 401);
+      return;
+    }
 
     // Hardening audit 2026-04-20: verify the user is still active
     // BEFORE admitting the request. Previously the middleware trusted
@@ -123,19 +186,73 @@ export function authMiddleware(req: Request, res: Response, next: NextFunction):
       return;
     }
 
+    const canonicalTenantId = resolveCurrentTenantIdForUser(payload.userId);
+    const tokenTenantId = typeof payload.tenantId === 'number' && Number.isInteger(payload.tenantId)
+      ? payload.tenantId
+      : canonicalTenantId;
+    if (tokenTenantId !== canonicalTenantId) {
+      recordTenantScopeAnomaly({
+        layer: 'delivery',
+        operation: 'ios_auth_jwt_tenant',
+        reason: 'tenant_mismatch',
+        userId: payload.userId,
+        details: { tokenTenantId, canonicalTenantId },
+      });
+      sendError(res, 'FORBIDDEN', 'JWT tenant scope no longer matches this user', 403);
+      return;
+    }
+
+    const requestedTenant = readRequestedActiveTenant(req);
+    if (requestedTenant) {
+      if (!isValidTenantUserId(requestedTenant.tenantId)) {
+        recordTenantScopeAnomaly({
+          layer: 'delivery',
+          operation: 'ios_auth_active_tenant',
+          reason: 'invalid_user_scope',
+          userId: payload.userId,
+          details: {
+            header: requestedTenant.header,
+            raw: requestedTenant.raw,
+          },
+        });
+        sendError(res, 'FORBIDDEN', 'Invalid active tenant scope', 403);
+        return;
+      }
+
+      if (requestedTenant.tenantId !== canonicalTenantId) {
+        recordTenantScopeAnomaly({
+          layer: 'delivery',
+          operation: 'ios_auth_active_tenant',
+          reason: 'tenant_mismatch',
+          userId: payload.userId,
+          details: {
+            header: requestedTenant.header,
+            requestedTenantId: requestedTenant.tenantId,
+            canonicalTenantId,
+          },
+        });
+        sendError(res, 'FORBIDDEN', 'Active tenant switching is not enabled for this session', 403);
+        return;
+      }
+    }
+
     // Nexus currently uses users.id as the canonical tenant key for iOS
     // runtime data. Keep tenant scope explicit on the request so downstream
     // Chat/agenda/memory paths never have to infer it from frontend filters.
-    (req as AuthenticatedRequest).tenantId = payload.userId;
+    // If a client attempts same-user workspace switching before the backend
+    // has a membership-backed active-tenant model, fail closed above instead
+    // of silently accepting or ignoring the requested tenant.
+    const authenticatedDeviceId = typeof payload.deviceId === 'string' ? payload.deviceId : '';
+    (req as AuthenticatedRequest).tenantId = canonicalTenantId;
     (req as AuthenticatedRequest).userId = payload.userId;
-    (req as AuthenticatedRequest).deviceId = payload.deviceId;
+    (req as AuthenticatedRequest).deviceId = authenticatedDeviceId;
 
     // Update last_active_at for portal user tracking (fire-and-forget, non-blocking)
     try {
       const db = getDb();
       db.prepare(
         "UPDATE ios_devices SET last_active_at = datetime('now') WHERE user_id = ? AND device_id = ?"
-      ).run(payload.userId, payload.deviceId);
+      ).run(payload.userId, authenticatedDeviceId);
       db.prepare(
         "UPDATE users SET last_active_at = datetime('now') WHERE id = ?"
       ).run(payload.userId);

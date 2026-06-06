@@ -2,12 +2,15 @@ import { describe, expect, it } from 'vitest';
 
 import {
   analyzeTrainingFeedback,
+  applyFeedbackToWeeklyPlan,
   applyFeedbackToAthleteState,
   buildWeekPlan,
   loadCoachKnowledge,
   sampleHybridAthlete,
   type AthleteState,
   type RecentSession,
+  type TrainingFeedbackAnalysis,
+  type WeeklyPlan,
 } from '../../src/services/coach-kernel';
 import { trainingEvalPersonaBank } from '../../src/services/coach-kernel/evaluation';
 import { validateSessionCoherence } from '../../src/services/coach-kernel/session-coherence';
@@ -157,6 +160,67 @@ describe('coach-kernel feedback analysis and autoregulation', () => {
 
     expect(totalMinutes(tooLong)).toBeLessThan(totalMinutes(baseline));
     expect(buildWeekPlan(tooLong, '2026-05-04').notes.some((note) => note.includes('taking materially longer'))).toBe(true);
+  });
+
+  it('still emits an intensity downshift when too_long feedback is also too_hard', () => {
+    const overloaded = athlete({
+      recentSessions: [
+        recent({ plannedDurationMinutes: 45, actualDurationMinutes: 65, rpe: 9, feedbackTags: ['too_long', 'too_hard'] }),
+        recent({ plannedDurationMinutes: 45, actualDurationMinutes: 64, rpe: 9 }),
+        recent({ plannedDurationMinutes: 45, actualDurationMinutes: 63, rpe: 9 }),
+      ],
+    });
+
+    const analysis = analyzeTrainingFeedback(overloaded);
+
+    expect(analysis.difficultyBias).toBe('too_long');
+    expect(analysis.decisions.map((decision) => decision.code)).toContain('too_hard_intensity_downshift');
+  });
+
+  it('applies volumeMultiplier to the weekly plan even when durationMultiplier is absent', () => {
+    const plan: WeeklyPlan = {
+      athleteId: 303,
+      weekStart: '2026-05-04',
+      discipline: 'running',
+      phase: 'build',
+      sessions: [{
+        id: 'run',
+        sport: 'running',
+        sessionType: 'threshold_run',
+        title: 'Threshold',
+        description: 'Work.',
+        dayOfWeek: 'tuesday',
+        durationMinutes: 100,
+        intensityZone: 'threshold',
+        fatigueCost: 'high',
+        keySession: true,
+        plannedLoad: 130,
+        tags: [],
+      }],
+      notes: [],
+      guardrailResults: [],
+    };
+    const analysis: TrainingFeedbackAnalysis = {
+      generatedAt: '2026-05-01T00:00:00.000Z',
+      sampleSize: 1,
+      completionCounts: { completed: 1, partial: 0, skipped: 0 },
+      adherenceClass: 'steady',
+      recoveryClass: 'ready',
+      difficultyBias: 'balanced',
+      progressionState: 'hold',
+      decisions: [{
+        code: 'missed_key_session_rebuild',
+        severity: 'watch',
+        reason: 'Missed key.',
+        evidence: [],
+        volumeMultiplier: 0.9,
+      }],
+      notes: [],
+    };
+
+    const adjusted = applyFeedbackToWeeklyPlan(plan, analysis);
+
+    expect(adjusted.sessions[0].durationMinutes).toBe(90);
   });
 
   it('keeps reduced strength sessions time-volume coherent after feedback/guardrail duration cuts', () => {

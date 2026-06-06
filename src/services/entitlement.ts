@@ -8,12 +8,13 @@
  *
  *   • `cost-guardrail.resolvePlanFromSubscriptionState` (file-private,
  *     reads subscriptions + users.tier + isOwnerUserRef)
- *   • `skill-tiers.checkTierAccess` (reads ONLY users.tier — ignored
- *     subscription status, so a canceled user kept 'pro' access)
+ *   • legacy `skill-tiers.checkTierAccess` (tier-only; runtime gates now
+ *     use `checkSkillAccess` so install state, user denies, and tier grants
+ *     are resolved in one place)
  *   • `stripe-service.getSubscriptionStatus` (reads subscriptions
  *     directly, derives own boolean)
- *   • `dashboard.hasHomeSkillAccess` (combines checkTierAccess +
- *     isSkillEnabled with AND)
+ *   • old `dashboard.hasHomeSkillAccess` (used to combine checkTierAccess +
+ *     the user skill-toggle helper with AND before the canonical skill gate existed)
  *   • Each individual route doing its own ad-hoc read
  *
  * This file replaces all of them with one pure resolver that returns
@@ -197,7 +198,9 @@ export function getEffectiveEntitlement(userId: number | null | undefined): User
   }
 
   const subscriptionExpiresAt = sub?.current_period_end ?? null;
-  const isActiveSub = sub?.status === 'active' || sub?.status === 'trialing';
+  const periodEndMs = subscriptionExpiresAt ? Date.parse(subscriptionExpiresAt) : NaN;
+  const hasExpiredPeriod = Number.isFinite(periodEndMs) && periodEndMs <= Date.now();
+  const isActiveSub = (sub?.status === 'active' || sub?.status === 'trialing') && !hasExpiredPeriod;
 
   if (sub && isActiveSub) {
     const plan = normalizePlan(sub.plan);
@@ -275,7 +278,8 @@ export function getEffectiveEntitlement(userId: number | null | undefined): User
 
   // Rule 6 — no privileged state → Free
   const status: EntitlementStatus =
-    sub?.status === 'past_due' ? 'past_due'
+    hasExpiredPeriod ? 'expired'
+      : sub?.status === 'past_due' ? 'past_due'
       : sub?.status === 'expired' || sub?.status === 'canceled' ? 'expired'
         : 'none';
   return freeEntitlement({ userId, source: 'free', status, evaluatedAt, isOwner: false, isFounder: false });
@@ -296,6 +300,12 @@ export function isSkillAllowedByEntitlement(
   // Paid plans get the whole catalog (per-skill granular caps live in
   // plan_configs / per-user overrides — separate concern).
   return entitlement.allowedSkills.has(skillId);
+}
+
+export function entitlementPlanToSkillTier(plan: BillingPlan): 'free' | 'pro' | 'max' | 'owner' {
+  if (plan === 'owner' || plan === 'max' || plan === 'pro') return plan;
+  if (plan === 'beta') return 'max';
+  return 'free';
 }
 
 // ── Internal helpers ─────────────────────────────────────────────

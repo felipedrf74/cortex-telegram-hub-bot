@@ -1,6 +1,8 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
 import * as onboarding from '../../services/onboarding';
+import { DateTime } from 'luxon';
+import { config } from '../../config';
 import {
   readContentMeshContext,
   readCookingMeshContext,
@@ -13,12 +15,17 @@ import {
   adaptTrainingPlanToAvailableEquipment,
   buildTrainingEquipmentAdaptation,
 } from '../../services/training-plan-equipment-adaptation';
-import { getEvents } from '../../services/unified-calendar';
+import { getEvents, getEventsForSources } from '../../services/unified-calendar';
 import {
   applyTrainingPlanCoordination,
   buildTrainingPlanCoordination,
 } from '../../services/training-plan-coordination';
-import { buildCoachKernelTrainingPlan } from '../../services/training-coach-kernel-plan-generator';
+import {
+  buildCoachKernelTrainingPlan,
+  normalizeTrainingPlanDurationWeeks,
+  type TrainingGoalMode,
+  type TrainingPriority,
+} from '../../services/training-coach-kernel-plan-generator';
 import {
   buildBusyWindows,
   normalizePreferredTime,
@@ -31,38 +38,89 @@ import {
 } from './training-profile-requirements';
 import { buildDeterministicTrainingPlan } from './training-fallback-plan';
 import { fetchCurrentReadinessForPlan } from './training-read-models';
-import { persistGeneratedTrainingPlan } from './training-plan-persistence';
+import {
+  lintGeneratedTrainingPlanPreflight,
+  persistGeneratedTrainingPlan,
+} from './training-plan-persistence';
 import { cancelTrainingPlanForUser } from './training-plan-cancellation';
 import { enforceRequestedTrainingPlanVolume } from '../../services/training-plan-volume-enforcement';
 import * as trainingPlans from '../../services/training-plans';
 import { findOrphanedOwnerships } from '../../services/training-plan-lifecycle';
 import { reconcileOrphanedTrainingAgendaEvents } from '../../services/training-agenda-reconciliation';
+import { resolveTrainingCalendarSource } from '../../services/training-calendar-source';
+import { isPastIsoDate, isStrictIsoDate } from '../../services/training-date-utils';
 import { logger } from '../../utils/logger';
+import type { CalendarSource } from '../../services/unified-calendar';
+import type { PlanLintResult } from '../../services/coach-kernel/plan-linter';
+
+export const TRAINING_PLAN_GENERATOR_POLICY_VERSION = 'training-plan-shape-v2';
 
 export interface GenerateTrainingPlanForUserInput {
   userId: number;
+  tenantId?: number;
   objective: string;
   durationWeeks?: number;
   preferredTime?: string;
   preferredCardioTime?: unknown;
   preferredStrengthTime?: unknown;
   sessionsPerWeek?: unknown;
+  runSessionsPerWeek?: unknown;
+  bikeSessionsPerWeek?: unknown;
+  swimSessionsPerWeek?: unknown;
   strengthSessionsPerWeek?: unknown;
+  startPolicy?: unknown;
   longWorkoutDay?: unknown;
   notes?: unknown;
+  goalMode?: unknown;
+  trainingPriority?: unknown;
+  raceDate?: unknown;
   /**
    * Slice 2.B — explicit two-a-day preference. Routes to
    * `availability.maxSessionsPerDay` inside the kernel input. When
    * omitted the generator behaves exactly as before (volume-based
    * inference) — additive, fully backward-compatible.
    */
-  twoADayPreference?: 'never' | 'optional' | 'preferred' | null;
+  twoADayPreference?: 'never' | 'optional' | 'preferred' | 'auto' | null;
+  calendarSource?: CalendarSource | null;
+  previewOnly?: boolean;
 }
+
+export type TrainingPlanStartPolicy = 'next_full_week' | 'today';
 
 export type TrainingPlanGenerationResult =
   | {
       status: 'needs_profile';
       data: Record<string, unknown>;
+    }
+  | {
+      status: 'preview';
+      data: {
+        status: 'preview';
+        planName: string | null;
+        sport: string | null;
+        objective: string;
+        durationWeeks: number;
+        resolvedStartDate: string;
+        weeklyTargets: TrainingPlanWeeklyTargets;
+        totalSessions: number;
+        calendarSource: CalendarSource | null;
+        phaseRoadmap: Array<{
+          weekNumber: number;
+          phase: string;
+          sessionCount: number;
+          keySessions: string[];
+        }>;
+        planLint: PlanLintResult;
+        warnings: Array<{ code: string; message: string }>;
+        blockers: Array<{ code: string; message: string }>;
+        calendarFetchDegraded: boolean;
+        calendarFetchError?: string;
+        fallbackTemplateUsed: boolean;
+        goalMode: TrainingGoalMode | null;
+        trainingPriority: TrainingPriority | null;
+        raceDate: string | null;
+        generatorPolicyVersion: string;
+      };
     }
   | {
       status: 'created';
@@ -71,6 +129,26 @@ export type TrainingPlanGenerationResult =
       eventsCreated: number;
       totalSessions: number;
       durationWeeks: number;
+    }
+  /**
+   * Strict Training quality gate. Returned before any existing plan is
+   * cancelled or any new plan/week/session rows are written.
+   */
+  | {
+      status: 'plan_quality_blocked';
+      data: {
+        status: 'plan_quality_blocked';
+        message: string;
+        planLint: PlanLintResult;
+        warnings: Array<{ code: string; message: string }>;
+        calendarFetchDegraded: boolean;
+        calendarFetchError?: string;
+        fallbackTemplateUsed: boolean;
+        goalMode: TrainingGoalMode | null;
+        trainingPriority: TrainingPriority | null;
+        raceDate: string | null;
+        generatorPolicyVersion: string;
+      };
     }
   /**
    * Slice 4.D.2 — saga abort. The pre-persist cancellation of the
@@ -117,15 +195,13 @@ type CancellationSagaOutcome =
   | { kind: 'success'; removedEvents: number }
   | { kind: 'no_active_plan' }
   | { kind: 'external_partial'; orphanedEventCount: number }
-  | { kind: 'forbidden' }
   | { kind: 'local_delete_failed'; reason: string; activePlansRemaining: number };
 
-async function runPrePersistCancellationSaga(userId: number): Promise<CancellationSagaOutcome> {
+async function runPrePersistCancellationSaga(userId: number, tenantId: number): Promise<CancellationSagaOutcome> {
   try {
-    const cancellation = await cancelTrainingPlanForUser(userId);
-    if (cancellation.status === 'forbidden') {
-      return { kind: 'forbidden' };
-    }
+    const cancellation = tenantId === userId
+      ? await cancelTrainingPlanForUser(userId)
+      : await cancelTrainingPlanForUser(userId, undefined, { tenantId });
     if (cancellation.status === 'not_found') {
       const reconciliation = await reconcileOrphanedTrainingAgendaEvents(userId);
       if (reconciliation.failed > 0) {
@@ -138,7 +214,7 @@ async function runPrePersistCancellationSaga(userId: number): Promise<Cancellati
     // deletes failed (status='orphaned' rows). Those are reconcilable;
     // the saga can safely proceed.
     const reconciliation = await reconcileOrphanedTrainingAgendaEvents(userId);
-    const orphans = findOrphanedOwnerships(userId);
+    const orphans = findOrphanedOwnerships(userId, userId);
     const orphanedEventCount = orphans.length + reconciliation.failed;
     if (orphanedEventCount > 0) {
       return { kind: 'external_partial', orphanedEventCount };
@@ -152,7 +228,7 @@ async function runPrePersistCancellationSaga(userId: number): Promise<Cancellati
     // remain, the throw was post-delete (e.g. narrative cleanup), so
     // continuing is safe but we mark it as external-partial so the
     // ownership reconciler picks up any remaining orphans.
-    const remainingPlans = trainingPlans.getActivePlans?.(userId) ?? [];
+    const remainingPlans = trainingPlans.getActivePlans?.(userId, tenantId) ?? [];
     const reason = err instanceof Error ? err.message : String(err);
     if (remainingPlans.length > 0) {
       return {
@@ -170,26 +246,88 @@ async function runPrePersistCancellationSaga(userId: number): Promise<Cancellati
   }
 }
 
+export interface TrainingPlanWeeklyTargets {
+  sessionsPerWeek: number;
+  runSessionsPerWeek: number;
+  strengthSessionsPerWeek: number;
+  bikeSessionsPerWeek: number | null;
+  swimSessionsPerWeek: number | null;
+}
+
 export async function generateTrainingPlanForUser(
   input: GenerateTrainingPlanForUserInput,
 ): Promise<TrainingPlanGenerationResult> {
   const {
     userId,
+    tenantId = input.userId,
     objective,
     preferredTime = '12:00',
     preferredCardioTime,
     preferredStrengthTime,
     sessionsPerWeek = 5,
+    runSessionsPerWeek,
+    bikeSessionsPerWeek,
+    swimSessionsPerWeek,
     strengthSessionsPerWeek = 2,
+    startPolicy,
     longWorkoutDay,
     notes,
+    goalMode,
+    trainingPriority,
+    raceDate,
     twoADayPreference,
+    calendarSource,
+    previewOnly = false,
   } = input;
-  const durationWeeks = input.durationWeeks ?? 4;
+  const durationWeeks = normalizeTrainingPlanDurationWeeks(input.durationWeeks, 4);
 
-  const fitnessProfile = onboarding.getProfile?.(userId, 'fitness');
-  const gymProfile = onboarding.getProfile?.(userId, 'triathlon-gym');
-  const runProfile = onboarding.getProfile?.(userId, 'triathlon-running');
+  const fitnessProfile = unwrapOnboardingProfileData(onboarding.getProfile?.(userId, 'fitness'));
+  const gymProfile = unwrapOnboardingProfileData(onboarding.getProfile?.(userId, 'triathlon-gym'));
+  const runProfile = unwrapOnboardingProfileData(onboarding.getProfile?.(userId, 'triathlon-running'));
+  const normalizedGoalMode = normalizeGoalMode(goalMode);
+  const normalizedTrainingPriority = normalizeTrainingPriority(trainingPriority);
+  const normalizedRaceDate = normalizeIsoDate(raceDate);
+  const raceDateWasProvided = typeof raceDate === 'string'
+    ? raceDate.trim() !== ''
+    : raceDate != null;
+  if (raceDateWasProvided && normalizedRaceDate == null) {
+    return {
+      status: 'needs_profile',
+      data: {
+        needsProfile: true,
+        message: 'Race date must be a real future date in YYYY-MM-DD format.',
+        missingFields: ['raceDate'],
+        validationError: {
+          code: 'INVALID_RACE_DATE',
+          field: 'raceDate',
+        },
+      },
+    };
+  }
+  if (normalizedRaceDate && isPastIsoDate(normalizedRaceDate)) {
+    return {
+      status: 'needs_profile',
+      data: {
+        needsProfile: true,
+        message: 'Race date must be in the future.',
+        missingFields: ['raceDate'],
+        validationError: {
+          code: 'PAST_RACE_DATE',
+          field: 'raceDate',
+        },
+      },
+    };
+  }
+  const effectiveRaceDate = normalizedRaceDate ?? resolveProfileRaceDate(runProfile);
+  const runProfileForPlan = effectiveRaceDate
+    ? {
+        ...(runProfile ?? {}),
+        target_race_date: effectiveRaceDate,
+        target_race: typeof runProfile?.target_race === 'string' && runProfile.target_race.trim()
+          ? runProfile.target_race
+          : objective,
+      }
+    : runProfile;
 
   if (!fitnessProfile || Object.keys(fitnessProfile).length === 0) {
     return {
@@ -217,16 +355,51 @@ export async function generateTrainingPlanForUser(
   }
 
   const now = new Date();
-  const endDate = new Date(now.getTime() + durationWeeks * 7 * 24 * 60 * 60 * 1000);
-  const startStr = now.toISOString().slice(0, 10);
-  const endStr = endDate.toISOString().slice(0, 10);
+  const normalizedStartPolicy = normalizeStartPolicy(startPolicy);
+  const startStr = resolveTrainingPlanStartDate(now, normalizedStartPolicy);
+  const endStr = DateTime
+    .fromISO(startStr, { zone: config.app.timezone || 'Europe/Lisbon' })
+    .plus({ weeks: durationWeeks })
+    .toISODate() ?? startStr;
+  const resolvedCalendarSource = resolveTrainingCalendarSource({
+    userId,
+    tenantId,
+    requestedSource: calendarSource ?? undefined,
+  });
 
+  // training-expert-coach-knowledge-engine (2026-05-03):
+  // Calendar fetch is the upstream source of truth for "when can the
+  // user actually train?". A silent empty `busyWindows` after a
+  // `getEvents` failure means we schedule blind — sessions land on top
+  // of meetings with no warning. Two changes here:
+  //   1. The catch logs the error structurally so SRE can see when
+  //      Google/Outlook is degraded for a real user.
+  //   2. We track a `calendarFetchDegraded` flag so downstream callers
+  //      (and the plan-linter response) can attach an explicit warning
+  //      ("Plan generated without calendar conflict detection — please
+  //      review your week before trusting it"). The plan still
+  //      generates so the user isn't blocked by transient OAuth
+  //      hiccups, but the caller knows it happened.
   let busyWindows: BusyWindow[] = [];
+  let calendarFetchDegraded = false;
+  let calendarFetchError: string | undefined;
   try {
-    const events = await getEvents(startStr, endStr, userId);
+    const events = resolvedCalendarSource
+      ? await getEventsForSources(startStr, endStr, userId, [resolvedCalendarSource])
+      : await getEvents(startStr, endStr, userId);
     busyWindows = buildBusyWindows(events || []);
-  } catch {
-    // Calendar unavailable — plan without schedule constraints.
+  } catch (err) {
+    calendarFetchDegraded = true;
+    calendarFetchError = err instanceof Error ? err.message : String(err);
+    logger.warn(
+      {
+        userId,
+        startDate: startStr,
+        endDate: endStr,
+        err,
+      },
+      'training-plan-generation: calendar getEvents failed; plan will be generated without conflict detection',
+    );
   }
 
   const equipmentAdaptation = buildTrainingEquipmentAdaptation({
@@ -235,12 +408,16 @@ export async function generateTrainingPlanForUser(
   });
 
   const normalizedSessionsPerWeek = clampNumber(sessionsPerWeek, 5, 3, 7);
-  const normalizedStrengthSessionsPerWeek = clampNumber(strengthSessionsPerWeek, 0, 0, 4);
+  const normalizedRunSessionsPerWeek =
+    normalizeOptionalSessionTarget(runSessionsPerWeek, 0, 7) ?? normalizedSessionsPerWeek;
+  const normalizedBikeSessionsPerWeek = normalizeOptionalSessionTarget(bikeSessionsPerWeek, 0, 7);
+  const normalizedSwimSessionsPerWeek = normalizeOptionalSessionTarget(swimSessionsPerWeek, 0, 7);
+  const normalizedStrengthSessionsPerWeek = clampNumber(strengthSessionsPerWeek, 0, 0, 6);
   const gymOnlyObjective = objectiveNeedsGymProfile(objective) && !objectiveNeedsRunningProfile(objective);
   const effectiveStrengthSessionsPerWeek = normalizedStrengthSessionsPerWeek > 0
     ? normalizedStrengthSessionsPerWeek
     : gymOnlyObjective
-      ? Math.min(normalizedSessionsPerWeek, 4)
+      ? Math.min(normalizedSessionsPerWeek, 6)
       : 0;
   const normalizedLongWorkoutDay = typeof longWorkoutDay === 'string' ? longWorkoutDay.trim() : null;
 
@@ -251,7 +428,7 @@ export async function generateTrainingPlanForUser(
     longWorkoutDay: normalizedLongWorkoutDay,
     fitnessProfile,
     gymProfile,
-    runProfile,
+    runProfile: runProfileForPlan,
     training: null,
     cooking: null,
     finance: null,
@@ -283,7 +460,7 @@ export async function generateTrainingPlanForUser(
       longWorkoutDay: normalizedLongWorkoutDay,
       fitnessProfile,
       gymProfile,
-      runProfile,
+      runProfile: runProfileForPlan,
       training: trainingContextResult.status === 'fulfilled' ? trainingContextResult.value : null,
       cooking: cookingContextResult.status === 'fulfilled' ? cookingContextResult.value : null,
       finance: financeContextResult.status === 'fulfilled' ? financeContextResult.value : null,
@@ -310,15 +487,21 @@ export async function generateTrainingPlanForUser(
         durationWeeks,
         startDate: startStr,
         sessionsPerWeek: normalizedSessionsPerWeek,
+        runSessionsPerWeek: normalizedRunSessionsPerWeek,
+        bikeSessionsPerWeek: normalizedBikeSessionsPerWeek,
+        swimSessionsPerWeek: normalizedSwimSessionsPerWeek,
         strengthSessionsPerWeek: effectiveStrengthSessionsPerWeek,
         preferredTime: normalizedPreferredTime,
         preferredCardioTime: normalizedPreferredCardioTime,
         preferredStrengthTime: normalizedPreferredStrengthTime,
         longWorkoutDay: normalizedLongWorkoutDay,
         notes: typeof notes === 'string' ? notes.trim() : null,
+        goalMode: normalizedGoalMode,
+        trainingPriority: normalizedTrainingPriority,
+        raceDate: effectiveRaceDate,
         fitnessProfile,
         gymProfile,
-        runProfile,
+        runProfile: runProfileForPlan,
         currentReadiness,
         twoADayPreference,
       }), coordination),
@@ -343,28 +526,178 @@ export async function generateTrainingPlanForUser(
   planData = adaptTrainingPlanToAvailableEquipment(
     enforceRequestedTrainingPlanVolume(planData, {
       sessionsPerWeek: normalizedSessionsPerWeek,
+      runSessionsPerWeek: normalizedRunSessionsPerWeek,
       strengthSessionsPerWeek: effectiveStrengthSessionsPerWeek,
       preferredCardioTime: normalizedPreferredCardioTime,
       preferredStrengthTime: normalizedPreferredStrengthTime,
       startDate: startStr,
+      longWorkoutDay: coordination.resolvedLongWorkoutDay ?? normalizedLongWorkoutDay,
     }),
     equipmentAdaptation,
   );
+
+  // training-expert-coach-knowledge-engine (2026-05-12):
+  // Run the Training quality gate BEFORE the cancellation saga and
+  // persistence. A plan with deterministic blockers should not delete
+  // the user's current plan and should not write a new unsafe plan that
+  // iOS merely marks "requires review".
+  //
+  // Pass through the fields the linter needs for accurate rules:
+  //   • equipmentProfile — drives the equipment_compatibility rule.
+  //   • raceDate         — drives the no_fake_taper_without_event rule
+  //                        and the race_specific_plan_requires_race_date
+  //                        rule.
+  //   • isRaceSpecific   — derived from the objective; tells the linter
+  //                        whether to treat missing race date as a
+  //                        blocker.
+  //   • goalMode         — distinguishes event-based taper/race strictness
+  //                        from continuous or hypertrophy-style plans.
+  // All four are best-effort: when absent, the relevant rules no-op.
+  const equipmentProfileLabel: string | undefined =
+    typeof gymProfile?.equipment_access === 'string'
+      ? String(gymProfile.equipment_access).toLowerCase().trim() || undefined
+      : typeof fitnessProfile?.available_equipment === 'string'
+        ? String(fitnessProfile.available_equipment).toLowerCase().trim() || undefined
+        : undefined;
+  const raceDateForLint: string | null =
+    effectiveRaceDate
+      ? effectiveRaceDate
+      : typeof runProfileForPlan?.target_race_date === 'string' && runProfileForPlan.target_race_date.trim()
+      ? runProfileForPlan.target_race_date
+      : null;
+  const isRaceSpecificForLint =
+    objectiveNeedsRunningProfile(objective) &&
+    /\b(marathon|half\s*marathon|10k|5k|race|ironman|70\.3|trail)\b/i.test(objective);
+
+  const persistenceInput = {
+    userId,
+    tenantId,
+    objective,
+    durationWeeks,
+    startDate: startStr,
+    endDate: endStr,
+    now,
+    planData,
+    preferencesJson: JSON.stringify({
+      preferredTime: normalizedPreferredTime,
+      preferredCardioTime: normalizedPreferredCardioTime,
+      preferredStrengthTime: normalizedPreferredStrengthTime,
+      sessionsPerWeek,
+      runSessionsPerWeek: runSessionsPerWeek ?? null,
+      bikeSessionsPerWeek: bikeSessionsPerWeek ?? null,
+      swimSessionsPerWeek: swimSessionsPerWeek ?? null,
+      strengthSessionsPerWeek,
+      longWorkoutDay: longWorkoutDay || null,
+      notes: notes || null,
+      goalMode: normalizedGoalMode,
+      trainingPriority: normalizedTrainingPriority,
+      raceDate: effectiveRaceDate,
+      startPolicy: normalizedStartPolicy,
+      trainingCalendarSource: resolvedCalendarSource || null,
+      generatorPolicyVersion: TRAINING_PLAN_GENERATOR_POLICY_VERSION,
+    }),
+    normalizedPreferredTime,
+    normalizedPreferredCardioTime,
+    normalizedPreferredStrengthTime,
+    busyWindows,
+    athleteProfiles: {
+      fitnessProfile,
+      gymProfile,
+      runProfile: runProfileForPlan,
+    },
+    calendarSource: resolvedCalendarSource || undefined,
+    equipmentProfile: equipmentProfileLabel,
+    raceDate: raceDateForLint,
+    isRaceSpecific: isRaceSpecificForLint,
+    goalMode: normalizedGoalMode,
+  };
+
+  const preflightLint = lintGeneratedTrainingPlanPreflight(persistenceInput);
+  if (previewOnly) {
+    return {
+      status: 'preview',
+      data: {
+        status: 'preview',
+        planName: typeof planData.planName === 'string' ? planData.planName : null,
+        sport: typeof planData.sport === 'string' ? planData.sport : null,
+        objective,
+        durationWeeks,
+        resolvedStartDate: startStr,
+        weeklyTargets: buildWeeklyTargets({
+          sessionsPerWeek: normalizedSessionsPerWeek,
+          runSessionsPerWeek: normalizedRunSessionsPerWeek,
+          strengthSessionsPerWeek: effectiveStrengthSessionsPerWeek,
+          bikeSessionsPerWeek: normalizedBikeSessionsPerWeek,
+          swimSessionsPerWeek: normalizedSwimSessionsPerWeek,
+        }),
+        totalSessions: countSchedulablePlanSessions(planData),
+        calendarSource: resolvedCalendarSource || null,
+        phaseRoadmap: buildPlanPhaseRoadmap(planData),
+        planLint: preflightLint,
+        warnings: buildPlanWarnings({
+          calendarFetchDegraded,
+          calendarFetchError,
+          lintResult: preflightLint,
+        }),
+        blockers: preflightLint.blockers.map((blocker) => ({
+          code: blocker.ruleId,
+          message: blocker.message,
+        })),
+        calendarFetchDegraded,
+        ...(calendarFetchError ? { calendarFetchError } : {}),
+        fallbackTemplateUsed: usedFallbackTemplate,
+        goalMode: normalizedGoalMode,
+        trainingPriority: normalizedTrainingPriority,
+        raceDate: raceDateForLint,
+        generatorPolicyVersion: TRAINING_PLAN_GENERATOR_POLICY_VERSION,
+      },
+    };
+  }
+
+  if (preflightLint.status === 'fail') {
+    logger.warn(
+      {
+        event: 'training_plan_quality_gate.blocked_pre_persist',
+        userId,
+        objective,
+        blockerRuleIds: preflightLint.blockers.map((b) => b.ruleId),
+        warningRuleIds: preflightLint.warnings.map((w) => w.ruleId),
+      },
+      'Training plan quality gate blocked plan before cancellation/persistence',
+    );
+    return {
+      status: 'plan_quality_blocked',
+      data: {
+        status: 'plan_quality_blocked',
+        message:
+          'Nexus blocked this plan before saving because it failed the Training quality gate. Review the coach warning, adjust the inputs, and generate again.',
+        planLint: preflightLint,
+        warnings: buildPlanWarnings({
+          calendarFetchDegraded,
+          calendarFetchError,
+          lintResult: preflightLint,
+        }),
+        calendarFetchDegraded,
+        ...(calendarFetchError ? { calendarFetchError } : {}),
+        fallbackTemplateUsed: usedFallbackTemplate,
+        goalMode: normalizedGoalMode,
+        trainingPriority: normalizedTrainingPriority,
+        raceDate: raceDateForLint,
+        generatorPolicyVersion: TRAINING_PLAN_GENERATOR_POLICY_VERSION,
+      },
+    };
+  }
 
   // Slice 4.D.2 — saga for pre-persist cancellation. The previous
   // silent catch produced a double-plan state when the local
   // hard-delete failed; the new saga inspects post-cancellation
   // database state and aborts the persist when the old plan rows
-  // are still present.
-  const cancellationOutcome = await runPrePersistCancellationSaga(userId);
+  // are still present. This now runs only after the strict quality
+  // gate has passed, so a blocked candidate cannot delete the current
+  // plan.
+  const cancellationOutcome = await runPrePersistCancellationSaga(userId, tenantId);
 
   switch (cancellationOutcome.kind) {
-    case 'forbidden':
-      logger.warn(
-        { userId },
-        'Existing active training plan was not user-owned during replacement; continuing with new plan creation',
-      );
-      break;
     case 'external_partial':
       logger.warn(
         { userId, orphanedEventCount: cancellationOutcome.orphanedEventCount },
@@ -395,32 +728,31 @@ export async function generateTrainingPlanForUser(
       break;
   }
 
-  const persistedPlan = await persistGeneratedTrainingPlan({
-    userId,
-    objective,
-    durationWeeks,
-    startDate: startStr,
-    endDate: endStr,
-    now,
-    planData,
-    preferencesJson: JSON.stringify({
-      preferredTime: normalizedPreferredTime,
-      preferredCardioTime: normalizedPreferredCardioTime,
-      preferredStrengthTime: normalizedPreferredStrengthTime,
-      sessionsPerWeek,
-      strengthSessionsPerWeek,
-      longWorkoutDay: longWorkoutDay || null,
-      notes: notes || null,
-    }),
-    normalizedPreferredTime,
-    normalizedPreferredCardioTime,
-    normalizedPreferredStrengthTime,
-    busyWindows,
-    athleteProfiles: {
-      fitnessProfile,
-      gymProfile,
-      runProfile,
-    },
+  const persistedPlan = await persistGeneratedTrainingPlan(persistenceInput);
+
+  // training-expert-coach-knowledge-engine (2026-05-03):
+  // Surface plan-linter findings + calendar-degraded warning on the
+  // response so iOS can render an honest "review your week before
+  // trusting it" banner. Both fields are best-effort signals; the iOS
+  // client decides UX. Treating these as silent passes was the historical
+  // foot-gun where a calendar outage produced sessions stacked on top of
+  // meetings with no warning.
+  // Lint result is optional defensively: mocked persistGeneratedTrainingPlan
+  // in legacy tests pre-dates the lint field; production always populates it.
+  const lintResult = persistedPlan.lint ?? {
+    status: 'pass' as const,
+    blockers: [],
+    warnings: [],
+    suggestedFixes: [],
+  };
+  const sessionsLinked = typeof persistedPlan.sessionsLinked === 'number'
+    ? persistedPlan.sessionsLinked
+    : persistedPlan.eventsCreated;
+  const sessionsFailed = Math.max(0, persistedPlan.totalSessions - sessionsLinked);
+  const planWarnings = buildPlanWarnings({
+    calendarFetchDegraded,
+    calendarFetchError,
+    lintResult,
   });
 
   return {
@@ -435,14 +767,47 @@ export async function generateTrainingPlanForUser(
       sport: planData.sport,
       objective,
       durationWeeks,
+      resolvedStartDate: startStr,
+      calendarSource: resolvedCalendarSource || null,
+      phaseRoadmap: buildPlanPhaseRoadmap(planData),
       totalSessions: persistedPlan.totalSessions,
       eventsCreated: persistedPlan.eventsCreated,
+      calendarSync: {
+        provider: resolvedCalendarSource || null,
+        sessionsAttempted: persistedPlan.totalSessions,
+        eventsCreated: persistedPlan.eventsCreated,
+        sessionsLinked,
+        sessionsFailed,
+        unscheduled: sessionsFailed,
+        status: sessionsLinked >= persistedPlan.totalSessions
+          ? 'synced'
+          : sessionsLinked > 0
+            ? 'partial'
+            : 'not_synced',
+      },
       preferredCardioTime: normalizedPreferredCardioTime,
       preferredStrengthTime: normalizedPreferredStrengthTime,
+      weeklyTargets: buildWeeklyTargets({
+        sessionsPerWeek: normalizedSessionsPerWeek,
+        runSessionsPerWeek: normalizedRunSessionsPerWeek,
+        strengthSessionsPerWeek: effectiveStrengthSessionsPerWeek,
+        bikeSessionsPerWeek: normalizedBikeSessionsPerWeek,
+        swimSessionsPerWeek: normalizedSwimSessionsPerWeek,
+      }),
       weeks: persistedPlan.weekSummaries,
       profileQuality: planData.profileQuality ?? null,
       decisionReasons: Array.isArray(planData.decisionReasons) ? planData.decisionReasons : [],
       fallbackTemplateUsed: usedFallbackTemplate,
+      goalMode: normalizedGoalMode,
+      trainingPriority: normalizedTrainingPriority,
+      raceDate: raceDateForLint,
+      generatorPolicyVersion: TRAINING_PLAN_GENERATOR_POLICY_VERSION,
+      // training-expert-coach-knowledge-engine: explicit calendar
+      // health flag + lint verdict surface on the response payload.
+      calendarFetchDegraded,
+      ...(calendarFetchError ? { calendarFetchError } : {}),
+      planLint: lintResult,
+      warnings: planWarnings,
       message: usedFallbackTemplate
         ? `Plan created with a reliable fallback template. ${persistedPlan.totalSessions} sessions scheduled across ${durationWeeks} weeks. ${persistedPlan.eventsCreated} calendar events created.`
         : `Plan created! ${persistedPlan.totalSessions} sessions scheduled across ${durationWeeks} weeks. ${persistedPlan.eventsCreated} calendar events created.`,
@@ -450,7 +815,159 @@ export async function generateTrainingPlanForUser(
   };
 }
 
+function countSchedulablePlanSessions(planData: any): number {
+  return (Array.isArray(planData?.weeks) ? planData.weeks : []).reduce((sum: number, week: any) => {
+    const sessions = Array.isArray(week?.sessions) ? week.sessions : [];
+    return sum + sessions.filter((session: any) => {
+      const type = String(session?.sessionType || '').toLowerCase();
+      const status = String(session?.scheduleState || '').toLowerCase();
+      return type !== 'rest' && status !== 'dropped' && status !== 'deferred';
+    }).length;
+  }, 0);
+}
+
+function buildPlanPhaseRoadmap(planData: any): Array<{
+  weekNumber: number;
+  phase: string;
+  sessionCount: number;
+  keySessions: string[];
+}> {
+  return (Array.isArray(planData?.weeks) ? planData.weeks : []).map((week: any, index: number) => {
+    const sessions = Array.isArray(week?.sessions) ? week.sessions : [];
+    const activeSessions = sessions.filter((session: any) =>
+      String(session?.sessionType || '').toLowerCase() !== 'rest'
+      && String(session?.scheduleState || '').toLowerCase() !== 'dropped'
+    );
+    const keySessions = activeSessions
+      .map((session: any) => String(session?.title || '').trim())
+      .filter((title: string) => title.length > 0)
+      .slice(0, 3);
+    return {
+      weekNumber: Number(week?.weekNumber) || index + 1,
+      phase: String(week?.focus || 'base'),
+      sessionCount: activeSessions.length,
+      keySessions,
+    };
+  });
+}
+
+function buildPlanWarnings(input: {
+  calendarFetchDegraded: boolean;
+  calendarFetchError?: string;
+  lintResult: PlanLintResult;
+}): Array<{ code: string; message: string }> {
+  const planWarnings: Array<{ code: string; message: string }> = [];
+  if (input.calendarFetchDegraded) {
+    planWarnings.push({
+      code: 'calendar_fetch_degraded',
+      message:
+        'Could not read your calendar to detect conflicts. The plan was generated ' +
+        'without conflict checks — please review the week before trusting it.',
+    });
+  }
+  for (const blocker of input.lintResult.blockers) {
+    planWarnings.push({ code: `lint_blocker_${blocker.ruleId}`, message: blocker.message });
+  }
+  for (const warning of input.lintResult.warnings) {
+    planWarnings.push({ code: `lint_warning_${warning.ruleId}`, message: warning.message });
+  }
+  return planWarnings;
+}
+
+function unwrapOnboardingProfileData(profile: unknown): Record<string, any> | null {
+  if (!profile || typeof profile !== 'object' || Array.isArray(profile)) return null;
+
+  const record = profile as Record<string, any>;
+  const data = record.data;
+  if (data && typeof data === 'object' && !Array.isArray(data)) {
+    return data as Record<string, any>;
+  }
+
+  // Unit tests and legacy callers sometimes pass the profile-data object
+  // directly. Keep that path supported while the production service returns
+  // the persisted wrapper row { id, user_id, profile_type, data, ... }.
+  return record;
+}
+
 function clampNumber(raw: unknown, fallback: number, min: number, max: number): number {
-  const resolved = Number(raw) || fallback;
-  return Math.max(min, Math.min(max, resolved));
+  const resolved = Number(raw);
+  const candidate = Number.isFinite(resolved) && resolved > 0 ? Math.round(resolved) : fallback;
+  return Math.max(min, Math.min(max, candidate));
+}
+
+function normalizeOptionalSessionTarget(raw: unknown, min: number, max: number): number | null {
+  if (raw === undefined || raw === null || raw === '') return null;
+  const resolved = Number(raw);
+  if (!Number.isFinite(resolved)) return null;
+  return Math.max(min, Math.min(max, Math.round(resolved)));
+}
+
+function normalizeStartPolicy(raw: unknown): TrainingPlanStartPolicy {
+  return raw === 'today' ? 'today' : 'next_full_week';
+}
+
+export function resolveTrainingPlanStartDate(now: Date, startPolicy: TrainingPlanStartPolicy): string {
+  const zone = config.app.timezone || 'Europe/Lisbon';
+  const today = DateTime.fromJSDate(now, { zone }).startOf('day');
+  if (!today.isValid) return now.toISOString().slice(0, 10);
+  if (startPolicy === 'today') return today.toISODate() ?? now.toISOString().slice(0, 10);
+
+  // Luxon weekday is 1=Monday ... 7=Sunday. A full training week begins
+  // on Monday; when today is Monday, starting today is already a full week.
+  const daysUntilMonday = (8 - today.weekday) % 7;
+  return today.plus({ days: daysUntilMonday }).toISODate() ?? today.toISODate() ?? now.toISOString().slice(0, 10);
+}
+
+function buildWeeklyTargets(input: TrainingPlanWeeklyTargets): TrainingPlanWeeklyTargets {
+  return {
+    sessionsPerWeek: input.sessionsPerWeek,
+    runSessionsPerWeek: input.runSessionsPerWeek,
+    strengthSessionsPerWeek: input.strengthSessionsPerWeek,
+    bikeSessionsPerWeek: input.bikeSessionsPerWeek,
+    swimSessionsPerWeek: input.swimSessionsPerWeek,
+  };
+}
+
+function normalizeGoalMode(raw: unknown): TrainingGoalMode | null {
+  if (typeof raw !== 'string') return null;
+  const normalized = raw.trim().toLowerCase();
+  if (
+    normalized === 'event_based' ||
+    normalized === 'continuous' ||
+    normalized === 'maintenance' ||
+    normalized === 'return_to_training'
+  ) {
+    return normalized;
+  }
+  return null;
+}
+
+function normalizeTrainingPriority(raw: unknown): TrainingPriority | null {
+  if (typeof raw !== 'string') return null;
+  const normalized = raw.trim().toLowerCase();
+  if (
+    normalized === 'running' ||
+    normalized === 'cycling' ||
+    normalized === 'swimming' ||
+    normalized === 'strength' ||
+    normalized === 'triathlon' ||
+    normalized === 'hybrid'
+  ) {
+    return normalized;
+  }
+  return null;
+}
+
+function normalizeIsoDate(raw: unknown): string | null {
+  if (typeof raw !== 'string') return null;
+  const trimmed = raw.trim();
+  return isStrictIsoDate(trimmed) ? trimmed : null;
+}
+
+function resolveProfileRaceDate(profile: Record<string, any> | null | undefined): string | null {
+  if (!profile) return null;
+  return normalizeIsoDate(profile.target_race_date)
+    ?? normalizeIsoDate(profile.targetRaceDate)
+    ?? normalizeIsoDate(profile.race_date)
+    ?? normalizeIsoDate(profile.raceDate);
 }

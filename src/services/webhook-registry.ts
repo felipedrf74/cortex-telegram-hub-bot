@@ -165,7 +165,7 @@ function getHandlers(provider: string, eventType: string): { key: string; handle
 
 /**
  * Verify the HMAC-SHA256 signature of an incoming webhook request.
- * Returns true if signature is valid or if no secret is configured.
+ * Returns true only if a configured secret validates the signature.
  */
 export function verifySignature(
   provider: WebhookProvider,
@@ -173,7 +173,7 @@ export function verifySignature(
   headers: Record<string, string | string[] | undefined>,
   secret: string,
 ): boolean {
-  if (!secret) return true; // no secret configured — skip verification
+  if (!secret) return false;
 
   const headerName = SIGNATURE_HEADERS[provider] || 'x-webhook-signature';
   const providedSig = headers[headerName];

@@ -1,0 +1,192 @@
+{
+  "ok": true,
+  "userId": 1000005,
+  "baseUrl": "http://staging.localhost:18201/",
+  "startedAt": "2026-05-09T17:39:47.548Z",
+  "routes": [
+    {
+      "name": "focused-route",
+      "path": "/api/v1/dashboard/home",
+      "first": {
+        "route": "focused-route",
+        "method": "GET",
+        "path": "/api/v1/dashboard/home",
+        "status": 200,
+        "ok": true,
+        "elapsedMs": 191.4,
+        "cached": false,
+        "etag": "\"07c3a1ad0686fba901d4f46f36dd4836\"",
+        "cacheControl": "private, max-age=30",
+        "errorCode": null,
+        "readiness": {
+          "readinessText": "—",
+          "bodyBatteryText": "—",
+          "reasonCodes": [
+            "CALENDAR_INTEGRATION_MISSING",
+            "WEARABLE_INTEGRATION_MISSING",
+            "BODY_BATTERY_UNAVAILABLE"
+          ]
+        },
+        "shapeOk": true,
+        "bodyPreview": "{\"ok\":true,\"data\":{\"meta\":{\"source\":\"server\",\"isFallback\":true,\"isPartial\":true,\"isStale\":false,\"generatedAt\":\"2026-05-09T17:39:47.749Z\",\"reasonCodes\":[\"CALENDAR_INTEGRATION_MISSING\",\"WEARABLE_INTEGRATION_MISSING\",\"BODY_BATTERY_UNAVAILABLE\"]},\"hero\":{\"state\":\"recoveryProtected\",\"eyebrow\":\"Day state\""
+      },
+      "second": {
+        "route": "focused-route",
+        "method": "GET",
+        "path": "/api/v1/dashboard/home",
+        "status": 200,
+        "ok": true,
+        "elapsedMs": 9.1,
+        "cached": true,
+        "etag": "\"07c3a1ad0686fba901d4f46f36dd4836\"",
+        "cacheControl": "private, max-age=30",
+        "errorCode": null,
+        "readiness": {
+          "readinessText": "—",
+          "bodyBatteryText": "—",
+          "reasonCodes": [
+            "CALENDAR_INTEGRATION_MISSING",
+            "WEARABLE_INTEGRATION_MISSING",
+            "BODY_BATTERY_UNAVAILABLE"
+          ]
+        },
+        "shapeOk": true,
+        "bodyPreview": "{\"ok\":true,\"data\":{\"meta\":{\"source\":\"server\",\"isFallback\":true,\"isPartial\":true,\"isStale\":false,\"generatedAt\":\"2026-05-09T17:39:47.749Z\",\"reasonCodes\":[\"CALENDAR_INTEGRATION_MISSING\",\"WEARABLE_INTEGRATION_MISSING\",\"BODY_BATTERY_UNAVAILABLE\"]},\"hero\":{\"state\":\"recoveryProtected\",\"eyebrow\":\"Day state\""
+      },
+      "inferredCacheImproved": true
+    }
+  ],
+  "routeFailures": [],
+  "writes": [
+    {
+      "name": "cooking-write-dependent-read",
+      "write": {
+        "route": "cooking-write-recipe",
+        "method": "POST",
+        "path": "/api/v1/cooking/recipes",
+        "status": 201,
+        "ok": true,
+        "elapsedMs": 13.9,
+        "cached": false,
+        "etag": "W/\"2a1-acfV9i04e8T6GU1B0gDw/IPPYvc\"",
+        "cacheControl": null,
+        "errorCode": null,
+        "readiness": {
+          "readinessText": null,
+          "bodyBatteryText": null,
+          "reasonCodes": []
+        },
+        "shapeOk": true,
+        "bodyPreview": "{\"ok\":true,\"data\":{\"recipe\":{\"id\":20,\"user_id\":1000005,\"title\":\"Fixture Cache Probe 1778348387763\",\"ingredients\":[{\"name\":\"oats\",\"quantity\":\"1\",\"unit\":\"cup\"}],\"instructions\":\"Combine oats with water.\",\"prep_time_min\":5,\"cook_time_min\":10,\"servings\":2,\"tags\":\"fixture,cache-probe\",\"source\":null,\"creat"
+      },
+      "dependentRead": {
+        "route": "cooking-recipes-after-write",
+        "method": "GET",
+        "path": "/api/v1/cooking/recipes",
+        "status": 200,
+        "ok": true,
+        "elapsedMs": 17.6,
+        "cached": false,
+        "etag": "W/\"524-LSUYWCWJAtVToFcYJ+/q9tjOBqA\"",
+        "cacheControl": null,
+        "errorCode": null,
+        "readiness": {
+          "readinessText": null,
+          "bodyBatteryText": null,
+          "reasonCodes": []
+        },
+        "shapeOk": true,
+        "bodyPreview": "{\"ok\":true,\"data\":{\"recipes\":[{\"id\":19,\"user_id\":1000005,\"title\":\"Fixture Lentil Soup\",\"ingredients\":[{\"name\":\"lentils\",\"quantity\":\"1\",\"unit\":\"cup\"}],\"instructions\":\"Simmer lentils with vegetables until tender.\",\"prep_time_min\":10,\"cook_time_min\":30,\"servings\":4,\"tags\":\"fixture,vegetarian\",\"source\":"
+      },
+      "changed": true
+    },
+    {
+      "name": "calendar-write-dependent-dashboard-read",
+      "write": {
+        "route": "calendar-write-event",
+        "method": "POST",
+        "path": "/api/v1/calendar/events",
+        "status": 400,
+        "ok": false,
+        "elapsedMs": 7.3,
+        "cached": null,
+        "etag": "W/\"8c-POcZ4+kL/PdZksNhvD0gar8oIaw\"",
+        "cacheControl": null,
+        "errorCode": "CALENDAR_NOT_CONFIGURED",
+        "readiness": null,
+        "shapeOk": true,
+        "bodyPreview": "{\"ok\":false,\"error\":{\"code\":\"CALENDAR_NOT_CONFIGURED\",\"message\":\"No calendar provider is connected\"},\"timestamp\":\"2026-05-09T17:39:47.828Z\"}"
+      },
+      "dependentRead": {
+        "route": "dashboard-after-calendar-write",
+        "method": "GET",
+        "path": "/api/v1/dashboard",
+        "status": 200,
+        "ok": true,
+        "elapsedMs": 12.3,
+        "cached": false,
+        "etag": "\"93fbde179380d710d7299ec52ea03e32\"",
+        "cacheControl": "private, max-age=30",
+        "errorCode": null,
+        "readiness": {
+          "readinessText": null,
+          "bodyBatteryText": null,
+          "reasonCodes": []
+        },
+        "shapeOk": true,
+        "bodyPreview": "{\"ok\":true,\"data\":{\"greeting\":\"Good evening, Staging\",\"date\":\"2026-05-09\",\"dayOfWeek\":\"Saturday\",\"calendar\":{\"today\":[],\"upcoming\":[],\"status\":\"unavailable\",\"warningCodes\":[\"CALENDAR_INTEGRATION_MISSING\"],\"warnings\":[\"No calendar integration is connected yet.\"]},\"tasks\":{\"overdue\":0,\"dueToday\":0,\"to"
+      },
+      "providerBacked": false,
+      "note": "Fixture user has no real calendar OAuth token; registry-level cache invalidation probe below covers the deployed invalidator path."
+    }
+  ],
+  "cacheCoherence": {
+    "ok": true,
+    "userId": 1000005,
+    "keys": [
+      "u:1000005:calendar:today:2026-05-09",
+      "u:1000005:calendar:events:2026-05-09:2026-05-09",
+      "dashboard:1000005:en-US",
+      "dashboard-home:1000005:en-US",
+      "plan:today:u:1000005:2026-05-09:route:en-US",
+      "plan:week:u:1000005:2026-05-09:route:en-US"
+    ],
+    "cooking": {
+      "before": {
+        "u:1000005:calendar:today:2026-05-09": true,
+        "u:1000005:calendar:events:2026-05-09:2026-05-09": true,
+        "dashboard:1000005:en-US": true,
+        "dashboard-home:1000005:en-US": true,
+        "plan:today:u:1000005:2026-05-09:route:en-US": true,
+        "plan:week:u:1000005:2026-05-09:route:en-US": true
+      },
+      "after": {
+        "u:1000005:calendar:today:2026-05-09": false,
+        "u:1000005:calendar:events:2026-05-09:2026-05-09": false,
+        "dashboard:1000005:en-US": false,
+        "dashboard-home:1000005:en-US": false,
+        "plan:today:u:1000005:2026-05-09:route:en-US": false,
+        "plan:week:u:1000005:2026-05-09:route:en-US": false
+      }
+    },
+    "calendar": {
+      "before": {
+        "u:1000005:calendar:today:2026-05-09": true,
+        "u:1000005:calendar:events:2026-05-09:2026-05-09": true,
+        "dashboard:1000005:en-US": true,
+        "dashboard-home:1000005:en-US": true,
+        "plan:today:u:1000005:2026-05-09:route:en-US": true,
+        "plan:week:u:1000005:2026-05-09:route:en-US": true
+      },
+      "after": {
+        "u:1000005:calendar:today:2026-05-09": false,
+        "u:1000005:calendar:events:2026-05-09:2026-05-09": false,
+        "dashboard:1000005:en-US": false,
+        "dashboard-home:1000005:en-US": false,
+        "plan:today:u:1000005:2026-05-09:route:en-US": false,
+        "plan:week:u:1000005:2026-05-09:route:en-US": false
+      }
+    }
+  },
+  "finishedAt": "2026-05-09T17:39:48.767Z"
+}

@@ -103,7 +103,7 @@ type AthleteConstraintProfile = {
 
 export function buildTrainingPlanCoordination(input: TrainingPlanCoordinationInput): TrainingPlanCoordination {
   const requestedSessions = clamp(Math.round(input.sessionsPerWeek || 5), 3, 7);
-  const requestedStrength = clamp(Math.round(input.strengthSessionsPerWeek || 0), 0, 4);
+  const requestedStrength = clamp(Math.round(input.strengthSessionsPerWeek || 0), 0, 6);
 
   const recoveryState = extractRecoveryState(input.training);
   const cookingRisk = extractCookingRisk(input.cooking);
@@ -324,7 +324,6 @@ export function applyTrainingPlanCoordination(
   });
 
   capWeekToWeekProgression(cloned.weeks, coordination.progressionRampCapPct);
-  enforceFinalDeload(cloned.weeks);
 
   return cloned;
 }
@@ -403,7 +402,7 @@ function enforceWeeklySessionCap(sessions: CoordinatedTrainingSession[], cap: nu
   const removable = [...activeSessions]
     .sort((a, b) => removableSessionScore(a.session) - removableSessionScore(b.session));
 
-  for (const extra of removable.slice(cap)) {
+  for (const extra of removable.slice(0, activeSessions.length - cap)) {
     sessions[extra.index] = {
       dayOfWeek: extra.session.dayOfWeek,
       sessionType: 'rest',
@@ -578,19 +577,6 @@ function capWeekToWeekProgression(weeks: CoordinatedTrainingWeek[], rampCapPct: 
       week.intensityPct = current;
     }
     previousIntensity = week.intensityPct ?? current;
-  }
-}
-
-function enforceFinalDeload(weeks: CoordinatedTrainingWeek[]): void {
-  if (weeks.length < 2) return;
-  const lastWeek = weeks[weeks.length - 1];
-  const previousWeek = weeks[weeks.length - 2];
-  const previousIntensity = typeof previousWeek.intensityPct === 'number' ? previousWeek.intensityPct : 70;
-  const targetDeload = Math.max(50, previousIntensity - 10);
-  const currentLast = typeof lastWeek.intensityPct === 'number' ? lastWeek.intensityPct : previousIntensity;
-
-  if (currentLast >= previousIntensity || currentLast > targetDeload) {
-    lastWeek.intensityPct = targetDeload;
   }
 }
 

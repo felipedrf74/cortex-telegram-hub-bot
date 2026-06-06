@@ -1,6 +1,13 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
-import type { AthleteState, FatigueCost, IntensityZone, Session, SessionType, Sport } from './types';
+import { loadCoachKnowledge } from './knowledge-loader';
+import {
+  buildMobilityRecoveryExerciseList,
+  MOBILITY_TARGET_MAX_MINUTES,
+  MOBILITY_TARGET_MIN_MINUTES,
+} from './mobility-recovery-builder';
+import { estimateStrengthSessionMinutes, trimOverstuffedStrengthSessionToDuration, validateSessionCoherence } from './session-coherence';
+import type { AthleteState, ExercisePrescription, FatigueCost, IntensityZone, Session, SessionType, Sport } from './types';
 import { clamp, dayIndex, durationToLoad } from './utils';
 
 export type RecoveryScenario =
@@ -92,13 +99,13 @@ function hasHybridOverload(athlete: AthleteState, weekSessions: Session[]): bool
 export function classifyRecoveryScenario(context: PoorRecoveryContext): RecoveryScenario {
   const { athlete, weekSessions } = context;
   if (hasTravelSignal(athlete)) return 'travel_fatigue';
+  if (hasHighSorenessSignal(athlete)) return 'high_soreness';
+  if (hasPostIntensityFatigue(athlete)) return 'post_intensity_fatigue';
+  if (athlete.readiness.level === 'red' || athlete.readiness.score <= 40) return 'low_readiness';
   if (athlete.compliance.trailing14DayCompliance < 0.7 || athlete.compliance.consecutiveMisses >= 2) {
     return 'low_adherence_fatigue';
   }
   if (hasHybridOverload(athlete, weekSessions)) return 'hybrid_modality_overload';
-  if (hasHighSorenessSignal(athlete)) return 'high_soreness';
-  if (hasPostIntensityFatigue(athlete)) return 'post_intensity_fatigue';
-  if (athlete.readiness.level === 'red' || athlete.readiness.score <= 40) return 'low_readiness';
   return 'mild_fatigue';
 }
 
@@ -111,6 +118,8 @@ function ordinalForSport(session: Session, weekSessions: Session[]): number {
 
 function stableVariantIndex(context: PoorRecoveryContext, optionCount: number): number {
   if (optionCount <= 1) return 0;
+  const roleIndex = rolePreferredVariantIndex(context.session);
+  if (roleIndex != null) return Math.min(roleIndex, optionCount - 1);
   const sportOrdinal = Math.max(0, ordinalForSport(context.session, context.weekSessions));
   const seed = context.athlete.currentBlock.weekIndex
     + dayIndex(context.session.dayOfWeek)
@@ -118,6 +127,17 @@ function stableVariantIndex(context: PoorRecoveryContext, optionCount: number): 
     + sportOrdinal
     + context.session.sessionType.length;
   return seed % optionCount;
+}
+
+function rolePreferredVariantIndex(session: Session): number | null {
+  if (session.sport === 'running') {
+    if (session.sessionType === 'threshold_run' || session.sessionType === 'interval_run') return 0;
+    if (session.sessionType === 'long_run') return 1;
+  }
+  if (session.sport === 'cycling' && (session.sessionType === 'threshold_ride' || session.sessionType === 'vo2_ride')) {
+    return 0;
+  }
+  return null;
 }
 
 function recoveryVariantsFor(session: Session, scenario: RecoveryScenario, athlete: AthleteState): RecoveryVariant[] {
@@ -324,7 +344,7 @@ export function adaptSessionForPoorRecovery(context: PoorRecoveryContext): PoorR
   const scenario = classifyRecoveryScenario(context);
   const variants = recoveryVariantsFor(context.session, scenario, context.athlete);
   const variant = variants[stableVariantIndex(context, variants.length)];
-  const durationMinutes = recoveryDuration(context.session, variant);
+  let durationMinutes = recoveryDuration(context.session, variant);
   const explanation = scenarioExplanation(scenario, context.session, variant);
   const tags = dedupeStrings([
     ...context.session.tags.filter((tag) => !tag.startsWith('key_')),
@@ -333,7 +353,40 @@ export function adaptSessionForPoorRecovery(context: PoorRecoveryContext): PoorR
     'readiness_adjusted',
   ]);
 
-  const session: Session = {
+  // The original strength session's exercise list was sized for the
+  // original (longer) duration. Recovery shrinks `durationMinutes` to
+  // 20-35 min, but inheriting the original exercises produces an
+  // overstuffed session — the pattern flagged by `time_volume_coherence`
+  // in the eval baseline (e.g. "Technique Strength + Mobility: claimed
+  // 20min, estimated 51min"). Recompute the exercise list so the
+  // recovery slot is honest.
+  let exercises: ExercisePrescription[] | undefined = context.session.exercises;
+  if (context.session.sport === 'strength' && variant.sessionType === 'mobility') {
+    // P2 follow-up (closed-beta backlog, 2026-05-04 night): instead of
+    // an empty exercise list (which used to force the duration-honesty
+    // shrink to ~13 min), populate the mobility recovery slot with a
+    // catalog-grounded mobility flow whose estimated content matches
+    // the variant's claimed minutes. Falls back to empty-block if the
+    // catalog can't span ≥3 distinct warmupNeeds buckets, in which
+    // case the existing shrink path keeps the duration credible.
+    const knowledge = loadCoachKnowledge();
+    const mobilityList = buildMobilityRecoveryExerciseList(knowledge, durationMinutes);
+    if (mobilityList) {
+      exercises = mobilityList;
+      // Keep the claim aligned to the catalog-grounded content. This
+      // prevents later capacity reconciliation from trimming a valid
+      // 4-exercise mobility flow merely because the old multiplier
+      // placeholder landed at the lower 18-minute bound.
+      durationMinutes = Math.max(
+        MOBILITY_TARGET_MIN_MINUTES,
+        Math.min(MOBILITY_TARGET_MAX_MINUTES, estimateStrengthSessionMinutes({ exercises: mobilityList }, knowledge)),
+      );
+    } else {
+      exercises = [];
+    }
+  }
+
+  let session: Session = {
     ...context.session,
     sessionType: variant.sessionType,
     title: variant.title,
@@ -348,7 +401,50 @@ export function adaptSessionForPoorRecovery(context: PoorRecoveryContext): PoorR
       ...(context.session.alternatives ?? []),
       ...variant.alternatives,
     ]),
+    exercises,
   };
+
+  // For strength sport, the session's content has now diverged from
+  // the original (mobility variants emptied the list; strength_maintenance
+  // variants kept the original list). Reconcile the claimed duration
+  // with the actual content:
+  //   1. Strength_maintenance with exercises: trim trailing accessory
+  //      volume until claimed duration is honest.
+  //   2. After trim (or for empty mobility blocks), if still
+  //      underfilled, shrink the claim to match estimated content.
+  //
+  // This guarantees the planner emits a recovery session whose
+  // displayed minutes credibly match what the user will do — closing
+  // the `time_volume_coherence` gap the eval baseline pinned at 82.
+  if (session.sport === 'strength') {
+    const knowledge = loadCoachKnowledge();
+    if (variant.sessionType === 'strength_maintenance' && session.exercises?.length) {
+      session = trimOverstuffedStrengthSessionToDuration(session, knowledge, {
+        tag: 'recovery_duration_coherent',
+        alternative: 'Trailing strength volume was trimmed so the recovery session matches the shrunk duration.',
+      }).session;
+    }
+    const verdict = validateSessionCoherence(session, knowledge);
+    if (!verdict.ok && verdict.reason === 'underfilled') {
+      // The variant's `minMinutes` is a soft preference; the absolute
+      // floor is warmup + cooldown (~12 min) so we never claim a
+      // sub-credible duration. Honesty wins over the variant's
+      // aspirational range.
+      const honestDuration = Math.max(12, verdict.estimatedMinutes);
+      if (honestDuration < session.durationMinutes) {
+        session = {
+          ...session,
+          durationMinutes: honestDuration,
+          plannedLoad: durationToLoad(honestDuration, variant.intensityZone, variant.fatigueCost),
+          tags: dedupeStrings([...session.tags, 'recovery_duration_coherent']),
+          alternatives: dedupeStrings([
+            ...(session.alternatives ?? []),
+            'Recovery duration was reduced to match what the trimmed content can credibly deliver.',
+          ]),
+        };
+      }
+    }
+  }
 
   return { session, scenario, explanation };
 }

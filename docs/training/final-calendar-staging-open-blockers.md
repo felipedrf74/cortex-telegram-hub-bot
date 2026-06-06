@@ -1,33 +1,41 @@
 # Final Calendar Staging Open Blockers
 
-Updated: 2026-04-28
+Updated: 2026-04-28  
+Run ID: `training-calendar-smoke-20260428094430-r9cyiu`
 
 ## Summary
 
-The prior P0 blockers for real Google and Outlook staging calendar lifecycle proof are **closed**.
+The final calendar lifecycle staging gate is blocked before provider execution. These blockers must be resolved before Training calendar lifecycle can be production-cleared.
 
-Both providers passed real staging create/read-back/update/same-shape regenerate/changed-shape replace/cancel/retry/cleanup flows with explicit staging-only live-write guardrails.
+## Blockers
 
-## Closed Blockers
+| ID | Severity | Provider / Layer | Blocker | Impact | Required Resolution | Waiver Policy |
+| --- | --- | --- | --- | --- | --- | --- |
+| CAL-P0-01 | P0 | Global staging | No staging mode configured: missing `STAGING=true` or `NODE_ENV=staging`. | Harness refuses live writes, so no provider lifecycle can be proven. | Run with staging-mode env only. | Cannot waive globally; protects production data. |
+| CAL-P0-02 | P0 | Global staging | Missing explicit write guardrails: `TRAINING_CALENDAR_STAGING_SMOKE=1` and `TRAINING_CALENDAR_STAGING_ALLOW_LIVE_WRITES=1`. | Harness refuses writes. | Set both flags only for isolated staging smoke. | Cannot waive globally. |
+| CAL-P0-03 | P0 | Internal agenda / OAuth | Missing `TRAINING_CALENDAR_STAGING_USER_ID=<staging user id>`. | No user-scoped OAuth tokens or agenda ownership can be verified. | Provide isolated staging user with Google/Outlook connected. | Provider-specific waiver possible only if that provider is not in release scope. |
+| CAL-P0-04 | P0 | Internal agenda DB | Missing `DATABASE_PATH=<staging database path>`. | Plan lifecycle, ownership mapping, and OAuth token lookup cannot run. | Provide staging/test database path. It must look like staging/test unless explicitly overridden. | Cannot waive if backend calendar lifecycle ships. |
+| CAL-P0-05 | P0 | OAuth security | Missing `OAUTH_ENCRYPTION_KEY`. | OAuth tokens cannot be decrypted for staging provider calls. | Provide staging OAuth encryption key matching staging DB token encryption. | Cannot waive for real provider smoke. |
+| CAL-P0-06 | P0 | Google Calendar | Missing `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET`. | Google create/update/read/delete cannot be run. | Provide staging Google OAuth app credentials and connected staging user tokens. | Google may be waived only by explicit owner decision; otherwise release blocker. |
+| CAL-P0-07 | P0 | Outlook Calendar | Missing `OUTLOOK_CLIENT_ID` and `OUTLOOK_CLIENT_SECRET`. | Outlook create/update/read/delete cannot be run. | Provide staging Outlook OAuth app credentials and connected staging user tokens. | Outlook may be waived only by explicit owner decision; otherwise release blocker. |
+| CAL-P0-08 | P0 | Provider read-back | No provider read-back evidence exists for create/update/regenerate/cancel/retry. | Calendar lifecycle trust remains unproven despite local tests. | Rerun smoke and archive event IDs/read-back/cleanup status. | Cannot waive unless provider is out of release scope. |
+| CAL-P0-09 | P0 | Cleanup proof | No real cleanup proof exists because no events were created. | Stale event cleanup is unproven. | Rerun smoke; cleanup must be `cleaned` or exact failures documented. | Cannot waive for provider in release scope. |
 
-| ID | Severity | Provider / Layer | Previous blocker | Closure evidence |
-| --- | --- | --- | --- | --- |
-| CAL-P0-01 | P0 | Global staging | No staging mode configured. | Closed: run used `STAGING=true` and `NODE_ENV=staging`. |
-| CAL-P0-02 | P0 | Global staging | Missing explicit write guardrails. | Closed: run used `TRAINING_CALENDAR_STAGING_SMOKE=1` and `TRAINING_CALENDAR_STAGING_ALLOW_LIVE_WRITES=1`. |
-| CAL-P0-03 | P0 | Internal agenda / OAuth | Missing staging user ID. | Closed: staging user `1` used for both providers. |
-| CAL-P0-04 | P0 | Internal agenda DB | Missing staging DB path. | Closed: server-side staging `.env` supplied `/home/dominguez/telegram-hub-bot-staging/data/bot.db`. |
-| CAL-P0-05 | P0 | OAuth security | Missing OAuth encryption key. | Closed: key remained on staging server; tokens decrypted successfully. |
-| CAL-P0-06 | P0 | Google Calendar | Missing Google credentials/read-back proof. | Closed: Google run `training-calendar-smoke-20260428165035-7ljwng` passed. |
-| CAL-P0-07 | P0 | Outlook Calendar | Missing Outlook credentials/read-back proof. | Closed: Outlook run `training-calendar-smoke-20260428165107-7fsbbr` passed. |
-| CAL-P0-08 | P0 | Provider read-back | No provider read-back evidence. | Closed: both providers read back created/updated/replacement events. |
-| CAL-P0-09 | P0 | Cleanup proof | No real cleanup proof. | Closed: cleanup failures were `None` for both provider runs. |
+## Required Pass Conditions
 
-## Remaining Calendar Notes
+For each provider in release scope:
 
-- No open P0/P1 calendar staging blocker remains from this gate.
-- Provider smoke results are recorded in `docs/training/final-calendar-staging-results.md`.
-- The unified read-back path emits Outlook token-refresh warnings when Outlook is connected, even during Google-only smoke. This is a noisy observability issue, not a lifecycle blocker.
+- `create_plan`: pass with read-back event ID.
+- `sync_update_time`: pass with same event ID and no duplicate.
+- `regenerate_same_shape`: pass with same logical event behavior.
+- `regenerate_changed_shape_create_replacement`: pass with replacement event ID.
+- `regenerate_changed_shape_delete_old`: pass with old event absent on read-back.
+- `retry_sync_no_duplicate`: pass with exactly one active current run event.
+- `replace_plan_create_new`: pass with distinct replacement plan identity.
+- `cancel_plan_delete_current`: pass with event absent on read-back.
+- `replace_plan_delete_old_scope`: pass with precise cleanup.
+- `Cleanup Failures`: `None`.
 
-## Verdict
+## Current Release Recommendation
 
-Calendar staging gate: **closed / pass**.
+Do not mark Training calendar lifecycle production-ready. The backend hardening branch can proceed to staging validation, but not production promotion, until this gate passes or provider scope is explicitly waived.

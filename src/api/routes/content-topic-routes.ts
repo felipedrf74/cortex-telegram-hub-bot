@@ -1,9 +1,10 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
+import { createHash } from 'node:crypto';
 import { Router, Response } from 'express';
 import { AuthenticatedRequest } from '../auth-middleware';
 import { asyncHandler, sendError, sendInternalError, sendSuccess } from '../response-helpers';
-import { invalidateContentDerivedCaches } from '../../services/content-cache-invalidator';
+import { invalidateContentDerivedCaches } from '../../services/cache-coherence-registry';
 import {
   addTopic,
   getFilmingRecommendation,
@@ -11,16 +12,20 @@ import {
   getUpcomingTopicCount,
   updateTopic,
   deleteTopic,
+  getTopicById,
   CONTENT_TOPIC_STATUSES,
   type ContentTopicStatus,
+  type ContentTopic,
 } from '../../services/content-scheduler';
 import {
   getContentRadarPreferences,
   setContentRadarPreferences,
 } from '../../services/content-radar-preferences';
 import { localizeFilmingRecommendation } from '../../services/content-intelligence';
-import { syncContentTopicSecretaryArtifacts } from '../../services/content-topic-secretary-sync';
+import { cleanupContentTopicSecretaryArtifacts } from '../../services/content-topic-secretary-sync';
 import { logger } from '../../utils/logger';
+import { runOutboxTransaction } from '../../services/event-outbox';
+import { consumeResourceBudget } from '../../services/resource-budgets';
 import type { Lang } from '../../utils/i18n';
 
 type ResolveContentLanguage = (req: Pick<AuthenticatedRequest, 'header'>, userId: number) => Lang;
@@ -59,15 +64,15 @@ export function registerContentTopicRoutes(
 ): void {
   /** GET /api/v1/content/radar-preferences — creator topics for Reaction Radar */
   router.get('/radar-preferences', asyncHandler(async (req, res: Response) => {
-    const { userId } = req as unknown as AuthenticatedRequest;
+    const { userId, tenantId } = req as unknown as AuthenticatedRequest;
     if (!ensureValidContentRouteScope(res, userId, 'content_route_radar_preferences_read')) return;
 
-    sendSuccess(res, getContentRadarPreferences(userId));
+    sendSuccess(res, getContentRadarPreferences(userId, tenantId));
   }));
 
   /** PUT /api/v1/content/radar-preferences — replace creator topics for Reaction Radar */
   router.put('/radar-preferences', asyncHandler(async (req, res: Response) => {
-    const { userId } = req as unknown as AuthenticatedRequest;
+    const { userId, tenantId } = req as unknown as AuthenticatedRequest;
     if (!ensureValidContentRouteScope(res, userId, 'content_route_radar_preferences_write')) return;
 
     const topics = Array.isArray(req.body?.topics) ? req.body.topics : null;
@@ -76,7 +81,7 @@ export function registerContentTopicRoutes(
       return;
     }
 
-    const preferences = setContentRadarPreferences(userId, topics);
+    const preferences = setContentRadarPreferences(userId, topics, tenantId);
     invalidateContentDerivedCaches(userId);
     sendSuccess(res, preferences);
   }));
@@ -89,7 +94,7 @@ export function registerContentTopicRoutes(
    * topics are hidden unless the caller passes ?status=cancelled.
    */
   router.get('/topics', asyncHandler(async (req, res: Response) => {
-    const { userId } = req as unknown as AuthenticatedRequest;
+    const { userId, tenantId } = req as unknown as AuthenticatedRequest;
     if (!ensureValidContentRouteScope(res, userId, 'content_route_topics_list')) return;
 
     const status = typeof req.query.status === 'string'
@@ -98,9 +103,7 @@ export function registerContentTopicRoutes(
     const from = typeof req.query.from === 'string' ? req.query.from : undefined;
     const to = typeof req.query.to === 'string' ? req.query.to : undefined;
     const scheduledOnly = req.query.scheduledOnly === 'true';
-    const limit = req.query.limit
-      ? Math.min(parseInt(String(req.query.limit), 10) || 100, 500)
-      : 100;
+    const limit = Math.min(parseInt(String(req.query.limit ?? ''), 10) || 20, 500);
 
     if (status && !CONTENT_TOPIC_STATUSES.includes(status)) {
       sendError(res, 'BAD_REQUEST', `status must be one of: ${CONTENT_TOPIC_STATUSES.join(', ')}`);
@@ -146,7 +149,7 @@ export function registerContentTopicRoutes(
    * to 'planned' server-side.
    */
   router.post('/topics', asyncHandler(async (req, res: Response) => {
-    const { userId } = req as unknown as AuthenticatedRequest;
+    const { userId, tenantId } = req as unknown as AuthenticatedRequest;
     if (!ensureValidContentRouteScope(res, userId, 'content_route_topics_create')) return;
 
     const { title, notes, scheduledDate, scheduledDateTime, status } = req.body;
@@ -166,21 +169,45 @@ export function registerContentTopicRoutes(
       sendError(res, 'BAD_REQUEST', 'scheduledDateTime must be ISO datetime or null');
       return;
     }
+    if (!consumeContentWriteBudget(res, tenantId, userId, 'content_topic_create')) return;
 
     try {
       const language = resolveContentLanguage(req, userId);
       const effectiveScheduledDate = scheduledDate
         ?? datePartFromScheduledDateTime(scheduledDateTime)
         ?? null;
-      const topic = addTopic(userId, title.trim(), {
+      const writeTopic = () => addTopic(userId, title.trim(), {
         notes: notes ?? null,
         scheduledDate: effectiveScheduledDate,
         scheduledAt: scheduledDateTime ?? null,
         status: status ?? 'planned',
+        tenantId,
       });
-      const syncedTopic = await syncContentTopicSecretaryArtifacts(userId, topic, { language });
+      const topic = runOutboxTransaction((emitDomainEvent) => {
+        const created = markTopicSecretarySyncPending(userId, writeTopic());
+        emitDomainEvent({
+          tenantId,
+          userId,
+          sourceSkill: 'content',
+          eventType: 'content.idea.created',
+          entityType: 'content_topic',
+          entityId: created.id,
+          payload: {
+            summary: {
+              status: created.status,
+              scheduled: Boolean(created.scheduled_date ?? created.scheduled_at),
+              syncPending: topicNeedsSecretarySync(created),
+            },
+            action: 'created',
+            language,
+          },
+          privacyClassification: 'private_content',
+          idempotencyKey: `content.idea.created:${userId}:${created.id}`,
+        });
+        return created;
+      });
       invalidateContentDerivedCaches(userId);
-      sendSuccess(res, { topic: syncedTopic }, { status: 201 });
+      sendSuccess(res, { topic }, { status: 201 });
     } catch (err: any) {
       logger.error({ err, userId }, 'iOS content topic create failed');
       sendInternalError(res, 'Failed to create topic');
@@ -195,7 +222,7 @@ export function registerContentTopicRoutes(
    * `scheduledDate` and `notes` accept explicit null to clear.
    */
   router.patch('/topics/:id', asyncHandler(async (req, res: Response) => {
-    const { userId } = req as unknown as AuthenticatedRequest;
+    const { userId, tenantId } = req as unknown as AuthenticatedRequest;
     const topicId = parseContentTopicId(req.params.id);
     if (!ensureValidContentRouteScope(res, userId, 'content_route_topics_update', { topicId })) return;
 
@@ -224,27 +251,77 @@ export function registerContentTopicRoutes(
       sendError(res, 'BAD_REQUEST', 'scheduledDateTime must be ISO datetime or null');
       return;
     }
+    if (!consumeContentWriteBudget(res, tenantId, userId, 'content_topic_update')) return;
 
     try {
+      const existingTopic = getTopicById(userId, topicId);
+      if (!existingTopic) {
+        sendError(res, 'NOT_FOUND', 'Topic not found or not owned by user', 404);
+        return;
+      }
       const effectiveScheduledDate = scheduledDate !== undefined
         ? scheduledDate
         : datePartFromScheduledDateTime(scheduledDateTime);
-      const updated = updateTopic(userId, topicId, {
+      const nextSchedule = resolveNextTopicSchedule(existingTopic, scheduledDate, scheduledDateTime);
+      if (nextSchedule.clearsSchedule && topicHasSecretaryRefs(existingTopic)) {
+        const cleanup = await cleanupContentTopicSecretaryArtifacts(userId, existingTopic);
+        if (cleanup.errors.length > 0) {
+          sendInternalError(res, 'Failed to clean up synced Secretary artifacts');
+          return;
+        }
+      }
+      const mutationFingerprint = stableMutationFingerprint({
+        title: title !== undefined ? title.trim() : undefined,
+        notes: notes !== undefined ? (notes === null ? null : String(notes)) : undefined,
+        scheduledDate: effectiveScheduledDate,
+        scheduledDateTime: scheduledDateTime !== undefined ? scheduledDateTime : undefined,
+        status,
+      });
+      const writeUpdate = () => updateTopic(userId, topicId, {
         title: title !== undefined ? title.trim() : undefined,
         notes: notes !== undefined ? (notes === null ? null : String(notes)) : undefined,
         scheduled_date: effectiveScheduledDate,
         scheduled_at: scheduledDateTime !== undefined ? scheduledDateTime : undefined,
         status,
+        secretary_task_list_id: nextSchedule.clearsSchedule ? null : undefined,
+        secretary_task_list_name: nextSchedule.clearsSchedule ? null : undefined,
+        secretary_task_external_id: nextSchedule.clearsSchedule ? null : undefined,
+        calendar_event_id: nextSchedule.clearsSchedule ? null : undefined,
+        calendar_source: nextSchedule.clearsSchedule ? null : undefined,
+        secretary_sync_status: nextSchedule.hasSchedule ? 'pending' : nextSchedule.clearsSchedule ? null : undefined,
+        secretary_sync_error: nextSchedule.hasSchedule || nextSchedule.clearsSchedule ? null : undefined,
+      });
+      const updated = runOutboxTransaction((emitDomainEvent) => {
+        const row = writeUpdate();
+        if (!row) return null;
+        const topic = markTopicSecretarySyncPending(userId, row);
+        emitDomainEvent({
+          tenantId,
+          userId,
+          sourceSkill: 'content',
+          eventType: 'content.idea.updated',
+          entityType: 'content_topic',
+          entityId: topic.id,
+          payload: {
+            summary: {
+              status: topic.status,
+              scheduled: Boolean(topic.scheduled_date ?? topic.scheduled_at),
+              syncPending: topicNeedsSecretarySync(topic),
+            },
+            action: 'updated',
+            language: resolveContentLanguage(req, userId),
+          },
+          privacyClassification: 'private_content',
+          idempotencyKey: `content.idea.updated:${userId}:${topic.id}:${mutationFingerprint}`,
+        });
+        return topic;
       });
       if (!updated) {
         sendError(res, 'NOT_FOUND', 'Topic not found or not owned by user', 404);
         return;
       }
-      const syncedTopic = await syncContentTopicSecretaryArtifacts(userId, updated, {
-        language: resolveContentLanguage(req, userId),
-      });
       invalidateContentDerivedCaches(userId);
-      sendSuccess(res, { topic: syncedTopic });
+      sendSuccess(res, { topic: updated });
     } catch (err: any) {
       logger.error({ err, userId, topicId }, 'iOS content topic update failed');
       sendInternalError(res, 'Failed to update topic');
@@ -257,7 +334,7 @@ export function registerContentTopicRoutes(
    * status='cancelled' instead.
    */
   router.delete('/topics/:id', asyncHandler(async (req, res: Response) => {
-    const { userId } = req as unknown as AuthenticatedRequest;
+    const { userId, tenantId } = req as unknown as AuthenticatedRequest;
     const topicId = parseContentTopicId(req.params.id);
     if (!ensureValidContentRouteScope(res, userId, 'content_route_topics_delete', { topicId })) return;
 
@@ -265,9 +342,41 @@ export function registerContentTopicRoutes(
       sendError(res, 'BAD_REQUEST', 'id must be a number');
       return;
     }
+    if (!consumeContentWriteBudget(res, tenantId, userId, 'content_topic_delete')) return;
 
     try {
-      const deleted = deleteTopic(userId, topicId);
+      const topic = getTopicById(userId, topicId);
+      if (!topic) {
+        sendError(res, 'NOT_FOUND', 'Topic not found or not owned by user', 404);
+        return;
+      }
+      if (topicHasSecretaryRefs(topic)) {
+        const cleanup = await cleanupContentTopicSecretaryArtifacts(userId, topic);
+        if (cleanup.errors.length > 0) {
+          sendInternalError(res, 'Failed to clean up synced Secretary artifacts');
+          return;
+        }
+      }
+      const writeDelete = () => deleteTopic(userId, topicId);
+      const deleted = runOutboxTransaction((emitDomainEvent) => {
+        const didDelete = writeDelete();
+        if (!didDelete) return false;
+        emitDomainEvent({
+          tenantId,
+          userId,
+          sourceSkill: 'content',
+          eventType: 'content.idea.updated',
+          entityType: 'content_topic',
+          entityId: topicId,
+          payload: {
+            summary: { deleted: true },
+            action: 'deleted',
+          },
+          privacyClassification: 'private_content',
+          idempotencyKey: `content.idea.deleted:${userId}:${topicId}`,
+        });
+        return true;
+      });
       if (!deleted) {
         sendError(res, 'NOT_FOUND', 'Topic not found or not owned by user', 404);
         return;
@@ -279,4 +388,76 @@ export function registerContentTopicRoutes(
       sendInternalError(res, 'Failed to delete topic');
     }
   }));
+}
+
+function stableMutationFingerprint(value: Record<string, unknown>): string {
+  return createHash('sha256')
+    .update(JSON.stringify(value, Object.keys(value).sort()))
+    .digest('hex')
+    .slice(0, 16);
+}
+
+function topicNeedsSecretarySync(topic: Pick<ContentTopic, 'scheduled_date' | 'scheduled_at'>): boolean {
+  return Boolean(topic.scheduled_date ?? topic.scheduled_at);
+}
+
+function topicHasSecretaryRefs(topic: ContentTopic): boolean {
+  return Boolean(
+    (topic.secretary_task_external_id && topic.secretary_task_list_id)
+    || (topic.calendar_event_id && topic.calendar_source),
+  );
+}
+
+function markTopicSecretarySyncPending(userId: number, topic: ContentTopic): ContentTopic {
+  if (!topicNeedsSecretarySync(topic)) return topic;
+  if (topic.secretary_sync_status === 'pending' && !topic.secretary_sync_error) return topic;
+  return updateTopic(userId, topic.id, {
+    secretary_sync_status: 'pending',
+    secretary_sync_error: null,
+  }) ?? {
+    ...topic,
+    secretary_sync_status: 'pending',
+    secretary_sync_error: null,
+  };
+}
+
+function resolveNextTopicSchedule(
+  existing: ContentTopic,
+  scheduledDate: string | null | undefined,
+  scheduledDateTime: string | null | undefined,
+): { hasSchedule: boolean; clearsSchedule: boolean } {
+  const nextDate = scheduledDate !== undefined
+    ? scheduledDate
+    : scheduledDateTime !== undefined && scheduledDateTime !== null
+      ? datePartFromScheduledDateTime(scheduledDateTime)
+      : existing.scheduled_date;
+  const nextDateTime = scheduledDateTime !== undefined ? scheduledDateTime : existing.scheduled_at;
+  const hadSchedule = topicNeedsSecretarySync(existing);
+  const hasSchedule = Boolean(nextDate ?? nextDateTime);
+  return {
+    hasSchedule,
+    clearsSchedule: hadSchedule && !hasSchedule,
+  };
+}
+
+function consumeContentWriteBudget(res: Response, tenantId: number, userId: number, budgetKey: string): boolean {
+  const budget = consumeResourceBudget({
+    tenantId,
+    userId,
+    budgetKey,
+    limit: 60,
+    windowSeconds: 60,
+  });
+  if (budget.allowed) return true;
+  setRetryAfter(res, budget.resetAt);
+  sendError(res, 'RATE_LIMITED', 'Too many content write requests. Try again shortly.', 429, {
+    resetAt: budget.resetAt,
+    budgetKey: budget.budgetKey,
+  });
+  return false;
+}
+
+function setRetryAfter(res: Response, resetAt: string): void {
+  const seconds = Math.max(1, Math.ceil((Date.parse(resetAt) - Date.now()) / 1000));
+  res.setHeader('Retry-After', String(Number.isFinite(seconds) ? seconds : 60));
 }

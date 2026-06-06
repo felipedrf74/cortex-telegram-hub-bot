@@ -38,10 +38,14 @@ let testDb: Database.Database;
 
 vi.mock('../../src/services/database', () => ({
   getDb: () => testDb,
+  initDatabase: vi.fn(),
+  closeDatabase: vi.fn(),
+  findUnexpectedMigrationPrefixCollisions: vi.fn(() => []),
 }));
 
 vi.mock('../../src/utils/logger', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(), trace: vi.fn(), child: vi.fn().mockReturnThis() },
+  LOGGER_REDACTION_PATHS: [],
 }));
 
 vi.mock('../../src/config', () => ({
@@ -51,7 +55,28 @@ vi.mock('../../src/config', () => ({
   },
 }));
 
-vi.mock('../../src/services/coordination-cache-invalidator', () => ({
+vi.mock('../../src/services/cache-coherence-registry', () => ({
+  ...{
+    CacheCoherenceEvents: {},
+    _resetDashboardCacheInvalidationStatsForTests: vi.fn(),
+    getDashboardCacheInvalidationStats: vi.fn(),
+    invalidateCacheForEvent: vi.fn(),
+    invalidateCalendarCaches: vi.fn(),
+    invalidateContentDerivedCaches: vi.fn(),
+    invalidateCookingDerivedCaches: vi.fn(),
+    invalidateDashboardCaches: vi.fn(),
+    invalidateDashboardCoordinationCaches: vi.fn(),
+    invalidateDashboardHomeCaches: vi.fn(),
+    invalidateDashboardReadinessCaches: vi.fn(),
+    invalidateDashboardRootCaches: vi.fn(),
+    invalidateExecutiveBriefCaches: vi.fn(),
+    invalidateFinanceDerivedCaches: vi.fn(),
+    invalidateIntegrationDerivedCaches: vi.fn(),
+    invalidateOnboardingDerivedCaches: vi.fn(),
+    invalidatePlanningCaches: vi.fn(),
+    invalidateTaskCaches: vi.fn(),
+    invalidateTrainingDerivedCaches: vi.fn(),
+  },
   invalidateDashboardCoordinationCaches: (...args: unknown[]) =>
     cacheMocks.invalidateDashboardCoordinationCaches(...args),
 }));
@@ -77,22 +102,32 @@ import { getOrCreateUser, setUserTier } from '../../src/services/user-service';
 interface MockRes {
   statusCode: number;
   body: any;
+  ended: boolean;
+  headers: Record<string, number | string | string[]>;
   status(code: number): MockRes;
+  setHeader(name: string, value: number | string | string[]): MockRes;
+  getHeader(name: string): number | string | string[] | undefined;
   json(body: any): MockRes;
+  end(): MockRes;
 }
 
 function mockRes(): MockRes {
   const r: MockRes = {
     statusCode: 200,
     body: null,
+    ended: false,
+    headers: {},
     status(code: number) { r.statusCode = code; return r; },
+    setHeader(name: string, value: number | string | string[]) { r.headers[name.toLowerCase()] = value; return r; },
+    getHeader(name: string) { return r.headers[name.toLowerCase()]; },
     json(body: any) { r.body = body; return r; },
+    end() { r.ended = true; return r; },
   };
   return r;
 }
 
 function mockReq(userId: number, body?: any): Request {
-  return { userId, body } as any;
+  return { userId, tenantId: userId, body } as any;
 }
 
 /**
@@ -105,6 +140,7 @@ async function dispatch(
   url: string,
   userId: number,
   body?: any,
+  options: { headers?: Record<string, string | string[]> } = {},
 ): Promise<MockRes> {
   const router = skillsRoutes();
   const req = mockReq(userId, body);
@@ -116,6 +152,9 @@ async function dispatch(
   (req as any).query = {};
   (req as any).params = {};
   (req as any).headers = {};
+  for (const [name, value] of Object.entries(options.headers ?? {})) {
+    (req as any).headers[name.toLowerCase()] = value;
+  }
 
   const res = mockRes();
 
@@ -176,7 +215,7 @@ describe('Skills API — GET /catalog', () => {
 
     const data = res.body.data;
     expect(data.userTier).toBe('pro');
-    expect(data.skills).toHaveLength(5); // secretary, content, cooking, finance, triathlon
+    expect(data.skills).toHaveLength(8); // 5 domain skills + 3 platform skills (connections, notifications, decision_center) promoted 2026-05-15
 
     // Every parent should be accessible for pro
     for (const skill of data.skills) {
@@ -241,6 +280,144 @@ describe('Skills API — GET /catalog', () => {
     getOrCreateUser(1005, { username: 'cnt' });
     const res = await dispatch('GET', '/catalog', 1005);
     expect(res.body.data.catalogRowCount).toBeGreaterThan(20);
+  });
+
+  it('supports private ETag validation for repeated catalog reads', async () => {
+    getOrCreateUser(1006, { username: 'etag-reader' });
+
+    const first = await dispatch('GET', '/catalog', 1006);
+    expect(first.statusCode).toBe(200);
+    expect(first.body.ok).toBe(true);
+    expect(first.getHeader('cache-control')).toBe('private, max-age=30');
+
+    const etag = first.getHeader('etag');
+    expect(etag).toEqual(expect.stringMatching(/^"skills-catalog-[a-f0-9]{32}"$/));
+
+    const second = await dispatch('GET', '/catalog', 1006, undefined, {
+      headers: { 'If-None-Match': String(etag) },
+    });
+    expect(second.statusCode).toBe(304);
+    expect(second.ended).toBe(true);
+    expect(second.body).toBeNull();
+    expect(second.getHeader('etag')).toBe(etag);
+    expect(second.getHeader('cache-control')).toBe('private, max-age=30');
+  });
+});
+
+describe('Skills API — version registry', () => {
+  beforeEach(() => {
+    testDb = new Database(':memory:');
+    testDb.pragma('journal_mode = WAL');
+    applyMigrations(testDb);
+    cacheMocks.invalidateDashboardCoordinationCaches.mockClear();
+  });
+  afterEach(() => testDb?.close());
+
+  it('returns current skill version metadata for an authenticated user', async () => {
+    getOrCreateUser(1501, { username: 'version-reader' });
+
+    const res = await dispatch('GET', '/versions', 1501);
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body.ok).toBe(true);
+    expect(res.body.data.skills.map((skill: any) => skill.skillId)).toEqual([
+      'chat',
+      'secretary',
+      'training',
+      'finance',
+      'cooking',
+      'content',
+    ]);
+    expect(res.body.data.skills.find((skill: any) => skill.skillId === 'content').currentVersion).toBe('2.0.0');
+  });
+
+  it('returns one skill metadata and supports the triathlon training alias', async () => {
+    getOrCreateUser(1502, { username: 'version-reader-2' });
+
+    const res = await dispatch('GET', '/versions/triathlon', 1502);
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body.ok).toBe(true);
+    expect(res.body.data.skillId).toBe('training');
+    expect(res.body.data.currentVersion).toBe('3.0.0');
+  });
+
+  it('denies version mutation to non-owner users', async () => {
+    getOrCreateUser(1503, { username: 'pro' });
+
+    const res = await dispatch('POST', '/versions', 1503, {
+      skillId: 'content',
+      skillName: 'Content Creation',
+      version: '2.1.0',
+      releaseType: 'minor',
+      releaseTitle: 'Unauthorized write',
+      releaseSummary: 'Should not be accepted.',
+    });
+
+    expect(res.statusCode).toBe(403);
+    expect(res.body.ok).toBe(false);
+    expect(res.body.error.code).toBe('FORBIDDEN');
+  });
+
+  it('owner can create version metadata without exposing internal notes in release history', async () => {
+    getOrCreateUser(1504, { username: 'owner' });
+    setUserTier(1504, 'owner');
+
+    const createRes = await dispatch('POST', '/versions', 1504, {
+      skillId: 'content',
+      skillName: 'Content Creation',
+      version: '2.1.0',
+      releaseType: 'minor',
+      releaseTitle: 'Source provenance foundation',
+      releaseSummary: 'Adds source-ledger metadata for content artifacts.',
+      capabilitiesAdded: ['source registry'],
+      testsAdded: ['skill-version-registry.test.ts'],
+      rollbackNotes: 'Roll back to content@2.0.0.',
+      internalNotes: 'private security investigation details',
+      status: 'candidate',
+    });
+
+    expect(createRes.statusCode).toBe(201);
+    expect(createRes.body.data.skillId).toBe('content');
+    expect(JSON.stringify(createRes.body)).not.toContain('private security investigation details');
+
+    const historyRes = await dispatch('GET', '/versions/content/history', 1504);
+    expect(historyRes.statusCode).toBe(200);
+    expect(historyRes.body.data.versions.map((version: any) => version.version)).toContain('2.1.0');
+    expect(JSON.stringify(historyRes.body)).not.toContain('private security investigation details');
+  });
+
+  it('owner can activate tenant-specific rollout metadata without changing global users', async () => {
+    getOrCreateUser(1505, { username: 'owner' });
+    setUserTier(1505, 'owner');
+
+    await dispatch('POST', '/versions', 1505, {
+      skillId: 'secretary',
+      skillName: 'Secretary',
+      version: '2.1.0',
+      releaseType: 'minor',
+      releaseTitle: 'Tenant schedule canary',
+      releaseSummary: 'Canary scheduling metadata.',
+      capabilitiesAdded: ['tenant schedule canary'],
+      rollbackNotes: 'Remove tenant rollout.',
+      status: 'candidate',
+      rolloutScope: 'tenant',
+    });
+
+    const activateRes = await dispatch('POST', '/versions/secretary/2.1.0/activate', 1505, {
+      scopeType: 'tenant',
+      tenantId: 1506,
+    });
+    expect(activateRes.statusCode).toBe(200);
+    expect(activateRes.body.data.version).toBe('2.1.0');
+
+    getOrCreateUser(1506, { username: 'tenant-canary' });
+    getOrCreateUser(1507, { username: 'ordinary' });
+
+    const canaryRes = await dispatch('GET', '/versions/secretary', 1506);
+    const ordinaryRes = await dispatch('GET', '/versions/secretary', 1507);
+    expect(canaryRes.body.data.currentVersion).toBe('2.1.0');
+    expect(ordinaryRes.body.data.currentVersion).toBe('2.0.0');
   });
 });
 
@@ -311,7 +488,7 @@ describe('Skills API — POST /override', () => {
     const afterTri = afterRes.body.data.skills.find((s: any) => s.name === 'triathlon');
     const afterGym = afterTri.subSkills.find((s: any) => s.name === 'gym');
     expect(afterGym.accessible).toBe(true);
-    expect(afterGym.accessReason).toBe('override');
+    expect(afterGym.accessReason).toBe('user_grant');
   });
 
   it('sanitizes override grant failures instead of leaking persistence internals', async () => {

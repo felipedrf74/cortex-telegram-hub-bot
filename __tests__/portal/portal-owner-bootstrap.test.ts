@@ -35,6 +35,7 @@ vi.mock('../../src/utils/logger', () => ({
     debug: vi.fn(),
     child: vi.fn().mockReturnThis(),
   },
+  LOGGER_REDACTION_PATHS: [],
 }));
 
 vi.mock('../../src/utils/request-context', () => ({
@@ -44,6 +45,9 @@ vi.mock('../../src/utils/request-context', () => ({
 
 vi.mock('../../src/services/database', () => ({
   getDb: (...args: unknown[]) => mockGetDb(...args),
+  initDatabase: vi.fn(),
+  closeDatabase: vi.fn(),
+  findUnexpectedMigrationPrefixCollisions: vi.fn(() => []),
 }));
 
 vi.mock('../../src/portal/telemetry', () => ({

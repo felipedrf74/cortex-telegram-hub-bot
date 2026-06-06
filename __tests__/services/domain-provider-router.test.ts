@@ -9,15 +9,20 @@ vi.mock('../../src/services/database', () => ({
       run: vi.fn(),
     }),
   }),
+  initDatabase: vi.fn(),
+  closeDatabase: vi.fn(),
+  findUnexpectedMigrationPrefixCollisions: vi.fn(() => []),
 }));
 
 import {
   getProviderForDomain,
   getFallbackForDomain,
   getDomainProviderConfig,
+  hasDomainProviderRoute,
   initDomainRouting,
   isSimpleSecretaryQuery,
 } from '../../src/services/domain-provider-router';
+import { logger } from '../../src/utils/logger';
 
 describe('Domain Provider Router', () => {
   const originalEnv = { ...process.env };
@@ -27,15 +32,15 @@ describe('Domain Provider Router', () => {
     delete process.env.GEMINI_ROUTING_ENABLED;
     delete process.env.GEMINI_INCLUDE_SECRETARY;
     delete process.env.GEMINI_DOMAINS;
+    delete process.env.AI_DOMAIN_PROVIDER_OVERRIDES;
     delete process.env.SECRETARY_HAIKU_ROUTING_ENABLED;
     initDomainRouting();
   });
 
   describe('getProviderForDomain', () => {
-    // April 2026 revision — no Claude models as primary ANYWHERE.
-    // Every domain (including secretary, which previously used Sonnet for
-    // Secretary routes to OpenAI (GPT-5.4 nano — best tool-calling at lowest cost).
-    // Other domains route to Gemini Flash. Anthropic stays as last-resort fallback.
+    // April/May 2026 revision — no Claude models as primary by default.
+    // Secretary routes to OpenAI (GPT-5.4 nano). Other domains route to
+    // Gemini Flash and use OpenAI as the normal cross-provider fallback.
     it('secretary routes to openai, others to gemini', () => {
       expect(getProviderForDomain('secretary')).toBe('openai');
       expect(getProviderForDomain('triathlon')).toBe('gemini');
@@ -67,17 +72,53 @@ describe('Domain Provider Router', () => {
       expect(getProviderForDomain('content')).toBe('gemini');
       expect(getProviderForDomain('finance')).toBe('anthropic');
     });
+
+    it('supports domain-level provider experiment overrides without changing global chat defaults', () => {
+      const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => undefined as any);
+      process.env.AI_DOMAIN_PROVIDER_OVERRIDES = 'cooking=openai,finance=openai,unknown=gemini,content=bogus';
+      initDomainRouting();
+
+      expect(getProviderForDomain('cooking')).toBe('openai');
+      expect(getProviderForDomain('finance')).toBe('openai');
+      expect(getProviderForDomain('content')).toBe('gemini');
+      expect(getProviderForDomain('triathlon')).toBe('gemini');
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.objectContaining({ domain: 'unknown', provider: 'gemini' }),
+        expect.stringContaining('unknown domain'),
+      );
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.objectContaining({ domain: 'content', provider: 'bogus' }),
+        expect.stringContaining('unknown provider'),
+      );
+      warnSpy.mockRestore();
+    });
+
+    it('keeps the Gemini kill switch stronger than experiment overrides', () => {
+      process.env.GEMINI_ROUTING_ENABLED = 'false';
+      process.env.AI_DOMAIN_PROVIDER_OVERRIDES = 'cooking=openai';
+      initDomainRouting();
+
+      expect(getProviderForDomain('cooking')).toBe('anthropic');
+    });
+
+    it('identifies only domains with executable domain-provider routes', () => {
+      expect(hasDomainProviderRoute('secretary')).toBe(true);
+      expect(hasDomainProviderRoute('cooking')).toBe(true);
+      expect(hasDomainProviderRoute('chat')).toBe(false);
+      expect(hasDomainProviderRoute('dynamic_custom_skill')).toBe(false);
+    });
   });
 
   describe('getFallbackForDomain', () => {
-    // Secretary falls back to Gemini (cheaper than Anthropic) since its
-    // primary is now OpenAI. Other domains fall back to Anthropic.
-    it('secretary falls back to gemini, others to anthropic', () => {
+    // Secretary falls back to Gemini since its primary is OpenAI. Other
+    // domains fall back to OpenAI so Anthropic-gated deployments still
+    // have a usable cross-provider fallback.
+    it('secretary falls back to gemini, others to openai', () => {
       expect(getFallbackForDomain('secretary')).toBe('gemini');
-      expect(getFallbackForDomain('triathlon')).toBe('anthropic');
-      expect(getFallbackForDomain('content')).toBe('anthropic');
-      expect(getFallbackForDomain('finance')).toBe('anthropic');
-      expect(getFallbackForDomain('cooking')).toBe('anthropic');
+      expect(getFallbackForDomain('triathlon')).toBe('openai');
+      expect(getFallbackForDomain('content')).toBe('openai');
+      expect(getFallbackForDomain('finance')).toBe('openai');
+      expect(getFallbackForDomain('cooking')).toBe('openai');
     });
   });
 

@@ -53,10 +53,14 @@ let testDb: Database.Database;
 
 vi.mock('../../src/services/database', () => ({
   getDb: () => testDb,
+  initDatabase: vi.fn(),
+  closeDatabase: vi.fn(),
+  findUnexpectedMigrationPrefixCollisions: vi.fn(() => []),
 }));
 
 vi.mock('../../src/utils/logger', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
+  LOGGER_REDACTION_PATHS: [],
 }));
 
 vi.mock('../../src/portal/telemetry', () => ({
@@ -180,6 +184,25 @@ describe('Error Categorizer', () => {
       expect(ctx.taskId).toBe('task-abc');
       expect(ctx.agent).toBe('backend');
       expect(ctx.retryAttempt).toBe(1);
+    });
+
+    it('should sanitize sensitive error messages before durable persistence', async () => {
+      const { logCategorizedError } = await import('../../src/services/error-categorizer');
+      const categorized = { category: 'integration' as const, strategy: 'backoff_retry' as const, maxRetries: 3, backoffMs: 10000 };
+
+      logCategorizedError(
+        'task-secret',
+        'content',
+        'provider failed prompt=private strategy token=secret-token',
+        categorized,
+        1,
+      );
+
+      const row = testDb.prepare('SELECT * FROM error_log WHERE source = ?').get('agent') as any;
+      expect(row.message).toContain('prompt=[Redacted]');
+      expect(row.message).toContain('token=[Redacted]');
+      expect(row.message).not.toContain('private strategy');
+      expect(row.message).not.toContain('secret-token');
     });
   });
 

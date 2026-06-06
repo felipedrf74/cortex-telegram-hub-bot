@@ -25,6 +25,8 @@ import json
 import logging
 import os
 import re
+from contextvars import ContextVar
+from typing import Any
 
 import httpx
 
@@ -44,6 +46,31 @@ _TS_BASE = (
 ).rstrip("/")
 _INTERNAL_SECRET = os.environ.get("INTERNAL_API_SECRET", "")
 _AI_COMPLETE_URL = f"{_TS_BASE}/api/v1/internal/ai-complete"
+_FIXTURE_MODE = (
+    os.environ.get("CONTENT_ENGINE_FIXTURE_MODE") == "1"
+    or os.environ.get("NEXUS_LOCAL_ALLOW_MODEL_CALLS") == "0"
+)
+_ATTRIBUTION_CONTEXT: ContextVar[dict[str, Any] | None] = ContextVar(
+    "content_engine_attribution_context",
+    default=None,
+)
+
+
+def set_attribution_context(
+    user_id: int | None = None,
+    tenant_id: int | None = None,
+    attribution_token: str | None = None,
+):
+    """Install request-scoped user/tenant attribution for downstream AI calls."""
+    return _ATTRIBUTION_CONTEXT.set({
+        "user_id": user_id,
+        "tenant_id": tenant_id,
+        "attribution_token": attribution_token,
+    })
+
+
+def reset_attribution_context(token) -> None:
+    _ATTRIBUTION_CONTEXT.reset(token)
 
 
 def _strip_markdown_json_fence(raw: str) -> str:
@@ -97,6 +124,8 @@ async def _repair_json_response(
     system: str,
     category: str,
     max_tokens: int,
+    user_id: int | None = None,
+    tenant_id: int | None = None,
 ) -> dict | list | None:
     repair_prompt = f"""Repair the following model output into valid JSON only.
 Preserve the original structure and data. Do not summarize. Do not add markdown.
@@ -112,6 +141,8 @@ BROKEN OUTPUT:
             temperature=0.0,
             category=f"{category}_json_repair",
             json_mode=True,
+            user_id=user_id,
+            tenant_id=tenant_id,
         )
         return json.loads(_extract_json_candidate(repaired))
     except Exception as exc:
@@ -127,6 +158,9 @@ async def ask_claude(
     temperature: float = 0.7,
     category: str = "content_engine",
     json_mode: bool = False,
+    user_id: int | None = None,
+    tenant_id: int | None = None,
+    attribution_token: str | None = None,
 ) -> str:
     """Send a prompt through the TS AI proxy and return the text response.
 
@@ -134,11 +168,19 @@ async def ask_claude(
     The `model` parameter is kept for backward compat but is ignored —
     the TS backend picks the best available provider.
     """
+    if _FIXTURE_MODE:
+        raise RuntimeError("AI proxy disabled by Content Engine fixture mode.")
+
     if not _INTERNAL_SECRET:
         raise RuntimeError(
             "INTERNAL_API_SECRET not set — content-engine requires it to "
             "communicate with the TS backend's AI proxy."
         )
+
+    context = _ATTRIBUTION_CONTEXT.get() or {}
+    effective_user_id = user_id if user_id is not None else context.get("user_id")
+    effective_tenant_id = tenant_id if tenant_id is not None else context.get("tenant_id")
+    effective_attribution_token = attribution_token or context.get("attribution_token")
 
     body = {
         "prompt": prompt,
@@ -148,6 +190,12 @@ async def ask_claude(
         "temperature": temperature,
         "jsonMode": json_mode,
     }
+    if effective_user_id is not None:
+        body["userId"] = effective_user_id
+    if effective_tenant_id is not None:
+        body["tenantId"] = effective_tenant_id
+    if effective_attribution_token:
+        body["attributionToken"] = effective_attribution_token
 
     async with httpx.AsyncClient(timeout=300.0) as client:
         try:
@@ -158,11 +206,12 @@ async def ask_claude(
             resp.raise_for_status()
         except httpx.HTTPStatusError as e:
             logger.error(
-                "AI proxy HTTP error %d: %s",
+                "AI proxy HTTP error %d for category=%s (%d chars)",
                 e.response.status_code,
-                e.response.text[:300],
+                category,
+                len(e.response.text or ""),
             )
-            raise RuntimeError(f"AI proxy error {e.response.status_code}: {e.response.text[:200]}")
+            raise RuntimeError(f"AI proxy error {e.response.status_code} for category={category}")
         except httpx.TimeoutException:
             logger.error("AI proxy timeout after 300s for category=%s", category)
             raise
@@ -186,6 +235,9 @@ async def ask_claude_json(
     max_tokens: int = 4096,
     temperature: float = 0.5,
     category: str = "content_engine",
+    user_id: int | None = None,
+    tenant_id: int | None = None,
+    attribution_token: str | None = None,
 ) -> dict | list:
     """Send a prompt through the AI proxy and parse the response as JSON.
 
@@ -197,6 +249,8 @@ async def ask_claude_json(
         prompt, system=system, model=model,
         max_tokens=max_tokens, temperature=temperature,
         category=category, json_mode=True,
+        user_id=user_id, tenant_id=tenant_id,
+        attribution_token=attribution_token,
     )
 
     cleaned = _extract_json_candidate(raw)
@@ -204,10 +258,10 @@ async def ask_claude_json(
     try:
         return json.loads(cleaned)
     except json.JSONDecodeError:
-        repaired = await _repair_json_response(raw, system, category, max_tokens)
+        repaired = await _repair_json_response(raw, system, category, max_tokens, user_id, tenant_id)
         if repaired is not None:
             logger.info("AI JSON response repaired for category=%s", category)
             return repaired
 
-        logger.warning("AI proxy returned non-JSON after repair attempt: %s", raw[:200])
+        logger.warning("AI proxy returned non-JSON after repair attempt for category=%s (%d chars)", category, len(raw))
         return {"raw": raw}

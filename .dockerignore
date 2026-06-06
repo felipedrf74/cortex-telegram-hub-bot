@@ -1,0 +1,38 @@
+# Build artifacts — recompile inside the container
+node_modules
+dist
+content-engine/.venv
+content-engine/.venv313
+content-engine/__pycache__
+content-engine/**/__pycache__
+
+# Local state — must NOT bake into the image
+data
+logs
+.local
+coverage
+reports
+*.db
+*.db-journal
+*.db-wal
+*.log
+
+# Secrets — must NOT bake into the image
+.env
+.env.*
+!.env.local.example
+
+# Tests + dev tooling that bloats the image without runtime value
+__tests__
+vitest.config.ts
+.git
+.gitignore
+.github
+.claude
+docs/release/cannot-skip-gate-evidence
+docs/release/smoke-evidence
+
+# OS noise
+.DS_Store
+*.swp
+*.tmp

@@ -18,24 +18,13 @@ class EngineConfig:
     anthropic_api_key: str = ""
     reddit_client_id: str = ""
     reddit_client_secret: str = ""
+    internal_api_secret: str = ""
+    fixture_mode: bool = False
+    env: str = "development"
 
     # ── Timeouts (seconds) ────────────────────────────────────────────
     searcher_timeout: float = 10.0
     pipeline_timeout: float = 30.0
-
-    # ── Scoring weights ───────────────────────────────────────────────
-    weight_relevance: float = 0.40
-    weight_virality: float = 0.30
-    weight_recency: float = 0.30
-
-    # ── Niche defaults ────────────────────────────────────────────────
-    default_niches: list[str] = field(default_factory=lambda: [
-        "fitness strength training gym trends",
-        "running cycling endurance sports",
-        "politics news trending debates Brazil",
-        "viral reaction content YouTube trends",
-        "self development motivational content",
-    ])
 
     # ── Competitor channels (YouTube channel IDs or handles) ──────────
     niche1_competitors: list[str] = field(default_factory=lambda: [
@@ -48,6 +37,20 @@ class EngineConfig:
 
 def load_config() -> EngineConfig:
     """Build config from environment variables."""
+    env = os.environ.get("ENV") or os.environ.get("NODE_ENV") or "development"
+    internal_api_secret = os.environ.get("INTERNAL_API_SECRET", "")
+    if _fixture_mode_enabled():
+        return EngineConfig(
+            fixture_mode=True,
+            internal_api_secret=internal_api_secret,
+            env=env,
+        )
+
+    if env == "production" and not internal_api_secret:
+        raise RuntimeError(
+            "INTERNAL_API_SECRET must be set before starting the content engine in production."
+        )
+
     return EngineConfig(
         serpapi_key=os.environ.get("SERPAPI_API_KEY", ""),
         youtube_api_key=os.environ.get("YOUTUBE_API_KEY", ""),
@@ -55,6 +58,15 @@ def load_config() -> EngineConfig:
         anthropic_api_key=os.environ.get("ANTHROPIC_API_KEY", ""),
         reddit_client_id=os.environ.get("REDDIT_CLIENT_ID", ""),
         reddit_client_secret=os.environ.get("REDDIT_CLIENT_SECRET", ""),
+        internal_api_secret=internal_api_secret,
+        env=env,
+    )
+
+
+def _fixture_mode_enabled() -> bool:
+    return (
+        os.environ.get("CONTENT_ENGINE_FIXTURE_MODE") == "1"
+        or os.environ.get("NEXUS_LOCAL_ALLOW_MODEL_CALLS") == "0"
     )
 
 

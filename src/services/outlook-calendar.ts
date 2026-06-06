@@ -235,8 +235,9 @@ export async function createEvent(data: {
   attendees?: string[];
   location?: string;
   recurrence?: NormalizedRecurrence;
-}, userId?: number): Promise<CalendarEvent> {
+}, userId?: number, options?: { signal?: AbortSignal }): Promise<CalendarEvent> {
   try {
+    if (options?.signal?.aborted) throw new Error('provider_write_aborted');
     const client = userId
       ? getGraphClientForUser(userId)
       : getGraphClient();
@@ -257,8 +258,9 @@ export async function createEvent(data: {
     if (data.description) {
       postBody.body = { contentType: 'Text', content: data.description };
     }
-    if (data.categories && data.categories.length > 0) {
-      postBody.categories = data.categories;
+    const writableCategories = await resolveWritableOutlookCategories(data.categories, userId);
+    if (writableCategories.length > 0) {
+      postBody.categories = writableCategories;
     }
     if (data.location) {
       postBody.location = { displayName: data.location };
@@ -276,11 +278,14 @@ export async function createEvent(data: {
       {
         titleLength: String(postBody.subject || '').length,
         categoryCount: Array.isArray(postBody.categories) ? postBody.categories.length : 0,
+        droppedCategoryCount: Math.max(0, (data.categories?.length ?? 0) - writableCategories.length),
         attendeeCount: attendees.length,
       },
       'Creating Outlook calendar event',
     );
-    const response = await client.api('/me/events').post(postBody);
+    const request = client.api('/me/events');
+    if (options?.signal) request.option('signal', options.signal);
+    const response = await request.post(postBody);
 
     return {
       id: response.id || '',
@@ -289,6 +294,7 @@ export async function createEvent(data: {
       end: response.end?.dateTime || data.end,
       description: response.bodyPreview || undefined,
       htmlLink: response.webLink || undefined,
+      categories: Array.isArray(response.categories) ? response.categories : (writableCategories.length > 0 ? writableCategories : undefined),
       isAllDay: !!response.isAllDay,
     };
   } catch (err) {
@@ -297,14 +303,50 @@ export async function createEvent(data: {
   }
 }
 
+async function resolveWritableOutlookCategories(categories: string[] | undefined, userId?: number): Promise<string[]> {
+  const cleanCategories = [...new Set((categories || [])
+    .map((value) => typeof value === 'string' ? value.trim() : '')
+    .filter(Boolean))];
+  if (cleanCategories.length === 0) return [];
+
+  const masterCategories = await getMasterCategories(userId);
+  if (masterCategories.length === 0) {
+    logger.warn(
+      { requestedCategories: cleanCategories },
+      'Dropping Outlook event categories because master categories could not be verified',
+    );
+    return [];
+  }
+
+  const byNormalizedName = new Map(
+    masterCategories.map((category) => [normalizeCategoryName(category.displayName), category.displayName] as const),
+  );
+  const writable = cleanCategories
+    .map((category) => byNormalizedName.get(normalizeCategoryName(category)))
+    .filter((category): category is string => Boolean(category));
+  const dropped = cleanCategories.filter((category) => !byNormalizedName.has(normalizeCategoryName(category)));
+  if (dropped.length > 0) {
+    logger.warn(
+      { droppedCategories: dropped, writableCategories: writable },
+      'Dropping Outlook event categories that are not in the user master category list',
+    );
+  }
+  return [...new Set(writable)];
+}
+
+function normalizeCategoryName(value: string): string {
+  return value.toLowerCase().replace(/\s+/g, ' ').trim();
+}
+
 export async function updateEvent(data: {
   event_id: string;
   new_start?: string;
   new_end?: string;
   new_title?: string;
   new_description?: string;
-}, userId?: number): Promise<CalendarEvent> {
+}, userId?: number, options?: { signal?: AbortSignal }): Promise<CalendarEvent> {
   try {
+    if (options?.signal?.aborted) throw new Error('provider_write_aborted');
     const client = userId
       ? getGraphClientForUser(userId)
       : getGraphClient();
@@ -320,7 +362,9 @@ export async function updateEvent(data: {
     if (data.new_start) patch.start = { dateTime: data.new_start, timeZone: config.app.timezone };
     if (data.new_end) patch.end = { dateTime: data.new_end, timeZone: config.app.timezone };
 
-    const response = await client.api(`/me/events/${data.event_id}`).patch(patch);
+    const request = client.api(`/me/events/${data.event_id}`);
+    if (options?.signal) request.option('signal', options.signal);
+    const response = await request.patch(patch);
 
     return {
       id: response.id || data.event_id,
@@ -337,12 +381,15 @@ export async function updateEvent(data: {
   }
 }
 
-export async function deleteEvent(eventId: string, userId?: number): Promise<void> {
+export async function deleteEvent(eventId: string, userId?: number, options?: { signal?: AbortSignal }): Promise<void> {
   try {
+    if (options?.signal?.aborted) throw new Error('provider_write_aborted');
     const client = userId
       ? getGraphClientForUser(userId)
       : getGraphClient();
-    await client.api(`/me/events/${eventId}`).delete();
+    const request = client.api(`/me/events/${eventId}`);
+    if (options?.signal) request.option('signal', options.signal);
+    await request.delete();
   } catch (err) {
     logger.error({ err }, 'Failed to delete Outlook calendar event');
     throw err;

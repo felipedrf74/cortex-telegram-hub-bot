@@ -1,22 +1,19 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
 import { Router, Request, Response } from 'express';
-import crypto from 'crypto';
 import { AuthenticatedRequest } from '../auth-middleware';
 import { logger } from '../../utils/logger';
 import { config } from '../../config';
 import { getRuntimeStatus } from '../../services/runtime-status';
 import { getCachedSWR, setCacheSWR } from '../../services/cache-store';
-import { apiSuccess, sendError, sendInternalError } from '../response-helpers';
+import { sendInternalError } from '../response-helpers';
 import { normalizeLangHeader } from '../../services/secretary-fastpath';
-import { getUserLanguage } from '../../services/user-service';
+import { getPreferredDisplayNameById, getUserLanguageById, getUserTimezoneById } from '../../services/user-service';
 import { getDailyQuotaStatus } from '../../services/cost-guardrail';
 import { composeDailyBrief } from '../../services/daily-brief-orchestrator';
 import { buildDashboardHomeViewState } from '../../services/dashboard-home-view-state';
 import { buildScreenContractMeta } from '../../services/screen-contract-meta';
-import { recordSWRRefreshFailure, recordSWRRefreshSuccess } from '../../services/swr-refresh-observability';
 import type { Lang } from '../../utils/i18n';
-import { isValidTenantUserId, recordTenantScopeAnomaly } from '../../services/tenant-scope-observability';
 import {
   buildUnavailableSection,
   fetchCalendar,
@@ -25,41 +22,86 @@ import {
   fetchTraining,
 } from './dashboard-data-fetchers';
 import { buildDashboardHomeInput } from './dashboard-home-input';
+import { buildHomeDayDial } from '../../services/home-day-dial';
+import {
+  isDecisionStreakV1Enabled,
+  isHomeDayDialV1Enabled,
+  isHomeFocusPillV1Enabled,
+  isProviderPreferencesV1Enabled,
+  isSecretaryOrchestrationSnapshotV1Enabled,
+} from '../../services/runtime-flags';
+import { timedAsync, timedSync, type RouteTiming } from '../route-timing';
+import { sendConditionalApiSuccess } from '../conditional-cache';
+import { ensureCachedRouteTenantScope, handleCachedRoute, routeCacheKey } from '../route-helpers/cached-route-handler';
 
 export { mapDashboardTask, queryContentPipelineCounts } from './dashboard-data-fetchers';
 export { buildHomeOrchestrationSummary } from './dashboard-home-input';
 
-const DASHBOARD_CACHE_TTL = 60;
+const DASHBOARD_CACHE_TTL = 180;
 const DASHBOARD_SWR_STALE = 300;
-const DASHBOARD_HOME_CACHE_TTL = 60;
+const DASHBOARD_HOME_CACHE_TTL = 180;
 const DASHBOARD_HOME_SWR_STALE = 300;
-const swrInFlight = new Set<string>();
+const DASHBOARD_SECTION_TIMEOUT_MS = readPositiveIntEnv('DASHBOARD_SECTION_TIMEOUT_MS', 3000);
+const DASHBOARD_HOME_BRIEF_TIMEOUT_MS = readPositiveIntEnv('DASHBOARD_HOME_BRIEF_TIMEOUT_MS', 2500);
 
-function ensureValidDashboardRouteScope(
-  res: Response,
-  userId: number | undefined,
-  operation: string,
-  details?: Record<string, unknown>,
-): userId is number {
-  if (isValidTenantUserId(userId)) return true;
-  recordTenantScopeAnomaly({
-    layer: 'delivery',
-    operation,
-    reason: 'invalid_user_scope',
-    userId: typeof userId === 'number' ? userId : null,
-    details,
-  });
-  sendError(res, 'UNAUTHORIZED', 'Invalid authenticated user scope', 401);
-  return false;
+function readPositiveIntEnv(name: string, fallback: number): number {
+  const parsed = Number.parseInt(process.env[name] || '', 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
-function swrRefresh(key: string, fn: () => Promise<void>): void {
-  if (swrInFlight.has(key)) return;
-  swrInFlight.add(key);
-  fn()
-    .then(() => recordSWRRefreshSuccess(key))
-    .catch((err) => recordSWRRefreshFailure(key, err, { source: 'dashboard_route', operation: 'dashboard_swr_refresh' }))
-    .finally(() => swrInFlight.delete(key));
+function withDashboardTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  const timeout = new Promise<T>((_, reject) => {
+    timer = setTimeout(() => {
+      reject(new Error(`dashboard_${label}_timeout_${timeoutMs}ms`));
+    }, timeoutMs);
+  });
+
+  return Promise.race([promise, timeout]).finally(() => {
+    if (timer) clearTimeout(timer);
+  });
+}
+
+function normalizeDashboardUsageLevel(fraction: number, isOverLimit: boolean): 'ok' | 'near_limit' | 'exhausted' {
+  if (isOverLimit || fraction >= 1) return 'exhausted';
+  if (fraction >= 0.8) return 'near_limit';
+  return 'ok';
+}
+
+function sanitizeDashboardQuotaForClient(quota: any): any {
+  if (!quota || typeof quota !== 'object') return quota;
+
+  const rawFraction = quota.usage_fraction ?? quota.usageFraction;
+  const rawUsed = quota.used_usd ?? quota.usedUsd;
+  const rawLimit = quota.limit_usd ?? quota.limitUsd;
+  const fraction = Number.isFinite(Number(rawFraction))
+    ? Math.max(0, Math.min(1, Number(rawFraction)))
+    : Number.isFinite(Number(rawUsed)) && Number.isFinite(Number(rawLimit)) && Number(rawLimit) > 0
+      ? Math.max(0, Math.min(1, Number(rawUsed) / Number(rawLimit)))
+      : 0;
+  const isOverLimit = Boolean(quota.is_over_limit ?? quota.isOverLimit ?? fraction >= 1);
+
+  return {
+    plan: quota.plan,
+    resetAt: quota.resetAt,
+    usage_level: quota.usage_level ?? quota.usageLevel ?? normalizeDashboardUsageLevel(fraction, isOverLimit),
+    usage_fraction: fraction,
+    usage_percent: quota.usage_percent ?? quota.usagePercent ?? Math.round(fraction * 100),
+    is_over_limit: isOverLimit,
+    nexus_points_balance: quota.nexus_points_balance ?? quota.nexusPointsBalance,
+    nexus_points_expiring_soon: quota.nexus_points_expiring_soon ?? quota.nexusPointsExpiringSoon,
+    points_purchase_available: quota.points_purchase_available ?? quota.pointsPurchaseAvailable,
+  };
+}
+
+export function sanitizeDashboardPayloadForClient<T>(payload: T): T {
+  if (!payload || typeof payload !== 'object') return payload;
+  const maybeDashboard = payload as any;
+  if (!('quota' in maybeDashboard)) return payload;
+  return {
+    ...maybeDashboard,
+    quota: sanitizeDashboardQuotaForClient(maybeDashboard.quota),
+  };
 }
 
 export function dashboardRoutes(): Router {
@@ -67,48 +109,25 @@ export function dashboardRoutes(): Router {
 
   router.get('/home', async (req: Request, res: Response) => {
     const { userId } = req as AuthenticatedRequest;
-    if (!ensureValidDashboardRouteScope(res, userId, 'dashboard_route_home')) return;
+    if (!ensureCachedRouteTenantScope(res, userId, 'dashboard_route_home')) return;
     const language = resolveDashboardLanguage(req, userId);
 
     try {
       const cacheKey = dashboardHomeCacheKeyFor(userId, language);
-      const swr = getCachedSWR<any>(cacheKey);
-
-      if (swr) {
-        const envelope = apiSuccess(swr.value, { cached: true });
-        const envelopeJson = JSON.stringify({ ...envelope, timestamp: undefined });
-        const etag = `"${crypto.createHash('md5').update(envelopeJson).digest('hex')}"`;
-        if (req.headers['if-none-match'] === etag) {
-          res.status(304).end();
-          return;
-        }
-        res.setHeader('ETag', etag);
-        res.setHeader('Cache-Control', 'private, max-age=30');
-        res.json(envelope);
-
-        if (!swr.fresh) {
-          swrRefresh(cacheKey, async () => {
-            const home = await buildDashboardHomePayload(userId, language);
-            setCacheSWR(cacheKey, home, DASHBOARD_HOME_CACHE_TTL, DASHBOARD_HOME_SWR_STALE);
+      const timings: RouteTiming[] = [];
+      await handleCachedRoute<any>({
+        cacheKey,
+        ttlSeconds: DASHBOARD_HOME_CACHE_TTL,
+        staleSeconds: DASHBOARD_HOME_SWR_STALE,
+        refreshContext: { source: 'dashboard_route', operation: 'dashboard_swr_refresh', userId },
+        fetchFresh: () => buildDashboardHomePayload(userId, language, timings),
+        send: (home, meta) => {
+          sendConditionalApiSuccess(res, req, sanitizeDashboardPayloadForClient(home), {
+            cached: meta.cached,
+            timings: meta.cached ? [{ name: 'cache_hit', durationMs: 0 }] : timings,
           });
-        }
-        return;
-      }
-
-      const home = await buildDashboardHomePayload(userId, language);
-      setCacheSWR(cacheKey, home, DASHBOARD_HOME_CACHE_TTL, DASHBOARD_HOME_SWR_STALE);
-
-      const envelope = apiSuccess(home);
-      const envelopeJson = JSON.stringify({ ...envelope, timestamp: undefined });
-      const etag = `"${crypto.createHash('md5').update(envelopeJson).digest('hex')}"`;
-      if (req.headers['if-none-match'] === etag) {
-        res.status(304).end();
-        return;
-      }
-
-      res.setHeader('ETag', etag);
-      res.setHeader('Cache-Control', 'private, max-age=30');
-      res.json(envelope);
+        },
+      });
     } catch (err: any) {
       logger.error({ err, platform: 'ios' }, 'Dashboard home aggregation failed');
       sendInternalError(res, 'Unable to load the home briefing right now.');
@@ -123,52 +142,25 @@ export function dashboardRoutes(): Router {
    */
   router.get('/', async (req: Request, res: Response) => {
     const { userId } = req as AuthenticatedRequest;
-    if (!ensureValidDashboardRouteScope(res, userId, 'dashboard_route_root')) return;
+    if (!ensureCachedRouteTenantScope(res, userId, 'dashboard_route_root')) return;
     const language = resolveDashboardLanguage(req, userId);
 
     try {
       const dashboardCacheKey = dashboardCacheKeyFor(userId, language);
-      const swr = getCachedSWR<any>(dashboardCacheKey);
-
-      if (swr) {
-        // The ETag is computed over the wrapped envelope, so iOS clients
-        // get a stable hash that includes the timestamp/cached flags.
-        const envelope = apiSuccess(swr.value, { cached: true });
-        const envelopeJson = JSON.stringify({ ...envelope, timestamp: undefined }); // hash is content-only
-        const etag = `"${crypto.createHash('md5').update(envelopeJson).digest('hex')}"`;
-        if (req.headers['if-none-match'] === etag) {
-          res.status(304).end();
-          return;
-        }
-        res.setHeader('ETag', etag);
-        res.setHeader('Cache-Control', 'private, max-age=30');
-        res.json(envelope);
-
-        if (!swr.fresh) {
-          swrRefresh(dashboardCacheKey, async () => {
-            const dashboard = await buildDashboardPayload(userId, language);
-            setCacheSWR(dashboardCacheKey, dashboard, DASHBOARD_CACHE_TTL, DASHBOARD_SWR_STALE);
+      const timings: RouteTiming[] = [];
+      await handleCachedRoute<any>({
+        cacheKey: dashboardCacheKey,
+        ttlSeconds: DASHBOARD_CACHE_TTL,
+        staleSeconds: DASHBOARD_SWR_STALE,
+        refreshContext: { source: 'dashboard_route', operation: 'dashboard_swr_refresh', userId },
+        fetchFresh: () => buildDashboardPayload(userId, language, timings),
+        send: (dashboard, meta) => {
+          sendConditionalApiSuccess(res, req, sanitizeDashboardPayloadForClient(dashboard), {
+            cached: meta.cached,
+            timings: meta.cached ? [{ name: 'cache_hit', durationMs: 0 }] : timings,
           });
-        }
-        return;
-      }
-
-      const dashboard = await buildDashboardPayload(userId, language);
-      setCacheSWR(dashboardCacheKey, dashboard, DASHBOARD_CACHE_TTL, DASHBOARD_SWR_STALE);
-
-      const envelope = apiSuccess(dashboard);
-      // ETag support — skip full response if nothing changed
-      const envelopeJson = JSON.stringify({ ...envelope, timestamp: undefined });
-      const etag = `"${crypto.createHash('md5').update(envelopeJson).digest('hex')}"`;
-
-      if (req.headers['if-none-match'] === etag) {
-        res.status(304).end();
-        return;
-      }
-
-      res.setHeader('ETag', etag);
-      res.setHeader('Cache-Control', 'private, max-age=30');
-      res.json(envelope);
+        },
+      });
     } catch (err: any) {
       logger.error({ err, platform: 'ios' }, 'Dashboard aggregation failed');
       sendInternalError(res, 'Unable to load the dashboard right now.');
@@ -183,7 +175,7 @@ export function dashboardRoutes(): Router {
  * Called on startup and periodically.
  */
 export async function warmDashboardCache(userId: number): Promise<void> {
-  const language = getUserLanguage(userId);
+  const language = getUserLanguageById(userId);
   const cacheKey = dashboardCacheKeyFor(userId, language);
   if (getCachedSWR(cacheKey)?.fresh) return; // Already warm enough
 
@@ -197,11 +189,11 @@ export async function warmDashboardCache(userId: number): Promise<void> {
 }
 
 function dashboardCacheKeyFor(userId: number, language: Lang): string {
-  return `dashboard:${userId}:${language}`;
+  return routeCacheKey('dashboard', userId, language);
 }
 
 function dashboardHomeCacheKeyFor(userId: number, language: Lang): string {
-  return `dashboard-home:${userId}:${language}`;
+  return routeCacheKey('dashboard-home', userId, language);
 }
 
 function resolveDashboardLanguage(req: Request, userId: number): Lang {
@@ -211,7 +203,7 @@ function resolveDashboardLanguage(req: Request, userId: number): Lang {
   // language wins when the client didn't send x-language.
   const rawHeader = req.header?.('x-language');
   if (rawHeader) return normalizeLangHeader(rawHeader);
-  return getUserLanguage(userId);
+  return getUserLanguageById(userId);
 }
 
 function localizeGreeting(hour: number, language: Lang): string {
@@ -239,12 +231,12 @@ function localizedWeekday(date: Date, language: Lang): string {
   return weekday.charAt(0).toUpperCase() + weekday.slice(1);
 }
 
-async function buildDashboardPayload(userId: number, language: Lang) {
+async function buildDashboardPayload(userId: number, language: Lang, timings: RouteTiming[] = []) {
   const [calendarResult, tasksResult, trainingResult, contentResult] = await Promise.allSettled([
-    fetchCalendar(userId),
-    fetchTasks(userId),
-    fetchTraining(userId),
-    fetchContent(userId),
+    timedAsync(timings, 'calendar', () => withDashboardTimeout(fetchCalendar(userId), DASHBOARD_SECTION_TIMEOUT_MS, 'calendar')),
+    timedAsync(timings, 'tasks', () => withDashboardTimeout(fetchTasks(userId), DASHBOARD_SECTION_TIMEOUT_MS, 'tasks')),
+    timedAsync(timings, 'training', () => withDashboardTimeout(fetchTraining(userId), DASHBOARD_SECTION_TIMEOUT_MS, 'training')),
+    timedAsync(timings, 'content', () => withDashboardTimeout(fetchContent(userId), DASHBOARD_SECTION_TIMEOUT_MS, 'content')),
   ]);
 
   const calendar = calendarResult.status === 'fulfilled'
@@ -286,11 +278,11 @@ async function buildDashboardPayload(userId: number, language: Lang) {
   const hour = parseInt(now.toLocaleString('en-US', { hour: 'numeric', hour12: false, timeZone: config.app.timezone }), 10);
   const greeting = localizeGreeting(hour, language);
 
-  let displayName = '';
-  try {
-    const { getPreferredDisplayName } = require('../../services/user-service');
-    displayName = getPreferredDisplayName(userId);
-  } catch { /* user-service not available */ }
+  // Identity-safety: strict by-id resolver only. The legacy
+  // require('../../services/user-service').getPreferredDisplayName path was
+  // a fuzzy any-identifier lookup that could match a foreign user via
+  // telegram_id collision; the *ById helper rejects that surface.
+  const displayName = getPreferredDisplayNameById(userId);
 
   const startTime = (global as any).__startTime;
   const uptimeMs = startTime ? Date.now() - startTime : 0;
@@ -300,6 +292,8 @@ async function buildDashboardPayload(userId: number, language: Lang) {
 
   const runtime = getRuntimeStatus();
   const quota = getDailyQuotaStatus(userId);
+  const featureFlags = buildHomeFeatureFlags(userId);
+  const timezone = getUserTimezoneById(userId);
 
   return {
     greeting: displayName ? `${greeting}, ${displayName}` : greeting,
@@ -307,12 +301,25 @@ async function buildDashboardPayload(userId: number, language: Lang) {
     dayOfWeek: localizedWeekday(now, language),
     calendar,
     tasks,
+    featureFlags,
+    dayDial: featureFlags.homeDayDialV1
+      ? buildHomeDayDial({
+          userId,
+          calendarEvents: calendar.today ?? [],
+          date: now.toLocaleDateString('en-CA', { timeZone: timezone }),
+          timezone,
+        })
+      : null,
     training,
     content,
     quota: {
-      used_usd: quota.usedUsd,
-      limit_usd: quota.limitUsd,
-      remaining_usd: quota.remainingUsd,
+      usage_level: quota.usageLevel,
+      usage_fraction: quota.usageFraction,
+      usage_percent: Math.round(quota.usageFraction * 100),
+      is_over_limit: quota.over,
+      nexus_points_balance: quota.nexusPointsBalance,
+      nexus_points_expiring_soon: quota.nexusPointsExpiringSoon,
+      points_purchase_available: quota.pointsPurchaseAvailable,
       plan: quota.plan,
       resetAt: quota.resetAt,
     },
@@ -327,10 +334,21 @@ async function buildDashboardPayload(userId: number, language: Lang) {
   };
 }
 
-async function buildDashboardHomePayload(userId: number, language: Lang) {
+function buildHomeFeatureFlags(userId: number) {
+  const scope = { userId, tenantId: userId };
+  return {
+    homeDayDialV1: isHomeDayDialV1Enabled(process.env, scope),
+    providerPreferencesV1: isProviderPreferencesV1Enabled(process.env, scope),
+    homeFocusPillV1: isHomeFocusPillV1Enabled(process.env, scope),
+    decisionStreakV1: isDecisionStreakV1Enabled(process.env, scope),
+    secretaryOrchestrationSnapshotV1: isSecretaryOrchestrationSnapshotV1Enabled(process.env, scope),
+  };
+}
+
+async function buildDashboardHomePayload(userId: number, language: Lang, timings: RouteTiming[] = []) {
   const [dashboardResult, briefResult] = await Promise.allSettled([
-    buildDashboardPayload(userId, language),
-    composeDailyBrief({ userId, language }),
+    timedAsync(timings, 'dashboard', () => buildDashboardPayload(userId, language, timings)),
+    timedAsync(timings, 'daily_brief', () => withDashboardTimeout(composeDailyBrief({ userId, language }), DASHBOARD_HOME_BRIEF_TIMEOUT_MS, 'daily_brief')),
   ]);
 
   if (dashboardResult.status !== 'fulfilled') {
@@ -350,20 +368,20 @@ async function buildDashboardHomePayload(userId: number, language: Lang) {
     ...(briefResult.status === 'rejected' ? ['DAILY_BRIEF_UNAVAILABLE'] : []),
   ];
 
-  return buildDashboardHomeViewState(buildDashboardHomeInput({
-    userId,
-    dashboard,
-    brief,
-    language,
-    meta: buildScreenContractMeta({
-      source: 'server',
-      isFallback: reasonCodes.length > 0,
-      isPartial: reasonCodes.length > 0,
-      isStale: false,
-      generatedAt: new Date().toISOString(),
-      reasonCodes,
-    }),
-  }), language);
+  return timedSync(timings, 'home_view_state', () => buildDashboardHomeViewState(buildDashboardHomeInput({
+      userId,
+      dashboard,
+      brief,
+      language,
+      meta: buildScreenContractMeta({
+        source: 'server',
+        isFallback: reasonCodes.length > 0,
+        isPartial: reasonCodes.length > 0,
+        isStale: false,
+        generatedAt: new Date().toISOString(),
+        reasonCodes,
+      }),
+    }), language));
 }
 
 /** Read version from package.json (works with PM2, not just npm start) */

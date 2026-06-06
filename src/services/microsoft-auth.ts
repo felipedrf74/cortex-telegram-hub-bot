@@ -24,6 +24,7 @@ import { config } from '../config';
 import { logger } from '../utils/logger';
 import { getTokens } from './oauth-store';
 import { getOwnerBootstrapUserRefs } from './user-service';
+import { registerOAuthTokenMutationListener } from './oauth-token-cache-events';
 
 // ─── All Microsoft Graph scopes needed by the app ────────────────────
 const ALL_SCOPES = [
@@ -39,6 +40,73 @@ const ALL_SCOPES = [
 let confidentialMsalClient: any = null;
 let publicMsalClient: PublicClientApplication | null = null;
 let graphClient: Client | null = null;
+
+const ACCESS_TOKEN_CACHE_TTL_MS = 55 * 60 * 1000;
+const CACHE_SUMMARY_INTERVAL_MS = 5 * 60 * 1000;
+
+type MicrosoftClientType = 'confidential' | 'public';
+type MicrosoftAccessTokenCacheKey = `user:${number}` | 'owner';
+
+interface CachedAccessToken {
+  token: string;
+  refreshAt: number;
+}
+
+const accessTokenCache = new Map<MicrosoftAccessTokenCacheKey, CachedAccessToken>();
+const accessTokenInFlight = new Map<MicrosoftAccessTokenCacheKey, Promise<string>>();
+const clientTypeByCacheKey = new Map<MicrosoftAccessTokenCacheKey, MicrosoftClientType>();
+const cacheGenerationByCacheKey = new Map<MicrosoftAccessTokenCacheKey, number>();
+
+let tokenCacheHits = 0;
+let tokenCacheMisses = 0;
+let tokenCacheCoalesced = 0;
+let lastCacheSummaryAt = 0;
+
+function userAccessTokenCacheKey(userId: number): MicrosoftAccessTokenCacheKey {
+  return `user:${userId}`;
+}
+
+function maybeLogTokenCacheSummary(now = Date.now()): void {
+  if (now - lastCacheSummaryAt < CACHE_SUMMARY_INTERVAL_MS) return;
+  lastCacheSummaryAt = now;
+  const total = tokenCacheHits + tokenCacheMisses;
+  if (total === 0) return;
+  logger.info({
+    hits: tokenCacheHits,
+    misses: tokenCacheMisses,
+    coalesced: tokenCacheCoalesced,
+    hitRatio: Number((tokenCacheHits / total).toFixed(4)),
+    entries: accessTokenCache.size,
+    clientTypeMemoizedEntries: clientTypeByCacheKey.size,
+  }, 'microsoft_auth_token_cache_summary');
+}
+
+function invalidateMicrosoftAccessTokenCacheKey(cacheKey: MicrosoftAccessTokenCacheKey): void {
+  cacheGenerationByCacheKey.set(cacheKey, (cacheGenerationByCacheKey.get(cacheKey) ?? 0) + 1);
+  accessTokenCache.delete(cacheKey);
+  accessTokenInFlight.delete(cacheKey);
+  clientTypeByCacheKey.delete(cacheKey);
+}
+
+export function invalidateMicrosoftAccessTokenCacheForUser(userId: number): void {
+  invalidateMicrosoftAccessTokenCacheKey(userAccessTokenCacheKey(userId));
+
+  try {
+    if (getOwnerBootstrapUserRefs().includes(userId)) {
+      invalidateMicrosoftAccessTokenCacheKey('owner');
+    }
+  } catch { /* owner refs unavailable in some tests/early boot paths */ }
+}
+
+export function invalidateMicrosoftAccessTokenCacheForOwner(): void {
+  invalidateMicrosoftAccessTokenCacheKey('owner');
+}
+
+registerOAuthTokenMutationListener(({ userId, provider }) => {
+  if (provider === 'outlook') {
+    invalidateMicrosoftAccessTokenCacheForUser(userId);
+  }
+});
 
 function buildAuthConfig(includeSecret: boolean): any {
   const authConfig: any = {
@@ -83,7 +151,30 @@ function isPublicClientRefreshTokenMismatch(err: unknown): boolean {
     || message.includes("Public clients can't send a client secret");
 }
 
-async function acquireAccessTokenFromRefreshToken(refreshToken: string): Promise<string> {
+async function acquireAccessTokenFromRefreshToken(
+  refreshToken: string,
+  cacheKey: MicrosoftAccessTokenCacheKey = 'owner',
+): Promise<string> {
+  const now = Date.now();
+  const cached = accessTokenCache.get(cacheKey);
+  if (cached && cached.refreshAt > now) {
+    tokenCacheHits++;
+    logger.debug({ cacheKey }, 'microsoft_auth_token_cache_hit');
+    maybeLogTokenCacheSummary(now);
+    return cached.token;
+  }
+
+  const pending = accessTokenInFlight.get(cacheKey);
+  if (pending) {
+    tokenCacheCoalesced++;
+    logger.debug({ cacheKey }, 'microsoft_auth_token_cache_coalesced');
+    return pending;
+  }
+
+  tokenCacheMisses++;
+  logger.debug({ cacheKey }, 'microsoft_auth_token_cache_miss');
+  maybeLogTokenCacheSummary(now);
+
   const acquire = async (mode: 'auto' | 'confidential' | 'public') => {
     const result = await getMsalClient(mode).acquireTokenByRefreshToken({
       refreshToken,
@@ -97,15 +188,47 @@ async function acquireAccessTokenFromRefreshToken(refreshToken: string): Promise
     return result.accessToken;
   };
 
-  try {
-    return await acquire('auto');
-  } catch (err) {
-    if (config.outlook.clientSecret && isPublicClientRefreshTokenMismatch(err)) {
-      logger.warn('Microsoft refresh token requires public-client MSAL flow; retrying without client secret');
-      return acquire('public');
+  const acquisitionGeneration = cacheGenerationByCacheKey.get(cacheKey) ?? 0;
+  const writeAcquiredToken = (token: string, clientType: MicrosoftClientType): void => {
+    if ((cacheGenerationByCacheKey.get(cacheKey) ?? 0) !== acquisitionGeneration) {
+      logger.debug({ cacheKey }, 'microsoft_auth_token_cache_write_skipped_after_invalidation');
+      return;
     }
-    throw err;
-  }
+    clientTypeByCacheKey.set(cacheKey, clientType);
+    accessTokenCache.set(cacheKey, { token, refreshAt: Date.now() + ACCESS_TOKEN_CACHE_TTL_MS });
+  };
+
+  const acquisition = (async () => {
+    const memoizedClientType = clientTypeByCacheKey.get(cacheKey);
+    const initialMode: 'auto' | 'confidential' | 'public' = memoizedClientType ?? 'auto';
+
+    try {
+      const token = await acquire(initialMode);
+      if (initialMode === 'public' || (!config.outlook.clientSecret && initialMode === 'auto')) {
+        writeAcquiredToken(token, 'public');
+      } else {
+        writeAcquiredToken(token, 'confidential');
+      }
+      return token;
+    } catch (err) {
+      if (initialMode !== 'public' && config.outlook.clientSecret && isPublicClientRefreshTokenMismatch(err)) {
+        logger.warn({ cacheKey }, 'Microsoft refresh token requires public-client MSAL flow; retrying without client secret');
+        const token = await acquire('public');
+        writeAcquiredToken(token, 'public');
+        return token;
+      }
+      throw err;
+    }
+  })();
+
+  accessTokenInFlight.set(cacheKey, acquisition);
+  const clearIfCurrent = () => {
+    if (accessTokenInFlight.get(cacheKey) === acquisition) {
+      accessTokenInFlight.delete(cacheKey);
+    }
+  };
+  void acquisition.then(clearIfCurrent, clearIfCurrent);
+  return acquisition;
 }
 
 /**
@@ -137,7 +260,6 @@ function getOwnerOutlookRefreshToken(): string | null {
  */
 export function getOutlookRefreshTokenForUser(userId: number): string | null {
   try {
-    const { getTokens } = require('./oauth-store');
     const tokens = getTokens(userId, 'outlook');
     return tokens?.refreshToken ?? null;
   } catch {
@@ -155,7 +277,7 @@ export async function getAccessTokenForUser(userId: number): Promise<string> {
     throw new Error(`Outlook not connected for user ${userId}`);
   }
 
-  return acquireAccessTokenFromRefreshToken(refreshToken);
+  return acquireAccessTokenFromRefreshToken(refreshToken, userAccessTokenCacheKey(userId));
 }
 
 /** @deprecated Use getAccessTokenForUser(userId) for multi-user. */
@@ -165,7 +287,7 @@ async function getAccessToken(): Promise<string> {
     throw new Error('Outlook refresh token not configured (neither oauth-store nor .env has it)');
   }
 
-  return acquireAccessTokenFromRefreshToken(refreshToken);
+  return acquireAccessTokenFromRefreshToken(refreshToken, 'owner');
 }
 
 // ─── Per-request user resolution ────────────────────────────────────
@@ -216,8 +338,8 @@ export function getGraphClient(): Client {
 /**
  * Build a Graph client for a specific user. NOT cached — each call gets
  * a fresh client that resolves the user's refresh token on demand.
- * This is safe because MSAL handles token caching internally, and the
- * per-call authProvider pattern means the Graph client itself is stateless.
+ * Access tokens are cached in this module per user, and the per-call
+ * authProvider pattern means the Graph client itself is stateless.
  */
 export function getGraphClientForUser(userId: number): Client {
   return Client.init({
@@ -247,17 +369,49 @@ export function resetMicrosoftClients(): void {
   confidentialMsalClient = null;
   publicMsalClient = null;
   graphClient = null;
+  accessTokenCache.clear();
+  accessTokenInFlight.clear();
+  clientTypeByCacheKey.clear();
+  cacheGenerationByCacheKey.clear();
+  tokenCacheHits = 0;
+  tokenCacheMisses = 0;
+  tokenCacheCoalesced = 0;
+  lastCacheSummaryAt = 0;
   logger.info('Microsoft client caches reset after re-auth');
 }
 
 export const __testing = {
+  ACCESS_TOKEN_CACHE_TTL_MS,
   acquireAccessTokenFromRefreshToken,
+  getAccessTokenForOwner: getAccessToken,
   isPublicClientRefreshTokenMismatch,
+  invalidateMicrosoftAccessTokenCacheForUser,
+  invalidateMicrosoftAccessTokenCacheForOwner,
   setMsalClientsForTests(clients: {
     confidential?: any | null;
     public?: PublicClientApplication | null;
   }) {
     confidentialMsalClient = clients.confidential ?? null;
     publicMsalClient = clients.public ?? null;
+  },
+  resetTokenCacheForTests() {
+    accessTokenCache.clear();
+    accessTokenInFlight.clear();
+    clientTypeByCacheKey.clear();
+    cacheGenerationByCacheKey.clear();
+    tokenCacheHits = 0;
+    tokenCacheMisses = 0;
+    tokenCacheCoalesced = 0;
+    lastCacheSummaryAt = 0;
+  },
+  getTokenCacheStatsForTests() {
+    return {
+      hits: tokenCacheHits,
+      misses: tokenCacheMisses,
+      coalesced: tokenCacheCoalesced,
+      entries: accessTokenCache.size,
+      clientTypeMemoizedEntries: clientTypeByCacheKey.size,
+      generations: cacheGenerationByCacheKey.size,
+    };
   },
 };

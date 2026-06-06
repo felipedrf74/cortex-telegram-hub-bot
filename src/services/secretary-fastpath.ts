@@ -27,7 +27,14 @@
  * are common phrasings missing from the dictionary that should be added.
  */
 
-import { getEvents, hasConnectedCalendarForUser } from './unified-calendar';
+import {
+  createEvent,
+  getEvents,
+  getEventsForSources,
+  hasConnectedCalendarForUser,
+  hasWritableCalendarForUser,
+  type CalendarSource,
+} from './unified-calendar';
 import type { TodoTask } from './microsoft-todo';
 import { getRemindersForToday, setReminder } from '../state/reminders';
 import {
@@ -44,6 +51,10 @@ import { getUserLanguage, getUserTimezone } from './user-service';
 import { getTaskProviderForUser } from './task-store/task-router';
 import { composeDailyBrief } from './daily-brief-orchestrator';
 import { getUnreadMailSummaryForUser, isAnyMailConfiguredForUser } from './unified-mail-pressure';
+import { invalidateCalendarCaches } from './cache-coherence-registry';
+import { parseNaturalLanguageCalendarEvent } from './calendar-natural-language-parser';
+import { getDecisionSummary, listHandledByNexusItems } from './decision-center';
+import { getRecentReports, getLatestByType, type ReportType } from './report-document-store';
 
 // ─── Types ──────────────────────────────────────────────────────────
 
@@ -53,6 +64,8 @@ export interface FastpathResult {
   response?: DomainResponse;
   /** Which pattern matched (for metrics). */
   patternId?: string;
+  /** Why the fastpath fell through to the AI path. */
+  missReason?: string;
 }
 
 interface PatternEntry {
@@ -63,7 +76,7 @@ interface PatternEntry {
    * pick localized copy. May throw — caller catches and falls through
    * to the AI pipeline.
    */
-  handler: (userId: number, match: RegExpMatchArray, lang: Lang) => Promise<DomainResponse>;
+  handler: (userId: number, match: RegExpMatchArray, lang: Lang, tenantId: number) => Promise<DomainResponse>;
   /** Optional sub-skill the pattern depends on. If disabled, the pattern is skipped. */
   requires?: 'tasks' | 'calendar' | 'email' | 'reminders';
 }
@@ -75,6 +88,69 @@ const SECRETARY: DomainName = 'secretary';
 function getScopedTaskProvider(userId: number) {
   if (!userId) return null;
   return getTaskProviderForUser(userId);
+}
+
+type ParsedCalendarCreate = {
+  title: string;
+  start: string;
+  end: string;
+  attendees: string[];
+  target?: CalendarSource;
+};
+
+function parseCalendarCreateRequest(text: string, timezone: string): ParsedCalendarCreate | null {
+  const parsedNatural = parseNaturalLanguageCalendarEvent(text, { timezone });
+  if (parsedNatural) {
+    return {
+      title: parsedNatural.title,
+      start: parsedNatural.startDateTime,
+      end: parsedNatural.endDateTime,
+      attendees: parsedNatural.attendees,
+      target: parsedNatural.provider,
+    };
+  }
+  return null;
+}
+
+function formatCalendarCreateSuccess(
+  lang: Lang,
+  event: { source?: CalendarSource; title?: string; summary?: string; start: string; end: string },
+  attendees: string[],
+): string {
+  const zoneLabel = event.source === 'google' ? 'Google' : event.source === 'outlook' ? 'Outlook' : 'Google/Outlook';
+  const start = DateTime.fromISO(event.start).toFormat('dd/MM/yyyy, HH:mm');
+  const end = DateTime.fromISO(event.end).toFormat('HH:mm');
+  const attendeeLine = attendees.length > 0
+    ? `\n• ${lang.startsWith('pt') ? 'Convite' : 'Invite'}: ${attendees.map(escapeHtml).join(', ')}`
+    : '';
+  const title = escapeHtml(event.title || event.summary || 'Evento');
+  return lang.startsWith('pt')
+    ? `Pronto ✅ Agendei no ${zoneLabel}:\n• 📅 ${start}–${end} — ${title}${attendeeLine}`
+    : `Done ✅ Scheduled in ${zoneLabel}:\n• 📅 ${start}–${end} — ${title}${attendeeLine}`;
+}
+
+function calendarCreateReadBackMatches(
+  event: { id?: string; source?: CalendarSource; title?: string; summary?: string; start: string; end: string },
+  expected: { title: string; start: string; end: string },
+): boolean {
+  const title = String(event.title || event.summary || '').trim().toLowerCase();
+  const expectedTitle = expected.title.trim().toLowerCase();
+  const startDelta = Math.abs(DateTime.fromISO(event.start).toMillis() - DateTime.fromISO(expected.start).toMillis());
+  const endDelta = Math.abs(DateTime.fromISO(event.end).toMillis() - DateTime.fromISO(expected.end).toMillis());
+  return title === expectedTitle && startDelta < 60_000 && endDelta < 60_000;
+}
+
+async function verifyCalendarCreateReadBack(
+  userId: number,
+  event: Awaited<ReturnType<typeof createEvent>>,
+  expected: { title: string; start: string; end: string },
+): Promise<boolean> {
+  if (!event.source) return false;
+  const readBack = await getEventsForSources(expected.start, expected.end, userId, [event.source]).catch(() => []);
+  return readBack.some((candidate) => {
+    if (event.id && candidate.id === event.id) return true;
+    return calendarCreateReadBackMatches(candidate, expected);
+  });
 }
 
 // ─── Bilingual copy table ───────────────────────────────────────────
@@ -131,7 +207,10 @@ interface DayNamesCopy {
 
 type Copy = Record<CopyKey, string> & DayNamesCopy;
 
-const COPY: Record<Lang, Copy> = {
+// Phase 16 batch 80 (2026-05-16): Lang now includes 'es-ES'. The fast-path
+// copy is not yet translated to Spanish; ES users fall back to en-US via
+// copyForLang() below. Full ES translation is a Phase 16 follow-up.
+const COPY: Partial<Record<Lang, Copy>> = {
   'pt-BR': {
     agendaHeader: 'AGENDA:',
     agendaEmpty: 'Sem eventos hoje',
@@ -249,7 +328,7 @@ const COPY: Record<Lang, Copy> = {
 };
 
 function copyForLang(lang: Lang): Copy {
-  return COPY[lang];
+  return COPY[lang] ?? COPY['en-US'] ?? COPY['pt-BR']!;
 }
 
 /**
@@ -358,6 +437,9 @@ interface FastpathMetrics {
   totalAttempts: number;
   totalHits: number;
   hitsByPattern: Record<string, number>;
+  missesByReason: Record<string, number>;
+  handlerFailuresByPattern: Record<string, number>;
+  skippedBySubskill: Record<string, number>;
   totalLatencyMs: number;
 }
 
@@ -365,8 +447,15 @@ const _metrics: FastpathMetrics = {
   totalAttempts: 0,
   totalHits: 0,
   hitsByPattern: {},
+  missesByReason: {},
+  handlerFailuresByPattern: {},
+  skippedBySubskill: {},
   totalLatencyMs: 0,
 };
+
+function recordFastpathMiss(reason: string): void {
+  _metrics.missesByReason[reason] = (_metrics.missesByReason[reason] || 0) + 1;
+}
 
 export function getFastpathMetrics(): Readonly<FastpathMetrics> & {
   hitRate: number;
@@ -377,6 +466,9 @@ export function getFastpathMetrics(): Readonly<FastpathMetrics> & {
   return {
     ..._metrics,
     hitsByPattern: { ..._metrics.hitsByPattern },
+    missesByReason: { ..._metrics.missesByReason },
+    handlerFailuresByPattern: { ..._metrics.handlerFailuresByPattern },
+    skippedBySubskill: { ..._metrics.skippedBySubskill },
     hitRate,
     avgLatencyMs,
   };
@@ -388,6 +480,84 @@ export function resetFastpathMetrics(): void {
   _metrics.totalHits = 0;
   _metrics.totalLatencyMs = 0;
   for (const k of Object.keys(_metrics.hitsByPattern)) delete _metrics.hitsByPattern[k];
+  for (const k of Object.keys(_metrics.missesByReason)) delete _metrics.missesByReason[k];
+  for (const k of Object.keys(_metrics.handlerFailuresByPattern)) delete _metrics.handlerFailuresByPattern[k];
+  for (const k of Object.keys(_metrics.skippedBySubskill)) delete _metrics.skippedBySubskill[k];
+}
+
+function reportTypeFromMessage(message: string): ReportType | null {
+  const normalized = message
+    .normalize('NFD')
+    .replace(/\p{Diacritic}/gu, '')
+    .toLowerCase();
+  if (/\b(coach|treino|training)\b/.test(normalized)) return 'coach_briefing';
+  if (/\b(weekly|week|semana|semanal)\b/.test(normalized)) return 'weekly_review';
+  if (/\b(evening|end of day|fim do dia|noite|resumo)\b/.test(normalized)) return 'evening_summary';
+  if (/\b(morning|manha|manha|briefing)\b/.test(normalized)) return 'morning_briefing';
+  return null;
+}
+
+function formatDecisionSummaryFastpath(userId: number, tenantId: number, lang: Lang): DomainResponse {
+  const cta = getDecisionSummary(userId, tenantId, 3);
+  const pt = lang.startsWith('pt');
+  const lines = [
+    pt ? '🧭 <b>Centro de decisões</b>' : '🧭 <b>Decision Center</b>',
+    pt
+      ? `${cta.openCount} abertas · ${cta.urgentCount} urgentes · ${cta.handledTodayCount} tratadas hoje`
+      : `${cta.openCount} open · ${cta.urgentCount} urgent · ${cta.handledTodayCount} handled today`,
+  ];
+  if (cta.previewItems.length > 0) {
+    lines.push('');
+    for (const item of cta.previewItems.slice(0, 3)) {
+      const label = item.recommendedActionLabel ? ` — ${item.recommendedActionLabel}` : '';
+      lines.push(`▸ ${escapeHtml(item.safePreviewTitle || item.title)}${escapeHtml(label)}`);
+      if (item.whySummary) lines.push(`  ${escapeHtml(item.whySummary)}`);
+    }
+  } else {
+    lines.push(pt ? 'Tudo limpo agora.' : 'All clear right now.');
+  }
+  return { text: lines.join('\n').trim(), domain: SECRETARY };
+}
+
+function formatHandledByNexusFastpath(userId: number, tenantId: number, lang: Lang): DomainResponse {
+  const pt = lang.startsWith('pt');
+  const handled = listHandledByNexusItems(userId, tenantId, 5);
+  const lines = [pt ? '✅ <b>Tratado pelo Nexus</b>' : '✅ <b>Handled by Nexus</b>'];
+  if (handled.length === 0) {
+    lines.push(pt ? 'Nada tratado automaticamente hoje.' : 'Nothing auto-handled recently.');
+  } else {
+    for (const item of handled) {
+      lines.push(`▸ ${escapeHtml(item.title)} — ${escapeHtml(item.actionTaken)}`);
+      if (item.whyBrief) lines.push(`  ${escapeHtml(item.whyBrief)}`);
+    }
+  }
+  return { text: lines.join('\n').trim(), domain: SECRETARY };
+}
+
+function formatLatestReportFastpath(userId: number, message: string, lang: Lang): DomainResponse {
+  const pt = lang.startsWith('pt');
+  const requestedType = reportTypeFromMessage(message);
+  const report = requestedType
+    ? getLatestByType(userId, requestedType)
+    : getRecentReports(userId, { limit: 1 })[0] ?? null;
+  if (!report) {
+    return {
+      text: pt ? 'Não encontrei nenhum relatório recente.' : 'I could not find a recent report.',
+      domain: SECRETARY,
+    };
+  }
+  const created = DateTime.fromISO(report.createdAt, { zone: 'utc' });
+  const createdLabel = created.isValid
+    ? created.setZone(getUserTimezone(userId)).toFormat('dd/MM HH:mm')
+    : report.createdAt;
+  return {
+    text: [
+      pt ? '📄 <b>Relatório mais recente</b>' : '📄 <b>Latest report</b>',
+      `${escapeHtml(report.title)} · ${createdLabel}`,
+      report.summary ? escapeHtml(report.summary) : null,
+    ].filter(Boolean).join('\n'),
+    domain: SECRETARY,
+  };
 }
 
 // ─── Pattern Dictionary ─────────────────────────────────────────────
@@ -406,6 +576,88 @@ export function resetFastpathMetrics(): void {
 //   4. Add a test in __tests__/services/secretary-fastpath.test.ts
 
 const FASTPATH_PATTERNS: PatternEntry[] = [
+  // ── Calendar Event Create ───────────────────────────────────────
+  // "Colocar no calendário evento no próximo sábado, 16/5, das 9h às 13h. Volei Lucas, convide o ..."
+  // "Add calendar event tomorrow 9:00 to 10:00 School activity invite ..."
+  {
+    id: 'create_calendar_event',
+    pattern: /^(?=.*\b(?:calend[aá]rio|calendar|agenda|evento|event)\b)(?:colocar|coloca|p[õo]e|poe|mete|adicionar|adiciona|criar|cria|agendar|agenda|marcar|marca|schedule|add|create|book)\b[\s\S]+$/i,
+    requires: 'calendar',
+    handler: async (userId, match, lang) => {
+      const text = match.input ?? match[0];
+      const timezone = getUserTimezone(userId);
+      const parsed = parseCalendarCreateRequest(text, timezone);
+      if (!parsed) {
+        return {
+          text: lang.startsWith('pt')
+            ? 'Preciso da data, hora de início, hora de fim e título para criar o evento.'
+            : 'I need the date, start time, end time, and title to create the event.',
+          domain: SECRETARY,
+        };
+      }
+
+      if (!hasWritableCalendarForUser(userId)) {
+        return {
+          text: lang.startsWith('pt')
+            ? '⚠️ Não encontrei um calendário ligado para criar o evento. Liga Google Calendar ou Outlook em Definições > Ligações.'
+            : '⚠️ I could not find a connected calendar to create the event. Connect Google Calendar or Outlook in Settings > Connections.',
+          domain: SECRETARY,
+        };
+      }
+
+      if (parsed.attendees.length > 0) {
+        return {
+          text: lang.startsWith('pt')
+            ? `Preciso da tua confirmação antes de criar “${escapeHtml(parsed.title)}”, porque isso pode enviar convite para ${parsed.attendees.map(escapeHtml).join(', ')}.`
+            : `I need your confirmation before creating “${escapeHtml(parsed.title)}” because it may send an invite to ${parsed.attendees.map(escapeHtml).join(', ')}.`,
+          domain: SECRETARY,
+        };
+      }
+
+      try {
+        const eventInput = {
+          title: parsed.title,
+          start: parsed.start,
+          end: parsed.end,
+          attendees: parsed.attendees,
+        };
+        let event: Awaited<ReturnType<typeof createEvent>>;
+        try {
+          event = await createEvent(eventInput, parsed.target, userId);
+        } catch (err) {
+          if (!parsed.target) throw err;
+          logger.warn(
+            { err, userId, requestedSource: parsed.target, title: parsed.title },
+            'fastpath create_calendar_event requested source failed, retrying default connected calendar',
+          );
+          event = await createEvent(eventInput, undefined, userId);
+        }
+        const verified = await verifyCalendarCreateReadBack(userId, event, eventInput);
+        if (!verified) {
+          return {
+            text: lang.startsWith('pt')
+              ? '⚠️ Enviei o pedido ao calendário, mas ainda não consegui verificar o evento por leitura de volta. Não vou marcar como concluído até conseguir confirmar.'
+              : '⚠️ I sent the request to the calendar, but I could not verify the event by reading it back yet. I will not mark it complete until I can confirm it.',
+            domain: SECRETARY,
+          };
+        }
+        invalidateCalendarCaches(userId);
+        return {
+          text: formatCalendarCreateSuccess(lang, event, parsed.attendees),
+          domain: SECRETARY,
+        };
+      } catch (err) {
+        logger.warn({ err, userId, title: parsed.title, attendeeCount: parsed.attendees.length }, 'fastpath create_calendar_event failed');
+        return {
+          text: lang.startsWith('pt')
+            ? '⚠️ Não consegui criar o evento no calendário agora. Tenta novamente dentro de instantes.'
+            : '⚠️ I could not create the calendar event right now. Please try again shortly.',
+          domain: SECRETARY,
+        };
+      }
+    },
+  },
+
   // ── Day Overview ────────────────────────────────────────────────
   // "what's my day", "o que tenho hoje", "/day", "today", "hoje", "mostra meu dia"
   {
@@ -504,7 +756,7 @@ const FASTPATH_PATTERNS: PatternEntry[] = [
   // "what's my week", "show my week", "/week", "esta semana", "minha semana"
   {
     id: 'daily_priority',
-    pattern: /^(?:what(?:'s| is)? my priority(?: today)?|what should i do first(?: today)?|prioriti[sz]e my day|o que faço primeiro|o que devo fazer primeiro|o que devo priorizar(?: hoje)?|o que priorizo(?: hoje)?|qual(?: é| a)? prioridade(?: hoje)?|prioriza o meu dia|priorizar o meu dia|prioriza meu dia|priorizar meu dia)[\s?!.]*$/i,
+    pattern: /^(?:what(?:'s| is)? my priority(?: today)?|what should i do first(?: today)?|what should i focus on(?: now| today)?|what do i focus on(?: now| today)?|focus me(?: now| today)?|prioriti[sz]e my day|o que faço primeiro|o que devo fazer primeiro|o que devo priorizar(?: hoje)?|o que priorizo(?: hoje)?|qual(?: é| a)? prioridade(?: hoje)?|prioriza o meu dia|priorizar o meu dia|prioriza meu dia|priorizar meu dia|em que devo focar(?: agora| hoje)?)[\s?!.]*$/i,
     handler: async (_userId, _match, lang) => {
       const c = copyForLang(lang);
       const brief = await composeDailyBrief({ userId: _userId, language: lang });
@@ -542,6 +794,30 @@ const FASTPATH_PATTERNS: PatternEntry[] = [
       }
       return { text: lines.join('\n').trim(), domain: SECRETARY };
     },
+  },
+
+  // ── Decision Center Summary ────────────────────────────────────
+  // "what needs my decision", "decision center", "o que precisa da minha decisão"
+  {
+    id: 'decision_center_summary',
+    pattern: /^(?:what (?:needs|requires) my (?:decision|input|approval)|what decisions? (?:need|needs) me|what do i need to decide|show (?:my )?(?:decisions|decision center)|decision center|centro de decis(?:a|ã)o(?:es)?|o que precisa da minha decis(?:a|ã)o|que decis(?:o|õ)es precisam de mim|mostra(?:r)? decis(?:o|õ)es)[\s?!.]*$/i,
+    handler: async (userId, _match, lang, tenantId) => formatDecisionSummaryFastpath(userId, tenantId, lang),
+  },
+
+  // ── Handled By Nexus Summary ───────────────────────────────────
+  // "what did Nexus handle", "handled by Nexus", "o que o Nexus tratou"
+  {
+    id: 'handled_by_nexus_summary',
+    pattern: /^(?:what did nexus handle|what has nexus handled|handled by nexus|show handled(?: by nexus)?|o que o nexus tratou|tratado pelo nexus|mostra(?:r)? tratado(?: pelo nexus)?)[\s?!.]*$/i,
+    handler: async (userId, _match, lang, tenantId) => formatHandledByNexusFastpath(userId, tenantId, lang),
+  },
+
+  // ── Latest Report / Briefing ───────────────────────────────────
+  // "latest report", "morning briefing", "último relatório"
+  {
+    id: 'latest_report',
+    pattern: /^(?:latest report|show (?:my )?(?:latest )?report|(?:morning|evening|weekly|coach) briefing|today'?s briefing|ultimo relatorio|último relatório|relatorio mais recente|relatório mais recente|briefing da manh(?:a|ã)|resumo do dia|revis(?:a|ã)o semanal)[\s?!.]*$/i,
+    handler: async (userId, match, lang) => formatLatestReportFastpath(userId, match.input ?? match[0], lang),
   },
 
   {
@@ -844,13 +1120,18 @@ export async function tryFastpath(
   userId: number,
   message: string,
   langOverride?: Lang,
+  tenantId = userId,
 ): Promise<FastpathResult> {
   _metrics.totalAttempts++;
   const trimmed = message.trim();
-  if (!trimmed) return { matched: false };
+  if (!trimmed) {
+    recordFastpathMiss('empty_message');
+    return { matched: false, missReason: 'empty_message' };
+  }
 
   const startedAt = Date.now();
   const lang = resolveLang(userId, langOverride);
+  let skippedSubskill: string | null = null;
 
   for (const entry of FASTPATH_PATTERNS) {
     const match = trimmed.match(entry.pattern);
@@ -858,31 +1139,37 @@ export async function tryFastpath(
 
     // Sub-skill gate — skip patterns whose required sub-skill is off
     if (entry.requires && !isSubmoduleEnabled('secretary', entry.requires)) {
+      skippedSubskill = entry.requires;
+      _metrics.skippedBySubskill[entry.requires] = (_metrics.skippedBySubskill[entry.requires] || 0) + 1;
       logger.debug({ pattern: entry.id, requires: entry.requires }, 'Fastpath pattern skipped — sub-skill disabled');
       continue;
     }
 
     try {
-      const response = await entry.handler(userId, match, lang);
+      const response = await entry.handler(userId, match, lang, tenantId);
       const latency = Date.now() - startedAt;
       _metrics.totalHits++;
       _metrics.totalLatencyMs += latency;
       _metrics.hitsByPattern[entry.id] = (_metrics.hitsByPattern[entry.id] || 0) + 1;
       logger.info(
-        { userId, pattern: entry.id, lang, latencyMs: latency },
+        { userId, tenantId, pattern: entry.id, lang, latencyMs: latency },
         'Secretary fastpath matched',
       );
       return { matched: true, response, patternId: entry.id };
     } catch (err) {
+      _metrics.handlerFailuresByPattern[entry.id] = (_metrics.handlerFailuresByPattern[entry.id] || 0) + 1;
+      recordFastpathMiss('handler_error');
       logger.warn(
-        { err, userId, pattern: entry.id },
+        { err, userId, tenantId, pattern: entry.id },
         'Fastpath handler failed — falling through to AI',
       );
-      return { matched: false };
+      return { matched: false, missReason: 'handler_error' };
     }
   }
 
-  return { matched: false };
+  const missReason = skippedSubskill ? `subskill_disabled:${skippedSubskill}` : 'no_pattern';
+  recordFastpathMiss(missReason);
+  return { matched: false, missReason };
 }
 
 /** Get all registered fastpath pattern IDs (for portal display + tests). */
@@ -908,5 +1195,9 @@ export function normalizeLangHeader(
   if (lower.startsWith('pt-pt') || lower.startsWith('pt_pt')) return 'pt-PT';
   if (lower.startsWith('pt')) return 'pt-BR';
   if (lower.startsWith('en')) return 'en-US';
+  // Phase 16 batch 80 (2026-05-16): preserve es-ES instead of collapsing
+  // to pt-BR. The earlier collapse silently disabled ES branches in the
+  // chat planner for HTTP Accept-Language: es-* requests.
+  if (lower.startsWith('es')) return 'es-ES';
   return 'pt-BR';
 }

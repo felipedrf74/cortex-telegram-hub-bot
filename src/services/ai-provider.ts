@@ -17,6 +17,62 @@ export interface AICallResult {
   text: string;
   toolCalls: AIToolCall[];
   stopReason: string;
+  /**
+   * Optional per-call metadata surfaced for evaluation visibility (see
+   * WO-ollama-local-llm). When LOCAL_LLM_SHOW_PROVIDER_METADATA=true,
+   * iOS/portal responses expose this; otherwise it's stripped at the
+   * serialization boundary (operator/admin surfaces still see it).
+   *
+   * Backwards compatible: existing cloud providers leave it undefined.
+   */
+  providerMetadata?: {
+    providerUsed: string;
+    modelUsed: string;
+    modelDigest?: string;
+    fallbackUsed: boolean;
+    fallbackReason?: string;
+    totalDurationNs?: number;
+    loadDurationNs?: number;
+    promptEvalCount?: number;
+    promptEvalDurationNs?: number;
+    evalCount?: number;
+    evalDurationNs?: number;
+    promptTokensPerSec?: number;
+    generationTokensPerSec?: number;
+    totalTokensPerSec?: number;
+    isColdLoad?: boolean;
+    warmGenerationMs?: number;
+    warning?: string;
+    recommendation?: string;
+    validationStatus?: 'passed' | 'failed' | 'skipped';
+    // v3.1 (Codex round-7 cleanup): narrowed from
+    // `'sent_raw' | 'sent_redacted' | 'blocked_by_privacy_gate'` to just
+    // `'sent_raw'`. The `'sent_redacted'` and `'blocked_by_privacy_gate'`
+    // states are no longer reachable: the v3.1 gate either emits
+    // `privacyAction='sent_raw'` (raw forward, only when escalation is
+    // explicitly approved) or REJECTS via `CloudReasoningRejection` (in
+    // which case the dispatch never populates `providerMetadata` from a
+    // successful gate). Keeping the type as a single-member union forces
+    // any future re-introduction of redaction to go through a public API
+    // change with reviewer attention, rather than slipping in via
+    // metadata leaking the removed state to downstream consumers.
+    privacyAction?: 'sent_raw';
+    // Phase K (2026-05-26): observability fields. Populated by
+    // OllamaProvider.callDomain so audit_trail / iOS metadata surface
+    // EXACTLY what went over the wire (no hardcoded literals — every
+    // value reflects the actual request). Cloud providers may also
+    // populate these in the future; current cloud providers leave them
+    // undefined.
+    domain?: string;
+    temperature?: number;
+    think?: boolean;
+    numCtx?: number;
+    numPredict?: number;
+    // Phase K — quality-gate decision carry-through, set by
+    // chat-message-routes.ts after applyChatResponseQualityGate runs.
+    qualityGateSkipped?: boolean;
+    qualityGateReason?: string;
+  };
 }
 
 export interface AIToolCall {
@@ -128,7 +184,7 @@ export function getModelRouting(
  *     these. Providers that don't use tools (or that get an empty
  *     array) should call without tools.
  *   - modelTier: Layer 4. Abstract tier the provider should use:
- *     'heavy' = the full reasoning model (Sonnet/gemini-3-flash)
+ *     'heavy' = the full reasoning model (Sonnet/gemini-2.5-flash)
  *     'light' = the cheap model (Haiku/gemini-2.5-flash-lite)
  *     Providers map this to their own concrete model names.
  *   - maxTokensOverride: explicit max-tokens cap (existing field —
@@ -140,6 +196,77 @@ export interface CallDomainOptions {
   maxTokensOverride?: number;
   userId?: number;
   tenantId?: number;
+  /**
+   * Explicit per-call model override. Used by `cloud-reasoning-gate.ts`
+   * to ensure the selected approved reasoning model (e.g.,
+   * gemini-2.5-pro) is actually used for the fallback call rather than
+   * the provider's default chat/classify model. Cloud providers must
+   * use this when set; the local Ollama provider also honors it for
+   * symmetry. (Plan A2.)
+   */
+  modelOverride?: string;
+  /** Request-level privacy metadata used by cloud-reasoning-gate. */
+  containsPrivateData?: boolean;
+  allowCloudEscalation?: boolean;
+  redactionRequired?: boolean;
+  /**
+   * Phase K (2026-05-26) — request-level shape hints used by the
+   * provider-fallback runtime hard-block to refuse routing certain
+   * shapes to Ollama (which has no tool calling and no execute path
+   * in v1). Both are optional and populated by `chat-message-routes.ts`
+   * from the resolved `NexusAnswerContract` before dispatch.
+   *
+   * - `ownerSkill`: the contract.ownerSkill (e.g., 'training' even when
+   *   domain is 'triathlon'). Lets the guard catch the
+   *   domain↔ownerSkill mismatch case.
+   * - `executeIntent`: true when contract.actionability === 'execute'.
+   *   When true, Ollama is bypassed in favor of the cloud fallback
+   *   regardless of domain.
+   *
+   * Kept as opaque optional strings/booleans to avoid importing
+   * NexusAnswerContract from chat-answer-contract.ts here — that would
+   * pull a domain-specific type into a foundational interface used by
+   * every provider.
+   */
+  ownerSkill?: string;
+  executeIntent?: boolean;
+}
+
+/**
+ * Options bag for `classify()`. Mirrors `CallDomainOptions` for the
+ * lightweight classify path. Added 2026-05-26 for Option 3 (small
+ * dedicated classifier on Ollama with shadow-eval), but every field is
+ * generic and applies to all providers:
+ *
+ *   - `userId`/`tenantId`: cost attribution on `api_usage` rows. Cloud
+ *     providers already attribute via `trackedCreate`; this makes the
+ *     attribution explicit for the local Ollama path (F-new-6).
+ *   - `requestId`: chains `request-context` into shadow telemetry so a
+ *     shadow row can be correlated with the live chat turn that
+ *     spawned it.
+ *   - `source`: defaults to 'live'. Set to 'shadow' by
+ *     `classify-shadow.ts` so OllamaProvider can suppress side effects
+ *     (api_usage write, rate-limit increment) for shadow runs (O3-A12
+ *     OPTION 1, O3-A19).
+ *   - `recordUsage`: explicit "do not write api_usage" flag. Redundant
+ *     with `source==='shadow'` but kept as an explicit override; useful
+ *     for offline evals or smoke runs.
+ *   - `timeoutMs`: per-call timeout. Providers should treat it as an
+ *     advisory cap on their own AbortController setup.
+ *   - `abortSignal`: external cancellation. Providers MUST forward this
+ *     to `fetch()` (or equivalent) so a caller-side timeout actually
+ *     terminates the underlying HTTP request (O3-A18). Without this,
+ *     shadow timeouts would orphan in-flight model generations on the
+ *     Ollama daemon, holding CPU + KV cache indefinitely.
+ */
+export interface ClassifyOptions {
+  userId?: number;
+  tenantId?: number;
+  requestId?: string;
+  source?: 'live' | 'shadow';
+  recordUsage?: boolean;
+  timeoutMs?: number;
+  abortSignal?: AbortSignal;
 }
 
 export interface AIProvider {
@@ -149,10 +276,17 @@ export interface AIProvider {
   /**
    * Classify a message into a domain.
    * Returns the domain and a confidence score (0-1).
+   *
+   * `options` is the optional Option-3 ClassifyOptions bag. Existing
+   * callers omit it; providers default to live behavior (write api_usage,
+   * respect rate limits, no cancellation signal). Shadow callers in
+   * `classify-shadow.ts` set `source: 'shadow'` and pass an
+   * `abortSignal` for caller-side timeout cancellation.
    */
   classify(
     message: string,
     activeContext?: { domain: DomainName; lastAssistantMessage: string },
+    options?: ClassifyOptions,
   ): Promise<ClassificationResult>;
 
   /**
@@ -185,6 +319,57 @@ export interface AIProvider {
     toolConversation: AIToolResultMessage[],
     options?: CallDomainOptions,
   ): Promise<AICallResult>;
+
+  // ─── Optional capabilities (provider-specific) ──────────────────
+  //
+  // These are NOT required by every implementation. The Ollama provider
+  // implements all three; cloud providers implement getProviderHealth
+  // when they expose richer health than the default circuit-breaker
+  // reading. Callers check `if (provider.generateScript) ...` etc.
+
+  /**
+   * Two-step structured script generation (plan → artifacts → sandboxed
+   * validation). Only the local provider supports this in v1; cloud
+   * providers leave it undefined so `scriptGeneration` task type cannot
+   * silently escalate.
+   */
+  generateScript?(task: unknown): Promise<unknown>;
+
+  /**
+   * Single-shot reasoning with optional structured-output schema. Used
+   * by the `localReasoning` task type; the routing layer may escalate to
+   * an approved cloud reasoning model via cloud-reasoning-gate when the
+   * local model returns `requires_cloud_reasoning=true` AND policy
+   * allows.
+   */
+  localReason?(task: unknown): Promise<unknown>;
+
+  // NOTE: getProviderHealth is intentionally NOT on the interface.
+  // TaskRoutingProvider already exposes its own getProviderHealth() with
+  // a different signature (Record<string, {circuit, metrics}>) for the
+  // /health/detailed route. The OllamaProvider exposes a richer per-call
+  // health snapshot as a concrete-class method (not interface-required)
+  // so it doesn't clash with the routing-layer's signature.
+}
+
+/** Provider-agnostic health snapshot surfaced at `/health/detailed`. */
+export interface ProviderHealthSnapshot {
+  name: string;
+  healthy: boolean;
+  /** Probe latency in ms (most recent reachability check). */
+  latencyMs?: number;
+  /** Loaded models, if applicable (e.g., Ollama daemon's /api/ps). */
+  modelsLoaded?: string[];
+  /** Current in-process queue depth, if the provider has one. */
+  queueDepth?: number;
+  /** Pre-OOM degraded signal — provider works but is under pressure (plan A7). */
+  degraded?: boolean;
+  /** Symbolic warning when `degraded=true`. */
+  warning?: 'memory_pressure' | 'swap_thrash' | 'slow_generation' | string;
+  /** Last observed error message, if the provider tracks it. */
+  lastError?: string;
+  /** Available KB from /proc/meminfo (Linux only; informational). */
+  memAvailableKb?: number;
 }
 
 /**
@@ -221,12 +406,13 @@ export class FallbackProvider implements AIProvider {
   async classify(
     message: string,
     activeContext?: { domain: DomainName; lastAssistantMessage: string },
+    options?: ClassifyOptions,
   ): Promise<ClassificationResult> {
     try {
-      return await this.primary.classify(message, activeContext);
+      return await this.primary.classify(message, activeContext, options);
     } catch (err) {
       this.onFallback?.(err as Error, 'classify');
-      return this.fallback.classify(message, activeContext);
+      return this.fallback.classify(message, activeContext, options);
     }
   }
 

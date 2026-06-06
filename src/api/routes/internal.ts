@@ -4,9 +4,17 @@
  * Internal routes — service-to-service endpoints used by the Python
  * content-engine to report data back to the TS backend.
  *
- * These routes are NOT behind JWT auth. Instead they validate a shared
- * secret (`INTERNAL_API_SECRET`) that both processes read from the same
- * .env file. If the secret is unset, the routes reject all requests.
+ * These routes are NOT behind JWT auth. Instead they require loopback
+ * network origin by default (`INTERNAL_REQUIRE_LOOPBACK !== 'false'`) and
+ * validate a shared secret (`INTERNAL_API_SECRET`) that both processes read
+ * from the same .env file. If the secret is unset, the routes reject all
+ * requests.
+ *
+ * `ai-complete` strips body-supplied userId/tenantId unless the Python engine
+ * forwards a short-lived attribution token minted by the TS content route.
+ * That keeps normal callers from spoofing user/tenant billing while allowing
+ * content-engine work that originated from an authenticated request to be
+ * attributed to the real user and tenant.
  *
  * Mount BEFORE authMiddleware in router.ts.
  */
@@ -15,7 +23,7 @@ import { Router, Request, Response } from 'express';
 import { logger } from '../../utils/logger';
 import { config } from '../../config';
 import { sendError } from '../response-helpers';
-import { secureSecretMatches } from '../secret-guards';
+import { isLoopbackRequest, secureSecretMatches } from '../secret-guards';
 import {
   internalAiCompleteRateLimitMiddleware,
   internalRateLimitMiddleware,
@@ -23,6 +31,11 @@ import {
 import { getOwnerBootstrapTarget } from '../../services/user-service';
 import { getPerformanceSummary } from '../../services/content-learning-store';
 import { isAnthropicRuntimeEnabled } from '../../services/runtime-flags';
+import { getEffectiveDomainModel } from '../../services/model-config';
+import { completeOneShotWithFallback } from '../../services/gemini-provider';
+import { verifyInternalAttributionToken } from '../../services/internal-attribution';
+import { computeModelUsageCostUsd, recordUnresolvedModelPricingAlert } from '../../services/model-pricing';
+import { insertApiUsageFallback } from '../../services/api-usage-fallback';
 
 function resolveInternalAiTimeoutMs(category: string, maxTokens: number): number | undefined {
   const normalized = String(category || '').toLowerCase();
@@ -44,6 +57,10 @@ export function internalRoutes(): Router {
   const secret = process.env.INTERNAL_API_SECRET || '';
 
   router.use((req: Request, res: Response, next) => {
+    if (process.env.INTERNAL_REQUIRE_LOOPBACK !== 'false' && !isLoopbackRequest(req)) {
+      sendError(res, 'FORBIDDEN', 'Internal API requires loopback origin', 403);
+      return;
+    }
     const provided = req.headers['x-internal-secret'] as string | undefined;
     if (!secret || !secureSecretMatches(secret, provided)) {
       // Canonical error envelope. Python content-engine only checks
@@ -78,6 +95,9 @@ export function internalRoutes(): Router {
         inputTokens, outputTokens,
         cacheReadTokens = 0, cacheWriteTokens = 0,
         durationMs,
+        userId,
+        tenantId,
+        attributionToken,
       } = req.body;
 
       if (!category || !model || inputTokens == null || outputTokens == null) {
@@ -85,36 +105,68 @@ export function internalRoutes(): Router {
         return;
       }
 
-      // Compute cost using the same pricing table as anthropic-hook.ts
-      const COST_PER_MTK: Record<string, { in: number; out: number; cacheRead: number; cacheWrite: number }> = {
-        'claude-sonnet-4-6':         { in: 3.00, out: 15.00, cacheRead: 0.30, cacheWrite: 3.75 },
-        'claude-haiku-4-5-20251001': { in: 0.80, out: 4.00,  cacheRead: 0.08, cacheWrite: 1.00 },
-      };
+      const suppliedUserId = normalizeOptionalScopeId(userId);
+      const suppliedTenantId = normalizeOptionalScopeId(tenantId);
+      const verifiedAttribution = verifyInternalAttributionToken(attributionToken, category);
+      const scopedUserId = verifiedAttribution?.userId ?? 0;
+      const scopedTenantId = verifiedAttribution?.tenantId ?? 0;
+      if ((suppliedUserId || suppliedTenantId) && !verifiedAttribution) {
+        logger.warn({
+          category,
+          suppliedUserId: suppliedUserId ?? null,
+          suppliedTenantId: suppliedTenantId ?? null,
+        }, 'Ignoring body-supplied internal usage attribution; billing as system usage');
+      }
 
-      const rates = COST_PER_MTK[model] ?? COST_PER_MTK['claude-sonnet-4-6'];
-      const cost =
-        (inputTokens / 1_000_000) * rates.in +
-        (outputTokens / 1_000_000) * rates.out +
-        (cacheReadTokens / 1_000_000) * rates.cacheRead +
-        (cacheWriteTokens / 1_000_000) * rates.cacheWrite;
+      const priced = computeModelUsageCostUsd(model, {
+        inputTokens,
+        outputTokens,
+        cacheReadTokens,
+        cacheWriteTokens,
+      }, 'anthropic');
+      if (!priced.pricingResolved) {
+        recordUnresolvedModelPricingAlert({ model, provider: 'anthropic', category, userId: scopedUserId });
+      }
+      const cost = priced.costUsd;
+      const pricingStatus = priced.pricingResolved ? 'resolved' : 'unresolved';
 
       // Write to api_usage table (same as anthropic-hook.ts)
       const { getDb } = require('../../services/database');
-      getDb().prepare(`
-        INSERT INTO api_usage
-          (category, model, user_id, input_tokens, output_tokens,
-           cache_read_tokens, cache_write_tokens, cost_usd, duration_ms)
-        VALUES (?, ?, 0, ?, ?, ?, ?, ?, ?)
-      `).run(
-        category, model,
-        inputTokens, outputTokens,
-        cacheReadTokens, cacheWriteTokens,
-        cost, durationMs ?? 0,
-      );
+      try {
+        getDb().prepare(`
+          INSERT INTO api_usage
+            (category, model, tenant_id, user_id, input_tokens, output_tokens,
+             cache_read_tokens, cache_write_tokens, cost_usd, duration_ms,
+             provider, pricing_status, pricing_model_key)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'anthropic', ?, ?)
+        `).run(
+          category, model, scopedTenantId, scopedUserId,
+          inputTokens, outputTokens,
+          cacheReadTokens, cacheWriteTokens,
+          cost, durationMs ?? 0,
+          pricingStatus, priced.pricingModelKey,
+        );
+      } catch {
+        insertApiUsageFallback(getDb(), {
+          category,
+          model,
+          provider: 'anthropic',
+          tenantId: scopedTenantId,
+          userId: scopedUserId,
+          inputTokens,
+          outputTokens,
+          cacheReadTokens,
+          cacheWriteTokens,
+          costUsd: cost,
+          durationMs: durationMs ?? 0,
+          pricingStatus: 'legacy',
+        });
+      }
 
-      // Write to usage_metering aggregate (user_id=0 for system/content-engine calls)
+      // Write to usage_metering aggregate. Signed attribution preserves the
+      // real user; unsigned legacy calls remain system-scoped.
       const { recordUsage } = require('../../services/usage-metering');
-      recordUsage(0, inputTokens, outputTokens, cost, false);
+      recordUsage(scopedUserId, inputTokens, outputTokens, cost, false);
 
       // Push telemetry event
       const { pushEvent } = require('../../portal/telemetry');
@@ -127,7 +179,7 @@ export function internalRoutes(): Router {
       });
 
       logger.info(
-        { category, model, inputTokens, outputTokens, cost: cost.toFixed(4) },
+        { category, model, inputTokens, outputTokens, cost: cost.toFixed(4), userId: scopedUserId, tenantId: scopedTenantId },
         'Python usage reported',
       );
 
@@ -153,6 +205,9 @@ export function internalRoutes(): Router {
   //   maxTokens?: number,    // default 4096
   //   temperature?: number,  // default 0.7
   //   jsonMode?: boolean,    // if true, instructs model to return JSON
+  //   userId?: number,       // ignored unless attributionToken verifies
+  //   tenantId?: number,     // ignored unless attributionToken verifies
+  //   attributionToken?: string,
   // }
   //
   // Response: { text: string, provider: string }
@@ -162,6 +217,9 @@ export function internalRoutes(): Router {
         prompt, system = '', category,
         maxTokens = 4096, temperature = 0.7,
         jsonMode = false,
+        userId,
+        tenantId,
+        attributionToken,
       } = req.body;
 
       if (!prompt || !category) {
@@ -172,12 +230,27 @@ export function internalRoutes(): Router {
       const userPrompt = jsonMode
         ? `${prompt}\n\nReturn ONLY valid JSON. No markdown fences, no extra text.`
         : prompt;
-
-      const { completeOneShotWithFallback } = require('../../services/gemini-provider');
-      const { trackedCreate } = require('../../portal/anthropic-hook');
-      const Anthropic = require('@anthropic-ai/sdk');
-
-      const client = new Anthropic.default({ apiKey: config.anthropic?.apiKey || '', maxRetries: 2 });
+      const suppliedUserId = normalizeOptionalScopeId(userId);
+      const suppliedTenantId = normalizeOptionalScopeId(tenantId);
+      const verifiedAttribution = verifyInternalAttributionToken(attributionToken, category);
+      const scopedUserId = verifiedAttribution?.userId ?? 0;
+      const scopedTenantId = verifiedAttribution?.tenantId ?? 0;
+      if ((suppliedUserId || suppliedTenantId) && !verifiedAttribution) {
+        logger.warn({
+          category,
+          suppliedUserId: suppliedUserId ?? null,
+          suppliedTenantId: suppliedTenantId ?? null,
+        }, 'Ignoring body-supplied internal AI attribution; billing as system usage');
+      }
+      if (verifiedAttribution && (suppliedUserId !== verifiedAttribution.userId || suppliedTenantId !== verifiedAttribution.tenantId)) {
+        logger.warn({
+          category,
+          suppliedUserId: suppliedUserId ?? null,
+          suppliedTenantId: suppliedTenantId ?? null,
+          scopedUserId,
+          scopedTenantId,
+        }, 'Internal AI attribution token verified; body scope ignored in favor of signed claims');
+      }
 
       const { text, provider } = await completeOneShotWithFallback(
         system,
@@ -185,12 +258,16 @@ export function internalRoutes(): Router {
         category,
         // Anthropic fallback thunk — only fires if ANTHROPIC_ENABLED=true
         async () => {
+          const { trackedCreate } = require('../../portal/anthropic-hook');
+          const Anthropic = require('@anthropic-ai/sdk');
+          const client = new Anthropic.default({ apiKey: config.anthropic?.apiKey || '', maxRetries: 2 });
+          const anthropicModel = getEffectiveDomainModel('anthropic', 'content');
           const response = await trackedCreate(client, {
-            model: 'claude-haiku-4-5-20251001',
+            model: anthropicModel,
             max_tokens: maxTokens,
             system: system || undefined,
             messages: [{ role: 'user', content: userPrompt }],
-          }, category);
+          }, category, { userId: scopedUserId, tenantId: scopedTenantId });
           return response.content
             .filter((b: any) => b.type === 'text')
             .map((b: any) => b.text)
@@ -201,10 +278,18 @@ export function internalRoutes(): Router {
           temperature,
           timeoutMs: resolveInternalAiTimeoutMs(category, maxTokens),
           jsonMode,
+          userId: scopedUserId,
+          tenantId: scopedTenantId,
         },
       );
 
-      logger.info({ category, provider, chars: text.length }, 'AI completion for Python engine');
+      logger.info({
+        category,
+        provider,
+        chars: text.length,
+        userId: scopedUserId ?? null,
+        tenantId: scopedTenantId ?? null,
+      }, 'AI completion for Python engine');
       res.json({ text, provider });
     } catch (err: any) {
       logger.error({ err }, 'Internal ai-complete failed');
@@ -227,12 +312,20 @@ export function internalRoutes(): Router {
   router.get('/performance-summary', (req: Request, res: Response) => {
     try {
       const days = parseInt(req.query.days as string, 10) || 30;
+      const requestedTenantId = normalizeOptionalScopeId(req.query.tenantId);
+      const attributionToken = req.headers['x-internal-attribution-token'] as string | undefined;
+      const verifiedAttribution = verifyInternalAttributionToken(attributionToken, 'content_engine_report');
+      if (requestedTenantId && !verifiedAttribution) {
+        sendError(res, 'FORBIDDEN', 'Signed attribution is required for scoped performance summary', 403);
+        return;
+      }
       const ownerTarget = getOwnerBootstrapTarget();
-      if (!ownerTarget?.tenantId) {
+      const scopedTenantId = verifiedAttribution?.tenantId ?? ownerTarget?.tenantId;
+      if (!scopedTenantId) {
         sendError(res, 'SERVICE_UNAVAILABLE', 'Owner bootstrap target unavailable', 503);
         return;
       }
-      const summary = getPerformanceSummary(ownerTarget.tenantId, days);
+      const summary = getPerformanceSummary(scopedTenantId, days);
       res.json({
         entries: summary.entries.map((e: any) => ({
           views: e.views,
@@ -256,4 +349,10 @@ export function internalRoutes(): Router {
   });
 
   return router;
+}
+
+function normalizeOptionalScopeId(value: unknown): number | undefined {
+  if (value == null || value === '') return undefined;
+  const parsed = typeof value === 'number' ? value : Number(value);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : undefined;
 }

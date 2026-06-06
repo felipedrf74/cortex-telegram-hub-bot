@@ -17,12 +17,13 @@ describe('content script route contract utilities', () => {
   });
 
   it('normalizes generation and render modes without trusting arbitrary client values', () => {
+    expect(resolveScriptGenerationMode('draft')).toBe('draft');
     expect(resolveScriptGenerationMode('quick')).toBe('quick');
     expect(resolveScriptGenerationMode('standard')).toBe('standard');
     expect(resolveScriptGenerationMode('deep')).toBe('deep');
-    expect(resolveScriptGenerationMode('deep ')).toBe('standard');
-    expect(resolveScriptGenerationMode('expensive')).toBe('standard');
-    expect(resolveScriptGenerationMode(undefined)).toBe('standard');
+    expect(resolveScriptGenerationMode('deep ')).toBe('deep');
+    expect(resolveScriptGenerationMode('expensive')).toBe('draft');
+    expect(resolveScriptGenerationMode(undefined)).toBe('draft');
 
     expect(resolveScriptRenderMode('chat')).toBe('chat');
     expect(resolveScriptRenderMode(' STRUCTURED ')).toBe('structured');
@@ -114,7 +115,7 @@ describe('content script route contract utilities', () => {
 
     expect(response).toMatchObject({
       topic: 'Creator OS',
-      script: 'Open with the constraint.',
+      script: expect.stringContaining('FIRST 3 SECONDS:'),
       hook: 'Stop treating content as captions.',
       titleOptions: ['A', 'B'],
       sourcesUsed: [{
@@ -130,9 +131,26 @@ describe('content script route contract utilities', () => {
       durationMs: 1200,
       hashtags: [],
       caption: '',
-      cta: '',
+      cta: 'Pick one action from this video and measure the result this week.',
       degraded: false,
       warnings: [],
+      scriptQuality: {
+        overallScore: expect.any(Number),
+        hookScore: expect.any(Number),
+        retentionScore: expect.any(Number),
+        proofScore: expect.any(Number),
+        platformFitScore: expect.any(Number),
+        voiceFitScore: expect.any(Number),
+        ctaScore: expect.any(Number),
+        structureScore: expect.any(Number),
+        complianceWarnings: expect.any(Array),
+        revisionActions: expect.any(Array),
+        blockers: expect.any(Array),
+      },
+      scriptStructure: {
+        firstThreeSeconds: expect.stringContaining('Stop treating content as captions'),
+        cta: expect.any(String),
+      },
       generation: {
         mode: 'deep',
         cacheHit: false,
@@ -144,6 +162,151 @@ describe('content script route contract utilities', () => {
       cacheHit: false,
       usageImpact: 'high',
     });
+  });
+
+  it('attaches draft-first cost, prompt, research, and expansion metadata', () => {
+    const response = buildScriptSuccessResponse({
+      result: {
+        topic: 'Token-smart content',
+        script: 'Draft pack body with one concrete hook and one CTA. Save this.',
+        hook: 'Most content teams overpay for first drafts.',
+        title_options: ['Draft first'],
+        sources_used: [],
+        duration_ms: 100,
+      },
+      format: 'YouTube',
+      renderMode: 'structured',
+      scriptStyle: 'bullets',
+      generationMode: 'draft',
+      startMs: Date.now() - 100,
+      cacheHit: false,
+      promptBudget: {
+        prompt: 'stable',
+        tokenEstimate: 900,
+        maxTokens: 1600,
+        overBudget: false,
+        cacheablePrefixHash: 'prefix-hash',
+        sections: [{
+          sectionName: 'creator_voice_card',
+          text: 'voice',
+          required: true,
+          cacheable: true,
+          source: 'content_knowledge',
+          maxChars: 900,
+          tokenEstimate: 100,
+          truncated: false,
+        }],
+      },
+      estimatedCost: {
+        estimatedInputTokens: 900,
+        estimatedOutputTokens: 1200,
+        estimatedCostUsd: 0.00175,
+        costConfidence: 'high',
+      },
+      researchRoute: {
+        route: 'evergreen_cached',
+        reason: 'evergreen_or_draft_default',
+        allowDeepSearch: false,
+      },
+      budgetState: 'healthy',
+      qualityGate: {
+        qualityScore: 88,
+        qualityWarnings: ['needs_expansion'],
+        needsExpansion: true,
+        needsResearchRefresh: false,
+      },
+    });
+
+    expect(response.generationMode).toBe('draft');
+    expect(response.usageImpact).toBe('low');
+    expect(response.generation.researchUsed).toBe(false);
+    expect(response.contentCost.estimatedBeforeCall.estimatedCostUsd).toBe(0.00175);
+    expect(response.promptBudget.cacheablePrefixHash).toBe('prefix-hash');
+    expect(response.research).toMatchObject({
+      route: 'evergreen_cached',
+      allowDeepSearch: false,
+      sourceSummary: [],
+    });
+    expect(response.qualityScore).toBe(88);
+    expect(response.qualityWarnings).toContain('Draft needs expansion before publishing.');
+    expect(response.expandOptions.map((option) => option.action)).toContain('expand_full');
+    expect(response.nextActions.map((option: any) => option.action)).toEqual(expect.arrayContaining([
+      'hook_pack',
+      'title_pack',
+      'caption_pack',
+      'thumbnail_pack',
+    ]));
+    expect(response.operationTrace).toMatchObject({
+      operation: 'script_draft',
+      costTier: 'low',
+      cacheStatus: 'miss',
+    });
+    // 2026-05-18 phase2-qa P2: previously `reuseStatus` defaulted to
+    // 'reused' even when there was no source package and no cache hit —
+    // misleading iOS into showing "Reused" for a fresh draft. This fixture
+    // has hasReusableSourcePackage=false + cacheHit=false, so the honest
+    // value is 'fresh'.
+    expect(response.reuseStatus).toBe('fresh');
+    expect(response.costTier).toBe('low');
+    expect(response.qualityReport).toMatchObject({
+      score: 88,
+      needsExpansion: true,
+      needsResearchRefresh: false,
+    });
+    expect(response.artifactRefs).toEqual([]);
+    expect(response.claimLedger).toEqual(expect.any(Array));
+    expect(response.agentSignalsUsed).toEqual(expect.any(Array));
+    expect(response.requestedMode).toBe('draft');
+    expect(response.appliedMode).toBe('draft');
+    expect(response.downgradeReason).toBe('none');
+    expect('sourcePackageId' in response.research).toBe(false);
+    expect('researchArtifactId' in response.research).toBe(false);
+  });
+
+  it('prefers the actual engine prompt budget over the TypeScript estimate for cache metadata', () => {
+    const response = buildScriptSuccessResponse({
+      result: {
+        topic: 'Prompt parity',
+        script: 'Draft pack body with enough specific content to pass.',
+        prompt_budget: {
+          tokenEstimate: 111,
+          maxTokens: 1600,
+          overBudget: false,
+          cacheablePrefixHash: 'python-prefix',
+          sections: [{
+            sectionName: 'creator_voice_card',
+            tokenEstimate: 20,
+            required: true,
+            cacheable: true,
+            source: 'content_knowledge',
+            truncated: false,
+          }],
+        },
+      },
+      format: 'YouTube',
+      renderMode: 'structured',
+      scriptStyle: 'bullets',
+      requestedMode: 'deep',
+      generationMode: 'draft',
+      downgradeReason: 'deep_research_disabled',
+      startMs: Date.now() - 100,
+      cacheHit: false,
+      promptBudget: {
+        prompt: 'ts-estimate',
+        tokenEstimate: 999,
+        maxTokens: 3200,
+        overBudget: false,
+        cacheablePrefixHash: 'ts-prefix',
+        sections: [],
+      },
+    });
+
+    expect(response.promptBudget.cacheablePrefixHash).toBe('python-prefix');
+    expect(response.contentCost.providerCache.cacheablePrefixHash).toBe('python-prefix');
+    expect(response.promptBudget.sections[0].source).toBe('voice');
+    expect(response.requestedMode).toBe('deep');
+    expect(response.appliedMode).toBe('draft');
+    expect(response.downgradeReason).toBe('deep_research_disabled');
   });
 
   it('keeps cache-hit responses cheap and tolerates missing optional engine fields', () => {
@@ -169,8 +332,43 @@ describe('content script route contract utilities', () => {
     expect(response.usageImpact).toBe('none');
     expect(response.hashtags).toEqual([]);
     expect(response.caption).toBe('');
-    expect(response.cta).toBe('');
+    expect(response.cta).toContain('Save this');
     expect(response.degraded).toBe(true);
     expect(response.warnings).toEqual(['cached fallback']);
+    expect(response.scriptQuality.overallScore).toBeGreaterThanOrEqual(90);
+  });
+
+  it('attaches script quality to fresh, cached, degraded, and regenerated-style responses', () => {
+    const variants = [
+      { name: 'fresh', cacheHit: false, generationMode: 'standard' as const, degraded: false },
+      { name: 'cached', cacheHit: true, generationMode: 'standard' as const, degraded: false },
+      { name: 'degraded', cacheHit: false, generationMode: 'quick' as const, degraded: true },
+      { name: 'regenerated', cacheHit: false, generationMode: 'deep' as const, degraded: false },
+    ];
+
+    for (const variant of variants) {
+      const response = buildScriptSuccessResponse({
+        result: {
+          topic: `${variant.name} script`,
+          script: 'Today we are going to talk about a creator workflow.\nProof appears before the second beat.\nSave this.',
+          hook: '',
+          cta: '',
+          degraded: variant.degraded,
+          warnings: variant.degraded ? ['AI generation was unavailable; returned a templated degraded script grounded in the available research.'] : [],
+        },
+        format: 'Reel',
+        renderMode: 'structured',
+        scriptStyle: 'detailed',
+        generationMode: variant.generationMode,
+        startMs: Date.now() - 100,
+        cacheHit: variant.cacheHit,
+      });
+
+      expect(response.scriptQuality.overallScore, variant.name).toBeGreaterThanOrEqual(90);
+      expect(response.scriptQuality.revisionActions, variant.name).toContain('weak_intro_rewritten_to_first_three_seconds_hook');
+      expect(response.scriptStructure.firstThreeSeconds, variant.name).not.toMatch(/^Today we are going to talk/i);
+      expect(response.generation.cacheHit, variant.name).toBe(variant.cacheHit);
+      expect(response.degraded, variant.name).toBe(variant.degraded);
+    }
   });
 });

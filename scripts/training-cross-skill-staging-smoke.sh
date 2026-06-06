@@ -9,4 +9,7 @@ if [ ! -f dist/tools/training-cross-skill-staging-smoke.js ]; then
   npm run build >/dev/null
 fi
 
-node dist/tools/training-cross-skill-staging-smoke.js "$@"
+# Wrapped through with-smoke-evidence.sh so the run leaves a JSON evidence
+# file under docs/release/smoke-evidence/. Disable with NEXUS_SMOKE_EVIDENCE=0.
+exec scripts/with-smoke-evidence.sh training-cross-skill-staging \
+  node dist/tools/training-cross-skill-staging-smoke.js "$@"

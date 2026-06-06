@@ -15,6 +15,7 @@ import { buildAgentContext, formatContextForPrompt } from '../services/cross-age
 import { getDb } from '../services/database';
 import { config } from '../config';
 import { logger } from '../utils/logger';
+import { ensureContentTenantScopeColumns } from '../services/content-tenant-scope';
 
 const YOUTUBE_API_BASE = 'https://www.googleapis.com/youtube/v3';
 
@@ -31,12 +32,12 @@ const YOUTUBE_API_BASE = 'https://www.googleapis.com/youtube/v3';
 // run so changes take effect on the next 4-hour cycle without restart.
 
 const FALLBACK_PILLAR_KEYWORDS: Record<string, string[]> = {
-  politics: ['política', 'governo', 'lula', 'bolsonaro', 'esquerda', 'direita', 'estado', 'imposto', 'congresso', 'stf', 'regulação', 'censura', 'liberdade'],
-  economics: ['economia', 'inflação', 'dólar', 'real', 'mercado', 'juros', 'selic', 'pib', 'recessão', 'investimento', 'cripto', 'bitcoin', 'banco central'],
-  fitness: ['treino', 'musculação', 'corrida', 'maratona', 'dieta', 'suplemento', 'academia', 'crossfit', 'hipertrofia', 'atleta'],
-  faith: ['cristão', 'igreja', 'bíblia', 'fé', 'deus', 'família', 'valores', 'casamento', 'masculinidade'],
-  selfdev: ['disciplina', 'hábito', 'produtividade', 'mentalidade', 'sucesso', 'foco', 'propósito', 'estoicismo'],
-  geopolitics: ['guerra', 'china', 'eua', 'trump', 'brics', 'otan', 'israel', 'irã', 'ucrânia', 'rússia', 'petróleo'],
+  technology: ['tecnologia', 'inteligência artificial', 'automação', 'software', 'produto', 'ferramenta', 'startup', 'internet'],
+  creator_economy: ['criador', 'youtube', 'instagram', 'vídeo', 'shorts', 'reels', 'conteúdo', 'audiência', 'canal'],
+  wellness: ['bem-estar', 'saúde', 'treino', 'corrida', 'nutrição', 'recuperação', 'sono', 'performance'],
+  lifestyle: ['rotina', 'hábitos', 'viagem', 'casa', 'organização', 'agenda', 'trabalho', 'comunidade'],
+  business: ['negócio', 'empresa', 'mercado', 'cliente', 'produto', 'operação', 'finanças', 'estratégia'],
+  current_events: ['notícia', 'atualidade', 'evento', 'lançamento', 'mudança', 'tendência', 'debate público'],
 };
 
 /**
@@ -53,6 +54,7 @@ const FALLBACK_PILLAR_KEYWORDS: Record<string, string[]> = {
 function getPillarKeywords(): Record<string, string[]> {
   try {
     const db = getDb();
+    ensureContentTenantScopeColumns(db);
     const rows = db.prepare(
       `SELECT name, keywords FROM config_pillars WHERE enabled = 1 ORDER BY name ASC`,
     ).all() as Array<{ name: string; keywords: string }>;
@@ -269,17 +271,13 @@ function scoreReactionPotential(
   const lowerTitle = video.title.toLowerCase();
   const hoursAge = (Date.now() - new Date(video.publishedAt).getTime()) / (1000 * 60 * 60);
 
-  // 1. Audience Trigger (0-10): How strongly will this trigger Brazilian men 18-35?
+  // 1. Audience Trigger (0-10): How strongly could this matter to the saved creator audience?
   let audienceTrigger = 0;
-  const triggerKeywords = ['homem', 'masculin', 'treino', 'disciplina', 'luta', 'trabalho',
-    'preguiça', 'fracass', 'sucesso', 'liberdade', 'imposto', 'governo',
-    'família', 'pai', 'cristão', 'dieta', 'academia', 'corrida'];
+  const triggerKeywords = ['tendência', 'debate', 'viral', 'mudança', 'risco', 'oportunidade',
+    'criador', 'conteúdo', 'trabalho', 'carreira', 'negócio', 'tecnologia',
+    'saúde', 'treino', 'corrida', 'rotina', 'comunidade'];
   const triggerHits = triggerKeywords.filter(k => lowerTitle.includes(k)).length;
   audienceTrigger = Math.min(10, triggerHits * 3 + (video.pillar !== 'none' ? 3 : 0));
-  // Opposition to values = strong trigger
-  const leftKeywords = ['socialismo', 'igualdade', 'cotas', 'regulação', 'estado social',
-    'imposto justo', 'sus funciona', 'feminism', 'aborto', 'desarm'];
-  if (leftKeywords.some(k => lowerTitle.includes(k))) audienceTrigger = Math.min(10, audienceTrigger + 4);
 
   // 2. Controversy Potential (0-10): How polarizing?
   let controversy = 0;
@@ -287,7 +285,6 @@ function scoreReactionPotential(
     'destruiu', 'acabou', 'urgente', 'bomba', 'escândalo', 'absurdo',
     'vergonha', 'verdade', 'ninguém fala', 'lacrou', 'cancelado'];
   controversy = Math.min(10, controversyKeywords.filter(k => lowerTitle.includes(k)).length * 3);
-  if (leftKeywords.some(k => lowerTitle.includes(k))) controversy = Math.min(10, controversy + 3);
   if (video.viewCount > 500000) controversy = Math.min(10, controversy + 2); // viral = controversial
 
   // 3. Timeliness (0-10): How fresh?
@@ -331,12 +328,12 @@ function scoreReactionPotential(
   let keyQuoteOrClip = `Video: "${video.title}" by ${video.channelTitle}`;
   let bookReference: { book: string; framework: string } | null = null;
 
-  if (leftKeywords.some(k => lowerTitle.includes(k))) {
-    suggestedAngle = 'Disagree — counter with free market / libertarian arguments';
-    counterPosition = 'Expose the statist logic and present the freedom-based alternative';
+  if (controversy >= 6) {
+    suggestedAngle = 'Clarify the claim, separate evidence from opinion, and add the authenticated creator\'s scoped perspective';
+    counterPosition = 'Explain what is supported, what is uncertain, and what the audience should watch next';
   } else if (video.source === 'reference_channel') {
     suggestedAngle = `React/respond to ${video.channelTitle}'s take`;
-    counterPosition = `Agree, disagree, or add Felipe's unique perspective`;
+    counterPosition = `Agree, disagree, or add the authenticated creator's unique perspective`;
   } else {
     suggestedAngle = `React to "${video.title.slice(0, 50)}" — ${video.pillar} angle`;
     counterPosition = 'Take a contrarian or deeper-analysis stance';
@@ -380,7 +377,7 @@ export async function runReactionRadar(): Promise<void> {
     const pillarSignals = readSignals('reaction-radar', ['pillar_performance'], 5);
     signalsConsumed += dnaSignals.length + bookSignals.length + pillarSignals.length;
 
-    // Cross-agent learning: consume voice patterns to suggest reactions in Felipe's style
+    // Cross-agent learning: consume voice patterns to suggest reactions in the authenticated creator's style
     const peerContext = buildAgentContext('reaction-radar');
     signalsConsumed += peerContext.signalsConsumed;
 
@@ -409,9 +406,15 @@ export async function runReactionRadar(): Promise<void> {
     }
 
     // Get reference channel IDs
-    const refChannels = db.prepare(
-      "SELECT channel_id, channel_name FROM content_ref_channels WHERE status = 'active' AND channel_id IS NOT NULL"
-    ).all() as any[];
+    const refChannels = db.prepare(`
+      SELECT channel_id, channel_name
+        FROM content_ref_channels
+       WHERE status = 'active'
+         AND channel_id IS NOT NULL
+         AND COALESCE(scope_status, 'quarantined') = 'active'
+         AND COALESCE(visibility_scope, 'platform_internal') IN ('platform_internal', 'public_published')
+         AND COALESCE(tenant_id, 0) = 0
+    `).all() as any[];
 
     // Fetch data from multiple sources
     const allFindings: VideoFinding[] = [];

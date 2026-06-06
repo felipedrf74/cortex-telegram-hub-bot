@@ -120,6 +120,94 @@ describe('training-session-description', () => {
       expect(text).toContain('1. Back Squat — 4×6 @ RPE 7-8 | 2 min rest');
       expect(text).toContain('TIME: ~60-65 min total');
     });
+
+    it('uses strength prescription when a mislabeled session carries strength evidence', () => {
+      const { sections, text } = buildRichSessionDescription({
+        ...baseInput,
+        sport: 'running',
+        session: {
+          sessionType: 'easy_run',
+          title: 'Upper Hypertrophy',
+          durationMinutes: 50,
+          dayOfWeek: 'Thursday',
+          description: [
+            'Strict Zone 2 with walk breaks if HR drifts.',
+            'session_prescription · mp3',
+            'Keep elbows stacked and stop each set with 2 reps in reserve.',
+          ].join('\n'),
+          exercises: [
+            { name: 'Dumbbell Bench Press', sets: 4, reps: '8-10', rpe: '7', rest_sec: 90 },
+            { name: 'Seated Row', sets: 3, reps: '10-12', rpe: '7', rest_sec: 75 },
+          ],
+        },
+      });
+
+      expect(sections.execution).toBeUndefined();
+      expect(sections.exercises).toHaveLength(2);
+      expect(sections.warmup?.items.some((item) => /main lift/i.test(item))).toBe(true);
+      expect(text).toContain('EXERCISES:');
+      expect(text).not.toMatch(/Zone 2|walk breaks|HR drifts|session_prescription|mp3/i);
+      expect(text).toContain('Keep elbows stacked');
+    });
+
+    it('does not treat standalone "press" in an endurance title as strength evidence', () => {
+      const { sections, text } = buildRichSessionDescription({
+        ...baseInput,
+        sport: 'running',
+        session: {
+          sessionType: 'easy_run',
+          title: 'Press deeper into Zone 2',
+          durationMinutes: 35,
+          dayOfWeek: 'Friday',
+          description: 'Stay relaxed and keep the rhythm smooth.',
+        },
+      });
+
+      expect(sections.execution?.some((item) => item.label === 'RPE')).toBe(true);
+      expect(sections.exercises).toBeUndefined();
+      expect(text).toContain('EXECUTION:');
+      expect(text).not.toContain('EXERCISES:');
+    });
+  });
+
+  describe('free-text modality linter', () => {
+    it('removes strength execution language from running notes before iOS renders them', () => {
+      const { sections, text } = buildRichSessionDescription({
+        ...baseInput,
+        session: {
+          ...baseInput.session,
+          sessionType: 'tempo_run',
+          title: 'Tempo Run',
+          description: 'Run controlled.\nKeep 2 reps in reserve on the main set.\ncalendar_busy_blocks · mp1',
+        },
+      });
+
+      expect(sections.execution?.some((item) => item.label === 'Pace')).toBe(true);
+      expect(sections.notes).toBe('Run controlled.');
+      expect(text).not.toMatch(/reps in reserve|calendar_busy_blocks|mp1/i);
+    });
+
+    it('removes plural strength and cycling cues from swimming notes', () => {
+      const { sections, text } = buildRichSessionDescription({
+        ...baseInput,
+        sport: 'swimming',
+        session: {
+          sessionType: 'threshold_swim',
+          title: 'Threshold Swim',
+          durationMinutes: 45,
+          dayOfWeek: 'Wednesday',
+          description: [
+            'Hold a smooth catch and controlled breathing.',
+            'Skip squats and deadlifts after the pool.',
+            'Use high cadence like a bike interval.',
+          ].join('\n'),
+        },
+      });
+
+      expect(sections.execution?.some((item) => item.label === 'Effort' || item.label === 'RPE')).toBe(true);
+      expect(sections.notes).toBe('Hold a smooth catch and controlled breathing.');
+      expect(text).not.toMatch(/squats|deadlifts|cadence/i);
+    });
   });
 
   describe('deload week IMPORTANT block', () => {
@@ -152,6 +240,60 @@ describe('training-session-description', () => {
       const { sections, text } = buildRichSessionDescription(baseInput);
       const independentRender = renderSectionsAsText(sections);
       expect(independentRender).toBe(text);
+    });
+
+    it('renders the provider email body in useful training-content order', () => {
+      const text = renderSectionsAsText({
+        header: { planName: 'Example Plan' },
+        badge: { emoji: '🏃', eyebrow: 'MONDAY EASY RUN', title: 'Easy Run' },
+        weeklyProgression: [
+          { weekNumber: 1, weekStart: 'Mar 9', summary: '30 min easy' },
+        ],
+        warmup: {
+          headline: 'WARM-UP',
+          items: ['5 min walk', '3 min mobility'],
+        },
+        execution: [
+          { label: 'Pace', value: '6:00/km' },
+          { label: 'RPE', value: '4-5/10' },
+        ],
+        cooldown: {
+          headline: 'COOL-DOWN',
+          items: ['5 min walk'],
+        },
+        important: ['Keep it conversational.'],
+        notes: 'Bring water.',
+        totalMinutesText: '~30 min total',
+      } as any);
+
+      expect(text.startsWith('Example Plan')).toBe(true);
+      expect(text.startsWith('NEXUS_')).toBe(false);
+      expect(text.indexOf('WARM-UP')).toBeLessThan(text.indexOf('MAIN WORKOUT'));
+      expect(text.indexOf('MAIN WORKOUT')).toBeLessThan(text.indexOf('COOL-DOWN'));
+      expect(text.indexOf('COOL-DOWN')).toBeLessThan(text.indexOf('TIPS / RECOMMENDATIONS'));
+      expect(text).not.toContain('⚠️ IMPORTANT:');
+    });
+
+    it('uses one clean main-workout label instead of stacked headings', () => {
+      const { text: runningText } = buildRichSessionDescription(baseInput);
+      expect(runningText).toContain('MAIN WORKOUT — EXECUTION:');
+      expect(runningText).not.toContain('MAIN WORKOUT:\nEXECUTION:');
+
+      const { text: strengthText } = buildRichSessionDescription({
+        ...baseInput,
+        sport: 'strength',
+        session: {
+          sessionType: 'strength_max',
+          title: 'Lower Body A',
+          durationMinutes: 65,
+          dayOfWeek: 'Tuesday',
+          exercises: [
+            { name: 'Back Squat', sets: 4, reps: '6', rpe: '7-8', rest_sec: 120 },
+          ],
+        },
+      });
+      expect(strengthText).toContain('MAIN WORKOUT — EXERCISES:');
+      expect(strengthText).not.toContain('MAIN WORKOUT:\nEXERCISES:');
     });
   });
 });

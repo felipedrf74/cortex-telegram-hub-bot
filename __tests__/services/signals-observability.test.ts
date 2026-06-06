@@ -26,10 +26,14 @@ let testDb: Database.Database;
 
 vi.mock('../../src/utils/logger', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(), trace: vi.fn(), child: vi.fn().mockReturnThis() },
+  LOGGER_REDACTION_PATHS: [],
 }));
 
 vi.mock('../../src/services/database', () => ({
   getDb: () => testDb,
+  initDatabase: vi.fn(),
+  closeDatabase: vi.fn(),
+  findUnexpectedMigrationPrefixCollisions: vi.fn(() => []),
 }));
 
 import { setDbProvider } from '../../src/services/intelligence-bus';
@@ -360,8 +364,8 @@ describe('buildActiveSignalsResponse — unknown type fallback', () => {
     // `hook_effectiveness` is a content-mesh type — valid SignalType
     // enum value but no training-coach meta entry.
     testDb.prepare(`
-      INSERT INTO agent_signals (source_agent, signal_type, payload, priority, expires_at, user_id, status)
-      VALUES ('test', 'planned_hard_run', '{}', 'normal', datetime('now', '+1 day'), 8001, 'active')
+      INSERT INTO agent_signals (source_agent, signal_type, payload, priority, expires_at, tenant_id, user_id, status)
+      VALUES ('test', 'planned_hard_run', '{}', 'normal', datetime('now', '+1 day'), 8001, 8001, 'active')
     `).run();
 
     const res = buildActiveSignalsResponse(8001);

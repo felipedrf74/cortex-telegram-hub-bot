@@ -22,10 +22,15 @@ const mockInvalidateFinanceDerivedCaches = vi.fn();
 
 vi.mock('../../src/services/database', () => ({
   getDb: () => testDb,
+  initDatabase: vi.fn(),
+  closeDatabase: vi.fn(),
+  findUnexpectedMigrationPrefixCollisions: vi.fn(() => []),
+  assertNoUnexpectedMigrationPrefixCollisions: vi.fn(),
 }));
 
 vi.mock('../../src/utils/logger', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(), trace: vi.fn(), child: vi.fn().mockReturnThis() },
+  LOGGER_REDACTION_PATHS: [],
 }));
 
 vi.mock('../../src/config', () => ({
@@ -42,14 +47,61 @@ vi.mock('../../src/config', () => ({
 vi.mock('../../src/services/cost-guardrail', () => ({
   isUserOverDailyCap: (...args: unknown[]) => mockIsUserOverDailyCap(...args),
   buildQuotaExceededMessage: vi.fn((quota: { plan: string; resetAt: string }) => `Daily AI quota reached for the ${quota.plan} plan. Resets at ${quota.resetAt}.`),
+  enforceCostGuardrails: (userId: number) => {
+    const quota = mockIsUserOverDailyCap(userId);
+    const global = { totalUsd: 0, limitUsd: 100, exceeded: false };
+    if (!quota.over) return { block: false, status: 200, reason: 'ok', quota, global };
+    return {
+      block: true,
+      status: 429,
+      reason: 'daily_limit_exceeded',
+      message: `Daily AI quota reached for the ${quota.plan} plan. Resets at ${quota.resetAt}.`,
+      quota,
+      global,
+      details: {
+        plan: quota.plan,
+        resetAt: quota.resetAt,
+      },
+    };
+  },
   acquireCostLock: vi.fn(async () => () => { /* no-op */ }),
 }));
 
 vi.mock('../../src/services/invoice-filer', () => ({
   analyzeInvoiceImage: vi.fn(),
+  buildFilename: vi.fn(),
+  buildPdfFilename: vi.fn(),
+  fileInvoice: vi.fn(),
+  filePdf: vi.fn(),
+  getPortugueseMonthFolder: vi.fn(),
+  isInvoiceFilingConfigured: vi.fn(() => false),
+  PT_MONTHS: {},
+  resolveTargetDirectory: vi.fn(),
+  testSshConnection: vi.fn(() => false),
 }));
 
-vi.mock('../../src/services/finance-cache-invalidator', () => ({
+vi.mock('../../src/services/cache-coherence-registry', () => ({
+  ...{
+    CacheCoherenceEvents: {},
+    _resetDashboardCacheInvalidationStatsForTests: vi.fn(),
+    getDashboardCacheInvalidationStats: vi.fn(),
+    invalidateCacheForEvent: vi.fn(),
+    invalidateCalendarCaches: vi.fn(),
+    invalidateContentDerivedCaches: vi.fn(),
+    invalidateCookingDerivedCaches: vi.fn(),
+    invalidateDashboardCaches: vi.fn(),
+    invalidateDashboardCoordinationCaches: vi.fn(),
+    invalidateDashboardHomeCaches: vi.fn(),
+    invalidateDashboardReadinessCaches: vi.fn(),
+    invalidateDashboardRootCaches: vi.fn(),
+    invalidateExecutiveBriefCaches: vi.fn(),
+    invalidateFinanceDerivedCaches: vi.fn(),
+    invalidateIntegrationDerivedCaches: vi.fn(),
+    invalidateOnboardingDerivedCaches: vi.fn(),
+    invalidatePlanningCaches: vi.fn(),
+    invalidateTaskCaches: vi.fn(),
+    invalidateTrainingDerivedCaches: vi.fn(),
+  },
   invalidateFinanceDerivedCaches: (...args: unknown[]) => mockInvalidateFinanceDerivedCaches(...args),
 }));
 
@@ -63,6 +115,8 @@ import {
   getTransactions,
 } from '../../src/services/finance-tracker';
 import { analyzeInvoiceImage } from '../../src/services/invoice-filer';
+import { listNotificationCenterItems } from '../../src/services/notification-orchestrator';
+import { listSecretaryAgendaItems } from '../../src/services/secretary-scheduling-arbitrator';
 
 function applyMigrations(db: Database.Database): void {
   db.exec(`CREATE TABLE IF NOT EXISTS _migrations (id INTEGER PRIMARY KEY, filename TEXT UNIQUE, applied_at TEXT DEFAULT (datetime('now')))`);
@@ -94,8 +148,18 @@ function mockRes(): MockRes {
   return r;
 }
 
-function mockReq(userId: number, body?: any): Request {
-  return { userId, body } as any;
+interface MockTenantScope {
+  tenantId?: number;
+}
+
+function mockReq(userId: number, body?: any, scope: MockTenantScope = {}): Request {
+  const req: any = { userId, body };
+  if (Object.prototype.hasOwnProperty.call(scope, 'tenantId')) {
+    req.tenantId = scope.tenantId;
+  } else {
+    req.tenantId = userId;
+  }
+  return req as Request;
 }
 
 async function dispatch(
@@ -103,9 +167,10 @@ async function dispatch(
   url: string,
   userId: number,
   body?: any,
+  scope: MockTenantScope = {},
 ): Promise<MockRes> {
   const router = financeRoutes();
-  const req = mockReq(userId, body);
+  const req = mockReq(userId, body, scope);
   (req as any).method = method;
   (req as any).url = url;
   (req as any).originalUrl = url;
@@ -173,6 +238,33 @@ describe('Finance API — tax routes', () => {
     expect(res.body.data.summary.totalPending).toBe(res.body.data.summary.totalTaxDue);
   });
 
+  it('emits a finance notification intent when a tax event with due amounts is calculated', async () => {
+    const user = getOrCreateUser(22013, { username: 'finance-notification' });
+
+    addTransaction(user.id, '2024-04-10', 'income', 12000);
+    const res = await dispatch('POST', '/tax/calculate', user.id, { month: '2024-04' });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body.ok).toBe(true);
+    const notifications = listNotificationCenterItems(user.id, user.id, { sourceSkill: 'finance' });
+    expect(notifications).toHaveLength(1);
+    expect(notifications[0]).toMatchObject({
+      sourceSkill: 'finance',
+      type: 'reminder',
+      priority: 'time_sensitive',
+      safeBody: 'Finance reminder needs review.',
+    });
+    expect(notifications[0].sensitiveBody).toContain('Tax event 2024-04');
+    const agendaItems = listSecretaryAgendaItems({ ownerUserId: user.id, tenantId: user.id });
+    expect(agendaItems).toHaveLength(1);
+    expect(agendaItems[0]).toMatchObject({
+      sourceSkill: 'finance',
+      sourceAction: 'bill_reminder',
+      sourceEntityId: '2024-04',
+      providerSyncState: 'not_synced',
+    });
+  });
+
   it('returns preferredCurrency with monthly summary for dashboard consumers', async () => {
     const user = getOrCreateUser(22011, { username: 'finance-currency' });
 
@@ -195,7 +287,7 @@ describe('Finance API — tax routes', () => {
   });
 
   it('fails closed on invalid tenant scope before loading transactions', async () => {
-    const res = await dispatch('GET', '/transactions', 0);
+    const res = await dispatch('GET', '/transactions', 22010, undefined, { tenantId: undefined });
 
     expect(res.statusCode, JSON.stringify(res.body)).toBe(401);
     expect(res.body.ok).toBe(false);
@@ -204,8 +296,8 @@ describe('Finance API — tax routes', () => {
       expect.objectContaining({
         layer: 'delivery',
         operation: 'finance_route',
-        reason: 'invalid_user_scope',
-        userId: 0,
+        reason: 'missing_tenant_scope',
+        userId: 22010,
       }),
     ]);
   });
@@ -285,6 +377,24 @@ describe('Finance API — tax routes', () => {
     expect(mockInvalidateFinanceDerivedCaches).toHaveBeenCalledWith(user.id);
   });
 
+  it('accepts cent-backed transaction amounts from iOS clients', async () => {
+    const user = getOrCreateUser(22014, { username: 'finance-cents-route' });
+
+    const res = await dispatch('POST', '/transactions', user.id, {
+      date: '2024-04-16',
+      category: 'expense',
+      amount_cents: 1234,
+      currency: 'EUR',
+    });
+
+    expect(res.statusCode).toBe(201);
+    expect(res.body.data.transaction).toMatchObject({
+      amount: 12.34,
+      amount_cents: 1234,
+      currency: 'EUR',
+    });
+  });
+
   it('returns 404 when marking a missing tax event as paid', async () => {
     const user = getOrCreateUser(22003, { username: 'finance-missing' });
 
@@ -295,7 +405,7 @@ describe('Finance API — tax routes', () => {
     expect(res.body.error.code).toBe('NOT_FOUND');
   });
 
-  it('returns 402 on parse-receipt when the daily AI quota is exhausted', async () => {
+  it('returns 429 on parse-receipt when the daily AI quota is exhausted', async () => {
     const user = getOrCreateUser(22004, { username: 'finance-quota' });
     mockIsUserOverDailyCap.mockReturnValue({
       over: true,
@@ -310,9 +420,9 @@ describe('Finance API — tax routes', () => {
       mimeType: 'image/jpeg',
     });
 
-    expect(res.statusCode).toBe(402);
+    expect(res.statusCode).toBe(429);
     expect(res.body.ok).toBe(false);
-    expect(res.body.error.code).toBe('QUOTA_EXCEEDED');
+    expect(res.body.error.code).toBe('daily_limit_exceeded');
     expect(res.body.error.details).toEqual({
       plan: 'pro',
       resetAt: '2026-04-15T00:00:00.000Z',

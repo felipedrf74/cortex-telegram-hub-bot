@@ -1,6 +1,9 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Request } from 'express';
+import Database from 'better-sqlite3';
 import { clearTenantScopeAnomaliesForTests, getTenantScopeAnomalies } from '../../src/services/tenant-scope-observability';
+
+let testDb: Database.Database;
 
 const mockGetCached = vi.fn();
 const mockSetCache = vi.fn();
@@ -51,7 +54,9 @@ const mockGetStoredPlanCoveringDate = vi.fn();
 const mockLoggerError = vi.fn();
 const mockBuildActiveSignalsResponse = vi.fn();
 const mockInvalidateCalendarCaches = vi.fn();
+const mockInvalidateTrainingDerivedCaches = vi.fn();
 const mockReconcileOrphanedTrainingAgendaEvents = vi.fn();
+const mockSubmitSecretarySchedulingIntent = vi.fn();
 const mockIsUserOverDailyCap = vi.fn(() => ({
   over: false,
   spentUsd: 0,
@@ -67,6 +72,14 @@ vi.mock('../../src/services/cache-store', () => ({
   clearCacheByPrefix: (...args: unknown[]) => mockClearCacheByPrefix(...args),
 }));
 
+vi.mock('../../src/services/database', () => ({
+  getDb: () => testDb,
+  initDatabase: vi.fn(),
+  closeDatabase: vi.fn(),
+  findUnexpectedMigrationPrefixCollisions: vi.fn(() => []),
+  assertNoUnexpectedMigrationPrefixCollisions: vi.fn(),
+}));
+
 vi.mock('../../src/services/garmin-coach', () => ({
   generateCoachBriefing: (...args: unknown[]) => mockGenerateCoachBriefing(...args),
   applyCoachRecommendations: (...args: unknown[]) => mockApplyCoachRecommendations(...args),
@@ -79,12 +92,35 @@ vi.mock('../../src/services/report-document-store', () => ({
 
 vi.mock('../../src/services/unified-calendar', () => ({
   getEvents: (...args: unknown[]) => mockGetEvents(...args),
+  getEventsForSources: (...args: unknown[]) => mockGetEvents(...args),
   createEvent: (...args: unknown[]) => mockCreateEvent(...args),
   deleteEvent: (...args: unknown[]) => mockDeleteEvent(...args),
 }));
 
-vi.mock('../../src/services/calendar-cache-invalidator', () => ({
+vi.mock('../../src/services/cache-coherence-registry', () => ({
+  ...{
+    CacheCoherenceEvents: {},
+    _resetDashboardCacheInvalidationStatsForTests: vi.fn(),
+    getDashboardCacheInvalidationStats: vi.fn(),
+    invalidateCacheForEvent: vi.fn(),
+    invalidateCalendarCaches: vi.fn(),
+    invalidateContentDerivedCaches: vi.fn(),
+    invalidateCookingDerivedCaches: vi.fn(),
+    invalidateDashboardCaches: vi.fn(),
+    invalidateDashboardCoordinationCaches: vi.fn(),
+    invalidateDashboardHomeCaches: vi.fn(),
+    invalidateDashboardReadinessCaches: vi.fn(),
+    invalidateDashboardRootCaches: vi.fn(),
+    invalidateExecutiveBriefCaches: vi.fn(),
+    invalidateFinanceDerivedCaches: vi.fn(),
+    invalidateIntegrationDerivedCaches: vi.fn(),
+    invalidateOnboardingDerivedCaches: vi.fn(),
+    invalidatePlanningCaches: vi.fn(),
+    invalidateTaskCaches: vi.fn(),
+    invalidateTrainingDerivedCaches: vi.fn(),
+  },
   invalidateCalendarCaches: (...args: unknown[]) => mockInvalidateCalendarCaches(...args),
+  invalidateTrainingDerivedCaches: (...args: unknown[]) => mockInvalidateTrainingDerivedCaches(...args),
 }));
 
 vi.mock('../../src/services/training-plans', () => ({
@@ -114,6 +150,11 @@ vi.mock('../../src/services/onboarding', () => ({
 
 vi.mock('../../src/services/training-coach-kernel-plan-generator', () => ({
   buildCoachKernelTrainingPlan: (...args: unknown[]) => mockBuildCoachKernelTrainingPlan(...args),
+  normalizeTrainingPlanDurationWeeks: (raw: unknown, fallback = 4) => {
+    const resolved = Number(raw);
+    const candidate = Number.isFinite(resolved) && resolved > 0 ? Math.round(resolved) : fallback;
+    return Math.max(1, Math.min(52, candidate));
+  },
 }));
 
 vi.mock('../../src/services/readiness-scorer', () => ({
@@ -152,11 +193,33 @@ vi.mock('../../src/services/signals-observability', () => ({
 // hitting the real database resolver (which is unmocked in this file).
 vi.mock('../../src/services/user-service', () => ({
   getUserLanguage: vi.fn(() => 'pt-BR'),
+  getUserLanguageById: vi.fn(() => 'pt-BR'),
+}));
+
+vi.mock('../../src/services/integration-status', () => ({
+  isGarminActivelyIntegrated: vi.fn(() => false),
 }));
 
 vi.mock('../../src/services/cost-guardrail', () => ({
   isUserOverDailyCap: (...args: unknown[]) => mockIsUserOverDailyCap(...args),
   buildQuotaExceededMessage: vi.fn((quota: { plan: string; resetAt: string }) => `Daily AI quota reached for the ${quota.plan} plan. Resets at ${quota.resetAt}.`),
+  enforceCostGuardrails: (userId: number) => {
+    const quota = mockIsUserOverDailyCap(userId);
+    const global = { totalUsd: 0, limitUsd: 100, exceeded: false };
+    if (!quota.over) return { block: false, status: 200, reason: 'ok', quota, global };
+    return {
+      block: true,
+      status: 429,
+      reason: 'daily_limit_exceeded',
+      message: `Daily AI quota reached for the ${quota.plan} plan. Resets at ${quota.resetAt}.`,
+      quota,
+      global,
+      details: {
+        plan: quota.plan,
+        resetAt: quota.resetAt,
+      },
+    };
+  },
   acquireCostLock: vi.fn(async () => () => { /* no-op */ }),
 }));
 
@@ -169,6 +232,7 @@ vi.mock('../../src/utils/logger', () => ({
     trace: vi.fn(),
     child: vi.fn().mockReturnThis(),
   },
+  LOGGER_REDACTION_PATHS: [],
 }));
 
 // Slice 4.D — lifecycle audit module touches the real DB. Stubbed here
@@ -195,7 +259,15 @@ vi.mock('../../src/services/training-agenda-reconciliation', () => ({
   ),
 }));
 
+vi.mock('../../src/services/secretary-scheduling-arbitrator', () => ({
+  submitSecretarySchedulingIntent: (...args: unknown[]) => mockSubmitSecretarySchedulingIntent(...args),
+}));
+
 import { looksLikeTrainingCalendarEvent, trainingRoutes } from '../../src/api/routes/training';
+import {
+  claimTrainingPlanGenerationIdempotency,
+  completeTrainingPlanGenerationIdempotency,
+} from '../../src/services/training-plan-generation-idempotency';
 
 interface MockRes {
   statusCode: number;
@@ -252,6 +324,7 @@ function mockReq(
   body?: any,
   userId = 12,
   headers: Record<string, string> = {},
+  tenantId = userId,
 ): Request {
   return {
     method,
@@ -267,6 +340,9 @@ function mockReq(
     },
     body,
     userId,
+    // Mirror iosAuthMiddleware setting tenantId alongside userId. Tests can
+    // override tenantId to cover active-tenant behavior.
+    tenantId,
   } as any;
 }
 
@@ -277,9 +353,10 @@ async function dispatch(
   body?: any,
   userId = 12,
   headers: Record<string, string> = {},
+  tenantId = userId,
 ): Promise<MockRes> {
   const router = trainingRoutes();
-  const req = mockReq(method, path, query, body, userId, headers);
+  const req = mockReq(method, path, query, body, userId, headers, tenantId);
   const res = mockRes();
 
   await new Promise<void>((resolve) => {
@@ -305,7 +382,13 @@ function resetTrainingOperationalEnvForTests(): void {
 }
 
 describe('Training API routes', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+    testDb.close();
+  });
+
   beforeEach(async () => {
+    testDb = new Database(':memory:');
     resetTrainingOperationalEnvForTests();
 
     // Hardening audit 2026-04-20: reset the new calendar-lookup
@@ -370,7 +453,9 @@ describe('Training API routes', () => {
     mockLoggerError.mockReset();
     mockBuildActiveSignalsResponse.mockReset();
     mockInvalidateCalendarCaches.mockReset();
+    mockInvalidateTrainingDerivedCaches.mockReset();
     mockReconcileOrphanedTrainingAgendaEvents.mockReset();
+    mockSubmitSecretarySchedulingIntent.mockReset();
     mockIsUserOverDailyCap.mockReset();
 
     mockGetCached.mockReturnValue(null);
@@ -380,6 +465,32 @@ describe('Training API routes', () => {
     mockGetStoredPlanCoveringDate.mockReturnValue(null);
     mockGetEvents.mockResolvedValue([]);
     mockCreateEvent.mockResolvedValue({ id: 'evt-1', source: 'outlook' });
+    mockSubmitSecretarySchedulingIntent.mockImplementation((intent: any) => ({
+      status: 'scheduled',
+      reasonCodes: ['scheduled_in_available_window'],
+      selectedSlot: intent.preferredWindows[0],
+      agendaItem: {
+        agendaItemId: `sec-${intent.sourceEntityId}`,
+        sourceIntentId: intent.intentId,
+        lifecycleState: 'scheduled',
+      },
+      explanation: 'scheduled',
+      alternativeSlots: [],
+      conflicts: [],
+      downstreamImplications: [],
+      confidence: 'high',
+      feedback: {
+        sourceSkill: 'training',
+        sourceIntentId: intent.intentId,
+        agendaItemId: `sec-${intent.sourceEntityId}`,
+        status: 'scheduled',
+        reasonCodes: ['scheduled_in_available_window'],
+        scheduledStart: intent.preferredWindows[0].start,
+        scheduledEnd: intent.preferredWindows[0].end,
+        shouldRefreshSource: false,
+        downstreamImplications: [],
+      },
+    }));
     mockDeleteEvent.mockResolvedValue(undefined);
     mockReconcileOrphanedTrainingAgendaEvents.mockResolvedValue({
       attempted: 0,
@@ -472,6 +583,56 @@ describe('Training API routes', () => {
     expect(res.body.data.cachedOnlyMiss).toBe(true);
     expect(res.body.data.briefing).toBe('');
     expect(mockGenerateCoachBriefing).not.toHaveBeenCalled();
+  });
+
+  it('returns a structured sanitized coach report without raw debug fragments', async () => {
+    mockGetCached.mockImplementation((key: string) => {
+      if (key === 'coach-briefing:12') {
+        return {
+          briefing: [
+            'Keep today controlled.',
+            'COACH_RECS_START',
+            'eventId: "_60q30c1g60o30e1i60o4ac1g60rj8gpl88rj2c1h84s34h9g60s30c1g60o30c1g6srj2h216sqjgha184s48gpg64o30c1g60o30c1g60o32c1g60o30c1g6os32"',
+            'Analysis: 12.4s',
+          ].join('\n'),
+          recommendations: [{ summary: 'Keep effort easy and protect tomorrow.' }],
+          garminData: { sleepScore: 68, bodyBattery: 55 },
+        };
+      }
+      return null;
+    });
+
+    const res = await dispatch('POST', '/coach/report');
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body.ok).toBe(true);
+    expect(res.body.data.report.structured).toBe(true);
+    expect(res.body.data.report.sections.map((section: any) => section.key)).toEqual([
+      'coach_summary',
+      'recommendation',
+      'signals_used',
+      'confidence_uncertainty',
+      'sources_details',
+    ]);
+    const serialized = JSON.stringify(res.body.data);
+    expect(serialized).not.toMatch(/COACH_RECS_START|_60q30c1g60o30e1i60o4ac1g60rj8gpl88rj2c1h84s34h9g60s30c1g60o30c1g6srj2h216sqjgha184s48gpg64o30c1g60o30c1g60o32c1g60o30c1g6os32|Analysis: 12\.4s/);
+    expect(serialized).toContain('Keep effort easy');
+    expect(mockGenerateCoachBriefing).not.toHaveBeenCalled();
+  });
+
+  it('generates coach reports against the active tenant while billing the authenticated actor', async () => {
+    const res = await dispatch('POST', '/coach/report', {}, { refresh: true }, 12, {}, 34);
+
+    expect(res.statusCode).toBe(200);
+    expect(mockGenerateCoachBriefing).toHaveBeenCalledWith(34, {
+      tenantId: 34,
+      meteringUserId: 12,
+    });
+    expect(mockSetCache).toHaveBeenCalledWith(
+      'coach-briefing:34',
+      expect.any(Object),
+      expect.any(Number),
+    );
   });
 
   it('returns render-ready training home state without triggering a fresh coach generation', async () => {
@@ -572,7 +733,7 @@ describe('Training API routes', () => {
     expect(res.body.data.totalCount).toBe(0);
   });
 
-  it('surfaces rich training lifecycle states in the week payload without counting inactive sessions as active load', async () => {
+  it('surfaces rich training lifecycle states in the week payload without counting superseded sessions as active load', async () => {
     mockGetActivePlan.mockReturnValue({
       id: 44,
       name: 'Travel build',
@@ -641,7 +802,7 @@ describe('Training API routes', () => {
       planVersion: 3,
       lifecycleState: 'active',
     }));
-    expect(res.body.data.totalCount).toBe(2);
+    expect(res.body.data.totalCount).toBe(3);
     expect(res.body.data.sessions).toEqual(expect.arrayContaining([
       expect.objectContaining({
         id: '301',
@@ -838,16 +999,7 @@ describe('Training API routes', () => {
     expect(res.body.data.applied).toBe(1);
     expect(mockApplyCoachRecommendations).toHaveBeenCalledWith(12, ['rec-1']);
 
-    const clearedKeys = mockClearCache.mock.calls.map((call) => call[0]);
-    expect(clearedKeys).toEqual(
-      expect.arrayContaining([
-        'coach-briefing:12',
-        'training-summary:12',
-        'readiness:12',
-        'dashboard-readiness:12',
-      ]),
-    );
-    expect(mockClearCacheByPrefix).toHaveBeenCalledWith('dashboard-home:12:');
+    expect(mockInvalidateTrainingDerivedCaches).toHaveBeenCalledWith(12);
   });
 
   it('sanitizes degraded coach warnings when briefing generation fails', async () => {
@@ -887,10 +1039,37 @@ describe('Training API routes', () => {
 
     expect(res.statusCode).toBe(200);
     expect(res.body.ok).toBe(true);
-    expect(res.body.data.degraded).toBe(false);
+    expect(res.body.data.degraded).toBe(true);
     expect(res.body.data.deterministicFallback).toBe(true);
+    expect(res.body.data.warnings).toContain('Coach AI unavailable; deterministic fallback used.');
     expect(res.body.data.briefing).toContain('Leitura rápida do coach');
     expect(JSON.stringify(res.body)).not.toContain('upstream garmin timeout');
+    expect(mockSetCache).not.toHaveBeenCalledWith(
+      'coach-briefing:12',
+      expect.anything(),
+      expect.anything(),
+    );
+  });
+
+  it('returns uncached readiness unavailable state when readiness scoring fails', async () => {
+    mockCalculateReadiness.mockRejectedValueOnce(new Error('wearable store unavailable'));
+
+    const res = await dispatch('GET', '/readiness');
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body.ok).toBe(true);
+    expect(res.body.data).toMatchObject({
+      score: 0,
+      factors: {},
+      recommendation: null,
+      reasonCode: 'READINESS_UNAVAILABLE',
+      unavailable: true,
+    });
+    expect(mockSetCache).not.toHaveBeenCalledWith(
+      'readiness:12',
+      expect.anything(),
+      expect.anything(),
+    );
   });
 
   it('keeps coach/apply failures generic for the client while preserving the route code', async () => {
@@ -924,7 +1103,7 @@ describe('Training API routes', () => {
     });
   });
 
-  it('returns 402 on plan generation when the user is over quota', async () => {
+  it('returns 429 on plan generation when the user is over quota', async () => {
     mockIsUserOverDailyCap.mockReturnValue({
       over: true,
       spentUsd: 0.2,
@@ -937,9 +1116,9 @@ describe('Training API routes', () => {
       objective: 'Lisbon Marathon October 2026',
     });
 
-    expect(res.statusCode).toBe(402);
+    expect(res.statusCode).toBe(429);
     expect(res.body.ok).toBe(false);
-    expect(res.body.error.code).toBe('QUOTA_EXCEEDED');
+    expect(res.body.error.code).toBe('daily_limit_exceeded');
     expect(res.body.error.details).toEqual({
       plan: 'pro',
       resetAt: '2026-04-15T00:00:00.000Z',
@@ -1018,7 +1197,7 @@ describe('Training API routes', () => {
     expect(mockBuildCoachKernelTrainingPlan).not.toHaveBeenCalled();
   });
 
-  it('schedules same-day run and gym sessions at separate preferred times', async () => {
+  it('blocks race-specific generated plans before writes when the race date is missing', async () => {
     mockGetProfile.mockImplementation((_userId: number, profile: string) => {
       if (profile === 'fitness') return { experienceLevel: 'Intermediate', available_equipment: 'Full gym' };
       if (profile === 'triathlon-running') return { target_race: 'Marathon' };
@@ -1031,7 +1210,54 @@ describe('Training API routes', () => {
         intensityPct: 70,
         sessions: [
           {
-            dayOfWeek: 'Monday',
+            dayOfWeek: 'Wednesday',
+            sessionType: 'run',
+            title: 'Base Run',
+            durationMinutes: 50,
+            description: 'Easy aerobic run.',
+            exercises: [],
+          },
+        ],
+      },
+    ]));
+
+    const res = await dispatch('POST', '/plan/generate', {}, {
+      objective: 'Lisbon Marathon',
+      preferredTime: '07:00',
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body.ok).toBe(true);
+    expect(res.body.data.status).toBe('plan_quality_blocked');
+    expect(res.body.data.planLint.status).toBe('fail');
+    expect(res.body.data.planLint.blockers).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ ruleId: 'race_specific_plan_requires_race_date' }),
+      ]),
+    );
+    expect(mockCreatePlan).not.toHaveBeenCalled();
+    expect(mockCreateSession).not.toHaveBeenCalled();
+    expect(mockCreateEvent).not.toHaveBeenCalled();
+    expect(mockInvalidateCalendarCaches).not.toHaveBeenCalled();
+  });
+
+  it('schedules same-day run and gym sessions at separate preferred times', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(new Date('2026-04-15T06:00:00.000Z'));
+
+    mockGetProfile.mockImplementation((_userId: number, profile: string) => {
+      if (profile === 'fitness') return { experienceLevel: 'Intermediate', available_equipment: 'Full gym' };
+      if (profile === 'triathlon-running') return { target_race: 'Marathon', target_race_date: '2026-10-18' };
+      return null;
+    });
+    mockBuildCoachKernelTrainingPlan.mockReturnValue(makeKernelPlan([
+      {
+        weekNumber: 1,
+        focus: 'base',
+        intensityPct: 70,
+        sessions: [
+          {
+            dayOfWeek: 'Wednesday',
             sessionType: 'run',
             title: 'Base Run',
             durationMinutes: 50,
@@ -1039,7 +1265,7 @@ describe('Training API routes', () => {
             exercises: [],
           },
           {
-            dayOfWeek: 'Monday',
+            dayOfWeek: 'Wednesday',
             sessionType: 'gym',
             title: 'Runner Strength',
             durationMinutes: 40,
@@ -1062,7 +1288,7 @@ describe('Training API routes', () => {
     expect(res.statusCode).toBe(201);
     const createdEvents = mockCreateEvent.mock.calls.map((call) => call[0]);
     const runEvent = createdEvents.find((event) => String(event.title).includes('Base Run'));
-    const gymEvent = createdEvents.find((event) => String(event.title).includes('Runner Strength'));
+    const gymEvent = createdEvents.find((event) => /\bRunner Strength \(40min\)/.test(String(event.title)));
 
     expect(runEvent).toBeTruthy();
     expect(gymEvent).toBeTruthy();
@@ -1075,10 +1301,219 @@ describe('Training API routes', () => {
     expect(mockInvalidateCalendarCaches).toHaveBeenCalledWith(12);
   });
 
+  it('replays confirmed plan creation by idempotency key instead of creating a duplicate plan', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(new Date('2026-04-15T06:00:00.000Z'));
+
+    mockGetProfile.mockImplementation((_userId: number, profile: string) => {
+      if (profile === 'fitness') return { experienceLevel: 'Intermediate', available_equipment: 'Full gym' };
+      return null;
+    });
+    mockBuildCoachKernelTrainingPlan.mockReturnValue(makeKernelPlan([
+      {
+        weekNumber: 1,
+        focus: 'base',
+        intensityPct: 70,
+        sessions: [
+          {
+            dayOfWeek: 'Wednesday',
+            sessionType: 'gym',
+            title: 'Strength + Core Support',
+            durationMinutes: 40,
+            description: 'Controlled strength work.',
+            exercises: [],
+          },
+        ],
+      },
+    ]));
+
+    const body = {
+      objective: 'General fitness',
+      preferredTime: '12:00',
+      sessionsPerWeek: 3,
+      strengthSessionsPerWeek: 3,
+      idempotencyKey: 'plan-create-abc',
+    };
+
+    const first = await dispatch('POST', '/plan/generate', {}, body);
+    const createPlanCountAfterFirst = mockCreatePlan.mock.calls.length;
+    const createSessionCountAfterFirst = mockCreateSession.mock.calls.length;
+    const createEventCountAfterFirst = mockCreateEvent.mock.calls.length;
+    const second = await dispatch('POST', '/plan/generate', {}, body);
+
+    expect(first.statusCode).toBe(201);
+    expect(second.statusCode).toBe(201);
+    expect(second.body.data).toEqual(first.body.data);
+    expect(createPlanCountAfterFirst).toBeGreaterThan(0);
+    expect(createSessionCountAfterFirst).toBeGreaterThan(0);
+    expect(createEventCountAfterFirst).toBeGreaterThan(0);
+    expect(mockCreatePlan).toHaveBeenCalledTimes(createPlanCountAfterFirst);
+    expect(mockCreateSession).toHaveBeenCalledTimes(createSessionCountAfterFirst);
+    expect(mockCreateEvent).toHaveBeenCalledTimes(createEventCountAfterFirst);
+  });
+
+  it('auto-dedupes rapid duplicate plan creation when the client omits an idempotency key', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(new Date('2026-04-15T06:00:00.000Z'));
+
+    mockGetProfile.mockImplementation((_userId: number, profile: string) => {
+      if (profile === 'fitness') return { experienceLevel: 'Intermediate', available_equipment: 'Full gym' };
+      return null;
+    });
+    mockBuildCoachKernelTrainingPlan.mockReturnValue(makeKernelPlan([
+      {
+        weekNumber: 1,
+        focus: 'base',
+        intensityPct: 70,
+        sessions: [
+          {
+            dayOfWeek: 'Wednesday',
+            sessionType: 'gym',
+            title: 'Strength + Core Support',
+            durationMinutes: 40,
+            description: 'Controlled strength work.',
+            exercises: [],
+          },
+        ],
+      },
+    ]));
+
+    const body = {
+      objective: 'General fitness',
+      preferredTime: '12:00',
+      sessionsPerWeek: 3,
+      strengthSessionsPerWeek: 3,
+    };
+
+    const first = await dispatch('POST', '/plan/generate', {}, body);
+    const createPlanCountAfterFirst = mockCreatePlan.mock.calls.length;
+    const createSessionCountAfterFirst = mockCreateSession.mock.calls.length;
+    const createEventCountAfterFirst = mockCreateEvent.mock.calls.length;
+    const second = await dispatch('POST', '/plan/generate', {}, body);
+
+    expect(first.statusCode).toBe(201);
+    expect(second.statusCode).toBe(201);
+    expect(second.body.data).toEqual(first.body.data);
+    expect(mockCreatePlan).toHaveBeenCalledTimes(createPlanCountAfterFirst);
+    expect(mockCreateSession).toHaveBeenCalledTimes(createSessionCountAfterFirst);
+    expect(mockCreateEvent).toHaveBeenCalledTimes(createEventCountAfterFirst);
+  });
+
+  it('auto-dedupes rapid duplicate plan creation across a minute boundary', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(new Date('2026-04-15T12:00:59.500Z'));
+
+    mockGetProfile.mockImplementation((_userId: number, profile: string) => {
+      if (profile === 'fitness') return { experienceLevel: 'Intermediate', available_equipment: 'Full gym' };
+      return null;
+    });
+    mockBuildCoachKernelTrainingPlan.mockReturnValue(makeKernelPlan([
+      {
+        weekNumber: 1,
+        focus: 'base',
+        intensityPct: 70,
+        sessions: [
+          {
+            dayOfWeek: 'Wednesday',
+            sessionType: 'gym',
+            title: 'Strength + Core Support',
+            durationMinutes: 40,
+            description: 'Controlled strength work.',
+            exercises: [],
+          },
+        ],
+      },
+    ]));
+
+    const body = {
+      objective: 'General fitness',
+      preferredTime: '12:00',
+      sessionsPerWeek: 3,
+      strengthSessionsPerWeek: 3,
+    };
+
+    const first = await dispatch('POST', '/plan/generate', {}, body);
+    const createPlanCountAfterFirst = mockCreatePlan.mock.calls.length;
+    const createSessionCountAfterFirst = mockCreateSession.mock.calls.length;
+    const createEventCountAfterFirst = mockCreateEvent.mock.calls.length;
+
+    vi.setSystemTime(new Date('2026-04-15T12:01:00.500Z'));
+    const second = await dispatch('POST', '/plan/generate', {}, body);
+
+    expect(first.statusCode).toBe(201);
+    expect(second.statusCode).toBe(201);
+    expect(second.body.data).toEqual(first.body.data);
+    expect(createPlanCountAfterFirst).toBeGreaterThan(0);
+    expect(createSessionCountAfterFirst).toBeGreaterThan(0);
+    expect(createEventCountAfterFirst).toBeGreaterThan(0);
+    expect(mockCreatePlan).toHaveBeenCalledTimes(createPlanCountAfterFirst);
+    expect(mockCreateSession).toHaveBeenCalledTimes(createSessionCountAfterFirst);
+    expect(mockCreateEvent).toHaveBeenCalledTimes(createEventCountAfterFirst);
+  });
+
+  it('keeps stale automatic plan-generation claims in progress while the first request is still running', () => {
+    vi.useFakeTimers({ shouldAdvanceTime: false });
+    vi.setSystemTime(new Date('2026-04-15T12:00:00.000Z'));
+
+    const key = 'auto:slow-provider-request';
+    const requestHash = 'same-plan-request-hash';
+
+    const first = claimTrainingPlanGenerationIdempotency(12, key, requestHash);
+    expect(first).toEqual({ kind: 'claimed', idempotencyKey: key, requestHash });
+
+    vi.setSystemTime(new Date('2026-04-15T12:01:40.000Z'));
+    const second = claimTrainingPlanGenerationIdempotency(12, key, requestHash);
+
+    expect(second).toEqual({ kind: 'in_progress', idempotencyKey: key });
+    expect(mockCreatePlan).not.toHaveBeenCalled();
+  });
+
+  it('replaces stale automatic succeeded plan-generation rows as a fresh user action', () => {
+    vi.useFakeTimers({ shouldAdvanceTime: false });
+    vi.setSystemTime(new Date('2026-04-15T12:00:00.000Z'));
+
+    const key = 'auto:stale-success-request';
+    const requestHash = 'same-plan-request-hash';
+    const responseData = { planId: 901, resolvedStartDate: '2026-04-20' };
+
+    const first = claimTrainingPlanGenerationIdempotency(12, key, requestHash);
+    expect(first).toEqual({ kind: 'claimed', idempotencyKey: key, requestHash });
+    completeTrainingPlanGenerationIdempotency(12, key, requestHash, responseData, 201);
+
+    vi.setSystemTime(new Date('2026-04-15T12:01:40.000Z'));
+    const second = claimTrainingPlanGenerationIdempotency(12, key, requestHash);
+
+    expect(second).toEqual({ kind: 'claimed', idempotencyKey: key, requestHash });
+  });
+
+  it('rejects reused plan creation idempotency keys with different inputs', async () => {
+    mockGetProfile.mockImplementation((_userId: number, profile: string) => {
+      if (profile === 'fitness') return { experienceLevel: 'Intermediate', available_equipment: 'Full gym' };
+      return null;
+    });
+    mockBuildCoachKernelTrainingPlan.mockReturnValue(makeKernelPlan());
+
+    const first = await dispatch('POST', '/plan/generate', {}, {
+      objective: 'General fitness',
+      sessionsPerWeek: 3,
+      idempotencyKey: 'plan-create-conflict',
+    });
+    const second = await dispatch('POST', '/plan/generate', {}, {
+      objective: 'General fitness with extra cycling',
+      sessionsPerWeek: 4,
+      idempotencyKey: 'plan-create-conflict',
+    });
+
+    expect(first.statusCode).toBe(201);
+    expect(second.statusCode).toBe(409);
+    expect(second.body.error.code).toBe('IDEMPOTENCY_KEY_REUSED');
+    expect(mockCreatePlan).toHaveBeenCalledTimes(1);
+  });
+
   it('returns profile quality and decision reasons from the generated plan payload', async () => {
     mockGetProfile.mockImplementation((_userId: number, profile: string) => {
       if (profile === 'fitness') return { experienceLevel: 'Intermediate', available_equipment: 'Full gym' };
-      if (profile === 'triathlon-running') return { target_race: 'Half marathon' };
+      if (profile === 'triathlon-running') return { target_race: 'Half marathon', target_race_date: '2026-10-18' };
       return null;
     });
     mockBuildCoachKernelTrainingPlan.mockReturnValue({
@@ -1157,7 +1592,7 @@ describe('Training API routes', () => {
     expect(mockMarkSessionSkipped).toHaveBeenCalledWith(321);
   });
 
-  it('rejects /skip with 403 when the session id belongs to a different user', async () => {
+  it('returns uniform 404 from /skip when the session id belongs to a different user', async () => {
     // Hardening 2026-04-21: Alice (userId=12) must not be able to
     // skip Bob's session by POSTing Bob's session id. Previously
     // the route called markSessionSkipped(rowId) without any plan
@@ -1167,30 +1602,185 @@ describe('Training API routes', () => {
 
     const res = await dispatch('POST', '/skip', {}, { sessionId: '999' });
 
-    expect(res.statusCode).toBe(403);
+    expect(res.statusCode).toBe(404);
     expect(res.body.ok).toBe(false);
-    expect(res.body.error.code).toBe('FORBIDDEN');
+    expect(res.body.error.code).toBe('NOT_FOUND');
     expect(mockMarkSessionSkipped).not.toHaveBeenCalled();
   });
 
-  it('rejects /complete with 403 when the session id belongs to a different user', async () => {
+  it('rejects /skip with 400 when session id is malformed', async () => {
+    const res = await dispatch('POST', '/skip', {}, { sessionId: '12.5' });
+
+    expect(res.statusCode).toBe(400);
+    expect(res.body.ok).toBe(false);
+    expect(res.body.error.code).toBe('BAD_INPUT');
+    expect(res.body.error.message).toContain('sessionId must be a positive integer');
+    expect(mockMarkSessionSkipped).not.toHaveBeenCalled();
+  });
+
+  it('returns uniform 404 from /complete when the session id belongs to a different user', async () => {
     mockGetSessionById.mockReturnValue({ id: 999, plan_id: 88 });
     mockGetPlanById.mockReturnValue({ id: 88, user_id: 77 });
 
     const res = await dispatch('POST', '/complete', {}, { sessionId: '999' });
 
-    expect(res.statusCode).toBe(403);
+    expect(res.statusCode).toBe(404);
     expect(res.body.ok).toBe(false);
-    expect(res.body.error.code).toBe('FORBIDDEN');
+    expect(res.body.error.code).toBe('NOT_FOUND');
+  });
+
+  it('rejects /complete with 400 when session id is malformed', async () => {
+    const res = await dispatch('POST', '/complete', {}, { sessionId: 'abc' });
+
+    expect(res.statusCode).toBe(400);
+    expect(res.body.ok).toBe(false);
+    expect(res.body.error.code).toBe('BAD_INPUT');
+    expect(res.body.error.message).toContain('sessionId must be a positive integer');
+  });
+
+  // ─── R4 P2 #1 — /complete V2 field validation hardening ───
+  //
+  // Codex caught (R4 P2) that R3's `typeof v === 'number'` accepted
+  // NaN and Infinity, and the event hash only fingerprinted field
+  // *presence* (so two distinct value payloads collapsed onto the
+  // same outbox idempotency key). These tests pin the new behavior:
+  // BAD_INPUT bails out *before* any DB access, so no plan/session
+  // mocks are needed.
+
+  it('R4 P2 — /complete rejects NaN rir as BAD_INPUT (400)', async () => {
+    const res = await dispatch('POST', '/complete', {}, {
+      sessionId: 'today',
+      rir: Number.NaN,
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.body.ok).toBe(false);
+    expect(res.body.error.code).toBe('BAD_INPUT');
+    expect(res.body.error.message).toMatch(/rir must be a finite number/);
+  });
+
+  it('R4 P2 — /complete rejects Infinity painScore as BAD_INPUT (400)', async () => {
+    const res = await dispatch('POST', '/complete', {}, {
+      sessionId: 'today',
+      painScore: Number.POSITIVE_INFINITY,
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.body.error.code).toBe('BAD_INPUT');
+    expect(res.body.error.message).toMatch(/painScore must be a finite number/);
+  });
+
+  it('R4 P2 — /complete rejects out-of-range rir > 10 (400)', async () => {
+    const res = await dispatch('POST', '/complete', {}, {
+      sessionId: 'today',
+      rir: 25,
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.body.error.code).toBe('BAD_INPUT');
+    expect(res.body.error.message).toMatch(/rir must be between 0 and 10/);
+  });
+
+  it('R4 P2 — /complete rejects negative completedDurationSec (400)', async () => {
+    const res = await dispatch('POST', '/complete', {}, {
+      sessionId: 'today',
+      completedDurationSec: -120,
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.body.error.code).toBe('BAD_INPUT');
+    expect(res.body.error.message).toMatch(/completedDurationSec must be between 0 and 86400/);
+  });
+
+  it('R4 P2 — /complete rejects oversized completedSetsJson (400)', async () => {
+    const tooBig = 'x'.repeat(9 * 1024); // > 8 KB cap
+    const res = await dispatch('POST', '/complete', {}, {
+      sessionId: 'today',
+      completedSetsJson: tooBig,
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.body.error.code).toBe('BAD_INPUT');
+    expect(res.body.error.message).toMatch(/completedSetsJson must be ≤ 8192 characters/);
+  });
+
+  it('R4 P2 — /complete returns multiple errors joined when many fields are invalid', async () => {
+    const res = await dispatch('POST', '/complete', {}, {
+      sessionId: 'today',
+      rir: Number.NaN,
+      painScore: 99,
+      completedDistanceMeters: Number.NEGATIVE_INFINITY,
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.body.error.code).toBe('BAD_INPUT');
+    expect(res.body.error.message).toMatch(/rir must be a finite number/);
+    expect(res.body.error.message).toMatch(/painScore must be between 0 and 10/);
+    expect(res.body.error.message).toMatch(/completedDistanceMeters must be a finite number/);
+  });
+
+  it('R4 P2 — /complete accepts valid V2 payload (soft-success path proves bad-input gate is bypassed)', async () => {
+    mockGetActivePlan.mockReturnValue(null);
+    const res = await dispatch('POST', '/complete', {}, {
+      sessionId: 'today',
+      rir: 2,
+      painScore: 0,
+      completedDurationSec: 1800,
+      completedDistanceMeters: 5000,
+    });
+    // No active plan → soft success (200). Validation passed before
+    // reaching the no-active-plan resolver.
+    expect(res.statusCode).toBe(200);
+    expect(res.body.ok).toBe(true);
+    expect(res.body.data.noActiveSession).toBe(true);
+  });
+
+  // R7 P2/P3 — Codex caught the helper accepted explicit null as if
+  // the field had been omitted, so `externalTrainingDeclared: null`
+  // silently collapsed to false. The R7 contract is reject-on-non
+  // -boolean including null; only `undefined` (absent from payload)
+  // is omitted.
+
+  it('R7 P2/P3 — /complete rejects explicit externalTrainingDeclared: null (400)', async () => {
+    const res = await dispatch('POST', '/complete', {}, {
+      sessionId: 'today',
+      externalTrainingDeclared: null,
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.body.error.code).toBe('BAD_INPUT');
+    expect(res.body.error.message).toMatch(/externalTrainingDeclared must be a boolean/);
+  });
+
+  it('R7 P2/P3 — /complete rejects externalTrainingDeclared: "yes" (string, 400)', async () => {
+    const res = await dispatch('POST', '/complete', {}, {
+      sessionId: 'today',
+      externalTrainingDeclared: 'yes',
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.body.error.code).toBe('BAD_INPUT');
+  });
+
+  it('R7 P2/P3 — /complete still accepts externalTrainingDeclared: true / false / absent', async () => {
+    mockGetActivePlan.mockReturnValue(null);
+    for (const payload of [
+      { sessionId: 'today', externalTrainingDeclared: true },
+      { sessionId: 'today', externalTrainingDeclared: false },
+      { sessionId: 'today' /* omitted */ },
+    ]) {
+      const res = await dispatch('POST', '/complete', {}, payload);
+      expect(res.statusCode).toBe(200);
+    }
   });
 
   it('applies cross-skill coaching coordination before training sessions are stored', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(new Date('2026-04-13T12:00:00.000Z'));
+
     mockGetProfile.mockImplementation((_userId: number, profile: string) => {
       if (profile === 'fitness') {
         return { experienceLevel: 'Beginner (< 1 year)', available_equipment: 'Full gym', injuries: 'left knee irritation' };
       }
       if (profile === 'triathlon-running') {
-        return { recentRace: '10k', preferredRunsPerWeek: 4, injury_history: 'achilles flare-up' };
+        return {
+          recentRace: '10k',
+          preferredRunsPerWeek: 4,
+          injury_history: 'achilles flare-up',
+          target_race_date: '2026-10-18',
+        };
       }
       return null;
     });
@@ -1264,6 +1854,9 @@ describe('Training API routes', () => {
       sessionsPerWeek: 5,
       strengthSessionsPerWeek: 1,
       preferredTime: '07:00',
+      goalMode: 'event_based',
+      trainingPriority: 'running',
+      raceDate: '2026-10-18',
     });
 
     expect(res.statusCode).toBe(201);
@@ -1273,6 +1866,9 @@ describe('Training API routes', () => {
       sessionsPerWeek: 5,
       strengthSessionsPerWeek: 1,
       preferredTime: '07:00',
+      goalMode: 'event_based',
+      trainingPriority: 'running',
+      raceDate: '2026-10-18',
     }));
     expect(mockGetEvents).toHaveBeenCalledWith(expect.any(String), expect.any(String), 12);
 
@@ -1354,9 +1950,40 @@ describe('Training API routes', () => {
     ]);
   });
 
+  it('rejects impossible race dates before plan generation starts', async () => {
+    mockGetProfile.mockReturnValue({ experienceLevel: 'intermediate' });
+
+    const res = await dispatch('POST', '/plan/generate', {}, {
+      objective: 'Lisbon Marathon October 2026',
+      raceDate: '2026-02-30',
+    });
+
+    expect(res.statusCode).toBe(400);
+    expect(res.body.error.code).toBe('INVALID_RACE_DATE');
+    expect(mockBuildCoachKernelTrainingPlan).not.toHaveBeenCalled();
+    expect(mockCreatePlan).not.toHaveBeenCalled();
+  });
+
+  it('rejects past race dates before plan generation starts', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(new Date('2026-06-03T12:00:00.000Z'));
+    mockGetProfile.mockReturnValue({ experienceLevel: 'intermediate' });
+
+    const res = await dispatch('POST', '/plan/generate', {}, {
+      objective: 'Old race',
+      raceDate: '2026-06-02',
+    });
+
+    expect(res.statusCode).toBe(400);
+    expect(res.body.error.code).toBe('PAST_RACE_DATE');
+    expect(mockBuildCoachKernelTrainingPlan).not.toHaveBeenCalled();
+    expect(mockCreatePlan).not.toHaveBeenCalled();
+  });
+
   it('falls back to the deterministic template when the coach kernel generation fails', async () => {
     mockGetProfile.mockImplementation((_userId: number, profile: string) => {
       if (profile === 'fitness') return { experienceLevel: 'Intermediate' };
+      if (profile === 'triathlon-running') return { currentMileage: 24 };
       return null;
     });
     mockBuildCoachKernelTrainingPlan.mockImplementation(() => {
@@ -1364,7 +1991,7 @@ describe('Training API routes', () => {
     });
 
     const res = await dispatch('POST', '/plan/generate', {}, {
-      objective: 'General running consistency block',
+      objective: 'General consistency block',
       preferredTime: '07:00',
       sessionsPerWeek: 5,
       strengthSessionsPerWeek: 1,
@@ -1379,20 +2006,45 @@ describe('Training API routes', () => {
   });
 
   it('cancels an owned plan, removes linked calendar events, and hard-deletes the plan + cascades', async () => {
-    mockGetActivePlan.mockReturnValue({ id: 44, user_id: 12 });
-    mockGetWeeksForPlan.mockReturnValue([{ id: 7001 }]);
+    mockGetActivePlan.mockReturnValue({
+      id: 44,
+      user_id: 12,
+      start_date: '2026-05-25T00:00:00.000Z',
+      tenant_id: 12,
+    });
+    mockGetWeeksForPlan.mockReturnValue([{ id: 7001, week_number: 1 }]);
     mockGetSessionsForWeek.mockReturnValue([
       {
         id: 321,
         status: 'completed',
+        day_of_week: 'Monday',
+        session_type: 'run',
+        title: 'Recovery Run',
+        duration_minutes: 30,
         calendar_event_id: 'evt-completed',
         calendar_source: 'outlook',
       },
       {
         id: 322,
         status: 'planned',
+        day_of_week: 'Monday',
+        session_type: 'gym',
+        title: 'Strength + Core',
+        duration_minutes: 40,
+        session_identity_key: 'key-322',
+        session_shape_hash: 'shape-322',
         calendar_event_id: 'evt-planned',
         calendar_source: 'google',
+      },
+    ]);
+    mockGetEvents.mockResolvedValue([
+      {
+        id: 'evt-orphan-moved',
+        source: 'google',
+        summary: '💪 Strength + Core (40min)',
+        start: '2026-05-31T18:00:00.000Z',
+        end: '2026-05-31T18:40:00.000Z',
+        description: 'Training moved by the user\n\n[NEXUS_TRAINING_IDENTITY plan=44;version=1;session=322;key=key-322;shape=shape-322]',
       },
     ]);
     mockDeletePlanHard.mockReturnValue({
@@ -1410,7 +2062,7 @@ describe('Training API routes', () => {
     expect(res.body.data).toMatchObject({
       cancelled: true,
       planId: 44,
-      removedEvents: 2,
+      removedEvents: 3,
       removedSessions: 2,
       removedWeeks: 1,
       removedCompletions: 1,
@@ -1419,11 +2071,72 @@ describe('Training API routes', () => {
     });
     expect(mockDeleteEvent).toHaveBeenCalledWith('evt-completed', 'outlook', 12);
     expect(mockDeleteEvent).toHaveBeenCalledWith('evt-planned', 'google', 12);
+    expect(mockDeleteEvent).toHaveBeenCalledWith('evt-orphan-moved', 'google', 12);
     expect(mockDeletePlanHard).toHaveBeenCalledWith(44, 12);
     // Hard delete replaces the soft-update path; no per-session
     // status mutations or plan status mutation should fire anymore.
     expect(mockUpdateSession).not.toHaveBeenCalled();
     expect(mockUpdatePlanStatus).not.toHaveBeenCalled();
+  });
+
+  it('returns uniform no-op from /plan/cancel when a requested plan belongs to another user', async () => {
+    mockGetPlanById.mockReturnValue({ id: 99, user_id: 77 });
+
+    const res = await dispatch('POST', '/plan/cancel', {}, { planId: 99 });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body.ok).toBe(true);
+    expect(res.body.data).toMatchObject({
+      cancelled: false,
+      removedEvents: 0,
+      removedSessions: 0,
+      removedWeeks: 0,
+      removedPlans: 0,
+      totalSessions: 0,
+    });
+    expect(mockDeletePlanHard).not.toHaveBeenCalled();
+    expect(mockDeleteEvent).not.toHaveBeenCalled();
+  });
+
+  it('returns uniform 404 from reflow preview for foreign and missing sessions', async () => {
+    mockGetSessionById.mockReturnValue({ id: 100, week_id: 70, plan_id: 7 });
+    mockGetPlanById.mockReturnValue({ id: 7, user_id: 77, start_date: '2026-04-20T00:00:00.000Z' });
+
+    const foreign = await dispatch('POST', '/sessions/100/reflow-preview', {}, {});
+
+    mockGetSessionById.mockReturnValue(null);
+    mockGetPlanById.mockReturnValue(null);
+
+    const missing = await dispatch('POST', '/sessions/100/reflow-preview', {}, {});
+
+    expect(foreign.statusCode).toBe(404);
+    expect(missing.statusCode).toBe(404);
+    expect(foreign.body.error).toEqual(missing.body.error);
+    expect(foreign.body.error).toEqual(expect.objectContaining({
+      code: 'NOT_FOUND',
+      message: 'Training session not found.',
+    }));
+  });
+
+  it('returns uniform 404 from reflow confirm for foreign and missing sessions', async () => {
+    mockGetSessionById.mockReturnValue({ id: 101, week_id: 71, plan_id: 8 });
+    mockGetPlanById.mockReturnValue({ id: 8, user_id: 77, start_date: '2026-04-20T00:00:00.000Z' });
+
+    const foreign = await dispatch('POST', '/sessions/101/reflow-confirm', {}, {});
+
+    mockGetSessionById.mockReturnValue(null);
+    mockGetPlanById.mockReturnValue(null);
+
+    const missing = await dispatch('POST', '/sessions/101/reflow-confirm', {}, {});
+
+    expect(foreign.statusCode).toBe(404);
+    expect(missing.statusCode).toBe(404);
+    expect(foreign.body.error).toEqual(missing.body.error);
+    expect(foreign.body.error).toEqual(expect.objectContaining({
+      code: 'NOT_FOUND',
+      message: 'Training session not found.',
+    }));
+    expect(mockUpdateSession).not.toHaveBeenCalled();
   });
 
   it('ignores generic routine walk events when resolving today training from calendar', async () => {
@@ -1467,6 +2180,79 @@ describe('Training API routes', () => {
     expect(weekRes.body.data.totalCount).toBe(0);
   });
 
+  it('returns every active plan week for the iOS progression timeline without regenerating or syncing', async () => {
+    mockGetActivePlan.mockReturnValue({
+      id: 77,
+      name: 'Marathon Build',
+      start_date: '2026-05-04',
+      end_date: '2026-06-01',
+      periodization: 'block',
+      duration_weeks: 4,
+      plan_version: 3,
+      status: 'active',
+    });
+    mockGetWeeksForPlan.mockReturnValue([
+      { id: 771, week_number: 1, focus: 'base', intensity_pct: 64, adjustment_reason: null },
+      { id: 772, week_number: 2, focus: 'build', intensity_pct: 70, adjustment_reason: 'progression' },
+    ]);
+    mockGetSessionsForWeek.mockImplementation((weekId: number) => (
+      weekId === 771
+        ? [
+            {
+              id: 1,
+              plan_id: 77,
+              day_of_week: 'Monday',
+              session_type: 'run',
+              title: 'Easy Run',
+              duration_minutes: 45,
+              status: 'planned',
+              calendar_event_id: null,
+              exercises_json: null,
+              description_json: null,
+            },
+          ]
+        : [
+            {
+              id: 2,
+              plan_id: 77,
+              day_of_week: 'Saturday',
+              session_type: 'run',
+              title: 'Long Run',
+              duration_minutes: 90,
+              status: 'planned',
+              calendar_event_id: null,
+              exercises_json: null,
+              description_json: null,
+            },
+          ]
+    ));
+
+    const res = await dispatch('GET', '/plan/weeks');
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body.ok).toBe(true);
+    expect(res.body.data.plan).toMatchObject({
+      id: 77,
+      name: 'Marathon Build',
+      planVersion: 3,
+      durationWeeks: 4,
+    });
+    expect(res.body.data.weeks).toHaveLength(2);
+    expect(res.body.data.weeks[0]).toMatchObject({
+      weekNumber: 1,
+      phase: 'base',
+      activeSessionCount: 1,
+      syncedSessionCount: 0,
+      missingSessionCount: 1,
+      weekSyncStatus: 'unsynced',
+    });
+    expect(res.body.data.weeks[1].sessions[0]).toMatchObject({
+      title: 'Long Run',
+      calendarSyncState: 'missing',
+    });
+    expect(mockBuildCoachKernelTrainingPlan).not.toHaveBeenCalled();
+    expect(mockCreateEvent).not.toHaveBeenCalled();
+  });
 
   it('recognizes explicit training events while excluding routine walk labels', () => {
     expect(looksLikeTrainingCalendarEvent('Tempo Run')).toBe(true);

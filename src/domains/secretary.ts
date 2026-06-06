@@ -34,6 +34,26 @@ import { getUnreadMailSummaryForUser, isAnyMailConfiguredForUser } from '../serv
 import { getUserLanguage, getUserTimezone } from '../services/user-service';
 import { DateTime } from 'luxon';
 import { buildChatPromptContextBlock } from '../services/chat-context-engine';
+import { buildChatGroundingEnvelope } from '../services/chat-grounding-layer';
+import { sanitizeForPromptInterpolation } from '../utils/prompt-sanitizer';
+
+// Codex QA round 5: untrusted text from user-controlled sources (task
+// titles, reminder messages, calendar summaries) was previously
+// interpolated raw into the secretary state-context prompt. Wrap with
+// the sanitizer so injection attempts are neutralized. JSON-stringify
+// adds quotes but keeps the prompt readable as a data literal — fine
+// for a comma-separated list. Returns the inner value without the
+// outer quotes to keep the human-readable format closer to before.
+function safeInline(value: unknown): string {
+  const sanitized = sanitizeForPromptInterpolation(value);
+  // sanitizeForPromptInterpolation returns a JSON-stringified value
+  // (e.g. `"my title"`). Strip the outer quotes for cleaner inline
+  // rendering — the inner content is already neutralized.
+  if (sanitized.startsWith('"') && sanitized.endsWith('"')) {
+    return sanitized.slice(1, -1);
+  }
+  return sanitized;
+}
 
 const DOMAIN: DomainName = 'secretary';
 
@@ -97,6 +117,37 @@ export function _resetStateContextCacheForTesting(): void {
  * a "show tasks" cache hit on a follow-up "what's my week" would miss
  * (calendar wasn't loaded the first time) and re-run with calendar.
  */
+// Slim <missing_facts> block — built directly from the grounding
+// envelope so the pre-call hallucination guard reaches the model on
+// mutating turns that don't trigger the planner context. Returns ''
+// when no fields are missing (read-only turns) so the prompt isn't
+// inflated unnecessarily.
+function buildMinimalMissingFactsBlock(
+  message: string,
+  userId: number | null,
+  tenantId?: number,
+): string {
+  if (!message.trim() || userId === null) return '';
+  try {
+    const envelope = buildChatGroundingEnvelope({
+      message,
+      userId,
+      tenantId: typeof tenantId === 'number' ? tenantId : userId,
+      routedDomain: DOMAIN,
+    });
+    if (!envelope.missingFacts.length) return '';
+    const lines = [
+      `<missing_facts owner_skill="${envelope.capability.ownerSkill}" intent="${envelope.capability.intent}">`,
+      'The user message does not state these fields. Do NOT invent values; ask one focused clarification (in the user language) before calling any write tool:',
+      ...envelope.missingFacts.map((f) => `- ${f}`),
+      '</missing_facts>',
+    ];
+    return lines.join('\n');
+  } catch {
+    return '';
+  }
+}
+
 async function buildStateContext(message: string = '', userId?: number, tenantId?: number): Promise<string> {
   const scopedUserId = typeof userId === 'number' ? userId : null;
   const hasUserScope = scopedUserId !== null;
@@ -122,6 +173,12 @@ async function buildStateContext(message: string = '', userId?: number, tenantId
     garmin: intent.ambiguous || intent.garmin,
     planner: intent.ambiguous || /\b(plan|prioriti[sz]e|priority|first|focus|fit|reschedul|schedule|organi[sz]e|tradeoff|handoff|what should i do|what do i do first|how do i fit|o que faço primeiro|o que devo fazer primeiro|o que devo priorizar(?: hoje)?|o que priorizo(?: hoje)?|qual(?: é| a)? prioridade(?: hoje)?|prioriza o meu dia|priorizar o meu dia|prioriza meu dia|priorizar meu dia|organiza o meu dia|organiza meu dia|como encaixo)\b/i.test(message),
   };
+  const needsSharedDecisionContext = hasUserScope && needs.planner;
+  const promptBudgetChars = needs.planner
+    ? 2000
+    : intent.ambiguous
+      ? 1500
+      : 700;
   const taskProvider = hasUserScope && needs.tasks && tasksEnabled
     ? getTaskProviderForUser(scopedUserId)
     : null;
@@ -138,23 +195,60 @@ async function buildStateContext(message: string = '', userId?: number, tenantId
   // Cache key = userId + context shape — prevents cross-user leakage
   const shape = `${needs.tasks ? 't' : ''}${needs.calendar ? 'c' : ''}${needs.email ? 'e' : ''}${needs.reminders ? 'r' : ''}${needs.garmin ? 'g' : ''}${needs.planner ? 'p' : ''}`;
   const scopedTenantKey = hasUserScope ? (typeof tenantId === 'number' && tenantId > 0 ? tenantId : scopedUserId) : 'anon';
-  const appendPromptContext = async (baseContext: string): Promise<string> => {
+  const appendPromptContext = async (baseContext: string, cacheHit: boolean): Promise<string> => {
     if (!hasUserScope) return baseContext;
+    if (!needs.planner) {
+      // Codex QA round 2: even when the planner context is skipped,
+      // mutating turns still need the pre-call <missing_facts> block
+      // so the model asks for unstated date/time/title instead of
+      // inventing them. Cost: ~100-250 chars only when the grounding
+      // layer actually finds missing fields.
+      const minimalBlock = buildMinimalMissingFactsBlock(message, scopedUserId, tenantId);
+      const augmented = minimalBlock ? `${baseContext}\n${minimalBlock}` : baseContext;
+      logger.debug({
+        userId: scopedUserId,
+        tenantId: scopedTenantKey,
+        cacheShape: shape,
+        cacheHit,
+        promptBudgetChars: 0,
+        promptContextAttached: false,
+        missingFactsAttached: !!minimalBlock,
+        estimatedContextChars: augmented.length,
+        estimatedInputTokens: Math.ceil(augmented.length / 4),
+      }, 'Secretary state context assembled without broad prompt context');
+      return augmented;
+    }
     const promptContext = await buildChatPromptContextBlock({
       domain: DOMAIN,
       message,
       userId: scopedUserId,
       tenantId,
-      budgetChars: 2000,
+      budgetChars: promptBudgetChars,
     });
-    return promptContext ? `${baseContext}\n${promptContext}` : baseContext;
+    const combined = promptContext ? `${baseContext}\n${promptContext}` : baseContext;
+    logger.debug({
+      userId: scopedUserId,
+      tenantId: scopedTenantKey,
+      cacheShape: shape,
+      cacheHit,
+      promptBudgetChars,
+      promptContextAttached: !!promptContext,
+      estimatedContextChars: combined.length,
+      estimatedInputTokens: Math.ceil(combined.length / 4),
+    }, 'Secretary state context assembled from cache');
+    return combined;
   };
 
-  const cacheKey = `${scopedTenantKey}:${hasUserScope ? scopedUserId : 'anon'}:${shape}:${contextLanguage}`;
+  // Codex QA round 3: subskill toggles weren't part of the cache key,
+  // so disabling `tasks` mid-conversation still let cached task context
+  // ship for up to 30s. Bake the enabled-flags into the key so any
+  // toggle immediately invalidates.
+  const enabledFlags = `${tasksEnabled ? 't' : ''}${calendarEnabled ? 'c' : ''}${emailEnabled ? 'e' : ''}${remindersEnabled ? 'r' : ''}`;
+  const cacheKey = `${scopedTenantKey}:${hasUserScope ? scopedUserId : 'anon'}:${shape}:e${enabledFlags}:${contextLanguage}`;
 
   const cached = _stateContextCache.get(cacheKey);
   if (cached && Date.now() < cached.expiresAt) {
-    return appendPromptContext(cached.value);
+    return appendPromptContext(cached.value, true);
   }
 
   const timezone = getUserTimezone(scopedUserId);
@@ -188,8 +282,8 @@ async function buildStateContext(message: string = '', userId?: number, tenantId
     hasUserScope && needs.planner
       ? composeDailyBrief({ userId: scopedUserId, language: contextLanguage }).catch(() => null)
       : Promise.resolve(null),
-    hasUserScope ? buildSharedDecisionContext(DOMAIN, scopedUserId, tenantId).catch(() => '') : Promise.resolve(''),
-    hasUserScope ? buildSharedDecisionContracts(DOMAIN, scopedUserId, tenantId).catch(() => ({} as SharedDecisionContracts)) : Promise.resolve({} as SharedDecisionContracts),
+    needsSharedDecisionContext ? buildSharedDecisionContext(DOMAIN, scopedUserId, tenantId).catch(() => '') : Promise.resolve(''),
+    needsSharedDecisionContext ? buildSharedDecisionContracts(DOMAIN, scopedUserId, tenantId).catch(() => ({} as SharedDecisionContracts)) : Promise.resolve({} as SharedDecisionContracts),
   ]);
 
   // Microsoft To Do — compact summary (details available via tools)
@@ -227,19 +321,22 @@ async function buildStateContext(message: string = '', userId?: number, tenantId
         `\n${copy.todoLabel}: ${copy.pendingLabel(tasks.length)}, ${copy.overdueLabel(overdue.length)}, ${copy.dueTodayLabel(dueToday.length)}.\n${copy.listsLabel}: ${listSummary}`,
       );
       if (overdue.length > 0) {
-        parts.push(`${copy.overdueOnlyLabel}: ${overdue.slice(0, 5).map((t: TodoTask) => t.title).join(', ')}`);
+        parts.push(`${copy.overdueOnlyLabel}: ${overdue.slice(0, 5).map((t: TodoTask) => safeInline(t.title)).join(', ')}`);
       }
     } else if (!todoResult.success) {
       parts.push(`\n${copy.todoLabel}: ${copy.apiErrorLabel}`);
     }
   }
 
-  // Reminders & calendar — compact
+  // Reminders & calendar — compact. Codex QA round 5: untrusted
+  // strings (reminder body, event summary) now wrapped in safeInline
+  // so injection patterns inside a calendar invite or reminder don't
+  // reach the model as instructions.
   if (reminders.length > 0) {
-    parts.push(`\n${copy.remindersTodayLabel}: ${reminders.map((r) => `${r.message} (${formatDateTime(r.remind_at)})`).join(', ')}`);
+    parts.push(`\n${copy.remindersTodayLabel}: ${reminders.map((r) => `${safeInline(r.message)} (${formatDateTime(r.remind_at)})`).join(', ')}`);
   }
   if (calendarResult.length > 0) {
-    parts.push(`\n${copy.calendarTodayLabel(calendarResult.length)}: ${calendarResult.map((e) => `${formatDateTime(e.start)}-${formatDateTime(e.end)} ${e.summary}`).join(' | ')}`);
+    parts.push(`\n${copy.calendarTodayLabel(calendarResult.length)}: ${calendarResult.map((e) => `${formatDateTime(e.start)}-${formatDateTime(e.end)} ${safeInline(e.summary)}`).join(' | ')}`);
   }
   if (unreadMail) {
     const providerDetails = [
@@ -341,7 +438,26 @@ async function buildStateContext(message: string = '', userId?: number, tenantId
     if (oldest) _stateContextCache.delete(oldest);
   }
   _stateContextCache.set(cacheKey, { value: result, expiresAt: Date.now() + STATE_CONTEXT_TTL });
-  return appendPromptContext(result);
+  const finalContext = await appendPromptContext(result, false);
+  logger.debug({
+    userId: scopedUserId,
+    tenantId: scopedTenantKey,
+    cacheShape: shape,
+    cacheHit: false,
+    promptBudgetChars,
+    selectedSources: {
+      tasks: !!taskProvider,
+      calendar: hasCalendar,
+      email: hasMail,
+      reminders: hasUserScope && needs.reminders && remindersEnabled,
+      garmin: hasGarmin,
+      planner: hasUserScope && needs.planner,
+      sharedDecisionContext: needsSharedDecisionContext,
+    },
+    estimatedContextChars: finalContext.length,
+    estimatedInputTokens: Math.ceil(finalContext.length / 4),
+  }, 'Secretary state context assembled');
+  return finalContext;
 }
 
 function renderSharedDecisionContracts(contracts: SharedDecisionContracts): string {
@@ -419,6 +535,81 @@ function secretaryStateContextCopy(language: string) {
     overdueLabel: (count: number) => localizeSecretaryContext(language, `${count} atrasadas`, `${count} atrasadas`, `${count} overdue`),
     dueTodayLabel: (count: number) => localizeSecretaryContext(language, `${count} para hoje`, `${count} para hoje`, `${count} due today`),
     unreadMailLabel: (count: number) => localizeSecretaryContext(language, `${count} por ler`, `${count} não lidos`, `${count} unread`),
+    // ── M8 PT-PT/PT-BR sweep over strings introduced in Wave 1 ──
+    // M2 (agenda → provider sync): cron summary lines that may surface in
+    // Daily Brief / Decision Center footers.
+    syncedToCalendarLabel: localizeSecretaryContext(
+      language,
+      'Sincronizado ao calendário',
+      'Sincronizado ao calendário',
+      'Synced to calendar',
+    ),
+    awaitingCalendarSyncLabel: localizeSecretaryContext(
+      language,
+      'A aguardar sincronização do calendário',
+      'Aguardando sincronização do calendário',
+      'Awaiting calendar sync',
+    ),
+    calendarOfflineLabel: localizeSecretaryContext(
+      language,
+      'Calendário offline',
+      'Calendário offline',
+      'Calendar offline',
+    ),
+    // C2 (reasoning trail surface): user-facing rendering of trail nodes.
+    secretaryReasoningHeader: localizeSecretaryContext(
+      language,
+      'Porque Secretary decidiu',
+      'Porque Secretary decidiu',
+      'Why Secretary decided',
+    ),
+    secretaryDecisionStatusLabel: localizeSecretaryContext(
+      language,
+      'Estado',
+      'Estado',
+      'Status',
+    ),
+    secretaryChoseLabel: localizeSecretaryContext(
+      language,
+      'Escolhido',
+      'Escolhido',
+      'Chosen',
+    ),
+    secretaryConsideredLabel: localizeSecretaryContext(
+      language,
+      'Considerado',
+      'Considerado',
+      'Considered',
+    ),
+    // C8 (weekly notes): one-line summary woven into coach-kernel notes.
+    secretaryWeeklyContributionLabel: localizeSecretaryContext(
+      language,
+      'Secretary',
+      'Secretary',
+      'Secretary',
+    ),
+    secretaryCompressedSessionsLabel: (count: number) => localizeSecretaryContext(
+      language,
+      `comprimiu ${count} sessão${count === 1 ? '' : 'ões'}`,
+      `comprimiu ${count} sessão${count === 1 ? '' : 'ões'}`,
+      `compressed ${count} session${count === 1 ? '' : 's'}`,
+    ),
+    secretaryReflowedLabel: (count: number) => localizeSecretaryContext(
+      language,
+      `realocou ${count}`,
+      `realocou ${count}`,
+      `reflowed ${count}`,
+    ),
+    secretaryLongRunProtectedLabel: localizeSecretaryContext(
+      language,
+      'corrida longa protegida',
+      'corrida longa protegida',
+      'long run protected',
+    ),
+    // M5 (APNs anchoring): day-anchor words used by secretary-apns-anchoring.ts.
+    apnsTodayAnchor: localizeSecretaryContext(language, 'Hoje', 'Hoje', 'Today'),
+    apnsTomorrowAnchor: localizeSecretaryContext(language, 'Amanhã', 'Amanhã', 'Tomorrow'),
+    apnsMinUnit: localizeSecretaryContext(language, 'min', 'min', 'min'),
   };
 }
 
@@ -430,7 +621,7 @@ export async function handleSecretary(message: string, userId?: number, tenantId
   // Identical Telegram-HTML output to the AI path; users can't tell the
   // difference. Errors fall through to the AI path automatically.
   // See src/services/secretary-fastpath.ts for the pattern dictionary.
-  const fastpath = hasUserScope ? await tryFastpath(userId, message) : { matched: false, response: null };
+  const fastpath = hasUserScope ? await tryFastpath(userId, message, undefined, tenantId ?? userId) : { matched: false, response: null };
   if (fastpath.matched && fastpath.response && hasUserScope) {
     // Record in conversation history so the next AI turn has context
     // about what the user just asked. Tag the assistant message with the

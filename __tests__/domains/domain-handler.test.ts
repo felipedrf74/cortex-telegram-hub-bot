@@ -65,10 +65,14 @@ vi.mock('../../src/utils/logger', () => ({
     info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(),
     trace: vi.fn(), child: vi.fn().mockReturnThis(),
   },
+  LOGGER_REDACTION_PATHS: [],
 }));
 
 vi.mock('../../src/services/database', () => ({
   getDb: () => testDb,
+  initDatabase: vi.fn(),
+  closeDatabase: vi.fn(),
+  findUnexpectedMigrationPrefixCollisions: vi.fn(() => []),
 }));
 
 // ─── Imports ─────────────────────────────────────────────────────────
@@ -87,6 +91,7 @@ import { getSharedMemorySummary } from '../../src/state/shared-memory';
 import { executeToolCall } from '../../src/services/tool-executor';
 import { now } from '../../src/utils/date-parser';
 import { callDomain, continueWithToolResults } from '../../src/services/anthropic';
+import { setCookingPreferenceMemory } from '../../src/services/cooking-preferences';
 
 // Use the provider-routed mocks (domain-handler now calls getActiveProvider().callDomain)
 const mockCallDomain = mockCallDomainFn;
@@ -225,6 +230,65 @@ describe('buildSimpleStateContext', () => {
     expect(ctx).toContain('due: 2026-04-01');
   });
 
+  it('does not attach scoped Nexus context to generic Cooking recipe requests', async () => {
+    vi.mocked(listTodos).mockReturnValue([
+      { id: 2, title: 'Meal prep local state', priority: 'medium', due_date: null, domain: 'cooking', description: null, status: 'pending', tags: null, created_at: '', updated_at: '', completed_at: null },
+    ] as any);
+    vi.mocked(getSharedMemorySummary).mockReturnValue('[Shared] local cooking preference');
+
+    const ctx = await buildSimpleStateContext('cooking', 42, 'Me indique uma receita de legumes assados para 3 pessoas');
+
+    expect(ctx).toContain('Monday, March 30 2026');
+    expect(ctx).not.toContain('Cooking to-dos');
+    expect(ctx).not.toContain('Meal prep local state');
+    expect(ctx).not.toContain('[Shared] local cooking preference');
+  });
+
+  it('does not attach scoped Nexus context to generic Finance explanation requests', async () => {
+    vi.mocked(listTodos).mockReturnValue([
+      { id: 3, title: 'Review local budget', priority: 'high', due_date: null, domain: 'finance', description: null, status: 'pending', tags: null, created_at: '', updated_at: '', completed_at: null },
+    ] as any);
+    vi.mocked(getSharedMemorySummary).mockReturnValue('[Shared] local finance state');
+
+    const ctx = await buildSimpleStateContext('finance', 42, 'Explain deductible expense categories');
+
+    expect(ctx).toContain('Monday, March 30 2026');
+    expect(ctx).not.toContain('Finance to-dos');
+    expect(ctx).not.toContain('Review local budget');
+    expect(ctx).not.toContain('[Shared] local finance state');
+  });
+
+  it('includes scoped Nexus context when Cooking asks for local meal-plan state', async () => {
+    vi.mocked(listTodos).mockReturnValue([
+      { id: 4, title: 'Plan local meals', priority: 'medium', due_date: null, domain: 'cooking', description: null, status: 'pending', tags: null, created_at: '', updated_at: '', completed_at: null },
+    ] as any);
+    vi.mocked(getSharedMemorySummary).mockReturnValue('[Shared] local cooking preference');
+
+    const ctx = await buildSimpleStateContext('cooking', 42, 'What meals did I plan this week?');
+
+    expect(ctx).toContain('Cooking to-dos');
+    expect(ctx).toContain('Plan local meals');
+    expect(ctx).toContain('[Shared] local cooking preference');
+  });
+
+  it('marks empty scoped local-read context so the model cannot invent local facts', async () => {
+    const ctx = await buildSimpleStateContext('secretary', 42, 'show my latest tasks');
+
+    expect(ctx).toContain('Local grounding rule: answer only from scoped Nexus facts listed above.');
+    expect(ctx).toContain('say no matching local records were found instead of inventing it.');
+  });
+
+  it('keeps scoped training context for prescription requests even before local grounding is inferred', async () => {
+    vi.mocked(listTodos).mockReturnValue([
+      { id: 5, title: 'Finish run profile', priority: 'high', due_date: null, domain: 'triathlon', description: null, status: 'pending', tags: null, created_at: '', updated_at: '', completed_at: null },
+    ] as any);
+
+    const ctx = await buildSimpleStateContext('triathlon', 42, 'Build me a running workout for tomorrow');
+
+    expect(ctx).toContain('Triathlon to-dos');
+    expect(ctx).toContain('Finish run profile');
+  });
+
   it('includes coach recommendations for triathlon domain with userId', async () => {
     const recs = [{
       action: 'MODIFY', eventId: 'evt1', source: 'outlook',
@@ -271,6 +335,19 @@ describe('buildSimpleStateContext', () => {
 
     const ctx = await buildSimpleStateContext('triathlon', 42);
     expect(ctx).toContain('[Shared] A-race: Ironman');
+  });
+
+  it('injects Cooking safety preferences into the cooking prompt context', async () => {
+    ensureUser(88);
+    setCookingPreferenceMemory(88, { kind: 'allergy', value: 'marisco' }, 88);
+    setCookingPreferenceMemory(88, { kind: 'dietary_restriction', value: 'vegetariano' }, 88);
+
+    const ctx = await buildSimpleStateContext('cooking', 88, 'planeia jantar', 88);
+
+    expect(ctx).toContain('<cooking_safety_preferences>');
+    expect(ctx).toContain('Allergies: marisco');
+    expect(ctx).toContain('Restrictions: vegetariano');
+    expect(ctx).toContain('Treat these as hard constraints');
   });
 });
 
@@ -413,7 +490,7 @@ describe('handleSimpleDomain', () => {
     expect(storedCall![3]).toBe('[Tools: search_notes]\nFound notes.');
   });
 
-  it('stops at maxIterations even if tools keep returning', async () => {
+  it('stops at maxIterations and surfaces a cap-reached notice (Codex QA round 5)', async () => {
     const toolCall = { type: 'tool_use', id: 'tc_1', name: 'set_reminder', input: {} };
 
     mockCallDomain.mockResolvedValue({
@@ -430,7 +507,11 @@ describe('handleSimpleDomain', () => {
 
     // 1 initial callDomain + 3 continueWithToolResults = 3 iterations max
     expect(mockContinue).toHaveBeenCalledTimes(3);
-    expect(result.text).toBe('Still working...');
+    // Codex QA round 5: cap-exceeded turns must NOT silently return
+    // the partial text — they must tell the user iteration cap was
+    // hit and the request can be continued.
+    expect(result.text).toContain('Still working...');
+    expect(result.text).toMatch(/tool cap|per-turn tool cap|tool-call iterations|partial/i);
   });
 
   it('passes userId to buildSimpleStateContext', async () => {

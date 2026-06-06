@@ -1,0 +1,3012 @@
+# Open Items Archive - 2026-05
+
+Status: archive
+Owner: release lead (Felipe)
+Last verified: 2026-05-07
+Update policy: append-only monthly archive. Active carryovers belong in
+`docs/release/OPEN_ITEMS.md`.
+
+Archived from `docs/release/OPEN_ITEMS.md` during Batch 24 U3 closeout on
+2026-05-07. The rotation script referenced by older docs was not present in
+the engine checkout, so Batch 24 performed the authorized manual rotation.
+
+## Standing authorizations
+
+BATCH-13-J1-AUTHORIZED: base=feature/tech-debt-2026-05-f4-mock-ratchet-stack
+- Granted by Felipe via 2026-05-06 delegated-approval message ("If anything needs my approval, send in the next prompt that is approved to move on.").
+- Scope: Codex may branch the Batch 13 J1 mock-baseline ratchet from the F4 stack (`feature/tech-debt-2026-05-f4-mock-ratchet-stack`) and lower `engine/scripts/.vi-mock-baseline.txt` toward 640. `main` still fails strict lint until D5/F4 land — that gate stays open and is tracked in I1's merge-readiness analysis.
+- Closed annotation: J1 ran on the authorized F4 stack and is closed in source at `feature/tech-debt-2026-05-j1-mock-ratchet-640` (`e4884c2b`), lowering the staged strict baseline from 655 to 640 with current partial mocks at 637. Marker retained for audit trail; do not reuse for other workstreams.
+- Expires: closed by Batch 13 J1. D5/F4 still need to land on `main` before strict mock lint is a `main` gate.
+
+BATCH-21-Q-MERGES-AUTHORIZED: base=local-main-post-Batch-19
+- Granted by Felipe via Batch 21 unblock prompt on 2026-05-06.
+- Scope: Codex may merge Batch 20 branches into local `main` only when the Batch 20 closure report marks the corresponding Q workstream CLOSED. Q1/Q2/Q4 were merged; Q3 was not merged because it was BLOCKED.
+- Closed annotation: honored in Batch 21 pre-flight unblock; post-merge local `main` became `5d3ab548`. Marker retained for audit trail.
+
+BATCH-21-J2-AUTHORIZED: base=feature/tech-debt-2026-05-j2-python-pytest-expansion-3
+- Granted by Felipe in Batch 21 prompt.
+- Scope: Codex may merge the Batch 13 J2 Python pytest stack into local `main` and expand content-engine pytest to 130+ cases.
+- Closed annotation: honored in R4; content-engine pytest reached 135 passing cases on `feature/tech-debt-2026-05-r4-python-pytest-j2-landing` (`dee6ba63`).
+
+BATCH-21-F4-TARGET-RESET-AUTHORIZED: formula=max(600,current_baseline-15)
+- Granted by Felipe in Batch 21 prompt.
+- Scope: only applies if Batch 20 Q3 stopped because the F4 ratchet target was no longer meaningful.
+- Closed annotation: recorded but not exercised in Batch 21 because Batch 20 Q3 was BLOCKED by D5 rebase conflicts, not by target judgment. D5/F4 refresh remains a manual-reconciliation follow-up.
+
+BATCH-21-GENAI-MIGRATION-PHASE-1-AUTHORIZED: phase=dependency-plus-adapter-only
+- Granted by Felipe in Batch 21 prompt.
+- Scope: add `@google/genai`, create an adapter shim for the current Gemini call surface, and verify existing tests without changing production call sites. Phases 2-4 remain unauthorized.
+- Closed annotation: honored in R7 at `feature/tech-debt-2026-05-r7-genai-migration-phase-1` (`6c16bad1`), with `@google/genai@1.52.0` pinned and adapter tests passing.
+
+BATCH-22-Q3-DIAGNOSIS-AUTHORIZED: scope=D5/F4-Q3-diagnosis
+- Granted by Felipe in Batch 22 prompt.
+- Scope: diagnose Batch 20 Q3's D5/F4 stop reason and attempt the matching autonomous resolution branch.
+- Closed annotation: honored in S1; Q3 mapped to Diagnosis Branch A and refreshed D5/F4 closed at D5 `16d05f1b` and F4 `5d1a722b`.
+
+BATCH-22-GENAI-MIGRATION-PHASE-2-AUTHORIZED: phase=provider-import-switch
+- Granted by Felipe in Batch 22 prompt.
+- Scope: migrate production `@google/generative-ai` imports to the Batch 21 `gemini-adapter.ts` shim. Test mocks and old dependency removal remain unauthorized.
+- Closed annotation: attempted in S2 and BLOCKED by adapter type-surface mismatch plus provider tests still mocking the old SDK. No S2 commit was created.
+
+BATCH-22-Q3-SECONDARY-SOURCE-AUTHORIZED: source=Batch21-report-plus-OPEN_ITEMS-mirror
+- Granted by Felipe in Batch 22 unblock prompt.
+- Scope: use Batch 21 remediation and workspace-mirror `OPEN_ITEMS.md` as the canonical Q3 source because the Batch 20 archive report was missing.
+- Closed annotation: honored in S1/S3; secondary references supplied the Q3 stop reason.
+
+BATCH-22-RETRO-BATCH-20-REPORT-AUTHORIZED: path=docs/archive/2026-05/tech-debt-validation/codex-batch-20-remediation.md
+- Granted by Felipe in Batch 22 unblock prompt.
+- Scope: reconstruct the missing Batch 20 closure report from secondary references and mark it explicitly retroactive.
+- Closed annotation: honored in S3 at `docs/archive/2026-05/tech-debt-validation/codex-batch-20-remediation.md`.
+
+BATCH-23-D5-F4-MERGE-AUTHORIZED: branches=feature/tech-debt-2026-05-d5-mock-factories+feature/tech-debt-2026-05-f4-mock-ratchet-stack
+- Granted by Felipe in Batch 23 prompt.
+- Scope: merge refreshed D5/F4 stack into local `main`; strict mock lint becomes enforceable on `main`.
+- Closed annotation: honored in Batch 23 pre-flight. D5/F4 landed through merge `ef9b5e0b`; strict mock lint passed at 827 partial mocks / baseline 827.
+
+BATCH-23-S3-CLOSURE-MERGE-AUTHORIZED: branch=feature/tech-debt-2026-05-s3-batch-22-closure
+- Granted by Felipe in Batch 23 prompt.
+- Scope: merge Batch 22 S3 closure for audit-trail completeness.
+- Closed annotation: honored in Batch 23 pre-flight through merge `09d35547`.
+
+BATCH-23-GENAI-ADAPTER-EXPANSION-AUTHORIZED: phase=adapter-surface-expansion
+- Granted by Felipe in Batch 23 prompt.
+- Scope: expand `src/services/gemini-adapter.ts` for the Batch 22 S2 surface mismatches while keeping it a thin shim.
+- Closed annotation: honored in T1 at `feature/tech-debt-2026-05-t1-genai-adapter-expansion` (`7211a09b`).
+
+BATCH-23-GENAI-MIGRATION-PHASE-3-AUTHORIZED: phase=test-mock-migration
+- Granted by Felipe in Batch 23 prompt.
+- Scope: migrate test mocks targeting `@google/generative-ai` to the `@google/genai` boundary.
+- Closed annotation: honored in T2 at `feature/tech-debt-2026-05-t2-genai-mock-migration-phase-3` (`8d735e56`).
+
+BATCH-23-GENAI-MIGRATION-PHASE-2-RETRY-AUTHORIZED: phase=provider-import-switch-retry
+- Granted by Felipe in Batch 23 prompt.
+- Scope: retry production Gemini call-site migration after T1 and T2 close.
+- Closed annotation: honored in T3 at `feature/tech-debt-2026-05-t3-genai-phase-2-retry` (`a783d4d8`).
+
+BATCH-23-GENAI-MIGRATION-PHASE-4-AUTHORIZED: phase=legacy-dependency-removal
+- Granted by Felipe in Batch 23 prompt.
+- Scope: remove `@google/generative-ai` after T3 closes and record whether the adapter remains.
+- Closed annotation: honored in T4 at `feature/tech-debt-2026-05-t4-genai-phase-4-dependency-removal` (`ac8108e0`); adapter retained as the stable Nexus Gemini boundary.
+
+## Tech-debt Batch 23 — genai migration completion + D5/F4 merge consolidation (2026-05-06)
+
+Report:
+`docs/archive/2026-05/tech-debt-validation/codex-batch-23-remediation.md`.
+
+Archived outcome: **CLOSED / CONDITIONAL SKIPS HONORED**. Batch 23 merged the refreshed
+D5/F4 mock-ratchet stack and Batch 22 closure onto local `main`, then completed
+the authorized Gemini SDK migration through Phase 4. T5 stayed skipped because
+content-lifecycle Phase 1 was not authorized; T6 stayed skipped because Batch
+21 R3 had already closed the self-hosted-runner prerequisite doc.
+
+Branches:
+
+- `feature/tech-debt-2026-05-t1-genai-adapter-expansion` (`7211a09b`)
+- `feature/tech-debt-2026-05-t2-genai-mock-migration-phase-3` (`8d735e56`)
+- `feature/tech-debt-2026-05-t3-genai-phase-2-retry` (`a783d4d8`)
+- `feature/tech-debt-2026-05-t4-genai-phase-4-dependency-removal` (`ac8108e0`)
+- `feature/tech-debt-2026-05-t7-batch-23-closure` — closure branch.
+
+Closure delta:
+
+| Workstream | Status | Evidence |
+|---|---|---|
+| D5/F4 merge consolidation | **CLOSED ON LOCAL MAIN** | Refreshed D5/F4 stack merged via `ef9b5e0b`; strict mock lint passed at 827 partial mocks / baseline 827. |
+| Batch 22 audit trail | **CLOSED ON LOCAL MAIN** | S3 closure merged via `09d35547`; retro Batch 20 report remains archived. |
+| Genai adapter expansion | **CLOSED IN SOURCE BRANCH** | T1 expanded old-SDK-compatible response/type helpers without call-site changes; adapter tests passed 5/5. |
+| Genai mock migration | **CLOSED IN SOURCE STACK BRANCH** | T2 moved provider tests to mock `@google/genai`; focused provider suite passed. |
+| Genai Phase 2 retry | **CLOSED IN SOURCE STACK BRANCH** | T3 switched `gemini-provider.ts` to the adapter; production source has no `@google/generative-ai` import. |
+| Genai Phase 4 removal | **CLOSED IN SOURCE STACK BRANCH** | T4 removed `@google/generative-ai` from `package.json` / lockfile; full verify passed. |
+| Content lifecycle Phase 1 | **SKIPPED BY AUTHORIZATION CHECKBOX** | `BATCH-23-CONTENT-LIFECYCLE-PHASE-1-AUTHORIZED` remained unchecked. |
+| Self-hosted runner prereq finalization | **SKIPPED BY CONDITION** | `docs/release/self-hosted-runner-prereqs.md` already exists and Batch 21 R3 closed that documentation surface. |
+
+Open next actions:
+
+1. Treat Genai migration as complete at the SDK/dependency level; future work is
+   normal provider hardening, not a migration phase.
+2. Keep content lifecycle unification authorization-gated.
+3. Keep self-hosted runner provisioning, iOS fastlane/TestFlight automation,
+   APNs, OAuth credentials, Garmin MFA, and Content portal smoke operator-gated.
+
+## Tech-debt Batch 22 — D5/F4 ratchet resolution + genai phase 2 attempt (2026-05-06)
+
+Report:
+`docs/archive/2026-05/tech-debt-validation/codex-batch-22-remediation.md`.
+
+Archived outcome: **PARTIAL**. S1 closed the D5/F4 ratchet refresh using the authorized
+secondary-source diagnosis and reset formula. S2 stopped correctly because
+switching `gemini-provider.ts` to the Batch 21 adapter requires mock/type work
+that belongs to the next authorized genai phase. S3 reconstructed the missing
+Batch 20 closure report.
+
+Branches:
+
+- `feature/tech-debt-2026-05-d5-mock-factories` (`16d05f1b`)
+- `feature/tech-debt-2026-05-f4-mock-ratchet-stack` (`5d1a722b`)
+- `feature/tech-debt-2026-05-s2-genai-migration-phase-2` — BLOCKED, no commit.
+- `feature/tech-debt-2026-05-s3-batch-22-closure` — report branch.
+
+Closure delta:
+
+| Workstream | Status | Evidence |
+|---|---|---|
+| D5/F4 mock ratchet | **CLOSED IN SOURCE STACK BRANCH** | D5 refreshed baseline to 842; F4 target reset to 827 with strict lint PASS. Full verify passed: 467 files / 6971 tests. |
+| Genai migration Phase 2 | **BLOCKED / NEEDS PHASE 3 MOCK AUTHORIZATION** | Provider import probe made TypeScript fail on adapter type-surface differences and made `gemini-provider.test.ts` call real `@google/genai` because tests still mock `@google/generative-ai`. |
+| Batch 20 audit trail | **RETRO REPORT WRITTEN** | `docs/archive/2026-05/tech-debt-validation/codex-batch-20-remediation.md` reconstructed from Batch 21 report and `OPEN_ITEMS.md` mirror. |
+
+Open next actions:
+
+1. Authorize Genai Phase 3 / provider-test mock migration before retrying the
+   provider import switch.
+2. Keep Genai Phase 4 dependency removal blocked until phases 2 and 3 are
+   both green.
+3. Continue content lifecycle, self-hosted runner, and iOS fastlane only under
+   separate explicit authorizations.
+
+## Tech-debt Batch 21 — engineering closure + authorized expansions (2026-05-06)
+
+Report:
+`docs/archive/2026-05/tech-debt-validation/codex-batch-21-remediation.md`.
+
+Verdict: **CLOSED / CONDITIONAL SKIPS HONORED**. Batch 21 merged the closed
+Batch 20 workstreams into local `main`, closed PM2 recovery observability, JWT
+rotation key-id support, GH Actions reachability documentation, Python pytest
+J2 landing plus expansion, and `@google/genai` migration phase 1. R5 and R6
+were skipped by their conditions.
+
+Branches:
+
+- `feature/tech-debt-2026-05-r1-pm2-recovery-self-heal` (`c23d748a`)
+- `feature/tech-debt-2026-05-r2-jwt-rotation-key-id` (`aef9fa9d`)
+- `feature/tech-debt-2026-05-r3-gh-actions-ipv6` (`a78b6922`)
+- `feature/tech-debt-2026-05-r4-python-pytest-j2-landing` (`dee6ba63`)
+- `feature/tech-debt-2026-05-r7-genai-migration-phase-1` (`6c16bad1`)
+- `feature/tech-debt-2026-05-r8-batch-21-closure` — integrated closure branch.
+
+Closure delta:
+
+| Finding / Workstream | Status | Evidence |
+|---|---|---|
+| P2-38 PM2 recovery | **CLOSED IN SOURCE BRANCH** | `/health/detailed` now includes PM2 process health and records error-monitor alerts for restart-loop/non-online process state. Focused tests passed: 2 files / 14 tests. |
+| P2-40 JWT rotation | **CLOSED IN SOURCE BRANCH** | iOS JWT issuance includes `kid`; verification supports multi-key rotation and legacy no-`kid` fallback. Focused tests passed: 3 files / 33 tests. |
+| P2-44 GH Actions IPv6 reachability | **DOCUMENTED / RUNNER DEPENDENCY CLARIFIED** | Hosted workflow probes Cloudflare HTTPS health only; SSH stays self-hosted-runner gated. |
+| Python pytest workstream | **CLOSED IN SOURCE STACK BRANCH** | J2 merged under authorization and expanded to 135 content-engine pytest cases. |
+| `@google/genai` migration Phase 1 | **CLOSED IN SOURCE BRANCH** | `@google/genai@1.52.0` pinned; compatibility adapter and phase plan added; no production call sites switched. |
+| D5/F4 target reset | **SKIPPED BY CONDITION** | Batch 20 Q3 was blocked by D5 rebase conflicts rather than target reset. |
+
+Open next actions:
+
+1. Authorize GenAI Phase 2 when ready: switch `gemini-provider.ts` import
+   boundary to the adapter and keep the old SDK installed for rollback.
+2. Manually reconcile D5 rebase conflicts before retrying the F4 mock ratchet.
+3. Treat self-hosted runner setup as an operator/infra workstream, using the
+   Batch 21 prerequisites doc.
+
+## Tech-debt Batch 20 — content-references admin split + state isolation closure (2026-05-06)
+
+Report:
+`docs/archive/2026-05/tech-debt-validation/codex-batch-20-remediation.md`.
+
+Verdict: **PRIMARY CLOSED / SIDE-TASK BLOCKED**. Q1 closed the
+`content-references.ts` system-scope gap with an explicit state-layer admin
+context. Q2 closed P2-24 with six green state isolation packs. Q3 stopped
+before changes because D5 rebase conflicts appeared in workspace mirror/release
+identity docs, outside the allowed SQL/mock-factory conflict set.
+
+Branches:
+
+- `feature/tech-debt-2026-05-q1-content-references-admin-split`
+  (`266094e5`)
+- `feature/tech-debt-2026-05-q2-state-isolation-pack` (`9cd72866`)
+- `feature/tech-debt-2026-05-q4-batch-20-report` — report branch on Q2 tip.
+
+Closure delta:
+
+| Finding | Status | Evidence |
+|---|---|---|
+| P2-24 state isolation tests | **CLOSED IN SOURCE BRANCH** | Q2 adds six isolation packs for `coach-state`, `conversation`, `fiscal-collection-profiles`, `invoice-filings`, `invoice-vendors`, and `content-references`. Isolation pack passed: 6 files / 209 tests. Full verify passed: 464 files / 6958 tests. |
+| `content-references.ts` owner/admin boundary | **CLOSED IN SOURCE BRANCH** | Q1 chose explicit opaque admin context (Option beta), guards user-scoped entry points with positive safe-integer user IDs, and requires admin context for system-scope reads/writes. |
+| D5/F4 ratchet refresh | **BLOCKED / MANUAL RECONCILIATION REQUIRED** | D5 rebase hit conflicts in `docs/_workspace-mirror/docs/agent/AGENT_PROCESS_STANDARD.md`, `docs/_workspace-mirror/docs/release/release-identity.json`, and `docs/_workspace-mirror/docs/release/release-identity.md`; rebase aborted, branches unchanged. |
+
+Open next actions:
+
+1. Manually reconcile the D5 rebase conflicts, then retry the mock-baseline
+   refresh.
+2. Continue with P2-38 PM2 recovery and P2-40 JWT rotation as the next natural
+   engine-side P2 pair.
+3. Keep P2-44 under the self-hosted runner / infra authorization lane.
+
+## Tech-debt Batch 19 — P2-24 fix-first completion + state isolation retry (2026-05-06)
+
+Report:
+`docs/archive/2026-05/tech-debt-validation/codex-batch-19-remediation.md`.
+
+Verdict: **BLOCKED / STOP CONDITION HONORED**. P1 closed the fiscal/invoice
+invalid-user guard gap in source. P2 found intentional `content-references.ts`
+system-scope semantics plus system-scope write paths without an explicit
+admin-gated state-layer contract, which fired the mandatory stop rule. P3
+six-module isolation tests and the D5/F4 refresh side-task did not run.
+
+Branches:
+
+- `feature/tech-debt-2026-05-p1-fiscal-invoice-userid-guards` (`0bf095e2`)
+- `feature/tech-debt-2026-05-p2-content-references-scope-audit` (`4bf712a6`)
+- `feature/tech-debt-2026-05-p4-batch-19-report` — report branch with P1/P2
+  merged for integrated evidence.
+
+Closure delta:
+
+| Finding | Status | Evidence |
+|---|---|---|
+| Fiscal/invoice invalid-user guards | **CLOSED IN SOURCE BRANCH** | `fiscal-collection-profiles.ts`, `invoice-filings.ts`, and `invoice-vendors.ts` now reject non-positive or unsafe user IDs at public entry points. Focused state tests passed: 7 files / 100 tests. Full verify passed: 457 files / 6745 tests. |
+| `content-references.ts` owner-scope boundary | **BLOCKED / FIX-FIRST REQUIRED** | Audit found system-scope writes (`addChannel`, `upsertKnowledge`, `updateChannelStatus`, `removeChannel`, `upsertPatterns`) without explicit admin-gated state-layer entry points. See `engine/docs/security/content-references-scope-audit.md`. |
+| P2-24 six-module isolation pack | **DEFERRED BY STOP RULE** | P3 must wait until `content-references.ts` user-scoped vs system-scoped paths are explicit. |
+| D5/F4 ratchet refresh | **SKIPPED** | Side-task only runs after Batch 19 verdict is CLOSED; this batch is blocked. |
+
+Required next fix-first branch for P2-24:
+
+1. Split or explicitly admin-gate `content-references.ts` system-scope write
+   paths.
+2. Remove implicit `userId = 0` write defaults from app-facing entry points.
+3. Add positive-user guards to user-scoped content-reference paths.
+4. Re-run the six-module isolation pack only after the boundary is explicit.
+
+## Batch 18 Active Fix-First Item (2026-05-06)
+
+| ID | Severity | Status | Description |
+|---|---|---|---|
+| TD-CS-O1 | P0-class | **CLOSED IN SOURCE BRANCH** | `coach-state.ts` userId validation hardened to match the positive-user contract after Batch 16 M2 exposed the fix-first blocker. Closed on `feature/tech-debt-2026-05-o1-coach-state-userid-fix` (`4e7e89df`); focused RED→GREEN proof and full verify evidence are archived in `docs/archive/2026-05/tech-debt-validation/codex-batch-18-coach-state-userid-fix-rationale.md`. |
+
+## Tech-debt Batch 18 — coach-state fix-first + Batch 16 retry (2026-05-06)
+
+Report:
+`docs/archive/2026-05/tech-debt-validation/codex-batch-18-remediation.md`.
+Revalidation:
+`docs/archive/2026-05/tech-debt-validation/codex-batch-18-revalidation.md`.
+
+Verdict: **PARTIAL SOURCE CLOSURE / STOP CONDITION HONORED**. O1 closed the
+`coach-state.ts` invalid-user bug in source. O2 deferred because no J2 stack
+authorization marker exists. O3 stopped before adding the six-module state test
+pack because non-coach modules still accept `userId=0` writes and require their
+own fix-first branch.
+
+Branches:
+
+- `feature/tech-debt-2026-05-o1-coach-state-userid-fix` (`4e7e89df`)
+- `feature/tech-debt-2026-05-o3-state-modules-finish-retry` — **BLOCKED /
+  NO TEST COMMIT**; preflight found additional invalid-user write paths.
+- `feature/tech-debt-2026-05-o4-batch-18-closure` (`8f89821a`) — report-only
+  branch with workspace mirror refresh.
+
+Closure delta:
+
+| Finding | Status | Evidence |
+|---|---|---|
+| TD-CS-O1 `coach-state.ts` invalid-user fix | **CLOSED IN SOURCE BRANCH** | O1 adds positive-user guards to `saveCoachState`, `loadCoachState`, and `deleteCoachState`. Focused RED→GREEN proof: 18 invalid-user assertions failed pre-fix and 19/19 passed post-fix. Full verify passed: 456 files / 6848 tests. |
+| P2-24 remaining state isolation tests | **STILL BLOCKED / FIX-FIRST REQUIRED** | O3 preflight found `fiscal-collection-profiles.ts`, `invoice-filings.ts`, and `invoice-vendors.ts` can still accept `userId=0` writes. The test-only O3 scope stopped instead of adding known-red tests or changing source. |
+| Python pytest finish | **DEFERRED** | `BATCH-18-O2-AUTHORIZED` is absent; J2 exists but is not on `main`; `main` has zero Python pytest files. |
+
+Required next fix-first branch for P2-24:
+
+1. Harden invalid-user guards in fiscal collection profiles, invoice filings,
+   and invoice vendors.
+2. Preserve intentional `content-references.ts` system-scope administration
+   separately from app-facing user-private paths.
+3. Re-run the six-module state isolation pack only after the guards pass.
+
+## Tech-debt Batch 16 — test-infra finish + deploy safety (2026-05-06)
+
+Report:
+`docs/archive/2026-05/tech-debt-validation/codex-batch-16-remediation.md`.
+Revalidation:
+`docs/archive/2026-05/tech-debt-validation/codex-batch-16-revalidation.md`.
+
+Verdict: **PARTIAL SOURCE CLOSURE / STOP CONDITIONS HONORED**. Batch 16
+closed P2-34 and P2-29 in source branches. M1 and M2 did not run because their
+pre-flight checks hit explicit blockers: M1 depends on an unmerged Python
+pytest stack while Batch 16 required branching from `main`, and M2's test-only
+scope would expose a real invalid-user contract bug in `coach-state.ts`.
+
+Branches:
+
+- `feature/tech-debt-2026-05-m3-python-version-drift-detection` (`c47aae56`)
+- `feature/tech-debt-2026-05-m4-deploy-skip-verify-audit` (`add2a2cb`)
+- `feature/tech-debt-2026-05-m5-batch-16-closure` (report-only branch)
+
+Closure delta:
+
+| Finding | Status | Evidence |
+|---|---|---|
+| P2-24 remaining state isolation tests | **STILL BLOCKED / FIX-FIRST REQUIRED** | `src/state/coach-state.ts` does not reject `userId === 0` or invalid/missing user IDs; M2 was tests-only and stopped. |
+| P2-29 `deploy.sh --no-verify` policy | **CLOSED IN SOURCE BRANCH** | M4 adds skip-verify audit rows, a smoke-evidence freshness gate for `auto-when-staged`, `/health/detailed.lastDeploy`, and a deploy safety runbook. Full verify passed: 457 files / 6835 tests. |
+| P2-34 Python ↔ TS version drift | **CLOSED IN SOURCE BRANCH** | M3 adds `content-engine/version.txt`, deploy-time version bake, TS drift classification, and `/health/detailed.contentEngine.versionDrift`. Full verify passed: 456 files / 6835 tests. |
+| Python pytest finish | **BLOCKED** | `main` has 0 pytest files and no `content-engine/tests/conftest.py`; Batch 13 J2 has the 114-case scaffold on a staged branch. |
+
+Next unblock actions:
+
+1. Land or authorize the Python pytest stack through Batch 13 J2, then run the
+   remaining-module finish pass.
+2. Run a fix-first state-scope branch for `coach-state.ts`, then rerun M2's
+   six-module isolation-test pack.
+3. Merge M3 before M4 if possible; both touch `scripts/deploy.sh`, but the
+   conflict is mechanical: keep M3's version-bake step and M4's skip-verify
+   audit/smoke-evidence gate.
+
+## Tech-debt validation pass (2026-05-05)
+
+Validation report:
+`docs/archive/2026-05/tech-debt-validation/codex-tech-debt-pass.md`.
+Validation matrix:
+`docs/archive/2026-05/tech-debt-validation/codex-validation-matrix.md`.
+Batch 2 revalidation:
+`docs/archive/2026-05/tech-debt-validation/codex-batch-2-revalidation.md`.
+Batch 2 remediation:
+`docs/archive/2026-05/tech-debt-validation/codex-batch-2-remediation.md`.
+Batch 3 revalidation:
+`docs/archive/2026-05/tech-debt-validation/codex-batch-3-revalidation.md`.
+
+Verdict: **PHASE B COMPLETE WITH CONDITIONS** - Codex validated all supplied
+P0/P1 findings, validated P2-23 through P2-44 after Claude added
+`docs/archive/2026-05/tech-debt-validation/claude-tech-debt-2026-05-05.md`,
+completed Phase A1-A7, and staged Phase
+B1-B6 on separate `main`-based feature branches. Nothing was pushed or
+deployed. Conditions: branches remain independent/not merged, docs:audit
+remains above the frozen budget on current source, and the B4/B5 signed
+two-account E5 walkthroughs are documented but not executed.
+
+Batch 3 status: **BLOCKED BEFORE REMEDIATION**. Codex revalidated C1-C6 and
+stopped before code changes because C1 found explicit transaction control in
+`engine/migrations/042_unified_fks.sql`, while C5 depends on Batch 2/C4
+centralization not present on `main` under the prompt's "branch from main" rule.
+
+Batch 4 status: **D1-D6 STAGED ON SOURCE BRANCHES / NOT PUSHED / NOT
+DEPLOYED**. Codex reopened the C-batch work with a `042_unified_fks.sql`
+carve-out and staged D1-D6 on separate `main`-based branches. Reports:
+`docs/archive/2026-05/tech-debt-validation/codex-batch-4-revalidation.md`
+and
+`docs/archive/2026-05/tech-debt-validation/codex-batch-4-remediation.md`.
+
+Batch 5 status: **E2/E3/E5/E6 STAGED ON SOURCE BRANCHES / E1 AND E4
+BLOCKED / NOT PUSHED / NOT DEPLOYED**. Report:
+`docs/archive/2026-05/tech-debt-validation/codex-batch-5-remediation.md`.
+E1 remains blocked because B3 model constants and D4 retry extraction are not
+on `main` and no stack-branch authorization exists. E4 remains blocked because
+the D2/D3/D6 validation stack is staged but not authorized as the local-stack
+base for operator evidence.
+
+Batch 5 E1/F1 supersession: Felipe authorized stacked branches on 2026-05-06.
+Codex stacked B3 + D4 on `main` and closed the Anthropic wrapper in source on
+`feature/tech-debt-2026-05-f1-anthropic-wrapper-stack` (`2f02196c`, plus audit
+cleanup `6b2eadf0`). Report:
+`docs/archive/2026-05/tech-debt-validation/codex-batch-9-remediation.md`.
+
+Batch 5 E4/F2 supersession: the same stack authorization allowed a
+validation-only D1/D2/D3/D6 stack. Codex captured local `/health` healthy and
+degraded evidence, restore-test alert/history evidence, and Cloudflare headers
+on `feature/tech-debt-2026-05-f2-d2-d3-d6-validation-stack` (`920a3e1b`
+evidence commit). Public Cloudflare health headers report
+`cf-cache-status: DYNAMIC`, so no repository config change was required.
+
+Batch 6 F4 supersession: stack authorization allowed D5's mock-factory branch
+to be ratcheted without waiting for `main`. Codex staged
+`feature/tech-debt-2026-05-f4-mock-ratchet-stack` (`142398f3`, audit cleanup
+`5488ed8e`), lowering the strict partial-mock baseline from 660 to 655 with
+current count 653. Full verify passed (`6829/6829`) and docs-audit is at
+490 issues / 408 markdown files on the stack.
+
+Batch 6 F3 supersession: stack authorization allowed the E5 observability shim
+cleanup to be staged on top of E5. Codex staged
+`feature/tech-debt-2026-05-f3-shim-removal-stack` (`ad0ce25e`) based on E5
+(`d42a1e6b`), deleting `src/portal/anthropic-hook.ts` and
+`src/portal/telemetry.ts` and updating the remaining runtime imports to
+`src/observability/*`. Full verify passed (`6831/6831`) and docs-audit is at
+492 issues / 410 markdown files on the stack.
+
+Batch 6 E8 docs-mirror supersession: Codex refreshed
+`engine/docs/_workspace-mirror` from the current canonical workspace docs on
+`feature/tech-debt-2026-05-e8-docs-mirror-sync`. The mirror now includes the
+current agent process/open-items/release identity docs and the three runbooks.
+
+## Tech-debt Batch 6 - merge-safety analysis (2026-05-06)
+
+Reports:
+`docs/archive/2026-05/tech-debt-validation/codex-batch-6-revalidation.md`
+and
+`docs/archive/2026-05/tech-debt-validation/codex-batch-6-merge-safety-analysis.md`.
+
+Verdict: **F0 COMPLETE / F1, F2, F3, F4 CLOSED IN SOURCE STACK BRANCHES /
+F5 CLOSED IN SOURCE**. Current
+`main` remains `ed53f84`; none of the Batch 1-5 tech-debt feature branches
+has landed. Batch 6 revalidation found 27 existing
+`feature/tech-debt-2026-05-*` branches before F0, docs-audit baseline
+491 issues / 402 markdown files, and strict mock lint still failing at
+1,039 partial mocks on `main` because D5 is not merged there. Felipe's later
+stack authorization allowed source closure for F1, F2, F3, and F4 on dedicated
+stack branches.
+
+Operator action checklist for Felipe:
+
+1. Merge `feature/tech-debt-2026-05-open-items-cleanup` first.
+2. Merge the Phase A low-risk cluster: audit fix, drop-types-sharp,
+   audit allowlist, delete WhatsApp, auth-failure paths, hash-email,
+   migration-collision gate, and Sentry gate.
+3. Merge `feature/tech-debt-2026-05-model-id-constants` and
+   `feature/tech-debt-2026-05-d4-with-retry` to unblock F1/C5.
+4. Merge D1 -> D2 -> D3 -> D6 to unblock F2 operator validation.
+5. Merge D5, then E5. D5 unlocks F4; E5 should land after B3 so the moved
+   Anthropic hook already contains the model-id changes.
+
+Conditional readiness:
+
+| Batch | Status | Reason |
+|---|---|---|
+| F1 C5/E1 Anthropic wrapper | **CLOSED IN SOURCE STACK BRANCH** | Felipe authorized stacking after F0. `feature/tech-debt-2026-05-f1-anthropic-wrapper-stack` carries B3 (`6284fb3b`), D4 (`5660da9d`), and the wrapper implementation (`2f02196c`). |
+| F2 D2/D3/D6 validation | **CLOSED IN SOURCE STACK BRANCH** | Felipe authorized stacking after F0. `feature/tech-debt-2026-05-f2-d2-d3-d6-validation-stack` carries D1/D2/D3/D6 and captured local health, restore-test, and Cloudflare evidence. |
+| F3 E5 shim removal | **CLOSED IN SOURCE STACK BRANCH** | Felipe authorized stacking after F0. `feature/tech-debt-2026-05-f3-shim-removal-stack` is based on E5 (`d42a1e6b`) and removes the legacy portal observability shims in `ad0ce25e`. |
+| F4 D5 mock ratchet | **CLOSED IN SOURCE STACK BRANCH** | Felipe authorized stacking after F0. `feature/tech-debt-2026-05-f4-mock-ratchet-stack` carries D5 (`13c9cc74`), ratchets strict baseline 660 -> 655, and current partial mocks drop to 653. |
+| F5 Python pytest expansion | **CLOSED IN SOURCE BRANCH** | `feature/tech-debt-2026-05-f5-python-pytest-expansion` (`49cf23a1`) carries the E6 bootstrap forward from `main`, expands content-engine pytest to 53 cases across 10 modules, and leaves Python source semantics untouched. |
+
+### Closure delta
+
+| ID | Severity | Status | Description |
+|---|---|---|---|
+| TD-H1 | P2/P1 | **CLOSED IN SOURCE STACK BRANCH** | `feature/tech-debt-2026-05-f1-anthropic-wrapper-stack` (`2f02196c`, audit cleanup `6b2eadf0`) closes the C5/E1/F1 Anthropic-wrapper item by stacking B3 model constants (`6284fb3b`) and D4 retry helper (`5660da9d`) on `main`. Direct task-style Anthropic callers now go through `src/services/anthropic-task.ts`; structural guard tests block new runtime SDK construction outside approved wrappers. Full verify passed (`6845/6845`), P0 identity passed (`23/23`), and docs-audit is at 491 issues / 408 markdown files. |
+| TD-H2 | P1 ops | **CLOSED IN SOURCE STACK BRANCH** | `feature/tech-debt-2026-05-f2-d2-d3-d6-validation-stack` (`920a3e1b` evidence commit) closes the D2/D3/D6 operator-validation blocker on a validation stack. Local `/health` returned 200 healthy and 503 when content-engine was stopped; `/health/detailed` surfaced `migrationChecksums` and restore-test backup state; manual scheduler-equivalent restore-test failure inserted `restore_test_history` and a critical `operator_alerts` row; `https://api.nexushub.me/health` returned `cf-cache-status: DYNAMIC`. Full verify passed (`6848/6848`), docs-audit passed at 487 issues / 411 markdown files, and no listeners remained on 8100/8200/8201. |
+| TD-H3 | P2 test infra | **CLOSED IN SOURCE STACK BRANCH** | `feature/tech-debt-2026-05-f4-mock-ratchet-stack` (`142398f3`, audit cleanup `5488ed8e`) closes the D5/F4 strict mock-ratchet blocker on a stack. The branch carries D5 (`13c9cc74`), lowers `engine/scripts/.vi-mock-baseline.txt` from 660 to 655, and current partial mocks are 653. Focused tests + P0 identity passed (`262/262`), full verify passed (`6829/6829`), strict lint passed, and docs-audit passed at 490 issues / 408 markdown files. |
+| TD-H4 | P2 architecture | **CLOSED IN SOURCE STACK BRANCH** | `feature/tech-debt-2026-05-f3-shim-removal-stack` (`ad0ce25e`) closes the E5/F3 shim-removal item on a post-E5 stack. The branch deletes `src/portal/anthropic-hook.ts` and `src/portal/telemetry.ts`, updates remaining runtime imports to `src/observability/*`, extends the architecture guard to block shim reintroduction, and passes full verify (`6831/6831`). Merge order: E5 first, then F3 after dependent branches have been rebased or merged. |
+| TD-H5 | P2 docs gate | **CLOSED IN SOURCE BRANCH** | `feature/tech-debt-2026-05-e8-docs-mirror-sync` refreshes `engine/docs/_workspace-mirror` from the current workspace docs so `workspace-docs-mirror.sh --check` has a source branch that passes after the staged docs branches land. |
+| TD-G2 | P3 tests | **CLOSED IN SOURCE BRANCH** | `feature/tech-debt-2026-05-f7-python-pytest-expansion-3` (`e637f219`) continues the unblocked Python pytest expansion, raises content-engine pytest to 91/91 cases across 29 modules, and adds app/router/searcher/config/model coverage without changing Python source semantics. Report: `docs/archive/2026-05/tech-debt-validation/codex-batch-8-remediation.md`. |
+| TD-G1 | P3 tests | **CLOSED IN SOURCE BRANCH** | `feature/tech-debt-2026-05-f6-python-pytest-expansion-2` (`01385b69`) continues the Batch 6 Python pytest expansion, raises content-engine pytest to 71/71 cases across 18 modules, fixes `book_knowledge.py` SerpAPI config lookup (`cfg.serpapi_key`), and keeps Python pytest advisory until Felipe approves the 2026-06-01 blocking flip. Report: `docs/archive/2026-05/tech-debt-validation/codex-batch-7-remediation.md`. |
+| TD-F0 | P1 merge gate | **CLOSED** | `docs/archive/2026-05/tech-debt-validation/codex-batch-6-merge-safety-analysis.md` inventories 27 pre-existing tech-debt feature branches, records the conflict-shape matrix, and gives Felipe the next-five merge checklist inline above. |
+| TD-F1 | P2/P1 | **CLOSED IN SOURCE STACK BRANCH** | Superseded by Felipe's 2026-05-06 stack authorization. `feature/tech-debt-2026-05-f1-anthropic-wrapper-stack` stacks B3 + D4 and closes the Anthropic wrapper in source. Merge order: land B3, land D4, then merge or replay this stack branch. |
+| TD-F2 | P1 ops | **CLOSED IN SOURCE STACK BRANCH** | Superseded by Felipe's 2026-05-06 stack authorization. The F2 validation stack captured healthy/degraded local `/health`, restore-test alert/history, detailed backup health, and Cloudflare dynamic-cache evidence. |
+| TD-F3 | P2 architecture | **CLOSED IN SOURCE STACK BRANCH** | Superseded by Felipe's 2026-05-06 stack authorization. `feature/tech-debt-2026-05-f3-shim-removal-stack` stacks on E5 and removes the one-merge-cycle portal observability shims. |
+| TD-F4 | P2 test infra | **CLOSED IN SOURCE STACK BRANCH** | Superseded by Felipe's 2026-05-06 stack authorization. `feature/tech-debt-2026-05-f4-mock-ratchet-stack` stacks D5 and ratchets the staged baseline from 660 to 655 with current partial mocks at 653. |
+| TD-F5 | P3 tests | **CLOSED IN SOURCE BRANCH** | `feature/tech-debt-2026-05-f5-python-pytest-expansion` (`49cf23a1`) adds Batch 6 Python tests for hook generator, caption writer, thumbnail generator, title tester, repurpose engine, gap finder, and competitor analyzer. Content-engine pytest now passes 53/53 cases across 10 modules; full backend verify passes on the branch. |
+| TD-A1 | P0 | **CLOSED IN SOURCE BRANCH** | `feature/tech-debt-2026-05-audit-fix` (`2139235`) refreshes vulnerable transitive packages. `npm audit --json` reports 0 vulnerabilities on that branch; focused provider/auth tests, full verify, and staging-smoke passed. |
+| TD-A2 | P0/P1 | **CLOSED IN SOURCE BRANCH** | `feature/tech-debt-2026-05-sentry-gate` (`463d5da`) documents `SENTRY_DSN`, adds production deploy warning-only posture, surfaces Sentry status in `/health/detailed`, and pins disabled-with-warning behavior. |
+| TD-A3 | P0 | **CLOSED IN SOURCE BRANCH** | `feature/tech-debt-2026-05-hash-email` (`8145b82`) unifies email hash normalization through `src/utils/identity.ts`. Follow-up: historical audit-log `emailHash` joins may need a one-time backfill note if old drifted hashes matter. |
+| TD-A4 | P1 | **CLOSED IN SOURCE BRANCH** | `feature/tech-debt-2026-05-migration-collision-gate` (`26a583c`) fails startup for non-allowlisted duplicate migration prefixes and adds a CI duplicate-prefix gate while preserving known legacy duplicates. |
+| TD-A5 | P2 | **CLOSED IN SOURCE BRANCH** | `feature/tech-debt-2026-05-audit-allowlist` (`2aff001`) aligns docs:audit with DOCS_INDEX for `engine/docs/agents/claude/handoff.md` without promoting the handoff to a canonical link root. |
+| TD-A6 | P2 | **CLOSED IN SOURCE BRANCH** | `feature/tech-debt-2026-05-delete-whatsapp` (`1ef044e`) deletes the dead WhatsApp adapter, its adapter-only tests, historical task spec, and adapter re-export; active webhook tests remain. Full verify passed (`453` files / `6716` tests). |
+| TD-A7 | P3 | **CLOSED IN SOURCE BRANCH** | `feature/tech-debt-2026-05-drop-types-sharp` (`a4dd949`) removes deprecated `@types/sharp`; TypeScript, invoice-focused tests (`25/25`), and full verify (`455` files / `6829` tests) passed. |
+| TD-B1 | P0 | **CLOSED IN SOURCE BRANCH** | `feature/tech-debt-2026-05-auth-failure-paths` (`7538749`) adds a 12-case auth failure-path safety net. Auth-routes + P0 identity focused run passed (`54/54`); full verify passed (`455` files / `6841` tests). |
+| TD-B2 | P1 | **CLOSED IN SOURCE BRANCH** | `feature/tech-debt-2026-05-coverage-threshold` (`33745b5`) rebaselines Vitest coverage thresholds to statements/lines 69%, branches 72%, functions 78%, adds a coverage baseline doc, and documents the monthly ratchet. Full verify passed (`455` files / `6829` tests). |
+| TD-B3 | P1 | **CLOSED IN SOURCE BRANCH** | `feature/tech-debt-2026-05-model-id-constants` (`3ededc3`) centralizes Anthropic model IDs behind `config.anthropic.*`; literal grep now returns only `src/config.ts`. Full verify passed (`456` files / `6831` tests). |
+| TD-B4 | P1 | **CLOSED IN SOURCE BRANCH** | `feature/tech-debt-2026-05-jwt-helper` (`43fb15d`) centralizes Nexus JWT and Apple identity-token verification in `src/services/auth-tokens.ts`; runtime `jwt.verify` call sites are reduced to the helper. Full verify passed (`456` files / `6837` tests). E5 two-account walkthrough remains manual/operator action. |
+| TD-B5 | P0 | **CLOSED IN SOURCE BRANCHES** | Backend `feature/tech-debt-2026-05-timezone-resolver` (`025319e`) and iOS `feature/tech-debt-2026-05-timezone-resolver` (`1a82150`) replace Lisbon assumptions with saved-user timezone resolution. `users.timezone` exists in `migrations/030_users.sql` and `migrations/051_multi_auth_users.sql`; non-Lisbon users now use their saved timezone in touched flows. Backend full verify passed (`456` files / `6833` tests); iOS focused timezone/currency/parser tests passed (`17/17`). |
+| TD-B6 | P0/P2 | **CLOSED IN SOURCE BRANCH** | iOS `feature/tech-debt-2026-05-ios-scope-unification` (`55bc2e2`) adds `AuthScope` and `ScopedUserDefaults`, preserving the historical scoped-key shape while removing repeated `currentScopeKey` definitions. iOS build passed; focused scope/content/navigation tests passed (`67/67`). |
+| TD-CX-O1 | P2 | **CLOSED IN SOURCE BRANCH** | `feature/tech-debt-2026-05-open-items-cleanup` adds `scripts/filter-existing-vitest-globs.mjs` and wires pre-commit/pre-push focused Vitest runs through it, dropping stale no-match globs before Vitest is invoked. |
+| TD-CX-O2 | P1 | **CLOSED IN SOURCE BRANCH** | `feature/tech-debt-2026-05-open-items-cleanup` repairs stale current-doc references and updates `audit-docs.mjs` so skipped workspace-mirror snapshots no longer inflate the active markdown-file budget. `npm run docs:audit -- --json` now reports 482 issues / 379 audited files, with 15 mirror files disclosed separately as skipped duplicates. |
+| TD-CX-O3 | P2 | **OPEN E5 VALIDATION** | Requires a signed TestFlight build containing B4/B5/B6 before closure. Walkthrough: sign in as Felipe, verify `/auth/me`, read Content/Home/Calendar/Training state, rotate or refresh the session, create/read scoped local Content profile/reference/brief state, set/confirm Felipe timezone; sign out, sign in as nexushubbot, verify `/auth/me`, confirm Felipe state is invisible, create bot-scoped Content state, set/confirm a different timezone, relaunch, switch back to Felipe, and confirm identity, timezone labels, and local cache scopes remain partitioned. Record screenshots/log notes with `engine/scripts/testflight-evidence.sh --apply`. |
+| TD-CX-O4 | P1 | **CLOSED IN SOURCE STACK BRANCH** | D1 resolved the C1 blocker by adding a filename-specific carve-out for self-transactional `042_unified_fks.sql` while wrapping non-legacy migrations in `db.transaction(...)`. The F2 validation stack carries D1 (`fc20ef19`) plus D2/D3/D6 evidence. |
+| TD-CX-O5 | P1 | **CLOSED IN SOURCE STACK BRANCH** | Felipe approved stacked branches on 2026-05-06. `feature/tech-debt-2026-05-f1-anthropic-wrapper-stack` carries the required B3/D4 prerequisites plus the Anthropic wrapper closure. |
+| TD-D1 | P1 | **CLOSED IN SOURCE BRANCH** | `feature/tech-debt-2026-05-d1-migration-safety` (`3a68ccc2`) wraps non-legacy migrations in `db.transaction(...)`, adds `_migrations.checksum`, surfaces checksum drift, and preserves `042_unified_fks.sql` as the only self-transactional carve-out. Full verify and P0 identity passed on branch. |
+| TD-D2 | P1 | **CLOSED IN SOURCE BRANCH** | `feature/tech-debt-2026-05-d2-health-extension` (`a61dc5ec`) adds content-engine/provider readiness to `/health` and `/health/detailed`, with degraded 503 semantics. Follow-up: verify Cloudflare cache rules do not mask 503 responses. |
+| TD-D3 | P1 | **CLOSED IN SOURCE BRANCH** | `feature/tech-debt-2026-05-d3-restore-test-alerts` (`605f0f46`) persists restore-test history and routes failures through operator alerts instead of Telegram-only best effort. |
+| TD-D4 | P1 | **CLOSED IN SOURCE BRANCH** | `feature/tech-debt-2026-05-d4-with-retry` (`47fb7ed6`) centralizes retry behavior in `src/utils/retry.ts` and codemods Telegram, Microsoft Todo, content-engine, OpenAI, and Gemini callers while preserving existing retry semantics. |
+| TD-D5 | P2 | **CLOSED IN SOURCE BRANCH** | `feature/tech-debt-2026-05-d5-mock-factories` (`a83e4517`) adds logger/database/user-service mock factories and strict-ratchets `vi-mock-completeness-lint` from 1,039 partial mocks to a 660 baseline. |
+| TD-D6 | P2 | **CLOSED IN SOURCE BRANCH** | `feature/tech-debt-2026-05-d6-runbook-trio` (`93308a6e`) adds canonical VPS cold-start, Cloudflared tunnel, and secret-rotation runbooks, a sanitized Cloudflare config example, and a dry-run-first OAuth encryption-key rotation script. |
+| TD-D7 | P2 | **CLOSED IN SOURCE STACK BRANCH** | F2 validation captured public `https://api.nexushub.me/health` headers with `cf-cache-status: DYNAMIC`; no stale 200 cache behavior was visible from Cloudflare's public health route. |
+| TD-E1 | P2/P1 | **CLOSED IN SOURCE STACK BRANCH** | Batch 5's E1 blocker was resolved by Felipe's later stack authorization. The stack branch includes B3/D4 prerequisites and the wrapper implementation; no push or deploy has occurred. |
+| TD-E2 | P1 docs | **CLOSED IN SOURCE BRANCH** | `feature/tech-debt-2026-05-e2-claude-md-bootloader` (`d3b7ec7c`) slims `engine/CLAUDE.md` to a bootloader, archives release narrative, and pins the shape with `claude-md-bootloader-shape` tests. E2 branch docs-audit improved to 472 issues / 402 markdown files from the Batch 5 baseline of 493 / 399. |
+| TD-E3 | P1 docs | **CLOSED IN SOURCE BRANCH** | `feature/tech-debt-2026-05-e3-open-items-rotation` (`8bd70cf7`) adds `rotate-open-items.mjs`, weekly housekeeping wiring, tests, and the May archive template. Dry-run moved 0 sections on current source and warned on undated priority sections. |
+| TD-E4 | P1 ops | **CLOSED IN SOURCE STACK BRANCH** | Superseded by the F2 validation stack after Felipe authorized stacking. Evidence is committed under `engine/docs/release/smoke-evidence/2026-05-batch9-f2-*` and summarized in `docs/archive/2026-05/tech-debt-validation/codex-batch-9-remediation.md`. |
+| TD-E5 | P2 architecture | **CLOSED IN SOURCE BRANCH** | `feature/tech-debt-2026-05-e5-observability-extraction` (`d42a1e6b`) moves cost telemetry from `portal/` to `observability/`, keeps one-merge-cycle re-export shims, and adds a structural no-portal-import-from-services test. Merge note: B3 edits inside the moved `anthropic-hook` must be applied to the new observability path; D4 conflicts should be import-path-only; E1 should use the observability path if E5 lands first. |
+| TD-E6 | P3 tests | **CLOSED IN SOURCE BRANCH** | `feature/tech-debt-2026-05-e6-python-pytest-bootstrap` (`48624b2c`, includes `c1aa931b`) adds pytest bootstrap for content-engine creator profile, orchestrator, and script writer. Python pytest passed 17/17; latest Batch 5 full verify passed 455 files / 6829 tests. |
+| TD-E7 | P2 merge gate | **CLOSED IN SOURCE STACK BRANCH** | Batch 5 final strict mock gate is source-closed on the F4 stack after Felipe authorized stacking. `main` still has the old 1,039 partial-mock state until D5/F4 are merged, but the stack branch passes strict lint at baseline 655 with current count 653. |
+| TD-E8 | P2 docs gate | **CLOSED IN SOURCE BRANCH** | `feature/tech-debt-2026-05-e8-docs-mirror-sync` refreshes the engine workspace mirror from current canonical docs, including D6 runbooks and current OPEN_ITEMS/release identity state. |
+
+### Deferred validated tech-debt
+
+- **Phase C/D queue**: P1-09 retry helper, P1-13 cost tables, P1-14 scheduler split, P1-17 formatter centralization, P1-21 restore-test alerting, P1-22 health/content-engine readiness, P2-25/P2-38/P2-39/P2-43/P2-44 infra runbooks, P2-30 provider-bypass wrapper, P2-33 observability module extraction, P2-35 Garmin client ownership, P2-37 docs verdict cleanup, P2-41 Content XCUITest identifier walk, P2-42 mock factories, `@google/generative-ai` -> `@google/genai`, migration-runner transaction wrapping, iOS fastlane/TestFlight automation, self-hosted GitHub runner, and Python content-engine pytest bootstrap.
+- **P2 count corrections**: `src/state` currently has 15 files, not 87; of Claude's ten listed untested state modules, only `coach-state.ts` lacked direct test-name evidence. `PreviewRuntime` hits are 21, `services/* -> portal/*` imports are 29, and partial mocks remain 1,039.
+
+## Content Creation workflow promote (2026-05-05)
+
+Backend source: `main` @ `e3de170`; production deploy bump `583b431` (`4.14.131`).
+iOS source: `main` @ `6d76f53`.
+
+Verdict: **PROMOTED TO BACKEND PRODUCTION / IOS SOURCE PUSHED** — the validated Content Creation workflow branch was merged and pushed to both `main` branches. Backend was staged, smoke-tested, and promoted to production. iOS source is pushed; TestFlight/App Store distribution remains a separate operator release action.
+
+### Closure delta
+
+| ID | Severity | Status | Description |
+|---|---|---|---|
+| CONTENT-CX-O1 | P1 | **CLOSED IN SOURCE + PROD BACKEND** | Content Creation REST/portal contracts for creator profile, radar feedback, lifecycle, references/provenance, and performance aggregates are merged to backend `main` and live in production `4.14.131`. |
+| CONTENT-CX-O2 | P1 | **CLOSED IN IOS SOURCE** | iOS Content Creation workflow surfaces are merged to iOS `main` with focused profile tests passing. Signed TestFlight delivery is separate from source promotion. |
+| CONTENT-CX-O3 | P2 | **OPEN E5 VALIDATION** | Run a signed TestFlight two-account Content Creation walkthrough: create/edit profile, read back profile/voice, accept/reject radar idea, open brief/script, verify no cross-user/tenant leakage, and confirm neutral/no-profile fallback for non-founder accounts. |
+| CONTENT-CX-O4 | P2 | **OPEN PORTAL SMOKE** | Run operator-scoped portal Content smoke with realistic dummy entries after the next portal QA window; do not count shell load only. |
+
+### Evidence
+
+- Backend focused Content/portal tests: **100 files / 783 tests passed**.
+- Backend main pre-push/deploy full suite: **454 files / 6809 tests passed**.
+- Staging smoke before promote: **17/17 passed**.
+- Production health: `nexus-hub` online, `content-engine` online, status portal reported `4.14.131`.
+- iOS Content source: `xcodebuild build-for-testing` passed; `ContentCreatorProfileTests` **27/27 passed**.
+
+## Technical suite mastery Codex validation (2026-05-04 late)
+
+Workspace validation branch: `feature/technical-suite-mastery-codex-validation`.
+iOS validation branch: `feature/technical-suite-mastery-codex-validation`.
+Validation report: `docs/archive/2026-05/technical-suite-mastery-codex-validation/codex-validation.md`.
+
+Verdict: **READY_WITH_CONDITIONS** — the technical mastery pack is usable for agent onboarding after Codex's docs/process corrections. Remaining condition: merge the restored iOS engineering docs to iOS `main` and keep the historical docs-audit cleanup/symlink-resolution workstream open.
+
+### Validation delta
+
+| ID | Severity | Status | Description |
+|---|---|---|---|
+| TECH-CX-O1 | P2 | **FIXED LOCALLY** | Canonical indexes referenced `ios/docs/engineering/*`, but iOS `main` did not contain those docs. Codex restored the iOS engineering standards on the validation branch and cross-linked the technical mastery pack. |
+| TECH-CX-O2 | P2 | **FIXED** | `CURRENT_RELEASE_STATE.md` still described production `4.14.129` after the auth-UX promote to `4.14.130`. Codex refreshed the production/source/deploy/iOS status and mirrored the workspace doc. |
+| TECH-CX-O3 | P3 | **FIXED** | `docs/agent/AGENT_TECHNICAL_MASTERY.md` omitted `engine/src/router/` and `engine/src/sdk/` from the source-tree map. Codex added path-specific rows and test/ownership guidance. |
+| TECH-CX-O4 | P3 | **FIXED** | The mastery pack described docs-audit as a simple frozen-count check. Codex updated it to require per-class drift investigation when totals exceed the baseline policy. |
+| TECH-CX-O5 | P3 | **CLOSED IN SOURCE BRANCH** | Batch 10 reduced docs:audit from 494 issues / 408 audited files on engine `main` to 268 issues / 396 audited files on `feature/tech-debt-2026-05-g5-tech-cx-o5-closure` (-226 total). Residual broken-link noise remains tracked as future cross-repo path-resolution cleanup, but the historical outside-approved/SHA/test-count/verdict noise is now materially below budget. |
+
+## Tech-debt Batch 10 — TECH-CX-O5 docs-audit cleanup (2026-05-06)
+
+Branches:
+
+- `feature/tech-debt-2026-05-g1-archive-sweep` — `08dc585b`
+- `feature/tech-debt-2026-05-g2-auditor-refinements` — `b441fdc0`
+- `feature/tech-debt-2026-05-g3-verdict-backlinks` — `b45d1444`
+- `feature/tech-debt-2026-05-g4-frontmatter-completion` — `3bd7c0b5`
+- `feature/tech-debt-2026-05-g5-tech-cx-o5-closure` — `e4149b02`
+
+docs:audit:
+
+| Metric | Start | End | Delta |
+|---|---:|---:|---:|
+| Total issues | 494 | 268 | -226 |
+| Audited markdown files | 408 | 396 | -12 |
+| markdown-outside-approved-current-or-archive-location | 229 | 128 | -101 |
+| commit-hash-not-found-in-own-repo | 78 | 32 | -46 |
+| test-count-literal-outside-current-report | 75 | 30 | -45 |
+| broken-markdown-reference | 68 | 76 | +8 |
+| duplicate-or-scattered-current-verdict | 35 | 2 | -33 |
+
+Verdict: **CLOSED IN SOURCE BRANCH** because cumulative reduction is 226 issues, above the 175-issue closure threshold. Remaining broken-link noise is mostly cross-repo/iOS path resolution and stays deferred to a dedicated follow-up.
+
+### Evidence
+
+- `npm run docs:audit`: **487 issues / 387 files** (inside frozen baseline budget after iOS docs restoration, validation report, and mirror refresh).
+- `engine/scripts/workspace-docs-mirror.sh --check`: PASS.
+- `npx tsc --noEmit`: PASS.
+- `engine/scripts/cannot-skip-gate-dashboard.sh --json --no-evidence`: PASS, 23 gates / 0 failures.
+
+## Tech-debt Batch 11 — residual non-operator cleanup (2026-05-06)
+
+Branches:
+
+- `feature/tech-debt-2026-05-h1-cross-repo-link-resolver` — `a5a72b31`
+- `feature/tech-debt-2026-05-h2-frontmatter-error-flip` — `6cffb0b4`
+- `feature/tech-debt-2026-05-h3-mock-ratchet-645` — **DEFERRED**; D5/F4 mock baseline is not on `main` and no `BATCH-11-H3-AUTHORIZED` marker exists.
+- `feature/tech-debt-2026-05-h4-python-pytest-expansion` — `96459575`
+- `feature/tech-debt-2026-05-h5-batch-11-closure` — `a7d0d953`
+
+Closure delta:
+
+| Item | Status | Evidence |
+|---|---|---|
+| Dedicated broken-markdown-reference pass | **CLOSED IN SOURCE BRANCH** | docs:audit `broken-markdown-reference` dropped 68 -> 1 on the Batch 11 stack. |
+| G4 follow-up: canonical engine frontmatter promotion | **CLOSED IN SOURCE BRANCH** | `engineering-standard-frontmatter-missing` remains 0; missing frontmatter is now error-severity for canonical `engine/docs/**/*.md`. |
+| D5 mock baseline ratchet 655 -> 645 | **DEFERRED** | main still lacks D5/F4 baseline; strict mock lint reports the historical 1,039 partial mocks. |
+| Python content-engine pytest expansion | **CLOSED IN SOURCE BRANCH** | 50 pytest cases pass across hook, caption, thumbnail, title, repurpose, gap finder, and competitor analyzer modules. |
+
+docs:audit:
+
+| Metric | Start on main | End on Batch 11 stack | Delta |
+|---|---:|---:|---:|
+| Total issues | 494 | 418 | -76 |
+| Audited markdown files | 410 | 417 | +7 |
+| broken-markdown-reference | 68 | 1 | -67 |
+| markdown-outside-approved-current-or-archive-location | 229 | 229 | 0 |
+| commit-hash-not-found-in-own-repo | 78 | 78 | 0 |
+| test-count-literal-outside-current-report | 75 | 75 | 0 |
+| duplicate-or-scattered-current-verdict | 35 | 35 | 0 |
+
+Note: Batch 10's G1-G5 stack already source-closed TECH-CX-O5 at 268 issues.
+Batch 11 intentionally ran from `main`, so it does not include the G1 archive
+sweep/G2 regex/G3 verdict consolidation reductions. Do not raise Batch 10's
+lower baseline from this main-derived stack; merge Batch 10 first, then apply
+Batch 11's `broken-markdown-reference <= 1` result on top.
+
+Evidence:
+
+- `npx vitest run __tests__/scripts/audit-docs-cross-repo-resolver.test.ts`: 4/4 PASS.
+- `npx vitest run __tests__/scripts/canonical-frontmatter-coverage.test.ts __tests__/scripts/audit-docs-frontmatter-error.test.ts`: 5/5 PASS.
+- `cd content-engine && .venv313/bin/python -m pytest tests/ -v`: 50/50 PASS. Literal `python -m pytest` is blocked locally because no `python` shim exists; `python3` lacks pytest outside the content-engine venv.
+- `npx vitest run __tests__/security/p0-chat-identity-isolation.test.ts`: 23/23 PASS.
+- `npm run verify`: PASS on H2, 458 files / 6,838 tests.
+
+## Batch 12 — merge-readiness analysis (2026-05-06)
+
+Reports:
+
+- Revalidation:
+  `docs/archive/2026-05/tech-debt-validation/codex-batch-12-revalidation.md`
+- Merge-readiness analysis:
+  `docs/archive/2026-05/tech-debt-validation/codex-batch-12-merge-readiness-analysis.md`
+
+Verdict: **I1 COMPLETE / I2 GATE UNMET AT START**. Engine `main` remains
+`ed53f84a`; docs:audit baseline is 494 issues / 412 audited markdown files;
+strict mock lint on `main` still reports 1,039 partial mocks because D5/F4 are
+not on `main`.
+
+D5/F4 unblock options:
+
+| Option | Action | Impact |
+|---|---|---|
+| A | Land D5, then F4, on `main`. | Cleanest path; future mock ratchets branch from `main`. |
+| B | Add `BATCH-12-I2-AUTHORIZED: base=feature/tech-debt-2026-05-f4-mock-ratchet-stack`. | Lets Codex ratchet 655 -> 640 on the stack; `main` still fails strict lint until D5/F4 land. |
+| C | Queue mock work until after the landing wave. | Lowest immediate risk; no partial-mock progress until merge cadence catches up. |
+
+Operator action checklist:
+
+1. Pick D5/F4 unblock option A, B, or C.
+2. If A: merge/cherry-pick D5 (`a83e4517`, carrying D5 `13c9cc74`), then F4
+   (`5488ed8e`, carrying ratchet `142398f3` and cleanup).
+3. If B: add the `BATCH-12-I2-AUTHORIZED` marker above.
+4. Merge B3 (`model-id-constants`) and D4 (`with-retry`) before replaying F1/C5.
+5. Merge Batch 10 before Batch 11 docs branches so the lower docs-audit
+   baseline remains the ceiling.
+
+## Tech-debt Batch 12 — D5/F4 merge gate + independent work (2026-05-06)
+
+Branches:
+
+- `feature/tech-debt-2026-05-i1-merge-readiness-analysis` — `c1e71788`
+- `feature/tech-debt-2026-05-i2-mock-ratchet-640` — **DEFERRED**; D5/F4 are not on `main` and no `BATCH-12-I2-AUTHORIZED` marker exists.
+- `feature/tech-debt-2026-05-i3-python-pytest-expansion-2` — `12e1fd03` standalone, integrated into I5 as `04f7b218` + `5411fce6`
+- `feature/tech-debt-2026-05-i4-workspace-ios-frontmatter-error` — engine `7633d259`, iOS `d660792`
+- `feature/tech-debt-2026-05-i5-batch-12-closure` — final closure stack
+
+Report: `docs/archive/2026-05/tech-debt-validation/codex-batch-12-remediation.md`
+
+Closure delta:
+
+| Item | Status | Evidence |
+|---|---|---|
+| D5/F4 merge-readiness decision tree | **CLOSED IN SOURCE BRANCH** | I1 produced `docs/archive/2026-05/tech-debt-validation/codex-batch-12-merge-readiness-analysis.md` and inlined the 3-option D5/F4 unblock proposal above. |
+| Mock baseline ratchet 655 -> 640 | **DEFERRED** | `main` still lacks D5/F4; strict mock lint remains the historical 1,039 partial mocks. Use option A or B from the I1 proposal to unblock. |
+| Python content-engine pytest expansion | **CLOSED IN SOURCE BRANCH** | I3 adds pytest bootstrap plus 82/82 passing tests across core, creative, and intelligence content-engine modules without changing Python source semantics. |
+| Workspace + iOS canonical frontmatter enforcement | **CLOSED IN SOURCE BRANCH** | I4 extends `engineering-standard-frontmatter-missing` to workspace and iOS canonical docs at error severity; docs:audit reports 0 frontmatter errors. |
+
+docs:audit:
+
+| Metric | Start on main | End on I5 stack | Delta |
+|---|---:|---:|---:|
+| Total issues | 494 | 485 | -9 |
+| Audited markdown files | 412 | 420 | +8 |
+| engineering-standard-frontmatter-missing | 0 | 0 | 0 |
+| markdown-outside-approved-current-or-archive-location | 229 | 229 | 0 |
+| broken-markdown-reference | 68 | 68 | 0 |
+
+Evidence:
+
+- `npm run verify`: PASS on I5, 456 files / 6,830 tests.
+- `cd content-engine && .venv313/bin/python -m pytest tests/ -q`: 82/82 PASS.
+- `npx vitest run __tests__/security/p0-chat-identity-isolation.test.ts`: 23/23 PASS on I1, I3, and I4.
+- `bash scripts/workspace-docs-mirror.sh --check`: PASS.
+- iOS frontmatter doc change is staged on iOS branch `feature/tech-debt-2026-05-i4-workspace-ios-frontmatter-error` (`d660792`). Existing iOS code edits in `CalendarRepository.swift` / `DashboardViewModel.swift` remain untouched.
+
+## Tech-debt Batch 13 — mock ratchet + pytest expansion + cross-repo replay (2026-05-06)
+
+Report: `docs/archive/2026-05/tech-debt-validation/codex-batch-13-remediation.md`
+
+Branches:
+
+- `feature/tech-debt-2026-05-j1-mock-ratchet-640` — source-stack branch from authorized F4 base; commit `e4884c2b`.
+- `feature/tech-debt-2026-05-j2-python-pytest-expansion-3` — main-rooted Python pytest expansion; commit `04fd36e3` on top of replayed I3 scaffold.
+- `feature/tech-debt-2026-05-j3-cross-repo-resolver-on-main` — main-rooted H1 resolver replay; commits `8fa5919f`, `96c0fb2b`, `1681205c`.
+- `feature/tech-debt-2026-05-j4-batch-13-closure` — combined J2+J3 closure stack for final verification/reporting.
+
+Closure delta:
+
+| Item | Status | Evidence |
+|---|---|---|
+| I2 / TD-H3 mock baseline ratchet 655 -> 640 | **CLOSED IN SOURCE STACK BRANCH** | J1 ran under the standing authorization on `feature/tech-debt-2026-05-f4-mock-ratchet-stack`; strict lint passed at 637 partial mocks with baseline 640; full verify passed 455 files / 6,829 tests; P0 identity passed 23/23. |
+| Python content-engine pytest expansion | **PROGRESSING** | J2/J4 expand content-engine pytest to 114 passing cases and disable `.pytest_cache` generation so docs:audit does not count generated pytest markdown. Python source semantics unchanged. |
+| Cross-repo broken-md-ref replay onto main-rooted base | **CLOSED IN SOURCE BRANCH** | J3 replays the H1 resolver onto a fresh `main` branch; docs:audit broken-markdown-reference drops from 68 at Batch 13 start to 1 on J3/J4; resolver regression test passes 4/4. |
+
+docs:audit:
+
+| Metric | Start on main | End on J4 stack | Delta |
+|---|---:|---:|---:|
+| Total issues | 498 | 418 | -80 |
+| Audited markdown files | 415 | 421 | +6 |
+| broken-markdown-reference | 68 | 1 | -67 |
+| markdown-outside-approved-current-or-archive-location | 229 | 229 | 0 |
+
+Evidence:
+
+- J1: `node scripts/vi-mock-completeness-lint.mjs --strict` PASS at baseline 640; `npm run verify` PASS (455 files / 6,829 tests).
+- J2/J4: `cd content-engine && .venv313/bin/python -m pytest tests/ -q` PASS (114/114).
+- J3/J4: `npx vitest run __tests__/scripts/audit-docs-cross-repo-resolver.test.ts` PASS (4/4); `bash scripts/workspace-docs-mirror.sh --check` PASS.
+- P0 identity: `npx vitest run __tests__/security/p0-chat-identity-isolation.test.ts` PASS (23/23) on J1, J2, and J3/J4.
+
+## Tech-debt Batch 14 — quick-win mechanical sweep + state-module isolation (2026-05-06)
+
+Report: `docs/archive/2026-05/tech-debt-validation/codex-batch-14-remediation.md`
+
+Branches:
+
+- `feature/tech-debt-2026-05-k1-cost-per-mtk-consolidation` — engine source branch, commit `e448e437`.
+- `feature/tech-debt-2026-05-k2-ios-date-formatters` — iOS source branch, commit `4bc6fe6`.
+- `feature/tech-debt-2026-05-k3-named-scoring-weights` — engine source branch, commit `2850d47d`.
+- K4 state-module isolation tests — **BLOCKED before branch** by a `saved_ideas` scoped-mutation bug.
+
+Closure delta:
+
+| Item | Status | Evidence |
+|---|---|---|
+| P1-13 `COST_PER_MTK` duplication | **CLOSED IN SOURCE BRANCH** | K1 centralizes Anthropic/OpenAI pricing in `engine/src/services/provider-pricing.ts`; full backend verify passed 456 files / 6,835 tests; P0 identity passed 23/23. |
+| P1-17 iOS formatter proliferation | **CLOSED IN SOURCE BRANCH WITH BROAD-SUITE RISK** | K2 adds `Date+Formatters.swift`, `DateFormattersTests`, and the formatter cookbook. iOS build passed; focused formatter XCTest passed 5/5; constructor grep is reduced to helper implementation only. Broad iOS suite still fails 7 non-formatter tests and needs separate cleanup. |
+| P2-32 inline scoring weights | **CLOSED IN SOURCE BRANCH** | K3 names notification/content scoring constants, adds a scoring-weights rationale doc, and passes focused tests plus full backend verify. |
+| P2-24 state isolation tests | **BLOCKED / P0 FIX-FIRST REQUIRED** | Source inspection found `markIdeaPromoted(id)`, `markIdeaUsed(id)`, and `deleteIdea(id)` mutate `saved_ideas` by raw `id` only. K4 was test-only by prompt, so Codex stopped instead of adding failing tests or changing production code in the test slice. |
+| P1-14 scheduler decomposition | **CLOSED IN SOURCE STACK BRANCH** | Batch 15 L0-L3 decomposed `engine/src/services/scheduler.ts` into a registry bootloader plus per-domain job modules. `scheduler.ts` is now 150 LOC with 0 inline `cron.schedule(...)` calls; inventory invariant pins 34 registry jobs / 33 telemetry jobs. Full backend verify passed 463 files / 6,845 tests. |
+
+Required next fix-first branch for P2-24:
+
+1. Change `engine/src/state/saved-ideas.ts` mutation helpers to require `userId` and mutate with `WHERE id = ? AND user_id = ?`.
+2. Update `engine/src/services/content-workflow.ts` to pass the authenticated `userId` into `markIdeaPromoted`.
+3. Add the K4 state isolation tests for `notes`, `reminders`, `saved-ideas`, and `todos` after the scoped mutation fix is in place.
+
+Evidence:
+
+- K1: `npx tsc --noEmit` PASS; focused provider-pricing/usage-metering/P0 identity tests PASS 55/55; full `npm run verify` PASS 456 files / 6,835 tests.
+- K2: iOS `xcodebuild build` PASS; focused `DateFormattersTests` PASS 5/5; P0 identity PASS 23/23; broad `xcodebuild test` FAILS 1,247 passed / 12 skipped / 7 failed in unrelated contract/UI tests.
+- K3: `npx tsc --noEmit` PASS; focused scoring/P0 identity tests PASS 29/29; docs:audit PASS 498 issues / 419 audited; full `npm run verify` PASS 456 files / 6,835 tests.
+- Post-report docs:audit: 499 issues / 420 audited, within Batch 14's start-baseline +2 allowance but not a completion signal because K4 is blocked.
+
+## Tech-debt Batch 15 — scheduler.ts decomposition (2026-05-06)
+
+Report: `docs/archive/2026-05/tech-debt-validation/codex-batch-15-remediation.md`
+
+Branch stack and merge order:
+
+1. `feature/tech-debt-2026-05-l0-scheduler-inventory` — source branch commit `597849e2`; stack replay commit `2282f099`.
+2. `feature/tech-debt-2026-05-l1-scheduler-wave-1` — `59320777`.
+3. `feature/tech-debt-2026-05-l2-scheduler-wave-2` — `31569528`.
+4. `feature/tech-debt-2026-05-l3-scheduler-wave-3-final` — `d8523505`.
+5. `feature/tech-debt-2026-05-l4-batch-15-closure` — documentation closure on top of L3.
+
+Closure delta:
+
+| Item | Status | Evidence |
+|---|---|---|
+| P1-14 `scheduler.ts startScheduler` decomposition | **CLOSED IN SOURCE STACK BRANCH** | L0 captured 34 scheduled jobs / 33 telemetry jobs; L1-L3 moved all jobs through `scheduler-registry`; L3 reduced `engine/src/services/scheduler.ts` from ~1,407 LOC on L2 / 1,711 LOC in the original finding to 150 LOC. |
+
+Evidence:
+
+- `npx tsc --noEmit` PASS.
+- Focused scheduler + P0 identity: PASS 49/49.
+- Full backend `npm run verify`: PASS 463 files / 6,845 tests.
+- `node scripts/audit-docs.mjs --json`: 486 issues / 426 audited after workspace mirror refresh, below Batch 15 L0 baseline (499 issues / 419 audited).
+- Inventory invariant: registry contains all 34 baseline jobs, 33 telemetry-registered jobs, and `dst_watchdog` remains intentionally raw.
+
+Residual scheduler policy:
+
+- Add new cron jobs only through `engine/src/services/scheduler/jobs/<domain>.ts`.
+- Preserve `registerJob` + `wrapJob` telemetry through `engine/src/services/scheduler-registry.ts` unless a job is explicitly raw like `dst_watchdog`.
+- Felipe merge order must keep the stack order above, or merge L0-L4 together.
+
+## Engineering excellence Codex validation refresh (2026-05-04 late)
+
+Codex validation branch: `feature/engineering-excellence-codex-validation-20260504`.
+Validation report: `docs/archive/2026-05/engineering-excellence-codex-validation-20260504/engineering-excellence-codex-validation.md`.
+
+Verdict: **PASS WITH CONDITIONS** — standards/classifier layer verified; Codex fixed documentation drift in current release state and security standards. No runtime P0/P1 issue found in this engineering-standards pass.
+
+### Validation delta
+
+| ID | Severity | Status | Description |
+|---|---|---|---|
+| ENG-EXC-CX-O7 | P2 | **FIXED** | `CURRENT_RELEASE_STATE.md` still described 4.14.127 after the 4.14.129 production/staging align. Codex refreshed release scope/status and mirrored the workspace doc into engine. |
+| ENG-EXC-CX-O8 | P2 | **FIXED** | `engine/docs/engineering/security-and-data-isolation-standard.md` still called AUTH-O4/O6/O7/O8/O10/O12 open after OPEN_ITEMS closed them. Codex updated the canonical standard to describe the current permanent controls. |
+| ENG-EXC-CX-O9 | P3 | **FIXED** | Agent-process issue-ledger example reused live AUTH-O1/AUTH-O2 IDs and looked like stale state. Codex made the sample IDs generic and clarified generated identity vs manual rollout summary rules. |
+
+### Evidence
+
+- `npm run docs:audit`: **487 issues / 384 files** (within frozen baseline budget; +1 archive report).
+- `engine/scripts/workspace-docs-mirror.sh --check`: PASS.
+- `npx tsc --noEmit`: PASS.
+- `__tests__/scripts/changed-area-classifier.test.ts`: PASS.
+- `engine/scripts/cannot-skip-gate-dashboard.sh --json --no-evidence`: PASS.
+- Representative routed suites for logger/secrets, scheduler, notifications, health integrations, rate limits, audit/admin scope, config/deploy health, prompt cleanliness, and P0 chat identity: PASS.
+
+## Backlog drain pass — frontmatter hygiene + archive sweep + mobility catalog (2026-05-04 night, post-merge)
+
+Engine branch: `feature/engineering-excellence-architecture-standards` @ `9a64df4` (NOT pushed).
+iOS branch: `feature/engineering-excellence-architecture-standards` @ `ced1cb4` (NOT pushed).
+Codex validation branch: `feature/closed-beta-backlog-drain-codex-validation` (required before opening the engine PR).
+Backup tags preserved on both repos.
+
+Verdict: **EXTENDED — frontmatter + archive sweep confirmed; mobility catalog required Codex fix before opening the engine PR.**
+
+### What I shipped (commits `61f974a` + `626067b` + `612cf52` + `ced1cb4`)
+
+**P3 frontmatter hygiene — CLOSED (`61f974a` + `ced1cb4`):**
+- Added `Status: / Owner: / Last verified: / Update policy:` frontmatter to 22 high-value canonical docs (workspace AGENTS/CLAUDE/DOCS_INDEX/OPERATING_CONTEXT, engine 9 root docs, engine 7 release docs, engine QA report, iOS QA report).
+- Codex's `audit-docs.mjs` engineering-frontmatter check already enforces the shape on `engineering/` paths; this extension unifies the shape across all canonical surfaces.
+- `audit-docs.mjs` baseline went from 486 → 485 issues / 382 files (1 BELOW the frozen baseline of 486).
+
+**P3 archive sweep — CLOSED (`626067b`):**
+- Moved `engine/docs/release/archive/2026-04/training/training-release-fixes.md` into the release archive for consistency with the 8 already-archived release-candidate-* and production-release-final-status docs.
+- Net effect: `markdown-outside-approved-current-or-archive-location` 227 → 226; `duplicate-or-scattered-current-verdict` 36 → 35.
+
+**P2 training mobility-variant catalog — CLOSED (`612cf52`):**
+- Added `cat_cow` and `childs_pose` to `engine/src/services/coach-kernel/knowledge/entities/exercises.json`. Catalog now has 12 mobility-pattern exercises.
+- New module `engine/src/services/coach-kernel/mobility-recovery-builder.ts` (247 LOC) with two-pass selection (greedy-novel-buckets, then fill) producing 4-5 distinct exercises spanning ≥3 distinct `warmupNeeds`. Estimator-aware: per-rep math mirrors `session-coherence.ts` exactly. Falls back to null when catalog can't span 3 buckets — caller uses empty-block + shrink (existing behavior).
+- Wired into `engine/src/services/coach-kernel/poor-recovery-variation.ts` mobility-variant branch.
+- Effect: poor-recovery-day mobility sessions now claim AND deliver 18-25 min (was: empty-block shrunk to ~13 min).
+- 16 new pin tests in `__tests__/services/coach-kernel-mobility-recovery-builder.test.ts`.
+
+**Codex validation delta — EXTENDED (2026-05-04 night):**
+- **MOBILITY-CX-O1 (P2) — FIXED on `feature/closed-beta-backlog-drain-codex-validation`:** `adaptSessionForPoorRecovery()` built the catalog mobility list, but `guardrails.ts` discarded strength mobility exercises before the full plan surfaced. A realistic low-readiness strength-athlete plan still produced `exerciseCount:0`, `duration:18`, `estimated:13` at `9a64df4`.
+- Codex fix preserves `adaptation.session.exercises` for strength mobility variants and aligns `durationMinutes` to the estimator-derived mobility flow, clamped to the 18-25 minute band. End-to-end probe now produces two mobility sessions with `exerciseCount:4`, `duration:22`, `estimated:22`, all catalog-backed.
+- Added regression coverage: builder test count is now **17/17** (adds the 4-candidates/1-bucket fallback pin), and poor-recovery planner-path tests fail against `9a64df4` without the source fix.
+- **FRONTMATTER-CX-O1 (P3) — FIXED by mirror refresh:** initial Codex run found `workspace-docs-mirror.sh --check` failing on stale `release-identity.{json,md}` mirror files. Mirror is refreshed in the Codex validation branch after this validation report.
+- Validation report: `docs/archive/2026-05/closed-beta-backlog-drain-codex-validation/codex-validation.md`.
+
+### Verification
+
+- `npx tsc --noEmit`: clean.
+- `__tests__/services/coach-kernel-mobility-recovery-builder.test.ts`: **17/17 PASS** after Codex extension (constants lock-step, candidate filter, one-bucket fallback, builder bounds, integration with `estimateStrengthSessionMinutes`).
+- Touch-risk regression: poor-recovery-variation 8/8 PASS, session-coherence 27/27 PASS, plan-linter 23/23 PASS, training-plan-persistence 14/14 PASS.
+- Pre-commit hook (classifier-driven, mobility commit triggered focused training sweep): **893/893 PASS** across 69 files.
+- `npm run docs:audit`: initial Codex rerun 488 / 382 due 2 stale mirror warnings; final post-refresh count **486 / 383**, inside the frozen-baseline budget of 486 ± 5.
+- Workspace mirror: initial Codex check found stale release identity mirror; fixed by Codex validation branch refresh (`workspace-docs-mirror.sh --check` exits 0).
+
+### Closure summary (cumulative across all 2026-05-04 sessions)
+
+| ID | Severity | Status |
+|---|---|---|
+| AUTH-O2 | P0 | **CLOSED** |
+| AUTH-O4..O12 | P1 | **CLOSED** (8 items, single batch + Codex hardening) |
+| AUTH-CX-O3 | P3 | **CLOSED** (`2688b23` docs softening) |
+| TR-EC-O10 / TR-EC-IOS-O3 | P1 | **CLOSED on physical iPhone E3** |
+| TR-EC-O11/O12 | P1 | SHIPPED in main 4.14.128 |
+| TR-EC-O13 | P1 | DECIDED + telemetry |
+| TR-EC-IOS-O1/O2 | P1 | PRE-EXISTING / DECIDED |
+| ENG-EXC-O6/O7/O9/O10 | P2/P3 | CLOSED |
+| ENG-EXC-CX-O5/O6 | P2 | CLOSED |
+| TR-EC-CX-O1 | P2 | REFUTED + closed (clean-simulator rerun) |
+| **P3 frontmatter hygiene** | **P3** | **CLOSED** (this pass) |
+| **P3 archive sweep** | **P3** | **CLOSED** (this pass) |
+| **P2 training mobility-variant catalog** | **P2** | **EXTENDED / FIXED ON CODEX VALIDATION BRANCH** |
+| MOBILITY-CX-O1 | P2 | **FIXED** (Codex validation branch; merge before opening engine PR) |
+| FRONTMATTER-CX-O1 | P3 | **FIXED** (mirror refresh) |
+
+### What still requires operator action
+
+1. **Merge `feature/closed-beta-backlog-drain-codex-validation` into `feature/engineering-excellence-architecture-standards`, then open the engine PR.** Opening directly from `9a64df4` would ship the full-plan mobility discard bug.
+2. **Open the iOS PR** from `feature/engineering-excellence-architecture-standards` (3 commits since main).
+3. **Open-beta gate (E5)**: signed TestFlight walk-through with the new AUTH flows when ready. Closed-beta is fully satisfied by the E3 evidence in `engine/docs/release/testflight-evidence/`.
+
+---
+
+## Closed-beta auth + training + engineering closeout — Physical iPhone E3 closure (2026-05-04 late night)
+
+Original branch: `feature/engineering-excellence-architecture-standards` @ `73b5c6a` (Claude initial closeout).
+Codex validation branch: `feature/closed-beta-auth-training-engineering-codex-validation` @ `751480d`
+(5 commits on top of `73b5c6a`: `972bf58` + `9f4d828` + `4dbbd90` + `69fded6` + `751480d`).
+Backup tag: `backup/engineering-excellence-before-hardening-20260504-1057`.
+
+Verdict: **READY_TO_OPEN_PR** — every P0/P1 is CLOSED including physical-iPhone E3. Codex's two extensions validated; simulator-`Busy` blocker REFUTED; physical iPhone Felipe (now connected, was `unavailable`) ran both Training UI suites green.
+
+### Physical iPhone E3 evidence (NEW)
+
+iPhone Felipe (`00008150-000C0D5101D8401C`, iPhone 17 Pro Max, iOS 26.5):
+
+- `TrainingFixtureBypassUITests`: **11/11 PASS** on physical device (≈300s total). All 11 cases including the 198s tab-stress (10× round-trip switches under rich-fixture state) green.
+- `TrainingValidationUITests`: **3 PASS + 1 SKIP** on physical device (≈26s). Skipped case requires fixture-bypass env exclusive to the sister suite — by design.
+
+Evidence files:
+- `engine/docs/release/testflight-evidence/testflight-751480d-training-fixture-bypass-A-through-I-2026-05-04T13-45-01Z.json`
+- `engine/docs/release/testflight-evidence/testflight-751480d-training-validation-welcome-to-auth-transition-2026-05-04T13-45-01Z.json`
+
+Build: clean after `xattr -cr build/DerivedData/Build/Products/Debug-iphoneos`.
+Auto-clone behavior: absent on physical devices (runner = `iPhone Felipe - Nexus HubUITests-Runner`, no XPC `Busy` noise).
+
+### Claude's review of Codex validation delta
+
+| Item | Codex claim | Claude review | Final status |
+|---|---|---|---|
+| AUTH-O2 | EXTENDED/fixed (devToken gated by `PASSWORD_RESET_DEV_TOKEN=1` + non-prod + non-staging; 150ms response-timing floor; fire-and-forget email send) | Diff at `972bf58` reviewed: `passwordResetDevTokenAllowed()` requires THREE conditions (fail-closed); `waitForPasswordResetRequestFloor()` equalizes timing; new test `expect(known.body).toEqual(res.body)` is exactly the right anti-enumeration assertion. **VALIDATED.** | **CLOSED via Codex `972bf58`** |
+| AUTH-O4 | EXTENDED/fixed (`backfillLegacyRefreshTokenHashes()` startup hook hashes legacy plaintext rows + clears plaintext + preserves row count via UPDATE-not-DELETE) | Diff at `972bf58` reviewed: transaction-wrapped UPDATE is atomic; PRAGMA precheck makes it safe on un-migrated schemas; database.ts startup invocation is wrapped in try/catch with operator-actionable warning. New auth-routes test pins row-count preservation, plaintext-cleared, hash-matches-sha256 simultaneously. **VALIDATED.** | **CLOSED via Codex `972bf58`** |
+| AUTH-O6/O7/O8/O9/O10/O11/O12 | CONFIRMED | Re-ran 14/14 + 13/13 + 52/52 + 23/23 dashboard. All green. | **CLOSED in Claude `627e0e4`** |
+| TR-EC-O10 / TR-EC-IOS-O3 | Codex blocked twice on `TrainingValidationUITests` simulator `Busy`, accepted only `TrainingFixtureBypassUITests` 11/11 PASS | Claude re-ran with `xcrun simctl shutdown all` + boot exactly one simulator. **`TrainingValidationUITests`: 3 PASS + 1 SKIP (the skipped case requires fixture-bypass env handled by the OTHER suite); `TrainingFixtureBypassUITests`: 11/11 PASS.** Codex `Busy` was transient noise during the auto-clone setup, not an actual blocker — the test cases ran and passed regardless. **TR-EC-CX-O1 REFUTED.** | **CLOSED on simulator** (physical iPhone E5 still requires unlock) |
+| ENG-EXC-CX-O6 | Workspace-mirror default workspace root incorrectly resolved to `Custom Connectors/Cortex` parent — Codex fixed | Diff at `972bf58` reviewed: defaults to `/Users/felipedominguez/Desktop/Nexus Hub` if present, falls through to engine parent only as last resort, honors `NEXUS_WORKSPACE_ROOT`. `--check` exits 0. **VALIDATED.** | **CLOSED via Codex `972bf58`** |
+| AUTH-CX-O3 | NEW P3: attempt_count cap is documented as primary brute-force control but isn't reached for unknown tokens | Re-read service: with 256-bit token entropy, brute-force is infeasible by entropy alone — the cap is genuinely belt-and-suspenders against pathological clients hitting a known token row. **FIXED LATER:** `src/services/password-reset.ts` now presents the cap as defense-in-depth and names 256-bit token entropy as the primary control. | **CLOSED** (`2688b23` docs softening) |
+
+### Claude's re-run evidence (Codex branch HEAD `69fded6`)
+
+- `npx tsc --noEmit`: clean.
+- `__tests__/api/auth-password-reset.test.ts`: **14/14 PASS** (6.37s).
+- `__tests__/api/auth-routes.test.ts`: **13/13 PASS** (5.57s).
+- `__tests__/services/account-lockout.test.ts` + `__tests__/scripts/changed-area-classifier.test.ts` + `__tests__/services/audit-trail.test.ts` + `__tests__/services/coach-kernel-plan-linter.test.ts`: **52/52 PASS** (11.17s).
+- `engine/scripts/cannot-skip-gate-dashboard.sh --quiet`: **exit 0** (23/23 gates wired).
+- `engine/scripts/workspace-docs-mirror.sh --check`: **in sync** (exit 0).
+- `npm run docs:audit`: **486 issues / 382 files** (matches Codex baseline; +1 file vs Claude's 381 because of the new validation report).
+- iOS simulator UDID `A0B13967-B5DE-4E6F-897D-F1E409093F94` (single-booted after `simctl shutdown all`):
+  - `TrainingFixtureBypassUITests`: **11/11 PASS**.
+  - `TrainingValidationUITests`: **3 PASS + 1 SKIP** (the `strengthStepperAccepts5Sessions` case skips because it depends on fixture-bypass env exclusive to the sister suite). Codex's `Busy` blocker was transient launch noise; tests ran and passed in the same run.
+- Physical iPhone Felipe: still `unavailable` via `devicectl` (needs unlock + Trust This Computer + Developer Mode toggle on the device).
+
+### Decision: merge path
+
+The Codex validation branch (`feature/closed-beta-auth-training-engineering-codex-validation`) MUST be merged into the standards branch before the engine PR opens. Without Codex's two extensions, AUTH-O2 has a misconfig footgun (raw token leak under Resend outage in production) and AUTH-O4 leaves legacy plaintext refresh tokens in `ios_devices.refresh_token` after migration 110.
+
+Recommended merge: a single `--no-ff` merge of the Codex branch into `feature/engineering-excellence-architecture-standards` to preserve the two-agent validation lane in `git log --graph`.
+
+### Final closure summary (after Codex merge)
+
+| ID | Severity | Status |
+|---|---|---|
+| AUTH-O2 | P0 | **CLOSED** (Codex `972bf58` extends Claude `627e0e4`) |
+| AUTH-O4 | P1 | **CLOSED** (Codex backfill closes the migration gap) |
+| AUTH-O6/O7/O8/O9/O10/O11/O12 | P1 | **CLOSED** (Claude `627e0e4`) |
+| TR-EC-O10 / TR-EC-IOS-O3 | P1 | **CLOSED on physical iPhone Felipe E3** (11/11 fixture-bypass + 3/3 validation, evidence under `engine/docs/release/testflight-evidence/`) |
+| TR-EC-O11/O12 | P1 | **SHIPPED** in main 4.14.128 |
+| TR-EC-O13 | P1 | **DECIDED + telemetry** (Claude `1aa5955`) |
+| TR-EC-IOS-O1/O2 | P1 | **PRE-EXISTING / DECIDED** |
+| ENG-EXC-O6/O7/O9/O10 | P2/P3 | **CLOSED** (Claude `1aa5955`) |
+| ENG-EXC-CX-O5 | P2 | **CLOSED** (Claude docs-audit baseline policy) |
+| ENG-EXC-CX-O6 | P2 | **CLOSED** (Codex mirror root detection fix) |
+| AUTH-CX-O3 | P3 | **CLOSED** (`2688b23` docs softening; `src/services/password-reset.ts` now documents the cap as defense-in-depth) |
+| TR-EC-CX-O1 | P2 | **REFUTED** by Claude clean-simulator rerun (3/3+1 skip; 11/11 sister suite). Closed. |
+
+### What remains operator-action
+
+1. **Open the engine PR** from `feature/engineering-excellence-architecture-standards` AFTER merging the Codex validation branch in.
+2. AUTH-CX-O3 is now closed in source: `src/services/password-reset.ts` presents the 5-attempt cap as defense-in-depth and 256-bit token entropy as the primary brute-force control.
+3. Run signed TestFlight E5 walk-through with the new AUTH flows (login, password reset, account-switch, two-account "Who am I?") — required for OPEN-beta gate; closed-beta is satisfied by the physical-device E3 above.
+
+---
+
+## Closed-beta auth + training + engineering closeout pass (2026-05-04 evening)
+
+Branch: `feature/engineering-excellence-architecture-standards` @ `1aa5955` (NOT pushed).
+Backup tag: `backup/engineering-excellence-before-hardening-20260504-1057`.
+
+Verdict: **READY_WITH_CONDITIONS** — every P0/P1 item from the prior list is FIXED locally; only physical-iPhone E5 walk-throughs and operator deploy decisions remain.
+
+### What I shipped (commits `627e0e4` + `1aa5955`)
+
+**P0:**
+- **AUTH-O2** password reset flow — `POST /auth/password-reset/{request,confirm}`, opaque hashed token (SHA-256 at rest), 1h TTL, 5-attempt cap, single-use, account-existence-enumeration-resistant generic 200 envelope, all-session revocation on success. Migration 109. 14 new tests.
+
+**P1 (auth):**
+- **AUTH-O4** refresh tokens hashed at rest + `previous_refresh_token_hash` for theft detection. Migration 110. `/auth/refresh` revokes ALL device sessions on previous-hash replay.
+- **AUTH-O6** `auth.user_created` + `auth.provider_linked` audit rows on every Apple/Google/email/invite creation path.
+- **AUTH-O7** per-account lockout (10 attempts / 15min sliding window / 15min lockout). New `failed_login_attempts` table + `account-lockout.ts`. 8 pin tests.
+- **AUTH-O8** Apple `@privaterelay.appleid.com` defensive check on `/auth/register/apple`.
+- **AUTH-O9** `/auth/me` extended with `email`, `emailVerified`, `tier`, `authProvider` (additive).
+- **AUTH-O10** portal `/api/*` rate limit mounted (excluding iOS `/api/v1/*`).
+- **AUTH-O11** `PORTAL_BETA_HARDENED=true` now refuses to boot when `PORTAL_ADMIN_TOKEN` is empty.
+- **AUTH-O12** portal `enforcePortalToken` emits `portal.auth` audit rows on every branch.
+
+**P1 (training, already in main at 4.14.128):**
+- **TR-EC-O11** scheduler-floor fix.
+- **TR-EC-O12** plan-linter session date persistence fix.
+- **TR-EC-O13** advisor-mode kept; new `plan_linter.blocker_present` event for operator dashboarding.
+
+**P1 (iOS training):**
+- **TR-EC-IOS-O1** `training-goal-mode-picker` already in `Nexus Hub/Views/Training/TrainingView.swift:1066`.
+- **TR-EC-IOS-O2** decision: modality-specific profile inputs stay in onboarding.
+- **TR-EC-O10 + TR-EC-IOS-O3** Workflows A–I: 11/11 `TrainingFixtureBypassUITests` PASS on iPhone 17 Pro simulator. Physical iPhone Felipe blocked by `devicectl unavailable` (needs unlock + Trust + Developer Mode).
+
+**P2/P3 (engineering excellence):**
+- **ENG-EXC-O6** TestFlight evidence pattern → `engine/scripts/testflight-evidence.sh`.
+- **ENG-EXC-O7 + ENG-EXC-CX-O5** `docs/release/docs-audit-baseline-policy.md` codifying frozen-baseline classes.
+- **ENG-EXC-O9** outbound markdown link lint over engineering paths.
+- **ENG-EXC-O10** "must" rule deprecation workflow.
+
+### Closure summary
+
+| ID | Severity | Status |
+|---|---|---|
+| AUTH-O2 | P0 | **FIXED locally** (`627e0e4`) |
+| AUTH-O4..O12 | P1 | **FIXED locally** (`627e0e4`, 8 items, single batch) |
+| TR-EC-O10 | P1 | **PARTIAL** (simulator green; physical iPhone blocked on unlock) |
+| TR-EC-O11/O12 | P1 | **MERGED in main 4.14.128** |
+| TR-EC-O13 | P1 | **DECIDED + telemetry** (`1aa5955`) |
+| TR-EC-IOS-O1 | P1 | **PRE-EXISTING in iOS main** |
+| TR-EC-IOS-O2 | P1 | **DECIDED** (kept in onboarding) |
+| TR-EC-IOS-O3 | P1 | **PARTIAL** — see TR-EC-O10 |
+| ENG-EXC-O6/O7/O9/O10/CX-O5 | P2/P3 | **FIXED locally** (`1aa5955`) |
+
+### Verification
+
+- `npx tsc --noEmit` clean.
+- **202/202 tests PASS** across 19 files (classifier 15/15, auth-routes 13/13, auth-password-reset 14/14, account-lockout 8/8, audit-trail 6/6, plan-linter 23/23, training-plan-persistence 14/14, etc.).
+- Pre-commit hooks ran clean (88/88 first commit, 877/877 second).
+- Cannot-skip dashboard: 23/23 gates PASS.
+- Workspace mirror: in sync.
+- `npm run docs:audit`: 486 issues / 381 files (matches frozen baseline).
+- iOS simulator: 11/11 TrainingFixtureBypassUITests + 3/3 TrainingValidationUITests PASS.
+
+### Codex validation delta (2026-05-04)
+
+Codex validation branch: `engine/feature/closed-beta-auth-training-engineering-codex-validation`.
+Report: `docs/archive/2026-05/closed-beta-auth-training-engineering-codex-validation/codex-validation.md`.
+
+| ID | Codex status | Delta |
+|---|---|---|
+| AUTH-O2 | **EXTENDED / fixed on Codex branch** | Password reset existed, but raw `devToken` could still be returned when email was misconfigured unless explicitly gated. Codex added `PASSWORD_RESET_DEV_TOKEN=1` + non-production + non-staging gating, generic response timing floor, and fire-and-forget email delivery to reduce account-existence timing signal. |
+| AUTH-O4 | **EXTENDED / fixed on Codex branch** | Refresh-token runtime path used hashes, but migration 110 preserved legacy plaintext `ios_devices.refresh_token` rows. Codex added startup backfill to hash legacy plaintext rows, clear plaintext, and preserve row count. |
+| TR-EC-O10 / TR-EC-IOS-O3 | **PARTIAL confirmed** | Codex re-ran `TrainingFixtureBypassUITests`: 11/11 PASS on simulator UDID `A0B13967-B5DE-4E6F-897D-F1E409093F94`. `TrainingValidationUITests` did **not** reproduce the claimed 3/3 PASS; two attempts were blocked by simulator runner preflight `Busy`. Requires rerun before counting as closed. |
+| ENG-EXC-CX-O6 | **FIXED on Codex branch** | `workspace-docs-mirror.sh --check` defaulted to the real engine parent (`Custom Connectors/Cortex`) instead of official workspace when engine is symlinked. Codex fixed root detection; mirror check now exits 0 after refresh. |
+| AUTH-CX-O3 | **CLOSED LATER** | Password-reset attempt-cap wording overstates the reachable behavior. `attempt_count` is enforced when pre-set, but normal invalid-token attempts do not increment any row. `src/services/password-reset.ts` now documents the cap as defense-in-depth and the 256-bit token entropy as the primary brute-force control. |
+
+Codex validation results:
+- `npx tsc --noEmit`: PASS.
+- `__tests__/api/auth-password-reset.test.ts`: 14/14 PASS.
+- `__tests__/api/auth-routes.test.ts`: 13/13 PASS.
+- `__tests__/services/account-lockout.test.ts` + classifier + audit-trail + plan-linter: 52/52 PASS.
+- Password-reset + auth-routes + training-plan-persistence: 41/41 PASS.
+- Broad classifier-expanded security/training/auth/portal sweep: 134 files / 1440 tests PASS.
+- Cannot-skip dashboard: 23/23 PASS.
+- Workspace mirror check: PASS after refresh.
+- `npm run docs:audit`: 486 issues / 382 files (the +1 file is the Codex validation report under `docs/archive/`).
+- Revert-before-fix invariant for `627e0e4`: expected failure after reverting code while restoring tests (21/22 failed), confirming the tests pin the auth-hardening behavior.
+
+### What still requires operator action
+
+1. Open the engine PR (7 commits since main: `eacebb3` + merge `799af5d` + `ca4eed1` + `dcb27cf` + `d11e4e1` + `627e0e4` + `1aa5955`).
+2. Unlock iPhone Felipe + Trust + Developer Mode → re-run physical-device tests + record via `scripts/testflight-evidence.sh --apply` for TR-EC-O10 final E3 closure.
+3. Decide deploy plan: AUTH P0+P1 batch (single migration sequence 109+110); training telemetry is a no-op behavior change; engineering docs/scripts are docs-only.
+4. Signed TestFlight E5 walk-through with the AUTH changes (login, password reset, account-switch, two-account "Who am I?" test).
+
+---
+
+## Engineering excellence enrichment pass (2026-05-04)
+
+Branches:
+- engine: `feature/engineering-excellence-architecture-standards` @ `ca4eed1` (three commits, NOT pushed).
+  - `eacebb3` Claude initial standards + 5 classifier flags + 6 classifier tests.
+  - merge `799af5d` ← Codex `61d381e` (frontmatter check + 4 classifier flags + 4 classifier tests).
+  - `ca4eed1` ENG-EXC-O3 + ENG-EXC-O8 closure (mirror + dashboard + prompt-only fix + 2 classifier tests).
+- ios: `feature/engineering-excellence-architecture-standards` @ `f07e80c` (one commit, NOT pushed).
+- Backup tags (both repos): `backup/engineering-excellence-before-hardening-20260504-1057`.
+
+Verdict: **PASS WITH CONDITIONS** → CONDITIONS NARROWED. ENG-EXC-O1, O2, O3, O4, O5, O8 are now FIXED locally on `feature/engineering-excellence-architecture-standards`. ENG-EXC-O6, O7, O9, O10 remain open at P2/P3.
+
+Canonical report: `docs/archive/2026-05/engineering-excellence-architecture-standards/engineering-excellence-enrichment-report.md`.
+Codex independent validation: `docs/archive/2026-05/engineering-excellence-codex-validation/engineering-excellence-codex-validation.md`.
+
+### What I shipped (Claude initial — `eacebb3`)
+
+- 8 canonical engineering standards: 5 backend (API contract, security/isolation, runtime/observability, testing/QA, engineering index) under `engine/docs/engineering/`; 2 iOS (architecture/SwiftUI performance, frontend validation checklist) under `ios/docs/engineering/`; 1 workspace agent-process standard at `docs/agent/AGENT_PROCESS_STANDARD.md`.
+- 3 engineering standards indexes (workspace + engine + iOS).
+- 1 new iOS DOCS_INDEX (`ios/docs/DOCS_INDEX.md`).
+- 5 new release-classifier flags (`HAS_LOGGER`, `HAS_SCHEDULER`, `HAS_NOTIFICATION`, `HAS_HEALTH_INTEGRATION`, `HAS_RATE_LIMIT`) + 5 cannot-skip safety gates + 5 vitest glob mappings.
+- 6 new classifier test cases.
+- `scripts/audit-docs.mjs` extended to register the new `engineering/` canonical paths and `docs/agent/AGENT_PROCESS_STANDARD.md`.
+- Workspace + engine + iOS DOCS_INDEX updated.
+
+### What Codex shipped (merge `799af5d` ← `61d381e`)
+
+- `scripts/audit-docs.mjs`: `engineering-standard-frontmatter-missing` validation for workspace/backend/iOS engineering standards + agent process standard.
+- `scripts/changed-area-classifier.sh`: 4 new flags + cannot-skip gates + XCTest/Vitest mappings — `HAS_AUDIT`, `HAS_DEPLOY_CONFIG`, `HAS_IOS_NAVIGATION`, `HAS_IOS_DTO`. `HAS_DEPLOY_CONFIG` also bumps Tier-4 staging-smoke and generic 17-check.
+- `__tests__/scripts/changed-area-classifier.test.ts`: 4 affirmative tests + extended no-false-positives sentinel.
+
+### What Claude shipped (continuation — `ca4eed1`, ENG-EXC-O3 + O8)
+
+- **ENG-EXC-O8 (workspace docs durability) — CLOSED**:
+  - `scripts/workspace-docs-mirror.sh`: one-way mirror from workspace `docs/`, `CLAUDE.md`, `AGENTS.md`, `README.md` into `engine/docs/_workspace-mirror/`. Modes: snapshot (default), `--check` (drift exit 1), `--dry-run`.
+  - 15 workspace docs are now mirrored (CLAUDE/AGENTS/README + docs/agent + docs/engineering + docs/release; docs/archive intentionally NOT mirrored).
+  - `audit-docs.mjs` gains `workspace-mirror-stale` + `workspace-mirror-missing` warnings; mirror itself is registered as approved-current AND skipped from per-file lints (avoids duplicate warnings on the same content).
+  - Workspace `engine/docs/engineering/ENGINEERING_STANDARDS_INDEX.md` documents the mirror contract.
+  - Wired into `release-pipeline-housekeeping.sh` step 3 (dry-run checks drift, `--apply` refreshes).
+  - `.gitignore` excludes `docs/release/cannot-skip-gate-evidence/` (generated).
+
+- **ENG-EXC-O3 (cannot-skip gate dashboard) — CLOSED**:
+  - `scripts/cannot-skip-gate-dashboard.sh`: synthetically invokes the classifier with a representative file per gate, asserts every gate name appears in `cannotSkip` AND every expected test route appears in `vitest`/`xctest` output. 23 gates total. Emits markdown to stdout + JSON evidence file under `docs/release/cannot-skip-gate-evidence/`.
+  - **Found and fixed a real classifier gap during dashboard development**: prompts-only diffs (`HAS_PROMPT=true`, `HAS_NON_DOC=false`) named `prompt-injection-defense` as cannot-skip BUT emitted ZERO vitest globs because the entire vitest block was inside the `HAS_NON_DOC` branch. Fix: when `HAS_PROMPT` fires and `VITEST_MODE` would otherwise be `skip`, force focused mode and add the security suite + prompt-cleanliness globs.
+  - 2 new classifier tests pinning the prompt-only fix and the dashboard wiring.
+  - Wired into `release-pipeline-housekeeping.sh` step 4 (runs `--quiet`; sets `OVERALL_RC=1` on any wiring failure).
+
+### Verification (final state @ `ca4eed1`)
+
+- `engine`: `npx tsc --noEmit` clean.
+- Pre-commit hook (classifier-driven): typecheck + 15/15 classifier tests pass.
+- `__tests__/scripts/changed-area-classifier.test.ts`: **15/15 PASS** (was 9 → 13 after Codex → 15 after ENG-EXC-O3 fix).
+- Audit-focused tests (Codex 27/27 reference): **27/27 PASS** across 4 files (`audit-trail`, `authenticated-support-routes-scope`, `portal-admin-audit`, `portal-admin-data-routes`).
+- Config/runtime/health tests (Codex 51/51 reference): **51/51 PASS** across 4 files (`config-runtime-validation`, `config-provider`, `health-endpoint-qa-validation`, `health-endpoints`).
+- `npm run docs:audit`: **486 issues / 380 files** (matches Codex baseline; zero new engineering-frontmatter warnings; zero workspace-mirror-stale warnings after mirror is in sync).
+- `cannot-skip-gate-dashboard.sh`: **23/23 gates PASS**, verdict PASS, JSON evidence written.
+- `release-pipeline-housekeeping.sh`: dry-run completes clean across all 5 steps including the new mirror + dashboard steps.
+- `ios`: docs-only iOS branch; no iOS source code changed in this continuation pass.
+- Cleanup: no simulators booted, no orphan vitest/xcodebuild/xctrace processes, no listeners on dev ports.
+
+### Open engineering-excellence items
+
+| ID | Severity | Status | Description |
+|---|---|---|---|
+| ENG-EXC-O1 | P1 | **FIXED, MERGED** (`799af5d`). | Per-iOS-area classifier sub-flags (`HAS_IOS_NAVIGATION`, `HAS_IOS_DTO`) — Codex closure merged. |
+| ENG-EXC-O2 | P1 | **FIXED, MERGED** (`799af5d`). | Engineering-standard frontmatter check in `audit-docs.mjs` — Codex closure merged. |
+| ENG-EXC-O3 | P1 | **FIXED** (`ca4eed1`). | Cannot-skip gate dashboard exists at `engine/scripts/cannot-skip-gate-dashboard.sh`; emits JSON evidence to `engine/docs/release/cannot-skip-gate-evidence/`; runs from weekly housekeeping; classifier test pins 23/23 PASS. Found+fixed a real prompts-only classifier gap during dashboard build. |
+| ENG-EXC-O4 | P2 | **FIXED, MERGED** (`799af5d`). | `HAS_AUDIT` + `audit-trail-emission-and-scope` cannot-skip gate — Codex closure merged. |
+| ENG-EXC-O5 | P2 | **FIXED, MERGED** (`799af5d`). | `HAS_DEPLOY_CONFIG` + `deploy-config-health-rehearsal` cannot-skip gate + Tier-4 staging-smoke uplift — Codex closure merged. |
+| ENG-EXC-O6 | P2 | **FIXED LATER** (`1aa5955`, 2026-05-04 evening). | TestFlight evidence pattern at `engine/scripts/testflight-evidence.sh` — see Closed-beta evening pass for closure. |
+| ENG-EXC-O7 | P2 | **FIXED LATER** (`1aa5955`, 2026-05-04 evening). | docs:audit baseline policy at `engine/docs/release/docs-audit-baseline-policy.md`. |
+| ENG-EXC-O8 | P1 | **FIXED** (`ca4eed1`). | Workspace docs durability via `engine/docs/_workspace-mirror/` (one-way snapshot) + `audit-docs.mjs` drift detection + housekeeping wiring. 15 workspace docs mirrored. |
+| ENG-EXC-O9 | P3 | **FIXED LATER** (`1aa5955`, 2026-05-04 evening). | Outbound markdown link lint enabled by extending `audit-docs.mjs` `isCurrentLike()` to engineering paths. |
+| ENG-EXC-O10 | P3 | **FIXED LATER** (`1aa5955`, 2026-05-04 evening). | Standard deprecation workflow added to workspace `engine/docs/engineering/ENGINEERING_STANDARDS_INDEX.md`. |
+
+### Codex validation findings (CX-O*)
+
+| ID | Severity | Status | Description |
+|---|---|---|---|
+| ENG-EXC-CX-O1 | P1 | **FIXED** (`ca4eed1`). | Workspace docs are now mirrored into engine via `engine/scripts/workspace-docs-mirror.sh`; durability concern resolved. |
+| ENG-EXC-CX-O2 | P1 | **FIXED, MERGED** (`799af5d`). | iOS navigation/DTO classifier sub-flags. |
+| ENG-EXC-CX-O3 | P1 | **FIXED, MERGED** (`799af5d`). | Audit + deploy-config classifier flags. |
+| ENG-EXC-CX-O4 | P2 | **FIXED, MERGED** (`799af5d`). | Engineering-standard frontmatter check. |
+| ENG-EXC-CX-O5 | P2 | **FIXED LATER** (`1aa5955`, 2026-05-04 evening). | docs:audit baseline policy doc codifies frozen-baseline classes (227 outside-approved + 78 commit-hash + 73 test-count) vs actionable classes (broken-link + duplicate-verdict). Total budget: 486 ± 5. |
+
+### Recommended next operator action
+
+1. Open the engine PR from `feature/engineering-excellence-architecture-standards` (3 commits: `eacebb3` + merge `799af5d` + `ca4eed1`) and the iOS PR from `feature/engineering-excellence-architecture-standards` (1 commit: `f07e80c`). CI strict-scanner gate already passes locally for the engine branch.
+2. Close ENG-EXC-O6 (TestFlight evidence pattern) as a small follow-up slice when the next iOS device-validation pass runs.
+3. Close ENG-EXC-O7 and ENG-EXC-CX-O5 together as a "docs-audit historical cleanup" project (P2/P3 hygiene).
+4. Continue with AUTH-O2 (password reset) per the security/isolation standard §2.
+
+---
+
+## Auth + registration closed-beta hardening pass (2026-05-04)
+
+Rollout state:
+- engine: merged to `main`, pushed, and promoted to production as `4.14.127` (`bc6e963` deploy bump; source fix `00a1d23`).
+- ios: merged to `main` and pushed at `50d2fa7` with auth hardening plus navigation/Home responsiveness fixes.
+
+Verdict: **READY_WITH_CONDITIONS** for closed-beta cohort sign-up via Apple, Google, and email/password.
+
+Canonical report: `docs/archive/2026-05/auth-registration-hardening/auth-readiness-report.md`.
+Codex independent validation: `docs/archive/2026-05/auth-registration-hardening/auth-codex-validation.md`.
+
+Method: 5 parallel Claude Opus 4.7 max-effort specialist subagents (backend auth, OAuth Apple+Google, iOS auth, portal auth, tenant + identity-link) + targeted reads + safe surgical fixes. Audit-only constraint honored: no push, no deploy, no production data, no force-push, no rebase, no amend, no CI jobs removed.
+
+Codex second-pass delta (2026-05-04):
+- engine branch: `feature/auth-registration-codex-validation` was merged/pushed to `main`; production promote completed at `4.14.127`.
+- ios branch: `feature/auth-registration-codex-validation` was merged/pushed to `main`.
+- Verdict remains **READY_WITH_CONDITIONS**. Codex closed Apple nonce replay, Telegram OAuth numeric-state callbacks, Google unverified-email account creation, email verification brute-force cap, release-classifier auth routing, and iOS navigation/Home responsiveness regressions. Live full portal login/session interaction remains blocked/unverified.
+
+### What I shipped (engine)
+
+- **P0** Replaced deprecated Google `tokeninfo` debug endpoint with `OAuth2Client.verifyIdToken` from `google-auth-library` (local JWKS cache + signature + iss + aud + exp).
+- **P0** Drop `validAuds.length > 0 &&` precondition — fail-closed when neither Google client id is configured rather than accept any audience.
+- **P0** Google `email_verified` link gate — refuse to merge Google `sub` into existing email-matched user unless BOTH `payload.emailVerified === true` AND `existing.email_verified === 1`. Throws typed `GoogleAccountLinkRequiresVerificationError` → 409 `ACCOUNT_LINK_REQUIRES_VERIFICATION`.
+- **P0** Apple JWKS force-refresh on `kid` miss (debounced 60s) — Apple key rotation no longer 401s for up to 24h.
+- **P0** Apple `maxAge: '5m'` + `clockTolerance: 30` on `jwt.verify` — narrows replay window from 10 min to 5 min.
+- **P0** Register/email enumeration collapsed to generic `REGISTRATION_REJECTED 400` (was `EMAIL_EXISTS 409` — confirm-by-status enumeration vector).
+- **P0** Strict per-user `config_pillars` read in `services/content-intelligence.ts` — dropped `IN (0, ?)` platform-seed leak vector.
+- **P0** `getSavedIdeas` and `getWorkflowEligibleIdeas` now require explicit `userId` (was optional → returned every user's ideas when omitted).
+- **P1** Login audit log on `/auth/login/email` for success / failure (user-not-found / invalid-password) / suspended.
+
+### What I shipped (iOS)
+
+- **P1** Keychain saves with `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly` + `kSecAttrSynchronizable: false`. Sync-aware delete clears any pre-fix iCloud-Keychain-synced entry.
+- **P1** `AuthManager.logout()` now fires fire-and-forget `POST /auth/logout` server-side (5s timeout) BEFORE clearing local Keychain — revokes the `ios_devices` row + refresh token instead of leaving them alive until natural expiry.
+- **P1** `submitEmail()` / `submitInviteCode()` re-entrancy guards — `guard !isLoading else { return }` first line. Prevents keyboard-Return + tap race.
+- **P1** Login error parity — collapsed all login-mode catch errors to `"Invalid email or password"` so backend codes don't leak account existence; registration mode keeps specific copy.
+
+### Verification
+
+- `engine`: `npx tsc --noEmit` clean. **500/500 tests PASS** across 56 files (auth-routes 9, auth-middleware-device-revocation 9, auth-session-revocation 4, content-intelligence-detail 3, content-intelligence 6, content-* 47, security/* 28, scope/* 3, prompt-cleanliness 72, user-service 46, portal-oauth-routes 8, plus broader content + auth integration suites).
+- `ios`: `xcodebuild build` on iPhone 17 Pro Max simulator (UDID `4E6C6A6C-8334-4C27-8206-DCF55020BC22`, iOS 26.4) → **BUILD SUCCEEDED**. **23/23 focused tests PASS** across 5 suites (KeychainHelperTests 5, AuthManagerFixtureLeakTests 3, AuthManagerPersistenceTests 4, AuthUserPresentationTests 8, GoogleAuthCallbackResolverTests 3).
+- Cleanup: simulators shut down; no orphan vitest/node processes; PM2 daemon left running (user's pre-existing service, not started by this pass).
+
+Codex verification delta:
+- `engine`: `npx tsc --noEmit` clean; focused auth/OAuth tests **32/32 PASS**; broader auth/security/content/portal tests **187/187 PASS**; release-classifier tests **3/3 PASS**; `scripts/closed-beta-identity-scan.sh` **0 flags**.
+- `ios`: `xcodebuild build-for-testing` passed on iPhone 17 Pro simulator `A0B13967-B5DE-4E6F-897D-F1E409093F94`; focused auth/keychain tests **25/25 PASS**. Auth-surface XCUITests were retried twice and blocked before runner launch by simulator preflight `Busy`. Physical `iPhone Felipe` was listed offline by `xcrun xctrace list devices`.
+
+### Closed by Codex validation delta
+
+| ID | Severity | Description |
+|---|---|---|
+| AUTH-O1 | P0 | **FIXED and deployed.** Apple Sign In now uses iOS rawNonce → SHA-256 `request.nonce`; backend validates `payload.nonce`, stores consumed nonce hashes in `apple_sign_in_nonces`, and rejects replay/mismatch. |
+| AUTH-O3 | P0 | **FIXED and deployed.** Telegram-flow OAuth state now uses `tg:<userId>:<nonce>` backed by the existing nonce store. Legacy numeric state and provider-mismatched nonce callbacks are rejected before token exchange/storage. |
+| AUTH-O5 | P1 | **FIXED and deployed.** Email verification codes now have `attempt_count` with a 5-attempt cap; wrong guesses lock the active code until a new one is requested. |
+| AUTH-O22 | P3 | **FIXED and deployed.** 6-digit email verification codes now use `crypto.randomInt(100000, 1000000)`. |
+| AUTH-PROC-O1 | P1 | **FIXED and deployed.** Release classifier now maps backend auth/OAuth and iOS Auth/Keychain files to `tenant-auth-security`, focused auth/OAuth Vitest globs, and auth-focused XCTest classes. |
+
+### Open auth items (must close BEFORE broad cohort sign-up)
+
+| ID | Severity | Description |
+|---|---|---|
+| AUTH-O2 | P0 | Password reset flow does not exist. No `password_reset_tokens` table, no `/auth/password-reset/{request,confirm}` routes. Locked-out users have no path. Recommended: opaque hashed token, 1h TTL, single-use, session-revoke on success. |
+
+### Open auth items (close-during-closed-beta)
+
+| ID | Severity | Description |
+|---|---|---|
+| AUTH-O4 | P1 | Refresh tokens stored plaintext in `ios_devices.refresh_token`. Hash at rest + `previous_refresh_token_hash` for theft detection on rotation. |
+| AUTH-O6 | P1 | Audit row for `auth.user_created` and `auth.provider_linked` not emitted. Add to `createAppleUser` / `createGoogleUser` / `createEmailUser` and the Google-link branch. |
+| AUTH-O7 | P1 | No per-account lockout — only IP-bucket rate limit. Distributed credential-stuffing across many IPs is unbounded per-account. Add `failed_login_attempts` + 10-attempt 15-min lockout. |
+| AUTH-O8 | P1 | Apple-side defensive check for `@privaterelay.appleid.com` — refuse cross-provider linking when email ends with private-relay suffix. |
+| AUTH-O9 | P1 | `/auth/me` returns no `email`, `emailVerified`, or `tier`. iOS cannot drive UI without separate fetches. |
+| AUTH-O10 | P1 | Portal login rate limit absent on `/api/*`. Mount `rateLimitMiddleware` (or a tighter portal-specific 20 req/min/IP). |
+| AUTH-O11 | P1 | Legacy `PORTAL_TOKEN` still admin-capable in production when `PORTAL_ALLOW_LEGACY_FALLBACK=true`. Ship `PORTAL_BETA_HARDENED=true` + `PORTAL_ADMIN_TOKEN` non-empty in prod env file; refuse to boot otherwise. |
+| AUTH-O12 | P1 | Portal login attempts (success + failure) not in `audit_trail`. Add `logAudit` in both branches of `enforcePortalToken`. |
+
+### Open auth items (post-beta polish)
+
+| ID | Severity | Description |
+|---|---|---|
+| AUTH-O13 | P2 | Password strength is only `length >= 8`. Add zxcvbn min-score-3 OR top-1000 common-password screening. |
+| AUTH-O14 | P2 | In-process rate limiter buckets — wipe on restart, multi-PM2 = N×quota. Move to Redis-backed when scaling. |
+| AUTH-O15 | P2 | 7-day access-token TTL — long-lived but revocable. Acceptable for closed beta; revisit before open beta. |
+| AUTH-O16 | P2 | No biometric gate option (Face ID / Touch ID). Add opt-in toggle as beta+1. |
+| AUTH-O17 | P2 | No "view active sessions" UI. Add `Settings → Account → Active sessions` with `GET /auth/sessions` + per-row revoke. |
+| AUTH-O18 | P2 | `email_verified` flow exists but doesn't gate any route. Decide whether to gate sensitive routes (billing/deletion/password-change). |
+| AUTH-O19 | P2 | `auth_identities (provider, provider_subject UNIQUE)` migration. Schema-level enabler for safe linking + audit history. |
+| AUTH-O20 | P2 | `tenant_memberships` table. Schema-level enabler for future multi-tenant. Populate today as `(user_id, user_id, 'owner')`. |
+| AUTH-O21 | P2 | `deviceId` fallback churns on `identifierForVendor=nil`. Cache once in Keychain, reuse. |
+
+### Open auth items (hygiene / process)
+
+| ID | Severity | Description |
+|---|---|---|
+| AUTH-O23 | P3 | Replace dynamic `require(...)` in `src/api/routes/auth.ts:479,581` with top-level import. |
+| AUTH-O24 | P3 | Add `vitest`-time SQL-shape lint that walks `db.prepare('...')` callsites and rejects scoped-table reads missing `user_id`. |
+
+### Recommended next operator action
+
+1. Close AUTH-O2 password reset before broad cohort sign-up, or explicitly accept an invite-only operator-support process for closed beta.
+2. Close AUTH-O4/O6/O7/O10/O12 during closed beta: refresh-token hash-at-rest, provider audit rows, per-account lockout, portal auth rate limit, and portal auth audit.
+3. Re-run full portal login/session walkthrough when portal credentials are available.
+4. Full reports: Claude `docs/archive/2026-05/auth-registration-hardening/auth-readiness-report.md`; Codex `docs/archive/2026-05/auth-registration-hardening/auth-codex-validation.md`.
+
+---
+
+## Training expert-coach Codex deliverable — hostile QA closeout (2026-05-04 night)
+
+Branches:
+- engine: `feature/training-expert-coach-codex-validation` @ Codex tip + Claude QA fixes (next push)
+- iOS: `feature/ios-training-expert-coach-claude-qa` (committed `1917439` swimming + requiresReview pins) + new goal-mode echo + ledger fixes (next push)
+
+Verdict: **READY_FOR_LOCAL_QA** — every issue from the latest hostile QA ledger is FIXED, VERIFIED NON-ISSUE, or BLOCKED with reason. 877/877 backend tests pass; 51 unit tests + 11/11 TrainingFixtureBypassUITests pass on iPhone Felipe (physical device); 1140+/1140+ unit tests pass on simulator.
+
+### Issue ledger closure
+
+| Item | Status | Evidence |
+|---|---|---|
+| TR-EC-QA-O1 (P1) maintenance volume throttling | **FIXED** | `engine/src/services/training-coach-kernel-plan-generator.ts` `applyGoalModeVolumeShaping`: maintenance scales 60%, capped 4 total; return_to_training scales 50%, capped 3 total. Strength preserved at min 1 when originally requested. Emits `maintenance_volume_capped` / `return_to_training_volume_capped` `TrainingDecisionReason`. 15 pin tests in `__tests__/services/training-coach-kernel-goal-mode-shaping.test.ts`. |
+| TR-EC-QA-O2 (P1) continuous + event-based-without-raceDate signals | **FIXED** | Same module `collectGoalModeDecisionReasons`: emits `continuous_plan_no_taper` (info severity) when goalMode=continuous; emits `event_based_missing_race_date` (warning severity) when goalMode=event_based and raceCalendar empty. Pinned by the same 15-test suite. |
+| TR-EC-QA-O3 (P2) hybrid-engine priorityOrder safety | **FIXED** | `engine/src/services/coach-kernel/engines/hybrid-engine.ts` new `firstModalityPriority(priorityOrder)` skips `'maintenance' \| 'return'` lifecycle tokens before reading the leading modality. Endurance priority is now correctly detected for maintenance + running and return + cycling combos. 5 pin tests in `__tests__/services/coach-kernel-hybrid-engine-priority-safety.test.ts`. |
+| iOS goalMode/trainingPriority echo (P2) | **FIXED** | `ios/Nexus Hub/ViewModels/TrainingViewModel.swift` 3 helpers: `trainingViewModelGoalModeLabel`, `trainingViewModelTrainingPriorityLabel`, `trainingViewModelComposeGoalModeEcho`. Returns nil for unknown / future enum values — never displays raw enum. Composes "Coach mode: Event · Running." line on the post-generation banner when present. 9 pin tests in `Nexus HubTests/TrainingViewModelGoalModeEchoTests.swift` covering known/unknown/composition/safe-unknown paths. |
+| Picker swimming + 6 requiresReview tests + strength stepper | **PRESERVED + VERIFIED** | Swimming option still in `Nexus Hub/Views/Training/TrainingView.swift:927`; localized `Natação`/`Swimming` at `:563`. 6 `test_generatePlan_keepsSheetInReviewModeFor*` pin tests in `Nexus HubTests/TrainingViewModelObservationTests.swift`. `test_noPlanFixture_createPlanSheetStrengthStepperAccepts5Sessions` PASS on physical iPhone Felipe + simulator. |
+| Physical device validation | **PASS (PHYSICAL DEVICE)** | iPhone Felipe (UDID `00008150-000C0D5101D8401C`, iPhone 17 Pro Max, iOS 26.5): 51 focused unit tests (TrainingViewModelObservationTests + GoalModeEchoTests + PlanGenerateResponseExpertCoachTests + TrainingServiceTwoADayPreferenceTests) PASS. Full TrainingFixtureBypassUITests 11/11 PASS in 305s. Real interaction validation, not launch-only. |
+| Provider-live Google/Outlook calendar smoke | **BLOCKED — non-prod OAuth credentials** | Long-standing closed-beta condition. Requires Felipe to provision dedicated non-prod Google + Outlook OAuth credentials and supply them as env vars. Production calendars must NOT be used. Workaround: deterministic fixture coverage via `__tests__/api/training-plan-calendar-sync.test.ts` (23 cases) covers the same scenarios. |
+| Docs / open items | **FIXED** | `npm run docs:audit` baseline: 471 issues across 348 files (was 449/338 baseline). The +22 increase is from this pass's new test files + report fields and is expected. No new "outside-approved-location" warnings introduced. |
+
+### What I shipped (this hostile QA closeout pass)
+
+**Backend** (engine, branch `feature/training-expert-coach-codex-validation`):
+- `src/services/coach-kernel/types.ts` — extended `TrainingDecisionReasonCode` with 4 goal-mode codes (`maintenance_volume_capped`, `return_to_training_volume_capped`, `continuous_plan_no_taper`, `event_based_missing_race_date`).
+- `src/services/training-coach-kernel-plan-generator.ts` — added `applyGoalModeVolumeShaping(rawTargets, input, raceCalendar)` (deterministic 60%/50% scale + total cap) and `collectGoalModeDecisionReasons` (surfaces signals on plan response). Wired into `buildAthleteStateFromTrainingProfiles` AND `buildCoachKernelTrainingPlan`.
+- `src/services/coach-kernel/engines/hybrid-engine.ts` — added `firstModalityPriority` helper that skips lifecycle tokens; `resolveHybridPriority` now uses it.
+- New tests: `__tests__/services/training-coach-kernel-goal-mode-shaping.test.ts` (15) + `__tests__/services/coach-kernel-hybrid-engine-priority-safety.test.ts` (5). Total +20 backend tests.
+
+**iOS** (branch `feature/ios-training-expert-coach-claude-qa`):
+- `Nexus Hub/ViewModels/TrainingViewModel.swift` — three new helpers (`trainingViewModelGoalModeLabel`, `trainingViewModelTrainingPriorityLabel`, `trainingViewModelComposeGoalModeEcho`) at file scope; surfaced in `generatePlan` so the post-generation banner appends "Coach mode: Event · Running." when present.
+- New tests: `Nexus HubTests/TrainingViewModelGoalModeEchoTests.swift` (9). Total +9 iOS tests.
+
+### Verification
+
+- `engine`: `npx tsc --noEmit` clean. Focused 877/877 PASS in 11.7s. Goal-mode shaping suite 15/15 PASS. Hybrid-priority safety suite 5/5 PASS.
+- `ios` simulator iPhone 17 Pro UDID `A0B13967-B5DE-4E6F-897D-F1E409093F94`: build clean. Echo + observation + DTO 36/36 PASS. Full TrainingFixtureBypassUITests 11/11 PASS in 279s.
+- `ios` physical device iPhone Felipe (`00008150-000C0D5101D8401C`): build clean. Focused 51/51 unit PASS. TrainingFixtureBypassUITests 11/11 PASS in 305s. TR-EC-O14 fixture test (`test_noPlanFixture_createPlanSheetStrengthStepperAccepts5Sessions`) re-verified on physical device 16.4s.
+
+---
+
+## iOS Training expert-coach readiness pass (2026-05-03 night)
+
+## iOS Training expert-coach readiness pass (2026-05-03 night)
+
+Branch: `feature/ios-training-expert-coach-readiness` in `ios`.
+Codex validation branch: `feature/ios-training-expert-coach-codex-validation` in `ios`.
+Backup tag: `backup/ios-training-expert-coach-readiness-pre-20260503-1955`.
+Forked from: `main` @ `76529bf`.
+One commit, not pushed:
+
+- `fe62d43 feat(training): TR-EC-O14 createPlan id + expert-coach DTO contracts`
+
+Verdict: **PASS WITH CONDITIONS** for iOS-side preparation of the new Training expert-coach engine contracts. TR-EC-O14 is closed and verified on simulator and physical iPhone. Full physical Workflows A–I + tenant cache isolation remain open for full-engine fixtures, provider-safe scheduling fixtures, and two-account validation.
+
+Canonical report: `ios/docs/ios/training-expert-coach-ios-readiness-report.md`.
+Codex validation report: `ios/docs/ios/training-expert-coach-ios-codex-validation.md`.
+
+### What I shipped (ios commit `fe62d43`)
+
+**TR-EC-O14 — accessibility identifier propagation closed:**
+- `Nexus Hub/Components/NexusButton.swift`: NexusButton accepts an optional `accessibilityIdentifier:` parameter and applies it directly on the underlying SwiftUI `Button`. Previously, callers attaching `.accessibilityIdentifier(...)` to the wrapping View were shadowed by the inner `.accessibilityLabel(title)` SwiftUI applies on the button label — XCUITest queried the label-derived identifier instead and the caller's id was invisible.
+- `TrainingPrimaryActionButton` now threads `training-action-\(target.rawValue)` into NexusButton, so `app.buttons["training-action-createPlan"]` resolves cleanly.
+- Verified: `TrainingFixtureBypassUITests/test_noPlanFixture_createPlanSheetStrengthStepperAccepts5Sessions` passes on simulator. Full simulator TrainingFixtureBypassUITests suite passes.
+
+**Phase 4 — safe DTO decoders for the new contracts:**
+- `Nexus Hub/Core/Services/TrainingService.swift`: PlanGenerateResponse extended with `calendarFetchDegraded: Bool?`, `calendarFetchError: String?`, `planLint: PlanLintResult` (with `passDefault()` fallback), `structuredWarnings: [PlanGenerateWarning]`. New types: `PlanGenerateWarning`, `PlanLintStatus` (with `.unknown`), `PlanLintFinding` (with `.info` severity fallback), `PlanLintAffectedSession`, `PlanLintResult`, `PlanLintSuggestedFix`. Every new enum has safe-unknown fallback so a future backend status doesn't crash.
+- 13 new pin tests in `__tests__/PlanGenerateResponseExpertCoachTests.swift` — calendarFetchDegraded true/false/absent, planLint pass/pass_with_warnings/fail/unknown, unknown-severity-safely, structured + legacy warnings, end-to-end realistic payload.
+
+**Phase 5 — UI rendering for the new states:**
+- `Nexus Hub/ViewModels/TrainingViewModel.swift`: post-generation message now appends calendarFetchDegraded warning + first planLint blocker / first warning so the user sees the engine's safety verdict in the create-plan banner.
+- `Nexus Hub/Views/Training/TrainingView.swift`: new XCUITest identifiers — `training-plan-status-banner`, `training-generate-plan-button`, `training-objective-<slug>` per tile, `training-sessions-per-week-stepper` + `-value`.
+
+**Codex second-pass validation — safety and stale-test cleanup:**
+- `TrainingViewModel.planGenerationRequiresReview` now keeps the create-plan sheet open with warning styling when plan generation returns missing critical inputs, calendar-degraded creation, long-run override, lint `fail`, lint `needs_user_input`, blockers, or warnings. This prevents invalid/questionable plans from looking like normal success.
+- `Phase5RuntimeSmokeHarnessTests` no longer read deleted `docs/beta/*.md`; they assert the code-backed local smoke script and smoke matrix instead.
+- Verification: focused unit suites passed, simulator `TrainingFixtureBypassUITests` passed, and physical iPhone focused Training contract/view-model + fixture UI suites passed.
+
+### Verification
+
+- `xcodebuild build` — clean.
+- `xcodebuild build-for-testing` — clean.
+- Selected unit suites: PlanGenerateResponseExpertCoachTests (13/13), PlanGenerateResponseRaceDateTests, PlanGenerateResponsePrimaryFocusTests, TrainingHomeContractResolverTests, TrainingHomeNoPlanCTAFixTests — all PASS.
+- Full `Nexus HubTests` (excluding pre-existing `Phase5RuntimeSmokeHarnessTests` doc-path failures) — **1,121 / 1,121 PASS** in 4.8s.
+- TrainingFixtureBypassUITests — simulator suite passed on the iPhone 17 Pro simulator.
+- Physical iPhone — focused Training DTO/view-model suites and `TrainingFixtureBypassUITests` passed.
+
+### What's still pending (after this pass)
+
+| ID | Severity | Description |
+|---|---|---|
+| TR-EC-IOS-O1 | P1 | Add `training-goal-mode-picker` (event_based / continuous / maintenance / return_to_training) to the create-plan sheet. |
+| TR-EC-IOS-O2 | P1 | Documented: modality-specific profile inputs (running level/volume/days, strength level/split, cycling FTP) are collected only in onboarding. Decision needed on whether to add them to the create-plan sheet. |
+| TR-EC-IOS-O3 | P1 | Real iOS device-level validation of Workflows A–I — physical iPhone fixture UI tests pass. Full A-I still needs full-engine fixtures, provider-safe scheduling fixtures, and two-account credentials. |
+| TR-EC-IOS-O4 | P2 | Wire `AthleteLifecycleVerdict.reason` from the engine derivation into a dedicated iOS card once the engine ships it on the response payload. |
+| TR-EC-IOS-O5 | P2 | Wire `evaluateSafetyContext().topMessage` into a coach safety banner when a session reports stress-fracture-pattern pain or a self-reported pregnancy/postpartum/disordered-eating flag. |
+| TR-EC-IOS-O6 | P2 | Surface `planLint.suggestedFixes` as actionable CTAs (e.g. "Re-run equipment adaptation" → re-trigger generation with updated profile). Interim safety is fixed locally: lint blockers/warnings now require review and no longer auto-dismiss. |
+| TR-EC-IOS-O7 | P2 | **Closed locally.** `Phase5RuntimeSmokeHarnessTests` no longer reference deleted markdown files; simulator runs execute repo-source checks, while physical-device runs skip checkout-only reads explicitly. |
+| TR-EC-IOS-O8 | P3 | Once the engine multi-block roadmap ships (P3 in engine OPEN_ITEMS as TR-EC-O5), iOS needs `TrainingRoadmap` decoders + a roadmap timeline view. |
+| TR-EC-IOS-O9 | P3 | Phase 11's full identifier list (`training-priority-picker`, `training-running-level-picker`, `training-equipment-picker`, `training-feedback-rpe-input`, etc.) requires both UI controls AND backend contracts; multi-slice initiative. |
+
+The new contract additions on the iOS side (`PlanGenerateResponse.calendarFetchDegraded`, `.planLint`, `.structuredWarnings`) are PURELY ADDITIVE — no field is required, every enum has a safe-unknown fallback, and the legacy `warnings: [String]` accessor still returns user-friendly copy. Existing iOS production builds will continue to decode responses cleanly when the engine pass deploys.
+
+---
+
+## Training expert-coach knowledge-engine pass (2026-05-03 evening)
+
+Branch: `feature/training-expert-coach-knowledge-engine` in `engine`.
+Backup tag: `backup/training-expert-coach-knowledge-engine-pre-20260503-1839`.
+Forked from: `feature/closed-beta-readiness-codex-validation` @ `8bb7f34`.
+Two commits, not pushed:
+
+- `d3b09b8 feat(training): P0 reliability — past-day floor + plan-linter + calendar fail-safe`
+- `a65dcbc feat(coach-kernel): P1 typed-derivation modules — load + lifecycle + safety`
+
+Verdict: **PASS WITH CONDITIONS** for local code-level audit + safe high-priority backend fixes. iOS device-level validation + production deploy gates remain explicitly out-of-scope per the local-only rule.
+
+Canonical report: `engine/docs/training/training-expert-coach-knowledge-engine-report.md`.
+Codex second-pass validation: `engine/docs/training/training-expert-coach-codex-validation.md`.
+
+### What I shipped (engine commits `d3b09b8` + `a65dcbc`)
+
+**P0 reliability fixes (`d3b09b8`)**:
+- **Past-day floor in `scheduleSessionForPlan`** — Wed-generated plans no longer silently slide week-1 Mon/Tue to next week. New `resolvePlanSlotDate` helper rejects past-day requests with a `past_day_in_week_1` reason that flows through the existing `noAvailableSlot` plumbing → session persisted `status: 'unscheduled'` with a clear human-readable explanation.
+- **`PlanLinter` (NEW `engine/src/services/coach-kernel/plan-linter.ts`)** — 7 deterministic plan-level rules: `no_past_active_sessions`, `equipment_compatibility`, `no_three_consecutive_leg_heavy_days`, `no_heavy_lower_before_long_run`, `no_fake_taper_without_event`, `race_specific_plan_requires_race_date`, `no_consecutive_identical_strength_sessions`. Wired through `persistGeneratedTrainingPlan` in advisor mode → `data.planLint` + per-finding entries on `data.warnings` of the API response.
+- **Calendar fetch fail-safe** — `getEvents()` errors now log structurally, set `calendarFetchDegraded: true` on the response, and emit a `calendar_fetch_degraded` warning so iOS can render "review your week before trusting it" instead of silently scheduling on top of meetings.
+
+**P1 typed-derivation foundations (`a65dcbc`)**:
+- **`session-load-metadata.ts`** — `deriveSessionLoadMetadata(session) → SessionLoadMetadata` with `legLoadScore`, `tendonLoadScore`, `upperBodyLoadScore`, `neuromuscularCost`, `keySessionPriority`, `minimumRecoveryHours`, `compatibleNeighbors`, `signature`. Plus `isSpacingCompatible(a, b)` based on leg-load math (NOT session-type set membership) — easy_run before long_run is allowed; heavy squat before long_run is rejected.
+- **`athlete-lifecycle-state.ts`** — `deriveAthleteLifecycleState(state, now) → AthleteLifecycleVerdict` with 11 typed states (`onboarding | profile_incomplete | returning_from_break | overloaded | recovering | deloading | tapering | base_building | progressing | maintenance | needs_user_input`) and priority-ordered branches (health-first overrides beat structural state).
+- **`safety-guardrails.ts`** — `evaluateSafetyContext(input) → SafetyEvaluationResult` with 8 typed safety domains. Stress-fracture red flags BLOCK with sports-medicine referral. Pregnancy/disordered-eating BLOCK with specialist referral. Direct medical questions ("do I have", "should I take") WARN. Supplement / anti-doping vocabulary INFORMS with WADA reference. Plus `COACH_NON_DIAGNOSTIC_DISCLAIMER` constant.
+
+NO migration. All four new modules are pure-derivation, on-demand. The lint runs in advisor mode through the soak window; flip to strict on the API response after telemetry shows blocker rate ≈ 0.
+
+### Verification
+
+- `npx tsc --noEmit` clean.
+- Pre-commit (auto-classified focused) ran 66 test files / 848 tests in 11.5s on each commit.
+- Full `vitest run` after the batch: **6,639 / 6,640 PASS** in 65.8s. The 1 failing test (`__tests__/services/prompt-cleanliness.test.ts:160` referencing the now-archived `engine/docs/archive/2026-05/content/daily-content-discovery.md`) is a PRE-EXISTING artifact of the closed-beta-hardening commit `8bb7f34` that landed on the same branch ancestry. Verified by checking out `dadcbe0` (the production main before closed-beta hardening) — there the test passes 72/72. Documented as `TR-EC-O9` in the new training report's open items.
+
+### What's still pending (after this pass)
+
+| ID | Severity | Description |
+|---|---|---|
+| TR-EC-O1 | P2 | Flip plan-linter from advisor → strict on the API response after a 1–2 week soak with low blocker rate. |
+| TR-EC-O2 | P2 | Wire `AthleteLifecycleVerdict.reason` into iOS Today/Week banner. |
+| TR-EC-O3 | P2 | Wire `evaluateSafetyContext().topMessage` into coach-briefing JSON when readiness/feedback signals trigger it. |
+| TR-EC-O4 | P2 | Refactor plan-linter to use `SessionLoadMetadata.isSpacingCompatible` instead of regex `isLowerHeavy` heuristic. |
+| TR-EC-O5 | P3 | Multi-block `TrainingRoadmap` + `TrainingProgressLedger` (requires migration). |
+| TR-EC-O6 | P3 | Promote `SessionLoadMetadata` fields onto `Session` shape via backfill migration once telemetry stabilizes. |
+| TR-EC-O7 | P3 | Add `tempo_run`, `hill_run`, `strength_lower_heavy`, `strength_upper_heavy` to `SessionType`. |
+| TR-EC-O8 | P3 | Persist `AthleteLifecycleState` to a `training_athlete_lifecycle` table for trend analysis. |
+| TR-EC-O9 | P2 | (Pre-existing) `__tests__/services/prompt-cleanliness.test.ts:160` references `engine/docs/archive/2026-05/content/daily-content-discovery.md` archived by `8bb7f34`. Either restore the prompt-cleanliness check from the archive path or remove the test. |
+| TR-EC-O10 | P1 | iOS device-level validation for the 9 Training workflows (A–I per the prompt) — physical iPhone fixture UI tests pass; full-engine/two-account/provider-safe workflow validation remains open. |
+| TR-EC-O11 | P1 | Codex validation found same-day plan creation could schedule today's preferred time in the past. Fixed locally on `feature/training-expert-coach-codex-validation`; requires review/merge before staging. |
+| TR-EC-O12 | P1 | Codex validation found persisted plan-linter sessions were missing scheduled dates, so exact-date lint rules were not reliable through real persistence. Fixed locally on `feature/training-expert-coach-codex-validation`; requires review/merge before staging. |
+| TR-EC-O13 | P1 | Plan-linter blockers are still advisor-only: the API creates the plan with `planLint.status:"fail"`. Decide strict/repair behavior before closed beta. |
+| TR-EC-O14 | P1 | **CLOSED / superseded by the iOS readiness pass.** The `training-action-createPlan` accessibility path was fixed and `TrainingFixtureBypassUITests/test_noPlanFixture_createPlanSheetStrengthStepperAccepts5Sessions` was re-verified on simulator and physical iPhone Felipe. Full A-I workflow validation remains tracked separately under `TR-EC-O10` / `TR-EC-IOS-O3`. |
+
+### Closed-beta readiness implication
+
+The new contract additions (`data.calendarFetchDegraded`, `data.planLint`, `data.warnings`) are PURELY ADDITIVE — existing iOS clients won't break, and a future iOS slice can opt in to render the warnings as banners. No production deploy from this branch.
+
+The mid-week-creation past-day silent-slide fix is the most user-visible improvement: before this pass, a Wed-generated plan dropped Mon/Tue of week 1 with no warning; after this pass, those days are surfaced honestly as `unscheduled` with a clear reason.
+
+---
+
+## Closed-beta readiness hardening (2026-05-03)
+
+Branch: `feature/closed-beta-readiness-hardening` in `engine`. Backup tag: `backup/closed-beta-readiness-before-hardening-20260503-1530`. Two commits, not pushed:
+
+- `c8f5c71 feat(closed-beta): hardcoded-identity scanner + CI wiring`
+- `2001efe fix(content+voice): remove hardcoded founder identity from runtime`
+
+Verdict: **READY_WITH_CONDITIONS** — backend safety architecture is intact; two surgical residual identity-leak fixes landed; new `closed-beta-identity-scan` is wired into CI (advisor on PR, strict in nightly) so v4.14.118-class regressions can't return silently. The `WITH_CONDITIONS` is for the iOS device-level validation that I cannot perform from the audit harness (see iOS open items below).
+
+### What I audited
+
+- Phase 0: state survey (engine on `main` at `dadcbe0` v4.14.124; iOS on `main` at `255522d`; iOS pipeline branch unmerged intentionally).
+- Phase 1: hardcoded-identity grep across `src/`, `prompts/`, `content-engine/`, `src/skills/`, `ios/Nexus Hub/` Swift code.
+- Phase 1: review of Codex's `3bf9a37` training commit for tenant/user-scope correctness.
+- Phase 3: Training/Secretary orchestration code review (past-session prevention, race-date follow-up, weekly cap, Saturday long-run).
+- Phase 4: Calendar/agenda lifecycle (deletePlanHard scoping, session_identity_key dedup, calendar-sync past-skip).
+- Phase 5: Chat memory/tool safety (auth-middleware JWT-derived `req.userId === req.tenantId`, chat-context-engine scope flow, P0 regression suite still in place).
+- Phase 6: Skill preference ownership (creator_profile per-user, content-script user-scoped fetch, fixture seeding gated to STAGING).
+- Phase 8: closed-beta security gate design (the new identity scanner).
+- Phase 10: focused tests — voice-evolution-agent, voice-evolution-qa-validation, p0-chat-identity-isolation = 50/50 pass; pre-commit auto-classified to focused mode and ran 320/320 in 8.15 s.
+- Phase 11: cleanup verified (no dirty tree, no orphan ports/processes).
+
+### What I fixed (engine commit `2001efe`)
+
+| File | Root cause | Fix |
+| --- | --- | --- |
+| `src/handlers/commands/content.ts:1038–1056` | Content-calendar `/calendar` Telegram command instructed the model to use the authenticated creator's stored pillars, but the prompt body literally hardcoded a Felipe-specific pillar list (AI/Tech, Commentary politics, Training+carnivore, Helldivers, etc.). Models would pull from the literal examples for any user with no stored pillars. P1 identity-leak surface. | Removed the hardcoded pillar list. Replaced with neutral instruction: use the creator's stored pillars; if missing, ask or propose a small neutral mix tailored to THIS creator's audience and goals. No founder pillars hardcoded. |
+| `src/agents/voice-evolution-agent.ts:381–382` | Code read `rp.felipe_version` but the analysis prompt produces `creator_version` (legacy field name was already renamed in earlier neutralization work). Effect: every NEW analysis silently stored `${original} → undefined` and dropped the rephrased example. Pre-existing latent bug, not a leak. | Aligned reader with prompt schema: `(rp as any).creator_version ?? (rp as any).felipe_version ?? ''`. Backward-compat fallback for already-persisted rows. Marked with `nx-allow-identity-scan` so the new scanner doesn't flag it. |
+| `content-engine/services/orchestrator.py:356` | Legacy `felipes_angle` backward-compat read (intentional, was already in code from prior neutralization). | Added `nx-allow-identity-scan` marker so the scanner explicitly approves it. |
+
+### What I added (engine commit `c8f5c71`)
+
+`engine/scripts/closed-beta-identity-scan.sh` — trip-wire scanner for the v4.14.118-class P0. Greps runtime code (`src/`, `prompts/`, `content-engine/`) for forbidden patterns: `Felipe's voice`, `Felipe's brand`, `Felipe's profile`, `adapt to Felipe`, `Felipe's audience`, `felipe_version`, `felipes_angle`. Excludes test files, manifest.json author fields, copyright headers, the public landing footer, the stale design doc, and any line/block marked `nx-allow-identity-scan`. `--strict` mode exits 1 on any non-allowed match.
+
+CI wiring:
+- `engine/.github/workflows/ci.yml` lint job — advisor mode (informational on every PR).
+- `engine/.github/workflows/nightly.yml` — new `closed-beta-identity-scan-strict` job (gates the nightly).
+
+Initial run: **0 flags** in current tree.
+
+### What's still pending (iOS-side closed-beta gates)
+
+These remain because I cannot perform real-device validation from the audit harness:
+
+- **Two-account device walk-through**: User A asks "Who am I?" → must get User A; User B asks → must get User B. The P0 regression suite (`__tests__/security/p0-chat-identity-isolation.test.ts`) covers the backend deterministic identity fast-path (still passing 23 cases), but the iOS UI flow needs a signed TestFlight build with two test accounts. **Closed-beta blocker until verified live.**
+- **iOS interaction validation** (Phase 2): real tap-to-feedback latency, navigation stress (10× tab switches, 5× Home → Week round-trips), account/tenant switch staleness. Requires physical iPhone or signed TestFlight + UDID-pinned simulator. The new `ios-tests.yml` PR lane runs unit tests automatically; the new `ios-nightly.yml` runs XCUITest at 05:45 UTC; both are committed but UNMERGED in iOS repo (intentional).
+- **Provider-live calendar lifecycle smoke**: dedicated non-prod Google/Outlook OAuth credentials still missing. Existing unit/integration coverage at `__tests__/api/training-plan-calendar-sync.test.ts` (23/23 PASS) covers the same scenarios deterministically.
+- **Live readiness/body-battery isolation across Felipe / Jaqueline / nexushubbot**: required to prove no cross-user Garmin readiness leaks. Requires live device data (cannot use production data per rules).
+
+### Closed-beta verdict
+
+**READY_WITH_CONDITIONS**. Code-level identity isolation is correct (v4.14.118 architecture intact, 2 residual fixes landed, new scanner gates regressions). Backend training fixes (Codex's `3bf9a37`) are properly user-scoped. Calendar/agenda/promotion lifecycle has belt-and-suspenders multi-tenant safety. Chat memory/tool/prompt scope flows from JWT-derived `req.userId` cleanly. The remaining conditions are all real-device validations that require human + signed-build access.
+
+## P0
+
+## P1
+
+- Validate on staging/production-safe accounts that Felipe, Jaqueline, and nexushubbot have isolated readiness/body battery values and provider connection states.
+- Validate Jaqueline's `Entrada` task list read-back after backend promotion.
+- ~~Merge + deploy the 2026-05-03 training poor-recovery `time_volume_coherence` fix~~ — **DONE**: shipped in production version `4.14.123` (commit `396b8f0`) on 2026-05-03 via the documented `deploy-staging.sh` → `staging-smoke.sh` (17/17) → `promote-to-prod.sh` chain. PM2 confirms `nexus-hub` and `content-engine` online post-restart.
+- ~~**Release pipeline optimization adoption**~~ — **DONE**: backend v2 pipeline changes were merged to `main`, pushed, used for the 2026-05-03 `4.14.124` production promotion, and validated by staging smoke + production health. iOS pipeline commits remain available in the iOS repo history/branch state for separate TestFlight validation. Report: `docs/release/release-pipeline-optimization-report.md`.
+
+  Quick wins landed and measured:
+  - ~~Drop `npm run verify` from `engine/scripts/deploy.sh:37`~~ → **DONE** as opt-in env-flag (`NEXUS_DEPLOY_SKIP_VERIFY=1` or `auto-when-staged`); default is unchanged. Engine commit `53d95b6`.
+  - ~~Pre-commit hook → focused vitest~~ → **DONE**. New `.husky/pre-commit` is classifier-driven; docs-only diff skips vitest entirely. Engine commit `b304367`. Measured: 9 m 35 s → 6.91 s on the same SHA (98.8 % reduction).
+  - ~~Pre-push hook → focused on feature, full on RC~~ → **DONE**. New `.husky/pre-push` runs full Vitest only on RC-class branches (`main`, `release/*`, `rc/*`, `feature/p0-*`, `feature/release-*`); focused on feature branches. Engine commit `b304367`.
+  - ~~CI parallel matrix + coverage to nightly~~ → **DONE**. `ci.yml` rewritten as classifier-driven parallel matrix; new `nightly.yml` carries full Vitest + coverage + full migration rehearsal. Engine commit `8cdb8c0`.
+  - ~~Add changed-area classifier~~ → **DONE**. `engine/scripts/changed-area-classifier.sh` is the input to the new hooks and CI. Engine commit `b304367`.
+  - ~~Archive `cd-production.yml`~~ → **DONE**. Renamed to `.archived` with banner; legacy file deleted. Engine commit `8cdb8c0`.
+  - ~~Enforce iOS UDID simulator destination~~ → **DONE** as fail-closed when `IOS_REQUIRE_UDID=1`; legacy name-only default still works (back-compat) but logs a loud warning. iOS commit `36e76d7`.
+  - **Activation** (one-time, by Felipe): `cd engine && git config core.hooksPath .husky` to use the tracked `.husky/*` hooks; or accept the per-clone delegate at `.git/hooks/pre-commit` and `.git/hooks/pre-push` (already installed on this Mac as `pre-commit.legacy-backup` / `pre-push.legacy-backup` snapshots, with delegate scripts pointing at `.husky/`).
+  - **Make `release-identity.sh` mandatory in any current-verdict doc write** → still pending (P2 / one-week improvement).
+- **Branches and tags from the implementation pass**:
+  - engine: branch `feature/release-pipeline-risk-based-optimization`, backup tag `backup/pre-release-pipeline-optimization-2026-05-03`. Seventeen commits (newest first):
+    - `2603162 feat(release-pipeline): weekly housekeeping (prune + identity refresh)`
+    - `80c4506 feat(release-pipeline): wrap content-full-nexus-local smoke for JSON evidence`
+    - `466eaf5 feat(deploy): --dry-run mode for gate rehearsal`
+    - `aa2a89e feat(release-pipeline): smoke-evidence summary + prune tools`
+    - `37e3dff feat(release-identity): --persist mode + pre-commit auto-injection`
+    - `5bc7386 ci: wire vi-mock-completeness-lint + release-doc drift check (advisor + nightly)`
+    - `f8694c2 feat(staging-smoke): classifier-driven domain probes (bonus tier)`
+    - `2135bfe feat(promote-to-prod): reuse recent smoke-evidence for same staging SHA`
+    - `ff42e65 feat(release-pipeline): with-smoke-evidence wrapper + domain smokes`
+    - `f354b7d fix(release-doc-drift-check): strip UUIDs + allow cross-repo SHA refs`
+    - `1b8a0de fix(docs-audit): ignore git worktrees (false positives)`
+    - `5007b25 feat(release-pipeline): smoke-evidence JSON + release-doc drift checker`
+    - `9e2c890 perf(vitest): lift singleFork — 9 m 36 s → 1 m 20 s (7.22× speedup)`
+    - `82b4c78 feat(release-pipeline): vi.mock completeness lint (singleFork precondition)`
+    - `53d95b6 feat(deploy): NEXUS_DEPLOY_SKIP_VERIFY env-flag for risk-based deploy`
+    - `8cdb8c0 feat(release-pipeline): parallel CI matrix + nightly + archive dead workflow`
+    - `b304367 feat(release-pipeline): add changed-area classifier + risk-based hooks`
+  - ios: branch `feature/release-pipeline-risk-based-optimization`, backup tag `backup/pre-release-pipeline-optimization-2026-05-03`. Three commits:
+    - `945567d ci: add nightly XCUITest workflow`
+    - `672a0fc ci: add focused XCTest lane on macOS runner`
+    - `36e76d7 feat(beta-smoke): UDID-aware simulator destination`
+- **Felipe's parallel training-reliability WIP preserved** in named stashes during the implementation pass. As of 2026-05-03 evening, the inventory in `engine` is:
+  - `stash@{0}: felipe-training-WIP-batch7-2026-05-03-during-release-pipeline-perf-improvements` (most recent training files Felipe edited while the singleFork lift was in flight)
+  - `stash@{1}: felipe-training-WIP-batch6-2026-05-03-on-20260503-suffix-branch`
+  - `stash@{2}: felipe-training-WIP-batch5-2026-05-03-training.ts-only`
+  - `stash@{3}: felipe-training-WIP-batch4-2026-05-03`
+  - `stash@{4}: felipe-training-WIP-batch3-2026-05-03-during-release-pipeline-commits`
+  - `stash@{5}: felipe-training-WIP-batch2-2026-05-03-parallel-with-release-pipeline-work`
+  - `stash@{6}: training-reliability-WIP-paused-for-release-pipeline-quick-wins-2026-05-03`
+  - `stash@{7}: preserve dirty backend-main worktree before 4.14.123 local merge 2026-05-03` (previously protected)
+  - Older stashes (`p0-deploy-pause-unrelated-wip-20260502`, etc.) shifted accordingly; nothing dropped.
+  - Restoration sequence (Felipe): switch to `feature/training-reliability-local-orchestration-hardening` (or its `-20260503` suffix variant), then `git stash pop` in order from oldest (`stash@{6}`) to newest (`stash@{0}`), resolving any conflicts file-by-file. The same training files appear across multiple batches because Felipe was iterating; merging conflicts intelligently is the right approach (newer batch wins for each file).
+
+## P1.5 — Release-doc drift cleanup (post-adoption)
+
+- `npm run docs:audit` baseline: **449 issues** across 338 files. Categories: 222 markdown-outside-approved-current-or-archive, 66 test-count-literal, 66 commit-hash-not-in-own-repo, 62 broken-markdown-reference, 33 duplicate-or-scattered-current-verdict.
+- Sweep + relocate 222 outside-approved-location files under `docs/archive/2026-05/<workstream>/` and link relevant evidence from `engine/docs/release/current-release-index.md`.
+- Add `engine/scripts/release-doc-drift-check.sh` (compares current-doc SHAs to `git log --all`).
+- Make `npm run docs:audit` gating for PRs that touch `engine/docs/release/**`.
+
+## P2
+
+- **Content Creation UI workflow follow-ups** (2026-05-04 vertical slice
+  closeout — see `engine/docs/portal/content-portal-readiness.md` and
+  `engine/docs/content/content-frontend-contracts.md`):
+  - ~~**CONTENT-UI-O1**~~ → **DONE 2026-05-04**: migration `111_content_creator_profile.sql`,
+    `src/state/content-creator-profile.ts`, REST routes
+    `GET/PUT/DELETE /api/v1/content/creator-profile`, 15 backend tests,
+    iOS round-trip via `ContentService.getCreatorProfile()` /
+    `putCreatorProfile()` with offline-first local cache.
+  - ~~**CONTENT-UI-O2**~~ → **DONE 2026-05-04**: migration
+    `112_content_radar_feedback.sql`,
+    `src/state/content-radar-feedback.ts`, REST routes
+    `POST/GET /api/v1/content/radar/feedback`, 13 backend tests, iOS
+    per-card accept/reject/save/create-brief buttons in
+    `ContentIntelligenceView` with confirmation chip + Undo + error
+    inline. Accessibility ids `content-idea-accept-button`,
+    `content-idea-reject-button`, `content-create-brief-button`.
+  - ~~**CONTENT-UI-O3**~~ → **DONE 2026-05-04**:
+    `src/state/content-performance-aggregate.ts` aggregator (read-only
+    over existing tables), admin route
+    `GET /api/v1/admin/content/performance`, 8 backend tests, portal
+    Performance card with KPI strip + highlights/warnings + top
+    accepted/rejected topics (visible only when scope is active).
+  - ~~**CONTENT-UI-O4**~~ → **DONE 2026-05-04**:
+    `src/state/content-lifecycle.ts` canonical-12-stage mapper
+    (`mapContentTopicStatusToCanonical` collapses 22 `ContentTopicStatus`
+    cases into 12; `mapSavedIdeaStatusToCanonical` covers the legacy
+    `saved_ideas` set; radar-feedback signals feed `accepted` /
+    `rejected` buckets). Routes `GET /api/v1/content/lifecycle` (iOS,
+    JWT) + `GET /api/v1/admin/content/lifecycle` (portal, scope picker).
+    19 backend tests. iOS canonical lifecycle pill band on
+    `PipelineDetailView`. Portal canonical lifecycle band inside the
+    Content Pipeline card.
+  - ~~**CONTENT-UI-O5**~~ → **DONE 2026-05-04**: portal browser-runtime
+    smoke at `engine/scripts/content-portal-browser-smoke.mjs` — two
+    modes: `--validate-only` (31 structural + JS-presence assertions, no
+    browser, no engine) and Playwright live-smoke mode (boots Chromium,
+    applies scope, asserts `x-nexus-user-id` / `x-nexus-tenant-id`
+    headers ride along on `/api/v1/admin/content/*`). The validate-only
+    mode is wired into the focused-test lane.
+  - ~~**CONTENT-UI-O6**~~ → **DONE 2026-05-04**:
+    `ios/Nexus Hub/Views/Content/ContentBriefEditorView.swift` — 12-field
+    brief editor (objective, audience, platform, format, angle, source
+    material, main points, claims, CTA, constraints, deadline, approval
+    owner) with offline-first tenant-scoped `ContentBriefLocalStore`,
+    `POST /api/v1/content/workflow/:id/actions` round-trip when a
+    `contentObjectId` is attached. Brief nav card on Content Home
+    (`content-brief-button`). Save button id `content-brief-save-button`.
+  - ~~**CONTENT-UI-O7**~~ → **DONE 2026-05-04**: `TopicSchedulerView`
+    now defaults to a 7-column week-grid view of the current + next 3
+    weeks, with status-tinted topic chips, today highlight, mode picker
+    (`topic-scheduler-mode-picker`) toggling to the legacy week-grouped
+    list, and the unscheduled drawer below the grid. Accessibility id
+    `topic-scheduler-week-grid`.
+  - ~~**CONTENT-UI-O8**~~ → **DONE 2026-05-04**: `ios-specs/03-SCREENS-UI.md`
+    Content section rewritten to match the shipped IA (Skills tab slot 3
+    → ContentSkillView). Tab 5/More section is now marked **legacy**;
+    new Tab 4: Skills section is normative. Includes accessibility ids,
+    nav order, Profile/Voice editor, Brief editor, week-grid topic
+    scheduler, canonical lifecycle band, and per-card Radar action
+    contracts.
+
+  Codex validation delta (2026-05-05): READY_WITH_CONDITIONS for local QA
+  after second-pass fixes; archive evidence:
+  `docs/archive/2026-05/content-creation-ui-codex-validation/codex-validation.md`.
+  Added/fixed: iOS Radar `create_brief` now opens a seeded Brief editor;
+  Content Home profile completeness refreshes backend state before rendering;
+  sign-out clears new Content profile/brief local stores; portal scope controls
+  work inside the IIFE; scoped Performance/Lifecycle panels load independently
+  from the legacy content dashboard; portal smoke asserts live scoped route
+  2xx responses; Performance aggregate now counts scripts using the real
+  `content_scripts.created_at` schema. Verification: backend `tsc --noEmit`
+  clean; 60/60 backend Content tests PASS across state/API suites; portal
+  validate-only smoke PASS (38/38 assertions); portal live Chromium smoke PASS
+  against local throwaway DB with 6 scoped V1 admin Content requests carrying
+  tenant/user headers and 4 scoped panel endpoint responses returning 2xx; iOS
+  `xcodebuild build-for-testing` PASS; iOS `ContentCreatorProfileTests` PASS
+  (27/27). Remaining conditions: provider-backed semantic quality and
+  tenant-facing portal profile/brief/script/calendar/memory workflows still
+  require staging-safe or explicit follow-up validation. `docs:audit` baseline
+  was 488 issues / 387 markdown files immediately before this validation
+  report/update.
+
+- Run `cd engine && npm run docs:audit` before future release-doc updates; the
+  first implementation landed on 2026-05-03 and now flags scattered verdicts,
+  commit-hash drift, literal test-count drift risk, broken markdown references,
+  and markdown outside approved current/archive locations.
+- **Release pipeline — one-week improvements** (post P1 adoption — ALL DONE):
+  - ~~`vi.mock` completeness lint~~ → **DONE** as `engine/scripts/vi-mock-completeness-lint.mjs` (commit `82b4c78`). Wired into CI as advisor (commit `5bc7386`); strict mode + JSON artifact runs nightly. Initial scan: 1,020 partial mocks across 142 modules; top offenders `logger.ts` (206), `database.ts` (161), `user-service.ts` (46).
+  - ~~Lift `singleFork: true` in `engine/vitest.config.ts`~~ → **DONE** (commit `9e2c890`). Full Vitest **9 m 35 s → 1 m 20 s (7.22× speedup)**, **6,557/6,557 pass**. The flake under `singleFork: true` was *caused by* the shared module cache.
+  - ~~Smoke scripts write JSON evidence~~ → **DONE** end-to-end. `staging-smoke.sh` (commit `5007b25`) writes per-check rows. `cooking-portal`, `training-calendar-staging`, `training-cross-skill-staging` (commit `ff42e65`) wrap through `scripts/with-smoke-evidence.sh`.
+  - ~~`release-doc-drift-check.sh`~~ → **DONE** (commit `5007b25`); UUID-stripping + cross-repo SHA acceptance fix in `f354b7d`; wired into CI as advisor (commit `5bc7386`); strict mode runs nightly. Final drift count: **0** (was 3, all UUID/cross-repo false positives).
+  - ~~`promote-to-prod.sh` reuses recent (≤30 min) smoke evidence for same SHA~~ → **DONE** (commit `2135bfe`). `NEXUS_SMOKE_REUSE_MAX_AGE_S` configurable; `NEXUS_SMOKE_REUSE=0` disables.
+  - ~~iOS focused-XCTest CI lane on macOS runners with single UDID~~ → **DONE** as `ios/.github/workflows/ios-tests.yml` (commit `672a0fc`). Conditioned on Swift/xcconfig/xcodeproj/plist diff; skips for docs/config-only PRs. UI tests deliberately not included (separate nightly).
+  - ~~`staging-smoke.sh` classifier-driven domain checks~~ → **DONE** (commit `f8694c2`). Auth-401 contract probes for training, coach-kernel, calendar, cooking, content, secretary, plus a migration-count assertion. Disable with `NEXUS_SMOKE_DOMAIN_PROBES=0`.
+- **Release pipeline — additional improvements (round 2, 2026-05-03 evening)**:
+  - ~~Fix `audit-docs.mjs` to ignore `worktrees/`~~ → **DONE** (commit `1b8a0de`). Restored canonical 449 baseline.
+  - ~~Add nightly full-coverage + migration-rehearsal workflow~~ → already DONE in `nightly.yml` from the first pass; round 2 added `release-doc-drift-strict` and `vi-mock-completeness` jobs (commit `5bc7386`).
+- **Release pipeline — adoption tooling (round 4, 2026-05-03 night)**:
+  - ~~Migrate workspace `CURRENT_RELEASE_STATE.md` to reference auto-generated `docs/release/release-identity.md`~~ → **DONE**. Volatile fields (production HEAD / version / migrations / dirty state) now read from the artifact the pre-commit hook auto-refreshes; manual SHA typing eliminated for those fields.
+  - ~~Weekly housekeeping wrapper~~ → **DONE** as `engine/scripts/release-pipeline-housekeeping.sh` + `engine/.github/workflows/weekly-housekeeping.yml` (commit `2603162`). Sundays 06:00 UTC: prune smoke-evidence + refresh release-identity + print docs:audit total.
+  - ~~Codex deploy-process brief~~ → **DONE** as `docs/release/codex-deploy-process-brief.md`. Self-contained operator prompt with environment, constraints, seven-step deploy loop, dry-run rehearsal, failure-mode escape hatches, report-back checklist.
+- **Release pipeline — operator tooling (round 3, 2026-05-03 night)**:
+  - ~~`release-identity.sh --persist` mode + pre-commit auto-injection~~ → **DONE** (commit `37e3dff`). Eliminates the 132 stale-SHA + stale-test-count warnings by construction (29 % of the 449 baseline) once canonical docs adopt the generated artifact.
+  - ~~Smoke-evidence summary tool~~ → **DONE** as `engine/scripts/smoke-evidence-summary.sh` (commit `aa2a89e`). Markdown + JSON output, `--sha` / `--since` / `--latest` filters.
+  - ~~Smoke-evidence retention/prune script~~ → **DONE** as `engine/scripts/smoke-evidence-prune.sh` (commit `aa2a89e`). 60-day default age cap; always preserves the 5 newest records per smokeName. Default dry-run; `--apply` deletes.
+  - ~~`deploy.sh --dry-run` mode~~ → **DONE** (commit `466eaf5`). Exits after build phase; prints the full mutation surface that the real deploy would perform.
+  - ~~`smoke:content:local` JSON-evidence wrap~~ → **DONE** (commit `80c4506`). Completes JSON-evidence coverage across all five smokes.
+  - ~~iOS UI tests in nightly workflow~~ → **DONE** as `ios/.github/workflows/ios-nightly.yml` (commit `945567d`). Runs `Nexus HubUITests` on macos-latest at 05:45 UTC daily; UDID-pinned, sequential, simulator-log capture on failure, 14-day artifact retention.
+- Training mobility-variant exercise catalogs: the 2026-05-03 fix now keeps mobility recovery sessions honest by shrinking duration to estimated content (~13 min for empty-block sessions). A follow-up could add a small mobility-exercise catalog (cat-cow, hip flexor, thoracic rotation, etc.) so the variant claims a richer 18-25 min and delivers it.
+- Training cycling/hybrid progression depth (TR-P2-CYCLING from `engine/docs/training/training-final-deep-audit-report.md`).
+- Production-safe TestFlight smoke for Training mutation + Garmin readiness + task-list read-back across Felipe/Jaqueline/nexushubbot. The old scripted checklist was removed during the 2026-05-13 cleanup after `docs/release/wave1-testflight-cut-runbook.md` became the retained runbook.
+
+## P3
+
+- Gradually add frontmatter to high-value markdown files:
+  - `doc_status`
+  - `owner`
+  - `last_verified`
+  - `update_policy`
+  - `supersedes`
+  - `superseded_by`
+- Doc hygiene sweep on `engine/docs/training/release-candidate-*.md` and `engine/docs/release/archive/2026-04/training/production-release-final-status.md` — these were release-candidate evidence for v4.14.100 (2026-04-28) and now belong under `engine/docs/release/archive/2026-04/training/` per the canonical hygiene rule.
+
+## Full snapshot before Codex rotation — 2026-05-11
+
+The previous `OPEN_ITEMS.md` body was archived before replacing the active
+file with a current-only carryover list. This preserves historical closed
+rows and long evidence blocks while keeping the active file readable.
+
+```markdown
+# Open Items
+
+Status: canonical
+Owner: release lead (Felipe)
+Last verified: 2026-05-10
+Update policy: update when a current carryover opens or closes. Monthly
+historical detail for the 2026-05 tech-debt sweep lives in
+`docs/release/OPEN_ITEMS_ARCHIVE_2026-05.md`.
+
+Last sweep complete: 2026-05-07.
+Closeout dossier:
+`engine/docs/archive/2026-05/tech-debt-validation/sweep-closeout-dossier.md`.
+
+## 2026-05-10 P0 Tenant And Safety — Round A
+
+Closeout:
+`docs/archive/2026-05/p0-tenant-and-safety-2026-05/closeout.md`
+
+Verdict: **SOURCE_AND_LOCAL_VALIDATION_COMPLETE** on split Round A
+(Parts 1+2 only). Production and main were not touched; hostile QA and staging
+remain operator-gated before promote.
+
+Closed in source:
+- Google Drive now uses per-user OAuth for user-scoped uploads, with owner
+  bootstrap reserved for explicit system backup calls.
+- Closed-beta invites are enforced server-side across email/password, Apple,
+  Apple web session, Google, and Google web session registration flows.
+- Chat fastpath pending-task cache keys include both user and tenant scope.
+- iOS JWT/WebSocket tenant claims are validated and WebSocket messages
+  re-check tenant scope before processing.
+- iOS auth sign-in now uses an atomic scope barrier before repository loads.
+- Deep links, keychain tokens, APNs device bindings, and onboarding progress
+  are scoped or cleared on sign-out.
+- Sentry redaction now sanitizes request headers, request bodies, contexts, and
+  extra payloads.
+- `api_cache` cleanup has a 10k-row safety valve, warning telemetry, and a
+  supporting `(expires_at, cache_key)` index.
+
+Evidence:
+- Engine typecheck PASS.
+- Engine focused P0 tenant/safety suite PASS: 10 files / 119 tests.
+- Cannot-skip dashboard PASS: 34/34 with new `google-drive-tenant-leak` gate.
+- Mock lint PASS at strict baseline 827.
+- iOS Debug focused unit suite PASS: 53 tests / 0 failures.
+- iOS DeepLink scope UI regression PASS: 1 test / 0 failures.
+- iOS ReleaseWithTesting full unit suite PASS: 1,255 XCTest + 10 Swift Testing
+  / 0 failures.
+- iOS ReleaseWithTesting visual matrix PASS: 21/21 with 80 PNG screenshots.
+
+Operator-gated before production:
+- Deploy the engine branch to staging and run staging smoke.
+- Run Google Drive cleanup dry-run/delete evidence on staging.
+- Capture production Google Drive cleanup dry-run before promote.
+- Promote only after hostile QA returns `READY_FOR_LOCAL_QA`.
+
+Carryover:
+- Parts 3-5 from the original prompt (Felipe-volume performance,
+  second-pass performance, and accessibility hardening) are intentionally
+  deferred to `fix/perf-and-a11y-2026-05` after Round A hostile QA.
+
+## 2026-05-10 Perf And Accessibility Hardening — Round B
+
+Closeout:
+`docs/archive/2026-05/p0-tenant-and-safety-and-perf-2026-05/closeout.md`
+
+Verdict: **SOURCE_AND_STAGING_VALIDATION_COMPLETE** on split Round B
+(Parts 3-5 only). Production, engine main, iOS main, and TestFlight were not
+touched.
+
+Closed in source:
+- Engine Home/dashboard cache TTLs were aligned for Felipe-volume usage:
+  dashboard/root and dashboard/home fresh TTLs are now 180 seconds, readiness
+  is now 300 seconds, and SWR remains 300 seconds.
+- Engine `fetchTraining()` now starts readiness and fallback calendar-event
+  reads in parallel.
+- Engine cache-coherence prefix cascades now batch related prefix clears.
+- Engine reminder cron ticks are single-flight guarded.
+- Engine provider fallback runaway detection now hard-stops with a clean 502.
+- Engine content topic default limit is tightened to 20 with a 500 hard cap.
+- Engine daily-context and audit-trail hot paths have new compound indexes.
+- iOS dashboard load and calendar warmup now run concurrently.
+- iOS Home Secretary calendar projections are cached between SwiftUI renders.
+- iOS dashboard-facing repository TTLs are aligned to 60 seconds.
+- iOS HTTP reads retry transient GET/PATCH/PUT failures with bounded jittered
+  backoff and decode JSON off the main actor.
+- iOS hot-path date formatters are cached, receipt preview images are
+  constrained/downscaled, hardcoded fonts named by the audit are semantic,
+  reduce-motion guards cover launch/Home/quick-add animations, and major
+  interactive surfaces have source-pinned accessibility labels.
+
+Evidence:
+- Engine typecheck PASS.
+- Engine focused Round B suite PASS: 6 files / 65 tests.
+- Engine pre-push focused suite PASS: 85 files / 832 tests.
+- Mock lint PASS at 827/827 strict baseline.
+- Cannot-skip dashboard PASS: 34/34.
+- Staging deploy PASS after fixing the worktree `node_modules` symlink
+  exclusion in `scripts/deploy-staging.sh`.
+- Staging smoke PASS: 20 tests / 0 failures.
+- Authenticated staging fixture probe PASS: 0 route failures; dashboard-home
+  improved from 91.6 ms first call to 8.3 ms cached call.
+- iOS Debug focused suite PASS: 45 tests / 0 failures.
+- iOS ReleaseWithTesting full unit suite PASS: 1,263 XCTest + 10 Swift Testing
+  / 0 failures.
+- iOS Release UI visual matrix PASS: 21/21 with 80 PNG screenshots.
+
+Carryover:
+- The staging fixture harness still needs a 100-calendar-event seeding mode to
+  produce repeatable Felipe-volume before/after wall-time evidence.
+
+## 2026-05-10 iOS Pre-TestFlight Validation + Wave 1 Runbook
+
+Release validation:
+`docs/archive/2026-05/ios-pre-testflight-validation/release-mode-validation.md`
+
+Operator runbook:
+`docs/release/wave1-testflight-cut-runbook.md`
+
+Verdict: **READY_FOR_OPERATOR_TESTFLIGHT_CUT**. iOS `origin/main` is bumped to
+`1.4.2 (16)` at `5981d10`. No TestFlight build was cut by Codex.
+
+Closed in source:
+- Task A `CachedResource` single-flight regression test is cherry-picked onto
+  iOS `main`.
+- Release clean simulator build passed with zero warnings/errors after the
+  AppIntents.framework link fix.
+- Release UI visual matrix passed 21/21 with 80 screenshot attachments.
+- Wave 1 TestFlight cut + invitation runbook is written for Felipe's
+  operator-physical App Store Connect flow.
+- Garmin tenant-isolation watcher state snapshot script is available for the
+  first-48-hours observation check.
+
+Operator-only next steps:
+- Felipe cuts the TestFlight archive/upload from Xcode.
+- Felipe runs the operator-physical smoke checklist from the runbook.
+- Felipe monitors the Garmin watcher for `matchedCount: 0` during the first
+  48 hours.
+
+## 2026-05-10 Wave 1 Launch Readiness Sweep
+
+Closeout:
+`engine/docs/archive/2026-05/launch-readiness-sweep/closeout.md`
+
+Provider filesystem-session audit:
+`engine/docs/archive/2026-05/launch-readiness-sweep/provider-filesystem-session-audit.md`
+
+Verdict: **CLOSED IN PRODUCTION** on backend `4.14.147`
+(`95a42c80`). Hostile QA returned `READY_FOR_LOCAL_QA`; Felipe authorized the
+production promote on 2026-05-10.
+
+Closed in source:
+- iOS Phase 2B.4 P3 F-2: `CachedResource` now has a direct single-flight
+  regression test proving concurrent loads share one fetch.
+- P0 Garmin P3 F-2: Apple Health readiness now has six partial-data sufficiency
+  tests covering HRV-only, sleep-only, RHR-only, and paired metric subsets.
+- P0 Garmin P3 F-3 audit: Amazon and Uber collectors were audited for
+  filesystem session leakage.
+- P0 observability: a daily `garmin_tenant_isolation_watcher` dry-runs the
+  tainted-session cleanup script and records warning evidence in `error_log`
+  plus durable operator alerts if matches reappear.
+
+Evidence:
+- iOS `CachedResourceTests` PASS: 7/7 on
+  `phase2b4-ios-repository-primitive-2026-05`.
+- Engine focused B+D PASS: 2 files / 14 tests.
+- Pre-commit focused engine slice PASS: 26 files / 249 tests.
+- Mock lint PASS at 826/827 strict baseline.
+- Staging re-smoke PASS: 17 passed / 0 failed / 19 total.
+- Staging watcher positive-path probe PASS:
+  `engine/docs/release/smoke-evidence/staging-garmin-tenant-isolation-watcher-positive-20260509T235850Z.json`.
+- Staging watcher negative-path probe PASS:
+  `engine/docs/release/smoke-evidence/staging-garmin-tenant-isolation-watcher-negative-20260509T235904Z.json`.
+- Production health PASS:
+  `engine/docs/release/smoke-evidence/prod-health-launch-readiness-20260510T000541Z.json`.
+- Authenticated production snapshot returned version `4.14.147`:
+  `engine/docs/release/smoke-evidence/prod-snapshot-launch-readiness-auth-20260510T001015Z.json`.
+- Production watcher cold-start PASS: `matchedCount: 0`, no new watcher
+  warnings, no new operator alerts:
+  `engine/docs/release/smoke-evidence/prod-garmin-tenant-isolation-watcher-cold-start-20260510T001046Z.json`.
+- `origin/main` was fast-forwarded to production deploy commit `95a42c80`.
+
+Carryover opened by the audit:
+- P1/P2: Amazon and Uber invoice collectors use global filesystem browser
+  sessions plus global credentials. Scheduled collection is owner-only, but
+  manual Telegram `/amazon` and `/uber` commands can invoke those global
+  sessions under any authenticated canonical user. This is
+  `dirty-different-mechanism`, not Garmin-style token-table contamination.
+  Recommended follow-up: finance collector tenant-safety round before broad
+  multi-user finance rollout.
+
+## 2026-05-10 Phase 2B.5 Chat Fastpath Dedup Deferred
+
+Closeout:
+`engine/docs/archive/2026-05/phase2b5-chat-fastpath-dedup/closeout-deferred.md`
+
+Verdict: **DEFERRED_WITH_REASON**. Phase 2B is now **4/5 done**:
+2B.1 workspace landing state, 2B.2 cache-coherence registry, 2B.3 cached route
+helper, and 2B.4 iOS repository primitive are shipped/queued. 2B.5 chat
+fastpath dedup is deferred to a likely Phase 3 post-Wave-1 round.
+
+- [DEFERRED] Phase 2B.5 chat fastpath dedup — speculative cleanup,
+  source-side probe found only 4 sites and prototype hit +152 LoC. Re-open
+  trigger documented. See
+  `docs/archive/2026-05/phase2b5-chat-fastpath-dedup/closeout-deferred.md`.
+
+Reason:
+- Source-truth diagnosis found 14 `fastpath` mentions, 4 actual runtime
+  adapter/call sites, and 2 heavy implementation files.
+- The smaller cache/dedup primitive prototype passed its focused suite but had
+  a positive source LoC delta, so it failed the architecture-round bar.
+- A wider iOS slash-command + Telegram secretary-fastpath merge might pass the
+  deletion test, but it would touch user-visible chat rendering and trigger the
+  visual QA protocol. That risk is not appropriate before Wave 1.
+
+Re-open trigger:
+- Reopen only if beta usage shows observable fastpath cache/coalescing bugs, a
+  third real fastpath implementation site appears, or a planned feature needs a
+  unified fastpath surface across iOS, Telegram, and WebSocket.
+
+## 2026-05-09 P0 Garmin Tenant Leak + Apple Health Cascade
+
+Closeout:
+`docs/archive/2026-05/p0-garmin-tenant-leak-and-applehealth-cascade/closeout.md`
+
+Verdict: **CLOSED IN PRODUCTION** on backend `4.14.146`
+(`d05e3bac`). Hostile QA returned `READY_FOR_LOCAL_QA`; Felipe authorized the
+production promote on 2026-05-09.
+
+Closed in source/staging:
+- Garmin legacy filesystem token fallback is now owner-only.
+- Global Garmin credential MFA login is blocked for non-owner users without a
+  per-user Garmin session.
+- Apple Health readiness fallback is verified with seeded HRV/sleep/RHR data
+  and returns real per-user readiness when Garmin is empty.
+- Synthetic neutral readiness is preserved when both Garmin and Apple Health are
+  empty.
+- Staging cleanup script dry-run/delete pass found 0 contaminated Garmin rows
+  and is idempotent.
+
+Evidence:
+- Typecheck PASS.
+- Focused P0/Garmin/readiness route suite PASS: 9 files / 140 tests.
+- New P0 regression suite PASS: 6/6.
+- Cannot-skip dashboard PASS: 33/33.
+- Mock lint PASS at strict baseline 827.
+- Staging smoke PASS: 17 passed / 0 failed / 19 total.
+- Smoke evidence:
+  `engine/docs/release/smoke-evidence/staging-smoke-379f741d-20260509T171331Z.json`.
+- Pre-promote staging re-smoke PASS: 17 passed / 0 failed / 19 total.
+  Evidence:
+  `engine/docs/release/smoke-evidence/staging-smoke-d580da66-20260509T173848Z.json`.
+- No-data staging probe:
+  `engine/docs/release/smoke-evidence/staging-p0-garmin-no-data-20260509T173947Z.json`.
+- Apple Health staging probe:
+  `engine/docs/release/smoke-evidence/staging-p0-garmin-apple-health-20260509T173947Z.json`.
+- Production cleanup pre-promote dry-run found 5 tainted non-owner rows:
+  `engine/docs/release/smoke-evidence/prod-cleanup-dry-run-20260509T174048Z.json`.
+- Production cleanup post-deploy delete pass removed all 5 rows and follow-up
+  dry-run returned `matchedCount: 0`:
+  `engine/docs/release/smoke-evidence/prod-cleanup-delete-20260509T174717Z.json`,
+  `engine/docs/release/smoke-evidence/prod-cleanup-postdelete-dry-run-20260509T174722Z.json`.
+- Production health/snapshot/PM2 evidence:
+  `engine/docs/release/smoke-evidence/prod-health-20260509T174909Z.json`,
+  `engine/docs/release/smoke-evidence/prod-snapshot-20260509T174909Z.json`,
+  `engine/docs/release/smoke-evidence/prod-pm2-health-20260509T174938Z.json`.
+- Non-owner production readiness probe: user `28` returned Apple Health
+  readiness `84` and body battery `78`, not the leaked Felipe pair:
+  `engine/docs/release/smoke-evidence/prod-non-owner-readiness-probe-user28-clean-20260509T174858Z.json`.
+
+Remaining after closure:
+- P3: Separate provider filesystem-session audit for Amazon/Uber collectors.
+
+## 2026-05-09 Phase 2B.1 Workspace State Visual QA Closure
+
+Closeout addendum:
+`docs/archive/2026-05/phase2b1-workspace-state-module/visual-qa-closure-closeout.md`
+
+Verdict: **READY_FOR_LOCAL_QA** eligible after visual-evidence closure.
+Production and main were not touched.
+
+Closed in source:
+- Workspace landing visual QA now covers every enumerated Tasks, Training,
+  Cooking, Content, and Finance warmup/unavailable/content state across en-US
+  and pt-BR.
+- Shared workspace warmup/unavailable views now support centrally generated
+  accessibility identifiers via optional `identifierPrefix`.
+- Cooking, Content, and Finance unavailable states can be forced through
+  `QualityAuditScenario` for deterministic XCUITest rendering.
+- Retry interactions are covered for all five domains.
+
+Evidence:
+- `WorkspaceLandingStateTests` PASS: 13/13.
+- `WorkspaceLandingVisualUITests` PASS: 38/38 with screenshot attachments.
+- Combined selected UI gate PASS: 42/42 selected UI tests including visual,
+  auth, and feedback smoke.
+- Screenshot export path:
+  `/tmp/phase2b1-visual-attachments-final`.
+- Combined xcresult:
+  `/Users/felipedominguez/Library/Developer/Xcode/DerivedData/Nexus_Hub-gsoqdyrpqmkkotdmfddhuhobycvu/Logs/Test/Test-Nexus Hub-2026.05.09_13-03-01-+0100.xcresult`.
+
+Remaining before closing Phase 2B.1:
+- P1: Claude hostile QA on the visual-closure commit stack.
+- P2: TestFlight/operator visual review after hostile QA, if requested.
+
+## 2026-05-09 Phase 2A Wave-2 Blockers — Source/Staging Complete
+
+Closeout:
+`docs/archive/2026-05/phase2a-wave2-blockers/closeout.md`
+
+Verdict: **READY_FOR_HOSTILE_QA** on local source branches after staging smoke.
+Production was not touched by this phase.
+
+Closed in source/staging:
+- Voice-evolution agent and Tuesday/Thursday/Friday content crons now scope to
+  active users/tenants instead of owner-only execution.
+- `video-study.ts` and `channel-learner.ts` now derive language/audience/niche
+  from authenticated creator profiles instead of founder-shaped PT-BR/fitness
+  defaults.
+- iOS REST AI routes now use a shared global + per-user cost guardrail helper
+  before AI execution.
+- Settings now has an in-app feedback report channel with build/user/provider
+  context and recent client-error context.
+- Legacy `NEXUS_SKIP_AUTH` references were removed from `Nexus HubUITests/`.
+- Cannot-skip dashboard now includes Phase 2A gates and reports 30/30 locally.
+
+Evidence:
+- Engine typecheck PASS.
+- Focused engine vitest PASS: 6 files / 16 tests.
+- Content-engine prompt cleanliness PASS: 11/11.
+- Cannot-skip dashboard PASS: 30/30.
+- Mock lint PASS at strict baseline 827.
+- iOS focused XCUITest PASS: 10 executed, 1 skipped, 0 failures.
+- Staging deploy PASS.
+- Staging smoke PASS: 20/20.
+- Smoke evidence:
+  `engine/docs/release/smoke-evidence/staging-smoke-b1f3ceea-20260509T010124Z.json`.
+
+Remaining before Wave 2 promote:
+- P1: Claude hostile QA on Phase 2A branches.
+- P1: Operator decision on production promote after hostile QA.
+- P2: Replace the remaining TrainingValidation auth-stub skip with a hard
+  main-tab assertion once the stub server can provide the required
+  post-onboarding/profile state.
+- P2: Add authenticated staging fixture users for free-tier/pro-tier/global-cost
+  manual probes so future release gates do not rely only on local behavioral
+  tests.
+- P3: Add real screenshot attachment support to the in-app feedback channel
+  after privacy/retention rules are defined.
+- P3: Revisit Sentry/ops alert thresholds for the cohort-scoped
+  `GLOBAL_DAILY_COST_LIMIT=100.00`.
+
+Phase 2B carryovers remain unchanged and out of scope for this phase:
+- iOS Repository read-cache plumbing consolidation.
+- Workspace state module consolidation.
+- API route helper consolidation.
+- Cache invalidator registry.
+- iOS chat fastpath + Telegram fastpath convergence.
+
+Latest closed-beta gap analysis: 2026-05-07 (mid-day Europe/Lisbon).
+Report: `docs/archive/2026-05/closed-beta-gap-analysis/all-skills-gap-analysis-report.md`
+Verdict: READY_WITH_CONDITIONS on the source branch after the P0 cluster
+closures below and the 2026-05-07 hostile-validation remediation. Operator-only
+device/APNs/deploy validation remains before broad beta.
+
+**2026-05-07 late-day hostile QA on `5bbe1b40` + `a4b4be8`** — `docs/archive/2026-05/secretary-notification-orchestrator/remaining-open-tasks-hostile-qa.md`. Verdict: **NOT_READY**. Multiple "CLOSED IN SOURCE BRANCH" claims are downgraded:
+
+- **GAP-CONT-3 → FALSE-CLAIM**: `content-performance-aggregate.ts` reads `content_radar_feedback`, not `content_performance`. Performance-feedback adaptation loop is still a silent dead-end. **REOPEN**.
+- **GAP-CONT-4 → PARTIAL**: TopicSchedulerView is a real publishing calendar ✓; ContentIntelligenceView is NOT a performance dashboard (renders `optimization.recentSignals` and `activeInsightCount` only — zero views/retention/likes/comments). **Performance half REOPEN**.
+- **GAP-CONT-1 → PARTIAL / OPEN WRITER GAP**: Global env leak closed ✓ and resolver fails closed, but `youtube-channel-scope.ts` still needs an explicit OAuth/owned-channel writer before Performance/SEO can use live creator analytics. Do not mark production analytics adaptation closed until that writer exists.
+- **GAP-CONT-2 → CLOSED IN SOURCE BRANCH**: Neutrality scanner now covers `src/agents/**`, `src/services/**`, and Python `content-engine/services/intelligence|creative/**/*.py`; YouTube global-channel detection now uses a bypass-resistant pattern. Closed by engine commit `16b23cc9`.
+- **GAP-SEC-AUTH-1 → CLOSED IN SOURCE BRANCH**: `runContentDiscovery` now requires a named positive `userId`/`tenantId`, removes the `userId ?? 0 as any` escape, and manual report dispatch passes named values. Closed by engine commit `16b23cc9`.
+- **GAP-CHAT-1 → CLOSED IN SOURCE BRANCH**: Telegram command/callback/media handlers now inherit one central bot-level `runWithChatToolAuthorization` context, and the legacy helper rejects `0/-1/NaN/Infinity/unsafe` ids via `isValidTenantUserId`. Closed by engine commit `16b23cc9`.
+- **GAP-CAL-1 → PARTIAL**: conflict-detection NotificationIntent emission now has per-user try/catch containment and dedupe keys include a conflict signature. The other Telegram-only crons remain a separate migration workstream. Partial closure by engine commit `16b23cc9`.
+- **GAP-FIN-1 → CLOSED FOR HOSTILE CITATIONS**: receipt OCR no longer logs merchant/amount, tax calculation no longer logs `taxDue`, invoice collector no longer logs vendor names, and logger redaction includes finance PII/amount paths. Closed by engine commit `16b23cc9`.
+- **GAP-REL-3 → CLOSED IN SOURCE BRANCH**: iOS release-hardening workflow now lists simulator runtimes, verifies an iPhone 16 Pro destination for GitHub runners, runs `xcodebuild test`, and asserts a non-zero xcresult test summary. Closed by iOS commit `f43fc5b`.
+- **GAP-IOS-5 → CLOSED IN SOURCE BRANCH**: `AppState.signOut` and scope reconciliation now await process-wide cache clearing, invalidate `InboxSnapshotStore`, clear `URLCache`, and reorder auth logout after cache invalidation. Closed by iOS commit `f43fc5b`.
+
+**New P0 from this hostile pass:**
+| ID | Description |
+|---|---|
+| HOSTILE-CHAT-1A | Callback queries + commands/media now inherit central Telegram bot chat-tool authorization middleware. CLOSED IN SOURCE BRANCH via engine commit `16b23cc9`; coverage in `__tests__/handlers/chat-tool-auth-middleware.test.ts`. |
+| HOSTILE-CHAT-1B | `runTelegramDomainHandlerWithToolAuthorization` now uses `isValidTenantUserId` and records tenant-scope anomalies for invalid ids. CLOSED IN SOURCE BRANCH via engine commit `16b23cc9`; coverage in `__tests__/handlers/chat-tool-auth-context.test.ts`. |
+
+**New P1 from this hostile pass:**
+- HOSTILE-AUTH-1 — CLOSED via engine commit `16b23cc9`; coverage in `__tests__/services/content-discovery-scope.test.ts` and `__tests__/services/manual-report-triggers.test.ts`.
+- HOSTILE-CONT-F1 — OPEN / OWNER DECISION REQUIRED: resolver remains fail-closed until an OAuth/owned-channel writer marks creator-owned channels.
+- GAP-CAL-1-A — CLOSED via engine commit `16b23cc9`; conflict intent emit is now isolated per user.
+- GAP-CAL-1-C — OPEN / FOLLOW-UP: broader Telegram-only cron migration remains intentionally unbatched.
+- GAP-FIN-1-A/D — CLOSED via engine commit `16b23cc9`; coverage in finance route/tracker tests plus `__tests__/utils/logger-redaction-finance.test.ts`.
+- HOSTILE-IOS-REL3 — CLOSED via iOS commit `f43fc5b`; coverage in `Nexus HubTests/ReleaseHardeningConfigTests.swift`.
+- HOSTILE-IOS-5A/B — CLOSED via iOS commit `f43fc5b`; coverage in `Nexus HubTests/RepositoryScopeChangeTests.swift`.
+- P1-CHAT-1C — CLOSED via engine commit `16b23cc9`; destructive and external-send confirmation are pinned.
+- P1-CHAT-1D — CLOSED / NARRATIVE CORRECTED in this section; central bot middleware is the closure mechanism.
+
+P2/P3 (~15 more) live only in the hostile QA archive report; surface to OPEN_ITEMS only when promoted by a fix prompt or new evidence.
+
+Secretary Notification Orchestrator source branch: 2026-05-07.
+Report:
+`docs/archive/2026-05/secretary-notification-orchestrator/secretary-notification-orchestrator-report.md`.
+Verdict: READY_WITH_CONDITIONS on local/mock validation. Production APNs
+credentials, signed-device push/action validation, and deploy remain
+operator-only; no push or deploy was performed.
+
+Event backbone / read models / delta sync source branch: 2026-05-07.
+Report:
+`docs/release/event-backbone-readmodels-delta-sync-report.md`.
+Verdict: **READY_WITH_CONDITIONS** after source remediation. Do not push or
+deploy from this branch yet.
+
+**2026-05-07 hostile QA on event backbone** —
+`docs/archive/2026-05/event-backbone-readmodels-delta-sync/hostile-qa-report.md`.
+Original hostile verdict was **NOT_READY** and was correct at audit time.
+Source remediation now landed in engine `2e896435` and iOS `82abbea`; Claude
+hostile re-QA remains the next evidence gate.
+
+**2026-05-07 hostile QA v2 final report** —
+`docs/archive/2026-05/event-backbone-readmodels-delta-sync/hostile-qa-v2-final-report.md`.
+Verdict: **READY_FOR_LOCAL_QA**. After v2 source remediation (engine `e82bbdae`/`ca2e0cd9` + iOS `12a9d95`),
+all 11 v2 hostile findings are behaviorally closed with real-DB / real-route /
+real-cancellation tests. Independent gates: tsc clean, 56/56 focused vitest
+pass, 23/23 cannot-skip dashboard, mock lint baseline 827 unchanged, workspace
+mirror in sync. iOS xcodebuild simulator 11/11 PASS. Zero regressions found.
+Remaining gates are operator-only: authenticated iOS product-surface walkthrough,
+migration 115 staging apply, production env flag confirmation, APNs credentials.
+
+**2026-05-07 staging deploy evidence** —
+`docs/archive/2026-05/event-backbone-readmodels-delta-sync/staging-deploy-evidence-2026-05-07.md`.
+Verdict: **STAGING_READY**, not production-ready. Runtime/evidence baselines are
+engine `b13e2495` and iOS `dd8ffe0`, both pushed to origin; the engine feature
+branch also has later docs-only staging evidence commits. Staging deploy completed
+with conservative event-backbone flags, migration 115 applied on the staging DB,
+worker-disabled soak queued safely, worker-enabled soak drained to
+`event_outbox processed=18` and `background_jobs completed=27`, and post-worker
+staging smoke passed 21/21. Dead-letter admin routes returned zero events/jobs.
+Production push/promote remains operator-only pending signed TestFlight
+two-account walkthrough, APNs production credentials, time-sensitive entitlement
+confirmation, production event-backbone env flag decision, and production row
+count review if event_backbone tables already exist there.
+
+**Hostile P0 cluster — REMEDIATED IN SOURCE BRANCH**
+| ID | Source-branch remediation | Hostile re-QA verdict |
+|---|---|---|
+| HOSTILE-OUTBOX-1 | Runtime emit paths now use transactional outbox via `runOutboxTransaction`; business state and event rows commit together when the DB is initialized. | **WEAK CLOSURE** — 8 wrapped sites correct, `emitDomainEventSafely` removed; but new `fallbackWhenDatabaseUnavailable` parameter re-introduces silent-drop on DB-unavailable race (HOSTILE-OUTBOX-1A); notification-orchestrator + finance PATCH hand-roll their own transactions bypassing canonical wrapper (HOSTILE-OUTBOX-1C); transactional-rollback test missing (HOSTILE-OUTBOX-1B). |
+| HOSTILE-PRIV-1 | Event payloads and decision-log summaries now use recursive privacy sanitization before persistence/sync. | **VERIFIED CLOSED** — `src/utils/privacy-sanitizer.ts` (54 lines) recurses with `maxDepth: 4` + 26-key expanded regex; used by event-outbox, product-decision-log, AND delta-sync (defense-in-depth at appSafeSummary, tighter `maxStringLength: 160`); behavioral test pins nested redaction. |
+| HOSTILE-BUDGET-1 | Resource budgets now use atomic SQLite `UPDATE ... RETURNING` counters keyed by tenant/user/window. | **VERIFIED CLOSED** — `UPDATE ... WHERE count + ? <= ? RETURNING count` is single-statement atomic; 100-caller concurrency test asserts final count <= 10 AND exactly 10 succeed. |
+| HOSTILE-OBS-1 | Event/job workers and budget exhaustion emit structured, scoped logs with processed/failed/dead-letter counts. | **VERIFIED CLOSED** — 3 batch-summary log lines (`event_outbox_batch`, `background_job_batch`, `event_backbone_worker_tick`) with `claimed/processed/failed/deadLetter/durationMs`; spy tests assert schema; PII-safe. |
+
+**P1 cluster outcomes:**
+- HOSTILE-OUTBOX-2 (lease atomicity) — VERIFIED CLOSED
+- HOSTILE-OUTBOX-3/JOB-3 (orphan reaper) — WEAK (code present, behavioral test missing)
+- HOSTILE-OUTBOX-7 (dead-letter operator surface) — WEAK (102-line admin router, ZERO behavioral tests)
+- HOSTILE-OUTBOX-9 (replay tenant scope) — VERIFIED CLOSED
+- HOSTILE-JOB-2 (cancel processing) — WEAK / asymmetric (job side guards correct; **event side `markEventFailed`/`markEventProcessed` overwrite canceled** — HOSTILE-EVENT-CANCEL-RACE)
+- HOSTILE-JOB-4 (decision-log retention) — VERIFIED CLOSED
+- HOSTILE-SYNC-1 (deviceId no query trust) — VERIFIED CLOSED with strong behavioral test
+- HOSTILE-SYNC-2 (retention vs offline device) — VERIFIED CLOSED with `protectFloor` + behavioral test
+- HOSTILE-SYNC-4 (reset not advance cursor) — VERIFIED CLOSED with idempotent-reset test
+- HOSTILE-OBS-2 (budget log + Retry-After) — VERIFIED CLOSED
+- HOSTILE-TEST-1 (real 429 test) — VERIFIED CLOSED (drives 121 requests through live consume)
+
+**iOS hardening outcomes:**
+- HOSTILE-IOS-DS-1 (parallel fan-out): CLOSED structurally, but **validation test crashes** — HOSTILE-IOS-DS-NEW-1
+- HOSTILE-IOS-DS-2 (cold-launch race): WEAK (fragile MainActor invariant, undocumented)
+- HOSTILE-IOS-DS-3 (cancellation propagation): OPEN (no `Task.checkCancellation()`)
+- HOSTILE-IOS-DS-4 (test coverage): WEAK (parallel test broken; cancellation/duplicate/cap untested)
+- HOSTILE-IOS-DS-5 (duplicate changeId): WEAK (semantic flip last→first-write-wins, no test)
+- HOSTILE-IOS-DS-6 (cache bound): CLOSED-with-caveat (magic 500, no constant/comment)
+- HOSTILE-IOS-DS-9 (scenePhase TTL): WEAK / partial — only cold-launch gated; `onChange(of: scenePhase)` at DashboardView:214 still un-gated
+
+**NEW findings introduced by remediation — REMEDIATED IN SOURCE BRANCH**
+- **HOSTILE-OUTBOX-1A (P1)** — CLOSED via engine `e82bbdae`; `runOutboxTransaction` no longer has a DB-unavailable fallback and fails closed without initialized storage.
+- **HOSTILE-OUTBOX-1B (P1)** — CLOSED via engine `e82bbdae`; rollback tests prove business rows roll back when event emit fails and event rows roll back when the callback throws.
+- **HOSTILE-OUTBOX-1C (P2)** — CLOSED via engine `e82bbdae`; notification intent creation and Finance PATCH use `runOutboxTransaction`.
+- **HOSTILE-EVENT-CANCEL-RACE (P1)** — CLOSED via engine `e82bbdae`; event processed/failed paths preserve `canceled`.
+- **HOSTILE-MIGRATION-114-EDITED (P2)** — CLOSED via engine `e82bbdae`; migration 114 was restored and migration 115 rebuilds `event_outbox` with `canceled`.
+- **HOSTILE-IOS-DS-NEW-1 (P1)** — CLOSED via iOS `12a9d95`; URLProtocol mock state is lock-protected.
+- **HOSTILE-ADMIN-NO-TESTS (P1)** — CLOSED via engine `e82bbdae` plus `ca2e0cd9`; admin auth, tenant scope, replay, cancel, and attempts reset are behavior-tested.
+- **HOSTILE-ORPHAN-REAPER-NO-TEST (P2)** — CLOSED via engine `e82bbdae`; stale event/job lease reclaim paths are behavior-tested.
+- **HOSTILE-IOS-DS-9 (P1)** — CLOSED via iOS `12a9d95`; Dashboard scenePhase active refresh is TTL-gated.
+- **HOSTILE-IOS-DS-3 (P1)** — CLOSED via iOS `12a9d95`; summary refreshes include cancellation checkpoints and regression coverage.
+- **HOSTILE-IOS-DS-5 (P1/P2)** — CLOSED via iOS `12a9d95`; duplicate `changeId` first-write-wins is documented and tested.
+
+**Hostile re-QA closeout addendum**: `docs/archive/2026-05/event-backbone-readmodels-delta-sync/hostile-qa-report.md` (post-remediation § + v2 closeout §).
+
+**Independent gates after remediation**: tsc PASS · full `npm run verify` PASS 481 files / 7074 tests · focused event-backbone/security vitest PASS 52/52 · chat/admin follow-up vitest PASS 9/9 · Python pytest PASS 135/135 · iPhone Felipe DeltaSync tests PASS 11/11 · cannot-skip dashboard 23/23 · mock lint baseline 827.
+
+**Process improvement observed**: this is the FIRST hostile wave where Codex's closure narrative matched the source on architectural primitives. The pre-claim probe was adopted. Remaining gaps are now narrower and behavioral (fallback-path bug, asymmetric guards, missing rollback test, broken mock thread-safety) rather than "headline architectural property is fabricated."
+
+**Promoted P1 cluster — REMEDIATED IN SOURCE BRANCH**
+- Atomic event/job claims, stuck-lock recovery, dead-letter list/replay/cancel
+  operator routes, tenant-scoped replay/cancel, and processing-job cancellation.
+- Cleanup preserves dead-letter forensic evidence and processed events needed by
+  active sync cursors.
+- Sync no longer trusts query-string `deviceId`; authenticated request device
+  scope is required, reset-required paths do not advance the cursor, and iOS
+  reset handling clears scope without storing an unacknowledged cursor.
+- Route/budget tests now exercise real 429 paths and `Retry-After`; iOS
+  repository/store tests now cover coalescing, parallel summaries, reset cursor
+  safety, duplicate handling, and bounded cache history.
+
+Remaining conditions:
+- P1: independent Claude hostile re-QA against `2e896435` + `82abbea`.
+- P1: authenticated iOS product-surface interaction smoke remains required
+  before treating summary/delta app integration as UI-validated. Physical iPhone
+  behavior tests passed, but no authenticated screen walkthrough is claimed.
+- P1: release/deploy operator must explicitly confirm event-backbone worker and
+  cleanup env flags before staging/prod (`EVENT_BACKBONE_WORKER_DISABLED`,
+  batch limits, `EVENT_BACKBONE_CLEANUP_APPLY`).
+- P2: gradually render Home, Week/Semana, Training, Content, and Notifications
+  from summary read models where product value is clear.
+- P2: expand budgets to provider, calendar, content radar, and live
+  notification-delivery attempts.
+
+## 2026-05-07 Closed-Beta Gap Analysis — New P0/P1 Items
+
+These items came from the all-skills gap analysis run on 2026-05-07 by Claude Code
+on Opus 4.7 with 8 specialist Opus subagents. Detailed evidence (file:line, expected vs
+actual, recommended fix-prompts) is in the archive report linked above.
+
+### P0 — closed-beta blockers
+
+| ID | Area | Description |
+|---|---|---|
+| GAP-CONT-1 | content runtime | Performance + SEO agents no longer read global `YOUTUBE_CHANNEL_ID` as a fallback. PARTIAL IN SOURCE BRANCH `feature/secretary-notification-orchestrator`; `src/services/youtube-channel-scope.ts` resolves only explicitly user-owned channels and fails closed. OPEN WRITER GAP: OAuth/owned-channel writer still needs owner authorization before live creator analytics can be considered enabled. Coverage in `__tests__/services/youtube-channel-scope.test.ts` and `__tests__/security/content-agent-neutrality.test.ts`. |
+| GAP-COOK-1 | cooking | `applyMealPlanSubstitution`, `addRecipe`, `updateRecipe`, and `setMealPlan` now enforce stored allergy memory before writes; unsafe substitutions are rejected before mutation. CLOSED IN SOURCE BRANCH `feature/secretary-notification-orchestrator` via `6b6e74cb`; coverage in `__tests__/services/cooking-chef.test.ts` and `__tests__/api/cooking-routes.test.ts`. |
+| GAP-REL-3 | iOS CI | `ios/.github/workflows/ios-release-hardening.yml` now runs real `xcodebuild test` on the Nexus Hub scheme, verifies the GitHub-runner simulator destination, writes an xcresult bundle, and asserts a non-zero test count before release-hardening completion. CLOSED IN SOURCE BRANCH `feature/secretary-notification-orchestrator` via iOS commit `f43fc5b`; coverage in `Nexus HubTests/ReleaseHardeningConfigTests.swift`. |
+| GAP-REL-4 | backend health | `/health` and `/health/detailed` now run a live `SELECT 1` DB probe and return degraded/503 on failure. CLOSED IN SOURCE BRANCH `feature/secretary-notification-orchestrator` via `6b6e74cb`; coverage in `__tests__/portal/health-endpoints.test.ts`. |
+| GAP-REL-5 | release pipeline | Notification orchestrator security gate is empty: classifier glob `__tests__/security/notification-*.test.ts` expands to nothing; cannot-skip dashboard does not include orchestrator file. — CLOSED IN SOURCE BRANCH `feature/secretary-notification-orchestrator` via `__tests__/security/notification-orchestrator-security.test.ts`, changed-area classifier mapping, and cannot-skip dashboard representative. |
+| GAP-IOS-2 | iOS APNs | `ReportService.swift:111` hardcodes `environment: "sandbox"` for ALL builds → TestFlight/prod tokens mis-tagged → APNs delivery fails. — CLOSED IN SOURCE BRANCH `feature/secretary-notification-orchestrator`; debug builds register `sandbox`, release/TestFlight builds register `production`. |
+| GAP-IOS-1 | iOS WIP | `SettingsView.swift:83-89` switch non-exhaustive after `SettingsDestination.notificationCenter` was added. — CLOSED IN SOURCE BRANCH `feature/secretary-notification-orchestrator`; settings navigation handles `.notificationCenter`. |
+| GAP-IOS-3 | iOS WIP | `nexus://notifications/<id>` deep-link dead-ends (no view consumes `.notificationCenter`). — CLOSED IN SOURCE BRANCH `feature/secretary-notification-orchestrator`; `DeepLinkRouter` and Settings navigation consume notification-center routes. |
+| GAP-IOS-4 | iOS WIP | `AppDelegate.swift didReceive response` ignores `actionIdentifier` (mark_done/snooze/approve_script/reject_reflow are no-ops). — CLOSED IN SOURCE BRANCH `feature/secretary-notification-orchestrator`; custom notification actions are queued and consumed by Decision Center action handling. |
+
+### P1 — high priority before beta-launch
+
+| ID | Area | Description |
+|---|---|---|
+| GAP-SEC-AUTH-1 | auth/state | Legacy 2-arg `saveIdea(title, sourceDate)` no longer writes `user_id=0`; saved-idea writes and promote/use/delete mutations now require and scope by positive `userId`. CLOSED IN SOURCE BRANCH `feature/secretary-notification-orchestrator`; coverage in `__tests__/state/saved-ideas-scope.test.ts`. |
+| GAP-CHAT-1 | chat | Telegram domain routing now runs skill handlers inside `runWithChatToolAuthorization` ALS context with the canonical user/tenant. CLOSED IN SOURCE BRANCH `feature/secretary-notification-orchestrator`; coverage in `__tests__/handlers/chat-tool-auth-context.test.ts`. |
+| GAP-TRN-1 | training | Plan-linter blockers are now strict before app-facing plan-generation side effects. CLOSED IN SOURCE BRANCH `feature/training-intelligence-orchestration-consolidation` via engine `b35ed604` and iOS `d337636`: the backend runs write-free preflight before cancellation/persistence and returns `plan_quality_blocked`; iOS surfaces the blocker as requires-review without marking the plan created. |
+| GAP-CONT-2 | content tests | Neutrality coverage now scans TypeScript content agents/services and Python content-engine intelligence/creative services, and pins that runtime code does not read global `config.youtube?.channelId` / `YOUTUBE_CHANNEL_ID`. CLOSED IN SOURCE BRANCH `feature/secretary-notification-orchestrator` via engine commit `16b23cc9`; coverage in `__tests__/security/content-agent-neutrality.test.ts`. |
+| GAP-CONT-3 | content loop | Radar feedback currently feeds `content_radar_feedback` and source-side aggregate state, but the hostile re-check confirmed the performance-feedback adaptation loop is not wired to live `content_performance`. OPEN / PRODUCT WORKSTREAM REQUIRED; do not describe this as verified closed. |
+| GAP-CONT-4 | iOS content | TopicSchedulerView covers the publishing calendar half. Performance dashboard remains OPEN: ContentIntelligenceView does not expose views/retention/likes/comments performance truth. PARTIAL; physical/UI beta smoke remains operator validation after the performance surface exists. |
+| GAP-SEC-NOTIF-1 | notif orch | Quiet-hours-delayed and digest items persisted with `scheduled_for` but no scheduler/release loop consumes them. — CLOSED IN SOURCE BRANCH `feature/secretary-notification-orchestrator`; scheduler now runs the orchestrator release loop. |
+| GAP-SEC-NOTIF-2 | notif orch | `POST /api/v1/notifications/intents` accepts arbitrary `priority`/`sourceSkill`/`type` from client body; iOS could fabricate `security/critical`. — CLOSED IN SOURCE BRANCH `feature/secretary-notification-orchestrator`; arbitrary intent creation now requires internal secret authorization and fixture route remains deterministic. |
+| GAP-SEC-NOTIF-3 | notif orch | `migrations/113_*.sql` schema diverges from runtime `ensureNotificationTables()`; `ios_devices` only at runtime. — CLOSED IN SOURCE BRANCH `feature/secretary-notification-orchestrator`; migration/runtime table setup now cover orchestrator tables and existing APNs compatibility storage is preserved. |
+| GAP-SEC-NOTIF-4 | notif orch | `isInQuietHours` uses server-local time, not `profile.timezone`. — CLOSED IN SOURCE BRANCH `feature/secretary-notification-orchestrator`; quiet-hours policy now evaluates in the profile timezone. |
+| GAP-CAL-1 | secretary | Conflict-detection cron now emits a Secretary `conflict_detected` NotificationIntent before Telegram delivery, isolates failures per user, and dedupes by conflict signature. PARTIAL via engine commit `16b23cc9`; broader Telegram-only cron migration remains OPEN as a separate workstream. Coverage in `__tests__/services/scheduler-user-scope.test.ts`. |
+| GAP-FIN-1 | finance privacy | Hostile-cited finance logs no longer include raw transaction `category`/`amount`, receipt merchant/amount, tax due, or vendor names; logger redaction now includes finance PII/amount paths. CLOSED IN SOURCE BRANCH `feature/secretary-notification-orchestrator` via engine commit `16b23cc9`; coverage in `__tests__/services/finance-tracker.test.ts`, `__tests__/api/finance-routes.test.ts`, and `__tests__/utils/logger-redaction-finance.test.ts`. |
+| GAP-FIN-2 | finance | Brazilian tax support is still the only implemented jurisdiction for tax calculation. OPEN / OWNER DECISION REQUIRED for a finance jurisdiction model and non-BR behavior contract. |
+| GAP-PORT-3 | portal | New `/api/notifications` and `/api/notification-preferences` lack tenant filter at route boundary (`engine/src/portal/document-routes.ts:13-50,52-64`). — CLOSED IN SOURCE BRANCH `feature/secretary-notification-orchestrator`; portal routes validate scoped user/tenant headers/query and reject cross-tenant scope. |
+| GAP-REL-1 | docs/identity | Workspace `docs/release/release-identity.md` stale at 4.14.132 (prod is 4.14.134). — OPEN |
+| GAP-REL-2 | docs/release | Engine `docs/release/CURRENT_RELEASE_STATE.md` frozen at 4.14.127 — 7 production releases unsynced. — OPEN |
+| GAP-REL-6 | mock-lint | Trajectory off-target: ~70 months at 10/month vs `<100 by 2026-08-01`. OPEN / OWNER DECISION REQUIRED: either authorize a larger mock-factory reduction batch or downgrade the commitment date. |
+| GAP-REL-7 | release gate | Two-account E5 remains operator-evidence gated; adding a hard CI/deploy gate needs an explicit release-process decision to avoid blocking emergency deploys without physical-device evidence. OPEN / OWNER DECISION REQUIRED. |
+| GAP-IOS-5 | iOS cache | `ResponseCache.shared.clear()` is now awaited on signOut and scope reconciliation/account switch paths, `InboxSnapshotStore` is invalidated, `URLCache` is cleared, and logout runs after local cache invalidation. CLOSED IN SOURCE BRANCH `feature/secretary-notification-orchestrator` via iOS commit `f43fc5b`; coverage in `Nexus HubTests/ResponseCacheTests.swift` and `Nexus HubTests/RepositoryScopeChangeTests.swift`. |
+
+P2/P3 items (~30 more) live only in the archive report; surface to OPEN_ITEMS only when promoted by a fix prompt or new evidence.
+
+## 2026-05-07 Hostile QA on Notification Orchestrator — New Findings
+
+Hostile QA report: `docs/archive/2026-05/secretary-notification-orchestrator/hostile-qa-report.md`
+Verdict: **SOURCE REMEDIATION COMPLETE FOR HOSTILE P0/P1 CLUSTER** on `feature/secretary-notification-orchestrator`; original hostile verdict was **NOT_READY** until the P0/P1 cluster closed.
+Scope: 5 specialist Opus subagents in parallel; independent vitest run 37/37 passed; manual probes.
+
+### P0 NEW
+
+| ID | Area | Description |
+|---|---|---|
+| HOSTILE-POLICY-1 | notif policy | `quietHoursPolicy: 'send_now'` bypass hardened. CLOSED IN SOURCE BRANCH via `29ceb44f`; `send_now` is trusted only for security/system urgent paths and otherwise delays through quiet-hours logic. Behavioral coverage added in `__tests__/services/notification-orchestrator.test.ts`. |
+| HOSTILE-PORTAL-1 | portal | Missing portal scope no longer falls back to all tenants. CLOSED IN SOURCE BRANCH via `3d66339b`; notification portal routes require admin token plus explicit user/tenant scope and return 400 on first-paint empty scope. |
+| HOSTILE-PORTAL-2 | portal | Legacy content notifications are now scoped. CLOSED IN SOURCE BRANCH via `3d66339b`; `getAllNotifications(limit, scope)` requires validated user/tenant scope and portal tests pin no cross-tenant blend. |
+| HOSTILE-PRIVACY-1 | privacy | Lock-screen body redaction now defaults safe. CLOSED IN SOURCE BRANCH via `8b79faaa`; `sensitiveBody` is persisted/read for authenticated detail and standard/security bodies no longer expose raw content. |
+| P0-IOS-NOTIF-1 + HOSTILE-BACKEND-1 | iOS+auth lifecycle | Orphan notification tokens closed. CLOSED IN SOURCE BRANCH via backend `b50cc162` and iOS `f7a940b`; logout/logout-all revoke `notification_device_tokens`, and iOS signOut DELETEs the registered token before local reset. |
+| P0-IOS-NOTIF-2 | iOS APNs entitlement | Time-sensitive support is no longer UI-only. CLOSED IN SOURCE BRANCH via engine `29ceb44f` and iOS `f7a940b`; APNs payload includes `interruption-level`, local reminders set interruption level, and debug/release entitlements include `com.apple.developer.usernotifications.time-sensitive`. |
+| P0-IOS-NOTIF-3 | iOS test confidence | Decision action UI test is no longer fixture-only. CLOSED IN SOURCE BRANCH via iOS `d55367f`; the UI test launches against a local HTTP stub and verifies the action POST reaches `/api/v1/notifications/:id/actions`. |
+
+### P1 NEW
+
+| ID | Area | Description |
+|---|---|---|
+| HOSTILE-POLICY-2 | notif policy | Equal quiet-hours bounds are rejected. CLOSED IN SOURCE BRANCH via `29ceb44f`; `updateNotificationProfile` throws when `quietHours.start === quietHours.end`. |
+| HOSTILE-POLICY-3 | privacy | `public` no longer bypasses per-skill scrubs. CLOSED IN SOURCE BRANCH via `8b79faaa`; finance/training/content/security redaction branches win before any raw-public body path. |
+| HOSTILE-POLICY-4 | digest | Digest release now groups due passive items. CLOSED IN SOURCE BRANCH via `29ceb44f`; `assembleDailyDigest` emits one digest attempt for grouped rows. |
+| HOSTILE-POLICY-5 | spam | Push rate limiting added. CLOSED IN SOURCE BRANCH via `29ceb44f`; excess active pushes become in-app-only with a decision-log reason instead of spamming APNs. |
+| HOSTILE-POLICY-6 | APNs | APNs `interruption-level` support added. CLOSED IN SOURCE BRANCH via `29ceb44f` plus iOS `f7a940b`; backend, local notifications, and entitlement tests cover the contract. |
+| HOSTILE-POLICY-7 | cross-skill | Cooking and Finance now have production intent emission paths. CLOSED IN SOURCE BRANCH via `29ceb44f`; meal-prep scheduling and tax due calculation emit orchestrated intents without direct push delivery. |
+| HOSTILE-PRIVACY-2 | security | Security defaults are sensitive. CLOSED IN SOURCE BRANCH via `8b79faaa`; security lock-screen copy routes through the sensitive safe-title branch. |
+| HOSTILE-PORTAL-3 | portal scope | Notification portal routes require admin token. CLOSED IN SOURCE BRANCH via `3d66339b`; read-token-only access is rejected. |
+| P1-IOS-NOTIF-4 | iOS lifecycle | Queued notification actions now persist until consumed. CLOSED IN SOURCE BRANCH via iOS `676b7ed`; `DeepLinkRouter` restores pending action IDs from `UserDefaults` and clears them after matching consumption. |
+| P1-IOS-NOTIF-5 | iOS scope guard | Decision Center load is scope-key guarded. CLOSED IN SOURCE BRANCH via iOS `f7a940b`; stale async responses after signOut/account switch are dropped. |
+| P1-IOS-NOTIF-6 | iOS contract | Notification ID contract is standardized around string `itemId` while tolerating legacy numeric payloads. CLOSED IN SOURCE BRANCH via iOS `f814541` and existing router coverage; local notification payloads include both string `notificationId` and `itemId`. |
+
+### Test-quality findings
+
+- `__tests__/security/notification-orchestrator-security.test.ts`: CLOSED IN SOURCE BRANCH via `0a51d881`; replaced source-grep checks with behavior-bearing SQLite/route tests.
+- `__tests__/portal/portal-notifications-ui.test.ts`: CLOSED IN SOURCE BRANCH via `0a51d881`; portal notification reads now exercise admin/scope behavior and safe serialization.
+- `Nexus HubTests/NotificationDecisionCenterTests.swift`: CLOSED IN SOURCE BRANCH via iOS `f814541`; source-grep cases were replaced with DTO/action contract tests.
+- `Nexus HubUITests/NotificationDecisionCenterUITests.swift`: CLOSED IN SOURCE BRANCH via iOS `d55367f`; added a non-fixture local-backend action round-trip UI test.
+
+### Override notes
+
+- **GAP-PORT-3** hostile downgrade is now CLOSED AGAIN IN SOURCE BRANCH via `3d66339b`; both empty route scope and legacy notification-array bypasses have behavioral tests.
+- **GAP-SEC-NOTIF-3** hostile privacy downgrade is now CLOSED AGAIN IN SOURCE BRANCH via `8b79faaa`; `sensitive_body` is stored, mapped, serialized only where safe, and lock-screen bodies redact by default.
+
+Codex remediation prompt: `docs/archive/2026-05/secretary-notification-orchestrator/notification-orchestrator-codex-remediation-prompt.md`.
+
+
+## 2026-05-08 Hostile QA on Chat Reasoning Engine v1
+
+Branch: `feature/chat-reasoning-engine-v1` (engine commit `6e2f27d3`, on top of `main` `5373398c` / 4.14.138).
+
+Backup tag: `backup/chat-reasoning-before-v1-20260507-2330`.
+
+Verdict: **READY_WITH_CONDITIONS** after Codex remediation on `feature/chat-reasoning-engine-v1`. Exact Prozis acceptance case works end to end, and the hostile P0/P1 source blockers listed below are closed locally. Do not promote to staging/production until the branch is merged deliberately and the normal deploy gates run.
+
+Report: `docs/archive/2026-05/chat-reasoning-engine-v1/hostile-qa-report.md`.
+
+Verification reproduced (read-only):
+- `npx tsc --noEmit`: PASS.
+- Focused suite: 3 files / 64 tests PASS (`__tests__/services/chat-reasoning-engine.test.ts`, `__tests__/api/chat-routes.test.ts`, `__tests__/services/task-store/task-router.test.ts`).
+- P0 chat identity isolation: 23/23 PASS.
+- Native task route regression: 25/25 PASS.
+- `vi-mock-completeness-lint --strict`: exit 0 (warnings about new `assertNoUnexpectedMigrationPrefixCollisions` mock key are non-fatal).
+- `cannot-skip-gate-dashboard.sh --json --no-evidence`: 23/23 PASS.
+- `npm run docs:audit`: 443 files / 469 issues (+2 drift from Codex's 467 due to stale workspace mirror; under 480 ceiling).
+
+### P0 NEW — CLOSED IN SOURCE BRANCH
+
+| ID | File / line | Description |
+|---|---|---|
+| F-EXEC-1 | `src/services/chat-reasoning-engine.ts` | CLOSED locally. Reusable action-plan lookup now includes `executing`; task refs are persisted immediately after parent creation; retries with a saved task ref resume missing subtasks without calling `createTask`; retries without a task ref fail closed as in-progress instead of duplicating. |
+| F-PARSE-3 | `src/services/chat-reasoning-engine.ts` | CLOSED locally. Targeted destructive commands on task/event/calendar nouns now route to confirmation-required before any skill/model execution. |
+| F-PARSE-4 | `src/services/chat-reasoning-engine.ts` | CLOSED locally. Task messages joined with a second action verb now fail closed as multi-step clarification instead of flattening reminders/schedules/cancels into subtasks. |
+
+### P1 NEW — CLOSED / DEFERRED HONESTLY IN SOURCE BRANCH
+
+| ID | File / line | Description |
+|---|---|---|
+| F-EXEC-2 | `src/services/chat-reasoning-engine.ts` | CLOSED locally. Plain `create_task` now executes through the deterministic task provider and verifies read-back. |
+| F-ARCH-1 | `migrations/116_chat_reasoning_engine_v1.sql` | CLOSED by removing the writerless `chat_correction_events` table from v1. Repair/correction remains a documented future slice rather than dead DDL. |
+| F-ARCH-2 | `src/config.ts` | CLOSED by removing unused `chatActionLabel/Plan/Repair/Clarify` config. Model-graded labelling remains deferred until a real call site ships. |
+| F-PARSE-1 / F-PARSE-7 / F-PARSE-9 / F-PARSE-10 / F-PARSE-11 / F-PARSE-12 / F-PARSE-13 / F-PARSE-15 | `src/services/chat-reasoning-engine.ts` | CLOSED locally with regression coverage: discourse phrases are stripped before splitting, title/subtask caps are enforced, PT implicit-subtask and Spanish explicit-subtask cases parse, mixed quotes survive, bare checklist syntax parses, multi-recipient updates ask clarification, and bulk plural/count forms no longer collapse into one task. |
+
+### P2/P3 — CLOSED OR LEFT AS EXPLICIT FOLLOW-UP
+
+Closed locally: `F-CTX-1` tenant fallback removed; `F-TEST-1` cross-tenant action-plan scope covered; `F-ARCH-3` stale-plan expiry utility added and then wired to the scheduler; `F-ARCH-4` recursive identity stripping added; `F-EXEC-3` null task read-back no longer verifies; `F-EXEC-4` partial/in-progress plans resume missing subtasks; `F-PARSE-2/5/6/8/14` covered by parser hardening where applicable. Remaining follow-up: `F-ARCH-5` model confidence remains future-only because v1 is intentionally deterministic.
+
+### Path back to READY
+
+Secretary task/subtask vertical slice is now appropriate for hostile re-QA. iOS result-card rendering, full undo/repair, model-graded labelling, and broader cross-skill execution remain explicit follow-ups.
+
+
+## 2026-05-08 Hostile QA v2 on Chat Reasoning Engine v1 — Closure verdict
+
+Branch: `feature/chat-reasoning-engine-v1` at remediation commit `1d2e6d22`.
+
+Verdict: **READY_FOR_LOCAL_QA** after post-v2 Codex remediation. Prior NOT_READY blockers are closed behaviorally, and the v2 F-EXEC-6 retry verifier gap is closed locally.
+
+Report: `docs/archive/2026-05/chat-reasoning-engine-v1/hostile-qa-v2-final-report.md`.
+
+Verification floor reproduced (read-only):
+- `npx tsc --noEmit`: PASS.
+- Full focused suite: 6 files / **122 tests** PASS (up from 64 in the prior round). New surface: 6 tests in `chat-reasoning-engine.test.ts` + 4 in the brand-new `chat-reasoning-engine-persistence.test.ts` (real-DB sqlite + manually-inserted `'executing'` rows + cross-tenant scope + expiry sweep).
+- P0 chat identity isolation: 23/23 PASS.
+- Native task route regression: 25/25 PASS.
+- `vi-mock-completeness-lint --strict`: exit 0.
+- `cannot-skip-gate-dashboard.sh`: 23/23 PASS.
+- `npm run docs:audit`: 444 files / 469 issues during hostile v2 (under 480 ceiling; +2 workspace-mirror-stale carryover). Post-v2 remediation reruns the mirror before commit.
+
+### Independent confirmation of CLOSED locally claims
+
+All P0 (F-EXEC-1, F-PARSE-3, F-PARSE-4) confirmed CLOSED with real behavioural evidence:
+- F-EXEC-1: `findReusablePlan` filter now includes `'executing'`; `replayOrResumeTaskWithSubtasks` reads `created_entity_refs_json`, computes missing subtasks via verifier, and re-adds only missing items. Persistence test "resumes an executing action plan without creating a duplicate provider task" asserts `provider.createTask` NOT called and `addChecklistItem` called for 2 missing items.
+- F-PARSE-3: Three new patterns (`DESTRUCTIVE_VERBS`/`DESTRUCTIVE_OBJECT_TARGETS`/`DESTRUCTIVE_SWEEP_TARGETS`) and `isDestructiveIntent` helper. "Delete the Prozis task", "Cancel my 9am meeting", "Apaga a tarefa Prozis" all → `'high_risk_preview'`.
+- F-PARSE-4: `MULTI_STEP_SECOND_ACTION` regex + `hasMultiStepActionIntent` helper, gated BEFORE `TASK_CREATE_PATTERNS`. Multi-step messages return `needs_clarification` with `multi_step_action_requires_preview`.
+
+All P1 (F-EXEC-2, F-ARCH-1, F-ARCH-2, F-PARSE-1/7/9/10/11/12/13/15) confirmed CLOSED:
+- F-ARCH-1 / F-ARCH-2 closed by REMOVAL (correct call — DDL/config without callers is worse than absence).
+- All parser P1 closed by behavioral test fixtures.
+- F-EXEC-2 closed with new `executeCreateTask` executor that creates the plain task via `provider.createTask` and verifies read-back.
+
+All P2 from prior round (F-CTX-1, F-TEST-1, F-ARCH-3, F-ARCH-4, F-EXEC-3, F-EXEC-4) confirmed CLOSED:
+- F-CTX-1 escalated from "fallback" to "throw `chat_reasoning_missing_authenticated_tenant`".
+- F-TEST-1 closed with explicit "scopes action-plan idempotency by tenant and user" test using same userId + same sourceMessageId + different tenantId.
+- F-ARCH-3 closed with exported `expireStaleChatActionPlans()`. Note: function exists; scheduler/cron wiring is a P3 follow-up.
+- F-ARCH-4 closed with recursive `containsAuthoritativeIdentityField` and `stripAuthoritativeIdentityFields` over arrays + nested objects, applied to `entities` and `steps[*].entities`.
+- F-EXEC-3 closed with explicit `task_read_back_unavailable` warning.
+- F-EXEC-4 closed via `replayOrResumeTaskWithSubtasks`; F-EXEC-6 below closes the verifier-blind edge in that same path.
+
+### New P1 from this re-QA pass — CLOSED LOCALLY
+
+| ID | File / line | Description |
+|---|---|---|
+| F-EXEC-6 | `src/services/chat-reasoning-engine.ts` + `__tests__/services/chat-reasoning-engine-persistence.test.ts` | CLOSED locally. `verifyTaskWithSubtasks` now marks verifier-blind state when both task and checklist read-back are unavailable, returns no guessed missing subtasks, and `replayOrResumeTaskWithSubtasks` bails to `in_progress` without calling `addChecklistItem`. Regression test manually seeds an `executing` plan with a saved task ref, makes both provider read-backs fail, and asserts zero duplicate task/subtask writes. |
+
+### P3 follow-ups (cosmetic, not blocking)
+
+- **F-EXEC-5** (carryover) — CLOSED locally. Action-plan creation now uses atomic `INSERT OR IGNORE` claim semantics; a duplicate/concurrent claimant receives `chat_action_in_progress` before resolving lists or touching provider state. Regression test seeds an already-claimed plan and asserts zero provider writes.
+- **F-ARCH-3 follow-up** — CLOSED locally. `expireStaleChatActionPlans` now runs through the scheduler as `chat_action_plan_expiry` on an hourly cadence, with a no-op skip test.
+- **F-DOCS-1** (carryover) — CLOSED locally by rerunning `bash scripts/workspace-docs-mirror.sh` after the post-v2 remediation docs update.
+- **F-PROCESS-1** (NEW) — CLOSED locally by tagging the remediation line with `backup/chat-reasoning-after-v1-remediation-20260508-0919`.
+
+### Path to TestFlight
+
+1. iOS structured chat-result card pass — CLOSED locally on `feature/chat-reasoning-engine-v1`. The app now decodes `metadata.subtasks`, `metadata.actions`, `metadata.actionPlanId`, `metadata.idempotentReplay`, and `routeMethod: 'chat-reasoning-engine'`, renders the task/subtask card, and exposes View/Add-more actions without faking backend mutations.
+2. Existing operator-only gates: signed TestFlight + APNs + two-account walkthrough on a real device.
+
+
+## 2026-05-08 Hostile QA v3 on Chat Reasoning Engine v1 — Final closure verdict
+
+Branch: `feature/chat-reasoning-engine-v1`. Engine HEAD `d6d010e2` (commits since v2: `e7416c0b` F-EXEC-6 fix, `373a9a79` F-EXEC-5 + scheduler, `d6d010e2` docs). iOS HEAD `955eedb` (NEW iOS chat-reasoning card surface).
+
+Verdict: **READY_FOR_LOCAL_QA**. All v2 P1 + P3 follow-ups closed with strong behavioral evidence. One new P2 iOS polish gap (F-IOS-1) and one carryover P3 docs hygiene (F-DOCS-1). Zero P0, zero P1, zero regressions.
+
+Report: `docs/archive/2026-05/chat-reasoning-engine-v1/hostile-qa-v3-final-report.md`.
+
+### Independent verification of v2 closures (all behaviorally re-confirmed)
+
+- **F-EXEC-6** — verifier-blind retry duplication. CLOSED via `verifyTaskWithSubtasks` returning `verificationBlind: true` when both `getTask` and `getChecklistItems` fail; `replayOrResumeTaskWithSubtasks` short-circuits to `'in_progress'` with `reason: 'verification_blind'` BEFORE attempting any subtask retry. Persistence test asserts `provider.createTask` AND `provider.addChecklistItem` BOTH NOT called when both reads fail.
+- **F-EXEC-5** — concurrent retry race. CLOSED via atomic `INSERT OR IGNORE` + new `claimActionPlan` helper. Failed claims return `acquired: false` with the existing row's status; executors return `'in_progress'` with `reason: 'action_plan_already_claimed'` instead of throwing UNIQUE 500. Persistence test asserts the entire provider call chain stays untouched.
+- **F-ARCH-3 follow-up** — `expireStaleChatActionPlans` is now wired into the scheduler as `chat_action_plan_expiry` on `15 * * * *` (hourly). Logs only when expirations occur. Scheduler test asserts the cron entry exists and short-circuits cleanly.
+- **F-PROCESS-1** — three new backup tags landed: `backup/chat-reasoning-after-v1-remediation-20260508-0919`, `backup/chat-reasoning-after-v1-v2-closure-20260508-0920`, `backup/chat-reasoning-after-v1-final-20260508-0830`.
+
+### Verification floor reproduced (read-only)
+
+- `npx tsc --noEmit`: PASS.
+- Engine focused suite: 6 files / **131 tests** PASS (was 122 in v2, 64 in v1; net +9 from v2, +67 from v1).
+- `chat-reasoning-engine-persistence.test.ts`: 6/6 PASS (was 4 in v2). New: F-EXEC-6 verifier-blind test + F-EXEC-5 already-claimed test.
+- `scheduler-user-scope.test.ts`: 14/14 PASS, includes the new chat-action-plan-expiry test.
+- P0 chat identity isolation: 23/23.
+- Tasks routes regression: 25/25.
+- `vi-mock-completeness-lint --strict`: exit 0.
+- `cannot-skip-gate-dashboard.sh`: 23/23.
+- `npm run docs:audit`: 445 files / 469 issues (under 480 ceiling; +2 `workspace-mirror-stale` carryover on `release-identity.{json,md}`).
+
+### NEW finding from v3 round
+
+| ID | File / line | Description |
+|---|---|---|
+| F-IOS-1 | `Nexus Hub/Views/Chat/StructuredCards.swift:41-59` | The iOS card switch only handles `task_created` / `task_completed`. The 5 other `chat_action_*` types the engine emits (`chat_action_in_progress`, `chat_action_clarification_required`, `chat_action_confirmation_required`, `chat_action_execution_failed`, `chat_action_deferred`) all fall through to `unknownTypeInline` which renders a generic gray "Structured response" placeholder card. The `response.text` is rendered correctly in the bubble; only the card below is unhelpful. **Recommendation**: add the 5 types to the silent `EmptyView()` list (one-line fix) OR render small status badges per type. ~10 lines + 5 small rendering tests. **Severity**: P2 polish before signed TestFlight, not a blocker for local QA. |
+
+### Pending actions (TL;DR)
+
+| Owner | Action | Severity | ETA |
+|---|---|---|---|
+| Codex (or Claude) | F-IOS-1 — add the 5 `chat_action_*` types to the iOS card switch | P2 | <30 min |
+| Felipe (operator) | F-DOCS-1 — run `engine/scripts/workspace-docs-mirror.sh` to converge `+2 release-identity` drift | P3 | 1 command |
+| Felipe (operator) | iOS xcodebuild simulator run for new chat-reasoning card tests (`ChatRichStateDecodingTests` + `ChatStructuredCardRenderingTests`) | operator-only | ~15 min |
+| Felipe (operator) | Signed TestFlight + two-account walkthrough on physical device | operator-only | requires APNs creds |
+
+### Lower-priority follow-ups
+
+- **F-IOS-2** (P3) — `view_task` deep-link does not pass `taskId`/`listId`; user lands on Tasks tab list, not the specific task. Track as Tasks-tab follow-up.
+- **F-IOS-3** (P3) — "undo" action button is plumbed in iOS but the engine never emits `'undo'` in the actions array (manifest declares `undoSupported: false`). Dead code path; remove from `MetadataTaskAction` until a real undo endpoint ships.
+
+After F-IOS-1 closes, this slice is ready for the existing operator-only TestFlight + APNs + two-account gates that apply to every 2026-05 workstream.
+
+
+## 2026-05-08 Hostile QA v4 — F-IOS-1 + F-DOCS-1 final closure
+
+Both v3 carryovers verified CLOSED behaviorally on `main`. Engine `1f7862aa`, iOS `fb63527e`, both aligned with `origin/main`, both working trees clean. Production at backend `4.14.140`.
+
+### F-IOS-1 — CLOSED
+
+- Source contract: `Nexus Hub IOS/Nexus Hub/Nexus Hub/Views/Chat/StructuredCards.swift` declares `static let silentMetadataTypes: Set<String>` (line 9-25) containing all 5 chat_action_* types: `chat_action_in_progress`, `chat_action_clarification_required`, `chat_action_confirmation_required`, `chat_action_execution_failed`, `chat_action_deferred`.
+- Switch routing: line 71 `case let type where Self.silentMetadataTypes.contains(type): EmptyView()` matches BEFORE the `default → unknownTypeInline(type)` case, so Swift's top-down evaluation guarantees these types render as silent EmptyView, not the generic placeholder.
+- Behavioral test: `Nexus HubTests/ChatStructuredCardRenderingTests.swift:163` `test_chatActionMetadataTypesAreKnownSilentCards` iterates the 5 types, asserts membership AND renders each via the helper that asserts non-zero hosting-controller layout.
+- Test execution: `xcodebuild test … -only-testing:Nexus HubTests/ChatStructuredCardRenderingTests` on simulator `A0B13967-B5DE-4E6F-897D-F1E409093F94` (after a clean simulator erase) → **7 tests, 0 failures, 0.127s**. Simulator shut down afterward; no booted devices remaining; no orphan xcodebuild processes.
+
+### F-DOCS-1 — CLOSED
+
+- `engine/scripts/workspace-docs-mirror.sh --check` returns `workspace-docs-mirror: in sync` with exit 0.
+- `npm run docs:audit` now reports **446 markdown files / 467 issues** (down from 469; the `workspace-mirror-stale: 2` entries on `release-identity.{json,md}` are gone). Under 480 ceiling.
+
+### Cleanup
+
+- Engine HEAD `1f7862aa`, iOS HEAD `fb63527e`, both clean working trees.
+- Simulator `A0B13967` shut down via `xcrun simctl shutdown`; `xcrun simctl list devices booted` empty.
+- No orphan `xcodebuild test` processes.
+- No deploy / push / rebase / amend / force-push performed.
+
+### Final verdict
+
+**READY for the next operator-only gates** (signed TestFlight + APNs + two-account walkthrough on physical device). All Codex-closable items in the chat-reasoning workstream are now behaviorally closed.
+
+The minor follow-ups (F-IOS-2 deep-link taskId/listId, F-IOS-3 dead "undo" code path) are P3 polish, not blockers.
+
+
+## 2026-05-08 APNs operational verification — CLOSED
+
+APNs end-to-end push delivery is operationally verified on production. The "APNs validation" carryover under Operator-Only Carryovers is closed for backend wire-up; remaining is signed TestFlight + device walkthrough for cohort onboarding.
+
+Runbook: `docs/release/apns-runbook.md`.
+
+### Pre-existing config (no new portal work)
+
+- Apple Developer Auth Key already exists: Key ID `4QU52CCBPM` (created 2026-04-10 19:04 by Felipe). Service: APNs, team scoped, sandbox + production. The `.p8` file is at `~/Library/Mobile Documents/com~apple~CloudDocs/Dev/Nexus Hub/certificates/AuthKey_4QU52CCBPM.p8` on Felipe's Mac and at `/home/dominguez/secrets/AuthKey_4QU52CCBPM.p8` (mode 600) on production.
+- Production `~/telegram-hub-bot/.env` already has all 5 APNs keys set: `APNS_ENABLED=true`, `APNS_TEAM_ID=B6885R8NWM`, `APNS_KEY_ID=4QU52CCBPM`, `APNS_AUTH_KEY_P8` pointing at the server `.p8`, `APNS_BUNDLE_ID=me.nexushub.app`, `APNS_ENVIRONMENT=sandbox`.
+- iOS app has the right entitlements: `aps-environment=development` (Debug) and `aps-environment=production` (Release), plus `time-sensitive`.
+
+### End-to-end smoke (2026-05-08)
+
+Sent a real push to user 25 (Felipe) via `node scripts/apns-smoke.mjs --user 25`:
+- Endpoint: `api.sandbox.push.apple.com`
+- Topic: `me.nexushub.app`
+- Result: **HTTP 200**, Apple `apns-id=52E648D4-D3ED-D5D4-1189-6341FFF9F105`
+- JWT: ES256, kid=`4QU52CCBPM`, signed cleanly (200 chars)
+
+This proves: backend env loaded, `.p8` readable, JWT signing healthy, Apple Push endpoint reachable, topic + bundle ID accepted, auth accepted, sandbox environment matches existing tokens.
+
+### New helpers landed in this round
+
+- `engine/scripts/apns-smoke.mjs` — diagnostic CLI with `--check` (no network), `--list` (token inventory), `--user <id> [--dry-run] [--message ...]` (real send). Reads `.env` directly so it works inside an SSH session without the engine running. Never prints `.p8`, push tokens, or signed JWTs.
+- `engine/.env.example` — APNs section added with all 6 keys documented inline.
+- `docs/release/apns-runbook.md` — workspace-canonical runbook covering current state, sandbox/production switching, rotation procedure, common gotchas. Mirror in sync.
+
+### Production endpoint flip + device-verified push delivery (2026-05-08 13:30)
+
+After Felipe reinstalled the app on his physical iPhone via TestFlight Release build:
+
+1. **iOS auth-only**: 3 fresh device rows landed (IDs 244, 246, 247) but all had `push_token = NULL` because the app deliberately does NOT auto-prompt for notification permission at launch (Apple HIG compliance, see `Nexus Hub/Core/NotificationManager.swift:151`).
+2. **Felipe enabled notifications via Settings tab** → app called `registerForRemoteNotifications` → fresh token uploaded (row 247, token_len=64 — standard 32-byte hex, much cleaner than the old row 114's anomalous 160 chars).
+3. **First smoke push on sandbox endpoint returned `BadDeviceToken`** — confirming the new token came from a Release/TestFlight build (production entitlement) and the backend was misaligned at `APNS_ENVIRONMENT=sandbox`.
+4. **Flipped `APNS_ENVIRONMENT=sandbox → production`** on `~/telegram-hub-bot/.env` (backup at `.env.bak.20260508-133036`, all other env values untouched), then `pm2 restart nexus-hub --update-env`.
+5. **Re-verified config**: `node scripts/apns-smoke.mjs --check` → all green, environment now `production`.
+6. **Re-sent smoke push**: `node scripts/apns-smoke.mjs --user 25` → **HTTP 200** from `api.push.apple.com`, Apple `apns-id=EF8A9B5A-0CD3-628A-5526-303FAA5B8901`. Felipe confirmed visually that the notification landed on iPhone.
+
+### Two-account walkthrough still open
+
+- Jaqueline's user 28 token (created 2026-04-18) has token_len=64; her last push from sandbox endpoint succeeded under the prior config. Now that the backend is on production, her token may also be a production token (TestFlight install) — should be retested via `apns-smoke.mjs --user 28` once Jaqueline has confirmed her install is also fresh. If her token was sandbox, it'll now reject with `BadDeviceToken` until she reinstalls via TestFlight too.
+- Tenant-isolation device proof on Felipe + Jaqueline accounts (already validated via P0 chat-identity-isolation test suite at the API layer; device-side validation remains an operator gate).
+
+### Final APNs state
+
+| Field | Value |
+|---|---|
+| `.p8` (Apple) | Auth Key `4QU52CCBPM`, sandbox + production scope |
+| `.p8` (server) | `/home/dominguez/secrets/AuthKey_4QU52CCBPM.p8` (mode 600) |
+| Engine env | `APNS_ENABLED=true`, `APNS_TEAM_ID=B6885R8NWM`, `APNS_KEY_ID=4QU52CCBPM`, `APNS_BUNDLE_ID=me.nexushub.app`, `APNS_AUTH_KEY_P8=/home/dominguez/secrets/AuthKey_4QU52CCBPM.p8`, `APNS_ENVIRONMENT=production` |
+| pm2 nexus-hub | restart counter 430 (one clean restart at 13:30:36 to pick up production env) |
+| Last verified delivery | apns-id `EF8A9B5A-0CD3-628A-5526-303FAA5B8901` to Felipe's iPhone (user 25, row 247) on 2026-05-08 13:31 — **device-side delivery confirmed by Felipe** |
+| APNs gate status | **CLOSED on production**. Backend → Apple → device chain verified end-to-end. |
+
+
+## 2026-05-08 Outlook token-cache performance remediation — STAGING READY
+
+Closeout: `docs/archive/2026-05/perf-outlook-token-cache/closeout.md`.
+
+Codex implemented the server-side Microsoft auth remediation on branch
+`perf/outlook-token-cache-2026-05`:
+
+- Per-user and owner Microsoft Graph access-token cache with 55-minute TTL.
+- Per-user client-type memoization so iOS public-client refresh tokens skip the
+  repeated confidential-client failure path after the first fallback.
+- Cache invalidation on Outlook `storeTokens`, `disconnectProvider`, and
+  `updateAccessToken`.
+- Single-flight coalescing for concurrent cold misses.
+- Additional Tasks working-set optimization: Microsoft To Do working-set reads
+  no longer call `getAllPendingTasks()` and no longer refetch the default list's
+  active page after building the active snapshot.
+
+Validation:
+
+- TypeScript: PASS.
+- Microsoft auth focused tests: PASS, 11/11.
+- Chat/task/identity regression suite: PASS, 119/119.
+- Provider-routing safety suite: PASS, 19/19.
+- Garmin passive-auth suite: PASS, 9/9.
+- Strict mock lint: PASS at baseline 827.
+- Cannot-skip gate dashboard: PASS, 23/23.
+- Staging deploy: PASS; production untouched.
+- Five-minute staging soak: PASS.
+- Staging smoke: PASS, 17/17.
+
+Evidence limit:
+
+- Staging has no `user_oauth_tokens` rows for users 25 or 28, so staging could
+  not prove live Outlook cache hit ratio. The cache behavior is covered
+  hermetically in tests; production log verification remains required after
+  merge/deploy.
+- Physical iPhone device logs were not captured because this macOS `/usr/bin/log`
+  does not support `--device`, and `xcrun devicectl` on this host exposes no
+  device log streaming command.
+
+Remaining follow-ups:
+
+- **Operator**: merge/review and deploy to production when ready; then verify
+  production PM2 logs show the Microsoft public-client warning at most once per
+  cache key/hour and `microsoft_auth_token_cache_summary` reports >90% hit
+  ratio after warm-up.
+- **Codex/iOS follow-up (P2)**: move `TaskRepository` fetch/decode work off
+  `@MainActor`; keep only final state assignment on main.
+- **Codex/backend follow-up (P2)**: add JSON compression for large app-facing
+  API responses with tests.
+
+
+## 2026-05-08 v4.14.141 production promote — Outlook token cache + APNs unblock
+
+Engine `main` advanced from `1f7862aa` (v4.14.140) to `9f551b73` (v4.14.141, auto-bumped by `deploy.sh`). Production tag `v4.14.141-prod-20260508-1358` published to origin. iOS unchanged at `fb63527e`.
+
+Backup tags created:
+- `backup/main-before-perf-outlook-merge-20260508-1444` (pre-merge baseline)
+- `backup/perf-outlook-token-cache-before-20260508-1353` (Codex pre-remediation)
+
+### Deploy procedure executed
+
+1. Fast-forward merge `perf/outlook-token-cache-2026-05` → `main` (6 commits): `d57f9368` APNs carryover, `9a1b8d08` Microsoft auth cache + memoization, `9fd80359` regression tests, `bbc4648d` working-set duplicate-read fix, `f7ecff88` strict mock cleanup, `a1e34fe1` staging evidence.
+2. `git push origin main` — pre-push hooks PASS, 3/3 required status checks.
+3. `./scripts/deploy-staging.sh` — staging redeployed at `a1e34fe1`, health checks ✓.
+4. `./scripts/staging-smoke.sh` — **17/17 PASS**, evidence at `engine/docs/release/smoke-evidence/staging-smoke-a1e34fe1-20260508T134929Z.json`.
+5. `./scripts/promote-to-prod.sh` — re-ran staging gate (17/17 PASS again at `T135001Z`), then `deploy.sh` auto-bumped package.json to `4.14.141` and committed `9f551b73`. Production PM2 nexus-hub PID 209410 → 258309 (clean restart).
+6. Production `/health` immediately healthy: db connected, services online, RSS 323 MB.
+7. Production `/api/snapshot`: `version=4.14.141`.
+8. New code verified live on production: `grep accessTokenCache | microsoft_auth_token_cache_summary | invalidateMicrosoftAccessTokenCacheForUser` returns 13 source hits + 14 dist hits on the running production install.
+
+### Post-deploy observability targets (operator-only verification)
+
+1. PM2 logs `microsoft_auth_token_cache_summary` info-level lines should appear every 5 min once cache traffic warms. Target: hit ratio >90%.
+2. `Microsoft refresh token requires public-client MSAL flow` warning should fire AT MOST ONCE per (cacheKey, hour) instead of every 5 min as before.
+3. Felipe's iPhone Tasks/Home navigation — reduced p95 on `/api/v1/tasks/working-set`, `/api/v1/plan/today`, `/api/v1/plan/week` (target: 21s → ~3-5s).
+
+### Pre-existing tech-debt unchanged by this deploy
+
+- 403 ForbiddenException stderr noise (separate integration issue, predates this deploy).
+- Two workspace-mirror-stale entries on `release-identity.{json,md}` (timestamp drift artifact of the generator script).
+
+### Remaining follow-ups (not blocked by this deploy)
+
+- iOS @MainActor pressure in `TaskRepository` (P2 deferred per perf closeout).
+- iOS URLSession per-host concurrency governor (P2 deferred).
+- Express API gzip compression (P2 deferred).
+- F-MSAUTH-1 (P3) — race between in-flight acquisition and `storeTokens` invalidation can cache a just-replaced access token for up to 55 min. Generation-counter fix recommended.
+- Two-account walkthrough on physical devices for closed-beta cohort onboarding (operator-physical).
+
+
+## 2026-05-08 cache/compression/iOS conditional-read batch — staged, production not promoted
+
+Codex completed the `perf/cache-and-compression-2026-05` batch after the
+Outlook token cache deploy showed residual UI lag. The branch is staged and
+smoke-tested, but production was not promoted in this batch.
+
+Closeout:
+`docs/archive/2026-05/perf-cache-and-compression/closeout.md`
+
+Implemented:
+
+- SWR + stable ETag handling for `/api/v1/plan/today` and `/api/v1/plan/week`.
+- SWR upgrade for connected-calendar `/api/v1/calendar/events` and
+  `/api/v1/calendar/today`.
+- Gzip compression middleware for large app-facing JSON responses.
+- Stable data-only conditional response helper shared by dashboard, plan,
+  calendar, and content routes.
+- Microsoft auth generation counter for in-flight invalidation safety.
+- iOS repository-level conditional reads for Tasks, Plan, Calendar, Dashboard,
+  and Content.
+- Extra hostile-review fix: `/api/v1/content/home` now has SWR/ETag support and
+  iOS conditional reads.
+
+Validation:
+
+- Backend typecheck and focused regression suite: PASS.
+- Full vitest commit-hook suite: PASS.
+- Strict mock lint: PASS at baseline 827.
+- Cannot-skip dashboard: PASS, 23/23.
+- iOS focused build and conditional-read tests: PASS on one simulator UDID.
+- Staging deploy: PASS.
+- Five-minute staging soak: PASS.
+- Staging smoke: PASS, evidence at
+  `engine/docs/release/smoke-evidence/staging-smoke-6c3d509d-20260508T154251Z.json`.
+- Staging timing probe: Plan, Dashboard, Dashboard Home, and Content Home
+  returned conditional 304 responses in low single-digit milliseconds after
+  warm-up.
+- Compression probe: `/api/v1/plan/week` returned gzip and reduced wire bytes
+  by roughly 84%.
+
+Remaining follow-ups:
+
+- **Operator**: merge/review and promote when ready; production was
+  intentionally untouched.
+- **Operator**: verify connected-calendar SWR on production because staging
+  user 25 lacks a connected calendar.
+- **Codex P2**: add an iOS request coalescer/governor if Felipe still sees
+  cold-launch fan-out stalls after this batch lands in TestFlight.
+- **Codex P3**: extend repository-level conditional reads to lower-frequency
+  repositories when their routes expose stable ETags.
+
+
+## 2026-05-08 closed-beta block fixes phase 1 — staged, production not promoted
+
+Codex completed Phase 1 of the closed-beta blocker batch on the existing
+architecture branches. Production and `main` were intentionally untouched.
+
+Closeout:
+`docs/archive/2026-05/closed-beta-block-fixes/closeout.md`
+
+Closed in this phase:
+
+- Apple App Store Server Notification webhook now verifies both outer and inner
+  JWS payloads before subscription mutation. Forged staging probe returned
+  `{ handled: false, reason: "invalid signature" }`.
+- `/api/v1/training/*` is now centrally entitlement-gated, and
+  `/training/coach?refresh=true` uses the per-user daily AI cap/lock pattern.
+  Free-tier staging probe returned `403 TIER_REQUIRED`.
+- Nine target content-engine prompt builders now use per-request creator profile
+  context with neutral fallback instead of founder-shaped defaults.
+- Auth/onboarding iOS surfaces now expose stable accessibility identifiers and
+  have six no-`NEXUS_SKIP_AUTH` XCUITests covering email auth, Apple retry,
+  Google callback, account switch, and interrupted onboarding.
+- Cannot-skip dashboard has three new blocker gates and now reports 26/26.
+
+Validation:
+
+- Backend typecheck: PASS.
+- Focused backend security/API suite: PASS, 59 tests.
+- Content-engine prompt-cleanliness/creative/core suite: PASS, 86 tests.
+- Strict mock lint: PASS at baseline 827.
+- Cannot-skip dashboard: PASS, 26/26.
+- iOS auth/onboarding UI tests: PASS, 6 tests on simulator
+  `A0B13967-B5DE-4E6F-897D-F1E409093F94`.
+- Staging deploy: PASS.
+- Five-minute staging soak: PASS.
+- Staging smoke: PASS, 19/19 in the current script, evidence at
+  `engine/docs/release/smoke-evidence/staging-smoke-da95f348-20260508T230237Z.json`.
+
+New findings to carry forward:
+
+- **P2**: `engine/src/services/video-study.ts` still hardcodes PT-BR
+  title/hook/content-idea output. Migrate to creator-profile language/context.
+- **P3**: `engine/src/services/channel-learner.ts` still frames advice for
+  PT-BR fitness/commentary. Migrate to creator-profile niche/language context.
+- **P3**: older iOS Training/Notification UI tests still use `NEXUS_SKIP_AUTH`.
+  New auth/onboarding tests avoid it, but older critical flows should migrate
+  as mock-server coverage expands.
+
+Phase 2 carryovers from the blocker audit:
+
+- Voice-evolution agent owner-only scope leak (P1).
+- Global cost guardrail enforcement on iOS REST routes (P1).
+- iOS repository read-cache plumbing toward one shared primitive (P1).
+- WorkspaceStateView/resolver duplication cleanup (P1).
+- API route boilerplate helper cleanup (P1).
+- Cache-invalidator registry cleanup (P1).
+- In-app bug-report channel (P1).
+- iOS chat fastpath + Telegram fastpath duplication cleanup (P2).
+
+Phase 3 / parked items:
+
+- iOS URLSession governance and app-level request coalescer.
+- Per-skill HomeViewState fallback-builder collapse.
+- Apple notification + provider-client error preservation.
+- OAuth token-cache event bus deletion.
+- Scheduler cron registry extraction.
+- KeychainHelper main-thread sync audit.
+- DashboardViewModel timer leak audit.
+- Onboarding race hardening beyond the new resume-step fix.
+- TaskRepository, ContentService, TrainingViewModel size reductions.
+- Onboarding monolith split.
+- DashboardSheetCoordinator API cleanup.
+- Domain wrapper cleanup.
+- Audit-trail consolidation.
+- Chat tool-dispatch consolidation.
+- `/api/v1/internal/performance-summary` owner-only review.
+- Python FastAPI loopback auth hardening.
+- Python orchestrator singleton cleanup.
+- FastAPI route tests.
+- ResearchOrchestrator `deep_search` decomposition.
+
+## 2026-05-09 Phase 2B.1 Workspace Landing State consolidation
+
+Status: **READY_FOR_LOCAL_QA** after visual closure (hostile QA v3, 2026-05-09).
+
+Visual QA evidence: 32 visual cells + 5 retry-interaction tests + 1 identifier-inventory contract, 38/38 PASS on simulator A0B13967-…. Screenshot attachments exported to `/tmp/phase2b1-visual-attachments-final/` and confirmed via xcresult `Test-Nexus Hub-2026.05.09_13-21-07-+0100.xcresult`.
+
+Verdict reports:
+- v2 (architecture + behavior parity): `docs/archive/2026-05/phase2b1-workspace-state-module/hostile-qa-v2-report.md`
+- v3 (visual closure): `docs/archive/2026-05/phase2b1-workspace-state-module/hostile-qa-v3-visual-closure-report.md`
+
+Closeouts:
+- Original: `docs/archive/2026-05/phase2b1-workspace-state-module/closeout.md`
+- Visual closure: `docs/archive/2026-05/phase2b1-workspace-state-module/visual-qa-closure-closeout.md`
+
+Summary:
+
+- Corrected the prompt baseline from 7 obsolete files to 6 real obsolete source
+  files. `TrainingWorkspaceStateView.swift` did not exist.
+- Deleted four shallow `*WorkspaceStateView.swift` wrappers and two resolver
+  files.
+- Added one shared `WorkspaceLandingState` module with the three-state model,
+  per-domain presentation config, Tasks/Training resolver logic, and shared
+  warmup/unavailable renderers.
+- Migrated Tasks, Training, Cooking, Content, and Finance callers onto the
+  shared module.
+- App-source diff is net negative: 317 insertions / 319 deletions. Total diff
+  including tests is positive because the old narrow resolver tests were
+  replaced with broader shared-module coverage.
+
+Validation:
+
+- Focused workspace-state/source-pin suite passed: 14/14 selected tests on
+  simulator `A0B13967-B5DE-4E6F-897D-F1E409093F94`.
+- Selected auth/feedback UI smoke passed: 4/4 selected UI tests on the same
+  simulator.
+- Additional Training fixture smoke and tab-stress checks passed during the
+  round.
+
+Carry forward:
+
+- Phase 2B.2 is the cache-invalidator registry workstream.
+- P2 QA cleanup: `AppShellVisualSnapshotUITests` should adopt the
+  `-NexusUITestMode YES` fixture pattern before full-target UI evidence is
+  treated as release-grade.
+
+## 2026-05-09 Phase 2B.2 Cache-invalidator registry
+
+Status: **READY_FOR_HOSTILE_QA**.
+
+Closeout: `docs/archive/2026-05/phase2b2-cache-invalidator-registry/closeout.md`
+
+Summary:
+
+- Consolidated 11 shallow `*-cache-invalidator.ts` services into one
+  `CacheCoherenceRegistry`.
+- Preserved the legacy invalidation graph with typed named events and
+  compatibility facades.
+- Deleted the 11 obsolete source files and four obsolete invalidator test files.
+- Added a behavior-level registry suite that asserts exact event-to-cache-key
+  fan-out.
+- Added the `cache-coherence-registry` cannot-skip gate; dashboard now reports
+  31/31.
+- Removed the old `intelligence-bus` direct plan-prefix fallback so
+  mesh-priority planning invalidation is registry-wired.
+
+Validation:
+
+- Typecheck: PASS.
+- Registry suite: PASS, 15 tests.
+- Focused migration suite: PASS, 214 tests.
+- Registry-mock-touched suite: PASS, 376 tests.
+- Cannot-skip dashboard: PASS, 31/31.
+- Strict mock-completeness lint: PASS at 822 partial mocks, under baseline 827.
+- Staging deploy: PASS; production untouched.
+- Staging smoke: PASS, 21 passed / 0 failed / 23 total (2 skipped, neither
+  implementation-related). Evidence:
+  `engine/docs/release/smoke-evidence/staging-smoke-d1149c52-20260509T131735Z.json`.
+
+Carry forward:
+
+- Phase 2B.3 is API route helper consolidation.
+- Read-cache key builders still live at read sites; decide in Phase 2B.3
+  whether they belong in route helpers or a sibling cache-key module.
+
+## 2026-05-09 Phase 2B.3 API route helper
+
+Status: **READY_FOR_HOSTILE_QA**.
+
+Closeout: `docs/archive/2026-05/phase2b3-api-route-helper/closeout.md`
+
+Summary:
+
+- Confirmed the current fit-for-helper scope is 6 route files, not the stale
+  "16+" estimate.
+- Added `cached-route-handler` for request-side SWR cache lookup, cache writes,
+  stale refresh single-flight, tenant-scope delegation, and route cache-key
+  construction.
+- Added `provider-error-classifier` with the canonical stable task-provider
+  error matrix.
+- Migrated plan, calendar, content home, dashboard, notifications, and task
+  list reads onto the helper.
+- Documented non-fits instead of forcing them through the helper:
+  task working-set budget/degraded fallback, dashboard warmers, and task
+  warmers/list helper cache paths.
+- Added the `cached-route-handler` cannot-skip gate; dashboard now reports
+  32/32.
+
+Validation:
+
+- Typecheck: PASS.
+- Focused helper + migrated routes: PASS, 107 tests.
+- Prompt validation suite: PASS, 231 tests.
+- Pre-commit focused suite: PASS, 434 tests.
+- Cannot-skip dashboard: PASS, 32/32.
+- Strict mock-completeness lint: PASS at 824 partial mocks, under baseline 827.
+- Staging deploy: PASS; production untouched.
+- Staging smoke: PASS, 21 passed / 0 failed / 23 total (2 skipped, neither
+  implementation-related). Evidence:
+  `engine/docs/release/smoke-evidence/staging-smoke-d884cc62-20260509T135559Z.json`.
+
+Carry forward:
+
+- Phase 2B.4 is the iOS Repository read-cache primitive and requires the
+  visual QA protocol.
+- Add a safe reusable authenticated staging fixture before the next
+  route-pipeline manual-probe round.
+
+## 2026-05-09 Staging fixture harness
+
+Status: **READY_FOR_HOSTILE_QA**.
+
+Closeout: `docs/archive/2026-05/staging-fixture-harness/closeout.md`
+Runbook: `docs/runbooks/staging-fixture-harness.md`
+
+Summary:
+
+- Added a staging-only synthetic-user harness for seed → probe → cleanup.
+- Added production refusal at three layers: hostname, `staging_fixture` JWT
+  claim, and reserved synthetic user-id range `1000000-1099999`.
+- Captured authenticated staging route-pipeline evidence for 13 `/api/v1`
+  routes and cache-coherence evidence for cooking/calendar invalidation paths.
+- Closed the Phase 2B.2 CC-2 and Phase 2B.3 authenticated manual-probe gaps via
+  addenda in each archive directory.
+
+Validation:
+
+- Typecheck: PASS.
+- Focused safety tests: PASS, 7/7.
+- Pre-commit changed-area suites: PASS, 187 files / 2828 tests.
+- Staging deploy: PASS; production untouched.
+- Staging smoke: PASS, 21 passed / 0 failed / 23 total.
+- Harness seed/probe/cleanup: PASS; post-cleanup reserved-range user count `0`.
+- Production refusal: PASS, exit code 2.
+
+Carry forward:
+
+- Phase 2B is 4/5 done. Phase 2B.5 chat fastpath is deferred with source-side
+  diagnosis preserved for a likely Phase 3 post-Wave-1 round.
+
+## 2026-05-09 Phase 2B.4 iOS Repository read-cache primitive
+
+Status: **READY_FOR_HOSTILE_QA**.
+
+Closeout: `docs/archive/2026-05/phase2b4-ios-repository-primitive/closeout.md`
+Visual manifest:
+`docs/archive/2026-05/phase2b4-ios-repository-primitive/visual-matrix-manifest.md`
+
+Summary:
+
+- Added `CachedResource<Value>` as the shared iOS repository read-cache
+  primitive for TTL freshness, stale-while-revalidate, in-flight coalescing,
+  ETag/304 handling, scope invalidation, reset, and preview seeding.
+- Migrated 13 repositories to compose the primitive while preserving their
+  public APIs and keeping mutation/optimistic-update logic local.
+- Added a repository cache-state visual audit host and an 80-cell visual matrix
+  across 10 critical repository-consuming surfaces, 4 cache states, and 2
+  locales.
+
+Validation:
+
+- Build: PASS on simulator `A0B13967-B5DE-4E6F-897D-F1E409093F94`.
+- Full unit target: PASS, 1,280 XCTest tests / 0 failures plus 10 Swift
+  Testing checks / 0 failures.
+- Focused primitive/unit tests: PASS, 21/21; post-full-unit edge-case rerun
+  PASS, 9/9.
+- Repository visual matrix: PASS, 21 XCTest methods / 80 screenshot-bearing
+  cells / 0 failures.
+- Existing focused UI smoke: PASS, 42 UI tests / 0 failures
+  (`AuthenticationFlowUITests`, `FeedbackFlowUITests`,
+  `WorkspaceLandingVisualUITests`).
+
+Carry forward:
+
+- Phase 2B is 4/5 done. Phase 2B.5 chat fastpath is deferred with source-side
+  diagnosis preserved for a likely Phase 3 post-Wave-1 round.
+
+
+## Standing Authorizations
+
+- `BATCH-24-CLOSEOUT-AUTHORIZED`: honored by Batch 24 U1/U2/U5.
+- `BATCH-24-CLAUDE-MD-PRODUCTION-TRUTH-UPDATE-AUTHORIZED`: honored as staged
+  text only at `docs/release/staged-claude-md-update-after-2026-05-deploy.md`;
+  `CLAUDE.md` was not modified.
+- `BATCH-24-OPEN-ITEMS-ROTATION-AUTHORIZED`: honored manually because
+  `engine/scripts/rotate-open-items.mjs` was absent in the Batch 24 checkout.
+
+## Operator-Only Carryovers
+
+These require Felipe/operator action and are not Codex-closable without live
+credentials, devices, or deployment authority.
+
+- Push local `main` to `origin/main` after Felipe's merge review.
+- Deploy staging and run staging smoke.
+- Promote production and run production health.
+- Signed TestFlight and two-account walkthrough.
+- APNs validation.
+- Secretary Notification Orchestrator APNs live-provider setup and physical-device
+  push/action validation.
+- Real Gmail/Outlook/Health provider-state checks.
+- Non-prod Google/Outlook OAuth credentials provisioning.
+- Garmin MFA/live-session validation, which remains the closure path for P2-35.
+- Content portal smoke window.
+- iOS fastlane setup, if Felipe chooses to pursue it.
+- Self-hosted runner provisioning, only if SSH-only promote workflows require it.
+
+## Authorization-Gated Codex Workstreams
+
+These are Codex-addressable but remain deferred until Felipe explicitly
+authorizes the next batch.
+
+| Queue | Status | Notes |
+|---|---|---|
+| Batch 25 | pending authorization | Content lifecycle unification phase 1: audit and plan. |
+| Batch 26 | pending authorization | Content lifecycle schema migration phase. |
+| Batch 27 | pending authorization | Content lifecycle service/API migration phase. |
+| Batch 28 | pending authorization | Content lifecycle iOS/Python contract and cleanup phase. |
+
+## Evidence Gaps
+
+- Batch 17 iOS P2 remediation report was not reconstructable in the Batch 24
+  archive pass. Revalidation exists at
+  `docs/archive/2026-05/tech-debt-validation/codex-batch-17-revalidation.md`.
+- Batch 1 does not have a standalone remediation artifact; evidence is
+  preserved in
+  `docs/archive/2026-05/tech-debt-validation/codex-tech-debt-pass.md` and
+  `docs/archive/2026-05/tech-debt-validation/codex-validation-matrix.md`.
+```

@@ -24,7 +24,13 @@ const mockGetContentDeskItems = vi.fn(() => []);
 const mockGetActiveContentPillars = vi.fn(() => []);
 
 vi.mock('../../src/services/user-service', () => ({
+  // Identity-safety: chat domains call the strict by-id helpers post-audit.
   getUserLanguage: (...args: unknown[]) => mockGetUserLanguage(...args),
+  getUserLanguageById: (...args: unknown[]) => mockGetUserLanguage(...args),
+  getPreferredDisplayName: vi.fn(() => 'Test User'),
+  getPreferredDisplayNameById: vi.fn(() => 'Test User'),
+  getUserTimezone: vi.fn(() => 'Europe/Lisbon'),
+  getUserTimezoneById: vi.fn(() => 'Europe/Lisbon'),
 }));
 
 vi.mock('../../src/services/context-engine', () => ({

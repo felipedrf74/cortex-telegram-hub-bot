@@ -5,6 +5,11 @@ import * as outlookCal from './outlook-calendar';
 import { logger } from '../utils/logger';
 import { config } from '../config';
 import { normalizeMicrosoftRecurrence, type NormalizedRecurrence } from './recurrence-utils';
+import {
+  getStagingFixtureCalendarEvents,
+  hasStagingFixtureCalendarEventsForUser,
+} from './staging-fixture-calendar';
+import { resolveCalendarWritePreference } from './provider-preferences';
 
 export type CalendarSource = 'google' | 'outlook';
 
@@ -59,7 +64,8 @@ export function hasConnectedCalendarForUser(userId?: number): boolean {
     return isAnyCalendarConfigured();
   }
   return googleCal.isGoogleCalendarConfigured(scopedUserId)
-    || outlookCal.isOutlookCalendarConfigured(scopedUserId);
+    || outlookCal.isOutlookCalendarConfigured(scopedUserId)
+    || hasStagingFixtureCalendarEventsForUser(scopedUserId);
 }
 
 export function hasWritableCalendarForUser(userId?: number): boolean {
@@ -90,18 +96,39 @@ export async function getEvents(startDate: string, endDate: string, userId?: num
   return result.events;
 }
 
+export async function getEventsForSources(
+  startDate: string,
+  endDate: string,
+  userId: number | undefined,
+  sources: CalendarSource[],
+): Promise<UnifiedCalendarEvent[]> {
+  const result = await getEventsWithDiagnostics(startDate, endDate, userId, { sources });
+  if (result.status === 'unavailable' && result.sources.configured.length > 0) {
+    throw new UnifiedCalendarUnavailableError(
+      result.warnings[0] || 'Calendar data is unavailable right now.',
+      result.warningCodes,
+      result.warnings,
+    );
+  }
+  return result.events;
+}
+
 export async function getEventsWithDiagnostics(
   startDate: string,
   endDate: string,
   userId?: number,
+  options?: { sources?: CalendarSource[] },
 ): Promise<UnifiedCalendarFetchResult> {
   const scopedUserId = resolveScopedUserId(userId);
+  const allowedSources = options?.sources?.length
+    ? new Set<CalendarSource>(options.sources)
+    : null;
   const fetchers: Array<{
     source: CalendarSource;
     run: () => Promise<UnifiedCalendarEvent[]>;
   }> = [];
 
-  if (googleCal.isGoogleCalendarConfigured(scopedUserId ?? undefined)) {
+  if ((!allowedSources || allowedSources.has('google')) && googleCal.isGoogleCalendarConfigured(scopedUserId ?? undefined)) {
     fetchers.push({
       source: 'google',
       run: async () => {
@@ -113,13 +140,20 @@ export async function getEventsWithDiagnostics(
 
   // CHAT-M2: pass userId to isOutlookCalendarConfigured() so per-user
   // OAuth tokens (from iOS) are checked, not just the global owner token.
-  if (outlookCal.isOutlookCalendarConfigured(scopedUserId ?? undefined)) {
+  if ((!allowedSources || allowedSources.has('outlook')) && outlookCal.isOutlookCalendarConfigured(scopedUserId ?? undefined)) {
     fetchers.push({
       source: 'outlook',
       run: async () => {
         const oEvents = await outlookCal.getEvents(startDate, endDate, scopedUserId ?? undefined);
         return oEvents.map((event) => ({ ...event, source: 'outlook' as const }));
       },
+    });
+  }
+
+  if ((!allowedSources || allowedSources.has('outlook')) && hasStagingFixtureCalendarEventsForUser(scopedUserId ?? undefined)) {
+    fetchers.push({
+      source: 'outlook',
+      run: async () => getStagingFixtureCalendarEvents(startDate, endDate, scopedUserId ?? undefined),
     });
   }
 
@@ -210,6 +244,7 @@ export async function createEvent(
   },
   target?: CalendarSource,
   userId?: number,
+  options?: { signal?: AbortSignal; tenantId?: number },
 ): Promise<UnifiedCalendarEvent> {
   const scopedUserId = resolveScopedUserId(userId);
   // Per-user source resolution: check which provider the requesting
@@ -218,8 +253,7 @@ export async function createEvent(
   let source = target;
   if (!source) {
     if (scopedUserId != null) {
-      if (outlookCal.isOutlookCalendarConfigured(scopedUserId)) source = 'outlook';
-      else if (googleCal.isGoogleCalendarConfigured(scopedUserId)) source = 'google';
+      source = resolveCalendarWritePreference(scopedUserId, options?.tenantId ?? scopedUserId).source ?? undefined;
     }
     // Fall back to global config check (owner / Telegram codepath)
     if (!source) {
@@ -240,10 +274,10 @@ export async function createEvent(
   const eventData = { ...data, recurrence };
 
   if (source === 'outlook') {
-    const event = await outlookCal.createEvent(eventData, scopedUserId ?? undefined);
+    const event = await outlookCal.createEvent(eventData, scopedUserId ?? undefined, options);
     return { ...event, source: 'outlook' };
   } else {
-    const event = await googleCal.createEvent(eventData, scopedUserId ?? undefined);
+    const event = await googleCal.createEvent(eventData, scopedUserId ?? undefined, options);
     return { ...event, source: 'google' };
   }
 }
@@ -252,21 +286,22 @@ export async function updateEvent(
   data: { event_id: string; new_start?: string; new_end?: string; new_title?: string; new_description?: string },
   source: CalendarSource,
   userId?: number,
+  options?: { signal?: AbortSignal },
 ): Promise<UnifiedCalendarEvent> {
   if (source === 'outlook') {
-    const event = await outlookCal.updateEvent(data, userId);
+    const event = await outlookCal.updateEvent(data, userId, options);
     return { ...event, source: 'outlook' };
   } else {
-    const event = await googleCal.updateEvent(data, userId);
+    const event = await googleCal.updateEvent(data, userId, options);
     return { ...event, source: 'google' };
   }
 }
 
-export async function deleteEvent(eventId: string, source: CalendarSource, userId?: number): Promise<void> {
+export async function deleteEvent(eventId: string, source: CalendarSource, userId?: number, options?: { signal?: AbortSignal }): Promise<void> {
   if (source === 'outlook') {
-    await outlookCal.deleteEvent(eventId, userId);
+    await outlookCal.deleteEvent(eventId, userId, options);
   } else {
-    await googleCal.deleteEvent(eventId, userId);
+    await googleCal.deleteEvent(eventId, userId, options);
   }
 }
 
@@ -312,25 +347,33 @@ function normalizeAllDayStartDate(event: UnifiedCalendarEvent): string | null {
  * Deduplicate events from multiple calendar sources.
  * When the same event appears on both Google and Outlook (same meeting invite),
  * merge them into a single event with syncedSources listing both calendars.
+ * Same-provider duplicates are intentionally preserved because they represent
+ * real calendar dirt that cleanup and cancellation paths must still see.
  * Keeps the event with the richer data (longer description, location present).
  */
 export function deduplicateEvents(events: UnifiedCalendarEvent[]): UnifiedCalendarEvent[] {
   if (events.length === 0) return events;
   if (events.length === 1) return [{ ...events[0], syncedSources: [events[0].source] }];
 
-  const fingerMap = new Map<string, UnifiedCalendarEvent>();
+  const fingerMap = new Map<string, UnifiedCalendarEvent[]>();
   let dupsFound = 0;
 
   for (const event of events) {
     const fp = eventFingerprint(event);
-    const existing = fingerMap.get(fp);
+    const bucket = fingerMap.get(fp) ?? [];
+    const existingIndex = bucket.findIndex((candidate) => {
+      const sources = new Set(candidate.syncedSources || [candidate.source]);
+      return !sources.has(event.source);
+    });
 
-    if (!existing) {
-      fingerMap.set(fp, { ...event, syncedSources: [event.source] });
+    if (existingIndex < 0) {
+      bucket.push({ ...event, syncedSources: [event.source] });
+      fingerMap.set(fp, bucket);
       continue;
     }
 
-    // Duplicate found — merge sources and keep richer data
+    const existing = bucket[existingIndex];
+    // Cross-provider duplicate found — merge sources and keep richer data.
     dupsFound++;
     const sources = new Set(existing.syncedSources || [existing.source]);
     sources.add(event.source);
@@ -340,20 +383,21 @@ export function deduplicateEvents(events: UnifiedCalendarEvent[]): UnifiedCalend
     const newScore = dataRichness(event);
 
     if (newScore > existingScore) {
-      fingerMap.set(fp, {
+      bucket[existingIndex] = {
         ...event,
         syncedSources: [...sources],
-      });
+      };
     } else {
       existing.syncedSources = [...sources];
     }
   }
 
+  const deduped = [...fingerMap.values()].flat();
   if (dupsFound > 0) {
-    logger.info({ dupsFound, total: events.length, after: fingerMap.size }, 'Calendar events deduplicated');
+    logger.info({ dupsFound, total: events.length, after: deduped.length }, 'Calendar events deduplicated');
   }
 
-  return [...fingerMap.values()];
+  return deduped;
 }
 
 /** Score an event's data richness (more fields = higher score). */

@@ -1,0 +1,62 @@
+{
+  "ok": true,
+  "mode": "dry-run",
+  "dbPath": "/home/dominguez/telegram-hub-bot/data/bot.db",
+  "ownerUserId": 1,
+  "ownerGarminEmail": "fe***@hotmail.com",
+  "matchedRows": [
+    {
+      "userId": 25,
+      "reasons": [
+        "non-owner Garmin connection email matches owner GARMIN_EMAIL"
+      ],
+      "sources": [
+        "garmin_user_tokens"
+      ]
+    },
+    {
+      "userId": 28,
+      "reasons": [
+        "non-owner Garmin connection email matches owner GARMIN_EMAIL"
+      ],
+      "sources": [
+        "garmin_user_tokens"
+      ]
+    },
+    {
+      "userId": 29,
+      "reasons": [
+        "non-owner Garmin connection email matches owner GARMIN_EMAIL"
+      ],
+      "sources": [
+        "garmin_user_tokens"
+      ]
+    },
+    {
+      "userId": 30,
+      "reasons": [
+        "non-owner Garmin connection email matches owner GARMIN_EMAIL"
+      ],
+      "sources": [
+        "garmin_user_tokens"
+      ]
+    },
+    {
+      "userId": 86,
+      "reasons": [
+        "non-owner Garmin connection email matches owner GARMIN_EMAIL"
+      ],
+      "sources": [
+        "garmin_user_tokens"
+      ]
+    }
+  ],
+  "matchedCount": 5,
+  "deletion": {
+    "deletedGarminSessions": 0,
+    "deletedGarminUserTokens": 0
+  },
+  "remainingCount": 5,
+  "ranAt": "2026-05-09T17:47:12.943Z",
+  "note": "Dry run only. Re-run with --yes to delete matched rows."
+}

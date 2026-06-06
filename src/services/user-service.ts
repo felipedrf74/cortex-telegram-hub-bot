@@ -12,6 +12,7 @@ import { config } from '../config';
 import { logger } from '../utils/logger';
 import crypto from 'crypto';
 import type { Lang } from '../utils/i18n';
+import { hashEmail } from '../utils/identity';
 import { getStoredDailyCostLimitUsdForTier } from './plan-quotas';
 
 // ─── Types ──────────────────────────────────────────────────────────
@@ -52,14 +53,59 @@ export interface InviteCode {
 
 export interface UserTarget {
   tenantId: number;
-  telegramId: number;
+  telegramId: number | null;
 }
 
 export type IosInviteResolution =
   | { kind: 'owner'; user: User }
-  | { kind: 'sandbox'; user: User }
+  | { kind: 'sandbox'; user: User; inviteExpiresAt?: string | null }
   | { kind: 'owner_unavailable' }
   | { kind: 'invalid' };
+
+export type ClosedBetaInviteStatus = 'valid' | 'missing' | 'invalid';
+
+export class ClosedBetaInviteRequiredError extends Error {
+  readonly code: 'INVITE_REQUIRED' | 'INVALID_INVITE';
+
+  constructor(code: 'INVITE_REQUIRED' | 'INVALID_INVITE') {
+    super(code === 'INVITE_REQUIRED' ? 'Invite code is required' : 'Invalid invite code');
+    this.name = 'ClosedBetaInviteRequiredError';
+    this.code = code;
+  }
+}
+
+export function getClosedBetaInviteStatus(inviteCode: unknown): ClosedBetaInviteStatus {
+  const rawCode = String(inviteCode ?? '').trim();
+  const normalized = rawCode.toLowerCase();
+  if (!normalized) return 'missing';
+
+  const validCodes = [
+    (config as any).ios?.inviteCode,
+    (config as any).ios?.ownerCode,
+  ]
+    .map((code) => String(code ?? '').trim().toLowerCase())
+    .filter(Boolean);
+
+  if (validCodes.includes(normalized)) return 'valid';
+  try {
+    return peekInviteCode(rawCode).valid ? 'valid' : 'invalid';
+  } catch {
+    return 'invalid';
+  }
+}
+
+export function assertClosedBetaInviteForNewUser(inviteCode: unknown): void {
+  const status = getClosedBetaInviteStatus(inviteCode);
+  if (status === 'valid') return;
+  throw new ClosedBetaInviteRequiredError(status === 'missing' ? 'INVITE_REQUIRED' : 'INVALID_INVITE');
+}
+
+export function resolveCurrentTenantIdForUser(userId: number): number {
+  // Current production model is one canonical tenant per iOS user.
+  // Keep this centralized so future tenant-enrollment tables can replace
+  // the implementation without each delivery surface inferring userId.
+  return userId;
+}
 
 // ─── User CRUD ──────────────────────────────────────────────────────
 
@@ -204,10 +250,17 @@ export function getUserById(id: number): User | null {
 }
 
 function getUserByAnyIdentifier(userRef: number): User | null {
-  // Telegram traffic still uses telegram_id, while iOS API requests carry
-  // the canonical users.id in JWTs. Resolve both so shared helpers like
-  // getUserLanguage() behave consistently across platforms.
-  return getUserByTelegramId(userRef) ?? getUserById(userRef);
+  // Identity-safety (May 2026 audit): resolve users.id FIRST, then fall back
+  // to telegram_id. iOS API requests carry the canonical users.id in JWTs;
+  // resolving users.id first means an iOS-derived id can never accidentally
+  // match a foreign user's telegram_id (defense-in-depth against the
+  // documented id-collision surface). Telegram traffic carries large numeric
+  // telegram_id values that won't collide with the small autoincrement
+  // users.id range, so this reorder is safe for legacy Telegram callers too.
+  // New callers that know their input shape should prefer the strict
+  // getUserById / getUserByTelegramId / *ById helpers instead of this
+  // dual-lookup helper.
+  return getUserById(userRef) ?? getUserByTelegramId(userRef);
 }
 
 /**
@@ -250,6 +303,26 @@ export function getOwnerBootstrapTarget(): UserTarget | null {
     tenantId,
     telegramId: ownerTelegramId,
   };
+}
+
+export function getActiveUserTargets(): UserTarget[] {
+  try {
+    const db = getDb();
+    const rows = db.prepare(
+      "SELECT id, telegram_id FROM users WHERE status = 'active' ORDER BY id ASC",
+    ).all() as { id: number; telegram_id: number | null }[];
+    if (rows.length > 0) {
+      return rows.map((row) => ({
+        tenantId: row.id,
+        telegramId: row.telegram_id ?? null,
+      }));
+    }
+  } catch (err) {
+    logger.warn({ err }, 'Active user target query failed; falling back to owner bootstrap target');
+  }
+
+  const ownerTarget = getOwnerBootstrapTarget();
+  return ownerTarget ? [ownerTarget] : [];
 }
 
 /**
@@ -295,9 +368,10 @@ export function getOrCreateInviteSandboxUser(deviceId: string): User {
 }
 
 export function resolveIosInviteRegistrationTarget(inviteCode: string, deviceId: string): IosInviteResolution {
-  const normalizedInviteCode = String(inviteCode).trim().toLowerCase();
-  const ownerCode = (config.ios.ownerCode || '').trim().toLowerCase();
-  const betaCode = (config.ios.inviteCode || '').trim().toLowerCase();
+  const rawInviteCode = String(inviteCode).trim();
+  const normalizedInviteCode = rawInviteCode.toLowerCase();
+  const ownerCode = ((config as any).ios?.ownerCode || '').trim().toLowerCase();
+  const betaCode = ((config as any).ios?.inviteCode || '').trim().toLowerCase();
 
   if (ownerCode && normalizedInviteCode === ownerCode) {
     const user = getOwnerBootstrapUser();
@@ -305,7 +379,21 @@ export function resolveIosInviteRegistrationTarget(inviteCode: string, deviceId:
   }
 
   if (betaCode && normalizedInviteCode === betaCode) {
-    return { kind: 'sandbox', user: getOrCreateInviteSandboxUser(deviceId) };
+    const days = (config as any).ios?.staticInviteExpiresDays ?? 365;
+    return {
+      kind: 'sandbox',
+      user: getOrCreateInviteSandboxUser(deviceId),
+      inviteExpiresAt: new Date(Date.now() + days * 86400000).toISOString(),
+    };
+  }
+
+  const consumed = validateAndConsumeInviteCode(rawInviteCode);
+  if (consumed.valid) {
+    return {
+      kind: 'sandbox',
+      user: getOrCreateInviteSandboxUser(deviceId),
+      inviteExpiresAt: consumed.expiresAt ?? null,
+    };
   }
 
   return { kind: 'invalid' };
@@ -353,6 +441,22 @@ export function sanitizeDisplayName(value: string | null | undefined): string {
 
 export function getPreferredDisplayName(userRef: number): string {
   const user = getUserByAnyIdentifier(userRef);
+  return getPreferredDisplayNameFromUser(user);
+}
+
+/**
+ * Strict by-id resolver for the user's preferred display name. Use this
+ * from any iOS API route or other path where the input is the canonical
+ * users.id from authentication — it bypasses the Telegram-id-first lookup
+ * in getUserByAnyIdentifier and removes the cross-user collision risk
+ * surface flagged in the May 2026 identity audit.
+ */
+export function getPreferredDisplayNameById(userId: number): string {
+  const user = getUserById(userId);
+  return getPreferredDisplayNameFromUser(user);
+}
+
+function getPreferredDisplayNameFromUser(user: User | null): string {
   if (!user) return '';
   return (
     sanitizeDisplayName(user.first_name)
@@ -378,7 +482,8 @@ export function getUserByEmail(email: string): User | null {
 
 export function createAppleUser(appleUserId: string, profile: {
   email?: string; firstName?: string; lastName?: string;
-}): User {
+}, inviteCode?: unknown): User {
+  assertClosedBetaInviteForNewUser(inviteCode);
   const db = getDb();
   // Hardening 2026-04-21: new users default to `tier='free'` per
   // the business rule (users are privileged only if they have an
@@ -398,13 +503,18 @@ export function createAppleUser(appleUserId: string, profile: {
     profile.lastName || null,
     getStoredDailyCostLimitUsdForTier('free'),
   );
-  logger.info({ appleUserId, email: profile.email }, 'New Apple user registered');
-  return getUserByAppleId(appleUserId)!;
+  const user = getUserByAppleId(appleUserId)!;
+  logger.info({ appleUserId, emailHash: profile.email ? hashEmail(profile.email, 16) : null }, 'New Apple user registered');
+  // AUTH-O6 (closed-beta-auth-hardening, 2026-05-04): emit auth.user_created
+  // audit row so operators can dashboard registration volume + provider mix.
+  emitUserCreatedAudit(user.id, 'apple', { appleUserId, emailHash: profile.email ? hashEmail(profile.email, 16) : null });
+  return user;
 }
 
 export function createGoogleUser(googleUserId: string, profile: {
   email: string; name?: string; picture?: string;
-}): User {
+}, inviteCode?: unknown): User {
+  assertClosedBetaInviteForNewUser(inviteCode);
   const db = getDb();
   const [firstName, ...rest] = (profile.name || '').split(' ');
   // Hardening 2026-04-21: default tier='free' — see createAppleUser
@@ -422,8 +532,10 @@ export function createGoogleUser(googleUserId: string, profile: {
     profile.picture || null,
     getStoredDailyCostLimitUsdForTier('free'),
   );
-  logger.info({ googleUserId, email: profile.email }, 'New Google user registered');
-  return getUserByGoogleId(googleUserId)!;
+  const user = getUserByGoogleId(googleUserId)!;
+  logger.info({ googleUserId, emailHash: hashEmail(profile.email, 16) }, 'New Google user registered');
+  emitUserCreatedAudit(user.id, 'google', { googleUserId, emailHash: hashEmail(profile.email, 16) });
+  return user;
 }
 
 export function createEmailUser(email: string, passwordHash: string, profile: {
@@ -439,8 +551,62 @@ export function createEmailUser(email: string, passwordHash: string, profile: {
       auth_provider, tier, daily_message_limit, daily_token_limit, daily_cost_limit_usd)
     VALUES (?, ?, ?, 0, 'email', 'free', 40, 100000, ?)
   `).run(email.toLowerCase(), passwordHash, profile.firstName, getStoredDailyCostLimitUsdForTier('free'));
-  logger.info({ email }, 'New email user registered');
-  return getUserByEmail(email)!;
+  const user = getUserByEmail(email)!;
+  logger.info({ emailHash: hashEmail(email, 16) }, 'New email user registered');
+  emitUserCreatedAudit(user.id, 'email', { emailHash: hashEmail(email, 16) });
+  return user;
+}
+
+// AUTH-O6 (closed-beta-auth-hardening, 2026-05-04): canonical helper for
+// emitting `auth.user_created` audit rows. Keeps the event shape stable
+// across the four creation paths (Apple, Google, email, invite). Audit
+// emission failures must never block user creation — the user row is
+// already committed at this point.
+function emitUserCreatedAudit(
+  userId: number,
+  provider: 'apple' | 'google' | 'email' | 'invite',
+  details: Record<string, unknown> = {},
+): void {
+  try {
+    // Lazy require to avoid an import cycle (audit-trail → database →
+    // user-service in some call paths).
+    const { logAudit } = require('./audit-trail');
+    logAudit({
+      userId,
+      tenantId: userId,
+      actorId: userId,
+      action: 'access',
+      resource: 'auth.user_created',
+      details: { provider, ...details },
+    });
+  } catch (err: any) {
+    logger.warn({ err, userId, provider, event: 'auth.user_created.audit_failed' },
+      'Failed to emit auth.user_created audit row');
+  }
+}
+
+// AUTH-O6: emit on provider-link branches. Used by google-sign-in.ts when
+// it merges a Google sub into an existing email-matched user, by future
+// Apple-link branches, etc.
+export function emitProviderLinkedAudit(
+  userId: number,
+  provider: 'apple' | 'google' | 'telegram',
+  details: Record<string, unknown> = {},
+): void {
+  try {
+    const { logAudit } = require('./audit-trail');
+    logAudit({
+      userId,
+      tenantId: userId,
+      actorId: userId,
+      action: 'access',
+      resource: 'auth.provider_linked',
+      details: { provider, ...details },
+    });
+  } catch (err: any) {
+    logger.warn({ err, userId, provider, event: 'auth.provider_linked.audit_failed' },
+      'Failed to emit auth.provider_linked audit row');
+  }
 }
 
 export function isUserAuthorized(telegramId: number): boolean {
@@ -464,6 +630,18 @@ export function getUserLanguage(userRef: number): Lang {
   return (user?.language as Lang) || 'pt-BR';
 }
 
+/**
+ * Strict by-id resolver for the user's saved language preference. Use
+ * this from any iOS API route or other path where the input is the
+ * canonical users.id from authentication — it bypasses the Telegram-id-
+ * first lookup in getUserByAnyIdentifier and removes the cross-user
+ * collision risk surface flagged in the May 2026 identity audit.
+ */
+export function getUserLanguageById(userId: number): Lang {
+  const user = getUserById(userId);
+  return (user?.language as Lang) || 'pt-BR';
+}
+
 export function getUserTimezone(userRef: number | null | undefined): string {
   const fallback = config.app.timezone || 'Europe/Lisbon';
   if (typeof userRef !== 'number' || !Number.isFinite(userRef) || userRef <= 0) {
@@ -476,6 +654,28 @@ export function getUserTimezone(userRef: number | null | undefined): string {
     return candidate;
   } catch {
     logger.warn({ userRef, timezone: candidate }, 'Invalid user timezone; falling back to app timezone');
+    return fallback;
+  }
+}
+
+/**
+ * Strict by-id resolver for the user's timezone. Use this from any iOS API
+ * route or other path where the input is the canonical users.id from
+ * authentication — it bypasses the Telegram-id-first lookup in
+ * getUserByAnyIdentifier and removes the cross-user collision risk
+ * surface flagged in the May 2026 identity audit.
+ */
+export function getUserTimezoneById(userId: number | null | undefined): string {
+  const fallback = config.app.timezone || 'Europe/Lisbon';
+  if (typeof userId !== 'number' || !Number.isFinite(userId) || userId <= 0) {
+    return fallback;
+  }
+  const candidate = getUserById(userId)?.timezone || fallback;
+  try {
+    new Intl.DateTimeFormat('en-US', { timeZone: candidate });
+    return candidate;
+  } catch {
+    logger.warn({ userId, timezone: candidate }, 'Invalid user timezone; falling back to app timezone');
     return fallback;
   }
 }
@@ -556,7 +756,7 @@ export function setUserLimits(telegramId: number, limits: {
 
 export function createInviteCode(createdBy: number, maxUses = 1, expiresInDays?: number): string {
   const db = getDb();
-  const code = crypto.randomBytes(4).toString('hex').toUpperCase(); // 8-char hex
+  const code = crypto.randomBytes(16).toString('base64url');
   const expiresAt = expiresInDays
     ? new Date(Date.now() + expiresInDays * 86400000).toISOString()
     : null;
@@ -566,11 +766,45 @@ export function createInviteCode(createdBy: number, maxUses = 1, expiresInDays?:
     VALUES (?, ?, ?, ?)
   `).run(code, createdBy, maxUses, expiresAt);
 
-  logger.info({ code, createdBy, maxUses, expiresAt }, 'Invite code created');
+  logger.info({ codeSuffix: code.slice(-4), createdBy, maxUses, expiresAt }, 'Invite code created');
   return code;
 }
 
-export function validateAndConsumeInviteCode(code: string): { valid: boolean; skillPreset?: Record<string, boolean> } {
+export function peekInviteCode(code: string): {
+  valid: boolean;
+  expiresAt?: string | null;
+  skillPreset?: Record<string, boolean>;
+} {
+  const trimmed = String(code ?? '').trim();
+  if (!trimmed) return { valid: false };
+  const db = getDb();
+  const invite = db.prepare(`
+    SELECT skill_preset, expires_at
+    FROM invite_codes
+    WHERE code = ?
+      AND used_count < max_uses
+      AND (expires_at IS NULL OR expires_at > datetime('now'))
+  `).get(trimmed) as any;
+  if (!invite) return { valid: false };
+
+  let skillPreset: Record<string, boolean> | undefined;
+  if (invite.skill_preset) {
+    try { skillPreset = JSON.parse(invite.skill_preset); } catch { /* ignore */ }
+  }
+
+  const result: { valid: true; expiresAt?: string | null; skillPreset?: Record<string, boolean> } = { valid: true };
+  if (invite.expires_at) result.expiresAt = invite.expires_at;
+  if (skillPreset) result.skillPreset = skillPreset;
+  return result;
+}
+
+export function validateAndConsumeInviteCode(code: string): {
+  valid: boolean;
+  expiresAt?: string | null;
+  skillPreset?: Record<string, boolean>;
+} {
+  const trimmed = String(code ?? '').trim();
+  if (!trimmed) return { valid: false };
   const db = getDb();
 
   const result = db.prepare(`
@@ -579,18 +813,52 @@ export function validateAndConsumeInviteCode(code: string): { valid: boolean; sk
     WHERE code = ?
       AND used_count < max_uses
       AND (expires_at IS NULL OR expires_at > datetime('now'))
-  `).run(code);
+  `).run(trimmed);
 
   if (result.changes === 0) return { valid: false };
 
   // Get the skill_preset from the consumed code
-  const invite = db.prepare('SELECT skill_preset FROM invite_codes WHERE code = ?').get(code) as any;
+  const invite = db.prepare('SELECT skill_preset, expires_at FROM invite_codes WHERE code = ?').get(trimmed) as any;
+  try {
+    db.prepare(`
+      UPDATE waitlist
+         SET status = 'signed_up',
+             email_delivery_status = 'invite_redeemed'
+       WHERE invite_code = ?
+    `).run(trimmed);
+  } catch { /* waitlist table may not exist in older local fixtures */ }
   let skillPreset: Record<string, boolean> | undefined;
   if (invite?.skill_preset) {
     try { skillPreset = JSON.parse(invite.skill_preset); } catch { /* ignore */ }
   }
 
-  return { valid: true, skillPreset };
+  const response: { valid: true; expiresAt?: string | null; skillPreset?: Record<string, boolean> } = { valid: true };
+  if (invite?.expires_at) response.expiresAt = invite.expires_at;
+  if (skillPreset) response.skillPreset = skillPreset;
+  return response;
+}
+
+export function consumeDatabaseInviteForUser(inviteCode: unknown): {
+  consumed: boolean;
+  expiresAt?: string | null;
+  skillPreset?: Record<string, boolean>;
+} {
+  const rawCode = String(inviteCode ?? '').trim();
+  if (!rawCode) return { consumed: false };
+
+  const normalized = rawCode.toLowerCase();
+  const staticCodes = [
+    (config as any).ios?.inviteCode,
+    (config as any).ios?.ownerCode,
+  ].map((code) => String(code ?? '').trim().toLowerCase()).filter(Boolean);
+  if (staticCodes.includes(normalized)) return { consumed: false };
+
+  const result = validateAndConsumeInviteCode(rawCode);
+  if (!result.valid) return { consumed: false };
+  const consumed: { consumed: true; expiresAt?: string | null; skillPreset?: Record<string, boolean> } = { consumed: true };
+  if (result.expiresAt) consumed.expiresAt = result.expiresAt;
+  if (result.skillPreset) consumed.skillPreset = result.skillPreset;
+  return consumed;
 }
 
 export function listInviteCodes(): InviteCode[] {

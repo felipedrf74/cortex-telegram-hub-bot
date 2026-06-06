@@ -8,6 +8,7 @@ import { generateCoachBriefing } from './garmin-coach';
 import { buildEndOfDaySummaryForUser, sendDailyBriefing } from './scheduler';
 
 export interface ManualReportTarget {
+  userId: number;
   tenantId: number;
   telegramId: number;
 }
@@ -28,6 +29,7 @@ export function getManualReportTargets(): ManualReportTarget[] {
       return rows
         .filter((row) => row.telegram_id != null)
         .map((row) => ({
+          userId: row.id,
           tenantId: row.id,
           telegramId: row.telegram_id as number,
         }));
@@ -37,7 +39,11 @@ export function getManualReportTargets(): ManualReportTarget[] {
   }
 
   const ownerTarget = getOwnerBootstrapTarget();
-  return ownerTarget ? [ownerTarget] : [];
+  return ownerTarget?.telegramId != null ? [{
+    userId: ownerTarget.tenantId,
+    tenantId: ownerTarget.tenantId,
+    telegramId: ownerTarget.telegramId,
+  }] : [];
 }
 
 async function sendChunked(
@@ -54,7 +60,7 @@ async function sendChunked(
 
 export async function dispatchContentReports(send: TelegramSend): Promise<void> {
   for (const target of getManualReportTargets()) {
-    const result = await runContentDiscovery(target.tenantId);
+    const result = await runContentDiscovery({ userId: target.userId, tenantId: target.tenantId });
     let msg = `🎬 <b>Daily Content Ideas Ready</b>\n\n`;
     if (result.ideas.length > 0) {
       for (let i = 0; i < result.ideas.length; i++) {
@@ -71,7 +77,7 @@ export async function dispatchContentReports(send: TelegramSend): Promise<void> 
 
 export async function dispatchCoachReports(send: TelegramSend): Promise<void> {
   for (const target of getManualReportTargets()) {
-    const result = await generateCoachBriefing(target.tenantId);
+    const result = await generateCoachBriefing(target.tenantId, { garminSilent: true });
     await sendChunked(target, result.message, send, 'HTML');
   }
 }

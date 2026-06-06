@@ -149,6 +149,35 @@ describe('buildTrainingHomeViewState', () => {
     expect(state.weekProtection?.kernelAdjustments).toEqual([]);
   });
 
+  it('frames a zero-adherence active week as a restart instead of a failure score', () => {
+    const state = buildTrainingHomeViewState(baseInput({
+      weeklyAdherence: 0,
+    }), 'pt-BR');
+
+    const adherenceMetric = state.reasoning?.metrics.find((metric) => metric.id === 'adherence');
+    expect(adherenceMetric?.value).toBe('Recomeço');
+    expect(adherenceMetric?.tint).toBe('info');
+    expect(state.weekProtection?.impactLines.join(' ')).not.toContain('0%');
+    expect(state.weekProtection?.impactLines.join(' ')).toContain('recomeçar');
+    expect(state.weekJourney?.adherenceText).toContain('recomeçar');
+  });
+
+  it('does not surface adherence impact on an active week with zero scheduled sessions', () => {
+    const state = buildTrainingHomeViewState(baseInput({
+      todaySession: null,
+      weekSessions: [
+        { id: 'rest', day: 'Sunday', type: 'Rest', title: 'Rest', status: 'rest' },
+        { id: 'done', day: 'Monday', type: 'Recovery', title: 'Recovery', status: 'completed' },
+        { id: 'skip', day: 'Tuesday', type: 'Mobility', title: 'Mobility', status: 'skipped' },
+      ],
+      weeklyAdherence: 0,
+      tomorrowSession: null,
+    }), 'en-US');
+
+    expect(state.weekProtection?.impactLines.join(' ')).not.toContain('Weekly adherence at 0%');
+    expect(state.weekProtection?.impactLines.join(' ')).not.toContain('Adherence: ready to restart');
+  });
+
   it('classifies stale-Garmin with an active plan as lowConfidence and surfaces the COACH_STALE reason code', () => {
     // Stale-wearable-with-plan is a distinct degraded state. It
     // deliberately falls into 'lowConfidence' (not 'ready' or
@@ -415,6 +444,19 @@ describe('buildTrainingHomeViewState', () => {
       hasActivePlan: false,
       isGarminStale: false,
     }, 'pt-BR');
+
+    expect(state.lowAdherenceCard).toBeNull();
+  });
+
+  it('suppresses the low-adherence card when an active plan has no active sessions this week', () => {
+    const state = buildTrainingHomeViewState(baseInput({
+      weekSessions: [
+        { id: 'rest', day: 'Sunday', type: 'Rest', title: 'Rest', status: 'rest' },
+        { id: 'done', day: 'Monday', type: 'Recovery', title: 'Recovery', status: 'completed' },
+      ],
+      weeklyAdherence: 0.1,
+      tomorrowSession: null,
+    }), 'pt-BR');
 
     expect(state.lowAdherenceCard).toBeNull();
   });

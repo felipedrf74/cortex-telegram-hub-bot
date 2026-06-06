@@ -23,7 +23,7 @@
 import { Router, Response } from 'express';
 import { logger } from '../../utils/logger';
 import { getDb } from '../../services/database';
-import { invalidateTrainingDerivedCaches } from '../../services/training-cache-invalidator';
+import { invalidateTrainingDerivedCaches } from '../../services/cache-coherence-registry';
 import { sendInternalError as sendApiInternalError } from '../response-helpers';
 import type { AuthenticatedRequest } from '../auth-middleware';
 import type Database from 'better-sqlite3';
@@ -59,6 +59,12 @@ interface HealthSyncPayload {
     totalDistance?: number;
     source: string;
   }>;
+  sleepIntervals?: Array<{
+    stage?: string;
+    start?: string;
+    end?: string;
+    durationMinutes?: number;
+  }>;
 }
 
 function sendSuccess(res: Response, data: Record<string, unknown> = {}): void {
@@ -71,6 +77,119 @@ function sendError(res: Response, code: string, message: string, status = 400): 
 
 function sendInternalError(res: Response, message: string): void {
   sendApiInternalError(res, message);
+}
+
+type HealthPayloadValidation =
+  | { ok: true }
+  | { ok: false; code: string; message: string };
+
+function validateHealthSyncPayload(payload: HealthSyncPayload): HealthPayloadValidation {
+  const parsedDate = parseApiDate(payload.date);
+  if (!parsedDate) {
+    return { ok: false, code: 'BAD_REQUEST', message: 'date is required in YYYY-MM-DD format' };
+  }
+
+  const today = startOfUtcDay(new Date());
+  const staleCutoff = new Date(today.getTime() - 400 * 24 * 60 * 60 * 1000);
+  if (parsedDate.getTime() > today.getTime()) {
+    return { ok: false, code: 'BAD_REQUEST', message: 'date cannot be in the future' };
+  }
+  if (parsedDate.getTime() < staleCutoff.getTime()) {
+    return { ok: false, code: 'BAD_REQUEST', message: 'date is too old to sync' };
+  }
+
+  const rangeChecks: Array<[keyof HealthSyncPayload, number, number]> = [
+    ['hrvMs', 5, 250],
+    ['restingHeartRate', 30, 220],
+    ['steps', 0, 100_000],
+    ['activeCalories', 0, 10_000],
+    ['totalSleepMinutes', 0, 1_440],
+    ['deepSleepMinutes', 0, 1_440],
+    ['remSleepMinutes', 0, 1_440],
+    ['vo2Max', 10, 100],
+    ['respiratoryRate', 5, 40],
+    ['oxygenSaturation', 50, 100],
+    ['walkingHeartRateAverage', 30, 220],
+    ['bodyMassKg', 20, 350],
+    ['bodyFatPercentage', 1, 80],
+    ['leanBodyMassKg', 10, 250],
+    ['basalCalories', 500, 6_000],
+    ['exerciseMinutes', 0, 1_440],
+  ];
+  for (const [field, min, max] of rangeChecks) {
+    const value = payload[field];
+    if (value == null) continue;
+    if (typeof value !== 'number' || !Number.isFinite(value) || value < min || value > max) {
+      return { ok: false, code: 'BAD_REQUEST', message: `${String(field)} is outside the accepted range` };
+    }
+  }
+
+  const totalSleep = payload.totalSleepMinutes ?? 0;
+  const deepSleep = payload.deepSleepMinutes ?? 0;
+  const remSleep = payload.remSleepMinutes ?? 0;
+  if (deepSleep + remSleep > totalSleep && totalSleep > 0) {
+    return { ok: false, code: 'BAD_REQUEST', message: 'sleep stage minutes cannot exceed total sleep minutes' };
+  }
+
+  if (Array.isArray(payload.sleepIntervals)) {
+    const totalIntervalMinutes = payload.sleepIntervals.reduce((sum, interval) => {
+      const duration = Number(interval?.durationMinutes);
+      return Number.isFinite(duration) && duration > 0 ? sum + duration : sum;
+    }, 0);
+    if (totalSleep > 0 && totalIntervalMinutes > totalSleep + 60) {
+      return { ok: false, code: 'BAD_REQUEST', message: 'sleep intervals exceed total sleep duration' };
+    }
+  }
+
+  if (Array.isArray(payload.workouts)) {
+    if (payload.workouts.length > 40) {
+      return { ok: false, code: 'BAD_REQUEST', message: 'too many workouts in one sync payload' };
+    }
+    for (const workout of payload.workouts) {
+      const source = typeof workout?.source === 'string' ? workout.source.trim() : '';
+      if (!source || source.length > 128) {
+        return { ok: false, code: 'BAD_REQUEST', message: 'workout source is invalid' };
+      }
+      const start = parseIsoInstant(workout?.start);
+      const end = parseIsoInstant(workout?.end);
+      if (!start || !end || end.getTime() <= start.getTime()) {
+        return { ok: false, code: 'BAD_REQUEST', message: 'workout start/end are invalid' };
+      }
+      if (!isNumberInRange(workout?.durationMinutes, 1, 1_440)) {
+        return { ok: false, code: 'BAD_REQUEST', message: 'workout duration is outside the accepted range' };
+      }
+      if (workout.totalEnergyBurned != null && !isNumberInRange(workout.totalEnergyBurned, 0, 10_000)) {
+        return { ok: false, code: 'BAD_REQUEST', message: 'workout calories are outside the accepted range' };
+      }
+      if (workout.totalDistance != null && !isNumberInRange(workout.totalDistance, 0, 500_000)) {
+        return { ok: false, code: 'BAD_REQUEST', message: 'workout distance is outside the accepted range' };
+      }
+    }
+  }
+
+  return { ok: true };
+}
+
+function parseApiDate(value: unknown): Date | null {
+  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return null;
+  const parsed = new Date(`${value}T00:00:00.000Z`);
+  if (Number.isNaN(parsed.getTime())) return null;
+  if (parsed.toISOString().slice(0, 10) !== value) return null;
+  return parsed;
+}
+
+function startOfUtcDay(date: Date): Date {
+  return new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
+}
+
+function parseIsoInstant(value: unknown): Date | null {
+  if (typeof value !== 'string' || value.length > 64) return null;
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+function isNumberInRange(value: unknown, min: number, max: number): boolean {
+  return typeof value === 'number' && Number.isFinite(value) && value >= min && value <= max;
 }
 
 function prepareAppleHealthUpsert(db: Database.Database): Database.Statement {
@@ -124,9 +243,8 @@ export function healthDataRoutes(): Router {
     const { userId } = req as AuthenticatedRequest;
     const payload = req.body as HealthSyncPayload;
 
-    if (!payload.date || !/^\d{4}-\d{2}-\d{2}$/.test(payload.date)) {
-      return sendError(res, 'BAD_REQUEST', 'date is required in YYYY-MM-DD format');
-    }
+    const validation = validateHealthSyncPayload(payload);
+    if (!validation.ok) return sendError(res, validation.code, validation.message);
 
     try {
       const db = getDb();
@@ -166,6 +284,7 @@ export function healthDataRoutes(): Router {
           totalMinutes: payload.totalSleepMinutes ?? 0,
           deepMinutes: payload.deepSleepMinutes ?? 0,
           remMinutes: payload.remSleepMinutes ?? 0,
+          intervals: normalizeSleepIntervals(payload.sleepIntervals),
         }));
         typesUpserted++;
       }
@@ -302,4 +421,33 @@ export function healthDataRoutes(): Router {
   });
 
   return router;
+}
+
+function normalizeSleepIntervals(payloadIntervals: HealthSyncPayload['sleepIntervals']): Array<{
+  stage: string;
+  start: string;
+  end: string;
+  durationMinutes: number | null;
+}> {
+  if (!Array.isArray(payloadIntervals)) return [];
+  return payloadIntervals
+    .map((interval) => {
+      const stage = typeof interval?.stage === 'string' ? interval.stage.trim() : '';
+      const start = typeof interval?.start === 'string' ? interval.start.trim() : '';
+      const end = typeof interval?.end === 'string' ? interval.end.trim() : '';
+      if (!stage || !start || !end) return null;
+      const startDate = new Date(start);
+      const endDate = new Date(end);
+      if (Number.isNaN(startDate.getTime()) || Number.isNaN(endDate.getTime()) || endDate <= startDate) return null;
+      return {
+        stage,
+        start: startDate.toISOString(),
+        end: endDate.toISOString(),
+        durationMinutes: Number.isFinite(Number(interval.durationMinutes))
+          ? Math.round(Number(interval.durationMinutes))
+          : null,
+      };
+    })
+    .filter((interval): interval is { stage: string; start: string; end: string; durationMinutes: number | null } => !!interval)
+    .slice(0, 40);
 }

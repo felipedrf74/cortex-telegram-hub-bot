@@ -5,20 +5,20 @@
  *
  * Strategy (April 2026 revision — mixed primary routing):
  *   - secretary → OpenAI GPT-5.4 nano (best low-cost tool-use path)
- *   - triathlon → Gemini 3 Flash
- *   - content  → Gemini 3 Flash
- *   - finance  → Gemini 3 Flash
- *   - cooking  → Gemini 3 Flash
+ *   - triathlon → Gemini 2.5 Flash
+ *   - content  → Gemini 2.5 Flash
+ *   - finance  → Gemini 2.5 Flash
+ *   - cooking  → Gemini 2.5 Flash
  *
- * Anthropic is fallback-only — if the primary provider errors the
- * provider-fallback layer transparently degrades to Anthropic Haiku so the
- * user never sees a hard failure.
+ * OpenAI is the default cross-provider fallback for Gemini-backed domains.
+ * Anthropic remains an explicit emergency path when the Gemini kill-switch or
+ * operator overrides route traffic there and ANTHROPIC_ENABLED=true.
  *
  * Cost rationale (per MTK):
- *   Gemini 3 Flash: $0.50 / $3  — primary for non-secretary domains
- *   GPT-5.4 nano:   $0.20 / $1.25 — primary for secretary
- *   Haiku 4.5:      $1.00 / $5  — fallback across every domain
- *   Sonnet 4.6:     $3.00 / $15 — not used in this router
+ *   Gemini 2.5 Flash: $0.30 / $2.50 — primary for non-secretary domains
+ *   GPT-5.4 nano:     $0.20 / $1.25 — primary for secretary/eligible experiments
+ *   Haiku 4.5:        $1.00 / $5    — emergency fallback where enabled/configured
+ *   Sonnet 4.6:       $3.00 / $15   — not used in this router
  *
  * Feature flag: GEMINI_ROUTING_ENABLED is a kill-switch for the Gemini-backed
  * domains. When explicitly set to 'false' they route back to Anthropic as an
@@ -29,6 +29,7 @@ import type { DomainName } from '../domains/types';
 import type { ProviderName } from './model-config';
 import { logger } from '../utils/logger';
 import {
+  getDomainProviderExperimentOverrides,
   getGeminiDomainAllowlist,
   getGeminiIncludeSecretaryEnvOverride,
   getGeminiRoutingEnvOverride,
@@ -46,15 +47,14 @@ const DOMAIN_PROVIDER_MAP: Record<string, ProviderName> = {
 };
 
 // Fallbacks run when the primary provider errors, times out, or trips a
-// circuit breaker. Anthropic's Haiku is cheap, reliable, and has strong
-// tool-use — a good last line of defense for EVERY domain (including
-// secretary, which previously used OpenAI as a backup).
+// circuit breaker. Gemini-backed domains use OpenAI as the cross-provider
+// fallback so an Anthropic-disabled deployment still has a real fallback.
 const DOMAIN_FALLBACK_MAP: Record<string, ProviderName> = {
   secretary:  'gemini',      // Gemini Flash as OpenAI fallback (cheaper than Anthropic)
-  triathlon:  'anthropic',
-  content:    'anthropic',
-  finance:    'anthropic',
-  cooking:    'anthropic',
+  triathlon:  'openai',
+  content:    'openai',
+  finance:    'openai',
+  cooking:    'openai',
 };
 
 // ─── Feature Flag ───────────────────────────────────────────────────
@@ -71,6 +71,7 @@ let _geminiRoutingEnabled = true;
 // this set because its primary provider is OpenAI.
 const DEFAULT_GEMINI_DOMAINS = ['triathlon', 'content', 'finance', 'cooking'];
 let _geminiDomains = new Set<string>(DEFAULT_GEMINI_DOMAINS);
+let _domainProviderExperimentOverrides = new Map<string, ProviderName>();
 
 // Historical toggle — now repurposed as the secretary primary-provider
 // safeguard. When true (default), secretary stays on OpenAI. When false,
@@ -81,6 +82,7 @@ let _geminiIncludeSecretary = true;
 export function initDomainRouting(): void {
   _geminiRoutingEnabled = true;
   _geminiDomains = new Set(DEFAULT_GEMINI_DOMAINS);
+  _domainProviderExperimentOverrides = new Map();
   _geminiIncludeSecretary = true;
   _secretaryHaikuEnabled = isSecretaryHaikuRoutingEnabled();
 
@@ -100,6 +102,8 @@ export function initDomainRouting(): void {
   if (envDomains.length > 0) {
     _geminiDomains = new Set(envDomains);
   }
+
+  _domainProviderExperimentOverrides = normalizeDomainProviderOverrides(getDomainProviderExperimentOverrides());
 
   // kv_store overrides env (persistent user preferences win)
   try {
@@ -121,6 +125,7 @@ export function initDomainRouting(): void {
     geminiRoutingEnabled: _geminiRoutingEnabled,
     geminiIncludeSecretary: _geminiIncludeSecretary,
     geminiDomains: [..._geminiDomains],
+    domainProviderExperimentOverrides: Object.fromEntries(_domainProviderExperimentOverrides),
   }, 'Domain provider routing initialized');
 }
 
@@ -175,6 +180,9 @@ export function getProviderForDomain(domain: DomainName): ProviderName {
   // hatch (e.g. GEMINI_API_KEY expired, Gemini quota exhausted).
   if (!_geminiRoutingEnabled) return 'anthropic';
 
+  const experimentOverride = _domainProviderExperimentOverrides.get(domain);
+  if (experimentOverride) return experimentOverride;
+
   // Secretary routes to OpenAI (GPT-5.4 nano) by default.
   // The _geminiIncludeSecretary toggle is repurposed: when false, secretary
   // falls back to Anthropic (emergency escape). When true (default), it
@@ -191,11 +199,51 @@ export function getProviderForDomain(domain: DomainName): ProviderName {
   return DOMAIN_PROVIDER_MAP[domain] || 'anthropic';
 }
 
+export function hasDomainProviderRoute(domain: DomainName): boolean {
+  return Object.prototype.hasOwnProperty.call(DOMAIN_PROVIDER_MAP, domain);
+}
+
 /**
  * Get the fallback provider for a domain.
  */
 export function getFallbackForDomain(domain: DomainName): ProviderName {
   return DOMAIN_FALLBACK_MAP[domain] || 'anthropic';
+}
+
+function normalizeDomainProviderOverrides(raw: Record<string, string>): Map<string, ProviderName> {
+  const validDomains = new Set(['secretary', 'triathlon', 'content', 'finance', 'cooking']);
+  const validProviders = new Set<ProviderName>(['anthropic', 'openai', 'gemini', 'ollama']);
+  // Phase K (2026-05-26, Operator A2): Nexus Hub OllamaProvider v1 does
+  // not support safe local tool orchestration yet. Qwen/Ollama may emit
+  // tool calls via the `tools` parameter, but Nexus Hub must keep
+  // tool-requiring domains on the cloud/tool path until v2 implements
+  // schema validation, argument validation, max tool turns, dry-run
+  // / write-confirmation rules, and tool-result continuation. Secretary
+  // needs calendar/email/tasks tools; triathlon needs training-plans +
+  // calendar. Routing these to Ollama would break user-facing flows.
+  // Drop such overrides with a warn so a misconfigured .env is visible
+  // in logs but doesn't take down the bot.
+  const toolRequiringDomains = new Set(['secretary', 'triathlon']);
+  const normalized = new Map<string, ProviderName>();
+  for (const [domain, provider] of Object.entries(raw)) {
+    if (!validDomains.has(domain)) {
+      logger.warn({ domain, provider }, 'Dropped invalid AI_DOMAIN_PROVIDER_OVERRIDES entry: unknown domain');
+      continue;
+    }
+    if (!validProviders.has(provider as ProviderName)) {
+      logger.warn({ domain, provider }, 'Dropped invalid AI_DOMAIN_PROVIDER_OVERRIDES entry: unknown provider');
+      continue;
+    }
+    if (provider === 'ollama' && toolRequiringDomains.has(domain)) {
+      logger.warn(
+        { domain, provider },
+        'Dropped AI_DOMAIN_PROVIDER_OVERRIDES: Nexus Hub OllamaProvider v1 does not support safe local tool orchestration for tool-requiring domains. Falling back to default cloud routing.',
+      );
+      continue;
+    }
+    normalized.set(domain, provider as ProviderName);
+  }
+  return normalized;
 }
 
 /**

@@ -1,5 +1,10 @@
 # Documentation Map — Backend / Content Engine
 
+Status: canonical
+Owner: backend lead (Felipe)
+Last verified: 2026-05-04
+Update policy: update when a new docs/ subdirectory is added or canonical doc moves.
+
 ## Purpose
 This file is the Markdown inventory for the Nexus Hub backend and content
 engine workspace.
@@ -53,7 +58,6 @@ used as live implementation truth.
 - `/Users/felipedominguez/Desktop/Custom Connectors/Cortex/cortex-telegram-hub-bot/TASK-integration-tests.md`
 - `/Users/felipedominguez/Desktop/Custom Connectors/Cortex/cortex-telegram-hub-bot/TASK-openai-provider.md`
 - `/Users/felipedominguez/Desktop/Custom Connectors/Cortex/cortex-telegram-hub-bot/TASK-telegram-adapter.md`
-- `/Users/felipedominguez/Desktop/Custom Connectors/Cortex/cortex-telegram-hub-bot/TASK-whatsapp-adapter.md`
 
 ## Maintenance Rule
 When a backend Markdown file stops matching current runtime truth:

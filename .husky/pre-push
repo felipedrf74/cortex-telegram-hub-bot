@@ -1,29 +1,38 @@
 #!/usr/bin/env bash
-# ─────────────────────────────────────────────────────
-# Committed pre-push hook (hardening audit 2026-04-20).
-#
-# Matches the behavior previously written imperatively into
-# .git/hooks/pre-push by scripts/setup-hooks.sh. Now lives in version
-# control so every clone runs the same gates.
-# ─────────────────────────────────────────────────────
-set -e
+set -euo pipefail
 
-BRANCH=$(git rev-parse --abbrev-ref HEAD)
+ROOT="$(git rev-parse --show-toplevel)"
+cd "$ROOT"
 
-echo "🔍 Pre-push: Verifying $BRANCH..."
+BRANCH="$(git rev-parse --abbrev-ref HEAD)"
+BASE_REF="$(git for-each-ref --format='%(refname:short)' refs/remotes/origin/main 2>/dev/null | head -1)"
+BASE_REF="${BASE_REF:-main}"
 
-echo "   📝 Type check..."
-npx tsc --noEmit
-echo "   ✅ Types OK"
+export NEXUS_SKIP_SHADOW_PARITY_WRITE="${NEXUS_SKIP_SHADOW_PARITY_WRITE:-1}"
 
-echo "   🧪 Running tests..."
-npx vitest run --reporter=dot
-echo "   ✅ Tests passed"
+echo "🔍 Pre-push risk gate: $BRANCH (base: $BASE_REF)"
+
+if [ "${NEXUS_PREPUSH_SKIP_VITEST:-0}" = "1" ]; then
+  if [ -z "${NEXUS_EMERGENCY_SKIP_REASON:-}" ]; then
+    echo "❌ NEXUS_PREPUSH_SKIP_VITEST=1 requires NEXUS_EMERGENCY_SKIP_REASON"
+    exit 1
+  fi
+  echo "⚠️ skipping Vitest via emergency override: $NEXUS_EMERGENCY_SKIP_REASON"
+  npx tsc --noEmit
+  scripts/risk-gate.sh --base "$BASE_REF" --skip-typecheck --skip-python --skip-migrations --dry-run
+  exit 0
+fi
+
+ARGS=(--base "$BASE_REF")
+if [ "${NEXUS_PREPUSH_FULL_VITEST:-0}" = "1" ]; then
+  ARGS+=(--full)
+fi
+
+scripts/risk-gate.sh "${ARGS[@]}"
 
 if [ "$BRANCH" = "main" ]; then
-  echo "   🔨 Build verification (pushing to main)..."
+  echo "🔨 Build verification (pushing to main)"
   npm run build > /dev/null
-  echo "   ✅ Build OK"
 fi
 
 echo "✅ All checks passed — pushing"

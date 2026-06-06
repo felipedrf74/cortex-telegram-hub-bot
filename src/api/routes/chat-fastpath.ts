@@ -16,6 +16,10 @@ import * as msTodo from '../../services/microsoft-todo';
 import { getEvents, hasConnectedCalendarForUser, isAnyCalendarConfigured } from '../../services/unified-calendar';
 import { getActiveReminders } from '../../state/reminders';
 import { getTaskProviderForUser } from '../../services/task-store/task-router';
+import {
+  getProviderAwarePendingTodoTasks,
+  getProviderAwareTodoTasksDueInRange,
+} from '../../services/task-store/provider-aware-read-model';
 import { getUnreadMailSummaryForUser, isAnyMailConfiguredForUser } from '../../services/unified-mail-pressure';
 import {
   formatMsTodoLists,
@@ -38,7 +42,7 @@ import {
 import { config } from '../../config';
 import { logger } from '../../utils/logger';
 import { getCached, setCache } from '../../services/cache-store';
-import { getUserLanguage } from '../../services/user-service';
+import { getUserLanguageById } from '../../services/user-service';
 import type { InlineButton } from '../../adapters/message-adapter';
 import {
   buildListSelectionButtons,
@@ -61,14 +65,16 @@ type FastPathTaskProvider = {
   getTasksDueInRange: typeof msTodo.getTasksDueInRange;
 };
 
-function getPendingTasksCacheKey(userId?: number): string {
-  if (userId != null) {
-    return `u:${userId}:fastpath:pending-tasks`;
+export function getPendingTasksCacheKey(userId?: number, tenantId?: number): string {
+  if (userId != null && tenantId != null) {
+    return `u:${userId}:t:${tenantId}:fastpath:pending-tasks`;
   }
   try {
     const { getCurrentContext } = require('../../utils/request-context');
-    const uid = getCurrentContext()?.userId;
-    return uid ? `u:${uid}:fastpath:pending-tasks` : 'fastpath:pending-tasks';
+    const context = getCurrentContext();
+    const uid = context?.userId;
+    const tid = context?.tenantId;
+    return uid && tid ? `u:${uid}:t:${tid}:fastpath:pending-tasks` : 'fastpath:pending-tasks';
   } catch { return 'fastpath:pending-tasks'; }
 }
 
@@ -89,17 +95,39 @@ function getCallbackScope(userId?: number, tenantId?: number): { userId: number;
 async function getPendingTasksCached(
   taskProvider: FastPathTaskProvider,
   userId?: number,
+  tenantId?: number,
 ): Promise<msTodo.ServiceResult<msTodo.TodoTask[]>> {
-  const key = getPendingTasksCacheKey(userId);
+  const key = getPendingTasksCacheKey(userId, tenantId);
   const cached = getCached<msTodo.TodoTask[]>(key);
   if (cached) {
     return { success: true, data: cached };
   }
-  const result = await taskProvider.getAllPendingTasks();
+  const result = userId != null
+    ? await getProviderAwarePendingTasksWithFallback(userId, taskProvider)
+    : await taskProvider.getAllPendingTasks();
   if (result.success) {
     setCache(key, result.data, PENDING_TASKS_TTL);
   }
   return result;
+}
+
+async function getProviderAwarePendingTasksWithFallback(
+  userId: number,
+  taskProvider: FastPathTaskProvider,
+): Promise<msTodo.ServiceResult<msTodo.TodoTask[]>> {
+  const providerAware = await getProviderAwarePendingTodoTasks(userId);
+  return providerAware.success ? providerAware : taskProvider.getAllPendingTasks();
+}
+
+async function getProviderAwareDueRangeWithFallback(
+  userId: number | undefined,
+  taskProvider: FastPathTaskProvider,
+  startDate: string,
+  endDate: string,
+): Promise<msTodo.ServiceResult<msTodo.TodoTask[]>> {
+  if (userId == null) return taskProvider.getTasksDueInRange(startDate, endDate);
+  const providerAware = await getProviderAwareTodoTasksDueInRange(userId, startDate, endDate);
+  return providerAware.success ? providerAware : taskProvider.getTasksDueInRange(startDate, endDate);
 }
 
 export interface FastPathResult {
@@ -113,7 +141,7 @@ function getFastPathLabels(userId?: number): ReturnType<typeof labelsForLanguage
     return labelsForLanguage('en-US');
   }
   try {
-    return labelsForLanguage(getUserLanguage(userId));
+    return labelsForLanguage(getUserLanguageById(userId));
   } catch (err) {
     logger.debug({ err, userId }, 'fast-path language lookup unavailable, falling back to English labels');
     return labelsForLanguage('en-US');
@@ -125,7 +153,7 @@ function getFastPathLanguage(userId?: number): string {
     return 'en-US';
   }
   try {
-    return getUserLanguage(userId);
+    return getUserLanguageById(userId);
   } catch (err) {
     logger.debug({ err, userId }, 'fast-path language lookup unavailable, falling back to English copy');
     return 'en-US';
@@ -189,17 +217,17 @@ export async function tryDeterministicChatCommand(
 
       case '/todosummary':
       case '/todo_summary':
-        return await handleTodoSummary(labels, userId);
+        return await handleTodoSummary(labels, userId, tenantId);
 
       case '/day':
       case '/today':
-        return await handleDayOverview(labels, userId);
+        return await handleDayOverview(labels, userId, tenantId);
 
       case '/week':
-        return await handleWeekOverview(labels, userId);
+        return await handleWeekOverview(labels, userId, tenantId);
 
       case '/status':
-        return await handleStatus(labels, userId);
+        return await handleStatus(labels, userId, tenantId);
 
       default:
         return null;
@@ -258,7 +286,7 @@ async function handleDueToday(labels: ReturnType<typeof labelsForLanguage>, user
 
   // Use date-portion comparison in the configured timezone to avoid MS Graph
   // timezone ambiguity (their dueDateTime is stored as a naked datetime).
-  const tasksResult = await getPendingTasksCached(taskProvider, userId);
+  const tasksResult = await getPendingTasksCached(taskProvider, userId, tenantId);
   if (!tasksResult.success) {
     return { text: `⚠️ ${copy('Falha ao obter tarefas', 'Failed to fetch tasks')}: ${escapeHtml(tasksResult.error || copy('erro desconhecido', 'unknown error'))}`, domain: 'secretary' };
   }
@@ -291,7 +319,7 @@ async function handleOverdue(labels: ReturnType<typeof labelsForLanguage>, userI
   if (!taskProvider) return null;
   const copy = (pt: string, en: string) => fastPathCopy(userId, pt, en);
 
-  const tasksResult = await getPendingTasksCached(taskProvider, userId);
+  const tasksResult = await getPendingTasksCached(taskProvider, userId, tenantId);
   if (!tasksResult.success) {
     return { text: `⚠️ ${copy('Falha ao obter tarefas', 'Failed to fetch tasks')}: ${escapeHtml(tasksResult.error || copy('erro desconhecido', 'unknown error'))}`, domain: 'secretary' };
   }
@@ -323,7 +351,7 @@ async function handleDueWeek(labels: ReturnType<typeof labelsForLanguage>, userI
   if (!taskProvider) return null;
   const copy = (pt: string, en: string) => fastPathCopy(userId, pt, en);
 
-  const result = await taskProvider.getTasksDueInRange(startOfWeek(), endOfWeek());
+  const result = await getProviderAwareDueRangeWithFallback(userId, taskProvider, startOfWeek(), endOfWeek());
   if (!result.success) {
     return { text: `⚠️ ${copy('Falha ao obter tarefas', 'Failed to fetch tasks')}: ${escapeHtml(result.error || copy('erro desconhecido', 'unknown error'))}`, domain: 'secretary' };
   }
@@ -350,7 +378,7 @@ async function handleAllTasks(labels: ReturnType<typeof labelsForLanguage>, user
   if (!taskProvider) return null;
   const copy = (pt: string, en: string) => fastPathCopy(userId, pt, en);
 
-  const result = await getPendingTasksCached(taskProvider, userId);
+  const result = await getPendingTasksCached(taskProvider, userId, tenantId);
   if (!result.success) {
     return { text: `⚠️ ${copy('Falha ao obter tarefas', 'Failed to fetch tasks')}: ${escapeHtml(result.error || copy('erro desconhecido', 'unknown error'))}`, domain: 'secretary' };
   }
@@ -362,12 +390,12 @@ async function handleAllTasks(labels: ReturnType<typeof labelsForLanguage>, user
   };
 }
 
-async function handleTodoSummary(labels: ReturnType<typeof labelsForLanguage>, userId?: number): Promise<FastPathResult | null> {
+async function handleTodoSummary(labels: ReturnType<typeof labelsForLanguage>, userId?: number, tenantId?: number): Promise<FastPathResult | null> {
   const taskProvider = getFastPathTaskProvider(userId);
   if (!taskProvider) return null;
   const copy = (pt: string, en: string) => fastPathCopy(userId, pt, en);
 
-  const pendingResult = await getPendingTasksCached(taskProvider, userId);
+  const pendingResult = await getPendingTasksCached(taskProvider, userId, tenantId);
   if (!pendingResult.success) {
     return { text: `⚠️ ${copy('Falha ao obter tarefas', 'Failed to fetch tasks')}: ${escapeHtml(pendingResult.error || copy('erro desconhecido', 'unknown error'))}`, domain: 'secretary' };
   }
@@ -396,7 +424,7 @@ async function handleTodoSummary(labels: ReturnType<typeof labelsForLanguage>, u
   };
 }
 
-async function handleDayOverview(labels: ReturnType<typeof labelsForLanguage>, userId?: number): Promise<FastPathResult> {
+async function handleDayOverview(labels: ReturnType<typeof labelsForLanguage>, userId?: number, tenantId?: number): Promise<FastPathResult> {
   const copy = (pt: string, en: string) => fastPathCopy(userId, pt, en);
   let msg = `<b>📅 ${now().toFormat('cccc, LLLL dd yyyy')}</b>\n\n`;
 
@@ -422,7 +450,7 @@ async function handleDayOverview(labels: ReturnType<typeof labelsForLanguage>, u
   const taskProvider = getFastPathTaskProvider(userId);
   if (taskProvider) {
     try {
-      const pendingResult = await getPendingTasksCached(taskProvider, userId);
+      const pendingResult = await getPendingTasksCached(taskProvider, userId, tenantId);
       if (pendingResult.success) {
         const todayStr = nowDateInTimezone();
         const dueToday = pendingResult.data.filter((t) => dueDateInTimezone(t.dueDateTime) === todayStr);
@@ -445,7 +473,7 @@ async function handleDayOverview(labels: ReturnType<typeof labelsForLanguage>, u
   };
 }
 
-async function handleWeekOverview(labels: ReturnType<typeof labelsForLanguage>, userId?: number): Promise<FastPathResult> {
+async function handleWeekOverview(labels: ReturnType<typeof labelsForLanguage>, userId?: number, tenantId?: number): Promise<FastPathResult> {
   const copy = (pt: string, en: string) => fastPathCopy(userId, pt, en);
   let msg = `${copy('<b>📅 Vista da semana</b>', '<b>📅 Week Overview</b>')}\n`;
   msg += `${now().startOf('week').toFormat('LLL dd')} - ${now().endOf('week').toFormat('LLL dd yyyy')}\n\n`;
@@ -476,7 +504,7 @@ async function handleWeekOverview(labels: ReturnType<typeof labelsForLanguage>, 
   const taskProvider = getFastPathTaskProvider(userId);
   if (taskProvider) {
     try {
-      const pendingResult = await getPendingTasksCached(taskProvider, userId);
+      const pendingResult = await getPendingTasksCached(taskProvider, userId, tenantId);
       if (pendingResult.success && pendingResult.data.length > 0) {
         msg += `\n${copy(`📋 Tarefas pendentes: ${pendingResult.data.length}`, `📋 Pending tasks: ${pendingResult.data.length}`)}\n`;
       }
@@ -492,7 +520,7 @@ async function handleWeekOverview(labels: ReturnType<typeof labelsForLanguage>, 
   };
 }
 
-async function handleStatus(labels: ReturnType<typeof labelsForLanguage>, userId?: number): Promise<FastPathResult> {
+async function handleStatus(labels: ReturnType<typeof labelsForLanguage>, userId?: number, tenantId?: number): Promise<FastPathResult> {
   const copy = (pt: string, en: string) => fastPathCopy(userId, pt, en);
   let msg = `${copy('<b>📊 Estado geral</b>', '<b>📊 Status Overview</b>')}\n\n`;
 
@@ -500,7 +528,7 @@ async function handleStatus(labels: ReturnType<typeof labelsForLanguage>, userId
   const taskProvider = getFastPathTaskProvider(userId);
   if (taskProvider) {
     try {
-      const pendingResult = await getPendingTasksCached(taskProvider, userId);
+      const pendingResult = await getPendingTasksCached(taskProvider, userId, tenantId);
       if (pendingResult.success) {
         const highPriority = pendingResult.data.filter((t) => t.importance === 'high');
         msg += `📋 Microsoft To Do: ${copy(`${pendingResult.data.length} tarefas pendentes`, `${pendingResult.data.length} pending tasks`)}\n`;

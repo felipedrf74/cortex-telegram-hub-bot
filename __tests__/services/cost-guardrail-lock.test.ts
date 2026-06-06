@@ -10,15 +10,49 @@
  * the daily budget. Across users, execution must stay concurrent.
  */
 
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import Database from 'better-sqlite3';
+
+let testDb: Database.Database;
+
+vi.mock('../../src/services/database', () => ({
+  getDb: () => testDb,
+  initDatabase: vi.fn(),
+  closeDatabase: vi.fn(),
+  findUnexpectedMigrationPrefixCollisions: vi.fn(() => []),
+}));
+
+vi.mock('../../src/utils/logger', () => ({
+  logger: { warn: vi.fn(), info: vi.fn(), error: vi.fn(), debug: vi.fn(), trace: vi.fn() },
+  LOGGER_REDACTION_PATHS: [],
+}));
+
+vi.mock('../../src/config', () => ({
+  config: {
+    telegram: { allowedUserIds: [] },
+    app: { timezone: 'Europe/Lisbon' },
+    billing: { paywallEnabled: true },
+    aiSafety: { globalDailyLimitUsd: 10.0, alertThresholdPercent: 0.8 },
+  },
+}));
+
+vi.mock('../../src/services/user-service', () => ({
+  isOwnerUserRef: () => false,
+}));
+
 import {
   acquireCostLock,
   withUserCostLock,
   _resetUserCostLocksForTests,
 } from '../../src/services/cost-guardrail';
 
+beforeEach(() => {
+  testDb = new Database(':memory:');
+});
+
 afterEach(() => {
   _resetUserCostLocksForTests();
+  testDb?.close();
 });
 
 describe('withUserCostLock — per-user serialization', () => {

@@ -71,6 +71,10 @@ vi.mock('../../src/services/database', () => ({
       run: (...args: unknown[]) => mockDbRun(sql, ...args),
     }),
   }),
+  initDatabase: vi.fn(),
+  closeDatabase: vi.fn(),
+  findUnexpectedMigrationPrefixCollisions: vi.fn(() => []),
+  assertNoUnexpectedMigrationPrefixCollisions: vi.fn(),
 }));
 
 vi.mock('../../src/services/cache-store', () => ({
@@ -96,6 +100,7 @@ vi.mock('../../src/services/cooking-chef', () => ({
   generateShoppingList: vi.fn(),
   getShoppingList: vi.fn(),
   updateShoppingListItemChecked: vi.fn(),
+  getPantryItems: vi.fn(() => []),
 }));
 
 vi.mock('../../src/services/training-plans', () => ({
@@ -119,7 +124,8 @@ vi.mock('../../src/services/finance-tracker', () => ({
   getMonthlySummary: (...args: unknown[]) => mockGetMonthlySummary(...args),
   getMonthlyBudgetView: (...args: unknown[]) => mockGetMonthlyBudgetView(...args),
   getPreferredCurrencyForUser: (...args: unknown[]) => mockGetPreferredCurrencyForUser(...args),
-  calculateMonthlyTax: (...args: unknown[]) => mockCalculateMonthlyTax(...args),
+  calculatePortugueseMonthlyTax: (...args: unknown[]) => mockCalculateMonthlyTax(...args),
+  calculateMonthlyTax: vi.fn(() => { throw new Error("Brazilian tax engine removed; see finance-tax-pt"); }),
   addTransaction: vi.fn(),
   getTransactions: vi.fn(),
   deleteTransaction: vi.fn(),
@@ -144,8 +150,13 @@ vi.mock('../../src/services/secretary-fastpath', () => ({
 }));
 
 vi.mock('../../src/services/user-service', () => ({
+  // Identity-safety: iOS routes use the strict by-id helpers post-audit.
   getUserLanguage: (...args: unknown[]) => mockGetUserLanguage(...args),
+  getUserLanguageById: (...args: unknown[]) => mockGetUserLanguage(...args),
   getUserTimezone: () => 'Europe/Lisbon',
+  getUserTimezoneById: () => 'Europe/Lisbon',
+  getPreferredDisplayName: () => 'Test User',
+  getPreferredDisplayNameById: () => 'Test User',
   getOwnerBootstrapUser: () => null,
   getUserById: (...args: unknown[]) => mockGetUserById(...args),
   getUserByTelegramId: (...args: unknown[]) => mockGetUserById(...args),
@@ -213,28 +224,37 @@ vi.mock('../../src/services/task-store/task-router', () => ({
   resolveTaskProvider: vi.fn(() => 'ms_todo'),
 }));
 
-vi.mock('../../src/services/task-cache-invalidator', () => ({
+vi.mock('../../src/services/cache-coherence-registry', () => ({
+  ...{
+    CacheCoherenceEvents: {},
+    _resetDashboardCacheInvalidationStatsForTests: vi.fn(),
+    getDashboardCacheInvalidationStats: vi.fn(),
+    invalidateCacheForEvent: vi.fn(),
+    invalidateCalendarCaches: vi.fn(),
+    invalidateContentDerivedCaches: vi.fn(),
+    invalidateCookingDerivedCaches: vi.fn(),
+    invalidateDashboardCaches: vi.fn(),
+    invalidateDashboardCoordinationCaches: vi.fn(),
+    invalidateDashboardHomeCaches: vi.fn(),
+    invalidateDashboardReadinessCaches: vi.fn(),
+    invalidateDashboardRootCaches: vi.fn(),
+    invalidateExecutiveBriefCaches: vi.fn(),
+    invalidateFinanceDerivedCaches: vi.fn(),
+    invalidateIntegrationDerivedCaches: vi.fn(),
+    invalidateOnboardingDerivedCaches: vi.fn(),
+    invalidatePlanningCaches: vi.fn(),
+    invalidateTaskCaches: vi.fn(),
+    invalidateTrainingDerivedCaches: vi.fn(),
+  },
   invalidateTaskCaches: vi.fn(),
+  invalidateTrainingDerivedCaches: vi.fn(),
+  invalidateCalendarCaches: vi.fn(),
+  invalidateCookingDerivedCaches: vi.fn(),
+  invalidateFinanceDerivedCaches: vi.fn(),
 }));
 
 vi.mock('../../src/services/focus-planner', () => ({
   getFocusBlockRecommendation: (...args: unknown[]) => mockGetFocusBlockRecommendation(...args),
-}));
-
-vi.mock('../../src/services/training-cache-invalidator', () => ({
-  invalidateTrainingDerivedCaches: vi.fn(),
-}));
-
-vi.mock('../../src/services/calendar-cache-invalidator', () => ({
-  invalidateCalendarCaches: vi.fn(),
-}));
-
-vi.mock('../../src/services/cooking-cache-invalidator', () => ({
-  invalidateCookingDerivedCaches: vi.fn(),
-}));
-
-vi.mock('../../src/services/finance-cache-invalidator', () => ({
-  invalidateFinanceDerivedCaches: vi.fn(),
 }));
 
 vi.mock('../../src/services/cross-agent-learning', () => ({
@@ -268,6 +288,19 @@ vi.mock('../../src/services/cost-guardrail', () => ({
     capUsd: 0.2,
     plan: 'pro',
     resetAt: '2026-04-15T00:00:00.000Z',
+  })),
+  enforceCostGuardrails: vi.fn(() => ({
+    block: false,
+    status: 200,
+    reason: 'ok',
+    global: { totalUsd: 0, limitUsd: 100, exceeded: false },
+    quota: {
+      over: false,
+      spentUsd: 0,
+      capUsd: 0.2,
+      plan: 'pro',
+      resetAt: '2026-04-15T00:00:00.000Z',
+    },
   })),
 }));
 
@@ -327,6 +360,7 @@ vi.mock('../../src/utils/logger', () => ({
     trace: vi.fn(),
     child: vi.fn().mockReturnThis(),
   },
+  LOGGER_REDACTION_PATHS: [],
 }));
 
 import { planRoutes } from '../../src/api/routes/plan';
@@ -404,8 +438,9 @@ function protectedApp(mountPath: string, router: Router): express.Express {
   // request on the "auth has admitted the caller" path so the route family
   // health checks stay focused on downstream app-facing contracts.
   app.use((req, _res, next) => {
-    (req as express.Request & { userId: number; deviceId: string }).userId = 7001;
-    (req as express.Request & { userId: number; deviceId: string }).deviceId = 'smoke-device';
+    (req as express.Request & { userId: number; tenantId: number; deviceId: string }).userId = 7001;
+    (req as express.Request & { userId: number; tenantId: number; deviceId: string }).tenantId = 7001;
+    (req as express.Request & { userId: number; tenantId: number; deviceId: string }).deviceId = 'smoke-device';
     next();
   });
   app.use(mountPath, router);
@@ -729,7 +764,7 @@ describe('app-facing happy path smoke', () => {
       if (sql.includes("FROM content_ideas WHERE stage = 'filmed'")) return [];
       if (sql.includes("FROM content_ideas WHERE stage = 'editing'")) return [];
       if (sql.includes("FROM content_ideas WHERE stage = 'published'")) {
-        return [{ id: 3, title: 'Publicado ontem', score: 70, created_at: `${todayIso}T08:00:00.000Z` }];
+        return [{ id: 3, title: 'Publicado ontem', score: 70, created_at: new Date().toISOString() }];
       }
       return [];
     });
@@ -790,6 +825,7 @@ describe('app-facing happy path smoke', () => {
         path: '/content/pipeline',
         assert: (body) => {
           expect(body.data.stages.ideas).toHaveLength(1);
+          expect(body.data.stages.published).toHaveLength(1);
           expect(body.data.stats).toMatchObject({
             totalIdeas: 2,
             publishedThisMonth: 1,

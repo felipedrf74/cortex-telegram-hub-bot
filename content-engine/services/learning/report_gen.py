@@ -15,6 +15,7 @@ import httpx
 
 from models.requests import ReportResponse
 from services.claude_client import ask_claude_json
+from services.creator_context import creator_profile_block, language_instruction
 
 logger = logging.getLogger("content-engine.report")
 
@@ -27,16 +28,26 @@ _INTERNAL_SECRET = os.environ.get("INTERNAL_API_SECRET", "")
 _PERFORMANCE_URL = f"{_TS_BASE}/api/v1/internal/performance-summary"
 
 
-async def _fetch_performance_history(days: int) -> list[dict]:
+async def _fetch_performance_history(
+    days: int,
+    tenant_id: int | None = None,
+    attribution_token: str | None = None,
+) -> list[dict]:
     """Fetch performance history from the TS backend's canonical store."""
     if not _INTERNAL_SECRET:
         logger.warning("INTERNAL_API_SECRET not set — cannot fetch performance history")
         return []
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
-            resp = await client.get(_PERFORMANCE_URL, params={"days": days}, headers={
+            params: dict[str, int] = {"days": days}
+            headers = {
                 "x-internal-secret": _INTERNAL_SECRET,
-            })
+            }
+            if tenant_id is not None:
+                params["tenantId"] = tenant_id
+            if attribution_token:
+                headers["x-internal-attribution-token"] = attribution_token
+            resp = await client.get(_PERFORMANCE_URL, params=params, headers=headers)
             if resp.status_code == 200:
                 data = resp.json()
                 return data.get("entries", [])
@@ -45,14 +56,20 @@ async def _fetch_performance_history(days: int) -> list[dict]:
     return []
 
 
-async def generate(period: str = "week") -> ReportResponse:
+async def generate(
+    period: str = "week",
+    creator_profile: str | None = None,
+    language: str = "en-US",
+    tenant_id: int | None = None,
+    attribution_token: str | None = None,
+) -> ReportResponse:
     start = time.monotonic()
 
     # Fetch from canonical TS store
     days = 30 if period == "month" else 7
     period_label = "Last 30 Days" if period == "month" else "Last 7 Days"
 
-    recent = await _fetch_performance_history(days)
+    recent = await _fetch_performance_history(days, tenant_id=tenant_id, attribution_token=attribution_token)
 
     if not recent:
         duration_ms = int((time.monotonic() - start) * 1000)
@@ -73,6 +90,18 @@ async def generate(period: str = "week") -> ReportResponse:
         for v in recent
     )
 
+    context = type("ReportCreatorContext", (), {
+        "creator_profile": creator_profile,
+        "language": language,
+    })()
+    system_prompt = f"""You are the authenticated creator's content performance report analyst.
+
+{creator_profile_block(context)}
+
+{language_instruction(context)}
+
+Use only bounded performance summaries and creator profile details supplied for this request."""
+
     prompt = f"""Generate a content performance report for the period: {period_label}
 
 Data from {len(recent)} videos:
@@ -89,9 +118,9 @@ Create a report with:
 8. hook_analysis: which hooks worked best
 9. trend_direction: "improving" | "stable" | "declining"
 
-Return JSON. Insights in PT-BR."""
+Return JSON. Insights in {language}."""
 
-    report = await ask_claude_json(prompt, category="content_engine_report")
+    report = await ask_claude_json(prompt, system=system_prompt, category="content_engine_report")
     if not isinstance(report, dict):
         report = {"raw": report}
 

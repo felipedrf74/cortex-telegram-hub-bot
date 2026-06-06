@@ -3,6 +3,8 @@
 import crypto from 'crypto';
 import type { NextFunction, Request, Response } from 'express';
 import { config } from '../config';
+import { logAudit } from '../services/audit-trail';
+import { logger } from '../utils/logger';
 import {
   PORTAL_SESSION_PREFIX,
   createPortalSessionToken,
@@ -13,6 +15,39 @@ import {
   type PortalSessionPayload,
   type PortalTokenScope,
 } from '../services/portal-session-token';
+
+// AUTH-O12 (closed-beta-auth-hardening, 2026-05-04): audit every portal
+// token enforcement decision so operators can dashboard portal access
+// volume + failures. Wrapped in try/catch so an audit-write failure
+// never blocks a normal portal response.
+function emitPortalAuditEvent(
+  req: Request,
+  scope: PortalTokenScope,
+  outcome: 'success' | 'failure',
+  reason?: string,
+  extra: Record<string, unknown> = {},
+): void {
+  try {
+    logAudit({
+      userId: 0,
+      tenantId: 0,
+      actorId: 0,
+      action: 'access',
+      resource: 'portal.auth',
+      details: {
+        scope,
+        outcome,
+        reason,
+        method: req.method,
+        path: (req as { path?: string }).path,
+        ...extra,
+      },
+      ipAddress: req.ip || req.socket?.remoteAddress || undefined,
+    });
+  } catch (err: any) {
+    logger.warn?.({ err, scope, outcome }, 'Failed to emit portal.auth audit row');
+  }
+}
 
 export { createPortalSessionToken };
 
@@ -341,6 +376,7 @@ function enforcePortalToken(req: Request, res: Response, next: NextFunction, sco
         actorSignatureRequired: false,
         actorSignatureVerified: false,
       });
+      emitPortalAuditEvent(req, scope, 'success', 'local_bypass');
       next();
       return;
     }
@@ -351,6 +387,7 @@ function enforcePortalToken(req: Request, res: Response, next: NextFunction, sco
       : scope === 'write'
         ? 'Portal write token not configured'
         : 'Portal token not configured';
+    emitPortalAuditEvent(req, scope, 'failure', 'token_not_configured');
     res.status(401).json({
       ok: false,
       error: {
@@ -377,11 +414,13 @@ function enforcePortalToken(req: Request, res: Response, next: NextFunction, sco
       sessionExpiresAt: sessionMatch.expiresAt,
       sessionSignatureVerified: true,
     });
+    emitPortalAuditEvent(req, scope, 'success', 'session', { sessionScope: sessionMatch.scope });
     next();
     return;
   }
 
   if (tokens.requireSessionAuth) {
+    emitPortalAuditEvent(req, scope, 'failure', 'invalid_session');
     res.status(401).json({
       ok: false,
       error: {
@@ -399,6 +438,7 @@ function enforcePortalToken(req: Request, res: Response, next: NextFunction, sco
       : scope === 'write'
         ? 'Invalid portal write token'
         : 'Invalid portal token';
+    emitPortalAuditEvent(req, scope, 'failure', 'invalid_token');
     res.status(401).json({
       ok: false,
       error: {
@@ -417,6 +457,9 @@ function enforcePortalToken(req: Request, res: Response, next: NextFunction, sco
     && matchedCredential !== 'local_bypass'
     && (tokens.adminRequireActor || tokens.adminActorAllowlist.length > 0 || actorSignatureRequired);
   if (actorRequired && !portalActorMatchesAllowlist(actorHint, tokens.adminActorAllowlist)) {
+    emitPortalAuditEvent(req, scope, 'failure', 'invalid_admin_actor', {
+      actorHint, allowlistConfigured: tokens.adminActorAllowlist.length > 0,
+    });
     res.status(401).json({
       ok: false,
       error: {
@@ -438,6 +481,7 @@ function enforcePortalToken(req: Request, res: Response, next: NextFunction, sco
     })
     : false;
   if (actorSignatureRequired && !actorSignatureVerified) {
+    emitPortalAuditEvent(req, scope, 'failure', 'invalid_admin_actor_signature', { actorHint });
     res.status(401).json({
       ok: false,
       error: {
@@ -456,6 +500,12 @@ function enforcePortalToken(req: Request, res: Response, next: NextFunction, sco
     actorHint,
     actorRequired,
     actorAllowlistConfigured: tokens.adminActorAllowlist.length > 0,
+    actorSignatureRequired,
+    actorSignatureVerified,
+  });
+  emitPortalAuditEvent(req, scope, 'success', matchedCredential, {
+    usingLegacyFallback: matchedCredential === 'legacy',
+    actorHint,
     actorSignatureRequired,
     actorSignatureVerified,
   });

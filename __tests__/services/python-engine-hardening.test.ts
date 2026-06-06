@@ -75,11 +75,109 @@ describe('Python claude_client.py — routes through TS AI proxy', () => {
     expect(src).toContain('category=category, json_mode=True');
   });
 
+  it('can forward scoped user and tenant metadata to the backend proxy', () => {
+    expect(src).toContain('user_id: int | None = None');
+    expect(src).toContain('tenant_id: int | None = None');
+    expect(src).toContain('attribution_token: str | None = None');
+    expect(src).toContain('_ATTRIBUTION_CONTEXT');
+    expect(src).toContain('effective_user_id = user_id if user_id is not None else context.get("user_id")');
+    expect(src).toContain('effective_tenant_id = tenant_id if tenant_id is not None else context.get("tenant_id")');
+    expect(src).toContain('effective_attribution_token = attribution_token or context.get("attribution_token")');
+    expect(src).toContain('body["userId"] = effective_user_id');
+    expect(src).toContain('body["tenantId"] = effective_tenant_id');
+    expect(src).toContain('body["attributionToken"] = effective_attribution_token');
+  });
+
+  it('blocks AI proxy calls in local fixture mode', () => {
+    expect(src).toContain('_FIXTURE_MODE');
+    expect(src).toContain('CONTENT_ENGINE_FIXTURE_MODE');
+    expect(src).toContain('NEXUS_LOCAL_ALLOW_MODEL_CALLS');
+    expect(src).toContain('AI proxy disabled by Content Engine fixture mode.');
+  });
+
+  it('does not log raw model text when JSON repair fails', () => {
+    expect(src).toContain('AI proxy returned non-JSON after repair attempt for category=%s (%d chars)');
+    expect(src).not.toContain('raw[:200]');
+  });
+
+  it('does not log or rethrow raw AI proxy HTTP response bodies', () => {
+    expect(src).toContain('AI proxy HTTP error %d for category=%s (%d chars)');
+    expect(src).toContain('AI proxy error {e.response.status_code} for category={category}');
+    expect(src).not.toContain('e.response.text[:300]');
+    expect(src).not.toContain('e.response.text[:200]');
+  });
+
   it('repairs fenced or malformed JSON instead of immediately degrading research synthesis', () => {
     expect(src).toContain('def _extract_json_candidate');
     expect(src).toContain('def _repair_json_response');
     expect(src).toContain("_json_repair");
     expect(src).toContain('AI JSON response repaired');
+  });
+});
+
+describe('Python content-engine sensitive log sinks', () => {
+  it('does not log raw gap finder model output after malformed JSON', () => {
+    const src = readPy('intelligence/gap_finder.py');
+    expect(src).toContain('Claude returned non-JSON in gap_finder (%d chars)');
+    expect(src).not.toContain('raw: %s');
+    expect(src).not.toContain('gaps.get("raw", ""))[:200]');
+  });
+});
+
+describe('Python config.py — local fixture resource controls', () => {
+  const src = readEngineFile('config.py');
+
+  it('blanks external search/provider keys in explicit fixture mode', () => {
+    expect(src).toContain('def _fixture_mode_enabled()');
+    expect(src).toContain('CONTENT_ENGINE_FIXTURE_MODE');
+    expect(src).toContain('NEXUS_LOCAL_ALLOW_MODEL_CALLS');
+    expect(src).toContain('fixture_mode: bool = False');
+    expect(src).toContain('fixture_mode=True');
+    expect(src).toContain('internal_api_secret=internal_api_secret');
+  });
+
+  it('requires INTERNAL_API_SECRET before production startup', () => {
+    expect(src).toContain('internal_api_secret: str = ""');
+    expect(src).toContain('INTERNAL_API_SECRET');
+    expect(src).toContain('ENV');
+    expect(src).toContain('INTERNAL_API_SECRET must be set before starting the content engine in production.');
+  });
+});
+
+describe('Python main.py — inbound internal auth', () => {
+  const src = readEngineFile('main.py');
+
+  it('protects all non-health routes with x-internal-secret', () => {
+    expect(src).toContain('class InternalSecretMiddleware');
+    expect(src).toContain('request.url.path == "/health"');
+    expect(src).toContain('x-internal-secret');
+    expect(src).toContain('secrets.compare_digest');
+    expect(src).toContain('"UNAUTHORIZED"');
+  });
+});
+
+describe('TypeScript content-engine callers — outbound internal auth', () => {
+  it('forwards INTERNAL_API_SECRET from the shared content-engine client', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', '..', 'src', 'services', 'content-engine.ts'), 'utf-8');
+    expect(src).toContain('X-Internal-Secret');
+    expect(src).toContain('config.contentEngine.internalApiSecret');
+  });
+
+  it('forwards INTERNAL_API_SECRET from book extraction calls', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', '..', 'src', 'commands', 'books.ts'), 'utf-8');
+    expect(src).toContain('X-Internal-Secret');
+    expect(src).toContain('config.contentEngine.internalApiSecret');
+  });
+});
+
+describe('Python reddit.py — fixture mode avoids live unauthenticated calls', () => {
+  const src = readEngineFile(path.join('searchers', 'reddit.py'));
+
+  it('returns deterministic mock results when fixture mode is enabled', () => {
+    expect(src).toContain('if cfg.fixture_mode:');
+    expect(src).toContain('Content-engine fixture mode');
+    expect(src).toContain('def _mock');
+    expect(src).toContain('Fixture mode avoids live Reddit calls.');
   });
 });
 
@@ -147,7 +245,8 @@ describe('Python script_writer.py — JSON metadata parsing', () => {
   });
 
   it('passes category to ask_claude', () => {
-    expect(src).toContain('category="content_engine_script"');
+    expect(src).toContain('category=f"content_engine_script_{normalized_mode}"');
+    expect(src).toContain('attribution_token=req.internal_attribution_token');
   });
 
   it('returns a degraded fallback script when AI generation fails', () => {
@@ -175,7 +274,7 @@ describe('Python script_writer.py — JSON metadata parsing', () => {
     expect(src).toContain('def _build_system_prompt(req: ScriptRequest) -> str:');
     expect(src).toContain('CREATOR CONTEXT FOR THIS REQUEST:');
     expect(src).toContain('Never assume a founder persona');
-    expect(src).toContain('temperature=SCRIPT_TEMPERATURE');
+    expect(src).toContain('temperature=0.62 if normalized_mode == "draft" else SCRIPT_TEMPERATURE');
     expect(src).not.toContain('SYSTEM_PROMPT =');
     expect(src).not.toContain('from services.creator_profile import get_profile');
     expect(src).not.toContain('as if Felipe is talking to camera');
@@ -188,7 +287,7 @@ describe('Python script_writer.py — JSON metadata parsing', () => {
     expect(src).toContain('def _clean_chat_script');
     expect(src).toContain('def _is_usable_key_point');
     expect(src).toContain('if render_mode == "chat"');
-    expect(src).toContain('RENDER MODE RULES:');
+    expect(src).toContain('format_and_quality_rules');
     expect(src).toContain('Do NOT use production tags such as [SFX:]');
     expect(src).toContain('SHOW ON SCREEN');
     expect(src).toContain('re.sub(r"\\[(?:SFX|EDIT|CUT TO|PLAY CLIP):[^\\]]+\\]"');
@@ -200,7 +299,7 @@ describe('Python script_writer.py — JSON metadata parsing', () => {
     expect(src).toContain('def _script_quality_guidance');
     expect(src).toContain('def _strip_inline_markdown_emphasis');
     expect(src).toContain('def _clean_script_dividers');
-    expect(src).toContain('OUTPUT STYLE RULES:');
+    expect(src).toContain('format_and_quality_rules');
     expect(src).toContain('SCRIPT QUALITY BAR:');
     expect(src).toContain('Do not reuse the same hook/title/script skeleton');
     expect(src).toContain('Do NOT use decorative dividers or labels');
@@ -208,11 +307,13 @@ describe('Python script_writer.py — JSON metadata parsing', () => {
     expect(src).toContain('Voice DNA memory was available, but the AI writer was unavailable');
   });
 
-  it('uses shallow quick research on quick mode cache misses instead of always deep searching', () => {
-    expect(src).toContain('normalized_mode = (getattr(req, "mode", "standard") or "standard").strip().lower()');
-    expect(src).toContain('if normalized_mode == "quick":');
-    expect(src).toContain('research = await orchestrator.quick_search(req.topic, max_results=3)');
-    expect(src).toContain('research = await orchestrator.deep_search(req.topic, max_results=5)');
+  it('uses compact research by default and reserves deep search for explicit deep mode', () => {
+    expect(src).toContain('def _normalize_generation_mode');
+    expect(src).toContain('return normalized if normalized in {"draft", "quick", "standard", "deep"} else "draft"');
+    expect(src).toContain('if not research_route["allowDeepSearch"]');
+    expect(src).toContain('research = await orchestrator.quick_search(req.topic, max_results=max_briefs, language=normalized_language)');
+    expect(src).toContain('research = await orchestrator.deep_search(req.topic, max_results=max_briefs, language=normalized_language)');
+    expect(src).toContain('compile_prompt(normalized_mode');
   });
 
   it('injects first-party topic context into the generation prompt', () => {
@@ -230,12 +331,13 @@ describe('Python requests.py — script render mode contract', () => {
   });
 
   it('ScriptRequest exposes mode and topic_context for richer script generation', () => {
-    expect(src).toContain('mode: str = Field(default="standard")');
+    expect(src).toContain('mode: Literal["draft", "quick", "standard", "deep"] = Field(default="draft")');
     expect(src).toContain('script_style: str = Field(default="detailed")');
     expect(src).toContain('topic_context: dict | None = Field(default=None)');
     expect(src).toContain('creator_profile: str | None = Field(default=None)');
     expect(src).toContain('force_refresh: bool = Field(default=False)');
     expect(src).toContain('regeneration_seed: str | None = Field(default=None)');
+    expect(src).toContain('internal_attribution_token: str | None = Field(default=None)');
   });
 });
 
@@ -258,13 +360,19 @@ describe('Python orchestrator.py — evergreen query handling', () => {
   });
 
   it('adds a dedicated quick_search path for cheap shallow research', () => {
-    expect(src).toContain('async def quick_search(self, query: str, max_results: int = 3) -> DeepSearchResponse:');
+    expect(src).toContain('async def quick_search(');
+    expect(src).toContain('max_results: int = 3');
+    expect(src).toContain('language: str | None = None');
+    expect(src).toContain(') -> DeepSearchResponse:');
     expect(src).toContain('Quick mode used shallow research without AI synthesis.');
   });
 
   it('uses creator profile config instead of hardcoded worldview blocks in synthesis prompts', () => {
-    expect(src).toContain('from services.creator_profile import get_profile');
-    expect(src).toContain('{get_profile(short=True)}');
+    expect(src).toContain('from services.creator_context import creator_profile_block, language_instruction');
+    expect(src).toContain('{creator_profile_block(creator_context)}');
+    expect(src).toContain('{language_instruction(creator_context)}');
+    expect(src).not.toContain('from services.creator_profile import get_profile');
+    expect(src).not.toContain('{get_profile(short=True)}');
     expect(src).not.toContain('Brazilian conservative/libertarian');
   });
 });
@@ -273,22 +381,26 @@ describe('Python mock searchers — evergreen-friendly local results', () => {
   const webSrc = readPy(path.join('..', 'searchers', 'web.py'));
   const youtubeSrc = readPy(path.join('..', 'searchers', 'youtube.py'));
   const newsSrc = readPy(path.join('..', 'searchers', 'news.py'));
+  const helperSrc = readEngineFile(path.join('searchers', 'mock_fixtures.py'));
 
   it('web mock avoids hardcoded viral framing for evergreen topics', () => {
-    expect(webSrc).toContain('EVERGREEN_MOCK_HINTS');
+    expect(helperSrc).toContain('EVERGREEN_MOCK_HINTS');
+    expect(helperSrc).toContain('recuperar');
+    expect(webSrc).toContain('is_evergreen_mock_query(query)');
     expect(webSrc).toContain('evidence overview');
     expect(webSrc).toContain('Practical guide to');
-    expect(webSrc).toContain('recuperar');
   });
 
   it('youtube mock uses coaching-style evergreen titles when appropriate', () => {
-    expect(youtubeSrc).toContain('EVERGREEN_MOCK_HINTS');
+    expect(helperSrc).toContain('EVERGREEN_MOCK_HINTS');
+    expect(youtubeSrc).toContain('is_evergreen_mock_query(query)');
     expect(youtubeSrc).toContain('Coach breakdown');
     expect(youtubeSrc).toContain('practical walkthrough');
   });
 
   it('news mock uses evidence/protocol framing for evergreen topics', () => {
-    expect(newsSrc).toContain('EVERGREEN_MOCK_HINTS');
+    expect(helperSrc).toContain('EVERGREEN_MOCK_HINTS');
+    expect(newsSrc).toContain('is_evergreen_mock_query(query)');
     expect(newsSrc).toContain('practical protocol');
     expect(newsSrc).toContain('evidence review');
   });
@@ -331,6 +443,12 @@ describe('Python book_knowledge.py — no hallucination on empty search', () => 
 
   it('passes category to ask_claude_json', () => {
     expect(src).toContain('category="content_engine_book"');
+  });
+
+  it('uses neutral creator wording instead of gendered/founder-shaped copy', () => {
+    expect(src).toContain('how would this creator use these ideas');
+    expect(src).not.toContain('how would HE use');
+    expect(src).not.toContain('align with his worldview');
   });
 });
 

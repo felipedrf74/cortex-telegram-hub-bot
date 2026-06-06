@@ -17,47 +17,42 @@ import { sendSuccess, sendError, sendInternalError, asyncHandler } from '../resp
 import type { AuthenticatedRequest } from '../auth-middleware';
 import {
   clearGarminSession,
+  getGarminConnectionRecord,
+  hasActiveGarminConnection,
   markGarminConnectionActive,
+  markGarminConnectionMfaPending,
   upsertGarminSession,
 } from '../../services/garmin-session-store';
 import { ensureValidTenantRouteScope } from '../tenant-route-scope';
+import {
+  startGarminInteractiveLogin,
+  verifyGarminInteractiveLogin,
+} from '../../services/garmin-interactive-auth';
 
 async function beginGarminLogin(userId: number, email: string, password: string) {
-  const GarminConnect = (await import('garmin-connect')).GarminConnect;
-  const client = new GarminConnect({ username: email, password });
-  const db = getDb();
-
   try {
-    await client.login();
-    upsertGarminSession(userId, {
-      oauth1: (client.client as any).oauth1Token ?? null,
-      oauth2: (client.client as any).oauth2Token ?? null,
-    });
-    markGarminConnectionActive(userId, email.toLowerCase());
-    logger.info({ userId }, 'Garmin login succeeded without MFA');
-    return {
-      mfaRequired: false,
-      connected: true,
-      status: 'active' as const,
-      verificationFlow: null,
-    };
-  } catch (loginErr: any) {
-    db.prepare(`
-      INSERT INTO garmin_user_tokens (user_id, garmin_email, tokens_json, status)
-      VALUES (?, ?, '{}', 'mfa_pending')
-      ON CONFLICT(user_id) DO UPDATE SET
-        garmin_email = excluded.garmin_email,
-        status = 'mfa_pending',
-        updated_at = datetime('now')
-    `).run(userId, email.toLowerCase());
+    const result = await startGarminInteractiveLogin(userId, email, password);
+    if (!result.mfaRequired && result.tokens) {
+      upsertGarminSession(userId, result.tokens);
+      markGarminConnectionActive(userId, result.email);
+      logger.info({ userId }, 'Garmin login succeeded without MFA');
+      return {
+        mfaRequired: false,
+        connected: true,
+        status: 'active' as const,
+        verificationFlow: null,
+      };
+    }
+
+    markGarminConnectionMfaPending(userId, result.email);
 
     logger.info({ userId }, 'Garmin login requires MFA — code sent to email');
     return {
       mfaRequired: true,
       connected: false,
       status: 'mfa_pending' as const,
-      verificationFlow: {
-        channel: 'email_code',
+      verificationFlow: result.verificationFlow ?? {
+        channel: 'email_code' as const,
         verifyEndpoint: '/api/v1/garmin/verify',
         instructions: [
           'Check your email for the Garmin verification code.',
@@ -65,7 +60,24 @@ async function beginGarminLogin(userId: number, email: string, password: string)
         ],
       },
     };
+  } catch (loginErr: any) {
+    if (loginErr?.code === 'GARMIN_RATE_LIMITED') {
+      throw loginErr;
+    }
+    throw loginErr;
   }
+}
+
+function normalizeGarminStatus(
+  userId: number,
+  record: { status?: string | null } | undefined,
+): { connected: boolean; status: string } {
+  const rawStatus = record?.status || 'not_connected';
+  const connected = rawStatus === 'active' && hasActiveGarminConnection(userId);
+  return {
+    connected,
+    status: connected ? 'active' : rawStatus === 'active' ? 'needs_reauth' : rawStatus,
+  };
 }
 
 export function garminAuthRoutes(): Router {
@@ -99,7 +111,7 @@ export function garminAuthRoutes(): Router {
       sendSuccess(res, result);
     } catch (err: any) {
       logger.error({ err, userId }, 'Garmin login failed');
-      sendError(res, 'AUTH_FAILED', 'Garmin login failed', 401);
+      sendError(res, err?.code === 'GARMIN_RATE_LIMITED' ? 'GARMIN_RATE_LIMITED' : 'AUTH_FAILED', 'Garmin login failed', err?.statusCode ?? 401);
     }
   }));
 
@@ -121,27 +133,19 @@ export function garminAuthRoutes(): Router {
         return;
       } catch (err: any) {
         logger.error({ err, userId }, 'Garmin manual reauth failed');
-        sendError(res, 'AUTH_FAILED', 'Garmin re-authentication failed', 401);
+        sendError(res, err?.code === 'GARMIN_RATE_LIMITED' ? 'GARMIN_RATE_LIMITED' : 'AUTH_FAILED', 'Garmin re-authentication failed', err?.statusCode ?? 401);
         return;
       }
     }
 
-    const db = getDb();
-    const record = db.prepare(`
-      SELECT garmin_email, status, last_refresh, last_used
-      FROM garmin_user_tokens
-      WHERE user_id = ?
-    `).get(userId) as {
-      garmin_email?: string | null;
-      status?: string | null;
-      last_refresh?: string | null;
-      last_used?: string | null;
-    } | undefined;
+    const record = getGarminConnectionRecord(userId) ?? undefined;
+
+    const state = normalizeGarminStatus(userId, record);
 
     sendSuccess(res, {
-      connected: record?.status === 'active',
-      status: record?.status || 'not_connected',
-      email: record?.garmin_email || null,
+      connected: state.connected,
+      status: state.status,
+      email: record?.garminEmail || null,
       verificationFlow: {
         channel: 'email_code',
         startEndpoint: '/api/v1/garmin/login',
@@ -152,8 +156,8 @@ export function garminAuthRoutes(): Router {
           'When the code arrives by email, submit it to the verify endpoint to complete the reconnect flow.',
         ],
       },
-      lastRefresh: record?.last_refresh || null,
-      lastSync: record?.last_used || null,
+      lastRefresh: record?.lastRefresh || null,
+      lastSync: record?.lastUsed || null,
     });
   }));
 
@@ -173,33 +177,35 @@ export function garminAuthRoutes(): Router {
 
     try {
       const db = getDb();
-      const record = db.prepare(
-        'SELECT garmin_email FROM garmin_user_tokens WHERE user_id = ? AND status = ?'
-      ).get(userId, 'mfa_pending') as { garmin_email: string } | undefined;
+      const record = getGarminConnectionRecord(userId) ?? undefined;
 
-      if (!record) {
+      if (!record || record.status !== 'mfa_pending') {
         sendError(res, 'NO_PENDING', 'No pending Garmin login. Start with POST /garmin/login first.');
         return;
       }
 
-      // Attempt to verify the MFA code
-      // Note: the garth library's MFA flow is complex — simplified here
-      logger.info({ userId, code: code.slice(0, 2) + '****' }, 'Garmin MFA verification attempt');
+      logger.info({ userId }, 'Garmin MFA verification attempt');
 
-      // For now, mark as connected (the actual MFA verification
-      // requires the garth library's internal state which we'd need
-      // to serialize. Full implementation in a future iteration.)
-      db.prepare(`
-        UPDATE garmin_user_tokens
-        SET status = 'active', updated_at = datetime('now'), last_refresh = datetime('now')
-        WHERE user_id = ?
-      `).run(userId);
-      markGarminConnectionActive(userId, record.garmin_email);
+      const result = await verifyGarminInteractiveLogin(userId, String(code));
+      upsertGarminSession(userId, result.tokens);
+      markGarminConnectionActive(userId, result.email || record.garminEmail);
 
-      sendSuccess(res, { verified: true, connected: true });
+      const connected = hasActiveGarminConnection(userId);
+      if (!connected) {
+        db.prepare(`
+          UPDATE garmin_user_tokens
+          SET status = 'needs_reauth', updated_at = datetime('now')
+          WHERE user_id = ?
+        `).run(userId);
+        sendError(res, 'GARMIN_SESSION_NOT_VERIFIED', 'Garmin verification did not persist a usable session.', 502);
+        return;
+      }
+
+      sendSuccess(res, { verified: true, connected: true, status: 'active' });
     } catch (err: any) {
       logger.error({ err, userId }, 'Garmin MFA verification failed');
-      sendError(res, 'VERIFY_FAILED', 'Verification failed', 400);
+      const statusCode = Number.isInteger(err?.statusCode) ? err.statusCode : 400;
+      sendError(res, err?.code || 'VERIFY_FAILED', 'Verification failed', statusCode);
     }
   }));
 
@@ -210,17 +216,15 @@ export function garminAuthRoutes(): Router {
   router.get('/status', (req, res: Response) => {
     const { userId } = req as unknown as AuthenticatedRequest;
     try {
-      const db = getDb();
-      const record = db.prepare(
-        'SELECT garmin_email, status, last_refresh, last_used FROM garmin_user_tokens WHERE user_id = ?'
-      ).get(userId) as any;
+      const record = getGarminConnectionRecord(userId) ?? undefined;
 
+      const state = normalizeGarminStatus(userId, record);
       sendSuccess(res, {
-        connected: record?.status === 'active',
-        email: record?.garmin_email || null,
-        status: record?.status || 'not_connected',
-        lastSync: record?.last_used || null,
-        reauthEndpoint: record?.status === 'needs_reauth' ? '/api/v1/garmin/reauth' : null,
+        connected: state.connected,
+        email: record?.garminEmail || null,
+        status: state.status,
+        lastSync: record?.lastUsed || null,
+        reauthEndpoint: state.status === 'needs_reauth' ? '/api/v1/garmin/reauth' : null,
       });
     } catch {
       sendSuccess(res, { connected: false, status: 'not_connected' });

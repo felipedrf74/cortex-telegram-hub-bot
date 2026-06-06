@@ -3,12 +3,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 const mockIsConnected = vi.fn(() => false);
 const mockGetTokens = vi.fn(() => null);
 
-vi.mock('../../../src/services/oauth-store', () => ({
+vi.mock('../../../src/services/oauth-store', async () => ({
+  ...(await vi.importActual('../../../src/services/oauth-store')),
   isConnected: (...args: unknown[]) => mockIsConnected(...args),
   getTokens: (...args: unknown[]) => mockGetTokens(...args),
 }));
 
-vi.mock('../../../src/services/user-service', () => ({
+vi.mock('../../../src/services/user-service', async () => ({
+  ...(await vi.importActual('../../../src/services/user-service')),
   getUserTimezone: vi.fn(() => 'Europe/Lisbon'),
 }));
 
@@ -192,6 +194,41 @@ describe('task-router native wrapper', () => {
           title: 'Review training deck',
         }),
       ],
+    });
+  });
+
+  it('exposes native checklist items so Secretary subtasks can be verified without Microsoft To Do', async () => {
+    vi.spyOn(NativeTaskAdapter.prototype, 'getChecklistItems').mockResolvedValue([
+      { id: 'ci-1', displayName: 'creatine', isChecked: false },
+      { id: 'ci-2', displayName: 'K2', isChecked: false },
+    ]);
+    vi.spyOn(NativeTaskAdapter.prototype, 'addChecklistItem').mockResolvedValue({
+      id: 'ci-3',
+      displayName: 'D3',
+      isChecked: false,
+    });
+    vi.spyOn(NativeTaskAdapter.prototype, 'updateChecklistItem').mockResolvedValue({
+      id: 'ci-3',
+      displayName: 'D3',
+      isChecked: true,
+    });
+
+    const provider = getTaskProviderForUser(42);
+
+    await expect(provider.getChecklistItems('7', '1')).resolves.toMatchObject({
+      success: true,
+      data: [
+        { displayName: 'creatine' },
+        { displayName: 'K2' },
+      ],
+    });
+    await expect(provider.addChecklistItem('7', '1', 'D3')).resolves.toMatchObject({
+      success: true,
+      data: { displayName: 'D3', isChecked: false },
+    });
+    await expect(provider.updateChecklistItem('7', '1', 'ci-3', true)).resolves.toMatchObject({
+      success: true,
+      data: { displayName: 'D3', isChecked: true },
     });
   });
 

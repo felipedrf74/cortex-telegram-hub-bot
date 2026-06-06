@@ -85,6 +85,8 @@ vi.mock('../../src/services/database', () => ({
     };
   },
   initDatabase: vi.fn(),
+  closeDatabase: vi.fn(),
+  findUnexpectedMigrationPrefixCollisions: vi.fn(() => []),
 }));
 
 vi.mock('../../src/services/cache-store', () => ({
@@ -93,8 +95,45 @@ vi.mock('../../src/services/cache-store', () => ({
   getCacheStoreStats: () => mockCacheStats,
 }));
 
-vi.mock('../../src/services/dashboard-cache-invalidator', () => ({
+vi.mock('../../src/services/cache-coherence-registry', () => ({
+  ...{
+    CacheCoherenceEvents: {},
+    _resetDashboardCacheInvalidationStatsForTests: vi.fn(),
+    getDashboardCacheInvalidationStats: vi.fn(),
+    invalidateCacheForEvent: vi.fn(),
+    invalidateCalendarCaches: vi.fn(),
+    invalidateContentDerivedCaches: vi.fn(),
+    invalidateCookingDerivedCaches: vi.fn(),
+    invalidateDashboardCaches: vi.fn(),
+    invalidateDashboardCoordinationCaches: vi.fn(),
+    invalidateDashboardHomeCaches: vi.fn(),
+    invalidateDashboardReadinessCaches: vi.fn(),
+    invalidateDashboardRootCaches: vi.fn(),
+    invalidateExecutiveBriefCaches: vi.fn(),
+    invalidateFinanceDerivedCaches: vi.fn(),
+    invalidateIntegrationDerivedCaches: vi.fn(),
+    invalidateOnboardingDerivedCaches: vi.fn(),
+    invalidatePlanningCaches: vi.fn(),
+    invalidateTaskCaches: vi.fn(),
+    invalidateTrainingDerivedCaches: vi.fn(),
+  },
   getDashboardCacheInvalidationStats: () => mockDashboardCacheInvalidationStats,
+}));
+
+vi.mock('../../src/services/pm2-health', () => ({
+  getPm2SupervisorHealth: vi.fn(async () => ({
+    available: true,
+    processes: [{
+      name: 'nexus-hub',
+      pmId: 0,
+      status: 'online',
+      restartCount: 0,
+      unstableRestarts: 0,
+      uptimeMs: 120_000,
+      lastCrashReason: null,
+    }],
+  })),
+  recordPm2SupervisorAlerts: vi.fn(() => 0),
 }));
 
 // ── Mock config (port 0 = OS-assigned random port) ──────────────────
@@ -200,6 +239,7 @@ vi.mock('../../src/utils/logger', () => ({
     info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(),
     child: vi.fn().mockReturnThis(),
   },
+  LOGGER_REDACTION_PATHS: [],
 }));
 
 // ── Helper: create server and wait for listen ──────────────────────
@@ -284,6 +324,8 @@ describe('GET /health', () => {
     expect(body.bot).toHaveProperty('polling', true);
     expect(body.bot).toHaveProperty('restarting', false);
     expect(body.database).toBe('connected');
+    expect(body.databaseProbe).toMatchObject({ status: 'connected' });
+    expect(typeof body.databaseProbe.latencyMs).toBe('number');
     expect(body.memory).toHaveProperty('rss');
     expect(body.memory).toHaveProperty('heapUsed');
     expect(body.memory).toHaveProperty('heapTotal');
@@ -318,6 +360,10 @@ describe('GET /health', () => {
     const body = await res.json();
     expect(body.status).toBe('degraded');
     expect(body.database).toBe('disconnected');
+    expect(body.databaseProbe).toMatchObject({
+      status: 'disconnected',
+      errorCode: 'DB_PROBE_FAILED',
+    });
   });
 });
 
@@ -389,6 +435,7 @@ describe('GET /health/detailed', () => {
     expect(typeof body.uptime).toBe('number');
     expect(body.bot.polling).toBe(true);
     expect(body.database).toBe('connected');
+    expect(body.databaseProbe).toMatchObject({ status: 'connected' });
     expect(body.memory).toHaveProperty('rss');
 
     // Cron statuses
@@ -428,6 +475,16 @@ describe('GET /health/detailed', () => {
       globalRequestCount: 1,
       lastUserId: 42,
     });
+
+    expect(body.pm2).toMatchObject({
+      available: true,
+      alertsRecorded: 0,
+      processes: [expect.objectContaining({
+        name: 'nexus-hub',
+        status: 'online',
+        restartCount: 0,
+      })],
+    });
   });
 
   it('returns 200 when only Telegram bot polling is degraded', async () => {
@@ -448,6 +505,26 @@ describe('GET /health/detailed', () => {
     expect(body.errors).toBeDefined();
   });
 
+  it('returns 503 with detailed diagnostics when the live database probe fails', async () => {
+    mockDbOk = false;
+
+    const { server, port } = await startServer();
+    activeServer = server;
+
+    const res = await fetch(`http://127.0.0.1:${port}/health/detailed`, { headers: { Authorization: 'Bearer test-health-secret' } });
+    expect(res.status).toBe(503);
+
+    const body = await res.json();
+    expect(body.status).toBe('degraded');
+    expect(body.server.database).toBe('disconnected');
+    expect(body.databaseProbe).toMatchObject({
+      status: 'disconnected',
+      errorCode: 'DB_PROBE_FAILED',
+    });
+    expect(body.crons).toBeDefined();
+    expect(body.integrations).toBeDefined();
+  });
+
   it('rejects access without token when HEALTH_TOKEN is empty and bypass is disabled', async () => {
     healthToken = '';
 
@@ -466,6 +543,91 @@ describe('GET /health/detailed', () => {
     activeServer = server;
 
     const res = await fetch(`http://127.0.0.1:${port}/health/detailed`);
+    expect(res.status).toBe(200);
+  });
+});
+
+describe('GET /public-status', () => {
+  beforeEach(() => {
+    mockPolling = true;
+    mockRestarting = false;
+    mockLastMessage = new Date().toISOString();
+    mockDbOk = true;
+  });
+
+  it('returns 200 with minimal payload when service is healthy', async () => {
+    const { server, port } = await startServer();
+    activeServer = server;
+
+    const res = await fetch(`http://127.0.0.1:${port}/public-status`);
+    expect(res.status).toBe(200);
+
+    const body = await res.json();
+    expect(body).toEqual({
+      status: 'ok',
+      service: 'nexushub-api',
+      timestamp: expect.any(String),
+    });
+    expect(new Date(body.timestamp).toISOString()).toBe(body.timestamp);
+  });
+
+  it('still returns 200 with the same payload when the database is down', async () => {
+    mockDbOk = false;
+
+    const { server, port } = await startServer();
+    activeServer = server;
+
+    const res = await fetch(`http://127.0.0.1:${port}/public-status`);
+    expect(res.status).toBe(200);
+
+    const body = await res.json();
+    expect(body).toMatchObject({
+      status: 'ok',
+      service: 'nexushub-api',
+    });
+  });
+
+  it('does not leak memory, bot internals, database state, or providers', async () => {
+    const { server, port } = await startServer();
+    activeServer = server;
+
+    const res = await fetch(`http://127.0.0.1:${port}/public-status`);
+    const body = await res.json();
+
+    expect(Object.keys(body).sort()).toEqual(['service', 'status', 'timestamp']);
+    expect(body).not.toHaveProperty('memory');
+    expect(body).not.toHaveProperty('bot');
+    expect(body).not.toHaveProperty('database');
+    expect(body).not.toHaveProperty('databaseProbe');
+    expect(body).not.toHaveProperty('uptime');
+    expect(body).not.toHaveProperty('server');
+    expect(body).not.toHaveProperty('providers');
+    expect(body).not.toHaveProperty('integrations');
+    expect(body).not.toHaveProperty('crons');
+    expect(body).not.toHaveProperty('errors');
+    expect(body).not.toHaveProperty('pm2');
+    expect(body).not.toHaveProperty('cache');
+    expect(body).not.toHaveProperty('sentry');
+  });
+
+  it('sets permissive cache, CORS, and robots headers for AI fetchers', async () => {
+    const { server, port } = await startServer();
+    activeServer = server;
+
+    const res = await fetch(`http://127.0.0.1:${port}/public-status`);
+
+    expect(res.headers.get('cache-control')).toBe('public, max-age=60');
+    expect(res.headers.get('access-control-allow-origin')).toBe('*');
+    expect(res.headers.get('x-robots-tag')).toBe('all');
+  });
+
+  it('does not require authentication', async () => {
+    healthToken = 'a-non-empty-token';
+
+    const { server, port } = await startServer();
+    activeServer = server;
+
+    const res = await fetch(`http://127.0.0.1:${port}/public-status`);
     expect(res.status).toBe(200);
   });
 });

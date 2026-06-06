@@ -2,7 +2,8 @@
 
 /**
  * Voice Evolution Agent — compares AI-generated scripts against
- * actual published video transcripts to learn Felipe's true voice.
+ * actual published video transcripts to learn the authenticated
+ * creator's true voice.
  *
  * Schedule: Monthly, 1st of month at 04:00
  *
@@ -10,7 +11,7 @@
  * Produces: voice_pattern, voice_phrase_trend
  */
 
-import Anthropic from '@anthropic-ai/sdk';
+import type Anthropic from '@anthropic-ai/sdk';
 import { writeSignal, readSignals, logAgentRun } from '../services/intelligence-bus';
 import { buildAgentContext } from '../services/cross-agent-learning';
 import { getDb } from '../services/database';
@@ -18,18 +19,15 @@ import { config } from '../config';
 import { logger } from '../utils/logger';
 import { trackedCreate } from '../portal/anthropic-hook';
 import { completeOneShotWithFallback } from '../services/gemini-provider';
-import { getOwnerBootstrapTarget } from '../services/user-service';
-import fs from 'fs';
-import os from 'os';
-import path from 'path';
+import { getActiveUserTargets, type UserTarget } from '../services/user-service';
+import { contentScopeParams, contentScopePredicate, ensureContentTenantScopeColumns } from '../services/content-tenant-scope';
+import { createLazyAnthropicClient } from '../services/anthropic-lazy-client';
 
-const IDEAS_DIR = path.join(os.homedir(), 'Desktop', 'IDEAS', 'SCRIPTS');
+const client = createLazyAnthropicClient({ maxRetries: 2 });
 
-const client = new Anthropic({ apiKey: config.anthropic.apiKey, maxRetries: 2 });
+const ANALYSIS_PROMPT = `You are analyzing the voice evolution of the authenticated content creator (resolved from the active user/tenant target).
 
-const ANALYSIS_PROMPT = `You are analyzing the voice evolution of Felipe, a Brazilian content creator.
-
-Compare these AI-GENERATED scripts against Felipe's ACTUAL published video transcripts.
+Compare these AI-GENERATED scripts against the creator's ACTUAL published video transcripts.
 
 AI-GENERATED SCRIPTS:
 {scripts}
@@ -37,52 +35,52 @@ AI-GENERATED SCRIPTS:
 PUBLISHED VIDEO TRANSCRIPTS:
 {transcripts}
 
-BOOK KNOWLEDGE (extracted from books Felipe reads — frameworks, vocabulary, and techniques):
+BOOK KNOWLEDGE (extracted from books the creator reads — frameworks, vocabulary, and techniques):
 {book_knowledge}
 
 Analyze and return a JSON object with:
 {{
   "additions": [
     {{
-      "pattern": "Short description of what Felipe adds",
-      "examples": ["Specific text he added"],
+      "pattern": "Short description of what the creator adds",
+      "examples": ["Specific text added"],
       "frequency": "often|sometimes|rare",
       "category": "anecdote|argument|humor|data|reference|transition"
     }}
   ],
   "removals": [
     {{
-      "pattern": "What Felipe consistently removes/shortens",
-      "examples": ["Original text he cut"],
+      "pattern": "What the creator consistently removes/shortens",
+      "examples": ["Original text cut"],
       "category": "filler|formal|repetitive|off_brand"
     }}
   ],
   "rephrasing": [
     {{
       "original": "How the AI wrote it",
-      "felipe_version": "How Felipe actually said it",
-      "insight": "What this tells us about his voice"
+      "creator_version": "How the creator actually said it",
+      "insight": "What this tells us about the creator's voice"
     }}
   ],
   "recurring_phrases": [
     {{
-      "phrase": "Exact phrase Felipe repeats",
-      "context": "When he uses it",
+      "phrase": "Exact phrase the creator repeats",
+      "context": "When it is used",
       "count": 3
     }}
   ],
   "book_influences": [
     {{
       "book_or_concept": "Name of book or concept from book knowledge",
-      "how_it_appears": "How this concept shows up in Felipe's scripts or transcripts",
+      "how_it_appears": "How this concept shows up in the creator's scripts or transcripts",
       "adoption_level": "integrated|emerging|absent"
     }}
   ],
-  "voice_summary": "2-3 sentences describing Felipe's actual voice vs the AI-generated voice, including any book influences detected"
+  "voice_summary": "2-3 sentences describing the creator's actual voice vs the AI-generated voice, including any book influences detected"
 }}
 
 If transcripts are limited, analyze the scripts against the creator profile instead and note what's missing.
-If book knowledge is available, identify which concepts Felipe has integrated into his natural voice vs. which remain absent.
+If book knowledge is available, identify which concepts the creator has integrated into his/her natural voice vs. which remain absent.
 Return ONLY valid JSON, no markdown.`;
 
 // ── Main Agent Runner ────────────────────────────────────────────────
@@ -93,81 +91,86 @@ export async function runVoiceEvolutionAgent(): Promise<void> {
   let signalsConsumed = 0;
 
   try {
-    const db = getDb();
+    const targets = getActiveUserTargets();
+    if (targets.length === 0) {
+      logAgentRun('voice-evolution', 'skipped', 0, 0, Date.now() - start, 'No active users available');
+      logger.info('Voice Evolution: no active users available. Skipping.');
+      return;
+    }
 
-    // ── Collect generated scripts (DB-first, file fallback) ──────
+    for (const target of targets) {
+      const result = await runVoiceEvolutionForTarget(target);
+      signalsProduced += result.signalsProduced;
+      signalsConsumed += result.signalsConsumed;
+    }
+
+    logAgentRun('voice-evolution', 'success', signalsProduced, signalsConsumed, Date.now() - start);
+    logger.info({ targetCount: targets.length, signalsProduced, signalsConsumed }, 'Voice Evolution complete for active tenants');
+  } catch (err: any) {
+    logAgentRun('voice-evolution', 'error', signalsProduced, signalsConsumed, Date.now() - start, err.message);
+    logger.error({ err }, 'Voice Evolution Agent failed');
+    throw err;
+  }
+}
+
+async function runVoiceEvolutionForTarget(target: UserTarget): Promise<{ signalsProduced: number; signalsConsumed: number }> {
+  const start = Date.now();
+  let signalsProduced = 0;
+  let signalsConsumed = 0;
+  const userId = target.tenantId;
+  const tenantId = target.tenantId;
+
+  try {
+    const db = getDb();
+    ensureContentTenantScopeColumns(db);
+
+    // ── Collect generated scripts from the authenticated tenant ───
     //
     // Primary: read raw script text from content_scripts table (April 2026).
     // This is reliable — the full text is stored durably in SQLite.
-    //
-    // Fallback: if content_scripts is empty (pre-migration scripts),
-    // try the old pipeline → file path approach. This gracefully degrades
-    // for historical data while new scripts use the DB-backed store.
     const scripts: { topic: string; text: string }[] = [];
 
     try {
       const { getRecentScripts } = await import('../services/content-learning-store');
-      const ownerTarget = getOwnerBootstrapTarget();
-      if (ownerTarget?.tenantId) {
-        const dbScripts = getRecentScripts(ownerTarget.tenantId, 30, 10);
-        for (const s of dbScripts) {
-          scripts.push({
-            topic: s.topic,
-            text: s.scriptText.slice(0, 3000),
-          });
-        }
-        logger.info({ count: dbScripts.length, userId: ownerTarget.tenantId }, 'Voice agent: loaded scripts from DB');
-      } else {
-        logger.warn('Voice agent: owner bootstrap target unavailable, skipping DB script load');
+      const dbScripts = getRecentScripts(userId, 30, 10, tenantId);
+      for (const s of dbScripts) {
+        scripts.push({
+          topic: s.topic,
+          text: s.scriptText.slice(0, 3000),
+        });
       }
-    } catch {
-      logger.warn('Voice agent: content_scripts table not available, using file fallback');
-    }
-
-    // File fallback for pre-migration scripts (DOCX is unreadable, try .txt)
-    if (scripts.length === 0 && fs.existsSync(IDEAS_DIR)) {
-      const files = fs.readdirSync(IDEAS_DIR)
-        .filter(f => f.endsWith('.txt'))
-        .sort()
-        .slice(-10);
-
-      for (const file of files) {
-        try {
-          const content = fs.readFileSync(path.join(IDEAS_DIR, file), 'utf-8');
-          if (content.length > 100) {
-            scripts.push({ topic: file, text: content.slice(0, 2000) });
-          }
-        } catch { /* skip */ }
-      }
+      logger.info({ count: dbScripts.length, userId, tenantId }, 'Voice agent: loaded scripts from scoped DB');
+    } catch (err) {
+      logger.warn({ err, userId, tenantId }, 'Voice agent: content_scripts table not available; skipping tenant script load');
     }
 
     // Collect published video transcripts
     const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
     const transcripts = db.prepare(`
       SELECT title, full_text FROM video_transcripts
-      WHERE created_at > ?
+      WHERE user_id = ?
+        AND ${contentScopePredicate()}
+        AND created_at > ?
       ORDER BY created_at DESC
       LIMIT 10
-    `).all(thirtyDaysAgo) as any[];
+    `).all(userId, ...contentScopeParams(userId, tenantId), thirtyDaysAgo) as any[];
 
     // Consume channel DNA for reference
-    const dnaSignals = readSignals('voice-evolution', ['channel_dna'], 20);
+    const dnaSignals = readSignals('voice-evolution', ['channel_dna'], 20, userId, undefined, tenantId);
     signalsConsumed += dnaSignals.length;
 
-    // Consume book knowledge — frameworks, vocabulary, techniques from books Felipe reads
-    const bookSignals = readSignals('voice-evolution', ['book_knowledge'], 10);
+    // Consume book knowledge — frameworks, vocabulary, techniques from books the authenticated creator reads
+    const bookSignals = readSignals('voice-evolution', ['book_knowledge'], 10, userId, undefined, tenantId);
     signalsConsumed += bookSignals.length;
 
     // Cross-agent learning: consume performance data to focus on high-performing content
-    const peerContext = buildAgentContext('voice-evolution');
+    const peerContext = buildAgentContext('voice-evolution', userId, tenantId);
     signalsConsumed += peerContext.signalsConsumed;
 
     // If we have neither scripts nor transcripts, graceful skip
     if (scripts.length === 0 && transcripts.length === 0) {
-      logger.info('Voice Evolution: No scripts or transcripts from last 30 days. Skipping.');
-      logAgentRun('voice-evolution', 'skipped', 0, signalsConsumed, Date.now() - start,
-        'No scripts or transcripts available');
-      return;
+      logger.info({ userId, tenantId }, 'Voice Evolution: no scripts or transcripts from last 30 days. Skipping tenant.');
+      return { signalsProduced, signalsConsumed };
     }
 
     // Build context for Claude analysis
@@ -203,18 +206,18 @@ export async function runVoiceEvolutionAgent(): Promise<void> {
       prompt,
       'voice_evolution',
       async () => {
-        const response = await trackedCreate(client, {
+        const response = await trackedCreate(client.get(), {
           model: config.anthropic.model,
           max_tokens: 4096,
           messages: [{ role: 'user', content: prompt }],
           temperature: 0.3,
-        }, 'voice_evolution');
+        }, 'voice_evolution', { userId, tenantId });
         return response.content
           .filter((b): b is Anthropic.TextBlock => b.type === 'text')
           .map(b => b.text)
           .join('');
       },
-      { maxTokens: 4096, temperature: 0.3 },
+      { maxTokens: 4096, temperature: 0.3, userId, tenantId },
     );
 
     let text = voiceText;
@@ -234,9 +237,11 @@ export async function runVoiceEvolutionAgent(): Promise<void> {
       writeSignal({
         source_agent: 'voice-evolution',
         signal_type: 'voice_pattern',
+        user_id: userId,
+        tenant_id: tenantId,
         payload: {
           observation: 'content_additions',
-          description: `Felipe adds ${analysis.additions.length} types of content not in generated scripts`,
+          description: `creator adds ${analysis.additions.length} types of content not in generated scripts`,
           patterns: analysis.additions,
           strength: analysis.additions.filter((a: any) => a.frequency === 'often').length / Math.max(1, analysis.additions.length),
           first_detected: new Date().toISOString().slice(0, 10),
@@ -250,9 +255,11 @@ export async function runVoiceEvolutionAgent(): Promise<void> {
       writeSignal({
         source_agent: 'voice-evolution',
         signal_type: 'voice_pattern',
+        user_id: userId,
+        tenant_id: tenantId,
         payload: {
           observation: 'content_removals',
-          description: `Felipe removes ${analysis.removals.length} types of content from generated scripts`,
+          description: `creator removes ${analysis.removals.length} types of content from generated scripts`,
           patterns: analysis.removals,
           strength: 0.7,
           first_detected: new Date().toISOString().slice(0, 10),
@@ -266,9 +273,11 @@ export async function runVoiceEvolutionAgent(): Promise<void> {
       writeSignal({
         source_agent: 'voice-evolution',
         signal_type: 'voice_pattern',
+        user_id: userId,
+        tenant_id: tenantId,
         payload: {
           observation: 'voice_rephrasing',
-          description: 'How Felipe rephrases AI-generated text to match his voice',
+          description: 'How the creator rephrases AI-generated text to match their voice',
           examples: analysis.rephrasing.slice(0, 5),
           strength: 0.8,
           first_detected: new Date().toISOString().slice(0, 10),
@@ -284,6 +293,8 @@ export async function runVoiceEvolutionAgent(): Promise<void> {
         writeSignal({
           source_agent: 'voice-evolution',
           signal_type: 'voice_phrase_trend',
+          user_id: userId,
+          tenant_id: tenantId,
           payload: {
             phrase: phrase.phrase,
             context: phrase.context,
@@ -295,11 +306,13 @@ export async function runVoiceEvolutionAgent(): Promise<void> {
       }
     }
 
-    // Write book influence signals (tracks how book concepts enter Felipe's voice)
+    // Write book influence signals (tracks how book concepts enter the authenticated creator's voice)
     if (analysis.book_influences?.length > 0) {
       writeSignal({
         source_agent: 'voice-evolution',
         signal_type: 'voice_pattern',
+        user_id: userId,
+        tenant_id: tenantId,
         payload: {
           observation: 'book_voice_influence',
           description: `${analysis.book_influences.filter((b: any) => b.adoption_level === 'integrated').length} book concepts integrated into voice`,
@@ -317,6 +330,8 @@ export async function runVoiceEvolutionAgent(): Promise<void> {
       writeSignal({
         source_agent: 'voice-evolution',
         signal_type: 'voice_pattern',
+        user_id: userId,
+        tenant_id: tenantId,
         payload: {
           observation: 'monthly_voice_summary',
           description: analysis.voice_summary,
@@ -331,28 +346,10 @@ export async function runVoiceEvolutionAgent(): Promise<void> {
     // ── Persist learned patterns durably (April 2026) ──────────────
     //
     // Bus signals expire (voice_pattern: 90-day TTL). Store patterns
-    // in content_learned_patterns table so they accumulate over time
-    // and survive signal expiry. The upsert increments frequency on
-    // repeated detection instead of duplicating.
-    // Voice evolution is an owner-scoped monthly agent learning the
-    // owner's voice from their own scripts and transcripts. The pattern
-    // rows MUST be written under the owner's real tenant id; a silent
-    // fallback to userId=0 would leak system-scoped rows across tenants
-    // on any future per-user visibility query. When the owner bootstrap
-    // resolver returns null (pre-bootstrap install, misconfigured env)
-    // the safe behavior is to skip this run's persistence entirely. A
-    // missed monthly persist is recoverable; a corrupted tenant scope
-    // is not.
-    const ownerTarget = getOwnerBootstrapTarget();
-    if (!ownerTarget) {
-      logger.warn(
-        { agent: 'voice-evolution', signalsProduced },
-        'voice-evolution: owner bootstrap target unresolved; skipping pattern persist for this run',
-      );
-    } else {
-      try {
-        const { upsertLearnedPattern } = await import('../services/content-learning-store');
-        const userId = ownerTarget.tenantId;
+    // in content_learned_patterns table per active tenant so each creator's
+    // voice memory accumulates without entering a global founder-shaped pool.
+    try {
+      const { upsertLearnedPattern } = await import('../services/content-learning-store');
 
         for (const a of analysis.additions ?? []) {
           upsertLearnedPattern({
@@ -362,6 +359,7 @@ export async function runVoiceEvolutionAgent(): Promise<void> {
             confidence: a.frequency === 'often' ? 0.9 : a.frequency === 'sometimes' ? 0.7 : 0.5,
             sourceAgent: 'voice-evolution',
             userId,
+            tenantId,
           });
         }
         for (const r of analysis.removals ?? []) {
@@ -372,16 +370,28 @@ export async function runVoiceEvolutionAgent(): Promise<void> {
             confidence: 0.7,
             sourceAgent: 'voice-evolution',
             userId,
+            tenantId,
           });
         }
         for (const rp of analysis.rephrasing ?? []) {
+          // The analysis prompt produces `creator_version` (line 64 of the
+          // ANALYSIS_PROMPT template). Earlier code read the legacy
+          // field name which silently dropped the rephrased example to
+          // `undefined` and rendered patternText as
+          // `<original> → undefined`. Closed-beta-readiness-hardening
+          // (2026-05-03): align reader with the prompt schema and fall
+          // back to the legacy field name ONLY for rows persisted before
+          // the rename so already-stored patterns continue to render.
+          // nx-allow-identity-scan: intentional backward-compat read
+          const creatorVersion = (rp as any).creator_version ?? (rp as any).felipe_version ?? '';
           upsertLearnedPattern({
             category: 'voice_rephrasing',
-            patternText: rp.insight || `${rp.original} → ${rp.felipe_version}`,
-            examples: [rp.original, rp.felipe_version].filter(Boolean),
+            patternText: rp.insight || `${rp.original} → ${creatorVersion}`,
+            examples: [rp.original, creatorVersion].filter(Boolean),
             confidence: 0.8,
             sourceAgent: 'voice-evolution',
             userId,
+            tenantId,
           });
         }
         for (const bi of analysis.book_influences ?? []) {
@@ -392,21 +402,20 @@ export async function runVoiceEvolutionAgent(): Promise<void> {
             confidence: bi.adoption_level === 'integrated' ? 0.9 : 0.5,
             sourceAgent: 'voice-evolution',
             userId,
+            tenantId,
           });
         }
 
-        logger.info('Voice agent: persisted learned patterns to DB');
-      } catch (err) {
-        logger.warn({ err }, 'Voice agent: failed to persist patterns (non-fatal)');
-      }
+      logger.info({ userId, tenantId }, 'Voice agent: persisted learned patterns to scoped DB');
+    } catch (err) {
+      logger.warn({ err, userId, tenantId }, 'Voice agent: failed to persist scoped patterns (non-fatal)');
     }
 
     const summary = `Voice Evolution: analyzed ${scripts.length} scripts + ${transcripts.length} transcripts + ${bookSignals.length} book insights. ${signalsProduced} voice patterns detected.`;
-    logAgentRun('voice-evolution', 'success', signalsProduced, signalsConsumed, Date.now() - start);
-    logger.info(summary);
+    logger.info({ userId, tenantId, durationMs: Date.now() - start }, summary);
+    return { signalsProduced, signalsConsumed };
   } catch (err: any) {
-    logAgentRun('voice-evolution', 'error', signalsProduced, signalsConsumed, Date.now() - start, err.message);
-    logger.error({ err }, 'Voice Evolution Agent failed');
+    logger.error({ err, userId, tenantId }, 'Voice Evolution tenant run failed');
     throw err;
   }
 }

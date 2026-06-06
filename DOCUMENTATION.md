@@ -1043,7 +1043,7 @@ Content outputs (DOCX files) are automatically uploaded to Google Drive for easy
 
 ### How It Works
 
-- When `saveContentAsDocx()` creates a file, it calls `uploadToDrive()` with the subfolder name
+- Legacy DOCX export paths were removed; current content delivery returns workflow-backed artifacts and Drive URLs from active content services
 - The file is uploaded to Drive under a subfolder matching the local structure (RESEARCH, SCRIPTS, etc.)
 - The Drive URL is returned and included in the Telegram message as "📂 Open in Google Drive"
 - Local file + Drive copy are both kept (Drive is the accessibility layer, not the primary store)

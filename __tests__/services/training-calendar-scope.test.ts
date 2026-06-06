@@ -11,6 +11,9 @@ const prepare = vi.fn(() => ({ all }));
 
 vi.mock('../../src/services/database', () => ({
   getDb: mocks.getDb,
+  initDatabase: vi.fn(),
+  closeDatabase: vi.fn(),
+  findUnexpectedMigrationPrefixCollisions: vi.fn(() => []),
 }));
 
 vi.mock('../../src/utils/logger', () => ({
@@ -22,6 +25,7 @@ vi.mock('../../src/utils/logger', () => ({
     trace: vi.fn(),
     child: vi.fn().mockReturnThis(),
   },
+  LOGGER_REDACTION_PATHS: [],
 }));
 
 import {
@@ -118,6 +122,24 @@ describe('training-calendar-scope', () => {
     expect(isTrainingCalendarEventUnclaimed('evt-orphaned', 'google')).toBe(false);
     expect(filterCalendarEventsForTrainingScope([
       { id: 'evt-orphaned', source: 'google' },
+      { id: 'manual-workout', source: 'google' },
+    ], 30).map((event) => event.id)).toEqual(['manual-workout']);
+  });
+
+  it('hides ownership-backed training events when the plan row is missing', () => {
+    rows = [
+      {
+        eventId: 'evt-missing-plan',
+        source: 'google',
+        sessionId: 0,
+        planId: 22,
+        userId: 30,
+        planStatus: 'missing',
+      },
+    ];
+
+    expect(filterCalendarEventsForTrainingScope([
+      { id: 'evt-missing-plan', source: 'google' },
       { id: 'manual-workout', source: 'google' },
     ], 30).map((event) => event.id)).toEqual(['manual-workout']);
   });

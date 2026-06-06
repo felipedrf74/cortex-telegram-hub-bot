@@ -127,6 +127,33 @@ describe('sendError (express helper)', () => {
     expect(res.status).toHaveBeenCalledWith(404);
   });
 
+  it('sets no-store headers when no cache headers are pre-set', () => {
+    const res = mockResponse();
+    sendError(res, 'BAD_REQUEST', 'invalid');
+
+    expect(res.headers['cache-control']).toBe('no-store, max-age=0, must-revalidate');
+    expect(res.headers.pragma).toBe('no-cache');
+    expect(res.headers.expires).toBe('0');
+  });
+
+  it('preserves existing Cache-Control and does not add partial no-store headers', () => {
+    const res = mockResponse({ 'Cache-Control': 'private, max-age=60' });
+    sendError(res, 'NOT_FOUND', 'no such id', 404);
+
+    expect(res.headers['cache-control']).toBe('private, max-age=60');
+    expect(res.headers.pragma).toBeUndefined();
+    expect(res.headers.expires).toBeUndefined();
+  });
+
+  it('preserves existing Pragma and does not add partial no-store headers', () => {
+    const res = mockResponse({ Pragma: 'custom-no-cache' });
+    sendError(res, 'NOT_FOUND', 'no such id', 404);
+
+    expect(res.headers.pragma).toBe('custom-no-cache');
+    expect(res.headers['cache-control']).toBeUndefined();
+    expect(res.headers.expires).toBeUndefined();
+  });
+
   it('records a durable operator alert for degraded backend responses', () => {
     const res = mockResponse();
     sendError(res, 'SERVICE_UNAVAILABLE', 'Try again later', 503, {
@@ -198,6 +225,20 @@ describe('asyncHandler', () => {
     );
   });
 
+  it('emits no-store headers on uncaught route exceptions', async () => {
+    const res = mockResponse();
+    const handler = asyncHandler(async () => {
+      throw new Error('boom');
+    });
+
+    await handler({ method: 'GET', originalUrl: '/api/v1/test/throw' }, res);
+
+    expect(res.status).toHaveBeenCalledWith(500);
+    expect(res.headers['cache-control']).toBe('no-store, max-age=0, must-revalidate');
+    expect(res.headers.pragma).toBe('no-cache');
+    expect(res.headers.expires).toBe('0');
+  });
+
   it('does NOT double-send when the handler already responded', async () => {
     const res = mockResponse();
     res.headersSent = true; // simulate handler already wrote a response
@@ -211,10 +252,19 @@ describe('asyncHandler', () => {
 
 // ── Test helpers ────────────────────────────────────────────────────
 
-function mockResponse() {
+function mockResponse(initialHeaders: Record<string, string> = {}) {
+  const headers = Object.fromEntries(
+    Object.entries(initialHeaders).map(([key, value]) => [key.toLowerCase(), value]),
+  );
   const res: any = {
     headersSent: false,
+    headers,
     status: vi.fn().mockReturnThis(),
+    setHeader: vi.fn((name: string, value: string) => {
+      headers[name.toLowerCase()] = value;
+      return res;
+    }),
+    getHeader: vi.fn((name: string) => headers[name.toLowerCase()]),
     json: vi.fn().mockReturnThis(),
   };
   return res;

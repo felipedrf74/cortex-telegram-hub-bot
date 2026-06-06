@@ -72,24 +72,36 @@ export function getActiveContentPillars(userId: number): ContentPillarSummary[] 
   }
 
   try {
+    // Closed-beta-auth-hardening (2026-05-04): strict per-user read.
+    // The previous query was `user_id IN (0, ?)` which returned both
+    // the user's rows AND any `user_id=0` "platform seed" rows. The
+    // post-filter at lines 84-89 (pre-fix) tried to limit the leak,
+    // but `Number(row.weight ?? 0) > 1` allowed any platform-seed
+    // pillar with `weight > 1` to pass through to every authenticated
+    // user. The `migrations/056_content_user_isolation.sql:18` schema
+    // sets `user_id INTEGER NOT NULL DEFAULT 0`, so any code that
+    // wrote a config_pillars row without an explicit `user_id` ended
+    // up at the platform-seed bucket — and from there leaked into
+    // every authenticated user's pillar list.
+    //
+    // Post-fix: strict `user_id = ?`. Users with no saved pillars
+    // get an empty list; the iOS Content surface then prompts them
+    // to configure their pillars (the correct first-touch UX). The
+    // closed-beta-hardening pass already neutralized the
+    // founder-shaped pillar enum in `prompts/topic-generation.md`,
+    // `content-workflow.ts`, `scorer.py`, and `orchestrator.py`, so
+    // first-touch users are no longer pushed into a founder pillar
+    // set even on the AI-driven path.
     const rows = getDb().prepare(`
       SELECT name, keywords, weight, user_id
       FROM config_pillars
       WHERE enabled = 1
-        AND user_id IN (0, ?)
-      ORDER BY weight DESC, user_id DESC, name ASC
+        AND user_id = ?
+      ORDER BY weight DESC, name ASC
     `).all(userId) as Array<{ name: string; keywords: string | null; user_id: number; weight: number }>;
 
-    const hasUserScopedRows = rows.some((row) => row.user_id === userId);
-    const scopedRows = hasUserScopedRows
-      ? rows.filter((row) => (
-        row.user_id === userId
-        || (row.user_id === 0 && Number(row.weight ?? 0) > 1)
-      ))
-      : rows.filter((row) => row.user_id === 0).slice(0, 6);
-
     const deduped = new Map<string, ContentPillarSummary>();
-    for (const row of scopedRows) {
+    for (const row of rows) {
       if (!deduped.has(row.name)) {
         deduped.set(row.name, {
           name: row.name,

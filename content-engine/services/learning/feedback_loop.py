@@ -20,12 +20,20 @@ import logging
 
 from models.requests import FeedbackRequest, FeedbackResponse
 from services.claude_client import ask_claude_json
+from services.creator_context import creator_profile_block, language_instruction
 
 logger = logging.getLogger("content-engine.feedback")
 
 
 async def log_and_analyze(req: FeedbackRequest) -> FeedbackResponse:
     start = time.monotonic()
+    system_prompt = f"""You are the authenticated creator's content performance analyst.
+
+{creator_profile_block(req)}
+
+{language_instruction(req)}
+
+Analyze only the supplied performance data and creator profile. Do not assume ideology, language, audience, belief system, diet, nationality, or founder persona when it is not supplied."""
 
     # Build context from the request metrics. Historical averages are
     # now computed by the TS backend (getPerformanceSummary) — this
@@ -55,9 +63,9 @@ Provide analysis with:
 5. hook_analysis: if hook was provided, did it work? (string)
 6. recommendations: 2-3 specific next steps (array)
 
-Return JSON. Language: PT-BR for insights."""
+Return JSON. Language: {req.language} for insights."""
 
-    analysis = await ask_claude_json(prompt, category="content_engine_feedback")
+    analysis = await ask_claude_json(prompt, system=system_prompt, category="content_engine_feedback")
     if not isinstance(analysis, dict):
         analysis = {"raw": analysis}
 

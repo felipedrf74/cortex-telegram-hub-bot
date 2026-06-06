@@ -20,6 +20,7 @@ import {
   AIToolCall,
   AIToolResultMessage,
   CallDomainOptions,
+  ClassifyOptions,
   getModelRouting,
   normalizeCallDomainOptions,
 } from './ai-provider';
@@ -31,6 +32,11 @@ import { getDb } from './database';
 import { pushEvent } from '../portal/telemetry';
 import { withTimeout } from '../utils/timeout';
 import { getAICallTimeoutMs } from './runtime-flags';
+import { buildScopedStateContextPrefix } from './provider-state-context';
+import { getDomainModelOverride, type DomainModelRole } from './model-config';
+import { computeModelUsageCostUsd, getModelPricingTable, recordUnresolvedModelPricingAlert } from './model-pricing';
+import { settleNexusPointOverageForUser } from './nexus-points';
+import { insertApiUsageFallback } from './api-usage-fallback';
 
 // ─── Client (lazy init — only created if API key is set) ────────────
 
@@ -53,13 +59,12 @@ export function isOpenAIConfigured(): boolean {
 
 // ─── Cost per million tokens (update when OpenAI changes rates) ─────
 
-const OPENAI_COST_PER_MTK: Record<string, { in: number; out: number }> = {
-  'gpt-5.4-nano': { in: 0.20, out: 1.25 },
-  'gpt-5.4-mini': { in: 0.40, out: 1.60 },
-  'gpt-5-nano':   { in: 0.20, out: 1.25 },
-  'gpt-5-mini':   { in: 0.40, out: 1.60 },
-  'gpt-4o':       { in: 2.50, out: 10.00 },
-  'gpt-4o-mini':  { in: 0.15, out: 0.60 },
+export const OPENAI_COST_PER_MTK: Record<string, { in: number; out: number }> = {
+  ...Object.fromEntries(
+    getModelPricingTable()
+      .filter((entry) => entry.provider === 'openai')
+      .map((entry) => [entry.model, { in: entry.inputUsdPerMillion, out: entry.outputUsdPerMillion }]),
+  ),
 };
 
 type OpenAINonStreamingParams = OpenAI.ChatCompletionCreateParamsNonStreaming & {
@@ -79,6 +84,15 @@ type OneShotOptions = {
   timeoutMs?: number;
   jsonMode?: boolean;
 };
+
+const warnedUnresolvedModels = new Set<string>();
+
+function warnUnresolvedOpenAiPricing(model: string, category: string, userId: number): void {
+  const key = `${model}:${category}`;
+  if (warnedUnresolvedModels.has(key)) return;
+  warnedUnresolvedModels.add(key);
+  recordUnresolvedModelPricingAlert({ provider: 'openai', model, category, userId });
+}
 
 function usesCompletionTokenCap(model: string): boolean {
   const normalized = model.trim().toLowerCase();
@@ -129,26 +143,43 @@ async function trackedCompletion(
   const usage = response.usage;
   if (usage) {
     const model = response.model || params.model;
-    // Prefix match (longest key first): OpenAI returns versioned models (e.g. 'gpt-4o-2024-08-06')
-    const rateKey = Object.keys(OPENAI_COST_PER_MTK).sort((a, b) => b.length - a.length).find(k => model.startsWith(k));
-    const rates = rateKey ? OPENAI_COST_PER_MTK[rateKey] : OPENAI_COST_PER_MTK['gpt-4o'];
-    const costUsd =
-      (usage.prompt_tokens / 1_000_000) * rates.in +
-      (usage.completion_tokens / 1_000_000) * rates.out;
+    const cacheReadTokens = usage.prompt_tokens_details?.cached_tokens ?? 0;
+    const priced = computeModelUsageCostUsd(model, {
+      inputTokens: usage.prompt_tokens,
+      outputTokens: usage.completion_tokens,
+      cacheReadTokens,
+    }, 'openai');
+    if (!priced.pricingResolved) {
+      warnUnresolvedOpenAiPricing(model, category, userId);
+    }
+    const costUsd = priced.costUsd;
+    const pricingStatus = priced.pricingResolved ? 'resolved' : 'unresolved';
+    let apiUsageId: number | null = null;
 
     try {
       const db = getDb();
-      db.prepare(`
-        INSERT INTO api_usage (category, model, tenant_id, user_id, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost_usd, duration_ms, provider)
-        VALUES (?, ?, ?, ?, ?, ?, 0, 0, ?, ?, 'openai')
-      `).run(category, model, tenantId, userId, usage.prompt_tokens, usage.completion_tokens, costUsd, durationMs);
+      const result = db.prepare(`
+        INSERT INTO api_usage (category, model, tenant_id, user_id, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost_usd, duration_ms, provider, pricing_status, pricing_model_key)
+        VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, 'openai', ?, ?)
+      `).run(category, model, tenantId, userId, usage.prompt_tokens, usage.completion_tokens, cacheReadTokens, costUsd, durationMs, pricingStatus, priced.pricingModelKey);
+      apiUsageId = Number((result as { lastInsertRowid?: number | bigint } | undefined)?.lastInsertRowid ?? 0);
     } catch (e) {
       try {
         const db = getDb();
-        db.prepare(`
-          INSERT INTO api_usage (category, model, user_id, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost_usd, duration_ms, provider)
-          VALUES (?, ?, ?, ?, ?, 0, 0, ?, ?, 'openai')
-        `).run(category, model, userId, usage.prompt_tokens, usage.completion_tokens, costUsd, durationMs);
+        apiUsageId = insertApiUsageFallback(db, {
+          category,
+          model,
+          provider: 'openai',
+          tenantId,
+          userId,
+          inputTokens: usage.prompt_tokens,
+          outputTokens: usage.completion_tokens,
+          cacheReadTokens,
+          cacheWriteTokens: 0,
+          costUsd,
+          durationMs,
+          pricingStatus: 'legacy',
+        });
       } catch (fallbackErr) {
         logger.warn({ err: fallbackErr }, 'Failed to log OpenAI usage to database');
       }
@@ -160,6 +191,20 @@ async function trackedCompletion(
       summary: `OpenAI ${model} [${category}] — ${usage.prompt_tokens}+${usage.completion_tokens} tokens`,
       detail: `$${costUsd.toFixed(4)} in ${durationMs}ms`,
     });
+    // April 2026 follow-up: per-user metering for OpenAI mirrors
+    // anthropic-hook and gemini-provider so quota enforcement sees
+    // every provider's traffic, not only the disabled Anthropic path.
+    try {
+      const { recordUsage } = require('./usage-metering') as typeof import('./usage-metering');
+      recordUsage(userId, usage.prompt_tokens, usage.completion_tokens, costUsd, false);
+    } catch (meterErr) {
+      logger.warn({ err: meterErr, userId }, 'Failed to record OpenAI usage_metering');
+    }
+    try {
+      await settleNexusPointOverageForUser(userId, apiUsageId);
+    } catch (settleErr) {
+      logger.warn({ err: settleErr, apiUsageId, userId }, 'nexus_points: OpenAI usage settlement failed');
+    }
   }
 
   return response;
@@ -231,6 +276,48 @@ export async function completeOneShot(
   return response.choices[0]?.message?.content ?? '';
 }
 
+export async function completeOneShotWithWebSearch(
+  systemPrompt: string,
+  userPrompt: string,
+  category: string,
+  options?: OneShotOptions,
+): Promise<{ text: string; sources: string[] }> {
+  if (!isOpenAIConfigured()) {
+    throw new Error('OpenAI provider not configured (OPENAI_API_KEY missing)');
+  }
+  const model = options?.model ?? process.env.OPENAI_WEB_SEARCH_MODEL ?? 'gpt-4o-mini';
+  const maxOutputTokens = options?.maxTokens ?? 900;
+  const startedAt = Date.now();
+  const response = await withRetry(() =>
+    withTimeout(getClient().responses.create({
+      model,
+      instructions: systemPrompt,
+      input: userPrompt,
+      tools: [{ type: 'web_search' }],
+      tool_choice: 'auto',
+      max_output_tokens: maxOutputTokens,
+    } as any), options?.timeoutMs ?? getAICallTimeoutMs()),
+  ) as any;
+
+  recordOpenAIResponseUsage({
+    response,
+    model: String(response?.model ?? model),
+    category,
+    userId: options?.userId ?? 0,
+    tenantId: options?.tenantId ?? options?.userId ?? 0,
+    durationMs: Date.now() - startedAt,
+  });
+
+  const text = extractOpenAIResponseText(response);
+  if (!text) {
+    throw new Error('openai_web_search_empty_response');
+  }
+  return {
+    text,
+    sources: collectHttpUrlsFromUnknown(response),
+  };
+}
+
 /**
  * Single-prompt chat completion with an image input (vision mode) via
  * GPT-4o. Mirrors `gemini-provider.completeVisionOneShot`.
@@ -288,6 +375,126 @@ export async function completeVisionOneShot(
   return response.choices[0]?.message?.content ?? '';
 }
 
+function recordOpenAIResponseUsage(input: {
+  response: any;
+  model: string;
+  category: string;
+  userId: number;
+  tenantId: number;
+  durationMs: number;
+}): void {
+  const usage = input.response?.usage;
+  if (!usage || typeof usage !== 'object') return;
+  const inputTokens = numberFromUnknown(usage.input_tokens ?? usage.prompt_tokens);
+  const outputTokens = numberFromUnknown(usage.output_tokens ?? usage.completion_tokens);
+  if (inputTokens === null || outputTokens === null) return;
+  const cacheReadTokens = numberFromUnknown(usage.input_tokens_details?.cached_tokens) ?? 0;
+  const priced = computeModelUsageCostUsd(input.model, {
+    inputTokens,
+    outputTokens,
+    cacheReadTokens,
+  }, 'openai');
+  if (!priced.pricingResolved) {
+    warnUnresolvedOpenAiPricing(input.model, input.category, input.userId);
+  }
+  let apiUsageId: number | null = null;
+  try {
+    const db = getDb();
+    const result = db.prepare(`
+      INSERT INTO api_usage (category, model, tenant_id, user_id, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost_usd, duration_ms, provider, pricing_status, pricing_model_key)
+      VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, 'openai', ?, ?)
+    `).run(
+      input.category,
+      input.model,
+      input.tenantId,
+      input.userId,
+      inputTokens,
+      outputTokens,
+      cacheReadTokens,
+      priced.costUsd,
+      input.durationMs,
+      priced.pricingResolved ? 'resolved' : 'unresolved',
+      priced.pricingModelKey,
+    );
+    apiUsageId = Number((result as { lastInsertRowid?: number | bigint } | undefined)?.lastInsertRowid ?? 0);
+  } catch (err) {
+    try {
+      const db = getDb();
+      apiUsageId = insertApiUsageFallback(db, {
+        category: input.category,
+        model: input.model,
+        provider: 'openai',
+        tenantId: input.tenantId,
+        userId: input.userId,
+        inputTokens,
+        outputTokens,
+        cacheReadTokens,
+        cacheWriteTokens: 0,
+        costUsd: priced.costUsd,
+        durationMs: input.durationMs,
+        pricingStatus: 'legacy',
+      });
+    } catch (fallbackErr) {
+      logger.warn({ err: fallbackErr }, 'Failed to log OpenAI Responses usage to database');
+    }
+  }
+  pushEvent({
+    ts: new Date().toISOString(),
+    type: 'api_call',
+    summary: `OpenAI ${input.model} [${input.category}] — ${inputTokens}+${outputTokens} tokens`,
+    detail: `$${priced.costUsd.toFixed(4)} in ${input.durationMs}ms`,
+  });
+  void settleNexusPointOverageForUser(input.userId, apiUsageId).catch((settleErr) => {
+    logger.warn({ err: settleErr, apiUsageId, userId: input.userId }, 'nexus_points: OpenAI Responses usage settlement failed');
+  });
+}
+
+function extractOpenAIResponseText(response: any): string {
+  if (typeof response?.output_text === 'string' && response.output_text.trim()) {
+    return response.output_text.trim();
+  }
+  const chunks: string[] = [];
+  const output = Array.isArray(response?.output) ? response.output : [];
+  for (const item of output) {
+    const content = Array.isArray(item?.content) ? item.content : [];
+    for (const block of content) {
+      if (typeof block?.text === 'string') chunks.push(block.text);
+    }
+  }
+  return chunks.join('\n').trim();
+}
+
+function collectHttpUrlsFromUnknown(value: unknown, urls = new Set<string>()): string[] {
+  if (typeof value === 'string') {
+    for (const match of value.matchAll(/https?:\/\/[^\s)"'<>]+/gi)) {
+      urls.add(match[0].replace(/[),.;\]]+$/g, ''));
+    }
+    return [...urls];
+  }
+  if (!value || typeof value !== 'object') return [...urls];
+  if (Array.isArray(value)) {
+    for (const entry of value) collectHttpUrlsFromUnknown(entry, urls);
+    return [...urls];
+  }
+  const record = value as Record<string, unknown>;
+  for (const [key, entry] of Object.entries(record)) {
+    if ((key === 'url' || key === 'uri') && typeof entry === 'string' && /^https?:\/\//i.test(entry)) {
+      urls.add(entry);
+    }
+    collectHttpUrlsFromUnknown(entry, urls);
+  }
+  return [...urls];
+}
+
+function numberFromUnknown(value: unknown): number | null {
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value === 'string' && value.trim()) {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
+}
+
 // ─── Retry on 429 / 5xx ─────────────────────────────────────────────
 
 /** Injectable sleep — override `.fn` in tests to avoid real setTimeout waits. */
@@ -325,7 +532,14 @@ async function withRetry<T>(fn: () => Promise<T>, maxRetries = 3): Promise<T> {
 /**
  * Convert Anthropic-format tool definitions to OpenAI function-calling format.
  */
-function toOpenAITools(filteredTools?: unknown[]): OpenAI.ChatCompletionTool[] {
+function toOpenAITools(
+  filteredTools: unknown[] | undefined,
+  context = 'OpenAI domain call',
+  allowLegacyFullTools = false,
+): OpenAI.ChatCompletionTool[] {
+  if (!Array.isArray(filteredTools) && !allowLegacyFullTools) {
+    throw new Error(`${context} requires explicit filteredTools; pass [] for no tools or TOOLS for the full set`);
+  }
   const sourceTools = (Array.isArray(filteredTools) ? filteredTools : TOOLS) as Array<{
     name?: unknown;
     description?: unknown;
@@ -343,6 +557,36 @@ function toOpenAITools(filteredTools?: unknown[]): OpenAI.ChatCompletionTool[] {
       parameters: t.input_schema as Record<string, unknown>,
     },
   }));
+}
+
+function resolveOpenAIModel(
+  domain: DomainName,
+  tier?: 'heavy' | 'light',
+): { model: string; maxTokens: number } {
+  const domainOverride = getDomainModelOverride('openai', domain as DomainModelRole);
+  if (domainOverride) {
+    return {
+      model: domainOverride,
+      maxTokens: domain === 'secretary' ? config.openai.secretaryMaxTokens
+        : domain === 'triathlon' ? 2048
+        : config.openai.maxTokens,
+    };
+  }
+
+  if (tier === 'light') {
+    return {
+      model: config.openai.classifierModel,
+      maxTokens: domain === 'secretary' || domain === 'triathlon' ? 2048 : config.openai.maxTokens,
+    };
+  }
+  if (tier === 'heavy') {
+    return {
+      model: config.openai.model,
+      maxTokens: domain === 'secretary' ? config.openai.secretaryMaxTokens : config.openai.maxTokens,
+    };
+  }
+
+  return getModelRouting(config.openai, domain, 'openai');
 }
 
 // ─── Response parsing helpers ───────────────────────────────────────
@@ -379,7 +623,13 @@ export class OpenAIProvider implements AIProvider {
   async classify(
     message: string,
     activeContext?: { domain: DomainName; lastAssistantMessage: string },
+    options?: ClassifyOptions,
   ): Promise<ClassificationResult> {
+    // O3-A11/F-new-6: ClassifyOptions must carry user attribution for
+    // routed classify calls. Without this, OpenAI fallback classify rows
+    // silently fall back to user_id=0 / tenant_id=0.
+    const usageUserId = options?.userId ?? 0;
+    const usageTenantId = options?.tenantId ?? options?.userId ?? 0;
     try {
       let userContent = message;
       if (activeContext) {
@@ -397,7 +647,7 @@ ${message}`;
             { role: 'system', content: getClassifierSystemPrompt() },
             { role: 'user', content: userContent },
           ],
-        }, 100), 'openai_classify')
+        }, 100), 'openai_classify', usageUserId, usageTenantId, options?.timeoutMs)
       );
 
       let text = response.choices[0]?.message?.content || '';
@@ -423,13 +673,19 @@ ${message}`;
     optionsOrMaxTokens?: number | CallDomainOptions,
   ): Promise<AICallResult> {
     const opts = normalizeCallDomainOptions(optionsOrMaxTokens);
-    const routing = getModelRouting(config.openai, domain, 'openai');
+    // v2: honor options.modelOverride (set by cloud-reasoning-gate so the
+    // approved reasoning model is actually used).
+    const baseRouting = resolveOpenAIModel(domain, opts.modelTier);
+    const routing = opts.modelOverride
+      ? { model: opts.modelOverride, maxTokens: baseRouting.maxTokens }
+      : baseRouting;
     // Phase 2 Slice A: pass currentMessage so triathlon sub-skill
     // routing picks the sport-specific coach persona prompt.
     const systemPrompt = getDomainSystemPrompt(domain, currentMessage);
     const useTools = domain === 'secretary' || domain === 'triathlon';
-    const tools = useTools ? toOpenAITools(opts.filteredTools) : [];
-    const contextPrefix = stateContext ? `[Current State]\n${stateContext}\n\n` : '';
+    const allowLegacyFullTools = optionsOrMaxTokens == null || typeof optionsOrMaxTokens === 'number';
+    const tools = useTools ? toOpenAITools(opts.filteredTools, 'OpenAI callDomain', allowLegacyFullTools) : [];
+    const contextPrefix = buildScopedStateContextPrefix(stateContext);
 
     const messages: OpenAI.ChatCompletionMessageParam[] = [
       { role: 'system', content: systemPrompt },
@@ -465,13 +721,18 @@ ${message}`;
     options?: CallDomainOptions,
   ): Promise<AICallResult> {
     const opts = normalizeCallDomainOptions(options);
-    const routing = getModelRouting(config.openai, domain, 'openai');
+    // v2: honor options.modelOverride (set by cloud-reasoning-gate so the
+    // approved reasoning model is actually used).
+    const baseRouting = resolveOpenAIModel(domain, opts.modelTier);
+    const routing = opts.modelOverride
+      ? { model: opts.modelOverride, maxTokens: baseRouting.maxTokens }
+      : baseRouting;
     // Phase 2 Slice A: pass currentMessage so triathlon sub-skill
     // routing picks the sport-specific coach persona prompt.
     const systemPrompt = getDomainSystemPrompt(domain, currentMessage);
     const useTools = domain === 'secretary' || domain === 'triathlon';
-    const tools = useTools ? toOpenAITools(opts.filteredTools) : [];
-    const contextPrefix = stateContext ? `[Current State]\n${stateContext}\n\n` : '';
+    const tools = useTools ? toOpenAITools(opts.filteredTools, 'OpenAI continueWithToolResults', options == null) : [];
+    const contextPrefix = buildScopedStateContextPrefix(stateContext);
 
     const messages: OpenAI.ChatCompletionMessageParam[] = [
       { role: 'system', content: systemPrompt },
@@ -539,11 +800,25 @@ ${message}`;
     history: DomainMessage[],
     currentMessage: string,
     stateContext: string,
+    options: CallDomainOptions = {},
   ): AsyncGenerator<string, AICallResult, undefined> {
-    const routing = getModelRouting(config.openai, domain, 'openai');
+    if (typeof options.userId !== 'number' || options.userId <= 0) {
+      throw new Error('streamDomain requires options.userId: no userId=0 sentinel allowed for streaming usage');
+    }
+    const userId = options.userId;
+    const tenantId = options.tenantId ?? userId;
+    // v2.6 (angry-QA-found): streamDomain was the one model-resolution
+    // site missing the modelOverride wrap. callDomain and
+    // continueWithToolResults honored it; streaming silently used the
+    // default model, which would let cloud-reasoning-gate's approved
+    // model selection be ignored for any streaming consumer.
+    const baseRouting = getModelRouting(config.openai, domain, 'openai');
+    const routing = options.modelOverride
+      ? { model: options.modelOverride, maxTokens: baseRouting.maxTokens }
+      : baseRouting;
     // Phase 2 Slice A: same persona routing for the streaming path.
     const systemPrompt = getDomainSystemPrompt(domain, currentMessage);
-    const contextPrefix = stateContext ? `[Current State]\n${stateContext}\n\n` : '';
+    const contextPrefix = buildScopedStateContextPrefix(stateContext);
 
     const messages: OpenAI.ChatCompletionMessageParam[] = [
       { role: 'system', content: systemPrompt },
@@ -566,7 +841,7 @@ ${message}`;
 
     let fullText = '';
     let finishReason = 'stop';
-    let usage: { prompt_tokens: number; completion_tokens: number } | null = null;
+    let usage: { prompt_tokens: number; completion_tokens: number; cached_tokens?: number } | null = null;
 
     for await (const chunk of stream) {
       const delta = chunk.choices[0]?.delta?.content;
@@ -581,6 +856,7 @@ ${message}`;
         usage = {
           prompt_tokens: chunk.usage.prompt_tokens,
           completion_tokens: chunk.usage.completion_tokens,
+          cached_tokens: chunk.usage.prompt_tokens_details?.cached_tokens ?? 0,
         };
       }
     }
@@ -589,26 +865,45 @@ ${message}`;
 
     if (usage) {
       const model = routing.model;
-      // Prefix match (longest key first): OpenAI returns versioned models (e.g. 'gpt-4o-2024-08-06')
-    const rateKey = Object.keys(OPENAI_COST_PER_MTK).sort((a, b) => b.length - a.length).find(k => model.startsWith(k));
-    const rates = rateKey ? OPENAI_COST_PER_MTK[rateKey] : OPENAI_COST_PER_MTK['gpt-4o'];
-      const costUsd =
-        (usage.prompt_tokens / 1_000_000) * rates.in +
-        (usage.completion_tokens / 1_000_000) * rates.out;
+      const priced = computeModelUsageCostUsd(model, {
+        inputTokens: usage.prompt_tokens,
+        outputTokens: usage.completion_tokens,
+        cacheReadTokens: usage.cached_tokens ?? 0,
+      }, 'openai');
+      if (!priced.pricingResolved) {
+        warnUnresolvedOpenAiPricing(model, `openai_stream_${domain}`, options.userId ?? 0);
+      }
+      const costUsd = priced.costUsd;
+      const pricingStatus = priced.pricingResolved ? 'resolved' : 'unresolved';
+      let apiUsageId: number | null = null;
 
       try {
         const db = getDb();
-        // April 9 2026: persist user_id (same fix as the non-streaming
-        // trackedCompletion above). Streaming callers don't currently
-        // pass userId through — the AIProvider interface's streamDomain
-        // method predates per-user cost attribution. Fallback to 0
-        // until the interface is extended.
-        db.prepare(`
-          INSERT INTO api_usage (category, model, user_id, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost_usd, duration_ms, provider)
-          VALUES (?, ?, ?, ?, ?, 0, 0, ?, ?, 'openai')
-        `).run(`openai_stream_${domain}`, model, 0, usage.prompt_tokens, usage.completion_tokens, costUsd, durationMs);
+        const result = db.prepare(`
+          INSERT INTO api_usage (category, model, tenant_id, user_id, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost_usd, duration_ms, provider, pricing_status, pricing_model_key)
+          VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, 'openai', ?, ?)
+        `).run(`openai_stream_${domain}`, model, tenantId, userId, usage.prompt_tokens, usage.completion_tokens, usage.cached_tokens ?? 0, costUsd, durationMs, pricingStatus, priced.pricingModelKey);
+        apiUsageId = Number((result as { lastInsertRowid?: number | bigint } | undefined)?.lastInsertRowid ?? 0);
       } catch (e) {
-        logger.warn({ err: e }, 'Failed to log OpenAI streaming usage');
+        try {
+          const db = getDb();
+          apiUsageId = insertApiUsageFallback(db, {
+            category: `openai_stream_${domain}`,
+            model,
+            provider: 'openai',
+            tenantId,
+            userId,
+            inputTokens: usage.prompt_tokens,
+            outputTokens: usage.completion_tokens,
+            cacheReadTokens: usage.cached_tokens ?? 0,
+            cacheWriteTokens: 0,
+            costUsd,
+            durationMs,
+            pricingStatus: 'legacy',
+          });
+        } catch (fallbackErr) {
+          logger.warn({ err: fallbackErr }, 'Failed to log OpenAI streaming usage');
+        }
       }
 
       pushEvent({
@@ -617,6 +912,20 @@ ${message}`;
         summary: `OpenAI stream ${model} [${domain}] — ${usage.prompt_tokens}+${usage.completion_tokens} tokens`,
         detail: `$${costUsd.toFixed(4)} in ${durationMs}ms`,
       });
+      // Codex QA: the streaming path wrote api_usage but skipped
+      // usage_metering, leaving per-user quota silently undercounting
+      // every OpenAI stream call. Mirror the non-streaming path.
+      try {
+        const { recordUsage } = require('./usage-metering') as typeof import('./usage-metering');
+        recordUsage(userId, usage.prompt_tokens, usage.completion_tokens, costUsd, false);
+      } catch (meterErr) {
+        logger.warn({ err: meterErr, userId }, 'Failed to record OpenAI streaming usage_metering');
+      }
+      try {
+        await settleNexusPointOverageForUser(userId, apiUsageId);
+      } catch (settleErr) {
+        logger.warn({ err: settleErr, apiUsageId, userId }, 'nexus_points: OpenAI stream settlement failed');
+      }
     }
 
     return {

@@ -15,7 +15,8 @@ import logging
 from pydantic import BaseModel
 
 from services.claude_client import ask_claude_json, MODEL
-from services.creator_profile import get_profile
+from services.creator_context import creator_profile_block, language_instruction
+from services.creative.operation_prompt_compilers import OperationPromptInput, build_operation_metadata, compile_operation_prompt
 from config import cfg
 
 import httpx
@@ -37,17 +38,29 @@ class BookDNA(BaseModel):
     personal_notes: list[str]    # initially empty
 
 
-async def _web_search(query: str, max_results: int = 5) -> list[dict]:
+def _serpapi_locale(language: str | None) -> tuple[str, str]:
+    normalized = (language or "en-US").strip().lower()
+    if normalized == "pt-br" or "brazil" in normalized or "brasil" in normalized:
+        return "pt", "br"
+    if normalized == "pt-pt" or "portugal" in normalized or "european" in normalized:
+        return "pt", "pt"
+    if normalized.startswith("pt"):
+        return "pt", "pt"
+    return "en", "us"
+
+
+async def _web_search(query: str, max_results: int = 5, language: str = "en-US") -> list[dict]:
     """Run a single SerpAPI search and return organic results."""
-    if not cfg.serpapi_api_key:
+    if not cfg.serpapi_key:
         return []
     try:
+        hl, gl = _serpapi_locale(language)
         params = {
             "q": query,
-            "api_key": cfg.serpapi_api_key,
+            "api_key": cfg.serpapi_key,
             "num": max_results,
-            "hl": "pt",
-            "gl": "br",
+            "hl": hl,
+            "gl": gl,
         }
         async with httpx.AsyncClient(timeout=15.0) as client:
             resp = await client.get(SERPAPI_URL, params=params)
@@ -66,7 +79,31 @@ async def _web_search(query: str, max_results: int = 5) -> list[dict]:
         return []
 
 
-async def extract_book(title: str, author: str) -> BookDNA:
+async def extract_book(
+    title: str,
+    author: str,
+    creator_profile: str | None = None,
+    language: str = "en-US",
+) -> BookDNA:
+    book, _metadata = await extract_book_with_metadata(title, author, creator_profile=creator_profile, language=language)
+    return book
+
+
+class _BookOperationRequest:
+    source_package_id = None
+    voice_card_version = None
+    draft_id = None
+    script_id = None
+    reuse_policy = None
+    quality_tier = "standard"
+
+
+async def extract_book_with_metadata(
+    title: str,
+    author: str,
+    creator_profile: str | None = None,
+    language: str = "en-US",
+) -> tuple[BookDNA, dict]:
     """Research a book via web search and extract structured knowledge."""
     start = time.monotonic()
 
@@ -82,7 +119,7 @@ async def extract_book(title: str, author: str) -> BookDNA:
         f'"{title}" practical application real world',
     ]
 
-    search_tasks = [_web_search(q, max_results=3) for q in queries]
+    search_tasks = [_web_search(q, max_results=3, language=language) for q in queries]
     results_lists = await asyncio.gather(*search_tasks, return_exceptions=True)
 
     # Flatten results
@@ -101,6 +138,16 @@ async def extract_book(title: str, author: str) -> BookDNA:
         # of asking the model to hallucinate book content.
         logger.warning("No web search results for '%s' by %s — returning partial result", title, author)
         duration_ms = int((time.monotonic() - start) * 1000)
+        compiled = compile_operation_prompt(OperationPromptInput(
+            operation="book_source",
+            topic=f"{title} by {author}",
+            language=language,
+            creator_profile=creator_profile or "",
+            source_summary=[],
+            format_contract="No source data available; return low-confidence metadata only.",
+        ))
+        metadata = build_operation_metadata(_BookOperationRequest(), "book_source", compiled)
+        metadata["quality_report"]["warnings"].append("no_source_data")
         return BookDNA(
             title=title,
             author=author,
@@ -112,27 +159,27 @@ async def extract_book(title: str, author: str) -> BookDNA:
             counter_arguments=[],
             related_thinkers=[],
             personal_notes=[f"⚠️ Extraction skipped — no research data available ({duration_ms}ms)"],
-        )
+        ), metadata
 
     # Phase 2: Claude Sonnet synthesis
-    profile = get_profile()
+    context = type("BookCreatorContext", (), {
+        "creator_profile": creator_profile,
+        "language": language,
+    })()
 
-    system_prompt = f"""You are an intellectual knowledge extractor for Felipe, a Brazilian content creator.
+    system_prompt = f"""You are an intellectual knowledge extractor for the authenticated content creator.
 
-{profile}
+{creator_profile_block(context)}
 
-Your task: Extract structured knowledge from a book that Felipe can use in his content.
-Think through Felipe's lens — how would HE use these ideas in videos for Brazilian men aged 18-35?
-Focus on frameworks, provocative ideas, and counter-arguments that align with his worldview.
+{language_instruction(context)}
+
+Your task: Extract structured knowledge from a book that the authenticated creator can use in their content.
+Think through the supplied creator profile and saved brand voice — how would this creator use these ideas in videos for their saved target audience?
+Focus on frameworks, provocative ideas, and counter-arguments that align with the supplied creator profile. If no creator profile is supplied, keep recommendations topic-driven and neutral.
 
 Return ONLY valid JSON, no markdown wrapping."""
 
-    prompt = f"""Research the book "{title}" by {author}.
-
-WEB RESEARCH FINDINGS:
-{research_context}
-
-Extract and return a JSON object with these exact fields:
+    schema = f"""Extract and return a JSON object with these exact fields:
 {{
     "title": "{title}",
     "author": "{author}",
@@ -141,32 +188,42 @@ Extract and return a JSON object with these exact fields:
         {{
             "name": "Framework name",
             "description": "What it is (2-3 sentences)",
-            "use_in_content": "How Felipe would use this in a video — specific example",
-            "pillar": "Which content pillar it maps to (politics/economics/fitness/faith/self-development/geopolitics)"
+            "use_in_content": "How the creator would use this in a video — specific example",
+            "pillar": "Which supplied creator content pillar it maps to, or a neutral topic category if no pillar is supplied"
         }}
     ],
     "quotable_ideas": [
         {{
             "idea": "The provocative idea or quote",
             "context": "What the author meant",
-            "use_when": "When Felipe should reference this (e.g., 'when discussing minimum wage')"
+            "use_when": "When the authenticated creator should reference this (e.g., 'when discussing minimum wage')"
         }}
     ],
-    "pillar_mapping": ["economics", "politics"],
+    "pillar_mapping": ["topic category"],
     "counter_arguments": ["What critics say about this book — useful for reaction content"],
     "related_thinkers": ["Other thinkers who share or oppose these views"],
     "personal_notes": []
 }}
 
-Extract 3-6 key frameworks and 4-8 quotable ideas. Focus on what's USEFUL for Felipe's content, not academic completeness.
-For Austrian economics books, extract the most provocative anti-state arguments.
-For philosophy/faith books, extract frameworks that challenge mainstream thinking."""
+Extract 3-6 key frameworks and 4-8 quotable ideas. Focus on what's USEFUL for the authenticated creator's content, not academic completeness.
+Do not assume any political, religious, dietary, national, or founder-specific angle unless the supplied creator profile asks for it."""
+    compiled = compile_operation_prompt(OperationPromptInput(
+        operation="book_source",
+        topic=f"{title} by {author}",
+        language=language,
+        creator_profile=creator_profile_block(context),
+        source_summary=[
+            f"{r['title']} — {r['snippet']} Source: {r['link']}"
+            for r in all_results[:16]
+        ],
+        format_contract=schema,
+    ))
 
     result = await ask_claude_json(
-        prompt,
+        compiled.prompt,
         system=system_prompt,
         model=MODEL,
-        max_tokens=6000,
+        max_tokens=2800,
         temperature=0.5,
         category="content_engine_book",
     )
@@ -186,7 +243,7 @@ For philosophy/faith books, extract frameworks that challenge mainstream thinkin
             counter_arguments=result.get("counter_arguments", []),
             related_thinkers=result.get("related_thinkers", []),
             personal_notes=result.get("personal_notes", []),
-        )
+        ), build_operation_metadata(_BookOperationRequest(), "book_source", compiled)
     else:
         # Fallback — return minimal
         return BookDNA(
@@ -199,4 +256,4 @@ For philosophy/faith books, extract frameworks that challenge mainstream thinkin
             counter_arguments=[],
             related_thinkers=[],
             personal_notes=[],
-        )
+        ), build_operation_metadata(_BookOperationRequest(), "book_source", compiled)

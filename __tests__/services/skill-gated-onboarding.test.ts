@@ -52,10 +52,14 @@ let testDb: Database.Database;
 
 vi.mock('../../src/services/database', () => ({
   getDb: () => testDb,
+  initDatabase: vi.fn(),
+  closeDatabase: vi.fn(),
+  findUnexpectedMigrationPrefixCollisions: vi.fn(() => []),
 }));
 
 vi.mock('../../src/utils/logger', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
+  LOGGER_REDACTION_PATHS: [],
 }));
 
 vi.mock('../../src/config', () => ({
@@ -80,7 +84,7 @@ import {
 import { applySkillPreset, setSkillAccess } from '../../src/services/user-skill-access';
 
 // Helper: create a user in the DB
-function createUser(db: Database.Database, telegramId: number, tier: string = 'free'): void {
+function createUser(db: Database.Database, telegramId: number, tier: string = 'pro'): void {
   db.prepare(`
     INSERT OR IGNORE INTO users (telegram_id, first_name, tier, status, daily_message_limit, daily_token_limit, daily_cost_limit_usd)
     VALUES (?, 'Test', ?, 'active', 40, 100000, 0)

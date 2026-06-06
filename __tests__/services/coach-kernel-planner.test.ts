@@ -31,14 +31,172 @@ describe('coach-kernel planner', () => {
     expect(plan.phase).toBe('peak');
   });
 
+  it('respects a one-run weekly target for running-primary plans', () => {
+    const athlete: AthleteState = {
+      ...sampleMarathonAthlete,
+      goals: {
+        ...sampleMarathonAthlete.goals,
+        secondaryFocus: undefined,
+        priorityOrder: ['running'],
+        weeklySessionsTarget: { running: 1, strength: 0 },
+        weeklyMinutesTarget: { running: 75, strength: 0 },
+      },
+    };
+
+    const plan = buildWeekPlan(athlete, '2026-05-11');
+    const runs = plan.sessions.filter((session) => session.sport === 'running');
+
+    expect(runs).toHaveLength(1);
+    expect(plan.sessions.filter((session) => session.sport === 'strength')).toHaveLength(0);
+  });
+
+  it('keeps key run and long run on separate days even when the preferred long day is Tuesday', () => {
+    const athlete: AthleteState = {
+      ...sampleMarathonAthlete,
+      availability: {
+        ...sampleMarathonAthlete.availability,
+        preferredLongSessionDay: 'tuesday',
+      },
+      goals: {
+        ...sampleMarathonAthlete.goals,
+        weeklySessionsTarget: { running: 4, strength: 0 },
+      },
+    };
+
+    const plan = buildWeekPlan(athlete, '2026-05-11');
+    const longRun = plan.sessions.find((session) => session.sessionType === 'long_run');
+    const keyRun = plan.sessions.find((session) => session.sport === 'running' && session.keySession && session.sessionType !== 'long_run');
+
+    expect(longRun?.dayOfWeek).toBe('tuesday');
+    expect(keyRun).toBeTruthy();
+    expect(keyRun?.dayOfWeek).not.toBe(longRun?.dayOfWeek);
+  });
+
   it('places a triathlon brick around the bike day', () => {
     const plan = buildWeekPlan(sampleTriathlete, '2026-06-15');
     const brick = plan.sessions.find((session) => session.sessionType === 'brick');
-    const keyRide = plan.sessions.find((session) => session.tags.includes('key_ride'));
+    const longRide = plan.sessions.find((session) => session.sport === 'cycling' && session.tags.includes('long_session'));
 
     expect(brick).toBeTruthy();
-    expect(keyRide).toBeTruthy();
-    expect(brick!.dayOfWeek).toBe(keyRide!.dayOfWeek);
+    expect(longRide).toBeTruthy();
+    expect(brick!.dayOfWeek).toBe(longRide!.dayOfWeek);
+  });
+
+  it('adds triathlon maintenance strength when requested', () => {
+    const plan = buildWeekPlan(sampleTriathlete, '2026-06-15');
+    const strength = plan.sessions.filter((session) => session.sport === 'strength');
+
+    expect(strength.length).toBeGreaterThan(0);
+    expect(strength.length).toBeLessThanOrEqual(2);
+    expect(strength.every((session) => session.tags.includes('maintenance'))).toBe(true);
+  });
+
+  it('suppresses triathlon bricks in taper weeks', () => {
+    const athlete: AthleteState = {
+      ...sampleTriathlete,
+      currentBlock: {
+        ...sampleTriathlete.currentBlock,
+        phase: 'taper',
+      },
+    };
+
+    const plan = buildWeekPlan(athlete, '2026-07-06');
+
+    expect(plan.sessions.some((session) => session.sessionType === 'brick')).toBe(false);
+  });
+
+  it('keeps triathlon day stacking within the athlete max sessions per day', () => {
+    const plan = buildWeekPlan(sampleTriathlete, '2026-06-15');
+    const byDay = new Map<string, typeof plan.sessions>();
+    for (const session of plan.sessions) {
+      byDay.set(session.dayOfWeek, [...(byDay.get(session.dayOfWeek) ?? []), session]);
+    }
+
+    for (const daySessions of byDay.values()) {
+      expect(daySessions.length).toBeLessThanOrEqual(sampleTriathlete.availability.maxSessionsPerDay ?? 2);
+      const sportCounts = new Map<string, number>();
+      for (const session of daySessions) {
+        if (session.sessionType === 'brick') continue;
+        sportCounts.set(session.sport, (sportCounts.get(session.sport) ?? 0) + 1);
+      }
+      expect([...sportCounts.values()].every((count) => count <= 1)).toBe(true);
+    }
+  });
+
+  it('respects a one-ride weekly target for cycling-primary plans', () => {
+    const athlete: AthleteState = {
+      ...sampleTriathlete,
+      goals: {
+        ...sampleTriathlete.goals,
+        primaryFocus: 'cycling',
+        secondaryFocus: undefined,
+        priorityOrder: ['cycling'],
+        weeklySessionsTarget: { cycling: 1 },
+      },
+      currentBlock: {
+        ...sampleTriathlete.currentBlock,
+        discipline: 'cycling',
+        phase: 'build',
+      },
+    };
+
+    const plan = buildWeekPlan(athlete, '2026-06-15');
+
+    expect(plan.sessions.filter((session) => session.sport === 'cycling')).toHaveLength(1);
+  });
+
+  it('does not grow cycling volume during race weeks', () => {
+    const athlete: AthleteState = {
+      ...sampleTriathlete,
+      goals: {
+        ...sampleTriathlete.goals,
+        primaryFocus: 'cycling',
+        secondaryFocus: undefined,
+        priorityOrder: ['cycling'],
+        weeklySessionsTarget: { cycling: 3 },
+      },
+      trainingHistory: {
+        ...sampleTriathlete.trainingHistory,
+        lastWeekMinutesBySport: {
+          ...sampleTriathlete.trainingHistory.lastWeekMinutesBySport,
+          cycling: 200,
+        },
+      },
+      currentBlock: {
+        ...sampleTriathlete.currentBlock,
+        discipline: 'cycling',
+        phase: 'race',
+      },
+    };
+
+    const plan = buildWeekPlan(athlete, '2026-06-15');
+    const cyclingMinutes = plan.sessions
+      .filter((session) => session.sport === 'cycling')
+      .reduce((total, session) => total + session.durationMinutes, 0);
+
+    expect(cyclingMinutes).toBeLessThanOrEqual(200);
+  });
+
+  it('emits speed_swim for advanced peak swim weeks', () => {
+    const athlete: AthleteState = {
+      ...sampleTriathlete,
+      goals: {
+        ...sampleTriathlete.goals,
+        primaryFocus: 'swimming',
+        secondaryFocus: undefined,
+        priorityOrder: ['swimming'],
+        weeklySessionsTarget: { swimming: 2 },
+      },
+      currentBlock: {
+        ...sampleTriathlete.currentBlock,
+        discipline: 'swimming',
+        phase: 'peak',
+      },
+    };
+
+    const plan = buildWeekPlan(athlete, '2026-06-15');
+
+    expect(plan.sessions.some((session) => session.sessionType === 'speed_swim')).toBe(true);
   });
 
   it('resolves hybrid priority conflicts in favor of the declared priority', () => {

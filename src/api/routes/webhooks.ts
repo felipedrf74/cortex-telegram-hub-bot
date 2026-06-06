@@ -23,6 +23,7 @@
 import { Router, Request, Response } from 'express';
 import express from 'express';
 import crypto from 'crypto';
+import StripeLib from 'stripe';
 import { logger } from '../../utils/logger';
 import { config } from '../../config';
 import { webhookRateLimitMiddleware } from '../rate-limiter';
@@ -30,7 +31,17 @@ import type { Bot } from 'grammy';
 import { getDb } from '../../services/database';
 import { syncProvider } from '../../services/task-store/sync-engine';
 import { findNexusUserByTodoistId } from '../../services/task-store/todoist-adapter';
-import { invalidateTaskCaches } from '../../services/task-cache-invalidator';
+import { invalidateTaskCaches } from '../../services/cache-coherence-registry';
+import {
+  handleCheckoutCompleted,
+  handleInvoicePaymentFailed,
+  handleSubscriptionDeleted,
+  handleSubscriptionUpdated,
+  hasProcessedStripeWebhookEvent,
+  isStripeConfigured,
+  markStripeWebhookEventProcessed,
+} from '../../services/stripe-service';
+import { handleStripeNexusPointsEvent } from '../../services/stripe-nexus-points-service';
 
 // Maximum age of a webhook delivery we'll accept. Without a timestamp window,
 // a leaked HMAC could let an attacker replay old events forever. Todoist
@@ -119,32 +130,42 @@ export function createWebhookRouter(bot?: Bot): Router {
     const rawBody = req.body as Buffer;
     const signature = (req.headers['stripe-signature'] as string) || '';
 
+    if (!isStripeConfigured()) {
+      res.status(503).json({ error: 'Stripe not configured' });
+      return;
+    }
+
+    const stripe = new StripeLib(config.stripe?.secretKey || '');
+    let event: any;
+
     try {
-      const {
-        isStripeConfigured,
-        handleCheckoutCompleted,
-        handleSubscriptionUpdated,
-        handleSubscriptionDeleted,
-        handleInvoicePaymentFailed,
-      } = require('../../services/stripe-service');
-
-      if (!isStripeConfigured()) {
-        res.status(503).json({ error: 'Stripe not configured' });
-        return;
-      }
-
-      const Stripe = require('stripe').default || require('stripe');
-      const stripe = new Stripe(config.stripe?.secretKey || '');
-
-      const event = stripe.webhooks.constructEvent(
+      event = stripe.webhooks.constructEvent(
         rawBody,
         signature,
         config.stripe?.webhookSecret || '',
       );
+    } catch (err: any) {
+      logger.warn({ err: err.message }, 'Stripe webhook verification failed');
+      res.status(400).json({ error: 'Webhook signature verification failed' });
+      return;
+    }
 
+    if (hasProcessedStripeWebhookEvent(event.id)) {
+      res.status(200).json({ received: true, duplicate: true });
+      return;
+    }
+
+    try {
       switch (event.type) {
         case 'checkout.session.completed':
-          handleCheckoutCompleted(event.data.object);
+          if (!(await handleStripeNexusPointsEvent(event)) && event.data.object?.mode === 'subscription') {
+            handleCheckoutCompleted(event.data.object);
+          }
+          break;
+        case 'checkout.session.async_payment_succeeded':
+        case 'charge.refunded':
+        case 'charge.dispute.created':
+          await handleStripeNexusPointsEvent(event);
           break;
         case 'customer.subscription.updated':
           handleSubscriptionUpdated(event.data.object);
@@ -159,10 +180,12 @@ export function createWebhookRouter(bot?: Bot): Router {
           logger.debug({ type: event.type }, 'Stripe webhook event not handled');
       }
 
+      markStripeWebhookEventProcessed(event.id, event.type);
+
       res.status(200).json({ received: true });
     } catch (err: any) {
-      logger.warn({ err: err.message }, 'Stripe webhook verification failed');
-      res.status(400).json({ error: 'Webhook signature verification failed' });
+      logger.error({ err: err.message, type: event.type, eventId: event.id }, 'Stripe webhook processing failed');
+      res.status(500).json({ error: 'Stripe webhook processing failed' });
     }
   });
 

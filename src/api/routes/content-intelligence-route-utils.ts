@@ -40,6 +40,35 @@ type MonitoredPillar = {
 
 type DeskItem = Record<string, any>;
 
+export type ContentPerformanceSummary = {
+  count: number;
+  avgViews: number;
+  avgRetention: number;
+  totalLikes: number;
+  totalComments: number;
+  totalSubsGained: number;
+  topEntry: {
+    id: number;
+    title: string | null;
+    views: number;
+    retentionPct: number;
+    likes: number;
+    comments: number;
+    subsGained: number;
+    loggedAt: string;
+  } | null;
+  recentEntries: Array<{
+    id: number;
+    title: string | null;
+    views: number;
+    retentionPct: number;
+    likes: number;
+    comments: number;
+    subsGained: number;
+    loggedAt: string;
+  }>;
+};
+
 export function buildContentIntelligenceSummary(params: {
   language: Lang;
   reactionJob?: JobStatus | null;
@@ -47,10 +76,11 @@ export function buildContentIntelligenceSummary(params: {
   autoresearchJob?: JobStatus | null;
   discoverySignals: AgentSignal[];
   optimizationSignals: AgentSignal[];
+  performanceSummary?: ContentPerformanceSummary | null;
   voiceEntries: VoiceEntry[];
   knowledgeStats: KnowledgeStats;
 }) {
-  const { language, reactionJob, performanceJob, autoresearchJob, discoverySignals, optimizationSignals, voiceEntries, knowledgeStats } = params;
+  const { language, reactionJob, performanceJob, autoresearchJob, discoverySignals, optimizationSignals, performanceSummary, voiceEntries, knowledgeStats } = params;
   const latestVoiceUpdate = voiceEntries
     .map((entry) => entry.updatedAt)
     .sort((a, b) => b.localeCompare(a))[0] ?? null;
@@ -82,6 +112,7 @@ export function buildContentIntelligenceSummary(params: {
       performanceLastStatus: performanceJob?.lastResult ?? 'never',
       autoresearchLastRunAt: autoresearchJob?.lastRunAt ?? null,
       autoresearchLastStatus: autoresearchJob?.lastResult ?? 'never',
+      performanceSummary: performanceSummary ?? emptyPerformanceSummary(),
     },
     schedule: {
       status: 'ready',
@@ -104,6 +135,7 @@ export function buildContentIntelligenceDetail(params: {
   autoresearchJob?: JobStatus | null;
   discoverySignals: AgentSignal[];
   optimizationSignals: AgentSignal[];
+  performanceSummary?: ContentPerformanceSummary | null;
   voiceEntries: VoiceEntry[];
   knowledgeStats: KnowledgeStats;
   filmingRecommendation: FilmingRecommendation;
@@ -118,6 +150,7 @@ export function buildContentIntelligenceDetail(params: {
     autoresearchJob,
     discoverySignals,
     optimizationSignals,
+    performanceSummary,
     voiceEntries,
     knowledgeStats,
     filmingRecommendation,
@@ -180,7 +213,21 @@ export function buildContentIntelligenceDetail(params: {
       performanceLastStatus: performanceJob?.lastResult ?? 'never',
       autoresearchLastRunAt: autoresearchJob?.lastRunAt ?? null,
       autoresearchLastStatus: autoresearchJob?.lastResult ?? 'never',
+      performanceSummary: performanceSummary ?? emptyPerformanceSummary(),
       recentSignals: optimizationSignals.map((signal) => formatSignalDigest(signal, language)),
     },
+  };
+}
+
+function emptyPerformanceSummary(): ContentPerformanceSummary {
+  return {
+    count: 0,
+    avgViews: 0,
+    avgRetention: 0,
+    totalLikes: 0,
+    totalComments: 0,
+    totalSubsGained: 0,
+    topEntry: null,
+    recentEntries: [],
   };
 }

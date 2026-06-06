@@ -27,6 +27,9 @@ let testDb: Database.Database;
 
 vi.mock('../../src/services/database', () => ({
   getDb: () => testDb,
+  initDatabase: vi.fn(),
+  closeDatabase: vi.fn(),
+  findUnexpectedMigrationPrefixCollisions: vi.fn(() => []),
 }));
 
 vi.mock('../../src/utils/logger', () => ({
@@ -38,6 +41,7 @@ vi.mock('../../src/utils/logger', () => ({
     trace: vi.fn(),
     child: vi.fn().mockReturnThis(),
   },
+  LOGGER_REDACTION_PATHS: [],
 }));
 
 function applyMigrations(db: Database.Database): void {
@@ -78,12 +82,12 @@ afterEach(() => {
   testDb.close();
 });
 
-function seedPlan(opts: { id: number; userId: number; planVersion?: number }): void {
+function seedPlan(opts: { id: number; userId: number; planVersion?: number; status?: string }): void {
   testDb.prepare(`
     INSERT INTO fitness_training_plans
       (id, user_id, name, sport, duration_weeks, start_date, end_date, status, plan_version)
-    VALUES (?, ?, 'Test plan', 'gym', 12, '2026-01-01', '2026-04-01', 'active', ?)
-  `).run(opts.id, opts.userId, opts.planVersion ?? 1);
+    VALUES (?, ?, 'Test plan', 'gym', 12, '2026-01-01', '2026-04-01', ?, ?)
+  `).run(opts.id, opts.userId, opts.status ?? 'active', opts.planVersion ?? 1);
 }
 
 function seedSession(opts: { id: number; planId: number; weekId: number; userId: number }): void {
@@ -116,6 +120,7 @@ describe('training-plan-lifecycle — migration 081', () => {
     expect(names.has('plan_id')).toBe(true);
     expect(names.has('plan_version')).toBe(true);
     expect(names.has('session_id')).toBe(true);
+    expect(names.has('tenant_id')).toBe(true);
     expect(names.has('user_id')).toBe(true);
     expect(names.has('calendar_event_id')).toBe(true);
     expect(names.has('calendar_source')).toBe(true);
@@ -332,6 +337,19 @@ describe('training-plan-lifecycle — findOrphanedOwnerships', () => {
     expect(orphans.length).toBe(0);
   });
 
+  it('returns active rows when the owning plan is no longer active even if sessions remain', () => {
+    seedPlan({ id: 1, userId: 100, status: 'cancelled' });
+    seedSession({ id: 10, planId: 1, weekId: 20, userId: 100 });
+    recordCalendarOwnership({
+      planId: 1, planVersion: 1, sessionId: 10, userId: 100, eventId: 'evt-cancelled-plan', source: 'google',
+    });
+
+    const orphans = findOrphanedOwnerships(100);
+
+    expect(orphans.length).toBe(1);
+    expect(orphans[0].calendar_event_id).toBe('evt-cancelled-plan');
+  });
+
   it('does not treat an existing unlinked session as an orphan while sync can still relink it', () => {
     seedPlan({ id: 1, userId: 100 });
     seedSession({ id: 10, planId: 1, weekId: 20, userId: 100 });
@@ -542,5 +560,28 @@ describe('training-plan-lifecycle — scoped ownership transitions', () => {
       { plan_id: 1, user_id: 100, status: 'deleted' },
       { plan_id: 2, user_id: 200, status: 'active' },
     ]);
+  });
+
+  it('does not return ownership rows outside the requested tenant', () => {
+    seedPlan({ id: 1, userId: 100 });
+    seedSession({ id: 10, planId: 1, weekId: 20, userId: 100 });
+    seedPlan({ id: 2, userId: 200 });
+    seedSession({ id: 11, planId: 2, weekId: 21, userId: 200 });
+    recordCalendarOwnership({
+      planId: 1, planVersion: 1, sessionId: 10, tenantId: 100, userId: 100, eventId: 'evt-a', source: 'google',
+    });
+    recordCalendarOwnership({
+      planId: 2, planVersion: 1, sessionId: 11, tenantId: 200, userId: 200, eventId: 'evt-b', source: 'google',
+    });
+
+    expect(findOwnershipsForPlan(1, 200)).toEqual([]);
+    expect(findOrphanedOwnerships(100, 200)).toEqual([]);
+    expect(findExistingOwnership({
+      planId: 1,
+      planVersion: 1,
+      sessionId: 10,
+      tenantId: 200,
+      userId: 100,
+    })).toBeNull();
   });
 });

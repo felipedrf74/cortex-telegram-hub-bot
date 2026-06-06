@@ -218,6 +218,107 @@ describe('training-plan-coordination', () => {
     expect(coordination.promptBlock).toContain('Keep non-key training locally executable');
   });
 
+  it('preserves explicit five-day strength targets for experienced full-gym plans', () => {
+    const coordination = buildTrainingPlanCoordination({
+      sessionsPerWeek: 7,
+      strengthSessionsPerWeek: 5,
+      longWorkoutDay: 'saturday',
+      fitnessProfile: {
+        experience_level: 'Advanced (3+ years)',
+        available_equipment: 'Full gym',
+      },
+      gymProfile: {
+        training_age: '5+ years',
+        equipment_access: 'Full commercial gym',
+      },
+      training: null,
+      cooking: null,
+      finance: null,
+      content: null,
+      sharedDecisionContext: '',
+      secretary: null,
+    });
+
+    expect(coordination.weeklySessionTarget).toBe(7);
+    expect(coordination.strengthSessionTarget).toBe(5);
+  });
+
+  it('caps impossible strength targets at six instead of silently reverting to four', () => {
+    const coordination = buildTrainingPlanCoordination({
+      sessionsPerWeek: 7,
+      strengthSessionsPerWeek: 9,
+      longWorkoutDay: 'saturday',
+      fitnessProfile: {
+        experience_level: 'Advanced (3+ years)',
+        available_equipment: 'Full gym',
+      },
+      gymProfile: {
+        training_age: '5+ years',
+        equipment_access: 'Full commercial gym',
+      },
+      training: null,
+      cooking: null,
+      finance: null,
+      content: null,
+      sharedDecisionContext: '',
+      secretary: null,
+    });
+
+    expect(coordination.strengthSessionTarget).toBe(6);
+  });
+
+  it('keeps the long run when capping weekly volume', () => {
+    const plan: CoordinatedTrainingPlan = {
+      planName: 'Advanced Marathon Hybrid',
+      sport: 'running',
+      periodization: 'block',
+      weeks: [
+        {
+          weekNumber: 1,
+          intensityPct: 72,
+          sessions: [
+            { dayOfWeek: 'monday', sessionType: 'run', title: 'Easy Aerobic Support', durationMinutes: 35, description: 'Filler.', exercises: [] },
+            { dayOfWeek: 'monday', sessionType: 'gym', title: 'Upper Body Strength A', durationMinutes: 55, description: 'Lift.', exercises: [] },
+            { dayOfWeek: 'tuesday', sessionType: 'run', title: 'Tempo Run', durationMinutes: 55, description: 'Quality.', exercises: [] },
+            { dayOfWeek: 'wednesday', sessionType: 'gym', title: 'Lower Body Strength A', durationMinutes: 55, description: 'Lift.', exercises: [] },
+            { dayOfWeek: 'thursday', sessionType: 'run', title: 'Recovery Run', durationMinutes: 40, description: 'Easy.', exercises: [] },
+            { dayOfWeek: 'friday', sessionType: 'gym', title: 'Upper Body Strength B', durationMinutes: 55, description: 'Lift.', exercises: [] },
+            { dayOfWeek: 'saturday', sessionType: 'run', title: 'Long Run', durationMinutes: 110, description: 'Key marathon session.', exercises: [] },
+            { dayOfWeek: 'sunday', sessionType: 'gym', title: 'Mobility Strength Support', durationMinutes: 40, description: 'Support.', exercises: [] },
+          ],
+        },
+      ],
+    };
+    const coordination = buildTrainingPlanCoordination({
+      sessionsPerWeek: 7,
+      strengthSessionsPerWeek: 5,
+      longWorkoutDay: 'saturday',
+      fitnessProfile: {
+        experience_level: 'Advanced (3+ years)',
+        available_equipment: 'Full gym',
+      },
+      gymProfile: {
+        training_age: '5+ years',
+        equipment_access: 'Full commercial gym',
+      },
+      training: null,
+      cooking: null,
+      finance: null,
+      content: null,
+      sharedDecisionContext: '',
+      secretary: null,
+    });
+
+    const result = applyTrainingPlanCoordination(plan, coordination);
+    const week = result.weeks?.[0];
+    const activeTitles = (week?.sessions ?? [])
+      .filter((session) => session.sessionType !== 'rest')
+      .map((session) => session.title);
+
+    expect(activeTitles).toContain('Long Run');
+    expect(activeTitles.length).toBe(7);
+  });
+
   it('adds safer spacing and progression caps for beginner injury-risk profiles', () => {
     const plan: CoordinatedTrainingPlan = {
       planName: 'Return to Run',
@@ -300,7 +401,7 @@ describe('training-plan-coordination', () => {
 
     expect(week1?.intensityPct).toBe(62);
     expect(week2?.intensityPct).toBe(66);
-    expect(week3?.intensityPct).toBe(56);
+    expect(week3?.intensityPct).toBe(70);
     expect(week1?.sessions?.find((session) => session.dayOfWeek === 'wednesday')?.title).toBe('Low-Impact Recovery');
     expect(week1?.sessions?.find((session) => session.dayOfWeek === 'sunday')?.title).toBe('Low-Impact Recovery');
     expect(week1?.sessions?.filter((session) => session.title === 'Long Run')).toHaveLength(1);

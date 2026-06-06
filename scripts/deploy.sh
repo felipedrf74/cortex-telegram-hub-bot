@@ -23,33 +23,250 @@ LOCAL_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 PM2="/home/dominguez/.npm-global/bin/pm2"
 NOTION_TOKEN="${NOTION_TOKEN:-}"
 NOTION_RELEASES_DB="${NOTION_RELEASES_DB:-332ad49d-23e7-8134-b413-d8d3cc3f1a4a}"
+SKIP_MODE="${NEXUS_DEPLOY_SKIP_VERIFY:-0}"
+AUDIT_LOG="${NEXUS_RELEASE_AUDIT_LOG:-$LOCAL_DIR/.local/release/override-audit.jsonl}"
+DEPLOY_MUTATION_MARKER="${NEXUS_DEPLOY_MUTATION_MARKER:-/tmp/nexus-deploy-prod-mutation-started}"
+
+# release-pipeline-risk-based-optimization (2026-05-03) — Round 3:
+# --dry-run mode exercises every gate (env validation, typecheck/verify
+# decision, build, version-bump preview, backup plan) WITHOUT actually
+# touching the server, the git tree, or PM2. Useful for rehearsing a
+# risky deploy or auditing the gate chain.
+DRY_RUN="${NEXUS_DEPLOY_DRY_RUN:-0}"
+for arg in "$@"; do
+  case "$arg" in
+    --dry-run) DRY_RUN=1 ;;
+  esac
+done
+
+if [ "$DRY_RUN" = "1" ]; then
+  echo "🟡 DRY RUN — no server, git, or PM2 mutations will occur"
+  echo ""
+fi
 
 echo "🚀 Deploying from: $LOCAL_DIR"
 echo "   To: $SERVER:$REMOTE_DIR"
 echo ""
 
 # ── 0. VALIDATE FIRST — before any git operations ────
-# This is the safety gate: typecheck + full test suite must pass
-# before we bump version, commit, push, or touch the server.
-# If this fails, nothing has changed — safe to fix and retry.
+# This is the safety gate. Historically `deploy.sh` re-ran the full
+# `npm run verify` (typecheck + full Vitest) here, even though pre-push
+# had already enforced both on the same SHA and `staging-smoke.sh`
+# validates the deployed artifact. That redundancy adds ~9 min per
+# deploy with zero incremental signal (release-pipeline-risk-based-
+# optimization audit, 2026-05-03).
+#
+# Behavior modes (all preserve the safety contract: nothing risky runs
+# until typecheck passes):
+#
+#   default                                 → full verify (legacy behavior)
+#   NEXUS_DEPLOY_SKIP_VERIFY=1              → typecheck only; trust the
+#                                             pre-push + staging-smoke
+#                                             chain. Saves ~9 min/deploy.
+#   NEXUS_DEPLOY_SKIP_VERIFY=auto-when-staged
+#                                           → typecheck only IFF the
+#                                             local↔staging dist hashes
+#                                             match (verified by
+#                                             promote-to-prod.sh before
+#                                             this script is invoked).
+#                                             Falls back to full verify
+#                                             otherwise.
+#
+# Owner approval required to flip the project default to a non-empty
+# NEXUS_DEPLOY_SKIP_VERIFY in `.env` or shell config. The script itself
+# defaults to legacy behavior so accidental rollouts are safe.
 cd "$LOCAL_DIR"
-echo "🔍 Running full validation (typecheck + tests)..."
-npm run verify 2>&1 && echo "" || {
-  echo ""
-  echo "═══════════════════════════════════════════════"
-  echo "  ❌ VALIDATION FAILED — deploy aborted"
-  echo "  Fix type errors or failing tests, then retry."
-  echo "═══════════════════════════════════════════════"
-  exit 1
+rm -f "$DEPLOY_MUTATION_MARKER"
+
+audit_override() {
+  local flag="$1"
+  local reason="${NEXUS_EMERGENCY_SKIP_REASON:-}"
+  mkdir -p "$(dirname "$AUDIT_LOG")"
+  node -e '
+    const fs = require("fs");
+    const entry = {
+      ts: new Date().toISOString(),
+      flag: process.argv[1],
+      reason: process.argv[2],
+      user: process.env.USER || process.env.LOGNAME || "unknown",
+      sha: process.argv[3],
+      branch: process.argv[4],
+      script: "deploy.sh",
+    };
+    fs.appendFileSync(process.argv[5], JSON.stringify(entry) + "\n");
+  ' "$flag" "$reason" "$(git rev-parse HEAD 2>/dev/null || echo unknown)" "$(git branch --show-current 2>/dev/null || echo unknown)" "$AUDIT_LOG"
 }
-echo "═══════════════════════════════════════════════"
-echo "  ✅ VALIDATION PASSED — proceeding with deploy"
-echo "═══════════════════════════════════════════════"
-echo ""
+
+require_emergency_reason() {
+  local flag="$1"
+  if [ -z "${NEXUS_EMERGENCY_SKIP_REASON:-}" ]; then
+    echo "❌ $flag requires NEXUS_EMERGENCY_SKIP_REASON"
+    exit 1
+  fi
+  audit_override "$flag"
+}
+
+ensure_clean_deploy_tree() {
+  if [ "${NEXUS_DEPLOY_ALLOW_DIRTY:-0}" = "1" ]; then
+    require_emergency_reason "NEXUS_DEPLOY_ALLOW_DIRTY"
+    case "$SKIP_MODE" in
+      1|true|yes|auto-when-staged)
+        echo "❌ Dirty production deploys cannot reuse evidence or skip full verification."
+        echo "   Set NEXUS_DEPLOY_SKIP_VERIFY=0 for a dirty hotfix deploy."
+        exit 1
+        ;;
+    esac
+  else
+    if [ -n "$(git status --porcelain)" ]; then
+      echo "❌ Working tree has uncommitted changes. Refusing to deploy."
+      echo "   Either commit, stash, or set NEXUS_DEPLOY_ALLOW_DIRTY=1 to override."
+      echo "   Override is sometimes correct for hotfixes, but /api/snapshot"
+      echo "   GIT_COMMIT will not reflect the deployed code."
+      exit 1
+    fi
+  fi
+}
+
+restore_deploy_generated_artifacts() {
+  if [ "${NEXUS_DEPLOY_ALLOW_DIRTY:-0}" = "1" ]; then
+    return
+  fi
+
+  local shadow_parity_report="docs/release/eval-evidence/registry-shadow-parity-latest.json"
+  if [ -n "$(git status --porcelain -- "$shadow_parity_report")" ]; then
+    echo "♻️  Restoring deploy-generated shadow parity evidence"
+    git restore -- "$shadow_parity_report"
+  fi
+}
+
+restore_deploy_generated_artifacts
+ensure_clean_deploy_tree
+
+if [ "${NEXUS_DEPLOY_SKIP_VERIFY:-0}" = "1" ] || [ "${NEXUS_DEPLOY_SKIP_VERIFY:-0}" = "true" ] || [ "${NEXUS_DEPLOY_SKIP_VERIFY:-0}" = "yes" ]; then
+  require_emergency_reason "NEXUS_DEPLOY_SKIP_VERIFY"
+fi
+
+if [ -d "$LOCAL_DIR/migrations" ]; then
+  echo "🗃️  Checking migration safety policy..."
+  node scripts/migration-safety-check.mjs --base "${NEXUS_DEPLOY_BASE_REF:-origin/main}" --changed-only
+fi
+
+run_full_verify() {
+  echo "🔍 Running full validation (typecheck + tests)..."
+  # Deploy validation must not refresh tracked observational evidence files.
+  # Those artifacts are intentionally updated by explicit QA/evidence runs, not
+  # by the release transport path after the clean-tree guard has passed.
+  if NEXUS_SKIP_SHADOW_PARITY_WRITE="${NEXUS_SKIP_SHADOW_PARITY_WRITE:-1}" npm run verify 2>&1; then
+    echo ""
+    echo "═══════════════════════════════════════════════"
+    echo "  ✅ VALIDATION PASSED — proceeding with deploy"
+    echo "═══════════════════════════════════════════════"
+    echo ""
+  else
+    echo ""
+    echo "═══════════════════════════════════════════════"
+    echo "  ❌ VALIDATION FAILED — deploy aborted"
+    echo "  Fix type errors or failing tests, then retry."
+    echo "═══════════════════════════════════════════════"
+    exit 1
+  fi
+}
+
+run_typecheck_only() {
+  echo "🔍 Running typecheck-only validation (NEXUS_DEPLOY_SKIP_VERIFY=$SKIP_MODE)..."
+  if npx tsc --noEmit; then
+    echo ""
+    echo "═══════════════════════════════════════════════"
+    echo "  ✅ TYPECHECK PASSED — skipping full vitest"
+    echo "  (pre-push + staging-smoke already validated this SHA)"
+    echo "═══════════════════════════════════════════════"
+    echo ""
+  else
+    echo ""
+    echo "═══════════════════════════════════════════════"
+    echo "  ❌ TYPECHECK FAILED — deploy aborted"
+    echo "═══════════════════════════════════════════════"
+    exit 1
+  fi
+}
+
+case "$SKIP_MODE" in
+  1|true|yes)
+    run_typecheck_only
+    ;;
+  auto-when-staged)
+    if [ "${NEXUS_RELEASE_EVIDENCE_REUSE_ENABLED:-0}" != "1" ]; then
+      echo "🟡 auto-when-staged requested, but evidence reuse is still in shadow."
+      echo "   Set NEXUS_RELEASE_EVIDENCE_REUSE_ENABLED=1 only after 3 clean RCs."
+      if node scripts/release-evidence.mjs validate --json > /tmp/nexus-release-evidence-shadow.json 2>/tmp/nexus-release-evidence-shadow.err; then
+        echo "   Shadow evidence check: MATCH"
+        cat /tmp/nexus-release-evidence-shadow.json
+      else
+        echo "   Shadow evidence check: no match"
+        cat /tmp/nexus-release-evidence-shadow.err 2>/dev/null || true
+        cat /tmp/nexus-release-evidence-shadow.json 2>/dev/null || true
+      fi
+      run_full_verify
+    elif node scripts/release-evidence.mjs validate --json > /tmp/nexus-release-evidence-validate.json 2>/tmp/nexus-release-evidence-validate.err; then
+      echo "🔁 NEXUS_DEPLOY_SKIP_VERIFY=auto-when-staged: release evidence matches SHA + manifest digest — typecheck only"
+      cat /tmp/nexus-release-evidence-validate.json
+      run_typecheck_only
+    else
+      echo "🔁 NEXUS_DEPLOY_SKIP_VERIFY=auto-when-staged: no matching release evidence — full verify"
+      cat /tmp/nexus-release-evidence-validate.err 2>/dev/null || true
+      cat /tmp/nexus-release-evidence-validate.json 2>/dev/null || true
+      run_full_verify
+    fi
+    ;;
+  0|false|no|"")
+    if node scripts/release-evidence.mjs validate --json > /tmp/nexus-release-evidence-shadow.json 2>/tmp/nexus-release-evidence-shadow.err; then
+      echo "🟡 Release evidence shadow check: MATCH (strict deploy still runs full verify during shadow period)"
+      cat /tmp/nexus-release-evidence-shadow.json
+    else
+      echo "🟡 Release evidence shadow check: no reusable evidence yet (expected during shadow period)"
+      cat /tmp/nexus-release-evidence-shadow.err 2>/dev/null || true
+      cat /tmp/nexus-release-evidence-shadow.json 2>/dev/null || true
+    fi
+    run_full_verify
+    ;;
+  *)
+    echo "⚠️  Unrecognized NEXUS_DEPLOY_SKIP_VERIFY='$SKIP_MODE' — defaulting to full verify"
+    run_full_verify
+    ;;
+esac
+
+restore_deploy_generated_artifacts
+ensure_clean_deploy_tree
 
 # ── 1. Build TypeScript locally ──────────────────────
 echo "📦 Building TypeScript..."
 npm run build 2>/dev/null && echo "   ✅ Build complete" || { echo "   ❌ Build failed — aborting"; exit 1; }
+
+# Dry-run early-exit: everything below this line touches the server, the
+# git tree, or PM2. Stop here for the rehearsal mode.
+if [ "$DRY_RUN" = "1" ]; then
+  echo ""
+  echo "═══════════════════════════════════════════════"
+  echo "  🟡 DRY RUN — would now do:"
+  echo "       1a) ssh validate prod .env"
+  echo "       1b) npm version patch + git commit + git push"
+  echo "       2)  ssh \$SERVER pm2 stop nexus-hub + content-engine"
+  echo "       2b) ssh \$SERVER tar backup of dist + bot.db"
+  echo "       3b) ssh \$SERVER drain port 8200"
+  echo "       4)  rsync to \$SERVER:$REMOTE_DIR"
+  echo "       5)  ssh \$SERVER npm ci + pip install"
+  echo "       5a) ssh \$SERVER owner-bootstrap-preflight --strict"
+  echo "       5b) ssh \$SERVER rebuild native modules"
+  echo "       6)  ssh \$SERVER mkdir protected dirs"
+  echo "       7)  ssh \$SERVER pm2 start"
+  echo "       8)  health checks (curl + pm2 jlist)"
+  echo "       9)  Notion log (if NOTION_TOKEN set)"
+  echo ""
+  echo "  ✅ Validation/build phase passed; no server mutations performed."
+  echo "  Re-run without --dry-run (or unset NEXUS_DEPLOY_DRY_RUN) to deploy."
+  echo "═══════════════════════════════════════════════"
+  exit 0
+fi
 
 # ── 1a. Validate production .env before version bump/deploy ─────────
 # The Python content-engine calls the TS AI proxy for script synthesis.
@@ -64,11 +281,16 @@ ENV_CHECK=$(ssh "$SERVER" "
     exit 0
   fi
   MISSING=''
+  WARNINGS=''
   for KEY in DATABASE_PATH CONTENT_ENGINE_PORT PORTAL_TOKEN OAUTH_ENCRYPTION_KEY INTERNAL_API_SECRET AI_CALL_TIMEOUT_MS; do
     if ! grep -qE \"^\${KEY}=.+\" $REMOTE_DIR/.env; then
       MISSING=\"\$MISSING \$KEY\"
     fi
   done
+  NODE_ENV_VALUE=\$(grep -oE '^NODE_ENV=.+' $REMOTE_DIR/.env 2>/dev/null | tail -1 | cut -d= -f2- || true)
+  if [ \"\$NODE_ENV_VALUE\" = \"production\" ] && ! grep -qE '^SENTRY_DSN=.+' $REMOTE_DIR/.env; then
+    WARNINGS=\"\$WARNINGS SENTRY_DSN\"
+  fi
   if ! grep -qE '^NEXUS_BACKEND_BASE_URL=.+' $REMOTE_DIR/.env && ! grep -qE '^NEXUS_BACKEND_PORT=.+' $REMOTE_DIR/.env; then
     MISSING=\"\$MISSING NEXUS_BACKEND_BASE_URL_OR_NEXUS_BACKEND_PORT\"
   fi
@@ -77,6 +299,8 @@ ENV_CHECK=$(ssh "$SERVER" "
   fi
   if [ -n \"\$MISSING\" ]; then
     echo \"MISSING_KEYS:\$MISSING\"
+  elif [ -n \"\$WARNINGS\" ]; then
+    echo \"WARNING_KEYS:\$WARNINGS\"
   else
     echo OK
   fi
@@ -93,6 +317,10 @@ case "$ENV_CHECK" in
     ;;
   OK)
     echo "   ✅ All required production keys present"
+    ;;
+  WARNING_KEYS:*)
+    echo "   ⚠️  Production .env is missing recommended keys:${ENV_CHECK#WARNING_KEYS:}"
+    echo "      Sentry is warning-only for this pass; add SENTRY_DSN before making it a hard deploy gate."
     ;;
   *)
     echo "   ⚠️  Unexpected .env validator output: $ENV_CHECK — proceeding cautiously"
@@ -113,12 +341,19 @@ git push origin "$(git branch --show-current)" 2>/dev/null || {
 COMMIT=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
 DEPLOY_STATUS="✅ Success"
 
+# Last local provenance guard before production is stopped. Any generated
+# artifact drift or build/version side effect must abort here while prod is
+# still online; after this point the script must continue through rsync/start.
+restore_deploy_generated_artifacts
+ensure_clean_deploy_tree
+
 # ── 2. Stop services on server ───────────────────────
 # (Moved BEFORE backup so the SQLite WAL is checkpointed and bot.db is in
 # a consistent state when we copy it. Audit QW-10 found that the previous
 # backup ordering produced backups WITHOUT user data — see below.)
 echo ""
 echo "🛑 Stopping services on server..."
+printf '%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$DEPLOY_MUTATION_MARKER"
 # ── Handle PM2 process rename (one-time migration) ──
 ssh "$SERVER" "export PATH=\$PATH:$(dirname $PM2) && $PM2 delete telegram-hub-bot 2>/dev/null || true"
 ssh "$SERVER" "export PATH=\$PATH:$(dirname $PM2) && $PM2 stop nexus-hub 2>/dev/null; $PM2 stop content-engine 2>/dev/null; echo '   Stopped.'"
@@ -190,11 +425,15 @@ if command -v rsync &>/dev/null; then
     --exclude='*.db' \
     --exclude='data/' \
     --exclude='logs/' \
+    --exclude='node_modules' \
     --exclude='node_modules/' \
     --exclude='content-engine/.venv/' \
     --exclude='content-engine/data/' \
     --exclude='content-engine/__pycache__/' \
     --exclude='**/__pycache__/' \
+    --exclude='.claude' \
+    --exclude='.claude/' \
+    --exclude='.claude/**' \
     --exclude='.claude/worktrees/' \
     --exclude='.claude/worktrees/**' \
     --exclude='.codex/' \
@@ -272,7 +511,13 @@ sleep 10
 HEALTH_OK=true
 
 # Content engine
-ssh "$SERVER" "curl -sf http://localhost:8100/health 2>/dev/null && echo ' ✅ Content engine OK' || echo ' ⚠️  Content engine not responding'"
+if ssh "$SERVER" "curl -sf http://localhost:8100/health 2>/dev/null" >/dev/null; then
+  echo " ✅ Content engine OK"
+else
+  echo " ❌ Content engine not responding"
+  DEPLOY_STATUS="❌ Failed"
+  HEALTH_OK=false
+fi
 
 # Portal — production may require signed portal sessions instead of legacy
 # PORTAL_TOKEN. Use the same auth strategy as staging smoke/deploy.
@@ -287,13 +532,31 @@ if [ "$PORTAL_REQUIRE_SESSION_AUTH" = "true" ]; then
     node dist/tools/portal-session-token.js --actor deploy-production@nexushub.me --scope admin --ttl-ms 600000 --json \
       | node -e \"let b=''; process.stdin.on('data', c => b += c); process.stdin.on('end', () => { const j = JSON.parse(b); process.stdout.write(j.token || ''); });\"
   " 2>/dev/null || true)
-  ssh "$SERVER" "curl -sf -H 'x-portal-session: ${PROD_SESSION:-x}' http://localhost:8200/api/snapshot 2>/dev/null | head -c 100 && echo ' ✅ Status portal OK' || echo ' ⚠️  Status portal not responding'"
+  if ssh "$SERVER" "curl -sf -H 'x-portal-session: ${PROD_SESSION:-x}' http://localhost:8200/api/snapshot 2>/dev/null | head -c 100" >/dev/null; then
+    echo " ✅ Status portal OK"
+  else
+    echo " ❌ Status portal not responding"
+    DEPLOY_STATUS="❌ Failed"
+    HEALTH_OK=false
+  fi
 else
   PORTAL_TOKEN=$(ssh "$SERVER" "grep -oP '(?<=^PORTAL_TOKEN=).+' $REMOTE_DIR/.env 2>/dev/null" || true)
   if [ -n "$PORTAL_TOKEN" ]; then
-    ssh "$SERVER" "curl -sf -H 'Authorization: Bearer $PORTAL_TOKEN' http://localhost:8200/api/snapshot 2>/dev/null | head -c 100 && echo ' ✅ Status portal OK' || echo ' ⚠️  Status portal not responding'"
+    if ssh "$SERVER" "curl -sf -H 'Authorization: Bearer $PORTAL_TOKEN' http://localhost:8200/api/snapshot 2>/dev/null | head -c 100" >/dev/null; then
+      echo " ✅ Status portal OK"
+    else
+      echo " ❌ Status portal not responding"
+      DEPLOY_STATUS="❌ Failed"
+      HEALTH_OK=false
+    fi
   else
-    ssh "$SERVER" "curl -sf http://localhost:8200/api/snapshot 2>/dev/null | head -c 100 && echo ' ✅ Status portal OK' || echo ' ⚠️  Status portal not responding'"
+    if ssh "$SERVER" "curl -sf http://localhost:8200/api/snapshot 2>/dev/null | head -c 100" >/dev/null; then
+      echo " ✅ Status portal OK"
+    else
+      echo " ❌ Status portal not responding"
+      DEPLOY_STATUS="❌ Failed"
+      HEALTH_OK=false
+    fi
   fi
 fi
 
@@ -354,3 +617,9 @@ else
   echo "  ⚠️  Deploy completed with warnings. Check services."
 fi
 echo "═══════════════════════════════════════════════"
+
+if [ "$HEALTH_OK" != true ]; then
+  exit 1
+fi
+
+rm -f "$DEPLOY_MUTATION_MARKER"
