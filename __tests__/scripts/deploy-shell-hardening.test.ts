@@ -250,7 +250,7 @@ case "$url" in
 esac
 `,
     );
-    writeFileSync(join(remoteDir, '.env'), `DATABASE_PATH=${join(dataDir, 'bot.db')}\n`, {
+    writeFileSync(join(remoteDir, '.env'), 'DATABASE_PATH="./data/bot.db"\n', {
       mode: 0o600,
     });
     writeFileSync(join(dataDir, 'bot.db'), '');

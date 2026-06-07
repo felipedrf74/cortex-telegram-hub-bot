@@ -95,6 +95,15 @@ PM2_SAMPLE_DELAY_S="$9"
 PM2='/home/dominguez/.npm-global/bin/pm2'
 export TARGET PM2_APP PM2_CONTENT_APP MIN_UPTIME_MS MAX_PM2_RESTARTS
 
+strip_env_quotes() {
+  local value="$1"
+  case "$value" in
+    \"*\") value="${value#\"}"; value="${value%\"}" ;;
+    \'*\') value="${value#\'}"; value="${value%\'}" ;;
+  esac
+  printf '%s' "$value"
+}
+
 cd "$REMOTE_DIR"
 echo '   Checking .env mode...'
 if [ ! -f .env ]; then
@@ -117,6 +126,11 @@ echo "   ✅ .env owner $OWNER"
 echo '   Checking SQLite integrity...'
 DB_PATH=$(grep -oE '^DATABASE_PATH=.+' .env 2>/dev/null | tail -1 | cut -d= -f2- || true)
 DB_PATH=${DB_PATH:-$REMOTE_DIR/data/bot.db}
+DB_PATH="$(strip_env_quotes "$DB_PATH")"
+case "$DB_PATH" in
+  /*) ;;
+  *) DB_PATH="$REMOTE_DIR/$DB_PATH" ;;
+esac
 if [ ! -f "$DB_PATH" ]; then
   echo "   ❌ DB missing at $DB_PATH"
   exit 1
@@ -161,6 +175,7 @@ printf '%s' "$HEALTH" | /usr/bin/node -e "
 
 echo '   Checking content-engine readiness...'
 CONTENT_SECRET=$(grep -oE '^INTERNAL_API_SECRET=.+' .env 2>/dev/null | tail -1 | cut -d= -f2- || true)
+CONTENT_SECRET="$(strip_env_quotes "$CONTENT_SECRET")"
 case "$TARGET" in
   prod|production)
     if [ -z "$CONTENT_SECRET" ]; then
