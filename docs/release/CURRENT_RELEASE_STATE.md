@@ -30,10 +30,11 @@ older production versions.
 - Release transport has been hardened so version preparation happens before
   staging via `scripts/release-prep.sh`; `deploy.sh` must not create a new
   version bump after staging evidence exists.
-- Reusable evidence now requires signed `nexus.release-evidence.v2` JSON and a
-  post-build manifest recheck before rsync. `auto-when-staged` remains
-  default-off until the signed-evidence shadow period and rollback-drill
-  requirements are satisfied.
+- Reusable evidence now requires signed `nexus.release-evidence.v2` JSON, three
+  distinct signed RC run IDs, per-suite test-count floors, and a post-build
+  manifest recheck before rsync. `auto-when-staged` remains default-off until
+  the signed-evidence shadow period and rollback-drill requirements are
+  satisfied.
 - The public release-evidence verifier is committed under
   `docs/release/evidence/`; the matching private signing key is owner-managed
   and must be installed as a GitHub Actions secret before CI evidence can pass.

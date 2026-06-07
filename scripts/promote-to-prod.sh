@@ -280,8 +280,6 @@ echo "📦 Promoting to production via deploy.sh..."
 echo ""
 set +e
 NEXUS_DEPLOY_MUTATION_MARKER="$DEPLOY_MUTATION_MARKER" \
-NEXUS_STAGING_PROD_MANIFEST_PARITY_OK=1 \
-NEXUS_STAGING_MANIFEST_DIGEST="$STAGING_MANIFEST_DIGEST" \
 "$LOCAL_DIR/scripts/deploy.sh"
 DEPLOY_EXIT=$?
 set -e

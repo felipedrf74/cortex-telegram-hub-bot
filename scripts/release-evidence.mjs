@@ -154,6 +154,29 @@ function countValue(name) {
   return Number(process.env[envKey] || 0);
 }
 
+function numericEnv(name, fallback) {
+  const raw = process.env[name];
+  if (raw === undefined || raw === '') return fallback;
+  const value = Number(raw);
+  return Number.isFinite(value) ? value : fallback;
+}
+
+function minimumTestCount(name) {
+  const upper = name.toUpperCase();
+  const explicit = numericEnv(`NEXUS_RELEASE_${upper}_MIN_COUNT`, null);
+  if (Number.isFinite(explicit) && explicit > 0) {
+    return Math.floor(explicit);
+  }
+
+  const defaultBaseline = name === 'vitest' ? 10000 : 7;
+  const baseline = Math.max(1, numericEnv(`NEXUS_RELEASE_${upper}_BASELINE_COUNT`, defaultBaseline));
+  const tolerancePct = Math.min(
+    100,
+    Math.max(0, numericEnv(`NEXUS_RELEASE_${upper}_COUNT_TOLERANCE_PCT`, numericEnv('NEXUS_RELEASE_TEST_COUNT_TOLERANCE_PCT', 10))),
+  );
+  return Math.max(1, Math.floor(baseline * (1 - tolerancePct / 100)));
+}
+
 function buildPayload() {
   const manifest = currentManifest();
   const currentSha = gitValue(['rev-parse', 'HEAD']);
@@ -174,6 +197,13 @@ function buildPayload() {
       sha: currentSha,
       shortSha: gitValue(['rev-parse', '--short', 'HEAD']),
       branch,
+    },
+    ci: {
+      provider: process.env.NEXUS_RELEASE_CI_PROVIDER || (process.env.GITHUB_ACTIONS === 'true' ? 'github-actions' : 'local'),
+      workflow: process.env.GITHUB_WORKFLOW || null,
+      runId: process.env.NEXUS_RELEASE_RUN_ID || process.env.GITHUB_RUN_ID || null,
+      runAttempt: process.env.NEXUS_RELEASE_RUN_ATTEMPT || process.env.GITHUB_RUN_ATTEMPT || null,
+      job: process.env.GITHUB_JOB || null,
     },
     ios: {
       includesIos,
@@ -331,11 +361,16 @@ function validate() {
     }
   }
 
-  if (!Number.isFinite(Number(payload?.testCounts?.vitest)) || Number(payload?.testCounts?.vitest) <= 0) {
-    reasons.push(`test_count_invalid:vitest:${payload?.testCounts?.vitest ?? 'missing'}`);
-  }
-  if (!Number.isFinite(Number(payload?.testCounts?.pytest)) || Number(payload?.testCounts?.pytest) <= 0) {
-    reasons.push(`test_count_invalid:pytest:${payload?.testCounts?.pytest ?? 'missing'}`);
+  for (const suiteName of ['vitest', 'pytest']) {
+    const count = Number(payload?.testCounts?.[suiteName]);
+    if (!Number.isFinite(count) || count <= 0) {
+      reasons.push(`test_count_invalid:${suiteName}:${payload?.testCounts?.[suiteName] ?? 'missing'}`);
+      continue;
+    }
+    const floor = minimumTestCount(suiteName);
+    if (count < floor) {
+      reasons.push(`test_count_below_floor:${suiteName}:${count}<${floor}`);
+    }
   }
 
   emit({
@@ -353,8 +388,15 @@ function validate() {
       manifestDigest: gotDigest,
       verdict: payload.verdict || null,
       generatedAt,
+      runId: payload?.ci?.runId || null,
+      runAttempt: payload?.ci?.runAttempt || null,
+      ci: payload.ci || {},
       commands: payload.commands || {},
       testCounts: payload.testCounts || {},
+      testCountFloors: {
+        vitest: minimumTestCount('vitest'),
+        pytest: minimumTestCount('pytest'),
+      },
     },
   }, reasons.length === 0 ? 0 : 1);
 }

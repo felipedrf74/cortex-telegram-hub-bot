@@ -26,11 +26,12 @@ function writeExecutable(path: string, contents: string) {
   chmodSync(path, 0o755);
 }
 
-function writeInjectionDetectingSsh(binDir: string) {
+function writeInjectionDetectingSsh(binDir: string, logPath?: string) {
   writeExecutable(
     join(binDir, 'ssh'),
     `#!/usr/bin/env bash
 set -euo pipefail
+${logPath ? `printf 'ssh called\\n' >> "${logPath}"\n` : ''}
 shift
 if [ "$#" -eq 1 ]; then
   bash -c "$1"
@@ -73,31 +74,28 @@ exec "$@"
 }
 
 describe('deploy shell hardening', () => {
-  it('passes readiness arguments through ssh without command injection', () => {
+  it.each([
+    ['command substitution', '/tmp/x$(touch __PWN__)'],
+    ['backtick substitution', '/tmp/x`touch __PWN__`'],
+    ['semicolon injection', '/tmp/x;touch __PWN__'],
+  ])('rejects unsafe readiness remote-dir before ssh: %s', (_label, maliciousTemplate) => {
     const root = mkdtempSync(join(tmpdir(), 'readiness-injection-'));
     const binDir = join(root, 'bin');
+    const sshLog = join(root, 'ssh.log');
     const pwn = join(root, 'PWN');
+    const maliciousRemoteDir = maliciousTemplate.replace('__PWN__', pwn);
     mkdirSync(binDir);
-    writeInjectionDetectingSsh(binDir);
+    writeInjectionDetectingSsh(binDir, sshLog);
     try {
-      const maliciousRemoteDir = `${root}/remote'; touch '${pwn}'; #`;
-      execFileSync(
+      const result = execFileSync(
         'bash',
         [
-          READINESS,
-          '--target',
-          'prod',
-          '--server',
-          'fake-server',
-          '--remote-dir',
-          maliciousRemoteDir,
-          '--portal-port',
-          '8200',
-          '--content-port',
-          '8100',
+          '-c',
+          `set +e; "${READINESS}" --target prod --server fake-server --remote-dir '${maliciousRemoteDir}' --portal-port 8200 --content-port 8100 >/tmp/readiness.out 2>/tmp/readiness.err; printf '%s' "$?"`,
         ],
         {
           cwd: ROOT,
+          encoding: 'utf8',
           env: {
             ...process.env,
             PATH: prependPath(binDir),
@@ -105,36 +103,41 @@ describe('deploy shell hardening', () => {
           },
         },
       );
+      expect(result).toBe('2');
+      expect(() => readFileSync(sshLog, 'utf8')).toThrow();
       expect(() => readFileSync(pwn, 'utf8')).toThrow();
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
   });
 
-  it('passes env parity directories through ssh without command injection', () => {
+  it.each([
+    ['command substitution', '/tmp/staging$(touch __PWN__)'],
+    ['backtick substitution', '/tmp/staging`touch __PWN__`'],
+    ['semicolon injection', '/tmp/staging;touch __PWN__'],
+  ])('rejects unsafe env parity directory before ssh: %s', (_label, maliciousTemplate) => {
     const root = mkdtempSync(join(tmpdir(), 'env-parity-injection-'));
     const binDir = join(root, 'bin');
+    const sshLog = join(root, 'ssh.log');
     const pwn = join(root, 'PWN');
+    const maliciousStagingDir = maliciousTemplate.replace('__PWN__', pwn);
     mkdirSync(binDir);
-    writeInjectionDetectingSsh(binDir);
+    writeInjectionDetectingSsh(binDir, sshLog);
     try {
-      const maliciousStagingDir = `${root}/staging'; touch '${pwn}'; #`;
-      execFileSync(
+      const result = execFileSync(
         'bash',
         [
-          ENV_PARITY,
-          '--server',
-          'fake-server',
-          '--staging-dir',
-          maliciousStagingDir,
-          '--prod-dir',
-          join(root, 'prod'),
+          '-c',
+          `set +e; "${ENV_PARITY}" --server fake-server --staging-dir '${maliciousStagingDir}' --prod-dir /tmp/prod >/tmp/env-parity.out 2>/tmp/env-parity.err; printf '%s' "$?"`,
         ],
         {
           cwd: ROOT,
+          encoding: 'utf8',
           env: { ...process.env, PATH: prependPath(binDir) },
         },
       );
+      expect(result).toBe('2');
+      expect(() => readFileSync(sshLog, 'utf8')).toThrow();
       expect(() => readFileSync(pwn, 'utf8')).toThrow();
     } finally {
       rmSync(root, { recursive: true, force: true });

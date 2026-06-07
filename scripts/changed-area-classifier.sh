@@ -586,6 +586,15 @@ if $HAS_NON_DOC; then
   fi
 fi
 
+if $HAS_RUNTIME_INFRA; then
+  VITEST_MODE="full"
+  VITEST_GLOBS=()
+fi
+
+if $HAS_MIGRATION && [ "$VITEST_MODE" = "skip" ]; then
+  VITEST_MODE="changed-only"
+fi
+
 # Engineering-excellence enrichment (2026-05-04, ENG-EXC-O3): when only
 # prompts/*.md changed, the diff is treated as docs-only and the entire
 # vitest block above is skipped — even though `prompt-injection-defense`

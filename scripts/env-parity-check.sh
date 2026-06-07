@@ -20,6 +20,18 @@ while [ $# -gt 0 ]; do
   esac
 done
 
+validate_remote_dir_arg() {
+  local label="$1"
+  local value="$2"
+  if ! [[ "$value" =~ ^[A-Za-z0-9_./-]+$ ]]; then
+    echo "Invalid $label: only A-Z a-z 0-9 _ . / - are allowed" >&2
+    exit 2
+  fi
+}
+
+validate_remote_dir_arg STAGING_DIR "$STAGING_DIR"
+validate_remote_dir_arg PROD_DIR "$PROD_DIR"
+
 ssh "$SERVER" bash -s -- "$STAGING_DIR" "$PROD_DIR" <<'REMOTE'
 set -euo pipefail
 

@@ -32,6 +32,15 @@ while [ $# -gt 0 ]; do
   esac
 done
 
+validate_remote_dir_arg() {
+  local label="$1"
+  local value="$2"
+  if ! [[ "$value" =~ ^[A-Za-z0-9_./-]+$ ]]; then
+    echo "Invalid $label: only A-Z a-z 0-9 _ . / - are allowed" >&2
+    exit 2
+  fi
+}
+
 case "$TARGET" in
   prod|production)
     REMOTE_DIR="${REMOTE_DIR:-/home/dominguez/telegram-hub-bot}"
@@ -49,6 +58,8 @@ case "$TARGET" in
     ;;
   *) echo "Unknown target: $TARGET" >&2; exit 64 ;;
 esac
+
+validate_remote_dir_arg REMOTE_DIR "$REMOTE_DIR"
 
 for port_name in PORTAL_PORT CONTENT_PORT; do
   port_value="${!port_name}"

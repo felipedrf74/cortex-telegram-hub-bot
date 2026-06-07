@@ -1,4 +1,4 @@
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { describe, expect, it } from 'vitest';
 
 describe('risk-gate dry run', () => {
@@ -55,5 +55,27 @@ describe('risk-gate dry run', () => {
 
     expect(raw).toContain('-m pytest');
     expect(raw).toContain('/content-engine/tests');
+  });
+
+  it('escalates to full Vitest when the classifier fails', () => {
+    const result = spawnSync(
+      'bash',
+      [
+        'scripts/risk-gate.sh',
+        '--dry-run',
+        '--skip-typecheck',
+        '--skip-python',
+        '--skip-migrations',
+        '--base',
+        'definitely-missing-release-base',
+      ],
+      { encoding: 'utf8' },
+    );
+
+    expect(result.status).toBe(0);
+    expect(result.stderr).toContain('classifier failed');
+    expect(result.stdout).toContain('vitest mode: full');
+    expect(result.stdout).toContain('npx vitest run --reporter=dot');
+    expect(result.stdout).not.toContain('--changed');
   });
 });

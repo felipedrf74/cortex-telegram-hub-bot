@@ -542,6 +542,15 @@ describe('changed-area-classifier CI/CD optimization routing', () => {
     expect(result.flags.migration).toBe(true);
     expect(result.flags.irreversibleMigration).toBe(true);
     expect(result.cannotSkip).toContain('irreversible-migration-manual-approval');
+    expect(result.vitest.mode).toBe('changed-only');
+  });
+
+  it('classifies runtime infrastructure changes as full Vitest', () => {
+    const result = classify('Dockerfile.release-test,.env.example');
+
+    expect(result.flags.runtimeInfra).toBe(true);
+    expect(result.flags.deployConfig).toBe(true);
+    expect(result.vitest.mode).toBe('full');
   });
 
   it('normalizes workspace-prefixed backend and migration paths', () => {
@@ -574,8 +583,7 @@ describe('changed-area-classifier CI/CD optimization routing', () => {
     expect(result.flags.runtimeInfra).toBe(true);
     expect(result.flags.deployConfig).toBe(true);
     expect(result.flags.docsOnly).toBe(false);
-    expect(result.vitest.mode).toBe('focused');
-    expect(result.vitest.globs).toContain('__tests__/scripts/*.test.ts');
+    expect(result.vitest.mode).toBe('full');
     expect(result.stagingSmoke.generic).toBe(true);
   });
 });

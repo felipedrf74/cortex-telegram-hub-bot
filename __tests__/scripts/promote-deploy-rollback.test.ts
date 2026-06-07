@@ -59,13 +59,15 @@ describe('deploy/promote rollback mutation marker', () => {
     expect(deploy).toContain('NEXUS_RELEASE_MIN_CLEAN_RCS:-3');
     expect(deploy).toContain('NEXUS_RELEASE_CLEAN_RC_EVIDENCE_DIR:-$LOCAL_DIR/.local/release/evidence');
     expect(deploy).toContain('release-evidence-"$expected_sha"-*.json');
+    expect(deploy).toContain('release_evidence_run_key()');
+    expect(deploy).toContain('Duplicate signed RC run ID ignored');
     expect(deploy).toContain('--evidence "$RELEASE_EVIDENCE_PATH"');
     expect(deploy).toContain('check_current_rollback_drill()');
-    expect(deploy).toContain('check_staging_manifest_parity()');
-    expect(deploy).toContain('if check_clean_rc_history && check_current_rollback_drill && check_staging_manifest_parity; then');
+    expect(deploy).not.toContain('check_staging_manifest_parity()');
+    expect(deploy).toContain('if check_clean_rc_history && check_current_rollback_drill; then');
     expect(deploy).toContain('run_typecheck_only');
     expect(deploy).toContain('REUSED_RELEASE_EVIDENCE=1');
-    expect(deploy).toContain('POST_BUILD_MANIFEST_DIGEST" != "${NEXUS_STAGING_MANIFEST_DIGEST:-}"');
+    expect(deploy).toContain('release_evidence_manifest_digest /tmp/nexus-release-evidence-validate.json');
     expect(deploy).toContain('Evidence reuse preconditions are not complete — full verify');
     expect(deploy).toContain('run_full_verify');
     expect(deploy).toContain('if [ "$REUSED_RELEASE_EVIDENCE" = "1" ]; then');
@@ -76,8 +78,8 @@ describe('deploy/promote rollback mutation marker', () => {
 
     expect(promote).toMatch(/DEPLOY_MUTATION_MARKER=/);
     expect(promote).toContain('NEXUS_DEPLOY_MUTATION_MARKER="$DEPLOY_MUTATION_MARKER" \\');
-    expect(promote).toContain('NEXUS_STAGING_PROD_MANIFEST_PARITY_OK=1 \\');
-    expect(promote).toContain('NEXUS_STAGING_MANIFEST_DIGEST="$STAGING_MANIFEST_DIGEST" \\');
+    expect(promote).not.toContain('NEXUS_STAGING_PROD_MANIFEST_PARITY_OK=1');
+    expect(promote).not.toContain('NEXUS_STAGING_MANIFEST_DIGEST="$STAGING_MANIFEST_DIGEST"');
     expect(promote).toContain('"$LOCAL_DIR/scripts/deploy.sh"');
     expect(promote).toMatch(/\[ -f "\$DEPLOY_MUTATION_MARKER" \]/);
     expect(promote).toMatch(/Deploy failed before production mutation\. Auto rollback skipped\./);

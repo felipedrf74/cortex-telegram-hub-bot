@@ -118,8 +118,10 @@ describe('release-evidence', () => {
         NEXUS_RELEASE_MIGRATIONS_RESULT: 'passed',
         NEXUS_RELEASE_CANNOT_SKIP_DASHBOARD_RESULT: 'passed',
         NEXUS_RELEASE_SMOKE_RESULT: 'passed',
-        NEXUS_RELEASE_VITEST_TEST_COUNT: '42',
-        NEXUS_RELEASE_PYTEST_TEST_COUNT: '5',
+        NEXUS_RELEASE_VITEST_TEST_COUNT: '12000',
+        NEXUS_RELEASE_PYTEST_TEST_COUNT: '7',
+        NEXUS_RELEASE_RUN_ID: '12345',
+        NEXUS_RELEASE_RUN_ATTEMPT: '1',
       },
     });
 
@@ -128,7 +130,10 @@ describe('release-evidence', () => {
       [evidenceScript, 'validate', '--root', tmp, '--evidence', evidencePath, '--public-key', publicKeyPath, '--json'],
       { encoding: 'utf8' },
     );
-    expect(JSON.parse(ok).ok).toBe(true);
+    const okPayload = JSON.parse(ok);
+    expect(okPayload.ok).toBe(true);
+    expect(okPayload.evidence.runId).toBe('12345');
+    expect(okPayload.evidence.runAttempt).toBe('1');
 
     fs.appendFileSync(path.join(tmp, 'prompts/content.md'), 'changed\n');
     const failed = spawnSync(
@@ -140,6 +145,39 @@ describe('release-evidence', () => {
     expect(JSON.parse(failed.stdout).reasons).toEqual(
       expect.arrayContaining([expect.stringContaining('manifest_digest_mismatch')]),
     );
+  });
+
+  it('rejects evidence with nonzero counts below suite floors', () => {
+    const evidencePath = path.join(tmp, 'docs/release/evidence/latest-release-evidence.json');
+    execFileSync('node', [evidenceScript, 'write', '--root', tmp, '--evidence', evidencePath], {
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        NEXUS_RELEASE_EVIDENCE_PRIVATE_KEY_PATH: privateKeyPath,
+        NEXUS_RELEASE_TYPECHECK_RESULT: 'passed',
+        NEXUS_RELEASE_BUILD_RESULT: 'passed',
+        NEXUS_RELEASE_VITEST_RESULT: 'passed',
+        NEXUS_RELEASE_PYTEST_RESULT: 'passed',
+        NEXUS_RELEASE_SCIENCE_POLICY_RESULT: 'passed',
+        NEXUS_RELEASE_MIGRATIONS_RESULT: 'passed',
+        NEXUS_RELEASE_CANNOT_SKIP_DASHBOARD_RESULT: 'passed',
+        NEXUS_RELEASE_SMOKE_RESULT: 'passed',
+        NEXUS_RELEASE_VITEST_TEST_COUNT: '8999',
+        NEXUS_RELEASE_PYTEST_TEST_COUNT: '5',
+      },
+    });
+
+    const failed = spawnSync(
+      'node',
+      [evidenceScript, 'validate', '--root', tmp, '--evidence', evidencePath, '--public-key', publicKeyPath, '--json'],
+      { encoding: 'utf8' },
+    );
+
+    expect(failed.status).toBe(1);
+    expect(JSON.parse(failed.stdout).reasons).toEqual(expect.arrayContaining([
+      'test_count_below_floor:vitest:8999<9000',
+      'test_count_below_floor:pytest:5<6',
+    ]));
   });
 
   it('rejects unsigned evidence, short-SHA evidence, and zero test counts', () => {
@@ -157,8 +195,8 @@ describe('release-evidence', () => {
         NEXUS_RELEASE_MIGRATIONS_RESULT: 'passed',
         NEXUS_RELEASE_CANNOT_SKIP_DASHBOARD_RESULT: 'passed',
         NEXUS_RELEASE_SMOKE_RESULT: 'passed',
-        NEXUS_RELEASE_VITEST_TEST_COUNT: '42',
-        NEXUS_RELEASE_PYTEST_TEST_COUNT: '5',
+        NEXUS_RELEASE_VITEST_TEST_COUNT: '12000',
+        NEXUS_RELEASE_PYTEST_TEST_COUNT: '7',
       },
     });
     const evidence = JSON.parse(fs.readFileSync(evidencePath, 'utf8'));
@@ -234,8 +272,8 @@ describe('release-evidence', () => {
         NEXUS_RELEASE_MIGRATIONS_RESULT: 'passed',
         NEXUS_RELEASE_CANNOT_SKIP_DASHBOARD_RESULT: 'passed',
         NEXUS_RELEASE_SMOKE_RESULT: 'passed',
-        NEXUS_RELEASE_VITEST_TEST_COUNT: '42',
-        NEXUS_RELEASE_PYTEST_TEST_COUNT: '5',
+        NEXUS_RELEASE_VITEST_TEST_COUNT: '12000',
+        NEXUS_RELEASE_PYTEST_TEST_COUNT: '7',
       },
     });
 
@@ -263,8 +301,8 @@ describe('release-evidence', () => {
         NEXUS_RELEASE_SCIENCE_POLICY_RESULT: 'passed',
         NEXUS_RELEASE_MIGRATIONS_RESULT: 'passed',
         NEXUS_RELEASE_CANNOT_SKIP_DASHBOARD_RESULT: 'passed',
-        NEXUS_RELEASE_VITEST_TEST_COUNT: '42',
-        NEXUS_RELEASE_PYTEST_TEST_COUNT: '5',
+        NEXUS_RELEASE_VITEST_TEST_COUNT: '12000',
+        NEXUS_RELEASE_PYTEST_TEST_COUNT: '7',
       },
     });
 
@@ -293,8 +331,8 @@ describe('release-evidence', () => {
         NEXUS_RELEASE_MIGRATIONS_RESULT: 'passed',
         NEXUS_RELEASE_CANNOT_SKIP_DASHBOARD_RESULT: 'passed',
         NEXUS_RELEASE_SMOKE_RESULT: 'passed',
-        NEXUS_RELEASE_VITEST_TEST_COUNT: '42',
-        NEXUS_RELEASE_PYTEST_TEST_COUNT: '5',
+        NEXUS_RELEASE_VITEST_TEST_COUNT: '12000',
+        NEXUS_RELEASE_PYTEST_TEST_COUNT: '7',
       },
     });
 
@@ -347,8 +385,8 @@ describe('release-evidence', () => {
         NEXUS_RELEASE_MIGRATIONS_RESULT: 'passed',
         NEXUS_RELEASE_CANNOT_SKIP_DASHBOARD_RESULT: 'passed',
         NEXUS_RELEASE_SMOKE_RESULT: 'passed',
-        NEXUS_RELEASE_VITEST_TEST_COUNT: '42',
-        NEXUS_RELEASE_PYTEST_TEST_COUNT: '5',
+        NEXUS_RELEASE_VITEST_TEST_COUNT: '12000',
+        NEXUS_RELEASE_PYTEST_TEST_COUNT: '7',
       },
     });
 
@@ -386,8 +424,8 @@ describe('release-evidence', () => {
         NEXUS_RELEASE_MIGRATIONS_RESULT: 'passed',
         NEXUS_RELEASE_CANNOT_SKIP_DASHBOARD_RESULT: 'passed',
         NEXUS_RELEASE_SMOKE_RESULT: 'passed',
-        NEXUS_RELEASE_VITEST_TEST_COUNT: '42',
-        NEXUS_RELEASE_PYTEST_TEST_COUNT: '5',
+        NEXUS_RELEASE_VITEST_TEST_COUNT: '12000',
+        NEXUS_RELEASE_PYTEST_TEST_COUNT: '7',
       },
     });
     fs.renameSync(path.join(tmp, '.git'), path.join(tmp, '.git-hidden'));

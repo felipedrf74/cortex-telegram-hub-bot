@@ -2,11 +2,11 @@
 
 Status: canonical
 Owner: release lead (Felipe)
-Last verified: 2026-06-06
+Last verified: 2026-06-07
 
 Release evidence is reusable only when it is cryptographically bound to the
 exact release artifact. `auto-when-staged` stays shadow/default-off until three
-clean signed RCs and a current rollback drill exist.
+distinct clean signed RC runs and a current rollback drill exist.
 
 ## Evidence Identity
 
@@ -15,10 +15,11 @@ The signed payload uses schema `nexus.release-evidence-payload.v2` and keys on:
 - full engine git SHA, never a prefix
 - optional iOS SHA plus `includesIos`
 - optional iOS build hash when the release includes iOS
+- CI provider, `runId`, and `runAttempt`
 - release artifact manifest digest from `scripts/release-artifact-manifest.mjs`
-- command results and test counts for typecheck, build, full sharded Vitest,
-  full pytest, science-policy, migration rehearsal, sandbox smoke, and the
-  cannot-skip dashboard
+- command results and per-suite test counts for typecheck, build, full sharded
+  Vitest, full pytest, science-policy, migration rehearsal, sandbox smoke, and
+  the cannot-skip dashboard
 
 The outer envelope uses schema `nexus.release-evidence.v2`:
 
@@ -27,9 +28,9 @@ The outer envelope uses schema `nexus.release-evidence.v2`:
 - `signatureAlgorithm` set to the EdDSA Curve25519 verifier identifier
 - `keyId`
 
-Deploy validation rejects unsigned evidence, stale evidence, zero Vitest/pytest
-counts, missing sandbox-smoke proof, missing command results, non-passing
-command results, prefix SHA matches, and manifest drift.
+Deploy validation rejects unsigned evidence, stale evidence, zero or below-floor
+Vitest/pytest counts, missing sandbox-smoke proof, missing command results,
+non-passing command results, prefix SHA matches, and manifest drift.
 
 ## Evidence Producer
 
@@ -63,9 +64,9 @@ The generated private key is written under `.local/release/` and must be copied
 into the GitHub secret by an owner. Do not commit the private key.
 
 Deploy validation reads the public key from
-`docs/release/evidence/release-evidence-public-key.pem` by default, or from
-`NEXUS_RELEASE_EVIDENCE_PUBLIC_KEY_PEM` /
-`NEXUS_RELEASE_EVIDENCE_PUBLIC_KEY_PATH`.
+`docs/release/evidence/release-evidence-public-key.pem` by default, or from an
+explicit `--public-key` path. Environment-based public-key overrides are ignored
+for verifier safety.
 
 ## Evidence Consumers
 
@@ -92,19 +93,18 @@ skip full local Vitest only when all are true:
 - `NEXUS_DEPLOY_SKIP_VERIFY=auto-when-staged`
 - `NEXUS_RELEASE_EVIDENCE_REUSE_ENABLED=1`
 - signed v2 evidence validates against the exact post-build manifest
-- at least three clean signed RC evidence files validate for the current SHA
+- at least three distinct clean signed RC run IDs validate for the current SHA
 - `scripts/rollback-drill-check.mjs` finds current rollback drill evidence
-- `scripts/promote-to-prod.sh` has proven local/staging artifact manifest
-  parity and passed `NEXUS_STAGING_PROD_MANIFEST_PARITY_OK=1` plus
-  `NEXUS_STAGING_MANIFEST_DIGEST` into `scripts/deploy.sh`
+- `scripts/promote-to-prod.sh` has already proven local/staging artifact
+  manifest parity before invoking production deploy
 - the worktree is clean
 - no emergency dirty-deploy override is active
 
 When these conditions pass, deploy still runs typecheck, build, post-build
-artifact digest revalidation against the staging parity proof, env/readiness
-checks, deploy locks, DB integrity, native-module probes, PM2 checks, and
-postdeploy health. When any condition is missing or invalid, deploy falls back
-to the full local `npm run verify` path.
+artifact digest revalidation against signed evidence, env/readiness checks,
+deploy locks, DB integrity, native-module probes, PM2 checks, and postdeploy
+health. When any condition is missing or invalid, deploy falls back to the full
+local `npm run verify` path.
 
 Emergency bypasses require `NEXUS_EMERGENCY_SKIP_REASON` and are appended to
 `.local/release/override-audit.jsonl`.

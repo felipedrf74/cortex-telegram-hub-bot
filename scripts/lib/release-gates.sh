@@ -74,6 +74,72 @@ release_write_local_lock_owner() {
   } > "$lock_dir/owner"
 }
 
+release_epoch_from_iso8601() {
+  local value="$1"
+  date -u -d "$value" +%s 2>/dev/null \
+    || date -u -j -f "%Y-%m-%dT%H:%M:%SZ" "$value" +%s 2>/dev/null \
+    || printf 0
+}
+
+release_write_reclaim_marker_owner() {
+  local marker_dir="$1"
+  {
+    printf 'pid=%s\n' "$$"
+    printf 'host=%s\n' "$(release_current_host)"
+    printf 'createdAt=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  } > "$marker_dir/owner"
+}
+
+release_reclaim_marker_is_stale() {
+  local marker_dir="$1"
+  local owner_file="$marker_dir/owner"
+  local max_age="${NEXUS_RECLAIM_MARKER_MAX_AGE_S:-60}"
+  local created_at created_epoch now_epoch owner_pid owner_host current_host
+  [ -d "$marker_dir" ] || return 0
+  [ -f "$owner_file" ] || return 0
+  case "$max_age" in
+    ''|*[!0-9]*) max_age=60 ;;
+  esac
+
+  created_at="$(release_lock_owner_value "$owner_file" createdAt)"
+  created_epoch="$(release_epoch_from_iso8601 "$created_at")"
+  now_epoch="$(date -u +%s)"
+  if [ "$created_epoch" -gt 0 ] && [ $((now_epoch - created_epoch)) -gt "$max_age" ]; then
+    return 0
+  fi
+
+  owner_pid="$(release_lock_owner_value "$owner_file" pid)"
+  owner_host="$(release_lock_owner_value "$owner_file" host)"
+  current_host="$(release_current_host)"
+  case "$owner_pid" in
+    ''|*[!0-9]*) return 0 ;;
+  esac
+  if [ "$owner_host" = "$current_host" ] && ! kill -0 "$owner_pid" 2>/dev/null; then
+    return 0
+  fi
+  return 1
+}
+
+release_acquire_reclaim_marker() {
+  local marker_dir="$1"
+  local stale_marker
+  if mkdir "$marker_dir" 2>/dev/null; then
+    release_write_reclaim_marker_owner "$marker_dir"
+    return 0
+  fi
+  if [ -d "$marker_dir" ] && release_reclaim_marker_is_stale "$marker_dir"; then
+    stale_marker="${marker_dir}.stale.$$"
+    if mv "$marker_dir" "$stale_marker" 2>/dev/null; then
+      rm -rf "$stale_marker"
+      if mkdir "$marker_dir" 2>/dev/null; then
+        release_write_reclaim_marker_owner "$marker_dir"
+        return 0
+      fi
+    fi
+  fi
+  return 1
+}
+
 release_local_lock_is_stale() {
   local lock_dir="$1"
   local owner_file="$lock_dir/owner"
@@ -108,19 +174,19 @@ release_acquire_local_lock() {
   if [ -d "$lock_dir" ] && release_local_lock_is_stale "$lock_dir"; then
     local reclaim_marker
     reclaim_marker="$lock_dir/.reclaiming"
-    if ! mkdir "$reclaim_marker" 2>/dev/null; then
+    if ! release_acquire_reclaim_marker "$reclaim_marker"; then
       echo "❌ Lost race reclaiming stale local release lock: $lock_dir" >&2
       return 73
     fi
     if ! release_local_lock_is_stale "$lock_dir"; then
-      rmdir "$reclaim_marker" 2>/dev/null || true
+      rm -rf "$reclaim_marker" 2>/dev/null || true
       echo "❌ Local release lock became active during reclaim: $lock_dir" >&2
       return 73
     fi
     echo "🟡 Reclaiming stale local release lock: $lock_dir" >&2
     sed 's/^/   /' "$lock_dir/owner" >&2 || true
     release_write_local_lock_owner "$lock_dir"
-    rmdir "$reclaim_marker" 2>/dev/null || true
+    rm -rf "$reclaim_marker" 2>/dev/null || true
     release_register_local_lock "$lock_dir"
     return 0
   fi
@@ -161,11 +227,12 @@ release_acquire_remote_lock() {
   local server="$1"
   local remote_dir="$2"
   local name="$3"
-  local token lock_dir max_age
+  local token lock_dir max_age marker_max_age
   token="$(date -u +%Y%m%dT%H%M%SZ)-$$"
   lock_dir="$remote_dir/.local/release/locks/$name.lock"
   max_age="${NEXUS_REMOTE_LOCK_MAX_AGE_S:-1800}"
-  if ssh "$server" bash -s -- "$remote_dir" "$name" "$token" "$(basename "$0")" "$max_age" <<'REMOTE_LOCK'
+  marker_max_age="${NEXUS_RECLAIM_MARKER_MAX_AGE_S:-60}"
+  if ssh "$server" bash -s -- "$remote_dir" "$name" "$token" "$(basename "$0")" "$max_age" "$marker_max_age" <<'REMOTE_LOCK'
 set -euo pipefail
 
 remote_dir="$1"
@@ -173,6 +240,7 @@ name="$2"
 token="$3"
 script_name="$4"
 max_age="$5"
+marker_max_age="$6"
 lock_root="$remote_dir/.local/release/locks"
 lock_dir="$lock_root/$name.lock"
 
@@ -188,8 +256,78 @@ write_owner() {
 }
 
 owner_value() {
-  local key="$1"
-  awk -F= -v key="$key" '$1 == key { print substr($0, index($0, "=") + 1); exit }' "$lock_dir/owner" 2>/dev/null || true
+  local owner_file="$1"
+  local key="$2"
+  awk -F= -v key="$key" '$1 == key { print substr($0, index($0, "=") + 1); exit }' "$owner_file" 2>/dev/null || true
+}
+
+lock_owner_value() {
+  owner_value "$lock_dir/owner" "$1"
+}
+
+epoch_from_iso8601() {
+  local value="$1"
+  date -u -d "$value" +%s 2>/dev/null \
+    || date -u -j -f "%Y-%m-%dT%H:%M:%SZ" "$value" +%s 2>/dev/null \
+    || printf 0
+}
+
+write_reclaim_marker_owner() {
+  local marker_dir="$1"
+  {
+    printf 'pid=%s\n' "$$"
+    printf 'host=%s\n' "$(hostname 2>/dev/null || printf unknown)"
+    printf 'createdAt=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  } > "$marker_dir/owner"
+}
+
+reclaim_marker_is_stale() {
+  local marker_dir="$1"
+  local owner_file="$marker_dir/owner"
+  local created_at created_epoch now_epoch owner_host owner_pid current_host
+  [ -d "$marker_dir" ] || return 0
+  [ -f "$owner_file" ] || return 0
+  case "$marker_max_age" in
+    ''|*[!0-9]*) marker_max_age=60 ;;
+  esac
+
+  created_at="$(owner_value "$owner_file" createdAt)"
+  created_epoch="$(epoch_from_iso8601 "$created_at")"
+  now_epoch="$(date -u +%s)"
+  if [ "$created_epoch" -gt 0 ] && [ $((now_epoch - created_epoch)) -gt "$marker_max_age" ]; then
+    return 0
+  fi
+
+  owner_host="$(owner_value "$owner_file" host)"
+  owner_pid="$(owner_value "$owner_file" pid)"
+  current_host="$(hostname 2>/dev/null || printf unknown)"
+  case "$owner_pid" in
+    ''|*[!0-9]*) return 0 ;;
+  esac
+  if [ "$owner_host" = "$current_host" ] && ! kill -0 "$owner_pid" 2>/dev/null; then
+    return 0
+  fi
+  return 1
+}
+
+acquire_reclaim_marker() {
+  local marker_dir="$1"
+  local stale_marker
+  if mkdir "$marker_dir" 2>/dev/null; then
+    write_reclaim_marker_owner "$marker_dir"
+    return 0
+  fi
+  if [ -d "$marker_dir" ] && reclaim_marker_is_stale "$marker_dir"; then
+    stale_marker="${marker_dir}.stale.$$"
+    if mv "$marker_dir" "$stale_marker" 2>/dev/null; then
+      rm -rf "$stale_marker"
+      if mkdir "$marker_dir" 2>/dev/null; then
+        write_reclaim_marker_owner "$marker_dir"
+        return 0
+      fi
+    fi
+  fi
+  return 1
 }
 
 mkdir -p "$lock_root"
@@ -200,8 +338,8 @@ fi
 
 stale=0
 if [ -f "$lock_dir/owner" ]; then
-  created_at="$(owner_value createdAt)"
-  created_epoch="$(date -u -d "$created_at" +%s 2>/dev/null || printf 0)"
+  created_at="$(lock_owner_value createdAt)"
+  created_epoch="$(epoch_from_iso8601 "$created_at")"
   now_epoch="$(date -u +%s)"
   case "$max_age" in
     ''|*[!0-9]*) max_age=1800 ;;
@@ -210,8 +348,8 @@ if [ -f "$lock_dir/owner" ]; then
     stale=1
   fi
 
-  owner_host="$(owner_value host)"
-  owner_pid="$(owner_value pid)"
+  owner_host="$(lock_owner_value host)"
+  owner_pid="$(lock_owner_value pid)"
   current_host="$(hostname 2>/dev/null || printf unknown)"
   case "$owner_pid" in
     ''|*[!0-9]*) ;;
@@ -225,16 +363,16 @@ fi
 
 if [ "$stale" = "1" ]; then
   reclaim_marker="$lock_dir/.reclaiming"
-  if ! mkdir "$reclaim_marker" 2>/dev/null; then
+  if ! acquire_reclaim_marker "$reclaim_marker"; then
     echo "REMOTE_LOCK_EXISTS:$lock_dir"
     [ -f "$lock_dir/owner" ] && sed 's/^/   /' "$lock_dir/owner" || true
     exit 73
   fi
-  trap 'rmdir "$reclaim_marker" 2>/dev/null || true' EXIT
+  trap 'rm -rf "$reclaim_marker" 2>/dev/null || true' EXIT
   echo "🟡 Reclaiming stale remote release lock: $lock_dir" >&2
   [ -f "$lock_dir/owner" ] && sed 's/^/   /' "$lock_dir/owner" >&2 || true
   write_owner
-  rmdir "$reclaim_marker" 2>/dev/null || true
+  rm -rf "$reclaim_marker" 2>/dev/null || true
   trap - EXIT
   exit 0
 fi

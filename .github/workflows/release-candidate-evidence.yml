@@ -202,6 +202,9 @@ jobs:
           NEXUS_RELEASE_EVIDENCE_PATH: docs/release/evidence/release-evidence-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}.json
           NEXUS_RELEASE_EVIDENCE_PRIVATE_KEY_PEM: ${{ secrets.NEXUS_RELEASE_EVIDENCE_PRIVATE_KEY_PEM }}
           NEXUS_RELEASE_EVIDENCE_KEY_ID: github-actions-release-evidence-2026-06
+          NEXUS_RELEASE_CI_PROVIDER: github-actions
+          NEXUS_RELEASE_RUN_ID: ${{ github.run_id }}
+          NEXUS_RELEASE_RUN_ATTEMPT: ${{ github.run_attempt }}
           NEXUS_RELEASE_VERDICT: ${{ needs.vitest-full.result == 'success' && needs.python-full.result == 'success' && steps.typecheck.outcome == 'success' && steps.science_policy.outcome == 'success' && steps.build.outcome == 'success' && steps.migrations.outcome == 'success' && steps.cannot_skip_dashboard.outcome == 'success' && steps.release_test_image.outcome == 'success' && steps.sandbox_smoke.outcome == 'success' && 'passed' || 'failed' }}
           NEXUS_RELEASE_VITEST_RESULT: ${{ needs.vitest-full.result }}
           NEXUS_RELEASE_TYPECHECK_RESULT: ${{ steps.typecheck.outcome }}

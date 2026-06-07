@@ -69,11 +69,9 @@ echo ""
 #                                             pre-push + staging-smoke
 #                                             chain. Saves ~9 min/deploy.
 #   NEXUS_DEPLOY_SKIP_VERIFY=auto-when-staged
-#                                           → typecheck only IFF the
-#                                             local↔staging dist hashes
-#                                             match (verified by
-#                                             promote-to-prod.sh before
-#                                             this script is invoked).
+#                                           → typecheck only IFF signed CI
+#                                             evidence, clean RC history, and
+#                                             rollback-drill evidence all pass.
 #                                             Falls back to full verify
 #                                             otherwise.
 #
@@ -223,11 +221,30 @@ check_current_rollback_drill() {
   cat /tmp/nexus-rollback-drill-check.json
 }
 
+json_string_value() {
+  local file="$1"
+  local key="$2"
+  tr -d '\n' < "$file" | sed -n "s/.*\"$key\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/p" | head -1
+}
+
+release_evidence_run_key() {
+  local validation_json="$1"
+  local run_id
+  run_id="$(json_string_value "$validation_json" runId)"
+  [ -n "$run_id" ] || return 1
+  printf '%s' "$run_id"
+}
+
+release_evidence_manifest_digest() {
+  json_string_value "$1" manifestDigest
+}
+
 check_clean_rc_history() {
   local min_count="${NEXUS_RELEASE_MIN_CLEAN_RCS:-3}"
   local evidence_dir="${NEXUS_RELEASE_CLEAN_RC_EVIDENCE_DIR:-$LOCAL_DIR/.local/release/evidence}"
   local expected_sha
   local count=0
+  local seen_run_keys=""
 
   case "$min_count" in
     ''|*[!0-9]*)
@@ -237,36 +254,34 @@ check_clean_rc_history() {
   esac
 
   expected_sha="$(git rev-parse HEAD)"
-  echo "🧾 Checking clean signed RC evidence history (${count}/${min_count})..."
+  echo "🧾 Checking distinct clean signed RC evidence history (${count}/${min_count})..."
   shopt -s nullglob
-  local evidence_file
+  local evidence_file run_key
   for evidence_file in "$evidence_dir"/release-evidence-"$expected_sha"-*.json "$evidence_dir"/release-evidence-"$expected_sha".json; do
     if node scripts/release-evidence.mjs validate --evidence "$evidence_file" --expect-sha "$expected_sha" --public-key "$RELEASE_EVIDENCE_PUBLIC_KEY_REL" --json >/tmp/nexus-clean-rc-evidence.json 2>/tmp/nexus-clean-rc-evidence.err; then
+      run_key="$(release_evidence_run_key /tmp/nexus-clean-rc-evidence.json || true)"
+      if [ -z "$run_key" ]; then
+        echo "🟡 Signed RC evidence lacks ci.runId and does not count: $evidence_file"
+        continue
+      fi
+      if printf '%s\n' "$seen_run_keys" | grep -Fxq "$run_key"; then
+        echo "🟡 Duplicate signed RC run ID ignored: $run_key"
+        continue
+      fi
+      seen_run_keys="${seen_run_keys}${run_key}
+"
       count=$((count + 1))
     fi
   done
   shopt -u nullglob
 
   if [ "$count" -lt "$min_count" ]; then
-    echo "🟡 Clean signed RC evidence count is $count/$min_count for $expected_sha."
-    echo "   Download or retain at least $min_count signed RC evidence artifacts before enabling deploy-time reuse."
+    echo "🟡 Distinct clean signed RC evidence run count is $count/$min_count for $expected_sha."
+    echo "   Download or retain at least $min_count signed RC evidence runs before enabling deploy-time reuse."
     return 1
   fi
 
-  echo "   ✅ Clean signed RC evidence count: $count/$min_count"
-}
-
-check_staging_manifest_parity() {
-  if [ "${NEXUS_STAGING_PROD_MANIFEST_PARITY_OK:-0}" != "1" ]; then
-    echo "🟡 Staging/prod manifest parity proof is missing."
-    echo "   Run scripts/promote-to-prod.sh so staging artifact parity is checked before deploy-time evidence reuse."
-    return 1
-  fi
-  if [ -z "${NEXUS_STAGING_MANIFEST_DIGEST:-}" ]; then
-    echo "🟡 Staging/prod manifest parity proof did not include NEXUS_STAGING_MANIFEST_DIGEST."
-    return 1
-  fi
-  echo "   ✅ Staging/prod manifest parity proof: $NEXUS_STAGING_MANIFEST_DIGEST"
+  echo "   ✅ Distinct clean signed RC evidence runs: $count/$min_count"
 }
 
 case "$SKIP_MODE" in
@@ -276,7 +291,7 @@ case "$SKIP_MODE" in
   auto-when-staged)
     if [ "${NEXUS_RELEASE_EVIDENCE_REUSE_ENABLED:-0}" != "1" ]; then
       echo "🟡 auto-when-staged requested, but evidence reuse is still in shadow."
-      echo "   Set NEXUS_RELEASE_EVIDENCE_REUSE_ENABLED=1 only after 3 clean RCs."
+      echo "   Set NEXUS_RELEASE_EVIDENCE_REUSE_ENABLED=1 only after 3 distinct clean RCs and a current rollback drill."
       if node scripts/release-evidence.mjs validate --evidence "$RELEASE_EVIDENCE_PATH" --public-key "$RELEASE_EVIDENCE_PUBLIC_KEY_REL" --json > /tmp/nexus-release-evidence-shadow.json 2>/tmp/nexus-release-evidence-shadow.err; then
         echo "   Shadow evidence check: MATCH"
         cat /tmp/nexus-release-evidence-shadow.json
@@ -287,8 +302,8 @@ case "$SKIP_MODE" in
       fi
       run_full_verify
     elif node scripts/release-evidence.mjs validate --evidence "$RELEASE_EVIDENCE_PATH" --public-key "$RELEASE_EVIDENCE_PUBLIC_KEY_REL" --json > /tmp/nexus-release-evidence-validate.json 2>/tmp/nexus-release-evidence-validate.err; then
-      if check_clean_rc_history && check_current_rollback_drill && check_staging_manifest_parity; then
-        echo "🔁 NEXUS_DEPLOY_SKIP_VERIFY=auto-when-staged: signed evidence matches SHA + manifest digest + clean RC history — typecheck only"
+      if check_clean_rc_history && check_current_rollback_drill; then
+        echo "🔁 NEXUS_DEPLOY_SKIP_VERIFY=auto-when-staged: signed evidence matches SHA + manifest digest + clean RC history + rollback drill — typecheck only"
         cat /tmp/nexus-release-evidence-validate.json
         run_typecheck_only
         REUSED_RELEASE_EVIDENCE=1
@@ -360,10 +375,11 @@ npm run build 2>/dev/null && echo "   ✅ Build complete" || { echo "   ❌ Buil
 POST_BUILD_MANIFEST_DIGEST=$(node scripts/release-artifact-manifest.mjs --digest)
 echo "   Artifact digest: $POST_BUILD_MANIFEST_DIGEST"
 if [ "$REUSED_RELEASE_EVIDENCE" = "1" ]; then
-  if [ "$POST_BUILD_MANIFEST_DIGEST" != "${NEXUS_STAGING_MANIFEST_DIGEST:-}" ]; then
-    echo "❌ Post-build artifact digest no longer matches the staging parity proof."
+  EXPECTED_EVIDENCE_MANIFEST_DIGEST="$(release_evidence_manifest_digest /tmp/nexus-release-evidence-validate.json || true)"
+  if [ -n "$EXPECTED_EVIDENCE_MANIFEST_DIGEST" ] && [ "$POST_BUILD_MANIFEST_DIGEST" != "$EXPECTED_EVIDENCE_MANIFEST_DIGEST" ]; then
+    echo "❌ Post-build artifact digest no longer matches the signed release evidence."
     echo "   post-build: $POST_BUILD_MANIFEST_DIGEST"
-    echo "   staging:    ${NEXUS_STAGING_MANIFEST_DIGEST:-missing}"
+    echo "   evidence:   $EXPECTED_EVIDENCE_MANIFEST_DIGEST"
     exit 1
   fi
   echo "🔁 Re-validating signed release evidence against post-build artifact..."

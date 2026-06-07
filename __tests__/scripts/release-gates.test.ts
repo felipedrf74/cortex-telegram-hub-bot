@@ -80,6 +80,38 @@ describe('release-gates local locks', () => {
     }
   });
 
+  it('reclaims stale local .reclaiming markers left by killed reclaimers', () => {
+    const root = mkdtempSync(join(tmpdir(), 'release-gates-local-reclaim-marker-'));
+    try {
+      const output = runBash(`
+        set -euo pipefail
+        source "${RELEASE_GATES}"
+        lock_root="$(release_lock_root "${root}")"
+        lock_dir="$lock_root/test.lock"
+        mkdir -p "$lock_dir/.reclaiming"
+        {
+          echo "pid=999999999"
+          echo "host=$(release_current_host)"
+          echo "script=dead-deploy.sh"
+          echo "createdAt=1970-01-01T00:00:00Z"
+        } > "$lock_dir/owner"
+        {
+          echo "pid=999999998"
+          echo "host=$(release_current_host)"
+          echo "createdAt=1970-01-01T00:00:00Z"
+        } > "$lock_dir/.reclaiming/owner"
+        NEXUS_RECLAIM_MARKER_MAX_AGE_S=1 release_acquire_local_lock "${root}" test
+        cat "$lock_dir/owner"
+        [ ! -e "$lock_dir/.reclaiming" ]
+        release_cleanup_local_locks
+      `);
+      expect(output).toContain('script=bash');
+      expect(output).not.toContain('dead-deploy.sh');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('cleans acquired locks from an EXIT trap', () => {
     const root = mkdtempSync(join(tmpdir(), 'release-gates-trap-'));
     try {
@@ -196,6 +228,41 @@ exec "$@"
         cat "$lock_dir/owner"
         PATH="${binDir}:$PATH" release_cleanup_remote_locks
         [ ! -e "$lock_dir" ]
+      `);
+      expect(output).toContain('script=bash');
+      expect(output).not.toContain('dead-prod-deploy.sh');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('reclaims stale remote .reclaiming markers left by killed reclaimers', () => {
+    const root = mkdtempSync(join(tmpdir(), 'release-gates-remote-reclaim-marker-'));
+    const binDir = join(root, 'bin');
+    const remoteDir = join(root, 'remote');
+    try {
+      execFileSync('mkdir', ['-p', binDir, join(remoteDir, '.local/release/locks/prod.lock/.reclaiming')]);
+      writeSshShim(binDir);
+      const output = runBash(`
+        set -euo pipefail
+        source "${RELEASE_GATES}"
+        lock_dir="${remoteDir}/.local/release/locks/prod.lock"
+        {
+          echo "token=old"
+          echo "pid=999999999"
+          echo "host=$(release_current_host)"
+          echo "script=dead-prod-deploy.sh"
+          echo "createdAt=1970-01-01T00:00:00Z"
+        } > "$lock_dir/owner"
+        {
+          echo "pid=999999998"
+          echo "host=$(release_current_host)"
+          echo "createdAt=1970-01-01T00:00:00Z"
+        } > "$lock_dir/.reclaiming/owner"
+        PATH="${binDir}:$PATH" NEXUS_RECLAIM_MARKER_MAX_AGE_S=1 release_acquire_remote_lock fake-server "${remoteDir}" prod
+        cat "$lock_dir/owner"
+        [ ! -e "$lock_dir/.reclaiming" ]
+        PATH="${binDir}:$PATH" release_cleanup_remote_locks
       `);
       expect(output).toContain('script=bash');
       expect(output).not.toContain('dead-prod-deploy.sh');

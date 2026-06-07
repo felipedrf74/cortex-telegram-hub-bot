@@ -2,10 +2,10 @@
 
 Status: canonical
 Owner: release lead (Felipe)
-Last verified: 2026-06-06
+Last verified: 2026-06-07
 Update policy: update when the release-process entrypoint structure changes.
 
-Date: 2026-06-06
+Date: 2026-06-07
 
 This folder is the active source of truth for the release process.
 
@@ -48,7 +48,7 @@ Current release verification contract:
    science-policy, sandbox smoke, and the cannot-skip dashboard.
 5. Download signed CI evidence into `.local/release/evidence/` for local
    promote/deploy reuse. Keep the run-specific evidence files there until the
-   three-clean-RC threshold is met for the candidate SHA.
+   three-distinct-signed-run threshold is met for the candidate SHA.
 6. Deploy staging, run staging smoke/readiness, run promote dry-run, then
    promote to production.
 

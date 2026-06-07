@@ -1,4 +1,4 @@
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 
@@ -39,5 +39,17 @@ describe('release-focused-verify', () => {
     expect(output).toContain('env NEXUS_RISK_GATE_ASSERT_CANNOT_SKIP_DASHBOARD=1 scripts/risk-gate.sh');
     expect(output).toContain('./scripts/release-doc-drift-check.sh --strict');
     expect(output).not.toContain('scripts/release-verify.sh');
+  });
+
+  it('escalates to the full local release runner when the classifier fails', () => {
+    const result = spawnSync('bash', [SCRIPT, '--base', 'definitely-missing-release-base', '--dry-run'], {
+      cwd: ROOT,
+      encoding: 'utf8',
+    });
+
+    expect(result.status).toBe(0);
+    expect(result.stderr).toContain('classifier failed');
+    expect(result.stdout).toContain('scripts/release-verify.sh');
+    expect(result.stdout).not.toContain('scripts/risk-gate.sh');
   });
 });
