@@ -66,13 +66,15 @@ release_lock_owner_value() {
 release_write_local_lock_owner() {
   local lock_dir="$1"
   local current_pid="${BASHPID:-$$}"
+  local tmp_owner="$lock_dir/owner.tmp.$current_pid"
   {
     printf 'pid=%s\n' "$current_pid"
     printf 'user=%s\n' "${USER:-${LOGNAME:-unknown}}"
     printf 'host=%s\n' "$(release_current_host)"
     printf 'script=%s\n' "$(basename "$0")"
     printf 'createdAt=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-  } > "$lock_dir/owner"
+  } > "$tmp_owner"
+  mv "$tmp_owner" "$lock_dir/owner"
 }
 
 release_epoch_from_iso8601() {
@@ -92,11 +94,13 @@ release_path_mtime_epoch() {
 release_write_reclaim_marker_owner() {
   local marker_dir="$1"
   local current_pid="${BASHPID:-$$}"
+  local tmp_owner="$marker_dir/owner.tmp.$current_pid"
   {
     printf 'pid=%s\n' "$current_pid"
     printf 'host=%s\n' "$(release_current_host)"
     printf 'createdAt=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-  } > "$marker_dir/owner"
+  } > "$tmp_owner"
+  mv "$tmp_owner" "$marker_dir/owner"
 }
 
 release_reclaim_marker_is_stale() {
@@ -200,7 +204,7 @@ release_acquire_local_lock() {
     return 0
   fi
   if [ -d "$lock_dir" ] && release_local_lock_is_stale "$lock_dir"; then
-    local reclaim_marker stale_lock current_pid
+    local reclaim_marker
     reclaim_marker="$lock_dir/.reclaiming"
     if ! release_acquire_reclaim_marker "$reclaim_marker"; then
       echo "❌ Lost race reclaiming stale local release lock: $lock_dir" >&2
@@ -213,21 +217,10 @@ release_acquire_local_lock() {
     fi
     echo "🟡 Reclaiming stale local release lock: $lock_dir" >&2
     sed 's/^/   /' "$lock_dir/owner" >&2 || true
-    current_pid="${BASHPID:-$$}"
-    stale_lock="${lock_dir}.stale.$current_pid"
-    rm -rf "$stale_lock" 2>/dev/null || true
-    if mv "$lock_dir" "$stale_lock" 2>/dev/null; then
-      if mkdir "$lock_dir" 2>/dev/null; then
-        release_write_local_lock_owner "$lock_dir"
-        rm -rf "$stale_lock" 2>/dev/null || true
-        release_register_local_lock "$lock_dir"
-        return 0
-      fi
-      rm -rf "$stale_lock" 2>/dev/null || true
-    fi
+    release_write_local_lock_owner "$lock_dir"
     rm -rf "$reclaim_marker" 2>/dev/null || true
-    echo "❌ Lost race replacing stale local release lock: $lock_dir" >&2
-    return 73
+    release_register_local_lock "$lock_dir"
+    return 0
   fi
   echo "❌ Local release lock already exists: $lock_dir" >&2
   if [ -f "$lock_dir/owner" ]; then
@@ -284,6 +277,7 @@ lock_root="$remote_dir/.local/release/locks"
 lock_dir="$lock_root/$name.lock"
 
 write_owner() {
+  tmp_owner="$lock_dir/owner.tmp.$$"
   {
     printf 'token=%s\n' "$token"
     printf 'pid=%s\n' "$$"
@@ -291,7 +285,8 @@ write_owner() {
     printf 'user=%s\n' "${USER:-${LOGNAME:-unknown}}"
     printf 'script=%s\n' "$script_name"
     printf 'createdAt=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-  } > "$lock_dir/owner"
+  } > "$tmp_owner"
+  mv "$tmp_owner" "$lock_dir/owner"
 }
 
 owner_value() {
@@ -320,11 +315,13 @@ path_mtime_epoch() {
 
 write_reclaim_marker_owner() {
   local marker_dir="$1"
+  local tmp_owner="$marker_dir/owner.tmp.$$"
   {
     printf 'pid=%s\n' "$$"
     printf 'host=%s\n' "$(hostname 2>/dev/null || printf unknown)"
     printf 'createdAt=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-  } > "$marker_dir/owner"
+  } > "$tmp_owner"
+  mv "$tmp_owner" "$marker_dir/owner"
 }
 
 reclaim_marker_is_stale() {
@@ -421,31 +418,13 @@ if [ "$stale" = "1" ]; then
     [ -f "$lock_dir/owner" ] && sed 's/^/   /' "$lock_dir/owner" || true
     exit 73
   fi
-  claim_dir="${lock_dir}.claim.$$"
-  stale_lock="${lock_dir}.stale.$$"
-  trap 'rm -rf "$claim_dir" "$reclaim_marker" 2>/dev/null || true' EXIT
+  trap 'rm -rf "$reclaim_marker" 2>/dev/null || true' EXIT
   echo "🟡 Reclaiming stale remote release lock: $lock_dir" >&2
   [ -f "$lock_dir/owner" ] && sed 's/^/   /' "$lock_dir/owner" >&2 || true
-  rm -rf "$claim_dir" "$stale_lock" 2>/dev/null || true
-  if mkdir "$claim_dir" 2>/dev/null; then
-    old_lock_dir="$lock_dir"
-    lock_dir="$claim_dir"
-    write_owner
-    lock_dir="$old_lock_dir"
-    if mv "$lock_dir" "$stale_lock" 2>/dev/null; then
-      if mv "$claim_dir" "$lock_dir" 2>/dev/null; then
-        rm -rf "$stale_lock" 2>/dev/null || true
-        trap - EXIT
-        exit 0
-      fi
-      rm -rf "$claim_dir" 2>/dev/null || true
-      if [ ! -e "$lock_dir" ]; then
-        mv "$stale_lock" "$lock_dir" 2>/dev/null || true
-      fi
-    fi
-  fi
-  echo "REMOTE_LOCK_EXISTS:$lock_dir"
-  exit 73
+  write_owner
+  rm -rf "$reclaim_marker" 2>/dev/null || true
+  trap - EXIT
+  exit 0
 fi
 
 echo "REMOTE_LOCK_EXISTS:$lock_dir"
