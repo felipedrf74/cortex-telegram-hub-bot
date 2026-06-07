@@ -553,6 +553,15 @@ describe('changed-area-classifier CI/CD optimization routing', () => {
     expect(result.vitest.mode).toBe('full');
   });
 
+  it('classifies release gate helpers as runtime infrastructure', () => {
+    const result = classify('scripts/lib/release-gates.sh');
+
+    expect(result.flags.runtimeInfra).toBe(true);
+    expect(result.flags.deployConfig).toBe(true);
+    expect(result.vitest.mode).toBe('full');
+    expect(result.stagingSmoke.generic).toBe(true);
+  });
+
   it('normalizes workspace-prefixed backend and migration paths', () => {
     const result = classify('engine/src/api/routes/billing.ts,engine/migrations/203_apple_health_encrypted_payload.sql');
 

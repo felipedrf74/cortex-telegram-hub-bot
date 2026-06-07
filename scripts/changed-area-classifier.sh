@@ -295,6 +295,7 @@ match '^src/services/(google-drive|google-auth)\.ts$|^__tests__/security/google-
 match '^src/services/chat/registry/|^src/services/registry-(driven-eval-scenarios|real-eval-scoring|telemetry-report|adversarial-discovery|adversarial-example-proposer|readable-intents-proposer|cross-tenant-alert-hook)\.ts$|^src/services/build-llm-safe-prompt-slice\.ts$|^src/services/skills/|^__tests__/services/(chat-action-registry-|registry-(driven-eval|real-eval|telemetry-report|adversarial|readable-intents|cross-tenant))|^__tests__/scripts/registry-feedback-report\.test\.ts$|^scripts/registry-feedback-report\.ts$' && HAS_REGISTRY_REAL_EVAL=true
 
 match '^scripts/(deploy|deploy-staging|promote-to-prod|rollback|restore)\.sh$' && HAS_DEPLOY_SCRIPT=true
+match '^scripts/lib/release-gates\.sh$' && { HAS_RUNTIME_INFRA=true; HAS_DEPLOY_CONFIG=true; }
 match '^Dockerfile(\..*)?$|^docker-compose(\..*)?\.ya?ml$|^\.dockerignore$|^\.nvmrc$|^\.node-version$|^\.env(\..*)?\.example$|^\.env\.example$|^content-engine/Dockerfile(\..*)?$|^content-engine/\.env(\..*)?\.example$' && { HAS_RUNTIME_INFRA=true; HAS_DEPLOY_CONFIG=true; }
 match '^\.husky/' && HAS_HOOK=true
 match '^\.github/workflows/' && HAS_CI_WORKFLOW=true
