@@ -1,4 +1,5 @@
 import { execFileSync, spawnSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 
 describe('risk-gate dry run', () => {
@@ -55,6 +56,16 @@ describe('risk-gate dry run', () => {
 
     expect(raw).toContain('-m pytest');
     expect(raw).toContain('/content-engine/tests');
+  });
+
+  it('prefers the Python 3.13 content-engine venv before the default venv', () => {
+    const script = readFileSync('scripts/risk-gate.sh', 'utf8');
+    const py313Index = script.indexOf('$ROOT/content-engine/.venv313/bin/python');
+    const defaultVenvIndex = script.indexOf('$ROOT/content-engine/.venv/bin/python');
+
+    expect(py313Index).toBeGreaterThan(-1);
+    expect(defaultVenvIndex).toBeGreaterThan(-1);
+    expect(py313Index).toBeLessThan(defaultVenvIndex);
   });
 
   it('escalates to full Vitest when the classifier fails', () => {

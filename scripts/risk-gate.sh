@@ -165,6 +165,8 @@ if [ "$PYTHON_ENGINE" = "true" ] && [ "$SKIP_PYTHON" != "true" ]; then
   if [ -z "$PYTHON_BIN" ]; then
     if [ -x "$ROOT/content-engine/.venv-codex313/bin/python" ]; then
       PYTHON_BIN="$ROOT/content-engine/.venv-codex313/bin/python"
+    elif [ -x "$ROOT/content-engine/.venv313/bin/python" ]; then
+      PYTHON_BIN="$ROOT/content-engine/.venv313/bin/python"
     elif [ -x "$ROOT/content-engine/.venv/bin/python" ]; then
       PYTHON_BIN="$ROOT/content-engine/.venv/bin/python"
     else
