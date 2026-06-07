@@ -391,6 +391,52 @@ describe('secretary-agenda-provider-sync', () => {
     expect(stored?.providerSyncState).toBe('deleted');
   });
 
+  it('treats provider 410 Gone during cleanup as already deleted', async () => {
+    class GoneOnDeleteProvider extends MockSecretaryProvider {
+      async deleteEvent(eventId: string): Promise<void> {
+        this.deletedEventIds.push(eventId);
+        this.events.delete(eventId);
+        throw { status: 410, reason: 'deleted', message: 'Resource has been deleted' };
+      }
+    }
+
+    const provider = new GoneOnDeleteProvider();
+    const decision = submitSecretarySchedulingIntent(intent({
+      intentId: 'bulk-canceled-gone-cleanup',
+      sourceEntityId: 'session-bulk-canceled-gone',
+    }));
+    const created = await syncOne(decision.agendaItem.agendaItemId, provider);
+    cancelSecretaryAgendaItem({
+      agendaItemId: decision.agendaItem.agendaItemId,
+      ownerUserId: OWNER_USER_ID,
+      tenantId: TENANT_ID,
+      reason: 'training_plan_canceled',
+      now: '2026-05-01T10:00:00.000Z',
+    });
+
+    const results = await syncSecretaryAgendaItemsToProvider({
+      ownerUserId: OWNER_USER_ID,
+      tenantId: TENANT_ID,
+      includeInactive: false,
+    }, provider);
+    const stored = getSecretaryAgendaItemById({
+      agendaItemId: decision.agendaItem.agendaItemId,
+      ownerUserId: OWNER_USER_ID,
+      tenantId: TENANT_ID,
+    });
+
+    expect(results).toHaveLength(1);
+    expect(results[0]).toMatchObject({
+      agendaItemId: decision.agendaItem.agendaItemId,
+      action: 'deleted',
+      providerSyncState: 'deleted',
+      reasonCode: 'provider_event_deleted',
+    });
+    expect(provider.deletedEventIds).toContain(created.providerEventId);
+    expect(stored?.lifecycleState).toBe('canceled');
+    expect(stored?.providerSyncState).toBe('deleted');
+  });
+
   it('replaces a regenerated agenda item by deleting the superseded provider event and creating the new version', async () => {
     const provider = new MockSecretaryProvider();
     const first = submitSecretarySchedulingIntent(intent({

@@ -8,6 +8,7 @@ import {
   type SecretaryAgendaLifecycleState,
   type SecretaryProviderSyncState,
 } from './secretary-scheduling-arbitrator';
+import { isProviderEventNotFoundError } from './training-calendar-errors';
 import { logger } from '../utils/logger';
 
 export type SecretaryCalendarProviderSource = 'google' | 'outlook';
@@ -334,7 +335,11 @@ async function cleanupProviderEvent(
 
   try {
     for (const eventId of idsToDelete) {
-      await adapter.deleteEvent(eventId, input);
+      try {
+        await adapter.deleteEvent(eventId, input);
+      } catch (err) {
+        if (!isProviderEventNotFoundError(err)) throw err;
+      }
       if (eventId !== agendaItem.providerEventId) deletedDuplicateEventIds.push(eventId);
     }
     updateProviderMapping(agendaItem, {
