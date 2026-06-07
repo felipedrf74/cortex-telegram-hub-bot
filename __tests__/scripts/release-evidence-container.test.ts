@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 
 describe('release-evidence-container wrapper', () => {
   const script = () => readFileSync('scripts/release-evidence-container.sh', 'utf8');
+  const workflow = () => readFileSync('.github/workflows/release-candidate-evidence.yml', 'utf8');
 
   it('marks the bind-mounted workspace as a safe git directory', () => {
     const raw = script();
@@ -27,5 +28,18 @@ describe('release-evidence-container wrapper', () => {
     ]) {
       expect(raw).toContain(name);
     }
+  });
+
+  it('fails fast before evidence writing when prerequisite full suites fail', () => {
+    const raw = workflow();
+    const stopIndex = raw.indexOf('Stop when full-suite prerequisites failed');
+    const countIndex = raw.indexOf('Count tests from shard artifacts');
+    const writeIndex = raw.indexOf('- name: Write release evidence');
+
+    expect(stopIndex).toBeGreaterThan(-1);
+    expect(countIndex).toBeGreaterThan(stopIndex);
+    expect(writeIndex).toBeGreaterThan(stopIndex);
+    expect(raw).toContain("needs.vitest-full.result != 'success' || needs.python-full.result != 'success'");
+    expect(raw).toContain('timeout-minutes: 30');
   });
 });

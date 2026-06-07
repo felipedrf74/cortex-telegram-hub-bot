@@ -16,6 +16,9 @@ const ROOT = join(__dirname, '..', '..');
 const READINESS = join(ROOT, 'scripts', 'deploy-readiness-check.sh');
 const ENV_PARITY = join(ROOT, 'scripts', 'env-parity-check.sh');
 const VERIFY_CONTAINER = join(ROOT, 'scripts', 'release-verify-container.sh');
+const RELEASE_SANDBOX_UP = join(ROOT, 'scripts', 'release-sandbox-up.sh');
+const RELEASE_SANDBOX_SMOKE = join(ROOT, 'scripts', 'release-sandbox-smoke.sh');
+const RELEASE_SANDBOX_DEPLOY_HARNESS = join(ROOT, 'scripts', 'release-sandbox-deploy-harness.sh');
 
 function prependPath(binDir: string) {
   return `${binDir}:${process.env.PATH ?? ''}`;
@@ -367,5 +370,20 @@ printf '%s\\n' "$*" >> "${dockerLog}"
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
+  });
+
+  it('keeps release sandbox entrypoints local-only wrappers', () => {
+    const up = readFileSync(RELEASE_SANDBOX_UP, 'utf8');
+    const smoke = readFileSync(RELEASE_SANDBOX_SMOKE, 'utf8');
+    const harness = readFileSync(RELEASE_SANDBOX_DEPLOY_HARNESS, 'utf8');
+
+    expect(up).toContain('scripts/local-up.sh');
+    expect(smoke).toContain('scripts/local-smoke.sh');
+    expect(smoke).toContain('docker compose -f docker-compose.local.yml exec -T nexus-hub node');
+    expect(smoke).toContain('x-internal-secret');
+    expect(harness).toContain('__tests__/scripts/release-deploy-dry-runs.test.ts');
+    expect(harness).toContain('__tests__/scripts/deploy-shell-hardening.test.ts');
+    expect(up + smoke + harness).not.toContain('dominguez@serverdominguez');
+    expect(up + smoke + harness).not.toContain('rsync ');
   });
 });

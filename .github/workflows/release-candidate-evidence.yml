@@ -17,6 +17,7 @@ jobs:
   vitest-full:
     name: 🧪 Full Vitest shard ${{ matrix.shard }}/4
     runs-on: ubuntu-latest
+    timeout-minutes: 25
     strategy:
       fail-fast: false
       matrix:
@@ -53,6 +54,7 @@ jobs:
   python-full:
     name: 🐍 Content Engine full pytest
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
@@ -89,6 +91,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: [vitest-full, python-full]
     if: always()
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
@@ -101,8 +104,15 @@ jobs:
 
       - run: npm ci
 
+      - name: Stop when full-suite prerequisites failed
+        if: ${{ needs.vitest-full.result != 'success' || needs.python-full.result != 'success' }}
+        run: |
+          echo "Full-suite prerequisites did not pass."
+          echo "vitest-full=${{ needs.vitest-full.result }}"
+          echo "python-full=${{ needs.python-full.result }}"
+          exit 1
+
       - name: Prepare result directory
-        if: always()
         run: mkdir -p rc-test-results
 
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
@@ -157,7 +167,6 @@ jobs:
         run: scripts/release-verify-container.sh --skip-vitest --skip-pytest
 
       - name: Count tests from shard artifacts
-        if: always()
         run: |
           node <<'NODE' >> "$GITHUB_ENV"
           const fs = require('fs');
@@ -195,7 +204,6 @@ jobs:
 
       - name: Write release evidence
         id: write_evidence
-        if: always()
         env:
           NEXUS_RELEASE_TEST_IMAGE: nexus-hub-release-test:ci
           NEXUS_RELEASE_TEST_SKIP_BUILD: '1'
@@ -219,7 +227,6 @@ jobs:
           cp "docs/release/evidence/release-evidence-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}.json" docs/release/evidence/latest-release-evidence.json
 
       - name: Validate signed release evidence
-        if: always()
         run: |
           node scripts/release-evidence.mjs validate \
             --evidence "docs/release/evidence/release-evidence-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}.json" \
@@ -228,7 +235,6 @@ jobs:
             --json
 
       - name: Upload release evidence
-        if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: release-evidence-${{ github.sha }}
