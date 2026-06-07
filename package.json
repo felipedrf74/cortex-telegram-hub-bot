@@ -68,7 +68,7 @@
     "npm": ">=10"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.78.0",
+    "@anthropic-ai/sdk": "^0.102.0",
     "@aws-sdk/client-s3": "^3.1063.0",
     "@azure/msal-node": "^5.0.6",
     "@google/genai": "^1.52.0",
