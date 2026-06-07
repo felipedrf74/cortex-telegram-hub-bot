@@ -146,6 +146,11 @@ export async function syncSecretaryAgendaItemToProvider(
     };
   }
 
+  if (agendaItem.cancellationReason && ACTIVE_PROVIDER_STATES.has(agendaItem.lifecycleState)) {
+    const canceled = markCancellationReasonedItemCanceled(agendaItem);
+    return cleanupProviderEvent(canceled, adapter);
+  }
+
   if (CLEANUP_PROVIDER_STATES.has(agendaItem.lifecycleState)) {
     return cleanupProviderEvent(agendaItem, adapter);
   }
@@ -185,11 +190,12 @@ export async function syncSecretaryAgendaItemsToProvider(
   adapter: SecretaryAgendaProviderAdapter,
   options: SecretaryAgendaProviderSyncOptions = {},
 ): Promise<SecretaryAgendaProviderSyncResult[]> {
+  const includeInactive = scope.includeInactive ?? true;
   const items = listSecretaryAgendaItems({
     ownerUserId: scope.ownerUserId,
     tenantId: scope.tenantId,
-    includeInactive: scope.includeInactive ?? true,
-  });
+    includeInactive: true,
+  }).filter((item) => shouldSyncAgendaItem(item, includeInactive));
   const results: SecretaryAgendaProviderSyncResult[] = [];
   for (const item of items) {
     results.push(await syncSecretaryAgendaItemToProviderWithRetry({
@@ -199,6 +205,14 @@ export async function syncSecretaryAgendaItemsToProvider(
     }, adapter, options));
   }
   return results;
+}
+
+function shouldSyncAgendaItem(item: SecretaryAgendaItem, includeInactive: boolean): boolean {
+  if (includeInactive) return true;
+  if (!['canceled', 'superseded', 'completed'].includes(item.lifecycleState)) return true;
+  return ['canceled', 'superseded'].includes(item.lifecycleState)
+    && !!item.providerEventId
+    && item.providerSyncState !== 'deleted';
 }
 
 async function syncSecretaryAgendaItemToProviderWithRetry(
@@ -428,12 +442,22 @@ function updateProviderMapping(
       : FAILED_PROVIDER_SYNC_STATES.has(patch.providerSyncState)
         ? 'failed_sync'
         : null);
+  const requestedLifecycleIsActive = lifecycleState != null
+    && ACTIVE_PROVIDER_STATES.has(lifecycleState);
   const result = getDb().prepare(`
     UPDATE secretary_agenda_items
     SET provider_event_id = COALESCE(?, provider_event_id),
         provider_source = COALESCE(?, provider_source),
         provider_sync_state = ?,
-        lifecycle_state = COALESCE(?, lifecycle_state),
+        lifecycle_state = CASE
+          WHEN ?
+           AND (
+             lifecycle_state IN ('canceled', 'superseded', 'unscheduled', 'deferred', 'completed')
+             OR cancellation_reason IS NOT NULL
+           )
+          THEN lifecycle_state
+          ELSE COALESCE(?, lifecycle_state)
+        END,
         updated_at = ?
     WHERE agenda_item_id = ?
       AND owner_user_id = ?
@@ -442,6 +466,7 @@ function updateProviderMapping(
     patch.providerEventId ?? null,
     patch.providerSource ?? null,
     patch.providerSyncState,
+    requestedLifecycleIsActive ? 1 : 0,
     lifecycleState,
     new Date().toISOString(),
     agendaItem.agendaItemId,
@@ -451,6 +476,31 @@ function updateProviderMapping(
   if (result.changes === 0) {
     throw new Error(`SECRETARY_PROVIDER_MAPPING_UPDATE_MISSED: ${agendaItem.agendaItemId}`);
   }
+}
+
+function markCancellationReasonedItemCanceled(agendaItem: SecretaryAgendaItem): SecretaryAgendaItem {
+  const result = getDb().prepare(`
+    UPDATE secretary_agenda_items
+       SET lifecycle_state = 'canceled',
+           updated_at = ?
+     WHERE agenda_item_id = ?
+       AND owner_user_id = ?
+       AND tenant_id = ?
+       AND cancellation_reason IS NOT NULL
+       AND lifecycle_state IN ('scheduled', 'synced', 'reflowed', 'compressed', 'failed_sync')
+  `).run(
+    new Date().toISOString(),
+    agendaItem.agendaItemId,
+    agendaItem.ownerUserId,
+    String(agendaItem.tenantId),
+  );
+
+  if (result.changes === 0) return agendaItem;
+  return {
+    ...agendaItem,
+    lifecycleState: 'canceled',
+    updatedAt: new Date().toISOString(),
+  };
 }
 
 function result(
