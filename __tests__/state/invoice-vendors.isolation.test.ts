@@ -123,4 +123,22 @@ describe('state/invoice-vendors isolation contract', () => {
     expect(getActiveVendors(1)).toMatchObject([{ name: 'Reenabled', subject_patterns: 'updated' }]);
     expect(getActiveVendors(2)).toMatchObject([{ name: 'Other' }]);
   });
+
+  it('round-trips multiple sender patterns for a single vendor', () => {
+    addVendor('Multi Sender', 'billing@example.com', 1, 'invoice', 1, [
+      'billing@example.com',
+      'receipts@example.com',
+      'example.org',
+    ]);
+
+    const [vendor] = getActiveVendors(1);
+    expect(vendor.sender_pattern).toBe('billing@example.com');
+    expect(vendor.sender_patterns).toEqual([
+      'billing@example.com',
+      'receipts@example.com',
+      'example.org',
+    ]);
+    expect(vendorExists('receipts@example.com', 1)).toBe(true);
+    expect(vendorExists('example.org', 1)).toBe(true);
+  });
 });

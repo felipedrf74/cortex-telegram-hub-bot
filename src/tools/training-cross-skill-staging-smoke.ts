@@ -525,6 +525,9 @@ function fixtureFinanceContext(): FinanceMeshContext {
     month: '2026-05',
     monthlySummary: {
       month: '2026-05',
+      currency: 'EUR',
+      currencies: ['EUR'],
+      mixedCurrency: false,
       totalIncome: 1000,
       totalExpenses: 930,
       totalDeductions: 0,

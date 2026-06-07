@@ -3,11 +3,11 @@
 /**
  * Invoice Queue Service
  *
- * When the Mac SSH tunnel is unavailable (Mac sleeping, network issues),
- * invoices are saved to local disk and queued in SQLite for later retry.
+ * When durable object storage is temporarily unavailable, invoices are saved
+ * to local disk and queued in SQLite for later retry.
  *
- * A cron job runs every 15 minutes to flush the queue when the tunnel
- * comes back online. Users are notified via Telegram on queue and flush.
+ * A cron job runs every 15 minutes to flush the queue once storage accepts
+ * the checksum-verified write. Users are notified via telemetry on queue and flush.
  */
 import fs from 'fs';
 import path from 'path';
@@ -16,7 +16,6 @@ import {
   InvoiceAnalysis,
   fileInvoice,
   filePdf,
-  testSshConnection,
   isInvoiceFilingConfigured,
 } from './invoice-filer';
 import { recordFiling } from '../state/invoice-filings';
@@ -45,8 +44,8 @@ function getStmts(): Record<string, BetterSqlite3.Statement> {
   const db = getDb();
   _stmts = {
     enqueue: db.prepare(`
-      INSERT INTO invoice_queue (type, local_path, media_type, analysis_json, source, user_id, status)
-      VALUES (?, ?, ?, ?, ?, ?, 'pending')`),
+      INSERT INTO invoice_queue (type, local_path, media_type, analysis_json, source, tenant_id, user_id, status)
+      VALUES (?, ?, ?, ?, ?, ?, ?, 'pending')`),
     pending: db.prepare(`
       SELECT * FROM invoice_queue WHERE status = 'pending' ORDER BY created_at ASC`),
     pendingCount: db.prepare(`
@@ -73,6 +72,7 @@ export interface QueuedInvoice {
   media_type: string | null;
   analysis_json: string;
   source: string;
+  tenant_id: number;
   user_id: number;
   status: string;
   retries: number;
@@ -95,6 +95,7 @@ export function enqueueInvoice(
   analysisJson: string,
   source: string,
   userId: number,
+  tenantId = userId,
 ): number {
   ensureQueueDir();
 
@@ -108,13 +109,13 @@ export function enqueueInvoice(
   fs.writeFileSync(localPath, buffer);
 
   const stmts = getStmts();
-  const result = stmts.enqueue.run(type, localPath, mediaType, analysisJson, source, userId);
+  const result = stmts.enqueue.run(type, localPath, mediaType, analysisJson, source, tenantId, userId);
 
-  logger.info({ id: result.lastInsertRowid, localPath, source }, 'Invoice queued for later filing');
+  logger.info({ id: result.lastInsertRowid, localPath, source }, 'Invoice queued for durable filing retry');
   pushEvent({
     ts: new Date().toISOString(),
     type: 'job',
-    summary: `Invoice queued (Mac unavailable) — ${JSON.parse(analysisJson).vendor || 'unknown'}`,
+    summary: `Invoice queued (object storage unavailable) — ${JSON.parse(analysisJson).vendor || 'unknown'}`,
   });
 
   return Number(result.lastInsertRowid);
@@ -160,13 +161,7 @@ export async function flushQueue(): Promise<{ flushed: number; failed: number; r
   const pending = getPendingInvoices();
   if (pending.length === 0) return { flushed: 0, failed: 0, remaining: 0 };
 
-  // Quick SSH check before attempting any filing
-  if (!testSshConnection()) {
-    logger.debug({ pendingCount: pending.length }, 'Invoice queue flush: SSH tunnel still down');
-    return { flushed: 0, failed: 0, remaining: pending.length };
-  }
-
-  logger.info({ pendingCount: pending.length }, 'Invoice queue flush: SSH tunnel is up, processing queue');
+  logger.info({ pendingCount: pending.length }, 'Invoice queue flush: processing pending durable writes');
 
   const stmts = getStmts();
   let flushed = 0;
@@ -184,8 +179,6 @@ export async function flushQueue(): Promise<{ flushed: number; failed: number; r
     if (item.retries >= MAX_RETRIES) {
       stmts.markFailed.run(`Exceeded ${MAX_RETRIES} retries`, item.id);
       failed++;
-      // Clean up local file
-      try { fs.unlinkSync(item.local_path); } catch { /* ignore */ }
       continue;
     }
 
@@ -200,6 +193,7 @@ export async function flushQueue(): Promise<{ flushed: number; failed: number; r
           buffer,
           item.media_type as 'image/jpeg' | 'image/png' | 'image/webp',
           analysis as InvoiceAnalysis,
+          { tenantId: item.tenant_id || item.user_id, userId: item.user_id },
         );
       } else {
         result = await filePdf(
@@ -208,6 +202,7 @@ export async function flushQueue(): Promise<{ flushed: number; failed: number; r
           analysis.documentDate,
           analysis.invoiceNumber,
           analysis.originalName,
+          { tenantId: item.tenant_id || item.user_id, userId: item.user_id },
         );
       }
 
@@ -228,8 +223,14 @@ export async function flushQueue(): Promise<{ flushed: number; failed: number; r
             filename: result.filename,
             file_size_bytes: result.originalSizeKB ? result.originalSizeKB * 1024 : null,
             compressed_size_bytes: result.compressedSizeKB ? result.compressedSizeKB * 1024 : null,
+            object_key: result.objectKey ?? null,
+            checksum: result.checksum ?? null,
+            mime: result.mime ?? item.media_type ?? null,
+            bytes: result.bytes ?? buffer.length,
+            storage_backend: result.storageBackend ?? null,
             status: 'filed',
             user_id: item.user_id,
+            tenant_id: item.tenant_id || item.user_id,
           });
         })();
         flushed++;
@@ -243,9 +244,8 @@ export async function flushQueue(): Promise<{ flushed: number; failed: number; r
       }
     } catch (err: any) {
       stmts.markRetry.run(err?.message || 'Unknown error', item.id);
-      // If SSH fails mid-flush, stop trying the rest
       if (err?.message?.includes('Connection') || err?.message?.includes('timed out')) {
-        logger.warn('SSH connection lost mid-flush, stopping queue processing');
+        logger.warn('Object storage connection failed mid-flush, stopping queue processing');
         break;
       }
     }

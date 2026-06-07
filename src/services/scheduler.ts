@@ -1299,14 +1299,14 @@ export function startScheduler(bot?: any): void {
     const prev = now().minus({ months: 1 });
     const ownerTenantIds = getOwnerTenantIds();
     for (const tenantId of ownerTenantIds) {
-      const result = await collectMonthlyInvoices(tenantId, prev.year, prev.month);
-      const notification = formatCollectionNotification(result);
-      const ownerTelegramId = getUserById(tenantId)?.telegram_id;
-      if (!ownerTelegramId) continue;
       try {
+        const result = await collectMonthlyInvoices(tenantId, prev.year, prev.month);
+        const notification = formatCollectionNotification(result);
+        const ownerTelegramId = getUserById(tenantId)?.telegram_id;
+        if (!ownerTelegramId) continue;
         await safeSend(ownerTelegramId, notification, { parse_mode: 'HTML' });
       } catch (err) {
-        logger.error({ err, userId: ownerTelegramId, tenantId }, 'Failed to send invoice collection notification');
+        logger.error({ err, tenantId }, 'Invoice collection failed for tenant; continuing scheduler run');
       }
     }
   }), { timezone: tz });
@@ -1369,26 +1369,26 @@ export function startScheduler(bot?: any): void {
     const prev = now().minus({ months: 1 });
     const ownerTenantIds = getOwnerTenantIds();
     for (const tenantId of ownerTenantIds) {
-      const callbacks = createScraperMfaInteractiveCallbacks({
-        userId: tenantId,
-        tenantId,
-        source: 'amazon',
-      });
-      const result = await collectAmazonInvoices(
-        tenantId,
-        prev.year,
-        prev.month,
-        callbacks.sendMessage,
-        callbacks.sendScreenshot,
-        callbacks.waitForReply,
-      );
-      const notification = formatAmazonNotification(result);
-      const ownerTelegramId = getUserById(tenantId)?.telegram_id;
-      if (!ownerTelegramId) continue;
       try {
+        const callbacks = createScraperMfaInteractiveCallbacks({
+          userId: tenantId,
+          tenantId,
+          source: 'amazon',
+        });
+        const result = await collectAmazonInvoices(
+          tenantId,
+          prev.year,
+          prev.month,
+          callbacks.sendMessage,
+          callbacks.sendScreenshot,
+          callbacks.waitForReply,
+        );
+        const notification = formatAmazonNotification(result);
+        const ownerTelegramId = getUserById(tenantId)?.telegram_id;
+        if (!ownerTelegramId) continue;
         await safeSend(ownerTelegramId, notification, { parse_mode: 'HTML' });
       } catch (err) {
-        logger.error({ err, userId: ownerTelegramId, tenantId }, 'Failed to send Amazon collection notification');
+        logger.error({ err, tenantId }, 'Amazon collection failed for tenant; continuing scheduler run');
       }
     }
   }), { timezone: tz });
@@ -1400,26 +1400,26 @@ export function startScheduler(bot?: any): void {
     const prev = now().minus({ months: 1 });
     const ownerTenantIds = getOwnerTenantIds();
     for (const tenantId of ownerTenantIds) {
-      const callbacks = createScraperMfaInteractiveCallbacks({
-        userId: tenantId,
-        tenantId,
-        source: 'uber',
-      });
-      const result = await collectUberInvoices(
-        tenantId,
-        prev.year,
-        prev.month,
-        callbacks.sendMessage,
-        callbacks.sendScreenshot,
-        callbacks.waitForReply,
-      );
-      const notification = formatUberNotification(result);
-      const ownerTelegramId = getUserById(tenantId)?.telegram_id;
-      if (!ownerTelegramId) continue;
       try {
+        const callbacks = createScraperMfaInteractiveCallbacks({
+          userId: tenantId,
+          tenantId,
+          source: 'uber',
+        });
+        const result = await collectUberInvoices(
+          tenantId,
+          prev.year,
+          prev.month,
+          callbacks.sendMessage,
+          callbacks.sendScreenshot,
+          callbacks.waitForReply,
+        );
+        const notification = formatUberNotification(result);
+        const ownerTelegramId = getUserById(tenantId)?.telegram_id;
+        if (!ownerTelegramId) continue;
         await safeSend(ownerTelegramId, notification, { parse_mode: 'HTML' });
       } catch (err) {
-        logger.error({ err, userId: ownerTelegramId, tenantId }, 'Failed to send Uber collection notification');
+        logger.error({ err, tenantId }, 'Uber collection failed for tenant; continuing scheduler run');
       }
     }
   }), { timezone: tz });

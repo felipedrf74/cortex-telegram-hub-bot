@@ -1,7 +1,6 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
 import type { Bot } from 'grammy';
-import { config } from '../config';
 import { runPerformanceAgent } from '../agents/performance-agent';
 import { runVoiceEvolutionAgent } from '../agents/voice-evolution-agent';
 import { runReactionRadar } from '../agents/reaction-radar-agent';
@@ -32,7 +31,7 @@ export const VALID_PORTAL_ACTIONS = new Set([
   'trigger-coach',
   'trigger-content',
   'clear-history',
-  'test-ssh',
+  'test-invoice-storage',
   'test-graph',
   'restart-polling',
   'resynthesize-knowledge',
@@ -106,22 +105,17 @@ export async function handlePortalAction(
       return { ok: true, message: 'All conversation history cleared' };
     }
 
-    case 'test-ssh': {
-      if (!isInvoiceFilingConfigured()) return { ok: false, message: 'Invoice filing not configured' };
-      const { execFileSync } = await import('child_process');
-      const sshArgs = ['-o', 'StrictHostKeyChecking=accept-new', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10'];
-      if (config.invoices.sshKeyPath) sshArgs.push('-i', config.invoices.sshKeyPath);
-      if (config.invoices.sshPort !== '22') sshArgs.push('-p', config.invoices.sshPort);
-      sshArgs.push(`${config.invoices.sshUser}@${config.invoices.sshHost}`, 'echo ok');
-      try {
-        execFileSync('ssh', sshArgs, { timeout: 15_000, stdio: 'pipe' });
-        pushEvent({ ts: new Date().toISOString(), type: 'auth', summary: 'SSH test: success' });
-        return { ok: true, message: 'SSH connection successful' };
-      } catch (err) {
-        logger.warn({ err }, 'Portal action SSH test failed');
-        pushEvent({ ts: new Date().toISOString(), type: 'error', summary: 'SSH test: failed' });
-        return { ok: false, message: 'SSH test failed' };
-      }
+    case 'test-invoice-storage': {
+      const ok = isInvoiceFilingConfigured();
+      pushEvent({
+        ts: new Date().toISOString(),
+        type: ok ? 'auth' : 'error',
+        summary: `Invoice object storage test: ${ok ? 'configured' : 'not configured'}`,
+      });
+      return {
+        ok,
+        message: ok ? 'Invoice object storage configured' : 'Invoice object storage not configured',
+      };
     }
 
     case 'test-graph': {

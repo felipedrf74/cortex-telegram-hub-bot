@@ -287,7 +287,7 @@ export function buildPortalSnapshot(startedAt: number): PortalSnapshotResponse {
       lastApiCall: garminLastSuccess,
     },
     {
-      name: 'Invoice Filing (SSH)',
+      name: 'Invoice Object Storage',
       group: 'system',
       configured: isInvoiceFilingConfigured(),
       status: isInvoiceFilingConfigured() ? 'configured' : 'not configured',

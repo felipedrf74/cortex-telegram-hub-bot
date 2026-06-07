@@ -1126,6 +1126,7 @@ describe('app-facing happy path smoke', () => {
               cadence: 'monthly',
               primary_day: 28,
             }),
+            7001,
           );
         },
       },
@@ -1141,7 +1142,7 @@ describe('app-facing happy path smoke', () => {
             id: 88,
             name: 'Apple',
           });
-          expect(mockAddInvoiceVendor).toHaveBeenCalledWith('Apple', 'apple.com', 7001, ['receipt']);
+          expect(mockAddInvoiceVendor).toHaveBeenCalledWith('Apple', 'apple.com', 7001, ['receipt'], 7001);
         },
       },
       {
@@ -1151,7 +1152,7 @@ describe('app-facing happy path smoke', () => {
         path: '/invoices/vendors/88',
         assert: (body) => {
           expect(body.data).toMatchObject({ removed: true, id: 88 });
-          expect(mockRemoveInvoiceVendor).toHaveBeenCalledWith(88, 7001);
+          expect(mockRemoveInvoiceVendor).toHaveBeenCalledWith(88, 7001, 7001);
         },
       },
       {

@@ -370,6 +370,9 @@ export function createEmptyFinanceMeshContext(opts: { userId: number; tenantId?:
     month,
     monthlySummary: {
       month,
+      currency: null,
+      currencies: [],
+      mixedCurrency: false,
       totalIncome: 0,
       totalExpenses: 0,
       totalDeductions: 0,
@@ -1016,8 +1019,14 @@ export async function readCookingMeshContext(opts: {
   const shoppingForecastSource = deriveShoppingForecastSource(shoppingList?.items ?? [], mealProfiles, meals.length);
   const aisleCount = new Set(shoppingForecastSource.items.map((item) => normalizeShoppingAisle(item.aisle)).filter(Boolean)).size;
   const estimatedSpendBrl = estimateShoppingSpendBrl(shoppingForecastSource.items);
-  const preferredCurrency = getPreferredCurrencyForUser(opts.userId);
-  const estimatedSpend = convertPlanningEstimateFromBrl(estimatedSpendBrl, preferredCurrency);
+  const requestedCurrency = getPreferredCurrencyForUser(opts.userId);
+  let preferredCurrency = requestedCurrency;
+  let estimatedSpend = estimatedSpendBrl;
+  try {
+    estimatedSpend = convertPlanningEstimateFromBrl(estimatedSpendBrl, requestedCurrency);
+  } catch {
+    preferredCurrency = 'BRL';
+  }
   const shoppingReady = (shoppingList?.items.length ?? 0) > 0;
   const manualMealCount = mealProfiles.filter((profile) => !profile.hasLinkedRecipe).length;
   const highEffortMealCount = mealProfiles.filter((profile) => profile.isHighEffort).length;
@@ -1511,6 +1520,9 @@ export async function readFinanceMeshContext(opts: {
   const year = window.start.year;
   const monthlySummary = safely(() => getMonthlySummary(opts.userId, month, { tenantId: opts.tenantId }), {
     month,
+    currency: null,
+    currencies: [],
+    mixedCurrency: false,
     totalIncome: 0,
     totalExpenses: 0,
     totalDeductions: 0,

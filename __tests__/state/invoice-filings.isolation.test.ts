@@ -14,6 +14,7 @@ vi.mock('../../src/services/database', () => ({
 import {
   deleteAmazonFilings,
   deleteUberFilings,
+  getFilingsForPeriod,
   getFilingsForMonth,
   getRecentFilings,
   isDuplicate,
@@ -72,6 +73,7 @@ describe('state/invoice-filings isolation contract', () => {
       expect(() => isDuplicate('Amazon.es', 'INV', userId as number)).toThrow(REQUIRED_USER_ID_ERROR);
       expect(() => isEmailAlreadyFiled('message', userId as number)).toThrow(REQUIRED_USER_ID_ERROR);
       expect(() => getFilingsForMonth(2026, 5, userId as number)).toThrow(REQUIRED_USER_ID_ERROR);
+      expect(() => getFilingsForPeriod(1, userId as number, '2026-05-01T00:00:00Z', '2026-06-01T00:00:00Z')).toThrow(REQUIRED_USER_ID_ERROR);
       expect(() => getRecentFilings(userId as number)).toThrow(REQUIRED_USER_ID_ERROR);
     });
 
@@ -97,6 +99,46 @@ describe('state/invoice-filings isolation contract', () => {
     expect(getRecentFilings(2).map((row) => row.invoice_number)).toEqual(['B']);
     expect(isDuplicate('Amazon.es', 'B', 1)).toBe(false);
     expect(isEmailAlreadyFiled('b', 1)).toBe(false);
+  });
+
+  it('includes filed invoices dated on an end-of-day period boundary', () => {
+    recordFiling(filing(1, {
+      document_date: '2026-04-30',
+      invoice_number: 'APR-END',
+      source_ref: 'apr-end',
+      object_key: 'invoices/1/1/2026/Abr-2026/apr-end.pdf',
+      checksum: 'apr-checksum',
+      mime: 'application/pdf',
+      bytes: 7,
+      storage_backend: 'filesystem',
+    }));
+    recordFiling(filing(1, {
+      document_date: '2026-05-01',
+      invoice_number: 'MAY-START',
+      source_ref: 'may-start',
+    }));
+
+    const finalDayEnd = getFilingsForPeriod(
+      1,
+      1,
+      '2026-04-01T00:00:00.000Z',
+      '2026-04-30T23:59:59.999Z',
+    );
+    const firstOfNextMonthExclusive = getFilingsForPeriod(
+      1,
+      1,
+      '2026-04-01T00:00:00.000Z',
+      '2026-05-01T00:00:00.000Z',
+    );
+
+    expect(finalDayEnd.map((row) => row.invoice_number)).toEqual(['APR-END']);
+    expect(firstOfNextMonthExclusive.map((row) => row.invoice_number)).toEqual(['APR-END']);
+    expect(finalDayEnd[0]).toMatchObject({
+      object_key: 'invoices/1/1/2026/Abr-2026/apr-end.pdf',
+      checksum: 'apr-checksum',
+      bytes: 7,
+      storage_backend: 'filesystem',
+    });
   });
 
   it('delete helpers are scoped and idempotent', () => {

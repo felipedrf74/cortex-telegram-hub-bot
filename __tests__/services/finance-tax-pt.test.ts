@@ -19,8 +19,15 @@ describe('finance-tax-pt', () => {
     const result = calculatePortugueseMonthlyTaxEstimate(500);
     expect(result.bracket).toBe('12.5%');
     expect(result.taxDue).toBe(62.5);
-    expect(result.ivaDue).toBe(115);
+    expect(result.ivaDue).toBe(0);
     expect(result.ruleset).toBe('pt-irs-2026-mainland-estimate');
+  });
+
+  it('only charges IVA when an IVA rate is explicitly supplied', () => {
+    const result = calculatePortugueseMonthlyTaxEstimate(500, 0, {
+      ivaRate: PORTUGAL_MAINLAND_VAT_RATES.standard,
+    });
+    expect(result.ivaDue).toBe(115);
   });
 
   it('calculates the second bracket using previous average plus marginal excess', () => {

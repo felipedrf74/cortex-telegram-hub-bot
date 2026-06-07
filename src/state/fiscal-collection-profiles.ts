@@ -6,6 +6,7 @@ export type FiscalCollectionCadence = 'monthly' | 'twice_monthly';
 
 export interface FiscalCollectionProfileRow {
   user_id: number;
+  tenant_id: number;
   destination_email: string | null;
   cadence: FiscalCollectionCadence;
   primary_day: number;
@@ -26,32 +27,47 @@ function assertPositiveUserId(userId: number): void {
   }
 }
 
+function assertPositiveTenantId(tenantId: number): void {
+  if (!Number.isSafeInteger(tenantId) || tenantId <= 0) {
+    throw new Error('tenantId required: must be a positive integer');
+  }
+}
+
+function effectiveTenantId(userId: number, tenantId?: number): number {
+  const resolved = tenantId ?? userId;
+  assertPositiveTenantId(resolved);
+  return resolved;
+}
+
 function normalizeDay(day: number | null | undefined): number | null {
   if (day == null) return null;
   const safe = Math.floor(day);
   if (!Number.isFinite(safe)) return null;
-  return Math.max(1, Math.min(28, safe));
+  return Math.max(1, Math.min(31, safe));
 }
 
-export function getFiscalCollectionProfile(userId: number): FiscalCollectionProfileRow | null {
+export function getFiscalCollectionProfile(userId: number, tenantId = userId): FiscalCollectionProfileRow | null {
   assertPositiveUserId(userId);
+  const resolvedTenantId = effectiveTenantId(userId, tenantId);
   const db = getDb();
   return (
-    db.prepare('SELECT * FROM fiscal_collection_profiles WHERE user_id = ?').get(userId) as FiscalCollectionProfileRow | undefined
+    db.prepare('SELECT * FROM fiscal_collection_profiles WHERE tenant_id = ? AND user_id = ?').get(resolvedTenantId, userId) as FiscalCollectionProfileRow | undefined
   ) ?? null;
 }
 
-export function getOrCreateFiscalCollectionProfile(userId: number): FiscalCollectionProfileRow {
+export function getOrCreateFiscalCollectionProfile(userId: number, tenantId = userId): FiscalCollectionProfileRow {
   assertPositiveUserId(userId);
-  const existing = getFiscalCollectionProfile(userId);
+  const resolvedTenantId = effectiveTenantId(userId, tenantId);
+  const existing = getFiscalCollectionProfile(userId, resolvedTenantId);
   if (existing) return existing;
 
   const db = getDb();
   db.prepare(`
     INSERT INTO fiscal_collection_profiles (
-      user_id, destination_email, cadence, primary_day, secondary_day, enabled
-    ) VALUES (?, ?, ?, ?, ?, 1)
+      tenant_id, user_id, destination_email, cadence, primary_day, secondary_day, enabled
+    ) VALUES (?, ?, ?, ?, ?, ?, 1)
   `).run(
+    resolvedTenantId,
     userId,
     null,
     DEFAULT_CADENCE,
@@ -59,7 +75,7 @@ export function getOrCreateFiscalCollectionProfile(userId: number): FiscalCollec
     null,
   );
 
-  return getFiscalCollectionProfile(userId)!;
+  return getFiscalCollectionProfile(userId, resolvedTenantId)!;
 }
 
 export function updateFiscalCollectionProfile(
@@ -73,9 +89,11 @@ export function updateFiscalCollectionProfile(
     last_bundle_sent_at?: string | null;
     last_bundle_document_count?: number;
   },
+  tenantId = userId,
 ): FiscalCollectionProfileRow {
   assertPositiveUserId(userId);
-  const current = getOrCreateFiscalCollectionProfile(userId);
+  const resolvedTenantId = effectiveTenantId(userId, tenantId);
+  const current = getOrCreateFiscalCollectionProfile(userId, resolvedTenantId);
 
   const cadence = patch.cadence ?? current.cadence;
   const primaryDay = normalizeDay(patch.primary_day ?? current.primary_day) ?? DEFAULT_PRIMARY_DAY;
@@ -95,7 +113,7 @@ export function updateFiscalCollectionProfile(
       last_bundle_sent_at = ?,
       last_bundle_document_count = ?,
       updated_at = datetime('now')
-    WHERE user_id = ?
+    WHERE tenant_id = ? AND user_id = ?
   `).run(
     patch.destination_email !== undefined ? patch.destination_email : current.destination_email,
     cadence,
@@ -106,10 +124,11 @@ export function updateFiscalCollectionProfile(
     patch.last_bundle_document_count !== undefined
       ? Math.max(0, patch.last_bundle_document_count)
       : current.last_bundle_document_count,
+    resolvedTenantId,
     userId,
   );
 
-  return getFiscalCollectionProfile(userId)!;
+  return getFiscalCollectionProfile(userId, resolvedTenantId)!;
 }
 
 export function listActiveFiscalCollectionProfiles(): FiscalCollectionProfileRow[] {

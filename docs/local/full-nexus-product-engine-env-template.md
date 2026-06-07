@@ -37,6 +37,16 @@ BACKUP_ENABLED=false
 INTERNAL_API_SECRET=local-full-nexus-internal-secret
 NEXUS_MULTISKILL_MESH=on
 
+# Local invoice object storage. Production should use self-hosted MinIO on
+# the VPS; local smoke uses filesystem storage so photo/receipt filing can
+# run without external services.
+INVOICE_OBJECT_STORAGE_ENABLED=true
+INVOICE_OBJECT_STORAGE_BACKEND=filesystem
+INVOICE_OBJECT_STORAGE_DIR=./data/invoice-objects
+INVOICE_OBJECT_MAX_BYTES=10485760
+INVOICE_OBJECT_MIN_FREE_BYTES=0
+INVOICE_OBJECT_TENANT_MAX_BYTES=0
+
 # Model/provider cost control: default smoke should not call providers.
 OPENAI_API_KEY=
 GEMINI_API_KEY=

@@ -334,7 +334,7 @@ async function loginToUber(
 // Uber Eats shows: "05 Mar at 20:05" (DD Mon at HH:MM) — day-first!
 // Uber Rides may show: "Feb 15", "February 15, 2026", or "15/02/2026"
 
-function parseUberDate(rawDate: string, year: number): string | null {
+export function parseUberDate(rawDate: string, year: number, targetMonth?: number): string | null {
   if (!rawDate) return null;
 
   const months: Record<string, number> = {
@@ -348,13 +348,18 @@ function parseUberDate(rawDate: string, year: number): string | null {
     str.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
 
   const s = rawDate.trim();
+  const inferYear = (parsedMonth: number): number => {
+    if (targetMonth === 1 && parsedMonth === 12) return year - 1;
+    if (targetMonth === 12 && parsedMonth === 1) return year + 1;
+    return year;
+  };
 
   // "05 Mar at 20:05" or "28 Feb at 22:32" (Uber Eats format — day first!)
   const eatsMatch = s.match(/(\d{1,2})\s+(\w{3,})\s+at\s+\d{1,2}:\d{2}/i);
   if (eatsMatch) {
     const m = months[eatsMatch[2].toLowerCase()] ?? months[normalize(eatsMatch[2])];
     if (m) {
-      return `${year}-${m.toString().padStart(2, '0')}-${eatsMatch[1].padStart(2, '0')}`;
+      return `${inferYear(m)}-${m.toString().padStart(2, '0')}-${eatsMatch[1].padStart(2, '0')}`;
     }
   }
 
@@ -372,7 +377,7 @@ function parseUberDate(rawDate: string, year: number): string | null {
   if (shortMatch) {
     const m = months[shortMatch[1].toLowerCase()] ?? months[normalize(shortMatch[1])];
     if (m) {
-      return `${year}-${m.toString().padStart(2, '0')}-${shortMatch[2].padStart(2, '0')}`;
+      return `${inferYear(m)}-${m.toString().padStart(2, '0')}-${shortMatch[2].padStart(2, '0')}`;
     }
   }
 
@@ -396,6 +401,27 @@ function parseUberDate(rawDate: string, year: number): string | null {
 function isValidPdf(buf: Buffer): boolean {
   return buf.length > 4 &&
     buf[0] === 0x25 && buf[1] === 0x50 && buf[2] === 0x44 && buf[3] === 0x46;
+}
+
+const TRANSIENT_DOWNLOAD_STATUSES = new Set([429, 502, 503, 504]);
+
+export class UberTransientDownloadError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'UberTransientDownloadError';
+  }
+}
+
+export function isUberTransientDownloadError(err: unknown): boolean {
+  return err instanceof UberTransientDownloadError;
+}
+
+export function shouldRecordTerminalUberDownloadFailure(err: unknown): boolean {
+  return !isUberTransientDownloadError(err);
+}
+
+async function waitForUberDownloadRetry(page: Page, attempt: number): Promise<void> {
+  await page.waitForTimeout(500 * attempt + Math.random() * 500);
 }
 
 /**
@@ -548,12 +574,35 @@ async function downloadRidesReceipt(page: Page, detailUrl: string): Promise<Buff
       const href = await pdfLink.first().getAttribute('href');
       if (href) {
         const fullUrl = href.startsWith('http') ? href : new URL(href, page.url()).href;
-        const response = await page.request.get(fullUrl, { timeout: 30000 });
-        if (response.ok()) {
-          const body = await response.body();
-          if (isValidPdf(body)) {
-            logger.debug({ detailUrl }, 'Downloaded PDF via direct link');
-            return body;
+        for (let attempt = 1; attempt <= 3; attempt += 1) {
+          try {
+            const response = await page.request.get(fullUrl, { timeout: 30000 });
+            if (!response.ok()) {
+              const status = response.status();
+              logger.warn({ detailUrl, status, attempt }, 'Uber receipt direct PDF download failed');
+              if (TRANSIENT_DOWNLOAD_STATUSES.has(status)) {
+                if (attempt < 3) {
+                  await waitForUberDownloadRetry(page, attempt);
+                  continue;
+                }
+                throw new UberTransientDownloadError(`Uber receipt download failed with transient HTTP ${status}`);
+              }
+              break;
+            }
+            const body = await response.body();
+            if (isValidPdf(body)) {
+              logger.debug({ detailUrl }, 'Downloaded PDF via direct link');
+              return body;
+            }
+            break;
+          } catch (err) {
+            if (err instanceof UberTransientDownloadError) throw err;
+            logger.warn({ err, detailUrl, attempt }, 'Uber receipt direct PDF download request failed');
+            if (attempt < 3) {
+              await waitForUberDownloadRetry(page, attempt);
+              continue;
+            }
+            throw new UberTransientDownloadError('Uber receipt direct PDF download failed after retries');
           }
         }
       }
@@ -620,10 +669,13 @@ async function downloadRidesReceipt(page: Page, detailUrl: string): Promise<Buff
     return pdfBuffer;
 
   } catch (err) {
+    if (err instanceof UberTransientDownloadError) throw err;
     logger.warn({ err, detailUrl }, 'Failed to download Rides receipt');
     return null;
   }
 }
+
+export const _downloadRidesReceiptForTests = downloadRidesReceipt;
 
 // ─── Eats Order Scraper ──────────────────────────────────────────────
 //
@@ -692,11 +744,11 @@ async function scrapeEatsOrders(page: Page, year: number, month: number): Promis
         let date: string | null = null;
         if (dateTimeMatch) {
           // Build "Feb 28" format for our existing parser
-          date = parseUberDate(`${dateTimeMatch[2]} ${dateTimeMatch[1]}`, year);
+          date = parseUberDate(`${dateTimeMatch[2]} ${dateTimeMatch[1]}`, year, month);
         }
         if (!date) {
           // Fallback: try the generic parser on the full card text
-          date = parseUberDate(cardText, year);
+          date = parseUberDate(cardText, year, month);
         }
         if (!date) {
           logger.debug({ orderId, cardText: cardText.substring(0, 100) }, 'Could not parse date from Eats order');
@@ -783,7 +835,7 @@ async function scrapeRides(page: Page, year: number, month: number): Promise<Ube
         seenIds.add(tripId);
 
         const cardText = await link.textContent().catch(() => '');
-        const date = parseUberDate(cardText || '', year);
+        const date = parseUberDate(cardText || '', year, month);
         if (!date) continue;
 
         if (date < targetPrefix + '-01') {
@@ -930,8 +982,8 @@ export async function collectUberInvoices(
 
     // Pre-flight: verify filing infrastructure is configured before downloading PDFs
     if (!isInvoiceFilingConfigured()) {
-      const errMsg = '⚠️ Filing não configurado: faltam variáveis INVOICE_SSH_HOST / INVOICE_REMOTE_PATH no .env do servidor.';
-      logger.error('Uber: invoice filing is NOT configured — missing INVOICE_SSH_HOST / INVOICE_REMOTE_PATH. Cannot file PDFs.');
+      const errMsg = '⚠️ Filing não configurado: o armazenamento de faturas não está disponível no servidor.';
+      logger.error('Uber: invoice object storage is NOT configured. Cannot file PDFs.');
       if (sendTelegram) await sendTelegram(errMsg);
       // Mark all orders as errors
       for (const order of allOrders) {
@@ -993,9 +1045,17 @@ export async function collectUberInvoices(
                 source_ref: `eats:${order.orderId}`,
                 status: 'failed', error_message: 'No invoice PDF downloaded',
                 user_id: userId,
+                tenant_id: userId,
               });
             } else {
-              const filingResult = await filePdf(pdfBuffer, 'Uber', order.date, order.orderId);
+              const filingResult = await filePdf(
+                pdfBuffer,
+                'Uber',
+                order.date,
+                order.orderId,
+                `${order.orderId}.pdf`,
+                { tenantId: userId, userId, mime: 'application/pdf' },
+              );
 
               if (filingResult.success) {
                 orderResult.status = 'filed';
@@ -1006,8 +1066,14 @@ export async function collectUberInvoices(
                   source: 'uber', source_ref: `eats:${order.orderId}`,
                   remote_path: filingResult.filePath, folder_path: filingResult.folderPath,
                   filename: filingResult.filename, file_size_bytes: pdfBuffer.length,
+                  object_key: filingResult.objectKey ?? null,
+                  checksum: filingResult.checksum ?? null,
+                  mime: filingResult.mime ?? 'application/pdf',
+                  bytes: filingResult.bytes ?? pdfBuffer.length,
+                  storage_backend: filingResult.storageBackend ?? null,
                   status: 'filed',
                   user_id: userId,
+                  tenant_id: userId,
                 });
               } else {
                 orderResult.error = filingResult.error;
@@ -1019,6 +1085,7 @@ export async function collectUberInvoices(
                   source_ref: `eats:${order.orderId}`,
                   status: 'failed', error_message: filingResult.error,
                   user_id: userId,
+                  tenant_id: userId,
                 });
               }
             }
@@ -1066,12 +1133,20 @@ export async function collectUberInvoices(
             source_ref: `rides:${order.orderId}`,
             status: 'failed', error_message: 'No receipt PDF found',
             user_id: userId,
+            tenant_id: userId,
           });
           result.orders.push(orderResult);
           continue;
         }
 
-        const filingResult = await filePdf(pdfBuffer, 'Uber', order.date, order.orderId);
+        const filingResult = await filePdf(
+          pdfBuffer,
+          'Uber',
+          order.date,
+          order.orderId,
+          `${order.orderId}.pdf`,
+          { tenantId: userId, userId, mime: 'application/pdf' },
+        );
 
         if (filingResult.success) {
           orderResult.status = 'filed';
@@ -1082,8 +1157,14 @@ export async function collectUberInvoices(
             source: 'uber', source_ref: `rides:${order.orderId}`,
             remote_path: filingResult.filePath, folder_path: filingResult.folderPath,
             filename: filingResult.filename, file_size_bytes: pdfBuffer.length,
+            object_key: filingResult.objectKey ?? null,
+            checksum: filingResult.checksum ?? null,
+            mime: filingResult.mime ?? 'application/pdf',
+            bytes: filingResult.bytes ?? pdfBuffer.length,
+            storage_backend: filingResult.storageBackend ?? null,
             status: 'filed',
             user_id: userId,
+            tenant_id: userId,
           });
         } else {
           orderResult.error = filingResult.error;
@@ -1095,6 +1176,7 @@ export async function collectUberInvoices(
             source_ref: `rides:${order.orderId}`,
             status: 'failed', error_message: filingResult.error,
             user_id: userId,
+            tenant_id: userId,
           });
         }
       } catch (err) {

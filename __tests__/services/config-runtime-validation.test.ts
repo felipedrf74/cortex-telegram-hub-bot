@@ -115,13 +115,22 @@ describe('runtime config validation', () => {
     expect(config.billing.allowUnsafePaywallBypass).toBe(true);
   });
 
-  it('fails fast in production when finance encryption is enabled without FINANCE_ENCRYPTION_KEY', async () => {
+  it('fails fast in production when finance encryption is missing FINANCE_ENCRYPTION_KEY', async () => {
     applySafeProductionEnv();
     vi.stubEnv('FINANCE_ENCRYPTION_ENABLED', 'true');
     vi.stubEnv('FINANCE_ENCRYPTION_KEY', '');
 
     await expect(loadConfigFresh()).rejects.toThrow(
-      'FINANCE_ENCRYPTION_KEY is required when FINANCE_ENCRYPTION_ENABLED=true in production.',
+      'FINANCE_ENCRYPTION_ENABLED=true and FINANCE_ENCRYPTION_KEY are required in production.',
+    );
+  });
+
+  it('fails fast in production when finance encryption is disabled', async () => {
+    applySafeProductionEnv();
+    vi.stubEnv('FINANCE_ENCRYPTION_ENABLED', 'false');
+
+    await expect(loadConfigFresh()).rejects.toThrow(
+      'FINANCE_ENCRYPTION_ENABLED=true and FINANCE_ENCRYPTION_KEY are required in production.',
     );
   });
 
