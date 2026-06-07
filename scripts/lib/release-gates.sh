@@ -63,14 +63,11 @@ release_lock_owner_value() {
   awk -F= -v key="$key" '$1 == key { print substr($0, index($0, "=") + 1); exit }' "$owner_file" 2>/dev/null
 }
 
-release_current_shell_pid() {
-  printf '%s' "${BASHPID:-$$}"
-}
-
 release_write_local_lock_owner() {
   local lock_dir="$1"
+  local current_pid="${BASHPID:-$$}"
   {
-    printf 'pid=%s\n' "$(release_current_shell_pid)"
+    printf 'pid=%s\n' "$current_pid"
     printf 'user=%s\n' "${USER:-${LOGNAME:-unknown}}"
     printf 'host=%s\n' "$(release_current_host)"
     printf 'script=%s\n' "$(basename "$0")"
@@ -94,8 +91,9 @@ release_path_mtime_epoch() {
 
 release_write_reclaim_marker_owner() {
   local marker_dir="$1"
+  local current_pid="${BASHPID:-$$}"
   {
-    printf 'pid=%s\n' "$(release_current_shell_pid)"
+    printf 'pid=%s\n' "$current_pid"
     printf 'host=%s\n' "$(release_current_host)"
     printf 'createdAt=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   } > "$marker_dir/owner"
@@ -140,13 +138,14 @@ release_reclaim_marker_is_stale() {
 
 release_acquire_reclaim_marker() {
   local marker_dir="$1"
-  local stale_marker
+  local stale_marker current_pid
   if mkdir "$marker_dir" 2>/dev/null; then
     release_write_reclaim_marker_owner "$marker_dir"
     return 0
   fi
   if [ -d "$marker_dir" ] && release_reclaim_marker_is_stale "$marker_dir"; then
-    stale_marker="${marker_dir}.stale.$(release_current_shell_pid)"
+    current_pid="${BASHPID:-$$}"
+    stale_marker="${marker_dir}.stale.$current_pid"
     if mv "$marker_dir" "$stale_marker" 2>/dev/null; then
       rm -rf "$stale_marker"
       if mkdir "$marker_dir" 2>/dev/null; then
@@ -201,7 +200,7 @@ release_acquire_local_lock() {
     return 0
   fi
   if [ -d "$lock_dir" ] && release_local_lock_is_stale "$lock_dir"; then
-    local reclaim_marker stale_lock
+    local reclaim_marker stale_lock current_pid
     reclaim_marker="$lock_dir/.reclaiming"
     if ! release_acquire_reclaim_marker "$reclaim_marker"; then
       echo "❌ Lost race reclaiming stale local release lock: $lock_dir" >&2
@@ -214,7 +213,8 @@ release_acquire_local_lock() {
     fi
     echo "🟡 Reclaiming stale local release lock: $lock_dir" >&2
     sed 's/^/   /' "$lock_dir/owner" >&2 || true
-    stale_lock="${lock_dir}.stale.$(release_current_shell_pid)"
+    current_pid="${BASHPID:-$$}"
+    stale_lock="${lock_dir}.stale.$current_pid"
     rm -rf "$stale_lock" 2>/dev/null || true
     if mv "$lock_dir" "$stale_lock" 2>/dev/null; then
       if mkdir "$lock_dir" 2>/dev/null; then
