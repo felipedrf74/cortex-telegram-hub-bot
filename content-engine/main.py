@@ -105,7 +105,9 @@ class InternalSecretMiddleware(BaseHTTPMiddleware):
 
         expected = cfg.internal_api_secret
         provided = request.headers.get("x-internal-secret") or ""
-        if not expected or not secrets.compare_digest(provided, expected):
+        expected_bytes = (expected or "").encode("utf-8")
+        provided_bytes = provided.encode("utf-8", "replace")
+        if not expected_bytes or not secrets.compare_digest(provided_bytes, expected_bytes):
             return JSONResponse(
                 status_code=401,
                 content={"error": {"code": "UNAUTHORIZED", "message": "Unauthorized"}},

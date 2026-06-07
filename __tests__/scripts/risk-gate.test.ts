@@ -38,4 +38,22 @@ describe('risk-gate dry run', () => {
 
     expect(raw).toContain('tenant-auth-security');
   });
+
+  it('runs content-engine pytest for Python engine changes', () => {
+    const raw = execFileSync(
+      'bash',
+      [
+        'scripts/risk-gate.sh',
+        '--dry-run',
+        '--skip-typecheck',
+        '--skip-migrations',
+        '--files',
+        'content-engine/main.py',
+      ],
+      { encoding: 'utf8' },
+    );
+
+    expect(raw).toContain('-m pytest');
+    expect(raw).toContain('/content-engine/tests');
+  });
 });

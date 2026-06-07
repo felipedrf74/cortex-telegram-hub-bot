@@ -3,6 +3,7 @@ import { execFileSync } from 'node:child_process';
 import { createPrivateKey, createPublicKey, sign as cryptoSign, verify as cryptoVerify } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import { resolveMaxAge } from './lib/freshness.mjs';
 
 const args = process.argv.slice(2);
 const command = args[0] || 'validate';
@@ -19,7 +20,14 @@ function hasArg(name) {
 
 const root = path.resolve(readArg('--root', process.cwd()));
 const evidencePath = readArg('--evidence', process.env.NEXUS_RELEASE_EVIDENCE_PATH || 'docs/release/evidence/latest-release-evidence.json');
-const maxAgeSeconds = Number(readArg('--max-age-seconds', process.env.NEXUS_RELEASE_EVIDENCE_MAX_AGE_S || String(72 * 60 * 60)));
+const DEFAULT_MAX_AGE_SECONDS = 72 * 60 * 60;
+const MAX_AGE_CEILING_SECONDS = 7 * 24 * 60 * 60;
+const maxAgeSeconds = resolveMaxAge(
+  readArg('--max-age-seconds', process.env.NEXUS_RELEASE_EVIDENCE_MAX_AGE_S || String(DEFAULT_MAX_AGE_SECONDS)),
+  DEFAULT_MAX_AGE_SECONDS,
+  MAX_AGE_CEILING_SECONDS,
+  { root, flag: 'NEXUS_RELEASE_EVIDENCE_MAX_AGE_S' },
+);
 const outputJson = hasArg('--json');
 const allowUnsigned = hasArg('--allow-unsigned') || process.env.NEXUS_RELEASE_EVIDENCE_ALLOW_UNSIGNED === '1';
 
@@ -31,6 +39,7 @@ const REQUIRED_COMMANDS = [
   'sciencePolicy',
   'migrations',
   'cannotSkipDashboard',
+  'smoke',
 ];
 
 function emit(payload, exitCode) {
@@ -107,12 +116,11 @@ function privateKeyPem() {
 }
 
 function publicKeyPem() {
-  return readPemFromArgOrEnv(
-    '--public-key',
-    'NEXUS_RELEASE_EVIDENCE_PUBLIC_KEY_PEM',
-    'NEXUS_RELEASE_EVIDENCE_PUBLIC_KEY_PATH',
-    'docs/release/evidence/release-evidence-public-key.pem',
-  );
+  const directPath = readArg('--public-key', '');
+  if (directPath) return fs.readFileSync(path.resolve(root, directPath), 'utf8');
+  const defaultPath = path.resolve(root, 'docs/release/evidence/release-evidence-public-key.pem');
+  if (fs.existsSync(defaultPath)) return fs.readFileSync(defaultPath, 'utf8');
+  return '';
 }
 
 function signPayload(payload, pem = privateKeyPem()) {
@@ -268,6 +276,11 @@ function validate() {
   const manifest = currentManifest();
   const currentSha = gitValue(['rev-parse', 'HEAD']);
   const expectedSha = readArg('--expect-sha', currentSha || '');
+  const fullShaPattern = /^[0-9a-f]{40}$/i;
+
+  if (!expectedSha || !fullShaPattern.test(expectedSha)) {
+    reasons.push(`engine_sha_unverifiable:${expectedSha || 'missing'}`);
+  }
 
   if (!isPassed(payload.verdict)) {
     reasons.push(`verdict_not_passing:${payload.verdict || 'missing'}`);
@@ -276,6 +289,8 @@ function validate() {
   const gotSha = payload?.engine?.sha || null;
   if (!gotSha) {
     reasons.push('engine_sha_missing');
+  } else if (!fullShaPattern.test(gotSha)) {
+    reasons.push(`engine_sha_invalid:${gotSha}`);
   } else if (expectedSha && gotSha !== expectedSha) {
     reasons.push(`engine_sha_mismatch:evidence=${gotSha}:current=${expectedSha}`);
   }

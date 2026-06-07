@@ -16,8 +16,9 @@ The signed payload uses schema `nexus.release-evidence-payload.v2` and keys on:
 - optional iOS SHA plus `includesIos`
 - optional iOS build hash when the release includes iOS
 - release artifact manifest digest from `scripts/release-artifact-manifest.mjs`
-- command results and test counts for typecheck, build, Vitest, pytest,
-  science-policy, migration rehearsal, and cannot-skip dashboard
+- command results and test counts for typecheck, build, full sharded Vitest,
+  full pytest, science-policy, migration rehearsal, sandbox smoke, and the
+  cannot-skip dashboard
 
 The outer envelope uses schema `nexus.release-evidence.v2`:
 
@@ -27,18 +28,19 @@ The outer envelope uses schema `nexus.release-evidence.v2`:
 - `keyId`
 
 Deploy validation rejects unsigned evidence, stale evidence, zero Vitest/pytest
-counts, missing command results, non-passing command results, prefix SHA
-matches, and manifest drift.
+counts, missing sandbox-smoke proof, missing command results, non-passing
+command results, prefix SHA matches, and manifest drift.
 
 ## Evidence Producer
 
 The `RC — Release Evidence` workflow runs on `v*` tags and manual dispatch. It
-runs sharded Vitest, content-engine pytest on Python 3.12, typecheck, build,
-cumulative migration rehearsal, and the cannot-skip dashboard. It also builds
-the release-test container and runs the non-sharded release gate contract inside
-that container before writing:
+runs the full JavaScript suite once per release candidate as four Vitest shards,
+content-engine pytest once on Python 3.12, typecheck, build, cumulative
+migration rehearsal, and the cannot-skip dashboard. It also builds the
+release-test container and runs the release gate contract inside that container
+as sandbox-smoke proof before writing:
 
-- `docs/release/evidence/release-evidence-<engine-sha>.json`
+- `docs/release/evidence/release-evidence-<engine-sha>-<run-id>-<run-attempt>.json`
 - `docs/release/evidence/latest-release-evidence.json`
 
 The workflow writes evidence through `scripts/release-evidence-container.sh`, so
@@ -72,15 +74,37 @@ against the current full SHA and manifest digest. `deploy.sh` validates again
 after `npm run build`, immediately before remote mutation, so the digest that
 matched is the digest about to be shipped.
 
+For local deploy consumption, keep downloaded CI evidence outside the tracked
+docs tree by default:
+
+- `.local/release/evidence/latest-release-evidence.json`
+- `.local/release/evidence/release-evidence-<engine-sha>-<run-id>-<run-attempt>.json`
+
+Override with `NEXUS_RELEASE_EVIDENCE_PATH` or
+`NEXUS_RELEASE_CLEAN_RC_EVIDENCE_DIR` only when the replacement path is part of
+an owner-approved release runbook. The evidence file itself may be
+operator-writable because the signed payload, public key, exact SHA, and exact
+manifest digest are the trust boundary.
+
 Default production deploy still runs full verification. `auto-when-staged` can
 skip full local Vitest only when all are true:
 
 - `NEXUS_DEPLOY_SKIP_VERIFY=auto-when-staged`
 - `NEXUS_RELEASE_EVIDENCE_REUSE_ENABLED=1`
 - signed v2 evidence validates against the exact post-build manifest
+- at least three clean signed RC evidence files validate for the current SHA
 - `scripts/rollback-drill-check.mjs` finds current rollback drill evidence
+- `scripts/promote-to-prod.sh` has proven local/staging artifact manifest
+  parity and passed `NEXUS_STAGING_PROD_MANIFEST_PARITY_OK=1` plus
+  `NEXUS_STAGING_MANIFEST_DIGEST` into `scripts/deploy.sh`
 - the worktree is clean
 - no emergency dirty-deploy override is active
+
+When these conditions pass, deploy still runs typecheck, build, post-build
+artifact digest revalidation against the staging parity proof, env/readiness
+checks, deploy locks, DB integrity, native-module probes, PM2 checks, and
+postdeploy health. When any condition is missing or invalid, deploy falls back
+to the full local `npm run verify` path.
 
 Emergency bypasses require `NEXUS_EMERGENCY_SKIP_REASON` and are appended to
 `.local/release/override-audit.jsonl`.

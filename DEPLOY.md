@@ -46,8 +46,15 @@ For any change beyond a one-line typo, use the validated-promote pipeline:
 ```bash
 cd ~/Desktop/Custom\ Connectors/Cortex/cortex-telegram-hub-bot
 
-# 0. Prepare the versioned release commit before staging
-./scripts/release-prep.sh --patch
+# 0. Prepare and locally gate the release candidate
+npm run release:prep -- --patch
+npm run release:focused-verify
+npm run release:pre-rc
+
+# 0a. Let RC CI produce signed evidence:
+#     full Vitest once as shards, full pytest once, typecheck, build,
+#     migration safety, science-policy, sandbox smoke, cannot-skip dashboard.
+#     Download the signed artifacts into .local/release/evidence/.
 
 # 1. Ship the exact release commit to staging
 ./scripts/deploy-staging.sh
@@ -61,17 +68,27 @@ cd ~/Desktop/Custom\ Connectors/Cortex/cortex-telegram-hub-bot
 
 `promote-to-prod.sh` checks staging/prod env-key parity, validates the
 staging artifact digest as a hard no-drift gate, runs `staging-smoke.sh`, and
-only proceeds to `deploy.sh` if all gates pass. `deploy.sh` no longer bumps
+only proceeds to `deploy.sh` if all gates pass. When `promote-to-prod.sh`
+delegates to `deploy.sh`, it passes the staging manifest digest as the required
+parity proof for deploy-time evidence reuse. `deploy.sh` no longer bumps
 versions during production deploy; the artifact digest checked after local
-build is rechecked immediately before rsync. See `STAGING.md` for the full
-staging runbook.
+build is rechecked against both signed evidence and the staging parity proof
+immediately before rsync. See `STAGING.md` for the full staging runbook.
 
 Signed release evidence reuse remains shadow/default-off. Before enabling
 `NEXUS_RELEASE_EVIDENCE_REUSE_ENABLED=1`, an owner must install the GitHub
 Actions signing secret that matches
 `docs/release/evidence/release-evidence-public-key.pem`, three clean signed RCs
-must pass, and current rollback drill evidence must exist at
+for the candidate SHA must be present under `.local/release/evidence/`, and
+current rollback drill evidence must exist at
 `docs/release/evidence/rollback-drill-latest.json`.
+
+Performance rule: full Vitest and full pytest are required once per release
+candidate through signed CI evidence. Staging and production deploy steps should
+not rerun the 10k+ JavaScript suite when signed evidence, exact SHA, exact
+post-build artifact digest, clean RC history, rollback drill evidence, staging
+smoke, locks, env parity, and readiness checks all pass. If any of those gates
+is missing or invalid, `deploy.sh` falls back to the full local verify path.
 
 ### GitHub Actions Reachability Smoke
 
@@ -120,7 +137,8 @@ It still does:
 1. Acquires local and remote deploy locks
 2. Verifies git/worktree health and release evidence shadow status
 3. Runs full local validation unless an explicitly enabled signed-evidence path
-   is also backed by current rollback drill evidence
+   is also backed by three clean RC evidence runs and current rollback drill
+   evidence
 4. Type-checks TypeScript locally
 5. Builds the project and records the artifact manifest digest
 6. Rechecks the artifact digest immediately before rsync

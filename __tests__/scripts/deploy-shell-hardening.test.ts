@@ -1,0 +1,368 @@
+import { execFileSync } from 'node:child_process';
+import {
+  chmodSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { describe, expect, it } from 'vitest';
+
+const ROOT = join(__dirname, '..', '..');
+const READINESS = join(ROOT, 'scripts', 'deploy-readiness-check.sh');
+const ENV_PARITY = join(ROOT, 'scripts', 'env-parity-check.sh');
+const VERIFY_CONTAINER = join(ROOT, 'scripts', 'release-verify-container.sh');
+
+function prependPath(binDir: string) {
+  return `${binDir}:${process.env.PATH ?? ''}`;
+}
+
+function writeExecutable(path: string, contents: string) {
+  writeFileSync(path, contents, 'utf8');
+  chmodSync(path, 0o755);
+}
+
+function writeInjectionDetectingSsh(binDir: string) {
+  writeExecutable(
+    join(binDir, 'ssh'),
+    `#!/usr/bin/env bash
+set -euo pipefail
+shift
+if [ "$#" -eq 1 ]; then
+  bash -c "$1"
+fi
+exit 0
+`,
+  );
+}
+
+function writeExecSsh(binDir: string) {
+  writeExecutable(
+    join(binDir, 'ssh'),
+    `#!/usr/bin/env bash
+set -euo pipefail
+shift
+exec "$@"
+`,
+  );
+}
+
+function writeNodeTransformingSsh(binDir: string) {
+  writeExecutable(
+    join(binDir, 'ssh'),
+    `#!/usr/bin/env bash
+set -euo pipefail
+shift
+script="$(mktemp)"
+node_bin="\${NODE_BIN:-node}"
+sed "s|/usr/bin/node|$node_bin|g" > "$script"
+if [ "\${1:-}" = "bash" ] && [ "\${2:-}" = "-s" ]; then
+  shift 2
+  if [ "\${1:-}" = "--" ]; then
+    shift
+  fi
+  exec bash "$script" "$@"
+fi
+exec "$@"
+`,
+  );
+}
+
+describe('deploy shell hardening', () => {
+  it('passes readiness arguments through ssh without command injection', () => {
+    const root = mkdtempSync(join(tmpdir(), 'readiness-injection-'));
+    const binDir = join(root, 'bin');
+    const pwn = join(root, 'PWN');
+    mkdirSync(binDir);
+    writeInjectionDetectingSsh(binDir);
+    try {
+      const maliciousRemoteDir = `${root}/remote'; touch '${pwn}'; #`;
+      execFileSync(
+        'bash',
+        [
+          READINESS,
+          '--target',
+          'prod',
+          '--server',
+          'fake-server',
+          '--remote-dir',
+          maliciousRemoteDir,
+          '--portal-port',
+          '8200',
+          '--content-port',
+          '8100',
+        ],
+        {
+          cwd: ROOT,
+          env: {
+            ...process.env,
+            PATH: prependPath(binDir),
+            NEXUS_DEPLOY_PM2_SAMPLE_DELAY_S: '0',
+          },
+        },
+      );
+      expect(() => readFileSync(pwn, 'utf8')).toThrow();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('passes env parity directories through ssh without command injection', () => {
+    const root = mkdtempSync(join(tmpdir(), 'env-parity-injection-'));
+    const binDir = join(root, 'bin');
+    const pwn = join(root, 'PWN');
+    mkdirSync(binDir);
+    writeInjectionDetectingSsh(binDir);
+    try {
+      const maliciousStagingDir = `${root}/staging'; touch '${pwn}'; #`;
+      execFileSync(
+        'bash',
+        [
+          ENV_PARITY,
+          '--server',
+          'fake-server',
+          '--staging-dir',
+          maliciousStagingDir,
+          '--prod-dir',
+          join(root, 'prod'),
+        ],
+        {
+          cwd: ROOT,
+          env: { ...process.env, PATH: prependPath(binDir) },
+        },
+      );
+      expect(() => readFileSync(pwn, 'utf8')).toThrow();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('compares env key presence while allowing staging/prod secret values to differ', () => {
+    const root = mkdtempSync(join(tmpdir(), 'env-parity-values-'));
+    const binDir = join(root, 'bin');
+    const staging = join(root, 'staging');
+    const prod = join(root, 'prod');
+    mkdirSync(binDir);
+    mkdirSync(staging);
+    mkdirSync(prod);
+    writeExecSsh(binDir);
+    writeFileSync(
+      join(staging, '.env'),
+      [
+        'NODE_ENV=staging',
+        'BACKUP_ENCRYPT=false',
+        'AI_CALL_TIMEOUT_MS=60',
+        'OAUTH_ENCRYPTION_KEY=staging-key',
+        'INTERNAL_API_SECRET=staging-secret',
+        'STRIPE_SECRET_KEY=sk_test_example',
+      ].join('\n'),
+    );
+    writeFileSync(
+      join(prod, '.env'),
+      [
+        'NODE_ENV=production',
+        'BACKUP_ENCRYPT=true',
+        'AI_CALL_TIMEOUT_MS=30',
+        'OAUTH_ENCRYPTION_KEY=prod-key',
+        'INTERNAL_API_SECRET=prod-secret',
+        'STRIPE_SECRET_KEY=sk_live_example',
+      ].join('\n'),
+    );
+    try {
+      const output = execFileSync(
+        'bash',
+        [ENV_PARITY, '--server', 'fake-server', '--staging-dir', staging, '--prod-dir', prod],
+        {
+          cwd: ROOT,
+          encoding: 'utf8',
+          env: { ...process.env, PATH: prependPath(binDir) },
+        },
+      );
+      expect(output).toContain('env_parity_ok');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('fails env parity when production NODE_ENV or backup encryption is unsafe', () => {
+    const root = mkdtempSync(join(tmpdir(), 'env-parity-prod-required-'));
+    const binDir = join(root, 'bin');
+    const staging = join(root, 'staging');
+    const prod = join(root, 'prod');
+    mkdirSync(binDir);
+    mkdirSync(staging);
+    mkdirSync(prod);
+    writeExecSsh(binDir);
+    const shared = [
+      'BACKUP_ENCRYPT=false',
+      'AI_CALL_TIMEOUT_MS=60',
+      'OAUTH_ENCRYPTION_KEY=key',
+      'INTERNAL_API_SECRET=secret',
+    ].join('\n');
+    writeFileSync(join(staging, '.env'), `NODE_ENV=staging\n${shared}\n`);
+    writeFileSync(join(prod, '.env'), `NODE_ENV=staging\n${shared}\n`);
+    try {
+      expect(() =>
+        execFileSync(
+          'bash',
+          [ENV_PARITY, '--server', 'fake-server', '--staging-dir', staging, '--prod-dir', prod],
+          {
+            cwd: ROOT,
+            env: { ...process.env, PATH: prependPath(binDir) },
+            stdio: ['ignore', 'pipe', 'pipe'],
+          },
+        ),
+      ).toThrow(/NODE_ENV:prod_expected_production|BACKUP_ENCRYPT:prod_expected_enabled/);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('fails production readiness when INTERNAL_API_SECRET is missing', () => {
+    const root = mkdtempSync(join(tmpdir(), 'readiness-missing-secret-'));
+    const binDir = join(root, 'bin');
+    const remoteDir = join(root, 'remote');
+    const dataDir = join(remoteDir, 'data');
+    mkdirSync(binDir);
+    mkdirSync(dataDir, { recursive: true });
+    writeNodeTransformingSsh(binDir);
+    writeExecutable(
+      join(binDir, 'sqlite3'),
+      `#!/usr/bin/env bash
+echo ok
+`,
+    );
+    writeExecutable(
+      join(binDir, 'curl'),
+      `#!/usr/bin/env bash
+url="\${@: -1}"
+case "$url" in
+  */health) echo '{"status":"healthy","server":{"database":"connected"}}' ;;
+  */ready) echo '{"status":"ready","internalAuthConfigured":true}' ;;
+  *) exit 22 ;;
+esac
+`,
+    );
+    writeFileSync(join(remoteDir, '.env'), `DATABASE_PATH=${join(dataDir, 'bot.db')}\n`, {
+      mode: 0o600,
+    });
+    writeFileSync(join(dataDir, 'bot.db'), '');
+    symlinkSync(join(ROOT, 'node_modules'), join(remoteDir, 'node_modules'), 'dir');
+    try {
+      let combined = '';
+      try {
+        execFileSync(
+          'bash',
+          [
+            READINESS,
+            '--target',
+            'prod',
+            '--server',
+            'fake-server',
+            '--remote-dir',
+            remoteDir,
+            '--portal-port',
+            '8200',
+            '--content-port',
+            '8100',
+          ],
+          {
+            cwd: ROOT,
+            env: {
+              ...process.env,
+              PATH: prependPath(binDir),
+              NODE_BIN: process.execPath,
+              NEXUS_DEPLOY_PM2_SAMPLE_DELAY_S: '0',
+            },
+            stdio: ['ignore', 'pipe', 'pipe'],
+          },
+        );
+        throw new Error('expected readiness to fail without INTERNAL_API_SECRET');
+      } catch (error) {
+        const failure = error as { stdout?: Buffer | string; stderr?: Buffer | string };
+        combined = `${String(failure.stdout ?? '')}\n${String(failure.stderr ?? '')}`;
+      }
+      expect(combined).toContain('INTERNAL_API_SECRET missing');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('fails readiness before ssh when PM2 stability env values are invalid', () => {
+    const root = mkdtempSync(join(tmpdir(), 'readiness-invalid-env-'));
+    const binDir = join(root, 'bin');
+    const sshLog = join(root, 'ssh.log');
+    mkdirSync(binDir);
+    writeExecutable(
+      join(binDir, 'ssh'),
+      `#!/usr/bin/env bash
+printf 'ssh called\\n' >> "${sshLog}"
+exit 0
+`,
+    );
+    try {
+      expect(() =>
+        execFileSync(
+          'bash',
+          [
+            READINESS,
+            '--target',
+            'prod',
+            '--server',
+            'fake-server',
+            '--remote-dir',
+            join(root, 'remote'),
+            '--portal-port',
+            '8200',
+            '--content-port',
+            '8100',
+          ],
+          {
+            cwd: ROOT,
+            env: {
+              ...process.env,
+              PATH: prependPath(binDir),
+              NEXUS_DEPLOY_MAX_PM2_RESTARTS: 'not-a-number',
+            },
+            stdio: ['ignore', 'pipe', 'pipe'],
+          },
+        ),
+      ).toThrow(/Invalid NEXUS_DEPLOY_MAX_PM2_RESTARTS/);
+      expect(() => readFileSync(sshLog, 'utf8')).toThrow();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('runs release-verify-container with default args on bash 3 compatible array expansion', () => {
+    const root = mkdtempSync(join(tmpdir(), 'release-verify-container-'));
+    const binDir = join(root, 'bin');
+    const dockerLog = join(root, 'docker.log');
+    mkdirSync(binDir);
+    writeExecutable(
+      join(binDir, 'docker'),
+      `#!/usr/bin/env bash
+printf '%s\\n' "$*" >> "${dockerLog}"
+`,
+    );
+    try {
+      execFileSync('bash', [VERIFY_CONTAINER], {
+        cwd: ROOT,
+        env: {
+          ...process.env,
+          PATH: prependPath(binDir),
+          NEXUS_RELEASE_TEST_SKIP_BUILD: '1',
+        },
+      });
+      const log = readFileSync(dockerLog, 'utf8');
+      expect(log).toContain('run --rm');
+      expect(log).toContain('./scripts/release-verify.sh');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});

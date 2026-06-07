@@ -23,9 +23,12 @@ REMOTE_DIR="${DEPLOY_PATH:-/home/dominguez/telegram-hub-bot}"
 LOCAL_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 source "$LOCAL_DIR/scripts/lib/release-gates.sh"
 PM2="/home/dominguez/.npm-global/bin/pm2"
+RELEASE_EVIDENCE_PUBLIC_KEY_REL="docs/release/evidence/release-evidence-public-key.pem"
+RELEASE_EVIDENCE_PATH="${NEXUS_RELEASE_EVIDENCE_PATH:-$LOCAL_DIR/.local/release/evidence/latest-release-evidence.json}"
 NOTION_TOKEN="${NOTION_TOKEN:-}"
 NOTION_RELEASES_DB="${NOTION_RELEASES_DB:-332ad49d-23e7-8134-b413-d8d3cc3f1a4a}"
 SKIP_MODE="${NEXUS_DEPLOY_SKIP_VERIFY:-0}"
+REUSED_RELEASE_EVIDENCE=0
 AUDIT_LOG="${NEXUS_RELEASE_AUDIT_LOG:-$LOCAL_DIR/.local/release/override-audit.jsonl}"
 DEPLOY_MUTATION_MARKER="${NEXUS_DEPLOY_MUTATION_MARKER:-/tmp/nexus-deploy-prod-mutation-started}"
 
@@ -78,9 +81,12 @@ echo ""
 # NEXUS_DEPLOY_SKIP_VERIFY in `.env` or shell config. The script itself
 # defaults to legacy behavior so accidental rollouts are safe.
 cd "$LOCAL_DIR"
-rm -f "$DEPLOY_MUTATION_MARKER"
+if [ "$DRY_RUN" != "1" ]; then
+  rm -f "$DEPLOY_MUTATION_MARKER"
+fi
 trap release_cleanup_all_locks EXIT
 release_require_git_worktree "$LOCAL_DIR"
+release_require_tracked_clean_file "$LOCAL_DIR" "$RELEASE_EVIDENCE_PUBLIC_KEY_REL"
 release_acquire_local_lock "$LOCAL_DIR" "prod-deploy"
 
 audit_override() {
@@ -155,7 +161,9 @@ restore_deploy_generated_artifacts() {
   fi
 }
 
-restore_deploy_generated_artifacts
+if [ "$DRY_RUN" != "1" ]; then
+  restore_deploy_generated_artifacts
+fi
 ensure_clean_deploy_tree
 
 if [ "${NEXUS_DEPLOY_SKIP_VERIFY:-0}" = "1" ] || [ "${NEXUS_DEPLOY_SKIP_VERIFY:-0}" = "true" ] || [ "${NEXUS_DEPLOY_SKIP_VERIFY:-0}" = "yes" ]; then
@@ -194,7 +202,7 @@ run_typecheck_only() {
     echo ""
     echo "═══════════════════════════════════════════════"
     echo "  ✅ TYPECHECK PASSED — skipping full vitest"
-    echo "  (pre-push + staging-smoke already validated this SHA)"
+    echo "  (signed CI evidence + staging/readiness gates validate this SHA)"
     echo "═══════════════════════════════════════════════"
     echo ""
   else
@@ -206,10 +214,59 @@ run_typecheck_only() {
   fi
 }
 
-require_current_rollback_drill() {
+check_current_rollback_drill() {
   echo "🧯 Checking current rollback drill evidence before release evidence reuse..."
-  node scripts/rollback-drill-check.mjs --json > /tmp/nexus-rollback-drill-check.json
+  if ! node scripts/rollback-drill-check.mjs --expect-sha "$(git rev-parse HEAD)" --expect-target-version "$(node -p "require('./package.json').version")" --public-key "$RELEASE_EVIDENCE_PUBLIC_KEY_REL" --json > /tmp/nexus-rollback-drill-check.json; then
+    cat /tmp/nexus-rollback-drill-check.json 2>/dev/null || true
+    return 1
+  fi
   cat /tmp/nexus-rollback-drill-check.json
+}
+
+check_clean_rc_history() {
+  local min_count="${NEXUS_RELEASE_MIN_CLEAN_RCS:-3}"
+  local evidence_dir="${NEXUS_RELEASE_CLEAN_RC_EVIDENCE_DIR:-$LOCAL_DIR/.local/release/evidence}"
+  local expected_sha
+  local count=0
+
+  case "$min_count" in
+    ''|*[!0-9]*)
+      echo "❌ Invalid NEXUS_RELEASE_MIN_CLEAN_RCS=$min_count"
+      return 1
+      ;;
+  esac
+
+  expected_sha="$(git rev-parse HEAD)"
+  echo "🧾 Checking clean signed RC evidence history (${count}/${min_count})..."
+  shopt -s nullglob
+  local evidence_file
+  for evidence_file in "$evidence_dir"/release-evidence-"$expected_sha"-*.json "$evidence_dir"/release-evidence-"$expected_sha".json; do
+    if node scripts/release-evidence.mjs validate --evidence "$evidence_file" --expect-sha "$expected_sha" --public-key "$RELEASE_EVIDENCE_PUBLIC_KEY_REL" --json >/tmp/nexus-clean-rc-evidence.json 2>/tmp/nexus-clean-rc-evidence.err; then
+      count=$((count + 1))
+    fi
+  done
+  shopt -u nullglob
+
+  if [ "$count" -lt "$min_count" ]; then
+    echo "🟡 Clean signed RC evidence count is $count/$min_count for $expected_sha."
+    echo "   Download or retain at least $min_count signed RC evidence artifacts before enabling deploy-time reuse."
+    return 1
+  fi
+
+  echo "   ✅ Clean signed RC evidence count: $count/$min_count"
+}
+
+check_staging_manifest_parity() {
+  if [ "${NEXUS_STAGING_PROD_MANIFEST_PARITY_OK:-0}" != "1" ]; then
+    echo "🟡 Staging/prod manifest parity proof is missing."
+    echo "   Run scripts/promote-to-prod.sh so staging artifact parity is checked before deploy-time evidence reuse."
+    return 1
+  fi
+  if [ -z "${NEXUS_STAGING_MANIFEST_DIGEST:-}" ]; then
+    echo "🟡 Staging/prod manifest parity proof did not include NEXUS_STAGING_MANIFEST_DIGEST."
+    return 1
+  fi
+  echo "   ✅ Staging/prod manifest parity proof: $NEXUS_STAGING_MANIFEST_DIGEST"
 }
 
 case "$SKIP_MODE" in
@@ -220,7 +277,7 @@ case "$SKIP_MODE" in
     if [ "${NEXUS_RELEASE_EVIDENCE_REUSE_ENABLED:-0}" != "1" ]; then
       echo "🟡 auto-when-staged requested, but evidence reuse is still in shadow."
       echo "   Set NEXUS_RELEASE_EVIDENCE_REUSE_ENABLED=1 only after 3 clean RCs."
-      if node scripts/release-evidence.mjs validate --json > /tmp/nexus-release-evidence-shadow.json 2>/tmp/nexus-release-evidence-shadow.err; then
+      if node scripts/release-evidence.mjs validate --evidence "$RELEASE_EVIDENCE_PATH" --public-key "$RELEASE_EVIDENCE_PUBLIC_KEY_REL" --json > /tmp/nexus-release-evidence-shadow.json 2>/tmp/nexus-release-evidence-shadow.err; then
         echo "   Shadow evidence check: MATCH"
         cat /tmp/nexus-release-evidence-shadow.json
       else
@@ -229,11 +286,16 @@ case "$SKIP_MODE" in
         cat /tmp/nexus-release-evidence-shadow.json 2>/dev/null || true
       fi
       run_full_verify
-    elif node scripts/release-evidence.mjs validate --json > /tmp/nexus-release-evidence-validate.json 2>/tmp/nexus-release-evidence-validate.err; then
-      require_current_rollback_drill
-      echo "🔁 NEXUS_DEPLOY_SKIP_VERIFY=auto-when-staged: release evidence matches SHA + manifest digest — typecheck only"
-      cat /tmp/nexus-release-evidence-validate.json
-      run_typecheck_only
+    elif node scripts/release-evidence.mjs validate --evidence "$RELEASE_EVIDENCE_PATH" --public-key "$RELEASE_EVIDENCE_PUBLIC_KEY_REL" --json > /tmp/nexus-release-evidence-validate.json 2>/tmp/nexus-release-evidence-validate.err; then
+      if check_clean_rc_history && check_current_rollback_drill && check_staging_manifest_parity; then
+        echo "🔁 NEXUS_DEPLOY_SKIP_VERIFY=auto-when-staged: signed evidence matches SHA + manifest digest + clean RC history — typecheck only"
+        cat /tmp/nexus-release-evidence-validate.json
+        run_typecheck_only
+        REUSED_RELEASE_EVIDENCE=1
+      else
+        echo "🔁 Evidence reuse preconditions are not complete — full verify"
+        run_full_verify
+      fi
     else
       echo "🔁 NEXUS_DEPLOY_SKIP_VERIFY=auto-when-staged: no matching release evidence — full verify"
       cat /tmp/nexus-release-evidence-validate.err 2>/dev/null || true
@@ -242,7 +304,7 @@ case "$SKIP_MODE" in
     fi
     ;;
   0|false|no|"")
-    if node scripts/release-evidence.mjs validate --json > /tmp/nexus-release-evidence-shadow.json 2>/tmp/nexus-release-evidence-shadow.err; then
+    if node scripts/release-evidence.mjs validate --evidence "$RELEASE_EVIDENCE_PATH" --public-key "$RELEASE_EVIDENCE_PUBLIC_KEY_REL" --json > /tmp/nexus-release-evidence-shadow.json 2>/tmp/nexus-release-evidence-shadow.err; then
       echo "🟡 Release evidence shadow check: MATCH (strict deploy still runs full verify during shadow period)"
       cat /tmp/nexus-release-evidence-shadow.json
     else
@@ -258,26 +320,19 @@ case "$SKIP_MODE" in
     ;;
 esac
 
-restore_deploy_generated_artifacts
+if [ "$DRY_RUN" != "1" ]; then
+  restore_deploy_generated_artifacts
+fi
 ensure_clean_deploy_tree
 
-# ── 1. Build TypeScript locally ──────────────────────
-echo "📦 Building TypeScript..."
-npm run build 2>/dev/null && echo "   ✅ Build complete" || { echo "   ❌ Build failed — aborting"; exit 1; }
-POST_BUILD_MANIFEST_DIGEST=$(node scripts/release-artifact-manifest.mjs --digest)
-echo "   Artifact digest: $POST_BUILD_MANIFEST_DIGEST"
-if [ "$SKIP_MODE" = "auto-when-staged" ] && [ "${NEXUS_RELEASE_EVIDENCE_REUSE_ENABLED:-0}" = "1" ]; then
-  echo "🔁 Re-validating signed release evidence against post-build artifact..."
-  node scripts/release-evidence.mjs validate --expect-sha "$(git rev-parse HEAD)" --json >/tmp/nexus-release-evidence-post-build.json
-  cat /tmp/nexus-release-evidence-post-build.json
-fi
-
-# Dry-run early-exit: everything below this line touches the server, the
-# git tree, or PM2. Stop here for the rehearsal mode.
+# Dry-run early-exit: everything below this line touches build artifacts,
+# the server, the git tree, or PM2. Stop here for rehearsal mode after the
+# release validation gate has run.
 if [ "$DRY_RUN" = "1" ]; then
   echo ""
   echo "═══════════════════════════════════════════════"
   echo "  🟡 DRY RUN — would now do:"
+  echo "       1)  npm run build and compute release artifact digest"
   echo "       1a) ssh validate prod .env"
   echo "       1b) confirm package version already prepared by scripts/release-prep.sh"
   echo "       2)  ssh \$SERVER pm2 stop nexus-hub + content-engine"
@@ -292,11 +347,28 @@ if [ "$DRY_RUN" = "1" ]; then
   echo "       8)  health checks (curl + pm2 jlist)"
   echo "       9)  Notion log (if NOTION_TOKEN set)"
   echo ""
-  echo "  ✅ Validation/build phase passed; no server mutations performed."
+  echo "  ✅ Validation phase passed; no build, server, git, or PM2 mutations performed."
   echo "  Re-run without --dry-run (or unset NEXUS_DEPLOY_DRY_RUN) to deploy."
   echo "═══════════════════════════════════════════════"
   release_cleanup_all_locks
   exit 0
+fi
+
+# ── 1. Build TypeScript locally ──────────────────────
+echo "📦 Building TypeScript..."
+npm run build 2>/dev/null && echo "   ✅ Build complete" || { echo "   ❌ Build failed — aborting"; exit 1; }
+POST_BUILD_MANIFEST_DIGEST=$(node scripts/release-artifact-manifest.mjs --digest)
+echo "   Artifact digest: $POST_BUILD_MANIFEST_DIGEST"
+if [ "$REUSED_RELEASE_EVIDENCE" = "1" ]; then
+  if [ "$POST_BUILD_MANIFEST_DIGEST" != "${NEXUS_STAGING_MANIFEST_DIGEST:-}" ]; then
+    echo "❌ Post-build artifact digest no longer matches the staging parity proof."
+    echo "   post-build: $POST_BUILD_MANIFEST_DIGEST"
+    echo "   staging:    ${NEXUS_STAGING_MANIFEST_DIGEST:-missing}"
+    exit 1
+  fi
+  echo "🔁 Re-validating signed release evidence against post-build artifact..."
+  node scripts/release-evidence.mjs validate --evidence "$RELEASE_EVIDENCE_PATH" --expect-sha "$(git rev-parse HEAD)" --public-key "$RELEASE_EVIDENCE_PUBLIC_KEY_REL" --json >/tmp/nexus-release-evidence-post-build.json
+  cat /tmp/nexus-release-evidence-post-build.json
 fi
 
 # ── 1a. Validate production .env before deploy ─────────
@@ -521,8 +593,8 @@ fi
 # ── 5. Install/update dependencies on server ─────────
 echo ""
 echo "📥 Installing dependencies..."
-ssh "$SERVER" "cd $REMOTE_DIR && npm ci --production 2>&1 | tail -1"
-ssh "$SERVER" "cd $REMOTE_DIR/content-engine && source .venv/bin/activate && pip install -q -r requirements.txt 2>&1 | tail -3"
+ssh "$SERVER" "set -euo pipefail; cd $REMOTE_DIR && npm ci --production 2>&1 | tail -1"
+ssh "$SERVER" "set -euo pipefail; cd $REMOTE_DIR/content-engine && source .venv/bin/activate && pip install -q -r requirements.txt 2>&1 | tail -3"
 echo "   ✅ Dependencies updated"
 
 # ── 5a. Owner bootstrap preflight (strict) ───────────
@@ -543,6 +615,7 @@ ssh "$SERVER" "
   SYSTEM_NODE=/usr/bin/node
   if [ -x \"\$SYSTEM_NODE\" ]; then
     echo \"   System Node: \$(\$SYSTEM_NODE --version)\"
+    set -euo pipefail
     cd $REMOTE_DIR && PATH=/usr/bin:\$PATH /usr/bin/npm rebuild better-sqlite3 2>&1 | tail -1
     echo '   ✅ Native modules rebuilt for system Node'
   else
@@ -587,7 +660,7 @@ if [ "$PORTAL_REQUIRE_SESSION_AUTH" = "true" ]; then
     node dist/tools/portal-session-token.js --actor deploy-production@nexushub.me --scope admin --ttl-ms 600000 --json \
       | node -e \"let b=''; process.stdin.on('data', c => b += c); process.stdin.on('end', () => { const j = JSON.parse(b); process.stdout.write(j.token || ''); });\"
   " 2>/dev/null || true)
-  if ssh "$SERVER" "curl -sf -H 'x-portal-session: ${PROD_SESSION:-x}' http://localhost:8200/api/snapshot 2>/dev/null | head -c 100" >/dev/null; then
+  if ssh "$SERVER" "curl -sf -o /dev/null -H 'x-portal-session: ${PROD_SESSION:-x}' http://localhost:8200/api/snapshot 2>/dev/null"; then
     echo " ✅ Status portal OK"
   else
     echo " ❌ Status portal not responding"
@@ -597,7 +670,7 @@ if [ "$PORTAL_REQUIRE_SESSION_AUTH" = "true" ]; then
 else
   PORTAL_TOKEN=$(ssh "$SERVER" "grep -oP '(?<=^PORTAL_TOKEN=).+' $REMOTE_DIR/.env 2>/dev/null" || true)
   if [ -n "$PORTAL_TOKEN" ]; then
-    if ssh "$SERVER" "curl -sf -H 'Authorization: Bearer $PORTAL_TOKEN' http://localhost:8200/api/snapshot 2>/dev/null | head -c 100" >/dev/null; then
+    if ssh "$SERVER" "curl -sf -o /dev/null -H 'Authorization: Bearer $PORTAL_TOKEN' http://localhost:8200/api/snapshot 2>/dev/null"; then
       echo " ✅ Status portal OK"
     else
       echo " ❌ Status portal not responding"
@@ -605,7 +678,7 @@ else
       HEALTH_OK=false
     fi
   else
-    if ssh "$SERVER" "curl -sf http://localhost:8200/api/snapshot 2>/dev/null | head -c 100" >/dev/null; then
+    if ssh "$SERVER" "curl -sf -o /dev/null http://localhost:8200/api/snapshot 2>/dev/null"; then
       echo " ✅ Status portal OK"
     else
       echo " ❌ Status portal not responding"

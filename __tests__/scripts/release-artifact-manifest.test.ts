@@ -117,6 +117,7 @@ describe('release-evidence', () => {
         NEXUS_RELEASE_SCIENCE_POLICY_RESULT: 'passed',
         NEXUS_RELEASE_MIGRATIONS_RESULT: 'passed',
         NEXUS_RELEASE_CANNOT_SKIP_DASHBOARD_RESULT: 'passed',
+        NEXUS_RELEASE_SMOKE_RESULT: 'passed',
         NEXUS_RELEASE_VITEST_TEST_COUNT: '42',
         NEXUS_RELEASE_PYTEST_TEST_COUNT: '5',
       },
@@ -155,6 +156,7 @@ describe('release-evidence', () => {
         NEXUS_RELEASE_SCIENCE_POLICY_RESULT: 'passed',
         NEXUS_RELEASE_MIGRATIONS_RESULT: 'passed',
         NEXUS_RELEASE_CANNOT_SKIP_DASHBOARD_RESULT: 'passed',
+        NEXUS_RELEASE_SMOKE_RESULT: 'passed',
         NEXUS_RELEASE_VITEST_TEST_COUNT: '42',
         NEXUS_RELEASE_PYTEST_TEST_COUNT: '5',
       },
@@ -175,9 +177,47 @@ describe('release-evidence', () => {
     const payload = JSON.parse(failed.stdout);
     expect(payload.reasons).toEqual(expect.arrayContaining([
       'signature_missing',
-      expect.stringContaining('engine_sha_mismatch'),
+      expect.stringContaining('engine_sha_invalid'),
       'test_count_invalid:vitest:0',
     ]));
+  });
+
+  it('ignores verifier public-key env overrides during validation', () => {
+    const evidencePath = path.join(tmp, 'docs/release/evidence/latest-release-evidence.json');
+    const attackerKeys = generateKeyPairSync('ed25519');
+    const attackerPrivatePath = path.join(tmp, 'attacker-private.pem');
+    const attackerPublicPath = path.join(tmp, 'attacker-public.pem');
+    fs.writeFileSync(attackerPrivatePath, attackerKeys.privateKey.export({ type: 'pkcs8', format: 'pem' }));
+    fs.writeFileSync(attackerPublicPath, attackerKeys.publicKey.export({ type: 'spki', format: 'pem' }));
+
+    execFileSync('node', [evidenceScript, 'write', '--root', tmp, '--evidence', evidencePath], {
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        NEXUS_RELEASE_EVIDENCE_PRIVATE_KEY_PATH: attackerPrivatePath,
+        NEXUS_RELEASE_TYPECHECK_RESULT: 'passed',
+        NEXUS_RELEASE_BUILD_RESULT: 'passed',
+        NEXUS_RELEASE_VITEST_RESULT: 'passed',
+        NEXUS_RELEASE_PYTEST_RESULT: 'passed',
+        NEXUS_RELEASE_SCIENCE_POLICY_RESULT: 'passed',
+        NEXUS_RELEASE_MIGRATIONS_RESULT: 'passed',
+        NEXUS_RELEASE_CANNOT_SKIP_DASHBOARD_RESULT: 'passed',
+        NEXUS_RELEASE_SMOKE_RESULT: 'passed',
+        NEXUS_RELEASE_VITEST_TEST_COUNT: '99999',
+        NEXUS_RELEASE_PYTEST_TEST_COUNT: '99999',
+      },
+    });
+
+    const failed = spawnSync('node', [evidenceScript, 'validate', '--root', tmp, '--evidence', evidencePath, '--json'], {
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        NEXUS_RELEASE_EVIDENCE_PUBLIC_KEY_PATH: attackerPublicPath,
+      },
+    });
+
+    expect(failed.status).toBe(1);
+    expect(JSON.parse(failed.stdout).reasons).toContain('public_key_missing');
   });
 
   it('rejects self-attested command omissions', () => {
@@ -193,6 +233,7 @@ describe('release-evidence', () => {
         NEXUS_RELEASE_PYTEST_RESULT: 'passed',
         NEXUS_RELEASE_MIGRATIONS_RESULT: 'passed',
         NEXUS_RELEASE_CANNOT_SKIP_DASHBOARD_RESULT: 'passed',
+        NEXUS_RELEASE_SMOKE_RESULT: 'passed',
         NEXUS_RELEASE_VITEST_TEST_COUNT: '42',
         NEXUS_RELEASE_PYTEST_TEST_COUNT: '5',
       },
@@ -206,6 +247,35 @@ describe('release-evidence', () => {
 
     expect(failed.status).toBe(1);
     expect(JSON.parse(failed.stdout).reasons).toContain('command_not_passing:sciencePolicy:missing');
+  });
+
+  it('rejects evidence that lacks sandbox smoke proof', () => {
+    const evidencePath = path.join(tmp, 'docs/release/evidence/latest-release-evidence.json');
+    execFileSync('node', [evidenceScript, 'write', '--root', tmp, '--evidence', evidencePath], {
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        NEXUS_RELEASE_EVIDENCE_PRIVATE_KEY_PATH: privateKeyPath,
+        NEXUS_RELEASE_TYPECHECK_RESULT: 'passed',
+        NEXUS_RELEASE_BUILD_RESULT: 'passed',
+        NEXUS_RELEASE_VITEST_RESULT: 'passed',
+        NEXUS_RELEASE_PYTEST_RESULT: 'passed',
+        NEXUS_RELEASE_SCIENCE_POLICY_RESULT: 'passed',
+        NEXUS_RELEASE_MIGRATIONS_RESULT: 'passed',
+        NEXUS_RELEASE_CANNOT_SKIP_DASHBOARD_RESULT: 'passed',
+        NEXUS_RELEASE_VITEST_TEST_COUNT: '42',
+        NEXUS_RELEASE_PYTEST_TEST_COUNT: '5',
+      },
+    });
+
+    const failed = spawnSync(
+      'node',
+      [evidenceScript, 'validate', '--root', tmp, '--evidence', evidencePath, '--public-key', publicKeyPath, '--json'],
+      { encoding: 'utf8' },
+    );
+
+    expect(failed.status).toBe(1);
+    expect(JSON.parse(failed.stdout).reasons).toContain('command_not_passing:smoke:not_run');
   });
 
   it('rejects stale, expired, and future-dated signed evidence', () => {
@@ -222,6 +292,7 @@ describe('release-evidence', () => {
         NEXUS_RELEASE_SCIENCE_POLICY_RESULT: 'passed',
         NEXUS_RELEASE_MIGRATIONS_RESULT: 'passed',
         NEXUS_RELEASE_CANNOT_SKIP_DASHBOARD_RESULT: 'passed',
+        NEXUS_RELEASE_SMOKE_RESULT: 'passed',
         NEXUS_RELEASE_VITEST_TEST_COUNT: '42',
         NEXUS_RELEASE_PYTEST_TEST_COUNT: '5',
       },
@@ -259,5 +330,75 @@ describe('release-evidence', () => {
     expect(JSON.parse(future.stdout).reasons).toEqual(expect.arrayContaining([
       expect.stringContaining('generated_at_in_future'),
     ]));
+  });
+
+  it('does not let max-age env values disable stale evidence checks', () => {
+    const evidencePath = path.join(tmp, 'docs/release/evidence/latest-release-evidence.json');
+    execFileSync('node', [evidenceScript, 'write', '--root', tmp, '--evidence', evidencePath], {
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        NEXUS_RELEASE_EVIDENCE_PRIVATE_KEY_PATH: privateKeyPath,
+        NEXUS_RELEASE_TYPECHECK_RESULT: 'passed',
+        NEXUS_RELEASE_BUILD_RESULT: 'passed',
+        NEXUS_RELEASE_VITEST_RESULT: 'passed',
+        NEXUS_RELEASE_PYTEST_RESULT: 'passed',
+        NEXUS_RELEASE_SCIENCE_POLICY_RESULT: 'passed',
+        NEXUS_RELEASE_MIGRATIONS_RESULT: 'passed',
+        NEXUS_RELEASE_CANNOT_SKIP_DASHBOARD_RESULT: 'passed',
+        NEXUS_RELEASE_SMOKE_RESULT: 'passed',
+        NEXUS_RELEASE_VITEST_TEST_COUNT: '42',
+        NEXUS_RELEASE_PYTEST_TEST_COUNT: '5',
+      },
+    });
+
+    const evidence = JSON.parse(fs.readFileSync(evidencePath, 'utf8'));
+    evidence.payload.generatedAt = new Date(Date.now() - 96 * 60 * 60 * 1000).toISOString();
+    evidence.payload.expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+    fs.writeFileSync(evidencePath, `${JSON.stringify(evidence, null, 2)}\n`);
+    execFileSync('node', [evidenceScript, 'sign', '--root', tmp, '--evidence', evidencePath, '--private-key', privateKeyPath]);
+
+    for (const value of ['0', 'NaN', '99999']) {
+      const failed = spawnSync(
+        'node',
+        [evidenceScript, 'validate', '--root', tmp, '--evidence', evidencePath, '--public-key', publicKeyPath, '--json'],
+        { encoding: 'utf8', env: { ...process.env, NEXUS_RELEASE_EVIDENCE_MAX_AGE_S: value } },
+      );
+      expect(failed.status).toBe(1);
+      expect(JSON.parse(failed.stdout).reasons).toEqual(expect.arrayContaining([
+        expect.stringContaining('evidence_stale'),
+      ]));
+    }
+  });
+
+  it('fails closed when the current engine SHA is not resolvable', () => {
+    const evidencePath = path.join(tmp, 'docs/release/evidence/latest-release-evidence.json');
+    execFileSync('node', [evidenceScript, 'write', '--root', tmp, '--evidence', evidencePath], {
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        NEXUS_RELEASE_EVIDENCE_PRIVATE_KEY_PATH: privateKeyPath,
+        NEXUS_RELEASE_TYPECHECK_RESULT: 'passed',
+        NEXUS_RELEASE_BUILD_RESULT: 'passed',
+        NEXUS_RELEASE_VITEST_RESULT: 'passed',
+        NEXUS_RELEASE_PYTEST_RESULT: 'passed',
+        NEXUS_RELEASE_SCIENCE_POLICY_RESULT: 'passed',
+        NEXUS_RELEASE_MIGRATIONS_RESULT: 'passed',
+        NEXUS_RELEASE_CANNOT_SKIP_DASHBOARD_RESULT: 'passed',
+        NEXUS_RELEASE_SMOKE_RESULT: 'passed',
+        NEXUS_RELEASE_VITEST_TEST_COUNT: '42',
+        NEXUS_RELEASE_PYTEST_TEST_COUNT: '5',
+      },
+    });
+    fs.renameSync(path.join(tmp, '.git'), path.join(tmp, '.git-hidden'));
+
+    const failed = spawnSync(
+      'node',
+      [evidenceScript, 'validate', '--root', tmp, '--evidence', evidencePath, '--public-key', publicKeyPath, '--json'],
+      { encoding: 'utf8' },
+    );
+
+    expect(failed.status).toBe(1);
+    expect(JSON.parse(failed.stdout).reasons).toContain('engine_sha_unverifiable:missing');
   });
 });

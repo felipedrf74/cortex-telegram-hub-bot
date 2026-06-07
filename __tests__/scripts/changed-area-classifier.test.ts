@@ -567,4 +567,15 @@ describe('changed-area-classifier CI/CD optimization routing', () => {
     expect(result.flags.irreversibleMigration).toBe(true);
     expect(result.cannotSkip).toContain('irreversible-migration-manual-approval');
   });
+
+  it('classifies runtime infrastructure as deploy config with staging smoke', () => {
+    const result = classify('Dockerfile.release-test,.nvmrc,.env.example,docker-compose.yml');
+
+    expect(result.flags.runtimeInfra).toBe(true);
+    expect(result.flags.deployConfig).toBe(true);
+    expect(result.flags.docsOnly).toBe(false);
+    expect(result.vitest.mode).toBe('focused');
+    expect(result.vitest.globs).toContain('__tests__/scripts/*.test.ts');
+    expect(result.stagingSmoke.generic).toBe(true);
+  });
 });

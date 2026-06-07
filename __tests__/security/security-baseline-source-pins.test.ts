@@ -122,10 +122,10 @@ describe('Nexus security baseline source pins', () => {
     const workflow = read('.github/workflows/security.yml');
     const dependabot = read('.github/dependabot.yml');
 
-    expect(workflow).toContain('github/codeql-action/init@v4');
+    expect(workflow).toMatch(/github\/codeql-action\/init@[a-f0-9]{40}\s+# v4/);
     expect(workflow).toContain('npm audit --audit-level=high');
     expect(workflow).toContain('pip-audit -r content-engine/requirements.txt');
-    expect(workflow).toContain('ossf/scorecard-action@v2.4.3');
+    expect(workflow).toMatch(/ossf\/scorecard-action@[a-f0-9]{40}\s+# v2\.4\.3/);
     expect(workflow).toContain('permissions:');
     expect(workflow).not.toContain('contents: write');
     expect(workflow).not.toContain('pull-requests: write');

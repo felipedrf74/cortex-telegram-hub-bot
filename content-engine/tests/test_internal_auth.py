@@ -49,6 +49,20 @@ def test_protected_routes_accept_valid_secret_before_routing(monkeypatch):
     assert response.headers["x-request-id"] == "req-allowed"
 
 
+def test_protected_routes_reject_non_ascii_secret_without_500(monkeypatch):
+    main = _reload_content_engine(monkeypatch, secret="valid-secret")
+    client = TestClient(main.app)
+
+    response = client.get(
+        "/api/v1/not-a-real-route",
+        headers={"x-internal-secret": b"\xe9", "x-request-id": "req-nonascii"},
+    )
+
+    assert response.status_code == 401
+    assert response.json() == {"error": {"code": "UNAUTHORIZED", "message": "Unauthorized"}}
+    assert response.headers["x-request-id"] == "req-nonascii"
+
+
 def test_ready_requires_secret_and_reports_readiness(monkeypatch):
     main = _reload_content_engine(monkeypatch, secret="valid-secret")
     client = TestClient(main.app)

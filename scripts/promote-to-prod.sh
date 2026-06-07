@@ -48,10 +48,13 @@ umask 077
 
 LOCAL_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 source "$LOCAL_DIR/scripts/lib/release-gates.sh"
+RELEASE_EVIDENCE_PUBLIC_KEY_REL="docs/release/evidence/release-evidence-public-key.pem"
+RELEASE_EVIDENCE_PATH="${NEXUS_RELEASE_EVIDENCE_PATH:-$LOCAL_DIR/.local/release/evidence/latest-release-evidence.json}"
 AUDIT_LOG="${NEXUS_RELEASE_AUDIT_LOG:-$LOCAL_DIR/.local/release/override-audit.jsonl}"
 DEPLOY_MUTATION_MARKER="${NEXUS_DEPLOY_MUTATION_MARKER:-/tmp/nexus-deploy-prod-mutation-started}"
 trap release_cleanup_all_locks EXIT
 release_require_git_worktree "$LOCAL_DIR"
+release_require_tracked_clean_file "$LOCAL_DIR" "$RELEASE_EVIDENCE_PUBLIC_KEY_REL"
 release_acquire_local_lock "$LOCAL_DIR" "promote-to-prod"
 
 SKIP_SMOKE=false
@@ -147,7 +150,7 @@ else
   echo "   ✅ Local and staging artifact manifests match"
 fi
 
-if node "$LOCAL_DIR/scripts/release-evidence.mjs" validate --root "$LOCAL_DIR" --json > /tmp/nexus-promote-release-evidence.json 2>/tmp/nexus-promote-release-evidence.err; then
+if node "$LOCAL_DIR/scripts/release-evidence.mjs" validate --root "$LOCAL_DIR" --evidence "$RELEASE_EVIDENCE_PATH" --public-key "$RELEASE_EVIDENCE_PUBLIC_KEY_REL" --json > /tmp/nexus-promote-release-evidence.json 2>/tmp/nexus-promote-release-evidence.err; then
   echo "   ✅ Release evidence matches local SHA + manifest digest"
 else
   echo "   🟡 Release evidence shadow check did not match; promotion will still run strict deploy verification"
@@ -276,7 +279,10 @@ echo ""
 echo "📦 Promoting to production via deploy.sh..."
 echo ""
 set +e
-NEXUS_DEPLOY_MUTATION_MARKER="$DEPLOY_MUTATION_MARKER" "$LOCAL_DIR/scripts/deploy.sh"
+NEXUS_DEPLOY_MUTATION_MARKER="$DEPLOY_MUTATION_MARKER" \
+NEXUS_STAGING_PROD_MANIFEST_PARITY_OK=1 \
+NEXUS_STAGING_MANIFEST_DIGEST="$STAGING_MANIFEST_DIGEST" \
+"$LOCAL_DIR/scripts/deploy.sh"
 DEPLOY_EXIT=$?
 set -e
 

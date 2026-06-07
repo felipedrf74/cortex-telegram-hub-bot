@@ -35,6 +35,19 @@ release_require_clean_tree() {
   fi
 }
 
+release_require_tracked_clean_file() {
+  local root="$1"
+  local rel_path="$2"
+  if ! git -C "$root" ls-files --error-unmatch -- "$rel_path" >/dev/null 2>&1; then
+    echo "❌ Required release trust-anchor file is not tracked: $rel_path" >&2
+    return 1
+  fi
+  if ! git -C "$root" diff --quiet HEAD -- "$rel_path"; then
+    echo "❌ Required release trust-anchor file is modified vs HEAD: $rel_path" >&2
+    return 1
+  fi
+}
+
 release_lock_root() {
   local root="$1"
   printf '%s/.local/release/locks' "$root"
@@ -93,14 +106,23 @@ release_acquire_local_lock() {
     return 0
   fi
   if [ -d "$lock_dir" ] && release_local_lock_is_stale "$lock_dir"; then
-    echo "🟡 Removing stale local release lock: $lock_dir" >&2
-    sed 's/^/   /' "$lock_dir/owner" >&2 || true
-    rm -rf "$lock_dir"
-    if mkdir "$lock_dir" 2>/dev/null; then
-      release_write_local_lock_owner "$lock_dir"
-      release_register_local_lock "$lock_dir"
-      return 0
+    local reclaim_marker
+    reclaim_marker="$lock_dir/.reclaiming"
+    if ! mkdir "$reclaim_marker" 2>/dev/null; then
+      echo "❌ Lost race reclaiming stale local release lock: $lock_dir" >&2
+      return 73
     fi
+    if ! release_local_lock_is_stale "$lock_dir"; then
+      rmdir "$reclaim_marker" 2>/dev/null || true
+      echo "❌ Local release lock became active during reclaim: $lock_dir" >&2
+      return 73
+    fi
+    echo "🟡 Reclaiming stale local release lock: $lock_dir" >&2
+    sed 's/^/   /' "$lock_dir/owner" >&2 || true
+    release_write_local_lock_owner "$lock_dir"
+    rmdir "$reclaim_marker" 2>/dev/null || true
+    release_register_local_lock "$lock_dir"
+    return 0
   fi
   echo "❌ Local release lock already exists: $lock_dir" >&2
   if [ -f "$lock_dir/owner" ]; then
@@ -139,23 +161,93 @@ release_acquire_remote_lock() {
   local server="$1"
   local remote_dir="$2"
   local name="$3"
-  local token lock_dir
+  local token lock_dir max_age
   token="$(date -u +%Y%m%dT%H%M%SZ)-$$"
   lock_dir="$remote_dir/.local/release/locks/$name.lock"
-  ssh "$server" "set -e
-    mkdir -p '$remote_dir/.local/release/locks'
-    if mkdir '$lock_dir' 2>/dev/null; then
-      {
-        printf 'token=%s\n' '$token'
-        printf 'user=%s\n' '${USER:-${LOGNAME:-unknown}}'
-        printf 'script=%s\n' '$(basename "$0")'
-        printf 'createdAt=%s\n' \"\$(date -u +%Y-%m-%dT%H:%M:%SZ)\"
-      } > '$lock_dir/owner'
-    else
-      echo 'REMOTE_LOCK_EXISTS:$lock_dir'
-      [ -f '$lock_dir/owner' ] && sed 's/^/   /' '$lock_dir/owner' || true
-      exit 73
-    fi"
+  max_age="${NEXUS_REMOTE_LOCK_MAX_AGE_S:-1800}"
+  if ssh "$server" bash -s -- "$remote_dir" "$name" "$token" "$(basename "$0")" "$max_age" <<'REMOTE_LOCK'
+set -euo pipefail
+
+remote_dir="$1"
+name="$2"
+token="$3"
+script_name="$4"
+max_age="$5"
+lock_root="$remote_dir/.local/release/locks"
+lock_dir="$lock_root/$name.lock"
+
+write_owner() {
+  {
+    printf 'token=%s\n' "$token"
+    printf 'pid=%s\n' "$$"
+    printf 'host=%s\n' "$(hostname 2>/dev/null || printf unknown)"
+    printf 'user=%s\n' "${USER:-${LOGNAME:-unknown}}"
+    printf 'script=%s\n' "$script_name"
+    printf 'createdAt=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  } > "$lock_dir/owner"
+}
+
+owner_value() {
+  local key="$1"
+  awk -F= -v key="$key" '$1 == key { print substr($0, index($0, "=") + 1); exit }' "$lock_dir/owner" 2>/dev/null || true
+}
+
+mkdir -p "$lock_root"
+if mkdir "$lock_dir" 2>/dev/null; then
+  write_owner
+  exit 0
+fi
+
+stale=0
+if [ -f "$lock_dir/owner" ]; then
+  created_at="$(owner_value createdAt)"
+  created_epoch="$(date -u -d "$created_at" +%s 2>/dev/null || printf 0)"
+  now_epoch="$(date -u +%s)"
+  case "$max_age" in
+    ''|*[!0-9]*) max_age=1800 ;;
+  esac
+  if [ "$created_epoch" -gt 0 ] && [ $((now_epoch - created_epoch)) -gt "$max_age" ]; then
+    stale=1
+  fi
+
+  owner_host="$(owner_value host)"
+  owner_pid="$(owner_value pid)"
+  current_host="$(hostname 2>/dev/null || printf unknown)"
+  case "$owner_pid" in
+    ''|*[!0-9]*) ;;
+    *)
+      if [ "$owner_host" = "$current_host" ] && ! kill -0 "$owner_pid" 2>/dev/null; then
+        stale=1
+      fi
+      ;;
+  esac
+fi
+
+if [ "$stale" = "1" ]; then
+  reclaim_marker="$lock_dir/.reclaiming"
+  if ! mkdir "$reclaim_marker" 2>/dev/null; then
+    echo "REMOTE_LOCK_EXISTS:$lock_dir"
+    [ -f "$lock_dir/owner" ] && sed 's/^/   /' "$lock_dir/owner" || true
+    exit 73
+  fi
+  trap 'rmdir "$reclaim_marker" 2>/dev/null || true' EXIT
+  echo "🟡 Reclaiming stale remote release lock: $lock_dir" >&2
+  [ -f "$lock_dir/owner" ] && sed 's/^/   /' "$lock_dir/owner" >&2 || true
+  write_owner
+  rmdir "$reclaim_marker" 2>/dev/null || true
+  trap - EXIT
+  exit 0
+fi
+
+echo "REMOTE_LOCK_EXISTS:$lock_dir"
+[ -f "$lock_dir/owner" ] && sed 's/^/   /' "$lock_dir/owner" || true
+exit 73
+REMOTE_LOCK
+  then
+    :
+  else
+    return $?
+  fi
   release_append_lock_entry RELEASE_REMOTE_LOCKS "$server|$lock_dir"
 }
 
@@ -166,7 +258,12 @@ release_cleanup_remote_locks() {
     server="${entry%%|*}"
     lock_dir="${entry#*|}"
     [ -n "$server" ] && [ -n "$lock_dir" ] || continue
-    ssh "$server" "rm -rf '$lock_dir'" >/dev/null 2>&1 || true
+    ssh "$server" bash -s -- "$lock_dir" >/dev/null 2>&1 <<'REMOTE_CLEANUP' || true
+set -euo pipefail
+lock_dir="$1"
+[ -n "$lock_dir" ] || exit 0
+rm -rf "$lock_dir"
+REMOTE_CLEANUP
   done <<< "${RELEASE_REMOTE_LOCKS:-}"
   RELEASE_REMOTE_LOCKS=""
 }

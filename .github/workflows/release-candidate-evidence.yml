@@ -22,11 +22,11 @@ jobs:
       matrix:
         shard: [1, 2, 3, 4]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           fetch-depth: 0
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: 'npm'
@@ -44,7 +44,7 @@ jobs:
 
       - name: Upload shard result
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: vitest-results-${{ matrix.shard }}
           path: vitest-results-${{ matrix.shard }}.json
@@ -54,9 +54,9 @@ jobs:
     name: 🐍 Content Engine full pytest
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: '3.12'
           cache: 'pip'
@@ -78,7 +78,7 @@ jobs:
 
       - name: Upload pytest result
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: pytest-results
           path: pytest-results.log
@@ -88,47 +88,76 @@ jobs:
     name: 📦 Write release evidence
     runs-on: ubuntu-latest
     needs: [vitest-full, python-full]
+    if: always()
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           fetch-depth: 0
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: 'npm'
 
       - run: npm ci
 
-      - uses: actions/download-artifact@v4
+      - name: Prepare result directory
+        if: always()
+        run: mkdir -p rc-test-results
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        continue-on-error: true
         with:
           pattern: vitest-results-*
           path: rc-test-results
           merge-multiple: true
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        continue-on-error: true
         with:
           name: pytest-results
           path: rc-test-results
 
-      - name: Typecheck, science policy, build, migration rehearsal, cannot-skip dashboard
-        run: |
-          npx tsc --noEmit
-          npm run science-policy:check
-          npm run build
-          node scripts/migration-safety-check.mjs
-          scripts/cannot-skip-gate-dashboard.sh --json --no-evidence > cannot-skip-dashboard.json
+      - name: Typecheck
+        id: typecheck
+        continue-on-error: true
+        run: npx tsc --noEmit
+
+      - name: Science policy
+        id: science_policy
+        continue-on-error: true
+        run: npm run science-policy:check
+
+      - name: Build
+        id: build
+        continue-on-error: true
+        run: npm run build
+
+      - name: Migration rehearsal
+        id: migrations
+        continue-on-error: true
+        run: node scripts/migration-safety-check.mjs
+
+      - name: Cannot-skip dashboard
+        id: cannot_skip_dashboard
+        continue-on-error: true
+        run: scripts/cannot-skip-gate-dashboard.sh --json --no-evidence > cannot-skip-dashboard.json
 
       - name: Build release-test container
+        id: release_test_image
+        continue-on-error: true
         run: DOCKER_BUILDKIT=1 docker build -f Dockerfile.release-test -t nexus-hub-release-test:ci .
 
-      - name: Container release gate contract
+      - name: Sandbox smoke / container release gate contract
+        id: sandbox_smoke
+        continue-on-error: true
         env:
           NEXUS_RELEASE_TEST_IMAGE: nexus-hub-release-test:ci
           NEXUS_RELEASE_TEST_SKIP_BUILD: '1'
         run: scripts/release-verify-container.sh --skip-vitest --skip-pytest
 
       - name: Count tests from shard artifacts
+        if: always()
         run: |
           node <<'NODE' >> "$GITHUB_ENV"
           const fs = require('fs');
@@ -146,44 +175,62 @@ jobs:
             return total;
           }
           let total = 0;
-          for (const file of fs.readdirSync('rc-test-results').filter((name) => name.endsWith('.json'))) {
+          const resultDir = 'rc-test-results';
+          const files = fs.existsSync(resultDir)
+            ? fs.readdirSync(resultDir).filter((name) => name.endsWith('.json'))
+            : [];
+          for (const file of files) {
             try {
-              total += countTests(JSON.parse(fs.readFileSync(path.join('rc-test-results', file), 'utf8')));
+              total += countTests(JSON.parse(fs.readFileSync(path.join(resultDir, file), 'utf8')));
             } catch {}
           }
           console.log(`NEXUS_RELEASE_VITEST_TEST_COUNT=${total}`);
-          const pytestLog = fs.existsSync('rc-test-results/pytest-results.log')
-            ? fs.readFileSync('rc-test-results/pytest-results.log', 'utf8')
+          const pytestPath = path.join(resultDir, 'pytest-results.log');
+          const pytestLog = fs.existsSync(pytestPath)
+            ? fs.readFileSync(pytestPath, 'utf8')
             : '';
           const pytestMatch = pytestLog.match(/(\d+)\s+passed(?:,|\s)/);
           console.log(`NEXUS_RELEASE_PYTEST_TEST_COUNT=${pytestMatch ? Number(pytestMatch[1]) : 0}`);
           NODE
 
       - name: Write release evidence
+        id: write_evidence
+        if: always()
         env:
           NEXUS_RELEASE_TEST_IMAGE: nexus-hub-release-test:ci
           NEXUS_RELEASE_TEST_SKIP_BUILD: '1'
-          NEXUS_RELEASE_EVIDENCE_PATH: docs/release/evidence/release-evidence-${{ github.sha }}.json
+          NEXUS_RELEASE_EVIDENCE_PATH: docs/release/evidence/release-evidence-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}.json
           NEXUS_RELEASE_EVIDENCE_PRIVATE_KEY_PEM: ${{ secrets.NEXUS_RELEASE_EVIDENCE_PRIVATE_KEY_PEM }}
           NEXUS_RELEASE_EVIDENCE_KEY_ID: github-actions-release-evidence-2026-06
-          NEXUS_RELEASE_VITEST_RESULT: passed
-          NEXUS_RELEASE_TYPECHECK_RESULT: passed
-          NEXUS_RELEASE_BUILD_RESULT: passed
-          NEXUS_RELEASE_PYTEST_RESULT: passed
-          NEXUS_RELEASE_SCIENCE_POLICY_RESULT: passed
-          NEXUS_RELEASE_MIGRATIONS_RESULT: passed
-          NEXUS_RELEASE_CANNOT_SKIP_RESULT: passed
-          NEXUS_RELEASE_CANNOT_SKIP_DASHBOARD_RESULT: passed
+          NEXUS_RELEASE_VERDICT: ${{ needs.vitest-full.result == 'success' && needs.python-full.result == 'success' && steps.typecheck.outcome == 'success' && steps.science_policy.outcome == 'success' && steps.build.outcome == 'success' && steps.migrations.outcome == 'success' && steps.cannot_skip_dashboard.outcome == 'success' && steps.release_test_image.outcome == 'success' && steps.sandbox_smoke.outcome == 'success' && 'passed' || 'failed' }}
+          NEXUS_RELEASE_VITEST_RESULT: ${{ needs.vitest-full.result }}
+          NEXUS_RELEASE_TYPECHECK_RESULT: ${{ steps.typecheck.outcome }}
+          NEXUS_RELEASE_BUILD_RESULT: ${{ steps.build.outcome }}
+          NEXUS_RELEASE_PYTEST_RESULT: ${{ needs.python-full.result }}
+          NEXUS_RELEASE_SCIENCE_POLICY_RESULT: ${{ steps.science_policy.outcome }}
+          NEXUS_RELEASE_MIGRATIONS_RESULT: ${{ steps.migrations.outcome }}
+          NEXUS_RELEASE_CANNOT_SKIP_DASHBOARD_RESULT: ${{ steps.cannot_skip_dashboard.outcome }}
+          NEXUS_RELEASE_SMOKE_RESULT: ${{ steps.sandbox_smoke.outcome }}
         run: |
           scripts/release-evidence-container.sh write --json
-          cp "docs/release/evidence/release-evidence-${{ github.sha }}.json" docs/release/evidence/latest-release-evidence.json
+          cp "docs/release/evidence/release-evidence-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}.json" docs/release/evidence/latest-release-evidence.json
+
+      - name: Validate signed release evidence
+        if: always()
+        run: |
+          node scripts/release-evidence.mjs validate \
+            --evidence "docs/release/evidence/release-evidence-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}.json" \
+            --public-key docs/release/evidence/release-evidence-public-key.pem \
+            --expect-sha "${{ github.sha }}" \
+            --json
 
       - name: Upload release evidence
-        uses: actions/upload-artifact@v4
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: release-evidence-${{ github.sha }}
           path: |
-            docs/release/evidence/release-evidence-${{ github.sha }}.json
+            docs/release/evidence/release-evidence-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}.json
             docs/release/evidence/latest-release-evidence.json
             cannot-skip-dashboard.json
             rc-test-results/*.json

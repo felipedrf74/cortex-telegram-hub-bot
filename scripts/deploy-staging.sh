@@ -205,8 +205,8 @@ echo "   ✅ rsync complete"
 # Each install has its OWN node_modules and .venv — NO sharing with prod.
 echo ""
 echo "📥 Installing dependencies..."
-ssh "$SERVER" "cd $STAGING_DIR && npm ci --production 2>&1 | tail -1"
-ssh "$SERVER" "cd $STAGING_DIR/content-engine && [ -d .venv ] && source .venv/bin/activate && pip install -q -r requirements.txt 2>&1 | tail -1 || echo '   ⚠️  No staging .venv yet — see first-time setup in deploy-staging.sh header'"
+ssh "$SERVER" "set -euo pipefail; cd $STAGING_DIR && npm ci --production 2>&1 | tail -1"
+ssh "$SERVER" "set -euo pipefail; cd $STAGING_DIR/content-engine && if [ -d .venv ]; then source .venv/bin/activate && pip install -q -r requirements.txt 2>&1 | tail -1; else echo '   ⚠️  No staging .venv yet — see first-time setup in deploy-staging.sh header'; fi"
 echo "   ✅ Dependencies updated"
 
 # ── 5a. Owner bootstrap preflight (warn-only) ────────
@@ -224,6 +224,7 @@ echo ""
 echo "🔧 Rebuilding native modules..."
 ssh "$SERVER" "
   if [ -x /usr/bin/node ]; then
+    set -euo pipefail
     cd $STAGING_DIR && PATH=/usr/bin:\$PATH /usr/bin/npm rebuild better-sqlite3 2>&1 | tail -1
     echo '   ✅ Native modules rebuilt'
   fi
