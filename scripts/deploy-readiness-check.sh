@@ -13,7 +13,9 @@ PM2_APP=""
 PM2_CONTENT_APP=""
 MIN_UPTIME_MS="${NEXUS_DEPLOY_MIN_UPTIME_MS:-10000}"
 MAX_PM2_RESTARTS="${NEXUS_DEPLOY_MAX_PM2_RESTARTS:-2}"
+MAX_PM2_RESTART_DELTA="${NEXUS_DEPLOY_MAX_PM2_RESTART_DELTA:-0}"
 PM2_SAMPLE_DELAY_S="${NEXUS_DEPLOY_PM2_SAMPLE_DELAY_S:-10}"
+PM2_BIN="${NEXUS_DEPLOY_PM2_BIN:-/home/dominguez/.npm-global/bin/pm2}"
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -60,6 +62,7 @@ case "$TARGET" in
 esac
 
 validate_remote_dir_arg REMOTE_DIR "$REMOTE_DIR"
+validate_remote_dir_arg NEXUS_DEPLOY_PM2_BIN "$PM2_BIN"
 
 for port_name in PORTAL_PORT CONTENT_PORT; do
   port_value="${!port_name}"
@@ -68,19 +71,20 @@ for port_name in PORTAL_PORT CONTENT_PORT; do
     exit 64
   fi
 done
-for numeric_name in MIN_UPTIME_MS MAX_PM2_RESTARTS PM2_SAMPLE_DELAY_S; do
+for numeric_name in MIN_UPTIME_MS MAX_PM2_RESTARTS MAX_PM2_RESTART_DELTA PM2_SAMPLE_DELAY_S; do
   numeric_value="${!numeric_name}"
   if ! [[ "$numeric_value" =~ ^[0-9]+$ ]]; then
     case "$numeric_name" in
       MIN_UPTIME_MS) echo "Invalid NEXUS_DEPLOY_MIN_UPTIME_MS: $numeric_value" >&2 ;;
       MAX_PM2_RESTARTS) echo "Invalid NEXUS_DEPLOY_MAX_PM2_RESTARTS: $numeric_value" >&2 ;;
+      MAX_PM2_RESTART_DELTA) echo "Invalid NEXUS_DEPLOY_MAX_PM2_RESTART_DELTA: $numeric_value" >&2 ;;
       PM2_SAMPLE_DELAY_S) echo "Invalid NEXUS_DEPLOY_PM2_SAMPLE_DELAY_S: $numeric_value" >&2 ;;
     esac
     exit 64
   fi
 done
 
-ssh "$SERVER" bash -s -- "$TARGET" "$REMOTE_DIR" "$PORTAL_PORT" "$CONTENT_PORT" "$PM2_APP" "$PM2_CONTENT_APP" "$MIN_UPTIME_MS" "$MAX_PM2_RESTARTS" "$PM2_SAMPLE_DELAY_S" <<'REMOTE'
+ssh "$SERVER" bash -s -- "$TARGET" "$REMOTE_DIR" "$PORTAL_PORT" "$CONTENT_PORT" "$PM2_APP" "$PM2_CONTENT_APP" "$MIN_UPTIME_MS" "$MAX_PM2_RESTARTS" "$MAX_PM2_RESTART_DELTA" "$PM2_SAMPLE_DELAY_S" "$PM2_BIN" <<'REMOTE'
 set -euo pipefail
 
 TARGET="$1"
@@ -91,9 +95,10 @@ PM2_APP="$5"
 PM2_CONTENT_APP="$6"
 MIN_UPTIME_MS="$7"
 MAX_PM2_RESTARTS="$8"
-PM2_SAMPLE_DELAY_S="$9"
-PM2='/home/dominguez/.npm-global/bin/pm2'
-export TARGET PM2_APP PM2_CONTENT_APP MIN_UPTIME_MS MAX_PM2_RESTARTS
+MAX_PM2_RESTART_DELTA="$9"
+PM2_SAMPLE_DELAY_S="${10}"
+PM2="${11}"
+export TARGET PM2_APP PM2_CONTENT_APP MIN_UPTIME_MS MAX_PM2_RESTARTS MAX_PM2_RESTART_DELTA PM2_SAMPLE_DELAY_S
 
 strip_env_quotes() {
   local value="$1"
@@ -210,7 +215,9 @@ const first = JSON.parse(process.env.PM2_FIRST || '[]');
 const second = JSON.parse(process.env.PM2_SECOND || '[]');
 const names = [process.env.PM2_APP, process.env.PM2_CONTENT_APP].filter(Boolean);
 const minUptime = Number(process.env.MIN_UPTIME_MS || 0);
-const maxRestarts = Number(process.env.MAX_PM2_RESTARTS || 2);
+const maxHistoricalRestarts = Number(process.env.MAX_PM2_RESTARTS || 2);
+const maxRestartDelta = Number(process.env.MAX_PM2_RESTART_DELTA || 0);
+const sampleDelaySeconds = Number(process.env.PM2_SAMPLE_DELAY_S || 0);
 for (const name of names) {
   const before = first.find((p) => p.name === name);
   const app = second.find((p) => p.name === name);
@@ -219,9 +226,12 @@ for (const name of names) {
   const uptimeMs = Date.now() - Number(app.pm2_env?.pm_uptime || Date.now());
   const restarts = Number(app.pm2_env?.restart_time || 0);
   const previousRestarts = Number(before?.pm2_env?.restart_time || 0);
+  const restartDelta = restarts - previousRestarts;
   if (uptimeMs < minUptime) throw new Error('pm2_uptime_too_low_' + name + ':' + uptimeMs);
-  if (restarts > maxRestarts) throw new Error('pm2_restarts_high_' + name + ':' + restarts);
-  if (restarts > previousRestarts) throw new Error('pm2_restarted_during_readiness_' + name + ':' + previousRestarts + '->' + restarts);
+  if (restartDelta > maxRestartDelta) throw new Error('pm2_restarted_during_readiness_' + name + ':' + previousRestarts + '->' + restarts);
+  if (restarts > maxHistoricalRestarts) {
+    console.log(`   ⚠️ PM2 historical restarts high for ${name}: ${restarts} (no restart during ${sampleDelaySeconds}s sample)`);
+  }
 }
 console.log('   ✅ PM2 apps online and stable');
 NODE

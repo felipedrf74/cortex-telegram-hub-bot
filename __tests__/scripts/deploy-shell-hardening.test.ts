@@ -390,6 +390,179 @@ esac
     }
   });
 
+  it('allows historical PM2 restart counters when no restart happens during readiness', () => {
+    const root = mkdtempSync(join(tmpdir(), 'readiness-pm2-history-'));
+    const binDir = join(root, 'bin');
+    const remoteDir = join(root, 'remote');
+    const dataDir = join(remoteDir, 'data');
+    const pm2Bin = join(binDir, 'pm2');
+    mkdirSync(binDir);
+    mkdirSync(dataDir, { recursive: true });
+    writeNodeTransformingSsh(binDir);
+    writeExecutable(
+      join(binDir, 'sqlite3'),
+      `#!/usr/bin/env bash
+echo ok
+`,
+    );
+    writeExecutable(
+      join(binDir, 'curl'),
+      `#!/usr/bin/env bash
+url="\${@: -1}"
+case "$url" in
+  *:8201/health) echo '{"status":"healthy","server":{"database":"connected"}}' ;;
+  *:8101/health) echo '{"status":"ok"}' ;;
+  *) exit 22 ;;
+esac
+`,
+    );
+    writeExecutable(
+      pm2Bin,
+      `#!/usr/bin/env bash
+if [ "\${1:-}" != "jlist" ]; then exit 1; fi
+now=$(node -p 'Date.now()')
+uptime=$((now - 20000))
+cat <<JSON
+[
+  {"name":"nexus-hub-staging","pid":123,"pm2_env":{"status":"online","pm_uptime":$uptime,"restart_time":19}},
+  {"name":"content-engine-staging","pid":124,"pm2_env":{"status":"online","pm_uptime":$uptime,"restart_time":2}}
+]
+JSON
+`,
+    );
+    writeFileSync(join(remoteDir, '.env'), 'DATABASE_PATH="./data/bot.db"\n', {
+      mode: 0o600,
+    });
+    writeFileSync(join(dataDir, 'bot.db'), '');
+    symlinkSync(join(ROOT, 'node_modules'), join(remoteDir, 'node_modules'), 'dir');
+    try {
+      const output = execFileSync(
+        'bash',
+        [
+          READINESS,
+          '--target',
+          'staging',
+          '--server',
+          'fake-server',
+          '--remote-dir',
+          remoteDir,
+          '--portal-port',
+          '8201',
+          '--content-port',
+          '8101',
+        ],
+        {
+          cwd: ROOT,
+          encoding: 'utf8',
+          env: {
+            ...process.env,
+            PATH: prependPath(binDir),
+            NODE_BIN: process.execPath,
+            NEXUS_DEPLOY_PM2_BIN: pm2Bin,
+            NEXUS_DEPLOY_PM2_SAMPLE_DELAY_S: '0',
+          },
+        },
+      );
+      expect(output).toContain('PM2 historical restarts high for nexus-hub-staging: 19');
+      expect(output).toContain('PM2 apps online and stable');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('fails readiness when PM2 restart count increases during the sample', () => {
+    const root = mkdtempSync(join(tmpdir(), 'readiness-pm2-delta-'));
+    const binDir = join(root, 'bin');
+    const remoteDir = join(root, 'remote');
+    const dataDir = join(remoteDir, 'data');
+    const pm2Bin = join(binDir, 'pm2');
+    const pm2Count = join(root, 'pm2-count');
+    mkdirSync(binDir);
+    mkdirSync(dataDir, { recursive: true });
+    writeNodeTransformingSsh(binDir);
+    writeExecutable(
+      join(binDir, 'sqlite3'),
+      `#!/usr/bin/env bash
+echo ok
+`,
+    );
+    writeExecutable(
+      join(binDir, 'curl'),
+      `#!/usr/bin/env bash
+url="\${@: -1}"
+case "$url" in
+  *:8201/health) echo '{"status":"healthy","server":{"database":"connected"}}' ;;
+  *:8101/health) echo '{"status":"ok"}' ;;
+  *) exit 22 ;;
+esac
+`,
+    );
+    writeExecutable(
+      pm2Bin,
+      `#!/usr/bin/env bash
+if [ "\${1:-}" != "jlist" ]; then exit 1; fi
+count=0
+if [ -f "${pm2Count}" ]; then count=$(cat "${pm2Count}"); fi
+count=$((count + 1))
+printf '%s' "$count" > "${pm2Count}"
+now=$(node -p 'Date.now()')
+uptime=$((now - 20000))
+restarts=19
+if [ "$count" -gt 1 ]; then restarts=20; fi
+cat <<JSON
+[
+  {"name":"nexus-hub-staging","pid":123,"pm2_env":{"status":"online","pm_uptime":$uptime,"restart_time":$restarts}},
+  {"name":"content-engine-staging","pid":124,"pm2_env":{"status":"online","pm_uptime":$uptime,"restart_time":2}}
+]
+JSON
+`,
+    );
+    writeFileSync(join(remoteDir, '.env'), 'DATABASE_PATH="./data/bot.db"\n', {
+      mode: 0o600,
+    });
+    writeFileSync(join(dataDir, 'bot.db'), '');
+    symlinkSync(join(ROOT, 'node_modules'), join(remoteDir, 'node_modules'), 'dir');
+    try {
+      let combined = '';
+      try {
+        execFileSync(
+          'bash',
+          [
+            READINESS,
+            '--target',
+            'staging',
+            '--server',
+            'fake-server',
+            '--remote-dir',
+            remoteDir,
+            '--portal-port',
+            '8201',
+            '--content-port',
+            '8101',
+          ],
+          {
+            cwd: ROOT,
+            env: {
+              ...process.env,
+              PATH: prependPath(binDir),
+              NODE_BIN: process.execPath,
+              NEXUS_DEPLOY_PM2_BIN: pm2Bin,
+              NEXUS_DEPLOY_PM2_SAMPLE_DELAY_S: '0',
+            },
+            stdio: ['ignore', 'pipe', 'pipe'],
+          },
+        );
+        throw new Error('expected readiness to fail on PM2 restart delta');
+      } catch (error) {
+        const failure = error as { stdout?: Buffer | string; stderr?: Buffer | string };
+        combined = `${String(failure.stdout ?? '')}\n${String(failure.stderr ?? '')}`;
+      }
+      expect(combined).toContain('pm2_restarted_during_readiness_nexus-hub-staging:19->20');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('fails readiness before ssh when PM2 stability env values are invalid', () => {
     const root = mkdtempSync(join(tmpdir(), 'readiness-invalid-env-'));
     const binDir = join(root, 'bin');
