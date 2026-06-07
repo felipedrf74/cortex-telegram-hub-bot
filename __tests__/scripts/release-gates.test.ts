@@ -164,6 +164,8 @@ describe('release-gates local locks', () => {
           echo "createdAt=2026-06-06T00:00:00Z"
         } > "$lock_root/test.lock/owner"
         wins="${root}/wins"
+        attempts_dir="${root}/attempts"
+        mkdir -p "$attempts_dir"
         pids=""
         for i in $(seq 1 40); do
           (
@@ -172,7 +174,13 @@ describe('release-gates local locks', () => {
             while [ ! -f "${root}/go" ]; do sleep 0.01; done
             if release_acquire_local_lock "${root}" test >/dev/null 2>&1; then
               echo "$i" >> "$wins"
-              sleep 0.5
+              touch "$attempts_dir/$i"
+              deadline=$((SECONDS + 10))
+              while [ "$(find "$attempts_dir" -type f | wc -l | tr -d ' ')" -lt 40 ] && [ "$SECONDS" -lt "$deadline" ]; do
+                sleep 0.01
+              done
+            else
+              touch "$attempts_dir/$i"
             fi
           ) &
           pids="$pids $!"
