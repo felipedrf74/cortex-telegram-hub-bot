@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Compare staging/prod env key presence without printing secret values.
+# Compare staging/prod env shape without printing secret values.
 
 set -euo pipefail
 
@@ -48,12 +48,42 @@ done
 node - "$STAGING_DIR/.env" "$PROD_DIR/.env" <<'NODE'
 const fs = require('fs');
 const [stagingPath, prodPath] = process.argv.slice(2);
+const path = require('path');
 
 const optional = new Set([
   'SENTRY_DSN',
   'HEALTH_TOKEN',
   'PORTAL_REQUIRE_SESSION_AUTH',
 ]);
+
+const prodOnly = [
+  /^AI_CLASSIFY_/,
+  /^APNS_/,
+  /^BACKUP_/,
+  /^CLASSIFY_SHADOW_/,
+  /^FINANCE_/,
+  /^LOCAL_LLM_/,
+  /^OLLAMA_CLASSIFIER_/,
+  /^OLLAMA_CLASSIFY_/,
+  /^STRIPE_PRICE_.*YEARLY/,
+  /^TELEGRAM_/,
+  'IOS_OWNER_CODE',
+  'NOTIFICATION_DELIVERY_MODE',
+  'PAYWALL_ENABLED',
+];
+
+const stagingOnly = [
+  /^EVENT_BACKBONE_/,
+  /^OPERATOR_ALERT_/,
+  /^PORTAL_ADMIN_/,
+  /^PORTAL_OPERATOR_/,
+  /^PORTAL_SESSION_/,
+  /^STRIPE_PRICE_ID_POINTS_/,
+  'PORTAL_BETA_HARDENED',
+  'PORTAL_PORT',
+  'STAGING',
+  'STRIPE_NEXUS_POINTS_ENABLED',
+];
 
 const requiredBoth = [
   'AI_CALL_TIMEOUT_MS',
@@ -62,8 +92,12 @@ const requiredBoth = [
 ];
 
 const productionRequired = [
-  'NODE_ENV',
   'BACKUP_ENCRYPT',
+  'INTERNAL_API_SECRET',
+  'OAUTH_ENCRYPTION_KEY',
+];
+
+const stagingRequired = [
   'INTERNAL_API_SECRET',
   'OAUTH_ENCRYPTION_KEY',
 ];
@@ -88,6 +122,31 @@ function normalized(map, key) {
   return String(map.get(key) ?? '').trim().replace(/^['"]|['"]$/g, '');
 }
 
+function matchesRule(key, rules) {
+  return rules.some((rule) => {
+    if (rule instanceof RegExp) return rule.test(key);
+    return rule === key;
+  });
+}
+
+function readEffectiveNodeEnv(envPath, target, envMap) {
+  const fromEnv = normalized(envMap, 'NODE_ENV');
+  if (fromEnv) return { value: fromEnv, source: '.env' };
+
+  const dir = path.dirname(envPath);
+  const ecosystemCandidates = target === 'staging'
+    ? ['ecosystem.staging.config.js', 'ecosystem.config.js']
+    : ['ecosystem.config.js'];
+  for (const candidate of ecosystemCandidates) {
+    const fullPath = path.join(dir, candidate);
+    if (!fs.existsSync(fullPath)) continue;
+    const body = fs.readFileSync(fullPath, 'utf8');
+    const match = body.match(/NODE_ENV\s*:\s*['"]([^'"]+)['"]/);
+    if (match) return { value: match[1], source: candidate };
+  }
+  return { value: '', source: 'missing' };
+}
+
 const staging = parse(stagingPath);
 const prod = parse(prodPath);
 const allKeys = [...new Set([...staging.keys(), ...prod.keys()])].sort();
@@ -95,9 +154,12 @@ const failures = [];
 
 for (const key of allKeys) {
   if (optional.has(key)) continue;
+  if (key === 'NODE_ENV') continue;
   const stagingConfigured = configured(staging, key);
   const prodConfigured = configured(prod, key);
   if (stagingConfigured !== prodConfigured) {
+    if (!stagingConfigured && prodConfigured && matchesRule(key, prodOnly)) continue;
+    if (stagingConfigured && !prodConfigured && matchesRule(key, stagingOnly)) continue;
     failures.push(`${key}:staging=${stagingConfigured ? 'set' : 'missing'}:prod=${prodConfigured ? 'set' : 'missing'}`);
   }
 }
@@ -114,8 +176,19 @@ for (const key of productionRequired) {
   }
 }
 
-if (normalized(prod, 'NODE_ENV') !== 'production') {
-  failures.push(`NODE_ENV:prod_expected_production:actual=${normalized(prod, 'NODE_ENV') || 'missing'}`);
+for (const key of stagingRequired) {
+  if (!configured(staging, key)) {
+    failures.push(`${key}:staging_required_missing`);
+  }
+}
+
+const prodNodeEnv = readEffectiveNodeEnv(prodPath, 'prod', prod);
+const stagingNodeEnv = readEffectiveNodeEnv(stagingPath, 'staging', staging);
+if (prodNodeEnv.value !== 'production') {
+  failures.push(`NODE_ENV:prod_expected_production:actual=${prodNodeEnv.value || 'missing'}:source=${prodNodeEnv.source}`);
+}
+if (stagingNodeEnv.value !== 'staging') {
+  failures.push(`NODE_ENV:staging_expected_staging:actual=${stagingNodeEnv.value || 'missing'}:source=${stagingNodeEnv.source}`);
 }
 
 if (!new Set(['1', 'true', 'yes']).has(normalized(prod, 'BACKUP_ENCRYPT').toLowerCase())) {

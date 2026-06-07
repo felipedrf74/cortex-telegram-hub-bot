@@ -458,7 +458,7 @@ describe('changed-area-classifier cannot-skip dashboard wiring (ENG-EXC-O3)', ()
   it('cannot-skip gate dashboard reports every gate wired and PASS verdict', { timeout: 120_000 }, () => {
     const raw = execFileSync(
       'bash',
-      ['scripts/cannot-skip-gate-dashboard.sh', '--json', '--no-evidence'],
+      ['scripts/cannot-skip-gate-dashboard.sh', '--json', '--no-evidence', '--base', 'origin/main'],
       { encoding: 'utf8' },
     );
     const result = JSON.parse(raw) as {

@@ -29,6 +29,7 @@ NOTION_TOKEN="${NOTION_TOKEN:-}"
 NOTION_RELEASES_DB="${NOTION_RELEASES_DB:-332ad49d-23e7-8134-b413-d8d3cc3f1a4a}"
 SKIP_MODE="${NEXUS_DEPLOY_SKIP_VERIFY:-0}"
 REUSED_RELEASE_EVIDENCE=0
+PREBUILT_RELEASE_ARTIFACT=0
 AUDIT_LOG="${NEXUS_RELEASE_AUDIT_LOG:-$LOCAL_DIR/.local/release/override-audit.jsonl}"
 DEPLOY_MUTATION_MARKER="${NEXUS_DEPLOY_MUTATION_MARKER:-/tmp/nexus-deploy-prod-mutation-started}"
 
@@ -212,6 +213,23 @@ run_typecheck_only() {
   fi
 }
 
+prepare_release_artifact_for_reuse() {
+  if [ "$DRY_RUN" = "1" ] || [ "$PREBUILT_RELEASE_ARTIFACT" = "1" ]; then
+    return 0
+  fi
+
+  echo "📦 Preparing clean release artifact for signed evidence validation..."
+  if npm run build >/tmp/nexus-release-reuse-build.log 2>&1; then
+    echo "   ✅ Evidence reuse artifact build complete"
+    PREBUILT_RELEASE_ARTIFACT=1
+    return 0
+  fi
+
+  echo "   ❌ Evidence reuse artifact build failed"
+  cat /tmp/nexus-release-reuse-build.log 2>/dev/null || true
+  return 1
+}
+
 check_current_rollback_drill() {
   echo "🧯 Checking current rollback drill evidence before release evidence reuse..."
   if ! node scripts/rollback-drill-check.mjs --expect-sha "$(git rev-parse HEAD)" --expect-target-version "$(node -p "require('./package.json').version")" --public-key "$RELEASE_EVIDENCE_PUBLIC_KEY_REL" --json > /tmp/nexus-rollback-drill-check.json; then
@@ -301,6 +319,9 @@ case "$SKIP_MODE" in
         cat /tmp/nexus-release-evidence-shadow.json 2>/dev/null || true
       fi
       run_full_verify
+    elif ! prepare_release_artifact_for_reuse; then
+      echo "🔁 Evidence reuse artifact preparation failed — full verify"
+      run_full_verify
     elif node scripts/release-evidence.mjs validate --evidence "$RELEASE_EVIDENCE_PATH" --public-key "$RELEASE_EVIDENCE_PUBLIC_KEY_REL" --json > /tmp/nexus-release-evidence-validate.json 2>/tmp/nexus-release-evidence-validate.err; then
       if check_clean_rc_history && check_current_rollback_drill; then
         echo "🔁 NEXUS_DEPLOY_SKIP_VERIFY=auto-when-staged: signed evidence matches SHA + manifest digest + clean RC history + rollback drill — typecheck only"
@@ -370,8 +391,12 @@ if [ "$DRY_RUN" = "1" ]; then
 fi
 
 # ── 1. Build TypeScript locally ──────────────────────
-echo "📦 Building TypeScript..."
-npm run build 2>/dev/null && echo "   ✅ Build complete" || { echo "   ❌ Build failed — aborting"; exit 1; }
+if [ "$PREBUILT_RELEASE_ARTIFACT" = "1" ]; then
+  echo "📦 Reusing clean release artifact built for signed evidence validation..."
+else
+  echo "📦 Building TypeScript..."
+  npm run build 2>/dev/null && echo "   ✅ Build complete" || { echo "   ❌ Build failed — aborting"; exit 1; }
+fi
 POST_BUILD_MANIFEST_DIGEST=$(node scripts/release-artifact-manifest.mjs --digest)
 echo "   Artifact digest: $POST_BUILD_MANIFEST_DIGEST"
 if [ "$REUSED_RELEASE_EVIDENCE" = "1" ]; then

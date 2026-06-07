@@ -194,6 +194,98 @@ describe('deploy shell hardening', () => {
     }
   });
 
+  it('allows documented staging/prod-only env keys and reads prod NODE_ENV from ecosystem config', () => {
+    const root = mkdtempSync(join(tmpdir(), 'env-parity-shape-'));
+    const binDir = join(root, 'bin');
+    const staging = join(root, 'staging');
+    const prod = join(root, 'prod');
+    mkdirSync(binDir);
+    mkdirSync(staging);
+    mkdirSync(prod);
+    writeExecSsh(binDir);
+    writeFileSync(
+      join(staging, '.env'),
+      [
+        'NODE_ENV=staging',
+        'AI_CALL_TIMEOUT_MS=60',
+        'OAUTH_ENCRYPTION_KEY=staging-key',
+        'INTERNAL_API_SECRET=staging-secret',
+        'PORTAL_ADMIN_ACTORS=deploy-staging@example.invalid',
+        'STAGING=true',
+        'STRIPE_NEXUS_POINTS_ENABLED=false',
+      ].join('\n'),
+    );
+    writeFileSync(
+      join(staging, 'ecosystem.staging.config.js'),
+      "module.exports = { apps: [{ env: { NODE_ENV: 'staging' } }] };\n",
+    );
+    writeFileSync(
+      join(prod, '.env'),
+      [
+        'BACKUP_ENCRYPT=true',
+        'BACKUP_KEY=prod-backup-key',
+        'AI_CALL_TIMEOUT_MS=30',
+        'OAUTH_ENCRYPTION_KEY=prod-key',
+        'INTERNAL_API_SECRET=prod-secret',
+        'TELEGRAM_BOT_TOKEN=prod-bot',
+        'APNS_ENABLED=true',
+        'PAYWALL_ENABLED=true',
+      ].join('\n'),
+    );
+    writeFileSync(
+      join(prod, 'ecosystem.config.js'),
+      "module.exports = { apps: [{ env: { NODE_ENV: 'production' } }] };\n",
+    );
+    try {
+      const output = execFileSync(
+        'bash',
+        [ENV_PARITY, '--server', 'fake-server', '--staging-dir', staging, '--prod-dir', prod],
+        {
+          cwd: ROOT,
+          encoding: 'utf8',
+          env: { ...process.env, PATH: prependPath(binDir) },
+        },
+      );
+      expect(output).toContain('env_parity_ok');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('fails env parity when an unallowlisted key only exists in one environment', () => {
+    const root = mkdtempSync(join(tmpdir(), 'env-parity-unallowlisted-'));
+    const binDir = join(root, 'bin');
+    const staging = join(root, 'staging');
+    const prod = join(root, 'prod');
+    mkdirSync(binDir);
+    mkdirSync(staging);
+    mkdirSync(prod);
+    writeExecSsh(binDir);
+    const shared = [
+      'BACKUP_ENCRYPT=true',
+      'AI_CALL_TIMEOUT_MS=60',
+      'OAUTH_ENCRYPTION_KEY=key',
+      'INTERNAL_API_SECRET=secret',
+    ].join('\n');
+    writeFileSync(join(staging, '.env'), `NODE_ENV=staging\n${shared}\nUNEXPECTED_FLAG=true\n`);
+    writeFileSync(join(prod, '.env'), `NODE_ENV=production\n${shared}\n`);
+    try {
+      expect(() =>
+        execFileSync(
+          'bash',
+          [ENV_PARITY, '--server', 'fake-server', '--staging-dir', staging, '--prod-dir', prod],
+          {
+            cwd: ROOT,
+            env: { ...process.env, PATH: prependPath(binDir) },
+            stdio: ['ignore', 'pipe', 'pipe'],
+          },
+        ),
+      ).toThrow(/UNEXPECTED_FLAG:staging=set:prod=missing/);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('fails env parity when production NODE_ENV or backup encryption is unsafe', () => {
     const root = mkdtempSync(join(tmpdir(), 'env-parity-prod-required-'));
     const binDir = join(root, 'bin');
