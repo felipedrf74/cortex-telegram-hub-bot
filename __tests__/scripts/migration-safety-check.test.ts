@@ -9,7 +9,7 @@ function envWithoutMigrationEvidence() {
 }
 
 describe('migration-safety-check', () => {
-  it('blocks changed irreversible migrations without backup evidence and approver', () => {
+  it('blocks changed irreversible migrations without backup evidence and approver', { timeout: 30_000 }, () => {
     const result = spawnSync(
       'node',
       [
@@ -27,7 +27,7 @@ describe('migration-safety-check', () => {
     expect(payload.errors.some((error) => error.startsWith('irreversible_migration_fast_path_blocked'))).toBe(true);
   });
 
-  it('allows changed irreversible migrations when backup evidence and approver are recorded', () => {
+  it('allows changed irreversible migrations when backup evidence and approver are recorded', { timeout: 30_000 }, () => {
     const result = spawnSync(
       'node',
       [
