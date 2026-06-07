@@ -26,13 +26,15 @@
  *      week without a race date is misleading product copy.)
  *   6. **Race-specific plan requires a race date.**          (catches
  *      profile-incomplete cases that slipped through.)
- *   7. **No two consecutive identical strength sessions.**   (variety
+ *   7. **Event-based race dates must be usable.**            (future race
+ *      date, and plan window must not run past the race.)
+ *   8. **No two consecutive identical strength sessions.**   (variety
  *      — backstops slice 4.B/4.C catalog rotation.)
- *   8. **Week 1 cannot be empty when later weeks contain work.**
+ *   9. **Week 1 cannot be empty when later weeks contain work.**
  *      (prevents a plan from "starting" unscheduled while weeks 2+ sync.)
- *   9. **No sessions outside the actual plan window.**       (prevents
+ *  10. **No sessions outside the actual plan window.**       (prevents
  *      hidden Week 5 / out-of-window move suggestions in 4-week plans.)
- *  10. **Active sessions need executable prescription basics.**
+ *  11. **Active sessions need executable prescription basics.**
  *      (duration plus detail/equipment blocks, not just a label.)
  *
  * Output shape mirrors `GuardrailResult` so the existing decision-trail
@@ -58,6 +60,8 @@ export type PlanLintRuleId =
   | 'no_heavy_lower_before_long_run'
   | 'no_fake_taper_without_event'
   | 'race_specific_plan_requires_race_date'
+  | 'race_date_must_be_future'
+  | 'plan_duration_overshoots_race_date'
   | 'no_consecutive_identical_strength_sessions'
   | 'plan_linter_exception'
   | 'week_one_has_active_training'
@@ -147,6 +151,8 @@ export interface PlanLintInput {
   startDate?: string;
   /** Mark the plan as race-specific so rule 6 can fire on missing race date. */
   isRaceSpecific?: boolean;
+  /** Goal mode from the plan request; event_based enables race/taper strictness. */
+  goalMode?: string | null;
   raceDate?: string | Date | null;
   /** Intended plan duration. Used to block Week 5 leakage in a 4-week plan. */
   durationWeeks?: number;
@@ -190,6 +196,8 @@ const PLAN_LINT_COACH_RULE_MAP: Partial<Record<PlanLintRuleId, string>> = {
   no_heavy_lower_before_long_run: 'hybrid-interference-protect-key-sessions',
   no_fake_taper_without_event: 'endurance-periodization-by-goal-horizon',
   race_specific_plan_requires_race_date: 'endurance-periodization-by-goal-horizon',
+  race_date_must_be_future: 'endurance-periodization-by-goal-horizon',
+  plan_duration_overshoots_race_date: 'endurance-periodization-by-goal-horizon',
   no_consecutive_identical_strength_sessions: 'strength-progressive-overload-with-deloads',
   week_one_has_active_training: 'endurance-periodization-by-goal-horizon',
   no_sessions_outside_plan_window: 'endurance-periodization-by-goal-horizon',
@@ -230,6 +238,11 @@ function isRestLikeSession(session: PlanLintSession): boolean {
 }
 
 const DAY_ORDER = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'];
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+function isEventBasedPlan(input: PlanLintInput): boolean {
+  return input.goalMode === 'event_based' || input.isRaceSpecific === true;
+}
 
 function dayIndexFor(dayOfWeek: string): number {
   return DAY_ORDER.indexOf(String(dayOfWeek || '').toLowerCase());
@@ -278,7 +291,7 @@ function ruleEquipmentCompatibility(input: PlanLintInput): PlanLintFinding | nul
     for (const session of week.sessions) {
       if (!session.exerciseTokens?.length) continue;
       const hits = bannedTokens.filter((tok) =>
-        session.exerciseTokens!.some((existing) => existing.includes(tok)),
+        session.exerciseTokens!.some((existing) => tokenMatchesPhrase(existing, tok)),
       );
       if (hits.length > 0) {
         offenders.push(makeAffected(week.weekNumber, session));
@@ -298,6 +311,11 @@ function ruleEquipmentCompatibility(input: PlanLintInput): PlanLintFinding | nul
     affectedSessions: offenders,
     evidence: { equipmentProfile: input.equipmentProfile, offendingTokens: [...new Set(offendingTokens)] },
   };
+}
+
+function tokenMatchesPhrase(phrase: string, token: string): boolean {
+  const escaped = token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`(^|[^a-z0-9])${escaped}([^a-z0-9]|$)`, 'i').test(phrase);
 }
 
 function ruleNoThreeConsecutiveLegHeavyDays(input: PlanLintInput): PlanLintFinding | null {
@@ -359,7 +377,6 @@ function ruleNoHeavyLowerBeforeLongRun(input: PlanLintInput): PlanLintFinding | 
       existing.push({ weekNumber: entry.weekNumber, session: entry.session });
       lowerByDay.set(entry.dayStartMs, existing);
     }
-    const DAY_MS = 24 * 60 * 60 * 1000;
     for (const entry of datedSessions) {
       if (!entry.session.isLongRun) continue;
       const previousDay = entry.dayStartMs - DAY_MS;
@@ -415,6 +432,7 @@ function ruleNoHeavyLowerBeforeLongRun(input: PlanLintInput): PlanLintFinding | 
 }
 
 function ruleNoFakeTaperWithoutEvent(input: PlanLintInput): PlanLintFinding | null {
+  if (!isEventBasedPlan(input)) return null;
   const hasRaceDate = !!toDate(input.raceDate);
   if (hasRaceDate) return null;
   const offenders: PlanLintAffectedSession[] = [];
@@ -430,7 +448,7 @@ function ruleNoFakeTaperWithoutEvent(input: PlanLintInput): PlanLintFinding | nu
   if (offenders.length === 0) return null;
   return {
     ruleId: 'no_fake_taper_without_event',
-    severity: 'warning',
+    severity: 'blocker',
     message:
       `${offenders.length} week${offenders.length === 1 ? '' : 's'} marked as taper/peak/race-week, ` +
       `but no race date is set on the plan. Either set a race date or use a neutral focus label ` +
@@ -440,7 +458,7 @@ function ruleNoFakeTaperWithoutEvent(input: PlanLintInput): PlanLintFinding | nu
 }
 
 function ruleRaceSpecificRequiresRaceDate(input: PlanLintInput): PlanLintFinding | null {
-  if (!input.isRaceSpecific) return null;
+  if (!isEventBasedPlan(input)) return null;
   if (toDate(input.raceDate)) return null;
   return {
     ruleId: 'race_specific_plan_requires_race_date',
@@ -449,6 +467,51 @@ function ruleRaceSpecificRequiresRaceDate(input: PlanLintInput): PlanLintFinding
       `Plan is marked race-specific but no race date is set. ` +
       `Ask the user for the race date before generating taper / build progression.`,
     affectedSessions: [],
+  };
+}
+
+function ruleRaceDateMustBeFuture(input: PlanLintInput): PlanLintFinding | null {
+  if (!isEventBasedPlan(input)) return null;
+  const raceDate = toDate(input.raceDate);
+  if (!raceDate) return null;
+  const today = startOfDay(input.now);
+  const race = startOfDay(raceDate);
+  if (race.getTime() > today.getTime()) return null;
+  return {
+    ruleId: 'race_date_must_be_future',
+    severity: 'blocker',
+    message: 'Race date must be in the future before Nexus can generate an event-based training plan.',
+    affectedSessions: [],
+    evidence: {
+      todayIso: today.toISOString().slice(0, 10),
+      raceDateIso: race.toISOString().slice(0, 10),
+    },
+  };
+}
+
+function rulePlanDurationDoesNotOvershootRaceDate(input: PlanLintInput): PlanLintFinding | null {
+  if (!isEventBasedPlan(input)) return null;
+  const raceDate = toDate(input.raceDate);
+  const startDate = toDate(input.startDate);
+  const durationWeeks = Number(input.durationWeeks);
+  if (!raceDate || !startDate || !Number.isFinite(durationWeeks) || durationWeeks <= 0) return null;
+  const start = startOfDay(startDate);
+  const race = startOfDay(raceDate);
+  if (race.getTime() < start.getTime()) return null;
+  const planDays = Math.round(durationWeeks * 7);
+  const daysThroughRace = Math.floor((race.getTime() - start.getTime()) / DAY_MS) + 1;
+  if (planDays <= daysThroughRace) return null;
+  return {
+    ruleId: 'plan_duration_overshoots_race_date',
+    severity: 'blocker',
+    message: `Requested ${durationWeeks} week plan extends beyond the race date. Shorten the plan or move the start date.`,
+    affectedSessions: [],
+    evidence: {
+      startDateIso: start.toISOString().slice(0, 10),
+      raceDateIso: race.toISOString().slice(0, 10),
+      planDays,
+      daysThroughRace,
+    },
   };
 }
 
@@ -612,6 +675,8 @@ const RULES: Array<(input: PlanLintInput) => PlanLintFinding | null> = [
   ruleNoHeavyLowerBeforeLongRun,
   ruleNoFakeTaperWithoutEvent,
   ruleRaceSpecificRequiresRaceDate,
+  ruleRaceDateMustBeFuture,
+  rulePlanDurationDoesNotOvershootRaceDate,
   ruleNoConsecutiveIdenticalStrengthSessions,
   ruleSessionPrescriptionCompleteness,
 ];
@@ -629,6 +694,10 @@ const SUGGESTED_FIXES: Record<PlanLintRuleId, string> = {
     'Use neutral focus copy ("deload"/"review") OR collect race date via training-profile follow-up.',
   race_specific_plan_requires_race_date:
     'Block plan generation until race date is provided; emit follow-up question through training-profile-requirements.',
+  race_date_must_be_future:
+    'Ask for a future race date before generating an event-specific plan.',
+  plan_duration_overshoots_race_date:
+    'Shorten the generated plan duration or ask the user to choose a later race/start date.',
   no_consecutive_identical_strength_sessions:
     'Bump strength variant index by `weekIndex` (slice 4.B/4.C) before the next regenerate.',
   plan_linter_exception:

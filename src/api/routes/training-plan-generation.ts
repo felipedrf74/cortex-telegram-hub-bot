@@ -550,7 +550,9 @@ export async function generateTrainingPlanForUser(
   //   • isRaceSpecific   — derived from the objective; tells the linter
   //                        whether to treat missing race date as a
   //                        blocker.
-  // All three are best-effort: when absent, the relevant rules no-op.
+  //   • goalMode         — distinguishes event-based taper/race strictness
+  //                        from continuous or hypertrophy-style plans.
+  // All four are best-effort: when absent, the relevant rules no-op.
   const equipmentProfileLabel: string | undefined =
     typeof gymProfile?.equipment_access === 'string'
       ? String(gymProfile.equipment_access).toLowerCase().trim() || undefined
@@ -607,6 +609,7 @@ export async function generateTrainingPlanForUser(
     equipmentProfile: equipmentProfileLabel,
     raceDate: raceDateForLint,
     isRaceSpecific: isRaceSpecificForLint,
+    goalMode: normalizedGoalMode,
   };
 
   const preflightLint = lintGeneratedTrainingPlanPreflight(persistenceInput);

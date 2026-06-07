@@ -130,6 +130,8 @@ export interface PersistGeneratedTrainingPlanInput {
   raceDate?: string | Date | null;
   /** True when the plan was generated for a specific event (marathon, 5k, etc.). */
   isRaceSpecific?: boolean;
+  /** Request goal mode; `event_based` enables strict race-date semantics. */
+  goalMode?: string | null;
 }
 
 export interface PersistGeneratedTrainingPlanResult {
@@ -618,6 +620,7 @@ function runPlanLintGuarded(args: {
       startDate: args.input.startDate,
       durationWeeks: args.input.durationWeeks,
       isRaceSpecific: args.input.isRaceSpecific,
+      goalMode: args.input.goalMode,
       raceDate: args.input.raceDate ?? null,
       equipmentProfile: args.input.equipmentProfile,
       weeks: buildPlanLintWeeks(args.weeks, args.calendarEvents),

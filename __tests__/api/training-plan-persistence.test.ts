@@ -19,26 +19,50 @@ const mockFindExistingOwnership = vi.fn();
 const mockRecordCalendarOwnership = vi.fn();
 const mockSubmitSecretarySchedulingIntent = vi.fn();
 
-vi.mock('../../src/services/training-plans', () => ({
-  createPlan: (...args: unknown[]) => mockCreatePlan(...args),
-  createWeek: (...args: unknown[]) => mockCreateWeek(...args),
-  createSession: (...args: unknown[]) => mockCreateSession(...args),
-  linkSessionToCalendar: (...args: unknown[]) => mockLinkSessionToCalendar(...args),
-}));
+vi.mock('../../src/services/training-plans', async () => {
+  const actual = await vi.importActual<typeof import('../../src/services/training-plans')>(
+    '../../src/services/training-plans',
+  );
+  return {
+    ...actual,
+    createPlan: (...args: unknown[]) => mockCreatePlan(...args),
+    createWeek: (...args: unknown[]) => mockCreateWeek(...args),
+    createSession: (...args: unknown[]) => mockCreateSession(...args),
+    linkSessionToCalendar: (...args: unknown[]) => mockLinkSessionToCalendar(...args),
+  };
+});
 
-vi.mock('../../src/services/unified-calendar', () => ({
-  createEvent: (...args: unknown[]) => mockCreateEvent(...args),
-}));
+vi.mock('../../src/services/unified-calendar', async () => {
+  const actual = await vi.importActual<typeof import('../../src/services/unified-calendar')>(
+    '../../src/services/unified-calendar',
+  );
+  return {
+    ...actual,
+    createEvent: (...args: unknown[]) => mockCreateEvent(...args),
+  };
+});
 
-vi.mock('../../src/services/training-plan-lifecycle', () => ({
-  getPlanVersion: (...args: unknown[]) => mockGetPlanVersion(...args),
-  findExistingOwnership: (...args: unknown[]) => mockFindExistingOwnership(...args),
-  recordCalendarOwnership: (...args: unknown[]) => mockRecordCalendarOwnership(...args),
-}));
+vi.mock('../../src/services/training-plan-lifecycle', async () => {
+  const actual = await vi.importActual<typeof import('../../src/services/training-plan-lifecycle')>(
+    '../../src/services/training-plan-lifecycle',
+  );
+  return {
+    ...actual,
+    getPlanVersion: (...args: unknown[]) => mockGetPlanVersion(...args),
+    findExistingOwnership: (...args: unknown[]) => mockFindExistingOwnership(...args),
+    recordCalendarOwnership: (...args: unknown[]) => mockRecordCalendarOwnership(...args),
+  };
+});
 
-vi.mock('../../src/services/secretary-scheduling-arbitrator', () => ({
-  submitSecretarySchedulingIntent: (...args: unknown[]) => mockSubmitSecretarySchedulingIntent(...args),
-}));
+vi.mock('../../src/services/secretary-scheduling-arbitrator', async () => {
+  const actual = await vi.importActual<typeof import('../../src/services/secretary-scheduling-arbitrator')>(
+    '../../src/services/secretary-scheduling-arbitrator',
+  );
+  return {
+    ...actual,
+    submitSecretarySchedulingIntent: (...args: unknown[]) => mockSubmitSecretarySchedulingIntent(...args),
+  };
+});
 
 vi.mock('../../src/utils/logger', () => ({
   logger: {
@@ -48,8 +72,10 @@ vi.mock('../../src/utils/logger', () => ({
   LOGGER_REDACTION_PATHS: [],
 }));
 
-vi.mock('../../src/services/coach-kernel/plan-linter', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../../src/services/coach-kernel/plan-linter')>();
+vi.mock('../../src/services/coach-kernel/plan-linter', async () => {
+  const actual = await vi.importActual<typeof import('../../src/services/coach-kernel/plan-linter')>(
+    '../../src/services/coach-kernel/plan-linter',
+  );
   return {
     ...actual,
     lintPlan: (...args: unknown[]) => {
@@ -1086,7 +1112,7 @@ describe('training-plan-persistence', () => {
       );
     });
 
-    it('plan-linter advisor: warns on race-week label without race date', async () => {
+    it('plan-linter advisor: blocks event-based race-week label without race date', async () => {
       const result = await persistGeneratedTrainingPlan({
         userId: 12,
         objective: 'Plan with stale taper label',
@@ -1100,6 +1126,7 @@ describe('training-plan-persistence', () => {
         normalizedPreferredStrengthTime: '12:30',
         busyWindows: [],
         // raceDate intentionally absent.
+        goalMode: 'event_based',
         planData: {
           weeks: [
             {
@@ -1113,8 +1140,9 @@ describe('training-plan-persistence', () => {
         },
       });
 
-      expect(result.lint.status).toBe('pass_with_warnings');
-      expect(result.lint.warnings.some((w) => w.ruleId === 'no_fake_taper_without_event')).toBe(true);
+      expect(result.lint.status).toBe('fail');
+      expect(result.lint.blockers.some((w) => w.ruleId === 'no_fake_taper_without_event')).toBe(true);
+      expect(result.lint.blockers.some((w) => w.ruleId === 'race_specific_plan_requires_race_date')).toBe(true);
     });
 
     it('does NOT apply the past-day floor to week 2+ (rolling 7-day envelope is correct)', async () => {

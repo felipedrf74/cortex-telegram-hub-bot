@@ -554,6 +554,10 @@ export async function updateTask(
       patch.recurrence = data.recurrence;
     }
 
+    if (data.recurrence !== undefined) {
+      patch.recurrence = data.recurrence || null;
+    }
+
     if (data.reminderDateTime !== undefined) {
       if (data.reminderDateTime) {
         patch.reminderDateTime = { dateTime: data.reminderDateTime, timeZone: tz };

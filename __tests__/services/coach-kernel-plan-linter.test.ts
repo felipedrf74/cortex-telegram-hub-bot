@@ -318,6 +318,21 @@ describe('coach-kernel/plan-linter', () => {
       expect(result.status).toBe('pass');
     });
 
+    it('does not false-positive equipment tokens embedded inside unrelated words', () => {
+      const result = lintPlan(input({
+        equipmentProfile: 'bodyweight',
+        weeks: [week(1, [
+          session({
+            sessionType: 'gym',
+            title: 'Bodyweight Tempo',
+            exerciseTokens: ['template tempo squat', 'track stance lunge', 'pushup'],
+          }),
+        ])],
+      }));
+
+      expect(result.status).toBe('pass');
+    });
+
     it('does not flag a full_gym profile with barbell exercises', () => {
       const result = lintPlan(input({
         equipmentProfile: 'full_gym',
@@ -439,21 +454,38 @@ describe('coach-kernel/plan-linter', () => {
   });
 
   describe('rule: no_fake_taper_without_event', () => {
-    it('warns when a week is labeled "taper" but no race date is set', () => {
+    it('blocks when an event-based week is labeled "taper" but no race date is set', () => {
       const result = lintPlan(input({
+        goalMode: 'event_based',
         weeks: [
           week(1, [session({})], 'taper'),
           week(2, [session({})], 'race week'),
         ],
         raceDate: undefined,
       }));
-      expect(result.status).toBe('pass_with_warnings');
-      expect(result.warnings[0]?.ruleId).toBe('no_fake_taper_without_event');
-      expect(result.warnings[0]?.affectedSessions.length).toBe(2);
+      expect(result.status).toBe('fail');
+      expect(result.blockers.some((blocker) => blocker.ruleId === 'no_fake_taper_without_event')).toBe(true);
+      expect(result.blockers.find((blocker) => blocker.ruleId === 'no_fake_taper_without_event')?.affectedSessions.length).toBe(2);
+    });
+
+    it('does not block peak or taper labels for non-event hypertrophy plans', () => {
+      const result = lintPlan(input({
+        goalMode: 'hypertrophy',
+        weeks: [
+          week(1, [session({ sessionType: 'gym', title: 'Hypertrophy A' })], 'peak hypertrophy volume'),
+          week(2, [session({ sessionType: 'gym', title: 'Hypertrophy B' })], 'taper fatigue through deload'),
+        ],
+        raceDate: undefined,
+      }));
+
+      expect(result.status).toBe('pass');
+      expect(result.blockers.some((blocker) => blocker.ruleId === 'no_fake_taper_without_event')).toBe(false);
+      expect(result.warnings.some((warning) => warning.ruleId === 'no_fake_taper_without_event')).toBe(false);
     });
 
     it('passes a taper-labeled week when raceDate is set', () => {
       const result = lintPlan(input({
+        goalMode: 'event_based',
         weeks: [week(1, [session({})], 'taper')],
         raceDate: '2026-05-15',
       }));
@@ -469,6 +501,15 @@ describe('coach-kernel/plan-linter', () => {
   });
 
   describe('rule: race_specific_plan_requires_race_date', () => {
+    it('blocks an event-based plan with no race date', () => {
+      const result = lintPlan(input({
+        goalMode: 'event_based',
+        raceDate: null,
+      }));
+      expect(result.status).toBe('fail');
+      expect(result.blockers[0]?.ruleId).toBe('race_specific_plan_requires_race_date');
+    });
+
     it('blocks a race-specific plan with no race date', () => {
       const result = lintPlan(input({
         isRaceSpecific: true,
@@ -491,6 +532,42 @@ describe('coach-kernel/plan-linter', () => {
         isRaceSpecific: false,
         raceDate: null,
       }));
+      expect(result.status).toBe('pass');
+    });
+  });
+
+  describe('rule: event-based race-date validity', () => {
+    it('blocks an event-based plan with a past race date', () => {
+      const result = lintPlan(input({
+        goalMode: 'event_based',
+        raceDate: '2026-04-20',
+      }));
+
+      expect(result.status).toBe('fail');
+      expect(result.blockers.some((blocker) => blocker.ruleId === 'race_date_must_be_future')).toBe(true);
+    });
+
+    it('blocks a plan duration that overshoots the race date', () => {
+      const result = lintPlan(input({
+        goalMode: 'event_based',
+        startDate: '2026-04-22',
+        raceDate: '2026-05-05',
+        durationWeeks: 6,
+      }));
+
+      expect(result.status).toBe('fail');
+      expect(result.blockers.some((blocker) => blocker.ruleId === 'plan_duration_overshoots_race_date')).toBe(true);
+    });
+
+    it('does not apply race-date duration checks to non-event plans', () => {
+      const result = lintPlan(input({
+        goalMode: 'continuous',
+        startDate: '2026-04-22',
+        raceDate: '2026-05-05',
+        durationWeeks: 6,
+      }));
+
+      expect(result.blockers.some((blocker) => blocker.ruleId === 'plan_duration_overshoots_race_date')).toBe(false);
       expect(result.status).toBe('pass');
     });
   });
@@ -604,12 +681,12 @@ describe('coach-kernel/plan-linter', () => {
               title: 'Lift A',
               exerciseTokens: ['barbell back squat'],
             }),
-          ], 'taper'), // also fires the warning rule
+          ], 'taper'), // non-event taper copy is allowed; equipment remains the blocker.
         ],
       }));
       expect(result.status).toBe('fail');
       expect(result.blockers.length).toBe(1);
-      expect(result.warnings.length).toBe(1);
+      expect(result.warnings.length).toBe(0);
     });
 
     it('always returns the same shape (blockers + warnings + suggestedFixes arrays)', () => {

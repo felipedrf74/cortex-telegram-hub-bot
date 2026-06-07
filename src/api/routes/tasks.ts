@@ -637,7 +637,7 @@ export function taskRoutes(): Router {
       }
 
       const result = await todo.updateTask(listId, taskId, updates, listName);
-      const task = await resolveMutatedTask(todo, listId, taskId, listName, result?.data || result);
+      const task = await resolveTaskDetail(todo, listId, taskId, listName, result?.data || result);
 
       invalidateTaskRouteCaches(listId, userId);
       sendSuccess(
@@ -907,6 +907,7 @@ function normalizeTaskDto(
     importance: task.importance || 'normal',
     status: task.status || 'notStarted',
     dueDateTime: task.dueDateTime?.dateTime || task.dueDateTime || null,
+    recurrence: task.recurrence || null,
     listId: task.listId || defaults?.listId || null,
     listName: task.listName || defaults?.listName || null,
     checklistItems: Array.isArray(task.checklistItems)
@@ -917,7 +918,6 @@ function normalizeTaskDto(
         }))
       : null,
     createdDateTime: task.createdDateTime || null,
-    recurrence: task.recurrence || null,
     syncProvider,
   };
 }

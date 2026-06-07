@@ -671,6 +671,43 @@ describe('Task routes sync provider metadata', () => {
     );
   });
 
+  it('passes recurrence updates through PATCH and includes recurrence in the response DTO', async () => {
+    const recurrence = {
+      pattern: { type: 'weekly', interval: 1, daysOfWeek: ['friday'] },
+      range: { type: 'noEnd', startDate: '2026-06-05' },
+    };
+    providerApi.getTask.mockResolvedValueOnce({
+      success: true,
+      data: {
+        id: 'task-1',
+        title: 'Inbox cleanup',
+        importance: 'normal',
+        status: 'notStarted',
+        listId: 'list-1',
+        listName: 'Tasks',
+        dueDateTime: '2026-06-05T09:00:00Z',
+        recurrence,
+      },
+    });
+
+    const res = await dispatch('PATCH', '/list-1/task-1', {
+      params: { listId: 'list-1', taskId: 'task-1' },
+      body: {
+        dueDateTime: '2026-06-05T09:00:00Z',
+        recurrence,
+      },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(providerApi.updateTask).toHaveBeenCalledWith(
+      'list-1',
+      'task-1',
+      expect.objectContaining({ recurrence }),
+      'Tasks',
+    );
+    expect(res.body.data.task.recurrence).toEqual(recurrence);
+  });
+
   it('normalizes complete responses when the provider only returns completion metadata', async () => {
     providerApi.getTasks.mockResolvedValue({
       success: true,
