@@ -19,6 +19,7 @@ import type {
 } from './types';
 import { makeRequiredFieldsValidator, riskClassForRisk } from './helpers';
 import { SECRETARY_CALENDAR_ACTIONS } from './definitions/secretary-calendar';
+import { SECRETARY_REMINDER_ACTIONS } from './definitions/secretary-reminders';
 import { MAIL_ACTIONS } from './definitions/mail';
 import { TASK_ACTIONS } from './definitions/tasks';
 import { TRAINING_ACTIONS } from './definitions/training';
@@ -68,6 +69,12 @@ export const SKILL_METADATA: Record<ChatActionSkill, ChatSkillMetadata> = {
     displayName: 'Secretary',
     responseCardType: 'calendar_action',
     latencyBudgetMs: 2500,
+    privacyPolicy: 'private_detail',
+  },
+  secretary_reminders: {
+    displayName: 'Reminders',
+    responseCardType: 'calendar_action',
+    latencyBudgetMs: 1200,
     privacyPolicy: 'private_detail',
   },
   mail: {
@@ -142,6 +149,7 @@ export function getSkillMetadata(skill: ChatActionSkill): ChatSkillMetadata {
 
 export const CHAT_ACTION_REGISTRY: ChatActionDefinition[] = [
   ...SECRETARY_CALENDAR_ACTIONS,
+  ...SECRETARY_REMINDER_ACTIONS,
   ...MAIL_ACTIONS,
   ...TASK_ACTIONS,
   ...TRAINING_ACTIONS,
@@ -180,6 +188,7 @@ function defaultOwnerForSkill(skill: ChatActionSkill): ChatActionOwner {
   switch (skill) {
     case 'tasks':
     case 'secretary_calendar':
+    case 'secretary_reminders':
     case 'mail':
       return 'productivity';
     case 'training':
@@ -205,6 +214,8 @@ export function selectRegistrySubsetForMessage(text: string): ChatActionDefiniti
   const folded = foldCalendarText(text);
   const selected = new Set<ChatActionSkill>();
   if (hasCalendarWriteIntent(text) || /\b(calendar|calendario|agenda|evento|event)\b/.test(folded)) selected.add('secretary_calendar');
+  if (/\b(remind\s+me|reminder|lembrete|lembra-?me|lembre-?me|lembrar|avisa-?me|avise-?me|avisame|alerta-?me|recordatorio|recuerdame|recu[eé]rdame)\b/.test(folded)
+    || /^\s*(?:avisa|alerta)\b(?!\s+(?:que|es)\b)/.test(folded)) selected.add('secretary_reminders');
   if (hasMailReadIntent(text) || /\b(email|mail|gmail|outlook mail|inbox|caixa de entrada)\b/.test(folded)) selected.add('mail');
   if (/\b(task|todo|tarefa|subtarefa|checklist|lembrete|reminder)\b/.test(folded)) selected.add('tasks');
   if (/\b(treino|training|plan[o]? de treino|corrida|gym|ginasio)\b/.test(folded)) selected.add('training');
@@ -224,7 +235,7 @@ export function messageHasActionCandidate(text: string): boolean {
   const subset = selectRegistrySubsetForMessage(text);
   if (subset.length === 0) return false;
   const folded = foldCalendarText(text);
-  return /\b(cria|criar|gera|gerar|marca|marcar|agenda|agendar|adiciona|adicionar|coloca|mete|poe|faz|apaga|apagar|remove|delete|move|mover|send|enviar|draft|create|add|generate|schedule|complete|concluir|reflow|ajusta|ajustar|atualiza|atualizar|adjust|update|publish|publicar|paga|pay|refund|categorize|rotate|revoke|revoga|revogar|mostra|mostrar|show|list|listar|resume|summary|relatorio|relatório|explain|explica|help|ajuda|check|retry|reconnect|snooze|dismiss|follow)\b/.test(folded);
+  return /\b(cria|criar|gera|gerar|marca|marcar|agenda|agendar|adiciona|adicionar|coloca|mete|poe|faz|apaga|apagar|remove|delete|move|mover|send|enviar|draft|create|add|generate|schedule|complete|concluir|reflow|ajusta|ajustar|atualiza|atualizar|adjust|update|publish|publicar|paga|pay|refund|categorize|rotate|revoke|revoga|revogar|mostra|mostrar|show|list|listar|resume|summary|relatorio|relatório|explain|explica|help|ajuda|check|retry|reconnect|snooze|dismiss|follow|remind|lembra|lembre|avisa|alerta|recordatorio|recuerdame|recu[eé]rdame)\b/.test(folded);
 }
 
 // Phase 11 batch 59 (2026-05-16): typed slot accessors.
@@ -323,6 +334,7 @@ function defaultUiSurfaces(skill: ChatActionSkill, action: ChatActionName): stri
   if (skill === 'training' && action === 'training_plan_create') return ['training_plan_builder'];
   if (skill === 'content') return ['script_studio', 'content_pipeline'];
   if (skill === 'tasks') return ['task_detail'];
+  if (skill === 'secretary_reminders') return ['reminder_detail'];
   if (skill === 'secretary_calendar') return ['calendar_event'];
   if (skill === 'finance') return ['finance_review'];
   if (skill === 'cooking') return ['cooking_meal_plan'];

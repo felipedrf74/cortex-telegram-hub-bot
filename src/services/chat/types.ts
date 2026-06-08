@@ -92,6 +92,12 @@ export interface ChatPlannerInput {
   nowIso?: string;
   persistRuns?: boolean;
   requireSafeWriteConfirmation?: boolean;
+  /**
+   * Internal transport guard for channels that can plan writes but cannot
+   * safely collect confirmations yet. Non-read-only plans return a
+   * confirmation-required response before any provider executor runs.
+   */
+  blockNonReadOnlyPlans?: boolean;
   routeStartedAtMs?: number;
 }
 

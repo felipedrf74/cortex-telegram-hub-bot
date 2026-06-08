@@ -302,6 +302,17 @@ describe('SkillRegistry — enable() / disable()', () => {
     expect(disable('ghost')).toBe(false);
   });
 
+  it('maps the legacy training toggle alias to the installed triathlon skill', () => {
+    install({ name: 'triathlon', domain: 'triathlon' });
+
+    expect(disable('training')).toBe(true);
+    expect(getByName('triathlon')?.enabled).toBe(0);
+    expect(getByName('training')?.name).toBe('triathlon');
+
+    expect(enable('training')).toBe(true);
+    expect(getByName('triathlon')?.enabled).toBe(1);
+  });
+
   it('updates updated_at on disable', () => {
     const before = install({ name: 'ts-check' });
     disable('ts-check');

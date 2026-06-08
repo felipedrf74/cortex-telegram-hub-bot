@@ -6,6 +6,7 @@ import {
   type SecretarySchedulingDecision,
   type SecretarySchedulingIntent,
   type SecretarySchedulingPreview,
+  type SecretaryTimeWindow,
 } from './secretary-scheduling-arbitrator';
 
 export interface CookingMealPrepSecretaryInput {
@@ -17,18 +18,32 @@ export interface CookingMealPrepSecretaryInput {
   endIso: string;
   durationMinutes: number;
   mealCount: number;
+  additionalBusyWindows?: SecretaryTimeWindow[];
+  liveBusyWindowsDegraded?: boolean;
 }
 
 export function submitCookingMealPrepSchedulingIntent(
   input: CookingMealPrepSecretaryInput,
 ): SecretarySchedulingDecision {
-  return submitSecretarySchedulingIntent(buildCookingMealPrepSchedulingIntent(input));
+  const options = requireCookingLiveBusyWindows(input);
+  return submitSecretarySchedulingIntent(buildCookingMealPrepSchedulingIntent(input), options);
 }
 
 export function previewCookingMealPrepSchedulingIntent(
   input: CookingMealPrepSecretaryInput,
 ): SecretarySchedulingPreview {
-  return previewSecretarySchedulingIntent(buildCookingMealPrepSchedulingIntent(input));
+  const options = requireCookingLiveBusyWindows(input);
+  return previewSecretarySchedulingIntent(buildCookingMealPrepSchedulingIntent(input), options);
+}
+
+function requireCookingLiveBusyWindows(input: CookingMealPrepSecretaryInput): { additionalBusyWindows: SecretaryTimeWindow[] } {
+  if (input.liveBusyWindowsDegraded === true) {
+    throw new Error('COOKING_SECRETARY_LIVE_BUSY_WINDOWS_DEGRADED');
+  }
+  if (!Array.isArray(input.additionalBusyWindows)) {
+    throw new Error('COOKING_SECRETARY_LIVE_BUSY_WINDOWS_REQUIRED');
+  }
+  return { additionalBusyWindows: input.additionalBusyWindows };
 }
 
 export function buildCookingMealPrepSchedulingIntent(

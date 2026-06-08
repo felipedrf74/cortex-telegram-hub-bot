@@ -270,6 +270,8 @@ export interface ContentScheduleRequestInput {
   flexibility?: SecretaryIntentFlexibility;
   reason?: string | null;
   approvalConfirmed?: boolean;
+  additionalBusyWindows?: SecretaryTimeWindow[];
+  liveBusyWindowsDegraded?: boolean;
 }
 
 export interface ConvertRadarSignalInput {
@@ -1179,7 +1181,8 @@ export function requestContentScheduleThroughSecretary(
     throw new Error(`Content scheduling requires approval: ${approval.reasonCodes.join(',')}`);
   }
   const intent = buildContentSecretarySchedulingIntent(input);
-  const preview = previewSecretarySchedulingIntent(intent);
+  const schedulingOptions = requireContentLiveBusyWindows(input);
+  const preview = previewSecretarySchedulingIntent(intent, schedulingOptions);
   if (!isAcceptedSecretarySchedule(preview.status) || !preview.recommendedSlot) {
     return {
       status: preview.status,
@@ -1240,7 +1243,7 @@ export function requestContentScheduleThroughSecretary(
       reasoningTrail: preview.reasoningTrail,
     };
   }
-  const decision = submitSecretarySchedulingIntent(intent);
+  const decision = submitSecretarySchedulingIntent(intent, schedulingOptions);
   const accepted = isAcceptedSecretarySchedule(decision.status);
   const toState = accepted ? 'scheduled' : object.editorialState;
   const approvalState = approval.approvalRequired && input.approvalConfirmed ? 'approved' : object.approvalState;
@@ -1315,6 +1318,16 @@ export function requestContentScheduleThroughSecretary(
   });
 
   return decision;
+}
+
+function requireContentLiveBusyWindows(input: ContentScheduleRequestInput): { additionalBusyWindows: SecretaryTimeWindow[] } {
+  if (input.liveBusyWindowsDegraded === true) {
+    throw new Error('CONTENT_SECRETARY_LIVE_BUSY_WINDOWS_DEGRADED');
+  }
+  if (!Array.isArray(input.additionalBusyWindows)) {
+    throw new Error('CONTENT_SECRETARY_LIVE_BUSY_WINDOWS_REQUIRED');
+  }
+  return { additionalBusyWindows: input.additionalBusyWindows };
 }
 
 export function convertRadarSignalToIdea(input: ConvertRadarSignalInput): ConvertRadarSignalResult {

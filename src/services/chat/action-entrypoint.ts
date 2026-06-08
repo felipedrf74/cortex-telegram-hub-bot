@@ -16,7 +16,12 @@ import {
   recordShadowTelemetry,
 } from './executor/telemetry';
 import { executeChatActionPlan } from './executor/plan-executor';
+import { buildActionResponse } from './executor/response-builder';
 import { buildChatActionPlan } from './planner/orchestrator';
+import {
+  authorizeChatActionPlanSteps,
+  buildChatActionAccessDeniedResponse,
+} from './authorization';
 
 export async function tryHandleChatActionPlan(
   input: ChatPlannerInput,
@@ -27,6 +32,33 @@ export async function tryHandleChatActionPlan(
   if (plannerMode === 'off') return null;
   const plan = await buildChatActionPlan({ ...input, routeStartedAtMs });
   if (!plan) return null;
+  const authorization = authorizeChatActionPlanSteps({
+    userId: input.userId,
+    tenantId: input.tenantId,
+    steps: plan.steps,
+  });
+  if (!authorization.allowed) {
+    const response = buildChatActionAccessDeniedResponse({ ...input, routeStartedAtMs }, plan, authorization);
+    return { plan, response, status: 'blocked' };
+  }
+  if (input.blockNonReadOnlyPlans && plan.steps.some((step) => step.risk !== 'read_only')) {
+    const isPT = input.locale?.startsWith('pt');
+    const response = buildActionResponse(
+      { ...input, routeStartedAtMs },
+      plan,
+      'needs_confirmation',
+      isPT
+        ? 'Esta ação precisa de confirmação no app antes de eu alterar qualquer coisa.'
+        : 'This action needs confirmation in the app before I change anything.',
+      {
+        type: 'chat_action_confirmation_required',
+        actionStatus: 'ACTION_CONFIRMATION_REQUIRED',
+        confirmationTransport: 'rest_required',
+        mutationBlocked: true,
+      },
+    );
+    return { plan, response, status: 'needs_confirmation' };
+  }
   if (plannerMode === 'shadow') {
     logger.info({
       userId: input.userId,

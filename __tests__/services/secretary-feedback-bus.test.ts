@@ -18,6 +18,10 @@ const MIGRATION_083 = path.resolve(
   __dirname,
   '../../migrations/083_secretary_agenda_ledger.sql',
 );
+const MIGRATION_098 = path.resolve(
+  __dirname,
+  '../../migrations/098_secretary_decision_explanation.sql',
+);
 
 let testDb: Database.Database;
 
@@ -64,6 +68,8 @@ const OWNER_USER_ID = 42;
 beforeEach(() => {
   testDb = new Database(':memory:');
   testDb.exec(fs.readFileSync(MIGRATION_083, 'utf8'));
+  testDb.exec(fs.readFileSync(MIGRATION_098, 'utf8'));
+  testDb.exec('ALTER TABLE secretary_agenda_items ADD COLUMN reasoning_trail_json TEXT');
   _resetSecretaryFeedbackBusForTests();
   loggerWarnSpy.mockClear();
 });

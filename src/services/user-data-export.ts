@@ -198,11 +198,54 @@ export interface FullUserExport {
   finance: UserFinanceExport;
   oauthConnections: Array<{ provider: string; connectedAt: string }>;
   settings: Array<{ key: string; value: string }>;
-  notificationDeviceTokens?: Array<{ environment: string; platform: string; appVersion: string | null; lastSeenAt: string; revokedAt: string | null }>;
-  garminSessions?: Array<{ lastRefreshedAt: string | null; createdAt: string; updatedAt: string }>;
-  agentSignals?: Array<{ sourceAgent: string; signalType: string; status: string; createdAt: string }>;
-  encryptionMeta?: Array<{ keyVersion: number; encryptedAt: string; updatedAt: string }>;
-  legalConsents?: Array<{ documentKey: string; documentVersion: string; documentUrl: string; acceptedAt: string; source: string }>;
+  notificationDeviceTokens: Array<{ environment: string; platform: string; appVersion: string | null; lastSeenAt: string; revokedAt: string | null }>;
+  garminSessions: Array<{ lastRefreshedAt: string | null; createdAt: string; updatedAt: string }>;
+  agentSignals: Array<{ sourceAgent: string; signalType: string; status: string; createdAt: string }>;
+  encryptionMeta: Array<{ keyVersion: number; encryptedAt: string; updatedAt: string }>;
+  legalConsents: Array<{ documentKey: string; documentVersion: string; documentUrl: string; acceptedAt: string; source: string }>;
+  secretaryAgendaItems: Array<{
+    agendaItemId: string;
+    sourceSkill: string;
+    title: string;
+    lifecycleState: string;
+    startAt: string | null;
+    endAt: string | null;
+    createdAt: string;
+    updatedAt: string;
+  }>;
+  skillMemories: Array<{
+    memoryId: string;
+    skillId: string;
+    memoryType: string;
+    scope: string;
+    memoryKey: string;
+    memoryValue: string;
+    status: string;
+    createdAt: string;
+    updatedAt: string;
+  }>;
+  trainingFeedbackDecisions: Array<{
+    sourceSkill: string;
+    agendaItemId: string;
+    sourceIntentId: string;
+    feedbackType: string;
+    status: string;
+    scheduledStart: string | null;
+    scheduledEnd: string | null;
+    createdAt: string;
+    updatedAt: string;
+  }>;
+  secretarySourceSkillFeedback: Array<{
+    targetSkill: string;
+    agendaItemId: string;
+    sourceIntentId: string;
+    feedbackType: string;
+    status: string;
+    scheduledStart: string | null;
+    scheduledEnd: string | null;
+    createdAt: string;
+    updatedAt: string;
+  }>;
 }
 
 export function exportAllUserData(userId: number): FullUserExport {
@@ -259,6 +302,61 @@ export function exportAllUserData(userId: number): FullUserExport {
     'SELECT key_version as keyVersion, encrypted_at as encryptedAt, updated_at as updatedAt FROM user_encryption_meta WHERE user_id = ?', userId);
   const legalConsents = safeAll(db,
     'SELECT document_key as documentKey, document_version as documentVersion, document_url as documentUrl, accepted_at as acceptedAt, source FROM user_legal_consents WHERE user_id = ? ORDER BY accepted_at', userId);
+  const secretaryAgendaItems = safeAll(db, `
+    SELECT agenda_item_id as agendaItemId,
+           source_skill as sourceSkill,
+           title,
+           lifecycle_state as lifecycleState,
+           start_at as startAt,
+           end_at as endAt,
+           created_at as createdAt,
+           updated_at as updatedAt
+    FROM secretary_agenda_items
+    WHERE owner_user_id = ?
+    ORDER BY created_at
+  `, userId);
+  const skillMemories = safeAll(db, `
+    SELECT memory_id as memoryId,
+           skill_id as skillId,
+           memory_type as memoryType,
+           scope,
+           memory_key as memoryKey,
+           memory_value as memoryValue,
+           status,
+           created_at as createdAt,
+           updated_at as updatedAt
+    FROM skill_memories
+    WHERE user_id = ?
+    ORDER BY updated_at
+  `, userId);
+  const trainingFeedbackDecisions = safeAll(db, `
+    SELECT source_skill as sourceSkill,
+           agenda_item_id as agendaItemId,
+           source_intent_id as sourceIntentId,
+           feedback_type as feedbackType,
+           status,
+           scheduled_start as scheduledStart,
+           scheduled_end as scheduledEnd,
+           created_at as createdAt,
+           updated_at as updatedAt
+    FROM training_feedback_decisions
+    WHERE user_id = ?
+    ORDER BY created_at
+  `, userId);
+  const secretarySourceSkillFeedback = safeAll(db, `
+    SELECT target_skill as targetSkill,
+           agenda_item_id as agendaItemId,
+           source_intent_id as sourceIntentId,
+           feedback_type as feedbackType,
+           status,
+           scheduled_start as scheduledStart,
+           scheduled_end as scheduledEnd,
+           created_at as createdAt,
+           updated_at as updatedAt
+    FROM secretary_source_skill_feedback
+    WHERE user_id = ?
+    ORDER BY created_at
+  `, userId);
 
   return {
     exportedAt: new Date().toISOString(),
@@ -285,6 +383,10 @@ export function exportAllUserData(userId: number): FullUserExport {
     agentSignals,
     encryptionMeta,
     legalConsents,
+    secretaryAgendaItems,
+    skillMemories,
+    trainingFeedbackDecisions,
+    secretarySourceSkillFeedback,
   };
 }
 
@@ -297,6 +399,10 @@ export const ACCOUNT_DELETION_TABLES: Array<{ table: string; column: string }> =
   { table: 'native_tasks', column: 'user_id' },
   { table: 'native_task_lists', column: 'user_id' },
   { table: 'reminders', column: 'user_id' },
+  { table: 'secretary_agenda_items', column: 'owner_user_id' },
+  { table: 'skill_memories', column: 'user_id' },
+  { table: 'training_feedback_decisions', column: 'user_id' },
+  { table: 'secretary_source_skill_feedback', column: 'user_id' },
   { table: 'notes', column: 'user_id' },
   { table: 'saved_ideas', column: 'user_id' },
   { table: 'shared_memory', column: 'user_id' },

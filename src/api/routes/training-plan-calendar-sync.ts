@@ -12,6 +12,7 @@ import {
 import { createTrainingCalendarEvent } from './training-calendar-event-writer';
 import { logger } from '../../utils/logger';
 import { isTrainingCalendarEventUnclaimed } from '../../services/training-calendar-scope';
+import { loadLiveCalendarBusyWindowsForSecretaryIntent } from '../../services/secretary-live-calendar-busy';
 import {
   findExistingOwnership,
   findReusableOwnershipBySessionIdentity,
@@ -87,12 +88,13 @@ export interface TrainingCalendarSessionSyncResult {
 
 export type TrainingSessionReflowPreviewResult =
   | {
-      status: 'not_found' | 'forbidden' | 'no_calendar' | 'blocked';
+      status: 'not_found' | 'forbidden' | 'no_calendar' | 'blocked' | 'calendar_degraded';
       data: {
         message: string;
         reason?: string;
         sessionId?: number;
         provider?: CalendarSource | null;
+        warningCodes?: string[];
       };
     }
   | {
@@ -468,7 +470,23 @@ export async function previewTrainingSessionReflow(
     start: scheduled.start,
     end: scheduled.end,
   });
-  const secretaryPreview = previewSecretarySchedulingIntent(intent, { now: notBefore.toISOString() });
+  const liveBusyWindows = await loadLiveCalendarBusyWindowsForSecretaryIntent(intent);
+  if (liveBusyWindows.degraded) {
+    return {
+      status: 'calendar_degraded',
+      data: {
+        message: 'Calendar availability could not be checked right now.',
+        reason: 'TRAINING_SECRETARY_LIVE_BUSY_WINDOWS_DEGRADED',
+        provider: calendarSource,
+        sessionId,
+        warningCodes: liveBusyWindows.warningCodes,
+      },
+    };
+  }
+  const secretaryPreview = previewSecretarySchedulingIntent(intent, {
+    now: notBefore.toISOString(),
+    additionalBusyWindows: liveBusyWindows.windows,
+  });
   const selected = selectedTrainingSyncSecretaryWindow(secretaryPreview, { notBefore });
   const proposedStart = selected ? new Date(selected.start) : scheduled.start;
   const proposedEnd = selected ? new Date(selected.end) : scheduled.end;
@@ -1192,7 +1210,14 @@ async function syncTrainingPlanCalendarLocked(
         start: window.start,
         end: window.end,
       });
-      const secretaryPreview = previewSecretarySchedulingIntent(secretaryIntent, { now: now.toISOString() });
+      const liveBusyWindows = await loadLiveCalendarBusyWindowsForSecretaryIntent(secretaryIntent);
+      if (liveBusyWindows.degraded) {
+        throw new Error('TRAINING_SECRETARY_LIVE_BUSY_WINDOWS_DEGRADED');
+      }
+      const secretaryPreview = previewSecretarySchedulingIntent(secretaryIntent, {
+        now: now.toISOString(),
+        additionalBusyWindows: liveBusyWindows.windows,
+      });
       const previewWindow = selectedTrainingSyncSecretaryWindow(secretaryPreview, { notBefore: now });
       if (!previewWindow) {
         trainingPlans.updateSession(item.sessionId, {
@@ -1215,7 +1240,10 @@ async function syncTrainingPlanCalendarLocked(
         sessionResults.push(syncResult(item, calendarSource, 'failed', 'secretary_no_schedulable_slot', true, null, attemptedAt));
         continue;
       }
-      const secretaryDecision = submitSecretarySchedulingIntent(secretaryIntent, { now: now.toISOString() });
+      const secretaryDecision = submitSecretarySchedulingIntent(secretaryIntent, {
+        now: now.toISOString(),
+        additionalBusyWindows: liveBusyWindows.windows,
+      });
       secretaryWindow = selectedTrainingSyncSecretaryWindow(secretaryDecision, { notBefore: now });
       if (!secretaryWindow) {
         trainingPlans.updateSession(item.sessionId, {

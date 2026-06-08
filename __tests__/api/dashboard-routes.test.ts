@@ -94,8 +94,9 @@ vi.mock('../../src/services/unified-calendar', () => ({
   getEventsWithDiagnostics: vi.fn(async () => ({
     events: [],
     status: 'ready',
-    sources: [],
-    diagnostics: [],
+    warningCodes: [],
+    warnings: [],
+    sources: { configured: [], fulfilled: [], failed: [] },
   })),
   createEvent: vi.fn(),
   updateEvent: vi.fn(),

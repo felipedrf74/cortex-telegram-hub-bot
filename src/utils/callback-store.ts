@@ -334,27 +334,48 @@ export function getCallbackForScope(ref: string, scope: { tenantId?: number; use
 }
 
 export function consumeCallbackForScope(ref: string, scope: { tenantId?: number; userId: number }): boolean {
-  const data = getCallbackForScope(ref, scope);
+  const resolved = resolveChatTenantScope({
+    userId: scope.userId,
+    tenantId: scope.tenantId,
+    operation: 'chat_callback_consume',
+    layer: 'delivery',
+  });
+  if (!resolved) return false;
+
+  const data = getCallbackForScope(ref, { tenantId: resolved.tenantId, userId: resolved.userId });
   if (!data) return false;
 
   const now = Date.now();
+  const db = getDbSafe();
+  const hasScopeColumns = db ? hasCallbackScopeColumns() : false;
+  if (!db || !hasScopeColumns) {
+    logger.warn({ ref, userId: scope.userId, tenantId: scope.tenantId }, 'Failed closed while consuming scoped callback without persistent scope columns');
+    return false;
+  }
+
+  try {
+    const result = db.prepare(`
+      UPDATE callback_entries
+      SET consumed_at_ms = ?, last_used_at_ms = ?, use_count = COALESCE(use_count, 0) + 1, updated_at = datetime('now')
+      WHERE ref = ? AND tenant_id = ? AND user_id = ? AND scope_status = 'active' AND consumed_at_ms IS NULL
+    `).run(now, now, ref, resolved.tenantId, resolved.userId);
+    if (Number(result.changes ?? 0) <= 0) {
+      const cached = callbackStore.get(ref);
+      if (cached) {
+        cached.consumedAtMs = now;
+        callbackStore.set(ref, cached);
+      }
+      return false;
+    }
+  } catch (err) {
+    logger.warn({ err, ref, userId: scope.userId, tenantId: scope.tenantId }, 'Failed to consume scoped callback');
+    return false;
+  }
+
   const cached = callbackStore.get(ref);
   if (cached) {
     cached.consumedAtMs = now;
     callbackStore.set(ref, cached);
-  }
-
-  const db = getDbSafe();
-  if (db && hasCallbackScopeColumns()) {
-    try {
-      db.prepare(`
-        UPDATE callback_entries
-        SET consumed_at_ms = ?, last_used_at_ms = ?, use_count = COALESCE(use_count, 0) + 1, updated_at = datetime('now')
-        WHERE ref = ? AND tenant_id = ? AND user_id = ? AND scope_status = 'active' AND consumed_at_ms IS NULL
-      `).run(now, now, ref, scope.tenantId ?? scope.userId, scope.userId);
-    } catch (err) {
-      logger.warn({ err, ref, userId: scope.userId, tenantId: scope.tenantId }, 'Failed to consume scoped callback');
-    }
   }
   return true;
 }

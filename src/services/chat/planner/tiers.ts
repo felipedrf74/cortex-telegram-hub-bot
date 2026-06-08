@@ -32,6 +32,7 @@ import {
   calibratePlanConfidence,
   clampConfidence,
   normalizeProvider,
+  shouldRequireSafeWriteConfirmation,
   stepRequiresConfirmation,
   thresholdForSteps,
 } from './plan-utils';
@@ -44,7 +45,7 @@ const CHAT_LLM_TIER3_OPENAI_FALLBACK_MODEL = 'gpt-5.4-mini';
 
 export function buildLlmPlannerPrompt(input: ChatPlannerInput): { systemPrompt: string; userPrompt: string } {
   const subset = selectRegistrySubsetForMessage(input.text);
-  const candidateRegistry = subset.length > 0 ? subset : getChatActionRegistry().filter((entry) => entry.skill === 'tasks' || entry.skill === 'secretary_calendar');
+  const candidateRegistry = subset.length > 0 ? subset : getChatActionRegistry().filter((entry) => entry.skill === 'tasks' || entry.skill === 'secretary_calendar' || entry.skill === 'secretary_reminders');
   const registry = limitLlmPlannerRegistryForPrompt(input.text, candidateRegistry);
   const examples = retrievePlannerExamples(input, registry).slice(0, 6);
   // SECURITY: registry entries are filtered through buildLlmSafePromptSlice so
@@ -224,7 +225,7 @@ export function parseLlmPlannerJson(raw: string, input: ChatPlannerInput, option
     });
   }
   const requiresConfirmation = steps.some((step) => stepRequiresConfirmation(step, {
-    requireSafeWrites: input.requireSafeWriteConfirmation === true,
+    requireSafeWrites: shouldRequireSafeWriteConfirmation(input),
   }));
   const confidence = clampConfidence(Number(parsed.confidence ?? Math.min(...steps.map((step) => step.requiredArgsPresent ? 0.72 : 0.45))));
   const effectiveConfidence = calibratePlanConfidence(steps, confidence);

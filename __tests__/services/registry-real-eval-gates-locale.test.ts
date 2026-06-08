@@ -70,10 +70,11 @@ describe('per-locale real-eval gates (Phase 11 batch 60)', () => {
   });
 
   it('mixed-locale scenarios run cleanly (no locale-filter side effects)', () => {
-    const allLocales = buildRegistryDrivenEvalScenarios({ tags: ['golden'] });
-    const enOnly = buildRegistryDrivenEvalScenarios({ tags: ['golden'], locales: ['en'] });
-    const ptOnly = buildRegistryDrivenEvalScenarios({ tags: ['golden'], locales: ['pt'] });
-    const esOnly = buildRegistryDrivenEvalScenarios({ tags: ['golden'], locales: ['es'] });
+    const uncappedOptions = { tags: ['golden'], perActionMax: Number.MAX_SAFE_INTEGER } as const;
+    const allLocales = buildRegistryDrivenEvalScenarios(uncappedOptions);
+    const enOnly = buildRegistryDrivenEvalScenarios({ ...uncappedOptions, locales: ['en'] });
+    const ptOnly = buildRegistryDrivenEvalScenarios({ ...uncappedOptions, locales: ['pt'] });
+    const esOnly = buildRegistryDrivenEvalScenarios({ ...uncappedOptions, locales: ['es'] });
     // The sum of locale-filtered counts must be <= the no-filter count.
     // Strict equality isn't required because the no-filter set may
     // include examples without a locale field (mixed/legacy).

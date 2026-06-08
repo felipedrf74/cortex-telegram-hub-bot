@@ -25,7 +25,7 @@ import { invalidateFinanceDerivedCaches } from './cache-coherence-registry';
 import { invalidateOnboardingDerivedCaches } from './cache-coherence-registry';
 import { getTaskProviderForUser } from './task-store/task-router';
 import { resolvePreferredCaptureList, resolveTaskCreationList } from './task-store/task-list-resolution';
-import { resolveCanonicalUserId } from './user-service';
+import { getUserTimezoneById, resolveCanonicalUserId } from './user-service';
 import { logger } from '../utils/logger';
 import { resolveChatTenantId } from './chat-tenant-scope';
 import { authorizeChatToolCall, formatToolAuthorizationFailure } from './chat-tool-authorization';
@@ -572,12 +572,24 @@ export async function executeToolCall(
 
       // ── Reminder tools ──
       case 'set_reminder': {
+        if (input.__trustedDirectToolWrite !== true) {
+          return {
+            success: false,
+            code: 'ACTION_CONFIRMATION_REQUIRED',
+            error: 'set_reminder must be routed through the chat action planner before mutating reminders',
+            confirmation_required: true,
+          };
+        }
         const scope = requireTenantToolUserId(toolName, userId, undefined, tenantId);
         if (!scope.ok) return { error: scope.error };
         return setReminder(scope.userId, {
           message: input.message,
           remind_at: input.remind_at,
           recurring: input.recurring,
+          timezone: typeof input.timezone === 'string' ? input.timezone : getUserTimezoneById(scope.userId),
+        }, {
+          tenantId: scope.tenantId,
+          timezone: typeof input.timezone === 'string' ? input.timezone : getUserTimezoneById(scope.userId),
         });
       }
 

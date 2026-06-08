@@ -65,10 +65,14 @@ export interface Note {
 
 export interface Reminder {
   id: number;
+  user_id: number;
+  tenant_id: number;
   message: string;
   remind_at: string;
   recurring: string | null;
   status: string;
+  timezone: string;
+  agenda_item_id: string | null;
   created_at: string;
 }
 

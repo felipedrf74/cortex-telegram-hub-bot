@@ -185,6 +185,7 @@ function insertHandledFixture(input: {
 function ensureSecretaryAgendaFixtureTables(): void {
   testDb.exec(readFileSync('migrations/083_secretary_agenda_ledger.sql', 'utf8'));
   testDb.exec(readFileSync('migrations/098_secretary_decision_explanation.sql', 'utf8'));
+  testDb.exec('ALTER TABLE secretary_agenda_items ADD COLUMN reasoning_trail_json TEXT');
 }
 
 function ensureUserFixtureTable(): void {

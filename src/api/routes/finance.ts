@@ -52,9 +52,11 @@ import { ensureValidTenantRouteScope } from '../tenant-route-scope';
 import { createNotificationIntent } from '../../services/notification-orchestrator';
 import { centsToNumber, parseUserAmount, toCents } from '../../services/money';
 import {
+  buildFinanceSchedulingIntent,
   previewFinanceSchedulingIntent,
   submitFinanceSchedulingIntent,
 } from '../../services/finance-secretary-integration';
+import { loadLiveCalendarBusyWindowsForSecretaryIntent } from '../../services/secretary-live-calendar-busy';
 import { assertTenantScope, TenantScopeError } from '../../services/tenant-scope';
 
 function requireFinanceHandlerScope(req: Request, operation: string): { userId: number; tenantId: number } {
@@ -446,9 +448,18 @@ export function financeRoutes(): Router {
               priority: 'high' as const,
               context: 'Finance tax calculation created a payment reminder candidate. Amount details remain in Finance.',
             };
-            const preview = previewFinanceSchedulingIntent(secretaryInput);
+            const busyWindows = await loadLiveCalendarBusyWindowsForSecretaryIntent(
+              buildFinanceSchedulingIntent(secretaryInput),
+            );
+            if (busyWindows.degraded) {
+              throw new Error('FINANCE_SECRETARY_LIVE_BUSY_WINDOWS_DEGRADED');
+            }
+            const secretaryInputWithBusyWindows = { ...secretaryInput, additionalBusyWindows: busyWindows.windows };
+            const preview = previewFinanceSchedulingIntent(secretaryInputWithBusyWindows);
             if (['scheduled', 'reflowed', 'compressed'].includes(preview.status) && preview.recommendedSlot) {
-              submitFinanceSchedulingIntent(secretaryInput);
+              submitFinanceSchedulingIntent(secretaryInputWithBusyWindows);
+            } else if (!busyWindows.providerConfigured) {
+              submitFinanceSchedulingIntent(secretaryInputWithBusyWindows);
             } else {
               logger.warn(
                 { userId, tenantId, month, status: preview.status, reasonCodes: preview.reasonCodes },

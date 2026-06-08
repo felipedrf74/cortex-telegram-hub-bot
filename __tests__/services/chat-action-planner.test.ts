@@ -43,6 +43,7 @@ import {
   buildDeterministicChatActionPlan,
   buildLlmPlannerPrompt,
   buildTier1ClassifierPrompt,
+  executeConfirmedChatActionRuns,
   executeChatActionPlan,
   parseLlmPlannerJson,
   parseTier1ClassifierJson,
@@ -59,14 +60,33 @@ import {
   upsertPendingChatAction,
 } from '../../src/services/chat-action-state';
 import {
+  claimChatActionRun,
   claimChatActionRunForExecution,
   getChatActionRun,
   pruneCompletedChatActionRuns,
   reapZombieChatActionRuns,
   updateChatActionRun,
 } from '../../src/services/chat-action-run-store';
+import {
+  getPendingChatConfirmation,
+  resetPendingChatConfirmationsForTests,
+  trackPendingChatConfirmation,
+} from '../../src/services/chat-pending-confirmations';
+import { cancelAllPendingChatWork } from '../../src/services/chat-pending-work';
+import {
+  getPendingChatCoreV2Command,
+  resetPendingChatCoreV2CommandsForTests,
+  trackPendingChatCoreV2Command,
+} from '../../src/services/chat-core-v2/pending-commands';
+import {
+  createDecisionIntent,
+  findDecisionByRelatedEntity,
+} from '../../src/services/decision-center';
+import { buildSkillNotificationFixtureIntent } from '../../src/services/notification-orchestrator';
+import type { AICommandEnvelope } from '../../src/services/chat-core-v2/types';
 import { getChatActionRegistry } from '../../src/services/chat/registry';
 import { parseNaturalLanguageCalendarEvent } from '../../src/services/calendar-natural-language-parser';
+import { isPendingChatWorkCancellationTurn } from '../../src/services/chat-pending-cancellation';
 import { buildContentAgencyPackage, ensureContentAgencyTables, getContentAgencyProject, persistContentAgencyArtifact } from '../../src/services/content-agency';
 import { getTopics } from '../../src/services/content-scheduler';
 import { addRecipe, generateShoppingList, getMealPlan, getRecipeById, getShoppingList, setMealPlan } from '../../src/services/cooking-chef';
@@ -74,6 +94,7 @@ import { addTransaction, calculateAndStoreTax, getTaxEvents, getTransactions } f
 import { confirmTrainingSessionReflow, previewTrainingSessionReflow } from '../../src/api/routes/training-plan-calendar-sync';
 import { executeTaskWithSubtasksStep } from '../../src/services/skills/tasks/executor';
 import { executeContentAgencyStep } from '../../src/services/skills/content/executor';
+import { replayDuplicateClaimedActionRun } from '../../src/services/chat/executor/helpers';
 
 const FROZEN_NOW = '2026-05-14T12:00:00+01:00';
 
@@ -90,12 +111,39 @@ const baseInput = {
   persistRuns: false,
 };
 
+function seedPlannerUser(userId: number, tier = 'pro'): void {
+  testDb.prepare(`
+    INSERT OR IGNORE INTO users (
+      id, telegram_id, username, first_name, language, timezone, tier, status,
+      auth_provider, daily_message_limit, daily_token_limit, daily_cost_limit_usd
+    )
+    VALUES (?, ?, ?, ?, 'en-US', 'Europe/Lisbon', ?, 'active', 'email', 1000, 1000000, 100)
+  `).run(userId, userId, `planner-${userId}`, `Planner ${userId}`, tier);
+  if (tier !== 'free') {
+    testDb.prepare(`
+      INSERT INTO subscriptions (user_id, plan, period, status, provider, current_period_end)
+      VALUES (?, ?, 'monthly', 'active', 'founder', '2099-01-01T00:00:00.000Z')
+      ON CONFLICT(user_id) DO UPDATE SET
+        plan = excluded.plan,
+        status = excluded.status,
+        provider = excluded.provider,
+        current_period_end = excluded.current_period_end,
+        updated_at = datetime('now')
+    `).run(userId, tier === 'max' ? 'max' : 'pro');
+  }
+}
+
 describe('ChatActionPlanner', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     resetChatActionStateForTests();
+    resetPendingChatConfirmationsForTests();
+    resetPendingChatCoreV2CommandsForTests();
     testDb = createTestDb();
     applyMigrations(testDb);
+    for (const userId of [42, 999, 4201, 4202, 4210, 4211, 4213, 4301, 4302, 4303, 4401]) {
+      seedPlannerUser(userId);
+    }
   });
 
   afterEach(() => {
@@ -137,6 +185,27 @@ describe('ChatActionPlanner', () => {
         reason: 'ambiguous_intent',
       },
     });
+  });
+
+  it('routes standalone reminder writes to the Secretary reminders planner action', async () => {
+    const plan = await buildChatActionPlan({
+      ...baseInput,
+      text: 'Remind me at 15:30 to call dentist',
+      locale: 'en-US',
+      messageId: 'msg-standalone-reminder',
+    });
+
+    expect(plan?.steps[0]).toMatchObject({
+      skill: 'secretary_reminders',
+      action: 'set_reminder',
+      requiredArgsPresent: true,
+      args: {
+        message: 'call dentist',
+        timezone: 'Europe/Lisbon',
+      },
+    });
+    expect(String(plan?.steps[0].args.remindAt)).toMatch(/^2026-05-14T15:30:00/);
+    expect(plan?.requiresConfirmation).toBe(true);
   });
 
   it('builds agenda summary requests with an ISO day window', async () => {
@@ -203,7 +272,7 @@ describe('ChatActionPlanner', () => {
     const plan = await buildChatActionPlan(baseInput);
     expect(plan).toMatchObject({
       planner: 'deterministic',
-      requiresConfirmation: false,
+      requiresConfirmation: true,
       steps: [{
         skill: 'secretary_calendar',
         action: 'schedule_event',
@@ -350,7 +419,7 @@ describe('ChatActionPlanner', () => {
       .mockResolvedValueOnce([created]);
     const createEvent = vi.fn().mockResolvedValue(created);
 
-    const result = await tryHandleChatActionPlan(baseInput, {
+    const result = await tryHandleChatActionPlan({ ...baseInput, requireSafeWriteConfirmation: false }, {
       calendar: {
         createEvent: createEvent as any,
         getEventsForSources: getEventsForSources as any,
@@ -385,7 +454,7 @@ describe('ChatActionPlanner', () => {
       .mockResolvedValueOnce([])
       .mockResolvedValueOnce([{ ...created, id: 'other', summary: 'other event' }]);
 
-    const result = await tryHandleChatActionPlan(baseInput, {
+    const result = await tryHandleChatActionPlan({ ...baseInput, requireSafeWriteConfirmation: false }, {
       calendar: {
         createEvent: vi.fn().mockResolvedValue(created) as any,
         getEventsForSources: getEventsForSources as any,
@@ -414,7 +483,7 @@ describe('ChatActionPlanner', () => {
       .mockImplementationOnce(() => new Promise(() => undefined));
 
     try {
-      const result = await tryHandleChatActionPlan(baseInput, {
+      const result = await tryHandleChatActionPlan({ ...baseInput, requireSafeWriteConfirmation: false }, {
         calendar: {
           createEvent: vi.fn().mockResolvedValue(created) as any,
           getEventsForSources: getEventsForSources as any,
@@ -437,7 +506,7 @@ describe('ChatActionPlanner', () => {
     const getEventsForSources = vi.fn().mockResolvedValueOnce([]);
 
     try {
-      const result = await tryHandleChatActionPlan(baseInput, {
+      const result = await tryHandleChatActionPlan({ ...baseInput, requireSafeWriteConfirmation: false }, {
         calendar: {
           createEvent: vi.fn().mockImplementation(() => new Promise(() => undefined)) as any,
           getEventsForSources: getEventsForSources as any,
@@ -868,23 +937,28 @@ describe('ChatActionPlanner', () => {
       text: 'Create a task for tomorrow 9 am called Test chat',
       locale: 'en',
       persistRuns: false,
+      requireSafeWriteConfirmation: false,
     }, deps);
     expect(created?.status).toBe('verified_success');
 
-    const completed = await tryHandleChatActionPlan({
+    const completeInput = {
       ...baseInput,
       text: 'Mark this task as done.',
       messageId: 'msg-complete-recent',
       locale: 'en',
       persistRuns: false,
-    }, deps);
+      requireSafeWriteConfirmation: false,
+    };
+    const completePlan = await buildChatActionPlan(completeInput);
+    expect(completePlan).toBeTruthy();
+    const completed = await executeChatActionPlan(completePlan!, completeInput, deps, { confirmed: true });
 
-    expect(completed?.plan.steps[0]).toMatchObject({
+    expect(completePlan?.steps[0]).toMatchObject({
       skill: 'tasks',
       action: 'complete_task',
       requiredArgsPresent: true,
     });
-    expect(completed?.status).toBe('verified_success');
+    expect(completed.metadata.actionStatus).toBe('verified_success');
     expect(taskProvider.completeTask).toHaveBeenCalledTimes(1);
     expect(taskProvider.completeTask).toHaveBeenCalledWith('tasks', 'task-recent-1');
   });
@@ -1143,6 +1217,355 @@ describe('ChatActionPlanner', () => {
     expect(followup?.clarificationQuestion).toMatch(/which task|task/i);
   });
 
+  it('clears all pending chat work on free-form cancellation turns', async () => {
+    const dbPending = upsertPendingChatAction({
+      userId: baseInput.userId,
+      tenantId: baseInput.tenantId,
+      conversationId: baseInput.conversationId,
+      skill: 'training',
+      action: 'training_plan_create',
+      collectedSlots: { sport: 'running' },
+      missingSlots: ['weeklyVolumeKm'],
+      riskClass: 'R1',
+      locale: 'en-US',
+      timezone: 'Europe/Lisbon',
+      originatingSurface: 'ios',
+      nowIso: FROZEN_NOW,
+    });
+    testDb.prepare(`
+      UPDATE chat_pending_actions
+      SET status = 'needs_user_followup',
+          validation_state = 'invalid'
+      WHERE id = ?
+    `).run(dbPending.id);
+    const previousConversationPending = upsertPendingChatAction({
+      userId: baseInput.userId,
+      tenantId: baseInput.tenantId,
+      conversationId: 'previous-client-message',
+      skill: 'tasks',
+      action: 'create_task',
+      collectedSlots: { title: 'Prior turn task' },
+      missingSlots: [],
+      riskClass: 'R1',
+      locale: 'en-US',
+      timezone: 'Europe/Lisbon',
+      originatingSurface: 'ios',
+      nowIso: FROZEN_NOW,
+    });
+
+    const pendingConfirmation = trackPendingChatConfirmation({
+      userId: baseInput.userId,
+      tenantId: baseInput.tenantId,
+      actionSummary: 'Confirm pending destructive chat action',
+      involvedSkills: ['secretary'],
+      reasonCodes: ['destructive_action'],
+      sourceMessageId: 'msg-pending-confirmation',
+      now: new Date(FROZEN_NOW),
+    });
+
+    await createDecisionIntent(buildSkillNotificationFixtureIntent('chat', baseInput.userId, {
+      tenantId: baseInput.tenantId,
+      type: 'decision_required',
+      priority: 'active',
+      title: 'Confirm chat action',
+      body: pendingConfirmation.actionSummary,
+      sensitiveBody: pendingConfirmation.actionSummary,
+      relatedEntityId: pendingConfirmation.id,
+      relatedEntityType: 'chat_confirmation',
+      actionButtons: [
+        { id: 'option_a', label: 'Confirm', style: 'primary' },
+        { id: 'option_b', label: 'Cancel', style: 'secondary' },
+      ],
+      requiresUserAction: true,
+      deliveryPolicy: 'in_app_only',
+      dedupeKey: 'chat:cancel-all:memory-confirmation',
+    }));
+    await createDecisionIntent(buildSkillNotificationFixtureIntent('chat', baseInput.userId, {
+      tenantId: baseInput.tenantId,
+      type: 'decision_required',
+      priority: 'active',
+      title: 'Confirm DB pending action',
+      body: 'Confirm typed pending chat action',
+      sensitiveBody: 'Confirm typed pending chat action',
+      relatedEntityId: dbPending.id,
+      relatedEntityType: 'chat_confirmation',
+      actionButtons: [
+        { id: 'option_a', label: 'Confirm', style: 'primary' },
+        { id: 'option_b', label: 'Cancel', style: 'secondary' },
+      ],
+      requiresUserAction: true,
+      deliveryPolicy: 'in_app_only',
+      dedupeKey: 'chat:cancel-all:db-pending',
+    }));
+
+    const command: AICommandEnvelope<Record<string, unknown>> = {
+      commandId: 'cmd-cancel-all-pending',
+      commandSchemaVersion: 'chat_command@1.0.0',
+      previewSchemaVersion: 'chat_preview@1.0.0',
+      responseSchemaVersion: 'chat_response_v2@1.0.0',
+      tenantId: String(baseInput.tenantId),
+      userId: String(baseInput.userId),
+      domain: 'tasks',
+      commandType: 'tasks.create',
+      origin: 'chat',
+      payload: { title: 'Draft pending task' },
+      basedOn: {
+        entityIds: ['task_draft:cmd-cancel-all-pending'],
+        entityVersions: {},
+        contextHash: 'cancel-all-context',
+        createdAt: FROZEN_NOW,
+      },
+      preconditions: {
+        requiredEntityVersions: {},
+        invariants: [],
+      },
+      authorization: {
+        actorUserId: String(baseInput.userId),
+        tenantId: String(baseInput.tenantId),
+        actingSurface: 'ios_chat',
+        delegatedScopes: ['tasks:write'],
+        permissionSnapshotVersion: 'test-permissions',
+        authTime: FROZEN_NOW,
+      },
+      expiresAt: '2026-05-14T12:10:00+01:00',
+      idempotencyKey: 'chat-v2:cancel-all-pending',
+    };
+    trackPendingChatCoreV2Command({
+      userId: baseInput.userId,
+      tenantId: baseInput.tenantId,
+      capabilityId: 'tasks.create',
+      command,
+      conversationId: baseInput.conversationId,
+      messageId: 'msg-v2-pending-command',
+      now: new Date(FROZEN_NOW),
+    });
+    const pendingRun = claimChatActionRun({
+      userId: baseInput.userId,
+      tenantId: baseInput.tenantId,
+      conversationId: baseInput.conversationId,
+      messageId: 'msg-action-run-pending',
+      normalizedActionHash: 'cancel-all-action-run-hash',
+      provider: 'nexus',
+      actionType: 'create_task',
+      risk: 'safe_write',
+      request: { title: 'Pending confirmed-run task' },
+      nowIso: FROZEN_NOW,
+    });
+    updateChatActionRun(pendingRun.row.id, 'needs_confirmation', { nowIso: FROZEN_NOW });
+    const plannedRun = claimChatActionRun({
+      userId: baseInput.userId,
+      tenantId: baseInput.tenantId,
+      conversationId: baseInput.conversationId,
+      messageId: 'msg-action-run-planned',
+      normalizedActionHash: 'cancel-all-action-run-planned-hash',
+      provider: 'nexus',
+      actionType: 'create_task',
+      risk: 'safe_write',
+      request: { title: 'Planned task' },
+      nowIso: FROZEN_NOW,
+    });
+    const executingRun = claimChatActionRun({
+      userId: baseInput.userId,
+      tenantId: baseInput.tenantId,
+      conversationId: baseInput.conversationId,
+      messageId: 'msg-action-run-executing',
+      normalizedActionHash: 'cancel-all-action-run-executing-hash',
+      provider: 'nexus',
+      actionType: 'create_task',
+      risk: 'safe_write',
+      request: { title: 'Executing task' },
+      nowIso: FROZEN_NOW,
+    });
+    updateChatActionRun(executingRun.row.id, 'executing', { nowIso: FROZEN_NOW });
+
+    const cancelPlan = await buildChatActionPlan({
+      ...baseInput,
+      text: 'never mind',
+      locale: 'en-US',
+      messageId: 'msg-cancel-all-pending',
+    });
+
+    expect(cancelPlan?.telemetry?.outcome).toBe('pending_action_cancelled');
+    expect(getPendingChatConfirmation(baseInput.userId, baseInput.tenantId, new Date(FROZEN_NOW))).toBeNull();
+    expect(getPendingChatCoreV2Command(command.commandId, baseInput.userId, baseInput.tenantId, new Date(FROZEN_NOW))).toBeNull();
+    expect(findDecisionByRelatedEntity(baseInput.userId, baseInput.tenantId, 'chat_confirmation', pendingConfirmation.id)).toBeNull();
+    expect(findDecisionByRelatedEntity(baseInput.userId, baseInput.tenantId, 'chat_confirmation', dbPending.id)).toBeNull();
+    expect(getChatActionRun(pendingRun.row.id)?.status).toBe('cancelled');
+    expect(getChatActionRun(plannedRun.row.id)?.status).toBe('cancelled');
+    expect(getChatActionRun(executingRun.row.id)?.status).toBe('cancelled');
+    await expect(executeConfirmedChatActionRuns({
+      ...baseInput,
+      text: 'confirm',
+      messageId: 'msg-confirm-after-cancel',
+      sourceMessageId: 'msg-action-run-pending',
+    })).resolves.toBeNull();
+    expect(testDb.prepare(`
+      SELECT status, cancellation_state
+      FROM chat_pending_actions
+      WHERE id = ?
+    `).get(dbPending.id)).toMatchObject({
+      status: 'cancelled',
+      cancellation_state: 'cancelled',
+    });
+    expect(testDb.prepare(`
+      SELECT status, cancellation_state
+      FROM chat_pending_actions
+      WHERE id = ?
+    `).get(previousConversationPending.id)).toMatchObject({
+      status: 'cancelled',
+      cancellation_state: 'cancelled',
+    });
+  });
+
+  it('blocks confirmed-run replay when entitlement is no longer sufficient', async () => {
+    const freeUserId = 65001;
+    testDb.prepare(`
+      INSERT INTO users (
+        id, telegram_id, username, first_name, language, timezone, tier, status,
+        auth_provider, daily_message_limit, daily_token_limit, daily_cost_limit_usd
+      )
+      VALUES (?, ?, ?, ?, ?, ?, 'free', 'active', 'email', 40, 100000, 0)
+    `).run(freeUserId, 965001, 'free-confirmed-run', 'Free', 'en', 'Europe/Lisbon');
+    const pendingRun = claimChatActionRun({
+      userId: freeUserId,
+      tenantId: freeUserId,
+      conversationId: 'conv-confirmed-tier',
+      messageId: 'msg-confirmed-tier',
+      normalizedActionHash: 'confirmed-paid-training-hash',
+      provider: 'nexus',
+      actionType: 'training_plan_create',
+      risk: 'safe_write',
+      request: { goal: 'Generate a new training plan' },
+      nowIso: FROZEN_NOW,
+    });
+    updateChatActionRun(pendingRun.row.id, 'needs_confirmation', { nowIso: FROZEN_NOW });
+
+    const result = await executeConfirmedChatActionRuns({
+      ...baseInput,
+      userId: freeUserId,
+      tenantId: freeUserId,
+      conversationId: 'conv-confirmed-tier',
+      messageId: 'msg-confirmed-tier-response',
+      sourceMessageId: 'msg-confirmed-tier',
+      text: 'confirm',
+      locale: 'en-US',
+    });
+
+    expect(result?.status).toBe('blocked');
+    expect(result?.response.metadata?.error).toMatchObject({
+      code: 'TIER_REQUIRED',
+      details: {
+        skill: 'triathlon',
+        actionSkill: 'training',
+        action: 'training_plan_create',
+      },
+    });
+    expect(getChatActionRun(pendingRun.row.id)?.status).toBe('needs_confirmation');
+  });
+
+  it('continues cancelling other pending stores when DB-backed stores fail', async () => {
+    trackPendingChatConfirmation({
+      userId: baseInput.userId,
+      tenantId: baseInput.tenantId,
+      actionSummary: 'Confirm pending action while DB stores are down',
+      involvedSkills: ['secretary'],
+      reasonCodes: ['safe_write'],
+      sourceMessageId: 'msg-pending-confirmation-db-down',
+      now: new Date(FROZEN_NOW),
+    });
+    testDb.exec('DROP TABLE chat_pending_actions');
+    testDb.exec('DROP TABLE chat_action_runs');
+
+    const cancelPlan = await buildChatActionPlan({
+      ...baseInput,
+      text: 'never mind',
+      locale: 'en-US',
+      messageId: 'msg-cancel-db-down',
+    });
+
+    expect(cancelPlan?.telemetry?.outcome).toBe('pending_action_cancelled');
+    expect(getPendingChatConfirmation(baseInput.userId, baseInput.tenantId, new Date(FROZEN_NOW))).toBeNull();
+  });
+
+  it('reports DB-backed pending-store failures while clearing in-memory confirmations', () => {
+    trackPendingChatConfirmation({
+      userId: baseInput.userId,
+      tenantId: baseInput.tenantId,
+      actionSummary: 'Confirm pending action while DB stores are down',
+      involvedSkills: ['secretary'],
+      reasonCodes: ['safe_write'],
+      sourceMessageId: 'msg-pending-confirmation-db-down-direct',
+      now: new Date(FROZEN_NOW),
+    });
+    expect(testDb.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'chat_pending_actions'").get()).toBeTruthy();
+    testDb.exec('DROP TABLE chat_pending_actions');
+    testDb.exec('DROP TABLE chat_action_runs');
+
+    const cancelled = cancelAllPendingChatWork({
+      userId: baseInput.userId,
+      tenantId: baseInput.tenantId,
+      conversationId: baseInput.conversationId,
+      nowIso: FROZEN_NOW,
+    });
+
+    expect(cancelled.chatPendingConfirmation).toBe(true);
+    expect(cancelled.errors?.map((entry) => entry.store)).toEqual(expect.arrayContaining([
+      'chat_pending_actions.list',
+      'chat_pending_actions.cancel',
+      'chat_action_runs.cancel',
+    ]));
+    expect(getPendingChatConfirmation(baseInput.userId, baseInput.tenantId, new Date(FROZEN_NOW))).toBeNull();
+  });
+
+  it('replays duplicate cancelled action runs as blocked', () => {
+    const step = {
+      stepId: 'cancelled-step',
+      skill: 'tasks',
+      type: 'create_task',
+      action: 'create_task',
+      risk: 'safe_write',
+      provider: 'nexus',
+      args: { title: 'Do not recreate' },
+      requiredArgsPresent: true,
+      idempotencyKey: 'cancelled-idem',
+      verification: { required: false, method: 'none' },
+    } as const;
+
+    const result = replayDuplicateClaimedActionRun({
+      acquired: false,
+      row: {
+        id: 'run-cancelled',
+        user_id: baseInput.userId,
+        tenant_id: baseInput.tenantId,
+        account_id: null,
+        conversation_id: baseInput.conversationId,
+        message_id: 'msg-cancelled-replay',
+        normalized_action_hash: 'cancelled-idem',
+        provider: 'nexus',
+        action_type: 'create_task',
+        status: 'cancelled',
+        risk: 'safe_write',
+        request_json: JSON.stringify(step.args),
+        result_json: null,
+        provider_object_id: null,
+        provider_transaction_id: null,
+        verification_json: null,
+        error_json: JSON.stringify({ reason: 'user_cancelled_pending_chat_work' }),
+        created_at: FROZEN_NOW,
+        updated_at: FROZEN_NOW,
+        completed_at: FROZEN_NOW,
+      },
+    }, step as any);
+
+    expect(result).toMatchObject({
+      status: 'blocked',
+      error: 'idempotent_retry_existing_cancelled',
+      result: {
+        previousStatus: 'cancelled',
+      },
+    });
+  });
+
   it('expires stale pending actions in bounded batches below the shortest high-risk TTL', () => {
     for (let index = 0; index < 1500; index += 1) {
       upsertPendingChatAction({
@@ -1313,7 +1736,7 @@ describe('ChatActionPlanner', () => {
     });
     expect(contentPlan).toMatchObject({
       planner: 'deterministic',
-      requiresConfirmation: false,
+      requiresConfirmation: true,
       steps: [{ skill: 'content', action: 'content_script_create', requiredArgsPresent: true }],
     });
     expect(contentPlan?.steps[0]?.args).toMatchObject({
@@ -1604,17 +2027,35 @@ describe('ChatActionPlanner', () => {
 
     const actionInvocation = restSource.search(/await\s+tryHandleChatActionPlan\s*\(/);
     const fastPathInvocation = restSource.search(/await\s+tryBuildFastPathChatResponse\s*\(/);
+    const cancelInvocation = restSource.indexOf('if (normalizedText && normalizedAttachments.length === 0 && isPendingChatWorkCancellationTurn(normalizedText))');
+    const zeroPendingCancelResponse = restSource.indexOf('pending-action-cancel-empty');
+    const actionGatewayInvocation = restSource.indexOf('runChatCoreV2ActionGateway({');
     expect(actionInvocation).toBeGreaterThanOrEqual(0);
     expect(fastPathInvocation).toBeGreaterThanOrEqual(0);
+    expect(cancelInvocation).toBeGreaterThanOrEqual(0);
+    expect(zeroPendingCancelResponse).toBeGreaterThan(cancelInvocation);
+    expect(actionGatewayInvocation).toBeGreaterThanOrEqual(0);
+    expect(cancelInvocation).toBeLessThan(actionGatewayInvocation);
+    expect(zeroPendingCancelResponse).toBeLessThan(actionGatewayInvocation);
     expect(actionInvocation).toBeLessThan(fastPathInvocation);
     expect(wsSource).toMatch(/tryHandleChatActionPlan\s*\(/);
     expect(wsSource).not.toMatch(/tryBuildFastPathChatResponse\s*\(/);
+  });
+
+  it('matches only free-form pending-work cancellation turns, not specific cancel intents', () => {
+    for (const text of ['cancel', 'Cancel!', 'never mind', 'nvm', 'esquece', 'deixa para la']) {
+      expect(isPendingChatWorkCancellationTurn(text), text).toBe(true);
+    }
+    for (const text of ['cancel my meeting', 'cancel 3pm meeting', 'cancelar a reunião', 'cancela a reunião']) {
+      expect(isPendingChatWorkCancellationTurn(text), text).toBe(false);
+    }
   });
 
   it('registry exposes initial owner skills without creating a Chat v2 stack', () => {
     const skills = new Set(getChatActionRegistry().map((entry) => entry.skill));
     expect(skills).toEqual(new Set([
       'secretary_calendar',
+      'secretary_reminders',
       'mail',
       'tasks',
       'training',
@@ -1652,6 +2093,21 @@ describe('ChatActionPlanner', () => {
     }
   });
 
+  it('keeps non-destructive task creation actions unconfirmed while destructive task actions require confirmation', () => {
+    const registry = getChatActionRegistry();
+    for (const action of ['create_task', 'create_task_with_subtasks', 'create_checklist', 'add_subtasks_to_task']) {
+      expect(registry.find((entry) => entry.skill === 'tasks' && entry.action === action)).toMatchObject({
+        risk: 'safe_write',
+        confirmationPolicy: 'none',
+      });
+    }
+    for (const action of ['update_task', 'complete_task', 'delete_task', 'set_task_reminder']) {
+      expect(registry.find((entry) => entry.skill === 'tasks' && entry.action === action)).toMatchObject({
+        confirmationPolicy: 'confirm',
+      });
+    }
+  });
+
   it('keeps provider read-back mismatch below verified-success in response metadata and copy', async () => {
     const created = {
       id: 'google-event-duplicate',
@@ -1665,7 +2121,7 @@ describe('ChatActionPlanner', () => {
       .mockResolvedValueOnce([]);
     const createEvent = vi.fn().mockResolvedValue(created);
 
-    const first = await tryHandleChatActionPlan(baseInput, {
+    const first = await tryHandleChatActionPlan({ ...baseInput, requireSafeWriteConfirmation: false }, {
       calendar: {
         createEvent: createEvent as any,
         getEventsForSources: getEventsForSources as any,
@@ -1698,6 +2154,7 @@ describe('ChatActionPlanner', () => {
       ...baseInput,
       messageId: 'msg-pii-redaction',
       persistRuns: true,
+      requireSafeWriteConfirmation: false,
     }, {
       calendar: {
         createEvent: vi.fn().mockResolvedValue(created) as any,
@@ -1750,6 +2207,7 @@ describe('ChatActionPlanner', () => {
       ...baseInput,
       messageId: 'msg-partial-requeue',
       persistRuns: true,
+      requireSafeWriteConfirmation: false,
     }, {
       calendar: {
         createEvent: vi.fn().mockResolvedValue(created) as any,
@@ -1797,6 +2255,7 @@ describe('ChatActionPlanner', () => {
       ...baseInput,
       messageId: 'msg-late-completion',
       persistRuns: true,
+      requireSafeWriteConfirmation: false,
     }, {
       calendar: {
         createEvent: createEvent as any,
@@ -1849,6 +2308,7 @@ describe('ChatActionPlanner', () => {
       locale: 'en-US',
       messageId: 'msg-late-completion-en',
       persistRuns: true,
+      requireSafeWriteConfirmation: false,
     }, {
       calendar: {
         createEvent: createEvent as any,
@@ -1896,6 +2356,55 @@ describe('ChatActionPlanner', () => {
       nowIso: '2026-05-14T12:08:00+01:00',
     })).toBe(1);
     expect(getChatActionRun(claim.row.id)).toBeNull();
+  });
+
+  it('claims pending confirmation runs once before confirmed provider execution', () => {
+    const pending = claimChatActionRun({
+      userId: baseInput.userId,
+      tenantId: baseInput.tenantId,
+      conversationId: baseInput.conversationId,
+      messageId: 'msg-confirm-claim',
+      normalizedActionHash: 'confirm-claim-hash',
+      provider: 'nexus',
+      actionType: 'create_task',
+      risk: 'safe_write',
+      request: { title: 'Confirm once' },
+      nowIso: '2026-05-14T12:00:00+01:00',
+    });
+    updateChatActionRun(pending.row.id, 'needs_confirmation', {
+      nowIso: '2026-05-14T12:00:01+01:00',
+      verification: { required: true, reason: 'risk_policy' },
+    });
+
+    const first = claimChatActionRunForExecution({
+      userId: baseInput.userId,
+      tenantId: baseInput.tenantId,
+      conversationId: baseInput.conversationId,
+      messageId: 'msg-confirm-claim',
+      normalizedActionHash: 'confirm-claim-hash',
+      provider: 'nexus',
+      actionType: 'create_task',
+      risk: 'safe_write',
+      request: { title: 'Confirm once' },
+      nowIso: '2026-05-14T12:00:02+01:00',
+    });
+    const second = claimChatActionRunForExecution({
+      userId: baseInput.userId,
+      tenantId: baseInput.tenantId,
+      conversationId: baseInput.conversationId,
+      messageId: 'msg-confirm-claim',
+      normalizedActionHash: 'confirm-claim-hash',
+      provider: 'nexus',
+      actionType: 'create_task',
+      risk: 'safe_write',
+      request: { title: 'Confirm once' },
+      nowIso: '2026-05-14T12:00:03+01:00',
+    });
+
+    expect(first.acquired).toBe(true);
+    expect(first.row.status).toBe('executing');
+    expect(second.acquired).toBe(false);
+    expect(second.row.status).toBe('executing');
   });
 
   it('resumes confirmed task mutations through the deterministic task executor and read-back', async () => {
@@ -1953,7 +2462,7 @@ describe('ChatActionPlanner', () => {
         hasOutlook: vi.fn(() => false),
       },
       taskProviderForUser: vi.fn(() => ({}) as any),
-    });
+    }, { confirmed: true });
     expect(scheduleResponse.metadata.actionStatus).toBe('verified_success');
     expect(getTopics(4201, { includeTerminal: true, limit: 5 })).toEqual(expect.arrayContaining([
       expect.objectContaining({ title: 'Filmar reel de recuperação', scheduled_date: '2026-05-18' }),
@@ -2083,6 +2592,7 @@ describe('ChatActionPlanner', () => {
       locale: 'en-US',
       messageId: 'content-pending-second',
       persistRuns: true,
+      requireSafeWriteConfirmation: false,
     }, deps);
 
     expect(second?.status).toBe('verified_pending');
@@ -2176,7 +2686,7 @@ describe('ChatActionPlanner', () => {
         hasOutlook: vi.fn(() => false),
       },
       taskProviderForUser: vi.fn(() => ({}) as any),
-    });
+    }, { confirmed: true });
 
     expect(response.metadata.actionStatus).toBe('verified_success');
     expect(response.text).toContain('Recovery Reel');
@@ -2216,7 +2726,7 @@ describe('ChatActionPlanner', () => {
         hasOutlook: vi.fn(() => false),
       },
       taskProviderForUser: vi.fn(() => ({}) as any),
-    });
+    }, { confirmed: true });
 
     expect(response.metadata.actionStatus).toBe('blocked');
     expect(response.text.length).toBeGreaterThan(0);
@@ -2250,7 +2760,7 @@ describe('ChatActionPlanner', () => {
         hasOutlook: vi.fn(() => false),
       },
       taskProviderForUser: vi.fn(() => ({}) as any),
-    });
+    }, { confirmed: true });
 
     expect(response.metadata.actionStatus).toBe('blocked');
     expect(testDb.prepare('SELECT stage FROM content_pipeline WHERE topic_title = ?').get('Other User Reel')).toEqual({ stage: 'scripted' });
@@ -2275,7 +2785,7 @@ describe('ChatActionPlanner', () => {
         hasOutlook: vi.fn(() => false),
       },
       taskProviderForUser: vi.fn(() => ({}) as any),
-    });
+    }, { confirmed: true });
 
     expect(response.metadata.actionStatus).toBe('verified_success');
     expect(getMealPlan(4301, '2026-05-18', '2026-05-18', 4301)[0]).toMatchObject({

@@ -14,6 +14,8 @@ const MIGRATIONS_DIR = path.resolve(__dirname, '../../migrations');
 let testDb: Database.Database;
 const mockCalendarCreateEvent = vi.fn();
 const mockIsAnyCalendarConfigured = vi.fn();
+const mockHasConnectedCalendarForUser = vi.fn();
+const mockGetEventsWithDiagnostics = vi.fn();
 const mockInvalidateCookingDerivedCaches = vi.fn();
 const mockPreviewCookingMealPrepSchedulingIntent = vi.fn();
 const mockSubmitCookingMealPrepSchedulingIntent = vi.fn();
@@ -47,8 +49,8 @@ vi.mock('../../src/services/unified-calendar', () => ({
   eventFingerprint: vi.fn(() => 'event-fingerprint'),
   getConfiguredSources: vi.fn(() => []),
   getEvents: vi.fn(async () => []),
-  getEventsWithDiagnostics: vi.fn(async () => ({ events: [], status: 'ready', sources: [] })),
-  hasConnectedCalendarForUser: vi.fn(() => false),
+  getEventsWithDiagnostics: (...args: unknown[]) => mockGetEventsWithDiagnostics(...args),
+  hasConnectedCalendarForUser: (...args: unknown[]) => mockHasConnectedCalendarForUser(...args),
   hasWritableCalendarForUser: vi.fn(() => false),
   isAnyCalendarConfigured: (...args: unknown[]) => mockIsAnyCalendarConfigured(...args),
   updateEvent: vi.fn(),
@@ -80,7 +82,20 @@ vi.mock('../../src/services/cache-coherence-registry', () => ({
 }));
 
 vi.mock('../../src/services/cooking-secretary-integration', () => ({
-  buildCookingMealPrepSchedulingIntent: vi.fn(),
+  buildCookingMealPrepSchedulingIntent: (input: any) => ({
+    intentId: `cooking:meal-prep:${input.tenantId}:${input.userId}:${input.week}`,
+    sourceSkill: 'cooking',
+    sourceAction: 'schedule_meal_prep',
+    sourceEntityId: input.week,
+    sourceEntityType: 'meal_prep_block',
+    ownerUserId: input.userId,
+    tenantId: input.tenantId,
+    title: input.title,
+    requestedDurationMinutes: input.durationMinutes,
+    preferredWindows: [{ start: input.startIso, end: input.endIso, label: 'meal prep window', hard: true }],
+    priority: 'normal',
+    flexibility: 'fixed',
+  }),
   previewCookingMealPrepSchedulingIntent: (...args: unknown[]) => mockPreviewCookingMealPrepSchedulingIntent(...args),
   submitCookingMealPrepSchedulingIntent: (...args: unknown[]) => mockSubmitCookingMealPrepSchedulingIntent(...args),
 }));
@@ -190,10 +205,20 @@ describe('Cooking API — shopping list item updates', () => {
     clearTenantScopeAnomaliesForTests();
     mockCalendarCreateEvent.mockReset();
     mockIsAnyCalendarConfigured.mockReset();
+    mockHasConnectedCalendarForUser.mockReset();
+    mockGetEventsWithDiagnostics.mockReset();
     mockInvalidateCookingDerivedCaches.mockReset();
     mockPreviewCookingMealPrepSchedulingIntent.mockReset();
     mockSubmitCookingMealPrepSchedulingIntent.mockReset();
     mockIsAnyCalendarConfigured.mockReturnValue(true);
+    mockHasConnectedCalendarForUser.mockReturnValue(true);
+    mockGetEventsWithDiagnostics.mockResolvedValue({
+      events: [],
+      status: 'ready',
+      warningCodes: [],
+      warnings: [],
+      sources: { configured: [], fulfilled: [], failed: [] },
+    });
     mockCalendarCreateEvent.mockResolvedValue({
       id: 'evt-meal-prep',
       summary: 'Meal prep — 1 meals',
@@ -1110,5 +1135,56 @@ describe('Cooking API — shopping list item updates', () => {
       type: 'reminder',
       safeBody: 'Cooking reminder — open Nexus to review the recommendation.',
     });
+  });
+
+  it('checks the authenticated user calendar before creating a meal prep event', async () => {
+    const user = getOrCreateUser(21014, { username: 'cook14' });
+    const recipe = addRecipe(user.id, 'Prep rice', [
+      { name: 'Rice', quantity: '500', unit: 'g' },
+    ]);
+    setMealPlan(user.id, '2026-04-13', 'dinner', 'Prep rice', { recipeId: recipe.id });
+    mockHasConnectedCalendarForUser.mockReturnValue(false);
+    mockIsAnyCalendarConfigured.mockReturnValue(true);
+
+    const res = await dispatch('POST', '/meal-plan/create-prep-event', user.id, {
+      week: '2026-04-13',
+      dayOfWeek: 0,
+      startHour: 14,
+      durationMinutes: 120,
+    });
+
+    expect(res.statusCode).toBe(400);
+    expect(res.body.error.code).toBe('CALENDAR_NOT_CONFIGURED');
+    expect(mockHasConnectedCalendarForUser).toHaveBeenCalledWith(user.id);
+    expect(mockCalendarCreateEvent).not.toHaveBeenCalled();
+    expect(mockPreviewCookingMealPrepSchedulingIntent).not.toHaveBeenCalled();
+  });
+
+  it('fails closed when meal prep scheduling cannot verify live calendar availability', async () => {
+    const user = getOrCreateUser(21015, { username: 'cook15' });
+    const recipe = addRecipe(user.id, 'Prep beans', [
+      { name: 'Beans', quantity: '500', unit: 'g' },
+    ]);
+    setMealPlan(user.id, '2026-04-13', 'dinner', 'Prep beans', { recipeId: recipe.id });
+    mockGetEventsWithDiagnostics.mockResolvedValueOnce({
+      events: [],
+      status: 'unavailable',
+      warningCodes: ['OUTLOOK_CALENDAR_UNAVAILABLE'],
+      warnings: ['Outlook Calendar is unavailable right now.'],
+      sources: { configured: ['outlook'], fulfilled: [], failed: ['outlook'] },
+    });
+
+    const res = await dispatch('POST', '/meal-plan/create-prep-event', user.id, {
+      week: '2026-04-13',
+      dayOfWeek: 0,
+      startHour: 14,
+      durationMinutes: 120,
+    });
+
+    expect(res.statusCode).toBe(503);
+    expect(res.body.error.code).toBe('COOKING_PREP_CALENDAR_UNAVAILABLE');
+    expect(res.body.error.details.warningCodes).toEqual(['OUTLOOK_CALENDAR_UNAVAILABLE']);
+    expect(mockPreviewCookingMealPrepSchedulingIntent).not.toHaveBeenCalled();
+    expect(mockCalendarCreateEvent).not.toHaveBeenCalled();
   });
 });

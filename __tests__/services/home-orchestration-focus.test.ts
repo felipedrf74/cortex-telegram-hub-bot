@@ -3,6 +3,7 @@ import Database from 'better-sqlite3';
 import { DateTime } from 'luxon';
 
 let testDb: Database.Database;
+const mockGetEvents = vi.fn();
 const mockGetEventsForSources = vi.fn();
 
 vi.mock('../../src/services/database', () => ({
@@ -26,6 +27,7 @@ vi.mock('../../src/utils/logger', () => ({
 }));
 
 vi.mock('../../src/services/unified-calendar', () => ({
+  getEvents: (...args: unknown[]) => mockGetEvents(...args),
   getEventsForSources: (...args: unknown[]) => mockGetEventsForSources(...args),
 }));
 
@@ -54,6 +56,8 @@ import {
 } from '../../src/services/provider-preferences';
 
 beforeEach(() => {
+  mockGetEvents.mockReset();
+  mockGetEvents.mockResolvedValue([]);
   mockGetEventsForSources.mockReset();
   mockGetEventsForSources.mockResolvedValue([]);
   testDb = new Database(':memory:');
@@ -423,7 +427,12 @@ describe('Home orchestration focus helpers', () => {
       timezone: 'UTC',
     });
 
-    expect(mockGetEventsForSources).toHaveBeenCalled();
+    expect(mockGetEvents).toHaveBeenCalledWith(
+      '2026-05-17T07:30:00.000Z',
+      '2026-05-17T22:00:00.000Z',
+      42,
+    );
+    expect(mockGetEventsForSources).not.toHaveBeenCalled();
     expect(result.status).toBe('conflicted');
     expect(result.conflicts[0]).toMatchObject({
       title: 'Sleep',

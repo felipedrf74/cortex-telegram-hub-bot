@@ -544,7 +544,7 @@ async function handleStatus(labels: ReturnType<typeof labelsForLanguage>, userId
     msg += `${copy('📋 Microsoft To Do: não configurado', '📋 Microsoft To Do: not configured')}\n`;
   }
 
-  const reminders = userId != null ? getActiveReminders(userId) : [];
+  const reminders = userId != null ? getActiveReminders(userId, tenantId) : [];
   msg += `${copy(`⏰ Lembretes ativos: ${reminders.length}`, `⏰ Active reminders: ${reminders.length}`)}\n`;
 
   if (userId != null ? hasConnectedCalendarForUser(userId) : isAnyCalendarConfigured()) {

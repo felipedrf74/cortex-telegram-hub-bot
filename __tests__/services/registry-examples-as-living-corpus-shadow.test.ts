@@ -47,9 +47,10 @@ describe('examples-as-living-corpus shadow mode (Phase 14 batch 74)', () => {
   it('every active skill is represented in the generated golden scenarios', () => {
     const generated = buildRegistryDrivenEvalScenarios({ tags: ['golden'] });
     const skills = new Set(generated.map((s) => s.title.split('.')[0]));
-    // 10 active skills (secretary_calendar, mail, tasks, training, content,
-    // cooking, finance, connections, notifications, decision_center)
-    expect(skills.size).toBeGreaterThanOrEqual(10);
+    // 11 active action skills (secretary_calendar, secretary_reminders, mail,
+    // tasks, training, content, cooking, finance, connections, notifications,
+    // decision_center)
+    expect(skills.size).toBeGreaterThanOrEqual(11);
   });
 
   it('en + pt + es scenarios all generate from registry', () => {

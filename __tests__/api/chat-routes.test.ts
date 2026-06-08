@@ -6549,6 +6549,80 @@ describe('Chat API routes', () => {
     expect(JSON.stringify(messageRes.body.error.details)).not.toMatch(/usd|allowance/i);
   });
 
+  it('returns a local empty-cancel response without falling through to chat routing', async () => {
+    const messageRes = await dispatch('POST', '/message', 7001, {
+      text: 'nvm',
+    });
+
+    expect(messageRes.statusCode, JSON.stringify(messageRes.body)).toBe(200);
+    expect(messageRes.body.routeMethod).toBe('pending-action-cancel-empty');
+    expect(messageRes.body.metadata).toMatchObject({
+      type: 'pending_action_cancel_empty',
+      mutationBlocked: true,
+    });
+    expect(messageRes.body.metadata.cancelled).toMatchObject({
+      chatPendingActions: 0,
+      chatActionRuns: 0,
+      chatPendingConfirmation: false,
+      chatCoreV2Commands: 0,
+      decisionDismissed: false,
+    });
+    expect(mockRouteMessage).not.toHaveBeenCalled();
+  });
+
+  it('clears pending chat work before quota enforcement blocks model-backed chat', async () => {
+    const pending = upsertPendingChatAction({
+      userId: 7001,
+      tenantId: 7001,
+      conversationId: 'conv-quota-cancel',
+      skill: 'training',
+      action: 'training_plan_create',
+      collectedSlots: { sport: 'running' },
+      missingSlots: ['weeklyVolumeKm'],
+      riskClass: 'R1',
+      locale: 'en-US',
+      timezone: 'Europe/Lisbon',
+      originatingSurface: 'api',
+      nowIso: '2026-04-15T12:00:00.000Z',
+    });
+    mockIsUserOverDailyCap.mockReturnValue({
+      over: true,
+      spentUsd: 0,
+      capUsd: 0,
+      plan: 'free',
+      usageLevel: 'exhausted',
+      usageFraction: 1,
+      resetAt: '2026-04-15T00:00:00.000Z',
+      limitUsd: 0,
+      usedUsd: 0,
+      remainingUsd: 0,
+      planDailyLimitUsd: 0,
+      includedRemainingUsd: 0,
+      nexusPointsBalance: 0,
+      nexusPointsRemainingUsd: 0,
+      boostAvailable: false,
+      pointsPurchaseAvailable: false,
+    });
+
+    const messageRes = await dispatch('POST', '/message', 7001, {
+      text: 'nvm',
+      clientMessageId: 'conv-quota-cancel',
+    });
+
+    expect(messageRes.statusCode, JSON.stringify(messageRes.body)).toBe(200);
+    expect(messageRes.body.routeMethod).toBe('pending-action-cancelled');
+    expect(messageRes.body.metadata).toMatchObject({
+      type: 'pending_action_cancelled',
+      mutationBlocked: true,
+      cancelled: expect.objectContaining({ chatPendingActions: 1 }),
+    });
+    expect(testDb.prepare('SELECT status, cancellation_state FROM chat_pending_actions WHERE id = ?').get(pending.id)).toEqual({
+      status: 'cancelled',
+      cancellation_state: 'cancelled',
+    });
+    expect(mockRouteMessage).not.toHaveBeenCalled();
+  });
+
   it('fails closed on invalid tenant scope before processing personalized chat state', async () => {
     const messageRes = await dispatch('POST', '/message', 0, {
       text: 'what is on my content desk?',

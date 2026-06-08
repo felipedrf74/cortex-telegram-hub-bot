@@ -49,6 +49,13 @@ export function successCopy(
       ? `A tua agenda tem ${count} evento(s) nesse período.`
       : `Your agenda has ${count} event(s) in that window.`;
   }
+  if (first?.step.action === 'set_reminder') {
+    const args = first.step.args as any;
+    const remindAt = DateTime.fromISO(String(args.remindAt)).setZone(input.timezone);
+    return input.locale?.startsWith('pt')
+      ? `Feito — criei o lembrete “${String(args.message)}” para ${remindAt.toFormat('dd/LL HH:mm')}.`
+      : `Done — I created the reminder “${String(args.message)}” for ${remindAt.toFormat('LLL d, HH:mm')}.`;
+  }
   if (first?.step.action === 'update_event' || first?.step.action === 'move_event') {
     return input.locale?.startsWith('pt') ? 'Feito — atualizei o evento e verifiquei no calendário.' : 'Done — I updated the event and verified it in the calendar.';
   }
@@ -308,6 +315,14 @@ export function confirmationCopy(plan: ChatActionPlan, input: ChatPlannerInput):
     }
     return `Confirm that you want to ${first.action === 'delete_task' ? 'delete' : first.action === 'complete_task' ? 'complete' : 'change'} the task “${title}”?`;
   }
+  if (first?.action === 'set_reminder') {
+    const args = first.args as any;
+    const remindAt = DateTime.fromISO(String(args.remindAt)).setZone(input.timezone);
+    if (input.locale?.startsWith('pt')) {
+      return `Confirma que queres criar o lembrete “${String(args.message || input.text)}” para ${remindAt.toFormat('dd/LL HH:mm')}?`;
+    }
+    return `Confirm that you want to create the reminder “${String(args.message || input.text)}” for ${remindAt.toFormat('LLL d, HH:mm')}?`;
+  }
   if (first?.action === 'cooking_substitute_ingredient') {
     const args = first.args as any;
     const original = String(args.originalIngredient || 'ingredient');
@@ -367,6 +382,8 @@ function friendlyActionLabel(step: ChatPlanStep, input: ChatPlannerInput): strin
       return input.locale?.startsWith('pt') ? `Criei a tarefa “${String((step.args as any).title || 'tarefa')}”` : `Created task “${String((step.args as any).title || 'task')}”`;
     case 'schedule_event':
       return input.locale?.startsWith('pt') ? `Agendei “${String((step.args as any).title || 'evento')}”` : `Scheduled “${String((step.args as any).title || 'event')}”`;
+    case 'set_reminder':
+      return input.locale?.startsWith('pt') ? `Criei o lembrete “${String((step.args as any).message || 'lembrete')}”` : `Created reminder “${String((step.args as any).message || 'reminder')}”`;
     case 'content_pipeline_stage_transition':
       return input.locale?.startsWith('pt') ? 'Atualizei o estado no pipeline de Content' : 'Updated the Content pipeline stage';
     case 'cooking_substitute_ingredient':

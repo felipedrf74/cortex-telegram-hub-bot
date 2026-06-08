@@ -23,6 +23,7 @@ vi.mock('../../src/services/database', () => ({
   getDb: () => ({
     prepare: () => ({
       all: (...args: unknown[]) => mockDbAll(...args),
+      get: vi.fn(() => null),
       run: (...args: unknown[]) => mockDbRun(...args),
     }),
   }),

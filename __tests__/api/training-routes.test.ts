@@ -57,6 +57,8 @@ const mockInvalidateCalendarCaches = vi.fn();
 const mockInvalidateTrainingDerivedCaches = vi.fn();
 const mockReconcileOrphanedTrainingAgendaEvents = vi.fn();
 const mockSubmitSecretarySchedulingIntent = vi.fn();
+const mockLoadLiveCalendarBusyWindows = vi.fn();
+const mockIsConnected = vi.fn();
 const mockIsUserOverDailyCap = vi.fn(() => ({
   over: false,
   spentUsd: 0,
@@ -95,6 +97,14 @@ vi.mock('../../src/services/unified-calendar', () => ({
   getEventsForSources: (...args: unknown[]) => mockGetEvents(...args),
   createEvent: (...args: unknown[]) => mockCreateEvent(...args),
   deleteEvent: (...args: unknown[]) => mockDeleteEvent(...args),
+}));
+
+vi.mock('../../src/services/oauth-store', () => ({
+  isConnected: (...args: unknown[]) => mockIsConnected(...args),
+}));
+
+vi.mock('../../src/services/secretary-live-calendar-busy', () => ({
+  loadLiveCalendarBusyWindowsForSecretaryIntent: (...args: unknown[]) => mockLoadLiveCalendarBusyWindows(...args),
 }));
 
 vi.mock('../../src/services/cache-coherence-registry', () => ({
@@ -456,6 +466,8 @@ describe('Training API routes', () => {
     mockInvalidateTrainingDerivedCaches.mockReset();
     mockReconcileOrphanedTrainingAgendaEvents.mockReset();
     mockSubmitSecretarySchedulingIntent.mockReset();
+    mockLoadLiveCalendarBusyWindows.mockReset();
+    mockIsConnected.mockReset();
     mockIsUserOverDailyCap.mockReset();
 
     mockGetCached.mockReturnValue(null);
@@ -465,6 +477,14 @@ describe('Training API routes', () => {
     mockGetStoredPlanCoveringDate.mockReturnValue(null);
     mockGetEvents.mockResolvedValue([]);
     mockCreateEvent.mockResolvedValue({ id: 'evt-1', source: 'outlook' });
+    mockIsConnected.mockImplementation((_userId: number, provider: string) => provider === 'google' || provider === 'outlook');
+    mockLoadLiveCalendarBusyWindows.mockResolvedValue({
+      windows: [],
+      degraded: false,
+      providerConfigured: true,
+      warningCodes: [],
+      warnings: [],
+    });
     mockSubmitSecretarySchedulingIntent.mockImplementation((intent: any) => ({
       status: 'scheduled',
       reasonCodes: ['scheduled_in_available_window'],
@@ -1870,7 +1890,7 @@ describe('Training API routes', () => {
       trainingPriority: 'running',
       raceDate: '2026-10-18',
     }));
-    expect(mockGetEvents).toHaveBeenCalledWith(expect.any(String), expect.any(String), 12);
+    expect(mockGetEvents).toHaveBeenCalledWith(expect.any(String), expect.any(String), 12, ['outlook']);
 
     const storedSessions = mockCreateSession.mock.calls.map((call) => ({
       day: String(call[0]?.day_of_week || '').toLowerCase(),
@@ -2116,6 +2136,110 @@ describe('Training API routes', () => {
       code: 'NOT_FOUND',
       message: 'Training session not found.',
     }));
+  });
+
+  it('returns 503 from reflow preview when live calendar availability is degraded', async () => {
+    mockGetSessionById.mockReturnValue({
+      id: 200,
+      week_id: 700,
+      plan_id: 70,
+      day_of_week: 'Monday',
+      session_type: 'run',
+      title: 'Base Run',
+      duration_minutes: 45,
+      description: 'Easy aerobic run.',
+      status: 'scheduled',
+      calendar_event_id: null,
+      calendar_source: null,
+      session_identity_key: null,
+      session_shape_hash: null,
+      intensity_text: null,
+      exercises_json: null,
+      description_json: null,
+    });
+    mockGetPlanById.mockReturnValue({
+      id: 70,
+      user_id: 12,
+      start_date: '2026-06-15T00:00:00.000Z',
+      preferences_json: JSON.stringify({ preferredTime: '12:00' }),
+    });
+    mockGetWeeksForPlan.mockReturnValue([{ id: 700, week_number: 1 }]);
+    mockLoadLiveCalendarBusyWindows.mockResolvedValueOnce({
+      windows: [],
+      degraded: true,
+      providerConfigured: true,
+      warningCodes: ['GOOGLE_CALENDAR_UNAVAILABLE'],
+      warnings: ['Google Calendar is unavailable right now.'],
+    });
+
+    const res = await dispatch('POST', '/sessions/200/reflow-preview', {}, { calendarSource: 'google' });
+
+    expect(res.statusCode).toBe(503);
+    expect(res.body.ok).toBe(false);
+    expect(res.body.error).toMatchObject({
+      code: 'TRAINING_CALENDAR_AVAILABILITY_UNAVAILABLE',
+      message: 'Calendar availability could not be checked right now.',
+    });
+    expect(res.body.error.details).toMatchObject({
+      reason: 'TRAINING_SECRETARY_LIVE_BUSY_WINDOWS_DEGRADED',
+      provider: 'google',
+      sessionId: 200,
+      warningCodes: ['GOOGLE_CALENDAR_UNAVAILABLE'],
+    });
+    expect(mockCreateEvent).not.toHaveBeenCalled();
+    expect(mockUpdateSession).not.toHaveBeenCalled();
+  });
+
+  it('returns 503 from reflow confirm when live calendar availability is degraded', async () => {
+    mockGetSessionById.mockReturnValue({
+      id: 201,
+      week_id: 701,
+      plan_id: 71,
+      day_of_week: 'Tuesday',
+      session_type: 'run',
+      title: 'Tempo Run',
+      duration_minutes: 50,
+      description: 'Controlled tempo.',
+      status: 'scheduled',
+      calendar_event_id: null,
+      calendar_source: null,
+      session_identity_key: null,
+      session_shape_hash: null,
+      intensity_text: null,
+      exercises_json: null,
+      description_json: null,
+    });
+    mockGetPlanById.mockReturnValue({
+      id: 71,
+      user_id: 12,
+      start_date: '2026-06-15T00:00:00.000Z',
+      preferences_json: JSON.stringify({ preferredTime: '12:00' }),
+    });
+    mockGetWeeksForPlan.mockReturnValue([{ id: 701, week_number: 1 }]);
+    mockLoadLiveCalendarBusyWindows.mockResolvedValueOnce({
+      windows: [],
+      degraded: true,
+      providerConfigured: true,
+      warningCodes: ['OUTLOOK_CALENDAR_UNAVAILABLE'],
+      warnings: ['Outlook Calendar is unavailable right now.'],
+    });
+
+    const res = await dispatch('POST', '/sessions/201/reflow-confirm', {}, { calendarSource: 'outlook' });
+
+    expect(res.statusCode).toBe(503);
+    expect(res.body.ok).toBe(false);
+    expect(res.body.error).toMatchObject({
+      code: 'TRAINING_CALENDAR_AVAILABILITY_UNAVAILABLE',
+      message: 'Calendar availability could not be checked right now.',
+    });
+    expect(res.body.error.details).toMatchObject({
+      reason: 'TRAINING_SECRETARY_LIVE_BUSY_WINDOWS_DEGRADED',
+      provider: 'outlook',
+      sessionId: 201,
+      warningCodes: ['OUTLOOK_CALENDAR_UNAVAILABLE'],
+    });
+    expect(mockCreateEvent).not.toHaveBeenCalled();
+    expect(mockUpdateSession).not.toHaveBeenCalled();
   });
 
   it('returns uniform 404 from reflow confirm for foreign and missing sessions', async () => {

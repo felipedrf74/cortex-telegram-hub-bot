@@ -173,10 +173,13 @@ export function registerChatCallbackRoutes(
           return;
         }
 
-        const applied = await applyCoachRecommendations(userId, recommendationIds);
-        if (ref) {
-          consumeCallbackForScope(ref, { tenantId, userId });
+        if (ref && !consumeCallbackForScope(ref, { tenantId, userId })) {
+          res.status(410).json({
+            error: buildCoachExpiredError(lang),
+          });
+          return;
         }
+        const applied = await applyCoachRecommendations(userId, recommendationIds);
         const payload = buildCoachApplyPayload(lang, applied.count, applied.appliedRecommendations);
 
         if (messageId) {
@@ -214,6 +217,12 @@ export function registerChatCallbackRoutes(
       let editOriginal = false;
       let newButtons: { text: string; callbackData: string }[][] | null = null;
       const taskProvider = getTaskProviderForUser(userId);
+      const expireMalformedTaskCallback = () => {
+        if (ref) consumeCallbackForScope(ref, { tenantId, userId });
+        res.status(410).json({
+          error: buildCallbackExpiredError(language),
+        });
+      };
 
       switch (prefix) {
         case 'td:ls': {
@@ -233,39 +242,61 @@ export function registerChatCallbackRoutes(
           break;
         }
         case 'td:tc': {
-          if (cbData?.listId && cbData?.taskId) {
-            await taskProvider.completeTask(cbData.listId, cbData.taskId);
-            if (ref) consumeCallbackForScope(ref, { tenantId, userId });
-            const payload = buildTaskCompletedPayload(language, cbData.title);
-            responseText = payload.text;
-            editOriginal = payload.editOriginal;
+          if (!cbData?.listId || !cbData?.taskId) {
+            expireMalformedTaskCallback();
+            return;
           }
+          if (ref && !consumeCallbackForScope(ref, { tenantId, userId })) {
+            res.status(410).json({
+              error: buildCallbackExpiredError(language),
+            });
+            return;
+          }
+          await taskProvider.completeTask(cbData.listId, cbData.taskId);
+          const payload = buildTaskCompletedPayload(language, cbData.title);
+          responseText = payload.text;
+          editOriginal = payload.editOriginal;
           break;
         }
         case 'td:dy': {
           if (cbData?.listId && cbData?.taskId) {
+            if (ref && !consumeCallbackForScope(ref, { tenantId, userId })) {
+              res.status(410).json({
+                error: buildCallbackExpiredError(language),
+              });
+              return;
+            }
             await taskProvider.deleteTask(cbData.listId, cbData.taskId);
-            if (ref) consumeCallbackForScope(ref, { tenantId, userId });
             const payload = buildTaskDeletedPayload(language, cbData.title);
             responseText = payload.text;
             editOriginal = payload.editOriginal;
           } else if (cbData?.listId && cbData?.type === 'list') {
+            if (ref && !consumeCallbackForScope(ref, { tenantId, userId })) {
+              res.status(410).json({
+                error: buildCallbackExpiredError(language),
+              });
+              return;
+            }
             await taskProvider.deleteList(cbData.listId);
-            if (ref) consumeCallbackForScope(ref, { tenantId, userId });
             const payload = buildListDeletedPayload(language, cbData.listName);
             responseText = payload.text;
             editOriginal = payload.editOriginal;
+          } else {
+            expireMalformedTaskCallback();
+            return;
           }
           break;
         }
         case 'td:tx': {
-          if (cbData?.listId && (cbData?.taskId || cbData?.type === 'list')) {
-            const confirmRef = callbackData.split(':')[2];
-            const payload = buildDeleteConfirmationPayload(language, cbData, confirmRef, labels);
-            responseText = payload.text;
-            newButtons = payload.newButtons;
-            editOriginal = payload.editOriginal;
+          if (!cbData?.listId || (!cbData?.taskId && cbData?.type !== 'list')) {
+            expireMalformedTaskCallback();
+            return;
           }
+          const confirmRef = callbackData.split(':')[2];
+          const payload = buildDeleteConfirmationPayload(language, cbData, confirmRef, labels);
+          responseText = payload.text;
+          newButtons = payload.newButtons;
+          editOriginal = payload.editOriginal;
           break;
         }
         case 'td:dn': {

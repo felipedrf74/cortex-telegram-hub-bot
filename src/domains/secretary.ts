@@ -36,6 +36,7 @@ import { DateTime } from 'luxon';
 import { buildChatPromptContextBlock } from '../services/chat-context-engine';
 import { buildChatGroundingEnvelope } from '../services/chat-grounding-layer';
 import { sanitizeForPromptInterpolation } from '../utils/prompt-sanitizer';
+import { getChatToolRisk } from '../services/chat-tool-authorization';
 
 // Codex QA round 5: untrusted text from user-controlled sources (task
 // titles, reminder messages, calendar summaries) was previously
@@ -88,6 +89,26 @@ function executeScopedToolCall(
     return executeToolCall(name, input, userId, tenantId);
   }
   return executeToolCall(name, input, userId);
+}
+
+function isLegacySecretaryWriteTool(name: string): boolean {
+  return getChatToolRisk(name) !== 'read';
+}
+
+function buildLegacyWriteBlockedToolResult(name: string): Record<string, unknown> {
+  return {
+    success: false,
+    code: 'ACTION_CONFIRMATION_REQUIRED',
+    confirmation_required: true,
+    error: `${name} is a write action and must run through the chat action planner confirmation flow.`,
+  };
+}
+
+function buildLegacyWriteBlockedReply(userId?: number): string {
+  const isPT = typeof userId === 'number' && getUserLanguage(userId).startsWith('pt');
+  return isPT
+    ? 'Essa ação precisa de confirmação no app antes de eu alterar qualquer coisa.'
+    : 'This action needs confirmation in the app before I change anything.';
 }
 
 /**
@@ -266,7 +287,9 @@ async function buildStateContext(message: string = '', userId?: number, tenantId
     taskProvider
       ? taskProvider.getAllPendingTasks().catch(() => ({ success: false as const, data: [], error: 'API error' }))
       : Promise.resolve(null),
-    hasUserScope && needs.reminders && remindersEnabled ? Promise.resolve(getRemindersForToday(scopedUserId)) : Promise.resolve([]),
+    hasUserScope && needs.reminders && remindersEnabled
+      ? Promise.resolve(getRemindersForToday(scopedUserId, scopedTenantKey, timezone))
+      : Promise.resolve([]),
     hasCalendar && scopedUserId !== null
       ? getEvents(localNow.startOf('day').toISO()!, localNow.endOf('day').toISO()!, scopedUserId).catch(() => [] as any[])
       : Promise.resolve([] as any[]),
@@ -686,6 +709,7 @@ export async function handleSecretary(message: string, userId?: number, tenantId
 
   const toolConversation: AIToolResultMessage[] = [];
   const toolsUsed: string[] = [];
+  let legacyWriteBlocked = false;
   let iterations = 0;
 
   while (result.toolCalls.length > 0 && iterations < 4) {
@@ -704,6 +728,17 @@ export async function handleSecretary(message: string, userId?: number, tenantId
     // Execute all tool calls in parallel, truncate large results
     const toolResults = await Promise.all(
       result.toolCalls.map(async (tc) => {
+        if (isLegacySecretaryWriteTool(tc.name)) {
+          legacyWriteBlocked = true;
+          logger.warn(
+            { userId, tenantId, tool: tc.name },
+            'Blocked Secretary legacy chat write tool; action planner confirmation is required',
+          );
+          const blockedResult = buildLegacyWriteBlockedToolResult(tc.name);
+          let content = JSON.stringify(blockedResult);
+          if (content.length > 2000) content = content.slice(0, 2000) + '...(truncated)';
+          return { type: 'tool_result' as const, tool_use_id: tc.id, content };
+        }
         const toolResult = await executeScopedToolCall(tc.name, tc.input as Record<string, any>, userId, tenantId);
         let content = JSON.stringify(toolResult);
         if (content.length > 2000) content = content.slice(0, 2000) + '...(truncated)';
@@ -723,6 +758,10 @@ export async function handleSecretary(message: string, userId?: number, tenantId
     });
     finalText = result.text;
     logger.debug({ iteration: iterations, hasText: !!finalText, toolCalls: result.toolCalls.length }, 'Continue result');
+  }
+
+  if (legacyWriteBlocked) {
+    finalText = buildLegacyWriteBlockedReply(userId);
   }
 
   // Guard against empty response (can happen after errors exhaust tool iterations)
@@ -779,6 +818,7 @@ async function handleSecretaryWithDirectAnthropic(
 
   const toolConversation: any[] = [];
   const toolsUsed: string[] = [];
+  let legacyWriteBlocked = false;
   let iterations = 0;
 
   while (result.toolCalls.length > 0 && iterations < 4) {
@@ -792,6 +832,17 @@ async function handleSecretaryWithDirectAnthropic(
 
     const toolResults = await Promise.all(
       result.toolCalls.map(async (tc: any) => {
+        if (isLegacySecretaryWriteTool(tc.name)) {
+          legacyWriteBlocked = true;
+          logger.warn(
+            { userId, tenantId, tool: tc.name },
+            'Blocked Secretary legacy direct-Anthropic write tool; action planner confirmation is required',
+          );
+          const blockedResult = buildLegacyWriteBlockedToolResult(tc.name);
+          let content = JSON.stringify(blockedResult);
+          if (content.length > 2000) content = content.slice(0, 2000) + '...(truncated)';
+          return { type: 'tool_result' as const, tool_use_id: tc.id, content };
+        }
         const toolResult = await executeScopedToolCall(tc.name, tc.input as Record<string, any>, userId, tenantId);
         let content = JSON.stringify(toolResult);
         if (content.length > 2000) content = content.slice(0, 2000) + '...(truncated)';
@@ -806,6 +857,10 @@ async function handleSecretaryWithDirectAnthropic(
 
     result = await continueWithToolResults(DOMAIN, history, message, stateContext, toolConversation, userId);
     finalText = result.text;
+  }
+
+  if (legacyWriteBlocked) {
+    finalText = buildLegacyWriteBlockedReply(uid);
   }
 
   if (!finalText || !finalText.trim()) {

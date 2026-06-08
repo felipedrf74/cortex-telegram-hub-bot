@@ -11,7 +11,7 @@ import type {
   ChatPlannerInput,
   ChatPlanStep,
 } from '../types';
-import { stepRequiresConfirmation } from './plan-utils';
+import { shouldRequireSafeWriteConfirmation, stepRequiresConfirmation } from './plan-utils';
 import { containsPromptInjectionMarker } from './safety-refusals';
 import {
   hasLegacySubtaskIntent,
@@ -21,7 +21,7 @@ import {
 export function parseSimpleTaskIntent(input: ChatPlannerInput): ChatActionPlan | null {
   const step = parseSimpleTaskStep(input, input.text);
   if (!step) return null;
-  const requireSafeWrites = input.requireSafeWriteConfirmation === true;
+  const requireSafeWrites = shouldRequireSafeWriteConfirmation(input);
   return {
     schemaVersion: 1,
     userId: String(input.userId),
@@ -127,8 +127,15 @@ export function parseSimpleTaskStep(input: ChatPlannerInput, text: string | null
 
 export function startsWithSimpleTaskCreateIntent(text: string): boolean {
   const folded = foldCalendarText(text).replace(/^(?:please|por favor|pfv)\s+/, '');
+  const reminderPrefix = /^\s*(?:remind me to|lembra-?me de|lembre-?me de|recuerdame(?: a)?|recordarme(?: a)?)\b/.test(folded);
+  if (reminderPrefix) return !hasStandaloneReminderSchedulingCue(folded);
   return /^\s*(?:create|add|cria[r]?|adiciona[r]?|bota[r]?|coloca[r]?|poe[r]?|mete[r]?|crea[r]?|anade|anadir|agrega[r]?)\b[\s\S]{0,40}\b(?:task|tarefa|todo|lembrete|tarea)\b/.test(folded)
-    || /^\s*(?:remind me to|lembra-?me de|lembre-?me de|recuerdame(?: a)?|recordarme(?: a)?)\b/.test(folded);
+    || reminderPrefix;
+}
+
+function hasStandaloneReminderSchedulingCue(folded: string): boolean {
+  return /\b(?:today|tomorrow|hoje|amanha|manana|monday|tuesday|wednesday|thursday|friday|saturday|sunday|segunda(?:-feira)?|terca(?:-feira)?|quarta(?:-feira)?|quinta(?:-feira)?|sexta(?:-feira)?|sabado|domingo|lunes|martes|miercoles|jueves|viernes|at|as|a las|pelas?|para as)\b/.test(folded)
+    || /\b\d{1,2}(?::\d{2}|h\d{0,2})?\s*(?:am|pm)?\b/.test(folded);
 }
 
 function isUnsafeTaskTitle(title: string): boolean {

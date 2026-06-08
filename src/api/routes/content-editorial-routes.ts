@@ -6,6 +6,7 @@ import { sendError, sendInternalError, sendSuccess } from '../response-helpers';
 import { invalidateContentDerivedCaches } from '../../services/cache-coherence-registry';
 import {
   canTransitionContent,
+  buildContentSecretarySchedulingIntent,
   decideContentApproval,
   evaluateContentApprovalRequirements,
   getContentWorkflowObject,
@@ -19,6 +20,7 @@ import {
 } from '../../services/content-editorial-workflow';
 import type { SecretaryIntentFlexibility, SecretaryIntentPriority, SecretaryTimeWindow } from '../../services/secretary-scheduling-arbitrator';
 import { logger } from '../../utils/logger';
+import { loadLiveCalendarBusyWindowsForSecretaryIntent } from '../../services/secretary-live-calendar-busy';
 
 type EnsureValidContentRouteScope = (
   res: Response,
@@ -105,7 +107,7 @@ export function registerContentEditorialRoutes(
           return;
         }
 
-        const decision = requestContentScheduleThroughSecretary({
+        const scheduleInput = {
           userId,
           tenantId,
           objectId: id,
@@ -120,6 +122,23 @@ export function registerContentEditorialRoutes(
           flexibility: normalizeScheduleFlexibility(req.body?.flexibility),
           reason: typeof req.body?.reason === 'string' ? req.body.reason : null,
           approvalConfirmed: req.body?.approvalConfirmed === true,
+        };
+        const busyWindows = await loadLiveCalendarBusyWindowsForSecretaryIntent(
+          buildContentSecretarySchedulingIntent(scheduleInput),
+        );
+        if (busyWindows.degraded) {
+          sendError(
+            res,
+            'CONTENT_SECRETARY_CALENDAR_UNAVAILABLE',
+            'Calendar availability could not be checked right now.',
+            503,
+            { warningCodes: busyWindows.warningCodes },
+          );
+          return;
+        }
+        const decision = requestContentScheduleThroughSecretary({
+          ...scheduleInput,
+          additionalBusyWindows: busyWindows.windows,
         });
         const updated = getContentWorkflowObject(userId, id, tenantId);
         invalidateContentDerivedCaches(userId);

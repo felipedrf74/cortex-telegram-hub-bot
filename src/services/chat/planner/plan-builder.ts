@@ -12,6 +12,7 @@ import { buildStepIdempotencyKey, makeStep } from '../../skills/step-builder';
 import { buildTargetedClarificationQuestion } from './clarification';
 import {
   calibratePlanConfidence,
+  shouldRequireSafeWriteConfirmation,
   stepRequiresConfirmation,
   thresholdForSteps,
 } from './plan-utils';
@@ -23,7 +24,7 @@ export function buildPlanFromSteps(
   confidence: number,
 ): ChatActionPlan {
   const effectiveConfidence = calibratePlanConfidence(steps, confidence);
-  const requireSafeWrites = input.requireSafeWriteConfirmation === true;
+  const requireSafeWrites = shouldRequireSafeWriteConfirmation(input);
   return {
     schemaVersion: 1,
     userId: String(input.userId),

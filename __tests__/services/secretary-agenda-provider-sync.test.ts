@@ -7,6 +7,10 @@ const MIGRATION_083 = path.resolve(
   __dirname,
   '../../migrations/083_secretary_agenda_ledger.sql',
 );
+const MIGRATION_098 = path.resolve(
+  __dirname,
+  '../../migrations/098_secretary_decision_explanation.sql',
+);
 
 let testDb: Database.Database;
 
@@ -53,6 +57,8 @@ const OWNER_USER_ID = 74;
 beforeEach(() => {
   testDb = new Database(':memory:');
   testDb.exec(fs.readFileSync(MIGRATION_083, 'utf8'));
+  testDb.exec(fs.readFileSync(MIGRATION_098, 'utf8'));
+  testDb.exec('ALTER TABLE secretary_agenda_items ADD COLUMN reasoning_trail_json TEXT');
 });
 
 afterEach(() => {
@@ -622,9 +628,12 @@ describe('secretary-agenda-provider-sync', () => {
       CREATE TABLE IF NOT EXISTS reminders (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         user_id INTEGER NOT NULL DEFAULT 0,
+        tenant_id INTEGER,
         message TEXT NOT NULL,
         remind_at TEXT NOT NULL,
         recurring TEXT,
+        agenda_item_id TEXT,
+        timezone TEXT,
         status TEXT DEFAULT 'active',
         created_at TEXT DEFAULT (datetime('now'))
       );

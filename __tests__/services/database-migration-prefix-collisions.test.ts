@@ -1,4 +1,6 @@
 import { describe, expect, it } from 'vitest';
+import fs from 'fs';
+import path from 'path';
 import {
   assertNoUnexpectedMigrationPrefixCollisions,
   filterAlreadyAppliedAddColumnStatements,
@@ -104,5 +106,26 @@ describe('database migration duplicate ADD COLUMN guard', () => {
     );
 
     expect(filtered).toMatch(/ALTER\s+TABLE\s+fitness_training_plans\s+ADD\s+COLUMN\s+adaptation_revision/i);
+  });
+
+  it('makes migration 204 idempotent for Secretary reminder schema hardening columns', () => {
+    const migration204 = fs.readFileSync(
+      path.resolve(__dirname, '../../migrations/204_secretary_reminder_schema_hardening.sql'),
+      'utf8',
+    );
+    const filtered = filterAlreadyAppliedAddColumnStatements(
+      migration204,
+      (table, column) => (
+        table === 'secretary_agenda_items' && column === 'reasoning_trail_json'
+      ) || (
+        table === 'reminders' && (column === 'tenant_id' || column === 'timezone')
+      ),
+    );
+
+    expect(filtered).not.toMatch(/ADD\s+COLUMN\s+reasoning_trail_json/i);
+    expect(filtered).not.toMatch(/ADD\s+COLUMN\s+tenant_id/i);
+    expect(filtered).not.toMatch(/ADD\s+COLUMN\s+timezone/i);
+    expect(filtered).toContain('UPDATE reminders');
+    expect(filtered).toContain('idx_reminders_tenant_user_status');
   });
 });

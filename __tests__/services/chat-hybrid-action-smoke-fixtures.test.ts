@@ -1,31 +1,50 @@
 import { describe, expect, it, vi } from 'vitest';
+import Database from 'better-sqlite3';
+import fs from 'fs';
+import path from 'path';
 
-vi.mock('../../src/services/chat-action-state', () => ({
-  cancelPendingChatActions: vi.fn(() => 0),
-  cancelPendingChatActionsForAccountSwitch: vi.fn(() => 0),
-  clearRecentChatEntitiesForUser: vi.fn(),
-  expireStalePendingChatActionsForJob: vi.fn(() => 0),
-  getActivePendingChatAction: vi.fn(() => null),
-  getPendingChatActionById: vi.fn(() => null),
-  listChatActionTelemetryForScope: vi.fn(() => []),
-  markPendingChatActionNeedsUserFollowup: vi.fn(() => false),
-  recordChatActionTelemetry: vi.fn(),
-  rememberRecentChatEntity: vi.fn(),
-  resetChatActionStateForTests: vi.fn(),
-  resolveRecentChatEntity: vi.fn(() => ({ status: 'none', candidates: [] })),
-  upsertPendingChatAction: vi.fn(),
-  makeSlotProvenance: vi.fn((input: any) => ({
-    slot: input.slot,
-    value: input.value,
-    rawText: input.rawText ?? null,
-    turnId: input.turnId,
-    spanStart: input.spanStart ?? null,
-    spanEnd: input.spanEnd ?? null,
-    sourceType: input.sourceType ?? 'user_message',
-    normalizer: input.normalizer,
-    confidence: input.confidence,
-    validation: input.validation ?? 'passed',
-  })),
+const MIGRATIONS_DIR = path.resolve(__dirname, '../../migrations');
+
+let testDb: Database.Database | null = null;
+
+function createTestDb(): Database.Database {
+  const db = new Database(':memory:');
+  db.pragma('journal_mode = WAL');
+  db.pragma('foreign_keys = ON');
+  return db;
+}
+
+function applyMigrations(db: Database.Database): void {
+  db.exec("CREATE TABLE IF NOT EXISTS _migrations (name TEXT PRIMARY KEY, applied_at TEXT DEFAULT (datetime('now')))");
+  const files = fs.readdirSync(MIGRATIONS_DIR).filter((file) => file.endsWith('.sql')).sort();
+  for (const file of files) {
+    const applied = db.prepare('SELECT 1 FROM _migrations WHERE name = ?').get(file);
+    if (applied) continue;
+    db.exec(fs.readFileSync(path.join(MIGRATIONS_DIR, file), 'utf8'));
+    db.prepare('INSERT INTO _migrations (name) VALUES (?)').run(file);
+  }
+}
+
+function seedFixtureUser(db: Database.Database): void {
+  db.prepare(`
+    INSERT OR IGNORE INTO users (
+      id, email, email_verified, username, first_name, language, timezone,
+      tier, status, auth_provider, daily_message_limit, daily_token_limit,
+      daily_cost_limit_usd
+    )
+    VALUES (?, ?, 1, ?, ?, 'en', 'Europe/Lisbon', 'free', 'active', 'email', 40, 100000, 0)
+  `).run(42, 'chat-hybrid-smoke@example.test', 'chat-hybrid-smoke', 'Chat Hybrid Smoke');
+}
+
+vi.mock('../../src/services/database', () => ({
+  getDb: () => {
+    if (!testDb) throw new Error('Test database not initialized');
+    return testDb;
+  },
+  initDatabase: vi.fn(),
+  closeDatabase: vi.fn(),
+  findUnexpectedMigrationPrefixCollisions: vi.fn(() => []),
+  assertNoUnexpectedMigrationPrefixCollisions: vi.fn(),
 }));
 
 import {
@@ -586,6 +605,10 @@ async function withRealPlannerExecution<T>(callback: () => Promise<T>): Promise<
     reviewer: process.env.CHAT_ESCALATION_REVIEWER_ENABLED,
     modelFixture: process.env.NEXUS_MODEL_FIXTURE_MODE,
   };
+  const previousDb = testDb;
+  testDb = createTestDb();
+  applyMigrations(testDb);
+  seedFixtureUser(testDb);
   process.env.CHAT_HYBRID_PLANNER_ENABLED = 'active';
   delete process.env.CHAT_HYBRID_SHADOW_MODE;
   process.env.CHAT_LLM_TIER1_ENABLED = 'false';
@@ -607,6 +630,8 @@ async function withRealPlannerExecution<T>(callback: () => Promise<T>): Promise<
     else process.env.CHAT_ESCALATION_REVIEWER_ENABLED = previous.reviewer;
     if (previous.modelFixture === undefined) delete process.env.NEXUS_MODEL_FIXTURE_MODE;
     else process.env.NEXUS_MODEL_FIXTURE_MODE = previous.modelFixture;
+    testDb?.close();
+    testDb = previousDb;
   }
 }
 
@@ -632,12 +657,13 @@ async function buildExecutedMetricCase(
   const step = firstStep(plan);
   const args = (step?.args as Record<string, unknown> | undefined) ?? null;
   const expectedActionable = fixture.expectedActionable ?? (fixture.expectedGate && Boolean(fixture.expectedSkill && fixture.expectedAction));
-  const verificationStatus = String(runtimeResult?.response.metadata?.verificationStatus ?? '');
+  const actionStatus = String(runtimeResult?.response.metadata?.actionStatus ?? runtimeResult?.status ?? '');
+  const verificationStatus = String(runtimeResult?.response.metadata?.verificationStatus ?? actionStatus);
   const claimedSuccess = runtimeResult?.status === 'verified_success' || verificationStatus === 'verified_success';
-  const mutationAttempted = ['verified_success', 'partial_success', 'verified_pending', 'failed'].includes(verificationStatus);
+  const mutationAttempted = ['verified_success', 'partial_success', 'failed'].includes(verificationStatus);
   const verifierReadBackOk = verificationStatus === 'verified_success'
     ? true
-    : verificationStatus === 'partial_success' || verificationStatus === 'verified_pending' || verificationStatus === 'failed'
+    : verificationStatus === 'partial_success' || verificationStatus === 'failed'
       ? false
       : step?.verification.required === true
         ? false
@@ -649,6 +675,7 @@ async function buildExecutedMetricCase(
     expectedAction: fixture.expectedAction ?? null,
     actualSkill: step?.skill ?? null,
     actualAction: step?.action ?? null,
+    actualRisk: step?.risk ?? null,
     expectedActionable,
     expectedRefusal: fixture.expectedRefusal,
     actualActionable: Boolean(step),
@@ -656,6 +683,8 @@ async function buildExecutedMetricCase(
     expectedSlots: expectedSlotsForFixture(fixture),
     actualSlots: actualSlotsForFixture(fixture, args),
     status: step?.requiredArgsPresent === false ? 'needs_clarification' : step ? 'planned' : null,
+    actionStatus,
+    verificationStatus,
     verificationRequired: mutationAttempted && step?.verification.required === true,
     verifiedMutation: mutationAttempted && verificationStatus === 'verified_success',
     actualResponseText: runtimeResult ? runtimeResponseText(runtimeResult) : planResponseText(plan),
@@ -726,7 +755,13 @@ describe('Chat hybrid action smoke fixture suite', () => {
     expect(metrics.falseSuccessWithoutReadBackCount).toBe(0);
     expect(metrics.falsePositiveOnRefusalCount).toBe(0);
     expect(cases.some((testCase) => typeof testCase.actualResponseText === 'string')).toBe(true);
-    expect(cases.some((testCase) => testCase.claimedSuccess === true && testCase.verifierReadBackOk === true)).toBe(true);
+    const writeCases = cases.filter((testCase) =>
+      testCase.expectedGate === true
+      && testCase.actualActionable === true
+      && testCase.actualRequiredArgsPresent === true
+      && testCase.actualRisk !== 'read_only');
+    expect(writeCases.some((testCase) => testCase.actionStatus === 'needs_confirmation')).toBe(true);
+    expect(writeCases.some((testCase) => testCase.claimedSuccess === true)).toBe(false);
     expect(cases.some((testCase) => testCase.expectedRefusal === true && testCase.actualRequiredArgsPresent === false)).toBe(true);
     expect(cases.filter((testCase) => testCase.bypassedRealExecution)).toHaveLength(26);
     expect(cases.filter((testCase) => testCase.bypassedRealExecution && testCase.expectedGate === true)).toHaveLength(0);

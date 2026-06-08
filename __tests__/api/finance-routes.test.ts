@@ -19,6 +19,7 @@ const mockIsUserOverDailyCap = vi.fn().mockReturnValue({
   resetAt: '2026-04-15T00:00:00.000Z',
 });
 const mockInvalidateFinanceDerivedCaches = vi.fn();
+const mockLoadLiveCalendarBusyWindows = vi.fn();
 
 vi.mock('../../src/services/database', () => ({
   getDb: () => testDb,
@@ -103,6 +104,10 @@ vi.mock('../../src/services/cache-coherence-registry', () => ({
     invalidateTrainingDerivedCaches: vi.fn(),
   },
   invalidateFinanceDerivedCaches: (...args: unknown[]) => mockInvalidateFinanceDerivedCaches(...args),
+}));
+
+vi.mock('../../src/services/secretary-live-calendar-busy', () => ({
+  loadLiveCalendarBusyWindowsForSecretaryIntent: (...args: unknown[]) => mockLoadLiveCalendarBusyWindows(...args),
 }));
 
 import { financeRoutes } from '../../src/api/routes/finance';
@@ -214,6 +219,14 @@ describe('Finance API — tax routes', () => {
       resetAt: '2026-04-15T00:00:00.000Z',
     });
     mockInvalidateFinanceDerivedCaches.mockReset();
+    mockLoadLiveCalendarBusyWindows.mockReset();
+    mockLoadLiveCalendarBusyWindows.mockResolvedValue({
+      windows: [],
+      degraded: false,
+      providerConfigured: false,
+      warningCodes: ['CALENDAR_INTEGRATION_MISSING'],
+      warnings: ['No calendar integration is connected yet.'],
+    });
   });
 
   afterEach(() => testDb?.close());
@@ -263,6 +276,26 @@ describe('Finance API — tax routes', () => {
       sourceEntityId: '2024-04',
       providerSyncState: 'not_synced',
     });
+  });
+
+  it('keeps tax calculation ledger-only when live calendar availability is degraded', async () => {
+    const user = getOrCreateUser(22014, { username: 'finance-degraded-calendar' });
+    mockLoadLiveCalendarBusyWindows.mockResolvedValueOnce({
+      windows: [],
+      degraded: true,
+      providerConfigured: true,
+      warningCodes: ['GOOGLE_CALENDAR_UNAVAILABLE'],
+      warnings: ['Google Calendar is unavailable right now.'],
+    });
+
+    addTransaction(user.id, '2024-04-10', 'income', 12000);
+    const res = await dispatch('POST', '/tax/calculate', user.id, { month: '2024-04' });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body.ok).toBe(true);
+    expect(mockLoadLiveCalendarBusyWindows).toHaveBeenCalledTimes(1);
+    expect(listSecretaryAgendaItems({ ownerUserId: user.id, tenantId: user.id })).toEqual([]);
+    expect(listNotificationCenterItems(user.id, user.id, { sourceSkill: 'finance' })).toHaveLength(1);
   });
 
   it('returns preferredCurrency with monthly summary for dashboard consumers', async () => {

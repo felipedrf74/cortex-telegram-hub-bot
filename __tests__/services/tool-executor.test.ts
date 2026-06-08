@@ -122,6 +122,7 @@ vi.mock('../../src/services/task-store/task-router', () => ({
 
 vi.mock('../../src/services/user-service', () => ({
   resolveCanonicalUserId: (...args: unknown[]) => mockResolveCanonicalUserId(...args),
+  getUserTimezoneById: vi.fn(() => 'Europe/Lisbon'),
 }));
 
 vi.mock('../../src/utils/logger', () => ({
@@ -189,6 +190,7 @@ beforeEach(() => {
   mockInvalidateCalendarCaches.mockReset();
   mockInvalidateFinanceDerivedCaches.mockReset();
   mockInvalidateCookingDerivedCaches.mockReset();
+  vi.mocked(setReminder).mockReset();
 });
 
 // ═══════════════════════════════════════════════════════════════════
@@ -773,16 +775,36 @@ describe('executeToolCall — Reminders', () => {
     vi.mocked(setReminder).mockReturnValue(reminder as any);
 
     const result = await execAsUser('set_reminder', {
+      __trustedDirectToolWrite: true,
       message: 'Call coach',
       remind_at: '2026-04-01T08:00:00',
       recurring: 'weekly',
     });
     expect(result).toEqual(reminder);
-    expect(setReminder).toHaveBeenCalledWith(AUTH_USER_ID, {
+    expect(setReminder).toHaveBeenCalledWith(
+      AUTH_USER_ID,
+      {
+        message: 'Call coach',
+        remind_at: '2026-04-01T08:00:00',
+        recurring: 'weekly',
+        timezone: 'Europe/Lisbon',
+      },
+      { tenantId: AUTH_USER_ID, timezone: 'Europe/Lisbon' },
+    );
+  });
+
+  it('set_reminder — blocks direct chat writes without planner approval', async () => {
+    const result = await execAsUser('set_reminder', {
       message: 'Call coach',
       remind_at: '2026-04-01T08:00:00',
-      recurring: 'weekly',
     });
+
+    expect(result).toMatchObject({
+      success: false,
+      code: 'ACTION_CONFIRMATION_REQUIRED',
+      confirmation_required: true,
+    });
+    expect(setReminder).not.toHaveBeenCalled();
   });
 });
 

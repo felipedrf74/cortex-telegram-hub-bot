@@ -442,10 +442,47 @@ describe('handleSimpleDomain', () => {
     expect(mockContinue).toHaveBeenCalledOnce();
   });
 
+  it('blocks legacy domain write tools instead of executing provider mutations', async () => {
+    mockCallDomain.mockResolvedValue({
+      text: '',
+      toolCalls: [{ type: 'tool_use', id: 'tc_write_1', name: 'set_reminder', input: { message: 'Unsafe legacy write' } }],
+      stopReason: 'tool_use',
+    } as any);
+    mockContinue.mockResolvedValue({
+      text: 'Reminder set.',
+      toolCalls: [],
+      stopReason: 'end_turn',
+    } as any);
+
+    const result = await handleSimpleDomain('secretary', 'remind me tomorrow', 5, 42, undefined, 42);
+
+    expect(mockExecuteTool).not.toHaveBeenCalled();
+    expect(mockContinue).toHaveBeenCalledWith(
+      'secretary',
+      expect.any(Array),
+      'remind me tomorrow',
+      expect.any(String),
+      expect.arrayContaining([
+        expect.objectContaining({
+          role: 'user',
+          content: [expect.objectContaining({
+            tool_use_id: 'tc_write_1',
+            content: expect.stringContaining('ACTION_CONFIRMATION_REQUIRED'),
+          })],
+        }),
+      ]),
+      expect.objectContaining({ userId: 42, tenantId: 42 }),
+    );
+    expect(result).toEqual({
+      text: 'This action needs confirmation in the app before I change anything.',
+      domain: 'secretary',
+    });
+  });
+
   it('prefixes stored text with [Tools: ...] when tools are used', async () => {
     mockCallDomain.mockResolvedValue({
       text: '',
-      toolCalls: [{ type: 'tool_use', id: 'tc_1', name: 'save_note', input: {} }],
+      toolCalls: [{ type: 'tool_use', id: 'tc_1', name: 'search_notes', input: { query: 'plan' } }],
       stopReason: 'tool_use',
     } as any);
     mockExecuteTool.mockResolvedValue({ id: 1 });
@@ -460,7 +497,7 @@ describe('handleSimpleDomain', () => {
     const storedCall = vi.mocked(addToConversation).mock.calls.find(
       (c) => c[2] === 'assistant',
     );
-    expect(storedCall![3]).toContain('[Tools: save_note]');
+    expect(storedCall![3]).toContain('[Tools: search_notes]');
     expect(storedCall![3]).toContain('Note saved.');
   });
 
@@ -491,7 +528,7 @@ describe('handleSimpleDomain', () => {
   });
 
   it('stops at maxIterations and surfaces a cap-reached notice (Codex QA round 5)', async () => {
-    const toolCall = { type: 'tool_use', id: 'tc_1', name: 'set_reminder', input: {} };
+    const toolCall = { type: 'tool_use', id: 'tc_1', name: 'search_notes', input: { query: 'recovery' } };
 
     mockCallDomain.mockResolvedValue({
       text: '', toolCalls: [toolCall], stopReason: 'tool_use',

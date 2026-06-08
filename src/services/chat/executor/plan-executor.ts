@@ -31,6 +31,7 @@ import {
 import {
   confirmationVariant,
   intentClassForPlan,
+  shouldRequireSafeWriteConfirmation,
 } from '../planner/plan-utils';
 import {
   persistPlanStatus,
@@ -66,7 +67,7 @@ export async function executeChatActionPlan(
       confirmedDestructiveAction: options.confirmed === true,
       confirmationSource: options.confirmationSource
         ?? (options.confirmed === true ? 'pending_confirmation' : 'none'),
-      requireConfirmationForWrites: input.requireSafeWriteConfirmation === true,
+      requireConfirmationForWrites: shouldRequireSafeWriteConfirmation(input),
     }, () => executeChatActionPlan(plan, input, deps, options));
   }
   const hasUnresolvedStep = plan.clarificationQuestion || plan.steps.some((step) => !step.requiredArgsPresent);
