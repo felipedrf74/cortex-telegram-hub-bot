@@ -19,10 +19,17 @@ function hasSimpleTaskWriteIntent(text: string): boolean {
     && /\b(task|tarefa|todo|lembrete|tarea[s]?)\b/.test(folded);
 }
 
+function hasReminderWriteIntent(text: string): boolean {
+  const folded = foldCalendarText(text);
+  return /\b(remind\s+me|reminder|lembrete|lembra-?me|lembre-?me|lembrar|avisa-?me|avise-?me|avisame|alerta-?me|recordatorio|recuerdame|recu[eé]rdame)\b/.test(folded)
+    || /^\s*(?:avisa|alerta)\b(?!\s+(?:que|es)\b)/.test(folded);
+}
+
 export function shouldRunActionPlannerBeforeReadOnlyFastPaths(text: string): boolean {
   if (!text.trim()) return false;
   if (hasLegacySubtaskIntent(text)) return true;
   if (hasCalendarWriteIntent(text)) return true;
+  if (hasReminderWriteIntent(text)) return true;
   // Calendar read intent (e.g., "What's on my agenda today", "Mostra a agenda
   // de domingo", "agenda do Gmail") routes to summarize_agenda via the new
   // parseSummarizeAgendaIntent path; let the planner run.

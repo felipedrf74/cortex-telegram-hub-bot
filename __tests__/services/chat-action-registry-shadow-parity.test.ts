@@ -200,6 +200,8 @@ describe('chat-action-registry shadow-mode parity (Phase 2.1)', () => {
   });
 
   it('records per-fixture parity findings without failing the gate (shadow mode)', () => {
+    // Deliberate release posture: this report is still advisory shadow telemetry;
+    // registry example routing is hard-gated by registry-examples-end-to-end-routing.
     for (const fixture of fixtures) {
       const finding = evaluateParity(fixture);
       PARITY_REPORT.findings.push(finding);

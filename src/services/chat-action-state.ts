@@ -311,11 +311,13 @@ export function getPendingChatActionById(input: {
 export function cancelPendingChatActions(input: {
   userId: number;
   tenantId: number;
-  conversationId: string;
+  conversationId?: string | null;
   skill?: ChatActionSkill;
   nowIso?: string;
 }): number {
-  const params: Array<number | string> = [input.nowIso ?? new Date().toISOString(), input.userId, input.tenantId, input.conversationId];
+  const params: Array<number | string> = [input.nowIso ?? new Date().toISOString(), input.userId, input.tenantId];
+  const conversationClause = input.conversationId ? 'AND conversation_id = ?' : '';
+  if (input.conversationId) params.push(input.conversationId);
   const skillClause = input.skill ? 'AND skill = ?' : '';
   if (input.skill) params.push(input.skill);
   const result = getDb().prepare(`
@@ -323,9 +325,10 @@ export function cancelPendingChatActions(input: {
     SET status = 'cancelled',
         cancellation_state = 'cancelled',
         updated_at = ?
-    WHERE user_id = ? AND tenant_id = ? AND conversation_id = ?
+    WHERE user_id = ? AND tenant_id = ?
+      ${conversationClause}
       ${skillClause}
-      AND status IN ('needs_input', 'needs_confirmation', 'executable')
+      AND status IN ('needs_input', 'needs_confirmation', 'executable', 'needs_user_followup')
   `).run(...params);
   return Number(result.changes ?? 0);
 }

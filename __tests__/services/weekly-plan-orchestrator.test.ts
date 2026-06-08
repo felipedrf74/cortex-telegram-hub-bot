@@ -104,6 +104,10 @@ vi.mock('../../src/services/database', () => ({
   initDatabase: vi.fn(),
   closeDatabase: vi.fn(),
   findUnexpectedMigrationPrefixCollisions: vi.fn(() => []),
+  assertNoUnexpectedMigrationPrefixCollisions: vi.fn(),
+  filterAlreadyAppliedAddColumnStatements: vi.fn((sql: string) => sql),
+  runMigrationsForTest: vi.fn(),
+  stripWrappingTransactionStatements: vi.fn((sql: string) => sql),
 }));
 
 vi.mock('../../src/services/intelligence-bus', () => ({
@@ -460,6 +464,31 @@ describe('weekly-plan-orchestrator', () => {
       userId: 0,
       details: { weekStart: '2026-04-13' },
     });
+  });
+
+  it('does not persist or dismiss mesh signals in read-only weekly plan mode', async () => {
+    const base = buildBaseContexts();
+    base.finance.derivedSignals = [
+      {
+        sourceAgent: 'mesh.finance-context',
+        signalType: 'budget_remaining',
+        meshPriority: 2,
+        priority: 'urgent',
+        payload: {
+          month: '2026-04',
+          remainingRatio: 0.22,
+          budgetMode: 'controlled',
+        },
+      },
+    ];
+    mockReadFinanceMeshContext.mockResolvedValueOnce(base.finance);
+
+    const { composeWeeklyPlan } = await import('../../src/services/weekly-plan-orchestrator');
+    const result = await composeWeeklyPlan({ userId: 12, weekStart: '2026-04-13', forceRefresh: true });
+
+    expect(result.days.length).toBeGreaterThan(0);
+    expect(writtenSignals).toHaveLength(0);
+    expect(mockDismissSignal).not.toHaveBeenCalled();
   });
 
   it('keeps the weekly plan available when the user record is missing', async () => {
@@ -870,7 +899,7 @@ describe('weekly-plan-orchestrator', () => {
     mockReadFinanceMeshContext.mockResolvedValueOnce(first.finance);
 
     const { composeWeeklyPlan } = await import('../../src/services/weekly-plan-orchestrator');
-    await composeWeeklyPlan({ userId: 12, weekStart: '2026-04-13', forceRefresh: true });
+    await composeWeeklyPlan({ userId: 12, weekStart: '2026-04-13', forceRefresh: true, syncSignals: true });
 
     const second = buildBaseContexts();
     second.finance.derivedSignals = [
@@ -888,7 +917,7 @@ describe('weekly-plan-orchestrator', () => {
     ];
     mockReadFinanceMeshContext.mockResolvedValueOnce(second.finance);
 
-    const refreshed = await composeWeeklyPlan({ userId: 12, weekStart: '2026-04-13', forceRefresh: true });
+    const refreshed = await composeWeeklyPlan({ userId: 12, weekStart: '2026-04-13', forceRefresh: true, syncSignals: true });
     const activeBudgetSignals = writtenSignals.filter((signal) =>
       signal.status === 'active'
       && signal.user_id === 12

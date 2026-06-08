@@ -226,6 +226,7 @@ export async function composeWeeklyPlan(opts: {
   userId: number;
   weekStart?: string;
   forceRefresh?: boolean;
+  syncSignals?: boolean;
 }): Promise<WeeklyPlanResponse> {
   if (!isValidTenantUserId(opts.userId)) {
     recordTenantScopeAnomaly({
@@ -241,7 +242,8 @@ export async function composeWeeklyPlan(opts: {
   }
 
   const window = resolveWeekWindow(opts.weekStart);
-  const cacheKey = `plan:week:u:${opts.userId}:${window.weekStart}`;
+  const shouldSyncSignals = opts.syncSignals === true;
+  const cacheKey = `plan:week:u:${opts.userId}:${window.weekStart}:sync:${shouldSyncSignals ? '1' : '0'}`;
   if (!opts.forceRefresh) {
     const cached = getCached<WeeklyPlanResponse>(cacheKey);
     if (cached) {
@@ -317,15 +319,18 @@ export async function composeWeeklyPlan(opts: {
     || contentLoad.degraded
     || financeLoad.degraded;
 
+  const derivedSignalDrafts = [
+    ...training.derivedSignals,
+    ...secretary.derivedSignals,
+    ...(cooking ? buildCookingMeshSignals(cooking, training, secretary, content) : []),
+    ...(content ? [...content.derivedSignals, ...buildEditorialCoordinationSignals({ content, secretary, training }).signals] : []),
+    ...(finance ? finance.derivedSignals : []),
+  ];
   let meshSignals = new Map<SignalType, AgentSignal[]>();
   try {
-    meshSignals = await syncDerivedSignals(opts.userId, [
-      ...training.derivedSignals,
-      ...secretary.derivedSignals,
-      ...(cooking ? buildCookingMeshSignals(cooking, training, secretary, content) : []),
-      ...(content ? [...content.derivedSignals, ...buildEditorialCoordinationSignals({ content, secretary, training }).signals] : []),
-      ...(finance ? finance.derivedSignals : []),
-    ]);
+    meshSignals = shouldSyncSignals
+      ? await syncDerivedSignals(opts.userId, derivedSignalDrafts)
+      : groupDerivedSignalDrafts(opts.userId, derivedSignalDrafts);
   } catch (err) {
     orchestrationDegraded = true;
     logger.warn(
@@ -380,6 +385,41 @@ export async function composeWeeklyPlan(opts: {
 
   setCache(cacheKey, response, 1800);
   return response;
+}
+
+function groupDerivedSignalDrafts(
+  userId: number,
+  drafts: MeshSignalDraft[],
+): Map<SignalType, AgentSignal[]> {
+  const grouped = new Map<SignalType, AgentSignal[]>();
+  const createdAt = new Date().toISOString();
+  drafts.forEach((draft, index) => {
+    const signal: AgentSignal = {
+      id: -(index + 1),
+      source_agent: draft.sourceAgent,
+      signal_type: draft.signalType,
+      payload: draft.payload,
+      priority: draft.priority,
+      consumed_by: [],
+      status: 'active',
+      created_at: createdAt,
+      expires_at: draft.expiresAt ?? DateTime.now().plus({ days: 7 }).toISO()!,
+      user_id: userId,
+      tenant_id: userId,
+      confidence: 0.5,
+      format_tag: null,
+      pillar_tag: null,
+      evidence_count: 1,
+      meshPriority: draft.meshPriority,
+    };
+    const bucket = grouped.get(signal.signal_type);
+    if (bucket) {
+      bucket.push(signal);
+    } else {
+      grouped.set(signal.signal_type, [signal]);
+    }
+  });
+  return grouped;
 }
 
 function buildCookingMeshSignals(

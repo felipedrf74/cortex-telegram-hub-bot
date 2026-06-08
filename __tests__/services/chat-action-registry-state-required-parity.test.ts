@@ -200,8 +200,9 @@ describe('state-required fixture parity (Phase 3 batch 13)', () => {
   });
 
   // Phase 6 batch 29 (2026-05-15): pending-cancellation scenarios across all
-  // skills. The cancelPendingChatActions path is skill-agnostic — any pending
-  // action gets cancelled when the user types "cancel/esquece/deixa/forget".
+  // skills. The cancelPendingChatActions path is skill-agnostic, but only for
+  // exact free-form cancellation turns so "cancel my meeting" can route as a
+  // real domain intent instead of wiping unrelated pending work.
   describe('pending-cancellation (skill-agnostic)', () => {
     const cancelPendingMock = vi.fn(() => 1); // Pretend 1 action was cancelled.
 
@@ -215,12 +216,12 @@ describe('state-required fixture parity (Phase 3 batch 13)', () => {
     });
 
     const cancellationCases: Array<{ text: string; locale: string }> = [
-      { text: 'Cancel that', locale: 'en-US' },
+      { text: 'Cancel', locale: 'en-US' },
       { text: 'Never mind', locale: 'en-US' },
       { text: 'Forget it', locale: 'en-US' },
-      { text: 'Esquece isso', locale: 'pt-PT' },
+      { text: 'Esquece', locale: 'pt-PT' },
       { text: 'Deixa pra lá', locale: 'pt-BR' },
-      { text: 'Cancelar a ação pendente', locale: 'pt-PT' },
+      { text: 'Cancelar', locale: 'pt-PT' },
     ];
 
     for (const { text, locale } of cancellationCases) {
@@ -244,6 +245,13 @@ describe('state-required fixture parity (Phase 3 batch 13)', () => {
         expect(cancelPendingMock).toHaveBeenCalled();
       });
     }
+
+    it('does not treat specific cancel intents as pending-work cancellation', async () => {
+      const plan = await buildChatActionPlan(baseInput('Cancel my meeting tomorrow', 'en-US'));
+
+      expect(cancelPendingMock).not.toHaveBeenCalled();
+      expect(plan?.telemetry?.outcome).not.toBe('pending_action_cancelled');
+    });
   });
 
   // Phase 6 batch 29: recent-task references in PT (matches the english
@@ -263,9 +271,8 @@ describe('state-required fixture parity (Phase 3 batch 13)', () => {
       // PT-PT "Conclui essa tarefa" matches the complete-task-by-mark
       // pattern. The step should claim complete_task with the resolved id.
       const step = plan?.steps[0];
-      if (step?.action === 'complete_task') {
-        expect((step.args as Record<string, unknown>)?.taskId).toBe('task-recovery-9');
-      }
+      expect(step?.action).toBe('complete_task');
+      expect((step?.args as Record<string, unknown>)?.taskId).toBe('task-recovery-9');
     });
 
     it('PT-BR "Marca essa tarefa como pronta" resolves the recent task', async () => {
@@ -280,9 +287,8 @@ describe('state-required fixture parity (Phase 3 batch 13)', () => {
       } as any);
       const plan = await buildChatActionPlan(baseInput('Marca essa tarefa como pronta', 'pt-BR'));
       const step = plan?.steps[0];
-      if (step?.action === 'complete_task') {
-        expect((step.args as Record<string, unknown>)?.taskId).toBe('task-recovery-10');
-      }
+      expect(step?.action).toBe('complete_task');
+      expect((step?.args as Record<string, unknown>)?.taskId).toBe('task-recovery-10');
     });
   });
 
@@ -682,13 +688,10 @@ describe('state-required fixture parity (Phase 3 batch 13)', () => {
       } as any);
       const plan = await buildChatActionPlan(baseInput('30 quilometros por semana', 'pt-PT'));
       const step = plan?.steps[0];
-      // Note: PT volume extraction depends on extractTrainingPlanSlots
-      // recognising "quilometros por semana". If not yet implemented, the
-      // plan returns a clarification — both outcomes are acceptable here.
-      if (step?.action === 'training_plan_create' && step.requiredArgsPresent) {
-        const args = step.args as Record<string, unknown>;
-        expect(args.weeklyVolumeKm).toBe(30);
-      }
+      expect(step?.action).toBe('training_plan_create');
+      expect(step?.requiredArgsPresent).toBe(true);
+      const args = step?.args as Record<string, unknown>;
+      expect(args.weeklyVolumeKm).toBe(30);
     });
   });
 });

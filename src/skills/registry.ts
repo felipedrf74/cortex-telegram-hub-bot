@@ -4,6 +4,11 @@ import { getDb } from '../services/database';
 import { logger } from '../utils/logger';
 import type { InstalledSkill, SkillSubmodule } from '../domains/types';
 
+function canonicalInstalledSkillName(name: string): string {
+  const normalized = name.trim();
+  return normalized === 'training' ? 'triathlon' : normalized;
+}
+
 // ── Install / Uninstall ────────────────────────────────────────────
 
 export interface InstallSkillOptions {
@@ -60,9 +65,10 @@ export function install(opts: InstallSkillOptions): InstalledSkill {
 /** Uninstall a skill by name. Cascade-deletes submodules. Returns true if removed. */
 export function uninstall(name: string): boolean {
   const db = getDb();
-  const result = db.prepare('DELETE FROM installed_skills WHERE name = ?').run(name);
+  const skillName = canonicalInstalledSkillName(name);
+  const result = db.prepare('DELETE FROM installed_skills WHERE name = ?').run(skillName);
   if (result.changes > 0) {
-    logger.info({ skill: name }, 'Skill uninstalled');
+    logger.info({ skill: skillName }, 'Skill uninstalled');
   }
   return result.changes > 0;
 }
@@ -72,18 +78,20 @@ export function uninstall(name: string): boolean {
 /** Enable a skill by name. Returns true if the skill was found and updated. */
 export function enable(name: string): boolean {
   const db = getDb();
+  const skillName = canonicalInstalledSkillName(name);
   const result = db.prepare(
     "UPDATE installed_skills SET enabled = 1, updated_at = datetime('now') WHERE name = ?"
-  ).run(name);
+  ).run(skillName);
   return result.changes > 0;
 }
 
 /** Disable a skill by name. Returns true if the skill was found and updated. */
 export function disable(name: string): boolean {
   const db = getDb();
+  const skillName = canonicalInstalledSkillName(name);
   const result = db.prepare(
     "UPDATE installed_skills SET enabled = 0, updated_at = datetime('now') WHERE name = ?"
-  ).run(name);
+  ).run(skillName);
   return result.changes > 0;
 }
 
@@ -92,7 +100,8 @@ export function disable(name: string): boolean {
 /** Enable a submodule by skill name and module name. Returns true if found and updated. */
 export function enableSubmodule(skillName: string, moduleName: string): boolean {
   const db = getDb();
-  const skill = db.prepare('SELECT id FROM installed_skills WHERE name = ?').get(skillName) as { id: number } | undefined;
+  const canonicalSkillName = canonicalInstalledSkillName(skillName);
+  const skill = db.prepare('SELECT id FROM installed_skills WHERE name = ?').get(canonicalSkillName) as { id: number } | undefined;
   if (!skill) return false;
   const result = db.prepare(
     'UPDATE skill_submodules SET enabled = 1 WHERE skill_id = ? AND module_name = ?'
@@ -103,7 +112,8 @@ export function enableSubmodule(skillName: string, moduleName: string): boolean 
 /** Disable a submodule by skill name and module name. Returns true if found and updated. */
 export function disableSubmodule(skillName: string, moduleName: string): boolean {
   const db = getDb();
-  const skill = db.prepare('SELECT id FROM installed_skills WHERE name = ?').get(skillName) as { id: number } | undefined;
+  const canonicalSkillName = canonicalInstalledSkillName(skillName);
+  const skill = db.prepare('SELECT id FROM installed_skills WHERE name = ?').get(canonicalSkillName) as { id: number } | undefined;
   if (!skill) return false;
   const result = db.prepare(
     'UPDATE skill_submodules SET enabled = 0 WHERE skill_id = ? AND module_name = ?'
@@ -114,13 +124,14 @@ export function disableSubmodule(skillName: string, moduleName: string): boolean
 /** Get all enabled submodule names for a skill. */
 export function getEnabledSubmodules(skillName: string): string[] {
   const db = getDb();
-  const skill = db.prepare('SELECT id FROM installed_skills WHERE name = ?').get(skillName) as { id: number } | undefined;
+  const canonicalSkillName = canonicalInstalledSkillName(skillName);
+  const skill = db.prepare('SELECT id FROM installed_skills WHERE name = ?').get(canonicalSkillName) as { id: number } | undefined;
   if (!skill) {
     // Skill not in DB — default ALL sub-skills to enabled
     // Return all sub-skill names from DEFAULT_SKILLS definition
     try {
       const { DEFAULT_SKILLS } = require('./skill-config');
-      const def = DEFAULT_SKILLS[skillName];
+      const def = DEFAULT_SKILLS[canonicalSkillName];
       if (def?.subSkills) return def.subSkills.map((s: any) => s.name);
     } catch { /* skill-config not loaded */ }
     return [];
@@ -134,16 +145,17 @@ export function getEnabledSubmodules(skillName: string): string[] {
 /** Check if a specific submodule is enabled. */
 export function isSubmoduleEnabled(skillName: string, moduleName: string): boolean {
   const db = getDb();
+  const canonicalSkillName = canonicalInstalledSkillName(skillName);
   const row = db.prepare(`
     SELECT sm.enabled FROM skill_submodules sm
     JOIN installed_skills s ON s.id = sm.skill_id
     WHERE s.name = ? AND sm.module_name = ?
-  `).get(skillName, moduleName) as { enabled: number } | undefined;
+  `).get(canonicalSkillName, moduleName) as { enabled: number } | undefined;
   if (row) return row.enabled === 1;
   // Not in DB — check if it's a known skill from DEFAULT_SKILLS
   try {
     const { DEFAULT_SKILLS } = require('./skill-config');
-    const def = DEFAULT_SKILLS[skillName];
+    const def = DEFAULT_SKILLS[canonicalSkillName];
     if (def) {
       // Known skill, not in DB → default to enabled
       const sub = def.subSkills?.find((s: any) => s.name === moduleName);
@@ -179,7 +191,7 @@ export function getByDomain(domain: string): InstalledSkill[] {
 /** Get a single skill by name. Returns undefined if not found. */
 export function getByName(name: string): InstalledSkill | undefined {
   const db = getDb();
-  return db.prepare('SELECT * FROM installed_skills WHERE name = ?').get(name) as InstalledSkill | undefined;
+  return db.prepare('SELECT * FROM installed_skills WHERE name = ?').get(canonicalInstalledSkillName(name)) as InstalledSkill | undefined;
 }
 
 /** Get all installed skills (enabled and disabled). */

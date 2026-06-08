@@ -2,7 +2,7 @@
 
 import { DateTime } from 'luxon';
 import type { CalendarSource, UnifiedCalendarEvent } from './unified-calendar';
-import { getEventsForSources } from './unified-calendar';
+import { getEvents, getEventsForSources } from './unified-calendar';
 import { getUserTimezoneById } from './user-service';
 import { getAppleHealthSleepAgendaEvents, type AppleHealthSleepAgendaEvent } from './health-sleep-agenda';
 
@@ -96,11 +96,12 @@ export async function precheckFocusCalendarConflict(input: {
   start: string;
   end: string;
   timezone?: string;
+  constrainToSource?: boolean;
 }): Promise<FocusConflictPrecheckResult> {
   const timezone = input.timezone || getUserTimezoneById(input.userId);
   const start = DateTime.fromISO(input.start, { setZone: true });
   const end = DateTime.fromISO(input.end, { setZone: true });
-  if (!start.isValid || !end.isValid || end <= start) {
+  if (!start.isValid || !end.isValid || end.toMillis() <= start.toMillis()) {
     return {
       status: 'unavailable',
       start: input.start,
@@ -117,7 +118,9 @@ export async function precheckFocusCalendarConflict(input: {
   try {
     const searchStart = start.minus({ hours: 2 }).toUTC().toISO()!;
     const searchEnd = end.plus({ hours: 12 }).toUTC().toISO()!;
-    const providerEvents = await getEventsForSources(searchStart, searchEnd, input.userId, [input.source]);
+    const providerEvents = input.constrainToSource
+      ? await getEventsForSources(searchStart, searchEnd, input.userId, [input.source])
+      : await getEvents(searchStart, searchEnd, input.userId);
     const sleepEvents = getAppleHealthSleepAgendaEvents({
       userId: input.userId,
       start: searchStart,
@@ -172,7 +175,7 @@ function overlappingEvents(events: BusyEvent[], startUtc: DateTime, endUtc: Date
     const eventStart = parseBoundary(event.start);
     const eventEnd = parseBoundary(event.end);
     if (!eventStart?.isValid || !eventEnd?.isValid) return false;
-    return eventEnd > startUtc && eventStart < endUtc;
+    return eventEnd.toMillis() > startUtc.toMillis() && eventStart.toMillis() < endUtc.toMillis();
   });
 }
 
@@ -184,7 +187,7 @@ function findNextFreeSlot(
 ): { start: string; end: string } | null {
   let cursor = DateTime.fromJSDate(roundUpToNextQuarterHour(after.toJSDate(), timezone)).setZone(timezone);
   const horizon = cursor.plus({ hours: 12 });
-  while (cursor < horizon) {
+  while (cursor.toMillis() < horizon.toMillis()) {
     const candidateEnd = cursor.plus({ minutes: durationMinutes });
     if (overlappingEvents(events, cursor.toUTC(), candidateEnd.toUTC()).length === 0) {
       return { start: cursor.toUTC().toISO()!, end: candidateEnd.toUTC().toISO()! };

@@ -223,10 +223,10 @@ describe('typed slot adoption — cooking ingredient substitution', () => {
 });
 
 describe('typed slot adoption inventory (Phase 15 batch 77: full coverage)', () => {
-  it('imports the runtime registry and finds exactly 49 active actions', () => {
+  it('imports the runtime registry and finds exactly 50 active actions', () => {
     const entries = getChatActionRegistry();
-    expect(entries).toHaveLength(49);
-    expect(activeActions(entries)).toHaveLength(49);
+    expect(entries).toHaveLength(50);
+    expect(activeActions(entries)).toHaveLength(50);
   });
 
   it('excludes non-active action definitions from active-action counts', () => {
@@ -240,7 +240,7 @@ describe('typed slot adoption inventory (Phase 15 batch 77: full coverage)', () 
     expect(activeActions(synthetic).map((entry) => entry.status)).toEqual(['active']);
   });
 
-  it('all 49 active registry actions have typedSlotExtractors (full coverage)', () => {
+  it('all 50 active registry actions have typedSlotExtractors (full coverage)', () => {
     // Adoption history:
     //   Phase 12 batch 63 — 3 (calendar/task/training core)
     //   Phase 13 batch 67 — +5 (mail send/draft, delete_event, etc.)
@@ -249,7 +249,7 @@ describe('typed slot adoption inventory (Phase 15 batch 77: full coverage)', () 
     //     where extraction has no useful NL signal)
     const entries = activeActions(getChatActionRegistry());
     const adopted = entries.filter((e: { typedSlotExtractors?: unknown }) => Array.isArray(e.typedSlotExtractors) && e.typedSlotExtractors.length > 0);
-    expect(adopted.length).toBe(49);
+    expect(adopted.length).toBe(50);
     expect(adopted.length).toBe(entries.length);
   });
 
@@ -281,6 +281,7 @@ describe('typed slot adoption inventory (Phase 15 batch 77: full coverage)', () 
       'training.training_reflow_confirm': 'confirmation applies a pending preview; slot truth is the pending action id, not raw text',
       'content.content_pipeline_handoff': 'handoff operates on the current/visible package; package id comes from UI or recent entity context',
       'finance.finance_payment_action': 'financial payment actions require strong confirmation and provider context; raw text extraction would be unsafe',
+      'secretary_reminders.set_reminder': 'standalone reminder slot extraction is owned by the deterministic reminder parser to preserve timezone/date semantics',
     };
     const actual = activeActions(getChatActionRegistry())
       .filter((entry) => (entry.typedSlotExtractors ?? []).some((extractor) => extractor.name === 'noop'))

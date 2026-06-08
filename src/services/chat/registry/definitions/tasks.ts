@@ -91,11 +91,32 @@ export const TASK_ACTIONS: ChatActionDefinition[] = [
           condition: 'embedded_llm_instruction_markers',
         },
         {
+          text: 'Remind me to buy milk',
+          locale: 'en',
+          tags: ['golden'],
+          expectedSlots: { title: 'Buy milk' },
+          expectedAction: 'create_task',
+        },
+        {
+          text: 'Lembra-me de comprar leite',
+          locale: 'pt',
+          tags: ['golden'],
+          expectedSlots: { title: 'comprar leite' },
+          expectedAction: 'create_task',
+        },
+        {
           // Phase 12 batch 64 (2026-05-16): Spanish golden example.
           text: 'Crea una tarea llamada llamar a María',
           locale: 'es',
           tags: ['golden'],
           expectedSlots: { title: 'llamar a María' },
+          expectedAction: 'create_task',
+        },
+        {
+          text: 'Recuérdame de comprar leche',
+          locale: 'es',
+          tags: ['golden'],
+          expectedSlots: { title: 'comprar leche' },
           expectedAction: 'create_task',
         },
       ],
@@ -258,7 +279,7 @@ export const TASK_ACTIONS: ChatActionDefinition[] = [
       optionalFields: [],
       providerDependencies: ['nexus'],
       risk: 'safe_write',
-      confirmationPolicy: 'none',
+      confirmationPolicy: 'confirm',
       executor: 'task_store.updateTask',
       verifier: 'local_read_back',
       // Phase 14 batch 72: shares task reference extractor with update_task / delete_task.

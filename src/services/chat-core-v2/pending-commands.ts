@@ -99,6 +99,22 @@ export function clearPendingChatCoreV2Command(commandId: string, userId: number,
   return pendingCommands.delete(keyFor(commandId, userId, tenantId));
 }
 
+export function clearPendingChatCoreV2CommandsForScope(input: {
+  userId: number;
+  tenantId?: number;
+  conversationId?: string | null;
+}): number {
+  const tenantId = resolveChatTenantId(input.userId, input.tenantId);
+  let cleared = 0;
+  for (const [key, pending] of pendingCommands.entries()) {
+    if (pending.userId !== input.userId || pending.tenantId !== tenantId) continue;
+    if (input.conversationId && pending.conversationId !== input.conversationId) continue;
+    pendingCommands.delete(key);
+    cleared++;
+  }
+  return cleared;
+}
+
 export function resetPendingChatCoreV2CommandsForTests(): void {
   pendingCommands.clear();
 }

@@ -304,6 +304,7 @@ export function calendarRoutes(): Router {
       start: roundedStart.toISOString(),
       end: end.toISOString(),
       timezone,
+      constrainToSource: Boolean(requestedSource),
     });
     sendSuccess(res, {
       ...precheck,
@@ -372,6 +373,7 @@ export function calendarRoutes(): Router {
         start: start.toISOString(),
         end: end.toISOString(),
         timezone,
+        constrainToSource: Boolean(requestedSource),
       });
       if (precheck.status !== 'clean') {
         sendError(res, precheck.status === 'conflicted' ? 'FOCUS_SLOT_CONFLICT' : 'FOCUS_SLOT_UNAVAILABLE', precheck.warnings[0] || 'Focus block cannot be created for this slot.', 409, {

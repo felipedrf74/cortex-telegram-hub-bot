@@ -321,8 +321,8 @@ describe('chat action production safety: tenant isolation, idempotency, retries,
       const plan = calendarPlan('msg-calendar-dupe');
       const request = input({ messageId: 'msg-calendar-dupe' });
 
-      const first = await executeChatActionPlan(plan, request, calendar.deps);
-      const second = await executeChatActionPlan(plan, request, calendar.deps);
+      const first = await executeChatActionPlan(plan, request, calendar.deps, { confirmed: true });
+      const second = await executeChatActionPlan(plan, request, calendar.deps, { confirmed: true });
 
       expect(first.metadata.actionStatus).toBe('verified_success');
       expect(second.metadata.actionStatus).toBe('verified_success');
@@ -343,13 +343,13 @@ describe('chat action production safety: tenant isolation, idempotency, retries,
       if (!taskPlan) throw new Error('task test plan failed to parse');
       const taskRequest = input({ messageId: 'msg-task-dupe', text: 'Create a task called Release checklist' });
 
-      const taskFirst = await executeChatActionPlan(taskPlan, taskRequest, taskDeps.deps);
-      const taskSecond = await executeChatActionPlan(taskPlan, taskRequest, taskDeps.deps);
+      const taskFirst = await executeChatActionPlan(taskPlan, taskRequest, taskDeps.deps, { confirmed: true });
+      const taskSecond = await executeChatActionPlan(taskPlan, taskRequest, taskDeps.deps, { confirmed: true });
       expect(taskFirst.metadata.actionStatus).toBe('verified_success');
       expect(taskSecond.metadata.actionStatus).toBe('verified_success');
       expect(taskSecond.text).toMatch(/already handled|did not create a duplicate/i);
       expect(taskDeps.deps.taskProviderForUser().createTask).toHaveBeenCalledTimes(1);
-      expect(taskDeps.tasks).toHaveLength(1);
+      expect(taskDeps.tasks.size).toBe(1);
     });
 
     it('does not duplicate provider writes after provider success plus verifier failure or timeout', async () => {
@@ -359,8 +359,8 @@ describe('chat action production safety: tenant isolation, idempotency, retries,
       const mismatchPlan = calendarPlan('msg-calendar-verifier-failure');
       const mismatchRequest = input({ messageId: 'msg-calendar-verifier-failure' });
 
-      const firstMismatch = await executeChatActionPlan(mismatchPlan, mismatchRequest, mismatch.deps);
-      const secondMismatch = await executeChatActionPlan(mismatchPlan, mismatchRequest, mismatch.deps);
+      const firstMismatch = await executeChatActionPlan(mismatchPlan, mismatchRequest, mismatch.deps, { confirmed: true });
+      const secondMismatch = await executeChatActionPlan(mismatchPlan, mismatchRequest, mismatch.deps, { confirmed: true });
       expect(firstMismatch.metadata.actionStatus).toBe('partial_success');
       expect(secondMismatch.metadata.actionStatus).toBe('partial_success');
       expect(mismatch.deps.calendar.createEvent).toHaveBeenCalledTimes(1);
@@ -371,8 +371,8 @@ describe('chat action production safety: tenant isolation, idempotency, retries,
       });
       const timeoutPlan = calendarPlan('msg-calendar-readback-timeout');
       const timeoutRequest = input({ messageId: 'msg-calendar-readback-timeout' });
-      const firstTimeout = await executeChatActionPlan(timeoutPlan, timeoutRequest, timeout.deps);
-      const secondTimeout = await executeChatActionPlan(timeoutPlan, timeoutRequest, timeout.deps);
+      const firstTimeout = await executeChatActionPlan(timeoutPlan, timeoutRequest, timeout.deps, { confirmed: true });
+      const secondTimeout = await executeChatActionPlan(timeoutPlan, timeoutRequest, timeout.deps, { confirmed: true });
 
       expect(firstTimeout.metadata.actionStatus).toBe('partial_success');
       expect(secondTimeout.metadata.actionStatus).toBe('partial_success');
@@ -478,7 +478,7 @@ describe('chat action production safety: tenant isolation, idempotency, retries,
       });
       const response = await executeChatActionPlan(calendarPlan(`msg-provider-${String(_label).replace(/\s+/g, '-')}`), input({
         messageId: `msg-provider-${String(_label).replace(/\s+/g, '-')}`,
-      }), provider.deps);
+      }), provider.deps, { confirmed: true });
 
       expect(response.metadata.actionStatus).toBe('failed');
       expect(response.text).toMatch(/could not complete|nothing was confirmed/i);
@@ -498,7 +498,7 @@ describe('chat action production safety: tenant isolation, idempotency, retries,
       const provider = makeCalendarDeps({ hasGoogle: false });
       const response = await executeChatActionPlan(calendarPlan('msg-disconnected-provider'), input({
         messageId: 'msg-disconnected-provider',
-      }), provider.deps);
+      }), provider.deps, { confirmed: true });
 
       expect(response.metadata.actionStatus).toBe('blocked');
       expect(response.text).toMatch(/not connected/i);
@@ -526,7 +526,7 @@ describe('chat action production safety: tenant isolation, idempotency, retries,
       const taskResponse = await executeChatActionPlan(taskPlan, input({
         messageId: 'msg-malformed-task',
         text: 'Create a task called Malformed task response',
-      }), malformedTask.deps);
+      }), malformedTask.deps, { confirmed: true });
       expect(taskResponse.metadata.actionStatus).toBe('failed');
       expect(taskResponse.text).toMatch(/could not complete|nothing was confirmed/i);
       expectNoSecretLeak(taskResponse);
@@ -537,7 +537,7 @@ describe('chat action production safety: tenant isolation, idempotency, retries,
       });
       const calendarResponse = await executeChatActionPlan(calendarPlan('msg-verifier-cannot-confirm'), input({
         messageId: 'msg-verifier-cannot-confirm',
-      }), verifierFailure.deps);
+      }), verifierFailure.deps, { confirmed: true });
       expect(calendarResponse.metadata.actionStatus).toBe('partial_success');
       expect(calendarResponse.text).toMatch(/could not verify|will not claim full success/i);
       expectNoSecretLeak(calendarResponse);

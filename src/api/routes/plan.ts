@@ -89,7 +89,7 @@ export function planRoutes(): Router {
     invalidatePlanningCaches(userId);
 
     try {
-      const week = await composeWeeklyPlan({ userId, weekStart, forceRefresh: true });
+      const week = await composeWeeklyPlan({ userId, weekStart, forceRefresh: true, syncSignals: true });
       const today = await composeDailyBrief({ userId, date, forceRefresh: true });
       res.json(apiSuccess({ week, today }));
     } catch (err: any) {

@@ -48,9 +48,9 @@ function walkTsFiles(dir: string): string[] {
 }
 
 describe('runtime capability-registry architecture', () => {
-  it('keeps SKILL_METADATA as the 10-skill source of shared capability metadata', () => {
+  it('keeps SKILL_METADATA as the action-skill source of shared capability metadata', () => {
     const metadataEntries = Object.entries(SKILL_METADATA);
-    expect(metadataEntries).toHaveLength(10);
+    expect(metadataEntries).toHaveLength(11);
     expect(metadataEntries.map(([skill]) => skill).sort()).toEqual([
       'connections',
       'content',
@@ -60,6 +60,7 @@ describe('runtime capability-registry architecture', () => {
       'mail',
       'notifications',
       'secretary_calendar',
+      'secretary_reminders',
       'tasks',
       'training',
     ]);
@@ -145,7 +146,7 @@ describe('manifest loader runtime architecture', () => {
 describe('runtime registry shape', () => {
   it('keeps disabled/deprecated actions out of the active registry count', () => {
     const actions = getChatActionRegistry();
-    expect(actions).toHaveLength(49);
+    expect(actions).toHaveLength(50);
     expect(actions.every((entry) => entry.status === 'active')).toBe(true);
   });
 });

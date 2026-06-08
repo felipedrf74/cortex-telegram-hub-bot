@@ -76,13 +76,15 @@ import {
   setCookingPreferenceMemory,
   type CookingPreferenceWriteInput,
 } from '../../services/cooking-preferences';
-import { createEvent as createCalendarEvent, isAnyCalendarConfigured } from '../../services/unified-calendar';
+import { createEvent as createCalendarEvent, hasConnectedCalendarForUser } from '../../services/unified-calendar';
 import { getActivePlans, getCurrentWeek, getSessionsForWeek, getWeeksForPlan, type TrainingSession } from '../../services/training-plans';
 import { invalidateCookingDerivedCaches } from '../../services/cache-coherence-registry';
 import {
+  buildCookingMealPrepSchedulingIntent,
   previewCookingMealPrepSchedulingIntent,
   submitCookingMealPrepSchedulingIntent,
 } from '../../services/cooking-secretary-integration';
+import { loadLiveCalendarBusyWindowsForSecretaryIntent } from '../../services/secretary-live-calendar-busy';
 import { runOutboxTransaction } from '../../services/event-outbox';
 import { consumeResourceBudget } from '../../services/resource-budgets';
 import { createNotificationIntent } from '../../services/notification-orchestrator';
@@ -1355,7 +1357,7 @@ export function cookingRoutes(): Router {
       ? durationMinutes
       : 120;
 
-    if (!isAnyCalendarConfigured()) {
+    if (!hasConnectedCalendarForUser(userId)) {
       sendError(
         res,
         'CALENDAR_NOT_CONFIGURED',
@@ -1434,7 +1436,21 @@ export function cookingRoutes(): Router {
         durationMinutes: duration,
         mealCount: meals.length,
       };
-      const secretaryPreview = previewCookingMealPrepSchedulingIntent(secretaryInput);
+      const busyWindows = await loadLiveCalendarBusyWindowsForSecretaryIntent(
+        buildCookingMealPrepSchedulingIntent(secretaryInput),
+      );
+      if (busyWindows.degraded) {
+        sendError(
+          res,
+          'COOKING_PREP_CALENDAR_UNAVAILABLE',
+          'Calendar availability could not be checked right now.',
+          503,
+          { warningCodes: busyWindows.warningCodes },
+        );
+        return;
+      }
+      const secretaryInputWithBusyWindows = { ...secretaryInput, additionalBusyWindows: busyWindows.windows };
+      const secretaryPreview = previewCookingMealPrepSchedulingIntent(secretaryInputWithBusyWindows);
       if (!['scheduled', 'reflowed', 'compressed'].includes(secretaryPreview.status) || !secretaryPreview.recommendedSlot) {
         sendError(
           res,
@@ -1446,7 +1462,7 @@ export function cookingRoutes(): Router {
         return;
       }
 
-      const secretaryDecision = submitCookingMealPrepSchedulingIntent(secretaryInput);
+      const secretaryDecision = submitCookingMealPrepSchedulingIntent(secretaryInputWithBusyWindows);
       if (!['scheduled', 'reflowed', 'compressed'].includes(secretaryDecision.status) || !secretaryDecision.selectedSlot) {
         sendError(
           res,

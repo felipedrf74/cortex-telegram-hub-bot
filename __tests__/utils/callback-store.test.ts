@@ -12,6 +12,10 @@ vi.mock('../../src/services/database', () => ({
   initDatabase: vi.fn(),
   closeDatabase: vi.fn(),
   findUnexpectedMigrationPrefixCollisions: vi.fn(() => []),
+  assertNoUnexpectedMigrationPrefixCollisions: vi.fn(),
+  filterAlreadyAppliedAddColumnStatements: vi.fn((sql: string) => sql),
+  runMigrationsForTest: vi.fn(),
+  stripWrappingTransactionStatements: vi.fn((sql: string) => sql),
 }));
 
 vi.mock('../../src/utils/logger', () => ({
@@ -34,6 +38,7 @@ import {
   storeCallback,
   storeCallbackForScope,
 } from '../../src/utils/callback-store';
+import { logger } from '../../src/utils/logger';
 
 function applyMigrations(db: Database.Database): void {
   db.exec(`CREATE TABLE IF NOT EXISTS _migrations (id INTEGER PRIMARY KEY, filename TEXT UNIQUE, applied_at TEXT DEFAULT (datetime('now')))`);
@@ -128,6 +133,35 @@ describe('callback-store persistence', () => {
     );
 
     expect(consumeCallbackForScope(ref, { tenantId: 42, userId: 42 })).toBe(true);
+    expect(consumeCallbackForScope(ref, { tenantId: 42, userId: 42 })).toBe(false);
     expect(getCallbackForScope(ref, { tenantId: 42, userId: 42 })).toBeNull();
+  });
+
+  it('fails closed when consuming scoped callbacks against a legacy unscoped table', () => {
+    const ref = storeCallbackForScope(
+      { taskId: 'task-legacy-schema' },
+      { tenantId: 42, userId: 42, actionType: 'todo_task_delete' },
+      300_000,
+    );
+    testDb.exec(`
+      ALTER TABLE callback_entries RENAME TO callback_entries_scoped;
+      CREATE TABLE callback_entries (
+        ref TEXT PRIMARY KEY,
+        data_json TEXT NOT NULL,
+        created_at_ms INTEGER NOT NULL,
+        expires_at_ms INTEGER NOT NULL,
+        updated_at TEXT DEFAULT (datetime('now'))
+      );
+      INSERT INTO callback_entries (ref, data_json, created_at_ms, expires_at_ms, updated_at)
+      SELECT ref, data_json, created_at_ms, expires_at_ms, updated_at
+      FROM callback_entries_scoped;
+      DROP TABLE callback_entries_scoped;
+    `);
+
+    expect(consumeCallbackForScope(ref, { tenantId: 42, userId: 42 })).toBe(false);
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ ref, userId: 42, tenantId: 42 }),
+      'Failed closed while consuming scoped callback without persistent scope columns',
+    );
   });
 });

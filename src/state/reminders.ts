@@ -1,23 +1,46 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
-import { getDb } from '../services/database';
-import { Reminder } from '../domains/types';
 import { DateTime } from 'luxon';
-import { now } from '../utils/date-parser';
 import { config } from '../config';
+import { Reminder } from '../domains/types';
+import { getDb } from '../services/database';
+import { now } from '../utils/date-parser';
 
-function ensureReminderAgendaLinkColumn(db: any): void {
+function assertReminderSchemaReady(db: any): void {
   const table = db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'reminders'").get();
-  if (!table) return;
-  const columns = db.prepare('PRAGMA table_info(reminders)').all() as Array<{ name: string }>;
-  if (!columns.some((column) => column.name === 'agenda_item_id')) {
-    db.exec('ALTER TABLE reminders ADD COLUMN agenda_item_id TEXT');
+  if (!table) {
+    throw new Error('REMINDERS_SCHEMA_MISSING:reminders');
   }
-  db.exec(`
-    CREATE UNIQUE INDEX IF NOT EXISTS idx_reminders_agenda_item
-      ON reminders(user_id, agenda_item_id, remind_at)
-      WHERE agenda_item_id IS NOT NULL
-  `);
+  const columns = db.prepare('PRAGMA table_info(reminders)').all() as Array<{ name: string }>;
+  const names = new Set(columns.map((column) => column.name));
+  const missing = ['tenant_id', 'timezone', 'agenda_item_id'].filter((column) => !names.has(column));
+  if (missing.length > 0) {
+    throw new Error(`REMINDERS_SCHEMA_MISSING:${missing.join(',')}`);
+  }
+}
+
+function reminderSchemaReadyForOptionalCascade(db: any): boolean {
+  const table = db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'reminders'").get();
+  if (!table) return false;
+  assertReminderSchemaReady(db);
+  return true;
+}
+
+function resolveTenantId(userId: number, tenantId?: number | string | null): number {
+  const numeric = Number(tenantId);
+  return Number.isFinite(numeric) && numeric > 0 ? numeric : userId;
+}
+
+function normalizeTimezone(timezone?: string | null): string {
+  if (timezone && DateTime.now().setZone(timezone).isValid) {
+    return timezone;
+  }
+  return config.app.timezone || 'UTC';
+}
+
+function parseReminderTime(value: string, timezone: string): DateTime | null {
+  const parsed = DateTime.fromISO(value, { zone: timezone, setZone: true });
+  return parsed.isValid ? parsed : null;
 }
 
 export function setReminder(userId: number, data: {
@@ -25,49 +48,87 @@ export function setReminder(userId: number, data: {
   remind_at: string;
   recurring?: string;
   agenda_item_id?: string | null;
-}): Reminder {
+  tenant_id?: number | string | null;
+  timezone?: string | null;
+}, options: {
+  tenantId?: number | string | null;
+  timezone?: string | null;
+} = {}): Reminder {
   const db = getDb();
-  ensureReminderAgendaLinkColumn(db);
+  assertReminderSchemaReady(db);
+  const tenantId = resolveTenantId(userId, options.tenantId ?? data.tenant_id);
+  const timezone = normalizeTimezone(options.timezone ?? data.timezone);
   const stmt = db.prepare(`
-    INSERT INTO reminders (user_id, message, remind_at, recurring, agenda_item_id)
-    VALUES (?, ?, ?, ?, ?)
+    INSERT INTO reminders (user_id, tenant_id, message, remind_at, recurring, agenda_item_id, timezone)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
   `);
-  const result = stmt.run(userId, data.message, data.remind_at, data.recurring || null, data.agenda_item_id ?? null);
+  const result = stmt.run(
+    userId,
+    tenantId,
+    data.message,
+    data.remind_at,
+    data.recurring || null,
+    data.agenda_item_id ?? null,
+    timezone,
+  );
   return db.prepare('SELECT * FROM reminders WHERE id = ?').get(result.lastInsertRowid) as Reminder;
 }
 
-export function getActiveReminders(userId: number): Reminder[] {
+export function getActiveReminders(userId: number, tenantId?: number | string | null): Reminder[] {
   const db = getDb();
-  ensureReminderAgendaLinkColumn(db);
+  assertReminderSchemaReady(db);
+  const resolvedTenantId = resolveTenantId(userId, tenantId);
   return db.prepare(`
-    SELECT * FROM reminders WHERE user_id = ? AND status = 'active' ORDER BY remind_at ASC
-  `).all(userId) as Reminder[];
+    SELECT * FROM reminders
+    WHERE tenant_id = ? AND user_id = ? AND status = 'active'
+    ORDER BY remind_at ASC
+  `).all(resolvedTenantId, userId) as Reminder[];
 }
 
 /**
  * Get all due reminders across ALL users (for the scheduler).
- * Returns user_id with each reminder so the scheduler knows who to notify.
+ * Returns user_id and tenant_id with each reminder so the scheduler knows who
+ * to notify and which workspace owns the row.
  */
 export function getDueReminders(): Reminder[] {
   const db = getDb();
-  ensureReminderAgendaLinkColumn(db);
-  const currentISO = now().toISO()!;
-  return db.prepare(`
+  assertReminderSchemaReady(db);
+  const current = now().toUTC();
+  const reminders = db.prepare(`
     SELECT * FROM reminders
     WHERE status = 'active'
-    AND remind_at <= ?
     ORDER BY remind_at ASC
-  `).all(currentISO) as Reminder[];
+  `).all() as Reminder[];
+  return reminders
+    .filter((reminder) => {
+      const timezone = normalizeTimezone(reminder.timezone);
+      const reminderTime = parseReminderTime(reminder.remind_at, timezone);
+      return reminderTime ? reminderTime.toUTC().toMillis() <= current.toMillis() : false;
+    })
+    .sort((a, b) => {
+      const aTime = parseReminderTime(a.remind_at, normalizeTimezone(a.timezone))?.toUTC().toMillis() ?? Number.MAX_SAFE_INTEGER;
+      const bTime = parseReminderTime(b.remind_at, normalizeTimezone(b.timezone))?.toUTC().toMillis() ?? Number.MAX_SAFE_INTEGER;
+      return aTime - bTime;
+    });
 }
 
 export function markReminderFired(id: number): void {
   const db = getDb();
-  ensureReminderAgendaLinkColumn(db);
+  assertReminderSchemaReady(db);
   const reminder = db.prepare('SELECT * FROM reminders WHERE id = ?').get(id) as Reminder | undefined;
   if (!reminder) return;
+  const tenantId = resolveTenantId(reminder.user_id, reminder.tenant_id);
+  const updateReminder = (sql: string, ...params: Array<number | string>) => {
+    db.prepare(sql).run(...params, id, tenantId, reminder.user_id);
+  };
 
   if (reminder.recurring) {
-    const current = DateTime.fromISO(reminder.remind_at, { zone: config.app.timezone });
+    const timezone = normalizeTimezone(reminder.timezone);
+    const current = parseReminderTime(reminder.remind_at, timezone);
+    if (!current) {
+      updateReminder("UPDATE reminders SET status = 'fired' WHERE id = ? AND tenant_id = ? AND user_id = ?");
+      return;
+    }
     let next: DateTime;
 
     switch (reminder.recurring) {
@@ -81,64 +142,91 @@ export function markReminderFired(id: number): void {
         next = current.plus({ months: 1 });
         break;
       default:
-        db.prepare("UPDATE reminders SET status = 'fired' WHERE id = ?").run(id);
+        updateReminder("UPDATE reminders SET status = 'fired' WHERE id = ? AND tenant_id = ? AND user_id = ?");
         return;
     }
 
-    db.prepare('UPDATE reminders SET remind_at = ? WHERE id = ?').run(next.toISO()!, id);
+    updateReminder('UPDATE reminders SET remind_at = ? WHERE id = ? AND tenant_id = ? AND user_id = ?', next.toISO()!);
   } else {
-    db.prepare("UPDATE reminders SET status = 'fired' WHERE id = ?").run(id);
+    updateReminder("UPDATE reminders SET status = 'fired' WHERE id = ? AND tenant_id = ? AND user_id = ?");
   }
 }
 
-export function cancelReminder(userId: number, id: number): boolean {
+export function cancelReminder(userId: number, id: number, tenantId?: number | string | null): boolean {
   const db = getDb();
-  ensureReminderAgendaLinkColumn(db);
-  db.prepare("UPDATE reminders SET status = 'cancelled' WHERE user_id = ? AND id = ?").run(userId, id);
-  return true;
-}
-
-export function cancelRemindersForAgendaItem(userId: number, agendaItemId: string): number {
-  const db = getDb();
-  ensureReminderAgendaLinkColumn(db);
-  const table = db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'reminders'").get();
-  if (!table) return 0;
+  assertReminderSchemaReady(db);
+  const resolvedTenantId = resolveTenantId(userId, tenantId);
   const result = db.prepare(`
     UPDATE reminders
        SET status = 'cancelled'
-     WHERE user_id = ?
+     WHERE tenant_id = ?
+       AND user_id = ?
+       AND id = ?
+  `).run(resolvedTenantId, userId, id);
+  return Number(result.changes ?? 0) > 0;
+}
+
+export function cancelRemindersForAgendaItem(
+  userId: number,
+  agendaItemId: string,
+  tenantId?: number | string | null,
+): number {
+  const db = getDb();
+  if (!reminderSchemaReadyForOptionalCascade(db)) return 0;
+  const resolvedTenantId = resolveTenantId(userId, tenantId);
+  const result = db.prepare(`
+    UPDATE reminders
+       SET status = 'cancelled'
+     WHERE tenant_id = ?
+       AND user_id = ?
        AND agenda_item_id = ?
        AND status = 'active'
-  `).run(userId, agendaItemId);
+  `).run(resolvedTenantId, userId, agendaItemId);
   return Number(result.changes ?? 0);
 }
 
-export function updateRemindersForAgendaItem(userId: number, agendaItemId: string, remindAt: string): number {
+export function updateRemindersForAgendaItem(
+  userId: number,
+  agendaItemId: string,
+  remindAt: string,
+  tenantId?: number | string | null,
+): number {
   const db = getDb();
-  ensureReminderAgendaLinkColumn(db);
-  const table = db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'reminders'").get();
-  if (!table) return 0;
+  if (!reminderSchemaReadyForOptionalCascade(db)) return 0;
+  const resolvedTenantId = resolveTenantId(userId, tenantId);
   const result = db.prepare(`
     UPDATE reminders
        SET remind_at = ?
-     WHERE user_id = ?
+     WHERE tenant_id = ?
+       AND user_id = ?
        AND agenda_item_id = ?
        AND status = 'active'
-  `).run(remindAt, userId, agendaItemId);
+  `).run(remindAt, resolvedTenantId, userId, agendaItemId);
   return Number(result.changes ?? 0);
 }
 
 /**
  * Get today's reminders for a specific user (for briefings).
  */
-export function getRemindersForToday(userId: number): Reminder[] {
+export function getRemindersForToday(
+  userId: number,
+  tenantId?: number | string | null,
+  timezone?: string | null,
+): Reminder[] {
   const db = getDb();
-  ensureReminderAgendaLinkColumn(db);
-  const todayDate = now().toFormat('yyyy-MM-dd');
-  return db.prepare(`
+  assertReminderSchemaReady(db);
+  const resolvedTenantId = resolveTenantId(userId, tenantId);
+  const defaultTimezone = normalizeTimezone(timezone);
+  const current = now();
+  const reminders = db.prepare(`
     SELECT * FROM reminders
-    WHERE user_id = ? AND status = 'active'
-    AND date(remind_at) = ?
+    WHERE tenant_id = ? AND user_id = ? AND status = 'active'
     ORDER BY remind_at ASC
-  `).all(userId, todayDate) as Reminder[];
+  `).all(resolvedTenantId, userId) as Reminder[];
+  return reminders.filter((reminder) => {
+    const reminderTimezone = normalizeTimezone(reminder.timezone || defaultTimezone);
+    const reminderTime = parseReminderTime(reminder.remind_at, reminderTimezone);
+    const todayInReminderTimezone = current.setZone(reminderTimezone).toFormat('yyyy-MM-dd');
+    return reminderTime?.setZone(reminderTimezone).toFormat('yyyy-MM-dd') === todayInReminderTimezone;
+  });
 }

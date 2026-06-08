@@ -2,6 +2,7 @@
 
 export type ChatActionSkill =
   | 'secretary_calendar'
+  | 'secretary_reminders'
   | 'mail'
   | 'tasks'
   | 'training'
@@ -30,6 +31,7 @@ export type ChatActionName =
   | 'delete_event'
   | 'check_calendar_conflicts'
   | 'summarize_agenda'
+  | 'set_reminder'
   | 'mail_unread_count'
   | 'mail_inbox_summary'
   | 'draft_email'

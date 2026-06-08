@@ -23,12 +23,17 @@ vi.mock('../../src/services/database', () => ({
   getDb: () => ({
     prepare: () => ({
       all: (...args: unknown[]) => mockDbAll(...args),
+      get: vi.fn(() => null),
       run: (...args: unknown[]) => mockDbRun(...args),
     }),
   }),
   initDatabase: vi.fn(),
   closeDatabase: vi.fn(),
   findUnexpectedMigrationPrefixCollisions: vi.fn(() => []),
+  assertNoUnexpectedMigrationPrefixCollisions: vi.fn(),
+  filterAlreadyAppliedAddColumnStatements: vi.fn((sql: string) => sql),
+  runMigrationsForTest: vi.fn(),
+  stripWrappingTransactionStatements: vi.fn((sql: string) => sql),
 }));
 
 vi.mock('../../src/state/notes', () => ({

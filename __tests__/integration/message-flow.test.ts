@@ -362,7 +362,7 @@ describe('Integration: Domain handler with tool calls', () => {
       toolCalls: [{
         type: 'tool_use' as const,
         id: 'toolu_01',
-        name: 'list_todos',
+        name: 'ms_todo_get_tasks',
         input: { domain: 'secretary' },
       }],
       stopReason: 'tool_use',
@@ -384,13 +384,13 @@ describe('Integration: Domain handler with tool calls', () => {
 
     expect(response.text).toBe('You have 1 pending task: Buy groceries (high priority).');
     expect(response.domain).toBe('secretary');
-    expect(mockExecuteToolCall).toHaveBeenCalledWith('list_todos', { domain: 'secretary' }, 42);
+    expect(mockExecuteToolCall).toHaveBeenCalledWith('ms_todo_get_tasks', { domain: 'secretary' }, 42);
     expect(mockContinueWithToolResults).toHaveBeenCalledTimes(1);
 
     // Verify conversation stored with tool annotation
     expect(mockAddToConversation).toHaveBeenCalledWith(
       42, 'secretary', 'assistant',
-      expect.stringContaining('[Tools: list_todos]'),
+      expect.stringContaining('[Tools: ms_todo_get_tasks]'),
     );
   });
 
@@ -401,7 +401,7 @@ describe('Integration: Domain handler with tool calls', () => {
       toolCalls: [{
         type: 'tool_use' as const,
         id: 'toolu_01',
-        name: 'list_todos',
+        name: 'ms_todo_get_tasks',
         input: { domain: 'secretary' },
       }],
       stopReason: 'tool_use',
@@ -411,28 +411,28 @@ describe('Integration: Domain handler with tool calls', () => {
       .mockResolvedValueOnce({ success: true, data: [{ title: 'Review PR', priority: 'high' }] })
       .mockResolvedValueOnce({ success: true, message: 'Reminder created' });
 
-    // Round 2: Claude wants to create a reminder
+    // Round 2: Claude wants to read supporting notes
     mockContinueWithToolResults
       .mockResolvedValueOnce({
-        text: 'I see you have a PR to review. Let me set a reminder.',
+        text: 'I see you have a PR to review. Let me check your notes.',
         toolCalls: [{
           type: 'tool_use' as const,
           id: 'toolu_02',
-          name: 'create_reminder',
-          input: { title: 'Review PR', time: '14:00' },
+          name: 'search_notes',
+          input: { query: 'Review PR' },
         }],
         stopReason: 'tool_use',
       })
       // Round 3: Final response
       .mockResolvedValueOnce({
-        text: 'Done! You have a PR to review, and I set a reminder for 2 PM.',
+        text: 'Done! You have a PR to review, and I found your prep notes.',
         toolCalls: [],
         stopReason: 'end_turn',
       });
 
     const response = await handleSimpleDomain('secretary', 'check my tasks and remind me');
 
-    expect(response.text).toBe('Done! You have a PR to review, and I set a reminder for 2 PM.');
+    expect(response.text).toBe('Done! You have a PR to review, and I found your prep notes.');
     expect(mockExecuteToolCall).toHaveBeenCalledTimes(2);
     expect(mockContinueWithToolResults).toHaveBeenCalledTimes(2);
   });
@@ -444,7 +444,7 @@ describe('Integration: Domain handler with tool calls', () => {
       toolCalls: [{
         type: 'tool_use' as const,
         id: 'toolu_loop',
-        name: 'list_todos',
+        name: 'ms_todo_get_tasks',
         input: {},
       }],
       stopReason: 'tool_use',
@@ -466,8 +466,8 @@ describe('Integration: Domain handler with tool calls', () => {
     mockCallDomain.mockResolvedValue({
       text: 'Checking both...',
       toolCalls: [
-        { type: 'tool_use' as const, id: 'toolu_a', name: 'list_todos', input: {} },
-        { type: 'tool_use' as const, id: 'toolu_b', name: 'get_events', input: { start: '2026-04-01', end: '2026-04-01' } },
+        { type: 'tool_use' as const, id: 'toolu_a', name: 'ms_todo_get_tasks', input: {} },
+        { type: 'tool_use' as const, id: 'toolu_b', name: 'get_calendar_events', input: { start: '2026-04-01', end: '2026-04-01' } },
       ],
       stopReason: 'tool_use',
     });
@@ -487,8 +487,8 @@ describe('Integration: Domain handler with tool calls', () => {
     expect(response.text).toBe('You have 1 task and no events today.');
     // Both tools executed in parallel
     expect(mockExecuteToolCall).toHaveBeenCalledTimes(2);
-    expect(mockExecuteToolCall).toHaveBeenCalledWith('list_todos', {}, undefined);
-    expect(mockExecuteToolCall).toHaveBeenCalledWith('get_events', { start: '2026-04-01', end: '2026-04-01' }, undefined);
+    expect(mockExecuteToolCall).toHaveBeenCalledWith('ms_todo_get_tasks', {}, undefined);
+    expect(mockExecuteToolCall).toHaveBeenCalledWith('get_calendar_events', { start: '2026-04-01', end: '2026-04-01' }, undefined);
   });
 });
 
@@ -509,7 +509,7 @@ describe('Integration: Full end-to-end message flow', () => {
       toolCalls: [{
         type: 'tool_use' as const,
         id: 'toolu_cal',
-        name: 'get_events',
+        name: 'get_calendar_events',
         input: { start: '2026-04-01', end: '2026-04-01' },
       }],
       stopReason: 'tool_use',
@@ -645,8 +645,8 @@ describe('Integration: Conversation history management', () => {
       toolCalls: [{
         type: 'tool_use' as const,
         id: 'toolu_01',
-        name: 'create_todo',
-        input: { title: 'Test', domain: 'secretary' },
+        name: 'search_notes',
+        input: { query: 'Test' },
       }],
       stopReason: 'tool_use',
     });
@@ -654,7 +654,7 @@ describe('Integration: Conversation history management', () => {
     mockExecuteToolCall.mockResolvedValue({ success: true });
 
     mockContinueWithToolResults.mockResolvedValue({
-      text: 'Task created!',
+      text: 'Notes found!',
       toolCalls: [],
       stopReason: 'end_turn',
     });
@@ -666,16 +666,16 @@ describe('Integration: Conversation history management', () => {
       (c) => c[2] === 'assistant'
     );
     expect(assistantCall).toBeDefined();
-    expect(assistantCall![3]).toContain('[Tools: create_todo]');
-    expect(assistantCall![3]).toContain('Task created!');
+    expect(assistantCall![3]).toContain('[Tools: search_notes]');
+    expect(assistantCall![3]).toContain('Notes found!');
   });
 
   it('deduplicates tool names in stored annotation', async () => {
     mockCallDomain.mockResolvedValue({
       text: '',
       toolCalls: [
-        { type: 'tool_use' as const, id: 'toolu_01', name: 'list_todos', input: {} },
-        { type: 'tool_use' as const, id: 'toolu_02', name: 'list_todos', input: {} },
+        { type: 'tool_use' as const, id: 'toolu_01', name: 'ms_todo_get_tasks', input: {} },
+        { type: 'tool_use' as const, id: 'toolu_02', name: 'ms_todo_get_tasks', input: {} },
       ],
       stopReason: 'tool_use',
     });
@@ -693,8 +693,8 @@ describe('Integration: Conversation history management', () => {
     const assistantCall = mockAddToConversation.mock.calls.find(
       (c) => c[2] === 'assistant'
     );
-    // Should deduplicate "list_todos" — only appear once
-    expect(assistantCall![3]).toBe('[Tools: list_todos]\nNo tasks found.');
+    // Should deduplicate "ms_todo_get_tasks" — only appear once
+    expect(assistantCall![3]).toBe('[Tools: ms_todo_get_tasks]\nNo tasks found.');
   });
 });
 
@@ -882,7 +882,7 @@ describe('Integration: Classification tier priority', () => {
 // ════════════════════════════════════════════════════════════════════
 
 describe('Scenario: "what is on my calendar today?" → secretary → calendar tool → response', () => {
-  it('routes to secretary, calls get_events tool, returns formatted schedule', async () => {
+  it('routes to secretary, calls get_calendar_events tool, returns formatted schedule', async () => {
     // Step 1: Route — "calendar" keyword matches secretary
     const route = await routeMessage('what is on my calendar today?');
     expect(route.domain).toBe('secretary');
@@ -893,7 +893,7 @@ describe('Scenario: "what is on my calendar today?" → secretary → calendar t
       toolCalls: [{
         type: 'tool_use' as const,
         id: 'toolu_cal_01',
-        name: 'get_events',
+        name: 'get_calendar_events',
         input: { start: '2026-04-01T00:00:00', end: '2026-04-01T23:59:59' },
       }],
       stopReason: 'tool_use',
@@ -927,15 +927,15 @@ describe('Scenario: "what is on my calendar today?" → secretary → calendar t
     expect(response.domain).toBe('secretary');
 
     // Verify: tool was called with correct params
-    expect(mockExecuteToolCall).toHaveBeenCalledWith('get_events', {
+    expect(mockExecuteToolCall).toHaveBeenCalledWith('get_calendar_events', {
       start: '2026-04-01T00:00:00',
       end: '2026-04-01T23:59:59',
     }, undefined);
   });
 });
 
-describe('Scenario: "/expense 50 almoço" → finance → expense logged → confirmation', () => {
-  it('routes to finance via pattern, logs expense, returns confirmation', async () => {
+describe('Scenario: "/expense 50 almoço" → finance → legacy write blocked for confirmation', () => {
+  it('routes to finance via pattern but does not execute legacy write tools', async () => {
     // Step 1: Route — /expense command matches finance domain
     const route = await routeMessage('/expense 50 almoço');
     expect(route.domain).toBe('finance');
@@ -960,14 +960,8 @@ describe('Scenario: "/expense 50 almoço" → finance → expense logged → con
       stopReason: 'tool_use',
     });
 
-    // Step 3: Tool confirms expense logged
-    mockExecuteToolCall.mockResolvedValue({
-      success: true,
-      id: 42,
-      message: 'Expense logged: €50.00 — almoço (food)',
-    });
-
-    // Step 4: Claude returns human confirmation
+    // Step 3: Domain handler returns a confirmation-required tool result
+    // to the model, but never executes the legacy write tool.
     mockContinueWithToolResults.mockResolvedValue({
       text: '✅ Expense logged!\n\n💰 €50.00 — almoço\n📂 Category: food\n📅 Date: April 1, 2026',
       toolCalls: [],
@@ -976,10 +970,25 @@ describe('Scenario: "/expense 50 almoço" → finance → expense logged → con
 
     const response = await handleSimpleDomain(route.domain, route.strippedMessage);
 
-    // Verify: confirmation text, not JSON
-    expect(response.text).toContain('€50.00');
-    expect(response.text).toContain('almoço');
-    expect(response.text).toContain('food');
+    // Verify: write was not executed through the legacy domain loop.
+    expect(mockExecuteToolCall).not.toHaveBeenCalled();
+    expect(mockContinueWithToolResults).toHaveBeenCalledWith(
+      'finance',
+      expect.any(Array),
+      '50 almoço',
+      expect.any(String),
+      expect.arrayContaining([
+        expect.objectContaining({
+          role: 'user',
+          content: [expect.objectContaining({
+            tool_use_id: 'toolu_exp_01',
+            content: expect.stringContaining('ACTION_CONFIRMATION_REQUIRED'),
+          })],
+        }),
+      ]),
+      expect.objectContaining({ userId: undefined, tenantId: undefined }),
+    );
+    expect(response.text).toBe('This action needs confirmation in the app before I change anything.');
     expect(response.text).not.toContain('"success"');
     expect(response.domain).toBe('finance');
   });
@@ -1083,7 +1092,7 @@ describe('Scenario: Tool execution loop returns human text, never raw JSON', () 
       toolCalls: [{
         type: 'tool_use' as const,
         id: 'toolu_tasks_01',
-        name: 'list_todos',
+        name: 'ms_todo_get_tasks',
         input: { domain: 'secretary' },
       }],
       stopReason: 'tool_use',
@@ -1127,7 +1136,7 @@ describe('Scenario: Tool execution loop returns human text, never raw JSON', () 
       toolCalls: [{
         type: 'tool_use' as const,
         id: 'toolu_r1',
-        name: 'get_events',
+        name: 'get_calendar_events',
         input: { start: '2026-04-01', end: '2026-04-01' },
       }],
       stopReason: 'tool_use',
@@ -1137,21 +1146,21 @@ describe('Scenario: Tool execution loop returns human text, never raw JSON', () 
       .mockResolvedValueOnce({ success: true, events: [{ title: 'Meeting', start: '14:00' }] })
       .mockResolvedValueOnce({ success: true, id: 7 });
 
-    // Round 2: create reminder based on calendar
+    // Round 2: read notes based on calendar
     mockContinueWithToolResults
       .mockResolvedValueOnce({
         text: '',
         toolCalls: [{
           type: 'tool_use' as const,
           id: 'toolu_r2',
-          name: 'create_reminder',
-          input: { title: 'Prepare for meeting', time: '13:30' },
+          name: 'search_notes',
+          input: { query: 'Prepare for meeting' },
         }],
         stopReason: 'tool_use',
       })
       // Round 3: final human response
       .mockResolvedValueOnce({
-        text: '📅 You have a meeting at 2 PM. I\'ve set a reminder at 1:30 PM to prepare.',
+        text: '📅 You have a meeting at 2 PM. I found prep notes for it.',
         toolCalls: [],
         stopReason: 'end_turn',
       });
@@ -1160,7 +1169,7 @@ describe('Scenario: Tool execution loop returns human text, never raw JSON', () 
 
     // Final response is natural language
     expect(response.text).toContain('meeting at 2 PM');
-    expect(response.text).toContain('reminder at 1:30 PM');
+    expect(response.text).toContain('prep notes');
     expect(response.text).not.toContain('"success"');
     expect(response.text).not.toContain('"events"');
     expect(response.text).not.toContain('toolu_');
@@ -1176,7 +1185,7 @@ describe('Scenario: Tool execution loop returns human text, never raw JSON', () 
       toolCalls: [{
         type: 'tool_use' as const,
         id: 'toolu_store_01',
-        name: 'list_todos',
+        name: 'ms_todo_get_tasks',
         input: {},
       }],
       stopReason: 'tool_use',

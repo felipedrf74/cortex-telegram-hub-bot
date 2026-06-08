@@ -60,6 +60,9 @@ export function replayDuplicateClaimedActionRun(claim: ClaimedActionRun | null, 
   if (row.status === 'failed' || row.status === 'blocked') {
     return { step, status: row.status, result, error: `idempotent_retry_existing_${row.status}` };
   }
+  if (row.status === 'cancelled') {
+    return { step, status: 'blocked', result, error: 'idempotent_retry_existing_cancelled' };
+  }
   if (row.status === 'executing' || row.status === 'verifying' || row.status === 'planned') {
     return {
       step,
@@ -69,6 +72,17 @@ export function replayDuplicateClaimedActionRun(claim: ClaimedActionRun | null, 
         currentStatus: row.status,
       },
       error: 'idempotent_retry_already_in_progress',
+    };
+  }
+  if (row.status === 'needs_confirmation') {
+    return {
+      step,
+      status: 'verified_pending',
+      result: {
+        ...result,
+        currentStatus: row.status,
+      },
+      error: 'idempotent_retry_confirmation_not_claimed',
     };
   }
   return null;

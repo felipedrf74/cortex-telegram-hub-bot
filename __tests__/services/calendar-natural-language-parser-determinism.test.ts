@@ -104,13 +104,15 @@ describe('calendar natural-language parser date/time determinism', () => {
     expect(parsed?.endDateTime).toBe(entry.expectedEnd);
   });
 
-  it('keeps secretary fastpath calendar creation delegated to the canonical parser', () => {
+  it('keeps secretary fastpath calendar creation routed to the planner', () => {
     const source = fs.readFileSync(
       path.resolve(__dirname, '../../src/services/secretary-fastpath.ts'),
       'utf8',
     );
 
-    expect(source).toContain("parseNaturalLanguageCalendarEvent(text, { timezone })");
+    expect(source).toMatch(/id:\s*'create_calendar_event'[\s\S]*?mutating:\s*true/);
+    expect(source).not.toMatch(/parseNaturalLanguageCalendarEvent/);
+    expect(source).not.toMatch(/\bcreateEvent\s*\(/);
     expect(source).not.toMatch(/\bfunction\s+resolveCalendarCreateDate\b/);
     expect(source).not.toMatch(/\bfunction\s+parseCalendarTimeRange\b/);
   });

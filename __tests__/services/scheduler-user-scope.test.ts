@@ -2,6 +2,8 @@
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { DateTime } from 'luxon';
+import fs from 'fs';
+import path from 'path';
 
 const fixedNow = DateTime.fromISO('2026-04-17T08:00:00', { zone: 'Europe/Lisbon' });
 
@@ -225,6 +227,7 @@ import {
 import { setLastCoachState } from '../../src/domains/domain-handler';
 import { setLastActiveDomain } from '../../src/api/routes/chat-message-context';
 import { addToConversation } from '../../src/state/conversation';
+import { getDueReminders, markReminderFired } from '../../src/state/reminders';
 
 describe('scheduler tenant scoping', () => {
   beforeEach(() => {
@@ -292,6 +295,111 @@ describe('scheduler tenant scoping', () => {
     expect(decisionMetricsRollupDateForScheduler(winterMidnight, 'Europe/Lisbon')).toBe('2026-01-02');
   });
 
+  it('source-pins reminder cron as per-reminder fault isolated and tenant deduped', () => {
+    const source = fs.readFileSync(path.resolve(__dirname, '../../src/services/scheduler.ts'), 'utf8');
+    const loopIndex = source.indexOf('for (const reminder of dueReminders)');
+    const orchestrationFailureIndex = source.indexOf('Reminder notification orchestration failed');
+    const deliveredCheckIndex = source.indexOf('if (delivered)', loopIndex);
+    const markFiredIndex = source.indexOf('markReminderFired(reminder.id)', loopIndex);
+
+    expect(loopIndex).toBeGreaterThan(-1);
+    expect(orchestrationFailureIndex).toBeGreaterThan(loopIndex);
+    expect(deliveredCheckIndex).toBeGreaterThan(orchestrationFailureIndex);
+    expect(markFiredIndex).toBeGreaterThan(deliveredCheckIndex);
+    expect(source).toContain('Reminder delivery failed on all channels; not marking fired');
+    expect(source).toContain('dedupeKey: `secretary:reminder:${targetTenantId}:${targetUserId}:${reminder.id}:${reminderOccurrence}`');
+    expect(source).toContain('tenantId: targetTenantId');
+  });
+
+  it('continues processing later reminders when one reminder delivery fails', async () => {
+    vi.mocked(getDueReminders).mockReturnValue([
+      { id: 2, user_id: 42, tenant_id: 42, message: 'First reminder fails', remind_at: '2026-04-17T08:00:00.000Z', recurring: null },
+      { id: 3, user_id: 42, tenant_id: 42, message: 'Second reminder succeeds', remind_at: '2026-04-17T08:01:00.000Z', recurring: null },
+    ] as any);
+    mockCreateNotificationIntent
+      .mockRejectedValueOnce(new Error('push unavailable'))
+      .mockResolvedValueOnce({ decision: 'in_app_only' });
+
+    startScheduler();
+    const reminderJob = mockCronSchedule.mock.calls.find((call) => call[0] === '* * * * *' && String(call[1]).includes('getDueReminders'))?.[1] as (() => Promise<unknown>) | undefined;
+    expect(reminderJob).toBeTypeOf('function');
+
+    await reminderJob!();
+
+    expect(mockCreateNotificationIntent).toHaveBeenCalledTimes(2);
+    expect(markReminderFired).toHaveBeenCalledTimes(1);
+    expect(markReminderFired).toHaveBeenCalledWith(3);
+  });
+
+  it('does not mark one-shot reminders fired when all delivery channels fail', async () => {
+    vi.mocked(getDueReminders).mockReturnValue([
+      { id: 4, user_id: 42, tenant_id: 42, message: 'Do not lose me', remind_at: '2026-04-17T08:00:00.000Z', recurring: null },
+    ] as any);
+    mockCreateNotificationIntent.mockRejectedValueOnce(new Error('notification store down'));
+
+    startScheduler();
+    const reminderJob = mockCronSchedule.mock.calls.find((call) => call[0] === '* * * * *' && String(call[1]).includes('getDueReminders'))?.[1] as (() => Promise<unknown>) | undefined;
+    expect(reminderJob).toBeTypeOf('function');
+
+    await reminderJob!();
+
+    expect(markReminderFired).not.toHaveBeenCalled();
+  });
+
+  it('marks one-shot reminders fired when Telegram delivery succeeds even if notification orchestration fails', async () => {
+    const previousTelegramLegacyDelivery = process.env.TELEGRAM_LEGACY_DELIVERY;
+    process.env.TELEGRAM_LEGACY_DELIVERY = 'true';
+    try {
+      vi.mocked(getDueReminders).mockReturnValue([
+        { id: 6, user_id: 42, tenant_id: 42, message: 'Telegram still works', remind_at: '2026-04-17T08:00:00.000Z', recurring: null },
+      ] as any);
+      mockCreateNotificationIntent.mockRejectedValueOnce(new Error('notification store down'));
+      const sendMessage = vi.fn(async () => undefined);
+
+      startScheduler({ api: { sendMessage } });
+      const reminderJob = mockCronSchedule.mock.calls.find((call) => call[0] === '* * * * *' && String(call[1]).includes('getDueReminders'))?.[1] as (() => Promise<unknown>) | undefined;
+      expect(reminderJob).toBeTypeOf('function');
+
+      await reminderJob!();
+
+      expect(sendMessage).toHaveBeenCalledWith(42, '⏰ <b>Reminder:</b> Telegram still works', { parse_mode: 'HTML' });
+      expect(mockCreateNotificationIntent).toHaveBeenCalledTimes(1);
+      expect(markReminderFired).toHaveBeenCalledTimes(1);
+      expect(markReminderFired).toHaveBeenCalledWith(6);
+    } finally {
+      if (previousTelegramLegacyDelivery === undefined) {
+        delete process.env.TELEGRAM_LEGACY_DELIVERY;
+      } else {
+        process.env.TELEGRAM_LEGACY_DELIVERY = previousTelegramLegacyDelivery;
+      }
+    }
+  });
+
+  it('uses per-occurrence dedupe keys for recurring reminder notifications', async () => {
+    vi.mocked(getDueReminders)
+      .mockReturnValueOnce([
+        { id: 5, user_id: 42, tenant_id: 42, message: 'Repeat me', remind_at: '2026-04-17T08:00:00.000Z', recurring: 'daily' },
+      ] as any)
+      .mockReturnValueOnce([
+        { id: 5, user_id: 42, tenant_id: 42, message: 'Repeat me', remind_at: '2026-04-18T08:00:00.000Z', recurring: 'daily' },
+      ] as any);
+    mockCreateNotificationIntent.mockResolvedValue({ decision: 'in_app_only' });
+
+    startScheduler();
+    const reminderJob = mockCronSchedule.mock.calls.find((call) => call[0] === '* * * * *' && String(call[1]).includes('getDueReminders'))?.[1] as (() => Promise<unknown>) | undefined;
+    expect(reminderJob).toBeTypeOf('function');
+
+    await reminderJob!();
+    await reminderJob!();
+
+    const dedupeKeys = mockCreateNotificationIntent.mock.calls.map((call) => call[0]?.dedupeKey);
+    expect(dedupeKeys).toEqual([
+      'secretary:reminder:42:42:5:1776412800000',
+      'secretary:reminder:42:42:5:1776499200000',
+    ]);
+    expect(new Set(dedupeKeys).size).toBe(2);
+  });
+
   it('getActiveUserIds returns canonical tenant ids from the users table', () => {
     expect(getActiveUserIds()).toEqual([11, 22]);
   });
@@ -335,7 +443,7 @@ describe('scheduler tenant scoping', () => {
     );
     expect(mockHasConnectedCalendarForUser).toHaveBeenCalledWith(42);
     expect(mockGetEvents).toHaveBeenCalledWith(expect.any(String), expect.any(String), 42);
-    expect(mockGetRemindersForToday).toHaveBeenCalledWith(42);
+    expect(mockGetRemindersForToday).toHaveBeenCalledWith(42, 42, 'Europe/Lisbon');
     expect(mockIsOutlookMailConfiguredForUser).toHaveBeenCalledWith(42);
     expect(mockGetUnreadCountForUser).toHaveBeenCalledWith(42);
     expect(vi.mocked(globalTodo.getAllPendingTasks)).not.toHaveBeenCalled();

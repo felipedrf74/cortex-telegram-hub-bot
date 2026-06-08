@@ -16,6 +16,7 @@ import {
   type SecretarySchedulingDecision,
   type SecretarySchedulingIntent,
 } from '../../services/secretary-scheduling-arbitrator';
+import { loadLiveCalendarBusyWindowsForSecretaryIntent } from '../../services/secretary-live-calendar-busy';
 import {
   appendTrainingIdentityMarker,
   buildTrainingSessionIdentityKey,
@@ -399,15 +400,23 @@ async function persistGeneratedTrainingPlanLocked(
       return 'already_owned';
     }
     try {
+      const secretaryIntent = buildTrainingSecretaryIntent({
+        userId: input.userId,
+        tenantId,
+        planId: plan.id,
+        planVersion: planVersionForOwnership,
+        eventPayload,
+      });
+      const liveBusyWindows = await loadLiveCalendarBusyWindowsForSecretaryIntent(secretaryIntent);
+      if (liveBusyWindows.degraded) {
+        throw new Error('TRAINING_SECRETARY_LIVE_BUSY_WINDOWS_DEGRADED');
+      }
       const secretaryDecision = submitSecretarySchedulingIntent(
-        buildTrainingSecretaryIntent({
-          userId: input.userId,
-          tenantId,
-          planId: plan.id,
-          planVersion: planVersionForOwnership,
-          eventPayload,
-        }),
-        { now: input.now.toISOString() },
+        secretaryIntent,
+        {
+          now: input.now.toISOString(),
+          additionalBusyWindows: liveBusyWindows.windows,
+        },
       );
       const selectedWindow = selectedTrainingSecretaryWindow(secretaryDecision, { notBefore: input.now });
       if (!selectedWindow) {

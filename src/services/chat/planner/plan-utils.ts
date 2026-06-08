@@ -8,6 +8,7 @@ import {
 import type { ChatActionRiskClass } from '../../chat-action-state';
 import type {
   ChatActionPlan,
+  ChatPlannerInput,
   ChatPlanStep,
 } from '../types';
 
@@ -42,6 +43,14 @@ export function stepRequiresConfirmation(
     || definition?.confirmationPolicy === 'strong_confirm';
 }
 
+export function shouldRequireSafeWriteConfirmation(
+  input: Pick<ChatPlannerInput, 'channel' | 'requireSafeWriteConfirmation'>,
+): boolean {
+  if (input.requireSafeWriteConfirmation === false) return false;
+  if (input.requireSafeWriteConfirmation === true) return true;
+  return input.channel === 'ios' || input.channel === 'api' || input.channel === 'portal';
+}
+
 export function intentClassForPlan(plan: ChatActionPlan): string {
   const action = plan.steps[0]?.action;
   switch (action) {
@@ -63,6 +72,8 @@ export function intentClassForPlan(plan: ChatActionPlan): string {
       return 'event_move';
     case 'delete_event':
       return 'event_delete';
+    case 'set_reminder':
+      return 'reminder_create';
     case 'finance_payment_action':
       return 'financial_transfer';
     case 'finance_create_reminder':

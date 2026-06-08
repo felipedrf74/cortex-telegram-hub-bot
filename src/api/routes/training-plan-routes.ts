@@ -493,6 +493,10 @@ export function registerTrainingPlanRoutes(
         sendError(res, 'NOT_FOUND', result.data.message, 404, result.data);
         return;
       }
+      if (result.status === 'calendar_degraded') {
+        sendError(res, 'TRAINING_CALENDAR_AVAILABILITY_UNAVAILABLE', result.data.message, 503, result.data);
+        return;
+      }
       if (result.status === 'no_calendar' || result.status === 'blocked') {
         sendError(res, result.status === 'no_calendar' ? 'NO_CALENDAR' : 'NO_REFLOW_SLOT', result.data.message, 409, result.data);
         return;
@@ -544,6 +548,10 @@ export function registerTrainingPlanRoutes(
       });
       if (result.status === 'not_found') {
         sendError(res, 'NOT_FOUND', result.data.message, 404, result.data);
+        return;
+      }
+      if (result.status === 'calendar_degraded') {
+        sendError(res, 'TRAINING_CALENDAR_AVAILABILITY_UNAVAILABLE', result.data.message, 503, result.data);
         return;
       }
       if (result.status === 'no_calendar' || result.status === 'blocked') {

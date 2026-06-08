@@ -50,6 +50,7 @@ import { AITimeoutError } from '../utils/timeout';
 import type { CoachRecommendation } from '../services/garmin-coach';
 import { LRUMap } from '../utils/lru-map';
 import { deleteCoachState, loadCoachState, saveCoachState } from '../state/coach-state';
+import { getChatToolRisk } from '../services/chat-tool-authorization';
 
 // ─── Phase 3 Slice A — Chat-triggered onboarding ────────────────────
 //
@@ -204,6 +205,23 @@ function executeScopedToolCall(
     return executeToolCall(name, input, userId, tenantId);
   }
   return executeToolCall(name, input, userId);
+}
+
+function isLegacyDomainWriteTool(name: string): boolean {
+  return getChatToolRisk(name) !== 'read';
+}
+
+function buildLegacyDomainWriteBlockedToolResult(name: string): Record<string, unknown> {
+  return {
+    success: false,
+    code: 'ACTION_CONFIRMATION_REQUIRED',
+    confirmation_required: true,
+    error: `${name} is a write action and must run through the chat action planner confirmation flow.`,
+  };
+}
+
+function buildLegacyDomainWriteBlockedReply(): string {
+  return 'This action needs confirmation in the app before I change anything.';
 }
 
 /**
@@ -519,6 +537,7 @@ export async function handleSimpleDomain(
     // Provider-agnostic tool conversation (no Anthropic-specific types)
     const toolConversation: AIToolResultMessage[] = [];
     const toolsUsed: string[] = [];
+    let legacyWriteBlocked = false;
     let iterations = 0;
 
     while (result.toolCalls.length > 0 && iterations < maxIterations) {
@@ -535,6 +554,17 @@ export async function handleSimpleDomain(
       // Execute tool calls in parallel
       const toolResults = await Promise.all(
         result.toolCalls.map(async (tc) => {
+          if (isLegacyDomainWriteTool(tc.name)) {
+            legacyWriteBlocked = true;
+            logger.warn(
+              { domain, userId, tenantId, tool: tc.name },
+              'Blocked legacy domain chat write tool; action planner confirmation is required',
+            );
+            const blockedResult = buildLegacyDomainWriteBlockedToolResult(tc.name);
+            let content = JSON.stringify(blockedResult);
+            if (content.length > 2000) content = content.slice(0, 2000) + '...(truncated)';
+            return { type: 'tool_result' as const, tool_use_id: tc.id, content };
+          }
           const toolResult = await executeScopedToolCall(tc.name, tc.input as Record<string, any>, userId, tenantId);
           let content = JSON.stringify(toolResult);
           if (content.length > 2000) content = content.slice(0, 2000) + '...(truncated)';
@@ -556,6 +586,10 @@ export async function handleSimpleDomain(
       finalText = result.text;
     }
 
+    if (legacyWriteBlocked) {
+      finalText = buildLegacyDomainWriteBlockedReply();
+    }
+
     // Codex QA round 5: if the loop exits at maxIterations with the
     // model STILL requesting tools, we used to silently return
     // finalText (often empty or stale). That hides a cap-exceeded
@@ -569,6 +603,10 @@ export async function handleSimpleDomain(
       finalText = (finalText && finalText.trim().length > 10)
         ? `${finalText}\n\n_Nexus reached the per-turn tool cap (${maxIterations}). Some steps are still pending — ask me to continue and I'll keep going._`
         : `Nexus ran out of tool-call iterations for this turn (${maxIterations}). I started the work but didn't finish — ask me to continue from where I left off.`;
+    }
+
+    if (legacyWriteBlocked) {
+      finalText = buildLegacyDomainWriteBlockedReply();
     }
 
     finalText = normalizeReplyForUserLanguage(finalText, userId);
@@ -611,6 +649,7 @@ async function handleWithDirectCalls(
 
   const toolConversation: any[] = [];
   const toolsUsed: string[] = [];
+  let legacyWriteBlocked = false;
   let iterations = 0;
 
   while (result.toolCalls.length > 0 && iterations < maxIterations) {
@@ -623,6 +662,17 @@ async function handleWithDirectCalls(
     }
     const toolResults = await Promise.all(
       result.toolCalls.map(async (tc: any) => {
+        if (isLegacyDomainWriteTool(tc.name)) {
+          legacyWriteBlocked = true;
+          logger.warn(
+            { domain, userId, tenantId, tool: tc.name },
+            'Blocked legacy direct-call write tool; action planner confirmation is required',
+          );
+          const blockedResult = buildLegacyDomainWriteBlockedToolResult(tc.name);
+          let content = JSON.stringify(blockedResult);
+          if (content.length > 2000) content = content.slice(0, 2000) + '...(truncated)';
+          return { type: 'tool_result' as const, tool_use_id: tc.id, content };
+        }
         const toolResult = await executeScopedToolCall(tc.name, tc.input as Record<string, any>, userId, tenantId);
         let content = JSON.stringify(toolResult);
         // Truncate large results (consistent with primary path)
@@ -638,6 +688,10 @@ async function handleWithDirectCalls(
     finalText = result.text;
   }
 
+  if (legacyWriteBlocked) {
+    finalText = buildLegacyDomainWriteBlockedReply();
+  }
+
   // Codex QA round 5/6: parity with the primary path — direct-calls
   // fallback must also surface a cap-reached notice when the loop
   // exits with the model still requesting tools.
@@ -649,6 +703,10 @@ async function handleWithDirectCalls(
     finalText = (finalText && finalText.trim().length > 10)
       ? `${finalText}\n\n_Nexus reached the per-turn tool cap (${maxIterations}). Some steps are still pending — ask me to continue and I'll keep going._`
       : `Nexus ran out of tool-call iterations for this turn (${maxIterations}). I started the work but didn't finish — ask me to continue from where I left off.`;
+  }
+
+  if (legacyWriteBlocked) {
+    finalText = buildLegacyDomainWriteBlockedReply();
   }
 
   finalText = normalizeReplyForUserLanguage(finalText, userId);

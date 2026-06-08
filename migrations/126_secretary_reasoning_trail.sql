@@ -1,10 +1,9 @@
 -- Migration 126: Secretary reasoning trail support + source-skill feedback consumers
 --
--- The reasoning trail column itself is still added idempotently by the
--- Secretary arbitrator because legacy/local test databases may be initialized
--- from migration 083 only. This migration adds the durable Training feedback
--- sink consumed by the W-B SecretaryFeedbackBus Training consumer and the
--- shared Wave 2 sink for Cooking / Finance / Content feedback.
+-- Migration 204 adds the reasoning trail column. This migration adds the
+-- durable Training feedback sink consumed by the W-B SecretaryFeedbackBus
+-- Training consumer and the shared Wave 2 sink for Cooking / Finance /
+-- Content feedback.
 
 CREATE TABLE IF NOT EXISTS training_feedback_decisions (
   id INTEGER PRIMARY KEY AUTOINCREMENT,

@@ -63,9 +63,10 @@ describe('intent-detectors module presence', () => {
 });
 
 // Phase 14 batch 76 follow-up (2026-05-16): secretary-fastpath parser
-// consolidation. The fastpath should delegate calendar-create parsing to
-// `calendar-natural-language-parser.ts` instead of keeping drift-prone local
-// date/weekday/time helpers.
+// consolidation. Calendar-create phrases must not keep drift-prone local
+// date/weekday/time helpers. Secretary remediation later moved chat/prose
+// writes out of fastpath entirely: matched write phrases are marked mutating
+// and fall through to the planner confirmation path.
 describe('secretary-fastpath internal-parser inventory (Phase 14 batch 76)', () => {
   it('does not keep duplicate calendar-create parser helpers in the fastpath', () => {
     const src = readSource('src/services/secretary-fastpath.ts');
@@ -73,9 +74,10 @@ describe('secretary-fastpath internal-parser inventory (Phase 14 batch 76)', () 
     expect(src).not.toMatch(/function\s+parseCalendarTimeRange/);
   });
 
-  it('delegates calendar-create parsing to the canonical calendar NLP module', () => {
+  it('routes calendar-create fastpath matches to the planner instead of parsing or writing locally', () => {
     const src = readSource('src/services/secretary-fastpath.ts');
-    expect(src).toMatch(/import\s+\{[^}]*parseNaturalLanguageCalendarEvent[^}]*\}\s+from\s+['"][^'"]*calendar-natural-language-parser['"]/);
-    expect(src).toMatch(/parseNaturalLanguageCalendarEvent\(text,\s*\{\s*timezone\s*\}\)/);
+    expect(src).toMatch(/id:\s*'create_calendar_event'[\s\S]*?mutating:\s*true/);
+    expect(src).not.toMatch(/parseNaturalLanguageCalendarEvent/);
+    expect(src).not.toMatch(/\bcreateEvent\s*\(/);
   });
 });

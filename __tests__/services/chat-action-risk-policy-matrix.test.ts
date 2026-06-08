@@ -72,7 +72,7 @@ describe('chat action production risk-policy matrix', () => {
   const rows = registry.map(matrixRow);
 
   it('builds one risk-policy row for every active action', () => {
-    expect(rows).toHaveLength(49);
+    expect(rows).toHaveLength(50);
     expect(new Set(rows.map((row) => row.action)).size).toBe(rows.length);
     for (const row of rows) {
       expect(row).toEqual({
@@ -157,7 +157,7 @@ describe('original R1-R10 safety/refusal matrix', () => {
 
   it('R4 preserves destructive words as a literal trusted task title', () => {
     const { plan, step } = firstStep('Create a task called delete all my tasks');
-    expect(plan?.requiresConfirmation).toBe(false);
+    expect(plan?.requiresConfirmation).toBe(true);
     expect(step).toMatchObject({
       skill: 'tasks',
       action: 'create_task',
@@ -165,6 +165,69 @@ describe('original R1-R10 safety/refusal matrix', () => {
       requiredArgsPresent: true,
       args: { title: 'delete all my tasks' },
     });
+    expect(planFor('Create a task called delete all my tasks', 'en-US')?.steps[0]).toMatchObject({
+      skill: 'tasks',
+      action: 'create_task',
+    });
+    const telegramPlan = buildDeterministicChatActionPlan({
+      ...baseInput,
+      channel: 'telegram',
+      text: 'Create a task called delete all my tasks',
+      messageId: 'risk-policy-telegram-task-create',
+    });
+    expect(telegramPlan?.requiresConfirmation).toBe(false);
+  });
+
+  it('requires safe-write confirmation for complete iOS task creation while Telegram stays immediate', () => {
+    const iosPlan = buildDeterministicChatActionPlan({
+      ...baseInput,
+      channel: 'ios',
+      text: 'Create a task called buy milk',
+      messageId: 'risk-policy-ios-task-create',
+    });
+
+    expect(iosPlan?.requiresConfirmation).toBe(true);
+    expect(iosPlan?.steps[0]).toMatchObject({
+      skill: 'tasks',
+      action: 'create_task',
+      risk: 'safe_write',
+      requiredArgsPresent: true,
+      args: { title: 'buy milk' },
+    });
+
+    const telegramPlan = buildDeterministicChatActionPlan({
+      ...baseInput,
+      channel: 'telegram',
+      text: 'Create a task called buy milk',
+      messageId: 'risk-policy-telegram-task-create-complete',
+    });
+
+    expect(telegramPlan?.requiresConfirmation).toBe(false);
+    expect(telegramPlan?.steps[0]).toMatchObject({
+      skill: 'tasks',
+      action: 'create_task',
+      risk: 'safe_write',
+      requiredArgsPresent: true,
+      args: { title: 'buy milk' },
+    });
+  });
+
+  it('does not route narrative alerta/avisa phrases to reminder writes', () => {
+    const alerta = buildDeterministicChatActionPlan({
+      ...baseInput,
+      locale: 'es-ES',
+      text: 'el alerta es a las 3pm',
+      messageId: 'risk-policy-es-alerta-narrative',
+    });
+    const avisa = buildDeterministicChatActionPlan({
+      ...baseInput,
+      locale: 'es-ES',
+      text: 'avisa que llegó',
+      messageId: 'risk-policy-es-avisa-narrative',
+    });
+
+    expect(alerta?.steps[0]?.action).not.toBe('set_reminder');
+    expect(avisa?.steps[0]?.action).not.toBe('set_reminder');
   });
 
   it('R5/R6/R10 ignore past-tense statements instead of creating new actions', () => {
@@ -260,7 +323,14 @@ describe('high-risk action confirmation behavior', () => {
       risk: 'safe_write',
       requiredArgsPresent: false,
     });
-    expect(task.plan?.requiresConfirmation).toBe(false);
+    expect(task.plan?.requiresConfirmation).toBe(true);
+    const telegramTask = buildDeterministicChatActionPlan({
+      ...baseInput,
+      channel: 'telegram',
+      text: 'Create a task',
+      messageId: 'risk-policy-telegram-incomplete-task',
+    });
+    expect(telegramTask?.requiresConfirmation).toBe(false);
 
     const notification = firstStep('Create a notification');
     expect(notification.step).toMatchObject({
@@ -325,6 +395,6 @@ describe('high-risk action confirmation behavior', () => {
 
     const followUp = firstStep('Follow up on decision dec_123');
     expect(followUp.step).toMatchObject({ skill: 'decision_center', action: 'decision_follow_up', requiredArgsPresent: true });
-    expect(followUp.plan?.requiresConfirmation).toBe(false);
+    expect(followUp.plan?.requiresConfirmation).toBe(true);
   });
 });

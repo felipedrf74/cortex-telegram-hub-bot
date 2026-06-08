@@ -60,7 +60,7 @@ export function _resetSecretarySourceSkillFeedbackConsumersForTests(): void {
 
 export function recordSecretarySourceSkillFeedback(feedback: SecretarySourceSkillFeedback): void {
   if (!isConsumerSourceSkill(feedback.sourceSkill)) return;
-  ensureSecretarySourceSkillFeedbackTable();
+  assertSecretarySourceSkillFeedbackSchemaReady();
   const now = new Date().toISOString();
   const hints = hintsForSourceFeedback(feedback);
   getDb().prepare(`
@@ -104,7 +104,7 @@ export function listSecretarySourceSkillFeedback(scope: {
   tenantId: string | number;
   sourceSkill?: SecretaryConsumerSourceSkill;
 }): SecretarySourceSkillFeedbackRecord[] {
-  ensureSecretarySourceSkillFeedbackTable();
+  assertSecretarySourceSkillFeedbackSchemaReady();
   const params: unknown[] = [scope.userId, String(scope.tenantId)];
   const sourceFilter = scope.sourceSkill ? ' AND target_skill = ?' : '';
   if (scope.sourceSkill) params.push(scope.sourceSkill);
@@ -117,30 +117,32 @@ export function listSecretarySourceSkillFeedback(scope: {
   return rows.map(rowToFeedbackRecord);
 }
 
-function ensureSecretarySourceSkillFeedbackTable(): void {
-  getDb().exec(`
-    CREATE TABLE IF NOT EXISTS secretary_source_skill_feedback (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      user_id INTEGER NOT NULL,
-      tenant_id TEXT NOT NULL,
-      target_skill TEXT NOT NULL,
-      agenda_item_id TEXT NOT NULL,
-      source_intent_id TEXT NOT NULL,
-      feedback_type TEXT NOT NULL,
-      status TEXT NOT NULL,
-      reason_codes_json TEXT NOT NULL DEFAULT '[]',
-      scheduled_start TEXT,
-      scheduled_end TEXT,
-      should_refresh_source INTEGER NOT NULL DEFAULT 0,
-      downstream_implications_json TEXT NOT NULL DEFAULT '[]',
-      hints_json TEXT NOT NULL DEFAULT '[]',
-      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-      UNIQUE(user_id, tenant_id, target_skill, agenda_item_id, source_intent_id)
-    );
-    CREATE INDEX IF NOT EXISTS idx_secretary_source_skill_feedback_scope
-      ON secretary_source_skill_feedback(user_id, tenant_id, target_skill, created_at);
-  `);
+function assertSecretarySourceSkillFeedbackSchemaReady(): void {
+  const db = getDb();
+  const table = db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'secretary_source_skill_feedback'").get();
+  if (!table) {
+    throw new Error('SECRETARY_SOURCE_SKILL_FEEDBACK_SCHEMA_MISSING:secretary_source_skill_feedback');
+  }
+  const columns = db.prepare('PRAGMA table_info(secretary_source_skill_feedback)').all() as Array<{ name: string }>;
+  const names = new Set(columns.map((column) => column.name));
+  const missing = [
+    'user_id',
+    'tenant_id',
+    'target_skill',
+    'agenda_item_id',
+    'source_intent_id',
+    'feedback_type',
+    'status',
+    'reason_codes_json',
+    'scheduled_start',
+    'scheduled_end',
+    'should_refresh_source',
+    'downstream_implications_json',
+    'hints_json',
+  ].filter((column) => !names.has(column));
+  if (missing.length > 0) {
+    throw new Error(`SECRETARY_SOURCE_SKILL_FEEDBACK_SCHEMA_MISSING:${missing.join(',')}`);
+  }
 }
 
 function feedbackTypeForSourceFeedback(feedback: SecretarySourceSkillFeedback): string {

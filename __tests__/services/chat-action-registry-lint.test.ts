@@ -97,6 +97,7 @@ describe('chat-action-registry lint', () => {
         'stripe',
         'connections',
         'notifications',
+        'secretary',
         'decisionCenter',
         'daily_brief_orchestrator',
       ]);

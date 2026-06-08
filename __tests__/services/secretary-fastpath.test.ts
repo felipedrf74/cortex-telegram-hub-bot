@@ -229,7 +229,6 @@ describe('secretary-fastpath / pattern matching', () => {
   });
 
   it.each([
-    ['Colocar no calendario evento no proximo sabado, 16/5, das 9h as 13h. Volei Lucas, convide o felipedrf@hotmail.com', 'create_calendar_event'],
     ["what's my day?", 'day_overview'],
     ['what is my day', 'day_overview'],
     ['o que tenho hoje', 'day_overview'],
@@ -241,6 +240,16 @@ describe('secretary-fastpath / pattern matching', () => {
     const result = await tryFastpath(UID, input);
     expect(result.matched).toBe(true);
     expect(result.patternId).toBe(expectedPattern);
+  });
+
+  it('routes calendar write phrases to the planner instead of fastpath provider writes', async () => {
+    const result = await tryFastpath(
+      UID,
+      'Colocar no calendario evento no proximo sabado, 16/5, das 9h as 13h. Volei Lucas, convide o felipedrf@hotmail.com',
+    );
+    expect(result.matched).toBe(false);
+    expect(result.missReason).toBe('write_action_routed_to_planner:calendar');
+    expect(calendar.createEvent).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -320,22 +329,24 @@ describe('secretary-fastpath / pattern matching', () => {
     ['lembra às 15:30 ligar dentista', 'set_reminder'],
     ['avisa 9:00 reunião com Pedro', 'set_reminder'],
     ['reminder at 8:00 take vitamins', 'set_reminder'],
-  ])('matches "%s" → %s', async (input, expectedPattern) => {
+  ])('routes "%s" → planner instead of %s fastpath', async (input, expectedPattern) => {
     const result = await tryFastpath(UID, input);
-    expect(result.matched).toBe(true);
-    expect(result.patternId).toBe(expectedPattern);
+    expect(result.matched).toBe(false);
+    expect(result.missReason).toBe(`write_action_routed_to_planner:${expectedPattern === 'set_reminder' ? 'reminders' : expectedPattern}`);
+    expect(reminders.setReminder).not.toHaveBeenCalled();
   });
 
   it.each([
     ['add task: buy milk', 'quick_add_task'],
     ['nova tarefa: comprar leite', 'quick_add_task'],
     ['adicionar tarefa: revisar PR', 'quick_add_task'],
-  ])('matches "%s" → %s', async (input, expectedPattern) => {
+  ])('routes "%s" → planner instead of %s fastpath', async (input, expectedPattern) => {
     mockTaskGetDefaultList.mockResolvedValue({ id: 'L1', displayName: 'Tasks' } as any);
     mockTaskCreateTask.mockResolvedValue({ success: true, data: { id: 'T1', title: 'x' } } as any);
     const result = await tryFastpath(UID, input);
-    expect(result.matched).toBe(true);
-    expect(result.patternId).toBe(expectedPattern);
+    expect(result.matched).toBe(false);
+    expect(result.missReason).toBe(`write_action_routed_to_planner:${expectedPattern === 'quick_add_task' ? 'tasks' : expectedPattern}`);
+    expect(mockTaskCreateTask).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -439,7 +450,7 @@ describe('secretary-fastpath / day_overview handler', () => {
 // ════════════════════════════════════════════════════════════════════
 
 describe('secretary-fastpath / create_calendar_event handler', () => {
-  it('requires confirmation for a Portuguese calendar event with an attendee invite', async () => {
+  it('routes a Portuguese calendar event with an attendee invite to the planner', async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-05-13T12:00:00.000Z'));
     try {
@@ -457,19 +468,16 @@ describe('secretary-fastpath / create_calendar_event handler', () => {
         'pt-PT',
       );
 
-      expect(result.matched).toBe(true);
-      expect(result.patternId).toBe('create_calendar_event');
+      expect(result.matched).toBe(false);
+      expect(result.missReason).toBe('write_action_routed_to_planner:calendar');
       expect(calendar.createEvent).not.toHaveBeenCalled();
       expect(cacheCoherence.invalidateCalendarCaches).not.toHaveBeenCalled();
-      expect(result.response?.text).toContain('confirmação');
-      expect(result.response?.text).toContain('Volei Lucas');
-      expect(result.response?.text).toContain('felipedrf@hotmail.com');
     } finally {
       vi.useRealTimers();
     }
   });
 
-  it('returns an honest calendar-unavailable message instead of falling through to a timeout', async () => {
+  it('routes calendar unavailable write phrases to the planner without provider writes', async () => {
     vi.mocked(calendar.hasWritableCalendarForUser).mockReturnValueOnce(false);
 
     const result = await tryFastpath(
@@ -478,13 +486,12 @@ describe('secretary-fastpath / create_calendar_event handler', () => {
       'pt-PT',
     );
 
-    expect(result.matched).toBe(true);
-    expect(result.patternId).toBe('create_calendar_event');
+    expect(result.matched).toBe(false);
+    expect(result.missReason).toBe('write_action_routed_to_planner:calendar');
     expect(calendar.createEvent).not.toHaveBeenCalled();
-    expect(result.response?.text).toContain('calendário ligado');
   });
 
-  it('falls back to the connected default calendar when a colloquial Google request has no writable Google path', async () => {
+  it('does not fall back directly to a connected default calendar from fastpath', async () => {
     vi.mocked(calendar.createEvent).mockReset();
     vi.mocked(calendar.createEvent)
       .mockRejectedValueOnce(new Error('google not connected'))
@@ -509,20 +516,9 @@ describe('secretary-fastpath / create_calendar_event handler', () => {
       'pt-PT',
     );
 
-    expect(result.matched).toBe(true);
-    expect(calendar.createEvent).toHaveBeenNthCalledWith(
-      1,
-      expect.objectContaining({ title: 'Atividade Escola Sunny' }),
-      'google',
-      UID,
-    );
-    expect(calendar.createEvent).toHaveBeenNthCalledWith(
-      2,
-      expect.objectContaining({ title: 'Atividade Escola Sunny' }),
-      undefined,
-      UID,
-    );
-    expect(result.response?.text).toContain('Agendei no Outlook');
+    expect(result.matched).toBe(false);
+    expect(result.missReason).toBe('write_action_routed_to_planner:calendar');
+    expect(calendar.createEvent).not.toHaveBeenCalled();
   });
 });
 
@@ -637,39 +633,33 @@ describe('secretary-fastpath / daily_priority handler', () => {
 // ════════════════════════════════════════════════════════════════════
 
 describe('secretary-fastpath / set_reminder handler', () => {
-  it('parses "15:30" correctly and persists', async () => {
+  it('routes "15:30" reminders to the planner without persisting', async () => {
     const result = await tryFastpath(UID, 'remind me at 15:30 call dentist');
-    expect(result.matched).toBe(true);
-    expect(result.response!.text).toContain('⏰');
-    expect(result.response!.text).toContain('15:30');
-    expect(result.response!.text).toContain('call dentist');
-    expect(reminders.setReminder).toHaveBeenCalledTimes(1);
-    const call = vi.mocked(reminders.setReminder).mock.calls[0];
-    expect(call[0]).toBe(UID);
-    expect(call[1].message).toBe('call dentist');
-    expect(call[1].remind_at).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/);
-  });
-
-  it('parses "3.30" as 3:30 (dot separator)', async () => {
-    const result = await tryFastpath(UID, 'lembra às 3.30 acordar');
-    expect(result.matched).toBe(true);
-    expect(result.response!.text).toContain('3:30');
-  });
-
-  it('rejects invalid time "25:00"', async () => {
-    const result = await tryFastpath(UID, 'remind me at 25:00 invalid');
-    expect(result.matched).toBe(true);
-    expect(result.response!.text).toContain('inválido');
+    expect(result.matched).toBe(false);
+    expect(result.missReason).toBe('write_action_routed_to_planner:reminders');
     expect(reminders.setReminder).not.toHaveBeenCalled();
   });
 
-  it('shows error when DB write fails', async () => {
+  it('routes "3.30" reminder writes to the planner', async () => {
+    const result = await tryFastpath(UID, 'lembra às 3.30 acordar');
+    expect(result.matched).toBe(false);
+    expect(result.missReason).toBe('write_action_routed_to_planner:reminders');
+  });
+
+  it('routes invalid-time reminder write phrases to the planner', async () => {
+    const result = await tryFastpath(UID, 'remind me at 25:00 invalid');
+    expect(result.matched).toBe(false);
+    expect(result.missReason).toBe('write_action_routed_to_planner:reminders');
+    expect(reminders.setReminder).not.toHaveBeenCalled();
+  });
+
+  it('does not touch reminders DB even when the write mock would fail', async () => {
     vi.mocked(reminders.setReminder).mockImplementation(() => {
       throw new Error('SQLITE_BUSY');
     });
     const result = await tryFastpath(UID, 'remind me at 10:00 test');
-    expect(result.matched).toBe(true);
-    expect(result.response!.text).toContain('Erro ao salvar lembrete');
+    expect(result.matched).toBe(false);
+    expect(result.missReason).toBe('write_action_routed_to_planner:reminders');
   });
 });
 
@@ -678,21 +668,21 @@ describe('secretary-fastpath / set_reminder handler', () => {
 // ════════════════════════════════════════════════════════════════════
 
 describe('secretary-fastpath / quick_add_task handler', () => {
-  it('creates task in default list', async () => {
+  it('routes task creation to the planner without creating a provider task', async () => {
     mockTaskGetDefaultList.mockResolvedValue({ id: 'L1', displayName: 'Tasks' } as any);
     mockTaskCreateTask.mockResolvedValue({ success: true, data: { id: 'T1', title: 'Buy milk' } } as any);
     const result = await tryFastpath(UID, 'add task: buy milk');
-    expect(result.matched).toBe(true);
-    expect(result.response!.text).toContain('Tarefa criada');
-    expect(result.response!.text).toContain('buy milk');
-    expect(mockTaskCreateTask).toHaveBeenCalledWith('L1', 'Tasks', { title: 'buy milk' });
+    expect(result.matched).toBe(false);
+    expect(result.missReason).toBe('write_action_routed_to_planner:tasks');
+    expect(mockTaskCreateTask).not.toHaveBeenCalled();
   });
 
-  it('errors gracefully when no default list', async () => {
+  it('does not inspect default task lists for quick task writes', async () => {
     mockTaskGetDefaultList.mockResolvedValue(null);
     const result = await tryFastpath(UID, 'add task: buy milk');
-    expect(result.matched).toBe(true);
-    expect(result.response!.text).toContain('Lista padrão');
+    expect(result.matched).toBe(false);
+    expect(result.missReason).toBe('write_action_routed_to_planner:tasks');
+    expect(mockTaskGetDefaultList).not.toHaveBeenCalled();
   });
 });
 
@@ -984,27 +974,26 @@ describe('secretary-fastpath / bilingual — EN', () => {
   });
 
   // ── set_reminder ──
-  it('set_reminder uses English "Reminder set for" prefix', async () => {
+  it('set_reminder routes English write phrases to the planner', async () => {
     const result = await tryFastpath(UID, 'remind me at 10:00 take vitamins');
-    expect(result.response!.text).toContain('Reminder set for');
-    expect(result.response!.text).toContain('10:00');
-    expect(result.response!.text).toContain('take vitamins');
-    expect(result.response!.text).not.toContain('Lembrete definido');
+    expect(result.matched).toBe(false);
+    expect(result.missReason).toBe('write_action_routed_to_planner:reminders');
   });
 
-  it('set_reminder invalid time message is English', async () => {
+  it('set_reminder invalid time still routes to the planner', async () => {
     const result = await tryFastpath(UID, 'remind me at 25:00 invalid');
-    expect(result.response!.text).toContain('Invalid time:');
-    expect(result.response!.text).not.toContain('Horário inválido');
+    expect(result.matched).toBe(false);
+    expect(result.missReason).toBe('write_action_routed_to_planner:reminders');
   });
 
   // ── quick_add_task ──
-  it('quick_add_task uses English "Task created" confirmation', async () => {
+  it('quick_add_task routes English writes to the planner', async () => {
     mockTaskGetDefaultList.mockResolvedValue({ id: 'L1', displayName: 'Tasks' } as any);
     mockTaskCreateTask.mockResolvedValue({ success: true, data: { id: 'T1', title: 'x' } } as any);
     const result = await tryFastpath(UID, 'add task: buy milk');
-    expect(result.response!.text).toContain('Task created');
-    expect(result.response!.text).not.toContain('Tarefa criada');
+    expect(result.matched).toBe(false);
+    expect(result.missReason).toBe('write_action_routed_to_planner:tasks');
+    expect(mockTaskCreateTask).not.toHaveBeenCalled();
   });
 });
 

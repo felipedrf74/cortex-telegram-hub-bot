@@ -17,7 +17,7 @@ type StepRunResult = StepResult & { status: ChatActionRunStatus; error?: string 
 
 export function domainForPlan(plan: ChatActionPlan): ChatActionRouteResponse['domain'] {
   const skill = plan.steps[0]?.skill;
-  if (skill === 'secretary_calendar' || skill === 'mail') return 'secretary';
+  if (skill === 'secretary_calendar' || skill === 'secretary_reminders' || skill === 'mail') return 'secretary';
   if (skill === 'tasks') return 'tasks';
   if (skill === 'training') return 'training';
   if (skill === 'content') return 'content';
@@ -103,6 +103,7 @@ export function actionButtonsForResults(results: Array<{ step: ChatPlanStep }>):
   const first = results[0]?.step;
   if (!first) return [];
   if (first.action === 'schedule_event') return ['open_provider_event', 'undo_created_event'];
+  if (first.action === 'set_reminder') return ['open_skill', 'undo'];
   if (first.action === 'create_task' || first.action === 'create_checklist' || first.action === 'create_task_with_subtasks' || first.action === 'add_subtasks_to_task') return ['open_skill', 'undo'];
   if (first.skill === 'content' || first.skill === 'cooking' || first.skill === 'finance' || first.skill === 'connections' || first.skill === 'training') return ['open_skill'];
   if (first.skill === 'notifications' || first.skill === 'decision_center') return ['open_skill'];
@@ -131,6 +132,7 @@ export function openSurfacePayloadForStep(
   }
   if (step.skill === 'content') return { surface: 'script_studio', prefill: step.args };
   if (step.skill === 'tasks') return { surface: 'task_detail', prefill: step.args };
+  if (step.skill === 'secretary_reminders') return { surface: 'reminder_detail', prefill: step.args };
   if (step.skill === 'secretary_calendar') return { surface: 'calendar_event', prefill: step.args };
   if (step.skill === 'finance') return { surface: 'finance_review', prefill: step.args };
   if (step.skill === 'cooking') return { surface: 'cooking_meal_plan', prefill: step.args };

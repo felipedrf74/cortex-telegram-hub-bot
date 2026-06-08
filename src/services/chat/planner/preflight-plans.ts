@@ -2,10 +2,11 @@
 
 import { foldCalendarText } from '../../calendar-natural-language-parser';
 import {
-  cancelPendingChatActions,
   makeSlotProvenance,
   resolveRecentChatEntity,
 } from '../../chat-action-state';
+import { cancelAllPendingChatWork } from '../../chat-pending-work';
+import { isPendingChatWorkCancellationTurn } from '../../chat-pending-cancellation';
 import { makeStep } from '../../skills/step-builder';
 import type {
   ChatActionPlan,
@@ -38,15 +39,19 @@ export function buildAmbiguousActionClarificationPlan(input: ChatPlannerInput): 
 }
 
 export function buildPendingCancellationPlan(input: ChatPlannerInput): ChatActionPlan | null {
-  const folded = foldCalendarText(input.text);
-  if (!/\b(cancel|cancelar|never mind|nevermind|esquece|deixa|forget it)\b/.test(folded)) return null;
-  const cancelled = cancelPendingChatActions({
+  if (!isPendingChatWorkCancellationTurn(input.text)) return null;
+  const cancelled = cancelAllPendingChatWork({
     userId: input.userId,
     tenantId: input.tenantId,
     conversationId: input.conversationId,
     nowIso: input.nowIso,
   });
-  if (cancelled <= 0) return null;
+  const totalCancelled = cancelled.chatPendingActions
+    + cancelled.chatActionRuns
+    + cancelled.chatCoreV2Commands
+    + (cancelled.chatPendingConfirmation ? 1 : 0)
+    + (cancelled.decisionDismissed ? 1 : 0);
+  if (totalCancelled <= 0) return null;
   return buildMessageOnlyPlan(input, input.locale?.startsWith('pt')
     ? 'Está cancelado. Não vou continuar essa ação pendente.'
     : 'Cancelled. I will not continue that pending action.', 'pending_action_cancelled');

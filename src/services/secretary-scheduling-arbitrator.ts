@@ -341,15 +341,12 @@ const SKILL_PRIORITY_WEIGHT: Record<SecretarySourceSkill, number> = {
   content: 6,
 };
 
-function ensureSecretaryAgendaDecisionExplanationColumn(db = getDb()): void {
+function assertSecretaryAgendaSchemaReady(db = getDb()): void {
   const columns = db.prepare('PRAGMA table_info(secretary_agenda_items)').all() as Array<{ name: string }>;
-  if (!columns.some((column) => column.name === 'decision_explanation')) {
-    db.exec('ALTER TABLE secretary_agenda_items ADD COLUMN decision_explanation TEXT');
-  }
-  // W-E: reasoning trail. Idempotent PRAGMA add. Persisted as JSON-encoded
-  // ReasoningTrailNode[]. NULL when row predates this column.
-  if (!columns.some((column) => column.name === 'reasoning_trail_json')) {
-    db.exec('ALTER TABLE secretary_agenda_items ADD COLUMN reasoning_trail_json TEXT');
+  const names = new Set(columns.map((column) => column.name));
+  const missing = ['decision_explanation', 'reasoning_trail_json'].filter((column) => !names.has(column));
+  if (missing.length > 0) {
+    throw new Error(`SECRETARY_AGENDA_SCHEMA_MISSING:${missing.join(',')}`);
   }
 }
 
@@ -358,7 +355,7 @@ export function submitSecretarySchedulingIntent(
   options: SecretarySchedulingOptions = {},
 ): SecretarySchedulingDecision {
   assertSecretaryTenantScope(intent);
-  ensureSecretaryAgendaDecisionExplanationColumn();
+  assertSecretaryAgendaSchemaReady();
   const decision = scheduleOne(intent, options, []);
   // W-B: emit feedback to registered consumers. Synchronous emit; bad
   // consumers are caught inside the bus so arbitration is never blocked.
@@ -385,7 +382,7 @@ export function previewSecretarySchedulingIntent(
   options: SecretarySchedulingOptions = {},
 ): SecretarySchedulingPreview {
   assertSecretaryTenantScope(intent);
-  ensureSecretaryAgendaDecisionExplanationColumn();
+  assertSecretaryAgendaSchemaReady();
   // Use the canonical scheduleOne machinery in read-only preview mode. The
   // decision is fully shaped (including feedback/trail), but no agenda row is
   // inserted, superseded, or canceled. Preview is a hint; submit remains the
@@ -429,7 +426,7 @@ export function arbitrateSecretarySchedulingIntents(
   options: SecretarySchedulingOptions = {},
 ): SecretarySchedulingBatchResult {
   for (const intent of intents) assertSecretaryTenantScope(intent);
-  ensureSecretaryAgendaDecisionExplanationColumn();
+  assertSecretaryAgendaSchemaReady();
   const ordered = [...intents].sort(compareIntentPriority);
   const acceptedBusyWindows: SecretaryTimeWindow[] = [];
   const decisions: SecretarySchedulingDecision[] = [];
@@ -460,7 +457,7 @@ export function listSecretaryAgendaItems(scope: {
   includeInactive?: boolean;
 }): SecretaryAgendaItem[] {
   const db = getDb();
-  ensureSecretaryAgendaDecisionExplanationColumn(db);
+  assertSecretaryAgendaSchemaReady(db);
   const tenantId = normalizeTenantId(scope.tenantId);
   const rows = scope.includeInactive
     ? db.prepare(`
@@ -482,7 +479,7 @@ export function getSecretaryAgendaItemById(scope: {
   ownerUserId: number;
   tenantId: string | number;
 }): SecretaryAgendaItem | null {
-  ensureSecretaryAgendaDecisionExplanationColumn();
+  assertSecretaryAgendaSchemaReady();
   const row = getDb().prepare(`
     SELECT *
     FROM secretary_agenda_items
@@ -501,7 +498,7 @@ export function cancelSecretaryAgendaItem(scope: {
   now?: string;
 }): SecretaryAgendaItem | null {
   const nowIso = normalizeNow(scope.now);
-  ensureSecretaryAgendaDecisionExplanationColumn();
+  assertSecretaryAgendaSchemaReady();
   getDb().prepare(`
     UPDATE secretary_agenda_items
     SET lifecycle_state = 'canceled',
@@ -518,7 +515,7 @@ export function cancelSecretaryAgendaItem(scope: {
     scope.ownerUserId,
     normalizeTenantId(scope.tenantId),
   );
-  cancelRemindersForAgendaItem(scope.ownerUserId, scope.agendaItemId);
+  cancelRemindersForAgendaItem(scope.ownerUserId, scope.agendaItemId, scope.tenantId);
   return getSecretaryAgendaItemById(scope);
 }
 
@@ -776,7 +773,7 @@ function persistDecision(input: {
             updated_at = ?
         WHERE agenda_item_id = ?
       `).run(agendaItemId, input.nowIso, latest.agendaItemId);
-      cancelRemindersForAgendaItem(input.intent.ownerUserId, latest.agendaItemId);
+      cancelRemindersForAgendaItem(input.intent.ownerUserId, latest.agendaItemId, input.intent.tenantId);
     }
 
     db.prepare(`
@@ -1026,7 +1023,7 @@ function findLatestAgendaItemForIntent(intent: SecretarySchedulingIntent): Secre
 
 function findAgendaItemById(agendaItemId: string): SecretaryAgendaItem | null {
   const db = getDb();
-  ensureSecretaryAgendaDecisionExplanationColumn(db);
+  assertSecretaryAgendaSchemaReady(db);
   const row = db.prepare('SELECT * FROM secretary_agenda_items WHERE agenda_item_id = ?').get(agendaItemId);
   return row ? rowToAgendaItem(row) : null;
 }
