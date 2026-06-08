@@ -104,7 +104,7 @@
     "@types/express": "^5.0.6",
     "@types/jsonwebtoken": "^9.0.10",
     "@types/luxon": "^3.7.1",
-    "@types/node": "^25.3.3",
+    "@types/node": "^25.9.2",
     "@types/ws": "^8.18.1",
     "@vitest/coverage-v8": "^4.1.8",
     "@vitest/ui": "^4.1.8",
