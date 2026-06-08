@@ -11,12 +11,33 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({
   dispatchLocalReasoning: vi.fn(),
+  evaluateCookingSafetyText: vi.fn(() => ({
+    blocked: false,
+    surface: 'chat_core_v2_recipe',
+    issues: [],
+  })),
+  hasCookingSafetyPreferences: vi.fn(() => false),
+  renderCookingSafetyBlockedResponse: vi.fn(() => 'I cannot suggest that option because it conflicts with a saved cooking safety preference.\nI can help with a safe alternative.'),
+  renderCookingSafetyPromptBlockForUser: vi.fn(() => '<cooking_safety_preferences>\nAllergies: peanuts\n</cooking_safety_preferences>'),
 }));
 
 vi.mock('../../src/services/provider-registry', () => ({
   ensureActiveProvider: vi.fn(() => ({
     dispatchLocalReasoning: mocks.dispatchLocalReasoning,
   })),
+}));
+
+vi.mock('../../src/services/cooking-safety-policy', () => ({
+  cookingSafetyLogPayload: vi.fn((evaluation: any) => ({
+    surface: evaluation.surface,
+    issueCodes: [...new Set((evaluation.issues ?? []).map((issue: any) => issue.code))],
+    issueSources: [...new Set((evaluation.issues ?? []).map((issue: any) => issue.source))],
+    issueCount: evaluation.issues?.length ?? 0,
+  })),
+  evaluateCookingSafetyText: (...args: unknown[]) => mocks.evaluateCookingSafetyText(...args),
+  hasCookingSafetyPreferences: (...args: unknown[]) => mocks.hasCookingSafetyPreferences(...args),
+  renderCookingSafetyBlockedResponse: (...args: unknown[]) => mocks.renderCookingSafetyBlockedResponse(...args),
+  renderCookingSafetyPromptBlockForUser: (...args: unknown[]) => mocks.renderCookingSafetyPromptBlockForUser(...args),
 }));
 
 import {
@@ -150,6 +171,16 @@ describe('WP-11 resolveLocalChatModel selection matrix', () => {
 describe('WP-11 kill-switch invariants', () => {
   beforeEach(() => {
     mocks.dispatchLocalReasoning.mockReset();
+    mocks.evaluateCookingSafetyText.mockReset();
+    mocks.evaluateCookingSafetyText.mockReturnValue({
+      blocked: false,
+      surface: 'chat_core_v2_recipe',
+      issues: [],
+    });
+    mocks.hasCookingSafetyPreferences.mockReset();
+    mocks.hasCookingSafetyPreferences.mockReturnValue(false);
+    mocks.renderCookingSafetyBlockedResponse.mockClear();
+    mocks.renderCookingSafetyPromptBlockForUser.mockClear();
     _resetLocalInferenceGateForTests();
   });
 
@@ -259,5 +290,62 @@ describe('WP-11 kill-switch invariants', () => {
     expect(mocks.dispatchLocalReasoning).toHaveBeenCalledWith(expect.objectContaining({
       modelOverride: STANDARD_MODEL,
     }));
+  });
+
+  it('blocks unsafe recipe drafts with additive safety metadata before return', async () => {
+    mocks.dispatchLocalReasoning.mockResolvedValue({
+      text: [
+        'Peanut noodles',
+        'Servings: 2',
+        'Prep time: 10 minutes. Cook time: 8 minutes.',
+        'Ingredients:',
+        '- Peanuts',
+        '- Noodles',
+        'Method:',
+        '1. Toss noodles with peanuts.',
+        'Macros estimate: protein 20g, fat 18g, carbs 55g, calories 460.',
+      ].join('\n'),
+      providerMetadata: { providerUsed: 'ollama', modelUsed: RECIPE_MODEL, fallbackUsed: false },
+    });
+    mocks.evaluateCookingSafetyText.mockReturnValueOnce({
+      blocked: true,
+      surface: 'chat_core_v2_recipe',
+      issues: [{
+        code: 'ALLERGY_CONFLICT',
+        severity: 'blocker',
+        surface: 'chat_core_v2_recipe',
+        term: 'peanuts',
+        source: 'cooking_preference_profile',
+      }],
+    });
+    const env = visibleEnv({ CHAT_CORE_V2_LOCAL_CHAT_RECIPE_MODEL: RECIPE_MODEL });
+
+    const result = await runChatCoreV2LocalChatTurn({
+      normalizedText: 'Give me a recipe for peanut noodles',
+      userId: 42,
+      tenantId: 84,
+      requestId: 'req-recipe-safety',
+      locale: 'en',
+      surface: 'ios',
+      env,
+    });
+
+    expect(result?.response.text).toContain('saved cooking safety preference');
+    expect(result?.response.text).not.toContain('Peanut noodles');
+    expect(result?.response.metadata).toEqual(expect.objectContaining({
+      safetyBlocked: true,
+      safetySurface: 'chat_core_v2_recipe',
+      safetyIssueCodes: ['ALLERGY_CONFLICT'],
+      safetyIssueSources: ['cooking_preference_profile'],
+      safetyIssueCount: 1,
+      reasoningTier: 'standard_command' satisfies ChatCoreV2LocalReasoningTier,
+      fastModelUsed: false,
+    }));
+    expect(mocks.evaluateCookingSafetyText).toHaveBeenCalledWith(
+      42,
+      84,
+      'chat_core_v2_recipe',
+      [expect.stringContaining('Peanut noodles')],
+    );
   });
 });

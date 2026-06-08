@@ -36,8 +36,14 @@ import {
   getCardioProgression,
   formatCardioProgressionForPrompt,
 } from '../services/progression-analytics';
+import { getUserLanguageById, resolveCurrentTenantIdForUser } from '../services/user-service';
 import { buildCookingPreferenceReadModel } from '../services/cooking-preferences';
-import { buildCookingPreferenceMemorySummary } from '../services/cooking-intelligence';
+import {
+  cookingSafetyLogPayload,
+  evaluateCookingSafetyText,
+  renderCookingSafetyBlockedResponse,
+  renderCookingSafetyPromptBlock,
+} from '../services/cooking-safety-policy';
 import type { AIToolResultMessage } from '../services/ai-provider';
 import { logger } from '../utils/logger';
 import { AITimeoutError } from '../utils/timeout';
@@ -379,17 +385,8 @@ export async function buildSimpleStateContext(
   if (domain === 'cooking' && hasUserScope) {
     try {
       const cookingPreferences = buildCookingPreferenceReadModel(userId, tenantId).profile;
-      const cookingSummary = buildCookingPreferenceMemorySummary(cookingPreferences);
-      if (cookingSummary) {
-        parts.push(
-          [
-            '<cooking_safety_preferences>',
-            cookingSummary,
-            'Treat these as hard constraints for allergies and dietary restrictions. Do not suggest, cook, buy, or substitute ingredients that conflict with them.',
-            '</cooking_safety_preferences>',
-          ].join('\n'),
-        );
-      }
+      const cookingSafetyBlock = renderCookingSafetyPromptBlock(cookingPreferences);
+      if (cookingSafetyBlock) parts.push(cookingSafetyBlock);
     } catch (err) {
       logger.warn({ err, userId, tenantId }, 'Cooking preference context unavailable; continuing without preference block');
     }
@@ -575,6 +572,7 @@ export async function handleSimpleDomain(
     }
 
     finalText = normalizeReplyForUserLanguage(finalText, userId);
+    finalText = enforceCookingDomainAnswerSafety(domain, finalText, userId, tenantId);
 
     if (hasUserScope) {
       const storedText = toolsUsed.length > 0
@@ -654,6 +652,7 @@ async function handleWithDirectCalls(
   }
 
   finalText = normalizeReplyForUserLanguage(finalText, userId);
+  finalText = enforceCookingDomainAnswerSafety(domain, finalText, userId, tenantId);
 
   if (typeof userId === 'number') {
     addScopedConversation(userId, domain, 'user', message, tenantId);
@@ -664,4 +663,43 @@ async function handleWithDirectCalls(
   }
 
   return { text: finalText, domain };
+}
+
+function enforceCookingDomainAnswerSafety(
+  domain: DomainName,
+  finalText: string,
+  userId?: number,
+  tenantId?: number,
+): string {
+  if (domain !== 'cooking' || typeof userId !== 'number') {
+    return finalText;
+  }
+  const resolvedTenantId = typeof tenantId === 'number'
+    ? tenantId
+    : resolveCurrentTenantIdForUser(userId);
+  try {
+    const evaluation = evaluateCookingSafetyText(userId, resolvedTenantId, 'legacy_domain_answer', [finalText]);
+    if (!evaluation.blocked) return finalText;
+    logger.warn(
+      {
+        userId,
+        tenantId: resolvedTenantId,
+        event: 'COOKING_SAFETY_BLOCKED',
+        ...cookingSafetyLogPayload(evaluation),
+      },
+      'COOKING_SAFETY_BLOCKED',
+    );
+    return renderCookingSafetyBlockedResponse(getCookingSafetyLocale(userId));
+  } catch (err) {
+    logger.warn({ err, userId, tenantId: resolvedTenantId }, 'Cooking domain answer safety check failed; returning safe refusal');
+    return renderCookingSafetyBlockedResponse(getCookingSafetyLocale(userId));
+  }
+}
+
+function getCookingSafetyLocale(userId: number): string | undefined {
+  try {
+    return getUserLanguageById(userId);
+  } catch {
+    return undefined;
+  }
 }

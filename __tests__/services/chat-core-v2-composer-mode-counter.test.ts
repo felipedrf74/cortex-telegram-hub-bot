@@ -4,6 +4,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 // inert for the pure-counter unit tests (which never import the orchestrator).
 const orchestratorMocks = vi.hoisted(() => ({
   dispatchLocalReasoning: vi.fn(),
+  evaluateCookingSafetyText: vi.fn(() => ({
+    blocked: false,
+    surface: 'chat_core_v2_cooking',
+    issues: [],
+  })),
+  hasCookingSafetyPreferences: vi.fn(() => false),
 }));
 
 vi.mock('../../src/services/provider-registry', () => ({
@@ -14,6 +20,19 @@ vi.mock('../../src/services/provider-registry', () => ({
 
 vi.mock('../../src/services/chat-core-v2/cloud-allowlist-answer', () => ({
   dispatchCloudAllowlistAnswer: vi.fn(),
+}));
+
+vi.mock('../../src/services/cooking-safety-policy', () => ({
+  cookingSafetyLogPayload: vi.fn((evaluation: any) => ({
+    surface: evaluation.surface,
+    issueCodes: [...new Set((evaluation.issues ?? []).map((issue: any) => issue.code))],
+    issueSources: [...new Set((evaluation.issues ?? []).map((issue: any) => issue.source))],
+    issueCount: evaluation.issues?.length ?? 0,
+  })),
+  evaluateCookingSafetyText: (...args: unknown[]) => orchestratorMocks.evaluateCookingSafetyText(...args),
+  hasCookingSafetyPreferences: (...args: unknown[]) => orchestratorMocks.hasCookingSafetyPreferences(...args),
+  renderCookingSafetyBlockedResponse: vi.fn(() => 'I cannot suggest that option because it conflicts with a saved cooking safety preference.'),
+  renderCookingSafetyPromptBlockForUser: vi.fn(() => ''),
 }));
 
 import { logger } from '../../src/utils/logger';
@@ -283,6 +302,14 @@ describe('ChatCoreV2 composer-mode counter — orchestrator wiring contract', ()
 
   beforeEach(() => {
     orchestratorMocks.dispatchLocalReasoning.mockReset();
+    orchestratorMocks.evaluateCookingSafetyText.mockReset();
+    orchestratorMocks.evaluateCookingSafetyText.mockReturnValue({
+      blocked: false,
+      surface: 'chat_core_v2_cooking',
+      issues: [],
+    });
+    orchestratorMocks.hasCookingSafetyPreferences.mockReset();
+    orchestratorMocks.hasCookingSafetyPreferences.mockReturnValue(false);
     _resetLocalInferenceGateForTests();
     _resetComposerModeCounterForTests();
     // Replace the real implementation so the assertion is purely on the wiring

@@ -400,6 +400,39 @@ describe('handleSimpleDomain', () => {
     expect(addToConversation).toHaveBeenCalledWith(42, 'content', 'assistant', 'Here is your plan.');
   });
 
+  it('blocks unsafe generated cooking answers before returning or storing them', async () => {
+    ensureUser(188);
+    testDb.prepare('UPDATE users SET language = ? WHERE id = ?').run('pt-BR', 188);
+    setCookingPreferenceMemory(188, { kind: 'allergy', value: 'amendoim' }, 188);
+    mockCallDomain.mockResolvedValue({
+      text: 'Faça noodles com amendoim triturado por cima.',
+      toolCalls: [],
+      stopReason: 'end_turn',
+    } as any);
+
+    const result = await handleSimpleDomain('cooking', 'me dá uma receita', 5, 188, undefined, 188);
+
+    expect(result.text).toContain('preferência de segurança culinária');
+    expect(result.text).not.toContain('amendoim triturado');
+    expect(addToConversation).toHaveBeenCalledWith(188, 'cooking', 'assistant', result.text, 188);
+  });
+
+  it('resolves tenant scope internally before enforcing legacy cooking answers', async () => {
+    ensureUser(189);
+    setCookingPreferenceMemory(189, { kind: 'allergy', value: 'peanuts' }, 189);
+    mockCallDomain.mockResolvedValue({
+      text: 'Make peanut noodles with crushed peanuts.',
+      toolCalls: [],
+      stopReason: 'end_turn',
+    } as any);
+
+    const result = await handleSimpleDomain('cooking', 'give me dinner ideas', 5, 189);
+
+    expect(result.text).toContain('saved cooking safety preference');
+    expect(result.text).not.toContain('crushed peanuts');
+    expect(addToConversation).toHaveBeenCalledWith(189, 'cooking', 'assistant', result.text);
+  });
+
   it('lazily initializes the routing provider when the active singleton is cold', async () => {
     mockGetActiveProvider.mockReturnValueOnce(null);
     mockEnsureActiveProvider.mockReturnValue({

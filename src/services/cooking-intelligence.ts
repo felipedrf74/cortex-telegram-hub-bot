@@ -479,6 +479,9 @@ function buildSubstitutionSuggestions(
   const normalizedOriginal = normalizeName(originalIngredient);
   if (!normalizedOriginal) return [];
   const rules = SUBSTITUTION_RULES.filter((rule) => rule.terms.some((term) => containsTerm(normalizedOriginal, term)));
+  // Unknown-role substitutions intentionally emit no automatic alternatives in
+  // v1. If future rules add fallback candidates, the `unknown` role below keeps
+  // them low-confidence and review-required before user acceptance.
   const sourceRules = rules.length > 0 ? rules : [{ terms: [normalizedOriginal], role: 'unknown' as const, alternatives: [] }];
   const suggestions: CookingSubstitutionSuggestion[] = [];
 
@@ -492,7 +495,10 @@ function buildSubstitutionSuggestions(
         cookingRole: rule.role,
         impact: buildSubstitutionImpact(reason),
         confidence: rule.role === 'unknown' ? 'low' : reason === 'allergy' || reason === 'dietary_restriction' ? 'medium' : 'high',
-        requiresReview: reason === 'allergy' || reason === 'dietary_restriction' || reason === 'expired_pantry',
+        requiresReview: rule.role === 'unknown'
+          || reason === 'allergy'
+          || reason === 'dietary_restriction'
+          || reason === 'expired_pantry',
         source: 'cooking_substitution_rules',
       });
       if (suggestions.length >= 3) return suggestions;

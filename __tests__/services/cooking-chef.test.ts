@@ -186,6 +186,24 @@ describe('Recipe CRUD', () => {
       { name: 'Amêndoa', quantity: '20', unit: 'g' },
     ], { tenantId: 70 })).toThrow(/COOKING_SAFETY_BLOCKED: recipe contains allergy "frutos secos"/);
   });
+
+  it('blocks recipe creation when stored dietary restrictions conflict', () => {
+    setCookingPreferenceMemory(1, { kind: 'dietary_restriction', value: 'vegan' }, 70);
+
+    expect(() => addRecipe(1, 'Chicken rice bowl', [
+      { name: 'Chicken', quantity: '180', unit: 'g' },
+      { name: 'Rice', quantity: '120', unit: 'g' },
+    ], { tenantId: 70 })).toThrow(/COOKING_SAFETY_BLOCKED: recipe contains dietary restriction "vegan"/);
+  });
+
+  it('blocks compound foods that may contain a stored allergen', () => {
+    setCookingPreferenceMemory(1, { kind: 'allergy', value: 'tree nut' }, 70);
+
+    expect(() => addRecipe(1, 'Pesto pasta', [
+      { name: 'Pesto', quantity: '3', unit: 'tbsp' },
+      { name: 'Pasta', quantity: '100', unit: 'g' },
+    ], { tenantId: 70 })).toThrow(/COOKING_SAFETY_BLOCKED: recipe contains allergy "tree nut"/);
+  });
 });
 
 describe('Meal Planning', () => {
@@ -240,6 +258,16 @@ describe('Meal Planning', () => {
     expect(() => setMealPlan(1, '2024-06-15', 'dinner', 'Peanut noodles', {
       tenantId: 70,
     })).toThrow(/COOKING_SAFETY_BLOCKED: meal_plan contains allergy "peanuts"/);
+
+    expect(getMealPlan(1, '2024-06-15', '2024-06-15', 70)).toEqual([]);
+  });
+
+  it('blocks meal plan text when stored dietary restrictions conflict', () => {
+    setCookingPreferenceMemory(1, { kind: 'dietary_restriction', value: 'gluten-free' }, 70);
+
+    expect(() => setMealPlan(1, '2024-06-15', 'dinner', 'Wheat pasta', {
+      tenantId: 70,
+    })).toThrow(/COOKING_SAFETY_BLOCKED: meal_plan contains dietary restriction "gluten-free"/);
 
     expect(getMealPlan(1, '2024-06-15', '2024-06-15', 70)).toEqual([]);
   });
@@ -396,11 +424,32 @@ describe('Cooking safety enforcement', () => {
       mealType: 'dinner',
       originalIngredient: 'Peanuts',
       suggestedIngredient: 'Almond butter',
-      reason: 'allergy',
+      reason: 'disliked_ingredient',
     }, 70)).toThrow(/COOKING_SAFETY_BLOCKED: meal_plan_substitution contains allergy "almonds"/);
 
     expect(getRecipeById(1, recipe.id, 70)?.ingredients.map((ingredient) => ingredient.name)).toEqual(['Peanuts', 'Noodles']);
     expect(getMealPlan(1, '2024-06-15', '2024-06-15', 70)[0].title).toBe('Peanut noodles');
+  });
+
+  it('blocks recipe writes that conflict with a saved vegetarian restriction', () => {
+    setCookingPreferenceMemory(1, { kind: 'dietary_restriction', value: 'vegetarian' }, 70);
+
+    expect(() => addRecipe(1, 'Chicken bowl', [
+      { name: 'Chicken breast', quantity: '200', unit: 'g' },
+      { name: 'Rice', quantity: '100', unit: 'g' },
+    ], { tenantId: 70 })).toThrow(/COOKING_SAFETY_BLOCKED: recipe contains dietary restriction "vegetarian"/);
+
+    expect(getRecipes(1, { tenantId: 70 })).toHaveLength(0);
+  });
+
+  it('blocks meal-plan writes that conflict with a saved dairy-free restriction', () => {
+    setCookingPreferenceMemory(1, { kind: 'dietary_restriction', value: 'dairy-free' }, 70);
+
+    expect(() => setMealPlan(1, '2024-06-16', 'dinner', 'Vegetables with butter sauce', {
+      tenantId: 70,
+    })).toThrow(/COOKING_SAFETY_BLOCKED: meal_plan contains dietary restriction "dairy-free"/);
+
+    expect(getMealPlan(1, '2024-06-16', '2024-06-16', 70)).toHaveLength(0);
   });
 
   it('allows substitutions that remove a stored allergen and replace it with a safe ingredient', () => {

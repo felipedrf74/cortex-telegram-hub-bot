@@ -17,6 +17,8 @@ const mockIsAnyCalendarConfigured = vi.fn();
 const mockInvalidateCookingDerivedCaches = vi.fn();
 const mockPreviewCookingMealPrepSchedulingIntent = vi.fn();
 const mockSubmitCookingMealPrepSchedulingIntent = vi.fn();
+const mockGetWearableReadiness = vi.fn();
+const mockLoggerWarn = vi.fn();
 
 vi.mock('../../src/services/database', () => ({
   getDb: () => testDb,
@@ -27,7 +29,7 @@ vi.mock('../../src/services/database', () => ({
 }));
 
 vi.mock('../../src/utils/logger', () => ({
-  logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(), trace: vi.fn(), child: vi.fn().mockReturnThis() },
+  logger: { info: vi.fn(), warn: (...args: unknown[]) => mockLoggerWarn(...args), error: vi.fn(), debug: vi.fn(), trace: vi.fn(), child: vi.fn().mockReturnThis() },
   LOGGER_REDACTION_PATHS: [],
 }));
 
@@ -85,6 +87,10 @@ vi.mock('../../src/services/cooking-secretary-integration', () => ({
   submitCookingMealPrepSchedulingIntent: (...args: unknown[]) => mockSubmitCookingMealPrepSchedulingIntent(...args),
 }));
 
+vi.mock('../../src/services/wearable/wearable-service', () => ({
+  getReadiness: (...args: unknown[]) => mockGetWearableReadiness(...args),
+}));
+
 import { cookingRoutes } from '../../src/api/routes/cooking';
 import { getOrCreateUser } from '../../src/services/user-service';
 import { addRecipe, setMealPlan, generateShoppingList, upsertPantryItem, getRecipeById, getShoppingList, getMealPlan } from '../../src/services/cooking-chef';
@@ -120,12 +126,17 @@ function applyMigrations(db: Database.Database): void {
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
       consumed_by TEXT NOT NULL DEFAULT '[]',
       user_id INTEGER,
+      tenant_id INTEGER,
       confidence REAL NOT NULL DEFAULT 0.5,
       format_tag TEXT,
       pillar_tag TEXT,
       evidence_count INTEGER NOT NULL DEFAULT 1
     )
   `);
+  const signalColumns = db.prepare('PRAGMA table_info(agent_signals)').all() as Array<{ name: string }>;
+  if (!signalColumns.some((column) => column.name === 'tenant_id')) {
+    db.exec('ALTER TABLE agent_signals ADD COLUMN tenant_id INTEGER');
+  }
 }
 
 interface MockRes {
@@ -193,6 +204,9 @@ describe('Cooking API — shopping list item updates', () => {
     mockInvalidateCookingDerivedCaches.mockReset();
     mockPreviewCookingMealPrepSchedulingIntent.mockReset();
     mockSubmitCookingMealPrepSchedulingIntent.mockReset();
+    mockGetWearableReadiness.mockReset();
+    mockGetWearableReadiness.mockResolvedValue(null);
+    mockLoggerWarn.mockReset();
     mockIsAnyCalendarConfigured.mockReturnValue(true);
     mockCalendarCreateEvent.mockResolvedValue({
       id: 'evt-meal-prep',
@@ -561,9 +575,47 @@ describe('Cooking API — shopping list item updates', () => {
     expect(res.statusCode).toBe(400);
     expect(res.body.error).toMatchObject({
       code: 'BAD_REQUEST',
-      message: 'Cooking item conflicts with a saved allergy preference',
+      message: 'Cooking item conflicts with a saved cooking safety preference',
     });
+    expect(mockLoggerWarn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: 'COOKING_SAFETY_BLOCKED',
+        userId: user.id,
+        tenantId: 101,
+        route: 'POST /recipes',
+        surface: 'recipe',
+      }),
+      'COOKING_SAFETY_BLOCKED',
+    );
     expect(cookingChef.getRecipes(user.id, { tenantId: 101 })).toEqual([]);
+  });
+
+  it('logs meal-plan safety blocks with route context', async () => {
+    const user = getOrCreateUser(2101811, { username: 'cook18plan' });
+    await dispatch('POST', '/preferences', user.id, {
+      kind: 'allergy',
+      value: 'peanuts',
+      source: 'chat_correction',
+    }, 101);
+
+    const res = await dispatch('POST', '/meal-plan', user.id, {
+      date: '2026-04-13',
+      mealType: 'dinner',
+      title: 'Peanut noodles',
+    }, 101);
+
+    expect(res.statusCode).toBe(400);
+    expect(mockLoggerWarn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: 'COOKING_SAFETY_BLOCKED',
+        userId: user.id,
+        tenantId: 101,
+        route: 'POST /meal-plan',
+        surface: 'meal_plan',
+      }),
+      'COOKING_SAFETY_BLOCKED',
+    );
+    expect(cookingChef.getMealPlan(user.id, '2026-04-13', '2026-04-13', 101)).toEqual([]);
   });
 
   it('rejects substitution actions that would introduce a stored allergy', async () => {
@@ -591,8 +643,18 @@ describe('Cooking API — shopping list item updates', () => {
     expect(res.statusCode).toBe(400);
     expect(res.body.error).toMatchObject({
       code: 'BAD_REQUEST',
-      message: 'Cooking item conflicts with a saved allergy preference',
+      message: 'Cooking item conflicts with a saved cooking safety preference',
     });
+    expect(mockLoggerWarn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: 'COOKING_SAFETY_BLOCKED',
+        userId: user.id,
+        tenantId: 101,
+        route: 'POST /meal-plan/substitutions/apply',
+        surface: 'meal_plan_substitution',
+      }),
+      'COOKING_SAFETY_BLOCKED',
+    );
     expect(getRecipeById(user.id, recipe.id, 101)!.ingredients.map((ingredient) => ingredient.name)).toEqual(['Peanuts', 'Noodles']);
     expect(mockInvalidateCookingDerivedCaches).not.toHaveBeenCalled();
   });
@@ -894,6 +956,50 @@ describe('Cooking API — shopping list item updates', () => {
       kind: 'protein_up',
       reasonCodes: ['HIGH_LEG_LOAD'],
     });
+  });
+
+  it('does not leak training signals into meal adaptation across tenants', async () => {
+    const user = getOrCreateUser(210041, { username: 'cook4tenant' });
+    const today = DateTime.now().setZone('Europe/Lisbon').toISODate()!;
+    setMealPlan(user.id, today, 'dinner', 'Tenant A chicken bowl', { tenantId: 101 });
+    setMealPlan(user.id, today, 'dinner', 'Tenant B chicken bowl', { tenantId: 202 });
+    publishHighLegLoad({ userId: user.id, tenantId: 101, source: 'gym', rpe: 9 });
+
+    const tenantA = await dispatch('GET', `/meal-plan?from=${today}&to=${today}`, user.id, undefined, 101);
+    const tenantB = await dispatch('GET', `/meal-plan?from=${today}&to=${today}`, user.id, undefined, 202);
+
+    expect(tenantA.statusCode).toBe(200);
+    expect(tenantA.body.data.meals[0].adaptation).toMatchObject({
+      kind: 'protein_up',
+      reasonCodes: ['HIGH_LEG_LOAD'],
+    });
+    expect(tenantB.statusCode).toBe(200);
+    expect(tenantB.body.data.meals[0].adaptation).toBeNull();
+  });
+
+  it('suppresses wearable readiness adaptation for non-default tenant scope', async () => {
+    const user = getOrCreateUser(210042, { username: 'cook4wearable' });
+    const today = DateTime.now().setZone('Europe/Lisbon').toISODate()!;
+    mockGetWearableReadiness.mockResolvedValue({ readinessScore: 30 });
+    setMealPlan(user.id, today, 'dinner', 'Default tenant dinner', { tenantId: user.id });
+    setMealPlan(user.id, today, 'dinner', 'Tenant B dinner', { tenantId: 202 });
+
+    const defaultTenant = await dispatch('GET', `/meal-plan?from=${today}&to=${today}`, user.id);
+
+    expect(defaultTenant.statusCode).toBe(200);
+    expect(defaultTenant.body.data.meals[0].adaptation).toMatchObject({
+      kind: 'recovery',
+      readinessScore: 30,
+      reasonCodes: ['LOW_READINESS'],
+    });
+    expect(mockGetWearableReadiness).toHaveBeenCalledTimes(1);
+
+    mockGetWearableReadiness.mockClear();
+    const tenantB = await dispatch('GET', `/meal-plan?from=${today}&to=${today}`, user.id, undefined, 202);
+
+    expect(tenantB.statusCode).toBe(200);
+    expect(tenantB.body.data.meals[0].adaptation).toBeNull();
+    expect(mockGetWearableReadiness).not.toHaveBeenCalled();
   });
 
   it('does not invent meal adaptations without training context', async () => {

@@ -17,7 +17,7 @@ import {
   resolveCookingTenantId,
 } from './cooking-tenant-scope';
 import { buildCookingPreferenceReadModel } from './cooking-preferences';
-import { matchesCookingAllergenText } from './cooking-allergen-vocabulary';
+import { assertCookingSafetyText } from './cooking-safety-policy';
 import {
   suggestCookingSubstitutionsForIngredient,
   type CookingSubstitutionSuggestion,
@@ -230,7 +230,7 @@ export function addRecipe(
 ): Recipe {
   const db = getCookingDb();
   const scope = cookingScopeForInsert(userId, opts?.tenantId, 'user_private', 'active');
-  assertAllergySafeRecipe(userId, scope.tenantId, {
+  assertCookingSafeRecipe(userId, scope.tenantId, {
     title,
     ingredients,
     instructions: opts?.instructions,
@@ -350,7 +350,7 @@ export function updateRecipe(
   const db = getCookingDb();
   const current = getRecipeById(userId, recipeId, tenantId);
   if (!current) return null;
-  assertAllergySafeRecipe(userId, resolveCookingTenantId(userId, tenantId), {
+  assertCookingSafeRecipe(userId, resolveCookingTenantId(userId, tenantId), {
     title: updates.title ?? current.title,
     ingredients: updates.ingredients ?? current.ingredients,
     instructions: updates.instructions === undefined ? current.instructions : updates.instructions,
@@ -439,9 +439,9 @@ export function setMealPlan(
   const scope = cookingScopeForInsert(userId, opts?.tenantId, 'user_private', 'planned');
   const linkedRecipe = opts?.recipeId ? getRecipeById(userId, opts.recipeId, opts?.tenantId) : null;
   if (linkedRecipe) {
-    assertAllergySafeRecipe(userId, scope.tenantId, linkedRecipe);
+    assertCookingSafeRecipe(userId, scope.tenantId, linkedRecipe);
   }
-  assertAllergySafeText(userId, scope.tenantId, 'meal_plan', [
+  assertCookingSafetyText(userId, scope.tenantId, 'meal_plan', [
     title,
     opts?.notes,
   ]);
@@ -545,7 +545,7 @@ export function applyMealPlanSubstitution(
     throw new Error('COOKING_SUBSTITUTION_NOOP: suggestedIngredient must differ from originalIngredient');
   }
   const resolvedTenantId = resolveCookingTenantId(userId, tenantId);
-  assertAllergySafeText(userId, resolvedTenantId, 'meal_plan_substitution', [suggestedIngredient]);
+  assertCookingSafetyText(userId, resolvedTenantId, 'meal_plan_substitution', [suggestedIngredient]);
 
   const meals = getMealPlan(userId, input.date, input.date, tenantId);
   const meal = meals.find((candidate) => candidate.meal_type === input.mealType) ?? null;
@@ -1207,7 +1207,7 @@ function normalizeRequiredText(value: unknown, field: string): string {
   return text;
 }
 
-function assertAllergySafeRecipe(
+function assertCookingSafeRecipe(
   userId: number,
   tenantId: number,
   recipe: {
@@ -1223,35 +1223,13 @@ function assertAllergySafeRecipe(
     ingredient.quantity,
     ingredient.unit,
   ]);
-  assertAllergySafeText(userId, tenantId, 'recipe', [
+  assertCookingSafetyText(userId, tenantId, 'recipe', [
     recipe.title,
     recipe.instructions,
     recipe.tags,
     recipe.source,
     ...ingredientTexts,
   ]);
-}
-
-function assertAllergySafeText(
-  userId: number,
-  tenantId: number,
-  surface: 'recipe' | 'meal_plan' | 'meal_plan_substitution',
-  values: Array<string | null | undefined>,
-): void {
-  const allergies = buildCookingPreferenceReadModel(userId, tenantId).profile.allergies ?? [];
-  if (allergies.length === 0) return;
-
-  const haystacks = values
-    .map((value) => String(value ?? '').trim())
-    .filter(Boolean);
-  const conflict = allergies
-    .map((allergy) => String(allergy ?? '').trim())
-    .filter(Boolean)
-    .find((allergy) => haystacks.some((haystack) => matchesCookingAllergenText(allergy, haystack)));
-
-  if (conflict) {
-    throw new Error(`COOKING_SAFETY_BLOCKED: ${surface} contains allergy "${conflict}"`);
-  }
 }
 
 function ingredientNameMatches(candidate: string, originalIngredient: string): boolean {
