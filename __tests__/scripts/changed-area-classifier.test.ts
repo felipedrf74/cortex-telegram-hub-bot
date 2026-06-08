@@ -458,7 +458,7 @@ describe('changed-area-classifier cannot-skip dashboard wiring (ENG-EXC-O3)', ()
   it('cannot-skip gate dashboard reports every gate wired and PASS verdict', { timeout: 120_000 }, () => {
     const raw = execFileSync(
       'bash',
-      ['scripts/cannot-skip-gate-dashboard.sh', '--json', '--no-evidence'],
+      ['scripts/cannot-skip-gate-dashboard.sh', '--json', '--no-evidence', '--base', 'origin/main'],
       { encoding: 'utf8' },
     );
     const result = JSON.parse(raw) as {
@@ -491,6 +491,7 @@ describe('changed-area-classifier CI/CD optimization routing', () => {
       { encoding: 'utf8' },
     );
     return JSON.parse(raw) as {
+      changedFiles: string[];
       flags: Record<string, boolean>;
       vitest: { mode: string; globs: string[]; skipReason?: string | null };
       pytest: { globs: string[] };
@@ -541,5 +542,57 @@ describe('changed-area-classifier CI/CD optimization routing', () => {
     expect(result.flags.migration).toBe(true);
     expect(result.flags.irreversibleMigration).toBe(true);
     expect(result.cannotSkip).toContain('irreversible-migration-manual-approval');
+    expect(result.vitest.mode).toBe('changed-only');
+  });
+
+  it('classifies runtime infrastructure changes as full Vitest', () => {
+    const result = classify('Dockerfile.release-test,.env.example');
+
+    expect(result.flags.runtimeInfra).toBe(true);
+    expect(result.flags.deployConfig).toBe(true);
+    expect(result.vitest.mode).toBe('full');
+  });
+
+  it('classifies release gate helpers as runtime infrastructure', () => {
+    const result = classify('scripts/lib/release-gates.sh');
+
+    expect(result.flags.runtimeInfra).toBe(true);
+    expect(result.flags.deployConfig).toBe(true);
+    expect(result.vitest.mode).toBe('full');
+    expect(result.stagingSmoke.generic).toBe(true);
+  });
+
+  it('normalizes workspace-prefixed backend and migration paths', () => {
+    const result = classify('engine/src/api/routes/billing.ts,engine/migrations/203_apple_health_encrypted_payload.sql');
+
+    expect(result.changedFiles).toContain('src/api/routes/billing.ts');
+    expect(result.changedFiles).toContain('migrations/203_apple_health_encrypted_payload.sql');
+    expect(result.flags.backendSrc).toBe(true);
+    expect(result.flags.apiRoute).toBe(true);
+    expect(result.flags.migration).toBe(true);
+    expect(result.flags.appleNotificationWebhook).toBe(true);
+    expect(result.cannotSkip).toContain('migration-rollback-review');
+    expect(result.cannotSkip).toContain('apple-notifications-jws-verify');
+    expect(result.vitest.mode).toBe('focused');
+    expect(result.vitest.globs).toContain('__tests__/security/billing-apple-notifications-jws-verify.test.ts');
+  });
+
+  it('fails closed for deleted or renamed migration paths', () => {
+    const result = classify('engine/migrations/999_deleted_forward_only.sql');
+
+    expect(result.changedFiles).toContain('migrations/999_deleted_forward_only.sql');
+    expect(result.flags.migration).toBe(true);
+    expect(result.flags.irreversibleMigration).toBe(true);
+    expect(result.cannotSkip).toContain('irreversible-migration-manual-approval');
+  });
+
+  it('classifies runtime infrastructure as deploy config with staging smoke', () => {
+    const result = classify('Dockerfile.release-test,.nvmrc,.env.example,docker-compose.yml');
+
+    expect(result.flags.runtimeInfra).toBe(true);
+    expect(result.flags.deployConfig).toBe(true);
+    expect(result.flags.docsOnly).toBe(false);
+    expect(result.vitest.mode).toBe('full');
+    expect(result.stagingSmoke.generic).toBe(true);
   });
 });

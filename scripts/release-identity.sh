@@ -19,6 +19,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "$ROOT/scripts/lib/release-gates.sh"
 IOS_REPO="${IOS_REPO:-/Users/felipedominguez/Desktop/Nexus Hub IOS/Nexus Hub}"
 WORKSPACE_DOCS_ROOT="${NEXUS_WORKSPACE_DOCS_ROOT:-/Users/felipedominguez/Desktop/Nexus Hub}"
 FORMAT="${1:-markdown}"
@@ -34,6 +35,8 @@ while [ $# -gt 0 ]; do
   esac
 done
 
+release_require_git_worktree "$ROOT"
+
 branch_for() {
   git -C "$1" branch --show-current 2>/dev/null || printf 'unknown'
 }
@@ -47,7 +50,12 @@ dirty_for() {
     printf 'unknown'
     return
   fi
-  if [ -n "$(git -C "$1" status --short)" ]; then
+  local status
+  if ! status="$(git -C "$1" status --short 2>/dev/null)"; then
+    printf 'unknown'
+    return
+  fi
+  if [ -n "$status" ]; then
     printf 'dirty'
   else
     printf 'clean'

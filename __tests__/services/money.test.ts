@@ -15,6 +15,14 @@ describe('money cent helpers', () => {
   it('rounds fractional cent strings without binary float conversion', () => {
     expect(parseUserAmount('1,005', 'EUR')).toBe(101n);
     expect(parseUserAmount('1,004', 'EUR')).toBe(100n);
+    expect(toCents(1.005)).toBe(101n);
+    expect(toCents(0.145)).toBe(15n);
+  });
+
+  it('normalizes scientific notation numbers before cent rounding', () => {
+    expect(toCents(1e-7)).toBe(0n);
+    expect(toCents(1.25e-2)).toBe(1n);
+    expect(() => toCents(1e21)).toThrow(/too large/);
   });
 
   it('parses US decimal and thousands separators', () => {

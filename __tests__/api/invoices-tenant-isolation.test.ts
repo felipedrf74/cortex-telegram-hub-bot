@@ -200,7 +200,7 @@ describe('Invoices API tenant isolation', () => {
 
     expect(res.statusCode).toBe(200);
     expect(res.body.ok).toBe(true);
-    expect(mockCollectMonthlyInvoices).toHaveBeenCalledWith(202, 2026, 4);
+    expect(mockCollectMonthlyInvoices).toHaveBeenCalledWith(202, 2026, 4, 202);
     expect(mockInvalidateFinanceDerivedCaches).toHaveBeenCalledWith(202);
   });
 });

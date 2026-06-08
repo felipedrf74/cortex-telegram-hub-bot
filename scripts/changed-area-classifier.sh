@@ -108,7 +108,30 @@ collect_changes() {
   } | sed '/^$/d' | sort -u
 }
 
-CHANGED="$(collect_changes)"
+normalize_changed_path() {
+  sed -E '
+    s#^\./##
+    s#^engine/##
+    s#^backend/##
+    s#^cortex-telegram-hub-bot/##
+  '
+}
+
+normalize_changed_paths() {
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    case "$f" in
+      *" -> "*)
+        printf '%s\n' "${f%% -> *}" "${f##* -> }"
+        ;;
+      *)
+        printf '%s\n' "$f"
+        ;;
+    esac
+  done | normalize_changed_path | sed '/^$/d' | sort -u
+}
+
+CHANGED="$(collect_changes | normalize_changed_paths)"
 CHANGED_COUNT="$(printf '%s\n' "$CHANGED" | sed '/^$/d' | wc -l | tr -d ' ')"
 
 # Classification flags
@@ -162,6 +185,7 @@ HAS_HEALTH_INTEGRATION=false  # Garmin/HealthKit/wearable/body-battery
 HAS_RATE_LIMIT=false          # rate-limit middleware + per-account lockout
 HAS_AUDIT=false               # audit trail and audit-event contracts
 HAS_DEPLOY_CONFIG=false       # PM2/deploy config and environment shape
+HAS_RUNTIME_INFRA=false       # Docker/compose/node/env examples alter runtime contracts
 HAS_EVENT_BACKBONE=false      # event_outbox/jobs/read-models/delta-sync/budgets
 HAS_CHAT_REASONING=false      # Chat ActionFrame parsing/execution/eval harness
 HAS_CHAT_CORE_V2=false        # Chat Core v2 contracts/orchestration/shadow route
@@ -271,6 +295,8 @@ match '^src/services/(google-drive|google-auth)\.ts$|^__tests__/security/google-
 match '^src/services/chat/registry/|^src/services/registry-(driven-eval-scenarios|real-eval-scoring|telemetry-report|adversarial-discovery|adversarial-example-proposer|readable-intents-proposer|cross-tenant-alert-hook)\.ts$|^src/services/build-llm-safe-prompt-slice\.ts$|^src/services/skills/|^__tests__/services/(chat-action-registry-|registry-(driven-eval|real-eval|telemetry-report|adversarial|readable-intents|cross-tenant))|^__tests__/scripts/registry-feedback-report\.test\.ts$|^scripts/registry-feedback-report\.ts$' && HAS_REGISTRY_REAL_EVAL=true
 
 match '^scripts/(deploy|deploy-staging|promote-to-prod|rollback|restore)\.sh$' && HAS_DEPLOY_SCRIPT=true
+match '^scripts/lib/release-gates\.sh$' && { HAS_RUNTIME_INFRA=true; HAS_DEPLOY_CONFIG=true; }
+match '^Dockerfile(\..*)?$|^docker-compose(\..*)?\.ya?ml$|^\.dockerignore$|^\.nvmrc$|^\.node-version$|^\.env(\..*)?\.example$|^\.env\.example$|^content-engine/Dockerfile(\..*)?$|^content-engine/\.env(\..*)?\.example$' && { HAS_RUNTIME_INFRA=true; HAS_DEPLOY_CONFIG=true; }
 match '^\.husky/' && HAS_HOOK=true
 match '^\.github/workflows/' && HAS_CI_WORKFLOW=true
 match '^vitest\.config\.ts$|^tsconfig\.json$' && HAS_TEST_CONFIG=true
@@ -283,7 +309,10 @@ detect_irreversible_migration() {
     [ -n "$f" ] || continue
     case "$f" in
       migrations/*.sql)
-        [ -f "$LOCAL_DIR/$f" ] || continue
+        # Deleted/renamed migrations are dangerous because the target SQL is no
+        # longer available for content inspection. Fail closed into manual
+        # migration approval instead of silently treating them as harmless.
+        [ -f "$LOCAL_DIR/$f" ] || return 0
         stripped="$(sed -E 's/--.*$//' "$LOCAL_DIR/$f" | tr '\n' ' ')"
         if printf '%s\n' "$stripped" | grep -Eiq '\bDROP[[:space:]]+TABLE\b|\bDROP[[:space:]]+COLUMN\b|\bALTER[[:space:]]+TABLE\b[^;]*\bRENAME\b|\bRENAME[[:space:]]+TO\b'; then
           return 0
@@ -535,6 +564,7 @@ if $HAS_NON_DOC; then
     $HAS_RATE_LIMIT && VITEST_GLOBS+=("__tests__/api/rate-limiter.test.ts" "__tests__/security/**/*.test.ts")
     $HAS_AUDIT && VITEST_GLOBS+=("__tests__/services/audit-trail.test.ts" "__tests__/api/authenticated-support-routes-scope.test.ts" "__tests__/portal/portal-admin-audit.test.ts" "__tests__/portal/portal-admin-data-routes.test.ts" "__tests__/portal/portal-admin-data-isolation.integration.test.ts")
     $HAS_DEPLOY_CONFIG && VITEST_GLOBS+=("__tests__/services/config-*.test.ts" "__tests__/portal/health-endpoint*.test.ts" "__tests__/portal/health-endpoints.test.ts" "__tests__/scripts/*.test.ts" "__tests__/security/**/*.test.ts")
+    $HAS_RUNTIME_INFRA && VITEST_GLOBS+=("__tests__/scripts/*.test.ts" "__tests__/security/github-workflow-pinning.test.ts")
     $HAS_EVENT_BACKBONE && VITEST_GLOBS+=("__tests__/services/event-backbone.test.ts" "__tests__/api/event-backbone-routes.test.ts" "__tests__/security/**/*.test.ts")
     $HAS_CHAT_REASONING && VITEST_GLOBS+=("__tests__/services/chat-action-planner.test.ts" "__tests__/services/chat-action-production-safety.test.ts" "__tests__/api/chat-routes.test.ts" "__tests__/security/p0-chat-identity-isolation.test.ts")
     $HAS_CHAT_CORE_V2 && VITEST_GLOBS+=("__tests__/services/chat-core-v2-*.test.ts")
@@ -555,6 +585,15 @@ if $HAS_NON_DOC; then
       VITEST_MODE="changed-only"
     fi
   fi
+fi
+
+if $HAS_RUNTIME_INFRA; then
+  VITEST_MODE="full"
+  VITEST_GLOBS=()
+fi
+
+if $HAS_MIGRATION && [ "$VITEST_MODE" = "skip" ]; then
+  VITEST_MODE="changed-only"
 fi
 
 # Engineering-excellence enrichment (2026-05-04, ENG-EXC-O3): when only
@@ -602,7 +641,7 @@ fi
 # ── Staging smoke ──────────────────────────────────────
 SS_GENERIC=false
 SS_DOMAINS=()
-if $HAS_BACKEND_SRC || $HAS_MIGRATION || $HAS_PYTHON_ENGINE || $HAS_DEPLOY_CONFIG; then
+if $HAS_BACKEND_SRC || $HAS_MIGRATION || $HAS_PYTHON_ENGINE || $HAS_DEPLOY_CONFIG || $HAS_RUNTIME_INFRA; then
   SS_GENERIC=true
 fi
 $HAS_TRAINING && { $HAS_CALENDAR || true; } && SS_DOMAINS+=("smoke:training-cross-skill:staging")
@@ -687,6 +726,7 @@ emit_json() {
   export CLAS_RATE_LIMIT="$HAS_RATE_LIMIT"
   export CLAS_AUDIT="$HAS_AUDIT"
   export CLAS_DEPLOY_CONFIG="$HAS_DEPLOY_CONFIG"
+  export CLAS_RUNTIME_INFRA="$HAS_RUNTIME_INFRA"
   export CLAS_IOS_NAVIGATION="$HAS_IOS_NAVIGATION"
   export CLAS_IOS_DTO="$HAS_IOS_DTO"
   export CLAS_APPLE_NOTIFICATION_WEBHOOK="$HAS_APPLE_NOTIFICATION_WEBHOOK"
@@ -772,6 +812,7 @@ const payload = {
     rateLimit: flag('CLAS_RATE_LIMIT'),
     audit: flag('CLAS_AUDIT'),
     deployConfig: flag('CLAS_DEPLOY_CONFIG'),
+    runtimeInfra: flag('CLAS_RUNTIME_INFRA'),
     iosNavigation: flag('CLAS_IOS_NAVIGATION'),
     iosDto: flag('CLAS_IOS_DTO'),
     appleNotificationWebhook: flag('CLAS_APPLE_NOTIFICATION_WEBHOOK'),

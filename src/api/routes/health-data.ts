@@ -28,6 +28,7 @@ import { sendInternalError as sendApiInternalError } from '../response-helpers';
 import type { AuthenticatedRequest } from '../auth-middleware';
 import type Database from 'better-sqlite3';
 import { ensureValidTenantRouteScope } from '../tenant-route-scope';
+import { encodeAppleHealthPayload } from '../../services/apple-health-encryption';
 
 /** POST /api/v1/health-data/sync request body shape.
  *  Matches the iOS HealthDaySnapshot struct. */
@@ -192,7 +193,12 @@ function isNumberInRange(value: unknown, min: number, max: number): boolean {
   return typeof value === 'number' && Number.isFinite(value) && value >= min && value <= max;
 }
 
-function prepareAppleHealthUpsert(db: Database.Database): Database.Statement {
+type AppleHealthUpsert = {
+  statement: Database.Statement;
+  hasEncryptedDataJson: boolean;
+};
+
+function prepareAppleHealthUpsert(db: Database.Database): AppleHealthUpsert {
   const tableInfo = db.prepare(`PRAGMA table_info(apple_health_data)`).all() as Array<{ name: string }>;
   const columnNames = new Set(tableInfo.map((row) => row.name));
   const sourceColumn = columnNames.has('source')
@@ -201,15 +207,23 @@ function prepareAppleHealthUpsert(db: Database.Database): Database.Statement {
       ? 'source_name'
       : null;
   const hasSyncedAt = columnNames.has('synced_at');
+  const hasEncryptedDataJson = columnNames.has('encrypted_data_json');
 
   const insertColumns = ['user_id', 'date', 'data_type', 'data_json'];
   const insertValues = ['?', '?', '?', '?'];
+  if (hasEncryptedDataJson) {
+    insertColumns.push('encrypted_data_json');
+    insertValues.push('?');
+  }
   if (sourceColumn) {
     insertColumns.push(sourceColumn);
     insertValues.push(`'ios_app'`);
   }
 
   const updates = ['data_json = excluded.data_json'];
+  if (hasEncryptedDataJson) {
+    updates.push('encrypted_data_json = excluded.encrypted_data_json');
+  }
   if (hasSyncedAt) {
     updates.push(`synced_at = datetime('now')`);
   }
@@ -218,12 +232,30 @@ function prepareAppleHealthUpsert(db: Database.Database): Database.Statement {
     ? '(user_id, data_type, date, source_name)'
     : '(user_id, date, data_type)';
 
-  return db.prepare(`
+  return {
+    statement: db.prepare(`
     INSERT INTO apple_health_data (${insertColumns.join(', ')})
     VALUES (${insertValues.join(', ')})
     ON CONFLICT${conflictTarget}
     DO UPDATE SET ${updates.join(', ')}
-  `);
+  `),
+    hasEncryptedDataJson,
+  };
+}
+
+function runAppleHealthUpsert(
+  upsert: AppleHealthUpsert,
+  userId: number,
+  date: string,
+  dataType: string,
+  payload: unknown,
+): void {
+  const encoded = encodeAppleHealthPayload(userId, payload);
+  const args: Array<number | string | null> = [userId, date, dataType, encoded.dataJson];
+  if (upsert.hasEncryptedDataJson) {
+    args.push(encoded.encryptedDataJson);
+  }
+  upsert.statement.run(...args);
 }
 
 export function healthDataRoutes(): Router {
@@ -254,25 +286,25 @@ export function healthDataRoutes(): Router {
 
       // ── HRV ────────────────────────────────────────────────
       if (payload.hrvMs != null) {
-        upsert.run(userId, payload.date, 'hrv', JSON.stringify({
+        runAppleHealthUpsert(upsert, userId, payload.date, 'hrv', {
           value: payload.hrvMs,
           sdnn_ms: payload.hrvMs,
-        }));
+        });
         typesUpserted++;
       }
 
       // ── Resting Heart Rate ─────────────────────────────────
       if (payload.restingHeartRate != null) {
-        upsert.run(userId, payload.date, 'resting_heart_rate', JSON.stringify({
+        runAppleHealthUpsert(upsert, userId, payload.date, 'resting_heart_rate', {
           value: payload.restingHeartRate,
           bpm: payload.restingHeartRate,
-        }));
+        });
         typesUpserted++;
       }
 
       // ── Sleep ──────────────────────────────────────────────
       if ((payload.totalSleepMinutes ?? 0) > 0) {
-        upsert.run(userId, payload.date, 'sleep', JSON.stringify({
+        runAppleHealthUpsert(upsert, userId, payload.date, 'sleep', {
           totalSleepSeconds: Math.round((payload.totalSleepMinutes ?? 0) * 60),
           deepSleepSeconds: Math.round((payload.deepSleepMinutes ?? 0) * 60),
           remSleepSeconds: Math.round((payload.remSleepMinutes ?? 0) * 60),
@@ -285,67 +317,63 @@ export function healthDataRoutes(): Router {
           deepMinutes: payload.deepSleepMinutes ?? 0,
           remMinutes: payload.remSleepMinutes ?? 0,
           intervals: normalizeSleepIntervals(payload.sleepIntervals),
-        }));
+        });
         typesUpserted++;
       }
 
       // ── Steps ──────────────────────────────────────────────
       if ((payload.steps ?? 0) > 0) {
-        upsert.run(userId, payload.date, 'steps', JSON.stringify({ count: payload.steps }));
+        runAppleHealthUpsert(upsert, userId, payload.date, 'steps', { count: payload.steps });
         typesUpserted++;
       }
 
       // ── Active Calories ────────────────────────────────────
       if ((payload.activeCalories ?? 0) > 0) {
-        upsert.run(userId, payload.date, 'calories', JSON.stringify({ kcal: payload.activeCalories }));
+        runAppleHealthUpsert(upsert, userId, payload.date, 'calories', { kcal: payload.activeCalories });
         typesUpserted++;
       }
 
       // ── VO2 Max ────────────────────────────────────────────
       if (payload.vo2Max != null) {
-        upsert.run(userId, payload.date, 'vo2max', JSON.stringify({ value: payload.vo2Max }));
+        runAppleHealthUpsert(upsert, userId, payload.date, 'vo2max', { value: payload.vo2Max });
         typesUpserted++;
       }
 
       // ── Body composition + metabolic context ─────────────────
       if (payload.bodyMassKg != null) {
-        upsert.run(userId, payload.date, 'body_mass', JSON.stringify({ value: payload.bodyMassKg, kg: payload.bodyMassKg }));
+        runAppleHealthUpsert(upsert, userId, payload.date, 'body_mass', { value: payload.bodyMassKg, kg: payload.bodyMassKg });
         typesUpserted++;
       }
 
       if (payload.bodyFatPercentage != null) {
-        upsert.run(
-          userId,
-          payload.date,
-          'body_fat_percentage',
-          JSON.stringify({ value: payload.bodyFatPercentage, percent: payload.bodyFatPercentage }),
-        );
+        runAppleHealthUpsert(upsert, userId, payload.date, 'body_fat_percentage', {
+          value: payload.bodyFatPercentage,
+          percent: payload.bodyFatPercentage,
+        });
         typesUpserted++;
       }
 
       if (payload.leanBodyMassKg != null) {
-        upsert.run(
-          userId,
-          payload.date,
-          'lean_body_mass',
-          JSON.stringify({ value: payload.leanBodyMassKg, kg: payload.leanBodyMassKg }),
-        );
+        runAppleHealthUpsert(upsert, userId, payload.date, 'lean_body_mass', {
+          value: payload.leanBodyMassKg,
+          kg: payload.leanBodyMassKg,
+        });
         typesUpserted++;
       }
 
       if ((payload.basalCalories ?? 0) > 0) {
-        upsert.run(userId, payload.date, 'basal_calories', JSON.stringify({ kcal: payload.basalCalories }));
+        runAppleHealthUpsert(upsert, userId, payload.date, 'basal_calories', { kcal: payload.basalCalories });
         typesUpserted++;
       }
 
       if ((payload.exerciseMinutes ?? 0) > 0) {
-        upsert.run(userId, payload.date, 'exercise_minutes', JSON.stringify({ minutes: payload.exerciseMinutes }));
+        runAppleHealthUpsert(upsert, userId, payload.date, 'exercise_minutes', { minutes: payload.exerciseMinutes });
         typesUpserted++;
       }
 
       // ── Workouts ───────────────────────────────────────────
       if (payload.workouts && payload.workouts.length > 0) {
-        upsert.run(userId, payload.date, 'workout', JSON.stringify(payload.workouts));
+        runAppleHealthUpsert(upsert, userId, payload.date, 'workout', payload.workouts);
         typesUpserted++;
       }
 
@@ -365,7 +393,7 @@ export function healthDataRoutes(): Router {
         || (payload.exerciseMinutes ?? 0) > 0
         || (payload.totalSleepMinutes ?? 0) > 0
       ) {
-        upsert.run(userId, payload.date, 'daily_summary', JSON.stringify({
+        runAppleHealthUpsert(upsert, userId, payload.date, 'daily_summary', {
           steps: payload.steps ?? null,
           activeCalories: payload.activeCalories ?? null,
           restingHeartRate: payload.restingHeartRate ?? null,
@@ -382,7 +410,7 @@ export function healthDataRoutes(): Router {
           basalCalories: payload.basalCalories ?? null,
           exerciseMinutes: payload.exerciseMinutes ?? null,
           workoutsCount: payload.workouts?.length ?? 0,
-        }));
+        });
         typesUpserted++;
       }
 

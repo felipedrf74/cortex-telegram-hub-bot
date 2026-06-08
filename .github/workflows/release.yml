@@ -3,14 +3,10 @@ name: 🏷️ Release
 on:
   workflow_dispatch:
     inputs:
-      bump:
-        description: 'Version bump type'
+      version:
+        description: 'Already-prepared package version to tag, for example 4.14.206 or v4.14.206'
         required: true
-        type: choice
-        options:
-          - patch
-          - minor
-          - major
+        type: string
       changelog:
         description: 'Release notes (what changed)'
         required: true
@@ -18,7 +14,7 @@ on:
 
 jobs:
   release:
-    name: Create Release ${{ github.event.inputs.bump }}
+    name: Create Release ${{ github.event.inputs.version }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -34,74 +30,52 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
-          node-version: '20'
+          node-version: '22'
 
       - name: Configure Git
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-      - name: Bump version
-        id: bump
+      - name: Validate prepared release version
+        id: release
         run: |
+          EXPECTED="${{ github.event.inputs.version }}"
+          EXPECTED="${EXPECTED#v}"
           CURRENT=$(node -p "require('./package.json').version")
-          
-          IFS='.' read -ra PARTS <<< "$CURRENT"
-          MAJOR=${PARTS[0]}
-          MINOR=${PARTS[1]}
-          PATCH=${PARTS[2]}
-          
-          case "${{ github.event.inputs.bump }}" in
-            major) MAJOR=$((MAJOR + 1)); MINOR=0; PATCH=0 ;;
-            minor) MINOR=$((MINOR + 1)); PATCH=0 ;;
-            patch) PATCH=$((PATCH + 1)) ;;
-          esac
-          
-          NEW="${MAJOR}.${MINOR}.${PATCH}"
-          echo "old=$CURRENT" >> $GITHUB_OUTPUT
-          echo "new=$NEW" >> $GITHUB_OUTPUT
-          echo "tag=v${NEW}" >> $GITHUB_OUTPUT
-          
-          npm version "$NEW" --no-git-tag-version
-          echo "📦 Version: $CURRENT → $NEW"
 
-      - name: Update CHANGELOG.md
-        run: |
-          DATE=$(date +%Y-%m-%d)
-          VERSION="${{ steps.bump.outputs.new }}"
-          NOTES="${{ github.event.inputs.changelog }}"
-          
-          {
-            head -3 CHANGELOG.md
-            echo ""
-            echo "## [${VERSION}] — ${DATE}"
-            echo ""
-            echo "${NOTES}"
-            echo ""
-            echo "---"
-            echo ""
-            tail -n +4 CHANGELOG.md
-          } > CHANGELOG.tmp
-          mv CHANGELOG.tmp CHANGELOG.md
+          if [ "$CURRENT" != "$EXPECTED" ]; then
+            echo "package.json version ($CURRENT) does not match requested release ($EXPECTED)." >&2
+            echo "Run scripts/release-prep.sh before staging, then tag the exact promoted commit." >&2
+            exit 1
+          fi
 
-      - name: Commit & Tag
+          TAG="v$CURRENT"
+          if git rev-parse "$TAG" >/dev/null 2>&1; then
+            echo "Tag $TAG already exists; refusing to overwrite release history." >&2
+            exit 1
+          fi
+
+          echo "version=$CURRENT" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "📦 Prepared release: $TAG at $GITHUB_SHA"
+
+      - name: Tag prepared commit
         run: |
-          git add package.json package-lock.json CHANGELOG.md
-          git commit -m "release: ${{ steps.bump.outputs.tag }}"
-          git tag -a "${{ steps.bump.outputs.tag }}" -m "Release ${{ steps.bump.outputs.tag }}"
-          git push origin main --follow-tags
+          git tag -a "${{ steps.release.outputs.tag }}" -m "Release ${{ steps.release.outputs.tag }}"
+          git push origin "${{ steps.release.outputs.tag }}"
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
-          tag_name: ${{ steps.bump.outputs.tag }}
-          name: ${{ steps.bump.outputs.tag }}
+          tag_name: ${{ steps.release.outputs.tag }}
+          name: ${{ steps.release.outputs.tag }}
           body: |
             ## What's Changed
             
             ${{ github.event.inputs.changelog }}
             
-            **Full Changelog**: https://github.com/${{ github.repository }}/compare/v${{ steps.bump.outputs.old }}...${{ steps.bump.outputs.tag }}
+            Commit: `${{ github.sha }}`
           draft: false
           prerelease: false
 
@@ -115,7 +89,7 @@ jobs:
             -d "{
               \"parent\": { \"database_id\": \"$NOTION_RELEASES_DB\" },
               \"properties\": {
-                \"Release\": { \"title\": [{ \"text\": { \"content\": \"${{ steps.bump.outputs.tag }}\" } }] },
+                \"Release\": { \"title\": [{ \"text\": { \"content\": \"${{ steps.release.outputs.tag }}\" } }] },
                 \"Status\": { \"select\": { \"name\": \"✅ Released\" } },
                 \"Type\": { \"select\": { \"name\": \"Release\" } },
                 \"Environment\": { \"select\": { \"name\": \"Production\" } },

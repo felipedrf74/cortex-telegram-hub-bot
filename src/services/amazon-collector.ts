@@ -647,10 +647,13 @@ async function scrapeOrders(page: Page, year: number, month: number): Promise<Am
   await page.waitForTimeout(2000);
 
   let pageNum = 1;
-  const maxPages = 20; // Safety limit
+  const maxPages = 80; // Back-months can require many pages; early-stop below keeps this bounded.
 
   while (pageNum <= maxPages) {
     logger.info({ pageNum }, 'Scraping order history page');
+    let datedCards = 0;
+    let olderThanTargetCards = 0;
+    let targetMonthCards = 0;
 
     // ── Find all order cards on this page ─────────────────────
     // Amazon uses various class structures depending on the locale / UI version.
@@ -758,6 +761,9 @@ async function scrapeOrders(page: Page, year: number, month: number): Promise<Am
           logger.debug({ orderId }, 'Could not extract date from order card');
           continue;
         }
+        datedCards += 1;
+        if (date.startsWith(targetPrefix)) targetMonthCards += 1;
+        if (date < `${targetPrefix}-01`) olderThanTargetCards += 1;
 
         // Filter to target month
         if (!date.startsWith(targetPrefix)) {
@@ -783,6 +789,14 @@ async function scrapeOrders(page: Page, year: number, month: number): Promise<Am
       } catch (err) {
         logger.warn({ err }, 'Error parsing order card');
       }
+    }
+
+    if (datedCards > 0 && targetMonthCards === 0 && olderThanTargetCards === datedCards) {
+      logger.info(
+        { pageNum, targetMonth: targetPrefix, datedCards },
+        'Stopping Amazon pagination: page is entirely older than target month',
+      );
+      break;
     }
 
     // ── Pagination ─────────────────────────────────────────────
@@ -875,36 +889,48 @@ async function fetchInvoiceUrls(page: Page, orderId: string): Promise<InvoiceLin
  * the page and triggering Playwright's download-interception.
  */
 async function downloadInvoicePdf(page: Page, url: string): Promise<Buffer | null> {
-  try {
-    const response = await page.request.get(url, { timeout: 30000 });
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    try {
+      const response = await page.request.get(url, { timeout: 30000 });
 
-    if (!response.ok()) {
-      logger.warn({ url, status: response.status() }, 'Invoice PDF download failed');
+      if (!response.ok()) {
+        const status = response.status();
+        logger.warn({ url, status, attempt }, 'Invoice PDF download failed');
+        if ((status === 429 || status === 502 || status === 503 || status === 504) && attempt < 3) {
+          await page.waitForTimeout(500 * attempt + Math.random() * 500);
+          continue;
+        }
+        return null;
+      }
+
+      const contentType = response.headers()['content-type'] || '';
+      const body = await response.body();
+
+      // Verify we got a PDF (content-type or magic bytes)
+      const isPdf = contentType.includes('pdf') ||
+        (body.length > 4 && body[0] === 0x25 && body[1] === 0x50 && body[2] === 0x44 && body[3] === 0x46);
+      // %PDF magic bytes
+
+      if (!isPdf) {
+        logger.warn(
+          { url, contentType, bodyLen: body.length },
+          'Invoice download did not return a PDF',
+        );
+        return null;
+      }
+
+      logger.info({ url: url.substring(0, 80), sizeKB: Math.round(body.length / 1024) }, 'Invoice PDF downloaded');
+      return body;
+    } catch (err) {
+      logger.warn({ err, url: url.substring(0, 80), attempt }, 'Failed to download invoice PDF');
+      if (attempt < 3) {
+        await page.waitForTimeout(500 * attempt + Math.random() * 500);
+        continue;
+      }
       return null;
     }
-
-    const contentType = response.headers()['content-type'] || '';
-    const body = await response.body();
-
-    // Verify we got a PDF (content-type or magic bytes)
-    const isPdf = contentType.includes('pdf') ||
-      (body.length > 4 && body[0] === 0x25 && body[1] === 0x50 && body[2] === 0x44 && body[3] === 0x46);
-    // %PDF magic bytes
-
-    if (!isPdf) {
-      logger.warn(
-        { url, contentType, bodyLen: body.length },
-        'Invoice download did not return a PDF',
-      );
-      return null;
-    }
-
-    logger.info({ url: url.substring(0, 80), sizeKB: Math.round(body.length / 1024) }, 'Invoice PDF downloaded');
-    return body;
-  } catch (err) {
-    logger.warn({ err, url: url.substring(0, 80) }, 'Failed to download invoice PDF');
-    return null;
   }
+  return null;
 }
 
 // ─── Main Collection Orchestrator ───────────────────────────────────
@@ -951,7 +977,7 @@ export async function collectAmazonInvoices(
   }
 
   if (!isInvoiceFilingConfigured()) {
-    logger.error('Amazon: invoice filing not configured — missing SSH config');
+    logger.error('Amazon: invoice object storage not configured');
     result.durationMs = Date.now() - startTime;
     return result;
   }
@@ -1062,6 +1088,7 @@ export async function collectAmazonInvoices(
             status: 'failed',
             error_message: 'No invoice PDFs found in popover',
             user_id: userId,
+            tenant_id: userId,
           });
           continue;
         }
@@ -1091,12 +1118,13 @@ export async function collectAmazonInvoices(
             continue;
           }
 
-          // File the PDF to iCloud
           const filingResult = await filePdf(
             pdfBuffer,
             'Amazon.es',
             order.date,
             invoiceRef,
+            `${invoiceRef}.pdf`,
+            { tenantId: userId, userId, mime: 'application/pdf' },
           );
 
           if (filingResult.success) {
@@ -1114,8 +1142,14 @@ export async function collectAmazonInvoices(
               folder_path: filingResult.folderPath,
               filename: filingResult.filename,
               file_size_bytes: pdfBuffer.length,
+              object_key: filingResult.objectKey ?? null,
+              checksum: filingResult.checksum ?? null,
+              mime: filingResult.mime ?? 'application/pdf',
+              bytes: filingResult.bytes ?? pdfBuffer.length,
+              storage_backend: filingResult.storageBackend ?? null,
               status: 'filed',
               user_id: userId,
+              tenant_id: userId,
             });
           } else {
             errorCount++;
@@ -1130,6 +1164,7 @@ export async function collectAmazonInvoices(
               status: 'failed',
               error_message: filingResult.error,
               user_id: userId,
+              tenant_id: userId,
             });
           }
 
@@ -1143,7 +1178,6 @@ export async function collectAmazonInvoices(
         } else if (errorCount > 0) {
           orderResult.status = 'error';
           orderResult.error = `${errorCount} invoice(s) failed to download`;
-          result.totalErrors++;
         } else {
           orderResult.status = 'no_invoice';
           result.totalNoInvoice++;

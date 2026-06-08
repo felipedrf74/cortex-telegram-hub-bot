@@ -35,18 +35,31 @@ export function senderMatchesPatterns(rawSender: string, senderPatterns: string[
   const atIdx = emailFrom.indexOf('@');
   if (atIdx === -1) return false;
   const emailDomain = emailFrom.slice(atIdx + 1);
+  const matchableMailbox = normalizeMailboxForMatch(emailFrom);
 
   return senderPatterns.some((pattern) => {
     const p = pattern.toLowerCase().trim();
-    if (p.includes('@')) return emailFrom === p;
+    if (p.includes('@')) return emailFrom === p || matchableMailbox === normalizeMailboxForMatch(p);
     return emailDomain === p || emailDomain.endsWith(`.${p}`);
   });
+}
+
+function normalizeMailboxForMatch(email: string): string {
+  const normalized = normalizeSenderAddress(email);
+  const atIdx = normalized.indexOf('@');
+  if (atIdx === -1) return normalized;
+  const local = normalized.slice(0, atIdx);
+  const domain = normalized.slice(atIdx + 1);
+  return `${local.split('+')[0]}@${domain}`;
 }
 
 export function subjectMatchesPatterns(subject: string, subjectPatterns: string[]): boolean {
   const subjectLower = subject.toLowerCase();
   if (subjectPatterns.length === 0) return true;
-  return subjectPatterns.some((pattern) => subjectLower.includes(pattern.toLowerCase().trim()));
+  return subjectPatterns.some((pattern) => {
+    const normalized = pattern.toLowerCase().trim();
+    return normalized.length === 0 || subjectLower.includes(normalized);
+  });
 }
 
 /** Hardcoded vendors — always present, cannot be removed. */
@@ -83,6 +96,57 @@ const BUILTIN_VENDORS: VendorConfig[] = [
   },
 ];
 
+const SUPPORTED_INVOICE_ATTACHMENT_EXTENSIONS = new Set([
+  'pdf',
+  'xml',
+  'p7m',
+  'zip',
+  'csv',
+  'xls',
+  'xlsx',
+  'doc',
+  'docx',
+  'jpg',
+  'jpeg',
+  'png',
+  'heic',
+  'heif',
+  'tif',
+  'tiff',
+]);
+
+const SUPPORTED_INVOICE_ATTACHMENT_CONTENT_TYPES = [
+  'application/pdf',
+  'application/xml',
+  'text/xml',
+  'application/pkcs7-mime',
+  'application/zip',
+  'application/x-zip-compressed',
+  'text/csv',
+  'application/csv',
+  'application/vnd.ms-excel',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  'application/msword',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  'image/jpeg',
+  'image/png',
+  'image/heic',
+  'image/heif',
+  'image/tiff',
+];
+
+function isSupportedInvoiceAttachment(filename: string, contentType: string | null | undefined): boolean {
+  const normalizedFilename = filename.trim().toLowerCase();
+  const dotIndex = normalizedFilename.lastIndexOf('.');
+  const extension = dotIndex >= 0 ? normalizedFilename.slice(dotIndex + 1) : '';
+  if (extension && SUPPORTED_INVOICE_ATTACHMENT_EXTENSIONS.has(extension)) return true;
+
+  const normalizedContentType = (contentType ?? '').trim().toLowerCase();
+  return SUPPORTED_INVOICE_ATTACHMENT_CONTENT_TYPES.some((supported) =>
+    normalizedContentType.startsWith(supported),
+  );
+}
+
 /**
  * Returns invoice vendor rules for the authenticated user.
  *
@@ -90,11 +154,11 @@ const BUILTIN_VENDORS: VendorConfig[] = [
  * Those are now opt-in only: a user who has not configured a vendor should not
  * see or scan against another account's fiscal assumptions.
  */
-export function getAllVendors(userId: number): VendorConfig[] {
-  const dbVendors = getActiveVendors(userId).map((v) => ({
+export function getAllVendors(userId: number, tenantId = userId): VendorConfig[] {
+  const dbVendors = getActiveVendors(userId, tenantId).map((v) => ({
     name: v.name,
-    senderPatterns: [v.sender_pattern],
-    subjectPatterns: v.subject_patterns?.split(',').map((s) => s.trim()) || ['fatura'],
+    senderPatterns: v.sender_patterns?.length ? v.sender_patterns : [v.sender_pattern],
+    subjectPatterns: v.subject_patterns?.split(',').map((s) => s.trim()).filter(Boolean) ?? [],
     builtin: false,
   }));
   return areGlobalInvoiceVendorsEnabled() ? [...BUILTIN_VENDORS, ...dbVendors] : dbVendors;
@@ -123,8 +187,11 @@ export interface MonthlyCollectionResult {
   totalFiled: number;
   totalDuplicates: number;
   totalErrors: number;
+  warnings: string[];
   durationMs: number;
 }
+
+const MONTHLY_COLLECTION_EMAIL_CAP = 2000;
 
 // ─── Invoice Number Extraction ──────────────────────────────────────
 
@@ -216,6 +283,7 @@ async function collectForVendor(
   targetYear: number,
   targetMonth: number,
   userId: number,
+  tenantId = userId,
 ): Promise<VendorCollectionResult> {
   const result: VendorCollectionResult = {
     vendor: vendor.name,
@@ -235,7 +303,7 @@ async function collectForVendor(
 
   for (const email of vendorEmails) {
     // Check if we've already processed this email
-    if (isEmailAlreadyFiled(email.id, userId)) {
+    if (isEmailAlreadyFiled(email.id, userId, tenantId)) {
       result.duplicates++;
       result.details.push(`⏭ Duplicado: ${email.subject}`);
       continue;
@@ -251,10 +319,13 @@ async function collectForVendor(
       continue;
     }
 
-    // Get PDF attachments
-    let pdfAttachments;
+    // Get supported fiscal attachments. PDF is common, but many fiscal
+    // senders use images, XML, p7m, zip, or office files.
+    let invoiceAttachments;
     try {
-      pdfAttachments = await getAttachments(email.id, 'application/pdf');
+      invoiceAttachments = (await getAttachments(email.id)).filter((attachment) =>
+        isSupportedInvoiceAttachment(attachment.name, attachment.contentType),
+      );
     } catch (err) {
       logger.error({ err, emailId: email.id }, 'Failed to list attachments');
       result.errors++;
@@ -262,19 +333,19 @@ async function collectForVendor(
       continue;
     }
 
-    if (pdfAttachments.length === 0) {
-      logger.debug({ subject: email.subject }, 'No PDF attachments found');
+    if (invoiceAttachments.length === 0) {
+      logger.debug({ subject: email.subject }, 'No supported invoice attachments found');
       continue;
     }
 
-    // Process each PDF attachment
-    for (const att of pdfAttachments) {
+    // Process each supported invoice attachment.
+    for (const att of invoiceAttachments) {
       // Extract metadata from email subject
       const invoiceNumber = extractInvoiceNumber(email.subject);
       const documentDate = extractDateFromSubject(email.subject, targetYear, targetMonth);
 
       // Check for duplicate by invoice number
-      if (isDuplicate(vendor.name, invoiceNumber, userId)) {
+      if (isDuplicate(vendor.name, invoiceNumber, userId, tenantId)) {
         result.duplicates++;
         result.details.push(`⏭ Duplicado: ${att.name} (${invoiceNumber})`);
         recordFiling({
@@ -284,6 +355,7 @@ async function collectForVendor(
           source_ref: email.id,
           status: 'duplicate',
           user_id: userId,
+          tenant_id: tenantId,
         });
         continue;
       }
@@ -297,6 +369,7 @@ async function collectForVendor(
           documentDate,
           invoiceNumber,
           att.name,
+          { tenantId, userId, mime: att.contentType },
         );
 
         if (filingResult.success) {
@@ -313,8 +386,14 @@ async function collectForVendor(
             folder_path: filingResult.folderPath,
             filename: filingResult.filename,
             file_size_bytes: download.buffer.length,
+            object_key: filingResult.objectKey ?? null,
+            checksum: filingResult.checksum ?? null,
+            mime: filingResult.mime ?? att.contentType ?? 'application/octet-stream',
+            bytes: filingResult.bytes ?? download.buffer.length,
+            storage_backend: filingResult.storageBackend ?? null,
             status: 'filed',
             user_id: userId,
+            tenant_id: tenantId,
           });
         } else {
           result.errors++;
@@ -328,6 +407,7 @@ async function collectForVendor(
             status: 'failed',
             error_message: filingResult.error,
             user_id: userId,
+            tenant_id: tenantId,
           });
         }
       } catch (err) {
@@ -355,6 +435,7 @@ export async function collectMonthlyInvoices(
   userId: number,
   year: number,
   month: number,
+  tenantId = userId,
 ): Promise<MonthlyCollectionResult> {
   const startTime = Date.now();
   const { monthFolder } = resolveTargetDirectory(`${year}-${month.toString().padStart(2, '0')}-15`);
@@ -367,6 +448,7 @@ export async function collectMonthlyInvoices(
       year, month, monthLabel: monthFolder,
       vendors: [],
       totalFiled: 0, totalDuplicates: 0, totalErrors: 0,
+      warnings: [],
       durationMs: Date.now() - startTime,
     };
   }
@@ -381,9 +463,13 @@ export async function collectMonthlyInvoices(
   // Personal Outlook/Hotmail accounts don't support `contains()` in $filter,
   // so we use a simple date range + hasAttachments filter and match senders client-side.
   let allEmails: OutlookEmail[];
+  const warnings: string[] = [];
   try {
     const filter = `receivedDateTime ge ${startDate} and receivedDateTime lt ${endDate} and hasAttachments eq true`;
-    allEmails = await searchEmailsByFilter(filter, 250);
+    allEmails = await searchEmailsByFilter(filter, MONTHLY_COLLECTION_EMAIL_CAP);
+    if (allEmails.length >= MONTHLY_COLLECTION_EMAIL_CAP) {
+      warnings.push('RESULTS_TRUNCATED');
+    }
     logger.info(
       { year, month, emailCount: allEmails.length },
       'Fetched emails with attachments for month',
@@ -394,16 +480,17 @@ export async function collectMonthlyInvoices(
       year, month, monthLabel: monthFolder,
       vendors: [],
       totalFiled: 0, totalDuplicates: 0, totalErrors: 1,
+      warnings: [],
       durationMs: Date.now() - startTime,
     };
   }
 
-  const vendors = getAllVendors(userId);
+  const vendors = getAllVendors(userId, tenantId);
   const vendorResults: VendorCollectionResult[] = [];
 
   for (const vendor of vendors) {
     try {
-      const vResult = await collectForVendor(vendor, allEmails, year, month, userId);
+      const vResult = await collectForVendor(vendor, allEmails, year, month, userId, tenantId);
       vendorResults.push(vResult);
       logger.info(
         { filed: vResult.filed, duplicates: vResult.duplicates, errors: vResult.errors, builtin: vendor.builtin },
@@ -432,6 +519,7 @@ export async function collectMonthlyInvoices(
     year, month, monthLabel: monthFolder,
     vendors: vendorResults,
     totalFiled, totalDuplicates, totalErrors,
+    warnings,
     durationMs: Date.now() - startTime,
   };
 }
@@ -445,6 +533,10 @@ export function formatCollectionNotification(result: MonthlyCollectionResult): s
     `📊 <b>Recolha de Faturas — ${esc(result.monthLabel)}</b>`,
     '',
   ];
+  if ((result.warnings ?? []).includes('RESULTS_TRUNCATED')) {
+    lines.push('⚠️ Resultado truncado: reveja mais mensagens manualmente.');
+    lines.push('');
+  }
 
   if (result.vendors.length === 0) {
     lines.push('⚠️ Nenhum fornecedor configurado.');

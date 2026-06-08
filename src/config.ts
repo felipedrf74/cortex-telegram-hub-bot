@@ -371,7 +371,7 @@ export const config = {
     digestEnabled: (process.env.TODO_DIGEST_ENABLED || 'true') === 'true',
     digestTime: process.env.TODO_DIGEST_TIME || '06:00',
   },
-  // ── Invoice/Receipt Filing (via SSH/SCP to Mac → iCloud Drive) ─────
+  // ── Invoice/Receipt Filing (legacy SSH fields retained for backfill metadata) ─────
   invoices: {
     enabled: (process.env.INVOICE_FILING_ENABLED || 'true') === 'true',
     sshHost: process.env.INVOICE_SSH_HOST || '',
@@ -397,6 +397,22 @@ export const config = {
     uberHeadless: (process.env.UBER_HEADLESS || 'true') === 'true',
     uberRidesEnabled: (process.env.UBER_RIDES_ENABLED || 'true') === 'true',
     uberEatsEnabled: (process.env.UBER_EATS_ENABLED || 'true') === 'true',
+  },
+  invoiceObjectStorage: {
+    enabled: (process.env.INVOICE_OBJECT_STORAGE_ENABLED || 'true') === 'true',
+    backend: (process.env.INVOICE_OBJECT_STORAGE_BACKEND || (process.env.INVOICE_MINIO_ENDPOINT ? 'minio' : 'filesystem')).toLowerCase(),
+    filesystemDir: process.env.INVOICE_OBJECT_STORAGE_DIR || './data/invoice-objects',
+    maxObjectBytes: optionalInt('INVOICE_OBJECT_MAX_BYTES', 10 * 1024 * 1024, { min: 1 }),
+    minFreeBytes: optionalInt('INVOICE_OBJECT_MIN_FREE_BYTES', 512 * 1024 * 1024, { min: 0 }),
+    tenantMaxBytes: optionalInt('INVOICE_OBJECT_TENANT_MAX_BYTES', 5 * 1024 * 1024 * 1024, { min: 0 }),
+    minio: {
+      endpoint: process.env.INVOICE_MINIO_ENDPOINT || '',
+      region: process.env.INVOICE_MINIO_REGION || 'us-east-1',
+      bucket: process.env.INVOICE_MINIO_BUCKET || 'nexus-invoices',
+      accessKeyId: process.env.INVOICE_MINIO_ACCESS_KEY_ID || '',
+      secretAccessKey: process.env.INVOICE_MINIO_SECRET_ACCESS_KEY || '',
+      forcePathStyle: (process.env.INVOICE_MINIO_FORCE_PATH_STYLE || 'true') !== 'false',
+    },
   },
   // ── Sentry Error Tracking ────────────────────────────────────────────
   // Cloud-based error monitoring alongside our existing SQLite + Telegram
@@ -601,6 +617,9 @@ export const config = {
     enabled: (process.env.FINANCE_ENCRYPTION_ENABLED || 'true') === 'true',
     masterKey: process.env.FINANCE_ENCRYPTION_KEY || '',
   },
+  financePlanning: {
+    allowStaticFxEstimate: (process.env.FINANCE_ALLOW_STATIC_FX_ESTIMATE || 'false') === 'true',
+  },
   rateLimit: {
     maxMessagesPerMinute: 30,
   },
@@ -731,9 +750,9 @@ if (!config.billing.paywallEnabled && !config.billing.allowUnsafePaywallBypass) 
   );
 }
 
-if (IS_PRODUCTION && config.financeEncryption.enabled && !config.financeEncryption.masterKey) {
+if (IS_PRODUCTION && (!config.financeEncryption.enabled || !config.financeEncryption.masterKey)) {
   throw new Error(
-    'FINANCE_ENCRYPTION_KEY is required when FINANCE_ENCRYPTION_ENABLED=true in production. Generate one with: openssl rand -hex 32',
+    'FINANCE_ENCRYPTION_ENABLED=true and FINANCE_ENCRYPTION_KEY are required in production. Generate one with: openssl rand -hex 32',
   );
 }
 

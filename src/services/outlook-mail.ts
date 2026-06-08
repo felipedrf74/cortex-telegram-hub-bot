@@ -352,30 +352,41 @@ export async function searchEmailsByFilter(
 ): Promise<OutlookEmail[]> {
   try {
     const client = getGraphClient();
+    const pageSize = Math.min(Math.max(maxResults, 1), 250);
+
+    const fetchPages = async (useOrderBy: boolean): Promise<OutlookEmail[]> => {
+      const messages: OutlookEmail[] = [];
+      let nextLink: string | null = null;
+
+      do {
+        let request: any;
+        if (nextLink) {
+          request = client.api(nextLink);
+        } else {
+          request = client
+            .api('/me/messages')
+            .filter(filter)
+            .top(Math.min(pageSize, maxResults - messages.length))
+            .select('id,conversationId,from,toRecipients,subject,bodyPreview,receivedDateTime,isRead,importance,hasAttachments');
+          if (useOrderBy) request = request.orderby('receivedDateTime DESC');
+        }
+        const response: any = await request.get();
+
+        messages.push(...mapEmailResponse(response));
+        nextLink = response['@odata.nextLink'] || null;
+      } while (nextLink && messages.length < maxResults);
+
+      return messages.slice(0, maxResults);
+    };
 
     // Try with $orderby first (works on most accounts)
     try {
-      const response = await client
-        .api('/me/messages')
-        .filter(filter)
-        .top(maxResults)
-        .select('id,conversationId,from,toRecipients,subject,bodyPreview,receivedDateTime,isRead,importance,hasAttachments')
-        .orderby('receivedDateTime DESC')
-        .get();
-
-      return mapEmailResponse(response);
+      return await fetchPages(true);
     } catch (orderErr: any) {
       // If $orderby + $filter fails, retry without $orderby (personal account fallback)
       if (orderErr?.statusCode === 400) {
         logger.warn('$filter + $orderby failed, retrying without $orderby (personal account fallback)');
-        const response = await client
-          .api('/me/messages')
-          .filter(filter)
-          .top(maxResults)
-          .select('id,conversationId,from,toRecipients,subject,bodyPreview,receivedDateTime,isRead,importance,hasAttachments')
-          .get();
-
-        return mapEmailResponse(response);
+        return await fetchPages(false);
       }
       throw orderErr;
     }

@@ -2,7 +2,9 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "$ROOT/scripts/lib/release-gates.sh"
 cd "$ROOT"
+release_require_git_worktree "$ROOT"
 
 BASE_REF=""
 EXPLICIT_FILES=""
@@ -163,6 +165,8 @@ if [ "$PYTHON_ENGINE" = "true" ] && [ "$SKIP_PYTHON" != "true" ]; then
   if [ -z "$PYTHON_BIN" ]; then
     if [ -x "$ROOT/content-engine/.venv-codex313/bin/python" ]; then
       PYTHON_BIN="$ROOT/content-engine/.venv-codex313/bin/python"
+    elif [ -x "$ROOT/content-engine/.venv313/bin/python" ]; then
+      PYTHON_BIN="$ROOT/content-engine/.venv313/bin/python"
     elif [ -x "$ROOT/content-engine/.venv/bin/python" ]; then
       PYTHON_BIN="$ROOT/content-engine/.venv/bin/python"
     else

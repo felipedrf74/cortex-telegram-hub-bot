@@ -89,8 +89,8 @@ async function dispatchRegisterInvite(body: any): Promise<MockRes> {
 function legalAcceptance() {
   return {
     accepted: true,
-    termsVersion: '2026-06-04',
-    privacyVersion: '2026-06-04',
+    termsVersion: '2026-06-05',
+    privacyVersion: '2026-06-05',
   };
 }
 
@@ -226,8 +226,8 @@ describe('Auth invite registration', () => {
       source: string;
     }>;
     expect(consents).toEqual([
-      { document_key: 'privacy', document_version: '2026-06-04', source: 'ios_register' },
-      { document_key: 'terms', document_version: '2026-06-04', source: 'ios_register' },
+      { document_key: 'privacy', document_version: '2026-06-05', source: 'ios_register' },
+      { document_key: 'terms', document_version: '2026-06-05', source: 'ios_register' },
     ]);
   });
 

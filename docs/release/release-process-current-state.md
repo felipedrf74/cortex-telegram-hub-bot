@@ -2,6 +2,14 @@
 
 Date: 2026-05-01
 
+Status: deprecated historical snapshot
+
+This file is retained as May 1 process evidence only. It is not the current
+release process. Use `docs/release/README.md`,
+`docs/release/current-release-index.md`, `docs/release/CURRENT_RELEASE_STATE.md`,
+and `docs/release/release-evidence-contract.md` for active release decisions.
+The observed branch/version/migration counts below are intentionally stale.
+
 ## Repositories Reviewed
 
 | Area | Path | Current observed state |

@@ -550,6 +550,9 @@ export async function updateTask(
         }
       }
     }
+    if (data.recurrence !== undefined) {
+      patch.recurrence = data.recurrence;
+    }
 
     if (data.recurrence !== undefined) {
       patch.recurrence = data.recurrence || null;

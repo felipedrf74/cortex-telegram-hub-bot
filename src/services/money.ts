@@ -8,7 +8,11 @@ export function toCents(value: number): Cents {
   if (!Number.isFinite(value)) {
     throw new Error('Money amount must be finite');
   }
-  return BigInt(Math.round(value * 100));
+  if (Math.abs(value) >= 1e21) {
+    throw new Error('Money amount is too large');
+  }
+  const parsed = parseNormalizedDecimalToCents(normalizeNumberForCents(value));
+  return value < 0 ? -parsed : parsed;
 }
 
 export function cents(value: number | string | bigint): Cents {
@@ -71,4 +75,13 @@ function parseNormalizedDecimalToCents(raw: string): Cents {
   const baseCents = BigInt(centsDigits.slice(0, 2));
   const shouldRoundUp = Number(centsDigits[2] ?? '0') >= 5;
   return wholeCents + baseCents + (shouldRoundUp ? 1n : 0n);
+}
+
+function normalizeNumberForCents(value: number): string {
+  const raw = Math.abs(value).toString();
+  if (!/[eE]/.test(raw)) return raw;
+  return Math.abs(value)
+    .toFixed(12)
+    .replace(/0+$/, '')
+    .replace(/\.$/, '') || '0';
 }

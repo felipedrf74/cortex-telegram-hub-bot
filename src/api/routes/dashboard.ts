@@ -154,6 +154,7 @@ export function dashboardRoutes(): Router {
         staleSeconds: DASHBOARD_SWR_STALE,
         refreshContext: { source: 'dashboard_route', operation: 'dashboard_swr_refresh', userId },
         fetchFresh: () => buildDashboardPayload(userId, language, timings),
+        shouldServeCached: shouldServeDashboardCache,
         send: (dashboard, meta) => {
           sendConditionalApiSuccess(res, req, sanitizeDashboardPayloadForClient(dashboard), {
             cached: meta.cached,
@@ -194,6 +195,32 @@ function dashboardCacheKeyFor(userId: number, language: Lang): string {
 
 function dashboardHomeCacheKeyFor(userId: number, language: Lang): string {
   return routeCacheKey('dashboard-home', userId, language);
+}
+
+function shouldServeDashboardCache(hit: { value: any; fresh: boolean }): boolean {
+  return !payloadContainsTrainingCalendarEvent(hit.value);
+}
+
+function payloadContainsTrainingCalendarEvent(payload: any): boolean {
+  const events = Array.isArray(payload?.calendar?.today) ? payload.calendar.today : [];
+  return events.some(isTrainingCalendarEventLike);
+}
+
+function isTrainingCalendarEventLike(event: any): boolean {
+  const source = String(event?.source || '').toLowerCase();
+  if (source === 'apple_health') return false;
+  const text = [
+    event?.title,
+    event?.summary,
+    event?.category,
+    Array.isArray(event?.categories) ? event.categories.join(' ') : '',
+  ]
+    .filter(Boolean)
+    .join(' ')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase();
+  return /\b(training|workout|gym|strength|run|runner|treino|corrida|academia)\b/.test(text);
 }
 
 function resolveDashboardLanguage(req: Request, userId: number): Lang {

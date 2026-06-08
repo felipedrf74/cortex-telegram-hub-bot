@@ -47,11 +47,16 @@
 #   ./scripts/deploy-staging.sh
 # ─────────────────────────────────────────────────────
 set -euo pipefail
+umask 077
 
 SERVER="${DEPLOY_SERVER:-dominguez@serverdominguez}"
 STAGING_DIR="${STAGING_PATH:-/home/dominguez/telegram-hub-bot-staging}"
 LOCAL_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+source "$LOCAL_DIR/scripts/lib/release-gates.sh"
 PM2="/home/dominguez/.npm-global/bin/pm2"
+trap release_cleanup_all_locks EXIT
+release_require_git_worktree "$LOCAL_DIR"
+release_acquire_local_lock "$LOCAL_DIR" "staging-deploy"
 
 echo "═══════════════════════════════════════════════"
 echo "  🚧 Nexus Hub Staging Deploy"
@@ -65,6 +70,8 @@ echo "📦 Building TypeScript..."
 cd "$LOCAL_DIR"
 npx tsc --noEmit 2>&1 | tail -3 && echo "   ✅ Type check passed" || { echo "   ❌ Type errors — aborting"; exit 1; }
 npm run build 2>&1 | tail -3 && echo "   ✅ Build complete" || { echo "   ❌ Build failed — aborting"; exit 1; }
+STAGING_BUILD_MANIFEST_DIGEST=$(node scripts/release-artifact-manifest.mjs --digest)
+echo "   Artifact digest: $STAGING_BUILD_MANIFEST_DIGEST"
 
 # ── 2. Ensure staging directory structure exists ─────
 # First-run safe: creates the dirs if they don't exist, no-op otherwise.
@@ -84,6 +91,17 @@ ENV_CHECK=$(ssh "$SERVER" "
   set -e
   if [ ! -f $STAGING_DIR/.env ]; then
     echo 'MISSING_FILE'
+    exit 0
+  fi
+  ENV_MODE=\$(stat -c '%a' $STAGING_DIR/.env 2>/dev/null || stat -f '%Lp' $STAGING_DIR/.env 2>/dev/null || echo unknown)
+  case \"\$ENV_MODE\" in
+    400|600) ;;
+    *) echo \"BAD_MODE:\$ENV_MODE\"; exit 0 ;;
+  esac
+  ENV_OWNER=\$(stat -c '%U' $STAGING_DIR/.env 2>/dev/null || stat -f '%Su' $STAGING_DIR/.env 2>/dev/null || echo unknown)
+  CURRENT_OWNER=\$(id -un)
+  if [ \"\$ENV_OWNER\" != \"\$CURRENT_OWNER\" ]; then
+    echo \"BAD_OWNER:\$ENV_OWNER:expected:\$CURRENT_OWNER\"
     exit 0
   fi
   MISSING=''
@@ -109,6 +127,14 @@ case "$ENV_CHECK" in
     echo "   ❌ No staging .env file at $STAGING_DIR/.env — see first-time setup in header"
     exit 1
     ;;
+  BAD_MODE:*)
+    echo "   ❌ Staging .env has unsafe permissions (${ENV_CHECK#BAD_MODE:}); require 400 or 600"
+    exit 1
+    ;;
+  BAD_OWNER:*)
+    echo "   ❌ Staging .env has unsafe owner (${ENV_CHECK#BAD_OWNER:})"
+    exit 1
+    ;;
   MISSING_KEYS:*)
     echo "   ❌ Staging .env is missing required keys:${ENV_CHECK#MISSING_KEYS:}"
     echo "      Edit $STAGING_DIR/.env and ensure each key has a non-empty value."
@@ -121,6 +147,16 @@ case "$ENV_CHECK" in
     echo "   ⚠️  Unexpected .env validator output: $ENV_CHECK — proceeding cautiously"
     ;;
 esac
+
+PRE_RSYNC_MANIFEST_DIGEST=$(node scripts/release-artifact-manifest.mjs --digest)
+if [ "$PRE_RSYNC_MANIFEST_DIGEST" != "$STAGING_BUILD_MANIFEST_DIGEST" ]; then
+  echo "   ❌ Artifact digest changed after build:"
+  echo "      post-build: $STAGING_BUILD_MANIFEST_DIGEST"
+  echo "      pre-rsync:   $PRE_RSYNC_MANIFEST_DIGEST"
+  exit 1
+fi
+
+release_acquire_remote_lock "$SERVER" "$STAGING_DIR" "staging-deploy"
 
 # ── 3. Stop staging services (if running) ────────────
 # Use `|| true` because the apps may not be registered with PM2 yet on
@@ -141,6 +177,7 @@ echo "📤 Syncing files to staging..."
     --exclude='.env.*' \
     --exclude='.local/' \
     --exclude='.local/**' \
+    --exclude='.deploy.lock' \
     --exclude='.DS_Store' \
     --exclude='.db.sqlite' \
     --exclude='*.db' \
@@ -168,8 +205,8 @@ echo "   ✅ rsync complete"
 # Each install has its OWN node_modules and .venv — NO sharing with prod.
 echo ""
 echo "📥 Installing dependencies..."
-ssh "$SERVER" "cd $STAGING_DIR && npm ci --production 2>&1 | tail -1"
-ssh "$SERVER" "cd $STAGING_DIR/content-engine && [ -d .venv ] && source .venv/bin/activate && pip install -q -r requirements.txt 2>&1 | tail -1 || echo '   ⚠️  No staging .venv yet — see first-time setup in deploy-staging.sh header'"
+ssh "$SERVER" "set -euo pipefail; cd $STAGING_DIR && npm ci --production 2>&1 | tail -1"
+ssh "$SERVER" "set -euo pipefail; cd $STAGING_DIR/content-engine && if [ -d .venv ]; then source .venv/bin/activate && pip install -q -r requirements.txt 2>&1 | tail -1; else echo '   ⚠️  No staging .venv yet — see first-time setup in deploy-staging.sh header'; fi"
 echo "   ✅ Dependencies updated"
 
 # ── 5a. Owner bootstrap preflight (warn-only) ────────
@@ -187,6 +224,7 @@ echo ""
 echo "🔧 Rebuilding native modules..."
 ssh "$SERVER" "
   if [ -x /usr/bin/node ]; then
+    set -euo pipefail
     cd $STAGING_DIR && PATH=/usr/bin:\$PATH /usr/bin/npm rebuild better-sqlite3 2>&1 | tail -1
     echo '   ✅ Native modules rebuilt'
   fi
@@ -261,6 +299,10 @@ else
     fi
   "
 fi
+
+echo ""
+echo "🧭 Staging readiness check..."
+"$LOCAL_DIR/scripts/deploy-readiness-check.sh" --target staging --server "$SERVER" --remote-dir "$STAGING_DIR"
 
 echo ""
 echo "═══════════════════════════════════════════════"

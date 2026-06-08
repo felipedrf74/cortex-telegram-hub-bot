@@ -20,7 +20,7 @@ _shared_env_candidates = (
 
 for _env_path in _shared_env_candidates:
     if _env_path.exists():
-        load_dotenv(_env_path, override=True)
+        load_dotenv(_env_path, override=False)
         break
 
 from fastapi import FastAPI, Request
@@ -105,7 +105,9 @@ class InternalSecretMiddleware(BaseHTTPMiddleware):
 
         expected = cfg.internal_api_secret
         provided = request.headers.get("x-internal-secret") or ""
-        if not expected or not secrets.compare_digest(provided, expected):
+        expected_bytes = (expected or "").encode("utf-8")
+        provided_bytes = provided.encode("utf-8", "replace")
+        if not expected_bytes or not secrets.compare_digest(provided_bytes, expected_bytes):
             return JSONResponse(
                 status_code=401,
                 content={"error": {"code": "UNAUTHORIZED", "message": "Unauthorized"}},
@@ -178,6 +180,16 @@ app.include_router(books_router)
 @app.get("/health")
 async def health() -> dict:
     return {"status": "ok", "version": "0.1.0"}
+
+
+@app.get("/ready")
+async def ready() -> dict:
+    return {
+        "status": "ready",
+        "version": "0.1.0",
+        "internalAuthConfigured": bool(cfg.internal_api_secret),
+        "routers": ["research", "books"],
+    }
 
 
 if __name__ == "__main__":

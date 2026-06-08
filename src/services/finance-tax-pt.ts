@@ -219,7 +219,7 @@ export function calculatePortugueseMonthlyTaxEstimate(
   const annualIrs = calculateAnnualIrs(annualizedTaxableIncome);
   const taxDue = roundMoney(annualIrs.taxDue / 12);
 
-  const ivaRate = opts.ivaRate ?? PORTUGAL_MAINLAND_VAT_RATES.standard;
+  const ivaRate = opts.ivaRate ?? 0;
   const withholdingRate = opts.withholdingRate ?? 0;
 
   const socialSecurity = calculateSocialSecurityMonthly(gross, regime, opts);
@@ -242,4 +242,3 @@ export function calculatePortugueseMonthlyTaxEstimate(
     socialSecurityCapped: socialSecurity.capped,
   };
 }
-

@@ -170,6 +170,30 @@ describe('stripe service billing reconciliation', () => {
     expect(checkout.user_id).toBe(userId);
   });
 
+  it('does not let another user claim an existing Apple original transaction id', async () => {
+    const {
+      handleAppleTransaction,
+      AppleTransactionAlreadyClaimedError,
+    } = await import('../../src/services/stripe-service');
+    const userOne = Number(testDb.prepare('INSERT INTO users (email, email_verified) VALUES (?, 1)').run('apple-one@example.com').lastInsertRowid);
+    const userTwo = Number(testDb.prepare('INSERT INTO users (email, email_verified) VALUES (?, 1)').run('apple-two@example.com').lastInsertRowid);
+
+    handleAppleTransaction(userOne, '2000000123456789', 'me.nexushub.pro.monthly', new Date(Date.now() + 86400000).toISOString());
+
+    expect(() => handleAppleTransaction(
+      userTwo,
+      '2000000123456789',
+      'me.nexushub.max.monthly',
+      new Date(Date.now() + 86400000).toISOString(),
+    )).toThrow(AppleTransactionAlreadyClaimedError);
+
+    expect(testDb.prepare('SELECT COUNT(*) AS count FROM subscriptions WHERE user_id = ?').get(userTwo)).toMatchObject({ count: 0 });
+    expect(testDb.prepare('SELECT plan, provider FROM subscriptions WHERE user_id = ?').get(userOne)).toMatchObject({
+      plan: 'pro',
+      provider: 'apple',
+    });
+  });
+
   it('skips subscription updates with unknown Stripe price IDs', async () => {
     const { handleSubscriptionUpdated } = await import('../../src/services/stripe-service');
     testDb.prepare('INSERT INTO users (email, email_verified) VALUES (?, 1)').run('known@example.com');

@@ -401,6 +401,81 @@ describe('Dashboard API route', () => {
     ]);
   });
 
+  it('filters inactive training-owned calendar events from the dashboard', async () => {
+    mockGoogleCalendarConfigured.mockReturnValue(true);
+    mockGoogleCalendarEvents.mockResolvedValue([
+      {
+        id: 'stale-training',
+        summary: 'Runner Upper Body Strength A (48min)',
+        start: todayAt(12),
+        end: todayAt(12, 48),
+      },
+    ]);
+    mockDashboardDbAll.mockImplementation((sql: string) => {
+      if (sql.includes('FROM training_sessions')) {
+        return [{
+          eventId: 'stale-training',
+          source: 'google',
+          sessionId: 101,
+          planId: 11,
+          userId: 4,
+          planStatus: 'cancelled',
+        }];
+      }
+      return [];
+    });
+
+    const res = await dispatch(4);
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body.ok).toBe(true);
+    expect(res.body.data.calendar.today).toEqual([]);
+  });
+
+  it('bypasses cached dashboard payloads that contain training calendar blocks', async () => {
+    mockGetCachedSWR.mockImplementation((key: string) => {
+      if (key.startsWith('dashboard:4:')) {
+        return {
+          fresh: true,
+          value: {
+            greeting: 'Good morning, Felipe',
+            date: '2026-06-05',
+            dayOfWeek: 'Friday',
+            calendar: {
+              today: [{
+                id: 'cached-training',
+                title: 'Runner Upper Body Strength A (48min)',
+                start: todayAt(12),
+                end: todayAt(12, 48),
+                source: 'google',
+              }],
+              upcoming: [],
+              status: 'ready',
+              warningCodes: [],
+              warnings: [],
+            },
+            tasks: { overdue: 0, dueToday: 0, totalPending: 0, topTasks: [], status: 'ready', warningCodes: [], warnings: [] },
+            training: { todaySession: null, weeklyAdherence: null, readinessScore: null, bodyBattery: null, status: 'ready', readinessStatus: 'ready', bodyBatteryStatus: 'ready', warningCodes: [], warnings: [] },
+            content: { pipelineCount: { ideas: 0, scripted: 0, filmed: 0, editing: 0, published: 0 }, nextDeadline: null, status: 'ready', warningCodes: [], warnings: [] },
+            featureFlags: { homeDayDialV1: true },
+            dayDial: null,
+            quota: {},
+            system: {},
+          },
+        };
+      }
+      return null;
+    });
+    mockGoogleCalendarConfigured.mockReturnValue(true);
+    mockGoogleCalendarEvents.mockResolvedValue([]);
+
+    const res = await dispatch(4);
+
+    expect(res.statusCode).toBe(200);
+    expect(mockGoogleCalendarEvents).toHaveBeenCalledWith(expect.any(String), expect.any(String), 4);
+    expect(res.body.data.calendar.today).toEqual([]);
+  });
+
   it('sanitizes malformed dashboard event and task rows before returning them to iOS', async () => {
     mockOutlookCalendarConfigured.mockReturnValue(true);
     mockOutlookCalendarEvents.mockResolvedValue([

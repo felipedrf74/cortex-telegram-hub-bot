@@ -677,6 +677,25 @@ export function buildFinanceStateShortcutResponse(
       const month = now.toFormat('yyyy-MM');
       const summary = getMonthlySummary(userId, month, financeScope);
       if (summary.totalIncome > 0 || summary.totalDeductions > 0) {
+        if (summary.mixedCurrency) {
+          return {
+            text: language === 'en-US'
+              ? `I do not see a stored pending tax event, and the current ${month} numbers use mixed currencies (${summary.currencies.join(', ')}), so I am suppressing the Portugal tax preview until those amounts are normalized.`
+              : `Não vejo um evento fiscal pendente já registado, e os números atuais de ${month} usam moedas misturadas (${summary.currencies.join(', ')}), por isso estou a ocultar a prévia fiscal portuguesa até esses valores serem normalizados.`,
+            metadata: {
+              type: 'finance_tax_snapshot',
+              month,
+              taxDue: null,
+              inssDue: null,
+              ivaDue: null,
+              withholdingDue: null,
+              ptInvoiceCode: null,
+              status: 'mixed_currency_preview_suppressed',
+              derived: true,
+              currencies: summary.currencies,
+            },
+          };
+        }
         const preview = calculatePortugueseMonthlyTax(summary.totalIncome, summary.totalDeductions);
         return {
           text: language === 'en-US'

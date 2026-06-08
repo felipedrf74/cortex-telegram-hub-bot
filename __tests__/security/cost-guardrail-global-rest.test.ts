@@ -147,4 +147,17 @@ describe('global cost guardrail for REST AI routes', () => {
       expect(source, `${file} should import/call enforceCostGuardrails`).toContain('enforceCostGuardrails');
     }
   });
+
+  it('keeps iOS WebSocket quota and tier gates before action planning', () => {
+    const source = fs.readFileSync(path.resolve(__dirname, '../../src/api/websocket.ts'), 'utf8');
+    const quotaIndex = source.indexOf('const quotaDecision = enforceCostGuardrails(userId)');
+    const tierIndex = source.indexOf('const tierResult = checkSkillAccess');
+    const actionPlanIndex = source.indexOf('const actionResult = await tryHandleChatActionPlan');
+
+    expect(quotaIndex).toBeGreaterThan(-1);
+    expect(tierIndex).toBeGreaterThan(-1);
+    expect(actionPlanIndex).toBeGreaterThan(-1);
+    expect(quotaIndex).toBeLessThan(actionPlanIndex);
+    expect(tierIndex).toBeLessThan(actionPlanIndex);
+  });
 });

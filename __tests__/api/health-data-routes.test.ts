@@ -11,6 +11,7 @@ import {
 const MIGRATIONS_DIR = path.resolve(__dirname, '../../migrations');
 
 let testDb: Database.Database;
+const originalHealthEncryptionKey = process.env.HEALTH_DATA_ENCRYPTION_KEY;
 
 vi.mock('../../src/services/database', () => ({
   getDb: () => testDb,
@@ -34,6 +35,7 @@ vi.mock('../../src/utils/logger', () => ({
 import { healthDataRoutes } from '../../src/api/routes/health-data';
 import { getReadiness } from '../../src/api/routes/training-read-models';
 import { clearCacheByPrefix } from '../../src/services/cache-store';
+import { parseAppleHealthDataJson } from '../../src/services/apple-health-encryption';
 
 function applyMigrations(db: Database.Database): void {
   db.exec(`CREATE TABLE IF NOT EXISTS _migrations (id INTEGER PRIMARY KEY, filename TEXT UNIQUE, applied_at TEXT DEFAULT (datetime('now')))`);
@@ -101,6 +103,7 @@ async function dispatch(method: string, path: string, body: Record<string, unkno
 
 describe('Health data routes', () => {
   beforeEach(() => {
+    process.env.HEALTH_DATA_ENCRYPTION_KEY = 'health-data-test-master-key';
     testDb = new Database(':memory:');
     testDb.pragma('journal_mode = WAL');
     applyMigrations(testDb);
@@ -110,6 +113,11 @@ describe('Health data routes', () => {
   });
 
   afterEach(() => {
+    if (originalHealthEncryptionKey == null) {
+      delete process.env.HEALTH_DATA_ENCRYPTION_KEY;
+    } else {
+      process.env.HEALTH_DATA_ENCRYPTION_KEY = originalHealthEncryptionKey;
+    }
     testDb?.close();
   });
 
@@ -141,13 +149,17 @@ describe('Health data routes', () => {
     expect(res.body.ok).toBe(true);
 
     const summaryRow = testDb.prepare(`
-      SELECT data_json
+      SELECT data_json, encrypted_data_json
       FROM apple_health_data
       WHERE user_id = ? AND date = ? AND data_type = 'daily_summary'
-    `).get(62, '2026-04-16') as { data_json: string } | undefined;
+    `).get(62, '2026-04-16') as { data_json: string; encrypted_data_json: string | null } | undefined;
 
     expect(summaryRow).toBeTruthy();
-    const summary = JSON.parse(summaryRow!.data_json);
+    expect(summaryRow!.data_json).toBe('{"encrypted":true}');
+    expect(summaryRow!.encrypted_data_json).toEqual(expect.any(String));
+    expect(summaryRow!.encrypted_data_json).not.toContain('72.3');
+    expect(summaryRow!.encrypted_data_json).not.toContain('bodyMassKg');
+    const summary = parseAppleHealthDataJson(summaryRow!, 62);
     expect(summary.bodyMassKg).toBe(72.3);
     expect(summary.bodyFatPercentage).toBe(14.8);
     expect(summary.leanBodyMassKg).toBe(61.6);

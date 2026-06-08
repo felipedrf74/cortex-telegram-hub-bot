@@ -31,26 +31,26 @@ or copying verdicts, commit hashes, or test counts.
 
 **Providers**: Gemini primary (2.5-flash / 2.5-flash-lite), Anthropic fallback (Claude Sonnet 4.6 / Haiku 4.5), OpenAI as secondary fallback. See `src/config.ts > providerRouting`.
 
-## Current Production Truth - 2026-05-25
+## Current Production Truth - 2026-06-06
 
-- Production backend is live at `4.14.193` on `main`.
+- Canonical production state lives in `docs/release/CURRENT_RELEASE_STATE.md`
+  and `docs/release/current-release-index.md`; read those before making
+  release decisions.
+- Last documented production backend is live at `4.14.202` on `main`.
 - Current production deploy commit is
-  `fb1ca66d0169ce69530bb18194b532cc43802a12`.
+  `6438553d` (version bump for 4.14.202).
 - Source scope now in production:
-  - PR #135 `99992ddc` — Coach Periodization v2.1 training stack.
-  - PR #136 `256aa591` — deploy hardening so generated parity evidence is
-    restored before risky deploy phases and dirty-tree failures happen before
-    PM2 services are stopped.
-- Production promote completed through the standard gate. Staging smoke passed
-  17/17 before promotion, deploy-time `npm run verify` passed 718 files /
-  10,525 tests, and the final `main` pre-push gate repeated typecheck, full
-  Vitest, and build successfully before pushing `fb1ca66d`.
-- Production `/health` returned HTTP 200 repeatedly after deploy, local
-  `http://127.0.0.1:8200/health` returned 200 on the server, PM2 showed
-  `nexus-hub` and `content-engine` online, and the server package version is
-  `4.14.193`.
-- Staging remains on the previous deploy version until the next staging deploy;
-  this is expected after production version bumps.
+  - `870ca09f` — Training remediation round-3 fast-follow.
+- Production promote completed through the standard gate. Promote-time staging
+  smoke passed 19/19 before production was touched, backend `npm run verify`
+  passed typecheck, science-policy, and full Vitest with 816 files / 11,951
+  tests, and final `main` pre-push repeated typecheck, full Vitest, and build.
+- Production health passed after deploy: content engine returned `status: ok`,
+  authenticated status portal returned version `4.14.202`, and PM2 showed
+  `nexus-hub` and `content-engine` online.
+- The local package version can be ahead of production while release hardening
+  or feature work is staged. Run `scripts/release-identity.sh markdown` for
+  current local identity instead of hand-copying version/SHA fields.
 - Cloudflare Tunnel is currently restored and serving traffic, but it was
   restarted as detached `cloudflared` user processes during incident recovery.
   Follow up by installing/enabling a supervised service for the tunnel so it
@@ -62,7 +62,9 @@ or copying verdicts, commit hashes, or test counts.
 
 Current verification floor:
 
-- Full backend verify: 718 Vitest files / 10,525 tests.
+- Full backend verify: last documented production promote used 816 Vitest files
+  / 11,951 tests. Regenerate current counts from CI/evidence instead of
+  copying this number into release decisions.
 - Main pre-push gate: typecheck + full Vitest + build.
 - Promote gate: staging smoke 17/17 before production.
 - Deploy script now restores the tracked registry shadow parity evidence before

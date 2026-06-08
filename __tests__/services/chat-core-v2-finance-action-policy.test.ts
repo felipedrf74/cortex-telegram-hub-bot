@@ -113,6 +113,17 @@ describe('Chat Core v2 finance action policy', () => {
     ]);
   });
 
+  it('allows authenticated fiscal bundle sends through the dedicated action class', () => {
+    const verdict = evaluateChatCoreV2FinanceActionPolicy({
+      actionClass: 'finance.send_bundle',
+      operation: 'execute',
+      hasSourceCitations: true,
+    });
+
+    expect(verdict.ok).toBe(true);
+    expect(verdict.reasons).toEqual(['authenticated_bundle_send_allowed']);
+  });
+
   it('routes multi-item finance previews to manual review', () => {
     const verdict = evaluateChatCoreV2FinanceActionPolicy({
       actionClass: 'finance.prepare_reminder',

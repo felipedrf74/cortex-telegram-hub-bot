@@ -629,11 +629,11 @@ export function taskRoutes(): Router {
       if (Object.prototype.hasOwnProperty.call(updates, 'dueDateTime')) {
         updates.timeZone = timezone;
       }
-      if (Object.prototype.hasOwnProperty.call(updates, 'recurrence') && updates.recurrence != null) {
-        updates.recurrence = normalizeMicrosoftRecurrence(
-          updates.recurrence,
-          typeof updates.dueDateTime === 'string' ? updates.dueDateTime : new Date(),
-        );
+      if (Object.prototype.hasOwnProperty.call(updates, 'recurrence')) {
+        const recurrenceAnchor = typeof updates.dueDateTime === 'string' ? updates.dueDateTime : new Date();
+        updates.recurrence = updates.recurrence == null
+          ? null
+          : normalizeMicrosoftRecurrence(updates.recurrence, recurrenceAnchor);
       }
 
       const result = await todo.updateTask(listId, taskId, updates, listName);

@@ -26,16 +26,17 @@
 import { Router, Response } from 'express';
 import { AuthenticatedRequest } from '../auth-middleware';
 import { logger } from '../../utils/logger';
-import { getUserConnections } from '../../services/oauth-store';
+import { disconnectProvider, getUserConnections, type OAuthProvider } from '../../services/oauth-store';
 import { getDb } from '../../services/database';
 import { config } from '../../config';
-import { sendSuccess, sendInternalError, asyncHandler } from '../response-helpers';
+import { sendSuccess, sendInternalError, sendError, asyncHandler } from '../response-helpers';
 import { ensureValidTenantRouteScope } from '../tenant-route-scope';
 import {
   getIntegrationSummary,
   capabilitiesForProvider,
 } from '../../services/integration-status';
 import { hasActiveGarminConnection } from '../../services/garmin-session-store';
+import { revokeThirdPartyOAuthTokenForProvider } from '../../services/user-data-export';
 
 type ConnectionAvailability = {
   provider: string;
@@ -44,6 +45,40 @@ type ConnectionAvailability = {
   reasonCode?: 'NOT_CONFIGURED' | 'COMING_SOON';
   detail?: string;
 };
+
+type RevocableConnectionProvider = OAuthProvider | 'garmin';
+
+const REVOCABLE_PROVIDERS = new Set<string>([
+  'google',
+  'outlook',
+  'strava',
+  'whoop',
+  'fitbit',
+  'todoist',
+  'notion',
+  'garmin',
+]);
+
+function normalizeRevocableProvider(value: unknown): RevocableConnectionProvider | null {
+  if (typeof value !== 'string') return null;
+  const provider = value.trim().toLowerCase();
+  return REVOCABLE_PROVIDERS.has(provider) ? provider as RevocableConnectionProvider : null;
+}
+
+function hasLocalConnection(userId: number, provider: RevocableConnectionProvider): boolean {
+  const db = getDb();
+  try {
+    if (provider === 'garmin') {
+      const session = db.prepare('SELECT 1 FROM garmin_sessions WHERE user_id = ? LIMIT 1').get(userId);
+      if (session) return true;
+      const token = db.prepare('SELECT 1 FROM garmin_user_tokens WHERE user_id = ? LIMIT 1').get(userId);
+      return !!token;
+    }
+    return !!db.prepare('SELECT 1 FROM user_oauth_tokens WHERE user_id = ? AND provider = ? LIMIT 1').get(userId, provider);
+  } catch {
+    return false;
+  }
+}
 
 function oauthConfigured(provider: string): boolean {
   switch (provider) {
@@ -171,6 +206,35 @@ export function connectionRoutes(): Router {
     } catch (err: any) {
       logger.error({ err, userId }, 'iOS connections list failed');
       sendInternalError(res, 'Unable to load connections right now.');
+    }
+  }));
+
+  /**
+   * DELETE /api/v1/connections/:provider
+   * Best-effort provider revoke + deterministic local disconnect.
+   */
+  router.delete('/:provider', asyncHandler(async (req, res: Response) => {
+    const { userId } = req as AuthenticatedRequest;
+    const provider = normalizeRevocableProvider(req.params.provider);
+    if (!provider) {
+      return sendError(res, 'BAD_REQUEST', 'Unsupported connection provider.', 400);
+    }
+
+    try {
+      const connectedBefore = hasLocalConnection(userId, provider);
+      const revocation = await revokeThirdPartyOAuthTokenForProvider(userId, provider);
+      if (provider !== 'garmin') {
+        disconnectProvider(userId, provider);
+      }
+      sendSuccess(res, {
+        provider,
+        disconnected: true,
+        connectedBefore,
+        revocation,
+      });
+    } catch (err: any) {
+      logger.error({ err, userId, provider }, 'iOS connection revoke failed');
+      sendInternalError(res, 'Unable to disconnect this provider right now.');
     }
   }));
 

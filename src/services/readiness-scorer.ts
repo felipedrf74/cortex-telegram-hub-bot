@@ -30,6 +30,7 @@ import {
   resolveFallbackEnergyReserve,
 } from './wearable/energy-reserve';
 import { computeLoadModelForDimension } from './coach-kernel/load-model';
+import { appleHealthJsonSelectColumns, parseAppleHealthDataJson } from './apple-health-encryption';
 
 // ── Types ───────────────────────────────────────────────────────────
 
@@ -50,6 +51,11 @@ export interface ReadinessResult {
   reasoning: string;
   reasonCode?: ReadinessReasonCode;
 }
+
+type AppleHealthJsonRow = {
+  data_json: string;
+  encrypted_data_json?: string | null;
+};
 
 function providerDisplayName(provider: NormalizedReadiness['provider']): string {
   switch (provider) {
@@ -397,48 +403,49 @@ async function calculateAppleHealthReadiness(
   const today = new Date().toISOString().slice(0, 10);
 
   try {
+    const healthJsonColumns = appleHealthJsonSelectColumns(db);
     // Read HRV (today)
     const hrvRow = db.prepare(
-      "SELECT data_json FROM apple_health_data WHERE user_id = ? AND data_type = 'hrv' AND date = ? ORDER BY created_at DESC LIMIT 1",
-    ).get(userId, today) as { data_json: string } | undefined;
+      `SELECT ${healthJsonColumns} FROM apple_health_data WHERE user_id = ? AND data_type = 'hrv' AND date = ? ORDER BY created_at DESC LIMIT 1`,
+    ).get(userId, today) as AppleHealthJsonRow | undefined;
 
     // Read HRV baseline (7-day average)
     const hrvHistory = db.prepare(
-      "SELECT data_json FROM apple_health_data WHERE user_id = ? AND data_type = 'hrv' AND date > ? ORDER BY date DESC LIMIT 7",
-    ).all(userId, subtractDays(today, 8)) as Array<{ data_json: string }>;
+      `SELECT ${healthJsonColumns} FROM apple_health_data WHERE user_id = ? AND data_type = 'hrv' AND date > ? ORDER BY date DESC LIMIT 7`,
+    ).all(userId, subtractDays(today, 8)) as AppleHealthJsonRow[];
 
     // Read sleep (today)
     const sleepRow = db.prepare(
-      "SELECT data_json FROM apple_health_data WHERE user_id = ? AND data_type = 'sleep' AND date = ? ORDER BY created_at DESC LIMIT 1",
-    ).get(userId, today) as { data_json: string } | undefined;
+      `SELECT ${healthJsonColumns} FROM apple_health_data WHERE user_id = ? AND data_type = 'sleep' AND date = ? ORDER BY created_at DESC LIMIT 1`,
+    ).get(userId, today) as AppleHealthJsonRow | undefined;
 
     // Read RHR (today)
     const rhrRow = db.prepare(
-      "SELECT data_json FROM apple_health_data WHERE user_id = ? AND data_type IN ('resting_heart_rate', 'resting_hr') AND date = ? ORDER BY created_at DESC LIMIT 1",
-    ).get(userId, today) as { data_json: string } | undefined;
+      `SELECT ${healthJsonColumns} FROM apple_health_data WHERE user_id = ? AND data_type IN ('resting_heart_rate', 'resting_hr') AND date = ? ORDER BY created_at DESC LIMIT 1`,
+    ).get(userId, today) as AppleHealthJsonRow | undefined;
 
     // Read RHR baseline (7-day average)
     const rhrHistory = db.prepare(
-      "SELECT data_json FROM apple_health_data WHERE user_id = ? AND data_type IN ('resting_heart_rate', 'resting_hr') AND date > ? ORDER BY date DESC LIMIT 7",
-    ).all(userId, subtractDays(today, 8)) as Array<{ data_json: string }>;
+      `SELECT ${healthJsonColumns} FROM apple_health_data WHERE user_id = ? AND data_type IN ('resting_heart_rate', 'resting_hr') AND date > ? ORDER BY date DESC LIMIT 7`,
+    ).all(userId, subtractDays(today, 8)) as AppleHealthJsonRow[];
 
     // Read workouts for ACWR (28 days)
     const workoutRows = db.prepare(
-      "SELECT data_json FROM apple_health_data WHERE user_id = ? AND data_type = 'workout' AND date > ? ORDER BY date ASC",
-    ).all(userId, subtractDays(today, 29)) as Array<{ data_json: string }>;
+      `SELECT ${healthJsonColumns} FROM apple_health_data WHERE user_id = ? AND data_type = 'workout' AND date > ? ORDER BY date ASC`,
+    ).all(userId, subtractDays(today, 29)) as AppleHealthJsonRow[];
 
     const summaryRow = db.prepare(
-      "SELECT data_json FROM apple_health_data WHERE user_id = ? AND data_type = 'daily_summary' AND date = ? ORDER BY created_at DESC LIMIT 1",
-    ).get(userId, today) as { data_json: string } | undefined;
+      `SELECT ${healthJsonColumns} FROM apple_health_data WHERE user_id = ? AND data_type = 'daily_summary' AND date = ? ORDER BY created_at DESC LIMIT 1`,
+    ).get(userId, today) as AppleHealthJsonRow | undefined;
     const caloriesRow = db.prepare(
-      "SELECT data_json FROM apple_health_data WHERE user_id = ? AND data_type = 'calories' AND date = ? ORDER BY created_at DESC LIMIT 1",
-    ).get(userId, today) as { data_json: string } | undefined;
+      `SELECT ${healthJsonColumns} FROM apple_health_data WHERE user_id = ? AND data_type = 'calories' AND date = ? ORDER BY created_at DESC LIMIT 1`,
+    ).get(userId, today) as AppleHealthJsonRow | undefined;
     const stepsRow = db.prepare(
-      "SELECT data_json FROM apple_health_data WHERE user_id = ? AND data_type = 'steps' AND date = ? ORDER BY created_at DESC LIMIT 1",
-    ).get(userId, today) as { data_json: string } | undefined;
+      `SELECT ${healthJsonColumns} FROM apple_health_data WHERE user_id = ? AND data_type = 'steps' AND date = ? ORDER BY created_at DESC LIMIT 1`,
+    ).get(userId, today) as AppleHealthJsonRow | undefined;
     const exerciseRow = db.prepare(
-      "SELECT data_json FROM apple_health_data WHERE user_id = ? AND data_type = 'exercise_minutes' AND date = ? ORDER BY created_at DESC LIMIT 1",
-    ).get(userId, today) as { data_json: string } | undefined;
+      `SELECT ${healthJsonColumns} FROM apple_health_data WHERE user_id = ? AND data_type = 'exercise_minutes' AND date = ? ORDER BY created_at DESC LIMIT 1`,
+    ).get(userId, today) as AppleHealthJsonRow | undefined;
 
     // If Apple Health has any useful signal, still provide the energy-reserve
     // fallback. Body Battery does not exist in HealthKit, but activity-only
@@ -456,16 +463,16 @@ async function calculateAppleHealthReadiness(
     if (!hasAppleHealthSignal) return null;
 
     // ── HRV ──
-    const todayHrv = hrvRow ? (metricValue(JSON.parse(hrvRow.data_json), 'value', 'sdnn_ms', 'ms') ?? 0) : 0;
+    const todayHrv = hrvRow ? (metricValue(parseAppleHealthDataJson(hrvRow, userId), 'value', 'sdnn_ms', 'ms') ?? 0) : 0;
     const hrvValues = hrvHistory
-      .map(r => metricValue(JSON.parse(r.data_json), 'value', 'sdnn_ms', 'ms') ?? 0)
+      .map(r => metricValue(parseAppleHealthDataJson(r, userId), 'value', 'sdnn_ms', 'ms') ?? 0)
       .filter((v: number) => v > 0);
     const weeklyHrv = hrvValues.length > 0 ? hrvValues.reduce((a: number, b: number) => a + b, 0) / hrvValues.length : todayHrv;
     const hrvTrend: 'up' | 'stable' | 'down' = todayHrv > weeklyHrv * 1.05 ? 'up' : todayHrv < weeklyHrv * 0.95 ? 'down' : 'stable';
     const hrvScoreVal = scoreHrv(todayHrv || 60, weeklyHrv || 60);
 
     // ── Sleep ──
-    const sleepData = sleepRow ? JSON.parse(sleepRow.data_json) : null;
+    const sleepData = sleepRow ? parseAppleHealthDataJson(sleepRow, userId) : null;
     const totalSleepMin = sleepData
       ? (metricValue(sleepData, 'totalSleepSeconds') ?? (metricValue(sleepData, 'totalMinutes') ?? 0) * 60) / 60
       : 0;
@@ -481,19 +488,19 @@ async function calculateAppleHealthReadiness(
     const sleepScoreVal = scoreSleep(totalSleepMin / 60, derivedSleepScore);
 
     // ── RHR ──
-    const todayRhr = rhrRow ? metricValue(JSON.parse(rhrRow.data_json), 'value', 'bpm') : null;
+    const todayRhr = rhrRow ? metricValue(parseAppleHealthDataJson(rhrRow, userId), 'value', 'bpm') : null;
     const rhrValues = rhrHistory
-      .map(r => metricValue(JSON.parse(r.data_json), 'value', 'bpm') ?? 0)
+      .map(r => metricValue(parseAppleHealthDataJson(r, userId), 'value', 'bpm') ?? 0)
       .filter((v: number) => v > 0);
     const rhrBaseline = rhrValues.length > 0 ? rhrValues.reduce((a: number, b: number) => a + b, 0) / rhrValues.length : null;
 
     // ── Derived Body Battery ──
     const derivedBB = deriveBodyBatteryEquivalent(derivedSleepScore, hrvScoreVal, todayRhr, rhrBaseline);
 
-    const summary = summaryRow ? JSON.parse(summaryRow.data_json) : null;
-    const calories = caloriesRow ? JSON.parse(caloriesRow.data_json) : null;
-    const steps = stepsRow ? JSON.parse(stepsRow.data_json) : null;
-    const exercise = exerciseRow ? JSON.parse(exerciseRow.data_json) : null;
+    const summary = summaryRow ? parseAppleHealthDataJson(summaryRow, userId) : null;
+    const calories = caloriesRow ? parseAppleHealthDataJson(caloriesRow, userId) : null;
+    const steps = stepsRow ? parseAppleHealthDataJson(stepsRow, userId) : null;
+    const exercise = exerciseRow ? parseAppleHealthDataJson(exerciseRow, userId) : null;
     const currentEnergyReserve = deriveIntradayEnergyReserve({
       morningPeak: derivedBB,
       activeCalories: summary?.activeCalories ?? calories?.kcal ?? null,
@@ -504,7 +511,7 @@ async function calculateAppleHealthReadiness(
 
     // ── ACWR from workouts ──
     const activities = workoutRows.map(r => {
-      const w = JSON.parse(r.data_json);
+      const w = parseAppleHealthDataJson(r, userId);
       return {
         startTimeLocal: w.startDate ?? w.start,
         duration: w.duration ?? w.durationMinutes * 60,

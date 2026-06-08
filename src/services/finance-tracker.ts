@@ -12,7 +12,7 @@ import { logger } from '../utils/logger';
 import { config } from '../config';
 import { encryptNumber, decryptNumber, encryptValue, decryptValue } from '../utils/encryption';
 import { logAudit } from './audit-trail';
-import { calculatePortugueseMonthlyTaxEstimate } from './finance-tax-pt';
+import { calculatePortugueseMonthlyTaxEstimate, type PortugueseTaxOptions } from './finance-tax-pt';
 import { centsToNumber, parseUserAmount, toCents } from './money';
 
 // ── Encryption Helpers ────────────────────────────────────────────
@@ -79,9 +79,9 @@ function hasColumn(table: string, column: string): boolean {
 
 export function assertFinanceEncryptionConfigured(): void {
   const { enabled, masterKey } = config.financeEncryption;
-  if (process.env.NODE_ENV === 'production' && enabled && !masterKey) {
+  if (process.env.NODE_ENV === 'production' && (!enabled || !masterKey)) {
     throw new Error(
-      'FINANCE_ENCRYPTION_KEY is required when FINANCE_ENCRYPTION_ENABLED=true in production. Generate one with: openssl rand -hex 32',
+      'FINANCE_ENCRYPTION_ENABLED=true and FINANCE_ENCRYPTION_KEY are required in production. Generate one with: openssl rand -hex 32',
     );
   }
 }
@@ -311,13 +311,25 @@ function decryptTaxEvent(row: any): TaxEvent {
   if (!row) return row;
   const userId = row.user_id;
   return {
-    ...row,
+    id: row.id,
+    user_id: row.user_id,
+    tenant_id: row.tenant_id,
+    month: row.month,
     gross_income: readEncryptedNum(row.encrypted_gross_income, row.gross_income, userId),
     deductions: readEncryptedNum(row.encrypted_deductions, row.deductions, userId),
     taxable_income: readEncryptedNum(row.encrypted_taxable_income, row.taxable_income, userId),
     tax_due: readEncryptedNum(row.encrypted_tax_due, row.tax_due, userId),
     inss_due: readEncryptedNum(row.encrypted_inss_due, row.inss_due, userId),
+    status: row.status,
+    darf_code: row.darf_code,
+    pt_invoice_code: row.pt_invoice_code,
+    iva_due: row.iva_due,
+    withholding_due: row.withholding_due,
+    ruleset: row.ruleset,
+    paid_at: row.paid_at,
     notes: readEncryptedStr(row.encrypted_notes, row.notes, userId),
+    created_at: row.created_at,
+    updated_at: row.updated_at,
   };
 }
 
@@ -379,6 +391,9 @@ export interface TaxBreakdown {
 
 export interface MonthlySummary {
   month: string;
+  currency: string | null;
+  currencies: string[];
+  mixedCurrency: boolean;
   totalIncome: number;
   totalExpenses: number;
   totalDeductions: number;
@@ -426,9 +441,42 @@ const PLANNING_CURRENCY_CONVERSION_FROM_BRL: Record<string, number> = {
 };
 
 const DEFAULT_FINANCE_CURRENCY = 'EUR';
+export const FINANCE_TRANSACTION_CATEGORIES = new Set([
+  'income',
+  'deduction',
+  'expense',
+  'uncategorized',
+  'food',
+  'groceries',
+  'grocery',
+  'transport',
+  'housing',
+  'utilities',
+  'subscription',
+  'shopping',
+  'travel',
+  'entertainment',
+  'health',
+  'medical',
+  'education',
+  'tax',
+  'software',
+  'business',
+  'other',
+]);
 
 interface FinanceScopeOptions {
   tenantId?: number | null;
+}
+
+export interface UpdateTransactionPatch {
+  date?: string;
+  category?: string;
+  subcategory?: string | null;
+  amount?: number;
+  currency?: string;
+  description?: string | null;
+  receiptRef?: string | null;
 }
 
 function tenantScopeForUser(userId: number, opts?: FinanceScopeOptions): number {
@@ -478,6 +526,9 @@ export function getPreferredCurrencyForUser(userId: number): string {
 
 export function convertPlanningEstimateFromBrl(amountBrl: number, currency: string): number {
   const code = currency.toUpperCase();
+  if (code !== 'BRL' && !config.financePlanning.allowStaticFxEstimate) {
+    throw new Error('Static BRL planning FX estimates are disabled; provide a sourced FX rate.');
+  }
   const rate = PLANNING_CURRENCY_CONVERSION_FROM_BRL[code] ?? 1;
   return Math.round(amountBrl * rate * 100) / 100;
 }
@@ -505,6 +556,20 @@ function monthBounds(month: string): { startDate: string; endDate: string } {
 function normalizeCurrencyCode(currency: string | null | undefined): string {
   const normalized = currency?.trim().toUpperCase();
   return normalized && normalized.length > 0 ? normalized : DEFAULT_FINANCE_CURRENCY;
+}
+
+export function normalizeFinanceCategory(category: string): string {
+  const normalized = category.trim().toLowerCase().replace(/\s+/g, '_');
+  if (!FINANCE_TRANSACTION_CATEGORIES.has(normalized)) {
+    throw new Error(`Unsupported finance transaction category: ${category}`);
+  }
+  return normalized;
+}
+
+function assertNonNegativeMoney(amount: number): void {
+  if (!Number.isFinite(amount) || amount < 0) {
+    throw new Error('Finance transaction amount must be a non-negative finite number.');
+  }
 }
 
 function normalizeRecurringFingerprint(value: string | null | undefined): string | null {
@@ -757,8 +822,12 @@ export const INSS_MAX_BASE = 7786.02;
 
 // ── Tax Calculation ────────────────────────────────────────────────
 
-export function calculatePortugueseMonthlyTax(grossIncome: number, deductions: number = 0): TaxBreakdown {
-  const estimate = calculatePortugueseMonthlyTaxEstimate(grossIncome, deductions);
+export function calculatePortugueseMonthlyTax(
+  grossIncome: number,
+  deductions: number = 0,
+  options?: PortugueseTaxOptions,
+): TaxBreakdown {
+  const estimate = calculatePortugueseMonthlyTaxEstimate(grossIncome, deductions, options);
   return {
     grossIncome: estimate.grossIncome,
     deductions: estimate.deductions,
@@ -796,11 +865,14 @@ export function addTransaction(
 ): Transaction {
   const db = getDb();
   const tenantId = tenantScopeForUser(userId, opts);
+  assertNonNegativeMoney(amount);
+  const normalizedCategory = normalizeFinanceCategory(category);
   const amountCents = toCents(amount);
   const normalizedAmount = centsToNumber(amountCents);
   const currency = opts?.currency ?? DEFAULT_FINANCE_CURRENCY;
   const encAmt = tryEncryptNum(normalizedAmount, userId);
   const encDesc = tryEncryptStr(opts?.description ?? null, userId);
+  const plaintextDescription = encDesc ? null : opts?.description ?? null;
 
   const stmt = db.prepare(`
     INSERT INTO finance_transactions
@@ -808,12 +880,12 @@ export function addTransaction(
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   stmt.run(
-    userId, tenantId, date, category,
+    userId, tenantId, date, normalizedCategory,
     opts?.subcategory ?? null,
     normalizedAmount,
     Number(amountCents),
     currency,
-    opts?.description ?? null,
+    plaintextDescription,
     opts?.receiptRef ?? null,
     encAmt,
     encDesc,
@@ -838,7 +910,7 @@ export function getTransactions(
 
   if (opts?.startDate) { conditions.push('date >= ?'); params.push(opts.startDate); }
   if (opts?.endDate) { conditions.push('date <= ?'); params.push(opts.endDate); }
-  if (opts?.category) { conditions.push('category = ?'); params.push(opts.category); }
+  if (opts?.category) { conditions.push('category = ?'); params.push(normalizeFinanceCategory(opts.category)); }
 
   const limit = opts?.limit ?? 50;
   const sql = `SELECT * FROM finance_transactions WHERE ${conditions.join(' AND ')} ORDER BY date DESC LIMIT ?`;
@@ -883,6 +955,7 @@ export function updateTransactionCategory(
 ): Transaction | null {
   const db = getDb();
   const tenantId = tenantScopeForUser(userId, opts);
+  const normalizedCategory = normalizeFinanceCategory(category);
   const existing = db.prepare(
     'SELECT * FROM finance_transactions WHERE id = ? AND user_id = ? AND tenant_id = ? AND deleted_at IS NULL',
   ).get(transactionId, userId, tenantId) as any | undefined;
@@ -896,10 +969,70 @@ export function updateTransactionCategory(
        AND user_id = ?
        AND tenant_id = ?
        AND deleted_at IS NULL
-  `).run(category, opts?.subcategory ?? null, transactionId, userId, tenantId);
+  `).run(normalizedCategory, opts?.subcategory ?? null, transactionId, userId, tenantId);
   const row = db.prepare('SELECT * FROM finance_transactions WHERE id = ? AND user_id = ? AND tenant_id = ? AND deleted_at IS NULL')
     .get(transactionId, userId, tenantId) as any;
   if (!row) return null;
+  const updated = decryptTransaction(row);
+  auditFinanceTransaction(userId, 'update', {
+    before: financeTransactionAuditSnapshot(decryptTransaction(existing)),
+    after: financeTransactionAuditSnapshot(updated),
+  }, tenantId);
+  return updated;
+}
+
+export function updateTransaction(
+  userId: number,
+  transactionId: number,
+  patch: UpdateTransactionPatch,
+  opts?: FinanceScopeOptions,
+): Transaction | null {
+  const db = getDb();
+  const tenantId = tenantScopeForUser(userId, opts);
+  const existing = db.prepare(
+    'SELECT * FROM finance_transactions WHERE id = ? AND user_id = ? AND tenant_id = ? AND deleted_at IS NULL',
+  ).get(transactionId, userId, tenantId) as any | undefined;
+  if (!existing) return null;
+
+  const setParts: string[] = [];
+  const params: any[] = [];
+
+  if (patch.date !== undefined) { setParts.push('date = ?'); params.push(patch.date); }
+  if (patch.category !== undefined) { setParts.push('category = ?'); params.push(normalizeFinanceCategory(patch.category)); }
+  if (patch.subcategory !== undefined) { setParts.push('subcategory = ?'); params.push(patch.subcategory); }
+  if (patch.amount !== undefined) {
+    assertNonNegativeMoney(patch.amount);
+    const amountCents = toCents(patch.amount);
+    const normalizedAmount = centsToNumber(amountCents);
+    const encryptedAmount = tryEncryptNum(normalizedAmount, userId);
+    setParts.push('amount = ?', 'amount_cents = ?', 'encrypted_amount = ?');
+    params.push(normalizedAmount, Number(amountCents), encryptedAmount);
+  }
+  if (patch.currency !== undefined) { setParts.push('currency = ?'); params.push(patch.currency); }
+  if (patch.description !== undefined) {
+    const encryptedDescription = tryEncryptStr(patch.description, userId);
+    setParts.push('description = ?', 'encrypted_description = ?');
+    params.push(encryptedDescription ? null : patch.description, encryptedDescription);
+  }
+  if (patch.receiptRef !== undefined) { setParts.push('receipt_ref = ?'); params.push(patch.receiptRef); }
+
+  if (setParts.length === 0) return decryptTransaction(existing);
+
+  setParts.push("updated_at = datetime('now')");
+  params.push(transactionId, userId, tenantId);
+
+  db.prepare(`
+    UPDATE finance_transactions
+       SET ${setParts.join(', ')}
+     WHERE id = ?
+       AND user_id = ?
+       AND tenant_id = ?
+       AND deleted_at IS NULL
+  `).run(...params);
+
+  const row = db.prepare(
+    'SELECT * FROM finance_transactions WHERE id = ? AND user_id = ? AND tenant_id = ? AND deleted_at IS NULL',
+  ).get(transactionId, userId, tenantId) as any;
   const updated = decryptTransaction(row);
   auditFinanceTransaction(userId, 'update', {
     before: financeTransactionAuditSnapshot(decryptTransaction(existing)),
@@ -921,20 +1054,24 @@ export function getMonthlySummary(userId: number, month: string, opts?: FinanceS
 
   const rows = db.prepare(`
     SELECT category,
-           SUM(COALESCE(amount_cents, CAST(ROUND(amount * 100) AS INTEGER))) as total_cents,
+           currency,
+           SUM(amount_cents) as total_cents,
            COUNT(*) as cnt
     FROM finance_transactions
     WHERE user_id = ? AND tenant_id = ? AND deleted_at IS NULL AND date >= ? AND date < ?
-    GROUP BY category
-  `).all(userId, tenantId, startDate, endDate) as { category: string; total_cents: number; cnt: number }[];
+      AND amount_cents IS NOT NULL
+    GROUP BY category, currency
+  `).all(userId, tenantId, startDate, endDate) as { category: string; currency: string | null; total_cents: number; cnt: number }[];
 
   let totalIncome = 0;
   let totalExpenses = 0;
   let totalDeductions = 0;
   let transactionCount = 0;
+  const currencies = new Set<string>();
 
   for (const row of rows) {
     transactionCount += row.cnt;
+    currencies.add(normalizeCurrencyCode(row.currency));
     const total = centsToNumber(row.total_cents);
     if (row.category === 'income') totalIncome += total;
     else if (row.category === 'deduction') totalDeductions += total;
@@ -943,6 +1080,9 @@ export function getMonthlySummary(userId: number, month: string, opts?: FinanceS
 
   return {
     month,
+    currency: currencies.size === 1 ? [...currencies][0] : null,
+    currencies: [...currencies].sort(),
+    mixedCurrency: currencies.size > 1,
     totalIncome,
     totalExpenses,
     totalDeductions,
@@ -956,6 +1096,9 @@ export function getMonthlySummary(userId: number, month: string, opts?: FinanceS
 export function calculateAndStoreTax(userId: number, month: string, opts?: FinanceScopeOptions): TaxEvent {
   const tenantId = tenantScopeForUser(userId, opts);
   const summary = getMonthlySummary(userId, month, { tenantId });
+  if (summary.mixedCurrency) {
+    throw new Error(`Cannot calculate Portuguese tax for mixed-currency month ${month}: ${summary.currencies.join(', ')}`);
+  }
   const tax = calculatePortugueseMonthlyTax(summary.totalIncome, summary.totalDeductions);
 
   const db = getDb();

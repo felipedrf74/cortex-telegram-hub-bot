@@ -71,8 +71,8 @@ describe('legal routes', () => {
     expect(res.statusCode).toBe(200);
     expect(res.body.ok).toBe(true);
     expect(res.body.data.supportEmail).toBe('support@nexushub.me');
-    expect(res.body.data.documents.terms.version).toBe('2026-06-04');
-    expect(res.body.data.documents.privacy.version).toBe('2026-06-04');
+    expect(res.body.data.documents.terms.version).toBe('2026-06-05');
+    expect(res.body.data.documents.privacy.version).toBe('2026-06-05');
     expect(res.body.data.documents.terms.lawyerReviewRequired).toBe(true);
     expect(res.body.data.documents.privacy.lawyerReviewRequired).toBe(true);
   });
@@ -82,8 +82,8 @@ describe('legal routes', () => {
     const privacy = await dispatchLegal('/privacy');
 
     expect(terms.statusCode).toBe(302);
-    expect(terms.headers.location).toBe('https://nexushub.me/terms');
+    expect(terms.headers.location).toBe('https://nexushub.me/termos');
     expect(privacy.statusCode).toBe(302);
-    expect(privacy.headers.location).toBe('https://nexushub.me/privacy');
+    expect(privacy.headers.location).toBe('https://nexushub.me/privacidade');
   });
 });

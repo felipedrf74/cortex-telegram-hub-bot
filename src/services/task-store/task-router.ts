@@ -178,7 +178,7 @@ function createTodoistWrapper(userId: number) {
         priority: data.importance ? importanceToPriority(data.importance) : undefined,
         dueDate: data.dueDateTime || undefined,
         dueIsDatetime: typeof data.dueDateTime === 'string' && data.dueDateTime.includes('T'),
-        recurrence: data.recurrence !== undefined ? data.recurrence || null : undefined,
+        recurrence: Object.prototype.hasOwnProperty.call(data, 'recurrence') ? data.recurrence : undefined,
       });
       return { success: true, data: { id: taskId, listId, status: data.status || 'notStarted' } };
     },
@@ -392,7 +392,7 @@ function createNativeWrapper(userId: number) {
       if (data.importance) updates.priority = data.importance === 'high' ? 3 : data.importance === 'low' ? 1 : 2;
       if (data.status) updates.status = data.status === 'completed' ? 'completed' : 'pending';
       if (data.dueDateTime !== undefined) updates.dueDate = data.dueDateTime || undefined;
-      if (data.recurrence !== undefined) updates.recurrence = data.recurrence || null;
+      if (Object.prototype.hasOwnProperty.call(data, 'recurrence')) updates.recurrence = data.recurrence;
 
       await nativeAdapter.updateTask(userId, taskId, updates);
       return { success: true, data: { id: taskId } };

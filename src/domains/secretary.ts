@@ -631,7 +631,7 @@ export async function handleSecretary(message: string, userId?: number, tenantId
     return fastpath.response;
   }
 
-  const history = hasUserScope ? getConversationHistory(userId, DOMAIN, tenantId) : [];
+  const history = hasUserScope ? (getConversationHistory(userId, DOMAIN, tenantId) ?? []) : [];
   // Layer 2: pass the message so buildStateContext can fetch only what
   // the message actually needs (saves ~1,000-2,000 input tokens on
   // intent-typed queries; ambiguous queries fall back to fetching all).

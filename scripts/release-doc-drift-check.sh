@@ -104,6 +104,8 @@ check_doc() {
   # word boundaries — the lengths are specific enough on their own.
   local stripped
   stripped="$(sed -E '
+    s#https?://[A-Za-z0-9._-]*\.pages\.dev[^[:space:]`)]*##g
+    s#[A-Za-z0-9._-]*\.pages\.dev##g
     s/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}//g
     s/[0-9a-fA-F]{32,}//g
   ' "$doc" 2>/dev/null)"

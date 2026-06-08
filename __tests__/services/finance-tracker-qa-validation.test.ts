@@ -180,7 +180,7 @@ describe('Finance Tracker — QA Validation', () => {
     });
 
     it('Portugal estimate includes IVA while leaving taxable income as IRS base', () => {
-      const result = calculatePortugueseMonthlyTax(3000);
+      const result = calculatePortugueseMonthlyTax(3000, 0, { ivaRate: 0.23 });
       expect(result.inssDue).toBe(0);
       expect(result.taxableIncome).toBe(3000);
       expect(result.ivaDue).toBe(690);

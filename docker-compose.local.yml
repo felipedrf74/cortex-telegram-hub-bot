@@ -65,6 +65,9 @@ services:
       # compose service name (not 127.0.0.1, which inside this container
       # would mean Node itself).
       CONTENT_ENGINE_BASE_URL: "http://content-engine:8100"
+      # Keep the loopback-only Docker sandbox bootable even when .env.local
+      # still carries a placeholder iOS JWT secret from setup templates.
+      IOS_API_JWT_SECRET: "${NEXUS_LOCAL_IOS_API_JWT_SECRET:-nexus-hub-local-compose-ios-jwt-secret-2026-06-strong-48-byte}"
       # Force watch-mode polling — inotify often doesn't propagate cleanly
       # across macOS bind mounts. Costs a tiny bit of CPU, gains reliable
       # hot reload.

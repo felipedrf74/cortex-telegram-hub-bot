@@ -32,6 +32,7 @@
 #   scripts/cannot-skip-gate-dashboard.sh --json          # JSON only
 #   scripts/cannot-skip-gate-dashboard.sh --no-evidence   # skip writing evidence
 #   scripts/cannot-skip-gate-dashboard.sh --quiet         # suppress markdown
+#   scripts/cannot-skip-gate-dashboard.sh --base origin/main
 #
 # Exit codes:
 #   0 — every gate fires correctly on its representative file
@@ -46,6 +47,7 @@ TS="$(date -u +%Y-%m-%dT%H-%M-%SZ)"
 OUTPUT_FORMAT="markdown"
 WRITE_EVIDENCE=true
 QUIET=false
+BASE_REF=""
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -53,6 +55,7 @@ while [ $# -gt 0 ]; do
     --markdown)     OUTPUT_FORMAT="markdown"; shift;;
     --no-evidence)  WRITE_EVIDENCE=false; shift;;
     --quiet)        QUIET=true; shift;;
+    --base)         BASE_REF="$2"; shift 2;;
     -h|--help)
       sed -n '2,40p' "$0" | sed 's/^# \?//'
       exit 0;;
@@ -113,8 +116,13 @@ FAILED_GATES=()
 for entry in "${GATES[@]}"; do
   IFS='|' read -r gate representative expected <<<"$entry"
 
+  classifier_args=(--json --files "$representative")
+  if [ -n "$BASE_REF" ]; then
+    classifier_args+=(--base "$BASE_REF")
+  fi
+
   output=$(bash "$ENGINE_ROOT/scripts/changed-area-classifier.sh" \
-    --json --files "$representative" 2>/dev/null) || {
+    "${classifier_args[@]}" 2>/dev/null) || {
     FAIL=$((FAIL+1))
     FAILED_GATES+=("$gate (classifier execution failed)")
     continue

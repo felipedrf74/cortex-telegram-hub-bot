@@ -11,7 +11,15 @@ import {
   type FiscalCollectionCadence,
   type FiscalCollectionProfileRow,
 } from '../state/fiscal-collection-profiles';
+import { getFilingsForPeriod } from '../state/invoice-filings';
+import {
+  findFiscalBundleSendByIdempotencyKey,
+  findFiscalBundleSendForPeriod,
+  normalizeFiscalBundleIdempotencyKey,
+  recordFiscalBundleSend,
+} from '../state/fiscal-bundle-sends';
 import { getAllVendors, normalizeSenderAddress, subjectMatchesPatterns, senderMatchesPatterns } from './invoice-collector';
+import { verifyInvoiceObjectChecksum } from './invoice-object-storage';
 import { isConnected } from './oauth-store';
 import { sendFiscalBundleEmail, isFiscalBundleDeliveryConfigured } from './email-sender';
 import {
@@ -27,6 +35,12 @@ import {
 } from './google-gmail';
 
 type FiscalMailProvider = 'outlook' | 'gmail';
+type FiscalBundleProvider = FiscalMailProvider | 'filed';
+
+export class FiscalBundleBadRequestError extends Error {
+  code = 'BAD_REQUEST';
+  status = 400;
+}
 
 export interface FiscalCollectionProviderStatus {
   provider: FiscalMailProvider;
@@ -34,7 +48,7 @@ export interface FiscalCollectionProviderStatus {
 }
 
 export interface FiscalBundleDocument {
-  provider: FiscalMailProvider;
+  provider: FiscalBundleProvider;
   ruleName: string;
   subject: string;
   from: string;
@@ -48,7 +62,7 @@ export interface FiscalBundleResult {
   periodStart: string;
   periodEnd: string;
   cadence: FiscalCollectionCadence;
-  providers: FiscalMailProvider[];
+  providers: FiscalBundleProvider[];
   ruleCount: number;
   totalMatchedEmails: number;
   totalDocuments: number;
@@ -65,7 +79,7 @@ interface BundleAttachment {
 }
 
 interface BundleCollection {
-  providers: FiscalMailProvider[];
+  providers: FiscalBundleProvider[];
   totalMatchedEmails: number;
   totalDocuments: number;
   totalBytes: number;
@@ -94,7 +108,8 @@ interface DemoFiscalFixture {
 }
 
 const MAX_ATTACHMENT_BYTES = 35 * 1024 * 1024;
-const FISCAL_BUNDLE_HOUR_UTC = 8;
+const FISCAL_BUNDLE_HOUR_LOCAL = 8;
+const FISCAL_BUNDLE_MISSED_RUN_LOOKBACK_DAYS = 7;
 const SUPPORTED_FISCAL_ATTACHMENT_EXTENSIONS = new Set([
   'pdf',
   'xml',
@@ -166,9 +181,11 @@ function loadFiscalBundleDemoFixture(userId: number): DemoFiscalFixture | null {
 }
 
 function scheduledRunAt(base: DateTime, day: number): DateTime {
-  return base.set({
-    day,
-    hour: FISCAL_BUNDLE_HOUR_UTC,
+  const localBase = base.setZone(config.app.timezone);
+  const clampedDay = Math.min(day, localBase.daysInMonth ?? day);
+  return localBase.set({
+    day: clampedDay,
+    hour: FISCAL_BUNDLE_HOUR_LOCAL,
     minute: 0,
     second: 0,
     millisecond: 0,
@@ -186,12 +203,78 @@ function alreadySentForCandidate(profile: FiscalCollectionProfileRow, candidate:
   return !!sentAt && sentAt.hasSame(candidate, 'day');
 }
 
+function shouldConsiderDueCandidate(scheduled: DateTime, nowUtc: DateTime): boolean {
+  if (scheduled > nowUtc) return false;
+
+  const nowLocal = nowUtc.setZone(config.app.timezone);
+  const scheduledLocal = scheduled.setZone(config.app.timezone);
+  if (scheduledLocal.hasSame(nowLocal, 'month')) return true;
+
+  const previousMonth = nowLocal.startOf('month').minus({ months: 1 });
+  if (!scheduledLocal.hasSame(previousMonth, 'month')) return false;
+
+  const daysSinceScheduled = nowLocal
+    .startOf('day')
+    .diff(scheduledLocal.startOf('day'), 'days')
+    .days;
+  return daysSinceScheduled >= 0 && daysSinceScheduled <= FISCAL_BUNDLE_MISSED_RUN_LOOKBACK_DAYS;
+}
+
 function defaultPeriodStart(profile: FiscalCollectionProfileRow): DateTime {
   if (profile.last_bundle_sent_at) {
     const parsed = DateTime.fromISO(profile.last_bundle_sent_at, { zone: 'utc' });
     if (parsed.isValid) return parsed.plus({ seconds: 1 });
   }
   return startOfTodayUtc().startOf('month');
+}
+
+function resolveBundlePeriod(
+  profile: FiscalCollectionProfileRow,
+  options?: { startAt?: string; endAt?: string },
+): { start: DateTime; end: DateTime; isExplicitPeriod: boolean } {
+  const hasStart = typeof options?.startAt === 'string' && options.startAt.trim().length > 0;
+  const hasEnd = typeof options?.endAt === 'string' && options.endAt.trim().length > 0;
+  if (hasStart !== hasEnd) {
+    throw new FiscalBundleBadRequestError('startAt and endAt must be provided together.');
+  }
+
+  if (!hasStart && !hasEnd) {
+    return {
+      start: defaultPeriodStart(profile).toUTC(),
+      end: startOfTodayUtc().endOf('day').toUTC(),
+      isExplicitPeriod: false,
+    };
+  }
+
+  const start = DateTime.fromISO(options!.startAt!, { zone: 'utc' });
+  const end = DateTime.fromISO(options!.endAt!, { zone: 'utc' });
+  if (!start.isValid || !end.isValid) {
+    throw new FiscalBundleBadRequestError('startAt and endAt must be valid ISO-8601 timestamps.');
+  }
+  if (start >= end) {
+    throw new FiscalBundleBadRequestError('startAt must be before endAt.');
+  }
+  if (end > DateTime.utc().endOf('day')) {
+    throw new FiscalBundleBadRequestError('endAt cannot be in the future.');
+  }
+  if (end.diff(start, 'months').months > 18) {
+    throw new FiscalBundleBadRequestError('Fiscal bundle period cannot exceed 18 months.');
+  }
+
+  return {
+    start: start.toUTC(),
+    end: end.toUTC(),
+    isExplicitPeriod: true,
+  };
+}
+
+function parseStoredFiscalBundleResult(resultJson: string | null): FiscalBundleResult | null {
+  if (!resultJson) return null;
+  try {
+    return JSON.parse(resultJson) as FiscalBundleResult;
+  } catch {
+    return null;
+  }
 }
 
 export function computeNextFiscalBundleRun(
@@ -203,12 +286,12 @@ export function computeNextFiscalBundleRun(
   const days = configuredRunDays(profile);
   if (days.length === 0) return null;
 
-  const currentMonth = now.toUTC().startOf('month');
+  const nowUtc = now.toUTC();
+  const currentMonth = nowUtc.setZone(config.app.timezone).startOf('month');
   for (let monthOffset = 0; monthOffset < 12; monthOffset += 1) {
     const monthBase = currentMonth.plus({ months: monthOffset });
     for (const day of days) {
       const candidate = scheduledRunAt(monthBase, day);
-      if (candidate < now.startOf('day')) continue;
       if (alreadySentForCandidate(profile, candidate)) continue;
       return candidate.toISO();
     }
@@ -223,14 +306,15 @@ export function isFiscalBundleDue(
 ): boolean {
   if (!profile.enabled) return false;
 
-  const candidateDay = configuredRunDays(profile).find((day) => day === now.toUTC().day);
-  if (!candidateDay) return false;
+  const nowUtc = now.toUTC();
+  const localMonth = nowUtc.setZone(config.app.timezone).startOf('month');
+  const runDays = configuredRunDays(profile);
+  const candidates = [-1, 0]
+    .flatMap((monthOffset) => runDays.map((day) => scheduledRunAt(localMonth.plus({ months: monthOffset }), day)))
+    .filter((scheduled) => shouldConsiderDueCandidate(scheduled, nowUtc))
+    .sort((a, b) => b.toMillis() - a.toMillis());
 
-  const scheduled = scheduledRunAt(now.toUTC(), candidateDay);
-  if (now.toUTC() < scheduled) return false;
-  if (alreadySentForCandidate(profile, scheduled)) return false;
-
-  return true;
+  return candidates.some((scheduled) => !alreadySentForCandidate(profile, scheduled));
 }
 
 function fiscalProvidersForUser(userId: number): FiscalCollectionProviderStatus[] {
@@ -253,7 +337,7 @@ function fiscalProvidersForUser(userId: number): FiscalCollectionProviderStatus[
   }));
 }
 
-export function getFiscalCollectionSummary(userId: number): {
+export function getFiscalCollectionSummary(userId: number, tenantId = userId): {
   profile: FiscalCollectionProfileRow;
   destinationEmail: string | null;
   nextRunAt: string | null;
@@ -263,9 +347,9 @@ export function getFiscalCollectionSummary(userId: number): {
   deliveryAvailable: boolean;
   warnings: string[];
 } {
-  const profile = getOrCreateFiscalCollectionProfile(userId);
+  const profile = getOrCreateFiscalCollectionProfile(userId, tenantId);
   const providers = fiscalProvidersForUser(userId);
-  const rules = getAllVendors(userId);
+  const rules = getAllVendors(userId, tenantId);
   const customRuleCount = rules.filter((rule) => !rule.builtin).length;
   const destinationEmail = profile.destination_email || null;
 
@@ -447,11 +531,12 @@ function collectDemoDocs(userId: number, start: DateTime, end: DateTime): Bundle
   };
 }
 
-async function collectOutlookDocs(userId: number, start: DateTime, end: DateTime): Promise<BundleCollection> {
-  const rules = getAllVendors(userId);
+async function collectOutlookDocs(userId: number, start: DateTime, end: DateTime, tenantId = userId): Promise<BundleCollection> {
+  const rules = getAllVendors(userId, tenantId);
   const warnings: string[] = [];
   const filter = `receivedDateTime ge ${start.toISO()!} and receivedDateTime lt ${end.toISO()!} and hasAttachments eq true`;
-  const emails = await searchOutlookEmailsByFilter(filter, 250);
+  const emails = await searchOutlookEmailsByFilter(filter, 2000);
+  if (emails.length >= 2000) warnings.push('OUTLOOK_RESULTS_TRUNCATED');
 
   const seen = new Set<string>();
   const documents: FiscalBundleDocument[] = [];
@@ -507,6 +592,10 @@ async function collectOutlookDocs(userId: number, start: DateTime, end: DateTime
     }
   }
 
+  if (emails.length > 0 && rules.length > 0 && totalMatchedEmails === 0) {
+    warnings.push('NO_RULE_MATCHED_ANY_EMAIL');
+  }
+
   return {
     providers: ['outlook'],
     totalMatchedEmails,
@@ -518,15 +607,16 @@ async function collectOutlookDocs(userId: number, start: DateTime, end: DateTime
   };
 }
 
-async function collectGmailDocs(userId: number, start: DateTime, end: DateTime): Promise<BundleCollection> {
-  const rules = getAllVendors(userId);
+async function collectGmailDocs(userId: number, start: DateTime, end: DateTime, tenantId = userId): Promise<BundleCollection> {
+  const rules = getAllVendors(userId, tenantId);
   const warnings: string[] = [];
   const query = [
     'has:attachment',
-    `after:${start.toFormat('yyyy/MM/dd')}`,
-    `before:${end.toFormat('yyyy/MM/dd')}`,
+    `after:${Math.floor(start.toUTC().toSeconds())}`,
+    `before:${Math.floor(end.toUTC().toSeconds())}`,
   ].join(' ');
-  const emails = await searchGmailEmails(query, 200);
+  const emails = await searchGmailEmails(query, 2000);
+  if (emails.length >= 2000) warnings.push('GMAIL_RESULTS_TRUNCATED');
 
   const seen = new Set<string>();
   const documents: FiscalBundleDocument[] = [];
@@ -584,6 +674,10 @@ async function collectGmailDocs(userId: number, start: DateTime, end: DateTime):
     }
   }
 
+  if (emails.length > 0 && rules.length > 0 && totalMatchedEmails === 0) {
+    warnings.push('NO_RULE_MATCHED_ANY_EMAIL');
+  }
+
   return {
     providers: ['gmail'],
     totalMatchedEmails,
@@ -595,54 +689,67 @@ async function collectGmailDocs(userId: number, start: DateTime, end: DateTime):
   };
 }
 
-async function collectBundle(userId: number, start: DateTime, end: DateTime): Promise<BundleCollection> {
-  const providers = fiscalProvidersForUser(userId);
-  const hasRealProvider = isConnected(userId, 'outlook') || isConnected(userId, 'google');
-  if (!hasRealProvider) {
-    const demo = collectDemoDocs(userId, start, end);
-    if (demo) return demo;
-  }
-
+async function collectFiledDocs(
+  tenantId: number,
+  userId: number,
+  start: DateTime,
+  end: DateTime,
+  existingBytes: number,
+  seenDurableKeys: Set<string>,
+): Promise<BundleCollection> {
+  const filings = getFilingsForPeriod(tenantId, userId, start.toUTC().toISO()!, end.toUTC().toISO()!);
   const warnings: string[] = [];
   const documents: FiscalBundleDocument[] = [];
   const attachments: BundleAttachment[] = [];
   let totalBytes = 0;
-  let totalMatchedEmails = 0;
-  const activeProviders: FiscalMailProvider[] = [];
 
-  if (providers.find((provider) => provider.provider === 'outlook')?.connected) {
-    try {
-      const outlook = await collectOutlookDocs(userId, start, end);
-      activeProviders.push(...outlook.providers);
-      totalMatchedEmails += outlook.totalMatchedEmails;
-      totalBytes += outlook.totalBytes;
-      warnings.push(...outlook.warnings);
-      documents.push(...outlook.documents);
-      attachments.push(...outlook.attachments);
-    } catch (err) {
-      logger.warn({ err, userId }, 'Fiscal bundle: Outlook collection failed');
-      warnings.push('OUTLOOK_COLLECTION_FAILED');
+  for (const filing of filings) {
+    if (!filing.object_key) {
+      warnings.push(`FILED_OBJECT_MISSING:${filing.id}`);
+      continue;
     }
-  }
 
-  if (providers.find((provider) => provider.provider === 'gmail')?.connected) {
+    const durableKey = filing.checksum
+      ? `checksum:${filing.checksum}`
+      : filing.source_ref
+        ? `source:${filing.source}:${filing.source_ref}`
+        : `filing:${filing.id}`;
+    if (seenDurableKeys.has(durableKey)) continue;
+
     try {
-      const gmail = await collectGmailDocs(userId, start, end);
-      activeProviders.push(...gmail.providers);
-      totalMatchedEmails += gmail.totalMatchedEmails;
-      totalBytes += gmail.totalBytes;
-      warnings.push(...gmail.warnings);
-      documents.push(...gmail.documents);
-      attachments.push(...gmail.attachments);
+      const content = await verifyInvoiceObjectChecksum(
+        filing.object_key,
+        filing.checksum,
+        filing.storage_backend,
+      );
+      if ((existingBytes + totalBytes + content.length) > MAX_ATTACHMENT_BYTES) {
+        warnings.push(`FILED_SKIPPED_SIZE:${filing.id}`);
+        continue;
+      }
+
+      seenDurableKeys.add(durableKey);
+      const filename = filing.filename || path.basename(filing.object_key);
+      const contentType = filing.mime || 'application/octet-stream';
+      totalBytes += content.length;
+      attachments.push({ filename, content, contentType });
+      documents.push({
+        provider: 'filed',
+        ruleName: filing.vendor,
+        subject: filing.invoice_number ? `Filed invoice ${filing.invoice_number}` : 'Filed invoice',
+        from: filing.source,
+        receivedAt: DateTime.fromISO(filing.document_date || filing.created_at, { zone: 'utc' }).toUTC().toISO()!,
+        filename,
+        sizeBytes: content.length,
+      });
     } catch (err) {
-      logger.warn({ err, userId }, 'Fiscal bundle: Gmail collection failed');
-      warnings.push('GMAIL_COLLECTION_FAILED');
+      logger.warn({ err, filingId: filing.id }, 'Fiscal bundle: failed to read filed invoice object');
+      warnings.push(`FILED_OBJECT_READ_FAILED:${filing.id}`);
     }
   }
 
   return {
-    providers: activeProviders,
-    totalMatchedEmails,
+    providers: documents.length > 0 ? ['filed'] : [],
+    totalMatchedEmails: 0,
     totalDocuments: documents.length,
     totalBytes,
     warnings,
@@ -651,14 +758,78 @@ async function collectBundle(userId: number, start: DateTime, end: DateTime): Pr
   };
 }
 
+function mergeCollection(target: BundleCollection, source: BundleCollection): void {
+  for (const provider of source.providers) {
+    if (!target.providers.includes(provider)) target.providers.push(provider);
+  }
+  target.totalMatchedEmails += source.totalMatchedEmails;
+  target.totalDocuments += source.totalDocuments;
+  target.totalBytes += source.totalBytes;
+  target.warnings.push(...source.warnings);
+  target.documents.push(...source.documents);
+  target.attachments.push(...source.attachments);
+}
+
+async function collectBundle(tenantId: number, userId: number, start: DateTime, end: DateTime): Promise<BundleCollection> {
+  const providers = fiscalProvidersForUser(userId);
+  const hasRealProvider = isConnected(userId, 'outlook') || isConnected(userId, 'google');
+  if (!hasRealProvider) {
+    const demo = collectDemoDocs(userId, start, end);
+    if (demo) return demo;
+  }
+
+  const collection: BundleCollection = {
+    providers: [],
+    totalMatchedEmails: 0,
+    totalDocuments: 0,
+    totalBytes: 0,
+    warnings: [],
+    documents: [],
+    attachments: [],
+  };
+  const seenDurableKeys = new Set<string>();
+
+  if (providers.find((provider) => provider.provider === 'outlook')?.connected) {
+    try {
+      mergeCollection(collection, await collectOutlookDocs(userId, start, end, tenantId));
+    } catch (err) {
+      logger.warn({ err, userId }, 'Fiscal bundle: Outlook collection failed');
+      collection.warnings.push('OUTLOOK_COLLECTION_FAILED');
+    }
+  }
+
+  if (providers.find((provider) => provider.provider === 'gmail')?.connected) {
+    try {
+      mergeCollection(collection, await collectGmailDocs(userId, start, end, tenantId));
+    } catch (err) {
+      logger.warn({ err, userId }, 'Fiscal bundle: Gmail collection failed');
+      collection.warnings.push('GMAIL_COLLECTION_FAILED');
+    }
+  }
+
+  mergeCollection(
+    collection,
+    await collectFiledDocs(tenantId, userId, start, end, collection.totalBytes, seenDurableKeys),
+  );
+
+  if (collection.totalDocuments === 0) {
+    collection.warnings.push('NO_FISCAL_DOCUMENTS_FOUND');
+  }
+
+  return collection;
+}
+
 export async function sendFiscalBundleNow(
   userId: number,
   options?: {
+    tenantId?: number;
     startAt?: string;
     endAt?: string;
+    idempotencyKey?: string;
   },
 ): Promise<FiscalBundleResult> {
-  const summary = getFiscalCollectionSummary(userId);
+  const tenantId = options?.tenantId ?? userId;
+  const summary = getFiscalCollectionSummary(userId, tenantId);
   const { profile } = summary;
   const destinationEmail = summary.destinationEmail;
 
@@ -669,14 +840,31 @@ export async function sendFiscalBundleNow(
     throw new Error('Fiscal bundle delivery is not configured on the server.');
   }
 
-  const start = options?.startAt
-    ? DateTime.fromISO(options.startAt, { zone: 'utc' })
-    : defaultPeriodStart(profile);
-  const end = options?.endAt
-    ? DateTime.fromISO(options.endAt, { zone: 'utc' })
-    : startOfTodayUtc().endOf('day');
+  const { start, end, isExplicitPeriod } = resolveBundlePeriod(profile, options);
+  const periodStart = start.toUTC().toISO()!;
+  const periodEnd = end.toUTC().toISO()!;
+  const idempotencyKey = normalizeFiscalBundleIdempotencyKey(
+    tenantId,
+    userId,
+    periodStart,
+    periodEnd,
+    options?.idempotencyKey,
+  );
 
-  const collection = await collectBundle(userId, start, end);
+  const existingByKey = findFiscalBundleSendByIdempotencyKey(tenantId, userId, idempotencyKey);
+  const existingKeyResult = parseStoredFiscalBundleResult(existingByKey?.result_json ?? null);
+  if (existingKeyResult) return existingKeyResult;
+
+  const existingByPeriod = findFiscalBundleSendForPeriod(tenantId, userId, periodStart, periodEnd);
+  const existingPeriodResult = parseStoredFiscalBundleResult(existingByPeriod?.result_json ?? null);
+  if (existingPeriodResult) {
+    return {
+      ...existingPeriodResult,
+      warnings: [...new Set([...existingPeriodResult.warnings, 'FISCAL_BUNDLE_PERIOD_ALREADY_SENT'])],
+    };
+  }
+
+  const collection = await collectBundle(tenantId, userId, start, end);
   const emailBody = textSummaryForBundle(profile, destinationEmail, collection, start, end);
   const sent = await sendFiscalBundleEmail({
     to: destinationEmail,
@@ -690,15 +878,10 @@ export async function sendFiscalBundleNow(
     throw new Error('Failed to send the fiscal bundle email.');
   }
 
-  updateFiscalCollectionProfile(userId, {
-    last_bundle_sent_at: DateTime.utc().toISO(),
-    last_bundle_document_count: collection.totalDocuments,
-  });
-
-  return {
+  const result: FiscalBundleResult = {
     destinationEmail,
-    periodStart: start.toUTC().toISO()!,
-    periodEnd: end.toUTC().toISO()!,
+    periodStart,
+    periodEnd,
     cadence: profile.cadence,
     providers: collection.providers,
     ruleCount: summary.ruleCount,
@@ -709,4 +892,24 @@ export async function sendFiscalBundleNow(
     warnings: collection.warnings,
     documents: collection.documents,
   };
+
+  recordFiscalBundleSend({
+    tenantId,
+    userId,
+    periodStart,
+    periodEnd,
+    documentCount: collection.totalDocuments,
+    totalBytes: collection.totalBytes,
+    idempotencyKey,
+    resultJson: JSON.stringify(result),
+  });
+
+  if (!isExplicitPeriod) {
+    updateFiscalCollectionProfile(userId, {
+      last_bundle_sent_at: DateTime.utc().toISO(),
+      last_bundle_document_count: collection.totalDocuments,
+    }, tenantId);
+  }
+
+  return result;
 }

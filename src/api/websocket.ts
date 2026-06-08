@@ -35,6 +35,7 @@ import {
 } from '../services/runtime-flags';
 import { buildSimpleStateContext } from '../domains/domain-handler';
 import type { NexusChatOwnerSkill } from '../services/chat-answer-contract';
+import { enforceCostGuardrails } from '../services/cost-guardrail';
 
 const WEBSOCKET_RATE_WINDOW_MS = 60_000;
 const DEFAULT_ALLOWED_WEBSOCKET_ORIGINS = [
@@ -132,6 +133,26 @@ async function streamTextFrame(
     }
     await new Promise(resolve => setTimeout(resolve, 30));
   }
+}
+
+function sendWebSocketQuotaExceeded(
+  ws: WebSocket,
+  decision: ReturnType<typeof enforceCostGuardrails>,
+  input: { userId: number; tenantId: number },
+): void {
+  if (!decision.block || ws.readyState !== WebSocket.OPEN) return;
+  ws.send(JSON.stringify({
+    type: 'error',
+    code: decision.reason,
+    message: decision.message,
+    details: {
+      ...decision.details,
+      error: 'rate_limited',
+      retryable: true,
+    },
+    userId: input.userId,
+    tenantId: input.tenantId,
+  }));
 }
 
 /**
@@ -253,9 +274,94 @@ export function attachWebSocket(server: http.Server): void {
           { requestId: generateRequestId(), source: 'http', userId, tenantId },
           async () => {
             const messageId = `msg-${Date.now()}`;
+            const messageText = String(msg.text);
+
+            const quotaDecision = enforceCostGuardrails(userId);
+            if (quotaDecision.block) {
+              logger.warn(
+                {
+                  userId,
+                  tenantId,
+                  reason: quotaDecision.reason,
+                  spentUsd: quotaDecision.quota.spentUsd,
+                  capUsd: quotaDecision.quota.capUsd,
+                  globalTotalUsd: quotaDecision.global.totalUsd,
+                  globalLimitUsd: quotaDecision.global.limitUsd,
+                  platform: 'ios_ws',
+                },
+                'iOS WebSocket blocked by cost guardrail before planning',
+              );
+              sendWebSocketQuotaExceeded(ws, quotaDecision, { userId, tenantId });
+              return;
+            }
+
+            const preRoutingDecision = analyzeChatSkillOrchestration({
+              message: messageText,
+              userId,
+              tenantId,
+            });
+            const preTurnContract = isChatTurnContractEnabled(process.env, { userId, tenantId })
+              ? inferChatTurnContract({
+                message: messageText,
+                involvedSkills: preRoutingDecision.involvedSkills,
+              })
+              : null;
+            const preGateDomain = preRoutingDecision.primaryDomain
+              ?? (preTurnContract ? domainForWebSocketTurnContractSkill(preTurnContract.skill) : null)
+              ?? 'secretary';
+
+        // ─── Phase 1 Slice C — Tier gate for iOS WebSocket stream ───
+        // Same gate as the REST chat endpoint. We emit an 'error' frame
+        // with enough detail for the client to render a tier-upgrade
+        // prompt, then close the message flow without invoking the
+        // domain handler (so no tokens are spent on blocked users).
+            try {
+              const { getUserById, getUserByTelegramId } = require('../services/user-service');
+              const { checkSkillAccess } = require('../services/skill-tiers');
+              const { entitlementPlanToSkillTier, getEffectiveEntitlement } = require('../services/entitlement');
+              const user = getUserById(userId) || getUserByTelegramId(userId);
+              if (user) {
+                const entitlement = getEffectiveEntitlement(user.id);
+                const tierResult = checkSkillAccess(
+                  { id: user.id, tier: entitlementPlanToSkillTier(entitlement.plan) },
+                  preGateDomain,
+                );
+                if (!tierResult.allowed) {
+                  logger.info(
+                    { userId, tenantId, domain: preGateDomain, userTier: tierResult.userTier, requiredTier: tierResult.requiredTier, reason: tierResult.reason },
+                    'iOS WebSocket tier gate blocked',
+                  );
+                  if (ws.readyState === WebSocket.OPEN) {
+                    ws.send(JSON.stringify({
+                      type: 'error',
+                      code: 'TIER_REQUIRED',
+                      message: `This feature requires the ${tierResult.requiredTier} tier. Your current tier: ${tierResult.userTier}.`,
+                      details: {
+                        domain: preGateDomain,
+                        userTier: tierResult.userTier,
+                        requiredTier: tierResult.requiredTier,
+                      },
+                    }));
+                  }
+                  return;
+                }
+              }
+            } catch (err) {
+              logger.warn({ err, userId, tenantId, domain: preGateDomain }, 'iOS WebSocket tier gate check failed — fail-closed');
+              if (ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({
+                  type: 'error',
+                  code: 'ACCESS_CHECK_UNAVAILABLE',
+                  message: 'Nexus could not verify access for this request. Please reconnect and try again.',
+                  details: { domain: preGateDomain },
+                }));
+                ws.close(1011, 'Access check unavailable');
+              }
+              return;
+            }
 
             const actionResult = await tryHandleChatActionPlan({
-              text: String(msg.text),
+              text: messageText,
               userId,
               tenantId,
               conversationId: typeof msg.clientMessageId === 'string' && msg.clientMessageId.trim()
@@ -301,18 +407,6 @@ export function attachWebSocket(server: http.Server): void {
               return;
             }
 
-            const messageText = String(msg.text);
-            const preRoutingDecision = analyzeChatSkillOrchestration({
-              message: messageText,
-              userId,
-              tenantId,
-            });
-            const preTurnContract = isChatTurnContractEnabled(process.env, { userId, tenantId })
-              ? inferChatTurnContract({
-                message: messageText,
-                involvedSkills: preRoutingDecision.involvedSkills,
-              })
-              : null;
             const rawRoute = await routeMessage(messageText, undefined, userId, tenantId);
             const contractAwareRoute = preTurnContract ? applyWebSocketTurnContractRouteHint(rawRoute, preTurnContract) : rawRoute;
             const routingDecision = analyzeChatSkillOrchestration({
@@ -334,56 +428,6 @@ export function attachWebSocket(server: http.Server): void {
               },
               'iOS WebSocket message routed',
             );
-
-        // ─── Phase 1 Slice C — Tier gate for iOS WebSocket stream ───
-        // Same gate as the REST chat endpoint. We emit an 'error' frame
-        // with enough detail for the client to render a tier-upgrade
-        // prompt, then close the message flow without invoking the
-        // domain handler (so no tokens are spent on blocked users).
-            try {
-              const { getUserById, getUserByTelegramId } = require('../services/user-service');
-              const { checkSkillAccess } = require('../services/skill-tiers');
-              const { entitlementPlanToSkillTier, getEffectiveEntitlement } = require('../services/entitlement');
-              const user = getUserById(userId) || getUserByTelegramId(userId);
-              if (user) {
-                const entitlement = getEffectiveEntitlement(user.id);
-                const tierResult = checkSkillAccess(
-                  { id: user.id, tier: entitlementPlanToSkillTier(entitlement.plan) },
-                  route.domain,
-                );
-                if (!tierResult.allowed) {
-                  logger.info(
-                    { userId, tenantId, domain: route.domain, userTier: tierResult.userTier, requiredTier: tierResult.requiredTier, reason: tierResult.reason },
-                    'iOS WebSocket tier gate blocked',
-                  );
-                  if (ws.readyState === WebSocket.OPEN) {
-                    ws.send(JSON.stringify({
-                      type: 'error',
-                      code: 'TIER_REQUIRED',
-                      message: `This feature requires the ${tierResult.requiredTier} tier. Your current tier: ${tierResult.userTier}.`,
-                      details: {
-                        domain: route.domain,
-                        userTier: tierResult.userTier,
-                        requiredTier: tierResult.requiredTier,
-                      },
-                    }));
-                  }
-                  return;
-                }
-              }
-            } catch (err) {
-              logger.warn({ err, userId, tenantId, domain: route.domain }, 'iOS WebSocket tier gate check failed — fail-closed');
-              if (ws.readyState === WebSocket.OPEN) {
-                ws.send(JSON.stringify({
-                  type: 'error',
-                  code: 'ACCESS_CHECK_UNAVAILABLE',
-                  message: 'Nexus could not verify access for this request. Please reconnect and try again.',
-                  details: { domain: route.domain },
-                }));
-                ws.close(1011, 'Access check unavailable');
-              }
-              return;
-            }
 
             if (preTurnContract?.riskClass === 'destructive' || routingDecision.safety.destructive) {
               const text = preTurnContract?.language === 'pt' || preTurnContract?.language === 'mixed'

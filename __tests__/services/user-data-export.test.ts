@@ -422,8 +422,8 @@ describe('deleteAllUserData', () => {
         user_id, document_key, document_version, document_url,
         locale, source, accepted_at
       ) VALUES
-        (1, 'terms', '2026-06-04', 'https://nexushub.me/terms', 'en-US', 'ios_register', datetime('now')),
-        (1, 'privacy', '2026-06-04', 'https://nexushub.me/privacy', 'en-US', 'ios_register', datetime('now'))
+        (1, 'terms', '2026-06-05', 'https://nexushub.me/termos', 'en-US', 'ios_register', datetime('now')),
+        (1, 'privacy', '2026-06-05', 'https://nexushub.me/privacidade', 'en-US', 'ios_register', datetime('now'))
     `).run();
 
     const inventory = getAccountDeletionInventoryForUser(1);
@@ -433,6 +433,60 @@ describe('deleteAllUserData', () => {
     const counts = deleteAllUserData(1);
     expect(counts.user_legal_consents).toBe(2);
     expect(testDb.prepare('SELECT COUNT(*) as c FROM user_legal_consents WHERE user_id = 1').get()).toMatchObject({ c: 0 });
+    expect(testDb.prepare('SELECT COUNT(*) as c FROM audit_trail WHERE user_id = 1').get()).toMatchObject({ c: 1 });
+  });
+
+  it('deletes exported app tables and dynamically discovered future user-owned tables', () => {
+    seedUser(testDb, 1);
+    seedUser(testDb, 2, { username: 'other' });
+    logAudit({ userId: 1, actorId: 1, action: 'export', resource: 'all' });
+
+    testDb.prepare(`
+      INSERT INTO apple_health_data (user_id, data_type, date, data_json, source_name)
+      VALUES (1, 'hrv', '2026-06-05', '{"value":72}', 'ios_app')
+    `).run();
+    const listId = Number(testDb.prepare(`
+      INSERT INTO native_task_lists (user_id, name, is_default)
+      VALUES (1, 'Account deletion QA', 1)
+    `).run().lastInsertRowid);
+    testDb.prepare(`
+      INSERT INTO native_tasks (user_id, list_id, title)
+      VALUES (1, ?, 'Delete me')
+    `).run(listId);
+    testDb.prepare(`
+      INSERT INTO messages (user_id, message_uuid, role, text)
+      VALUES (1, 'msg-delete-1', 'user', 'delete me')
+    `).run();
+    testDb.prepare(`
+      INSERT INTO subscriptions (user_id, plan, period, status, provider, provider_subscription_id)
+      VALUES (1, 'pro', 'monthly', 'active', 'apple', '2000000123456789')
+    `).run();
+    testDb.exec(`
+      CREATE TABLE future_user_private_rows (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER NOT NULL,
+        payload TEXT NOT NULL
+      )
+    `);
+    testDb.prepare('INSERT INTO future_user_private_rows (user_id, payload) VALUES (1, ?), (2, ?)')
+      .run('delete', 'keep');
+
+    const inventory = getAccountDeletionInventoryForUser(1);
+    expect(inventory.deletableTables.apple_health_data).toBe(1);
+    expect(inventory.deletableTables.native_tasks).toBe(1);
+    expect(inventory.deletableTables.messages).toBe(1);
+    expect(inventory.deletableTables.subscriptions).toBe(1);
+    expect(inventory.deletableTables.future_user_private_rows).toBe(1);
+
+    const counts = deleteAllUserData(1);
+    expect(counts.apple_health_data).toBe(1);
+    expect(counts.native_tasks).toBe(1);
+    expect(counts.native_task_lists).toBe(1);
+    expect(counts.messages).toBe(1);
+    expect(counts.subscriptions).toBe(1);
+    expect(counts.future_user_private_rows).toBe(1);
+
+    expect(testDb.prepare('SELECT COUNT(*) as c FROM future_user_private_rows WHERE user_id = 2').get()).toMatchObject({ c: 1 });
     expect(testDb.prepare('SELECT COUNT(*) as c FROM audit_trail WHERE user_id = 1').get()).toMatchObject({ c: 1 });
   });
 

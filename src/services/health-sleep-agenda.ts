@@ -2,6 +2,7 @@
 
 import { DateTime } from 'luxon';
 import { getDb } from './database';
+import { appleHealthJsonSelectColumns, parseAppleHealthDataJson } from './apple-health-encryption';
 
 export interface AppleHealthSleepSegment {
   stage: string | null;
@@ -24,6 +25,13 @@ export interface AppleHealthSleepAgendaEvent {
 }
 
 const SLEEP_WINDOW_GAP_MINUTES = 45;
+
+type AppleHealthAgendaRow = {
+  date: string;
+  data_type: string;
+  data_json: string;
+  encrypted_data_json?: string | null;
+};
 
 export function getAppleHealthSleepAgendaEvents(input: {
   userId: number;
@@ -56,8 +64,10 @@ export function getAppleHealthSleepSegments(input: {
   if (!rangeStart?.isValid || !rangeEnd?.isValid || rangeEnd <= rangeStart) return [];
 
   try {
-    const rows = getDb().prepare(`
-      SELECT date, data_type, data_json
+    const db = getDb();
+    const healthJsonColumns = appleHealthJsonSelectColumns(db);
+    const rows = db.prepare(`
+      SELECT date, data_type, ${healthJsonColumns}
         FROM apple_health_data
        WHERE user_id = ?
          AND data_type IN ('sleep', 'daily_summary')
@@ -68,13 +78,13 @@ export function getAppleHealthSleepSegments(input: {
       input.userId,
       rangeStart.setZone(input.timezone).minus({ days: 1 }).toISODate(),
       rangeEnd.setZone(input.timezone).plus({ days: 1 }).toISODate(),
-    ) as Array<{ date: string; data_type: string; data_json: string }>;
+    ) as AppleHealthAgendaRow[];
 
     const segments: AppleHealthSleepSegment[] = [];
     const seen = new Set<string>();
     const datesWithSleepSegments = new Set<string>();
     for (const row of rows) {
-      const parsed = safeJson(row.data_json);
+      const parsed = safeAppleHealthJson(row, input.userId);
       const intervals = Array.isArray(parsed?.intervals) ? parsed.intervals : [];
       const segmentCountBeforeRow = segments.length;
       for (const interval of intervals) {
@@ -233,9 +243,9 @@ function parseBoundary(value: unknown, timezone: string): DateTime | null {
   return local.isValid ? local : null;
 }
 
-function safeJson(value: string): any {
+function safeAppleHealthJson(row: AppleHealthAgendaRow, userId: number): any {
   try {
-    return JSON.parse(value);
+    return parseAppleHealthDataJson(row, userId);
   } catch {
     return null;
   }

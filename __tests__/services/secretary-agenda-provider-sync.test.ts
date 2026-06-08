@@ -295,6 +295,148 @@ describe('secretary-agenda-provider-sync', () => {
     expect(stored?.providerSyncState).toBe('deleted');
   });
 
+  it('does not reactivate a canceled agenda item when a stale provider sync write finishes after cancellation', async () => {
+    class CancelDuringUpdateProvider extends MockSecretaryProvider {
+      async updateEvent(eventId: string, input: SecretaryProviderEventInput): Promise<SecretaryProviderEvent> {
+        const event = await super.updateEvent(eventId, input);
+        cancelSecretaryAgendaItem({
+          agendaItemId: input.agendaItemId,
+          ownerUserId: input.ownerUserId,
+          tenantId: input.tenantId,
+          reason: 'training_plan_canceled',
+          now: '2026-05-01T10:30:00.000Z',
+        });
+        return event;
+      }
+    }
+
+    const provider = new CancelDuringUpdateProvider();
+    const decision = submitSecretarySchedulingIntent(intent({
+      intentId: 'cancel-race-session',
+      sourceEntityId: 'session-cancel-race',
+    }));
+    const created = await syncOne(decision.agendaItem.agendaItemId, provider);
+    testDb.prepare(`
+      UPDATE secretary_agenda_items
+      SET lifecycle_state = 'reflowed',
+          provider_sync_state = 'not_synced',
+          title = ?,
+          updated_at = ?
+      WHERE agenda_item_id = ?
+    `).run(
+      'Bike endurance session moved before cancel',
+      '2026-05-01T10:15:00.000Z',
+      decision.agendaItem.agendaItemId,
+    );
+
+    const staleSync = await syncOne(decision.agendaItem.agendaItemId, provider);
+    const afterStaleSync = getSecretaryAgendaItemById({
+      agendaItemId: decision.agendaItem.agendaItemId,
+      ownerUserId: OWNER_USER_ID,
+      tenantId: TENANT_ID,
+    });
+
+    expect(staleSync.action).toBe('updated');
+    expect(afterStaleSync?.lifecycleState).toBe('canceled');
+    expect(afterStaleSync?.cancellationReason).toBe('training_plan_canceled');
+    expect(afterStaleSync?.providerSyncState).toBe('synced');
+
+    const cleanup = await syncOne(decision.agendaItem.agendaItemId, provider);
+    const afterCleanup = getSecretaryAgendaItemById({
+      agendaItemId: decision.agendaItem.agendaItemId,
+      ownerUserId: OWNER_USER_ID,
+      tenantId: TENANT_ID,
+    });
+
+    expect(cleanup.action).toBe('deleted');
+    expect(provider.deletedEventIds).toContain(created.providerEventId);
+    expect(afterCleanup?.lifecycleState).toBe('canceled');
+    expect(afterCleanup?.providerSyncState).toBe('deleted');
+  });
+
+  it('bulk sync includes canceled provider-backed cleanup rows even when inactive history is excluded', async () => {
+    const provider = new MockSecretaryProvider();
+    const decision = submitSecretarySchedulingIntent(intent({
+      intentId: 'bulk-canceled-cleanup',
+      sourceEntityId: 'session-bulk-canceled',
+    }));
+    const created = await syncOne(decision.agendaItem.agendaItemId, provider);
+    cancelSecretaryAgendaItem({
+      agendaItemId: decision.agendaItem.agendaItemId,
+      ownerUserId: OWNER_USER_ID,
+      tenantId: TENANT_ID,
+      reason: 'training_plan_canceled',
+      now: '2026-05-01T10:00:00.000Z',
+    });
+
+    const results = await syncSecretaryAgendaItemsToProvider({
+      ownerUserId: OWNER_USER_ID,
+      tenantId: TENANT_ID,
+      includeInactive: false,
+    }, provider);
+    const stored = getSecretaryAgendaItemById({
+      agendaItemId: decision.agendaItem.agendaItemId,
+      ownerUserId: OWNER_USER_ID,
+      tenantId: TENANT_ID,
+    });
+
+    expect(results).toHaveLength(1);
+    expect(results[0]).toMatchObject({
+      agendaItemId: decision.agendaItem.agendaItemId,
+      action: 'deleted',
+      providerSyncState: 'deleted',
+    });
+    expect(provider.deletedEventIds).toContain(created.providerEventId);
+    expect(stored?.lifecycleState).toBe('canceled');
+    expect(stored?.providerSyncState).toBe('deleted');
+  });
+
+  it('treats provider 410 Gone during cleanup as already deleted', async () => {
+    class GoneOnDeleteProvider extends MockSecretaryProvider {
+      async deleteEvent(eventId: string): Promise<void> {
+        this.deletedEventIds.push(eventId);
+        this.events.delete(eventId);
+        throw { status: 410, reason: 'deleted', message: 'Resource has been deleted' };
+      }
+    }
+
+    const provider = new GoneOnDeleteProvider();
+    const decision = submitSecretarySchedulingIntent(intent({
+      intentId: 'bulk-canceled-gone-cleanup',
+      sourceEntityId: 'session-bulk-canceled-gone',
+    }));
+    const created = await syncOne(decision.agendaItem.agendaItemId, provider);
+    cancelSecretaryAgendaItem({
+      agendaItemId: decision.agendaItem.agendaItemId,
+      ownerUserId: OWNER_USER_ID,
+      tenantId: TENANT_ID,
+      reason: 'training_plan_canceled',
+      now: '2026-05-01T10:00:00.000Z',
+    });
+
+    const results = await syncSecretaryAgendaItemsToProvider({
+      ownerUserId: OWNER_USER_ID,
+      tenantId: TENANT_ID,
+      includeInactive: false,
+    }, provider);
+    const stored = getSecretaryAgendaItemById({
+      agendaItemId: decision.agendaItem.agendaItemId,
+      ownerUserId: OWNER_USER_ID,
+      tenantId: TENANT_ID,
+    });
+
+    expect(results).toHaveLength(1);
+    expect(results[0]).toMatchObject({
+      agendaItemId: decision.agendaItem.agendaItemId,
+      action: 'deleted',
+      providerSyncState: 'deleted',
+      reasonCode: 'provider_event_deleted',
+    });
+    expect(provider.deletedEventIds).toContain(created.providerEventId);
+    expect(stored?.lifecycleState).toBe('canceled');
+    expect(stored?.providerSyncState).toBe('deleted');
+  });
+
   it('replaces a regenerated agenda item by deleting the superseded provider event and creating the new version', async () => {
     const provider = new MockSecretaryProvider();
     const first = submitSecretarySchedulingIntent(intent({
@@ -529,6 +671,42 @@ describe('secretary-agenda-provider-sync', () => {
     expect(repaired.providerEventId).not.toBe(first.providerEventId);
     expect(stored?.providerSyncState).toBe('synced');
     expect(stored?.providerEventId).toBe(repaired.providerEventId);
+  });
+
+  it('treats cancellation-reasoned active rows as cleanup rows instead of recreating deleted provider events', async () => {
+    const provider = new MockSecretaryProvider();
+    const decision = submitSecretarySchedulingIntent(intent({
+      intentId: 'leaked-training-cancel',
+      sourceEntityId: 'session-leaked-cancel',
+    }));
+    const first = await syncOne(decision.agendaItem.agendaItemId, provider);
+    provider.removeExternally(first.providerEventId!);
+    testDb.prepare(`
+      UPDATE secretary_agenda_items
+      SET lifecycle_state = 'synced',
+          provider_sync_state = 'synced',
+          cancellation_reason = 'training_plan_canceled',
+          updated_at = ?
+      WHERE agenda_item_id = ?
+    `).run(
+      '2026-06-07T18:00:00.000Z',
+      decision.agendaItem.agendaItemId,
+    );
+
+    const cleanup = await syncOne(decision.agendaItem.agendaItemId, provider);
+    const stored = getSecretaryAgendaItemById({
+      agendaItemId: decision.agendaItem.agendaItemId,
+      ownerUserId: OWNER_USER_ID,
+      tenantId: TENANT_ID,
+    });
+
+    expect(cleanup.action).toBe('deleted');
+    expect(cleanup.reasonCode).toBe('provider_event_deleted');
+    expect(provider.createInputs).toHaveLength(1);
+    expect(provider.deletedEventIds).toContain(first.providerEventId);
+    expect(stored?.lifecycleState).toBe('canceled');
+    expect(stored?.providerSyncState).toBe('deleted');
+    expect(stored?.providerEventId).toBe(first.providerEventId);
   });
 
   it('repairs stale duplicate provider events for the same agenda item', async () => {

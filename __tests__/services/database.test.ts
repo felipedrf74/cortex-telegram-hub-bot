@@ -12,6 +12,10 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import Database from 'better-sqlite3';
 import fs from 'fs';
 import path from 'path';
+import {
+  runMigrationsForTest,
+  stripWrappingTransactionStatements,
+} from '../../src/services/database';
 
 const MIGRATIONS_DIR = path.resolve(__dirname, '../../migrations');
 
@@ -75,6 +79,39 @@ describe('Database Migrations', () => {
   it('applies all migrations without errors', () => {
     const applied = applyMigrations(db);
     expect(applied.length).toBeGreaterThanOrEqual(18);
+  });
+
+  it('strips literal transaction wrappers before the runner opens its own transaction', () => {
+    const stripped = stripWrappingTransactionStatements(`
+      BEGIN TRANSACTION;
+      CREATE TABLE wrapped_migration (id INTEGER PRIMARY KEY);
+      CREATE TRIGGER wrapped_migration_ai
+      AFTER INSERT ON wrapped_migration
+      BEGIN
+        SELECT 1;
+      END;
+      COMMIT;
+      END;
+    `);
+
+    expect(stripped).toContain('CREATE TABLE wrapped_migration');
+    expect(stripped).toMatch(/CREATE\s+TRIGGER[\s\S]*BEGIN[\s\S]*END;/i);
+    expect(stripped).not.toMatch(/^\s*BEGIN\s+TRANSACTION\s*;/im);
+    expect(stripped).not.toMatch(/^\s*COMMIT\s*;/im);
+  });
+
+  it('applies literal-transaction migrations through the real migration runner', () => {
+    expect(() => runMigrationsForTest(db)).not.toThrow();
+    const applied = db.prepare(`
+      SELECT filename FROM _migrations
+      WHERE filename IN ('042_unified_fks.sql', '116_chat_reasoning_engine_v1.sql')
+      ORDER BY filename
+    `).all() as { filename: string }[];
+
+    expect(applied.map((row) => row.filename)).toEqual([
+      '042_unified_fks.sql',
+      '116_chat_reasoning_engine_v1.sql',
+    ]);
   });
 
   it('migrations are idempotent (safe to run twice)', () => {

@@ -95,15 +95,15 @@ function mockRes(): MockRes {
   return res;
 }
 
-async function dispatch(userId: number): Promise<MockRes> {
+async function dispatchRoute(method: string, routePath: string, userId: number): Promise<MockRes> {
   const router = connectionRoutes();
   const req = {
     userId,
-    method: 'GET',
-    url: '/',
-    originalUrl: '/',
+    method,
+    url: routePath,
+    originalUrl: routePath,
     baseUrl: '',
-    path: '/',
+    path: routePath,
     query: {},
     params: {},
     headers: {},
@@ -121,6 +121,10 @@ async function dispatch(userId: number): Promise<MockRes> {
   return res;
 }
 
+async function dispatch(userId: number): Promise<MockRes> {
+  return dispatchRoute('GET', '/', userId);
+}
+
 describe('Connections API tenant isolation', () => {
   beforeEach(() => {
     process.env.OAUTH_ENCRYPTION_KEY = 'tenant-isolation-oauth-key-32-bytes-minimum';
@@ -131,6 +135,7 @@ describe('Connections API tenant isolation', () => {
   afterEach(() => {
     testDb?.close();
     delete process.env.OAUTH_ENCRYPTION_KEY;
+    vi.unstubAllGlobals();
   });
 
   it('returns only the authenticated user integration metadata and never token material', async () => {
@@ -181,5 +186,46 @@ describe('Connections API tenant isolation', () => {
     expect(serializedB).not.toContain('refresh-secret-b');
     expect(serializedB).not.toContain('tenant-a@garmin.example');
     expect(serializedA).not.toContain('outlook-secret');
+  });
+
+  it('revokes and removes only the authenticated user provider connection', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ status: 200, ok: true });
+    vi.stubGlobal('fetch', fetchMock);
+
+    storeTokens(401, 'google', {
+      accessToken: 'access-secret-a',
+      refreshToken: 'refresh-secret-a',
+      tokenType: 'Bearer',
+      expiresAt: null,
+      scopes: ['https://www.googleapis.com/auth/calendar.readonly'],
+    });
+    storeTokens(402, 'google', {
+      accessToken: 'access-secret-b',
+      refreshToken: 'refresh-secret-b',
+      tokenType: 'Bearer',
+      expiresAt: null,
+      scopes: ['https://www.googleapis.com/auth/calendar.readonly'],
+    });
+
+    const res = await dispatchRoute('DELETE', '/google', 401);
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body.data).toMatchObject({
+      provider: 'google',
+      disconnected: true,
+      connectedBefore: true,
+      revocation: {
+        provider: 'google',
+        attempted: true,
+        status: 'revoked',
+        statusCode: 200,
+      },
+    });
+    expect(fetchMock).toHaveBeenCalledWith(
+      'https://oauth2.googleapis.com/revoke',
+      expect.objectContaining({ method: 'POST' }),
+    );
+    expect(testDb.prepare('SELECT 1 FROM user_oauth_tokens WHERE user_id = ? AND provider = ?').get(401, 'google')).toBeUndefined();
+    expect(testDb.prepare('SELECT 1 FROM user_oauth_tokens WHERE user_id = ? AND provider = ?').get(402, 'google')).toBeTruthy();
   });
 });
