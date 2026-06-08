@@ -65,6 +65,7 @@ import { isFiscalBundleDeliveryConfigured } from '../../src/services/email-sende
 function profile(overrides: Partial<FiscalCollectionProfileRow> = {}): FiscalCollectionProfileRow {
   return {
     user_id: 12,
+    tenant_id: 12,
     destination_email: 'felipe@nexushub.me',
     cadence: 'monthly',
     primary_day: 28,
@@ -85,7 +86,7 @@ describe('Fiscal bundle scheduling', () => {
       DateTime.fromISO('2026-04-14T10:00:00Z', { zone: 'utc' }),
     );
 
-    expect(nextRun).toBe('2026-04-28T08:00:00.000Z');
+    expect(nextRun).toBe('2026-04-28T07:00:00.000Z');
   });
 
   it('skips the current-day run when it was already sent today', () => {
@@ -97,7 +98,7 @@ describe('Fiscal bundle scheduling', () => {
       DateTime.fromISO('2026-04-14T09:00:00Z', { zone: 'utc' }),
     );
 
-    expect(nextRun).toBe('2026-05-14T08:00:00.000Z');
+    expect(nextRun).toBe('2026-05-14T07:00:00.000Z');
   });
 
   it('uses the second configured day before moving to the next month', () => {
@@ -111,13 +112,13 @@ describe('Fiscal bundle scheduling', () => {
       DateTime.fromISO('2026-04-12T12:00:00Z', { zone: 'utc' }),
     );
 
-    expect(nextRun).toBe('2026-04-25T08:00:00.000Z');
+    expect(nextRun).toBe('2026-04-25T07:00:00.000Z');
   });
 
-  it('is due once the configured day reaches 08:00 UTC and has not been sent yet', () => {
+  it('is due once the configured local run time has passed and has not been sent yet', () => {
     const due = isFiscalBundleDue(
       profile({ primary_day: 14 }),
-      DateTime.fromISO('2026-04-14T08:30:00Z', { zone: 'utc' }),
+      DateTime.fromISO('2026-04-14T07:30:00Z', { zone: 'utc' }),
     );
 
     expect(due).toBe(true);
@@ -127,7 +128,7 @@ describe('Fiscal bundle scheduling', () => {
     expect(
       isFiscalBundleDue(
         profile({ primary_day: 14 }),
-        DateTime.fromISO('2026-04-14T07:59:00Z', { zone: 'utc' }),
+        DateTime.fromISO('2026-04-14T06:59:00Z', { zone: 'utc' }),
       ),
     ).toBe(false);
 
@@ -138,6 +139,43 @@ describe('Fiscal bundle scheduling', () => {
           last_bundle_sent_at: '2026-04-14T08:05:00Z',
         }),
         DateTime.fromISO('2026-04-14T10:00:00Z', { zone: 'utc' }),
+      ),
+    ).toBe(false);
+  });
+
+  it('uses winter UTC offset for the same local fiscal run hour', () => {
+    const nextRun = computeNextFiscalBundleRun(
+      profile({ primary_day: 14 }),
+      DateTime.fromISO('2026-01-10T12:00:00Z', { zone: 'utc' }),
+    );
+
+    expect(nextRun).toBe('2026-01-14T08:00:00.000Z');
+  });
+
+  it('catches up a missed configured day later in the same month', () => {
+    expect(
+      isFiscalBundleDue(
+        profile({ primary_day: 14 }),
+        DateTime.fromISO('2026-04-16T10:00:00Z', { zone: 'utc' }),
+      ),
+    ).toBe(true);
+  });
+
+  it('catches up a missed clamped run day across the next month boundary without double-send', () => {
+    expect(
+      isFiscalBundleDue(
+        profile({ primary_day: 31 }),
+        DateTime.fromISO('2026-05-01T10:00:00Z', { zone: 'utc' }),
+      ),
+    ).toBe(true);
+
+    expect(
+      isFiscalBundleDue(
+        profile({
+          primary_day: 31,
+          last_bundle_sent_at: '2026-04-30T08:20:00.000Z',
+        }),
+        DateTime.fromISO('2026-05-01T10:00:00Z', { zone: 'utc' }),
       ),
     ).toBe(false);
   });

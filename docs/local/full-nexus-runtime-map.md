@@ -57,7 +57,7 @@ http://127.0.0.1:8200
 | Secretary | Included | Plan, calendar, tasks, notifications, and agenda-facing APIs run through the local backend. Rich Secretary fixture/scenario seeding is not yet a single first-class runner command. |
 | Training | Included | Training summary/today/plan routes and deterministic coach-kernel logic run locally. Model calls are disabled by default. |
 | Cooking | Included | Cooking meal-plan API is part of the authenticated smoke set. Rich fueling/cooking persona seeding remains pending. |
-| Finance | Included | Finance monthly summary and finance services run locally with finance encryption disabled for local-only smoke. |
+| Finance | Included | Finance monthly summary, fiscal bundle, and invoice object storage paths run locally. Finance encryption is disabled for local-only smoke; invoice objects use filesystem storage instead of production VPS MinIO. |
 | Content Creation | Included; sidecar optional | API routes run locally. Python content-engine sidecar is off by default and starts only with `NEXUS_LOCAL_START_CONTENT_ENGINE=1`. |
 | Shared context/orchestration | Included | Plan, dashboard, signals, shared-memory/cache state, skill catalog, and mesh flags are available locally. |
 | Model/provider layer | Controlled fixture/degraded mode by default | Provider keys are blanked unless `NEXUS_LOCAL_ALLOW_MODEL_CALLS=1`; routing architecture remains configurable and provider-agnostic. |
@@ -157,6 +157,12 @@ The runner supplies local-safe defaults. Do not source production or staging
 | `DATABASE_PATH` | `data/local-full-nexus-smoke.db` | Isolated SQLite DB. |
 | `OAUTH_ENCRYPTION_KEY` | local-only runner key | Allows OAuth-token table code paths without production secrets. |
 | `FINANCE_ENCRYPTION_ENABLED` | `false` | Keeps local finance smoke simple and non-production. |
+| `INVOICE_OBJECT_STORAGE_ENABLED` | `true` | Enables durable local invoice/receipt object writes. |
+| `INVOICE_OBJECT_STORAGE_BACKEND` | `filesystem` | Uses local filesystem storage instead of production VPS MinIO. |
+| `INVOICE_OBJECT_STORAGE_DIR` | `./data/invoice-objects` | Local tenant-scoped invoice object root. |
+| `INVOICE_OBJECT_MAX_BYTES` | `10485760` | Maximum invoice object size for local filing. |
+| `INVOICE_OBJECT_MIN_FREE_BYTES` | `0` | Disables local free-space guardrail for smoke fixtures. |
+| `INVOICE_OBJECT_TENANT_MAX_BYTES` | `0` | Disables local per-tenant storage cap for smoke fixtures. |
 | `PAYWALL_ENABLED` | `false` | Avoids billing gates in local smoke. |
 | `TELEGRAM_LEGACY_DELIVERY` | `false` | Prevents external Telegram delivery. |
 | `BACKUP_ENABLED` | `false` | Prevents backup jobs during local smoke. |
@@ -198,6 +204,20 @@ Real external-provider credentials are not part of default local smoke:
 | APNs | Requires signed device/TestFlight token flow. |
 | Stripe/billing | Paywall is disabled by default; billing integration should use staging/test-mode paths when explicitly needed. |
 | Model providers | Disabled by default; use fixture/degraded paths unless a bounded provider smoke is explicitly approved. |
+
+Production invoice object storage is intentionally different from local smoke:
+self-hosted MinIO should run on the VPS with `INVOICE_OBJECT_STORAGE_BACKEND=minio`,
+`INVOICE_MINIO_ENDPOINT`, `INVOICE_MINIO_BUCKET`, and MinIO access credentials.
+Legacy invoice storage migration is handled by the dry-run-first backfill tool:
+
+```bash
+npm run build
+npm run fiscal:storage:backfill -- --db ./data/local-full-nexus-smoke.db --legacy-root /mounted/legacy/invoices
+```
+
+Add `--apply` only when the legacy remote invoice root is mounted or mirrored.
+The tool does not open SSH/SCP; rows with missing legacy files become `orphaned`
+only in apply mode.
 
 ## Local Database Setup
 

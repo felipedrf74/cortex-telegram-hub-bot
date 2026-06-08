@@ -113,19 +113,26 @@ function getHeader(headers: gmail_v1.Schema$MessagePartHeader[] | undefined, nam
 
 async function searchEmailsWithClient(gmail: gmail_v1.Gmail, query: string, maxResults = 10): Promise<EmailMessage[]> {
   try {
-    const response = await withTimeout(
-      gmail.users.messages.list({
-        userId: 'me',
-        q: query,
-        maxResults,
-      }),
-      GMAIL_API_TIMEOUT_MS,
-    );
+    const messageRefs: gmail_v1.Schema$Message[] = [];
+    let pageToken: string | undefined;
+    do {
+      const response = await withTimeout(
+        gmail.users.messages.list({
+          userId: 'me',
+          q: query,
+          maxResults: Math.min(500, Math.max(1, maxResults - messageRefs.length)),
+          pageToken,
+        }),
+        GMAIL_API_TIMEOUT_MS,
+      );
+      messageRefs.push(...(response.data.messages || []));
+      pageToken = response.data.nextPageToken || undefined;
+    } while (pageToken && messageRefs.length < maxResults);
 
-    if (!response.data.messages) return [];
+    if (messageRefs.length === 0) return [];
 
     const detailResults = await Promise.allSettled(
-      response.data.messages.slice(0, maxResults).map((msg) =>
+      messageRefs.slice(0, maxResults).map((msg) =>
         withTimeout(
           gmail.users.messages.get({
             userId: 'me',

@@ -200,10 +200,24 @@ function sendCookingPreferenceErrorIfNeeded(res: Response, err: unknown): boolea
   return true;
 }
 
-function sendCookingSafetyErrorIfNeeded(res: Response, err: unknown): boolean {
+function sendCookingSafetyErrorIfNeeded(
+  res: Response,
+  err: unknown,
+  context?: { userId?: number; tenantId?: number; route?: string; surface?: string },
+): boolean {
   const message = err instanceof Error ? err.message : '';
   if (!message.startsWith('COOKING_SAFETY_BLOCKED')) return false;
-  sendError(res, 'BAD_REQUEST', 'Cooking item conflicts with a saved allergy preference', 400);
+  logger.warn(
+    {
+      event: 'COOKING_SAFETY_BLOCKED',
+      userId: context?.userId,
+      tenantId: context?.tenantId,
+      route: context?.route,
+      surface: context?.surface,
+    },
+    'COOKING_SAFETY_BLOCKED',
+  );
+  sendError(res, 'BAD_REQUEST', 'Cooking item conflicts with a saved cooking safety preference', 400);
   return true;
 }
 
@@ -246,7 +260,14 @@ function isHardTrainingSession(session: TrainingSession): boolean {
   ].some((token) => haystack.includes(token));
 }
 
-async function buildCookingTrainingSnapshot(userId: number): Promise<CookingTrainingSnapshot> {
+function isDefaultPersonalTenantScope(userId: number, tenantId: number): boolean {
+  // Wearable readiness adapters are still keyed only by user_id. Keep them on
+  // the default personal tenant until those adapters can accept tenant scope.
+  return userId === tenantId;
+}
+
+async function buildCookingTrainingSnapshot(opts: { userId: number; tenantId: number }): Promise<CookingTrainingSnapshot> {
+  const { userId, tenantId } = opts;
   const zone = config.app.timezone || 'Europe/Lisbon';
   const now = DateTime.now().setZone(zone);
   const tomorrow = now.plus({ days: 1 });
@@ -255,7 +276,7 @@ async function buildCookingTrainingSnapshot(userId: number): Promise<CookingTrai
   const todayName = now.toFormat('EEEE');
   const tomorrowName = tomorrow.toFormat('EEEE');
 
-  const activePlans = getActivePlans(userId);
+  const activePlans = getActivePlans(userId, tenantId);
   const sessionsForDay = (target: DateTime, dayName: string) => activePlans.flatMap((plan) => {
     const week = getCurrentWeek(plan.id);
     if (!week) return [];
@@ -269,13 +290,20 @@ async function buildCookingTrainingSnapshot(userId: number): Promise<CookingTrai
 
   const todaySessions = sessionsForDay(now, todayName);
   const tomorrowSessions = sessionsForDay(tomorrow, tomorrowName);
-  const trainingContext = readTrainingContextAll({ userId });
+  const trainingContext = readTrainingContextAll({ userId, tenantId });
 
   let readinessScore: number | null = null;
-  try {
-    readinessScore = (await getWearableReadiness(userId, todayIso))?.readinessScore ?? null;
-  } catch (err) {
-    logger.debug({ err, userId }, 'Cooking meal-plan readiness lookup failed');
+  if (isDefaultPersonalTenantScope(userId, tenantId)) {
+    try {
+      readinessScore = (await getWearableReadiness(userId, todayIso))?.readinessScore ?? null;
+    } catch (err) {
+      logger.debug({ err, userId, tenantId }, 'Cooking meal-plan readiness lookup failed');
+    }
+  } else {
+    logger.debug(
+      { userId, tenantId },
+      'Cooking meal-plan readiness suppressed for non-default tenant scope',
+    );
   }
 
   return {
@@ -442,7 +470,7 @@ export function cookingRoutes(): Router {
       sendSuccess(res, { recipes, count: recipes.length });
     } catch (err: unknown) {
       if (sendCookingScopeConflictIfNeeded(res, err)) return;
-      if (sendCookingSafetyErrorIfNeeded(res, err)) return;
+      if (sendCookingSafetyErrorIfNeeded(res, err, { userId, tenantId, route: 'GET /recipes', surface: 'recipe' })) return;
       sendCookingInternalError(res, {
         err,
         userId,
@@ -519,7 +547,7 @@ export function cookingRoutes(): Router {
       sendSuccess(res, { recipe }, { status: 201 });
     } catch (err: unknown) {
       if (sendCookingScopeConflictIfNeeded(res, err)) return;
-      if (sendCookingSafetyErrorIfNeeded(res, err)) return;
+      if (sendCookingSafetyErrorIfNeeded(res, err, { userId, tenantId, route: 'POST /recipes', surface: 'recipe' })) return;
       sendCookingInternalError(res, {
         err,
         userId,
@@ -551,7 +579,7 @@ export function cookingRoutes(): Router {
       }
       sendSuccess(res, { recipe });
     } catch (err: unknown) {
-      if (sendCookingSafetyErrorIfNeeded(res, err)) return;
+      if (sendCookingSafetyErrorIfNeeded(res, err, { userId, tenantId, route: 'GET /recipes/:id', surface: 'recipe' })) return;
       sendCookingInternalError(res, {
         err,
         userId,
@@ -625,7 +653,7 @@ export function cookingRoutes(): Router {
       }
       sendSuccess(res, { recipe: updated });
     } catch (err: unknown) {
-      if (sendCookingSafetyErrorIfNeeded(res, err)) return;
+      if (sendCookingSafetyErrorIfNeeded(res, err, { userId, tenantId, route: 'PATCH /recipes/:id', surface: 'recipe' })) return;
       sendCookingInternalError(res, {
         err,
         userId,
@@ -919,7 +947,7 @@ export function cookingRoutes(): Router {
 
     try {
       const plans = getMealPlan(userId, from, to, tenantId);
-      const trainingSnapshot = await buildCookingTrainingSnapshot(userId);
+      const trainingSnapshot = await buildCookingTrainingSnapshot({ userId, tenantId });
       const meals: MealPlanRouteRow[] = plans.map((plan) => ({
         ...plan,
         adaptation: buildMealAdaptation(plan, trainingSnapshot),
@@ -1009,7 +1037,7 @@ export function cookingRoutes(): Router {
       sendSuccess(res, { meal: plan });
     } catch (err: unknown) {
       if (sendCookingScopeConflictIfNeeded(res, err)) return;
-      if (sendCookingSafetyErrorIfNeeded(res, err)) return;
+      if (sendCookingSafetyErrorIfNeeded(res, err, { userId, tenantId, route: 'POST /meal-plan', surface: 'meal_plan' })) return;
       sendCookingInternalError(res, {
         err,
         userId,
@@ -1130,7 +1158,7 @@ export function cookingRoutes(): Router {
       sendSuccess(res, result);
     } catch (err: unknown) {
       if (sendCookingScopeConflictIfNeeded(res, err)) return;
-      if (sendCookingSafetyErrorIfNeeded(res, err)) return;
+      if (sendCookingSafetyErrorIfNeeded(res, err, { userId, tenantId, route: 'POST /meal-plan/substitutions/apply', surface: 'meal_plan_substitution' })) return;
       const message = err instanceof Error ? err.message : '';
       if (message.startsWith('COOKING_SUBSTITUTION')) {
         sendError(res, 'BAD_REQUEST', message, 400);

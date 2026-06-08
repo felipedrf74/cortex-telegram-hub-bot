@@ -80,6 +80,8 @@ export interface Reminder {
 
 export interface InvoiceFiling {
   id: number;
+  tenant_id: number;
+  user_id: number;
   vendor: string;
   amount: string | null;
   document_date: string | null;
@@ -91,15 +93,23 @@ export interface InvoiceFiling {
   filename: string | null;
   file_size_bytes: number | null;
   compressed_size_bytes: number | null;
-  status: 'filed' | 'failed' | 'duplicate';
+  object_key: string | null;
+  checksum: string | null;
+  mime: string | null;
+  bytes: number | null;
+  storage_backend: string | null;
+  status: 'filed' | 'failed' | 'duplicate' | 'orphaned';
   error_message: string | null;
   created_at: string;
 }
 
 export interface InvoiceVendor {
   id: number;
+  tenant_id: number;
+  user_id: number;
   name: string;
   sender_pattern: string;
+  sender_patterns?: string[];
   subject_patterns: string | null;
   enabled: number;       // SQLite boolean: 1 = active, 0 = disabled
   created_at: string;

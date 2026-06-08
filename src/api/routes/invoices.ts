@@ -40,6 +40,7 @@ import {
 } from '../../state/invoice-vendors';
 import type { InvoiceVendor } from '../../domains/types';
 import {
+  FiscalBundleBadRequestError,
   getFiscalCollectionSummary,
   sendFiscalBundleNow,
 } from '../../services/fiscal-bundle';
@@ -47,6 +48,7 @@ import { updateFiscalCollectionProfile } from '../../state/fiscal-collection-pro
 import { ensureValidTenantRouteScope } from '../tenant-route-scope';
 import { invalidateFinanceDerivedCaches } from '../../services/cache-coherence-registry';
 import { assertTenantScope, TenantScopeError } from '../../services/tenant-scope';
+import { evaluateChatCoreV2FinanceActionPolicy } from '../../services/chat-core-v2/finance-action-policy';
 import {
   normalizeScraperMfaCode,
   normalizeScraperMfaSource,
@@ -59,16 +61,34 @@ function splitSubjectPatterns(subjectPatterns: string | null | undefined): strin
     .map((value) => value.trim())
     .filter(Boolean);
 
-  return patterns?.length ? patterns : ['fatura'];
+  return patterns?.length ? patterns : [];
+}
+
+function isValidSingleEmailAddress(value: string): boolean {
+  const normalized = value.trim();
+  if (!normalized || normalized.includes(',') || normalized.includes(';')) return false;
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalized);
 }
 
 function toUserScopedVendorConfig(row: InvoiceVendor) {
   return {
     name: row.name,
-    senderPatterns: [row.sender_pattern],
+    senderPatterns: row.sender_patterns?.length ? row.sender_patterns : [row.sender_pattern],
     subjectPatterns: splitSubjectPatterns(row.subject_patterns),
     builtin: false,
   };
+}
+
+function normalizeRequestSenderPatterns(senderPattern: unknown, senderPatterns: unknown): string[] {
+  const values: string[] = [];
+  if (typeof senderPattern === 'string' && senderPattern.trim()) values.push(senderPattern.trim());
+  if (Array.isArray(senderPatterns)) {
+    for (const value of senderPatterns) {
+      if (typeof value !== 'string' || !value.trim()) continue;
+      values.push(value.trim());
+    }
+  }
+  return [...new Set(values.map((value) => value.toLowerCase()))];
 }
 
 export function invoicesRoutes(): Router {
@@ -95,8 +115,8 @@ export function invoicesRoutes(): Router {
 
   router.get('/profile', asyncHandler(async (req, res: Response) => {
     try {
-      const { userId } = req as AuthenticatedRequest;
-      const summary = getFiscalCollectionSummary(userId);
+      const { userId, tenantId } = assertTenantScope(req as any, 'invoices.profile');
+      const summary = getFiscalCollectionSummary(userId, tenantId);
       sendSuccess(res, summary);
     } catch (err: any) {
       logger.error({ err }, 'iOS fiscal collection profile failed');
@@ -112,16 +132,20 @@ export function invoicesRoutes(): Router {
       sendError(res, 'BAD_REQUEST', 'destinationEmail must be a string or null');
       return;
     }
+    if (typeof destinationEmail === 'string' && !isValidSingleEmailAddress(destinationEmail)) {
+      sendError(res, 'BAD_REQUEST', 'destinationEmail must be one valid email address');
+      return;
+    }
     if (cadence !== undefined && cadence !== 'monthly' && cadence !== 'twice_monthly') {
       sendError(res, 'BAD_REQUEST', "cadence must be 'monthly' or 'twice_monthly'");
       return;
     }
-    if (primaryDay !== undefined && (!Number.isFinite(primaryDay) || primaryDay < 1 || primaryDay > 28)) {
-      sendError(res, 'BAD_REQUEST', 'primaryDay must be between 1 and 28');
+    if (primaryDay !== undefined && (!Number.isFinite(primaryDay) || primaryDay < 1 || primaryDay > 31)) {
+      sendError(res, 'BAD_REQUEST', 'primaryDay must be between 1 and 31');
       return;
     }
-    if (secondaryDay !== undefined && secondaryDay !== null && (!Number.isFinite(secondaryDay) || secondaryDay < 1 || secondaryDay > 28)) {
-      sendError(res, 'BAD_REQUEST', 'secondaryDay must be between 1 and 28 or null');
+    if (secondaryDay !== undefined && secondaryDay !== null && (!Number.isFinite(secondaryDay) || secondaryDay < 1 || secondaryDay > 31)) {
+      sendError(res, 'BAD_REQUEST', 'secondaryDay must be between 1 and 31 or null');
       return;
     }
     if (enabled !== undefined && typeof enabled !== 'boolean') {
@@ -131,12 +155,12 @@ export function invoicesRoutes(): Router {
 
     try {
       updateFiscalCollectionProfile(userId, {
-        destination_email: destinationEmail,
+        destination_email: typeof destinationEmail === 'string' ? destinationEmail.trim() : destinationEmail,
         cadence,
         primary_day: primaryDay,
         secondary_day: secondaryDay,
         enabled,
-      });
+      }, tenantId);
       // 2026-05-18 (skill-hardening QA P0-4): every fiscal mutation must
       // write an audit_trail row. Portuguese tax retention requires this.
       logAudit({
@@ -155,7 +179,7 @@ export function invoicesRoutes(): Router {
         ipAddress: (req as any).ip,
       });
       invalidateFinanceDerivedCaches(userId);
-      sendSuccess(res, getFiscalCollectionSummary(userId));
+      sendSuccess(res, getFiscalCollectionSummary(userId, tenantId));
     } catch (err: any) {
       logger.error({ err, userId }, 'iOS fiscal collection profile update failed');
       sendInternalError(res, 'Unable to update fiscal collection profile right now.');
@@ -166,10 +190,21 @@ export function invoicesRoutes(): Router {
     const { userId, tenantId } = assertTenantScope(req as any, 'invoices.bundle-now');
 
     try {
+      const policy = evaluateChatCoreV2FinanceActionPolicy({
+        actionClass: 'finance.send_bundle',
+        operation: 'execute',
+        hasSourceCitations: true,
+      });
+      if (!policy.ok) {
+        sendError(res, 'FORBIDDEN', 'Fiscal bundle send is blocked by finance action policy.', 403);
+        return;
+      }
       logger.info({ userId }, 'iOS fiscal bundle send started');
       const result = await sendFiscalBundleNow(userId, {
+        tenantId,
         startAt: req.body?.startAt,
         endAt: req.body?.endAt,
+        idempotencyKey: req.body?.idempotencyKey,
       });
       // P0-4: audit on every bundle send — fiscal records leaving the system.
       logAudit({
@@ -188,6 +223,10 @@ export function invoicesRoutes(): Router {
       invalidateFinanceDerivedCaches(userId);
       sendSuccess(res, { result });
     } catch (err: any) {
+      if (err instanceof FiscalBundleBadRequestError) {
+        sendError(res, err.code, err.message, err.status);
+        return;
+      }
       logger.error({ err, userId }, 'iOS fiscal bundle send failed');
       sendInternalError(res, 'Unable to send the fiscal bundle right now.');
     }
@@ -207,11 +246,11 @@ export function invoicesRoutes(): Router {
    */
   router.get('/vendors', asyncHandler(async (req, res: Response) => {
     try {
-      const { userId } = req as AuthenticatedRequest;
+      const { userId, tenantId } = assertTenantScope(req as any, 'invoices.vendors.list');
 
       // Pull the raw DB rows so the UI can show disabled vendors
       // (for re-enable) — these include `id` and `enabled` fields.
-      const dbRows = getAllVendorsDb(userId);
+      const dbRows = getAllVendorsDb(userId, tenantId);
       const active = dbRows
         .filter((row) => row.enabled === 1)
         .map(toUserScopedVendorConfig);
@@ -238,20 +277,23 @@ export function invoicesRoutes(): Router {
    * and toggles `enabled` back on if it was previously disabled).
    */
   router.post('/vendors', asyncHandler(async (req, res: Response) => {
-    const { name, senderPattern, subjectPatterns } = req.body;
+    const { name, senderPattern, senderPatterns, subjectPatterns } = req.body;
 
     if (!name || typeof name !== 'string' || !name.trim()) {
       sendError(res, 'BAD_REQUEST', 'name is required');
       return;
     }
-    if (!senderPattern || typeof senderPattern !== 'string' || !senderPattern.trim()) {
-      sendError(res, 'BAD_REQUEST', 'senderPattern is required (e.g. "vendor.com")');
+    const normalizedSenderPatterns = normalizeRequestSenderPatterns(senderPattern, senderPatterns);
+    if (normalizedSenderPatterns.length === 0) {
+      sendError(res, 'BAD_REQUEST', 'at least one senderPattern is required (e.g. "vendor.com")');
       return;
     }
 
     try {
       const { userId, tenantId } = assertTenantScope(req as any, 'invoices.vendors.create');
-      const vendor = addVendor(name.trim(), senderPattern.trim(), userId, subjectPatterns);
+      const vendor = Array.isArray(senderPatterns)
+        ? addVendor(name.trim(), normalizedSenderPatterns[0], userId, subjectPatterns, tenantId, normalizedSenderPatterns)
+        : addVendor(name.trim(), normalizedSenderPatterns[0], userId, subjectPatterns, tenantId);
       // P0-4: audit vendor creation — vendor table writes affect downstream
       // collection scope and are auditable mutations.
       logAudit({
@@ -260,7 +302,7 @@ export function invoicesRoutes(): Router {
         actorId: userId,
         action: 'invoice_vendor_create',
         resource: 'invoice_vendors',
-        details: { vendorId: vendor.id, name: name.trim(), senderPattern: senderPattern.trim() },
+        details: { vendorId: vendor.id, name: name.trim(), senderPatterns: normalizedSenderPatterns },
         ipAddress: (req as any).ip,
       });
       invalidateFinanceDerivedCaches(userId);
@@ -286,7 +328,7 @@ export function invoicesRoutes(): Router {
 
     try {
       const { userId, tenantId } = assertTenantScope(req as any, 'invoices.vendors.delete');
-      const removed = removeVendor(id, userId);
+      const removed = removeVendor(id, userId, tenantId);
       if (!removed) {
         sendError(res, 'NOT_FOUND', 'Vendor not found', 404);
         return;
@@ -338,7 +380,7 @@ export function invoicesRoutes(): Router {
 
     try {
       logger.info({ userId, year, month }, 'iOS on-demand invoice scan started');
-      const result = await collectMonthlyInvoices(userId, year, month);
+      const result = await collectMonthlyInvoices(userId, year, month, tenantId);
       // P0-4: audit on-demand scans — they create invoice_filings rows
       // (fiscal records) and write to external mail providers via the
       // collector. Auditable mutation by Portuguese tax retention rules.

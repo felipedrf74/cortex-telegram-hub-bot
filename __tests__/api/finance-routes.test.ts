@@ -39,6 +39,8 @@ vi.mock('../../src/config', () => ({
     telegram: { allowedUserIds: [111111] },
     app: { timezone: 'Europe/Lisbon' },
     financeEncryption: { enabled: false },
+    financePlanning: { allowStaticFxEstimate: false },
+    invoices: { minConfidence: 0.85 },
     anthropic: { apiKey: '' },
     gemini: { apiKey: 'test-key' },
     openai: { apiKey: '' },
@@ -227,6 +229,8 @@ describe('Finance API — tax routes', () => {
       warningCodes: ['CALENDAR_INTEGRATION_MISSING'],
       warnings: ['No calendar integration is connected yet.'],
     });
+    (config.financeEncryption as any).enabled = false;
+    (config.financeEncryption as any).masterKey = '';
   });
 
   afterEach(() => testDb?.close());
@@ -317,6 +321,9 @@ describe('Finance API — tax routes', () => {
       integrity: 'mixed_currency',
       currencies: ['EUR', 'BRL'],
     });
+    expect(res.body.data.summary.mixedCurrency).toBe(true);
+    expect(res.body.data.tax).toBeNull();
+    expect(res.body.data.warnings).toContain('MIXED_CURRENCY_TAX_PREVIEW_SUPPRESSED');
   });
 
   it('fails closed on invalid tenant scope before loading transactions', async () => {
@@ -426,6 +433,48 @@ describe('Finance API — tax routes', () => {
       amount_cents: 1234,
       currency: 'EUR',
     });
+  });
+
+  it('updates encrypted amount and description fields through PATCH and returns decrypted data', async () => {
+    const user = getOrCreateUser(22015, { username: 'finance-encrypted-patch' });
+    (config.financeEncryption as any).enabled = true;
+    (config.financeEncryption as any).masterKey = 'test-master-key-for-finance-tests!';
+    const tx = addTransaction(user.id, '2024-04-16', 'expense', 10, {
+      currency: 'EUR',
+      description: 'Old private note',
+    });
+
+    const res = await dispatch('PATCH', `/transactions/${tx.id}`, user.id, {
+      amount_cents: 1299,
+      description: 'Updated private note',
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body.data.transaction).toMatchObject({
+      id: tx.id,
+      amount: 12.99,
+      amount_cents: 1299,
+      description: 'Updated private note',
+    });
+    const raw = testDb.prepare(`
+      SELECT amount, amount_cents, description, encrypted_amount, encrypted_description
+      FROM finance_transactions
+      WHERE id = ?
+    `).get(tx.id) as {
+      amount: number;
+      amount_cents: number;
+      description: string | null;
+      encrypted_amount: string | null;
+      encrypted_description: string | null;
+    };
+    expect(raw).toMatchObject({
+      amount: 12.99,
+      amount_cents: 1299,
+      description: null,
+    });
+    expect(raw.encrypted_amount).toMatch(/^[0-9a-f]{56,}$/i);
+    expect(raw.encrypted_description).toMatch(/^[0-9a-f]{56,}$/i);
+    expect(raw.encrypted_description).not.toContain('Updated private note');
   });
 
   it('returns 404 when marking a missing tax event as paid', async () => {

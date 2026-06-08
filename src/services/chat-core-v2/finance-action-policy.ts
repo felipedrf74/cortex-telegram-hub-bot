@@ -10,6 +10,7 @@ export type FinanceActionClass =
   | 'finance.prepare_reminder'
   | 'finance.classify_preview'
   | 'finance.manual_review'
+  | 'finance.send_bundle'
   | 'finance.execute_restricted';
 
 export type FinanceActionOperation = 'read' | 'preview' | 'execute';
@@ -24,6 +25,7 @@ export type FinanceActionReason =
   | 'aggregate_read_allowed'
   | 'cited_item_read_allowed'
   | 'safe_preview_allowed'
+  | 'authenticated_bundle_send_allowed'
   | 'execution_not_enabled'
   | 'restricted_finance_action'
   | 'payment_or_tax_execution_blocked'
@@ -63,6 +65,13 @@ export function evaluateChatCoreV2FinanceActionPolicy(
   const hardBlocks = blockingReasons(input);
   if (hardBlocks.length > 0) {
     return verdict('blocked', hardBlocks);
+  }
+
+  if (input.actionClass === 'finance.send_bundle') {
+    if (input.operation === 'execute' && input.hasSourceCitations === true) {
+      return verdict('allowed', ['authenticated_bundle_send_allowed']);
+    }
+    return verdict('needs_clarification', ['missing_source_citation']);
   }
 
   if (input.operation === 'execute') {

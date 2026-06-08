@@ -30,6 +30,7 @@
     "chat:model-bakeoff": "node dist/tools/chat-model-bakeoff.js",
     "fiscal:vendors:audit": "node dist/tools/invoice-vendor-cleanup.js",
     "fiscal:vendors:repair": "node dist/tools/invoice-vendor-cleanup.js --apply",
+    "fiscal:storage:backfill": "node dist/tools/invoice-object-storage-backfill.js",
     "docs:audit": "node scripts/audit-docs.mjs",
     "science-policy:check": "node scripts/ci/science-policy-version-check.mjs",
     "lint": "npm run typecheck",
@@ -68,6 +69,7 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.78.0",
+    "@aws-sdk/client-s3": "^3.1063.0",
     "@azure/msal-node": "^5.0.6",
     "@google/genai": "^1.52.0",
     "@microsoft/microsoft-graph-client": "^3.0.7",

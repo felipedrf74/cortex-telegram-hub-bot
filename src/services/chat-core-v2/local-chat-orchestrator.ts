@@ -47,6 +47,14 @@ import type { ChatCoreV2MemoryContextItem } from './memory-store-reader';
 import type { ChatCoreV2Locale } from './response-contracts';
 import { classifyShadowRoute } from './shadow-route-classifier';
 import type { ChatCoreV2Domain } from './types';
+import {
+  cookingSafetyLogPayload,
+  evaluateCookingSafetyText,
+  hasCookingSafetyPreferences,
+  renderCookingSafetyBlockedResponse,
+  renderCookingSafetyPromptBlockForUser,
+  type CookingSafetyEvaluation,
+} from '../cooking-safety-policy';
 
 export type ChatCoreV2LocalChatLlmMode = 'off' | 'shadow' | 'canary' | 'on';
 
@@ -234,6 +242,10 @@ export async function runChatCoreV2LocalChatTurn(
 
   const locale = normalizeLocale(input.locale);
   const foldedMessage = foldForIntent(input.normalizedText);
+  const recipeRequest = isRecipeRequest(foldedMessage);
+  const cookingResponseRequest = recipeRequest
+    || inferLocalAnswerDomains(input.normalizedText).includes('cooking')
+    || looksCookingAdjacent(foldedMessage);
   if (isCookingIdeaRequest(foldedMessage)) {
     return buildTemplatedCookingIdeaResponse(input, locale);
   }
@@ -276,6 +288,24 @@ export async function runChatCoreV2LocalChatTurn(
       });
       const locale = normalizeLocale(input.locale);
       const guarded = applyNoUnverifiedSuccessClaimGuard(cloudAnswer.text, locale, input.normalizedText);
+      const cloudSafetySurface = resolveCookingSafetySurfaceForAnswer({
+        userId: input.userId,
+        tenantId: input.tenantId,
+        recipeRequest,
+        inputCookingRequest: cookingResponseRequest,
+        packetDomain: cloudAllowlistPacket.packet.domain,
+        answerText: guarded.text,
+      });
+      if (cloudSafetySurface) {
+        const safetyBlock = evaluateLocalCookingSafety(input, locale, cloudSafetySurface, [guarded.text]);
+        if (safetyBlock) {
+          return buildCookingSafetyBlockedLocalResponse(input, locale, safetyBlock, cloudAnswer.providerMetadata, {
+            queueFallbackDecision,
+            queueFallbackObservabilityEvent,
+            cloudAllowlistSafetyBlocked: true,
+          });
+        }
+      }
       const cloudDraft = buildDraftFromPlainText(guarded.text, locale, [
         'cloud_allowlist',
         guarded.rewritten ? 'anti_claim_guard_rewritten' : 'packet_only_answer',
@@ -340,7 +370,6 @@ export async function runChatCoreV2LocalChatTurn(
   }
 
   const requireJson = parseBoolean(env.CHAT_CORE_V2_LOCAL_CHAT_REQUIRE_JSON, false);
-  const recipeRequest = isRecipeRequest(foldedMessage);
   const baseNumPredict = readPositiveInt(env.CHAT_CORE_V2_LOCAL_CHAT_NUM_PREDICT, DEFAULT_LOCAL_CHAT_NUM_PREDICT);
   const baseTimeoutMs = readPositiveInt(env.CHAT_CORE_V2_LOCAL_CHAT_TIMEOUT_MS, DEFAULT_LOCAL_CHAT_TIMEOUT_MS);
   const recipeNumPredict = readPositiveInt(env.CHAT_CORE_V2_LOCAL_CHAT_RECIPE_NUM_PREDICT, DEFAULT_RECIPE_NUM_PREDICT);
@@ -365,9 +394,11 @@ export async function runChatCoreV2LocalChatTurn(
   const memoryPromptBlock = activationMode === 'off'
     ? null
     : buildMemoryContextPromptBlock(input.memoryContext, input.tenantId, input.userId);
+  const cookingSafetyPromptBlock = cookingResponseRequest ? buildCookingSafetyPromptBlock(input, locale) : null;
+  const systemEvidenceBlock = [memoryPromptBlock, cookingSafetyPromptBlock].filter(Boolean).join('\n\n') || null;
   const task: LocalReasoningTask = {
-    systemContext: buildSystemPrompt(locale, requireJson, memoryPromptBlock),
-    prompt: buildUserPrompt(input, locale, recipeRequest),
+    systemContext: buildSystemPrompt(locale, requireJson, systemEvidenceBlock),
+    prompt: buildUserPrompt(input, locale, recipeRequest, cookingSafetyPromptBlock),
     userId: input.userId,
     tenantId: input.tenantId,
     allowCloudEscalation: false,
@@ -394,13 +425,32 @@ export async function runChatCoreV2LocalChatTurn(
     const draft = result.parsed !== undefined
       ? normalizeDraft(result.parsed, locale)
       : buildDraftFromPlainText(result.text, locale);
+    let fullDraftTextForSafety = extractDraftTextForSafety(result, draft.text);
     if (recipeRequest && shouldRepairRecipeDraft(draft.text, stopReason, hitOutputCap)) {
       const repaired = await tryRepairRecipeDraft(provider, input, locale, draft.text, env);
       if (!repaired) {
         return buildHelpfulFallbackResponse(input, 'recipe_generation_incomplete', result.providerMetadata);
       }
-      draft.text = repaired.text;
+      fullDraftTextForSafety = repaired.text;
+      draft.text = truncate(repaired.text, 1600);
       draft.reasonCodes = [...draft.reasonCodes, 'recipe_model_repair'];
+    }
+    const safetySurface = resolveCookingSafetySurfaceForAnswer({
+      userId: input.userId,
+      tenantId: input.tenantId,
+      recipeRequest,
+      inputCookingRequest: cookingResponseRequest,
+      answerText: fullDraftTextForSafety,
+    });
+    if (safetySurface) {
+      const safetyBlock = evaluateLocalCookingSafety(input, locale, safetySurface, [fullDraftTextForSafety]);
+      if (safetyBlock) {
+        return buildCookingSafetyBlockedLocalResponse(input, locale, safetyBlock, result.providerMetadata, {
+          reasoningTier,
+          fastModelUsed,
+          queueFallbackDecision,
+        });
+      }
     }
     const guarded = applyNoUnverifiedSuccessClaimGuard(draft.text, locale, input.normalizedText);
     const localeChecked = await maybeRepairLocaleDrift(provider, input, locale, guarded.text, env);
@@ -511,6 +561,13 @@ function buildTemplatedCookingIdeaResponse(
   locale: ChatCoreV2Locale,
 ): ChatCoreV2LocalChatTurnResult {
   const draft = buildDraftFromPlainText(cookingIdeaText(locale), locale, ['templated_cooking_idea']);
+  const safetyBlock = evaluateLocalCookingSafety(input, locale, 'chat_core_v2_cooking', [draft.text]);
+  if (safetyBlock) {
+    return buildCookingSafetyBlockedLocalResponse(input, locale, safetyBlock, undefined, {
+      reasoningTier: 'none',
+      fastModelUsed: false,
+    });
+  }
   draft.mode = 'templated';
   const composed = composeChatCoreV2FinalAnswer({
     draft,
@@ -554,6 +611,132 @@ function buildTemplatedCookingIdeaResponse(
     },
     degraded: false,
   };
+}
+
+function buildCookingSafetyPromptBlock(
+  input: ChatCoreV2LocalChatTurnInput,
+  locale: ChatCoreV2Locale,
+): string | null {
+  try {
+    return renderCookingSafetyPromptBlockForUser(input.userId, input.tenantId, locale) || null;
+  } catch (err) {
+    logger.warn(
+      {
+        requestId: input.requestId,
+        userId: input.userId,
+        tenantId: input.tenantId,
+        err: err instanceof Error ? err.message : String(err),
+      },
+      'Chat Core v2 cooking safety prompt block unavailable; continuing without preference block',
+    );
+    return null;
+  }
+}
+
+function evaluateLocalCookingSafety(
+  input: ChatCoreV2LocalChatTurnInput,
+  locale: ChatCoreV2Locale,
+  surface: 'chat_core_v2_recipe' | 'chat_core_v2_cooking',
+  values: Array<string | null | undefined>,
+): CookingSafetyEvaluation | null {
+  try {
+    const evaluation = evaluateCookingSafetyText(input.userId, input.tenantId, surface, values);
+    if (!evaluation.blocked) return null;
+    logger.warn(
+      {
+        requestId: input.requestId,
+        userId: input.userId,
+        tenantId: input.tenantId,
+        locale,
+        event: 'COOKING_SAFETY_BLOCKED',
+        ...cookingSafetyLogPayload(evaluation),
+      },
+      'COOKING_SAFETY_BLOCKED',
+    );
+    return evaluation;
+  } catch (err) {
+    logger.warn(
+      {
+        requestId: input.requestId,
+        userId: input.userId,
+        tenantId: input.tenantId,
+        err: err instanceof Error ? err.message : String(err),
+      },
+      'Chat Core v2 cooking safety check unavailable; returning safe refusal',
+    );
+    return {
+      blocked: true,
+      surface,
+      issues: [],
+    };
+  }
+}
+
+function buildCookingSafetyBlockedLocalResponse(
+  input: ChatCoreV2LocalChatTurnInput,
+  locale: ChatCoreV2Locale,
+  evaluation: CookingSafetyEvaluation,
+  providerMetadata?: LocalReasoningResult['providerMetadata'],
+  extraMetadata: Record<string, unknown> = {},
+): ChatCoreV2LocalChatTurnResult {
+  const text = renderCookingSafetyBlockedResponse(locale);
+  const draft = buildDraftFromPlainText(text, locale, ['cooking_generation_safety_blocked']);
+  const composed = composeChatCoreV2FinalAnswer({
+    draft,
+    expectedLocale: locale,
+    extraReasonCodes: ['cooking_generation_safety_blocked'],
+  });
+  const responseText = composed.ok && composed.response ? composed.response.text : text;
+  return {
+    response: {
+      id: `msg-${Date.now()}`,
+      text: responseText,
+      domain: 'cooking',
+      routeMethod: 'chat-core-v2-local-llm',
+      confidence: 0.2,
+      buttons: null,
+      metadata: {
+        type: 'chat_core_v2_local_llm',
+        schemaVersion: CHAT_CORE_V2_LOCAL_CHAT_SCHEMA_VERSION,
+        compositionMode: 'templated',
+        safetyBlocked: true,
+        safetySurface: evaluation.surface,
+        safetyIssueCodes: [...new Set(evaluation.issues.map((issue) => issue.code))],
+        safetyIssueSources: [...new Set(evaluation.issues.map((issue) => issue.source))],
+        safetyIssueCount: evaluation.issues.length,
+        finalAnswerComposerVersion: CHAT_CORE_V2_FINAL_ANSWER_COMPOSER_VERSION,
+        providerMetadata,
+        ...extraMetadata,
+      },
+      timestamp: new Date().toISOString(),
+      responseCards: [],
+    },
+    modelMetadata: providerMetadata,
+    degraded: false,
+  };
+}
+
+function extractDraftTextForSafety(result: LocalReasoningResult, fallback: string): string {
+  const parsed = result.parsed;
+  if (parsed && typeof parsed === 'object' && typeof (parsed as { text?: unknown }).text === 'string') {
+    return String((parsed as { text: string }).text);
+  }
+  const text = String(result.text ?? '').trim();
+  return text || fallback;
+}
+
+function resolveCookingSafetySurfaceForAnswer(input: {
+  userId: number;
+  tenantId: number;
+  recipeRequest: boolean;
+  inputCookingRequest: boolean;
+  packetDomain?: string | null;
+  answerText: string;
+}): 'chat_core_v2_recipe' | 'chat_core_v2_cooking' | null {
+  if (input.recipeRequest) return 'chat_core_v2_recipe';
+  if (input.inputCookingRequest || input.packetDomain === 'cooking') return 'chat_core_v2_cooking';
+  if (looksGeneratedCookingAnswer(foldForIntent(input.answerText))) return 'chat_core_v2_cooking';
+  return hasCookingSafetyPreferences(input.userId, input.tenantId) ? 'chat_core_v2_cooking' : null;
 }
 
 function recordAnswerCanaryTurn(
@@ -689,6 +872,7 @@ function buildUserPrompt(
   input: ChatCoreV2LocalChatTurnInput,
   locale: ChatCoreV2Locale,
   recipeRequest = false,
+  cookingSafetyPromptBlock?: string | null,
 ): string {
   const recentTurns = (input.recentTurns ?? [])
     .slice(-2)
@@ -703,6 +887,9 @@ function buildUserPrompt(
     '',
     'Answer current only. No app actions.',
   ];
+  if (cookingSafetyPromptBlock) {
+    parts.push('', cookingSafetyPromptBlock);
+  }
   if (recipeRequest) {
     parts.push(buildRecipeFormatInstructions(locale).join('\n'));
   }
@@ -1155,6 +1342,7 @@ async function tryRepairRecipeDraft(
   env: EnvLike,
 ): Promise<{ text: string } | null> {
   try {
+    const cookingSafetyPromptBlock = buildCookingSafetyPromptBlock(input, locale);
     const result = await runWithLocalInferenceSlot(() => provider.dispatchLocalReasoning({
       systemContext: [
         'You are Nexus Hub recipe composer.',
@@ -1162,8 +1350,9 @@ async function tryRepairRecipeDraft(
         'Generate a complete, saveable recipe that directly matches the user request.',
         'Do not use placeholder ingredients. Do not mention app actions. Do not hardcode a stock recipe.',
         'Be concise so every required section fits in one response.',
+        cookingSafetyPromptBlock,
         'Return plain text only.',
-      ].join('\n'),
+      ].filter(Boolean).join('\n'),
       prompt: [
         `User request: ${truncate(input.normalizedText, 700)}`,
         '',
@@ -1171,8 +1360,9 @@ async function tryRepairRecipeDraft(
         truncate(partialText, 700) || '(none)',
         '',
         'Rewrite as a complete recipe.',
+        cookingSafetyPromptBlock,
         ...buildRecipeFormatInstructions(locale),
-      ].join('\n'),
+      ].filter(Boolean).join('\n'),
       userId: input.userId,
       tenantId: input.tenantId,
       allowCloudEscalation: false,
@@ -1188,7 +1378,7 @@ async function tryRepairRecipeDraft(
         : resolveKeepAliveForRole('planner_3b', env),
       temperature: 0.2,
     })) as LocalReasoningResult;
-    const text = truncate(String(result.text ?? '').trim(), 1600);
+    const text = String(result.text ?? '').trim();
     return shouldRepairRecipeDraft(text, String(result.stopReason ?? ''), false) ? null : { text };
   } catch (err) {
     logger.warn(
@@ -1217,6 +1407,9 @@ function buildRecipeFormatInstructions(locale: ChatCoreV2Locale): string[] {
       '**Macros por porção (estimado):** Proteína N g; Gordura N g; Carboidratos N g; Calorias N kcal',
       '**Ingredientes:** 5-8 linhas com quantidade + unidade + ingrediente quando possível',
       '**Modo de preparo:** 4-5 passos numerados',
+      'Inclui temperatura/doneness, armazenamento ou reaquecimento quando houver carne, peixe, ovos, sobras, alimentos crus ou ingredientes vencidos.',
+      'Para gravidez, bebés/crianças pequenas, idosos ou pessoas imunocomprometidas, evita alimentos de alto risco ou adiciona uma cautela clara.',
+      'Não afirmes curar, tratar, reverter ou diagnosticar condições médicas.',
       'Termina todas as secções.',
     ];
   }
@@ -1232,6 +1425,9 @@ function buildRecipeFormatInstructions(locale: ChatCoreV2Locale): string[] {
       '**Macros por porción (estimado):** Proteína N g; Grasa N g; Carbohidratos N g; Calorías N kcal',
       '**Ingredientes:** 5-8 líneas con cantidad + unidad + ingrediente cuando sea posible',
       '**Modo de preparación:** 4-5 pasos numerados',
+      'Incluye temperatura/cocción, almacenamiento o recalentado cuando haya carne, pescado, huevos, sobras, alimentos crudos o ingredientes vencidos.',
+      'Para embarazo, bebés/niños pequeños, personas mayores o inmunocomprometidas, evita alimentos de alto riesgo o añade una cautela clara.',
+      'No afirmes curar, tratar, revertir ni diagnosticar condiciones médicas.',
       'Termina todas las secciones.',
     ];
   }
@@ -1246,6 +1442,9 @@ function buildRecipeFormatInstructions(locale: ChatCoreV2Locale): string[] {
     '**Macros per serving (estimate):** Protein N g; Fat N g; Carbs N g; Calories N kcal',
     '**Ingredients:** 5-8 lines with quantity + unit + ingredient when possible',
     '**Method:** 4-5 numbered steps',
+    'Include doneness/temperature, storage, or reheating guidance when meat, fish, eggs, leftovers, raw foods, or expired ingredients are relevant.',
+    'For pregnancy, infants, older adults, or immunocompromised people, avoid high-risk foods or add a clear caution.',
+    'Do not claim to cure, treat, reverse, or diagnose medical conditions.',
     'Finish every section.',
   ];
 }
@@ -1304,7 +1503,12 @@ export function classifyLocalReasoningTier(
 }
 
 function looksCookingAdjacent(foldedText: string): boolean {
-  return /\b(cook|cooking|recipe|recipes|meal|food|dish|servings?|ingredients?|cozinhar|cozinha|receita|receitas|jantar|almoco|porcoes|porcao|ingredientes?|cocinar|cocina|receta|recetas|cenar|cena|plato|ingredientes?)\b/.test(foldedText);
+  return /\b(cook|cooking|recipe|recipes|meal|food|dish|servings?|ingredients?|snacks?|brunch|desserts?|appetizers?|starters?|leftovers?|breakfast|lunch|dinner|cozinhar|cozinha|receita|receitas|jantar|almoco|sobras|lanche|merenda|sobremesas?|aperitivos?|entradas?|pequeno almoco|cafe da manha|porcoes|porcao|ingredientes?|cocinar|cocina|receta|recetas|cenar|cena|plato|desayuno|almuerzo|merienda|postres?|aperitivos?|entrantes?|ingredientes?)\b/.test(foldedText);
+}
+
+function looksGeneratedCookingAnswer(foldedText: string): boolean {
+  if (looksCookingAdjacent(foldedText)) return true;
+  return /\b(peanut(?:s| butter)?|amendoim|manteiga de amendoim|almonds?|walnuts?|cashews?|hazelnuts?|nuts?|frutos secos|amendoas?|nozes?|caju|worcestershire|molho ingles|pesto|cookies?|cakes?|sandwich(?:es)?|salads?|soups?|pasta|noodles?|rice|chicken|beef|pork|fish|shrimp|seafood|galletas?|pastel|bolo|bolos|biscoitos?|sandes|ensaladas?|sopas?|arroz|frango|pollo|carne|peixe|pescado|camarao|camarones|marisco)\b/.test(foldedText);
 }
 
 /**

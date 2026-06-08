@@ -38,6 +38,10 @@ vi.mock('../../src/state/invoice-vendors', () => ({
 }));
 
 vi.mock('../../src/services/fiscal-bundle', () => ({
+  FiscalBundleBadRequestError: class FiscalBundleBadRequestError extends Error {
+    code = 'BAD_REQUEST';
+    status = 400;
+  },
   getFiscalCollectionSummary: (...args: unknown[]) => mockGetFiscalCollectionSummary(...args),
   sendFiscalBundleNow: (...args: unknown[]) => mockSendFiscalBundleNow(...args),
 }));
@@ -214,7 +218,7 @@ describe('Invoices API routes', () => {
     expect(res.statusCode).toBe(200);
     expect(res.body.ok).toBe(true);
     expect(res.body.data.destinationEmail).toBe('felipe@nexushub.me');
-    expect(mockGetFiscalCollectionSummary).toHaveBeenCalledWith(12);
+    expect(mockGetFiscalCollectionSummary).toHaveBeenCalledWith(12, 12);
   });
 
   it('returns a client-safe message when the fiscal collection summary fails unexpectedly', async () => {
@@ -281,7 +285,7 @@ describe('Invoices API routes', () => {
 
     expect(res.statusCode).toBe(200);
     expect(res.body.ok).toBe(true);
-    expect(mockGetAllVendorsDb).toHaveBeenCalledWith(44);
+    expect(mockGetAllVendorsDb).toHaveBeenCalledWith(44, 44);
     expect(mockGetAllVendorsMerged).not.toHaveBeenCalled();
     expect(res.body.data).toEqual({
       active: [
@@ -336,7 +340,7 @@ describe('Invoices API routes', () => {
 
     expect(res.statusCode).toBe(200);
     expect(res.body.ok).toBe(true);
-    expect(mockGetAllVendorsDb).toHaveBeenCalledWith(99);
+    expect(mockGetAllVendorsDb).toHaveBeenCalledWith(99, 99);
     expect(mockGetAllVendorsMerged).not.toHaveBeenCalled();
     expect(res.body.data).toEqual({
       active: [],
@@ -374,9 +378,9 @@ describe('Invoices API routes', () => {
       primary_day: 10,
       secondary_day: 24,
       enabled: true,
-    });
+    }, 12);
     expect(mockInvalidateFinanceDerivedCaches).toHaveBeenCalledWith(12);
-    expect(mockGetFiscalCollectionSummary).toHaveBeenLastCalledWith(12);
+    expect(mockGetFiscalCollectionSummary).toHaveBeenLastCalledWith(12, 12);
   });
 
   it('sends the fiscal bundle immediately for the authenticated user', async () => {
@@ -389,14 +393,17 @@ describe('Invoices API routes', () => {
     const res = await dispatch('POST', '/bundle-now', {
       startAt: '2026-04-01T00:00:00Z',
       endAt: '2026-04-14T23:59:59Z',
+      idempotencyKey: 'ios-fiscal-bundle-test',
     });
 
     expect(res.statusCode).toBe(200);
     expect(res.body.ok).toBe(true);
     expect(res.body.data.result.sent).toBe(true);
     expect(mockSendFiscalBundleNow).toHaveBeenCalledWith(12, {
+      tenantId: 12,
       startAt: '2026-04-01T00:00:00Z',
       endAt: '2026-04-14T23:59:59Z',
+      idempotencyKey: 'ios-fiscal-bundle-test',
     });
     expect(mockInvalidateFinanceDerivedCaches).toHaveBeenCalledWith(12);
   });
@@ -417,7 +424,7 @@ describe('Invoices API routes', () => {
     });
 
     expect(res.statusCode).toBe(201);
-    expect(mockAddVendor).toHaveBeenCalledWith('Vodafone', 'vodafone.pt', 12, 'fatura');
+    expect(mockAddVendor).toHaveBeenCalledWith('Vodafone', 'vodafone.pt', 12, 'fatura', 12);
     expect(mockInvalidateFinanceDerivedCaches).toHaveBeenCalledWith(12);
   });
 
@@ -427,7 +434,7 @@ describe('Invoices API routes', () => {
     const res = await dispatch('DELETE', '/vendors/31');
 
     expect(res.statusCode).toBe(200);
-    expect(mockRemoveVendor).toHaveBeenCalledWith(31, 12);
+    expect(mockRemoveVendor).toHaveBeenCalledWith(31, 12, 12);
     expect(mockInvalidateFinanceDerivedCaches).toHaveBeenCalledWith(12);
   });
 
@@ -444,7 +451,7 @@ describe('Invoices API routes', () => {
 
     expect(res.statusCode).toBe(200);
     expect(res.body.ok).toBe(true);
-    expect(mockCollectMonthlyInvoices).toHaveBeenCalledWith(12, 2026, 4);
+    expect(mockCollectMonthlyInvoices).toHaveBeenCalledWith(12, 2026, 4, 12);
     expect(mockInvalidateFinanceDerivedCaches).toHaveBeenCalledWith(12);
   });
 

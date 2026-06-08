@@ -110,7 +110,7 @@ describe('database migration duplicate ADD COLUMN guard', () => {
 
   it('makes migration 204 idempotent for Secretary reminder schema hardening columns', () => {
     const migration204 = fs.readFileSync(
-      path.resolve(__dirname, '../../migrations/204_secretary_reminder_schema_hardening.sql'),
+      path.resolve(__dirname, '../../migrations/205_secretary_reminder_schema_hardening.sql'),
       'utf8',
     );
     const filtered = filterAlreadyAppliedAddColumnStatements(

@@ -122,6 +122,7 @@ export function publishSessionLoad(opts: {
  */
 export function publishHighLegLoad(opts: {
   userId: number;
+  tenantId?: number;
   source: 'gym' | 'running';
   rpe: number;
   details?: { lifts?: string[]; mileage?: number; notes?: string };
@@ -135,6 +136,7 @@ export function publishHighLegLoad(opts: {
     signal_type: 'high_leg_load',
     payload: { source: opts.source, rpe: opts.rpe, ...opts.details },
     user_id: opts.userId,
+    tenant_id: opts.tenantId,
     priority: 'urgent',
   });
 }
@@ -623,7 +625,7 @@ export function readTrainingContext(opts: {
  * Returns the same TrainingContext shape as `readTrainingContext` so the
  * formatter can render either one identically.
  */
-export function readTrainingContextAll(opts: { userId: number }): TrainingContext {
+export function readTrainingContextAll(opts: { userId: number; tenantId?: number }): TrainingContext {
   const consumer = 'triathlon.all';
   const allTrainingSignalTypes: SignalType[] = [
     'low_sleep', 'low_hrv', 'low_readiness', 'planned_race_this_week',
@@ -640,7 +642,7 @@ export function readTrainingContextAll(opts: { userId: number }): TrainingContex
     'budget_remaining', 'subscription_renewal_due',
     'publishing_commitment',
   ];
-  const signals = readSignals(consumer, allTrainingSignalTypes, 40, opts.userId);
+  const signals = readSignals(consumer, allTrainingSignalTypes, 40, opts.userId, undefined, opts.tenantId);
 
   const flags = {
     lowSleep: signals.some((s) => s.signal_type === 'low_sleep'),

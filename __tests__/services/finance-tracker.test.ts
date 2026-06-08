@@ -50,6 +50,9 @@ let mockConfig = {
     enabled: true,
     masterKey: 'test-master-key-for-finance-tests!',
   },
+  financePlanning: {
+    allowStaticFxEstimate: false,
+  },
 };
 
 vi.mock('../../src/services/database', () => ({
@@ -90,6 +93,8 @@ import {
   markTaxPaid,
   getAnnualTaxSummary,
   parseReceiptAmount,
+  normalizeFinanceCategory,
+  convertPlanningEstimateFromBrl,
 } from '../../src/services/finance-tracker';
 
 // ═══════════════════════════════════════════════════════════════════
@@ -106,7 +111,7 @@ describe('calculatePortugueseMonthlyTax — Portugal IRS/IVA estimate', () => {
     expect(result.ruleset).toBe('pt-irs-2026-mainland-estimate');
     expect(result.inssDue).toBe(0);
     expect(result.ptInvoiceCode).toBe('PT-IRS-ESTIMATE');
-    expect(result.ivaDue).toBe(230);
+    expect(result.ivaDue).toBe(0);
     expect(result.taxDue).toBeGreaterThan(0);
   });
 
@@ -152,6 +157,9 @@ describe('Transaction CRUD', () => {
         enabled: true,
         masterKey: 'test-master-key-for-finance-tests!',
       },
+      financePlanning: {
+        allowStaticFxEstimate: false,
+      },
     };
     testDb = createTestDb();
     applyMigrations(testDb);
@@ -172,11 +180,14 @@ describe('Transaction CRUD', () => {
     expect(tx.subcategory).toBe('freelance');
     expect(tx.description).toBe('June contract payment');
     expect(tx.currency).toBe('EUR');
-    const row = testDb.prepare('SELECT amount, amount_cents FROM finance_transactions WHERE id = ?').get(tx.id) as {
+    const row = testDb.prepare('SELECT amount, amount_cents, description, encrypted_description FROM finance_transactions WHERE id = ?').get(tx.id) as {
       amount: number;
       amount_cents: number;
+      description: string | null;
+      encrypted_description: string | null;
     };
-    expect(row).toEqual({ amount: 5000, amount_cents: 500000 });
+    expect(row).toMatchObject({ amount: 5000, amount_cents: 500000, description: null });
+    expect(row.encrypted_description).toMatch(/^[0-9a-f]{56,}$/i);
   });
 
   it('backfills encrypted shadows for legacy plaintext finance rows', () => {
@@ -246,23 +257,46 @@ describe('Transaction CRUD', () => {
     expect(taxRaw.encrypted_gross_income).toMatch(/^[0-9a-f]{56,}$/i);
     expect(taxRaw.encrypted_notes).toMatch(/^[0-9a-f]{56,}$/i);
     expect(taxRaw.encrypted_notes).not.toContain('legacy tax note');
-    expect(getTaxEvents(1)[0]).toMatchObject({
+    const taxEvent = getTaxEvents(1)[0];
+    expect(taxEvent).toMatchObject({
       gross_income: 5000,
       notes: 'legacy tax note',
     });
+    expect(Object.keys(taxEvent).some((key) => key.startsWith('encrypted_'))).toBe(false);
   });
 
-  it('fails closed in production when finance encryption is enabled without a key', () => {
+  it('fails closed in production when finance encryption is missing a key', () => {
     process.env.NODE_ENV = 'production';
     mockConfig = {
       financeEncryption: {
         enabled: true,
         masterKey: '',
       },
+      financePlanning: {
+        allowStaticFxEstimate: false,
+      },
     };
 
     expect(() => assertFinanceEncryptionConfigured()).toThrow(
-      'FINANCE_ENCRYPTION_KEY is required when FINANCE_ENCRYPTION_ENABLED=true in production.',
+      'FINANCE_ENCRYPTION_ENABLED=true and FINANCE_ENCRYPTION_KEY are required in production.',
+    );
+    delete process.env.NODE_ENV;
+  });
+
+  it('fails closed in production when finance encryption is disabled', () => {
+    process.env.NODE_ENV = 'production';
+    mockConfig = {
+      financeEncryption: {
+        enabled: false,
+        masterKey: 'test-master-key-for-finance-tests!',
+      },
+      financePlanning: {
+        allowStaticFxEstimate: false,
+      },
+    };
+
+    expect(() => assertFinanceEncryptionConfigured()).toThrow(
+      'FINANCE_ENCRYPTION_ENABLED=true and FINANCE_ENCRYPTION_KEY are required in production.',
     );
     delete process.env.NODE_ENV;
   });
@@ -309,6 +343,24 @@ describe('Transaction CRUD', () => {
     expect(metadata).toMatchObject({ userId: 1, txId: tx.id, currency: 'EUR' });
     expect(metadata).not.toHaveProperty('category');
     expect(metadata).not.toHaveProperty('amount');
+  });
+
+  it('normalizes allowed categories and rejects unsupported categories or negative amounts', () => {
+    expect(normalizeFinanceCategory(' Food ')).toBe('food');
+    expect(() => addTransaction(1, '2024-06-01', 'not-a-real-category', 10)).toThrow(
+      /Unsupported finance transaction category/,
+    );
+    expect(() => addTransaction(1, '2024-06-01', 'expense', -10)).toThrow(
+      /non-negative/,
+    );
+  });
+
+  it('fails closed for static non-BRL planning FX unless explicitly enabled', () => {
+    expect(convertPlanningEstimateFromBrl(100, 'BRL')).toBe(100);
+    expect(() => convertPlanningEstimateFromBrl(100, 'EUR')).toThrow(/Static BRL planning FX estimates are disabled/);
+
+    mockConfig.financePlanning.allowStaticFxEstimate = true;
+    expect(convertPlanningEstimateFromBrl(100, 'EUR')).toBe(18);
   });
 
   it('gets transactions for a user', () => {
@@ -438,6 +490,8 @@ describe('getMonthlySummary', () => {
     expect(summary.totalDeductions).toBe(800);
     expect(summary.netIncome).toBe(8200);
     expect(summary.transactionCount).toBe(4);
+    expect(summary.currencies).toEqual(['EUR']);
+    expect(summary.mixedCurrency).toBe(false);
   });
 
   it('returns zeros for a month with no transactions', () => {
@@ -445,6 +499,8 @@ describe('getMonthlySummary', () => {
     expect(summary.totalIncome).toBe(0);
     expect(summary.totalExpenses).toBe(0);
     expect(summary.transactionCount).toBe(0);
+    expect(summary.currencies).toEqual([]);
+    expect(summary.mixedCurrency).toBe(false);
   });
 
   it('only includes transactions from the specified month', () => {
@@ -455,6 +511,17 @@ describe('getMonthlySummary', () => {
     const summary = getMonthlySummary(1, '2024-06');
     expect(summary.totalIncome).toBe(5000);
     expect(summary.transactionCount).toBe(1);
+  });
+
+  it('marks mixed-currency months so tax code can refuse blended bases', () => {
+    addTransaction(1, '2024-06-01', 'income', 1000, { currency: 'EUR' });
+    addTransaction(1, '2024-06-02', 'income', 1000, { currency: 'USD' });
+
+    const summary = getMonthlySummary(1, '2024-06');
+
+    expect(summary.currencies).toEqual(['EUR', 'USD']);
+    expect(summary.mixedCurrency).toBe(true);
+    expect(() => calculateAndStoreTax(1, '2024-06')).toThrow(/mixed-currency month/);
   });
 });
 
@@ -483,7 +550,7 @@ describe('Tax event persistence', () => {
     expect(taxEvent.status).toBe('pending');
     expect(taxEvent.darf_code).toBeNull();
     expect(taxEvent.pt_invoice_code).toBe('PT-IRS-ESTIMATE');
-    expect(taxEvent.iva_due).toBe(1840);
+    expect(taxEvent.iva_due).toBe(0);
     expect(taxEvent.withholding_due).toBe(0);
     expect(taxEvent.ruleset).toBe('pt-irs-2026-mainland-estimate');
   });

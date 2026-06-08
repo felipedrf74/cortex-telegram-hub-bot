@@ -2965,7 +2965,7 @@ describe('ChatActionPlanner', () => {
     expect(categorizeResponse.metadata.actionStatus).toBe('verified_success');
     expect(getTransactions(4401, { limit: 5 }).find((candidate) => candidate.id === tx.id)).toMatchObject({ category: 'food', subcategory: 'lunch' });
 
-    addTransaction(4401, '2026-05-01', 'income', 5000, { currency: 'BRL' });
+    addTransaction(4401, '2026-05-01', 'income', 5000, { currency: 'EUR' });
     calculateAndStoreTax(4401, '2026-05');
     const payPlan = parseLlmPlannerJson(JSON.stringify({
       confidence: 0.99,

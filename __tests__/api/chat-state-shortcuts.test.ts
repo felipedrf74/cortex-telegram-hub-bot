@@ -238,4 +238,34 @@ describe('chat state shortcut builders', () => {
       missingVendors: ['EDP', 'MEO'],
     });
   });
+
+  it('suppresses derived Portugal tax previews for mixed-currency months', async () => {
+    const { buildFinanceStateShortcutResponse } = await import('../../src/api/routes/chat-state-shortcuts');
+    mockGetTaxEvents.mockReturnValue([]);
+    mockGetMonthlySummary.mockReturnValue({
+      totalIncome: 1200,
+      totalExpenses: 100,
+      totalDeductions: 50,
+      transactionCount: 3,
+      mixedCurrency: true,
+      currencies: ['EUR', 'USD'],
+    });
+
+    const result = buildFinanceStateShortcutResponse('next_tax_due', 7, 'en-US');
+
+    expect(mockCalculateMonthlyTax).not.toHaveBeenCalled();
+    expect(result.text).toContain('suppressing the Portugal tax preview');
+    expect(result.metadata).toMatchObject({
+      type: 'finance_tax_snapshot',
+      month: '2026-04',
+      taxDue: null,
+      inssDue: null,
+      ivaDue: null,
+      withholdingDue: null,
+      ptInvoiceCode: null,
+      status: 'mixed_currency_preview_suppressed',
+      derived: true,
+      currencies: ['EUR', 'USD'],
+    });
+  });
 });

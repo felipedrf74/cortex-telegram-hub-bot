@@ -216,9 +216,65 @@ function runMigrations(): void {
   for (const file of files) {
     if (applied.has(file)) continue;
     const sql = fs.readFileSync(path.join(migrationsDir, file), 'utf-8');
-    db.exec(filterAlreadyAppliedAddColumnStatements(sql));
-    db.prepare('INSERT INTO _migrations (filename) VALUES (?)').run(file);
+    applyMigration(file, sql);
     logger.info({ migration: file }, 'Migration applied');
+  }
+}
+
+function applyMigration(filename: string, rawSql: string): void {
+  const needsForeignKeysOff = /\bPRAGMA\s+foreign_keys\s*=\s*OFF\b/i.test(rawSql);
+  const priorForeignKeys = Number(db.pragma('foreign_keys', { simple: true })) === 1;
+  const sql = filterAlreadyAppliedAddColumnStatements(
+    stripWrappingTransactionStatements(stripForeignKeyPragmas(rawSql)),
+  );
+
+  if (needsForeignKeysOff) {
+    db.pragma('foreign_keys = OFF');
+  }
+
+  try {
+    db.transaction(() => {
+      db.exec(sql);
+      db.prepare('INSERT INTO _migrations (filename) VALUES (?)').run(filename);
+    })();
+  } finally {
+    db.pragma(`foreign_keys = ${priorForeignKeys ? 'ON' : 'OFF'}`);
+  }
+}
+
+function stripForeignKeyPragmas(sql: string): string {
+  return sql
+    .split('\n')
+    .filter((line) => !/^\s*PRAGMA\s+foreign_keys\s*=/i.test(line))
+    .join('\n');
+}
+
+export function stripWrappingTransactionStatements(sql: string): string {
+  let insideTrigger = false;
+  return sql
+    .split('\n')
+    .filter((line) => {
+      const trimmed = line.trim();
+      if (/^CREATE\s+(?:TEMP(?:ORARY)?\s+)?TRIGGER\b/i.test(trimmed)) {
+        insideTrigger = true;
+      }
+      const isWrapper = !insideTrigger
+        && /^(BEGIN(?:\s+TRANSACTION)?|COMMIT(?:\s+TRANSACTION)?|END(?:\s+TRANSACTION)?)\s*;$/i.test(trimmed);
+      if (insideTrigger && /^END\s*;$/i.test(trimmed)) {
+        insideTrigger = false;
+      }
+      return !isWrapper;
+    })
+    .join('\n');
+}
+
+export function runMigrationsForTest(testDb: Database.Database): void {
+  const previousDb = db as Database.Database | undefined;
+  (db as any) = testDb;
+  try {
+    runMigrations();
+  } finally {
+    (db as any) = previousDb;
   }
 }
 

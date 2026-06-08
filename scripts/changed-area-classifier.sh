@@ -256,7 +256,7 @@ match '^__tests__/services/.*context|^__tests__/services/.*memory|^__tests__/ser
 
 match '^prompts/|^src/skills/.*/prompts/' && HAS_PROMPT=true
 
-match '^src/domains/cooking/|^src/services/cooking-|^src/api/routes/cooking|^src/skills/cooking/' && HAS_COOKING=true
+match '^src/domains/cooking|^src/services/cooking-|^src/services/skills/cooking/|^src/api/routes/cooking|^src/skills/cooking/' && HAS_COOKING=true
 match 'cooking' && match '^__tests__/' && HAS_COOKING=true
 
 match '^src/domains/content/|^src/services/content-|^src/services/voice-|^src/api/routes/content|^src/agents/|^content-engine/' && HAS_CONTENT=true

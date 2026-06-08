@@ -28,7 +28,6 @@ import { Router, type Request, Response } from 'express';
 import { AuthenticatedRequest } from '../auth-middleware';
 import { logger } from '../../utils/logger';
 import { sendSuccess, sendError, sendInternalError, asyncHandler } from '../response-helpers';
-import { getDb } from '../../services/database';
 import { emitDomainEvent, runOutboxTransaction } from '../../services/event-outbox';
 import { consumeResourceBudget } from '../../services/resource-budgets';
 import { invalidateFinanceDerivedCaches } from '../../services/cache-coherence-registry';
@@ -45,9 +44,13 @@ import {
   calculateAndStoreTax,
   calculatePortugueseMonthlyTax,
   markTaxPaid,
+  normalizeFinanceCategory,
+  updateTransaction,
 } from '../../services/finance-tracker';
 import { acquireCostLock, enforceCostGuardrails } from '../../services/cost-guardrail';
-import { analyzeInvoiceImage } from '../../services/invoice-filer';
+import { analyzeInvoiceImage, fileInvoice } from '../../services/invoice-filer';
+import { getFilingById, recordFiling } from '../../state/invoice-filings';
+import { verifyInvoiceObjectChecksum } from '../../services/invoice-object-storage';
 import { ensureValidTenantRouteScope } from '../tenant-route-scope';
 import { createNotificationIntent } from '../../services/notification-orchestrator';
 import { centsToNumber, parseUserAmount, toCents } from '../../services/money';
@@ -126,9 +129,19 @@ export function financeRoutes(): Router {
       sendError(res, 'BAD_REQUEST', 'category is required');
       return;
     }
+    try {
+      normalizeFinanceCategory(category);
+    } catch {
+      sendError(res, 'BAD_REQUEST', 'unsupported finance transaction category');
+      return;
+    }
     const resolvedAmount = resolveFinanceRouteAmount(amount, amountCentsSnake ?? amountCents);
     if (resolvedAmount == null) {
       sendError(res, 'BAD_REQUEST', 'amount or amount_cents must be a finite money value');
+      return;
+    }
+    if (resolvedAmount < 0) {
+      sendError(res, 'BAD_REQUEST', 'amount must be non-negative');
       return;
     }
     if (!consumeFinanceWriteBudget(res, tenantId, userId, 'finance_transaction_create')) return;
@@ -172,11 +185,6 @@ export function financeRoutes(): Router {
    * PATCH /api/v1/finance/transactions/:id
    * Partial update — only the fields present in the body are written.
    * Scoped to the caller's user_id so cross-user writes return 404.
-   *
-   * Implemented at the route layer (not via a service function) because
-   * finance-tracker.ts doesn't currently expose an updateTransaction
-   * helper and the raw SQL is simple enough to inline. If more update
-   * surfaces show up later, this should move to finance-tracker.ts.
    */
   router.patch('/transactions/:id', asyncHandler(async (req, res: Response) => {
     const { userId, tenantId } = requireFinanceHandlerScope(req, 'finance_handler');
@@ -205,6 +213,15 @@ export function financeRoutes(): Router {
       sendError(res, 'BAD_REQUEST', 'category must be a non-empty string');
       return;
     }
+    let normalizedCategory: string | undefined;
+    if (category !== undefined) {
+      try {
+        normalizedCategory = normalizeFinanceCategory(category);
+      } catch {
+        sendError(res, 'BAD_REQUEST', 'unsupported finance transaction category');
+        return;
+      }
+    }
     const resolvedAmount = amount !== undefined || amountCentsSnake !== undefined || amountCents !== undefined
       ? resolveFinanceRouteAmount(amount, amountCentsSnake ?? amountCents)
       : undefined;
@@ -212,41 +229,24 @@ export function financeRoutes(): Router {
       sendError(res, 'BAD_REQUEST', 'amount or amount_cents must be a finite money value');
       return;
     }
+    if (resolvedAmount !== undefined && resolvedAmount < 0) {
+      sendError(res, 'BAD_REQUEST', 'amount must be non-negative');
+      return;
+    }
     if (!consumeFinanceWriteBudget(res, tenantId, userId, 'finance_transaction_update')) return;
 
     try {
       const updated = runOutboxTransaction((emitDomainEvent) => {
-        const db = getDb();
-        const existing = db.prepare(
-          'SELECT id FROM finance_transactions WHERE id = ? AND user_id = ?'
-        ).get(txId, userId) as { id: number } | undefined;
-        if (!existing) return null;
-
-        const setParts: string[] = [];
-        const params: any[] = [];
-
-        if (date !== undefined) { setParts.push('date = ?'); params.push(date); }
-        if (category !== undefined) { setParts.push('category = ?'); params.push(category); }
-        if (subcategory !== undefined) { setParts.push('subcategory = ?'); params.push(subcategory); }
-        if (resolvedAmount !== undefined) {
-          const amountCents = toCents(resolvedAmount);
-          setParts.push('amount = ?', 'amount_cents = ?');
-          params.push(centsToNumber(amountCents), Number(amountCents));
-        }
-        if (currency !== undefined) { setParts.push('currency = ?'); params.push(currency); }
-        if (description !== undefined) { setParts.push('description = ?'); params.push(description); }
-        if (receiptRef !== undefined) { setParts.push('receipt_ref = ?'); params.push(receiptRef); }
-
-        setParts.push("updated_at = datetime('now')");
-        params.push(txId, userId);
-
-        db.prepare(
-          `UPDATE finance_transactions SET ${setParts.join(', ')} WHERE id = ? AND user_id = ?`
-        ).run(...params);
-
-        const row = db.prepare(
-          'SELECT * FROM finance_transactions WHERE id = ? AND user_id = ?'
-        ).get(txId, userId) as any;
+        const row = updateTransaction(userId, txId, {
+          date,
+          category: normalizedCategory,
+          subcategory,
+          amount: resolvedAmount,
+          currency,
+          description,
+          receiptRef,
+        }, { tenantId });
+        if (!row) return null;
         emitDomainEvent({
           tenantId,
           userId,
@@ -354,9 +354,12 @@ export function financeRoutes(): Router {
       // Precompute the Portugal tax estimate so the iOS KPI card can show it
       // without a second round-trip. Uses the same sourced ruleset the backend
       // persists via calculateAndStoreTax.
-      const taxBreakdown = calculatePortugueseMonthlyTax(summary.totalIncome, summary.totalDeductions);
+      const taxBreakdown = summary.mixedCurrency
+        ? null
+        : calculatePortugueseMonthlyTax(summary.totalIncome, summary.totalDeductions);
+      const warnings = summary.mixedCurrency ? ['MIXED_CURRENCY_TAX_PREVIEW_SUPPRESSED'] : [];
 
-      sendSuccess(res, { summary, budgetView, tax: taxBreakdown, preferredCurrency });
+      sendSuccess(res, { summary, budgetView, tax: taxBreakdown, warnings, preferredCurrency });
     } catch (err: any) {
       logger.error({ err, userId, month }, 'iOS finance monthly-summary failed');
       sendInternalError(res, 'Failed to fetch monthly summary');
@@ -715,9 +718,65 @@ export function financeRoutes(): Router {
         'iOS receipt parsed',
       );
 
+      let filedInvoice: Record<string, unknown> | null = null;
+      let filingWarning: string | null = null;
+      if (
+        typeof imageBase64 === 'string' &&
+        analysis.isInvoice &&
+        mergedResult.confidence >= config.invoices.minConfidence
+      ) {
+        try {
+          const imageBuffer = Buffer.from(imageBase64, 'base64');
+          const filingResult = await fileInvoice(
+            imageBuffer,
+            normalizeMimeType(mimeType),
+            analysis,
+            { tenantId, userId },
+          );
+          if (filingResult.success) {
+            const filing = recordFiling({
+              tenant_id: tenantId,
+              user_id: userId,
+              vendor: analysis.vendor || mergedResult.merchant || 'Unknown',
+              amount: analysis.totalAmount ?? (mergedResult.amount != null ? String(mergedResult.amount) : null),
+              document_date: analysis.documentDate || mergedResult.date,
+              invoice_number: analysis.invoiceNumber,
+              source: 'photo',
+              source_ref: filingResult.objectKey ? `photo:${filingResult.objectKey}` : `photo:${Date.now()}`,
+              remote_path: filingResult.filePath,
+              folder_path: filingResult.folderPath,
+              filename: filingResult.filename,
+              file_size_bytes: imageBuffer.length,
+              compressed_size_bytes: filingResult.compressedSizeKB ? filingResult.compressedSizeKB * 1024 : null,
+              object_key: filingResult.objectKey ?? null,
+              checksum: filingResult.checksum ?? null,
+              mime: filingResult.mime ?? normalizeMimeType(mimeType),
+              bytes: filingResult.bytes ?? imageBuffer.length,
+              storage_backend: filingResult.storageBackend ?? null,
+              status: 'filed',
+            });
+            filedInvoice = {
+              id: filing.id,
+              objectKey: filing.object_key,
+              checksum: filing.checksum,
+              filename: filing.filename,
+              mime: filing.mime,
+              bytes: filing.bytes,
+            };
+          } else {
+            filingWarning = filingResult.error || 'Invoice image was parsed but not durably filed.';
+          }
+        } catch (filingErr: any) {
+          logger.error({ err: filingErr, userId, tenantId }, 'iOS parse-receipt: durable filing failed');
+          filingWarning = filingErr?.message || 'Invoice image was parsed but not durably filed.';
+        }
+      }
+
       sendSuccess(res, {
         parsed: mergedResult,
         verificationNote,
+        filedInvoice,
+        filingWarning,
         tokensUsed: 0,
         model: provider,
       });
@@ -735,6 +794,38 @@ export function financeRoutes(): Router {
       sendInternalError(res, 'Receipt parsing failed');
     } finally {
       releaseCostLock();
+    }
+  }));
+
+  router.get('/invoices/:id/file', asyncHandler(async (req, res: Response) => {
+    const { userId, tenantId } = requireFinanceHandlerScope(req, 'finance.invoice_file');
+    const id = Number.parseInt(req.params.id, 10);
+    if (!Number.isSafeInteger(id) || id <= 0) {
+      sendError(res, 'BAD_REQUEST', 'id must be a positive integer');
+      return;
+    }
+
+    try {
+      const filing = getFilingById(tenantId, userId, id);
+      if (!filing || !filing.object_key) {
+        sendError(res, 'NOT_FOUND', 'Invoice file not found', 404);
+        return;
+      }
+      const buffer = await verifyInvoiceObjectChecksum(
+        filing.object_key,
+        filing.checksum,
+        filing.storage_backend,
+      );
+      res.setHeader('Content-Type', filing.mime || 'application/octet-stream');
+      res.setHeader('Content-Length', String(buffer.length));
+      res.setHeader(
+        'Content-Disposition',
+        `inline; filename="${(filing.filename || `invoice-${filing.id}`).replace(/"/g, '')}"`,
+      );
+      res.send(buffer);
+    } catch (err) {
+      logger.error({ err, userId, tenantId, id }, 'iOS invoice file download failed');
+      sendInternalError(res, 'Unable to fetch invoice file right now.');
     }
   }));
 

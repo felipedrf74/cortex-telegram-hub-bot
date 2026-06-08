@@ -4,6 +4,7 @@ import * as dotenv from 'dotenv';
 dotenv.config();
 
 import { DateTime } from 'luxon';
+import { config } from '../src/config';
 import { initDatabase, getDb, closeDatabase } from '../src/services/database';
 import { getUserById } from '../src/services/user-service';
 import { addRecipe, generateShoppingList, setMealPlan } from '../src/services/cooking-chef';
@@ -12,45 +13,80 @@ import { publishHighLegLoad } from '../src/services/training-signals';
 
 interface CliArgs {
   userId: number;
+  tenantId: number;
+  destructiveDemo: boolean;
 }
 
-function parseArgs(): CliArgs {
-  const userFlag = process.argv.indexOf('--user-id');
-  const rawUserId = userFlag >= 0 ? process.argv[userFlag + 1] : undefined;
-  const userId = Number.parseInt(rawUserId ?? '12', 10);
+export function parseArgs(argv = process.argv): CliArgs {
+  const userId = readRequiredPositiveIntFlag(argv, '--user-id');
+  const tenantId = readRequiredPositiveIntFlag(argv, '--tenant-id');
+  const destructiveDemo = argv.includes('--destructive-demo');
 
-  if (!Number.isFinite(userId) || userId <= 0) {
-    throw new Error('Usage: npx tsx scripts/seed-cooking-training-demo.ts --user-id <number>');
+  return { userId, tenantId, destructiveDemo };
+}
+
+function readRequiredPositiveIntFlag(argv: string[], flag: string): number {
+  const index = argv.indexOf(flag);
+  const rawValue = index >= 0 ? argv[index + 1] : undefined;
+  const value = Number.parseInt(rawValue ?? '', 10);
+
+  if (!Number.isFinite(value) || value <= 0) {
+    throw new Error(
+      'Usage: npx tsx scripts/seed-cooking-training-demo.ts --user-id <number> --tenant-id <number> --destructive-demo',
+    );
   }
 
-  return { userId };
+  return value;
 }
 
-function clearUserCookingAndTrainingState(userId: number): void {
+export function assertDemoSeedAllowed(
+  destructiveDemo: boolean,
+  dbPath = config.app.databasePath || './data/bot.db',
+  nodeEnv = process.env.NODE_ENV ?? '',
+): void {
+  const normalizedPath = dbPath.toLowerCase();
+  const normalizedNodeEnv = nodeEnv.toLowerCase();
+  const isDefaultDb = dbPath === './data/bot.db' || normalizedPath.endsWith('/data/bot.db');
+  const looksProduction = normalizedNodeEnv === 'production' || /\b(prod|production)\b/.test(normalizedPath);
+
+  if ((isDefaultDb || looksProduction) && !destructiveDemo) {
+    throw new Error(
+      `Refusing to seed destructive cooking demo data against "${dbPath}". Pass --destructive-demo after confirming this is not production data.`,
+    );
+  }
+}
+
+export function clearUserCookingAndTrainingState(userId: number, tenantId: number): void {
   const db = getDb();
-  const planIds = db.prepare('SELECT id FROM fitness_training_plans WHERE user_id = ?').all(userId) as Array<{ id: number }>;
+  const clearScopedState = db.transaction(() => {
+    const planIds = db.prepare(
+      'SELECT id FROM fitness_training_plans WHERE user_id = ? AND tenant_id = ?',
+    ).all(userId, tenantId) as Array<{ id: number }>;
 
-  db.prepare('DELETE FROM shopping_lists WHERE user_id = ?').run(userId);
-  db.prepare('DELETE FROM meal_plans WHERE user_id = ?').run(userId);
-  db.prepare('DELETE FROM recipes WHERE user_id = ?').run(userId);
-  db.prepare('DELETE FROM agent_signals WHERE user_id = ?').run(userId);
+    db.prepare('DELETE FROM shopping_lists WHERE user_id = ? AND tenant_id = ?').run(userId, tenantId);
+    db.prepare('DELETE FROM meal_plans WHERE user_id = ? AND tenant_id = ?').run(userId, tenantId);
+    db.prepare('DELETE FROM recipes WHERE user_id = ? AND tenant_id = ?').run(userId, tenantId);
+    db.prepare('DELETE FROM agent_signals WHERE user_id = ? AND tenant_id = ?').run(userId, tenantId);
 
-  for (const planId of planIds) {
-    db.prepare('DELETE FROM training_completions WHERE plan_id = ?').run(planId.id);
-    db.prepare('DELETE FROM training_sessions WHERE plan_id = ?').run(planId.id);
-    db.prepare('DELETE FROM training_weeks WHERE plan_id = ?').run(planId.id);
-  }
+    for (const planId of planIds) {
+      db.prepare('DELETE FROM training_completions WHERE plan_id = ?').run(planId.id);
+      db.prepare('DELETE FROM training_sessions WHERE plan_id = ?').run(planId.id);
+      db.prepare('DELETE FROM training_weeks WHERE plan_id = ?').run(planId.id);
+    }
 
-  db.prepare('DELETE FROM fitness_training_plans WHERE user_id = ?').run(userId);
+    db.prepare('DELETE FROM fitness_training_plans WHERE user_id = ? AND tenant_id = ?').run(userId, tenantId);
+  });
+
+  clearScopedState();
 }
 
-function seedCookingTrainingDemo(userId: number): void {
+export function seedCookingTrainingDemo(userId: number, tenantId: number): void {
   const user = getUserById(userId);
   if (!user) {
     throw new Error(`User ${userId} not found. Sign in once in the iOS app first, then rerun this seed.`);
   }
 
-  clearUserCookingAndTrainingState(userId);
+  clearUserCookingAndTrainingState(userId, tenantId);
 
   const zone = user.timezone || 'Europe/Lisbon';
   const now = DateTime.now().setZone(zone);
@@ -70,6 +106,7 @@ function seedCookingTrainingDemo(userId: number): void {
     prepTime: 5,
     servings: 1,
     tags: 'breakfast,performance',
+    tenantId,
   });
 
   const lunchRecipe = addRecipe(userId, 'Bowl de arroz com frango', [
@@ -80,6 +117,7 @@ function seedCookingTrainingDemo(userId: number): void {
     prepTime: 20,
     servings: 1,
     tags: 'lunch,recovery',
+    tenantId,
   });
 
   const dinnerRecipe = addRecipe(userId, 'Frango com arroz e legumes', [
@@ -90,6 +128,7 @@ function seedCookingTrainingDemo(userId: number): void {
     prepTime: 35,
     servings: 1,
     tags: 'dinner,recovery',
+    tenantId,
   });
 
   const tomorrowBreakfastRecipe = addRecipe(userId, 'Papas de aveia com frutos vermelhos', [
@@ -100,6 +139,7 @@ function seedCookingTrainingDemo(userId: number): void {
     prepTime: 8,
     servings: 1,
     tags: 'breakfast,training-day',
+    tenantId,
   });
 
   const tomorrowDinnerRecipe = addRecipe(userId, 'Salmão com batata-doce', [
@@ -110,31 +150,38 @@ function seedCookingTrainingDemo(userId: number): void {
     prepTime: 30,
     servings: 1,
     tags: 'dinner,training-day',
+    tenantId,
   });
 
   setMealPlan(userId, today, 'breakfast', breakfastRecipe.title, {
     recipeId: breakfastRecipe.id,
     notes: 'Pré-intervalos',
+    tenantId,
   });
   setMealPlan(userId, today, 'lunch', lunchRecipe.title, {
     recipeId: lunchRecipe.id,
     notes: 'Mantém os hidratos consistentes antes do treino',
+    tenantId,
   });
   setMealPlan(userId, today, 'dinner', dinnerRecipe.title, {
     recipeId: dinnerRecipe.id,
     notes: 'Depois do treino de pernas',
+    tenantId,
   });
   setMealPlan(userId, tomorrow, 'breakfast', tomorrowBreakfastRecipe.title, {
     recipeId: tomorrowBreakfastRecipe.id,
     notes: 'Abastece a sessão de amanhã',
+    tenantId,
   });
   setMealPlan(userId, tomorrow, 'dinner', tomorrowDinnerRecipe.title, {
     recipeId: tomorrowDinnerRecipe.id,
     notes: 'Fecho do dia antes do bloco intenso',
+    tenantId,
   });
 
   const plan = createPlan({
     user_id: userId,
+    tenant_id: tenantId,
     name: 'Cooking demo training week',
     sport: 'running',
     duration_weeks: 2,
@@ -179,6 +226,7 @@ function seedCookingTrainingDemo(userId: number): void {
 
   publishHighLegLoad({
     userId,
+    tenantId,
     source: 'gym',
     rpe: 9,
     details: {
@@ -187,25 +235,29 @@ function seedCookingTrainingDemo(userId: number): void {
     },
   });
 
-  generateShoppingList(userId, weekStart);
+  generateShoppingList(userId, weekStart, tenantId);
   if (tomorrowWeekStart != weekStart) {
-    generateShoppingList(userId, tomorrowWeekStart);
+    generateShoppingList(userId, tomorrowWeekStart, tenantId);
   }
 
-  console.log(`Seeded cooking/training demo for user #${userId}`);
+  console.log(`Seeded cooking/training demo for user #${userId} tenant #${tenantId}`);
   console.log(`Week: ${weekStart} -> ${DateTime.fromISO(weekStart).plus({ days: 6 }).toISODate()}`);
   console.log(`Meals: breakfast/lunch/dinner today + breakfast/dinner tomorrow`);
   console.log('Training: hard running today, hard cycling tomorrow, heavy leg-load signal active');
 }
 
-function main(): void {
-  const { userId } = parseArgs();
+export function main(): void {
+  const { userId, tenantId, destructiveDemo } = parseArgs();
+  assertDemoSeedAllowed(destructiveDemo);
   initDatabase();
   try {
-    seedCookingTrainingDemo(userId);
+    const runSeed = getDb().transaction(() => seedCookingTrainingDemo(userId, tenantId));
+    runSeed();
   } finally {
     closeDatabase();
   }
 }
 
-main();
+if (require.main === module) {
+  main();
+}

@@ -2,9 +2,6 @@
 
 import Anthropic from '@anthropic-ai/sdk';
 import { DateTime } from 'luxon';
-import { execFileSync } from 'child_process';
-import { tmpdir } from 'os';
-import fs from 'fs';
 import path from 'path';
 import sharp from 'sharp';
 import { config } from '../config';
@@ -13,6 +10,12 @@ import { trackedCreate } from '../portal/anthropic-hook';
 import { completeVisionOneShotWithFallback } from './gemini-provider';
 import { sanitizeForPromptInterpolation } from '../utils/prompt-sanitizer';
 import { centsToNumber, parseUserAmount } from './money';
+import {
+  buildInvoiceObjectKey,
+  isInvoiceObjectStorageConfigured,
+  putInvoiceObject,
+  type InvoiceStorageBackend,
+} from './invoice-object-storage';
 
 const client = new Anthropic({
   apiKey: config.anthropic.apiKey,
@@ -48,31 +51,24 @@ export interface InvoiceAnalysisResult {
 
 export interface FilingResult {
   success: boolean;
-  filePath?: string;       // Remote path on Mac
+  filePath?: string;       // Object key
   folderPath?: string;     // Year/month folder name
   filename?: string;
+  objectKey?: string;
+  checksum?: string;
+  mime?: string;
+  bytes?: number;
+  storageBackend?: InvoiceStorageBackend;
   analysis?: InvoiceAnalysis;
   originalSizeKB?: number;
   compressedSizeKB?: number;
   error?: string;
 }
 
-// ─── SSH/SCP Helpers ────────────────────────────────────────────────
-
-/** Returns user@host string for SSH/SCP commands. */
-function sshTarget(): string {
-  return `${config.invoices.sshUser}@${config.invoices.sshHost}`;
-}
-
 // ─── Configuration Guard ────────────────────────────────────────────
 
 export function isInvoiceFilingConfigured(): boolean {
-  return (
-    config.invoices.enabled &&
-    config.invoices.sshHost !== '' &&
-    config.invoices.sshUser !== '' &&
-    config.invoices.remotePath !== ''
-  );
+  return isInvoiceObjectStorageConfigured();
 }
 
 // ─── Invoice Analysis (Haiku Vision) ────────────────────────────────
@@ -362,109 +358,72 @@ async function compressImage(
   }
 }
 
-// ─── SSH Connectivity Check ─────────────────────────────────────────
+// ─── Object Storage Filing (Images) ─────────────────────────────────
 
 /**
- * Quick SSH connectivity test (5s timeout).
- * Returns true if the tunnel is up and the Mac is reachable.
- */
-export function testSshConnection(): boolean {
-  if (!isInvoiceFilingConfigured()) return false;
-  try {
-    const args = ['-o', 'StrictHostKeyChecking=accept-new', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=5'];
-    if (config.invoices.sshKeyPath) args.push('-i', config.invoices.sshKeyPath);
-    if (config.invoices.sshPort !== '22') args.push('-p', config.invoices.sshPort);
-    args.push(sshTarget(), 'echo ok');
-    execFileSync('ssh', args, { timeout: 8_000, stdio: 'pipe' });
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-// ─── SSH/SCP Core ───────────────────────────────────────────────────
-
-/**
- * Core SCP upload: ensures remote directory exists, then copies a local file.
- *
- * SCP quoting note: Modern OpenSSH (9+) uses SFTP internally for SCP,
- * so the remote path is NOT passed through a remote shell. We wrap the
- * entire "user@host:path" in double quotes for the local shell only —
- * no single quotes around the remote path (they'd become literal chars).
- */
-function scpUpload(localPath: string, remoteDir: string, remotePath: string): void {
-  // SSH: create remote year/month directory on Mac (uses execFileSync to avoid shell injection)
-  // Escape single quotes for the remote shell: ' → '\'' (end quote, escaped quote, restart quote)
-  const safeRemoteDir = remoteDir.replace(/'/g, "'\\''");
-  const sshArgs = ['-o', 'StrictHostKeyChecking=accept-new', '-o', 'BatchMode=yes'];
-  if (config.invoices.sshKeyPath) sshArgs.push('-i', config.invoices.sshKeyPath);
-  if (config.invoices.sshPort !== '22') sshArgs.push('-p', config.invoices.sshPort);
-  sshArgs.push(sshTarget(), `mkdir -p '${safeRemoteDir}'`);
-  execFileSync('ssh', sshArgs, { timeout: 15_000, stdio: 'pipe' });
-  logger.debug({ remoteDir }, 'Remote directory ensured via SSH');
-
-  // SCP: copy file to Mac's iCloud Drive (uses execFileSync to avoid shell injection)
-  const scpArgs = ['-o', 'StrictHostKeyChecking=accept-new', '-o', 'BatchMode=yes'];
-  if (config.invoices.sshKeyPath) scpArgs.push('-i', config.invoices.sshKeyPath);
-  if (config.invoices.sshPort !== '22') scpArgs.push('-P', config.invoices.sshPort);
-  scpArgs.push(localPath, `${sshTarget()}:${remotePath}`);
-  execFileSync('scp', scpArgs, { timeout: 30_000, stdio: 'pipe' });
-}
-
-// ─── SSH/SCP Filing (Images) ────────────────────────────────────────
-
-/**
- * Files an invoice image to iCloud Drive on the Mac via SSH/SCP.
+ * Files an invoice image to durable tenant-scoped object storage.
  * Compresses the image with sharp before upload (if enabled).
  */
 export async function fileInvoice(
   imageBuffer: Buffer,
   mediaType: 'image/jpeg' | 'image/png' | 'image/webp',
-  analysis: InvoiceAnalysis
+  analysis: InvoiceAnalysis,
+  options: { tenantId?: number; userId?: number } = {},
 ): Promise<FilingResult> {
   if (!isInvoiceFilingConfigured()) {
-    return { success: false, error: 'Invoice filing is not configured.' };
+    return { success: false, error: 'Invoice object storage is not configured.' };
+  }
+  if (!options.tenantId || !options.userId) {
+    return { success: false, error: 'tenantId and userId are required for invoice object storage.', analysis };
   }
 
-  const { remoteDir, monthFolder, effectiveDate } = resolveTargetDirectory(analysis.documentDate);
+  const { monthFolder, effectiveDate } = resolveTargetDirectory(analysis.documentDate);
   const filename = buildFilename(analysis, mediaType, effectiveDate);
-  const remotePath = `${remoteDir}/${filename}`;
 
-  const ext = mediaType === 'image/png' ? 'png' : mediaType === 'image/webp' ? 'webp' : 'jpg';
-  const tmpPath = path.join(tmpdir(), `invoice_${Date.now()}.${ext}`);
+  const { buffer: finalBuffer, originalKB, compressedKB } =
+    await compressImage(imageBuffer, mediaType);
 
   try {
-    // Compress image before writing to temp file
-    const { buffer: finalBuffer, originalKB, compressedKB } =
-      await compressImage(imageBuffer, mediaType);
-
-    fs.writeFileSync(tmpPath, finalBuffer);
-    scpUpload(tmpPath, remoteDir, remotePath);
-
+    const objectKey = buildInvoiceObjectKey({
+      tenantId: options.tenantId,
+      userId: options.userId,
+      documentDate: analysis.documentDate,
+      filename,
+    });
+    const stored = await putInvoiceObject(finalBuffer, objectKey, mediaType);
     logger.info(
-      { remotePath, vendor: analysis.vendor, date: analysis.documentDate, originalKB, compressedKB },
-      'Invoice image filed to iCloud Drive via SCP',
+      {
+        objectKey: stored.objectKey,
+        vendor: analysis.vendor,
+        date: analysis.documentDate,
+        originalKB,
+        compressedKB,
+        storageBackend: stored.storageBackend,
+      },
+      'Invoice image filed to object storage',
     );
-
     return {
       success: true,
-      filePath: remotePath,
+      filePath: stored.objectKey,
       folderPath: `${effectiveDate.year}/${monthFolder}`,
       filename,
+      objectKey: stored.objectKey,
+      checksum: stored.checksum,
+      mime: stored.mime,
+      bytes: stored.bytes,
+      storageBackend: stored.storageBackend,
       analysis,
       originalSizeKB: originalKB,
       compressedSizeKB: compressedKB,
     };
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Unknown error';
-    logger.error({ err, remotePath }, 'Failed to file invoice image via SSH/SCP');
+    logger.error({ err, vendor: analysis.vendor }, 'Failed to file invoice image to object storage');
     return { success: false, error: message, analysis };
-  } finally {
-    try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
   }
 }
 
-// ─── SSH/SCP Filing (PDFs from email) ───────────────────────────────
+// ─── Object Storage Filing (Email Attachments) ──────────────────────
 
 /** Builds a filesystem-safe PDF filename for email-sourced invoices. */
 export function buildPdfFilename(
@@ -475,6 +434,8 @@ export function buildPdfFilename(
 ): string {
   const sanitize = (s: string) =>
     s.replace(/[^a-zA-Z0-9€.,\-_àáãâéêíóôõúçÀÁÃÂÉÊÍÓÔÕÚÇ]/g, '_').slice(0, 40);
+  const extensionMatch = originalName?.trim().toLowerCase().match(/\.([a-z0-9]{1,8})$/);
+  const extension = extensionMatch?.[1] || 'pdf';
 
   const parts: string[] = [effectiveDate.toFormat('yyyy-MM-dd')];
   parts.push(sanitize(vendor));
@@ -482,18 +443,18 @@ export function buildPdfFilename(
 
   // Use original filename as hint if no invoice number
   if (!invoiceNumber && originalName) {
-    const nameWithoutExt = originalName.replace(/\.pdf$/i, '');
+    const nameWithoutExt = originalName.replace(/\.[^.]+$/i, '');
     parts.push(sanitize(nameWithoutExt));
   }
 
   const suffix = Date.now().toString().slice(-6);
   parts.push(suffix);
 
-  return `${parts.join('_')}.pdf`;
+  return `${parts.join('_')}.${extension}`;
 }
 
 /**
- * Files a PDF invoice (from email) to iCloud Drive on the Mac via SSH/SCP.
+ * Files an invoice attachment (from email/collector) to durable object storage.
  * Follows the same year/Portuguese-month folder structure as photo invoices.
  */
 export async function filePdf(
@@ -502,39 +463,52 @@ export async function filePdf(
   documentDate: string | null,
   invoiceNumber?: string | null,
   originalName?: string | null,
+  options: { tenantId?: number; userId?: number; mime?: string } = {},
 ): Promise<FilingResult> {
   if (!isInvoiceFilingConfigured()) {
-    return { success: false, error: 'Invoice filing is not configured.' };
+    return { success: false, error: 'Invoice object storage is not configured.' };
+  }
+  if (!options.tenantId || !options.userId) {
+    return { success: false, error: 'tenantId and userId are required for invoice object storage.' };
   }
 
-  const { remoteDir, monthFolder, effectiveDate } = resolveTargetDirectory(documentDate);
+  const { monthFolder, effectiveDate } = resolveTargetDirectory(documentDate);
   const filename = buildPdfFilename(vendor, effectiveDate, invoiceNumber, originalName);
-  const remotePath = `${remoteDir}/${filename}`;
-
-  const tmpPath = path.join(tmpdir(), `invoice_${Date.now()}.pdf`);
+  const mime = options.mime || 'application/pdf';
 
   try {
-    fs.writeFileSync(tmpPath, pdfBuffer);
-    scpUpload(tmpPath, remoteDir, remotePath);
-
-    const sizeKB = Math.round(pdfBuffer.length / 1024);
+    const objectKey = buildInvoiceObjectKey({
+      tenantId: options.tenantId,
+      userId: options.userId,
+      documentDate,
+      filename,
+    });
+    const stored = await putInvoiceObject(pdfBuffer, objectKey, mime);
     logger.info(
-      { remotePath, vendor, documentDate, sizeKB },
-      'PDF invoice filed to iCloud Drive via SCP',
+      {
+        objectKey: stored.objectKey,
+        vendor,
+        documentDate,
+        sizeKB: Math.round(pdfBuffer.length / 1024),
+        storageBackend: stored.storageBackend,
+      },
+      'Invoice attachment filed to object storage',
     );
-
     return {
       success: true,
-      filePath: remotePath,
+      filePath: stored.objectKey,
       folderPath: `${effectiveDate.year}/${monthFolder}`,
       filename,
-      originalSizeKB: sizeKB,
+      objectKey: stored.objectKey,
+      checksum: stored.checksum,
+      mime: stored.mime,
+      bytes: stored.bytes,
+      storageBackend: stored.storageBackend,
+      originalSizeKB: Math.round(pdfBuffer.length / 1024),
     };
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Unknown error';
-    logger.error({ err, remotePath, vendor }, 'Failed to file PDF invoice via SSH/SCP');
+    logger.error({ err, vendor }, 'Failed to file invoice attachment to object storage');
     return { success: false, error: message };
-  } finally {
-    try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
   }
 }
