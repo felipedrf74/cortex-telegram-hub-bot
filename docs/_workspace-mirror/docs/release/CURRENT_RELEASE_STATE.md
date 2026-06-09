@@ -2,10 +2,10 @@
 
 Status: canonical
 Owner: release lead (Felipe)
-Last verified: 2026-06-04
+Last verified: 2026-06-09
 Update policy: update after merge / staging / production / deploy-gate changes. Live identity (branch/commit/version/migrations) auto-generated via engine/scripts/release-identity.sh --persist; do not type those by hand.
 
-Last updated: 2026-06-04
+Last updated: 2026-06-09
 
 > **Live identity** — branch / commit / version / migration count for the
 > current working tree are auto-generated. Do NOT type those values by
@@ -17,15 +17,54 @@ Last updated: 2026-06-04
 
 - Repo: `engine`
 - Workspace HEAD / version / migrations / dirty state: see `docs/release/release-identity.md`
-- Production status (last manual update 2026-06-04): backend package version
-  `4.14.202` is deployed from commit `6438553d`; both `nexus-hub` and
+- Production status (last manual update 2026-06-09): backend package version
+  `4.14.207` is deployed from commit `4f2927c1`; both `nexus-hub` and
   `content-engine` PM2 processes are online, production content health passed,
-  the status portal returned version `4.14.202`, and
-  `https://api.nexushub.me/public-status` returned `status: ok`.
-  Backend `origin/main` includes the running production deploy commit
-  `6438553d`. Workspace audit evidence lives at
+  the status portal returned version `4.14.207`, and production readiness
+  passed SQLite integrity, `/health`, content-engine readiness, native
+  better-sqlite3 loading, and PM2 stability. The immutable global Training
+  catalog version `repo-seed-1.0.0` is active with 131 exercises and 24
+  equipment items. Backend `origin/main` may lag until the local release commits
+  are pushed. Workspace audit evidence lives at
   `docs/release/worktree-recovery-audit-2026-05-18.md` and
   `docs/release/worktree-recovery-audit-2026-05-21/`.
+
+### 2026-06-09 Training Coach Remediation Production Promote
+
+- Scope: promoted the Training / Coach remediation program through production.
+  The backend now carries tenant-scope hardening, tenant-aware
+  idempotency/locks, safety guardrail plumbing, canonical equipment vocabulary,
+  conservative unknown-equipment defaults, immutable DB catalog schema/seed and
+  validation, catalog-backed strength selector scaffolding, completion feedback
+  substrate, endurance coherence validation, calendar-capacity inputs,
+  audit/version pins, observability counters, and additive iOS/read-model
+  coach-insight fields. The iOS companion commit adds defensive decoding and
+  user-facing coach insight presentation for useful Training decision data.
+- Production version: `4.14.207`.
+- Production deploy commit: `4f2927c1`.
+- Source implementation commits before final docs evidence: `bc7aacc2`
+  (`feat(training): harden coach generation pipeline`) and `770ac929`
+  (`fix(training): initialize database for catalog seed writes`).
+- iOS main companion commit: `49ce035` (`feat(training): present coach
+  decision insights`). This backend promote does not claim TestFlight/App Store
+  distribution.
+- Staging smoke passed **26/26** at
+  `engine/docs/release/smoke-evidence/staging-smoke-770ac929-20260609T102353Z.json`;
+  promote-time staging smoke also passed **26/26** before production mutation.
+- Deploy-time backend verification passed typecheck, science-policy pin check,
+  and full Vitest with **841 test files / 12,307 tests**; migration safety
+  passed **200 migrations**.
+- Production catalog activation completed after deploy using
+  `npm run training:catalog:seed -- --write --activate --created-by
+  production-release-4f2927c1`. Verified active row:
+  `repo-seed-1.0.0`, scope `__global__`, status `active`, validation
+  `passed`, `immutable_after_activation=1`, 131 active exercises, 24 active
+  equipment items.
+- Rollout caveat: production `.env` has no explicit `TRAINING_*` or
+  `COACH_KERNEL_*` behavior flags set. Code and DB catalog are live, but
+  behavior-changing equipment authority, selector, safety, endurance, and
+  calendar-capacity paths remain in feature-flag rollout/soak before Phase 10
+  cleanup.
 
 ### 2026-06-04 Training Remediation Round 3 Fast-Follow Production Promote
 

@@ -2,59 +2,68 @@
 
 Status: canonical
 Owner: release lead (Felipe)
-Last verified: 2026-06-06
+Last verified: 2026-06-09
 Update policy: update when the current RC identity, deploy-gate evidence, or canonical-doc cross-references change. Run engine/scripts/release-identity.sh --persist to refresh auto-generated identity fields.
 
-Date: 2026-06-06
+Date: 2026-06-09
 
 ## Current Status
 
 Active production package:
 
 - source branch: `main`
-- production HEAD: `6438553d` (version-bump for 4.14.202)
-- production version: `4.14.202`
-- runtime source commit: `870ca09f` (Training remediation round-3 fast-follow)
-- latest runtime deploy commit: `6438553d`; post-deploy docs-only closeout may
+- production HEAD: `4f2927c1`
+- production version: `4.14.207`
+- runtime source commits: `bc7aacc2` (Training/coach remediation) and
+  `770ac929` (catalog seed write initialization fix)
+- latest runtime deploy commit: `4f2927c1`; post-deploy docs-only closeout may
   sit ahead of production runtime
 - release state: `docs/release/CURRENT_RELEASE_STATE.md` (backend) and `/Users/felipedominguez/Desktop/Nexus Hub/docs/release/CURRENT_RELEASE_STATE.md` (workspace)
 - official workspace root: `/Users/felipedominguez/Desktop/Nexus Hub`
 
-Commits in this release (4.14.201 -> 4.14.202):
+Commits in this release (4.14.205 -> 4.14.207):
 
-- `870ca09f fix(training): harden round 3 remediation`
-- `6438553d chore: bump version to 4.14.202 [deploy]`
+- `bc7aacc2 feat(training): harden coach generation pipeline`
+- `4d4e14cc docs(release): add training staging smoke evidence`
+- `770ac929 fix(training): initialize database for catalog seed writes`
+- `4f2927c1 docs(release): add catalog seed fix staging smoke evidence`
+- iOS companion: `49ce035 feat(training): present coach decision insights`
 
 Scope:
 
-- Training remediation round 3:
-  - backend reflow preview/confirm and plan cancel paths now return no-oracle
-    foreign-vs-missing responses, with owner hashes retained only in server
-    audit logs.
-  - cancellation active-plan reads are tenant-scoped, acute-injury safety copy
-    is preserved, ACWR and inferred-pain route boundaries are pinned, and
-    low-adherence / WeekProtection zero-session false positives are guarded.
-  - migration 199 has DB-level index/uniqueness proof.
-  - iOS main `40a885f` enforces required plan freshness markers and keeps
-    backend-validated low-adherence cards visible during cold load.
+- Training / Coach remediation:
+  - tenant-scope hardening, tenant-aware idempotency/locks, Training safety
+    guardrail plumbing, canonical equipment vocabulary, conservative
+    unknown-equipment defaults, DB catalog schema/seed/validation, selector
+    scaffolding, completion feedback substrate, endurance coherence, upstream
+    calendar-capacity inputs, audit/version pins, observability counters, and
+    additive iOS/read-model coach insight fields.
+  - production catalog `repo-seed-1.0.0` is active and immutable for
+    `__global__`, with 131 exercises and 24 equipment items.
+  - behavior-changing flags remain in rollout/soak state; production `.env`
+    has no explicit `TRAINING_*` or `COACH_KERNEL_*` behavior flags set.
 
 Validated through promotion:
 
-- focused backend round-3 suites: 10 files / 300 tests
-- backend local `npm run verify`: 816 files / 11,951 tests
-- staging smoke: 19/19 passed
-  (promote-time smoke)
-- focused iOS Training/contract suites: 107 tests
-- full iOS helper: 1,461 XCTest tests plus 10 Swift Testing cases
-- final `main` pre-push gates: typecheck, full Vitest, and build passed
-- final `main` pre-push Vitest: 816 files / 11,951 tests
-- `promote-to-prod.sh` completed cleanly for 4.14.202
+- backend local `npm run verify`: 841 files / 12,307 tests
+- deploy-time backend verification: typecheck, science-policy check, and full
+  Vitest passed with 841 files / 12,307 tests
+- migration safety: 200 migrations passed
+- catalog dry-run/write validation: `repo-seed-1.0.0`, 131 exercises, 24
+  equipment items, 0 issues; staging and production activation both passed
+- staging smoke: 26/26 passed standalone and again during promotion
+- focused iOS Training/contract/presentation suites: 49/49 plus onboarding
+  scope wrapper 2/2
+- full iOS wrapper: 1,482 tests passed
+- `promote-to-prod.sh` completed cleanly for 4.14.207
 - post-deploy: PM2 `nexus-hub` and `content-engine` online
-- production status portal returned version `4.14.202`
-- production `/public-status`: HTTP 200 `status: ok`
+- production readiness passed: SQLite integrity, `/health`, content-engine
+  readiness, better-sqlite3 native binding, and PM2 stability
 
 ## Previous Production Versions On This Branch
 
+- 4.14.207 (`4f2927c1`) — Training/Coach remediation production promote with active immutable Training catalog (source commits `bc7aacc2`, `770ac929`)
+- 4.14.205 (`24a22f3c`) — release-hardening candidate and event-based training plan linting hardening catch-up
 - 4.14.202 (`6438553d`) — Training remediation round-3 no-oracle, safety, docs, and iOS freshness fast-follow (source commit `870ca09f`)
 - 4.14.201 (`ddb8eec4`) — Training remediation and coach/iOS contract hardening (source commit `3aac49b4`)
 - 4.14.200 (`30285bb3`) — Decision Center execution gates + iOS local smoke harness (source commit `c7f049e1`)
