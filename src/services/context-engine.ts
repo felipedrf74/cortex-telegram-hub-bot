@@ -167,7 +167,10 @@ export async function buildDailyContext(userId: number, tenantId?: number): Prom
   // ── Training (active plan + today's session) ────────────────────────
   try {
     const { getActivePlan, getCurrentWeek, getSessionsForWeek } = require('./training-plans');
-    const plan = getActivePlan(userId);
+    const scopedTenantId = typeof tenantId === 'number' && Number.isSafeInteger(tenantId) && tenantId > 0
+      ? tenantId
+      : null;
+    const plan = scopedTenantId ? getActivePlan(userId, scopedTenantId) : null;
     if (plan) {
       const currentWeek = getCurrentWeek(plan.id);
       if (currentWeek) {

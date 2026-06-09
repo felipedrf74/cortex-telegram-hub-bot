@@ -462,7 +462,7 @@ describe('chat callback route registrar', () => {
 
     expect(res.statusCode, JSON.stringify(res.body)).toBe(200);
     expect(mockConsumeCallbackForScope).toHaveBeenCalledWith('ref-coach-ok', { tenantId: 7001, userId: 7001 });
-    expect(mockApplyCoachRecommendations).toHaveBeenCalledWith(7001, ['rec-1', 'rec-2']);
+    expect(mockApplyCoachRecommendations).toHaveBeenCalledWith(7001, 7001, ['rec-1', 'rec-2']);
     expect(mockConsumeCallbackForScope.mock.invocationCallOrder[0])
       .toBeLessThan(mockApplyCoachRecommendations.mock.invocationCallOrder[0]);
     expect(mockPersistAssistantEdit).toHaveBeenCalledWith(expect.objectContaining({

@@ -5,6 +5,8 @@ import type { DayOfWeek, Session, SessionType, WorkoutTemplate } from '../types'
 import { clamp, createSessionId, durationToLoad } from '../utils';
 import { pickAvailableDays, pickKeyDay } from '../availability-day-picker';
 import { applyVolumeGrowthCapForSport } from '../training-principles';
+import { attachTrainingSessionRole } from '../endurance-session-classifier';
+import { attachSessionIntensityMetadata } from '../session-intensity-metadata';
 
 function templateFor(templates: WorkoutTemplate[], sessionType: SessionType): WorkoutTemplate {
   const match = templates.find((template) => template.sessionType === sessionType);
@@ -46,8 +48,14 @@ function cyclingPhaseVolumeMultiplier(phase: EngineContext['phase']): number {
   return 1.05;
 }
 
-function buildRideSession(template: WorkoutTemplate, dayOfWeek: DayOfWeek, durationMinutes: number, tags: string[]): Session {
-  return {
+function buildRideSession(
+  template: WorkoutTemplate,
+  dayOfWeek: DayOfWeek,
+  durationMinutes: number,
+  tags: string[],
+  athleteProfile: EngineContext['athlete']['profile'],
+): Session {
+  return attachTrainingSessionRole(attachSessionIntensityMetadata({
     id: createSessionId('ride', dayOfWeek, template.title),
     sport: 'cycling',
     sessionType: template.sessionType,
@@ -62,7 +70,7 @@ function buildRideSession(template: WorkoutTemplate, dayOfWeek: DayOfWeek, durat
     sourceTemplateId: template.id,
     tags,
     alternatives: ['Swap for indoor endurance ride', 'Swap for short aerobic spin'],
-  };
+  }, template, athleteProfile), template);
 }
 
 function keyRideTemplateFor(context: EngineContext, templates: WorkoutTemplate[]): WorkoutTemplate {
@@ -123,7 +131,7 @@ export const cyclingEngine: SportEngine = {
         ? templateFor(templates, 'recovery_ride')
         : templateFor(templates, 'endurance_ride');
       const duration = clamp(Math.round(targetMinutes), 45, template.sessionType === 'recovery_ride' ? 75 : 180);
-      return [buildRideSession(template, longDay, duration, ['single_ride', template.id])];
+      return [buildRideSession(template, longDay, duration, ['single_ride', template.id], context.athlete.profile)];
     }
 
     const longRideMinutes = clamp(Math.round(targetMinutes * 0.4), 90, 240);
@@ -132,8 +140,8 @@ export const cyclingEngine: SportEngine = {
 
     const keyTemplate = keyRideTemplateFor(context, templates);
     const sessions: Session[] = [
-      buildRideSession(keyTemplate, keyDay, keyMinutes, ['key_ride', keyTemplate.id]),
-      buildRideSession(templateFor(templates, 'endurance_ride'), longDay, longRideMinutes, ['long_session']),
+      buildRideSession(keyTemplate, keyDay, keyMinutes, ['key_ride', keyTemplate.id], context.athlete.profile),
+      buildRideSession(templateFor(templates, 'endurance_ride'), longDay, longRideMinutes, ['long_session'], context.athlete.profile),
     ];
 
     const fillerPreferences: DayOfWeek[] = ['monday', 'friday', 'thursday'];
@@ -142,7 +150,7 @@ export const cyclingEngine: SportEngine = {
       if (sessions.length >= targetSessions) break;
       if (sessions.find((session) => session.dayOfWeek === dayOfWeek)) continue;
       const template = supportRideTemplateFor(context, templates, supportIndex, sessions.length === targetSessions - 1);
-      sessions.push(buildRideSession(template, dayOfWeek, fillerMinutes, ['support_ride', template.id]));
+      sessions.push(buildRideSession(template, dayOfWeek, fillerMinutes, ['support_ride', template.id], context.athlete.profile));
     }
 
     return sessions;

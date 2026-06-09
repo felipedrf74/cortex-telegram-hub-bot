@@ -1221,6 +1221,7 @@ describe('training-plan-calendar-sync', () => {
       reason: 'training_sync_replaced_stale_event',
       status: 'deleted',
       userId: 42,
+      tenantId: 42,
       planId: 29,
     });
   });
@@ -1592,7 +1593,7 @@ describe('training-plan-calendar-sync', () => {
       expect(result.data.eventsCreated).toBe(1);
       expect(result.data.sessionsLinked).toBe(0);
     }
-    expect(mocks.isTrainingCalendarEventUnclaimed).toHaveBeenCalledWith('claimed-recovery-run', 'google');
+    expect(mocks.isTrainingCalendarEventUnclaimed).toHaveBeenCalledWith('claimed-recovery-run', 'google', 42);
     expect(mocks.linkSessionToCalendar).toHaveBeenCalledWith(210, 'evt-new-run', 'google');
   });
 

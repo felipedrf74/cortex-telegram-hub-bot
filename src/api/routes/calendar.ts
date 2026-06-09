@@ -46,6 +46,7 @@ import { sendConditionalApiSuccess } from '../conditional-cache';
 import { handleCachedRoute, routeCacheKey } from '../route-helpers/cached-route-handler';
 import { getUserTimezoneById } from '../../services/user-service';
 import { getAppleHealthSleepAgendaEvents } from '../../services/health-sleep-agenda';
+import { requireTenantIdParam } from '../../services/tenant-scope';
 
 const TODAY_TTL = 120; // 2 min — calendar can change mid-day from notifications
 const RANGE_TTL = 60;  // 1 min for arbitrary ranges
@@ -78,6 +79,7 @@ export function calendarRoutes(): Router {
    */
   router.get('/events', asyncHandler(async (req, res: Response) => {
     const userId = (req as AuthenticatedRequest).userId;
+    const tenantId = requireTenantIdParam((req as AuthenticatedRequest).tenantId, 'calendar.events');
     if (!hasConnectedCalendarForUser(userId)) {
       const { start, end } = parseRange(
         req.query.start as string | undefined,
@@ -89,7 +91,7 @@ export function calendarRoutes(): Router {
     }
 
     const { start, end } = parseRange(req.query.start as string | undefined, req.query.end as string | undefined);
-    const cacheKey = calendarEventsCacheKey(userId, start, end);
+    const cacheKey = calendarEventsCacheKey(userId, tenantId, start, end);
     const forceRefresh = req.query.refresh === 'true' || req.query.forceRefresh === 'true';
 
     try {
@@ -97,8 +99,8 @@ export function calendarRoutes(): Router {
         cacheKey,
         ttlSeconds: RANGE_TTL,
         staleSeconds: RANGE_SWR_STALE,
-        refreshContext: { source: 'calendar_route', operation: 'calendar_swr_refresh', userId },
-        fetchFresh: () => buildEventsPayload(start, end, userId),
+        refreshContext: { source: 'calendar_route', operation: 'calendar_swr_refresh', userId, tenantId },
+        fetchFresh: () => buildEventsPayload(start, end, userId, tenantId),
         shouldServeCached: forceRefresh ? () => false : shouldServeCalendarCache,
         send: (value, meta) => {
           sendConditionalApiSuccess(res, req, normalizeCalendarEventsPayload(value), { cached: meta.cached });
@@ -557,6 +559,7 @@ export function calendarRoutes(): Router {
    */
   router.get('/today', asyncHandler(async (req, res: Response) => {
     const userId = (req as AuthenticatedRequest).userId;
+    const tenantId = requireTenantIdParam((req as AuthenticatedRequest).tenantId, 'calendar.today');
     if (!hasConnectedCalendarForUser(userId)) {
       const timezone = calendarUserTimezone(userId);
       const { start, end } = todayRangeISO(timezone);
@@ -568,7 +571,7 @@ export function calendarRoutes(): Router {
     }
 
     const timezone = calendarUserTimezone(userId);
-    const cacheKey = calendarTodayCacheKey(userId, todayDateString(timezone));
+    const cacheKey = calendarTodayCacheKey(userId, tenantId, todayDateString(timezone));
     const forceRefresh = req.query.refresh === 'true' || req.query.forceRefresh === 'true';
 
     try {
@@ -576,8 +579,8 @@ export function calendarRoutes(): Router {
         cacheKey,
         ttlSeconds: TODAY_TTL,
         staleSeconds: TODAY_SWR_STALE,
-        refreshContext: { source: 'calendar_route', operation: 'calendar_swr_refresh', userId },
-        fetchFresh: () => buildTodayPayload(userId),
+        refreshContext: { source: 'calendar_route', operation: 'calendar_swr_refresh', userId, tenantId },
+        fetchFresh: () => buildTodayPayload(userId, tenantId),
         shouldServeCached: forceRefresh ? () => false : shouldServeCalendarCache,
         send: (value, meta) => {
           sendConditionalApiSuccess(res, req, { ...normalizeCalendarEventsPayload(value), date: todayDateString(timezone) }, { cached: meta.cached });
@@ -651,15 +654,15 @@ function normalizeCalendarEventsPayload(value: any): {
   };
 }
 
-function calendarEventsCacheKey(userId: number | undefined, start: string, end: string): string {
+function calendarEventsCacheKey(userId: number | undefined, tenantId: number | undefined, start: string, end: string): string {
   return typeof userId === 'number' && userId > 0
-    ? routeCacheKey('u', userId, 'calendar', 'events', start, end)
+    ? routeCacheKey('t', tenantId ?? 'missing', 'u', userId, 'calendar', 'events', start, end)
     : routeCacheKey('calendar', 'events', start, end);
 }
 
-function calendarTodayCacheKey(userId: number | undefined, date: string): string {
+function calendarTodayCacheKey(userId: number | undefined, tenantId: number | undefined, date: string): string {
   return typeof userId === 'number' && userId > 0
-    ? routeCacheKey('u', userId, 'calendar', 'today', date)
+    ? routeCacheKey('t', tenantId ?? 'missing', 'u', userId, 'calendar', 'today', date)
     : routeCacheKey('calendar', 'today', date);
 }
 
@@ -713,7 +716,7 @@ function buildSleepOnlyCalendarPayload(userId: number, start: string, end: strin
   };
 }
 
-async function buildEventsPayload(start: string, end: string, userId: number): Promise<{
+async function buildEventsPayload(start: string, end: string, userId: number, tenantId: number): Promise<{
   events: any[];
   status: string;
   warningCodes: string[];
@@ -726,7 +729,7 @@ async function buildEventsPayload(start: string, end: string, userId: number): P
   }
 
   const timezone = calendarUserTimezone(userId);
-  const visibleEvents = filterCalendarEventsForTrainingScope(result.events, userId);
+  const visibleEvents = filterCalendarEventsForTrainingScope(result.events, userId, tenantId);
   const sleepEvents = getAppleHealthSleepAgendaEvents({ userId, start, end, timezone });
   return {
     events: sortFormattedEvents([...visibleEvents.map(formatEvent), ...sleepEvents.map(formatEvent)]),
@@ -736,7 +739,7 @@ async function buildEventsPayload(start: string, end: string, userId: number): P
   };
 }
 
-async function buildTodayPayload(userId: number): Promise<{
+async function buildTodayPayload(userId: number, tenantId: number): Promise<{
   events: any[];
   status: string;
   warningCodes: string[];
@@ -749,7 +752,7 @@ async function buildTodayPayload(userId: number): Promise<{
   if (result.status === 'unavailable' && result.sources.configured.length > 0) {
     throw new CalendarFetchError(result.warnings[0] || 'Failed to fetch today\'s events', result.warningCodes);
   }
-  const formatted = filterCalendarEventsForTrainingScope(result.events, userId)
+  const formatted = filterCalendarEventsForTrainingScope(result.events, userId, tenantId)
     .filter((event) => eventOverlapsRange(event, actualRange.start, actualRange.end))
     .map(formatEvent);
   const sleepEvents = getAppleHealthSleepAgendaEvents({

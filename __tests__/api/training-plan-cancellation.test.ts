@@ -148,7 +148,7 @@ describe('training-plan-cancellation (hard delete)', () => {
       removedCompletions: 1,
     });
 
-    const result = await cancelTrainingPlanForUser(12);
+    const result = await cancelTrainingPlanForUser(12, undefined, { tenantId: 12 });
 
     expect(result).toEqual({
       status: 'cancelled',
@@ -166,7 +166,7 @@ describe('training-plan-cancellation (hard delete)', () => {
     });
     expect(mocks.deleteEvent).toHaveBeenCalledWith('evt-completed', 'outlook', 12);
     expect(mocks.deleteEvent).toHaveBeenCalledWith('evt-planned', 'google', 12);
-    expect(mocks.deletePlanHard).toHaveBeenCalledWith(44, 12);
+    expect(mocks.deletePlanHard).toHaveBeenCalledWith(44, 12, 12);
     expect(mocks.cancelTrainingPlanCrossSkillDependents).toHaveBeenCalledWith({
       userId: 12,
       tenantId: 12,
@@ -183,6 +183,7 @@ describe('training-plan-cancellation (hard delete)', () => {
       reason: 'plan_cancelled',
       status: 'deleted',
       userId: 12,
+      tenantId: 12,
       planId: 44,
     });
     expect(mocks.markCalendarOwnershipDeleted).toHaveBeenCalledWith({
@@ -191,6 +192,7 @@ describe('training-plan-cancellation (hard delete)', () => {
       reason: 'plan_cancelled',
       status: 'deleted',
       userId: 12,
+      tenantId: 12,
       planId: 44,
     });
     // After hard-delete, every per-user coach narrative store must
@@ -248,7 +250,7 @@ describe('training-plan-cancellation (hard delete)', () => {
       removedCompletions: 0,
     });
 
-    const result = await cancelTrainingPlanForUser(12);
+    const result = await cancelTrainingPlanForUser(12, undefined, { tenantId: 12 });
 
     expect(result.status).toBe('cancelled');
     if (result.status === 'cancelled') {
@@ -257,7 +259,7 @@ describe('training-plan-cancellation (hard delete)', () => {
     }
     expect(mocks.deleteEvent).toHaveBeenCalledWith('orphan-a', 'google', 12);
     expect(mocks.deleteEvent).toHaveBeenCalledWith('orphan-b', 'google', 12);
-    expect(mocks.deletePlanHard).toHaveBeenCalledWith(47, 12);
+    expect(mocks.deletePlanHard).toHaveBeenCalledWith(47, 12, 12);
   });
 
   it('deletes ownership-table events even when session calendar links are missing and calendar lookup fails', async () => {
@@ -303,7 +305,7 @@ describe('training-plan-cancellation (hard delete)', () => {
       removedCompletions: 0,
     });
 
-    const result = await cancelTrainingPlanForUser(12);
+    const result = await cancelTrainingPlanForUser(12, undefined, { tenantId: 12 });
 
     expect(result.status).toBe('cancelled');
     if (result.status === 'cancelled') {
@@ -316,6 +318,7 @@ describe('training-plan-cancellation (hard delete)', () => {
       reason: 'plan_cancelled',
       status: 'deleted',
       userId: 12,
+      tenantId: 12,
       planId: 72,
     });
   });
@@ -408,14 +411,14 @@ describe('training-plan-cancellation (hard delete)', () => {
       removedCompletions: 0,
     });
 
-    const result = await cancelTrainingPlanForUser(12);
+    const result = await cancelTrainingPlanForUser(12, undefined, { tenantId: 12 });
 
     expect(result.status).toBe('cancelled');
     if (result.status === 'cancelled') {
       expect(result.data.removedEvents).toBe(0);
     }
     expect(mocks.deleteEvent).not.toHaveBeenCalled();
-    expect(mocks.deletePlanHard).toHaveBeenCalledWith(73, 12);
+    expect(mocks.deletePlanHard).toHaveBeenCalledWith(73, 12, 12);
   });
 
   it('does not delete unowned title/date matches without a Nexus identity marker', async () => {
@@ -454,7 +457,7 @@ describe('training-plan-cancellation (hard delete)', () => {
       removedCompletions: 0,
     });
 
-    const result = await cancelTrainingPlanForUser(12);
+    const result = await cancelTrainingPlanForUser(12, undefined, { tenantId: 12 });
 
     expect(result.status).toBe('cancelled');
     if (result.status === 'cancelled') {
@@ -501,7 +504,7 @@ describe('training-plan-cancellation (hard delete)', () => {
       removedCompletions: 0,
     });
 
-    const result = await cancelTrainingPlanForUser(12);
+    const result = await cancelTrainingPlanForUser(12, undefined, { tenantId: 12 });
 
     expect(result.status).toBe('cancelled');
     expect(mocks.deleteEvent).toHaveBeenCalledWith('orphan-rich', 'google', 12);
@@ -549,7 +552,7 @@ describe('training-plan-cancellation (hard delete)', () => {
       removedCompletions: 0,
     });
 
-    const result = await cancelTrainingPlanForUser(12);
+    const result = await cancelTrainingPlanForUser(12, undefined, { tenantId: 12 });
 
     expect(result.status).toBe('cancelled');
     if (result.status === 'cancelled') {
@@ -607,7 +610,7 @@ describe('training-plan-cancellation (hard delete)', () => {
       removedCompletions: 0,
     });
 
-    const result = await cancelTrainingPlanForUser(12);
+    const result = await cancelTrainingPlanForUser(12, undefined, { tenantId: 12 });
 
     expect(result.status).toBe('cancelled');
     if (result.status === 'cancelled') {
@@ -648,7 +651,7 @@ describe('training-plan-cancellation (hard delete)', () => {
         removedCompletions: 0,
       });
 
-    const result = await cancelTrainingPlanForUser(12);
+    const result = await cancelTrainingPlanForUser(12, undefined, { tenantId: 12 });
 
     expect(result.status).toBe('cancelled');
     if (result.status === 'cancelled') {
@@ -658,14 +661,14 @@ describe('training-plan-cancellation (hard delete)', () => {
       expect(result.data.removedSessions).toBe(2);
     }
     expect(mocks.getActivePlan).not.toHaveBeenCalled();
-    expect(mocks.deletePlanHard).toHaveBeenCalledWith(70, 12);
-    expect(mocks.deletePlanHard).toHaveBeenCalledWith(71, 12);
+    expect(mocks.deletePlanHard).toHaveBeenCalledWith(70, 12, 12);
+    expect(mocks.deletePlanHard).toHaveBeenCalledWith(71, 12, 12);
   });
 
   it('routes foreign requested plan ids through the same no-op path as missing ids', async () => {
     mocks.getPlanById.mockReturnValue({ id: 99, user_id: 88 });
 
-    const foreign = await cancelTrainingPlanForUser(12, 99);
+    const foreign = await cancelTrainingPlanForUser(12, 99, { tenantId: 12 });
     vi.clearAllMocks();
     mocks.deleteEvent.mockResolvedValue({ ok: true });
     mocks.getEvents.mockResolvedValue([]);
@@ -678,7 +681,7 @@ describe('training-plan-cancellation (hard delete)', () => {
     mocks.getTrainingCalendarEventOwners.mockReturnValue([]);
     mocks.findSecretaryAgendaCalendarEventsForPlan.mockReturnValue([]);
 
-    const missing = await cancelTrainingPlanForUser(12, 9999);
+    const missing = await cancelTrainingPlanForUser(12, 9999, { tenantId: 12 });
 
     expect(foreign).toEqual(missing);
     expect(foreign).toEqual({
@@ -700,7 +703,7 @@ describe('training-plan-cancellation (hard delete)', () => {
   });
 
   it('returns a stable no-op when there is no active plan', async () => {
-    const result = await cancelTrainingPlanForUser(12);
+    const result = await cancelTrainingPlanForUser(12, undefined, { tenantId: 12 });
 
     expect(result).toEqual({
       status: 'not_found',
@@ -737,7 +740,7 @@ describe('training-plan-cancellation (hard delete)', () => {
       }];
     });
 
-    const result = await cancelTrainingPlanForUser(12);
+    const result = await cancelTrainingPlanForUser(12, undefined, { tenantId: 12 });
 
     expect(result.status).toBe('not_found');
     if (result.status === 'not_found') {
@@ -765,7 +768,7 @@ describe('training-plan-cancellation (hard delete)', () => {
       removedCompletions: 0,
     });
 
-    const result = await cancelTrainingPlanForUser(12);
+    const result = await cancelTrainingPlanForUser(12, undefined, { tenantId: 12 });
 
     expect(result.status).toBe('cancelled');
     if (result.status === 'cancelled') {
@@ -773,7 +776,7 @@ describe('training-plan-cancellation (hard delete)', () => {
       expect(result.data.removedSessions).toBe(2);
       expect(result.data.message).toBe('Plan cancelled. 1 scheduled workout removed from the calendar; 2 sessions cleared from the plan.');
     }
-    expect(mocks.deletePlanHard).toHaveBeenCalledWith(45, 12);
+    expect(mocks.deletePlanHard).toHaveBeenCalledWith(45, 12, 12);
   });
 
   it('retries provider rate limits before marking plan-owned events orphaned', async () => {
@@ -798,7 +801,7 @@ describe('training-plan-cancellation (hard delete)', () => {
       removedCompletions: 0,
     });
 
-    const result = await cancelTrainingPlanForUser(12);
+    const result = await cancelTrainingPlanForUser(12, undefined, { tenantId: 12 });
 
     expect(result.status).toBe('cancelled');
     if (result.status === 'cancelled') {
@@ -812,9 +815,10 @@ describe('training-plan-cancellation (hard delete)', () => {
       reason: 'plan_cancelled',
       status: 'deleted',
       userId: 12,
+      tenantId: 12,
       planId: 146,
     });
-    expect(mocks.deletePlanHard).toHaveBeenCalledWith(146, 12);
+    expect(mocks.deletePlanHard).toHaveBeenCalledWith(146, 12, 12);
   });
 
   it('serializes large provider deletion batches to avoid calendar rate-limit storms', async () => {
@@ -845,7 +849,7 @@ describe('training-plan-cancellation (hard delete)', () => {
       removedCompletions: 0,
     });
 
-    const result = await cancelTrainingPlanForUser(12);
+    const result = await cancelTrainingPlanForUser(12, undefined, { tenantId: 12 });
 
     expect(result.status).toBe('cancelled');
     if (result.status === 'cancelled') {
@@ -876,7 +880,7 @@ describe('training-plan-cancellation (hard delete)', () => {
       removedCompletions: 0,
     });
 
-    const result = await cancelTrainingPlanForUser(12);
+    const result = await cancelTrainingPlanForUser(12, undefined, { tenantId: 12 });
 
     expect(result.status).toBe('cancelled');
     if (result.status === 'cancelled') {
@@ -889,6 +893,7 @@ describe('training-plan-cancellation (hard delete)', () => {
       reason: 'plan_cancelled_event_gone_upstream',
       status: 'deleted',
       userId: 12,
+      tenantId: 12,
       planId: 145,
     });
   });
@@ -907,7 +912,7 @@ describe('training-plan-cancellation (hard delete)', () => {
       removedCompletions: 0,
     });
 
-    const result = await cancelTrainingPlanForUser(12);
+    const result = await cancelTrainingPlanForUser(12, undefined, { tenantId: 12 });
 
     expect(result.status).toBe('cancelled');
     if (result.status === 'cancelled') {
@@ -915,7 +920,7 @@ describe('training-plan-cancellation (hard delete)', () => {
       expect(result.data.totalSessions).toBe(1);
     }
     expect(mocks.deleteEvent).not.toHaveBeenCalled();
-    expect(mocks.deletePlanHard).toHaveBeenCalledWith(46, 12);
+    expect(mocks.deletePlanHard).toHaveBeenCalledWith(46, 12, 12);
   });
 
   it('idempotently reports not_found if the hard delete affects zero rows', async () => {
@@ -931,7 +936,7 @@ describe('training-plan-cancellation (hard delete)', () => {
       removedCompletions: 0,
     });
 
-    const result = await cancelTrainingPlanForUser(12);
+    const result = await cancelTrainingPlanForUser(12, undefined, { tenantId: 12 });
 
     expect(result.status).toBe('not_found');
     if (result.status === 'not_found') {
@@ -970,11 +975,11 @@ describe('training-plan-cancellation (hard delete)', () => {
       };
     });
 
-    const first = cancelTrainingPlanForUser(12);
+    const first = cancelTrainingPlanForUser(12, undefined, { tenantId: 12 });
     for (let i = 0; i < 20; i += 1) await Promise.resolve();
     expect(mocks.deleteEvent).toHaveBeenCalledTimes(1);
 
-    const second = cancelTrainingPlanForUser(12);
+    const second = cancelTrainingPlanForUser(12, undefined, { tenantId: 12 });
     for (let i = 0; i < 20; i += 1) await Promise.resolve();
     expect(mocks.getActivePlan).toHaveBeenCalledTimes(1);
     expect(mocks.deleteEvent).toHaveBeenCalledTimes(1);

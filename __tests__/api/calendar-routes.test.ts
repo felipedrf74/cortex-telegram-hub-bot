@@ -295,7 +295,7 @@ describe('Calendar API — mutation routes', () => {
     expect(res.body.data.events).toEqual([]);
     expect(mockGetEventsWithDiagnostics).toHaveBeenCalled();
     expect(mockSetCacheSWR).toHaveBeenCalledWith(
-      expect.stringMatching(/^u:34:calendar:today:/),
+      expect.stringMatching(/^t:34:u:34:calendar:today:/),
       expect.objectContaining({
         events: [expect.objectContaining({ id: 'refreshed-event' })],
       }),
@@ -374,6 +374,7 @@ describe('Calendar API — mutation routes', () => {
     expect(res.body.data.events[0].id).toBe('manual-event');
     expect(mockFilterCalendarEventsForTrainingScope).toHaveBeenCalledWith(
       expect.arrayContaining([expect.objectContaining({ id: 'foreign-training' })]),
+      12,
       12,
     );
   });

@@ -424,6 +424,7 @@ describe('Dashboard API route', () => {
           sessionId: 101,
           planId: 11,
           userId: 4,
+          tenantId: 4,
           planStatus: 'cancelled',
         }];
       }
@@ -633,13 +634,13 @@ describe('Dashboard API route', () => {
     await dispatch(4, {}, '/home');
 
     expect(mockSetCacheSWR).toHaveBeenCalledWith(
-      expect.stringMatching(/^dashboard:4:/),
+      expect.stringMatching(/^dashboard:4:4:/),
       expect.anything(),
       180,
       300,
     );
     expect(mockSetCacheSWR).toHaveBeenCalledWith(
-      expect.stringMatching(/^dashboard-home:4:/),
+      expect.stringMatching(/^dashboard-home:4:4:/),
       expect.anything(),
       180,
       300,

@@ -8,12 +8,24 @@ import { getActivePlanSummary, getPlanById, getSessionById } from '../../trainin
 import { missingTrainingPlanSlots } from './helpers';
 import { confirmTrainingSessionReflow, previewTrainingSessionReflow } from '../../../api/routes/training-plan-calendar-sync';
 
+function validTenantId(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value > 0;
+}
+
+function trainingTenantIdForInput(input: ChatPlannerInput): number | null {
+  return validTenantId(input.tenantId) ? input.tenantId : null;
+}
+
 export function executeTrainingCoachReportStep(
   step: ChatPlanStep,
   input: ChatPlannerInput,
 ): { step: ChatPlanStep; status: ChatActionRunStatus; result?: unknown; error?: string } {
+  const tenantId = trainingTenantIdForInput(input);
+  if (!tenantId) {
+    return { step, status: 'blocked', error: 'training_tenant_scope_required' };
+  }
   try {
-    const summary = getActivePlanSummary(input.userId);
+    const summary = getActivePlanSummary(input.userId, tenantId);
     return { step, status: 'verified_success', result: { summary: summary || 'No active training plan found.' } };
   } catch {
     return { step, status: 'failed', error: 'training_summary_failed' };
@@ -24,13 +36,20 @@ export function executeTrainingExplainSessionStep(
   step: ChatPlanStep,
   input: ChatPlannerInput,
 ): { step: ChatPlanStep; status: ChatActionRunStatus; result?: unknown; error?: string } {
+  const tenantId = trainingTenantIdForInput(input);
+  if (!tenantId) {
+    return { step, status: 'blocked', error: 'training_tenant_scope_required' };
+  }
   const sessionId = Number((step.args as any).sessionId);
   if (!Number.isInteger(sessionId) || sessionId <= 0) return { step, status: 'blocked', error: 'training_session_id_required' };
   try {
     const session = getSessionById(sessionId);
     if (!session) return { step, status: 'blocked', error: 'training_session_not_found' };
     const plan = getPlanById(session.plan_id);
-    if (!plan || plan.user_id !== input.userId) return { step, status: 'blocked', error: 'training_session_not_found_or_unauthorized' };
+    const planTenantId = typeof plan?.tenant_id === 'number' && plan.tenant_id > 0 ? plan.tenant_id : plan?.user_id;
+    if (!plan || plan.user_id !== input.userId || planTenantId !== tenantId) {
+      return { step, status: 'blocked', error: 'training_session_not_found_or_unauthorized' };
+    }
     return {
       step,
       status: 'verified_success',

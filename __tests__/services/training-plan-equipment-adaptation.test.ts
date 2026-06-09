@@ -103,6 +103,46 @@ describe('training-plan-equipment-adaptation', () => {
     expect(adaptation.equipmentProfile).toBe('bodyweight');
     expect(adaptation.summary).toBe('Bodyweight only');
     expect(adaptation.promptBlock).toContain('no barbell, dumbbell, machine, or cable access');
+    expect(adaptation.canonicalProfile.items).toContain('bodyweight');
+  });
+
+  it('normalizes Portuguese no-equipment phrases as bodyweight-only', () => {
+    const adaptation = buildTrainingEquipmentAdaptation({
+      gymProfile: { equipment_access: 'sem equipamento em casa' },
+    });
+
+    expect(adaptation.equipmentProfile).toBe('bodyweight');
+    expect(adaptation.canonicalProfile.confidence).toBe('declared');
+    expect(adaptation.canonicalProfile.items).toEqual(expect.arrayContaining([
+      'bodyweight',
+      'floor_space',
+      'mobility_mat',
+    ]));
+  });
+
+  it('keeps legacy unknown equipment as full-gym until kernel authority is enabled', () => {
+    const adaptation = buildTrainingEquipmentAdaptation({
+      gymProfile: { equipment_access: 'Pilates studio' },
+    });
+
+    expect(adaptation.equipmentProfile).toBe('full_gym');
+    expect(adaptation.authority).toBe('legacy_route_adapter');
+    expect(adaptation.canonicalProfile.confidence).toBe('unknown');
+  });
+
+  it('uses a bodyweight-safe default for unknown equipment under kernel authority', () => {
+    const adaptation = buildTrainingEquipmentAdaptation({
+      gymProfile: { equipment_access: 'Pilates studio' },
+      conservativeUnknown: true,
+    });
+
+    expect(adaptation.equipmentProfile).toBe('bodyweight');
+    expect(adaptation.authority).toBe('coach_kernel');
+    expect(adaptation.summary).toBe('Bodyweight-safe default');
+    expect(adaptation.decisionReasons).toContainEqual(expect.objectContaining({
+      code: 'equipment_conservative_default',
+      text: expect.stringContaining('bodyweight-safe options'),
+    }));
   });
 
   it('removes equipment-dependent support lifts for no-equipment athletes', () => {

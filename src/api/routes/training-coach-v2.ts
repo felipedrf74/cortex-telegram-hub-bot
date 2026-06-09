@@ -86,6 +86,7 @@ import {
   resolveRaceCalendarFromPlanWithReport,
   type DbSessionRow,
 } from './training-coach-v2-hydration';
+import { requireTenantIdParam } from '../../services/tenant-scope';
 
 export { isStrictIsoDate };
 
@@ -280,16 +281,17 @@ function resolveOwnedPlan(
   req: Request,
   res: Response,
   planId: number,
-): { planId: number; userId: number } | null {
+): { planId: number; userId: number; tenantId: number } | null {
   const auth = req as AuthenticatedRequest;
+  const tenantId = requireTenantIdParam(auth.tenantId, 'trainingCoachV2.resolveOwnedPlan');
   const row = getDb().prepare(
-    'SELECT user_id FROM fitness_training_plans WHERE id = ?',
-  ).get(planId) as { user_id: number } | undefined;
+    'SELECT user_id, tenant_id FROM fitness_training_plans WHERE id = ?',
+  ).get(planId) as { user_id: number; tenant_id: number } | undefined;
   if (!row) {
     sendError(res, 'PLAN_NOT_FOUND', `Plan ${planId} not found.`, 404);
     return null;
   }
-  if (row.user_id !== auth.userId) {
+  if (row.user_id !== auth.userId || row.tenant_id !== tenantId) {
     // R3 P2 fix — return IDENTICAL response (same status, same code,
     // same body) for both "missing" and "foreign owner" so the
     // status code cannot be used to enumerate plan ids. The
@@ -303,14 +305,14 @@ function resolveOwnedPlan(
         // Audit correlation by hash; operator log can't reconstruct
         // the victim from the entry.
         ownerIdHash: hashOwnerIdForLog(row.user_id),
-        reason: 'foreign_owner',
+        reason: row.user_id !== auth.userId ? 'foreign_owner' : 'foreign_tenant',
       },
       'training_coach_v2.ownership_denied',
     );
     sendError(res, 'PLAN_NOT_FOUND', `Plan ${planId} not found.`, 404);
     return null;
   }
-  return { planId, userId: auth.userId };
+  return { planId, userId: auth.userId, tenantId };
 }
 
 /**
@@ -321,19 +323,20 @@ function resolveOwnedWeek(
   req: Request,
   res: Response,
   weekId: number,
-): { weekId: number; planId: number; userId: number } | null {
+): { weekId: number; planId: number; userId: number; tenantId: number } | null {
   const auth = req as AuthenticatedRequest;
+  const tenantId = requireTenantIdParam(auth.tenantId, 'trainingCoachV2.resolveOwnedWeek');
   const row = getDb().prepare(`
-    SELECT w.id AS week_id, w.plan_id AS plan_id, p.user_id AS user_id
+    SELECT w.id AS week_id, w.plan_id AS plan_id, p.user_id AS user_id, p.tenant_id AS tenant_id
     FROM training_weeks w
     JOIN fitness_training_plans p ON p.id = w.plan_id
     WHERE w.id = ?
-  `).get(weekId) as { week_id: number; plan_id: number; user_id: number } | undefined;
+  `).get(weekId) as { week_id: number; plan_id: number; user_id: number; tenant_id: number } | undefined;
   if (!row) {
     sendError(res, 'WEEK_NOT_FOUND', `Week ${weekId} not found.`, 404);
     return null;
   }
-  if (row.user_id !== auth.userId) {
+  if (row.user_id !== auth.userId || row.tenant_id !== tenantId) {
     // R3 P2 fix — uniform 404 (no status-code side channel).
     logger.warn(
       {
@@ -341,14 +344,14 @@ function resolveOwnedWeek(
         weekId,
         // R4 P3 fix — hashed owner id, see resolveOwnedPlan comment.
         ownerIdHash: hashOwnerIdForLog(row.user_id),
-        reason: 'foreign_owner',
+        reason: row.user_id !== auth.userId ? 'foreign_owner' : 'foreign_tenant',
       },
       'training_coach_v2.ownership_denied',
     );
     sendError(res, 'WEEK_NOT_FOUND', `Week ${weekId} not found.`, 404);
     return null;
   }
-  return { weekId, planId: row.plan_id, userId: auth.userId };
+  return { weekId, planId: row.plan_id, userId: auth.userId, tenantId };
 }
 
 /**
@@ -485,6 +488,7 @@ export function mountCoachV2Routes(parent: Router): Router {
     try {
       const result = recordHealthSignal({
         userId: auth.userId,
+        tenantId: auth.tenantId,
         date,
         painScore: typeof body.painScore === 'number' ? body.painScore : undefined,
         painLocation: typeof body.painLocation === 'string' ? body.painLocation : undefined,
@@ -662,7 +666,7 @@ export function mountCoachV2Routes(parent: Router): Router {
       // from the signal so a structured intake row can actually emit
       // a hard pause. Previously hardcoded `source: 'wearable'` made
       // every signal degrade to warning-only.
-      const healthSignal = getLatestHealthSignal(auth.userId);
+      const healthSignal = getLatestHealthSignal(auth.userId, auth.tenantId);
       const safetyOutput = healthSignal
         ? (() => {
             // R8 P2-11 — single decode at the route boundary
@@ -701,6 +705,7 @@ export function mountCoachV2Routes(parent: Router): Router {
       }).filter((s) => s.planId === planId);
       const reflowGap = detectTrainingGap({
         userId: auth.userId,
+        tenantId: auth.tenantId,
         asOfISODate: reflowAsOfISODate,
       });
       const reflowAdherence = computeAdherenceTrend(auth.userId, reflowAsOfISODate);
@@ -1158,7 +1163,7 @@ export function mountCoachV2Routes(parent: Router): Router {
 
       // Gap detector (C4) + adherence trend (C5) + missed sweep (C1).
       const asOfISODate = new Date().toISOString();
-      const gapSignal = detectTrainingGap({ userId: auth.userId, asOfISODate });
+      const gapSignal = detectTrainingGap({ userId: auth.userId, tenantId: auth.tenantId, asOfISODate });
       const adherence = computeAdherenceTrend(auth.userId, asOfISODate);
       const missed = detectMissedSessions({ userId: auth.userId, asOfISODate });
 
@@ -1206,7 +1211,7 @@ export function mountCoachV2Routes(parent: Router): Router {
       // consented HealthSignal and run it through the safety wiring;
       // the resulting safetyOutput is what makes C8's hard-pause
       // path actually reachable from the runtime endpoint.
-      const healthSignal = getLatestHealthSignal(auth.userId);
+      const healthSignal = getLatestHealthSignal(auth.userId, auth.tenantId);
       const safetyOutput = healthSignal
         ? (() => {
             // R8 P2-11 — single decode at the route boundary

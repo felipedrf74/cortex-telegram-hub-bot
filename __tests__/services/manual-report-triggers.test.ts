@@ -122,7 +122,11 @@ describe('manual-report-triggers', () => {
 
     await dispatchCoachReports(send);
 
-    expect(mockGenerateCoachBriefing).toHaveBeenCalledWith(11, { garminSilent: true });
+    expect(mockGenerateCoachBriefing).toHaveBeenCalledWith(11, {
+      garminSilent: true,
+      tenantId: 11,
+      meteringUserId: 11,
+    });
     expect(send).toHaveBeenCalledWith(1011, 'coach message', 'HTML');
   });
 

@@ -1769,7 +1769,7 @@ function weekIsoDates(start: DateTime): string[] {
 }
 
 function findActivePlanForWeek(userId: number, targetDate: DateTime): ActivePlanWeekMatch | null {
-  const plans = getActivePlans(userId);
+  const plans = getActivePlans(userId, userId);
   for (const plan of plans) {
     const week = resolveTrainingWeekForDate(plan, targetDate);
     if (week) {

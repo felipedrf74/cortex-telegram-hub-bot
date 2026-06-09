@@ -5,6 +5,8 @@ import type { DayOfWeek, Session, SessionType, WorkoutTemplate } from '../types'
 import { clamp, createSessionId, durationToLoad } from '../utils';
 import { pickAvailableDays, pickKeyDay } from '../availability-day-picker';
 import { applyVolumeGrowthCapForSport } from '../training-principles';
+import { attachTrainingSessionRole } from '../endurance-session-classifier';
+import { attachSessionIntensityMetadata } from '../session-intensity-metadata';
 
 function templateFor(templates: WorkoutTemplate[], sessionType: SessionType): WorkoutTemplate {
   const match = templates.find((template) => template.sessionType === sessionType);
@@ -61,8 +63,9 @@ function buildRunSession(
   dayOfWeek: DayOfWeek,
   durationMinutes: number,
   tags: string[],
+  athleteProfile: EngineContext['athlete']['profile'],
 ): Session {
-  return {
+  return attachTrainingSessionRole(attachSessionIntensityMetadata({
     id: createSessionId('run', dayOfWeek, template.title),
     sport: 'running',
     sessionType: template.sessionType,
@@ -77,7 +80,7 @@ function buildRunSession(
     sourceTemplateId: template.id,
     tags,
     alternatives: ['Swap for aerobic support run', 'Swap for mobility and strides'],
-  };
+  }, template, athleteProfile), template);
 }
 
 function buildSupportOnlyRunSessions(context: EngineContext, templates: WorkoutTemplate[], requestedRunning: number): Session[] {
@@ -108,7 +111,7 @@ function buildSupportOnlyRunSessions(context: EngineContext, templates: WorkoutT
     const duration = template.sessionType === 'recovery_run'
       ? Math.max(25, baseMinutes - 5)
       : baseMinutes;
-    sessions.push(buildRunSession(template, dayOfWeek, duration, ['aerobic_support', 'support_run', template.id]));
+    sessions.push(buildRunSession(template, dayOfWeek, duration, ['aerobic_support', 'support_run', template.id], context.athlete.profile));
   }
 
   return sessions;
@@ -185,7 +188,7 @@ export const runningEngine: SportEngine = {
         ? templateFor(templates, 'recovery_run')
         : templateFor(templates, 'long_run');
       const duration = clamp(Math.round(targetMinutes), 30, template.sessionType === 'long_run' ? 120 : 50);
-      return [buildRunSession(template, longRunDay, duration, ['single_run', template.id])];
+      return [buildRunSession(template, longRunDay, duration, ['single_run', template.id], context.athlete.profile)];
     }
     const longRunMinutes = clamp(Math.round(targetMinutes * (context.phase === 'peak' ? 0.32 : 0.28)), 70, 170);
     const keyMinutes = clamp(Math.round(targetMinutes * 0.18), 30, 70);
@@ -204,8 +207,8 @@ export const runningEngine: SportEngine = {
     const keyDay = pickKeyDay(context.athlete, 'running', keyDayPreferences);
 
     const sessions: Session[] = [
-      buildRunSession(keyTemplate, keyDay, keyMinutes, ['key_run', keyTemplate.id]),
-      buildRunSession(templateFor(templates, 'long_run'), longRunDay, longRunMinutes, ['long_session']),
+      buildRunSession(keyTemplate, keyDay, keyMinutes, ['key_run', keyTemplate.id], context.athlete.profile),
+      buildRunSession(templateFor(templates, 'long_run'), longRunDay, longRunMinutes, ['long_session'], context.athlete.profile),
     ];
 
     // Slice 4.F — filler days now respect availability windows too.
@@ -223,7 +226,7 @@ export const runningEngine: SportEngine = {
       const duration = template.sessionType === 'recovery_run'
         ? Math.max(25, fillerMinutes - 10)
         : fillerMinutes;
-      sessions.push(buildRunSession(template, dayOfWeek, duration, ['support_run', template.id]));
+      sessions.push(buildRunSession(template, dayOfWeek, duration, ['support_run', template.id], context.athlete.profile));
       supportIndex += 1;
     }
 

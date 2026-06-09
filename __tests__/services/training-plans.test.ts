@@ -103,6 +103,7 @@ describe('Plan CRUD', () => {
   it('creates a training plan', () => {
     const plan = createPlan({
       user_id: 42,
+      tenant_id: 42,
       name: '12-Week Strength Base',
       sport: 'strength',
       goal: 'Build strength foundation',
@@ -120,21 +121,21 @@ describe('Plan CRUD', () => {
 
   it('gets active plan for user', () => {
     createPlan({
-      user_id: 42, name: 'Plan A', sport: 'running',
+      user_id: 42, tenant_id: 42, name: 'Plan A', sport: 'running',
       duration_weeks: 8, start_date: '2026-04-01', end_date: '2026-05-27',
     });
-    const plan = getActivePlan(42);
+    const plan = getActivePlan(42, 42);
     expect(plan).not.toBeNull();
     expect(plan!.name).toBe('Plan A');
   });
 
   it('returns null when no active plan', () => {
-    expect(getActivePlan(99)).toBeNull();
+    expect(getActivePlan(99, 99)).toBeNull();
   });
 
   it('gets plan by ID', () => {
     const created = createPlan({
-      user_id: 42, name: 'My Plan', sport: 'cycling',
+      user_id: 42, tenant_id: 42, name: 'My Plan', sport: 'cycling',
       duration_weeks: 6, start_date: '2026-04-01', end_date: '2026-05-13',
     });
     const found = getPlanById(created.id);
@@ -143,9 +144,9 @@ describe('Plan CRUD', () => {
   });
 
   it('lists user plans', () => {
-    createPlan({ user_id: 42, name: 'Plan 1', sport: 'running', duration_weeks: 4, start_date: '2026-04-01', end_date: '2026-04-29' });
-    createPlan({ user_id: 42, name: 'Plan 2', sport: 'strength', duration_weeks: 8, start_date: '2026-05-01', end_date: '2026-06-26' });
-    createPlan({ user_id: 99, name: 'Other User', sport: 'cycling', duration_weeks: 6, start_date: '2026-04-01', end_date: '2026-05-13' });
+    createPlan({ user_id: 42, tenant_id: 42, name: 'Plan 1', sport: 'running', duration_weeks: 4, start_date: '2026-04-01', end_date: '2026-04-29' });
+    createPlan({ user_id: 42, tenant_id: 42, name: 'Plan 2', sport: 'strength', duration_weeks: 8, start_date: '2026-05-01', end_date: '2026-06-26' });
+    createPlan({ user_id: 99, tenant_id: 99, name: 'Other User', sport: 'cycling', duration_weeks: 6, start_date: '2026-04-01', end_date: '2026-05-13' });
 
     const plans = getUserPlans(42);
     expect(plans).toHaveLength(2);
@@ -153,7 +154,7 @@ describe('Plan CRUD', () => {
 
   it('updates plan status', () => {
     const plan = createPlan({
-      user_id: 42, name: 'Plan', sport: 'strength',
+      user_id: 42, tenant_id: 42, name: 'Plan', sport: 'strength',
       duration_weeks: 4, start_date: '2026-04-01', end_date: '2026-04-29',
     });
     const updated = updatePlanStatus(plan.id, 'paused');
@@ -165,17 +166,17 @@ describe('Plan CRUD', () => {
 
   it('returns only active plan (most recent)', () => {
     const plan1 = createPlan({
-      user_id: 42, name: 'Old Plan', sport: 'running',
+      user_id: 42, tenant_id: 42, name: 'Old Plan', sport: 'running',
       duration_weeks: 4, start_date: '2026-01-01', end_date: '2026-01-29',
     });
     updatePlanStatus(plan1.id, 'completed');
 
     createPlan({
-      user_id: 42, name: 'New Plan', sport: 'strength',
+      user_id: 42, tenant_id: 42, name: 'New Plan', sport: 'strength',
       duration_weeks: 8, start_date: '2026-04-01', end_date: '2026-05-27',
     });
 
-    const active = getActivePlan(42);
+    const active = getActivePlan(42, 42);
     expect(active!.name).toBe('New Plan');
   });
 });
@@ -185,7 +186,7 @@ describe('Plan CRUD', () => {
 describe('Week CRUD', () => {
   it('creates a training week', () => {
     const plan = createPlan({
-      user_id: 42, name: 'Plan', sport: 'strength',
+      user_id: 42, tenant_id: 42, name: 'Plan', sport: 'strength',
       duration_weeks: 4, start_date: '2026-04-01', end_date: '2026-04-29',
     });
 
@@ -200,7 +201,7 @@ describe('Week CRUD', () => {
 
   it('gets weeks for plan in order', () => {
     const plan = createPlan({
-      user_id: 42, name: 'Plan', sport: 'strength',
+      user_id: 42, tenant_id: 42, name: 'Plan', sport: 'strength',
       duration_weeks: 4, start_date: '2026-04-01', end_date: '2026-04-29',
     });
 
@@ -229,7 +230,7 @@ describe('Week CRUD', () => {
 
   it('updates week adjustment', () => {
     const plan = createPlan({
-      user_id: 42, name: 'Plan', sport: 'strength',
+      user_id: 42, tenant_id: 42, name: 'Plan', sport: 'strength',
       duration_weeks: 4, start_date: '2026-04-01', end_date: '2026-04-29',
     });
     const week = createWeek({ plan_id: plan.id, week_number: 1 });
@@ -251,7 +252,7 @@ describe('Session CRUD', () => {
 
   beforeEach(() => {
     const plan = createPlan({
-      user_id: 42, name: 'Plan', sport: 'strength',
+      user_id: 42, tenant_id: 42, name: 'Plan', sport: 'strength',
       duration_weeks: 4, start_date: '2026-04-01', end_date: '2026-04-29',
     });
     planId = plan.id;
@@ -370,6 +371,7 @@ describe('Session CRUD', () => {
     });
     const userBPlan = createPlan({
       user_id: 99,
+      tenant_id: 99,
       name: 'Other Plan',
       sport: 'running',
       duration_weeks: 4,
@@ -398,7 +400,7 @@ describe('Session CRUD', () => {
 describe('Completion Logging', () => {
   it('logs a completion and marks session as completed', () => {
     const plan = createPlan({
-      user_id: 42, name: 'Plan', sport: 'strength',
+      user_id: 42, tenant_id: 42, name: 'Plan', sport: 'strength',
       duration_weeks: 4, start_date: '2026-04-01', end_date: '2026-04-29',
     });
     const week = createWeek({ plan_id: plan.id, week_number: 1 });
@@ -427,7 +429,7 @@ describe('Completion Logging', () => {
 describe('Weekly Adherence', () => {
   it('calculates adherence stats correctly', () => {
     const plan = createPlan({
-      user_id: 42, name: 'Plan', sport: 'strength',
+      user_id: 42, tenant_id: 42, name: 'Plan', sport: 'strength',
       duration_weeks: 4, start_date: '2026-04-01', end_date: '2026-04-29',
     });
     const week = createWeek({ plan_id: plan.id, week_number: 1, volume_sessions: 4 });
@@ -456,7 +458,7 @@ describe('Weekly Adherence', () => {
 
   it('handles zero sessions', () => {
     const plan = createPlan({
-      user_id: 42, name: 'Plan', sport: 'strength',
+      user_id: 42, tenant_id: 42, name: 'Plan', sport: 'strength',
       duration_weeks: 4, start_date: '2026-04-01', end_date: '2026-04-29',
     });
     const week = createWeek({ plan_id: plan.id, week_number: 1 });
@@ -469,7 +471,7 @@ describe('Weekly Adherence', () => {
 
   it('excludes unscheduled/deferred/superseded sessions from adherence totals', () => {
     const plan = createPlan({
-      user_id: 42, name: 'Plan', sport: 'hybrid',
+      user_id: 42, tenant_id: 42, name: 'Plan', sport: 'hybrid',
       duration_weeks: 4, start_date: '2026-04-01', end_date: '2026-04-29',
     });
     const week = createWeek({ plan_id: plan.id, week_number: 1, volume_sessions: 5 });
@@ -494,7 +496,7 @@ describe('Weekly Adherence', () => {
   it('excludes inactive rich lifecycle states from cross-plan load', () => {
     const today = new Date().toISOString().slice(0, 10);
     const plan = createPlan({
-      user_id: 42, name: 'Plan', sport: 'hybrid',
+      user_id: 42, tenant_id: 42, name: 'Plan', sport: 'hybrid',
       duration_weeks: 4, start_date: today, end_date: '2026-05-29',
     });
     const week = createWeek({ plan_id: plan.id, week_number: 1, volume_sessions: 4 });
@@ -504,7 +506,7 @@ describe('Weekly Adherence', () => {
     createSession({ week_id: week.id, plan_id: plan.id, day_of_week: 'Wednesday', session_type: 'running', title: 'No Slot Run', duration_minutes: 45, status: 'unscheduled' });
     createSession({ week_id: week.id, plan_id: plan.id, day_of_week: 'Thursday', session_type: 'running', title: 'Skipped Run', duration_minutes: 30, status: 'skipped' });
 
-    const load = getCrossplanWeeklyLoad(42);
+    const load = getCrossplanWeeklyLoad(42, 42);
     expect(load.totalSessions).toBe(2);
     expect(load.totalMinutes).toBe(75);
   });
@@ -577,7 +579,7 @@ describe('computeAdjustmentRecommendation', () => {
 
 describe('getActivePlanSummary', () => {
   it('returns null when no active plan', () => {
-    expect(getActivePlanSummary(99)).toBeNull();
+    expect(getActivePlanSummary(99, 99)).toBeNull();
   });
 
   it('returns plan summary with current week', () => {
@@ -587,13 +589,13 @@ describe('getActivePlanSummary', () => {
     endDate.setDate(endDate.getDate() + 28);
 
     const plan = createPlan({
-      user_id: 42, name: 'Test Plan', sport: 'strength', goal: 'Get strong',
+      user_id: 42, tenant_id: 42, name: 'Test Plan', sport: 'strength', goal: 'Get strong',
       duration_weeks: 4, start_date: today, end_date: endDate.toISOString().slice(0, 10),
     });
     const week = createWeek({ plan_id: plan.id, week_number: 1, focus: 'hypertrophy' });
     createSession({ week_id: week.id, plan_id: plan.id, day_of_week: 'Monday', session_type: 'strength', title: 'Upper Push' });
 
-    const summary = getActivePlanSummary(42);
+    const summary = getActivePlanSummary(42, 42);
     expect(summary).not.toBeNull();
     expect(summary).toContain('Test Plan');
     expect(summary).toContain('strength');
@@ -611,21 +613,21 @@ describe('getPlanStats', () => {
     endDate.setDate(endDate.getDate() + 28);
 
     const plan = createPlan({
-      user_id: 42, name: 'Test', sport: 'strength',
+      user_id: 42, tenant_id: 42, name: 'Test', sport: 'strength',
       duration_weeks: 4, start_date: today, end_date: endDate.toISOString().slice(0, 10),
     });
     const week = createWeek({ plan_id: plan.id, week_number: 1 });
     const s = createSession({ week_id: week.id, plan_id: plan.id, day_of_week: 'Monday', session_type: 'strength', title: 'Test' });
     logCompletion({ session_id: s.id, plan_id: plan.id, rpe_overall: 7 });
 
-    const stats = getPlanStats(42);
+    const stats = getPlanStats(42, 42);
     expect(stats.activePlans).toBe(1);
     expect(stats.totalCompletedSessions).toBe(1);
     expect(stats.currentPlanName).toBe('Test');
   });
 
   it('returns zeros for user with no plans', () => {
-    const stats = getPlanStats(99);
+    const stats = getPlanStats(99, 99);
     expect(stats.activePlans).toBe(0);
     expect(stats.totalCompletedSessions).toBe(0);
     expect(stats.currentPlanName).toBeNull();

@@ -61,12 +61,33 @@ import {
   CONSENT_EXPLANATIONS,
   DEFAULT_RETENTION_DAYS,
   SCOPE_SUPPORT_REDACTED,
-  deleteAllHealthDataForUser,
+  deleteAllHealthDataForUser as deleteAllHealthDataForUserRaw,
   validateConsentScopes,
 } from '../../src/services/health-consent';
-import { recordReadinessEvent } from '../../src/services/readiness-events';
-import { recordHealthSignal } from '../../src/services/health-signals';
+import { recordReadinessEvent as recordReadinessEventRaw } from '../../src/services/readiness-events';
+import { recordHealthSignal as recordHealthSignalRaw } from '../../src/services/health-signals';
 import { recordAdaptation } from '../../src/services/training-plan-adaptations';
+
+type RecordReadinessEventTestInput =
+  Omit<Parameters<typeof recordReadinessEventRaw>[0], 'tenantId'> & { tenantId?: number };
+
+function recordReadinessEvent(input: RecordReadinessEventTestInput): ReturnType<typeof recordReadinessEventRaw> {
+  return recordReadinessEventRaw({ ...input, tenantId: input.tenantId ?? input.userId });
+}
+
+type RecordHealthSignalTestInput =
+  Omit<Parameters<typeof recordHealthSignalRaw>[0], 'tenantId'> & { tenantId?: number };
+
+function recordHealthSignal(input: RecordHealthSignalTestInput): ReturnType<typeof recordHealthSignalRaw> {
+  return recordHealthSignalRaw({ ...input, tenantId: input.tenantId ?? input.userId });
+}
+
+function deleteAllHealthDataForUser(
+  userId: number,
+  tenantId = userId,
+): ReturnType<typeof deleteAllHealthDataForUserRaw> {
+  return deleteAllHealthDataForUserRaw(userId, tenantId);
+}
 
 beforeEach(() => {
   testDb = new Database(':memory:');
@@ -77,12 +98,12 @@ afterEach(() => {
   testDb.close();
 });
 
-function seedPlan(id: number, userId: number): void {
+function seedPlan(id: number, userId: number, tenantId = userId): void {
   testDb.prepare(`
     INSERT INTO fitness_training_plans
-      (id, user_id, name, sport, duration_weeks, start_date, end_date, status)
-    VALUES (?, ?, 'p', 'gym', 4, '2026-01-01', '2026-02-01', 'active')
-  `).run(id, userId);
+      (id, user_id, tenant_id, name, sport, duration_weeks, start_date, end_date, status)
+    VALUES (?, ?, ?, 'p', 'gym', 4, '2026-01-01', '2026-02-01', 'active')
+  `).run(id, userId, tenantId);
 }
 
 describe('consent scope explanations', () => {
@@ -179,6 +200,7 @@ describe('deleteAllHealthDataForUser — right-to-delete cascade', () => {
     });
 
     const result = deleteAllHealthDataForUser(userId);
+    expect(result.tenantId).toBe(userId);
     expect(result.readinessEventsDeleted).toBe(2);
     expect(result.healthSignalsDeleted).toBe(2);
     expect(result.ledgerRowsRedacted).toBe(1);
@@ -229,6 +251,49 @@ describe('deleteAllHealthDataForUser — right-to-delete cascade', () => {
       'SELECT COUNT(*) AS n FROM athlete_readiness_events WHERE user_id = ?',
     ).get(userB) as { n: number };
     expect(userBRows.n).toBe(1);
+  });
+
+  it('does not affect another tenant for the same user id', () => {
+    const userId = 610;
+    const tenantA = 1000;
+    const tenantB = 2000;
+    seedPlan(210, userId, tenantA);
+    seedPlan(211, userId, tenantB);
+
+    recordReadinessEvent({ userId, tenantId: tenantA, date: '2026-01-10', sleepHours: 7, consentScope: ['readiness_basic'] });
+    recordReadinessEvent({ userId, tenantId: tenantB, date: '2026-01-10', sleepHours: 8, consentScope: ['readiness_basic'] });
+    recordHealthSignal({ userId, tenantId: tenantA, date: '2026-01-12', painScore: 6, consentScope: ['pain'] });
+    recordHealthSignal({ userId, tenantId: tenantB, date: '2026-01-12', painScore: 4, consentScope: ['pain'] });
+    recordAdaptation({
+      planId: 210,
+      scope: 'session',
+      triggerType: 'pain_flag',
+      triggerPayload: { painLocation: 'knee', painScore: 6 },
+      sciencePolicyVersion: '1.0.0',
+    });
+    recordAdaptation({
+      planId: 211,
+      scope: 'session',
+      triggerType: 'pain_flag',
+      triggerPayload: { painLocation: 'hip', painScore: 4 },
+      sciencePolicyVersion: '1.0.0',
+    });
+
+    const result = deleteAllHealthDataForUser(userId, tenantA);
+    expect(result.readinessEventsDeleted).toBe(1);
+    expect(result.healthSignalsDeleted).toBe(1);
+    expect(result.ledgerRowsRedacted).toBe(1);
+
+    expect(testDb.prepare(
+      'SELECT COUNT(*) AS n FROM athlete_readiness_events WHERE user_id = ? AND tenant_id = ?',
+    ).get(userId, tenantB)).toEqual({ n: 1 });
+    expect(testDb.prepare(
+      'SELECT COUNT(*) AS n FROM athlete_health_signals WHERE user_id = ? AND tenant_id = ?',
+    ).get(userId, tenantB)).toEqual({ n: 1 });
+    const tenantBLedger = testDb.prepare(
+      'SELECT trigger_type FROM training_plan_adaptations WHERE plan_id = ?',
+    ).get(211) as { trigger_type: string };
+    expect(tenantBLedger.trigger_type).toBe('pain_flag');
   });
 
   it('returns elapsedSeconds for SLA tracking', () => {

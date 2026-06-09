@@ -279,7 +279,8 @@ function requireOwnedTrainingPlanForTool(
     return { ok: false, error: `${toolName} requires a valid plan_id` };
   }
   const plan = trainingPlans.getPlanById(numericPlanId);
-  if (!plan || plan.user_id !== scope.userId) {
+  const planTenantId = typeof plan?.tenant_id === 'number' && plan.tenant_id > 0 ? plan.tenant_id : plan?.user_id;
+  if (!plan || plan.user_id !== scope.userId || planTenantId !== scope.tenantId) {
     return { ok: false, error: `${toolName} cannot access that training plan for the authenticated user` };
   }
   return { ...scope, plan };
@@ -302,7 +303,8 @@ function requireOwnedTrainingSessionForTool(
     return { ok: false, error: `${toolName} cannot access that training session for the authenticated user` };
   }
   const plan = trainingPlans.getPlanById(session.plan_id);
-  if (!plan || plan.user_id !== scope.userId) {
+  const planTenantId = typeof plan?.tenant_id === 'number' && plan.tenant_id > 0 ? plan.tenant_id : plan?.user_id;
+  if (!plan || plan.user_id !== scope.userId || planTenantId !== scope.tenantId) {
     return { ok: false, error: `${toolName} cannot access that training session for the authenticated user` };
   }
   return { ...scope, session, plan };
@@ -771,6 +773,7 @@ export async function executeToolCall(
         if (!scope.ok) return { error: scope.error };
         const plan = trainingPlans.createPlan({
           user_id: scope.userId,
+          tenant_id: scope.tenantId,
           name: input.name,
           sport: input.sport,
           goal: input.goal,
@@ -824,9 +827,10 @@ export async function executeToolCall(
         if (!scope.ok) return { error: scope.error };
         const plan = input.plan_id
           ? trainingPlans.getPlanById(input.plan_id)
-          : trainingPlans.getActivePlan(scope.userId);
+          : trainingPlans.getActivePlan(scope.userId, scope.tenantId);
         if (!plan) return { error: 'No training plan found' };
-        if (plan.user_id !== scope.userId) {
+        const planTenantId = typeof plan.tenant_id === 'number' && plan.tenant_id > 0 ? plan.tenant_id : plan.user_id;
+        if (plan.user_id !== scope.userId || planTenantId !== scope.tenantId) {
           return { error: 'No training plan found for the authenticated user' };
         }
 

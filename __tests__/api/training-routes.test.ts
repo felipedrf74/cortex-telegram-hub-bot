@@ -1020,7 +1020,7 @@ describe('Training API routes', () => {
     expect(res.statusCode).toBe(200);
     expect(res.body.ok).toBe(true);
     expect(res.body.data.applied).toBe(1);
-    expect(mockApplyCoachRecommendations).toHaveBeenCalledWith(12, ['rec-1']);
+    expect(mockApplyCoachRecommendations).toHaveBeenCalledWith(12, 12, ['rec-1']);
 
     expect(mockInvalidateTrainingDerivedCaches).toHaveBeenCalledWith(12);
   });
@@ -1481,11 +1481,11 @@ describe('Training API routes', () => {
     const key = 'auto:slow-provider-request';
     const requestHash = 'same-plan-request-hash';
 
-    const first = claimTrainingPlanGenerationIdempotency(12, key, requestHash);
+    const first = claimTrainingPlanGenerationIdempotency(12, 12, key, requestHash);
     expect(first).toEqual({ kind: 'claimed', idempotencyKey: key, requestHash });
 
     vi.setSystemTime(new Date('2026-04-15T12:01:40.000Z'));
-    const second = claimTrainingPlanGenerationIdempotency(12, key, requestHash);
+    const second = claimTrainingPlanGenerationIdempotency(12, 12, key, requestHash);
 
     expect(second).toEqual({ kind: 'in_progress', idempotencyKey: key });
     expect(mockCreatePlan).not.toHaveBeenCalled();
@@ -1499,12 +1499,12 @@ describe('Training API routes', () => {
     const requestHash = 'same-plan-request-hash';
     const responseData = { planId: 901, resolvedStartDate: '2026-04-20' };
 
-    const first = claimTrainingPlanGenerationIdempotency(12, key, requestHash);
+    const first = claimTrainingPlanGenerationIdempotency(12, 12, key, requestHash);
     expect(first).toEqual({ kind: 'claimed', idempotencyKey: key, requestHash });
-    completeTrainingPlanGenerationIdempotency(12, key, requestHash, responseData, 201);
+    completeTrainingPlanGenerationIdempotency(12, 12, key, requestHash, responseData, 201);
 
     vi.setSystemTime(new Date('2026-04-15T12:01:40.000Z'));
-    const second = claimTrainingPlanGenerationIdempotency(12, key, requestHash);
+    const second = claimTrainingPlanGenerationIdempotency(12, 12, key, requestHash);
 
     expect(second).toEqual({ kind: 'claimed', idempotencyKey: key, requestHash });
   });
@@ -2095,7 +2095,7 @@ describe('Training API routes', () => {
     expect(mockDeleteEvent).toHaveBeenCalledWith('evt-completed', 'outlook', 12);
     expect(mockDeleteEvent).toHaveBeenCalledWith('evt-planned', 'google', 12);
     expect(mockDeleteEvent).toHaveBeenCalledWith('evt-orphan-moved', 'google', 12);
-    expect(mockDeletePlanHard).toHaveBeenCalledWith(44, 12);
+    expect(mockDeletePlanHard).toHaveBeenCalledWith(44, 12, 12);
     // Hard delete replaces the soft-update path; no per-session
     // status mutations or plan status mutation should fire anymore.
     expect(mockUpdateSession).not.toHaveBeenCalled();

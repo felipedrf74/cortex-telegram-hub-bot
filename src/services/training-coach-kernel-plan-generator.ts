@@ -4,6 +4,7 @@ import { buildWeekPlan } from './coach-kernel/planner-engine';
 import type {
   AthleteState,
   BlockPhase,
+  CapacityWindow,
   CoachingDiscipline,
   Constraint,
   DayOfWeek,
@@ -92,6 +93,7 @@ export type TrainingPriority = Sport | 'triathlon' | 'hybrid';
 
 export interface CoachKernelTrainingPlanInput {
   userId: number;
+  tenantId?: number;
   objective: string;
   durationWeeks: number;
   startDate: string;
@@ -135,6 +137,7 @@ export interface CoachKernelTrainingPlanInput {
   goalMode?: TrainingGoalMode | null;
   trainingPriority?: TrainingPriority | null;
   raceDate?: string | null;
+  capacityWindows?: CapacityWindow[] | null;
   recentlyAskedFollowUpIds?: string[] | null;
   resolvedFollowUpIds?: string[] | null;
 }
@@ -410,7 +413,9 @@ export function buildAthleteStateFromTrainingProfiles(input: CoachKernelTraining
   // fallback below keeps the planner alive.
   let realHistory: RealTrainingHistory | undefined;
   try {
-    realHistory = readTrainingHistoryFromCompletions(input.userId);
+    realHistory = readTrainingHistoryFromCompletions(input.userId, {
+      tenantId: input.tenantId,
+    });
   } catch (err) {
     logger.warn(
       { surface: 'coach-kernel.buildAthleteStateFromTrainingProfiles.realHistory', userId: input.userId, err },
@@ -1172,10 +1177,14 @@ function matchEquipmentKeywords(raw: string): { value: EquipmentAccess; matchedK
   // ── Home / garage / partial vocabulary (existing) ─────────
   const hasGarageGym = lower.includes('garage');
   if (hasGarageGym) matchedKeywords.push('garage');
+  const hasHotelGym = lower.includes('hotel gym') || lower.includes('hotel fitness') || lower.includes('travel gym');
+  if (hasHotelGym) matchedKeywords.push('hotel gym');
   const hasHomeGym = lower.includes('home gym');
   if (hasHomeGym) matchedKeywords.push('home gym');
   const hasBasic = lower.includes('basic');
   if (hasBasic) matchedKeywords.push('basic');
+  const hasDumbbellsOnly = /\bdumbbells?\s*only\b/.test(lower);
+  if (hasDumbbellsOnly) matchedKeywords.push('dumbbells only');
 
   // ── Bodyweight / resistance vocabulary ────────────────────
   // Includes pt-BR/pt-PT variants for users describing minimal
@@ -1209,7 +1218,7 @@ function matchEquipmentKeywords(raw: string): { value: EquipmentAccess; matchedK
     hasGymMembership ||
     hasAcademia ||
     hasAcademiaCompleta;
-  const hasHomeBasic = hasHomeGym || hasBasic;
+  const hasHomeBasic = hasHomeGym || hasBasic || hasHotelGym || hasDumbbellsOnly;
 
   return {
     value: {
@@ -1222,6 +1231,9 @@ function matchEquipmentKeywords(raw: string): { value: EquipmentAccess; matchedK
       notes: compact([
         hasBodyweightOnly ? 'Bodyweight-only setup.' : null,
         hasBands ? 'Resistance bands available.' : null,
+        hasHotelGym ? 'Hotel gym / limited equipment.' : null,
+        (hasHomeGym || hasBasic || hasDumbbellsOnly) ? 'Home/basic equipment.' : null,
+        hasGarageGym ? 'Garage gym equipment.' : null,
       ]),
     },
     matchedKeywords,
@@ -1596,6 +1608,35 @@ function buildAvailabilityWindows(
 ) {
   const cardioStart = normalizeTime(input.preferredCardioTime, input.preferredTime);
   const strengthStart = normalizeTime(input.preferredStrengthTime, input.preferredTime);
+  const capacityWindows = (input.capacityWindows ?? []).filter((window) =>
+    typeof window.date === 'string'
+    && window.date.length >= 10
+    && typeof window.availableMinutes === 'number'
+    && window.availableMinutes >= 10
+  );
+  if (capacityWindows.length > 0) {
+    const sports: Sport[] = [
+      ...((targets.running ?? 0) > 0 ? ['running' as const] : []),
+      ...((targets.cycling ?? 0) > 0 ? ['cycling' as const] : []),
+      ...((targets.swimming ?? 0) > 0 ? ['swimming' as const] : []),
+      ...((targets.strength ?? 0) > 0 ? ['strength' as const] : []),
+    ];
+    return capacityWindows.map((window): AthleteState['availability']['weeklyWindows'][number] | null => {
+      const dayOfWeek = dayOfWeekFromISODate(window.date);
+      if (!dayOfWeek) return null;
+      const preferredStart = sports.includes('strength') && sports.length === 1 ? strengthStart : cardioStart;
+      const start = normalizeTime(window.startTime ?? preferredStart, preferredStart);
+      const end = normalizeTime(window.endTime ?? addMinutes(start, window.availableMinutes), addMinutes(start, window.availableMinutes));
+      const constraints = Array.isArray(window.constraints) ? window.constraints : [];
+      return {
+        dayOfWeek,
+        start,
+        end,
+        sports: sports.length > 0 ? sports : undefined,
+        label: `${window.source} capacity${constraints.length > 0 ? `: ${constraints.join(', ')}` : ''}`,
+      };
+    }).filter((window): window is AthleteState['availability']['weeklyWindows'][number] => Boolean(window));
+  }
   const weakProfile = normalizedProfile?.quality.planQualityLimited === true
     || (normalizedProfile?.quality.confidenceScore ?? 100) < 65;
   const cardioDuration = normalizedProfile?.availableSessionDurations.enduranceMinutes
@@ -1628,6 +1669,13 @@ function buildAvailabilityWindows(
   }
 
   return windows;
+}
+
+function dayOfWeekFromISODate(date: string): DayOfWeek | null {
+  const parsed = new Date(`${date.slice(0, 10)}T12:00:00`);
+  if (!Number.isFinite(parsed.getTime())) return null;
+  const days: DayOfWeek[] = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
+  return days[parsed.getDay()] ?? null;
 }
 
 function trainingPlanProfileQuality(quality: TrainingProfileQuality | undefined): CoordinatedTrainingPlan['profileQuality'] | undefined {
@@ -1905,11 +1953,20 @@ function convertSessionToLegacy(session: Session): CoordinatedTrainingSession {
     durationMinutes: session.durationMinutes,
     description: session.description,
     exercises: session.exercises?.map((exercise) => ({
+      exerciseId: exercise.exerciseId,
       name: exercise.name,
       sets: exercise.sets,
       reps: exercise.reps,
       rpe: exercise.rir != null ? `RIR ${exercise.rir}` : undefined,
+      rir: exercise.rir,
       rest_sec: exercise.restSec,
+      tempo: exercise.tempo,
+      notes: exercise.notes,
+      selectionReason: exercise.selectionReason,
+      progressionState: exercise.progressionState,
+      progressionSummary: exercise.progressionSummary,
+      progressionReason: exercise.progressionReason,
+      progressionConfidence: exercise.progressionConfidence,
     })) ?? [],
     preferredStartTime: session.startTime ?? null,
     scheduleState: session.scheduleState,
@@ -1917,6 +1974,12 @@ function convertSessionToLegacy(session: Session): CoordinatedTrainingSession {
     scheduleReason: session.scheduleReason,
     decisionReasons: session.decisionReasons,
     originalDayOfWeek: session.originalDayOfWeek ? DAY_NAME_MAP[session.originalDayOfWeek] : null,
+    sessionRole: session.sessionRole,
+    sessionRoleLabel: session.sessionRoleLabel,
+    sessionRoleSummary: session.sessionRoleSummary,
+    keySessionLabel: session.keySessionLabel,
+    intensitySummary: session.intensitySummary,
+    intensityProfile: session.intensityProfile,
   };
 }
 

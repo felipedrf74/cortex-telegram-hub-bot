@@ -58,6 +58,7 @@ import {
   getAdaptationRevision,
   incrementAdaptationRevision,
 } from './training-plan-lifecycle';
+import { requireTenantIdParam } from './tenant-scope';
 
 export type AdaptationScope = 'plan' | 'week' | 'session' | 'preview';
 export type AdaptationActor = 'system' | 'user' | 'admin';
@@ -628,8 +629,10 @@ function redactRowIfNeeded(
  */
 export function purgeSensitivePayloadsForUser(
   userId: number,
+  tenantId: number,
 ): number {
   const db = getDb();
+  const scopedTenantId = requireTenantIdParam(tenantId, 'purgeSensitivePayloadsForUser');
   // The ledger joins through fitness_training_plans → user_id; we
   // only redact rows whose plan belongs to this user.
   //
@@ -666,11 +669,11 @@ export function purgeSensitivePayloadsForUser(
            trigger_type = ?
      WHERE trigger_type IN (${placeholders})
        AND plan_id IN (
-         SELECT id FROM fitness_training_plans WHERE user_id = ?
+         SELECT id FROM fitness_training_plans WHERE user_id = ? AND tenant_id = ?
        )
-  `).run(REDACTED_TRIGGER_BUCKET, REDACTED_TRIGGER_BUCKET, ...sensitiveList, userId);
+  `).run(REDACTED_TRIGGER_BUCKET, REDACTED_TRIGGER_BUCKET, ...sensitiveList, userId, scopedTenantId);
   if (result.changes > 0) {
-    logger.info({ userId, affected: result.changes }, 'training_plan_adaptations.purge_sensitive_payloads');
+    logger.info({ userId, tenantId: scopedTenantId, affected: result.changes }, 'training_plan_adaptations.purge_sensitive_payloads');
   }
   return result.changes;
 }

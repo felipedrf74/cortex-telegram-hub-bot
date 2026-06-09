@@ -14,6 +14,7 @@ import {
 import { getUserTimezoneById } from '../../services/user-service';
 import { getAppleHealthSleepAgendaEvents } from '../../services/health-sleep-agenda';
 import { filterCalendarEventsForTrainingScope } from '../../services/training-calendar-scope';
+import { requireTenantIdParam } from '../../services/tenant-scope';
 
 // Phase 17 hostile-QA fix (2026-05-18): 'stale' added so the dashboard
 // can distinguish "snapshot last fetch failed; serving cached data"
@@ -162,11 +163,12 @@ export function mapDashboardTask(t: any, index = 0) {
   };
 }
 
-export async function fetchCalendar(userId?: number) {
-  return fetchCalendarForUser(userId);
+export async function fetchCalendar(userId?: number, tenantId?: number) {
+  return fetchCalendarForUser(userId, tenantId);
 }
 
-async function fetchCalendarForUser(userId?: number) {
+async function fetchCalendarForUser(userId?: number, tenantId?: number) {
+  const scopedTenantId = userId ? requireTenantIdParam(tenantId, 'fetchCalendar') : undefined;
   const zone = getUserTimezoneById(userId);
   const today = DateTime.now().setZone(zone);
   const actualStart = today.startOf('day');
@@ -242,7 +244,7 @@ async function fetchCalendarForUser(userId?: number) {
     : [];
 
   const visibleProviderEvents = userId
-    ? filterCalendarEventsForTrainingScope(allProviderEvents, userId)
+    ? filterCalendarEventsForTrainingScope(allProviderEvents, userId, scopedTenantId)
     : allProviderEvents;
   const allEvents = [...visibleProviderEvents, ...sleepEvents].sort((a, b) => a.start.localeCompare(b.start));
   const localHealthSources = sleepEvents.length > 0 ? 1 : 0;
@@ -382,7 +384,13 @@ function sumActiveCounts(value: unknown): number {
     .reduce((sum: number, count: unknown) => sum + (Number.isFinite(Number(count)) ? Number(count) : 0), 0);
 }
 
-export async function fetchTraining(userId: number, deps: FetchTrainingDeps = {}) {
+export async function fetchTraining(
+  userId: number,
+  tenantIdOrDeps: number | FetchTrainingDeps = userId,
+  maybeDeps: FetchTrainingDeps = {},
+) {
+  const tenantId = typeof tenantIdOrDeps === 'number' ? tenantIdOrDeps : userId;
+  const deps = typeof tenantIdOrDeps === 'number' ? maybeDeps : tenantIdOrDeps;
   let readinessScore: number | null = null;
   let bodyBattery: number | null = null;
   let readinessStatus: DashboardSectionStatus = 'ready';
@@ -487,7 +495,7 @@ export async function fetchTraining(userId: number, deps: FetchTrainingDeps = {}
   let todaySession: any = null;
   try {
     const { getActivePlan, getCurrentWeek, getSessionsForWeek } = require('../../services/training-plans');
-    const plan = getActivePlan(userId);
+    const plan = getActivePlan(userId, tenantId);
     const currentWeek = plan ? getCurrentWeek(plan.id) : null;
     const sessions = currentWeek ? getSessionsForWeek(currentWeek.id) : null;
     if (Array.isArray(sessions) && sessions.length > 0) {

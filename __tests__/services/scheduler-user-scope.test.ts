@@ -802,8 +802,16 @@ describe('scheduler tenant scoping', () => {
     await sendCoachBriefings();
 
     expect(mockGenerateCoachBriefing).toHaveBeenCalledTimes(2);
-    expect(mockGenerateCoachBriefing).toHaveBeenNthCalledWith(1, 11, { garminSilent: true });
-    expect(mockGenerateCoachBriefing).toHaveBeenNthCalledWith(2, 22, { garminSilent: true });
+    expect(mockGenerateCoachBriefing).toHaveBeenNthCalledWith(1, 11, {
+      garminSilent: true,
+      tenantId: 11,
+      meteringUserId: 11,
+    });
+    expect(mockGenerateCoachBriefing).toHaveBeenNthCalledWith(2, 22, {
+      garminSilent: true,
+      tenantId: 22,
+      meteringUserId: 22,
+    });
     expect(mockRunWithContext).toHaveBeenCalledWith(
       expect.objectContaining({ source: 'cron:garmin_coach', userId: 11 }),
       expect.any(Function),

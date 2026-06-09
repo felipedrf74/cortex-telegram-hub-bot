@@ -179,7 +179,7 @@ export function registerChatCallbackRoutes(
           });
           return;
         }
-        const applied = await applyCoachRecommendations(userId, recommendationIds);
+        const applied = await applyCoachRecommendations(userId, tenantId, recommendationIds);
         const payload = buildCoachApplyPayload(lang, applied.count, applied.appliedRecommendations);
 
         if (messageId) {

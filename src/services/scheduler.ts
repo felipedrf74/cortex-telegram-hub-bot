@@ -401,8 +401,8 @@ export async function buildEndOfDaySummaryForUser(userId: number): Promise<{
   let trainingSection = '';
   try {
     const tp = require('./training-plans');
-    const plans = tp.getActivePlans?.(userId) || [];
-    const plan = plans[0] || tp.getActivePlan(userId);
+    const plans = tp.getActivePlans?.(userId, userId) || [];
+    const plan = plans[0] || tp.getActivePlan(userId, userId);
     if (plan) {
       const week = tp.getCurrentWeek(plan.id);
       if (week) {
@@ -1666,7 +1666,7 @@ export function startScheduler(bot?: any): void {
       // in a scheduled job. runWithContext scopes the AsyncLocalStorage
       // so all downstream reads see the correct userId.
       await runWithContext({ source: 'cron:training_plan_adjust', userId }, async () => {
-      const plan = getActivePlan(userId);
+      const plan = getActivePlan(userId, userId);
       if (!plan) return;
 
       const currentWeek = getCurrentWeek(plan.id);
@@ -2305,7 +2305,11 @@ export async function sendCoachBriefings(bot?: any): Promise<void> {
     await runWithContext({ source: 'cron:garmin_coach', userId: target.tenantId }, async () => {
       let result;
       try {
-        result = await generateCoachBriefing(target.tenantId, { garminSilent: true });
+        result = await generateCoachBriefing(target.tenantId, {
+          tenantId: target.tenantId,
+          meteringUserId: target.tenantId,
+          garminSilent: true,
+        });
       } catch (err) {
         logger.warn({ err, userId: target.tenantId }, 'Coach briefing skipped for user');
         return;

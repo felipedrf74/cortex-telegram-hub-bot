@@ -3,6 +3,7 @@
 import { isConnected } from './oauth-store';
 import { resolveCalendarWritePreference } from './provider-preferences';
 import { isTrainingCalendarSourceWritesEnabled } from './training-operational-switches';
+import { requireTenantIdParam } from './tenant-scope';
 import type { CalendarSource } from './unified-calendar';
 
 const TRAINING_CALENDAR_SOURCES: readonly CalendarSource[] = ['outlook', 'google'];
@@ -66,11 +67,12 @@ export function validateRequestedTrainingCalendarSource(
 
 export function resolveTrainingCalendarSource(input: {
   userId: number;
-  tenantId?: number;
+  tenantId: number;
   requestedSource?: CalendarSource | null;
   planPreferencesJson?: string | null;
   linkedSources?: Array<unknown>;
 }): CalendarSource | undefined {
+  const tenantId = requireTenantIdParam(input.tenantId, 'resolveTrainingCalendarSource');
   if (input.requestedSource && isTrainingCalendarSourceAvailable(input.userId, input.requestedSource)) {
     return input.requestedSource;
   }
@@ -95,7 +97,7 @@ export function resolveTrainingCalendarSource(input: {
   // Match unified-calendar.createEvent's authenticated-user default, including
   // tenant-scoped provider preferences. If the user explicitly selected a
   // preferred provider and it is unavailable, do not silently switch providers.
-  const preference = resolveCalendarWritePreference(input.userId, input.tenantId ?? input.userId);
+  const preference = resolveCalendarWritePreference(input.userId, tenantId);
   if (preference.source) {
     if (isTrainingCalendarSourceAvailable(input.userId, preference.source)) {
       return preference.source;

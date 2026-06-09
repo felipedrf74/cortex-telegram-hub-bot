@@ -2,6 +2,7 @@
 
 import { getDb } from './database';
 import { logger } from '../utils/logger';
+import { requireTenantIdParam } from './tenant-scope';
 
 type CalendarSource = 'google' | 'outlook';
 
@@ -15,6 +16,7 @@ export interface TrainingCalendarEventOwner {
   source: string | null;
   sessionId: number;
   planId: number;
+  tenantId: number;
   userId: number;
   planStatus: string;
 }
@@ -22,9 +24,11 @@ export interface TrainingCalendarEventOwner {
 export function getTrainingCalendarEventOwners(
   eventId: string | null | undefined,
   source?: string | null,
+  tenantId?: number,
 ): TrainingCalendarEventOwner[] {
   const normalizedEventId = normalizeEventId(eventId);
   if (!normalizedEventId) return [];
+  const scopedTenantId = requireTenantIdParam(tenantId, 'getTrainingCalendarEventOwners');
 
   try {
     const db = getDb();
@@ -36,6 +40,7 @@ export function getTrainingCalendarEventOwners(
             ts.calendar_source AS source,
             ts.id AS sessionId,
             ts.plan_id AS planId,
+            ftp.tenant_id AS tenantId,
             ftp.user_id AS userId,
             ftp.status AS planStatus
           FROM training_sessions ts
@@ -49,6 +54,7 @@ export function getTrainingCalendarEventOwners(
             ts.calendar_source AS source,
             ts.id AS sessionId,
             ts.plan_id AS planId,
+            ftp.tenant_id AS tenantId,
             ftp.user_id AS userId,
             ftp.status AS planStatus
           FROM training_sessions ts
@@ -62,6 +68,7 @@ export function getTrainingCalendarEventOwners(
             o.calendar_source AS source,
             COALESCE(o.session_id, 0) AS sessionId,
             o.plan_id AS planId,
+            o.tenant_id AS tenantId,
             o.user_id AS userId,
             COALESCE(ftp.status, 'missing') AS planStatus
           FROM training_agenda_event_ownership o
@@ -78,6 +85,7 @@ export function getTrainingCalendarEventOwners(
             o.calendar_source AS source,
             COALESCE(o.session_id, 0) AS sessionId,
             o.plan_id AS planId,
+            o.tenant_id AS tenantId,
             o.user_id AS userId,
             COALESCE(ftp.status, 'missing') AS planStatus
           FROM training_agenda_event_ownership o
@@ -92,7 +100,7 @@ export function getTrainingCalendarEventOwners(
       [...sessionRows, ...ownershipRows].map(normalizeOwnerRow).filter(Boolean) as TrainingCalendarEventOwner[],
     );
   } catch (err) {
-    logger.debug({ err, eventId: normalizedEventId, source }, 'Training calendar scope lookup failed');
+    logger.debug({ err, eventId: normalizedEventId, source, tenantId: scopedTenantId }, 'Training calendar scope lookup failed');
     return [];
   }
 }
@@ -100,16 +108,19 @@ export function getTrainingCalendarEventOwners(
 export function isTrainingCalendarEventUnclaimed(
   eventId: string | null | undefined,
   source?: string | null,
+  tenantId?: number,
 ): boolean {
-  return getTrainingCalendarEventOwners(eventId, source).length === 0;
+  return getTrainingCalendarEventOwners(eventId, source, tenantId).length === 0;
 }
 
 export function filterCalendarEventsForTrainingScope<T extends CalendarEventLike>(
   events: T[],
   userId: number,
+  tenantId?: number,
 ): T[] {
   if (!Array.isArray(events) || events.length === 0) return events;
   if (!Number.isFinite(userId) || userId <= 0) return events;
+  const scopedTenantId = requireTenantIdParam(tenantId, 'filterCalendarEventsForTrainingScope');
 
   const eventIds = Array.from(new Set(events.map((event) => normalizeEventId(event.id)).filter(Boolean))) as string[];
   if (eventIds.length === 0) return events;
@@ -123,6 +134,7 @@ export function filterCalendarEventsForTrainingScope<T extends CalendarEventLike
         ts.calendar_source AS source,
         ts.id AS sessionId,
         ts.plan_id AS planId,
+        ftp.tenant_id AS tenantId,
         ftp.user_id AS userId,
         ftp.status AS planStatus
       FROM training_sessions ts
@@ -135,6 +147,7 @@ export function filterCalendarEventsForTrainingScope<T extends CalendarEventLike
         o.calendar_source AS source,
         COALESCE(o.session_id, 0) AS sessionId,
         o.plan_id AS planId,
+        o.tenant_id AS tenantId,
         o.user_id AS userId,
         COALESCE(ftp.status, 'missing') AS planStatus
       FROM training_agenda_event_ownership o
@@ -166,10 +179,14 @@ export function filterCalendarEventsForTrainingScope<T extends CalendarEventLike
         : owners;
       if (scopedOwners.length === 0) return true;
 
-      return scopedOwners.some((owner) => owner.userId === userId && owner.planStatus === 'active');
+      return scopedOwners.some((owner) =>
+        owner.userId === userId
+        && owner.tenantId === scopedTenantId
+        && owner.planStatus === 'active'
+      );
     });
   } catch (err) {
-    logger.debug({ err, userId }, 'Training calendar scope filtering failed');
+    logger.debug({ err, userId, tenantId: scopedTenantId }, 'Training calendar scope filtering failed');
     return events;
   }
 }
@@ -188,8 +205,15 @@ function normalizeOwnerRow(row: unknown): TrainingCalendarEventOwner | null {
   const eventId = normalizeEventId(candidate.eventId as string | null | undefined);
   const sessionId = Number(candidate.sessionId);
   const planId = Number(candidate.planId);
+  const tenantId = Number(candidate.tenantId);
   const userId = Number(candidate.userId);
-  if (!eventId || !Number.isFinite(sessionId) || !Number.isFinite(planId) || !Number.isFinite(userId)) {
+  if (
+    !eventId
+    || !Number.isFinite(sessionId)
+    || !Number.isFinite(planId)
+    || !Number.isFinite(tenantId)
+    || !Number.isFinite(userId)
+  ) {
     return null;
   }
 
@@ -198,6 +222,7 @@ function normalizeOwnerRow(row: unknown): TrainingCalendarEventOwner | null {
     source: normalizeCalendarSource(candidate.source as string | null | undefined),
     sessionId,
     planId,
+    tenantId,
     userId,
     planStatus: String(candidate.planStatus || '').toLowerCase(),
   };
@@ -212,6 +237,7 @@ function dedupeOwners(owners: TrainingCalendarEventOwner[]): TrainingCalendarEve
       owner.source ?? '',
       owner.sessionId,
       owner.planId,
+      owner.tenantId,
       owner.userId,
       owner.planStatus,
     ].join('|');

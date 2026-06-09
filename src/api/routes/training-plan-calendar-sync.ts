@@ -534,17 +534,18 @@ export async function previewTrainingSessionReflow(
 
 export async function confirmTrainingSessionReflow(input: {
   userId: number;
-  tenantId?: number;
+  tenantId: number;
   sessionId: number;
   proposedStartAt?: string | null;
   proposedEndAt?: string | null;
   requestedCalendarSource?: CalendarSource | null;
   signal?: AbortSignal;
 }): Promise<TrainingSessionReflowConfirmResult> {
+  const tenantId = requireTenantIdParam(input.tenantId, 'confirmTrainingSessionReflow');
   return withTrainingCalendarOperationLock(
     {
       userId: input.userId,
-      tenantId: input.tenantId ?? input.userId,
+      tenantId,
       operation: 'calendar_reflow',
     },
     () => confirmTrainingSessionReflowLocked(input),
@@ -553,7 +554,7 @@ export async function confirmTrainingSessionReflow(input: {
 
 async function confirmTrainingSessionReflowLocked(input: {
   userId: number;
-  tenantId?: number;
+  tenantId: number;
   sessionId: number;
   proposedStartAt?: string | null;
   proposedEndAt?: string | null;
@@ -629,6 +630,7 @@ async function confirmTrainingSessionReflowLocked(input: {
       eventId = created?.id || eventId;
       await deleteStaleLinkedTrainingEvent({
         userId: input.userId,
+        tenantId: effectiveTenantId,
         planId: scope.plan.id,
         planVersion: getPlanVersion(scope.plan.id) ?? 1,
         sessionId: input.sessionId,
@@ -722,24 +724,25 @@ async function confirmTrainingSessionReflowLocked(input: {
 export async function syncTrainingPlanCalendar(
   userId: number,
   now: Date = new Date(),
-  requestedCalendarSource?: CalendarSource | null,
-  tenantId?: number,
+  requestedCalendarSource: CalendarSource | null | undefined,
+  tenantId: number,
 ): Promise<TrainingPlanCalendarSyncResult> {
+  const validatedTenantId = requireTenantIdParam(tenantId, 'syncTrainingPlanCalendar');
   return withTrainingCalendarOperationLock(
     {
       userId,
-      tenantId: tenantId ?? userId,
+      tenantId: validatedTenantId,
       operation: 'calendar_sync',
     },
-    () => syncTrainingPlanCalendarLocked(userId, now, requestedCalendarSource, tenantId),
+    () => syncTrainingPlanCalendarLocked(userId, now, requestedCalendarSource, validatedTenantId),
   );
 }
 
 async function syncTrainingPlanCalendarLocked(
   userId: number,
   now: Date = new Date(),
-  requestedCalendarSource?: CalendarSource | null,
-  tenantId?: number,
+  requestedCalendarSource: CalendarSource | null | undefined,
+  tenantId: number,
 ): Promise<TrainingPlanCalendarSyncResult> {
   const validatedTenantId = requireTenantIdParam(tenantId, 'syncTrainingPlanCalendar');
   const plan = trainingPlans.getActivePlan(userId, validatedTenantId);
@@ -989,6 +992,7 @@ async function syncTrainingPlanCalendarLocked(
         });
         await deleteDuplicateTrainingEventsForSession({
           userId,
+          tenantId: effectiveTenantId,
           planId: plan.id,
           planVersion,
           item,
@@ -1057,6 +1061,7 @@ async function syncTrainingPlanCalendarLocked(
       });
       await deleteDuplicateTrainingEventsForSession({
         userId,
+        tenantId: effectiveTenantId,
         planId: plan.id,
         planVersion,
         item,
@@ -1119,7 +1124,14 @@ async function syncTrainingPlanCalendarLocked(
   let firstError: Error | null = null;
 
   for (const item of pending) {
-    const existingEvent = consumeMatchingExistingTrainingEvent(item, plan.id, calendarEvents, consumedExistingEventKeys, calendarSource);
+    const existingEvent = consumeMatchingExistingTrainingEvent(
+      item,
+      plan.id,
+      calendarEvents,
+      consumedExistingEventKeys,
+      calendarSource,
+      effectiveTenantId,
+    );
     if (existingEvent) {
       trainingPlans.linkSessionToCalendar(item.sessionId, existingEvent.id, existingEvent.source);
       markSessionScheduledAfterCalendarLink(item);
@@ -1147,6 +1159,7 @@ async function syncTrainingPlanCalendarLocked(
       }
       await deleteStaleLinkedTrainingEvent({
         userId,
+        tenantId: effectiveTenantId,
         planId: plan.id,
         planVersion,
         sessionId: item.sessionId,
@@ -1155,6 +1168,7 @@ async function syncTrainingPlanCalendarLocked(
       });
       await deleteDuplicateTrainingEventsForSession({
         userId,
+        tenantId: effectiveTenantId,
         planId: plan.id,
         planVersion,
         item,
@@ -1337,6 +1351,7 @@ async function syncTrainingPlanCalendarLocked(
       });
       await deleteStaleLinkedTrainingEvent({
         userId,
+        tenantId: effectiveTenantId,
         planId: plan.id,
         planVersion,
         sessionId: item.sessionId,
@@ -1345,6 +1360,7 @@ async function syncTrainingPlanCalendarLocked(
       });
       await deleteDuplicateTrainingEventsForSession({
         userId,
+        tenantId: effectiveTenantId,
         planId: plan.id,
         planVersion,
         item,
@@ -1445,6 +1461,7 @@ function syncResult(
 
 async function deleteStaleLinkedTrainingEvent(input: {
   userId: number;
+  tenantId: number;
   planId: number;
   planVersion: number;
   sessionId: number;
@@ -1463,6 +1480,7 @@ async function deleteStaleLinkedTrainingEvent(input: {
       source: staleSource,
       reason: 'training_sync_replaced_stale_event',
       status: 'deleted',
+      tenantId: input.tenantId,
       userId: input.userId,
       planId: input.planId,
     });
@@ -1483,6 +1501,7 @@ async function deleteStaleLinkedTrainingEvent(input: {
       source: staleSource,
       reason: 'training_sync_stale_event_delete_failed',
       status: 'orphaned',
+      tenantId: input.tenantId,
       userId: input.userId,
       planId: input.planId,
     });
@@ -1532,7 +1551,7 @@ function recordTrainingCalendarOwnership(input: {
   planId: number;
   planVersion: number;
   sessionId: number;
-  tenantId?: number;
+  tenantId: number;
   userId: number;
   eventId: string;
   source: string;
@@ -1618,6 +1637,7 @@ function isFutureWindow(start: Date, end: Date, notBefore: Date): boolean {
 
 async function deleteDuplicateTrainingEventsForSession(input: {
   userId: number;
+  tenantId: number;
   planId: number;
   planVersion: number;
   item: {
@@ -1647,6 +1667,7 @@ async function deleteDuplicateTrainingEventsForSession(input: {
         source: event.source,
         reason: 'training_sync_deleted_duplicate_event',
         status: 'deleted',
+        tenantId: input.tenantId,
         userId: input.userId,
         planId: input.planId,
       });
@@ -1669,6 +1690,7 @@ async function deleteDuplicateTrainingEventsForSession(input: {
         source: event.source,
         reason: 'training_sync_duplicate_delete_failed',
         status: 'orphaned',
+        tenantId: input.tenantId,
         userId: input.userId,
         planId: input.planId,
       });
@@ -1702,13 +1724,14 @@ function consumeMatchingExistingTrainingEvent(
   events: UnifiedCalendarEvent[],
   consumedKeys: Set<string>,
   calendarSource: CalendarSource,
+  tenantId: number,
 ): UnifiedCalendarEvent | null {
   for (const event of events) {
     if (event.source !== calendarSource) continue;
     const key = `${event.source}:${event.id}`;
     if (consumedKeys.has(key)) continue;
     if (!isMatchingGeneratedTrainingEvent(item, event, planId, { allowLegacyTitleMatch: false })) continue;
-    if (!isTrainingCalendarEventUnclaimed(event.id, event.source)) continue;
+    if (!isTrainingCalendarEventUnclaimed(event.id, event.source, tenantId)) continue;
     consumedKeys.add(key);
     return event;
   }

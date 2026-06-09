@@ -7,6 +7,7 @@ import { runningEngine } from './running-engine';
 import { cyclingEngine } from './cycling-engine';
 import { swimmingEngine } from './swimming-engine';
 import { strengthEngine } from './strength-engine';
+import { attachTrainingSessionRole } from '../endurance-session-classifier';
 
 function availableDaysForSport(context: EngineContext, sport: Sport): DayOfWeek[] {
   const days = DAY_ORDER.filter((day) =>
@@ -134,7 +135,7 @@ export const triathlonEngine: SportEngine = {
     const longRide = rides.find((session) => session.tags.includes('long_session'));
     const brickDay = longRide?.dayOfWeek ?? rides.find((session) => session.tags.includes('key_ride'))?.dayOfWeek ?? 'saturday';
     const brick: Session[] = includeBrick
-      ? [{
+      ? [attachTrainingSessionRole({
           id: createSessionId('brick', brickDay, 'Brick Run'),
           sport: 'running',
           sessionType: 'brick',
@@ -146,9 +147,26 @@ export const triathlonEngine: SportEngine = {
           fatigueCost: 'medium',
           keySession: true,
           plannedLoad: durationToLoad(20, 'aerobic', 'medium'),
+          intensityProfile: {
+            primaryZone: 'aerobic',
+            segments: [{
+              role: 'steady',
+              modality: 'running',
+              durationSec: 20 * 60,
+              targetZone: 'aerobic',
+            }],
+            intensityDistribution: { aerobic: 1 },
+          },
+          intensitySummary: {
+            primaryZone: 'aerobic',
+            lowPct: 1,
+            moderatePct: 0,
+            highPct: 0,
+            targetSummaryText: '20min easy transition run off the bike.',
+          },
           tags: ['brick', 'triathlon_specific'],
           alternatives: ['Swap for easy run the following day'],
-        }]
+        })]
       : [];
 
     return spreadTriathlonSessions(context, [...runs, ...rides, ...swims, ...strength, ...brick]);

@@ -115,7 +115,7 @@ describe('training skill hardening source contracts', () => {
     expect(coach).toContain("export type CoachAnalysisMeteringActor = 'user' | 'system'");
     expect(coach).toContain('COACH_ANALYSIS_SYSTEM_METERING_USER_ID');
     expect(coach).toContain('COACH_ANALYSIS_SYSTEM_METERING_TENANT_ID');
-    expect(coach).toContain('resolveCoachAnalysisMeteringScope(opts.meteringUserId ?? userId, opts.tenantId ?? userId)');
+    expect(coach).toContain("requireTenantIdParam(opts.tenantId, 'generateCoachBriefing')");
     expect(coach).toContain('meteringActor: meteringScope.actor');
     expect(coach).toContain('{ maxTokens: 2500, userId: meteringScope.userId, tenantId: meteringScope.tenantId }');
     expect(coach).toContain("{ userId: meteringScope.userId, tenantId: meteringScope.tenantId }");

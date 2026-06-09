@@ -19,7 +19,7 @@
  *      The string lives here (single source of truth for support +
  *      iOS surfaces).
  *
- *   3. **Right to delete.** `deleteAllHealthDataForUser(userId)`
+ *   3. **Right to delete.** `deleteAllHealthDataForUser(userId, tenantId)`
  *      cascades across the A0c readiness/health event tables AND
  *      redacts sensitive trigger payloads in the A0b adaptation
  *      ledger. Ledger ROWS are preserved (for audit + the
@@ -57,6 +57,7 @@ import {
 import {
   purgeSensitivePayloadsForUser,
 } from './training-plan-adaptations';
+import { requireTenantIdParam } from './tenant-scope';
 
 export type ConsentScope =
   | 'readiness_basic'
@@ -104,6 +105,7 @@ export const CONSENT_EXPLANATIONS: Record<ConsentScope, string> = {
 
 export interface HealthDataDeletionResult {
   userId: number;
+  tenantId: number;
   readinessEventsDeleted: number;
   healthSignalsDeleted: number;
   ledgerRowsRedacted: number;
@@ -139,9 +141,11 @@ export interface HealthDataDeletionResult {
  */
 export function deleteAllHealthDataForUser(
   userId: number,
+  tenantId: number,
 ): HealthDataDeletionResult {
   const start = Date.now();
   const db = getDb();
+  const scopedTenantId = requireTenantIdParam(tenantId, 'deleteAllHealthDataForUser');
 
   let readinessEventsDeleted = 0;
   let healthSignalsDeleted = 0;
@@ -149,16 +153,17 @@ export function deleteAllHealthDataForUser(
 
   const txn = db.transaction((): void => {
     // 1. Redact ledger payloads FIRST (Codex P2 — safer order).
-    ledgerRowsRedacted = purgeSensitivePayloadsForUser(userId);
+    ledgerRowsRedacted = purgeSensitivePayloadsForUser(userId, scopedTenantId);
     // 2. Delete health signals next.
-    healthSignalsDeleted = deleteHealthHistoryForUser(userId);
+    healthSignalsDeleted = deleteHealthHistoryForUser(userId, scopedTenantId);
     // 3. Delete readiness events last.
-    readinessEventsDeleted = deleteReadinessHistoryForUser(userId);
+    readinessEventsDeleted = deleteReadinessHistoryForUser(userId, scopedTenantId);
   });
   txn();
 
   const result: HealthDataDeletionResult = {
     userId,
+    tenantId: scopedTenantId,
     readinessEventsDeleted,
     healthSignalsDeleted,
     ledgerRowsRedacted,

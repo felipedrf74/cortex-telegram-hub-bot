@@ -14,7 +14,7 @@ type MutationSessionRef = {
 type WeeklyAdherenceValue = { adherenceRate?: number | null } | number | null | undefined;
 
 export interface TrainingSessionMutationDeps {
-  getActivePlan(userId: number): MutationPlanRef | null;
+  getActivePlan(userId: number, tenantId: number): MutationPlanRef | null;
   getCurrentWeek(planId: number): MutationWeekRef | null;
   getSessionsForWeek(weekId: number): MutationSessionRef[] | null | undefined;
   getSessionById(sessionId: number): MutationSessionRef | null;
@@ -59,6 +59,7 @@ function parseRequestedTrainingSessionId(sessionId: unknown): RequestedSessionRe
 
 function resolveRequestedTrainingSessionId(
   userId: number,
+  tenantId: number,
   sessionId: unknown,
   deps: TrainingSessionMutationDeps,
   options: ResolveTrainingMutationOptions = {},
@@ -67,7 +68,7 @@ function resolveRequestedTrainingSessionId(
   if (requested.kind === 'invalid') return { rowId: null, error: requested.message };
   if (requested.kind === 'explicit') return { rowId: requested.rowId };
 
-  const plan = deps.getActivePlan(userId);
+  const plan = deps.getActivePlan(userId, tenantId);
   if (!plan) return { rowId: null };
 
   const week = deps.getCurrentWeek(plan.id);
@@ -87,11 +88,12 @@ function resolveRequestedTrainingSessionId(
 
 export function resolveTrainingMutationSession(
   userId: number,
+  tenantId: number,
   sessionId: unknown,
   deps: TrainingSessionMutationDeps,
   options: ResolveTrainingMutationOptions = {},
 ): TrainingSessionMutationResolution {
-  const { rowId, error } = resolveRequestedTrainingSessionId(userId, sessionId, deps, options);
+  const { rowId, error } = resolveRequestedTrainingSessionId(userId, tenantId, sessionId, deps, options);
   if (error) {
     return { kind: 'bad_input', message: error };
   }
@@ -114,10 +116,11 @@ export function resolveTrainingMutationSession(
 
 export function getTrainingWeeklyAdherenceRate(
   userId: number,
+  tenantId: number,
   deps: Pick<TrainingSessionMutationDeps, 'getActivePlan' | 'getCurrentWeek' | 'getWeeklyAdherence'>,
 ): number | null {
   try {
-    const plan = deps.getActivePlan(userId);
+    const plan = deps.getActivePlan(userId, tenantId);
     if (!plan) return null;
 
     const week = deps.getCurrentWeek(plan.id);

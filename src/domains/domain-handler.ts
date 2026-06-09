@@ -305,7 +305,8 @@ export async function buildSimpleStateContext(
   // Active training plan context for triathlon domain
   if (includeScopedContext && domain === 'triathlon' && userId) {
     try {
-      const planSummary = getActivePlanSummary(userId);
+      const scopedTenantId = typeof tenantId === 'number' && Number.isSafeInteger(tenantId) && tenantId > 0 ? tenantId : null;
+      const planSummary = scopedTenantId ? getActivePlanSummary(userId, scopedTenantId) : null;
       if (planSummary) parts.push(`\n${planSummary}`);
     } catch {
       // Training plan tables may not exist yet — skip silently

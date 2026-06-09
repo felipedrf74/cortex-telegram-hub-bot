@@ -6,8 +6,10 @@ import type {
   DayOfWeek,
   Exercise,
   ExercisePrescription,
+  ExerciseSelectionReason,
   Session,
   SessionType,
+  StrengthExerciseCompletionSignal,
   WorkoutTemplate,
 } from '../types';
 import {
@@ -35,7 +37,16 @@ import {
   getExercisePrimaryPurpose,
   getExerciseSpinalLoading,
 } from '../exercise-metadata';
+import { selectStrengthExercisesFromCatalog, type StrengthSelectorTrace } from '../strength-selector';
+import { attachTrainingSessionRole } from '../endurance-session-classifier';
+import {
+  decideStrengthProgression,
+  type ProgressionDecision,
+  type StrengthProgressionSessionSignal,
+} from '../strength-progression';
+import { config } from '../../../config';
 import { logger } from '../../../utils/logger';
+import { recordTrainingProgressionState } from '../../training-generation-observability';
 
 // 'hybrid' added 2026-05-23 (Layer-3 goal→split mapping audit closeout):
 // dedicated profile for concurrent endurance + strength athletes. Mapped
@@ -86,20 +97,27 @@ function preferredSessionType(profile: StrengthProfile): SessionType {
 
 function availableEquipment(athlete: AthleteState): Set<string> {
   const equipment = new Set<string>();
+  const hasFullGymCapabilities = athlete.equipment.hasGym
+    && athlete.equipment.hasBarbell
+    && athlete.equipment.hasDumbbells;
   if (athlete.equipment.hasGym) {
-    equipment.add('rack');
     equipment.add('bench');
     equipment.add('pullup_bar');
-    equipment.add('lat_pulldown');
-    equipment.add('kettlebells');
-    equipment.add('dumbbells');
-    equipment.add('barbell');
-    equipment.add('leg_press');
-    equipment.add('cable_stack');
-    equipment.add('chest_press_machine');
+    if (hasFullGymCapabilities) {
+      equipment.add('lat_pulldown');
+      equipment.add('leg_press');
+      equipment.add('cable_stack');
+      equipment.add('chest_press_machine');
+    }
   }
-  if (athlete.equipment.hasBarbell) equipment.add('barbell');
-  if (athlete.equipment.hasDumbbells) equipment.add('dumbbells');
+  if (athlete.equipment.hasBarbell) {
+    equipment.add('barbell');
+    equipment.add('rack');
+  }
+  if (athlete.equipment.hasDumbbells) {
+    equipment.add('dumbbells');
+    equipment.add('kettlebells');
+  }
   if (athlete.equipment.hasBikeTrainer) equipment.add('bike_trainer');
   if (athlete.equipment.hasPool) equipment.add('pool');
   if (athlete.equipment.hasTrack) equipment.add('track');
@@ -780,12 +798,21 @@ function resolveExercises(
   profile: StrengthProfile,
   variant: StrengthVariant,
   durationMinutes: number,
+  selectionReasons?: Map<string, ExerciseSelectionReason>,
+  selectorOptions: {
+    allowTemplateDefaults?: boolean;
+    allowHardcodedFillers?: boolean;
+    selectorTrace?: StrengthSelectorTrace;
+  } = {},
 ): ExercisePrescription[] {
   const equipment = availableEquipment(athlete);
   const libraryById = new Map(library.map((exercise) => [exercise.id, exercise]));
   const usedIds = new Set<string>();
   const experience = athlete.profile.experienceLevel;
-  const desiredExerciseIds = [...variant.exerciseIds, ...(template.defaultExercises ?? [])]
+  const desiredExerciseIds = [
+    ...variant.exerciseIds,
+    ...(selectorOptions.allowTemplateDefaults === false ? [] : template.defaultExercises ?? []),
+  ]
     .filter((exerciseId, index, all) => all.indexOf(exerciseId) === index);
 
   const basePrescriptions = desiredExerciseIds
@@ -809,6 +836,8 @@ function resolveExercises(
         notes: original && original.id !== resolved.id
           ? `Adjusted from ${original.name} to fit the athlete's available equipment.`
           : undefined,
+        selectionReason: selectionReasons?.get(resolved.id),
+        selectorTrace: selectorOptions.selectorTrace,
       };
     })
     .filter((exercise): exercise is ExercisePrescription => exercise !== null);
@@ -817,6 +846,7 @@ function resolveExercises(
 
   const targetCount = targetExerciseCount(durationMinutes, experience);
   if (prescriptions.length >= targetCount) return prescriptions.slice(0, targetCount);
+  if (selectorOptions.allowHardcodedFillers === false) return prescriptions;
 
   const fillerIds = [
     'bodyweight_squat',
@@ -860,10 +890,162 @@ function resolveExercises(
       rir: prescription.rir,
       restSec: prescription.restSec,
       notes: 'Fallback support movement added to keep the session complete with the athlete\'s current setup.',
+      selectionReason: selectionReasons?.get(filler.id),
+      selectorTrace: selectorOptions.selectorTrace,
     });
   }
 
   return prescriptions;
+}
+
+function normalizeExerciseKey(value: string | undefined): string {
+  return String(value ?? '').trim().toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+}
+
+function repsUpperBound(reps: string): number {
+  const matches = reps.match(/\d+/g);
+  if (!matches || matches.length === 0) return 8;
+  return Math.max(...matches.map(Number));
+}
+
+function allStrengthSignals(athlete: AthleteState): StrengthExerciseCompletionSignal[] {
+  return (athlete.recentSessions ?? [])
+    .flatMap((session) => session.strengthExerciseSignals ?? [])
+    .filter((signal) => typeof signal.completedAt === 'string')
+    .sort((left, right) => Date.parse(right.completedAt) - Date.parse(left.completedAt));
+}
+
+function matchingSignalsForPrescription(
+  prescription: ExercisePrescription,
+  signals: StrengthExerciseCompletionSignal[],
+): StrengthExerciseCompletionSignal[] {
+  const exerciseId = normalizeExerciseKey(prescription.exerciseId);
+  const exerciseName = normalizeExerciseKey(prescription.name);
+  return signals.filter((signal) => {
+    const signalId = normalizeExerciseKey(signal.exerciseId);
+    const signalName = normalizeExerciseKey(signal.exerciseName);
+    return (!!exerciseId && signalId === exerciseId)
+      || (!!exerciseName && signalName === exerciseName);
+  });
+}
+
+function progressionSignalToGateSignal(
+  signal: StrengthExerciseCompletionSignal | undefined,
+  fallbackPrescribedReps: number,
+): StrengthProgressionSessionSignal | undefined {
+  if (!signal) return undefined;
+  return {
+    completedRepsTopSet: signal.completedRepsTopSet,
+    prescribedRepsTopSet: signal.prescribedRepsTopSet || fallbackPrescribedReps,
+    rpeTopSet: signal.rpeTopSet,
+    rir: signal.rir,
+    sorenessLevel: signal.sorenessLevel,
+    technicalSuccessScore: signal.technicalSuccessScore,
+  };
+}
+
+function progressionStateFromDecision(
+  athlete: AthleteState,
+  decision: ProgressionDecision,
+): NonNullable<ExercisePrescription['progressionState']> {
+  if (athlete.feedbackAnalysis?.progressionState === 'deload') return 'deload';
+  if (athlete.feedbackAnalysis?.progressionState === 'reentry') return 'reentry';
+  if (decision.vector === 'consistency_preservation') return 'hold';
+  return 'build';
+}
+
+function applyDecisionToPrescription(
+  prescription: ExercisePrescription,
+  decision: ProgressionDecision,
+  state: NonNullable<ExercisePrescription['progressionState']>,
+): ExercisePrescription {
+  recordTrainingProgressionState(state);
+  const rationale = decision.rationale[0] ?? 'Progression was kept conservative from recent completion feedback.';
+  const summary = (() => {
+    if (state === 'deload') return 'Deload: reduced progression pressure this week.';
+    if (state === 'reentry') return 'Re-entry: hold the prescription while consistency rebuilds.';
+    if (decision.vector === 'load_progression') return 'Build: increase load about 2.5% if warm-up confirms readiness.';
+    if (decision.vector === 'volume_then_load') return 'Build: add one clean rep before increasing load.';
+    if (decision.vector === 'intent_then_load') return 'Build: use tempo intent before adding load.';
+    return 'Hold: keep this prescription steady this week.';
+  })();
+  const next: ExercisePrescription = {
+    ...prescription,
+    progressionState: state,
+    progressionSummary: summary,
+    progressionReason: rationale,
+    progressionConfidence: 'real_feedback',
+  };
+  if (decision.vector === 'intent_then_load' && !next.tempo) {
+    next.tempo = '3-1-1-0';
+  }
+  if (decision.vector === 'volume_then_load' && decision.repsDelta) {
+    next.notes = next.notes
+      ? `${next.notes} Progression: add one clean top-set rep if form stays solid.`
+      : 'Progression: add one clean top-set rep if form stays solid.';
+  } else if (decision.vector === 'load_progression' && decision.loadDeltaPct) {
+    next.notes = next.notes
+      ? `${next.notes} Progression: add ~${Math.round(decision.loadDeltaPct * 1000) / 10}% load only if warm-up sets move well.`
+      : `Progression: add ~${Math.round(decision.loadDeltaPct * 1000) / 10}% load only if warm-up sets move well.`;
+  } else if (decision.vector === 'consistency_preservation') {
+    next.notes = next.notes
+      ? `${next.notes} Progression held: ${rationale}`
+      : `Progression held: ${rationale}`;
+  }
+  return next;
+}
+
+function applyStrengthProgressionPolicy(
+  prescriptions: ExercisePrescription[],
+  template: WorkoutTemplate,
+  athlete: AthleteState,
+): ExercisePrescription[] {
+  if (!config.coaching.trainingCompletionFeedbackV2Enabled) return prescriptions;
+
+  const signals = allStrengthSignals(athlete);
+  if (signals.length === 0) {
+    return prescriptions.map((prescription) => {
+      recordTrainingProgressionState('hold');
+      return {
+        ...prescription,
+        progressionState: 'hold',
+        progressionSummary: 'Cold start: keep the prescription steady until Nexus has completion feedback.',
+        progressionReason: 'No recent per-exercise completion feedback is available yet.',
+        progressionConfidence: 'cold_start',
+      };
+    });
+  }
+
+  return prescriptions.map((prescription) => {
+    const matching = matchingSignalsForPrescription(prescription, signals);
+    const targetReps = repsUpperBound(prescription.reps);
+    const lastSignal = matching[0];
+    if (!lastSignal) {
+      recordTrainingProgressionState('hold');
+      return {
+        ...prescription,
+        progressionState: 'hold',
+        progressionSummary: 'Cold start: hold until this exercise has feedback.',
+        progressionReason: 'Nexus has not seen this exact exercise completed recently.',
+        progressionConfidence: 'cold_start',
+      };
+    }
+    const priorSignal = matching[1];
+    const painSameRegionLast7d = matching.some((signal) => {
+      if ((signal.painScore ?? 0) < 4) return false;
+      const completedMs = Date.parse(signal.completedAt);
+      return Number.isFinite(completedMs) && Date.now() - completedMs <= 7 * 24 * 60 * 60 * 1000;
+    });
+    const decision = decideStrengthProgression({
+      progressionTarget: template.progressionTarget,
+      priorExposureCount: matching.length,
+      lastSession: progressionSignalToGateSignal(lastSignal, targetReps),
+      priorSession: progressionSignalToGateSignal(priorSignal, targetReps),
+      painSameRegionLast7d,
+    });
+    const state = progressionStateFromDecision(athlete, decision);
+    return applyDecisionToPrescription(prescription, decision, state);
+  });
 }
 
 type StrengthMovementPattern = Exercise['movementPattern'];
@@ -1206,7 +1388,7 @@ function buildStrengthSession(
   exercises: ExercisePrescription[],
   tags: string[],
 ): Session {
-  return {
+  return attachTrainingSessionRole({
     id: createSessionId('strength', dayOfWeek, template.title),
     sport: 'strength',
     sessionType: template.sessionType,
@@ -1222,7 +1404,7 @@ function buildStrengthSession(
     tags: [...new Set([...tags, ...variant.tags])],
     exercises,
     alternatives: ['Reduce one accessory set if recovery is low', 'Keep load lighter and finish the mobility cooldown'],
-  };
+  }, template);
 }
 
 function buildStrengthDescription(template: WorkoutTemplate, variant: StrengthVariant): string {
@@ -1367,15 +1549,31 @@ export const strengthEngine: SportEngine = {
 
     return days.slice(0, targetSessions).map((dayOfWeek, index) => {
       const durationMinutes = resolveDurationForDay(template, context.athlete, dayOfWeek);
-      const baseVariant = isLimitedStrengthSetup(context.athlete)
-        ? limitedEquipmentVariantFor(strengthProfile, targetSessions, index, weekIndexForRotation)
-          ?? strengthVariantFor(strengthProfile, targetSessions, index, weekIndexForRotation)
-        : strengthVariantFor(strengthProfile, targetSessions, index, weekIndexForRotation);
+      const catalogSelection = config.coaching.trainingSelectorPolicyV2Enabled
+        ? selectStrengthExercisesFromCatalog({
+            library: context.knowledge.exercises,
+            athlete: context.athlete,
+            availableEquipment: availableEquipment(context.athlete),
+            profile: strengthProfile,
+            durationMinutes,
+            targetCount: targetExerciseCount(durationMinutes, context.athlete.profile.experienceLevel),
+            targetSessions,
+            sessionIndex: index,
+            weekIndex: weekIndexForRotation,
+          })
+        : null;
+      const baseVariant = catalogSelection?.variant
+        ?? (isLimitedStrengthSetup(context.athlete)
+          ? limitedEquipmentVariantFor(strengthProfile, targetSessions, index, weekIndexForRotation)
+            ?? strengthVariantFor(strengthProfile, targetSessions, index, weekIndexForRotation)
+          : strengthVariantFor(strengthProfile, targetSessions, index, weekIndexForRotation));
       // Slice 2.A — beginner substitutions are applied to the variant
       // BEFORE equipment-aware resolution so the substituted exercise
       // (e.g. goblet_squat) still picks up its own equipment fallback
       // chain (e.g. bodyweight_squat) if the user has no dumbbells.
-      const variant = applyBeginnerSubstitutions(baseVariant, context.athlete.profile.experienceLevel);
+      const variant = catalogSelection
+        ? baseVariant
+        : applyBeginnerSubstitutions(baseVariant, context.athlete.profile.experienceLevel);
       const baseExercises = resolveExercises(
         template,
         context.knowledge.exercises,
@@ -1383,6 +1581,12 @@ export const strengthEngine: SportEngine = {
         strengthProfile,
         variant,
         durationMinutes,
+        catalogSelection?.selectionReasons,
+        {
+          allowTemplateDefaults: !catalogSelection,
+          allowHardcodedFillers: !catalogSelection,
+          selectorTrace: catalogSelection?.trace,
+        },
       );
       // Slice 4.H — biomechanics-aware substitution. After equipment
       // + beginner substitutions have produced the prescription list,
@@ -1412,9 +1616,14 @@ export const strengthEngine: SportEngine = {
       // Slice 4.H — sort the prescription list compound→accessory→
       // core→mobility so the heaviest work hits while the user is
       // freshest. Stable within each phase.
-      const exercises = orderExercisesForSession(
+      const orderedExercises = orderExercisesForSession(
         safetyResult.prescriptions,
         context.knowledge.exercises,
+      );
+      const exercises = applyStrengthProgressionPolicy(
+        orderedExercises,
+        template,
+        context.athlete,
       );
       const rawSession = buildStrengthSession(
         template,

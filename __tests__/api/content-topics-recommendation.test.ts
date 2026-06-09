@@ -168,6 +168,7 @@ describe('Content API — filming recommendation', () => {
 
     const plan = createPlan({
       user_id: user.id,
+      tenant_id: user.id,
       name: 'Tri plan',
       sport: 'running',
       duration_weeks: 2,

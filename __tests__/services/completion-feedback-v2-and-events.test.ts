@@ -64,18 +64,89 @@ function applyMigrations(db: Database.Database): void {
 }
 
 import {
-  deleteReadinessHistoryForUser,
-  getLatestReadinessEvent,
-  getReadinessEventsInRange,
-  recordReadinessEvent,
+  deleteReadinessHistoryForUser as deleteReadinessHistoryForUserRaw,
+  getLatestReadinessEvent as getLatestReadinessEventRaw,
+  getReadinessEventsInRange as getReadinessEventsInRangeRaw,
+  recordReadinessEvent as recordReadinessEventRaw,
 } from '../../src/services/readiness-events';
 import {
-  deleteHealthHistoryForUser,
-  findIllnessSignalsInRange,
-  findPainSignalsInRange,
-  getLatestHealthSignal,
-  recordHealthSignal,
+  deleteHealthHistoryForUser as deleteHealthHistoryForUserRaw,
+  findIllnessSignalsInRange as findIllnessSignalsInRangeRaw,
+  findPainSignalsInRange as findPainSignalsInRangeRaw,
+  getLatestHealthSignal as getLatestHealthSignalRaw,
+  recordHealthSignal as recordHealthSignalRaw,
 } from '../../src/services/health-signals';
+
+type RecordHealthSignalTestInput =
+  Omit<Parameters<typeof recordHealthSignalRaw>[0], 'tenantId'> & { tenantId?: number };
+
+function recordHealthSignal(input: RecordHealthSignalTestInput): ReturnType<typeof recordHealthSignalRaw> {
+  return recordHealthSignalRaw({ ...input, tenantId: input.tenantId ?? input.userId });
+}
+
+function getLatestHealthSignal(
+  userId: number,
+  asOfDate?: string,
+  tenantId = userId,
+): ReturnType<typeof getLatestHealthSignalRaw> {
+  return getLatestHealthSignalRaw(userId, tenantId, asOfDate);
+}
+
+function findPainSignalsInRange(
+  userId: number,
+  fromDate: string,
+  toDate: string,
+  tenantId = userId,
+): ReturnType<typeof findPainSignalsInRangeRaw> {
+  return findPainSignalsInRangeRaw(userId, tenantId, fromDate, toDate);
+}
+
+function findIllnessSignalsInRange(
+  userId: number,
+  fromDate: string,
+  toDate: string,
+  tenantId = userId,
+): ReturnType<typeof findIllnessSignalsInRangeRaw> {
+  return findIllnessSignalsInRangeRaw(userId, tenantId, fromDate, toDate);
+}
+
+function deleteHealthHistoryForUser(
+  userId: number,
+  tenantId = userId,
+): ReturnType<typeof deleteHealthHistoryForUserRaw> {
+  return deleteHealthHistoryForUserRaw(userId, tenantId);
+}
+
+type RecordReadinessEventTestInput =
+  Omit<Parameters<typeof recordReadinessEventRaw>[0], 'tenantId'> & { tenantId?: number };
+
+function recordReadinessEvent(input: RecordReadinessEventTestInput): ReturnType<typeof recordReadinessEventRaw> {
+  return recordReadinessEventRaw({ ...input, tenantId: input.tenantId ?? input.userId });
+}
+
+function getLatestReadinessEvent(
+  userId: number,
+  asOfDate?: string,
+  tenantId = userId,
+): ReturnType<typeof getLatestReadinessEventRaw> {
+  return getLatestReadinessEventRaw(userId, tenantId, asOfDate);
+}
+
+function getReadinessEventsInRange(
+  userId: number,
+  fromDate: string,
+  toDate: string,
+  tenantId = userId,
+): ReturnType<typeof getReadinessEventsInRangeRaw> {
+  return getReadinessEventsInRangeRaw(userId, tenantId, fromDate, toDate);
+}
+
+function deleteReadinessHistoryForUser(
+  userId: number,
+  tenantId = userId,
+): ReturnType<typeof deleteReadinessHistoryForUserRaw> {
+  return deleteReadinessHistoryForUserRaw(userId, tenantId);
+}
 
 beforeEach(() => {
   testDb = new Database(':memory:');
@@ -117,8 +188,8 @@ describe('migration 157 — training_completions v2 columns', () => {
     // Seed a minimal plan + session + completion (smallest path to test
     // the column default).
     testDb.prepare(`
-      INSERT INTO fitness_training_plans (id, user_id, name, sport, duration_weeks, start_date, end_date, status)
-      VALUES (1, 100, 'p', 'gym', 4, '2026-01-01', '2026-02-01', 'active')
+      INSERT INTO fitness_training_plans (id, user_id, tenant_id, name, sport, duration_weeks, start_date, end_date, status)
+      VALUES (1, 100, 100, 'p', 'gym', 4, '2026-01-01', '2026-02-01', 'active')
     `).run();
     testDb.prepare(`
       INSERT INTO training_weeks (id, plan_id, week_number) VALUES (1, 1, 1)
@@ -145,6 +216,7 @@ describe('migration 158 — athlete_readiness_events table', () => {
       .all() as Array<{ name: string }>;
     const names = new Set(cols.map((c) => c.name));
     expect(names.has('user_id')).toBe(true);
+    expect(names.has('tenant_id')).toBe(true);
     expect(names.has('date')).toBe(true);
     expect(names.has('sleep_hours')).toBe(true);
     expect(names.has('sleep_quality')).toBe(true);
@@ -163,6 +235,7 @@ describe('migration 158 — athlete_health_signals table', () => {
       .all() as Array<{ name: string }>;
     const names = new Set(cols.map((c) => c.name));
     expect(names.has('user_id')).toBe(true);
+    expect(names.has('tenant_id')).toBe(true);
     expect(names.has('date')).toBe(true);
     expect(names.has('pain_score')).toBe(true);
     expect(names.has('pain_location')).toBe(true);
@@ -176,6 +249,15 @@ describe('migration 158 — athlete_health_signals table', () => {
 });
 
 describe('recordReadinessEvent — consent enforcement', () => {
+  it('raw service call refuses missing tenant scope', () => {
+    expect(() => recordReadinessEventRaw({
+      userId: 100,
+      date: '2026-01-15',
+      sleepHours: 7,
+      consentScope: ['readiness_basic'],
+    } as Parameters<typeof recordReadinessEventRaw>[0])).toThrow(/tenantId/);
+  });
+
   it('refuses to insert without readiness_basic scope', () => {
     expect(() => recordReadinessEvent({
       userId: 100,
@@ -296,9 +378,27 @@ describe('readiness event reads', () => {
     expect(rows.length).toBe(1);
     expect(rows[0].date).toBe('2026-01-15');
   });
+
+  it('keeps same-user readiness events isolated by tenant', () => {
+    recordReadinessEvent({ userId: 203, tenantId: 1000, date: '2026-01-10', sleepHours: 6, consentScope: ['readiness_basic'] });
+    recordReadinessEvent({ userId: 203, tenantId: 2000, date: '2026-01-15', sleepHours: 9, consentScope: ['readiness_basic'] });
+
+    expect(getLatestReadinessEvent(203, undefined, 1000)?.sleep_hours).toBe(6);
+    expect(getLatestReadinessEvent(203, undefined, 2000)?.sleep_hours).toBe(9);
+    expect(getReadinessEventsInRange(203, '2026-01-01', '2026-01-31', 1000).length).toBe(1);
+  });
 });
 
 describe('recordHealthSignal — consent enforcement', () => {
+  it('raw service call refuses missing tenant scope', () => {
+    expect(() => recordHealthSignalRaw({
+      userId: 300,
+      date: '2026-01-15',
+      painScore: 5,
+      consentScope: ['pain'],
+    } as Parameters<typeof recordHealthSignalRaw>[0])).toThrow(/tenantId/);
+  });
+
   it('refuses to insert with empty consentScope', () => {
     expect(() => recordHealthSignal({
       userId: 300,
@@ -430,6 +530,15 @@ describe('health signal reads', () => {
     recordHealthSignal({ userId: 402, date: '2026-01-15', painScore: 7, consentScope: ['pain'] });
     const asOf10 = getLatestHealthSignal(402, '2026-01-10');
     expect(asOf10?.pain_score).toBe(3);
+  });
+
+  it('keeps same-user health signals isolated by tenant', () => {
+    recordHealthSignal({ userId: 403, tenantId: 1000, date: '2026-01-05', painScore: 3, consentScope: ['pain'] });
+    recordHealthSignal({ userId: 403, tenantId: 2000, date: '2026-01-15', painScore: 9, consentScope: ['pain'] });
+
+    expect(getLatestHealthSignal(403, undefined, 1000)?.pain_score).toBe(3);
+    expect(getLatestHealthSignal(403, undefined, 2000)?.pain_score).toBe(9);
+    expect(findPainSignalsInRange(403, '2026-01-01', '2026-01-31', 1000).length).toBe(1);
   });
 });
 

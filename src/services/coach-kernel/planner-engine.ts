@@ -28,6 +28,7 @@ import {
   applyFeedbackToWeeklyPlan,
 } from './feedback-analysis';
 import { isActiveTrainingSession, reconcileWeeklyCapacity } from './capacity-reconciliation';
+import { validateEnduranceCoherence } from './endurance-coherence';
 
 function hasHighImpactInjuryConstraint(athlete: AthleteState): boolean {
   return athlete.constraints.some((constraint) =>
@@ -106,7 +107,7 @@ function trySecretaryWeeklySummary(athleteId: number, weekStart: string): string
 function reconcilePlanSessions(athlete: AthleteState, weeklyPlan: WeeklyPlan): WeeklyPlan {
   const reconciliation = reconcileWeeklyCapacity(athlete, weeklyPlan.sessions);
   const guardrailDecisionReasons = decisionReasonsFromGuardrails(weeklyPlan.guardrailResults);
-  return {
+  const candidatePlan: WeeklyPlan = {
     ...weeklyPlan,
     sessions: reconciliation.sessions,
     guardrailResults: [
@@ -117,6 +118,18 @@ function reconcilePlanSessions(athlete: AthleteState, weeklyPlan: WeeklyPlan): W
       ...(weeklyPlan.decisionReasons ?? []),
       ...guardrailDecisionReasons,
       ...reconciliation.decisionReasons,
+    ]),
+  };
+  const enduranceCoherence = validateEnduranceCoherence(candidatePlan.sessions);
+  return {
+    ...candidatePlan,
+    guardrailResults: [
+      ...candidatePlan.guardrailResults,
+      ...enduranceCoherence.guardrailResults,
+    ],
+    decisionReasons: dedupeDecisionReasons([
+      ...(candidatePlan.decisionReasons ?? []),
+      ...enduranceCoherence.decisionReasons,
     ]),
   };
 }

@@ -21,8 +21,9 @@
  * Contract:
  *
  *   - PURE READ. Never writes to the DB.
- *   - Scoped to (user_id, completed_at) — won't bleed across users
- *     even if a stale plan_id slipped through somewhere else.
+ *   - Scoped to (tenant_id, user_id, completed_at) — won't bleed
+ *     across tenants even if a stale plan_id slipped through
+ *     somewhere else. Missing tenantId fails closed to no-history.
  *   - Maps `training_sessions.session_type` → canonical sport via
  *     the same vocabulary the rest of the engine uses (see
  *     `normalizeSessionTypeToSport`).
@@ -35,7 +36,14 @@
 
 import { getDb } from './database';
 import { logger } from '../utils/logger';
-import type { FatigueCost, IntensityZone, RecentSession, SessionType, Sport } from './coach-kernel/types';
+import type {
+  FatigueCost,
+  IntensityZone,
+  RecentSession,
+  SessionType,
+  Sport,
+  StrengthExerciseCompletionSignal,
+} from './coach-kernel/types';
 
 export interface TrainingHistoryReadOptions {
   /**
@@ -43,6 +51,7 @@ export interface TrainingHistoryReadOptions {
    * server clock. Tests pass a fixed date for determinism.
    */
   asOf?: Date;
+  tenantId?: number;
 }
 
 export interface RealTrainingHistory {
@@ -163,6 +172,17 @@ export function readTrainingHistoryFromCompletions(
 ): RealTrainingHistory {
   const asOf = options.asOf ?? new Date();
   const windowStart = isoDateNDaysBefore(asOf, 28);
+  const tenantId = typeof options.tenantId === 'number' && Number.isFinite(options.tenantId)
+    ? Math.trunc(options.tenantId)
+    : null;
+
+  if (tenantId === null) {
+    logger.warn(
+      { userId },
+      'readTrainingHistoryFromCompletions: missing tenantId; refusing user-only completion history read',
+    );
+    return emptyHistory();
+  }
 
   const db = getDb();
 
@@ -182,6 +202,13 @@ export function readTrainingHistoryFromCompletions(
     soreness_level: number | null;
     energy_level: number | null;
     actual_exercises_json: string | null;
+    completed_sets_json: string | null;
+    completed_reps_json: string | null;
+    completed_load_json: string | null;
+    rir: number | null;
+    pain_score: number | null;
+    pain_location: string | null;
+    technical_success_score: number | null;
   }> = [];
   try {
     rows = db.prepare(`
@@ -193,22 +220,31 @@ export function readTrainingHistoryFromCompletions(
              tc.rpe_overall AS rpe_overall,
              tc.soreness_level AS soreness_level,
              tc.energy_level AS energy_level,
-             tc.actual_exercises_json AS actual_exercises_json
+             tc.actual_exercises_json AS actual_exercises_json,
+             tc.completed_sets_json AS completed_sets_json,
+             tc.completed_reps_json AS completed_reps_json,
+             tc.completed_load_json AS completed_load_json,
+             tc.rir AS rir,
+             tc.pain_score AS pain_score,
+             tc.pain_location AS pain_location,
+             tc.technical_success_score AS technical_success_score
       FROM training_completions tc
       JOIN training_sessions ts ON ts.id = tc.session_id
       JOIN fitness_training_plans ftp ON ftp.id = tc.plan_id
       WHERE ftp.user_id = ?
+        AND ftp.tenant_id = ?
         AND tc.completed_at >= ?
         AND tc.completed_at < ?
       ORDER BY tc.completed_at ASC
     `).all(
       userId,
+      tenantId,
       windowStart,
       asOf.toISOString(),
     ) as typeof rows;
   } catch (err) {
     logger.warn(
-      { err, userId },
+      { err, userId, tenantId },
       'readTrainingHistoryFromCompletions: query failed; falling back to no-history',
     );
     return emptyHistory();
@@ -279,6 +315,7 @@ export function readTrainingHistoryFromCompletions(
       intensityZone: inferIntensityZone(sessionType),
       fatigueCost: inferFatigueCost(sessionType),
       rpe: row.rpe_overall ?? undefined,
+      rir: row.rir ?? undefined,
       sorenessLevel: row.soreness_level ?? undefined,
       energyLevel: row.energy_level ?? undefined,
       distanceKm: distanceKm > 0 ? distanceKm : undefined,
@@ -286,6 +323,9 @@ export function readTrainingHistoryFromCompletions(
       completed: true,
       keySession: isLikelyKeySession(sessionType),
       feedbackTags: inferFeedbackTags(row, plannedMinutes, actualMinutes),
+      strengthExerciseSignals: sport === 'strength'
+        ? extractStrengthExerciseSignals(row, completedAt, plannedMinutes)
+        : undefined,
     });
   }
 
@@ -359,6 +399,7 @@ function inferFeedbackTags(
     rpe_overall: number | null;
     soreness_level: number | null;
     actual_exercises_json: string | null;
+    pain_score?: number | null;
   },
   plannedMinutes: number,
   actualMinutes: number,
@@ -366,12 +407,141 @@ function inferFeedbackTags(
   const tags = new Set<NonNullable<RecentSession['feedbackTags']>[number]>();
   if (row.rpe_overall != null && row.rpe_overall >= 9) tags.add('too_hard');
   if (row.rpe_overall != null && row.rpe_overall <= 5) tags.add('too_easy');
-  if (row.soreness_level != null && row.soreness_level >= 8) tags.add('pain');
+  if ((row.soreness_level != null && row.soreness_level >= 8) || (row.pain_score != null && row.pain_score >= 4)) tags.add('pain');
   if (plannedMinutes > 0 && actualMinutes >= plannedMinutes * 1.25) tags.add('too_long');
   const raw = row.actual_exercises_json?.toLowerCase() ?? '';
   if (raw.includes('substitut')) tags.add('substitution');
   if (raw.includes('travel') || raw.includes('hotel')) tags.add('travel');
   return Array.from(tags);
+}
+
+function extractStrengthExerciseSignals(
+  row: {
+    actual_exercises_json: string | null;
+    completed_sets_json?: string | null;
+    completed_reps_json?: string | null;
+    completed_load_json?: string | null;
+    rpe_overall?: number | null;
+    rir?: number | null;
+    soreness_level?: number | null;
+    pain_score?: number | null;
+    pain_location?: string | null;
+    technical_success_score?: number | null;
+  },
+  completedAt: string,
+  plannedMinutes: number,
+): StrengthExerciseCompletionSignal[] | undefined {
+  const exercises = parseExerciseEntries(row.actual_exercises_json);
+  const completedReps = parseNumberArray(row.completed_reps_json);
+  const completedSets = parseSetEntries(row.completed_sets_json);
+  if (exercises.length === 0 && completedReps.length === 0 && completedSets.length === 0) return undefined;
+
+  const maxCompletedFromParallel = completedReps.length > 0 ? Math.max(...completedReps) : null;
+  const signals: StrengthExerciseCompletionSignal[] = [];
+  const entryCount = Math.max(exercises.length, completedSets.length > 0 ? 1 : 0);
+  for (let index = 0; index < entryCount; index++) {
+    const entry = exercises[index] as Record<string, unknown> | undefined;
+    const perExerciseSets = Array.isArray(entry?.sets) ? parseSetEntries(JSON.stringify(entry?.sets)) : [];
+    const completedTop = maxFinite([
+      maxCompletedFromParallel,
+      maxCompletedRepsFromSets(perExerciseSets),
+      maxCompletedRepsFromSets(completedSets),
+      numberFromUnknown(entry?.completedReps),
+      numberFromUnknown(entry?.completed_reps),
+      numberFromUnknown(entry?.repsDone),
+      numberFromUnknown(entry?.reps_done),
+      numberFromUnknown(entry?.reps),
+    ]);
+    const prescribedTop = maxFinite([
+      numberFromUnknown(entry?.prescribedReps),
+      numberFromUnknown(entry?.targetReps),
+      numberFromUnknown(entry?.target_reps),
+      numberFromUnknown(entry?.plannedReps),
+      numberFromUnknown(entry?.planned_reps),
+      maxRepsFromText(entry?.prescribed_reps ?? entry?.reps),
+      completedTop,
+    ]);
+    if (!completedTop || !prescribedTop) continue;
+
+    signals.push({
+      exerciseId: stringFromUnknown(entry?.exerciseId ?? entry?.exercise_id ?? entry?.id),
+      exerciseName: stringFromUnknown(entry?.name ?? entry?.exercise),
+      completedRepsTopSet: completedTop,
+      prescribedRepsTopSet: prescribedTop,
+      rpeTopSet: row.rpe_overall ?? undefined,
+      rir: row.rir ?? undefined,
+      sorenessLevel: row.soreness_level ?? undefined,
+      technicalSuccessScore: row.technical_success_score ?? undefined,
+      painScore: row.pain_score ?? undefined,
+      painLocation: row.pain_location ?? undefined,
+      completedAt,
+    });
+  }
+
+  if (signals.length > 0) return signals;
+  if (plannedMinutes <= 0) return undefined;
+  return undefined;
+}
+
+function parseExerciseEntries(rawJson: string | null): unknown[] {
+  if (!rawJson) return [];
+  try {
+    const parsed = JSON.parse(rawJson);
+    if (Array.isArray(parsed)) return parsed;
+    if (parsed && typeof parsed === 'object') return [parsed];
+  } catch {
+    return [];
+  }
+  return [];
+}
+
+function parseNumberArray(rawJson?: string | null): number[] {
+  if (!rawJson) return [];
+  try {
+    const parsed = JSON.parse(rawJson);
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .map(numberFromUnknown)
+      .filter((value): value is number => value != null && value > 0);
+  } catch {
+    return [];
+  }
+}
+
+function parseSetEntries(rawJson?: string | null): Array<Record<string, unknown>> {
+  if (!rawJson) return [];
+  try {
+    const parsed = JSON.parse(rawJson);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((value): value is Record<string, unknown> =>
+      !!value && typeof value === 'object' && !Array.isArray(value)
+    );
+  } catch {
+    return [];
+  }
+}
+
+function maxCompletedRepsFromSets(sets: Array<Record<string, unknown>>): number | null {
+  return maxFinite(sets.map((set) => numberFromUnknown(set.reps ?? set.completedReps ?? set.completed_reps)));
+}
+
+function maxRepsFromText(value: unknown): number | null {
+  if (typeof value === 'number' && Number.isFinite(value)) return Math.max(1, Math.round(value));
+  if (typeof value !== 'string') return null;
+  const matches = value.match(/\d+/g);
+  if (!matches) return null;
+  return Math.max(...matches.map(Number));
+}
+
+function maxFinite(values: Array<number | null | undefined>): number | null {
+  const finite = values.filter((value): value is number =>
+    typeof value === 'number' && Number.isFinite(value) && value > 0
+  );
+  return finite.length > 0 ? Math.round(Math.max(...finite)) : null;
+}
+
+function stringFromUnknown(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim().length > 0 ? value.trim() : undefined;
 }
 
 function extractDistanceKm(rawJson: string | null): number {

@@ -76,6 +76,7 @@ afterEach(() => {
 
 interface SeedOpts {
   userId: number;
+  tenantId?: number;
   sessionType: string;
   daysAgo: number;
   durationMin: number;
@@ -83,11 +84,12 @@ interface SeedOpts {
 }
 
 function seed(opts: SeedOpts): void {
+  const tenantId = opts.tenantId ?? opts.userId;
   testDb.prepare(`
     INSERT INTO fitness_training_plans
-      (id, user_id, name, sport, duration_weeks, start_date, end_date, status)
-    VALUES (?, ?, 'Test', ?, 12, '2026-01-01', '2026-04-01', 'active')
-  `).run(opts.baseId, opts.userId, opts.sessionType);
+      (id, user_id, tenant_id, name, sport, duration_weeks, start_date, end_date, status)
+    VALUES (?, ?, ?, 'Test', ?, 12, '2026-01-01', '2026-04-01', 'active')
+  `).run(opts.baseId, opts.userId, tenantId, opts.sessionType);
 
   testDb.prepare(`
     INSERT INTO training_weeks (id, plan_id, week_number) VALUES (?, ?, 1)
@@ -110,7 +112,7 @@ function seed(opts: SeedOpts): void {
 }
 
 const ASOF = new Date('2026-04-27T12:00:00.000Z');
-const READ = (userId: number) => readTrainingHistoryFromCompletions(userId, { asOf: ASOF });
+const READ = (userId: number, tenantId = userId) => readTrainingHistoryFromCompletions(userId, { asOf: ASOF, tenantId });
 
 describe('training-history — empty case', () => {
   it('returns no-history when the user has no completions', () => {
@@ -125,6 +127,23 @@ describe('training-history — empty case', () => {
     seed({ userId: 200, sessionType: 'running', daysAgo: 3, durationMin: 45, baseId: 1 });
     const result = READ(100);
     expect(result.hasAnyHistory).toBe(false);
+  });
+
+  it('fails closed to no-history when tenantId is missing', () => {
+    seed({ userId: 100, tenantId: 100, sessionType: 'running', daysAgo: 3, durationMin: 45, baseId: 1 });
+    const result = readTrainingHistoryFromCompletions(100, { asOf: ASOF });
+    expect(result.hasAnyHistory).toBe(false);
+    expect(result.rawCompletionCount).toBe(0);
+  });
+
+  it('does not leak same-user completions from another tenant', () => {
+    seed({ userId: 100, tenantId: 200, sessionType: 'running', daysAgo: 3, durationMin: 45, baseId: 1 });
+    const result = READ(100, 100);
+    expect(result.hasAnyHistory).toBe(false);
+
+    const tenantResult = READ(100, 200);
+    expect(tenantResult.hasAnyHistory).toBe(true);
+    expect(tenantResult.lastWeekMinutesBySport.running).toBe(45);
   });
 });
 
@@ -286,8 +305,8 @@ describe('training-history — duration fallback', () => {
     // Insert plan + week + session with duration 60.
     testDb.prepare(`
       INSERT INTO fitness_training_plans
-        (id, user_id, name, sport, duration_weeks, start_date, end_date, status)
-      VALUES (1, 100, 'Test', 'running', 12, '2026-01-01', '2026-04-01', 'active')
+        (id, user_id, tenant_id, name, sport, duration_weeks, start_date, end_date, status)
+      VALUES (1, 100, 100, 'Test', 'running', 12, '2026-01-01', '2026-04-01', 'active')
     `).run();
     testDb.prepare(`
       INSERT INTO training_weeks (id, plan_id, week_number) VALUES (1, 1, 1)

@@ -311,12 +311,13 @@ function looksLikeTrainingTitle(title: string | undefined | null): boolean {
 
 async function getTodayTrainingSummary(
   userId: number,
+  tenantId: number,
   events: Array<{ summary?: string; start: string; end: string }>,
   timezone: string,
 ): Promise<string | null> {
   try {
     const tp = require('../../services/training-plans');
-    const activePlan = tp.getActivePlan?.(userId);
+    const activePlan = tp.getActivePlan?.(userId, tenantId);
     if (activePlan) {
       const currentWeek = tp.getCurrentWeek?.(activePlan.id);
       if (currentWeek) {
@@ -548,7 +549,7 @@ const FASTPATH_PATTERNS: PatternEntry[] = [
           : Promise.resolve({ success: false as const, data: [], error: 'disabled' }),
         remOk ? Promise.resolve(getRemindersForToday(userId, tenantId, timezone)) : Promise.resolve([]),
       ]);
-      const todayTraining = await getTodayTrainingSummary(userId, events, timezone);
+      const todayTraining = await getTodayTrainingSummary(userId, tenantId, events, timezone);
 
       // Date header in the user's locale. PT-BR puts day before
       // month ("terça, 09 abril 2026"); EN puts month before day

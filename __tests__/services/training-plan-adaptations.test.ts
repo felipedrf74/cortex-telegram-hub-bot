@@ -94,12 +94,12 @@ afterEach(() => {
   testDb.close();
 });
 
-function seedPlan(id: number, userId = 100): void {
+function seedPlan(id: number, userId = 100, tenantId = userId): void {
   testDb.prepare(`
     INSERT INTO fitness_training_plans
-      (id, user_id, name, sport, duration_weeks, start_date, end_date, status)
-    VALUES (?, ?, 'Test plan', 'gym', 12, '2026-01-01', '2026-04-01', 'active')
-  `).run(id, userId);
+      (id, user_id, tenant_id, name, sport, duration_weeks, start_date, end_date, status)
+    VALUES (?, ?, ?, 'Test plan', 'gym', 12, '2026-01-01', '2026-04-01', 'active')
+  `).run(id, userId, tenantId);
 }
 
 describe('migration 156 — training_plan_adaptations table', () => {
@@ -554,6 +554,7 @@ describe('privacy — invariant 6 (redaction for non-admin viewers)', () => {
     seedPlan(70, 500);
     seedPlan(71, 500); // same user, second plan
     seedPlan(72, 501); // different user
+    seedPlan(73, 500, 900); // same user, different tenant
 
     recordAdaptation({
       planId: 70,
@@ -583,8 +584,15 @@ describe('privacy — invariant 6 (redaction for non-admin viewers)', () => {
       triggerPayload: { painLocation: 'ankle', painScore: 6 },
       sciencePolicyVersion: POLICY_VERSION,
     });
+    recordAdaptation({
+      planId: 73,
+      scope: 'session',
+      triggerType: 'pain_flag',
+      triggerPayload: { painLocation: 'hip', painScore: 5 },
+      sciencePolicyVersion: POLICY_VERSION,
+    });
 
-    const affected = purgeSensitivePayloadsForUser(500);
+    const affected = purgeSensitivePayloadsForUser(500, 500);
     expect(affected).toBe(2); // pain_flag on plan 70 + illness_flag on plan 71.
 
     // User 500's pain row should be redacted. R3 P2 — both the JSON
@@ -624,6 +632,16 @@ describe('privacy — invariant 6 (redaction for non-admin viewers)', () => {
       painLocation: 'ankle',
       painScore: 6,
     });
+
+    // Same user but different tenant is also untouched.
+    const otherTenant = testDb.prepare(`
+      SELECT trigger_payload_json FROM training_plan_adaptations
+      WHERE plan_id = 73 AND trigger_type = 'pain_flag'
+    `).get() as { trigger_payload_json: string };
+    expect(JSON.parse(otherTenant.trigger_payload_json)).toEqual({
+      painLocation: 'hip',
+      painScore: 5,
+    });
   });
 });
 
@@ -653,7 +671,7 @@ describe('R4 P3 — purgeSensitivePayloadsForUser uses parameterized SQL for the
       triggerPayload: { painLocation: 'shoulder', painScore: 7 },
       sciencePolicyVersion: POLICY_VERSION,
     });
-    purgeSensitivePayloadsForUser(1000);
+    purgeSensitivePayloadsForUser(1000, 1000);
     const row = testDb.prepare(`
       SELECT trigger_type, trigger_payload_json
       FROM training_plan_adaptations

@@ -27,6 +27,7 @@
 
 import { getDb } from './database';
 import { logger } from '../utils/logger';
+import { requireTenantIdParam } from './tenant-scope';
 
 export type HrvStatus = 'balanced' | 'low' | 'unbalanced' | 'poor';
 export type RestingHrStatus = 'normal' | 'elevated';
@@ -39,6 +40,7 @@ export type ReadinessConsentScope =
 export interface ReadinessEventRow {
   id: number;
   user_id: number;
+  tenant_id: number;
   date: string;
   sleep_hours: number | null;
   sleep_quality: number | null;
@@ -52,6 +54,7 @@ export interface ReadinessEventRow {
 
 export interface RecordReadinessEventInput {
   userId: number;
+  tenantId: number;
   /** ISO 8601 date (YYYY-MM-DD). */
   date: string;
   sleepHours?: number;
@@ -92,6 +95,7 @@ export interface RecordReadinessEventResult {
 export function recordReadinessEvent(
   input: RecordReadinessEventInput,
 ): RecordReadinessEventResult {
+  const tenantId = requireTenantIdParam(input.tenantId, 'recordReadinessEvent');
   if (!input.consentScope.includes('readiness_basic')) {
     throw new Error(
       'recordReadinessEvent: consentScope must include readiness_basic; ' +
@@ -131,11 +135,12 @@ export function recordReadinessEvent(
   const db = getDb();
   const inserted = db.prepare(`
     INSERT INTO athlete_readiness_events (
-      user_id, date, sleep_hours, sleep_quality, stress_score,
+      user_id, tenant_id, date, sleep_hours, sleep_quality, stress_score,
       hrv_status, resting_hr_status, source, consent_scope
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     input.userId,
+    tenantId,
     input.date,
     sleepHours ?? null,
     sleepQuality ?? null,
@@ -159,24 +164,26 @@ export function recordReadinessEvent(
  */
 export function getLatestReadinessEvent(
   userId: number,
+  tenantId: number,
   asOfDate?: string,
 ): ReadinessEventRow | null {
   const db = getDb();
+  const scopedTenantId = requireTenantIdParam(tenantId, 'getLatestReadinessEvent');
   if (asOfDate) {
     const row = db.prepare(`
       SELECT * FROM athlete_readiness_events
-      WHERE user_id = ? AND date <= ?
+      WHERE user_id = ? AND tenant_id = ? AND date <= ?
       ORDER BY date DESC, created_at DESC
       LIMIT 1
-    `).get(userId, asOfDate) as ReadinessEventRow | undefined;
+    `).get(userId, scopedTenantId, asOfDate) as ReadinessEventRow | undefined;
     return row ?? null;
   }
   const row = db.prepare(`
     SELECT * FROM athlete_readiness_events
-    WHERE user_id = ?
+    WHERE user_id = ? AND tenant_id = ?
     ORDER BY date DESC, created_at DESC
     LIMIT 1
-  `).get(userId) as ReadinessEventRow | undefined;
+  `).get(userId, scopedTenantId) as ReadinessEventRow | undefined;
   return row ?? null;
 }
 
@@ -190,17 +197,19 @@ export function getLatestReadinessEvent(
  */
 export function getReadinessEventsInRange(
   userId: number,
+  tenantId: number,
   fromDate: string,
   toDate: string,
   limit = 60,
 ): ReadinessEventRow[] {
   const db = getDb();
+  const scopedTenantId = requireTenantIdParam(tenantId, 'getReadinessEventsInRange');
   return db.prepare(`
     SELECT * FROM athlete_readiness_events
-    WHERE user_id = ? AND date BETWEEN ? AND ?
+    WHERE user_id = ? AND tenant_id = ? AND date BETWEEN ? AND ?
     ORDER BY date DESC, created_at DESC
     LIMIT ?
-  `).all(userId, fromDate, toDate, Math.max(1, Math.min(limit, 1000))) as ReadinessEventRow[];
+  `).all(userId, scopedTenantId, fromDate, toDate, Math.max(1, Math.min(limit, 1000))) as ReadinessEventRow[];
 }
 
 /**
@@ -214,14 +223,15 @@ export function getReadinessEventsInRange(
  * sensitive payloads. Together these provide the "delete my health
  * history" primitive.
  */
-export function deleteReadinessHistoryForUser(userId: number): number {
+export function deleteReadinessHistoryForUser(userId: number, tenantId: number): number {
   const db = getDb();
+  const scopedTenantId = requireTenantIdParam(tenantId, 'deleteReadinessHistoryForUser');
   const result = db.prepare(
-    'DELETE FROM athlete_readiness_events WHERE user_id = ?',
-  ).run(userId);
+    'DELETE FROM athlete_readiness_events WHERE user_id = ? AND tenant_id = ?',
+  ).run(userId, scopedTenantId);
   if (result.changes > 0) {
     logger.info(
-      { userId, deleted: result.changes },
+      { userId, tenantId: scopedTenantId, deleted: result.changes },
       'readiness_events.delete_history',
     );
   }

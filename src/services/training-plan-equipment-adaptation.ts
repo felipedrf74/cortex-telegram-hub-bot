@@ -1,6 +1,11 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
 import type { CoordinatedTrainingPlan, CoordinatedTrainingSession } from './training-plan-coordination';
+import type { TrainingDecisionReason } from './coach-kernel/types';
+import {
+  resolveCanonicalEquipmentProfile,
+  type ResolvedEquipmentProfile,
+} from './training-equipment-vocabulary';
 
 export type TrainingEquipmentProfile =
   | 'full_gym'
@@ -12,12 +17,16 @@ export type TrainingEquipmentProfile =
 export interface TrainingEquipmentAdaptationInput {
   fitnessProfile?: Record<string, any> | null;
   gymProfile?: Record<string, any> | null;
+  conservativeUnknown?: boolean;
 }
 
 export interface TrainingEquipmentAdaptation {
   equipmentProfile: TrainingEquipmentProfile;
   promptBlock: string;
   summary: string;
+  canonicalProfile: ResolvedEquipmentProfile;
+  decisionReasons: TrainingDecisionReason[];
+  authority: 'legacy_route_adapter' | 'coach_kernel';
 }
 
 type ExerciseLike = {
@@ -164,11 +173,20 @@ const SUBSTITUTION_RULES: SubstitutionRule[] = [
 ];
 
 export function buildTrainingEquipmentAdaptation(input: TrainingEquipmentAdaptationInput): TrainingEquipmentAdaptation {
-  const equipmentProfile = normalizeEquipmentProfile(input);
+  const canonicalProfile = resolveCanonicalEquipmentProfile({
+    ...input,
+    recordConservativeDefaultMetric: input.conservativeUnknown !== false,
+  });
+  const equipmentProfile = normalizeEquipmentProfile(input, canonicalProfile);
   return {
     equipmentProfile,
-    summary: equipmentSummary(equipmentProfile),
+    canonicalProfile,
+    decisionReasons: canonicalProfile.decisionReasons,
+    summary: canonicalProfile.confidence === 'unknown'
+      ? canonicalProfile.summary
+      : equipmentSummary(equipmentProfile),
     promptBlock: equipmentPromptBlock(equipmentProfile),
+    authority: input.conservativeUnknown ? 'coach_kernel' : 'legacy_route_adapter',
   };
 }
 
@@ -244,31 +262,28 @@ function adaptExercise(exercise: ExerciseLike, equipmentProfile: TrainingEquipme
   return exercise;
 }
 
-function normalizeEquipmentProfile(input: TrainingEquipmentAdaptationInput): TrainingEquipmentProfile {
-  const raw = [
-    input.gymProfile?.equipment_access,
-    input.fitnessProfile?.available_equipment,
-    input.fitnessProfile?.equipment,
-  ]
-    .find((value) => typeof value === 'string' && value.trim().length > 0);
-
-  const normalized = String(raw || '').trim().toLowerCase();
-  if (normalized.includes('garage')) return 'garage_gym';
-  if (normalized.includes('full commercial') || normalized.includes('full gym') || normalized === 'full_gym') return 'full_gym';
-  if (normalized.includes('home gym') || normalized.includes('home_gym') || normalized.includes('basic')) return 'home_basic';
-  if (normalized.includes('resistance band') || normalized === 'bands' || normalized.includes('band')) return 'bands';
-  if (
-    normalized.includes('bodyweight') ||
-    normalized.includes('no equipment') ||
-    normalized.includes('no-equipment') ||
-    normalized.includes('without equipment') ||
-    normalized.includes('sem equipamento') ||
-    normalized.includes('peso corporal') ||
-    normalized === 'none'
-  ) {
-    return 'bodyweight';
+function normalizeEquipmentProfile(
+  input: TrainingEquipmentAdaptationInput,
+  canonicalProfile: ResolvedEquipmentProfile,
+): TrainingEquipmentProfile {
+  if (canonicalProfile.confidence === 'unknown') {
+    return input.conservativeUnknown ? 'bodyweight' : 'full_gym';
   }
-  return 'full_gym';
+
+  switch (canonicalProfile.bucket) {
+    case 'garage_gym':
+      return 'garage_gym';
+    case 'home_basic':
+    case 'hotel_gym':
+      return 'home_basic';
+    case 'bands':
+      return 'bands';
+    case 'bodyweight':
+      return 'bodyweight';
+    case 'full_gym':
+    default:
+      return 'full_gym';
+  }
 }
 
 function equipmentPromptBlock(profile: TrainingEquipmentProfile): string {

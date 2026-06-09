@@ -27,6 +27,7 @@ const mockReconcileOrphanedTrainingAgendaEvents = vi.fn();
 const mockLoggerWarn = vi.fn();
 const mockLoggerError = vi.fn();
 const mockIsConnected = vi.fn();
+const mockGetLatestHealthSignal = vi.fn();
 
 vi.mock('../../src/services/onboarding', () => ({
   getProfile: (...args: unknown[]) => mockGetProfile(...args),
@@ -101,6 +102,7 @@ vi.mock('../../src/api/routes/training-read-models', () => ({
 }));
 
 vi.mock('../../src/api/routes/training-plan-persistence', () => ({
+  finalizeGeneratedTrainingPlanForPersistence: (input: unknown) => input,
   lintGeneratedTrainingPlanPreflight: (...args: unknown[]) => (
     mockLintGeneratedTrainingPlanPreflight(...args)
   ),
@@ -129,6 +131,10 @@ vi.mock('../../src/services/oauth-store', () => ({
   isConnected: (...args: unknown[]) => mockIsConnected(...args),
 }));
 
+vi.mock('../../src/services/health-signals', () => ({
+  getLatestHealthSignal: (...args: unknown[]) => mockGetLatestHealthSignal(...args),
+}));
+
 vi.mock('../../src/utils/logger', () => ({
   logger: {
     warn: (...args: unknown[]) => mockLoggerWarn(...args),
@@ -146,6 +152,7 @@ import {
   generateTrainingPlanForUser,
   resolveTrainingPlanStartDate,
 } from '../../src/api/routes/training-plan-generation';
+import { config } from '../../src/config';
 
 function makePlan(title = 'Coach Plan') {
   return {
@@ -199,6 +206,10 @@ describe('generateTrainingPlanForUser', () => {
     mockLoggerWarn.mockReset();
     mockLoggerError.mockReset();
     mockIsConnected.mockReset();
+    mockGetLatestHealthSignal.mockReset();
+    mockGetLatestHealthSignal.mockReturnValue(null);
+    config.coaching.trainingSafetyGuardrailsEnabled = false;
+    config.coaching.coachKernelEquipmentAuthorityEnabled = false;
     mockIsConnected.mockReturnValue(true);
     // Slice 4.D.2 defaults — clean state, no orphans, no remaining plans.
     mockGetActivePlans.mockReturnValue([]);
@@ -265,6 +276,7 @@ describe('generateTrainingPlanForUser', () => {
 
     const result = await generateTrainingPlanForUser({
       userId: 12,
+      tenantId: 12,
       objective: 'Lisbon Marathon',
     });
 
@@ -295,6 +307,7 @@ describe('generateTrainingPlanForUser', () => {
 
     const result = await generateTrainingPlanForUser({
       userId: 12,
+      tenantId: 12,
       objective: 'General fitness',
     });
 
@@ -353,19 +366,20 @@ describe('generateTrainingPlanForUser', () => {
 
     await generateTrainingPlanForUser({
       userId: 12,
+      tenantId: 12,
       objective: 'Lisbon Marathon',
       sessionsPerWeek: 7,
       strengthSessionsPerWeek: 5,
     });
 
-    expect(mockBuildTrainingEquipmentAdaptation).toHaveBeenCalledWith({
+    expect(mockBuildTrainingEquipmentAdaptation).toHaveBeenCalledWith(expect.objectContaining({
       fitnessProfile: expect.objectContaining({
         available_equipment: 'Full gym',
       }),
       gymProfile: expect.objectContaining({
         equipment_access: 'Full commercial gym',
       }),
-    });
+    }));
     expect(mockBuildCoachKernelTrainingPlan).toHaveBeenCalledWith(expect.objectContaining({
       fitnessProfile: expect.objectContaining({
         experience_level: 'Advanced (3+ years)',
@@ -396,6 +410,7 @@ describe('generateTrainingPlanForUser', () => {
 
     const result = await generateTrainingPlanForUser({
       userId: 12,
+      tenantId: 12,
       objective: 'Porto Marathon',
     });
 
@@ -422,6 +437,7 @@ describe('generateTrainingPlanForUser', () => {
 
     const result = await generateTrainingPlanForUser({
       userId: 12,
+      tenantId: 12,
       objective: 'Lisbon Marathon',
       durationWeeks: 6,
       preferredTime: 'not-a-time',
@@ -475,7 +491,7 @@ describe('generateTrainingPlanForUser', () => {
       currentReadiness: { score: 76 },
       startDate: '2026-04-20',
     }));
-    expect(mockCancelTrainingPlanForUser).toHaveBeenCalledWith(12);
+    expect(mockCancelTrainingPlanForUser).toHaveBeenCalledWith(12, undefined, { tenantId: 12 });
 
     const persistInput = mockPersistGeneratedTrainingPlan.mock.calls[0][0];
     expect(persistInput.busyWindows).toEqual([
@@ -493,6 +509,100 @@ describe('generateTrainingPlanForUser', () => {
     });
   });
 
+  it('pauses generated sessions before persistence when structured safety guardrail blocks training', async () => {
+    config.coaching.trainingSafetyGuardrailsEnabled = true;
+    mockGetLatestHealthSignal.mockReturnValue({
+      id: 1,
+      user_id: 12,
+      tenant_id: 12,
+      date: '2026-04-18',
+      pain_score: null,
+      pain_location: null,
+      illness_symptoms_json: JSON.stringify(['chest_pain']),
+      injury_status: null,
+      menstrual_status: null,
+      energy_availability_risk: null,
+      source: 'structured_intake',
+      consent_scope: 'illness',
+      created_at: '2026-04-18T10:00:00.000Z',
+    });
+
+    const result = await generateTrainingPlanForUser({
+      userId: 12,
+      tenantId: 12,
+      objective: 'General fitness',
+    });
+
+    expect(result.status).toBe('created');
+    expect(mockGetLatestHealthSignal).toHaveBeenCalledWith(12, 12);
+    const persistInput = mockPersistGeneratedTrainingPlan.mock.calls[0][0];
+    expect(persistInput.planData.weeks[0].sessions[0]).toMatchObject({
+      sessionType: 'rest',
+      title: 'Safety pause',
+      durationMinutes: 0,
+      scheduleState: 'deferred',
+    });
+    expect(persistInput.planData.weeks[0].sessions[0].scheduleReason).toMatch(/consult a qualified healthcare professional/i);
+    expect(result.data).toMatchObject({
+      trainingSafety: {
+        status: 'blocked',
+        reasonCode: 'medical_referral',
+      },
+    });
+    expect(result.data.warnings).toContainEqual(expect.objectContaining({
+      code: 'safety_guardrail_blocked',
+    }));
+  });
+
+  it('skips route-level equipment mutation when coach-kernel equipment authority is enabled', async () => {
+    config.coaching.coachKernelEquipmentAuthorityEnabled = true;
+    const equipmentDecisionReason = {
+      code: 'equipment_conservative_default',
+      text: 'I used bodyweight-safe options because your available equipment is unknown.',
+      severity: 'notice',
+      affectedEntity: { type: 'week' },
+      sourceConstraint: { type: 'equipment', label: 'unknown equipment' },
+      evidence: ['equipment_missing'],
+    };
+    mockBuildTrainingEquipmentAdaptation.mockReturnValue({
+      equipmentProfile: 'bodyweight',
+      summary: 'Bodyweight-safe default',
+      promptBlock: '- bodyweight safe',
+      authority: 'coach_kernel',
+      canonicalProfile: {
+        profileId: 'equipment-vocabulary-v1:unknown_conservative',
+        bucket: 'bodyweight',
+        items: ['bodyweight', 'floor_space', 'mobility_mat'],
+        confidence: 'unknown',
+        source: 'default',
+        matchedAliases: [],
+        summary: 'Bodyweight-safe default',
+        decisionReasons: [equipmentDecisionReason],
+      },
+      decisionReasons: [equipmentDecisionReason],
+    });
+
+    const result = await generateTrainingPlanForUser({
+      userId: 12,
+      tenantId: 12,
+      objective: 'General fitness',
+    });
+
+    expect(result.status).toBe('created');
+    expect(mockBuildTrainingEquipmentAdaptation).toHaveBeenCalledWith(expect.objectContaining({
+      conservativeUnknown: true,
+    }));
+    expect(mockAdaptTrainingPlanToAvailableEquipment).not.toHaveBeenCalled();
+    const persistInput = mockPersistGeneratedTrainingPlan.mock.calls[0][0];
+    expect(persistInput.equipmentProfile).toBe('bodyweight');
+    expect(persistInput.planData.decisionReasons).toContainEqual(expect.objectContaining({
+      code: 'equipment_conservative_default',
+    }));
+    expect(result.data.decisionReasons).toContainEqual(expect.objectContaining({
+      code: 'equipment_conservative_default',
+    }));
+  });
+
   it('resolves default plan starts to the next full training week unless today is requested', () => {
     expect(resolveTrainingPlanStartDate(new Date('2026-04-17T10:00:00.000Z'), 'next_full_week')).toBe('2026-04-20');
     expect(resolveTrainingPlanStartDate(new Date('2026-04-17T10:00:00.000Z'), 'today')).toBe('2026-04-17');
@@ -502,6 +612,7 @@ describe('generateTrainingPlanForUser', () => {
   it('persists the requested training calendar source for generation and follow-up sync', async () => {
     const result = await generateTrainingPlanForUser({
       userId: 12,
+      tenantId: 12,
       objective: 'Lisbon Marathon',
       calendarSource: 'google',
     });
@@ -517,6 +628,7 @@ describe('generateTrainingPlanForUser', () => {
   it('returns a non-mutating preview using the selected calendar source', async () => {
     const result = await generateTrainingPlanForUser({
       userId: 12,
+      tenantId: 12,
       objective: 'Lisbon Marathon',
       calendarSource: 'outlook',
       previewOnly: true,
@@ -549,6 +661,7 @@ describe('generateTrainingPlanForUser', () => {
 
     const result = await generateTrainingPlanForUser({
       userId: 12,
+      tenantId: 12,
       objective: 'General running consistency',
       durationWeeks: 4,
       sessionsPerWeek: 5,
@@ -577,6 +690,7 @@ describe('generateTrainingPlanForUser', () => {
 
     const result = await generateTrainingPlanForUser({
       userId: 12,
+      tenantId: 12,
       objective: 'Build consistency',
     });
 
@@ -598,6 +712,7 @@ describe('generateTrainingPlanForUser', () => {
 
     const result = await generateTrainingPlanForUser({
       userId: 12,
+      tenantId: 12,
       objective: 'Build consistency',
     });
 
@@ -633,6 +748,7 @@ describe('generateTrainingPlanForUser', () => {
 
     const result = await generateTrainingPlanForUser({
       userId: 12,
+      tenantId: 12,
       objective: 'Build consistency',
       sessionsPerWeek: 5,
       strengthSessionsPerWeek: 2,
@@ -667,6 +783,7 @@ describe('generateTrainingPlanForUser', () => {
 
     const result = await generateTrainingPlanForUser({
       userId: 12,
+      tenantId: 12,
       objective: 'Build consistency',
     });
 
@@ -682,6 +799,7 @@ describe('generateTrainingPlanForUser', () => {
   it('preserves legacy zero-value session fallback semantics', async () => {
     await generateTrainingPlanForUser({
       userId: 12,
+      tenantId: 12,
       objective: 'Build consistency',
       sessionsPerWeek: 0,
       strengthSessionsPerWeek: 0,
@@ -696,6 +814,7 @@ describe('generateTrainingPlanForUser', () => {
   it('normalizes fractional and out-of-range frequency inputs before planning', async () => {
     const result = await generateTrainingPlanForUser({
       userId: 12,
+      tenantId: 12,
       objective: 'Olympic triathlon',
       durationWeeks: 4.4,
       sessionsPerWeek: 4.5,
@@ -727,6 +846,7 @@ describe('generateTrainingPlanForUser', () => {
   it('bounds durationWeeks and records the generator policy version', async () => {
     const result = await generateTrainingPlanForUser({
       userId: 12,
+      tenantId: 12,
       objective: 'Build consistency',
       durationWeeks: 999,
     });
@@ -737,16 +857,25 @@ describe('generateTrainingPlanForUser', () => {
     }));
     expect((result as any).data.durationWeeks).toBe(52);
     expect((result as any).data.generatorPolicyVersion).toBe(TRAINING_PLAN_GENERATOR_POLICY_VERSION);
+    expect((result as any).data.generationVersionPins).toMatchObject({
+      selectorPolicyVersion: 'selector-policy-v2',
+      equipmentVocabularyVersion: 'equipment-vocabulary-v1',
+      generationPipelineVersion: 'training-generation-pipeline-v1',
+    });
 
     const persistInput = mockPersistGeneratedTrainingPlan.mock.calls[0][0];
     expect(JSON.parse(persistInput.preferencesJson)).toMatchObject({
       generatorPolicyVersion: TRAINING_PLAN_GENERATOR_POLICY_VERSION,
+      generationVersionPins: expect.objectContaining({
+        selectorPolicyVersion: 'selector-policy-v2',
+      }),
     });
   });
 
   it('respects the requested gym volume for English muscle-building goals', async () => {
     await generateTrainingPlanForUser({
       userId: 12,
+      tenantId: 12,
       objective: 'Muscle Building',
       sessionsPerWeek: 5,
       strengthSessionsPerWeek: 2,
@@ -766,6 +895,7 @@ describe('generateTrainingPlanForUser', () => {
   it('passes explicit five-day strength volume through the app-facing marathon generation route', async () => {
     await generateTrainingPlanForUser({
       userId: 12,
+      tenantId: 12,
       objective: 'Lisbon Marathon',
       sessionsPerWeek: 6,
       strengthSessionsPerWeek: 5,
@@ -791,6 +921,7 @@ describe('generateTrainingPlanForUser', () => {
   it('passes explicit bike and swim targets through the app-facing triathlon route', async () => {
     const result = await generateTrainingPlanForUser({
       userId: 12,
+      tenantId: 12,
       objective: 'Olympic triathlon',
       sessionsPerWeek: 7,
       runSessionsPerWeek: 4,
@@ -829,6 +960,7 @@ describe('generateTrainingPlanForUser', () => {
   it('forwards explicit goal mode, priority, and race date from the app request', async () => {
     const result = await generateTrainingPlanForUser({
       userId: 12,
+      tenantId: 12,
       objective: 'Lisbon Marathon',
       sessionsPerWeek: 7,
       strengthSessionsPerWeek: 5,
@@ -870,6 +1002,7 @@ describe('generateTrainingPlanForUser', () => {
   it('drops unsupported goal mode and priority before planning', async () => {
     const result = await generateTrainingPlanForUser({
       userId: 12,
+      tenantId: 12,
       objective: 'General running consistency',
       goalMode: 'race',
       trainingPriority: 'bodybuilding',
@@ -895,6 +1028,7 @@ describe('generateTrainingPlanForUser', () => {
   it('blocks impossible race dates before planning', async () => {
     const result = await generateTrainingPlanForUser({
       userId: 12,
+      tenantId: 12,
       objective: 'Lisbon Marathon',
       raceDate: '2026-02-30',
     });
@@ -941,6 +1075,7 @@ describe('generateTrainingPlanForUser', () => {
 
       const result = await generateTrainingPlanForUser({
         userId: 12,
+        tenantId: 12,
         objective: 'Lisbon Marathon',
         sessionsPerWeek: 5,
         strengthSessionsPerWeek: 2,
@@ -974,6 +1109,7 @@ describe('generateTrainingPlanForUser', () => {
 
       const result = await generateTrainingPlanForUser({
         userId: 12,
+        tenantId: 12,
         objective: 'Lisbon Marathon',
         sessionsPerWeek: 5,
         strengthSessionsPerWeek: 2,
@@ -992,6 +1128,7 @@ describe('generateTrainingPlanForUser', () => {
       // Default mock from beforeEach already returns 'not_found'.
       const result = await generateTrainingPlanForUser({
         userId: 12,
+        tenantId: 12,
         objective: 'Lisbon Marathon',
         sessionsPerWeek: 5,
         strengthSessionsPerWeek: 2,

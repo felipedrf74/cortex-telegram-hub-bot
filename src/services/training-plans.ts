@@ -11,6 +11,7 @@ import { DateTime } from 'luxon';
 import { getDb } from './database';
 import { logger } from '../utils/logger';
 import { config } from '../config';
+import { requireTenantIdParam } from './tenant-scope';
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -148,7 +149,7 @@ export interface TrainingCompletion {
 
 export interface CreatePlanInput {
   user_id: number;
-  tenant_id?: number | null;
+  tenant_id: number;
   name: string;
   sport: string;
   goal?: string;
@@ -261,7 +262,7 @@ function canonicalDayOfWeek(value: string): string {
 
 export function createPlan(input: CreatePlanInput): TrainingPlan {
   const db = getDb();
-  const tenantId = input.tenant_id && input.tenant_id > 0 ? input.tenant_id : input.user_id;
+  const tenantId = requireTenantIdParam(input.tenant_id, 'createPlan');
   const result = db.prepare(`
     INSERT INTO fitness_training_plans
       (user_id, tenant_id, name, sport, goal, duration_weeks, periodization, start_date, end_date, preferences_json)
@@ -283,31 +284,17 @@ export function createPlan(input: CreatePlanInput): TrainingPlan {
  * That made the tenant-id work on these tables cosmetic — cross-tenant
  * reads were silently allowed when the caller forgot to scope.
  *
- * The fix is additive: tenantId remains optional for back-compat (~25
- * existing call sites), but when provided we filter by both user_id AND
- * tenant_id. Unscoped callers now log a warning so the remaining sites
- * can be migrated one-by-one to thread tenantId from `assertTenantScope`.
- * The follow-up plan should remove the optional-tenantId branch entirely
- * once all callers are updated.
+ * The follow-up hardening pass removed the optional-tenant fallback.
+ * Callers must now pass a validated tenantId for every production read.
  */
-export function getActivePlan(userId: number, tenantId?: number): TrainingPlan | null {
+export function getActivePlan(userId: number, tenantId: number): TrainingPlan | null {
   const db = getDb();
-  if (typeof tenantId === 'number' && tenantId > 0) {
-    return (db.prepare(`
-      SELECT * FROM fitness_training_plans
-      WHERE user_id = ? AND tenant_id = ? AND status = 'active'
-      ORDER BY created_at DESC LIMIT 1
-    `).get(userId, tenantId) as TrainingPlan | undefined) ?? null;
-  }
-  logger.warn(
-    { userId, op: 'getActivePlan' },
-    'training.getActivePlan called without tenantId; falling back to userId-only scope (P0-3 follow-up)',
-  );
+  const scopedTenantId = requireTenantIdParam(tenantId, 'getActivePlan');
   return (db.prepare(`
     SELECT * FROM fitness_training_plans
-    WHERE user_id = ? AND status = 'active'
+    WHERE user_id = ? AND tenant_id = ? AND status = 'active'
     ORDER BY created_at DESC LIMIT 1
-  `).get(userId) as TrainingPlan | undefined) ?? null;
+  `).get(userId, scopedTenantId) as TrainingPlan | undefined) ?? null;
 }
 
 /**
@@ -317,36 +304,26 @@ export function getActivePlan(userId: number, tenantId?: number): TrainingPlan |
  *
  * See `getActivePlan` for the tenant_id scoping rationale.
  */
-export function getActivePlans(userId: number, tenantId?: number): TrainingPlan[] {
+export function getActivePlans(userId: number, tenantId: number): TrainingPlan[] {
   const db = getDb();
-  if (typeof tenantId === 'number' && tenantId > 0) {
-    return db.prepare(`
-      SELECT * FROM fitness_training_plans
-      WHERE user_id = ? AND tenant_id = ? AND status = 'active'
-      ORDER BY sport, created_at DESC
-    `).all(userId, tenantId) as TrainingPlan[];
-  }
-  logger.warn(
-    { userId, op: 'getActivePlans' },
-    'training.getActivePlans called without tenantId; falling back to userId-only scope (P0-3 follow-up)',
-  );
+  const scopedTenantId = requireTenantIdParam(tenantId, 'getActivePlans');
   return db.prepare(`
     SELECT * FROM fitness_training_plans
-    WHERE user_id = ? AND status = 'active'
+    WHERE user_id = ? AND tenant_id = ? AND status = 'active'
     ORDER BY sport, created_at DESC
-  `).all(userId) as TrainingPlan[];
+  `).all(userId, scopedTenantId) as TrainingPlan[];
 }
 
 /**
  * Get the total weekly training load across ALL active plans.
  * Used for overtraining prevention when creating a new plan.
  */
-export function getCrossplanWeeklyLoad(userId: number): {
+export function getCrossplanWeeklyLoad(userId: number, tenantId: number): {
   totalSessions: number;
   bySport: Record<string, number>;
   totalMinutes: number;
 } {
-  const plans = getActivePlans(userId);
+  const plans = getActivePlans(userId, tenantId);
   const result = { totalSessions: 0, bySport: {} as Record<string, number>, totalMinutes: 0 };
 
   for (const plan of plans) {
@@ -416,7 +393,7 @@ export function updatePlanPreferences(planId: number, preferencesJson: string): 
  * Returns row counts so the route can report what was actually
  * removed in the response payload (audit + UI feedback).
  */
-export function deletePlanHard(planId: number, userId: number, tenantId?: number | null): {
+export function deletePlanHard(planId: number, userId: number, tenantId: number): {
   ok: boolean;
   removedPlans: number;
   removedWeeks: number;
@@ -424,6 +401,7 @@ export function deletePlanHard(planId: number, userId: number, tenantId?: number
   removedCompletions: number;
 } {
   const db = getDb();
+  const scopedTenantId = requireTenantIdParam(tenantId, 'deletePlanHard');
 
   const weeksCount = (db.prepare('SELECT COUNT(*) AS n FROM training_weeks WHERE plan_id = ?')
     .get(planId) as { n: number } | undefined)?.n ?? 0;
@@ -432,17 +410,12 @@ export function deletePlanHard(planId: number, userId: number, tenantId?: number
   const completionsCount = (db.prepare('SELECT COUNT(*) AS n FROM training_completions WHERE plan_id = ?')
     .get(planId) as { n: number } | undefined)?.n ?? 0;
 
-  // Scope the DELETE to (id, user_id) so a stale planId from another
-  // tenant cannot accidentally remove someone else's plan even if the
-  // caller's ownership gate is bypassed in the future.
-  const scopedTenantId = Number(tenantId);
-  const result = Number.isFinite(scopedTenantId) && scopedTenantId > 0
-    ? db.prepare(`
-        DELETE FROM fitness_training_plans WHERE id = ? AND user_id = ? AND tenant_id = ?
-      `).run(planId, userId, Math.trunc(scopedTenantId))
-    : db.prepare(`
-        DELETE FROM fitness_training_plans WHERE id = ? AND user_id = ?
-      `).run(planId, userId);
+  // Scope the DELETE to (id, user_id, tenant_id) so a stale planId from
+  // another tenant cannot remove someone else's plan even if the caller's
+  // ownership gate is bypassed in the future.
+  const result = db.prepare(`
+    DELETE FROM fitness_training_plans WHERE id = ? AND user_id = ? AND tenant_id = ?
+  `).run(planId, userId, scopedTenantId);
 
   const removedPlans = result.changes;
   return {
@@ -604,16 +577,18 @@ export function linkSessionToCalendar(sessionId: number, eventId: string, source
 }
 
 export interface TrainingSessionCalendarLookupScope {
-  userId?: number | null;
-  tenantId?: number | null;
+  userId: number;
+  tenantId: number;
 }
 
 export function getSessionByCalendarEvent(
   eventId: string,
-  source?: string | null,
-  scope?: TrainingSessionCalendarLookupScope,
+  source: string | null | undefined,
+  scope: TrainingSessionCalendarLookupScope,
 ): TrainingSession | null {
   const db = getDb();
+  const scopedUserId = requireTenantIdParam(scope.userId, 'getSessionByCalendarEvent.userId');
+  const scopedTenantId = requireTenantIdParam(scope.tenantId, 'getSessionByCalendarEvent');
   const clauses = ['ts.calendar_event_id = ?'];
   const values: any[] = [eventId];
 
@@ -621,14 +596,10 @@ export function getSessionByCalendarEvent(
     clauses.push('ts.calendar_source = ?');
     values.push(source);
   }
-  if (scope?.userId != null) {
-    clauses.push('ftp.user_id = ?');
-    values.push(scope.userId);
-  }
-  if (scope?.tenantId != null) {
-    clauses.push('ftp.tenant_id = ?');
-    values.push(scope.tenantId);
-  }
+  clauses.push('ftp.user_id = ?');
+  values.push(scopedUserId);
+  clauses.push('ftp.tenant_id = ?');
+  values.push(scopedTenantId);
 
   const row = db.prepare(`
     SELECT ts.* FROM training_sessions ts
@@ -644,8 +615,8 @@ export function getSessionByCalendarEvent(
 export function syncSessionWithCoachRecommendation(rec: {
   eventId: string;
   source?: string | null;
-  userId?: number | null;
-  tenantId?: number | null;
+  userId: number;
+  tenantId: number;
   timezone?: string | null;
   action: 'KEEP' | 'MODIFY' | 'SWAP' | 'REST';
   newTitle?: string | null;
@@ -871,8 +842,8 @@ export function computeAdjustmentRecommendation(stats: WeeklyAdherenceStats): {
 /**
  * Get a summary of the active training plan for state context injection.
  */
-export function getActivePlanSummary(userId: number): string | null {
-  const plan = getActivePlan(userId);
+export function getActivePlanSummary(userId: number, tenantId: number): string | null {
+  const plan = getActivePlan(userId, tenantId);
   if (!plan) return null;
 
   const currentWeek = getCurrentWeek(plan.id);
@@ -918,23 +889,23 @@ export function getActivePlanSummary(userId: number): string | null {
 /**
  * Get plan stats for portal display.
  */
-export function getPlanStats(userId: number): {
+export function getPlanStats(userId: number, tenantId: number): {
   activePlans: number;
   totalCompletedSessions: number;
   currentWeekAdherence: number;
   currentPlanName: string | null;
 } {
   const db = getDb();
-  const activePlan = getActivePlan(userId);
+  const activePlan = getActivePlan(userId, tenantId);
 
   const activePlans = (db.prepare(`
-    SELECT COUNT(*) as cnt FROM fitness_training_plans WHERE user_id = ? AND status = 'active'
-  `).get(userId) as { cnt: number }).cnt;
+    SELECT COUNT(*) as cnt FROM fitness_training_plans WHERE user_id = ? AND tenant_id = ? AND status = 'active'
+  `).get(userId, tenantId) as { cnt: number }).cnt;
 
   const totalCompleted = (db.prepare(`
     SELECT COUNT(*) as cnt FROM training_completions
-    WHERE plan_id IN (SELECT id FROM fitness_training_plans WHERE user_id = ?)
-  `).get(userId) as { cnt: number }).cnt;
+    WHERE plan_id IN (SELECT id FROM fitness_training_plans WHERE user_id = ? AND tenant_id = ?)
+  `).get(userId, tenantId) as { cnt: number }).cnt;
 
   let adherence = 0;
   if (activePlan) {

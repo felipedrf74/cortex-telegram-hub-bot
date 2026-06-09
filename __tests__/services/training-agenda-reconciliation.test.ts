@@ -70,7 +70,7 @@ describe('training-agenda-reconciliation', () => {
       },
     ]);
 
-    const result = await reconcileOrphanedTrainingAgendaEvents(42);
+    const result = await reconcileOrphanedTrainingAgendaEvents(42, 42);
 
     expect(result).toEqual({ attempted: 1, deleted: 1, failed: 0 });
     expect(mocks.deleteEvent).toHaveBeenCalledWith('evt-old', 'google', 42);
@@ -103,7 +103,7 @@ describe('training-agenda-reconciliation', () => {
       },
     ]);
 
-    const result = await reconcileOrphanedTrainingAgendaEvents(42);
+    const result = await reconcileOrphanedTrainingAgendaEvents(42, 42);
 
     expect(result).toEqual({ attempted: 1, deleted: 1, failed: 0 });
     expect(mocks.deleteEvent).toHaveBeenCalledWith('evt-active-orphan', 'google', 42);
@@ -137,7 +137,7 @@ describe('training-agenda-reconciliation', () => {
     ]);
     mocks.deleteEvent.mockRejectedValueOnce(new Error('provider timeout'));
 
-    const result = await reconcileOrphanedTrainingAgendaEvents(42);
+    const result = await reconcileOrphanedTrainingAgendaEvents(42, 42);
 
     expect(result).toEqual({ attempted: 1, deleted: 0, failed: 1 });
     expect(mocks.markCalendarOwnershipDeleted).not.toHaveBeenCalled();
@@ -172,7 +172,7 @@ describe('training-agenda-reconciliation', () => {
       }))
       .mockResolvedValueOnce(undefined);
 
-    const result = await reconcileOrphanedTrainingAgendaEvents(42);
+    const result = await reconcileOrphanedTrainingAgendaEvents(42, 42);
 
     expect(result).toEqual({ attempted: 1, deleted: 1, failed: 0 });
     expect(mocks.deleteEvent).toHaveBeenCalledTimes(2);
@@ -220,7 +220,7 @@ describe('training-agenda-reconciliation', () => {
     ]);
     mocks.deleteEvent.mockRejectedValueOnce(providerError);
 
-    const result = await reconcileOrphanedTrainingAgendaEvents(42);
+    const result = await reconcileOrphanedTrainingAgendaEvents(42, 42);
 
     expect(result).toEqual({ attempted: 1, deleted: 1, failed: 0 });
     expect(mocks.markCalendarOwnershipDeleted).toHaveBeenCalledWith({
@@ -254,7 +254,7 @@ describe('training-agenda-reconciliation', () => {
     ]);
     mocks.deleteEvent.mockRejectedValueOnce(new Error('User not found'));
 
-    const result = await reconcileOrphanedTrainingAgendaEvents(42);
+    const result = await reconcileOrphanedTrainingAgendaEvents(42, 42);
 
     expect(result).toEqual({ attempted: 1, deleted: 0, failed: 1 });
     expect(mocks.markCalendarOwnershipDeleted).not.toHaveBeenCalled();
@@ -282,7 +282,7 @@ describe('training-agenda-reconciliation', () => {
     ]);
     mocks.deleteEvent.mockRejectedValueOnce(new Error('provider timeout'));
 
-    const result = await reconcileOrphanedTrainingAgendaEvents(42);
+    const result = await reconcileOrphanedTrainingAgendaEvents(42, 42);
 
     expect(result).toEqual({ attempted: 1, deleted: 0, failed: 1 });
     expect(mocks.markCalendarOwnershipDeleted).toHaveBeenCalledWith({
@@ -315,7 +315,7 @@ describe('training-agenda-reconciliation', () => {
     ]);
     mocks.getPlanById.mockReturnValue(null);
 
-    const result = await reconcileOrphanedTrainingAgendaEvents(42);
+    const result = await reconcileOrphanedTrainingAgendaEvents(42, 42);
 
     expect(result).toEqual({ attempted: 1, deleted: 1, failed: 0 });
     expect(mocks.deleteEvent).toHaveBeenCalledWith('legacy-secretary-event', 'google', 42);
@@ -335,7 +335,7 @@ describe('training-agenda-reconciliation', () => {
     ]);
     mocks.getPlanById.mockReturnValue({ id: 43, user_id: 42, status: 'active' });
 
-    const result = await reconcileOrphanedTrainingAgendaEvents(42);
+    const result = await reconcileOrphanedTrainingAgendaEvents(42, 42);
 
     expect(result).toEqual({ attempted: 0, deleted: 0, failed: 0 });
     expect(mocks.deleteEvent).not.toHaveBeenCalled();

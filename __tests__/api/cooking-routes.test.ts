@@ -1050,6 +1050,7 @@ describe('Cooking API — shopping list item updates', () => {
 
     const plan = createPlan({
       user_id: user.id,
+      tenant_id: user.id,
       name: 'Run plan',
       sport: 'running',
       duration_weeks: 2,
@@ -1086,6 +1087,7 @@ describe('Cooking API — shopping list item updates', () => {
 
     const plan = createPlan({
       user_id: user.id,
+      tenant_id: user.id,
       name: 'Strength plan',
       sport: 'strength',
       duration_weeks: 2,

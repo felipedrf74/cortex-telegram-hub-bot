@@ -566,7 +566,7 @@ function buildTrainingSchedule(
   windowDays: number,
 ): Map<string, { load: TrainingLoad; scorePenalty: number; reasons: string[] }> {
   const byDate = new Map<string, { load: TrainingLoad; scorePenalty: number; reasons: string[] }>();
-  const plans = getActivePlans(userId);
+  const plans = getActivePlans(userId, userId);
 
   for (const plan of plans) {
     const weeks = getWeeksForPlan(plan.id);

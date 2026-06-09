@@ -604,7 +604,7 @@ export function buildPortalSnapshot(startedAt: number): PortalSnapshotResponse {
     const { getPlanStats } = require('../services/training-plans');
     const userId = getPortalTrainingStatsUserId();
     if (userId) {
-      trainingPlans = getPlanStats(userId);
+      trainingPlans = getPlanStats(userId, userId);
     }
   } catch { /* table may not exist yet */ }
 

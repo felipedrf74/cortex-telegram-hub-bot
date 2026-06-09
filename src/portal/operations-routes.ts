@@ -8,6 +8,7 @@ import { getSpendByProvider } from '../services/cost-guardrail';
 import { getFastpathMetrics, getFastpathPatterns } from '../services/secretary-fastpath';
 import { getQualityByAgent } from '../services/quality-scorer';
 import { getRecentExecutions, getTaskExecutionSummary } from '../services/task-metrics';
+import { getTrainingGenerationObservabilitySnapshot } from '../services/training-generation-observability';
 import {
   acknowledgeOperatorAlert,
   getOperatorAlertDeliverySummary,
@@ -135,6 +136,25 @@ export function registerPortalOperationsRoutes(app: Express, deps: PortalOperati
       res.json({ ok: true, summary, recent });
     } catch (err) {
       sendPortalInternalError(res, err, 'Portal request failed', 'Portal: request failed');
+    }
+  });
+
+  app.get('/api/training-generation-metrics', (_req: Request, res: Response) => {
+    try {
+      res.json({
+        ok: true,
+        training: getTrainingGenerationObservabilitySnapshot(),
+      });
+    } catch (err) {
+      logger.error({ err }, 'Portal: training generation metrics failed');
+      res.json({
+        ok: false,
+        message: 'Training generation metrics unavailable',
+        training: {
+          counters: {},
+          progression_state_counts: {},
+        },
+      });
     }
   });
 

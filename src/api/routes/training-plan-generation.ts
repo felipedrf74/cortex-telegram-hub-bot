@@ -14,6 +14,7 @@ import { buildSharedDecisionContext } from '../../services/shared-decision-conte
 import {
   adaptTrainingPlanToAvailableEquipment,
   buildTrainingEquipmentAdaptation,
+  type TrainingEquipmentAdaptation,
 } from '../../services/training-plan-equipment-adaptation';
 import { getEvents, getEventsForSources } from '../../services/unified-calendar';
 import {
@@ -39,11 +40,18 @@ import {
 import { buildDeterministicTrainingPlan } from './training-fallback-plan';
 import { fetchCurrentReadinessForPlan } from './training-read-models';
 import {
+  finalizeGeneratedTrainingPlanForPersistence,
   lintGeneratedTrainingPlanPreflight,
   persistGeneratedTrainingPlan,
 } from './training-plan-persistence';
 import { cancelTrainingPlanForUser } from './training-plan-cancellation';
 import { enforceRequestedTrainingPlanVolume } from '../../services/training-plan-volume-enforcement';
+import { EQUIPMENT_VOCABULARY_VERSION } from '../../services/training-equipment-vocabulary';
+import {
+  GENERATION_PIPELINE_VERSION,
+  loadTrainingCatalogSnapshot,
+} from '../../services/coach-kernel/training-catalog';
+import { STRENGTH_SELECTOR_POLICY_VERSION } from '../../services/coach-kernel/strength-selector';
 import * as trainingPlans from '../../services/training-plans';
 import { findOrphanedOwnerships } from '../../services/training-plan-lifecycle';
 import { reconcileOrphanedTrainingAgendaEvents } from '../../services/training-agenda-reconciliation';
@@ -52,12 +60,34 @@ import { isPastIsoDate, isStrictIsoDate } from '../../services/training-date-uti
 import { logger } from '../../utils/logger';
 import type { CalendarSource } from '../../services/unified-calendar';
 import type { PlanLintResult } from '../../services/coach-kernel/plan-linter';
+import type {
+  CapacityWindow,
+  HealthSignal,
+  TrainingDecisionReason,
+  TrainingDecisionReasonCode,
+} from '../../services/coach-kernel/types';
+import { requireTenantIdParam } from '../../services/tenant-scope';
+import { getLatestHealthSignal, type HealthSignalRow } from '../../services/health-signals';
+import { incrementTrainingGenerationCounter } from '../../services/training-generation-observability';
+import {
+  deriveSafetyTriggerFromSignal,
+  wireHealthSignalToSafety,
+  type WireHealthSignalOutput,
+} from '../../services/coach-kernel/safety-wiring';
 
 export const TRAINING_PLAN_GENERATOR_POLICY_VERSION = 'training-plan-shape-v2';
 
+type TrainingGenerationVersionPins = {
+  catalogVersion: string;
+  sciencePolicyVersion: string;
+  selectorPolicyVersion: string;
+  equipmentVocabularyVersion: string;
+  generationPipelineVersion: string;
+};
+
 export interface GenerateTrainingPlanForUserInput {
   userId: number;
-  tenantId?: number;
+  tenantId: number;
   objective: string;
   durationWeeks?: number;
   preferredTime?: string;
@@ -86,6 +116,12 @@ export interface GenerateTrainingPlanForUserInput {
 }
 
 export type TrainingPlanStartPolicy = 'next_full_week' | 'today';
+
+export interface TrainingSafetyGenerationSummary {
+  status: 'pass' | 'warning' | 'blocked';
+  message: string;
+  reasonCode: TrainingDecisionReasonCode | null;
+}
 
 export type TrainingPlanGenerationResult =
   | {
@@ -120,6 +156,8 @@ export type TrainingPlanGenerationResult =
         trainingPriority: TrainingPriority | null;
         raceDate: string | null;
         generatorPolicyVersion: string;
+        generationVersionPins: TrainingGenerationVersionPins;
+        trainingSafety?: TrainingSafetyGenerationSummary | null;
       };
     }
   | {
@@ -148,6 +186,8 @@ export type TrainingPlanGenerationResult =
         trainingPriority: TrainingPriority | null;
         raceDate: string | null;
         generatorPolicyVersion: string;
+        generationVersionPins: TrainingGenerationVersionPins;
+        trainingSafety?: TrainingSafetyGenerationSummary | null;
       };
     }
   /**
@@ -165,6 +205,7 @@ export type TrainingPlanGenerationResult =
         message: string;
         reason: string;
         activePlansRemaining: number;
+        generationVersionPins: TrainingGenerationVersionPins;
       };
     };
 
@@ -199,11 +240,9 @@ type CancellationSagaOutcome =
 
 async function runPrePersistCancellationSaga(userId: number, tenantId: number): Promise<CancellationSagaOutcome> {
   try {
-    const cancellation = tenantId === userId
-      ? await cancelTrainingPlanForUser(userId)
-      : await cancelTrainingPlanForUser(userId, undefined, { tenantId });
+    const cancellation = await cancelTrainingPlanForUser(userId, undefined, { tenantId });
     if (cancellation.status === 'not_found') {
-      const reconciliation = await reconcileOrphanedTrainingAgendaEvents(userId);
+      const reconciliation = await reconcileOrphanedTrainingAgendaEvents(userId, tenantId);
       if (reconciliation.failed > 0) {
         return { kind: 'external_partial', orphanedEventCount: reconciliation.failed };
       }
@@ -213,8 +252,8 @@ async function runPrePersistCancellationSaga(userId: number, tenantId: number): 
     // 4.D ownership audit table tells us whether any external calendar
     // deletes failed (status='orphaned' rows). Those are reconcilable;
     // the saga can safely proceed.
-    const reconciliation = await reconcileOrphanedTrainingAgendaEvents(userId);
-    const orphans = findOrphanedOwnerships(userId, userId);
+    const reconciliation = await reconcileOrphanedTrainingAgendaEvents(userId, tenantId);
+    const orphans = findOrphanedOwnerships(userId, tenantId);
     const orphanedEventCount = orphans.length + reconciliation.failed;
     if (orphanedEventCount > 0) {
       return { kind: 'external_partial', orphanedEventCount };
@@ -241,7 +280,7 @@ async function runPrePersistCancellationSaga(userId: number, tenantId: number): 
       { err, userId },
       'Cancellation threw post-delete; saga continuing with reconciliation queued',
     );
-    const reconciliation = await reconcileOrphanedTrainingAgendaEvents(userId);
+    const reconciliation = await reconcileOrphanedTrainingAgendaEvents(userId, tenantId);
     return { kind: 'external_partial', orphanedEventCount: reconciliation.failed || -1 };
   }
 }
@@ -259,7 +298,6 @@ export async function generateTrainingPlanForUser(
 ): Promise<TrainingPlanGenerationResult> {
   const {
     userId,
-    tenantId = input.userId,
     objective,
     preferredTime = '12:00',
     preferredCardioTime,
@@ -279,6 +317,7 @@ export async function generateTrainingPlanForUser(
     calendarSource,
     previewOnly = false,
   } = input;
+  const tenantId = requireTenantIdParam(input.tenantId, 'generateTrainingPlanForUser');
   const durationWeeks = normalizeTrainingPlanDurationWeeks(input.durationWeeks, 4);
 
   const fitnessProfile = unwrapOnboardingProfileData(onboarding.getProfile?.(userId, 'fitness'));
@@ -402,9 +441,11 @@ export async function generateTrainingPlanForUser(
     );
   }
 
+  const equipmentAuthorityEnabled = config.coaching.coachKernelEquipmentAuthorityEnabled;
   const equipmentAdaptation = buildTrainingEquipmentAdaptation({
     fitnessProfile,
     gymProfile,
+    conservativeUnknown: equipmentAuthorityEnabled,
   });
 
   const normalizedSessionsPerWeek = clampNumber(sessionsPerWeek, 5, 3, 7);
@@ -475,66 +516,116 @@ export async function generateTrainingPlanForUser(
   const normalizedPreferredTime = normalizePreferredTime(preferredTime, '12:00');
   const normalizedPreferredCardioTime = normalizePreferredTime(preferredCardioTime, normalizedPreferredTime);
   const normalizedPreferredStrengthTime = normalizePreferredTime(preferredStrengthTime, normalizedPreferredTime);
-  const currentReadiness = await fetchCurrentReadinessForPlan(userId);
+  const upstreamCapacityWindows = config.coaching.trainingCalendarCapacityKernelEnabled && !calendarFetchDegraded
+    ? buildKernelCapacityWindows({
+        startDate: startStr,
+        busyWindows,
+      })
+    : null;
+  if (upstreamCapacityWindows?.some((window) => window.constraints.includes('calendar_busy_windows_present'))) {
+    incrementTrainingGenerationCounter('calendar_capacity_reflow_total');
+  }
+  const currentReadiness = await fetchCurrentReadinessForPlan(userId, tenantId);
 
   let usedFallbackTemplate = false;
   let planData: any;
+  let kernelEquipmentCandidate: any | null = null;
   try {
-    planData = adaptTrainingPlanToAvailableEquipment(
-      applyTrainingPlanCoordination(buildCoachKernelTrainingPlan({
-        userId,
-        objective,
-        durationWeeks,
-        startDate: startStr,
-        sessionsPerWeek: normalizedSessionsPerWeek,
-        runSessionsPerWeek: normalizedRunSessionsPerWeek,
-        bikeSessionsPerWeek: normalizedBikeSessionsPerWeek,
-        swimSessionsPerWeek: normalizedSwimSessionsPerWeek,
-        strengthSessionsPerWeek: effectiveStrengthSessionsPerWeek,
-        preferredTime: normalizedPreferredTime,
-        preferredCardioTime: normalizedPreferredCardioTime,
-        preferredStrengthTime: normalizedPreferredStrengthTime,
-        longWorkoutDay: normalizedLongWorkoutDay,
-        notes: typeof notes === 'string' ? notes.trim() : null,
-        goalMode: normalizedGoalMode,
-        trainingPriority: normalizedTrainingPriority,
-        raceDate: effectiveRaceDate,
-        fitnessProfile,
-        gymProfile,
-        runProfile: runProfileForPlan,
-        currentReadiness,
-        twoADayPreference,
-      }), coordination),
+    kernelEquipmentCandidate = applyTrainingPlanCoordination(buildCoachKernelTrainingPlan({
+      userId,
+      tenantId,
+      objective,
+      durationWeeks,
+      startDate: startStr,
+      sessionsPerWeek: normalizedSessionsPerWeek,
+      runSessionsPerWeek: normalizedRunSessionsPerWeek,
+      bikeSessionsPerWeek: normalizedBikeSessionsPerWeek,
+      swimSessionsPerWeek: normalizedSwimSessionsPerWeek,
+      strengthSessionsPerWeek: effectiveStrengthSessionsPerWeek,
+      preferredTime: normalizedPreferredTime,
+      preferredCardioTime: normalizedPreferredCardioTime,
+      preferredStrengthTime: normalizedPreferredStrengthTime,
+      longWorkoutDay: normalizedLongWorkoutDay,
+      notes: typeof notes === 'string' ? notes.trim() : null,
+      goalMode: normalizedGoalMode,
+      trainingPriority: normalizedTrainingPriority,
+      raceDate: effectiveRaceDate,
+      fitnessProfile,
+      gymProfile,
+      runProfile: runProfileForPlan,
+      currentReadiness,
+      twoADayPreference,
+      capacityWindows: upstreamCapacityWindows,
+    }), coordination);
+    planData = applyEquipmentAuthorityMode(
+      kernelEquipmentCandidate,
       equipmentAdaptation,
+      equipmentAuthorityEnabled,
     );
   } catch (err) {
     logger.warn(
       { err, userId, objective },
       'Coach-kernel training plan generation unavailable — using deterministic fallback template',
     );
-    planData = adaptTrainingPlanToAvailableEquipment(
-      applyTrainingPlanCoordination(buildDeterministicTrainingPlan(objective, durationWeeks, {
-        sessionsPerWeek: normalizedSessionsPerWeek,
-        strengthSessionsPerWeek: effectiveStrengthSessionsPerWeek,
-        longWorkoutDay: normalizedLongWorkoutDay,
-      }), coordination),
+    kernelEquipmentCandidate = applyTrainingPlanCoordination(buildDeterministicTrainingPlan(objective, durationWeeks, {
+      sessionsPerWeek: normalizedSessionsPerWeek,
+      strengthSessionsPerWeek: effectiveStrengthSessionsPerWeek,
+      longWorkoutDay: normalizedLongWorkoutDay,
+    }), coordination);
+    planData = applyEquipmentAuthorityMode(
+      kernelEquipmentCandidate,
       equipmentAdaptation,
+      equipmentAuthorityEnabled,
     );
     usedFallbackTemplate = true;
   }
 
-  planData = adaptTrainingPlanToAvailableEquipment(
-    enforceRequestedTrainingPlanVolume(planData, {
-      sessionsPerWeek: normalizedSessionsPerWeek,
-      runSessionsPerWeek: normalizedRunSessionsPerWeek,
-      strengthSessionsPerWeek: effectiveStrengthSessionsPerWeek,
-      preferredCardioTime: normalizedPreferredCardioTime,
-      preferredStrengthTime: normalizedPreferredStrengthTime,
-      startDate: startStr,
-      longWorkoutDay: coordination.resolvedLongWorkoutDay ?? normalizedLongWorkoutDay,
-    }),
+  const volumeEnforcementInput = {
+    sessionsPerWeek: normalizedSessionsPerWeek,
+    runSessionsPerWeek: normalizedRunSessionsPerWeek,
+    strengthSessionsPerWeek: effectiveStrengthSessionsPerWeek,
+    preferredCardioTime: normalizedPreferredCardioTime,
+    preferredStrengthTime: normalizedPreferredStrengthTime,
+    startDate: startStr,
+    longWorkoutDay: coordination.resolvedLongWorkoutDay ?? normalizedLongWorkoutDay,
+  };
+  planData = applyEquipmentAuthorityMode(
+    enforceRequestedTrainingPlanVolume(planData, volumeEnforcementInput),
     equipmentAdaptation,
+    equipmentAuthorityEnabled,
   );
+  if (
+    config.coaching.coachKernelEquipmentAuthorityShadowEnabled
+    && !equipmentAuthorityEnabled
+    && kernelEquipmentCandidate
+  ) {
+    const shadowCandidate = applyEquipmentAuthorityDecisionReasons(
+      enforceRequestedTrainingPlanVolume(cloneTrainingPlan(kernelEquipmentCandidate), volumeEnforcementInput),
+      equipmentAdaptation,
+    );
+    logEquipmentAuthorityShadowDiff({
+      userId,
+      tenantId,
+      legacyPlan: planData,
+      kernelPlan: shadowCandidate,
+      equipmentAdaptation,
+    });
+  }
+  if (equipmentAuthorityEnabled) {
+    planData = applyEquipmentAuthorityDecisionReasons(planData, equipmentAdaptation);
+  }
+
+  const safetyOutput = config.coaching.trainingSafetyGuardrailsEnabled
+    ? buildTrainingSafetyOutputForGeneration({
+        userId,
+        tenantId,
+        affectedDate: startStr,
+      })
+    : undefined;
+  if (safetyOutput && safetyOutput.effectiveSeverity !== 'pass') {
+    incrementTrainingGenerationCounter('safety_guardrail_triggered_total');
+    planData = applyTrainingSafetyOutputToGeneratedPlan(planData, safetyOutput, startStr);
+  }
 
   // training-expert-coach-knowledge-engine (2026-05-12):
   // Run the Training quality gate BEFORE the cancellation saga and
@@ -553,8 +644,9 @@ export async function generateTrainingPlanForUser(
   //   • goalMode         — distinguishes event-based taper/race strictness
   //                        from continuous or hypertrophy-style plans.
   // All four are best-effort: when absent, the relevant rules no-op.
-  const equipmentProfileLabel: string | undefined =
-    typeof gymProfile?.equipment_access === 'string'
+  const equipmentProfileLabel: string | undefined = equipmentAuthorityEnabled
+    ? equipmentAdaptation.equipmentProfile
+    : typeof gymProfile?.equipment_access === 'string'
       ? String(gymProfile.equipment_access).toLowerCase().trim() || undefined
       : typeof fitnessProfile?.available_equipment === 'string'
         ? String(fitnessProfile.available_equipment).toLowerCase().trim() || undefined
@@ -568,6 +660,7 @@ export async function generateTrainingPlanForUser(
   const isRaceSpecificForLint =
     objectiveNeedsRunningProfile(objective) &&
     /\b(marathon|half\s*marathon|10k|5k|race|ironman|70\.3|trail)\b/i.test(objective);
+  const generationVersionPins = buildTrainingGenerationVersionPins();
 
   const persistenceInput = {
     userId,
@@ -595,6 +688,7 @@ export async function generateTrainingPlanForUser(
       startPolicy: normalizedStartPolicy,
       trainingCalendarSource: resolvedCalendarSource || null,
       generatorPolicyVersion: TRAINING_PLAN_GENERATOR_POLICY_VERSION,
+      generationVersionPins,
     }),
     normalizedPreferredTime,
     normalizedPreferredCardioTime,
@@ -612,7 +706,8 @@ export async function generateTrainingPlanForUser(
     goalMode: normalizedGoalMode,
   };
 
-  const preflightLint = lintGeneratedTrainingPlanPreflight(persistenceInput);
+  const finalizedPersistenceInput = finalizeGeneratedTrainingPlanForPersistence(persistenceInput);
+  const preflightLint = lintGeneratedTrainingPlanPreflight(finalizedPersistenceInput);
   if (previewOnly) {
     return {
       status: 'preview',
@@ -638,6 +733,7 @@ export async function generateTrainingPlanForUser(
           calendarFetchDegraded,
           calendarFetchError,
           lintResult: preflightLint,
+          safetyOutput,
         }),
         blockers: preflightLint.blockers.map((blocker) => ({
           code: blocker.ruleId,
@@ -650,11 +746,14 @@ export async function generateTrainingPlanForUser(
         trainingPriority: normalizedTrainingPriority,
         raceDate: raceDateForLint,
         generatorPolicyVersion: TRAINING_PLAN_GENERATOR_POLICY_VERSION,
+        generationVersionPins,
+        trainingSafety: buildTrainingSafetyGenerationSummary(safetyOutput),
       },
     };
   }
 
   if (preflightLint.status === 'fail') {
+    incrementTrainingGenerationCounter('final_validation_failure_total');
     logger.warn(
       {
         event: 'training_plan_quality_gate.blocked_pre_persist',
@@ -676,6 +775,7 @@ export async function generateTrainingPlanForUser(
           calendarFetchDegraded,
           calendarFetchError,
           lintResult: preflightLint,
+          safetyOutput,
         }),
         calendarFetchDegraded,
         ...(calendarFetchError ? { calendarFetchError } : {}),
@@ -684,6 +784,8 @@ export async function generateTrainingPlanForUser(
         trainingPriority: normalizedTrainingPriority,
         raceDate: raceDateForLint,
         generatorPolicyVersion: TRAINING_PLAN_GENERATOR_POLICY_VERSION,
+        generationVersionPins,
+        trainingSafety: buildTrainingSafetyGenerationSummary(safetyOutput),
       },
     };
   }
@@ -720,6 +822,7 @@ export async function generateTrainingPlanForUser(
             'Could not finalize cancellation of the existing plan. The old plan is still active. Please retry in a moment.',
           reason: cancellationOutcome.reason,
           activePlansRemaining: cancellationOutcome.activePlansRemaining,
+          generationVersionPins,
         },
       };
     case 'success':
@@ -728,7 +831,7 @@ export async function generateTrainingPlanForUser(
       break;
   }
 
-  const persistedPlan = await persistGeneratedTrainingPlan(persistenceInput);
+  const persistedPlan = await persistGeneratedTrainingPlan(finalizedPersistenceInput);
 
   // training-expert-coach-knowledge-engine (2026-05-03):
   // Surface plan-linter findings + calendar-degraded warning on the
@@ -753,6 +856,7 @@ export async function generateTrainingPlanForUser(
     calendarFetchDegraded,
     calendarFetchError,
     lintResult,
+    safetyOutput,
   });
 
   return {
@@ -802,6 +906,8 @@ export async function generateTrainingPlanForUser(
       trainingPriority: normalizedTrainingPriority,
       raceDate: raceDateForLint,
       generatorPolicyVersion: TRAINING_PLAN_GENERATOR_POLICY_VERSION,
+      generationVersionPins,
+      trainingSafety: buildTrainingSafetyGenerationSummary(safetyOutput),
       // training-expert-coach-knowledge-engine: explicit calendar
       // health flag + lint verdict surface on the response payload.
       calendarFetchDegraded,
@@ -824,6 +930,67 @@ function countSchedulablePlanSessions(planData: any): number {
       return type !== 'rest' && status !== 'dropped' && status !== 'deferred';
     }).length;
   }, 0);
+}
+
+function buildKernelCapacityWindows(input: {
+  startDate: string;
+  busyWindows: BusyWindow[];
+}): CapacityWindow[] {
+  const zone = config.app.timezone || 'Europe/Lisbon';
+  const weekStart = DateTime.fromISO(input.startDate, { zone }).startOf('day');
+  if (!weekStart.isValid) return [];
+  const windows: CapacityWindow[] = [];
+  for (let dayOffset = 0; dayOffset < 7; dayOffset++) {
+    const day = weekStart.plus({ days: dayOffset });
+    const dayStart = day.set({ hour: 5, minute: 0, second: 0, millisecond: 0 });
+    const dayEnd = day.set({ hour: 21, minute: 0, second: 0, millisecond: 0 });
+    const busy = input.busyWindows
+      .map((window) => ({
+        start: DateTime.fromMillis(window.startMs, { zone }),
+        end: DateTime.fromMillis(window.endMs, { zone }),
+      }))
+      .filter((window) => window.start < dayEnd && window.end > dayStart)
+      .map((window) => ({
+        start: window.start < dayStart ? dayStart : window.start,
+        end: window.end > dayEnd ? dayEnd : window.end,
+      }))
+      .filter((window) => window.end > window.start)
+      .sort((left, right) => left.start.toMillis() - right.start.toMillis());
+
+    let cursor: DateTime<boolean> = dayStart;
+    const pushFreeWindow = (start: DateTime<boolean>, end: DateTime<boolean>, hasBusyPressure: boolean): void => {
+      const availableMinutes = Math.floor(end.diff(start, 'minutes').minutes);
+      if (availableMinutes < 20) return;
+      windows.push({
+        date: day.toISODate() ?? input.startDate,
+        startTime: start.toFormat('HH:mm'),
+        endTime: end.toFormat('HH:mm'),
+        availableMinutes,
+        constraints: hasBusyPressure
+          ? ['calendar_busy_windows_present']
+          : ['calendar_open_day'],
+        source: 'calendar',
+      });
+    };
+
+    for (const block of busy) {
+      pushFreeWindow(cursor, block.start, busy.length > 0);
+      if (block.end > cursor) cursor = block.end;
+    }
+    pushFreeWindow(cursor, dayEnd, busy.length > 0);
+  }
+  return windows;
+}
+
+function buildTrainingGenerationVersionPins(): TrainingGenerationVersionPins {
+  const snapshot = loadTrainingCatalogSnapshot();
+  return {
+    catalogVersion: snapshot.catalogVersion,
+    sciencePolicyVersion: snapshot.sciencePolicyVersion,
+    selectorPolicyVersion: STRENGTH_SELECTOR_POLICY_VERSION,
+    equipmentVocabularyVersion: EQUIPMENT_VOCABULARY_VERSION,
+    generationPipelineVersion: GENERATION_PIPELINE_VERSION,
+  };
 }
 
 function buildPlanPhaseRoadmap(planData: any): Array<{
@@ -851,10 +1018,354 @@ function buildPlanPhaseRoadmap(planData: any): Array<{
   });
 }
 
+function applyEquipmentAuthorityMode(
+  planData: any,
+  equipmentAdaptation: TrainingEquipmentAdaptation,
+  equipmentAuthorityEnabled: boolean,
+): any {
+  if (equipmentAuthorityEnabled) return planData;
+  return adaptTrainingPlanToAvailableEquipment(planData, equipmentAdaptation);
+}
+
+function applyEquipmentAuthorityDecisionReasons(
+  planData: any,
+  equipmentAdaptation: TrainingEquipmentAdaptation,
+): any {
+  const equipmentReasons = safeDecisionReasons(equipmentAdaptation.decisionReasons);
+  if (equipmentReasons.length === 0) return planData;
+  return {
+    ...planData,
+    decisionReasons: dedupeDecisionReasons([
+      ...safeDecisionReasons(planData?.decisionReasons),
+      ...equipmentReasons,
+    ]),
+  };
+}
+
+function cloneTrainingPlan(planData: any): any {
+  return JSON.parse(JSON.stringify(planData ?? {}));
+}
+
+function logEquipmentAuthorityShadowDiff(input: {
+  userId: number;
+  tenantId: number;
+  legacyPlan: any;
+  kernelPlan: any;
+  equipmentAdaptation: TrainingEquipmentAdaptation;
+}): void {
+  const legacy = summarizeEquipmentPlanForShadow(input.legacyPlan);
+  const kernel = summarizeEquipmentPlanForShadow(input.kernelPlan);
+  const changedExerciseSessionCount = Math.max(
+    legacy.sessionExerciseFingerprints.length,
+    kernel.sessionExerciseFingerprints.length,
+  ) === 0
+    ? 0
+    : Array.from({
+        length: Math.max(
+          legacy.sessionExerciseFingerprints.length,
+          kernel.sessionExerciseFingerprints.length,
+        ),
+      }).filter((_, index) =>
+        legacy.sessionExerciseFingerprints[index] !== kernel.sessionExerciseFingerprints[index]
+      ).length;
+
+  logger.info(
+    {
+      event: 'training_equipment_authority.shadow_diff',
+      userId: input.userId,
+      tenantId: input.tenantId,
+      equipmentProfile: input.equipmentAdaptation.equipmentProfile,
+      canonicalEquipmentProfileId: input.equipmentAdaptation.canonicalProfile.profileId,
+      canonicalEquipmentConfidence: input.equipmentAdaptation.canonicalProfile.confidence,
+      changedExerciseSessionCount,
+      legacyGymSessionCount: legacy.gymSessionCount,
+      kernelGymSessionCount: kernel.gymSessionCount,
+      legacyExerciseCount: legacy.exerciseCount,
+      kernelExerciseCount: kernel.exerciseCount,
+      legacyDuplicateSessionCount: legacy.duplicateSessionCount,
+      kernelDuplicateSessionCount: kernel.duplicateSessionCount,
+    },
+    'training-plan-generation: equipment authority shadow comparison recorded',
+  );
+}
+
+function summarizeEquipmentPlanForShadow(planData: any): {
+  gymSessionCount: number;
+  exerciseCount: number;
+  duplicateSessionCount: number;
+  sessionExerciseFingerprints: string[];
+} {
+  const sessions = (Array.isArray(planData?.weeks) ? planData.weeks : [])
+    .flatMap((week: any) => Array.isArray(week?.sessions) ? week.sessions : [])
+    .filter((session: any) => String(session?.sessionType || '').toLowerCase() === 'gym');
+  const fingerprints: string[] = [];
+  let exerciseCount = 0;
+  let duplicateSessionCount = 0;
+  for (const session of sessions) {
+    const names = (Array.isArray(session?.exercises) ? session.exercises : [])
+      .map((exercise: any) => String(exercise?.exerciseId ?? exercise?.name ?? '').trim().toLowerCase())
+      .filter(Boolean);
+    exerciseCount += names.length;
+    if (new Set(names).size < names.length) duplicateSessionCount += 1;
+    fingerprints.push(stableShadowFingerprint(names.join('|')));
+  }
+  return {
+    gymSessionCount: sessions.length,
+    exerciseCount,
+    duplicateSessionCount,
+    sessionExerciseFingerprints: fingerprints,
+  };
+}
+
+function stableShadowFingerprint(value: string): string {
+  let hash = 2166136261;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(16).padStart(8, '0');
+}
+
+const GENERATION_HEALTH_INJURY_STATUSES = new Set([
+  'none',
+  'acute',
+  'chronic_managed',
+  'returning',
+  'post_exertional_symptom_risk',
+] as const);
+
+const GENERATION_HEALTH_MENSTRUAL_STATUSES = new Set([
+  'menses',
+  'follicular',
+  'ovulation',
+  'luteal',
+  'amenorrhea',
+  'symptom_only',
+] as const);
+
+const GENERATION_HEALTH_ENERGY_RISKS = new Set(['low', 'moderate', 'high'] as const);
+
+function buildTrainingSafetyOutputForGeneration(input: {
+  userId: number;
+  tenantId: number;
+  affectedDate: string;
+}): WireHealthSignalOutput | undefined {
+  const healthSignal = getLatestHealthSignal(input.userId, input.tenantId);
+  if (!healthSignal) return undefined;
+  const decoded = decodeHealthSignalRowForGeneration(healthSignal);
+  const trigger = deriveSafetyTriggerFromSignal({
+    source: decoded.source,
+    illnessSymptoms: decoded.illnessSymptoms,
+    injuryStatus: decoded.injuryStatus,
+    energyAvailabilityRisk: decoded.energyAvailabilityRisk,
+    painScore: decoded.painScore,
+    painLocation: decoded.painLocation,
+  });
+  return wireHealthSignalToSafety({
+    signal: decoded,
+    source: trigger.source,
+    triggerType: trigger.triggerType,
+    affectedDate: input.affectedDate,
+  });
+}
+
+function decodeHealthSignalRowForGeneration(row: HealthSignalRow): HealthSignal {
+  let illnessSymptoms: string[] | undefined;
+  if (row.illness_symptoms_json) {
+    try {
+      const parsed = JSON.parse(row.illness_symptoms_json) as unknown;
+      if (Array.isArray(parsed)) {
+        illnessSymptoms = parsed.filter((value): value is string => typeof value === 'string');
+      }
+    } catch (err) {
+      logger.warn(
+        { err, signalId: row.id },
+        'training_plan_generation.health_signal_illness_json_parse_failed',
+      );
+    }
+  }
+
+  const injuryStatus = GENERATION_HEALTH_INJURY_STATUSES.has(row.injury_status as never)
+    ? row.injury_status as HealthSignal['injuryStatus']
+    : undefined;
+  const menstrualStatus = GENERATION_HEALTH_MENSTRUAL_STATUSES.has(row.menstrual_status as never)
+    ? row.menstrual_status as HealthSignal['menstrualStatus']
+    : undefined;
+  const energyAvailabilityRisk = GENERATION_HEALTH_ENERGY_RISKS.has(row.energy_availability_risk as never)
+    ? row.energy_availability_risk as HealthSignal['energyAvailabilityRisk']
+    : undefined;
+
+  return {
+    capturedAt: row.created_at,
+    painScore: row.pain_score ?? undefined,
+    painLocation: row.pain_location ?? undefined,
+    illnessSymptoms,
+    injuryStatus,
+    menstrualStatus,
+    energyAvailabilityRisk,
+    consentScope: row.consent_scope
+      .split(',')
+      .map((scope) => scope.trim())
+      .filter(Boolean),
+    source: row.source ?? undefined,
+  };
+}
+
+function applyTrainingSafetyOutputToGeneratedPlan(
+  planData: any,
+  safetyOutput: WireHealthSignalOutput,
+  affectedDate: string,
+): any {
+  const safetyReasons = normalizeSafetyDecisionReasons(safetyOutput, affectedDate);
+  const decisionReasons = dedupeDecisionReasons([
+    ...safeDecisionReasons(planData?.decisionReasons),
+    ...safetyReasons,
+  ]);
+  if (safetyOutput.effectiveSeverity !== 'block') {
+    return {
+      ...planData,
+      decisionReasons,
+    };
+  }
+
+  const safetyMessage = safetyReasons[0]?.text
+    ?? 'Training is paused until the safety check is resolved.';
+  const weeks = Array.isArray(planData?.weeks)
+    ? planData.weeks.map((week: any, weekIndex: number) => {
+        const weekReasons = dedupeDecisionReasons([
+          ...safeDecisionReasons(week?.decisionReasons),
+          ...safetyReasons,
+        ]);
+        const sessions = Array.isArray(week?.sessions)
+          ? week.sessions.map((session: any) => ({
+              ...session,
+              sessionType: 'rest',
+              title: 'Safety pause',
+              durationMinutes: 0,
+              description: safetyMessage,
+              exercises: [],
+              scheduleState: 'deferred',
+              scheduleAdjustments: [
+                'Training paused until the safety check is resolved.',
+              ],
+              scheduleReason: safetyMessage,
+              decisionReasons: dedupeDecisionReasons([
+                ...safeDecisionReasons(session?.decisionReasons),
+                ...safetyReasons,
+              ]),
+            }))
+          : [{
+              dayOfWeek: 'Monday',
+              sessionType: 'rest',
+              title: 'Safety pause',
+              durationMinutes: 0,
+              description: safetyMessage,
+              exercises: [],
+              scheduleState: 'deferred',
+              scheduleAdjustments: [
+                'Training paused until the safety check is resolved.',
+              ],
+              scheduleReason: safetyMessage,
+              decisionReasons: safetyReasons,
+            }];
+        return {
+          ...week,
+          focus: 'recovery',
+          intensityPct: Math.min(Number(week?.intensityPct) || 50, 30),
+          sessions,
+          decisionReasons: weekReasons,
+          weekNumber: Number(week?.weekNumber) || weekIndex + 1,
+        };
+      })
+    : [];
+
+  return {
+    ...planData,
+    weeks,
+    decisionReasons,
+  };
+}
+
+function normalizeSafetyDecisionReasons(
+  safetyOutput: WireHealthSignalOutput,
+  affectedDate: string,
+): TrainingDecisionReason[] {
+  const existing = safetyOutput.decisionReasons.filter((reason) =>
+    reason && typeof reason.text === 'string' && reason.text.trim().length > 0,
+  );
+  if (existing.length > 0) return existing;
+
+  const code: TrainingDecisionReasonCode = safetyOutput.effectiveSeverity === 'block'
+    ? 'medical_referral'
+    : 'safety_warning_inferred';
+  return [{
+    code,
+    text: safetyOutput.effectiveSeverity === 'block'
+      ? 'For your safety, please consult a qualified healthcare professional before continuing with this training plan.'
+      : 'A safety signal was detected, so the coach kept this plan conservative.',
+    severity: safetyOutput.effectiveSeverity === 'block' ? 'block' : 'warning',
+    affectedEntity: { type: 'week', id: affectedDate },
+    sourceConstraint: {
+      type: 'safety',
+      label: 'training safety guardrail',
+    },
+    evidence: ['training_safety_guardrails_enabled'],
+  }];
+}
+
+function buildTrainingSafetyGenerationSummary(
+  safetyOutput: WireHealthSignalOutput | undefined,
+): TrainingSafetyGenerationSummary | null {
+  if (!safetyOutput || safetyOutput.effectiveSeverity === 'pass') {
+    return safetyOutput
+      ? {
+          status: 'pass',
+          message: 'No training safety guardrail changed this plan.',
+          reasonCode: null,
+        }
+      : null;
+  }
+  const reason = normalizeSafetyDecisionReasons(safetyOutput, '')[0];
+  return {
+    status: safetyOutput.effectiveSeverity === 'block' ? 'blocked' : 'warning',
+    message: reason?.text ?? 'A training safety guardrail changed this plan.',
+    reasonCode: reason?.code ?? null,
+  };
+}
+
+function safeDecisionReasons(value: unknown): TrainingDecisionReason[] {
+  return Array.isArray(value)
+    ? value.filter((reason): reason is TrainingDecisionReason =>
+        reason != null &&
+        typeof reason === 'object' &&
+        typeof (reason as TrainingDecisionReason).code === 'string' &&
+        typeof (reason as TrainingDecisionReason).text === 'string',
+      )
+    : [];
+}
+
+function dedupeDecisionReasons(reasons: TrainingDecisionReason[]): TrainingDecisionReason[] {
+  const seen = new Set<string>();
+  const output: TrainingDecisionReason[] = [];
+  for (const reason of reasons) {
+    const key = [
+      reason.code,
+      reason.affectedEntity?.type ?? '',
+      reason.affectedEntity?.id ?? '',
+      reason.text.trim().toLowerCase().replace(/\s+/g, ' '),
+    ].join('|');
+    if (seen.has(key)) continue;
+    seen.add(key);
+    output.push(reason);
+  }
+  return output;
+}
+
 function buildPlanWarnings(input: {
   calendarFetchDegraded: boolean;
   calendarFetchError?: string;
   lintResult: PlanLintResult;
+  safetyOutput?: WireHealthSignalOutput;
 }): Array<{ code: string; message: string }> {
   const planWarnings: Array<{ code: string; message: string }> = [];
   if (input.calendarFetchDegraded) {
@@ -863,6 +1374,15 @@ function buildPlanWarnings(input: {
       message:
         'Could not read your calendar to detect conflicts. The plan was generated ' +
         'without conflict checks — please review the week before trusting it.',
+      });
+  }
+  if (input.safetyOutput && input.safetyOutput.effectiveSeverity !== 'pass') {
+    const reason = normalizeSafetyDecisionReasons(input.safetyOutput, '')[0];
+    planWarnings.push({
+      code: input.safetyOutput.effectiveSeverity === 'block'
+        ? 'safety_guardrail_blocked'
+        : 'safety_guardrail_warning',
+      message: reason?.text ?? 'A training safety guardrail changed this plan.',
     });
   }
   for (const blocker of input.lintResult.blockers) {
