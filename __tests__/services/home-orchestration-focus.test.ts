@@ -255,6 +255,66 @@ describe('Home orchestration focus helpers', () => {
     expect(dial.warningCodes).not.toContain('SLEEP_DATA_UNAVAILABLE');
   });
 
+  it('builds day dial sleep totals from HealthKit sleepIntervals payloads', () => {
+    testDb.prepare(`
+      INSERT INTO apple_health_data (user_id, date, data_type, data_json, source)
+      VALUES (?, ?, 'sleep', ?, 'apple_health')
+    `).run(
+      42,
+      '2026-05-17',
+      JSON.stringify({
+        sleepIntervals: [
+          {
+            stage: 'asleepCore',
+            start: '2026-05-17T00:15:00.000Z',
+            end: '2026-05-17T06:45:00.000Z',
+          },
+        ],
+      }),
+    );
+
+    const dial = buildHomeDayDial({
+      userId: 42,
+      date: '2026-05-17',
+      timezone: 'UTC',
+      calendarEvents: [],
+    });
+
+    expect(dial.totals.find((total) => total.kind === 'sleep')?.minutes).toBe(390);
+    expect(dial.totals.find((total) => total.kind === 'sleep')?.unavailable).toBeUndefined();
+    expect(dial.warningCodes).not.toContain('SLEEP_DATA_UNAVAILABLE');
+  });
+
+  it('falls back to HealthKit sleepIntervals when legacy intervals are empty', () => {
+    testDb.prepare(`
+      INSERT INTO apple_health_data (user_id, date, data_type, data_json, source)
+      VALUES (?, ?, 'sleep', ?, 'apple_health')
+    `).run(
+      42,
+      '2026-05-17',
+      JSON.stringify({
+        intervals: [],
+        sleepIntervals: [
+          {
+            stage: 'asleepDeep',
+            start: '2026-05-17T01:00:00.000Z',
+            end: '2026-05-17T07:00:00.000Z',
+          },
+        ],
+      }),
+    );
+
+    const dial = buildHomeDayDial({
+      userId: 42,
+      date: '2026-05-17',
+      timezone: 'UTC',
+      calendarEvents: [],
+    });
+
+    expect(dial.totals.find((total) => total.kind === 'sleep')?.minutes).toBe(360);
+    expect(dial.warningCodes).not.toContain('SLEEP_DATA_UNAVAILABLE');
+  });
+
   it('builds day dial sleep totals from HealthKit daily totals when stage intervals are absent', () => {
     testDb.prepare(`
       INSERT INTO apple_health_data (user_id, date, data_type, data_json, source)
