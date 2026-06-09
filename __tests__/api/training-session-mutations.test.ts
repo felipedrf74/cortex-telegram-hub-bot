@@ -8,7 +8,7 @@ import {
 
 function buildDeps(overrides: Partial<TrainingSessionMutationDeps> = {}): TrainingSessionMutationDeps {
   return {
-    getActivePlan: vi.fn(() => ({ id: 44, user_id: 12 })),
+    getActivePlan: vi.fn(() => ({ id: 44, user_id: 12, tenant_id: 12 })),
     getCurrentWeek: vi.fn(() => ({ id: 78 })),
     getSessionsForWeek: vi.fn(() => [
       {
@@ -19,7 +19,7 @@ function buildDeps(overrides: Partial<TrainingSessionMutationDeps> = {}): Traini
       },
     ]),
     getSessionById: vi.fn(() => ({ id: 321, plan_id: 44 })),
-    getPlanById: vi.fn(() => ({ id: 44, user_id: 12 })),
+    getPlanById: vi.fn(() => ({ id: 44, user_id: 12, tenant_id: 12 })),
     getWeeklyAdherence: vi.fn(() => ({ adherenceRate: 40 })),
     ...overrides,
   };
@@ -39,7 +39,7 @@ describe('training-session-mutations', () => {
       kind: 'resolved',
       rowId: 321,
       session: { id: 321, plan_id: 44 },
-      plan: { id: 44, user_id: 12 },
+      plan: { id: 44, user_id: 12, tenant_id: 12 },
     });
   });
 
@@ -127,6 +127,21 @@ describe('training-session-mutations', () => {
     const deps = buildDeps({
       getSessionById: vi.fn(() => ({ id: 999, plan_id: 88 })),
       getPlanById: vi.fn(() => ({ id: 88, user_id: 77 })),
+    });
+
+    const result = resolveTrainingMutationSession(12, 12, '999', deps);
+
+    expect(result).toEqual({
+      kind: 'forbidden',
+      rowId: 999,
+      session: { id: 999, plan_id: 88 },
+    });
+  });
+
+  it('returns forbidden when the session belongs to the same user in another tenant', () => {
+    const deps = buildDeps({
+      getSessionById: vi.fn(() => ({ id: 999, plan_id: 88 })),
+      getPlanById: vi.fn(() => ({ id: 88, user_id: 12, tenant_id: 99 })),
     });
 
     const result = resolveTrainingMutationSession(12, 12, '999', deps);

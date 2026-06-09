@@ -1150,7 +1150,9 @@ function buildTrainingSafetyOutputForGeneration(input: {
   tenantId: number;
   affectedDate: string;
 }): WireHealthSignalOutput | undefined {
-  const healthSignal = getLatestHealthSignal(input.userId, input.tenantId);
+  const healthSignal = getLatestHealthSignal(input.userId, input.tenantId, input.affectedDate, {
+    maxAgeDays: config.coaching.trainingSafetyHealthSignalMaxAgeDays,
+  });
   if (!healthSignal) return undefined;
   const decoded = decodeHealthSignalRowForGeneration(healthSignal);
   const trigger = deriveSafetyTriggerFromSignal({

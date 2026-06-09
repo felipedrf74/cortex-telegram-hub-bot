@@ -217,6 +217,7 @@ describe('training-plan-calendar-sync', () => {
     mocks.getPlanById.mockReturnValue({
       id: 7,
       user_id: 42,
+      tenant_id: 42,
       start_date: '2026-04-20T00:00:00.000Z',
       preferences_json: JSON.stringify({
         preferredTime: '12:00',
@@ -272,6 +273,7 @@ describe('training-plan-calendar-sync', () => {
     mocks.getPlanById.mockReturnValue({
       id: 7,
       user_id: 42,
+      tenant_id: 42,
       start_date: '2026-04-20T00:00:00.000Z',
       preferences_json: JSON.stringify({ preferredTime: '12:00' }),
     });
@@ -320,7 +322,7 @@ describe('training-plan-calendar-sync', () => {
 
   it('returns the same not-found preview result for foreign and missing sessions', async () => {
     mocks.getSessionById.mockReturnValue({ id: 100, week_id: 70, plan_id: 7 });
-    mocks.getPlanById.mockReturnValue({ id: 7, user_id: 99, start_date: '2026-04-20T00:00:00.000Z' });
+    mocks.getPlanById.mockReturnValue({ id: 7, user_id: 99, tenant_id: 42, start_date: '2026-04-20T00:00:00.000Z' });
 
     const foreign = await previewTrainingSessionReflow(42, 100, 'google', 42);
 
@@ -341,7 +343,7 @@ describe('training-plan-calendar-sync', () => {
 
   it('returns the same not-found confirm result for foreign and missing sessions', async () => {
     mocks.getSessionById.mockReturnValue({ id: 101, week_id: 71, plan_id: 8 });
-    mocks.getPlanById.mockReturnValue({ id: 8, user_id: 99, start_date: '2026-04-20T00:00:00.000Z' });
+    mocks.getPlanById.mockReturnValue({ id: 8, user_id: 99, tenant_id: 42, start_date: '2026-04-20T00:00:00.000Z' });
 
     const foreign = await confirmTrainingSessionReflow({
       userId: 42,
@@ -368,6 +370,31 @@ describe('training-plan-calendar-sync', () => {
         sessionId: 101,
       },
     });
+    expect(mocks.updateSession).not.toHaveBeenCalled();
+  });
+
+  it('returns not-found for same-user reflow preview and confirm in another tenant', async () => {
+    mocks.getSessionById.mockReturnValue({ id: 101, week_id: 71, plan_id: 8 });
+    mocks.getPlanById.mockReturnValue({ id: 8, user_id: 42, tenant_id: 99, start_date: '2026-04-20T00:00:00.000Z' });
+
+    const preview = await previewTrainingSessionReflow(42, 101, 'google', 42);
+    const confirm = await confirmTrainingSessionReflow({
+      userId: 42,
+      tenantId: 42,
+      sessionId: 101,
+      requestedCalendarSource: 'google',
+    });
+
+    expect(preview).toEqual({
+      status: 'not_found',
+      data: {
+        message: 'Training session not found.',
+        sessionId: 101,
+      },
+    });
+    expect(confirm).toEqual(preview);
+    expect(mocks.previewSecretarySchedulingIntent).not.toHaveBeenCalled();
+    expect(mocks.submitSecretarySchedulingIntent).not.toHaveBeenCalled();
     expect(mocks.updateSession).not.toHaveBeenCalled();
   });
 

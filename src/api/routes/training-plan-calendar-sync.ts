@@ -226,15 +226,24 @@ const TRAINING_CALENDAR_SOURCES: readonly CalendarSource[] = ['google', 'outlook
 
 function resolveOwnedSessionScope(
   userId: number,
+  tenantId: number,
   sessionId: number,
 ): ReflowSessionScope | null | 'forbidden' {
   const session = trainingPlans.getSessionById(sessionId);
   if (!session) return null;
   const plan = trainingPlans.getPlanById(session.plan_id);
-  if (!plan || plan.user_id !== userId) {
+  const planTenantId = plan ? tenantIdForTrainingPlan(plan, Number.NaN) : Number.NaN;
+  if (!plan || plan.user_id !== userId || planTenantId !== tenantId) {
     if (plan) {
       logger.warn(
-        { actor: userId, sessionId, ownerIdHash: hashOwnerIdForLog(plan.user_id), reason: 'foreign_owner' },
+        {
+          actor: userId,
+          sessionId,
+          ownerIdHash: hashOwnerIdForLog(plan.user_id),
+          tenantId,
+          ownerTenantIdHash: hashOwnerIdForLog(planTenantId),
+          reason: 'foreign_owner_or_tenant',
+        },
         'training_reflow.ownership_denied',
       );
     }
@@ -371,7 +380,7 @@ export async function previewTrainingSessionReflow(
   tenantId?: number,
 ): Promise<TrainingSessionReflowPreviewResult> {
   const validatedTenantId = requireTenantIdParam(tenantId, 'previewTrainingSessionReflow');
-  const scope = resolveOwnedSessionScope(userId, sessionId);
+  const scope = resolveOwnedSessionScope(userId, validatedTenantId, sessionId);
   if (scope === 'forbidden' || !scope) {
     return { status: 'not_found', data: { message: 'Training session not found.', sessionId } };
   }
@@ -590,7 +599,7 @@ async function confirmTrainingSessionReflowLocked(input: {
     };
   }
 
-  const scope = resolveOwnedSessionScope(input.userId, input.sessionId);
+  const scope = resolveOwnedSessionScope(input.userId, validatedTenantId, input.sessionId);
   if (scope === 'forbidden' || !scope) {
     return { status: 'not_found', data: { message: 'Training session not found.', sessionId: input.sessionId } };
   }

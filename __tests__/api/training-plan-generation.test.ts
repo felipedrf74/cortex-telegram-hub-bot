@@ -534,7 +534,7 @@ describe('generateTrainingPlanForUser', () => {
     });
 
     expect(result.status).toBe('created');
-    expect(mockGetLatestHealthSignal).toHaveBeenCalledWith(12, 12);
+    expect(mockGetLatestHealthSignal).toHaveBeenCalledWith(12, 12, expect.any(String), { maxAgeDays: 14 });
     const persistInput = mockPersistGeneratedTrainingPlan.mock.calls[0][0];
     expect(persistInput.planData.weeks[0].sessions[0]).toMatchObject({
       sessionType: 'rest',
@@ -552,6 +552,27 @@ describe('generateTrainingPlanForUser', () => {
     expect(result.data.warnings).toContainEqual(expect.objectContaining({
       code: 'safety_guardrail_blocked',
     }));
+  });
+
+  it('continues generation when the bounded safety lookup returns no fresh health signal', async () => {
+    config.coaching.trainingSafetyGuardrailsEnabled = true;
+    mockGetLatestHealthSignal.mockReturnValue(null);
+
+    const result = await generateTrainingPlanForUser({
+      userId: 12,
+      tenantId: 12,
+      objective: 'General fitness',
+    });
+
+    expect(result.status).toBe('created');
+    expect(mockGetLatestHealthSignal).toHaveBeenCalledWith(12, 12, expect.any(String), { maxAgeDays: 14 });
+    const persistInput = mockPersistGeneratedTrainingPlan.mock.calls[0][0];
+    expect(persistInput.planData.weeks[0].sessions[0]).toMatchObject({
+      sessionType: 'run',
+      title: 'Easy Run',
+      durationMinutes: 45,
+    });
+    expect(result.data.trainingSafety).toBeNull();
   });
 
   it('skips route-level equipment mutation when coach-kernel equipment authority is enabled', async () => {

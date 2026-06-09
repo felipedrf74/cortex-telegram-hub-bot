@@ -88,8 +88,9 @@ function getLatestHealthSignal(
   userId: number,
   asOfDate?: string,
   tenantId = userId,
+  options?: Parameters<typeof getLatestHealthSignalRaw>[3],
 ): ReturnType<typeof getLatestHealthSignalRaw> {
-  return getLatestHealthSignalRaw(userId, tenantId, asOfDate);
+  return getLatestHealthSignalRaw(userId, tenantId, asOfDate, options);
 }
 
 function findPainSignalsInRange(
@@ -530,6 +531,15 @@ describe('health signal reads', () => {
     recordHealthSignal({ userId: 402, date: '2026-01-15', painScore: 7, consentScope: ['pain'] });
     const asOf10 = getLatestHealthSignal(402, '2026-01-10');
     expect(asOf10?.pain_score).toBe(3);
+  });
+
+  it('getLatestHealthSignal can bound results by maxAgeDays without changing default lookups', () => {
+    recordHealthSignal({ userId: 404, date: '2026-01-01', illnessSymptoms: ['chest_pain'], consentScope: ['illness'] });
+    recordHealthSignal({ userId: 404, date: '2026-04-19', illnessSymptoms: ['fever'], consentScope: ['illness'] });
+
+    expect(getLatestHealthSignal(404, '2026-04-20', 404, { maxAgeDays: 14 })?.date).toBe('2026-04-19');
+    expect(getLatestHealthSignal(404, '2026-04-18', 404, { maxAgeDays: 14 })).toBeNull();
+    expect(getLatestHealthSignal(404, '2026-04-18')?.date).toBe('2026-01-01');
   });
 
   it('keeps same-user health signals isolated by tenant', () => {

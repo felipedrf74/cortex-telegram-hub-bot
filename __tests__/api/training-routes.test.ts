@@ -1596,14 +1596,14 @@ describe('Training API routes', () => {
   });
 
   it('marks a session as skipped and returns updated weekly adherence', async () => {
-    mockGetActivePlan.mockReturnValue({ id: 44, user_id: 12 });
+    mockGetActivePlan.mockReturnValue({ id: 44, user_id: 12, tenant_id: 12 });
     mockGetCurrentWeek.mockReturnValue({ id: 78 });
     mockGetSessionsForWeek.mockReturnValue([
       { id: 321, day_of_week: new Date().toLocaleDateString('en-US', { weekday: 'long' }), status: 'pending', plan_id: 44 },
     ]);
     // Hardening 2026-04-21: ownership gate reads these.
     mockGetSessionById.mockReturnValue({ id: 321, plan_id: 44 });
-    mockGetPlanById.mockReturnValue({ id: 44, user_id: 12 });
+    mockGetPlanById.mockReturnValue({ id: 44, user_id: 12, tenant_id: 12 });
     mockGetWeeklyAdherence.mockReturnValue({ adherenceRate: 40 });
 
     const res = await dispatch('POST', '/skip', {}, { sessionId: 'today' });
@@ -2163,6 +2163,7 @@ describe('Training API routes', () => {
     mockGetPlanById.mockReturnValue({
       id: 70,
       user_id: 12,
+      tenant_id: 12,
       start_date: '2026-06-15T00:00:00.000Z',
       preferences_json: JSON.stringify({ preferredTime: '12:00' }),
     });
@@ -2215,6 +2216,7 @@ describe('Training API routes', () => {
     mockGetPlanById.mockReturnValue({
       id: 71,
       user_id: 12,
+      tenant_id: 12,
       start_date: '2026-06-15T00:00:00.000Z',
       preferences_json: JSON.stringify({ preferredTime: '12:00' }),
     });

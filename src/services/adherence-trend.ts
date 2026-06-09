@@ -26,6 +26,7 @@ export interface WeeklyAdherence {
 
 export interface AdherenceTrendResult {
   userId: number;
+  tenantId: number;
   currentWeek: WeeklyAdherence;
   priorWeek: WeeklyAdherence;
   rolling2WeekFraction: number;
@@ -39,6 +40,7 @@ export interface AdherenceTrendResult {
  */
 export function computeAdherenceTrend(
   userId: number,
+  tenantId: number,
   asOfISODate: string,
   lowThreshold = 0.70,
 ): AdherenceTrendResult {
@@ -52,8 +54,8 @@ export function computeAdherenceTrend(
   const priorEnd = new Date(now - 7 * dayMs).toISOString().slice(0, 10);
   const priorStart = new Date(now - 13 * dayMs).toISOString().slice(0, 10);
 
-  const currentWeek = computeWeekAdherence(userId, currentStart, currentEnd);
-  const priorWeek = computeWeekAdherence(userId, priorStart, priorEnd);
+  const currentWeek = computeWeekAdherence(userId, tenantId, currentStart, currentEnd);
+  const priorWeek = computeWeekAdherence(userId, tenantId, priorStart, priorEnd);
 
   const rolling = (currentWeek.completed + priorWeek.completed)
     / Math.max(1, currentWeek.scheduled + priorWeek.scheduled);
@@ -62,6 +64,7 @@ export function computeAdherenceTrend(
 
   return {
     userId,
+    tenantId,
     currentWeek,
     priorWeek,
     rolling2WeekFraction: Math.round(rolling * 1000) / 1000,
@@ -71,6 +74,7 @@ export function computeAdherenceTrend(
 
 function computeWeekAdherence(
   userId: number,
+  tenantId: number,
   weekStartDate: string,
   weekEndDate: string,
 ): WeeklyAdherence {
@@ -101,8 +105,8 @@ function computeWeekAdherence(
     FROM fitness_training_plans p
     JOIN training_weeks w ON w.plan_id = p.id
     JOIN training_sessions s ON s.week_id = w.id
-    WHERE p.user_id = ? AND p.status = 'active'
-  `).all(userId) as Array<{
+    WHERE p.user_id = ? AND p.tenant_id = ? AND p.status = 'active'
+  `).all(userId, tenantId) as Array<{
     plan_start: string;
     week_number: number;
     session_id: number;

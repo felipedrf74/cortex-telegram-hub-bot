@@ -1,10 +1,10 @@
 {
-  "generatedAt": "2026-06-07T16:47:53.111Z",
+  "generatedAt": "2026-06-09T11:59:07.843Z",
   "source": "chat-action-registry-shadow-parity.test.ts",
   "totals": {
-    "tested": 278,
-    "match": 277,
-    "mismatch": 1,
+    "tested": 285,
+    "match": 283,
+    "mismatch": 2,
     "not_resolved": 0,
     "state_required": 0
   },
@@ -658,6 +658,70 @@
       "mismatchReasons": []
     },
     {
+      "fixtureId": "secretary_reminders-set_reminder-golden-0",
+      "text": "Remind me at 15:30 to call the dentist",
+      "locale": "en-US",
+      "expectedSkill": "secretary_reminders",
+      "expectedAction": "set_reminder",
+      "expectedActionable": true,
+      "observed": {
+        "planResolved": true,
+        "skill": "secretary_reminders",
+        "action": "set_reminder",
+        "requiredArgsPresent": true
+      },
+      "parity": "match",
+      "mismatchReasons": []
+    },
+    {
+      "fixtureId": "secretary_reminders-set_reminder-golden-1",
+      "text": "Lembra-me às 15:30 de ligar ao dentista",
+      "locale": "pt-PT",
+      "expectedSkill": "secretary_reminders",
+      "expectedAction": "set_reminder",
+      "expectedActionable": true,
+      "observed": {
+        "planResolved": true,
+        "skill": "secretary_reminders",
+        "action": "set_reminder",
+        "requiredArgsPresent": true
+      },
+      "parity": "match",
+      "mismatchReasons": []
+    },
+    {
+      "fixtureId": "secretary_reminders-set_reminder-golden-2",
+      "text": "Avisa 9:00 reunião com Pedro",
+      "locale": "pt-PT",
+      "expectedSkill": "secretary_reminders",
+      "expectedAction": "set_reminder",
+      "expectedActionable": true,
+      "observed": {
+        "planResolved": true,
+        "skill": "secretary_reminders",
+        "action": "set_reminder",
+        "requiredArgsPresent": true
+      },
+      "parity": "match",
+      "mismatchReasons": []
+    },
+    {
+      "fixtureId": "secretary_reminders-set_reminder-golden-3",
+      "text": "Recuérdame a las 15:30 llamar al dentista",
+      "locale": "es-ES",
+      "expectedSkill": "secretary_reminders",
+      "expectedAction": "set_reminder",
+      "expectedActionable": true,
+      "observed": {
+        "planResolved": true,
+        "skill": "secretary_reminders",
+        "action": "set_reminder",
+        "requiredArgsPresent": true
+      },
+      "parity": "match",
+      "mismatchReasons": []
+    },
+    {
       "fixtureId": "mail-mail_unread_count-golden-0",
       "text": "How many unread emails do I have",
       "locale": "en-US",
@@ -1233,6 +1297,42 @@
     },
     {
       "fixtureId": "tasks-create_task-golden-6",
+      "text": "Remind me to buy milk",
+      "locale": "en-US",
+      "expectedSkill": "tasks",
+      "expectedAction": "create_task",
+      "expectedTitle": "Buy milk",
+      "expectedActionable": true,
+      "observed": {
+        "planResolved": true,
+        "skill": "tasks",
+        "action": "create_task",
+        "requiredArgsPresent": true,
+        "title": "Buy milk"
+      },
+      "parity": "match",
+      "mismatchReasons": []
+    },
+    {
+      "fixtureId": "tasks-create_task-golden-7",
+      "text": "Lembra-me de comprar leite",
+      "locale": "pt-PT",
+      "expectedSkill": "tasks",
+      "expectedAction": "create_task",
+      "expectedTitle": "comprar leite",
+      "expectedActionable": true,
+      "observed": {
+        "planResolved": true,
+        "skill": "tasks",
+        "action": "create_task",
+        "requiredArgsPresent": true,
+        "title": "comprar leite"
+      },
+      "parity": "match",
+      "mismatchReasons": []
+    },
+    {
+      "fixtureId": "tasks-create_task-golden-8",
       "text": "Crea una tarea llamada llamar a María",
       "locale": "es-ES",
       "expectedSkill": "tasks",
@@ -1248,6 +1348,26 @@
       },
       "parity": "match",
       "mismatchReasons": []
+    },
+    {
+      "fixtureId": "tasks-create_task-golden-9",
+      "text": "Recuérdame de comprar leche",
+      "locale": "es-ES",
+      "expectedSkill": "tasks",
+      "expectedAction": "create_task",
+      "expectedTitle": "comprar leche",
+      "expectedActionable": true,
+      "observed": {
+        "planResolved": true,
+        "skill": "tasks",
+        "action": "create_task",
+        "requiredArgsPresent": true,
+        "title": "de comprar leche"
+      },
+      "parity": "mismatch",
+      "mismatchReasons": [
+        "expectedTitle=\"comprar leche\" but observed title=\"de comprar leche\""
+      ]
     },
     {
       "fixtureId": "tasks-create_task_with_subtasks-golden-0",

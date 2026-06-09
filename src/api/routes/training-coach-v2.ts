@@ -701,6 +701,7 @@ export function mountCoachV2Routes(parent: Router): Router {
       const reflowAsOfISODate = new Date().toISOString();
       const reflowMissed = detectMissedSessions({
         userId: auth.userId,
+        tenantId: auth.tenantId,
         asOfISODate: reflowAsOfISODate,
       }).filter((s) => s.planId === planId);
       const reflowGap = detectTrainingGap({
@@ -708,7 +709,7 @@ export function mountCoachV2Routes(parent: Router): Router {
         tenantId: auth.tenantId,
         asOfISODate: reflowAsOfISODate,
       });
-      const reflowAdherence = computeAdherenceTrend(auth.userId, reflowAsOfISODate);
+      const reflowAdherence = computeAdherenceTrend(auth.userId, auth.tenantId, reflowAsOfISODate);
       const reflowWeekStart = new Date(
         Date.parse(planMeta.start_date) + weekIndex * 7 * 24 * 3600 * 1000,
       ).toISOString().slice(0, 10);
@@ -1164,8 +1165,8 @@ export function mountCoachV2Routes(parent: Router): Router {
       // Gap detector (C4) + adherence trend (C5) + missed sweep (C1).
       const asOfISODate = new Date().toISOString();
       const gapSignal = detectTrainingGap({ userId: auth.userId, tenantId: auth.tenantId, asOfISODate });
-      const adherence = computeAdherenceTrend(auth.userId, asOfISODate);
-      const missed = detectMissedSessions({ userId: auth.userId, asOfISODate });
+      const adherence = computeAdherenceTrend(auth.userId, auth.tenantId, asOfISODate);
+      const missed = detectMissedSessions({ userId: auth.userId, tenantId: auth.tenantId, asOfISODate });
 
       // Travel windows for the week start.
       const weekStart = new Date(Date.parse(plan.start_date) + safeWeekIndex * 7 * 24 * 3600 * 1000)

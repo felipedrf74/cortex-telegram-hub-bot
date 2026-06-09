@@ -3,7 +3,7 @@
 import { logger } from '../../utils/logger';
 import { resolveTrainingDay, trainingWeekdayMatches } from '../../services/training-date-utils';
 
-type MutationPlanRef = { id: number; user_id?: number | null };
+type MutationPlanRef = { id: number; user_id?: number | null; tenant_id?: number | null };
 type MutationWeekRef = { id: number };
 type MutationSessionRef = {
   id: number;
@@ -107,7 +107,7 @@ export function resolveTrainingMutationSession(
   }
 
   const plan = deps.getPlanById(session.plan_id);
-  if (!plan || plan.user_id !== userId) {
+  if (!plan || plan.user_id !== userId || plan.tenant_id !== tenantId) {
     return { kind: 'forbidden', rowId, session };
   }
 

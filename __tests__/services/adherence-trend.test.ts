@@ -56,6 +56,7 @@ afterEach(() => testDb.close());
 
 function seedSessions(opts: {
   userId: number;
+  tenantId?: number;
   planId: number;
   startDate: string;
   weeks: number;
@@ -63,9 +64,9 @@ function seedSessions(opts: {
   completedFraction: number; // 0..1 — fraction of sessions marked completed
 }): void {
   testDb.prepare(`
-    INSERT INTO fitness_training_plans (id, user_id, name, sport, duration_weeks, start_date, end_date, status)
-    VALUES (?, ?, 'p', 'gym', ?, ?, '2026-12-31', 'active')
-  `).run(opts.planId, opts.userId, opts.weeks, opts.startDate);
+    INSERT INTO fitness_training_plans (id, user_id, tenant_id, name, sport, duration_weeks, start_date, end_date, status)
+    VALUES (?, ?, ?, 'p', 'gym', ?, ?, '2026-12-31', 'active')
+  `).run(opts.planId, opts.userId, opts.tenantId ?? opts.userId, opts.weeks, opts.startDate);
   let sessionId = opts.planId * 1000;
   for (let w = 1; w <= opts.weeks; w++) {
     const weekId = opts.planId * 100 + w;
@@ -91,7 +92,7 @@ describe('computeAdherenceTrend', () => {
       userId: 100, planId: 1, startDate: '2026-05-04',
       weeks: 3, sessionsPerWeek: 4, completedFraction: 0.5,
     });
-    const result = computeAdherenceTrend(100, '2026-05-17T23:59:00Z', 0.70);
+    const result = computeAdherenceTrend(100, 100, '2026-05-17T23:59:00Z', 0.70);
     expect(result.trendLow).toBe(true);
     expect(result.currentWeek.fraction).toBeLessThan(0.70);
     expect(result.priorWeek.fraction).toBeLessThan(0.70);
@@ -100,8 +101,8 @@ describe('computeAdherenceTrend', () => {
   it('trendLow=false when only one week below threshold', () => {
     // Build manually: prior week has 4 completions out of 4 (100%); current week has 1 out of 4 (25%).
     testDb.prepare(`
-      INSERT INTO fitness_training_plans (id, user_id, name, sport, duration_weeks, start_date, end_date, status)
-      VALUES (2, 100, 'p', 'gym', 4, '2026-05-04', '2026-06-01', 'active')
+      INSERT INTO fitness_training_plans (id, user_id, tenant_id, name, sport, duration_weeks, start_date, end_date, status)
+      VALUES (2, 100, 100, 'p', 'gym', 4, '2026-05-04', '2026-06-01', 'active')
     `).run();
     // Week 1: 4 sessions, 4 completed (Monday=2026-05-04, +3 more)
     testDb.prepare('INSERT INTO training_weeks (id, plan_id, week_number) VALUES (201, 2, 1)').run();
@@ -121,14 +122,14 @@ describe('computeAdherenceTrend', () => {
         VALUES (?, 202, 2, ?, 'easy_run', 'x', 45, ?)
       `).run(2100 + i, day, i === 0 ? 'completed' : 'pending');
     }
-    const result = computeAdherenceTrend(100, '2026-05-17T23:59:00Z', 0.70);
+    const result = computeAdherenceTrend(100, 100, '2026-05-17T23:59:00Z', 0.70);
     expect(result.priorWeek.fraction).toBeGreaterThanOrEqual(0.70); // 100%
     expect(result.currentWeek.fraction).toBeLessThan(0.70); // 25%
     expect(result.trendLow).toBe(false); // one week good
   });
 
   it('0 scheduled sessions → 0 fraction, trendLow=false (per > threshold check)', () => {
-    const result = computeAdherenceTrend(999, '2026-05-17T23:59:00Z', 0.70);
+    const result = computeAdherenceTrend(999, 999, '2026-05-17T23:59:00Z', 0.70);
     expect(result.currentWeek.scheduled).toBe(0);
     expect(result.currentWeek.fraction).toBe(0);
     // 0 < 0.70 evaluates true; this is by design — no scheduled is suspicious.
@@ -141,7 +142,26 @@ describe('computeAdherenceTrend', () => {
       userId: 200, planId: 3, startDate: '2026-05-04',
       weeks: 3, sessionsPerWeek: 4, completedFraction: 0.5,
     });
-    const result = computeAdherenceTrend(200, '2026-05-17T23:59:00Z', 0.70);
+    const result = computeAdherenceTrend(200, 200, '2026-05-17T23:59:00Z', 0.70);
     expect(result.rolling2WeekFraction).toBeCloseTo(0.5, 2);
+  });
+
+  it('excludes active plans from another tenant for the same user', () => {
+    seedSessions({
+      userId: 300, tenantId: 300, planId: 30, startDate: '2026-05-04',
+      weeks: 3, sessionsPerWeek: 4, completedFraction: 1,
+    });
+    seedSessions({
+      userId: 300, tenantId: 301, planId: 31, startDate: '2026-05-04',
+      weeks: 3, sessionsPerWeek: 4, completedFraction: 0,
+    });
+
+    const tenant300 = computeAdherenceTrend(300, 300, '2026-05-17T23:59:00Z', 0.70);
+    const tenant301 = computeAdherenceTrend(300, 301, '2026-05-17T23:59:00Z', 0.70);
+
+    expect(tenant300.currentWeek.fraction).toBe(1);
+    expect(tenant300.priorWeek.fraction).toBe(1);
+    expect(tenant301.currentWeek.fraction).toBe(0);
+    expect(tenant301.priorWeek.fraction).toBe(0);
   });
 });

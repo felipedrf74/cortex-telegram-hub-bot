@@ -224,24 +224,43 @@ export function getLatestHealthSignal(
   userId: number,
   tenantId: number,
   asOfDate?: string,
+  options: { maxAgeDays?: number } = {},
 ): HealthSignalRow | null {
   const db = getDb();
   const scopedTenantId = requireTenantIdParam(tenantId, 'getLatestHealthSignal');
+  const maxAgeDays = options.maxAgeDays;
+  const hasMaxAgeDays = typeof maxAgeDays === 'number' && Number.isFinite(maxAgeDays) && maxAgeDays > 0;
+  const resolvedAsOfDate = (asOfDate ?? new Date().toISOString()).slice(0, 10);
+  const cutoffDate = hasMaxAgeDays
+    ? new Date(Date.parse(`${resolvedAsOfDate}T00:00:00.000Z`) - Math.floor(maxAgeDays) * 24 * 3600 * 1000)
+      .toISOString()
+      .slice(0, 10)
+    : null;
   if (asOfDate) {
     const row = db.prepare(`
       SELECT * FROM athlete_health_signals
       WHERE user_id = ? AND tenant_id = ? AND date <= ?
+        ${cutoffDate ? 'AND date >= ?' : ''}
       ORDER BY date DESC, created_at DESC
       LIMIT 1
-    `).get(userId, scopedTenantId, asOfDate) as HealthSignalRow | undefined;
+    `).get(...(
+      cutoffDate
+        ? [userId, scopedTenantId, resolvedAsOfDate, cutoffDate]
+        : [userId, scopedTenantId, resolvedAsOfDate]
+    )) as HealthSignalRow | undefined;
     return row ?? null;
   }
   const row = db.prepare(`
     SELECT * FROM athlete_health_signals
     WHERE user_id = ? AND tenant_id = ?
+      ${cutoffDate ? 'AND date >= ?' : ''}
     ORDER BY date DESC, created_at DESC
     LIMIT 1
-  `).get(userId, scopedTenantId) as HealthSignalRow | undefined;
+  `).get(...(
+    cutoffDate
+      ? [userId, scopedTenantId, cutoffDate]
+      : [userId, scopedTenantId]
+  )) as HealthSignalRow | undefined;
   return row ?? null;
 }
 
