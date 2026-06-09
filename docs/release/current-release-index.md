@@ -40,8 +40,9 @@ Scope:
     additive iOS/read-model coach insight fields.
   - production catalog `repo-seed-1.0.0` is active and immutable for
     `__global__`, with 131 exercises and 24 equipment items.
-  - behavior-changing flags remain in rollout/soak state; production `.env`
-    has no explicit `TRAINING_*` or `COACH_KERNEL_*` behavior flags set.
+  - behavior-changing Training flags are now explicitly enabled in staging and
+    production after the post-promote rollout; Phase 10 cleanup remains gated
+    by sustained production soak.
 
 Validated through promotion:
 
@@ -59,6 +60,10 @@ Validated through promotion:
 - post-deploy: PM2 `nexus-hub` and `content-engine` online
 - production readiness passed: SQLite integrity, `/health`, content-engine
   readiness, better-sqlite3 native binding, and PM2 stability
+- post-rollout staging smoke with all Training flags enabled: 19/19 passed
+- post-rollout production readiness, public health/public-status probes,
+  unauthenticated Training 401 contract probe, active catalog verification, and
+  30s PM2 restart-delta sample all passed
 
 ## Previous Production Versions On This Branch
 

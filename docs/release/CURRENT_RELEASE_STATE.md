@@ -24,11 +24,11 @@ older production versions.
 - Staging and production are both on `4.14.207`. Production has the immutable
   global Training catalog version `repo-seed-1.0.0` active with 131 exercises
   and 24 equipment items.
-- Behavior-changing Training rollout flags are not explicitly enabled in
-  production after this promote; the DB catalog is activated and ready, while
-  equipment authority, selector policy, safety guardrails, endurance coherence,
-  and upstream calendar-capacity behavior remain in feature-flag rollout/soak
-  state.
+- Behavior-changing Training rollout flags are explicitly enabled in staging
+  and production after the post-promote rollout. DB catalog, equipment
+  authority, selector policy, safety guardrails, endurance coherence, upstream
+  calendar capacity, and completion feedback are live behind the configured
+  production environment.
 - Official workspace root: `/Users/felipedominguez/Desktop/Nexus Hub`
 
 ## 2026-06-09 Training Coach Remediation Production Promote
@@ -77,15 +77,26 @@ older production versions.
   `repo-seed-1.0.0`, scope `__global__`, status `active`, validation
   `passed`, `immutable_after_activation=1`, 131 active exercises, 24 active
   equipment items, and 1 passed validation result.
-- Rollout caveat: production `.env` has no explicit `TRAINING_*` or
-  `COACH_KERNEL_*` behavior flags set. The code and catalog are deployed, but
-  behavior-changing flags should be enabled gradually through the approved
-  canary/soak path before Phase 10 legacy cleanup. Completion feedback V2 keeps
-  its default-on code path unless explicitly disabled.
-- Known open items: Phase 10 cleanup is intentionally blocked until soak proves
-  the canonical paths; production iOS distribution/TestFlight/App Store release
-  remains a separate app-store operation; Cloudflare edge smoke remains skipped
-  unless `NEXUS_SMOKE_EDGE_VERIFY=1` is configured.
+- Post-promote flag rollout: staging and production `.env` now explicitly set
+  `COACH_KERNEL_EQUIPMENT_AUTHORITY_ENABLED=on`,
+  `COACH_KERNEL_EQUIPMENT_AUTHORITY_SHADOW_ENABLED=off`,
+  `TRAINING_CATALOG_DB_ENABLED=on`,
+  `TRAINING_COMPLETION_FEEDBACK_V2_ENABLED=on`,
+  `TRAINING_SELECTOR_POLICY_V2_ENABLED=on`,
+  `TRAINING_ENDURANCE_COHERENCE_V2_ENABLED=on`,
+  `TRAINING_CALENDAR_CAPACITY_KERNEL_ENABLED=on`, and
+  `TRAINING_SAFETY_GUARDRAILS_ENABLED=on`.
+- Post-rollout validation: staging readiness passed, staging smoke passed
+  **19/19** at
+  `docs/release/smoke-evidence/staging-smoke-ad46082d-20260609T104930Z.json`,
+  production readiness passed, public `health`/`public-status` probes passed,
+  unauthenticated Training returned canonical 401, active catalog stayed
+  immutable/passed, and a 30s PM2 sample showed no production restart delta.
+- Known open items: Phase 10 cleanup is intentionally blocked until a sustained
+  production soak proves the canonical paths; production iOS
+  distribution/TestFlight/App Store release remains a separate app-store
+  operation; Cloudflare edge smoke remains skipped unless
+  `NEXUS_SMOKE_EDGE_VERIFY=1` is configured.
 
 ## 2026-06-06 Release Process Hardening Note
 

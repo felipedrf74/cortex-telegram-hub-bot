@@ -60,11 +60,24 @@ Last updated: 2026-06-09
   `repo-seed-1.0.0`, scope `__global__`, status `active`, validation
   `passed`, `immutable_after_activation=1`, 131 active exercises, 24 active
   equipment items.
-- Rollout caveat: production `.env` has no explicit `TRAINING_*` or
-  `COACH_KERNEL_*` behavior flags set. Code and DB catalog are live, but
-  behavior-changing equipment authority, selector, safety, endurance, and
-  calendar-capacity paths remain in feature-flag rollout/soak before Phase 10
-  cleanup.
+- Post-promote flag rollout: staging and production `.env` now explicitly set
+  `COACH_KERNEL_EQUIPMENT_AUTHORITY_ENABLED=on`,
+  `COACH_KERNEL_EQUIPMENT_AUTHORITY_SHADOW_ENABLED=off`,
+  `TRAINING_CATALOG_DB_ENABLED=on`,
+  `TRAINING_COMPLETION_FEEDBACK_V2_ENABLED=on`,
+  `TRAINING_SELECTOR_POLICY_V2_ENABLED=on`,
+  `TRAINING_ENDURANCE_COHERENCE_V2_ENABLED=on`,
+  `TRAINING_CALENDAR_CAPACITY_KERNEL_ENABLED=on`, and
+  `TRAINING_SAFETY_GUARDRAILS_ENABLED=on`.
+- Post-rollout validation: staging readiness passed, staging smoke passed
+  **19/19** at
+  `engine/docs/release/smoke-evidence/staging-smoke-ad46082d-20260609T104930Z.json`,
+  production readiness passed, public `health`/`public-status` probes passed,
+  unauthenticated Training returned canonical 401, active catalog stayed
+  immutable/passed, and a 30s PM2 sample showed no production restart delta.
+- Remaining blocker: Phase 10 cleanup is intentionally blocked until sustained
+  production soak proves the canonical paths. iOS TestFlight/App Store release
+  remains a separate app-store operation.
 
 ### 2026-06-04 Training Remediation Round 3 Fast-Follow Production Promote
 
