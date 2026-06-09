@@ -14,14 +14,13 @@ older production versions.
 ## Active Production Release
 
 - Source branch: `main`
-- Production HEAD: `4f2927c1`
-- Production version: `4.14.207`
-- Source implementation commits before final docs evidence: `bc7aacc2`
-  (Training/coach generation remediation) and `770ac929` (catalog seed write
-  initialization fix).
-- Latest runtime deploy commit: `4f2927c1`. Post-deploy docs-only closeout may
+- Production HEAD: `910b6d72`
+- Production version: `4.14.208`
+- Source implementation commit before release prep: `9c226007` (Training
+  health-signal freshness and tenant-gate hotfix).
+- Latest runtime deploy commit: `910b6d72`. Post-deploy docs-only closeout may
   sit ahead of production runtime.
-- Staging and production are both on `4.14.207`. Production has the immutable
+- Staging and production are both on `4.14.208`. Production has the immutable
   global Training catalog version `repo-seed-1.0.0` active with 131 exercises
   and 24 equipment items.
 - Behavior-changing Training rollout flags are explicitly enabled in staging
@@ -30,6 +29,56 @@ older production versions.
   calendar capacity, and completion feedback are live behind the configured
   production environment.
 - Official workspace root: `/Users/felipedominguez/Desktop/Nexus Hub`
+
+## 2026-06-09 Training Coach Tenant/Health Hotfix Production Promote
+
+- Scope: promoted the Claude-reviewed Training / Coach hotfixes for stale
+  health-signal safety decisions, tenant-scoped session mutation ownership,
+  tenant-scoped reflow ownership, and tenant-scoped adherence/missed-session
+  reads. The hotfix bounds health signals used by production plan generation to
+  fresh signals via `TRAINING_SAFETY_HEALTH_SIGNAL_MAX_AGE_DAYS`, fails closed
+  when mutation/reflow plan ownership lacks the requested tenant, and prevents
+  same-user cross-tenant aggregates from influencing Training progression or
+  missed-session decisions.
+- Production version: `4.14.208`.
+- Production deploy commit: `910b6d72`.
+- Source hotfix commit: `9c226007`
+  (`fix(training): bound health signal safety and tenant gates`).
+- Release prep/docs evidence commits before deploy: `77cbe12f`
+  (`chore: prepare release 4.14.208`) and `910b6d72`
+  (`docs(release): refresh registry parity evidence timestamp`).
+- Focused backend validation before full release gates: Training calendar sync,
+  plan generation, session mutation, adherence trend, completion feedback, and
+  missed-session suites passed **6 files / 131 tests**. The
+  `training-routes.test.ts` route-focused rerun passed **59 tests** after
+  tenant-aware route fixtures were corrected.
+- Full backend validation passed before production: local `npm run test` passed
+  **841 test files / 12,313 tests**; `npm run release:verify:full` passed
+  typecheck, science-policy pin validation, build, migration safety with **200
+  migrations**, full Vitest with **841 files / 12,313 tests**, and
+  content-engine pytest with **180 tests**; release-prep and pre-push risk gates
+  each repeated full Vitest with **841 files / 12,313 tests**.
+- Staging deploy passed through `./scripts/deploy-staging.sh`; staging
+  readiness passed and standalone staging smoke passed **19/19** for version
+  `4.14.208`. Promote-time staging smoke also passed **19/19** before
+  production mutation.
+- Production promotion completed through `./scripts/promote-to-prod.sh`.
+  Deploy-time validation passed typecheck, science-policy pin validation, full
+  Vitest with **841 files / 12,313 tests**, build, backup creation with
+  `bot.db`, native module rebuild under system Node `v22.22.2`, PM2 restart,
+  SQLite integrity, `/health`, content-engine readiness, native better-sqlite3
+  loading, and PM2 stability.
+- Post-production probes passed: public `/health`, public `/public-status`,
+  unauthenticated Training canonical 401, and production package version
+  `4.14.208`. The remote deploy directory is not a git worktree, so remote
+  `git rev-parse` is intentionally unavailable; the runtime deployment record
+  is the promoted package version plus deploy commit above.
+- Known caveats: release-evidence shadow parity still reports the expected
+  signed-evidence shadow mismatch for this process-hardening period; Cloudflare
+  edge smoke remained skipped because `NEXUS_SMOKE_EDGE_VERIFY=1` was not
+  configured; production PM2 restart counters remain historically high
+  (`nexus-hub` 37, `content-engine` 7), but no restart occurred during the
+  readiness sample.
 
 ## 2026-06-09 Training Coach Remediation Production Promote
 

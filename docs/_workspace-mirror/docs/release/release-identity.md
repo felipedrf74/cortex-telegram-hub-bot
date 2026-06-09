@@ -5,7 +5,7 @@
 
 | Area | Path | Branch | Commit | Dirty state | Version | Migrations |
 | --- | --- | --- | --- | --- | --- | --- |
-| Backend | `/Users/felipedominguez/Desktop/Nexus Hub/prelaunch-worktrees/payments-integrity` | `fix/payments-integrity` | `c5497eef` | `dirty` | `4.14.204` | `192` |
-| iOS | `/Users/felipedominguez/Desktop/Nexus Hub IOS/Nexus Hub` | `fix/payments-integrity` | `c5497eef` | `dirty` | n/a | n/a |
+| Backend | `/Users/felipedominguez/Desktop/Custom Connectors/Cortex/cortex-telegram-hub-bot` | `main` | `910b6d72` | `clean` | `4.14.208` | `200` |
+| iOS | `/Users/felipedominguez/Desktop/Nexus Hub IOS/Nexus Hub` | `main` | `49ce035` | `dirty` | n/a | n/a |
 
-Generated at: `2026-06-04T23:51:14Z`
+Generated at: `2026-06-09T12:27:15Z`

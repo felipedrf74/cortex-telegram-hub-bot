@@ -12,61 +12,57 @@ Date: 2026-06-09
 Active production package:
 
 - source branch: `main`
-- production HEAD: `4f2927c1`
-- production version: `4.14.207`
-- runtime source commits: `bc7aacc2` (Training/coach remediation) and
-  `770ac929` (catalog seed write initialization fix)
-- latest runtime deploy commit: `4f2927c1`; post-deploy docs-only closeout may
+- production HEAD: `910b6d72`
+- production version: `4.14.208`
+- runtime source commit: `9c226007` (Training health-signal freshness and
+  tenant-gate hotfix)
+- latest runtime deploy commit: `910b6d72`; post-deploy docs-only closeout may
   sit ahead of production runtime
 - release state: `docs/release/CURRENT_RELEASE_STATE.md` (backend) and `/Users/felipedominguez/Desktop/Nexus Hub/docs/release/CURRENT_RELEASE_STATE.md` (workspace)
 - official workspace root: `/Users/felipedominguez/Desktop/Nexus Hub`
 
-Commits in this release (4.14.205 -> 4.14.207):
+Commits in this release (4.14.207 -> 4.14.208):
 
-- `bc7aacc2 feat(training): harden coach generation pipeline`
-- `4d4e14cc docs(release): add training staging smoke evidence`
-- `770ac929 fix(training): initialize database for catalog seed writes`
-- `4f2927c1 docs(release): add catalog seed fix staging smoke evidence`
-- iOS companion: `49ce035 feat(training): present coach decision insights`
+- `9c226007 fix(training): bound health signal safety and tenant gates`
+- `77cbe12f chore: prepare release 4.14.208`
+- `910b6d72 docs(release): refresh registry parity evidence timestamp`
 
 Scope:
 
-- Training / Coach remediation:
-  - tenant-scope hardening, tenant-aware idempotency/locks, Training safety
-    guardrail plumbing, canonical equipment vocabulary, conservative
-    unknown-equipment defaults, DB catalog schema/seed/validation, selector
-    scaffolding, completion feedback substrate, endurance coherence, upstream
-    calendar-capacity inputs, audit/version pins, observability counters, and
-    additive iOS/read-model coach insight fields.
-  - production catalog `repo-seed-1.0.0` is active and immutable for
+- Training / Coach hotfix:
+  - bounded production plan-generation health-signal reads so stale safety
+    signals no longer hard-pause Training indefinitely.
+  - tenant-gated session complete/skip ownership and Training reflow ownership
+    so same-user IDs cannot cross tenants.
+  - tenant-scoped adherence trend and missed-session reads so progression and
+    missed-session decisions cannot consume another tenant's Training history.
+  - production catalog `repo-seed-1.0.0` remains active and immutable for
     `__global__`, with 131 exercises and 24 equipment items.
-  - behavior-changing Training flags are now explicitly enabled in staging and
-    production after the post-promote rollout; Phase 10 cleanup remains gated
-    by sustained production soak.
+  - no new iOS user-facing payload fields were introduced by this hotfix.
 
 Validated through promotion:
 
-- backend local `npm run verify`: 841 files / 12,307 tests
-- deploy-time backend verification: typecheck, science-policy check, and full
-  Vitest passed with 841 files / 12,307 tests
-- migration safety: 200 migrations passed
-- catalog dry-run/write validation: `repo-seed-1.0.0`, 131 exercises, 24
-  equipment items, 0 issues; staging and production activation both passed
-- staging smoke: 26/26 passed standalone and again during promotion
-- focused iOS Training/contract/presentation suites: 49/49 plus onboarding
-  scope wrapper 2/2
-- full iOS wrapper: 1,482 tests passed
-- `promote-to-prod.sh` completed cleanly for 4.14.207
+- focused Training hotfix suites: 6 files / 131 tests
+- focused `training-routes.test.ts`: 59 tests
+- backend local `npm run test`: 841 files / 12,313 tests
+- `npm run release:verify:full`: typecheck, science-policy check, build,
+  migration safety for 200 migrations, full Vitest with 841 files / 12,313
+  tests, and content-engine pytest with 180 tests
+- release-prep and pre-push risk gates both repeated full Vitest with 841
+  files / 12,313 tests
+- staging deploy/readiness passed; standalone staging smoke passed 19/19 for
+  version 4.14.208
+- promote-time staging smoke passed 19/19 before production mutation
+- `promote-to-prod.sh` completed cleanly for 4.14.208
 - post-deploy: PM2 `nexus-hub` and `content-engine` online
 - production readiness passed: SQLite integrity, `/health`, content-engine
   readiness, better-sqlite3 native binding, and PM2 stability
-- post-rollout staging smoke with all Training flags enabled: 19/19 passed
-- post-rollout production readiness, public health/public-status probes,
-  unauthenticated Training 401 contract probe, active catalog verification, and
-  30s PM2 restart-delta sample all passed
+- post-production public `health`/`public-status` probes and unauthenticated
+  Training 401 contract probe passed
 
 ## Previous Production Versions On This Branch
 
+- 4.14.208 (`910b6d72`) — Training/Coach tenant and health-signal hotfix for fresh safety reads, tenant-gated mutations/reflow, and tenant-scoped adherence/missed-session reads (source commit `9c226007`)
 - 4.14.207 (`4f2927c1`) — Training/Coach remediation production promote with active immutable Training catalog (source commits `bc7aacc2`, `770ac929`)
 - 4.14.205 (`24a22f3c`) — release-hardening candidate and event-based training plan linting hardening catch-up
 - 4.14.202 (`6438553d`) — Training remediation round-3 no-oracle, safety, docs, and iOS freshness fast-follow (source commit `870ca09f`)

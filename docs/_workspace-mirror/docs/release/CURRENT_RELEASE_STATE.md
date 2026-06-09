@@ -18,16 +18,60 @@ Last updated: 2026-06-09
 - Repo: `engine`
 - Workspace HEAD / version / migrations / dirty state: see `docs/release/release-identity.md`
 - Production status (last manual update 2026-06-09): backend package version
-  `4.14.207` is deployed from commit `4f2927c1`; both `nexus-hub` and
+  `4.14.208` is deployed from commit `910b6d72`; both `nexus-hub` and
   `content-engine` PM2 processes are online, production content health passed,
-  the status portal returned version `4.14.207`, and production readiness
+  public `/health` plus `/public-status` passed, unauthenticated Training
+  returned the canonical 401 contract, and production readiness
   passed SQLite integrity, `/health`, content-engine readiness, native
   better-sqlite3 loading, and PM2 stability. The immutable global Training
   catalog version `repo-seed-1.0.0` is active with 131 exercises and 24
-  equipment items. Backend `origin/main` may lag until the local release commits
-  are pushed. Workspace audit evidence lives at
+  equipment items. Workspace audit evidence lives at
   `docs/release/worktree-recovery-audit-2026-05-18.md` and
   `docs/release/worktree-recovery-audit-2026-05-21/`.
+
+### 2026-06-09 Training Coach Tenant/Health Hotfix Production Promote
+
+- Scope: promoted the Claude-reviewed Training / Coach hotfixes for stale
+  health-signal safety decisions, tenant-scoped session mutation ownership,
+  tenant-scoped reflow ownership, and tenant-scoped adherence/missed-session
+  reads. Production plan generation now bounds health-signal safety reads via
+  `TRAINING_SAFETY_HEALTH_SIGNAL_MAX_AGE_DAYS`, mutation/reflow ownership fails
+  closed on tenant mismatch, and progression/missed-session aggregates are
+  tenant-scoped.
+- Production version: `4.14.208`.
+- Production deploy commit: `910b6d72`.
+- Source hotfix commit: `9c226007`
+  (`fix(training): bound health signal safety and tenant gates`).
+- Release prep/docs evidence commits before deploy: `77cbe12f`
+  (`chore: prepare release 4.14.208`) and `910b6d72`
+  (`docs(release): refresh registry parity evidence timestamp`).
+- Focused backend validation passed **6 files / 131 tests** across Training
+  calendar sync, plan generation, session mutation, adherence trend, completion
+  feedback, and missed-session suites. `training-routes.test.ts` then passed
+  **59 tests** after tenant-aware route fixtures were corrected.
+- Full backend validation passed before production: local `npm run test` passed
+  **841 test files / 12,313 tests**; `npm run release:verify:full` passed
+  typecheck, science-policy pin validation, build, migration safety with **200
+  migrations**, full Vitest with **841 files / 12,313 tests**, and
+  content-engine pytest with **180 tests**. Release-prep and pre-push risk gates
+  each repeated full Vitest with **841 files / 12,313 tests**.
+- Staging deploy/readiness passed; standalone staging smoke passed **19/19**
+  for version `4.14.208`; promote-time staging smoke passed **19/19** before
+  production mutation.
+- Production promotion completed through `./scripts/promote-to-prod.sh`.
+  Deploy-time validation passed typecheck, science-policy pin validation, full
+  Vitest with **841 files / 12,313 tests**, build, backup creation with
+  `bot.db`, native module rebuild under system Node `v22.22.2`, PM2 restart,
+  SQLite integrity, `/health`, content-engine readiness, native better-sqlite3
+  loading, and PM2 stability.
+- Post-production probes passed: public `/health`, public `/public-status`,
+  unauthenticated Training canonical 401, and production package version
+  `4.14.208`.
+- Known caveats: release-evidence shadow parity still reports the expected
+  signed-evidence shadow mismatch for this process-hardening period; Cloudflare
+  edge smoke remained skipped because `NEXUS_SMOKE_EDGE_VERIFY=1` was not
+  configured; production PM2 restart counters remain historically high, but no
+  restart occurred during the readiness sample.
 
 ### 2026-06-09 Training Coach Remediation Production Promote
 
