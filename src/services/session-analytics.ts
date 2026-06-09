@@ -14,12 +14,12 @@
  *   - Progression-aware coach prompts (Phase 4 Slice D+)
  *
  * The schema comes from migration 023_fitness_training_plans.sql:
- *   fitness_training_plans  (user_id, sport, status, start_date, end_date)
+ *   fitness_training_plans  (user_id, tenant_id, sport, status, start_date, end_date)
  *   training_sessions       (plan_id, session_type, status, duration_minutes)
  *   training_completions    (session_id, plan_id, completed_at, rpe_overall, duration_minutes)
  *
- * User isolation: every query JOINs through fitness_training_plans so
- * one user never sees another's completion rows.
+ * Tenant isolation: every production read JOINs through fitness_training_plans
+ * and filters by both user_id and tenant_id.
  *
  * Sport taxonomy: the raw `session_type` column uses values like
  * `strength`, `running`, `cycling`, `swim`, `recovery`, `mobility`. We
@@ -35,6 +35,7 @@ import { DateTime } from 'luxon';
 import { logger } from '../utils/logger';
 import { getActivities } from './wearable/wearable-service';
 import type { ActivityType, NormalizedActivity } from './wearable/types';
+import { requireTenantIdParam } from './tenant-scope';
 
 // ─── Types ──────────────────────────────────────────────────────────
 
@@ -237,24 +238,28 @@ export function computeStreaks(
  */
 export function getWeeklyActivitySummary(
   userId: number,
+  tenantId: number,
   referenceDate?: DateTime,
 ): WeeklyActivitySummary {
+  const scopedTenantId = requireTenantIdParam(tenantId, 'getWeeklyActivitySummary');
   const ref = referenceDate ?? now();
   const weekStart = startOfWeek(ref);
   const weekEnd = endOfWeek(ref);
-  const rows = readWeeklyCompletionRows(userId, weekStart, weekEnd);
-  return buildWeeklySummaryFromRows(userId, ref, weekStart, weekEnd, rows);
+  const rows = readWeeklyCompletionRows(userId, scopedTenantId, weekStart, weekEnd);
+  return buildWeeklySummaryFromRows(userId, scopedTenantId, ref, weekStart, weekEnd, rows);
 }
 
 export async function getUnifiedWeeklyActivitySummary(
   userId: number,
+  tenantId: number,
   referenceDate?: DateTime,
 ): Promise<WeeklyActivitySummary> {
+  const scopedTenantId = requireTenantIdParam(tenantId, 'getUnifiedWeeklyActivitySummary');
   const ref = referenceDate ?? now();
   const weekStart = startOfWeek(ref);
   const weekEnd = endOfWeek(ref);
-  const rows = readWeeklyCompletionRows(userId, weekStart, weekEnd);
-  const baseSummary = buildWeeklySummaryFromRows(userId, ref, weekStart, weekEnd, rows);
+  const rows = readWeeklyCompletionRows(userId, scopedTenantId, weekStart, weekEnd);
+  const baseSummary = buildWeeklySummaryFromRows(userId, scopedTenantId, ref, weekStart, weekEnd, rows);
 
   try {
     const wearableActivities = await getActivities(
@@ -271,7 +276,7 @@ export async function getUnifiedWeeklyActivitySummary(
     for (const sport of Object.keys(mergedBySport) as SportKey[]) {
       mergedBySport[sport].avgRpe = baseSummary.bySport[sport].avgRpe;
     }
-    const completionDayRows = readStreakDayRows(userId, ref);
+    const completionDayRows = readStreakDayRows(userId, scopedTenantId, ref);
     const wearableDays = new Set(
       wearableActivities
         .map((activity) => DateTime.fromISO(activity.startTime).toFormat('yyyy-LL-dd'))
@@ -301,6 +306,7 @@ export async function getUnifiedWeeklyActivitySummary(
 
 function readWeeklyCompletionRows(
   userId: number,
+  tenantId: number,
   weekStart: string,
   weekEnd: string,
 ): CompletionRow[] {
@@ -316,18 +322,19 @@ function readWeeklyCompletionRows(
       FROM training_completions tc
       JOIN training_sessions ts ON ts.id = tc.session_id
       JOIN fitness_training_plans ftp ON ftp.id = tc.plan_id
-      WHERE ftp.user_id = ?
+      WHERE ftp.user_id = ? AND ftp.tenant_id = ?
         AND tc.completed_at >= ?
         AND tc.completed_at <= ?
-    `).all(userId, weekStart, weekEnd) as CompletionRow[];
+    `).all(userId, tenantId, weekStart, weekEnd) as CompletionRow[];
   } catch (err) {
-    logger.debug({ err, userId }, 'training_completions query failed — returning empty summary');
+    logger.debug({ err, userId, tenantId }, 'training_completions query failed — returning empty summary');
     return [];
   }
 }
 
 function buildWeeklySummaryFromRows(
   userId: number,
+  tenantId: number,
   ref: DateTime,
   weekStart: string,
   weekEnd: string,
@@ -371,7 +378,7 @@ function buildWeeklySummaryFromRows(
     ? Number((overallRpeSum / overallRpeCount).toFixed(1))
     : null;
 
-  const dayRows = readStreakDayRows(userId, ref);
+  const dayRows = readStreakDayRows(userId, tenantId, ref);
   const dayStrings = dayRows.map((r) => r.day);
   const streak = computeStreaks(dayStrings, ref);
 
@@ -387,7 +394,7 @@ function buildWeeklySummaryFromRows(
   };
 }
 
-function readStreakDayRows(userId: number, ref: DateTime): DayCountRow[] {
+function readStreakDayRows(userId: number, tenantId: number, ref: DateTime): DayCountRow[] {
   const db = getDb();
   const streakWindowStart = ref.minus({ days: 90 }).startOf('day').toISO();
 
@@ -397,13 +404,13 @@ function readStreakDayRows(userId: number, ref: DateTime): DayCountRow[] {
              COUNT(*) AS session_count
       FROM training_completions tc
       JOIN fitness_training_plans ftp ON ftp.id = tc.plan_id
-      WHERE ftp.user_id = ?
+      WHERE ftp.user_id = ? AND ftp.tenant_id = ?
         AND tc.completed_at >= ?
       GROUP BY day
       ORDER BY day
-    `).all(userId, streakWindowStart) as DayCountRow[];
+    `).all(userId, tenantId, streakWindowStart) as DayCountRow[];
   } catch (err) {
-    logger.debug({ err, userId }, 'streak day-count query failed — returning empty streaks');
+    logger.debug({ err, userId, tenantId }, 'streak day-count query failed — returning empty streaks');
     return [];
   }
 }
@@ -515,8 +522,10 @@ interface SessionStatusRow {
  */
 export function computeWeeklyAdherence(
   userId: number,
+  tenantId: number,
   referenceDate?: DateTime,
 ): WeeklyAdherence {
+  const scopedTenantId = requireTenantIdParam(tenantId, 'computeWeeklyAdherence');
   const ref = referenceDate ?? now();
   const weekStart = startOfWeek(ref);
   const weekEnd = endOfWeek(ref);
@@ -543,12 +552,12 @@ export function computeWeeklyAdherence(
     plan = db.prepare(`
       SELECT id, name, sport, start_date
       FROM fitness_training_plans
-      WHERE user_id = ? AND status = 'active'
+      WHERE user_id = ? AND tenant_id = ? AND status = 'active'
       ORDER BY created_at DESC
       LIMIT 1
-    `).get(userId) as ActivePlanRow | undefined ?? null;
+    `).get(userId, scopedTenantId) as ActivePlanRow | undefined ?? null;
   } catch (err) {
-    logger.debug({ err, userId }, 'active plan lookup failed — returning empty adherence');
+    logger.debug({ err, userId, tenantId: scopedTenantId }, 'active plan lookup failed — returning empty adherence');
     return empty;
   }
   if (!plan) return empty;

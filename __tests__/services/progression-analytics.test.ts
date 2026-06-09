@@ -72,17 +72,19 @@ import {
  */
 function seedCompletion(opts: {
   userId: number;
+  tenantId?: number;
   completedAt: string;
   actualExercisesJson: string | null;
   baseId?: number;
 }): void {
   const base = opts.baseId ?? Math.floor(Math.random() * 1_000_000);
+  const tenantId = opts.tenantId ?? opts.userId;
 
   testDb.prepare(`
     INSERT INTO fitness_training_plans
-      (id, user_id, name, sport, duration_weeks, start_date, end_date, status)
-    VALUES (?, ?, 'Test plan', 'strength', 12, '2026-01-01', '2027-01-01', 'active')
-  `).run(base, opts.userId);
+      (id, user_id, tenant_id, name, sport, duration_weeks, start_date, end_date, status)
+    VALUES (?, ?, ?, 'Test plan', 'strength', 12, '2026-01-01', '2027-01-01', 'active')
+  `).run(base, opts.userId, tenantId);
 
   testDb.prepare(`
     INSERT INTO training_weeks (id, plan_id, week_number)
@@ -217,7 +219,7 @@ describe('extractStrengthDataPoints — JSON shape variants', () => {
     ]);
     seedCompletion({ userId: 100, completedAt: '2026-04-07T12:00:00', actualExercisesJson: json, baseId: 1 });
 
-    const dps = extractStrengthDataPoints(100, 8, ref);
+    const dps = extractStrengthDataPoints(100, 100, 8, ref);
     expect(dps).toHaveLength(2);
     expect(dps.find(d => d.lift === 'Back Squat')).toMatchObject({ weightKg: 140, reps: 5 });
     expect(dps.find(d => d.lift === 'Bench Press')).toMatchObject({ weightKg: 100, reps: 3 });
@@ -227,7 +229,7 @@ describe('extractStrengthDataPoints — JSON shape variants', () => {
     const json = JSON.stringify([{ name: 'Deadlift', weight_kg: 180, reps: 3 }]);
     seedCompletion({ userId: 101, completedAt: '2026-04-07T12:00:00', actualExercisesJson: json, baseId: 2 });
 
-    const dps = extractStrengthDataPoints(101, 8, ref);
+    const dps = extractStrengthDataPoints(101, 101, 8, ref);
     expect(dps).toHaveLength(1);
     expect(dps[0]).toMatchObject({ lift: 'Deadlift', weightKg: 180, reps: 3 });
   });
@@ -246,7 +248,7 @@ describe('extractStrengthDataPoints — JSON shape variants', () => {
     ]);
     seedCompletion({ userId: 102, completedAt: '2026-04-07T12:00:00', actualExercisesJson: json, baseId: 3 });
 
-    const dps = extractStrengthDataPoints(102, 8, ref);
+    const dps = extractStrengthDataPoints(102, 102, 8, ref);
     expect(dps).toHaveLength(1);
     expect(dps[0]).toMatchObject({ lift: 'Back Squat', weightKg: 150, reps: 3 });
   });
@@ -255,7 +257,7 @@ describe('extractStrengthDataPoints — JSON shape variants', () => {
     const json = JSON.stringify({ name: 'Overhead Press', weight: 60, reps: 5 });
     seedCompletion({ userId: 103, completedAt: '2026-04-07T12:00:00', actualExercisesJson: json, baseId: 4 });
 
-    const dps = extractStrengthDataPoints(103, 8, ref);
+    const dps = extractStrengthDataPoints(103, 103, 8, ref);
     expect(dps).toHaveLength(1);
     expect(dps[0].lift).toBe('Overhead Press');
   });
@@ -264,7 +266,7 @@ describe('extractStrengthDataPoints — JSON shape variants', () => {
     const json = JSON.stringify([{ exercise: 'squats', weight: 140, reps: 5 }]);
     seedCompletion({ userId: 104, completedAt: '2026-04-07T12:00:00', actualExercisesJson: json, baseId: 5 });
 
-    const dps = extractStrengthDataPoints(104, 8, ref);
+    const dps = extractStrengthDataPoints(104, 104, 8, ref);
     expect(dps).toHaveLength(1);
     expect(dps[0].lift).toBe('Back Squat');
   });
@@ -273,20 +275,20 @@ describe('extractStrengthDataPoints — JSON shape variants', () => {
     const json = JSON.stringify([{ name: 'Bench', weight: '100', reps: '5' }]);
     seedCompletion({ userId: 105, completedAt: '2026-04-07T12:00:00', actualExercisesJson: json, baseId: 6 });
 
-    const dps = extractStrengthDataPoints(105, 8, ref);
+    const dps = extractStrengthDataPoints(105, 105, 8, ref);
     expect(dps).toHaveLength(1);
     expect(dps[0]).toMatchObject({ weightKg: 100, reps: 5 });
   });
 
   it('skips unparseable JSON without throwing', () => {
     seedCompletion({ userId: 106, completedAt: '2026-04-07T12:00:00', actualExercisesJson: 'not valid json', baseId: 7 });
-    const dps = extractStrengthDataPoints(106, 8, ref);
+    const dps = extractStrengthDataPoints(106, 106, 8, ref);
     expect(dps).toEqual([]);
   });
 
   it('skips null actual_exercises_json', () => {
     seedCompletion({ userId: 107, completedAt: '2026-04-07T12:00:00', actualExercisesJson: null, baseId: 8 });
-    const dps = extractStrengthDataPoints(107, 8, ref);
+    const dps = extractStrengthDataPoints(107, 107, 8, ref);
     expect(dps).toEqual([]);
   });
 
@@ -298,7 +300,7 @@ describe('extractStrengthDataPoints — JSON shape variants', () => {
     ]);
     seedCompletion({ userId: 108, completedAt: '2026-04-07T12:00:00', actualExercisesJson: json, baseId: 9 });
 
-    const dps = extractStrengthDataPoints(108, 8, ref);
+    const dps = extractStrengthDataPoints(108, 108, 8, ref);
     expect(dps).toHaveLength(1);
     expect(dps[0].lift).toBe('Back Squat');
   });
@@ -315,7 +317,7 @@ describe('extractStrengthDataPoints — JSON shape variants', () => {
     ]);
     seedCompletion({ userId: 109, completedAt: '2026-04-07T12:00:00', actualExercisesJson: json, baseId: 10 });
 
-    const dps = extractStrengthDataPoints(109, 8, ref);
+    const dps = extractStrengthDataPoints(109, 109, 8, ref);
     expect(dps).toHaveLength(1);
     expect(dps[0]).toMatchObject({ weightKg: 100, reps: 8 });
   });
@@ -327,7 +329,7 @@ describe('extractStrengthDataPoints — JSON shape variants', () => {
     ]);
     seedCompletion({ userId: 110, completedAt: '2026-04-07T12:00:00', actualExercisesJson: json, baseId: 11 });
 
-    const dps = extractStrengthDataPoints(110, 8, ref);
+    const dps = extractStrengthDataPoints(110, 110, 8, ref);
     expect(dps).toEqual([]);
   });
 });
@@ -345,13 +347,13 @@ describe('getStrengthProgression', () => {
   const ref = DateTime.fromISO('2026-04-08T12:00:00', { zone: 'Europe/Lisbon' });
 
   /** Seed a sequence of Back Squat sessions at given dates + weights. */
-  function seedSquatSessions(userId: number, sessions: Array<[string, number, number]>) {
+  function seedSquatSessions(userId: number, sessions: Array<[string, number, number]>, tenantId = userId) {
     // Use a dedicated plan for all sessions so they share plan_id scope
     const planBase = Math.floor(Math.random() * 100_000) + userId;
     testDb.prepare(`
-      INSERT INTO fitness_training_plans (id, user_id, name, sport, duration_weeks, start_date, end_date, status)
-      VALUES (?, ?, 'Plan', 'strength', 12, '2026-01-01', '2027-01-01', 'active')
-    `).run(planBase, userId);
+      INSERT INTO fitness_training_plans (id, user_id, tenant_id, name, sport, duration_weeks, start_date, end_date, status)
+      VALUES (?, ?, ?, 'Plan', 'strength', 12, '2026-01-01', '2027-01-01', 'active')
+    `).run(planBase, userId, tenantId);
     testDb.prepare(`
       INSERT INTO training_weeks (id, plan_id, week_number) VALUES (?, ?, 1)
     `).run(planBase, planBase);
@@ -371,14 +373,14 @@ describe('getStrengthProgression', () => {
   }
 
   it('returns empty lifts when the user has no completions', () => {
-    const report = getStrengthProgression(200, 8, ref);
+    const report = getStrengthProgression(200, 200, 8, ref);
     expect(report.userId).toBe(200);
     expect(report.lifts).toEqual([]);
   });
 
   it('reports insufficient_data for a lift with only one session', () => {
     seedSquatSessions(201, [['2026-04-01T12:00:00', 140, 5]]);
-    const report = getStrengthProgression(201, 8, ref);
+    const report = getStrengthProgression(201, 201, 8, ref);
     expect(report.lifts).toHaveLength(1);
     expect(report.lifts[0].lift).toBe('Back Squat');
     expect(report.lifts[0].trend).toBe('insufficient_data');
@@ -395,7 +397,7 @@ describe('getStrengthProgression', () => {
       ['2026-03-29T12:00:00', 155, 5],  // 180.8
       ['2026-04-05T12:00:00', 160, 5],  // 186.7
     ]);
-    const report = getStrengthProgression(202, 8, ref);
+    const report = getStrengthProgression(202, 202, 8, ref);
     expect(report.lifts).toHaveLength(1);
     const squat = report.lifts[0];
     expect(squat.trend).toBe('up');
@@ -412,7 +414,7 @@ describe('getStrengthProgression', () => {
       ['2026-03-10T12:00:00', 140, 5],
       ['2026-04-07T12:00:00', 140, 5],
     ]);
-    const report = getStrengthProgression(203, 8, ref);
+    const report = getStrengthProgression(203, 203, 8, ref);
     expect(report.lifts[0].trend).toBe('flat');
   });
 
@@ -423,7 +425,7 @@ describe('getStrengthProgression', () => {
       ['2026-03-10T12:00:00', 140, 5],
       ['2026-04-07T12:00:00', 130, 5],  // 151.7 — down ~13%
     ]);
-    const report = getStrengthProgression(204, 8, ref);
+    const report = getStrengthProgression(204, 204, 8, ref);
     expect(report.lifts[0].trend).toBe('down');
     expect(report.lifts[0].deltaPct).toBeLessThan(-2.5);
   });
@@ -434,7 +436,7 @@ describe('getStrengthProgression', () => {
       ['2026-03-01T12:00:00', 140, 5],
       ['2026-04-05T12:00:00', 150, 5],
     ]);
-    const report = getStrengthProgression(205, 8, ref);
+    const report = getStrengthProgression(205, 205, 8, ref);
     expect(report.lifts[0].dataPoints).toHaveLength(2);
     expect(report.lifts[0].dataPoints[0].date).toBe('2026-03-01');
   });
@@ -449,12 +451,30 @@ describe('getStrengthProgression', () => {
       ['2026-04-01T12:00:00', 85, 5],
     ]);
 
-    const a = getStrengthProgression(300, 8, ref);
-    const b = getStrengthProgression(301, 8, ref);
+    const a = getStrengthProgression(300, 300, 8, ref);
+    const b = getStrengthProgression(301, 301, 8, ref);
 
     expect(a.lifts[0].currentOneRm).not.toBe(b.lifts[0].currentOneRm);
     expect(a.lifts[0].dataPoints.every(d => d.weightKg > 100)).toBe(true);
     expect(b.lifts[0].dataPoints.every(d => d.weightKg < 100)).toBe(true);
+  });
+
+  it('keeps same-user strength progression isolated by tenant', () => {
+    seedSquatSessions(302, [
+      ['2026-03-01T12:00:00', 140, 5],
+      ['2026-04-01T12:00:00', 150, 5],
+    ], 30);
+    seedSquatSessions(302, [
+      ['2026-03-01T12:00:00', 80, 5],
+      ['2026-04-01T12:00:00', 85, 5],
+    ], 40);
+
+    const tenantA = getStrengthProgression(302, 30, 8, ref);
+    const tenantB = getStrengthProgression(302, 40, 8, ref);
+
+    expect(tenantA.lifts[0].currentOneRm).not.toBe(tenantB.lifts[0].currentOneRm);
+    expect(tenantA.lifts[0].dataPoints.every(d => d.weightKg > 100)).toBe(true);
+    expect(tenantB.lifts[0].dataPoints.every(d => d.weightKg < 100)).toBe(true);
   });
 });
 
@@ -550,6 +570,7 @@ describe('formatStrengthProgressionForPrompt', () => {
  */
 function seedCardioCompletion(opts: {
   userId: number;
+  tenantId?: number;
   sessionType: 'running' | 'cycling' | 'strength' | 'swim' | string;
   completedAt: string;
   durationMinutes: number | null;
@@ -557,12 +578,13 @@ function seedCardioCompletion(opts: {
   baseId?: number;
 }): void {
   const base = opts.baseId ?? Math.floor(Math.random() * 1_000_000);
+  const tenantId = opts.tenantId ?? opts.userId;
 
   testDb.prepare(`
     INSERT INTO fitness_training_plans
-      (id, user_id, name, sport, duration_weeks, start_date, end_date, status)
-    VALUES (?, ?, 'Cardio plan', ?, 12, '2026-01-01', '2027-01-01', 'active')
-  `).run(base, opts.userId, opts.sessionType);
+      (id, user_id, tenant_id, name, sport, duration_weeks, start_date, end_date, status)
+    VALUES (?, ?, ?, 'Cardio plan', ?, 12, '2026-01-01', '2027-01-01', 'active')
+  `).run(base, opts.userId, tenantId, opts.sessionType);
 
   testDb.prepare(`
     INSERT INTO training_weeks (id, plan_id, week_number)
@@ -603,7 +625,7 @@ describe('extractCardioDataPoints', () => {
       actualExercisesJson: JSON.stringify({ distance_km: 8.5 }),
       baseId: 400,
     });
-    const dps = extractCardioDataPoints(400, 'running', 8, ref);
+    const dps = extractCardioDataPoints(400, 400, 'running', 8, ref);
     expect(dps).toHaveLength(1);
     expect(dps[0].distanceKm).toBeCloseTo(8.5, 2);
     expect(dps[0].durationMin).toBe(42);
@@ -619,7 +641,7 @@ describe('extractCardioDataPoints', () => {
       actualExercisesJson: JSON.stringify({ distance: 25000, unit: 'm' }),
       baseId: 401,
     });
-    const dps = extractCardioDataPoints(401, 'cycling', 8, ref);
+    const dps = extractCardioDataPoints(401, 401, 'cycling', 8, ref);
     expect(dps[0].distanceKm).toBeCloseTo(25, 2);
   });
 
@@ -632,7 +654,7 @@ describe('extractCardioDataPoints', () => {
       actualExercisesJson: JSON.stringify({ distance: 5, unit: 'mi' }),
       baseId: 402,
     });
-    const dps = extractCardioDataPoints(402, 'running', 8, ref);
+    const dps = extractCardioDataPoints(402, 402, 'running', 8, ref);
     // 5 miles ≈ 8.04672 km
     expect(dps[0].distanceKm).toBeCloseTo(8.04, 1);
   });
@@ -646,7 +668,7 @@ describe('extractCardioDataPoints', () => {
       actualExercisesJson: JSON.stringify({ metrics: { distance_km: 7.2 } }),
       baseId: 403,
     });
-    const dps = extractCardioDataPoints(403, 'running', 8, ref);
+    const dps = extractCardioDataPoints(403, 403, 'running', 8, ref);
     expect(dps[0].distanceKm).toBeCloseTo(7.2, 2);
   });
 
@@ -659,7 +681,7 @@ describe('extractCardioDataPoints', () => {
       actualExercisesJson: JSON.stringify([{ distance_km: 45 }]),
       baseId: 404,
     });
-    const dps = extractCardioDataPoints(404, 'cycling', 8, ref);
+    const dps = extractCardioDataPoints(404, 404, 'cycling', 8, ref);
     expect(dps[0].distanceKm).toBeCloseTo(45, 2);
   });
 
@@ -672,7 +694,7 @@ describe('extractCardioDataPoints', () => {
       actualExercisesJson: null, // no structured data, just duration
       baseId: 405,
     });
-    const dps = extractCardioDataPoints(405, 'running', 8, ref);
+    const dps = extractCardioDataPoints(405, 405, 'running', 8, ref);
     expect(dps).toHaveLength(1);
     expect(dps[0].distanceKm).toBe(0);
     expect(dps[0].durationMin).toBe(40);
@@ -687,7 +709,7 @@ describe('extractCardioDataPoints', () => {
       actualExercisesJson: null,
       baseId: 406,
     });
-    const dps = extractCardioDataPoints(406, 'running', 8, ref);
+    const dps = extractCardioDataPoints(406, 406, 'running', 8, ref);
     expect(dps).toEqual([]);
   });
 
@@ -710,8 +732,8 @@ describe('extractCardioDataPoints', () => {
       baseId: 408,
     });
 
-    const runs = extractCardioDataPoints(407, 'running', 8, ref);
-    const rides = extractCardioDataPoints(407, 'cycling', 8, ref);
+    const runs = extractCardioDataPoints(407, 407, 'running', 8, ref);
+    const rides = extractCardioDataPoints(407, 407, 'cycling', 8, ref);
     expect(runs).toHaveLength(1);
     expect(runs[0].distanceKm).toBeCloseTo(5, 2);
     expect(rides).toHaveLength(1);
@@ -727,7 +749,7 @@ describe('extractCardioDataPoints', () => {
       actualExercisesJson: JSON.stringify([{ name: 'Back Squat', weight: 140, reps: 5 }]),
       baseId: 409,
     });
-    const runs = extractCardioDataPoints(409, 'running', 8, ref);
+    const runs = extractCardioDataPoints(409, 409, 'running', 8, ref);
     expect(runs).toEqual([]);
   });
 });
@@ -745,12 +767,12 @@ describe('getCardioProgression', () => {
   const ref = DateTime.fromISO('2026-04-08T12:00:00', { zone: 'Europe/Lisbon' });
 
   /** Seed a run-of-runs at given (date, km, minutes) tuples. */
-  function seedRuns(userId: number, runs: Array<[string, number, number]>) {
+  function seedRuns(userId: number, runs: Array<[string, number, number]>, tenantId = userId) {
     const planBase = Math.floor(Math.random() * 100_000) + userId;
     testDb.prepare(`
-      INSERT INTO fitness_training_plans (id, user_id, name, sport, duration_weeks, start_date, end_date, status)
-      VALUES (?, ?, 'Running plan', 'running', 12, '2026-01-01', '2027-01-01', 'active')
-    `).run(planBase, userId);
+      INSERT INTO fitness_training_plans (id, user_id, tenant_id, name, sport, duration_weeks, start_date, end_date, status)
+      VALUES (?, ?, ?, 'Running plan', 'running', 12, '2026-01-01', '2027-01-01', 'active')
+    `).run(planBase, userId, tenantId);
     testDb.prepare(`
       INSERT INTO training_weeks (id, plan_id, week_number) VALUES (?, ?, 1)
     `).run(planBase, planBase);
@@ -770,7 +792,7 @@ describe('getCardioProgression', () => {
   }
 
   it('returns an insufficient_data report when the user has no runs', () => {
-    const report = getCardioProgression(500, 'running', 8, ref);
+    const report = getCardioProgression(500, 500, 'running', 8, ref);
     expect(report.userId).toBe(500);
     expect(report.sport).toBe('running');
     expect(report.weeks).toEqual([]);
@@ -786,7 +808,7 @@ describe('getCardioProgression', () => {
       ['2026-04-06T08:00:00', 5, 30],
       ['2026-04-07T08:00:00', 7, 42],
     ]);
-    const report = getCardioProgression(501, 'running', 8, ref);
+    const report = getCardioProgression(501, 501, 'running', 8, ref);
     expect(report.weeks).toHaveLength(1);
     expect(report.weeks[0].sessions).toBe(2);
     expect(report.weeks[0].distanceKm).toBeCloseTo(12, 1);
@@ -805,7 +827,7 @@ describe('getCardioProgression', () => {
       ['2026-04-06T08:00:00', 20, 100],
       ['2026-04-07T08:00:00', 18, 90],
     ]);
-    const report = getCardioProgression(502, 'running', 8, ref);
+    const report = getCardioProgression(502, 502, 'running', 8, ref);
     expect(report.weeks.length).toBeGreaterThanOrEqual(2);
     expect(report.startWeeklyKm).toBeCloseTo(25, 1);
     expect(report.currentWeeklyKm).toBeCloseTo(38, 1);
@@ -819,7 +841,7 @@ describe('getCardioProgression', () => {
       ['2026-02-24T08:00:00', 20, 100],
       ['2026-04-06T08:00:00', 20, 100],
     ]);
-    const report = getCardioProgression(503, 'running', 8, ref);
+    const report = getCardioProgression(503, 503, 'running', 8, ref);
     expect(report.trend).toBe('flat');
   });
 
@@ -828,7 +850,7 @@ describe('getCardioProgression', () => {
       ['2026-02-24T08:00:00', 30, 150],
       ['2026-04-06T08:00:00', 20, 100],
     ]);
-    const report = getCardioProgression(504, 'running', 8, ref);
+    const report = getCardioProgression(504, 504, 'running', 8, ref);
     expect(report.trend).toBe('down');
     expect(report.deltaKm).toBeLessThan(0);
   });
@@ -839,7 +861,7 @@ describe('getCardioProgression', () => {
       ['2026-03-15T08:00:00', 10, 60],
       ['2026-04-05T08:00:00', 12, 65],
     ]);
-    const report = getCardioProgression(505, 'running', 8, ref);
+    const report = getCardioProgression(505, 505, 'running', 8, ref);
     // The stale December run must NOT contribute
     expect(report.totalKm).toBeCloseTo(22, 1);
     expect(report.weeks.every((w) => w.weekStart >= '2026-02-09')).toBe(true);
@@ -855,12 +877,30 @@ describe('getCardioProgression', () => {
       ['2026-04-05T08:00:00', 6, 35],
     ]);
 
-    const a = getCardioProgression(600, 'running', 8, ref);
-    const b = getCardioProgression(601, 'running', 8, ref);
+    const a = getCardioProgression(600, 600, 'running', 8, ref);
+    const b = getCardioProgression(601, 601, 'running', 8, ref);
 
     expect(a.totalKm).toBeGreaterThan(b.totalKm);
     expect(a.weeks.every((w) => w.distanceKm >= 50)).toBe(true);
     expect(b.weeks.every((w) => w.distanceKm <= 10)).toBe(true);
+  });
+
+  it('keeps same-user cardio progression isolated by tenant', () => {
+    seedRuns(602, [
+      ['2026-03-15T08:00:00', 50, 300],
+      ['2026-04-05T08:00:00', 55, 320],
+    ], 60);
+    seedRuns(602, [
+      ['2026-03-15T08:00:00', 5, 30],
+      ['2026-04-05T08:00:00', 6, 35],
+    ], 70);
+
+    const tenantA = getCardioProgression(602, 60, 'running', 8, ref);
+    const tenantB = getCardioProgression(602, 70, 'running', 8, ref);
+
+    expect(tenantA.totalKm).toBeGreaterThan(tenantB.totalKm);
+    expect(tenantA.weeks.every((w) => w.distanceKm >= 50)).toBe(true);
+    expect(tenantB.weeks.every((w) => w.distanceKm <= 10)).toBe(true);
   });
 
   it('only counts cycling sessions when sport=cycling is requested', () => {
@@ -886,8 +926,8 @@ describe('getCardioProgression', () => {
       baseId: 711,
     });
 
-    const runReport = getCardioProgression(700, 'running', 8, ref);
-    const rideReport = getCardioProgression(700, 'cycling', 8, ref);
+    const runReport = getCardioProgression(700, 700, 'running', 8, ref);
+    const rideReport = getCardioProgression(700, 700, 'cycling', 8, ref);
     expect(runReport.totalSessions).toBe(2);
     expect(runReport.totalKm).toBeCloseTo(22, 1);
     expect(rideReport.totalSessions).toBe(2);

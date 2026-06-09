@@ -86,12 +86,14 @@ import { buildActiveSignalsResponse } from '../../src/services/signals-observabi
  */
 function seedPlanWithWeek(opts: {
   userId: number;
+  tenantId?: number;
   sport?: string;
   referenceDate?: DateTime;
   sessionStatuses: string[];
   baseId?: number;
 }): number {
   const base = opts.baseId ?? Math.floor(Math.random() * 1_000_000);
+  const tenantId = opts.tenantId ?? opts.userId;
   const ref = opts.referenceDate ?? DateTime.fromISO('2026-04-08T12:00:00', { zone: 'Europe/Lisbon' });
   // Plan starts at the beginning of the current week so week 1 = current week
   const planStart = ref.startOf('week').toISODate()!;
@@ -99,9 +101,9 @@ function seedPlanWithWeek(opts: {
 
   testDb.prepare(`
     INSERT INTO fitness_training_plans
-      (id, user_id, name, sport, duration_weeks, start_date, end_date, status)
-    VALUES (?, ?, 'Test plan', ?, 12, ?, ?, 'active')
-  `).run(base, opts.userId, opts.sport ?? 'hybrid', planStart, planEnd);
+      (id, user_id, tenant_id, name, sport, duration_weeks, start_date, end_date, status)
+    VALUES (?, ?, ?, 'Test plan', ?, 12, ?, ?, 'active')
+  `).run(base, opts.userId, tenantId, opts.sport ?? 'hybrid', planStart, planEnd);
 
   testDb.prepare(`
     INSERT INTO training_weeks (id, plan_id, week_number, volume_sessions)
@@ -126,7 +128,7 @@ describe('computeWeeklyAdherence', () => {
   afterEach(() => testDb?.close());
 
   it('returns hasActivePlan:false when no plan exists', () => {
-    const result = computeWeeklyAdherence(100);
+    const result = computeWeeklyAdherence(100, 100);
     expect(result.hasActivePlan).toBe(false);
     expect(result.planned).toBe(0);
     expect(result.completed).toBe(0);
@@ -142,7 +144,7 @@ describe('computeWeeklyAdherence', () => {
       baseId: 1,
     });
 
-    const result = computeWeeklyAdherence(200, ref);
+    const result = computeWeeklyAdherence(200, 200, ref);
     expect(result.hasActivePlan).toBe(true);
     expect(result.planned).toBe(4);
     expect(result.completed).toBe(4);
@@ -159,7 +161,7 @@ describe('computeWeeklyAdherence', () => {
       baseId: 2,
     });
 
-    const result = computeWeeklyAdherence(201, ref);
+    const result = computeWeeklyAdherence(201, 201, ref);
     expect(result.planned).toBe(5);
     expect(result.completed).toBe(2);
     expect(result.ratio).toBe(0.4);
@@ -175,7 +177,7 @@ describe('computeWeeklyAdherence', () => {
       baseId: 3,
     });
 
-    const result = computeWeeklyAdherence(202, ref);
+    const result = computeWeeklyAdherence(202, 202, ref);
     expect(result.planned).toBe(4);
     expect(result.completed).toBe(1);
     expect(result.skipped).toBe(2);
@@ -189,15 +191,15 @@ describe('computeWeeklyAdherence', () => {
 
     testDb.prepare(`
       INSERT INTO fitness_training_plans
-        (id, user_id, name, sport, duration_weeks, start_date, end_date, status)
-      VALUES (?, ?, 'Marathon Build', 'running', 12, ?, '2027-01-01', 'active')
-    `).run(base, 203, planStart);
+        (id, user_id, tenant_id, name, sport, duration_weeks, start_date, end_date, status)
+      VALUES (?, ?, ?, 'Marathon Build', 'running', 12, ?, '2027-01-01', 'active')
+    `).run(base, 203, 203, planStart);
     testDb.prepare(`
       INSERT INTO training_weeks (id, plan_id, week_number, volume_sessions)
       VALUES (?, ?, 1, 4)
     `).run(base, base);
 
-    const result = computeWeeklyAdherence(203, ref);
+    const result = computeWeeklyAdherence(203, 203, ref);
     expect(result.planName).toBe('Marathon Build');
     expect(result.planSport).toBe('running');
   });
@@ -217,11 +219,37 @@ describe('computeWeeklyAdherence', () => {
       baseId: 11,
     });
 
-    const a = computeWeeklyAdherence(300, ref);
-    const b = computeWeeklyAdherence(301, ref);
+    const a = computeWeeklyAdherence(300, 300, ref);
+    const b = computeWeeklyAdherence(301, 301, ref);
 
     expect(a.completed).toBe(3);
     expect(b.completed).toBe(0);
+  });
+
+  it('keeps same-user adherence isolated by tenant', () => {
+    const ref = DateTime.fromISO('2026-04-08T12:00:00', { zone: 'Europe/Lisbon' });
+    seedPlanWithWeek({
+      userId: 303,
+      tenantId: 30,
+      referenceDate: ref,
+      sessionStatuses: ['completed', 'completed', 'completed'],
+      baseId: 30330,
+    });
+    seedPlanWithWeek({
+      userId: 303,
+      tenantId: 40,
+      referenceDate: ref,
+      sessionStatuses: ['pending', 'pending', 'pending'],
+      baseId: 30340,
+    });
+
+    const tenantA = computeWeeklyAdherence(303, 30, ref);
+    const tenantB = computeWeeklyAdherence(303, 40, ref);
+
+    expect(tenantA.completed).toBe(3);
+    expect(tenantA.planned).toBe(3);
+    expect(tenantB.completed).toBe(0);
+    expect(tenantB.planned).toBe(3);
   });
 });
 
@@ -232,7 +260,7 @@ describe('publishAdherenceSignalsForUser', () => {
   afterEach(() => testDb?.close());
 
   it('skipped_no_plan when the user has no active plan', () => {
-    const result = publishAdherenceSignalsForUser(1001);
+    const result = publishAdherenceSignalsForUser(1001, 1001);
     expect(result.action).toBe('skipped_no_plan');
   });
 
@@ -244,7 +272,7 @@ describe('publishAdherenceSignalsForUser', () => {
       sessionStatuses: [],
       baseId: 20,
     });
-    const result = publishAdherenceSignalsForUser(1002, ref);
+    const result = publishAdherenceSignalsForUser(1002, 1002, ref);
     expect(result.action).toBe('skipped_no_sessions');
   });
 
@@ -256,7 +284,7 @@ describe('publishAdherenceSignalsForUser', () => {
       sessionStatuses: ['completed', 'completed', 'completed', 'pending'], // 75%
       baseId: 21,
     });
-    const result = publishAdherenceSignalsForUser(1003, ref);
+    const result = publishAdherenceSignalsForUser(1003, 1003, ref);
     expect(result.action).toBe('skipped_neutral');
     expect(result.adherence.ratio).toBe(0.75);
   });
@@ -269,7 +297,7 @@ describe('publishAdherenceSignalsForUser', () => {
       sessionStatuses: ['completed', 'pending', 'pending', 'pending', 'pending'], // 20%
       baseId: 22,
     });
-    const result = publishAdherenceSignalsForUser(1004, ref);
+    const result = publishAdherenceSignalsForUser(1004, 1004, ref);
     expect(result.action).toBe('published_low');
     expect(result.adherence.ratio).toBeLessThan(LOW_ADHERENCE_THRESHOLD);
 
@@ -291,7 +319,7 @@ describe('publishAdherenceSignalsForUser', () => {
       sessionStatuses: sessions,
       baseId: 23,
     });
-    const result = publishAdherenceSignalsForUser(1005, ref);
+    const result = publishAdherenceSignalsForUser(1005, 1005, ref);
     expect(result.action).toBe('published_high');
 
     const row = testDb.prepare(
@@ -310,7 +338,7 @@ describe('publishAdherenceSignalsForUser', () => {
       sessionStatuses: ['completed', 'completed'],
       baseId: 24,
     });
-    const result = publishAdherenceSignalsForUser(1006, ref);
+    const result = publishAdherenceSignalsForUser(1006, 1006, ref);
     // 100% adherence but only 2 planned → neither threshold fires
     // (not low, not high with the min-planned gate). Result is neutral.
     expect(result.action).toBe('skipped_neutral');
@@ -325,11 +353,11 @@ describe('publishAdherenceSignalsForUser', () => {
       baseId: 25,
     });
 
-    const first = publishAdherenceSignalsForUser(1007, ref);
+    const first = publishAdherenceSignalsForUser(1007, 1007, ref);
     expect(first.action).toBe('published_low');
 
     // Second call should detect the existing signal and skip
-    const second = publishAdherenceSignalsForUser(1007, ref);
+    const second = publishAdherenceSignalsForUser(1007, 1007, ref);
     expect(second.action).toBe('skipped_existing');
 
     // Only ONE row on the bus
@@ -361,7 +389,7 @@ describe('publishAdherenceSignalsForUser', () => {
       week_end: ref.minus({ weeks: 1 }).endOf('week').toISO(),
     }), 1010, 1010);
 
-    const result = publishAdherenceSignalsForUser(1010, ref);
+    const result = publishAdherenceSignalsForUser(1010, 1010, ref);
     expect(result.action).toBe('published_low');
     expect(result.adherence.planned).toBe(5);
 
@@ -400,7 +428,7 @@ describe('publishAdherenceSignalsForUser', () => {
       week_end: ref.endOf('week').toISO(),
     }), 1011, 1011);
 
-    const result = publishAdherenceSignalsForUser(1011, ref);
+    const result = publishAdherenceSignalsForUser(1011, 1011, ref);
     expect(result.action).toBe('skipped_neutral');
 
     const active = testDb.prepare(`
@@ -427,7 +455,7 @@ describe('publishAdherenceSignalsForUser', () => {
       week_end: '2026-04-12T23:59:59.999+01:00',
     }), 1012, 1012);
 
-    const result = publishAdherenceSignalsForUser(1012);
+    const result = publishAdherenceSignalsForUser(1012, 1012);
     expect(result.action).toBe('skipped_no_plan');
 
     const row = testDb.prepare(`
@@ -453,8 +481,8 @@ describe('publishAdherenceSignalsForUser', () => {
       baseId: 27,
     });
 
-    const a = publishAdherenceSignalsForUser(1008, ref);
-    const b = publishAdherenceSignalsForUser(1009, ref);
+    const a = publishAdherenceSignalsForUser(1008, 1008, ref);
+    const b = publishAdherenceSignalsForUser(1009, 1009, ref);
 
     expect(a.action).toBe('published_low');
     expect(b.action).toBe('published_low');
@@ -481,7 +509,7 @@ describe('adherence signals — observability formatting', () => {
       sessionStatuses: ['completed', 'pending', 'pending', 'pending', 'pending'],
       baseId: 40,
     });
-    publishAdherenceSignalsForUser(2001, ref);
+    publishAdherenceSignalsForUser(2001, 2001, ref);
 
     const response = buildActiveSignalsResponse(2001);
     const low = response.signals.find((s) => s.type === 'low_adherence');
@@ -501,7 +529,7 @@ describe('adherence signals — observability formatting', () => {
       sessionStatuses: ['completed', 'completed', 'completed', 'completed'],
       baseId: 41,
     });
-    publishAdherenceSignalsForUser(2002, ref);
+    publishAdherenceSignalsForUser(2002, 2002, ref);
 
     const response = buildActiveSignalsResponse(2002);
     const high = response.signals.find((s) => s.type === 'high_adherence');
@@ -533,20 +561,22 @@ describe('adherence signals — observability formatting', () => {
  */
 function seedPlanAndCompletions(opts: {
   userId: number;
+  tenantId?: number;
   planSport: string;
   sessions: Array<[number, string]>; // [daysAgo, sessionType]
   baseId?: number;
 }): number {
   const base = opts.baseId ?? Math.floor(Math.random() * 1_000_000);
+  const tenantId = opts.tenantId ?? opts.userId;
   const ref = DateTime.now();
   const planStart = ref.minus({ weeks: 8 }).toISODate()!;
   const planEnd = ref.plus({ weeks: 12 }).toISODate()!;
 
   testDb.prepare(`
     INSERT INTO fitness_training_plans
-      (id, user_id, name, sport, duration_weeks, start_date, end_date, status)
-    VALUES (?, ?, 'Drift test plan', ?, 20, ?, ?, 'active')
-  `).run(base, opts.userId, opts.planSport, planStart, planEnd);
+      (id, user_id, tenant_id, name, sport, duration_weeks, start_date, end_date, status)
+    VALUES (?, ?, ?, 'Drift test plan', ?, 20, ?, ?, 'active')
+  `).run(base, opts.userId, tenantId, opts.planSport, planStart, planEnd);
 
   testDb.prepare(`
     INSERT INTO training_weeks (id, plan_id, week_number)
@@ -579,7 +609,7 @@ describe('publishPlanDriftSignalForUser', () => {
   afterEach(() => testDb?.close());
 
   it('skipped_no_plan when the user has no active plan', () => {
-    const result = publishPlanDriftSignalForUser(5000);
+    const result = publishPlanDriftSignalForUser(5000, 5000);
     expect(result.action).toBe('skipped_no_plan');
   });
 
@@ -592,7 +622,7 @@ describe('publishPlanDriftSignalForUser', () => {
       ],
       baseId: 50,
     });
-    const result = publishPlanDriftSignalForUser(5001);
+    const result = publishPlanDriftSignalForUser(5001, 5001);
     expect(result.action).toBe('skipped_unknown_sport');
     expect(result.planSport).toBe('breakdancing');
   });
@@ -607,7 +637,7 @@ describe('publishPlanDriftSignalForUser', () => {
       ],
       baseId: 51,
     });
-    const result = publishPlanDriftSignalForUser(5002);
+    const result = publishPlanDriftSignalForUser(5002, 5002);
     expect(result.action).toBe('skipped_not_enough_sessions');
     expect(result.sessionsInWindow).toBe(3);
     expect(PLAN_DRIFT_MIN_SESSIONS).toBe(4);
@@ -627,7 +657,7 @@ describe('publishPlanDriftSignalForUser', () => {
       ],
       baseId: 61,
     });
-    const result = publishPlanDriftSignalForUser(5012);
+    const result = publishPlanDriftSignalForUser(5012, 5012);
     expect(result.action).toBe('skipped_not_enough_sessions');
     expect(result.sessionsInWindow).toBe(5);
   });
@@ -645,7 +675,7 @@ describe('publishPlanDriftSignalForUser', () => {
       ],
       baseId: 62,
     });
-    const result = publishPlanDriftSignalForUser(5013);
+    const result = publishPlanDriftSignalForUser(5013, 5013);
     expect(result.action).toBe('skipped_not_enough_sessions');
   });
 
@@ -660,7 +690,7 @@ describe('publishPlanDriftSignalForUser', () => {
       ],
       baseId: 52,
     });
-    const result = publishPlanDriftSignalForUser(5003);
+    const result = publishPlanDriftSignalForUser(5003, 5003);
     expect(result.action).toBe('skipped_in_band');
     expect(result.dominantSport).toBe('gym');
   });
@@ -677,7 +707,7 @@ describe('publishPlanDriftSignalForUser', () => {
       ],
       baseId: 53,
     });
-    const result = publishPlanDriftSignalForUser(5004);
+    const result = publishPlanDriftSignalForUser(5004, 5004);
     // Dominant is gym (strength), matches plan → skipped_in_band
     expect(result.action).toBe('skipped_in_band');
     expect(result.dominantSport).toBe('gym');
@@ -694,7 +724,7 @@ describe('publishPlanDriftSignalForUser', () => {
       ],
       baseId: 54,
     });
-    const result = publishPlanDriftSignalForUser(5005);
+    const result = publishPlanDriftSignalForUser(5005, 5005);
     expect(result.action).toBe('published_drift');
     expect(result.dominantSport).toBe('running');
     expect(result.planSport).toBe('strength');
@@ -724,7 +754,7 @@ describe('publishPlanDriftSignalForUser', () => {
       ],
       baseId: 55,
     });
-    const result = publishPlanDriftSignalForUser(5006);
+    const result = publishPlanDriftSignalForUser(5006, 5006);
     expect(result.action).toBe('skipped_in_band');
   });
 
@@ -741,7 +771,7 @@ describe('publishPlanDriftSignalForUser', () => {
       ],
       baseId: 56,
     });
-    const result = publishPlanDriftSignalForUser(5007);
+    const result = publishPlanDriftSignalForUser(5007, 5007);
     expect(result.action).toBe('published_drift');
     expect(result.dominantSport).toBe('running');
     expect(result.planSport).toBe('hybrid');
@@ -758,10 +788,10 @@ describe('publishPlanDriftSignalForUser', () => {
       ],
       baseId: 57,
     });
-    const first = publishPlanDriftSignalForUser(5008);
+    const first = publishPlanDriftSignalForUser(5008, 5008);
     expect(first.action).toBe('published_drift');
 
-    const second = publishPlanDriftSignalForUser(5008);
+    const second = publishPlanDriftSignalForUser(5008, 5008);
     expect(second.action).toBe('skipped_existing');
 
     // Only one row on the bus
@@ -791,8 +821,8 @@ describe('publishPlanDriftSignalForUser', () => {
       baseId: 59,
     });
 
-    const a = publishPlanDriftSignalForUser(5009);
-    const b = publishPlanDriftSignalForUser(5010);
+    const a = publishPlanDriftSignalForUser(5009, 5009);
+    const b = publishPlanDriftSignalForUser(5010, 5010);
 
     expect(a.action).toBe('published_drift');
     expect(b.action).toBe('skipped_in_band');
@@ -813,7 +843,7 @@ describe('publishPlanDriftSignalForUser', () => {
       ],
       baseId: 60,
     });
-    const result = publishPlanDriftSignalForUser(5011);
+    const result = publishPlanDriftSignalForUser(5011, 5011);
     expect(result.dominantSport).toBe('running');
     expect(result.action).toBe('published_drift');
   });
@@ -835,7 +865,7 @@ describe('signal formatting — plan_drift', () => {
       ],
       baseId: 70,
     });
-    publishPlanDriftSignalForUser(6001);
+    publishPlanDriftSignalForUser(6001, 6001);
 
     const response = buildActiveSignalsResponse(6001);
     const drift = response.signals.find((s) => s.type === 'plan_drift');

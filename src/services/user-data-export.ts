@@ -409,7 +409,10 @@ export const ACCOUNT_DELETION_TABLES: Array<{ table: string; column: string }> =
   { table: 'apple_health_data', column: 'user_id' },
   { table: 'readiness_scores', column: 'user_id' },
   { table: 'training_completions', column: 'user_id' },
-  { table: 'fitness_training_plans', column: 'user_id' },
+  {
+    table: 'fitness_training_plans',
+    column: 'user_id',
+  },
   { table: 'finance_transactions', column: 'user_id' },
   { table: 'finance_tax_events', column: 'user_id' },
   { table: 'invoice_filings', column: 'user_id' },

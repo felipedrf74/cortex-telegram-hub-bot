@@ -633,8 +633,8 @@ export function purgeSensitivePayloadsForUser(
 ): number {
   const db = getDb();
   const scopedTenantId = requireTenantIdParam(tenantId, 'purgeSensitivePayloadsForUser');
-  // The ledger joins through fitness_training_plans → user_id; we
-  // only redact rows whose plan belongs to this user.
+  // The ledger joins through fitness_training_plans → user_id + tenant_id;
+  // we only redact rows whose plan belongs to this user and tenant.
   //
   // Codex R2 P2 fix — on USER-DELETION the redacted payload must NOT
   // retain the specific trigger_type. Knowing the user once had a

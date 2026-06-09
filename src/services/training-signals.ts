@@ -265,6 +265,7 @@ export function publishTrainingSessionScheduled(opts: {
  */
 export function publishLowAdherence(opts: {
   userId: number;
+  tenantId: number;
   completed: number;
   planned: number;
   weekStart: string;
@@ -285,6 +286,7 @@ export function publishLowAdherence(opts: {
       reason: opts.reason ?? null,
     },
     user_id: opts.userId,
+    tenant_id: opts.tenantId,
     priority: 'urgent',
   });
 }
@@ -297,6 +299,7 @@ export function publishLowAdherence(opts: {
  */
 export function publishHighAdherence(opts: {
   userId: number;
+  tenantId: number;
   completed: number;
   planned: number;
   weekStart: string;
@@ -313,6 +316,7 @@ export function publishHighAdherence(opts: {
       week_end: opts.weekEnd,
     },
     user_id: opts.userId,
+    tenant_id: opts.tenantId,
     priority: 'normal',
   });
 }
@@ -346,6 +350,7 @@ export function publishHighAdherence(opts: {
  */
 export function publishPlanDrift(opts: {
   userId: number;
+  tenantId: number;
   planSport: string;
   dominantSport: string;
   driftPct: number;
@@ -367,6 +372,7 @@ export function publishPlanDrift(opts: {
       window_weeks: opts.windowWeeks,
     },
     user_id: opts.userId,
+    tenant_id: opts.tenantId,
     priority: 'normal',
     expires_at: new Date(Date.now() + ttl * 3600 * 1000).toISOString(),
   });

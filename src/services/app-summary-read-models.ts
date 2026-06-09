@@ -206,7 +206,7 @@ function buildSummaryPayload(type: SummaryType, userId: number, tenantId: number
 
 function buildTrainingSummary(userId: number, tenantId: number, db: Database.Database): Record<string, unknown> {
   const activePlan = tableExists(db, 'fitness_training_plans')
-    ? db.prepare('SELECT id, name, sport, goal, status FROM fitness_training_plans WHERE user_id = ? AND status = ? ORDER BY created_at DESC LIMIT 1').get(userId, 'active') as any | undefined
+    ? db.prepare('SELECT id, name, sport, goal, status FROM fitness_training_plans WHERE user_id = ? AND tenant_id = ? AND status = ? ORDER BY created_at DESC LIMIT 1').get(userId, tenantId, 'active') as any | undefined
     : undefined;
   const today = new Date().toLocaleDateString('en-US', { weekday: 'long', timeZone: 'UTC' });
   const nextSession = activePlan && tableExists(db, 'training_sessions')

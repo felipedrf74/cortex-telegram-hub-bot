@@ -15,6 +15,7 @@ import {
   publishAdherenceSignalsForUser,
   publishPlanDriftSignalForUser,
 } from '../../services/adherence-signals';
+import { assertTenantScope, TenantScopeError } from '../../services/tenant-scope';
 
 export type TrainingLanguageResolver = (
   req: Pick<AuthenticatedRequest, 'header'>,
@@ -25,6 +26,22 @@ function invalidCardioSportMessage(language: Lang): string {
   if (language === 'pt-BR') return 'o parâmetro sport deve ser "running" ou "cycling"';
   if (language.startsWith('pt')) return 'o parâmetro sport tem de ser "running" ou "cycling"';
   return 'sport query param must be "running" or "cycling"';
+}
+
+function requireTrainingAnalyticsScope(
+  req: AuthenticatedRequest,
+  res: Response,
+  operation: string,
+): { userId: number; tenantId: number } | null {
+  try {
+    return assertTenantScope(req, operation);
+  } catch (err) {
+    if (err instanceof TenantScopeError) {
+      sendError(res, err.code, err.message, err.status);
+      return null;
+    }
+    throw err;
+  }
 }
 
 export function registerTrainingAnalyticsRoutes(
@@ -39,7 +56,9 @@ export function registerTrainingAnalyticsRoutes(
    * per-lift 1RM trajectories.
    */
   router.get('/progression/cardio', async (req, res: Response) => {
-    const { userId } = req as AuthenticatedRequest;
+    const scope = requireTrainingAnalyticsScope(req as AuthenticatedRequest, res, 'training.analytics.progression.cardio');
+    if (!scope) return;
+    const { userId, tenantId } = scope;
     const language = resolveTrainingLanguage(req as AuthenticatedRequest, userId);
     const sportRaw = typeof req.query.sport === 'string' ? req.query.sport : '';
     if (sportRaw !== 'running' && sportRaw !== 'cycling') {
@@ -53,7 +72,7 @@ export function registerTrainingAnalyticsRoutes(
       ? Math.min(52, Math.max(1, Math.floor(weeksRaw)))
       : 8;
 
-    const cacheKey = `cardio-progression:${userId}:${sport}:${weeks}`;
+    const cacheKey = `cardio-progression:${tenantId}:${userId}:${sport}:${weeks}`;
     const cached = getCached(cacheKey);
     if (cached) {
       sendSuccess(res, cached, { cached: true });
@@ -61,11 +80,11 @@ export function registerTrainingAnalyticsRoutes(
     }
 
     try {
-      const report = getCardioProgression(userId, sport, weeks);
+      const report = getCardioProgression(userId, tenantId, sport, weeks);
       setCache(cacheKey, report, 120);
       sendSuccess(res, report);
     } catch (err: any) {
-      logger.error({ err, userId, sport, weeks }, 'GET /progression/cardio failed');
+      logger.error({ err, userId, tenantId, sport, weeks }, 'GET /progression/cardio failed');
       sendInternalError(res, 'Failed to load cardio progression');
     }
   });
@@ -77,13 +96,15 @@ export function registerTrainingAnalyticsRoutes(
    * iOS progression view and mirrors the shape the coach context consumes.
    */
   router.get('/progression/strength', async (req, res: Response) => {
-    const { userId } = req as AuthenticatedRequest;
+    const scope = requireTrainingAnalyticsScope(req as AuthenticatedRequest, res, 'training.analytics.progression.strength');
+    if (!scope) return;
+    const { userId, tenantId } = scope;
     const weeksRaw = Number(req.query.weeks);
     const weeks = Number.isFinite(weeksRaw)
       ? Math.min(52, Math.max(1, Math.floor(weeksRaw)))
       : 8;
 
-    const cacheKey = `strength-progression:${userId}:${weeks}`;
+    const cacheKey = `strength-progression:${tenantId}:${userId}:${weeks}`;
     const cached = getCached(cacheKey);
     if (cached) {
       sendSuccess(res, cached, { cached: true });
@@ -91,11 +112,11 @@ export function registerTrainingAnalyticsRoutes(
     }
 
     try {
-      const report = getStrengthProgression(userId, weeks);
+      const report = getStrengthProgression(userId, tenantId, weeks);
       setCache(cacheKey, report, 120);
       sendSuccess(res, report);
     } catch (err: any) {
-      logger.error({ err, userId, weeks }, 'GET /progression/strength failed');
+      logger.error({ err, userId, tenantId, weeks }, 'GET /progression/strength failed');
       sendInternalError(res, 'Failed to load strength progression');
     }
   });
@@ -107,8 +128,10 @@ export function registerTrainingAnalyticsRoutes(
    * publishing. Signal failures must never take down the read contract.
    */
   router.get('/activity/weekly', async (req, res: Response) => {
-    const { userId } = req as AuthenticatedRequest;
-    const cacheKey = `training-activity-weekly:${userId}`;
+    const scope = requireTrainingAnalyticsScope(req as AuthenticatedRequest, res, 'training.analytics.activity.weekly');
+    if (!scope) return;
+    const { userId, tenantId } = scope;
+    const cacheKey = `training-activity-weekly:${tenantId}:${userId}`;
 
     const cached = getCached(cacheKey);
     if (cached) {
@@ -117,24 +140,24 @@ export function registerTrainingAnalyticsRoutes(
     }
 
     try {
-      const summary = await getUnifiedWeeklyActivitySummary(userId);
+      const summary = await getUnifiedWeeklyActivitySummary(userId, tenantId);
 
       try {
-        publishAdherenceSignalsForUser(userId);
+        publishAdherenceSignalsForUser(userId, tenantId);
       } catch (err) {
-        logger.warn({ err, userId }, 'adherence signal publish failed — summary still returned');
+        logger.warn({ err, userId, tenantId }, 'adherence signal publish failed — summary still returned');
       }
 
       try {
-        publishPlanDriftSignalForUser(userId);
+        publishPlanDriftSignalForUser(userId, tenantId);
       } catch (err) {
-        logger.warn({ err, userId }, 'plan drift signal publish failed — summary still returned');
+        logger.warn({ err, userId, tenantId }, 'plan drift signal publish failed — summary still returned');
       }
 
       setCache(cacheKey, summary, 60);
       sendSuccess(res, summary);
     } catch (err: any) {
-      logger.error({ err, userId }, 'GET /activity/weekly failed');
+      logger.error({ err, userId, tenantId }, 'GET /activity/weekly failed');
       sendInternalError(res, 'Failed to load weekly activity');
     }
   });

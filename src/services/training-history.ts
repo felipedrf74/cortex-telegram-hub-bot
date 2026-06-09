@@ -231,8 +231,7 @@ export function readTrainingHistoryFromCompletions(
       FROM training_completions tc
       JOIN training_sessions ts ON ts.id = tc.session_id
       JOIN fitness_training_plans ftp ON ftp.id = tc.plan_id
-      WHERE ftp.user_id = ?
-        AND ftp.tenant_id = ?
+      WHERE ftp.user_id = ? AND ftp.tenant_id = ?
         AND tc.completed_at >= ?
         AND tc.completed_at < ?
       ORDER BY tc.completed_at ASC

@@ -365,6 +365,7 @@ describe('event backbone foundation', () => {
       CREATE TABLE fitness_training_plans (
         id INTEGER PRIMARY KEY,
         user_id INTEGER NOT NULL,
+        tenant_id INTEGER NOT NULL,
         name TEXT NOT NULL,
         sport TEXT NOT NULL,
         goal TEXT,
@@ -389,7 +390,7 @@ describe('event backbone foundation', () => {
         expires_at TEXT
       );
     `);
-    testDb.prepare("INSERT INTO fitness_training_plans VALUES (1, 7, 'Marathon', 'running', 'Base', 'active', datetime('now'))").run();
+    testDb.prepare("INSERT INTO fitness_training_plans VALUES (1, 7, 7, 'Marathon', 'running', 'Base', 'active', datetime('now'))").run();
     testDb.prepare("INSERT INTO training_sessions VALUES (9, 1, 'running', 'Long run private title', 60, 'pending')").run();
     testDb.prepare("INSERT INTO notification_center_items VALUES ('n1', 7, 7, 'secretary', 'decision_required', 'unread', NULL)").run();
     testDb.prepare("INSERT INTO notification_center_items VALUES ('n2', 8, 8, 'secretary', 'decision_required', 'unread', NULL)").run();
@@ -403,6 +404,65 @@ describe('event backbone foundation', () => {
     expect(home.payload.pendingDecisionsCount).toBe(2); // n1 (no deadline) + n3 (future); n4 (past) excluded, n2 is another user
     expect(JSON.stringify(home.payload)).not.toContain('Long run private title');
     expect(JSON.stringify(home.payload)).not.toContain('n2');
+  });
+
+  it('projects the active training plan only for the requested tenant', () => {
+    testDb.exec(`
+      CREATE TABLE fitness_training_plans (
+        id INTEGER PRIMARY KEY,
+        user_id INTEGER NOT NULL,
+        tenant_id INTEGER NOT NULL,
+        name TEXT NOT NULL,
+        sport TEXT NOT NULL,
+        goal TEXT,
+        status TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      );
+      CREATE TABLE training_sessions (
+        id INTEGER PRIMARY KEY,
+        plan_id INTEGER NOT NULL,
+        session_type TEXT NOT NULL,
+        title TEXT NOT NULL,
+        duration_minutes INTEGER,
+        status TEXT NOT NULL
+      );
+      CREATE TABLE notification_center_items (
+        item_id TEXT PRIMARY KEY,
+        user_id INTEGER NOT NULL,
+        tenant_id INTEGER NOT NULL,
+        source_skill TEXT NOT NULL,
+        type TEXT NOT NULL,
+        status TEXT NOT NULL,
+        expires_at TEXT
+      );
+    `);
+    testDb.prepare(`
+      INSERT INTO fitness_training_plans
+        (id, user_id, tenant_id, name, sport, goal, status, created_at)
+      VALUES
+        (100, 42, 10, 'Tenant A Build', 'running', 'Base', 'active', '2026-04-01T00:00:00.000Z'),
+        (200, 42, 20, 'Tenant B Build', 'cycling', 'Peak', 'active', '2026-05-01T00:00:00.000Z')
+    `).run();
+    testDb.prepare(`
+      INSERT INTO training_sessions
+        (id, plan_id, session_type, title, duration_minutes, status)
+      VALUES
+        (1000, 100, 'running', 'Tenant A Run', 45, 'pending'),
+        (2000, 200, 'cycling', 'Tenant B Ride', 90, 'pending')
+    `).run();
+
+    const summaries = projectSummaryReadModelsForUser({
+      tenantId: 10,
+      userId: 42,
+      summaryTypes: ['training'],
+    });
+    const training = summaries.find((summary) => summary.summaryType === 'training')!;
+
+    expect(training.payload.activePlanId).toBe(100);
+    expect(training.payload.currentBlock).toBe('Tenant A Build');
+    expect(training.payload.goalMode).toBe('Base');
+    expect(JSON.stringify(training.payload)).not.toContain('Tenant B Build');
+    expect(JSON.stringify(training.payload)).not.toContain('Tenant B Ride');
   });
 
   it('returns user-scoped delta pages, resetRequired for invalid cursors, and no cross-tenant leakage', () => {

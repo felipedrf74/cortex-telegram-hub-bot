@@ -73,6 +73,7 @@ import {
  */
 function seedCompletion(opts: {
   userId: number;
+  tenantId?: number;
   sport: string;              // raw session_type value
   completedAt: string;        // ISO 8601
   rpe?: number;
@@ -80,12 +81,13 @@ function seedCompletion(opts: {
   baseId?: number;            // unique suffix for plan/week/session/completion IDs
 }): void {
   const base = opts.baseId ?? Math.floor(Math.random() * 1_000_000);
+  const tenantId = opts.tenantId ?? opts.userId;
 
   testDb.prepare(`
     INSERT INTO fitness_training_plans
-      (id, user_id, name, sport, duration_weeks, start_date, end_date, status)
-    VALUES (?, ?, 'Test plan', ?, 12, '2026-01-01', '2026-04-01', 'active')
-  `).run(base, opts.userId, opts.sport);
+      (id, user_id, tenant_id, name, sport, duration_weeks, start_date, end_date, status)
+    VALUES (?, ?, ?, 'Test plan', ?, 12, '2026-01-01', '2026-04-01', 'active')
+  `).run(base, opts.userId, tenantId, opts.sport);
 
   testDb.prepare(`
     INSERT INTO training_weeks (id, plan_id, week_number)
@@ -193,7 +195,7 @@ describe('getWeeklyActivitySummary', () => {
   const tz = 'Europe/Lisbon';
 
   it('returns an empty summary when the user has no completions', () => {
-    const summary = getWeeklyActivitySummary(100);
+    const summary = getWeeklyActivitySummary(100, 100);
     expect(summary.userId).toBe(100);
     expect(summary.totalCompletions).toBe(0);
     expect(summary.totalDurationMin).toBe(0);
@@ -210,7 +212,7 @@ describe('getWeeklyActivitySummary', () => {
   });
 
   it('includes week start/end as ISO 8601 strings', () => {
-    const summary = getWeeklyActivitySummary(101);
+    const summary = getWeeklyActivitySummary(101, 101);
     // Luxon's startOfWeek is Monday at 00:00:00 in the local TZ
     expect(summary.weekStart).toMatch(/T00:00:00\.000/);
     expect(summary.weekEnd).toMatch(/T23:59:59\.999/);
@@ -238,7 +240,7 @@ describe('getWeeklyActivitySummary', () => {
       baseId: 2,
     });
 
-    const summary = getWeeklyActivitySummary(200, ref);
+    const summary = getWeeklyActivitySummary(200, 200, ref);
     expect(summary.totalCompletions).toBe(1);
     expect(summary.bySport.gym.completions).toBe(1);
     expect(summary.bySport.running.completions).toBe(0);
@@ -272,7 +274,7 @@ describe('getWeeklyActivitySummary', () => {
       });
     }
 
-    const summary = getWeeklyActivitySummary(300, ref);
+    const summary = getWeeklyActivitySummary(300, 300, ref);
     expect(summary.bySport.gym.completions).toBe(2);
     expect(summary.bySport.running.completions).toBe(2);
     expect(summary.bySport.cycling.completions).toBe(2);
@@ -289,7 +291,7 @@ describe('getWeeklyActivitySummary', () => {
     seedCompletion({ userId: 400, sport: 'running', completedAt: isoAt(monday), durationMin: 45, baseId: 21 });
     seedCompletion({ userId: 400, sport: 'strength', completedAt: isoAt(monday), durationMin: 60, baseId: 22 });
 
-    const summary = getWeeklyActivitySummary(400, ref);
+    const summary = getWeeklyActivitySummary(400, 400, ref);
     expect(summary.bySport.running.totalDurationMin).toBe(75);
     expect(summary.bySport.gym.totalDurationMin).toBe(60);
     expect(summary.totalDurationMin).toBe(135);
@@ -303,7 +305,7 @@ describe('getWeeklyActivitySummary', () => {
     seedCompletion({ userId: 500, sport: 'strength', completedAt: isoAt(monday), rpe: 9, durationMin: 60, baseId: 31 });
     seedCompletion({ userId: 500, sport: 'strength', completedAt: isoAt(monday), rpe: 7, durationMin: 60, baseId: 32 });
 
-    const summary = getWeeklyActivitySummary(500, ref);
+    const summary = getWeeklyActivitySummary(500, 500, ref);
     expect(summary.bySport.gym.avgRpe).toBe(8.0);
     expect(summary.avgRpe).toBe(8.0);
   });
@@ -316,7 +318,7 @@ describe('getWeeklyActivitySummary', () => {
     // No rpe passed → stored as NULL
     seedCompletion({ userId: 600, sport: 'running', completedAt: isoAt(monday), rpe: 6, durationMin: 40, baseId: 41 });
 
-    const summary = getWeeklyActivitySummary(600, ref);
+    const summary = getWeeklyActivitySummary(600, 600, ref);
     expect(summary.bySport.running.completions).toBe(2);
     expect(summary.bySport.running.avgRpe).toBe(6.0); // only the non-null counts
   });
@@ -328,8 +330,8 @@ describe('getWeeklyActivitySummary', () => {
     seedCompletion({ userId: 700, sport: 'running', completedAt: isoAt(monday), durationMin: 30, baseId: 50 });
     seedCompletion({ userId: 701, sport: 'cycling', completedAt: isoAt(monday), durationMin: 60, baseId: 51 });
 
-    const a = getWeeklyActivitySummary(700, ref);
-    const b = getWeeklyActivitySummary(701, ref);
+    const a = getWeeklyActivitySummary(700, 700, ref);
+    const b = getWeeklyActivitySummary(701, 701, ref);
 
     expect(a.totalCompletions).toBe(1);
     expect(a.bySport.running.completions).toBe(1);
@@ -338,6 +340,39 @@ describe('getWeeklyActivitySummary', () => {
     expect(b.totalCompletions).toBe(1);
     expect(b.bySport.cycling.completions).toBe(1);
     expect(b.bySport.running.completions).toBe(0);
+  });
+
+  it('keeps same-user completions isolated by tenant', () => {
+    const ref = DateTime.fromISO('2026-04-08T12:00:00', { zone: tz });
+    const monday = ref.startOf('week');
+
+    seedCompletion({
+      userId: 777,
+      tenantId: 10,
+      sport: 'running',
+      completedAt: isoAt(monday),
+      durationMin: 30,
+      baseId: 77710,
+    });
+    seedCompletion({
+      userId: 777,
+      tenantId: 20,
+      sport: 'cycling',
+      completedAt: isoAt(monday),
+      durationMin: 60,
+      baseId: 77720,
+    });
+
+    const tenantA = getWeeklyActivitySummary(777, 10, ref);
+    const tenantB = getWeeklyActivitySummary(777, 20, ref);
+
+    expect(tenantA.totalCompletions).toBe(1);
+    expect(tenantA.bySport.running.completions).toBe(1);
+    expect(tenantA.bySport.cycling.completions).toBe(0);
+
+    expect(tenantB.totalCompletions).toBe(1);
+    expect(tenantB.bySport.cycling.completions).toBe(1);
+    expect(tenantB.bySport.running.completions).toBe(0);
   });
 
   it('computes current + longest streak from completion days', () => {
@@ -355,7 +390,7 @@ describe('getWeeklyActivitySummary', () => {
     seedCompletion({ userId: 800, sport: 'running', completedAt: isoAt(today.minus({ days: 17 })), durationMin: 30, baseId: 65 });
     seedCompletion({ userId: 800, sport: 'running', completedAt: isoAt(today.minus({ days: 18 })), durationMin: 30, baseId: 66 });
 
-    const summary = getWeeklyActivitySummary(800, ref);
+    const summary = getWeeklyActivitySummary(800, 800, ref);
     expect(summary.streak.currentDays).toBe(3);
     expect(summary.streak.longestDays).toBe(4);
   });
@@ -368,7 +403,7 @@ describe('getWeeklyActivitySummary', () => {
 
     seedCompletion({ userId: 900, sport: 'strength', completedAt: isoAt(monday.minus({ days: 10 })), durationMin: 60, baseId: 70 });
 
-    const summary = getWeeklyActivitySummary(900, ref);
+    const summary = getWeeklyActivitySummary(900, 900, ref);
     expect(summary.totalCompletions).toBe(0);
     expect(summary.streak.longestDays).toBe(1); // the 10-days-ago session
   });
@@ -394,7 +429,7 @@ describe('getWeeklyActivitySummary', () => {
       },
     ]);
 
-    const summary = await getUnifiedWeeklyActivitySummary(950, ref);
+    const summary = await getUnifiedWeeklyActivitySummary(950, 950, ref);
     expect(summary.totalCompletions).toBe(1);
     expect(summary.bySport.running.completions).toBe(1);
     expect(summary.totalDurationMin).toBe(60);
@@ -431,7 +466,7 @@ describe('getWeeklyActivitySummary', () => {
       },
     ]);
 
-    const summary = await getUnifiedWeeklyActivitySummary(951, ref);
+    const summary = await getUnifiedWeeklyActivitySummary(951, 951, ref);
     expect(summary.totalCompletions).toBe(1);
     expect(summary.bySport.running.completions).toBe(1);
     expect(summary.totalDurationMin).toBe(60);

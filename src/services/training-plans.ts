@@ -596,10 +596,8 @@ export function getSessionByCalendarEvent(
     clauses.push('ts.calendar_source = ?');
     values.push(source);
   }
-  clauses.push('ftp.user_id = ?');
-  values.push(scopedUserId);
-  clauses.push('ftp.tenant_id = ?');
-  values.push(scopedTenantId);
+  clauses.push('ftp.user_id = ? AND ftp.tenant_id = ?');
+  values.push(scopedUserId, scopedTenantId);
 
   const row = db.prepare(`
     SELECT ts.* FROM training_sessions ts

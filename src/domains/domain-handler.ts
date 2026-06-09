@@ -353,45 +353,50 @@ export async function buildSimpleStateContext(
   // only shows up for the sports the user actually trains.
   if (includeScopedContext && domain === 'triathlon' && userId) {
     try {
-      const strength = getStrengthProgression(userId, 8);
-      const running = getCardioProgression(userId, 'running', 8);
-      const cycling = getCardioProgression(userId, 'cycling', 8);
+      const scopedTenantId = typeof tenantId === 'number' && Number.isSafeInteger(tenantId) && tenantId > 0 ? tenantId : null;
+      if (!scopedTenantId) {
+        logger.warn({ userId }, 'progression block skipped — missing tenant scope');
+      } else {
+        const strength = getStrengthProgression(userId, scopedTenantId, 8);
+        const running = getCardioProgression(userId, scopedTenantId, 'running', 8);
+        const cycling = getCardioProgression(userId, scopedTenantId, 'cycling', 8);
 
-      const strengthBlock = formatStrengthProgressionForPrompt(strength);
-      const runningBlock = formatCardioProgressionForPrompt(running);
-      const cyclingBlock = formatCardioProgressionForPrompt(cycling);
+        const strengthBlock = formatStrengthProgressionForPrompt(strength);
+        const runningBlock = formatCardioProgressionForPrompt(running);
+        const cyclingBlock = formatCardioProgressionForPrompt(cycling);
 
-      // Build the unified block only if at least one sport has data.
-      // The strength formatter returns a tagged <athlete_progression>
-      // wrapper; the cardio formatters return raw multi-line sections.
-      // Splice the cardio sections inside the strength wrapper so the
-      // whole thing lands as one XML-ish block, or wrap cardio alone
-      // if there's no strength data.
-      const cardioSections = [runningBlock, cyclingBlock].filter(Boolean);
-      let combined = '';
-      if (strengthBlock && cardioSections.length > 0) {
-        const closingTag = '</athlete_progression>';
-        const insertAt = strengthBlock.lastIndexOf(closingTag);
-        if (insertAt >= 0) {
+        // Build the unified block only if at least one sport has data.
+        // The strength formatter returns a tagged <athlete_progression>
+        // wrapper; the cardio formatters return raw multi-line sections.
+        // Splice the cardio sections inside the strength wrapper so the
+        // whole thing lands as one XML-ish block, or wrap cardio alone
+        // if there's no strength data.
+        const cardioSections = [runningBlock, cyclingBlock].filter(Boolean);
+        let combined = '';
+        if (strengthBlock && cardioSections.length > 0) {
+          const closingTag = '</athlete_progression>';
+          const insertAt = strengthBlock.lastIndexOf(closingTag);
+          if (insertAt >= 0) {
+            combined =
+              strengthBlock.slice(0, insertAt) +
+              '\n' +
+              cardioSections.join('\n') +
+              '\n' +
+              strengthBlock.slice(insertAt);
+          } else {
+            combined = strengthBlock + '\n' + cardioSections.join('\n');
+          }
+        } else if (strengthBlock) {
+          combined = strengthBlock;
+        } else if (cardioSections.length > 0) {
           combined =
-            strengthBlock.slice(0, insertAt) +
-            '\n' +
             cardioSections.join('\n') +
-            '\n' +
-            strengthBlock.slice(insertAt);
-        } else {
-          combined = strengthBlock + '\n' + cardioSections.join('\n');
+            `\n</athlete_progression>`;
+          combined = `<athlete_progression window_weeks="8">\n${combined}`;
         }
-      } else if (strengthBlock) {
-        combined = strengthBlock;
-      } else if (cardioSections.length > 0) {
-        combined =
-          `<athlete_progression window_weeks="8">\n` +
-          cardioSections.join('\n') +
-          `\n</athlete_progression>`;
-      }
 
-      if (combined) parts.push(`\n${combined}`);
+        if (combined) parts.push(`\n${combined}`);
+      }
     } catch (err) {
       logger.warn({ err, userId }, 'progression block build failed — skipping');
     }
