@@ -74,25 +74,31 @@ async function main(): Promise<void> {
     process.exit(validation.status === 'passed' ? 0 : 1);
   }
 
-  const result = seedRepoTrainingCatalogVersion({
-    ...(catalogVersion ? { catalogVersion } : {}),
-    ...(scopeKey ? { scopeKey } : {}),
-    createdBy,
-    activate,
-  });
+  const { closeDatabase, initDatabase } = await import('../src/services/database');
+  initDatabase();
+  try {
+    const result = seedRepoTrainingCatalogVersion({
+      ...(catalogVersion ? { catalogVersion } : {}),
+      ...(scopeKey ? { scopeKey } : {}),
+      createdBy,
+      activate,
+    });
 
-  console.log(JSON.stringify({
-    mode: 'write',
-    catalogVersion: result.snapshot.catalogVersion,
-    scopeKey: result.snapshot.scopeKey,
-    inserted: result.inserted,
-    activated: result.activated,
-    validationStatus: result.validation.status,
-    issueCount: result.validation.issues.length,
-    issues: result.validation.issues.slice(0, 20),
-  }, null, 2));
+    console.log(JSON.stringify({
+      mode: 'write',
+      catalogVersion: result.snapshot.catalogVersion,
+      scopeKey: result.snapshot.scopeKey,
+      inserted: result.inserted,
+      activated: result.activated,
+      validationStatus: result.validation.status,
+      issueCount: result.validation.issues.length,
+      issues: result.validation.issues.slice(0, 20),
+    }, null, 2));
 
-  process.exit(result.validation.status === 'passed' ? 0 : 1);
+    process.exitCode = result.validation.status === 'passed' ? 0 : 1;
+  } finally {
+    closeDatabase();
+  }
 }
 
 void main().catch((err) => {
