@@ -94,8 +94,9 @@ vi.mock('../../src/services/unified-calendar', () => ({
   getEventsWithDiagnostics: vi.fn(async () => ({
     events: [],
     status: 'ready',
-    sources: [],
-    diagnostics: [],
+    warningCodes: [],
+    warnings: [],
+    sources: { configured: [], fulfilled: [], failed: [] },
   })),
   createEvent: vi.fn(),
   updateEvent: vi.fn(),
@@ -129,6 +130,10 @@ vi.mock('../../src/services/database', () => ({
   initDatabase: vi.fn(),
   closeDatabase: vi.fn(),
   findUnexpectedMigrationPrefixCollisions: vi.fn(() => []),
+  assertNoUnexpectedMigrationPrefixCollisions: vi.fn(),
+  filterAlreadyAppliedAddColumnStatements: vi.fn((sql: string) => sql),
+  runMigrationsForTest: vi.fn(),
+  stripWrappingTransactionStatements: vi.fn((sql: string) => sql),
 }));
 
 vi.mock('../../src/utils/logger', () => ({
@@ -173,9 +178,10 @@ function mockRes(): MockRes {
   return r;
 }
 
-function mockReq(userId: number, path = '/', headers: Record<string, string> = {}): Request {
+function mockReq(userId: number, path = '/', headers: Record<string, string> = {}, tenantId = userId): Request {
   return {
     userId,
+    tenantId,
     headers,
     method: 'GET',
     url: path,
@@ -190,9 +196,9 @@ function mockReq(userId: number, path = '/', headers: Record<string, string> = {
   } as any;
 }
 
-async function dispatch(userId = 4, headers: Record<string, string> = {}, path = '/'): Promise<MockRes> {
+async function dispatch(userId = 4, headers: Record<string, string> = {}, path = '/', tenantId = userId): Promise<MockRes> {
   const router = dashboardRoutes();
-  const req = mockReq(userId, path, headers);
+  const req = mockReq(userId, path, headers, tenantId);
   const res = mockRes();
 
   await new Promise<void>((resolve) => {
@@ -206,9 +212,9 @@ async function dispatch(userId = 4, headers: Record<string, string> = {}, path =
   return res;
 }
 
-async function dispatchUntilResponse(userId = 4, headers: Record<string, string> = {}, path = '/'): Promise<MockRes> {
+async function dispatchUntilResponse(userId = 4, headers: Record<string, string> = {}, path = '/', tenantId = userId): Promise<MockRes> {
   const router = dashboardRoutes();
-  const req = mockReq(userId, path, headers);
+  const req = mockReq(userId, path, headers, tenantId);
   let res!: MockRes;
 
   await new Promise<void>((resolve, reject) => {
@@ -419,6 +425,7 @@ describe('Dashboard API route', () => {
           sessionId: 101,
           planId: 11,
           userId: 4,
+          tenantId: 4,
           planStatus: 'cancelled',
         }];
       }
@@ -628,13 +635,13 @@ describe('Dashboard API route', () => {
     await dispatch(4, {}, '/home');
 
     expect(mockSetCacheSWR).toHaveBeenCalledWith(
-      expect.stringMatching(/^dashboard:4:/),
+      expect.stringMatching(/^dashboard:4:4:/),
       expect.anything(),
       180,
       300,
     );
     expect(mockSetCacheSWR).toHaveBeenCalledWith(
-      expect.stringMatching(/^dashboard-home:4:/),
+      expect.stringMatching(/^dashboard-home:4:4:/),
       expect.anything(),
       180,
       300,
@@ -680,6 +687,22 @@ describe('Dashboard API route', () => {
     expect(res.body.data.coordinatedDecision.protectedLater).toBeTruthy();
     expect(res.body.data.skillQueue[0]?.domain).toBe('training');
     expect(res.body.data.skillQueue[0]?.whyNow).toBeTruthy();
+  });
+
+  it('passes the authenticated tenant scope into the home Daily Brief', async () => {
+    const res = await dispatch(4, {}, '/home', 44);
+
+    expect(res.statusCode).toBe(200);
+    expect(mockComposeDailyBrief).toHaveBeenCalledWith(expect.objectContaining({
+      userId: 4,
+      tenantId: 44,
+    }));
+    expect(mockSetCacheSWR).toHaveBeenCalledWith(
+      expect.stringMatching(/^dashboard-home:44:4:/),
+      expect.anything(),
+      180,
+      300,
+    );
   });
 
   it('emits Server-Timing breakdowns for uncached dashboard and home reads', async () => {

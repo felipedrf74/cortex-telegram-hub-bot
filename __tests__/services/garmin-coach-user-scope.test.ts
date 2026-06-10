@@ -139,13 +139,13 @@ describe('garmin-coach user scoping', () => {
   });
 
   it('does not use global Garmin data for a non-owner scoped user', async () => {
-    await generateCoachBriefing(42);
+    await generateCoachBriefing(42, { tenantId: 42 });
     expect(mockIsOwnerUserRef).toHaveBeenCalledWith(42);
     expect(mockFetchDailyCoachData).not.toHaveBeenCalled();
   });
 
   it('uses scoped calendar reads when a userId is provided', async () => {
-    await generateCoachBriefing(42);
+    await generateCoachBriefing(42, { tenantId: 42 });
     expect(mockHasConnectedCalendarForUser).toHaveBeenCalledWith(42);
     expect(mockGetEvents).toHaveBeenNthCalledWith(
       1,
@@ -162,7 +162,7 @@ describe('garmin-coach user scoping', () => {
   });
 
   it('attributes coach explanation LLM cost to the scoped user and tenant', async () => {
-    await generateCoachBriefing(42);
+    await generateCoachBriefing(42, { tenantId: 42 });
 
     expect(resolveCoachAnalysisMeteringScope(42)).toEqual({
       actor: 'user',
@@ -204,6 +204,10 @@ describe('garmin-coach user scoping', () => {
     );
   });
 
+  it('requires tenant scope for coach briefing generation', async () => {
+    await expect(generateCoachBriefing(42)).rejects.toThrow(/TENANT_SCOPE_REQUIRED|requires a validated tenantId/);
+  });
+
   it('classifies owner-bootstrap coach analysis as a system metering actor', () => {
     const systemScope = {
       actor: 'system',
@@ -230,13 +234,13 @@ describe('garmin-coach user scoping', () => {
 
   it('still allows Garmin for owner-scoped users', async () => {
     mockIsOwnerUserRef.mockReturnValue(true);
-    await generateCoachBriefing(7);
+    await generateCoachBriefing(7, { tenantId: 7 });
     expect(mockFetchDailyCoachData).toHaveBeenCalledWith({ silent: undefined });
   });
 
   it('passes silent Garmin mode through for scheduled coach report generation', async () => {
     mockIsOwnerUserRef.mockReturnValue(true);
-    await generateCoachBriefing(7, { garminSilent: true });
+    await generateCoachBriefing(7, { tenantId: 7, garminSilent: true });
     expect(mockFetchDailyCoachData).toHaveBeenCalledWith({ silent: true });
   });
 });

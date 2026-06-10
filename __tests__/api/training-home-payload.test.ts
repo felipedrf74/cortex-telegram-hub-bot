@@ -65,7 +65,7 @@ describe('training home payload builder', () => {
   it('keeps fallback metadata honest when upstream reads degrade', async () => {
     const { buildTrainingHomePayload } = await import('../../src/api/routes/training-home-payload');
 
-    const payload = await buildTrainingHomePayload(12, 'pt-PT', {
+    const payload = await buildTrainingHomePayload(12, 12, 'pt-PT', {
       getTodaySession: async () => {
         throw new Error('today unavailable');
       },
@@ -158,7 +158,7 @@ describe('training home payload builder', () => {
       ],
     });
 
-    const payload = await buildTrainingHomePayload(12, 'en', {
+    const payload = await buildTrainingHomePayload(12, 12, 'en', {
       getTodaySession: async () => ({
         session: {
           type: 'run',
@@ -216,7 +216,7 @@ describe('training home payload builder', () => {
     vi.setSystemTime(new Date('2026-03-29T23:30:00.000Z'));
     const { buildTrainingHomePayload } = await import('../../src/api/routes/training-home-payload');
 
-    const payload = await buildTrainingHomePayload(12, 'en', {
+    const payload = await buildTrainingHomePayload(12, 12, 'en', {
       getTodaySession: async () => ({
         session: {
           type: 'run',
@@ -286,7 +286,7 @@ describe('training home payload builder', () => {
       },
     });
 
-    await buildTrainingHomePayload(12, 'en', {
+    await buildTrainingHomePayload(12, 12, 'en', {
       getTodaySession: async () => ({
         session: {
           type: 'run',

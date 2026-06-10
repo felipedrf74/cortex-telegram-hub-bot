@@ -18,6 +18,7 @@ import {
   listDecisionTypeSuppressions,
   listHandledByNexusItems,
   listDecisionItems,
+  recordDecisionItemExposures,
   markDecisionViewed,
   refreshDecisionItem,
   performDecisionAction,
@@ -39,6 +40,7 @@ import { buildDecisionCardSummary, resolveDecisionApiVersion } from '../decision
 import { decodeDecisionCursor, paginateDecisions, sortDecisionsForKeyset } from '../decision-cursor';
 import type { DecisionListResponse } from '../../services/decision-center';
 import { isDecisionRefreshEnabled } from '../../services/runtime-flags';
+import { invalidateNotificationInboxCaches } from '../../services/notification-cache-invalidation';
 import { logger } from '../../utils/logger';
 
 function routeTenantId(
@@ -183,6 +185,7 @@ export function decisionRoutes(): Router {
         type,
         urgency,
         limit: readLimit,
+        recordExposure: false,
         ...(cursorMode ? { maxLimit: DECISION_LIST_CURSOR_CAP } : {}),
       }),
       userId,
@@ -193,6 +196,7 @@ export function decisionRoutes(): Router {
       if (pageSize == null) return;
       const cursor = typeof req.query.cursor === 'string' ? decodeDecisionCursor(req.query.cursor) : null;
       const { page, nextCursor } = paginateDecisions(sortDecisionsForKeyset(items), cursor, pageSize);
+      recordDecisionItemExposures(page);
       const response: DecisionListResponse = {
         schemaVersion,
         count: page.length,
@@ -204,6 +208,7 @@ export function decisionRoutes(): Router {
       sendSuccess(res, response);
       return;
     }
+    recordDecisionItemExposures(items);
     const response = {
       count: items.length,
       openCount: items.filter((item) => ['unread', 'read', 'failed'].includes(item.status)).length,
@@ -228,6 +233,7 @@ export function decisionRoutes(): Router {
         userId,
         tenantId,
       });
+      if (result.item) invalidateNotificationInboxCaches(userId, tenantId);
       sendSuccess(res, result, { status: result.item ? 201 : 202 });
     } catch (err) {
       decisionError(res, err, 'INVALID_DECISION_INTENT');
@@ -254,6 +260,7 @@ export function decisionRoutes(): Router {
           userId,
         },
       ));
+      if (result.item) invalidateNotificationInboxCaches(userId, tenantId);
       sendSuccess(res, result, { status: result.item ? 201 : 202 });
     } catch (err) {
       decisionError(res, err, 'INVALID_DECISION_FIXTURE');
@@ -299,9 +306,10 @@ export function decisionRoutes(): Router {
     if (!ensureValidTenantRouteScope(res, userId, 'decisions_route_suppress_type')) return;
     const tenantId = routeTenantId(authReq, res, userId, 'decisions_route_suppress_type', 'decision_type_suppressions');
     if (tenantId == null) return;
-    const body = (req.body ?? {}) as { sourceSkill?: unknown; type?: unknown; mode?: unknown; untilDays?: unknown };
+    const body = (req.body ?? {}) as { sourceSkill?: unknown; type?: unknown; mode?: unknown; untilDays?: unknown; recipe?: unknown };
     const sourceSkill = typeof body.sourceSkill === 'string' ? body.sourceSkill.trim() : '';
     const type = typeof body.type === 'string' ? body.type.trim() : '';
+    const recipe = typeof body.recipe === 'string' && body.recipe.trim() ? body.recipe.trim() : null;
     const mode = body.mode === 'snooze_type' ? 'snooze_type' : body.mode === 'dont_show_type' ? 'dont_show_type' : null;
     if (!sourceSkill || !type || !mode) {
       sendError(res, 'VALIDATION', 'sourceSkill, type, and mode (dont_show_type|snooze_type) are required', 400);
@@ -314,7 +322,7 @@ export function decisionRoutes(): Router {
       until = new Date(Date.now() + days * 24 * 60 * 60 * 1000).toISOString();
     }
     try {
-      suppressDecisionType(userId, tenantId, sourceSkill, type, mode as DecisionTypeSuppressionMode, until);
+      suppressDecisionType(userId, tenantId, sourceSkill, type, mode as DecisionTypeSuppressionMode, until, recipe);
     } catch (err) {
       // Map service-layer DecisionActionError (VALIDATION / INVALID_SCOPE) to its intended 4xx instead of a
       // 500, consistent with every other handler in this file.
@@ -332,12 +340,13 @@ export function decisionRoutes(): Router {
     if (tenantId == null) return;
     const sourceSkill = typeof req.query.sourceSkill === 'string' ? req.query.sourceSkill.trim() : '';
     const type = typeof req.query.type === 'string' ? req.query.type.trim() : '';
+    const recipe = typeof req.query.recipe === 'string' && req.query.recipe.trim() ? req.query.recipe.trim() : null;
     if (!sourceSkill || !type) {
       sendError(res, 'VALIDATION', 'sourceSkill and type query params are required', 400);
       return;
     }
     try {
-      unsuppressDecisionType(userId, tenantId, sourceSkill, type);
+      unsuppressDecisionType(userId, tenantId, sourceSkill, type, recipe);
     } catch (err) {
       decisionError(res, err, 'DECISION_UNSUPPRESS_FAILED');
       return;
@@ -378,7 +387,9 @@ export function decisionRoutes(): Router {
     const tenantId = routeTenantId(authReq, res, userId, 'decisions_route_viewed', 'notification_center_items');
     if (tenantId == null) return;
     try {
-      sendSuccess(res, { item: markDecisionViewed(String(req.params.id || ''), userId, tenantId) });
+      const item = markDecisionViewed(String(req.params.id || ''), userId, tenantId);
+      invalidateNotificationInboxCaches(userId, tenantId);
+      sendSuccess(res, { item });
     } catch (err) {
       decisionError(res, err, 'DECISION_VIEW_FAILED');
     }
@@ -416,7 +427,9 @@ export function decisionRoutes(): Router {
     const tenantId = routeTenantId(authReq, res, userId, 'decisions_route_snooze', 'notification_center_items');
     if (tenantId == null) return;
     try {
-      sendSuccess(res, { item: snoozeDecision(String(req.params.id || ''), userId, tenantId, Number(req.body?.minutes ?? 60)) });
+      const item = snoozeDecision(String(req.params.id || ''), userId, tenantId, Number(req.body?.minutes ?? 60));
+      invalidateNotificationInboxCaches(userId, tenantId);
+      sendSuccess(res, { item });
     } catch (err) {
       decisionError(res, err, 'DECISION_SNOOZE_FAILED');
     }
@@ -429,7 +442,9 @@ export function decisionRoutes(): Router {
     const tenantId = routeTenantId(authReq, res, userId, 'decisions_route_dismiss', 'notification_center_items');
     if (tenantId == null) return;
     try {
-      sendSuccess(res, { item: dismissDecision(String(req.params.id || ''), userId, tenantId, typeof req.body?.reason === 'string' ? req.body.reason : undefined) });
+      const item = dismissDecision(String(req.params.id || ''), userId, tenantId, typeof req.body?.reason === 'string' ? req.body.reason : undefined);
+      invalidateNotificationInboxCaches(userId, tenantId);
+      sendSuccess(res, { item });
     } catch (err) {
       decisionError(res, err, 'DECISION_DISMISS_FAILED');
     }
@@ -452,6 +467,7 @@ export function decisionRoutes(): Router {
           payload: typeof req.body?.payload === 'object' && req.body.payload ? req.body.payload : {},
         },
       );
+      invalidateNotificationInboxCaches(userId, tenantId);
       sendSuccess(res, result);
     } catch (err) {
       decisionError(res, err, 'INVALID_DECISION_ACTION');

@@ -371,9 +371,63 @@ export function attachWebSocket(server: http.Server): void {
               channel: 'ios',
               locale: getUserLanguageById(userId) || undefined,
               timezone: getUserTimezoneById(userId),
+              requireSafeWriteConfirmation: true,
+              blockNonReadOnlyPlans: true,
             });
             if (actionResult) {
               const response = actionResult.response;
+              const actionError = response.metadata?.error as { code?: string; message?: string; details?: unknown } | undefined;
+              if (actionError?.code === 'TIER_REQUIRED' || actionError?.code === 'ACCESS_CHECK_UNAVAILABLE') {
+                if (ws.readyState === WebSocket.OPEN) {
+                  ws.send(JSON.stringify({
+                    type: 'error',
+                    code: actionError.code,
+                    message: actionError.message || response.text,
+                    details: actionError.details ?? null,
+                    messageId,
+                    userId,
+                    tenantId,
+                  }));
+                }
+                return;
+              }
+              const hasWriteStep = actionResult.plan.steps.some((step) => step.risk !== 'read_only');
+              if (hasWriteStep && actionResult.status === 'needs_confirmation') {
+                if (ws.readyState === WebSocket.OPEN) {
+                  ws.send(JSON.stringify({
+                    type: 'status',
+                    messageId,
+                    status: 'ACTION_CONFIRMATION_REQUIRED',
+                    metadata: {
+                      type: 'chat_action_confirmation_required',
+                      actionStatus: 'ACTION_CONFIRMATION_REQUIRED',
+                      involvedSkills: response.metadata?.involvedSkills,
+                    },
+                    userId,
+                    tenantId,
+                  }));
+                }
+                await streamTextFrame(ws, {
+                  text: response.text,
+                  messageId,
+                  userId,
+                  tenantId,
+                });
+                if (ws.readyState === WebSocket.OPEN) {
+                  ws.send(JSON.stringify({
+                    type: 'done',
+                    messageId,
+                    domain: response.domain,
+                    userId,
+                    tenantId,
+                    metadata: {
+                      ...response.metadata,
+                      actionStatus: 'ACTION_CONFIRMATION_REQUIRED',
+                    },
+                  }));
+                }
+                return;
+              }
               if (ws.readyState === WebSocket.OPEN) {
                 ws.send(JSON.stringify({
                   type: 'status',

@@ -45,6 +45,7 @@
 
 import { getDb } from './database';
 import { logger } from '../utils/logger';
+import { requireTenantIdParam } from './tenant-scope';
 
 export type AgendaOwnershipStatus = 'active' | 'deleted' | 'orphaned';
 
@@ -69,7 +70,7 @@ export interface RecordCalendarOwnershipInput {
   planId: number;
   planVersion: number;
   sessionId: number;
-  tenantId?: number;
+  tenantId: number;
   userId: number;
   eventId: string;
   source: string;
@@ -107,7 +108,7 @@ export function recordCalendarOwnership(
   input: RecordCalendarOwnershipInput,
 ): RecordCalendarOwnershipResult {
   const db = getDb();
-  const tenantId = resolveTrainingOwnershipTenantId(input.userId, input.tenantId);
+  const tenantId = requireTenantIdParam(input.tenantId, 'recordCalendarOwnership');
 
   const existing = db.prepare(`
     SELECT id FROM training_agenda_event_ownership
@@ -182,17 +183,10 @@ export interface MarkOwnershipDeletedInput {
   source: string;
   reason?: string;
   status?: 'deleted' | 'orphaned';
-  tenantId?: number;
-  userId?: number;
+  tenantId: number;
+  userId: number;
   planId?: number;
   ownershipId?: number;
-}
-
-function resolveTrainingOwnershipTenantId(userId: number, tenantId?: number | null): number {
-  const explicit = Number(tenantId);
-  if (Number.isFinite(explicit) && explicit > 0) return explicit;
-  const fallback = Number(userId);
-  return Number.isFinite(fallback) && fallback > 0 ? fallback : 0;
 }
 
 /**
@@ -210,6 +204,7 @@ export function markCalendarOwnershipDeleted(
   input: MarkOwnershipDeletedInput,
 ): { ok: boolean; rowsAffected: number } {
   const db = getDb();
+  const tenantId = requireTenantIdParam(input.tenantId, 'markCalendarOwnershipDeleted');
   const status = input.status ?? 'deleted';
   const statusPredicate = status === 'deleted'
     ? "status IN ('active', 'orphaned')"
@@ -225,15 +220,10 @@ export function markCalendarOwnershipDeleted(
     input.eventId,
     input.source,
   ];
-  if (Number.isFinite(input.userId) && Number(input.userId) > 0) {
-    whereClauses.push('user_id = ?');
-    values.push(Number(input.userId));
-  }
-  const tenantId = resolveTrainingOwnershipTenantId(Number(input.userId ?? 0), input.tenantId);
-  if (tenantId > 0) {
-    whereClauses.push('tenant_id = ?');
-    values.push(tenantId);
-  }
+  whereClauses.push('user_id = ?');
+  values.push(Number(input.userId));
+  whereClauses.push('tenant_id = ?');
+  values.push(tenantId);
   if (Number.isFinite(input.planId) && Number(input.planId) > 0) {
     whereClauses.push('plan_id = ?');
     values.push(Number(input.planId));
@@ -257,16 +247,15 @@ export function markCalendarOwnershipDeleted(
  * table — relevant when transient delete failures left active rows
  * behind that previous cancellations couldn't reach.
  */
-export function findOwnershipsForPlan(planId: number, tenantId?: number): AgendaEventOwnership[] {
+export function findOwnershipsForPlan(planId: number, tenantId: number): AgendaEventOwnership[] {
   const db = getDb();
-  const hasTenantScope = Number.isFinite(tenantId) && Number(tenantId) > 0;
-  const params = hasTenantScope ? [planId, Number(tenantId)] : [planId];
+  const scopedTenantId = requireTenantIdParam(tenantId, 'findOwnershipsForPlan');
   return db.prepare(`
     SELECT * FROM training_agenda_event_ownership
     WHERE plan_id = ?
-      ${hasTenantScope ? 'AND tenant_id = ?' : ''}
+      AND tenant_id = ?
     ORDER BY plan_version DESC, id DESC
-  `).all(...params) as AgendaEventOwnership[];
+  `).all(planId, scopedTenantId) as AgendaEventOwnership[];
 }
 
 /**
@@ -275,8 +264,9 @@ export function findOwnershipsForPlan(planId: number, tenantId?: number): Agenda
  * event delete failed transiently. Used by background reconcilers
  * and by the read paths that detect stale state.
  */
-export function findOrphanedOwnerships(userId: number, tenantId?: number): AgendaEventOwnership[] {
+export function findOrphanedOwnerships(userId: number, tenantId: number): AgendaEventOwnership[] {
   const db = getDb();
+  const scopedTenantId = requireTenantIdParam(tenantId, 'findOrphanedOwnerships');
   return db.prepare(`
     SELECT o.*
     FROM training_agenda_event_ownership o
@@ -291,7 +281,7 @@ export function findOrphanedOwnerships(userId: number, tenantId?: number): Agend
       AND o.status = 'active'
       AND (ts.id IS NULL OR ftp.id IS NULL OR LOWER(COALESCE(ftp.status, 'missing')) <> 'active')
     ORDER BY o.created_at ASC
-  `).all(userId, resolveTrainingOwnershipTenantId(userId, tenantId)) as AgendaEventOwnership[];
+  `).all(userId, scopedTenantId) as AgendaEventOwnership[];
 }
 
 /**
@@ -300,8 +290,9 @@ export function findOrphanedOwnerships(userId: number, tenantId?: number): Agend
  * `findOrphanedOwnerships` above catches the FK-cascade aftermath
  * before a row has been marked terminal.
  */
-export function findOwnershipsNeedingReconciliation(userId: number, tenantId?: number): AgendaEventOwnership[] {
+export function findOwnershipsNeedingReconciliation(userId: number, tenantId: number): AgendaEventOwnership[] {
   const db = getDb();
+  const scopedTenantId = requireTenantIdParam(tenantId, 'findOwnershipsNeedingReconciliation');
   return db.prepare(`
     SELECT *
     FROM training_agenda_event_ownership
@@ -309,7 +300,7 @@ export function findOwnershipsNeedingReconciliation(userId: number, tenantId?: n
       AND tenant_id = ?
       AND status = 'orphaned'
     ORDER BY COALESCE(deleted_at, created_at) ASC, id ASC
-  `).all(userId, resolveTrainingOwnershipTenantId(userId, tenantId)) as AgendaEventOwnership[];
+  `).all(userId, scopedTenantId) as AgendaEventOwnership[];
 }
 
 /**
@@ -406,21 +397,18 @@ export function findExistingOwnership(input: {
   planId: number;
   planVersion: number;
   sessionId: number;
-  tenantId?: number;
-  userId?: number;
+  tenantId: number;
+  userId: number;
 }): AgendaEventOwnership | null {
   const db = getDb();
-  const tenantId = resolveTrainingOwnershipTenantId(input.userId ?? 0, input.tenantId ?? input.userId);
-  const params = tenantId > 0
-    ? [input.planId, input.planVersion, input.sessionId, tenantId]
-    : [input.planId, input.planVersion, input.sessionId];
+  const tenantId = requireTenantIdParam(input.tenantId, 'findExistingOwnership');
   const row = db.prepare(`
     SELECT * FROM training_agenda_event_ownership
     WHERE plan_id = ? AND plan_version = ? AND session_id = ? AND status = 'active'
-      ${tenantId > 0 ? 'AND tenant_id = ?' : ''}
+      AND tenant_id = ?
     ORDER BY id DESC
     LIMIT 1
-  `).get(...params) as
+  `).get(input.planId, input.planVersion, input.sessionId, tenantId) as
     | AgendaEventOwnership
     | undefined;
   return row ?? null;
@@ -436,7 +424,7 @@ export function findExistingOwnership(input: {
  */
 export function findReusableOwnershipBySessionIdentity(input: {
   planId: number;
-  tenantId?: number;
+  tenantId: number;
   userId: number;
   sessionIdentityKey: string | null | undefined;
   sessionShapeHash: string | null | undefined;
@@ -445,6 +433,7 @@ export function findReusableOwnershipBySessionIdentity(input: {
   const shape = String(input.sessionShapeHash || '').trim();
   if (!identity || !shape) return null;
   const db = getDb();
+  const tenantId = requireTenantIdParam(input.tenantId, 'findReusableOwnershipBySessionIdentity');
   const row = db.prepare(`
     SELECT * FROM training_agenda_event_ownership
     WHERE plan_id = ?
@@ -455,7 +444,7 @@ export function findReusableOwnershipBySessionIdentity(input: {
       AND status = 'active'
     ORDER BY plan_version DESC, id DESC
     LIMIT 1
-  `).get(input.planId, resolveTrainingOwnershipTenantId(input.userId, input.tenantId), input.userId, identity, shape) as
+  `).get(input.planId, tenantId, input.userId, identity, shape) as
     | AgendaEventOwnership
     | undefined;
   return row ?? null;

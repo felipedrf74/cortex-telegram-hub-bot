@@ -251,7 +251,7 @@ function buildTrainingSchedule(
   zone: string,
 ): Map<string, TrainingDaySummary> {
   const byDate = new Map<string, TrainingDaySummary>();
-  const plans = getActivePlans(userId);
+  const plans = getActivePlans(userId, userId);
 
   if (plans.length > 0) {
     for (let offset = 0; offset < windowDays; offset += 1) {

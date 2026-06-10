@@ -171,10 +171,10 @@ async function buildTrainingBusyFallback(language: string, userId: number): Prom
   return null;
 }
 
-async function buildSecretaryBusyFallback(language: string, userId: number): Promise<string | null> {
+async function buildSecretaryBusyFallback(language: string, userId: number, tenantId: number): Promise<string | null> {
   try {
     const [brief, mailSummary] = await Promise.all([
-      composeDailyBrief({ userId, language }),
+      composeDailyBrief({ userId, tenantId, language }),
       getUnreadMailSummaryForUser(userId).catch(() => null),
     ]);
 
@@ -293,10 +293,13 @@ async function buildContentBusyFallback(language: string, userId: number): Promi
   }
 }
 
-export async function buildAITemporarilyBusyResponse(domain: DomainName, userId?: number): Promise<DomainResponse> {
+export async function buildAITemporarilyBusyResponse(domain: DomainName, userId?: number, tenantId?: number): Promise<DomainResponse> {
   let language = 'pt-BR';
 
   const hasValidUserScope = typeof userId === 'number' && isValidTenantUserId(userId);
+  const scopedTenantId = hasValidUserScope && typeof tenantId === 'number' && isValidTenantUserId(tenantId)
+    ? tenantId
+    : undefined;
 
   if (hasValidUserScope) {
     try {
@@ -319,7 +322,7 @@ export async function buildAITemporarilyBusyResponse(domain: DomainName, userId?
   }
 
   if (domain === 'secretary' && hasValidUserScope) {
-    const secretaryFallback = await buildSecretaryBusyFallback(language, userId);
+    const secretaryFallback = await buildSecretaryBusyFallback(language, userId!, scopedTenantId ?? userId!);
     if (secretaryFallback) {
       return {
         text: secretaryFallback,

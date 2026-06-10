@@ -80,6 +80,7 @@ describe('finance-secretary-integration', () => {
       entityId: 'equipment-purchase',
       title: 'Review equipment purchase',
       preferredWindows: [{ start: '2026-05-05T09:00:00.000Z', end: '2026-05-05T10:00:00.000Z' }],
+      additionalBusyWindows: [],
     });
 
     expect(decision.status).toBe('scheduled');
@@ -88,7 +89,30 @@ describe('finance-secretary-integration', () => {
       sourceAction: 'budget_review',
       sourceEntityId: 'equipment-purchase',
       action: 'schedule_this',
-    }));
+    }), { additionalBusyWindows: [] });
+  });
+
+  it('requires callers to provide live calendar busy windows explicitly', () => {
+    expect(() => submitFinanceSchedulingIntent({
+      userId: 42,
+      kind: 'budget_review',
+      entityId: 'equipment-purchase',
+      title: 'Review equipment purchase',
+      preferredWindows: [{ start: '2026-05-05T09:00:00.000Z', end: '2026-05-05T10:00:00.000Z' }],
+    })).toThrow('FINANCE_SECRETARY_LIVE_BUSY_WINDOWS_REQUIRED');
+  });
+
+  it('fails closed when live calendar busy-window loading is degraded', () => {
+    expect(() => previewFinanceSchedulingIntent({
+      userId: 42,
+      kind: 'budget_review',
+      entityId: 'equipment-purchase',
+      title: 'Review equipment purchase',
+      preferredWindows: [{ start: '2026-05-05T09:00:00.000Z', end: '2026-05-05T10:00:00.000Z' }],
+      additionalBusyWindows: [],
+      liveBusyWindowsDegraded: true,
+    })).toThrow('FINANCE_SECRETARY_LIVE_BUSY_WINDOWS_DEGRADED');
+    expect(mockPreviewSecretarySchedulingIntent).not.toHaveBeenCalled();
   });
 
   it('previews Finance reminders before callers persist an agenda item', () => {
@@ -105,13 +129,14 @@ describe('finance-secretary-integration', () => {
       entityId: 'invoice-1',
       title: 'Pay card bill',
       preferredWindows: [{ start: '2026-05-05T08:00:00.000Z', end: '2026-05-05T08:30:00.000Z' }],
+      additionalBusyWindows: [],
     });
 
     expect(preview.status).toBe('scheduled');
     expect(mockPreviewSecretarySchedulingIntent).toHaveBeenCalledWith(expect.objectContaining({
       sourceSkill: 'finance',
       sourceAction: 'bill_reminder',
-    }));
+    }), { additionalBusyWindows: [] });
     expect(mockSubmitSecretarySchedulingIntent).not.toHaveBeenCalledWith(expect.objectContaining({
       sourceSkill: 'finance',
       sourceAction: 'bill_reminder',

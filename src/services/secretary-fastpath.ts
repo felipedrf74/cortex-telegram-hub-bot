@@ -28,19 +28,12 @@
  */
 
 import {
-  createEvent,
   getEvents,
-  getEventsForSources,
   hasConnectedCalendarForUser,
-  hasWritableCalendarForUser,
-  type CalendarSource,
 } from './unified-calendar';
 import type { TodoTask } from './microsoft-todo';
-import { getRemindersForToday, setReminder } from '../state/reminders';
-import {
-  now,
-  formatTime,
-} from '../utils/date-parser';
+import { getRemindersForToday } from '../state/reminders';
+import { formatTime } from '../utils/date-parser';
 import { escapeHtml } from '../utils/telegram-formatter';
 import type { DomainName, DomainResponse } from '../domains/types';
 import { logger } from '../utils/logger';
@@ -51,8 +44,6 @@ import { getUserLanguage, getUserTimezone } from './user-service';
 import { getTaskProviderForUser } from './task-store/task-router';
 import { composeDailyBrief } from './daily-brief-orchestrator';
 import { getUnreadMailSummaryForUser, isAnyMailConfiguredForUser } from './unified-mail-pressure';
-import { invalidateCalendarCaches } from './cache-coherence-registry';
-import { parseNaturalLanguageCalendarEvent } from './calendar-natural-language-parser';
 import { getDecisionSummary, listHandledByNexusItems } from './decision-center';
 import { getRecentReports, getLatestByType, type ReportType } from './report-document-store';
 
@@ -79,6 +70,8 @@ interface PatternEntry {
   handler: (userId: number, match: RegExpMatchArray, lang: Lang, tenantId: number) => Promise<DomainResponse>;
   /** Optional sub-skill the pattern depends on. If disabled, the pattern is skipped. */
   requires?: 'tasks' | 'calendar' | 'email' | 'reminders';
+  /** Chat/prose writes are routed through the planner so confirmation and entitlement policy is shared. */
+  mutating?: boolean;
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────
@@ -88,69 +81,6 @@ const SECRETARY: DomainName = 'secretary';
 function getScopedTaskProvider(userId: number) {
   if (!userId) return null;
   return getTaskProviderForUser(userId);
-}
-
-type ParsedCalendarCreate = {
-  title: string;
-  start: string;
-  end: string;
-  attendees: string[];
-  target?: CalendarSource;
-};
-
-function parseCalendarCreateRequest(text: string, timezone: string): ParsedCalendarCreate | null {
-  const parsedNatural = parseNaturalLanguageCalendarEvent(text, { timezone });
-  if (parsedNatural) {
-    return {
-      title: parsedNatural.title,
-      start: parsedNatural.startDateTime,
-      end: parsedNatural.endDateTime,
-      attendees: parsedNatural.attendees,
-      target: parsedNatural.provider,
-    };
-  }
-  return null;
-}
-
-function formatCalendarCreateSuccess(
-  lang: Lang,
-  event: { source?: CalendarSource; title?: string; summary?: string; start: string; end: string },
-  attendees: string[],
-): string {
-  const zoneLabel = event.source === 'google' ? 'Google' : event.source === 'outlook' ? 'Outlook' : 'Google/Outlook';
-  const start = DateTime.fromISO(event.start).toFormat('dd/MM/yyyy, HH:mm');
-  const end = DateTime.fromISO(event.end).toFormat('HH:mm');
-  const attendeeLine = attendees.length > 0
-    ? `\n• ${lang.startsWith('pt') ? 'Convite' : 'Invite'}: ${attendees.map(escapeHtml).join(', ')}`
-    : '';
-  const title = escapeHtml(event.title || event.summary || 'Evento');
-  return lang.startsWith('pt')
-    ? `Pronto ✅ Agendei no ${zoneLabel}:\n• 📅 ${start}–${end} — ${title}${attendeeLine}`
-    : `Done ✅ Scheduled in ${zoneLabel}:\n• 📅 ${start}–${end} — ${title}${attendeeLine}`;
-}
-
-function calendarCreateReadBackMatches(
-  event: { id?: string; source?: CalendarSource; title?: string; summary?: string; start: string; end: string },
-  expected: { title: string; start: string; end: string },
-): boolean {
-  const title = String(event.title || event.summary || '').trim().toLowerCase();
-  const expectedTitle = expected.title.trim().toLowerCase();
-  const startDelta = Math.abs(DateTime.fromISO(event.start).toMillis() - DateTime.fromISO(expected.start).toMillis());
-  const endDelta = Math.abs(DateTime.fromISO(event.end).toMillis() - DateTime.fromISO(expected.end).toMillis());
-  return title === expectedTitle && startDelta < 60_000 && endDelta < 60_000;
-}
-
-async function verifyCalendarCreateReadBack(
-  userId: number,
-  event: Awaited<ReturnType<typeof createEvent>>,
-  expected: { title: string; start: string; end: string },
-): Promise<boolean> {
-  if (!event.source) return false;
-  const readBack = await getEventsForSources(expected.start, expected.end, userId, [event.source]).catch(() => []);
-  return readBack.some((candidate) => {
-    if (event.id && candidate.id === event.id) return true;
-    return calendarCreateReadBackMatches(candidate, expected);
-  });
 }
 
 // ─── Bilingual copy table ───────────────────────────────────────────
@@ -381,12 +311,13 @@ function looksLikeTrainingTitle(title: string | undefined | null): boolean {
 
 async function getTodayTrainingSummary(
   userId: number,
+  tenantId: number,
   events: Array<{ summary?: string; start: string; end: string }>,
   timezone: string,
 ): Promise<string | null> {
   try {
     const tp = require('../../services/training-plans');
-    const activePlan = tp.getActivePlan?.(userId);
+    const activePlan = tp.getActivePlan?.(userId, tenantId);
     if (activePlan) {
       const currentWeek = tp.getCurrentWeek?.(activePlan.id);
       if (currentWeek) {
@@ -583,79 +514,13 @@ const FASTPATH_PATTERNS: PatternEntry[] = [
     id: 'create_calendar_event',
     pattern: /^(?=.*\b(?:calend[aá]rio|calendar|agenda|evento|event)\b)(?:colocar|coloca|p[õo]e|poe|mete|adicionar|adiciona|criar|cria|agendar|agenda|marcar|marca|schedule|add|create|book)\b[\s\S]+$/i,
     requires: 'calendar',
-    handler: async (userId, match, lang) => {
-      const text = match.input ?? match[0];
-      const timezone = getUserTimezone(userId);
-      const parsed = parseCalendarCreateRequest(text, timezone);
-      if (!parsed) {
-        return {
-          text: lang.startsWith('pt')
-            ? 'Preciso da data, hora de início, hora de fim e título para criar o evento.'
-            : 'I need the date, start time, end time, and title to create the event.',
-          domain: SECRETARY,
-        };
-      }
-
-      if (!hasWritableCalendarForUser(userId)) {
-        return {
-          text: lang.startsWith('pt')
-            ? '⚠️ Não encontrei um calendário ligado para criar o evento. Liga Google Calendar ou Outlook em Definições > Ligações.'
-            : '⚠️ I could not find a connected calendar to create the event. Connect Google Calendar or Outlook in Settings > Connections.',
-          domain: SECRETARY,
-        };
-      }
-
-      if (parsed.attendees.length > 0) {
-        return {
-          text: lang.startsWith('pt')
-            ? `Preciso da tua confirmação antes de criar “${escapeHtml(parsed.title)}”, porque isso pode enviar convite para ${parsed.attendees.map(escapeHtml).join(', ')}.`
-            : `I need your confirmation before creating “${escapeHtml(parsed.title)}” because it may send an invite to ${parsed.attendees.map(escapeHtml).join(', ')}.`,
-          domain: SECRETARY,
-        };
-      }
-
-      try {
-        const eventInput = {
-          title: parsed.title,
-          start: parsed.start,
-          end: parsed.end,
-          attendees: parsed.attendees,
-        };
-        let event: Awaited<ReturnType<typeof createEvent>>;
-        try {
-          event = await createEvent(eventInput, parsed.target, userId);
-        } catch (err) {
-          if (!parsed.target) throw err;
-          logger.warn(
-            { err, userId, requestedSource: parsed.target, title: parsed.title },
-            'fastpath create_calendar_event requested source failed, retrying default connected calendar',
-          );
-          event = await createEvent(eventInput, undefined, userId);
-        }
-        const verified = await verifyCalendarCreateReadBack(userId, event, eventInput);
-        if (!verified) {
-          return {
-            text: lang.startsWith('pt')
-              ? '⚠️ Enviei o pedido ao calendário, mas ainda não consegui verificar o evento por leitura de volta. Não vou marcar como concluído até conseguir confirmar.'
-              : '⚠️ I sent the request to the calendar, but I could not verify the event by reading it back yet. I will not mark it complete until I can confirm it.',
-            domain: SECRETARY,
-          };
-        }
-        invalidateCalendarCaches(userId);
-        return {
-          text: formatCalendarCreateSuccess(lang, event, parsed.attendees),
-          domain: SECRETARY,
-        };
-      } catch (err) {
-        logger.warn({ err, userId, title: parsed.title, attendeeCount: parsed.attendees.length }, 'fastpath create_calendar_event failed');
-        return {
-          text: lang.startsWith('pt')
-            ? '⚠️ Não consegui criar o evento no calendário agora. Tenta novamente dentro de instantes.'
-            : '⚠️ I could not create the calendar event right now. Please try again shortly.',
-          domain: SECRETARY,
-        };
-      }
-    },
+    mutating: true,
+    handler: async (_userId, _match, lang) => ({
+      text: lang.startsWith('pt')
+        ? 'Vou preparar esta ação pelo fluxo de confirmação.'
+        : 'I will prepare this through the confirmation flow.',
+      domain: SECRETARY,
+    }),
   },
 
   // ── Day Overview ────────────────────────────────────────────────
@@ -663,7 +528,7 @@ const FASTPATH_PATTERNS: PatternEntry[] = [
   {
     id: 'day_overview',
     pattern: /^(?:what(?:'s| is)(?: on)? my (?:day|schedule)(?: today)?|what do i have today|(?:o que|como)(?: está| é)?(?: o)? meu dia|(?:show|mostra) (?:my |meu |o )?(?:day|dia)|\/day|today|hoje|o que tenho hoje|o que tenho na agenda hoje|qual(?:'s)? (?:my |a minha )?agenda(?: today| hoje)?)[\s?!.]*$/i,
-    handler: async (userId, _match, lang) => {
+    handler: async (userId, _match, lang, tenantId) => {
       const c = copyForLang(lang);
       const tasksOk = isSubmoduleEnabled('secretary', 'tasks');
       const calOk = isSubmoduleEnabled('secretary', 'calendar');
@@ -682,9 +547,9 @@ const FASTPATH_PATTERNS: PatternEntry[] = [
         taskProvider
           ? taskProvider.getAllPendingTasks().catch(() => ({ success: false as const, data: [], error: 'API error' }))
           : Promise.resolve({ success: false as const, data: [], error: 'disabled' }),
-        remOk ? Promise.resolve(getRemindersForToday(userId)) : Promise.resolve([]),
+        remOk ? Promise.resolve(getRemindersForToday(userId, tenantId, timezone)) : Promise.resolve([]),
       ]);
-      const todayTraining = await getTodayTrainingSummary(userId, events, timezone);
+      const todayTraining = await getTodayTrainingSummary(userId, tenantId, events, timezone);
 
       // Date header in the user's locale. PT-BR puts day before
       // month ("terça, 09 abril 2026"); EN puts month before day
@@ -757,9 +622,9 @@ const FASTPATH_PATTERNS: PatternEntry[] = [
   {
     id: 'daily_priority',
     pattern: /^(?:what(?:'s| is)? my priority(?: today)?|what should i do first(?: today)?|what should i focus on(?: now| today)?|what do i focus on(?: now| today)?|focus me(?: now| today)?|prioriti[sz]e my day|o que faço primeiro|o que devo fazer primeiro|o que devo priorizar(?: hoje)?|o que priorizo(?: hoje)?|qual(?: é| a)? prioridade(?: hoje)?|prioriza o meu dia|priorizar o meu dia|prioriza meu dia|priorizar meu dia|em que devo focar(?: agora| hoje)?)[\s?!.]*$/i,
-    handler: async (_userId, _match, lang) => {
+    handler: async (_userId, _match, lang, tenantId) => {
       const c = copyForLang(lang);
-      const brief = await composeDailyBrief({ userId: _userId, language: lang });
+      const brief = await composeDailyBrief({ userId: _userId, tenantId, language: lang });
       const coordination = brief.coordination;
       const topPriority = coordination?.nextBestAction?.title
         ?? coordination?.topPriority
@@ -987,37 +852,13 @@ const FASTPATH_PATTERNS: PatternEntry[] = [
     id: 'set_reminder',
     pattern: /^(?:remind(?:er)?(?:\s+me)?|lembra?(?:\s+me)?|avisa?(?:\s+me)?)(?:\s+(?:at|às|as))?\s+(\d{1,2}[:.]\d{2})\s*[:-]?\s*(.+)$/i,
     requires: 'reminders',
-    handler: async (userId, match, lang) => {
-      const c = copyForLang(lang);
-      const timeStr = match[1].replace('.', ':');
-      const message = match[2].trim();
-      const [h, m] = timeStr.split(':').map(Number);
-
-      if (Number.isNaN(h) || Number.isNaN(m) || h < 0 || h > 23 || m < 0 || m > 59) {
-        return { text: `${c.reminderInvalidTime} ${timeStr}`, domain: SECRETARY };
-      }
-
-      // If the requested time has already passed today, schedule for tomorrow
-      let remindAt = now().set({ hour: h, minute: m, second: 0, millisecond: 0 });
-      if (remindAt < now()) {
-        remindAt = remindAt.plus({ days: 1 });
-      }
-
-      try {
-        setReminder(userId, { message, remind_at: remindAt.toISO()! });
-      } catch (err) {
-        logger.warn({ err, userId }, 'fastpath set_reminder DB write failed');
-        return { text: c.reminderSavedError, domain: SECRETARY };
-      }
-
-      const dayLabel = remindAt.toFormat('dd/MM') === now().toFormat('dd/MM')
-        ? c.reminderDayToday
-        : c.reminderDayTomorrow;
-      return {
-        text: `${c.reminderSetPrefix} <b>${timeStr}</b> (${dayLabel}): ${escapeHtml(message)}`,
-        domain: SECRETARY,
-      };
-    },
+    mutating: true,
+    handler: async (_userId, _match, lang) => ({
+      text: lang.startsWith('pt')
+        ? 'Vou preparar este lembrete pelo fluxo de confirmação.'
+        : 'I will prepare this reminder through the confirmation flow.',
+      domain: SECRETARY,
+    }),
   },
 
   // ── Quick Task Add (parseable without AI) ───────────────────────
@@ -1028,38 +869,13 @@ const FASTPATH_PATTERNS: PatternEntry[] = [
     id: 'quick_add_task',
     pattern: /^(?:add task|nova tarefa|adicionar? tarefa)[:\s]+(.+)$/i,
     requires: 'tasks',
-    handler: async (_userId, match, lang) => {
-      const c = copyForLang(lang);
-      const title = match[1].trim();
-      if (!title) {
-        return { text: c.taskEmptyTitle, domain: SECRETARY };
-      }
-
-      try {
-        const taskProvider = getScopedTaskProvider(_userId);
-        if (!taskProvider) {
-          return { text: c.taskCreateError, domain: SECRETARY };
-        }
-        const list = await taskProvider.getDefaultList();
-        if (!list) {
-          return { text: c.taskCreateNoList, domain: SECRETARY };
-        }
-        const result = await taskProvider.createTask(list.id, list.displayName, { title });
-        if (!result.success) {
-          return {
-            text: `${c.taskCreateErrorDetail} ${result.error || 'unknown'}`,
-            domain: SECRETARY,
-          };
-        }
-        return {
-          text: `${c.taskCreated} <b>${escapeHtml(list.displayName)}</b>: ${escapeHtml(title)}`,
-          domain: SECRETARY,
-        };
-      } catch (err) {
-        logger.warn({ err }, 'fastpath quick_add_task failed');
-        return { text: c.taskCreateError, domain: SECRETARY };
-      }
-    },
+    mutating: true,
+    handler: async (_userId, _match, lang) => ({
+      text: lang.startsWith('pt')
+        ? 'Vou preparar esta tarefa pelo fluxo de confirmação.'
+        : 'I will prepare this task through the confirmation flow.',
+      domain: SECRETARY,
+    }),
   },
 ];
 
@@ -1132,6 +948,7 @@ export async function tryFastpath(
   const startedAt = Date.now();
   const lang = resolveLang(userId, langOverride);
   let skippedSubskill: string | null = null;
+  let skippedWriteAction: string | null = null;
 
   for (const entry of FASTPATH_PATTERNS) {
     const match = trimmed.match(entry.pattern);
@@ -1142,6 +959,11 @@ export async function tryFastpath(
       skippedSubskill = entry.requires;
       _metrics.skippedBySubskill[entry.requires] = (_metrics.skippedBySubskill[entry.requires] || 0) + 1;
       logger.debug({ pattern: entry.id, requires: entry.requires }, 'Fastpath pattern skipped — sub-skill disabled');
+      continue;
+    }
+    if (entry.mutating) {
+      skippedWriteAction = entry.requires ?? entry.id;
+      logger.debug({ pattern: entry.id, requires: entry.requires }, 'Fastpath write pattern skipped — routing to planner');
       continue;
     }
 
@@ -1167,7 +989,11 @@ export async function tryFastpath(
     }
   }
 
-  const missReason = skippedSubskill ? `subskill_disabled:${skippedSubskill}` : 'no_pattern';
+  const missReason = skippedWriteAction
+    ? `write_action_routed_to_planner:${skippedWriteAction}`
+    : skippedSubskill
+      ? `subskill_disabled:${skippedSubskill}`
+      : 'no_pattern';
   recordFastpathMiss(missReason);
   return { matched: false, missReason };
 }

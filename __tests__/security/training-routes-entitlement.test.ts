@@ -312,7 +312,7 @@ describe('training routes entitlement and AI cost guardrails', () => {
     expect(response.status).toBe(200);
     expect(response.body.ok).toBe(true);
     expect(response.body.data.briefing).toBe('Coach ready.');
-    expect(mockGenerateCoachBriefing).toHaveBeenCalledWith(42);
+    expect(mockGenerateCoachBriefing).toHaveBeenCalledWith(42, { tenantId: 42, meteringUserId: 42 });
   });
 
   it('serializes concurrent pro refreshes so one remaining quota slot cannot race', async () => {

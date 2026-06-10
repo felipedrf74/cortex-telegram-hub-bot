@@ -25,7 +25,7 @@ import { invalidateFinanceDerivedCaches } from './cache-coherence-registry';
 import { invalidateOnboardingDerivedCaches } from './cache-coherence-registry';
 import { getTaskProviderForUser } from './task-store/task-router';
 import { resolvePreferredCaptureList, resolveTaskCreationList } from './task-store/task-list-resolution';
-import { resolveCanonicalUserId } from './user-service';
+import { getUserTimezoneById, resolveCanonicalUserId } from './user-service';
 import { logger } from '../utils/logger';
 import { resolveChatTenantId } from './chat-tenant-scope';
 import { authorizeChatToolCall, formatToolAuthorizationFailure } from './chat-tool-authorization';
@@ -279,7 +279,8 @@ function requireOwnedTrainingPlanForTool(
     return { ok: false, error: `${toolName} requires a valid plan_id` };
   }
   const plan = trainingPlans.getPlanById(numericPlanId);
-  if (!plan || plan.user_id !== scope.userId) {
+  const planTenantId = typeof plan?.tenant_id === 'number' && plan.tenant_id > 0 ? plan.tenant_id : plan?.user_id;
+  if (!plan || plan.user_id !== scope.userId || planTenantId !== scope.tenantId) {
     return { ok: false, error: `${toolName} cannot access that training plan for the authenticated user` };
   }
   return { ...scope, plan };
@@ -302,7 +303,8 @@ function requireOwnedTrainingSessionForTool(
     return { ok: false, error: `${toolName} cannot access that training session for the authenticated user` };
   }
   const plan = trainingPlans.getPlanById(session.plan_id);
-  if (!plan || plan.user_id !== scope.userId) {
+  const planTenantId = typeof plan?.tenant_id === 'number' && plan.tenant_id > 0 ? plan.tenant_id : plan?.user_id;
+  if (!plan || plan.user_id !== scope.userId || planTenantId !== scope.tenantId) {
     return { ok: false, error: `${toolName} cannot access that training session for the authenticated user` };
   }
   return { ...scope, session, plan };
@@ -572,12 +574,24 @@ export async function executeToolCall(
 
       // ── Reminder tools ──
       case 'set_reminder': {
+        if (input.__trustedDirectToolWrite !== true) {
+          return {
+            success: false,
+            code: 'ACTION_CONFIRMATION_REQUIRED',
+            error: 'set_reminder must be routed through the chat action planner before mutating reminders',
+            confirmation_required: true,
+          };
+        }
         const scope = requireTenantToolUserId(toolName, userId, undefined, tenantId);
         if (!scope.ok) return { error: scope.error };
         return setReminder(scope.userId, {
           message: input.message,
           remind_at: input.remind_at,
           recurring: input.recurring,
+          timezone: typeof input.timezone === 'string' ? input.timezone : getUserTimezoneById(scope.userId),
+        }, {
+          tenantId: scope.tenantId,
+          timezone: typeof input.timezone === 'string' ? input.timezone : getUserTimezoneById(scope.userId),
         });
       }
 
@@ -759,6 +773,7 @@ export async function executeToolCall(
         if (!scope.ok) return { error: scope.error };
         const plan = trainingPlans.createPlan({
           user_id: scope.userId,
+          tenant_id: scope.tenantId,
           name: input.name,
           sport: input.sport,
           goal: input.goal,
@@ -812,9 +827,10 @@ export async function executeToolCall(
         if (!scope.ok) return { error: scope.error };
         const plan = input.plan_id
           ? trainingPlans.getPlanById(input.plan_id)
-          : trainingPlans.getActivePlan(scope.userId);
+          : trainingPlans.getActivePlan(scope.userId, scope.tenantId);
         if (!plan) return { error: 'No training plan found' };
-        if (plan.user_id !== scope.userId) {
+        const planTenantId = typeof plan.tenant_id === 'number' && plan.tenant_id > 0 ? plan.tenant_id : plan.user_id;
+        if (plan.user_id !== scope.userId || planTenantId !== scope.tenantId) {
           return { error: 'No training plan found for the authenticated user' };
         }
 

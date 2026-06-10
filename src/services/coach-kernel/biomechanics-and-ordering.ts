@@ -329,17 +329,27 @@ function resolveEquipment(
   if (provided instanceof Set) return provided;
   if (Array.isArray(provided)) return new Set(provided);
   const equipment = new Set<string>();
+  const hasFullGymCapabilities = athlete.equipment.hasGym
+    && athlete.equipment.hasBarbell
+    && athlete.equipment.hasDumbbells;
   if (athlete.equipment.hasGym) {
-    equipment.add('rack');
     equipment.add('bench');
     equipment.add('pullup_bar');
-    equipment.add('lat_pulldown');
-    equipment.add('kettlebells');
-    equipment.add('dumbbells');
-    equipment.add('barbell');
+    if (hasFullGymCapabilities) {
+      equipment.add('lat_pulldown');
+      equipment.add('leg_press');
+      equipment.add('cable_stack');
+      equipment.add('chest_press_machine');
+    }
   }
-  if (athlete.equipment.hasBarbell) equipment.add('barbell');
-  if (athlete.equipment.hasDumbbells) equipment.add('dumbbells');
+  if (athlete.equipment.hasBarbell) {
+    equipment.add('barbell');
+    equipment.add('rack');
+  }
+  if (athlete.equipment.hasDumbbells) {
+    equipment.add('dumbbells');
+    equipment.add('kettlebells');
+  }
   if (athlete.equipment.hasBikeTrainer) equipment.add('bike_trainer');
   if (athlete.equipment.hasPool) equipment.add('pool');
   if (athlete.equipment.hasTrack) equipment.add('track');

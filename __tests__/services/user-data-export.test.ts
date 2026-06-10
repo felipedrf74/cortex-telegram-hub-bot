@@ -52,6 +52,9 @@ vi.mock('../../src/services/database', () => ({
   closeDatabase: vi.fn(),
   findUnexpectedMigrationPrefixCollisions: vi.fn(() => []),
   assertNoUnexpectedMigrationPrefixCollisions: vi.fn(),
+  filterAlreadyAppliedAddColumnStatements: vi.fn((sql: string) => sql),
+  runMigrationsForTest: vi.fn(),
+  stripWrappingTransactionStatements: vi.fn((sql: string) => sql),
 }));
 
 vi.mock('../../src/utils/logger', () => ({
@@ -291,6 +294,94 @@ describe('exportAllUserData', () => {
     expect(exported.user!.language).toBe('pt-BR');
   });
 
+  it('exports Secretary source-skill feedback and Training feedback decisions', () => {
+    seedUser(testDb, 1);
+    testDb.prepare(`
+      INSERT INTO training_feedback_decisions (
+        user_id, tenant_id, source_skill, agenda_item_id, source_intent_id,
+        feedback_type, status, scheduled_start, scheduled_end
+      )
+      VALUES (1, '1', 'secretary', 'agenda-training-1', 'training-intent-1',
+              'schedule_feedback', 'scheduled', '2026-06-01T09:00:00Z', '2026-06-01T10:00:00Z')
+    `).run();
+    testDb.prepare(`
+      INSERT INTO secretary_source_skill_feedback (
+        user_id, tenant_id, target_skill, agenda_item_id, source_intent_id,
+        feedback_type, status, scheduled_start, scheduled_end
+      )
+      VALUES (1, '1', 'cooking', 'agenda-cooking-1', 'cooking-intent-1',
+              'schedule_feedback', 'reflowed', '2026-06-02T18:00:00Z', '2026-06-02T19:00:00Z')
+    `).run();
+
+    const exported = exportAllUserData(1);
+
+    expect(exported.trainingFeedbackDecisions).toEqual([
+      expect.objectContaining({
+        sourceSkill: 'secretary',
+        agendaItemId: 'agenda-training-1',
+        sourceIntentId: 'training-intent-1',
+        feedbackType: 'schedule_feedback',
+        status: 'scheduled',
+      }),
+    ]);
+    expect(exported.secretarySourceSkillFeedback).toEqual([
+      expect.objectContaining({
+        targetSkill: 'cooking',
+        agendaItemId: 'agenda-cooking-1',
+        sourceIntentId: 'cooking-intent-1',
+        feedbackType: 'schedule_feedback',
+        status: 'reflowed',
+      }),
+    ]);
+  });
+
+  it('exports Secretary agenda items and skill memories as first-class export fields', () => {
+    seedUser(testDb, 1);
+    testDb.prepare(`
+      INSERT INTO secretary_agenda_items (
+        agenda_item_id, source_intent_id, source_skill, source_action, intent_action,
+        owner_user_id, tenant_id, lifecycle_state, provider_sync_state, title,
+        start_at, end_at, decision_action, source_shape_hash, created_at, updated_at
+      )
+      VALUES (
+        'agenda-export-1', 'intent-export-1', 'training', 'schedule_workout', 'schedule_this',
+        1, '1', 'scheduled', 'not_synced', 'Exported workout',
+        '2026-06-01T09:00:00Z', '2026-06-01T10:00:00Z', 'schedule', 'shape-export-1',
+        '2026-05-31T10:00:00Z', '2026-05-31T10:00:00Z'
+      )
+    `).run();
+    testDb.prepare(`
+      INSERT INTO skill_memories (
+        memory_id, tenant_id, user_id, skill_id, memory_type, scope,
+        memory_key, memory_value, source
+      )
+      VALUES (
+        'memory-export-1', 1, 1, 'secretary', 'schedule_preference', 'user_private',
+        'preferred_focus_time', 'mornings', 'test'
+      )
+    `).run();
+
+    const exported = exportAllUserData(1);
+
+    expect(exported.secretaryAgendaItems).toEqual([
+      expect.objectContaining({
+        agendaItemId: 'agenda-export-1',
+        sourceSkill: 'training',
+        title: 'Exported workout',
+        lifecycleState: 'scheduled',
+      }),
+    ]);
+    expect(exported.skillMemories).toEqual([
+      expect.objectContaining({
+        memoryId: 'memory-export-1',
+        skillId: 'secretary',
+        memoryType: 'schedule_preference',
+        memoryKey: 'preferred_focus_time',
+        memoryValue: 'mornings',
+      }),
+    ]);
+  });
+
   it('does NOT include other users data', () => {
     seedUser(testDb, 1);
     seedUser(testDb, 2, { username: 'other' });
@@ -412,6 +503,72 @@ describe('deleteAllUserData', () => {
     expect(counts.user_encryption_meta).toBe(1);
     expect(counts.kv_store_settings).toBe(1);
     expect(testDb.prepare('SELECT COUNT(*) as c FROM audit_trail WHERE user_id = 1').get()).toMatchObject({ c: 1 });
+  });
+
+  it('deletes Secretary source-skill feedback and Training feedback decisions', () => {
+    seedUser(testDb, 1);
+    testDb.prepare(`
+      INSERT INTO training_feedback_decisions (
+        user_id, tenant_id, source_skill, agenda_item_id, source_intent_id,
+        feedback_type, status
+      )
+      VALUES (1, '1', 'secretary', 'agenda-training-delete', 'training-intent-delete',
+              'schedule_feedback', 'scheduled')
+    `).run();
+    testDb.prepare(`
+      INSERT INTO secretary_source_skill_feedback (
+        user_id, tenant_id, target_skill, agenda_item_id, source_intent_id,
+        feedback_type, status
+      )
+      VALUES (1, '1', 'finance', 'agenda-finance-delete', 'finance-intent-delete',
+              'schedule_feedback', 'scheduled')
+    `).run();
+
+    const inventory = getAccountDeletionInventoryForUser(1);
+    expect(inventory.deletableTables.training_feedback_decisions).toBe(1);
+    expect(inventory.deletableTables.secretary_source_skill_feedback).toBe(1);
+
+    const counts = deleteAllUserData(1);
+    expect(counts.training_feedback_decisions).toBe(1);
+    expect(counts.secretary_source_skill_feedback).toBe(1);
+    expect(testDb.prepare('SELECT COUNT(*) as c FROM training_feedback_decisions WHERE user_id = 1').get()).toMatchObject({ c: 0 });
+    expect(testDb.prepare('SELECT COUNT(*) as c FROM secretary_source_skill_feedback WHERE user_id = 1').get()).toMatchObject({ c: 0 });
+  });
+
+  it('deletes Secretary agenda items and skill memories through static account deletion coverage', () => {
+    seedUser(testDb, 1);
+    testDb.prepare(`
+      INSERT INTO secretary_agenda_items (
+        agenda_item_id, source_intent_id, source_skill, source_action, intent_action,
+        owner_user_id, tenant_id, lifecycle_state, provider_sync_state, title,
+        decision_action, source_shape_hash, created_at, updated_at
+      )
+      VALUES (
+        'agenda-delete-1', 'intent-delete-1', 'content', 'schedule_content', 'schedule_this',
+        1, '1', 'scheduled', 'not_synced', 'Delete agenda',
+        'schedule', 'shape-delete-1', '2026-05-31T10:00:00Z', '2026-05-31T10:00:00Z'
+      )
+    `).run();
+    testDb.prepare(`
+      INSERT INTO skill_memories (
+        memory_id, tenant_id, user_id, skill_id, memory_type, scope,
+        memory_key, memory_value, source
+      )
+      VALUES (
+        'memory-delete-1', 1, 1, 'cooking', 'cooking_preference', 'user_private',
+        'allergy', 'shellfish', 'test'
+      )
+    `).run();
+
+    const inventory = getAccountDeletionInventoryForUser(1);
+    expect(inventory.deletableTables.secretary_agenda_items).toBe(1);
+    expect(inventory.deletableTables.skill_memories).toBe(1);
+
+    const counts = deleteAllUserData(1);
+    expect(counts.secretary_agenda_items).toBe(1);
+    expect(counts.skill_memories).toBe(1);
+    expect(testDb.prepare('SELECT COUNT(*) as c FROM secretary_agenda_items WHERE owner_user_id = 1').get()).toMatchObject({ c: 0 });
+    expect(testDb.prepare('SELECT COUNT(*) as c FROM skill_memories WHERE user_id = 1').get()).toMatchObject({ c: 0 });
   });
 
   it('includes legal consent receipts in the deletion inventory and delete counts', () => {
@@ -580,23 +737,56 @@ describe('GDPR compliance', () => {
     seedUser(testDb, 1);
     seedUserData(testDb, 1);
     addTransaction(1, '2024-06-01', 'income', 5000);
+    testDb.prepare(`
+      INSERT INTO secretary_agenda_items (
+        agenda_item_id, source_intent_id, source_skill, source_action, intent_action,
+        owner_user_id, tenant_id, lifecycle_state, provider_sync_state, title,
+        start_at, end_at, decision_action, source_shape_hash, created_at, updated_at
+      )
+      VALUES (
+        'agenda-gdpr-1', 'intent-gdpr-1', 'secretary', 'focus_block', 'schedule_this',
+        1, '1', 'scheduled', 'not_synced', 'GDPR focus block',
+        '2026-06-01T09:00:00Z', '2026-06-01T10:00:00Z', 'scheduled', 'shape-gdpr-1',
+        '2026-05-31T10:00:00Z', '2026-05-31T10:00:00Z'
+      )
+    `).run();
+    testDb.prepare(`
+      INSERT INTO skill_memories (
+        memory_id, tenant_id, user_id, skill_id, memory_type, scope,
+        memory_key, memory_value, source
+      )
+      VALUES (
+        'memory-gdpr-1', 1, 1, 'secretary', 'user_preference', 'user_private',
+        'preferred_focus_time', 'morning', 'test'
+      )
+    `).run();
 
     // Export first
     const exported = exportAllUserData(1);
     expect(exported.conversations.length).toBeGreaterThan(0);
     expect(exported.todos.length).toBeGreaterThan(0);
     expect(exported.finance.transactions.length).toBeGreaterThan(0);
+    expect(exported.secretaryAgendaItems).toEqual([
+      expect.objectContaining({ agendaItemId: 'agenda-gdpr-1', title: 'GDPR focus block' }),
+    ]);
+    expect(exported.skillMemories).toEqual([
+      expect.objectContaining({ memoryId: 'memory-gdpr-1', memoryKey: 'preferred_focus_time' }),
+    ]);
 
     // Delete
     const counts = deleteAllUserData(1);
     expect(counts['conversations']).toBeGreaterThan(0);
     expect(counts['finance_transactions']).toBeGreaterThan(0);
+    expect(counts['secretary_agenda_items']).toBe(1);
+    expect(counts['skill_memories']).toBe(1);
 
     // Verify empty after deletion
     const afterExport = exportAllUserData(1);
     expect(afterExport.conversations).toHaveLength(0);
     expect(afterExport.todos).toHaveLength(0);
     expect(afterExport.finance.transactions).toHaveLength(0);
+    expect(afterExport.secretaryAgendaItems).toHaveLength(0);
+    expect(afterExport.skillMemories).toHaveLength(0);
   });
 
   it('audit trail entry is created for export operations', () => {

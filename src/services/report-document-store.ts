@@ -276,6 +276,36 @@ export function getUnreadReportCount(userId: number): number {
   return row?.cnt ?? 0;
 }
 
+/**
+ * Count unread report documents while excluding reports represented by a
+ * canonical Notification Center item. Reports stay queryable as domain
+ * history; the center item owns notification/badge contribution.
+ */
+export function getUnreadReportCountExcludingIds(
+  userId: number,
+  excludedIds: number[],
+): number {
+  if (!isValidTenantUserId(userId)) {
+    reportInvalidReportScope('get_unread_report_count_excluding_ids', userId, {
+      excludedCount: excludedIds.length,
+    });
+    return 0;
+  }
+
+  const ids = normalizePositiveIds(excludedIds);
+  if (ids.length === 0) return getUnreadReportCount(userId);
+
+  const placeholders = ids.map(() => '?').join(',');
+  const row = getDb().prepare(`
+    SELECT COUNT(*) as cnt
+    FROM report_documents
+    WHERE user_id = ?
+      AND status = 'unread'
+      AND id NOT IN (${placeholders})
+  `).get(userId, ...ids) as any;
+  return row?.cnt ?? 0;
+}
+
 // ═══════════════════════════════════════════════════════════════════
 // Update
 // ═══════════════════════════════════════════════════════════════════
@@ -469,6 +499,14 @@ function mapReport(row: any): ReportDocument {
     readAt: row.read_at,
     createdAt: row.created_at,
   };
+}
+
+function normalizePositiveIds(ids: number[]): number[] {
+  return Array.from(new Set(
+    ids
+      .map((id) => Number(id))
+      .filter((id) => Number.isInteger(id) && id > 0),
+  ));
 }
 
 function safeParseJSON(val: any, fallback: any): any {

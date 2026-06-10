@@ -27,18 +27,32 @@ export interface FinanceSecretarySchedulingInput {
   deadline?: string | null;
   priority?: 'normal' | 'high' | 'urgent';
   context?: string | null;
+  additionalBusyWindows?: SecretaryTimeWindow[];
+  liveBusyWindowsDegraded?: boolean;
 }
 
 export function submitFinanceSchedulingIntent(
   input: FinanceSecretarySchedulingInput,
 ): SecretarySchedulingDecision {
-  return submitSecretarySchedulingIntent(buildFinanceSchedulingIntent(input));
+  const options = requireFinanceLiveBusyWindows(input);
+  return submitSecretarySchedulingIntent(buildFinanceSchedulingIntent(input), options);
 }
 
 export function previewFinanceSchedulingIntent(
   input: FinanceSecretarySchedulingInput,
 ): SecretarySchedulingPreview {
-  return previewSecretarySchedulingIntent(buildFinanceSchedulingIntent(input));
+  const options = requireFinanceLiveBusyWindows(input);
+  return previewSecretarySchedulingIntent(buildFinanceSchedulingIntent(input), options);
+}
+
+function requireFinanceLiveBusyWindows(input: FinanceSecretarySchedulingInput): { additionalBusyWindows: SecretaryTimeWindow[] } {
+  if (input.liveBusyWindowsDegraded === true) {
+    throw new Error('FINANCE_SECRETARY_LIVE_BUSY_WINDOWS_DEGRADED');
+  }
+  if (!Array.isArray(input.additionalBusyWindows)) {
+    throw new Error('FINANCE_SECRETARY_LIVE_BUSY_WINDOWS_REQUIRED');
+  }
+  return { additionalBusyWindows: input.additionalBusyWindows };
 }
 
 export function buildFinanceSchedulingIntent(

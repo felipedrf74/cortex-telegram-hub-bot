@@ -212,10 +212,10 @@ describe('Chat Fast-Path Command Interceptor', () => {
       { id: 1, user_id: 42, message: 'Scoped reminder', remind_at: new Date().toISOString(), status: 'active' } as any,
     ]);
 
-    const result = await tryDeterministicChatCommand('/status', 42);
+    const result = await tryDeterministicChatCommand('/status', 42, 42);
 
     expect(mockGetTaskProviderForUser).toHaveBeenCalledWith(42);
-    expect(getActiveReminders).toHaveBeenCalledWith(42);
+    expect(getActiveReminders).toHaveBeenCalledWith(42, 42);
     expect(hasConnectedCalendarForUser).toHaveBeenCalledWith(42);
     expect(getEvents).toHaveBeenCalledWith(expect.any(String), expect.any(String), 42);
     expect(result?.text).toContain('Active reminders: 1');

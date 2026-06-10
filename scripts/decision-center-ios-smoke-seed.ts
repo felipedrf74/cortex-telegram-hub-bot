@@ -14,6 +14,7 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import Database from 'better-sqlite3';
 import type { NotificationIntentInput } from '../src/services/notification-orchestrator';
+import { CURRENT_LEGAL_DOCUMENTS } from '../src/services/legal-consent';
 
 const DEFAULT_BASE_URL = 'http://127.0.0.1:8200';
 const DEFAULT_INVITE_CODE = 'LOCAL-DECISION-IOS-SMOKE';
@@ -164,6 +165,11 @@ async function registerLocalIosUser(opts: CliOptions): Promise<AuthPayload> {
       deviceId,
       deviceName: 'Decision Center iOS Smoke Simulator',
       inviteCode: opts.inviteCode,
+      acceptedLegal: {
+        accepted: true,
+        termsVersion: CURRENT_LEGAL_DOCUMENTS.terms.version,
+        privacyVersion: CURRENT_LEGAL_DOCUMENTS.privacy.version,
+      },
     }),
   });
   const json = await readJson(res);

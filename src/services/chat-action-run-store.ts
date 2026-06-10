@@ -102,7 +102,19 @@ export function claimChatActionRunForExecution(input: ClaimChatActionRunInput): 
   const db = getDb();
   return db.transaction(() => {
     const claim = claimChatActionRun(input);
-    if (!claim.acquired) return claim;
+    if (!claim.acquired) {
+      if (claim.row.status !== 'needs_confirmation') return claim;
+      const now = input.nowIso ?? new Date().toISOString();
+      const result = db.prepare(`
+        UPDATE chat_action_runs
+        SET status = 'executing',
+            updated_at = ?
+        WHERE id = ?
+          AND status = 'needs_confirmation'
+      `).run(now, claim.row.id);
+      const row = getChatActionRun(claim.row.id) ?? claim.row;
+      return { acquired: Number(result.changes ?? 0) > 0, row };
+    }
     const row = updateChatActionRun(claim.row.id, 'executing', { nowIso: input.nowIso }) ?? claim.row;
     return { acquired: true, row };
   })();
@@ -183,7 +195,11 @@ export function listPendingChatActionRuns(input: {
   messageId?: string | null;
   limit?: number;
 }): ChatActionRunRow[] {
-  const clauses = ['user_id = ?', 'tenant_id = ?', "status = 'needs_confirmation'"];
+  const clauses = [
+    'user_id = ?',
+    'tenant_id = ?',
+    "status IN ('planned', 'needs_confirmation', 'executing', 'verifying')",
+  ];
   const params: Array<number | string> = [input.userId, input.tenantId];
   if (input.conversationId) {
     clauses.push('conversation_id = ?');
@@ -200,6 +216,39 @@ export function listPendingChatActionRuns(input: {
     ORDER BY created_at ASC, id ASC
     LIMIT ?
   `).all(...params) as ChatActionRunRow[];
+}
+
+export function cancelPendingChatActionRuns(input: {
+  userId: number;
+  tenantId: number;
+  conversationId?: string | null;
+  messageId?: string | null;
+  nowIso?: string;
+}): number {
+  const now = input.nowIso ?? new Date().toISOString();
+  const clauses = [
+    'user_id = ?',
+    'tenant_id = ?',
+    "status IN ('planned', 'needs_confirmation', 'executing', 'verifying')",
+  ];
+  const params: Array<number | string> = [input.userId, input.tenantId];
+  if (input.conversationId) {
+    clauses.push('conversation_id = ?');
+    params.push(input.conversationId);
+  }
+  if (input.messageId) {
+    clauses.push('message_id = ?');
+    params.push(input.messageId);
+  }
+  const result = getDb().prepare(`
+    UPDATE chat_action_runs
+    SET status = 'cancelled',
+        error_json = COALESCE(error_json, ?),
+        updated_at = ?,
+        completed_at = COALESCE(completed_at, ?)
+    WHERE ${clauses.join(' AND ')}
+  `).run(JSON.stringify({ reason: 'user_cancelled_pending_chat_work' }), now, now, ...params);
+  return Number(result.changes ?? 0);
 }
 
 export function reapZombieChatActionRuns(input: {

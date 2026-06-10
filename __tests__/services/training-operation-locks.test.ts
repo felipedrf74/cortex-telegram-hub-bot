@@ -63,6 +63,36 @@ describe('training operation SQLite advisory locks', () => {
     expect(afterRelease.count).toBe(0);
   });
 
+  it('requires tenant scope for operation locks', async () => {
+    await expect(acquireTrainingCalendarOperationLock({
+      userId: 42,
+      tenantId: undefined as unknown as number,
+      operation: 'calendar_sync',
+    })).rejects.toMatchObject({ code: 'TENANT_SCOPE_REQUIRED' });
+  });
+
+  it('does not queue same-user locks across different tenants', async () => {
+    const releaseFirst = await acquireTrainingCalendarOperationLock({
+      userId: 42,
+      tenantId: 84,
+      operation: 'calendar_sync',
+    });
+
+    let secondAcquired = false;
+    const releaseSecond = await acquireTrainingCalendarOperationLock({
+      userId: 42,
+      tenantId: 85,
+      operation: 'calendar_cancel',
+    }).then((release) => {
+      secondAcquired = true;
+      return release;
+    });
+
+    expect(secondAcquired).toBe(true);
+    releaseSecond();
+    releaseFirst();
+  });
+
   it('uses operation-aware TTLs so long provider writes are not stolen too early', async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-05-22T12:00:00.000Z'));
@@ -129,19 +159,30 @@ describe('training operation SQLite advisory locks', () => {
     }
   });
 
-  it('ships the advisory lock table in a migration, not only runtime bootstrap', () => {
-    const migrationSql = fs.readFileSync(
+  it('ships tenant-scoped advisory locks in migrations, not only runtime bootstrap', () => {
+    testDb.exec(fs.readFileSync(
+      path.join(MIGRATIONS_DIR, '127_training_plan_generation_idempotency.sql'),
+      'utf8',
+    ));
+    testDb.exec(fs.readFileSync(
       path.join(MIGRATIONS_DIR, '154_training_operation_locks.sql'),
       'utf8',
-    );
-    testDb.exec(migrationSql);
+    ));
+    testDb.exec(fs.readFileSync(
+      path.join(MIGRATIONS_DIR, '207_training_tenant_scoped_idempotency_and_locks.sql'),
+      'utf8',
+    ));
 
     const table = testDb.prepare(`
       SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'training_operation_locks'
     `).get() as { name: string } | undefined;
     expect(table?.name).toBe('training_operation_locks');
+    const scopedIdempotency = testDb.prepare(`
+      SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'training_plan_generation_idempotency_scoped'
+    `).get() as { name: string } | undefined;
+    expect(scopedIdempotency?.name).toBe('training_plan_generation_idempotency_scoped');
 
-    const columns = testDb.prepare('PRAGMA table_info(training_operation_locks)').all() as Array<{ name: string }>;
+    const columns = testDb.prepare('PRAGMA table_info(training_operation_locks)').all() as Array<{ name: string; notnull: number }>;
     expect(columns.map((column) => column.name)).toEqual([
       'lock_key',
       'owner_token',
@@ -152,5 +193,6 @@ describe('training operation SQLite advisory locks', () => {
       'acquired_at_ms',
       'expires_at_ms',
     ]);
+    expect(columns.find((column) => column.name === 'tenant_id')).toBeTruthy();
   });
 });

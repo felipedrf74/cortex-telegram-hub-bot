@@ -35,6 +35,7 @@ import {
   parseCompleteTaskByMarkIntent,
   parseTaskMutationIntent,
 } from './task-mutations';
+import { parseStandaloneReminderIntent } from './reminder-intents';
 import {
   extractTaskClause,
   parseSimpleTaskIntent,
@@ -50,6 +51,7 @@ import {
 import { parseBroadSkillActionIntent } from './broad-skill-intents';
 import { buildPlanFromSteps } from './plan-builder';
 import {
+  shouldRequireSafeWriteConfirmation,
   stepRequiresConfirmation,
 } from './plan-utils';
 
@@ -145,7 +147,7 @@ export function buildDeterministicChatActionPlan(input: ChatPlannerInput): ChatA
       planner: 'deterministic',
       steps,
       requiresConfirmation: steps.some((candidate) => stepRequiresConfirmation(candidate, {
-        requireSafeWrites: input.requireSafeWriteConfirmation === true,
+        requireSafeWrites: shouldRequireSafeWriteConfirmation(input),
       })),
       confidence: calendar.confidence,
       debug: {
@@ -183,6 +185,8 @@ export function buildDeterministicChatActionPlan(input: ChatPlannerInput): ChatA
   if (completeTaskByMark) return completeTaskByMark;
   const taskMutation = parseTaskMutationIntent(input);
   if (taskMutation) return taskMutation;
+  const reminder = parseStandaloneReminderIntent(input);
+  if (reminder) return reminder;
   const task = parseSimpleTaskIntent(input);
   if (task) return task;
   const broadAction = parseBroadSkillActionIntent(input);

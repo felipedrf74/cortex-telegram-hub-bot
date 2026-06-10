@@ -5,6 +5,7 @@ import path from 'path';
 
 let testDb: Database.Database;
 const MIGRATION_083 = path.resolve(__dirname, '../../migrations/083_secretary_agenda_ledger.sql');
+const MIGRATION_098 = path.resolve(__dirname, '../../migrations/098_secretary_decision_explanation.sql');
 
 vi.mock('../../src/services/database', () => ({
   getDb: () => testDb,
@@ -100,6 +101,8 @@ describe('Content editorial workflow lifecycle', () => {
     testDb = new Database(':memory:');
     seedSchema();
     testDb.exec(fs.readFileSync(MIGRATION_083, 'utf8'));
+    testDb.exec(fs.readFileSync(MIGRATION_098, 'utf8'));
+    testDb.exec('ALTER TABLE secretary_agenda_items ADD COLUMN reasoning_trail_json TEXT');
   });
 
   afterEach(() => {
@@ -405,6 +408,7 @@ describe('Content editorial workflow lifecycle', () => {
       priority: 'high',
       reason: 'Schedule approved editorial production block.',
       approvalConfirmed: true,
+      additionalBusyWindows: [],
     });
 
     const updated = getContentWorkflowObject(501, item.id, 101);
@@ -442,6 +446,57 @@ describe('Content editorial workflow lifecycle', () => {
     ]));
   });
 
+  it('requires Content scheduling callers to provide live calendar busy windows explicitly', () => {
+    const item = createContentWorkflowObject({
+      userId: 501,
+      tenantId: 101,
+      objectType: 'content_calendar_item',
+      title: 'Write launch post',
+      editorialState: 'approved',
+    });
+
+    expect(() => requestContentScheduleThroughSecretary({
+      userId: 501,
+      tenantId: 101,
+      objectId: item.id,
+      title: item.title,
+      durationMinutes: 75,
+      preferredWindows: [
+        { start: '2026-05-01T10:00:00.000Z', end: '2026-05-01T12:00:00.000Z', label: 'deep work' },
+      ],
+      approvalConfirmed: true,
+    })).toThrow('CONTENT_SECRETARY_LIVE_BUSY_WINDOWS_REQUIRED');
+  });
+
+  it('fails closed when Content live calendar busy-window loading is degraded', () => {
+    const item = createContentWorkflowObject({
+      userId: 501,
+      tenantId: 101,
+      objectType: 'content_calendar_item',
+      title: 'Write launch post',
+      editorialState: 'approved',
+    });
+
+    expect(() => requestContentScheduleThroughSecretary({
+      userId: 501,
+      tenantId: 101,
+      objectId: item.id,
+      title: item.title,
+      durationMinutes: 75,
+      preferredWindows: [
+        { start: '2026-05-01T10:00:00.000Z', end: '2026-05-01T12:00:00.000Z', label: 'deep work' },
+      ],
+      approvalConfirmed: true,
+      additionalBusyWindows: [],
+      liveBusyWindowsDegraded: true,
+    })).toThrow('CONTENT_SECRETARY_LIVE_BUSY_WINDOWS_DEGRADED');
+    expect(getContentWorkflowObject(501, item.id, 101)).toMatchObject({
+      editorialState: 'approved',
+      secretaryAgendaItemId: null,
+    });
+    expect(listSecretaryAgendaItems({ ownerUserId: 501, tenantId: 101 })).toHaveLength(0);
+  });
+
   it('previews Content scheduling and does not persist an agenda item when no slot fits', () => {
     const item = createContentWorkflowObject({
       userId: 501,
@@ -464,6 +519,7 @@ describe('Content editorial workflow lifecycle', () => {
       priority: 'high',
       reason: 'Schedule approved editorial production block.',
       approvalConfirmed: true,
+      additionalBusyWindows: [],
     });
 
     const updated = getContentWorkflowObject(501, item.id, 101);

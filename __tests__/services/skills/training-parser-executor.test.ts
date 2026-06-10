@@ -16,6 +16,9 @@ const mocks = vi.hoisted(() => ({
   upsertPendingChatAction: vi.fn(() => ({ id: 'pending-training-plan' })),
   previewTrainingSessionReflow: vi.fn(),
   confirmTrainingSessionReflow: vi.fn(),
+  getActivePlanSummary: vi.fn(),
+  getPlanById: vi.fn(),
+  getSessionById: vi.fn(),
 }));
 
 vi.mock('../../../src/services/chat-action-state', () => ({
@@ -28,9 +31,20 @@ vi.mock('../../../src/api/routes/training-plan-calendar-sync', () => ({
   confirmTrainingSessionReflow: mocks.confirmTrainingSessionReflow,
 }));
 
+vi.mock('../../../src/services/training-plans', () => ({
+  getActivePlanSummary: mocks.getActivePlanSummary,
+  getPlanById: mocks.getPlanById,
+  getSessionById: mocks.getSessionById,
+}));
+
 import { foldCalendarText } from '../../../src/services/calendar-natural-language-parser';
 import type { ChatActionPlan, ChatPlannerInput, ChatPlanStep } from '../../../src/services/chat/types';
-import { executeTrainingPlanCreateStep, executeTrainingReflowStep } from '../../../src/services/skills/training/executor';
+import {
+  executeTrainingCoachReportStep,
+  executeTrainingExplainSessionStep,
+  executeTrainingPlanCreateStep,
+  executeTrainingReflowStep,
+} from '../../../src/services/skills/training/executor';
 import { extractTrainingPlanSlots, extractTrainingStartDate, extractWeeklyVolumeKm } from '../../../src/services/skills/training/helpers';
 import { parseTrainingActionStep } from '../../../src/services/skills/training/parser';
 
@@ -82,6 +96,63 @@ function planWithStep(step: ChatPlanStep): ChatActionPlan {
 describe('training parser and executor hardening', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+  });
+
+  it('requires tenant scope for training coach report reads', () => {
+    const step = {
+      stepId: 'training-report',
+      skill: 'training',
+      type: 'training_coach_report',
+      action: 'training_coach_report',
+      args: {},
+    } as unknown as ChatPlanStep;
+    const input = { ...plannerInput('training report'), tenantId: 0 } as ChatPlannerInput;
+
+    const result = executeTrainingCoachReportStep(step, input);
+
+    expect(result).toMatchObject({
+      status: 'blocked',
+      error: 'training_tenant_scope_required',
+    });
+    expect(mocks.getActivePlanSummary).not.toHaveBeenCalled();
+  });
+
+  it('passes tenant scope to training coach report summary reads', () => {
+    mocks.getActivePlanSummary.mockReturnValueOnce('Tenant-scoped plan');
+    const step = {
+      stepId: 'training-report',
+      skill: 'training',
+      type: 'training_coach_report',
+      action: 'training_coach_report',
+      args: {},
+    } as unknown as ChatPlanStep;
+
+    const result = executeTrainingCoachReportStep(step, plannerInput('training report'));
+
+    expect(result).toMatchObject({
+      status: 'verified_success',
+      result: { summary: 'Tenant-scoped plan' },
+    });
+    expect(mocks.getActivePlanSummary).toHaveBeenCalledWith(42, 42);
+  });
+
+  it('blocks same-user training session explains across tenants', () => {
+    mocks.getSessionById.mockReturnValueOnce({ id: 501, plan_id: 900, title: 'Tempo', session_type: 'run' });
+    mocks.getPlanById.mockReturnValueOnce({ id: 900, user_id: 42, tenant_id: 99 });
+    const step = {
+      stepId: 'training-explain',
+      skill: 'training',
+      type: 'training_explain_session',
+      action: 'training_explain_session',
+      args: { sessionId: 501 },
+    } as unknown as ChatPlanStep;
+
+    const result = executeTrainingExplainSessionStep(step, plannerInput('explain training session'));
+
+    expect(result).toMatchObject({
+      status: 'blocked',
+      error: 'training_session_not_found_or_unauthorized',
+    });
   });
 
   it('extracts Portuguese running verbs as running sport', () => {

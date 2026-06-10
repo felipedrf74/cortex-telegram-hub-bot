@@ -7,13 +7,19 @@ import path from 'path';
 
 let testDb: Database.Database;
 const mockInvalidateContentDerivedCaches = vi.hoisted(() => vi.fn());
+const mockLoadLiveCalendarBusyWindows = vi.hoisted(() => vi.fn());
 const MIGRATION_083 = path.resolve(__dirname, '../../migrations/083_secretary_agenda_ledger.sql');
+const MIGRATION_098 = path.resolve(__dirname, '../../migrations/098_secretary_decision_explanation.sql');
 
 vi.mock('../../src/services/database', () => ({
   getDb: () => testDb,
   initDatabase: vi.fn(),
   closeDatabase: vi.fn(),
   findUnexpectedMigrationPrefixCollisions: vi.fn(() => []),
+  assertNoUnexpectedMigrationPrefixCollisions: vi.fn(),
+  filterAlreadyAppliedAddColumnStatements: vi.fn((sql: string) => sql),
+  runMigrationsForTest: vi.fn(),
+  stripWrappingTransactionStatements: vi.fn((sql: string) => sql),
 }));
 
 vi.mock('../../src/services/cache-coherence-registry', () => ({
@@ -44,6 +50,10 @@ vi.mock('../../src/services/cache-coherence-registry', () => ({
 vi.mock('../../src/utils/logger', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(), trace: vi.fn(), child: vi.fn().mockReturnThis() },
   LOGGER_REDACTION_PATHS: [],
+}));
+
+vi.mock('../../src/services/secretary-live-calendar-busy', () => ({
+  loadLiveCalendarBusyWindowsForSecretaryIntent: (...args: unknown[]) => mockLoadLiveCalendarBusyWindows(...args),
 }));
 
 import { registerContentEditorialRoutes } from '../../src/api/routes/content-editorial-routes';
@@ -180,8 +190,16 @@ function reference(overrides: Partial<ContentRegisteredReference> = {}): Content
 describe('content editorial mutation routes', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockLoadLiveCalendarBusyWindows.mockResolvedValue({
+      windows: [],
+      degraded: false,
+      warningCodes: [],
+      warnings: [],
+    });
     testDb = new Database(':memory:');
     testDb.exec(fs.readFileSync(MIGRATION_083, 'utf8'));
+    testDb.exec(fs.readFileSync(MIGRATION_098, 'utf8'));
+    testDb.exec('ALTER TABLE secretary_agenda_items ADD COLUMN reasoning_trail_json TEXT');
   });
 
   afterEach(() => {
@@ -357,6 +375,41 @@ describe('content editorial mutation routes', () => {
       fromState: 'drafted',
       toState: 'scheduled',
       reasonCodes: ['invalid_lifecycle_transition'],
+    });
+    expect(listSecretaryAgendaItems({ ownerUserId: 501, tenantId: 101 })).toEqual([]);
+  });
+
+  it('fails closed when live Content scheduling cannot verify connected calendar availability', async () => {
+    const item = createContentWorkflowObject({
+      userId: 501,
+      tenantId: 101,
+      objectType: 'content_calendar_item',
+      title: 'Write launch post',
+      editorialState: 'approved',
+    });
+    mockLoadLiveCalendarBusyWindows.mockResolvedValueOnce({
+      windows: [],
+      degraded: true,
+      providerConfigured: true,
+      warningCodes: ['GOOGLE_CALENDAR_UNAVAILABLE'],
+      warnings: ['Google Calendar is unavailable right now.'],
+    });
+
+    const { response } = await dispatch('POST', `/workflow/${item.id}/actions`, {
+      action: 'schedule_content',
+      durationMinutes: 75,
+      preferredWindows: [
+        { start: '2026-05-01T10:00:00.000Z', end: '2026-05-01T12:00:00.000Z', label: 'deep work' },
+      ],
+      priority: 'high',
+    });
+
+    expect(response.statusCode).toBe(503);
+    expect(response.body.error.code).toBe('CONTENT_SECRETARY_CALENDAR_UNAVAILABLE');
+    expect(response.body.error.details.warningCodes).toEqual(['GOOGLE_CALENDAR_UNAVAILABLE']);
+    expect(getContentWorkflowObject(501, item.id, 101)).toMatchObject({
+      editorialState: 'approved',
+      secretaryAgendaItemId: null,
     });
     expect(listSecretaryAgendaItems({ ownerUserId: 501, tenantId: 101 })).toEqual([]);
   });

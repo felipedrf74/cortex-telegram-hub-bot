@@ -17,6 +17,7 @@ import { logger } from '../utils/logger';
 import { deleteTrainingCalendarEventWithRetry } from './training-calendar-provider-retry';
 import { getUserTimezoneById } from './user-service';
 import { DateTime } from 'luxon';
+import { requireTenantIdParam } from './tenant-scope';
 
 export interface TrainingAgendaReconciliationResult {
   attempted: number;
@@ -39,11 +40,12 @@ function isCalendarSource(value: string): value is CalendarSource {
  */
 export async function reconcileOrphanedTrainingAgendaEvents(
   userId: number,
-  tenantId = userId,
+  tenantId: number,
 ): Promise<TrainingAgendaReconciliationResult> {
+  const scopedTenantId = requireTenantIdParam(tenantId, 'reconcileOrphanedTrainingAgendaEvents');
   const ownerships = mergeOwnershipQueues([
-    ...findOwnershipsNeedingReconciliation(userId, tenantId),
-    ...findOrphanedOwnerships(userId, tenantId),
+    ...findOwnershipsNeedingReconciliation(userId, scopedTenantId),
+    ...findOrphanedOwnerships(userId, scopedTenantId),
   ]);
   const ownershipKeys = new Set(ownerships.map((ownership) =>
     ownershipKey(ownership.calendar_event_id, ownership.calendar_source)));
@@ -77,14 +79,14 @@ export async function reconcileOrphanedTrainingAgendaEvents(
         userId,
         target.kind === 'ownership' ? {
           userId,
-          tenantId,
+          tenantId: scopedTenantId,
           planId: target.ownership.plan_id,
           ownershipId: target.ownership.id,
           eventId,
           source,
         } : {
           userId,
-          tenantId,
+          tenantId: scopedTenantId,
           planId: target.event.planId,
           eventId,
           source,
@@ -97,7 +99,7 @@ export async function reconcileOrphanedTrainingAgendaEvents(
           reason: 'orphan_reconciled',
           status: 'deleted',
           userId,
-          tenantId,
+          tenantId: scopedTenantId,
           planId: target.ownership.plan_id,
           ownershipId: target.ownership.id,
         });
@@ -116,7 +118,7 @@ export async function reconcileOrphanedTrainingAgendaEvents(
             reason: 'orphan_reconciled_event_gone_upstream',
             status: 'deleted',
             userId,
-            tenantId,
+            tenantId: scopedTenantId,
             planId: target.ownership.plan_id,
             ownershipId: target.ownership.id,
           });
@@ -137,7 +139,7 @@ export async function reconcileOrphanedTrainingAgendaEvents(
           reason: 'orphan_reconcile_delete_failed',
           status: 'orphaned',
           userId,
-          tenantId,
+          tenantId: scopedTenantId,
           planId: target.ownership.plan_id,
           ownershipId: target.ownership.id,
         });

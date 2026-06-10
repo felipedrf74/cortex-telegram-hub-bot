@@ -2512,6 +2512,16 @@ table.legacy th {
       <div class="card" style="margin-top:var(--space-4)">
         <div class="card-header">
           <div>
+            <div class="card-title">Notification reliability</div>
+            <div class="card-subtitle">Dedupe, digest, push, badge drift, and read-state telemetry for the selected scope</div>
+          </div>
+        </div>
+        <div id="notification-reliability-content"><div class="empty">Loading reliability…</div></div>
+      </div>
+
+      <div class="card" style="margin-top:var(--space-4)">
+        <div class="card-header">
+          <div>
             <div class="card-title">Notification preferences</div>
             <div class="card-subtitle">Channel and digest settings by scoped user profile</div>
           </div>
@@ -4542,6 +4552,8 @@ table.legacy th {
 	        document.getElementById('notification-kpi-profiles').textContent = '—';
 	        document.getElementById('notification-center-content').innerHTML =
 	          '<div class="empty">Select a user/tenant scope above to load Decision Center safely.</div>';
+	        document.getElementById('notification-reliability-content').innerHTML =
+	          '<div class="empty">Notification reliability is scoped to a selected user.</div>';
 	        document.getElementById('notification-preferences-content').innerHTML =
 	          '<div class="empty">Decision preferences are scoped to a selected user.</div>';
 	        return;
@@ -4549,10 +4561,11 @@ table.legacy th {
 	      const userId = CONTENT_SCOPE.userId;
 	      const tenantId = CONTENT_SCOPE.tenantId || CONTENT_SCOPE.userId;
 	      const query = '?tenantId=' + encodeURIComponent(tenantId);
-	      const [summary, center, prefs] = await Promise.all([
+	      const [summary, center, prefs, reliabilityResponse] = await Promise.all([
 	        apiJson('/api/users/' + encodeURIComponent(userId) + '/decision-center/summary' + query),
 	        apiJson('/api/users/' + encodeURIComponent(userId) + '/decision-center/decisions' + query + '&limit=100&status=all'),
 	        apiJson('/api/users/' + encodeURIComponent(userId) + '/decision-center/preferences' + query),
+	        apiJson('/api/users/' + encodeURIComponent(userId) + '/decision-center/notification-reliability' + query),
 	      ]);
 	      const items = center.items || [];
 	      const openCount = summary.summary?.openCount ?? items.filter(i => ['unread', 'read', 'failed', 'snoozed'].includes(i.status)).length;
@@ -4568,9 +4581,9 @@ table.legacy th {
 
 	      const grouped = {
 	        all: items,
-        decision: items.filter(i => ['decision_required', 'reflow_suggestion'].includes(i.type)),
-        conflicts: items.filter(i => i.type === 'conflict_detected'),
-        approvals: items.filter(i => i.type === 'approval_required'),
+	        decision: items.filter(i => ['decision_required', 'reflow_suggestion'].includes(i.type)),
+	        conflicts: items.filter(i => i.type === 'conflict_detected'),
+	        approvals: items.filter(i => i.type === 'approval_required'),
         training: items.filter(i => i.sourceSkill === 'training'),
         finance: items.filter(i => i.sourceSkill === 'finance'),
         security: items.filter(i => i.sourceSkill === 'security' || i.type === 'security_account'),
@@ -4601,11 +4614,30 @@ table.legacy th {
 	      '</tr>').join('');
 
 	      document.getElementById('notification-center-content').innerHTML =
-		'<div style="margin-bottom:var(--space-3)">' + chips + '</div>' +
+	        '<div style="margin-bottom:var(--space-3)">' + chips + '</div>' +
 	        '<div style="overflow-x:auto"><table class="data-table">' +
 	          '<thead><tr><th>Skill</th><th>Safe preview</th><th>Type</th><th>Urgency</th><th>Status</th><th>Actions</th><th>Created</th></tr></thead>' +
 	          '<tbody>' + (rows || '<tr><td colspan="7"><div class="empty">No Decision Center items</div></td></tr>') + '</tbody>' +
 	        '</table></div>';
+
+	      const reliability = reliabilityResponse.dashboard || {};
+	      const reliabilityRows = [
+	        ['Dedupe', 'Deduped', reliability.dedupe?.dedupedCount, 'Active keys', reliability.dedupe?.activeDedupeKeyCount],
+	        ['Digest', 'Pending', reliability.digest?.pendingCount, 'Due', reliability.digest?.dueCount],
+	        ['Push', 'Sent', reliability.pushOutcome?.sentCount, 'Blocked', reliability.pushOutcome?.blockedCount],
+	        ['Badge', 'Expected', reliability.badge?.expectedBadgeCount, 'Drift', reliability.badge?.drift],
+	        ['Read state', 'Client failures', reliability.readState?.clientReportedReadFailureCount, 'Server failures', reliability.readState?.serverReadFailureCount],
+	      ].map(r =>
+	        '<tr><td><span class="badge badge-neutral">' + esc(r[0]) + '</span></td>' +
+	        '<td>' + esc(r[1]) + '</td><td class="mono">' + esc(String(r[2] ?? '—')) + '</td>' +
+	        '<td>' + esc(r[3]) + '</td><td class="mono">' + esc(String(r[4] ?? '—')) + '</td></tr>'
+	      ).join('');
+	      document.getElementById('notification-reliability-content').innerHTML =
+	        '<div style="overflow-x:auto"><table class="data-table">' +
+	          '<thead><tr><th>Area</th><th>Metric</th><th>Value</th><th>Metric</th><th>Value</th></tr></thead>' +
+	          '<tbody>' + reliabilityRows + '</tbody>' +
+	        '</table></div>' +
+	        '<div class="text-muted" style="margin-top:var(--space-2);font-size:12px">Generated ' + esc(reliability.generatedAt || '—') + '</div>';
 
 	      document.getElementById('notification-preferences-content').innerHTML =
 	        '<div style="overflow-x:auto"><table class="data-table">' +
@@ -4622,6 +4654,7 @@ table.legacy th {
 	        '</table></div>';
 	    } catch (err) {
 	      setCardError('notification-center-content', 'Could not load Notification Center', err);
+	      setCardError('notification-reliability-content', 'Could not load notification reliability', err);
 	      setCardError('notification-preferences-content', 'Could not load notification preferences', err);
 	    }
 	  }

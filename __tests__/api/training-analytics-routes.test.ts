@@ -61,7 +61,7 @@ function mockRes(): MockRes {
   return r;
 }
 
-function mockReq(method: string, path: string, query: Record<string, any>, userId = 12): Request {
+function mockReq(method: string, path: string, query: Record<string, any>, userId = 12, tenantId = 34): Request {
   return {
     method,
     url: path,
@@ -74,6 +74,7 @@ function mockReq(method: string, path: string, query: Record<string, any>, userI
     header: () => undefined,
     body: undefined,
     userId,
+    tenantId,
   } as any;
 }
 
@@ -81,10 +82,11 @@ async function dispatch(
   path: string,
   query: Record<string, any> = {},
   language: ReturnType<TrainingLanguageResolver> = 'en-US',
+  tenantId = 34,
 ): Promise<MockRes> {
   const router = Router();
   registerTrainingAnalyticsRoutes(router, (() => language) as TrainingLanguageResolver);
-  const req = mockReq('GET', path, query);
+  const req = mockReq('GET', path, query, 12, tenantId);
   const res = mockRes();
 
   await new Promise<void>((resolve) => {
@@ -147,8 +149,8 @@ describe('training analytics route registrar', () => {
 
     expect(res.statusCode).toBe(200);
     expect(res.body.ok).toBe(true);
-    expect(mockGetCardioProgression).toHaveBeenCalledWith(12, 'running', 52);
-    expect(mockSetCache).toHaveBeenCalledWith('cardio-progression:12:running:52', res.body.data, 120);
+    expect(mockGetCardioProgression).toHaveBeenCalledWith(12, 34, 'running', 52);
+    expect(mockSetCache).toHaveBeenCalledWith('cardio-progression:34:12:running:52', res.body.data, 120);
   });
 
   it('returns cached strength progression without recomputing', async () => {
@@ -173,13 +175,23 @@ describe('training analytics route registrar', () => {
     expect(res.statusCode).toBe(200);
     expect(res.body.ok).toBe(true);
     expect(res.body.data.totalCompletions).toBe(2);
-    expect(mockGetUnifiedWeeklyActivitySummary).toHaveBeenCalledWith(12);
-    expect(mockPublishAdherenceSignalsForUser).toHaveBeenCalledWith(12);
-    expect(mockPublishPlanDriftSignalForUser).toHaveBeenCalledWith(12);
+    expect(mockGetUnifiedWeeklyActivitySummary).toHaveBeenCalledWith(12, 34);
+    expect(mockPublishAdherenceSignalsForUser).toHaveBeenCalledWith(12, 34);
+    expect(mockPublishPlanDriftSignalForUser).toHaveBeenCalledWith(12, 34);
     expect(mockLoggerWarn).toHaveBeenCalledWith(
-      expect.objectContaining({ userId: 12 }),
+      expect.objectContaining({ userId: 12, tenantId: 34 }),
       'adherence signal publish failed — summary still returned',
     );
-    expect(mockSetCache).toHaveBeenCalledWith('training-activity-weekly:12', res.body.data, 60);
+    expect(mockSetCache).toHaveBeenCalledWith('training-activity-weekly:34:12', res.body.data, 60);
+  });
+
+  it('fails closed when tenant scope is missing', async () => {
+    const res = await dispatch('/activity/weekly', {}, 'en-US', null as any);
+
+    expect(res.statusCode).toBe(401);
+    expect(res.body.ok).toBe(false);
+    expect(mockGetUnifiedWeeklyActivitySummary).not.toHaveBeenCalled();
+    expect(mockPublishAdherenceSignalsForUser).not.toHaveBeenCalled();
+    expect(mockPublishPlanDriftSignalForUser).not.toHaveBeenCalled();
   });
 });

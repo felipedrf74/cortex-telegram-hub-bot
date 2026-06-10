@@ -41,6 +41,8 @@ vi.mock('../../src/config', () => ({
     coaching: {
       get periodizationV2Enabled() { return flagState; },
       ruleEnforcementEnabled: false,
+      trainingSafetyGuardrailsEnabled: false,
+      coachKernelEquipmentAuthorityEnabled: false,
     },
   },
 }));
@@ -73,8 +75,8 @@ beforeEach(async () => {
   flagState = true;
   // Seed a plan + week.
   testDb.prepare(`
-    INSERT INTO fitness_training_plans (id, user_id, name, sport, duration_weeks, start_date, end_date, status)
-    VALUES (1, 100, 'p', 'gym', 4, '2026-01-05', '2026-02-01', 'active')
+    INSERT INTO fitness_training_plans (id, user_id, tenant_id, name, sport, duration_weeks, start_date, end_date, status)
+    VALUES (1, 100, 100, 'p', 'gym', 4, '2026-01-05', '2026-02-01', 'active')
   `).run();
   testDb.prepare('INSERT INTO training_weeks (id, plan_id, week_number) VALUES (1, 1, 1)').run();
 
@@ -83,6 +85,7 @@ beforeEach(async () => {
   app.use(express.json());
   app.use((req, _res, next) => {
     (req as unknown as { userId: number }).userId = 100;
+    (req as unknown as { tenantId: number }).tenantId = 100;
     next();
   });
   const router = express.Router();
@@ -596,10 +599,20 @@ describe('GET /plans/:planId/coach-analysis — end-to-end v2 composition', () =
 
   it('returns uniform 404 when plan belongs to a different user (R3 P2 — no status side channel)', async () => {
     testDb.prepare(`
-      INSERT INTO fitness_training_plans (id, user_id, name, sport, duration_weeks, start_date, end_date, status)
-      VALUES (2, 200, 'p', 'gym', 4, '2026-01-05', '2026-02-01', 'active')
+      INSERT INTO fitness_training_plans (id, user_id, tenant_id, name, sport, duration_weeks, start_date, end_date, status)
+      VALUES (2, 200, 200, 'p', 'gym', 4, '2026-01-05', '2026-02-01', 'active')
     `).run();
     const result = await req('GET', '/api/v1/training/plans/2/coach-analysis?weekIndex=0');
+    expect(result.status).toBe(404);
+    expect(result.json?.error?.code).toBe('PLAN_NOT_FOUND');
+  });
+
+  it('returns uniform 404 when plan belongs to same user in another tenant', async () => {
+    testDb.prepare(`
+      INSERT INTO fitness_training_plans (id, user_id, tenant_id, name, sport, duration_weeks, start_date, end_date, status)
+      VALUES (3, 100, 200, 'p', 'gym', 4, '2026-01-05', '2026-02-01', 'active')
+    `).run();
+    const result = await req('GET', '/api/v1/training/plans/3/coach-analysis?weekIndex=0');
     expect(result.status).toBe(404);
     expect(result.json?.error?.code).toBe('PLAN_NOT_FOUND');
   });
@@ -609,8 +622,8 @@ describe('Codex R2 P0 — cross-user ownership checks (reflow + policy routes)',
   // Seed a foreign plan + week owned by a different user.
   beforeEach(() => {
     testDb.prepare(`
-      INSERT INTO fitness_training_plans (id, user_id, name, sport, duration_weeks, start_date, end_date, status)
-      VALUES (777, 999, 'foreign', 'gym', 4, '2026-01-05', '2026-02-01', 'active')
+      INSERT INTO fitness_training_plans (id, user_id, tenant_id, name, sport, duration_weeks, start_date, end_date, status)
+      VALUES (777, 999, 999, 'foreign', 'gym', 4, '2026-01-05', '2026-02-01', 'active')
     `).run();
     testDb.prepare('INSERT INTO training_weeks (id, plan_id, week_number) VALUES (888, 777, 1)').run();
   });
@@ -782,8 +795,8 @@ describe('R3 P0/P1/P2 fixes — uniform status, hard pause, completed protection
   beforeEach(() => {
     // Foreign plan for status-side-channel test.
     testDb.prepare(`
-      INSERT INTO fitness_training_plans (id, user_id, name, sport, duration_weeks, start_date, end_date, status)
-      VALUES (888, 999, 'foreign', 'gym', 4, '2026-01-05', '2026-02-01', 'active')
+      INSERT INTO fitness_training_plans (id, user_id, tenant_id, name, sport, duration_weeks, start_date, end_date, status)
+      VALUES (888, 999, 999, 'foreign', 'gym', 4, '2026-01-05', '2026-02-01', 'active')
     `).run();
     testDb.prepare('INSERT INTO training_weeks (id, plan_id, week_number) VALUES (8888, 888, 1)').run();
   });
@@ -838,8 +851,8 @@ describe('R3 P1 — A4 hard-pause via structured intake', () => {
     // separately at POST /health-intake/red-flag.
     testDb.prepare(`
       INSERT INTO athlete_health_signals
-        (user_id, date, pain_score, pain_location, illness_symptoms_json, source, consent_scope)
-      VALUES (100, '2026-05-23', 9, 'chest', '["chest_pain"]', 'structured_intake', 'pain,illness')
+        (user_id, tenant_id, date, pain_score, pain_location, illness_symptoms_json, source, consent_scope)
+      VALUES (100, 100, '2026-05-23', 9, 'chest', '["chest_pain"]', 'structured_intake', 'pain,illness')
     `).run();
     const result = await req('GET', '/api/v1/training/plans/1/coach-analysis?weekIndex=0');
     expect(result.status).toBe(200);
@@ -852,8 +865,8 @@ describe('R3 P1 — A4 hard-pause via structured intake', () => {
   it('severe structured pain with location → coach-analysis emits pause_training without symptom wording', async () => {
     testDb.prepare(`
       INSERT INTO athlete_health_signals
-        (user_id, date, pain_score, pain_location, illness_symptoms_json, source, consent_scope)
-      VALUES (100, '2026-05-23', 9, 'left knee', '[]', 'structured_intake', 'pain')
+        (user_id, tenant_id, date, pain_score, pain_location, illness_symptoms_json, source, consent_scope)
+      VALUES (100, 100, '2026-05-23', 9, 'left knee', '[]', 'structured_intake', 'pain')
     `).run();
     const result = await req('GET', '/api/v1/training/plans/1/coach-analysis?weekIndex=0');
     expect(result.status).toBe(200);
@@ -866,8 +879,8 @@ describe('R3 P1 — A4 hard-pause via structured intake', () => {
   it('wearable-inferred high pain stays warning-only and does not pause training', async () => {
     testDb.prepare(`
       INSERT INTO athlete_health_signals
-        (user_id, date, pain_score, pain_location, illness_symptoms_json, source, consent_scope)
-      VALUES (100, '2026-05-23', 9, 'chest', '[]', 'wearable', 'pain')
+        (user_id, tenant_id, date, pain_score, pain_location, illness_symptoms_json, source, consent_scope)
+      VALUES (100, 100, '2026-05-23', 9, 'chest', '[]', 'wearable', 'pain')
     `).run();
     const result = await req('GET', '/api/v1/training/plans/1/coach-analysis?weekIndex=0');
     expect(result.status).toBe(200);
@@ -884,9 +897,10 @@ describe('R3 P1 — A4 hard-pause via structured intake', () => {
     expect(result.status).toBe(201);
     expect(result.json?.data?.id).toBeGreaterThan(0);
     const row = testDb.prepare(
-      'SELECT source FROM athlete_health_signals WHERE id = ?',
-    ).get(result.json.data.id) as { source: string };
+      'SELECT source, tenant_id FROM athlete_health_signals WHERE id = ?',
+    ).get(result.json.data.id) as { source: string; tenant_id: number };
     expect(row.source).toBe('structured_intake');
+    expect(row.tenant_id).toBe(100);
   });
 
   it('POST /health-intake/red-flag rejects empty consentScope with 400', async () => {
@@ -982,8 +996,8 @@ describe('R3 P1 — A4 hard-pause via structured intake', () => {
   it('R4 P1 — fainting-only structured intake → pause_training', async () => {
     testDb.prepare(`
       INSERT INTO athlete_health_signals
-        (user_id, date, illness_symptoms_json, source, consent_scope)
-      VALUES (100, '2026-05-23', '["fainting"]', 'structured_intake', 'illness')
+        (user_id, tenant_id, date, illness_symptoms_json, source, consent_scope)
+      VALUES (100, 100, '2026-05-23', '["fainting"]', 'structured_intake', 'illness')
     `).run();
     const result = await req('GET', '/api/v1/training/plans/1/coach-analysis?weekIndex=0');
     expect(result.status).toBe(200);
@@ -997,8 +1011,8 @@ describe('R3 P1 — A4 hard-pause via structured intake', () => {
   it('R4 P1 — acute_injury structured intake → pause_training (no pain score required)', async () => {
     testDb.prepare(`
       INSERT INTO athlete_health_signals
-        (user_id, date, injury_status, source, consent_scope)
-      VALUES (100, '2026-05-23', 'acute', 'structured_intake', 'injury')
+        (user_id, tenant_id, date, injury_status, source, consent_scope)
+      VALUES (100, 100, '2026-05-23', 'acute', 'structured_intake', 'injury')
     `).run();
     const result = await req('GET', '/api/v1/training/plans/1/coach-analysis?weekIndex=0');
     expect(result.status).toBe(200);
@@ -1011,8 +1025,8 @@ describe('R3 P1 — A4 hard-pause via structured intake', () => {
   it('R4 P1 — severe_dizziness-only structured intake → pause_training', async () => {
     testDb.prepare(`
       INSERT INTO athlete_health_signals
-        (user_id, date, illness_symptoms_json, source, consent_scope)
-      VALUES (100, '2026-05-23', '["severe_dizziness"]', 'structured_intake', 'illness')
+        (user_id, tenant_id, date, illness_symptoms_json, source, consent_scope)
+      VALUES (100, 100, '2026-05-23', '["severe_dizziness"]', 'structured_intake', 'illness')
     `).run();
     const result = await req('GET', '/api/v1/training/plans/1/coach-analysis?weekIndex=0');
     const pause = (result.json?.data?.scenario?.actions ?? []).find(
@@ -1024,8 +1038,8 @@ describe('R3 P1 — A4 hard-pause via structured intake', () => {
   it('R4 P1 — INFERRED source (e.g., wearable) does NOT emit hard pause for same symptoms', async () => {
     testDb.prepare(`
       INSERT INTO athlete_health_signals
-        (user_id, date, illness_symptoms_json, source, consent_scope)
-      VALUES (100, '2026-05-23', '["chest_pain"]', 'wearable', 'illness')
+        (user_id, tenant_id, date, illness_symptoms_json, source, consent_scope)
+      VALUES (100, 100, '2026-05-23', '["chest_pain"]', 'wearable', 'illness')
     `).run();
     const result = await req('GET', '/api/v1/training/plans/1/coach-analysis?weekIndex=0');
     const pause = (result.json?.data?.scenario?.actions ?? []).find(

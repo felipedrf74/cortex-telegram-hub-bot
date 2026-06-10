@@ -659,6 +659,18 @@ export const config = {
     // <25%. When OFF, the new routes return 404 — the legacy
     // training endpoints remain fully functional.
     periodizationV2Enabled: process.env.COACH_PERIODIZATION_V2_ENABLED === 'on',
+    trainingSafetyGuardrailsEnabled: process.env.TRAINING_SAFETY_GUARDRAILS_ENABLED === 'on',
+    trainingSafetyHealthSignalMaxAgeDays: optionalInt('TRAINING_SAFETY_HEALTH_SIGNAL_MAX_AGE_DAYS', 14, {
+      min: 1,
+      max: 90,
+    }),
+    coachKernelEquipmentAuthorityEnabled: process.env.COACH_KERNEL_EQUIPMENT_AUTHORITY_ENABLED === 'on',
+    coachKernelEquipmentAuthorityShadowEnabled: process.env.COACH_KERNEL_EQUIPMENT_AUTHORITY_SHADOW_ENABLED === 'on',
+    trainingCatalogDbEnabled: process.env.TRAINING_CATALOG_DB_ENABLED === 'on',
+    trainingCompletionFeedbackV2Enabled: process.env.TRAINING_COMPLETION_FEEDBACK_V2_ENABLED !== 'off',
+    trainingSelectorPolicyV2Enabled: process.env.TRAINING_SELECTOR_POLICY_V2_ENABLED === 'on',
+    trainingEnduranceCoherenceV2Enabled: process.env.TRAINING_ENDURANCE_COHERENCE_V2_ENABLED === 'on',
+    trainingCalendarCapacityKernelEnabled: process.env.TRAINING_CALENDAR_CAPACITY_KERNEL_ENABLED === 'on',
   },
   // ── Apple Push Notification Service (APNs) ────────────────────────
   // Token-based auth only (modern .p8 approach). All four env vars must

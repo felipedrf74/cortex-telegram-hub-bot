@@ -1,5 +1,6 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
+import { DateTime } from 'luxon';
 import type { NotificationSourceSkill, NotificationIntentType } from './notification-orchestrator';
 
 /**
@@ -74,13 +75,26 @@ export function buildDecisionDedupKey(input: {
   relatedEntityId: string | null;
   dedupeKey: string | null;
   createdAt: string;
+  timezone?: string | null;
 }): DecisionDedupKey {
   const normalizedIntent = `${input.sourceSkill}:${input.type}`;
   const segments = (input.dedupeKey ?? '').split(':');
   const decisionRecipe = segments.length >= 2 && segments[0] && segments[1] ? `${segments[0]}:${segments[1]}` : normalizedIntent;
   const targetEntityIds = input.relatedEntityId ? [String(input.relatedEntityId)] : [];
-  const timeWindow = input.createdAt.slice(0, 10);
+  const timeWindow = localDateWindow(input.createdAt, input.timezone);
   return { sourceSkill: input.sourceSkill, decisionRecipe, targetEntityIds, timeWindow, normalizedIntent };
+}
+
+function localDateWindow(createdAt: string, timezone?: string | null): string {
+  const zone = timezone || 'UTC';
+  const parsed = createdAt.includes('T')
+    ? DateTime.fromISO(createdAt, { zone: 'utc' })
+    : DateTime.fromSQL(createdAt, { zone: 'utc' });
+  if (parsed.isValid) {
+    const zoned = parsed.setZone(zone);
+    if (zoned.isValid) return zoned.toISODate() ?? createdAt.slice(0, 10);
+  }
+  return createdAt.slice(0, 10);
 }
 
 function intentTypeOf(key: DecisionDedupKey): string {

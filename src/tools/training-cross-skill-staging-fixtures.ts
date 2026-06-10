@@ -97,7 +97,7 @@ function cleanupFixtures(userId: number): Pick<FixtureReport, 'financeRowsRemove
 
   const planIdsRemoved: number[] = [];
   for (const planId of planIds) {
-    const result = deletePlanHard(planId, userId);
+    const result = deletePlanHard(planId, userId, userId);
     if (result.ok) planIdsRemoved.push(planId);
   }
 
@@ -129,6 +129,7 @@ function seedFixtures(userId: number): Pick<
 
   const plan = createPlan({
     user_id: userId,
+    tenant_id: userId,
     name: `${FIXTURE_PREFIX} Hybrid milestone proof`,
     sport: 'aaa-cross-skill-smoke',
     goal: 'prove Training can expose cross-skill staging signals',

@@ -1,6 +1,6 @@
 {
   "name": "@nexushub/core",
-  "version": "4.14.205",
+  "version": "4.14.208",
   "description": "Nexus Hub — AI-powered creator operating system with multi-domain routing",
   "main": "dist/index.js",
   "scripts": {
@@ -33,6 +33,7 @@
     "fiscal:storage:backfill": "node dist/tools/invoice-object-storage-backfill.js",
     "docs:audit": "node scripts/audit-docs.mjs",
     "science-policy:check": "node scripts/ci/science-policy-version-check.mjs",
+    "training:catalog:seed": "npx tsx scripts/seed-training-catalog.ts",
     "lint": "npm run typecheck",
     "verify": "npm run typecheck && npm run science-policy:check && npm run test",
     "release:prep": "scripts/release-prep.sh",

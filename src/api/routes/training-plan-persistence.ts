@@ -16,6 +16,7 @@ import {
   type SecretarySchedulingDecision,
   type SecretarySchedulingIntent,
 } from '../../services/secretary-scheduling-arbitrator';
+import { loadLiveCalendarBusyWindowsForSecretaryIntent } from '../../services/secretary-live-calendar-busy';
 import {
   appendTrainingIdentityMarker,
   buildTrainingSessionIdentityKey,
@@ -30,8 +31,10 @@ import {
   type PlanLintWeek,
   type PlanLintResult,
 } from '../../services/coach-kernel/plan-linter';
+import type { TrainingDecisionReason } from '../../services/coach-kernel/types';
 import { logger } from '../../utils/logger';
 import { withTrainingCalendarOperationLock } from '../../services/training-operation-locks';
+import { requireTenantIdParam } from '../../services/tenant-scope';
 import {
   preferredTimeForSessionType,
   scheduleSessionWindow,
@@ -45,6 +48,7 @@ import {
   inferTrainingSessionIsLongRun,
   inferTrainingSessionIsLowerHeavy,
 } from '../../services/training-session-classification';
+import { incrementTrainingGenerationCounter } from '../../services/training-generation-observability';
 
 const DAY_NAMES = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'];
 
@@ -71,6 +75,17 @@ type GeneratedTrainingSession = {
   scheduleState?: string;
   scheduleAdjustments?: string[];
   scheduleReason?: string;
+  decisionReasons?: TrainingDecisionReason[];
+  sessionRole?: string;
+  sessionRoleLabel?: string;
+  sessionRoleSummary?: string;
+  keySessionLabel?: string;
+  scheduleFinalizedBy?: string;
+  finalizedScheduledStart?: string;
+  finalizedScheduledEnd?: string;
+  finalizedPreferredTimeUnavailable?: boolean;
+  intensitySummary?: SessionDescriptionInput['session']['intensitySummary'];
+  intensityProfile?: Record<string, unknown>;
 };
 
 type PersistableSessionScheduleState =
@@ -96,9 +111,11 @@ const INACTIVE_SCHEDULE_STATES = new Set<PersistableSessionScheduleState>([
   'dropped',
 ]);
 
+const PRE_PERSIST_SCHEDULE_FINALIZER_VERSION = 'training_pre_persist_schedule_finalizer_v1';
+
 export interface PersistGeneratedTrainingPlanInput {
   userId: number;
-  tenantId?: number;
+  tenantId: number;
   objective: string;
   durationWeeks: number;
   startDate: string;
@@ -153,22 +170,49 @@ export interface PersistGeneratedTrainingPlanResult {
 }
 
 /**
+ * Pure schedule finalizer for the app-facing plan generation route.
+ * Persistence must not be the first place session placement is decided:
+ * final validation needs to see the exact schedule/status shape that will
+ * be written. This helper computes the same deterministic scheduling
+ * decisions formerly made inside the write loop, annotates a cloned plan,
+ * and leaves DB rows untouched.
+ */
+export function finalizeGeneratedTrainingPlanForPersistence(
+  input: PersistGeneratedTrainingPlanInput,
+): PersistGeneratedTrainingPlanInput {
+  if (isPlanScheduleFinalized(input.planData)) return input;
+
+  const scheduledWindows: BusyWindow[] = [];
+  const planData: GeneratedTrainingPlan = {
+    ...input.planData,
+    weeks: (input.planData.weeks ?? []).map((weekData) => ({
+      ...weekData,
+      sessions: (weekData.sessions ?? []).map((sessionData) => finalizeGeneratedTrainingSessionSchedule({
+        input,
+        weekData,
+        sessionData,
+        scheduledWindows,
+      })),
+    })),
+  };
+  return { ...input, planData };
+}
+
+/**
  * Strict, write-free Training quality gate for the app-facing plan
  * generation route. This reuses the canonical plan-linter + the same
- * generated-plan-to-lint-week mapper as persistence, but deliberately
- * supplies no calendar event rows because no sessions/events have been
- * written yet. Schedule-date-only checks still run in the post-persist
- * defense-in-depth pass; structural blockers such as missing race date,
- * impossible equipment, and heavy-lower-before-long-run are caught before
- * any old plan is cancelled or any new plan is persisted.
+ * generated-plan-to-lint-week mapper as persistence, and now validates
+ * the finalized deterministic schedule before any old plan is cancelled
+ * or any new plan row is persisted.
  */
 export function lintGeneratedTrainingPlanPreflight(
   input: PersistGeneratedTrainingPlanInput,
 ): PlanLintResult {
+  const finalizedInput = finalizeGeneratedTrainingPlanForPersistence(input);
   return runPlanLintGuarded({
-    input,
-    weeks: input.planData.weeks ?? [],
-    calendarEvents: [],
+    input: finalizedInput,
+    weeks: finalizedInput.planData.weeks ?? [],
+    calendarEvents: collectFinalizedCalendarEventsForLint(finalizedInput.planData),
     mode: 'strict_preflight',
   });
 }
@@ -176,22 +220,26 @@ export function lintGeneratedTrainingPlanPreflight(
 export async function persistGeneratedTrainingPlan(
   input: PersistGeneratedTrainingPlanInput,
 ): Promise<PersistGeneratedTrainingPlanResult> {
+  const tenantId = requireTenantIdParam(input.tenantId, 'persistGeneratedTrainingPlan');
+  const finalizedInput = finalizeGeneratedTrainingPlanForPersistence(input);
   return withTrainingCalendarOperationLock(
     {
-      userId: input.userId,
-      tenantId: input.tenantId ?? input.userId,
+      userId: finalizedInput.userId,
+      tenantId,
       operation: 'calendar_generate',
     },
-    () => persistGeneratedTrainingPlanLocked(input),
+    () => persistGeneratedTrainingPlanLocked(finalizedInput),
   );
 }
 
 async function persistGeneratedTrainingPlanLocked(
   input: PersistGeneratedTrainingPlanInput,
 ): Promise<PersistGeneratedTrainingPlanResult> {
-  const tenantId = input.tenantId ?? input.userId;
+  const tenantId = requireTenantIdParam(input.tenantId, 'persistGeneratedTrainingPlanLocked');
+  const preferencesJson = appendSelectorSupportDebugTraces(input.preferencesJson, input.planData, input.now);
   const plan = trainingPlans.createPlan({
     user_id: input.userId,
+    tenant_id: tenantId,
     name: input.planData.planName || `${input.objective} Plan`,
     sport: input.planData.sport || 'hybrid',
     goal: input.objective,
@@ -199,7 +247,7 @@ async function persistGeneratedTrainingPlanLocked(
     periodization: input.planData.periodization || 'undulating',
     start_date: input.startDate,
     end_date: input.endDate,
-    preferences_json: input.preferencesJson,
+    preferences_json: preferencesJson,
   });
 
   let totalSessions = 0;
@@ -212,8 +260,6 @@ async function persistGeneratedTrainingPlanLocked(
     end: string;
     description: string;
   }> = [];
-  const scheduledWindows: BusyWindow[] = [];
-
   for (const weekData of input.planData.weeks || []) {
     const sessionOrdinals = new Map<string, number>();
     const week = trainingPlans.createWeek({
@@ -232,6 +278,7 @@ async function persistGeneratedTrainingPlanLocked(
       if (dayIndex < 0) continue;
 
       const durationMinutes = sessionData.durationMinutes ?? (explicitInactiveState ? 0 : 60);
+      const persistedExercises = stripSupportDebugExerciseFields(sessionData.exercises || []);
 
       const richDescription = buildRichSessionDescription(
         buildSessionDescriptionInput({
@@ -260,11 +307,28 @@ async function persistGeneratedTrainingPlanLocked(
         title: sessionData.title || 'Training session',
         durationMinutes,
         intensityText,
-        exercises: sessionData.exercises || [],
+        exercises: persistedExercises,
         descriptionSections: richDescription.sections,
       });
 
       if (explicitInactiveState) {
+        if (
+          explicitInactiveState === 'unscheduled'
+          && sessionData.finalizedPreferredTimeUnavailable === true
+        ) {
+          logger.warn(
+            {
+              userId: input.userId,
+              tenantId,
+              planId: plan.id,
+              weekNumber: weekData.weekNumber || 1,
+              dayOfWeek: sessionData.dayOfWeek || '',
+              sessionType: sessionData.sessionType || 'training',
+              reasonCode: 'finalized_schedule_unavailable',
+            },
+            'persistGeneratedTrainingPlan: no calendar slot was available for finalized unscheduled session',
+          );
+        }
         trainingPlans.createSession({
           week_id: week.id,
           plan_id: plan.id,
@@ -273,7 +337,7 @@ async function persistGeneratedTrainingPlanLocked(
           title: sessionData.title || 'Training session',
           description: appendScheduleReason(richDescription.text, sessionData.scheduleReason),
           description_json: JSON.stringify(richDescription.sections),
-          exercises_json: JSON.stringify(sessionData.exercises || []),
+          exercises_json: JSON.stringify(persistedExercises),
           duration_minutes: durationMinutes,
           intensity_text: intensityText,
           session_identity_key: sessionIdentityKey,
@@ -287,33 +351,18 @@ async function persistGeneratedTrainingPlanLocked(
       const activeScheduleState = activeScheduleStateFor(sessionData);
       const activeDescription = appendScheduleReason(richDescription.text, sessionData.scheduleReason);
 
-      const scheduledWindow = scheduleSessionForPlan({
-        weekNumber: weekData.weekNumber || 1,
-        dayIndex,
-        planStartDate: input.startDate,
-        now: input.now,
-        durationMinutes,
-        sessionType: sessionData.sessionType || '',
-        preferredStartTime: sessionData.preferredStartTime,
-        normalizedPreferredTime: input.normalizedPreferredTime,
-        normalizedPreferredCardioTime: input.normalizedPreferredCardioTime,
-        normalizedPreferredStrengthTime: input.normalizedPreferredStrengthTime,
-        busyWindows: input.busyWindows,
-        scheduledWindows,
-        title: sessionData.title || 'Training session',
-      });
-      if (scheduledWindow.noAvailableSlot) {
-        const reason = scheduledWindow.unavailableReason
-          ?? 'No valid calendar slot remained for this session.';
+      const finalizedWindow = finalizedScheduleWindowForSession(sessionData);
+      if (!finalizedWindow) {
+        const reason = 'No finalized Training schedule slot was available before persistence.';
         trainingPlans.createSession({
           week_id: week.id,
           plan_id: plan.id,
           day_of_week: sessionData.dayOfWeek || '',
           session_type: sessionData.sessionType || 'training',
           title: sessionData.title || 'Training session',
-          description: appendScheduleReason(richDescription.text, reason),
+          description: appendScheduleReason(activeDescription, reason),
           description_json: JSON.stringify(richDescription.sections),
-          exercises_json: JSON.stringify(sessionData.exercises || []),
+          exercises_json: JSON.stringify(persistedExercises),
           duration_minutes: durationMinutes,
           intensity_text: intensityText,
           session_identity_key: sessionIdentityKey,
@@ -328,9 +377,9 @@ async function persistGeneratedTrainingPlanLocked(
             weekNumber: weekData.weekNumber || 1,
             dayOfWeek: sessionData.dayOfWeek || '',
             sessionType: sessionData.sessionType || 'training',
-            reasonCode: 'no_available_slot',
+            reasonCode: 'missing_finalized_schedule_slot',
           },
-          'persistGeneratedTrainingPlan: session persisted as unscheduled because no calendar slot was available',
+          'persistGeneratedTrainingPlan: session persisted as unscheduled because final schedule slot was missing',
         );
         continue;
       }
@@ -343,12 +392,12 @@ async function persistGeneratedTrainingPlanLocked(
         title: sessionData.title || 'Training session',
         description: activeDescription,
         description_json: JSON.stringify(richDescription.sections),
-        exercises_json: JSON.stringify(sessionData.exercises || []),
+        exercises_json: JSON.stringify(persistedExercises),
         duration_minutes: durationMinutes,
         intensity_text: intensityText,
         session_identity_key: sessionIdentityKey,
         session_shape_hash: sessionShapeHash,
-        preferred_time_unavailable: scheduledWindow.preferredTimeUnavailable,
+        preferred_time_unavailable: finalizedWindow.preferredTimeUnavailable,
         status: activeScheduleState,
       });
 
@@ -357,8 +406,8 @@ async function persistGeneratedTrainingPlanLocked(
         sessionIdentityKey,
         sessionShapeHash,
         title: `${emojiForTrainingSession(sessionData.sessionType)} ${sessionData.title || 'Training session'} (${durationMinutes}min)`,
-        start: scheduledWindow.start.toISOString(),
-        end: scheduledWindow.end.toISOString(),
+        start: finalizedWindow.start.toISOString(),
+        end: finalizedWindow.end.toISOString(),
         description: appendTrainingIdentityMarker(activeDescription, {
           planId: plan.id,
           planVersion: getPlanVersion(plan.id) ?? 1,
@@ -399,15 +448,23 @@ async function persistGeneratedTrainingPlanLocked(
       return 'already_owned';
     }
     try {
+      const secretaryIntent = buildTrainingSecretaryIntent({
+        userId: input.userId,
+        tenantId,
+        planId: plan.id,
+        planVersion: planVersionForOwnership,
+        eventPayload,
+      });
+      const liveBusyWindows = await loadLiveCalendarBusyWindowsForSecretaryIntent(secretaryIntent);
+      if (liveBusyWindows.degraded) {
+        throw new Error('TRAINING_SECRETARY_LIVE_BUSY_WINDOWS_DEGRADED');
+      }
       const secretaryDecision = submitSecretarySchedulingIntent(
-        buildTrainingSecretaryIntent({
-          userId: input.userId,
-          tenantId,
-          planId: plan.id,
-          planVersion: planVersionForOwnership,
-          eventPayload,
-        }),
-        { now: input.now.toISOString() },
+        secretaryIntent,
+        {
+          now: input.now.toISOString(),
+          additionalBusyWindows: liveBusyWindows.windows,
+        },
       );
       const selectedWindow = selectedTrainingSecretaryWindow(secretaryDecision, { notBefore: input.now });
       if (!selectedWindow) {
@@ -504,18 +561,27 @@ async function persistGeneratedTrainingPlanLocked(
     );
   }
 
-  // training-expert-coach-knowledge-engine (2026-05-03):
+  // training-expert-coach-knowledge-engine (2026-06-09):
   // Plan-level deterministic lint. The app-facing generation route now
-  // runs a strict, write-free preflight before cancellation/persistence.
-  // This post-persist pass remains defense-in-depth/advisor mode so it
-  // can validate final scheduled dates and surface any residual findings
-  // without throwing after rows have already been written.
+  // finalizes deterministic session placement before the strict,
+  // write-free preflight. This post-persist pass remains defense-in-depth
+  // and should match the preflight shape unless an external calendar write
+  // fails or provider/Secretary availability changes after persistence.
   const lint = runPlanLintGuarded({
     input,
     planId: plan.id,
     weeks: input.planData.weeks ?? [],
     calendarEvents,
     mode: 'advisor',
+  });
+  if (lint.status === 'fail') {
+    incrementTrainingGenerationCounter('final_validation_failure_total');
+  }
+  persistPlanValidationSummary({
+    planId: plan.id,
+    preferencesJson,
+    lint,
+    now: input.now,
   });
 
   return {
@@ -530,6 +596,197 @@ async function persistGeneratedTrainingPlanLocked(
     })),
     lint,
   };
+}
+
+function isPlanScheduleFinalized(planData: GeneratedTrainingPlan): boolean {
+  const sessions = (planData.weeks ?? []).flatMap((week) => week.sessions ?? []);
+  if (sessions.length === 0) return false;
+  return sessions.every((session) => session.scheduleFinalizedBy === PRE_PERSIST_SCHEDULE_FINALIZER_VERSION);
+}
+
+function finalizeGeneratedTrainingSessionSchedule(args: {
+  input: PersistGeneratedTrainingPlanInput;
+  weekData: NonNullable<GeneratedTrainingPlan['weeks']>[number];
+  sessionData: GeneratedTrainingSession;
+  scheduledWindows: BusyWindow[];
+}): GeneratedTrainingSession {
+  const { input, weekData, sessionData } = args;
+  const base: GeneratedTrainingSession = {
+    ...sessionData,
+    scheduleAdjustments: sessionData.scheduleAdjustments ? [...sessionData.scheduleAdjustments] : undefined,
+    exercises: sessionData.exercises ? [...sessionData.exercises] : undefined,
+    decisionReasons: sessionData.decisionReasons ? [...sessionData.decisionReasons] : undefined,
+    scheduleFinalizedBy: PRE_PERSIST_SCHEDULE_FINALIZER_VERSION,
+  };
+  if (inactiveScheduleState(base) || isStandaloneRestOrMobilitySession(base)) {
+    return base;
+  }
+
+  const dayIndex = DAY_NAMES.indexOf(base.dayOfWeek?.toLowerCase() || '');
+  if (dayIndex < 0) return base;
+  const durationMinutes = base.durationMinutes ?? 60;
+  const scheduledWindow = scheduleSessionForPlan({
+    weekNumber: weekData.weekNumber || 1,
+    dayIndex,
+    planStartDate: input.startDate,
+    now: input.now,
+    durationMinutes,
+    sessionType: base.sessionType || '',
+    preferredStartTime: base.preferredStartTime,
+    normalizedPreferredTime: input.normalizedPreferredTime,
+    normalizedPreferredCardioTime: input.normalizedPreferredCardioTime,
+    normalizedPreferredStrengthTime: input.normalizedPreferredStrengthTime,
+    busyWindows: input.busyWindows,
+    scheduledWindows: args.scheduledWindows,
+    title: base.title || 'Training session',
+  });
+
+  if (scheduledWindow.noAvailableSlot) {
+    return {
+      ...base,
+      scheduleState: 'unscheduled',
+      scheduleReason: joinScheduleReasons(
+        base.scheduleReason,
+        scheduledWindow.unavailableReason ?? 'No valid calendar slot remained for this session.',
+      ),
+      finalizedPreferredTimeUnavailable: true,
+    };
+  }
+
+  return {
+    ...base,
+    scheduleState: activeScheduleStateFor(base),
+    finalizedScheduledStart: scheduledWindow.start.toISOString(),
+    finalizedScheduledEnd: scheduledWindow.end.toISOString(),
+    finalizedPreferredTimeUnavailable: scheduledWindow.preferredTimeUnavailable,
+  };
+}
+
+function finalizedScheduleWindowForSession(session: GeneratedTrainingSession): {
+  start: Date;
+  end: Date;
+  preferredTimeUnavailable: boolean;
+} | null {
+  const startMs = Date.parse(String(session.finalizedScheduledStart || ''));
+  const endMs = Date.parse(String(session.finalizedScheduledEnd || ''));
+  if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs <= startMs) return null;
+  return {
+    start: new Date(startMs),
+    end: new Date(endMs),
+    preferredTimeUnavailable: session.finalizedPreferredTimeUnavailable === true,
+  };
+}
+
+function collectFinalizedCalendarEventsForLint(
+  planData: GeneratedTrainingPlan,
+): ReadonlyArray<{ sessionId: number; start: string; sessionIdentityKey: string }> {
+  const events: Array<{ sessionId: number; start: string; sessionIdentityKey: string }> = [];
+  for (const week of planData.weeks ?? []) {
+    for (const session of week.sessions ?? []) {
+      if (inactiveScheduleState(session) || isStandaloneRestOrMobilitySession(session)) continue;
+      const state = activeScheduleStateFor(session);
+      if (!ACTIVE_SCHEDULE_STATES.has(state)) continue;
+      if (!session.finalizedScheduledStart) continue;
+      events.push({
+        sessionId: 0,
+        start: session.finalizedScheduledStart,
+        sessionIdentityKey: '',
+      });
+    }
+  }
+  return events;
+}
+
+function joinScheduleReasons(...reasons: Array<string | null | undefined>): string | undefined {
+  const unique = Array.from(new Set(
+    reasons
+      .map((reason) => String(reason || '').trim())
+      .filter(Boolean),
+  ));
+  return unique.length > 0 ? unique.join(' ') : undefined;
+}
+
+function appendSelectorSupportDebugTraces(
+  preferencesJson: string,
+  planData: GeneratedTrainingPlan,
+  now: Date,
+): string {
+  const selectorTraces: Array<Record<string, unknown>> = [];
+  for (const week of planData.weeks ?? []) {
+    for (const session of week.sessions ?? []) {
+      for (const exercise of session.exercises ?? []) {
+        const trace = exercise?.selectorTrace;
+        if (!trace || typeof trace !== 'object' || Array.isArray(trace)) continue;
+        selectorTraces.push({
+          weekNumber: week.weekNumber ?? null,
+          dayOfWeek: session.dayOfWeek ?? null,
+          sessionType: session.sessionType ?? null,
+          sessionTitle: session.title ?? null,
+          exerciseId: typeof exercise.exerciseId === 'string' ? exercise.exerciseId : null,
+          selectorTrace: trace,
+        });
+      }
+    }
+  }
+  if (selectorTraces.length === 0) return preferencesJson;
+
+  try {
+    const parsed = JSON.parse(preferencesJson) as unknown;
+    const preferences = parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : {};
+    preferences.trainingSelectorSupportDebug = {
+      presentationLevel: 'support_debug',
+      schemaVersion: 1,
+      capturedAt: now.toISOString(),
+      traces: selectorTraces,
+    };
+    return JSON.stringify(preferences);
+  } catch {
+    return JSON.stringify({
+      trainingSelectorSupportDebug: {
+        presentationLevel: 'support_debug',
+        schemaVersion: 1,
+        capturedAt: now.toISOString(),
+        traces: selectorTraces,
+      },
+    });
+  }
+}
+
+function stripSupportDebugExerciseFields(
+  exercises: Array<Record<string, any>>,
+): Array<Record<string, any>> {
+  return exercises.map((exercise) => {
+    const { selectorTrace: _selectorTrace, ...userSafeExercise } = exercise;
+    return userSafeExercise;
+  });
+}
+
+function persistPlanValidationSummary(input: {
+  planId: number;
+  preferencesJson: string;
+  lint: PlanLintResult;
+  now: Date;
+}): void {
+  try {
+    const parsed = JSON.parse(input.preferencesJson) as unknown;
+    const preferences = parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : {};
+    preferences.finalValidationResult = {
+      status: input.lint.status,
+      blockerRuleIds: input.lint.blockers.map((finding) => finding.ruleId),
+      warningRuleIds: input.lint.warnings.map((finding) => finding.ruleId),
+      validatedAt: input.now.toISOString(),
+    };
+    trainingPlans.updatePlanPreferences(input.planId, JSON.stringify(preferences));
+  } catch (err) {
+    logger.warn(
+      { err, planId: input.planId },
+      'persistGeneratedTrainingPlan: failed to persist compact final validation summary',
+    );
+  }
 }
 
 function buildPlanLintWeeks(
@@ -550,6 +807,7 @@ function buildPlanLintWeek(
 ): PlanLintWeek {
   const sessions: PlanLintSession[] = [];
   for (const sessionData of weekData.sessions ?? []) {
+    if (!inactiveScheduleState(sessionData) && isStandaloneRestOrMobilitySession(sessionData)) continue;
     const dayOfWeek = String(sessionData.dayOfWeek || '').toLowerCase();
     if (!dayOfWeek) continue;
     const sessionType = String(sessionData.sessionType || '').toLowerCase();
@@ -1071,6 +1329,12 @@ function buildSessionDescriptionInput(args: {
       description: sessionData.description,
       exercises: sessionData.exercises,
       dayOfWeek: sessionData.dayOfWeek || 'Monday',
+      sessionRole: sessionData.sessionRole,
+      sessionRoleLabel: sessionData.sessionRoleLabel,
+      sessionRoleSummary: sessionData.sessionRoleSummary,
+      keySessionLabel: sessionData.keySessionLabel,
+      intensitySummary: sessionData.intensitySummary,
+      decisionReasons: sessionData.decisionReasons,
     },
     profiles: input.athleteProfiles,
   };

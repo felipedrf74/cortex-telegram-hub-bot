@@ -9,6 +9,7 @@ interface CachedRouteRefreshContext {
   source: string;
   operation: string;
   userId?: number;
+  tenantId?: number;
 }
 
 interface CachedRouteHit<T> {

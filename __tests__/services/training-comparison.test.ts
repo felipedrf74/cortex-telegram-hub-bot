@@ -74,6 +74,7 @@ function seedPlanWithSessions(userId: number): { planId: number; weekId: number 
 
   const plan = createPlan({
     user_id: userId,
+    tenant_id: userId,
     name: 'Test Plan',
     sport: 'gym',
     duration_weeks: 4,

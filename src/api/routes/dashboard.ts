@@ -108,19 +108,20 @@ export function dashboardRoutes(): Router {
   const router = Router();
 
   router.get('/home', async (req: Request, res: Response) => {
-    const { userId } = req as AuthenticatedRequest;
+    const { userId, tenantId } = req as AuthenticatedRequest;
+    const scopedTenantId = effectiveDashboardTenantId(userId, tenantId);
     if (!ensureCachedRouteTenantScope(res, userId, 'dashboard_route_home')) return;
     const language = resolveDashboardLanguage(req, userId);
 
     try {
-      const cacheKey = dashboardHomeCacheKeyFor(userId, language);
+      const cacheKey = dashboardHomeCacheKeyFor(userId, scopedTenantId, language);
       const timings: RouteTiming[] = [];
       await handleCachedRoute<any>({
         cacheKey,
         ttlSeconds: DASHBOARD_HOME_CACHE_TTL,
         staleSeconds: DASHBOARD_HOME_SWR_STALE,
         refreshContext: { source: 'dashboard_route', operation: 'dashboard_swr_refresh', userId },
-        fetchFresh: () => buildDashboardHomePayload(userId, language, timings),
+        fetchFresh: () => buildDashboardHomePayload(userId, scopedTenantId, language, timings),
         send: (home, meta) => {
           sendConditionalApiSuccess(res, req, sanitizeDashboardPayloadForClient(home), {
             cached: meta.cached,
@@ -141,19 +142,20 @@ export function dashboardRoutes(): Router {
    * All external calls are parallel via Promise.allSettled (never sequential).
    */
   router.get('/', async (req: Request, res: Response) => {
-    const { userId } = req as AuthenticatedRequest;
+    const { userId, tenantId } = req as AuthenticatedRequest;
+    const scopedTenantId = effectiveDashboardTenantId(userId, tenantId);
     if (!ensureCachedRouteTenantScope(res, userId, 'dashboard_route_root')) return;
     const language = resolveDashboardLanguage(req, userId);
 
     try {
-      const dashboardCacheKey = dashboardCacheKeyFor(userId, language);
+      const dashboardCacheKey = dashboardCacheKeyFor(userId, scopedTenantId, language);
       const timings: RouteTiming[] = [];
       await handleCachedRoute<any>({
         cacheKey: dashboardCacheKey,
         ttlSeconds: DASHBOARD_CACHE_TTL,
         staleSeconds: DASHBOARD_SWR_STALE,
         refreshContext: { source: 'dashboard_route', operation: 'dashboard_swr_refresh', userId },
-        fetchFresh: () => buildDashboardPayload(userId, language, timings),
+        fetchFresh: () => buildDashboardPayload(userId, scopedTenantId, language, timings),
         shouldServeCached: shouldServeDashboardCache,
         send: (dashboard, meta) => {
           sendConditionalApiSuccess(res, req, sanitizeDashboardPayloadForClient(dashboard), {
@@ -177,11 +179,11 @@ export function dashboardRoutes(): Router {
  */
 export async function warmDashboardCache(userId: number): Promise<void> {
   const language = getUserLanguageById(userId);
-  const cacheKey = dashboardCacheKeyFor(userId, language);
+  const cacheKey = dashboardCacheKeyFor(userId, userId, language);
   if (getCachedSWR(cacheKey)?.fresh) return; // Already warm enough
 
   try {
-    const response = await buildDashboardPayload(userId, language);
+    const response = await buildDashboardPayload(userId, userId, language);
     setCacheSWR(cacheKey, response, DASHBOARD_CACHE_TTL, DASHBOARD_SWR_STALE);
     logger.debug('Dashboard cache warmed');
   } catch (err) {
@@ -189,12 +191,12 @@ export async function warmDashboardCache(userId: number): Promise<void> {
   }
 }
 
-function dashboardCacheKeyFor(userId: number, language: Lang): string {
-  return routeCacheKey('dashboard', userId, language);
+function dashboardCacheKeyFor(userId: number, tenantId: number, language: Lang): string {
+  return routeCacheKey('dashboard', tenantId, userId, language);
 }
 
-function dashboardHomeCacheKeyFor(userId: number, language: Lang): string {
-  return routeCacheKey('dashboard-home', userId, language);
+function dashboardHomeCacheKeyFor(userId: number, tenantId: number, language: Lang): string {
+  return routeCacheKey('dashboard-home', tenantId, userId, language);
 }
 
 function shouldServeDashboardCache(hit: { value: any; fresh: boolean }): boolean {
@@ -258,11 +260,15 @@ function localizedWeekday(date: Date, language: Lang): string {
   return weekday.charAt(0).toUpperCase() + weekday.slice(1);
 }
 
-async function buildDashboardPayload(userId: number, language: Lang, timings: RouteTiming[] = []) {
+function effectiveDashboardTenantId(userId: number, tenantId: unknown): number {
+  return typeof tenantId === 'number' && Number.isSafeInteger(tenantId) && tenantId > 0 ? tenantId : userId;
+}
+
+async function buildDashboardPayload(userId: number, tenantId: number, language: Lang, timings: RouteTiming[] = []) {
   const [calendarResult, tasksResult, trainingResult, contentResult] = await Promise.allSettled([
-    timedAsync(timings, 'calendar', () => withDashboardTimeout(fetchCalendar(userId), DASHBOARD_SECTION_TIMEOUT_MS, 'calendar')),
+    timedAsync(timings, 'calendar', () => withDashboardTimeout(fetchCalendar(userId, tenantId), DASHBOARD_SECTION_TIMEOUT_MS, 'calendar')),
     timedAsync(timings, 'tasks', () => withDashboardTimeout(fetchTasks(userId), DASHBOARD_SECTION_TIMEOUT_MS, 'tasks')),
-    timedAsync(timings, 'training', () => withDashboardTimeout(fetchTraining(userId), DASHBOARD_SECTION_TIMEOUT_MS, 'training')),
+    timedAsync(timings, 'training', () => withDashboardTimeout(fetchTraining(userId, tenantId), DASHBOARD_SECTION_TIMEOUT_MS, 'training')),
     timedAsync(timings, 'content', () => withDashboardTimeout(fetchContent(userId), DASHBOARD_SECTION_TIMEOUT_MS, 'content')),
   ]);
 
@@ -319,7 +325,7 @@ async function buildDashboardPayload(userId: number, language: Lang, timings: Ro
 
   const runtime = getRuntimeStatus();
   const quota = getDailyQuotaStatus(userId);
-  const featureFlags = buildHomeFeatureFlags(userId);
+  const featureFlags = buildHomeFeatureFlags(userId, tenantId);
   const timezone = getUserTimezoneById(userId);
 
   return {
@@ -361,8 +367,8 @@ async function buildDashboardPayload(userId: number, language: Lang, timings: Ro
   };
 }
 
-function buildHomeFeatureFlags(userId: number) {
-  const scope = { userId, tenantId: userId };
+function buildHomeFeatureFlags(userId: number, tenantId: number) {
+  const scope = { userId, tenantId };
   return {
     homeDayDialV1: isHomeDayDialV1Enabled(process.env, scope),
     providerPreferencesV1: isProviderPreferencesV1Enabled(process.env, scope),
@@ -372,10 +378,10 @@ function buildHomeFeatureFlags(userId: number) {
   };
 }
 
-async function buildDashboardHomePayload(userId: number, language: Lang, timings: RouteTiming[] = []) {
+async function buildDashboardHomePayload(userId: number, tenantId: number, language: Lang, timings: RouteTiming[] = []) {
   const [dashboardResult, briefResult] = await Promise.allSettled([
-    timedAsync(timings, 'dashboard', () => buildDashboardPayload(userId, language, timings)),
-    timedAsync(timings, 'daily_brief', () => withDashboardTimeout(composeDailyBrief({ userId, language }), DASHBOARD_HOME_BRIEF_TIMEOUT_MS, 'daily_brief')),
+    timedAsync(timings, 'dashboard', () => buildDashboardPayload(userId, tenantId, language, timings)),
+    timedAsync(timings, 'daily_brief', () => withDashboardTimeout(composeDailyBrief({ userId, tenantId, language }), DASHBOARD_HOME_BRIEF_TIMEOUT_MS, 'daily_brief')),
   ]);
 
   if (dashboardResult.status !== 'fulfilled') {

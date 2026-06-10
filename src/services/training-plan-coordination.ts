@@ -26,6 +26,12 @@ export interface CoordinatedTrainingSession {
   scheduleReason?: string;
   decisionReasons?: TrainingDecisionReason[];
   originalDayOfWeek?: string | null;
+  sessionRole?: string;
+  sessionRoleLabel?: string;
+  sessionRoleSummary?: string;
+  keySessionLabel?: string;
+  intensitySummary?: unknown;
+  intensityProfile?: unknown;
 }
 
 export interface CoordinatedTrainingWeek {

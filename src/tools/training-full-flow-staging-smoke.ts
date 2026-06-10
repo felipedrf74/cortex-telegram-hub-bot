@@ -57,21 +57,22 @@ interface RuntimeDeps {
   isConnected(userId: number, provider: CalendarSource): boolean;
   generateTrainingPlanForUser(input: Record<string, unknown>): Promise<any>;
   syncTrainingPlanCalendar(userId: number, now: Date, provider: CalendarSource, tenantId: number): Promise<any>;
-  cancelTrainingPlanForUser(userId: number, planId?: number): Promise<any>;
+  cancelTrainingPlanForUser(userId: number, planId?: number, options?: { tenantId?: number | null }): Promise<any>;
   getActivePlans(userId: number, tenantId?: number): any[];
   getWeeksForPlan(planId: number): any[];
   getSessionsForWeek(weekId: number): any[];
   getEventsForSources(startDate: string, endDate: string, userId: number, sources: CalendarSource[]): Promise<UnifiedCalendarEvent[]>;
   fingerprintTrainingPlanGenerationRequest(payload: Record<string, unknown>): string;
-  claimTrainingPlanGenerationIdempotency(userId: number, idempotencyKey: string | null, requestHash: string): any;
+  claimTrainingPlanGenerationIdempotency(userId: number, tenantId: number, idempotencyKey: string | null, requestHash: string): any;
   completeTrainingPlanGenerationIdempotency(
     userId: number,
+    tenantId: number,
     idempotencyKey: string | null,
     requestHash: string,
     responseData: Record<string, unknown>,
     statusCode: number,
   ): void;
-  failTrainingPlanGenerationIdempotency(userId: number, idempotencyKey: string | null, requestHash: string): void;
+  failTrainingPlanGenerationIdempotency(userId: number, tenantId: number, idempotencyKey: string | null, requestHash: string): void;
 }
 
 type ProfileBackup = Record<ProfileType, { existed: boolean; data: string | null }>;
@@ -167,7 +168,7 @@ export async function runTrainingFullFlowStagingSmoke(
     profileBackup = backupProfiles(runtime.db(), userId);
     seedSmokeProfiles(runtime.db(), userId);
 
-    await cleanupActivePlans(runtime, userId, operations, 'pre_cleanup');
+    await cleanupActivePlans(runtime, userId, tenantId, operations, 'pre_cleanup');
 
     const generationRequest = buildGenerationRequest(options);
     const beforePreview = snapshotTrainingState(runtime, userId, tenantId);
@@ -196,17 +197,17 @@ export async function runTrainingFullFlowStagingSmoke(
 
     const requestHash = runtime.fingerprintTrainingPlanGenerationRequest(generationRequest);
     const idempotencyKey = `auto:${requestHash.slice(0, 48)}`;
-    const firstClaim = runtime.claimTrainingPlanGenerationIdempotency(userId, idempotencyKey, requestHash);
+    const firstClaim = runtime.claimTrainingPlanGenerationIdempotency(userId, tenantId, idempotencyKey, requestHash);
     let generationResult: any = null;
     if (firstClaim.kind === 'claimed') {
       generationResult = await runtime.generateTrainingPlanForUser({ userId, tenantId, ...generationRequest });
       if (generationResult.status === 'created') {
-        runtime.completeTrainingPlanGenerationIdempotency(userId, idempotencyKey, requestHash, generationResult.data, 201);
+        runtime.completeTrainingPlanGenerationIdempotency(userId, tenantId, idempotencyKey, requestHash, generationResult.data, 201);
       } else {
-        runtime.failTrainingPlanGenerationIdempotency(userId, idempotencyKey, requestHash);
+        runtime.failTrainingPlanGenerationIdempotency(userId, tenantId, idempotencyKey, requestHash);
       }
     }
-    const secondClaim = runtime.claimTrainingPlanGenerationIdempotency(userId, idempotencyKey, requestHash);
+    const secondClaim = runtime.claimTrainingPlanGenerationIdempotency(userId, tenantId, idempotencyKey, requestHash);
 
     createdPlanId = Number(generationResult?.planId || generationResult?.data?.planId || 0) || null;
     pushAssert(operations, {
@@ -308,7 +309,7 @@ export async function runTrainingFullFlowStagingSmoke(
       ],
     });
 
-    const cancellation = await runtime.cancelTrainingPlanForUser(userId, createdPlanId);
+    const cancellation = await runtime.cancelTrainingPlanForUser(userId, createdPlanId, { tenantId });
     const eventsAfterCancel = await runtime.getEventsForSources(planWindow.start, planWindow.end, userId, [options.provider]);
     const remainingPlanEvents = eventsForPlan(eventsAfterCancel, createdPlanId);
     createdPlanId = null;
@@ -339,13 +340,13 @@ export async function runTrainingFullFlowStagingSmoke(
   } finally {
     if (createdPlanId && options.userId && deps !== null) {
       try {
-        await deps.cancelTrainingPlanForUser(options.userId, createdPlanId);
+        await deps.cancelTrainingPlanForUser(options.userId, createdPlanId, { tenantId: options.tenantId ?? options.userId });
       } catch (err) {
         cleanupFailures.push(`failed to cancel plan ${createdPlanId}: ${errorMessage(err)}`);
       }
     } else if (createdPlanId && options.userId && deps === null) {
       try {
-        await (deps ?? loadRuntimeDeps()).cancelTrainingPlanForUser(options.userId, createdPlanId);
+        await (deps ?? loadRuntimeDeps()).cancelTrainingPlanForUser(options.userId, createdPlanId, { tenantId: options.tenantId ?? options.userId });
       } catch (err) {
         cleanupFailures.push(`failed to cancel plan ${createdPlanId}: ${errorMessage(err)}`);
       }
@@ -465,12 +466,13 @@ function restoreProfiles(db: any, userId: number, backup: ProfileBackup): void {
 async function cleanupActivePlans(
   deps: RuntimeDeps,
   userId: number,
+  tenantId: number,
   operations: SmokeOperationResult[],
   operation: string,
 ): Promise<void> {
-  const before = deps.getActivePlans(userId, userId).length;
-  const result = before > 0 ? await deps.cancelTrainingPlanForUser(userId) : null;
-  const after = deps.getActivePlans(userId, userId).length;
+  const before = deps.getActivePlans(userId, tenantId).length;
+  const result = before > 0 ? await deps.cancelTrainingPlanForUser(userId, undefined, { tenantId }) : null;
+  const after = deps.getActivePlans(userId, tenantId).length;
   operations.push({
     operation,
     expected: 'Dedicated staging user starts from a clean active Training plan state.',

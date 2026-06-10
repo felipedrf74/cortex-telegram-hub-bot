@@ -51,6 +51,7 @@ describe('training-calendar-scope', () => {
         source: 'google',
         sessionId: 293,
         planId: 13,
+        tenantId: 29,
         userId: 29,
         planStatus: 'active',
       },
@@ -59,6 +60,7 @@ describe('training-calendar-scope', () => {
         source: 'google',
         sessionId: 269,
         planId: 12,
+        tenantId: 30,
         userId: 30,
         planStatus: 'active',
       },
@@ -67,6 +69,7 @@ describe('training-calendar-scope', () => {
         source: 'google',
         sessionId: 201,
         planId: 10,
+        tenantId: 30,
         userId: 30,
         planStatus: 'cancelled',
       },
@@ -77,7 +80,7 @@ describe('training-calendar-scope', () => {
       { id: 'current-training', source: 'google' },
       { id: 'cancelled-training', source: 'google' },
       { id: 'manual-workout', source: 'google' },
-    ], 30);
+    ], 30, 30);
 
     expect(result.map((event) => event.id)).toEqual(['current-training', 'manual-workout']);
   });
@@ -89,18 +92,20 @@ describe('training-calendar-scope', () => {
         source: 'google',
         sessionId: 1,
         planId: 2,
+        tenantId: 3,
         userId: 3,
         planStatus: 'active',
       },
     ];
 
-    expect(isTrainingCalendarEventUnclaimed('evt-linked', 'google')).toBe(false);
-    expect(getTrainingCalendarEventOwners('evt-linked', 'google')).toEqual([
+    expect(isTrainingCalendarEventUnclaimed('evt-linked', 'google', 3)).toBe(false);
+    expect(getTrainingCalendarEventOwners('evt-linked', 'google', 3)).toEqual([
       {
         eventId: 'evt-linked',
         source: 'google',
         sessionId: 1,
         planId: 2,
+        tenantId: 3,
         userId: 3,
         planStatus: 'active',
       },
@@ -114,16 +119,17 @@ describe('training-calendar-scope', () => {
         source: 'google',
         sessionId: 0,
         planId: 22,
+        tenantId: 30,
         userId: 30,
         planStatus: 'orphaned',
       },
     ];
 
-    expect(isTrainingCalendarEventUnclaimed('evt-orphaned', 'google')).toBe(false);
+    expect(isTrainingCalendarEventUnclaimed('evt-orphaned', 'google', 30)).toBe(false);
     expect(filterCalendarEventsForTrainingScope([
       { id: 'evt-orphaned', source: 'google' },
       { id: 'manual-workout', source: 'google' },
-    ], 30).map((event) => event.id)).toEqual(['manual-workout']);
+    ], 30, 30).map((event) => event.id)).toEqual(['manual-workout']);
   });
 
   it('hides ownership-backed training events when the plan row is missing', () => {
@@ -133,6 +139,7 @@ describe('training-calendar-scope', () => {
         source: 'google',
         sessionId: 0,
         planId: 22,
+        tenantId: 30,
         userId: 30,
         planStatus: 'missing',
       },
@@ -141,7 +148,7 @@ describe('training-calendar-scope', () => {
     expect(filterCalendarEventsForTrainingScope([
       { id: 'evt-missing-plan', source: 'google' },
       { id: 'manual-workout', source: 'google' },
-    ], 30).map((event) => event.id)).toEqual(['manual-workout']);
+    ], 30, 30).map((event) => event.id)).toEqual(['manual-workout']);
   });
 
   it('fails open if the database is unavailable so calendar reads still render', () => {
@@ -151,9 +158,9 @@ describe('training-calendar-scope', () => {
 
     const events = [{ id: 'evt-1', source: 'google' }];
 
-    expect(filterCalendarEventsForTrainingScope(events, 30)).toEqual(events);
+    expect(filterCalendarEventsForTrainingScope(events, 30, 30)).toEqual(events);
     expect(mocks.loggerDebug).toHaveBeenCalledWith(
-      expect.objectContaining({ userId: 30 }),
+      expect.objectContaining({ userId: 30, tenantId: 30 }),
       'Training calendar scope filtering failed',
     );
   });

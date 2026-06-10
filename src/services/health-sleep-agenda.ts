@@ -85,7 +85,7 @@ export function getAppleHealthSleepSegments(input: {
     const datesWithSleepSegments = new Set<string>();
     for (const row of rows) {
       const parsed = safeAppleHealthJson(row, input.userId);
-      const intervals = Array.isArray(parsed?.intervals) ? parsed.intervals : [];
+      const intervals = sleepIntervalsFromPayload(parsed);
       const segmentCountBeforeRow = segments.length;
       for (const interval of intervals) {
         const stage = String(interval?.stage || '').trim();
@@ -134,6 +134,13 @@ function readSleepTotalMinutes(value: any): number {
     ?? numericMetric(value?.sleepSeconds)
     ?? numericMetric(value?.durationSeconds);
   return totalSeconds != null ? Math.max(0, totalSeconds / 60) : 0;
+}
+
+function sleepIntervalsFromPayload(value: any): any[] {
+  if (Array.isArray(value?.intervals) && value.intervals.length > 0) return value.intervals;
+  if (Array.isArray(value?.sleepIntervals)) return value.sleepIntervals;
+  if (Array.isArray(value?.intervals)) return value.intervals;
+  return [];
 }
 
 function numericMetric(value: unknown): number | null {

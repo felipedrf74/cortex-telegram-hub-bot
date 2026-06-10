@@ -231,12 +231,132 @@ describe('chat callback route registrar', () => {
     expect(mockGetCallbackForScope).toHaveBeenCalledWith('ref-1', { tenantId: 7001, userId: 7001 });
     expect(mockCompleteTask).toHaveBeenCalledWith('list-1', 'task-1');
     expect(mockConsumeCallbackForScope).toHaveBeenCalledWith('ref-1', { tenantId: 7001, userId: 7001 });
+    expect(mockConsumeCallbackForScope.mock.invocationCallOrder[0])
+      .toBeLessThan(mockCompleteTask.mock.invocationCallOrder[0]);
     expect(mockPersistCallbackAssistantResponse).toHaveBeenCalledWith(expect.objectContaining({
       userId: 7001,
       messageId: 'msg-2',
       text: '✅ Completed: Pagar imposto',
       domain: 'secretary',
     }));
+  });
+
+  it('uses tenant-scoped stored todo callback data to delete tasks after consuming the callback', async () => {
+    mockGetCallbackForScope.mockReturnValue({
+      listId: 'list-1',
+      taskId: 'task-1',
+      title: 'Old task',
+      type: 'task',
+    });
+
+    const res = await dispatch(7001, {
+      callbackData: 'td:dy:ref-delete-task',
+      messageId: 'msg-delete-task',
+    });
+
+    expect(res.statusCode, JSON.stringify(res.body)).toBe(200);
+    expect(res.body).toMatchObject({
+      text: '🗑️ Deleted: Old task',
+      editOriginal: true,
+      newButtons: null,
+    });
+    expect(mockGetCallbackForScope).toHaveBeenCalledWith('ref-delete-task', { tenantId: 7001, userId: 7001 });
+    expect(mockConsumeCallbackForScope).toHaveBeenCalledWith('ref-delete-task', { tenantId: 7001, userId: 7001 });
+    expect(mockDeleteTask).toHaveBeenCalledWith('list-1', 'task-1');
+    expect(mockConsumeCallbackForScope.mock.invocationCallOrder[0])
+      .toBeLessThan(mockDeleteTask.mock.invocationCallOrder[0]);
+    expect(mockPersistCallbackAssistantResponse).toHaveBeenCalledWith(expect.objectContaining({
+      userId: 7001,
+      messageId: 'msg-delete-task',
+      text: '🗑️ Deleted: Old task',
+      domain: 'secretary',
+    }));
+  });
+
+  it('uses tenant-scoped stored todo callback data to delete lists after consuming the callback', async () => {
+    mockGetCallbackForScope.mockReturnValue({
+      listId: 'list-1',
+      listName: 'Inbox',
+      type: 'list',
+    });
+
+    const res = await dispatch(7001, {
+      callbackData: 'td:dy:ref-delete-list',
+      messageId: 'msg-delete-list',
+    });
+
+    expect(res.statusCode, JSON.stringify(res.body)).toBe(200);
+    expect(res.body).toMatchObject({
+      text: '🗑️ Deleted list: Inbox',
+      editOriginal: true,
+      newButtons: null,
+    });
+    expect(mockGetCallbackForScope).toHaveBeenCalledWith('ref-delete-list', { tenantId: 7001, userId: 7001 });
+    expect(mockConsumeCallbackForScope).toHaveBeenCalledWith('ref-delete-list', { tenantId: 7001, userId: 7001 });
+    expect(mockDeleteList).toHaveBeenCalledWith('list-1');
+    expect(mockConsumeCallbackForScope.mock.invocationCallOrder[0])
+      .toBeLessThan(mockDeleteList.mock.invocationCallOrder[0]);
+    expect(mockPersistCallbackAssistantResponse).toHaveBeenCalledWith(expect.objectContaining({
+      userId: 7001,
+      messageId: 'msg-delete-list',
+      text: '🗑️ Deleted list: Inbox',
+      domain: 'secretary',
+    }));
+  });
+
+  it('mutates once when a task-complete callback ref is tapped twice sequentially', async () => {
+    mockGetCallbackForScope.mockReturnValue({
+      listId: 'list-1',
+      taskId: 'task-1',
+      title: 'Pay tax',
+    });
+    mockConsumeCallbackForScope
+      .mockReturnValueOnce(true)
+      .mockReturnValueOnce(false);
+
+    const first = await dispatch(7001, {
+      callbackData: 'td:tc:ref-double-complete',
+      messageId: 'msg-double-complete-1',
+    });
+    const second = await dispatch(7001, {
+      callbackData: 'td:tc:ref-double-complete',
+      messageId: 'msg-double-complete-2',
+    });
+
+    expect(first.statusCode, JSON.stringify(first.body)).toBe(200);
+    expect(second.statusCode).toBe(410);
+    expect(second.body.error.code).toBe('CALLBACK_EXPIRED');
+    expect(mockCompleteTask).toHaveBeenCalledTimes(1);
+    expect(mockCompleteTask).toHaveBeenCalledWith('list-1', 'task-1');
+    expect(mockConsumeCallbackForScope).toHaveBeenCalledTimes(2);
+  });
+
+  it('mutates once when a task-delete callback ref is tapped twice sequentially', async () => {
+    mockGetCallbackForScope.mockReturnValue({
+      listId: 'list-1',
+      taskId: 'task-1',
+      title: 'Old task',
+      type: 'task',
+    });
+    mockConsumeCallbackForScope
+      .mockReturnValueOnce(true)
+      .mockReturnValueOnce(false);
+
+    const first = await dispatch(7001, {
+      callbackData: 'td:dy:ref-double-delete',
+      messageId: 'msg-double-delete-1',
+    });
+    const second = await dispatch(7001, {
+      callbackData: 'td:dy:ref-double-delete',
+      messageId: 'msg-double-delete-2',
+    });
+
+    expect(first.statusCode, JSON.stringify(first.body)).toBe(200);
+    expect(second.statusCode).toBe(410);
+    expect(second.body.error.code).toBe('CALLBACK_EXPIRED');
+    expect(mockDeleteTask).toHaveBeenCalledTimes(1);
+    expect(mockDeleteTask).toHaveBeenCalledWith('list-1', 'task-1');
+    expect(mockConsumeCallbackForScope).toHaveBeenCalledTimes(2);
   });
 
   it('rejects task callbacks when scoped callback lookup fails', async () => {
@@ -251,6 +371,105 @@ describe('chat callback route registrar', () => {
     expect(res.body.error.code).toBe('CALLBACK_EXPIRED');
     expect(mockCompleteTask).not.toHaveBeenCalled();
     expect(mockConsumeCallbackForScope).not.toHaveBeenCalled();
+  });
+
+  it('does not mutate tasks when destructive callback consume fails', async () => {
+    mockGetCallbackForScope.mockReturnValue({
+      listId: 'list-1',
+      taskId: 'task-1',
+      title: 'Pagar imposto',
+    });
+    mockConsumeCallbackForScope.mockReturnValue(false);
+
+    const res = await dispatch(7001, {
+      callbackData: 'td:tc:ref-1',
+      messageId: 'msg-2',
+    });
+
+    expect(res.statusCode).toBe(410);
+    expect(res.body.error.code).toBe('CALLBACK_EXPIRED');
+    expect(mockConsumeCallbackForScope).toHaveBeenCalledWith('ref-1', { tenantId: 7001, userId: 7001 });
+    expect(mockCompleteTask).not.toHaveBeenCalled();
+  });
+
+  it('does not apply coach recommendations when callback consume fails', async () => {
+    mockGetCallbackForScope.mockReturnValue({
+      recommendationIds: ['rec-1'],
+    });
+    mockConsumeCallbackForScope.mockReturnValue(false);
+
+    const res = await dispatch(7001, {
+      callbackData: 'coach:apply:ref-coach-1',
+      messageId: 'msg-coach',
+    });
+
+    expect(res.statusCode).toBe(410);
+    expect(res.body.error.code).toBe('CALLBACK_EXPIRED');
+    expect(mockConsumeCallbackForScope).toHaveBeenCalledWith('ref-coach-1', { tenantId: 7001, userId: 7001 });
+    expect(mockApplyCoachRecommendations).not.toHaveBeenCalled();
+  });
+
+  it('consumes malformed task-complete callback refs and does not mutate tasks', async () => {
+    mockGetCallbackForScope.mockReturnValue({
+      listId: 'list-1',
+      title: 'Missing task id',
+    });
+
+    const res = await dispatch(7001, {
+      callbackData: 'td:tc:ref-malformed',
+      messageId: 'msg-2',
+    });
+
+    expect(res.statusCode).toBe(410);
+    expect(res.body.error.code).toBe('CALLBACK_EXPIRED');
+    expect(mockConsumeCallbackForScope).toHaveBeenCalledWith('ref-malformed', { tenantId: 7001, userId: 7001 });
+    expect(mockCompleteTask).not.toHaveBeenCalled();
+    expect(mockPersistCallbackAssistantResponse).not.toHaveBeenCalled();
+  });
+
+  it('consumes malformed task-delete callback refs and does not mutate tasks or lists', async () => {
+    mockGetCallbackForScope.mockReturnValue({
+      listName: 'Missing list id',
+      type: 'list',
+    });
+
+    const res = await dispatch(7001, {
+      callbackData: 'td:dy:ref-malformed-delete',
+      messageId: 'msg-2',
+    });
+
+    expect(res.statusCode).toBe(410);
+    expect(res.body.error.code).toBe('CALLBACK_EXPIRED');
+    expect(mockConsumeCallbackForScope).toHaveBeenCalledWith('ref-malformed-delete', { tenantId: 7001, userId: 7001 });
+    expect(mockDeleteTask).not.toHaveBeenCalled();
+    expect(mockDeleteList).not.toHaveBeenCalled();
+    expect(mockPersistCallbackAssistantResponse).not.toHaveBeenCalled();
+  });
+
+  it('applies coach recommendations only after consuming the scoped callback', async () => {
+    mockGetCallbackForScope.mockReturnValue({
+      recommendationIds: ['rec-1', 'rec-2'],
+    });
+    mockApplyCoachRecommendations.mockResolvedValue({
+      count: 2,
+      appliedRecommendations: ['rec-1', 'rec-2'],
+    });
+
+    const res = await dispatch(7001, {
+      callbackData: 'coach:apply:ref-coach-ok',
+      messageId: 'msg-coach',
+    });
+
+    expect(res.statusCode, JSON.stringify(res.body)).toBe(200);
+    expect(mockConsumeCallbackForScope).toHaveBeenCalledWith('ref-coach-ok', { tenantId: 7001, userId: 7001 });
+    expect(mockApplyCoachRecommendations).toHaveBeenCalledWith(7001, 7001, ['rec-1', 'rec-2']);
+    expect(mockConsumeCallbackForScope.mock.invocationCallOrder[0])
+      .toBeLessThan(mockApplyCoachRecommendations.mock.invocationCallOrder[0]);
+    expect(mockPersistAssistantEdit).toHaveBeenCalledWith(expect.objectContaining({
+      userId: 7001,
+      messageId: 'msg-coach',
+      domain: 'triathlon',
+    }));
   });
 
   it('passes tenant scope into the callback guard before any action executes', async () => {

@@ -23,6 +23,10 @@ vi.mock('../../src/services/database', () => ({
   initDatabase: vi.fn(),
   closeDatabase: vi.fn(),
   findUnexpectedMigrationPrefixCollisions: vi.fn(() => []),
+  assertNoUnexpectedMigrationPrefixCollisions: vi.fn(),
+  filterAlreadyAppliedAddColumnStatements: vi.fn((sql: string) => sql),
+  runMigrationsForTest: vi.fn(),
+  stripWrappingTransactionStatements: vi.fn((sql: string) => sql),
 }));
 
 vi.mock('../../src/utils/logger', () => ({
@@ -54,6 +58,7 @@ import {
   checkSkillAccess, checkTierAccess, checkTierAccessBatch, getSkillTier, listSkillTiers,
   grantOverride, revokeOverride, getUserOverride, setSkillTier,
 } from '../../src/services/skill-tiers';
+import { disable as disableInstalledSkill } from '../../src/skills/registry';
 import type { User } from '../../src/services/user-service';
 
 function makeUser(id: number, tier: 'free' | 'pro' | 'max' | 'owner'): Pick<User, 'id' | 'tier'> {
@@ -136,6 +141,13 @@ describe('migration 045: skill_tiers schema and seeds', () => {
     expect(getSkillTier('triathlon.cycle')).toBe('pro');
     expect(getSkillTier('triathlon.swim')).toBe('pro');
     expect(getSkillTier('triathlon')).toBe('pro');
+  });
+
+  it('seeds chat action aliases and platform helper skills for authorization', () => {
+    expect(getSkillTier('training')).toBe('pro');
+    expect(getSkillTier('connections')).toBe('free');
+    expect(getSkillTier('notifications')).toBe('free');
+    expect(getSkillTier('decision_center')).toBe('free');
   });
 
   it('bulk-upgrades existing free users to pro with new limits', () => {
@@ -286,6 +298,16 @@ describe('checkSkillAccess — canonical precedence', () => {
     grantOverride({ userId: 2, skillId: 'triathlon.swim', reason: 'beta grant' });
 
     const result = checkSkillAccess(makeUser(2, 'free'), 'triathlon.swim');
+
+    expect(result.allowed).toBe(false);
+    expect(result.reason).toBe('global_disabled');
+  });
+
+  it('training alias disable blocks pro triathlon sub-skill access before tier grants', () => {
+    upsertInstalledSkill('triathlon', true);
+
+    expect(disableInstalledSkill('training')).toBe(true);
+    const result = checkSkillAccess(makeUser(22, 'pro'), 'triathlon.swim');
 
     expect(result.allowed).toBe(false);
     expect(result.reason).toBe('global_disabled');

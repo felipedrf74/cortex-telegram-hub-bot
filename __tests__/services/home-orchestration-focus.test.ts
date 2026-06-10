@@ -3,6 +3,7 @@ import Database from 'better-sqlite3';
 import { DateTime } from 'luxon';
 
 let testDb: Database.Database;
+const mockGetEvents = vi.fn();
 const mockGetEventsForSources = vi.fn();
 
 vi.mock('../../src/services/database', () => ({
@@ -26,6 +27,7 @@ vi.mock('../../src/utils/logger', () => ({
 }));
 
 vi.mock('../../src/services/unified-calendar', () => ({
+  getEvents: (...args: unknown[]) => mockGetEvents(...args),
   getEventsForSources: (...args: unknown[]) => mockGetEventsForSources(...args),
 }));
 
@@ -54,6 +56,8 @@ import {
 } from '../../src/services/provider-preferences';
 
 beforeEach(() => {
+  mockGetEvents.mockReset();
+  mockGetEvents.mockResolvedValue([]);
   mockGetEventsForSources.mockReset();
   mockGetEventsForSources.mockResolvedValue([]);
   testDb = new Database(':memory:');
@@ -251,6 +255,66 @@ describe('Home orchestration focus helpers', () => {
     expect(dial.warningCodes).not.toContain('SLEEP_DATA_UNAVAILABLE');
   });
 
+  it('builds day dial sleep totals from HealthKit sleepIntervals payloads', () => {
+    testDb.prepare(`
+      INSERT INTO apple_health_data (user_id, date, data_type, data_json, source)
+      VALUES (?, ?, 'sleep', ?, 'apple_health')
+    `).run(
+      42,
+      '2026-05-17',
+      JSON.stringify({
+        sleepIntervals: [
+          {
+            stage: 'asleepCore',
+            start: '2026-05-17T00:15:00.000Z',
+            end: '2026-05-17T06:45:00.000Z',
+          },
+        ],
+      }),
+    );
+
+    const dial = buildHomeDayDial({
+      userId: 42,
+      date: '2026-05-17',
+      timezone: 'UTC',
+      calendarEvents: [],
+    });
+
+    expect(dial.totals.find((total) => total.kind === 'sleep')?.minutes).toBe(390);
+    expect(dial.totals.find((total) => total.kind === 'sleep')?.unavailable).toBeUndefined();
+    expect(dial.warningCodes).not.toContain('SLEEP_DATA_UNAVAILABLE');
+  });
+
+  it('falls back to HealthKit sleepIntervals when legacy intervals are empty', () => {
+    testDb.prepare(`
+      INSERT INTO apple_health_data (user_id, date, data_type, data_json, source)
+      VALUES (?, ?, 'sleep', ?, 'apple_health')
+    `).run(
+      42,
+      '2026-05-17',
+      JSON.stringify({
+        intervals: [],
+        sleepIntervals: [
+          {
+            stage: 'asleepDeep',
+            start: '2026-05-17T01:00:00.000Z',
+            end: '2026-05-17T07:00:00.000Z',
+          },
+        ],
+      }),
+    );
+
+    const dial = buildHomeDayDial({
+      userId: 42,
+      date: '2026-05-17',
+      timezone: 'UTC',
+      calendarEvents: [],
+    });
+
+    expect(dial.totals.find((total) => total.kind === 'sleep')?.minutes).toBe(360);
+    expect(dial.warningCodes).not.toContain('SLEEP_DATA_UNAVAILABLE');
+  });
+
   it('builds day dial sleep totals from HealthKit daily totals when stage intervals are absent', () => {
     testDb.prepare(`
       INSERT INTO apple_health_data (user_id, date, data_type, data_json, source)
@@ -423,7 +487,12 @@ describe('Home orchestration focus helpers', () => {
       timezone: 'UTC',
     });
 
-    expect(mockGetEventsForSources).toHaveBeenCalled();
+    expect(mockGetEvents).toHaveBeenCalledWith(
+      '2026-05-17T07:30:00.000Z',
+      '2026-05-17T22:00:00.000Z',
+      42,
+    );
+    expect(mockGetEventsForSources).not.toHaveBeenCalled();
     expect(result.status).toBe('conflicted');
     expect(result.conflicts[0]).toMatchObject({
       title: 'Sleep',

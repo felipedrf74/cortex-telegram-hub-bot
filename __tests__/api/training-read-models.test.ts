@@ -111,7 +111,7 @@ describe('training-read-models', () => {
       ['evt-1', { time: '07:00', event: { id: 'evt-1' } }],
     ]);
 
-    const result = await getTodaySession(42);
+    const result = await getTodaySession(42, 42);
 
     expect(result.plan).toMatchObject({
       name: 'Marathon Build',
@@ -146,7 +146,7 @@ describe('training-read-models', () => {
     const calendarMod = await import('../../src/api/routes/training-calendar-lookup');
     (calendarMod.buildCalendarEventLookup as any).mockRejectedValueOnce(new Error('invalid_grant'));
 
-    const result = await getWeekPlan(42);
+    const result = await getWeekPlan(42, 42);
 
     expect(result.plan).toMatchObject({ name: 'Strength Block', weekNumber: 1 });
     expect(result.sessions).toHaveLength(2);
@@ -186,7 +186,7 @@ describe('training-read-models', () => {
       }],
     ]);
 
-    const result = await getWeekPlan(42);
+    const result = await getWeekPlan(42, 42);
     const [rangeStart, rangeEnd] = (buildCalendarEventLookup as any).mock.calls[0];
 
     expect(rangeStart.toISOString()).toBe('2026-04-26T00:00:00.000Z');
@@ -218,7 +218,7 @@ describe('training-read-models', () => {
     ];
     mockCalendarLookup = new Map();
 
-    const result = await getWeekPlan(42);
+    const result = await getWeekPlan(42, 42);
 
     expect(result.sessions[0]).toMatchObject({
       id: '702',
@@ -258,7 +258,7 @@ describe('training-read-models', () => {
       }],
     ]);
 
-    const result = await getWeekPlan(42);
+    const result = await getWeekPlan(42, 42);
 
     expect(result.sessions[0]).toMatchObject({
       id: '703',
@@ -287,7 +287,7 @@ describe('training-read-models', () => {
     const calendarMod = await import('../../src/api/routes/training-calendar-lookup');
     (calendarMod.buildCalendarEventLookup as any).mockRejectedValueOnce(new Error('invalid_grant'));
 
-    const result = await getTodaySession(42);
+    const result = await getTodaySession(42, 42);
 
     expect(result.session).not.toBeNull();
     expect(result.session).toMatchObject({
@@ -322,7 +322,7 @@ describe('training-read-models', () => {
       }],
     ]);
 
-    const result = await getWeekPlan(42);
+    const result = await getWeekPlan(42, 42);
 
     expect(result.plan).toMatchObject({
       name: 'Hybrid Build',
@@ -375,7 +375,7 @@ describe('training-read-models', () => {
       },
     };
 
-    const mapped = await fetchCurrentReadinessForPlan(42);
+    const mapped = await fetchCurrentReadinessForPlan(42, 42);
     expect(mapped).toEqual({
       score: 81,
       confidence: 'fresh_wearable',
@@ -389,7 +389,7 @@ describe('training-read-models', () => {
     });
 
     mockReadinessResult = { score: 0, factors: {} };
-    const missing = await fetchCurrentReadinessForPlan(42);
+    const missing = await fetchCurrentReadinessForPlan(42, 42);
     expect(missing).toBeNull();
   });
 
@@ -402,7 +402,7 @@ describe('training-read-models', () => {
       factors: {},
     };
 
-    const mapped = await fetchCurrentReadinessForPlan(42);
+    const mapped = await fetchCurrentReadinessForPlan(42, 42);
 
     expect(mapped).toEqual({
       score: 50,
@@ -438,7 +438,7 @@ describe('training-read-models', () => {
       }];
       hoisted.getActivitiesByDateForUser.mockResolvedValueOnce(mockGarminActivities);
 
-      const result = await getTodaySession(42);
+      const result = await getTodaySession(42, 42);
 
       // Plan summary must be null since there's no active plan.
       expect(result.plan).toBeNull();
@@ -472,7 +472,7 @@ describe('training-read-models', () => {
       }];
       hoisted.getActivitiesByDateForUser.mockResolvedValueOnce(mockGarminActivities);
 
-      const result = await getTodaySession(42);
+      const result = await getTodaySession(42, 42);
 
       expect(result.plan).toMatchObject({ id: 7, name: 'Marathon Build' });
       expect(result.session).not.toBeNull();
@@ -488,7 +488,7 @@ describe('training-read-models', () => {
       mockActivePlan = null;
       hoisted.getActivitiesByDateForUser.mockResolvedValueOnce([]);
 
-      const result = await getTodaySession(42);
+      const result = await getTodaySession(42, 42);
 
       expect(result.plan).toBeNull();
       expect(result.session).toBeNull();

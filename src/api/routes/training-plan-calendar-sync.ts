@@ -12,6 +12,7 @@ import {
 import { createTrainingCalendarEvent } from './training-calendar-event-writer';
 import { logger } from '../../utils/logger';
 import { isTrainingCalendarEventUnclaimed } from '../../services/training-calendar-scope';
+import { loadLiveCalendarBusyWindowsForSecretaryIntent } from '../../services/secretary-live-calendar-busy';
 import {
   findExistingOwnership,
   findReusableOwnershipBySessionIdentity,
@@ -87,12 +88,13 @@ export interface TrainingCalendarSessionSyncResult {
 
 export type TrainingSessionReflowPreviewResult =
   | {
-      status: 'not_found' | 'forbidden' | 'no_calendar' | 'blocked';
+      status: 'not_found' | 'forbidden' | 'no_calendar' | 'blocked' | 'calendar_degraded';
       data: {
         message: string;
         reason?: string;
         sessionId?: number;
         provider?: CalendarSource | null;
+        warningCodes?: string[];
       };
     }
   | {
@@ -224,15 +226,24 @@ const TRAINING_CALENDAR_SOURCES: readonly CalendarSource[] = ['google', 'outlook
 
 function resolveOwnedSessionScope(
   userId: number,
+  tenantId: number,
   sessionId: number,
 ): ReflowSessionScope | null | 'forbidden' {
   const session = trainingPlans.getSessionById(sessionId);
   if (!session) return null;
   const plan = trainingPlans.getPlanById(session.plan_id);
-  if (!plan || plan.user_id !== userId) {
+  const planTenantId = plan ? tenantIdForTrainingPlan(plan, Number.NaN) : Number.NaN;
+  if (!plan || plan.user_id !== userId || planTenantId !== tenantId) {
     if (plan) {
       logger.warn(
-        { actor: userId, sessionId, ownerIdHash: hashOwnerIdForLog(plan.user_id), reason: 'foreign_owner' },
+        {
+          actor: userId,
+          sessionId,
+          ownerIdHash: hashOwnerIdForLog(plan.user_id),
+          tenantId,
+          ownerTenantIdHash: hashOwnerIdForLog(planTenantId),
+          reason: 'foreign_owner_or_tenant',
+        },
         'training_reflow.ownership_denied',
       );
     }
@@ -369,7 +380,7 @@ export async function previewTrainingSessionReflow(
   tenantId?: number,
 ): Promise<TrainingSessionReflowPreviewResult> {
   const validatedTenantId = requireTenantIdParam(tenantId, 'previewTrainingSessionReflow');
-  const scope = resolveOwnedSessionScope(userId, sessionId);
+  const scope = resolveOwnedSessionScope(userId, validatedTenantId, sessionId);
   if (scope === 'forbidden' || !scope) {
     return { status: 'not_found', data: { message: 'Training session not found.', sessionId } };
   }
@@ -468,7 +479,23 @@ export async function previewTrainingSessionReflow(
     start: scheduled.start,
     end: scheduled.end,
   });
-  const secretaryPreview = previewSecretarySchedulingIntent(intent, { now: notBefore.toISOString() });
+  const liveBusyWindows = await loadLiveCalendarBusyWindowsForSecretaryIntent(intent);
+  if (liveBusyWindows.degraded) {
+    return {
+      status: 'calendar_degraded',
+      data: {
+        message: 'Calendar availability could not be checked right now.',
+        reason: 'TRAINING_SECRETARY_LIVE_BUSY_WINDOWS_DEGRADED',
+        provider: calendarSource,
+        sessionId,
+        warningCodes: liveBusyWindows.warningCodes,
+      },
+    };
+  }
+  const secretaryPreview = previewSecretarySchedulingIntent(intent, {
+    now: notBefore.toISOString(),
+    additionalBusyWindows: liveBusyWindows.windows,
+  });
   const selected = selectedTrainingSyncSecretaryWindow(secretaryPreview, { notBefore });
   const proposedStart = selected ? new Date(selected.start) : scheduled.start;
   const proposedEnd = selected ? new Date(selected.end) : scheduled.end;
@@ -516,17 +543,18 @@ export async function previewTrainingSessionReflow(
 
 export async function confirmTrainingSessionReflow(input: {
   userId: number;
-  tenantId?: number;
+  tenantId: number;
   sessionId: number;
   proposedStartAt?: string | null;
   proposedEndAt?: string | null;
   requestedCalendarSource?: CalendarSource | null;
   signal?: AbortSignal;
 }): Promise<TrainingSessionReflowConfirmResult> {
+  const tenantId = requireTenantIdParam(input.tenantId, 'confirmTrainingSessionReflow');
   return withTrainingCalendarOperationLock(
     {
       userId: input.userId,
-      tenantId: input.tenantId ?? input.userId,
+      tenantId,
       operation: 'calendar_reflow',
     },
     () => confirmTrainingSessionReflowLocked(input),
@@ -535,7 +563,7 @@ export async function confirmTrainingSessionReflow(input: {
 
 async function confirmTrainingSessionReflowLocked(input: {
   userId: number;
-  tenantId?: number;
+  tenantId: number;
   sessionId: number;
   proposedStartAt?: string | null;
   proposedEndAt?: string | null;
@@ -571,7 +599,7 @@ async function confirmTrainingSessionReflowLocked(input: {
     };
   }
 
-  const scope = resolveOwnedSessionScope(input.userId, input.sessionId);
+  const scope = resolveOwnedSessionScope(input.userId, validatedTenantId, input.sessionId);
   if (scope === 'forbidden' || !scope) {
     return { status: 'not_found', data: { message: 'Training session not found.', sessionId: input.sessionId } };
   }
@@ -611,6 +639,7 @@ async function confirmTrainingSessionReflowLocked(input: {
       eventId = created?.id || eventId;
       await deleteStaleLinkedTrainingEvent({
         userId: input.userId,
+        tenantId: effectiveTenantId,
         planId: scope.plan.id,
         planVersion: getPlanVersion(scope.plan.id) ?? 1,
         sessionId: input.sessionId,
@@ -704,24 +733,25 @@ async function confirmTrainingSessionReflowLocked(input: {
 export async function syncTrainingPlanCalendar(
   userId: number,
   now: Date = new Date(),
-  requestedCalendarSource?: CalendarSource | null,
-  tenantId?: number,
+  requestedCalendarSource: CalendarSource | null | undefined,
+  tenantId: number,
 ): Promise<TrainingPlanCalendarSyncResult> {
+  const validatedTenantId = requireTenantIdParam(tenantId, 'syncTrainingPlanCalendar');
   return withTrainingCalendarOperationLock(
     {
       userId,
-      tenantId: tenantId ?? userId,
+      tenantId: validatedTenantId,
       operation: 'calendar_sync',
     },
-    () => syncTrainingPlanCalendarLocked(userId, now, requestedCalendarSource, tenantId),
+    () => syncTrainingPlanCalendarLocked(userId, now, requestedCalendarSource, validatedTenantId),
   );
 }
 
 async function syncTrainingPlanCalendarLocked(
   userId: number,
   now: Date = new Date(),
-  requestedCalendarSource?: CalendarSource | null,
-  tenantId?: number,
+  requestedCalendarSource: CalendarSource | null | undefined,
+  tenantId: number,
 ): Promise<TrainingPlanCalendarSyncResult> {
   const validatedTenantId = requireTenantIdParam(tenantId, 'syncTrainingPlanCalendar');
   const plan = trainingPlans.getActivePlan(userId, validatedTenantId);
@@ -971,6 +1001,7 @@ async function syncTrainingPlanCalendarLocked(
         });
         await deleteDuplicateTrainingEventsForSession({
           userId,
+          tenantId: effectiveTenantId,
           planId: plan.id,
           planVersion,
           item,
@@ -1039,6 +1070,7 @@ async function syncTrainingPlanCalendarLocked(
       });
       await deleteDuplicateTrainingEventsForSession({
         userId,
+        tenantId: effectiveTenantId,
         planId: plan.id,
         planVersion,
         item,
@@ -1101,7 +1133,14 @@ async function syncTrainingPlanCalendarLocked(
   let firstError: Error | null = null;
 
   for (const item of pending) {
-    const existingEvent = consumeMatchingExistingTrainingEvent(item, plan.id, calendarEvents, consumedExistingEventKeys, calendarSource);
+    const existingEvent = consumeMatchingExistingTrainingEvent(
+      item,
+      plan.id,
+      calendarEvents,
+      consumedExistingEventKeys,
+      calendarSource,
+      effectiveTenantId,
+    );
     if (existingEvent) {
       trainingPlans.linkSessionToCalendar(item.sessionId, existingEvent.id, existingEvent.source);
       markSessionScheduledAfterCalendarLink(item);
@@ -1129,6 +1168,7 @@ async function syncTrainingPlanCalendarLocked(
       }
       await deleteStaleLinkedTrainingEvent({
         userId,
+        tenantId: effectiveTenantId,
         planId: plan.id,
         planVersion,
         sessionId: item.sessionId,
@@ -1137,6 +1177,7 @@ async function syncTrainingPlanCalendarLocked(
       });
       await deleteDuplicateTrainingEventsForSession({
         userId,
+        tenantId: effectiveTenantId,
         planId: plan.id,
         planVersion,
         item,
@@ -1192,7 +1233,14 @@ async function syncTrainingPlanCalendarLocked(
         start: window.start,
         end: window.end,
       });
-      const secretaryPreview = previewSecretarySchedulingIntent(secretaryIntent, { now: now.toISOString() });
+      const liveBusyWindows = await loadLiveCalendarBusyWindowsForSecretaryIntent(secretaryIntent);
+      if (liveBusyWindows.degraded) {
+        throw new Error('TRAINING_SECRETARY_LIVE_BUSY_WINDOWS_DEGRADED');
+      }
+      const secretaryPreview = previewSecretarySchedulingIntent(secretaryIntent, {
+        now: now.toISOString(),
+        additionalBusyWindows: liveBusyWindows.windows,
+      });
       const previewWindow = selectedTrainingSyncSecretaryWindow(secretaryPreview, { notBefore: now });
       if (!previewWindow) {
         trainingPlans.updateSession(item.sessionId, {
@@ -1215,7 +1263,10 @@ async function syncTrainingPlanCalendarLocked(
         sessionResults.push(syncResult(item, calendarSource, 'failed', 'secretary_no_schedulable_slot', true, null, attemptedAt));
         continue;
       }
-      const secretaryDecision = submitSecretarySchedulingIntent(secretaryIntent, { now: now.toISOString() });
+      const secretaryDecision = submitSecretarySchedulingIntent(secretaryIntent, {
+        now: now.toISOString(),
+        additionalBusyWindows: liveBusyWindows.windows,
+      });
       secretaryWindow = selectedTrainingSyncSecretaryWindow(secretaryDecision, { notBefore: now });
       if (!secretaryWindow) {
         trainingPlans.updateSession(item.sessionId, {
@@ -1309,6 +1360,7 @@ async function syncTrainingPlanCalendarLocked(
       });
       await deleteStaleLinkedTrainingEvent({
         userId,
+        tenantId: effectiveTenantId,
         planId: plan.id,
         planVersion,
         sessionId: item.sessionId,
@@ -1317,6 +1369,7 @@ async function syncTrainingPlanCalendarLocked(
       });
       await deleteDuplicateTrainingEventsForSession({
         userId,
+        tenantId: effectiveTenantId,
         planId: plan.id,
         planVersion,
         item,
@@ -1417,6 +1470,7 @@ function syncResult(
 
 async function deleteStaleLinkedTrainingEvent(input: {
   userId: number;
+  tenantId: number;
   planId: number;
   planVersion: number;
   sessionId: number;
@@ -1435,6 +1489,7 @@ async function deleteStaleLinkedTrainingEvent(input: {
       source: staleSource,
       reason: 'training_sync_replaced_stale_event',
       status: 'deleted',
+      tenantId: input.tenantId,
       userId: input.userId,
       planId: input.planId,
     });
@@ -1455,6 +1510,7 @@ async function deleteStaleLinkedTrainingEvent(input: {
       source: staleSource,
       reason: 'training_sync_stale_event_delete_failed',
       status: 'orphaned',
+      tenantId: input.tenantId,
       userId: input.userId,
       planId: input.planId,
     });
@@ -1504,7 +1560,7 @@ function recordTrainingCalendarOwnership(input: {
   planId: number;
   planVersion: number;
   sessionId: number;
-  tenantId?: number;
+  tenantId: number;
   userId: number;
   eventId: string;
   source: string;
@@ -1590,6 +1646,7 @@ function isFutureWindow(start: Date, end: Date, notBefore: Date): boolean {
 
 async function deleteDuplicateTrainingEventsForSession(input: {
   userId: number;
+  tenantId: number;
   planId: number;
   planVersion: number;
   item: {
@@ -1619,6 +1676,7 @@ async function deleteDuplicateTrainingEventsForSession(input: {
         source: event.source,
         reason: 'training_sync_deleted_duplicate_event',
         status: 'deleted',
+        tenantId: input.tenantId,
         userId: input.userId,
         planId: input.planId,
       });
@@ -1641,6 +1699,7 @@ async function deleteDuplicateTrainingEventsForSession(input: {
         source: event.source,
         reason: 'training_sync_duplicate_delete_failed',
         status: 'orphaned',
+        tenantId: input.tenantId,
         userId: input.userId,
         planId: input.planId,
       });
@@ -1674,13 +1733,14 @@ function consumeMatchingExistingTrainingEvent(
   events: UnifiedCalendarEvent[],
   consumedKeys: Set<string>,
   calendarSource: CalendarSource,
+  tenantId: number,
 ): UnifiedCalendarEvent | null {
   for (const event of events) {
     if (event.source !== calendarSource) continue;
     const key = `${event.source}:${event.id}`;
     if (consumedKeys.has(key)) continue;
     if (!isMatchingGeneratedTrainingEvent(item, event, planId, { allowLegacyTitleMatch: false })) continue;
-    if (!isTrainingCalendarEventUnclaimed(event.id, event.source)) continue;
+    if (!isTrainingCalendarEventUnclaimed(event.id, event.source, tenantId)) continue;
     consumedKeys.add(key);
     return event;
   }

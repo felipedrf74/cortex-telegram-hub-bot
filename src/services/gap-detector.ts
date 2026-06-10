@@ -27,6 +27,7 @@ import { getDb } from './database';
 import { logger } from '../utils/logger';
 import { findIllnessSignalsInRange, findPainSignalsInRange } from './health-signals';
 import type { ReturnProtocol } from './coach-kernel/training-principles';
+import { requireTenantIdParam } from './tenant-scope';
 
 export interface GapSignal {
   userId: number;
@@ -38,6 +39,7 @@ export interface GapSignal {
 
 export interface DetectTrainingGapInput {
   userId: number;
+  tenantId: number;
   /** ISO date "now" — caller-controllable. */
   asOfISODate: string;
   /** Minimum gap (days) to consider noteworthy. Default 7. */
@@ -80,13 +82,14 @@ export function detectTrainingGap(input: DetectTrainingGapInput): GapSignal | nu
   const minGap = input.minGapDays ?? 7;
   const lookback = input.signalLookbackDays ?? 30;
   const db = getDb();
+  const tenantId = requireTenantIdParam(input.tenantId, 'detectTrainingGap');
 
   const latest = db.prepare(`
     SELECT MAX(completed_at) AS last_completion
     FROM training_completions tc
     JOIN fitness_training_plans p ON p.id = tc.plan_id
-    WHERE p.user_id = ?
-  `).get(input.userId) as { last_completion: string | null } | undefined;
+    WHERE p.user_id = ? AND p.tenant_id = ?
+  `).get(input.userId, tenantId) as { last_completion: string | null } | undefined;
 
   const lastCompletion = latest?.last_completion ?? null;
   const nowMs = Date.parse(input.asOfISODate);
@@ -101,8 +104,8 @@ export function detectTrainingGap(input: DetectTrainingGapInput): GapSignal | nu
   // Collect concurrent health signals.
   const lookbackStart = new Date(nowMs - lookback * 24 * 3600 * 1000).toISOString().slice(0, 10);
   const lookbackEnd = input.asOfISODate.slice(0, 10);
-  const illnessSignals = findIllnessSignalsInRange(input.userId, lookbackStart, lookbackEnd);
-  const painSignals = findPainSignalsInRange(input.userId, lookbackStart, lookbackEnd);
+  const illnessSignals = findIllnessSignalsInRange(input.userId, tenantId, lookbackStart, lookbackEnd);
+  const painSignals = findPainSignalsInRange(input.userId, tenantId, lookbackStart, lookbackEnd);
 
   let protocol: ReturnProtocol = 'unknown_conservative';
   let rationale = `${gapDays}-day gap, no concurrent signals — defaulting to conservative ramp.`;
@@ -156,7 +159,7 @@ export function detectTrainingGap(input: DetectTrainingGapInput): GapSignal | nu
     }
   }
 
-  logger.info({ userId: input.userId, gapDays, protocol }, 'gap_detector.classified');
+  logger.info({ userId: input.userId, tenantId, gapDays, protocol }, 'gap_detector.classified');
   return {
     userId: input.userId,
     gapDays,

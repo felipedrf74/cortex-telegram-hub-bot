@@ -112,6 +112,28 @@ describe('buildDecisionDedupKey (B3)', () => {
     expect(some.targetEntityIds).toEqual(['e9']);
     expect(some.timeWindow).toBe('2026-05-10'); // works for SQLite space-separated format too
   });
+
+  it('uses the user timezone for semantic dedupe day windows', () => {
+    const lisbon = buildDecisionDedupKey({
+      sourceSkill: 'secretary',
+      type: 'conflict_detected',
+      relatedEntityId: 'slot-1',
+      dedupeKey: null,
+      createdAt: '2026-05-10T23:30:00.000Z',
+      timezone: 'Europe/Lisbon',
+    });
+    const losAngeles = buildDecisionDedupKey({
+      sourceSkill: 'secretary',
+      type: 'conflict_detected',
+      relatedEntityId: 'slot-1',
+      dedupeKey: null,
+      createdAt: '2026-05-10T23:30:00.000Z',
+      timezone: 'America/Los_Angeles',
+    });
+
+    expect(lisbon.timeWindow).toBe('2026-05-11');
+    expect(losAngeles.timeWindow).toBe('2026-05-10');
+  });
 });
 
 describe('isDecisionSemanticDedupEnabled flag (B3)', () => {

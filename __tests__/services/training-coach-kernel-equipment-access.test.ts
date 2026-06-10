@@ -194,12 +194,15 @@ describe('resolveEquipmentAccessWithSource (slice 3.J)', () => {
     expect(r.rawInput).toBe('Pilates studio');
   });
 
-  it('fallback with reason="unrecognized" when gym_profile says "Hotel gym"', () => {
+  it('recognizes "Hotel gym" as limited dumbbell access, not full gym', () => {
     const r = resolveEquipmentAccessWithSource(null, { equipment_access: 'Hotel gym' });
-    expect(r.source).toBe('fallback');
-    if (r.source !== 'fallback') return;
-    expect(r.reason).toBe('unrecognized');
-    expect(r.rawInput).toBe('Hotel gym');
+    expect(r.source).toBe('gym_profile.equipment_access');
+    if (r.source === 'fallback') return;
+    expect(r.matchedKeywords).toEqual(['hotel gym']);
+    expect(r.value.hasGym).toBe(true);
+    expect(r.value.hasDumbbells).toBe(true);
+    expect(r.value.hasBarbell).toBe(false);
+    expect(r.value.notes).toContain('Hotel gym / limited equipment.');
   });
 
   it('fallback with reason="unrecognized" + concatenates BOTH raw inputs when both profiles say something unrecognized', () => {

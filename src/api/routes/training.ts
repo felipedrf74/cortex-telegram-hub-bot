@@ -48,6 +48,7 @@ import {
 } from './training-read-models';
 import { registerTrainingAnalyticsRoutes } from './training-analytics-routes';
 import { registerTrainingPlanRoutes } from './training-plan-routes';
+import { requireTenantIdParam } from '../../services/tenant-scope';
 
 export { looksLikeTrainingCalendarEvent } from './training-calendar-utils';
 
@@ -164,11 +165,12 @@ function buildCoachReportResponse(
 
 async function buildDeterministicCoachFallback(
   userId: number,
+  tenantId: number,
   language: Lang,
 ): Promise<Record<string, unknown> | null> {
   const [todayResult, weekResult, readinessResult] = await Promise.allSettled([
-    getTodaySession(userId),
-    getWeekPlan(userId),
+    getTodaySession(userId, tenantId),
+    getWeekPlan(userId, tenantId),
     getReadiness(userId),
   ]);
 
@@ -226,9 +228,9 @@ export function trainingRoutes(): Router {
    * Never triggers a fresh AI coach run.
    */
   router.get('/home', async (req, res: Response) => {
-    const { userId } = req as AuthenticatedRequest;
+    const { userId, tenantId } = req as AuthenticatedRequest;
     const language = resolveTrainingLanguage(req as AuthenticatedRequest, userId);
-    const cacheKey = `training-home:${userId}:${language}`;
+    const cacheKey = `training-home:${tenantId}:${userId}:${language}`;
 
     const cached = getCached(cacheKey);
     if (cached) {
@@ -237,7 +239,7 @@ export function trainingRoutes(): Router {
     }
 
     try {
-      const payload = await buildTrainingHomePayload(userId, language, {
+      const payload = await buildTrainingHomePayload(userId, tenantId, language, {
         getTodaySession,
         getWeekPlan,
         getReadiness,
@@ -258,8 +260,8 @@ export function trainingRoutes(): Router {
    * Cached for 5 minutes in SQLite. Eliminates 3 separate API calls from iOS.
    */
   router.get('/summary', async (req, res: Response) => {
-    const { userId } = req as AuthenticatedRequest;
-    const cacheKey = `training-summary:${userId}`;
+    const { userId, tenantId } = req as AuthenticatedRequest;
+    const cacheKey = `training-summary:${tenantId}:${userId}`;
 
     const cached = getCached(cacheKey);
     if (cached) {
@@ -269,8 +271,8 @@ export function trainingRoutes(): Router {
 
     // Parallel fetch — NEVER sequential
     const [todayResult, weekResult, readinessResult] = await Promise.allSettled([
-      getTodaySession(userId),
-      getWeekPlan(userId),
+      getTodaySession(userId, tenantId),
+      getWeekPlan(userId, tenantId),
       getReadiness(userId),
     ]);
 
@@ -286,9 +288,9 @@ export function trainingRoutes(): Router {
 
   /** GET /api/v1/training/today */
   router.get('/today', async (req, res: Response) => {
-    const { userId } = req as AuthenticatedRequest;
+    const { userId, tenantId } = req as AuthenticatedRequest;
     try {
-      const session = await getTodaySession(userId);
+      const session = await getTodaySession(userId, tenantId);
       sendSuccess(res, session);
     } catch (err: any) {
       logger.error({ err }, 'iOS training/today failed');
@@ -298,9 +300,9 @@ export function trainingRoutes(): Router {
 
   /** GET /api/v1/training/week */
   router.get('/week', async (req, res: Response) => {
-    const { userId } = req as AuthenticatedRequest;
+    const { userId, tenantId } = req as AuthenticatedRequest;
     try {
-      const week = await getWeekPlan(userId);
+      const week = await getWeekPlan(userId, tenantId);
       sendSuccess(res, week);
     } catch (err: any) {
       logger.error({ err }, 'iOS training/week failed');
@@ -310,9 +312,9 @@ export function trainingRoutes(): Router {
 
   /** GET /api/v1/training/plan/weeks */
   router.get('/plan/weeks', async (req, res: Response) => {
-    const { userId } = req as AuthenticatedRequest;
+    const { userId, tenantId } = req as AuthenticatedRequest;
     try {
-      const weeks = await getAllPlanWeeks(userId);
+      const weeks = await getAllPlanWeeks(userId, tenantId);
       sendSuccess(res, weeks);
     } catch (err: any) {
       logger.error({ err }, 'iOS training/plan/weeks failed');
@@ -340,10 +342,11 @@ export function trainingRoutes(): Router {
    * Use ?refresh=true to force a new AI analysis (costs ~$0.05).
    */
   router.get('/coach', async (req, res: Response) => {
-    const { userId } = req as AuthenticatedRequest;
+    const { userId, tenantId } = req as AuthenticatedRequest;
+    const dataUserId = tenantId;
     const forceRefresh = req.query.refresh === 'true';
     const cacheOnly = req.query.cacheOnly === 'true';
-    const cacheKey = `coach-briefing:${userId}`;
+    const cacheKey = `coach-briefing:${dataUserId}`;
     const language = resolveTrainingLanguage(req as AuthenticatedRequest, userId);
 
     // Return SQLite-cached briefing (survives restarts, no AI call)
@@ -351,16 +354,16 @@ export function trainingRoutes(): Router {
       const cached = getCached<Record<string, unknown>>(cacheKey);
       if (cached) {
         logger.debug('Returning SQLite-cached coach briefing (no AI call)');
-        const payload = syncCoachStateForUser(userId, cached);
+        const payload = syncCoachStateForUser(dataUserId, cached);
         sendSuccess(res, payload, { cached: true });
         return;
       }
 
-      const restored = restoreCoachBriefingFromLatestReport(userId);
+      const restored = restoreCoachBriefingFromLatestReport(dataUserId);
       if (restored) {
-        const payload = syncCoachStateForUser(userId, restored);
+        const payload = syncCoachStateForUser(dataUserId, restored);
         setCache(cacheKey, payload, COACH_BRIEFING_TTL);
-        logger.debug({ userId }, 'Restored coach briefing from latest report document');
+        logger.debug({ userId, tenantId: dataUserId }, 'Restored coach briefing from latest report document');
         sendSuccess(res, payload, { cached: true });
         return;
       }
@@ -384,7 +387,7 @@ export function trainingRoutes(): Router {
         return;
       }
 
-      const briefing = await generateCoachBriefing(userId);
+      const briefing = await generateCoachBriefing(dataUserId, { tenantId: dataUserId, meteringUserId: userId });
 
       // `briefing.message` is the only briefing text field on CoachBriefingResult;
       // garminData is hydrated later via syncCoachStateForUser and the cache-restore
@@ -399,17 +402,17 @@ export function trainingRoutes(): Router {
         cachedAt: new Date().toISOString(),
       };
 
-      const hydratedPayload = syncCoachStateForUser(userId, payload);
+      const hydratedPayload = syncCoachStateForUser(dataUserId, payload);
       setCache(cacheKey, hydratedPayload, COACH_BRIEFING_TTL);
       sendSuccess(res, hydratedPayload);
     } catch (err: any) {
       logger.error({ err }, 'iOS training/coach failed');
-      const fallback = await buildDeterministicCoachFallback(userId, language).catch((fallbackErr) => {
-        logger.debug({ err: fallbackErr, userId }, 'training/coach deterministic fallback failed');
+      const fallback = await buildDeterministicCoachFallback(dataUserId, dataUserId, language).catch((fallbackErr) => {
+        logger.debug({ err: fallbackErr, userId, tenantId: dataUserId }, 'training/coach deterministic fallback failed');
         return null;
       });
       if (fallback) {
-        const hydratedFallback = syncCoachStateForUser(userId, {
+        const hydratedFallback = syncCoachStateForUser(dataUserId, {
           ...fallback,
           degraded: true,
           warnings: [
@@ -437,7 +440,14 @@ export function trainingRoutes(): Router {
   });
 
   router.post('/coach/report', async (req, res: Response) => {
-    const { userId, tenantId = userId } = req as AuthenticatedRequest;
+    const { userId } = req as AuthenticatedRequest;
+    let tenantId: number;
+    try {
+      tenantId = requireTenantIdParam((req as AuthenticatedRequest).tenantId, 'training.coach.report');
+    } catch {
+      sendError(res, 'TENANT_SCOPE_REQUIRED', 'Training coach report requires a validated tenant scope.', 400);
+      return;
+    }
     const dataUserId = tenantId;
     const forceRefresh = req.body?.refresh === true;
     const cacheKey = `coach-briefing:${dataUserId}`;
@@ -478,7 +488,7 @@ export function trainingRoutes(): Router {
       sendSuccess(res, buildCoachReportResponse(payload, language));
     } catch (err: any) {
       logger.error({ err, userId, tenantId: dataUserId }, 'iOS training/coach/report failed');
-      const fallback = await buildDeterministicCoachFallback(dataUserId, language).catch(() => null);
+      const fallback = await buildDeterministicCoachFallback(dataUserId, dataUserId, language).catch(() => null);
       if (fallback) {
         const payload = syncCoachStateForUser(dataUserId, fallback);
         sendSuccess(res, buildCoachReportResponse(payload, language));
@@ -595,7 +605,7 @@ export function trainingRoutes(): Router {
     if (!consumeTrainingWriteBudget(res, tenantId, userId, 'training_session_complete')) return;
 
     try {
-      const resolved = resolveTrainingMutationSession(userId, sessionId, {
+      const resolved = resolveTrainingMutationSession(userId, tenantId, sessionId, {
         getActivePlan: trainingPlans.getActivePlan,
         getCurrentWeek: trainingPlans.getCurrentWeek,
         getSessionsForWeek: trainingPlans.getSessionsForWeek,
@@ -727,7 +737,7 @@ export function trainingRoutes(): Router {
         });
       });
 
-      const adherenceRate = getTrainingWeeklyAdherenceRate(userId, {
+      const adherenceRate = getTrainingWeeklyAdherenceRate(userId, tenantId, {
         getActivePlan: trainingPlans.getActivePlan,
         getCurrentWeek: trainingPlans.getCurrentWeek,
         getWeeklyAdherence: trainingPlans.getWeeklyAdherence,
@@ -756,7 +766,7 @@ export function trainingRoutes(): Router {
     if (!consumeTrainingWriteBudget(res, tenantId, userId, 'training_session_skip')) return;
 
     try {
-      const resolved = resolveTrainingMutationSession(userId, sessionId, {
+      const resolved = resolveTrainingMutationSession(userId, tenantId, sessionId, {
         getActivePlan: trainingPlans.getActivePlan,
         getCurrentWeek: trainingPlans.getCurrentWeek,
         getSessionsForWeek: trainingPlans.getSessionsForWeek,
@@ -814,7 +824,7 @@ export function trainingRoutes(): Router {
         });
       });
 
-      const adherenceRate = getTrainingWeeklyAdherenceRate(userId, {
+      const adherenceRate = getTrainingWeeklyAdherenceRate(userId, tenantId, {
         getActivePlan: trainingPlans.getActivePlan,
         getCurrentWeek: trainingPlans.getCurrentWeek,
         getWeeklyAdherence: trainingPlans.getWeeklyAdherence,
@@ -831,10 +841,10 @@ export function trainingRoutes(): Router {
 
   /** POST /api/v1/training/coach/apply */
   router.post('/coach/apply', async (req, res: Response) => {
-    const { userId } = req as AuthenticatedRequest;
+    const { userId, tenantId } = req as AuthenticatedRequest;
     const { recommendationIds } = req.body;
     try {
-      const applied = await applyCoachRecommendations(userId, recommendationIds);
+      const applied = await applyCoachRecommendations(userId, tenantId, recommendationIds);
       // Applying a coach recommendation changes the coach briefing and
       // training summary the client just read — clear those caches too,
       // otherwise the next read serves the pre-apply brief and the user

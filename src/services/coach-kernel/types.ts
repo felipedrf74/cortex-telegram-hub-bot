@@ -19,6 +19,20 @@ export type IntensityZone =
   | 'neuromuscular';
 export type FatigueCost = 'low' | 'medium' | 'high' | 'very_high';
 export type ReadinessLevel = 'green' | 'yellow' | 'orange' | 'red';
+export type TrainingSessionRole =
+  | 'easy'
+  | 'long'
+  | 'threshold'
+  | 'vo2'
+  | 'recovery'
+  | 'brick'
+  | 'taper'
+  | 'race_specific'
+  | 'technique'
+  | 'strength_maintenance'
+  | 'strength_build'
+  | 'mobility'
+  | 'rest';
 export type DayOfWeek =
   | 'monday'
   | 'tuesday'
@@ -74,6 +88,15 @@ export interface AvailabilityWindow {
   end: string;
   sports?: Sport[];
   label?: string;
+}
+
+export interface CapacityWindow {
+  date: string;
+  startTime?: string;
+  endTime?: string;
+  availableMinutes: number;
+  constraints: string[];
+  source: 'calendar' | 'user_preference' | 'travel' | 'secretary';
 }
 
 export interface Availability {
@@ -171,9 +194,24 @@ export interface RecentSession {
   cyclingIntensity?: number;
   completionStatus?: 'completed' | 'partial' | 'skipped';
   feedbackTags?: Array<'too_hard' | 'too_easy' | 'too_long' | 'underload' | 'substitution' | 'pain' | 'travel' | 'time_loss'>;
+  strengthExerciseSignals?: StrengthExerciseCompletionSignal[];
   completed: boolean;
   keySession?: boolean;
   missedReason?: string;
+}
+
+export interface StrengthExerciseCompletionSignal {
+  exerciseId?: string;
+  exerciseName?: string;
+  completedRepsTopSet: number;
+  prescribedRepsTopSet: number;
+  rpeTopSet?: number;
+  rir?: number;
+  sorenessLevel?: number;
+  technicalSuccessScore?: number;
+  painScore?: number;
+  painLocation?: string;
+  completedAt: string;
 }
 
 export interface ReadinessSnapshot {
@@ -658,6 +696,27 @@ export interface ExercisePrescription {
    * "AI generated" workout apps.
    */
   selectionReason?: ExerciseSelectionReason;
+  /**
+   * Support/debug-only selector trace. Normal iOS UI must not render
+   * this raw payload; user-facing copy comes from `selectionReason`.
+   */
+  selectorTrace?: {
+    selectorPolicyVersion: string;
+    catalogVersion: string;
+    candidateIds: string[];
+    selectedIds: string[];
+    selectedScores?: Array<{ exerciseId: string; score: number }>;
+    rejectedCandidateReasons: Array<{ exerciseId: string; reason: string }>;
+  };
+  /**
+   * Compact, user-facing progression output. Raw completion details
+   * and selector traces remain backend/support data; this summary
+   * answers "why did the coach change or hold this lift?"
+   */
+  progressionState?: 'build' | 'hold' | 'deload' | 'reentry';
+  progressionSummary?: string;
+  progressionReason?: string;
+  progressionConfidence?: 'real_feedback' | 'cold_start' | 'conservative';
 }
 
 export interface ExerciseSelectionReason {
@@ -734,7 +793,11 @@ export type TrainingDecisionReasonCode =
   | 'medical_referral'
   | 'pain_flag'
   | 'illness_flag'
-  | 'red_s_screening_flag';
+  | 'red_s_screening_flag'
+  | 'equipment_conservative_default'
+  | 'equipment_adaptation_applied'
+  | 'endurance_coherence_warning'
+  | 'endurance_interference_warning';
 
 export interface TrainingDecisionReason {
   code: TrainingDecisionReasonCode;
@@ -796,6 +859,16 @@ export interface Session {
     label?: string;
     capacityMinutes: number;
   };
+  /**
+   * Additive read-model metadata for iOS and coach explanations.
+   * `sessionRole` is the compact canonical role; the label/summary are
+   * user-facing and answer "what is this workout for?" without exposing
+   * selector traces or low-level validation internals.
+   */
+  sessionRole?: TrainingSessionRole;
+  sessionRoleLabel?: string;
+  sessionRoleSummary?: string;
+  keySessionLabel?: string;
   /**
    * Slice A2b — Interval-level intensity profile. Full segment plan
    * for the session (warmup + main work + cooldown), used by B1 (TSS

@@ -11,6 +11,7 @@ import {
 } from '../../src/services/coach-kernel/session-coherence';
 import { sampleHybridAthlete, sampleMarathonAthlete } from '../../src/services/coach-kernel/seed/sample-athletes';
 import type { AthleteState, Session } from '../../src/services/coach-kernel/types';
+import { config } from '../../src/config';
 
 function buildStrengthSessions(athlete: AthleteState, weekStart = '2026-05-04') {
   return strengthEngine.buildCandidateSessions({
@@ -56,6 +57,42 @@ describe('coach-kernel strength engine', () => {
     expect(exerciseIds).not.toContain('pull_up');
     expect(exerciseIds).not.toContain('bench_press');
     expect(exerciseIds.some((id) => id.startsWith('dumbbell_') || id === 'goblet_squat' || id === 'side_plank')).toBe(true);
+  });
+
+  it('uses the catalog-backed selector behind the selector policy flag', () => {
+    const previous = config.coaching.trainingSelectorPolicyV2Enabled;
+    config.coaching.trainingSelectorPolicyV2Enabled = true;
+    try {
+      const athlete: AthleteState = {
+        ...sampleHybridAthlete,
+        equipment: {
+          ...sampleHybridAthlete.equipment,
+          hasGym: false,
+          hasBarbell: false,
+          hasDumbbells: true,
+        },
+        goals: {
+          ...sampleHybridAthlete.goals,
+          strengthGoal: 'hybrid',
+          weeklySessionsTarget: {
+            ...sampleHybridAthlete.goals.weeklySessionsTarget,
+            strength: 1,
+          },
+        },
+      };
+
+      const [session] = buildStrengthSessions(athlete);
+      const exercises = session.exercises ?? [];
+      const exerciseIds = exercises.map((exercise) => exercise.exerciseId);
+
+      expect(session.tags).toContain('catalog_selector');
+      expect(new Set(exerciseIds).size).toBe(exerciseIds.length);
+      expect(exerciseIds).not.toContain('front_squat');
+      expect(exerciseIds).not.toContain('back_squat');
+      expect(exercises.some((exercise) => exercise.selectionReason?.pickedBecause.includes('fits your available equipment'))).toBe(true);
+    } finally {
+      config.coaching.trainingSelectorPolicyV2Enabled = previous;
+    }
   });
 
   it('uses hypertrophy-specific prescriptions when hypertrophy is the strength goal', () => {

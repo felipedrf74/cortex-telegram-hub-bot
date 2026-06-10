@@ -28,6 +28,7 @@ import { getLastCoachState } from '../domains/domain-handler';
 import { getUserTimezoneById, isOwnerUserRef } from './user-service';
 import { getDb } from './database';
 import { appleHealthJsonSelectColumns, parseAppleHealthDataJson } from './apple-health-encryption';
+import { requireTenantIdParam } from './tenant-scope';
 
 const client = new Anthropic({
   apiKey: config.anthropic.apiKey,
@@ -196,7 +197,7 @@ export interface CoachBriefingOptions {
    * Telegram `/coach` may leave this false so the interactive MFA flow works.
    */
   garminSilent?: boolean;
-  /** Active tenant/data-owner scope. Defaults to `userId` for legacy callers. */
+  /** Active tenant/data-owner scope. Required for production training reads/writes. */
   tenantId?: number;
   /** Authenticated actor to charge when generating for an active tenant. */
   meteringUserId?: number;
@@ -217,11 +218,13 @@ export async function applyCoachRecommendation(
   scope: CoachRecommendationApplyScope = {},
 ): Promise<void> {
   if (rec.action === 'KEEP') return;
+  const userId = requireTenantIdParam(scope.userId, 'applyCoachRecommendation.userId');
+  const tenantId = requireTenantIdParam(scope.tenantId, 'applyCoachRecommendation');
   const scopedRec = {
     ...rec,
-    userId: scope.userId,
-    tenantId: scope.tenantId ?? scope.userId,
-    timezone: scope.userId ? getUserTimezoneById(scope.userId) : undefined,
+    userId,
+    tenantId,
+    timezone: getUserTimezoneById(userId),
   };
 
   if (rec.action === 'REST') {
@@ -266,11 +269,13 @@ export async function applyCoachRecommendation(
  */
 export async function applyCoachRecommendations(
   userId: number | undefined,
+  tenantId: number | undefined,
   recommendationIds?: string[] | null,
 ): Promise<CoachApplyResult> {
   if (!userId) {
     throw new Error('Missing user id for coach recommendation apply');
   }
+  const scopedTenantId = requireTenantIdParam(tenantId, 'applyCoachRecommendations');
 
   const coachState = getLastCoachState(userId);
   if (!coachState || coachState.recommendations.length === 0) {
@@ -291,7 +296,7 @@ export async function applyCoachRecommendations(
   }
 
   for (const rec of selected) {
-    await applyCoachRecommendation(rec, { userId, tenantId: userId });
+    await applyCoachRecommendation(rec, { userId, tenantId: scopedTenantId });
   }
 
   return {
@@ -360,6 +365,7 @@ export async function generateCoachBriefing(
   userId?: number,
   opts: CoachBriefingOptions = {},
 ): Promise<CoachBriefingResult> {
+  const briefingTenantId = requireTenantIdParam(opts.tenantId, 'generateCoachBriefing');
   const errors: string[] = [];
   const collectStart = Date.now();
   let garminData: GarminCoachData | null = null;
@@ -508,7 +514,10 @@ ${payloadStr}
     // matches Sonnet quality for analytical prompts of this shape.
     // Falls back to Anthropic if Gemini is not configured or fails. See
     // audit P0-8.
-    const meteringScope = resolveCoachAnalysisMeteringScope(opts.meteringUserId ?? userId, opts.tenantId ?? userId);
+    const meteringScope = resolveCoachAnalysisMeteringScope(
+      opts.meteringUserId ?? userId,
+      briefingTenantId,
+    );
     const meteringScopePayload = { userId: meteringScope.userId, tenantId: meteringScope.tenantId };
     const meteringUserId = meteringScopePayload.userId;
     const meteringTenantId = meteringScopePayload.tenantId;

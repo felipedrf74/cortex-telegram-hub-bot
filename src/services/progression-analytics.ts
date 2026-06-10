@@ -30,6 +30,7 @@ import { getDb } from './database';
 import { now } from '../utils/date-parser';
 import { DateTime } from 'luxon';
 import { logger } from '../utils/logger';
+import { requireTenantIdParam } from './tenant-scope';
 
 // ─── Types ──────────────────────────────────────────────────────
 
@@ -254,9 +255,11 @@ interface CompletionRow {
  */
 export function extractStrengthDataPoints(
   userId: number,
+  tenantId: number,
   windowWeeks: number,
   referenceDate?: DateTime,
 ): StrengthDataPoint[] {
+  const scopedTenantId = requireTenantIdParam(tenantId, 'extractStrengthDataPoints');
   const ref = referenceDate ?? now();
   const windowStart = ref.minus({ weeks: windowWeeks }).startOf('day').toISO()!;
   const db = getDb();
@@ -267,12 +270,12 @@ export function extractStrengthDataPoints(
       SELECT tc.completed_at, tc.actual_exercises_json
       FROM training_completions tc
       JOIN fitness_training_plans ftp ON ftp.id = tc.plan_id
-      WHERE ftp.user_id = ?
+      WHERE ftp.user_id = ? AND ftp.tenant_id = ?
         AND tc.completed_at >= ?
       ORDER BY tc.completed_at ASC
-    `).all(userId, windowStart) as CompletionRow[];
+    `).all(userId, scopedTenantId, windowStart) as CompletionRow[];
   } catch (err) {
-    logger.debug({ err, userId }, 'strength progression query failed — returning empty set');
+    logger.debug({ err, userId, tenantId: scopedTenantId }, 'strength progression query failed — returning empty set');
     return [];
   }
 
@@ -349,12 +352,14 @@ const TREND_BAND_PCT = 2.5;
  */
 export function getStrengthProgression(
   userId: number,
+  tenantId: number,
   windowWeeks: number = 8,
   referenceDate?: DateTime,
 ): StrengthProgressionReport {
+  const scopedTenantId = requireTenantIdParam(tenantId, 'getStrengthProgression');
   const ref = referenceDate ?? now();
   const windowStart = ref.minus({ weeks: windowWeeks }).startOf('day').toISO()!;
-  const dataPoints = extractStrengthDataPoints(userId, windowWeeks, ref);
+  const dataPoints = extractStrengthDataPoints(userId, scopedTenantId, windowWeeks, ref);
 
   // Group by lift, preserving date-ascending order from extraction.
   const byLift = new Map<CanonicalLift, StrengthDataPoint[]>();
@@ -604,10 +609,12 @@ function extractCardioDistanceKm(rawJson: string | null): number {
  */
 export function extractCardioDataPoints(
   userId: number,
+  tenantId: number,
   sport: CardioSport,
   windowWeeks: number,
   referenceDate?: DateTime,
 ): Array<{ date: string; distanceKm: number; durationMin: number }> {
+  const scopedTenantId = requireTenantIdParam(tenantId, 'extractCardioDataPoints');
   const ref = referenceDate ?? now();
   const windowStart = ref.minus({ weeks: windowWeeks }).startOf('day').toISO()!;
   const db = getDb();
@@ -619,12 +626,12 @@ export function extractCardioDataPoints(
       FROM training_completions tc
       JOIN training_sessions ts ON ts.id = tc.session_id
       JOIN fitness_training_plans ftp ON ftp.id = tc.plan_id
-      WHERE ftp.user_id = ?
+      WHERE ftp.user_id = ? AND ftp.tenant_id = ?
         AND tc.completed_at >= ?
       ORDER BY tc.completed_at ASC
-    `).all(userId, windowStart) as CardioCompletionRow[];
+    `).all(userId, scopedTenantId, windowStart) as CardioCompletionRow[];
   } catch (err) {
-    logger.debug({ err, userId, sport }, 'cardio progression query failed');
+    logger.debug({ err, userId, tenantId: scopedTenantId, sport }, 'cardio progression query failed');
     return [];
   }
 
@@ -693,14 +700,16 @@ function aggregateByWeek(
  */
 export function getCardioProgression(
   userId: number,
+  tenantId: number,
   sport: CardioSport,
   windowWeeks: number = 8,
   referenceDate?: DateTime,
 ): CardioProgressionReport {
+  const scopedTenantId = requireTenantIdParam(tenantId, 'getCardioProgression');
   const ref = referenceDate ?? now();
   const windowStart = ref.minus({ weeks: windowWeeks }).startOf('day').toISO()!;
 
-  const dataPoints = extractCardioDataPoints(userId, sport, windowWeeks, ref);
+  const dataPoints = extractCardioDataPoints(userId, scopedTenantId, sport, windowWeeks, ref);
   const weeks = aggregateByWeek(dataPoints);
 
   const totalKm = Number(

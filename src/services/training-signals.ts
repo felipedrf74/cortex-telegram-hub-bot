@@ -122,6 +122,7 @@ export function publishSessionLoad(opts: {
  */
 export function publishHighLegLoad(opts: {
   userId: number;
+  tenantId?: number;
   source: 'gym' | 'running';
   rpe: number;
   details?: { lifts?: string[]; mileage?: number; notes?: string };
@@ -135,6 +136,7 @@ export function publishHighLegLoad(opts: {
     signal_type: 'high_leg_load',
     payload: { source: opts.source, rpe: opts.rpe, ...opts.details },
     user_id: opts.userId,
+    tenant_id: opts.tenantId,
     priority: 'urgent',
   });
 }
@@ -263,6 +265,7 @@ export function publishTrainingSessionScheduled(opts: {
  */
 export function publishLowAdherence(opts: {
   userId: number;
+  tenantId: number;
   completed: number;
   planned: number;
   weekStart: string;
@@ -283,6 +286,7 @@ export function publishLowAdherence(opts: {
       reason: opts.reason ?? null,
     },
     user_id: opts.userId,
+    tenant_id: opts.tenantId,
     priority: 'urgent',
   });
 }
@@ -295,6 +299,7 @@ export function publishLowAdherence(opts: {
  */
 export function publishHighAdherence(opts: {
   userId: number;
+  tenantId: number;
   completed: number;
   planned: number;
   weekStart: string;
@@ -311,6 +316,7 @@ export function publishHighAdherence(opts: {
       week_end: opts.weekEnd,
     },
     user_id: opts.userId,
+    tenant_id: opts.tenantId,
     priority: 'normal',
   });
 }
@@ -344,6 +350,7 @@ export function publishHighAdherence(opts: {
  */
 export function publishPlanDrift(opts: {
   userId: number;
+  tenantId: number;
   planSport: string;
   dominantSport: string;
   driftPct: number;
@@ -365,6 +372,7 @@ export function publishPlanDrift(opts: {
       window_weeks: opts.windowWeeks,
     },
     user_id: opts.userId,
+    tenant_id: opts.tenantId,
     priority: 'normal',
     expires_at: new Date(Date.now() + ttl * 3600 * 1000).toISOString(),
   });
@@ -623,7 +631,7 @@ export function readTrainingContext(opts: {
  * Returns the same TrainingContext shape as `readTrainingContext` so the
  * formatter can render either one identically.
  */
-export function readTrainingContextAll(opts: { userId: number }): TrainingContext {
+export function readTrainingContextAll(opts: { userId: number; tenantId?: number }): TrainingContext {
   const consumer = 'triathlon.all';
   const allTrainingSignalTypes: SignalType[] = [
     'low_sleep', 'low_hrv', 'low_readiness', 'planned_race_this_week',
@@ -640,7 +648,7 @@ export function readTrainingContextAll(opts: { userId: number }): TrainingContex
     'budget_remaining', 'subscription_renewal_due',
     'publishing_commitment',
   ];
-  const signals = readSignals(consumer, allTrainingSignalTypes, 40, opts.userId);
+  const signals = readSignals(consumer, allTrainingSignalTypes, 40, opts.userId, undefined, opts.tenantId);
 
   const flags = {
     lowSleep: signals.some((s) => s.signal_type === 'low_sleep'),

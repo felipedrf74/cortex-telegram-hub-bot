@@ -152,11 +152,15 @@ describe('buildAITemporarilyBusyResponse', () => {
     });
     mockGetUnreadMailSummaryForUser.mockResolvedValue({ totalUnread: 9, outlookUnread: 4, gmailUnread: 5 });
 
-    const response = await buildAITemporarilyBusyResponse('secretary', 41);
+    const response = await buildAITemporarilyBusyResponse('secretary', 41, 410);
 
     expect(response.text).toContain('Top priority');
     expect(response.text).toContain('Reserve filming block');
     expect(response.text).toContain('Inbox pressure');
+    expect(mockComposeDailyBrief).toHaveBeenCalledWith(expect.objectContaining({
+      userId: 41,
+      tenantId: 410,
+    }));
   });
 
   it('uses monthly finance summary for finance overloads', async () => {

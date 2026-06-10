@@ -52,8 +52,24 @@ function applyMigrations(db: Database.Database): void {
   }
 }
 
-import { detectTrainingGap } from '../../src/services/gap-detector';
-import { recordHealthSignal } from '../../src/services/health-signals';
+import { detectTrainingGap as detectTrainingGapRaw } from '../../src/services/gap-detector';
+import { recordHealthSignal as recordHealthSignalRaw } from '../../src/services/health-signals';
+
+type DetectTrainingGapTestInput =
+  Omit<Parameters<typeof detectTrainingGapRaw>[0], 'tenantId'> & { tenantId?: number };
+
+function detectTrainingGap(
+  input: DetectTrainingGapTestInput,
+): ReturnType<typeof detectTrainingGapRaw> {
+  return detectTrainingGapRaw({ ...input, tenantId: input.tenantId ?? input.userId });
+}
+
+type RecordHealthSignalTestInput =
+  Omit<Parameters<typeof recordHealthSignalRaw>[0], 'tenantId'> & { tenantId?: number };
+
+function recordHealthSignal(input: RecordHealthSignalTestInput): ReturnType<typeof recordHealthSignalRaw> {
+  return recordHealthSignalRaw({ ...input, tenantId: input.tenantId ?? input.userId });
+}
 
 beforeEach(() => {
   testDb = new Database(':memory:');
@@ -62,22 +78,26 @@ beforeEach(() => {
 
 afterEach(() => testDb.close());
 
-function seedPlanWithCompletion(opts: { userId: number; completedAt: string }): void {
+function seedPlanWithCompletion(opts: { userId: number; completedAt: string; tenantId?: number; planId?: number }): void {
+  const tenantId = opts.tenantId ?? opts.userId;
+  const planId = opts.planId ?? 1;
+  const weekId = planId;
+  const sessionId = planId;
   testDb.prepare(`
-    INSERT INTO fitness_training_plans (id, user_id, name, sport, duration_weeks, start_date, end_date, status)
-    VALUES (1, ?, 'p', 'gym', 4, '2026-01-05', '2026-02-01', 'active')
-  `).run(opts.userId);
+    INSERT INTO fitness_training_plans (id, user_id, tenant_id, name, sport, duration_weeks, start_date, end_date, status)
+    VALUES (?, ?, ?, 'p', 'gym', 4, '2026-01-05', '2026-02-01', 'active')
+  `).run(planId, opts.userId, tenantId);
   testDb.prepare(`
-    INSERT INTO training_weeks (id, plan_id, week_number) VALUES (1, 1, 1)
-  `).run();
+    INSERT INTO training_weeks (id, plan_id, week_number) VALUES (?, ?, 1)
+  `).run(weekId, planId);
   testDb.prepare(`
     INSERT INTO training_sessions (id, week_id, plan_id, day_of_week, session_type, title, duration_minutes, status)
-    VALUES (1, 1, 1, 'monday', 'easy_run', 'x', 45, 'completed')
-  `).run();
+    VALUES (?, ?, ?, 'monday', 'easy_run', 'x', 45, 'completed')
+  `).run(sessionId, weekId, planId);
   testDb.prepare(`
     INSERT INTO training_completions (session_id, plan_id, completed_at, rpe_overall)
-    VALUES (1, 1, ?, 6)
-  `).run(opts.completedAt);
+    VALUES (?, ?, ?, 6)
+  `).run(sessionId, planId, opts.completedAt);
 }
 
 describe('detectTrainingGap — basic detection', () => {
@@ -104,8 +124,8 @@ describe('detectTrainingGap — basic detection', () => {
 
   it('handles user with no completions (treats as very large gap)', () => {
     testDb.prepare(`
-      INSERT INTO fitness_training_plans (id, user_id, name, sport, duration_weeks, start_date, end_date, status)
-      VALUES (1, 100, 'p', 'gym', 4, '2026-01-05', '2026-02-01', 'active')
+      INSERT INTO fitness_training_plans (id, user_id, tenant_id, name, sport, duration_weeks, start_date, end_date, status)
+      VALUES (1, 100, 100, 'p', 'gym', 4, '2026-01-05', '2026-02-01', 'active')
     `).run();
     const gap = detectTrainingGap({
       userId: 100,
@@ -113,6 +133,44 @@ describe('detectTrainingGap — basic detection', () => {
     });
     expect(gap).not.toBeNull();
     expect(gap!.gapDays).toBeGreaterThanOrEqual(7);
+  });
+
+  it('scopes completions and health signals by tenant for same user id', () => {
+    seedPlanWithCompletion({
+      userId: 100,
+      tenantId: 100,
+      planId: 1,
+      completedAt: '2026-05-01T10:00:00Z',
+    });
+    seedPlanWithCompletion({
+      userId: 100,
+      tenantId: 200,
+      planId: 2,
+      completedAt: '2026-05-22T10:00:00Z',
+    });
+    recordHealthSignal({
+      userId: 100,
+      tenantId: 100,
+      date: '2026-05-10',
+      illnessSymptoms: ['fever'],
+      consentScope: ['illness'],
+    });
+
+    const tenant100Gap = detectTrainingGap({
+      userId: 100,
+      tenantId: 100,
+      asOfISODate: '2026-05-23T10:00:00Z',
+      minGapDays: 7,
+    });
+    const tenant200Gap = detectTrainingGap({
+      userId: 100,
+      tenantId: 200,
+      asOfISODate: '2026-05-23T10:00:00Z',
+      minGapDays: 7,
+    });
+
+    expect(tenant100Gap?.protocol).toBe('febrile_or_systemic_illness');
+    expect(tenant200Gap).toBeNull();
   });
 });
 

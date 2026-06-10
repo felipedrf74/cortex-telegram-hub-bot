@@ -8,7 +8,7 @@ import {
 
 function buildDeps(overrides: Partial<TrainingSessionMutationDeps> = {}): TrainingSessionMutationDeps {
   return {
-    getActivePlan: vi.fn(() => ({ id: 44, user_id: 12 })),
+    getActivePlan: vi.fn(() => ({ id: 44, user_id: 12, tenant_id: 12 })),
     getCurrentWeek: vi.fn(() => ({ id: 78 })),
     getSessionsForWeek: vi.fn(() => [
       {
@@ -19,7 +19,7 @@ function buildDeps(overrides: Partial<TrainingSessionMutationDeps> = {}): Traini
       },
     ]),
     getSessionById: vi.fn(() => ({ id: 321, plan_id: 44 })),
-    getPlanById: vi.fn(() => ({ id: 44, user_id: 12 })),
+    getPlanById: vi.fn(() => ({ id: 44, user_id: 12, tenant_id: 12 })),
     getWeeklyAdherence: vi.fn(() => ({ adherenceRate: 40 })),
     ...overrides,
   };
@@ -33,13 +33,13 @@ describe('training-session-mutations', () => {
   it('resolves an explicit numeric session id and verifies ownership', () => {
     const deps = buildDeps();
 
-    const result = resolveTrainingMutationSession(12, '321', deps);
+    const result = resolveTrainingMutationSession(12, 12, '321', deps);
 
     expect(result).toEqual({
       kind: 'resolved',
       rowId: 321,
       session: { id: 321, plan_id: 44 },
-      plan: { id: 44, user_id: 12 },
+      plan: { id: 44, user_id: 12, tenant_id: 12 },
     });
   });
 
@@ -48,7 +48,7 @@ describe('training-session-mutations', () => {
     (sessionId) => {
       const deps = buildDeps();
 
-      const result = resolveTrainingMutationSession(12, sessionId, deps);
+      const result = resolveTrainingMutationSession(12, 12, sessionId, deps);
 
       expect(result).toEqual({
         kind: 'bad_input',
@@ -69,12 +69,13 @@ describe('training-session-mutations', () => {
       getSessionById: vi.fn((sessionId: number) => ({ id: sessionId, plan_id: 44 })),
     });
 
-    const result = resolveTrainingMutationSession(12, 'today', deps);
+    const result = resolveTrainingMutationSession(12, 12, 'today', deps);
 
     expect(result).toMatchObject({
       kind: 'resolved',
       rowId: 222,
     });
+    expect(deps.getActivePlan).toHaveBeenCalledWith(12, 12);
   });
 
   it('resolves today using the Training timezone instead of the process date', () => {
@@ -88,7 +89,7 @@ describe('training-session-mutations', () => {
       getSessionById: vi.fn((sessionId: number) => ({ id: sessionId, plan_id: 44 })),
     });
 
-    const result = resolveTrainingMutationSession(12, 'today', deps);
+    const result = resolveTrainingMutationSession(12, 12, 'today', deps);
 
     expect(result).toMatchObject({
       kind: 'resolved',
@@ -105,7 +106,7 @@ describe('training-session-mutations', () => {
       ]),
     });
 
-    const result = resolveTrainingMutationSession(12, 'today', deps, {
+    const result = resolveTrainingMutationSession(12, 12, 'today', deps, {
       excludeSkippedSessions: true,
     });
 
@@ -117,7 +118,7 @@ describe('training-session-mutations', () => {
       getSessionById: vi.fn(() => null),
     });
 
-    const result = resolveTrainingMutationSession(12, '999', deps);
+    const result = resolveTrainingMutationSession(12, 12, '999', deps);
 
     expect(result).toEqual({ kind: 'not_found', rowId: 999 });
   });
@@ -128,7 +129,22 @@ describe('training-session-mutations', () => {
       getPlanById: vi.fn(() => ({ id: 88, user_id: 77 })),
     });
 
-    const result = resolveTrainingMutationSession(12, '999', deps);
+    const result = resolveTrainingMutationSession(12, 12, '999', deps);
+
+    expect(result).toEqual({
+      kind: 'forbidden',
+      rowId: 999,
+      session: { id: 999, plan_id: 88 },
+    });
+  });
+
+  it('returns forbidden when the session belongs to the same user in another tenant', () => {
+    const deps = buildDeps({
+      getSessionById: vi.fn(() => ({ id: 999, plan_id: 88 })),
+      getPlanById: vi.fn(() => ({ id: 88, user_id: 12, tenant_id: 99 })),
+    });
+
+    const result = resolveTrainingMutationSession(12, 12, '999', deps);
 
     expect(result).toEqual({
       kind: 'forbidden',
@@ -142,7 +158,7 @@ describe('training-session-mutations', () => {
       getWeeklyAdherence: vi.fn(() => ({ adherenceRate: 55 })),
     });
 
-    expect(getTrainingWeeklyAdherenceRate(12, deps)).toBe(0.55);
+    expect(getTrainingWeeklyAdherenceRate(12, 12, deps)).toBe(0.55);
   });
 
   it('returns numeric weekly adherence unchanged when already normalized', () => {
@@ -150,7 +166,7 @@ describe('training-session-mutations', () => {
       getWeeklyAdherence: vi.fn(() => 0.4),
     });
 
-    expect(getTrainingWeeklyAdherenceRate(12, deps)).toBe(0.4);
+    expect(getTrainingWeeklyAdherenceRate(12, 12, deps)).toBe(0.4);
   });
 
   it('returns null when adherence lookup throws', () => {
@@ -160,6 +176,6 @@ describe('training-session-mutations', () => {
       }),
     });
 
-    expect(getTrainingWeeklyAdherenceRate(12, deps)).toBeNull();
+    expect(getTrainingWeeklyAdherenceRate(12, 12, deps)).toBeNull();
   });
 });

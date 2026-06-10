@@ -79,9 +79,31 @@ export interface SessionInput {
     note?: string;
     distance_km?: number;
     pace?: string;
+    exerciseId?: string;
+    tempo?: string;
+    selectionReason?: {
+      pickedBecause?: string[];
+    };
+    progressionSummary?: string;
+    progressionReason?: string;
+    progressionState?: string;
+    progressionConfidence?: string;
   }>;
   /** Day name as canonicalized by the planner ("Monday" etc). */
   dayOfWeek: string;
+  sessionRole?: string;
+  sessionRoleLabel?: string;
+  sessionRoleSummary?: string;
+  keySessionLabel?: string;
+  intensitySummary?: {
+    primaryZone?: string;
+    lowPct?: number;
+    moderatePct?: number;
+    highPct?: number;
+    estimatedLoad?: number;
+    targetSummaryText?: string;
+  };
+  decisionReasons?: Array<{ text?: string; severity?: string; code?: string }>;
 }
 
 export interface AthleteProfiles {
@@ -118,6 +140,13 @@ export interface SessionSections {
   }>;
   /** Pace/HR/RPE/etc. — sport- and session-type-specific. */
   execution?: Array<{ label: string; value: string; note?: string }>;
+  /** Compact user-facing explanations derived from backend decision data. */
+  coachInsights?: Array<{
+    presentationLevel: 'user_facing';
+    label: string;
+    value: string;
+    reasonCode?: string;
+  }>;
   /** Numbered gym exercise list (only present for strength sessions). */
   exercises?: Array<{
     index: number;
@@ -170,6 +199,7 @@ function buildSections(input: SessionDescriptionInput): SessionSections {
     badge: buildBadge(input),
     weeklyProgression: undefined,
     execution: buildExecution(input, sport),
+    coachInsights: buildCoachInsights(input),
     exercises: buildExercises(input.session.exercises),
     warmup: buildWarmup(input.session.sessionType, sport),
     cooldown: buildCooldown(input.session.sessionType, sport),
@@ -566,6 +596,44 @@ function buildImportant(input: SessionDescriptionInput, sport: SportFamily): Ses
   return notes.length > 0 ? notes : undefined;
 }
 
+function buildCoachInsights(input: SessionDescriptionInput): SessionSections['coachInsights'] {
+  const insights: NonNullable<SessionSections['coachInsights']> = [];
+  const addInsight = (label: string, value: string | null | undefined, reasonCode?: string): void => {
+    const cleaned = String(value ?? '').trim();
+    if (!cleaned) return;
+    const key = `${label}|${cleaned}`.toLowerCase();
+    if (insights.some((item) => `${item.label}|${item.value}`.toLowerCase() === key)) return;
+    insights.push({
+      presentationLevel: 'user_facing',
+      label,
+      value: cleaned,
+      reasonCode,
+    });
+  };
+
+  addInsight('Training role', input.session.sessionRoleLabel, input.session.sessionRole);
+  addInsight('Coach intent', input.session.sessionRoleSummary, 'session_role_summary');
+  addInsight('Key session', input.session.keySessionLabel, 'key_session_label');
+  addInsight('Intensity target', input.session.intensitySummary?.targetSummaryText, 'intensity_summary');
+
+  for (const reason of input.session.decisionReasons ?? []) {
+    if (!reason || reason.severity === 'info') continue;
+    addInsight('Why this changed', reason.text, reason.code);
+  }
+
+  for (const exercise of input.session.exercises ?? []) {
+    const selection = exercise.selectionReason?.pickedBecause?.[0];
+    if (selection) {
+      addInsight(`${exercise.name ?? 'Exercise'} selection`, selection, 'exercise_selection');
+    }
+    if (exercise.progressionSummary) {
+      addInsight(`${exercise.name ?? 'Exercise'} progression`, exercise.progressionSummary, exercise.progressionState);
+    }
+  }
+
+  return insights.length > 0 ? insights.slice(0, 6) : undefined;
+}
+
 // ── Total minutes / notes ──────────────────────────────────────────
 
 function buildTotalMinutesText(durationMinutes: number): string {
@@ -661,6 +729,14 @@ export function renderSectionsAsText(sections: SessionSections): string {
       for (const item of sections.cooldown.items) {
         lines.push(`• ${item}`);
       }
+    }
+    lines.push('');
+  }
+
+  if (sections.coachInsights && sections.coachInsights.length > 0) {
+    lines.push('COACH INSIGHTS:');
+    for (const item of sections.coachInsights) {
+      lines.push(`• ${item.label}: ${item.value}`);
     }
     lines.push('');
   }

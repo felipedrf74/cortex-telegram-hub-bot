@@ -52,7 +52,7 @@ import {
 } from './chat-pending-confirmations';
 import { isValidTenantUserId, recordTenantScopeAnomaly } from './tenant-scope-observability';
 import { logger } from '../utils/logger';
-import { isDecisionCenterCommandBusEnabled, isDecisionCenterFatigueCapsEnabled, isDecisionCenterGuidanceSkillEnabled, isDecisionCenterGuidanceV1Enabled, isDecisionChoiceOptionsEnabled, isDecisionEvidenceFreshnessGateEnabled, isDecisionHumanReviewGateEnabled, isDecisionReconnectAffordanceEnabled, isDecisionRollbackSnapshotProtectionEnabled, isDecisionSemanticDedupEnabled, isDecisionSemanticSupersedeEnabled, isDecisionSkillCardsEnabled, isDecisionStreakV1Enabled, isDecisionTypeSuppressionEnabled } from './runtime-flags';
+import { isDecisionCenterCommandBusEnabled, isDecisionCenterFatigueCapsEnabled, isDecisionCenterGuidanceSkillEnabled, isDecisionCenterGuidanceV1Enabled, isDecisionChoiceOptionsEnabled, isDecisionEvidenceFreshnessGateEnabled, isDecisionFeedbackSuppressionEnabled, isDecisionHumanReviewGateEnabled, isDecisionReconnectAffordanceEnabled, isDecisionRollbackSnapshotProtectionEnabled, isDecisionSemanticDedupEnabled, isDecisionSemanticSupersedeEnabled, isDecisionSkillCardsEnabled, isDecisionStreakV1Enabled, isDecisionTypeSuppressionEnabled } from './runtime-flags';
 import { decisionRelationshipSemantics, type DecisionRelationshipKind, type DecisionRelationshipType } from './decision-relationship-types';
 import { buildDecisionDedupKey, classifyDecisionDedup } from './decision-center-semantic-dedup';
 import type { SecretaryTodaySummaryModel } from './secretary-orchestrator';
@@ -609,6 +609,7 @@ interface DecisionRecord extends NotificationCenterItem {
   privacyPolicy: NotificationPrivacyPolicy;
   deliveryPolicy: string | null;
   snoozedUntil: string | null;
+  priorityScore: number | null;
   actionedAt: string | null;
   decisionLogActionTaken: string | null;
   actionResult: Record<string, unknown> | null;
@@ -763,6 +764,7 @@ export function ensureDecisionCenterTables(): void {
   const db = getDb();
   ensureColumn('notification_center_items', 'snoozed_until', 'TEXT');
   ensureColumn('notification_center_items', 'action_result_json', 'TEXT');
+  ensureColumn('notification_center_items', 'priority_score', 'INTEGER');
   db.exec(`
     CREATE TABLE IF NOT EXISTS decision_action_executions (
       action_execution_id TEXT PRIMARY KEY,
@@ -785,6 +787,8 @@ export function ensureDecisionCenterTables(): void {
       ON decision_action_executions(user_id, tenant_id, decision_id, action_id);
     CREATE INDEX IF NOT EXISTS idx_notification_center_decision_home
       ON notification_center_items(user_id, tenant_id, status, priority, created_at);
+    CREATE INDEX IF NOT EXISTS idx_notification_center_decision_rank
+      ON notification_center_items(user_id, tenant_id, status, priority_score DESC, created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_notification_center_active_expiry
       ON notification_center_items(status, expires_at) WHERE expires_at IS NOT NULL;
     CREATE TABLE IF NOT EXISTS decision_dependencies (
@@ -922,6 +926,19 @@ export function ensureDecisionCenterTables(): void {
     );
     CREATE INDEX IF NOT EXISTS idx_decision_type_suppressions_scope
       ON decision_type_suppressions(user_id, tenant_id);
+    CREATE TABLE IF NOT EXISTS decision_recipe_suppressions (
+      user_id INTEGER NOT NULL,
+      tenant_id INTEGER NOT NULL,
+      source_skill TEXT NOT NULL,
+      type TEXT NOT NULL,
+      recipe TEXT NOT NULL,
+      mode TEXT NOT NULL,
+      until TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      PRIMARY KEY (user_id, tenant_id, source_skill, type, recipe)
+    );
+    CREATE INDEX IF NOT EXISTS idx_decision_recipe_suppressions_scope
+      ON decision_recipe_suppressions(user_id, tenant_id, source_skill, type);
   `);
   ensureColumn('handled_by_nexus_items', 'explanation_json', 'TEXT');
 }
@@ -994,12 +1011,14 @@ function linkConflictingDecisionsOnCreate(newId: string, input: NotificationInte
   const supersedeEnabled = isDecisionSemanticSupersedeEnabled(process.env, { userId, tenantId });
   let collapsedToExistingId: string | undefined;
   try {
+    const timezone = getOrCreateNotificationProfile(userId, tenantId).timezone;
     const candidate = buildDecisionDedupKey({
       sourceSkill: input.sourceSkill,
       type: input.type,
       relatedEntityId: input.relatedEntityId == null ? null : String(input.relatedEntityId),
       dedupeKey: input.dedupeKey ?? null,
       createdAt,
+      timezone,
     });
     for (const existing of listActiveDedupCandidates(userId, tenantId, newId)) {
       // Per-candidate isolation: a single pairing that throws (e.g. addDecisionDependency racing a
@@ -1014,6 +1033,7 @@ function linkConflictingDecisionsOnCreate(newId: string, input: NotificationInte
           relatedEntityId: existing.relatedEntityId,
           dedupeKey: existing.dedupeKey,
           createdAt: existing.createdAt,
+          timezone,
         });
         const verdict = classifyDecisionDedup(candidate, [existingKey]).verdict;
         // Map the dedup verdict to an ADVISORY relationship type (only `blocks` prevents action, so
@@ -1164,6 +1184,7 @@ export function listDecisionItems(
     limit?: number;
     maxLimit?: number;
     recordExposure?: boolean;
+    materializePriorityScore?: boolean;
   } = {},
 ): DecisionApiItem[] {
   assertScope(userId, tenantId, 'list_decision_items', opts);
@@ -1193,7 +1214,9 @@ export function listDecisionItems(
     clauses.push("(items.snoozed_until IS NULL OR datetime(items.snoozed_until) <= datetime('now'))");
   }
   const maxLimit = Math.min(Math.max(opts.maxLimit ?? 200, 1), 500);
-  params.push(Math.min(Math.max(opts.limit ?? 80, 1), maxLimit));
+  const requestedLimit = Math.min(Math.max(opts.limit ?? 80, 1), maxLimit);
+  const shouldMaterializePriorityScore = opts.materializePriorityScore ?? opts.recordExposure !== false;
+  params.push(maxLimit);
 
   const rows = getDb().prepare(`
     SELECT items.*, intents.related_entity_id, intents.related_entity_type, intents.requires_user_action,
@@ -1202,7 +1225,7 @@ export function listDecisionItems(
       JOIN notification_intents intents ON intents.intent_id = items.intent_id
      WHERE ${clauses.join(' AND ')}
      ORDER BY
-       CASE items.priority WHEN 'critical' THEN 0 WHEN 'time_sensitive' THEN 1 WHEN 'active' THEN 2 ELSE 3 END,
+       COALESCE(items.priority_score, CASE items.priority WHEN 'critical' THEN 100 WHEN 'time_sensitive' THEN 90 WHEN 'active' THEN 70 ELSE 35 END) DESC,
        COALESCE(intents.decision_deadline, items.expires_at, items.created_at) ASC,
        items.created_at DESC
      LIMIT ?
@@ -1216,7 +1239,18 @@ export function listDecisionItems(
     .filter((item) => !isSnoozedUntilFuture(item))
     .filter((item) => opts.status === 'expired' || !isDecisionExpired(item))
     .filter((item) => !opts.urgency || urgencyForPriority(item.priority, item.decisionDeadline, item.expiresAt) === opts.urgency);
-  return records.map((record) => formatDecisionItemForApiWithExposure(record, { recordExposure: opts.recordExposure }));
+  return records
+    .map((record) => ({
+      record,
+      item: formatDecisionItemForApi(record, { materializePriorityScore: false }),
+    }))
+    .sort((a, b) => compareDecisionApiItemsByRank(a.item, b.item))
+    .slice(0, requestedLimit)
+    .map(({ record, item }) => {
+      if (shouldMaterializePriorityScore) materializeDecisionPriorityScore(record, item.priorityScore);
+      if (opts.recordExposure !== false) recordDecisionExposure(record, item);
+      return item;
+    });
 }
 
 function isUserFacingDecision(record: DecisionRecord, logic: DecisionLogicV2): DecisionUserFacingFilterVerdict {
@@ -1328,9 +1362,11 @@ export function findDecisionByRelatedEntity(
 }
 
 export function getDecisionSummary(userId: number, tenantId = userId, limit = 3): DecisionSummary {
-  const items = listDecisionItems(userId, tenantId, { status: 'all', limit: 80 });
+  const items = listDecisionItems(userId, tenantId, { status: 'all', limit: 80, recordExposure: false });
   const handled = listHandledByNexusItems(userId, tenantId, 25);
-  return buildDecisionSummaryFromSections(userId, tenantId, items, handled, limit);
+  const summary = buildDecisionSummaryFromSections(userId, tenantId, items, handled, limit);
+  recordDecisionItemExposures(summary.previewItems);
+  return summary;
 }
 
 function buildDecisionSummaryFromSections(
@@ -1424,7 +1460,7 @@ export function getDecisionOverview(
   let summaryAvailable = true;
 
   try {
-    allItems = listDecisionItems(userId, tenantId, { status: 'all', limit: itemReadLimit });
+    allItems = listDecisionItems(userId, tenantId, { status: 'all', limit: itemReadLimit, recordExposure: false });
   } catch (err) {
     if (shouldRethrowDecisionOverviewError(err)) throw err;
     itemsAvailable = false;
@@ -1475,6 +1511,8 @@ export function getDecisionOverview(
       logDecisionOverviewSectionFailure('summary', err, userId, tenantId);
     }
   }
+  recordDecisionItemExposures(items);
+  recordDecisionItemExposures(summary.previewItems);
   const staleCount = openItemsRaw.filter((item) => item.analysis.sourceFreshness === 'stale' || item.sourceTrace?.dataFreshness === 'cached').length;
   const supersededCount = allItems.filter((item) => ['superseded', 'dismissed', 'actioned'].includes(item.status)).length;
   const topSuggestion = summary.topSuggestion ?? (allOpenItems[0] ? topSuggestionForItem(allOpenItems[0]) : null);
@@ -2024,6 +2062,10 @@ export function runDecisionExpiryJob(input: { batchSize?: number; maxBatches?: n
     for (const row of rows) {
       emitDecisionLifecycleEvent({ decisionId: row.item_id, userId: row.user_id, tenantId: row.tenant_id, event: 'expired', toStatus: 'expired' });
     }
+    emitUnblockedDependentsForBlockers(
+      rows.map((row) => ({ decisionId: row.item_id, userId: row.user_id, tenantId: row.tenant_id })),
+      'blocker_expired',
+    );
     expired += rows.length;
     batches += 1;
     if (rows.length < batchSize) break;
@@ -2687,7 +2729,55 @@ function priorityScoreFor(item: DecisionRecord): number {
   return urgencyScore + deadlineBoost;
 }
 
-function formatDecisionItemForApi(item: DecisionRecord): DecisionApiItem {
+function compareDecisionApiItemsByRank(a: DecisionApiItem, b: DecisionApiItem): number {
+  if (b.priorityScore !== a.priorityScore) return b.priorityScore - a.priorityScore;
+  const aDeadline = Date.parse(a.deadlineAt ?? a.expiresAt ?? a.createdAt);
+  const bDeadline = Date.parse(b.deadlineAt ?? b.expiresAt ?? b.createdAt);
+  const safeADeadline = Number.isFinite(aDeadline) ? aDeadline : Number.MAX_SAFE_INTEGER;
+  const safeBDeadline = Number.isFinite(bDeadline) ? bDeadline : Number.MAX_SAFE_INTEGER;
+  if (safeADeadline !== safeBDeadline) return safeADeadline - safeBDeadline;
+  return Date.parse(b.createdAt) - Date.parse(a.createdAt);
+}
+
+function materializeDecisionPriorityScore(item: DecisionRecord, priorityScore: number): void {
+  if (item.priorityScore === priorityScore) return;
+  try {
+    const result = getDb().prepare(`
+      UPDATE notification_center_items
+         SET priority_score = ?
+       WHERE item_id = ? AND user_id = ? AND tenant_id = ?
+    `).run(priorityScore, item.itemId, item.userId, item.tenantId);
+    assertScopedMutation(result, 'materialize_decision_priority_score', {
+      itemId: item.itemId,
+      userId: item.userId,
+      tenantId: item.tenantId,
+    });
+    item.priorityScore = priorityScore;
+  } catch (error) {
+    logger.warn?.({ error, itemId: item.itemId }, 'Failed to materialize Decision Center priority score');
+  }
+}
+
+function assertScopedMutation(
+  result: { changes?: number | bigint },
+  operation: string,
+  details: { itemId: string; userId: number; tenantId: number },
+): void {
+  if (Number(result.changes ?? 0) === 1) return;
+  recordTenantScopeAnomaly({
+    layer: 'orchestration',
+    operation,
+    reason: 'invalid_user_scope',
+    userId: isValidTenantUserId(details.userId) ? details.userId : null,
+    details,
+  });
+  throw new DecisionActionError('INVALID_SCOPE', 'Scoped mutation did not affect the expected decision row', 404, details);
+}
+
+function formatDecisionItemForApi(
+  item: DecisionRecord,
+  opts: { materializePriorityScore?: boolean } = {},
+): DecisionApiItem {
   const logic = decisionLogicForRecord(item);
   const safeTitle = logic.safePreviewTitle || safeTitleForItem(item);
   const actions = actionsForRecord(item);
@@ -2714,6 +2804,10 @@ function formatDecisionItemForApi(item: DecisionRecord): DecisionApiItem {
     actionCount: actions.length,
     dependencyBlocked: dependencies.blockedByDecisionIds.length > 0,
   });
+  const priorityScore = priorityScoreFor(item);
+  if (opts.materializePriorityScore !== false) {
+    materializeDecisionPriorityScore(item, priorityScore);
+  }
   const analysisBundle = analysisForRecord(item, logic);
   // F2: gate actionability on stale evidence (flag-gated; only lowers write-capable actionability so the
   // client offers Refresh instead of acting on stale data). OFF or fresh => unchanged.
@@ -2747,7 +2841,7 @@ function formatDecisionItemForApi(item: DecisionRecord): DecisionApiItem {
     prioritySnapshot,
     urgency,
     timingLabel: timingLabelForRecord(item, urgency),
-    priorityScore: priorityScoreFor(item),
+    priorityScore,
     title: logic.title,
     summary: logic.problemStatement,
     safePreviewTitle: safeTitle,
@@ -2830,9 +2924,9 @@ function formatDecisionItemForApi(item: DecisionRecord): DecisionApiItem {
 
 function formatDecisionItemForApiWithExposure(
   item: DecisionRecord,
-  opts: { recordExposure?: boolean } = {},
+  opts: { recordExposure?: boolean; materializePriorityScore?: boolean } = {},
 ): DecisionApiItem {
-  const apiItem = formatDecisionItemForApi(item);
+  const apiItem = formatDecisionItemForApi(item, { materializePriorityScore: opts.materializePriorityScore });
   if (opts.recordExposure !== false) recordDecisionExposure(item, apiItem);
   return apiItem;
 }
@@ -4336,6 +4430,7 @@ function mapDecisionRecord(row: any): DecisionRecord {
     privacyPolicy: row.privacy_policy ?? 'standard',
     deliveryPolicy: row.delivery_policy,
     snoozedUntil: row.snoozed_until ?? null,
+    priorityScore: row.priority_score ?? null,
     actionedAt: row.actioned_at ?? null,
     decisionLogActionTaken: row.decision_log_action_taken ?? null,
     actionResult: row.action_result_json ? safeParseJson(row.action_result_json, null) : null,
@@ -4670,7 +4765,7 @@ export function computeConfidenceExplanation(
 export type DecisionLifecycleEvent =
   | 'created' | 'surfaced' | 'detail_opened' | 'viewed' | 'snoozed' | 'dismissed'
   | 'action_previewed' | 'action_started' | 'action_succeeded' | 'action_failed' | 'verified'
-  | 'expired' | 'superseded' | 'rolled_back';
+  | 'expired' | 'superseded' | 'rolled_back' | 'unblocked';
 
 let decisionLifecycleEventWriteFailures = 0;
 
@@ -4717,6 +4812,94 @@ function emitDecisionLifecycleEvent(input: {
   }
 }
 
+function emitUnblockedDependentsForBlockers(
+  blockers: Array<{ decisionId: string; userId: number; tenantId: number }>,
+  reason: string,
+): void {
+  if (process.env.DECISION_LIFECYCLE_EVENTS_ENABLED === '0' || blockers.length === 0) return;
+  try {
+    const db = getDb();
+    const blockerIds = [...new Set(blockers.map((blocker) => blocker.decisionId))];
+    const placeholders = blockerIds.map(() => '?').join(', ');
+    const activeStatuses = [...DECISION_EXPIRY_ACTIVE_STATUSES];
+    const activePlaceholders = activeStatuses.map(() => '?').join(', ');
+    const rows = db.prepare(`
+      SELECT deps.decision_id,
+             deps.depends_on_decision_id,
+             deps.user_id,
+             deps.tenant_id,
+             dependent.status AS dependent_status
+        FROM decision_dependencies deps
+        JOIN notification_center_items dependent
+          ON dependent.item_id = deps.decision_id
+         AND dependent.user_id = deps.user_id
+         AND dependent.tenant_id = deps.tenant_id
+       WHERE deps.depends_on_decision_id IN (${placeholders})
+         AND deps.relationship = 'blocks'
+         AND dependent.status IN (${activePlaceholders})
+    `).all(...blockerIds, ...activeStatuses) as Array<{
+      decision_id: string;
+      depends_on_decision_id: string;
+      user_id: number;
+      tenant_id: number;
+      dependent_status: string;
+    }>;
+    const grouped = new Map<string, {
+      decisionId: string;
+      userId: number;
+      tenantId: number;
+      blockerDecisionIds: Set<string>;
+      status: string;
+    }>();
+    for (const row of rows) {
+      const key = `${row.user_id}:${row.tenant_id}:${row.decision_id}`;
+      let group = grouped.get(key);
+      if (!group) {
+        group = {
+          decisionId: row.decision_id,
+          userId: row.user_id,
+          tenantId: row.tenant_id,
+          blockerDecisionIds: new Set(),
+          status: row.dependent_status,
+        };
+        grouped.set(key, group);
+      }
+      group.blockerDecisionIds.add(row.depends_on_decision_id);
+    }
+    const unresolved = db.prepare(`
+      SELECT COUNT(*) AS n
+        FROM decision_dependencies deps
+        JOIN notification_center_items blocker
+          ON blocker.item_id = deps.depends_on_decision_id
+         AND blocker.user_id = deps.user_id
+         AND blocker.tenant_id = deps.tenant_id
+       WHERE deps.decision_id = ?
+         AND deps.user_id = ?
+         AND deps.tenant_id = ?
+         AND deps.relationship = 'blocks'
+         AND blocker.status IN (${activePlaceholders})
+    `);
+    for (const group of grouped.values()) {
+      const remaining = unresolved.get(group.decisionId, group.userId, group.tenantId, ...activeStatuses) as { n: number };
+      if ((remaining?.n ?? 0) > 0) continue;
+      emitDecisionLifecycleEvent({
+        decisionId: group.decisionId,
+        userId: group.userId,
+        tenantId: group.tenantId,
+        event: 'unblocked',
+        toStatus: group.status,
+        reason,
+        metadata: {
+          blockerDecisionIds: [...group.blockerDecisionIds].sort(),
+        },
+      });
+    }
+  } catch (err) {
+    decisionLifecycleEventWriteFailures += 1;
+    logger.warn({ err, reason }, 'Decision dependency unblocked lifecycle check failed (non-fatal)');
+  }
+}
+
 function shouldEmitSurfaced(record: DecisionRecord): boolean {
   return ['unread', 'read', 'failed', 'snoozed'].includes(record.status);
 }
@@ -4724,6 +4907,15 @@ function shouldEmitSurfaced(record: DecisionRecord): boolean {
 function recordDecisionExposure(record: DecisionRecord, item: DecisionApiItem): void {
   emitDecisionSurfacedIfFirst(record);
   emitDecisionActionPreviewedForVisibleActions(record, item);
+}
+
+export function recordDecisionItemExposures(items: DecisionApiItem[]): void {
+  for (const item of items) {
+    const record = getDecisionRecord(item.decisionId, item.userId, item.tenantId);
+    if (!record || !isDecisionRecord(record)) continue;
+    materializeDecisionPriorityScore(record, item.priorityScore);
+    recordDecisionExposure(record, item);
+  }
 }
 
 function emitDecisionSurfacedIfFirst(record: DecisionRecord): void {
@@ -4980,6 +5172,7 @@ export type DecisionTypeSuppressionMode = 'dont_show_type' | 'snooze_type';
 export interface DecisionTypeSuppression {
   sourceSkill: string;
   type: string;
+  recipe: string | null;
   mode: DecisionTypeSuppressionMode;
   until: string | null;
   createdAt: string;
@@ -4996,14 +5189,23 @@ export function suppressDecisionType(
   type: string,
   mode: DecisionTypeSuppressionMode,
   until: string | null = null,
+  recipe: string | null = null,
 ): void {
-  assertScope(userId, tenantId, 'suppress_decision_type', { sourceSkill, type, mode });
+  assertScope(userId, tenantId, 'suppress_decision_type', { sourceSkill, type, mode, recipe });
   // A snooze with no `until` would persist a row that listActiveDecisionTypeSuppressionKeys can never
   // activate (it requires `until > now`) — a silent no-op. Reject it so the caller's intent can't be dropped.
   if (mode === 'snooze_type' && !until) {
     throw new DecisionActionError('VALIDATION', 'snooze_type suppression requires a non-null until timestamp', 400);
   }
   ensureDecisionCenterTables();
+  const normalizedRecipe = normalizeDecisionRecipe(recipe);
+  if (normalizedRecipe) {
+    getDb().prepare(`
+      INSERT OR REPLACE INTO decision_recipe_suppressions (user_id, tenant_id, source_skill, type, recipe, mode, until, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
+    `).run(userId, tenantId, sourceSkill, type, normalizedRecipe, mode, mode === 'snooze_type' ? until : null);
+    return;
+  }
   getDb().prepare(`
     INSERT OR REPLACE INTO decision_type_suppressions (user_id, tenant_id, source_skill, type, mode, until, created_at)
     VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
@@ -5011,9 +5213,17 @@ export function suppressDecisionType(
 }
 
 /** C3 — remove a (sourceSkill, type) suppression. */
-export function unsuppressDecisionType(userId: number, tenantId: number, sourceSkill: string, type: string): void {
-  assertScope(userId, tenantId, 'unsuppress_decision_type', { sourceSkill, type });
+export function unsuppressDecisionType(userId: number, tenantId: number, sourceSkill: string, type: string, recipe: string | null = null): void {
+  assertScope(userId, tenantId, 'unsuppress_decision_type', { sourceSkill, type, recipe });
   ensureDecisionCenterTables();
+  const normalizedRecipe = normalizeDecisionRecipe(recipe);
+  if (normalizedRecipe) {
+    getDb().prepare(`
+      DELETE FROM decision_recipe_suppressions
+      WHERE user_id = ? AND tenant_id = ? AND source_skill = ? AND type = ? AND recipe = ?
+    `).run(userId, tenantId, sourceSkill, type, normalizedRecipe);
+    return;
+  }
   getDb().prepare(`DELETE FROM decision_type_suppressions WHERE user_id = ? AND tenant_id = ? AND source_skill = ? AND type = ?`)
     .run(userId, tenantId, sourceSkill, type);
 }
@@ -5022,21 +5232,44 @@ export function unsuppressDecisionType(userId: number, tenantId: number, sourceS
 export function listDecisionTypeSuppressions(userId: number, tenantId = userId): DecisionTypeSuppression[] {
   assertScope(userId, tenantId, 'list_decision_type_suppressions', {});
   ensureDecisionCenterTables();
-  return getDb().prepare(`
-    SELECT source_skill AS sourceSkill, type, mode, until, created_at AS createdAt
-      FROM decision_type_suppressions WHERE user_id = ? AND tenant_id = ? ORDER BY created_at DESC
+  const broad = getDb().prepare(`
+    SELECT source_skill AS sourceSkill, type, NULL AS recipe, mode, until, created_at AS createdAt
+      FROM decision_type_suppressions WHERE user_id = ? AND tenant_id = ?
   `).all(userId, tenantId) as DecisionTypeSuppression[];
+  const recipeRows = getDb().prepare(`
+    SELECT source_skill AS sourceSkill, type, recipe, mode, until, created_at AS createdAt
+      FROM decision_recipe_suppressions WHERE user_id = ? AND tenant_id = ?
+  `).all(userId, tenantId) as DecisionTypeSuppression[];
+  const recipes = recipeRows.map((row) => ({
+    ...row,
+    recipe: displayDecisionRecipe(row.sourceSkill, row.recipe),
+  }));
+  return [...broad, ...recipes].sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
 }
 
 /** ACTIVE suppression keys (`${sourceSkill}:${type}`): dont_show_type always; snooze_type only while until > now. */
-function listActiveDecisionTypeSuppressionKeys(userId: number, tenantId: number): Set<string> {
-  const rows = getDb().prepare(`
+function listActiveDecisionTypeSuppressionKeys(userId: number, tenantId: number): { broad: Set<string>; recipes: Set<string> } {
+  const broadRows = getDb().prepare(`
     SELECT source_skill AS sourceSkill, type
       FROM decision_type_suppressions
      WHERE user_id = ? AND tenant_id = ?
        AND (mode = 'dont_show_type' OR (mode = 'snooze_type' AND until IS NOT NULL AND datetime(until) > datetime('now')))
   `).all(userId, tenantId) as Array<{ sourceSkill: string; type: string }>;
-  return new Set(rows.map((row) => `${row.sourceSkill}:${row.type}`));
+  const recipeRows = getDb().prepare(`
+    SELECT source_skill AS sourceSkill, type, recipe
+      FROM decision_recipe_suppressions
+     WHERE user_id = ? AND tenant_id = ?
+       AND (mode = 'dont_show_type' OR (mode = 'snooze_type' AND until IS NOT NULL AND datetime(until) > datetime('now')))
+  `).all(userId, tenantId) as Array<{ sourceSkill: string; type: string; recipe: string }>;
+  return {
+    broad: new Set(broadRows.map((row) => `${row.sourceSkill}:${row.type}`)),
+    recipes: new Set(recipeRows
+      .map((row) => {
+        const recipe = normalizeDecisionRecipe(row.recipe);
+        return recipe ? `${row.sourceSkill}:${row.type}:${recipe}` : null;
+      })
+      .filter((key): key is string => !!key)),
+  };
 }
 
 /**
@@ -5046,23 +5279,91 @@ function listActiveDecisionTypeSuppressionKeys(userId: number, tenantId: number)
  * to integrity/admin reads (release gate, dashboard breakdowns, summary counts) so those stay accurate.
  */
 export function applyDecisionTypeSuppression(items: DecisionApiItem[], userId: number, tenantId: number): DecisionApiItem[] {
-  if (!isDecisionTypeSuppressionEnabled(process.env, { userId, tenantId })) return items;
-  let suppressed: Set<string>;
-  try {
-    suppressed = listActiveDecisionTypeSuppressionKeys(userId, tenantId);
-  } catch (err) {
-    // Presentation filter: a transient suppression-read fault (locked DB, table not yet self-healed) must
-    // NEVER hide the decision queue or 500 a survivable read. Fail OPEN to the full set; the preference
-    // re-applies on the next successful read. (Write paths keep throwing — a dropped write must surface.)
-    logger.warn({ err, userId, tenantId }, 'decision type-suppression read failed; showing all items (fail-open)');
-    return items;
+  let filtered = items;
+  if (isDecisionTypeSuppressionEnabled(process.env, { userId, tenantId })) {
+    let suppressed: { broad: Set<string>; recipes: Set<string> };
+    try {
+      suppressed = listActiveDecisionTypeSuppressionKeys(userId, tenantId);
+    } catch (err) {
+      // Presentation filter: a transient suppression-read fault (locked DB, table not yet self-healed) must
+      // NEVER hide the decision queue or 500 a survivable read. Fail OPEN to the full set; the preference
+      // re-applies on the next successful read. (Write paths keep throwing — a dropped write must surface.)
+      logger.warn({ err, userId, tenantId }, 'decision type-suppression read failed; showing all items (fail-open)');
+      return items;
+    }
+    if (suppressed.broad.size > 0 || suppressed.recipes.size > 0) {
+      filtered = filtered.filter((item) => {
+        if (isDecisionItemPolicyFloored(item)) return true;
+        const broadKey = `${item.sourceSkill}:${item.type}`;
+        if (suppressed.broad.has(broadKey)) return false;
+        const recipe = recipeForDecisionItem(item);
+        return !recipe || !suppressed.recipes.has(`${broadKey}:${recipe}`);
+      });
+    }
   }
-  if (suppressed.size === 0) return items;
-  return items.filter((item) => !suppressed.has(`${item.sourceSkill}:${item.type}`) || isDecisionItemPolicyFloored(item));
+  if (!isDecisionFeedbackSuppressionEnabled(process.env, { userId, tenantId })) return filtered;
+  const noisyTypes = feedbackSuppressedTypeKeys(userId, tenantId);
+  if (noisyTypes.size === 0) return filtered;
+  return filtered.filter((item) => isDecisionItemPolicyFloored(item) || !noisyTypes.has(`${item.sourceSkill}:${item.type}`));
+}
+
+function feedbackSuppressedTypeKeys(userId: number, tenantId: number): Set<string> {
+  try {
+    return new Set(
+      getDecisionFeedbackSignals(userId, tenantId, { sinceDays: 14 })
+        .filter((signal) => signal.type && signal.surfaced >= 5 && (
+          signal.dontShowTypeCount >= 2
+          || (signal.dismissed >= 4 && signal.dismissRate >= 0.8)
+          || (signal.snoozed >= 4 && signal.snoozed / Math.max(1, signal.surfaced) >= 0.8)
+        ))
+        .map((signal) => `${signal.sourceSkill}:${signal.type}`),
+    );
+  } catch (err) {
+    logger.warn({ err, userId, tenantId }, 'decision feedback suppression read failed; showing all items (fail-open)');
+    return new Set();
+  }
+}
+
+function normalizeDecisionRecipe(recipe: string | null | undefined): string | null {
+  if (typeof recipe !== 'string') return null;
+  const normalized = recipe.trim();
+  if (!normalized) return null;
+  const sourceSkill = normalized.split(':', 1)[0];
+  const sourcePrefix = `${sourceSkill}:`;
+  return isDecisionSourceSkillPrefix(sourceSkill) && normalized.startsWith(sourcePrefix)
+    ? normalized.slice(sourcePrefix.length).slice(0, 160)
+    : normalized.slice(0, 160);
+}
+
+function displayDecisionRecipe(sourceSkill: string, recipe: string | null): string | null {
+  if (!recipe) return null;
+  const normalized = recipe.trim();
+  if (!normalized) return null;
+  const sourcePrefix = `${sourceSkill}:`;
+  return normalized.startsWith(sourcePrefix) ? normalized.slice(0, 160) : `${sourcePrefix}${normalized}`.slice(0, 160);
+}
+
+function recipeForDecisionItem(item: DecisionApiItem): string | null {
+  const group = item.groupKey?.trim();
+  if (!group) return null;
+  const prefix = `${item.sourceSkill}:`;
+  return group.startsWith(prefix) ? group.slice(prefix.length).slice(0, 160) : group.slice(0, 160);
+}
+
+function isDecisionSourceSkillPrefix(value: string): value is NotificationSourceSkill {
+  return value === 'secretary'
+    || value === 'training'
+    || value === 'content'
+    || value === 'cooking'
+    || value === 'finance'
+    || value === 'chat'
+    || value === 'system'
+    || value === 'security';
 }
 
 export interface DecisionFeedbackSignal {
   sourceSkill: string;
+  type: string | null;
   surfaced: number;
   dismissed: number;
   snoozed: number;
@@ -5104,37 +5405,39 @@ export function getDecisionFeedbackSignals(
     typeof opts.sinceDays === 'number' && opts.sinceDays > 0 ? `AND e.created_at >= datetime('now', ?)` : '';
   const windowArg: string[] = windowClause ? [`-${Math.floor(opts.sinceDays as number)} days`] : [];
   const eventRows = db.prepare(`
-    SELECT i.source_skill AS sourceSkill, e.event AS event, COUNT(*) AS n
+    SELECT i.source_skill AS sourceSkill, i.type AS type, e.event AS event, COUNT(*) AS n
       FROM decision_lifecycle_events e
       JOIN notification_center_items i
         ON i.item_id = e.decision_id AND i.user_id = e.user_id AND i.tenant_id = e.tenant_id
      WHERE e.user_id = ? AND e.tenant_id = ? ${windowClause}
-     GROUP BY i.source_skill, e.event
-  `).all(userId, tenantId, ...windowArg) as Array<{ sourceSkill: string; event: string; n: number }>;
+     GROUP BY i.source_skill, i.type, e.event
+  `).all(userId, tenantId, ...windowArg) as Array<{ sourceSkill: string; type: string; event: string; n: number }>;
   const reasonRows = db.prepare(`
-    SELECT i.source_skill AS sourceSkill, e.reason AS reason, COUNT(*) AS n
+    SELECT i.source_skill AS sourceSkill, i.type AS type, e.reason AS reason, COUNT(*) AS n
       FROM decision_lifecycle_events e
       JOIN notification_center_items i
         ON i.item_id = e.decision_id AND i.user_id = e.user_id AND i.tenant_id = e.tenant_id
      WHERE e.user_id = ? AND e.tenant_id = ? AND e.event = 'dismissed' AND e.reason IS NOT NULL ${windowClause}
-     GROUP BY i.source_skill, e.reason
-  `).all(userId, tenantId, ...windowArg) as Array<{ sourceSkill: string; reason: string; n: number }>;
+     GROUP BY i.source_skill, i.type, e.reason
+  `).all(userId, tenantId, ...windowArg) as Array<{ sourceSkill: string; type: string; reason: string; n: number }>;
 
-  const bySkill = new Map<string, { events: Record<string, number>; reasons: Array<{ reason: string; count: number }> }>();
-  const bucket = (skill: string): { events: Record<string, number>; reasons: Array<{ reason: string; count: number }> } => {
-    let b = bySkill.get(skill);
-    if (!b) { b = { events: {}, reasons: [] }; bySkill.set(skill, b); }
+  const buckets = new Map<string, { sourceSkill: string; type: string; events: Record<string, number>; reasons: Array<{ reason: string; count: number }> }>();
+  const bucket = (skill: string, type: string): { sourceSkill: string; type: string; events: Record<string, number>; reasons: Array<{ reason: string; count: number }> } => {
+    const key = `${skill}:${type}`;
+    let b = buckets.get(key);
+    if (!b) { b = { sourceSkill: skill, type, events: {}, reasons: [] }; buckets.set(key, b); }
     return b;
   };
-  for (const row of eventRows) bucket(row.sourceSkill).events[row.event] = row.n;
-  for (const row of reasonRows) bucket(row.sourceSkill).reasons.push({ reason: row.reason, count: row.n });
+  for (const row of eventRows) bucket(row.sourceSkill, row.type).events[row.event] = row.n;
+  for (const row of reasonRows) bucket(row.sourceSkill, row.type).reasons.push({ reason: row.reason, count: row.n });
 
-  return [...bySkill.entries()]
-    .map(([sourceSkill, b]) => {
+  return [...buckets.values()]
+    .map((b) => {
       const surfaced = b.events.surfaced ?? b.events.created ?? 0;
       const dismissed = b.events.dismissed ?? 0;
       return {
-        sourceSkill,
+        sourceSkill: b.sourceSkill,
+        type: b.type,
         surfaced,
         dismissed,
         snoozed: b.events.snoozed ?? 0,
@@ -5210,19 +5513,22 @@ function dependencyStateForRecord(record: DecisionRecord): { dependsOnDecisionId
 }
 
 function guardActionable(record: DecisionRecord, actionId: string): void {
+  if (record.status === 'expired') throw new DecisionActionError('DECISION_EXPIRED', 'Decision expired and can no longer be actioned', 409);
   if (record.expiresAt && Date.parse(record.expiresAt) <= Date.now()) {
     const expire = getDb().prepare(`
       UPDATE notification_center_items SET status = 'expired'
       WHERE item_id = ? AND user_id = ? AND tenant_id = ?
+        AND status != 'expired'
     `).run(record.itemId, record.userId, record.tenantId);
-    assertDecisionScopedUpdateApplied(expire, 'expire_decision', {
-      decisionId: record.itemId,
-      userId: record.userId,
-      tenantId: record.tenantId,
-    });
+    if ((expire.changes ?? 0) > 0) {
+      emitDecisionLifecycleEvent({ decisionId: record.itemId, userId: record.userId, tenantId: record.tenantId, event: 'expired', toStatus: 'expired' });
+      emitUnblockedDependentsForBlockers(
+        [{ decisionId: record.itemId, userId: record.userId, tenantId: record.tenantId }],
+        'blocker_expired',
+      );
+    }
     throw new DecisionActionError('DECISION_EXPIRED', 'Decision expired and can no longer be actioned', 409);
   }
-  if (record.status === 'expired') throw new DecisionActionError('DECISION_EXPIRED', 'Decision expired and can no longer be actioned', 409);
   if (record.status === 'superseded') throw new DecisionActionError('DECISION_SUPERSEDED', 'Decision was superseded by newer state', 409);
   if (record.status === 'dismissed') throw new DecisionActionError('DECISION_DISMISSED', 'Decision was dismissed', 409);
   if (record.status === 'actioned' && rollbackContractForRecord(record).actionId !== actionId) {

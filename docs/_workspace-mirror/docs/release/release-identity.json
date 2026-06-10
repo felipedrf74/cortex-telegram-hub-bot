@@ -1,17 +1,17 @@
 {
-  "generatedAt": "2026-06-04T23:51:14Z",
+  "generatedAt": "2026-06-09T12:27:15Z",
   "backend": {
-    "path": "/Users/felipedominguez/Desktop/Nexus Hub/prelaunch-worktrees/payments-integrity",
-    "branch": "fix/payments-integrity",
-    "commit": "c5497eef",
-    "dirtyState": "dirty",
-    "packageVersion": "4.14.204",
-    "migrationCount": "192"
+    "path": "/Users/felipedominguez/Desktop/Custom Connectors/Cortex/cortex-telegram-hub-bot",
+    "branch": "main",
+    "commit": "910b6d72",
+    "dirtyState": "clean",
+    "packageVersion": "4.14.208",
+    "migrationCount": "200"
   },
   "ios": {
     "path": "/Users/felipedominguez/Desktop/Nexus Hub IOS/Nexus Hub",
-    "branch": "fix/payments-integrity",
-    "commit": "c5497eef",
+    "branch": "main",
+    "commit": "49ce035",
     "dirtyState": "dirty"
   }
 }

@@ -37,6 +37,7 @@ All notable changes to Nexus Hub (formerly Cortex Telegram Hub Bot) are document
 
 ### Bug Fixes
 
+- **ios/cooking**: Recipe nutrition parsing now averages range-style macro entries to the midpoint (for example `20-25` → `22.5`, `12 to 16` → `14`) instead of taking the low end; existing range-entry macros can shift to midpoint on next save/recompute.
 - **portal**: Mesh signal visibility + layout + missing edges ([`755fa19`](https://github.com/felipedrf74/cortex-telegram-hub-bot/commit/755fa19b3556e211eb6e8fbb680d995e214d2ca7))
 - **skills**: Seed installed_skills table on startup — fixes skill toggle errors ([`cc9173a`](https://github.com/felipedrf74/cortex-telegram-hub-bot/commit/cc9173ae7faf2606e5637e8357d8deb960827f95))
 - **portal**: Sub-skill toggle error + master skill toggle switch ([`6c6dc04`](https://github.com/felipedrf74/cortex-telegram-hub-bot/commit/6c6dc043957e06c959fdd7a8540353f887e4ebe3))
@@ -436,5 +437,3 @@ All notable changes to Nexus Hub (formerly Cortex Telegram Hub Bot) are document
 ### Features
 
 - Initial release v1.0.0 — Cortex Telegram Hub Bot ([`83b1363`](https://github.com/felipedrf74/cortex-telegram-hub-bot/commit/83b1363f26bfec6f28c8a08aa173cded57179c92))
-
-

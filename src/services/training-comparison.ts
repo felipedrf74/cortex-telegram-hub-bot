@@ -54,8 +54,8 @@ function sessionDayToDate(dayOfWeek: string, weekMonday: string): string {
  * Compare this week's planned sessions against Garmin activities.
  * Matches by: same calendar day + fuzzy activity type.
  */
-export async function comparePlannedVsActual(userId: number): Promise<ComparisonResult> {
-  const plan = getActivePlan(userId);
+export async function comparePlannedVsActual(userId: number, tenantId: number = userId): Promise<ComparisonResult> {
+  const plan = getActivePlan(userId, tenantId);
   if (!plan) throw new Error('No active plan');
 
   const currentWeek = getCurrentWeek(plan.id);

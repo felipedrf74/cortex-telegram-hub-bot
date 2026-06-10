@@ -4,6 +4,8 @@ import type { EngineContext, SportEngine } from './interfaces';
 import type { DayOfWeek, Session, SessionType, WorkoutTemplate } from '../types';
 import { clamp, createSessionId, durationToLoad } from '../utils';
 import { pickKeyDay } from '../availability-day-picker';
+import { attachTrainingSessionRole } from '../endurance-session-classifier';
+import { attachSessionIntensityMetadata } from '../session-intensity-metadata';
 
 function templateFor(templates: WorkoutTemplate[], sessionType: SessionType): WorkoutTemplate {
   const match = templates.find((template) => template.sessionType === sessionType);
@@ -11,8 +13,14 @@ function templateFor(templates: WorkoutTemplate[], sessionType: SessionType): Wo
   return match;
 }
 
-function buildSwimSession(template: WorkoutTemplate, dayOfWeek: DayOfWeek, durationMinutes: number, tags: string[]): Session {
-  return {
+function buildSwimSession(
+  template: WorkoutTemplate,
+  dayOfWeek: DayOfWeek,
+  durationMinutes: number,
+  tags: string[],
+  athleteProfile: EngineContext['athlete']['profile'],
+): Session {
+  return attachTrainingSessionRole(attachSessionIntensityMetadata({
     id: createSessionId('swim', dayOfWeek, template.title),
     sport: 'swimming',
     sessionType: template.sessionType,
@@ -27,7 +35,7 @@ function buildSwimSession(template: WorkoutTemplate, dayOfWeek: DayOfWeek, durat
     sourceTemplateId: template.id,
     tags,
     alternatives: ['Swap for technique swim', 'Swap for short aerobic swim'],
-  };
+  }, template, athleteProfile), template);
 }
 
 export const swimmingEngine: SportEngine = {
@@ -55,20 +63,20 @@ export const swimmingEngine: SportEngine = {
     };
 
     const sessions: Session[] = [
-      buildSwimSession(templateFor(templates, 'technique_swim'), pickFresh(techniquePreferences), 45, ['technique_focus']),
+      buildSwimSession(templateFor(templates, 'technique_swim'), pickFresh(techniquePreferences), 45, ['technique_focus'], context.athlete.profile),
     ];
 
     if (targetSessions >= 2) {
       const keyType: SessionType = context.phase === 'peak' && context.athlete.profile.experienceLevel !== 'novice'
         ? 'speed_swim'
         : 'threshold_swim';
-      sessions.push(buildSwimSession(templateFor(templates, keyType), pickFresh(keyPreferences), keyType === 'speed_swim' ? 45 : 55, ['key_swim']));
+      sessions.push(buildSwimSession(templateFor(templates, keyType), pickFresh(keyPreferences), keyType === 'speed_swim' ? 45 : 55, ['key_swim'], context.athlete.profile));
     }
     if (targetSessions >= 3) {
-      sessions.push(buildSwimSession(templateFor(templates, 'aerobic_swim'), pickFresh(aerobicPreferences), 50, ['aerobic_swim']));
+      sessions.push(buildSwimSession(templateFor(templates, 'aerobic_swim'), pickFresh(aerobicPreferences), 50, ['aerobic_swim'], context.athlete.profile));
     }
     if (targetSessions >= 4) {
-      sessions.push(buildSwimSession(templateFor(templates, 'recovery_swim'), pickFresh(recoveryPreferences), 35, ['recovery_swim']));
+      sessions.push(buildSwimSession(templateFor(templates, 'recovery_swim'), pickFresh(recoveryPreferences), 35, ['recovery_swim'], context.athlete.profile));
     }
 
     return sessions;

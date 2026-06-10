@@ -36,14 +36,21 @@ import {
   getCardioProgression,
   formatCardioProgressionForPrompt,
 } from '../services/progression-analytics';
+import { getUserLanguageById, resolveCurrentTenantIdForUser } from '../services/user-service';
 import { buildCookingPreferenceReadModel } from '../services/cooking-preferences';
-import { buildCookingPreferenceMemorySummary } from '../services/cooking-intelligence';
+import {
+  cookingSafetyLogPayload,
+  evaluateCookingSafetyText,
+  renderCookingSafetyBlockedResponse,
+  renderCookingSafetyPromptBlock,
+} from '../services/cooking-safety-policy';
 import type { AIToolResultMessage } from '../services/ai-provider';
 import { logger } from '../utils/logger';
 import { AITimeoutError } from '../utils/timeout';
 import type { CoachRecommendation } from '../services/garmin-coach';
 import { LRUMap } from '../utils/lru-map';
 import { deleteCoachState, loadCoachState, saveCoachState } from '../state/coach-state';
+import { getChatToolRisk } from '../services/chat-tool-authorization';
 
 // ─── Phase 3 Slice A — Chat-triggered onboarding ────────────────────
 //
@@ -200,6 +207,23 @@ function executeScopedToolCall(
   return executeToolCall(name, input, userId);
 }
 
+function isLegacyDomainWriteTool(name: string): boolean {
+  return getChatToolRisk(name) !== 'read';
+}
+
+function buildLegacyDomainWriteBlockedToolResult(name: string): Record<string, unknown> {
+  return {
+    success: false,
+    code: 'ACTION_CONFIRMATION_REQUIRED',
+    confirmation_required: true,
+    error: `${name} is a write action and must run through the chat action planner confirmation flow.`,
+  };
+}
+
+function buildLegacyDomainWriteBlockedReply(): string {
+  return 'This action needs confirmation in the app before I change anything.';
+}
+
 /**
  * Drop the last coach state for a user from both the in-memory LRU
  * and the durable persistence layer. Called when the user's training
@@ -281,7 +305,8 @@ export async function buildSimpleStateContext(
   // Active training plan context for triathlon domain
   if (includeScopedContext && domain === 'triathlon' && userId) {
     try {
-      const planSummary = getActivePlanSummary(userId);
+      const scopedTenantId = typeof tenantId === 'number' && Number.isSafeInteger(tenantId) && tenantId > 0 ? tenantId : null;
+      const planSummary = scopedTenantId ? getActivePlanSummary(userId, scopedTenantId) : null;
       if (planSummary) parts.push(`\n${planSummary}`);
     } catch {
       // Training plan tables may not exist yet — skip silently
@@ -328,45 +353,50 @@ export async function buildSimpleStateContext(
   // only shows up for the sports the user actually trains.
   if (includeScopedContext && domain === 'triathlon' && userId) {
     try {
-      const strength = getStrengthProgression(userId, 8);
-      const running = getCardioProgression(userId, 'running', 8);
-      const cycling = getCardioProgression(userId, 'cycling', 8);
+      const scopedTenantId = typeof tenantId === 'number' && Number.isSafeInteger(tenantId) && tenantId > 0 ? tenantId : null;
+      if (!scopedTenantId) {
+        logger.warn({ userId }, 'progression block skipped — missing tenant scope');
+      } else {
+        const strength = getStrengthProgression(userId, scopedTenantId, 8);
+        const running = getCardioProgression(userId, scopedTenantId, 'running', 8);
+        const cycling = getCardioProgression(userId, scopedTenantId, 'cycling', 8);
 
-      const strengthBlock = formatStrengthProgressionForPrompt(strength);
-      const runningBlock = formatCardioProgressionForPrompt(running);
-      const cyclingBlock = formatCardioProgressionForPrompt(cycling);
+        const strengthBlock = formatStrengthProgressionForPrompt(strength);
+        const runningBlock = formatCardioProgressionForPrompt(running);
+        const cyclingBlock = formatCardioProgressionForPrompt(cycling);
 
-      // Build the unified block only if at least one sport has data.
-      // The strength formatter returns a tagged <athlete_progression>
-      // wrapper; the cardio formatters return raw multi-line sections.
-      // Splice the cardio sections inside the strength wrapper so the
-      // whole thing lands as one XML-ish block, or wrap cardio alone
-      // if there's no strength data.
-      const cardioSections = [runningBlock, cyclingBlock].filter(Boolean);
-      let combined = '';
-      if (strengthBlock && cardioSections.length > 0) {
-        const closingTag = '</athlete_progression>';
-        const insertAt = strengthBlock.lastIndexOf(closingTag);
-        if (insertAt >= 0) {
+        // Build the unified block only if at least one sport has data.
+        // The strength formatter returns a tagged <athlete_progression>
+        // wrapper; the cardio formatters return raw multi-line sections.
+        // Splice the cardio sections inside the strength wrapper so the
+        // whole thing lands as one XML-ish block, or wrap cardio alone
+        // if there's no strength data.
+        const cardioSections = [runningBlock, cyclingBlock].filter(Boolean);
+        let combined = '';
+        if (strengthBlock && cardioSections.length > 0) {
+          const closingTag = '</athlete_progression>';
+          const insertAt = strengthBlock.lastIndexOf(closingTag);
+          if (insertAt >= 0) {
+            combined =
+              strengthBlock.slice(0, insertAt) +
+              '\n' +
+              cardioSections.join('\n') +
+              '\n' +
+              strengthBlock.slice(insertAt);
+          } else {
+            combined = strengthBlock + '\n' + cardioSections.join('\n');
+          }
+        } else if (strengthBlock) {
+          combined = strengthBlock;
+        } else if (cardioSections.length > 0) {
           combined =
-            strengthBlock.slice(0, insertAt) +
-            '\n' +
             cardioSections.join('\n') +
-            '\n' +
-            strengthBlock.slice(insertAt);
-        } else {
-          combined = strengthBlock + '\n' + cardioSections.join('\n');
+            `\n</athlete_progression>`;
+          combined = `<athlete_progression window_weeks="8">\n${combined}`;
         }
-      } else if (strengthBlock) {
-        combined = strengthBlock;
-      } else if (cardioSections.length > 0) {
-        combined =
-          `<athlete_progression window_weeks="8">\n` +
-          cardioSections.join('\n') +
-          `\n</athlete_progression>`;
-      }
 
-      if (combined) parts.push(`\n${combined}`);
+        if (combined) parts.push(`\n${combined}`);
+      }
     } catch (err) {
       logger.warn({ err, userId }, 'progression block build failed — skipping');
     }
@@ -379,17 +409,8 @@ export async function buildSimpleStateContext(
   if (domain === 'cooking' && hasUserScope) {
     try {
       const cookingPreferences = buildCookingPreferenceReadModel(userId, tenantId).profile;
-      const cookingSummary = buildCookingPreferenceMemorySummary(cookingPreferences);
-      if (cookingSummary) {
-        parts.push(
-          [
-            '<cooking_safety_preferences>',
-            cookingSummary,
-            'Treat these as hard constraints for allergies and dietary restrictions. Do not suggest, cook, buy, or substitute ingredients that conflict with them.',
-            '</cooking_safety_preferences>',
-          ].join('\n'),
-        );
-      }
+      const cookingSafetyBlock = renderCookingSafetyPromptBlock(cookingPreferences);
+      if (cookingSafetyBlock) parts.push(cookingSafetyBlock);
     } catch (err) {
       logger.warn({ err, userId, tenantId }, 'Cooking preference context unavailable; continuing without preference block');
     }
@@ -522,6 +543,7 @@ export async function handleSimpleDomain(
     // Provider-agnostic tool conversation (no Anthropic-specific types)
     const toolConversation: AIToolResultMessage[] = [];
     const toolsUsed: string[] = [];
+    let legacyWriteBlocked = false;
     let iterations = 0;
 
     while (result.toolCalls.length > 0 && iterations < maxIterations) {
@@ -538,6 +560,17 @@ export async function handleSimpleDomain(
       // Execute tool calls in parallel
       const toolResults = await Promise.all(
         result.toolCalls.map(async (tc) => {
+          if (isLegacyDomainWriteTool(tc.name)) {
+            legacyWriteBlocked = true;
+            logger.warn(
+              { domain, userId, tenantId, tool: tc.name },
+              'Blocked legacy domain chat write tool; action planner confirmation is required',
+            );
+            const blockedResult = buildLegacyDomainWriteBlockedToolResult(tc.name);
+            let content = JSON.stringify(blockedResult);
+            if (content.length > 2000) content = content.slice(0, 2000) + '...(truncated)';
+            return { type: 'tool_result' as const, tool_use_id: tc.id, content };
+          }
           const toolResult = await executeScopedToolCall(tc.name, tc.input as Record<string, any>, userId, tenantId);
           let content = JSON.stringify(toolResult);
           if (content.length > 2000) content = content.slice(0, 2000) + '...(truncated)';
@@ -559,6 +592,10 @@ export async function handleSimpleDomain(
       finalText = result.text;
     }
 
+    if (legacyWriteBlocked) {
+      finalText = buildLegacyDomainWriteBlockedReply();
+    }
+
     // Codex QA round 5: if the loop exits at maxIterations with the
     // model STILL requesting tools, we used to silently return
     // finalText (often empty or stale). That hides a cap-exceeded
@@ -574,7 +611,12 @@ export async function handleSimpleDomain(
         : `Nexus ran out of tool-call iterations for this turn (${maxIterations}). I started the work but didn't finish — ask me to continue from where I left off.`;
     }
 
+    if (legacyWriteBlocked) {
+      finalText = buildLegacyDomainWriteBlockedReply();
+    }
+
     finalText = normalizeReplyForUserLanguage(finalText, userId);
+    finalText = enforceCookingDomainAnswerSafety(domain, finalText, userId, tenantId);
 
     if (hasUserScope) {
       const storedText = toolsUsed.length > 0
@@ -613,6 +655,7 @@ async function handleWithDirectCalls(
 
   const toolConversation: any[] = [];
   const toolsUsed: string[] = [];
+  let legacyWriteBlocked = false;
   let iterations = 0;
 
   while (result.toolCalls.length > 0 && iterations < maxIterations) {
@@ -625,6 +668,17 @@ async function handleWithDirectCalls(
     }
     const toolResults = await Promise.all(
       result.toolCalls.map(async (tc: any) => {
+        if (isLegacyDomainWriteTool(tc.name)) {
+          legacyWriteBlocked = true;
+          logger.warn(
+            { domain, userId, tenantId, tool: tc.name },
+            'Blocked legacy direct-call write tool; action planner confirmation is required',
+          );
+          const blockedResult = buildLegacyDomainWriteBlockedToolResult(tc.name);
+          let content = JSON.stringify(blockedResult);
+          if (content.length > 2000) content = content.slice(0, 2000) + '...(truncated)';
+          return { type: 'tool_result' as const, tool_use_id: tc.id, content };
+        }
         const toolResult = await executeScopedToolCall(tc.name, tc.input as Record<string, any>, userId, tenantId);
         let content = JSON.stringify(toolResult);
         // Truncate large results (consistent with primary path)
@@ -640,6 +694,10 @@ async function handleWithDirectCalls(
     finalText = result.text;
   }
 
+  if (legacyWriteBlocked) {
+    finalText = buildLegacyDomainWriteBlockedReply();
+  }
+
   // Codex QA round 5/6: parity with the primary path — direct-calls
   // fallback must also surface a cap-reached notice when the loop
   // exits with the model still requesting tools.
@@ -653,7 +711,12 @@ async function handleWithDirectCalls(
       : `Nexus ran out of tool-call iterations for this turn (${maxIterations}). I started the work but didn't finish — ask me to continue from where I left off.`;
   }
 
+  if (legacyWriteBlocked) {
+    finalText = buildLegacyDomainWriteBlockedReply();
+  }
+
   finalText = normalizeReplyForUserLanguage(finalText, userId);
+  finalText = enforceCookingDomainAnswerSafety(domain, finalText, userId, tenantId);
 
   if (typeof userId === 'number') {
     addScopedConversation(userId, domain, 'user', message, tenantId);
@@ -664,4 +727,43 @@ async function handleWithDirectCalls(
   }
 
   return { text: finalText, domain };
+}
+
+function enforceCookingDomainAnswerSafety(
+  domain: DomainName,
+  finalText: string,
+  userId?: number,
+  tenantId?: number,
+): string {
+  if (domain !== 'cooking' || typeof userId !== 'number') {
+    return finalText;
+  }
+  const resolvedTenantId = typeof tenantId === 'number'
+    ? tenantId
+    : resolveCurrentTenantIdForUser(userId);
+  try {
+    const evaluation = evaluateCookingSafetyText(userId, resolvedTenantId, 'legacy_domain_answer', [finalText]);
+    if (!evaluation.blocked) return finalText;
+    logger.warn(
+      {
+        userId,
+        tenantId: resolvedTenantId,
+        event: 'COOKING_SAFETY_BLOCKED',
+        ...cookingSafetyLogPayload(evaluation),
+      },
+      'COOKING_SAFETY_BLOCKED',
+    );
+    return renderCookingSafetyBlockedResponse(getCookingSafetyLocale(userId));
+  } catch (err) {
+    logger.warn({ err, userId, tenantId: resolvedTenantId }, 'Cooking domain answer safety check failed; returning safe refusal');
+    return renderCookingSafetyBlockedResponse(getCookingSafetyLocale(userId));
+  }
+}
+
+function getCookingSafetyLocale(userId: number): string | undefined {
+  try {
+    return getUserLanguageById(userId);
+  } catch {
+    return undefined;
+  }
 }

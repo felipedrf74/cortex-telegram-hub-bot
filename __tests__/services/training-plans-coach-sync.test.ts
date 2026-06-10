@@ -55,6 +55,7 @@ describe('Training plan coach sync', () => {
   it('updates the linked training session when a workout moves to another day', () => {
     const plan = createPlan({
       user_id: 12,
+      tenant_id: 12,
       name: 'Half marathon',
       sport: 'running',
       duration_weeks: 4,
@@ -96,6 +97,7 @@ describe('Training plan coach sync', () => {
   it('does not sync a coach recommendation into another user session with the same provider event id', () => {
     const planA = createPlan({
       user_id: 12,
+      tenant_id: 12,
       name: 'Half marathon',
       sport: 'running',
       duration_weeks: 4,
@@ -115,6 +117,7 @@ describe('Training plan coach sync', () => {
 
     const planB = createPlan({
       user_id: 99,
+      tenant_id: 99,
       name: 'Other plan',
       sport: 'running',
       duration_weeks: 4,
@@ -150,6 +153,7 @@ describe('Training plan coach sync', () => {
   it('uses the user timezone instead of hardcoded Lisbon when deriving moved session weekday', () => {
     const plan = createPlan({
       user_id: 12,
+      tenant_id: 12,
       name: 'Half marathon',
       sport: 'running',
       duration_weeks: 4,

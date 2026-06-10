@@ -5,6 +5,14 @@ const mocks = vi.hoisted(() => ({
   dispatchCloudAllowlistAnswer: vi.fn(),
   maybeRecordCanaryTurn: vi.fn(),
   safeRecordChatV2CloudAllowlistEvidence: vi.fn(),
+  evaluateCookingSafetyText: vi.fn(() => ({
+    blocked: false,
+    surface: 'chat_core_v2_recipe',
+    issues: [],
+  })),
+  hasCookingSafetyPreferences: vi.fn(() => false),
+  renderCookingSafetyBlockedResponse: vi.fn(() => 'I cannot suggest that option because it conflicts with a saved cooking safety preference.\nI can help with a safe alternative.'),
+  renderCookingSafetyPromptBlockForUser: vi.fn(() => '<cooking_safety_preferences>\nAllergies: peanuts\n</cooking_safety_preferences>'),
 }));
 
 vi.mock('../../src/services/provider-registry', () => ({
@@ -19,6 +27,19 @@ vi.mock('../../src/services/chat-core-v2/cloud-allowlist-answer', () => ({
 
 vi.mock('../../src/services/chat-cloud-allowlist-evidence', () => ({
   safeRecordChatV2CloudAllowlistEvidence: mocks.safeRecordChatV2CloudAllowlistEvidence,
+}));
+
+vi.mock('../../src/services/cooking-safety-policy', () => ({
+  cookingSafetyLogPayload: vi.fn((evaluation: any) => ({
+    surface: evaluation.surface,
+    issueCodes: [...new Set((evaluation.issues ?? []).map((issue: any) => issue.code))],
+    issueSources: [...new Set((evaluation.issues ?? []).map((issue: any) => issue.source))],
+    issueCount: evaluation.issues?.length ?? 0,
+  })),
+  evaluateCookingSafetyText: (...args: unknown[]) => mocks.evaluateCookingSafetyText(...args),
+  hasCookingSafetyPreferences: (...args: unknown[]) => mocks.hasCookingSafetyPreferences(...args),
+  renderCookingSafetyBlockedResponse: (...args: unknown[]) => mocks.renderCookingSafetyBlockedResponse(...args),
+  renderCookingSafetyPromptBlockForUser: (...args: unknown[]) => mocks.renderCookingSafetyPromptBlockForUser(...args),
 }));
 
 vi.mock('../../src/services/chat-core-v2/canary-turn-log', async () => {
@@ -59,6 +80,16 @@ describe('ChatCoreV2 local chat orchestrator', () => {
     mocks.dispatchCloudAllowlistAnswer.mockReset();
     mocks.maybeRecordCanaryTurn.mockReset();
     mocks.safeRecordChatV2CloudAllowlistEvidence.mockReset();
+    mocks.evaluateCookingSafetyText.mockReset();
+    mocks.evaluateCookingSafetyText.mockReturnValue({
+      blocked: false,
+      surface: 'chat_core_v2_recipe',
+      issues: [],
+    });
+    mocks.hasCookingSafetyPreferences.mockReset();
+    mocks.hasCookingSafetyPreferences.mockReturnValue(false);
+    mocks.renderCookingSafetyBlockedResponse.mockClear();
+    mocks.renderCookingSafetyPromptBlockForUser.mockClear();
     mocks.maybeRecordCanaryTurn.mockReturnValue(true);
     _resetLocalInferenceGateForTests();
   });
@@ -464,6 +495,97 @@ describe('ChatCoreV2 local chat orchestrator', () => {
     await first;
   });
 
+  it('blocks unsafe cooking answers returned by queue cloud fallback even when input detection misses', async () => {
+    const env = baseEnv({
+      CHAT_CORE_V2_ALLOW_CLOUD_FALLBACK: 'true',
+      CHAT_CORE_V2_LOCAL_INFERENCE_MAX_CONCURRENCY: '1',
+      CHAT_CORE_V2_QUEUE_FALLBACK_MODE: 'cloud_allowlist',
+      CHAT_CORE_V2_QUEUE_CLOUD_AFTER_QUEUED_COUNT: '0',
+    });
+    let releaseFirst!: () => void;
+    mocks.dispatchLocalReasoning.mockImplementationOnce(async () => {
+      await new Promise<void>((resolve) => { releaseFirst = resolve; });
+      return {
+        text: 'Primeira resposta.',
+        providerMetadata: { providerUsed: 'ollama', modelUsed: 'qwen2.5:3b-instruct-q4_K_M' },
+      };
+    });
+    mocks.dispatchCloudAllowlistAnswer.mockResolvedValue({
+      text: 'Serve peanut butter cookies with chocolate cupcakes.',
+      providerMetadata: {
+        providerUsed: 'gemini',
+        modelUsed: 'gemini-2.5-pro',
+        cloudAllowlistPrivacyAction: 'packet_only',
+      },
+    });
+    mocks.evaluateCookingSafetyText.mockReturnValueOnce({
+      blocked: true,
+      surface: 'chat_core_v2_cooking',
+      issues: [{
+        code: 'ALLERGY_CONFLICT',
+        severity: 'blocker',
+        surface: 'chat_core_v2_cooking',
+        term: 'peanuts',
+        source: 'cooking_preference_profile',
+      }],
+    });
+
+    const first = runChatCoreV2LocalChatTurn({
+      normalizedText: 'Como mantenho foco?',
+      userId: 42,
+      tenantId: 84,
+      requestId: 'req-cloud-cooking-first',
+      locale: 'pt-BR',
+      surface: 'ios',
+      env,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const packet = {
+      schemaVersion: 'cloud_allowlist_packet@1.0.0' as const,
+      intent: 'answer' as const,
+      capabilityId: 'content.brainstorm',
+      domain: 'content' as const,
+      hmacEntityIds: [],
+      evidenceFingerprints: ['evidence:party_safe'],
+      locale: 'en',
+      complexityScore: 0.2,
+      escalationReason: 'cloud_allowlist_candidate' as const,
+    };
+    const second = await runChatCoreV2LocalChatTurn({
+      normalizedText: 'Give me birthday party ideas',
+      userId: 42,
+      tenantId: 84,
+      requestId: 'req-cloud-cooking-second',
+      locale: 'en',
+      surface: 'ios',
+      cloudAllowlistPacket: { ok: true, packet },
+      env,
+    });
+
+    expect(second?.response.text).toContain('saved cooking safety preference');
+    expect(second?.response.text).not.toContain('peanut butter cookies');
+    expect(second?.response.metadata).toEqual(expect.objectContaining({
+      safetyBlocked: true,
+      safetySurface: 'chat_core_v2_cooking',
+      safetyIssueCodes: ['ALLERGY_CONFLICT'],
+      cloudAllowlistSafetyBlocked: true,
+      queueFallbackDecision: expect.objectContaining({
+        kind: 'use_cloud_allowlist',
+        reasonCode: 'cloud_allowlist_packet_safe',
+      }),
+    }));
+    expect(mocks.evaluateCookingSafetyText).toHaveBeenCalledWith(
+      42,
+      84,
+      'chat_core_v2_cooking',
+      [expect.stringContaining('peanut butter cookies')],
+    );
+
+    releaseFirst();
+    await first;
+  });
+
   it('builds a packet-only cloud fallback from safe local-chat metadata under explicit producer flags', async () => {
     const env = baseEnv({
       CHAT_CORE_V2_ALLOW_CLOUD_FALLBACK: 'true',
@@ -698,6 +820,320 @@ describe('ChatCoreV2 local chat orchestrator', () => {
     expect(result?.response.text).not.toContain('próxima ação');
   });
 
+  it('injects and enforces cooking safety on non-recipe cooking advice generated by the local model', async () => {
+    mocks.dispatchLocalReasoning.mockResolvedValue({
+      text: 'Store cooked dinner leftovers in the fridge within 2 hours and reheat until steaming hot.',
+      providerMetadata: {
+        providerUsed: 'ollama',
+        modelUsed: 'qwen2.5:3b-instruct-q4_K_M',
+        fallbackUsed: false,
+      },
+    });
+
+    const result = await runChatCoreV2LocalChatTurn({
+      normalizedText: 'Explain safe storage for leftovers from dinner.',
+      userId: 42,
+      tenantId: 84,
+      requestId: 'req-cooking-non-recipe-safety',
+      locale: 'en',
+      surface: 'ios',
+      env: baseEnv({ CHAT_CORE_V2_LOCAL_CHAT_FAST_MODEL: 'off' }),
+    });
+
+    expect(result?.response.domain).toBe('cooking');
+    expect(mocks.dispatchLocalReasoning).toHaveBeenCalledWith(expect.objectContaining({
+      systemContext: expect.stringContaining('<cooking_safety_preferences>'),
+      prompt: expect.stringContaining('<cooking_safety_preferences>'),
+    }));
+    expect(mocks.evaluateCookingSafetyText).toHaveBeenCalledWith(
+      42,
+      84,
+      'chat_core_v2_cooking',
+      [expect.stringContaining('Store cooked dinner leftovers')],
+    );
+  });
+
+  it('blocks and suppresses unsafe non-recipe cooking advice', async () => {
+    mocks.dispatchLocalReasoning.mockResolvedValue({
+      text: 'For brunch, offer peanut butter cookies with fruit.',
+      providerMetadata: {
+        providerUsed: 'ollama',
+        modelUsed: 'qwen2.5:3b-instruct-q4_K_M',
+        fallbackUsed: false,
+      },
+    });
+    mocks.evaluateCookingSafetyText.mockReturnValueOnce({
+      blocked: true,
+      surface: 'chat_core_v2_cooking',
+      issues: [{
+        code: 'ALLERGY_CONFLICT',
+        severity: 'blocker',
+        surface: 'chat_core_v2_cooking',
+        term: 'peanuts',
+        source: 'cooking_preference_profile',
+      }],
+    });
+
+    const result = await runChatCoreV2LocalChatTurn({
+      normalizedText: 'Explain safe storage for leftovers from dinner.',
+      userId: 42,
+      tenantId: 84,
+      requestId: 'req-cooking-non-recipe-blocked',
+      locale: 'en',
+      surface: 'ios',
+      env: baseEnv({ CHAT_CORE_V2_LOCAL_CHAT_FAST_MODEL: 'off' }),
+    });
+
+    expect(result?.response.text).toContain('saved cooking safety preference');
+    expect(result?.response.text).not.toContain('peanut butter cookies');
+    expect(result?.response.metadata).toEqual(expect.objectContaining({
+      safetyBlocked: true,
+      safetySurface: 'chat_core_v2_cooking',
+      safetyIssueCodes: ['ALLERGY_CONFLICT'],
+    }));
+  });
+
+  it('blocks generated cooking output when the input-side cooking detector misses', async () => {
+    mocks.dispatchLocalReasoning.mockResolvedValue({
+      text: 'Serve peanut butter cookies and chocolate cake for the birthday table.',
+      providerMetadata: {
+        providerUsed: 'ollama',
+        modelUsed: 'qwen2.5:3b-instruct-q4_K_M',
+        fallbackUsed: false,
+      },
+    });
+    mocks.evaluateCookingSafetyText.mockReturnValueOnce({
+      blocked: true,
+      surface: 'chat_core_v2_cooking',
+      issues: [{
+        code: 'ALLERGY_CONFLICT',
+        severity: 'blocker',
+        surface: 'chat_core_v2_cooking',
+        term: 'peanuts',
+        source: 'cooking_preference_profile',
+      }],
+    });
+
+    const result = await runChatCoreV2LocalChatTurn({
+      normalizedText: 'Give me birthday party ideas',
+      userId: 42,
+      tenantId: 84,
+      requestId: 'req-cooking-output-detected',
+      locale: 'en',
+      surface: 'ios',
+      env: baseEnv({ CHAT_CORE_V2_LOCAL_CHAT_FAST_MODEL: 'off' }),
+    });
+
+    expect(result?.response.text).toContain('saved cooking safety preference');
+    expect(result?.response.text).not.toContain('peanut butter cookies');
+    expect(mocks.evaluateCookingSafetyText).toHaveBeenCalledWith(
+      42,
+      84,
+      'chat_core_v2_cooking',
+      [expect.stringContaining('peanut butter cookies')],
+    );
+  });
+
+  it('blocks stored sesame allergies even when generated output misses cooking vocabulary', async () => {
+    mocks.hasCookingSafetyPreferences.mockReturnValue(true);
+    mocks.dispatchLocalReasoning.mockResolvedValue({
+      text: 'Drizzle tahini over the bowl.',
+      providerMetadata: {
+        providerUsed: 'ollama',
+        modelUsed: 'qwen2.5:3b-instruct-q4_K_M',
+        fallbackUsed: false,
+      },
+    });
+    mocks.evaluateCookingSafetyText.mockReturnValueOnce({
+      blocked: true,
+      surface: 'chat_core_v2_cooking',
+      issues: [{
+        code: 'ALLERGY_CONFLICT',
+        severity: 'blocker',
+        surface: 'chat_core_v2_cooking',
+        term: 'sesame',
+        source: 'cooking_preference_profile',
+      }],
+    });
+
+    const result = await runChatCoreV2LocalChatTurn({
+      normalizedText: 'Give me birthday party ideas',
+      userId: 42,
+      tenantId: 84,
+      requestId: 'req-sesame-output-detected',
+      locale: 'en',
+      surface: 'ios',
+      env: baseEnv({ CHAT_CORE_V2_LOCAL_CHAT_FAST_MODEL: 'off' }),
+    });
+
+    expect(result?.response.text).toContain('saved cooking safety preference');
+    expect(result?.response.text).not.toContain('tahini');
+    expect(mocks.evaluateCookingSafetyText).toHaveBeenCalledWith(
+      42,
+      84,
+      'chat_core_v2_cooking',
+      [expect.stringContaining('tahini')],
+    );
+  });
+
+  it('blocks stored soy allergies when generated output only mentions tofu', async () => {
+    mocks.hasCookingSafetyPreferences.mockReturnValue(true);
+    mocks.dispatchLocalReasoning.mockResolvedValue({
+      text: 'Try tofu with a bright herb sauce.',
+      providerMetadata: {
+        providerUsed: 'ollama',
+        modelUsed: 'qwen2.5:3b-instruct-q4_K_M',
+        fallbackUsed: false,
+      },
+    });
+    mocks.evaluateCookingSafetyText.mockReturnValueOnce({
+      blocked: true,
+      surface: 'chat_core_v2_cooking',
+      issues: [{
+        code: 'ALLERGY_CONFLICT',
+        severity: 'blocker',
+        surface: 'chat_core_v2_cooking',
+        term: 'soy',
+        source: 'cooking_preference_profile',
+      }],
+    });
+
+    const result = await runChatCoreV2LocalChatTurn({
+      normalizedText: 'Give me birthday party ideas',
+      userId: 42,
+      tenantId: 84,
+      requestId: 'req-soy-output-detected',
+      locale: 'en',
+      surface: 'ios',
+      env: baseEnv({ CHAT_CORE_V2_LOCAL_CHAT_FAST_MODEL: 'off' }),
+    });
+
+    expect(result?.response.text).toContain('saved cooking safety preference');
+    expect(result?.response.text).not.toContain('tofu');
+    expect(mocks.evaluateCookingSafetyText).toHaveBeenCalledWith(
+      42,
+      84,
+      'chat_core_v2_cooking',
+      [expect.stringContaining('tofu')],
+    );
+  });
+
+  it('does not false-positive non-food answers for a user with stored allergies', async () => {
+    mocks.hasCookingSafetyPreferences.mockReturnValue(true);
+    mocks.dispatchLocalReasoning.mockResolvedValue({
+      text: 'Your meeting is at 3pm.',
+      providerMetadata: {
+        providerUsed: 'ollama',
+        modelUsed: 'qwen2.5:3b-instruct-q4_K_M',
+        fallbackUsed: false,
+      },
+    });
+
+    const result = await runChatCoreV2LocalChatTurn({
+      normalizedText: 'Share a calm sentence for today.',
+      userId: 42,
+      tenantId: 84,
+      requestId: 'req-non-food-allergy-safe',
+      locale: 'en',
+      surface: 'ios',
+      env: baseEnv({ CHAT_CORE_V2_LOCAL_CHAT_FAST_MODEL: 'off' }),
+    });
+
+    expect(result?.response.text).toContain('Your meeting is at 3pm.');
+    expect(result?.response.metadata).not.toHaveProperty('safetyBlocked');
+    expect(mocks.evaluateCookingSafetyText).toHaveBeenCalledWith(
+      42,
+      84,
+      'chat_core_v2_cooking',
+      ['Your meeting is at 3pm.'],
+    );
+  });
+
+  it('does not evaluate uncategorized non-food output when the user has no safety preferences', async () => {
+    mocks.hasCookingSafetyPreferences.mockReturnValue(false);
+    mocks.dispatchLocalReasoning.mockResolvedValue({
+      text: 'Your meeting is at 3pm.',
+      providerMetadata: {
+        providerUsed: 'ollama',
+        modelUsed: 'qwen2.5:3b-instruct-q4_K_M',
+        fallbackUsed: false,
+      },
+    });
+
+    const result = await runChatCoreV2LocalChatTurn({
+      normalizedText: 'Share a calm sentence for today.',
+      userId: 42,
+      tenantId: 84,
+      requestId: 'req-no-preference-safe',
+      locale: 'en',
+      surface: 'ios',
+      env: baseEnv({ CHAT_CORE_V2_LOCAL_CHAT_FAST_MODEL: 'off' }),
+    });
+
+    expect(result?.response.text).toContain('Your meeting is at 3pm.');
+    expect(mocks.evaluateCookingSafetyText).not.toHaveBeenCalled();
+  });
+
+  it('checks the full generated recipe draft before truncation can hide a late allergen', async () => {
+    const unsafeRecipe = [
+      '**Title**',
+      'Rice bowl for two',
+      '**Serves:** 2',
+      '**Prep:** 10 min',
+      '**Cook:** 15 min',
+      '**Macros per serving (estimated):** Protein 10 g; Fat 6 g; Carbs 52 g; Calories 320 kcal',
+      '**Ingredients:**',
+      '- 200 g rice',
+      '- 120 g vegetables',
+      '**Instructions:**',
+      '1. Cook the rice.',
+      '2. Steam the vegetables.',
+      '3. Combine and season.',
+      '4. Serve warm.',
+      'A'.repeat(1700),
+      'Finish with crushed peanuts.',
+    ].join('\n');
+    expect(unsafeRecipe.indexOf('crushed peanuts')).toBeGreaterThan(1600);
+    mocks.dispatchLocalReasoning.mockResolvedValue({
+      text: unsafeRecipe,
+      providerMetadata: {
+        providerUsed: 'ollama',
+        modelUsed: 'qwen3.6:35b-a3b-q4_K_M',
+        fallbackUsed: false,
+      },
+    });
+    mocks.evaluateCookingSafetyText.mockReturnValueOnce({
+      blocked: true,
+      surface: 'chat_core_v2_recipe',
+      issues: [{
+        code: 'ALLERGY_CONFLICT',
+        severity: 'blocker',
+        surface: 'chat_core_v2_recipe',
+        term: 'peanuts',
+        source: 'cooking_preference_profile',
+      }],
+    });
+
+    const result = await runChatCoreV2LocalChatTurn({
+      normalizedText: 'Give me a rice bowl recipe for two',
+      userId: 42,
+      tenantId: 84,
+      requestId: 'req-recipe-late-allergen',
+      locale: 'en',
+      surface: 'ios',
+      env: baseEnv({ CHAT_CORE_V2_LOCAL_CHAT_RECIPE_MODEL: 'qwen3.6:35b-a3b-q4_K_M' }),
+    });
+
+    expect(result?.response.text).toContain('saved cooking safety preference');
+    expect(result?.response.text).not.toContain('crushed peanuts');
+    expect(mocks.evaluateCookingSafetyText).toHaveBeenCalledWith(
+      42,
+      84,
+      'chat_core_v2_recipe',
+      [expect.stringContaining('crushed peanuts')],
+    );
+  });
+
   it('uses a larger bounded budget for recipe requests and repairs incomplete recipes through the model', async () => {
     mocks.dispatchLocalReasoning.mockResolvedValueOnce({
       text: '**Kibe de forno recheado**\n**Modo de preparo:**',
@@ -768,7 +1204,73 @@ describe('ChatCoreV2 local chat orchestrator', () => {
       timeoutMs: 50000,
       keepAliveSeconds: -1,
       prompt: expect.stringContaining('Rewrite as a complete recipe'),
+      systemContext: expect.stringContaining('<cooking_safety_preferences>'),
     }));
+    expect(mocks.dispatchLocalReasoning.mock.calls[1][0].prompt).toContain('<cooking_safety_preferences>');
+  });
+
+  it('blocks allergens reintroduced by the recipe repair path', async () => {
+    mocks.dispatchLocalReasoning.mockResolvedValueOnce({
+      text: '**Kibe de forno recheado**\n**Modo de preparo:**',
+      stopReason: 'length',
+      providerMetadata: {
+        providerUsed: 'ollama',
+        modelUsed: 'qwen2.5:3b-instruct-q4_K_M',
+        fallbackUsed: false,
+      },
+    }).mockResolvedValueOnce({
+      text: [
+        '**Recipe repaired by model**',
+        '**Serves:** 2',
+        '**Prep:** 18 min',
+        '**Cook:** 25 min',
+        '**Macros per serving (estimated):** Protein 31 g; Fat 18 g; Carbs 29 g; Calories 405 kcal',
+        '**Ingredients:**',
+        '- 200 g rice',
+        '- 30 g crushed peanuts',
+        '**Instructions:**',
+        '1. Prepare the rice.',
+        '2. Fold in crushed peanuts.',
+        '3. Bake until hot.',
+        '4. Serve warm.',
+      ].join('\n'),
+      providerMetadata: {
+        providerUsed: 'ollama',
+        modelUsed: 'qwen2.5:3b-instruct-q4_K_M',
+        fallbackUsed: false,
+      },
+    });
+    mocks.evaluateCookingSafetyText.mockReturnValueOnce({
+      blocked: true,
+      surface: 'chat_core_v2_recipe',
+      issues: [{
+        code: 'ALLERGY_CONFLICT',
+        severity: 'blocker',
+        surface: 'chat_core_v2_recipe',
+        term: 'peanuts',
+        source: 'cooking_preference_profile',
+      }],
+    });
+
+    const result = await runChatCoreV2LocalChatTurn({
+      normalizedText: 'make me a baked kibe recipe for two',
+      userId: 42,
+      tenantId: 84,
+      requestId: 'req-recipe-repair-allergen',
+      locale: 'en',
+      surface: 'ios',
+      env: baseEnv({ CHAT_CORE_V2_LOCAL_CHAT_RECIPE_MODEL: 'qwen3.6:35b-a3b-q4_K_M' }),
+    });
+
+    expect(mocks.dispatchLocalReasoning).toHaveBeenCalledTimes(2);
+    expect(result?.response.text).toContain('saved cooking safety preference');
+    expect(result?.response.text).not.toContain('crushed peanuts');
+    expect(mocks.evaluateCookingSafetyText).toHaveBeenCalledWith(
+      42,
+      84,
+      'chat_core_v2_recipe',
+      [expect.stringContaining('crushed peanuts')],
+    );
   });
 
   it('uses recipe routing for generic cooking requests without hardcoded dish names', async () => {

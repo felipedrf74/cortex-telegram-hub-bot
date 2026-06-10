@@ -9,6 +9,7 @@ const mockGetFastpathPatterns = vi.fn();
 const mockGetQualityByAgent = vi.fn();
 const mockGetTaskExecutionSummary = vi.fn();
 const mockGetRecentExecutions = vi.fn();
+const mockGetTrainingGenerationObservabilitySnapshot = vi.fn();
 const mockListOperatorAlerts = vi.fn();
 const mockGetOperatorAlertDeliverySummary = vi.fn();
 const mockAcknowledgeOperatorAlert = vi.fn();
@@ -41,6 +42,11 @@ vi.mock('../../src/services/quality-scorer', () => ({
 vi.mock('../../src/services/task-metrics', () => ({
   getTaskExecutionSummary: (...args: unknown[]) => mockGetTaskExecutionSummary(...args),
   getRecentExecutions: (...args: unknown[]) => mockGetRecentExecutions(...args),
+}));
+
+vi.mock('../../src/services/training-generation-observability', () => ({
+  getTrainingGenerationObservabilitySnapshot: (...args: unknown[]) =>
+    mockGetTrainingGenerationObservabilitySnapshot(...args),
 }));
 
 vi.mock('../../src/services/operator-alerts', () => ({
@@ -141,6 +147,7 @@ describe('portal operations routes', () => {
     mockGetQualityByAgent.mockReset();
     mockGetTaskExecutionSummary.mockReset();
     mockGetRecentExecutions.mockReset();
+    mockGetTrainingGenerationObservabilitySnapshot.mockReset();
     mockListOperatorAlerts.mockReset();
     mockGetOperatorAlertDeliverySummary.mockReset();
     mockAcknowledgeOperatorAlert.mockReset();
@@ -164,6 +171,7 @@ describe('portal operations routes', () => {
       'GET /api/secretary-metrics',
       'GET /api/quality-scores',
       'GET /api/task-metrics',
+      'GET /api/training-generation-metrics',
       'GET /api/operator-alerts',
       'POST /api/operator-alerts/:id/ack',
       'POST /api/operator-alerts/:id/resolve',
@@ -269,6 +277,45 @@ describe('portal operations routes', () => {
       ok: true,
       summary: { totalTasks: 3 },
       recent: [{ id: 1, taskTitle: 'Review' }],
+    });
+
+    mockGetTrainingGenerationObservabilitySnapshot.mockReturnValue({
+      counters: {
+        equipment_default_conservative_total: 1,
+        unavailable_equipment_blocked_total: 0,
+        selector_no_candidate_total: 2,
+        final_validation_failure_total: 0,
+        tenant_scope_missing_blocked_total: 0,
+        calendar_capacity_reflow_total: 1,
+        safety_guardrail_triggered_total: 0,
+      },
+      progression_state_counts: {
+        build: 3,
+        hold: 1,
+        deload: 0,
+        reentry: 0,
+      },
+    });
+
+    expect(invoke('/api/training-generation-metrics').body).toEqual({
+      ok: true,
+      training: {
+        counters: {
+          equipment_default_conservative_total: 1,
+          unavailable_equipment_blocked_total: 0,
+          selector_no_candidate_total: 2,
+          final_validation_failure_total: 0,
+          tenant_scope_missing_blocked_total: 0,
+          calendar_capacity_reflow_total: 1,
+          safety_guardrail_triggered_total: 0,
+        },
+        progression_state_counts: {
+          build: 3,
+          hold: 1,
+          deload: 0,
+          reentry: 0,
+        },
+      },
     });
   });
 

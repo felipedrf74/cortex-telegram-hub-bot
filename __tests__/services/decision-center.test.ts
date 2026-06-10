@@ -185,6 +185,7 @@ function insertHandledFixture(input: {
 function ensureSecretaryAgendaFixtureTables(): void {
   testDb.exec(readFileSync('migrations/083_secretary_agenda_ledger.sql', 'utf8'));
   testDb.exec(readFileSync('migrations/098_secretary_decision_explanation.sql', 'utf8'));
+  testDb.exec('ALTER TABLE secretary_agenda_items ADD COLUMN reasoning_trail_json TEXT');
 }
 
 function ensureUserFixtureTable(): void {
@@ -220,12 +221,16 @@ describe('Decision Center facade', () => {
     vi.setSystemTime(new Date('2026-05-10T10:00:00.000Z'));
     testDb = new Database(':memory:');
     process.env.NOTIFICATION_DELIVERY_MODE = 'mock';
+    delete process.env.DECISION_TYPE_SUPPRESSION_ENABLED;
+    delete process.env.DECISION_FEEDBACK_SUPPRESSION_ENABLED;
     ensureNotificationTables();
     ensureDecisionCenterTables();
   });
 
   afterEach(() => {
     delete process.env.NOTIFICATION_DELIVERY_MODE;
+    delete process.env.DECISION_TYPE_SUPPRESSION_ENABLED;
+    delete process.env.DECISION_FEEDBACK_SUPPRESSION_ENABLED;
     vi.useRealTimers();
     testDb?.close();
   });
@@ -2064,6 +2069,8 @@ describe('Decision Center expiry (A1)', () => {
     vi.setSystemTime(new Date('2026-05-10T10:00:00.000Z'));
     testDb = new Database(':memory:');
     process.env.NOTIFICATION_DELIVERY_MODE = 'mock';
+    delete process.env.DECISION_TYPE_SUPPRESSION_ENABLED;
+    delete process.env.DECISION_FEEDBACK_SUPPRESSION_ENABLED;
     ensureNotificationTables();
     ensureDecisionCenterTables();
   });
@@ -2113,6 +2120,162 @@ describe('Decision Center expiry (A1)', () => {
     expect(limited.map((item) => item.decisionId)).toEqual([active.item!.decisionId]);
   });
 
+  it('uses materialized priority_score in the SQL window and refreshes missing scores', async () => {
+    const lowStored = await createDecisionIntent(buildSkillDecisionFixtureIntent('training', 57, { dedupeKey: 'rank-low-stored' }));
+    const highStored = await createDecisionIntent(buildSkillDecisionFixtureIntent('content', 57, { dedupeKey: 'rank-high-stored' }));
+    testDb.prepare('UPDATE notification_center_items SET priority_score = ? WHERE item_id = ?')
+      .run(10, lowStored.item!.decisionId);
+    testDb.prepare('UPDATE notification_center_items SET priority_score = ? WHERE item_id = ?')
+      .run(95, highStored.item!.decisionId);
+
+    const limited = listDecisionItems(57, 57, { status: 'all', limit: 1, maxLimit: 1, recordExposure: false });
+
+    expect(limited.map((item) => item.decisionId)).toEqual([highStored.item!.decisionId]);
+
+    testDb.prepare('UPDATE notification_center_items SET priority_score = NULL WHERE item_id = ?')
+      .run(lowStored.item!.decisionId);
+    listDecisionItems(57, 57, { status: 'all', limit: 20, recordExposure: false, materializePriorityScore: true });
+    const refreshed = testDb.prepare('SELECT priority_score AS score FROM notification_center_items WHERE item_id = ?')
+      .get(lowStored.item!.decisionId) as { score: number | null };
+    expect(refreshed.score).toBeGreaterThan(0);
+  });
+
+  it('records exposure and materializes priority only for the returned page', async () => {
+    const top = await createDecisionIntent(buildSkillDecisionFixtureIntent('chat', 58, {
+      priority: 'critical',
+      dedupeKey: 'rank-page-top',
+    }));
+    const offPage = await createDecisionIntent(buildSkillDecisionFixtureIntent('finance', 58, {
+      priority: 'active',
+      dedupeKey: 'rank-page-off-page',
+    }));
+    const allIds = [top.item!.decisionId, offPage.item!.decisionId];
+    testDb.prepare('UPDATE notification_center_items SET priority_score = NULL WHERE item_id IN (?, ?)')
+      .run(...allIds);
+
+    const page = listDecisionItems(58, 58, { status: 'all', limit: 1, maxLimit: 20 });
+
+    expect(page).toHaveLength(1);
+    const renderedId = page[0].decisionId;
+    const offPageId = allIds.find((id) => id !== renderedId)!;
+    const scores = testDb.prepare(`
+      SELECT item_id AS itemId, priority_score AS priorityScore
+        FROM notification_center_items
+       WHERE item_id IN (?, ?)
+    `).all(...allIds) as Array<{ itemId: string; priorityScore: number | null }>;
+    expect(Object.fromEntries(scores.map((row) => [row.itemId, row.priorityScore]))).toEqual({
+      [renderedId]: expect.any(Number),
+      [offPageId]: null,
+    });
+    expect(getDecisionLifecycleEvents(renderedId, 58, 58).map((event) => event.event)).toContain('surfaced');
+    expect(getDecisionLifecycleEvents(offPageId, 58, 58).map((event) => event.event)).not.toContain('surfaced');
+  });
+
+  it('records summary exposure and priority only for rendered preview items', async () => {
+    const first = await createDecisionIntent(buildSkillDecisionFixtureIntent('chat', 59, {
+      priority: 'critical',
+      dedupeKey: 'summary-page-first',
+    }));
+    const second = await createDecisionIntent(buildSkillDecisionFixtureIntent('finance', 59, {
+      priority: 'time_sensitive',
+      dedupeKey: 'summary-page-second',
+    }));
+    const offPreview = await createDecisionIntent(buildSkillDecisionFixtureIntent('cooking', 59, {
+      priority: 'active',
+      dedupeKey: 'summary-page-off-preview',
+    }));
+    const allIds = [first.item!.decisionId, second.item!.decisionId, offPreview.item!.decisionId];
+    testDb.prepare('UPDATE notification_center_items SET priority_score = NULL WHERE item_id IN (?, ?, ?)')
+      .run(...allIds);
+
+    const summary = getDecisionSummary(59, 59, 2);
+
+    expect(summary.previewItems).toHaveLength(2);
+    const renderedIds = new Set(summary.previewItems.map((item) => item.decisionId));
+    const offPreviewId = allIds.find((id) => !renderedIds.has(id))!;
+    const scores = testDb.prepare(`
+      SELECT item_id AS itemId, priority_score AS priorityScore
+        FROM notification_center_items
+       WHERE item_id IN (?, ?, ?)
+    `).all(...allIds) as Array<{ itemId: string; priorityScore: number | null }>;
+    const byId = Object.fromEntries(scores.map((row) => [row.itemId, row.priorityScore]));
+    for (const renderedId of renderedIds) {
+      expect(byId[renderedId]).toEqual(expect.any(Number));
+      expect(getDecisionLifecycleEvents(renderedId, 59, 59).map((event) => event.event)).toContain('surfaced');
+    }
+    expect(byId[offPreviewId]).toBeNull();
+    expect(getDecisionLifecycleEvents(offPreviewId, 59, 59).map((event) => event.event)).not.toContain('surfaced');
+  });
+
+  it('does not expose or materialize type-suppressed summary decisions', async () => {
+    const suppressed = await createDecisionIntent(buildSkillDecisionFixtureIntent('cooking', 60, {
+      priority: 'active',
+      dedupeKey: 'summary-suppressed',
+    }));
+    testDb.prepare('UPDATE notification_center_items SET priority_score = NULL WHERE item_id = ?')
+      .run(suppressed.item!.decisionId);
+    process.env.DECISION_TYPE_SUPPRESSION_ENABLED = 'true';
+    suppressDecisionType(60, 60, suppressed.item!.sourceSkill, suppressed.item!.type, 'dont_show_type');
+
+    const summary = getDecisionSummary(60, 60, 2);
+
+    expect(summary.openCount).toBe(1);
+    expect(summary.previewItems).toEqual([]);
+    const score = (testDb.prepare('SELECT priority_score AS priorityScore FROM notification_center_items WHERE item_id = ?')
+      .get(suppressed.item!.decisionId) as { priorityScore: number | null }).priorityScore;
+    expect(score).toBeNull();
+    expect(getDecisionLifecycleEvents(suppressed.item!.decisionId, 60, 60).map((event) => event.event)).not.toContain('surfaced');
+  });
+
+  it('records overview exposure and priority only for rendered rows', async () => {
+    const first = await createDecisionIntent(buildSkillDecisionFixtureIntent('chat', 61, {
+      priority: 'critical',
+      dedupeKey: 'overview-rendered-first',
+    }));
+    const second = await createDecisionIntent(buildSkillDecisionFixtureIntent('finance', 61, {
+      priority: 'time_sensitive',
+      dedupeKey: 'overview-rendered-second',
+    }));
+    const third = await createDecisionIntent(buildSkillDecisionFixtureIntent('cooking', 61, {
+      priority: 'active',
+      dedupeKey: 'overview-rendered-third',
+    }));
+    const wideOnly = await createDecisionIntent(buildSkillDecisionFixtureIntent('training', 61, {
+      priority: 'passive',
+      dedupeKey: 'overview-wide-only',
+    }));
+    const allIds = [
+      first.item!.decisionId,
+      second.item!.decisionId,
+      third.item!.decisionId,
+      wideOnly.item!.decisionId,
+    ];
+    testDb.prepare('UPDATE notification_center_items SET priority_score = NULL WHERE item_id IN (?, ?, ?, ?)')
+      .run(...allIds);
+
+    const overview = getDecisionOverview(61, 61, { limit: 1, handledLimit: 0 });
+
+    expect(overview.items).toHaveLength(1);
+    expect(overview.summary.previewItems).toHaveLength(3);
+    const renderedIds = new Set([
+      ...overview.items.map((item) => item.decisionId),
+      ...overview.summary.previewItems.map((item) => item.decisionId),
+    ]);
+    const wideOnlyId = allIds.find((id) => !renderedIds.has(id))!;
+    const scores = testDb.prepare(`
+      SELECT item_id AS itemId, priority_score AS priorityScore
+        FROM notification_center_items
+       WHERE item_id IN (?, ?, ?, ?)
+    `).all(...allIds) as Array<{ itemId: string; priorityScore: number | null }>;
+    const byId = Object.fromEntries(scores.map((row) => [row.itemId, row.priorityScore]));
+    for (const renderedId of renderedIds) {
+      expect(byId[renderedId]).toEqual(expect.any(Number));
+      expect(getDecisionLifecycleEvents(renderedId, 61, 61).map((event) => event.event)).toContain('surfaced');
+    }
+    expect(byId[wideOnlyId]).toBeNull();
+    expect(getDecisionLifecycleEvents(wideOnlyId, 61, 61).map((event) => event.event)).not.toContain('surfaced');
+  });
+
   it('treats expires_at equal to the database clock as expired on active reads', async () => {
     const nowExpired = await createDecisionIntent(buildSkillDecisionFixtureIntent('training', 55, { dedupeKey: 'a1-db-now' }));
     setExpiry(nowExpired.item!.decisionId, dbNowIso());
@@ -2146,9 +2309,9 @@ describe('Decision Center expiry (A1)', () => {
     for (let i = 0; i < 3; i += 1) {
       const created = await createDecisionIntent(buildSkillDecisionFixtureIntent('training', 60, { dedupeKey: `a1-sweep-${i}` }));
       ids.push(created.item!.decisionId);
-      setExpiry(created.item!.decisionId, PAST);
     }
     const future = await createDecisionIntent(buildSkillDecisionFixtureIntent('training', 60, { dedupeKey: 'a1-sweep-future' }));
+    for (const id of ids) setExpiry(id, PAST);
     setExpiry(future.item!.decisionId, FUTURE);
 
     const result = runDecisionExpiryJob({ batchSize: 2, maxBatches: 20 });
@@ -2491,6 +2654,58 @@ describe('Decision Center lifecycle events (SI-4)', () => {
     testDb.prepare('UPDATE notification_center_items SET expires_at = ? WHERE item_id = ?').run('2020-01-01T00:00:00.000Z', exp.item!.decisionId);
     runDecisionExpiryJob();
     expect(getDecisionLifecycleEvents(exp.item!.decisionId, 81, 81).map((e) => e.event)).toContain('expired');
+  });
+
+  it('emits an unblocked lifecycle event when expiry clears the last blocking dependency', async () => {
+    const blocker = await createDecisionIntent(buildSkillDecisionFixtureIntent('training', 83, { dedupeKey: 'lc-blocker' }));
+    const dependent = await createDecisionIntent(buildSkillDecisionFixtureIntent('chat', 83, { dedupeKey: 'lc-dependent' }));
+    addDecisionDependency({
+      decisionId: dependent.item!.decisionId,
+      dependsOnDecisionId: blocker.item!.decisionId,
+      userId: 83,
+      tenantId: 83,
+      relationship: 'blocks',
+    });
+    expect(getDecisionItem(dependent.item!.decisionId, 83, 83)?.blockedByDecisionIds).toEqual([blocker.item!.decisionId]);
+
+    testDb.prepare('UPDATE notification_center_items SET expires_at = ? WHERE item_id = ?')
+      .run('2020-01-01T00:00:00.000Z', blocker.item!.decisionId);
+    runDecisionExpiryJob();
+
+    const events = getDecisionLifecycleEvents(dependent.item!.decisionId, 83, 83);
+    expect(events.some((event) => event.event === 'unblocked' && event.reason === 'blocker_expired')).toBe(true);
+    const metadata = testDb.prepare(`
+      SELECT metadata_json AS metadata
+        FROM decision_lifecycle_events
+       WHERE decision_id = ? AND event = 'unblocked'
+       LIMIT 1
+    `).get(dependent.item!.decisionId) as { metadata: string };
+    expect(JSON.parse(metadata.metadata)).toEqual({ blockerDecisionIds: [blocker.item!.decisionId] });
+    expect(getDecisionItem(dependent.item!.decisionId, 83, 83)?.blockedByDecisionIds).toEqual([]);
+  });
+
+  it('does not re-emit expiry or unblocked lifecycle events when an expired action is retried', async () => {
+    const blocker = await createDecisionIntent(buildSkillDecisionFixtureIntent('training', 84, { dedupeKey: 'lc-retry-blocker' }));
+    const dependent = await createDecisionIntent(buildSkillDecisionFixtureIntent('chat', 84, { dedupeKey: 'lc-retry-dependent' }));
+    addDecisionDependency({
+      decisionId: dependent.item!.decisionId,
+      dependsOnDecisionId: blocker.item!.decisionId,
+      userId: 84,
+      tenantId: 84,
+      relationship: 'blocks',
+    });
+    testDb.prepare('UPDATE notification_center_items SET expires_at = ? WHERE item_id = ?')
+      .run('2020-01-01T00:00:00.000Z', blocker.item!.decisionId);
+
+    await expect(performDecisionAction(blocker.item!.decisionId, 'open_detail', 84, 84, { idempotencyKey: 'expired-retry-1' }))
+      .rejects.toThrow(/expired/i);
+    await expect(performDecisionAction(blocker.item!.decisionId, 'open_detail', 84, 84, { idempotencyKey: 'expired-retry-2' }))
+      .rejects.toThrow(/expired/i);
+
+    expect(getDecisionLifecycleEvents(blocker.item!.decisionId, 84, 84)
+      .filter((event) => event.event === 'expired')).toHaveLength(1);
+    expect(getDecisionLifecycleEvents(dependent.item!.decisionId, 84, 84)
+      .filter((event) => event.event === 'unblocked' && event.reason === 'blocker_expired')).toHaveLength(1);
   });
 
   it('kill-switch (DECISION_LIFECYCLE_EVENTS_ENABLED=0) suppresses writes without throwing', async () => {
@@ -3041,12 +3256,15 @@ describe('Decision Center C3 type-suppression controls', () => {
     vi.setSystemTime(new Date('2026-05-10T10:00:00.000Z'));
     testDb = new Database(':memory:');
     process.env.NOTIFICATION_DELIVERY_MODE = 'mock';
+    delete process.env.DECISION_TYPE_SUPPRESSION_ENABLED;
+    delete process.env.DECISION_FEEDBACK_SUPPRESSION_ENABLED;
     ensureNotificationTables();
     ensureDecisionCenterTables();
   });
   afterEach(() => {
     delete process.env.NOTIFICATION_DELIVERY_MODE;
     delete process.env.DECISION_TYPE_SUPPRESSION_ENABLED;
+    delete process.env.DECISION_FEEDBACK_SUPPRESSION_ENABLED;
     vi.useRealTimers();
     testDb?.close();
   });
@@ -3092,6 +3310,48 @@ describe('Decision Center C3 type-suppression controls', () => {
     expect(applyDecisionTypeSuppression([item], 202, 202)).toHaveLength(0);
     unsuppressDecisionType(202, 202, 'cooking', 'decision_required');
     expect(applyDecisionTypeSuppression([item], 202, 202)).toHaveLength(1); // unsuppress restores
+  });
+
+  it('can suppress and restore one recipe without muting the whole type', async () => {
+    const planA = await cooking(222, 'recipe-a');
+    const planB = await cooking(222, 'recipe-b');
+    const itemA = getDecisionItem(planA.item!.decisionId, 222, 222)!;
+    const itemB = getDecisionItem(planB.item!.decisionId, 222, 222)!;
+    process.env.DECISION_TYPE_SUPPRESSION_ENABLED = 'true';
+
+    suppressDecisionType(222, 222, 'cooking', 'decision_required', 'dont_show_type', null, itemA.groupKey);
+
+    expect(listDecisionTypeSuppressions(222, 222)).toEqual([
+      expect.objectContaining({ sourceSkill: 'cooking', type: 'decision_required', recipe: itemA.groupKey }),
+    ]);
+    expect(applyDecisionTypeSuppression([itemA, itemB], 222, 222).map((item) => item.decisionId))
+      .toEqual([itemB.decisionId]);
+
+    unsuppressDecisionType(222, 222, 'cooking', 'decision_required', itemA.groupKey);
+    expect(applyDecisionTypeSuppression([itemA, itemB], 222, 222)).toHaveLength(2);
+  });
+
+  it('uses feedback signals for opt-in suppression while keeping the flag off by default', async () => {
+    const historical: DecisionApiItem[] = [];
+    for (let i = 0; i < 5; i += 1) {
+      const created = await cooking(223, `feedback-${i}`);
+      const item = getDecisionItem(created.item!.decisionId, 223, 223)!;
+      historical.push(item);
+      if (i < 3) dismissDecision(item.decisionId, 223, 223, 'dont_show_type');
+    }
+    const current = getDecisionItem((await cooking(223, 'feedback-current')).item!.decisionId, 223, 223)!;
+
+    expect(getDecisionFeedbackSignals(223, 223)[0]).toMatchObject({
+      sourceSkill: 'cooking',
+      type: 'decision_required',
+      dontShowTypeCount: 3,
+    });
+    expect(applyDecisionTypeSuppression([current], 223, 223)).toHaveLength(1);
+
+    process.env.DECISION_FEEDBACK_SUPPRESSION_ENABLED = 'true';
+    expect(applyDecisionTypeSuppression([current], 223, 223)).toHaveLength(0);
+
+    expect(historical).toHaveLength(5);
   });
 
   it('is scoped — one user\'s suppression does not affect another', async () => {

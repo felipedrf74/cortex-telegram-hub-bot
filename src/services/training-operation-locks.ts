@@ -3,6 +3,7 @@
 import crypto from 'crypto';
 import { getDb } from './database';
 import { logger } from '../utils/logger';
+import { requireTenantIdParam } from './tenant-scope';
 
 export type TrainingOperationName =
   | 'calendar_generate'
@@ -12,7 +13,7 @@ export type TrainingOperationName =
 
 export interface TrainingOperationLockInput {
   userId: number;
-  tenantId?: number | null;
+  tenantId: number;
   planId?: number | null;
   operation: TrainingOperationName;
 }
@@ -45,21 +46,65 @@ function tryGetLockDb(): ReturnType<typeof getDb> | null {
 }
 
 function ensureTrainingOperationLockTable(db: ReturnType<typeof getDb>): void {
+  const existing = db.prepare(`
+    SELECT name
+      FROM sqlite_master
+     WHERE type = 'table'
+       AND name = 'training_operation_locks'
+  `).get();
+  if (!existing) {
+    createTrainingOperationLockTable(db);
+    return;
+  }
+
+  const columns = db.prepare('PRAGMA table_info(training_operation_locks)').all() as Array<{ name: string; notnull: number }>;
+  const tenantColumn = columns.find((column) => column.name === 'tenant_id');
+  if (!tenantColumn) {
+    migrateTrainingOperationLocksTenantScope(db);
+  } else {
+    backfillTrainingOperationLockTenantScope(db);
+  }
+  ensureTrainingOperationLockIndexes(db);
+}
+
+function createTrainingOperationLockTable(db: ReturnType<typeof getDb>): void {
   db.exec(`
     CREATE TABLE IF NOT EXISTS training_operation_locks (
       lock_key TEXT PRIMARY KEY,
       owner_token TEXT NOT NULL,
       operation TEXT NOT NULL,
       user_id INTEGER NOT NULL,
-      tenant_id INTEGER,
+      tenant_id INTEGER NOT NULL,
       plan_id INTEGER,
       acquired_at_ms INTEGER NOT NULL,
       expires_at_ms INTEGER NOT NULL
     );
+  `);
+  ensureTrainingOperationLockIndexes(db);
+}
+
+function migrateTrainingOperationLocksTenantScope(db: ReturnType<typeof getDb>): void {
+  db.exec(`
+    ALTER TABLE training_operation_locks
+      ADD COLUMN tenant_id INTEGER;
+  `);
+  backfillTrainingOperationLockTenantScope(db);
+}
+
+function backfillTrainingOperationLockTenantScope(db: ReturnType<typeof getDb>): void {
+  db.exec(`
+    UPDATE training_operation_locks
+       SET tenant_id = user_id
+     WHERE tenant_id IS NULL;
+  `);
+}
+
+function ensureTrainingOperationLockIndexes(db: ReturnType<typeof getDb>): void {
+  db.exec(`
     CREATE INDEX IF NOT EXISTS idx_training_operation_locks_expires
       ON training_operation_locks(expires_at_ms);
-    CREATE INDEX IF NOT EXISTS idx_training_operation_locks_user
-      ON training_operation_locks(user_id, operation);
+    CREATE INDEX IF NOT EXISTS idx_training_operation_locks_user_tenant_operation
+      ON training_operation_locks(user_id, tenant_id, operation);
   `);
 }
 
@@ -68,9 +113,9 @@ function ttlMsForTrainingOperation(operation: TrainingOperationName): number {
 }
 
 export function trainingCalendarOperationLockKey(input: Pick<TrainingOperationLockInput, 'userId' | 'tenantId'>): string {
-  const tenantId = Number(input.tenantId ?? input.userId);
-  const resolvedTenantId = Number.isFinite(tenantId) && tenantId > 0 ? Math.trunc(tenantId) : Math.trunc(input.userId);
-  return `training-calendar:user:${Math.trunc(input.userId)}:tenant:${resolvedTenantId}`;
+  const userId = requireTrainingOperationUserId(input.userId);
+  const tenantId = requireTenantIdParam(input.tenantId, 'trainingCalendarOperationLockKey');
+  return `training-calendar:user:${userId}:tenant:${tenantId}`;
 }
 
 async function acquireMemoryTrainingOperationLock(lockKey: string): Promise<() => void> {
@@ -101,10 +146,8 @@ async function acquireMemoryTrainingOperationLock(lockKey: string): Promise<() =
 }
 
 export async function acquireTrainingCalendarOperationLock(input: TrainingOperationLockInput): Promise<() => void> {
-  if (!Number.isFinite(input.userId) || input.userId <= 0) {
-    return () => { /* invalid user scope: caller will fail auth/ownership elsewhere */ };
-  }
-
+  const userId = requireTrainingOperationUserId(input.userId);
+  const tenantId = requireTenantIdParam(input.tenantId, 'acquireTrainingCalendarOperationLock');
   const lockKey = trainingCalendarOperationLockKey(input);
   const db = tryGetLockDb();
   if (!db) {
@@ -115,9 +158,6 @@ export async function acquireTrainingCalendarOperationLock(input: TrainingOperat
   ensureTrainingOperationLockTable(db);
   const ownerToken = crypto.randomUUID();
   const startedAt = Date.now();
-  const tenantId = Number.isFinite(Number(input.tenantId)) && Number(input.tenantId) > 0
-    ? Math.trunc(Number(input.tenantId))
-    : null;
   const planId = Number.isFinite(Number(input.planId)) && Number(input.planId) > 0
     ? Math.trunc(Number(input.planId))
     : null;
@@ -142,7 +182,7 @@ export async function acquireTrainingCalendarOperationLock(input: TrainingOperat
       lockKey,
       ownerToken,
       input.operation,
-      Math.trunc(input.userId),
+      userId,
       tenantId,
       planId,
       nowMs,
@@ -160,7 +200,7 @@ export async function acquireTrainingCalendarOperationLock(input: TrainingOperat
              WHERE lock_key = ? AND owner_token = ?
           `).run(renewedAtMs + ttlMs, lockKey, ownerToken);
         } catch (err) {
-          logger.warn({ err, lockKey, operation: input.operation, userId: input.userId }, 'Training operation SQLite lock lease renewal failed');
+          logger.warn({ err, lockKey, operation: input.operation, userId, tenantId }, 'Training operation SQLite lock lease renewal failed');
         }
       }, Math.max(1_000, Math.floor(ttlMs / 3)));
       if (typeof renewalInterval.unref === 'function') renewalInterval.unref();
@@ -172,7 +212,7 @@ export async function acquireTrainingCalendarOperationLock(input: TrainingOperat
           db.prepare('DELETE FROM training_operation_locks WHERE lock_key = ? AND owner_token = ?')
             .run(lockKey, ownerToken);
         } catch (err) {
-          logger.warn({ err, lockKey, operation: input.operation, userId: input.userId }, 'Training operation SQLite lock release failed');
+          logger.warn({ err, lockKey, operation: input.operation, userId, tenantId }, 'Training operation SQLite lock release failed');
         }
       };
     }
@@ -196,4 +236,11 @@ export async function withTrainingCalendarOperationLock<T>(
 
 export function _resetTrainingOperationLocksForTests(): void {
   memoryLocks.clear();
+}
+
+function requireTrainingOperationUserId(userId: number): number {
+  if (!Number.isFinite(userId) || userId <= 0 || !Number.isSafeInteger(userId)) {
+    throw new Error(`TRAINING_OPERATION_LOCK_USER_SCOPE_REQUIRED: ${String(userId)}`);
+  }
+  return Math.trunc(userId);
 }

@@ -62,16 +62,79 @@ function applyMigrations(db: Database.Database): void {
 }
 
 import {
-  findExistingOwnership,
-  findOrphanedOwnerships,
-  findOwnershipsForPlan,
-  findOwnershipsNeedingReconciliation,
-  findReusableOwnershipBySessionIdentity,
+  findExistingOwnership as findExistingOwnershipRaw,
+  findOrphanedOwnerships as findOrphanedOwnershipsRaw,
+  findOwnershipsForPlan as findOwnershipsForPlanRaw,
+  findOwnershipsNeedingReconciliation as findOwnershipsNeedingReconciliationRaw,
+  findReusableOwnershipBySessionIdentity as findReusableOwnershipBySessionIdentityRaw,
   getPlanVersion,
   incrementPlanVersion,
-  markCalendarOwnershipDeleted,
-  recordCalendarOwnership,
+  markCalendarOwnershipDeleted as markCalendarOwnershipDeletedRaw,
+  recordCalendarOwnership as recordCalendarOwnershipRaw,
 } from '../../src/services/training-plan-lifecycle';
+
+type TestRecordCalendarOwnershipInput = Omit<
+  Parameters<typeof recordCalendarOwnershipRaw>[0],
+  'tenantId'
+> & { tenantId?: number };
+
+type TestMarkCalendarOwnershipDeletedInput = Omit<
+  Parameters<typeof markCalendarOwnershipDeletedRaw>[0],
+  'tenantId' | 'userId'
+> & { tenantId?: number; userId?: number };
+
+function recordCalendarOwnership(input: TestRecordCalendarOwnershipInput) {
+  return recordCalendarOwnershipRaw({
+    ...input,
+    tenantId: input.tenantId ?? input.userId,
+  });
+}
+
+function markCalendarOwnershipDeleted(input: TestMarkCalendarOwnershipDeletedInput) {
+  const userId = input.userId ?? 100;
+  return markCalendarOwnershipDeletedRaw({
+    ...input,
+    userId,
+    tenantId: input.tenantId ?? userId,
+  });
+}
+
+function findOwnershipsForPlan(planId: number, tenantId = 100) {
+  return findOwnershipsForPlanRaw(planId, tenantId);
+}
+
+function findOrphanedOwnerships(userId: number, tenantId = userId) {
+  return findOrphanedOwnershipsRaw(userId, tenantId);
+}
+
+function findOwnershipsNeedingReconciliation(userId: number, tenantId = userId) {
+  return findOwnershipsNeedingReconciliationRaw(userId, tenantId);
+}
+
+function findExistingOwnership(
+  input: Omit<Parameters<typeof findExistingOwnershipRaw>[0], 'tenantId' | 'userId'> & {
+    tenantId?: number;
+    userId?: number;
+  },
+) {
+  const userId = input.userId ?? 100;
+  return findExistingOwnershipRaw({
+    ...input,
+    userId,
+    tenantId: input.tenantId ?? userId,
+  });
+}
+
+function findReusableOwnershipBySessionIdentity(
+  input: Omit<Parameters<typeof findReusableOwnershipBySessionIdentityRaw>[0], 'tenantId'> & {
+    tenantId?: number;
+  },
+) {
+  return findReusableOwnershipBySessionIdentityRaw({
+    ...input,
+    tenantId: input.tenantId ?? input.userId,
+  });
+}
 
 beforeEach(() => {
   testDb = new Database(':memory:');
@@ -137,14 +200,28 @@ describe('training-plan-lifecycle — migration 081', () => {
     expect(() => {
       testDb.prepare(`
         INSERT INTO training_agenda_event_ownership
-          (plan_id, plan_version, user_id, calendar_event_id, calendar_source, status)
-        VALUES (1, 1, 100, 'evt-1', 'google', 'WAT')
+          (plan_id, plan_version, tenant_id, user_id, calendar_event_id, calendar_source, status)
+        VALUES (1, 1, 100, 100, 'evt-1', 'google', 'WAT')
       `).run();
     }).toThrow(/CHECK constraint/i);
   });
 });
 
 describe('training-plan-lifecycle — recordCalendarOwnership', () => {
+  it('requires tenant scope', () => {
+    seedPlan({ id: 1, userId: 100 });
+    seedSession({ id: 10, planId: 1, weekId: 20, userId: 100 });
+    expect(() => recordCalendarOwnershipRaw({
+      planId: 1,
+      planVersion: 1,
+      sessionId: 10,
+      tenantId: undefined as unknown as number,
+      userId: 100,
+      eventId: 'evt-missing-tenant',
+      source: 'google',
+    })).toThrow(/TENANT_SCOPE_REQUIRED|requires a validated tenantId/);
+  });
+
   it('inserts a fresh row and returns created=true', () => {
     seedPlan({ id: 1, userId: 100 });
     seedSession({ id: 10, planId: 1, weekId: 20, userId: 100 });
@@ -208,6 +285,16 @@ describe('training-plan-lifecycle — recordCalendarOwnership', () => {
 });
 
 describe('training-plan-lifecycle — markCalendarOwnershipDeleted', () => {
+  it('requires tenant scope', () => {
+    expect(() => markCalendarOwnershipDeletedRaw({
+      eventId: 'evt-1',
+      source: 'google',
+      reason: 'missing_tenant',
+      tenantId: undefined as unknown as number,
+      userId: 100,
+    })).toThrow(/TENANT_SCOPE_REQUIRED|requires a validated tenantId/);
+  });
+
   it('transitions an active row to status=deleted with a timestamp + reason', () => {
     seedPlan({ id: 1, userId: 100 });
     seedSession({ id: 10, planId: 1, weekId: 20, userId: 100 });
@@ -427,6 +514,16 @@ describe('training-plan-lifecycle — getPlanVersion', () => {
 });
 
 describe('training-plan-lifecycle — findExistingOwnership', () => {
+  it('requires tenant scope', () => {
+    expect(() => findExistingOwnershipRaw({
+      planId: 1,
+      planVersion: 1,
+      sessionId: 10,
+      tenantId: undefined as unknown as number,
+      userId: 100,
+    })).toThrow(/TENANT_SCOPE_REQUIRED|requires a validated tenantId/);
+  });
+
   it('returns the prior row for the same (plan, plan_version, session_id)', () => {
     seedPlan({ id: 1, userId: 100 });
     seedSession({ id: 10, planId: 1, weekId: 20, userId: 100 });

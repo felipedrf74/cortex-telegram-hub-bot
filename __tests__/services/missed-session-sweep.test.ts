@@ -75,6 +75,7 @@ afterEach(() => {
 function seedPlanWithSession(opts: {
   planId: number;
   userId: number;
+  tenantId?: number;
   weekId: number;
   sessionId: number;
   startDate: string;
@@ -86,9 +87,9 @@ function seedPlanWithSession(opts: {
 }): void {
   testDb.prepare(`
     INSERT INTO fitness_training_plans
-      (id, user_id, name, sport, duration_weeks, start_date, end_date, status)
-    VALUES (?, ?, 'p', 'gym', 12, ?, '2026-12-31', 'active')
-  `).run(opts.planId, opts.userId, opts.startDate);
+      (id, user_id, tenant_id, name, sport, duration_weeks, start_date, end_date, status)
+    VALUES (?, ?, ?, 'p', 'gym', 12, ?, '2026-12-31', 'active')
+  `).run(opts.planId, opts.userId, opts.tenantId ?? opts.userId, opts.startDate);
   testDb.prepare(`
     INSERT INTO training_weeks (id, plan_id, week_number) VALUES (?, ?, ?)
   `).run(opts.weekId, opts.planId, opts.weekNumber);
@@ -138,6 +139,7 @@ describe('detectMissedSessions — basic detection', () => {
     });
     const missed = detectMissedSessions({
       userId: 100,
+      tenantId: 100,
       asOfISODate: '2026-01-10T12:00:00Z', // 5 days past the scheduled monday
     });
     expect(missed.length).toBe(1);
@@ -157,6 +159,7 @@ describe('detectMissedSessions — basic detection', () => {
     `).run();
     const missed = detectMissedSessions({
       userId: 100,
+      tenantId: 100,
       asOfISODate: '2026-01-10T12:00:00Z',
     });
     expect(missed.length).toBe(0);
@@ -174,6 +177,7 @@ describe('detectMissedSessions — basic detection', () => {
     `).run();
     const missed = detectMissedSessions({
       userId: 100,
+      tenantId: 100,
       asOfISODate: '2026-01-10T12:00:00Z',
     });
     expect(missed.length).toBe(0);
@@ -188,6 +192,7 @@ describe('detectMissedSessions — basic detection', () => {
     // Just 6 hours past midnight Tuesday — within 24h grace.
     const missed = detectMissedSessions({
       userId: 100,
+      tenantId: 100,
       asOfISODate: '2026-01-06T06:00:00Z',
       gracePeriodHoursEasy: 24,
     });
@@ -204,6 +209,7 @@ describe('detectMissedSessions — basic detection', () => {
     // 18 hours past Tuesday midnight — past 12h key grace, before 24h easy grace.
     const missed = detectMissedSessions({
       userId: 100,
+      tenantId: 100,
       asOfISODate: '2026-01-06T18:00:00Z',
       gracePeriodHoursKey: 12,
       gracePeriodHoursEasy: 24,
@@ -226,6 +232,7 @@ describe('detectMissedSessions — basic detection', () => {
     `).run();
     const missed = detectMissedSessions({
       userId: 100,
+      tenantId: 100,
       asOfISODate: '2026-01-10T12:00:00Z',
     });
     expect(missed.length).toBe(0);
@@ -240,6 +247,7 @@ describe('detectMissedSessions — basic detection', () => {
     });
     const missed = detectMissedSessions({
       userId: 100,
+      tenantId: 100,
       asOfISODate: '2026-01-10T12:00:00Z',
     });
     expect(missed.length).toBe(0);
@@ -259,6 +267,7 @@ describe('detectMissedSessions — basic detection', () => {
     `).run();
     const missed = detectMissedSessions({
       userId: 100,
+      tenantId: 100,
       asOfISODate: '2026-01-10T12:00:00Z',
     });
     expect(missed.length).toBe(0);
@@ -284,11 +293,39 @@ describe('detectMissedSessions — basic detection', () => {
     `).run();
     const missed = detectMissedSessions({
       userId: 100,
+      tenantId: 100,
       asOfISODate: '2026-01-10T12:00:00Z',
     });
     const ids = missed.map((m) => m.sessionId);
     // 12 IS missed (preview did NOT exclude it); 123 is NOT missed.
     expect(ids).toContain(12);
     expect(ids).not.toContain(123);
+  });
+
+  it('excludes active plans from another tenant for the same user', () => {
+    seedPlanWithSession({
+      planId: 11, userId: 100, tenantId: 100, weekId: 11, sessionId: 110,
+      startDate: '2026-01-05', weekNumber: 1, dayOfWeek: 'monday',
+      sessionType: 'easy_run',
+    });
+    seedPlanWithSession({
+      planId: 12, userId: 100, tenantId: 200, weekId: 12, sessionId: 120,
+      startDate: '2026-01-05', weekNumber: 1, dayOfWeek: 'tuesday',
+      sessionType: 'easy_run',
+    });
+
+    const tenant100 = detectMissedSessions({
+      userId: 100,
+      tenantId: 100,
+      asOfISODate: '2026-01-10T12:00:00Z',
+    });
+    const tenant200 = detectMissedSessions({
+      userId: 100,
+      tenantId: 200,
+      asOfISODate: '2026-01-10T12:00:00Z',
+    });
+
+    expect(tenant100.map((m) => m.sessionId)).toEqual([110]);
+    expect(tenant200.map((m) => m.sessionId)).toEqual([120]);
   });
 });

@@ -55,6 +55,7 @@ export interface MissedSessionSignal {
 
 export interface DetectMissedSessionsInput {
   userId: number;
+  tenantId: number;
   /** ISO date "now" — caller-controllable for tests + replay. */
   asOfISODate: string;
   /** Plan timezone offset in hours (e.g., -8 for PST). Default 0 = UTC. */
@@ -180,9 +181,9 @@ export function detectMissedSessions(
     FROM fitness_training_plans p
     JOIN training_weeks w ON w.plan_id = p.id
     JOIN training_sessions s ON s.week_id = w.id
-    WHERE p.user_id = ? AND p.status = 'active'
+    WHERE p.user_id = ? AND p.tenant_id = ? AND p.status = 'active'
       AND s.status IN (${ACTIONABLE_SQL_LIST})
-  `).all(input.userId) as Array<{
+  `).all(input.userId, input.tenantId) as Array<{
     plan_id: number;
     plan_start: string;
     week_number: number;

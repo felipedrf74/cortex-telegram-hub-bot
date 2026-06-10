@@ -74,6 +74,8 @@ import {
   tryHandleChatActionPlan,
 } from '../../services/chat';
 import { getPendingChatActionById } from '../../services/chat-action-state';
+import { cancelAllPendingChatWork } from '../../services/chat-pending-work';
+import { isPendingChatWorkCancellationTurn } from '../../services/chat-pending-cancellation';
 import {
   buildNexusAnswerContract,
   createChatLatencyTracker,
@@ -404,12 +406,22 @@ function buildRecentTurnsForChatCoreV2(userId: number, tenantId: number): ChatCo
 }
 
 function mapActionPlannerSkillToNexusSkill(skill: string): NexusSkillId {
-  if (skill === 'secretary_calendar' || skill === 'mail' || skill === 'tasks') return 'secretary';
+  if (skill === 'secretary_calendar' || skill === 'secretary_reminders' || skill === 'mail' || skill === 'tasks') return 'secretary';
   if (skill === 'training') return 'training';
   if (skill === 'cooking') return 'cooking';
   if (skill === 'finance') return 'finance';
   if (skill === 'content') return 'content';
   return 'tools';
+}
+
+function statusForChatActionResponse(
+  actionStatus: string,
+  response: { metadata?: Record<string, unknown> | null },
+): number {
+  const error = response.metadata?.error as { code?: string } | undefined;
+  if (error?.code === 'TIER_REQUIRED') return 403;
+  if (error?.code === 'ACCESS_CHECK_UNAVAILABLE') return 503;
+  return actionStatus === 'needs_confirmation' || actionStatus === 'needs_clarification' ? 202 : 200;
 }
 
 function intentClassForAction(action: string | undefined, fallbackSkills: string[] = []): string {
@@ -432,6 +444,8 @@ function intentClassForAction(action: string | undefined, fallbackSkills: string
       return 'event_move';
     case 'delete_event':
       return 'event_delete';
+    case 'set_reminder':
+      return 'reminder_create';
     case 'finance_payment_action':
       return 'financial_transfer';
     case 'finance_create_reminder':
@@ -807,6 +821,8 @@ function deterministicReadGroundingFact(source: string): NexusGroundingFact {
     safeForUser: true,
   };
 }
+
+export { isPendingChatWorkCancellationTurn };
 
 function actionGatewayStopText(
   result: Extract<ChatCoreV2ActionGatewayResult, { kind: 'needs_clarification' | 'unsupported_write' | 'blocked_legacy_fallback' }>,
@@ -1559,7 +1575,7 @@ export function registerChatMessageRoutes(
       expiresAt: pending.expiresAt,
     };
 
-    const statusCode = confirmedAction.status === 'needs_confirmation' || confirmedAction.status === 'needs_clarification' ? 202 : 200;
+    const statusCode = statusForChatActionResponse(confirmedAction.status, response);
     recordConfirmedChatActionWriteEvidence({
       tenantId,
       userId,
@@ -1892,11 +1908,6 @@ export function registerChatMessageRoutes(
         return;
       }
 
-      // ── Cost cap enforcement ─────────────────────────────────────
-      // Run before any model-backed planner/reasoning path. Token-zero
-      // deterministic reads above remain available after quota exhaustion.
-      if (quotaDecision.block && sendChatQuotaExceededIfNeeded(res, userId, 'iOS chat: user over daily cost cap')) return;
-
       if (isChatCoreV2ShadowRouteHookEnabled(process.env, { userId, tenantId })) {
         const shadow = runChatCoreV2ShadowRouteHook({
           normalizedText,
@@ -1945,6 +1956,118 @@ export function registerChatMessageRoutes(
         }) as typeof res.json;
       };
       installChatV2EvidenceRecorder();
+
+      if (normalizedText && normalizedAttachments.length === 0 && isPendingChatWorkCancellationTurn(normalizedText)) {
+        const cancelled = cancelAllPendingChatWork({
+          userId,
+          tenantId,
+          conversationId: scopedClientMessageId ?? chatRequestId,
+          nowIso: new Date(requestStartedAt).toISOString(),
+        });
+        const totalCancelled = cancelled.chatPendingActions
+          + cancelled.chatActionRuns
+          + cancelled.chatCoreV2Commands
+          + (cancelled.chatPendingConfirmation ? 1 : 0)
+          + (cancelled.decisionDismissed ? 1 : 0);
+        if (totalCancelled > 0) {
+          const isPT = chatCoreV2RouteLocale.startsWith('pt');
+          const text = isPT
+            ? 'Está cancelado. Não vou continuar essa ação pendente.'
+            : 'Cancelled. I will not continue that pending action.';
+          const response = enrichChatResponseForContract({
+            id: `msg-${requestStartedAt}`,
+            text,
+            domain: 'secretary',
+            routeMethod: 'pending-action-cancelled',
+            confidence: 1,
+            buttons: null,
+            metadata: {
+              type: 'pending_action_cancelled',
+              cancelled,
+              mutationBlocked: true,
+            },
+            timestamp: new Date(requestStartedAt).toISOString(),
+            responseBlocks: buildBlocksFromMarkdown(text),
+          }, {
+            normalizedText,
+            userId,
+            tenantId,
+            chatRequestId,
+            tracker: latency,
+            latencyTier: 'tier0_local',
+            fallbackDomain: 'secretary',
+            fallbackRouteMethod: 'pending-action-cancelled',
+            actionability: 'answer_only',
+            verificationStatus: 'not_required',
+            compositionMode: 'templated',
+            groundingFacts: [deterministicReadGroundingFact('chat.pending_work_cancellation')],
+          });
+          rememberChatActiveDomain(userId, 'secretary', Date.now(), tenantId);
+          persistExchange(userId, userMessageId, normalizedText, response.id, response, tenantId, {
+            clientMessageId: scopedClientMessageId,
+            requestId: chatRequestId,
+          });
+          syncConversationStateForShortcut(userId, 'secretary', normalizedText, response.text, tenantId);
+          recordLegacyFallbackSample(false, {
+            domain: 'secretary',
+            routeOwner: 'chat_pending_work_cancellation',
+            routeMethod: response.routeMethod,
+          });
+          res.json(response);
+          return;
+        }
+        const isPT = chatCoreV2RouteLocale.startsWith('pt');
+        const text = isPT
+          ? 'Não há nenhuma ação pendente para cancelar.'
+          : 'There is no pending action to cancel.';
+        const response = enrichChatResponseForContract({
+          id: `msg-${requestStartedAt}`,
+          text,
+          domain: 'secretary',
+          routeMethod: 'pending-action-cancel-empty',
+          confidence: 1,
+          buttons: null,
+          metadata: {
+            type: 'pending_action_cancel_empty',
+            cancelled,
+            mutationBlocked: true,
+          },
+          timestamp: new Date(requestStartedAt).toISOString(),
+          responseBlocks: buildBlocksFromMarkdown(text),
+        }, {
+          normalizedText,
+          userId,
+          tenantId,
+          chatRequestId,
+          tracker: latency,
+          latencyTier: 'tier0_local',
+          fallbackDomain: 'secretary',
+          fallbackRouteMethod: 'pending-action-cancel-empty',
+          actionability: 'answer_only',
+          verificationStatus: 'not_required',
+          compositionMode: 'templated',
+          groundingFacts: [deterministicReadGroundingFact('chat.pending_work_cancellation.empty')],
+        });
+        rememberChatActiveDomain(userId, 'secretary', Date.now(), tenantId);
+        persistExchange(userId, userMessageId, normalizedText, response.id, response, tenantId, {
+          clientMessageId: scopedClientMessageId,
+          requestId: chatRequestId,
+        });
+        syncConversationStateForShortcut(userId, 'secretary', normalizedText, response.text, tenantId);
+        recordLegacyFallbackSample(false, {
+          domain: 'secretary',
+          routeOwner: 'chat_pending_work_cancellation',
+          routeMethod: response.routeMethod,
+        });
+        res.json(response);
+        return;
+      }
+
+      // ── Cost cap enforcement ─────────────────────────────────────
+      // Run before any model-backed planner/reasoning path. Token-zero
+      // deterministic reads and pending-work cancellation above remain
+      // available after quota exhaustion.
+      if (quotaDecision.block && sendChatQuotaExceededIfNeeded(res, userId, 'iOS chat: user over daily cost cap')) return;
 
       // ── ChatCoreV2 Action Gateway ───────────────────────────────
       // Natural-language write intents are now a firewall, not a legacy
@@ -2330,7 +2453,7 @@ export function registerChatMessageRoutes(
             routeOwner: 'chat_action_planner',
             routeMethod: response.routeMethod,
           });
-          res.status(actionResult.status === 'needs_confirmation' || actionResult.status === 'needs_clarification' ? 202 : 200).json(response);
+          res.status(statusForChatActionResponse(actionResult.status, response)).json(response);
           return;
         }
       }
@@ -2677,7 +2800,7 @@ export function registerChatMessageRoutes(
               routeOwner: 'decision_confirmation_shortcut',
               routeMethod: response.routeMethod,
             });
-            res.status(confirmedAction.status === 'needs_confirmation' || confirmedAction.status === 'needs_clarification' ? 202 : 200).json(response);
+            res.status(statusForChatActionResponse(confirmedAction.status, response)).json(response);
             return;
           }
           const response = enrichChatResponseForContract({

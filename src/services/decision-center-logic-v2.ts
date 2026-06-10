@@ -35,6 +35,7 @@ export interface DecisionLogicContext {
   deadlineAt?: string | null;
   timezone?: string | null;
   locale?: string | null;
+  recipe?: string | null;
   visibilityScope?: DecisionVisibilityScope | null;
   internalOnly?: boolean | null;
   smoke?: boolean | null;

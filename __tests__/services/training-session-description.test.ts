@@ -242,6 +242,53 @@ describe('training-session-description', () => {
       expect(independentRender).toBe(text);
     });
 
+    it('emits compact user-facing coach insights from decisions and progression metadata', () => {
+      const { sections, text } = buildRichSessionDescription({
+        ...baseInput,
+        sport: 'strength',
+        session: {
+          sessionType: 'strength_max',
+          title: 'Lower Body A',
+          durationMinutes: 60,
+          dayOfWeek: 'Tuesday',
+          sessionRole: 'strength_maintenance',
+          sessionRoleLabel: 'Strength maintenance',
+          sessionRoleSummary: 'Keeps strength touchpoints without competing with key endurance work.',
+          intensitySummary: {
+            targetSummaryText: 'Keep this controlled around the key long run.',
+          },
+          decisionReasons: [
+            {
+              code: 'equipment_conservative_default',
+              severity: 'warning',
+              text: 'I used bodyweight-safe options because your available equipment is unknown.',
+            },
+          ],
+          exercises: [
+            {
+              name: 'Goblet Squat',
+              sets: 3,
+              reps: '8',
+              tempo: '3-1-1',
+              selectionReason: {
+                pickedBecause: ['Matches your dumbbell equipment.'],
+              },
+              progressionState: 'hold',
+              progressionSummary: 'Held load this week because last session was marked too hard.',
+            },
+          ],
+        },
+      });
+
+      expect(sections.coachInsights?.some((item) => item.label === 'Training role')).toBe(true);
+      expect(sections.coachInsights?.some((item) => item.reasonCode === 'equipment_conservative_default')).toBe(true);
+      expect(sections.coachInsights?.some((item) => item.label === 'Goblet Squat progression')).toBe(true);
+      expect(text).toContain('COACH INSIGHTS:');
+      expect(text).toContain('I used bodyweight-safe options');
+      expect(text).not.toContain('candidate');
+      expect(text).not.toContain('selector trace');
+    });
+
     it('renders the provider email body in useful training-content order', () => {
       const text = renderSectionsAsText({
         header: { planName: 'Example Plan' },

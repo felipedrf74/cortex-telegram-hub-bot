@@ -2,6 +2,7 @@
 
 import { logAudit } from './audit-trail';
 import { isValidTenantUserId, recordTenantScopeAnomaly } from './tenant-scope-observability';
+import { incrementTrainingGenerationCounter } from './training-generation-observability';
 
 export interface TenantScope {
   userId: number;
@@ -101,6 +102,9 @@ export function requireTenantIdParam(tenantId: unknown, contextName: string): nu
       userId: null,
       details: { received: String(tenantId) },
     });
+    if (/\btraining\b/i.test(contextName)) {
+      incrementTrainingGenerationCounter('tenant_scope_missing_blocked_total');
+    }
     throw err;
   }
   return tenantId;

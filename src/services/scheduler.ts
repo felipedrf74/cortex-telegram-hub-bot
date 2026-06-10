@@ -42,7 +42,7 @@ import { runVoiceEvolutionAgent } from '../agents/voice-evolution-agent';
 import { expireStaleSignals } from './intelligence-bus';
 import { seedBooksIfEmpty } from '../commands/books';
 import { runAutoresearch, getScheduledTarget } from './autoresearch';
-import { getPreferredDisplayNameById, getUserLanguageById } from './user-service';
+import { getPreferredDisplayNameById, getUserLanguageById, getUserTimezoneById } from './user-service';
 import { runDatabaseBackup, weeklyRestoreTest } from './backup';
 import { getDb } from './database';
 import { listActiveFiscalCollectionProfiles } from '../state/fiscal-collection-profiles';
@@ -401,8 +401,8 @@ export async function buildEndOfDaySummaryForUser(userId: number): Promise<{
   let trainingSection = '';
   try {
     const tp = require('./training-plans');
-    const plans = tp.getActivePlans?.(userId) || [];
-    const plan = plans[0] || tp.getActivePlan(userId);
+    const plans = tp.getActivePlans?.(userId, userId) || [];
+    const plan = plans[0] || tp.getActivePlan(userId, userId);
     if (plan) {
       const week = tp.getCurrentWeek(plan.id);
       if (week) {
@@ -458,7 +458,7 @@ export async function buildEndOfDaySummaryForUser(userId: number): Promise<{
   };
 }
 
-export async function buildDailyBriefingDataForUser(userId: number): Promise<DailyBriefingData> {
+export async function buildDailyBriefingDataForUser(userId: number, tenantId = userId): Promise<DailyBriefingData> {
   const today = now();
   const data: DailyBriefingData = {
     date: today.toFormat('cccc, LLLL dd'),
@@ -492,7 +492,7 @@ export async function buildDailyBriefingDataForUser(userId: number): Promise<Dai
 
   try {
     const taskProvider = getTaskProviderForUser(userId);
-    const [pendingResult, yesterdayResult] = await runWithContext({ source: 'cron:daily_briefing', userId }, async () =>
+    const [pendingResult, yesterdayResult] = await runWithContext({ source: 'cron:daily_briefing', userId, tenantId }, async () =>
       Promise.all([
         taskProvider.getAllPendingTasks(),
         taskProvider.getCompletedTasksInRange(
@@ -540,7 +540,7 @@ export async function buildDailyBriefingDataForUser(userId: number): Promise<Dai
     logger.error({ err, userId }, 'Failed to fetch tasks for briefing');
   }
 
-  const reminders = getRemindersForToday(userId);
+  const reminders = getRemindersForToday(userId, tenantId, getUserTimezoneById(userId));
   data.reminders = reminders.map((r) => ({
     message: r.message,
     time: formatTime(r.remind_at),
@@ -784,9 +784,14 @@ export function startScheduler(bot?: any): void {
   //   - APNs push
   //   - portal events / telemetry
   const telegramEnabled = isTelegramLegacyDeliveryEnabled() && bot;
-  const safeSend = async (userId: number, message: string, opts?: any) => {
-    if (!telegramEnabled) return;
-    try { await bot.api.sendMessage(userId, message, opts); } catch {}
+  const safeSend = async (userId: number, message: string, opts?: any): Promise<boolean> => {
+    if (!telegramEnabled) return false;
+    try {
+      await bot.api.sendMessage(userId, message, opts);
+      return true;
+    } catch {
+      return false;
+    }
   };
 
   // Register failure notifier — logs to portal telemetry (always) + Telegram (if enabled)
@@ -911,36 +916,81 @@ export function startScheduler(bot?: any): void {
       if (dueReminders.length === 0) return 'skipped';
       for (const reminder of dueReminders) {
         const targetUserId = (reminder as any).user_id as number;
+        const targetTenantId = Number((reminder as any).tenant_id) || targetUserId;
+        const reminderOccurrence = (() => {
+          const remindAt = String((reminder as any).remind_at || '');
+          const parsed = DateTime.fromISO(remindAt, { setZone: true });
+          if (parsed.isValid) return String(parsed.toUTC().toMillis());
+          const fallback = Date.parse(remindAt);
+          return Number.isFinite(fallback) ? String(fallback) : (remindAt || 'unknown');
+        })();
+        let delivered = false;
         try {
-          let msg = `⏰ <b>Reminder:</b> ${escapeHtml(reminder.message)}`;
-          if (reminder.recurring) msg += `\n<i>(Recurring: ${reminder.recurring})</i>`;
-          await safeSend(targetUserId, msg, { parse_mode: 'HTML' });
+          try {
+            let msg = `⏰ <b>Reminder:</b> ${escapeHtml(reminder.message)}`;
+            if (reminder.recurring) msg += `\n<i>(Recurring: ${reminder.recurring})</i>`;
+            delivered = await safeSend(targetUserId, msg, { parse_mode: 'HTML' }) || delivered;
+          } catch (err) {
+            logger.error({ err, userId: targetUserId, tenantId: targetTenantId, reminderId: reminder.id }, 'Failed to send reminder');
+          }
+          // Parallel iOS notification. The Secretary Notification Orchestrator
+          // decides push vs in-app vs quiet-hours/digest; scheduler only emits
+          // the intent.
+          try {
+            await createNotificationIntent({
+              userId: targetUserId,
+              tenantId: targetTenantId,
+              sourceSkill: 'secretary',
+              type: 'reminder',
+              priority: 'active',
+              relatedEntityId: reminder.id,
+              relatedEntityType: 'reminder',
+              title: 'Reminder',
+              body: reminder.message,
+              sensitiveBody: reminder.message,
+              actionButtons: [
+                { id: 'mark_done', label: 'Done', style: 'primary' },
+                { id: 'snooze', label: 'Snooze', style: 'secondary' },
+              ],
+              deeplink: `nexus://notifications/reminder-${reminder.id}`,
+              dedupeKey: `secretary:reminder:${targetTenantId}:${targetUserId}:${reminder.id}:${reminderOccurrence}`,
+              privacyPolicy: 'sensitive',
+            });
+            delivered = true;
+          } catch (err) {
+            logger.error({
+              err,
+              userId: targetUserId,
+              tenantId: targetTenantId,
+              reminderId: reminder.id,
+            }, 'Reminder notification orchestration failed');
+          }
         } catch (err) {
-          logger.error({ err, userId: targetUserId }, 'Failed to send reminder');
+          logger.error({
+            err,
+            userId: targetUserId,
+            tenantId: targetTenantId,
+            reminderId: reminder.id,
+          }, 'Reminder delivery failed');
         }
-        // Parallel iOS notification. The Secretary Notification Orchestrator
-        // decides push vs in-app vs quiet-hours/digest; scheduler only emits
-        // the intent.
-        await createNotificationIntent({
-          userId: targetUserId,
-          tenantId: targetUserId,
-          sourceSkill: 'secretary',
-          type: 'reminder',
-          priority: 'active',
-          relatedEntityId: reminder.id,
-          relatedEntityType: 'reminder',
-          title: 'Reminder',
-          body: reminder.message,
-          sensitiveBody: reminder.message,
-          actionButtons: [
-            { id: 'mark_done', label: 'Done', style: 'primary' },
-            { id: 'snooze', label: 'Snooze', style: 'secondary' },
-          ],
-          deeplink: `nexus://notifications/reminder-${reminder.id}`,
-          dedupeKey: `secretary:reminder:${targetUserId}:${reminder.id}`,
-          privacyPolicy: 'sensitive',
-        });
-        markReminderFired(reminder.id);
+        if (delivered) {
+          try {
+            markReminderFired(reminder.id);
+          } catch (err) {
+            logger.error({
+              err,
+              userId: targetUserId,
+              tenantId: targetTenantId,
+              reminderId: reminder.id,
+            }, 'Failed to mark reminder fired after delivery attempt');
+          }
+        } else {
+          logger.warn({
+            userId: targetUserId,
+            tenantId: targetTenantId,
+            reminderId: reminder.id,
+          }, 'Reminder delivery failed on all channels; not marking fired');
+        }
       }
     } finally {
       remindersJobInFlight = false;
@@ -1616,7 +1666,7 @@ export function startScheduler(bot?: any): void {
       // in a scheduled job. runWithContext scopes the AsyncLocalStorage
       // so all downstream reads see the correct userId.
       await runWithContext({ source: 'cron:training_plan_adjust', userId }, async () => {
-      const plan = getActivePlan(userId);
+      const plan = getActivePlan(userId, userId);
       if (!plan) return;
 
       const currentWeek = getCurrentWeek(plan.id);
@@ -2255,7 +2305,11 @@ export async function sendCoachBriefings(bot?: any): Promise<void> {
     await runWithContext({ source: 'cron:garmin_coach', userId: target.tenantId }, async () => {
       let result;
       try {
-        result = await generateCoachBriefing(target.tenantId, { garminSilent: true });
+        result = await generateCoachBriefing(target.tenantId, {
+          tenantId: target.tenantId,
+          meteringUserId: target.tenantId,
+          garminSilent: true,
+        });
       } catch (err) {
         logger.warn({ err, userId: target.tenantId }, 'Coach briefing skipped for user');
         return;
@@ -2342,7 +2396,7 @@ export async function sendDailyBriefing(bot?: any): Promise<void> {
     try { await bot.api.sendMessage(userId, msg, opts); } catch {}
   };
   for (const target of getActiveUserTargets()) {
-    const data = await buildDailyBriefingDataForUser(target.tenantId);
+    const data = await buildDailyBriefingDataForUser(target.tenantId, target.tenantId);
     // Identity-safety: resolve display name via the strict by-id helper so
     // the briefing greets the actual recipient and never the legacy founder
     // default. Empty string falls through to a name-less greeting.

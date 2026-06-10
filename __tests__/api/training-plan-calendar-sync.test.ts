@@ -22,6 +22,7 @@ const mocks = vi.hoisted(() => ({
   markCalendarOwnershipDeleted: vi.fn(),
   previewSecretarySchedulingIntent: vi.fn(),
   submitSecretarySchedulingIntent: vi.fn(),
+  loadLiveCalendarBusyWindows: vi.fn(),
   loggerDebug: vi.fn(),
   loggerInfo: vi.fn(),
   loggerWarn: vi.fn(),
@@ -64,6 +65,10 @@ vi.mock('../../src/services/training-plan-lifecycle', () => ({
 vi.mock('../../src/services/secretary-scheduling-arbitrator', () => ({
   previewSecretarySchedulingIntent: (...args: unknown[]) => mocks.previewSecretarySchedulingIntent(...args),
   submitSecretarySchedulingIntent: (...args: unknown[]) => mocks.submitSecretarySchedulingIntent(...args),
+}));
+
+vi.mock('../../src/services/secretary-live-calendar-busy', () => ({
+  loadLiveCalendarBusyWindowsForSecretaryIntent: (...args: unknown[]) => mocks.loadLiveCalendarBusyWindows(...args),
 }));
 
 vi.mock('../../src/utils/logger', () => ({
@@ -171,6 +176,13 @@ describe('training-plan-calendar-sync', () => {
       reasoningTrail: [],
       noPersist: true,
     }));
+    mocks.loadLiveCalendarBusyWindows.mockResolvedValue({
+      windows: [],
+      degraded: false,
+      providerConfigured: true,
+      warningCodes: [],
+      warnings: [],
+    });
     mocks.submitSecretarySchedulingIntent.mockImplementation((intent: any) => ({
       status: 'scheduled',
       reasonCodes: ['scheduled_in_available_window'],
@@ -205,6 +217,7 @@ describe('training-plan-calendar-sync', () => {
     mocks.getPlanById.mockReturnValue({
       id: 7,
       user_id: 42,
+      tenant_id: 42,
       start_date: '2026-04-20T00:00:00.000Z',
       preferences_json: JSON.stringify({
         preferredTime: '12:00',
@@ -256,9 +269,60 @@ describe('training-plan-calendar-sync', () => {
     expect(mocks.updateEvent).not.toHaveBeenCalled();
   });
 
+  it('returns calendar_degraded when live calendar availability cannot be checked for reflow preview', async () => {
+    mocks.getPlanById.mockReturnValue({
+      id: 7,
+      user_id: 42,
+      tenant_id: 42,
+      start_date: '2026-04-20T00:00:00.000Z',
+      preferences_json: JSON.stringify({ preferredTime: '12:00' }),
+    });
+    mocks.getWeeksForPlan.mockReturnValue([{ id: 70, week_number: 1 }]);
+    mocks.getSessionById.mockReturnValue({
+      id: 100,
+      week_id: 70,
+      plan_id: 7,
+      day_of_week: 'Monday',
+      session_type: 'run',
+      title: 'Base Run',
+      duration_minutes: 45,
+      description: 'Easy aerobic run.',
+      status: 'scheduled',
+      calendar_event_id: null,
+      calendar_source: null,
+      session_identity_key: null,
+      session_shape_hash: null,
+      intensity_text: null,
+      exercises_json: null,
+      description_json: null,
+    });
+    mocks.loadLiveCalendarBusyWindows.mockResolvedValueOnce({
+      windows: [],
+      degraded: true,
+      providerConfigured: true,
+      warningCodes: ['GOOGLE_CALENDAR_UNAVAILABLE'],
+      warnings: ['Google Calendar is unavailable right now.'],
+    });
+
+    const result = await previewTrainingSessionReflow(42, 100, 'google', 42);
+
+    expect(result.status).toBe('calendar_degraded');
+    if (result.status === 'calendar_degraded') {
+      expect(result.data).toMatchObject({
+        provider: 'google',
+        sessionId: 100,
+        reason: 'TRAINING_SECRETARY_LIVE_BUSY_WINDOWS_DEGRADED',
+        warningCodes: ['GOOGLE_CALENDAR_UNAVAILABLE'],
+      });
+    }
+    expect(mocks.createEvent).not.toHaveBeenCalled();
+    expect(mocks.updateEvent).not.toHaveBeenCalled();
+    expect(mocks.updateSession).not.toHaveBeenCalled();
+  });
+
   it('returns the same not-found preview result for foreign and missing sessions', async () => {
     mocks.getSessionById.mockReturnValue({ id: 100, week_id: 70, plan_id: 7 });
-    mocks.getPlanById.mockReturnValue({ id: 7, user_id: 99, start_date: '2026-04-20T00:00:00.000Z' });
+    mocks.getPlanById.mockReturnValue({ id: 7, user_id: 99, tenant_id: 42, start_date: '2026-04-20T00:00:00.000Z' });
 
     const foreign = await previewTrainingSessionReflow(42, 100, 'google', 42);
 
@@ -279,7 +343,7 @@ describe('training-plan-calendar-sync', () => {
 
   it('returns the same not-found confirm result for foreign and missing sessions', async () => {
     mocks.getSessionById.mockReturnValue({ id: 101, week_id: 71, plan_id: 8 });
-    mocks.getPlanById.mockReturnValue({ id: 8, user_id: 99, start_date: '2026-04-20T00:00:00.000Z' });
+    mocks.getPlanById.mockReturnValue({ id: 8, user_id: 99, tenant_id: 42, start_date: '2026-04-20T00:00:00.000Z' });
 
     const foreign = await confirmTrainingSessionReflow({
       userId: 42,
@@ -306,6 +370,31 @@ describe('training-plan-calendar-sync', () => {
         sessionId: 101,
       },
     });
+    expect(mocks.updateSession).not.toHaveBeenCalled();
+  });
+
+  it('returns not-found for same-user reflow preview and confirm in another tenant', async () => {
+    mocks.getSessionById.mockReturnValue({ id: 101, week_id: 71, plan_id: 8 });
+    mocks.getPlanById.mockReturnValue({ id: 8, user_id: 42, tenant_id: 99, start_date: '2026-04-20T00:00:00.000Z' });
+
+    const preview = await previewTrainingSessionReflow(42, 101, 'google', 42);
+    const confirm = await confirmTrainingSessionReflow({
+      userId: 42,
+      tenantId: 42,
+      sessionId: 101,
+      requestedCalendarSource: 'google',
+    });
+
+    expect(preview).toEqual({
+      status: 'not_found',
+      data: {
+        message: 'Training session not found.',
+        sessionId: 101,
+      },
+    });
+    expect(confirm).toEqual(preview);
+    expect(mocks.previewSecretarySchedulingIntent).not.toHaveBeenCalled();
+    expect(mocks.submitSecretarySchedulingIntent).not.toHaveBeenCalled();
     expect(mocks.updateSession).not.toHaveBeenCalled();
   });
 
@@ -1159,6 +1248,7 @@ describe('training-plan-calendar-sync', () => {
       reason: 'training_sync_replaced_stale_event',
       status: 'deleted',
       userId: 42,
+      tenantId: 42,
       planId: 29,
     });
   });
@@ -1530,7 +1620,7 @@ describe('training-plan-calendar-sync', () => {
       expect(result.data.eventsCreated).toBe(1);
       expect(result.data.sessionsLinked).toBe(0);
     }
-    expect(mocks.isTrainingCalendarEventUnclaimed).toHaveBeenCalledWith('claimed-recovery-run', 'google');
+    expect(mocks.isTrainingCalendarEventUnclaimed).toHaveBeenCalledWith('claimed-recovery-run', 'google', 42);
     expect(mocks.linkSessionToCalendar).toHaveBeenCalledWith(210, 'evt-new-run', 'google');
   });
 

@@ -4,6 +4,7 @@ import { clearTenantScopeAnomaliesForTests, getTenantScopeAnomalies } from '../.
 const mockGetCached = vi.fn(() => null);
 const mockSetCache = vi.fn();
 const mockComposeWeeklyPlan = vi.fn();
+const mockGetDecisionOverview = vi.fn(() => ({ items: [], handled: [] }));
 
 vi.mock('../../src/services/cache-store', () => ({
   getCached: (...args: unknown[]) => mockGetCached(...args),
@@ -14,12 +15,18 @@ vi.mock('../../src/services/weekly-plan-orchestrator', () => ({
   composeWeeklyPlan: (...args: unknown[]) => mockComposeWeeklyPlan(...args),
 }));
 
+vi.mock('../../src/services/decision-center', () => ({
+  getDecisionOverview: (...args: unknown[]) => mockGetDecisionOverview(...args),
+}));
+
 describe('daily-brief-orchestrator', () => {
   beforeEach(() => {
     clearTenantScopeAnomaliesForTests();
     mockGetCached.mockReset();
     mockSetCache.mockReset();
     mockComposeWeeklyPlan.mockReset();
+    mockGetDecisionOverview.mockReset();
+    mockGetDecisionOverview.mockReturnValue({ items: [], handled: [] });
   });
 
   it('builds event-driven coordination from the selected day', async () => {
@@ -130,6 +137,58 @@ describe('daily-brief-orchestrator', () => {
         'The aligned meal helps keep training and schedule more executable.',
       ]),
     );
+  });
+
+  it('reads Secretary Today decision signals with the authenticated tenant scope', async () => {
+    mockComposeWeeklyPlan.mockResolvedValue({
+      degraded: false,
+      gated: { skills: [] },
+      garmin_stale: false,
+      creativeCopy: { headline: 'Quiet day', note: 'Stay steady.' },
+      conflicts: [],
+      days: [
+        {
+          date: '2026-04-15',
+          weekday: 'Wednesday',
+          headline: 'A calm operational day.',
+          training: {
+            title: 'Rest',
+            type: 'rest',
+            status: 'rest',
+            durationMinutes: null,
+            intensity: null,
+            reason: 'No session planned.',
+            decisions: [],
+          },
+          meals: [],
+          content: null,
+          secretary: {
+            focusBlock: null,
+            pendingTasks: 0,
+            overdueTasks: 0,
+            travel: false,
+            busy: false,
+            priorityNote: null,
+            sequence: [],
+            tradeoffNote: null,
+            decisions: [],
+          },
+          finance: null,
+        },
+      ],
+    });
+
+    const { composeDailyBrief } = await import('../../src/services/daily-brief-orchestrator');
+    await composeDailyBrief({ userId: 12, tenantId: 34, date: '2026-04-15', forceRefresh: true });
+
+    expect(mockComposeWeeklyPlan).toHaveBeenCalledWith(expect.objectContaining({
+      userId: 12,
+      tenantId: 34,
+    }));
+    expect(mockGetDecisionOverview).toHaveBeenCalledWith(12, 34, {
+      limit: 30,
+      handledLimit: 10,
+    });
   });
 
   it('fails closed in Portuguese and records an anomaly when tenant scope is invalid', async () => {

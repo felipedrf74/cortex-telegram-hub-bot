@@ -18,6 +18,7 @@ import {
 import { readinessResultToSnapshot } from '../../services/coach-kernel/readiness-snapshot-adapter';
 import { adaptSessionForReadiness, type AdaptationContext } from '../../services/coach-kernel/adaptation-engine';
 import type { Session, SessionType, Sport, ReadinessSnapshot } from '../../services/coach-kernel/types';
+import { requireTenantIdParam } from '../../services/tenant-scope';
 
 const READINESS_TTL = 5 * 60; // 5 minutes — intraday energy reserve should move during the day
 
@@ -132,12 +133,12 @@ function parseDescriptionSections(raw: string | null | undefined): unknown {
   }
 }
 
-export async function getTodaySession(userId: number) {
+export async function getTodaySession(userId: number, tenantId: number) {
   let session: any = null;
   let plan: any = null;
 
   try {
-    const activePlan = trainingPlans.getActivePlan(userId);
+    const activePlan = trainingPlans.getActivePlan(userId, tenantId);
     if (activePlan) {
       const currentWeek = trainingPlans.getCurrentWeek(activePlan.id);
       plan = {
@@ -304,7 +305,7 @@ export async function getTodaySession(userId: number) {
   };
 }
 
-export async function getWeekPlan(userId: number) {
+export async function getWeekPlan(userId: number, tenantId: number) {
   let weekNumber = 0;
   let sessions: any[] = [];
   let adherence = 0;
@@ -318,7 +319,7 @@ export async function getWeekPlan(userId: number) {
   } | null = null;
 
   try {
-    const plan = trainingPlans.getActivePlan(userId);
+    const plan = trainingPlans.getActivePlan(userId, tenantId);
     if (plan) {
       const currentWeek = trainingPlans.getCurrentWeek(plan.id);
       weekNumber = currentWeek?.week_number || 1;
@@ -381,8 +382,8 @@ export async function getWeekPlan(userId: number) {
   };
 }
 
-export async function getAllPlanWeeks(userId: number) {
-  const plan = trainingPlans.getActivePlan(userId);
+export async function getAllPlanWeeks(userId: number, tenantId: number) {
+  const plan = trainingPlans.getActivePlan(userId, tenantId);
   if (!plan) {
     return {
       plan: null,
@@ -534,7 +535,8 @@ export async function getReadiness(userId: number) {
   }
 }
 
-export async function fetchCurrentReadinessForPlan(userId: number): Promise<CoachKernelReadinessInput | null> {
+export async function fetchCurrentReadinessForPlan(userId: number, tenantId: number): Promise<CoachKernelReadinessInput | null> {
+  const scopedTenantId = requireTenantIdParam(tenantId, 'fetchCurrentReadinessForPlan');
   try {
     const readiness = await calculateReadiness(userId);
     if (!readiness || typeof readiness.score !== 'number' || readiness.score <= 0) return null;
@@ -562,7 +564,7 @@ export async function fetchCurrentReadinessForPlan(userId: number): Promise<Coac
       reasoning: typeof readiness.reasoning === 'string' ? readiness.reasoning : null,
     };
   } catch (err) {
-    logger.debug({ err, userId }, 'fetchCurrentReadinessForPlan failed — plan generator will use neutral fallback');
+    logger.debug({ err, userId, tenantId: scopedTenantId }, 'fetchCurrentReadinessForPlan failed — plan generator will use neutral fallback');
     return null;
   }
 }

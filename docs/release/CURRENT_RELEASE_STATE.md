@@ -2,10 +2,10 @@
 
 Status: canonical
 Owner: backend release lead (Felipe)
-Last verified: 2026-06-06
+Last verified: 2026-06-09
 Update policy: update after backend deploy or staging change. Workspace-level entry point is docs/release/CURRENT_RELEASE_STATE.md.
 
-Last updated: 2026-06-07
+Last updated: 2026-06-09
 
 Only the **Active Production Release** section states the current production
 truth. Dated sections below it are historical deploy evidence and may mention
@@ -14,17 +14,138 @@ older production versions.
 ## Active Production Release
 
 - Source branch: `main`
-- Production HEAD: `24a22f3c`
-- Production version: `4.14.205`
-- Source implementation commit before deploy bump: `f0a86d5d` (event-based
-  training plan linting hardening, on top of the current task recurrence,
-  calendar refresh, prelaunch, pricing, legal, and security hardening commits).
-- Latest pushed runtime deploy commit: `24a22f3c`. Post-deploy docs-only
-  closeout commits may sit ahead of the runtime deploy.
-- Staging was redeployed to the release-hardening candidate on 2026-06-07 and
-  passed the generic staging smoke. Production remains on `24a22f3c` until the
-  release-hardening promotion completes.
+- Production HEAD: `910b6d72`
+- Production version: `4.14.208`
+- Source implementation commit before release prep: `9c226007` (Training
+  health-signal freshness and tenant-gate hotfix).
+- Latest runtime deploy commit: `910b6d72`. Post-deploy docs-only closeout may
+  sit ahead of production runtime.
+- Staging and production are both on `4.14.208`. Production has the immutable
+  global Training catalog version `repo-seed-1.0.0` active with 131 exercises
+  and 24 equipment items.
+- Behavior-changing Training rollout flags are explicitly enabled in staging
+  and production after the post-promote rollout. DB catalog, equipment
+  authority, selector policy, safety guardrails, endurance coherence, upstream
+  calendar capacity, and completion feedback are live behind the configured
+  production environment.
 - Official workspace root: `/Users/felipedominguez/Desktop/Nexus Hub`
+
+## 2026-06-09 Training Coach Tenant/Health Hotfix Production Promote
+
+- Scope: promoted the Claude-reviewed Training / Coach hotfixes for stale
+  health-signal safety decisions, tenant-scoped session mutation ownership,
+  tenant-scoped reflow ownership, and tenant-scoped adherence/missed-session
+  reads. The hotfix bounds health signals used by production plan generation to
+  fresh signals via `TRAINING_SAFETY_HEALTH_SIGNAL_MAX_AGE_DAYS`, fails closed
+  when mutation/reflow plan ownership lacks the requested tenant, and prevents
+  same-user cross-tenant aggregates from influencing Training progression or
+  missed-session decisions.
+- Production version: `4.14.208`.
+- Production deploy commit: `910b6d72`.
+- Source hotfix commit: `9c226007`
+  (`fix(training): bound health signal safety and tenant gates`).
+- Release prep/docs evidence commits before deploy: `77cbe12f`
+  (`chore: prepare release 4.14.208`) and `910b6d72`
+  (`docs(release): refresh registry parity evidence timestamp`).
+- Focused backend validation before full release gates: Training calendar sync,
+  plan generation, session mutation, adherence trend, completion feedback, and
+  missed-session suites passed **6 files / 131 tests**. The
+  `training-routes.test.ts` route-focused rerun passed **59 tests** after
+  tenant-aware route fixtures were corrected.
+- Full backend validation passed before production: local `npm run test` passed
+  **841 test files / 12,313 tests**; `npm run release:verify:full` passed
+  typecheck, science-policy pin validation, build, migration safety with **200
+  migrations**, full Vitest with **841 files / 12,313 tests**, and
+  content-engine pytest with **180 tests**; release-prep and pre-push risk gates
+  each repeated full Vitest with **841 files / 12,313 tests**.
+- Staging deploy passed through `./scripts/deploy-staging.sh`; staging
+  readiness passed and standalone staging smoke passed **19/19** for version
+  `4.14.208`. Promote-time staging smoke also passed **19/19** before
+  production mutation.
+- Production promotion completed through `./scripts/promote-to-prod.sh`.
+  Deploy-time validation passed typecheck, science-policy pin validation, full
+  Vitest with **841 files / 12,313 tests**, build, backup creation with
+  `bot.db`, native module rebuild under system Node `v22.22.2`, PM2 restart,
+  SQLite integrity, `/health`, content-engine readiness, native better-sqlite3
+  loading, and PM2 stability.
+- Post-production probes passed: public `/health`, public `/public-status`,
+  unauthenticated Training canonical 401, and production package version
+  `4.14.208`. The remote deploy directory is not a git worktree, so remote
+  `git rev-parse` is intentionally unavailable; the runtime deployment record
+  is the promoted package version plus deploy commit above.
+- Known caveats: release-evidence shadow parity still reports the expected
+  signed-evidence shadow mismatch for this process-hardening period; Cloudflare
+  edge smoke remained skipped because `NEXUS_SMOKE_EDGE_VERIFY=1` was not
+  configured; production PM2 restart counters remain historically high
+  (`nexus-hub` 37, `content-engine` 7), but no restart occurred during the
+  readiness sample.
+
+## 2026-06-09 Training Coach Remediation Production Promote
+
+- Scope: promoted the Training / Coach remediation program through production.
+  The backend now carries tenant-scope hardening, tenant-aware idempotency and
+  locks, Training safety guardrail plumbing, canonical equipment vocabulary and
+  conservative unknown-equipment defaults, immutable DB catalog schema/seed and
+  validation, catalog-backed strength selector scaffolding, completion feedback
+  consumption substrate, endurance coherence validation, calendar-capacity
+  inputs, audit/version pins, decision reasons, observability counters, and
+  additive iOS/read-model fields. The iOS companion commit adds defensive
+  decoding and user-facing coach insight presentation for useful Training
+  decision data.
+- Production version: `4.14.207`.
+- Production deploy commit: `4f2927c1`.
+- Source implementation commits before final docs evidence: `bc7aacc2`,
+  `770ac929`, and staging smoke evidence commits `4d4e14cc`, `4f2927c1`.
+- iOS main companion commit: `49ce035` (`feat(training): present coach
+  decision insights`). iOS has not been claimed as App Store/TestFlight
+  released by this backend promote.
+- Staging deploy passed twice through `./scripts/deploy-staging.sh`.
+  Standalone staging smoke passed **26/26** at
+  `docs/release/smoke-evidence/staging-smoke-770ac929-20260609T102353Z.json`.
+  Promote-time staging smoke also passed **26/26** before production mutation.
+- Release validation passed before production: backend typecheck and
+  science-policy pin validation passed; full Vitest passed **841 test files /
+  12,307 tests** during deploy verification; migration safety passed **200
+  migrations**; catalog dry-run validation passed with `repo-seed-1.0.0`, 131
+  exercises, 24 equipment items, and 0 issues. Staging catalog write/activate
+  also passed before production activation.
+- Production promotion completed through `./scripts/promote-to-prod.sh`:
+  production backup included `bot.db`, dependencies installed with
+  `0 vulnerabilities`, strict owner bootstrap preflight passed, native modules
+  rebuilt for system Node `v22.22.2`, and PM2 restarted `content-engine` plus
+  `nexus-hub`.
+- Production health/readiness passed after deploy: content engine returned OK,
+  status portal returned OK, bot was online, SQLite integrity passed,
+  better-sqlite3 loaded, `/health` was healthy, content-engine `/ready` was
+  ready, and PM2 showed production apps online/stable. PM2 still reports high
+  historical restart counters for `nexus-hub` (36) and `content-engine` (6),
+  but no restart occurred during the readiness sample.
+- Production catalog activation completed after the deploy using
+  `npm run training:catalog:seed -- --write --activate --created-by
+  production-release-4f2927c1`. Verified active row:
+  `repo-seed-1.0.0`, scope `__global__`, status `active`, validation
+  `passed`, `immutable_after_activation=1`, 131 active exercises, 24 active
+  equipment items, and 1 passed validation result.
+- Post-promote flag rollout: staging and production `.env` now explicitly set
+  `COACH_KERNEL_EQUIPMENT_AUTHORITY_ENABLED=on`,
+  `COACH_KERNEL_EQUIPMENT_AUTHORITY_SHADOW_ENABLED=off`,
+  `TRAINING_CATALOG_DB_ENABLED=on`,
+  `TRAINING_COMPLETION_FEEDBACK_V2_ENABLED=on`,
+  `TRAINING_SELECTOR_POLICY_V2_ENABLED=on`,
+  `TRAINING_ENDURANCE_COHERENCE_V2_ENABLED=on`,
+  `TRAINING_CALENDAR_CAPACITY_KERNEL_ENABLED=on`, and
+  `TRAINING_SAFETY_GUARDRAILS_ENABLED=on`.
+- Post-rollout validation: staging readiness passed, staging smoke passed
+  **19/19** at
+  `docs/release/smoke-evidence/staging-smoke-ad46082d-20260609T104930Z.json`,
+  production readiness passed, public `health`/`public-status` probes passed,
+  unauthenticated Training returned canonical 401, active catalog stayed
+  immutable/passed, and a 30s PM2 sample showed no production restart delta.
+- Known open items: Phase 10 cleanup is intentionally blocked until a sustained
+  production soak proves the canonical paths; production iOS
+  distribution/TestFlight/App Store release remains a separate app-store
+  operation; Cloudflare edge smoke remains skipped unless
+  `NEXUS_SMOKE_EDGE_VERIFY=1` is configured.
 
 ## 2026-06-06 Release Process Hardening Note
 

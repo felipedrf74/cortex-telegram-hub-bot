@@ -34,6 +34,7 @@
 
 import { getDb } from './database';
 import { logger } from '../utils/logger';
+import { requireTenantIdParam } from './tenant-scope';
 
 export type InjuryStatus =
   | 'none'
@@ -62,6 +63,7 @@ export type HealthConsentScope =
 export interface HealthSignalRow {
   id: number;
   user_id: number;
+  tenant_id: number;
   date: string;
   pain_score: number | null;
   pain_location: string | null;
@@ -76,6 +78,7 @@ export interface HealthSignalRow {
 
 export interface RecordHealthSignalInput {
   userId: number;
+  tenantId: number;
   date: string;
   painScore?: number;
   painLocation?: string;
@@ -121,6 +124,7 @@ const FIELD_CONSENT_MAP: Record<string, HealthConsentScope> = {
 export function recordHealthSignal(
   input: RecordHealthSignalInput,
 ): RecordHealthSignalResult {
+  const tenantId = requireTenantIdParam(input.tenantId, 'recordHealthSignal');
   if (input.consentScope.length === 0) {
     throw new Error(
       'recordHealthSignal: consentScope cannot be empty; at least one ' +
@@ -187,12 +191,13 @@ export function recordHealthSignal(
   const db = getDb();
   const inserted = db.prepare(`
     INSERT INTO athlete_health_signals (
-      user_id, date, pain_score, pain_location, illness_symptoms_json,
+      user_id, tenant_id, date, pain_score, pain_location, illness_symptoms_json,
       injury_status, menstrual_status, energy_availability_risk,
       source, consent_scope
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     input.userId,
+    tenantId,
     input.date,
     painScore,
     painLocation,
@@ -217,24 +222,45 @@ export function recordHealthSignal(
  */
 export function getLatestHealthSignal(
   userId: number,
+  tenantId: number,
   asOfDate?: string,
+  options: { maxAgeDays?: number } = {},
 ): HealthSignalRow | null {
   const db = getDb();
+  const scopedTenantId = requireTenantIdParam(tenantId, 'getLatestHealthSignal');
+  const maxAgeDays = options.maxAgeDays;
+  const hasMaxAgeDays = typeof maxAgeDays === 'number' && Number.isFinite(maxAgeDays) && maxAgeDays > 0;
+  const resolvedAsOfDate = (asOfDate ?? new Date().toISOString()).slice(0, 10);
+  const cutoffDate = hasMaxAgeDays
+    ? new Date(Date.parse(`${resolvedAsOfDate}T00:00:00.000Z`) - Math.floor(maxAgeDays) * 24 * 3600 * 1000)
+      .toISOString()
+      .slice(0, 10)
+    : null;
   if (asOfDate) {
     const row = db.prepare(`
       SELECT * FROM athlete_health_signals
-      WHERE user_id = ? AND date <= ?
+      WHERE user_id = ? AND tenant_id = ? AND date <= ?
+        ${cutoffDate ? 'AND date >= ?' : ''}
       ORDER BY date DESC, created_at DESC
       LIMIT 1
-    `).get(userId, asOfDate) as HealthSignalRow | undefined;
+    `).get(...(
+      cutoffDate
+        ? [userId, scopedTenantId, resolvedAsOfDate, cutoffDate]
+        : [userId, scopedTenantId, resolvedAsOfDate]
+    )) as HealthSignalRow | undefined;
     return row ?? null;
   }
   const row = db.prepare(`
     SELECT * FROM athlete_health_signals
-    WHERE user_id = ?
+    WHERE user_id = ? AND tenant_id = ?
+      ${cutoffDate ? 'AND date >= ?' : ''}
     ORDER BY date DESC, created_at DESC
     LIMIT 1
-  `).get(userId) as HealthSignalRow | undefined;
+  `).get(...(
+    cutoffDate
+      ? [userId, scopedTenantId, cutoffDate]
+      : [userId, scopedTenantId]
+  )) as HealthSignalRow | undefined;
   return row ?? null;
 }
 
@@ -245,17 +271,20 @@ export function getLatestHealthSignal(
  */
 export function findPainSignalsInRange(
   userId: number,
+  tenantId: number,
   fromDate: string,
   toDate: string,
 ): HealthSignalRow[] {
   const db = getDb();
+  const scopedTenantId = requireTenantIdParam(tenantId, 'findPainSignalsInRange');
   return db.prepare(`
     SELECT * FROM athlete_health_signals
     WHERE user_id = ?
+      AND tenant_id = ?
       AND date BETWEEN ? AND ?
       AND pain_score IS NOT NULL
     ORDER BY date DESC, created_at DESC
-  `).all(userId, fromDate, toDate) as HealthSignalRow[];
+  `).all(userId, scopedTenantId, fromDate, toDate) as HealthSignalRow[];
 }
 
 /**
@@ -265,17 +294,20 @@ export function findPainSignalsInRange(
  */
 export function findIllnessSignalsInRange(
   userId: number,
+  tenantId: number,
   fromDate: string,
   toDate: string,
 ): HealthSignalRow[] {
   const db = getDb();
+  const scopedTenantId = requireTenantIdParam(tenantId, 'findIllnessSignalsInRange');
   return db.prepare(`
     SELECT * FROM athlete_health_signals
     WHERE user_id = ?
+      AND tenant_id = ?
       AND date BETWEEN ? AND ?
       AND illness_symptoms_json IS NOT NULL
     ORDER BY date DESC, created_at DESC
-  `).all(userId, fromDate, toDate) as HealthSignalRow[];
+  `).all(userId, scopedTenantId, fromDate, toDate) as HealthSignalRow[];
 }
 
 /**
@@ -286,14 +318,15 @@ export function findIllnessSignalsInRange(
  * The corresponding adaptation-ledger redaction is handled separately
  * by `purgeSensitivePayloadsForUser` (slice A0b).
  */
-export function deleteHealthHistoryForUser(userId: number): number {
+export function deleteHealthHistoryForUser(userId: number, tenantId: number): number {
   const db = getDb();
+  const scopedTenantId = requireTenantIdParam(tenantId, 'deleteHealthHistoryForUser');
   const result = db.prepare(
-    'DELETE FROM athlete_health_signals WHERE user_id = ?',
-  ).run(userId);
+    'DELETE FROM athlete_health_signals WHERE user_id = ? AND tenant_id = ?',
+  ).run(userId, scopedTenantId);
   if (result.changes > 0) {
     logger.info(
-      { userId, deleted: result.changes },
+      { userId, tenantId: scopedTenantId, deleted: result.changes },
       'health_signals.delete_history',
     );
   }

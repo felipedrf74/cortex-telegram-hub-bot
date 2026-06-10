@@ -45,7 +45,7 @@ export async function sendRetryableChatFailureResponseIfNeeded(opts: {
   const validatedTenantId = requireTenantIdParam(tenantId, 'sendRetryableChatFailureResponse');
 
   const degradedDomain = keywordMatch(normalizedText) || getLastChatActiveDomain(userId, Date.now(), validatedTenantId) || 'secretary';
-  const degraded = await buildAITemporarilyBusyResponse(degradedDomain, userId);
+  const degraded = await buildAITemporarilyBusyResponse(degradedDomain, userId, validatedTenantId);
   const timestamp = new Date().toISOString();
   const assistantMessageId = `msg-${Date.now()}`;
   const tracker = createChatLatencyTracker(Date.now());

@@ -29,6 +29,7 @@ RUN npm ci --no-audit --no-fund
 # ───────────────────────────────────────────────────────────────────────────
 FROM node:20-slim AS build
 WORKDIR /app
+ENV NODE_OPTIONS=--max-old-space-size=4096
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 # Compile TS -> dist/ and copy static portal HTML + knowledge base assets.

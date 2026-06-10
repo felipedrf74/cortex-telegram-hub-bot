@@ -133,8 +133,8 @@ describe('Migrations 165-168 — current FK state (PINS NO-FK BEHAVIOR)', () => 
   it('165 athlete_health_signals: deleting the user does NOT cascade rows (no FK declared)', () => {
     seedUser(50);
     testDb.prepare(`
-      INSERT INTO athlete_health_signals (user_id, date, consent_scope, created_at)
-      VALUES (50, '2026-05-10', 'illness', datetime('now'))
+      INSERT INTO athlete_health_signals (user_id, tenant_id, date, consent_scope, created_at)
+      VALUES (50, 50, '2026-05-10', 'illness', datetime('now'))
     `).run();
     testDb.prepare('DELETE FROM users WHERE id = 50').run();
     const remaining = testDb.prepare('SELECT COUNT(*) AS n FROM athlete_health_signals WHERE user_id = 50').get() as { n: number };
@@ -144,8 +144,8 @@ describe('Migrations 165-168 — current FK state (PINS NO-FK BEHAVIOR)', () => 
   it('165 athlete_readiness_events: deleting the user does NOT cascade rows (no FK declared)', () => {
     seedUser(51);
     testDb.prepare(`
-      INSERT INTO athlete_readiness_events (user_id, date, consent_scope, created_at)
-      VALUES (51, '2026-05-10', 'readiness_basic', datetime('now'))
+      INSERT INTO athlete_readiness_events (user_id, tenant_id, date, consent_scope, created_at)
+      VALUES (51, 51, '2026-05-10', 'readiness_basic', datetime('now'))
     `).run();
     testDb.prepare('DELETE FROM users WHERE id = 51').run();
     const remaining = testDb.prepare('SELECT COUNT(*) AS n FROM athlete_readiness_events WHERE user_id = 51').get() as { n: number };

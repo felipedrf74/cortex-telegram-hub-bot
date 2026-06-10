@@ -49,7 +49,9 @@ describe('WebSocket security boundary helpers', () => {
     expect(source).toContain('buildChatInternetResearchAnswer');
     expect(source).toContain('buildSimpleStateContext(researchDomain, userId, messageText, tenantId)');
     expect(source).toContain("preTurnContract?.riskClass === 'destructive'");
+    expect(source).toContain('blockNonReadOnlyPlans: true');
     expect(source).toContain("type: 'status'");
-    expect(source).toContain('metadata: response.metadata');
+    expect(source).toContain("status: 'ACTION_CONFIRMATION_REQUIRED'");
+    expect(source).toContain("actionStatus: 'ACTION_CONFIRMATION_REQUIRED'");
   });
 });

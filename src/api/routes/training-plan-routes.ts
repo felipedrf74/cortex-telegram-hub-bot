@@ -255,7 +255,7 @@ export function registerTrainingPlanRoutes(
     );
     const idempotencyKey = explicitIdempotencyKey
       ?? buildAutomaticTrainingPlanGenerationIdempotencyKey(requestHash);
-    const idempotencyClaim = claimTrainingPlanGenerationIdempotency(userId, idempotencyKey, requestHash);
+    const idempotencyClaim = claimTrainingPlanGenerationIdempotency(userId, tenantId, idempotencyKey, requestHash);
     if (idempotencyClaim.kind === 'replay') {
       sendSuccess(res, idempotencyClaim.responseData, { status: idempotencyClaim.statusCode });
       return;
@@ -288,7 +288,7 @@ export function registerTrainingPlanRoutes(
     const guardrail = enforceCostGuardrails(userId);
     if (guardrail.block) {
       releaseCostLock();
-      failTrainingPlanGenerationIdempotency(userId, idempotencyKey, requestHash);
+      failTrainingPlanGenerationIdempotency(userId, tenantId, idempotencyKey, requestHash);
       sendError(
         res,
         guardrail.reason,
@@ -334,7 +334,7 @@ export function registerTrainingPlanRoutes(
       });
 
       if (result.status === 'needs_profile') {
-        completeTrainingPlanGenerationIdempotency(userId, idempotencyKey, requestHash, result.data, 200);
+        completeTrainingPlanGenerationIdempotency(userId, tenantId, idempotencyKey, requestHash, result.data, 200);
         sendSuccess(res, result.data);
         return;
       }
@@ -358,7 +358,7 @@ export function registerTrainingPlanRoutes(
             activePlansRemaining: result.data.activePlansRemaining,
           },
         );
-        failTrainingPlanGenerationIdempotency(userId, idempotencyKey, requestHash);
+        failTrainingPlanGenerationIdempotency(userId, tenantId, idempotencyKey, requestHash);
         return;
       }
 
@@ -371,14 +371,14 @@ export function registerTrainingPlanRoutes(
           },
           'Training plan generation blocked by strict quality gate',
         );
-        completeTrainingPlanGenerationIdempotency(userId, idempotencyKey, requestHash, result.data, 200);
+        completeTrainingPlanGenerationIdempotency(userId, tenantId, idempotencyKey, requestHash, result.data, 200);
         sendSuccess(res, result.data);
         return;
       }
 
       if (result.status === 'preview') {
         logger.warn({ userId }, 'Training plan generate route returned preview unexpectedly');
-        failTrainingPlanGenerationIdempotency(userId, idempotencyKey, requestHash);
+        failTrainingPlanGenerationIdempotency(userId, tenantId, idempotencyKey, requestHash);
         sendError(res, 'INVALID_PLAN_GENERATION_STATE', 'Plan preview must be confirmed before creation.', 409);
         return;
       }
@@ -397,12 +397,12 @@ export function registerTrainingPlanRoutes(
       invalidateCalendarCaches(userId);
       invalidateTrainingScreenCaches(userId);
 
-      completeTrainingPlanGenerationIdempotency(userId, idempotencyKey, requestHash, result.data, 201);
+      completeTrainingPlanGenerationIdempotency(userId, tenantId, idempotencyKey, requestHash, result.data, 201);
       sendSuccess(res, result.data, { status: 201 });
 
     } catch (err: any) {
       logger.error({ err, userId }, 'Training plan generation failed');
-      failTrainingPlanGenerationIdempotency(userId, idempotencyKey, requestHash);
+      failTrainingPlanGenerationIdempotency(userId, tenantId, idempotencyKey, requestHash);
       sendError(res, 'INTERNAL', 'Failed to generate training plan. Please try again.', 500);
     } finally {
       releaseCostLock();
@@ -493,6 +493,10 @@ export function registerTrainingPlanRoutes(
         sendError(res, 'NOT_FOUND', result.data.message, 404, result.data);
         return;
       }
+      if (result.status === 'calendar_degraded') {
+        sendError(res, 'TRAINING_CALENDAR_AVAILABILITY_UNAVAILABLE', result.data.message, 503, result.data);
+        return;
+      }
       if (result.status === 'no_calendar' || result.status === 'blocked') {
         sendError(res, result.status === 'no_calendar' ? 'NO_CALENDAR' : 'NO_REFLOW_SLOT', result.data.message, 409, result.data);
         return;
@@ -544,6 +548,10 @@ export function registerTrainingPlanRoutes(
       });
       if (result.status === 'not_found') {
         sendError(res, 'NOT_FOUND', result.data.message, 404, result.data);
+        return;
+      }
+      if (result.status === 'calendar_degraded') {
+        sendError(res, 'TRAINING_CALENDAR_AVAILABILITY_UNAVAILABLE', result.data.message, 503, result.data);
         return;
       }
       if (result.status === 'no_calendar' || result.status === 'blocked') {

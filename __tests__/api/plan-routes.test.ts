@@ -82,6 +82,7 @@ function mockReq(
   userId = 12,
   headers: Record<string, string> = {},
   body: Record<string, unknown> = {},
+  tenantId = userId,
 ): Request {
   const parsed = new URL(path, 'http://test.local');
   return {
@@ -98,6 +99,7 @@ function mockReq(
     },
     body,
     userId,
+    tenantId,
   } as any;
 }
 
@@ -106,13 +108,14 @@ async function dispatch(
   path: string,
   options: {
     userId?: number;
+    tenantId?: number;
     headers?: Record<string, string>;
     body?: Record<string, unknown>;
   } = {},
 ): Promise<MockRes> {
   const { planRoutes } = await import('../../src/api/routes/plan');
   const router = planRoutes();
-  const req = mockReq(method, path, options.userId, options.headers, options.body);
+  const req = mockReq(method, path, options.userId, options.headers, options.body, options.tenantId ?? options.userId);
   const res = mockRes();
 
   await new Promise<void>((resolve) => {
@@ -326,7 +329,7 @@ describe('plan routes', () => {
     expect(response.body.cached).toBe(true);
     expect(response.body.data.creativeCopy.headline).toBe('Cached');
     expect(response.headers.ETag).toBeTruthy();
-    expect(mockGetCachedSWR).toHaveBeenCalledWith('plan:today:u:12:2026-04-14:route:pt-br');
+    expect(mockGetCachedSWR).toHaveBeenCalledWith('plan:today:u:12:tenant:12:2026-04-14:route:pt-br');
     expect(mockComposeDailyBrief).not.toHaveBeenCalled();
   });
 
@@ -354,9 +357,22 @@ describe('plan routes', () => {
     expect(response.statusCode).toBe(200);
     expect(response.body.cached).toBe(true);
     expect(response.body.data.creativeCopy.headline).toBe('Stale');
-    expect(mockComposeWeeklyPlan).toHaveBeenCalledWith({ userId: 12, weekStart: '2026-04-13' });
+    expect(mockComposeWeeklyPlan).toHaveBeenCalledWith({ userId: 12, tenantId: 12, weekStart: '2026-04-13' });
     expect(mockSetCacheSWR).toHaveBeenCalledWith(
-      'plan:week:u:12:2026-04-13:route:pt-br',
+      'plan:week:u:12:tenant:12:2026-04-13:route:pt-br',
+      expect.objectContaining({ weekStart: '2026-04-13' }),
+      120,
+      600,
+    );
+  });
+
+  it('passes tenant scope into weekly plan routes', async () => {
+    const response = await dispatch('GET', '/week?weekStart=2026-04-13', { tenantId: 34 });
+
+    expect(response.statusCode).toBe(200);
+    expect(mockComposeWeeklyPlan).toHaveBeenCalledWith({ userId: 12, tenantId: 34, weekStart: '2026-04-13' });
+    expect(mockSetCacheSWR).toHaveBeenCalledWith(
+      'plan:week:u:12:tenant:34:2026-04-13:route:pt-br',
       expect.objectContaining({ weekStart: '2026-04-13' }),
       120,
       600,
@@ -386,6 +402,15 @@ describe('plan routes', () => {
     expect(response.body.ok).toBe(true);
     expect(response.body.data.week.weekStart).toBe('2026-04-13');
     expect(response.body.data.today.date).toBe('2026-04-14');
+    expect(mockComposeWeeklyPlan).toHaveBeenCalledWith(expect.objectContaining({
+      userId: 12,
+      tenantId: 12,
+      syncSignals: true,
+    }));
+    expect(mockComposeDailyBrief).toHaveBeenCalledWith(expect.objectContaining({
+      userId: 12,
+      tenantId: 12,
+    }));
   });
 
   it('fails closed on invalid tenant scope before recompute invalidation and planner reads', async () => {

@@ -14,6 +14,10 @@ import type {
 import { resolveChatActionPlannerDeps } from '../deps';
 import { executeChatActionPlan } from './plan-executor';
 import { rowToConfirmedStep } from './run-persistence';
+import {
+  authorizeChatActionPlanSteps,
+  buildChatActionAccessDeniedResponse,
+} from '../authorization';
 
 export async function executeConfirmedChatActionRuns(
   input: ChatPlannerInput & { sourceMessageId?: string | null },
@@ -44,6 +48,15 @@ export async function executeConfirmedChatActionRuns(
     requiresConfirmation: false,
     confidence: 0.93,
   };
+  const authorization = authorizeChatActionPlanSteps({
+    userId: input.userId,
+    tenantId: input.tenantId,
+    steps: plan.steps,
+  });
+  if (!authorization.allowed) {
+    const response = buildChatActionAccessDeniedResponse(input, plan, authorization);
+    return { plan, response, status: 'blocked' };
+  }
   const resolvedDeps = resolveChatActionPlannerDeps(deps);
   const response = await executeChatActionPlan(plan, {
     ...input,

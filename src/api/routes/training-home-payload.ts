@@ -26,8 +26,8 @@ import type { CoachBriefingSnapshot } from './training-coach-briefing';
 import { isGarminActivelyIntegrated } from '../../services/integration-status';
 
 export interface TrainingHomePayloadDependencies {
-  getTodaySession: (userId: number) => Promise<{ session: TrainingSessionInput | null; plan: unknown | null }>;
-  getWeekPlan: (userId: number) => Promise<{
+  getTodaySession: (userId: number, tenantId: number) => Promise<{ session: TrainingSessionInput | null; plan: unknown | null }>;
+  getWeekPlan: (userId: number, tenantId: number) => Promise<{
     plan: unknown | null;
     sessions: WeekSessionInput[];
     adherence: number;
@@ -53,12 +53,13 @@ interface KernelTodayContext {
 
 export async function buildTrainingHomePayload(
   userId: number,
+  tenantId: number,
   language: Lang,
   dependencies: TrainingHomePayloadDependencies,
 ): Promise<TrainingHomeViewState> {
   const [todayResult, weekResult, readinessResult, signalResult] = await Promise.allSettled([
-    dependencies.getTodaySession(userId),
-    dependencies.getWeekPlan(userId),
+    dependencies.getTodaySession(userId, tenantId),
+    dependencies.getWeekPlan(userId, tenantId),
     dependencies.getReadiness(userId),
     Promise.resolve(dependencies.buildActiveSignalsResponse(userId)),
   ]);

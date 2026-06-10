@@ -7,6 +7,7 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
+import { DateTime } from 'luxon';
 import fs from 'fs';
 import path from 'path';
 
@@ -19,6 +20,10 @@ vi.mock('../../src/services/database', () => ({
   initDatabase: vi.fn(),
   closeDatabase: vi.fn(),
   findUnexpectedMigrationPrefixCollisions: vi.fn(() => []),
+  assertNoUnexpectedMigrationPrefixCollisions: vi.fn(),
+  filterAlreadyAppliedAddColumnStatements: vi.fn((sql: string) => sql),
+  runMigrationsForTest: vi.fn(),
+  stripWrappingTransactionStatements: vi.fn((sql: string) => sql),
 }));
 
 vi.mock('../../src/utils/logger', () => ({
@@ -29,6 +34,9 @@ vi.mock('../../src/utils/logger', () => ({
 vi.mock('../../src/utils/date-parser', () => ({
   now: vi.fn().mockReturnValue({
     toFormat: vi.fn().mockReturnValue('2026-04-03'),
+    setZone: vi.fn((zone: string) => ({
+      toFormat: vi.fn().mockReturnValue(zone === 'America/New_York' ? '2026-04-02' : '2026-04-03'),
+    })),
     minus: vi.fn().mockReturnValue({ toFormat: vi.fn().mockReturnValue('2026-04-02') }),
     toISO: vi.fn().mockReturnValue('2026-04-03T12:00:00.000+01:00'),
   }),
@@ -44,7 +52,7 @@ import {
   clearConversation, clearAllConversations,
 } from '../../src/state/conversation';
 import { createTodo, listTodos } from '../../src/state/todos';
-import { setReminder, getActiveReminders, getRemindersForToday } from '../../src/state/reminders';
+import { setReminder, getActiveReminders, getRemindersForToday, markReminderFired } from '../../src/state/reminders';
 import { setSharedMemory, getSharedMemory, getSharedMemorySummary } from '../../src/state/shared-memory';
 import { saveNote, searchNotes } from '../../src/state/notes';
 
@@ -175,6 +183,78 @@ describe('Per-user data isolation', () => {
       expect(todayA[0].message).toBe('A today');
       expect(todayB).toHaveLength(1);
       expect(todayB[0].message).toBe('B today');
+    });
+
+    it('getRemindersForToday uses each reminder timezone for the local day', () => {
+      setReminder(USER_A, {
+        message: 'NY local today',
+        remind_at: '2026-04-02T20:00:00-04:00',
+        timezone: 'America/New_York',
+      });
+      setReminder(USER_A, {
+        message: 'Lisbon today',
+        remind_at: '2026-04-03T10:00:00+01:00',
+        timezone: 'Europe/Lisbon',
+      });
+
+      const today = getRemindersForToday(USER_A, undefined, 'Europe/Lisbon');
+
+      expect(today.map((reminder) => reminder.message)).toEqual([
+        'NY local today',
+        'Lisbon today',
+      ]);
+    });
+
+    it('same-user reminders are isolated by tenant', () => {
+      setReminder(SAME_USER, {
+        message: 'Tenant A reminder',
+        remind_at: '2026-04-03T10:00:00',
+      }, { tenantId: TENANT_A });
+      setReminder(SAME_USER, {
+        message: 'Tenant B reminder',
+        remind_at: '2026-04-03T11:00:00',
+      }, { tenantId: TENANT_B });
+
+      expect(getActiveReminders(SAME_USER, TENANT_A).map((reminder) => reminder.message)).toEqual([
+        'Tenant A reminder',
+      ]);
+      expect(getActiveReminders(SAME_USER, TENANT_B).map((reminder) => reminder.message)).toEqual([
+        'Tenant B reminder',
+      ]);
+    });
+
+    it('markReminderFired updates only the owning tenant reminder row', () => {
+      const tenantAReminder = setReminder(SAME_USER, {
+        message: 'Tenant A one-shot',
+        remind_at: '2026-04-03T10:00:00',
+      }, { tenantId: TENANT_A });
+      setReminder(SAME_USER, {
+        message: 'Tenant B still active',
+        remind_at: '2026-04-03T11:00:00',
+      }, { tenantId: TENANT_B });
+
+      markReminderFired(tenantAReminder.id);
+
+      expect(getActiveReminders(SAME_USER, TENANT_A)).toHaveLength(0);
+      expect(getActiveReminders(SAME_USER, TENANT_B).map((reminder) => reminder.message)).toEqual([
+        'Tenant B still active',
+      ]);
+    });
+
+    it('recurs daily reminders in the reminder timezone across Lisbon DST', () => {
+      const reminder = setReminder(USER_A, {
+        message: 'Daily local reminder',
+        remind_at: '2026-03-29T00:30:00',
+        recurring: 'daily',
+        timezone: 'Europe/Lisbon',
+      }, { timezone: 'Europe/Lisbon' });
+
+      markReminderFired(reminder.id);
+
+      const [next] = getActiveReminders(USER_A);
+      const nextLocal = DateTime.fromISO(next.remind_at, { setZone: true }).setZone('Europe/Lisbon');
+      expect(nextLocal.toFormat('yyyy-LL-dd HH:mm')).toBe('2026-03-30 00:30');
+      expect(nextLocal.offset).toBe(60);
     });
   });
 

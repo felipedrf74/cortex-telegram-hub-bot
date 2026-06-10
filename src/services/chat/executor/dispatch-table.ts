@@ -3,6 +3,7 @@
 import type { ChatActionName } from '../registry';
 import type { ChatStepExecutor } from './types';
 import { executeCalendarCreateStep, executeCalendarDeleteStep, executeCalendarReadOnlyStep, executeCalendarUpdateStep } from '../../skills/secretary/executor';
+import { executeReminderSetStep } from '../../skills/reminders/executor';
 import { executeMailInboxSummaryStep, executeMailUnreadCountStep } from '../../skills/mail/executor';
 import { executeAddSubtasksToTaskStep, executeTaskCreateStep, executeTaskMutationStep, executeTaskWithSubtasksStep } from '../../skills/tasks/executor';
 import { executeContentAgencyStep, executeContentPipelineHandoffStep, executeContentPipelineStageTransitionStep, executeContentScheduleWorkStep } from '../../skills/content/executor';
@@ -22,6 +23,7 @@ const CHAT_STEP_EXECUTORS: Partial<Record<ChatActionName, ChatStepExecutor>> = {
   delete_event: (step, context) => executeCalendarDeleteStep(step, context.plan, context.input, context.persistRuns),
   check_calendar_conflicts: (step, context) => executeCalendarReadOnlyStep(step, context.input, context.deps.calendar),
   summarize_agenda: (step, context) => executeCalendarReadOnlyStep(step, context.input, context.deps.calendar),
+  set_reminder: (step, context) => executeReminderSetStep(step, context.plan, context.input, context.persistRuns),
   mail_unread_count: (step, context) => executeMailUnreadCountStep(step, context.input),
   mail_inbox_summary: (step, context) => executeMailInboxSummaryStep(step, context.input),
   create_task: (step, context) => executeTaskCreateStep(step, context.plan, context.input, context.deps.taskProviderForUser, context.persistRuns),

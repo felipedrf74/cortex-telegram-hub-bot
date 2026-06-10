@@ -6,6 +6,7 @@ const mockCreatePlan = vi.fn();
 const mockCreateWeek = vi.fn();
 const mockCreateSession = vi.fn();
 const mockLinkSessionToCalendar = vi.fn();
+const mockUpdatePlanPreferences = vi.fn();
 const mockCreateEvent = vi.fn();
 const mockLoggerWarn = vi.fn();
 const mockLoggerInfo = vi.fn();
@@ -29,6 +30,7 @@ vi.mock('../../src/services/training-plans', async () => {
     createWeek: (...args: unknown[]) => mockCreateWeek(...args),
     createSession: (...args: unknown[]) => mockCreateSession(...args),
     linkSessionToCalendar: (...args: unknown[]) => mockLinkSessionToCalendar(...args),
+    updatePlanPreferences: (...args: unknown[]) => mockUpdatePlanPreferences(...args),
   };
 });
 
@@ -107,6 +109,7 @@ describe('training-plan-persistence', () => {
     mockCreateWeek.mockReset();
     mockCreateSession.mockReset();
     mockLinkSessionToCalendar.mockReset();
+    mockUpdatePlanPreferences.mockReset();
     mockCreateEvent.mockReset();
     mockLoggerWarn.mockReset();
     mockLoggerInfo.mockReset();
@@ -120,6 +123,7 @@ describe('training-plan-persistence', () => {
     mockCreateWeek.mockImplementation(({ week_number }: any) => ({ id: 1000 + Number(week_number || 1) }));
     let sessionId = 2000;
     mockCreateSession.mockImplementation(() => ({ id: ++sessionId }));
+    mockUpdatePlanPreferences.mockReturnValue(true);
     mockCreateEvent.mockResolvedValue({ id: 'evt-1', source: 'google' });
     // Slice 4.D defaults: fresh plan_version=1, no prior ownership rows,
     // ownership recorder reports clean inserts.
@@ -157,6 +161,7 @@ describe('training-plan-persistence', () => {
   it('persists generated weeks and sessions, schedules events, and links created calendar events', async () => {
     const result = await persistGeneratedTrainingPlan({
       userId: 12,
+      tenantId: 12,
       objective: 'Marathon build',
       durationWeeks: 4,
       startDate: '2026-04-19',
@@ -273,6 +278,10 @@ describe('training-plan-persistence', () => {
     );
     expect(mockCreateEvent.mock.calls[0][0].description).toContain('[NEXUS_TRAINING_IDENTITY');
     expect(mockLinkSessionToCalendar).toHaveBeenCalledTimes(2);
+    expect(mockUpdatePlanPreferences).toHaveBeenCalledWith(
+      901,
+      expect.stringContaining('"finalValidationResult"'),
+    );
   });
 
   it('keeps plan persistence successful when individual calendar event creation fails', async () => {
@@ -282,6 +291,7 @@ describe('training-plan-persistence', () => {
 
     const result = await persistGeneratedTrainingPlan({
       userId: 12,
+      tenantId: 12,
       objective: 'Hybrid block',
       durationWeeks: 1,
       startDate: '2026-04-19',
@@ -336,6 +346,7 @@ describe('training-plan-persistence', () => {
 
     const result = await persistGeneratedTrainingPlan({
       userId: 12,
+      tenantId: 12,
       objective: 'Busy build',
       durationWeeks: 1,
       startDate: '2026-04-19',
@@ -385,6 +396,7 @@ describe('training-plan-persistence', () => {
 
     const result = await persistGeneratedTrainingPlan({
       userId: 12,
+      tenantId: 12,
       objective: 'Paced provider writes',
       durationWeeks: 1,
       startDate: '2026-04-19',
@@ -443,6 +455,7 @@ describe('training-plan-persistence', () => {
     const startedAt = performance.now();
     const result = await persistGeneratedTrainingPlan({
       userId: 12,
+      tenantId: 12,
       objective: '16-week batching SLA',
       durationWeeks: 16,
       startDate: '2026-04-19',
@@ -466,6 +479,7 @@ describe('training-plan-persistence', () => {
   it('does not persist standalone mobility sessions as calendar workouts', async () => {
     const result = await persistGeneratedTrainingPlan({
       userId: 12,
+      tenantId: 12,
       objective: 'Hybrid block',
       durationWeeks: 1,
       startDate: '2026-04-19',
@@ -500,6 +514,7 @@ describe('training-plan-persistence', () => {
   it('persists deferred and unscheduled capacity-reconciliation sessions as inactive rows without calendar events', async () => {
     const result = await persistGeneratedTrainingPlan({
       userId: 12,
+      tenantId: 12,
       objective: 'Constrained week',
       durationWeeks: 1,
       startDate: '2026-04-19',
@@ -557,6 +572,7 @@ describe('training-plan-persistence', () => {
   it('persists reflowed/capped schedule adjustments as rich lifecycle states for iOS read models', async () => {
     await persistGeneratedTrainingPlan({
       userId: 12,
+      tenantId: 12,
       objective: 'Travel week',
       durationWeeks: 1,
       startDate: '2026-04-19',
@@ -614,6 +630,7 @@ describe('training-plan-persistence', () => {
 
     const result = await persistGeneratedTrainingPlan({
       userId: 12,
+      tenantId: 12,
       objective: 'Calendar constrained week',
       durationWeeks: 1,
       startDate: '2026-04-20',
@@ -657,6 +674,7 @@ describe('training-plan-persistence', () => {
 
     const pending = persistGeneratedTrainingPlan({
       userId: 12,
+      tenantId: 12,
       objective: 'Strength block',
       durationWeeks: 1,
       startDate: '2026-04-19',
@@ -705,6 +723,7 @@ describe('training-plan-persistence', () => {
       // on this day used to silently slide forward to the following Monday.
       const result = await persistGeneratedTrainingPlan({
         userId: 12,
+        tenantId: 12,
         objective: 'Mid-week marathon block',
         durationWeeks: 1,
         startDate: '2026-04-22',
@@ -779,6 +798,7 @@ describe('training-plan-persistence', () => {
       // are still in the future, so no past-day floor should fire.
       const result = await persistGeneratedTrainingPlan({
         userId: 12,
+        tenantId: 12,
         objective: 'Sunday-start week',
         durationWeeks: 1,
         startDate: '2026-04-19',
@@ -814,6 +834,7 @@ describe('training-plan-persistence', () => {
       const now = new Date(2026, 3, 22, 15, 15, 0, 0); // Wednesday 15:15 local
       const result = await persistGeneratedTrainingPlan({
         userId: 12,
+        tenantId: 12,
         objective: 'Same-day floor',
         durationWeeks: 1,
         startDate: '2026-04-22',
@@ -955,6 +976,7 @@ describe('training-plan-persistence', () => {
 
       const result = await persistGeneratedTrainingPlan({
         userId: 12,
+        tenantId: 12,
         objective: 'Beginner bodyweight',
         durationWeeks: 1,
         startDate: '2026-04-19',
@@ -996,6 +1018,7 @@ describe('training-plan-persistence', () => {
     it('plan-linter advisor: surfaces equipment-incompatibility on bodyweight profile + barbell session', async () => {
       const result = await persistGeneratedTrainingPlan({
         userId: 12,
+        tenantId: 12,
         objective: 'Beginner bodyweight',
         durationWeeks: 1,
         startDate: '2026-04-19',
@@ -1049,6 +1072,7 @@ describe('training-plan-persistence', () => {
     it('plan-linter advisor: uses persisted dates to catch heavy lower before next-week long run', async () => {
       const result = await persistGeneratedTrainingPlan({
         userId: 12,
+        tenantId: 12,
         objective: 'Week-boundary long-run protection',
         durationWeeks: 2,
         startDate: '2026-04-19',
@@ -1115,6 +1139,7 @@ describe('training-plan-persistence', () => {
     it('plan-linter advisor: blocks event-based race-week label without race date', async () => {
       const result = await persistGeneratedTrainingPlan({
         userId: 12,
+        tenantId: 12,
         objective: 'Plan with stale taper label',
         durationWeeks: 1,
         startDate: '2026-04-19',
@@ -1151,6 +1176,7 @@ describe('training-plan-persistence', () => {
       // legitimate week-2 Monday).
       const result = await persistGeneratedTrainingPlan({
         userId: 12,
+        tenantId: 12,
         objective: 'Week 2 still gets Monday',
         durationWeeks: 2,
         startDate: '2026-04-22',

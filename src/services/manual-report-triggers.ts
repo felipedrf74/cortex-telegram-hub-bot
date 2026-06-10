@@ -77,7 +77,11 @@ export async function dispatchContentReports(send: TelegramSend): Promise<void> 
 
 export async function dispatchCoachReports(send: TelegramSend): Promise<void> {
   for (const target of getManualReportTargets()) {
-    const result = await generateCoachBriefing(target.tenantId, { garminSilent: true });
+    const result = await generateCoachBriefing(target.tenantId, {
+      tenantId: target.tenantId,
+      meteringUserId: target.tenantId,
+      garminSilent: true,
+    });
     await sendChunked(target, result.message, send, 'HTML');
   }
 }

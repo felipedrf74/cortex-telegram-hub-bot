@@ -47,6 +47,7 @@ import {
   publishFuelingGapRisk,
   publishTrainingBudgetConstraint,
   readTrainingContext,
+  readTrainingContextAll,
   readScheduledTrainingSessions,
   consumeSignal,
   formatTrainingContextForPrompt,
@@ -74,6 +75,10 @@ function applyMigrations(db: Database.Database): void {
         db.prepare('INSERT INTO _migrations (filename) VALUES (?)').run(file);
       } catch { /* skip deps */ }
     }
+  }
+  const signalColumns = db.prepare('PRAGMA table_info(agent_signals)').all() as Array<{ name: string }>;
+  if (!signalColumns.some((column) => column.name === 'tenant_id')) {
+    db.exec('ALTER TABLE agent_signals ADD COLUMN tenant_id INTEGER');
   }
 }
 
@@ -148,6 +153,21 @@ describe('per-user signal isolation', () => {
     // (the `user_id IS NULL` branch excludes per-user rows).
     const result = busReadSignals('test.consumer', ['cycling_load_today'], 50);
     expect(result).toHaveLength(0);
+  });
+
+  it('readTrainingContextAll honors optional tenant scope', () => {
+    publishHighLegLoad({ userId: 306, tenantId: 901, source: 'gym', rpe: 9 });
+    publishHighLegLoad({ userId: 306, tenantId: 902, source: 'gym', rpe: 9, details: { notes: 'tenant b' } });
+
+    const tenantA = readTrainingContextAll({ userId: 306, tenantId: 901 });
+    const tenantB = readTrainingContextAll({ userId: 306, tenantId: 902 });
+
+    expect(tenantA.flags.highLegLoad).toBe(true);
+    expect(tenantA.signals).toHaveLength(1);
+    expect(tenantA.signals[0].tenant_id).toBe(901);
+    expect(tenantB.flags.highLegLoad).toBe(true);
+    expect(tenantB.signals).toHaveLength(1);
+    expect(tenantB.signals[0].tenant_id).toBe(902);
   });
 });
 

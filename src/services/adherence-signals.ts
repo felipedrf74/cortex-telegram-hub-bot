@@ -41,6 +41,7 @@ import {
 import { logger } from '../utils/logger';
 import { getDb } from './database';
 import { now } from '../utils/date-parser';
+import { requireTenantIdParam } from './tenant-scope';
 
 // ─── Thresholds ─────────────────────────────────────────────────
 
@@ -93,17 +94,17 @@ function parseSignalPayload(raw: unknown): Record<string, unknown> {
   }
 }
 
-function readActiveAdherenceSignalsForUser(userId: number): ActiveAdherenceSignal[] {
+function readActiveAdherenceSignalsForUser(userId: number, tenantId: number): ActiveAdherenceSignal[] {
   try {
     const db = getDb();
     const rows = db.prepare(`
       SELECT id, signal_type, payload
       FROM agent_signals
-      WHERE user_id = ?
+      WHERE user_id = ? AND tenant_id = ?
         AND status = 'active'
         AND signal_type IN ('low_adherence', 'high_adherence')
       ORDER BY created_at DESC, id DESC
-    `).all(userId) as Array<{ id: number; signal_type: string; payload: unknown }>;
+    `).all(userId, tenantId) as Array<{ id: number; signal_type: string; payload: unknown }>;
 
     return rows
       .filter((row): row is { id: number; signal_type: 'low_adherence' | 'high_adherence'; payload: unknown } =>
@@ -115,7 +116,7 @@ function readActiveAdherenceSignalsForUser(userId: number): ActiveAdherenceSigna
         payload: parseSignalPayload(row.payload),
       }));
   } catch (err) {
-    logger.warn({ err, userId }, 'adherence active-signal lookup failed');
+    logger.warn({ err, userId, tenantId }, 'adherence active-signal lookup failed');
     return [];
   }
 }
@@ -143,16 +144,17 @@ function signalMatchesAdherenceSnapshot(
 
 function dismissStaleAdherenceSignals(
   userId: number,
+  tenantId: number,
   signals: ActiveAdherenceSignal[],
   keepId?: number,
 ): void {
   const stale = signals.filter((signal) => signal.id !== keepId);
   for (const signal of stale) {
-    dismissSignal(signal.id, userId, userId);
+    dismissSignal(signal.id, userId, tenantId);
   }
   if (stale.length > 0) {
     logger.info(
-      { userId, staleIds: stale.map((signal) => signal.id), keptId: keepId ?? null },
+      { userId, tenantId, staleIds: stale.map((signal) => signal.id), keptId: keepId ?? null },
       'stale adherence signals dismissed',
     );
   }
@@ -169,15 +171,16 @@ function dismissStaleAdherenceSignals(
  * means the bus never grows by more than one row per user per day
  * even under aggressive tab-bouncing.
  */
-export function publishAdherenceSignalsForUser(userId: number, referenceDate?: DateTime): AdherenceSignalResult {
-  const adherence = computeWeeklyAdherence(userId, referenceDate);
+export function publishAdherenceSignalsForUser(userId: number, tenantId: number, referenceDate?: DateTime): AdherenceSignalResult {
+  const scopedTenantId = requireTenantIdParam(tenantId, 'publishAdherenceSignalsForUser');
+  const adherence = computeWeeklyAdherence(userId, scopedTenantId, referenceDate);
 
   if (!adherence.hasActivePlan) {
-    dismissStaleAdherenceSignals(userId, readActiveAdherenceSignalsForUser(userId));
+    dismissStaleAdherenceSignals(userId, scopedTenantId, readActiveAdherenceSignalsForUser(userId, scopedTenantId));
     return { adherence, action: 'skipped_no_plan' };
   }
   if (adherence.planned === 0) {
-    dismissStaleAdherenceSignals(userId, readActiveAdherenceSignalsForUser(userId));
+    dismissStaleAdherenceSignals(userId, scopedTenantId, readActiveAdherenceSignalsForUser(userId, scopedTenantId));
     return { adherence, action: 'skipped_no_sessions' };
   }
 
@@ -187,7 +190,7 @@ export function publishAdherenceSignalsForUser(userId: number, referenceDate?: D
     adherence.ratio >= 1.0 && adherence.planned >= HIGH_ADHERENCE_MIN_PLANNED;
 
   if (!isLow && !isHigh) {
-    dismissStaleAdherenceSignals(userId, readActiveAdherenceSignalsForUser(userId));
+    dismissStaleAdherenceSignals(userId, scopedTenantId, readActiveAdherenceSignalsForUser(userId, scopedTenantId));
     return { adherence, action: 'skipped_neutral' };
   }
 
@@ -197,19 +200,19 @@ export function publishAdherenceSignalsForUser(userId: number, referenceDate?: D
   // this read doesn't mark signals as consumed from the coaches'
   // perspective — the sport coaches have their own readers.
   const targetType = isLow ? 'low_adherence' : 'high_adherence';
-  const activeSignals = readActiveAdherenceSignalsForUser(userId);
+  const activeSignals = readActiveAdherenceSignalsForUser(userId, scopedTenantId);
   const matchingSignal = activeSignals.find((signal) =>
     signalMatchesAdherenceSnapshot(signal, targetType, adherence),
   );
   if (matchingSignal) {
-    dismissStaleAdherenceSignals(userId, activeSignals, matchingSignal.id);
+    dismissStaleAdherenceSignals(userId, scopedTenantId, activeSignals, matchingSignal.id);
     logger.debug(
-      { userId, targetType, existingId: matchingSignal.id },
+      { userId, tenantId: scopedTenantId, targetType, existingId: matchingSignal.id },
       'matching adherence signal already active — skipping duplicate publish',
     );
     return { adherence, action: 'skipped_existing' };
   }
-  dismissStaleAdherenceSignals(userId, activeSignals);
+  dismissStaleAdherenceSignals(userId, scopedTenantId, activeSignals);
 
   try {
     const existing = readSignals(
@@ -217,6 +220,8 @@ export function publishAdherenceSignalsForUser(userId: number, referenceDate?: D
       [targetType],
       5,
       userId,
+      undefined,
+      scopedTenantId,
     );
     const stillMatching = existing.find((signal) =>
       signal.signal_type === targetType
@@ -228,7 +233,7 @@ export function publishAdherenceSignalsForUser(userId: number, referenceDate?: D
     );
     if (stillMatching) {
       logger.debug(
-        { userId, targetType, existingId: stillMatching.id },
+        { userId, tenantId: scopedTenantId, targetType, existingId: stillMatching.id },
         'adherence signal already active — skipping duplicate publish',
       );
       return { adherence, action: 'skipped_existing' };
@@ -236,13 +241,14 @@ export function publishAdherenceSignalsForUser(userId: number, referenceDate?: D
   } catch (err) {
     // If the read fails, fall through and publish anyway. Bus
     // failures shouldn't silently drop signals.
-    logger.warn({ err, userId }, 'adherence existing-check failed — publishing anyway');
+    logger.warn({ err, userId, tenantId: scopedTenantId }, 'adherence existing-check failed — publishing anyway');
   }
 
   // ── Publish ──
   if (isLow) {
     publishLowAdherence({
       userId,
+      tenantId: scopedTenantId,
       completed: adherence.completed,
       planned: adherence.planned,
       weekStart: adherence.weekStart,
@@ -252,7 +258,7 @@ export function publishAdherenceSignalsForUser(userId: number, referenceDate?: D
         : `${adherence.planned - adherence.completed} session(s) missed`,
     });
     logger.info(
-      { userId, completed: adherence.completed, planned: adherence.planned, pct: adherence.percentage },
+      { userId, tenantId: scopedTenantId, completed: adherence.completed, planned: adherence.planned, pct: adherence.percentage },
       'low_adherence signal published',
     );
     return { adherence, action: 'published_low' };
@@ -261,13 +267,14 @@ export function publishAdherenceSignalsForUser(userId: number, referenceDate?: D
   // isHigh
   publishHighAdherence({
     userId,
+    tenantId: scopedTenantId,
     completed: adherence.completed,
     planned: adherence.planned,
     weekStart: adherence.weekStart,
     weekEnd: adherence.weekEnd,
   });
   logger.info(
-    { userId, completed: adherence.completed, planned: adherence.planned },
+    { userId, tenantId: scopedTenantId, completed: adherence.completed, planned: adherence.planned },
     'high_adherence signal published',
   );
   return { adherence, action: 'published_high' };
@@ -375,6 +382,7 @@ function normalizePlanSport(raw: string | null | undefined): SportKey | 'hybrid'
  */
 function countSessionsBySportOverWindow(
   userId: number,
+  tenantId: number,
   weeks: number,
 ): Record<SportKey, number> {
   const counts: Record<SportKey, number> = {
@@ -384,13 +392,13 @@ function countSessionsBySportOverWindow(
   for (let i = 0; i < weeks; i++) {
     try {
       const weekRef = ref.minus({ weeks: i });
-      const summary = getWeeklyActivitySummary(userId, weekRef);
+      const summary = getWeeklyActivitySummary(userId, tenantId, weekRef);
       for (const sport of Object.keys(counts) as SportKey[]) {
         counts[sport] += summary.bySport[sport].completions;
       }
     } catch (err) {
       logger.warn(
-        { err, userId, weekOffset: i },
+        { err, userId, tenantId, weekOffset: i },
         'plan-drift weekly summary failed for one week — continuing with partial counts',
       );
     }
@@ -411,18 +419,18 @@ function countSessionsBySportOverWindow(
  * active plan" to the caller. Elevating to `warn` ensures schema
  * regressions show up in production log scrapes.
  */
-function getActivePlanSport(userId: number): string | null {
+function getActivePlanSport(userId: number, tenantId: number): string | null {
   const db = getDb();
   try {
     const row = db.prepare(`
       SELECT sport FROM fitness_training_plans
-      WHERE user_id = ? AND status = 'active'
+      WHERE user_id = ? AND tenant_id = ? AND status = 'active'
       ORDER BY created_at DESC
       LIMIT 1
-    `).get(userId) as { sport: string } | undefined;
+    `).get(userId, tenantId) as { sport: string } | undefined;
     return row?.sport ?? null;
   } catch (err) {
-    logger.warn({ err, userId }, 'plan-drift active plan lookup failed — drift detection disabled for this user');
+    logger.warn({ err, userId, tenantId }, 'plan-drift active plan lookup failed — drift detection disabled for this user');
     return null;
   }
 }
@@ -436,7 +444,8 @@ function getActivePlanSport(userId: number): string | null {
  * the adherence orchestrator so drift and adherence share the same
  * "once per tab open" rhythm.
  */
-export function publishPlanDriftSignalForUser(userId: number): PlanDriftResult {
+export function publishPlanDriftSignalForUser(userId: number, tenantId: number): PlanDriftResult {
+  const scopedTenantId = requireTenantIdParam(tenantId, 'publishPlanDriftSignalForUser');
   const empty: PlanDriftResult = {
     action: 'skipped_no_plan',
     planSport: null,
@@ -445,7 +454,7 @@ export function publishPlanDriftSignalForUser(userId: number): PlanDriftResult {
     sessionsInWindow: 0,
   };
 
-  const rawPlanSport = getActivePlanSport(userId);
+  const rawPlanSport = getActivePlanSport(userId, scopedTenantId);
   if (!rawPlanSport) return empty;
 
   const normalized = normalizePlanSport(rawPlanSport);
@@ -454,7 +463,7 @@ export function publishPlanDriftSignalForUser(userId: number): PlanDriftResult {
   }
 
   // Tally sessions by sport across the window
-  const counts = countSessionsBySportOverWindow(userId, PLAN_DRIFT_WINDOW_WEEKS);
+  const counts = countSessionsBySportOverWindow(userId, scopedTenantId, PLAN_DRIFT_WINDOW_WEEKS);
   const totalSessions = (Object.values(counts) as number[]).reduce((s, n) => s + n, 0);
 
   // "Active" sessions exclude the `other` bucket (recovery, mobility,
@@ -545,10 +554,12 @@ export function publishPlanDriftSignalForUser(userId: number): PlanDriftResult {
     ['plan_drift'],
     5,
     userId,
+    undefined,
+    scopedTenantId,
   );
   if (existing.length > 0) {
     logger.debug(
-      { userId, existingIds: existing.map((s) => s.id) },
+      { userId, tenantId: scopedTenantId, existingIds: existing.map((s) => s.id) },
       'plan_drift already active — skipping duplicate publish',
     );
     return {
@@ -563,6 +574,7 @@ export function publishPlanDriftSignalForUser(userId: number): PlanDriftResult {
   // ── Publish ──
   publishPlanDrift({
     userId,
+    tenantId: scopedTenantId,
     planSport: rawPlanSport,
     dominantSport,
     driftPct: dominantPct * 100,
@@ -572,6 +584,7 @@ export function publishPlanDriftSignalForUser(userId: number): PlanDriftResult {
   logger.info(
     {
       userId,
+      tenantId: scopedTenantId,
       planSport: rawPlanSport,
       dominantSport,
       driftPct: dominantPct * 100,
