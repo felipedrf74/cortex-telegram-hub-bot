@@ -1,3 +1,5 @@
+// Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
+
 import { clearCacheByPrefix } from './cache-store';
 
 function notificationRouteCacheKey(...parts: Array<string | number | boolean | null | undefined>): string {
