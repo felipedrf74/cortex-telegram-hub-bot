@@ -146,6 +146,8 @@ vi.mock('../../src/services/content-scheduler', () => ({
     return topic;
   }),
   deleteTopic: vi.fn((_userId: number, topicId: number) => topicStore.delete(topicId)),
+  // BE-3 (Content Studio): default = no replay hit; individual tests override.
+  findTopicByClientRequestId: vi.fn(() => null),
 }));
 
 import { registerContentTopicRoutes } from '../../src/api/routes/content-topic-routes';
@@ -155,6 +157,7 @@ import { cleanupContentTopicSecretaryArtifacts } from '../../src/services/conten
 import {
   addTopic,
   deleteTopic,
+  findTopicByClientRequestId,
   getFilmingRecommendation,
   getTopicById,
   getTopics,
@@ -371,6 +374,85 @@ describe('content topic routes', () => {
     expect(response.statusCode).toBe(400);
     expect(response.body.error.code).toBe('BAD_REQUEST');
     expect(addTopic).not.toHaveBeenCalled();
+  });
+
+  // BE-2/BE-3 (Content Studio): creation provenance + idempotent replay.
+
+  it('rejects unknown source values before creating topics', async () => {
+    const { response } = await dispatch('POST', '/topics', {
+      title: 'Race recap',
+      source: 'telepathy',
+    }, 77);
+
+    expect(response.statusCode).toBe(400);
+    expect(response.body.error.code).toBe('BAD_REQUEST');
+    expect(addTopic).not.toHaveBeenCalled();
+  });
+
+  it('records capture provenance and the idempotency key on create', async () => {
+    const { response } = await dispatch('POST', '/topics', {
+      title: 'Open water fear',
+      source: 'capture',
+      idempotencyKey: 'cap-123',
+    }, 77);
+
+    expect(response.statusCode).toBe(201);
+    expect(addTopic).toHaveBeenCalledWith(77, 'Open water fear', {
+      notes: null,
+      scheduledDate: null,
+      scheduledAt: null,
+      status: 'planned',
+      tenantId: 77,
+      provenance: { source: 'capture', clientRequestId: 'cap-123' },
+    });
+  });
+
+  it('replays an already-applied create without re-creating or double-charging', async () => {
+    const existing = {
+      id: 99,
+      user_id: 77,
+      tenant_id: 77,
+      owner_user_id: 77,
+      title: 'Open water fear',
+      notes: null,
+      scheduled_date: null,
+      scheduled_at: null,
+      status: 'planned',
+      secretary_sync_status: null,
+      secretary_sync_error: null,
+      created_at: '2026-06-10T10:00:00.000Z',
+      updated_at: '2026-06-10T10:00:00.000Z',
+    };
+    vi.mocked(findTopicByClientRequestId).mockReturnValueOnce(existing as any);
+
+    const { response } = await dispatch('POST', '/topics', {
+      title: 'Open water fear',
+      source: 'capture',
+      idempotencyKey: 'cap-123',
+    }, 77);
+
+    expect(findTopicByClientRequestId).toHaveBeenCalledWith(77, 'cap-123');
+    expect(response.statusCode).toBe(200);
+    expect(response.body.data.idempotentReplay).toBe(true);
+    expect(response.body.data.topic.id).toBe(99);
+    expect(addTopic).not.toHaveBeenCalled();
+  });
+
+  it('accepts the idempotency key via the Idempotency-Key header', async () => {
+    const router = Router();
+    registerContentTopicRoutes(router, () => 'pt-BR', makeEnsureValidScope());
+    const req = mockReq('POST', '/topics', { title: 'Header keyed' }, 77);
+    (req.headers as any)['idempotency-key'] = 'hdr-456';
+    const res = mockRes();
+    await new Promise<void>((resolve, reject) => {
+      (router as any).handle(req, res, (err: any) => (err ? reject(err) : resolve()));
+      setImmediate(resolve);
+    });
+
+    expect(res.statusCode).toBe(201);
+    expect(addTopic).toHaveBeenCalledWith(77, 'Header keyed', expect.objectContaining({
+      provenance: { source: null, clientRequestId: 'hdr-456' },
+    }));
   });
 
   it('updates and deletes only through scoped topic mutations', async () => {

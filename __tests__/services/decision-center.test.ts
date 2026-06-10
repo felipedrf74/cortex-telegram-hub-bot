@@ -358,6 +358,31 @@ describe('Decision Center facade', () => {
     }
   });
 
+  it('scopes overview items by sourceSkill and reports the pre-limit skill total (BE-1)', async () => {
+    await createDecisionIntent(buildSkillDecisionFixtureIntent('training', 1, {
+      relatedEntityId: 'be1-training',
+      relatedEntityType: 'training_profile',
+      dedupeKey: 'training:be1-filter-a',
+    }));
+    await createContentApprovalDecision(1, 1, 'content:be1-filter-a');
+    await createContentApprovalDecision(1, 1, 'content:be1-filter-b');
+
+    // Unfiltered responses carry no skill-filter fields (byte-compat).
+    const unfiltered = getDecisionOverview(1, 1, { limit: 20, handledLimit: 5 });
+    expect(unfiltered.sourceSkillFilter).toBeUndefined();
+    expect(unfiltered.sourceSkillTotalCount).toBeUndefined();
+    expect(unfiltered.items.length).toBeGreaterThanOrEqual(3);
+
+    // Filtered: items are skill-scoped, the total counts past the limit,
+    // and the global counters stay global.
+    const filtered = getDecisionOverview(1, 1, { limit: 1, handledLimit: 5, sourceSkill: 'content' });
+    expect(filtered.sourceSkillFilter).toBe('content');
+    expect(filtered.sourceSkillTotalCount).toBe(2);
+    expect(filtered.items).toHaveLength(1);
+    expect(filtered.items.every((item) => item.sourceSkill === 'content')).toBe(true);
+    expect(filtered.openCount).toBe(unfiltered.openCount);
+  });
+
   it('localizes Home Decision Center CTA labels from the user locale', async () => {
     ensureUserFixtureTable();
     testDb.prepare(`

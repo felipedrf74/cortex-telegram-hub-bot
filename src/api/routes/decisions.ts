@@ -146,7 +146,12 @@ export function decisionRoutes(): Router {
     if (limit == null) return;
     const handledLimit = positiveIntQuery(res, req.query.handledLimit, 10, 'handledLimit', 25);
     if (handledLimit == null) return;
-    const overview = getDecisionOverview(userId, tenantId, { limit, handledLimit });
+    // BE-1 (Content Studio): optional skill-scoped overview. Absent param =>
+    // byte-identical response to before.
+    const sourceSkill = typeof req.query.sourceSkill === 'string' && req.query.sourceSkill.trim() !== ''
+      ? req.query.sourceSkill as NotificationSourceSkill
+      : undefined;
+    const overview = getDecisionOverview(userId, tenantId, { limit, handledLimit, sourceSkill });
     const { version, schemaVersion } = resolveDecisionApiVersion(authReq);
     sendSuccess(res, version === 'v2'
       ? {

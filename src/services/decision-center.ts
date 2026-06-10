@@ -553,6 +553,15 @@ export interface DecisionCenterOverview {
   secretaryToday: SecretaryTodaySummaryModel;
   /** C5: present ONLY when fatigue caps are active — lets the client split `items` into pinned primary cards + a "More" bucket. */
   fatigue?: { primaryCount: number; moreCount: number; cappedCount: number };
+  /**
+   * BE-1 (Content Studio): present ONLY when the overview was requested with a
+   * `sourceSkill` filter. `items` is then the skill-scoped open slice and
+   * `sourceSkillTotalCount` is the pre-limit open total for that skill (the
+   * client's "+N more" overflow count). Counters, summary and secretaryToday
+   * stay GLOBAL; unfiltered responses are byte-identical to before.
+   */
+  sourceSkillFilter?: NotificationSourceSkill;
+  sourceSkillTotalCount?: number;
   items: DecisionApiItem[];
   handled: HandledByNexusItem[];
 }
@@ -1447,7 +1456,7 @@ function openDecisionItemsForOverview(items: DecisionApiItem[]): DecisionApiItem
 export function getDecisionOverview(
   userId: number,
   tenantId = userId,
-  opts: { limit?: number; handledLimit?: number } = {},
+  opts: { limit?: number; handledLimit?: number; sourceSkill?: NotificationSourceSkill } = {},
 ): DecisionCenterOverview {
   const limit = Math.min(Math.max(opts.limit ?? 80, 0), 100);
   const handledLimit = Math.min(Math.max(opts.handledLimit ?? 10, 0), 25);
@@ -1468,6 +1477,27 @@ export function getDecisionOverview(
     logDecisionOverviewSectionFailure('items', err, userId, tenantId);
   }
 
+  // BE-1 (Content Studio): when a sourceSkill filter is requested, the rendered
+  // `items` come from a dedicated skill-scoped read so skill items buried past
+  // the global read limit are never silently dropped. The global `allItems`
+  // read above still feeds counters/summary/secretaryToday unchanged.
+  let skillOpenItems: DecisionApiItem[] | null = null;
+  if (opts.sourceSkill != null && itemsAvailable) {
+    try {
+      const skillItems = listDecisionItems(userId, tenantId, {
+        status: 'all',
+        sourceSkill: opts.sourceSkill,
+        limit: itemReadLimit,
+        recordExposure: false,
+      });
+      skillOpenItems = applyDecisionTypeSuppression(openDecisionItemsForOverview(skillItems), userId, tenantId);
+    } catch (err) {
+      if (shouldRethrowDecisionOverviewError(err)) throw err;
+      itemsAvailable = false;
+      logDecisionOverviewSectionFailure('items', err, userId, tenantId);
+    }
+  }
+
   try {
     handledForSummary = listHandledByNexusItems(userId, tenantId, handledReadLimit);
   } catch (err) {
@@ -1486,18 +1516,21 @@ export function getDecisionOverview(
   const allOpenItems = applyDecisionTypeSuppression(openItemsRaw, userId, tenantId);
   let items: DecisionApiItem[] = [];
   let fatigueMeta: DecisionCenterOverview['fatigue'];
+  // BE-1: the rendered list draws from the skill-scoped set when a filter was
+  // requested; otherwise behavior is unchanged.
+  const renderSource = skillOpenItems ?? allOpenItems;
   if (itemsAvailable) {
     if (isDecisionCenterFatigueCapsEnabled(process.env, { userId, tenantId })) {
       // C5: flag-gated, post-ranking selection. Floored decisions bypass the cap; non-floored items
       // are bounded per-domain and to the visible budget. The cap reshapes the already-ranked `items`
       // array (then honors the caller's limit); `fatigue` advertises the primary/More split + how many
       // open decisions were capped out, so the client can render the hierarchy without re-deriving it.
-      const { primaryItems, moreItems } = applyDecisionFatigueCaps(allOpenItems);
+      const { primaryItems, moreItems } = applyDecisionFatigueCaps(renderSource);
       items = [...primaryItems, ...moreItems].slice(0, limit);
       const primaryCount = Math.min(primaryItems.length, items.length);
-      fatigueMeta = { primaryCount, moreCount: items.length - primaryCount, cappedCount: Math.max(allOpenItems.length - items.length, 0) };
+      fatigueMeta = { primaryCount, moreCount: items.length - primaryCount, cappedCount: Math.max(renderSource.length - items.length, 0) };
     } else {
-      items = allOpenItems.slice(0, limit);
+      items = renderSource.slice(0, limit);
     }
   }
   const handled = handledAvailable ? handledForSummary.slice(0, handledLimit) : [];
@@ -1534,6 +1567,9 @@ export function getDecisionOverview(
     },
     secretaryToday,
     fatigue: fatigueMeta,
+    ...(opts.sourceSkill != null
+      ? { sourceSkillFilter: opts.sourceSkill, sourceSkillTotalCount: skillOpenItems?.length ?? 0 }
+      : {}),
     items,
     handled,
   };

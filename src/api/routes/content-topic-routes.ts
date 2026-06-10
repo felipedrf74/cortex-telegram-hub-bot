@@ -7,6 +7,7 @@ import { asyncHandler, sendError, sendInternalError, sendSuccess } from '../resp
 import { invalidateContentDerivedCaches } from '../../services/cache-coherence-registry';
 import {
   addTopic,
+  findTopicByClientRequestId,
   getFilmingRecommendation,
   getTopics,
   getUpcomingTopicCount,
@@ -142,17 +143,26 @@ export function registerContentTopicRoutes(
 
   /**
    * POST /api/v1/content/topics
-   * Body: { title, notes?, scheduledDate?, scheduledDateTime?, status? }
+   * Body: { title, notes?, scheduledDate?, scheduledDateTime?, status?,
+   *         source?, idempotencyKey? }
    *
    * Creates a new topic. `scheduledDate` is nullable — unscheduled
    * topics go in the "later" bucket in the iOS UI. `status` defaults
    * to 'planned' server-side.
+   *
+   * BE-2/BE-3 (Content Studio, additive):
+   * - `source` ("capture" | "composer" | "manual") is recorded as creation
+   *   provenance in audit_metadata_json — the gate that lets future
+   *   topic-consuming intelligence filter raw captures.
+   * - `idempotencyKey` (body, or `Idempotency-Key` header) makes the create
+   *   retry-safe: a replay returns 200 with the original topic and consumes
+   *   no write budget, instead of creating a duplicate.
    */
   router.post('/topics', asyncHandler(async (req, res: Response) => {
     const { userId, tenantId } = req as unknown as AuthenticatedRequest;
     if (!ensureValidContentRouteScope(res, userId, 'content_route_topics_create')) return;
 
-    const { title, notes, scheduledDate, scheduledDateTime, status } = req.body;
+    const { title, notes, scheduledDate, scheduledDateTime, status, source } = req.body;
     if (!title || typeof title !== 'string' || !title.trim()) {
       sendError(res, 'BAD_REQUEST', 'title is required and must be non-empty');
       return;
@@ -169,6 +179,32 @@ export function registerContentTopicRoutes(
       sendError(res, 'BAD_REQUEST', 'scheduledDateTime must be ISO datetime or null');
       return;
     }
+    const TOPIC_CREATE_SOURCES = ['capture', 'composer', 'manual'];
+    if (source !== undefined && source !== null
+      && (typeof source !== 'string' || !TOPIC_CREATE_SOURCES.includes(source))) {
+      sendError(res, 'BAD_REQUEST', `source must be one of: ${TOPIC_CREATE_SOURCES.join(', ')}`);
+      return;
+    }
+    const headerIdempotencyKey = req.header('Idempotency-Key');
+    const rawIdempotencyKey = typeof req.body?.idempotencyKey === 'string'
+      ? req.body.idempotencyKey
+      : (typeof headerIdempotencyKey === 'string' ? headerIdempotencyKey : undefined);
+    const idempotencyKey = rawIdempotencyKey?.trim() || undefined;
+    if (idempotencyKey !== undefined && idempotencyKey.length > 128) {
+      sendError(res, 'BAD_REQUEST', 'idempotencyKey must be at most 128 characters');
+      return;
+    }
+
+    // BE-3: replay check BEFORE budget consumption — a retry of an already-
+    // applied create must not double-charge or double-create.
+    if (idempotencyKey) {
+      const existing = findTopicByClientRequestId(userId, idempotencyKey);
+      if (existing) {
+        sendSuccess(res, { topic: existing, idempotentReplay: true }, { status: 200 });
+        return;
+      }
+    }
+
     if (!consumeContentWriteBudget(res, tenantId, userId, 'content_topic_create')) return;
 
     try {
@@ -182,6 +218,9 @@ export function registerContentTopicRoutes(
         scheduledAt: scheduledDateTime ?? null,
         status: status ?? 'planned',
         tenantId,
+        ...(source != null || idempotencyKey != null
+          ? { provenance: { source: source ?? null, clientRequestId: idempotencyKey ?? null } }
+          : {}),
       });
       const topic = runOutboxTransaction((emitDomainEvent) => {
         const created = markTopicSecretarySyncPending(userId, writeTopic());

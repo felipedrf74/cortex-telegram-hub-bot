@@ -115,6 +115,14 @@ export function addTopic(
     scheduledAt?: string | null;
     status?: ContentTopicStatus;
     tenantId?: number | null;
+    /**
+     * BE-2/BE-3 (Content Studio): creation provenance recorded inside
+     * audit_metadata_json — `source` distinguishes quick-capture topics
+     * ("capture") from deliberate creation, and `clientRequestId` is the
+     * idempotency anchor for retry-safe creates. Additive: absent on
+     * legacy callers, and skipped entirely on pre-scope-column databases.
+     */
+    provenance?: { source?: string | null; clientRequestId?: string | null } | null;
   },
 ): ContentTopic {
   const db = getDb();
@@ -123,6 +131,21 @@ export function addTopic(
   const hasScopeColumns = hasColumn('content_topics', 'tenant_id')
     && hasColumn('content_topics', 'owner_user_id')
     && hasColumn('content_topics', 'scope_status');
+  let auditMetadataJson = scope.auditMetadataJson;
+  const provenanceSource = opts?.provenance?.source ?? null;
+  const provenanceRequestId = opts?.provenance?.clientRequestId ?? null;
+  if (provenanceSource != null || provenanceRequestId != null) {
+    try {
+      const audit = JSON.parse(auditMetadataJson || '{}') as Record<string, unknown>;
+      audit.provenance = {
+        ...(provenanceSource != null ? { source: provenanceSource } : {}),
+        ...(provenanceRequestId != null ? { clientRequestId: provenanceRequestId } : {}),
+      };
+      auditMetadataJson = JSON.stringify(audit);
+    } catch {
+      // Never let malformed scope metadata block a topic create.
+    }
+  }
   const result = hasScopeColumns
     ? db
       .prepare(
@@ -142,7 +165,7 @@ export function addTopic(
         scope.scopeStatus,
         scope.createdBy,
         scope.updatedBy,
-        scope.auditMetadataJson,
+        auditMetadataJson,
         title,
         opts?.notes ?? null,
         opts?.scheduledDate ?? null,
@@ -179,6 +202,35 @@ export function addTopic(
     'Content topic created',
   );
   return row;
+}
+
+/**
+ * BE-3 (Content Studio): idempotent-replay lookup. Returns the most recent
+ * topic this user created with the given clientRequestId (recorded in
+ * audit_metadata_json.provenance by addTopic), or null. Used by
+ * POST /api/v1/content/topics to make retries after ambiguous network
+ * failures return the original topic instead of creating a duplicate.
+ * Gracefully returns null on databases without the audit column or
+ * json_extract support.
+ */
+export function findTopicByClientRequestId(userId: number, clientRequestId: string): ContentTopic | null {
+  const trimmed = clientRequestId.trim();
+  if (!trimmed) return null;
+  if (!hasColumn('content_topics', 'audit_metadata_json')) return null;
+  try {
+    const row = getDb()
+      .prepare(
+        `SELECT * FROM content_topics
+         WHERE user_id = ?
+           AND json_extract(audit_metadata_json, '$.provenance.clientRequestId') = ?
+         ORDER BY id DESC
+         LIMIT 1`,
+      )
+      .get(userId, trimmed) as ContentTopic | undefined;
+    return row ?? null;
+  } catch {
+    return null;
+  }
 }
 
 // ─── Read ───────────────────────────────────────────────────────────
