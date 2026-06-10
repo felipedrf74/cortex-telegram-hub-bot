@@ -2,66 +2,72 @@
 
 Status: canonical
 Owner: release lead (Felipe)
-Last verified: 2026-06-09
+Last verified: 2026-06-10
 Update policy: update when the current RC identity, deploy-gate evidence, or canonical-doc cross-references change. Run engine/scripts/release-identity.sh --persist to refresh auto-generated identity fields.
 
-Date: 2026-06-09
+Date: 2026-06-10
 
 ## Current Status
 
 Active production package:
 
 - source branch: `main`
-- production HEAD: `910b6d72`
+- production HEAD: `636910e2`
 - production version: `4.14.208`
-- runtime source commit: `9c226007` (Training health-signal freshness and
-  tenant-gate hotfix)
-- latest runtime deploy commit: `910b6d72`; post-deploy docs-only closeout may
+- runtime source commit: `6651085e` (Content Studio backend contract)
+- latest runtime deploy commit: `636910e2`; post-deploy docs-only closeout may
   sit ahead of production runtime
 - release state: `docs/release/CURRENT_RELEASE_STATE.md` (backend) and `/Users/felipedominguez/Desktop/Nexus Hub/docs/release/CURRENT_RELEASE_STATE.md` (workspace)
 - official workspace root: `/Users/felipedominguez/Desktop/Nexus Hub`
 
-Commits in this release (4.14.207 -> 4.14.208):
+Commits in this release (4.14.208 content-studio promote):
 
-- `9c226007 fix(training): bound health signal safety and tenant gates`
-- `77cbe12f chore: prepare release 4.14.208`
-- `910b6d72 docs(release): refresh registry parity evidence timestamp`
+- `6651085e feat(content): studio backend contract - skill-scoped overview, capture provenance, idempotent topic create`
+- `c3be2cad docs(release): add content studio staging smoke evidence`
+- `7d529331 chore: restore notification cache license header`
+- `636910e2 docs(release): add content studio final staging smoke evidence`
 
 Scope:
 
-- Training / Coach hotfix:
-  - bounded production plan-generation health-signal reads so stale safety
-    signals no longer hard-pause Training indefinitely.
-  - tenant-gated session complete/skip ownership and Training reflow ownership
-    so same-user IDs cannot cross tenants.
-  - tenant-scoped adherence trend and missed-session reads so progression and
-    missed-session decisions cannot consume another tenant's Training history.
+- Content Studio backend contract:
+  - Decision Center overview supports `sourceSkill=content` and returns
+    `sourceSkillFilter` plus `sourceSkillTotalCount`.
+  - Content topic capture provenance is persisted into topic audit metadata.
+  - Content topic create is idempotent for iOS offline capture retries.
+  - no Content Studio migration was added by this promote.
   - production catalog `repo-seed-1.0.0` remains active and immutable for
     `__global__`, with 131 exercises and 24 equipment items.
-  - no new iOS user-facing payload fields were introduced by this hotfix.
 
 Validated through promotion:
 
-- focused Training hotfix suites: 6 files / 131 tests
-- focused `training-routes.test.ts`: 59 tests
-- backend local `npm run test`: 841 files / 12,313 tests
-- `npm run release:verify:full`: typecheck, science-policy check, build,
-  migration safety for 200 migrations, full Vitest with 841 files / 12,313
-  tests, and content-engine pytest with 180 tests
-- release-prep and pre-push risk gates both repeated full Vitest with 841
-  files / 12,313 tests
-- staging deploy/readiness passed; standalone staging smoke passed 19/19 for
-  version 4.14.208
-- promote-time staging smoke passed 19/19 before production mutation
-- `promote-to-prod.sh` completed cleanly for 4.14.208
+- `npm run release:focused-verify` passed
+- `npm run release:rollback-drill-check` passed
+- staging deploy/readiness passed with artifact digest
+  `350b468e03485d5151eceed28c79b37505ec37e4e3c239944613e686a7b62e13`
+- standalone staging smoke with `NEXUS_SMOKE_EDGE_VERIFY=1` passed 22/22 at
+  `docs/release/smoke-evidence/staging-smoke-7d529331-20260610T204235Z.json`
+- promote-time staging smoke with Cloudflare edge checks passed 22/22 before
+  production mutation
+- first promote verifier aborted before production mutation on a single MIT
+  header QA failure in `src/services/notification-cache-invalidation.ts`; the
+  header-only unblock landed in `7d529331`, and the targeted QA test passed
+  6/6 before retry
+- `promote-to-prod.sh` completed cleanly for 4.14.208 at `636910e2`
+- deploy-time validation passed typecheck, science-policy check, migration
+  safety for 204 migrations, and full Vitest with 842 files / 12,368 tests
 - post-deploy: PM2 `nexus-hub` and `content-engine` online
 - production readiness passed: SQLite integrity, `/health`, content-engine
   readiness, better-sqlite3 native binding, and PM2 stability
-- post-production public `health`/`public-status` probes and unauthenticated
-  Training 401 contract probe passed
+- post-production public `health`/`public-status` probes passed
+- live authenticated
+  `https://api.nexushub.me/api/v1/decisions/overview?sourceSkill=content`
+  returned 200 with `sourceSkillFilter` and `sourceSkillTotalCount`
+- App Store Connect/TestFlight INTERNAL assignment is blocked in this shell by
+  missing ASC credentials/session; no external cohort was touched
 
 ## Previous Production Versions On This Branch
 
+- 4.14.208 (`636910e2`) — Content Studio backend contract promote for source-skill overview filtering, capture provenance, and idempotent topic create (source commit `6651085e`)
 - 4.14.208 (`910b6d72`) — Training/Coach tenant and health-signal hotfix for fresh safety reads, tenant-gated mutations/reflow, and tenant-scoped adherence/missed-session reads (source commit `9c226007`)
 - 4.14.207 (`4f2927c1`) — Training/Coach remediation production promote with active immutable Training catalog (source commits `bc7aacc2`, `770ac929`)
 - 4.14.205 (`24a22f3c`) — release-hardening candidate and event-based training plan linting hardening catch-up

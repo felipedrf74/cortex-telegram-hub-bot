@@ -2,10 +2,10 @@
 
 Status: canonical
 Owner: backend release lead (Felipe)
-Last verified: 2026-06-09
+Last verified: 2026-06-10
 Update policy: update after backend deploy or staging change. Workspace-level entry point is docs/release/CURRENT_RELEASE_STATE.md.
 
-Last updated: 2026-06-09
+Last updated: 2026-06-10
 
 Only the **Active Production Release** section states the current production
 truth. Dated sections below it are historical deploy evidence and may mention
@@ -14,21 +14,71 @@ older production versions.
 ## Active Production Release
 
 - Source branch: `main`
-- Production HEAD: `910b6d72`
+- Production HEAD: `636910e2`
 - Production version: `4.14.208`
-- Source implementation commit before release prep: `9c226007` (Training
-  health-signal freshness and tenant-gate hotfix).
-- Latest runtime deploy commit: `910b6d72`. Post-deploy docs-only closeout may
+- Source implementation commit before release evidence/docs: `6651085e`
+  (Content Studio backend contract).
+- Latest runtime deploy commit: `636910e2`. Post-deploy docs-only closeout may
   sit ahead of production runtime.
-- Staging and production are both on `4.14.208`. Production has the immutable
-  global Training catalog version `repo-seed-1.0.0` active with 131 exercises
-  and 24 equipment items.
-- Behavior-changing Training rollout flags are explicitly enabled in staging
-  and production after the post-promote rollout. DB catalog, equipment
-  authority, selector policy, safety guardrails, endurance coherence, upstream
-  calendar capacity, and completion feedback are live behind the configured
-  production environment.
+- Staging and production are both on `4.14.208`. Content Studio backend
+  contract changes are live: Decision Center overview supports the
+  `sourceSkill=content` filter, capture provenance is persisted into topic
+  audit metadata, and Content topic creation is idempotent for iOS offline
+  capture retries. No Content Studio migration was added by this promote.
+- Production still has the immutable global Training catalog version
+  `repo-seed-1.0.0` active with 131 exercises and 24 equipment items.
 - Official workspace root: `/Users/felipedominguez/Desktop/Nexus Hub`
+
+## 2026-06-10 Content Studio Backend Contract Production Promote
+
+- Scope: promoted the Content Studio backend contract for iOS build `1.5.0`
+  (`38`): source-skill scoped Decision Center overview, topic capture
+  provenance in `audit_metadata_json`, and idempotent topic create semantics
+  for offline capture retry safety.
+- Production version: `4.14.208`.
+- Production deploy commit: `636910e2`.
+- Source implementation commit: `6651085e`
+  (`feat(content): studio backend contract - skill-scoped overview, capture
+  provenance, idempotent topic create`).
+- Release evidence/docs/unblock commits before deploy: `c3be2cad`
+  (Content Studio staging smoke evidence), `7d529331` (single missing MIT
+  header unblock in `src/services/notification-cache-invalidation.ts` after the
+  first promote verifier failed before production mutation), and `636910e2`
+  (final 22/22 staging smoke evidence).
+- Required gates passed: `npm run release:focused-verify`,
+  `npm run release:rollback-drill-check`, staging deploy through
+  `./scripts/deploy-staging.sh`, and full staging smoke with
+  `NEXUS_SMOKE_EDGE_VERIFY=1` passed **22/22** at
+  `docs/release/smoke-evidence/staging-smoke-7d529331-20260610T204235Z.json`.
+  Promote-time staging smoke also passed **22/22** with Cloudflare edge checks
+  enabled before production mutation.
+- Production promotion completed through `./scripts/promote-to-prod.sh`.
+  Deploy-time validation passed typecheck, science-policy pin validation, full
+  Vitest with **842 files / 12,368 tests**, migration safety with **204
+  migrations**, build, backup creation with `bot.db`, native module rebuild
+  under system Node `v22.22.3`, PM2 restart, SQLite integrity, `/health`,
+  content-engine readiness, native better-sqlite3 loading, and PM2 stability.
+- Post-production probes passed: public `https://api.nexushub.me/health`
+  returned `status: healthy`, public
+  `https://api.nexushub.me/public-status` returned `status: ok`, and live
+  authenticated
+  `https://api.nexushub.me/api/v1/decisions/overview?sourceSkill=content`
+  returned HTTP 200 with `sourceSkillFilter: "content"`,
+  `sourceSkillTotalCount` present, and `items` as an array.
+- Release identity was persisted with
+  `./scripts/release-identity.sh json --persist` at
+  `2026-06-10T20:52:55Z`: backend `main` commit `636910e2`, iOS `main`
+  commit `6393ab2`, backend package `4.14.208`, migration count `204`.
+- iOS/TestFlight status: App Store Connect build `1.5.0` (`38`) was reported
+  uploaded in the handoff, but this shell could not independently confirm
+  processing or assign INTERNAL testers because no App Store Connect API env
+  vars, `AuthKey_*.p8`, fastlane/appstoreconnect CLI, or repo-documented
+  credential/keychain item was available. No external cohort was touched.
+- Known caveats: release-evidence shadow parity still reports the expected
+  signed-evidence shadow mismatch for this process-hardening period; production
+  PM2 restart counters remain historically high (`nexus-hub` 37,
+  `content-engine` 7), but no restart occurred during the readiness sample;
+  package version remained `4.14.208`.
 
 ## 2026-06-09 Training Coach Tenant/Health Hotfix Production Promote
 
