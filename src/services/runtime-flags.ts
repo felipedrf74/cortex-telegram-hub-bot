@@ -149,6 +149,27 @@ function scopedFlagEnabledByExplicitOptIn(env: RuntimeEnv, key: string, scope?: 
   return raw === 'true' || raw === 'on' || raw === '1' || raw === 'enabled';
 }
 
+function scopedDarkFlagEnabled(env: RuntimeEnv, key: string, scope?: RuntimeFlagScope): boolean {
+  const raw = scopedEnvValue(env, key, scope)?.trim().toLowerCase();
+  if (raw === 'true' || raw === 'on' || raw === '1' || raw === 'enabled') return true;
+  if (raw === 'false' || raw === 'off' || raw === '0' || raw === 'disabled') return false;
+  const cohortRaw = scopedEnvValue(env, `${key}_COHORT_PERCENT`, scope)
+    ?? env.DECISION_CENTER_DARK_FLAGS_COHORT_PERCENT;
+  const cohortPercent = Number.parseFloat(cohortRaw ?? '');
+  if (!Number.isFinite(cohortPercent) || cohortPercent <= 0) return false;
+  const subject = scope?.tenantId ?? scope?.userId;
+  if (subject == null) return false;
+  return stablePercentBucket(`${key}:${String(subject)}`) < Math.min(cohortPercent, 100);
+}
+
+function stablePercentBucket(value: string): number {
+  let hash = 0;
+  for (let index = 0; index < value.length; index += 1) {
+    hash = ((hash * 31) + value.charCodeAt(index)) >>> 0;
+  }
+  return hash % 100;
+}
+
 export function isHomeDayDialV1Enabled(env: RuntimeEnv = process.env, scope?: RuntimeFlagScope): boolean {
   return scopedFlagEnabledByDefault(env, 'HOME_DAY_DIAL_V1_ENABLED', scope);
 }
@@ -255,7 +276,7 @@ export function isDecisionApiV2Enabled(env: RuntimeEnv = process.env, scope?: Ru
  * slice(0, limit) behavior is unchanged.
  */
 export function isDecisionCenterFatigueCapsEnabled(env: RuntimeEnv = process.env, scope?: RuntimeFlagScope): boolean {
-  return scopedFlagEnabledByExplicitOptIn(env, 'DECISION_CENTER_FATIGUE_CAPS_ENABLED', scope);
+  return scopedDarkFlagEnabled(env, 'DECISION_CENTER_FATIGUE_CAPS_ENABLED', scope);
 }
 
 /**
@@ -265,7 +286,7 @@ export function isDecisionCenterFatigueCapsEnabled(env: RuntimeEnv = process.env
  * Default OFF; opt-in per user/tenant.
  */
 export function isDecisionSemanticDedupEnabled(env: RuntimeEnv = process.env, scope?: RuntimeFlagScope): boolean {
-  return scopedFlagEnabledByExplicitOptIn(env, 'DECISION_SEMANTIC_DEDUP_ENABLED', scope);
+  return scopedDarkFlagEnabled(env, 'DECISION_SEMANTIC_DEDUP_ENABLED', scope);
 }
 
 /**
@@ -276,7 +297,7 @@ export function isDecisionSemanticDedupEnabled(env: RuntimeEnv = process.env, sc
  * different decision. Default OFF; opt-in per user/tenant — linking can stay ON without enabling hiding.
  */
 export function isDecisionSemanticSupersedeEnabled(env: RuntimeEnv = process.env, scope?: RuntimeFlagScope): boolean {
-  return scopedFlagEnabledByExplicitOptIn(env, 'DECISION_SEMANTIC_SUPERSEDE_ENABLED', scope);
+  return scopedDarkFlagEnabled(env, 'DECISION_SEMANTIC_SUPERSEDE_ENABLED', scope);
 }
 
 /**
@@ -368,6 +389,14 @@ export function isDecisionRollbackSnapshotProtectionEnabled(env: RuntimeEnv = pr
  */
 export function isDecisionTypeSuppressionEnabled(env: RuntimeEnv = process.env, scope?: RuntimeFlagScope): boolean {
   return scopedFlagEnabledByExplicitOptIn(env, 'DECISION_TYPE_SUPPRESSION_ENABLED', scope);
+}
+
+/**
+ * C3b/Phase 2 — uses aggregated feedback signals as a presentation-only
+ * suppression input. Dark by default. Policy-floored decisions remain exempt.
+ */
+export function isDecisionFeedbackSuppressionEnabled(env: RuntimeEnv = process.env, scope?: RuntimeFlagScope): boolean {
+  return scopedDarkFlagEnabled(env, 'DECISION_FEEDBACK_SUPPRESSION_ENABLED', scope);
 }
 
 

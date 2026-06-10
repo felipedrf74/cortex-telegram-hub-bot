@@ -111,11 +111,14 @@ import {
   verifyTodoistSignature,
   _resetDeliveryCacheForTests,
 } from '../../src/api/routes/webhooks';
+import { config } from '../../src/config';
 
-const SECRET = 'webhook_test_secret';
+function todoistWebhookSecretForTest(): string {
+  return config.todoist.webhookSecret || 'webhook_test_secret';
+}
 
 function buildSignature(rawBody: string): string {
-  return crypto.createHmac('sha256', SECRET).update(rawBody).digest('base64');
+  return crypto.createHmac('sha256', todoistWebhookSecretForTest()).update(rawBody).digest('base64');
 }
 
 /** Spin up a minimal Express server with the webhook router and POST a request. */
@@ -193,16 +196,17 @@ afterEach(() => {
 describe('verifyTodoistSignature', () => {
   it('accepts a correctly-signed body', () => {
     const body = Buffer.from('{"test":"data"}');
-    const sig = crypto.createHmac('sha256', SECRET).update(body).digest('base64');
-    expect(verifyTodoistSignature(body, sig, SECRET)).toBe(true);
+    const secret = todoistWebhookSecretForTest();
+    const sig = crypto.createHmac('sha256', secret).update(body).digest('base64');
+    expect(verifyTodoistSignature(body, sig, secret)).toBe(true);
   });
 
   it('rejects an empty signature', () => {
-    expect(verifyTodoistSignature(Buffer.from('x'), '', SECRET)).toBe(false);
+    expect(verifyTodoistSignature(Buffer.from('x'), '', todoistWebhookSecretForTest())).toBe(false);
   });
 
   it('rejects a wrong signature', () => {
-    expect(verifyTodoistSignature(Buffer.from('x'), 'AAAAAAAAAAAAAAAAAAAAAAAA', SECRET)).toBe(false);
+    expect(verifyTodoistSignature(Buffer.from('x'), 'AAAAAAAAAAAAAAAAAAAAAAAA', todoistWebhookSecretForTest())).toBe(false);
   });
 
   it('rejects an empty secret', () => {
@@ -211,10 +215,10 @@ describe('verifyTodoistSignature', () => {
 
   it('uses constant-time comparison (no length leak)', () => {
     const body = Buffer.from('{"a":1}');
-    const correct = crypto.createHmac('sha256', SECRET).update(body).digest('base64');
+    const correct = crypto.createHmac('sha256', todoistWebhookSecretForTest()).update(body).digest('base64');
     // Wrong but same length
     const wrongSameLength = correct.split('').reverse().join('');
-    expect(verifyTodoistSignature(body, wrongSameLength, SECRET)).toBe(false);
+    expect(verifyTodoistSignature(body, wrongSameLength, todoistWebhookSecretForTest())).toBe(false);
   });
 });
 
@@ -276,7 +280,7 @@ describe('POST /webhooks/todoist', () => {
   it('returns 400 for malformed JSON (after passing HMAC)', async () => {
     // Sign the literal "not json" string so HMAC passes; then the parser fails
     const rawBody = 'not json';
-    const sig = crypto.createHmac('sha256', SECRET).update(Buffer.from(rawBody)).digest('base64');
+    const sig = crypto.createHmac('sha256', todoistWebhookSecretForTest()).update(Buffer.from(rawBody)).digest('base64');
 
     const app = express();
     app.use('/webhooks', createWebhookRouter());

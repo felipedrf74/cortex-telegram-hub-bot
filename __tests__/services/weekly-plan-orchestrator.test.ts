@@ -111,11 +111,12 @@ vi.mock('../../src/services/database', () => ({
 }));
 
 vi.mock('../../src/services/intelligence-bus', () => ({
-  readSignals: (_consumer: string, signalTypes: string[], _limit: number, userId?: number) =>
+  readSignals: (_consumer: string, signalTypes: string[], _limit: number, userId?: number, _maxAgeDays?: number, tenantId?: number) =>
     writtenSignals
       .filter((signal) =>
         signal.status === 'active'
         && signal.user_id === userId
+        && (tenantId === undefined || signal.tenant_id === tenantId)
         && signalTypes.includes(String(signal.signal_type)))
       .map((signal) => ({ ...signal })),
   writeSignal: (signal: Record<string, unknown>) => {
@@ -489,6 +490,31 @@ describe('weekly-plan-orchestrator', () => {
     expect(result.days.length).toBeGreaterThan(0);
     expect(writtenSignals).toHaveLength(0);
     expect(mockDismissSignal).not.toHaveBeenCalled();
+  });
+
+  it('uses tenant scope for synced mesh signals', async () => {
+    const base = buildBaseContexts();
+    base.finance.derivedSignals = [
+      {
+        sourceAgent: 'mesh.finance-context',
+        signalType: 'budget_remaining',
+        meshPriority: 2,
+        priority: 'urgent',
+        payload: {
+          month: '2026-04',
+          remainingRatio: 0.22,
+          budgetMode: 'controlled',
+        },
+      },
+    ];
+    mockReadFinanceMeshContext.mockResolvedValueOnce(base.finance);
+
+    const { composeWeeklyPlan } = await import('../../src/services/weekly-plan-orchestrator');
+    await composeWeeklyPlan({ userId: 12, tenantId: 34, weekStart: '2026-04-13', forceRefresh: true, syncSignals: true });
+
+    expect(writtenSignals.length).toBeGreaterThan(0);
+    expect(writtenSignals.every((signal) => signal.user_id === 12 && signal.tenant_id === 34)).toBe(true);
+    expect(mockSetCache).toHaveBeenCalledWith(expect.stringContaining('plan:week:u:12:t:34:'), expect.anything(), 1800);
   });
 
   it('keeps the weekly plan available when the user record is missing', async () => {
@@ -899,7 +925,7 @@ describe('weekly-plan-orchestrator', () => {
     mockReadFinanceMeshContext.mockResolvedValueOnce(first.finance);
 
     const { composeWeeklyPlan } = await import('../../src/services/weekly-plan-orchestrator');
-    await composeWeeklyPlan({ userId: 12, weekStart: '2026-04-13', forceRefresh: true, syncSignals: true });
+    await composeWeeklyPlan({ userId: 12, tenantId: 34, weekStart: '2026-04-13', forceRefresh: true, syncSignals: true });
 
     const second = buildBaseContexts();
     second.finance.derivedSignals = [
@@ -917,15 +943,17 @@ describe('weekly-plan-orchestrator', () => {
     ];
     mockReadFinanceMeshContext.mockResolvedValueOnce(second.finance);
 
-    const refreshed = await composeWeeklyPlan({ userId: 12, weekStart: '2026-04-13', forceRefresh: true, syncSignals: true });
+    const refreshed = await composeWeeklyPlan({ userId: 12, tenantId: 34, weekStart: '2026-04-13', forceRefresh: true, syncSignals: true });
     const activeBudgetSignals = writtenSignals.filter((signal) =>
       signal.status === 'active'
       && signal.user_id === 12
+      && signal.tenant_id === 34
       && signal.source_agent === 'mesh.finance-context'
       && signal.signal_type === 'budget_remaining',
     );
 
     expect(mockDismissSignal).toHaveBeenCalledTimes(1);
+    expect(mockDismissSignal).toHaveBeenCalledWith(expect.any(Number), 12, 34);
     expect(activeBudgetSignals).toHaveLength(1);
     expect(activeBudgetSignals[0]?.payload).toMatchObject({
       month: '2026-04',

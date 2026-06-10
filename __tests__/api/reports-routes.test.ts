@@ -7,6 +7,9 @@ const mockGetUnreadReportCount = vi.fn();
 const mockGetLatestByType = vi.fn();
 const mockGetReportById = vi.fn();
 const mockMarkReportRead = vi.fn();
+const mockNotificationCacheInvalidation = vi.hoisted(() => ({
+  invalidateNotificationInboxCaches: vi.fn(),
+}));
 
 vi.mock('../../src/services/report-document-store', () => ({
   getRecentReports: (...args: unknown[]) => mockGetRecentReports(...args),
@@ -22,6 +25,10 @@ vi.mock('../../src/services/report-document-store', () => ({
     'decision_briefing',
     'coach_phase',
   ].includes(value),
+}));
+
+vi.mock('../../src/services/notification-cache-invalidation', () => ({
+  invalidateNotificationInboxCaches: (...args: unknown[]) => mockNotificationCacheInvalidation.invalidateNotificationInboxCaches(...args),
 }));
 
 import { reportRoutes } from '../../src/api/routes/reports';
@@ -49,7 +56,7 @@ function mockRes(): MockRes {
   return r;
 }
 
-function mockReq(method: string, path: string, query: Record<string, any> = {}, userId = 7): Request {
+function mockReq(method: string, path: string, query: Record<string, any> = {}, userId = 7, tenantId = userId): Request {
   return {
     method,
     url: path,
@@ -60,12 +67,13 @@ function mockReq(method: string, path: string, query: Record<string, any> = {}, 
     params: {},
     headers: {},
     userId,
+    tenantId,
   } as any;
 }
 
-async function dispatch(method: string, path: string, query: Record<string, any> = {}, userId = 7): Promise<MockRes> {
+async function dispatch(method: string, path: string, query: Record<string, any> = {}, userId = 7, tenantId = userId): Promise<MockRes> {
   const router = reportRoutes();
-  const req = mockReq(method, path, query, userId);
+  const req = mockReq(method, path, query, userId, tenantId);
   const res = mockRes();
 
   await new Promise<void>((resolve) => {
@@ -86,6 +94,7 @@ describe('Reports routes', () => {
     mockGetLatestByType.mockReset();
     mockGetReportById.mockReset();
     mockMarkReportRead.mockReset();
+    mockNotificationCacheInvalidation.invalidateNotificationInboxCaches.mockReset();
     clearTenantScopeAnomaliesForTests();
 
     mockGetRecentReports.mockReturnValue([]);
@@ -176,5 +185,16 @@ describe('Reports routes', () => {
         }),
       ]),
     );
+  });
+
+  it('invalidates notification inbox caches after marking a report read', async () => {
+    mockMarkReportRead.mockReturnValue(true);
+
+    const res = await dispatch('POST', '/123/read', {}, 7, 17);
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body.data.marked).toBe(true);
+    expect(mockMarkReportRead).toHaveBeenCalledWith(123, 7);
+    expect(mockNotificationCacheInvalidation.invalidateNotificationInboxCaches).toHaveBeenCalledWith(7, 17);
   });
 });

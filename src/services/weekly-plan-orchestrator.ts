@@ -224,6 +224,7 @@ function buildEmptyWeeklyPlanResponse(opts: {
 
 export async function composeWeeklyPlan(opts: {
   userId: number;
+  tenantId?: number;
   weekStart?: string;
   forceRefresh?: boolean;
   syncSignals?: boolean;
@@ -235,15 +236,30 @@ export async function composeWeeklyPlan(opts: {
       reason: 'invalid_user_scope',
       userId: opts.userId ?? null,
       details: {
+        tenantId: opts.tenantId ?? null,
         weekStart: opts.weekStart ?? null,
       },
     });
     return buildEmptyWeeklyPlanResponse(opts);
   }
 
+  const tenantId = isValidTenantUserId(opts.tenantId) ? opts.tenantId! : opts.userId;
+  if (opts.tenantId !== undefined && !isValidTenantUserId(opts.tenantId)) {
+    recordTenantScopeAnomaly({
+      layer: 'orchestration',
+      operation: 'compose_weekly_plan_tenant_scope',
+      reason: 'invalid_user_scope',
+      userId: opts.userId,
+      details: {
+        tenantId: opts.tenantId,
+        weekStart: opts.weekStart ?? null,
+      },
+    });
+  }
+
   const window = resolveWeekWindow(opts.weekStart);
   const shouldSyncSignals = opts.syncSignals === true;
-  const cacheKey = `plan:week:u:${opts.userId}:${window.weekStart}:sync:${shouldSyncSignals ? '1' : '0'}`;
+  const cacheKey = `plan:week:u:${opts.userId}:t:${tenantId}:${window.weekStart}:sync:${shouldSyncSignals ? '1' : '0'}`;
   if (!opts.forceRefresh) {
     const cached = getCached<WeeklyPlanResponse>(cacheKey);
     if (cached) {
@@ -329,8 +345,8 @@ export async function composeWeeklyPlan(opts: {
   let meshSignals = new Map<SignalType, AgentSignal[]>();
   try {
     meshSignals = shouldSyncSignals
-      ? await syncDerivedSignals(opts.userId, derivedSignalDrafts)
-      : groupDerivedSignalDrafts(opts.userId, derivedSignalDrafts);
+      ? await syncDerivedSignals(opts.userId, tenantId, derivedSignalDrafts)
+      : groupDerivedSignalDrafts(opts.userId, tenantId, derivedSignalDrafts);
   } catch (err) {
     orchestrationDegraded = true;
     logger.warn(
@@ -389,6 +405,7 @@ export async function composeWeeklyPlan(opts: {
 
 function groupDerivedSignalDrafts(
   userId: number,
+  tenantId: number,
   drafts: MeshSignalDraft[],
 ): Map<SignalType, AgentSignal[]> {
   const grouped = new Map<SignalType, AgentSignal[]>();
@@ -405,7 +422,7 @@ function groupDerivedSignalDrafts(
       created_at: createdAt,
       expires_at: draft.expiresAt ?? DateTime.now().plus({ days: 7 }).toISO()!,
       user_id: userId,
-      tenant_id: userId,
+      tenant_id: tenantId,
       confidence: 0.5,
       format_tag: null,
       pillar_tag: null,
@@ -481,11 +498,12 @@ function buildCookingMeshSignals(
 
 async function syncDerivedSignals(
   userId: number,
+  tenantId: number,
   drafts: MeshSignalDraft[],
 ): Promise<Map<SignalType, AgentSignal[]>> {
   const grouped = new Map<SignalType, AgentSignal[]>();
   for (const draft of drafts) {
-    const signal = ensureSignal(userId, draft);
+    const signal = ensureSignal(userId, tenantId, draft);
     const bucket = grouped.get(signal.signal_type);
     if (bucket) {
       bucket.push(signal);
@@ -496,8 +514,8 @@ async function syncDerivedSignals(
   return grouped;
 }
 
-function ensureSignal(userId: number, draft: MeshSignalDraft): AgentSignal {
-  const existing = readSignals('mesh.orchestrator', [draft.signalType], 20, userId).find((signal) =>
+function ensureSignal(userId: number, tenantId: number, draft: MeshSignalDraft): AgentSignal {
+  const existing = readSignals('mesh.orchestrator', [draft.signalType], 20, userId, undefined, tenantId).find((signal) =>
     signal.source_agent === draft.sourceAgent
     && signal.meshPriority === draft.meshPriority
     && stableStringify(signal.payload) === stableStringify(draft.payload),
@@ -507,19 +525,20 @@ function ensureSignal(userId: number, draft: MeshSignalDraft): AgentSignal {
     return existing;
   }
 
-  dismissSupersededSignals(userId, draft);
+  dismissSupersededSignals(userId, tenantId, draft);
 
   const signalId = writeSignal({
     source_agent: draft.sourceAgent,
     signal_type: draft.signalType,
     payload: draft.payload,
     user_id: userId,
+    tenant_id: tenantId,
     priority: draft.priority,
     expires_at: draft.expiresAt,
     meshPriority: draft.meshPriority,
   });
 
-  const inserted = readSignals('mesh.orchestrator', [draft.signalType], 20, userId)
+  const inserted = readSignals('mesh.orchestrator', [draft.signalType], 20, userId, undefined, tenantId)
     .find((signal) => signal.id === signalId);
   if (!inserted) {
     throw new Error(`Failed to read freshly written mesh signal ${draft.signalType}`);
@@ -527,9 +546,9 @@ function ensureSignal(userId: number, draft: MeshSignalDraft): AgentSignal {
   return inserted;
 }
 
-function dismissSupersededSignals(userId: number, draft: MeshSignalDraft): void {
+function dismissSupersededSignals(userId: number, tenantId: number, draft: MeshSignalDraft): void {
   const currentPayload = stableStringify(draft.payload);
-  const activeSignals = readSignals('mesh.orchestrator', [draft.signalType], 50, userId)
+  const activeSignals = readSignals('mesh.orchestrator', [draft.signalType], 50, userId, undefined, tenantId)
     .filter((signal) =>
       signal.source_agent === draft.sourceAgent
       && (
@@ -539,7 +558,7 @@ function dismissSupersededSignals(userId: number, draft: MeshSignalDraft): void 
     );
 
   for (const signal of activeSignals) {
-    dismissSignal(signal.id, userId, userId);
+    dismissSignal(signal.id, userId, tenantId);
   }
 }
 

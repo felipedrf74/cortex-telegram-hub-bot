@@ -128,7 +128,8 @@ compose exec -T nexus-hub npx tsx scripts/decision-center-ios-smoke-seed.ts seed
   --auth-file "$CONTAINER_AUTH_FILE" \
   --manifest-file "$CONTAINER_MANIFEST_FILE" \
   --push-file "$CONTAINER_PUSH_FILE" \
-  --invite-code "$IOS_INVITE_CODE"
+  --invite-code "$IOS_INVITE_CODE" \
+  | tee "$EVIDENCE_DIR/seed.log"
 
 printf '\n[4/7] Verifying Decision Center backend API routes...\n'
 compose exec -T nexus-hub npx tsx scripts/decision-center-ios-smoke-seed.ts assert-backend \
@@ -137,7 +138,8 @@ compose exec -T nexus-hub npx tsx scripts/decision-center-ios-smoke-seed.ts asse
   --auth-file "$CONTAINER_AUTH_FILE" \
   --manifest-file "$CONTAINER_MANIFEST_FILE" \
   --push-file "$CONTAINER_PUSH_FILE" \
-  --invite-code "$IOS_INVITE_CODE"
+  --invite-code "$IOS_INVITE_CODE" \
+  | tee "$EVIDENCE_DIR/backend-assertions.log"
 
 if [[ "$BACKEND_ONLY" == "1" ]]; then
   printf '\nBackend-only Decision Center smoke passed. Evidence: %s\n' "$EVIDENCE_DIR"
@@ -196,9 +198,10 @@ printf '\n[5/7] Running focused iOS local-engine Decision Center smoke...\n'
   export IOS_QUIT_SIMULATOR_APP=0
   export IOS_SHUTDOWN_OTHER_SIMS="${IOS_SHUTDOWN_OTHER_SIMS:-1}"
   export IOS_DERIVED_DATA_PATH="$IOS_DERIVED_DATA_ROOT/$EVIDENCE_STAMP-local-engine"
+  export IOS_RESULT_BUNDLE_PATH="$EVIDENCE_DIR/DecisionCenterLocalEngineSmoke.xcresult"
+  export IOS_TEST_SUMMARY_JSON="$EVIDENCE_DIR/DecisionCenterLocalEngineSmoke.summary.json"
   ./scripts/ios-single-simulator-test.sh \
-    -only-testing:"Nexus HubUITests/NotificationDecisionCenterUITests/test_localEngineDecisionCenterSmokeMatchesSeededBackend" \
-    -resultBundlePath "$EVIDENCE_DIR/DecisionCenterLocalEngineSmoke.xcresult"
+    -only-testing:"Nexus HubUITests/NotificationDecisionCenterUITests/test_localEngineDecisionCenterSmokeMatchesSeededBackend"
 )
 
 printf '\n[6/7] Injecting scoped simulator push payload...\n'
@@ -221,7 +224,8 @@ compose exec -T nexus-hub npx tsx scripts/decision-center-ios-smoke-seed.ts asse
   --auth-file "$CONTAINER_AUTH_FILE" \
   --manifest-file "$CONTAINER_MANIFEST_FILE" \
   --push-file "$CONTAINER_PUSH_FILE" \
-  --invite-code "$IOS_INVITE_CODE"
+  --invite-code "$IOS_INVITE_CODE" \
+  | tee "$EVIDENCE_DIR/post-ios-action-assertions.log"
 
 if [[ "$RUN_FIXTURE_SUITE" == "1" ]]; then
   printf '\n[extra] Running existing NotificationDecisionCenterUITests fixture suite...\n'
@@ -230,10 +234,11 @@ if [[ "$RUN_FIXTURE_SUITE" == "1" ]]; then
     export IOS_KEEP_SIM_BOOTED=0
     export IOS_QUIT_SIMULATOR_APP=1
     export IOS_DERIVED_DATA_PATH="$IOS_DERIVED_DATA_ROOT/$EVIDENCE_STAMP-fixture-suite"
+    export IOS_RESULT_BUNDLE_PATH="$EVIDENCE_DIR/NotificationDecisionCenterFixtureSuite.xcresult"
+    export IOS_TEST_SUMMARY_JSON="$EVIDENCE_DIR/NotificationDecisionCenterFixtureSuite.summary.json"
     ./scripts/ios-single-simulator-test.sh \
       -only-testing:"Nexus HubUITests/NotificationDecisionCenterUITests" \
-      -skip-testing:"Nexus HubUITests/NotificationDecisionCenterUITests/test_localEngineDecisionCenterSmokeMatchesSeededBackend" \
-      -resultBundlePath "$EVIDENCE_DIR/NotificationDecisionCenterFixtureSuite.xcresult"
+      -skip-testing:"Nexus HubUITests/NotificationDecisionCenterUITests/test_localEngineDecisionCenterSmokeMatchesSeededBackend"
   )
 fi
 

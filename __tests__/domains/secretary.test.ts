@@ -540,13 +540,46 @@ describe('Secretary state context', () => {
     });
 
     mockCallDomain.mockResolvedValue({ text: 'OK', toolCalls: [], stopReason: 'end_turn' } as any);
-    await handleSecretary('What should I prioritize today?', 42);
+    await handleSecretary('What should I prioritize today?', 42, 420);
 
     const stateCtx = mockCallDomain.mock.calls.at(-1)?.[3] as string;
+    expect(vi.mocked(composeDailyBrief)).toHaveBeenCalledWith(expect.objectContaining({
+      userId: 42,
+      tenantId: 420,
+    }));
+    expect(vi.mocked(buildSharedDecisionContext)).toHaveBeenCalledWith('secretary', 42, 420);
+    expect(vi.mocked(buildSharedDecisionContracts)).toHaveBeenCalledWith('secretary', 42, 420);
     expect(stateCtx).toContain('[PLANNER COORDINATION]');
     expect(stateCtx).toContain('Top priority: Protect the key session before adding admin.');
     expect(stateCtx).toContain('<shared_decision_contracts domain="secretary">');
     expect(stateCtx).toContain('training: nonNegotiables=Keep the tempo run protected.');
+  });
+
+  it('passes tenant scope into the deterministic daily-priority fastpath', async () => {
+    vi.mocked(composeDailyBrief).mockResolvedValue({
+      coordination: {
+        topPriority: 'Handle the tenant-scoped priority first.',
+        executionOrder: ['Tenant-scoped priority'],
+        watchouts: [],
+        handoffs: [],
+      },
+      day: {
+        secretary: {
+          priorityNote: 'Handle the tenant-scoped priority first.',
+          sequence: ['Tenant-scoped priority'],
+          tradeoffNote: null,
+        },
+      },
+    } as any);
+
+    const result = await handleSecretary('what should i do first today?', 42, 420);
+
+    expect(result.text).toContain('Handle the tenant-scoped priority first.');
+    expect(mockCallDomain).not.toHaveBeenCalled();
+    expect(vi.mocked(composeDailyBrief)).toHaveBeenCalledWith(expect.objectContaining({
+      userId: 42,
+      tenantId: 420,
+    }));
   });
 
   it('localizes planner coordination labels in the state context for portuguese users', async () => {

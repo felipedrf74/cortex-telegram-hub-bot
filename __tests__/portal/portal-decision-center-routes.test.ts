@@ -12,6 +12,7 @@ const mocks = vi.hoisted(() => ({
   logPortalAdminMutation: vi.fn(),
   isDecisionDashboardEnabled: vi.fn(),
   buildDecisionDashboardSnapshot: vi.fn(),
+  getNotificationReliabilityDashboard: vi.fn(),
 }));
 
 vi.mock('../../src/api/secret-guards', () => ({
@@ -84,6 +85,10 @@ vi.mock('../../src/utils/logger', () => ({
 
 vi.mock('../../src/services/decision-dashboard', () => ({
   buildDecisionDashboardSnapshot: (...args: unknown[]) => mocks.buildDecisionDashboardSnapshot(...args),
+}));
+
+vi.mock('../../src/services/notification-orchestrator', () => ({
+  getNotificationReliabilityDashboard: (...args: unknown[]) => mocks.getNotificationReliabilityDashboard(...args),
 }));
 
 vi.mock('../../src/services/runtime-flags', async (importActual) => ({
@@ -267,6 +272,19 @@ describe('portal Decision Center routes', () => {
       feedbackBySkill: [],
       outcomes: { totalOutcomes: 0, decisionQualityScore: null, primaryActionRate: 0, dismissRate: 0, snoozeRate: 0, failedActionRate: 0, genericBlockedRate: 0 },
     });
+    mocks.getNotificationReliabilityDashboard.mockReturnValue({
+      generatedAt: '2026-05-10T10:00:00.000Z',
+      dedupe: { dedupedCount: 2, activeDedupeKeyCount: 3 },
+      digest: { pendingCount: 1, dueCount: 0, releasedCount: 4 },
+      pushOutcome: { attemptCount: 6, sentCount: 5, blockedCount: 1, blockedByReason: {} },
+      badge: {
+        expectedBadgeCount: 4,
+        canonicalUnreadCount: 4,
+        clientReportedBadgeCount: 3,
+        drift: -1,
+      },
+      readState: { clientReportedReadFailureCount: 1, serverReadFailureCount: 0 },
+    });
   });
 
   it('registers per-user routes behind portal admin and operator target guards', () => {
@@ -320,6 +338,20 @@ describe('portal Decision Center routes', () => {
     expect((payload.body as any).ok).toBe(true);
     expect((payload.body as any).dashboard.releaseGate.pass).toBe(true);
     expect(mocks.buildDecisionDashboardSnapshot).toHaveBeenCalledWith(7, 7);
+  });
+
+  it('notification reliability route returns scoped delivery and count telemetry', () => {
+    const { app, routes } = makeApp();
+    registerPortalDecisionCenterRoutes(app as any);
+    const handler = routes.get('GET /api/users/:userId/decision-center/notification-reliability')?.[2]!;
+    const { payload, res } = makeResponse();
+
+    handler({ params: { userId: '7' }, query: {} }, res);
+
+    expect(payload.statusCode).toBe(200);
+    expect((payload.body as any).ok).toBe(true);
+    expect((payload.body as any).dashboard.badge.drift).toBe(-1);
+    expect(mocks.getNotificationReliabilityDashboard).toHaveBeenCalledWith(7, 7);
   });
 
   it('exposes v2 portal-safe decision metadata for admin parity', () => {

@@ -40,21 +40,27 @@ vi.mock('../../src/utils/logger', () => ({
 import {
   assembleDailyDigest,
   buildSkillNotificationFixtureIntent,
+  countUnreadNotificationCenterItems,
   createNotificationIntent,
   dismissNotificationCenterItem,
   ensureNotificationTables,
+  expireStaleNotificationIntents,
   getNotificationDecisionLog,
   getNotificationDeliveryObservabilityMetrics,
+  getNotificationReliabilityDashboard,
   getOrCreateNotificationProfile,
+  listNotificationBridgeEntityIds,
   listNotificationCenterItems,
   markNotificationCenterItemRead,
   performNotificationAction,
+  recordNotificationReliabilityEvent,
   registerNotificationDeviceToken,
   releaseDueNotificationDeliveries,
   revokeNotificationDeviceToken,
   sanitizeNotificationDeliveryErrorCode,
   updateNotificationProfile,
 } from '../../src/services/notification-orchestrator';
+import { deliveryPolicyForNotificationContract, resolveNotificationContract } from '../../src/services/notification-contracts';
 
 describe('Secretary Notification Orchestrator', () => {
   beforeEach(() => {
@@ -110,6 +116,60 @@ describe('Secretary Notification Orchestrator', () => {
     expect(result.decisionLog.decision).toBe('blocked_user_preferences');
   });
 
+  it('returns a deduped evaluation for duplicate suppressed intents instead of aborting on the intent index', async () => {
+    updateNotificationProfile(14, 14, {
+      skillPreferences: { finance: false },
+    });
+
+    const first = await createNotificationIntent(buildSkillNotificationFixtureIntent('finance', 14, {
+      dedupeKey: 'finance:suppressed-duplicate',
+    }));
+    const second = await createNotificationIntent(buildSkillNotificationFixtureIntent('finance', 14, {
+      dedupeKey: 'finance:suppressed-duplicate',
+    }));
+
+    expect(first.item).toBeNull();
+    expect(first.decisionLog.decision).toBe('blocked_user_preferences');
+    expect(second.item).toBeNull();
+    expect(second.intent.status).toBe('deduped');
+    expect(second.decisionLog.decision).toBe('deduped');
+    expect(second.pushPayload).toBeNull();
+    const intentCount = (testDb.prepare(`
+      SELECT COUNT(*) AS count
+        FROM notification_intents
+       WHERE user_id = 14
+         AND tenant_id = 14
+         AND source_skill = 'finance'
+         AND dedupe_key = 'finance:suppressed-duplicate'
+    `).get() as { count: number }).count;
+    expect(intentCount).toBe(1);
+  });
+
+  it('counts badge-contributing center unread and bridge entity ids without the UI list limit', () => {
+    const insert = testDb.prepare(`
+      INSERT INTO notification_center_items (
+        item_id, intent_id, user_id, tenant_id, title, body, safe_body,
+        source_skill, type, priority, status, actions_json, dedupe_key
+      ) VALUES (?, ?, 15, 15, 'Content', 'Open Nexus.', 'Open Nexus.',
+        'content', 'approval_required', 'active', 'unread', '[]', ?)
+    `);
+    for (let index = 1; index <= 205; index += 1) {
+      insert.run(`nc_bridge_${index}`, `ni_bridge_${index}`, `content:script_ready:${index}`);
+    }
+    testDb.prepare(`
+      INSERT INTO notification_center_items (
+        item_id, intent_id, user_id, tenant_id, title, body, safe_body,
+        source_skill, type, priority, status, actions_json, dedupe_key
+      ) VALUES ('nc_digest_badge_excluded', 'ni_digest_badge_excluded', 15, 15,
+        'Digest', 'Digest ready.', 'Digest ready.', 'secretary', 'daily_digest',
+        'passive', 'unread', '[]', 'secretary:digest:today')
+    `).run();
+
+    expect(countUnreadNotificationCenterItems(15, 15)).toBe(205);
+    expect(listNotificationBridgeEntityIds(15, 15, 'content')).toHaveLength(205);
+    expect(listNotificationCenterItems(15, 15, { status: 'all', limit: 500 })).toHaveLength(200);
+  });
+
   it('keeps concrete but lower-rank decisions in-app instead of visible push', async () => {
     pushTokens = ['sandbox-token'];
     const result = await createNotificationIntent(buildSkillNotificationFixtureIntent('content', 1, {
@@ -156,6 +216,60 @@ describe('Secretary Notification Orchestrator', () => {
     });
     expect(metrics.blockedByReason['decision rank gate held visible push']).toBe(1);
     expect(JSON.stringify(metrics)).not.toContain('Demo content draft');
+  });
+
+  it('builds a scoped reliability dashboard for dedupe, digest, push, badge, and read-state signals', async () => {
+    await createNotificationIntent(buildSkillNotificationFixtureIntent('content', 12, {
+      dedupeKey: 'dashboard:content:1',
+      decisionDeadline: null,
+      decisionContext: {
+        entityTitle: 'Demo content draft',
+        sourceState: 'awaiting_approval',
+      },
+    }));
+    await createNotificationIntent(buildSkillNotificationFixtureIntent('content', 12, {
+      dedupeKey: 'dashboard:content:1',
+      decisionDeadline: null,
+      decisionContext: {
+        entityTitle: 'Demo content draft',
+        sourceState: 'awaiting_approval',
+      },
+    }));
+    await createNotificationIntent(buildSkillNotificationFixtureIntent('secretary', 12, {
+      type: 'insight',
+      priority: 'passive',
+      relatedEntityType: 'cross_skill_impact',
+      relatedEntityId: '2026-05-08',
+      requiresUserAction: false,
+      decisionContext: { recipe: 'cross_skill_impact', entityTitle: 'Friday coordination' },
+      dedupeKey: 'dashboard:cross-skill',
+    }));
+    recordNotificationReliabilityEvent({
+      userId: 12,
+      tenantId: 12,
+      eventType: 'badge_reconciled',
+      badgeCount: 7,
+      source: 'ios_dashboard',
+    });
+    recordNotificationReliabilityEvent({
+      userId: 12,
+      tenantId: 12,
+      eventType: 'read_state_failure',
+      source: 'ios_inbox',
+      errorCode: 'network_timeout',
+    });
+
+    const dashboard = getNotificationReliabilityDashboard(12, 12);
+
+    expect(dashboard.dedupe.dedupedCount).toBe(1);
+    expect(dashboard.digest.pendingCount).toBe(1);
+    expect(dashboard.pushOutcome.blockedByReason['decision rank gate held visible push']).toBe(1);
+    expect(dashboard.badge.canonicalUnreadCount).toBe(1);
+    expect(dashboard.badge.expectedBadgeCount).toBe(1);
+    expect(dashboard.badge.clientReportedBadgeCount).toBe(7);
+    expect(dashboard.badge.drift).toBe(7 - dashboard.badge.expectedBadgeCount);
+    expect(dashboard.readState.serverReadFailureCount).toBe(0);
+    expect(dashboard.readState.clientReportedReadFailureCount).toBe(1);
   });
 
   it('blocks generic decision-shaped notifications from visible push', async () => {
@@ -260,17 +374,231 @@ describe('Secretary Notification Orchestrator', () => {
 
   it('deduplicates unresolved conflicts by dedupe key', async () => {
     pushTokens = ['sandbox-token'];
+    const dedupeKey = 'secretary:conflict:repeat';
     const first = await createNotificationIntent(buildSkillNotificationFixtureIntent('secretary', 4, {
-      dedupeKey: 'secretary:conflict:repeat',
+      dedupeKey,
     }));
     const second = await createNotificationIntent(buildSkillNotificationFixtureIntent('secretary', 4, {
-      dedupeKey: 'secretary:conflict:repeat',
+      dedupeKey,
     }));
 
     expect(first.item?.itemId).toBeDefined();
     expect(second.item?.itemId).toBe(first.item?.itemId);
     expect(second.decisionLog.decision).toBe('deduped');
     expect(listNotificationCenterItems(4, 4)).toHaveLength(1);
+    const intentCount = (testDb.prepare(
+      'SELECT COUNT(*) AS cnt FROM notification_intents WHERE user_id = ? AND tenant_id = ? AND source_skill = ? AND dedupe_key = ?',
+    ).get(4, 4, 'secretary', dedupeKey) as { cnt: number }).cnt;
+    expect(intentCount).toBe(1);
+  });
+
+  it('marks expired intent dedupe rows expired and allows a fresh intent for the same key', async () => {
+    const dedupeKey = 'secretary:conflict:expired-recreate';
+    const first = await createNotificationIntent(buildSkillNotificationFixtureIntent('secretary', 402, {
+      dedupeKey,
+      expiresAt: '2026-05-07T11:00:00.000Z',
+    }));
+
+    const second = await createNotificationIntent(buildSkillNotificationFixtureIntent('secretary', 402, {
+      dedupeKey,
+      expiresAt: '2026-05-08T12:00:00.000Z',
+    }));
+
+    expect(second.intent.intentId).not.toBe(first.intent.intentId);
+    expect(second.intent.status).not.toBe('deduped');
+    expect(second.decisionLog.decision).not.toBe('deduped');
+    const statuses = testDb.prepare(`
+      SELECT intent_id AS intentId, status
+        FROM notification_intents
+       WHERE user_id = 402 AND tenant_id = 402 AND source_skill = 'secretary' AND dedupe_key = ?
+    `).all(dedupeKey) as Array<{ intentId: string; status: string }>;
+    expect(Object.fromEntries(statuses.map((row) => [row.intentId, row.status]))).toEqual({
+      [first.intent.intentId]: 'expired',
+      [second.intent.intentId]: 'evaluated',
+    });
+    const centerStatuses = testDb.prepare(`
+      SELECT intent_id AS intentId, status
+        FROM notification_center_items
+       WHERE user_id = 402 AND tenant_id = 402 AND source_skill = 'secretary' AND dedupe_key = ?
+    `).all(dedupeKey) as Array<{ intentId: string; status: string }>;
+    expect(Object.fromEntries(centerStatuses.map((row) => [row.intentId, row.status]))).toEqual({
+      [first.intent.intentId]: 'expired',
+      [second.intent.intentId]: 'unread',
+    });
+  });
+
+  it('sweeps stale intent statuses without expiring active dedupe rows', async () => {
+    const stale = await createNotificationIntent(buildSkillNotificationFixtureIntent('finance', 403, {
+      dedupeKey: 'finance:dedupe:stale',
+      expiresAt: '2026-05-08T12:00:00.000Z',
+    }));
+    const active = await createNotificationIntent(buildSkillNotificationFixtureIntent('finance', 403, {
+      dedupeKey: 'finance:dedupe:active',
+      expiresAt: '2026-05-08T12:00:00.000Z',
+    }));
+    testDb.prepare('UPDATE notification_intents SET expires_at = ? WHERE intent_id = ?')
+      .run('2026-05-07T11:00:00.000Z', stale.intent.intentId);
+
+    expect(expireStaleNotificationIntents()).toBe(1);
+
+    const rows = testDb.prepare(`
+      SELECT intent_id AS intentId, status
+        FROM notification_intents
+       WHERE intent_id IN (?, ?)
+    `).all(stale.intent.intentId, active.intent.intentId) as Array<{ intentId: string; status: string }>;
+    expect(Object.fromEntries(rows.map((row) => [row.intentId, row.status]))).toEqual({
+      [stale.intent.intentId]: 'expired',
+      [active.intent.intentId]: 'evaluated',
+    });
+  });
+
+  it('does not rewrite terminal center-item history while freeing its dedupe key', async () => {
+    const dedupeKey = 'training:terminal-dedupe-recreate';
+    const terminal = await createNotificationIntent(buildSkillNotificationFixtureIntent('training', 407, {
+      dedupeKey,
+      expiresAt: '2026-05-08T12:00:00.000Z',
+    }));
+    testDb.prepare(`
+      UPDATE notification_center_items
+         SET status = 'actioned', expires_at = ?
+       WHERE item_id = ?
+    `).run('2026-05-07T11:00:00.000Z', terminal.item!.itemId);
+    testDb.prepare('UPDATE notification_intents SET expires_at = ? WHERE intent_id = ?')
+      .run('2026-05-07T11:00:00.000Z', terminal.intent.intentId);
+
+    expect(expireStaleNotificationIntents()).toBe(1);
+
+    const terminalStatus = (testDb.prepare(`
+      SELECT status FROM notification_center_items WHERE item_id = ?
+    `).get(terminal.item!.itemId) as { status: string }).status;
+    expect(terminalStatus).toBe('actioned');
+
+    const replacement = await createNotificationIntent(buildSkillNotificationFixtureIntent('training', 407, {
+      dedupeKey,
+      expiresAt: '2026-05-09T12:00:00.000Z',
+    }));
+    expect(replacement.item?.itemId).toBeDefined();
+    expect(replacement.item?.itemId).not.toBe(terminal.item!.itemId);
+    expect(replacement.decisionLog.decision).not.toBe('deduped');
+  });
+
+  it('allows the same dedupe key across different source skills', async () => {
+    const dedupeKey = 'shared:cross-skill:key';
+
+    await createNotificationIntent(buildSkillNotificationFixtureIntent('secretary', 404, {
+      dedupeKey,
+    }));
+    await createNotificationIntent(buildSkillNotificationFixtureIntent('content', 404, {
+      dedupeKey,
+    }));
+
+    expect(listNotificationCenterItems(404, 404)).toHaveLength(2);
+  });
+
+  it('creates runtime dedupe indexes equivalent to the migration contract', () => {
+    const rows = testDb.prepare(`
+      SELECT name, sql
+      FROM sqlite_master
+      WHERE type = 'index'
+        AND name IN ('idx_notification_intents_dedupe_unique', 'idx_notification_center_items_dedupe_unique')
+      ORDER BY name
+    `).all() as Array<{ name: string; sql: string }>;
+
+    expect(rows.map((row) => row.name)).toEqual([
+      'idx_notification_center_items_dedupe_unique',
+      'idx_notification_intents_dedupe_unique',
+    ]);
+    const byName = Object.fromEntries(rows.map((row) => [row.name, row.sql]));
+    expect(byName.idx_notification_intents_dedupe_unique).toContain("status != 'expired'");
+    expect(byName.idx_notification_center_items_dedupe_unique).toContain("status NOT IN ('expired','actioned','dismissed','superseded')");
+  });
+
+  it('resolves notification contracts for server APNs categories and badge contribution', () => {
+    const conflict = resolveNotificationContract({
+      sourceSkill: 'secretary',
+      type: 'conflict_detected',
+      actionId: 'accept_reflow',
+    });
+    expect(conflict).toMatchObject({
+      apnsCategory: 'DECISION_SCHEDULE_CONFLICT',
+      iosDestination: 'decision_center',
+      privacySafeCopyPolicy: 'standard',
+      defaultDelivery: ['in_app', 'inbox_history', 'push'],
+      contributesToBadge: true,
+      supportedActions: ['accept_reflow', 'choose_another_time', 'open_detail', 'snooze'],
+      actionId: 'accept_reflow',
+    });
+    expect(deliveryPolicyForNotificationContract(conflict)).toBe('auto');
+
+    expect(resolveNotificationContract({
+      sourceSkill: 'content',
+      type: 'approval_required',
+      actionId: 'approve_script',
+    })).toMatchObject({
+      apnsCategory: 'DECISION_APPROVAL',
+      iosDestination: 'decision_center',
+      privacySafeCopyPolicy: 'private_content',
+      supportedActions: ['approve_script', 'request_rewrite', 'open_detail'],
+      actionId: 'approve_script',
+      contributesToBadge: true,
+    });
+
+    const digest = resolveNotificationContract({
+      sourceSkill: 'secretary',
+      type: 'daily_digest',
+    });
+    expect(digest).toMatchObject({
+      apnsCategory: 'daily_digest',
+      iosDestination: 'report_detail',
+      defaultDelivery: ['in_app', 'inbox_history', 'digest'],
+      contributesToBadge: false,
+    });
+    expect(deliveryPolicyForNotificationContract(digest)).toBe('digest_only');
+
+    expect(resolveNotificationContract({
+      sourceSkill: 'finance',
+      type: 'reminder',
+      actionId: 'mark_paid',
+    })).toMatchObject({
+      apnsCategory: 'FINANCE_PAYMENT',
+      supportedActions: ['mark_paid', 'open_detail', 'dismiss'],
+      actionId: 'mark_paid',
+    });
+
+    const crossSkill = resolveNotificationContract({
+      sourceSkill: 'secretary',
+      type: 'insight',
+      entityType: 'cross_skill_impact',
+      entityId: '2026-05-08',
+      recipe: 'cross_skill_impact',
+    });
+    expect(crossSkill).toMatchObject({
+      topic: {
+        sourceSkill: 'secretary',
+        entityType: 'cross_skill_impact',
+        entityId: '2026-05-08',
+        recipe: 'cross_skill_impact',
+      },
+      iosDestination: 'coordinated_plan',
+      defaultDelivery: ['in_app', 'inbox_history', 'digest'],
+      contributesToBadge: false,
+    });
+    expect(deliveryPolicyForNotificationContract(crossSkill)).toBe('digest_only');
+  });
+
+  it('defaults cross-skill impact recipe notifications to digest delivery', async () => {
+    const result = await createNotificationIntent(buildSkillNotificationFixtureIntent('secretary', 405, {
+      type: 'insight',
+      priority: 'passive',
+      relatedEntityType: 'cross_skill_impact',
+      relatedEntityId: '2026-05-08',
+      requiresUserAction: false,
+      decisionContext: { recipe: 'cross_skill_impact', entityTitle: 'Friday coordination' },
+      dedupeKey: 'secretary:cross-skill:2026-05-08',
+    }));
+
+    expect(result.intent.deliveryPolicy).toBe('digest_only');
+    expect(result.decisionLog.decision).toBe('digest');
   });
 
   it('enforces active dedupe keys at the database layer', () => {
@@ -526,11 +854,19 @@ describe('Secretary Notification Orchestrator', () => {
     expect(queued?.sentAt).toBeTruthy();
   });
 
-  it('sends decision pushes with collapse id and urgent/today badge count', async () => {
+  it('sends decision pushes with collapse id and canonical unread badge count', async () => {
     process.env.NOTIFICATION_DELIVERY_MODE = 'apns';
     apnsConfigured = true;
     pushTokens = ['sandbox-token'];
     mockSendPushNotification.mockResolvedValue({ sent: 1, failed: 0, skipped: 0, retriable: 0, unregistered: [] });
+    testDb.prepare(`
+      INSERT INTO notification_center_items (
+        item_id, intent_id, user_id, tenant_id, title, body, safe_body,
+        source_skill, type, priority, status, actions_json, dedupe_key
+      ) VALUES ('nc_existing_badge_item', 'ni_existing_badge_item', 72, 72, 'Reminder',
+        'Reminder', 'Reminder', 'cooking', 'reminder', 'passive', 'unread', '[]',
+        'existing-badge-item')
+    `).run();
 
     const decision = await createNotificationIntent(buildSkillNotificationFixtureIntent('training', 72, {
       type: 'decision_required',
@@ -546,7 +882,7 @@ describe('Secretary Notification Orchestrator', () => {
     expect(decision.decisionLog.decision).toBe('sent_push');
     expect(mockSendPushNotification).toHaveBeenCalledWith(72, expect.objectContaining({
       collapseId: `decision:${decision.item!.itemId}`,
-      badge: 1,
+      badge: 2,
       threadId: 'decision-center',
       category: 'DECISION_CLARIFICATION',
       interruptionLevel: 'time-sensitive',
@@ -555,6 +891,7 @@ describe('Secretary Notification Orchestrator', () => {
         notificationUserId: 72,
         userId: 72,
         tenantId: 72,
+        iosDestination: 'decision_center',
       }),
     }));
   });

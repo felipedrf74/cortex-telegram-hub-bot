@@ -80,6 +80,7 @@ vi.mock('../../src/services/database', () => ({
 vi.mock('../../src/services/cache-store', () => ({
   getCached: (...args: unknown[]) => mockGetCached(...args),
   setCache: (...args: unknown[]) => mockSetCache(...args),
+  clearCacheByPrefix: vi.fn(),
   getCachedSWR: vi.fn(() => null),
   setCacheSWR: vi.fn(),
 }));
@@ -187,6 +188,7 @@ vi.mock('../../src/services/readiness-scorer', () => ({
 vi.mock('../../src/services/content-notification-store', () => ({
   getNotifications: (...args: unknown[]) => mockGetNotifications(...args),
   getUnreadCount: (...args: unknown[]) => mockGetUnreadNotificationCount(...args),
+  getUnreadCountExcludingNotificationIds: (...args: unknown[]) => mockGetUnreadNotificationCount(...args),
   markRead: (...args: unknown[]) => mockMarkNotificationRead(...args),
   markAllRead: (...args: unknown[]) => mockMarkAllNotificationsRead(...args),
   resolveNotification: (...args: unknown[]) => mockResolveNotification(...args),
@@ -196,6 +198,7 @@ vi.mock('../../src/services/report-document-store', () => ({
   getLatestByType: vi.fn(() => null),
   getRecentReports: (...args: unknown[]) => mockGetRecentReports(...args),
   getUnreadReportCount: (...args: unknown[]) => mockGetUnreadReportCount(...args),
+  getUnreadReportCountExcludingIds: (...args: unknown[]) => mockGetUnreadReportCount(...args),
   getReportById: vi.fn(() => null),
   markReportRead: (...args: unknown[]) => mockMarkReportRead(...args),
   getPushPreferences: (...args: unknown[]) => mockGetPushPreferences(...args),
@@ -911,7 +914,7 @@ describe('app-facing happy path smoke', () => {
         path: '/notifications',
         assert: (body) => {
           expect(body.data).toMatchObject({
-            unreadCount: 1,
+            unreadCount: 0,
             count: 1,
           });
           expect(body.data.notifications[0]).toMatchObject({

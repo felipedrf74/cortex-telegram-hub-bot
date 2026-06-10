@@ -13,6 +13,7 @@ import type Database from 'better-sqlite3';
 import { getDb } from './database';
 import { ensureEventOutboxTables, getEventSequenceBounds } from './event-outbox';
 import { isValidTenantUserId, recordTenantScopeAnomaly } from './tenant-scope-observability';
+import { NON_BADGE_NOTIFICATION_TYPES } from './notification-contracts';
 
 export type SummaryType = 'home' | 'week' | 'training' | 'content' | 'notifications';
 
@@ -262,8 +263,14 @@ function buildNotificationSummary(userId: number, tenantId: number, db: Database
   // even before the decision_expiry sweep flips its status. Same predicate as the
   // findActiveDuplicate guard in notification-orchestrator.
   const notExpired = "(expires_at IS NULL OR datetime(expires_at) > datetime('now'))";
+  const nonBadgePlaceholders = NON_BADGE_NOTIFICATION_TYPES.map(() => '?').join(',');
   return {
-    unreadCount: countRows(db, 'notification_center_items', `user_id = ? AND tenant_id = ? AND status = ? AND ${notExpired}`, [userId, tenantId, 'unread']),
+    unreadCount: countRows(
+      db,
+      'notification_center_items',
+      `user_id = ? AND tenant_id = ? AND status = ? AND type NOT IN (${nonBadgePlaceholders}) AND ${notExpired}`,
+      [userId, tenantId, 'unread', ...NON_BADGE_NOTIFICATION_TYPES],
+    ),
     needsDecisionCount: countRows(db, 'notification_center_items', `user_id = ? AND tenant_id = ? AND type = ? AND status = ? AND ${notExpired}`, [userId, tenantId, 'decision_required', 'unread']),
     conflictsCount: countRows(db, 'notification_center_items', `user_id = ? AND tenant_id = ? AND type = ? AND status = ? AND ${notExpired}`, [userId, tenantId, 'conflict_detected', 'unread']),
     approvalsCount: countRows(db, 'notification_center_items', `user_id = ? AND tenant_id = ? AND type = ? AND status = ? AND ${notExpired}`, [userId, tenantId, 'approval_required', 'unread']),

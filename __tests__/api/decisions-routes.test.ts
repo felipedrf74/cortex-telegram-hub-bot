@@ -4,6 +4,7 @@ import type { Request } from 'express';
 const mockGetDecisionSummary = vi.fn();
 const mockGetDecisionOverview = vi.fn();
 const mockListDecisionItems = vi.fn();
+const mockRecordDecisionItemExposures = vi.fn();
 const mockListHandledByNexusItems = vi.fn();
 const mockGetDecisionItem = vi.fn();
 const mockPerformDecisionAction = vi.fn();
@@ -42,6 +43,7 @@ vi.mock('../../src/services/decision-center', () => ({
   getDecisionSummary: (...args: unknown[]) => mockGetDecisionSummary(...args),
   getDecisionOverview: (...args: unknown[]) => mockGetDecisionOverview(...args),
   listDecisionItems: (...args: unknown[]) => mockListDecisionItems(...args),
+  recordDecisionItemExposures: (...args: unknown[]) => mockRecordDecisionItemExposures(...args),
   listHandledByNexusItems: (...args: unknown[]) => mockListHandledByNexusItems(...args),
   listDecisionDependencies: vi.fn(),
   runDecisionSourceStateSupersessionJob: vi.fn(),
@@ -65,6 +67,14 @@ vi.mock('../../src/services/decision-center', () => ({
 vi.mock('../../src/services/notification-orchestrator', () => ({
   registerNotificationDeviceToken: (...args: unknown[]) => mockRegisterNotificationDeviceToken(...args),
   revokeNotificationDeviceToken: (...args: unknown[]) => mockRevokeNotificationDeviceToken(...args),
+}));
+
+const mockNotificationCacheInvalidation = vi.hoisted(() => ({
+  invalidateNotificationInboxCaches: vi.fn(),
+}));
+
+vi.mock('../../src/services/notification-cache-invalidation', () => ({
+  invalidateNotificationInboxCaches: (...args: unknown[]) => mockNotificationCacheInvalidation.invalidateNotificationInboxCaches(...args),
 }));
 
 vi.mock('../../src/utils/logger', () => ({
@@ -180,6 +190,7 @@ describe('Decision routes', () => {
     mockGetDecisionSummary.mockReset();
     mockGetDecisionOverview.mockReset();
     mockListDecisionItems.mockReset();
+    mockRecordDecisionItemExposures.mockReset();
     mockListHandledByNexusItems.mockReset();
     mockGetDecisionItem.mockReset();
     mockPerformDecisionAction.mockReset();
@@ -197,6 +208,7 @@ describe('Decision routes', () => {
     mockSuppressDecisionType.mockReset();
     mockUnsuppressDecisionType.mockReset();
     mockCaptureError.mockReset();
+    mockNotificationCacheInvalidation.invalidateNotificationInboxCaches.mockReset();
 
     // Type-suppression is a presentation post-filter; by default it passes the list through unchanged
     // (flag OFF semantics) so the existing list assertions stay byte-identical.
@@ -313,7 +325,27 @@ describe('Decision routes', () => {
     expect(mockListDecisionItems).toHaveBeenCalledWith(7, 7, expect.objectContaining({
       limit: 500,
       maxLimit: 500,
+      recordExposure: false,
     }));
+    expect(mockRecordDecisionItemExposures).toHaveBeenCalledWith([
+      expect.objectContaining({ decisionId: 'nc_1' }),
+      expect.objectContaining({ decisionId: 'nc_2' }),
+    ]);
+  });
+
+  it('invalidates notification inbox caches after decision mutations and successful intent creation', async () => {
+    const router = decisionRoutes();
+    process.env.INTERNAL_API_SECRET = 'secret';
+    mockCreateDecisionIntent.mockResolvedValue({ item: { decisionId: 'nc_created' }, eligibility: { classification: 'decision' } });
+
+    await dispatch(router, 'PATCH', '/nc_1/viewed', {}, {}, {}, { tenantId: 17 });
+    await dispatch(router, 'PATCH', '/nc_1/snooze', {}, { minutes: 30 }, {}, { tenantId: 17 });
+    await dispatch(router, 'PATCH', '/nc_1/dismiss', {}, { reason: 'not_relevant' }, {}, { tenantId: 17 });
+    await dispatch(router, 'POST', '/nc_1/actions', {}, { actionId: 'open_detail', idempotencyKey: 'tap-1' }, {}, { tenantId: 17 });
+    await dispatch(router, 'POST', '/intents', {}, { sourceSkill: 'secretary' }, { 'x-internal-secret': 'secret' }, { tenantId: 17 });
+
+    expect(mockNotificationCacheInvalidation.invalidateNotificationInboxCaches).toHaveBeenCalledTimes(5);
+    expect(mockNotificationCacheInvalidation.invalidateNotificationInboxCaches).toHaveBeenCalledWith(7, 17);
   });
 
   it('validates overview pagination before calling the service', async () => {
@@ -435,16 +467,25 @@ describe('Decision routes', () => {
     const dontShow = await dispatch(router, 'POST', '/preferences/suppress-type', {}, { sourceSkill: 'cooking', type: 'decision_required', mode: 'dont_show_type' });
     expect(dontShow.statusCode).toBe(201);
     // dont_show_type never carries an `until`.
-    expect(mockSuppressDecisionType).toHaveBeenCalledWith(7, 7, 'cooking', 'decision_required', 'dont_show_type', null);
+    expect(mockSuppressDecisionType).toHaveBeenCalledWith(7, 7, 'cooking', 'decision_required', 'dont_show_type', null, null);
 
     const snooze = await dispatch(router, 'POST', '/preferences/suppress-type', {}, { sourceSkill: 'training', type: 'reminder', mode: 'snooze_type', untilDays: 3 });
     expect(snooze.statusCode).toBe(201);
     // snooze_type computes a forward `until` ISO timestamp from untilDays.
-    expect(mockSuppressDecisionType).toHaveBeenLastCalledWith(7, 7, 'training', 'reminder', 'snooze_type', expect.stringMatching(/^\d{4}-\d{2}-\d{2}T/));
+    expect(mockSuppressDecisionType).toHaveBeenLastCalledWith(7, 7, 'training', 'reminder', 'snooze_type', expect.stringMatching(/^\d{4}-\d{2}-\d{2}T/), null);
 
-    const removed = await dispatch(router, 'DELETE', '/preferences/suppress-type', { sourceSkill: 'cooking', type: 'decision_required' });
+    const recipe = await dispatch(router, 'POST', '/preferences/suppress-type', {}, {
+      sourceSkill: 'cooking',
+      type: 'decision_required',
+      mode: 'dont_show_type',
+      recipe: 'cooking:meal_plan:abc',
+    });
+    expect(recipe.statusCode).toBe(201);
+    expect(mockSuppressDecisionType).toHaveBeenLastCalledWith(7, 7, 'cooking', 'decision_required', 'dont_show_type', null, 'cooking:meal_plan:abc');
+
+    const removed = await dispatch(router, 'DELETE', '/preferences/suppress-type', { sourceSkill: 'cooking', type: 'decision_required', recipe: 'cooking:meal_plan:abc' });
     expect(removed.statusCode).toBe(200);
-    expect(mockUnsuppressDecisionType).toHaveBeenCalledWith(7, 7, 'cooking', 'decision_required');
+    expect(mockUnsuppressDecisionType).toHaveBeenCalledWith(7, 7, 'cooking', 'decision_required', 'cooking:meal_plan:abc');
   });
 
   it('C3: rejects suppress/unsuppress requests with missing fields before touching the store', async () => {

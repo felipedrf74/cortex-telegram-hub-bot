@@ -12,6 +12,7 @@ import { processPendingEvents, type EventHandler } from './event-outbox';
 import { projectSummaryReadModelsForUser } from './app-summary-read-models';
 import { recordProductDecision } from './product-decision-log';
 import { syncContentTopicSecretaryArtifactsById } from './content-topic-secretary-sync';
+import { releaseDueNotificationDeliveries } from './notification-orchestrator';
 import { logger } from '../utils/logger';
 
 const PROJECTABLE_EVENT_TYPES = new Set([
@@ -115,12 +116,25 @@ export const defaultJobHandlers: JobHandler[] = [
   {
     jobType: 'deliver_notification',
     idempotent: true,
-    handle() {
-      // Notification delivery is still synchronously evaluated by the
-      // Secretary Notification Orchestrator. The queued record provides a
-      // durable retry hook for the next phase without sending extra pushes.
-      // Any future real APNs implementation must use a collapse/idempotency key
-      // or a deliveries table before calling the provider.
+    async handle(job) {
+      const result = await releaseDueNotificationDeliveries();
+      if (!job.userId) return;
+      recordProductDecision({
+        tenantId: job.tenantId,
+        userId: job.userId,
+        sourceSkill: 'system',
+        entityType: 'notification_delivery_job',
+        entityId: String(job.payload?.intentId ?? job.jobId),
+        decisionType: 'notification_delivery_release',
+        inputsSummary: {
+          jobType: job.jobType,
+          intentId: job.payload?.intentId ?? null,
+        },
+        decision: result,
+        explanationCode: 'notification_delivery_job_released_due_items',
+        correlationId: job.correlationId,
+        eventId: job.causationEventId,
+      });
     },
   },
   {

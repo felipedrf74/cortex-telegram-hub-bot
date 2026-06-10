@@ -13,6 +13,7 @@ import {
   markReportRead,
   type ReportType,
 } from '../../services/report-document-store';
+import { invalidateNotificationInboxCaches } from '../../services/notification-cache-invalidation';
 
 /**
  * Report Documents — iOS API routes.
@@ -172,7 +173,8 @@ export function reportRoutes(): Router {
    * Mark a report as read.
    */
   router.post('/:id/read', asyncHandler(async (req, res: Response) => {
-    const { userId } = req as unknown as AuthenticatedRequest;
+    const authReq = req as unknown as AuthenticatedRequest;
+    const { userId } = authReq;
     if (!ensureValidReportsRouteScope(res, userId, 'reports_route_mark_read', { reportId: req.params.id })) return;
     const { id } = req.params;
 
@@ -183,6 +185,7 @@ export function reportRoutes(): Router {
       return;
     }
 
+    invalidateNotificationInboxCaches(userId, authReq.tenantId ?? userId);
     sendSuccess(res, { marked: true });
   }));
 

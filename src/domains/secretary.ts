@@ -215,7 +215,8 @@ async function buildStateContext(message: string = '', userId?: number, tenantId
 
   // Cache key = userId + context shape — prevents cross-user leakage
   const shape = `${needs.tasks ? 't' : ''}${needs.calendar ? 'c' : ''}${needs.email ? 'e' : ''}${needs.reminders ? 'r' : ''}${needs.garmin ? 'g' : ''}${needs.planner ? 'p' : ''}`;
-  const scopedTenantKey = hasUserScope ? (typeof tenantId === 'number' && tenantId > 0 ? tenantId : scopedUserId) : 'anon';
+  const scopedTenantId = hasUserScope ? (typeof tenantId === 'number' && tenantId > 0 ? tenantId : scopedUserId) : null;
+  const scopedTenantKey = scopedTenantId ?? 'anon';
   const appendPromptContext = async (baseContext: string, cacheHit: boolean): Promise<string> => {
     if (!hasUserScope) return baseContext;
     if (!needs.planner) {
@@ -224,7 +225,7 @@ async function buildStateContext(message: string = '', userId?: number, tenantId
       // so the model asks for unstated date/time/title instead of
       // inventing them. Cost: ~100-250 chars only when the grounding
       // layer actually finds missing fields.
-      const minimalBlock = buildMinimalMissingFactsBlock(message, scopedUserId, tenantId);
+      const minimalBlock = buildMinimalMissingFactsBlock(message, scopedUserId, scopedTenantId ?? undefined);
       const augmented = minimalBlock ? `${baseContext}\n${minimalBlock}` : baseContext;
       logger.debug({
         userId: scopedUserId,
@@ -243,7 +244,7 @@ async function buildStateContext(message: string = '', userId?: number, tenantId
       domain: DOMAIN,
       message,
       userId: scopedUserId,
-      tenantId,
+      tenantId: scopedTenantId ?? undefined,
       budgetChars: promptBudgetChars,
     });
     const combined = promptContext ? `${baseContext}\n${promptContext}` : baseContext;
@@ -303,10 +304,10 @@ async function buildStateContext(message: string = '', userId?: number, tenantId
       ? getBodyBatteryEventsForUser(scopedUserId, todayStr).catch(() => null)
       : Promise.resolve(null),
     hasUserScope && needs.planner
-      ? composeDailyBrief({ userId: scopedUserId, language: contextLanguage }).catch(() => null)
+      ? composeDailyBrief({ userId: scopedUserId, tenantId: scopedTenantId!, language: contextLanguage }).catch(() => null)
       : Promise.resolve(null),
-    needsSharedDecisionContext ? buildSharedDecisionContext(DOMAIN, scopedUserId, tenantId).catch(() => '') : Promise.resolve(''),
-    needsSharedDecisionContext ? buildSharedDecisionContracts(DOMAIN, scopedUserId, tenantId).catch(() => ({} as SharedDecisionContracts)) : Promise.resolve({} as SharedDecisionContracts),
+    needsSharedDecisionContext ? buildSharedDecisionContext(DOMAIN, scopedUserId, scopedTenantId ?? undefined).catch(() => '') : Promise.resolve(''),
+    needsSharedDecisionContext ? buildSharedDecisionContracts(DOMAIN, scopedUserId, scopedTenantId ?? undefined).catch(() => ({} as SharedDecisionContracts)) : Promise.resolve({} as SharedDecisionContracts),
   ]);
 
   // Microsoft To Do — compact summary (details available via tools)

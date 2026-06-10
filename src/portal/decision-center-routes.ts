@@ -13,7 +13,11 @@ import {
   type DecisionApiItem,
   type DecisionUrgency,
 } from '../services/decision-center';
-import type { NotificationIntentType, NotificationSourceSkill } from '../services/notification-orchestrator';
+import {
+  getNotificationReliabilityDashboard,
+  type NotificationIntentType,
+  type NotificationSourceSkill,
+} from '../services/notification-orchestrator';
 import { requireOperatorTargetUser } from './admin-target-user';
 import { logPortalAdminMutation } from './admin-audit';
 import { sendPortalInternalError } from './http';
@@ -286,6 +290,24 @@ export function registerPortalDecisionCenterRoutes(app: Express): void {
         return;
       }
       res.json({ ok: true, tenantId, dashboard: buildDecisionDashboardSnapshot(userId, tenantId) });
+    } catch (err) {
+      sendDecisionError(res, err);
+    }
+  });
+
+  app.get('/api/users/:userId/decision-center/notification-reliability', ...guards, (req: Request, res: Response) => {
+    try {
+      const userId = parsePositiveInteger(req.params.userId);
+      if (!userId) {
+        sendBadRequest(res, 'INVALID_USER_ID', 'invalid userId');
+        return;
+      }
+      const tenantId = resolveTenantId(req, userId);
+      if (!tenantId) {
+        sendForbiddenTenant(res);
+        return;
+      }
+      res.json({ ok: true, tenantId, dashboard: getNotificationReliabilityDashboard(userId, tenantId) });
     } catch (err) {
       sendDecisionError(res, err);
     }

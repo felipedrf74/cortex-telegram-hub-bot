@@ -6,14 +6,14 @@ import { AuthenticatedRequest } from '../auth-middleware';
 import { sendSuccess, sendError, asyncHandler } from '../response-helpers';
 import {
   getNotifications,
-  getUnreadCount,
+  getUnreadCountExcludingNotificationIds,
   markAllRead,
   markRead,
   resolveNotification,
   type NotificationStatus,
   type NotificationType,
 } from '../../services/content-notification-store';
-import { getRecentReports, getUnreadReportCount } from '../../services/report-document-store';
+import { getRecentReports, getUnreadReportCountExcludingIds } from '../../services/report-document-store';
 import { isConnected } from '../../services/oauth-store';
 import { getUnreadEmailsForUser as getOutlookUnreadEmailsForUser, readEmailForUser as readOutlookEmailForUser } from '../../services/outlook-mail';
 import {
@@ -32,15 +32,20 @@ import { isValidTenantUserId } from '../../services/tenant-scope-observability';
 import { listTasks } from '../../services/task-store/task-service';
 import type { NormalizedTask } from '../../services/task-store/types';
 import { ensureCachedRouteTenantScope, handleCachedRoute, routeCacheKey } from '../route-helpers/cached-route-handler';
+import { invalidateNotificationInboxCaches } from '../../services/notification-cache-invalidation';
 import {
   buildSkillNotificationFixtureIntent,
+  countUnreadNotificationCenterItems,
   createNotificationIntent,
   dismissNotificationCenterItem,
   getNotificationDecisionLog,
+  getNotificationReliabilityDashboard,
   getOrCreateNotificationProfile,
+  listNotificationBridgeEntityIds,
   listNotificationCenterItems,
   markNotificationCenterItemRead,
   performNotificationAction,
+  recordNotificationReliabilityEvent,
   registerNotificationDeviceToken,
   revokeNotificationDeviceToken,
   updateNotificationProfile,
@@ -267,6 +272,56 @@ function buildDecisionCenterSections(items: NotificationCenterItem[]): Record<st
   return sections;
 }
 
+function bridgedEntityIdsForScope(
+  userId: number,
+  tenantId: number,
+  bridgePrefix: 'content' | 'report',
+): number[] {
+  try {
+    return listNotificationBridgeEntityIds(userId, tenantId, bridgePrefix);
+  } catch (err) {
+    logger.warn(
+      {
+        event: 'notification_bridge_ids_degraded',
+        userId,
+        tenantId,
+        bridgePrefix,
+        errorName: safeErrorName(err),
+        errorCode: safeErrorCode(err),
+      },
+      'Notification bridge entity-id lookup degraded',
+    );
+    return [];
+  }
+}
+
+function centerItemsToInboxResult(centerItems: NotificationCenterItem[]): UnifiedInboxSourceResult {
+  const items = centerItems.map((item) => ({
+    kind: 'notification' as const,
+    id: `decision:${item.itemId}`,
+    title: item.title,
+    body: item.safeBody || item.body || null,
+    type: item.type,
+    status: item.status,
+    createdAt: safeIso(item.createdAt),
+    source: item.sourceSkill,
+    priority: item.priority === 'time_sensitive' || item.priority === 'critical'
+      ? 'high' as const
+      : item.priority === 'active'
+        ? 'medium' as const
+        : 'low' as const,
+    action: 'open_content' as const,
+    metadata: {
+      notificationId: item.itemId,
+      deeplink: item.deeplink,
+      sourceSkill: item.sourceSkill,
+      actions: item.actions,
+      dedupeKey: item.dedupeKey,
+    },
+  }));
+  return { items, unreadCount: centerItems.filter((item) => item.status === 'unread').length };
+}
+
 function toHumanDateTime(input: unknown): string | null {
   if (typeof input !== 'string' || !input) return null;
   const date = new Date(input);
@@ -341,6 +396,39 @@ async function buildUnifiedInbox(userId: number, tenantId: number, limit: number
   // instead of falling back to the (userId, userId) default which silently
   // reverts to 'auto'.
   const mailPreference = resolveMailReadPreference(userId, tenantId);
+  const warningCodes: string[] = [];
+  const warnings: string[] = [];
+  const items: UnifiedInboxItem[] = [];
+  let totalUnread = 0;
+  let successCount = 0;
+  let centerItems: NotificationCenterItem[] = [];
+
+  try {
+    const centerResult = await runInboxSource({
+      key: 'decision-center',
+      userId,
+      limit,
+      timeoutMs: getInboxSourceTimeoutMs(),
+      run: async () => {
+        centerItems = listNotificationCenterItems(userId, tenantId, { status: 'all', limit });
+        return {
+          ...centerItemsToInboxResult(centerItems),
+          unreadCount: countUnreadNotificationCenterItems(userId, tenantId),
+        };
+      },
+    });
+    successCount += 1;
+    items.push(...centerResult.items);
+    totalUnread += centerResult.unreadCount;
+  } catch {
+    warningCodes.push('DECISION_CENTER_UNAVAILABLE');
+    warnings.push('Decision Center notifications are temporarily unavailable.');
+  }
+
+  const bridgedContentNotificationIds = bridgedEntityIdsForScope(userId, tenantId, 'content');
+  const bridgedReportIds = bridgedEntityIdsForScope(userId, tenantId, 'report');
+  const bridgedContentNotificationIdSet = new Set(bridgedContentNotificationIds);
+  const bridgedReportIdSet = new Set(bridgedReportIds);
 
   const fetchers: Array<{
     key: string;
@@ -349,42 +437,12 @@ async function buildUnifiedInbox(userId: number, tenantId: number, limit: number
     run: () => Promise<UnifiedInboxSourceResult>;
   }> = [
     {
-      key: 'decision-center',
-      warningCode: 'DECISION_CENTER_UNAVAILABLE',
-      warning: 'Decision Center notifications are temporarily unavailable.',
-      run: async () => {
-        const centerItems = listNotificationCenterItems(userId, userId, { status: 'all', limit });
-        const items = centerItems.map((item) => ({
-          kind: 'notification' as const,
-          id: `decision:${item.itemId}`,
-          title: item.title,
-          body: item.safeBody || item.body || null,
-          type: item.type,
-          status: item.status,
-          createdAt: safeIso(item.createdAt),
-          source: item.sourceSkill,
-          priority: item.priority === 'time_sensitive' || item.priority === 'critical'
-            ? 'high' as const
-            : item.priority === 'active'
-              ? 'medium' as const
-              : 'low' as const,
-          action: 'open_content' as const,
-          metadata: {
-            notificationId: item.itemId,
-            deeplink: item.deeplink,
-            sourceSkill: item.sourceSkill,
-            actions: item.actions,
-          },
-        }));
-        return { items, unreadCount: centerItems.filter((item) => item.status === 'unread').length };
-      },
-    },
-    {
       key: 'notifications',
       warningCode: 'CONTENT_NOTIFICATIONS_UNAVAILABLE',
       warning: 'Content notifications are temporarily unavailable.',
       run: async () => {
-        const notifications = getNotifications(userId, { limit });
+        const notifications = getNotifications(userId, { limit })
+          .filter((n: any) => !bridgedContentNotificationIdSet.has(Number(n.id)));
         const items = notifications.map((n: any) => ({
           kind: 'notification' as const,
           id: `notification:${n.id}`,
@@ -399,7 +457,7 @@ async function buildUnifiedInbox(userId: number, tenantId: number, limit: number
           action: 'open_content' as const,
           metadata: n.data || {},
         }));
-        return { items, unreadCount: getUnreadCount(userId) };
+        return { items, unreadCount: getUnreadCountExcludingNotificationIds(userId, bridgedContentNotificationIds) };
       },
     },
     {
@@ -407,7 +465,8 @@ async function buildUnifiedInbox(userId: number, tenantId: number, limit: number
       warningCode: 'REPORTS_UNAVAILABLE',
       warning: 'Reports are temporarily unavailable.',
       run: async () => {
-        const reports = getRecentReports(userId, { limit });
+        const reports = getRecentReports(userId, { limit })
+          .filter((r: any) => !bridgedReportIdSet.has(Number(r.id)));
         const items = reports.map((r: any) => ({
           kind: 'report' as const,
           id: `report:${r.id}`,
@@ -422,7 +481,7 @@ async function buildUnifiedInbox(userId: number, tenantId: number, limit: number
           action: 'open_report' as const,
           metadata: { sourceJob: r.sourceJob || null },
         }));
-        return { items, unreadCount: getUnreadReportCount(userId) };
+        return { items, unreadCount: getUnreadReportCountExcludingIds(userId, bridgedReportIds) };
       },
     },
     {
@@ -617,8 +676,6 @@ async function buildUnifiedInbox(userId: number, tenantId: number, limit: number
       run: fetcher.run,
     }),
   ));
-  const warningCodes: string[] = [];
-  const warnings: string[] = [];
   if (mailPreference.warningCode) {
     warningCodes.push(mailPreference.warningCode);
     warnings.push(mailPreference.warning || 'Preferred mail provider is unavailable.');
@@ -629,9 +686,6 @@ async function buildUnifiedInbox(userId: number, tenantId: number, limit: number
     warningCodes.push('CALENDAR_INTEGRATION_MISSING');
     warnings.push('No calendar integration is connected yet.');
   }
-  const items: UnifiedInboxItem[] = [];
-  let totalUnread = 0;
-  let successCount = 0;
 
   results.forEach((result, index) => {
     const fetcher = fetchers[index];
@@ -674,6 +728,26 @@ async function buildUnifiedInboxSummary(userId: number, tenantId: number): Promi
   const googleConnected = isConnected(userId, 'google');
   // Phase 17 hostile-QA fix (2026-05-18): pass real tenantId.
   const mailPreference = resolveMailReadPreference(userId, tenantId);
+  const warningCodes: string[] = [];
+  const warnings: string[] = [];
+  let unreadCount = 0;
+
+  try {
+    const centerUnreadCount = await runInboxSource({
+      key: 'decision-center',
+      userId,
+      timeoutMs: getInboxSummarySourceTimeoutMs(),
+      run: async () => countUnreadNotificationCenterItems(userId, tenantId),
+    });
+    unreadCount += centerUnreadCount;
+  } catch {
+    warningCodes.push('DECISION_CENTER_UNAVAILABLE');
+    warnings.push('Decision Center notifications are temporarily unavailable.');
+  }
+
+  const bridgedContentNotificationIds = bridgedEntityIdsForScope(userId, tenantId, 'content');
+  const bridgedReportIds = bridgedEntityIdsForScope(userId, tenantId, 'report');
+
   const fetchers: Array<{
     key: string;
     warningCode: string;
@@ -681,22 +755,16 @@ async function buildUnifiedInboxSummary(userId: number, tenantId: number): Promi
     run: () => Promise<number>;
   }> = [
     {
-      key: 'decision-center',
-      warningCode: 'DECISION_CENTER_UNAVAILABLE',
-      warning: 'Decision Center notifications are temporarily unavailable.',
-      run: async () => listNotificationCenterItems(userId, userId, { status: 'unread', limit: 200 }).length,
-    },
-    {
       key: 'notifications',
       warningCode: 'CONTENT_NOTIFICATIONS_UNAVAILABLE',
       warning: 'Content notifications are temporarily unavailable.',
-      run: async () => getUnreadCount(userId),
+      run: async () => getUnreadCountExcludingNotificationIds(userId, bridgedContentNotificationIds),
     },
     {
       key: 'reports',
       warningCode: 'REPORTS_UNAVAILABLE',
       warning: 'Reports are temporarily unavailable.',
-      run: async () => getUnreadReportCount(userId),
+      run: async () => getUnreadReportCountExcludingIds(userId, bridgedReportIds),
     },
   ];
 
@@ -730,8 +798,6 @@ async function buildUnifiedInboxSummary(userId: number, tenantId: number): Promi
       run: fetcher.run,
     }),
   ));
-  const warningCodes: string[] = [];
-  const warnings: string[] = [];
   if (mailPreference.warningCode) {
     warningCodes.push(mailPreference.warningCode);
     warnings.push(mailPreference.warning || 'Preferred mail provider is unavailable.');
@@ -742,7 +808,6 @@ async function buildUnifiedInboxSummary(userId: number, tenantId: number): Promi
     warningCodes.push('CALENDAR_INTEGRATION_MISSING');
     warnings.push('No calendar integration is connected yet.');
   }
-  let unreadCount = 0;
 
   results.forEach((result, index) => {
     const fetcher = fetchers[index];
@@ -791,15 +856,16 @@ export function notificationRoutes(): Router {
       ? getNotifications(userId, { limit })
       : getNotifications(userId, { status, type, limit });
 
-    const unreadCount = getUnreadCount(userId);
     const tenantId = routeTenantId(req as unknown as AuthenticatedRequest, userId);
     const warnings: Array<{ code: string; message: string }> = [];
     let centerItems: NotificationCenterItem[] = [];
+    let centerUnreadCount = 0;
     try {
       centerItems = listNotificationCenterItems(userId, tenantId, {
         status: (String(req.query.centerStatus || 'all') as NotificationCenterStatus | 'all'),
         limit,
       });
+      centerUnreadCount = countUnreadNotificationCenterItems(userId, tenantId);
     } catch (err) {
       logger.warn(
         {
@@ -816,9 +882,8 @@ export function notificationRoutes(): Router {
         message: 'Decision Center notifications are temporarily unavailable.',
       });
     }
-
     sendSuccess(res, {
-      unreadCount: unreadCount + centerItems.filter((item) => item.status === 'unread').length,
+      unreadCount: centerUnreadCount,
       count: notifications.length,
       notifications: notifications.map((n: any) => ({
         id: n.id,
@@ -860,6 +925,7 @@ export function notificationRoutes(): Router {
         userId,
         tenantId,
       } as NotificationIntentInput);
+      if (result.item) invalidateNotificationInboxCaches(userId, tenantId);
       sendSuccess(res, formatEvaluationForApi(result));
     } catch (err: any) {
       logger.warn({ err, userId }, 'Notification intent rejected');
@@ -886,6 +952,7 @@ export function notificationRoutes(): Router {
         tenantId,
       });
       const result = await createNotificationIntent(fixture);
+      if (result.item) invalidateNotificationInboxCaches(userId, tenantId);
       sendSuccess(res, formatEvaluationForApi(result));
     } catch (err: any) {
       logger.warn({ err, userId, sourceSkill }, 'Notification fixture rejected');
@@ -931,6 +998,51 @@ export function notificationRoutes(): Router {
     } catch (err: any) {
       logger.warn({ err, userId }, 'Notification preferences rejected');
       sendError(res, 'INVALID_NOTIFICATION_PREFERENCES', 'Unable to update notification preferences', 400);
+    }
+  }));
+
+  router.get('/reliability-dashboard', asyncHandler(async (req, res: Response) => {
+    const authReq = req as unknown as AuthenticatedRequest;
+    const { userId } = authReq;
+    if (!ensureValidNotificationsRouteScope(res, userId, 'notifications_route_reliability_dashboard')) return;
+    const tenantId = routeTenantId(authReq, userId);
+    let canonicalUnreadCount: number | undefined;
+    try {
+      canonicalUnreadCount = (await buildUnifiedInboxSummary(userId, tenantId)).unreadCount;
+    } catch (err) {
+      logger.warn({ err, userId, tenantId }, 'Notification reliability dashboard badge baseline degraded');
+    }
+    sendSuccess(res, {
+      dashboard: getNotificationReliabilityDashboard(userId, tenantId, {
+        expectedBadgeCount: canonicalUnreadCount,
+        canonicalUnreadCount,
+      }),
+    });
+  }));
+
+  router.post('/reliability-events', asyncHandler(async (req, res: Response) => {
+    const authReq = req as unknown as AuthenticatedRequest;
+    const { userId } = authReq;
+    if (!ensureValidNotificationsRouteScope(res, userId, 'notifications_route_reliability_event')) return;
+    const tenantId = routeTenantId(authReq, userId);
+    const eventType = typeof req.body?.eventType === 'string' ? req.body.eventType : '';
+    if (eventType !== 'badge_reconciled' && eventType !== 'read_state_failure') {
+      sendError(res, 'VALIDATION', 'eventType must be badge_reconciled or read_state_failure', 400);
+      return;
+    }
+    try {
+      recordNotificationReliabilityEvent({
+        userId,
+        tenantId,
+        eventType,
+        badgeCount: Number.isInteger(req.body?.badgeCount) ? req.body.badgeCount : null,
+        source: typeof req.body?.source === 'string' ? req.body.source : null,
+        errorCode: typeof req.body?.errorCode === 'string' ? req.body.errorCode : null,
+      });
+      sendSuccess(res, { recorded: true });
+    } catch (err) {
+      logger.warn({ err, userId, tenantId, eventType }, 'Notification reliability event rejected');
+      sendError(res, 'INVALID_NOTIFICATION_RELIABILITY_EVENT', 'Unable to record notification reliability event', 400);
     }
   }));
 
@@ -996,6 +1108,7 @@ export function notificationRoutes(): Router {
       sendError(res, 'NOT_FOUND', 'Notification not found', 404);
       return;
     }
+    invalidateNotificationInboxCaches(userId, tenantId);
     sendSuccess(res, { item: formatCenterItemForApi(item) });
   }));
 
@@ -1009,6 +1122,7 @@ export function notificationRoutes(): Router {
       sendError(res, 'NOT_FOUND', 'Notification not found', 404);
       return;
     }
+    invalidateNotificationInboxCaches(userId, tenantId);
     sendSuccess(res, { item: formatCenterItemForApi(item) });
   }));
 
@@ -1026,11 +1140,13 @@ export function notificationRoutes(): Router {
           idempotencyKey: typeof req.body?.idempotencyKey === 'string' ? req.body.idempotencyKey : undefined,
           payload: typeof req.body?.payload === 'object' && req.body.payload ? req.body.payload : {},
         });
+        invalidateNotificationInboxCaches(userId, tenantId);
         sendSuccess(res, result);
         return;
       }
 
       const result = performNotificationAction(itemId, actionId, userId, tenantId);
+      invalidateNotificationInboxCaches(userId, tenantId);
       sendSuccess(res, {
         actionId: result.actionId,
         idempotent: result.idempotent,
@@ -1060,7 +1176,7 @@ export function notificationRoutes(): Router {
     const tenantId = routeTenantId(authReq, userId);
     if (!ensureValidNotificationsRouteScope(res, userId, 'notifications_route_inbox')) return;
     const limit = parseInt(String(req.query.limit || '30'), 10);
-    const cacheKey = routeCacheKey('unified-inbox', userId, limit);
+    const cacheKey = routeCacheKey('unified-inbox', userId, 'tenant', tenantId, limit);
     await handleCachedRoute<any>({
       cacheKey,
       ttlSeconds: INBOX_CACHE_TTL,
@@ -1119,7 +1235,7 @@ export function notificationRoutes(): Router {
     const { userId } = authReq;
     const tenantId = routeTenantId(authReq, userId);
     if (!ensureValidNotificationsRouteScope(res, userId, 'notifications_route_unread_count')) return;
-    const cacheKey = routeCacheKey('unified-inbox-unread', userId);
+    const cacheKey = routeCacheKey('unified-inbox-unread', userId, 'tenant', tenantId);
     await handleCachedRoute<{ unreadCount: number; warningCodes: string[]; warnings: string[] }>({
       cacheKey,
       ttlSeconds: INBOX_SUMMARY_CACHE_TTL,
@@ -1136,14 +1252,17 @@ export function notificationRoutes(): Router {
    * Mark a notification as read.
    */
   router.post('/:id/read', asyncHandler(async (req, res: Response) => {
-    const { userId } = req as unknown as AuthenticatedRequest;
+    const authReq = req as unknown as AuthenticatedRequest;
+    const { userId } = authReq;
     if (!ensureValidNotificationsRouteScope(res, userId, 'notifications_route_mark_read', { notificationId: req.params.id })) return;
+    const tenantId = routeTenantId(authReq, userId);
     const { id } = req.params;
     const success = markRead(parseInt(id, 10), userId);
     if (!success) {
       sendError(res, 'NOT_FOUND', 'Notification not found', 404);
       return;
     }
+    invalidateNotificationInboxCaches(userId, tenantId);
     sendSuccess(res, { marked: true });
   }));
 
@@ -1153,9 +1272,12 @@ export function notificationRoutes(): Router {
    * Mark all unread notifications as read.
    */
   router.post('/read-all', asyncHandler(async (req, res: Response) => {
-    const { userId } = req as unknown as AuthenticatedRequest;
+    const authReq = req as unknown as AuthenticatedRequest;
+    const { userId } = authReq;
     if (!ensureValidNotificationsRouteScope(res, userId, 'notifications_route_mark_all_read')) return;
+    const tenantId = routeTenantId(authReq, userId);
     const count = markAllRead(userId);
+    invalidateNotificationInboxCaches(userId, tenantId);
     sendSuccess(res, { markedCount: count });
   }));
 
@@ -1165,14 +1287,17 @@ export function notificationRoutes(): Router {
    * Resolve a notification (action completed).
    */
   router.post('/:id/resolve', asyncHandler(async (req, res: Response) => {
-    const { userId } = req as unknown as AuthenticatedRequest;
+    const authReq = req as unknown as AuthenticatedRequest;
+    const { userId } = authReq;
     if (!ensureValidNotificationsRouteScope(res, userId, 'notifications_route_resolve', { notificationId: req.params.id })) return;
+    const tenantId = routeTenantId(authReq, userId);
     const { id } = req.params;
     const success = resolveNotification(parseInt(id, 10), userId);
     if (!success) {
       sendError(res, 'NOT_FOUND', 'Notification not found', 404);
       return;
     }
+    invalidateNotificationInboxCaches(userId, tenantId);
     sendSuccess(res, { resolved: true });
   }));
 

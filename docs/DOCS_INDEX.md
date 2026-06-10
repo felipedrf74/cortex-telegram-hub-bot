@@ -31,6 +31,7 @@ This is the backend repo's markdown routing map for Codex and Claude Code.
 | Google GenAI migration plan | canonical | `docs/engineering/genai-migration-plan.md` | Update when a Google SDK migration phase lands or the SDK API surface changes. |
 | Runtime and observability standard | canonical | `docs/engineering/runtime-and-observability-standard.md` | Update when health/log/alert semantics change. |
 | Testing and QA harness standard | canonical | `docs/engineering/testing-and-qa-harness-standard.md` | Update when test categories or evidence requirements change. |
+| Notification Center boundary | canonical | `docs/notifications/notification-center-boundary.md` | Update when user notifications, operator alerts, badges, or legacy delivery boundaries change. |
 | Privacy policy draft | lawyer-review | `docs/legal/privacy-policy-draft.md` | Owner/counsel must approve before publication. |
 | Terms of service draft | lawyer-review | `docs/legal/terms-of-service-draft.md` | Owner/counsel must approve before publication. |
 | Content Agency model | current | `docs/content/content-agency-model.md` | Update when creator-agency rules, routes, persistence, iOS behavior, or quality gates change. |

@@ -381,7 +381,7 @@ function buildHomeFeatureFlags(userId: number, tenantId: number) {
 async function buildDashboardHomePayload(userId: number, tenantId: number, language: Lang, timings: RouteTiming[] = []) {
   const [dashboardResult, briefResult] = await Promise.allSettled([
     timedAsync(timings, 'dashboard', () => buildDashboardPayload(userId, tenantId, language, timings)),
-    timedAsync(timings, 'daily_brief', () => withDashboardTimeout(composeDailyBrief({ userId, language }), DASHBOARD_HOME_BRIEF_TIMEOUT_MS, 'daily_brief')),
+    timedAsync(timings, 'daily_brief', () => withDashboardTimeout(composeDailyBrief({ userId, tenantId, language }), DASHBOARD_HOME_BRIEF_TIMEOUT_MS, 'daily_brief')),
   ]);
 
   if (dashboardResult.status !== 'fulfilled') {

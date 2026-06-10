@@ -241,6 +241,7 @@ function buildUnavailableDailyBriefResponse(opts: { userId: number; date?: strin
 
 export async function composeDailyBrief(opts: {
   userId: number;
+  tenantId?: number;
   date?: string;
   language?: string;
   forceRefresh?: boolean;
@@ -257,10 +258,23 @@ export async function composeDailyBrief(opts: {
     });
     return buildEmptyDailyBriefResponse(opts);
   }
+  const tenantId = isValidTenantUserId(opts.tenantId) ? opts.tenantId! : opts.userId;
+  if (opts.tenantId !== undefined && !isValidTenantUserId(opts.tenantId)) {
+    recordTenantScopeAnomaly({
+      layer: 'orchestration',
+      operation: 'compose_daily_brief_tenant_scope',
+      reason: 'invalid_user_scope',
+      userId: opts.userId,
+      details: {
+        tenantId: opts.tenantId,
+        date: opts.date ?? null,
+      },
+    });
+  }
 
   const targetDate = resolveTargetDate(opts.date);
   const languageBucket = resolveLanguageBucket(opts.language);
-  const cacheKey = `plan:today:u:${opts.userId}:${targetDate}:${languageBucket}`;
+  const cacheKey = `plan:today:u:${opts.userId}:t:${tenantId}:${targetDate}:${languageBucket}`;
   if (!opts.forceRefresh) {
     const cached = getCached<DailyBriefResponse>(cacheKey);
     if (cached) {
@@ -271,6 +285,7 @@ export async function composeDailyBrief(opts: {
   try {
     const weekPlan = await composeWeeklyPlan({
       userId: opts.userId,
+      tenantId,
       weekStart: weekStartForDate(targetDate),
       forceRefresh: opts.forceRefresh,
     });
@@ -278,7 +293,7 @@ export async function composeDailyBrief(opts: {
     const fallbackDay = buildUnavailableDailyBriefDay(targetDate, opts.language);
     const day = weekPlan.days.find((entry) => entry.date === targetDate) ?? fallbackDay;
     const conflicts = weekPlan.conflicts.filter((conflict) => conflict.date === targetDate);
-    const secretaryTodaySignals = readSecretaryTodayDecisionSignals(opts.userId, opts.userId);
+    const secretaryTodaySignals = readSecretaryTodayDecisionSignals(opts.userId, tenantId);
     let coordination = buildUnavailableDailyBriefResponse(opts).coordination;
     let coordinationDegraded = day === fallbackDay;
 

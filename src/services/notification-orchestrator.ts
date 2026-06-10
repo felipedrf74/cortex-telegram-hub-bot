@@ -21,6 +21,11 @@ import { emitDomainEvent, runOutboxTransaction } from './event-outbox';
 import { enqueueJob } from './background-job-queue';
 import { consumeResourceBudget } from './resource-budgets';
 import {
+  NON_BADGE_NOTIFICATION_TYPES,
+  deliveryPolicyForNotificationContract,
+  resolveNotificationContract,
+} from './notification-contracts';
+import {
   buildDecisionLogicV2,
   rankDecision,
   type DecisionLogicContext,
@@ -122,7 +127,7 @@ export interface NotificationIntentRecord extends Required<Omit<NotificationInte
   deliveryPolicy: NotificationDeliveryPolicy;
   privacyPolicy: NotificationPrivacyPolicy;
   decisionContext: DecisionLogicContext | null;
-  status: 'pending' | 'evaluated' | 'deduped' | 'suppressed';
+  status: 'pending' | 'evaluated' | 'deduped' | 'suppressed' | 'expired';
   createdAt: string;
 }
 
@@ -169,6 +174,7 @@ export interface NotificationCenterItem {
   deeplink: string | null;
   actions: NotificationActionButton[];
   dedupeKey: string | null;
+  priorityScore?: number | null;
   createdAt: string;
   expiresAt: string | null;
   snoozedUntil?: string | null;
@@ -250,6 +256,48 @@ export interface NotificationDeliveryObservabilityMetrics {
   inAppOnlyCount: number;
   digestCount: number;
   blockedByReason: Record<string, number>;
+}
+
+export interface NotificationReliabilityDashboard {
+  userId: number;
+  tenantId: number;
+  generatedAt: string;
+  dedupe: {
+    dedupedCount: number;
+    activeDedupeKeyCount: number;
+  };
+  digest: {
+    pendingCount: number;
+    dueCount: number;
+    releasedCount: number;
+  };
+  pushOutcome: {
+    attemptCount: number;
+    sentCount: number;
+    blockedCount: number;
+    blockedByReason: Record<string, number>;
+  };
+  badge: {
+    expectedBadgeCount: number;
+    canonicalUnreadCount: number;
+    clientReportedBadgeCount: number | null;
+    drift: number | null;
+  };
+  readState: {
+    serverReadFailureCount: number;
+    clientReportedReadFailureCount: number | null;
+  };
+}
+
+export type NotificationReliabilityEventType = 'badge_reconciled' | 'read_state_failure';
+
+export interface NotificationReliabilityEventInput {
+  userId: number;
+  tenantId?: number;
+  eventType: NotificationReliabilityEventType;
+  badgeCount?: number | null;
+  source?: string | null;
+  errorCode?: string | null;
 }
 
 interface DecisionPushPlan {
@@ -416,6 +464,16 @@ export function ensureNotificationTables(): void {
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
       sent_at TEXT
     );
+    CREATE TABLE IF NOT EXISTS notification_reliability_events (
+      event_id TEXT PRIMARY KEY,
+      user_id INTEGER NOT NULL,
+      tenant_id INTEGER NOT NULL,
+      event_type TEXT NOT NULL,
+      badge_count INTEGER,
+      source TEXT,
+      error_code TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
     CREATE TABLE IF NOT EXISTS notification_device_tokens (
       token_id TEXT PRIMARY KEY,
       user_id INTEGER NOT NULL,
@@ -447,16 +505,26 @@ export function ensureNotificationTables(): void {
       ON notification_center_items(user_id, tenant_id, status, created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_notification_center_dedupe
       ON notification_center_items(user_id, tenant_id, dedupe_key, status);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_notification_intents_dedupe_unique
+      ON notification_intents(user_id, tenant_id, source_skill, dedupe_key)
+      WHERE dedupe_key IS NOT NULL AND status != 'expired';
+    DROP INDEX IF EXISTS idx_notification_center_items_dedupe_unique;
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_notification_center_items_dedupe_unique
+      ON notification_center_items(user_id, tenant_id, source_skill, dedupe_key)
+      WHERE dedupe_key IS NOT NULL AND status NOT IN ('expired','actioned','dismissed','superseded');
     CREATE INDEX IF NOT EXISTS idx_notification_decision_logs_scope_created
       ON notification_decision_logs(user_id, tenant_id, created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_notification_delivery_attempts_notification
       ON notification_delivery_attempts(notification_id, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_notification_reliability_events_scope_type_created
+      ON notification_reliability_events(user_id, tenant_id, event_type, created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_notification_device_tokens_scope_active
       ON notification_device_tokens(user_id, tenant_id, platform, revoked_at);
     CREATE INDEX IF NOT EXISTS idx_ios_devices_user ON ios_devices(user_id);
   `);
   ensureColumn('notification_center_items', 'sensitive_body', 'TEXT');
   ensureColumn('notification_center_items', 'snoozed_until', 'TEXT');
+  ensureColumn('notification_center_items', 'priority_score', 'INTEGER');
   ensureColumn('notification_intents', 'decision_context_json', 'TEXT');
 }
 
@@ -556,6 +624,7 @@ export function updateNotificationProfile(userId: number, tenantId: number, patc
 
 export async function createNotificationIntent(input: NotificationIntentInput): Promise<NotificationEvaluationResult> {
   const normalized = normalizeIntent(input);
+  expireStaleNotificationIntents();
   const budget = consumeResourceBudget({
     tenantId: normalized.tenantId,
     userId: normalized.userId,
@@ -566,38 +635,51 @@ export async function createNotificationIntent(input: NotificationIntentInput): 
   if (!budget.allowed) {
     throw new Error('notification intent rate limited');
   }
-  const intent = runOutboxTransaction((emitDomainEvent) => {
-    const persisted = persistIntent(normalized);
-    emitDomainEvent({
-      tenantId: persisted.tenantId,
-      userId: persisted.userId,
-      sourceSkill: 'notification',
-      eventType: 'notification.intent.created',
-      entityType: 'notification_intent',
-      entityId: persisted.intentId,
-      payload: {
-        summary: {
-          sourceSkill: persisted.sourceSkill,
-          type: persisted.type,
-          priority: persisted.priority,
-          requiresUserAction: persisted.requiresUserAction,
+  const existingDuplicate = resolveActiveDuplicateEvaluation(normalized);
+  if (existingDuplicate) return existingDuplicate;
+
+  let intent: NotificationIntentRecord;
+  try {
+    intent = runOutboxTransaction((emitDomainEvent) => {
+      const persisted = persistIntent(normalized);
+      emitDomainEvent({
+        tenantId: persisted.tenantId,
+        userId: persisted.userId,
+        sourceSkill: 'notification',
+        eventType: 'notification.intent.created',
+        entityType: 'notification_intent',
+        entityId: persisted.intentId,
+        payload: {
+          summary: {
+            sourceSkill: persisted.sourceSkill,
+            type: persisted.type,
+            priority: persisted.priority,
+            requiresUserAction: persisted.requiresUserAction,
+          },
+          action: 'created',
         },
-        action: 'created',
-      },
-      privacyClassification: persisted.privacyPolicy === 'financial' ? 'financial' : persisted.privacyPolicy === 'health' ? 'health' : 'internal',
-      idempotencyKey: `notification.intent.created:${persisted.tenantId}:${persisted.userId}:${persisted.intentId}`,
+        privacyClassification: persisted.privacyPolicy === 'financial' ? 'financial' : persisted.privacyPolicy === 'health' ? 'health' : 'internal',
+        idempotencyKey: `notification.intent.created:${persisted.tenantId}:${persisted.userId}:${persisted.intentId}`,
+      });
+      emitSourceSkillEventForIntent(persisted, emitDomainEvent);
+      enqueueJob({
+        tenantId: persisted.tenantId,
+        userId: persisted.userId,
+        jobType: 'deliver_notification',
+        payload: { intentId: persisted.intentId },
+        priority: persisted.priority === 'time_sensitive' || persisted.priority === 'critical' ? 10 : 50,
+        idempotencyKey: `deliver_notification:${persisted.intentId}`,
+      });
+      return persisted;
     });
-    emitSourceSkillEventForIntent(persisted, emitDomainEvent);
-    enqueueJob({
-      tenantId: persisted.tenantId,
-      userId: persisted.userId,
-      jobType: 'deliver_notification',
-      payload: { intentId: persisted.intentId },
-      priority: persisted.priority === 'time_sensitive' || persisted.priority === 'critical' ? 10 : 50,
-      idempotencyKey: `deliver_notification:${persisted.intentId}`,
-    });
-    return persisted;
-  });
+  } catch (err) {
+    if (isNotificationDedupeConstraintError(err)) {
+      expireStaleNotificationIntents();
+      const duplicate = resolveActiveDuplicateEvaluation(normalized);
+      if (duplicate) return duplicate;
+    }
+    throw err;
+  }
   return evaluateNotificationIntent(intent.intentId, intent.userId, intent.tenantId);
 }
 
@@ -775,12 +857,37 @@ export async function evaluateNotificationIntent(
   };
 }
 
+export function expireStaleNotificationIntents(now = new Date()): number {
+  ensureNotificationTables();
+  const db = getDb();
+  const nowIso = now.toISOString();
+  // The intent and active center-item unique dedupe indexes are status-based, so active expired
+  // rows must be flipped before a same-key replacement can be inserted after expiry. Terminal
+  // center rows are excluded by the partial index and keep their lifecycle/rollback history.
+  const intents = db.prepare(`
+    UPDATE notification_intents
+       SET status = 'expired'
+     WHERE status != 'expired'
+       AND expires_at IS NOT NULL
+       AND datetime(expires_at) <= datetime(?)
+  `).run(nowIso);
+  const items = db.prepare(`
+    UPDATE notification_center_items
+       SET status = 'expired'
+     WHERE status IN ('unread','read','failed','snoozed')
+       AND expires_at IS NOT NULL
+       AND datetime(expires_at) <= datetime(?)
+  `).run(nowIso);
+  return (intents.changes ?? 0) + (items.changes ?? 0);
+}
+
 export async function releaseDueNotificationDeliveries(now = new Date()): Promise<{
   inspected: number;
   released: number;
   blocked: number;
 }> {
   ensureNotificationTables();
+  expireStaleNotificationIntents(now);
   const db = getDb();
   const rows = db.prepare(`
     SELECT
@@ -974,6 +1081,50 @@ export function listNotificationCenterItems(
     LIMIT ?
   `).all(...params) as any[];
   return rows.map(mapCenterItem);
+}
+
+export function countUnreadNotificationCenterItems(userId: number, tenantId = userId): number {
+  assertScope(userId, tenantId, 'count_unread_notification_center_items');
+  ensureNotificationTables();
+  const nonBadgePlaceholders = NON_BADGE_NOTIFICATION_TYPES.map(() => '?').join(',');
+  const row = getDb().prepare(`
+    SELECT COUNT(*) AS count
+      FROM notification_center_items
+     WHERE user_id = ?
+       AND tenant_id = ?
+       AND status = 'unread'
+       AND type NOT IN (${nonBadgePlaceholders})
+       AND (expires_at IS NULL OR datetime(expires_at) > datetime('now'))
+  `).get(userId, tenantId, ...NON_BADGE_NOTIFICATION_TYPES) as { count: number } | undefined;
+  return row?.count ?? 0;
+}
+
+export function listNotificationBridgeEntityIds(
+  userId: number,
+  tenantId: number,
+  bridgePrefix: 'content' | 'report',
+): number[] {
+  assertScope(userId, tenantId, 'list_notification_bridge_entity_ids', { bridgePrefix });
+  ensureNotificationTables();
+  const rows = getDb().prepare(`
+    SELECT dedupe_key AS dedupeKey
+      FROM notification_center_items
+     WHERE user_id = ?
+       AND tenant_id = ?
+       AND dedupe_key LIKE ?
+       AND status != 'expired'
+       AND (expires_at IS NULL OR datetime(expires_at) > datetime('now'))
+  `).all(userId, tenantId, `${bridgePrefix}:%`) as Array<{ dedupeKey: string | null }>;
+  const ids = new Set<number>();
+  const pattern = new RegExp(`^${bridgePrefix}:[^:]+:(\\d+)$`);
+  for (const row of rows) {
+    if (!row.dedupeKey) continue;
+    const match = row.dedupeKey.match(pattern);
+    if (!match) continue;
+    const id = Number.parseInt(match[1], 10);
+    if (Number.isInteger(id) && id > 0) ids.add(id);
+  }
+  return [...ids];
 }
 
 export interface PortalNotificationScope {
@@ -1307,6 +1458,129 @@ export function getNotificationDeliveryObservabilityMetrics(
   };
 }
 
+export function recordNotificationReliabilityEvent(input: NotificationReliabilityEventInput): void {
+  const tenantId = input.tenantId ?? input.userId;
+  assertScope(input.userId, tenantId, 'record_notification_reliability_event', {
+    eventType: input.eventType,
+    source: input.source ?? null,
+  });
+  if (!['badge_reconciled', 'read_state_failure'].includes(input.eventType)) {
+    throw new Error('invalid notification reliability event type');
+  }
+  const badgeCount = Number.isInteger(input.badgeCount) && input.badgeCount! >= 0
+    ? Math.min(input.badgeCount!, 99_999)
+    : null;
+  const source = sanitizeReliabilityScalar(input.source, 80);
+  const errorCode = sanitizeReliabilityScalar(input.errorCode, 120);
+  ensureNotificationTables();
+  getDb().prepare(`
+    INSERT INTO notification_reliability_events (
+      event_id, user_id, tenant_id, event_type, badge_count, source, error_code, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
+  `).run(
+    `nre_${randomUUID()}`,
+    input.userId,
+    tenantId,
+    input.eventType,
+    badgeCount,
+    source,
+    errorCode,
+  );
+}
+
+export function getNotificationReliabilityDashboard(
+  userId: number,
+  tenantId = userId,
+  opts: { expectedBadgeCount?: number; canonicalUnreadCount?: number } = {},
+): NotificationReliabilityDashboard {
+  assertScope(userId, tenantId, 'get_notification_reliability_dashboard');
+  ensureNotificationTables();
+  const db = getDb();
+  const delivery = getNotificationDeliveryObservabilityMetrics(userId, tenantId);
+  const dedupe = db.prepare(`
+    SELECT
+      SUM(CASE WHEN logs.decision = 'deduped' THEN 1 ELSE 0 END) AS dedupedCount,
+      COUNT(DISTINCT CASE WHEN items.dedupe_key IS NOT NULL AND items.status != 'expired' THEN items.dedupe_key END) AS activeDedupeKeyCount
+      FROM notification_decision_logs logs
+      LEFT JOIN notification_center_items items
+        ON items.item_id = logs.notification_id
+       AND items.user_id = logs.user_id
+       AND items.tenant_id = logs.tenant_id
+     WHERE logs.user_id = ? AND logs.tenant_id = ?
+  `).get(userId, tenantId) as { dedupedCount: number | null; activeDedupeKeyCount: number | null };
+  const digest = db.prepare(`
+    SELECT
+      SUM(CASE WHEN decision = 'digest' AND sent_at IS NULL THEN 1 ELSE 0 END) AS pendingCount,
+      SUM(CASE WHEN decision = 'digest' AND sent_at IS NULL AND scheduled_for IS NOT NULL AND datetime(scheduled_for) <= datetime('now') THEN 1 ELSE 0 END) AS dueCount,
+      SUM(CASE WHEN reason LIKE 'digest notification released%' THEN 1 ELSE 0 END) AS releasedCount
+      FROM notification_decision_logs
+     WHERE user_id = ? AND tenant_id = ?
+  `).get(userId, tenantId) as { pendingCount: number | null; dueCount: number | null; releasedCount: number | null };
+  const latestBadgeEvent = db.prepare(`
+    SELECT badge_count AS badgeCount
+      FROM notification_reliability_events
+     WHERE user_id = ?
+       AND tenant_id = ?
+       AND event_type = 'badge_reconciled'
+       AND badge_count IS NOT NULL
+     ORDER BY datetime(created_at) DESC
+     LIMIT 1
+  `).get(userId, tenantId) as { badgeCount: number | null } | undefined;
+  const readState = db.prepare(`
+    SELECT COUNT(*) AS clientReportedReadFailureCount
+      FROM notification_reliability_events
+     WHERE user_id = ?
+       AND tenant_id = ?
+       AND event_type = 'read_state_failure'
+       AND datetime(created_at) >= datetime('now', '-24 hours')
+  `).get(userId, tenantId) as { clientReportedReadFailureCount: number | null };
+  const defaultCanonicalUnreadCount = countUnreadNotificationCenterItems(userId, tenantId);
+  const expectedBadgeCount = Number.isInteger(opts.expectedBadgeCount)
+    ? Math.max(0, opts.expectedBadgeCount!)
+    : defaultCanonicalUnreadCount;
+  const canonicalUnreadCount = Number.isInteger(opts.canonicalUnreadCount)
+    ? Math.max(0, opts.canonicalUnreadCount!)
+    : defaultCanonicalUnreadCount;
+  const clientReportedBadgeCount = latestBadgeEvent?.badgeCount ?? null;
+  return {
+    userId,
+    tenantId,
+    generatedAt: new Date().toISOString(),
+    dedupe: {
+      dedupedCount: dedupe.dedupedCount ?? 0,
+      activeDedupeKeyCount: dedupe.activeDedupeKeyCount ?? 0,
+    },
+    digest: {
+      pendingCount: digest.pendingCount ?? 0,
+      dueCount: digest.dueCount ?? 0,
+      releasedCount: digest.releasedCount ?? 0,
+    },
+    pushOutcome: {
+      attemptCount: delivery.pushAttemptCount,
+      sentCount: delivery.pushSentCount,
+      blockedCount: delivery.pushBlockedCount,
+      blockedByReason: delivery.blockedByReason,
+    },
+    badge: {
+      expectedBadgeCount,
+      canonicalUnreadCount,
+      clientReportedBadgeCount,
+      drift: clientReportedBadgeCount == null ? null : clientReportedBadgeCount - expectedBadgeCount,
+    },
+    readState: {
+      serverReadFailureCount: 0,
+      clientReportedReadFailureCount: readState.clientReportedReadFailureCount ?? 0,
+    },
+  };
+}
+
+function sanitizeReliabilityScalar(value: string | null | undefined, maxLength: number): string | null {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  return trimmed.replace(/[^a-zA-Z0-9_.:-]/g, '_').slice(0, maxLength);
+}
+
 function normalizeBlockedReason(reason: string): string {
   if (reason.startsWith('decision rank gate')) return reason.split(':')[0];
   if (reason.startsWith('decision quality gate')) return reason.split(':')[0];
@@ -1463,6 +1737,21 @@ function normalizeIntent(input: NotificationIntentInput): NotificationIntentReco
   if (!VALID_PRIORITIES.includes(input.priority)) throw new Error('invalid notification priority');
   if (!input.title.trim()) throw new Error('notification title required');
   if (!input.body.trim()) throw new Error('notification body required');
+  const relatedEntityId = input.relatedEntityId == null ? null : String(input.relatedEntityId);
+  const relatedEntityType = input.relatedEntityType ?? null;
+  const actionButtons = normalizeActions(input.actionButtons ?? defaultActionsForType(input.type));
+  const decisionContext = normalizeDecisionContext({
+    ...(input.decisionContext ?? {}),
+    ...(input.visibilityScope ? { visibilityScope: input.visibilityScope } : {}),
+  });
+  const contract = resolveNotificationContract({
+    sourceSkill: input.sourceSkill,
+    type: input.type,
+    actionId: actionButtons[0]?.id ?? null,
+    entityType: relatedEntityType,
+    entityId: relatedEntityId,
+    recipe: typeof decisionContext?.recipe === 'string' ? decisionContext.recipe : null,
+  });
 
   return {
     intentId: input.intentId ?? `ni_${randomUUID()}`,
@@ -1471,24 +1760,21 @@ function normalizeIntent(input: NotificationIntentInput): NotificationIntentReco
     sourceSkill: input.sourceSkill,
     type: input.type,
     priority: input.priority,
-    relatedEntityId: input.relatedEntityId == null ? null : String(input.relatedEntityId),
-    relatedEntityType: input.relatedEntityType ?? null,
+    relatedEntityId,
+    relatedEntityType,
     title: input.title.trim(),
     body: input.body.trim(),
     sensitiveBody: input.sensitiveBody?.trim() || null,
-    actionButtons: normalizeActions(input.actionButtons ?? defaultActionsForType(input.type)),
+    actionButtons,
     deeplink: input.deeplink ?? `nexus://notifications/${input.intentId ?? 'pending'}`,
     expiresAt: input.expiresAt ?? null,
     quietHoursPolicy: input.quietHoursPolicy ?? 'respect',
     dedupeKey: input.dedupeKey ?? defaultDedupeKey(input),
     requiresUserAction: !!input.requiresUserAction,
     decisionDeadline: input.decisionDeadline ?? null,
-    deliveryPolicy: input.deliveryPolicy ?? 'auto',
-    privacyPolicy: input.privacyPolicy ?? defaultPrivacyPolicy(input.sourceSkill),
-    decisionContext: normalizeDecisionContext({
-      ...(input.decisionContext ?? {}),
-      ...(input.visibilityScope ? { visibilityScope: input.visibilityScope } : {}),
-    }),
+    deliveryPolicy: input.deliveryPolicy ?? deliveryPolicyForNotificationContract(contract),
+    privacyPolicy: input.privacyPolicy ?? contract.privacySafeCopyPolicy,
+    decisionContext,
     status: 'pending',
     createdAt: new Date().toISOString(),
   };
@@ -1590,11 +1876,11 @@ async function attemptPushDelivery(
 
   try {
     const isDecisionPush = isDecisionIntentForPush(intent);
+    const contract = notificationContractForIntent(intent);
     let badge: number | undefined;
     if (isDecisionPush) {
       try {
-        const { countOpenUrgentDecisionsForUser } = await import('./decision-center');
-        badge = countOpenUrgentDecisionsForUser(intent.userId, intent.tenantId);
+        badge = countUnreadNotificationCenterItems(intent.userId, intent.tenantId);
       } catch (err) {
         logger.debug({ err, intentId: intent.intentId }, 'Notification orchestrator badge count lookup failed');
       }
@@ -1612,10 +1898,11 @@ async function attemptPushDelivery(
         intentId: intent.intentId,
         sourceSkill: intent.sourceSkill,
         type: intent.type,
+        iosDestination: contract.iosDestination,
         deeplink: payload.deeplink,
       },
       threadId: isDecisionPush ? 'decision-center' : `${intent.sourceSkill}-${intent.type}`,
-      category: notificationCategoryForIntent(intent),
+      category: contract.apnsCategory,
       sound: effectiveSound(intent.priority, profile),
       interruptionLevel: payload.interruptionLevel,
       collapseId: isDecisionPush ? `decision:${notificationId}` : undefined,
@@ -1744,19 +2031,99 @@ function markDecisionActionTaken(decisionLogId: string | null, actionId: string)
   `).run(actionId, decisionLogId);
 }
 
+function resolveActiveDuplicateEvaluation(intent: NotificationIntentRecord): NotificationEvaluationResult | null {
+  ensureNotificationTables();
+  const duplicate = findActiveDuplicate(intent);
+  const persistedIntent = duplicate
+    ? getIntentById(duplicate.intentId, intent.userId, intent.tenantId) ?? {
+        ...intent,
+        intentId: duplicate.intentId,
+      }
+    : findActiveDuplicateIntent(intent);
+  if (!persistedIntent) return null;
+
+  const profile = getOrCreateNotificationProfile(intent.userId, intent.tenantId);
+  const effectivePriority = normalizePriorityForPolicy(persistedIntent.priority, profile);
+  const effectiveIntent = { ...persistedIntent, priority: effectivePriority };
+  const pushPayload = {
+    title: safeNotificationTitle(effectiveIntent),
+    body: buildPrivacySafeBody(effectiveIntent),
+    deeplink: effectiveIntent.deeplink,
+    actions: effectiveIntent.actionButtons,
+    interruptionLevel: interruptionLevelForPriority(effectivePriority),
+  };
+  const log = persistDecisionLog({
+    intent: persistedIntent,
+    notificationId: duplicate?.itemId ?? null,
+    decision: 'deduped',
+    priority: effectivePriority,
+    reason: duplicate
+      ? 'active unresolved notification with same source and dedupe key already exists'
+      : 'active notification intent with same source and dedupe key already exists',
+    scheduledFor: null,
+    sentAt: null,
+    deliveryAttemptIds: [],
+  });
+
+  return {
+    intent: { ...persistedIntent, priority: effectivePriority, status: 'deduped' },
+    item: duplicate,
+    decisionLog: log,
+    deliveryAttempts: [],
+    pushPayload: duplicate ? pushPayload : null,
+  };
+}
+
+function getIntentById(intentId: string, userId: number, tenantId: number): NotificationIntentRecord | null {
+  const row = getDb().prepare(`
+    SELECT * FROM notification_intents
+    WHERE intent_id = ? AND user_id = ? AND tenant_id = ?
+    LIMIT 1
+  `).get(intentId, userId, tenantId) as any;
+  return row ? mapIntent(row) : null;
+}
+
+function isNotificationDedupeConstraintError(err: unknown): boolean {
+  const candidate = err as { code?: unknown; message?: unknown };
+  const code = typeof candidate?.code === 'string' ? candidate.code : '';
+  const message = typeof candidate?.message === 'string' ? candidate.message : String(err);
+  if (code === 'SQLITE_CONSTRAINT_UNIQUE' || code === 'SQLITE_CONSTRAINT_PRIMARYKEY') {
+    return /notification_(intents|center_items)|idx_notification_.*dedupe_unique/.test(message);
+  }
+  return /idx_notification_(intents|center_items)_dedupe_unique|UNIQUE constraint failed: notification_(intents|center_items)\./.test(message);
+}
+
 function findActiveDuplicate(intent: NotificationIntentRecord): NotificationCenterItem | null {
   if (!intent.dedupeKey) return null;
   const row = getDb().prepare(`
     SELECT * FROM notification_center_items
     WHERE user_id = ?
       AND tenant_id = ?
+      AND source_skill = ?
       AND dedupe_key = ?
       AND status IN ('unread', 'read')
       AND (expires_at IS NULL OR datetime(expires_at) > datetime('now'))
     ORDER BY created_at DESC
     LIMIT 1
-  `).get(intent.userId, intent.tenantId, intent.dedupeKey) as any;
+  `).get(intent.userId, intent.tenantId, intent.sourceSkill, intent.dedupeKey) as any;
   return row ? mapCenterItem(row) : null;
+}
+
+function findActiveDuplicateIntent(intent: NotificationIntentRecord): NotificationIntentRecord | null {
+  if (!intent.dedupeKey) return null;
+  const row = getDb().prepare(`
+    SELECT *
+      FROM notification_intents
+     WHERE user_id = ?
+       AND tenant_id = ?
+       AND source_skill = ?
+       AND dedupe_key = ?
+       AND status != 'expired'
+       AND (expires_at IS NULL OR datetime(expires_at) > datetime('now'))
+     ORDER BY created_at DESC
+     LIMIT 1
+  `).get(intent.userId, intent.tenantId, intent.sourceSkill, intent.dedupeKey) as any;
+  return row ? mapIntent(row) : null;
 }
 
 function quietHoursDecision(
@@ -1949,12 +2316,14 @@ function isDecisionIntentForPush(intent: NotificationIntentRecord): boolean {
     || intent.type === 'security_account';
 }
 
-function notificationCategoryForIntent(intent: NotificationIntentRecord): string {
-  if (!isDecisionIntentForPush(intent)) return intent.type;
-  if (intent.type === 'conflict_detected' || intent.type === 'reflow_suggestion') return 'DECISION_SCHEDULE_CONFLICT';
-  if (intent.type === 'approval_required') return 'DECISION_APPROVAL';
-  if (intent.type === 'sync_failure') return 'DECISION_SYNC_ISSUE';
-  return 'DECISION_CLARIFICATION';
+function notificationContractForIntent(intent: NotificationIntentRecord) {
+  return resolveNotificationContract({
+    sourceSkill: intent.sourceSkill,
+    type: intent.type,
+    entityType: intent.relatedEntityType,
+    entityId: intent.relatedEntityId,
+    recipe: typeof intent.decisionContext?.recipe === 'string' ? intent.decisionContext.recipe : null,
+  });
 }
 
 function mapProfile(row: any): NotificationProfile {
@@ -2036,6 +2405,7 @@ function normalizeDecisionContext(input: DecisionLogicContext | null | undefined
   assignContextString(context, 'deadlineAt', input.deadlineAt);
   assignContextString(context, 'timezone', input.timezone);
   assignContextString(context, 'locale', input.locale);
+  assignContextString(context, 'recipe', input.recipe);
   assignContextVisibilityScope(context, input.visibilityScope);
   assignContextBoolean(context, 'internalOnly', input.internalOnly);
   assignContextBoolean(context, 'smoke', input.smoke);
@@ -2124,6 +2494,7 @@ function mapCenterItem(row: any): NotificationCenterItem {
     deeplink: row.deeplink,
     actions: safeParseJSON(row.actions_json, []),
     dedupeKey: row.dedupe_key,
+    priorityScore: row.priority_score ?? null,
     createdAt: row.created_at,
     expiresAt: row.expires_at,
     snoozedUntil: row.snoozed_until ?? null,
@@ -2199,14 +2570,6 @@ function assertScope(userId: number, tenantId: number, operation: string, detail
     },
   });
   throw new Error('userId required: must be a positive integer');
-}
-
-function defaultPrivacyPolicy(sourceSkill: NotificationSourceSkill): NotificationPrivacyPolicy {
-  if (sourceSkill === 'finance') return 'financial';
-  if (sourceSkill === 'training') return 'health';
-  if (sourceSkill === 'content') return 'private_content';
-  if (sourceSkill === 'security') return 'sensitive';
-  return 'standard';
 }
 
 function defaultActionsForType(type: NotificationIntentType): NotificationActionButton[] {

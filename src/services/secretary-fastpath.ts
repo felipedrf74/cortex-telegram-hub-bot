@@ -622,9 +622,9 @@ const FASTPATH_PATTERNS: PatternEntry[] = [
   {
     id: 'daily_priority',
     pattern: /^(?:what(?:'s| is)? my priority(?: today)?|what should i do first(?: today)?|what should i focus on(?: now| today)?|what do i focus on(?: now| today)?|focus me(?: now| today)?|prioriti[sz]e my day|o que faço primeiro|o que devo fazer primeiro|o que devo priorizar(?: hoje)?|o que priorizo(?: hoje)?|qual(?: é| a)? prioridade(?: hoje)?|prioriza o meu dia|priorizar o meu dia|prioriza meu dia|priorizar meu dia|em que devo focar(?: agora| hoje)?)[\s?!.]*$/i,
-    handler: async (_userId, _match, lang) => {
+    handler: async (_userId, _match, lang, tenantId) => {
       const c = copyForLang(lang);
-      const brief = await composeDailyBrief({ userId: _userId, language: lang });
+      const brief = await composeDailyBrief({ userId: _userId, tenantId, language: lang });
       const coordination = brief.coordination;
       const topPriority = coordination?.nextBestAction?.title
         ?? coordination?.topPriority

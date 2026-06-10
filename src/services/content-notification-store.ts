@@ -287,6 +287,36 @@ export function getUnreadCount(userId: number): number {
 }
 
 /**
+ * Count unread legacy content notifications while excluding rows that already
+ * have a canonical Notification Center item. The legacy row remains domain
+ * history; the central item owns badge/unread contribution.
+ */
+export function getUnreadCountExcludingNotificationIds(
+  userId: number,
+  excludedIds: number[],
+): number {
+  if (!isValidTenantUserId(userId)) {
+    reportInvalidNotificationScope('get_unread_content_notification_count_excluding_ids', userId, {
+      excludedCount: excludedIds.length,
+    });
+    return 0;
+  }
+
+  const ids = normalizePositiveIds(excludedIds);
+  if (ids.length === 0) return getUnreadCount(userId);
+
+  const placeholders = ids.map(() => '?').join(',');
+  const row = getDb().prepare(`
+    SELECT COUNT(*) as cnt
+    FROM content_notifications
+    WHERE user_id = ?
+      AND status = 'unread'
+      AND id NOT IN (${placeholders})
+  `).get(userId, ...ids) as any;
+  return row?.cnt ?? 0;
+}
+
+/**
  * Read one notification for an authenticated user.
  *
  * This is intentionally scoped by user before any resolver data is returned.
@@ -446,6 +476,14 @@ function mapNotification(row: any): ContentNotification {
     resolvedAt: row.resolved_at,
     createdAt: row.created_at,
   };
+}
+
+function normalizePositiveIds(ids: number[]): number[] {
+  return Array.from(new Set(
+    ids
+      .map((id) => Number(id))
+      .filter((id) => Number.isInteger(id) && id > 0),
+  ));
 }
 
 function buildContentNotificationDeepLink(notification: ContentNotification): ContentNotificationDeepLink {

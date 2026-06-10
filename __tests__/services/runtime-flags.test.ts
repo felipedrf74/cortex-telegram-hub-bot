@@ -33,8 +33,10 @@ import {
   isDecisionCenterGuidanceSkillEnabled,
   isDecisionCenterGuidanceV1Enabled,
   isDecisionChoiceOptionsEnabled,
+  isDecisionFeedbackSuppressionEnabled,
   isDecisionHumanReviewGateEnabled,
   isDecisionReconnectAffordanceEnabled,
+  isDecisionSemanticDedupEnabled,
   isDecisionSemanticSupersedeEnabled,
   isDecisionTypeSuppressionEnabled,
   isDecisionSkillCardsEnabled,
@@ -274,6 +276,22 @@ describe('runtime-flags', () => {
       DECISION_CENTER_FATIGUE_CAPS_ENABLED: 'true',
       DECISION_CENTER_FATIGUE_CAPS_ENABLED_USER_42: 'off',
     }, { userId: 42, tenantId: 9 })).toBe(false);
+  });
+
+  it('supports staged cohorts for dark Decision Center intelligence flags without changing default-off', () => {
+    const env = { DECISION_CENTER_DARK_FLAGS_COHORT_PERCENT: '100' };
+    const scope = { userId: 7, tenantId: 9 };
+    expect(isDecisionCenterFatigueCapsEnabled(env, scope)).toBe(true);
+    expect(isDecisionSemanticDedupEnabled(env, scope)).toBe(true);
+    expect(isDecisionSemanticSupersedeEnabled(env, scope)).toBe(true);
+    expect(isDecisionFeedbackSuppressionEnabled(env, scope)).toBe(true);
+
+    expect(isDecisionFeedbackSuppressionEnabled({ DECISION_CENTER_DARK_FLAGS_COHORT_PERCENT: '0' }, scope)).toBe(false);
+    expect(isDecisionFeedbackSuppressionEnabled(env)).toBe(false);
+    expect(isDecisionFeedbackSuppressionEnabled({
+      DECISION_CENTER_DARK_FLAGS_COHORT_PERCENT: '100',
+      DECISION_FEEDBACK_SUPPRESSION_ENABLED_TENANT_9: 'off',
+    }, scope)).toBe(false);
   });
 
   it('keeps the A2 reconnect affordance default-off with scoped opt-in', () => {

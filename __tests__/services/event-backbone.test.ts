@@ -309,6 +309,32 @@ describe('event backbone foundation', () => {
     expect(getAppSummary({ tenantId: 7, userId: 7, summaryType: 'home' }).payload.kind).toBe('home');
   });
 
+  it('processes deliver_notification jobs through the notification release handler', async () => {
+    enqueueJob({
+      tenantId: 7,
+      userId: 7,
+      jobType: 'deliver_notification',
+      payload: { intentId: 'intent-delivery-1' },
+      idempotencyKey: 'deliver-notification-1',
+    });
+
+    const result = await processPendingJobs(defaultJobHandlers, { limit: 1 });
+
+    expect(result.completed).toBe(1);
+    const row = testDb.prepare(`
+      SELECT entity_type AS entityType, entity_id AS entityId, decision_type AS decisionType, decision_json AS decisionJson
+        FROM product_decision_logs
+       WHERE decision_type = 'notification_delivery_release'
+       LIMIT 1
+    `).get() as { entityType: string; entityId: string; decisionType: string; decisionJson: string };
+    expect(row).toMatchObject({
+      entityType: 'notification_delivery_job',
+      entityId: 'intent-delivery-1',
+      decisionType: 'notification_delivery_release',
+    });
+    expect(JSON.parse(row.decisionJson)).toMatchObject({ inspected: 0, released: 0, blocked: 0 });
+  });
+
   it('processPendingJobs only claims job types handled by the worker', async () => {
     const projectionJob = enqueueJob({
       tenantId: 7,
@@ -387,21 +413,30 @@ describe('event backbone foundation', () => {
         source_skill TEXT NOT NULL,
         type TEXT NOT NULL,
         status TEXT NOT NULL,
-        expires_at TEXT
+        expires_at TEXT,
+        dedupe_key TEXT,
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
       );
     `);
     testDb.prepare("INSERT INTO fitness_training_plans VALUES (1, 7, 7, 'Marathon', 'running', 'Base', 'active', datetime('now'))").run();
     testDb.prepare("INSERT INTO training_sessions VALUES (9, 1, 'running', 'Long run private title', 60, 'pending')").run();
-    testDb.prepare("INSERT INTO notification_center_items VALUES ('n1', 7, 7, 'secretary', 'decision_required', 'unread', NULL)").run();
-    testDb.prepare("INSERT INTO notification_center_items VALUES ('n2', 8, 8, 'secretary', 'decision_required', 'unread', NULL)").run();
+    const insertNotification = testDb.prepare(`
+      INSERT INTO notification_center_items
+        (item_id, user_id, tenant_id, source_skill, type, status, expires_at, dedupe_key, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+    `);
+    insertNotification.run('n1', 7, 7, 'secretary', 'decision_required', 'unread', null, 'secretary:decision:n1');
+    insertNotification.run('n2', 8, 8, 'secretary', 'decision_required', 'unread', null, 'secretary:decision:n2');
     // A1: a future-deadline decision still counts; a past-deadline one must be excluded.
-    testDb.prepare("INSERT INTO notification_center_items VALUES ('n3', 7, 7, 'secretary', 'decision_required', 'unread', '2999-01-01T00:00:00.000Z')").run();
-    testDb.prepare("INSERT INTO notification_center_items VALUES ('n4', 7, 7, 'secretary', 'decision_required', 'unread', '2020-01-01T00:00:00.000Z')").run();
+    insertNotification.run('n3', 7, 7, 'secretary', 'decision_required', 'unread', '2999-01-01T00:00:00.000Z', 'secretary:decision:n3');
+    insertNotification.run('n4', 7, 7, 'secretary', 'decision_required', 'unread', '2020-01-01T00:00:00.000Z', 'secretary:decision:n4');
+    insertNotification.run('n5', 7, 7, 'system', 'daily_digest', 'unread', null, 'system:digest:n5');
 
     const summaries = projectSummaryReadModelsForUser({ tenantId: 7, userId: 7 });
     const home = summaries.find((summary) => summary.summaryType === 'home')!;
 
     expect(home.payload.pendingDecisionsCount).toBe(2); // n1 (no deadline) + n3 (future); n4 (past) excluded, n2 is another user
+    expect(home.payload.notificationUnreadCount).toBe(2); // n5 digest is visible history but does not contribute to the app badge.
     expect(JSON.stringify(home.payload)).not.toContain('Long run private title');
     expect(JSON.stringify(home.payload)).not.toContain('n2');
   });
@@ -433,7 +468,9 @@ describe('event backbone foundation', () => {
         source_skill TEXT NOT NULL,
         type TEXT NOT NULL,
         status TEXT NOT NULL,
-        expires_at TEXT
+        expires_at TEXT,
+        dedupe_key TEXT,
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
       );
     `);
     testDb.prepare(`

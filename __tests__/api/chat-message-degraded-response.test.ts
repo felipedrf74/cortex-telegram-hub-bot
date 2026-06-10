@@ -107,7 +107,7 @@ describe('chat message degraded response', () => {
     });
 
     expect(handled).toBe(true);
-    expect(mockBuildAITemporarilyBusyResponse).toHaveBeenCalledWith('finance', 42);
+    expect(mockBuildAITemporarilyBusyResponse).toHaveBeenCalledWith('finance', 42, 420);
     expect(mockLoggerWarn).toHaveBeenCalledWith(
       { err, platform: 'ios', chatRequestId: 'chat-2', userId: 42, degradedDomain: 'finance' },
       'iOS chat/message degraded after retryable AI provider failure',
@@ -162,8 +162,8 @@ describe('chat message degraded response', () => {
       chatRequestId: 'chat-4',
     });
 
-    expect(mockBuildAITemporarilyBusyResponse).toHaveBeenNthCalledWith(1, 'content', 42);
-    expect(mockBuildAITemporarilyBusyResponse).toHaveBeenNthCalledWith(2, 'secretary', 42);
+    expect(mockBuildAITemporarilyBusyResponse).toHaveBeenNthCalledWith(1, 'content', 42, 420);
+    expect(mockBuildAITemporarilyBusyResponse).toHaveBeenNthCalledWith(2, 'secretary', 42, 420);
   });
 
   // ─────────────────────────────────────────────────────────────────────

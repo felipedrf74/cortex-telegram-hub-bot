@@ -4,19 +4,25 @@ import { clearTenantScopeAnomaliesForTests, getTenantScopeAnomalies } from '../.
 
 const mockGetNotifications = vi.fn();
 const mockGetUnreadCount = vi.fn();
+const mockGetUnreadCountExcludingNotificationIds = vi.fn();
 const mockGetRecentReports = vi.fn();
 const mockGetUnreadReportCount = vi.fn();
+const mockGetUnreadReportCountExcludingIds = vi.fn();
 const mockCreateNotificationIntent = vi.fn();
 const mockBuildSkillNotificationFixtureIntent = vi.fn();
+const mockCountUnreadNotificationCenterItems = vi.fn();
+const mockListNotificationBridgeEntityIds = vi.fn();
 const mockListNotificationCenterItems = vi.fn();
 const mockGetOrCreateNotificationProfile = vi.fn();
 const mockUpdateNotificationProfile = vi.fn();
 const mockRegisterNotificationDeviceToken = vi.fn();
 const mockRevokeNotificationDeviceToken = vi.fn();
 const mockGetNotificationDecisionLog = vi.fn();
+const mockGetNotificationReliabilityDashboard = vi.fn();
 const mockMarkNotificationCenterItemRead = vi.fn();
 const mockDismissNotificationCenterItem = vi.fn();
 const mockPerformNotificationAction = vi.fn();
+const mockRecordNotificationReliabilityEvent = vi.fn();
 const mockGetDecisionItem = vi.fn();
 const mockPerformDecisionAction = vi.fn();
 const mockIsConnected = vi.fn();
@@ -28,6 +34,9 @@ const mockReadGmailEmailForUser = vi.fn();
 const mockGetOutlookEvents = vi.fn();
 const mockGetGoogleEvents = vi.fn();
 const mockListTasks = vi.fn();
+const mockCacheStore = vi.hoisted(() => ({
+  clearCacheByPrefix: vi.fn(),
+}));
 
 const decisionCenterMockTypes = vi.hoisted(() => {
   class DecisionActionError extends Error {
@@ -50,25 +59,31 @@ const decisionCenterMockTypes = vi.hoisted(() => {
 vi.mock('../../src/services/content-notification-store', () => ({
   getNotifications: (...args: unknown[]) => mockGetNotifications(...args),
   getUnreadCount: (...args: unknown[]) => mockGetUnreadCount(...args),
+  getUnreadCountExcludingNotificationIds: (...args: unknown[]) => mockGetUnreadCountExcludingNotificationIds(...args),
 }));
 
 vi.mock('../../src/services/report-document-store', () => ({
   getRecentReports: (...args: unknown[]) => mockGetRecentReports(...args),
   getUnreadReportCount: (...args: unknown[]) => mockGetUnreadReportCount(...args),
+  getUnreadReportCountExcludingIds: (...args: unknown[]) => mockGetUnreadReportCountExcludingIds(...args),
 }));
 
 vi.mock('../../src/services/notification-orchestrator', () => ({
   createNotificationIntent: (...args: unknown[]) => mockCreateNotificationIntent(...args),
   buildSkillNotificationFixtureIntent: (...args: unknown[]) => mockBuildSkillNotificationFixtureIntent(...args),
+  countUnreadNotificationCenterItems: (...args: unknown[]) => mockCountUnreadNotificationCenterItems(...args),
+  listNotificationBridgeEntityIds: (...args: unknown[]) => mockListNotificationBridgeEntityIds(...args),
   listNotificationCenterItems: (...args: unknown[]) => mockListNotificationCenterItems(...args),
   getOrCreateNotificationProfile: (...args: unknown[]) => mockGetOrCreateNotificationProfile(...args),
   updateNotificationProfile: (...args: unknown[]) => mockUpdateNotificationProfile(...args),
   registerNotificationDeviceToken: (...args: unknown[]) => mockRegisterNotificationDeviceToken(...args),
   revokeNotificationDeviceToken: (...args: unknown[]) => mockRevokeNotificationDeviceToken(...args),
   getNotificationDecisionLog: (...args: unknown[]) => mockGetNotificationDecisionLog(...args),
+  getNotificationReliabilityDashboard: (...args: unknown[]) => mockGetNotificationReliabilityDashboard(...args),
   markNotificationCenterItemRead: (...args: unknown[]) => mockMarkNotificationCenterItemRead(...args),
   dismissNotificationCenterItem: (...args: unknown[]) => mockDismissNotificationCenterItem(...args),
   performNotificationAction: (...args: unknown[]) => mockPerformNotificationAction(...args),
+  recordNotificationReliabilityEvent: (...args: unknown[]) => mockRecordNotificationReliabilityEvent(...args),
 }));
 
 vi.mock('../../src/services/decision-center', () => ({
@@ -105,6 +120,14 @@ vi.mock('../../src/services/google-calendar', () => ({
 vi.mock('../../src/services/task-store/task-service', () => ({
   listTasks: (...args: unknown[]) => mockListTasks(...args),
 }));
+
+vi.mock('../../src/services/cache-store', async () => {
+  const actual = await vi.importActual<typeof import('../../src/services/cache-store')>('../../src/services/cache-store');
+  return {
+    ...actual,
+    clearCacheByPrefix: (...args: unknown[]) => mockCacheStore.clearCacheByPrefix(...args),
+  };
+});
 
 vi.mock('../../src/utils/logger', () => ({
   logger: {
@@ -150,6 +173,7 @@ function mockReq(
   userId = 7,
   body: Record<string, any> = {},
   headers: Record<string, string> = {},
+  tenantId = userId,
 ): Request {
   return {
     method,
@@ -165,7 +189,7 @@ function mockReq(
       return headers[name.toLowerCase()] ?? headers[name];
     },
     userId,
-    tenantId: userId,
+    tenantId,
     deviceId: 'iphone-test',
   } as any;
 }
@@ -177,9 +201,10 @@ async function dispatch(
   userId = 7,
   body: Record<string, any> = {},
   headers: Record<string, string> = {},
+  tenantId = userId,
 ): Promise<MockRes> {
   const router = notificationRoutes();
-  const req = mockReq(method, path, query, userId, body, headers);
+  const req = mockReq(method, path, query, userId, body, headers, tenantId);
   let resolveResponse!: () => void;
   let rejectResponse!: (err: Error) => void;
   const responseDone = new Promise<void>((resolve, reject) => {
@@ -216,19 +241,25 @@ describe('Notification inbox routes', () => {
 
     mockGetNotifications.mockReset();
     mockGetUnreadCount.mockReset();
+    mockGetUnreadCountExcludingNotificationIds.mockReset();
     mockGetRecentReports.mockReset();
     mockGetUnreadReportCount.mockReset();
+    mockGetUnreadReportCountExcludingIds.mockReset();
     mockCreateNotificationIntent.mockReset();
     mockBuildSkillNotificationFixtureIntent.mockReset();
+    mockCountUnreadNotificationCenterItems.mockReset();
+    mockListNotificationBridgeEntityIds.mockReset();
     mockListNotificationCenterItems.mockReset();
     mockGetOrCreateNotificationProfile.mockReset();
     mockUpdateNotificationProfile.mockReset();
     mockRegisterNotificationDeviceToken.mockReset();
     mockRevokeNotificationDeviceToken.mockReset();
     mockGetNotificationDecisionLog.mockReset();
+    mockGetNotificationReliabilityDashboard.mockReset();
     mockMarkNotificationCenterItemRead.mockReset();
     mockDismissNotificationCenterItem.mockReset();
     mockPerformNotificationAction.mockReset();
+    mockRecordNotificationReliabilityEvent.mockReset();
     mockGetDecisionItem.mockReset();
     mockPerformDecisionAction.mockReset();
     mockIsConnected.mockReset();
@@ -240,14 +271,23 @@ describe('Notification inbox routes', () => {
     mockGetOutlookEvents.mockReset();
     mockGetGoogleEvents.mockReset();
     mockListTasks.mockReset();
+    mockCacheStore.clearCacheByPrefix.mockReset();
     clearTenantScopeAnomaliesForTests();
 
     mockGetNotifications.mockReturnValue([]);
     mockGetUnreadCount.mockReturnValue(0);
+    mockGetUnreadCountExcludingNotificationIds.mockImplementation((userId: number) => mockGetUnreadCount(userId));
     mockGetRecentReports.mockReturnValue([]);
     mockGetUnreadReportCount.mockReturnValue(0);
+    mockGetUnreadReportCountExcludingIds.mockImplementation((userId: number) => mockGetUnreadReportCount(userId));
+    mockCountUnreadNotificationCenterItems.mockReturnValue(0);
+    mockListNotificationBridgeEntityIds.mockReturnValue([]);
     mockListNotificationCenterItems.mockReturnValue([]);
     mockGetOrCreateNotificationProfile.mockReturnValue({ pushEnabled: true });
+    mockGetNotificationReliabilityDashboard.mockReturnValue({
+      badge: { expectedBadgeCount: 0, canonicalUnreadCount: 0, clientReportedBadgeCount: null, drift: null },
+      readState: { serverReadFailureCount: 0, clientReportedReadFailureCount: 0 },
+    });
     mockUpdateNotificationProfile.mockImplementation((_userId, _tenantId, patch) => ({ ...patch }));
     mockRegisterNotificationDeviceToken.mockReturnValue({
       tokenId: 'dt_test',
@@ -335,6 +375,83 @@ describe('Notification inbox routes', () => {
     expect(res.body.data.decisionLog.decision).toBe('blocked_missing_device_token');
   });
 
+  it('invalidates unified inbox caches after successful internal intent and fixture creation', async () => {
+    process.env.INTERNAL_API_SECRET = 'test-internal-secret';
+    const item = {
+      itemId: 'nc_created',
+      intentId: 'ni_created',
+      decisionLogId: 'ndl_created',
+      userId: 7,
+      tenantId: 17,
+      title: 'Created',
+      body: 'Created body',
+      safeBody: 'Created safe body',
+      sourceSkill: 'finance',
+      type: 'reminder',
+      priority: 'active',
+      status: 'unread',
+      deeplink: 'nexus://notifications/nc_created',
+      actions: [{ id: 'open_detail', label: 'Open' }],
+      dedupeKey: 'finance:created',
+      createdAt: '2026-05-07T10:00:00.000Z',
+      expiresAt: null,
+    };
+    mockCreateNotificationIntent.mockResolvedValue({
+      intent: {
+        intentId: 'ni_created',
+        sourceSkill: 'finance',
+        type: 'reminder',
+        priority: 'active',
+        dedupeKey: 'finance:created',
+        createdAt: '2026-05-07T10:00:00.000Z',
+      },
+      item,
+      decisionLog: {
+        decisionLogId: 'ndl_created',
+        decision: 'send_now',
+        reason: 'eligible for immediate delivery',
+        scheduledFor: null,
+        sentAt: '2026-05-07T10:00:00.000Z',
+      },
+      deliveryAttempts: [],
+      pushPayload: null,
+    });
+    mockBuildSkillNotificationFixtureIntent.mockReturnValue({
+      userId: 7,
+      tenantId: 17,
+      sourceSkill: 'finance',
+      type: 'reminder',
+      priority: 'active',
+      title: 'Created',
+      body: 'Created body',
+    });
+
+    await dispatch(
+      'POST',
+      '/intents',
+      {},
+      7,
+      {
+        userId: 999,
+        tenantId: 999,
+        sourceSkill: 'finance',
+        type: 'reminder',
+        priority: 'active',
+        title: 'Created',
+        body: 'Created body',
+      },
+      { 'x-internal-secret': 'test-internal-secret' },
+      17,
+    );
+    await dispatch('POST', '/intents/fixtures/finance', {}, 7, {}, {}, 17);
+
+    expect(mockCacheStore.clearCacheByPrefix).toHaveBeenCalledTimes(2);
+    expect(mockCacheStore.clearCacheByPrefix).toHaveBeenCalledWith([
+      'unified-inbox:7:tenant:17',
+      'unified-inbox-unread:7:tenant:17',
+    ]);
+  });
+
   it('returns decision center sections and notification preferences', async () => {
     mockListNotificationCenterItems.mockReturnValue([
       {
@@ -372,6 +489,147 @@ describe('Notification inbox routes', () => {
     const prefs = await dispatch('GET', '/preferences');
     expect(prefs.statusCode).toBe(200);
     expect(prefs.body.data.profile.pushEnabled).toBe(true);
+  });
+
+  it('records scoped notification reliability telemetry and exposes dashboard data', async () => {
+    mockGetNotificationReliabilityDashboard.mockReturnValue({
+      badge: { expectedBadgeCount: 4, canonicalUnreadCount: 6, clientReportedBadgeCount: 5, drift: 1 },
+      readState: { serverReadFailureCount: 0, clientReportedReadFailureCount: 2 },
+    });
+    mockCountUnreadNotificationCenterItems.mockReturnValue(4);
+    mockGetUnreadCountExcludingNotificationIds.mockReturnValue(2);
+    mockGetUnreadReportCountExcludingIds.mockReturnValue(0);
+
+    const recorded = await dispatch('POST', '/reliability-events', {}, 7, {
+      eventType: 'badge_reconciled',
+      badgeCount: 5,
+      source: 'ios_dashboard',
+    }, {}, 17);
+
+    expect(recorded.statusCode).toBe(200);
+    expect(mockRecordNotificationReliabilityEvent).toHaveBeenCalledWith({
+      userId: 7,
+      tenantId: 17,
+      eventType: 'badge_reconciled',
+      badgeCount: 5,
+      source: 'ios_dashboard',
+      errorCode: null,
+    });
+
+    const dashboard = await dispatch('GET', '/reliability-dashboard', {}, 7, {}, {}, 17);
+    expect(dashboard.statusCode).toBe(200);
+    expect(mockGetNotificationReliabilityDashboard).toHaveBeenCalledWith(7, 17, {
+      expectedBadgeCount: 6,
+      canonicalUnreadCount: 6,
+    });
+    expect(dashboard.body.data.dashboard.badge.drift).toBe(1);
+  });
+
+  it('rejects unknown notification reliability event types', async () => {
+    const res = await dispatch('POST', '/reliability-events', {}, 7, {
+      eventType: 'raw_error_blob',
+      errorCode: 'too_much',
+    });
+
+    expect(res.statusCode).toBe(400);
+    expect(mockRecordNotificationReliabilityEvent).not.toHaveBeenCalled();
+  });
+
+  it('uses the central center item as the only notification unread-count owner', async () => {
+    mockGetNotifications.mockReturnValue([
+      {
+        id: 9,
+        type: 'script_ready',
+        title: 'Script ready',
+        body: 'Your weekly package is ready.',
+        status: 'unread',
+        createdAt: '2026-04-13T11:00:00Z',
+        data: {},
+      },
+    ]);
+    mockListNotificationCenterItems.mockReturnValue([
+      {
+        itemId: 'nc_content',
+        intentId: 'ni_content',
+        decisionLogId: null,
+        userId: 7,
+        tenantId: 7,
+        title: 'Script ready',
+        body: 'Open Nexus.',
+        safeBody: 'Content item is ready for review.',
+        sensitiveBody: null,
+        sourceSkill: 'content',
+        type: 'approval_required',
+        priority: 'active',
+        status: 'unread',
+        deeplink: 'nexus://content/script/9',
+        actions: [],
+        dedupeKey: 'content:script_ready:9',
+        createdAt: '2026-05-07T10:00:00.000Z',
+        expiresAt: null,
+      },
+    ]);
+    mockCountUnreadNotificationCenterItems.mockReturnValue(1);
+    mockGetUnreadCountExcludingNotificationIds.mockReturnValue(3);
+
+    const res = await dispatch('GET', '/', { limit: '20' });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body.ok).toBe(true);
+    expect(res.body.data.unreadCount).toBe(1);
+    expect(res.body.data.notifications).toHaveLength(1);
+    expect(res.body.data.items).toHaveLength(1);
+    expect(mockGetUnreadCountExcludingNotificationIds).not.toHaveBeenCalled();
+    expect(mockCountUnreadNotificationCenterItems).toHaveBeenCalledWith(7, 7);
+  });
+
+  it('keeps the root notifications list available when the center unread count is degraded', async () => {
+    mockGetNotifications.mockReturnValue([
+      {
+        id: 9,
+        type: 'script_ready',
+        title: 'Script ready',
+        body: 'Your weekly package is ready.',
+        status: 'unread',
+        createdAt: '2026-04-13T11:00:00Z',
+        data: {},
+      },
+    ]);
+    mockListNotificationCenterItems.mockReturnValue([
+      {
+        itemId: 'nc_content',
+        intentId: 'ni_content',
+        decisionLogId: null,
+        userId: 7,
+        tenantId: 7,
+        title: 'Script ready',
+        body: 'Open Nexus.',
+        safeBody: 'Content item is ready for review.',
+        sensitiveBody: null,
+        sourceSkill: 'content',
+        type: 'approval_required',
+        priority: 'active',
+        status: 'unread',
+        deeplink: 'nexus://content/script/9',
+        actions: [],
+        dedupeKey: 'content:script_ready:9',
+        createdAt: '2026-05-07T10:00:00.000Z',
+        expiresAt: null,
+      },
+    ]);
+    mockCountUnreadNotificationCenterItems.mockImplementation(() => {
+      throw new Error('center count unavailable');
+    });
+
+    const res = await dispatch('GET', '/', { limit: '20' });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body.ok).toBe(true);
+    expect(res.body.data.unreadCount).toBe(0);
+    expect(res.body.data.notifications).toHaveLength(1);
+    expect(res.body.data.warnings).toEqual([
+      expect.objectContaining({ code: 'DECISION_CENTER_UNAVAILABLE' }),
+    ]);
   });
 
   it('registers, revokes, and actions notification center items through scoped routes', async () => {
@@ -417,6 +675,45 @@ describe('Notification inbox routes', () => {
     const revoke = await dispatch('DELETE', '/device-tokens/dt_test');
     expect(revoke.statusCode).toBe(200);
     expect(revoke.body.data.revoked).toBe(true);
+  });
+
+  it('invalidates unified inbox caches after notification center mutations', async () => {
+    const item = {
+      itemId: 'nc_action',
+      intentId: 'ni_action',
+      decisionLogId: 'ndl_action',
+      userId: 7,
+      tenantId: 17,
+      title: 'Open me',
+      body: 'Open Nexus.',
+      safeBody: 'Open Nexus.',
+      sourceSkill: 'system',
+      type: 'insight',
+      priority: 'active',
+      status: 'read',
+      deeplink: 'nexus://notifications/nc_action',
+      actions: [{ id: 'open_detail', label: 'Open' }],
+      dedupeKey: 'action',
+      createdAt: '2026-05-07T10:00:00.000Z',
+      expiresAt: null,
+    };
+    mockMarkNotificationCenterItemRead.mockReturnValue(item);
+    mockDismissNotificationCenterItem.mockReturnValue({ ...item, status: 'dismissed' });
+    mockPerformNotificationAction.mockReturnValue({
+      actionId: 'open_detail',
+      idempotent: false,
+      item: { ...item, status: 'actioned' },
+    });
+
+    await dispatch('PATCH', '/nc_action/read', {}, 7, {}, {}, 17);
+    await dispatch('PATCH', '/nc_action/dismiss', {}, 7, {}, {}, 17);
+    await dispatch('POST', '/nc_action/actions', {}, 7, { actionId: 'open_detail' }, {}, 17);
+
+    expect(mockCacheStore.clearCacheByPrefix).toHaveBeenCalledTimes(3);
+    expect(mockCacheStore.clearCacheByPrefix).toHaveBeenCalledWith([
+      'unified-inbox:7:tenant:17',
+      'unified-inbox-unread:7:tenant:17',
+    ]);
   });
 
   it('forwards decision notification actions through the canonical Decision API path', async () => {
@@ -679,6 +976,152 @@ describe('Notification inbox routes', () => {
     expect(res.body.ok).toBe(true);
     expect(res.body.data.unreadCount).toBe(7);
     expect(mockCountEmailsForUser).toHaveBeenCalledWith(7, 'in:inbox is:unread newer_than:14d');
+  });
+
+  it('uses authenticated tenant scope for inbox and unread Decision Center reads', async () => {
+    mockIsConnected.mockReturnValue(false);
+
+    await dispatch('GET', '/inbox', { limit: '5' }, 42, {}, {}, 84);
+    expect(mockListNotificationCenterItems).toHaveBeenCalledWith(42, 84, {
+      status: 'all',
+      limit: 5,
+    });
+    expect(mockCountUnreadNotificationCenterItems).toHaveBeenCalledWith(42, 84);
+    expect(mockListNotificationBridgeEntityIds).toHaveBeenCalledWith(42, 84, 'content');
+    expect(mockListNotificationBridgeEntityIds).toHaveBeenCalledWith(42, 84, 'report');
+
+    mockListNotificationCenterItems.mockClear();
+    mockCountUnreadNotificationCenterItems.mockClear();
+    mockListNotificationBridgeEntityIds.mockClear();
+    await dispatch('GET', '/unread-count', {}, 42, {}, {}, 84);
+    expect(mockListNotificationCenterItems).not.toHaveBeenCalled();
+    expect(mockCountUnreadNotificationCenterItems).toHaveBeenCalledWith(42, 84);
+    expect(mockListNotificationBridgeEntityIds).toHaveBeenCalledWith(42, 84, 'content');
+    expect(mockListNotificationBridgeEntityIds).toHaveBeenCalledWith(42, 84, 'report');
+  });
+
+  it('does not double-count bridged content and report rows in canonical unread counts', async () => {
+    mockIsConnected.mockReturnValue(false);
+    mockListNotificationCenterItems.mockReturnValue([
+      {
+        itemId: 'nc_content',
+        intentId: 'ni_content',
+        decisionLogId: null,
+        userId: 7,
+        tenantId: 7,
+        title: 'Script ready',
+        body: 'Open Nexus.',
+        safeBody: 'Content item is ready for review.',
+        sensitiveBody: null,
+        sourceSkill: 'content',
+        type: 'approval_required',
+        priority: 'active',
+        status: 'unread',
+        deeplink: 'nexus://content/script/9',
+        actions: [],
+        dedupeKey: 'content:script_ready:9',
+        createdAt: '2026-05-07T10:00:00.000Z',
+        expiresAt: null,
+      },
+      {
+        itemId: 'nc_report',
+        intentId: 'ni_report',
+        decisionLogId: null,
+        userId: 7,
+        tenantId: 7,
+        title: 'Morning Briefing',
+        body: 'Open Nexus.',
+        safeBody: 'Secretary decision — open Nexus to review the recommendation.',
+        sensitiveBody: null,
+        sourceSkill: 'secretary',
+        type: 'daily_digest',
+        priority: 'passive',
+        status: 'read',
+        deeplink: 'nexus://notifications/report-3',
+        actions: [],
+        dedupeKey: 'report:morning_briefing:3',
+        createdAt: '2026-05-07T09:00:00.000Z',
+        expiresAt: null,
+      },
+    ]);
+    mockCountUnreadNotificationCenterItems.mockReturnValue(1);
+    mockListNotificationBridgeEntityIds.mockImplementation((_userId: number, _tenantId: number, bridgePrefix: string) =>
+      bridgePrefix === 'content' ? [9] : [3]
+    );
+    mockGetUnreadCountExcludingNotificationIds.mockReturnValue(2);
+    mockGetUnreadReportCountExcludingIds.mockReturnValue(1);
+
+    const res = await dispatch('GET', '/unread-count');
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body.ok).toBe(true);
+    expect(res.body.data.unreadCount).toBe(4);
+    expect(mockGetUnreadCountExcludingNotificationIds).toHaveBeenCalledWith(7, [9]);
+    expect(mockGetUnreadReportCountExcludingIds).toHaveBeenCalledWith(7, [3]);
+  });
+
+  it('excludes bridged content and report rows from the unified inbox list', async () => {
+    mockIsConnected.mockReturnValue(false);
+    mockListNotificationCenterItems.mockReturnValue([
+      {
+        itemId: 'nc_content',
+        intentId: 'ni_content',
+        decisionLogId: null,
+        userId: 7,
+        tenantId: 7,
+        title: 'Script ready',
+        body: 'Open Nexus.',
+        safeBody: 'Content item is ready for review.',
+        sensitiveBody: null,
+        sourceSkill: 'content',
+        type: 'approval_required',
+        priority: 'active',
+        status: 'unread',
+        deeplink: 'nexus://content/script/9',
+        actions: [],
+        dedupeKey: 'content:script_ready:9',
+        createdAt: '2026-05-07T10:00:00.000Z',
+        expiresAt: null,
+      },
+      {
+        itemId: 'nc_report',
+        intentId: 'ni_report',
+        decisionLogId: null,
+        userId: 7,
+        tenantId: 7,
+        title: 'Morning Briefing',
+        body: 'Open Nexus.',
+        safeBody: 'Secretary decision — open Nexus to review the recommendation.',
+        sensitiveBody: null,
+        sourceSkill: 'secretary',
+        type: 'daily_digest',
+        priority: 'passive',
+        status: 'read',
+        deeplink: 'nexus://notifications/report-3',
+        actions: [],
+        dedupeKey: 'report:morning_briefing:3',
+        createdAt: '2026-05-07T09:00:00.000Z',
+        expiresAt: null,
+      },
+    ]);
+    mockListNotificationBridgeEntityIds.mockImplementation((_userId: number, _tenantId: number, bridgePrefix: string) =>
+      bridgePrefix === 'content' ? [9] : [3]
+    );
+    mockGetNotifications.mockReturnValue([
+      { id: 9, type: 'script_ready', title: 'Bridged script', body: 'Duplicate', status: 'unread', createdAt: '2026-05-07T10:00:00.000Z', data: {} },
+      { id: 10, type: 'script_ready', title: 'Legacy script', body: 'Only legacy', status: 'unread', createdAt: '2026-05-07T09:30:00.000Z', data: {} },
+    ]);
+    mockGetRecentReports.mockReturnValue([
+      { id: 3, type: 'morning_briefing', title: 'Bridged briefing', summary: 'Duplicate', status: 'unread', createdAt: '2026-05-07T09:00:00.000Z', sourceJob: 'scheduler:morning' },
+      { id: 4, type: 'morning_briefing', title: 'Legacy briefing', summary: 'Only legacy', status: 'unread', createdAt: '2026-05-07T08:00:00.000Z', sourceJob: 'scheduler:morning' },
+    ]);
+
+    const res = await dispatch('GET', '/inbox', { limit: '10' });
+
+    expect(res.statusCode).toBe(200);
+    const ids = res.body.data.items.map((item: any) => item.id);
+    expect(ids).toEqual(expect.arrayContaining(['decision:nc_content', 'decision:nc_report', 'notification:10', 'report:4']));
+    expect(ids).not.toEqual(expect.arrayContaining(['notification:9', 'report:3']));
   });
 
   it('bounds slow unread provider counts so the Home badge can still use local counts', async () => {
