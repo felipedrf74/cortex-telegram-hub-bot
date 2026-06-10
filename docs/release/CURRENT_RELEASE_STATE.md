@@ -66,9 +66,9 @@ older production versions.
   returned HTTP 200 with `sourceSkillFilter: "content"`,
   `sourceSkillTotalCount` present, and `items` as an array.
 - Release identity was persisted with
-  `./scripts/release-identity.sh json --persist` at
-  `2026-06-10T20:52:55Z`: backend `main` commit `636910e2`, iOS `main`
-  commit `6393ab2`, backend package `4.14.208`, migration count `204`.
+  `./scripts/release-identity.sh json --persist` after promote. The generated
+  workspace identity artifact tracks current repo identity; post-deploy
+  docs-only closeout may sit ahead of runtime deploy commit `636910e2`.
 - iOS/TestFlight status: App Store Connect build `1.5.0` (`38`) was reported
   uploaded in the handoff, but this shell could not independently confirm
   processing or assign INTERNAL testers because no App Store Connect API env
