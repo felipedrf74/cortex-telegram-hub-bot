@@ -12,6 +12,11 @@ import {
 } from '../../services/progression-analytics';
 import { getUnifiedWeeklyActivitySummary } from '../../services/session-analytics';
 import {
+  decodeTrainingHistoryCursor,
+  getTrainingHistoryPage,
+  type TrainingHistoryCursor,
+} from '../../services/training-history';
+import {
   publishAdherenceSignalsForUser,
   publishPlanDriftSignalForUser,
 } from '../../services/adherence-signals';
@@ -26,6 +31,20 @@ function invalidCardioSportMessage(language: Lang): string {
   if (language === 'pt-BR') return 'o parâmetro sport deve ser "running" ou "cycling"';
   if (language.startsWith('pt')) return 'o parâmetro sport tem de ser "running" ou "cycling"';
   return 'sport query param must be "running" or "cycling"';
+}
+
+const HISTORY_SPORTS = ['running', 'cycling', 'strength', 'swimming'] as const;
+type HistorySport = (typeof HISTORY_SPORTS)[number];
+
+function invalidHistorySportMessage(language: Lang): string {
+  if (language === 'pt-BR') return 'o parâmetro sport deve ser "running", "cycling", "strength" ou "swimming"';
+  if (language.startsWith('pt')) return 'o parâmetro sport tem de ser "running", "cycling", "strength" ou "swimming"';
+  return 'sport query param must be "running", "cycling", "strength" or "swimming"';
+}
+
+function invalidHistoryCursorMessage(language: Lang): string {
+  if (language.startsWith('pt')) return 'o parâmetro cursor é inválido';
+  return 'cursor query param is invalid';
 }
 
 function requireTrainingAnalyticsScope(
@@ -159,6 +178,68 @@ export function registerTrainingAnalyticsRoutes(
     } catch (err: any) {
       logger.error({ err, userId, tenantId }, 'GET /activity/weekly failed');
       sendInternalError(res, 'Failed to load weekly activity');
+    }
+  });
+
+  /**
+   * GET /api/v1/training/history
+   *
+   * Keyset-paginated unified training log: completed entries from
+   * `training_completions` merged with skipped sessions. Drives the
+   * Progress-zone history list in the iOS Training redesign. First
+   * page (no cursor) is cached for 60s; cursor pages are never cached
+   * so pagination always reads fresh keyset slices.
+   */
+  router.get('/history', async (req, res: Response) => {
+    const scope = requireTrainingAnalyticsScope(req as AuthenticatedRequest, res, 'training.analytics.history');
+    if (!scope) return;
+    const { userId, tenantId } = scope;
+    const language = resolveTrainingLanguage(req as AuthenticatedRequest, userId);
+
+    const sportRaw = typeof req.query.sport === 'string' ? req.query.sport : '';
+    if (sportRaw !== '' && !HISTORY_SPORTS.includes(sportRaw as HistorySport)) {
+      sendError(res, 'BAD_REQUEST', invalidHistorySportMessage(language), 400);
+      return;
+    }
+    const sport = sportRaw === '' ? null : (sportRaw as HistorySport);
+
+    const limitRaw = Number(req.query.limit);
+    const limit = Number.isFinite(limitRaw)
+      ? Math.min(50, Math.max(1, Math.floor(limitRaw)))
+      : 20;
+
+    const cursorRaw = typeof req.query.cursor === 'string' && req.query.cursor.length > 0
+      ? req.query.cursor
+      : null;
+    let cursor: TrainingHistoryCursor | null = null;
+    if (cursorRaw) {
+      cursor = decodeTrainingHistoryCursor(cursorRaw);
+      if (!cursor) {
+        sendError(res, 'BAD_REQUEST', invalidHistoryCursorMessage(language), 400);
+        return;
+      }
+    }
+
+    const cacheKey = cursorRaw
+      ? null
+      : `training-history:${tenantId}:${userId}:${sport ?? 'all'}:${limit}`;
+    if (cacheKey) {
+      const cached = getCached(cacheKey);
+      if (cached) {
+        sendSuccess(res, cached, { cached: true });
+        return;
+      }
+    }
+
+    try {
+      const page = getTrainingHistoryPage(userId, tenantId, { limit, cursor, sport });
+      if (cacheKey) {
+        setCache(cacheKey, page, 60);
+      }
+      sendSuccess(res, page);
+    } catch (err: any) {
+      logger.error({ err, userId, tenantId, sport, limit }, 'GET /history failed');
+      sendInternalError(res, 'Failed to load training history');
     }
   });
 }

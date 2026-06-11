@@ -95,6 +95,23 @@ export interface RealTrainingHistory {
 const SPORTS: ReadonlyArray<Sport> = ['running', 'strength', 'cycling', 'swimming'];
 
 /**
+ * Session-type vocabulary per canonical sport. Single source of truth
+ * for both `normalizeSessionTypeToSport` (JS-side normalization) and
+ * the SQL `IN (…)` sport filter in `getTrainingHistoryPage` — deriving
+ * the IN-list from this table means the SQL filter can never drift
+ * from the JS mapping.
+ */
+const SESSION_TYPE_TOKENS_BY_SPORT: Record<Sport, ReadonlyArray<string>> = {
+  strength: ['gym', 'strength', 'lifting', 'weights', 'weight',
+    'strength_hypertrophy', 'strength_max', 'strength_maintenance'],
+  running: ['run', 'running', 'corrida', 'easy_run', 'long_run', 'threshold_run', 'interval_run', 'recovery_run', 'brick'],
+  cycling: ['ride', 'bike', 'biking', 'cycle', 'cycling', 'ciclismo', 'pedal',
+    'endurance_ride', 'tempo_ride', 'threshold_ride', 'vo2_ride', 'recovery_ride'],
+  swimming: ['swim', 'swimming', 'natacao', 'natação',
+    'technique_swim', 'aerobic_swim', 'threshold_swim', 'speed_swim', 'recovery_swim'],
+};
+
+/**
  * Normalize a `training_sessions.session_type` value into the
  * canonical 4-sport enum. The same mapping table is used elsewhere
  * (see `session-analytics.ts > normalizeSessionTypeToSport`); we
@@ -108,13 +125,9 @@ const SPORTS: ReadonlyArray<Sport> = ['running', 'strength', 'cycling', 'swimmin
 function normalizeSessionTypeToSport(sessionType: string | null | undefined): Sport | null {
   if (!sessionType) return null;
   const value = sessionType.toLowerCase().trim();
-  if (['gym', 'strength', 'lifting', 'weights', 'weight'].includes(value)) return 'strength';
-  if (['run', 'running', 'corrida', 'easy_run', 'long_run', 'threshold_run', 'interval_run', 'recovery_run', 'brick'].includes(value)) return 'running';
-  if (['ride', 'bike', 'biking', 'cycle', 'cycling', 'ciclismo', 'pedal',
-       'endurance_ride', 'tempo_ride', 'threshold_ride', 'vo2_ride', 'recovery_ride'].includes(value)) return 'cycling';
-  if (['swim', 'swimming', 'natacao', 'natação',
-       'technique_swim', 'aerobic_swim', 'threshold_swim', 'speed_swim', 'recovery_swim'].includes(value)) return 'swimming';
-  if (['strength_hypertrophy', 'strength_max', 'strength_maintenance'].includes(value)) return 'strength';
+  for (const sport of SPORTS) {
+    if (SESSION_TYPE_TOKENS_BY_SPORT[sport].includes(value)) return sport;
+  }
   return null;
 }
 
@@ -579,4 +592,337 @@ function numberFromUnknown(value: unknown): number | null {
     return Number.isFinite(parsed) ? parsed : null;
   }
   return null;
+}
+
+// ---------------------------------------------------------------------------
+// Training history page — GET /api/v1/training/history (Training redesign
+// Phase 0, item 5).
+//
+// Unified, keyset-paginated log of what actually happened: completed
+// entries from `training_completions` plus skipped sessions from
+// `training_sessions` (status = 'skipped'). Both arms are tenant-scoped
+// through `fitness_training_plans` (user_id AND tenant_id) like every
+// other read in this module.
+//
+// Ordering is (date key DESC, completion-before-skipped, row id DESC).
+// Skipped sessions have no completion timestamp, so `ts.updated_at` is
+// used as their approximate date. Skipped rows intentionally carry no
+// `reason` field — no such column exists (decided v1 deviation;
+// `training_completions.missed_reason` only exists for logged
+// completions, not bare skipped sessions).
+// ---------------------------------------------------------------------------
+
+const TRAINING_HISTORY_DEFAULT_LIMIT = 20;
+const TRAINING_HISTORY_MAX_LIMIT = 50;
+
+/**
+ * Threshold mirroring `RecentSession.completionStatus` above: a
+ * completion is 'partial' when the athlete did less than 72% of the
+ * planned duration.
+ */
+const TRAINING_HISTORY_PARTIAL_RATIO = 0.72;
+
+export interface TrainingHistoryCursor {
+  /**
+   * Raw date key exactly as stored in the source row (`completed_at`
+   * for completions, `updated_at` for skipped sessions). Kept raw —
+   * not re-normalized — so SQL string comparisons in the keyset
+   * filter match ORDER BY semantics exactly.
+   */
+  date: string;
+  type: 'completion' | 'skipped';
+  id: number;
+}
+
+export interface TrainingHistoryItem {
+  id: string;
+  type: 'completion' | 'skipped';
+  sessionId: number;
+  date: string;
+  sport: Sport | null;
+  sessionType: string | null;
+  title: string | null;
+  status: 'completed' | 'partial' | 'skipped';
+  plannedDurationMin: number | null;
+  actualDurationMin: number | null;
+  actualDistanceKm: number | null;
+  rpe: number | null;
+  energy: number | null;
+  soreness: number | null;
+  notes: string | null;
+  planName: string | null;
+  weekNumber: number | null;
+}
+
+export interface TrainingHistoryPage {
+  items: TrainingHistoryItem[];
+  nextCursor: string | null;
+}
+
+export interface TrainingHistoryPageOptions {
+  /** Page size, clamped to 1..50. Defaults to 20. */
+  limit?: number;
+  /** Decoded keyset cursor from a previous page, or null for page 1. */
+  cursor?: TrainingHistoryCursor | null;
+  /** Optional canonical-sport filter (see SESSION_TYPE_TOKENS_BY_SPORT). */
+  sport?: Sport | null;
+}
+
+export function encodeTrainingHistoryCursor(cursor: TrainingHistoryCursor): string {
+  return Buffer.from(`${cursor.date}|${cursor.type}|${cursor.id}`, 'utf8').toString('base64');
+}
+
+/**
+ * Decode a base64 "dateIso|type|id" keyset token. Returns null for
+ * anything malformed — callers should treat null as a 400, never as
+ * "start from page 1" (silent restarts would make pagination lie).
+ */
+export function decodeTrainingHistoryCursor(raw: string): TrainingHistoryCursor | null {
+  if (typeof raw !== 'string' || raw.length === 0 || raw.length > 256) return null;
+  let decoded: string;
+  try {
+    decoded = Buffer.from(raw, 'base64').toString('utf8');
+  } catch {
+    return null;
+  }
+  const parts = decoded.split('|');
+  if (parts.length < 3) return null;
+  const idRaw = parts[parts.length - 1];
+  const type = parts[parts.length - 2];
+  const date = parts.slice(0, -2).join('|');
+  if (type !== 'completion' && type !== 'skipped') return null;
+  if (date.length === 0) return null;
+  if (!/^\d+$/.test(idRaw)) return null;
+  const id = Number(idRaw);
+  if (!Number.isSafeInteger(id) || id <= 0) return null;
+  return { date, type, id };
+}
+
+interface TrainingHistoryCompletionRow {
+  completion_id: number;
+  session_id: number;
+  date_key: string;
+  session_type: string | null;
+  title: string | null;
+  planned_duration_minutes: number | null;
+  actual_duration_minutes: number | null;
+  completed_distance_meters: number | null;
+  rpe_overall: number | null;
+  energy_level: number | null;
+  soreness_level: number | null;
+  notes: string | null;
+  plan_name: string | null;
+  week_number: number | null;
+}
+
+interface TrainingHistorySkippedRow {
+  session_id: number;
+  date_key: string;
+  session_type: string | null;
+  title: string | null;
+  planned_duration_minutes: number | null;
+  plan_name: string | null;
+  week_number: number | null;
+}
+
+interface TrainingHistoryMergedRow {
+  dateKey: string;
+  type: 'completion' | 'skipped';
+  rowId: number;
+  item: TrainingHistoryItem;
+}
+
+/**
+ * Total order for the merged history stream: date key DESC, then
+ * completions before skipped rows on ties, then row id DESC. The
+ * keyset WHERE clauses below are derived from this comparator — they
+ * must change together.
+ */
+function compareTrainingHistoryRows(a: TrainingHistoryMergedRow, b: TrainingHistoryMergedRow): number {
+  if (a.dateKey !== b.dateKey) return a.dateKey > b.dateKey ? -1 : 1;
+  if (a.type !== b.type) return a.type === 'completion' ? -1 : 1;
+  return b.rowId - a.rowId;
+}
+
+export function getTrainingHistoryPage(
+  userId: number,
+  tenantId: number,
+  options: TrainingHistoryPageOptions = {},
+): TrainingHistoryPage {
+  const safeTenantId = typeof tenantId === 'number' && Number.isFinite(tenantId)
+    ? Math.trunc(tenantId)
+    : null;
+  if (safeTenantId === null) {
+    logger.warn(
+      { userId },
+      'getTrainingHistoryPage: missing tenantId; refusing user-only history read',
+    );
+    return { items: [], nextCursor: null };
+  }
+
+  const limit = typeof options.limit === 'number' && Number.isFinite(options.limit)
+    ? Math.min(TRAINING_HISTORY_MAX_LIMIT, Math.max(1, Math.floor(options.limit)))
+    : TRAINING_HISTORY_DEFAULT_LIMIT;
+  const cursor = options.cursor ?? null;
+  const sport = options.sport ?? null;
+  const sportTokens = sport ? SESSION_TYPE_TOKENS_BY_SPORT[sport] : null;
+  const sportClause = sportTokens
+    ? ` AND LOWER(TRIM(ts.session_type)) IN (${sportTokens.map(() => '?').join(', ')})`
+    : '';
+  const sportParams: unknown[] = sportTokens ? [...sportTokens] : [];
+
+  // Keyset clauses derived from compareTrainingHistoryRows: at an
+  // equal date key, completions sort before skipped rows, so a
+  // skipped cursor excludes same-date completions entirely while a
+  // completion cursor still admits same-date skipped rows.
+  let completionCursorClause = '';
+  const completionCursorParams: unknown[] = [];
+  let skippedCursorClause = '';
+  const skippedCursorParams: unknown[] = [];
+  if (cursor) {
+    if (cursor.type === 'completion') {
+      completionCursorClause = ' AND (tc.completed_at < ? OR (tc.completed_at = ? AND tc.id < ?))';
+      completionCursorParams.push(cursor.date, cursor.date, cursor.id);
+      skippedCursorClause = ' AND ts.updated_at <= ?';
+      skippedCursorParams.push(cursor.date);
+    } else {
+      completionCursorClause = ' AND tc.completed_at < ?';
+      completionCursorParams.push(cursor.date);
+      skippedCursorClause = ' AND (ts.updated_at < ? OR (ts.updated_at = ? AND ts.id < ?))';
+      skippedCursorParams.push(cursor.date, cursor.date, cursor.id);
+    }
+  }
+
+  const db = getDb();
+  // Fetch limit+1 per arm: enough to fill the page from either arm
+  // alone and to know whether a next page exists after the merge.
+  const fetchCount = limit + 1;
+
+  const completionRows = db.prepare(`
+    SELECT tc.id AS completion_id,
+           tc.session_id AS session_id,
+           tc.completed_at AS date_key,
+           ts.session_type AS session_type,
+           ts.title AS title,
+           ts.duration_minutes AS planned_duration_minutes,
+           tc.duration_minutes AS actual_duration_minutes,
+           tc.completed_distance_meters AS completed_distance_meters,
+           tc.rpe_overall AS rpe_overall,
+           tc.energy_level AS energy_level,
+           tc.soreness_level AS soreness_level,
+           tc.notes AS notes,
+           ftp.name AS plan_name,
+           tw.week_number AS week_number
+    FROM training_completions tc
+    JOIN training_sessions ts ON ts.id = tc.session_id
+    JOIN training_weeks tw ON tw.id = ts.week_id
+    JOIN fitness_training_plans ftp ON ftp.id = tc.plan_id
+    WHERE ftp.user_id = ? AND ftp.tenant_id = ?${sportClause}${completionCursorClause}
+    ORDER BY tc.completed_at DESC, tc.id DESC
+    LIMIT ?
+  `).all(
+    userId,
+    safeTenantId,
+    ...sportParams,
+    ...completionCursorParams,
+    fetchCount,
+  ) as TrainingHistoryCompletionRow[];
+
+  const skippedRows = db.prepare(`
+    SELECT ts.id AS session_id,
+           ts.updated_at AS date_key,
+           ts.session_type AS session_type,
+           ts.title AS title,
+           ts.duration_minutes AS planned_duration_minutes,
+           ftp.name AS plan_name,
+           tw.week_number AS week_number
+    FROM training_sessions ts
+    JOIN training_weeks tw ON tw.id = ts.week_id
+    JOIN fitness_training_plans ftp ON ftp.id = ts.plan_id
+    WHERE ftp.user_id = ? AND ftp.tenant_id = ? AND ts.status = 'skipped'${sportClause}${skippedCursorClause}
+    ORDER BY ts.updated_at DESC, ts.id DESC
+    LIMIT ?
+  `).all(
+    userId,
+    safeTenantId,
+    ...sportParams,
+    ...skippedCursorParams,
+    fetchCount,
+  ) as TrainingHistorySkippedRow[];
+
+  const merged: TrainingHistoryMergedRow[] = [];
+
+  for (const row of completionRows) {
+    const planned = row.planned_duration_minutes;
+    const actual = row.actual_duration_minutes;
+    const status: TrainingHistoryItem['status'] =
+      planned != null && planned > 0 && actual != null && actual < planned * TRAINING_HISTORY_PARTIAL_RATIO
+        ? 'partial'
+        : 'completed';
+    merged.push({
+      dateKey: row.date_key,
+      type: 'completion',
+      rowId: row.completion_id,
+      item: {
+        id: `completion-${row.completion_id}`,
+        type: 'completion',
+        sessionId: row.session_id,
+        date: row.date_key,
+        sport: normalizeSessionTypeToSport(row.session_type),
+        sessionType: row.session_type,
+        title: row.title,
+        status,
+        plannedDurationMin: planned,
+        actualDurationMin: actual,
+        actualDistanceKm: row.completed_distance_meters != null
+          ? row.completed_distance_meters / 1000
+          : null,
+        rpe: row.rpe_overall,
+        energy: row.energy_level,
+        soreness: row.soreness_level,
+        notes: row.notes,
+        planName: row.plan_name,
+        weekNumber: row.week_number,
+      },
+    });
+  }
+
+  for (const row of skippedRows) {
+    merged.push({
+      dateKey: row.date_key,
+      type: 'skipped',
+      rowId: row.session_id,
+      item: {
+        id: `skipped-${row.session_id}`,
+        type: 'skipped',
+        sessionId: row.session_id,
+        date: row.date_key,
+        sport: normalizeSessionTypeToSport(row.session_type),
+        sessionType: row.session_type,
+        title: row.title,
+        status: 'skipped',
+        plannedDurationMin: row.planned_duration_minutes,
+        actualDurationMin: null,
+        actualDistanceKm: null,
+        rpe: null,
+        energy: null,
+        soreness: null,
+        notes: null,
+        planName: row.plan_name,
+        weekNumber: row.week_number,
+      },
+    });
+  }
+
+  merged.sort(compareTrainingHistoryRows);
+  const page = merged.slice(0, limit);
+  const last = page.length > 0 ? page[page.length - 1] : null;
+  const hasMore = merged.length > limit;
+
+  return {
+    items: page.map((row) => row.item),
+    nextCursor: hasMore && last
+      ? encodeTrainingHistoryCursor({ date: last.dateKey, type: last.type, id: last.rowId })
+      : null,
+  };
 }
