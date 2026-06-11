@@ -63,6 +63,23 @@ export function taskDueDateKey(
   return dateKeyInAppTimezone(raw, timezone);
 }
 
+function normalizedTaskStatus(value: unknown): string {
+  return String(value || '').trim().toLowerCase().replace(/[\s_-]/g, '');
+}
+
+function isCompletedLikeTask(task: any): boolean {
+  switch (normalizedTaskStatus(task?.status)) {
+    case 'completed':
+    case 'complete':
+    case 'done':
+    case 'cancelled':
+    case 'canceled':
+      return true;
+    default:
+      return false;
+  }
+}
+
 function recordTasksFilteredApiReadEvidence(input: {
   userId: number;
   tenantId: number | undefined;
@@ -368,12 +385,13 @@ export function taskRoutes(): Router {
       if (!Array.isArray(allTasks)) {
         return { tasks: [], count: 0 };
       }
+      const activeTasks = allTasks.filter((task: any) => !isCompletedLikeTask(task));
 
       // Reuse the same cross-list snapshot for the chat fast-path cache so
       // `/overdue`, `/dueToday`, and the task tab share one fresh view of
       // the user's pending tasks instead of paying duplicate provider reads.
       if (userId) {
-        setCache(userCacheKey(userId, 'fastpath:pending-tasks'), allTasks, TASKS_CACHE_TTL);
+        setCache(userCacheKey(userId, 'fastpath:pending-tasks'), activeTasks, TASKS_CACHE_TTL);
       }
 
       // Use the configured app timezone for date-only comparisons so DST
@@ -381,14 +399,14 @@ export function taskRoutes(): Router {
       const timezone = getUserTimezoneById(userId);
       const todayStr = dateKeyInAppTimezone(new Date(), timezone) || new Date().toISOString().slice(0, 10);
 
-      let filtered = allTasks;
+      let filtered = activeTasks;
       if (filter === 'overdue') {
-        filtered = allTasks.filter((t: any) => {
+        filtered = activeTasks.filter((t: any) => {
           const dueStr = taskDueDateKey(t, timezone);
           return dueStr && dueStr < todayStr;
         });
       } else if (filter === 'dueToday') {
-        filtered = allTasks.filter((t: any) => {
+        filtered = activeTasks.filter((t: any) => {
           const dueStr = taskDueDateKey(t, timezone);
           return dueStr === todayStr;
         });
@@ -952,7 +970,9 @@ export async function warmTaskCache(): Promise<void> {
     const listsArray = result?.data || result || [];
     const lists = Array.isArray(listsArray) ? listsArray : [];
     const pendingResult = await todo.getAllPendingTasks().catch(() => null);
-    const pendingTasks = Array.isArray(pendingResult?.data) ? pendingResult.data : [];
+    const pendingTasks = Array.isArray(pendingResult?.data)
+      ? pendingResult.data.filter((task: any) => !isCompletedLikeTask(task))
+      : [];
     const countByListId = pendingTasks.reduce((map: Map<string, number>, task: any) => {
       const listId = String(task?.listId || '');
       if (!listId) return map;
@@ -1113,7 +1133,7 @@ function buildSmartCounts(tasks: any[], todayStr: string, timezone: string): { d
   const dueTodayIds = new Set<string>();
   const overdueIds = new Set<string>();
   for (const task of tasks) {
-    if (String(task?.status || '').toLowerCase() === 'completed') continue;
+    if (isCompletedLikeTask(task)) continue;
     const dueStr = taskDueDateKey(task, timezone);
     if (!dueStr) continue;
     const id = String(task?.id || `${task?.title || 'task'}:${dueStr}`);
@@ -1197,7 +1217,7 @@ async function completeTaskIdempotently(
 ): Promise<{ task: any; alreadyCompleted: boolean }> {
   const listName = await resolveTaskListName(todo, listId, userId);
   const current = await resolveTaskDetail(todo, listId, taskId, listName, null);
-  if (String(current?.status || '').toLowerCase() === 'completed') {
+  if (isCompletedLikeTask(current)) {
     return { task: current, alreadyCompleted: true };
   }
 

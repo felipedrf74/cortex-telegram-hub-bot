@@ -3,6 +3,7 @@
 import { DateTime } from 'luxon';
 import { getUserTimezoneById } from './user-service';
 import { getAppleHealthSleepSegments } from './health-sleep-agenda';
+import type { NormalizedSleep } from './wearable/types';
 
 export type DayDialSegmentKind = 'meet' | 'focus' | 'train' | 'eat' | 'sleep' | 'open';
 
@@ -31,6 +32,12 @@ export interface DayDialModel {
   warnings: string[];
 }
 
+type SleepSegment = {
+  start: string;
+  end: string;
+  minutes: number;
+};
+
 type CalendarLikeEvent = {
   id?: string;
   title?: string;
@@ -52,6 +59,7 @@ export function buildHomeDayDial(input: {
   calendarEvents: CalendarLikeEvent[];
   date?: string;
   timezone?: string;
+  wearableSleep?: NormalizedSleep | null;
 }): DayDialModel {
   const timezone = input.timezone || getUserTimezoneById(input.userId);
   const localDay = input.date
@@ -75,12 +83,18 @@ export function buildHomeDayDial(input: {
     });
   }
 
-  const sleepSegments = getAppleHealthSleepSegments({
+  const appleHealthSleepSegments = getAppleHealthSleepSegments({
     userId: input.userId,
     start: dayStart.toUTC().toISO()!,
     end: dayEnd.toUTC().toISO()!,
     timezone,
   });
+  const wearableSleepSegment = appleHealthSleepSegments.length === 0
+    ? wearableSleepToSegment(input.wearableSleep, dayStart, dayEnd, timezone)
+    : null;
+  const sleepSegments: SleepSegment[] = appleHealthSleepSegments.length > 0
+    ? appleHealthSleepSegments
+    : (wearableSleepSegment ? [wearableSleepSegment] : []);
   segments.push(...sleepSegments.map((segment) => ({
     kind: 'sleep' as const,
     start: segment.start,
@@ -124,6 +138,42 @@ export function buildHomeDayDial(input: {
     totals,
     warningCodes,
     warnings,
+  };
+}
+
+function wearableSleepToSegment(
+  sleep: NormalizedSleep | null | undefined,
+  dayStart: DateTime,
+  dayEnd: DateTime,
+  timezone: string,
+): SleepSegment | null {
+  if (!sleep) return null;
+  const totalMinutes = typeof sleep.totalSleepSeconds === 'number' && sleep.totalSleepSeconds > 0
+    ? Math.round(sleep.totalSleepSeconds / 60)
+    : 0;
+
+  const clipped = clipToDay(sleep.bedTimeStart, sleep.bedTimeEnd, dayStart, dayEnd, timezone);
+  if (clipped) {
+    const clippedMinutes = Math.round(clipped.end.diff(clipped.start, 'minutes').minutes);
+    if (clippedMinutes > 0) {
+      return {
+        start: clipped.start.toUTC().toISO()!,
+        end: clipped.end.toUTC().toISO()!,
+        minutes: clampMinutes(clippedMinutes, 1, 1440),
+      };
+    }
+  }
+
+  if (totalMinutes <= 0) return null;
+  const fallbackEnd = DateTime.fromISO(sleep.date || dayStart.toISODate()!, { zone: timezone })
+    .plus({ hours: 7 });
+  const fallbackStart = fallbackEnd.minus({ minutes: totalMinutes });
+  const fallback = clipToDay(fallbackStart.toISO(), fallbackEnd.toISO(), dayStart, dayEnd, timezone);
+  if (!fallback) return null;
+  return {
+    start: fallback.start.toUTC().toISO()!,
+    end: fallback.end.toUTC().toISO()!,
+    minutes: clampMinutes(Math.round(fallback.end.diff(fallback.start, 'minutes').minutes), 1, 1440),
   };
 }
 

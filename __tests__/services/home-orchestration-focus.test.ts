@@ -366,6 +366,37 @@ describe('Home orchestration focus helpers', () => {
     expect(dial.warningCodes).not.toContain('SLEEP_DATA_UNAVAILABLE');
   });
 
+  it('falls back to best-available wearable sleep when Apple Health agenda sleep is blank', () => {
+    const dial = buildHomeDayDial({
+      userId: 42,
+      date: '2026-05-25',
+      timezone: 'UTC',
+      calendarEvents: [],
+      wearableSleep: {
+        provider: 'garmin',
+        date: '2026-05-25',
+        totalSleepSeconds: 7 * 60 * 60,
+        deepSleepSeconds: null,
+        lightSleepSeconds: null,
+        remSleepSeconds: null,
+        awakeSleepSeconds: null,
+        sleepScore: 81,
+        bedTimeStart: '2026-05-25T00:10:00.000Z',
+        bedTimeEnd: '2026-05-25T07:10:00.000Z',
+      },
+    });
+
+    expect(dial.segments).toContainEqual(expect.objectContaining({
+      kind: 'sleep',
+      start: '2026-05-25T00:10:00.000Z',
+      end: '2026-05-25T07:10:00.000Z',
+      minutes: 420,
+    }));
+    expect(dial.totals.find((total) => total.kind === 'sleep')?.minutes).toBe(420);
+    expect(dial.totals.find((total) => total.kind === 'sleep')?.unavailable).toBeUndefined();
+    expect(dial.warningCodes).not.toContain('SLEEP_DATA_UNAVAILABLE');
+  });
+
   it('projects Apple Health sleep into read-only agenda blocks', () => {
     testDb.prepare(`
       INSERT INTO apple_health_data (user_id, date, data_type, data_json, source)

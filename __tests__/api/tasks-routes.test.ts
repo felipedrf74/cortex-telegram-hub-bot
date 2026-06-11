@@ -893,6 +893,57 @@ describe('Task routes sync provider metadata', () => {
     ]);
   });
 
+  it('filters completed-like provider rows out of overdue responses and fastpath cache', async () => {
+    const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+    providerApi.getAllPendingTasks.mockResolvedValue({
+      success: true,
+      data: [
+        {
+          id: 'task-active',
+          title: 'Still pending',
+          status: 'notStarted',
+          dueDateTime: yesterday,
+          listId: 'list-1',
+          listName: 'Tasks',
+        },
+        {
+          id: 'task-completed-case',
+          title: 'Completed stale provider row',
+          status: 'Completed',
+          dueDateTime: yesterday,
+          listId: 'list-1',
+          listName: 'Tasks',
+        },
+        {
+          id: 'task-done',
+          title: 'Done stale provider row',
+          status: 'done',
+          dueDateTime: yesterday,
+          listId: 'list-1',
+          listName: 'Tasks',
+        },
+        {
+          id: 'task-cancelled',
+          title: 'Cancelled stale provider row',
+          status: 'cancelled',
+          dueDateTime: yesterday,
+          listId: 'list-1',
+          listName: 'Tasks',
+        },
+      ],
+    });
+
+    const res = await dispatch('GET', '/filtered', { query: { filter: 'overdue' } });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body.data.tasks.map((task: any) => task.id)).toEqual(['task-active']);
+    expect(mockSetCache).toHaveBeenCalledWith(
+      'u:12:fastpath:pending-tasks',
+      [expect.objectContaining({ id: 'task-active' })],
+      expect.any(Number),
+    );
+  });
+
   it('includes nexus syncProvider on created tasks when using native storage', async () => {
     mockResolveTaskProvider.mockReturnValue('nexus');
 
