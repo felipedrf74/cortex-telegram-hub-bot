@@ -61,16 +61,36 @@ export interface ComputeLoadModelOutput {
   deload: DeloadRecommendation;
 }
 
+export interface HydrateLoadModelInput {
+  db: Database.Database;
+  userId: number;
+  /**
+   * Tenant scope. Completions are read only from plans owned by this
+   * tenant — `user_id` alone is not unique across tenants.
+   */
+  tenantId: number;
+  /** plan.sport string from `fitness_training_plans.sport`. */
+  planSport: string;
+}
+
+export interface HydrateLoadModelOutput {
+  loadModelByDimension: Record<LoadDimension, LoadModelDimensionResult>;
+  primaryDim: LoadDimension;
+}
+
 /**
- * Hydrate the multi-dimensional load model for the user from the
- * last 60 days of completions AND run the deload recommender. Single
- * source of truth used by both coach-analysis (read path) and
- * /week/:weekId/reflow (mutating path).
+ * Training redesign Phase 0 (item 6) — the hydration half of
+ * `computeLoadModelAndDeload`: read the last 60 days of completions,
+ * build the per-dimension load model, and pick the primary dimension.
+ * Extracted so GET /training/load-snapshot can serve the load model
+ * without a deload decision (which needs week/mesocycle context the
+ * read-only snapshot doesn't have). `computeLoadModelAndDeload`
+ * delegates here, so all three surfaces stay byte-identical.
  */
-export function computeLoadModelAndDeload(
-  input: ComputeLoadModelInput,
-): ComputeLoadModelOutput {
-  const { db, userId, tenantId, planSport, weeksSinceDeload, scheduledDeloadCadenceWeeks, principles } = input;
+export function hydrateLoadModelByDimension(
+  input: HydrateLoadModelInput,
+): HydrateLoadModelOutput {
+  const { db, userId, tenantId, planSport } = input;
 
   // R5 P2 fix (#108) — pull strength tonnage columns alongside the
   // generic load columns so the strength dimension can use the real
@@ -187,6 +207,27 @@ export function computeLoadModelAndDeload(
     loadModelByDimension.internal.loadModelStatus !== 'cold_start'
       ? 'internal'
       : 'external';
+
+  return { loadModelByDimension, primaryDim };
+}
+
+/**
+ * Hydrate the multi-dimensional load model for the user from the
+ * last 60 days of completions AND run the deload recommender. Single
+ * source of truth used by both coach-analysis (read path) and
+ * /week/:weekId/reflow (mutating path).
+ */
+export function computeLoadModelAndDeload(
+  input: ComputeLoadModelInput,
+): ComputeLoadModelOutput {
+  const { db, userId, tenantId, planSport, weeksSinceDeload, scheduledDeloadCadenceWeeks, principles } = input;
+
+  const { loadModelByDimension, primaryDim } = hydrateLoadModelByDimension({
+    db,
+    userId,
+    tenantId,
+    planSport,
+  });
   const loadModel = loadModelByDimension[primaryDim];
 
   const deload = recommendDeload(

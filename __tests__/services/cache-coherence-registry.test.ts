@@ -231,9 +231,11 @@ describe('cache-coherence-registry', () => {
     ]);
     expect(prefixKeys()).toEqual([
       'training-home:42:',
-      // training-history keys are tenant-first, so the whole family is
-      // cleared rather than a user-scoped prefix (60s TTL, rare event).
+      // training-history / training-load-snapshot keys are tenant-first,
+      // so the whole family is cleared rather than a user-scoped prefix
+      // (60s / 300s TTLs, rare event).
       'training-history:',
+      'training-load-snapshot:',
       'dashboard:42:',
       'dashboard-home:42:',
       'plan:week:u:42:',

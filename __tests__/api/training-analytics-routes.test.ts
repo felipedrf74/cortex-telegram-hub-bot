@@ -496,3 +496,135 @@ describe('GET /history', () => {
     expect(mockGetCached).toHaveBeenCalledWith('training-history:34:12:all:20');
   });
 });
+
+describe('GET /load-snapshot', () => {
+  beforeAll(() => {
+    testDb = new Database(':memory:');
+    applyMigrations(testDb);
+  });
+
+  afterAll(() => {
+    testDb?.close();
+    testDb = null;
+  });
+
+  beforeEach(() => {
+    mockGetCached.mockReset();
+    mockSetCache.mockReset();
+    mockGetCached.mockReturnValue(null);
+    testDb!.exec(`
+      DELETE FROM training_completions;
+      DELETE FROM training_sessions;
+      DELETE FROM training_weeks;
+      DELETE FROM fitness_training_plans;
+    `);
+  });
+
+  function seedPlan(planId: number, opts: { userId?: number; tenantId?: number; sport?: string } = {}): void {
+    testDb!.prepare(`
+      INSERT INTO fitness_training_plans
+        (id, user_id, tenant_id, name, sport, duration_weeks, start_date, end_date, status)
+      VALUES (?, ?, ?, 'Base Plan', ?, 12, '2026-01-05', '2026-12-31', 'active')
+    `).run(planId, opts.userId ?? 12, opts.tenantId ?? 34, opts.sport ?? 'running');
+    testDb!.prepare('INSERT INTO training_weeks (id, plan_id, week_number) VALUES (?, ?, 1)').run(planId, planId);
+    testDb!.prepare(`
+      INSERT INTO training_sessions
+        (id, week_id, plan_id, day_of_week, session_type, title, duration_minutes, status)
+      VALUES (?, ?, ?, 'monday', 'easy_run', 'run', 60, 'completed')
+    `).run(planId * 100, planId, planId);
+  }
+
+  /** Seed one RPE×duration completion per day for the last `days` days. */
+  function seedCompletions(planId: number, days: number): void {
+    const dayMs = 24 * 3600 * 1000;
+    for (let i = 1; i <= days; i++) {
+      const date = new Date(Date.now() - i * dayMs).toISOString().slice(0, 10);
+      testDb!.prepare(`
+        INSERT INTO training_completions
+          (session_id, plan_id, completed_at, rpe_overall, duration_minutes)
+        VALUES (?, ?, ?, 6, 60)
+      `).run(planId * 100, planId, `${date} 10:00:00`);
+    }
+  }
+
+  it('passes the cold_start status through on sparse data and caches for 300s', async () => {
+    seedPlan(1);
+    seedCompletions(1, 2);
+
+    const res = await dispatch('/load-snapshot');
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body.ok).toBe(true);
+    expect(res.body.data.status).toBe('cold_start');
+    // Both external and internal are cold_start → external heuristic.
+    expect(res.body.data.primaryDimension).toBe('external');
+    expect(res.body.data.asOf).toEqual(expect.any(String));
+    expect(res.body.data.acwr).toBe(0);
+    expect(res.body.data.zone).toBe('underTraining');
+    // RPE×duration completions hydrate internal, not external.
+    expect(res.body.data.completionDays).toBe(0);
+    expect(res.body.data.perDimension.internal.status).toBe('cold_start');
+    expect(mockSetCache).toHaveBeenCalledWith('training-load-snapshot:34:12', res.body.data, 300);
+  });
+
+  it('fails closed when tenant scope is missing', async () => {
+    seedPlan(1);
+    seedCompletions(1, 20);
+
+    const res = await dispatch('/load-snapshot', {}, 'en-US', null as any);
+
+    expect(res.statusCode).toBe(401);
+    expect(res.body.ok).toBe(false);
+    expect(mockSetCache).not.toHaveBeenCalled();
+  });
+
+  it('does not hydrate another tenant\'s completions for the same user id', async () => {
+    seedPlan(1, { userId: 12, tenantId: 99 });
+    seedCompletions(1, 20);
+
+    const res = await dispatch('/load-snapshot');
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body.data.status).toBe('cold_start');
+    for (const dim of ['external', 'internal', 'strength', 'impact']) {
+      expect(res.body.data.perDimension[dim].ctl).toBe(0);
+      expect(res.body.data.perDimension[dim].status).toBe('cold_start');
+    }
+  });
+
+  it('returns the cached snapshot without recomputing', async () => {
+    const cachedSnapshot = { asOf: '2026-06-11T00:00:00.000Z', status: 'warming', zone: 'lowRisk' };
+    mockGetCached.mockReturnValueOnce(cachedSnapshot);
+
+    const res = await dispatch('/load-snapshot');
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body.cached).toBe(true);
+    expect(res.body.data).toEqual(cachedSnapshot);
+    expect(mockGetCached).toHaveBeenCalledWith('training-load-snapshot:34:12');
+    expect(mockSetCache).not.toHaveBeenCalled();
+  });
+
+  it('serves a non-cold snapshot from seeded completions', async () => {
+    seedPlan(1);
+    seedCompletions(1, 20);
+
+    const res = await dispatch('/load-snapshot');
+
+    expect(res.statusCode).toBe(200);
+    const snapshot = res.body.data;
+    // 20 days of sRPE data → internal past the 14-day cold-start
+    // threshold while external (no device/pace data) stays cold —
+    // the heuristic promotes internal to primary.
+    expect(snapshot.primaryDimension).toBe('internal');
+    expect(snapshot.status).toBe('warming');
+    expect(snapshot.completionDays).toBe(20);
+    expect(snapshot.ctl).toBeGreaterThan(0);
+    expect(snapshot.atl).toBeGreaterThan(0);
+    expect(snapshot.acwr).toBeGreaterThan(0);
+    expect(['underTraining', 'lowRisk', 'moderateRisk', 'highRisk']).toContain(snapshot.zone);
+    expect(snapshot.perDimension.internal.status).toBe('warming');
+    expect(snapshot.perDimension.external.status).toBe('cold_start');
+    expect(mockSetCache).toHaveBeenCalledWith('training-load-snapshot:34:12', snapshot, 300);
+  });
+});

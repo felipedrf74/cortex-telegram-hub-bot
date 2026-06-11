@@ -21,6 +21,11 @@ import {
   publishPlanDriftSignalForUser,
 } from '../../services/adherence-signals';
 import { assertTenantScope, TenantScopeError } from '../../services/tenant-scope';
+import { getDb } from '../../services/database';
+import { loadCoachKnowledge } from '../../services/coach-kernel/knowledge-loader';
+import { getAcwrThresholds } from '../../services/coach-kernel/training-principles';
+import { classifyAcwr, type LoadDimension } from '../../services/coach-kernel/load-model';
+import { hydrateLoadModelByDimension } from './training-coach-v2-load-helper';
 
 export type TrainingLanguageResolver = (
   req: Pick<AuthenticatedRequest, 'header'>,
@@ -45,6 +50,10 @@ function invalidHistorySportMessage(language: Lang): string {
 function invalidHistoryCursorMessage(language: Lang): string {
   if (language.startsWith('pt')) return 'o parâmetro cursor é inválido';
   return 'cursor query param is invalid';
+}
+
+function round2(value: number): number {
+  return Math.round(value * 100) / 100;
 }
 
 function requireTrainingAnalyticsScope(
@@ -240,6 +249,99 @@ export function registerTrainingAnalyticsRoutes(
     } catch (err: any) {
       logger.error({ err, userId, tenantId, sport, limit }, 'GET /history failed');
       sendInternalError(res, 'Failed to load training history');
+    }
+  });
+
+  /**
+   * GET /api/v1/training/load-snapshot
+   *
+   * Point-in-time multi-dimensional load-model snapshot (CTL/ATL/TSB
+   * + ACWR + Gabbett zone). Drives the Progress-zone load card in the
+   * iOS Training redesign. Shares the hydration path with the coach
+   * V2 routes (`hydrateLoadModelByDimension`) so the snapshot can
+   * never disagree with coach-analysis. Cache is invalidated through
+   * the `training.changed` coherence event.
+   */
+  router.get('/load-snapshot', async (req, res: Response) => {
+    const scope = requireTrainingAnalyticsScope(req as AuthenticatedRequest, res, 'training.analytics.load.snapshot');
+    if (!scope) return;
+    const { userId, tenantId } = scope;
+    const cacheKey = `training-load-snapshot:${tenantId}:${userId}`;
+
+    const cached = getCached(cacheKey);
+    if (cached) {
+      sendSuccess(res, cached, { cached: true });
+      return;
+    }
+
+    try {
+      const db = getDb();
+      // The active plan's sport drives the primary-dimension pick
+      // (strength plans track tonnage, not TSS). Tenant-scoped —
+      // `user_id` alone is not unique across tenants. Null-safe: with
+      // no active plan the empty sport string falls through to the
+      // non-strength external/internal heuristic.
+      const planRow = db.prepare(`
+        SELECT sport FROM fitness_training_plans
+        WHERE user_id = ? AND tenant_id = ? AND status = 'active'
+        ORDER BY created_at DESC LIMIT 1
+      `).get(userId, tenantId) as { sport: string | null } | undefined;
+
+      const { loadModelByDimension, primaryDim } = hydrateLoadModelByDimension({
+        db,
+        userId,
+        tenantId,
+        planSport: planRow?.sport ?? '',
+      });
+      const loadModel = loadModelByDimension[primaryDim];
+
+      const principles = loadCoachKnowledge().principles;
+      // Same fallback bands as `recommendDeload` — principles without
+      // acwrThresholds still classify against the Gabbett defaults.
+      const acwrThresholds = getAcwrThresholds(principles) ?? {
+        underTraining: { min: 0, max: 0.8 },
+        lowRisk: { min: 0.8, max: 1.3 },
+        moderateRisk: { min: 1.3, max: 1.5 },
+        highRisk: { min: 1.5, max: 100 },
+      };
+      const zone = classifyAcwr(loadModel.acwrUncoupled, acwrThresholds);
+
+      const dimensionSummary = (dim: LoadDimension): {
+        ctl: number;
+        atl: number;
+        acwrUncoupled: number;
+        status: string;
+      } => ({
+        ctl: round2(loadModelByDimension[dim].ctl),
+        atl: round2(loadModelByDimension[dim].atl),
+        acwrUncoupled: round2(loadModelByDimension[dim].acwrUncoupled),
+        status: loadModelByDimension[dim].loadModelStatus,
+      });
+
+      const snapshot = {
+        asOf: new Date().toISOString(),
+        status: loadModel.loadModelStatus,
+        primaryDimension: primaryDim,
+        acwr: round2(loadModel.acwrUncoupled),
+        acwrCoupled: round2(loadModel.acwrCoupled),
+        zone,
+        ctl: round2(loadModel.ctl),
+        atl: round2(loadModel.atl),
+        tsb: round2(loadModel.tsb),
+        completionDays: loadModel.completionCount,
+        perDimension: {
+          external: dimensionSummary('external'),
+          internal: dimensionSummary('internal'),
+          strength: dimensionSummary('strength'),
+          impact: dimensionSummary('impact'),
+        },
+      };
+
+      setCache(cacheKey, snapshot, 300);
+      sendSuccess(res, snapshot);
+    } catch (err: any) {
+      logger.error({ err, userId, tenantId }, 'GET /load-snapshot failed');
+      sendInternalError(res, 'Failed to load training load snapshot');
     }
   });
 }

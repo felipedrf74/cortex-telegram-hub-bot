@@ -354,11 +354,16 @@ export function invalidateCacheForEvent(event: CacheCoherenceEvent): void {
       clearCache(`coach-briefing:${event.userId}`);
       clearCache(`training-summary:${event.userId}`);
       clearCache(`readiness:${event.userId}`);
-      // training-history keys are tenant-first
-      // (`training-history:{tenantId}:{userId}:…`), so a user-scoped
+      // training-history and training-load-snapshot keys are
+      // tenant-first (`…:{tenantId}:{userId}…`), so a user-scoped
       // prefix cannot target them; clear the whole family instead.
-      // Safe trade: the event is per-user-rare and the TTL is 60s.
-      clearCacheByPrefix([`training-home:${event.userId}:`, 'training-history:']);
+      // Safe trade: the event is per-user-rare and the TTLs are short
+      // (60s / 300s).
+      clearCacheByPrefix([
+        `training-home:${event.userId}:`,
+        'training-history:',
+        'training-load-snapshot:',
+      ]);
       invalidateCacheForEvent(CacheCoherenceEvents.dashboardAll(event.userId));
       invalidateCacheForEvent(CacheCoherenceEvents.planningChanged(event.userId));
       return;
