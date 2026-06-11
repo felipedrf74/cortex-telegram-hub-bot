@@ -14,6 +14,7 @@ import {
 } from '../../services/training-home-view-state';
 import { getStoredPlanCoveringDate } from '../../services/coach-plan-registry';
 import { adjustForFatigue } from '../../services/coach-kernel/planner-engine';
+import { isKeepOriginalSetForToday } from '../../services/training-keep-original';
 import { resolveTrainingDay, trainingWeekdayMatches } from '../../services/training-date-utils';
 import type {
   AthleteState,
@@ -140,13 +141,19 @@ function resolveKernelTodayContext(
 
   const todayDow = dayOfWeekForDate(today);
   const originalSession = stored.plan.sessions.find((session) => session.dayOfWeek === todayDow) ?? null;
+  // Training redesign Phase 0 — keep-original opt-out: when the flag is set
+  // for the current local day, skip the fatigue readjustment and pin the
+  // adapted prescription to the original so the swap banner clears.
+  const keepOriginal = isKeepOriginalSetForToday(userId);
   const liveLevel = classifyLiveReadinessLevel(liveReadiness?.score);
-  const needsReadjust = liveLevel === 'orange' || liveLevel === 'red';
+  const needsReadjust = !keepOriginal && (liveLevel === 'orange' || liveLevel === 'red');
 
   const effectivePlan = needsReadjust
     ? readjustForTodayFatigue(stored.athleteState, stored.plan, liveReadiness, liveLevel)
     : stored.plan;
-  const adaptedSession = effectivePlan.sessions.find((session) => session.dayOfWeek === todayDow) ?? null;
+  const adaptedSession = keepOriginal
+    ? originalSession
+    : effectivePlan.sessions.find((session) => session.dayOfWeek === todayDow) ?? null;
 
   return {
     kernelGuardrails: effectivePlan.guardrailResults.map((result) => ({

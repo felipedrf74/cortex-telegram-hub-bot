@@ -17,6 +17,7 @@ import {
 } from './training-calendar-utils';
 import { readinessResultToSnapshot } from '../../services/coach-kernel/readiness-snapshot-adapter';
 import { adaptSessionForReadiness, type AdaptationContext } from '../../services/coach-kernel/adaptation-engine';
+import { isKeepOriginalSetForToday } from '../../services/training-keep-original';
 import type { Session, SessionType, Sport, ReadinessSnapshot } from '../../services/coach-kernel/types';
 import { requireTenantIdParam } from '../../services/tenant-scope';
 
@@ -244,8 +245,13 @@ export async function getTodaySession(userId: number, tenantId: number) {
   // `getReadiness(userId)` (5-min TTL) so this is cheap on the hot path.
   // If readiness is unavailable, adaptation is skipped and the session
   // renders as written.
+  //
+  // Training redesign Phase 0 — keep-original opt-out: when the user posted
+  // /training/today/keep-original for the current local day, skip adaptation
+  // entirely so the session renders exactly as written (`adaptation: null`
+  // → iOS hides the chip).
   let adaptation: SessionAdaptation | null = null;
-  if (session) {
+  if (session && !isKeepOriginalSetForToday(userId)) {
     try {
       const readinessSummary = await getReadiness(userId);
       const snapshot = readinessResultToSnapshot({

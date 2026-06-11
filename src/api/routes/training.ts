@@ -15,6 +15,7 @@ import { getUserLanguageById } from '../../services/user-service';
 import type { Lang } from '../../utils/i18n';
 import { getCached, setCache } from '../../services/cache-store';
 import { invalidateTrainingDerivedCaches } from '../../services/cache-coherence-registry';
+import { markKeepOriginalForToday } from '../../services/training-keep-original';
 import * as trainingPlans from '../../services/training-plans';
 import { sendSuccess, sendError, sendInternalError } from '../response-helpers';
 import { applyCoachRecommendations, generateCoachBriefing } from '../../services/garmin-coach';
@@ -836,6 +837,31 @@ export function trainingRoutes(): Router {
     } catch (err: any) {
       logger.error({ err }, 'iOS training/skip failed');
       sendInternalError(res, 'Failed to skip session');
+    }
+  });
+
+  /**
+   * POST /api/v1/training/today/keep-original
+   *
+   * Training redesign Phase 0 — per-day adaptation opt-out. Persists a
+   * (userId, local date) flag so both adaptation read paths (the today
+   * read model and the Home kernel context) render today's prescription
+   * exactly as written, clearing the swap banner. Idempotent: a second
+   * call on the same local day refreshes the flag and still succeeds.
+   */
+  router.post('/today/keep-original', async (req, res: Response) => {
+    const { userId, tenantId } = req as AuthenticatedRequest;
+    if (!consumeTrainingWriteBudget(res, tenantId, userId, 'training_keep_original')) return;
+
+    try {
+      markKeepOriginalForToday(userId);
+      // The Today/Home read models cache adapted prescriptions — clear
+      // them so the next read reflects the opt-out immediately.
+      invalidateTrainingScreenCaches(userId);
+      sendSuccess(res, { kept: true });
+    } catch (err: any) {
+      logger.error({ err }, 'iOS training/today/keep-original failed');
+      sendInternalError(res, 'Failed to keep original session');
     }
   });
 
