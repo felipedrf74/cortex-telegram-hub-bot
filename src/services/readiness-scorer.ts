@@ -43,6 +43,7 @@ export interface ReadinessFactors {
 
 export type ReadinessRecommendation = 'full_intensity' | 'reduce_10pct' | 'reduce_25pct' | 'active_recovery' | 'rest_day';
 export type ReadinessReasonCode = 'WEARABLE_INTEGRATION_MISSING';
+export type ReadinessSource = 'garmin' | 'whoop' | 'apple_health' | 'estimated';
 
 export interface ReadinessResult {
   score: number;
@@ -50,6 +51,10 @@ export interface ReadinessResult {
   recommendation: ReadinessRecommendation;
   reasoning: string;
   reasonCode?: ReadinessReasonCode;
+  /** Which provider produced this readiness snapshot. Optional — additive for old clients. */
+  source?: ReadinessSource;
+  /** ISO timestamp captured at compute time. Optional — additive for old clients. */
+  asOf?: string;
 }
 
 type AppleHealthJsonRow = {
@@ -115,6 +120,8 @@ function buildWearableFallbackReadiness(readiness: NormalizedReadiness): Readine
     factors,
     recommendation,
     reasoning,
+    source: 'whoop',
+    asOf: new Date().toISOString(),
   };
 }
 
@@ -556,7 +563,7 @@ async function calculateAppleHealthReadiness(
     }
 
     logger.info({ userId, score: compositeScore, provider: 'apple_health' }, 'Apple Health readiness calculated');
-    return { score: compositeScore, factors, recommendation, reasoning };
+    return { score: compositeScore, factors, recommendation, reasoning, source: 'apple_health', asOf: new Date().toISOString() };
   } catch (err) {
     logger.warn({ err, userId }, 'Apple Health readiness calculation failed');
     return null;
@@ -606,6 +613,8 @@ export async function calculateReadiness(
       recommendation: getRecommendation(60),
       reasoning: 'No wearable connected — using conservative default readiness. Connect Garmin or Apple Health for personalized adjustments.',
       reasonCode: 'WEARABLE_INTEGRATION_MISSING',
+      source: 'estimated',
+      asOf: new Date().toISOString(),
     };
   }
 
@@ -728,7 +737,7 @@ export async function calculateReadiness(
     logger.warn({ err, userId }, 'training-signals publish failed after calculateReadiness');
   }
 
-  return { score: compositeScore, factors, recommendation, reasoning };
+  return { score: compositeScore, factors, recommendation, reasoning, source: 'garmin', asOf: new Date().toISOString() };
 }
 
 // ── Persistence ─────────────────────────────────────────────────────

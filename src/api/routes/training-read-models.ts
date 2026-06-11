@@ -520,7 +520,9 @@ export async function getReadiness(userId: number) {
     const rawRec = readiness?.recommendation || '';
     const recommendation = humanizeRecommendation(rawRec, score);
     const reasonCode = typeof readiness?.reasonCode === 'string' ? readiness.reasonCode : null;
-    const result = { score, factors, recommendation, reasonCode };
+    const source = typeof readiness?.source === 'string' ? readiness.source : null;
+    const asOf = typeof readiness?.asOf === 'string' ? readiness.asOf : null;
+    const result = { score, factors, recommendation, reasonCode, source, asOf };
     setCache(cacheKey, result, READINESS_TTL);
     return result;
   } catch (err) {

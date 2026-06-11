@@ -338,6 +338,8 @@ describe('training-read-models', () => {
       score: 72,
       recommendation: 'normal',
       reasonCode: 'maintain',
+      source: 'garmin',
+      asOf: '2026-06-11T07:30:00.000Z',
       factors: {
         sleep: { score: 88 },
         hrv: { trend: 'stable' },
@@ -353,6 +355,8 @@ describe('training-read-models', () => {
       score: 72,
       recommendation: 'Good to train at normal intensity.',
       reasonCode: 'maintain',
+      source: 'garmin',
+      asOf: '2026-06-11T07:30:00.000Z',
       factors: {
         sleepScore: 88,
         hrvStatus: 'stable',
@@ -362,6 +366,19 @@ describe('training-read-models', () => {
     });
     expect(second).toEqual(first);
     expect(hoisted.calculateReadiness).toHaveBeenCalledTimes(1);
+  });
+
+  it('passes null source and asOf through when the scorer omits provenance', async () => {
+    mockReadinessResult = {
+      score: 60,
+      recommendation: 'normal',
+      reasonCode: 'WEARABLE_INTEGRATION_MISSING',
+      factors: {},
+    };
+
+    const result = await getReadiness(42);
+    expect(result.source).toBeNull();
+    expect(result.asOf).toBeNull();
   });
 
   it('maps readiness into coach-kernel plan input and returns null for missing useful data', async () => {

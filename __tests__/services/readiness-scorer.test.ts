@@ -505,6 +505,64 @@ describe('readiness-scorer — calculateReadiness', () => {
     expect(result.factors.bodyBattery.current).toBe(0);
     expect(result.factors.bodyBattery.score).toBe(60);
   });
+
+  // ── Provenance: source + asOf (Training redesign Phase 0) ──
+
+  it('stamps source garmin and a compute-time asOf on the Garmin composite path', async () => {
+    mockGarmin.getHrvData.mockResolvedValue({ hrvSummary: { lastNightAvg: 55, weeklyAvg: 50 } });
+    mockGarmin.getSleepData.mockResolvedValue({ dailySleepDTO: { sleepTimeSeconds: 28800, overallSleepScore: 80 } });
+    mockGarmin.getBodyBatteryEvents.mockResolvedValue([{ bodyBatteryLevel: 70 }]);
+    mockGarmin.getTrainingReadiness.mockResolvedValue({});
+    mockGarmin.getActivitiesByDate.mockResolvedValue([]);
+
+    const before = Date.now();
+    const result = await calculateReadiness(1);
+    const after = Date.now();
+
+    expect(result.source).toBe('garmin');
+    expect(typeof result.asOf).toBe('string');
+    const asOfMs = Date.parse(result.asOf!);
+    expect(asOfMs).toBeGreaterThanOrEqual(before);
+    expect(asOfMs).toBeLessThanOrEqual(after);
+  });
+
+  it('stamps source whoop on the WHOOP fallback path', async () => {
+    mockGarmin.isGarminConfigured.mockReturnValue(false);
+    mockWearableService.getReadiness.mockResolvedValue({
+      provider: 'whoop',
+      date: '2026-04-16',
+      readinessScore: 81,
+      hrvMs: 64,
+      restingHeartRate: 49,
+      bodyBattery: null,
+      recoveryScore: 81,
+      raw: {},
+    });
+
+    const result = await calculateReadiness(1);
+    expect(result.source).toBe('whoop');
+    expect(Number.isFinite(Date.parse(result.asOf ?? ''))).toBe(true);
+  });
+
+  it('stamps source apple_health on the Apple Health derived path', async () => {
+    mockGarmin.isGarminConfigured.mockReturnValue(false);
+    seedAppleHealthData(1);
+
+    const result = await calculateReadiness(1);
+    expect(result.reasoning).toContain('Apple Health');
+    expect(result.source).toBe('apple_health');
+    expect(Number.isFinite(Date.parse(result.asOf ?? ''))).toBe(true);
+  });
+
+  it('stamps source estimated on the neutral no-wearable fallback', async () => {
+    mockGarmin.isGarminConfigured.mockReturnValue(false);
+
+    const result = await calculateReadiness(1);
+    expect(result.score).toBe(60);
+    expect(result.reasonCode).toBe('WEARABLE_INTEGRATION_MISSING');
+    expect(result.source).toBe('estimated');
+    expect(Number.isFinite(Date.parse(result.asOf ?? ''))).toBe(true);
+  });
 });
 
 // ── Persistence Tests ──
