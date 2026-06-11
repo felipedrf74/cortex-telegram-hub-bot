@@ -10,9 +10,13 @@ import { invalidatePlanningCaches } from './plan-cache-invalidator';
  */
 export function invalidateTrainingDerivedCaches(userId: number): void {
   clearCache(`coach-briefing:${userId}`);
-  clearCache(`training-summary:${userId}`);
   clearCache(`readiness:${userId}`);
-  clearCacheByPrefix(`training-home:${userId}:`);
+  // training-summary keys are tenant-first
+  // (`training-summary:{tenantId}:{userId}`), so a user-scoped exact
+  // key cannot target them; clear the whole family by prefix instead,
+  // mirroring cache-coherence-registry's training.changed handler
+  // (300s TTL, rare event).
+  clearCacheByPrefix([`training-home:${userId}:`, 'training-summary:']);
   invalidateDashboardCaches(userId);
   invalidatePlanningCaches(userId);
 }

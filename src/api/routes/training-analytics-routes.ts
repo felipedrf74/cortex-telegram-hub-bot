@@ -194,8 +194,9 @@ export function registerTrainingAnalyticsRoutes(
    * GET /api/v1/training/history
    *
    * Keyset-paginated unified training log: completed entries from
-   * `training_completions` merged with skipped sessions. Drives the
-   * Progress-zone history list in the iOS Training redesign. First
+   * `training_completions`, bare completed sessions (marked done with
+   * no feedback row), and skipped sessions. Drives the Progress-zone
+   * history list in the iOS Training redesign. First
    * page (no cursor) is cached for 60s; cursor pages are never cached
    * so pagination always reads fresh keyset slices.
    */

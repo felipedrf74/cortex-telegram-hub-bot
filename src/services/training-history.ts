@@ -598,18 +598,27 @@ function numberFromUnknown(value: unknown): number | null {
 // Training history page — GET /api/v1/training/history (Training redesign
 // Phase 0, item 5).
 //
-// Unified, keyset-paginated log of what actually happened: completed
-// entries from `training_completions` plus skipped sessions from
-// `training_sessions` (status = 'skipped'). Both arms are tenant-scoped
-// through `fitness_training_plans` (user_id AND tenant_id) like every
-// other read in this module.
+// Unified, keyset-paginated log of what actually happened, merged from
+// three arms:
 //
-// Ordering is (date key DESC, completion-before-skipped, row id DESC).
-// Skipped sessions have no completion timestamp, so `ts.updated_at` is
-// used as their approximate date. Skipped rows intentionally carry no
-// `reason` field — no such column exists (decided v1 deviation;
-// `training_completions.missed_reason` only exists for logged
-// completions, not bare skipped sessions).
+//   1. `training_completions` rows (feedback-logged completions),
+//   2. bare completed sessions — `training_sessions` with
+//      status = 'completed' and NO matching completion row. The iOS
+//      complete route only writes a completion row when notes/RPE/V2
+//      fields are present; a bare "mark done" just flips the session
+//      status, so without this arm those sessions would vanish from
+//      history while skipped ones appear (Phase-0 review fix),
+//   3. skipped sessions (`training_sessions`, status = 'skipped').
+//
+// All arms are tenant-scoped through `fitness_training_plans`
+// (user_id AND tenant_id) like every other read in this module.
+//
+// Ordering is (date key DESC, type rank ASC, row id DESC) — see
+// TRAINING_HISTORY_TYPE_RANK. Session-status rows have no completion
+// timestamp, so `ts.updated_at` is used as their approximate date.
+// Skipped rows intentionally carry no `reason` field — no such column
+// exists (decided v1 deviation; `training_completions.missed_reason`
+// only exists for logged completions, not bare skipped sessions).
 // ---------------------------------------------------------------------------
 
 const TRAINING_HISTORY_DEFAULT_LIMIT = 20;
@@ -625,14 +634,32 @@ const TRAINING_HISTORY_PARTIAL_RATIO = 0.72;
 export interface TrainingHistoryCursor {
   /**
    * Raw date key exactly as stored in the source row (`completed_at`
-   * for completions, `updated_at` for skipped sessions). Kept raw —
+   * for completions, `updated_at` for session-status rows). Kept raw —
    * not re-normalized — so SQL string comparisons in the keyset
    * filter match ORDER BY semantics exactly.
    */
   date: string;
-  type: 'completion' | 'skipped';
+  /**
+   * Source arm of the row the cursor points at. `'session'` is a bare
+   * completed session (status = 'completed', no completion row) — it
+   * surfaces to clients as item type `'completion'`, but the cursor
+   * keeps the arm distinct so the keyset filter stays exact.
+   */
+  type: 'completion' | 'session' | 'skipped';
   id: number;
 }
+
+/**
+ * Tie-break rank on equal date keys: completions first, then bare
+ * completed sessions, then skipped sessions. `compareTrainingHistoryRows`
+ * and the keyset WHERE clauses are both derived from this table — they
+ * must change together.
+ */
+const TRAINING_HISTORY_TYPE_RANK: Record<TrainingHistoryCursor['type'], number> = {
+  completion: 0,
+  session: 1,
+  skipped: 2,
+};
 
 export interface TrainingHistoryItem {
   id: string;
@@ -690,7 +717,7 @@ export function decodeTrainingHistoryCursor(raw: string): TrainingHistoryCursor 
   const idRaw = parts[parts.length - 1];
   const type = parts[parts.length - 2];
   const date = parts.slice(0, -2).join('|');
-  if (type !== 'completion' && type !== 'skipped') return null;
+  if (type !== 'completion' && type !== 'session' && type !== 'skipped') return null;
   if (date.length === 0) return null;
   if (!/^\d+$/.test(idRaw)) return null;
   const id = Number(idRaw);
@@ -715,7 +742,8 @@ interface TrainingHistoryCompletionRow {
   week_number: number | null;
 }
 
-interface TrainingHistorySkippedRow {
+/** Shared row shape for both session-status arms (bare-completed and skipped). */
+interface TrainingHistorySessionRow {
   session_id: number;
   date_key: string;
   session_type: string | null;
@@ -727,21 +755,50 @@ interface TrainingHistorySkippedRow {
 
 interface TrainingHistoryMergedRow {
   dateKey: string;
-  type: 'completion' | 'skipped';
+  type: TrainingHistoryCursor['type'];
   rowId: number;
   item: TrainingHistoryItem;
 }
 
 /**
  * Total order for the merged history stream: date key DESC, then
- * completions before skipped rows on ties, then row id DESC. The
+ * TRAINING_HISTORY_TYPE_RANK ASC on ties, then row id DESC. The
  * keyset WHERE clauses below are derived from this comparator — they
  * must change together.
  */
 function compareTrainingHistoryRows(a: TrainingHistoryMergedRow, b: TrainingHistoryMergedRow): number {
   if (a.dateKey !== b.dateKey) return a.dateKey > b.dateKey ? -1 : 1;
-  if (a.type !== b.type) return a.type === 'completion' ? -1 : 1;
+  if (a.type !== b.type) return TRAINING_HISTORY_TYPE_RANK[a.type] - TRAINING_HISTORY_TYPE_RANK[b.type];
   return b.rowId - a.rowId;
+}
+
+/**
+ * Keyset WHERE fragment for one arm, derived from
+ * compareTrainingHistoryRows: rows strictly after the cursor are
+ * (date < d), or (date = d AND rank > cursor rank), or
+ * (date = d AND rank = cursor rank AND id < cursor id).
+ */
+function buildTrainingHistoryKeysetClause(
+  armType: TrainingHistoryCursor['type'],
+  cursor: TrainingHistoryCursor,
+  dateColumn: string,
+  idColumn: string,
+): { clause: string; params: unknown[] } {
+  const armRank = TRAINING_HISTORY_TYPE_RANK[armType];
+  const cursorRank = TRAINING_HISTORY_TYPE_RANK[cursor.type];
+  if (armRank < cursorRank) {
+    // Same-date rows of a lower rank sorted before the cursor — they
+    // were already emitted, so only strictly older dates remain.
+    return { clause: ` AND ${dateColumn} < ?`, params: [cursor.date] };
+  }
+  if (armRank === cursorRank) {
+    return {
+      clause: ` AND (${dateColumn} < ? OR (${dateColumn} = ? AND ${idColumn} < ?))`,
+      params: [cursor.date, cursor.date, cursor.id],
+    };
+  }
+  // Higher-rank arms still admit same-date rows.
+  return { clause: ` AND ${dateColumn} <= ?`, params: [cursor.date] };
 }
 
 export function getTrainingHistoryPage(
@@ -771,30 +828,23 @@ export function getTrainingHistoryPage(
     : '';
   const sportParams: unknown[] = sportTokens ? [...sportTokens] : [];
 
-  // Keyset clauses derived from compareTrainingHistoryRows: at an
-  // equal date key, completions sort before skipped rows, so a
-  // skipped cursor excludes same-date completions entirely while a
-  // completion cursor still admits same-date skipped rows.
-  let completionCursorClause = '';
-  const completionCursorParams: unknown[] = [];
-  let skippedCursorClause = '';
-  const skippedCursorParams: unknown[] = [];
-  if (cursor) {
-    if (cursor.type === 'completion') {
-      completionCursorClause = ' AND (tc.completed_at < ? OR (tc.completed_at = ? AND tc.id < ?))';
-      completionCursorParams.push(cursor.date, cursor.date, cursor.id);
-      skippedCursorClause = ' AND ts.updated_at <= ?';
-      skippedCursorParams.push(cursor.date);
-    } else {
-      completionCursorClause = ' AND tc.completed_at < ?';
-      completionCursorParams.push(cursor.date);
-      skippedCursorClause = ' AND (ts.updated_at < ? OR (ts.updated_at = ? AND ts.id < ?))';
-      skippedCursorParams.push(cursor.date, cursor.date, cursor.id);
-    }
-  }
+  // Keyset clauses derived from compareTrainingHistoryRows via
+  // buildTrainingHistoryKeysetClause — one per arm, all driven by the
+  // same rank table so the SQL filters cannot drift from the merge
+  // comparator.
+  const emptyKeyset = { clause: '', params: [] as unknown[] };
+  const completionKeyset = cursor
+    ? buildTrainingHistoryKeysetClause('completion', cursor, 'tc.completed_at', 'tc.id')
+    : emptyKeyset;
+  const sessionKeyset = cursor
+    ? buildTrainingHistoryKeysetClause('session', cursor, 'ts.updated_at', 'ts.id')
+    : emptyKeyset;
+  const skippedKeyset = cursor
+    ? buildTrainingHistoryKeysetClause('skipped', cursor, 'ts.updated_at', 'ts.id')
+    : emptyKeyset;
 
   const db = getDb();
-  // Fetch limit+1 per arm: enough to fill the page from either arm
+  // Fetch limit+1 per arm: enough to fill the page from any one arm
   // alone and to know whether a next page exists after the merge.
   const fetchCount = limit + 1;
 
@@ -805,7 +855,7 @@ export function getTrainingHistoryPage(
            ts.session_type AS session_type,
            ts.title AS title,
            ts.duration_minutes AS planned_duration_minutes,
-           tc.duration_minutes AS actual_duration_minutes,
+           COALESCE(tc.duration_minutes, tc.completed_duration_sec / 60.0) AS actual_duration_minutes,
            tc.completed_distance_meters AS completed_distance_meters,
            tc.rpe_overall AS rpe_overall,
            tc.energy_level AS energy_level,
@@ -817,16 +867,45 @@ export function getTrainingHistoryPage(
     JOIN training_sessions ts ON ts.id = tc.session_id
     JOIN training_weeks tw ON tw.id = ts.week_id
     JOIN fitness_training_plans ftp ON ftp.id = tc.plan_id
-    WHERE ftp.user_id = ? AND ftp.tenant_id = ?${sportClause}${completionCursorClause}
+    WHERE ftp.user_id = ? AND ftp.tenant_id = ?${sportClause}${completionKeyset.clause}
     ORDER BY tc.completed_at DESC, tc.id DESC
     LIMIT ?
   `).all(
     userId,
     safeTenantId,
     ...sportParams,
-    ...completionCursorParams,
+    ...completionKeyset.params,
     fetchCount,
   ) as TrainingHistoryCompletionRow[];
+
+  // Bare completed sessions: marked done without feedback, so no
+  // training_completions row exists (the iOS complete route only logs
+  // a completion when notes/RPE/V2 fields are present). NOT EXISTS
+  // keeps feedback-logged sessions out of this arm — they already
+  // surface through the completion arm above.
+  const bareCompletedRows = db.prepare(`
+    SELECT ts.id AS session_id,
+           ts.updated_at AS date_key,
+           ts.session_type AS session_type,
+           ts.title AS title,
+           ts.duration_minutes AS planned_duration_minutes,
+           ftp.name AS plan_name,
+           tw.week_number AS week_number
+    FROM training_sessions ts
+    JOIN training_weeks tw ON tw.id = ts.week_id
+    JOIN fitness_training_plans ftp ON ftp.id = ts.plan_id
+    WHERE ftp.user_id = ? AND ftp.tenant_id = ? AND ts.status = 'completed'
+      AND NOT EXISTS (SELECT 1 FROM training_completions tc WHERE tc.session_id = ts.id)
+      ${sportClause}${sessionKeyset.clause}
+    ORDER BY ts.updated_at DESC, ts.id DESC
+    LIMIT ?
+  `).all(
+    userId,
+    safeTenantId,
+    ...sportParams,
+    ...sessionKeyset.params,
+    fetchCount,
+  ) as TrainingHistorySessionRow[];
 
   const skippedRows = db.prepare(`
     SELECT ts.id AS session_id,
@@ -839,21 +918,25 @@ export function getTrainingHistoryPage(
     FROM training_sessions ts
     JOIN training_weeks tw ON tw.id = ts.week_id
     JOIN fitness_training_plans ftp ON ftp.id = ts.plan_id
-    WHERE ftp.user_id = ? AND ftp.tenant_id = ? AND ts.status = 'skipped'${sportClause}${skippedCursorClause}
+    WHERE ftp.user_id = ? AND ftp.tenant_id = ? AND ts.status = 'skipped'${sportClause}${skippedKeyset.clause}
     ORDER BY ts.updated_at DESC, ts.id DESC
     LIMIT ?
   `).all(
     userId,
     safeTenantId,
     ...sportParams,
-    ...skippedCursorParams,
+    ...skippedKeyset.params,
     fetchCount,
-  ) as TrainingHistorySkippedRow[];
+  ) as TrainingHistorySessionRow[];
 
   const merged: TrainingHistoryMergedRow[] = [];
 
   for (const row of completionRows) {
     const planned = row.planned_duration_minutes;
+    // May be fractional minutes when derived from
+    // `completed_duration_sec` — the only duration the iOS complete
+    // contract writes. Classify partial on the precise value; round
+    // only for the payload.
     const actual = row.actual_duration_minutes;
     const status: TrainingHistoryItem['status'] =
       planned != null && planned > 0 && actual != null && actual < planned * TRAINING_HISTORY_PARTIAL_RATIO
@@ -873,7 +956,7 @@ export function getTrainingHistoryPage(
         title: row.title,
         status,
         plannedDurationMin: planned,
-        actualDurationMin: actual,
+        actualDurationMin: actual != null ? Math.round(actual) : null,
         actualDistanceKm: row.completed_distance_meters != null
           ? row.completed_distance_meters / 1000
           : null,
@@ -881,6 +964,37 @@ export function getTrainingHistoryPage(
         energy: row.energy_level,
         soreness: row.soreness_level,
         notes: row.notes,
+        planName: row.plan_name,
+        weekNumber: row.week_number,
+      },
+    });
+  }
+
+  // Bare completed sessions surface as item type 'completion' (that is
+  // what they are to the client) with status 'completed' and no actuals
+  // — nothing was logged, so plannedDurationMin is the only duration we
+  // can honestly report.
+  for (const row of bareCompletedRows) {
+    merged.push({
+      dateKey: row.date_key,
+      type: 'session',
+      rowId: row.session_id,
+      item: {
+        id: `session-${row.session_id}`,
+        type: 'completion',
+        sessionId: row.session_id,
+        date: row.date_key,
+        sport: normalizeSessionTypeToSport(row.session_type),
+        sessionType: row.session_type,
+        title: row.title,
+        status: 'completed',
+        plannedDurationMin: row.planned_duration_minutes,
+        actualDurationMin: null,
+        actualDistanceKm: null,
+        rpe: null,
+        energy: null,
+        soreness: null,
+        notes: null,
         planName: row.plan_name,
         weekNumber: row.week_number,
       },

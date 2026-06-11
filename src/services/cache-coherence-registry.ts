@@ -352,15 +352,19 @@ export function invalidateCacheForEvent(event: CacheCoherenceEvent): void {
 
     case 'training.changed':
       clearCache(`coach-briefing:${event.userId}`);
-      clearCache(`training-summary:${event.userId}`);
       clearCache(`readiness:${event.userId}`);
-      // training-history and training-load-snapshot keys are
-      // tenant-first (`…:{tenantId}:{userId}…`), so a user-scoped
-      // prefix cannot target them; clear the whole family instead.
-      // Safe trade: the event is per-user-rare and the TTLs are short
-      // (60s / 300s).
+      // training-summary, training-history, and training-load-snapshot
+      // keys are tenant-first (`…:{tenantId}:{userId}…`), so a
+      // user-scoped exact key or prefix cannot target them; clear the
+      // whole family instead. (Phase-0 review fix — the previous
+      // exact-key `training-summary:{userId}` clear never matched the
+      // route's `training-summary:{tenantId}:{userId}` key, so
+      // /summary kept serving stale adapted state for its full TTL
+      // after keep-original / complete / skip.) Safe trade: the event
+      // is per-user-rare and the TTLs are short (60s / 300s).
       clearCacheByPrefix([
         `training-home:${event.userId}:`,
+        'training-summary:',
         'training-history:',
         'training-load-snapshot:',
       ]);

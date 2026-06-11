@@ -225,15 +225,16 @@ describe('cache-coherence-registry', () => {
 
     expect(clearKeys()).toEqual([
       'coach-briefing:42',
-      'training-summary:42',
       'readiness:42',
       'dashboard-readiness:42',
     ]);
     expect(prefixKeys()).toEqual([
       'training-home:42:',
-      // training-history / training-load-snapshot keys are tenant-first,
-      // so the whole family is cleared rather than a user-scoped prefix
-      // (60s / 300s TTLs, rare event).
+      // training-summary / training-history / training-load-snapshot
+      // keys are tenant-first, so the whole family is cleared rather
+      // than a user-scoped prefix or exact key (60s / 300s TTLs, rare
+      // event).
+      'training-summary:',
       'training-history:',
       'training-load-snapshot:',
       'dashboard:42:',
@@ -241,6 +242,18 @@ describe('cache-coherence-registry', () => {
       'plan:week:u:42:',
       'plan:today:u:42:',
     ]);
+  });
+
+  it('covers the tenant-first /training/summary cache key shape on training writes', () => {
+    invalidateTrainingDerivedCaches(5);
+
+    // GET /training/summary caches under `training-summary:{tenantId}:{userId}`.
+    // Phase-0 regression guard: an exact `training-summary:{userId}` clear
+    // never matched that shape, leaving keep-original / complete / skip
+    // invisible on /summary for its full TTL.
+    const summaryKey = 'training-summary:5:5';
+    expect(clearKeys()).not.toContain(summaryKey);
+    expect(prefixKeys().some((prefix) => summaryKey.startsWith(prefix))).toBe(true);
   });
 
   it('routes onboarding profiles through their legacy domain invalidation graph', () => {

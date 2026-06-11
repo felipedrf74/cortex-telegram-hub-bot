@@ -286,6 +286,7 @@ describe('GET /history', () => {
     opts: {
       completedAt: string;
       durationMin?: number;
+      completedDurationSec?: number;
       distanceMeters?: number;
       rpe?: number;
       energy?: number;
@@ -295,15 +296,16 @@ describe('GET /history', () => {
   ): void {
     testDb!.prepare(`
       INSERT INTO training_completions
-        (id, session_id, plan_id, completed_at, duration_minutes, completed_distance_meters,
-         rpe_overall, energy_level, soreness_level, notes)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        (id, session_id, plan_id, completed_at, duration_minutes, completed_duration_sec,
+         completed_distance_meters, rpe_overall, energy_level, soreness_level, notes)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       completionId,
       sessionId,
       planId,
       opts.completedAt,
       opts.durationMin ?? null,
+      opts.completedDurationSec ?? null,
       opts.distanceMeters ?? null,
       opts.rpe ?? null,
       opts.energy ?? null,
@@ -466,6 +468,71 @@ describe('GET /history', () => {
       actualDistanceKm: 5,
       rpe: 7,
     });
+  });
+
+  it('derives actual minutes from completed_duration_sec for iOS-logged completions', async () => {
+    seedPlan(1);
+    // The iOS complete contract writes completed_duration_sec, never
+    // duration_minutes — actualDurationMin and the partial
+    // classification must still come through.
+    seedSession(101, 1, { durationMin: 60 });
+    seedCompletion(201, 101, 1, { completedAt: '2026-06-05T10:00:00.000Z', completedDurationSec: 2400 });
+    seedSession(102, 1, { durationMin: 60 });
+    seedCompletion(202, 102, 1, { completedAt: '2026-06-04T10:00:00.000Z', completedDurationSec: 3300 });
+
+    const res = await dispatch('/history');
+
+    expect(res.body.data.items.map((item: any) => [item.id, item.status, item.actualDurationMin])).toEqual([
+      ['completion-201', 'partial', 40],
+      ['completion-202', 'completed', 55],
+    ]);
+  });
+
+  it('includes bare completed sessions that have no completion row', async () => {
+    seedPlan(1);
+    // Feedback-logged completion → completion arm only, never duplicated
+    // by the bare-completed arm.
+    seedSession(101, 1, { updatedAt: '2026-06-05T10:00:00.000Z' });
+    seedCompletion(201, 101, 1, { completedAt: '2026-06-05T10:00:00.000Z', durationMin: 60 });
+    // Bare "mark done": session status flipped, no training_completions
+    // row — must still appear in the unified log.
+    seedSession(102, 1, { title: 'Easy Spin', sessionType: 'recovery_ride', updatedAt: '2026-06-04T09:00:00.000Z' });
+
+    const res = await dispatch('/history');
+
+    expect(res.body.data.items.map((item: any) => item.id)).toEqual(['completion-201', 'session-102']);
+    expect(res.body.data.items[1]).toMatchObject({
+      type: 'completion',
+      sessionId: 102,
+      status: 'completed',
+      sport: 'cycling',
+      title: 'Easy Spin',
+      plannedDurationMin: 60,
+      actualDurationMin: null,
+      rpe: null,
+      notes: null,
+    });
+  });
+
+  it('keeps keyset pagination exact across the bare-completed arm on tied dates', async () => {
+    const tied = '2026-06-03T08:00:00.000Z';
+    seedPlan(1);
+    seedSession(111, 1, { updatedAt: tied });
+    seedCompletion(301, 111, 1, { completedAt: tied, durationMin: 60 });
+    // Two bare completed sessions plus one skipped session, all tied.
+    seedSession(112, 1, { updatedAt: tied });
+    seedSession(113, 1, { updatedAt: tied });
+    seedSession(114, 1, { status: 'skipped', updatedAt: tied });
+
+    const page1 = await dispatch('/history', { limit: '2' });
+    expect(page1.body.data.items.map((item: any) => item.id)).toEqual(['completion-301', 'session-113']);
+
+    const page2 = await dispatch('/history', { limit: '2', cursor: page1.body.data.nextCursor });
+    expect(page2.body.data.items.map((item: any) => item.id)).toEqual(['session-112', 'skipped-114']);
+    expect(page2.body.data.nextCursor).toBeNull();
+
+    const seen = [...page1.body.data.items, ...page2.body.data.items].map((item: any) => item.id);
+    expect(new Set(seen).size).toBe(seen.length);
   });
 
   it('caches the first page only, never cursor pages', async () => {
