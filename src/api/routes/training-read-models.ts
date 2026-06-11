@@ -430,6 +430,16 @@ export async function getAllPlanWeeks(userId: number, tenantId: number) {
     });
   }
 
+  // preferences_json is written by training-plan-generation (raceDate,
+  // goalMode, ...) but legacy plans can carry null or malformed JSON —
+  // tolerate both rather than failing the whole read model.
+  let planPreferences: any = null;
+  try {
+    planPreferences = plan.preferences_json ? JSON.parse(plan.preferences_json) : null;
+  } catch {
+    planPreferences = null;
+  }
+
   return {
     plan: {
       id: plan.id,
@@ -440,6 +450,8 @@ export async function getAllPlanWeeks(userId: number, tenantId: number) {
       startDate: plan.start_date,
       endDate: plan.end_date,
       periodization: plan.periodization ?? null,
+      raceDate: typeof planPreferences?.raceDate === 'string' ? planPreferences.raceDate : null,
+      goalMode: typeof planPreferences?.goalMode === 'string' ? planPreferences.goalMode : null,
     },
     weeks: mappedWeeks,
   };

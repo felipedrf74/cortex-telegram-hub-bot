@@ -8,6 +8,7 @@ const hoisted = vi.hoisted(() => ({
 
 let mockActivePlan: any = null;
 let mockCurrentWeek: any = null;
+let mockPlanWeeks: any[] = [];
 let mockWeekSessions: any[] = [];
 let mockWeeklyAdherence: any = null;
 let mockCalendarLookup = new Map<any, any>();
@@ -27,6 +28,7 @@ vi.mock('../../src/services/cache-store', () => ({
 vi.mock('../../src/services/training-plans', () => ({
   getActivePlan: () => mockActivePlan,
   getCurrentWeek: () => mockCurrentWeek,
+  getWeeksForPlan: () => mockPlanWeeks,
   getSessionsForWeek: () => mockWeekSessions,
   getWeeklyAdherence: () => mockWeeklyAdherence,
 }));
@@ -46,6 +48,7 @@ vi.mock('../../src/services/garmin', () => ({
 import {
   adaptDtoSessionForReadiness,
   fetchCurrentReadinessForPlan,
+  getAllPlanWeeks,
   getReadiness,
   getTodaySession,
   getWeekPlan,
@@ -57,6 +60,7 @@ describe('training-read-models', () => {
     cache.clear();
     mockActivePlan = null;
     mockCurrentWeek = null;
+    mockPlanWeeks = [];
     mockWeekSessions = [];
     mockWeeklyAdherence = null;
     mockCalendarLookup = new Map();
@@ -511,6 +515,65 @@ describe('training-read-models', () => {
       expect(result.session).toBeNull();
       // Same short-circuit applies: don't call Garmin at all when no plan.
       expect(hoisted.getActivitiesByDateForUser).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('getAllPlanWeeks — raceDate/goalMode from preferences_json', () => {
+    it('exposes raceDate and goalMode from the plan preferences_json', async () => {
+      mockActivePlan = {
+        id: 14,
+        name: 'Marathon Build',
+        plan_version: 3,
+        duration_weeks: 12,
+        status: 'active',
+        start_date: '2026-04-20T00:00:00.000Z',
+        end_date: '2026-07-12T00:00:00.000Z',
+        periodization: 'build',
+        preferences_json: JSON.stringify({
+          preferredTime: 'morning',
+          goalMode: 'race',
+          raceDate: '2026-07-12',
+        }),
+      };
+      mockPlanWeeks = [{ id: 140, week_number: 1, focus: 'base', intensity_pct: 60 }];
+      mockWeekSessions = [];
+
+      const result = await getAllPlanWeeks(42, 42);
+
+      expect(result.plan).toMatchObject({
+        id: 14,
+        name: 'Marathon Build',
+        raceDate: '2026-07-12',
+        goalMode: 'race',
+      });
+      expect(result.weeks).toHaveLength(1);
+    });
+
+    it.each([
+      ['null preferences_json', null],
+      ['malformed preferences_json', '{not json'],
+    ])('returns null raceDate/goalMode without throwing for %s', async (_label, preferencesJson) => {
+      mockActivePlan = {
+        id: 15,
+        name: 'General Fitness',
+        duration_weeks: 8,
+        status: 'active',
+        start_date: '2026-04-20T00:00:00.000Z',
+        end_date: '2026-06-15T00:00:00.000Z',
+        periodization: 'base',
+        preferences_json: preferencesJson,
+      };
+      mockPlanWeeks = [{ id: 150, week_number: 1, focus: 'base' }];
+      mockWeekSessions = [];
+
+      const result = await getAllPlanWeeks(42, 42);
+
+      expect(result.plan).toMatchObject({
+        id: 15,
+        raceDate: null,
+        goalMode: null,
+      });
+      expect(result.weeks).toHaveLength(1);
     });
   });
 });
