@@ -706,7 +706,7 @@ describe('Auth invite registration', () => {
     expect(res.body.error.message).toBe('E-mail ou senha inválidos');
   });
 
-  it('keeps email/password registration behind the closed-beta invite gate', async () => {
+  it('allows public email/password registration without an invite code', async () => {
     const res = await dispatchAuth('/register/email', {
       email: 'new-email-user@example.com',
       password: 'correct-horse-battery',
@@ -715,9 +715,13 @@ describe('Auth invite registration', () => {
       acceptedLegal: legalAcceptance(),
     });
 
-    expect(res.statusCode).toBe(403);
-    expect(res.body.ok).toBe(false);
-    expect(res.body.error.code).toBe('INVITE_REQUIRED');
+    expect(res.statusCode).toBe(201);
+    expect(res.body.ok).toBe(true);
+    expect(res.body.data.user.email).toBe('new-email-user@example.com');
+
+    const sub = testDb.prepare('SELECT COUNT(*) AS count FROM subscriptions WHERE user_id = ?')
+      .get(res.body.data.user.id) as { count: number };
+    expect(sub.count).toBe(0);
   });
 
   it('rejects invalid invite codes during email/password registration', async () => {

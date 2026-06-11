@@ -100,6 +100,12 @@ export function assertClosedBetaInviteForNewUser(inviteCode: unknown): void {
   throw new ClosedBetaInviteRequiredError(status === 'missing' ? 'INVITE_REQUIRED' : 'INVALID_INVITE');
 }
 
+export function assertOptionalInviteForNewUser(inviteCode: unknown): void {
+  const status = getClosedBetaInviteStatus(inviteCode);
+  if (status === 'missing' || status === 'valid') return;
+  throw new ClosedBetaInviteRequiredError('INVALID_INVITE');
+}
+
 export function resolveCurrentTenantIdForUser(userId: number): number {
   // Current production model is one canonical tenant per iOS user.
   // Keep this centralized so future tenant-enrollment tables can replace
@@ -483,7 +489,7 @@ export function getUserByEmail(email: string): User | null {
 export function createAppleUser(appleUserId: string, profile: {
   email?: string; firstName?: string; lastName?: string;
 }, inviteCode?: unknown): User {
-  assertClosedBetaInviteForNewUser(inviteCode);
+  assertOptionalInviteForNewUser(inviteCode);
   const db = getDb();
   // Hardening 2026-04-21: new users default to `tier='free'` per
   // the business rule (users are privileged only if they have an
@@ -514,7 +520,7 @@ export function createAppleUser(appleUserId: string, profile: {
 export function createGoogleUser(googleUserId: string, profile: {
   email: string; name?: string; picture?: string;
 }, inviteCode?: unknown): User {
-  assertClosedBetaInviteForNewUser(inviteCode);
+  assertOptionalInviteForNewUser(inviteCode);
   const db = getDb();
   const [firstName, ...rest] = (profile.name || '').split(' ');
   // Hardening 2026-04-21: default tier='free' — see createAppleUser

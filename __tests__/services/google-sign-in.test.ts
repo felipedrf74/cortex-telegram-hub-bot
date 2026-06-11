@@ -100,4 +100,14 @@ describe('google-sign-in identity resolution', () => {
     const row = testDb.prepare('SELECT google_user_id FROM users WHERE id = ?').get(userId) as { google_user_id: string | null };
     expect(row.google_user_id).toBe('google-sub-verified');
   });
+
+  it('creates a public Google user without an invite code', async () => {
+    const { resolveGoogleIdentityUser } = await import('../../src/services/google-sign-in');
+
+    const user = resolveGoogleIdentityUser(googlePayload({ sub: 'google-sub-public' }));
+
+    expect(user.google_user_id).toBe('google-sub-public');
+    expect(user.email).toBe('verified@example.com');
+    expect(user.tier).toBe('free');
+  });
 });

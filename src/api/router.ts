@@ -125,7 +125,7 @@ export function createApiRouter(): Router {
         decisions: 'GET /api/v1/decisions/summary, GET/POST/PATCH /api/v1/decisions — user-scoped decision orchestration',
         sync: 'GET /api/v1/sync/changes?since=cursor — RAMEN-lite delta sync',
       },
-      auth_note: 'POST /auth/register with inviteCode to get a JWT. Include as Authorization: Bearer <token> on all other endpoints.',
+      auth_note: 'POST /auth/register/email, /auth/register/apple, or /auth/register/google/finish to get a JWT. Invite codes are optional and grant reviewer/early-access entitlements when supplied.',
     });
   });
 

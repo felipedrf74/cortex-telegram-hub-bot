@@ -134,6 +134,11 @@ function inviteGateCode(inviteCode: unknown): 'INVITE_REQUIRED' | 'INVALID_INVIT
   return status === 'missing' ? 'INVITE_REQUIRED' : 'INVALID_INVITE';
 }
 
+function optionalInviteGateCode(inviteCode: unknown): 'INVALID_INVITE' | null {
+  const status = getClosedBetaInviteStatus(inviteCode);
+  return status === 'invalid' ? 'INVALID_INVITE' : null;
+}
+
 function passwordResetRequestMinDelayMs(): number {
   if (process.env.NODE_ENV === 'test') return 0;
   const raw = process.env.PASSWORD_RESET_REQUEST_MIN_DELAY_MS;
@@ -871,12 +876,13 @@ export function authRoutes(): Router {
       return;
     }
 
-    // Closed beta posture: email/password sign-up is still invite-gated.
+    // Public App Store posture: email/password sign-up is self-serve.
+    // Invite codes are optional and only grant reviewer/early-access entitlements.
     // Do not call `resolveIosInviteRegistrationTarget()` here: that helper
     // provisions invite-code sandbox users as a side effect. Email sign-up
     // only needs a side-effect-free validity check before creating the real
     // email user below.
-    const inviteError = inviteGateCode(inviteCode);
+    const inviteError = optionalInviteGateCode(inviteCode);
     if (inviteError) {
       sendInviteGateError(res, language, inviteError);
       return;

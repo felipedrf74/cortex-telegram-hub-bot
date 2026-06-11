@@ -23,7 +23,7 @@
 
   <!-- Open Graph + Twitter cards (PT-BR defaults; setLanguage() swaps them on toggle) -->
   <meta property="og:title" content="Nexus Hub — O sistema operacional para quem faz tudo sozinho">
-  <meta property="og:description" content="Treino, finanças, conteúdo, cozinha, calendário — todos num único cérebro. Beta aberto, grátis durante o beta.">
+  <meta property="og:description" content="Treino, finanças, conteúdo, cozinha, calendário — todos num único cérebro. Lançamento público com planos Pro e Max.">
   <meta property="og:type" content="website">
   <meta property="og:url" content="https://nexushub.me">
   <meta name="twitter:card" content="summary_large_image">
@@ -819,7 +819,7 @@
 
     /* ─── BETA BANNER (overlays pricing) ─────────────────────── */
     /* Recycles the old .founder-banner CSS surface for the new
-       "Free during beta" banner shown at the bottom of the pricing
+       Founder-pricing banner shown at the bottom of the pricing
        section. Same gradient + trophy background treatment, just new
        copy. */
     .beta-banner {
@@ -1118,7 +1118,7 @@
           <button type="button" class="lang-toggle__btn" data-lang="en" aria-pressed="false">EN</button>
         </div>
         <a href="/user" class="nav__login" data-i18n="nav.login">Entrar</a>
-        <a href="#waitlist" class="nav__cta" data-i18n="nav.cta">Entrar no beta →</a>
+        <a href="#waitlist" class="nav__cta" data-i18n="nav.cta">Começar →</a>
       </div>
     </div>
   </nav>
@@ -1129,7 +1129,7 @@
       <div class="hero__inner">
         <div class="hero__eyebrow">
           <span class="dot"></span>
-          <span data-i18n="hero.eyebrow">Beta aberto · Grátis durante o beta</span>
+          <span data-i18n="hero.eyebrow">Lançamento público · vagas de fundador este mês</span>
         </div>
 
         <!-- Hero title has a styled accent span, so it uses data-i18n-html -->
@@ -1153,7 +1153,7 @@
             data-i18n-aria-label="form.email_label"
             aria-label="Endereço de e-mail">
           <button type="submit" class="form__button" data-i18n="form.cta">
-            Entrar no beta →
+            Começar →
           </button>
         </form>
 
@@ -1163,8 +1163,8 @@
           <strong id="beta-filled">—</strong>
           <span data-i18n="hero.counter_of">de</span>
           <strong>50</strong>
-          <span data-i18n="hero.counter_label">vagas do beta deste mês</span>
-          <span class="dim" data-i18n="hero.counter_price">· grátis enquanto dura</span>
+          <span data-i18n="hero.counter_label">vagas de fundador este mês</span>
+          <span class="dim" data-i18n="hero.counter_price">· preço bloqueado</span>
         </div>
       </div>
     </div>
@@ -1337,7 +1337,7 @@
       <div class="section__label" data-i18n="pricing.label">Preços</div>
       <h2 class="section__title" data-i18n="pricing.title">Uma só assinatura. Cancele as outras cinco.</h2>
       <p class="section__subtitle" data-i18n="pricing.subtitle">
-        Grátis durante o beta. Os preços abaixo entram em vigor quando o beta fecha.
+        Planos Pro e Max para o lançamento público. Preços de fundador podem bloquear enquanto a campanha estiver ativa.
       </p>
 
       <!-- Pricing toggles: monthly-only + USD↔BRL.
@@ -1374,7 +1374,7 @@
             <li data-i18n="pricing.pro_f6">App iOS + portal web</li>
           </ul>
           <button type="button" class="tier__cta tier__cta--primary" data-checkout-plan="pro" data-i18n="pricing.pro_checkout">Assinar Pro</button>
-          <a href="#waitlist" class="tier__cta tier__cta--secondary" data-intent="pro" data-i18n="pricing.pro_cta">Entrar no beta — grátis</a>
+          <a href="#waitlist" class="tier__cta tier__cta--secondary" data-intent="pro" data-i18n="pricing.pro_cta">Reservar Pro</a>
         </div>
 
         <!-- MAX (featured) -->
@@ -1396,16 +1396,16 @@
             <li data-i18n="pricing.max_f5">Acesso antecipado a novas skills</li>
           </ul>
           <button type="button" class="tier__cta tier__cta--primary" data-checkout-plan="max" data-i18n="pricing.max_checkout">Assinar Max</button>
-          <a href="#waitlist" class="tier__cta tier__cta--secondary" data-intent="max" data-i18n="pricing.max_cta">Entrar no beta — grátis</a>
+          <a href="#waitlist" class="tier__cta tier__cta--secondary" data-intent="max" data-i18n="pricing.max_cta">Reservar Max</a>
         </div>
       </div>
 
       <!-- Beta banner -->
       <div class="beta-banner">
-        <div class="beta-banner__label" data-i18n="beta.label">🎟️ Beta aberto · Grátis enquanto dura</div>
-        <div class="beta-banner__title" data-i18n="beta.title">50 vagas este mês. Zero cartão de crédito.</div>
+        <div class="beta-banner__label" data-i18n="beta.label">🎟️ Lançamento público · preço fundador</div>
+        <div class="beta-banner__title" data-i18n="beta.title">50 vagas este mês. Reserve seu preço.</div>
         <p class="beta-banner__text" data-i18n="beta.text">
-          Durante o beta você tem acesso total a todas as skills e aos Power Packs. Quando o beta fechar e ligarmos o billing, você recebe 30 dias de aviso para decidir em qual plano continuar — ou simplesmente exportar os dados e sair.
+          Assinantes fundadores recebem o sistema completo com planos Pro e Max. Você pode cancelar quando quiser e exportar seus dados nas configurações.
         </p>
         <div class="beta-banner__counter">
           <strong id="beta-banner-filled">—</strong>
@@ -1503,7 +1503,7 @@
     <div class="container">
       <h2 class="final-cta__title" id="final-cta-title" data-i18n="final.title">Pronto para deixar de ser a fita adesiva?</h2>
       <p class="final-cta__subtitle" data-i18n="final.subtitle">
-        Estamos integrando 50 pessoas este mês. Grátis durante o beta. Preços bloqueiam quando o beta fecha.
+        Estamos integrando os primeiros assinantes públicos este mês. Preços de fundador bloqueiam enquanto a assinatura permanecer ativa.
       </p>
 
       <form class="form" id="final-form" data-source="footer">
@@ -1518,13 +1518,13 @@
           data-i18n-aria-label="form.email_label"
           aria-label="Endereço de e-mail">
         <button type="submit" class="form__button" data-i18n="form.cta">
-          Entrar no beta →
+          Começar →
         </button>
       </form>
       <div class="form__message" id="final-form-message" aria-live="polite" style="margin-top: var(--s-4);"></div>
 
       <p style="margin-top: var(--s-8); font-size: 12px; color: var(--text-tertiary); font-family: var(--font-mono);" data-i18n="final.fine_print">
-        Sem cartão de crédito · Cancele quando quiser · Grátis durante o beta
+        Cancele quando quiser · Exportação de dados nas configurações
       </p>
     </div>
   </section>
@@ -1573,31 +1573,31 @@
         // Document-level
         'document.title': 'Nexus Hub — O sistema operacional para quem faz tudo sozinho',
         'document.description': 'Uma única assinatura que entende como seu treino afeta seu sono, como seu sono afeta seu dia de trabalho, como seu dia afeta seu orçamento. Cancele 5 assinaturas. Fique com uma que entende como tudo conecta.',
-        'document.og_description': 'Treino, finanças, conteúdo, cozinha, calendário — todos num único cérebro. Beta aberto, grátis durante o beta.',
+        'document.og_description': 'Treino, finanças, conteúdo, cozinha, calendário — todos num único cérebro. Lançamento público com planos Pro e Max.',
 
         // Nav
         'nav.skills': 'Skills',
         'nav.pricing': 'Preços',
         'nav.quiz': 'Quem é você',
         'nav.login': 'Entrar',
-        'nav.cta': 'Entrar no beta →',
+        'nav.cta': 'Começar →',
 
         // Hero
-        'hero.eyebrow': 'Beta aberto · Grátis durante o beta',
+        'hero.eyebrow': 'Lançamento público · vagas de fundador este mês',
         'hero.title': 'Cancele 5 assinaturas. Fique com uma que entende <span class="accent">como tudo conecta.</span>',
         'hero.subtitle': 'Seu Garmin não sabe do seu calendário. Seu calendário não sabe do seu orçamento. Suas receitas não sabem do seu dia de treino. O Nexus Hub é o primeiro sistema operacional pessoal que liga treino, finanças, conteúdo, cozinha e agenda num único cérebro assistivo.',
         'hero.counter_of': 'de',
-        'hero.counter_label': 'vagas do beta deste mês',
-        'hero.counter_price': '· grátis enquanto dura',
+        'hero.counter_label': 'vagas de fundador este mês',
+        'hero.counter_price': '· preço bloqueado',
 
         // Form (shared across hero + final CTA)
         'form.placeholder': 'voce@exemplo.com',
         'form.email_label': 'Endereço de e-mail',
-        'form.cta': 'Entrar no beta →',
+        'form.cta': 'Começar →',
         'form.reserving': 'Entrando...',
-        'form.success_founder': '✓ Pedido recebido. Confirma o e-mail para manter a vaga #{slot} no beta.',
+        'form.success_founder': '✓ Pedido recebido. Confirma o e-mail para manter a vaga de fundador #{slot}.',
         'form.success_general': '✓ Pedido recebido. Confirma o e-mail para entrar na lista.',
-        'form.exhausted': '✓ Beta deste mês fechado. Estás na lista de espera geral na posição {position}.',
+        'form.exhausted': '✓ Vagas de fundador deste mês encerradas. Estás na lista de espera geral na posição {position}.',
         'form.error_generic': 'Algo deu errado. Tenta novamente.',
         'form.error_network': 'Erro de rede. Tenta de novo daqui a um instante.',
 
@@ -1649,7 +1649,7 @@
         // Pricing
         'pricing.label': 'Preços',
         'pricing.title': 'Uma só assinatura. Cancele as outras cinco.',
-        'pricing.subtitle': 'Grátis durante o beta aprovado. Depois, continua com assinatura mensal.',
+        'pricing.subtitle': 'Planos Pro e Max para o lançamento público. Preços de fundador podem bloquear enquanto a campanha estiver ativa.',
         'pricing.toggle_monthly': 'Mensal',
         'pricing.per_month': '/mês',
         'pricing.pro_name': 'Pro',
@@ -1665,7 +1665,7 @@
         'pricing.pro_f5': 'OCR de recibos via foto',
         'pricing.pro_f6': 'App iOS + portal web',
         'pricing.pro_checkout': 'Assinar Pro',
-        'pricing.pro_cta': 'Entrar no beta — grátis',
+        'pricing.pro_cta': 'Reservar Pro',
         'pricing.max_badge': 'Maior valor',
         'pricing.max_name': 'Max',
         'pricing.max_tagline': 'Tudo desbloqueado. O OS completo.',
@@ -1679,12 +1679,12 @@
         'pricing.max_f4': 'Suporte prioritário por e-mail',
         'pricing.max_f5': 'Acesso antecipado a novas skills',
         'pricing.max_checkout': 'Assinar Max',
-        'pricing.max_cta': 'Entrar no beta — grátis',
+        'pricing.max_cta': 'Reservar Max',
 
         // Beta banner
-        'beta.label': '🎟️ Beta aberto · Grátis enquanto dura',
-        'beta.title': '50 vagas este mês. Zero cartão de crédito.',
-        'beta.text': 'Durante o beta você tem acesso total a todas as skills e aos Power Packs. Quando o beta fechar e ligarmos o billing, você recebe 30 dias de aviso para decidir em qual plano continuar — ou simplesmente exportar os dados e sair.',
+        'beta.label': '🎟️ Lançamento público · preço fundador',
+        'beta.title': '50 vagas este mês. Reserve seu preço.',
+        'beta.text': 'Assinantes fundadores recebem o sistema completo com planos Pro e Max. Você pode cancelar quando quiser e exportar seus dados nas configurações.',
         'beta.reserved': 'dentro',
         'beta.remaining': 'restantes',
 
@@ -1720,8 +1720,8 @@
         'final.title_creator': 'Pronto para manter o pipeline sem explodir o calendário?',
         'final.title_athlete': 'Pronto para treinar como se tivesse um coach?',
         'final.title_all': 'Pronto para um único app que entende tudo o que você faz?',
-        'final.subtitle': 'Estamos integrando 50 pessoas este mês. Grátis durante o beta. Preços bloqueiam quando o beta fecha.',
-        'final.fine_print': 'Sem cartão de crédito · Cancele quando quiser · Grátis durante o beta',
+        'final.subtitle': 'Estamos integrando os primeiros assinantes públicos este mês. Preços de fundador bloqueiam enquanto a assinatura permanecer ativa.',
+        'final.fine_print': 'Cancele quando quiser · Exportação de dados nas configurações',
 
         // Footer
         'footer.copyright': '© 2026 Nexus Hub · Feito por <a href="mailto:felipe@nexushub.me" style="color: var(--text-secondary);">Felipe Dominguez</a>',
@@ -1732,31 +1732,31 @@
         // Document-level
         'document.title': 'Nexus Hub — The personal OS for people who do it all themselves',
         'document.description': "One subscription that understands how your training affects your sleep, how your sleep affects your workday, how your workday affects your budget. Cancel 5 subscriptions. Keep one that actually knows how it all connects.",
-        'document.og_description': "Training, finance, content, cooking, calendar — all in one brain. Beta open, free during beta.",
+        'document.og_description': "Training, finance, content, cooking, calendar — all in one brain. Public launch with Pro and Max plans.",
 
         // Nav
         'nav.skills': 'Skills',
         'nav.pricing': 'Pricing',
         'nav.quiz': 'Who you are',
         'nav.login': 'Sign in',
-        'nav.cta': 'Join the beta →',
+        'nav.cta': 'Get started →',
 
         // Hero
-        'hero.eyebrow': 'Beta open · Free during beta',
+        'hero.eyebrow': 'Public launch · founder seats this month',
         'hero.title': "Cancel 5 subscriptions. Keep one that <span class=\"accent\">actually knows how it all connects.</span>",
         'hero.subtitle': "Your Garmin doesn't know your calendar. Your calendar doesn't know your budget. Your recipes don't know your training day. Nexus Hub is the first personal OS that wires all five — training, finance, content, cooking, calendar — into one assistive brain.",
         'hero.counter_of': 'of',
-        'hero.counter_label': "beta slots this month",
-        'hero.counter_price': '· free while it lasts',
+        'hero.counter_label': "founder seats this month",
+        'hero.counter_price': '· locked price',
 
         // Form
         'form.placeholder': 'you@example.com',
         'form.email_label': 'Email address',
-        'form.cta': 'Join the beta →',
+        'form.cta': 'Get started →',
         'form.reserving': 'Joining...',
-        'form.success_founder': "✓ Request received. Confirm your email to keep beta slot #{slot}.",
+        'form.success_founder': "✓ Request received. Confirm your email to keep founder seat #{slot}.",
         'form.success_general': "✓ Request received. Confirm your email to join the list.",
-        'form.exhausted': "✓ This month's beta is full. You're on the general waitlist at position {position}.",
+        'form.exhausted': "✓ This month's founder seats are full. You're on the general waitlist at position {position}.",
         'form.error_generic': 'Something went wrong. Try again.',
         'form.error_network': 'Network error. Try again in a moment.',
 
@@ -1808,7 +1808,7 @@
         // Pricing
         'pricing.label': 'Pricing',
         'pricing.title': 'One subscription. Cancel the other five.',
-        'pricing.subtitle': 'Free during an approved beta. Continue afterward with a monthly subscription.',
+        'pricing.subtitle': 'Pro and Max plans for the public launch. Founder pricing can lock while the campaign is active.',
         'pricing.toggle_monthly': 'Monthly',
         'pricing.per_month': '/mo',
         'pricing.pro_name': 'Pro',
@@ -1824,7 +1824,7 @@
         'pricing.pro_f5': 'Photo-to-receipt OCR',
         'pricing.pro_f6': 'iOS app + web portal',
         'pricing.pro_checkout': 'Subscribe Pro',
-        'pricing.pro_cta': 'Join the beta — free',
+        'pricing.pro_cta': 'Reserve Pro',
         'pricing.max_badge': 'Best value',
         'pricing.max_name': 'Max',
         'pricing.max_tagline': 'Everything unlocked. The full OS.',
@@ -1838,12 +1838,12 @@
         'pricing.max_f4': 'Priority email support',
         'pricing.max_f5': 'Early access to new skills',
         'pricing.max_checkout': 'Subscribe Max',
-        'pricing.max_cta': 'Join the beta — free',
+        'pricing.max_cta': 'Reserve Max',
 
         // Beta banner
-        'beta.label': '🎟️ Beta open · Free while it lasts',
-        'beta.title': '50 slots this month. Zero credit card.',
-        'beta.text': "During the beta you get full access to all skills and both Power Packs. When the beta closes and we turn billing on, you'll get 30 days' notice to pick a plan — or just export your data and leave.",
+        'beta.label': '🎟️ Public launch · founder pricing',
+        'beta.title': '50 seats this month. Reserve your price.',
+        'beta.text': "Founder subscribers get the complete system with Pro and Max plans. You can cancel anytime and export your data from settings.",
         'beta.reserved': 'in',
         'beta.remaining': 'remaining',
 
@@ -1879,8 +1879,8 @@
         'final.title_creator': "Ready to keep your pipeline without blowing up your calendar?",
         'final.title_athlete': 'Ready to train like you have a coach?',
         'final.title_all': 'Ready for one app that understands everything you do?',
-        'final.subtitle': "We're onboarding 50 people this month. Free during beta. Prices lock when beta closes.",
-        'final.fine_print': "No credit card · Cancel anytime · Free during beta",
+        'final.subtitle': "We're onboarding the first public subscribers this month. Founder prices lock while your subscription stays active.",
+        'final.fine_print': "Cancel anytime · Data export in settings",
 
         // Footer
         'footer.copyright': '© 2026 Nexus Hub · Built by <a href="mailto:felipe@nexushub.me" style="color: var(--text-secondary);">Felipe Dominguez</a>',
