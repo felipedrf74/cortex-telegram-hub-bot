@@ -39,6 +39,11 @@ import { inferSportFromSessionType } from './training-coach-v2-hydration';
 export interface ComputeLoadModelInput {
   db: Database.Database;
   userId: number;
+  /**
+   * Tenant scope. Completions are read only from plans owned by this
+   * tenant — `user_id` alone is not unique across tenants.
+   */
+  tenantId: number;
   /** plan.sport string from `fitness_training_plans.sport`. */
   planSport: string;
   /** week index (0-based) the deload decision will be made for. */
@@ -65,7 +70,7 @@ export interface ComputeLoadModelOutput {
 export function computeLoadModelAndDeload(
   input: ComputeLoadModelInput,
 ): ComputeLoadModelOutput {
-  const { db, userId, planSport, weeksSinceDeload, scheduledDeloadCadenceWeeks, principles } = input;
+  const { db, userId, tenantId, planSport, weeksSinceDeload, scheduledDeloadCadenceWeeks, principles } = input;
 
   // R5 P2 fix (#108) — pull strength tonnage columns alongside the
   // generic load columns so the strength dimension can use the real
@@ -80,9 +85,9 @@ export function computeLoadModelAndDeload(
     FROM training_completions tc
     JOIN training_sessions ts ON ts.id = tc.session_id
     JOIN fitness_training_plans s ON s.id = tc.plan_id
-    WHERE s.user_id = ? AND tc.completed_at >= datetime('now', '-60 days')
+    WHERE s.user_id = ? AND s.tenant_id = ? AND tc.completed_at >= datetime('now', '-60 days')
     ORDER BY tc.completed_at ASC
-  `).all(userId) as Array<{
+  `).all(userId, tenantId) as Array<{
     completed_at: string;
     duration_minutes: number | null;
     completed_duration_sec: number | null;

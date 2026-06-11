@@ -740,6 +740,7 @@ export function mountCoachV2Routes(parent: Router): Router {
       const reflowDeloadResult = computeLoadModelAndDeload({
         db,
         userId: auth.userId,
+        tenantId: auth.tenantId,
         planSport: planMeta.sport,
         weeksSinceDeload: weekIndex,
         scheduledDeloadCadenceWeeks: reflowMeso.mesocycleLength,
@@ -1183,6 +1184,7 @@ export function mountCoachV2Routes(parent: Router): Router {
       const loadResult = computeLoadModelAndDeload({
         db,
         userId: auth.userId,
+        tenantId: auth.tenantId,
         planSport: plan.sport,
         weeksSinceDeload: safeWeekIndex,
         scheduledDeloadCadenceWeeks: meso.mesocycleLength,
