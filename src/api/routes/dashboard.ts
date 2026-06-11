@@ -1,6 +1,7 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
 import { Router, Request, Response } from 'express';
+import { DateTime } from 'luxon';
 import { AuthenticatedRequest } from '../auth-middleware';
 import { logger } from '../../utils/logger';
 import { config } from '../../config';
@@ -23,6 +24,8 @@ import {
 } from './dashboard-data-fetchers';
 import { buildDashboardHomeInput } from './dashboard-home-input';
 import { buildHomeDayDial } from '../../services/home-day-dial';
+import { getAppleHealthSleepSegments } from '../../services/health-sleep-agenda';
+import { getSleep as getWearableSleep } from '../../services/wearable/wearable-service';
 import {
   isDecisionStreakV1Enabled,
   isHomeDayDialV1Enabled,
@@ -327,6 +330,28 @@ async function buildDashboardPayload(userId: number, tenantId: number, language:
   const quota = getDailyQuotaStatus(userId);
   const featureFlags = buildHomeFeatureFlags(userId, tenantId);
   const timezone = getUserTimezoneById(userId);
+  const localDate = now.toLocaleDateString('en-CA', { timeZone: timezone });
+  const localDay = DateTime.fromISO(localDate, { zone: timezone });
+  const hasAppleHealthSleep = featureFlags.homeDayDialV1 && getAppleHealthSleepSegments({
+    userId,
+    start: localDay.startOf('day').toUTC().toISO()!,
+    end: localDay.startOf('day').plus({ days: 1 }).toUTC().toISO()!,
+    timezone,
+  }).length > 0;
+  const wearableSleep = featureFlags.homeDayDialV1 && !hasAppleHealthSleep
+    ? await timedAsync(timings, 'wearable_sleep', async () => {
+        try {
+          return await withDashboardTimeout(
+            getWearableSleep(userId, localDate),
+            DASHBOARD_SECTION_TIMEOUT_MS,
+            'wearable_sleep',
+          );
+        } catch (err) {
+          logger.debug({ err, userId, date: localDate }, 'Dashboard wearable sleep fallback unavailable');
+          return null;
+        }
+      })
+    : null;
 
   return {
     greeting: displayName ? `${greeting}, ${displayName}` : greeting,
@@ -339,8 +364,9 @@ async function buildDashboardPayload(userId: number, tenantId: number, language:
       ? buildHomeDayDial({
           userId,
           calendarEvents: calendar.today ?? [],
-          date: now.toLocaleDateString('en-CA', { timeZone: timezone }),
+          date: localDate,
           timezone,
+          wearableSleep,
         })
       : null,
     training,
