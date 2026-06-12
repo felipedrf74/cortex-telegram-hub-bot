@@ -66,6 +66,16 @@ describe('R4 P2 — V2 completion idempotency hash', () => {
     expect(a).not.toBe(b);
   });
 
+  it('rerun-5 S12 — distinct energyLevel / sorenessLevel values produce distinct hashes', () => {
+    const a = computeV2IdempotencyHashHex({ energyLevel: 3 });
+    const b = computeV2IdempotencyHashHex({ energyLevel: 8 });
+    expect(a).not.toBe(b);
+
+    const c = computeV2IdempotencyHashHex({ sorenessLevel: 2 });
+    const d = computeV2IdempotencyHashHex({ sorenessLevel: 9 });
+    expect(c).not.toBe(d);
+  });
+
   it('distinct painLocation strings produce distinct hashes', () => {
     const a = computeV2IdempotencyHashHex({ painLocation: 'left achilles' });
     const b = computeV2IdempotencyHashHex({ painLocation: 'right knee' });

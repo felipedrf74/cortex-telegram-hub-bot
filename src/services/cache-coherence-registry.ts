@@ -373,6 +373,14 @@ export function invalidateCacheForEvent(event: CacheCoherenceEvent): void {
         'training-summary:',
         'training-history:',
         'training-load-snapshot:',
+        // rerun-5 S12 — progression and weekly-activity caches missed
+        // this event, so a fresh completion could show in history while
+        // the Progress charts/tiles served stale "no data" for up to
+        // their full TTL (120s/60s). Same tenant-first key shape, same
+        // whole-family clear.
+        'cardio-progression:',
+        'strength-progression:',
+        'training-activity-weekly:',
       ]);
       invalidateCacheForEvent(CacheCoherenceEvents.dashboardAll(event.userId));
       invalidateCacheForEvent(CacheCoherenceEvents.planningChanged(event.userId));

@@ -32,6 +32,9 @@ const mockCreateWeek = vi.fn();
 const mockCreateSession = vi.fn();
 const mockLinkSessionToCalendar = vi.fn();
 const mockMarkSessionSkipped = vi.fn();
+const mockLogCompletion = vi.fn();
+const mockMarkSessionCompleted = vi.fn();
+const mockEmitDomainEvent = vi.fn();
 const mockUpdateSession = vi.fn();
 const mockUpdatePlanStatus = vi.fn();
 const mockDeletePlanHard = vi.fn();
@@ -150,6 +153,8 @@ vi.mock('../../src/services/training-plans', () => ({
   createSession: (...args: unknown[]) => mockCreateSession(...args),
   linkSessionToCalendar: (...args: unknown[]) => mockLinkSessionToCalendar(...args),
   markSessionSkipped: (...args: unknown[]) => mockMarkSessionSkipped(...args),
+  logCompletion: (...args: unknown[]) => mockLogCompletion(...args),
+  markSessionCompleted: (...args: unknown[]) => mockMarkSessionCompleted(...args),
   updateSession: (...args: unknown[]) => mockUpdateSession(...args),
   updatePlanStatus: (...args: unknown[]) => mockUpdatePlanStatus(...args),
   deletePlanHard: (...args: unknown[]) => mockDeletePlanHard(...args),
@@ -159,6 +164,14 @@ vi.mock('../../src/services/onboarding', () => ({
   getProfile: (...args: unknown[]) => mockGetProfile(...args),
   getMissingProfileFields: (...args: unknown[]) => mockGetMissingProfileFields(...args),
   getQuestionnaire: (...args: unknown[]) => mockGetQuestionnaire(...args),
+}));
+
+// The completion write path wraps logCompletion + emitDomainEvent in an
+// outbox transaction against the real DB. Tests assert against the
+// captured emit instead of standing up the outbox tables.
+vi.mock('../../src/services/event-outbox', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../src/services/event-outbox')>()),
+  runOutboxTransaction: (operation: (emit: any) => unknown) => operation(mockEmitDomainEvent),
 }));
 
 vi.mock('../../src/services/training-coach-kernel-plan-generator', () => ({
@@ -438,6 +451,9 @@ describe('Training API routes', () => {
     mockCreateSession.mockReset();
     mockLinkSessionToCalendar.mockReset();
     mockMarkSessionSkipped.mockReset();
+    mockLogCompletion.mockReset();
+    mockMarkSessionCompleted.mockReset();
+    mockEmitDomainEvent.mockReset();
     mockUpdateSession.mockReset();
     mockUpdatePlanStatus.mockReset();
     mockDeletePlanHard.mockReset();
@@ -1734,6 +1750,67 @@ describe('Training API routes', () => {
     expect(res.body.error.message).toMatch(/rir must be a finite number/);
     expect(res.body.error.message).toMatch(/painScore must be between 0 and 10/);
     expect(res.body.error.message).toMatch(/completedDistanceMeters must be a finite number/);
+  });
+
+  // ─── rerun-5 S12 — iOS duration/wellbeing fields must persist ───
+  // The iOS feedback sheet sends actualDurationMinutes / energyLevel /
+  // sorenessLevel; the route used to silently drop all three, so every
+  // iOS completion landed with NULL duration and the cardio chart
+  // claimed "No running logged" while history showed the session.
+
+  it('rerun-5 S12 — /complete persists actualDurationMinutes (as seconds), energyLevel, sorenessLevel', async () => {
+    mockGetSessionById.mockReturnValue({ id: 42, plan_id: 7, status: 'pending' });
+    mockGetPlanById.mockReturnValue({ id: 7, user_id: 12, tenant_id: 12 });
+    mockGetActivePlan.mockReturnValue(null);
+
+    const res = await dispatch('POST', '/complete', {}, {
+      sessionId: '42',
+      rpe: 7,
+      actualDurationMinutes: 35,
+      energyLevel: 6,
+      sorenessLevel: 3,
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body.ok).toBe(true);
+    expect(mockLogCompletion).toHaveBeenCalledTimes(1);
+    expect(mockLogCompletion).toHaveBeenCalledWith(expect.objectContaining({
+      session_id: 42,
+      plan_id: 7,
+      rpe_overall: 7,
+      completed_duration_sec: 35 * 60,
+      energy_level: 6,
+      soreness_level: 3,
+    }));
+  });
+
+  it('rerun-5 S12 — explicit completedDurationSec wins over the actualDurationMinutes alias', async () => {
+    mockGetSessionById.mockReturnValue({ id: 42, plan_id: 7, status: 'pending' });
+    mockGetPlanById.mockReturnValue({ id: 7, user_id: 12, tenant_id: 12 });
+    mockGetActivePlan.mockReturnValue(null);
+
+    const res = await dispatch('POST', '/complete', {}, {
+      sessionId: '42',
+      completedDurationSec: 1900,
+      actualDurationMinutes: 35,
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(mockLogCompletion).toHaveBeenCalledWith(expect.objectContaining({
+      completed_duration_sec: 1900,
+    }));
+  });
+
+  it('rerun-5 S12 — /complete rejects out-of-range actualDurationMinutes and energyLevel (400)', async () => {
+    const res = await dispatch('POST', '/complete', {}, {
+      sessionId: 'today',
+      actualDurationMinutes: 5000,
+      energyLevel: 11,
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.body.error.code).toBe('BAD_INPUT');
+    expect(res.body.error.message).toMatch(/actualDurationMinutes must be between 0 and 1440/);
+    expect(res.body.error.message).toMatch(/energyLevel must be between 0 and 10/);
   });
 
   it('R4 P2 — /complete accepts valid V2 payload (soft-success path proves bad-input gate is bypassed)', async () => {

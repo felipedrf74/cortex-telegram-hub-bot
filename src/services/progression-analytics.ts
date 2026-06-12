@@ -621,8 +621,15 @@ export function extractCardioDataPoints(
 
   let rows: CardioCompletionRow[] = [];
   try {
+    // rerun-5 S12 — COALESCE with the V2 seconds column, mirroring the
+    // history reader (training-history.ts). iOS-logged completions
+    // carry completed_duration_sec, not the legacy duration_minutes;
+    // reading only the legacy column made the chart claim "No running
+    // logged" while history showed the completed session.
     rows = db.prepare(`
-      SELECT tc.completed_at, tc.duration_minutes, tc.actual_exercises_json, ts.session_type
+      SELECT tc.completed_at,
+             COALESCE(tc.duration_minutes, tc.completed_duration_sec / 60.0) AS duration_minutes,
+             tc.actual_exercises_json, ts.session_type
       FROM training_completions tc
       JOIN training_sessions ts ON ts.id = tc.session_id
       JOIN fitness_training_plans ftp ON ftp.id = tc.plan_id

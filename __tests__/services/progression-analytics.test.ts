@@ -576,6 +576,7 @@ function seedCardioCompletion(opts: {
   durationMinutes: number | null;
   actualExercisesJson: string | null;
   baseId?: number;
+  completedDurationSec?: number | null;
 }): void {
   const base = opts.baseId ?? Math.floor(Math.random() * 1_000_000);
   const tenantId = opts.tenantId ?? opts.userId;
@@ -599,9 +600,13 @@ function seedCardioCompletion(opts: {
 
   testDb.prepare(`
     INSERT INTO training_completions
-      (session_id, plan_id, completed_at, duration_minutes, actual_exercises_json)
-    VALUES (?, ?, ?, ?, ?)
-  `).run(base, base, opts.completedAt, opts.durationMinutes, opts.actualExercisesJson);
+      (session_id, plan_id, completed_at, duration_minutes, actual_exercises_json,
+       completed_duration_sec)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `).run(
+    base, base, opts.completedAt, opts.durationMinutes, opts.actualExercisesJson,
+    opts.completedDurationSec ?? null,
+  );
 }
 
 // ─── Layer 1: extraction ────────────────────────────────────────
@@ -711,6 +716,25 @@ describe('extractCardioDataPoints', () => {
     });
     const dps = extractCardioDataPoints(406, 406, 'running', 8, ref);
     expect(dps).toEqual([]);
+  });
+
+  it('rerun-5 S12 — includes iOS-logged completions that only carry completed_duration_sec', () => {
+    // iOS /complete writes the V2 seconds column, never the legacy
+    // duration_minutes. Reading only the legacy column made the chart
+    // claim "No running logged" while history showed the session.
+    seedCardioCompletion({
+      userId: 412,
+      sessionType: 'run',
+      completedAt: '2026-04-05T08:00:00',
+      durationMinutes: null,
+      actualExercisesJson: null,
+      completedDurationSec: 35 * 60,
+      baseId: 412,
+    });
+    const dps = extractCardioDataPoints(412, 412, 'running', 8, ref);
+    expect(dps).toEqual([
+      { date: '2026-04-05', distanceKm: 0, durationMin: 35 },
+    ]);
   });
 
   it('only returns sessions for the requested sport', () => {

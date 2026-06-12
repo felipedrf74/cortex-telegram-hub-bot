@@ -237,6 +237,12 @@ describe('cache-coherence-registry', () => {
       'training-summary:',
       'training-history:',
       'training-load-snapshot:',
+      // rerun-5 S12 — progression + weekly-activity caches join the
+      // family so a fresh completion can't show in history while the
+      // Progress charts/tiles serve stale "no data" for a full TTL.
+      'cardio-progression:',
+      'strength-progression:',
+      'training-activity-weekly:',
       'dashboard:42:',
       'dashboard-home:42:',
       'plan:week:u:42:',

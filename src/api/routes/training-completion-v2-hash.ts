@@ -43,6 +43,14 @@ export interface V2CompletionFieldsForHash {
   completedSetsJson?: string | null;
   completedRepsJson?: string | null;
   completedLoadJson?: string | null;
+  // rerun-5 S12 — the route now persists the iOS wellbeing fields, so
+  // they join the hash basis (two payloads differing only in energy or
+  // soreness must not collapse onto one idempotency key — the R4 P2
+  // lesson). Adding keys shifts the canonical JSON for every payload
+  // once at deploy; the full idempotency key still scopes per
+  // user/row/status, so the shift cannot dedupe across entities.
+  energyLevel?: number | null;
+  sorenessLevel?: number | null;
 }
 
 /**
@@ -98,6 +106,8 @@ export function buildV2CanonicalSummary(
     completedSetsJson: stringFingerprint(fields.completedSetsJson),
     completedRepsJson: stringFingerprint(fields.completedRepsJson),
     completedLoadJson: stringFingerprint(fields.completedLoadJson),
+    energyLevel: canonicalNumber(fields.energyLevel),
+    sorenessLevel: canonicalNumber(fields.sorenessLevel),
   };
 }
 

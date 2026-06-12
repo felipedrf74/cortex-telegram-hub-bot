@@ -538,6 +538,9 @@ export function trainingRoutes(): Router {
       completedSetsJson,
       completedRepsJson,
       completedLoadJson,
+      actualDurationMinutes,
+      energyLevel,
+      sorenessLevel,
     } = req.body as Record<string, unknown>;
     // R4 P2 fix — stricter V2 field validation. Codex caught that
     // R3's `typeof v === 'number'` accepted NaN and Infinity, and
@@ -598,10 +601,28 @@ export function trainingRoutes(): Router {
     checkString('completedSetsJson', completedSetsJson, 8 * 1024);
     checkString('completedRepsJson', completedRepsJson, 8 * 1024);
     checkString('completedLoadJson', completedLoadJson, 8 * 1024);
+    checkNumberInRange('actualDurationMinutes', actualDurationMinutes, 0, 24 * 60);
+    checkNumberInRange('energyLevel', energyLevel, 0, 10);
+    checkNumberInRange('sorenessLevel', sorenessLevel, 0, 10);
     if (v2TypeErrors.length > 0) {
       sendError(res, 'BAD_INPUT', `Invalid V2 completion fields: ${v2TypeErrors.join('; ')}`, 400);
       return;
     }
+
+    // rerun-5 S12: the iOS feedback sheet sends the user-confirmed
+    // duration as `actualDurationMinutes` (and wellbeing as
+    // `energyLevel`/`sorenessLevel`). This route only read the V2
+    // `completedDurationSec`, so every iOS completion persisted with a
+    // NULL duration — the cardio progression aggregation then skipped
+    // the row ("No running logged") while weekly activity and history
+    // counted it. Normalize the minutes alias into the V2 seconds
+    // column here; an explicit completedDurationSec still wins.
+    const normalizedCompletedDurationSec =
+      typeof completedDurationSec === 'number'
+        ? completedDurationSec
+        : typeof actualDurationMinutes === 'number'
+          ? actualDurationMinutes * 60
+          : undefined;
 
     if (!consumeTrainingWriteBudget(res, tenantId, userId, 'training_session_complete')) return;
 
@@ -648,9 +669,10 @@ export function trainingRoutes(): Router {
         rir != null || painScore != null || painLocation != null ||
         technicalSuccessScore != null || missedReason != null ||
         externalTrainingDeclared === true ||
-        completedDurationSec != null || completedDistanceMeters != null ||
+        normalizedCompletedDurationSec != null || completedDistanceMeters != null ||
         completedSetsJson != null || completedRepsJson != null ||
-        completedLoadJson != null
+        completedLoadJson != null ||
+        energyLevel != null || sorenessLevel != null
       );
 
       const writeCompletion = () => {
@@ -666,7 +688,9 @@ export function trainingRoutes(): Router {
             technical_success_score: typeof technicalSuccessScore === 'number' ? technicalSuccessScore : undefined,
             missed_reason: typeof missedReason === 'string' ? missedReason : undefined,
             external_training_declared: externalTrainingDeclared === true,
-            completed_duration_sec: typeof completedDurationSec === 'number' ? completedDurationSec : undefined,
+            energy_level: typeof energyLevel === 'number' ? energyLevel : undefined,
+            soreness_level: typeof sorenessLevel === 'number' ? sorenessLevel : undefined,
+            completed_duration_sec: typeof normalizedCompletedDurationSec === 'number' ? normalizedCompletedDurationSec : undefined,
             completed_distance_meters: typeof completedDistanceMeters === 'number' ? completedDistanceMeters : undefined,
             completed_sets_json: typeof completedSetsJson === 'string' ? completedSetsJson : undefined,
             completed_reps_json: typeof completedRepsJson === 'string' ? completedRepsJson : undefined,
@@ -695,11 +719,13 @@ export function trainingRoutes(): Router {
           hasTechnicalSuccessScore: technicalSuccessScore != null,
           hasMissedReason: typeof missedReason === 'string' && missedReason.length > 0,
           externalTrainingDeclared: externalTrainingDeclared === true,
-          hasCompletedDurationSec: completedDurationSec != null,
+          hasCompletedDurationSec: normalizedCompletedDurationSec != null,
           hasCompletedDistanceMeters: completedDistanceMeters != null,
           hasCompletedSetsJson: typeof completedSetsJson === 'string' && completedSetsJson.length > 0,
           hasCompletedRepsJson: typeof completedRepsJson === 'string' && completedRepsJson.length > 0,
           hasCompletedLoadJson: typeof completedLoadJson === 'string' && completedLoadJson.length > 0,
+          hasEnergyLevel: energyLevel != null,
+          hasSorenessLevel: sorenessLevel != null,
         };
         // Hash *values*, not just presence. Helper is exported from a
         // sibling module so it can be unit-tested in isolation (see
@@ -711,11 +737,13 @@ export function trainingRoutes(): Router {
           technicalSuccessScore: typeof technicalSuccessScore === 'number' ? technicalSuccessScore : null,
           missedReason: typeof missedReason === 'string' ? missedReason : null,
           externalTrainingDeclared: externalTrainingDeclared === true,
-          completedDurationSec: typeof completedDurationSec === 'number' ? completedDurationSec : null,
+          completedDurationSec: typeof normalizedCompletedDurationSec === 'number' ? normalizedCompletedDurationSec : null,
           completedDistanceMeters: typeof completedDistanceMeters === 'number' ? completedDistanceMeters : null,
           completedSetsJson: typeof completedSetsJson === 'string' ? completedSetsJson : null,
           completedRepsJson: typeof completedRepsJson === 'string' ? completedRepsJson : null,
           completedLoadJson: typeof completedLoadJson === 'string' ? completedLoadJson : null,
+          energyLevel: typeof energyLevel === 'number' ? energyLevel : null,
+          sorenessLevel: typeof sorenessLevel === 'number' ? sorenessLevel : null,
         });
         emitDomainEvent({
           tenantId,
