@@ -318,7 +318,7 @@ export async function generateTrainingPlanForUser(
     previewOnly = false,
   } = input;
   const tenantId = requireTenantIdParam(input.tenantId, 'generateTrainingPlanForUser');
-  const durationWeeks = normalizeTrainingPlanDurationWeeks(input.durationWeeks, 4);
+  const requestedDurationWeeks = normalizeTrainingPlanDurationWeeks(input.durationWeeks, 4);
 
   const fitnessProfile = unwrapOnboardingProfileData(onboarding.getProfile?.(userId, 'fitness'));
   const gymProfile = unwrapOnboardingProfileData(onboarding.getProfile?.(userId, 'triathlon-gym'));
@@ -367,6 +367,18 @@ export async function generateTrainingPlanForUser(
           : objective,
       }
     : runProfile;
+  // Computed here (not at the lint-input site below) because the
+  // duration clamp after start-date resolution needs the exact same
+  // event-based definition the linter applies.
+  const raceDateForLint: string | null =
+    effectiveRaceDate
+      ? effectiveRaceDate
+      : typeof runProfileForPlan?.target_race_date === 'string' && runProfileForPlan.target_race_date.trim()
+      ? runProfileForPlan.target_race_date
+      : null;
+  const isRaceSpecificForLint =
+    objectiveNeedsRunningProfile(objective) &&
+    /\b(marathon|half\s*marathon|10k|5k|race|ironman|70\.3|trail)\b/i.test(objective);
 
   if (!fitnessProfile || Object.keys(fitnessProfile).length === 0) {
     // RERUN-2 finding 3 (2026-06-12): this gate used to omit
@@ -403,6 +415,23 @@ export async function generateTrainingPlanForUser(
   const now = new Date();
   const normalizedStartPolicy = normalizeStartPolicy(startPolicy);
   const startStr = resolveTrainingPlanStartDate(now, normalizedStartPolicy);
+  // rerun-4 R3 (2026-06-12): iOS derives the requested week count from
+  // "today", but the engine anchors the plan at its start policy (e.g.
+  // next Monday). A 16-week request made days before that anchor then
+  // overshoots the race date and plan_duration_overshoots_race_date
+  // hard-blocks the wizard with no recourse. The engine owns the start
+  // date, so it also owns making the duration fit: clamp the requested
+  // weeks down to the largest whole-week count that still ends by race
+  // day (same arithmetic as the linter). Requests that already fit are
+  // untouched; a race too close to fit even one full week falls
+  // through to the honest linter blocker.
+  const durationWeeks = clampTrainingPlanDurationWeeksToRaceDate({
+    requestedDurationWeeks,
+    startDateIso: startStr,
+    raceDateIso: normalizedGoalMode === 'event_based' || isRaceSpecificForLint
+      ? raceDateForLint
+      : null,
+  });
   const endStr = DateTime
     .fromISO(startStr, { zone: config.app.timezone || 'Europe/Lisbon' })
     .plus({ weeks: durationWeeks })
@@ -658,15 +687,6 @@ export async function generateTrainingPlanForUser(
       : typeof fitnessProfile?.available_equipment === 'string'
         ? String(fitnessProfile.available_equipment).toLowerCase().trim() || undefined
         : undefined;
-  const raceDateForLint: string | null =
-    effectiveRaceDate
-      ? effectiveRaceDate
-      : typeof runProfileForPlan?.target_race_date === 'string' && runProfileForPlan.target_race_date.trim()
-      ? runProfileForPlan.target_race_date
-      : null;
-  const isRaceSpecificForLint =
-    objectiveNeedsRunningProfile(objective) &&
-    /\b(marathon|half\s*marathon|10k|5k|race|ironman|70\.3|trail)\b/i.test(objective);
   const generationVersionPins = buildTrainingGenerationVersionPins();
 
   const persistenceInput = {
@@ -1445,6 +1465,29 @@ export function resolveTrainingPlanStartDate(now: Date, startPolicy: TrainingPla
   // on Monday; when today is Monday, starting today is already a full week.
   const daysUntilMonday = (8 - today.weekday) % 7;
   return today.plus({ days: daysUntilMonday }).toISODate() ?? today.toISODate() ?? now.toISOString().slice(0, 10);
+}
+
+/// Largest whole-week duration that still ends by race day, mirroring
+/// the plan linter's plan_duration_overshoots_race_date arithmetic
+/// (planDays <= daysThroughRace, race day inclusive). Returns the
+/// request unchanged when there is no race date, the dates are
+/// malformed, the race precedes the start, or the window is too small
+/// to fit even one full week — those cases stay with the linter.
+export function clampTrainingPlanDurationWeeksToRaceDate(params: {
+  requestedDurationWeeks: number;
+  startDateIso: string;
+  raceDateIso: string | null;
+}): number {
+  const { requestedDurationWeeks, startDateIso, raceDateIso } = params;
+  if (!raceDateIso) return requestedDurationWeeks;
+  const zone = config.app.timezone || 'Europe/Lisbon';
+  const start = DateTime.fromISO(startDateIso, { zone }).startOf('day');
+  const race = DateTime.fromISO(raceDateIso, { zone }).startOf('day');
+  if (!start.isValid || !race.isValid || race < start) return requestedDurationWeeks;
+  const daysThroughRace = Math.floor(race.diff(start, 'days').days) + 1;
+  const maxWholeWeeks = Math.floor(daysThroughRace / 7);
+  if (maxWholeWeeks < 1) return requestedDurationWeeks;
+  return Math.min(requestedDurationWeeks, maxWholeWeeks);
 }
 
 function buildWeeklyTargets(input: TrainingPlanWeeklyTargets): TrainingPlanWeeklyTargets {

@@ -149,6 +149,7 @@ vi.mock('../../src/utils/logger', () => ({
 
 import {
   TRAINING_PLAN_GENERATOR_POLICY_VERSION,
+  clampTrainingPlanDurationWeeksToRaceDate,
   generateTrainingPlanForUser,
   resolveTrainingPlanStartDate,
 } from '../../src/api/routes/training-plan-generation';
@@ -659,6 +660,79 @@ describe('generateTrainingPlanForUser', () => {
     expect(resolveTrainingPlanStartDate(new Date('2026-04-17T10:00:00.000Z'), 'next_full_week')).toBe('2026-04-20');
     expect(resolveTrainingPlanStartDate(new Date('2026-04-17T10:00:00.000Z'), 'today')).toBe('2026-04-17');
     expect(resolveTrainingPlanStartDate(new Date('2026-04-20T10:00:00.000Z'), 'next_full_week')).toBe('2026-04-20');
+  });
+
+  // Rerun-4 R3: iOS derives the week count from "today" while the
+  // engine anchors at next Monday, so a 16-week marathon request made
+  // mid-week overshot the race by days and lint-blocked the wizard.
+  // The clamp mirrors the linter (planDays <= daysThroughRace, race
+  // day inclusive) so a clamped duration always passes it.
+  it('clamps the requested duration to the largest whole-week count ending by race day', () => {
+    // Exact rerun-4 repro: Mon 2026-06-15 → race Fri 2026-10-02 is a
+    // 110-day window; 16 weeks (112 days) overshoots, 15 weeks fits.
+    expect(clampTrainingPlanDurationWeeksToRaceDate({
+      requestedDurationWeeks: 16,
+      startDateIso: '2026-06-15',
+      raceDateIso: '2026-10-02',
+    })).toBe(15);
+    // Already-fitting requests are untouched.
+    expect(clampTrainingPlanDurationWeeksToRaceDate({
+      requestedDurationWeeks: 15,
+      startDateIso: '2026-06-15',
+      raceDateIso: '2026-10-02',
+    })).toBe(15);
+    expect(clampTrainingPlanDurationWeeksToRaceDate({
+      requestedDurationWeeks: 8,
+      startDateIso: '2026-06-15',
+      raceDateIso: '2026-10-02',
+    })).toBe(8);
+    // No race date / malformed / race-before-start / sub-week windows
+    // pass through unchanged and stay with the linter.
+    expect(clampTrainingPlanDurationWeeksToRaceDate({
+      requestedDurationWeeks: 16,
+      startDateIso: '2026-06-15',
+      raceDateIso: null,
+    })).toBe(16);
+    expect(clampTrainingPlanDurationWeeksToRaceDate({
+      requestedDurationWeeks: 16,
+      startDateIso: '2026-06-15',
+      raceDateIso: 'not-a-date',
+    })).toBe(16);
+    expect(clampTrainingPlanDurationWeeksToRaceDate({
+      requestedDurationWeeks: 16,
+      startDateIso: '2026-06-15',
+      raceDateIso: '2026-06-01',
+    })).toBe(16);
+    expect(clampTrainingPlanDurationWeeksToRaceDate({
+      requestedDurationWeeks: 16,
+      startDateIso: '2026-06-15',
+      raceDateIso: '2026-06-18',
+    })).toBe(16);
+  });
+
+  it('generates an event-based plan with the clamped duration instead of lint-blocking (rerun-4 R3)', async () => {
+    vi.useFakeTimers();
+    // Friday 2026-06-12 in Europe/Lisbon → start resolves to Monday 2026-06-15.
+    vi.setSystemTime(new Date('2026-06-12T10:00:00.000Z'));
+    try {
+      const result = await generateTrainingPlanForUser({
+        userId: 12,
+        tenantId: 12,
+        objective: 'Marathon',
+        goalMode: 'event_based',
+        raceDate: '2026-10-02',
+        durationWeeks: 16,
+      });
+
+      expect(result.status).toBe('created');
+      expect(result.durationWeeks).toBe(15);
+      expect(result.data.resolvedStartDate).toBe('2026-06-15');
+      const persistInput = mockPersistGeneratedTrainingPlan.mock.calls[0][0];
+      expect(persistInput.durationWeeks).toBe(15);
+      expect(persistInput.endDate).toBe('2026-09-28');
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('persists the requested training calendar source for generation and follow-up sync', async () => {
