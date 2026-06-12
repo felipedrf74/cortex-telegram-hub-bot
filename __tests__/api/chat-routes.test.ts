@@ -3868,8 +3868,15 @@ describe('Chat API routes', () => {
           },
         },
       });
-      expect(String(messageRes.body.metadata.chatCoreV2.command.payload.startDateTime)).toContain('2026-06-12T14:00:00');
-      expect(String(messageRes.body.metadata.chatCoreV2.command.payload.endDateTime)).toContain('2026-06-12T15:00:00');
+      // 'Friday' resolves to the next strictly-future Friday in
+      // server-local time. The previous hardcoded literal only held on
+      // the day after the test was written and started failing the
+      // moment the calendar caught up (R-2026-06-12 gate blockage).
+      const nextFriday = new Date();
+      nextFriday.setDate(nextFriday.getDate() + (((5 - nextFriday.getDay()) % 7 + 7) % 7 || 7));
+      const fridayIso = `${nextFriday.getFullYear()}-${String(nextFriday.getMonth() + 1).padStart(2, '0')}-${String(nextFriday.getDate()).padStart(2, '0')}`;
+      expect(String(messageRes.body.metadata.chatCoreV2.command.payload.startDateTime)).toContain(`${fridayIso}T14:00:00`);
+      expect(String(messageRes.body.metadata.chatCoreV2.command.payload.endDateTime)).toContain(`${fridayIso}T15:00:00`);
       expect(messageRes.body.metadata.chatCoreV2.response.cards[0]).toMatchObject({
         type: 'calendar_change_preview_card',
         title: 'Calendar preview: weekly sync',
@@ -3888,8 +3895,8 @@ describe('Chat API routes', () => {
         kind: 'eventCard',
         eventId: null,
         title: 'weekly sync',
-        startAt: expect.stringContaining('2026-06-12T14:00:00'),
-        endAt: expect.stringContaining('2026-06-12T15:00:00'),
+        startAt: expect.stringContaining(`${fridayIso}T14:00:00`),
+        endAt: expect.stringContaining(`${fridayIso}T15:00:00`),
         location: null,
         attendees: [],
         status: 'pending',

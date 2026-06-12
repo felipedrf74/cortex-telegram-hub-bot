@@ -1694,7 +1694,7 @@ function dedupedCausePhrases(readiness: ReadinessInput | null, signals: Training
       case 'low_readiness': phrases.push(tPT(language, 'prontidão baixa', 'prontidão baixa', 'low readiness')); break;
       case 'high_leg_load': phrases.push(tPT(language, 'carga alta nas pernas', 'carga alta nas pernas', 'heavy leg load')); break;
       case 'high_shoulder_load': phrases.push(tPT(language, 'ombros ainda carregados', 'ombros ainda carregados', 'heavy shoulder load')); break;
-      case 'calendar_conflict': phrases.push(tPT(language, 'conflito com a agenda', 'conflito com a agenda', 'calendar conflict')); break;
+      case 'calendar_conflict': phrases.push(tPT(language, 'sobreposição com a agenda', 'sobreposição com a agenda', 'calendar overlap')); break;
       case 'planned_race_this_week': phrases.push(tPT(language, 'corrida importante esta semana', 'corrida importante esta semana', 'race week')); break;
       default: break;
     }
