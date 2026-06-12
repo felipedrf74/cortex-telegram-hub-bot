@@ -229,11 +229,11 @@ describe('cache-coherence-registry', () => {
       'dashboard-readiness:42',
     ]);
     expect(prefixKeys()).toEqual([
-      'training-home:42:',
-      // training-summary / training-history / training-load-snapshot
-      // keys are tenant-first, so the whole family is cleared rather
-      // than a user-scoped prefix or exact key (60s / 300s TTLs, rare
-      // event).
+      // training-home / training-summary / training-history /
+      // training-load-snapshot keys are tenant-first, so the whole
+      // family is cleared rather than a user-scoped prefix or exact
+      // key (60s / 300s TTLs, rare event).
+      'training-home:',
       'training-summary:',
       'training-history:',
       'training-load-snapshot:',
@@ -256,10 +256,23 @@ describe('cache-coherence-registry', () => {
     expect(prefixKeys().some((prefix) => summaryKey.startsWith(prefix))).toBe(true);
   });
 
+  it('covers the tenant-first /training/home cache key shape on training writes', () => {
+    invalidateTrainingDerivedCaches(7);
+
+    // GET /training/home caches under
+    // `training-home:{tenantId}:{userId}:{language}` (tenant-first since
+    // bc7aacc2). RERUN-2 finding 3 regression guard: the previous
+    // `training-home:{userId}:` prefix never matched that shape when
+    // tenantId !== userId, so the home view-state stayed stale for its
+    // full 5-minute TTL after a fitness questionnaire answer landed.
+    const homeKey = 'training-home:1:7:en';
+    expect(prefixKeys().some((prefix) => homeKey.startsWith(prefix))).toBe(true);
+  });
+
   it('routes onboarding profiles through their legacy domain invalidation graph', () => {
     invalidateOnboardingDerivedCaches(42, 'triathlon-running');
     expect(clearKeys()).toContain('coach-briefing:42');
-    expect(prefixKeys()).toContain('training-home:42:');
+    expect(prefixKeys()).toContain('training-home:');
 
     mockClearCache.mockReset();
     mockClearCacheByPrefix.mockReset();
@@ -316,7 +329,7 @@ describe('cache-coherence-registry', () => {
     mockClearCacheByPrefix.mockReset();
     invalidateIntegrationDerivedCaches(42, 'garmin');
     expect(clearKeys()).toContain('coach-briefing:42');
-    expect(prefixKeys()).toContain('training-home:42:');
+    expect(prefixKeys()).toContain('training-home:');
 
     mockClearCache.mockReset();
     mockClearCacheByPrefix.mockReset();

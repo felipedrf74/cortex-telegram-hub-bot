@@ -11,12 +11,16 @@ import { invalidatePlanningCaches } from './plan-cache-invalidator';
 export function invalidateTrainingDerivedCaches(userId: number): void {
   clearCache(`coach-briefing:${userId}`);
   clearCache(`readiness:${userId}`);
-  // training-summary keys are tenant-first
-  // (`training-summary:{tenantId}:{userId}`), so a user-scoped exact
-  // key cannot target them; clear the whole family by prefix instead,
-  // mirroring cache-coherence-registry's training.changed handler
-  // (300s TTL, rare event).
-  clearCacheByPrefix([`training-home:${userId}:`, 'training-summary:']);
+  // training-home and training-summary keys are tenant-first
+  // (`training-home:{tenantId}:{userId}:{language}`,
+  // `training-summary:{tenantId}:{userId}`), so a user-scoped exact
+  // key or prefix cannot target them; clear the whole family by prefix
+  // instead, mirroring cache-coherence-registry's training.changed
+  // handler (300s TTL, rare event). RERUN-2 finding 3 follow-up,
+  // 2026-06-12: the previous `training-home:{userId}:` prefix never
+  // matched the tenant-first route key, leaving the home view-state
+  // stale for its full TTL after onboarding answers landed.
+  clearCacheByPrefix(['training-home:', 'training-summary:']);
   invalidateDashboardCaches(userId);
   invalidatePlanningCaches(userId);
 }

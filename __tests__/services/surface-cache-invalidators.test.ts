@@ -42,11 +42,12 @@ describe('surface cache invalidators', () => {
 
     expect(mockClearCache).toHaveBeenCalledWith('coach-briefing:42');
     expect(mockClearCache).toHaveBeenCalledWith('readiness:42');
-    // training-summary keys are tenant-first, so the family is cleared
-    // by prefix — an exact `training-summary:42` clear would miss the
-    // route's `training-summary:{tenantId}:{userId}` key.
+    // training-home and training-summary keys are tenant-first, so the
+    // families are cleared by family prefix — a user-scoped exact key
+    // or `training-home:{userId}:` prefix would miss the routes'
+    // `…:{tenantId}:{userId}…` keys (RERUN-2 finding 3 follow-up).
     expect(mockClearCache).not.toHaveBeenCalledWith('training-summary:42');
-    expect(mockClearCacheByPrefix).toHaveBeenCalledWith(['training-home:42:', 'training-summary:']);
+    expect(mockClearCacheByPrefix).toHaveBeenCalledWith(['training-home:', 'training-summary:']);
     expect(mockInvalidateDashboardCaches).toHaveBeenCalledWith(42);
     expect(mockInvalidatePlanningCaches).toHaveBeenCalledWith(42);
   });
@@ -88,7 +89,7 @@ describe('surface cache invalidators', () => {
     invalidateOnboardingDerivedCaches(42, 'triathlon-running');
 
     expect(mockClearCache).toHaveBeenCalledWith('coach-briefing:42');
-    expect(mockClearCacheByPrefix).toHaveBeenCalledWith(['training-home:42:', 'training-summary:']);
+    expect(mockClearCacheByPrefix).toHaveBeenCalledWith(['training-home:', 'training-summary:']);
     expect(mockInvalidateDashboardCaches).toHaveBeenCalledWith(42);
     expect(mockInvalidatePlanningCaches).toHaveBeenCalledWith(42);
   });
