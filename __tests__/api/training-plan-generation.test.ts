@@ -273,6 +273,33 @@ describe('generateTrainingPlanForUser', () => {
   it('returns a missing-profile response before calling planning services', async () => {
     mockGetProfile.mockReturnValue(null);
     mockGetMissingProfileFields.mockReturnValue([{ key: 'fitness_goal' }]);
+    mockGetQuestionnaire.mockImplementation((id: string) =>
+      id === 'fitness' ? { id, title: 'Fitness Profile' } : { id, title: id });
+
+    const result = await generateTrainingPlanForUser({
+      userId: 12,
+      tenantId: 12,
+      objective: 'Lisbon Marathon',
+    });
+
+    expect(result.status).toBe('needs_profile');
+    // RERUN-2 finding 3: the fitness gate must carry the questionnaire
+    // id + title just like the objective gate below it — a null id
+    // suppressed the iOS routing CTA for empty-profile users.
+    expect(result.data).toMatchObject({
+      needsProfile: true,
+      requiredQuestionnaireId: 'fitness',
+      requiredQuestionnaireTitle: 'Fitness Profile',
+      missingFields: [{ key: 'fitness_goal' }],
+    });
+    expect(mockBuildCoachKernelTrainingPlan).not.toHaveBeenCalled();
+    expect(mockPersistGeneratedTrainingPlan).not.toHaveBeenCalled();
+  });
+
+  it('falls back to the questionnaire id when the fitness definition has no title', async () => {
+    mockGetProfile.mockReturnValue(null);
+    mockGetMissingProfileFields.mockReturnValue([{ key: 'fitness_goal' }]);
+    mockGetQuestionnaire.mockReturnValue(undefined);
 
     const result = await generateTrainingPlanForUser({
       userId: 12,
@@ -283,10 +310,9 @@ describe('generateTrainingPlanForUser', () => {
     expect(result.status).toBe('needs_profile');
     expect(result.data).toMatchObject({
       needsProfile: true,
-      missingFields: [{ key: 'fitness_goal' }],
+      requiredQuestionnaireId: 'fitness',
+      requiredQuestionnaireTitle: 'fitness',
     });
-    expect(mockBuildCoachKernelTrainingPlan).not.toHaveBeenCalled();
-    expect(mockPersistGeneratedTrainingPlan).not.toHaveBeenCalled();
   });
 
   it('treats an empty persisted onboarding wrapper as a missing profile', async () => {
@@ -312,6 +338,11 @@ describe('generateTrainingPlanForUser', () => {
     });
 
     expect(result.status).toBe('needs_profile');
+    expect(result.data).toMatchObject({
+      needsProfile: true,
+      requiredQuestionnaireId: 'fitness',
+      requiredQuestionnaireTitle: 'fitness',
+    });
     expect(mockBuildTrainingEquipmentAdaptation).not.toHaveBeenCalled();
     expect(mockBuildCoachKernelTrainingPlan).not.toHaveBeenCalled();
     expect(mockPersistGeneratedTrainingPlan).not.toHaveBeenCalled();

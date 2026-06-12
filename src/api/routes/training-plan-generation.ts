@@ -369,10 +369,17 @@ export async function generateTrainingPlanForUser(
     : runProfile;
 
   if (!fitnessProfile || Object.keys(fitnessProfile).length === 0) {
+    // RERUN-2 finding 3 (2026-06-12): this gate used to omit
+    // requiredQuestionnaireId/Title while the objective gate right below
+    // includes them — the null id suppressed the iOS routing CTA for
+    // empty-fitness-profile users. Keep the shape identical to the
+    // objective gate so every needs_profile response is routable.
     return {
       status: 'needs_profile',
       data: {
         needsProfile: true,
+        requiredQuestionnaireId: 'fitness',
+        requiredQuestionnaireTitle: onboarding.getQuestionnaire('fitness')?.title ?? 'fitness',
         message: 'Complete your Fitness Profile first to generate a personalized plan.',
         missingFields: onboarding.getMissingProfileFields?.(userId, 'fitness') || [],
       },
