@@ -541,6 +541,7 @@ export function trainingRoutes(): Router {
       actualDurationMinutes,
       energyLevel,
       sorenessLevel,
+      fatigueLevel,
     } = req.body as Record<string, unknown>;
     // R4 P2 fix — stricter V2 field validation. Codex caught that
     // R3's `typeof v === 'number'` accepted NaN and Infinity, and
@@ -604,10 +605,27 @@ export function trainingRoutes(): Router {
     checkNumberInRange('actualDurationMinutes', actualDurationMinutes, 0, 24 * 60);
     checkNumberInRange('energyLevel', energyLevel, 0, 10);
     checkNumberInRange('sorenessLevel', sorenessLevel, 0, 10);
+    checkNumberInRange('fatigueLevel', fatigueLevel, 0, 10);
     if (v2TypeErrors.length > 0) {
       sendError(res, 'BAD_INPUT', `Invalid V2 completion fields: ${v2TypeErrors.join('; ')}`, 400);
       return;
     }
+
+    // rerun-6 S12: the iOS feedback sheet collects "Fatigue" and
+    // "Soreness", so it sends `fatigueLevel` + `sorenessLevel` but no
+    // `energyLevel`. The `training_completions` table has an
+    // `energy_level` column and no fatigue column, so energy_level
+    // landed NULL while soreness_level was set — an inconsistent row.
+    // Energy and fatigue are the standard complementary 0-10
+    // self-report pair, so derive energy from the rated fatigue
+    // (high fatigue => low energy). An explicit `energyLevel` still
+    // wins; with neither field the column stays NULL (honest).
+    const normalizedEnergyLevel =
+      typeof energyLevel === 'number'
+        ? energyLevel
+        : typeof fatigueLevel === 'number'
+          ? 10 - fatigueLevel
+          : undefined;
 
     // rerun-5 S12: the iOS feedback sheet sends the user-confirmed
     // duration as `actualDurationMinutes` (and wellbeing as
@@ -672,7 +690,7 @@ export function trainingRoutes(): Router {
         normalizedCompletedDurationSec != null || completedDistanceMeters != null ||
         completedSetsJson != null || completedRepsJson != null ||
         completedLoadJson != null ||
-        energyLevel != null || sorenessLevel != null
+        normalizedEnergyLevel != null || sorenessLevel != null || fatigueLevel != null
       );
 
       const writeCompletion = () => {
@@ -688,7 +706,7 @@ export function trainingRoutes(): Router {
             technical_success_score: typeof technicalSuccessScore === 'number' ? technicalSuccessScore : undefined,
             missed_reason: typeof missedReason === 'string' ? missedReason : undefined,
             external_training_declared: externalTrainingDeclared === true,
-            energy_level: typeof energyLevel === 'number' ? energyLevel : undefined,
+            energy_level: typeof normalizedEnergyLevel === 'number' ? normalizedEnergyLevel : undefined,
             soreness_level: typeof sorenessLevel === 'number' ? sorenessLevel : undefined,
             completed_duration_sec: typeof normalizedCompletedDurationSec === 'number' ? normalizedCompletedDurationSec : undefined,
             completed_distance_meters: typeof completedDistanceMeters === 'number' ? completedDistanceMeters : undefined,
@@ -724,7 +742,7 @@ export function trainingRoutes(): Router {
           hasCompletedSetsJson: typeof completedSetsJson === 'string' && completedSetsJson.length > 0,
           hasCompletedRepsJson: typeof completedRepsJson === 'string' && completedRepsJson.length > 0,
           hasCompletedLoadJson: typeof completedLoadJson === 'string' && completedLoadJson.length > 0,
-          hasEnergyLevel: energyLevel != null,
+          hasEnergyLevel: normalizedEnergyLevel != null,
           hasSorenessLevel: sorenessLevel != null,
         };
         // Hash *values*, not just presence. Helper is exported from a
@@ -742,7 +760,7 @@ export function trainingRoutes(): Router {
           completedSetsJson: typeof completedSetsJson === 'string' ? completedSetsJson : null,
           completedRepsJson: typeof completedRepsJson === 'string' ? completedRepsJson : null,
           completedLoadJson: typeof completedLoadJson === 'string' ? completedLoadJson : null,
-          energyLevel: typeof energyLevel === 'number' ? energyLevel : null,
+          energyLevel: typeof normalizedEnergyLevel === 'number' ? normalizedEnergyLevel : null,
           sorenessLevel: typeof sorenessLevel === 'number' ? sorenessLevel : null,
         });
         emitDomainEvent({

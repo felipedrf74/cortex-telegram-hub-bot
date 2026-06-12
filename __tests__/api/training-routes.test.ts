@@ -1784,6 +1784,58 @@ describe('Training API routes', () => {
     }));
   });
 
+  it('rerun-6 S12 — /complete derives energy_level from fatigueLevel when energyLevel is absent', async () => {
+    // The iOS feedback sheet collects "Fatigue" + "Soreness" only, so
+    // it sends fatigueLevel (default 3) + sorenessLevel (default 0) but
+    // no energyLevel — which used to leave energy_level NULL while
+    // soreness_level was set. Energy is derived as 10 - fatigue.
+    mockGetSessionById.mockReturnValue({ id: 42, plan_id: 7, status: 'pending' });
+    mockGetPlanById.mockReturnValue({ id: 7, user_id: 12, tenant_id: 12 });
+    mockGetActivePlan.mockReturnValue(null);
+
+    const res = await dispatch('POST', '/complete', {}, {
+      sessionId: '42',
+      rpe: 7,
+      actualDurationMinutes: 25,
+      fatigueLevel: 3,
+      sorenessLevel: 0,
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(mockLogCompletion).toHaveBeenCalledWith(expect.objectContaining({
+      completed_duration_sec: 25 * 60,
+      energy_level: 7, // 10 - fatigue(3)
+      soreness_level: 0,
+    }));
+  });
+
+  it('rerun-6 S12 — explicit energyLevel wins over the fatigueLevel derivation', async () => {
+    mockGetSessionById.mockReturnValue({ id: 42, plan_id: 7, status: 'pending' });
+    mockGetPlanById.mockReturnValue({ id: 7, user_id: 12, tenant_id: 12 });
+    mockGetActivePlan.mockReturnValue(null);
+
+    const res = await dispatch('POST', '/complete', {}, {
+      sessionId: '42',
+      energyLevel: 9,
+      fatigueLevel: 3,
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(mockLogCompletion).toHaveBeenCalledWith(expect.objectContaining({
+      energy_level: 9,
+    }));
+  });
+
+  it('rerun-6 S12 — /complete rejects out-of-range fatigueLevel (400)', async () => {
+    const res = await dispatch('POST', '/complete', {}, {
+      sessionId: 'today',
+      fatigueLevel: 11,
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.body.error.code).toBe('BAD_INPUT');
+    expect(res.body.error.message).toMatch(/fatigueLevel must be between 0 and 10/);
+  });
+
   it('rerun-5 S12 — explicit completedDurationSec wins over the actualDurationMinutes alias', async () => {
     mockGetSessionById.mockReturnValue({ id: 42, plan_id: 7, status: 'pending' });
     mockGetPlanById.mockReturnValue({ id: 7, user_id: 12, tenant_id: 12 });
