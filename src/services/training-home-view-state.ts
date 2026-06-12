@@ -237,6 +237,11 @@ export interface ReadinessInput {
   score: number;
   factors: ReadinessFactorsInput;
   recommendation?: string | null;
+  /** Provider provenance from the readiness scorer (Phase 0):
+   *  'garmin' | 'whoop' | 'apple_health' | 'estimated'. Drives the
+   *  locked vocabulary — Apple Health derives its energy metric, so
+   *  Body Battery wording is Garmin-only. */
+  source?: string | null;
 }
 
 export interface TrainingExerciseInput {
@@ -1247,9 +1252,16 @@ function reasoningMetrics(
     }
     const battery = normalizedBodyBattery(readiness.factors.bodyBattery);
     if (typeof battery === 'number') {
+      // "Body Battery" is Garmin's measured metric. The Apple Health
+      // path DERIVES an equivalent (readiness-scorer
+      // deriveBodyBatteryEquivalent) — locked vocabulary requires
+      // "Energy (derived)" there, never the Garmin trade name.
+      const appleDerived = readiness.source === 'apple_health';
       metrics.push({
         id: 'battery',
-        label: tPT(language, 'Body Battery', 'Body Battery', 'Body Battery'),
+        label: appleDerived
+          ? tPT(language, 'Energia (derivada)', 'Energia (derivada)', 'Energy (derived)')
+          : tPT(language, 'Body Battery', 'Body Battery', 'Body Battery'),
         value: `${battery}%`,
         tint: battery >= 60 ? 'success' : battery >= 35 ? 'warning' : 'error',
       });
@@ -1681,7 +1693,11 @@ function dedupedCausePhrases(readiness: ReadinessInput | null, signals: Training
   if (readiness) {
     const bodyBattery = normalizedBodyBattery(readiness.factors.bodyBattery);
     if ((readiness.factors.sleepScore ?? 100) < 65) phrases.push(tPT(language, 'pouco sono', 'pouco sono', 'light sleep'));
-    if ((bodyBattery ?? 100) < 45) phrases.push(tPT(language, 'Body Battery baixa', 'Body Battery baixa', 'low Body Battery'));
+    if ((bodyBattery ?? 100) < 45) {
+      phrases.push(readiness.source === 'apple_health'
+        ? tPT(language, 'reserva de energia baixa', 'reserva de energia baixa', 'low energy reserve')
+        : tPT(language, 'Body Battery baixa', 'Body Battery baixa', 'low Body Battery'));
+    }
     if (containsLowMarker(readiness.factors.hrvStatus)) phrases.push(tPT(language, 'HRV baixa', 'HRV baixa', 'low HRV'));
     if (containsElevatedLoad(readiness.factors.trainingLoad)) phrases.push(tPT(language, 'carga alta', 'carga alta', 'high load'));
     if (containsElevatedStress(readiness.factors.stressLevel)) phrases.push(tPT(language, 'stress alto', 'stress alto', 'high stress'));
@@ -1707,7 +1723,11 @@ function dedupedCauseChips(readiness: ReadinessInput | null, signals: TrainingSi
   if (readiness) {
     const bodyBattery = normalizedBodyBattery(readiness.factors.bodyBattery);
     if ((readiness.factors.sleepScore ?? 100) < 65) chips.push(tPT(language, 'Sono baixo', 'Sono baixo', 'Low sleep'));
-    if ((bodyBattery ?? 100) < 45) chips.push(tPT(language, 'Body Battery baixa', 'Body Battery baixa', 'Low Body Battery'));
+    if ((bodyBattery ?? 100) < 45) {
+      chips.push(readiness.source === 'apple_health'
+        ? tPT(language, 'Reserva de energia baixa', 'Reserva de energia baixa', 'Low energy reserve')
+        : tPT(language, 'Body Battery baixa', 'Body Battery baixa', 'Low Body Battery'));
+    }
     if (containsLowMarker(readiness.factors.hrvStatus)) chips.push(tPT(language, 'HRV baixa', 'HRV baixa', 'Low HRV'));
     if (containsElevatedLoad(readiness.factors.trainingLoad)) chips.push(tPT(language, 'Carga alta', 'Carga alta', 'High load'));
     if (containsElevatedStress(readiness.factors.stressLevel)) chips.push(tPT(language, 'Stress alto', 'Stress alto', 'High stress'));
