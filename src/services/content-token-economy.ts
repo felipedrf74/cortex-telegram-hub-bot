@@ -497,7 +497,9 @@ export function buildSourcePackage(input: {
   sources?: SourceReference[] | null;
   warnings?: string[] | null;
 }): SourcePackage {
-  const sources = (input.sources ?? []).slice(0, input.mode === 'deep' ? 8 : 4);
+  const sources = (input.sources ?? [])
+    .filter((source) => !isMockContentSource(source))
+    .slice(0, input.mode === 'deep' ? 8 : 4);
   const topicHash = stableHash(input.topic.toLowerCase().trim());
   const sourceSummaries = sources.map((source) => [source.title, source.relevance_note].filter(Boolean).join(' — ').slice(0, 260));
   const unsafe = (input.warnings ?? []).filter((warning) => /unsupported|unverified|review/i.test(warning));
@@ -521,6 +523,17 @@ export function buildSourcePackage(input: {
     expiresAt: new Date(Date.now() + (input.mode === 'deep' ? 6 : 48) * 3600_000).toISOString(),
     tokenEstimate: estimateContentTokens(sourceSummaries.join('\n')),
   };
+}
+
+export function isMockContentSource(source: SourceReference | null | undefined): boolean {
+  if (!source) return false;
+  const title = String(source.title || '').trim();
+  const url = String(source.url || '').trim();
+  const note = String(source.relevance_note || '').trim();
+  return /^\[mock\]/i.test(title)
+    || /\bexample\.com\b/i.test(url)
+    || /(?:[?&]mock=1\b|\/mock[_-]|watch\?v=mock[_-]|mock_react_|mock_walk_)/i.test(url)
+    || /\bmock\b/i.test(note);
 }
 
 export function lintSourcePackage(pkg: SourcePackage): string[] {

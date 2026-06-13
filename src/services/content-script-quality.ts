@@ -236,12 +236,16 @@ function buildBeats(script: string, brief: ScriptPreflightBrief): string[] {
     .map((line) => line.replace(/^(?:hook|intro|cta|call to action|fecho|abertura)\s*:\s*/i, '').trim())
     .filter(Boolean)
     .slice(0, 8);
+  const topicLabel = brief.objective
+    .replace(/^Make\s+/i, '')
+    .replace(/\s+useful, memorable, and worth acting on\.$/i, '')
+    .trim();
   const defaultBeats = [
-    'Name the tension in one sentence.',
-    'Show the old way or mistake.',
-    'Bring in one proof point or concrete example.',
-    'Explain the operating rule.',
-    'Close with one action and one metric to watch.',
+    `Name the specific tension behind ${topicLabel}.`,
+    `Show the common mistake people make with ${topicLabel}.`,
+    `Demonstrate one concrete reset, example, or proof point for ${topicLabel}.`,
+    `Explain the operating rule the viewer should remember about ${topicLabel}.`,
+    `Close with one action the viewer can test the next time ${topicLabel} comes up.`,
   ];
   const beats = existing.length >= 4 ? existing : [...existing, ...defaultBeats];
   const sliced = beats.slice(0, 10);

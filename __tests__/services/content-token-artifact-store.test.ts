@@ -42,7 +42,7 @@ describe('content token artifact store', () => {
       sources: [
         {
           title: 'Source A',
-          url: 'https://example.com/a',
+          url: 'https://www.usatriathlon.org/safety/open-water-swimming',
           source_type: 'web',
           relevance_note: 'Useful compact source.',
         },
@@ -71,7 +71,7 @@ describe('content token artifact store', () => {
       testDb,
     );
     expect(fetchedPackage?.sourceSummary).toEqual(sourcePackage.sourceSummaries);
-    expect(fetchedPackage?.sources[0].url).toBe('https://example.com/a');
+    expect(fetchedPackage?.sources[0].url).toBe('https://www.usatriathlon.org/safety/open-water-swimming');
 
     const fetchedArtifact = getContentResearchArtifact(
       { tenantId: 44, userId: 7 },
@@ -98,7 +98,7 @@ describe('content token artifact store', () => {
       language: 'en-US',
       format: 'Reel',
       mode: 'draft',
-      sources: [{ title: 'Source A', url: 'https://example.com/a', relevance_note: 'Scoped source.' }],
+      sources: [{ title: 'Source A', url: 'https://www.usatriathlon.org/safety/open-water-swimming', relevance_note: 'Scoped source.' }],
     });
     persistContentArtifacts({
       tenantId: 44,

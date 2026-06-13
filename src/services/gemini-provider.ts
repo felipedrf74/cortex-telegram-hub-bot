@@ -42,7 +42,7 @@ import { getDomainSystemPrompt, getClassifierSystemPrompt, TOOLS } from './anthr
 import { getDb } from './database';
 import { pushEvent } from '../portal/telemetry';
 import { withTimeout } from '../utils/timeout';
-import { getAICallTimeoutMs, isAnthropicRuntimeEnabled } from './runtime-flags';
+import { canUseAnthropicRuntimeFallback, getAICallTimeoutMs } from './runtime-flags';
 import { buildScopedStateContextPrefix } from './provider-state-context';
 import { getDomainModelOverride, type DomainModelRole } from './model-config';
 import { computeModelUsageCostUsd, recordUnresolvedModelPricingAlert, resolveModelPricing } from './model-pricing';
@@ -259,6 +259,16 @@ export async function completeOneShot(
   }
 
   return extractText(result);
+}
+
+function resolveGeminiOneShotFallbackModel(primaryModel: string): string | null {
+  const candidates = [
+    process.env.GEMINI_FALLBACK_MODEL,
+    config.gemini.classifierModel,
+  ]
+    .map((value) => value?.trim())
+    .filter((value): value is string => Boolean(value));
+  return candidates.find((candidate) => candidate !== primaryModel) ?? null;
 }
 
 /**
@@ -494,7 +504,7 @@ export async function completeVisionOneShotWithFallback(
   // branch normally never runs. If the thunk's internal trackedCreate
   // call fires, the kill switch in anthropic-hook.ts will throw before
   // the SDK actually hits Anthropic.
-  if (isAnthropicRuntimeEnabled()) {
+  if (canUseAnthropicRuntimeFallback()) {
     const text = await anthropicFallback();
     return { text, provider: 'anthropic' };
   }
@@ -542,7 +552,24 @@ export async function completeOneShotWithFallback(
       const text = await completeOneShot(systemPrompt, userPrompt, category, options);
       return { text, provider: 'gemini' };
     } catch (err) {
-      logger.warn({ err, category }, 'Gemini one-shot failed, trying OpenAI fallback');
+      const primaryModel = options?.model ?? config.gemini.model;
+      const fallbackModel = resolveGeminiOneShotFallbackModel(primaryModel);
+      if (fallbackModel) {
+        try {
+          logger.warn({ err, category, primaryModel, fallbackModel }, 'Gemini one-shot failed, trying Gemini fallback model');
+          const text = await completeOneShot(
+            systemPrompt,
+            userPrompt,
+            `${category}_gemini_model_fallback`,
+            { ...options, model: fallbackModel },
+          );
+          return { text, provider: 'gemini' };
+        } catch (fallbackErr) {
+          logger.warn({ err: fallbackErr, category, primaryModel, fallbackModel }, 'Gemini fallback model also failed, trying OpenAI fallback');
+        }
+      } else {
+        logger.warn({ err, category, primaryModel }, 'Gemini one-shot failed, trying OpenAI fallback');
+      }
     }
   }
 
@@ -565,7 +592,7 @@ export async function completeOneShotWithFallback(
   }
 
   // Stage 3: Anthropic thunk — only if explicitly re-enabled
-  if (isAnthropicRuntimeEnabled()) {
+  if (canUseAnthropicRuntimeFallback()) {
     const text = await anthropicFallback();
     return { text, provider: 'anthropic' };
   }

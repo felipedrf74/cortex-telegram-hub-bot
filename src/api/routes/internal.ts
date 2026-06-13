@@ -30,7 +30,7 @@ import {
 } from '../rate-limiter';
 import { getOwnerBootstrapTarget } from '../../services/user-service';
 import { getPerformanceSummary } from '../../services/content-learning-store';
-import { isAnthropicRuntimeEnabled } from '../../services/runtime-flags';
+import { canUseAnthropicRuntimeFallback } from '../../services/runtime-flags';
 import { getEffectiveDomainModel } from '../../services/model-config';
 import { completeOneShotWithFallback } from '../../services/gemini-provider';
 import { verifyInternalAttributionToken } from '../../services/internal-attribution';
@@ -257,6 +257,7 @@ export function internalRoutes(): Router {
         userPrompt,
         category,
         // Anthropic fallback thunk — only fires if ANTHROPIC_ENABLED=true
+        // and ANTHROPIC_API_KEY is configured.
         async () => {
           const { trackedCreate } = require('../../portal/anthropic-hook');
           const Anthropic = require('@anthropic-ai/sdk');
@@ -299,10 +300,10 @@ export function internalRoutes(): Router {
 
   // ── GET /api/v1/internal/anthropic-enabled ────────────────────────
   //
-  // Lets the Python engine check whether Anthropic is enabled before
-  // making a call. Mirrors the kill switch in anthropic-hook.ts.
+  // Lets the Python engine check whether Anthropic fallback is usable before
+  // making a call. Mirrors the kill switch and key requirement.
   router.get('/anthropic-enabled', (_req: Request, res: Response) => {
-    res.json({ enabled: isAnthropicRuntimeEnabled() });
+    res.json({ enabled: canUseAnthropicRuntimeFallback() });
   });
 
   // ── GET /api/v1/internal/performance-summary ──────────────────────

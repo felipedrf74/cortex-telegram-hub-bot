@@ -97,7 +97,7 @@ describe('content script route contract utilities', () => {
         sources_used: [
           {
             title: 'Reference',
-            url: 'https://example.com',
+            url: 'https://www.usatriathlon.org/safety/open-water-swimming',
             source_type: 'article',
             relevance_note: 'Used for framing',
           },
@@ -120,7 +120,7 @@ describe('content script route contract utilities', () => {
       titleOptions: ['A', 'B'],
       sourcesUsed: [{
         title: 'Reference',
-        url: 'https://example.com',
+        url: 'https://www.usatriathlon.org/safety/open-water-swimming',
         sourceType: 'article',
         relevanceNote: 'Used for framing',
       }],

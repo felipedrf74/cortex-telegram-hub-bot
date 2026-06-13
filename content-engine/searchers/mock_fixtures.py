@@ -40,5 +40,5 @@ def mock_search_result(
         snippet=snippet,
         source=source,
         published_at=datetime.now(timezone.utc) - timedelta(hours=hours_ago),
-        metadata=metadata or {},
+        metadata={**(metadata or {}), "mock": True},
     )

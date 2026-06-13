@@ -53,6 +53,12 @@ vi.mock('../../src/config', () => ({
       maxTokens: 1024,
       secretaryMaxTokens: 2048,
     },
+    openai: {
+      apiKey: '',
+    },
+    anthropic: {
+      apiKey: '',
+    },
   },
 }));
 
@@ -104,7 +110,7 @@ vi.mock('../../src/portal/telemetry', () => ({
 
 // ─── Imports ─────────────────────────────────────────────────────────
 
-import { GeminiProvider, _sleep, completeOneShotWithSearch } from '../../src/services/gemini-provider';
+import { GeminiProvider, _sleep, completeOneShotWithFallback, completeOneShotWithSearch } from '../../src/services/gemini-provider';
 import { pushEvent } from '../../src/portal/telemetry';
 import { _resetOverrides, setDomainModel } from '../../src/services/model-config';
 
@@ -167,6 +173,7 @@ describe('GeminiProvider', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    mockGenerateContent.mockReset();
     _resetOverrides();
     provider = new GeminiProvider();
   });
@@ -216,6 +223,62 @@ describe('GeminiProvider', () => {
       'content_discovery',
       { userId: 7, tenantId: 7 },
     )).rejects.toThrow(/Gemini search response incomplete: MAX_TOKENS/);
+  });
+
+  it('does not invoke Anthropic fallback when the runtime flag is enabled but the key is blank', async () => {
+    const originalEnabled = process.env.ANTHROPIC_ENABLED;
+    const originalKey = process.env.ANTHROPIC_API_KEY;
+    process.env.ANTHROPIC_ENABLED = 'true';
+    process.env.ANTHROPIC_API_KEY = '';
+    mockGenerateContent.mockRejectedValue(Object.assign(new Error('Gemini unavailable'), { status: 503 }));
+    const anthropicFallback = vi.fn(async () => 'anthropic text');
+
+    try {
+      await expect(completeOneShotWithFallback(
+        'System prompt',
+        'User prompt',
+        'content_engine_script_draft',
+        anthropicFallback,
+        { maxTokens: 32 },
+      )).rejects.toThrow(/All providers failed/);
+
+      expect(anthropicFallback).not.toHaveBeenCalled();
+    } finally {
+      if (originalEnabled === undefined) delete process.env.ANTHROPIC_ENABLED;
+      else process.env.ANTHROPIC_ENABLED = originalEnabled;
+      if (originalKey === undefined) delete process.env.ANTHROPIC_API_KEY;
+      else process.env.ANTHROPIC_API_KEY = originalKey;
+    }
+  });
+
+  it('tries the configured Gemini fallback model before leaving Gemini', async () => {
+    mockGenerateContent
+      .mockRejectedValueOnce(Object.assign(new Error('Gemini primary unavailable'), { status: 503 }))
+      .mockResolvedValueOnce({
+        text: 'fallback model text',
+        functionCalls: [],
+        candidates: [{ finishReason: 'STOP' }],
+        usageMetadata: {
+          promptTokenCount: 100,
+          candidatesTokenCount: 50,
+          totalTokenCount: 150,
+        },
+      });
+    const anthropicFallback = vi.fn(async () => 'anthropic text');
+
+    const result = await completeOneShotWithFallback(
+      'System prompt',
+      'User prompt',
+      'content_engine_script_draft',
+      anthropicFallback,
+      { maxTokens: 32 },
+    );
+
+    expect(result).toEqual({ text: 'fallback model text', provider: 'gemini' });
+    expect(anthropicFallback).not.toHaveBeenCalled();
+    expect(mockGenerateContent).toHaveBeenCalledTimes(2);
+    expect(mockGenerateContent.mock.calls[0][0].model).toBe('gemini-2.0-pro');
+    expect(mockGenerateContent.mock.calls[1][0].model).toBe('gemini-2.0-flash');
   });
 
   // ── classify ──────────────────────────────────────────────────────

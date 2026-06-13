@@ -11,6 +11,7 @@ import { escapeHtml } from '../utils/telegram-formatter';
 import { logger } from '../utils/logger';
 import { getCurrentRequestId, generateRequestId } from '../utils/request-context';
 import { config } from '../config';
+import { contentEngineApiBaseUrl } from '../services/content-engine';
 import { getContentCreatorProfile } from '../state/content-creator-profile';
 import {
   contentScopeForInsert,
@@ -19,7 +20,7 @@ import {
   ensureContentTenantScopeColumns,
 } from '../services/content-tenant-scope';
 
-const CONTENT_ENGINE_URL = `http://localhost:${config.contentEngine.port}/api/v1`;
+const CONTENT_ENGINE_URL = contentEngineApiBaseUrl();
 
 // ── Seed books (extracted on first deploy if table is empty) ────────
 

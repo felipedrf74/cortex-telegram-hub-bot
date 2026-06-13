@@ -675,22 +675,284 @@ def _fallback_parse(raw: str) -> tuple[str, str, list[str], list[str], str, str]
     script_lines: list[str] = []
 
     for line in lines:
-        stripped = line.strip()
-        if stripped.startswith("HOOK:"):
-            hook = stripped[5:].strip()
-        elif stripped.startswith("TITLE1:") or stripped.startswith("TITLE2:") or stripped.startswith("TITLE3:"):
-            title_options.append(stripped.split(":", 1)[1].strip())
-        elif stripped.startswith("HASHTAGS:"):
-            raw_tags = stripped[9:].strip()
-            hashtags = [t.strip() for t in raw_tags.split() if t.startswith("#")]
-        elif stripped.startswith("CAPTION:"):
-            caption = stripped[8:].strip()
-        elif stripped.startswith("CTA:"):
-            cta = stripped[4:].strip()
+        stripped = re.sub(r"^\s{0,3}#{1,4}\s*", "", line.strip())
+        stripped = re.sub(r"^\s*[-*]\s*", "", stripped)
+        stripped = stripped.strip("*_ ")
+        label = re.match(
+            r"^(hook|gancho|title\s*options?|titles?|t[íi]tulos?|title[123]|hashtags?|caption|legenda|cta|call\s*to\s*action)\s*[:\-]\s*(.*)$",
+            stripped,
+            flags=re.IGNORECASE,
+        )
+        if label:
+            key = label.group(1).lower()
+            value = label.group(2).strip()
+            if key in {"hook", "gancho"}:
+                hook = value or hook
+            elif key.startswith("title") or key.startswith("título") or key.startswith("titulo"):
+                parsed_titles = _parse_title_list(value)
+                title_options.extend(parsed_titles)
+            elif key.startswith("hashtag"):
+                hashtags = _parse_hashtags(value)
+            elif key in {"caption", "legenda"}:
+                caption = value
+            elif key in {"cta", "call to action"}:
+                cta = value
         else:
             script_lines.append(line)
 
-    return "\n".join(script_lines).strip(), hook, title_options, hashtags, caption, cta
+    script = "\n".join(script_lines).strip()
+    return script, hook, list(dict.fromkeys(title_options))[:5], hashtags, caption, cta
+
+
+def _parse_title_list(value: str) -> list[str]:
+    value = value.strip()
+    if not value:
+        return []
+    try:
+        parsed = json.loads(value)
+        if isinstance(parsed, list):
+            return [str(item).strip() for item in parsed if str(item).strip()]
+    except Exception:
+        pass
+    cleaned = re.sub(r"^\[(.*)\]$", r"\1", value).strip()
+    parts = re.split(r"\s*(?:\||;|\n)\s*", cleaned)
+    if len(parts) == 1:
+        parts = re.split(r"\s*,\s*(?=(?:[^\"']|[\"'][^\"']*[\"'])*$)", cleaned)
+    return [
+        re.sub(r"^\d+[.)]\s*", "", part).strip(" \"'")
+        for part in parts
+        if re.sub(r"^\d+[.)]\s*", "", part).strip(" \"'")
+    ][:5]
+
+
+def _parse_hashtags(value: str) -> list[str]:
+    tags = re.findall(r"#[\wÀ-ÿ-]+", value or "")
+    return list(dict.fromkeys(tags))[:8]
+
+
+def _json_candidate(raw: str) -> str | None:
+    cleaned = raw.strip()
+    if cleaned.startswith("```"):
+        cleaned = re.sub(r"^```(?:json|JSON)?\s*", "", cleaned)
+        cleaned = re.sub(r"\s*```\s*$", "", cleaned).strip()
+    starts = [idx for idx in (cleaned.find("{"), cleaned.find("[")) if idx >= 0]
+    if not starts:
+        return None
+    start = min(starts)
+    opener = cleaned[start]
+    closer = "}" if opener == "{" else "]"
+    depth = 0
+    in_string = False
+    escaped = False
+    for idx in range(start, len(cleaned)):
+        ch = cleaned[idx]
+        if in_string:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_string = False
+            continue
+        if ch == '"':
+            in_string = True
+        elif ch == opener:
+            depth += 1
+        elif ch == closer:
+            depth -= 1
+            if depth == 0:
+                return cleaned[start:idx + 1].strip()
+    return None
+
+
+def _metadata_from_dict(meta: dict) -> tuple[str, list[str], list[str], str, str]:
+    hook = str(meta.get("hook") or meta.get("gancho") or "").strip()
+    titles_raw = meta.get("titles") or meta.get("title_options") or meta.get("titleOptions") or []
+    if isinstance(titles_raw, list):
+        titles = [str(item).strip() for item in titles_raw if str(item).strip()]
+    else:
+        titles = _parse_title_list(str(titles_raw))
+    hashtags_raw = meta.get("hashtags") or []
+    if isinstance(hashtags_raw, list):
+        hashtags = [str(item).strip() for item in hashtags_raw if str(item).strip().startswith("#")]
+    else:
+        hashtags = _parse_hashtags(str(hashtags_raw))
+    caption = str(meta.get("caption") or meta.get("legenda") or "").strip()
+    cta = str(meta.get("cta") or meta.get("call_to_action") or meta.get("callToAction") or "").strip()
+    return hook, titles[:5], hashtags[:8], caption, cta
+
+
+def _script_from_json_payload(payload: dict) -> tuple[str, str, list[str], list[str], str, str] | None:
+    script_raw = (
+        payload.get("script")
+        or payload.get("body")
+        or payload.get("spoken_script")
+        or payload.get("spokenScript")
+        or payload.get("outline")
+    )
+    if isinstance(script_raw, list):
+        script = "\n".join(str(item).strip() for item in script_raw if str(item).strip())
+    else:
+        script = str(script_raw or "").strip()
+    if not script:
+        return None
+    hook, titles, hashtags, caption, cta = _metadata_from_dict(payload)
+    return script, hook, titles, hashtags, caption, cta
+
+
+def _parse_structured_json_response(raw: str) -> tuple[str, str, list[str], list[str], str, str] | None:
+    candidate = _json_candidate(raw)
+    if not candidate:
+        return None
+    try:
+        payload = json.loads(candidate)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    return _script_from_json_payload(payload)
+
+
+def _spoken_lines(script: str) -> list[str]:
+    lines: list[str] = []
+    for raw in script.replace("\r\n", "\n").split("\n"):
+        line = raw.strip()
+        line = re.sub(r"^\s*[-*]\s*", "", line)
+        line = re.sub(r"^\d+[.)]\s*", "", line)
+        if re.match(r"^\(?\d{1,2}:\d{2}(?:\s*[-–]\s*\d{1,2}:\d{2})?\)?$", line):
+            continue
+        if re.match(r"^\[?(?:SHOW ON SCREEN|ON SCREEN|VISUAL|B-ROLL|SFX|EDIT|CUT TO|PLAY CLIP)\b", line, flags=re.IGNORECASE):
+            continue
+        line = re.sub(r"^\(?\d{1,2}:\d{2}(?:\s*[-–]\s*\d{1,2}:\d{2})?\)?\s*", "", line)
+        line = re.sub(r"^\[[0-9:\s\-–]+\]\s*", "", line)
+        line = re.sub(r"\[(?:SHOW ON SCREEN|ON SCREEN|VISUAL|B-ROLL|SFX|EDIT|CUT TO|PLAY CLIP):[^\]]+\]", "", line, flags=re.IGNORECASE)
+        line = " ".join(line.strip().split())
+        if line:
+            lines.append(line)
+    return lines
+
+
+def _script_has_substance(script: str, req: ScriptRequest) -> bool:
+    cleaned = " ".join(_spoken_lines(script))
+    if len(cleaned) < 180:
+        return False
+    if _is_short_form(req):
+        return len(re.findall(r"\b\w+\b", cleaned)) >= 35
+    return len(re.findall(r"\b\w+\b", cleaned)) >= 55
+
+
+def _derive_hook_from_script(script: str) -> str:
+    for line in _spoken_lines(script):
+        line = re.sub(r"^(?:hook|gancho|intro|abertura)\s*[:\-]\s*", "", line, flags=re.IGNORECASE)
+        if len(line) >= 18:
+            return line
+    return ""
+
+
+def _parse_raw_script_output(
+    raw: str,
+    req: ScriptRequest,
+    warnings: list[str],
+) -> tuple[str, str, list[str], list[str], str, str, bool]:
+    hook = ""
+    title_options: list[str] = []
+    hashtags: list[str] = []
+    caption = ""
+    cta = ""
+    parse_degraded = False
+
+    json_parsed = _parse_structured_json_response(raw)
+    if json_parsed:
+        script_text, hook, title_options, hashtags, caption, cta = json_parsed
+    elif "---METADATA---" in raw:
+        parts = raw.split("---METADATA---", 1)
+        script_text = parts[0].strip()
+        metadata_raw = parts[1].strip()
+        if metadata_raw.startswith("```"):
+            fence_lines = metadata_raw.split("\n")
+            metadata_raw = "\n".join(
+                fence_lines[1:-1] if fence_lines[-1].strip() == "```" else fence_lines[1:]
+            )
+        try:
+            candidate = _json_candidate(metadata_raw) or metadata_raw
+            meta = json.loads(candidate)
+            if not isinstance(meta, dict):
+                raise json.JSONDecodeError("metadata is not an object", candidate, 0)
+            hook, title_options, hashtags, caption, cta = _metadata_from_dict(meta)
+        except json.JSONDecodeError:
+            logger.warning("Failed to parse script metadata JSON, falling back to line parsing")
+            script_text, hook, title_options, hashtags, caption, cta = _fallback_parse(raw)
+            warnings.append("Script metadata was malformed; fallback metadata was derived.")
+            if not _script_has_substance(script_text, req):
+                parse_degraded = True
+                warnings.append("Script body was too thin after metadata recovery; review before publishing.")
+    else:
+        logger.info("No ---METADATA--- separator found, using legacy line parser")
+        script_text, hook, title_options, hashtags, caption, cta = _fallback_parse(raw)
+        warnings.append("Script metadata was omitted; fallback metadata was derived.")
+        if not _script_has_substance(script_text, req):
+            parse_degraded = True
+            warnings.append("Script body was too thin after metadata recovery; review before publishing.")
+
+    return script_text, hook, title_options, hashtags, caption, cta, parse_degraded
+
+
+def _meaningful_line_count(script: str) -> int:
+    return len([
+        line for line in _spoken_lines(script)
+        if len(" ".join(line.split())) >= 18
+    ])
+
+
+def _looks_incomplete(script: str) -> bool:
+    lines = _spoken_lines(script)
+    if not lines:
+        return True
+    return not re.search(r'(?:[.!?]"?|[.!?]\)?|\])$', lines[-1])
+
+
+def _needs_script_repair(script: str, req: ScriptRequest, script_style: str) -> bool:
+    if not _script_has_substance(script, req):
+        return True
+    if _is_short_form(req) and script_style != "bullets":
+        min_words, _max_words = _short_form_word_range(_target_duration_seconds(req))
+        word_count = len(re.findall(r"\b\w+\b", " ".join(_spoken_lines(script))))
+        if word_count < int(min_words * 0.75):
+            return True
+        if _meaningful_line_count(script) < 4:
+            return True
+        if _looks_incomplete(script):
+            return True
+    return False
+
+
+def _repair_prompt(req: ScriptRequest, script_style: str, partial_script: str, language_label: str) -> str:
+    duration = _target_duration_seconds(req)
+    min_words, max_words = _short_form_word_range(duration)
+    if _is_short_form(req) and script_style != "bullets":
+        return f"""The previous short-form draft was incomplete or too thin.
+Rewrite it as a complete {duration}-second {req.format} script for this topic:
+{req.topic}
+
+Audience/niche: {req.niche}
+Language: {language_label}
+Target: roughly {min_words}-{max_words} spoken words across 5-7 timestamped beats.
+Include one tension, one reset/turn, one proof cue, and one clear CTA.
+Use this partial draft only as context; do not copy unfinished fragments:
+{partial_script[:1200]}
+
+Return the script body, then a line with exactly ---METADATA---, then valid JSON with hook, titles, hashtags, caption, and cta."""
+    return f"""The previous draft was incomplete or too thin.
+Rewrite a stronger draft for this topic:
+{req.topic}
+
+Audience/niche: {req.niche}
+Language: {language_label}
+Style: {script_style}
+Use this partial draft only as context; do not copy unfinished fragments:
+{partial_script[:1200]}
+
+Return the draft body, then a line with exactly ---METADATA---, then valid JSON with hook, titles, hashtags, caption, and cta."""
 
 
 def _clean_chat_script(script: str) -> str:
@@ -743,9 +1005,16 @@ def _clean_script_dividers(script: str) -> str:
     cleaned_lines: list[str] = []
     for raw_line in script.replace("\r\n", "\n").split("\n"):
         line = raw_line.strip()
+        if re.match(r"^\(?\d{1,2}:\d{2}(?:\s*[-–]\s*\d{1,2}:\d{2})?\)?$", line):
+            continue
+        if re.match(r"^\[?(?:SHOW ON SCREEN|ON SCREEN|VISUAL|B-ROLL|SFX|EDIT|CUT TO|PLAY CLIP)\b", line, flags=re.IGNORECASE):
+            continue
         if re.match(r"^={2,}\s*[^=]+\s*={2,}$", line):
             continue
         if re.match(r"^(HOOK|SCRIPT|ROTEIRO|FULL SCRIPT|ROTEIRO COMPLETO)\s*:?$", line, re.IGNORECASE):
+            continue
+        raw_line = re.sub(r"\[(?:SHOW ON SCREEN|ON SCREEN|VISUAL|B-ROLL|SFX|EDIT|CUT TO|PLAY CLIP):[^\]]+\]", "", raw_line, flags=re.IGNORECASE).rstrip()
+        if not raw_line.strip():
             continue
         cleaned_lines.append(raw_line)
     cleaned = "\n".join(cleaned_lines).strip()
@@ -862,11 +1131,28 @@ async def generate(req: ScriptRequest, orchestrator) -> ScriptResponse:
         if sections:
             intelligence_block = "\n\nINTELLIGENCE FROM CONTENT AGENTS:\n" + "\n".join(f"• {s}" for s in sections[:15])
 
-    output_instruction = (
-        "Return a compact Draft Pack: hook, 3 title options, outline beats, filming beats, caption, CTA, source notes, and expansion options. "
-        "Do not write the full word-for-word long-form script unless the user explicitly expands."
-        if normalized_mode == "draft"
-        else (
+    if normalized_mode == "draft":
+        if _is_short_form(req) and normalized_script_style != "bullets":
+            min_words, max_words = _short_form_word_range(_target_duration_seconds(req))
+            output_instruction = (
+                "Write the complete short-form draft script now. This is already the asset the creator can film; do not save the real script for expansion. "
+                f"Use roughly {min_words}-{max_words} spoken words across 5-7 timestamped beats, with one tension, one reset/turn, one proof cue, and one clear CTA. "
+                "Do NOT include generic placeholder beats."
+            )
+        elif normalized_script_style == "bullets":
+            output_instruction = (
+                "Return a substantial draft filming outline now: one sharp hook plus 6-8 concrete beat bullets, filming cues, source/proof notes, caption, and CTA. "
+                "Each beat must be specific to this topic and filmable as-is; do NOT use generic placeholders such as 'name the tension' or 'bring in proof'. "
+                "Do not write a full word-for-word long-form script unless the user explicitly expands."
+            )
+        else:
+            output_instruction = (
+                "Return a substantial Draft Pack: hook, 3 title options, 6-8 concrete outline beats, filming beats, caption, CTA, source notes, and expansion options. "
+                "Every beat must be specific to this topic and useful without another model pass. "
+                "Do not write the full word-for-word long-form script unless the user explicitly expands."
+            )
+    else:
+        output_instruction = (
             "Write the complete script now. Return only the clean spoken script body before the metadata separator. Do NOT include a FONTES VERIFICADAS appendix, section headings, or labeled metadata in the script body."
             if normalized_render_mode == "chat"
             else (
@@ -875,8 +1161,9 @@ async def generate(req: ScriptRequest, orchestrator) -> ScriptResponse:
                 else "Write the complete script now. Start with the strongest spoken opening for this specific topic, let the argument shape emerge from the research, and close with a natural next action. Do NOT use decorative dividers or labels like `=== HOOK ===`, `=== SCRIPT ===`, `HOOK:`, or `SCRIPT:`; the app already renders those sections.\n\nAfter the script, add a FONTES VERIFICADAS section listing sources."
             )
         )
-    )
-    metadata_contract = """Then, on a NEW LINE, write exactly `---METADATA---` followed by a JSON object with these fields:
+    metadata_contract = """REQUIRED OUTPUT SHAPE:
+First write the script/draft body.
+Then, on a NEW LINE, write exactly `---METADATA---` followed by a JSON object with these fields:
 {
   "hook": "the hook text",
   "titles": ["title option 1", "title option 2", "title option 3"],
@@ -884,7 +1171,8 @@ async def generate(req: ScriptRequest, orchestrator) -> ScriptResponse:
   "caption": "social media caption text",
   "cta": "call to action text"
 }
-The JSON must be valid and on a single block after `---METADATA---`. No other text after the JSON."""
+The JSON must be valid and on a single block after `---METADATA---`. No other text after the JSON.
+This metadata block is mandatory in draft, quick, standard, and deep modes."""
     compiled = compile_prompt(normalized_mode, [
         PromptSection(
             "system_policy",
@@ -979,53 +1267,56 @@ The JSON must be valid and on a single block after `---METADATA---`. No other te
             brand_voice=req.brand_voice,
         )
 
-    # Parse metadata from JSON block after ---METADATA--- separator
-    hook = ""
-    title_options: list[str] = []
-    hashtags: list[str] = []
-    caption = ""
-    cta = ""
-
-    SEPARATOR = "---METADATA---"
-    if SEPARATOR in raw:
-        parts = raw.split(SEPARATOR, 1)
-        script_text = parts[0].strip()
-        metadata_raw = parts[1].strip()
-        # Strip markdown code fences if Claude wrapped the JSON
-        if metadata_raw.startswith("```"):
-            fence_lines = metadata_raw.split("\n")
-            metadata_raw = "\n".join(
-                fence_lines[1:-1] if fence_lines[-1].strip() == "```" else fence_lines[1:]
-            )
-        try:
-            meta = json.loads(metadata_raw)
-            hook = meta.get("hook", "")
-            title_options = meta.get("titles", [])
-            hashtags = meta.get("hashtags", [])
-            caption = meta.get("caption", "")
-            cta = meta.get("cta", "")
-        except json.JSONDecodeError:
-            logger.warning("Failed to parse script metadata JSON, falling back to line parsing")
-            degraded = True
-            warnings.append("Script metadata was malformed; fallback parsing was used.")
-            script_text, hook, title_options, hashtags, caption, cta = _fallback_parse(raw)
-    else:
-        # Fallback: legacy line-by-line parsing for backward compatibility
-        logger.info("No ---METADATA--- separator found, using legacy line parser")
-        degraded = True
-        warnings.append("Script response missed the metadata separator; fallback parsing was used.")
-        script_text, hook, title_options, hashtags, caption, cta = _fallback_parse(raw)
+    script_text, hook, title_options, hashtags, caption, cta, parse_degraded = _parse_raw_script_output(raw, req, warnings)
 
     if normalized_render_mode == "chat":
         script_text = _clean_chat_script(script_text)
     else:
         script_text = _clean_script_dividers(script_text)
 
+    if _needs_script_repair(script_text, req, normalized_script_style):
+        warnings.append("Script body was incomplete; regenerated with a compact repair prompt.")
+        try:
+            repaired_raw = await ask_claude(
+                _repair_prompt(req, normalized_script_style, script_text, language_label),
+                system=_build_system_prompt(req),
+                model=MODEL,
+                max_tokens=max(max_tokens, 1800),
+                temperature=0.45,
+                category=f"content_engine_script_{normalized_mode}",
+                user_id=req.user_id,
+                tenant_id=req.tenant_id,
+                attribution_token=req.internal_attribution_token,
+            )
+            script_text, hook, title_options, hashtags, caption, cta, parse_degraded = _parse_raw_script_output(repaired_raw, req, warnings)
+            if normalized_render_mode == "chat":
+                script_text = _clean_chat_script(script_text)
+            else:
+                script_text = _clean_script_dividers(script_text)
+            if _needs_script_repair(script_text, req, normalized_script_style):
+                parse_degraded = True
+                warnings.append("Script body remained incomplete after repair; review before publishing.")
+        except Exception as exc:
+            logger.warning("AI script repair unavailable for script_writer.generate: %s", exc)
+            parse_degraded = True
+            warnings.append("Script repair was unavailable; review before publishing.")
+
+    if parse_degraded:
+        degraded = True
+
     # Final fallbacks if parsing didn't find hook/titles
+    if not hook:
+        hook = _derive_hook_from_script(script_text)
     if not hook and briefs:
         hook = briefs[0].hook
     if not title_options:
         title_options = _fallback_titles(req.topic, normalized_language)
+    if not hashtags:
+        hashtags = _fallback_hashtags(req.topic)
+    if not caption:
+        caption = _fallback_caption(req.topic, normalized_language)
+    if not cta:
+        cta = _fallback_cta(normalized_language)
 
     duration_ms = int((time.monotonic() - start) * 1000)
     topic_hash = hashlib.sha1(req.topic.lower().strip().encode("utf-8")).hexdigest()[:12]

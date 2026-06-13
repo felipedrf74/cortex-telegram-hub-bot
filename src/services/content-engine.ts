@@ -174,7 +174,14 @@ export interface ReportResponse {
   duration_ms: number;
 }
 
-const BASE_URL = `http://localhost:${config.contentEngine.port}/api/v1`;
+export function contentEngineApiBaseUrl(rawBaseUrl = config.contentEngine.baseUrl): string {
+  const trimmed = (rawBaseUrl || `http://localhost:${config.contentEngine.port}`)
+    .trim()
+    .replace(/\/+$/, '');
+  return trimmed.endsWith('/api/v1') ? trimmed : `${trimmed}/api/v1`;
+}
+
+const BASE_URL = contentEngineApiBaseUrl();
 
 let _lastHealthCheck = 0;
 let _isHealthy = true;

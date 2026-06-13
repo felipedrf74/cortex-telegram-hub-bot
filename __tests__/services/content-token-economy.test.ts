@@ -143,13 +143,13 @@ describe('content token economy', () => {
       sources: [
         {
           title: 'A',
-          url: 'https://example.com/a',
+          url: 'https://www.usatriathlon.org/safety/open-water-swimming',
           source_type: 'article',
           relevance_note: 'x'.repeat(600),
         },
         {
           title: 'A duplicate',
-          url: 'https://example.com/a',
+          url: 'https://www.usatriathlon.org/safety/open-water-swimming',
           source_type: 'article',
           relevance_note: 'same url',
         },
