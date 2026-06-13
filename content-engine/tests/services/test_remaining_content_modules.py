@@ -347,6 +347,38 @@ async def test_script_writer_happy_path_threads_tenant_scope(monkeypatch, assert
     assert_no_founder_identity(captured["prompt"], response.model_dump())
 
 
+async def test_script_writer_recovers_substantial_script_when_metadata_separator_is_missing(monkeypatch):
+    async def fake_ask(prompt, **kwargs):
+        return (
+            "First-time triathlete in open water? That sudden gasp for air can feel like your race is over.\n"
+            "[0:00-0:10] Name the trigger: cold water, crowd pressure, and no wall to grab all push breathing high.\n"
+            "[0:10-0:30] Reset: roll to your back or tread water, exhale fully twice, then make the next inhale slow.\n"
+            "[0:30-0:45] Give yourself one cue: bubbles before breath. If you can control the exhale, the inhale stops feeling stolen.\n"
+            "[0:45-0:60] Practice this in the pool after a hard 25 so race-day panic has a familiar exit ramp."
+        )
+
+    monkeypatch.setattr(script_writer, "ask_claude", fake_ask)
+    req = ScriptRequest(
+        topic="open-water panic breathing reset for first-time triathletes",
+        format="Reel",
+        target_duration_seconds=60,
+        language="en-US",
+        tenant_id=42,
+        user_id=42,
+    )
+
+    response = await script_writer.generate(req, ScriptOrchestrator())
+
+    assert response.degraded is False
+    assert response.cache_status == "fresh"
+    assert response.hook.startswith("First-time triathlete")
+    assert response.caption
+    assert response.cta
+    assert response.hashtags
+    assert any("metadata was omitted" in warning for warning in response.warnings)
+    assert "provider_fallback_review_required" not in response.quality_warnings
+
+
 async def test_script_writer_reports_over_budget_prompt_state(monkeypatch):
     captured = {}
     original_compile_prompt = script_writer.compile_prompt

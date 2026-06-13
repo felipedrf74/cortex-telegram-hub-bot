@@ -20,6 +20,7 @@ const PAYWALL_BYPASS_ALLOWED = IS_TEST || IS_DEVELOPMENT || IS_STAGING;
 const IOS_JWT_SECRET_MIN_BYTES = 32;
 const IOS_JWT_PLACEHOLDER_PATTERN = /(change[-_ ]?me|changeme|stub)/i;
 const PORTAL_PUBLIC_BIND_ACK_VALUE = 'production-public-host-reviewed';
+const CONTENT_ENGINE_PORT = optionalInt('CONTENT_ENGINE_PORT', 8100, { min: 1, max: 65535 });
 export type NotificationDeliveryMode = 'mock' | 'apns';
 
 function required(key: string): string {
@@ -462,7 +463,8 @@ export const config = {
   // ── Content Engine (Python microservice) ────────────────────────────
   contentEngine: {
     enabled: (process.env.CONTENT_ENGINE_ENABLED || 'false') === 'true',
-    port: optionalInt('CONTENT_ENGINE_PORT', 8100, { min: 1, max: 65535 }),
+    port: CONTENT_ENGINE_PORT,
+    baseUrl: optional('CONTENT_ENGINE_BASE_URL', `http://localhost:${CONTENT_ENGINE_PORT}`),
     internalApiSecret: process.env.INTERNAL_API_SECRET || '',
   },
   // ── Database Backup ─────────────────────────────────────────────────

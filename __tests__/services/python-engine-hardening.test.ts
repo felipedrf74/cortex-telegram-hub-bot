@@ -236,7 +236,8 @@ describe('Python script_writer.py — JSON metadata parsing', () => {
   });
 
   it('parses JSON metadata block', () => {
-    expect(src).toContain('json.loads(metadata_raw)');
+    expect(src).toContain('candidate = _json_candidate(metadata_raw) or metadata_raw');
+    expect(src).toContain('json.loads(candidate)');
   });
 
   it('has fallback to legacy line parsing', () => {

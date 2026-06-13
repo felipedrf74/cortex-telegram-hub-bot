@@ -22,6 +22,7 @@ import {
   buildContentArtifactRefs,
   buildContentNextActions,
   buildContentOperationTrace,
+  isMockContentSource,
   type ContentOperationKind,
 } from '../../services/content-token-economy';
 
@@ -233,7 +234,14 @@ export function buildScriptSuccessResponse(params: {
     qualityGate,
   } = params;
 
-  const sources = Array.isArray(result.sources_used) ? result.sources_used : [];
+  const rawSources = Array.isArray(result.sources_used) ? result.sources_used : [];
+  const sources = rawSources.filter((source) => !isMockContentSource({
+    title: source.title || '',
+    url: source.url || '',
+    source_type: source.source_type || '',
+    relevance_note: source.relevance_note || '',
+  }));
+  const excludedMockSources = rawSources.length - sources.length;
   const scriptQuality = analyzeAndImproveScript({
     topic: result.topic,
     script: result.script,
@@ -249,13 +257,27 @@ export function buildScriptSuccessResponse(params: {
       sources,
     }),
   });
+  const generationQualityRecord = generationQuality ?? {};
+  const sourceGrounding = typeof generationQualityRecord.sourceGrounding === 'string'
+    ? generationQualityRecord.sourceGrounding
+    : null;
+  const providerFallback = result.cache_status === 'fallback'
+    || (result.quality_warnings ?? []).includes('provider_fallback_review_required');
+  const lowTrustGeneration = providerFallback
+    || sourceGrounding === 'ungrounded';
   const warnings = Array.from(new Set([
     ...(result.warnings ?? []),
     ...scriptQuality.complianceWarnings,
     ...(qualityGate?.qualityWarnings ?? []),
+    ...(providerFallback ? ['provider_fallback_review_required'] : []),
+    ...(sourceGrounding === 'ungrounded' ? ['source_grounding_review_required'] : []),
+    ...(excludedMockSources > 0 ? ['mock_sources_excluded'] : []),
   ]));
-  const effectiveQualityScore = qualityGate?.qualityScore
+  const rawQualityScore = qualityGate?.qualityScore
     ?? (typeof result.quality_score === 'number' ? result.quality_score : scriptQuality.overallScore);
+  const effectiveQualityScore = lowTrustGeneration
+    ? Math.min(rawQualityScore, 49)
+    : rawQualityScore;
   const expandOptions = result.expand_options ?? defaultExpandOptions(generationMode);
   const enginePromptBudget = normalizeEnginePromptBudget(result.prompt_budget);
   const publicPromptBudget = enginePromptBudget ?? (promptBudget ? {
@@ -273,7 +295,8 @@ export function buildScriptSuccessResponse(params: {
     })),
   } : null);
   const publicQualityWarnings = warnings.map(publicQualityWarningText);
-  const hasReusableSourcePackage = Boolean(sourcePackage || publicSourcePackageIds);
+  const hasSourcePackageContents = Boolean(sourcePackage && (sourcePackage.sources.length > 0 || sourcePackage.sourceSummaries.length > 0));
+  const hasReusableSourcePackage = Boolean(hasSourcePackageContents || publicSourcePackageIds);
   const nextActions = buildContentNextActions({
     mode: generationMode,
     budgetState: (result.budget_state as ContentBudgetState | undefined) ?? budgetState,
@@ -281,7 +304,7 @@ export function buildScriptSuccessResponse(params: {
   });
   const artifactRefs = buildContentArtifactRefs({
     voiceCard: creatorVoiceCard ?? null,
-    sourcePackage: sourcePackage ?? null,
+    sourcePackage: hasSourcePackageContents ? (sourcePackage ?? null) : null,
   });
   const operationKind: ContentOperationKind = generationMode === 'draft' ? 'script_draft' : 'script_expand';
   const operationTrace = buildContentOperationTrace({
@@ -297,7 +320,7 @@ export function buildScriptSuccessResponse(params: {
   });
   const claimLedger = buildClaimLedger({
     text: scriptQuality.revisedScript,
-    sourcePackage: sourcePackage ?? null,
+    sourcePackage: hasSourcePackageContents ? (sourcePackage ?? null) : null,
     voiceCard: creatorVoiceCard ?? null,
   });
   // 2026-05-18 phase2-qa P1: `agentSignalsUsed` previously synthesized a
@@ -357,12 +380,12 @@ export function buildScriptSuccessResponse(params: {
       route: researchRoute?.route ?? (result.research_route as any)?.route ?? null,
       reason: researchRoute?.reason ?? (result.research_route as any)?.reason ?? null,
       allowDeepSearch: researchRoute?.allowDeepSearch ?? (result.research_route as any)?.allowDeepSearch ?? null,
-      freshnessClass: sourcePackage?.freshnessClass ?? null,
+      freshnessClass: hasSourcePackageContents ? (sourcePackage?.freshnessClass ?? null) : null,
       ...(publicSourcePackageIds ? {
         sourcePackageId: publicSourcePackageIds.sourcePackageId,
         researchArtifactId: publicSourcePackageIds.researchArtifactId,
       } : {}),
-      sourceSummary: sourcePackage?.sourceSummaries ?? [],
+      sourceSummary: hasSourcePackageContents ? (sourcePackage?.sourceSummaries ?? []) : [],
     },
     voiceCardVersion: result.voice_card_version ?? creatorVoiceCard?.voiceCardVersion ?? null,
     qualityScore: effectiveQualityScore,
@@ -379,10 +402,10 @@ export function buildScriptSuccessResponse(params: {
     qualityReport: {
       score: effectiveQualityScore,
       warnings: publicQualityWarnings,
-      needsExpansion: qualityGate?.needsExpansion ?? generationMode === 'draft',
-      needsResearchRefresh: qualityGate?.needsResearchRefresh ?? false,
+      needsExpansion: (qualityGate?.needsExpansion ?? generationMode === 'draft') || lowTrustGeneration,
+      needsResearchRefresh: (qualityGate?.needsResearchRefresh ?? false) || lowTrustGeneration || excludedMockSources > 0,
     },
-    scriptQuality: publicScriptQualityReport(scriptQuality),
+    scriptQuality: lowTrustGeneration ? null : publicScriptQualityReport(scriptQuality),
     scriptStructure: scriptQuality.structuredOutput,
     generation: buildGenerationMeta({
       mode: generationMode,
@@ -481,6 +504,12 @@ function publicQualityWarningText(code: string): string {
       return 'Duplicate source evidence needs review.';
     case 'source_note_too_long':
       return 'Source notes were shortened for budget.';
+    case 'provider_fallback_review_required':
+      return 'Model fallback output needs human review before publishing.';
+    case 'source_grounding_review_required':
+      return 'Source grounding was not strong enough for a publish-ready score.';
+    case 'mock_sources_excluded':
+      return 'Local mock research sources were excluded from publishable provenance.';
     default:
       return code.replace(/[_-]+/g, ' ');
   }

@@ -59,7 +59,9 @@ import {
   getContentSourcePackage,
   listRecentContentIdeaMemory,
   persistContentArtifacts,
+  recordContentVariantFeedback,
 } from '../../services/content-token-artifact-store';
+import { storeScript } from '../../services/content-learning-store';
 
 type ResolveContentLanguage = (req: Pick<AuthenticatedRequest, 'header'>, userId: number) => Lang;
 type EnsureValidContentRouteScope = (
@@ -112,6 +114,7 @@ export function registerContentScriptRoutes(
       forceRefresh,
       regenerate,
       regenerationSeed,
+      saveToIdeas,
       highRiskAcknowledged,
       acknowledgeHighRisk,
     } = req.body;
@@ -393,26 +396,31 @@ export function registerContentScriptRoutes(
         warnings: result.warnings,
       });
       const sourceWarnings = lintSourcePackage(sourcePackage);
+      const canPersistSourcePackage = result.degraded !== true
+        && result.cache_status !== 'fallback'
+        && sourcePackage.sources.length > 0;
       let persistedArtifacts: { sourcePackageId: string; researchArtifactId: string } | undefined;
-      try {
-        const persisted = persistContentArtifacts({
-          tenantId,
-          userId,
-          topic: topic.trim(),
-          voiceCard,
-          sourcePackage,
-          hook: result.hook,
-          angle: scriptTopicContext?.angleTag ?? null,
-          format: normalizedFormat,
-        });
-        if (persisted.sourcePackageId && persisted.researchArtifactId) {
-          persistedArtifacts = {
-            sourcePackageId: persisted.sourcePackageId,
-            researchArtifactId: persisted.researchArtifactId,
-          };
+      if (canPersistSourcePackage) {
+        try {
+          const persisted = persistContentArtifacts({
+            tenantId,
+            userId,
+            topic: topic.trim(),
+            voiceCard,
+            sourcePackage,
+            hook: result.hook,
+            angle: scriptTopicContext?.angleTag ?? null,
+            format: normalizedFormat,
+          });
+          if (persisted.sourcePackageId && persisted.researchArtifactId) {
+            persistedArtifacts = {
+              sourcePackageId: persisted.sourcePackageId,
+              researchArtifactId: persisted.researchArtifactId,
+            };
+          }
+        } catch (err) {
+          logger.warn({ err, userId, tenantId }, 'Content token artifacts could not be persisted');
         }
-      } catch (err) {
-        logger.warn({ err, userId, tenantId }, 'Content token artifacts could not be persisted');
       }
       const preflightBrief = buildScriptPreflightBrief({
         topic: topic.trim(),
@@ -439,7 +447,7 @@ export function registerContentScriptRoutes(
         sourcePackage,
       });
 
-      sendSuccess(res, buildScriptSuccessResponse({
+      const scriptResponse = buildScriptSuccessResponse({
         result,
         format: normalizedFormat,
         renderMode: targetRenderMode,
@@ -451,7 +459,7 @@ export function registerContentScriptRoutes(
         cacheHit,
         promptBudget: compiledPrompt,
         creatorVoiceCard: voiceCard,
-        sourcePackage,
+        sourcePackage: canPersistSourcePackage ? sourcePackage : undefined,
         publicSourcePackageIds: persistedArtifacts,
         researchRoute: effectiveRouteDecision,
         estimatedCost,
@@ -467,7 +475,80 @@ export function registerContentScriptRoutes(
           nextWorkflowStep: generationQuality.nextWorkflowStep,
           modelRouting: generationPackage.modelRoutingMetadata,
         },
-      }));
+      });
+      let savedIdea: Record<string, unknown> | undefined;
+      if (saveToIdeas === true) {
+        const degradedGeneration = scriptResponse.degraded === true
+          || scriptResponse.operationTrace?.cacheStatus === 'fallback';
+        if (degradedGeneration) {
+          savedIdea = {
+            saved: false,
+            topic: scriptResponse.topic,
+            variantKind: 'script',
+            accepted: false,
+            sourcePackageId: persistedArtifacts?.sourcePackageId ?? null,
+            variantTextChars: scriptResponse.script.length,
+            reason: 'review_required_degraded_generation',
+          };
+        } else {
+          try {
+            const scriptId = storeScript({
+              topic: scriptResponse.topic,
+              format: scriptResponse.format,
+              scriptText: scriptResponse.script,
+              hook: scriptResponse.hook,
+              titleOptions: scriptResponse.titleOptions ?? [],
+              sourcesUsed: scriptResponse.sourcesUsed ?? [],
+              hashtags: scriptResponse.hashtags ?? [],
+              caption: scriptResponse.caption,
+              cta: scriptResponse.cta,
+              estimatedDuration: scriptResponse.estimatedDuration,
+              niche: scriptTopicContext?.niche || niche || 'general',
+              generationDurationMs: scriptResponse.durationMs ?? elapsedMs,
+              userId,
+              tenantId,
+            });
+            try {
+              recordContentVariantFeedback({
+                tenantId: typeof tenantId === 'number' ? tenantId : userId,
+                userId,
+                topic: scriptResponse.topic,
+                variantText: scriptResponse.script,
+                sentiment: 'approved',
+                variantKind: 'script',
+                sourcePackageId: persistedArtifacts?.sourcePackageId,
+                angle: scriptTopicContext?.angleTag ?? null,
+                format: normalizedFormat,
+                notes: 'Saved from iOS Script Generator.',
+              });
+            } catch (err) {
+              logger.warn({ err, userId, tenantId, scriptId }, 'Content script save memory feedback could not be recorded');
+            }
+            savedIdea = {
+              saved: true,
+              topic: scriptResponse.topic,
+              variantKind: 'script',
+              accepted: true,
+              sourcePackageId: persistedArtifacts?.sourcePackageId ?? null,
+              variantTextChars: scriptResponse.script.length,
+              scriptId,
+            };
+          } catch (err) {
+            logger.warn({ err, userId, tenantId, topic }, 'Content script could not be saved to ideas');
+            savedIdea = {
+              saved: false,
+              topic: scriptResponse.topic,
+              variantKind: 'script',
+              accepted: false,
+              sourcePackageId: persistedArtifacts?.sourcePackageId ?? null,
+              variantTextChars: scriptResponse.script.length,
+              reason: 'script_save_failed',
+            };
+          }
+        }
+      }
+
+      sendSuccess(res, savedIdea ? { ...scriptResponse, savedIdea } : scriptResponse);
     } catch (err: any) {
       logger.error({ err, topic }, 'iOS content/script failed');
       sendInternalError(res, 'Script generation failed');

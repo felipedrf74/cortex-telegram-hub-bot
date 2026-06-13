@@ -51,6 +51,14 @@ const mockGetContentResearchArtifact = vi.fn(() => ({
   unsafeOrUnverifiedClaims: [],
   expiresAt: '2026-04-17T00:00:00.000Z',
 }));
+const mockStoreScript = vi.fn(() => 451);
+const mockRecordContentVariantFeedback = vi.fn(() => ({
+  topic: 'Test topic',
+  variantKind: 'script',
+  sentiment: 'approved',
+  accepted: true,
+  sourcePackageId: 'sp_1234567890abcdef_abcdef1234567890',
+}));
 
 vi.mock('../../src/utils/logger', () => ({
   logger: {
@@ -129,9 +137,14 @@ vi.mock('../../src/services/content-token-artifact-store', () => ({
   persistContentArtifacts: (...args: unknown[]) => mockPersistContentArtifacts(...args),
   getContentSourcePackage: (...args: unknown[]) => mockGetContentSourcePackage(...args),
   getContentResearchArtifact: (...args: unknown[]) => mockGetContentResearchArtifact(...args),
+  recordContentVariantFeedback: (...args: unknown[]) => mockRecordContentVariantFeedback(...args),
   listRecentContentIdeaMemory: vi.fn(() => [
     { topic: 'Old SaaS angle', hook: 'The costly myth', angle: 'proof', format: 'YouTube' },
   ]),
+}));
+
+vi.mock('../../src/services/content-learning-store', () => ({
+  storeScript: (...args: unknown[]) => mockStoreScript(...args),
 }));
 
 interface MockRes {
@@ -208,6 +221,8 @@ describe('Content API — script duration presets', () => {
     mockPersistContentArtifacts.mockClear();
     mockGetContentSourcePackage.mockClear();
     mockGetContentResearchArtifact.mockClear();
+    mockStoreScript.mockClear();
+    mockRecordContentVariantFeedback.mockClear();
   });
 
   afterEach(() => {
@@ -311,17 +326,140 @@ describe('Content API — script duration presets', () => {
     expect(response.body.data.contentCost).toBeTruthy();
     expect(response.body.data.promptBudget).toBeTruthy();
     expect(response.body.data.research.route).toBe('fresh_compact');
-    expect(response.body.data.research.sourcePackageId).toBe('sp_1234567890abcdef_abcdef1234567890');
-    expect(response.body.data.research.researchArtifactId).toBe('ra_1234567890abcdef_abcdef1234567890');
-    expect(mockPersistContentArtifacts).toHaveBeenCalledWith(expect.objectContaining({
-      tenantId: 12,
-      userId: 12,
-      topic: 'Build a SaaS product solo',
-    }));
+    expect(response.body.data.research.sourcePackageId).toBeUndefined();
+    expect(response.body.data.research.researchArtifactId).toBeUndefined();
+    expect(mockPersistContentArtifacts).not.toHaveBeenCalled();
     expect(response.body.data.requestedMode).toBe('draft');
     expect(response.body.data.appliedMode).toBe('draft');
     expect(response.body.data.downgradeReason).toBe('none');
     expect(response.body.data.expandOptions.map((option: any) => option.action)).toContain('expand_full');
+  });
+
+  it('persists generated scripts when the iOS saveToIdeas flag is set', async () => {
+    const response = await dispatch({
+      topic: 'Build a SaaS product solo',
+      format: 'YouTube',
+      maxDurationMinutes: 8,
+      saveToIdeas: true,
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.body.ok).toBe(true);
+    expect(response.body.data.savedIdea).toEqual(expect.objectContaining({
+      saved: true,
+      topic: 'Test topic',
+      variantKind: 'script',
+      accepted: true,
+      sourcePackageId: null,
+      scriptId: 451,
+    }));
+    expect(response.body.data.savedIdea.variantTextChars).toBe(response.body.data.script.length);
+    expect(mockStoreScript).toHaveBeenCalledWith(expect.objectContaining({
+      topic: response.body.data.topic,
+      format: 'YouTube',
+      scriptText: response.body.data.script,
+      userId: 12,
+      tenantId: 12,
+    }));
+    expect(mockRecordContentVariantFeedback).toHaveBeenCalledWith(expect.objectContaining({
+      tenantId: 12,
+      userId: 12,
+      topic: response.body.data.topic,
+      variantText: response.body.data.script,
+      sentiment: 'approved',
+      variantKind: 'script',
+      sourcePackageId: undefined,
+    }));
+  });
+
+  it('does not auto-save degraded fallback generations as approved ideas', async () => {
+    mockGetScript.mockResolvedValueOnce({
+      topic: 'Fallback topic',
+      script: '[0:00] Fallback script',
+      hook: 'Fallback hook',
+      title_options: ['Fallback title'],
+      sources_used: [{
+        title: '[Mock] fallback source',
+        url: 'https://example.com/web/fallback',
+        source_type: 'article',
+        relevance_note: 'Mock source',
+      }],
+      estimated_duration: '8:00',
+      duration_ms: 10,
+      hashtags: [],
+      caption: '',
+      cta: 'Review before publishing.',
+      degraded: true,
+      warnings: ['AI generation was unavailable; returned a fallback draft.'],
+      cache_status: 'fallback',
+      quality_score: 95,
+    });
+
+    const response = await dispatch({
+      topic: 'Build a SaaS product solo',
+      format: 'YouTube',
+      maxDurationMinutes: 8,
+      saveToIdeas: true,
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.body.ok).toBe(true);
+    expect(response.body.data.degraded).toBe(true);
+    expect(response.body.data.qualityScore).toBeLessThanOrEqual(49);
+    expect(response.body.data.scriptQuality).toBeNull();
+    expect(response.body.data.sourcesUsed).toEqual([]);
+    expect(response.body.data.savedIdea).toEqual(expect.objectContaining({
+      saved: false,
+      accepted: false,
+      reason: 'review_required_degraded_generation',
+    }));
+    expect(mockStoreScript).not.toHaveBeenCalled();
+    expect(mockPersistContentArtifacts).not.toHaveBeenCalled();
+  });
+
+  it('does not label recovered fresh metadata parsing as provider fallback', async () => {
+    mockGetScript.mockResolvedValueOnce({
+      topic: 'Open-water panic breathing reset',
+      script: 'First-time triathlete in open water? That sudden gasp for air can feel like your race is over. Stop, exhale twice, and restart with bubbles before breath. Practice the reset after a hard pool 25 so race-day panic has a familiar exit ramp.',
+      hook: 'First-time triathlete in open water? That sudden gasp for air can feel like your race is over.',
+      title_options: ['Open-water panic reset', 'Bubbles before breath', 'Fix panic breathing fast'],
+      sources_used: [{
+        title: 'USA Triathlon open water swim safety',
+        url: 'https://www.usatriathlon.org/safety/open-water-swimming',
+        source_type: 'article',
+        relevance_note: 'Open-water safety cue source.',
+      }],
+      estimated_duration: '0:60',
+      duration_ms: 1800,
+      hashtags: ['#triathlon', '#openwaterswim'],
+      caption: 'Practice the panic reset before race day.',
+      cta: 'Save this and test it after your next hard pool 25.',
+      degraded: false,
+      warnings: ['Script metadata was omitted; fallback metadata was derived.'],
+      cache_status: 'fresh',
+      quality_score: 88,
+    });
+
+    const response = await dispatch({
+      topic: 'Open-water panic breathing reset',
+      format: 'Reel',
+      targetDurationSeconds: 60,
+      saveToIdeas: true,
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.body.ok).toBe(true);
+    expect(response.body.data.degraded).toBe(false);
+    expect(response.body.data.qualityScore).toBeLessThanOrEqual(49);
+    expect(response.body.data.warnings).toContain('Script metadata was omitted; fallback metadata was derived.');
+    expect(response.body.data.warnings).not.toContain('Model fallback output needs human review before publishing.');
+    expect(response.body.data.savedIdea).toEqual(expect.objectContaining({
+      saved: true,
+      accepted: true,
+    }));
+    expect(mockStoreScript).toHaveBeenCalledWith(expect.objectContaining({
+      topic: 'Open-water panic breathing reset',
+    }));
   });
 
   it('returns persisted source packages and research artifacts through tenant-scoped routes', async () => {

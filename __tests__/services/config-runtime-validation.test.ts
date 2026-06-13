@@ -74,7 +74,16 @@ describe('runtime config validation', () => {
     const { config } = await loadConfigFresh();
 
     expect(config.contentEngine.port).toBe(9100);
+    expect(config.contentEngine.baseUrl).toBe('http://localhost:9100');
     expect(config.invoices.minConfidence).toBe(0.9);
+  });
+
+  it('allows Docker service discovery to override the content-engine base URL', async () => {
+    vi.stubEnv('CONTENT_ENGINE_BASE_URL', 'http://content-engine:8100');
+
+    const { config } = await loadConfigFresh();
+
+    expect(config.contentEngine.baseUrl).toBe('http://content-engine:8100');
   });
 
   it('defaults generic chat routing to OpenAI nano with Gemini fallback', async () => {

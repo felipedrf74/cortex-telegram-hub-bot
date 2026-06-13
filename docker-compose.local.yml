@@ -31,6 +31,11 @@ services:
       # uvicorn binds 0.0.0.0 inside the container so the Node service can
       # reach it by service name on the compose network.
       CONTENT_ENGINE_PORT: "8100"
+      # Inside Docker, 127.0.0.1/localhost is the Python container, not
+      # the Node engine. Point the Python AI proxy bridge at the compose
+      # service name so Content Studio script generation can use the local
+      # engine's configured provider keys.
+      NEXUS_BACKEND_BASE_URL: "http://nexus-hub:8200"
     ports:
       - "127.0.0.1:${NEXUS_LOCAL_PORT_PY:-8100}:8100"
     volumes:
@@ -65,6 +70,10 @@ services:
       # compose service name (not 127.0.0.1, which inside this container
       # would mean Node itself).
       CONTENT_ENGINE_BASE_URL: "http://content-engine:8100"
+      # The Python content-engine calls Node's internal AI proxy over the
+      # compose network, not container loopback. Keep the route protected by
+      # INTERNAL_API_SECRET while allowing this local-only Docker topology.
+      INTERNAL_REQUIRE_LOOPBACK: "false"
       # Keep the loopback-only Docker sandbox bootable even when .env.local
       # still carries a placeholder iOS JWT secret from setup templates.
       IOS_API_JWT_SECRET: "${NEXUS_LOCAL_IOS_API_JWT_SECRET:-nexus-hub-local-compose-ios-jwt-secret-2026-06-strong-48-byte}"

@@ -24,6 +24,7 @@ import {
   getContentSourcePackage,
   recordContentVariantFeedback,
 } from '../../services/content-token-artifact-store';
+import { storeScript } from '../../services/content-learning-store';
 
 type ContentTopicGeneratorFormat = 'reel' | 'youtube';
 type ResolveContentLanguage = (req: Pick<AuthenticatedRequest, 'header'>, userId: number) => Lang;
@@ -159,9 +160,11 @@ export function registerContentLearningRoutes(
     const routeTenantId = typeof tenantId === 'number' ? tenantId : userId;
     const topic = cleanFeedbackString(req.body?.topic, 240);
     const variantText = cleanFeedbackString(req.body?.variantText, 360);
+    const scriptText = cleanScriptArtifactText(req.body?.variantText, 60_000);
     const sentiment = req.body?.sentiment;
     const variantKind = cleanFeedbackString(req.body?.variantKind, 64) || 'script';
     const sourcePackageId = cleanFeedbackString(req.body?.sourcePackageId, 80);
+    const format = cleanFeedbackString(req.body?.format, 64);
 
     if (!topic || !variantText) {
       sendError(res, 'VALIDATION', 'topic and variantText are required', 400);
@@ -186,6 +189,17 @@ export function registerContentLearningRoutes(
       }
     }
 
+    let scriptId: number | null = null;
+    if (variantKind === 'script' && sentiment === 'approved') {
+      scriptId = storeScript({
+        topic,
+        format: format || 'YouTube',
+        scriptText: scriptText || variantText,
+        userId,
+        tenantId,
+      });
+    }
+
     const recorded = recordContentVariantFeedback({
       tenantId: routeTenantId,
       userId,
@@ -195,12 +209,16 @@ export function registerContentLearningRoutes(
       variantKind,
       sourcePackageId,
       angle: cleanFeedbackString(req.body?.angle, 160),
-      format: cleanFeedbackString(req.body?.format, 64),
+      format,
       notes: cleanFeedbackString(req.body?.notes, 320),
     });
 
     invalidateContentDerivedCaches(userId);
-    sendSuccess(res, recorded);
+    sendSuccess(res, {
+      ...recorded,
+      scriptId,
+      variantTextChars: (scriptText || variantText).length,
+    });
   }));
 
   /**
@@ -405,6 +423,15 @@ function cleanFeedbackString(value: unknown, maxChars: number): string | null {
   const cleaned = value
     .replace(/[\u0000-\u001F\u007F]/g, ' ')
     .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, maxChars);
+  return cleaned || null;
+}
+
+function cleanScriptArtifactText(value: unknown, maxChars: number): string | null {
+  if (typeof value !== 'string') return null;
+  const cleaned = value
+    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, ' ')
     .trim()
     .slice(0, maxChars);
   return cleaned || null;

@@ -53,6 +53,7 @@ describe('Internal Routes — structural', () => {
 
   it('defines anthropic-enabled endpoint', () => {
     expect(routesSrc).toContain("router.get('/anthropic-enabled'");
+    expect(routesSrc).toContain('canUseAnthropicRuntimeFallback');
   });
 
   it('defines performance-summary endpoint', () => {

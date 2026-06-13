@@ -30,13 +30,17 @@ vi.mock('../../src/services/content-workflow', () => ({
   updateFeedback: mocks.updateFeedback,
 }));
 
-vi.mock('../../src/services/content-learning-store', () => ({
-  logPerformanceFeedback: mocks.logPerformanceFeedback,
-  getPerformanceSummary: mocks.getPerformanceSummary,
-  getLearnedPatterns: mocks.getLearnedPatterns,
-  getArtifactChain: mocks.getArtifactChain,
-  getRecentScripts: mocks.getRecentScripts,
-}));
+vi.mock('../../src/services/content-learning-store', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../src/services/content-learning-store')>();
+  return {
+    ...actual,
+    logPerformanceFeedback: mocks.logPerformanceFeedback,
+    getPerformanceSummary: mocks.getPerformanceSummary,
+    getLearnedPatterns: mocks.getLearnedPatterns,
+    getArtifactChain: mocks.getArtifactChain,
+    getRecentScripts: mocks.getRecentScripts,
+  };
+});
 
 vi.mock('../../src/services/cache-coherence-registry', () => ({
   ...{
@@ -198,6 +202,33 @@ describe('content learning routes', () => {
         stage TEXT,
         user_id INTEGER NOT NULL
       );
+      CREATE TABLE content_scripts (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        pipeline_id INTEGER,
+        topic_feedback_id INTEGER,
+        topic TEXT NOT NULL,
+        format TEXT NOT NULL,
+        script_text TEXT NOT NULL,
+        hook TEXT,
+        title_options TEXT,
+        sources_used TEXT,
+        hashtags TEXT,
+        caption TEXT,
+        cta TEXT,
+        estimated_duration TEXT,
+        niche TEXT,
+        generation_duration_ms INTEGER,
+        user_id INTEGER NOT NULL,
+        tenant_id INTEGER,
+        owner_user_id INTEGER,
+        visibility_scope TEXT,
+        lifecycle_state TEXT,
+        scope_status TEXT,
+        created_by TEXT,
+        updated_by TEXT,
+        audit_metadata_json TEXT,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP
+      );
     `);
   });
 
@@ -304,6 +335,56 @@ describe('content learning routes', () => {
       topic: 'AI scripting workflow',
       hook: 'Most creators waste tokens before they write.',
       variant_kind: 'hook',
+      feedback_sentiment: 'approved',
+      accepted: 1,
+    }));
+  });
+
+  it('persists approved script variant feedback as a durable recent script artifact', async () => {
+    const scriptText = Array.from({ length: 40 }, (_, index) => {
+      return `[${index}:00] Paragraph ${index} keeps the generated script body intact.`;
+    }).join('\n');
+
+    const { response } = await dispatch('POST', '/variant-feedback', {
+      topic: 'AI scripting workflow',
+      variantKind: 'script',
+      variantText: scriptText,
+      sentiment: 'approved',
+      format: 'YouTube',
+    }, 77);
+
+    expect(response.statusCode).toBe(200);
+    expect(response.body.data).toEqual(expect.objectContaining({
+      topic: 'AI scripting workflow',
+      variantKind: 'script',
+      sentiment: 'approved',
+      accepted: true,
+      variantTextChars: scriptText.length,
+      scriptId: expect.any(Number),
+    }));
+
+    const scriptRow = testDb.prepare(`
+      SELECT topic, format, script_text, user_id, tenant_id
+      FROM content_scripts
+      WHERE id = ?
+    `).get(response.body.data.scriptId) as any;
+    expect(scriptRow).toEqual(expect.objectContaining({
+      topic: 'AI scripting workflow',
+      format: 'YouTube',
+      script_text: scriptText,
+      user_id: 77,
+      tenant_id: 77,
+    }));
+
+    const memoryRow = testDb.prepare(`
+      SELECT topic, hook, variant_kind, feedback_sentiment, accepted
+      FROM content_idea_memory
+      WHERE user_id = ? AND tenant_id = ?
+    `).get(77, 77) as any;
+    expect(memoryRow).toEqual(expect.objectContaining({
+      topic: 'AI scripting workflow',
+      hook: expect.stringContaining('[0:00] Paragraph 0'),
+      variant_kind: 'script',
       feedback_sentiment: 'approved',
       accepted: 1,
     }));

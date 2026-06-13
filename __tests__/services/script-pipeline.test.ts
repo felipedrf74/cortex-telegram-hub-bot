@@ -333,7 +333,7 @@ describe('script-pipeline: iOS API route', () => {
     expect(routeUtilitySource).toContain('const warnings = Array.from(new Set([');
     expect(routeUtilitySource).toContain('...scriptQuality.complianceWarnings');
     expect(routeUtilitySource).toContain('warnings: publicQualityWarnings');
-    expect(routeUtilitySource).toContain('sourceSummary: sourcePackage?.sourceSummaries ?? []');
+    expect(routeUtilitySource).toContain('sourceSummary: hasSourcePackageContents ? (sourcePackage?.sourceSummaries ?? []) : []');
   });
 
   it('iOS /script route validates topic parameter', () => {
