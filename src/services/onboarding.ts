@@ -416,11 +416,16 @@ export const QUESTIONNAIRES: Record<string, QuestionnaireDefinition> = {
 
 // ── Session Management ─────────────────────────────────────────────
 
-/** Start or resume an onboarding session. Returns the current step. */
-export function startOrResume(userId: number, questionnaireId: string): OnboardingSession {
+/**
+ * Start or resume an onboarding session. Returns the current step.
+ * Sport aliases ('running', …) are canonicalized at entry so session
+ * rows and the eventual profile row always use the canonical id.
+ */
+export function startOrResume(userId: number, rawQuestionnaireId: string): OnboardingSession {
   const db = getDb();
+  const questionnaireId = canonicalProfileType(rawQuestionnaireId);
   const def = QUESTIONNAIRES[questionnaireId];
-  if (!def) throw new Error(`Unknown questionnaire: ${questionnaireId}`);
+  if (!def) throw new Error(`Unknown questionnaire: ${rawQuestionnaireId}`);
 
   // Check for existing in-progress session
   const existing = db.prepare(
@@ -522,13 +527,16 @@ export function startOrResume(userId: number, questionnaireId: string): Onboardi
  */
 export function answerStep(
   userId: number,
-  questionnaireId: string,
+  rawQuestionnaireId: string,
   answer: string,
   options: { expectedStepIndex?: number } = {},
 ): { nextStep: QuestionStep | null; session: OnboardingSession; idempotentReplay?: boolean } {
   const db = getDb();
+  // Canonicalize like startOrResume so an alias-id answer addresses
+  // the same session row the canonical start created.
+  const questionnaireId = canonicalProfileType(rawQuestionnaireId);
   const def = QUESTIONNAIRES[questionnaireId];
-  if (!def) throw new Error(`Unknown questionnaire: ${questionnaireId}`);
+  if (!def) throw new Error(`Unknown questionnaire: ${rawQuestionnaireId}`);
 
   const session = getActiveSession(userId, questionnaireId);
   if (!session) throw new Error('No active session');
@@ -621,7 +629,8 @@ export function answerStep(
 }
 
 /** Get the current question step for an active session. Returns null if no active session. */
-export function getCurrentStep(userId: number, questionnaireId: string): QuestionStep | null {
+export function getCurrentStep(userId: number, rawQuestionnaireId: string): QuestionStep | null {
+  const questionnaireId = canonicalProfileType(rawQuestionnaireId);
   const def = QUESTIONNAIRES[questionnaireId];
   if (!def) return null;
 
@@ -636,7 +645,7 @@ export function getActiveSession(userId: number, questionnaireId: string): Onboa
   const db = getDb();
   const row = db.prepare(
     "SELECT * FROM onboarding_sessions WHERE user_id = ? AND questionnaire = ? AND status = 'in_progress'",
-  ).get(userId, questionnaireId) as any;
+  ).get(userId, canonicalProfileType(questionnaireId)) as any;
   return row ? parseSession(row) : null;
 }
 
@@ -645,11 +654,40 @@ export function abandonSession(userId: number, questionnaireId: string): boolean
   const db = getDb();
   const result = db.prepare(
     "UPDATE onboarding_sessions SET status = 'abandoned' WHERE user_id = ? AND questionnaire = ? AND status = 'in_progress'",
-  ).run(userId, questionnaireId);
+  ).run(userId, canonicalProfileType(questionnaireId));
   return result.changes > 0;
 }
 
 // ── Profile Management ─────────────────────────────────────────────
+
+// Profile-type equivalence. The canonical questionnaire ids double as
+// profile_type values ('triathlon-running', …), but rows under bare
+// sport keys exist in real databases (manual ops, legacy writers —
+// decision-center already special-cases a legacy 'training' type).
+// `user_profiles.profile_type` is free text with no FK, so reads must
+// treat an alias row as the same profile and writes must land on the
+// canonical key, or the plan-generation profile gate silently ignores
+// a completed profile (rerun-7 B2). Mirrors SPORT_TO_PROFILE_TYPE in
+// domains/domain-handler.ts.
+const PROFILE_TYPE_ALIASES: Record<string, string> = {
+  running: 'triathlon-running',
+  gym: 'triathlon-gym',
+  cycling: 'triathlon-cycling',
+  swim: 'triathlon-swim',
+};
+
+/** Map a profile type / questionnaire id to its canonical form. */
+export function canonicalProfileType(profileType: string): string {
+  return PROFILE_TYPE_ALIASES[profileType] ?? profileType;
+}
+
+/** Every stored key that means the same profile, canonical first. */
+function profileTypeEquivalents(profileType: string): string[] {
+  const canonical = canonicalProfileType(profileType);
+  const aliases = Object.keys(PROFILE_TYPE_ALIASES)
+    .filter((alias) => PROFILE_TYPE_ALIASES[alias] === canonical);
+  return [canonical, ...aliases];
+}
 
 /** Save a completed questionnaire as a user profile. */
 function saveProfile(userId: number, profileType: string, data: Record<string, string>): void {
@@ -660,7 +698,7 @@ function saveProfile(userId: number, profileType: string, data: Record<string, s
     ON CONFLICT(user_id, profile_type) DO UPDATE SET
       data = excluded.data,
       updated_at = datetime('now')
-  `).run(userId, profileType, JSON.stringify(data));
+  `).run(userId, canonicalProfileType(profileType), JSON.stringify(data));
 }
 
 // ── Phase 3 Slice A — Chat-triggered onboarding helpers ──
@@ -695,6 +733,9 @@ export function upsertProfileField(
   value: string,
 ): void {
   const db = getDb();
+  // Read merges across the alias equivalence class; the write always
+  // lands on the canonical key so alias rows stop accumulating.
+  const canonicalType = canonicalProfileType(profileType);
   const existing = getProfile(userId, profileType);
   const data: Record<string, string> = { ...(existing?.data ?? {}) };
   data[fieldKey] = value;
@@ -704,8 +745,8 @@ export function upsertProfileField(
     ON CONFLICT(user_id, profile_type) DO UPDATE SET
       data = excluded.data,
       updated_at = datetime('now')
-  `).run(userId, profileType, JSON.stringify(data));
-  logger.info({ userId, profileType, fieldKey }, 'Profile field upserted via chat');
+  `).run(userId, canonicalType, JSON.stringify(data));
+  logger.info({ userId, profileType: canonicalType, fieldKey }, 'Profile field upserted via chat');
 }
 
 /**
@@ -736,12 +777,23 @@ export function isProfileComplete(
   return getMissingProfileFields(userId, profileType).length === 0;
 }
 
-/** Get a user profile. Returns null if not found. */
+/**
+ * Get a user profile. Returns null if not found. Matches the whole
+ * equivalence class of the requested type (canonical + sport aliases),
+ * preferring the canonical row, then the most recently updated — so a
+ * profile stored under 'running' satisfies a 'triathlon-running' read
+ * and vice versa.
+ */
 export function getProfile(userId: number, profileType: string): UserProfile | null {
   const db = getDb();
+  const equivalents = profileTypeEquivalents(profileType);
+  const placeholders = equivalents.map(() => '?').join(', ');
   const row = db.prepare(
-    'SELECT * FROM user_profiles WHERE user_id = ? AND profile_type = ?',
-  ).get(userId, profileType) as any;
+    `SELECT * FROM user_profiles
+      WHERE user_id = ? AND profile_type IN (${placeholders})
+      ORDER BY CASE WHEN profile_type = ? THEN 0 ELSE 1 END, updated_at DESC
+      LIMIT 1`,
+  ).get(userId, ...equivalents, equivalents[0]) as any;
   if (!row) return null;
   return {
     ...row,
@@ -766,9 +818,9 @@ export function getAvailableQuestionnaires(): string[] {
   return Object.keys(QUESTIONNAIRES);
 }
 
-/** Get a questionnaire definition by ID. */
+/** Get a questionnaire definition by ID. Accepts sport aliases. */
 export function getQuestionnaire(id: string): QuestionnaireDefinition | undefined {
-  return QUESTIONNAIRES[id];
+  return QUESTIONNAIRES[canonicalProfileType(id)];
 }
 
 /** Alias kept for the iOS API route (onboarding.ts line 103). */

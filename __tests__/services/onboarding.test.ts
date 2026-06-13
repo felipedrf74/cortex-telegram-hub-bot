@@ -65,6 +65,10 @@ import {
   getAllProfiles,
   getAvailableQuestionnaires,
   getQuestionnaire,
+  getMissingProfileFields,
+  isProfileComplete,
+  upsertProfileField,
+  canonicalProfileType,
   QUESTIONNAIRES,
 } from '../../src/services/onboarding';
 
@@ -301,5 +305,119 @@ describe('Profile management', () => {
 
     const second = getProfile(1, 'fitness')!;
     expect(second.data.experience_level).toBe(QUESTIONNAIRES.fitness.steps[0].options![QUESTIONNAIRES.fitness.steps[0].options!.length - 1]);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════
+// PROFILE-TYPE ALIASES (rerun-7 B2)
+// ═══════════════════════════════════════════════════════════════════
+//
+// profile_type is free text (no FK); rows under bare sport keys exist
+// in real databases. The gate must treat 'running' and
+// 'triathlon-running' as the same profile, and new writes must land on
+// the canonical key.
+
+describe('Profile-type alias equivalence', () => {
+  beforeEach(() => {
+    testDb = createTestDb();
+    applyMigrations(testDb);
+  });
+  afterEach(() => { testDb.close(); });
+
+  function validAnswer(step: { options?: string[]; validation?: RegExp }): string {
+    if (step.options) return step.options[0];
+    if (step.validation) {
+      for (const candidate of ['6:00', '42', '2026-10-02', 'none']) {
+        if (step.validation.test(candidate)) return candidate;
+      }
+    }
+    return '42';
+  }
+
+  function fullAnswers(questionnaireId: string): Record<string, string> {
+    const def = QUESTIONNAIRES[questionnaireId];
+    const answers: Record<string, string> = {};
+    for (const step of def.steps) {
+      answers[step.key] = validAnswer(step);
+    }
+    return answers;
+  }
+
+  function insertRawProfile(userId: number, profileType: string, data: Record<string, string>): void {
+    testDb.prepare(
+      'INSERT INTO user_profiles (user_id, profile_type, data) VALUES (?, ?, ?)',
+    ).run(userId, profileType, JSON.stringify(data));
+  }
+
+  it('canonicalProfileType maps bare sport keys to triathlon-* ids', () => {
+    expect(canonicalProfileType('running')).toBe('triathlon-running');
+    expect(canonicalProfileType('gym')).toBe('triathlon-gym');
+    expect(canonicalProfileType('cycling')).toBe('triathlon-cycling');
+    expect(canonicalProfileType('swim')).toBe('triathlon-swim');
+    expect(canonicalProfileType('triathlon-running')).toBe('triathlon-running');
+    expect(canonicalProfileType('fitness')).toBe('fitness');
+  });
+
+  it('getQuestionnaire serves the canonical definition for an alias id', () => {
+    expect(getQuestionnaire('running')?.id).toBe('triathlon-running');
+    expect(getQuestionnaire('triathlon-running')?.id).toBe('triathlon-running');
+    expect(getQuestionnaire('nonexistent')).toBeUndefined();
+  });
+
+  it('a row stored under a bare alias satisfies the canonical read', () => {
+    insertRawProfile(1, 'running', fullAnswers('triathlon-running'));
+
+    const profile = getProfile(1, 'triathlon-running');
+    expect(profile).not.toBeNull();
+    expect(getMissingProfileFields(1, 'triathlon-running')).toHaveLength(0);
+    expect(isProfileComplete(1, 'triathlon-running')).toBe(true);
+  });
+
+  it('a canonical row satisfies a bare-alias read', () => {
+    insertRawProfile(1, 'triathlon-running', fullAnswers('triathlon-running'));
+
+    expect(getProfile(1, 'running')).not.toBeNull();
+    expect(isProfileComplete(1, 'running')).toBe(true);
+  });
+
+  it('prefers the canonical row when both keys exist', () => {
+    insertRawProfile(1, 'running', { ...fullAnswers('triathlon-running'), weekly_mileage_km: 'alias-row' });
+    insertRawProfile(1, 'triathlon-running', { ...fullAnswers('triathlon-running'), weekly_mileage_km: 'canonical-row' });
+
+    const profile = getProfile(1, 'triathlon-running')!;
+    expect(profile.data.weekly_mileage_km).toBe('canonical-row');
+  });
+
+  it('completing a questionnaire via an alias id persists the canonical profile_type', () => {
+    startOrResume(1, 'running');
+    for (const step of QUESTIONNAIRES['triathlon-running'].steps) {
+      answerStep(1, 'running', validAnswer(step));
+    }
+
+    const row = testDb.prepare(
+      'SELECT profile_type FROM user_profiles WHERE user_id = 1',
+    ).get() as { profile_type: string };
+    expect(row.profile_type).toBe('triathlon-running');
+  });
+
+  it('upsertProfileField writes to the canonical key and merges alias-row data', () => {
+    insertRawProfile(1, 'running', { weekly_mileage_km: '35' });
+
+    upsertProfileField(1, 'running', 'target_race', 'Marathon');
+
+    const canonicalRow = testDb.prepare(
+      "SELECT data FROM user_profiles WHERE user_id = 1 AND profile_type = 'triathlon-running'",
+    ).get() as { data: string } | undefined;
+    expect(canonicalRow).toBeDefined();
+    const data = JSON.parse(canonicalRow!.data);
+    expect(data.weekly_mileage_km).toBe('35');
+    expect(data.target_race).toBe('Marathon');
+  });
+
+  it('user isolation holds across the equivalence class', () => {
+    insertRawProfile(1, 'running', fullAnswers('triathlon-running'));
+
+    expect(getProfile(2, 'triathlon-running')).toBeNull();
+    expect(isProfileComplete(2, 'triathlon-running')).toBe(false);
   });
 });
