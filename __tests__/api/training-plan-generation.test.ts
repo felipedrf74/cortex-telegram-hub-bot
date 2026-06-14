@@ -661,6 +661,7 @@ describe('generateTrainingPlanForUser', () => {
     expect(resolveTrainingPlanStartDate(new Date('2026-04-17T10:00:00.000Z'), 'today')).toBe('2026-04-17');
     expect(resolveTrainingPlanStartDate(new Date('2026-04-20T10:00:00.000Z'), 'next_full_week')).toBe('2026-04-20');
     expect(resolveTrainingPlanStartDate(new Date('2026-06-15T08:00:00.000Z'), 'today')).toBe('2026-06-15');
+    expect(resolveTrainingPlanStartDate(new Date('2026-06-14T20:56:00.000Z'), 'today')).toBe('2026-06-15');
   });
 
   it('passes Monday June 15 2026 through as the plan start when iOS asks for today', async () => {
@@ -677,6 +678,29 @@ describe('generateTrainingPlanForUser', () => {
     expect(result.status).toBe('created');
     expect(mockBuildCoachKernelTrainingPlan).toHaveBeenCalledWith(expect.objectContaining({
       startDate: '2026-06-15',
+    }));
+  });
+
+  it('rolls Sunday June 14 2026 today requests to Monday to avoid an empty first week', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(new Date('2026-06-14T20:56:00.000Z'));
+
+    const result = await generateTrainingPlanForUser({
+      userId: 12,
+      tenantId: 12,
+      objective: 'Muscle Building',
+      startPolicy: 'today',
+      sessionsPerWeek: 5,
+      runSessionsPerWeek: 0,
+      strengthSessionsPerWeek: 5,
+    });
+
+    expect(result.status).toBe('created');
+    expect(mockBuildCoachKernelTrainingPlan).toHaveBeenCalledWith(expect.objectContaining({
+      startDate: '2026-06-15',
+      sessionsPerWeek: 5,
+      runSessionsPerWeek: 0,
+      strengthSessionsPerWeek: 5,
     }));
   });
 
