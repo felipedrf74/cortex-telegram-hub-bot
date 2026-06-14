@@ -113,6 +113,11 @@ export interface GenerateTrainingPlanForUserInput {
   twoADayPreference?: 'never' | 'optional' | 'preferred' | 'auto' | null;
   calendarSource?: CalendarSource | null;
   previewOnly?: boolean;
+  /**
+   * Internal test/staging smoke clock override. Public API routes do not pass
+   * this field; production ignores it so users cannot spoof plan dates.
+   */
+  plannerNow?: unknown;
 }
 
 export type TrainingPlanStartPolicy = 'next_full_week' | 'today';
@@ -316,6 +321,7 @@ export async function generateTrainingPlanForUser(
     twoADayPreference,
     calendarSource,
     previewOnly = false,
+    plannerNow,
   } = input;
   const tenantId = requireTenantIdParam(input.tenantId, 'generateTrainingPlanForUser');
   const requestedDurationWeeks = normalizeTrainingPlanDurationWeeks(input.durationWeeks, 4);
@@ -376,9 +382,7 @@ export async function generateTrainingPlanForUser(
       : typeof runProfileForPlan?.target_race_date === 'string' && runProfileForPlan.target_race_date.trim()
       ? runProfileForPlan.target_race_date
       : null;
-  const isRaceSpecificForLint =
-    objectiveNeedsRunningProfile(objective) &&
-    /\b(marathon|half\s*marathon|10k|5k|race|ironman|70\.3|trail)\b/i.test(objective);
+  const isRaceSpecificForLint = normalizedGoalMode === 'event_based';
 
   if (!fitnessProfile || Object.keys(fitnessProfile).length === 0) {
     // RERUN-2 finding 3 (2026-06-12): this gate used to omit
@@ -412,7 +416,7 @@ export async function generateTrainingPlanForUser(
     };
   }
 
-  const now = new Date();
+  const now = resolvePlannerNow(plannerNow);
   const normalizedStartPolicy = normalizeStartPolicy(startPolicy);
   const startStr = resolveTrainingPlanStartDate(now, normalizedStartPolicy);
   // rerun-4 R3 (2026-06-12): iOS derives the requested week count from
@@ -428,9 +432,7 @@ export async function generateTrainingPlanForUser(
   const durationWeeks = clampTrainingPlanDurationWeeksToRaceDate({
     requestedDurationWeeks,
     startDateIso: startStr,
-    raceDateIso: normalizedGoalMode === 'event_based' || isRaceSpecificForLint
-      ? raceDateForLint
-      : null,
+    raceDateIso: isRaceSpecificForLint ? raceDateForLint : null,
   });
   const endStr = DateTime
     .fromISO(startStr, { zone: config.app.timezone || 'Europe/Lisbon' })
@@ -1453,6 +1455,12 @@ function normalizeOptionalSessionTarget(raw: unknown, min: number, max: number):
 
 function normalizeStartPolicy(raw: unknown): TrainingPlanStartPolicy {
   return raw === 'today' ? 'today' : 'next_full_week';
+}
+
+function resolvePlannerNow(raw: unknown): Date {
+  if (raw == null || (!config.isStaging && process.env.NODE_ENV !== 'test')) return new Date();
+  const parsed = raw instanceof Date ? raw : typeof raw === 'string' ? new Date(raw) : null;
+  return parsed && Number.isFinite(parsed.getTime()) ? parsed : new Date();
 }
 
 export function resolveTrainingPlanStartDate(now: Date, startPolicy: TrainingPlanStartPolicy): string {

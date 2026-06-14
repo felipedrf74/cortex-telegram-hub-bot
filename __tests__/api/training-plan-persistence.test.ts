@@ -19,6 +19,7 @@ const mockGetPlanVersion = vi.fn();
 const mockFindExistingOwnership = vi.fn();
 const mockRecordCalendarOwnership = vi.fn();
 const mockSubmitSecretarySchedulingIntent = vi.fn();
+const mockMarkSecretaryAgendaProviderSyncSatisfied = vi.fn();
 
 vi.mock('../../src/services/training-plans', async () => {
   const actual = await vi.importActual<typeof import('../../src/services/training-plans')>(
@@ -63,6 +64,7 @@ vi.mock('../../src/services/secretary-scheduling-arbitrator', async () => {
   return {
     ...actual,
     submitSecretarySchedulingIntent: (...args: unknown[]) => mockSubmitSecretarySchedulingIntent(...args),
+    markSecretaryAgendaProviderSyncSatisfied: (...args: unknown[]) => mockMarkSecretaryAgendaProviderSyncSatisfied(...args),
   };
 });
 
@@ -118,6 +120,7 @@ describe('training-plan-persistence', () => {
     mockFindExistingOwnership.mockReset();
     mockRecordCalendarOwnership.mockReset();
     mockSubmitSecretarySchedulingIntent.mockReset();
+    mockMarkSecretaryAgendaProviderSyncSatisfied.mockReset();
 
     mockCreatePlan.mockReturnValue({ id: 901 });
     mockCreateWeek.mockImplementation(({ week_number }: any) => ({ id: 1000 + Number(week_number || 1) }));
@@ -130,6 +133,7 @@ describe('training-plan-persistence', () => {
     mockGetPlanVersion.mockReturnValue(1);
     mockFindExistingOwnership.mockReturnValue(null);
     mockRecordCalendarOwnership.mockReturnValue({ ok: true, created: true, ownershipId: 1 });
+    mockMarkSecretaryAgendaProviderSyncSatisfied.mockReturnValue({ ok: true, updated: true });
     mockSubmitSecretarySchedulingIntent.mockImplementation((intent: any) => ({
       status: 'scheduled',
       reasonCodes: ['scheduled_in_available_window'],
@@ -662,6 +666,54 @@ describe('training-plan-persistence', () => {
     }));
     expect(mockCreateEvent).not.toHaveBeenCalled();
     expect(mockLinkSessionToCalendar).not.toHaveBeenCalled();
+  });
+
+  it('marks alternate kernel-selected gym times as preferred-time unavailable', async () => {
+    const result = await persistGeneratedTrainingPlan({
+      userId: 12,
+      tenantId: 12,
+      objective: 'Calendar constrained strength block',
+      durationWeeks: 1,
+      startDate: '2026-04-20',
+      endDate: '2026-04-27',
+      now: new Date('2026-04-20T00:00:00.000Z'),
+      preferencesJson: '{}',
+      normalizedPreferredTime: '12:00',
+      normalizedPreferredCardioTime: '07:00',
+      normalizedPreferredStrengthTime: '12:00',
+      busyWindows: [],
+      planData: {
+        weeks: [{
+          weekNumber: 1,
+          sessions: [
+            {
+              dayOfWeek: 'Monday',
+              sessionType: 'gym',
+              title: 'Lift before meetings',
+              durationMinutes: 45,
+              preferredStartTime: '05:00',
+              exercises: [{ name: 'Squat' }],
+            },
+          ],
+        }],
+      },
+    });
+
+    expect(result.totalSessions).toBe(1);
+    expect(result.eventsCreated).toBe(1);
+    expect(mockCreateSession).toHaveBeenCalledWith(expect.objectContaining({
+      title: 'Lift before meetings',
+      status: 'scheduled',
+      preferred_time_unavailable: true,
+    }));
+    expect(mockCreateEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        start: '2026-04-20T04:00:00.000Z',
+      }),
+      undefined,
+      12,
+      expect.objectContaining({ tenantId: 12 }),
+    );
   });
 
   it('creates small calendar event sets in the same bounded batch', async () => {

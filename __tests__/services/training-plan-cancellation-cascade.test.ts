@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import Database from 'better-sqlite3';
 import fs from 'fs';
 import path from 'path';
+import { listCanonicalMigrationFiles } from '../utils/migrations';
 
 const MIGRATIONS_DIR = path.resolve(__dirname, '../../migrations');
 
@@ -35,9 +36,7 @@ function applyMigrations(db: Database.Database): void {
     );
   `);
 
-  const files = fs.readdirSync(MIGRATIONS_DIR)
-    .filter((file) => file.endsWith('.sql'))
-    .sort();
+  const files = listCanonicalMigrationFiles(fs.readdirSync(MIGRATIONS_DIR));
 
   for (const file of files) {
     const sql = fs.readFileSync(path.join(MIGRATIONS_DIR, file), 'utf-8');
@@ -318,6 +317,98 @@ describe('training-plan-cancellation cascade', () => {
        WHERE source_intent_id = 'training:90:1:601'
     `).get() as { lifecycle_state: string };
     expect(otherPlan.lifecycle_state).toBe('scheduled');
+  });
+
+  it('marks canceled Secretary provider mappings deleted only for confirmed Training calendar deletions', () => {
+    const deletedDecision = submitSecretarySchedulingIntent({
+      intentId: 'training:120:1:901',
+      sourceSkill: 'training',
+      sourceAction: 'schedule_training_session',
+      sourceEntityId: 901,
+      sourceEntityType: 'training_session',
+      ownerUserId: 61,
+      tenantId: 61,
+      title: 'Deleted Outlook Session',
+      requestedDurationMinutes: 40,
+      preferredWindows: [{
+        start: '2026-05-04T07:00:00.000Z',
+        end: '2026-05-04T07:40:00.000Z',
+        hard: true,
+      }],
+      priority: 'high',
+      flexibility: 'fixed',
+    }, { now: '2026-05-01T00:00:00.000Z' });
+
+    const failedDecision = submitSecretarySchedulingIntent({
+      intentId: 'training:120:1:902',
+      sourceSkill: 'training',
+      sourceAction: 'schedule_training_session',
+      sourceEntityId: 902,
+      sourceEntityType: 'training_session',
+      ownerUserId: 61,
+      tenantId: 61,
+      title: 'Delete Failed Outlook Session',
+      requestedDurationMinutes: 40,
+      preferredWindows: [{
+        start: '2026-05-05T07:00:00.000Z',
+        end: '2026-05-05T07:40:00.000Z',
+        hard: true,
+      }],
+      priority: 'high',
+      flexibility: 'fixed',
+    }, { now: '2026-05-01T00:00:00.000Z' });
+
+    testDb.prepare(`
+      UPDATE secretary_agenda_items
+         SET provider_event_id = ?, provider_source = 'outlook', provider_sync_state = 'synced', lifecycle_state = 'synced'
+       WHERE agenda_item_id = ?
+    `).run('outlook-deleted-evt', deletedDecision.agendaItem.agendaItemId);
+
+    testDb.prepare(`
+      UPDATE secretary_agenda_items
+         SET provider_event_id = ?, provider_source = 'outlook', provider_sync_state = 'synced', lifecycle_state = 'synced'
+       WHERE agenda_item_id = ?
+    `).run('outlook-delete-failed-evt', failedDecision.agendaItem.agendaItemId);
+
+    const result = cancelTrainingPlanCrossSkillDependents({
+      userId: 61,
+      tenantId: 61,
+      planId: 120,
+      planVersion: 1,
+      sessionIds: [901, 902],
+      deletedCalendarEvents: [{ eventId: 'outlook-deleted-evt', source: 'outlook' }],
+      reason: 'training_plan_canceled',
+    });
+
+    expect(result.canceledAgendaItems).toBe(2);
+    const rows = testDb.prepare(`
+      SELECT provider_event_id, lifecycle_state, provider_sync_state
+        FROM secretary_agenda_items
+       WHERE owner_user_id = 61
+         AND tenant_id = '61'
+         AND source_intent_id LIKE 'training:120:%'
+       ORDER BY provider_event_id
+    `).all() as Array<{
+      provider_event_id: string;
+      lifecycle_state: string;
+      provider_sync_state: string;
+    }>;
+
+    expect(rows).toEqual([
+      {
+        provider_event_id: 'outlook-delete-failed-evt',
+        lifecycle_state: 'canceled',
+        provider_sync_state: 'synced',
+      },
+      {
+        provider_event_id: 'outlook-deleted-evt',
+        lifecycle_state: 'canceled',
+        provider_sync_state: 'deleted',
+      },
+    ]);
+    expect(findSecretaryAgendaCalendarEventsForPlan(120, 61, 61)).toEqual([
+      { calendar_event_id: 'outlook-delete-failed-evt', calendar_source: 'outlook' },
+    ]);
   });
 
   it('R-2026-05-25 Bug #1 — buildTrainingPlanIntentPrefixPattern shape is `training:${planId}:%`', () => {

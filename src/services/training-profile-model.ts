@@ -199,9 +199,6 @@ function detectMissingProfileData(
   if (context.primaryFocus === 'hybrid' && !hasExplicitModalityPriority(input)) {
     missing.push({ key: 'modality_priority', category: 'modality', severity: 'critical', reason: 'Hybrid plans need a declared priority so strength, running, and cycling do not compete blindly.' });
   }
-  if (context.primaryFocus === 'marathon' && context.raceCalendar.length === 0) {
-    missing.push({ key: 'race_date', category: 'goals', severity: 'critical', reason: 'Marathon progression, long-run build, and taper need a target race date; otherwise the coach can only produce a conservative base block.' });
-  }
   if (needsRunning && !hasAnyProfileValue(input.runProfile?.weekly_mileage_km, input.runProfile?.easy_pace_min_per_km)) {
     missing.push({ key: 'running_baseline', category: 'markers', severity: 'important', reason: 'Running load and paces are inferred without current mileage or easy pace.' });
   }

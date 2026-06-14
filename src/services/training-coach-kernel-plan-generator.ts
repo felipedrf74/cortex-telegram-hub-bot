@@ -318,6 +318,7 @@ export function buildAthleteStateFromTrainingProfiles(input: CoachKernelTraining
   const primaryFocus = primaryFocusResolution.value;
   const rawWeeklyTargets = resolveWeeklyTargets(primaryFocus, input);
   const raceCalendar = resolveRaceCalendar(primaryFocus, input.objective, input.runProfile, input.raceDate);
+  const experienceResolution = resolveExperienceLevelWithSource(input.fitnessProfile, input.gymProfile);
   // TR-EC-QA-O1 + TR-EC-QA-O2 (2026-05-03 hostile QA closeout):
   // Apply goalMode-aware shaping. Before this pass goalMode was
   // accept-and-echo: maintenance only relabeled priorityOrder and
@@ -335,8 +336,13 @@ export function buildAthleteStateFromTrainingProfiles(input: CoachKernelTraining
   // both inside the AthleteState build (for shaped targets) and again
   // at the kernel level (for reasons) is safe — the dedupe pass at
   // line 198 collapses any duplicates.
-  const { targets: weeklyTargets } =
+  const { targets: goalModeWeeklyTargets } =
     applyGoalModeVolumeShaping(rawWeeklyTargets, input, raceCalendar);
+  const weeklyTargets = applyExperienceAwareWeeklyTargetCaps(
+    goalModeWeeklyTargets,
+    experienceResolution.value,
+    primaryFocus,
+  );
   const constraints = resolveConstraints(input.fitnessProfile, input.runProfile, input.notes);
 
   // Slice 3.J (Layer 1, audit follow-up): emit a structured warning
@@ -454,7 +460,6 @@ export function buildAthleteStateFromTrainingProfiles(input: CoachKernelTraining
   // `experienceLevel === 'novice'`. Carrying the raw inputs in the
   // log line lets operators see whether the cause was missing data
   // or a new vocabulary word the resolver should learn.
-  const experienceResolution = resolveExperienceLevelWithSource(input.fitnessProfile, input.gymProfile);
   if (experienceResolution.source === 'fallback') {
     logger.warn({
       surface: 'coach-kernel.buildAthleteStateFromTrainingProfiles.experienceLevel',
@@ -912,6 +917,66 @@ export function resolveWeeklyTargets(
       return { running, strength: strengthTarget };
     }
   }
+}
+
+type WeeklyTargetKey = keyof Goals['weeklySessionsTarget'];
+
+function applyExperienceAwareWeeklyTargetCaps(
+  targets: Goals['weeklySessionsTarget'],
+  experienceLevel: AthleteState['profile']['experienceLevel'],
+  primaryFocus: CoachingDiscipline,
+): Goals['weeklySessionsTarget'] {
+  if (experienceLevel !== 'novice') return targets;
+
+  const capped: Goals['weeklySessionsTarget'] = { ...targets };
+  if (capped.strength != null) {
+    capped.strength = Math.min(capped.strength, 3);
+  }
+
+  const totalCap = primaryFocus === 'triathlon' ? 5 : 4;
+  let runningTotal = totalTargetSessions(capped);
+  if (runningTotal <= totalCap) return capped;
+
+  for (const key of noviceTargetTrimOrder(primaryFocus)) {
+    while ((capped[key] ?? 0) > minimumNoviceTargetFor(primaryFocus, key) && runningTotal > totalCap) {
+      capped[key] = Math.max(0, (capped[key] ?? 0) - 1);
+      runningTotal -= 1;
+    }
+    if (runningTotal <= totalCap) break;
+  }
+
+  return capped;
+}
+
+function noviceTargetTrimOrder(primaryFocus: CoachingDiscipline): WeeklyTargetKey[] {
+  switch (primaryFocus) {
+    case 'strength':
+      return ['running', 'cycling', 'swimming', 'strength'];
+    case 'marathon':
+    case 'running':
+      return ['strength', 'swimming', 'cycling', 'running'];
+    case 'cycling':
+      return ['strength', 'swimming', 'running', 'cycling'];
+    case 'swimming':
+      return ['strength', 'cycling', 'running', 'swimming'];
+    case 'triathlon':
+      return ['strength', 'swimming', 'cycling', 'running'];
+    case 'hybrid':
+    default:
+      return ['swimming', 'cycling', 'strength', 'running'];
+  }
+}
+
+function minimumNoviceTargetFor(
+  primaryFocus: CoachingDiscipline,
+  key: WeeklyTargetKey,
+): number {
+  if (primaryFocus === 'strength' && key === 'strength') return 3;
+  if ((primaryFocus === 'running' || primaryFocus === 'marathon') && key === 'running') return 3;
+  if (primaryFocus === 'cycling' && key === 'cycling') return 3;
+  if (primaryFocus === 'swimming' && key === 'swimming') return 3;
+  if (primaryFocus === 'triathlon' && (key === 'running' || key === 'cycling' || key === 'swimming')) return 1;
+  return 0;
 }
 
 function optionalSessionTarget(value: unknown, min: number, max: number): number | null {

@@ -490,6 +490,41 @@ export function getSecretaryAgendaItemById(scope: {
   return row ? rowToAgendaItem(row) : null;
 }
 
+export function markSecretaryAgendaProviderSyncSatisfied(scope: {
+  agendaItemId: string;
+  ownerUserId: number;
+  tenantId: string | number;
+  providerEventId: string;
+  providerSource: 'google' | 'outlook';
+  now?: string;
+}): SecretaryAgendaItem | null {
+  const nowIso = normalizeNow(scope.now);
+  assertSecretaryAgendaSchemaReady();
+  getDb().prepare(`
+    UPDATE secretary_agenda_items
+       SET provider_event_id = ?,
+           provider_source = ?,
+           provider_sync_state = 'synced',
+           lifecycle_state = CASE
+             WHEN lifecycle_state IN ('scheduled', 'reflowed', 'compressed', 'synced')
+             THEN 'synced'
+             ELSE lifecycle_state
+           END,
+           updated_at = ?
+     WHERE agenda_item_id = ?
+       AND owner_user_id = ?
+       AND tenant_id = ?
+  `).run(
+    scope.providerEventId,
+    scope.providerSource,
+    nowIso,
+    scope.agendaItemId,
+    scope.ownerUserId,
+    normalizeTenantId(scope.tenantId),
+  );
+  return getSecretaryAgendaItemById(scope);
+}
+
 export function cancelSecretaryAgendaItem(scope: {
   agendaItemId: string;
   ownerUserId: number;

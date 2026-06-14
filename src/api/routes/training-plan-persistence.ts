@@ -12,6 +12,7 @@ import {
   recordCalendarOwnership,
 } from '../../services/training-plan-lifecycle';
 import {
+  markSecretaryAgendaProviderSyncSatisfied,
   submitSecretarySchedulingIntent,
   type SecretarySchedulingDecision,
   type SecretarySchedulingIntent,
@@ -498,6 +499,13 @@ async function persistGeneratedTrainingPlanLocked(
         },
       );
       trainingPlans.linkSessionToCalendar(eventPayload.sessionId, event.id, event.source);
+      markSecretaryAgendaProviderSyncSatisfied({
+        agendaItemId: secretaryDecision.agendaItem.agendaItemId,
+        ownerUserId: input.userId,
+        tenantId,
+        providerEventId: event.id,
+        providerSource: event.source,
+      });
       // Record ownership AFTER the session linkage write so we never
       // record an audit row for an event whose local linkage failed.
       // The recorder is idempotent; concurrent races degrade to a
@@ -640,6 +648,7 @@ function finalizeGeneratedTrainingSessionSchedule(args: {
     scheduledWindows: args.scheduledWindows,
     title: base.title || 'Training session',
   });
+  const preferredTimeShiftedBeforeFinalization = hasKernelShiftedPreferredTime(base, input);
 
   if (scheduledWindow.noAvailableSlot) {
     return {
@@ -658,8 +667,25 @@ function finalizeGeneratedTrainingSessionSchedule(args: {
     scheduleState: activeScheduleStateFor(base),
     finalizedScheduledStart: scheduledWindow.start.toISOString(),
     finalizedScheduledEnd: scheduledWindow.end.toISOString(),
-    finalizedPreferredTimeUnavailable: scheduledWindow.preferredTimeUnavailable,
+    finalizedPreferredTimeUnavailable: scheduledWindow.preferredTimeUnavailable || preferredTimeShiftedBeforeFinalization,
   };
+}
+
+function hasKernelShiftedPreferredTime(
+  session: GeneratedTrainingSession,
+  input: PersistGeneratedTrainingPlanInput,
+): boolean {
+  const explicit = typeof session.preferredStartTime === 'string' && /^\d{2}:\d{2}$/.test(session.preferredStartTime)
+    ? session.preferredStartTime
+    : null;
+  if (!explicit) return false;
+  const modalityPreferred = preferredTimeForSessionType(
+    session.sessionType || '',
+    input.normalizedPreferredTime,
+    input.normalizedPreferredCardioTime,
+    input.normalizedPreferredStrengthTime,
+  );
+  return explicit !== modalityPreferred;
 }
 
 function finalizedScheduleWindowForSession(session: GeneratedTrainingSession): {

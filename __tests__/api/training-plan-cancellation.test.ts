@@ -173,6 +173,10 @@ describe('training-plan-cancellation (hard delete)', () => {
       planId: 44,
       planVersion: 1,
       sessionIds: [321, 322, 323],
+      deletedCalendarEvents: [
+        { eventId: 'evt-completed', source: 'outlook' },
+        { eventId: 'evt-planned', source: 'google' },
+      ],
       reason: 'training_plan_canceled',
     });
     expect(mocks.deletePlanHard.mock.invocationCallOrder[0])

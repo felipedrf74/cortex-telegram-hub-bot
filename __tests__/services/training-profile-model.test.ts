@@ -120,6 +120,94 @@ describe('training profile model overhaul', () => {
     expect([...advancedExerciseIds].some((id) => ['front_squat', 'bench_press', 'pull_up', 'dumbbell_overhead_press'].includes(id))).toBe(true);
   });
 
+  it('keeps advanced strength loads high while capping novice strength-primary plans', () => {
+    const advancedPlan = buildCoachKernelTrainingPlan(baseInput({
+      userId: 91015,
+      startDate: '2026-06-15',
+      sessionsPerWeek: 6,
+      runSessionsPerWeek: 1,
+      strengthSessionsPerWeek: 5,
+      goalMode: 'continuous',
+      trainingPriority: 'strength',
+      fitnessProfile: {
+        experience_level: 'Advanced (3+ years)',
+        weekly_frequency: '6 days',
+        training_goals: 'Hypertrophy',
+        injuries: 'none',
+        available_equipment: 'Full gym',
+        session_duration_minutes: '60',
+      },
+      gymProfile: {
+        training_age: '5+ years',
+        primary_goal: 'Hypertrophy',
+        equipment_access: 'Full commercial gym',
+        sessions_per_week: '5',
+        session_duration_minutes: '60',
+      },
+      runProfile: {
+        weekly_mileage_km: '20',
+        easy_pace_min_per_km: '5:45',
+        weekly_availability_days: '4',
+        session_duration_minutes: '40',
+      },
+    }));
+    const novicePlan = buildCoachKernelTrainingPlan(baseInput({
+      userId: 91016,
+      startDate: '2026-06-15',
+      sessionsPerWeek: 6,
+      runSessionsPerWeek: 1,
+      strengthSessionsPerWeek: 5,
+      goalMode: 'continuous',
+      trainingPriority: 'strength',
+      fitnessProfile: {
+        experience_level: 'Beginner (< 1 year)',
+        weekly_frequency: '3 days',
+        training_goals: 'General fitness',
+        injuries: 'none',
+        available_equipment: 'Bodyweight only',
+        session_duration_minutes: '30',
+      },
+      gymProfile: {
+        training_age: '< 1 year',
+        primary_goal: 'General fitness',
+        equipment_access: 'Bodyweight only',
+        sessions_per_week: '3',
+        session_duration_minutes: '30',
+      },
+      runProfile: {
+        weekly_mileage_km: '5',
+        easy_pace_min_per_km: '7:30',
+        weekly_availability_days: '2',
+        session_duration_minutes: '25',
+      },
+    }));
+
+    const advancedWeek = advancedPlan.weeks[0].sessions;
+    const noviceWeek = novicePlan.weeks[0].sessions;
+    const advancedGym = advancedWeek.filter((session) => session.sessionType === 'gym');
+    const advancedRuns = advancedWeek.filter((session) => session.sessionType === 'run');
+    const noviceGym = noviceWeek.filter((session) => session.sessionType === 'gym');
+    const noviceRuns = noviceWeek.filter((session) => session.sessionType === 'run');
+    const noviceExerciseIds = new Set(noviceGym.flatMap((session) => session.exercises.map((exercise) => exercise.exerciseId)));
+    const noviceDays = new Set(noviceWeek.map((session) => session.dayOfWeek));
+
+    expect(advancedGym).toHaveLength(5);
+    expect(advancedRuns).toHaveLength(1);
+    expect(advancedRuns[0].durationMinutes).toBe(40);
+    expect(advancedGym.flatMap((session) => session.exercises.map((exercise) => exercise.exerciseId))).toEqual(
+      expect.arrayContaining(['front_squat', 'romanian_deadlift', 'pull_up']),
+    );
+
+    expect(noviceWeek.length).toBeLessThanOrEqual(4);
+    expect(noviceGym.length).toBeLessThanOrEqual(3);
+    expect(noviceRuns.length).toBeLessThanOrEqual(1);
+    expect(noviceDays.size).toBe(noviceWeek.length);
+    expect(noviceGym.every((session) => session.durationMinutes <= 35)).toBe(true);
+    expect(noviceRuns.every((session) => session.durationMinutes <= 30)).toBe(true);
+    expect([...noviceExerciseIds].some((id) => ['push_up', 'bodyweight_squat', 'glute_bridge'].includes(id))).toBe(true);
+    expect([...noviceExerciseIds]).not.toEqual(expect.arrayContaining(['front_squat', 'pull_up', 'dumbbell_overhead_press']));
+  });
+
   it('triggers targeted follow-up questions when critical profile data is missing', () => {
     const athlete = buildAthleteStateFromTrainingProfiles(baseInput({
       userId: 91004,
@@ -303,7 +391,7 @@ describe('training profile model overhaul', () => {
     expect(athlete.profileQuality?.followUpQuestions.map((question) => question.id)).toContain('injury_limitation_clarification');
   });
 
-  it('prompts for a marathon race date instead of silently producing an undated marathon build', () => {
+  it('treats an undated marathon-style target as continuous planning instead of forcing event day', () => {
     const athlete = buildAthleteStateFromTrainingProfiles(baseInput({
       userId: 91013,
       objective: 'Marathon training',
@@ -335,9 +423,9 @@ describe('training profile model overhaul', () => {
     const promptIds = athlete.profileQuality?.followUpQuestions.map((question) => question.id) ?? [];
     const criticalKeys = athlete.profileQuality?.missingCriticalData.map((item) => item.key) ?? [];
 
-    expect(promptIds).toContain('race_date_clarification');
-    expect(criticalKeys).toContain('race_date');
-    expect(athlete.profileQuality?.planningRiskFlags).toContain('goals:race_date');
+    expect(promptIds).not.toContain('race_date_clarification');
+    expect(criticalKeys).not.toContain('race_date');
+    expect(athlete.profileQuality?.planningRiskFlags).not.toContain('goals:race_date');
   });
 
   it('does not ask for race date when marathon target date is already provided', () => {

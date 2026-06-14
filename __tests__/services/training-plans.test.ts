@@ -9,6 +9,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
 import fs from 'fs';
 import path from 'path';
+import { listCanonicalMigrationFiles } from '../utils/migrations';
 
 const MIGRATIONS_DIR = path.resolve(__dirname, '../../migrations');
 
@@ -30,9 +31,7 @@ function applyMigrations(db: Database.Database): void {
     );
   `);
 
-  const files = fs.readdirSync(MIGRATIONS_DIR)
-    .filter(f => f.endsWith('.sql'))
-    .sort();
+  const files = listCanonicalMigrationFiles(fs.readdirSync(MIGRATIONS_DIR));
 
   for (const file of files) {
     const sql = fs.readFileSync(path.join(MIGRATIONS_DIR, file), 'utf-8');

@@ -3807,6 +3807,8 @@ describe('Chat API routes', () => {
     const previousPreviews = process.env.CHAT_CORE_V2_PREVIEWS_ENABLED;
     process.env.CHAT_CORE_V2_ENABLED = 'true';
     process.env.CHAT_CORE_V2_PREVIEWS_ENABLED = 'true';
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(new Date('2026-06-08T12:00:00.000Z'));
     try {
       mockRouteMessage.mockClear();
       mockHandleSecretary.mockClear();
@@ -3920,6 +3922,7 @@ describe('Chat API routes', () => {
       } else {
         process.env.CHAT_CORE_V2_PREVIEWS_ENABLED = previousPreviews;
       }
+      vi.useRealTimers();
     }
   });
 

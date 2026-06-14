@@ -41,6 +41,7 @@ import {
   arbitrateSecretarySchedulingIntents,
   getSecretaryAgendaItemById,
   listSecretaryAgendaItems,
+  markSecretaryAgendaProviderSyncSatisfied,
   submitSecretarySchedulingIntent,
   type SecretarySchedulingIntent,
   type SecretaryTimeWindow,
@@ -122,6 +123,39 @@ describe('secretary-scheduling-arbitrator', () => {
       shouldRefreshSource: false,
       scheduledStart: '2026-05-04T09:00:00.000Z',
       scheduledEnd: '2026-05-04T10:00:00.000Z',
+    });
+  });
+
+  it('marks Training-created provider events as Secretary synced to prevent duplicate provider writes', () => {
+    const decision = submitSecretarySchedulingIntent(intent(), {
+      now: '2026-05-01T08:00:00.000Z',
+    });
+
+    const updated = markSecretaryAgendaProviderSyncSatisfied({
+      agendaItemId: decision.agendaItem.agendaItemId,
+      ownerUserId: OWNER_USER_ID,
+      tenantId: TENANT_ID,
+      providerEventId: 'outlook-training-event-1',
+      providerSource: 'outlook',
+      now: '2026-05-01T08:05:00.000Z',
+    });
+
+    expect(updated).toMatchObject({
+      agendaItemId: decision.agendaItem.agendaItemId,
+      lifecycleState: 'synced',
+      providerSyncState: 'synced',
+      providerEventId: 'outlook-training-event-1',
+      providerSource: 'outlook',
+    });
+    expect(getSecretaryAgendaItemById({
+      agendaItemId: decision.agendaItem.agendaItemId,
+      ownerUserId: OWNER_USER_ID,
+      tenantId: TENANT_ID,
+    })).toMatchObject({
+      lifecycleState: 'synced',
+      providerSyncState: 'synced',
+      providerEventId: 'outlook-training-event-1',
+      providerSource: 'outlook',
     });
   });
 

@@ -75,6 +75,20 @@ describe('google calendar error sanitization', () => {
     expect(isProviderEventNotFoundError(wrapped)).toBe(true);
   });
 
+  it('treats Microsoft Graph deleted or legacy non-calendar event ids as gone upstream', () => {
+    expect(isProviderEventNotFoundError({
+      statusCode: 404,
+      code: 'ErrorItemNotFound',
+      message: 'The specified object was not found in the store.',
+    })).toBe(true);
+
+    expect(isProviderEventNotFoundError({
+      statusCode: 400,
+      code: 'ErrorInvalidRequest',
+      body: '{"message":"This operation does not support binding to a non-calendar folder."}',
+    })).toBe(true);
+  });
+
   it('also sanitizes top-level Google error envelopes without response.data.error', () => {
     const safe = sanitizeGoogleCalendarErrorForLog({
       message: 'Request failed',

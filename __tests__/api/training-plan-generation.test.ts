@@ -436,7 +436,7 @@ describe('generateTrainingPlanForUser', () => {
     mockGetQuestionnaire.mockImplementation((id: string) => ({ id, title: 'Running Profile' }));
     mockGetMissingProfileFields.mockImplementation((_userId: number, questionnaireId: string) => (
       questionnaireId === 'triathlon-running'
-        ? [{ key: 'target_race_date' }]
+        ? [{ key: 'weekly_mileage_km' }]
         : []
     ));
 
@@ -451,7 +451,7 @@ describe('generateTrainingPlanForUser', () => {
       needsProfile: true,
       requiredQuestionnaireId: 'triathlon-running',
       requiredQuestionnaireTitle: 'Running Profile',
-      missingFields: [{ key: 'target_race_date' }],
+      missingFields: [{ key: 'weekly_mileage_km' }],
     });
     expect(mockBuildCoachKernelTrainingPlan).not.toHaveBeenCalled();
   });
@@ -660,6 +660,39 @@ describe('generateTrainingPlanForUser', () => {
     expect(resolveTrainingPlanStartDate(new Date('2026-04-17T10:00:00.000Z'), 'next_full_week')).toBe('2026-04-20');
     expect(resolveTrainingPlanStartDate(new Date('2026-04-17T10:00:00.000Z'), 'today')).toBe('2026-04-17');
     expect(resolveTrainingPlanStartDate(new Date('2026-04-20T10:00:00.000Z'), 'next_full_week')).toBe('2026-04-20');
+    expect(resolveTrainingPlanStartDate(new Date('2026-06-15T08:00:00.000Z'), 'today')).toBe('2026-06-15');
+  });
+
+  it('passes Monday June 15 2026 through as the plan start when iOS asks for today', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(new Date('2026-06-15T08:00:00.000Z'));
+
+    const result = await generateTrainingPlanForUser({
+      userId: 12,
+      tenantId: 12,
+      objective: 'Muscle Building',
+      startPolicy: 'today',
+    });
+
+    expect(result.status).toBe('created');
+    expect(mockBuildCoachKernelTrainingPlan).toHaveBeenCalledWith(expect.objectContaining({
+      startDate: '2026-06-15',
+    }));
+  });
+
+  it('honors the internal planner clock override for staging smoke runs', async () => {
+    const result = await generateTrainingPlanForUser({
+      userId: 12,
+      tenantId: 12,
+      objective: 'Muscle Building',
+      startPolicy: 'today',
+      plannerNow: '2026-06-15T08:00:00+01:00',
+    });
+
+    expect(result.status).toBe('created');
+    expect(mockBuildCoachKernelTrainingPlan).toHaveBeenCalledWith(expect.objectContaining({
+      startDate: '2026-06-15',
+    }));
   });
 
   // Rerun-4 R3: iOS derives the week count from "today" while the
@@ -902,6 +935,69 @@ describe('generateTrainingPlanForUser', () => {
       }),
       expect.stringContaining('blocked plan before cancellation/persistence'),
     );
+  });
+
+  it('blocks event-based race-style plans when the race date is missing', async () => {
+    mockLintGeneratedTrainingPlanPreflight.mockImplementationOnce((input: any) => {
+      expect(input).toMatchObject({
+        objective: 'Lisbon Marathon',
+        goalMode: 'event_based',
+        raceDate: null,
+        isRaceSpecific: true,
+      });
+      return {
+        status: 'fail',
+        blockers: [
+          {
+            ruleId: 'race_specific_plan_requires_race_date',
+            severity: 'blocker',
+            message: 'Event-based plans need a race date.',
+            affectedSessions: [],
+          },
+        ],
+        warnings: [],
+        suggestedFixes: [],
+      };
+    });
+
+    const result = await generateTrainingPlanForUser({
+      userId: 12,
+      tenantId: 12,
+      objective: 'Lisbon Marathon',
+      goalMode: 'event_based',
+      raceDate: null,
+    });
+
+    expect(result.status).toBe('plan_quality_blocked');
+    expect(mockPersistGeneratedTrainingPlan).not.toHaveBeenCalled();
+  });
+
+  it('allows continuous marathon-style planning without forcing an event day', async () => {
+    mockLintGeneratedTrainingPlanPreflight.mockImplementationOnce((input: any) => {
+      expect(input).toMatchObject({
+        objective: 'Lisbon Marathon',
+        goalMode: 'continuous',
+        raceDate: null,
+        isRaceSpecific: false,
+      });
+      return {
+        status: 'pass',
+        blockers: [],
+        warnings: [],
+        suggestedFixes: [],
+      };
+    });
+
+    const result = await generateTrainingPlanForUser({
+      userId: 12,
+      tenantId: 12,
+      objective: 'Lisbon Marathon',
+      goalMode: 'continuous',
+      raceDate: null,
+    });
+
+    expect(result.status).toBe('created');
+    expect(mockPersistGeneratedTrainingPlan).toHaveBeenCalledTimes(1);
   });
 
   it('does NOT mark calendarFetchDegraded on a normal calendar read', async () => {

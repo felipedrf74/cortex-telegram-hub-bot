@@ -279,7 +279,9 @@ function isAutomaticIdempotencyKey(idempotencyKey: string): boolean {
 }
 
 function isAutoRowFresh(row: IdempotencyRow): boolean {
-  const source = row.created_at || row.updated_at;
+  const source = row.status === 'succeeded' || row.status === 'failed'
+    ? row.updated_at || row.created_at
+    : row.created_at || row.updated_at;
   if (!source) return false;
   const parsed = Date.parse(source.includes('T') ? source : `${source.replace(' ', 'T')}Z`);
   if (!Number.isFinite(parsed)) return false;

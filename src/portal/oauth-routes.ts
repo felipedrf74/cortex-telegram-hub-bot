@@ -134,11 +134,11 @@ function loadDefaultOAuthServices(): PortalOAuthServices {
 }
 
 function htmlConnected(provider: string, message?: string): string {
-  return `<html><body style="font-family:system-ui;text-align:center;padding:60px"><h1>✅ Connected!</h1><p>${message ?? `${provider} account linked. You can close this window and return to Telegram.`}</p></body></html>`;
+  return `<html><body style="font-family:system-ui;text-align:center;padding:60px"><h1>✅ Connected!</h1><p>${message ?? `${provider} account linked. You can close this window and return to Nexus Hub.`}</p></body></html>`;
 }
 
 function htmlConnectionFailed(provider: string): string {
-  return `<html><body style="font-family:system-ui;text-align:center;padding:60px"><h1>❌ Connection Failed</h1><p>Please try again with /connect ${provider.toLowerCase()} in Telegram.</p></body></html>`;
+  return `<html><body style="font-family:system-ui;text-align:center;padding:60px"><h1>❌ Connection Failed</h1><p>Please return to Nexus Hub and try connecting ${provider.toLowerCase()} again.</p></body></html>`;
 }
 
 function redirectIOSOAuth(provider: OAuthProvider, res: Response, status: 'success' | 'error', message?: string): void {
@@ -502,7 +502,7 @@ export function registerPortalOAuthRoutes(app: Express, deps: PortalOAuthRouteDe
         await notifyTelegramConnection(userId, 'Todoist', services, getBotRef);
       } catch { /* notification is best-effort */ }
 
-      res.send(htmlConnected('Todoist', 'Todoist account linked. Your first sync is starting now — return to Telegram.'));
+      res.send(htmlConnected('Todoist', 'Todoist account linked. Your first sync is starting now. Return to Nexus Hub to continue.'));
     } catch (err) {
       logger.error({ err }, 'Todoist OAuth callback failed');
       res.status(500).send(htmlConnectionFailed('todoist'));
@@ -542,7 +542,7 @@ export function registerPortalOAuthRoutes(app: Express, deps: PortalOAuthRouteDe
         }
       } catch { /* notification is best-effort */ }
 
-      res.send(htmlConnected('Notion', 'Notion account linked. Return to Telegram and send your database URL to finish setup.'));
+      res.send(htmlConnected('Notion', 'Notion account linked. Return to Nexus Hub to finish setup.'));
     } catch (err) {
       logger.error({ err }, 'Notion OAuth callback failed');
       res.status(500).send(htmlConnectionFailed('notion'));

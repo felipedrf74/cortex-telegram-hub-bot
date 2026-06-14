@@ -32,8 +32,11 @@ interface SmokeReport {
   runId: string;
   startedAt: string;
   finishedAt: string;
+  plannerNow: string;
   userId?: number;
   tenantId?: number;
+  userEmail?: string | null;
+  scenario: SmokeScenario;
   provider: CalendarSource;
   dryRun: boolean;
   prerequisites: SmokePrerequisiteReport;
@@ -41,9 +44,13 @@ interface SmokeReport {
   cleanupFailures: string[];
 }
 
+type SmokeScenario = 'hybrid_event' | 'strength_no_event';
+
 interface SmokeOptions {
   userId?: number;
   tenantId?: number;
+  userEmail?: string | null;
+  scenario: SmokeScenario;
   provider: CalendarSource;
   runId: string;
   dryRun: boolean;
@@ -62,6 +69,11 @@ interface RuntimeDeps {
   getWeeksForPlan(planId: number): any[];
   getSessionsForWeek(weekId: number): any[];
   getEventsForSources(startDate: string, endDate: string, userId: number, sources: CalendarSource[]): Promise<UnifiedCalendarEvent[]>;
+  syncSecretaryAgendaItemsToProvider(
+    scope: { ownerUserId: number; tenantId: string | number; includeInactive?: boolean },
+    adapter: any,
+  ): Promise<any[]>;
+  createUnifiedCalendarSecretaryProviderAdapter(source: CalendarSource): any;
   fingerprintTrainingPlanGenerationRequest(payload: Record<string, unknown>): string;
   claimTrainingPlanGenerationIdempotency(userId: number, tenantId: number, idempotencyKey: string | null, requestHash: string): any;
   completeTrainingPlanGenerationIdempotency(
@@ -87,12 +99,33 @@ export function parseSmokeProvider(raw: string | undefined): CalendarSource {
   return raw?.trim().toLowerCase() === 'outlook' ? 'outlook' : 'google';
 }
 
+export function parseSmokeScenario(raw: string | undefined): SmokeScenario {
+  return raw?.trim().toLowerCase() === 'strength_no_event' ? 'strength_no_event' : 'hybrid_event';
+}
+
+export function validateSmokeNow(raw: string | undefined): string | null {
+  const trimmed = String(raw ?? '').trim();
+  if (!trimmed) return null;
+  const parsed = new Date(trimmed);
+  return Number.isFinite(parsed.getTime())
+    ? null
+    : 'TRAINING_FULL_FLOW_STAGING_NOW must be an ISO-8601 date/time';
+}
+
+export function parseSmokeNow(raw: string | undefined, fallback = new Date()): Date {
+  const trimmed = String(raw ?? '').trim();
+  if (!trimmed) return new Date(fallback);
+  const parsed = new Date(trimmed);
+  return Number.isFinite(parsed.getTime()) ? parsed : new Date(fallback);
+}
+
 export function evaluateTrainingFullFlowSmokePrerequisites(
   env: NodeJS.ProcessEnv,
   provider: CalendarSource,
 ): SmokePrerequisiteReport {
   const missing: string[] = [];
   const warnings: string[] = [];
+  const scenario = parseSmokeScenario(env.TRAINING_FULL_FLOW_STAGING_SCENARIO);
 
   const stagingMode = env.STAGING === 'true' || env.NODE_ENV === 'staging';
   if (!stagingMode) missing.push('STAGING=true or NODE_ENV=staging');
@@ -102,9 +135,14 @@ export function evaluateTrainingFullFlowSmokePrerequisites(
   if (env.TRAINING_FULL_FLOW_STAGING_USER_IS_DEDICATED !== '1') {
     missing.push('TRAINING_FULL_FLOW_STAGING_USER_IS_DEDICATED=1');
   }
+  const nowError = validateSmokeNow(env.TRAINING_FULL_FLOW_STAGING_NOW);
+  if (nowError) missing.push(nowError);
 
   const userId = Number(env.TRAINING_FULL_FLOW_STAGING_USER_ID);
-  if (!Number.isInteger(userId) || userId <= 0) missing.push('TRAINING_FULL_FLOW_STAGING_USER_ID=<staging user id>');
+  const userEmail = String(env.TRAINING_FULL_FLOW_STAGING_USER_EMAIL || '').trim();
+  if ((!Number.isInteger(userId) || userId <= 0) && !userEmail) {
+    missing.push('TRAINING_FULL_FLOW_STAGING_USER_ID=<staging user id> or TRAINING_FULL_FLOW_STAGING_USER_EMAIL=<email>');
+  }
 
   if (!env.OAUTH_ENCRYPTION_KEY) missing.push('OAUTH_ENCRYPTION_KEY');
   if (!env.DATABASE_PATH) {
@@ -118,6 +156,14 @@ export function evaluateTrainingFullFlowSmokePrerequisites(
   }
   if (provider === 'outlook' && (!env.OUTLOOK_CLIENT_ID || !env.OUTLOOK_CLIENT_SECRET)) {
     missing.push('OUTLOOK_CLIENT_ID and OUTLOOK_CLIENT_SECRET');
+  }
+  if (scenario === 'strength_no_event') {
+    if (!env.GOOGLE_CLIENT_ID || !env.GOOGLE_CLIENT_SECRET) {
+      missing.push('GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET for cross-provider duplicate read-back');
+    }
+    if (!env.OUTLOOK_CLIENT_ID || !env.OUTLOOK_CLIENT_SECRET) {
+      missing.push('OUTLOOK_CLIENT_ID and OUTLOOK_CLIENT_SECRET for cross-provider duplicate read-back');
+    }
   }
   if (env.TRAINING_FULL_FLOW_STAGING_ALLOW_NON_STAGING_DB === '1') {
     warnings.push('Non-staging-looking DATABASE_PATH allowed explicitly; verify this is not production.');
@@ -135,7 +181,7 @@ export async function runTrainingFullFlowStagingSmoke(
   const operations: SmokeOperationResult[] = [];
   const cleanupFailures: string[] = [];
 
-  if (options.dryRun || !prerequisites.ok || !options.userId) {
+  if (options.dryRun || !prerequisites.ok) {
     operations.push({
       operation: options.dryRun ? 'dry_run' : 'prerequisites',
       expected: 'A staging-mode process, dedicated staging user, OAuth tokens, and explicit live-write guardrails are present.',
@@ -148,8 +194,25 @@ export async function runTrainingFullFlowStagingSmoke(
 
   const runtime = deps ?? loadRuntimeDeps();
   runtime.initDatabase();
-  const userId = options.userId;
+  const resolvedUserId = options.userId ?? resolveSmokeUserIdByEmail(runtime.db(), options.userEmail ?? null);
+  if (!resolvedUserId) {
+    operations.push({
+      operation: 'user_resolution',
+      expected: 'Smoke user resolves from TRAINING_FULL_FLOW_STAGING_USER_ID or TRAINING_FULL_FLOW_STAGING_USER_EMAIL.',
+      actual: `No user found for configured smoke identity.`,
+      status: 'blocked',
+      evidence: [
+        `userId=${options.userId ?? 'missing'}`,
+        `userEmail=${options.userEmail || 'missing'}`,
+      ],
+    });
+    return finishReport(options, startedAt, prerequisites, operations, cleanupFailures);
+  }
+  const userId = resolvedUserId;
   const tenantId = options.tenantId ?? userId;
+  options = { ...options, userId, tenantId };
+  const otherProvider = options.provider === 'outlook' ? 'google' : 'outlook';
+  let otherProviderConnected = false;
   let createdPlanId: number | null = null;
   let profileBackup: ProfileBackup | null = null;
 
@@ -164,9 +227,19 @@ export async function runTrainingFullFlowStagingSmoke(
       });
       return finishReport(options, startedAt, prerequisites, operations, cleanupFailures);
     }
+    otherProviderConnected = runtime.isConnected(userId, otherProvider);
+    if (!otherProviderConnected) {
+      operations.push({
+        operation: 'cross_provider_connection',
+        expected: `${otherProvider} OAuth tokens exist so the smoke can prove the non-selected provider stays empty.`,
+        actual: `${otherProvider} is not connected for user ${userId}. Selected-provider writes will still run and clean up.`,
+        status: 'blocked',
+        evidence: [`userId=${userId}`, `provider=${otherProvider}`],
+      });
+    }
 
     profileBackup = backupProfiles(runtime.db(), userId);
-    seedSmokeProfiles(runtime.db(), userId);
+    seedSmokeProfiles(runtime.db(), userId, options.scenario);
 
     await cleanupActivePlans(runtime, userId, tenantId, operations, 'pre_cleanup');
 
@@ -202,7 +275,14 @@ export async function runTrainingFullFlowStagingSmoke(
     if (firstClaim.kind === 'claimed') {
       generationResult = await runtime.generateTrainingPlanForUser({ userId, tenantId, ...generationRequest });
       if (generationResult.status === 'created') {
-        runtime.completeTrainingPlanGenerationIdempotency(userId, tenantId, idempotencyKey, requestHash, generationResult.data, 201);
+        runtime.completeTrainingPlanGenerationIdempotency(
+          userId,
+          tenantId,
+          idempotencyKey,
+          requestHash,
+          generationResult.data ?? generationResult,
+          201,
+        );
       } else {
         runtime.failTrainingPlanGenerationIdempotency(userId, tenantId, idempotencyKey, requestHash);
       }
@@ -243,24 +323,7 @@ export async function runTrainingFullFlowStagingSmoke(
       expectedCount: planShape.linkedSessionCount,
     });
 
-    pushAssert(operations, {
-      operation: 'plan_shape_and_week_sync',
-      expected: 'The generated 4-week hybrid plan has 6 run + 5 gym sessions per week and week 1/week 2 are fully linked.',
-      checks: [
-        ['four weeks generated', planShape.weekCount === 4],
-        ['44 active sessions generated', planShape.activeSessionCount === 44],
-        ['week 1 has 6 run sessions', planShape.weekSummaries[0]?.runCount === 6],
-        ['week 1 has 5 gym sessions', planShape.weekSummaries[0]?.gymCount === 5],
-        ['week 2 has 6 run sessions', planShape.weekSummaries[1]?.runCount === 6],
-        ['week 2 has 5 gym sessions', planShape.weekSummaries[1]?.gymCount === 5],
-        ['week 1 sessions are linked', planShape.weekSummaries[0]?.linkedCount === 11],
-        ['week 2 sessions are linked', planShape.weekSummaries[1]?.linkedCount === 11],
-        ['long run stays on Saturday', planShape.longRunDays.every((day) => day === 'Saturday')],
-      ],
-      evidence: planShape.weekSummaries.map((week) =>
-        `week${week.weekNumber}: active=${week.activeCount}, run=${week.runCount}, gym=${week.gymCount}, linked=${week.linkedCount}`
-      ).concat([`longRunDays=${planShape.longRunDays.join(',') || 'none'}`]),
-    });
+    pushPlanShapeAssert(operations, options.scenario, planShape, generationResult);
 
     pushAssert(operations, {
       operation: 'provider_event_body_and_times',
@@ -309,8 +372,71 @@ export async function runTrainingFullFlowStagingSmoke(
       ],
     });
 
+    const secretaryAdapter = runtime.createUnifiedCalendarSecretaryProviderAdapter(options.provider);
+    const secretarySync = await runtime.syncSecretaryAgendaItemsToProvider(
+      { ownerUserId: userId, tenantId, includeInactive: false },
+      secretaryAdapter,
+    );
+    const planEventsAfterSecretarySync = await getPlanEventsWithRetry({
+      deps: runtime,
+      planWindow,
+      userId,
+      provider: options.provider,
+      planId: createdPlanId,
+      expectedCount: planShape.linkedSessionCount,
+    });
+    pushAssert(operations, {
+      operation: 'secretary_sync_no_selected_provider_duplicates',
+      expected: 'Secretary agenda provider sync sees Training-owned items as already mapped: selected provider remains one event per session.',
+      checks: [
+        ['selected provider event count unchanged', planEventsAfterSecretarySync.length === planEventsAfterSync.length],
+        ['selected provider still has no duplicate session markers', hasNoDuplicateSessionMarkers(planEventsAfterSecretarySync)],
+      ],
+      evidence: [
+        `secretaryResults=${secretarySync.length}`,
+        `provider=${options.provider}`,
+        `eventCountBefore=${planEventsAfterSync.length}`,
+        `eventCountAfterSecretary=${planEventsAfterSecretarySync.length}`,
+      ],
+    });
+    if (otherProviderConnected) {
+      const otherProviderEvents = await getPlanEventsWithRetry({
+        deps: runtime,
+        planWindow,
+        userId,
+        provider: otherProvider,
+        planId: createdPlanId,
+        expectedCount: 0,
+      });
+      pushAssert(operations, {
+        operation: 'secretary_sync_no_cross_provider_duplicates',
+        expected: 'The non-selected provider has zero matching Training events for this plan.',
+        checks: [
+          ['other provider has no matching plan events', otherProviderEvents.length === 0],
+        ],
+        evidence: [
+          `provider=${options.provider}`,
+          `otherProvider=${otherProvider}`,
+          `otherProviderEvents=${otherProviderEvents.length}`,
+        ],
+      });
+    } else {
+      operations.push({
+        operation: 'secretary_sync_no_cross_provider_duplicates',
+        expected: 'The non-selected provider has zero matching Training events for this plan.',
+        actual: `Blocked: ${otherProvider} OAuth is not connected for read-back.`,
+        status: 'blocked',
+        evidence: [`provider=${options.provider}`, `otherProvider=${otherProvider}`],
+      });
+    }
+
     const cancellation = await runtime.cancelTrainingPlanForUser(userId, createdPlanId, { tenantId });
-    const eventsAfterCancel = await runtime.getEventsForSources(planWindow.start, planWindow.end, userId, [options.provider]);
+    const eventsAfterCancel = await runtime.getEventsForSources(
+      planWindow.start,
+      planWindow.end,
+      userId,
+      otherProviderConnected ? [options.provider, otherProvider] : [options.provider],
+    );
     const remainingPlanEvents = eventsForPlan(eventsAfterCancel, createdPlanId);
     createdPlanId = null;
     pushAssert(operations, {
@@ -318,7 +444,7 @@ export async function runTrainingFullFlowStagingSmoke(
       expected: 'Cancel removes active plan rows and every provider event owned by this generated plan.',
       checks: [
         ['cancel returned cancelled', cancellation.status === 'cancelled'],
-        ['removed sessions', Number(cancellation.data?.removedSessions || 0) >= 44],
+        ['removed sessions', Number(cancellation.data?.removedSessions || 0) >= planShape.activeSessionCount],
         ['removed provider events', Number(cancellation.data?.removedEvents || 0) >= planEventsAfterSync.length],
         ['no plan events remain on provider', remainingPlanEvents.length === 0],
       ],
@@ -365,6 +491,34 @@ export async function runTrainingFullFlowStagingSmoke(
 }
 
 function buildGenerationRequest(options: SmokeOptions): Record<string, unknown> {
+  if (options.scenario === 'strength_no_event') {
+    return {
+      objective: `Muscle Building strength-primary block (${options.runId})`,
+      durationWeeks: 4,
+      preferredTime: '12:00',
+      preferredCardioTime: '07:00',
+      preferredStrengthTime: '12:00',
+      sessionsPerWeek: 6,
+      runSessionsPerWeek: 1,
+      strengthSessionsPerWeek: 5,
+      bikeSessionsPerWeek: null,
+      swimSessionsPerWeek: null,
+      startPolicy: 'today',
+      longWorkoutDay: 'Saturday',
+      notes: [
+        `staging smoke run ${options.runId}`,
+        'Advanced lifter profile: heavy full-gym load is acceptable.',
+        'Include only short aerobic support runs around 40 minutes when recovery allows.',
+      ].join(' '),
+      goalMode: 'continuous',
+      trainingPriority: 'strength',
+      raceDate: null,
+      twoADayPreference: 'auto',
+      calendarSource: options.provider,
+      plannerNow: options.now.toISOString(),
+    };
+  }
+
   const raceDate = DateTime.fromJSDate(options.now, { zone: 'Europe/Lisbon' })
     .plus({ months: 5 })
     .toISODate() ?? '2026-10-18';
@@ -391,6 +545,7 @@ function buildGenerationRequest(options: SmokeOptions): Record<string, unknown> 
     raceDate,
     twoADayPreference: 'preferred',
     calendarSource: options.provider,
+    plannerNow: options.now.toISOString(),
   };
 }
 
@@ -404,8 +559,40 @@ function backupProfiles(db: any, userId: number): ProfileBackup {
   return out;
 }
 
-function seedSmokeProfiles(db: any, userId: number): void {
-  const profiles: Record<ProfileType, Record<string, unknown>> = {
+function seedSmokeProfiles(db: any, userId: number, scenario: SmokeScenario): void {
+  const profiles: Record<ProfileType, Record<string, unknown>> = scenario === 'strength_no_event'
+    ? {
+      fitness: {
+        experience_level: 'Advanced (3+ years)',
+        weekly_frequency: '6+ days',
+        training_goals: ['Hypertrophy', 'Strength', 'General fitness'],
+        injuries: 'none',
+        available_equipment: 'Full commercial gym',
+        session_duration_minutes: '60',
+      },
+      'triathlon-running': {
+        weekly_mileage_km: '20',
+        longest_recent_run_km: '8',
+        easy_pace_min_per_km: '5:45',
+        target_race: 'No event scheduled',
+        preferred_workouts: ['Easy aerobic support runs'],
+        injury_history: 'none',
+        weekly_availability_days: '2',
+        session_duration_minutes: '40',
+      },
+      'triathlon-gym': {
+        training_age: '5+ years',
+        current_split: 'ABCDE hypertrophy split',
+        primary_goal: 'Hypertrophy',
+        squat_1rm_kg: '140',
+        bench_1rm_kg: '100',
+        deadlift_1rm_kg: '170',
+        sessions_per_week: '5',
+        equipment_access: 'Full commercial gym',
+        session_duration_minutes: '60',
+      },
+    }
+    : {
     fitness: {
       experience_level: 'Intermediate (1-3 years)',
       weekly_frequency: '6+ days',
@@ -461,6 +648,14 @@ function restoreProfiles(db: any, userId: number, backup: ProfileBackup): void {
       db.prepare('DELETE FROM user_profiles WHERE user_id = ? AND profile_type = ?').run(userId, profileType);
     }
   }
+}
+
+function resolveSmokeUserIdByEmail(db: any, email: string | null): number | null {
+  const normalized = String(email ?? '').trim().toLowerCase();
+  if (!normalized) return null;
+  const row = db.prepare('SELECT id FROM users WHERE lower(email) = ? LIMIT 1').get(normalized) as { id?: number } | undefined;
+  const id = Number(row?.id);
+  return Number.isInteger(id) && id > 0 ? id : null;
 }
 
 async function cleanupActivePlans(
@@ -564,8 +759,27 @@ function planWindowFor(deps: RuntimeDeps, planId: number): { start: string; end:
   return { start, end };
 }
 
-function eventsForPlan(events: UnifiedCalendarEvent[], planId: number): UnifiedCalendarEvent[] {
-  return events.filter((event) => parseTrainingIdentityMarker(event.description)?.planId === planId);
+function linkedProviderEventIdsForPlan(deps: RuntimeDeps, planId: number, provider: CalendarSource): Set<string> {
+  const ids = new Set<string>();
+  for (const week of deps.getWeeksForPlan(planId)) {
+    for (const session of deps.getSessionsForWeek(week.id)) {
+      if (String(session.calendar_source || '') === provider && session.calendar_event_id) {
+        ids.add(String(session.calendar_event_id));
+      }
+    }
+  }
+  return ids;
+}
+
+function eventsForPlan(
+  events: UnifiedCalendarEvent[],
+  planId: number,
+  linkedEventIds = new Set<string>(),
+): UnifiedCalendarEvent[] {
+  return events.filter((event) =>
+    parseTrainingIdentityMarker(event.description)?.planId === planId
+    || linkedEventIds.has(event.id)
+  );
 }
 
 async function getPlanEventsWithRetry(input: {
@@ -580,13 +794,14 @@ async function getPlanEventsWithRetry(input: {
   const attempts = Math.max(1, Number(process.env.TRAINING_FULL_FLOW_STAGING_READBACK_ATTEMPTS || 5));
   const delayMs = Math.max(0, Number(process.env.TRAINING_FULL_FLOW_STAGING_READBACK_DELAY_MS || 2_000));
   for (let attempt = 1; attempt <= attempts; attempt++) {
+    const linkedEventIds = linkedProviderEventIdsForPlan(input.deps, input.planId, input.provider);
     const events = await input.deps.getEventsForSources(
       input.planWindow.start,
       input.planWindow.end,
       input.userId,
       [input.provider],
     );
-    latest = eventsForPlan(events, input.planId);
+    latest = eventsForPlan(events, input.planId, linkedEventIds);
     if (latest.length >= input.expectedCount) break;
     if (attempt < attempts) await sleep(delayMs);
   }
@@ -638,11 +853,66 @@ function hasNoDuplicateSessionMarkers(events: UnifiedCalendarEvent[]): boolean {
   const seen = new Set<string>();
   for (const event of events) {
     const marker = parseTrainingIdentityMarker(event.description);
-    const key = `${marker?.planId}:${marker?.sessionId}:${marker?.sessionIdentityKey}`;
+    const key = marker
+      ? `${marker.planId}:${marker.sessionId}:${marker.sessionIdentityKey}`
+      : `event:${event.source}:${event.id}`;
     if (seen.has(key)) return false;
     seen.add(key);
   }
   return true;
+}
+
+function pushPlanShapeAssert(
+  operations: SmokeOperationResult[],
+  scenario: SmokeScenario,
+  planShape: ReturnType<typeof snapshotPlanShape>,
+  generationResult: any,
+): void {
+  if (scenario === 'strength_no_event') {
+    pushAssert(operations, {
+      operation: 'plan_shape_and_week_sync',
+      expected: 'The generated no-event strength plan is strength-dominant, continuous, and links current-week and next-week sessions when real calendar capacity allows.',
+      checks: [
+        ['four weeks generated', planShape.weekCount === 4],
+        ['week 1 has at least 3 gym sessions', (planShape.weekSummaries[0]?.gymCount ?? 0) >= 3],
+        ['week 1 is strength-dominant', (planShape.weekSummaries[0]?.gymCount ?? 0) > (planShape.weekSummaries[0]?.runCount ?? 0)],
+        ['week 1 has no more than 2 run sessions', (planShape.weekSummaries[0]?.runCount ?? 0) <= 2],
+        ['week 2 has at least 4 gym sessions', (planShape.weekSummaries[1]?.gymCount ?? 0) >= 4],
+        ['week 2 is strength-dominant', (planShape.weekSummaries[1]?.gymCount ?? 0) > (planShape.weekSummaries[1]?.runCount ?? 0)],
+        ['week 2 has no more than 2 run sessions', (planShape.weekSummaries[1]?.runCount ?? 0) <= 2],
+        ['week 1 has linked calendar sessions', (planShape.weekSummaries[0]?.linkedCount ?? 0) > 0],
+        ['week 2 has linked calendar sessions', (planShape.weekSummaries[1]?.linkedCount ?? 0) > 0],
+        ['response stayed continuous', generationResult?.data?.goalMode === 'continuous'],
+        ['response has no race date', generationResult?.data?.raceDate == null],
+      ],
+      evidence: planShape.weekSummaries.map((week) =>
+        `week${week.weekNumber}: active=${week.activeCount}, run=${week.runCount}, gym=${week.gymCount}, linked=${week.linkedCount}`
+      ).concat([
+        `goalMode=${generationResult?.data?.goalMode ?? 'none'}`,
+        `raceDate=${generationResult?.data?.raceDate ?? 'none'}`,
+      ]),
+    });
+    return;
+  }
+
+  pushAssert(operations, {
+    operation: 'plan_shape_and_week_sync',
+    expected: 'The generated 4-week hybrid plan has 6 run + 5 gym sessions per week and week 1/week 2 are fully linked.',
+    checks: [
+      ['four weeks generated', planShape.weekCount === 4],
+      ['44 active sessions generated', planShape.activeSessionCount === 44],
+      ['week 1 has 6 run sessions', planShape.weekSummaries[0]?.runCount === 6],
+      ['week 1 has 5 gym sessions', planShape.weekSummaries[0]?.gymCount === 5],
+      ['week 2 has 6 run sessions', planShape.weekSummaries[1]?.runCount === 6],
+      ['week 2 has 5 gym sessions', planShape.weekSummaries[1]?.gymCount === 5],
+      ['week 1 sessions are linked', planShape.weekSummaries[0]?.linkedCount === 11],
+      ['week 2 sessions are linked', planShape.weekSummaries[1]?.linkedCount === 11],
+      ['long run stays on Saturday', planShape.longRunDays.every((day) => day === 'Saturday')],
+    ],
+    evidence: planShape.weekSummaries.map((week) =>
+      `week${week.weekNumber}: active=${week.activeCount}, run=${week.runCount}, gym=${week.gymCount}, linked=${week.linkedCount}`
+    ).concat([`longRunDays=${planShape.longRunDays.join(',') || 'none'}`]),
+  });
 }
 
 function sleep(ms: number): Promise<void> {
@@ -676,8 +946,11 @@ function finishReport(
     runId: options.runId,
     startedAt,
     finishedAt: new Date().toISOString(),
+    plannerNow: options.now.toISOString(),
     userId: options.userId,
     tenantId: options.tenantId,
+    userEmail: options.userEmail ?? null,
+    scenario: options.scenario,
     provider: options.provider,
     dryRun: options.dryRun,
     prerequisites,
@@ -693,9 +966,12 @@ export function renderTrainingFullFlowSmokeReportMarkdown(report: SmokeReport): 
   lines.push(`- Run ID: \`${report.runId}\``);
   lines.push(`- Started: \`${report.startedAt}\``);
   lines.push(`- Finished: \`${report.finishedAt}\``);
+  lines.push(`- Planner clock: \`${report.plannerNow}\``);
   lines.push(`- Provider: \`${report.provider}\``);
+  lines.push(`- Scenario: \`${report.scenario}\``);
   lines.push(`- Dry run: \`${report.dryRun}\``);
   lines.push(`- Staging user ID: \`${report.userId ?? 'not configured'}\``);
+  lines.push(`- Staging user email: \`${report.userEmail ?? 'not configured'}\``);
   lines.push(`- Tenant ID: \`${report.tenantId ?? report.userId ?? 'not configured'}\``);
   lines.push('');
   lines.push('## Prerequisites');
@@ -773,6 +1049,10 @@ function loadRuntimeDeps(): RuntimeDeps {
       // eslint-disable-next-line @typescript-eslint/no-var-requires
       getEventsForSources: require('../services/unified-calendar').getEventsForSources,
       // eslint-disable-next-line @typescript-eslint/no-var-requires
+      syncSecretaryAgendaItemsToProvider: require('../services/secretary-agenda-provider-sync').syncSecretaryAgendaItemsToProvider,
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      createUnifiedCalendarSecretaryProviderAdapter: require('../services/secretary-unified-calendar-provider-adapter').createUnifiedCalendarSecretaryProviderAdapter,
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
       fingerprintTrainingPlanGenerationRequest: require('../services/training-plan-generation-idempotency').fingerprintTrainingPlanGenerationRequest,
       // eslint-disable-next-line @typescript-eslint/no-var-requires
       claimTrainingPlanGenerationIdempotency: require('../services/training-plan-generation-idempotency').claimTrainingPlanGenerationIdempotency,
@@ -795,6 +1075,8 @@ function loadRuntimeDeps(): RuntimeDeps {
     getWeeksForPlan: (...args) => loadAfterDatabaseInit().getWeeksForPlan(...args),
     getSessionsForWeek: (...args) => loadAfterDatabaseInit().getSessionsForWeek(...args),
     getEventsForSources: (...args) => loadAfterDatabaseInit().getEventsForSources(...args),
+    syncSecretaryAgendaItemsToProvider: (...args) => loadAfterDatabaseInit().syncSecretaryAgendaItemsToProvider(...args),
+    createUnifiedCalendarSecretaryProviderAdapter: (...args) => loadAfterDatabaseInit().createUnifiedCalendarSecretaryProviderAdapter(...args),
     fingerprintTrainingPlanGenerationRequest: (...args) => loadAfterDatabaseInit().fingerprintTrainingPlanGenerationRequest(...args),
     claimTrainingPlanGenerationIdempotency: (...args) => loadAfterDatabaseInit().claimTrainingPlanGenerationIdempotency(...args),
     completeTrainingPlanGenerationIdempotency: (...args) => loadAfterDatabaseInit().completeTrainingPlanGenerationIdempotency(...args),
@@ -815,19 +1097,24 @@ async function main(): Promise<void> {
   dotenv.config(envFile ? { path: envFile } : undefined);
 
   const provider = parseSmokeProvider(process.env.TRAINING_FULL_FLOW_STAGING_PROVIDER);
+  const scenario = parseSmokeScenario(process.env.TRAINING_FULL_FLOW_STAGING_SCENARIO);
   const userId = Number(process.env.TRAINING_FULL_FLOW_STAGING_USER_ID);
   const tenantId = Number(process.env.TRAINING_FULL_FLOW_STAGING_TENANT_ID || process.env.TRAINING_FULL_FLOW_STAGING_USER_ID);
+  const userEmail = String(process.env.TRAINING_FULL_FLOW_STAGING_USER_EMAIL || '').trim() || null;
   const runId = process.env.TRAINING_FULL_FLOW_STAGING_RUN_ID || buildTrainingFullFlowSmokeRunId();
   const dryRun = process.argv.includes('--dry-run') || process.env.TRAINING_FULL_FLOW_STAGING_DRY_RUN === '1';
   const resultsPath = process.env.TRAINING_FULL_FLOW_STAGING_RESULTS_PATH || DEFAULT_RESULTS_PATH;
+  const now = parseSmokeNow(process.env.TRAINING_FULL_FLOW_STAGING_NOW);
 
   const report = await runTrainingFullFlowStagingSmoke({
     userId: Number.isInteger(userId) && userId > 0 ? userId : undefined,
     tenantId: Number.isInteger(tenantId) && tenantId > 0 ? tenantId : undefined,
+    userEmail,
+    scenario,
     provider,
     runId,
     dryRun,
-    now: new Date(),
+    now,
     env: process.env,
   });
 

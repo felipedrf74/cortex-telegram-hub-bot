@@ -6,6 +6,31 @@ import { logger } from '../utils/logger';
 import { getTokens } from './oauth-store';
 import { CalendarEvent } from './google-calendar';
 import type { NormalizedRecurrence } from './recurrence-utils';
+import { isProviderEventNotFoundError } from './training-calendar-errors';
+
+const OUTLOOK_IMMUTABLE_ID_PREFER = 'IdType="ImmutableId"';
+
+function outlookCalendarViewPreferHeader(): string {
+  return `outlook.timezone="${config.app.timezone}", ${OUTLOOK_IMMUTABLE_ID_PREFER}`;
+}
+
+function fullOutlookEventDescription(event: any): string | undefined {
+  const bodyContent = typeof event?.body?.content === 'string' ? event.body.content : '';
+  if (bodyContent.trim()) return bodyContent;
+  return event?.bodyPreview || undefined;
+}
+
+function graphApiPathFromNextLink(nextLink: string): string {
+  try {
+    const url = new URL(nextLink);
+    const path = url.pathname.startsWith('/v1.0/')
+      ? url.pathname.slice('/v1.0'.length)
+      : url.pathname;
+    return `${path}${url.search}`;
+  } catch {
+    return nextLink;
+  }
+}
 
 export function isOutlookCalendarConfigured(userId?: number): boolean {
   // Multi-tenant rule (mirrors `isGoogleConfigured(userId)` in
@@ -189,28 +214,40 @@ export async function getEvents(startDate: string, endDate: string, userId?: num
     const client = userId
       ? getGraphClientForUser(userId)
       : getGraphClient();
-    const response = await client
+    const firstResponse = await client
       .api('/me/calendarView')
       .query({
         startDateTime: new Date(startDate).toISOString(),
         endDateTime: new Date(endDate).toISOString(),
         $orderby: 'start/dateTime',
-        $top: 50,
-        $select: 'id,subject,start,end,isAllDay,isCancelled,responseStatus,bodyPreview,location,webLink,categories',
+        $top: 100,
+        $select: 'id,subject,start,end,isAllDay,isCancelled,responseStatus,bodyPreview,body,location,webLink,categories',
       })
-      .header('Prefer', `outlook.timezone="${config.app.timezone}"`)
+      .header('Prefer', outlookCalendarViewPreferHeader())
       .get();
+
+    const values: any[] = [...(firstResponse.value || [])];
+    let nextLink = firstResponse['@odata.nextLink'];
+    let pageCount = 1;
+    while (typeof nextLink === 'string' && nextLink && pageCount < 10) {
+      const request = client.api(graphApiPathFromNextLink(nextLink));
+      request.header('Prefer', outlookCalendarViewPreferHeader());
+      const page = await request.get();
+      values.push(...(page.value || []));
+      nextLink = page['@odata.nextLink'];
+      pageCount += 1;
+    }
 
     const masterCategories = await getMasterCategories(userId);
 
-    return (response.value || [])
+    return values
       .filter((event: any) => !event.isCancelled && event.responseStatus?.response !== 'declined')
       .map((event: any) => ({
         id: event.id || '',
         summary: event.subject || '(No title)',
         start: event.start?.dateTime || '',
         end: event.end?.dateTime || '',
-        description: event.bodyPreview || undefined,
+        description: fullOutlookEventDescription(event),
         location: event.location?.displayName || undefined,
         htmlLink: event.webLink || undefined,
         categories: Array.isArray(event.categories) ? event.categories : undefined,
@@ -284,6 +321,7 @@ export async function createEvent(data: {
       'Creating Outlook calendar event',
     );
     const request = client.api('/me/events');
+    request.header('Prefer', OUTLOOK_IMMUTABLE_ID_PREFER);
     if (options?.signal) request.option('signal', options.signal);
     const response = await request.post(postBody);
 
@@ -363,6 +401,7 @@ export async function updateEvent(data: {
     if (data.new_end) patch.end = { dateTime: data.new_end, timeZone: config.app.timezone };
 
     const request = client.api(`/me/events/${data.event_id}`);
+    request.header('Prefer', OUTLOOK_IMMUTABLE_ID_PREFER);
     if (options?.signal) request.option('signal', options.signal);
     const response = await request.patch(patch);
 
@@ -384,14 +423,48 @@ export async function updateEvent(data: {
 export async function deleteEvent(eventId: string, userId?: number, options?: { signal?: AbortSignal }): Promise<void> {
   try {
     if (options?.signal?.aborted) throw new Error('provider_write_aborted');
-    const client = userId
-      ? getGraphClientForUser(userId)
-      : getGraphClient();
-    const request = client.api(`/me/events/${eventId}`);
-    if (options?.signal) request.option('signal', options.signal);
-    await request.delete();
+    await deleteOutlookEventRequest(eventId, userId, options, true);
   } catch (err) {
+    if (shouldRetryOutlookDeleteWithoutImmutableId(err)) {
+      logger.debug(
+        { err, userId },
+        'Retrying Outlook event delete without immutable-id preference for legacy stored event id',
+      );
+      try {
+        await deleteOutlookEventRequest(eventId, userId, options, false);
+        return;
+      } catch (retryErr) {
+        if (isProviderEventNotFoundError(retryErr)) throw retryErr;
+        logger.error({ err: retryErr }, 'Failed to delete Outlook calendar event after legacy id retry');
+        throw retryErr;
+      }
+    }
+    if (isProviderEventNotFoundError(err)) throw err;
     logger.error({ err }, 'Failed to delete Outlook calendar event');
     throw err;
   }
+}
+
+async function deleteOutlookEventRequest(
+  eventId: string,
+  userId: number | undefined,
+  options: { signal?: AbortSignal } | undefined,
+  preferImmutableId: boolean,
+): Promise<void> {
+  const client = userId
+    ? getGraphClientForUser(userId)
+    : getGraphClient();
+  const request = client.api(`/me/events/${eventId}`);
+  if (preferImmutableId) request.header('Prefer', OUTLOOK_IMMUTABLE_ID_PREFER);
+  if (options?.signal) request.option('signal', options.signal);
+  await request.delete();
+}
+
+function shouldRetryOutlookDeleteWithoutImmutableId(err: unknown): boolean {
+  const candidate = err as { statusCode?: unknown; code?: unknown; message?: unknown; body?: unknown } | null;
+  if (!candidate || typeof candidate !== 'object') return false;
+  if (Number(candidate.statusCode) !== 400) return false;
+  const code = String(candidate.code || '');
+  const message = `${String(candidate.message || '')} ${String(candidate.body || '')}`.toLowerCase();
+  return code === 'ErrorInvalidRequest' && message.includes('non-calendar folder');
 }

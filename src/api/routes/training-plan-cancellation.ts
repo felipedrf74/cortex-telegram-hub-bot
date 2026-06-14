@@ -218,6 +218,15 @@ async function cancelTrainingPlanForUserLocked(
       result.status === 'fulfilled' || isProviderEventNotFoundError(result.reason),
     ).length;
     removedEvents += planRemovedEvents;
+    const deletedCalendarEventsForCascade = deletionResults
+      .map((result, idx) => {
+        const target = deletionTargets[idx];
+        if (!target) return null;
+        return result.status === 'fulfilled' || isProviderEventNotFoundError(result.reason)
+          ? { eventId: target.eventId, source: target.source }
+          : null;
+      })
+      .filter((event): event is { eventId: string; source: CalendarSource } => Boolean(event));
 
     // Slice 4.D — record the cancellation outcome on the audit table
     // so future reconcilers can distinguish events we intentionally
@@ -290,6 +299,7 @@ async function cancelTrainingPlanForUserLocked(
       planId: plan.id,
       planVersion: planVersionForCascade,
       sessionIds: sessionIdsForCascade,
+      deletedCalendarEvents: deletedCalendarEventsForCascade,
       reason: 'training_plan_canceled',
     });
 

@@ -35,7 +35,7 @@ describe('training plan generation idempotency', () => {
     expect(second).toEqual({ kind: 'in_progress', idempotencyKey: key });
   });
 
-  it('preserves the original memory-mode created_at freshness anchor on completion', () => {
+  it('uses completion time as the auto-key replay freshness anchor after slow writes', () => {
     vi.useFakeTimers({ shouldAdvanceTime: false });
     vi.setSystemTime(new Date('2026-04-15T12:00:00.000Z'));
 
@@ -45,13 +45,18 @@ describe('training plan generation idempotency', () => {
     const first = claimTrainingPlanGenerationIdempotency(12, 34, key, requestHash);
     expect(first).toEqual({ kind: 'claimed', idempotencyKey: key, requestHash });
 
-    vi.setSystemTime(new Date('2026-04-15T12:00:10.000Z'));
+    vi.setSystemTime(new Date('2026-04-15T12:02:10.000Z'));
     completeTrainingPlanGenerationIdempotency(12, 34, key, requestHash, { planId: 901 }, 201);
 
-    vi.setSystemTime(new Date('2026-04-15T12:01:35.000Z'));
+    vi.setSystemTime(new Date('2026-04-15T12:03:35.000Z'));
     const second = claimTrainingPlanGenerationIdempotency(12, 34, key, requestHash);
 
-    expect(second).toEqual({ kind: 'claimed', idempotencyKey: key, requestHash });
+    expect(second).toEqual({
+      kind: 'replay',
+      idempotencyKey: key,
+      responseData: { planId: 901 },
+      statusCode: 201,
+    });
   });
 
   it('scopes memory-mode idempotency claims by tenant', () => {

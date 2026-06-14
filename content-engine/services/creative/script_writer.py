@@ -911,6 +911,15 @@ def _looks_incomplete(script: str) -> bool:
     return not re.search(r'(?:[.!?]"?|[.!?]\)?|\])$', lines[-1])
 
 
+def _has_recoverable_short_form_substance(script: str, req: ScriptRequest) -> bool:
+    if not _is_short_form(req):
+        return False
+    spoken = " ".join(_spoken_lines(script))
+    word_count = len(re.findall(r"\b\w+\b", spoken))
+    min_words, _max_words = _short_form_word_range(_target_duration_seconds(req))
+    return _script_has_substance(script, req) and word_count >= max(35, int(min_words * 0.5))
+
+
 def _needs_script_repair(script: str, req: ScriptRequest, script_style: str) -> bool:
     if not _script_has_substance(script, req):
         return True
@@ -929,10 +938,14 @@ def _needs_script_repair(script: str, req: ScriptRequest, script_style: str) -> 
 def _repair_prompt(req: ScriptRequest, script_style: str, partial_script: str, language_label: str) -> str:
     duration = _target_duration_seconds(req)
     min_words, max_words = _short_form_word_range(duration)
+    creator_voice_card = _creator_profile_block(req)
     if _is_short_form(req) and script_style != "bullets":
         return f"""The previous short-form draft was incomplete or too thin.
 Rewrite it as a complete {duration}-second {req.format} script for this topic:
 {req.topic}
+
+[creator_voice_card]
+{creator_voice_card}
 
 Audience/niche: {req.niche}
 Language: {language_label}
@@ -945,6 +958,9 @@ Return the script body, then a line with exactly ---METADATA---, then valid JSON
     return f"""The previous draft was incomplete or too thin.
 Rewrite a stronger draft for this topic:
 {req.topic}
+
+[creator_voice_card]
+{creator_voice_card}
 
 Audience/niche: {req.niche}
 Language: {language_label}
@@ -1274,7 +1290,16 @@ This metadata block is mandatory in draft, quick, standard, and deep modes."""
     else:
         script_text = _clean_script_dividers(script_text)
 
-    if _needs_script_repair(script_text, req, normalized_script_style):
+    metadata_recovered_without_degradation = (
+        not parse_degraded
+        and any(
+            "Script metadata was omitted" in warning or "fallback metadata was derived" in warning
+            for warning in warnings
+        )
+        and _has_recoverable_short_form_substance(script_text, req)
+    )
+
+    if _needs_script_repair(script_text, req, normalized_script_style) and not metadata_recovered_without_degradation:
         warnings.append("Script body was incomplete; regenerated with a compact repair prompt.")
         try:
             repaired_raw = await ask_claude(

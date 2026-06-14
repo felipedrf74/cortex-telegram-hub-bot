@@ -255,6 +255,21 @@ describe('portal oauth routes', () => {
     expect(res.redirectedTo).toBe('me.nexushub.app://oauth/outlook?status=error&message=Connection%20failed');
   });
 
+  it('renders Nexus Hub retry copy on non-app OAuth callback failures without Telegram instructions', async () => {
+    const services = createServices({
+      consumeNonce: vi.fn(() => null),
+    });
+    const routes = captureRoutes(services);
+
+    const res = await invoke(findRoute(routes, '/oauth/outlook/callback'), {
+      query: { code: 'code-expired', state: 'tg:7:expired-nonce' },
+    });
+
+    expect(res.statusCode).toBe(400);
+    expect(String(res.sent)).toContain('Please return to Nexus Hub and try connecting outlook again.');
+    expect(String(res.sent)).not.toMatch(/Telegram|\/connect outlook/i);
+  });
+
   it('starts Todoist sync after a Telegram-origin callback stores tokens', async () => {
     const services = createServices({
       consumeNonce: vi.fn(() => ({ userId: 7, provider: 'todoist' })),

@@ -41,15 +41,40 @@ describe('training profile requirements', () => {
     const requirement = resolveObjectiveProfileRequirement(
       'marathon prep',
       7,
-      fakeProfileSource({ 'triathlon-running': ['raceDate', 'weeklyMileage'] }),
+      fakeProfileSource({ 'triathlon-running': ['weekly_mileage_km'] }),
     );
 
     expect(requirement).toEqual({
       questionnaireId: 'triathlon-running',
       title: 'Title for triathlon-running',
-      missingFields: ['raceDate', 'weeklyMileage'],
-      message: 'Complete your running profile first so the plan can ask about race date, target event, current mileage, and workout preferences.',
+      missingFields: ['weekly_mileage_km'],
+      message: 'Complete your running profile first so the plan can calibrate target context, current mileage, and workout preferences.',
     });
+  });
+
+  it('does not require target race date to complete a running profile', () => {
+    const requirement = resolveObjectiveProfileRequirement(
+      'marathon prep',
+      7,
+      {
+        ...fakeProfileSource({ 'triathlon-running': ['target_race_date'] }),
+        getProfile(_userId, questionnaireId) {
+          if (questionnaireId === 'triathlon-running') {
+            return {
+              data: {
+                target_race: 'Marathon',
+                weekly_mileage_km: '35',
+                easy_pace_min_per_km: '5:30',
+                weekly_availability_days: '5',
+              },
+            };
+          }
+          return null;
+        },
+      },
+    );
+
+    expect(requirement).toBeNull();
   });
 
   it('returns the gym questionnaire requirement when strength profile fields are missing', () => {

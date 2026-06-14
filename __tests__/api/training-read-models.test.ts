@@ -98,7 +98,13 @@ describe('training-read-models', () => {
 
   it('returns today session from the active plan plus linked calendar time', async () => {
     const todayName = new Date().toLocaleDateString('en-US', { weekday: 'long' });
-    mockActivePlan = { id: 10, name: 'Marathon Build', periodization: 'build', start_date: '2026-04-20T00:00:00.000Z' };
+    mockActivePlan = {
+      id: 10,
+      name: 'Marathon Build',
+      periodization: 'build',
+      start_date: '2026-04-20T00:00:00.000Z',
+      preferences_json: JSON.stringify({ trainingCalendarSource: 'outlook' }),
+    };
     mockCurrentWeek = { id: 20, week_number: 1, focus: 'base' };
     mockWeekSessions = [{
       id: 30,
@@ -121,6 +127,7 @@ describe('training-read-models', () => {
       name: 'Marathon Build',
       weekNumber: 1,
       phase: 'base',
+      calendarSource: 'outlook',
     });
     expect(result.session).toMatchObject({
       id: '30',
@@ -141,7 +148,13 @@ describe('training-read-models', () => {
     // follow this week yet" even though the plan was real. Calendar
     // enrichment is decoration only (adds `time:`) and must never erase
     // session content.
-    mockActivePlan = { id: 99, name: 'Strength Block', periodization: 'build', start_date: '2026-04-20T00:00:00.000Z' };
+    mockActivePlan = {
+      id: 99,
+      name: 'Strength Block',
+      periodization: 'build',
+      start_date: '2026-04-20T00:00:00.000Z',
+      preferences_json: JSON.stringify({ trainingCalendarSource: 'google' }),
+    };
     mockCurrentWeek = { id: 199, week_number: 1, focus: 'strength' };
     mockWeekSessions = [
       { id: 501, day_of_week: 'Monday', title: 'Strength + Core', session_type: 'gym', calendar_event_id: 'evt-mon', duration_minutes: 40, status: 'planned', description: 'Lifting day.', exercises_json: JSON.stringify([{ name: 'squat' }, { name: 'press' }]) },
@@ -152,7 +165,7 @@ describe('training-read-models', () => {
 
     const result = await getWeekPlan(42, 42);
 
-    expect(result.plan).toMatchObject({ name: 'Strength Block', weekNumber: 1 });
+    expect(result.plan).toMatchObject({ name: 'Strength Block', weekNumber: 1, calendarSource: 'google' });
     expect(result.sessions).toHaveLength(2);
     expect(result.sessions[0]).toMatchObject({ id: '501', title: 'Strength + Core', duration: 40 });
     // Time is null because calendar enrichment was unavailable, but the

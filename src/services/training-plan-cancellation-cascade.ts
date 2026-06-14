@@ -12,6 +12,10 @@ export interface TrainingCancellationCascadeInput {
   planId: number;
   planVersion?: number | null;
   sessionIds: number[];
+  deletedCalendarEvents?: Array<{
+    eventId: string;
+    source: string;
+  }>;
   reason?: string | null;
 }
 
@@ -62,6 +66,13 @@ export function cancelTrainingPlanCrossSkillDependents(
       );
     }
   }
+
+  markDeletedSecretaryProviderMappings({
+    ownerUserId: input.userId,
+    tenantId,
+    planId: input.planId,
+    deletedCalendarEvents: input.deletedCalendarEvents ?? [],
+  });
 
   const relatedSkillVersion = buildTrainingRelatedSkillVersion(planVersion);
   let staleMemories = 0;
@@ -138,6 +149,56 @@ function normalizeTenantId(value: number | string | null | undefined, fallbackUs
  */
 export function buildTrainingPlanIntentPrefixPattern(planId: number): string {
   return `training:${planId}:%`;
+}
+
+function markDeletedSecretaryProviderMappings(scope: {
+  ownerUserId: number;
+  tenantId: number;
+  planId: number;
+  deletedCalendarEvents: Array<{
+    eventId: string;
+    source: string;
+  }>;
+}): number {
+  const deletionKeys = [...new Set(scope.deletedCalendarEvents
+    .map((event) => {
+      const source = String(event.source || '').trim();
+      const eventId = String(event.eventId || '').trim();
+      return source && eventId ? `${source}:${eventId}` : '';
+    })
+    .filter(Boolean))];
+  if (deletionKeys.length === 0) return 0;
+
+  const placeholders = deletionKeys.map(() => '?').join(',');
+  try {
+    const result = getDb().prepare(`
+      UPDATE secretary_agenda_items
+         SET provider_sync_state = 'deleted',
+             updated_at = CURRENT_TIMESTAMP
+       WHERE owner_user_id = ?
+         AND tenant_id = ?
+         AND source_skill = 'training'
+         AND source_intent_id LIKE ?
+         AND lifecycle_state IN ('canceled', 'superseded')
+         AND provider_event_id IS NOT NULL
+         AND provider_event_id != ''
+         AND provider_source IS NOT NULL
+         AND COALESCE(provider_sync_state, '') != 'deleted'
+         AND (provider_source || ':' || provider_event_id) IN (${placeholders})
+    `).run(
+      scope.ownerUserId,
+      String(scope.tenantId),
+      buildTrainingPlanIntentPrefixPattern(scope.planId),
+      ...deletionKeys,
+    );
+    return Number(result.changes ?? 0);
+  } catch (err) {
+    logger.warn(
+      { err, userId: scope.ownerUserId, tenantId: scope.tenantId, planId: scope.planId },
+      'Failed to mark Training-owned Secretary provider mappings deleted during plan cancellation cascade',
+    );
+    return 0;
+  }
 }
 
 /**

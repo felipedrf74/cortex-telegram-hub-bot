@@ -3,6 +3,7 @@ import fs from 'fs';
 import path from 'path';
 import type { Request } from 'express';
 import { vi } from 'vitest';
+import { listCanonicalMigrationFiles } from '../utils/migrations';
 
 const dbState = vi.hoisted(() => ({
   db: null as Database.Database | null,
@@ -154,9 +155,7 @@ function applyMigrations(db: Database.Database): void {
     );
   `);
 
-  const files = fs.readdirSync(MIGRATIONS_DIR)
-    .filter((file) => file.endsWith('.sql'))
-    .sort();
+  const files = listCanonicalMigrationFiles(fs.readdirSync(MIGRATIONS_DIR));
 
   for (const file of files) {
     const sql = fs.readFileSync(path.join(MIGRATIONS_DIR, file), 'utf-8');

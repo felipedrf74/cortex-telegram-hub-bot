@@ -149,6 +149,7 @@ export async function getTodaySession(userId: number, tenantId: number) {
         lifecycleState: activePlan.status ?? 'active',
         weekNumber: currentWeek?.week_number || 1,
         phase: currentWeek?.focus || activePlan.periodization || null,
+        calendarSource: resolvePlanCalendarSource(activePlan),
       };
       if (currentWeek) {
         const sessions = trainingPlans.getSessionsForWeek(currentWeek.id);
@@ -322,6 +323,7 @@ export async function getWeekPlan(userId: number, tenantId: number) {
     lifecycleState?: string | null;
     weekNumber: number;
     phase: string | null;
+    calendarSource?: string | null;
   } | null = null;
 
   try {
@@ -336,6 +338,7 @@ export async function getWeekPlan(userId: number, tenantId: number) {
         lifecycleState: plan.status ?? 'active',
         weekNumber,
         phase: currentWeek?.focus || plan.periodization || null,
+        calendarSource: resolvePlanCalendarSource(plan),
       };
       const weekSessions = currentWeek ? trainingPlans.getSessionsForWeek(currentWeek.id) : [];
       if (Array.isArray(weekSessions) && weekSessions.length > 0) {
@@ -452,9 +455,28 @@ export async function getAllPlanWeeks(userId: number, tenantId: number) {
       periodization: plan.periodization ?? null,
       raceDate: typeof planPreferences?.raceDate === 'string' ? planPreferences.raceDate : null,
       goalMode: typeof planPreferences?.goalMode === 'string' ? planPreferences.goalMode : null,
+      calendarSource: resolvePlanCalendarSource(plan),
     },
     weeks: mappedWeeks,
   };
+}
+
+function resolvePlanCalendarSource(plan: any): 'google' | 'outlook' | null {
+  const preferences = parsePlanPreferences(plan?.preferences_json);
+  const source = preferences?.trainingCalendarSource ?? preferences?.calendarSource;
+  return source === 'google' || source === 'outlook' ? source : null;
+}
+
+function parsePlanPreferences(raw: unknown): Record<string, any> | null {
+  if (typeof raw !== 'string' || !raw.trim()) return null;
+  try {
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? parsed as Record<string, any>
+      : null;
+  } catch {
+    return null;
+  }
 }
 
 function buildWeekSessionDto(session: any, plan: any, linkedCalendarEvent: any) {

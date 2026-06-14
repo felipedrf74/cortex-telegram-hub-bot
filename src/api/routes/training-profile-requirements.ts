@@ -67,8 +67,8 @@ export function resolveObjectiveProfileRequirement(
   if (objectiveNeedsTriathlonProfiles(lowerObjective)) {
     return maybeRequirement(
       'triathlon-running',
-      'Complete your running profile first so triathlon planning can calibrate run load, race context, and availability.',
-      ['weekly_mileage_km', 'easy_pace_min_per_km', 'target_race', 'target_race_date', 'weekly_availability_days'],
+      'Complete your running profile first so triathlon planning can calibrate run load, target context, and availability.',
+      ['weekly_mileage_km', 'easy_pace_min_per_km', 'target_race', 'weekly_availability_days'],
     ) ?? maybeRequirement(
       'triathlon-cycling',
       'Complete your cycling profile first so triathlon planning can calibrate bike load, FTP or effort, and ride availability.',
@@ -87,8 +87,8 @@ export function resolveObjectiveProfileRequirement(
   if (objectiveNeedsRunningProfile(lowerObjective)) {
     return maybeRequirement(
       'triathlon-running',
-      'Complete your running profile first so the plan can ask about race date, target event, current mileage, and workout preferences.',
-      ['weekly_mileage_km', 'easy_pace_min_per_km', 'target_race', 'target_race_date', 'weekly_availability_days'],
+      'Complete your running profile first so the plan can calibrate target context, current mileage, and workout preferences.',
+      ['weekly_mileage_km', 'easy_pace_min_per_km', 'target_race', 'weekly_availability_days'],
     );
   }
 

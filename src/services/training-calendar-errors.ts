@@ -13,7 +13,13 @@ export function isProviderEventNotFoundError(err: unknown): boolean {
   if (status === 404 || status === 410) return true;
 
   const code = String(anyErr?.code ?? anyErr?.error?.code ?? '').toLowerCase();
-  if (code === 'event_not_found' || code === 'not_found' || code === 'notfound' || code === 'gone') return true;
+  if (
+    code === 'event_not_found'
+    || code === 'not_found'
+    || code === 'notfound'
+    || code === 'gone'
+    || code === 'erroritemnotfound'
+  ) return true;
 
   const reason = String(
     anyErr?.reason
@@ -24,6 +30,11 @@ export function isProviderEventNotFoundError(err: unknown): boolean {
   ).toLowerCase();
   if (reason === 'notfound' || reason === 'not_found' || reason === 'event_not_found' || reason === 'gone') return true;
 
-  const message = String(anyErr?.message ?? anyErr?.response?.data?.message ?? '').toLowerCase();
-  return /\b(404|410|event[_\s-]not[_\s-]found|calendar event not found|event gone|410 gone)\b/.test(message);
+  const message = String(
+    anyErr?.message
+    ?? anyErr?.body
+    ?? anyErr?.response?.data?.message
+    ?? '',
+  ).toLowerCase();
+  return /\b(404|410|event[_\s-]not[_\s-]found|calendar event not found|event gone|410 gone|object was not found in the store|non-calendar folder)\b/.test(message);
 }

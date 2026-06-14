@@ -1236,7 +1236,7 @@ describe('Training API routes', () => {
     expect(mockBuildCoachKernelTrainingPlan).not.toHaveBeenCalled();
   });
 
-  it('blocks race-specific generated plans before writes when the race date is missing', async () => {
+  it('blocks event-based generated plans before writes when the race date is missing', async () => {
     mockGetProfile.mockImplementation((_userId: number, profile: string) => {
       if (profile === 'fitness') return { experienceLevel: 'Intermediate', available_equipment: 'Full gym' };
       if (profile === 'triathlon-running') return { target_race: 'Marathon' };
@@ -1263,6 +1263,7 @@ describe('Training API routes', () => {
     const res = await dispatch('POST', '/plan/generate', {}, {
       objective: 'Lisbon Marathon',
       preferredTime: '07:00',
+      goalMode: 'event_based',
     });
 
     expect(res.statusCode).toBe(200);
@@ -1278,6 +1279,44 @@ describe('Training API routes', () => {
     expect(mockCreateSession).not.toHaveBeenCalled();
     expect(mockCreateEvent).not.toHaveBeenCalled();
     expect(mockInvalidateCalendarCaches).not.toHaveBeenCalled();
+  });
+
+  it('creates continuous marathon-style plans without forcing a race date', async () => {
+    mockGetProfile.mockImplementation((_userId: number, profile: string) => {
+      if (profile === 'fitness') return { experienceLevel: 'Intermediate', available_equipment: 'Full gym' };
+      if (profile === 'triathlon-running') return { target_race: 'Marathon' };
+      return null;
+    });
+    mockBuildCoachKernelTrainingPlan.mockReturnValue(makeKernelPlan([
+      {
+        weekNumber: 1,
+        focus: 'base',
+        intensityPct: 70,
+        sessions: [
+          {
+            dayOfWeek: 'Monday',
+            sessionType: 'run',
+            title: 'Base Run',
+            durationMinutes: 50,
+            description: 'Easy aerobic run.',
+            exercises: [],
+          },
+        ],
+      },
+    ]));
+
+    const res = await dispatch('POST', '/plan/generate', {}, {
+      objective: 'Lisbon Marathon',
+      preferredTime: '07:00',
+      goalMode: 'continuous',
+    });
+
+    expect(res.statusCode).toBe(201);
+    expect(res.body.ok).toBe(true);
+    expect(res.body.data.status).not.toBe('plan_quality_blocked');
+    expect(mockCreatePlan).toHaveBeenCalledTimes(1);
+    expect(mockCreateSession).toHaveBeenCalled();
+    expect(mockCreateEvent).toHaveBeenCalled();
   });
 
   it('schedules same-day run and gym sessions at separate preferred times', async () => {
@@ -1523,6 +1562,31 @@ describe('Training API routes', () => {
     const second = claimTrainingPlanGenerationIdempotency(12, 12, key, requestHash);
 
     expect(second).toEqual({ kind: 'claimed', idempotencyKey: key, requestHash });
+  });
+
+  it('replays slow automatic plan-generation successes from completion time', () => {
+    vi.useFakeTimers({ shouldAdvanceTime: false });
+    vi.setSystemTime(new Date('2026-04-15T12:00:00.000Z'));
+
+    const key = 'auto:slow-success-request';
+    const requestHash = 'same-plan-request-hash';
+    const responseData = { planId: 902, resolvedStartDate: '2026-04-20' };
+
+    const first = claimTrainingPlanGenerationIdempotency(12, 12, key, requestHash);
+    expect(first).toEqual({ kind: 'claimed', idempotencyKey: key, requestHash });
+
+    vi.setSystemTime(new Date('2026-04-15T12:02:00.000Z'));
+    completeTrainingPlanGenerationIdempotency(12, 12, key, requestHash, responseData, 201);
+
+    vi.setSystemTime(new Date('2026-04-15T12:02:01.000Z'));
+    const second = claimTrainingPlanGenerationIdempotency(12, 12, key, requestHash);
+
+    expect(second).toEqual({
+      kind: 'replay',
+      idempotencyKey: key,
+      responseData,
+      statusCode: 201,
+    });
   });
 
   it('rejects reused plan creation idempotency keys with different inputs', async () => {

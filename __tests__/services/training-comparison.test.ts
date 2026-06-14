@@ -8,6 +8,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
 import fs from 'fs';
 import path from 'path';
+import { listCanonicalMigrationFiles } from '../utils/migrations';
 
 const MIGRATIONS_DIR = path.resolve(__dirname, '../../migrations');
 
@@ -20,7 +21,7 @@ function createTestDb(): Database.Database {
 
 function applyMigrations(db: Database.Database): void {
   db.exec(`CREATE TABLE IF NOT EXISTS _migrations (name TEXT PRIMARY KEY, applied_at TEXT DEFAULT (datetime('now')))`);
-  const files = fs.readdirSync(MIGRATIONS_DIR).filter(f => f.endsWith('.sql')).sort();
+  const files = listCanonicalMigrationFiles(fs.readdirSync(MIGRATIONS_DIR));
   for (const file of files) {
     if (!db.prepare('SELECT 1 FROM _migrations WHERE name = ?').get(file)) {
       db.exec(fs.readFileSync(path.join(MIGRATIONS_DIR, file), 'utf-8'));

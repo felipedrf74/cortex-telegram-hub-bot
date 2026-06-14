@@ -21,6 +21,59 @@ describe('buildCoachKernelTrainingPlan — side effects', () => {
     _resetCoachPlanStoreForTests();
   });
 
+  const dayOffsets: Record<string, number> = {
+    monday: 0,
+    tuesday: 1,
+    wednesday: 2,
+    thursday: 3,
+    friday: 4,
+    saturday: 5,
+    sunday: 6,
+  };
+
+  function scheduledDateFor(startDate: string, weekNumber: number, dayOfWeek: string): string {
+    const start = new Date(`${startDate}T00:00:00.000Z`);
+    const offset = dayOffsets[dayOfWeek.trim().toLowerCase()] ?? 0;
+    start.setUTCDate(start.getUTCDate() + ((weekNumber - 1) * 7) + offset);
+    return start.toISOString();
+  }
+
+  function lintWeekSessions(args: {
+    startDate: string;
+    durationWeeks: number;
+    weekNumber: number;
+    focus?: string;
+    sessions: NonNullable<ReturnType<typeof buildCoachKernelTrainingPlan>['weeks']>[number]['sessions'];
+  }) {
+    return lintPlan({
+      now: new Date('2026-07-01T08:00:00.000Z'),
+      startDate: args.startDate,
+      durationWeeks: args.durationWeeks,
+      equipmentProfile: 'full_gym',
+      weeks: [{
+        weekNumber: args.weekNumber,
+        focus: args.focus,
+        sessions: (args.sessions ?? []).map((session): PlanLintSession => {
+          const text = `${session.title} ${session.description ?? ''}`.toLowerCase();
+          return {
+            dayOfWeek: String(session.dayOfWeek || '').toLowerCase(),
+            sessionType: String(session.sessionType || '').toLowerCase(),
+            title: session.title,
+            description: session.description,
+            durationMinutes: session.durationMinutes,
+            status: 'scheduled',
+            scheduledDate: scheduledDateFor(args.startDate, args.weekNumber, String(session.dayOfWeek || 'monday')),
+            exerciseTokens: (session.exercises ?? [])
+              .map((exercise) => `${exercise.exerciseId ?? ''} ${exercise.name ?? ''}`.trim())
+              .filter(Boolean),
+            isLowerHeavy: /lower|squat|deadlift|quad|posterior chain|lunge/.test(text),
+            isLongRun: session.sessionType === 'run' && /\blong\s+run\b/i.test(session.title),
+          };
+        }),
+      }],
+    });
+  }
+
   it('normalizes invalid durationWeeks defensively before allocating weeks', () => {
     expect(normalizeTrainingPlanDurationWeeks(-3)).toBe(4);
     expect(normalizeTrainingPlanDurationWeeks(0)).toBe(4);
@@ -134,10 +187,10 @@ describe('buildCoachKernelTrainingPlan — side effects', () => {
     });
 
     expect(athlete.goals.primaryFocus).toBe('strength');
-    expect(athlete.goals.weeklySessionsTarget).toMatchObject({ running: 3, strength: 2 });
+    expect(athlete.goals.weeklySessionsTarget).toMatchObject({ running: 2, strength: 2 });
   });
 
-  it('builds muscle-building weeks with requested gym volume plus aerobic support', () => {
+  it('caps unspecified-experience muscle-building weeks while keeping aerobic support', () => {
     const plan = buildCoachKernelTrainingPlan({
       userId: 506,
       objective: 'Muscle Building',
@@ -156,7 +209,7 @@ describe('buildCoachKernelTrainingPlan — side effects', () => {
     });
 
     expect(plan.sport).toBe('gym');
-    expect(plan.weeks?.[0]?.sessions?.filter((session) => session.sessionType === 'gym')).toHaveLength(4);
+    expect(plan.weeks?.[0]?.sessions?.filter((session) => session.sessionType === 'gym')).toHaveLength(3);
     expect(plan.weeks?.[0]?.sessions?.some((session) => session.sessionType === 'run')).toBe(true);
   });
 
@@ -638,5 +691,212 @@ describe('buildCoachKernelTrainingPlan — side effects', () => {
     expect(phases).not.toContain('deload');
     expect(phases[15]).toBe('race');
     expect(plan.decisionReasons?.map((reason) => reason.code)).not.toContain('event_based_missing_race_date');
+  });
+
+  it('creates coherent app-facing plans for every supported training discipline', () => {
+    const startDate = '2026-07-06'; // Monday
+    const supportedPlanCases = [
+      {
+        label: 'running',
+        objective: '10k running base',
+        expectedPrimaryFocus: 'running',
+        expectedPlanSport: 'running',
+        expectedSessionTypes: ['run'],
+        durationWeeks: 1,
+        sessionsPerWeek: 4,
+        strengthSessionsPerWeek: 1,
+        fitnessProfile: { experience_level: 'beginner', available_equipment: 'Full gym' },
+        gymProfile: { equipment_access: 'Full gym' },
+        runProfile: { weekly_mileage_km: '12', weekly_availability_days: '4' },
+      },
+      {
+        label: 'marathon',
+        objective: 'Lisbon Marathon',
+        expectedPrimaryFocus: 'marathon',
+        expectedPlanSport: 'running',
+        expectedSessionTypes: ['run'],
+        durationWeeks: 16,
+        sessionsPerWeek: 5,
+        strengthSessionsPerWeek: 2,
+        goalMode: 'event_based',
+        raceDate: '2026-10-25',
+        fitnessProfile: { experience_level: 'advanced', available_equipment: 'Full gym' },
+        gymProfile: { equipment_access: 'Full gym', training_age: '5 years' },
+        runProfile: { weekly_mileage_km: '45', weekly_availability_days: '6' },
+      },
+      {
+        label: 'cycling',
+        objective: 'Cycling FTP build',
+        expectedPrimaryFocus: 'cycling',
+        expectedPlanSport: 'cycling',
+        expectedSessionTypes: ['ride'],
+        durationWeeks: 4,
+        sessionsPerWeek: 4,
+        strengthSessionsPerWeek: 1,
+        fitnessProfile: { experience_level: 'intermediate', available_equipment: 'Full gym' },
+        gymProfile: { equipment_access: 'Full gym' },
+        runProfile: { ftp_watts: '250', weekly_hours: '4' },
+      },
+      {
+        label: 'swimming',
+        objective: 'Swimming technique build',
+        expectedPrimaryFocus: 'swimming',
+        expectedPlanSport: 'swimming',
+        expectedSessionTypes: ['swim'],
+        durationWeeks: 4,
+        sessionsPerWeek: 3,
+        strengthSessionsPerWeek: 1,
+        fitnessProfile: { experience_level: 'intermediate', available_equipment: 'Full gym', swim_css_seconds_per_100m: '105' },
+        gymProfile: { equipment_access: 'Full gym' },
+        runProfile: null,
+      },
+      {
+        label: 'strength',
+        objective: 'Hypertrophy strength plan',
+        expectedPrimaryFocus: 'strength',
+        expectedPlanSport: 'gym',
+        expectedSessionTypes: ['gym'],
+        durationWeeks: 12,
+        sessionsPerWeek: 5,
+        strengthSessionsPerWeek: 4,
+        fitnessProfile: { experience_level: 'advanced', available_equipment: 'Full gym' },
+        gymProfile: { equipment_access: 'Full gym', training_age: '5 years', primary_goal: 'Hypertrophy' },
+        runProfile: null,
+      },
+      {
+        label: 'triathlon',
+        objective: 'Olympic triathlon build',
+        expectedPrimaryFocus: 'triathlon',
+        expectedPlanSport: 'hybrid',
+        expectedSessionTypes: ['run', 'ride', 'swim'],
+        durationWeeks: 8,
+        sessionsPerWeek: 7,
+        runSessionsPerWeek: 3,
+        bikeSessionsPerWeek: 2,
+        swimSessionsPerWeek: 2,
+        strengthSessionsPerWeek: 1,
+        goalMode: 'continuous',
+        trainingPriority: 'triathlon',
+        fitnessProfile: { experience_level: 'intermediate', available_equipment: 'Full gym', swim_css_seconds_per_100m: '110' },
+        gymProfile: { equipment_access: 'Full gym' },
+        runProfile: { weekly_mileage_km: '25', weekly_availability_days: '5' },
+      },
+      {
+        label: 'hybrid',
+        objective: 'General fitness build',
+        expectedPrimaryFocus: 'hybrid',
+        expectedPlanSport: 'hybrid',
+        expectedSessionTypes: ['run', 'gym'],
+        durationWeeks: 4,
+        sessionsPerWeek: 5,
+        runSessionsPerWeek: 3,
+        strengthSessionsPerWeek: 2,
+        goalMode: 'maintenance',
+        trainingPriority: 'hybrid',
+        fitnessProfile: { experience_level: 'intermediate', available_equipment: 'Full gym' },
+        gymProfile: { equipment_access: 'Full gym', primary_goal: 'Athletic' },
+        runProfile: { weekly_mileage_km: '20', weekly_availability_days: '4' },
+      },
+    ] as const;
+
+    expect(supportedPlanCases.map((planCase) => planCase.expectedPrimaryFocus)).toEqual([
+      'running',
+      'marathon',
+      'cycling',
+      'swimming',
+      'strength',
+      'triathlon',
+      'hybrid',
+    ]);
+
+    for (const planCase of supportedPlanCases) {
+      const athlete = buildAthleteStateFromTrainingProfiles({
+        userId: 700,
+        objective: planCase.objective,
+        durationWeeks: planCase.durationWeeks,
+        startDate,
+        sessionsPerWeek: planCase.sessionsPerWeek,
+        runSessionsPerWeek: 'runSessionsPerWeek' in planCase ? planCase.runSessionsPerWeek : null,
+        bikeSessionsPerWeek: 'bikeSessionsPerWeek' in planCase ? planCase.bikeSessionsPerWeek : null,
+        swimSessionsPerWeek: 'swimSessionsPerWeek' in planCase ? planCase.swimSessionsPerWeek : null,
+        strengthSessionsPerWeek: planCase.strengthSessionsPerWeek,
+        preferredTime: '12:00',
+        preferredCardioTime: '07:00',
+        preferredStrengthTime: '18:00',
+        longWorkoutDay: 'Sunday',
+        notes: null,
+        fitnessProfile: planCase.fitnessProfile,
+        gymProfile: planCase.gymProfile,
+        runProfile: planCase.runProfile,
+        goalMode: 'goalMode' in planCase ? planCase.goalMode : null,
+        trainingPriority: 'trainingPriority' in planCase ? planCase.trainingPriority : null,
+        raceDate: 'raceDate' in planCase ? planCase.raceDate : null,
+      });
+      expect(athlete.goals.primaryFocus, planCase.label).toBe(planCase.expectedPrimaryFocus);
+
+      const plan = buildCoachKernelTrainingPlan({
+        userId: 700,
+        objective: planCase.objective,
+        durationWeeks: planCase.durationWeeks,
+        startDate,
+        sessionsPerWeek: planCase.sessionsPerWeek,
+        runSessionsPerWeek: 'runSessionsPerWeek' in planCase ? planCase.runSessionsPerWeek : null,
+        bikeSessionsPerWeek: 'bikeSessionsPerWeek' in planCase ? planCase.bikeSessionsPerWeek : null,
+        swimSessionsPerWeek: 'swimSessionsPerWeek' in planCase ? planCase.swimSessionsPerWeek : null,
+        strengthSessionsPerWeek: planCase.strengthSessionsPerWeek,
+        preferredTime: '12:00',
+        preferredCardioTime: '07:00',
+        preferredStrengthTime: '18:00',
+        longWorkoutDay: 'Sunday',
+        notes: null,
+        fitnessProfile: planCase.fitnessProfile,
+        gymProfile: planCase.gymProfile,
+        runProfile: planCase.runProfile,
+        goalMode: 'goalMode' in planCase ? planCase.goalMode : null,
+        trainingPriority: 'trainingPriority' in planCase ? planCase.trainingPriority : null,
+        raceDate: 'raceDate' in planCase ? planCase.raceDate : null,
+        currentReadiness: { score: 82, confidence: 'manual_check_in', dataSource: 'manual' },
+      });
+
+      expect(plan.sport, planCase.label).toBe(planCase.expectedPlanSport);
+      expect(plan.weeks, planCase.label).toHaveLength(planCase.durationWeeks);
+      expect(plan.profileQuality, planCase.label).toBeTruthy();
+
+      const sessions = (plan.weeks ?? []).flatMap((week) => week.sessions ?? []);
+      expect(sessions.length, planCase.label).toBeGreaterThan(0);
+      for (const expectedType of planCase.expectedSessionTypes) {
+        expect(sessions.some((session) => session.sessionType === expectedType), planCase.label).toBe(true);
+      }
+
+      for (const [weekIndex, week] of (plan.weeks ?? []).entries()) {
+        expect(week.focus, `${planCase.label} week ${weekIndex + 1}`).toMatch(/^(base|build|peak|taper|race|deload|maintenance)$/);
+        const weekSessions = week.sessions ?? [];
+        expect(weekSessions.length, `${planCase.label} week ${weekIndex + 1}`).toBeGreaterThan(0);
+        const sessionKeys = new Set<string>();
+        for (const session of weekSessions) {
+          expect(session.dayOfWeek, `${planCase.label} ${session.title}`).toMatch(/^(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)$/);
+          expect(session.sessionType, `${planCase.label} ${session.title}`).toMatch(/^(run|ride|swim|gym|rest)$/);
+          expect(session.title.trim().length, planCase.label).toBeGreaterThan(3);
+          expect((session.description ?? '').trim().length, `${planCase.label} ${session.title}`).toBeGreaterThan(12);
+          expect(session.durationMinutes, `${planCase.label} ${session.title}`).toBeGreaterThan(0);
+          expect(session.durationMinutes, `${planCase.label} ${session.title}`).toBeLessThanOrEqual(240);
+          if (session.sessionType === 'gym') {
+            expect(session.exercises?.length ?? 0, `${planCase.label} ${session.title}`).toBeGreaterThan(0);
+          }
+          const key = `${session.dayOfWeek}|${session.sessionType}|${session.title}`;
+          expect(sessionKeys.has(key), `${planCase.label} duplicate ${key}`).toBe(false);
+          sessionKeys.add(key);
+        }
+      }
+
+      const lintResult = lintWeekSessions({
+        startDate,
+        durationWeeks: planCase.durationWeeks,
+        weekNumber: 1,
+        focus: plan.weeks?.[0]?.focus,
+        sessions: plan.weeks?.[0]?.sessions,
+      });
+      expect(lintResult.blockers, planCase.label).toEqual([]);
+    }
   });
 });

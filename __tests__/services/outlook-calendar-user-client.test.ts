@@ -68,7 +68,7 @@ vi.mock('../../src/utils/logger', () => ({
   LOGGER_REDACTION_PATHS: [],
 }));
 
-import { createEvent, updateEvent, deleteEvent } from '../../src/services/outlook-calendar';
+import { createEvent, updateEvent, deleteEvent, getEvents } from '../../src/services/outlook-calendar';
 
 describe('OutlookCalendar — per-user Graph client for writes', () => {
   beforeEach(() => {
@@ -76,12 +76,14 @@ describe('OutlookCalendar — per-user Graph client for writes', () => {
     mocks.ownerRequest.patch.mockReset();
     mocks.ownerRequest.delete.mockReset();
     mocks.ownerRequest.get.mockReset();
+    mocks.ownerRequest.header.mockClear();
     mocks.ownerRequest.option.mockClear();
     mocks.ownerClient.api.mockClear();
     mocks.userRequest.post.mockReset();
     mocks.userRequest.patch.mockReset();
     mocks.userRequest.delete.mockReset();
     mocks.userRequest.get.mockReset();
+    mocks.userRequest.header.mockClear();
     mocks.userRequest.option.mockClear();
     mocks.userClient.api.mockClear();
     mocks.getGraphClient.mockClear();
@@ -105,6 +107,67 @@ describe('OutlookCalendar — per-user Graph client for writes', () => {
     expect(mocks.getGraphClientForUser).toHaveBeenCalledWith(77);
     expect(mocks.getGraphClient).not.toHaveBeenCalled();
     expect(mocks.userClient.api).toHaveBeenCalledWith('/me/events');
+    expect(mocks.userRequest.header).toHaveBeenCalledWith('Prefer', 'IdType="ImmutableId"');
+  });
+
+  it('uses immutable ids and full body content when reading calendar events', async () => {
+    mocks.userRequest.get
+      .mockResolvedValueOnce({
+        value: [{
+          id: 'evt-read',
+          subject: 'Training',
+          start: { dateTime: '2026-04-16T09:00:00.000Z' },
+          end: { dateTime: '2026-04-16T10:00:00.000Z' },
+          bodyPreview: 'truncated',
+          body: { content: 'Full training body [NEXUS_TRAINING_IDENTITY session=1]' },
+          categories: [],
+        }],
+      })
+      .mockResolvedValueOnce({ value: [] });
+
+    const events = await getEvents('2026-04-16', '2026-04-17', 77);
+
+    expect(mocks.userRequest.query).toHaveBeenCalledWith(expect.objectContaining({
+      $select: expect.stringContaining('body'),
+    }));
+    expect(mocks.userRequest.header).toHaveBeenCalledWith(
+      'Prefer',
+      'outlook.timezone="Europe/Lisbon", IdType="ImmutableId"',
+    );
+    expect(events[0]).toMatchObject({
+      id: 'evt-read',
+      description: 'Full training body [NEXUS_TRAINING_IDENTITY session=1]',
+    });
+  });
+
+  it('follows Outlook calendarView nextLink pages', async () => {
+    mocks.userRequest.get
+      .mockResolvedValueOnce({
+        value: [{
+          id: 'evt-page-1',
+          subject: 'Earlier event',
+          start: { dateTime: '2026-04-16T09:00:00.000Z' },
+          end: { dateTime: '2026-04-16T10:00:00.000Z' },
+        }],
+        '@odata.nextLink': 'https://graph.microsoft.com/v1.0/me/calendarView?$skiptoken=abc',
+      })
+      .mockResolvedValueOnce({
+        value: [{
+          id: 'evt-page-2',
+          subject: 'Training event',
+          start: { dateTime: '2026-04-16T12:00:00.000Z' },
+          end: { dateTime: '2026-04-16T13:00:00.000Z' },
+          body: { content: '[NEXUS_TRAINING_IDENTITY session=2]' },
+        }],
+      })
+      .mockResolvedValueOnce({ value: [] });
+
+    const events = await getEvents('2026-04-16', '2026-04-17', 77);
+
+    expect(mocks.userClient.api).toHaveBeenCalledWith('/me/calendarView');
+    expect(mocks.userClient.api).toHaveBeenCalledWith('/me/calendarView?$skiptoken=abc');
+    expect(events.map((event) => event.id)).toEqual(['evt-page-1', 'evt-page-2']);
+    expect(events[1].description).toBe('[NEXUS_TRAINING_IDENTITY session=2]');
   });
 
   it('drops Outlook write categories that are not present in the user master category list', async () => {
@@ -191,6 +254,7 @@ describe('OutlookCalendar — per-user Graph client for writes', () => {
     expect(mocks.getGraphClientForUser).toHaveBeenCalledWith(77);
     expect(mocks.getGraphClient).not.toHaveBeenCalled();
     expect(mocks.userClient.api).toHaveBeenCalledWith('/me/events/evt-2');
+    expect(mocks.userRequest.header).toHaveBeenCalledWith('Prefer', 'IdType="ImmutableId"');
   });
 
   it('uses the per-user Graph client when deleting an event with userId', async () => {
@@ -201,5 +265,25 @@ describe('OutlookCalendar — per-user Graph client for writes', () => {
     expect(mocks.getGraphClientForUser).toHaveBeenCalledWith(77);
     expect(mocks.getGraphClient).not.toHaveBeenCalled();
     expect(mocks.userClient.api).toHaveBeenCalledWith('/me/events/evt-3');
+    expect(mocks.userRequest.header).toHaveBeenCalledWith('Prefer', 'IdType="ImmutableId"');
+  });
+
+  it('retries Outlook deletes without immutable-id preference for legacy event ids', async () => {
+    mocks.userRequest.delete
+      .mockRejectedValueOnce(Object.assign(new Error("Your request can't be completed. This operation does not support binding to a non-calendar folder."), {
+        statusCode: 400,
+        code: 'ErrorInvalidRequest',
+        body: '{"code":"ErrorInvalidRequest","message":"non-calendar folder"}',
+      }))
+      .mockResolvedValueOnce(undefined);
+
+    await deleteEvent('legacy-evt', 77);
+
+    expect(mocks.userClient.api).toHaveBeenCalledTimes(2);
+    expect(mocks.userClient.api).toHaveBeenNthCalledWith(1, '/me/events/legacy-evt');
+    expect(mocks.userClient.api).toHaveBeenNthCalledWith(2, '/me/events/legacy-evt');
+    expect(mocks.userRequest.header).toHaveBeenCalledTimes(1);
+    expect(mocks.userRequest.header).toHaveBeenCalledWith('Prefer', 'IdType="ImmutableId"');
+    expect(mocks.userRequest.delete).toHaveBeenCalledTimes(2);
   });
 });
