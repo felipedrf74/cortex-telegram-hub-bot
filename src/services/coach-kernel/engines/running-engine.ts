@@ -43,6 +43,7 @@ function hasLowRecoverySignal(context: EngineContext): boolean {
 function runningPhaseVolumeMultiplier(phase: EngineContext['phase']): number {
   if (phase === 'deload') return 0.75;
   if (phase === 'taper') return 0.7;
+  if (phase === 'race') return 0.3;
   if (phase === 'peak') return 1.05;
   return 1;
 }
@@ -119,6 +120,9 @@ function buildSupportOnlyRunSessions(context: EngineContext, templates: WorkoutT
 
 function keyRunTemplateFor(context: EngineContext, templates: WorkoutTemplate[]): WorkoutTemplate {
   const weekSlot = Math.max(0, context.athlete.currentBlock.weekIndex - 1) % 3;
+  if (context.phase === 'race') {
+    return templateByIdOrType(templates, 'run_strides_aerobic', 'easy_run');
+  }
   if (context.athlete.profile.experienceLevel === 'novice') {
     return templateByIdOrType(templates, 'run_fartlek_controlled', 'easy_run');
   }
@@ -190,8 +194,15 @@ export const runningEngine: SportEngine = {
       const duration = clamp(Math.round(targetMinutes), 30, template.sessionType === 'long_run' ? 120 : 50);
       return [buildRunSession(template, longRunDay, duration, ['single_run', template.id], context.athlete.profile)];
     }
-    const longRunMinutes = clamp(Math.round(targetMinutes * (context.phase === 'peak' ? 0.32 : 0.28)), 70, 170);
-    const keyMinutes = clamp(Math.round(targetMinutes * 0.18), 30, 70);
+    const longTemplate = context.phase === 'race'
+      ? templateByIdOrType(templates, isTravelOrLimitedWeek(context) ? 'run_travel_treadmill_easy' : 'run_easy_aerobic', 'easy_run')
+      : templateFor(templates, 'long_run');
+    const longRunMinutes = clamp(
+      Math.round(targetMinutes * (context.phase === 'peak' ? 0.32 : 0.28)),
+      context.phase === 'race' ? 30 : 70,
+      context.phase === 'race' ? 55 : 170,
+    );
+    const keyMinutes = clamp(Math.round(targetMinutes * 0.18), context.phase === 'race' ? 25 : 30, context.phase === 'race' ? 40 : 70);
     const remainingMinutes = Math.max(targetMinutes - longRunMinutes - keyMinutes, 40);
     const fillerMinutes = Math.max(30, Math.round(remainingMinutes / Math.max(1, targetSessions - 2)));
     const keyTemplate = keyRunTemplateFor(context, templates);
@@ -208,7 +219,7 @@ export const runningEngine: SportEngine = {
 
     const sessions: Session[] = [
       buildRunSession(keyTemplate, keyDay, keyMinutes, ['key_run', keyTemplate.id], context.athlete.profile),
-      buildRunSession(templateFor(templates, 'long_run'), longRunDay, longRunMinutes, ['long_session'], context.athlete.profile),
+      buildRunSession(longTemplate, longRunDay, longRunMinutes, [context.phase === 'race' ? 'race_week_aerobic' : 'long_session', longTemplate.id], context.athlete.profile),
     ];
 
     // Slice 4.F — filler days now respect availability windows too.

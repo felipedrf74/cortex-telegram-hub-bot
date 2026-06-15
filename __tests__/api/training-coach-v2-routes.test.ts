@@ -84,8 +84,9 @@ beforeEach(async () => {
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
+    const requestedTenant = req.header('x-test-tenant-id');
     (req as unknown as { userId: number }).userId = 100;
-    (req as unknown as { tenantId: number }).tenantId = 100;
+    (req as unknown as { tenantId: number }).tenantId = requestedTenant ? Number(requestedTenant) : 100;
     next();
   });
   const router = express.Router();
@@ -106,10 +107,15 @@ afterEach(async () => {
   _resetRateLimiterForTests();
 });
 
-async function req(method: string, path: string, body?: unknown): Promise<{ status: number; json: any }> {
+async function req(
+  method: string,
+  path: string,
+  body?: unknown,
+  headers: Record<string, string> = {},
+): Promise<{ status: number; json: any }> {
   const r = await fetch(`${baseUrl}${path}`, {
     method,
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...headers },
     body: body !== undefined ? JSON.stringify(body) : undefined,
   });
   const json = await r.json().catch(() => null);
@@ -182,11 +188,77 @@ describe('POST /week/travel (C2)', () => {
     const row = testDb.prepare(
       'SELECT * FROM travel_windows WHERE user_id = 100',
     ).get() as {
-      start_date: string; time_zone_shift_hours: number; sleep_disruption_expected: number;
+      tenant_id: number; start_date: string; time_zone_shift_hours: number; sleep_disruption_expected: number;
     };
+    expect(row.tenant_id).toBe(100);
     expect(row.start_date).toBe('2026-06-01');
     expect(row.time_zone_shift_hours).toBe(8);
     expect(row.sleep_disruption_expected).toBe(1);
+  });
+
+  it('replays duplicate POST for the same tenant without creating another row', async () => {
+    const body = {
+      startDate: '2026-06-01',
+      endDate: '2026-06-08',
+      equipmentProfile: 'hotel_only',
+      timeZoneShiftHours: 8,
+      flightDurationHours: 12,
+      sleepDisruptionExpected: true,
+      walkingLoadExpected: true,
+      availableSessionDurationMinutes: 30,
+      notes: 'private trip notes',
+    };
+
+    const first = await req('POST', '/api/v1/training/week/travel', body);
+    const replay = await req('POST', '/api/v1/training/week/travel', { ...body, notes: 'retry notes changed' });
+    const count = testDb.prepare(
+      'SELECT COUNT(*) AS n FROM travel_windows WHERE user_id = 100 AND tenant_id = 100',
+    ).get() as { n: number };
+
+    expect(first.status).toBe(201);
+    expect(replay.status).toBe(201);
+    expect(first.json?.data?.alreadyExisted).toBe(false);
+    expect(replay.json?.data?.alreadyExisted).toBe(true);
+    expect(replay.json?.data?.id).toBe(first.json?.data?.id);
+    expect(count.n).toBe(1);
+  });
+
+  it('does not replay duplicate POST across another tenant', async () => {
+    const body = {
+      startDate: '2026-06-01',
+      endDate: '2026-06-08',
+      equipmentProfile: 'hotel_only',
+    };
+
+    const tenantA = await req('POST', '/api/v1/training/week/travel', body, { 'x-test-tenant-id': '100' });
+    const tenantB = await req('POST', '/api/v1/training/week/travel', body, { 'x-test-tenant-id': '200' });
+
+    expect(tenantA.status).toBe(201);
+    expect(tenantB.status).toBe(201);
+    expect(tenantB.json?.data?.alreadyExisted).toBe(false);
+    expect(tenantB.json?.data?.id).not.toBe(tenantA.json?.data?.id);
+    expect(testDb.prepare('SELECT COUNT(*) AS n FROM travel_windows WHERE user_id = 100').get()).toMatchObject({ n: 2 });
+  });
+
+  it('keeps overlapping but not identical POSTs as separate travel windows', async () => {
+    const first = await req('POST', '/api/v1/training/week/travel', {
+      startDate: '2026-06-01',
+      endDate: '2026-06-08',
+      equipmentProfile: 'hotel_only',
+      availableSessionDurationMinutes: 30,
+    });
+    const overlap = await req('POST', '/api/v1/training/week/travel', {
+      startDate: '2026-06-05',
+      endDate: '2026-06-10',
+      equipmentProfile: 'bodyweight_only',
+      availableSessionDurationMinutes: 20,
+    });
+
+    expect(first.status).toBe(201);
+    expect(overlap.status).toBe(201);
+    expect(overlap.json?.data?.alreadyExisted).toBe(false);
+    expect(overlap.json?.data?.id).not.toBe(first.json?.data?.id);
+    expect(testDb.prepare('SELECT COUNT(*) AS n FROM travel_windows WHERE user_id = 100 AND tenant_id = 100').get()).toMatchObject({ n: 2 });
   });
 
   it('rejects missing dates with 400', async () => {
@@ -901,6 +973,21 @@ describe('R3 P1 — A4 hard-pause via structured intake', () => {
     ).get(result.json.data.id) as { source: string; tenant_id: number };
     expect(row.source).toBe('structured_intake');
     expect(row.tenant_id).toBe(100);
+  });
+
+  it('fever/systemic illness via structured intake → coach-analysis emits pause_training', async () => {
+    testDb.prepare(`
+      INSERT INTO athlete_health_signals
+        (user_id, tenant_id, date, illness_symptoms_json, source, consent_scope)
+      VALUES (100, 100, '2026-05-23', '["fever"]', 'structured_intake', 'illness')
+    `).run();
+    const result = await req('GET', '/api/v1/training/plans/1/coach-analysis?weekIndex=0');
+    expect(result.status).toBe(200);
+    const pause = (result.json?.data?.scenario?.actions ?? []).find(
+      (a: any) => a.type === 'pause_training',
+    );
+    expect(pause).toBeDefined();
+    expect(pause?.severity).toBe('medical_referral');
   });
 
   it('POST /health-intake/red-flag rejects empty consentScope with 400', async () => {

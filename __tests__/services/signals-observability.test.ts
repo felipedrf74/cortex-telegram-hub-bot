@@ -200,7 +200,7 @@ describe('buildActiveSignalsResponse — per-type formatting', () => {
     expect(s.summary).toContain('FTP test');
   });
 
-  it('formats calendar_conflict with the conflicting event title', () => {
+  it('formats calendar_conflict without exposing the private event title', () => {
     publishTrainingSessionScheduled({
       userId: 2008,
       sport: 'running',
@@ -220,7 +220,8 @@ describe('buildActiveSignalsResponse — per-type formatting', () => {
     const res = buildActiveSignalsResponse(2008);
     const s = res.signals.find((x) => x.type === 'calendar_conflict')!;
     expect(s.title).toBe('Calendar conflict');
-    expect(s.summary).toContain('Team standup');
+    expect(s.summary).toBe('A calendar event overlaps a scheduled training session — consider moving one.');
+    expect(s.summary).not.toContain('Team standup');
   });
 
   it('every formatted signal has non-empty title and summary fields', () => {

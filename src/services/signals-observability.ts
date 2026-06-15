@@ -177,10 +177,7 @@ const TYPE_META: Partial<Record<SignalType, TypeMeta>> = {
   },
   calendar_conflict: {
     title: 'Calendar conflict',
-    summarize: (p) => {
-      const event = typeof p.conflict_event_title === 'string' ? p.conflict_event_title : 'event';
-      return `"${event}" overlaps a scheduled training session — consider moving one.`;
-    },
+    summarize: () => 'A calendar event overlaps a scheduled training session — consider moving one.',
   },
   // ─── Phase 4 Slice C — Adherence ──────────────────────────────
   low_adherence: {

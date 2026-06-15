@@ -19,6 +19,8 @@
 #   NEXUS_IOS_PROJECT_PATH    — path to the .xcodeproj directory
 #   NEXUS_LOCAL_PORT_TS       — host port for Node (default: 8200)
 #   NEXUS_SIM_AUTH_INVITE_CODE — local sandbox auth invite code override
+#   NEXUS_SIM_DEBUG_AUTH_IMPORT — set to 1 to launch logged in via local auth JSON
+#   NEXUS_SIM_DEBUG_AUTH_EMAIL  — local auth email (default nexushubbot@gmail.com)
 #   NEXUS_SIM_CONSOLE         — set to 1 to attach simctl --console-pty
 #   NEXUS_SIM_RESOLVE_ONLY    — set to 1 to print selected simulator and exit
 #
@@ -44,6 +46,9 @@ SIM_DEVICE="${NEXUS_SIM_DEVICE:-}"
 SIM_UDID_OVERRIDE="${NEXUS_SIM_UDID:-}"
 PORT="${NEXUS_LOCAL_PORT_TS:-8200}"
 LOCAL_AUTH_INVITE_CODE="${NEXUS_SIM_AUTH_INVITE_CODE:-${IOS_INVITE_CODE:-LOCAL-DEV-INVITE}}"
+DEBUG_AUTH_IMPORT="${NEXUS_SIM_DEBUG_AUTH_IMPORT:-0}"
+DEBUG_AUTH_EMAIL="${NEXUS_SIM_DEBUG_AUTH_EMAIL:-nexushubbot@gmail.com}"
+DEBUG_AUTH_FILE="${NEXUS_SIM_DEBUG_AUTH_FILE:-$ROOT/.local/full-nexus/local-ios-auth.json}"
 
 # ──────────────────────────────────────────────────────────────────────
 # Step 0 — preflight
@@ -78,6 +83,16 @@ if [ "${NEXUS_SIM_RESOLVE_ONLY:-0}" != "1" ]; then
   echo "  Step 1/5: boot Docker sandbox"
   echo "═══════════════════════════════════════════════"
   "$ROOT/scripts/local-up.sh"
+
+  if [ "$DEBUG_AUTH_IMPORT" = "1" ]; then
+    echo ""
+    echo "Preparing local iOS debug auth for $DEBUG_AUTH_EMAIL"
+    NEXUS_LOCAL_BASE_URL="http://127.0.0.1:${PORT}" \
+      NEXUS_LOCAL_IOS_EMAIL="$DEBUG_AUTH_EMAIL" \
+      NEXUS_LOCAL_IOS_INVITE_CODE="$LOCAL_AUTH_INVITE_CODE" \
+      NEXUS_LOCAL_AUTH_IMPORT_PATH="$DEBUG_AUTH_FILE" \
+      node "$ROOT/scripts/local-ios-debug-auth.mjs"
+  fi
 fi
 
 # ──────────────────────────────────────────────────────────────────────
@@ -226,6 +241,7 @@ echo ""
 echo "═══════════════════════════════════════════════"
 echo "  Step 5/5: launch with local-backend args"
 echo "═══════════════════════════════════════════════"
+LAUNCH_OPTIONS=(--terminate-running-process)
 LAUNCH_ARGS=(
   "$SIM_UDID"
   "$IOS_BUNDLE_ID"
@@ -233,16 +249,36 @@ LAUNCH_ARGS=(
   -nexus_base_url "http://127.0.0.1:${PORT}"
   -nexus_local_auth_invite_code "$LOCAL_AUTH_INVITE_CODE"
 )
+if [ "$DEBUG_AUTH_IMPORT" = "1" ]; then
+  if [ ! -s "$DEBUG_AUTH_FILE" ]; then
+    echo "ERROR: expected local auth JSON at $DEBUG_AUTH_FILE" >&2
+    exit 1
+  fi
+  export SIMCTL_CHILD_NEXUS_LOCAL_AUTH_IMPORT_PATH="$DEBUG_AUTH_FILE"
+  LAUNCH_ARGS+=(
+    -nexus_debug_local_auth_import YES
+  )
+  echo "Debug auth: $DEBUG_AUTH_EMAIL"
+  echo "Auth file:  $DEBUG_AUTH_FILE"
+fi
 if [ "${NEXUS_SIM_CONSOLE:-0}" = "1" ]; then
-  LAUNCH_ARGS=(--console-pty "${LAUNCH_ARGS[@]}")
+  LAUNCH_OPTIONS=(--console-pty "${LAUNCH_OPTIONS[@]}")
 fi
 
-xcrun simctl launch "${LAUNCH_ARGS[@]}" || {
+xcrun simctl launch "${LAUNCH_OPTIONS[@]}" "${LAUNCH_ARGS[@]}" || {
     echo ""
     echo "WARN: simctl launch returned non-zero. The app may still be"
     echo "running — check the Simulator window. You can manually launch with:"
-    echo "  xcrun simctl launch $SIM_UDID $IOS_BUNDLE_ID \\"
+    if [ "$DEBUG_AUTH_IMPORT" = "1" ]; then
+      echo "  SIMCTL_CHILD_NEXUS_LOCAL_AUTH_IMPORT_PATH='$DEBUG_AUTH_FILE' \\"
+    fi
+    echo "  xcrun simctl launch --terminate-running-process $SIM_UDID $IOS_BUNDLE_ID \\"
     echo "    -nexus_allow_local_backend YES \\"
     echo "    -nexus_base_url http://127.0.0.1:${PORT} \\"
-    echo "    -nexus_local_auth_invite_code '$LOCAL_AUTH_INVITE_CODE'"
+    if [ "$DEBUG_AUTH_IMPORT" = "1" ]; then
+      echo "    -nexus_local_auth_invite_code '$LOCAL_AUTH_INVITE_CODE' \\"
+      echo "    -nexus_debug_local_auth_import YES"
+    else
+      echo "    -nexus_local_auth_invite_code '$LOCAL_AUTH_INVITE_CODE'"
+    fi
   }

@@ -11,6 +11,7 @@ import {
   registerGoogleClientReset,
 } from './google-auth';
 import { recurrenceToGoogleRRule, type NormalizedRecurrence } from './recurrence-utils';
+import { isProviderEventNotFoundError } from './training-calendar-errors';
 
 // Google API calls are bounded to 15s. Google Calendar / Drive / Gmail
 // normally respond in <2s, but under Google outages they can hang for
@@ -102,19 +103,26 @@ export interface CalendarEvent {
 export async function getEvents(startDate: string, endDate: string, userId?: number): Promise<CalendarEvent[]> {
   try {
     const calendar = getCalendar(userId);
-    const response = await withTimeout(
-      calendar.events.list({
-        calendarId: 'primary',
-        timeMin: new Date(startDate).toISOString(),
-        timeMax: new Date(endDate).toISOString(),
-        singleEvents: true,
-        orderBy: 'startTime',
-        maxResults: 50,
-      }),
-      GOOGLE_API_TIMEOUT_MS,
-    );
+    const items: calendar_v3.Schema$Event[] = [];
+    let pageToken: string | undefined;
+    do {
+      const response = await withTimeout(
+        calendar.events.list({
+          calendarId: 'primary',
+          timeMin: new Date(startDate).toISOString(),
+          timeMax: new Date(endDate).toISOString(),
+          singleEvents: true,
+          orderBy: 'startTime',
+          maxResults: 2500,
+          pageToken,
+        }),
+        GOOGLE_API_TIMEOUT_MS,
+      );
+      items.push(...(response.data.items || []));
+      pageToken = response.data.nextPageToken || undefined;
+    } while (pageToken);
 
-    return (response.data.items || [])
+    return items
       .filter((event) => event.status !== 'cancelled')
       .map((event) => ({
         id: event.id || '',
@@ -250,6 +258,10 @@ export async function deleteEvent(eventId: string, userId?: number, options?: { 
       GOOGLE_API_TIMEOUT_MS,
     );
   } catch (err) {
+    if (isProviderEventNotFoundError(err)) {
+      logger.debug({ eventId, userId }, 'Google Calendar event already deleted');
+      return;
+    }
     throw logAndWrapGoogleCalendarError(err, 'Failed to delete calendar event');
   }
 }

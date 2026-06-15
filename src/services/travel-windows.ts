@@ -25,6 +25,7 @@ import { logger } from '../utils/logger';
 export interface TravelWindowRow {
   id: number;
   user_id: number;
+  tenant_id: number | null;
   start_date: string;
   end_date: string;
   equipment_profile: string | null;
@@ -40,6 +41,7 @@ export interface TravelWindowRow {
 
 export interface RecordTravelWindowInput {
   userId: number;
+  tenantId?: number | null;
   startDate: string;
   endDate: string;
   equipmentProfile?: string;
@@ -52,20 +54,64 @@ export interface RecordTravelWindowInput {
   notes?: string;
 }
 
-export function recordTravelWindow(input: RecordTravelWindowInput): { id: number } {
+export interface RecordTravelWindowResult {
+  id: number;
+  alreadyExisted: boolean;
+}
+
+export function recordTravelWindow(input: RecordTravelWindowInput): RecordTravelWindowResult {
   if (Date.parse(input.startDate) > Date.parse(input.endDate)) {
     throw new Error('recordTravelWindow: startDate must be ≤ endDate');
   }
   const db = getDb();
+  const identity = normalizeTravelWindowIdentity(input);
+  const existing = db.prepare(`
+    SELECT id FROM travel_windows
+    WHERE user_id = ?
+      AND tenant_id IS ?
+      AND start_date = ?
+      AND end_date = ?
+      AND equipment_profile IS ?
+      AND time_zone_shift_hours IS ?
+      AND flight_duration_hours IS ?
+      AND sleep_disruption_expected = ?
+      AND walking_load_expected = ?
+      AND heat_stress = ?
+      AND available_session_duration_minutes IS ?
+    ORDER BY created_at DESC, id DESC
+    LIMIT 1
+  `).get(
+    identity.userId,
+    identity.tenantId,
+    identity.startDate,
+    identity.endDate,
+    identity.equipmentProfile,
+    identity.timeZoneShiftHours,
+    identity.flightDurationHours,
+    identity.sleepDisruptionExpected,
+    identity.walkingLoadExpected,
+    identity.heatStress,
+    identity.availableSessionDurationMinutes,
+  ) as { id: number } | undefined;
+  if (existing) {
+    logger.info({
+      userId: input.userId,
+      tenantId: identity.tenantId,
+      startDate: input.startDate,
+      endDate: input.endDate,
+    }, 'travel_window.replayed');
+    return { id: Number(existing.id), alreadyExisted: true };
+  }
   const inserted = db.prepare(`
     INSERT INTO travel_windows (
-      user_id, start_date, end_date, equipment_profile,
+      user_id, tenant_id, start_date, end_date, equipment_profile,
       time_zone_shift_hours, flight_duration_hours,
       sleep_disruption_expected, walking_load_expected, heat_stress,
       available_session_duration_minutes, notes
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     input.userId,
+    input.tenantId ?? null,
     input.startDate,
     input.endDate,
     input.equipmentProfile ?? null,
@@ -77,8 +123,41 @@ export function recordTravelWindow(input: RecordTravelWindowInput): { id: number
     input.availableSessionDurationMinutes ?? null,
     input.notes ?? null,
   );
-  logger.info({ userId: input.userId, startDate: input.startDate, endDate: input.endDate }, 'travel_window.recorded');
-  return { id: Number(inserted.lastInsertRowid) };
+  logger.info({
+    userId: input.userId,
+    tenantId: identity.tenantId,
+    startDate: input.startDate,
+    endDate: input.endDate,
+  }, 'travel_window.recorded');
+  return { id: Number(inserted.lastInsertRowid), alreadyExisted: false };
+}
+
+function normalizeTravelWindowIdentity(input: RecordTravelWindowInput): {
+  userId: number;
+  tenantId: number | null;
+  startDate: string;
+  endDate: string;
+  equipmentProfile: string | null;
+  timeZoneShiftHours: number | null;
+  flightDurationHours: number | null;
+  sleepDisruptionExpected: number;
+  walkingLoadExpected: number;
+  heatStress: number;
+  availableSessionDurationMinutes: number | null;
+} {
+  return {
+    userId: input.userId,
+    tenantId: input.tenantId ?? null,
+    startDate: input.startDate,
+    endDate: input.endDate,
+    equipmentProfile: input.equipmentProfile ?? null,
+    timeZoneShiftHours: input.timeZoneShiftHours ?? null,
+    flightDurationHours: input.flightDurationHours ?? null,
+    sleepDisruptionExpected: input.sleepDisruptionExpected ? 1 : 0,
+    walkingLoadExpected: input.walkingLoadExpected ? 1 : 0,
+    heatStress: input.heatStress ? 1 : 0,
+    availableSessionDurationMinutes: input.availableSessionDurationMinutes ?? null,
+  };
 }
 
 /**
@@ -89,8 +168,20 @@ export function findTravelWindowsInRange(
   userId: number,
   fromDate: string,
   toDate: string,
+  tenantId?: number | null,
 ): TravelWindowRow[] {
   const db = getDb();
+  const tenantScoped = typeof tenantId === 'number' && Number.isFinite(tenantId);
+  if (tenantScoped) {
+    return db.prepare(`
+      SELECT * FROM travel_windows
+      WHERE user_id = ?
+        AND tenant_id = ?
+        AND start_date <= ?
+        AND end_date >= ?
+      ORDER BY created_at DESC
+    `).all(userId, tenantId, toDate, fromDate) as TravelWindowRow[];
+  }
   return db.prepare(`
     SELECT * FROM travel_windows
     WHERE user_id = ?

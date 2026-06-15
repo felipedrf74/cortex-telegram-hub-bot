@@ -1187,39 +1187,48 @@ export function resolvePlanSlotDate(input: {
   planStartDate?: string;
   now: Date;
 }): PlanSlotResolution {
-  const weekStart = parsePlanStartDate(input.planStartDate, input.now);
-  weekStart.setDate(weekStart.getDate() + ((input.weekNumber - 1) * 7));
+  const anchor = parsePlanStartDate(input.planStartDate, input.now);
+  anchor.setDate(anchor.getDate() + ((input.weekNumber - 1) * 7));
 
-  const currentDay = weekStart.getDay();
-  const targetDay = (input.dayIndex + 1) % 7; // shift Mon=0..Sun=6 → Mon=1..Sat=6,Sun=0
-
-  let daysUntil = targetDay - currentDay;
-
-  // PAST-DAY FLOOR: only relevant for week 1.
-  //
-  // For week 1 (weekStart === now's calendar week), daysUntil < 0 means
-  // the user is generating a plan AFTER the named day already passed
-  // (e.g. now=Wed, target=Mon → daysUntil = 1 - 3 = -2). The legacy code
-  // added +7 here; we now mark this as a past-day rejection so the
-  // session is persisted with status='unscheduled' and surfaced honestly
-  // to iOS instead of silently sliding to next week's Monday.
-  //
-  // For week 2+ we keep the +7 fallback because weekStart is already a
-  // forward-looking anchor; sliding within that week's 7-day envelope
-  // is the correct behavior.
-  if (daysUntil < 0) {
+  const anchorDayIndex = (anchor.getDay() + 6) % 7; // Mon=0, ..., Sun=6.
+  const anchorIsSunday = anchorDayIndex === 6;
+  let daysUntil = input.dayIndex - anchorDayIndex;
+  if (anchorIsSunday && input.weekNumber === 1) {
+    daysUntil = input.dayIndex === 6 ? 0 : input.dayIndex + 1;
+  } else if (daysUntil < 0) {
     if (input.weekNumber === 1) {
+      const pastDate = new Date(anchor);
+      pastDate.setDate(pastDate.getDate() + daysUntil);
       return {
         kind: 'past_day_in_week_1',
-        dayName: DAY_NAMES_SUN_FIRST[targetDay],
-        generatedOnDayName: DAY_NAMES_SUN_FIRST[currentDay],
+        dayName: DAY_NAMES_SUN_FIRST[pastDate.getDay()],
+        generatedOnDayName: DAY_NAMES_SUN_FIRST[input.now.getDay()],
       };
     }
     daysUntil += 7;
   }
 
-  const sessionDate = new Date(weekStart);
+  const sessionDate = new Date(anchor);
   sessionDate.setDate(sessionDate.getDate() + daysUntil);
+
+  // PAST-DAY FLOOR: only relevant for week 1.
+  //
+  // For week 1 (weekStart === now's calendar week), targetDate < today means
+  // the user is generating a plan AFTER the named day already passed
+  // (e.g. now=Wed, target=Mon). The legacy code
+  // added +7 here; we now mark this as a past-day rejection so the
+  // session is persisted with status='unscheduled' and surfaced honestly
+  // to iOS instead of silently sliding to next week's Monday.
+  const sessionDayStart = startOfLocalDay(sessionDate);
+  const todayStart = startOfLocalDay(input.now);
+  if (input.weekNumber === 1 && sessionDayStart.getTime() < todayStart.getTime()) {
+    return {
+      kind: 'past_day_in_week_1',
+      dayName: DAY_NAMES_SUN_FIRST[sessionDate.getDay()],
+      generatedOnDayName: DAY_NAMES_SUN_FIRST[input.now.getDay()],
+    };
+  }
+
   return { kind: 'usable', sessionDate };
 }
 
@@ -1309,6 +1318,12 @@ function parsePlanStartDate(raw: string | undefined, fallback: Date): Date {
     }
   }
   return new Date(fallback);
+}
+
+function startOfLocalDay(date: Date): Date {
+  const out = new Date(date);
+  out.setHours(0, 0, 0, 0);
+  return out;
 }
 
 /**

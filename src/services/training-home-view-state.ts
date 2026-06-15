@@ -2,6 +2,7 @@
 
 import type { ScreenContractMeta } from './screen-contract-meta';
 import { buildScreenContractMeta } from './screen-contract-meta';
+import { sanitizeTrainingUserFacingPayload } from './training-copy-sanitizer';
 import type { Lang } from '../utils/i18n';
 
 export type TrainingDayStateKind =
@@ -356,7 +357,7 @@ export function buildTrainingHomeViewState(
   const confidenceLevel = computeConfidenceLevel({ ...input, adjustmentSummary });
   const confidence = labelForConfidence(confidenceLevel, language);
 
-  return {
+  return sanitizeTrainingUserFacingPayload({
     meta: input.meta ?? inferTrainingContractMeta(input),
     hero: buildHero(state, confidence, input, adjustmentSummary, language),
     reasoning: buildReasoning(state, confidence, input, adjustmentSummary, language),
@@ -366,7 +367,7 @@ export function buildTrainingHomeViewState(
     emptyState: buildEmptyState(state, input, language),
     confidence: confidenceLevel,
     lowAdherenceCard: buildLowAdherenceCard(state, input, language),
-  };
+  });
 }
 
 function inferTrainingContractMeta(input: TrainingHomeViewStateInput): ScreenContractMeta {
@@ -381,6 +382,7 @@ function inferTrainingContractMeta(input: TrainingHomeViewStateInput): ScreenCon
 }
 
 function classify(input: TrainingHomeViewStateInput & { adjustmentSummary: TrainingTodayAdjustmentSummary | null }): TrainingDayStateKind {
+  if (hasExplicitRedFlagSignal(input.signals)) return 'recovery';
   if (normalizeStatus(input.todaySession?.status) === 'completed') return 'completed';
   if (!input.hasActivePlan && input.weekSessions.length === 0) return 'noPlan';
   if (hasConflictingSchedule(input.weekSessions, input.todaySession)) return 'conflictingSchedule';
@@ -436,7 +438,7 @@ function buildHero(
     statusTint: status.tint,
     readinessLabel: readinessLabel(input.readiness, state, language),
     confidenceLabel: confidence,
-    primaryAction: primaryAction(state, language),
+    primaryAction: primaryAction(state, language, input),
     secondaryAction: secondaryAction(state, language, input),
     supportingMetrics: heroMetrics(input.todaySession, language),
     originalPrescription: input.todayOriginalPrescription ?? null,
@@ -1093,7 +1095,23 @@ function heroMetrics(session: TrainingSessionInput | null, language: Lang): Trai
   return metrics;
 }
 
-function primaryAction(state: TrainingDayStateKind, language: Lang): TrainingHeroActionModel {
+function primaryAction(
+  state: TrainingDayStateKind,
+  language: Lang,
+  input?: TrainingHomeViewStateInput,
+): TrainingHeroActionModel {
+  if (input && hasExplicitRedFlagSignal(input.signals)) {
+    return {
+      id: 'hero-safety-review',
+      title: tPT(language, 'Rever com segurança', 'Rever com segurança', 'Review safely'),
+      subtitle: tPT(language, 'Pausar treino duro hoje', 'Pausar treino duro hoje', 'Pause hard training today'),
+      icon: 'heart.text.square',
+      tint: 'warning',
+      target: 'openWeekPlan',
+      priority: 'primary',
+    };
+  }
+
   switch (state) {
     case 'completed':
       return {
@@ -1164,6 +1182,18 @@ function secondaryAction(
   language: Lang,
   input: TrainingHomeViewStateInput,
 ): TrainingHeroActionModel | null {
+  if (hasExplicitRedFlagSignal(input.signals)) {
+    return {
+      id: 'hero-refresh-safety',
+      title: tPT(language, 'Atualizar coach', 'Atualizar coach', 'Refresh coach'),
+      subtitle: null,
+      icon: 'arrow.clockwise',
+      tint: 'secretary',
+      target: 'refreshCoach',
+      priority: 'secondary',
+    };
+  }
+
   switch (state) {
     case 'completed':
     case 'noPlan':
@@ -1400,6 +1430,20 @@ function resolveAdjustmentSummary(
 
   const causePhrases = dedupedCausePhrases(input.readiness, input.signals, language);
   const causeChips = dedupedCauseChips(input.readiness, input.signals, language);
+
+  if (hasExplicitRedFlagSignal(input.signals)) {
+    return {
+      title: tPT(language, 'Verificação de segurança primeiro', 'Verificação de segurança primeiro', 'Safety check first'),
+      detail: tPT(
+        language,
+        'Pausa treino duro hoje. Se os sintomas forem fortes, novos ou estiverem a piorar, procura apoio de um profissional qualificado.',
+        'Pause treino duro hoje. Se os sintomas forem fortes, novos ou estiverem piorando, procure apoio de um profissional qualificado.',
+        'Pause hard training today. If symptoms are severe, new, or worsening, seek support from a qualified professional.',
+      ),
+      tone: 'limited',
+      chips: [tPT(language, 'Segurança', 'Segurança', 'Safety'), tPT(language, 'Recuperação', 'Recuperação', 'Recovery')],
+    };
+  }
 
   // Gap 6: the Garmin-specific copy below names Garmin literally. Firing it
   // for `coachBriefing.degraded` alone (without Garmin being a data source
@@ -1712,6 +1756,12 @@ function dedupedCausePhrases(readiness: ReadinessInput | null, signals: Training
       case 'high_shoulder_load': phrases.push(tPT(language, 'ombros ainda carregados', 'ombros ainda carregados', 'heavy shoulder load')); break;
       case 'calendar_conflict': phrases.push(tPT(language, 'sobreposição com a agenda', 'sobreposição com a agenda', 'calendar overlap')); break;
       case 'planned_race_this_week': phrases.push(tPT(language, 'corrida importante esta semana', 'corrida importante esta semana', 'race week')); break;
+      case 'safety_red_flag':
+      case 'red_flag':
+      case 'health_red_flag':
+      case 'medical_red_flag':
+        phrases.push(tPT(language, 'sinal de segurança', 'sinal de segurança', 'safety signal'));
+        break;
       default: break;
     }
   }
@@ -1747,32 +1797,52 @@ function dedupedPositivePhrases(readiness: ReadinessInput | null, language: Lang
 }
 
 function localizedSignalTitle(signal: TrainingSignalInput, language: Lang): string {
-  if (!isPortuguese(language)) return signal.title;
   switch (signal.type) {
-    case 'low_sleep': return 'Pouco sono';
-    case 'low_hrv': return 'HRV baixa';
-    case 'low_readiness': return 'Prontidão baixa';
-    case 'high_leg_load': return 'Carga alta nas pernas';
-    case 'high_shoulder_load': return 'Carga alta nos ombros';
-    case 'gym_load_today': return 'Ginásio hoje';
-    case 'running_load_today': return 'Corrida hoje';
-    case 'cycling_load_today': return 'Bicicleta hoje';
-    case 'swim_load_today': return 'Natação hoje';
-    case 'planned_hard_run': return 'Corrida dura planeada';
-    case 'planned_hard_ride': return 'Saída dura planeada';
-    case 'planned_race_this_week': return 'Prova esta semana';
-    case 'training_session_scheduled': return 'Sessão marcada';
-    case 'calendar_conflict': return 'Conflito no calendário';
-    case 'low_adherence': return 'Aderência baixa';
-    case 'high_adherence': return 'Aderência alta';
-    case 'plan_drift': return 'Desvio ao plano';
+    case 'low_sleep': return tPT(language, 'Pouco sono', 'Pouco sono', 'Low sleep');
+    case 'low_hrv': return tPT(language, 'HRV baixa', 'HRV baixa', 'Low HRV');
+    case 'low_readiness': return tPT(language, 'Prontidão baixa', 'Prontidão baixa', 'Low readiness');
+    case 'high_leg_load': return tPT(language, 'Carga alta nas pernas', 'Carga alta nas pernas', 'Heavy leg load');
+    case 'high_shoulder_load': return tPT(language, 'Carga alta nos ombros', 'Carga alta nos ombros', 'Heavy shoulder load');
+    case 'gym_load_today': return tPT(language, 'Ginásio hoje', 'Ginásio hoje', 'Gym today');
+    case 'running_load_today': return tPT(language, 'Corrida hoje', 'Corrida hoje', 'Run today');
+    case 'cycling_load_today': return tPT(language, 'Bicicleta hoje', 'Bicicleta hoje', 'Bike today');
+    case 'swim_load_today': return tPT(language, 'Natação hoje', 'Natação hoje', 'Swim today');
+    case 'planned_hard_run': return tPT(language, 'Corrida dura planeada', 'Corrida dura planejada', 'Hard run planned');
+    case 'planned_hard_ride': return tPT(language, 'Saída dura planeada', 'Saída dura planejada', 'Hard ride planned');
+    case 'planned_race_this_week': return tPT(language, 'Prova esta semana', 'Prova esta semana', 'Race this week');
+    case 'training_session_scheduled': return tPT(language, 'Sessão marcada', 'Sessão marcada', 'Session scheduled');
+    case 'calendar_conflict': return tPT(language, 'Conflito no calendário', 'Conflito no calendário', 'Calendar conflict');
+    case 'low_adherence': return tPT(language, 'Aderência baixa', 'Aderência baixa', 'Low adherence');
+    case 'high_adherence': return tPT(language, 'Aderência alta', 'Aderência alta', 'High adherence');
+    case 'plan_drift': return tPT(language, 'Desvio ao plano', 'Desvio ao plano', 'Plan drift');
+    case 'safety_red_flag':
+    case 'red_flag':
+    case 'health_red_flag':
+    case 'medical_red_flag':
+      return tPT(language, 'Verificação de segurança', 'Verificação de segurança', 'Safety check');
     default: return localizedSessionType(signal.title, language);
   }
 }
 
 function localizedSignalSummary(signal: TrainingSignalInput, language: Lang): string {
-  if (!isPortuguese(language)) return signal.summary;
   const payload = signal.payload ?? {};
+  if (signal.type === 'calendar_conflict') {
+    return tPT(
+      language,
+      'Um evento da agenda sobrepõe-se a uma sessão de treino marcada — considera mover uma das duas.',
+      'Um evento da agenda se sobrepõe a uma sessão de treino marcada — considera mover uma das duas.',
+      'A calendar event overlaps a scheduled training session — consider moving one.',
+    );
+  }
+  if (hasExplicitRedFlagSignal([signal])) {
+    return tPT(
+      language,
+      'Pausa treino duro hoje. Se os sintomas forem fortes, novos ou estiverem a piorar, procura apoio de um profissional qualificado.',
+      'Pause treino duro hoje. Se os sintomas forem fortes, novos ou estiverem piorando, procure apoio de um profissional qualificado.',
+      'Pause hard training today. If symptoms are severe, new, or worsening, seek support from a qualified professional.',
+    );
+  }
+  if (!isPortuguese(language)) return signal.summary;
   switch (signal.type) {
     case 'low_sleep': {
       const scoreText = typeof payload.score === 'number' ? `score ${payload.score}` : 'score baixo';
@@ -1823,10 +1893,6 @@ function localizedSignalSummary(signal: TrainingSignalInput, language: Lang): st
       const titleText = typeof payload.title === 'string' ? `: ${localizedSessionType(payload.title, language)}` : '';
       return `Sessão de ${sportText}${titleText} — já está no calendário.`;
     }
-    case 'calendar_conflict': {
-      const event = typeof payload.conflict_event_title === 'string' ? payload.conflict_event_title : 'este evento';
-      return `"${event}" sobrepõe-se a uma sessão de treino marcada — considera mover uma das duas.`;
-    }
     case 'low_adherence': {
       const completed = typeof payload.completed === 'number' ? payload.completed : 0;
       const planned = typeof payload.planned === 'number' ? payload.planned : 0;
@@ -1875,6 +1941,16 @@ function signalTone(signal: TrainingSignalInput, state: TrainingDayStateKind): T
   if (signal.priority === 'urgent' || state === 'recovery' || state === 'caution' || state === 'conflictingSchedule' || state === 'missedSessionRecovery') return 'protective';
   if (state === 'ready') return 'supportive';
   return 'caution';
+}
+
+function hasExplicitRedFlagSignal(signals: TrainingSignalInput[]): boolean {
+  return signals.some((signal) => {
+    const type = trimmed(signal.type).toLowerCase();
+    return type === 'safety_red_flag'
+      || type === 'red_flag'
+      || type === 'health_red_flag'
+      || type === 'medical_red_flag';
+  });
 }
 
 function hasLowConfidenceState(input: TrainingHomeViewStateInput): boolean {

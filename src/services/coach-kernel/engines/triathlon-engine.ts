@@ -1,7 +1,7 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
 import type { EngineContext, SportEngine } from './interfaces';
-import type { DayOfWeek, Session, Sport } from '../types';
+import type { DayOfWeek, Session, Sport, TrainingDecisionReason } from '../types';
 import { DAY_ORDER, createSessionId, durationToLoad } from '../utils';
 import { runningEngine } from './running-engine';
 import { cyclingEngine } from './cycling-engine';
@@ -45,6 +45,79 @@ function placementRank(session: Session): number {
   if (session.keySession) return 2;
   if (session.sport === 'strength') return 4;
   return 3;
+}
+
+function isHighIntensityTriathlonKey(session: Session): boolean {
+  return session.keySession && ['threshold', 'vo2', 'neuromuscular'].includes(session.intensityZone);
+}
+
+function aerobicSessionTypeForSport(session: Session): Session['sessionType'] {
+  if (session.sport === 'cycling') return 'endurance_ride';
+  if (session.sport === 'swimming') return 'aerobic_swim';
+  return 'easy_run';
+}
+
+function softenForTriathlonSpacing(session: Session): Session {
+  const reason: TrainingDecisionReason = {
+    code: 'interference_reflowed',
+    text: `${session.title} was softened to aerobic support to avoid stacking hard triathlon sessions on consecutive days.`,
+    severity: 'notice',
+    affectedEntity: {
+      type: 'session',
+      id: session.id,
+      title: session.title,
+      dayOfWeek: session.dayOfWeek,
+    },
+    sourceConstraint: {
+      type: 'interference',
+      id: 'triathlon-hard-day-spacing',
+      label: 'Triathlon hard-day spacing',
+    },
+    before: {
+      intensityZone: session.intensityZone,
+      fatigueCost: session.fatigueCost,
+      keySession: session.keySession,
+    },
+    after: {
+      intensityZone: 'aerobic',
+      fatigueCost: 'medium',
+      keySession: false,
+    },
+    preservedIntent: 'Kept multisport frequency while protecting recovery between quality sessions.',
+  };
+  return {
+    ...session,
+    sessionType: aerobicSessionTypeForSport(session),
+    title: `${session.sport[0].toUpperCase()}${session.sport.slice(1)} Aerobic Support`,
+    description: `Aerobic support work replacing ${session.title} so quality days are not stacked back-to-back.`,
+    intensityZone: 'aerobic',
+    fatigueCost: 'medium',
+    keySession: false,
+    plannedLoad: durationToLoad(session.durationMinutes, 'aerobic', 'medium'),
+    tags: [...new Set([...session.tags, 'triathlon_spacing_softened', 'aerobic_support'])],
+    decisionReasons: [...(session.decisionReasons ?? []), reason],
+    intensityProfile: undefined,
+    intensitySummary: {
+      primaryZone: 'aerobic',
+      lowPct: 1,
+      moderatePct: 0,
+      highPct: 0,
+      targetSummaryText: `${session.durationMinutes}min aerobic support.`,
+    },
+  };
+}
+
+function softenConsecutiveTriathlonIntensity(sessions: readonly Session[]): Session[] {
+  let lastHighIntensityDay: number | null = null;
+  return sessions.map((session) => {
+    const dayIndex = DAY_ORDER.indexOf(session.dayOfWeek);
+    if (!isHighIntensityTriathlonKey(session) || dayIndex < 0) return session;
+    if (lastHighIntensityDay !== null && Math.abs(dayIndex - lastHighIntensityDay) <= 1) {
+      return softenForTriathlonSpacing(session);
+    }
+    lastHighIntensityDay = dayIndex;
+    return session;
+  });
 }
 
 function spreadTriathlonSessions(context: EngineContext, sessions: readonly Session[]): Session[] {
@@ -169,6 +242,6 @@ export const triathlonEngine: SportEngine = {
         })]
       : [];
 
-    return spreadTriathlonSessions(context, [...runs, ...rides, ...swims, ...strength, ...brick]);
+    return softenConsecutiveTriathlonIntensity(spreadTriathlonSessions(context, [...runs, ...rides, ...swims, ...strength, ...brick]));
   },
 };

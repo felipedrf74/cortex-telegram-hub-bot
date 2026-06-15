@@ -11,7 +11,7 @@ import type {
   SessionScheduleState,
   TrainingDecisionReason,
 } from './types';
-import { dayIndex, durationToLoad, resolvePreferredStartTime, timeToMinutes, withDuration } from './utils';
+import { DAY_ORDER, dayIndex, durationToLoad, resolvePreferredStartTime, timeToMinutes, withDuration } from './utils';
 
 interface CapacitySlot {
   id: string;
@@ -127,11 +127,11 @@ export function reconcileWeeklyCapacity(
     }
   }
 
-  const output = [...reconciledById.values()].sort((left, right) => {
+  const output = distributeInactiveSessionDays([...reconciledById.values()].sort((left, right) => {
     const leftIndex = originalIndex.get(left.id) ?? 0;
     const rightIndex = originalIndex.get(right.id) ?? 0;
     return leftIndex - rightIndex;
-  });
+  }), athlete.availability.maxSessionsPerDay);
 
   const activeCount = output.filter(isActiveTrainingSession).length;
   if (activeCount < sessions.filter((session) => session.sessionType !== 'rest').length) {
@@ -299,6 +299,33 @@ function clearScheduleForInactiveSession(
     tags: [...new Set([...session.tags.filter((tag) => !tag.startsWith('availability_')), `availability_${state}`])],
     alternatives: [...new Set([...(session.alternatives ?? []), reason])],
   };
+}
+
+function distributeInactiveSessionDays(sessions: Session[], maxSessionsPerDay: number): Session[] {
+  const maxPerDay = Math.max(1, Math.trunc(maxSessionsPerDay || 1));
+  const dayCounts = new Map<DayOfWeek, number>();
+  for (const session of sessions) {
+    if (!isActiveTrainingSession(session)) continue;
+    dayCounts.set(session.dayOfWeek, (dayCounts.get(session.dayOfWeek) ?? 0) + 1);
+  }
+
+  return sessions.map((session) => {
+    if (isActiveTrainingSession(session)) return session;
+    const currentCount = dayCounts.get(session.dayOfWeek) ?? 0;
+    if (currentCount < maxPerDay) {
+      dayCounts.set(session.dayOfWeek, currentCount + 1);
+      return session;
+    }
+
+    const fallbackDay = DAY_ORDER.find((day) => (dayCounts.get(day) ?? 0) < maxPerDay);
+    if (!fallbackDay) return session;
+    dayCounts.set(fallbackDay, (dayCounts.get(fallbackDay) ?? 0) + 1);
+    return {
+      ...session,
+      originalDayOfWeek: session.originalDayOfWeek ?? session.dayOfWeek,
+      dayOfWeek: fallbackDay,
+    };
+  });
 }
 
 function slotScore(

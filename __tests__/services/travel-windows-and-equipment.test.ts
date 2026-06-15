@@ -75,6 +75,7 @@ describe('migration 161', () => {
     const cols = testDb.prepare("PRAGMA table_info('travel_windows')").all() as Array<{ name: string }>;
     const names = new Set(cols.map((c) => c.name));
     expect(names.has('user_id')).toBe(true);
+    expect(names.has('tenant_id')).toBe(true);
     expect(names.has('start_date')).toBe(true);
     expect(names.has('end_date')).toBe(true);
     expect(names.has('time_zone_shift_hours')).toBe(true);
@@ -93,6 +94,7 @@ describe('recordTravelWindow', () => {
   it('persists all fields', () => {
     const result = recordTravelWindow({
       userId: 100,
+      tenantId: 1000,
       startDate: '2026-06-01',
       endDate: '2026-06-08',
       equipmentProfile: 'hotel_only',
@@ -106,8 +108,9 @@ describe('recordTravelWindow', () => {
     });
     expect(result.id).toBeGreaterThan(0);
     const row = testDb.prepare('SELECT * FROM travel_windows WHERE id = ?').get(result.id) as {
-      time_zone_shift_hours: number; sleep_disruption_expected: number; notes: string;
+      tenant_id: number; time_zone_shift_hours: number; sleep_disruption_expected: number; notes: string;
     };
+    expect(row.tenant_id).toBe(1000);
     expect(row.time_zone_shift_hours).toBe(6);
     expect(row.sleep_disruption_expected).toBe(1);
     expect(row.notes).toBe('work trip');
@@ -117,6 +120,81 @@ describe('recordTravelWindow', () => {
     expect(() => recordTravelWindow({
       userId: 100, startDate: '2026-06-10', endDate: '2026-06-01',
     })).toThrow(/startDate/);
+  });
+
+  it('replays duplicate logical travel window for the same tenant', () => {
+    const first = recordTravelWindow({
+      userId: 100,
+      tenantId: 1000,
+      startDate: '2026-06-01',
+      endDate: '2026-06-08',
+      equipmentProfile: 'hotel_only',
+      timeZoneShiftHours: 6,
+      sleepDisruptionExpected: true,
+      availableSessionDurationMinutes: 30,
+      notes: 'first note',
+    });
+    const replay = recordTravelWindow({
+      userId: 100,
+      tenantId: 1000,
+      startDate: '2026-06-01',
+      endDate: '2026-06-08',
+      equipmentProfile: 'hotel_only',
+      timeZoneShiftHours: 6,
+      sleepDisruptionExpected: true,
+      availableSessionDurationMinutes: 30,
+      notes: 'retry note should not create a new active window',
+    });
+
+    const count = testDb.prepare('SELECT COUNT(*) AS n FROM travel_windows WHERE user_id = 100 AND tenant_id = 1000').get() as { n: number };
+    expect(replay.id).toBe(first.id);
+    expect(first.alreadyExisted).toBe(false);
+    expect(replay.alreadyExisted).toBe(true);
+    expect(count.n).toBe(1);
+  });
+
+  it('does not replay duplicate logical window across different tenants', () => {
+    const tenantA = recordTravelWindow({
+      userId: 100,
+      tenantId: 1000,
+      startDate: '2026-06-01',
+      endDate: '2026-06-08',
+      equipmentProfile: 'hotel_only',
+    });
+    const tenantB = recordTravelWindow({
+      userId: 100,
+      tenantId: 2000,
+      startDate: '2026-06-01',
+      endDate: '2026-06-08',
+      equipmentProfile: 'hotel_only',
+    });
+
+    expect(tenantB.id).not.toBe(tenantA.id);
+    expect(tenantB.alreadyExisted).toBe(false);
+    expect(testDb.prepare('SELECT COUNT(*) AS n FROM travel_windows WHERE user_id = 100').get()).toMatchObject({ n: 2 });
+  });
+
+  it('keeps overlapping but materially different travel windows separate', () => {
+    const first = recordTravelWindow({
+      userId: 101,
+      tenantId: 1000,
+      startDate: '2026-06-01',
+      endDate: '2026-06-08',
+      equipmentProfile: 'hotel_only',
+      availableSessionDurationMinutes: 30,
+    });
+    const overlap = recordTravelWindow({
+      userId: 101,
+      tenantId: 1000,
+      startDate: '2026-06-05',
+      endDate: '2026-06-10',
+      equipmentProfile: 'bodyweight_only',
+      availableSessionDurationMinutes: 20,
+    });
+
+    expect(overlap.id).not.toBe(first.id);
+    expect(overlap.alreadyExisted).toBe(false);
+    expect(testDb.prepare('SELECT COUNT(*) AS n FROM travel_windows WHERE user_id = 101 AND tenant_id = 1000').get()).toMatchObject({ n: 2 });
   });
 });
 
@@ -133,12 +211,38 @@ describe('findTravelWindowsInRange', () => {
     recordTravelWindow({ userId: 201, startDate: '2026-06-01', endDate: '2026-06-08' });
     expect(findTravelWindowsInRange(201, '2026-08-01', '2026-08-15')).toEqual([]);
   });
+
+  it('isolates same-user travel windows by tenant when tenantId is provided', () => {
+    recordTravelWindow({
+      userId: 202,
+      tenantId: 10,
+      startDate: '2026-06-01',
+      endDate: '2026-06-08',
+      equipmentProfile: 'hotel_only',
+    });
+    recordTravelWindow({
+      userId: 202,
+      tenantId: 20,
+      startDate: '2026-06-01',
+      endDate: '2026-06-08',
+      equipmentProfile: 'full_gym',
+    });
+
+    const tenantTen = findTravelWindowsInRange(202, '2026-06-03', '2026-06-05', 10);
+    const tenantTwenty = findTravelWindowsInRange(202, '2026-06-03', '2026-06-05', 20);
+
+    expect(tenantTen).toHaveLength(1);
+    expect(tenantTen[0]?.equipment_profile).toBe('hotel_only');
+    expect(tenantTwenty).toHaveLength(1);
+    expect(tenantTwenty[0]?.equipment_profile).toBe('full_gym');
+  });
 });
 
 describe('computeTravelStressScore', () => {
   it('zero when no flags set', () => {
     const score = computeTravelStressScore({
       id: 1, user_id: 1, start_date: 'x', end_date: 'x',
+      tenant_id: null,
       equipment_profile: null, time_zone_shift_hours: null, flight_duration_hours: null,
       sleep_disruption_expected: 0, walking_load_expected: 0, heat_stress: 0,
       available_session_duration_minutes: null, notes: null, created_at: 'x',
@@ -149,6 +253,7 @@ describe('computeTravelStressScore', () => {
   it('combines flags up to 1.0', () => {
     const score = computeTravelStressScore({
       id: 1, user_id: 1, start_date: 'x', end_date: 'x',
+      tenant_id: null,
       equipment_profile: null, time_zone_shift_hours: 6, flight_duration_hours: 8,
       sleep_disruption_expected: 1, walking_load_expected: 1, heat_stress: 1,
       available_session_duration_minutes: null, notes: null, created_at: 'x',
@@ -161,6 +266,7 @@ describe('computeTravelStressScore', () => {
     // No way the current formula exceeds 1.0, but verify the clamp anyway.
     const score = computeTravelStressScore({
       id: 1, user_id: 1, start_date: 'x', end_date: 'x',
+      tenant_id: null,
       equipment_profile: null, time_zone_shift_hours: 12, flight_duration_hours: 12,
       sleep_disruption_expected: 1, walking_load_expected: 1, heat_stress: 1,
       available_session_duration_minutes: null, notes: null, created_at: 'x',

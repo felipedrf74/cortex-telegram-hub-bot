@@ -1211,6 +1211,103 @@ describe('training-plan-calendar-sync', () => {
     );
   });
 
+  it('preserves fresh calendar_event_id links when provider read-back has not caught up yet', async () => {
+    mocks.getActivePlan.mockReturnValue({
+      id: 119,
+      user_id: 42,
+      start_date: '2026-04-20T00:00:00.000Z',
+      preferences_json: null,
+    });
+    mocks.getWeeksForPlan.mockReturnValue([{ id: 1190, week_number: 1 }]);
+    mocks.getSessionsForWeek.mockReturnValue([
+      {
+        id: 1209,
+        day_of_week: 'Monday',
+        session_type: 'gym',
+        title: 'Lift',
+        duration_minutes: 45,
+        description: '',
+        status: 'pending',
+        calendar_event_id: 'evt-fresh-google',
+        calendar_source: 'google',
+        updated_at: now.toISOString(),
+      },
+    ]);
+    mocks.getEvents.mockResolvedValue([]);
+
+    const result = await syncTrainingPlanCalendar(42, now, undefined, 42);
+
+    expect(result.status).toBe('synced');
+    if (result.status === 'synced') {
+      expect(result.data.eventsCreated).toBe(0);
+      expect(result.data.sessionsAlreadySynced).toBe(1);
+      expect(result.data.sessionResults?.[0]).toEqual(expect.objectContaining({
+        sessionId: 1209,
+        eventId: 'evt-fresh-google',
+        reason: 'provider_read_missing_recent_link_preserved',
+      }));
+    }
+    expect(mocks.createEvent).not.toHaveBeenCalled();
+    expect(mocks.linkSessionToCalendar).not.toHaveBeenCalled();
+    expect(mocks.loggerWarn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sessionId: 1209,
+        calendarEventId: 'evt-fresh-google',
+        reason: 'missing_recent_link_preserved',
+      }),
+      'syncTrainingPlanCalendar: preserving fresh calendar link while provider read catches up',
+    );
+  });
+
+  it('marks sessions when live calendar capacity shifts them away from the preferred time', async () => {
+    mocks.getActivePlan.mockReturnValue({
+      id: 129,
+      user_id: 42,
+      start_date: '2026-04-20T00:00:00.000Z',
+      preferences_json: JSON.stringify({
+        preferredTime: '12:00',
+        preferredCardioTime: '07:00',
+        preferredStrengthTime: '12:00',
+      }),
+    });
+    mocks.getWeeksForPlan.mockReturnValue([{ id: 1290, week_number: 1 }]);
+    mocks.getSessionsForWeek.mockReturnValue([
+      {
+        id: 1309,
+        day_of_week: 'Monday',
+        session_type: 'gym',
+        title: 'Lift',
+        duration_minutes: 45,
+        description: '',
+        status: 'pending',
+        calendar_event_id: null,
+        calendar_source: null,
+        preferred_time_unavailable: 0,
+      },
+    ]);
+    mocks.getEvents.mockResolvedValue([
+      {
+        id: 'busy-noon',
+        source: 'google',
+        summary: 'Busy',
+        start: '2026-04-20T11:00:00.000Z',
+        end: '2026-04-20T12:00:00.000Z',
+      },
+    ]);
+    mocks.createEvent.mockImplementationOnce(async (payload: any) => ({
+      id: 'evt-shifted',
+      source: 'google',
+      start: payload.start,
+      end: payload.end,
+    }));
+
+    const result = await syncTrainingPlanCalendar(42, now, undefined, 42);
+
+    expect(result.status).toBe('synced');
+    expect(mocks.linkSessionToCalendar).toHaveBeenCalledWith(1309, 'evt-shifted', 'google');
+    expect(mocks.updateSession).toHaveBeenCalledWith(1309, { preferred_time_unavailable: 1 });
+  });
+
   it('precisely deletes a mismatched stale linked event after creating the replacement', async () => {
     mocks.getActivePlan.mockReturnValue({
       id: 29,
@@ -1457,7 +1554,7 @@ describe('training-plan-calendar-sync', () => {
     }));
   });
 
-  it('syncs future unscheduled sessions when the user taps Sync now', async () => {
+  it('does not create events for future unscheduled sessions during ordinary sync', async () => {
     mocks.getActivePlan.mockReturnValue({
       id: 33,
       user_id: 42,
@@ -1468,19 +1565,19 @@ describe('training-plan-calendar-sync', () => {
     mocks.getSessionsForWeek.mockReturnValue([
       { id: 3301, day_of_week: 'Monday', session_type: 'gym', title: 'Unscheduled Lift', duration_minutes: 40, description: '', status: 'unscheduled', calendar_event_id: null },
     ]);
-    mocks.createEvent.mockResolvedValueOnce({ id: 'evt-unscheduled', source: 'google' });
 
     const result = await syncTrainingPlanCalendar(42, now, undefined, 42);
 
     expect(result.status).toBe('synced');
     if (result.status === 'synced') {
-      expect(result.data.sessionsAttempted).toBe(1);
-      expect(result.data.eventsCreated).toBe(1);
+      expect(result.data.sessionsAttempted).toBe(0);
+      expect(result.data.eventsCreated).toBe(0);
       expect(result.data.sessionsFailed).toBe(0);
+      expect(result.data.message).toBe('No future sessions left to sync.');
     }
-    expect(mocks.createEvent).toHaveBeenCalledTimes(1);
-    expect(mocks.linkSessionToCalendar).toHaveBeenCalledWith(3301, 'evt-unscheduled', 'google');
-    expect(mocks.updateSession).toHaveBeenCalledWith(3301, { status: 'scheduled' });
+    expect(mocks.createEvent).not.toHaveBeenCalled();
+    expect(mocks.linkSessionToCalendar).not.toHaveBeenCalledWith(3301, expect.anything(), expect.anything());
+    expect(mocks.updateSession).not.toHaveBeenCalledWith(3301, { status: 'scheduled' });
   });
 
   it('does not create events for inactive deferred schedule-state sessions', async () => {

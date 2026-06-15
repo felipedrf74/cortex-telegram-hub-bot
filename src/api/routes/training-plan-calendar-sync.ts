@@ -40,6 +40,9 @@ import {
 import { requireTenantIdParam } from '../../services/tenant-scope';
 import { withTrainingCalendarOperationLock } from '../../services/training-operation-locks';
 import { hashOwnerIdForLog } from './_ownership-audit';
+import { isProviderEventNotFoundError } from '../../services/training-calendar-errors';
+import { config } from '../../config';
+import { DateTime } from 'luxon';
 
 export type TrainingPlanCalendarSyncResult =
   | {
@@ -223,6 +226,7 @@ type StaleTrainingCalendarEventRef = {
 };
 
 const TRAINING_CALENDAR_SOURCES: readonly CalendarSource[] = ['google', 'outlook'];
+const DEFAULT_MISSING_LINK_GRACE_MS = 15 * 60 * 1000;
 
 function resolveOwnedSessionScope(
   userId: number,
@@ -789,6 +793,8 @@ async function syncTrainingPlanCalendarLocked(
     calendarSource: string | null;
     staleLinkedEvent?: UnifiedCalendarEvent | null;
     staleEventRef?: StaleTrainingCalendarEventRef | null;
+    updatedAt?: string | null;
+    preferredTimeUnavailable?: number;
   };
   const candidates: SyncCandidate[] = [];
   const weeks = trainingPlans.getWeeksForPlan(plan.id);
@@ -842,6 +848,8 @@ async function syncTrainingPlanCalendarLocked(
         sessionDate,
         calendarEventId: session.calendar_event_id || null,
         calendarSource: session.calendar_source || null,
+        updatedAt: session.updated_at || null,
+        preferredTimeUnavailable: Number(session.preferred_time_unavailable || 0),
       });
     }
   }
@@ -987,7 +995,7 @@ async function syncTrainingPlanCalendarLocked(
           userId,
         });
         trainingPlans.linkSessionToCalendar(item.sessionId, ownedEvent.id, ownedEvent.source);
-        markSessionScheduledAfterCalendarLink(item);
+        markCalendarLinkedSessionState(item, ownedEvent.start, preferences);
         recordTrainingCalendarOwnership({
           planId: plan.id,
           planVersion,
@@ -1077,7 +1085,7 @@ async function syncTrainingPlanCalendarLocked(
         keepEvent: linkedEvent,
         events: [...calendarEvents, ...cleanupCalendarEvents],
       });
-      markSessionScheduledAfterCalendarLink(item);
+      markCalendarLinkedSessionState(item, linkedEvent.start, preferences);
       alreadySynced += 1;
       sessionResults.push(syncResult(item, linkedEvent.source, 'already_synced', 'verified_existing_provider_event', false, linkedEvent.id, attemptedAt, linkedEvent.start, linkedEvent.end));
       const eventStart = new Date(linkedEvent.start);
@@ -1090,6 +1098,35 @@ async function syncTrainingPlanCalendarLocked(
         });
         consumedExistingEventKeys.add(`${linkedEvent.source}:${linkedEvent.id}`);
       }
+      continue;
+    }
+
+    if (
+      item.calendarEventId
+      && item.calendarSource === calendarSource
+      && isRecentCalendarLink(item, now)
+    ) {
+      markSessionScheduledAfterCalendarLink(item);
+      alreadySynced += 1;
+      sessionResults.push(syncResult(
+        item,
+        calendarSource,
+        'already_synced',
+        'provider_read_missing_recent_link_preserved',
+        true,
+        item.calendarEventId,
+        attemptedAt,
+      ));
+      logger.warn(
+        {
+          userId,
+          sessionId: item.sessionId,
+          calendarEventId: item.calendarEventId,
+          calendarSource: item.calendarSource,
+          reason: 'missing_recent_link_preserved',
+        },
+        'syncTrainingPlanCalendar: preserving fresh calendar link while provider read catches up',
+      );
       continue;
     }
 
@@ -1143,7 +1180,7 @@ async function syncTrainingPlanCalendarLocked(
     );
     if (existingEvent) {
       trainingPlans.linkSessionToCalendar(item.sessionId, existingEvent.id, existingEvent.source);
-      markSessionScheduledAfterCalendarLink(item);
+      markCalendarLinkedSessionState(item, existingEvent.start, preferences);
       recordTrainingCalendarOwnership({
         planId: plan.id,
         planVersion,
@@ -1346,7 +1383,7 @@ async function syncTrainingPlanCalendarLocked(
         },
       );
       trainingPlans.linkSessionToCalendar(item.sessionId, event.id, event.source);
-      markSessionScheduledAfterCalendarLink(item);
+      markCalendarLinkedSessionState(item, event.start || secretaryWindow.start, preferences);
       recordTrainingCalendarOwnership({
         planId: plan.id,
         planVersion,
@@ -1505,6 +1542,29 @@ async function deleteStaleLinkedTrainingEvent(input: {
       'syncTrainingPlanCalendar: deleted stale linked calendar event after repair',
     );
   } catch (err) {
+    if (isProviderEventNotFoundError(err)) {
+      markCalendarOwnershipDeleted({
+        eventId: staleId,
+        source: staleSource,
+        reason: 'training_sync_stale_event_gone_upstream',
+        status: 'deleted',
+        tenantId: input.tenantId,
+        userId: input.userId,
+        planId: input.planId,
+      });
+      logger.debug(
+        {
+          userId: input.userId,
+          planId: input.planId,
+          planVersion: input.planVersion,
+          sessionId: input.sessionId,
+          staleEventId: staleId,
+          source: staleSource,
+        },
+        'syncTrainingPlanCalendar: stale linked calendar event was already gone',
+      );
+      return;
+    }
     markCalendarOwnershipDeleted({
       eventId: staleId,
       source: staleSource,
@@ -1554,6 +1614,32 @@ function staleLinkedEventRefForSession(
 function markSessionScheduledAfterCalendarLink(item: { sessionId: number; status?: string | null }): void {
   if (String(item.status || '').toLowerCase() !== 'unscheduled') return;
   trainingPlans.updateSession(item.sessionId, { status: 'scheduled' });
+}
+
+function markCalendarLinkedSessionState(
+  item: {
+    sessionId: number;
+    sessionType: string;
+    durationMinutes: number;
+    status?: string | null;
+    preferredTimeUnavailable?: number;
+  },
+  eventStart: string | undefined,
+  preferences: PlanPreferences,
+): void {
+  const updates: Parameters<typeof trainingPlans.updateSession>[1] = {};
+  if (String(item.status || '').toLowerCase() === 'unscheduled') {
+    updates.status = 'scheduled';
+  }
+  const shifted = eventStart
+    ? !calendarEventStartMatchesPreferredTime(item, eventStart, preferences)
+    : Boolean(item.preferredTimeUnavailable);
+  if (Number(item.preferredTimeUnavailable || 0) !== (shifted ? 1 : 0)) {
+    updates.preferred_time_unavailable = shifted ? 1 : 0;
+  }
+  if (Object.keys(updates).length > 0) {
+    trainingPlans.updateSession(item.sessionId, updates);
+  }
 }
 
 function recordTrainingCalendarOwnership(input: {
@@ -1694,6 +1780,29 @@ async function deleteDuplicateTrainingEventsForSession(input: {
         'syncTrainingPlanCalendar: deleted duplicate generated training calendar event',
       );
     } catch (err) {
+      if (isProviderEventNotFoundError(err)) {
+        markCalendarOwnershipDeleted({
+          eventId: event.id,
+          source: event.source,
+          reason: 'training_sync_duplicate_gone_upstream',
+          status: 'deleted',
+          tenantId: input.tenantId,
+          userId: input.userId,
+          planId: input.planId,
+        });
+        logger.debug(
+          {
+            userId: input.userId,
+            planId: input.planId,
+            planVersion: input.planVersion,
+            sessionId: input.item.sessionId,
+            eventId: event.id,
+            source: event.source,
+          },
+          'syncTrainingPlanCalendar: duplicate generated event was already gone',
+        );
+        continue;
+      }
       markCalendarOwnershipDeleted({
         eventId: event.id,
         source: event.source,
@@ -1844,6 +1953,7 @@ async function updateSameShapeEventIfNeeded(input: {
     durationMinutes: number;
     sessionDate: Date;
     description: string;
+    preferredTimeUnavailable?: number;
   };
   event: UnifiedCalendarEvent;
   preferences: PlanPreferences;
@@ -1851,6 +1961,7 @@ async function updateSameShapeEventIfNeeded(input: {
 }): Promise<void> {
   const { item, event, preferences, userId, planId, planVersion } = input;
   if (!isWritableCalendarSource(event.source)) return;
+  if (Number(item.preferredTimeUnavailable || 0) === 1) return;
   const currentStart = new Date(event.start);
   const currentEnd = new Date(event.end);
   if (!Number.isFinite(currentStart.getTime()) || !Number.isFinite(currentEnd.getTime())) return;
@@ -1902,7 +2013,8 @@ async function updateSameShapeEventIfNeeded(input: {
 }
 
 function isInactiveScheduleStatus(status: string): boolean {
-  return status === 'deferred'
+  return status === 'unscheduled'
+    || status === 'deferred'
     || status === 'dropped'
     || status === 'cancelled'
     || status === 'superseded';
@@ -1932,6 +2044,38 @@ function preferredWindowForItem(
   );
   const end = new Date(start.getTime() + item.durationMinutes * 60_000);
   return { start, end };
+}
+
+function isRecentCalendarLink(
+  item: { updatedAt?: string | null; calendarEventId?: string | null },
+  now: Date,
+): boolean {
+  if (!item.calendarEventId || !item.updatedAt) return false;
+  const updated = Date.parse(item.updatedAt);
+  if (!Number.isFinite(updated)) return false;
+  return now.getTime() - updated <= missingLinkedEventGraceMs();
+}
+
+function missingLinkedEventGraceMs(): number {
+  const raw = Number(process.env.TRAINING_CALENDAR_MISSING_LINK_GRACE_MS);
+  if (!Number.isFinite(raw) || raw < 0) return DEFAULT_MISSING_LINK_GRACE_MS;
+  return Math.floor(raw);
+}
+
+function calendarEventStartMatchesPreferredTime(
+  item: { sessionType: string; durationMinutes: number },
+  eventStart: string,
+  preferences: PlanPreferences,
+): boolean {
+  const preferredTime = preferredTimeForSessionType(
+    item.sessionType,
+    preferences.preferredTime,
+    preferences.preferredCardioTime,
+    preferences.preferredStrengthTime,
+  );
+  const local = DateTime.fromISO(eventStart, { setZone: true })
+    .setZone(config.app.timezone || 'Europe/Lisbon');
+  return local.isValid && local.toFormat('HH:mm') === preferredTime;
 }
 
 function normalizeTrainingEventTitle(value: string | null | undefined): string {

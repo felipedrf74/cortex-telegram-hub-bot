@@ -123,6 +123,22 @@ describe('coach-kernel planner', () => {
     }
   });
 
+  it('softens consecutive high-intensity triathlon sessions instead of stacking hard days', () => {
+    const plan = buildWeekPlan(sampleTriathlete, '2026-06-15');
+    const highIntensityDays = plan.sessions
+      .filter((session) => ['threshold', 'vo2', 'neuromuscular'].includes(session.intensityZone))
+      .map((session) => ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'].indexOf(session.dayOfWeek))
+      .sort((left, right) => left - right);
+
+    for (let index = 1; index < highIntensityDays.length; index++) {
+      expect(highIntensityDays[index] - highIntensityDays[index - 1]).toBeGreaterThan(1);
+    }
+    expect(plan.sessions.some((session) => session.tags.includes('triathlon_spacing_softened'))).toBe(true);
+    expect(plan.sessions.some((session) =>
+      session.decisionReasons?.some((reason) => reason.sourceConstraint?.id === 'triathlon-hard-day-spacing')
+    )).toBe(true);
+  });
+
   it('respects a one-ride weekly target for cycling-primary plans', () => {
     const athlete: AthleteState = {
       ...sampleTriathlete,
@@ -175,6 +191,49 @@ describe('coach-kernel planner', () => {
       .reduce((total, session) => total + session.durationMinutes, 0);
 
     expect(cyclingMinutes).toBeLessThanOrEqual(200);
+  });
+
+  it('protects race-week running volume and removes long-run fatigue when travel constrained', () => {
+    const athlete: AthleteState = {
+      ...sampleMarathonAthlete,
+      equipment: {
+        hasGym: false,
+        hasBarbell: false,
+        hasDumbbells: false,
+        hasBikeTrainer: false,
+        hasPool: false,
+        hasTrack: false,
+        notes: ['travel day bodyweight only'],
+      },
+      availability: {
+        weeklyWindows: [
+          { dayOfWeek: 'monday', start: '07:00', end: '07:45', sports: ['running', 'strength'] },
+          { dayOfWeek: 'tuesday', start: '07:15', end: '07:40', sports: ['strength'] },
+          { dayOfWeek: 'wednesday', start: '18:30', end: '19:00', sports: ['strength'] },
+          { dayOfWeek: 'thursday', start: '12:00', end: '12:45', sports: ['running', 'strength'] },
+          { dayOfWeek: 'saturday', start: '08:00', end: '11:00', sports: ['running'] },
+        ],
+        preferredLongSessionDay: 'saturday',
+        preferredTimesBySport: { running: '08:00', strength: '12:00' },
+        maxSessionsPerDay: 1,
+      },
+      constraints: [
+        { id: 'race-week-travel', type: 'equipment', severity: 'high', description: 'Race week travel: bodyweight only and limited time.' },
+      ],
+      currentBlock: {
+        ...sampleMarathonAthlete.currentBlock,
+        phase: 'race',
+      },
+    };
+
+    const plan = buildWeekPlan(athlete, '2026-06-22');
+    const running = plan.sessions.filter((session) => session.sport === 'running');
+
+    expect(plan.phase).toBe('race');
+    expect(running.reduce((sum, session) => sum + session.durationMinutes, 0)).toBeLessThanOrEqual(115);
+    expect(running.some((session) => session.sessionType === 'long_run')).toBe(false);
+    expect(running.some((session) => session.fatigueCost === 'very_high')).toBe(false);
+    expect(running.some((session) => session.intensityZone === 'threshold' || session.intensityZone === 'vo2')).toBe(false);
   });
 
   it('emits speed_swim for advanced peak swim weeks', () => {

@@ -203,7 +203,8 @@ describe('Local Dev Cockpit security boundary', () => {
     expect(simSource).not.toContain('NEXUS_SIM_DEVICE:-iPhone 15');
     expect(simSource).toContain('NEXUS_SIM_CONSOLE:-0');
     expect(simSource).toContain('NEXUS_SIM_RESOLVE_ONLY:-0');
-    expect(simSource).toContain('LAUNCH_ARGS=(--console-pty "${LAUNCH_ARGS[@]}")');
+    expect(simSource).toContain('LAUNCH_OPTIONS=(--console-pty "${LAUNCH_OPTIONS[@]}")');
+    expect(simSource).toContain('xcrun simctl launch "${LAUNCH_OPTIONS[@]}" "${LAUNCH_ARGS[@]}"');
     expect(simSource).toContain('-nexus_local_auth_invite_code "$LOCAL_AUTH_INVITE_CODE"');
   });
 

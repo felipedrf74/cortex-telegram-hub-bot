@@ -89,6 +89,10 @@ const COMMANDS = {
     label: 'Launch iOS Simulator',
     bin: path.join(SCRIPTS_DIR, 'sim-local.sh'),
     args: () => [],
+    env: {
+      NEXUS_SIM_DEBUG_AUTH_IMPORT: '1',
+      NEXUS_SIM_DEBUG_AUTH_EMAIL: 'nexushubbot@gmail.com',
+    },
     cwd: REPO_ROOT,
   },
   'sim-stop': {
@@ -124,9 +128,12 @@ const COMMANDS = {
     longRunning: true,
   },
   'mint-jwt': {
-    label: 'Mint dev iOS JWT',
-    bin: path.join(SCRIPTS_DIR, 'full-nexus-local-engine.sh'),
-    args: () => ['auth-token'],
+    label: 'Mint nexushubbot iOS auth',
+    bin: 'node',
+    args: () => [path.join(SCRIPTS_DIR, 'local-ios-debug-auth.mjs')],
+    env: {
+      NEXUS_LOCAL_IOS_EMAIL: 'nexushubbot@gmail.com',
+    },
     cwd: REPO_ROOT,
   },
   'vitest-run': {
@@ -564,7 +571,7 @@ async function handleRun(req, res, cmdName) {
 
   const child = spawn(spec.bin, resolvedArgs, {
     cwd: spec.cwd || REPO_ROOT,
-    env: { ...process.env, FORCE_COLOR: '0' },
+    env: { ...process.env, ...(spec.env || {}), FORCE_COLOR: '0' },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
 

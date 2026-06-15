@@ -58,6 +58,105 @@ describe('buildTrainingHomeViewState', () => {
     expect(state.reasoning?.signals.length).toBeGreaterThanOrEqual(1);
   });
 
+  it('turns explicit red-flag signals into non-diagnostic safety copy with no hard-training CTA', () => {
+    const state = buildTrainingHomeViewState(baseInput({
+      todaySession: {
+        id: 'hard-run',
+        type: 'Threshold Run',
+        sessionType: 'threshold_run',
+        time: '06:30',
+        duration: 55,
+        status: 'planned',
+      },
+      signals: [
+        {
+          id: 40,
+          type: 'safety_red_flag',
+          title: 'medical_referral',
+          summary: '{"illness_symptoms_json":["chest_pain"],"severity":"medical_referral"}',
+          priority: 'urgent',
+          source: 'structured_intake',
+          createdAt: '2026-04-19T06:00:00.000Z',
+          expiresAt: '2026-04-19T18:00:00.000Z',
+          payload: {
+            illness_symptoms_json: ['chest_pain'],
+            pain_location: 'chest',
+          },
+        },
+      ],
+    }), 'en-US');
+
+    const displayStrings = collectStrings(state);
+
+    expect(state.hero.state).toBe('recovery');
+    expect(state.hero.primaryAction.target).toBe('openWeekPlan');
+    expect(state.hero.secondaryAction?.target).toBe('refreshCoach');
+    expect(state.hero.primaryAction.target).not.toBe('completeSession');
+    expect(state.hero.secondaryAction?.target).not.toBe('skipSession');
+    expect(displayStrings.join(' ')).toContain('qualified professional');
+    expect(displayStrings.join(' ')).not.toContain('medical_referral');
+    expect(displayStrings.join(' ')).not.toContain('illness_symptoms_json');
+    expect(displayStrings.join(' ')).not.toContain('chest_pain');
+    expect(displayStrings.join(' ')).not.toContain('{"');
+  });
+
+  it('sanitizes Training Home display fields without stripping machine fields', () => {
+    const state = buildTrainingHomeViewState(baseInput({
+      todaySession: {
+        id: 'today',
+        type: 'threshold_run',
+        sessionType: 'threshold_run',
+        time: '06:30',
+        duration: 40,
+        status: 'planned',
+      },
+      coachBriefing: {
+        briefing: 'selector_trace {"bad":true}',
+        recommendations: [
+          {
+            action: 'MODIFY',
+            eventId: 'evt-raw',
+            source: 'coach',
+            originalTitle: 'threshold_run',
+            newTitle: 'recovery_run',
+            summary: '[object Object]',
+            reason: 'feature_flag training_debug',
+          },
+        ],
+      },
+      signals: [
+        {
+          id: 44,
+          type: 'training_session_scheduled',
+          title: 'training_session_scheduled',
+          summary: 'undefined',
+          priority: 'normal',
+          source: 'secretary',
+          createdAt: '2026-04-19T06:00:00.000Z',
+          expiresAt: '2026-04-19T18:00:00.000Z',
+          payload: {
+            title: 'selector_trace leaked raw validation',
+          },
+        },
+      ],
+      meta: {
+        source: 'server',
+        isFallback: true,
+        isPartial: false,
+        isStale: true,
+        generatedAt: '2026-04-19T10:00:00.000Z',
+        reasonCodes: ['READINESS_UNAVAILABLE'],
+      },
+    }), 'en-US');
+
+    const displayStrings = collectStrings(state);
+    const displayBlob = displayStrings.join(' ');
+
+    expect(state.meta.reasonCodes).toEqual(['READINESS_UNAVAILABLE']);
+    expect(displayBlob).toContain('threshold run');
+    expect(displayBlob).not.toMatch(/selector_trace|feature_flag|raw_validation|\[object Object\]|undefined|"\s*bad"\s*:/);
+  });
+
   it('marks no-plan state and promotes create-plan CTA', () => {
     const state = buildTrainingHomeViewState({
       todaySession: null,
@@ -267,6 +366,30 @@ describe('buildTrainingHomeViewState', () => {
 
     expect(state.coachReview?.state).toBe('needsRefresh');
     expect(state.coachReview?.primaryAction.target).toBe('refreshCoach');
+  });
+
+  it('does not expose private calendar event titles in conflict reasoning', () => {
+    const state = buildTrainingHomeViewState(baseInput({
+      signals: [
+        {
+          id: 2,
+          type: 'calendar_conflict',
+          title: 'Calendar conflict',
+          summary: 'A private event overlaps training.',
+          priority: 'urgent',
+          source: 'secretary',
+          createdAt: '2026-04-19T06:00:00.000Z',
+          expiresAt: '2026-04-19T18:00:00.000Z',
+          payload: {
+            conflict_event_title: 'Private therapy appointment',
+          },
+        },
+      ],
+    }), 'en-US');
+
+    const serialized = JSON.stringify(state);
+    expect(serialized).toContain('A calendar event overlaps a scheduled training session');
+    expect(serialized).not.toContain('Private therapy appointment');
   });
 
   it('marks low confidence when the read is degraded', () => {
@@ -596,3 +719,13 @@ describe('buildTrainingHomeViewState', () => {
     });
   });
 });
+
+function collectStrings(value: unknown): string[] {
+  if (typeof value === 'string') return [value];
+  if (!value || typeof value !== 'object') return [];
+  if (Array.isArray(value)) return value.flatMap(collectStrings);
+  return Object.entries(value as Record<string, unknown>).flatMap(([key, child]) => {
+    if (key === 'meta' || key === 'id' || key === 'target' || key === 'sessionType') return [];
+    return collectStrings(child);
+  });
+}

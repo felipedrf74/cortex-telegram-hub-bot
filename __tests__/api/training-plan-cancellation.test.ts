@@ -894,7 +894,7 @@ describe('training-plan-cancellation (hard delete)', () => {
     expect(mocks.markCalendarOwnershipDeleted).toHaveBeenCalledWith({
       eventId: 'evt-gone',
       source: 'google',
-      reason: 'plan_cancelled_event_gone_upstream',
+      reason: 'plan_cancelled',
       status: 'deleted',
       userId: 12,
       tenantId: 12,

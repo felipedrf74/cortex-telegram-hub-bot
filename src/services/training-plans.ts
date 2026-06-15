@@ -241,6 +241,7 @@ const TRAINING_SESSION_UPDATE_COLUMNS = new Set([
   'calendar_source',
   'session_identity_key',
   'session_shape_hash',
+  'preferred_time_unavailable',
 ]);
 
 const DAY_NAME_MAP: Record<string, string> = {
@@ -538,7 +539,7 @@ export function getSessionById(sessionId: number): TrainingSession | null {
 
 export function updateSession(
   sessionId: number,
-  updates: Partial<Pick<TrainingSession, 'day_of_week' | 'title' | 'exercises_json' | 'duration_minutes' | 'intensity_text' | 'description' | 'status' | 'calendar_event_id' | 'calendar_source' | 'session_identity_key' | 'session_shape_hash'>>,
+  updates: Partial<Pick<TrainingSession, 'day_of_week' | 'title' | 'exercises_json' | 'duration_minutes' | 'intensity_text' | 'description' | 'status' | 'calendar_event_id' | 'calendar_source' | 'session_identity_key' | 'session_shape_hash' | 'preferred_time_unavailable'>>,
 ): boolean {
   const db = getDb();
   const setClauses: string[] = [];

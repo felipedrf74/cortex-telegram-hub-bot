@@ -486,16 +486,16 @@ function enforceScheduleConflicts(plan: WeeklyPlan, athlete: AthleteState): Guar
     });
     return {
       ...session,
-      sessionType: 'rest',
+      sessionType: 'rest' as const,
       title: 'Rest / Recovery',
-      intensityZone: 'recovery',
-      fatigueCost: 'low',
+      intensityZone: 'recovery' as const,
+      fatigueCost: 'low' as const,
       durationMinutes: 0,
       endTime: undefined,
       plannedLoad: 0,
       tags: ['deferred'],
     };
-  });
+  }).filter((session) => !(session.durationMinutes <= 0 && session.tags.includes('deferred')));
 
   return results.length > 0
     ? results

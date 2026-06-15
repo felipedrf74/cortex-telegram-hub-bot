@@ -26,7 +26,10 @@ import {
   parseTrainingIdentityMarker,
 } from '../../services/training-session-identity';
 import { isProviderEventNotFoundError } from '../../services/training-calendar-errors';
-import { deleteTrainingCalendarEventWithRetry } from '../../services/training-calendar-provider-retry';
+import {
+  deleteTrainingCalendarEventWithRetry,
+  type TrainingCalendarDeleteResult,
+} from '../../services/training-calendar-provider-retry';
 import { withTrainingCalendarOperationLock } from '../../services/training-operation-locks';
 import { requireTenantIdParam } from '../../services/tenant-scope';
 import { hashOwnerIdForLog } from './_ownership-audit';
@@ -458,7 +461,7 @@ async function buildNoActivePlanResult(userId: number, tenantId: number): Promis
 async function deleteCalendarDeletionTargets(
   deletionTargets: CalendarDeletionTarget[],
   userId: number,
-): Promise<Array<PromiseSettledResult<void>>> {
+): Promise<Array<PromiseSettledResult<TrainingCalendarDeleteResult>>> {
   const deleteTarget = (target: CalendarDeletionTarget) => deleteTrainingCalendarEventWithRetry(
     target.eventId,
     target.source,
@@ -475,11 +478,11 @@ async function deleteCalendarDeletionTargets(
     return Promise.allSettled(deletionTargets.map(deleteTarget));
   }
 
-  const results: Array<PromiseSettledResult<void>> = [];
+  const results: Array<PromiseSettledResult<TrainingCalendarDeleteResult>> = [];
   for (const target of deletionTargets) {
     try {
-      await deleteTarget(target);
-      results.push({ status: 'fulfilled', value: undefined });
+      const value = await deleteTarget(target);
+      results.push({ status: 'fulfilled', value });
     } catch (reason) {
       results.push({ status: 'rejected', reason });
     }

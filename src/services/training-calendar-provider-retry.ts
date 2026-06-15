@@ -5,6 +5,7 @@ import {
   type CalendarSource,
 } from './unified-calendar';
 import { logger } from '../utils/logger';
+import { isProviderEventNotFoundError } from './training-calendar-errors';
 
 type RetryContext = {
   userId: number;
@@ -17,6 +18,11 @@ type RetryContext = {
   title?: string;
 };
 
+export interface TrainingCalendarDeleteResult {
+  deleted: boolean;
+  alreadyGone: boolean;
+}
+
 const DEFAULT_WRITE_SPACING_MS = 350;
 const DEFAULT_RETRY_DELAYS_MS = [1_500, 4_000, 8_000];
 
@@ -26,7 +32,7 @@ export async function deleteTrainingCalendarEventWithRetry(
   userId: number,
   context: RetryContext = { userId },
   options?: { signal?: AbortSignal },
-): Promise<void> {
+): Promise<TrainingCalendarDeleteResult> {
   const retryDelays = trainingCalendarRetryDelaysMs();
   let attempt = 0;
 
@@ -39,8 +45,24 @@ export async function deleteTrainingCalendarEventWithRetry(
         await deleteEvent(eventId, source, userId);
       }
       await sleep(trainingCalendarWriteSpacingMs(), options?.signal);
-      return;
+      return { deleted: true, alreadyGone: false };
     } catch (err) {
+      if (isProviderEventNotFoundError(err)) {
+        logger.debug(
+          {
+            userId,
+            tenantId: context.tenantId,
+            planId: context.planId,
+            sessionId: context.sessionId,
+            ownershipId: context.ownershipId,
+            eventId,
+            source,
+          },
+          'Training calendar delete skipped because provider event was already gone',
+        );
+        await sleep(trainingCalendarWriteSpacingMs(), options?.signal);
+        return { deleted: false, alreadyGone: true };
+      }
       if (!isTrainingCalendarRateLimitError(err) || attempt >= retryDelays.length) {
         throw err;
       }

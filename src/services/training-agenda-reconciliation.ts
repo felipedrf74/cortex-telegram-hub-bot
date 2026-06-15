@@ -73,7 +73,7 @@ export async function reconcileOrphanedTrainingAgendaEvents(
     }
 
     try {
-      await deleteTrainingCalendarEventWithRetry(
+      const deleteResult = await deleteTrainingCalendarEventWithRetry(
         eventId,
         source,
         userId,
@@ -96,7 +96,7 @@ export async function reconcileOrphanedTrainingAgendaEvents(
         const marked = markCalendarOwnershipDeleted({
           eventId,
           source,
-          reason: 'orphan_reconciled',
+          reason: deleteResult.alreadyGone ? 'orphan_reconciled_event_gone_upstream' : 'orphan_reconciled',
           status: 'deleted',
           userId,
           tenantId: scopedTenantId,

@@ -17,6 +17,20 @@ describe('training plan persistence slot-date anchoring', () => {
     }
   });
 
+  it('keeps Sunday at the end of a Monday-start week instead of marking it past', () => {
+    const result = resolvePlanSlotDate({
+      weekNumber: 1,
+      dayIndex: 6,
+      planStartDate: '2026-06-15',
+      now: new Date('2026-06-15T06:00:00.000Z'),
+    });
+
+    expect(result.kind).toBe('usable');
+    if (result.kind === 'usable') {
+      expect(result.sessionDate.toISOString().slice(0, 10)).toBe('2026-06-21');
+    }
+  });
+
   it('still rejects earlier week-one days when the user explicitly starts today mid-week', () => {
     const result = resolvePlanSlotDate({
       weekNumber: 1,

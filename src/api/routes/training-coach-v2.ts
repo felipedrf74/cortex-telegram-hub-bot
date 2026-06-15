@@ -415,6 +415,7 @@ export function mountCoachV2Routes(parent: Router): Router {
     try {
       const result = recordTravelWindow({
         userId: auth.userId,
+        tenantId: auth.tenantId,
         startDate,
         endDate,
         equipmentProfile: typeof body.equipmentProfile === 'string' ? body.equipmentProfile : undefined,
@@ -427,7 +428,7 @@ export function mountCoachV2Routes(parent: Router): Router {
           typeof body.availableSessionDurationMinutes === 'number' ? body.availableSessionDurationMinutes : undefined,
         notes: typeof body.notes === 'string' ? body.notes : undefined,
       });
-      sendSuccess(res, { id: result.id }, { status: 201 });
+      sendSuccess(res, { id: result.id, alreadyExisted: result.alreadyExisted }, { status: 201 });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       if (message.includes('startDate')) {
@@ -720,6 +721,7 @@ export function mountCoachV2Routes(parent: Router): Router {
         auth.userId,
         reflowWeekStart,
         reflowWeekEnd,
+        auth.tenantId,
       );
       // R5 P1 fix — Codex caught that reflow passed `deloadDue: undefined`
       // while coach-analysis passed the real `deload.triggered`. The
@@ -1174,7 +1176,7 @@ export function mountCoachV2Routes(parent: Router): Router {
         .toISOString().slice(0, 10);
       const weekEnd = new Date(Date.parse(plan.start_date) + (safeWeekIndex + 1) * 7 * 24 * 3600 * 1000 - 1)
         .toISOString().slice(0, 10);
-      const travelWindows = findTravelWindowsInRange(auth.userId, weekStart, weekEnd);
+      const travelWindows = findTravelWindowsInRange(auth.userId, weekStart, weekEnd, auth.tenantId);
 
       // R3/R4/R5 — load model + deload via shared helper.
       // Codex R5 P1 #3 + P2 #7 collapsed two prior inline copies of

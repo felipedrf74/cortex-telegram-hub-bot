@@ -27,7 +27,7 @@ Override port with `NEXUS_COCKPIT_PORT=8230 ./scripts/cockpit.sh` if
 | ▶️ Boot sandbox | `scripts/local-up.sh` | idempotent — no-op if already running |
 | 🛑 Stop sandbox | `scripts/local-down.sh` | keeps `data/` and named volumes |
 | 🔬 Run smoke | `scripts/local-smoke.sh` | 5-check contract |
-| 📱 Launch iOS Simulator | `scripts/sim-local.sh` | needs Xcode + simctl; auto-picks an available iPhone simulator |
+| 📱 Launch iOS Simulator | `scripts/sim-local.sh` | needs Xcode + simctl; auto-picks an available iPhone simulator and starts logged in as `nexushubbot@gmail.com` |
 | ⏻ Shutdown iOS Simulator | `scripts/sim-down.sh` | shuts down booted devices and trims SimulatorTrampoline/CoreSimulator memory |
 | 🔥 Force rebuild | `docker compose down && build --no-cache && up -d` | when Dockerfile / requirements.txt changes |
 | 💀 Reset sandbox | `scripts/local-reset.sh --yes` | **destructive — confirmation modal required** |
@@ -38,7 +38,7 @@ Override port with `NEXUS_COCKPIT_PORT=8230 ./scripts/cockpit.sh` if
 |---|---|
 | 📜 Tail container logs | `docker compose logs -f` streamed into output panel; click Stop to detach |
 | 🚀 Open Backend Portal | opens `http://127.0.0.1:8200` in default browser |
-| 🔑 Mint dev iOS JWT | runs `full-nexus-local-engine.sh auth-token`, surfaces `accessToken` in a copyable modal |
+| 🔑 Prepare iOS auth | runs `scripts/local-ios-debug-auth.mjs`, creates/repairs the local `nexushubbot@gmail.com` sandbox user, and writes the DEBUG-only iOS auth import JSON without printing tokens |
 | 🧪 Focused vitest | text input + Run; safe pattern matching `[a-zA-Z0-9/_.*-]{0,200}` |
 | 📈 Last smoke result | shows the cached output of the most recent smoke run |
 
