@@ -55,9 +55,9 @@ export function signalsRoutes(): Router {
    *   }
    */
   router.get('/active', (req, res: Response) => {
-    const { userId } = req as AuthenticatedRequest;
+    const { userId, tenantId } = req as AuthenticatedRequest;
     try {
-      const payload = buildActiveSignalsResponse(userId);
+      const payload = buildActiveSignalsResponse(userId, tenantId);
       sendSuccess(res, payload);
     } catch (err: any) {
       logger.error({ err, userId }, 'GET /api/v1/signals/active failed');

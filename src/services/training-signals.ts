@@ -55,6 +55,7 @@ export const TRAINING_SOURCE = {
   SECRETARY_CALENDAR: 'secretary.calendar',
   COOKING_FUELING: 'cooking.fueling',
   FINANCE_PLANNING: 'finance.training',
+  STRUCTURED_HEALTH_INTAKE: 'training.health-intake',
 } as const;
 
 export type TrainingSource = (typeof TRAINING_SOURCE)[keyof typeof TRAINING_SOURCE];
@@ -213,6 +214,40 @@ export function publishLowReadiness(opts: {
     user_id: opts.userId,
     priority: 'urgent',
   });
+}
+
+/**
+ * Publish a sanitized user-facing safety signal after structured health
+ * intake reports a typed red flag. The payload intentionally avoids raw
+ * symptoms, pain locations, notes, and private health rows; downstream
+ * UI only needs to know hard training should pause.
+ */
+export function publishSafetyRedFlag(opts: {
+  userId: number;
+  tenantId: number;
+  date: string;
+  triggerType: string;
+  source?: string;
+}): number {
+  return writeTrainingSignal({
+    source_agent: opts.source ?? TRAINING_SOURCE.STRUCTURED_HEALTH_INTAKE,
+    signal_type: 'safety_red_flag',
+    payload: {
+      safety_category: safetySignalCategory(opts.triggerType),
+      action: 'pause_hard_training',
+      date: opts.date,
+    },
+    user_id: opts.userId,
+    tenant_id: opts.tenantId,
+    priority: 'urgent',
+  });
+}
+
+function safetySignalCategory(triggerType: string): 'symptom' | 'illness' | 'injury' | 'energy_availability' {
+  if (triggerType === 'fever_or_systemic_illness') return 'illness';
+  if (triggerType === 'acute_injury') return 'injury';
+  if (triggerType === 'red_s_high_risk') return 'energy_availability';
+  return 'symptom';
 }
 
 /**
@@ -503,6 +538,7 @@ const UNIVERSAL_COACH_INPUTS: SignalType[] = [
   'low_sleep',
   'low_hrv',
   'low_readiness',
+  'safety_red_flag',
   'planned_race_this_week',
   'calendar_conflict',
   'training_schedule_stale',
@@ -634,7 +670,7 @@ export function readTrainingContext(opts: {
 export function readTrainingContextAll(opts: { userId: number; tenantId?: number }): TrainingContext {
   const consumer = 'triathlon.all';
   const allTrainingSignalTypes: SignalType[] = [
-    'low_sleep', 'low_hrv', 'low_readiness', 'planned_race_this_week',
+    'low_sleep', 'low_hrv', 'low_readiness', 'safety_red_flag', 'planned_race_this_week',
     'gym_load_today', 'running_load_today', 'cycling_load_today', 'swim_load_today',
     'high_leg_load', 'high_shoulder_load',
     'planned_hard_run', 'planned_hard_ride',

@@ -47,10 +47,15 @@ import {
   publishTrainingSessionScheduled,
   publishCalendarConflict,
 } from '../../src/services/training-signals';
+import { recordHealthSignal } from '../../src/services/health-signals';
 import {
   buildActiveSignalsResponse,
   type FormattedSignal,
 } from '../../src/services/signals-observability';
+import {
+  buildTrainingHomeViewState,
+  type TrainingHomeViewStateInput,
+} from '../../src/services/training-home-view-state';
 
 function applyMigrations(db: Database.Database): void {
   db.exec(`CREATE TABLE IF NOT EXISTS _migrations (id INTEGER PRIMARY KEY, filename TEXT UNIQUE, applied_at TEXT DEFAULT (datetime('now')))`);
@@ -70,6 +75,30 @@ function freshDb(): void {
   testDb.pragma('journal_mode = WAL');
   applyMigrations(testDb);
   setDbProvider(() => testDb as any);
+}
+
+function trainingHomeBaseInput(
+  signals: TrainingHomeViewStateInput['signals'],
+): TrainingHomeViewStateInput {
+  return {
+    todaySession: {
+      id: 'threshold-run',
+      type: 'Threshold Run',
+      sessionType: 'threshold_run',
+      time: '06:30',
+      duration: 55,
+      status: 'planned',
+      exercises: [],
+    },
+    readiness: null,
+    coachBriefing: null,
+    signals,
+    weekSessions: [],
+    weeklyAdherence: 0.7,
+    tomorrowSession: null,
+    hasActivePlan: true,
+    isGarminStale: false,
+  };
 }
 
 // ─── Empty state ────────────────────────────────────────────────────
@@ -158,6 +187,38 @@ describe('buildActiveSignalsResponse — per-type formatting', () => {
     expect(s.summary).toContain('28/100');
   });
 
+  it('surfaces structured health-intake red flags through active signals and Training Home state', () => {
+    recordHealthSignal({
+      userId: 2011,
+      tenantId: 9011,
+      date: '2026-05-23',
+      illnessSymptoms: ['chest_pain'],
+      source: 'structured_intake',
+      consentScope: ['illness'],
+    });
+
+    const legacyScope = buildActiveSignalsResponse(2011);
+    expect(legacyScope.signals.find((x) => x.type === 'safety_red_flag')).toBeUndefined();
+
+    const res = buildActiveSignalsResponse(2011, 9011);
+    const signal = res.signals.find((x) => x.type === 'safety_red_flag');
+
+    expect(signal).toBeDefined();
+    expect(signal?.title).toBe('Safety check');
+    expect(signal?.summary).toContain('qualified professional');
+    expect(JSON.stringify(signal)).not.toContain('illness_symptoms_json');
+    expect(JSON.stringify(signal)).not.toContain('chest_pain');
+    expect(JSON.stringify(signal)).not.toContain('medical_referral');
+
+    const home = buildTrainingHomeViewState(trainingHomeBaseInput(res.signals), 'en-US');
+    const display = JSON.stringify(home);
+    expect(home.hero.state).toBe('recovery');
+    expect(home.hero.primaryAction.target).toBe('openWeekPlan');
+    expect(display).toContain('qualified professional');
+    expect(display).not.toContain('medical_referral');
+    expect(display).not.toContain('chest_pain');
+  });
+
   it('formats high_leg_load with RPE and source', () => {
     publishHighLegLoad({ userId: 2004, source: 'gym', rpe: 9 });
     const res = buildActiveSignalsResponse(2004);
@@ -198,6 +259,8 @@ describe('buildActiveSignalsResponse — per-type formatting', () => {
     expect(s.title).toBe('Session scheduled');
     expect(s.summary).toContain('Cycling');
     expect(s.summary).toContain('FTP test');
+    expect(s.payload).toEqual({ sport: 'cycling', title: 'FTP test' });
+    expect(JSON.stringify(s.payload)).not.toContain('ride-abc');
   });
 
   it('formats calendar_conflict without exposing the private event title', () => {
@@ -222,6 +285,9 @@ describe('buildActiveSignalsResponse — per-type formatting', () => {
     expect(s.title).toBe('Calendar conflict');
     expect(s.summary).toBe('A calendar event overlaps a scheduled training session — consider moving one.');
     expect(s.summary).not.toContain('Team standup');
+    expect(s.payload).toEqual({});
+    expect(JSON.stringify(s)).not.toContain('Team standup');
+    expect(JSON.stringify(s)).not.toContain('evt-meeting');
   });
 
   it('every formatted signal has non-empty title and summary fields', () => {

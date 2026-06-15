@@ -53,6 +53,7 @@ export type SignalType =
   | 'low_sleep'              // < 60 sleep score or < 6 h total
   | 'low_hrv'                // HRV below 7-day baseline
   | 'low_readiness'          // Garmin training readiness < 40
+  | 'safety_red_flag'        // structured health intake says hard training should pause
   // Planning signals — forward-looking intent for cross-sport coordination
   | 'planned_hard_run'       // running coach scheduled a hard session today/tomorrow
   | 'planned_hard_ride'      // cycle coach scheduled a hard session today/tomorrow
@@ -203,6 +204,7 @@ const EXPIRY_HOURS: Record<SignalType, number> = {
   low_sleep:              24,
   low_hrv:                24,
   low_readiness:          24,
+  safety_red_flag:        24,
   // Planning signals: forward intent has natural shelf life up to the
   // planned session itself. We default to 48h; specific writers can
   // override with an explicit expires_at tied to the session start.

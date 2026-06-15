@@ -1,4 +1,4 @@
--- 161: Travel windows (slice C2) + per-week equipment override (slice C3).
+-- 191: Travel windows (slice C2) + per-week equipment override (slice C3).
 --
 -- Per the Week-Level Adaptability + Periodization plan (v2.1).
 --

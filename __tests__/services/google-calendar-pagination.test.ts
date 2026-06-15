@@ -69,4 +69,22 @@ describe('google calendar pagination', () => {
       pageToken: 'page-2',
     }));
   });
+
+  it('stops if Google Calendar pagination keeps returning a next page token', async () => {
+    mocks.list.mockResolvedValue({
+      data: {
+        items: [],
+        nextPageToken: 'still-more',
+      },
+    });
+
+    const { getEvents } = await import('../../src/services/google-calendar');
+
+    await expect(getEvents('2026-06-22', '2026-06-24', 42)).rejects.toMatchObject({
+      safeDetails: {
+        message: expect.stringContaining('pagination page limit exceeded'),
+      },
+    });
+    expect(mocks.list).toHaveBeenCalledTimes(20);
+  });
 });

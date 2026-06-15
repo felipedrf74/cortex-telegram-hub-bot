@@ -21,6 +21,7 @@
 
 import { getDb } from './database';
 import { logger } from '../utils/logger';
+import { requireTenantIdParam } from './tenant-scope';
 
 export interface TravelWindowRow {
   id: number;
@@ -171,24 +172,15 @@ export function findTravelWindowsInRange(
   tenantId?: number | null,
 ): TravelWindowRow[] {
   const db = getDb();
-  const tenantScoped = typeof tenantId === 'number' && Number.isFinite(tenantId);
-  if (tenantScoped) {
-    return db.prepare(`
-      SELECT * FROM travel_windows
-      WHERE user_id = ?
-        AND tenant_id = ?
-        AND start_date <= ?
-        AND end_date >= ?
-      ORDER BY created_at DESC
-    `).all(userId, tenantId, toDate, fromDate) as TravelWindowRow[];
-  }
+  const scopedTenantId = requireTenantIdParam(tenantId, 'findTravelWindowsInRange');
   return db.prepare(`
     SELECT * FROM travel_windows
     WHERE user_id = ?
+      AND tenant_id = ?
       AND start_date <= ?
       AND end_date >= ?
     ORDER BY created_at DESC
-  `).all(userId, toDate, fromDate) as TravelWindowRow[];
+  `).all(userId, scopedTenantId, toDate, fromDate) as TravelWindowRow[];
 }
 
 /**

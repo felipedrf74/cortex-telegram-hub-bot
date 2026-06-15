@@ -37,7 +37,7 @@ export interface TrainingHomePayloadDependencies {
     totalCount?: number;
   }>;
   getReadiness: (userId: number) => Promise<(ReadinessInput & { reasonCode?: string | null }) | null>;
-  buildActiveSignalsResponse: (userId: number) => Promise<{ signals: TrainingSignalInput[] }> | { signals: TrainingSignalInput[] };
+  buildActiveSignalsResponse: (userId: number, tenantId?: number) => Promise<{ signals: TrainingSignalInput[] }> | { signals: TrainingSignalInput[] };
   getCoachBriefingSnapshot: (userId: number) => CoachBriefingSnapshot | null;
 }
 
@@ -62,7 +62,7 @@ export async function buildTrainingHomePayload(
     dependencies.getTodaySession(userId, tenantId),
     dependencies.getWeekPlan(userId, tenantId),
     dependencies.getReadiness(userId),
-    Promise.resolve(dependencies.buildActiveSignalsResponse(userId)),
+    Promise.resolve(dependencies.buildActiveSignalsResponse(userId, tenantId)),
   ]);
 
   const today = todayResult.status === 'fulfilled' ? todayResult.value : { session: null, plan: null };

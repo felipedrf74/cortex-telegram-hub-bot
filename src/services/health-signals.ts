@@ -35,6 +35,8 @@
 import { getDb } from './database';
 import { logger } from '../utils/logger';
 import { requireTenantIdParam } from './tenant-scope';
+import { deriveSafetyTriggerFromSignal } from './coach-kernel/safety-wiring';
+import { publishSafetyRedFlag } from './training-signals';
 
 export type InjuryStatus =
   | 'none'
@@ -209,7 +211,48 @@ export function recordHealthSignal(
     consentScopeString,
   );
 
-  return { id: Number(inserted.lastInsertRowid), droppedFields };
+  const id = Number(inserted.lastInsertRowid);
+  publishStructuredRedFlagIfNeeded({
+    userId: input.userId,
+    tenantId,
+    date: input.date,
+    source: input.source,
+    painScore,
+    painLocation,
+    illnessSymptoms,
+    injuryStatus,
+    energyAvailabilityRisk,
+  });
+
+  return { id, droppedFields };
+}
+
+function publishStructuredRedFlagIfNeeded(input: {
+  userId: number;
+  tenantId: number;
+  date: string;
+  source?: string;
+  painScore: number | null;
+  painLocation: string | null;
+  illnessSymptoms: readonly string[] | null;
+  injuryStatus: InjuryStatus | null;
+  energyAvailabilityRisk: EnergyAvailabilityRisk | null;
+}): void {
+  const trigger = deriveSafetyTriggerFromSignal({
+    source: input.source,
+    painScore: input.painScore ?? undefined,
+    painLocation: input.painLocation ?? undefined,
+    illnessSymptoms: input.illnessSymptoms ?? undefined,
+    injuryStatus: input.injuryStatus ?? undefined,
+    energyAvailabilityRisk: input.energyAvailabilityRisk ?? undefined,
+  });
+  if (trigger.source !== 'structured_intake' || !trigger.triggerType) return;
+  publishSafetyRedFlag({
+    userId: input.userId,
+    tenantId: input.tenantId,
+    date: input.date,
+    triggerType: trigger.triggerType,
+  });
 }
 
 /**

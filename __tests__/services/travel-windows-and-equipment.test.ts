@@ -2,7 +2,8 @@
  * Slices C2 + C3 — travel windows + per-week equipment override.
  *
  * Pins:
- *   - Migration 161 creates travel_windows table + equipment_override column
+ *   - Migrations 161 + 214 create travel_windows table, equipment_override column,
+ *     and tenant-scoped travel-window reads
  *   - recordTravelWindow persists all fields
  *   - findTravelWindowsInRange finds overlapping windows
  *   - computeTravelStressScore combines flags into [0..1]
@@ -70,7 +71,7 @@ beforeEach(() => {
 
 afterEach(() => testDb.close());
 
-describe('migration 161', () => {
+describe('travel-window migrations', () => {
   it('creates travel_windows with expected columns', () => {
     const cols = testDb.prepare("PRAGMA table_info('travel_windows')").all() as Array<{ name: string }>;
     const names = new Set(cols.map((c) => c.name));
@@ -174,6 +175,33 @@ describe('recordTravelWindow', () => {
     expect(testDb.prepare('SELECT COUNT(*) AS n FROM travel_windows WHERE user_id = 100').get()).toMatchObject({ n: 2 });
   });
 
+  it('replays duplicate logical travel window for legacy null tenant rows without crossing into scoped tenants', () => {
+    const legacyFirst = recordTravelWindow({
+      userId: 102,
+      startDate: '2026-06-01',
+      endDate: '2026-06-08',
+      equipmentProfile: 'hotel_only',
+    });
+    const legacyReplay = recordTravelWindow({
+      userId: 102,
+      startDate: '2026-06-01',
+      endDate: '2026-06-08',
+      equipmentProfile: 'hotel_only',
+    });
+    const scoped = recordTravelWindow({
+      userId: 102,
+      tenantId: 1000,
+      startDate: '2026-06-01',
+      endDate: '2026-06-08',
+      equipmentProfile: 'hotel_only',
+    });
+
+    expect(legacyReplay.id).toBe(legacyFirst.id);
+    expect(legacyReplay.alreadyExisted).toBe(true);
+    expect(scoped.id).not.toBe(legacyFirst.id);
+    expect(testDb.prepare('SELECT COUNT(*) AS n FROM travel_windows WHERE user_id = 102').get()).toMatchObject({ n: 2 });
+  });
+
   it('keeps overlapping but materially different travel windows separate', () => {
     const first = recordTravelWindow({
       userId: 101,
@@ -200,16 +228,22 @@ describe('recordTravelWindow', () => {
 
 describe('findTravelWindowsInRange', () => {
   it('returns overlapping windows', () => {
-    recordTravelWindow({ userId: 200, startDate: '2026-06-01', endDate: '2026-06-08' });
-    recordTravelWindow({ userId: 200, startDate: '2026-06-15', endDate: '2026-06-20' });
-    recordTravelWindow({ userId: 200, startDate: '2026-07-01', endDate: '2026-07-05' });
-    const range = findTravelWindowsInRange(200, '2026-06-05', '2026-06-18');
+    recordTravelWindow({ userId: 200, tenantId: 1000, startDate: '2026-06-01', endDate: '2026-06-08' });
+    recordTravelWindow({ userId: 200, tenantId: 1000, startDate: '2026-06-15', endDate: '2026-06-20' });
+    recordTravelWindow({ userId: 200, tenantId: 1000, startDate: '2026-07-01', endDate: '2026-07-05' });
+    const range = findTravelWindowsInRange(200, '2026-06-05', '2026-06-18', 1000);
     expect(range.length).toBe(2);
   });
 
   it('returns empty when no overlap', () => {
-    recordTravelWindow({ userId: 201, startDate: '2026-06-01', endDate: '2026-06-08' });
-    expect(findTravelWindowsInRange(201, '2026-08-01', '2026-08-15')).toEqual([]);
+    recordTravelWindow({ userId: 201, tenantId: 1000, startDate: '2026-06-01', endDate: '2026-06-08' });
+    expect(findTravelWindowsInRange(201, '2026-08-01', '2026-08-15', 1000)).toEqual([]);
+  });
+
+  it('fails closed instead of reading legacy/global travel windows without a tenant', () => {
+    recordTravelWindow({ userId: 203, startDate: '2026-06-01', endDate: '2026-06-08' });
+
+    expect(() => findTravelWindowsInRange(203, '2026-06-03', '2026-06-05')).toThrow(/tenant/i);
   });
 
   it('isolates same-user travel windows by tenant when tenantId is provided', () => {

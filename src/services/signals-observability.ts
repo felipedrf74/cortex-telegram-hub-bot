@@ -38,7 +38,7 @@ export interface FormattedSignal {
   source: string;
   createdAt: string;
   expiresAt: string;
-  /** Original payload kept for power users / debug panels. */
+  /** Display-safe payload subset; raw/private payload fields are not exposed. */
   payload: Record<string, any>;
 }
 
@@ -110,6 +110,12 @@ const TYPE_META: Partial<Record<SignalType, TypeMeta>> = {
       const base = score != null ? `Garmin readiness ${score}/100` : 'Garmin readiness low';
       return `${base} — coach will skip any planned hard session.`;
     },
+  },
+  safety_red_flag: {
+    title: 'Safety check',
+    summarize: () => (
+      'Pause hard training today. If symptoms are severe, new, or worsening, seek support from a qualified professional.'
+    ),
   },
   high_leg_load: {
     title: 'High leg load',
@@ -225,8 +231,59 @@ function formatSignal(raw: AgentSignal): FormattedSignal {
     source: raw.source_agent,
     createdAt: raw.created_at,
     expiresAt: raw.expires_at,
-    payload: raw.payload,
+    payload: sanitizeSignalPayloadForClient(raw.signal_type, raw.payload),
   };
+}
+
+function sanitizeSignalPayloadForClient(
+  type: SignalType,
+  payload: Record<string, any>,
+): Record<string, any> {
+  switch (type) {
+  case 'low_sleep':
+    return pickPayloadFields(payload, ['score', 'total_hours']);
+  case 'low_hrv':
+    return pickPayloadFields(payload, ['delta_pct']);
+  case 'low_readiness':
+    return pickPayloadFields(payload, ['score']);
+  case 'high_leg_load':
+    return pickPayloadFields(payload, ['source', 'rpe']);
+  case 'high_shoulder_load':
+    return pickPayloadFields(payload, ['rpe']);
+  case 'gym_load_today':
+  case 'cycling_load_today':
+  case 'swim_load_today':
+    return pickPayloadFields(payload, ['rpe']);
+  case 'running_load_today':
+    return pickPayloadFields(payload, ['rpe', 'distance_km']);
+  case 'training_session_scheduled':
+    return pickPayloadFields(payload, ['sport', 'title']);
+  case 'low_adherence':
+  case 'high_adherence':
+    return pickPayloadFields(payload, ['completed', 'planned', 'adherence_pct']);
+  case 'plan_drift':
+    return pickPayloadFields(payload, ['dominant_sport', 'plan_sport', 'drift_pct']);
+  case 'safety_red_flag':
+    return pickPayloadFields(payload, ['safety_category', 'action', 'date']);
+  default:
+    return {};
+  }
+}
+
+function pickPayloadFields(payload: Record<string, any>, fields: readonly string[]): Record<string, any> {
+  const safe: Record<string, any> = {};
+  for (const field of fields) {
+    const value = payload[field];
+    if (
+      typeof value === 'string' ||
+      typeof value === 'number' ||
+      typeof value === 'boolean' ||
+      value === null
+    ) {
+      safe[field] = value;
+    }
+  }
+  return safe;
 }
 
 function readLatestSleepFactors(userId: number): { durationHours: number; score: number } | null {
@@ -337,6 +394,7 @@ const OBSERVABILITY_TYPES: SignalType[] = [
   'low_sleep',
   'low_hrv',
   'low_readiness',
+  'safety_red_flag',
   // Load markers
   'gym_load_today',
   'running_load_today',
@@ -376,13 +434,13 @@ const OBSERVABILITY_TYPES: SignalType[] = [
  *
  * Signals are sorted urgent→normal→background, then by createdAt DESC.
  */
-export function buildActiveSignalsResponse(userId: number): ActiveSignalsResponse {
-  const ctx = readTrainingContextAll({ userId });
+export function buildActiveSignalsResponse(userId: number, tenantId?: number): ActiveSignalsResponse {
+  const ctx = readTrainingContextAll({ userId, tenantId });
 
   // Broader read for the signals list, using a distinct consumer key
   // so we don't flip any signal's consumed_by state on either the
   // sport coaches or the secretary.
-  const rawSignals = readSignals('ios.signals.view', OBSERVABILITY_TYPES, 100, userId);
+  const rawSignals = readSignals('ios.signals.view', OBSERVABILITY_TYPES, 100, userId, undefined, tenantId);
 
   // User-facing observability should show the CURRENT active picture,
   // not every raw write that happened to publish the same condition.

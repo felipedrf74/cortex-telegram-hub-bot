@@ -64,6 +64,34 @@ function resolveHostDbPath() {
   return configured;
 }
 
+function assertLocalOnlyRuntime(baseUrl) {
+  if (process.env.NODE_ENV === 'production') {
+    throw new Error('local-ios-debug-auth refuses to run with NODE_ENV=production');
+  }
+  let url;
+  try {
+    url = new URL(baseUrl);
+  } catch {
+    throw new Error(`local-ios-debug-auth requires a valid loopback base URL; got ${baseUrl}`);
+  }
+  const loopbackHosts = new Set(['localhost', '127.0.0.1', '::1']);
+  if (url.protocol !== 'http:' || !loopbackHosts.has(url.hostname)) {
+    throw new Error(`local-ios-debug-auth refuses non-loopback base URL: ${baseUrl}`);
+  }
+}
+
+function assertLocalDbPath(dbPath) {
+  const resolved = path.resolve(dbPath);
+  const allowedRoots = [
+    ROOT,
+    path.resolve('/tmp'),
+    path.resolve(process.env.TMPDIR || '/tmp'),
+  ];
+  if (!allowedRoots.some((root) => resolved === root || resolved.startsWith(`${root}${path.sep}`))) {
+    throw new Error(`local-ios-debug-auth refuses non-local database path: ${resolved}`);
+  }
+}
+
 async function postJson(baseUrl, route, body) {
   const response = await fetch(`${baseUrl.replace(/\/+$/, '')}${route}`, {
     method: 'POST',
@@ -132,6 +160,7 @@ function grantLocalMaxAccess(db, userId) {
 
 async function resetLocalPassword(email, password, firstName) {
   const dbPath = resolveHostDbPath();
+  assertLocalDbPath(dbPath);
   if (!fs.existsSync(dbPath)) {
     throw new Error(`local database not found at ${dbPath}`);
   }
@@ -169,6 +198,8 @@ async function main() {
   const authFile = path.resolve(envOrArg('NEXUS_LOCAL_AUTH_IMPORT_PATH', '--auth-file', DEFAULT_AUTH_FILE));
   const baseUrl = envOrArg('NEXUS_LOCAL_BASE_URL', '--base-url', DEFAULT_BASE_URL);
   const inviteCode = envOrArg('NEXUS_LOCAL_IOS_INVITE_CODE', '--invite-code', process.env.IOS_INVITE_CODE || 'LOCAL-DEV-INVITE');
+
+  assertLocalOnlyRuntime(baseUrl);
 
   const loginBody = { email, password, deviceId, deviceName: 'Local Cockpit iOS Simulator' };
   let result = await postJson(baseUrl, '/api/v1/auth/login/email', loginBody);

@@ -18,6 +18,7 @@ import { isProviderEventNotFoundError } from './training-calendar-errors';
 // minutes. 15s is aggressive enough to unblock a stuck cron but generous
 // enough to absorb normal network variance. Audit Month 2 #4.
 const GOOGLE_API_TIMEOUT_MS = 15_000;
+const GOOGLE_EVENTS_MAX_PAGES = 20;
 
 let calendarClient: calendar_v3.Calendar | null = null;
 
@@ -105,7 +106,11 @@ export async function getEvents(startDate: string, endDate: string, userId?: num
     const calendar = getCalendar(userId);
     const items: calendar_v3.Schema$Event[] = [];
     let pageToken: string | undefined;
+    let pageCount = 0;
     do {
+      if (pageCount >= GOOGLE_EVENTS_MAX_PAGES) {
+        throw new Error(`Google Calendar pagination page limit exceeded (${GOOGLE_EVENTS_MAX_PAGES})`);
+      }
       const response = await withTimeout(
         calendar.events.list({
           calendarId: 'primary',
@@ -118,6 +123,7 @@ export async function getEvents(startDate: string, endDate: string, userId?: num
         }),
         GOOGLE_API_TIMEOUT_MS,
       );
+      pageCount += 1;
       items.push(...(response.data.items || []));
       pageToken = response.data.nextPageToken || undefined;
     } while (pageToken);
