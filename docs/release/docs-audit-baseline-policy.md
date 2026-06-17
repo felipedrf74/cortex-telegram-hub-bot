@@ -38,7 +38,7 @@ document.
 ## §1 — markdown-outside-approved-current-or-archive-location
 
 Most of the 3445 entries are per-domain design docs under
-`engine/docs/{chat,cooking,content,training,calendar,memory,...}/`.
+`docs/{chat,cooking,content,training,calendar,memory,...}/`.
 They were authored before `engineering/` was a canonical location and
 they reference rich domain context that's still useful as evidence even
 if not "current truth". Moving them all to `archive/` would lose the
@@ -46,13 +46,13 @@ co-located docs-with-code structure.
 
 **Decision**: keep where they are; do NOT count them as drift. New
 files MUST land in an approved location per the workspace
-[engineering standards index](docs/engineering/ENGINEERING_STANDARDS_INDEX.md)
+[engineering standards index](../engineering/ENGINEERING_STANDARDS_INDEX.md)
 standard-authoring rules.
 
 ## §2 — commit-hash-not-found-in-own-repo
 
 These are commit hashes referenced in archived release notes (e.g.
-`engine/docs/release/archive/...`) where the original commit was
+`docs/release/archive/...`) where the original commit was
 later squashed or rebased away from the current branch. The hash is
 intentionally preserved as historical provenance.
 
@@ -68,7 +68,7 @@ when the pass shipped; it's now historical evidence.
 
 **Decision**: keep as historical record. New release-track docs
 should reference `docs/release/release-identity.md` (auto-regenerated
-by `engine/scripts/release-identity.sh --persist`) instead of typing
+by `scripts/release-identity.sh --persist`) instead of typing
 literal counts.
 
 ## What's actionable
@@ -92,7 +92,7 @@ The two classes that **stay actionable** (block PRs):
 A run with `issues flagged: ≤ 5190` is **green**. The 5-issue buffer
 above the 5185 baseline absorbs day-to-day noise.
 
-A run with `issues flagged: > 491` requires **per-class diff** vs the
+A run with `issues flagged: > 5190` requires **per-class diff** vs the
 table above:
 
 ```
@@ -109,7 +109,7 @@ Future passes that would shrink the baseline (NOT required for
 closed-beta):
 
 - **Archive sweep of pre-2026-04 design docs** — relocate domain
-  docs older than 90 days into `engine/docs/archive/`.
+  docs older than 90 days into `docs/archive/`.
   Reduces class §1 by an estimated ~80 entries.
 - **Hash backfill** — scrub historical commit-hash references in
   release notes that point to squashed commits, replacing with a
@@ -117,17 +117,17 @@ closed-beta):
   an estimated ~50 entries.
 
 These are P3 hygiene items tracked in
-[OPEN_ITEMS](docs/release/OPEN_ITEMS.md) as ENG-EXC-O7 (now
+[OPEN_ITEMS](OPEN_ITEMS.md) as ENG-EXC-O7 (now
 closed via this policy doc).
 
 ## Related standards
 
-- `engine/docs/engineering/testing-and-qa-harness-standard.md` §16
+- `docs/engineering/testing-and-qa-harness-standard.md` §16
   defines evidence requirements per change.
-- [Workspace engineering standards index](docs/engineering/ENGINEERING_STANDARDS_INDEX.md)
+- [Workspace engineering standards index](../engineering/ENGINEERING_STANDARDS_INDEX.md)
   defines the workspace docs durability mirror (ENG-EXC-O8 closure).
-- `engine/scripts/audit-docs.mjs` implements the warning classes.
-- `engine/scripts/cannot-skip-gate-dashboard.sh` (ENG-EXC-O3) emits
+- `scripts/audit-docs.mjs` implements the warning classes.
+- `scripts/cannot-skip-gate-dashboard.sh` (ENG-EXC-O3) emits
   per-gate evidence to a sibling directory.
-- `engine/scripts/testflight-evidence.sh` (ENG-EXC-O6) emits E5
-  evidence to `engine/docs/release/testflight-evidence/`.
+- `scripts/testflight-evidence.sh` (ENG-EXC-O6) emits E5
+  evidence to `docs/release/testflight-evidence/`.

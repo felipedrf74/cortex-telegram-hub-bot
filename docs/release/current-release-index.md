@@ -3,7 +3,7 @@
 Status: canonical
 Owner: release lead (Felipe)
 Last verified: 2026-06-10
-Update policy: update when the current RC identity, deploy-gate evidence, or canonical-doc cross-references change. Run engine/scripts/release-identity.sh --persist to refresh auto-generated identity fields.
+Update policy: update when the current RC identity, deploy-gate evidence, or canonical-doc cross-references change. Run `scripts/release-identity.sh --persist` to refresh auto-generated identity fields.
 
 Date: 2026-06-10
 
@@ -17,8 +17,8 @@ Active production package:
 - runtime source commit: `6651085e` (Content Studio backend contract)
 - latest runtime deploy commit: `636910e2`; post-deploy docs-only closeout may
   sit ahead of production runtime
-- release state: `docs/release/CURRENT_RELEASE_STATE.md` (backend) and `/Users/felipedominguez/Desktop/Nexus Hub/docs/release/CURRENT_RELEASE_STATE.md` (workspace)
-- official workspace root: `/Users/felipedominguez/Desktop/Nexus Hub`
+- release state: `docs/release/CURRENT_RELEASE_STATE.md` (backend)
+- backend workspace root: `/Users/felipedominguez/Desktop/Custom Connectors/Cortex/cortex-telegram-hub-bot`
 
 Commits in this release (4.14.208 content-studio promote):
 

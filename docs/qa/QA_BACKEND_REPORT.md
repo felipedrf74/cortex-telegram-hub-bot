@@ -2,13 +2,21 @@
 
 Status: canonical
 Owner: backend QA lead (Felipe)
-Last verified: 2026-05-04
+Last verified: 2026-06-16
 Update policy: append addendum sections (do not overwrite historical
 ones). The body's per-addendum "Status:" lines refer to QA findings of
 that pass, not this doc's canonical-status frontmatter.
 
 Generated: 2026-04-29 03:30 WEST  
 Branch: `feature/chat-tenant-safe-context-orchestration`
+
+## 2026-06-16 Documentation Status Note
+
+This report is append-only historical QA evidence. Current production truth,
+release identity, and deploy/test counts live in
+`docs/release/current-release-index.md` and
+`docs/release/CURRENT_RELEASE_STATE.md`. This documentation refresh did not run
+new QA suites and does not supersede the historical addenda below.
 
 ## 2026-05-23 iOS QA Confirmation Hostile-QA Follow-up Addendum
 

@@ -146,7 +146,7 @@ describe('training plan create cycle integration', () => {
       keySessions: expect.any(Array),
     });
     expect(preview.body.data.planLint).toMatchObject({
-      status: expect.stringMatching(/^(pass|warn|fail)$/),
+      status: expect.stringMatching(/^(pass|pass_with_warnings|warn|fail)$/),
       blockers: expect.any(Array),
       warnings: expect.any(Array),
       suggestedFixes: expect.any(Array),
@@ -197,7 +197,7 @@ describe('training plan create cycle integration', () => {
       raceDate: '2026-10-18',
       calendarFetchDegraded: expect.any(Boolean),
       planLint: {
-        status: expect.stringMatching(/^(pass|warn|fail)$/),
+        status: expect.stringMatching(/^(pass|pass_with_warnings|warn|fail)$/),
         blockers: expect.any(Array),
         warnings: expect.any(Array),
         suggestedFixes: expect.any(Array),

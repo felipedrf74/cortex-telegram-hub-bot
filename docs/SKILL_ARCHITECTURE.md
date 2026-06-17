@@ -1,81 +1,120 @@
-# Nexus Hub — Modular Skills Architecture
+# Nexus Hub Skill Architecture
 
 Status: canonical
 Owner: backend skills lead (Felipe)
-Last verified: 2026-05-04
-Update policy: update when skill catalog shape, sub-skill dependency
-enforcement, or skill-manager enable/disable rules change.
+Last verified: 2026-06-16
+Update policy: update when `src/skills/skill-config.ts`, skill-manager startup,
+sub-skill dependency enforcement, entitlement gating, or runtime skill loading
+rules change.
 
-## Feature Plan v1.0 · March 2026
+## Current Model
 
----
+Nexus Hub currently ships with built-in skills, not a blank marketplace core.
+The runtime uses a declarative skill/sub-skill catalog plus database-backed
+enablement state:
 
-## Vision
+- `src/skills/skill-config.ts` is the source of truth for built-in skill
+  definitions, routes, sub-skills, tool ownership, prompt files, dependencies,
+  and minimum tiers.
+- `src/skills/skill-manager.ts` seeds default skills into `installed_skills`,
+  preserves user/operator toggles, filters tools by enabled sub-skills, enforces
+  dependency checks, and invalidates cached tool arrays on toggle changes.
+- `src/skills/registry.ts` stores installed skills and submodules in SQLite.
+- `src/skills/prompt-validator.ts` verifies prompt files declared by the
+  catalog during startup validation.
+- `src/skills/credentials.ts` stores skill-scoped credentials.
+- Portal skill routes expose operator/admin toggles; entitlement logic in
+  `src/services/entitlement.ts` gates skills by plan/tier.
 
-Transform Nexus Hub from a monolithic bot with hardcoded domains into a **plugin-based platform** where users install only the skills they need. The Hub Core stays lightweight — a runtime that loads, routes, and orchestrates pluggable skill packages.
+## Built-In Skills
 
-**The end state:** A user starts Nexus Hub, browses a marketplace, installs "Triathlon Coach" and "Content Creator", and immediately has a personalized AI assistant. A developer creates "Stock Trader" skill, publishes it, and earns revenue when others install it.
+Current `DEFAULT_SKILLS`:
 
----
+| Skill | Purpose | Tier posture |
+| --- | --- | --- |
+| `secretary` | Tasks, calendar, email, reminders, notes, briefings, operational follow-through. | Free baseline with sub-skill toggles. |
+| `triathlon` | Training plans, sport personas, Garmin/Health data, readiness, coach feedback. | Plan/tier gated by sub-skill. |
+| `content` | Content radar, ideas, scripts, editorial workflow, scheduling. | Plan/tier gated by sub-skill. |
+| `finance` | Financial reminders, categorization, taxes/bills/subscription review. | Plan/tier gated by sub-skill. |
+| `cooking` | Meal planning, recipes, pantry, preferences, nutrition-adjacent cooking support. | Plan/tier gated by sub-skill. |
+| `connections` | Provider integration health and reconnection guidance. | Free platform skill. |
+| `notifications` | APNs, notification preferences, delivery state, notification intents. | Free platform skill. |
+| `decision_center` | Choices, dismissals, snoozes, follow-ups for high-stakes decisions. | Free platform skill. |
 
-## Core Concepts
+`connections`, `notifications`, and `decision_center` are platform skills.
+Their current action surface is mostly owned by deterministic routes and the
+chat-action registry rather than the legacy Anthropic tool-call array.
 
-### Hub Core (the runtime)
+## Routing And Tool Ownership
 
-The Hub Core is what runs. It handles:
+Each skill definition owns:
 
-- **Message reception** — Telegram, Discord, WhatsApp (via MessageAdapter)
-- **Routing** — Three-tier classification that routes to the correct skill
-- **AI orchestration** — Multi-model provider (Claude, GPT, Gemini) via AIProvider
-- **Database** — SQLite with skill-namespaced tables
-- **Skill lifecycle** — Install, enable, disable, update, uninstall
-- **Scheduler** — Cron engine that skills register jobs into
-- **Intelligence Bus** — Event bus for inter-skill communication
-- **User config** — Per-user skill preferences and API keys
+- command/pattern routes,
+- keyword route hints,
+- classifier examples,
+- sub-skill names and descriptions,
+- legacy tool names where that skill still exposes Anthropic tools,
+- optional cron job ownership,
+- dependency edges between sub-skills,
+- optional prompt-file/persona mapping,
+- minimum tier requirements.
 
-The Hub Core ships with **zero skills**. It's a blank canvas until the user installs their first skill.
+Do not add a tool directly to a domain handler without also updating the skill
+definition that owns it. Do not add user-visible skill behavior without checking
+entitlement and sub-skill toggles.
 
-### Skill (the plugin)
+## Skill Toggles
 
-A skill is a self-contained package that adds a domain of intelligence to the bot. It's the equivalent of an app on a phone.
+Runtime toggle rules:
 
-**What a skill contains:**
+1. Startup calls seed built-in skills into `installed_skills`.
+2. Existing enabled/disabled state is preserved during reseed.
+3. New sub-skills are added with their default enablement.
+4. Enabling a sub-skill validates declared dependencies.
+5. Disabling a dependency cascade-disables dependent sub-skills.
+6. Tool arrays are cached by domain and invalidated after toggle changes.
 
-| Component | Required? | Purpose |
-|-----------|-----------|---------|
-| manifest.json | Yes | Metadata: name, version, author, description, dependencies, sub-modules, required API keys |
-| commands.ts | Yes | Pattern-match routes (/train, /gym) and keyword routes ("workout", "protein") |
-| handler.ts | Yes | Main domain handler — receives messages, returns responses |
-| prompts/ | No | System prompt markdown files, hot-reloadable |
-| tools/ | No | Tool definitions + executors (Garmin sync, calendar lookup, etc.) |
-| migrations/ | No | SQLite migrations, namespaced (e.g., tri_001_workouts.sql) |
-| agents/ | No | Autonomous agents that run on cron and emit signals to the Intelligence Bus |
-| config.ts | No | Required env vars, user-configurable settings, API key declarations |
-| README.md | No | Documentation shown in marketplace |
+If a known skill is absent from the DB, registry helpers fall back to the
+declarative defaults for sub-skill checks. Unknown skills stay disabled.
 
-### Sub-Module (the toggle)
+## Entitlements
 
-A sub-module is a feature within a skill that can be independently enabled or disabled.
+Access is controlled at two levels:
 
-**Example: Triathlon Skill sub-modules:**
+- `requiredTier` on the parent skill or sub-skill.
+- Plan-level allowed skills and per-skill caps from `plan_configs`.
 
-| Sub-Module | Default | What it adds |
-|------------|---------|-------------|
-| training-plans | Enabled | Periodized workout programming |
-| garmin-sync | Disabled | Garmin Connect API integration (requires API key) |
-| nutrition | Enabled | Meal tracking, macro calculation, diet adherence |
-| body-composition | Disabled | Weight tracking, body fat estimation, DEXA analysis |
-| race-predictor | Disabled | Race time predictions based on training data |
-| coach-briefing | Disabled | Nightly Telegram coaching message |
+Owner users can bypass allowed-skill limits for internal/admin workflows, but
+ordinary users must only see and execute skills allowed by their plan. Any new
+route, tool, or portal surface that exposes a skill must preserve this rule.
 
-### Marketplace (the distribution)
+## Prompts And Manifests
 
-| Tier | Who publishes | Review process | Revenue |
-|------|---------------|----------------|---------|
-| Official | Nexus Hub team | Internal QA | Included in subscription |
-| Community | Any developer | Automated checks + manual review | 70/30 revenue share |
-| Private | Companies | No review (internal use) | N/A |
+Prompt files declared in `skill-config.ts` are runtime inputs and must stay
+neutral, tenant-safe, and present on disk.
 
----
+`src/skills/<skill>/manifest.json` files still exist and `src/skills/loader.ts`
+can validate/load them when called directly. They are **not** currently the
+primary production startup catalog. Treat manifest loading as a maintenance or
+future-runtime path unless a startup import is intentionally added and tested.
 
-## Full documentation: see docs/SKILL_ARCHITECTURE.md in the repository.
+## Extension Rules
+
+When adding or changing a skill:
+
+1. Update `src/skills/skill-config.ts`.
+2. Add or update sub-skill prompt files if referenced.
+3. Update entitlement and plan config expectations if tier access changes.
+4. Add focused tests for routing, tool filtering, dependency behavior, and
+   tenant/entitlement isolation.
+5. Update iOS/API docs if the change affects native DTOs or visible skill
+   surfaces.
+6. Update release gate docs if the change adds a new required smoke or check.
+
+## Known Gaps
+
+- Manifest files are not the canonical startup source yet.
+- Marketplace install/publish/revenue flows are not current product reality.
+- Some older chat-action and legacy tool surfaces still overlap; keep the
+  action registry, capability registry, and skill catalog in sync when moving
+  behavior between deterministic actions and tool calls.

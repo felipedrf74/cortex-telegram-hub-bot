@@ -116,6 +116,36 @@ require_emergency_reason() {
   audit_override "$flag"
 }
 
+require_non_temp_deploy_source() {
+  if [ "$DRY_RUN" = "1" ]; then
+    return
+  fi
+
+  local real_local_dir
+  real_local_dir="$(cd "$LOCAL_DIR" && pwd -P)"
+  case "$real_local_dir" in
+    /tmp/*|/private/tmp/*|/var/folders/*|/private/var/folders/*)
+      if [ "${NEXUS_DEPLOY_ALLOW_TEMP_CHECKOUT:-0}" = "1" ]; then
+        require_emergency_reason "NEXUS_DEPLOY_ALLOW_TEMP_CHECKOUT"
+        echo "⚠️  Deploying from temporary checkout: $real_local_dir"
+        echo "   Override reason recorded in deploy audit log."
+        return
+      fi
+      echo "❌ Refusing production deploy from temporary checkout:"
+      echo "   $real_local_dir"
+      echo ""
+      echo "   Production deploys must run from the reviewed working tree so"
+      echo "   uncommitted release work cannot be silently left behind."
+      echo "   Commit/push the intended work and deploy from the repo root, or"
+      echo "   set NEXUS_DEPLOY_ALLOW_TEMP_CHECKOUT=1 with"
+      echo "   NEXUS_EMERGENCY_SKIP_REASON for an audited emergency override."
+      exit 1
+      ;;
+  esac
+}
+
+require_non_temp_deploy_source
+
 ensure_clean_deploy_tree() {
   if [ "${NEXUS_DEPLOY_ALLOW_DIRTY:-0}" = "1" ]; then
     require_emergency_reason "NEXUS_DEPLOY_ALLOW_DIRTY"

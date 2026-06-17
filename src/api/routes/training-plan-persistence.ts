@@ -32,6 +32,9 @@ import {
   type PlanLintWeek,
   type PlanLintResult,
 } from '../../services/coach-kernel/plan-linter';
+import type { MovementPattern, MuscleGroup } from '../../services/coach-kernel/training-taxonomy';
+import type { TrainingSessionSection } from '../../services/coach-kernel/training-plan-quality-gate';
+import type { TrainingPlanSpec } from '../../services/training-plan-spec';
 import type { TrainingDecisionReason } from '../../services/coach-kernel/types';
 import { logger } from '../../utils/logger';
 import { withTrainingCalendarOperationLock } from '../../services/training-operation-locks';
@@ -85,6 +88,14 @@ type GeneratedTrainingSession = {
   finalizedScheduledStart?: string;
   finalizedScheduledEnd?: string;
   finalizedPreferredTimeUnavailable?: boolean;
+  splitCode?: string;
+  splitSlot?: string;
+  focus?: string;
+  primaryMuscles?: MuscleGroup[];
+  secondaryMuscles?: MuscleGroup[];
+  movementPatterns?: MovementPattern[];
+  estimatedDurationMinutes?: number;
+  sections?: TrainingSessionSection[];
   intensitySummary?: SessionDescriptionInput['session']['intensitySummary'];
   intensityProfile?: Record<string, unknown>;
 };
@@ -150,6 +161,8 @@ export interface PersistGeneratedTrainingPlanInput {
   isRaceSpecific?: boolean;
   /** Request goal mode; `event_based` enables strict race-date semantics. */
   goalMode?: string | null;
+  /** Deterministic training generation contract used by the strict quality gate. */
+  trainingPlanSpec?: TrainingPlanSpec;
 }
 
 export interface PersistGeneratedTrainingPlanResult {
@@ -430,11 +443,15 @@ async function persistGeneratedTrainingPlanLocked(
   // on (plan_id, plan_version, event_id, source) is the safety
   // backstop for concurrent races we can't detect at the app layer.
   const planVersionForOwnership = getPlanVersion(plan.id) ?? 1;
+  const calendarWriteSource = effectiveTrainingCalendarWriteSource(input);
   let eventsCreated = 0;
   let eventsAlreadyOwned = 0;
   const createCalendarEventWithOwnership = async (
     eventPayload: (typeof calendarEvents)[number],
   ): Promise<'created' | 'already_owned' | 'skipped' | 'failed'> => {
+    if (calendarWriteSource === null) {
+      return 'skipped';
+    }
     const existing = findExistingOwnership({
       planId: plan.id,
       planVersion: planVersionForOwnership,
@@ -482,21 +499,24 @@ async function persistGeneratedTrainingPlanLocked(
       );
         return 'skipped';
       }
-      const event = await createTrainingCalendarEvent(
-        {
-          title: eventPayload.title,
-          start: selectedWindow.start,
-          end: selectedWindow.end,
-          description: eventPayload.description,
-        },
-        input.calendarSource,
-        input.userId,
-        {
-          userId: input.userId,
-          tenantId,
-          sessionId: eventPayload.sessionId,
-          title: eventPayload.title,
-        },
+      const event = await withTrainingCalendarSyncTimeout(
+        createTrainingCalendarEvent(
+          {
+            title: eventPayload.title,
+            start: selectedWindow.start,
+            end: selectedWindow.end,
+            description: eventPayload.description,
+          },
+          calendarWriteSource,
+          input.userId,
+          {
+            userId: input.userId,
+            tenantId,
+            sessionId: eventPayload.sessionId,
+            title: eventPayload.title,
+          },
+        ),
+        'provider_event_create',
       );
       trainingPlans.linkSessionToCalendar(eventPayload.sessionId, event.id, event.source);
       markSecretaryAgendaProviderSyncSatisfied({
@@ -518,11 +538,17 @@ async function persistGeneratedTrainingPlanLocked(
         userId: input.userId,
         eventId: event.id,
         source: event.source,
+        calendarId: input.trainingPlanSpec?.calendarPreference.calendarId ?? null,
         sessionIdentityKey: eventPayload.sessionIdentityKey,
         sessionShapeHash: eventPayload.sessionShapeHash,
       });
       return 'created';
     } catch (err) {
+      trainingPlans.updateSession(eventPayload.sessionId, {
+        status: 'unscheduled',
+        calendar_event_id: null,
+        calendar_source: null,
+      });
       logger.warn(
         {
           err,
@@ -1050,12 +1076,46 @@ function selectedTrainingSecretaryWindow(
   return { start: decision.selectedSlot.start, end: decision.selectedSlot.end };
 }
 
+function effectiveTrainingCalendarWriteSource(
+  input: PersistGeneratedTrainingPlanInput,
+): CalendarSource | undefined | null {
+  const provider = input.trainingPlanSpec?.calendarPreference.provider;
+  if (provider === 'google' || provider === 'outlook') return provider;
+  if (provider === 'none' || provider === 'apple') return null;
+  return input.calendarSource;
+}
+
 export function trainingCalendarCreateBatchSize(env: Record<string, string | undefined> = process.env): number {
   const raw = env.TRAINING_CALENDAR_CREATE_BATCH_SIZE;
   if (raw == null || raw.trim() === '') return 5;
   const parsed = Number.parseInt(raw, 10);
   if (!Number.isFinite(parsed)) return 5;
   return Math.min(5, Math.max(1, parsed));
+}
+
+function trainingCalendarSyncTimeoutMs(env: Record<string, string | undefined> = process.env): number {
+  const raw = env.TRAINING_CALENDAR_SYNC_TIMEOUT_MS;
+  if (raw == null || raw.trim() === '') return 15_000;
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed)) return 15_000;
+  return Math.min(30_000, Math.max(3_000, parsed));
+}
+
+async function withTrainingCalendarSyncTimeout<T>(
+  promise: Promise<T>,
+  operation: string,
+): Promise<T> {
+  let timeout: NodeJS.Timeout | undefined;
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timeout = setTimeout(() => {
+      reject(new Error(`TRAINING_CALENDAR_SYNC_TIMEOUT:${operation}`));
+    }, trainingCalendarSyncTimeoutMs());
+  });
+  try {
+    return await Promise.race([promise, timeoutPromise]);
+  } finally {
+    if (timeout) clearTimeout(timeout);
+  }
 }
 
 function chunkArray<T>(items: readonly T[], size: number): T[][] {
@@ -1374,6 +1434,13 @@ function buildSessionDescriptionInput(args: {
       sessionRoleLabel: sessionData.sessionRoleLabel,
       sessionRoleSummary: sessionData.sessionRoleSummary,
       keySessionLabel: sessionData.keySessionLabel,
+      splitCode: sessionData.splitCode,
+      splitSlot: sessionData.splitSlot,
+      focus: sessionData.focus,
+      primaryMuscles: sessionData.primaryMuscles,
+      secondaryMuscles: sessionData.secondaryMuscles,
+      movementPatterns: sessionData.movementPatterns,
+      sections: sessionData.sections,
       intensitySummary: sessionData.intensitySummary,
       decisionReasons: sessionData.decisionReasons,
     },

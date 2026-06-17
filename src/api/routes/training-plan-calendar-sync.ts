@@ -148,6 +148,7 @@ interface PlanPreferences {
   preferredTime: string;
   preferredCardioTime: string;
   preferredStrengthTime: string;
+  calendarId: string | null;
 }
 
 function tenantIdForTrainingPlan(plan: trainingPlans.TrainingPlan, fallbackTenantId: number): number {
@@ -164,18 +165,29 @@ function readPlanPreferences(plan: trainingPlans.TrainingPlan): PlanPreferences 
     preferredTime: '12:00',
     preferredCardioTime: '12:00',
     preferredStrengthTime: '12:00',
+    calendarId: null,
   };
   if (!plan.preferences_json) return fallback;
   try {
     const parsed = JSON.parse(plan.preferences_json) as Record<string, unknown>;
+    const trainingPlanSpec = parsed.trainingPlanSpec && typeof parsed.trainingPlanSpec === 'object'
+      ? parsed.trainingPlanSpec as { calendarPreference?: { calendarId?: unknown } }
+      : null;
     return {
       preferredTime: normalizePreferredTime(parsed.preferredTime, fallback.preferredTime),
       preferredCardioTime: normalizePreferredTime(parsed.preferredCardioTime, fallback.preferredCardioTime),
       preferredStrengthTime: normalizePreferredTime(parsed.preferredStrengthTime, fallback.preferredStrengthTime),
+      calendarId: normalizeCalendarId(parsed.calendarId)
+        ?? normalizeCalendarId(trainingPlanSpec?.calendarPreference?.calendarId),
     };
   } catch {
     return fallback;
   }
+}
+
+function normalizeCalendarId(value: unknown): string | null {
+  const trimmed = typeof value === 'string' ? value.trim() : '';
+  return trimmed || null;
 }
 
 function emojiForTrainingSession(sessionType: string | null | undefined): string {
@@ -692,6 +704,7 @@ async function confirmTrainingSessionReflowLocked(input: {
       userId: input.userId,
       eventId,
       source: preview.data.provider,
+      calendarId: scope.preferences.calendarId,
       sessionIdentityKey: scope.session.session_identity_key,
       sessionShapeHash: scope.session.session_shape_hash,
     });
@@ -1004,6 +1017,7 @@ async function syncTrainingPlanCalendarLocked(
           userId,
           eventId: ownedEvent.id,
           source: ownedEvent.source,
+          calendarId: preferences.calendarId,
           sessionIdentityKey: item.sessionIdentityKey,
           sessionShapeHash: item.sessionShapeHash,
         });
@@ -1073,6 +1087,7 @@ async function syncTrainingPlanCalendarLocked(
         userId,
         eventId: linkedEvent.id,
         source: linkedEvent.source,
+        calendarId: preferences.calendarId,
         sessionIdentityKey: item.sessionIdentityKey,
         sessionShapeHash: item.sessionShapeHash,
       });
@@ -1189,6 +1204,7 @@ async function syncTrainingPlanCalendarLocked(
         userId,
         eventId: existingEvent.id,
         source: existingEvent.source,
+        calendarId: preferences.calendarId,
         sessionIdentityKey: item.sessionIdentityKey,
         sessionShapeHash: item.sessionShapeHash,
       });
@@ -1392,6 +1408,7 @@ async function syncTrainingPlanCalendarLocked(
         userId,
         eventId: event.id,
         source: event.source,
+        calendarId: preferences.calendarId,
         sessionIdentityKey: item.sessionIdentityKey,
         sessionShapeHash: item.sessionShapeHash,
       });
@@ -1650,6 +1667,7 @@ function recordTrainingCalendarOwnership(input: {
   userId: number;
   eventId: string;
   source: string;
+  calendarId?: string | null;
   sessionIdentityKey?: string | null;
   sessionShapeHash?: string | null;
 }): void {

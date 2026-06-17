@@ -18,6 +18,11 @@ import {
 import { readinessResultToSnapshot } from '../../services/coach-kernel/readiness-snapshot-adapter';
 import { adaptSessionForReadiness, type AdaptationContext } from '../../services/coach-kernel/adaptation-engine';
 import { isKeepOriginalSetForToday } from '../../services/training-keep-original';
+import {
+  calendarSyncStateIsLinked,
+  resolveCalendarSyncState,
+} from '../../services/training-calendar-sync-state';
+import { findExistingOwnership } from '../../services/training-plan-lifecycle';
 import type { Session, SessionType, Sport, ReadinessSnapshot } from '../../services/coach-kernel/types';
 import { requireTenantIdParam } from '../../services/tenant-scope';
 
@@ -171,6 +176,16 @@ export async function getTodaySession(userId: number, tenantId: number) {
           } catch (err) {
             logger.debug({ err, userId }, 'getTodaySession: calendar enrichment failed — rendering session without start time');
           }
+          const linkedCalendarEvent = rawSession.calendar_event_id
+            ? calendarLookup.get(rawSession.calendar_event_id)
+            : null;
+          const verifiedCalendarEventId = resolveVerifiedCalendarEventId({
+            session: rawSession,
+            plan: activePlan,
+            linkedCalendarEvent,
+            userId,
+            tenantId,
+          });
           session = {
             id: rawSession.id != null ? String(rawSession.id) : null,
             planId: rawSession.plan_id != null ? String(rawSession.plan_id) : null,
@@ -180,10 +195,18 @@ export async function getTodaySession(userId: number, tenantId: number) {
             lifecycleState: rawSession.status || 'pending',
             type: rawSession.title || humanizeSessionType(rawSession.session_type),
             sessionType: rawSession.session_type || null,
-            time: rawSession.calendar_event_id ? calendarLookup.get(rawSession.calendar_event_id)?.time ?? null : null,
+            time: verifiedCalendarEventId ? linkedCalendarEvent?.time ?? null : null,
+            calendarEventId: verifiedCalendarEventId,
+            calendarSource: verifiedCalendarEventId ? rawSession.calendar_source || null : null,
+            calendarSyncState: resolveCalendarSyncState({
+              hasStoredCalendarEventId: Boolean(rawSession.calendar_event_id),
+              verifiedCalendarEventId,
+              manualUnscheduled: normalizeTrainingStatus(rawSession.status) === 'unscheduled',
+            }),
             duration: rawSession.duration_minutes || null,
             status: normalizeTrainingStatus(rawSession.status),
             notes: rawSession.description || null,
+            descriptionSections: parseDescriptionSections(rawSession.description_json),
             exercises: parseExercises(rawSession.exercises_json),
             preferredTimeUnavailable: Number(rawSession.preferred_time_unavailable) === 1,
           };
@@ -298,7 +321,11 @@ export async function getTodaySession(userId: number, tenantId: number) {
       duration: session.duration || null,
       status: session.status || 'planned',
       notes: session.notes || null,
+      descriptionSections: session.descriptionSections || null,
       exercises: session.exercises || null,
+      calendarEventId: session.calendarEventId || null,
+      calendarSource: session.calendarSource || null,
+      calendarSyncState: session.calendarSyncState || null,
       // Default to false when the session source is calendar/garmin
       // fallback (which never has a planner-derived flag).
       preferredTimeUnavailable: session.preferredTimeUnavailable === true,
@@ -361,7 +388,7 @@ export async function getWeekPlan(userId: number, tenantId: number) {
           const linkedCalendarEvent = s.calendar_event_id
             ? calendarLookup.get(s.calendar_event_id) ?? null
             : null;
-          return buildWeekSessionDto(s, plan, linkedCalendarEvent);
+          return buildWeekSessionDto(s, plan, linkedCalendarEvent, userId, tenantId);
         });
       }
       const adh = currentWeek ? trainingPlans.getWeeklyAdherence?.(plan.id, currentWeek.id) : null;
@@ -416,7 +443,7 @@ export async function getAllPlanWeeks(userId: number, tenantId: number) {
       const linkedCalendarEvent = session.calendar_event_id
         ? calendarLookup.get(session.calendar_event_id) ?? null
         : null;
-      return buildWeekSessionDto(session, plan, linkedCalendarEvent);
+      return buildWeekSessionDto(session, plan, linkedCalendarEvent, userId, tenantId);
     });
     const syncSummary = summarizeTrainingSyncState(sessions);
 
@@ -455,6 +482,11 @@ export async function getAllPlanWeeks(userId: number, tenantId: number) {
       periodization: plan.periodization ?? null,
       raceDate: typeof planPreferences?.raceDate === 'string' ? planPreferences.raceDate : null,
       goalMode: typeof planPreferences?.goalMode === 'string' ? planPreferences.goalMode : null,
+      whyThisPlan: Array.isArray(planPreferences?.trainingPlanQuality?.whyThisPlan)
+        ? planPreferences.trainingPlanQuality.whyThisPlan
+            .map((value: unknown) => String(value || '').trim())
+            .filter(Boolean)
+        : [],
       calendarSource: resolvePlanCalendarSource(plan),
     },
     weeks: mappedWeeks,
@@ -479,10 +511,56 @@ function parsePlanPreferences(raw: unknown): Record<string, any> | null {
   }
 }
 
-function buildWeekSessionDto(session: any, plan: any, linkedCalendarEvent: any) {
-  const verifiedCalendarEventId = session.calendar_event_id && linkedCalendarEvent && calendarEventMatchesSession(session, linkedCalendarEvent.event)
-    ? session.calendar_event_id
+function resolveVerifiedCalendarEventId(input: {
+  session: any;
+  plan: any;
+  linkedCalendarEvent: any;
+  userId: number;
+  tenantId: number;
+}): string | null {
+  const storedEventId = input.session?.calendar_event_id ? String(input.session.calendar_event_id) : '';
+  if (!storedEventId || !input.linkedCalendarEvent) return null;
+  const sessionId = Number(input.session?.id);
+  const planId = Number(input.plan?.id ?? input.session?.plan_id);
+  const planVersion = Number(input.plan?.plan_version ?? 1);
+  if (!Number.isFinite(sessionId) || !Number.isFinite(planId) || !Number.isFinite(planVersion)) return null;
+
+  let ownership: ReturnType<typeof findExistingOwnership> | null = null;
+  try {
+    ownership = findExistingOwnership({
+      planId,
+      planVersion,
+      sessionId,
+      tenantId: input.tenantId,
+      userId: input.userId,
+    });
+  } catch (err) {
+    logger.debug({ err, planId, sessionId, userId: input.userId }, 'training read model ownership lookup failed');
+    return null;
+  }
+  if (!ownership) return null;
+  if (String(ownership.calendar_event_id) !== storedEventId) return null;
+  if (input.session.calendar_source && ownership.calendar_source && String(ownership.calendar_source) !== String(input.session.calendar_source)) {
+    return null;
+  }
+  return calendarEventMatchesSession(input.session, input.linkedCalendarEvent.event)
+    ? storedEventId
     : null;
+}
+
+function buildWeekSessionDto(session: any, plan: any, linkedCalendarEvent: any, userId: number, tenantId: number) {
+  const verifiedCalendarEventId = resolveVerifiedCalendarEventId({
+    session,
+    plan,
+    linkedCalendarEvent,
+    userId,
+    tenantId,
+  });
+  const calendarSyncState = resolveCalendarSyncState({
+    hasStoredCalendarEventId: Boolean(session.calendar_event_id),
+    verifiedCalendarEventId,
+    manualUnscheduled: normalizeTrainingStatus(session.status) === 'unscheduled',
+  });
   return {
     id: session.id != null ? String(session.id) : undefined,
     planId: session.plan_id != null ? String(session.plan_id) : undefined,
@@ -496,9 +574,10 @@ function buildWeekSessionDto(session: any, plan: any, linkedCalendarEvent: any) 
     time: verifiedCalendarEventId ? linkedCalendarEvent?.time ?? null : null,
     calendarEventId: verifiedCalendarEventId,
     calendarSource: verifiedCalendarEventId ? session.calendar_source || null : null,
-    calendarSyncState: verifiedCalendarEventId
+    calendarSyncState,
+    legacyCalendarSyncState: calendarSyncState === 'verified'
       ? 'synced'
-      : session.calendar_event_id
+      : calendarSyncState === 'repair_needed'
         ? 'stale'
         : 'missing',
     lifecycleState: session.status || 'pending',
@@ -513,7 +592,7 @@ function buildWeekSessionDto(session: any, plan: any, linkedCalendarEvent: any) 
 
 function summarizeTrainingSyncState(sessions: any[]) {
   const activeSessions = sessions.filter((session) => !isInactiveTrainingReadModelStatus(session.lifecycleState ?? session.status));
-  const syncedSessionCount = activeSessions.filter((session) => session.calendarSyncState === 'synced').length;
+  const syncedSessionCount = activeSessions.filter((session) => calendarSyncStateIsLinked(session.calendarSyncState)).length;
   const missingSessionCount = Math.max(0, activeSessions.length - syncedSessionCount);
   const planSyncStatus = activeSessions.length === 0
     ? 'unscheduled'
@@ -613,9 +692,14 @@ export async function fetchCurrentReadinessForPlan(userId: number, tenantId: num
 
 function calendarEventMatchesSession(session: any, event: any): boolean {
   if (!event) return false;
+  const eventId = event.id || event.eventId || event.providerEventId || event.uid;
+  if (session.calendar_event_id && eventId && String(eventId) !== String(session.calendar_event_id)) return false;
+
   const eventTitle = normalizeCalendarTrainingTitle(event.summary || event.subject || event.title);
   const sessionTitle = normalizeCalendarTrainingTitle(session.title || humanizeSessionType(session.session_type));
-  if (!eventTitle || !sessionTitle || eventTitle !== sessionTitle) return false;
+  const titleMatches = (!eventTitle && session.calendar_event_id && eventId)
+    || (Boolean(eventTitle) && Boolean(sessionTitle) && eventTitle === sessionTitle);
+  if (!titleMatches) return false;
 
   const expectedDuration = Number(session.duration_minutes);
   if (!Number.isFinite(expectedDuration) || expectedDuration <= 0) return true;

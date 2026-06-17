@@ -1,5 +1,14 @@
 # Single-Agent Beta Status
 
+Status: historical beta tracker
+Last reviewed: 2026-06-16
+Current production truth: `docs/release/current-release-index.md` and
+`docs/release/CURRENT_RELEASE_STATE.md`
+
+This file preserves the 2026-04-25 single-agent beta tracker. Do not use the
+version numbers, branch names, worktree path, or smoke counts below as current
+release truth unless a current release doc links a specific entry as evidence.
+
 Date: 2026-04-25
 
 Active branch: `beta/single-agent-rc`

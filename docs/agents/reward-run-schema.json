@@ -1,0 +1,204 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://nexushub.local/schemas/reward-run.schema.json",
+  "title": "Nexus Verifiable Reward Run",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "policyVersion",
+    "runId",
+    "timestamp",
+    "agent",
+    "repo",
+    "area",
+    "changedFiles",
+    "classifier",
+    "signals",
+    "mandatoryChecks",
+    "optionalChecks",
+    "skippedChecks",
+    "hardFailures",
+    "score",
+    "verdict",
+    "evidence",
+    "redactions",
+    "exportEligibility"
+  ],
+  "properties": {
+    "version": { "type": "string", "const": "1.0.0" },
+    "policyVersion": { "type": "string", "minLength": 1 },
+    "runId": { "type": "string", "minLength": 8 },
+    "timestamp": { "type": "string", "format": "date-time" },
+    "agent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "enum": ["claude-code", "codex", "human", "unknown"]
+        },
+        "sessionId": { "type": "string" },
+        "model": { "type": "string" }
+      }
+    },
+    "repo": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "branch", "baseRef", "headSha", "dirty"],
+      "properties": {
+        "name": { "type": "string" },
+        "branch": { "type": "string" },
+        "baseRef": { "type": "string" },
+        "headSha": { "type": ["string", "null"] },
+        "dirty": { "type": "boolean" }
+      }
+    },
+    "area": {
+      "type": "string",
+      "enum": ["backend", "ios", "docs", "release", "research", "auto"]
+    },
+    "changedFiles": { "type": "array", "items": { "type": "string" } },
+    "classifier": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["command", "versionHash", "result"],
+      "properties": {
+        "command": { "type": "string" },
+        "versionHash": { "type": ["string", "null"] },
+        "result": {}
+      }
+    },
+    "signals": { "type": "array", "items": { "$ref": "#/$defs/signal" } },
+    "mandatoryChecks": { "type": "array", "items": { "$ref": "#/$defs/check" } },
+    "optionalChecks": { "type": "array", "items": { "$ref": "#/$defs/check" } },
+    "skippedChecks": { "type": "array", "items": { "$ref": "#/$defs/skippedCheck" } },
+    "hardFailures": { "type": "array", "items": { "$ref": "#/$defs/hardFailure" } },
+    "score": { "type": "integer", "minimum": 0, "maximum": 100 },
+    "verdict": {
+      "type": "string",
+      "enum": ["PASS", "WARN", "FAIL", "MANUAL_REQUIRED", "NOT_APPLICABLE"]
+    },
+    "evidence": { "type": "array", "items": { "$ref": "#/$defs/evidence" } },
+    "redactions": { "type": "array", "items": { "$ref": "#/$defs/redaction" } },
+    "exportEligibility": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["eligible", "reason"],
+      "properties": {
+        "eligible": { "type": "boolean" },
+        "reason": { "type": "string" }
+      }
+    }
+  },
+  "$defs": {
+    "signal": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["id", "label", "status"],
+      "properties": {
+        "id": { "type": "string" },
+        "label": { "type": "string" },
+        "status": { "type": "string" },
+        "details": {}
+      }
+    },
+    "check": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "label",
+        "command",
+        "status",
+        "mandatory",
+        "exitCode",
+        "durationMs",
+        "evidence",
+        "verdictImpact",
+        "reason"
+      ],
+      "properties": {
+        "id": { "type": "string" },
+        "label": { "type": "string" },
+        "command": { "type": "string" },
+        "status": {
+          "type": "string",
+          "enum": ["PASS", "FAIL", "SKIPPED", "ERROR", "NOT_APPLICABLE"]
+        },
+        "mandatory": { "type": "boolean" },
+        "exitCode": { "type": ["integer", "null"] },
+        "durationMs": { "type": "integer", "minimum": 0 },
+        "evidence": { "type": "array", "items": { "$ref": "#/$defs/evidence" } },
+        "verdictImpact": {
+          "type": "string",
+          "enum": ["none", "warn", "manual_required", "fail"]
+        },
+        "reason": { "type": "string" },
+        "skipClassification": {
+          "type": "string",
+          "enum": [
+            "acceptable skip",
+            "warning",
+            "manual review required",
+            "hard failure"
+          ]
+        }
+      }
+    },
+    "skippedCheck": {
+      "allOf": [
+        { "$ref": "#/$defs/check" },
+        {
+          "type": "object",
+          "properties": {
+            "skipClassification": {
+              "type": "string",
+              "enum": [
+                "acceptable skip",
+                "warning",
+                "manual review required",
+                "hard failure"
+              ]
+            }
+          },
+          "required": ["skipClassification"]
+        }
+      ]
+    },
+    "hardFailure": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "label", "reason", "evidence"],
+      "properties": {
+        "id": { "type": "string" },
+        "label": { "type": "string" },
+        "reason": { "type": "string" },
+        "evidence": { "type": "array", "items": { "$ref": "#/$defs/evidence" } }
+      }
+    },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "summary"],
+      "properties": {
+        "type": { "type": "string" },
+        "summary": { "type": "string" },
+        "path": { "type": "string" },
+        "command": { "type": "string" },
+        "excerpt": { "type": "string" }
+      }
+    },
+    "redaction": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "reason"],
+      "properties": {
+        "type": { "type": "string" },
+        "reason": { "type": "string" },
+        "count": { "type": "integer", "minimum": 1 }
+      }
+    }
+  }
+}

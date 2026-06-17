@@ -2,10 +2,10 @@
 
 Status: canonical
 Owner: release lead (Felipe)
-Last verified: 2026-05-04
+Last verified: 2026-06-16
 Update policy: update only when the production-promote process changes (deploy-staging → smoke → promote-to-prod sequence).
 
-Date: 2026-05-01
+Date: 2026-06-16
 
 ## Preflight
 
@@ -23,9 +23,17 @@ Date: 2026-05-01
 - [ ] iOS focused/full tests passed if iOS changed.
 - [ ] Staging deploy passed.
 - [ ] Staging health passed.
-- [ ] Focused staging smoke for changed domains passed.
+- [ ] Focused staging smoke for changed domains passed. Check count is
+      release-dependent; use the current smoke evidence, not a historical
+      17/19/22/26 count.
 - [ ] Tenant/security smoke passed if auth/data/retrieval/admin paths changed.
 - [ ] Provider/calendar smoke passed if calendar/provider code changed.
+- [ ] Secretary agenda/provider smoke passed or is explicitly blocked with
+      staging credential/live-write prerequisite details if Secretary
+      arbitration, provider sync, reminders, or calendar ownership changed.
+- [ ] Decision Center notification/iOS decision-surface smoke passed if
+      decision delivery, notification counts, APNs, or native decision views
+      changed.
 - [ ] TestFlight/device smoke passed or owner accepted waiver if native iOS capabilities are in scope.
 
 ## Data And Migration Safety

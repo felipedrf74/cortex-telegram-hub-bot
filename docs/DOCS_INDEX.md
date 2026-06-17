@@ -2,7 +2,7 @@
 
 Status: canonical
 Owner: backend architecture lead (Felipe)
-Last verified: 2026-05-04
+Last verified: 2026-06-16
 Update policy: update when a new canonical backend doc location is added
 or a canonical path moves. The workspace-level entry point is
 `docs/DOCS_INDEX.md`.
@@ -14,6 +14,8 @@ This is the backend repo's markdown routing map for Codex and Claude Code.
 | Purpose | Status | Path | Update Policy |
 | --- | --- | --- | --- |
 | Backend QA status | current | `docs/qa/QA_BACKEND_REPORT.md` | Update after backend QA, security, runtime, or release validation. |
+| Backend Verifiable Reward Protocol companion | canonical | `docs/agents/VERIFIABLE_REWARD_PROTOCOL.md` | Update when backend-local reward commands, schema, hooks, or export behavior change. |
+| Reward run schema | canonical | `docs/agents/reward-run-schema.json` | Update when `scripts/reward-check.mjs` output shape changes. |
 | Release process entrypoint | canonical | `docs/release/README.md` | Keep as the release-process start page. |
 | Current release index | current | `docs/release/current-release-index.md` | Update first for active release decisions and exact RC identity. |
 | Production checklist | canonical | `docs/release/production-promotion-checklist-v2.md` | Update only when the process changes. |
@@ -59,5 +61,6 @@ Do not treat old timestamped reports as current truth unless
    into many workstream docs.
 5. Never delete historical evidence until it has been archived or explicitly
    classified as scratch.
-6. Use `/Users/felipedominguez/Desktop/Nexus Hub` as the official workspace
-   entrypoint. Do not start from old beta-agent folders.
+6. Use `/Users/felipedominguez/Desktop/Custom Connectors/Cortex/cortex-telegram-hub-bot`
+   as the backend workspace entrypoint. Use the iOS workspace only for native
+   iOS work. Do not start from old beta-agent folders.

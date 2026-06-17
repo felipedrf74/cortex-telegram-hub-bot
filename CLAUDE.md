@@ -9,9 +9,12 @@ read:
    `/Users/felipedominguez/Desktop/Nexus Hub`
 1. `/Users/felipedominguez/Desktop/Nexus Hub/docs/DOCS_INDEX.md`
 2. `/Users/felipedominguez/Desktop/Nexus Hub/docs/agent/OPERATING_CONTEXT.md`
-3. `docs/DOCS_INDEX.md`
-4. `docs/release/current-release-index.md`
-5. `docs/qa/QA_BACKEND_REPORT.md`
+3. `/Users/felipedominguez/Desktop/Nexus Hub/docs/agent/VERIFIABLE_REWARD_PROTOCOL.md`
+4. `AGENTS.md`
+5. `docs/DOCS_INDEX.md`
+6. `docs/agents/VERIFIABLE_REWARD_PROTOCOL.md`
+7. `docs/release/current-release-index.md`
+8. `docs/qa/QA_BACKEND_REPORT.md`
 
 Do not create a new scattered final report when a current/canonical doc already
 exists. Update the current doc and link any one-off evidence from the current
@@ -31,23 +34,23 @@ or copying verdicts, commit hashes, or test counts.
 
 **Providers**: Gemini primary (2.5-flash / 2.5-flash-lite), Anthropic fallback (Claude Sonnet 4.6 / Haiku 4.5), OpenAI as secondary fallback. See `src/config.ts > providerRouting`.
 
-## Current Production Truth - 2026-06-06
+## Current Production Truth - 2026-06-16
 
 - Canonical production state lives in `docs/release/CURRENT_RELEASE_STATE.md`
   and `docs/release/current-release-index.md`; read those before making
   release decisions.
-- Last documented production backend is live at `4.14.202` on `main`.
-- Current production deploy commit is
-  `6438553d` (version bump for 4.14.202).
-- Source scope now in production:
-  - `870ca09f` — Training remediation round-3 fast-follow.
-- Production promote completed through the standard gate. Promote-time staging
-  smoke passed 19/19 before production was touched, backend `npm run verify`
-  passed typecheck, science-policy, and full Vitest with 816 files / 11,951
-  tests, and final `main` pre-push repeated typecheck, full Vitest, and build.
-- Production health passed after deploy: content engine returned `status: ok`,
-  authenticated status portal returned version `4.14.202`, and PM2 showed
-  `nexus-hub` and `content-engine` online.
+- Last documented production backend is live at `4.14.208` on `main`.
+- Current documented production deploy commit is `636910e2`; the runtime source
+  commit for that promote is `6651085e` (Content Studio backend contract).
+- Staging and production were both documented on `4.14.208` after the
+  2026-06-10 promote. Promote-time staging smoke with Cloudflare edge checks
+  passed 22/22 before production mutation, and deploy-time validation passed
+  typecheck, science-policy, migration safety for 204 migrations, and full
+  Vitest with 842 files / 12,368 tests.
+- Production health passed after deploy: public `/health` and `/public-status`
+  returned healthy/ok, PM2 showed `nexus-hub` and `content-engine` online, and
+  authenticated Decision Center overview with `sourceSkill=content` returned
+  HTTP 200.
 - The local package version can be ahead of production while release hardening
   or feature work is staged. Run `scripts/release-identity.sh markdown` for
   current local identity instead of hand-copying version/SHA fields.
@@ -55,18 +58,30 @@ or copying verdicts, commit hashes, or test counts.
   restarted as detached `cloudflared` user processes during incident recovery.
   Follow up by installing/enabling a supervised service for the tunnel so it
   survives host restarts cleanly.
-- Current active local feature worktree:
+- Current local backend checkout:
   `/Users/felipedominguez/Desktop/Custom Connectors/Cortex/cortex-telegram-hub-bot`
-  on `codex/chat_improvement_goal`, with uncommitted chat improvement changes.
-  Do not clean or reset that worktree unless Felipe explicitly asks.
+  is on `main` at `476a299f`
+  (`fix(training): close red flag signal QA gaps`) with package version
+  `4.14.208`, plus any current uncommitted documentation refresh in this
+  worktree. This local `main` is ahead of the last documented production
+  runtime with Training/Content/onboarding hardening commits. Do not treat
+  those local commits as production until the release index records the
+  promote.
+- A one-off Secretary + Decision Center QA report was generated under
+  `/tmp/secretary-decision-center-full-e2e-qa-2026-06-15.md` during local
+  investigation. It is temporary evidence, not repo-canonical release truth,
+  unless the release index later links it.
 
 Current verification floor:
 
-- Full backend verify: last documented production promote used 816 Vitest files
-  / 11,951 tests. Regenerate current counts from CI/evidence instead of
+- Full backend verify: last documented production promote used 842 Vitest files
+  / 12,368 tests. Regenerate current counts from CI/evidence instead of
   copying this number into release decisions.
 - Main pre-push gate: typecheck + full Vitest + build.
-- Promote gate: staging smoke 17/17 before production.
+- Promote gate: staging smoke count is release-dependent. The last documented
+  production promote passed 22/22 with edge checks; older gates used 17/17,
+  19/19, or 26/26. Always read the current risk matrix and smoke evidence
+  instead of copying a historical count.
 - Deploy script now restores the tracked registry shadow parity evidence before
   clean-tree checks that precede service stop.
 
@@ -88,6 +103,10 @@ Documentation hygiene:
   implementing scoped fixes, running focused and broad tests, deploying through
   staging smoke before production, and updating docs before handoff. Claude
   should follow the same loop.
+- Before ending non-trivial work, run the Nexus Verifiable Reward Loop via
+  `docs/agents/VERIFIABLE_REWARD_PROTOCOL.md` and include the verdict in the
+  handoff/final answer. V1 is local/advisory and verifier-driven; it is not
+  provider-side fine-tuning. Verdict and hard failures outrank numeric score.
 - Backend production changes should follow: focused tests/typecheck,
   staging deploy, staging smoke, production promote, production health, docs
   update. Do not skip the staging smoke gate.
@@ -289,31 +308,37 @@ to `/public-status`; its safety budget depends on the minimal payload.
 
 ---
 
-## Active Phase (April 2026)
+## Active Phase (June 2026)
 
-**Beta release hardening is the active production context.** The backend beta
-hardening work has been deployed to production as `4.14.74` from `main`; do not treat the
-older Phase 0/Phase 1 notes as the current release state.
+**Training/product hardening plus release-discipline cleanup is the active
+local context.** Production truth remains `docs/release/CURRENT_RELEASE_STATE.md`;
+the local `main` checkout is ahead of the last documented runtime deploy with
+Training read-model, calendar, red-flag, release-blocker, and Content/local
+generation follow-ups.
 
 Current backend follow-ups:
 
-- keep tenant/founder/business-rule docs aligned with the beta tracker;
-- validate the latest Content scheduling, high-quality AI script generation, Training readiness,
-  Secretary recurrence, and Health fixes in a signed TestFlight device build;
-- device-validate the Training coach engine hardening pass;
-- run another production-safe alert drill only if the final receiver differs
-  from the staging receiver;
-- keep deploy scripts worktree-safe;
-- avoid broad architecture rewrites until the signed TestFlight/device gates
-  are complete.
+- keep `docs/release/CURRENT_RELEASE_STATE.md` and
+  `docs/release/current-release-index.md` aligned after every staging or
+  production change;
+- before any promote, rerun the changed-area classifier and required focused
+  suites for the Training/Content/onboarding commits after `636910e2`;
+- keep Secretary agenda ownership docs aligned with the runtime arbitrator and
+  provider-sync services now present in the repo;
+- prove live Google/Outlook provider writes only with explicit staging/sandbox
+  gates and cleanup identities; otherwise use no-write fixtures and mark live
+  proof blocked;
+- keep deploy scripts worktree-safe and avoid broad architecture rewrites while
+  release validation is pending.
 
 Current iOS-dependent release gates:
 
-- signed TestFlight smoke;
+- signed TestFlight smoke for current backend contracts;
 - fresh Apple/Google/email auth and interrupted onboarding;
 - APNs token upload and safe delivery;
-- true two-account switching between Felipe and Jaqueline test accounts;
-- real Gmail/Outlook/Health provider-state validation.
+- true two-account switching across scoped test accounts;
+- real Gmail/Outlook/Health provider-state validation in safe staging or
+  TestFlight contexts.
 
 See `DEPLOY.md`, `STAGING.md`, `docs/OBSERVABILITY-ONCALL.md`, and
 `docs/beta/single-agent-status.md` for operational context.

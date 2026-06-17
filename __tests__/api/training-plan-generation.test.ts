@@ -297,6 +297,46 @@ describe('generateTrainingPlanForUser', () => {
     expect(mockPersistGeneratedTrainingPlan).not.toHaveBeenCalled();
   });
 
+  it('asks for clarification before saving high-frequency strength plans with unknown equipment', async () => {
+    mockGetProfile.mockImplementation((_userId: number, questionnaireId: string) => {
+      if (questionnaireId === 'fitness') return { experienceLevel: 'Intermediate' };
+      if (questionnaireId === 'triathlon-gym') return {};
+      return null;
+    });
+    mockBuildTrainingEquipmentAdaptation.mockReturnValue({
+      equipmentProfile: 'unknown',
+      canonicalProfile: { items: [] },
+    });
+
+    const result = await generateTrainingPlanForUser({
+      userId: 12,
+      tenantId: 12,
+      objective: 'Build muscle with a 5-day gym plan',
+      sessionsPerWeek: 5,
+      strengthSessionsPerWeek: 5,
+    });
+
+    expect(result.status).toBe('needs_clarification');
+    if (result.status === 'needs_clarification') {
+      expect(result.data.clarificationIssues).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ id: 'equipment_clarification', severity: 'blocker' }),
+          expect.objectContaining({ id: 'session_duration_clarification', severity: 'blocker' }),
+        ]),
+      );
+      expect(result.data.suggestedQuestions.join(' ')).toMatch(/equipment/i);
+    }
+    expect(mockCancelTrainingPlanForUser).not.toHaveBeenCalled();
+    expect(mockPersistGeneratedTrainingPlan).not.toHaveBeenCalled();
+    expect(mockLoggerWarn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: 'training_plan_spec.needs_clarification',
+        clarificationIds: expect.arrayContaining(['equipment_clarification']),
+      }),
+      expect.stringContaining('needs clarification'),
+    );
+  });
+
   it('falls back to the questionnaire id when the fitness definition has no title', async () => {
     mockGetProfile.mockReturnValue(null);
     mockGetMissingProfileFields.mockReturnValue([{ key: 'fitness_goal' }]);

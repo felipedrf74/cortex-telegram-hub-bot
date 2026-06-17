@@ -16,7 +16,7 @@ Branch: `feature/training-weak-profile-followup-prompts`
 
 | Scenario | Expected Behavior | Coverage |
 | --- | --- | --- |
-| Missing equipment | Emits `equipment_clarification`, planning risk, and `equipment_unknown`. | Covered. |
+| Missing equipment | Emits `equipment_clarification`, planning risk, and `equipment_unknown`; high-frequency strength generation returns `needs_clarification` before persistence. | Covered plus route contract added, not run. |
 | Missing available duration | Emits `session_duration_clarification`, `duration_unknown`, and conservative fallback windows. | Covered. |
 | Unclear goal | Emits a high-priority goal clarification prompt. | Covered through weak-profile prompt suite. |
 | Hybrid with no modality priority | Emits `modality_priority_clarification` and avoids overconfident hybrid assumptions. | Covered through missing critical data detection. |
@@ -50,4 +50,3 @@ npx vitest run '__tests__/services/training-profile-model.test.ts' '__tests__/se
 - API route-level contract tests should be added once the iOS app renders structured `profileQuality`.
 - Prompt localization is not covered in this backend slice.
 - Persisted prompt-resolution state depends on profile storage or client state; this slice accepts IDs but does not own long-term storage.
-

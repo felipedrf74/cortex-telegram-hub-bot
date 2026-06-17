@@ -27,7 +27,7 @@ older production versions.
   capture retries. No Content Studio migration was added by this promote.
 - Production still has the immutable global Training catalog version
   `repo-seed-1.0.0` active with 131 exercises and 24 equipment items.
-- Official workspace root: `/Users/felipedominguez/Desktop/Nexus Hub`
+- Backend workspace root: `/Users/felipedominguez/Desktop/Custom Connectors/Cortex/cortex-telegram-hub-bot`
 
 ## 2026-06-10 Content Studio Backend Contract Production Promote
 

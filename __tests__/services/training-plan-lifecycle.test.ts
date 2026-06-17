@@ -187,6 +187,9 @@ describe('training-plan-lifecycle — migration 081', () => {
     expect(names.has('user_id')).toBe(true);
     expect(names.has('calendar_event_id')).toBe(true);
     expect(names.has('calendar_source')).toBe(true);
+    expect(names.has('calendar_id')).toBe(true);
+    expect(names.has('last_verified_at')).toBe(true);
+    expect(names.has('sync_version')).toBe(true);
     expect(names.has('session_identity_key')).toBe(true);
     expect(names.has('session_shape_hash')).toBe(true);
     expect(names.has('status')).toBe(true);
@@ -236,6 +239,18 @@ describe('training-plan-lifecycle — recordCalendarOwnership', () => {
     expect(result.ok).toBe(true);
     expect(result.created).toBe(true);
     expect(result.ownershipId).not.toBeNull();
+    const row = testDb.prepare(`
+      SELECT calendar_id, last_verified_at, sync_version
+      FROM training_agenda_event_ownership
+      WHERE id = ?
+    `).get(result.ownershipId) as {
+      calendar_id: string;
+      last_verified_at: string | null;
+      sync_version: string;
+    };
+    expect(row.calendar_id).toBe('primary');
+    expect(row.last_verified_at).toBeTruthy();
+    expect(row.sync_version).toBe('training_calendar_sync_v1');
   });
 
   it('is idempotent — second call with same tuple returns created=false', () => {

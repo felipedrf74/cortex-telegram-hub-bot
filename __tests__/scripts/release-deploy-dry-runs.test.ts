@@ -501,6 +501,8 @@ describe('release deploy dry-run harness', () => {
             NEXUS_DEPLOY_SKIP_VERIFY: 'auto-when-staged',
             NEXUS_RELEASE_EVIDENCE_REUSE_ENABLED: '1',
             NEXUS_RELEASE_MIN_CLEAN_RCS: '3',
+            NEXUS_DEPLOY_ALLOW_TEMP_CHECKOUT: '1',
+            NEXUS_EMERGENCY_SKIP_REASON: 'fixture temp checkout exercises pre-mutation digest guard',
             FAKE_RELEASE_EVIDENCE_OK: '1',
             FAKE_RELEASE_EVIDENCE_DIGEST: 'evidence-digest',
             FAKE_ARTIFACT_DIGEST: 'post-build-digest',
@@ -518,6 +520,36 @@ describe('release deploy dry-run harness', () => {
       expect(combined).toContain('Post-build artifact digest no longer matches the signed release evidence');
       expect(readFileSync(npmLog, 'utf8')).toContain('npm run build');
       expect(combined).not.toContain('Validating production .env');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('deploy.sh non-dry-run refuses temporary checkouts without an audited override', () => {
+    const root = createReleaseHarnessRepo();
+    const { binDir } = installCommandStubs(root);
+
+    try {
+      let combined = '';
+      let status: number | undefined;
+      try {
+        execFileSync('bash', ['scripts/deploy.sh'], {
+          cwd: root,
+          env: {
+            ...process.env,
+            PATH: prependPath(binDir),
+          },
+          stdio: ['ignore', 'pipe', 'pipe'],
+        });
+      } catch (error) {
+        const failure = error as { status?: number; stdout?: Buffer | string; stderr?: Buffer | string };
+        status = failure.status;
+        combined = `${String(failure.stdout ?? '')}\n${String(failure.stderr ?? '')}`;
+      }
+
+      expect(status).toBeGreaterThan(0);
+      expect(combined).toContain('Refusing production deploy from temporary checkout');
+      expect(combined).toContain('uncommitted release work cannot be silently left behind');
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

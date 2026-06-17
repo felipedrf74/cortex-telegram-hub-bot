@@ -2,7 +2,7 @@
 
 Status: canonical
 Owner: backend on-call lead (Felipe)
-Last verified: 2026-05-04
+Last verified: 2026-06-16
 Update policy: update when alert sources, runbook surfaces, or the
 delivery contract change. Drill cadence is at least every 90 days; the
 last verified drill date is recorded in §1.
@@ -21,9 +21,11 @@ delivered, acknowledged, resolved, and recovered.
 - alert resolved;
 - portal/admin audit rows verified.
 
-Production backend is live at `4.14.74`. If the final production alert receiver
-differs from the staging receiver, run one additional production-safe delivery
-drill after changing the receiver env.
+Last documented production backend is live at `4.14.208`; confirm the exact
+current version in `docs/release/CURRENT_RELEASE_STATE.md` before incident or
+release decisions. If the final production alert receiver differs from the
+staging receiver, run one additional production-safe delivery drill after
+changing the receiver env.
 
 ## Alert Lifecycle
 

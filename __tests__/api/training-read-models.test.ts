@@ -4,6 +4,7 @@ const cache = new Map<string, any>();
 const hoisted = vi.hoisted(() => ({
   calculateReadiness: vi.fn(),
   getActivitiesByDateForUser: vi.fn(),
+  findExistingOwnership: vi.fn(),
 }));
 
 let mockActivePlan: any = null;
@@ -45,6 +46,10 @@ vi.mock('../../src/services/garmin', () => ({
   getActivitiesByDateForUser: hoisted.getActivitiesByDateForUser,
 }));
 
+vi.mock('../../src/services/training-plan-lifecycle', () => ({
+  findExistingOwnership: hoisted.findExistingOwnership,
+}));
+
 import {
   adaptDtoSessionForReadiness,
   fetchCurrentReadinessForPlan,
@@ -68,10 +73,12 @@ describe('training-read-models', () => {
     mockGarminActivities = [];
     hoisted.calculateReadiness.mockReset();
     hoisted.getActivitiesByDateForUser.mockReset();
+    hoisted.findExistingOwnership.mockReset();
     (buildCalendarEventLookup as any).mockReset();
     (buildCalendarEventLookup as any).mockImplementation(async () => mockCalendarLookup);
     hoisted.calculateReadiness.mockImplementation(async () => mockReadinessResult);
     hoisted.getActivitiesByDateForUser.mockImplementation(async () => mockGarminActivities);
+    hoisted.findExistingOwnership.mockReturnValue(null);
   });
 
   it('surfaces an injury-safe swap for injury-affecting active sessions', () => {
@@ -120,6 +127,11 @@ describe('training-read-models', () => {
     mockCalendarLookup = new Map([
       ['evt-1', { time: '07:00', event: { id: 'evt-1' } }],
     ]);
+    hoisted.findExistingOwnership.mockReturnValue({
+      calendar_event_id: 'evt-1',
+      calendar_source: 'outlook',
+      status: 'active',
+    });
 
     const result = await getTodaySession(42, 42);
 
@@ -134,6 +146,8 @@ describe('training-read-models', () => {
       type: 'Tempo Run',
       sessionType: 'run',
       time: '07:00',
+      calendarEventId: 'evt-1',
+      calendarSyncState: 'verified',
       duration: 55,
       status: 'planned',
       notes: 'Controlled threshold effort.',
@@ -202,6 +216,11 @@ describe('training-read-models', () => {
         },
       }],
     ]);
+    hoisted.findExistingOwnership.mockReturnValue({
+      calendar_event_id: 'evt-mon',
+      calendar_source: 'google',
+      status: 'active',
+    });
 
     const result = await getWeekPlan(42, 42);
     const [rangeStart, rangeEnd] = (buildCalendarEventLookup as any).mock.calls[0];
@@ -216,7 +235,7 @@ describe('training-read-models', () => {
     });
   });
 
-  it('marks stale stored calendar links as missing in the week plan read model', async () => {
+  it('marks stale stored calendar links as repair_needed in the week plan read model', async () => {
     mockActivePlan = { id: 12, name: 'Muscle Building', periodization: 'base', start_date: '2026-04-26' };
     mockCurrentWeek = { id: 212, week_number: 1, focus: 'base' };
     mockWeekSessions = [
@@ -243,10 +262,12 @@ describe('training-read-models', () => {
       time: null,
       calendarEventId: null,
       calendarSource: null,
+      calendarSyncState: 'repair_needed',
+      legacyCalendarSyncState: 'stale',
     });
   });
 
-  it('marks mismatched linked calendar events as missing in the week plan read model', async () => {
+  it('marks mismatched linked calendar events as repair_needed in the week plan read model', async () => {
     mockActivePlan = { id: 13, name: 'Muscle Building', periodization: 'base', start_date: '2026-04-26' };
     mockCurrentWeek = { id: 213, week_number: 1, focus: 'base' };
     mockWeekSessions = [
@@ -283,6 +304,8 @@ describe('training-read-models', () => {
       time: null,
       calendarEventId: null,
       calendarSource: null,
+      calendarSyncState: 'repair_needed',
+      legacyCalendarSyncState: 'stale',
     });
   });
 

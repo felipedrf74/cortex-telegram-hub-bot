@@ -25,6 +25,7 @@ small and Nexus-flavored on purpose.
 | "prototype this", "throwaway", "let me play with it" | [prototype](prototype/SKILL.md) |
 | "tdd", "red-green-refactor", "test-first" | [tdd](tdd/SKILL.md) |
 | "improve architecture", "ball of mud", "deepen this module" | [improve-codebase-architecture](improve-codebase-architecture/SKILL.md) |
+| "reward check", "RLVR", "verifiable rewards", "calibrate the loop", "handoff quality" | [verifiable-reward-check](verifiable-reward-check/SKILL.md) |
 | "write a new skill", "add a skill for…" | [write-a-skill](write-a-skill/SKILL.md) |
 
 ## Defaults baked into our way of working
@@ -41,6 +42,10 @@ small and Nexus-flavored on purpose.
 4. **When a hard-to-reverse decision crystallises** during grilling or
    architecture review, capture an ADR in `docs/adr/` (see
    [docs/adr/README.md](../adr/README.md)). Don't ADR ephemeral decisions.
+5. **Before ending non-trivial Claude Code or Codex work**, run
+   [verifiable-reward-check](verifiable-reward-check/SKILL.md) and summarize
+   the verdict in the handoff/final answer. Score is secondary to hard
+   failures and mandatory evidence.
 
 ## Catalogue
 
@@ -75,6 +80,11 @@ small and Nexus-flavored on purpose.
 - **[improve-codebase-architecture](improve-codebase-architecture/SKILL.md)**
   — Find deepening opportunities. Surface modules that are shallow, leaky, or
   hard to test. Drives toward fewer, deeper modules with cleaner seams.
+- **[verifiable-reward-check](verifiable-reward-check/SKILL.md)** — Apply the
+  Nexus Verifiable Reward Loop before handoff. Orchestrates existing verifier
+  evidence, classifies hard failures, records skipped checks, and decides
+  whether a deliverable is `PASS`, `WARN`, `FAIL`, `MANUAL_REQUIRED`, or
+  `NOT_APPLICABLE`.
 
 ## Skill format
 

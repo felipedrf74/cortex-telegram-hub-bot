@@ -2,10 +2,10 @@
 
 Status: canonical
 Owner: release lead (Felipe)
-Last verified: 2026-06-09
+Last verified: 2026-06-10
 Update policy: update after merge / staging / production / deploy-gate changes. Live identity (branch/commit/version/migrations) auto-generated via engine/scripts/release-identity.sh --persist; do not type those by hand.
 
-Last updated: 2026-06-09
+Last updated: 2026-06-10
 
 > **Live identity** — branch / commit / version / migration count for the
 > current working tree are auto-generated. Do NOT type those values by
@@ -17,17 +17,57 @@ Last updated: 2026-06-09
 
 - Repo: `engine`
 - Workspace HEAD / version / migrations / dirty state: see `docs/release/release-identity.md`
-- Production status (last manual update 2026-06-09): backend package version
-  `4.14.208` is deployed from commit `910b6d72`; both `nexus-hub` and
+- Production status (last manual update 2026-06-10): backend package version
+  `4.14.208` is deployed from commit `636910e2`; both `nexus-hub` and
   `content-engine` PM2 processes are online, production content health passed,
-  public `/health` plus `/public-status` passed, unauthenticated Training
-  returned the canonical 401 contract, and production readiness
+  public `/health` plus `/public-status` passed, live authenticated
+  `/api/v1/decisions/overview?sourceSkill=content` returned HTTP 200 with
+  `sourceSkillFilter` plus `sourceSkillTotalCount`, and production readiness
   passed SQLite integrity, `/health`, content-engine readiness, native
-  better-sqlite3 loading, and PM2 stability. The immutable global Training
-  catalog version `repo-seed-1.0.0` is active with 131 exercises and 24
-  equipment items. Workspace audit evidence lives at
+  better-sqlite3 loading, and PM2 stability. Content Studio backend contract
+  changes are live for source-skill overview filtering, capture provenance, and
+  idempotent topic create. The immutable global Training catalog version
+  `repo-seed-1.0.0` is active with 131 exercises and 24 equipment items.
+  Workspace audit evidence lives at
   `docs/release/worktree-recovery-audit-2026-05-18.md` and
   `docs/release/worktree-recovery-audit-2026-05-21/`.
+
+### 2026-06-10 Content Studio Backend Contract Production Promote
+
+- Scope: promoted the Content Studio backend contract for iOS build `1.5.0`
+  (`38`): Decision Center overview `sourceSkill=content` filtering, content
+  topic capture provenance in audit metadata, and idempotent topic create for
+  iOS offline capture retry safety.
+- Production version: `4.14.208`.
+- Production deploy commit: `636910e2`.
+- Source implementation commit: `6651085e`
+  (`feat(content): studio backend contract - skill-scoped overview, capture
+  provenance, idempotent topic create`).
+- Evidence/unblock commits before deploy: `c3be2cad`, `7d529331`, and
+  `636910e2`. The first promote verifier aborted before production mutation on
+  a single MIT header QA failure in
+  `src/services/notification-cache-invalidation.ts`; the header-only unblock
+  landed in `7d529331`.
+- Validation passed: `npm run release:focused-verify`,
+  `npm run release:rollback-drill-check`, staging deploy, standalone full
+  staging smoke with Cloudflare edge checks **22/22** at
+  `engine/docs/release/smoke-evidence/staging-smoke-7d529331-20260610T204235Z.json`,
+  promote-time staging smoke **22/22**, and deploy-time full Vitest
+  **842 files / 12,368 tests** with migration safety for **204 migrations**.
+- Production promotion completed through `./scripts/promote-to-prod.sh`.
+  Post-production probes passed: public `/health`, public `/public-status`,
+  and authenticated
+  `/api/v1/decisions/overview?sourceSkill=content` with
+  `sourceSkillFilter` plus `sourceSkillTotalCount` present.
+- TestFlight status: build `1.5.0` (`38`) was reported uploaded in the handoff,
+  but this shell could not independently confirm processing or assign INTERNAL
+  testers because no App Store Connect API env vars, `AuthKey_*.p8`,
+  fastlane/appstoreconnect CLI, or repo-documented credential/keychain item was
+  available. No external cohort was touched.
+- Known caveats: release-evidence shadow parity still reports the expected
+  signed-evidence shadow mismatch; production PM2 historical restart counters
+  remain high (`nexus-hub` 37, `content-engine` 7), with no restart during the
+  readiness sample.
 
 ### 2026-06-09 Training Coach Tenant/Health Hotfix Production Promote
 

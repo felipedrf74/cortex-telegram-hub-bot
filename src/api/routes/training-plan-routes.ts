@@ -145,6 +145,10 @@ export function registerTrainingPlanRoutes(
         sendSuccess(res, result.data);
         return;
       }
+      if (result.status === 'needs_clarification') {
+        sendSuccess(res, result.data);
+        return;
+      }
       sendInternalError(res, 'Failed to preview training plan');
     } catch (err: any) {
       logger.error({ err, userId }, 'Training plan preview failed');
@@ -334,6 +338,19 @@ export function registerTrainingPlanRoutes(
       });
 
       if (result.status === 'needs_profile') {
+        completeTrainingPlanGenerationIdempotency(userId, tenantId, idempotencyKey, requestHash, result.data, 200);
+        sendSuccess(res, result.data);
+        return;
+      }
+
+      if (result.status === 'needs_clarification') {
+        logger.warn(
+          {
+            userId,
+            clarificationIds: result.data.clarificationIssues.map((issue) => issue.id),
+          },
+          'Training plan generation needs clarification before persistence',
+        );
         completeTrainingPlanGenerationIdempotency(userId, tenantId, idempotencyKey, requestHash, result.data, 200);
         sendSuccess(res, result.data);
         return;

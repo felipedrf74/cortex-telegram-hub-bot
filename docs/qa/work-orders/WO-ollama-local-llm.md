@@ -451,11 +451,15 @@ These four are TypeScript and benefit from being authored alongside the provider
 ## Verification floor (must not regress)
 
 Per `CLAUDE.md` § "Current Production Truth":
-- Full backend verify: 718 vitest files / 10,525 tests.
+- Full backend verify count is release-dependent; use the current release
+  index instead of copying a historical literal.
 - Main pre-push gate: typecheck + full vitest + build.
-- Promote gate: staging smoke 17/17 before production.
+- Promote gate: required staging smoke suite before production; check count is
+  release-dependent.
 
-This Work Order ADDS new tests; it must not remove or skip existing ones. The new tests are EXPECTED to bring the count to ~725 files / ~10,565 tests (approximate — exact count depends on case granularity).
+This Work Order ADDS new tests; it must not remove or skip existing ones. Do
+not claim exact new totals until the suite has been run for the release
+candidate.
 
 ---
 

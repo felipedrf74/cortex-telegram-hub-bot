@@ -43,6 +43,7 @@ import {
   finalizeGeneratedTrainingPlanForPersistence,
   lintGeneratedTrainingPlanPreflight,
   persistGeneratedTrainingPlan,
+  resolvePlanSlotDate,
 } from './training-plan-persistence';
 import { cancelTrainingPlanForUser } from './training-plan-cancellation';
 import { enforceRequestedTrainingPlanVolume } from '../../services/training-plan-volume-enforcement';
@@ -56,6 +57,16 @@ import * as trainingPlans from '../../services/training-plans';
 import { findOrphanedOwnerships } from '../../services/training-plan-lifecycle';
 import { reconcileOrphanedTrainingAgendaEvents } from '../../services/training-agenda-reconciliation';
 import { resolveTrainingCalendarSource } from '../../services/training-calendar-source';
+import {
+  assessTrainingPlanSpecReadiness,
+  buildTrainingPlanSpec,
+  type EnduranceKeyDay,
+  type TrainingPlanSpecReadinessResult,
+} from '../../services/training-plan-spec';
+import {
+  mergeTrainingQualityIntoPlanLint,
+  prepareTrainingPlanForQualityGate,
+} from '../../services/coach-kernel/training-plan-quality-gate';
 import { isPastIsoDate, isStrictIsoDate } from '../../services/training-date-utils';
 import { logger } from '../../utils/logger';
 import type { CalendarSource } from '../../services/unified-calendar';
@@ -177,6 +188,23 @@ export type TrainingPlanGenerationResult =
    * Strict Training quality gate. Returned before any existing plan is
    * cancelled or any new plan/week/session rows are written.
    */
+  | {
+      status: 'needs_clarification';
+      data: {
+        status: 'needs_clarification';
+        message: string;
+        specReadiness: TrainingPlanSpecReadinessResult;
+        clarificationIssues: TrainingPlanSpecReadinessResult['issues'];
+        suggestedQuestions: string[];
+        fallbackTemplateUsed: boolean;
+        goalMode: TrainingGoalMode | null;
+        trainingPriority: TrainingPriority | null;
+        raceDate: string | null;
+        generatorPolicyVersion: string;
+        generationVersionPins: TrainingGenerationVersionPins;
+        trainingSafety?: TrainingSafetyGenerationSummary | null;
+      };
+    }
   | {
       status: 'plan_quality_blocked';
       data: {
@@ -664,6 +692,8 @@ export async function generateTrainingPlanForUser(
     incrementTrainingGenerationCounter('safety_guardrail_triggered_total');
     planData = applyTrainingSafetyOutputToGeneratedPlan(planData, safetyOutput, startStr);
   }
+  const safetyBlocked = safetyOutput?.effectiveSeverity === 'block'
+    || generatedPlanContainsSafetyPause(planData);
 
   // training-expert-coach-knowledge-engine (2026-05-12):
   // Run the Training quality gate BEFORE the cancellation saga and
@@ -690,6 +720,68 @@ export async function generateTrainingPlanForUser(
         ? String(fitnessProfile.available_equipment).toLowerCase().trim() || undefined
         : undefined;
   const generationVersionPins = buildTrainingGenerationVersionPins();
+  const requestedStrengthDaysForQuality = effectiveStrengthSessionsPerWeek > 0
+    ? effectiveStrengthSessionsPerWeek
+    : gymOnlyObjective
+      ? normalizedSessionsPerWeek
+      : 0;
+  const generatedEnduranceSchedule = buildGeneratedEnduranceSchedule(planData, startStr, now);
+  const trainingPlanSpec = requestedStrengthDaysForQuality >= 2
+    ? buildTrainingPlanSpec({
+        userId,
+        objective,
+        goalMode: normalizedGoalMode,
+        trainingPriority: normalizedTrainingPriority,
+        daysPerWeek: requestedStrengthDaysForQuality,
+        startDate: startStr,
+        equipmentProfileLabel,
+        availableEquipment: equipmentAdaptation.canonicalProfile?.items,
+        fitnessProfile,
+        gymProfile,
+        enduranceSchedule: generatedEnduranceSchedule,
+        calendarSource: resolvedCalendarSource || null,
+        durationWeeks,
+      })
+    : null;
+  const specReadiness = trainingPlanSpec
+    ? assessTrainingPlanSpecReadiness(trainingPlanSpec)
+    : null;
+  if (!safetyBlocked && specReadiness?.status === 'needs_clarification') {
+    incrementTrainingGenerationCounter('spec_needs_clarification_total');
+    logger.warn(
+      {
+        event: 'training_plan_spec.needs_clarification',
+        userId,
+        objective,
+        clarificationIds: specReadiness.issues.map((issue) => issue.id),
+      },
+      'Training plan generation needs clarification before cancellation/persistence',
+    );
+    return {
+      status: 'needs_clarification',
+      data: {
+        status: 'needs_clarification',
+        message:
+          'Nexus needs one or two training details before saving this high-frequency strength plan.',
+        specReadiness,
+        clarificationIssues: specReadiness.issues,
+        suggestedQuestions: specReadiness.issues.map((issue) => issue.question),
+        fallbackTemplateUsed: usedFallbackTemplate,
+        goalMode: normalizedGoalMode,
+        trainingPriority: normalizedTrainingPriority,
+        raceDate: raceDateForLint,
+        generatorPolicyVersion: TRAINING_PLAN_GENERATOR_POLICY_VERSION,
+        generationVersionPins,
+        trainingSafety: buildTrainingSafetyGenerationSummary(safetyOutput),
+      },
+    };
+  }
+  const trainingQuality = trainingPlanSpec && !safetyBlocked
+    ? prepareTrainingPlanForQualityGate(planData, trainingPlanSpec)
+    : null;
+  if (trainingQuality) {
+    planData = trainingQuality.planData;
+  }
 
   const persistenceInput = {
     userId,
@@ -715,6 +807,9 @@ export async function generateTrainingPlanForUser(
       trainingPriority: normalizedTrainingPriority,
       raceDate: effectiveRaceDate,
       startPolicy: normalizedStartPolicy,
+      trainingPlanSpec,
+      trainingPlanQuality: trainingQuality?.validation ?? null,
+      trainingPlanRepairActions: trainingQuality?.repairActions ?? [],
       trainingCalendarSource: resolvedCalendarSource || null,
       generatorPolicyVersion: TRAINING_PLAN_GENERATOR_POLICY_VERSION,
       generationVersionPins,
@@ -733,10 +828,14 @@ export async function generateTrainingPlanForUser(
     raceDate: raceDateForLint,
     isRaceSpecific: isRaceSpecificForLint,
     goalMode: normalizedGoalMode,
+    trainingPlanSpec: trainingPlanSpec ?? undefined,
   };
 
   const finalizedPersistenceInput = finalizeGeneratedTrainingPlanForPersistence(persistenceInput);
-  const preflightLint = lintGeneratedTrainingPlanPreflight(finalizedPersistenceInput);
+  const basePreflightLint = lintGeneratedTrainingPlanPreflight(finalizedPersistenceInput);
+  const preflightLint = trainingQuality
+    ? mergeTrainingQualityIntoPlanLint(basePreflightLint, trainingQuality.validation)
+    : basePreflightLint;
   if (previewOnly) {
     return {
       status: 'preview',
@@ -1317,6 +1416,18 @@ function applyTrainingSafetyOutputToGeneratedPlan(
   };
 }
 
+function generatedPlanContainsSafetyPause(planData: any): boolean {
+  return Array.isArray(planData?.weeks)
+    && planData.weeks.some((week: any) =>
+      Array.isArray(week?.sessions)
+      && week.sessions.some((session: any) =>
+        String(session?.sessionType || '').toLowerCase() === 'rest'
+        && String(session?.title || '').toLowerCase() === 'safety pause'
+        && String(session?.scheduleState || '').toLowerCase() === 'deferred'
+      )
+    );
+}
+
 function normalizeSafetyDecisionReasons(
   safetyOutput: WireHealthSignalOutput,
   affectedDate: string,
@@ -1390,6 +1501,80 @@ function dedupeDecisionReasons(reasons: TrainingDecisionReason[]): TrainingDecis
     output.push(reason);
   }
   return output;
+}
+
+const TRAINING_PLAN_GENERATION_DAY_INDEX: Record<string, number> = {
+  monday: 0,
+  tuesday: 1,
+  wednesday: 2,
+  thursday: 3,
+  friday: 4,
+  saturday: 5,
+  sunday: 6,
+};
+
+function buildGeneratedEnduranceSchedule(
+  planData: Record<string, any>,
+  startDate: string,
+  now: Date,
+): EnduranceKeyDay[] {
+  const schedule: EnduranceKeyDay[] = [];
+  const zone = config.app.timezone || 'Europe/Lisbon';
+  for (const week of Array.isArray(planData.weeks) ? planData.weeks : []) {
+    const weekNumber = typeof week?.weekNumber === 'number' ? week.weekNumber : 1;
+    for (const session of Array.isArray(week?.sessions) ? week.sessions : []) {
+      const keyDay = enduranceKeyDayTypeForSession(session);
+      if (!keyDay) continue;
+      const dayIndex = TRAINING_PLAN_GENERATION_DAY_INDEX[String(session?.dayOfWeek || '').trim().toLowerCase()];
+      if (dayIndex === undefined) continue;
+      const slotDate = resolvePlanSlotDate({
+        weekNumber,
+        dayIndex,
+        planStartDate: startDate,
+        now,
+      });
+      if (slotDate.kind !== 'usable') continue;
+      const date = DateTime.fromJSDate(slotDate.sessionDate, { zone }).toISODate();
+      if (!date) continue;
+      schedule.push({
+        date,
+        type: keyDay.type,
+        priority: keyDay.priority,
+      });
+    }
+  }
+  return dedupeEnduranceSchedule(schedule);
+}
+
+function enduranceKeyDayTypeForSession(session: Record<string, any>): Pick<EnduranceKeyDay, 'type' | 'priority'> | null {
+  const tokens = [
+    session?.sessionType,
+    session?.sessionRole,
+    session?.title,
+  ].map((value) => String(value || '').toLowerCase()).join(' ');
+  if (/\b(long[_ -]?run|long run)\b/.test(tokens)) return { type: 'long_run', priority: 'protected' };
+  if (/\brace\b/.test(tokens)) return { type: 'race', priority: 'protected' };
+  if (/\b(interval|threshold)\b/.test(tokens)) return { type: 'intervals', priority: 'high' };
+  if (/\btempo\b/.test(tokens)) return { type: 'tempo', priority: 'high' };
+  if (/\b(long[_ -]?ride|ride|bike|cycling)\b/.test(tokens) && /\b(long|key)\b/.test(tokens)) {
+    return { type: 'ride', priority: 'protected' };
+  }
+  if (/\bswim\b/.test(tokens) && /\b(long|key)\b/.test(tokens)) {
+    return { type: 'swim', priority: 'high' };
+  }
+  return null;
+}
+
+function dedupeEnduranceSchedule(schedule: EnduranceKeyDay[]): EnduranceKeyDay[] {
+  const seen = new Set<string>();
+  const deduped: EnduranceKeyDay[] = [];
+  for (const day of schedule) {
+    const key = `${day.date}:${day.type}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    deduped.push(day);
+  }
+  return deduped;
 }
 
 function buildPlanWarnings(input: {

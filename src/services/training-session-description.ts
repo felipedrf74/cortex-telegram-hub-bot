@@ -85,9 +85,28 @@ export interface SessionInput {
       pickedBecause?: string[];
     };
     progressionSummary?: string;
-    progressionReason?: string;
-    progressionState?: string;
-    progressionConfidence?: string;
+  progressionReason?: string;
+  progressionState?: string;
+  progressionConfidence?: string;
+  }>;
+  splitCode?: string;
+  splitSlot?: string;
+  focus?: string;
+  primaryMuscles?: string[];
+  secondaryMuscles?: string[];
+  movementPatterns?: string[];
+  sections?: Array<{
+    type?: string;
+    exercises?: Array<{
+      name?: string;
+      sets?: number;
+      reps?: string | number;
+      rir?: number;
+      rpe?: string | number;
+      restSec?: number;
+      rest_sec?: number;
+      note?: string;
+    }>;
   }>;
   /** Day name as canonicalized by the planner ("Monday" etc). */
   dayOfWeek: string;
@@ -147,6 +166,17 @@ export interface SessionSections {
     value: string;
     reasonCode?: string;
   }>;
+  blocks?: Array<{
+    id: string;
+    type: string;
+    title?: string;
+    subtitle?: string;
+    summary?: string;
+    items?: string[];
+    metrics?: Array<{ label: string; value: string; note?: string }>;
+    warnings?: string[];
+    notes?: string;
+  }>;
   /** Numbered gym exercise list (only present for strength sessions). */
   exercises?: Array<{
     index: number;
@@ -197,6 +227,7 @@ function buildSections(input: SessionDescriptionInput): SessionSections {
       phase: undefined,
     },
     badge: buildBadge(input),
+    blocks: buildDynamicBlocks(input.session),
     weeklyProgression: undefined,
     execution: buildExecution(input, sport),
     coachInsights: buildCoachInsights(input),
@@ -217,6 +248,7 @@ function buildMinimalFallback(input: SessionDescriptionInput): SessionSections {
       eyebrow: input.session.dayOfWeek.toUpperCase(),
       title: input.session.title || 'Training session',
     },
+    blocks: [],
     totalMinutesText: buildTotalMinutesText(input.session.durationMinutes),
   };
 }
@@ -493,6 +525,73 @@ function formatRest(seconds: number): string {
   return `${seconds}s`;
 }
 
+// ── Dynamic split / structure blocks ───────────────────────────────
+
+function buildDynamicBlocks(session: SessionInput): SessionSections['blocks'] {
+  const blocks: NonNullable<SessionSections['blocks']> = [];
+  const splitCode = String(session.splitCode || '').trim();
+  const splitSlot = String(session.splitSlot || '').trim();
+  if (splitCode && splitSlot) {
+    blocks.push({
+      id: `split-${splitCode}-${splitSlot}`,
+      type: 'why_this_session',
+      title: 'WHY THIS SESSION',
+      subtitle: `${splitCode} slot ${splitSlot}`,
+      summary: session.focus || 'Coach-selected strength split slot.',
+      items: [
+        listLine('Primary muscles', session.primaryMuscles),
+        listLine('Secondary muscles', session.secondaryMuscles),
+        listLine('Movement patterns', session.movementPatterns),
+      ].filter((item): item is string => Boolean(item)),
+      metrics: [
+        { label: 'Split', value: `${splitCode} ${splitSlot}` },
+        ...(session.sections?.length ? [{ label: 'Sections', value: String(session.sections.length) }] : []),
+      ],
+      warnings: [],
+      notes: 'This structure is deterministic and validated before the plan is saved.',
+    });
+  }
+
+  const sectionLines = (session.sections ?? [])
+    .map((section) => {
+      const type = String(section.type || '').replace(/_/g, ' ').toUpperCase();
+      const exercises = (section.exercises ?? [])
+        .map((exercise) => {
+          const setRep = exercise.sets && exercise.reps ? `${exercise.sets}×${exercise.reps}` : exercise.reps;
+          const effort = exercise.rir != null ? `RIR ${exercise.rir}` : exercise.rpe != null ? `RPE ${exercise.rpe}` : null;
+          const rest = exercise.restSec ?? exercise.rest_sec;
+          return [
+            exercise.name,
+            setRep,
+            effort,
+            rest ? `${rest}s rest` : null,
+          ].filter(Boolean).join(' · ');
+        })
+        .filter(Boolean);
+      return exercises.length > 0 ? `${type}: ${exercises.join('; ')}` : null;
+    })
+    .filter((line): line is string => Boolean(line));
+
+  if (sectionLines.length > 0) {
+    blocks.push({
+      id: 'structured-prescription',
+      type: 'session_prescription',
+      title: 'SESSION STRUCTURE',
+      summary: 'Warm-up, main work, accessories, core, and cooldown are preserved as explicit sections.',
+      items: sectionLines,
+      metrics: [],
+      warnings: [],
+    });
+  }
+
+  return blocks;
+}
+
+function listLine(label: string, values: string[] | undefined): string | null {
+  const cleaned = (values ?? []).map((value) => String(value || '').replace(/_/g, ' ').trim()).filter(Boolean);
+  return cleaned.length > 0 ? `${label}: ${cleaned.join(', ')}` : null;
+}
+
 // ── Warm-up / cool-down ────────────────────────────────────────────
 
 function buildWarmup(sessionType: string, sport: SportFamily): SessionSections['warmup'] {
@@ -680,6 +779,25 @@ export function renderSectionsAsText(sections: SessionSections): string {
   // Badge
   lines.push(`${sections.badge.emoji} ${sections.badge.eyebrow} — ${sections.badge.title}`);
   lines.push('');
+
+  if (sections.blocks && sections.blocks.length > 0) {
+    for (const block of sections.blocks) {
+      lines.push(`${(block.title || block.type || 'DETAILS').toUpperCase()}:`);
+      if (block.subtitle) lines.push(`• ${block.subtitle}`);
+      if (block.summary) lines.push(`• ${block.summary}`);
+      for (const metric of block.metrics ?? []) {
+        lines.push(`• ${metric.label}: ${metric.value}${metric.note ? ` — ${metric.note}` : ''}`);
+      }
+      for (const item of block.items ?? []) {
+        lines.push(`• ${item}`);
+      }
+      for (const warning of block.warnings ?? []) {
+        lines.push(`• ${warning}`);
+      }
+      if (block.notes) lines.push(`• ${block.notes}`);
+      lines.push('');
+    }
+  }
 
   // Weekly progression
   if (sections.weeklyProgression && sections.weeklyProgression.length > 0) {

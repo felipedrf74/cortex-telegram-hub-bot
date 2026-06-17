@@ -2,14 +2,14 @@
 
 Status: canonical
 Owner: backend architecture lead
-Last verified: 2026-05-04
+Last verified: 2026-06-16
 Update policy: update when REST contract conventions, route shape, or
 migration discipline changes. The risk-based gate matrix at
-`engine/docs/release/risk-based-release-gate-matrix.md` is the runtime
+`docs/release/risk-based-release-gate-matrix.md` is the runtime
 companion.
 
 This standard is the single source of truth for how Nexus Hub's TypeScript
-backend (`engine/src/`) exposes routes, validates input, shapes responses,
+backend (`src/`) exposes routes, validates input, shapes responses,
 manages migrations, and writes service-layer code. It is grounded in the
 OWASP REST/API guidance, OpenAPI conventions, and the Twelve-Factor App
 principles, then translated into Nexus-specific rules.
@@ -180,7 +180,7 @@ no-side-effect assertion is the explicit unit-level form.
 2. **Every migration has an inverse.** Either an explicit
    `migrations/down/082_*.sql` or, where down-migration is impossible,
    a documented "irreversible" note alongside the migration file
-   (the canonical home is `engine/docs/release/migration-irreversible`,
+   (the canonical home is `docs/release/migration-irreversible`,
    create when the first irreversible migration ships).
 3. **A migration that drops a column requires a feature-flag intermediate
    step.** Step 1: stop reading the column (deploy). Step 2: stop writing
@@ -241,17 +241,17 @@ provider credentials. The fixture mode:
 
 ## 13. Smoke evidence (must, for production deploys)
 
-Per `engine/docs/release/risk-based-release-gate-matrix.md`, every
+Per `docs/release/risk-based-release-gate-matrix.md`, every
 backend production deploy that touches an app-facing surface produces a
 JSON smoke evidence row under
-`engine/docs/release/smoke-evidence/staging-smoke-<sha>-<timestamp>.json`.
+`docs/release/smoke-evidence/staging-smoke-<sha>-<timestamp>.json`.
 The evidence file:
 
 - Lists the staging URL, the SHA tested, every check name and result.
 - Is referenced from `docs/release/CURRENT_RELEASE_STATE.md` (the
   workspace-level release truth).
 - Is pruned on a 60-day retention window with the 5 newest per smokeName
-  always preserved (`engine/scripts/smoke-evidence-prune.sh`).
+  always preserved (`scripts/smoke-evidence-prune.sh`).
 
 A deploy claim without an evidence file is **rejected** by the release-gate
 review.

@@ -2,7 +2,7 @@
 
 Status: canonical
 Owner: backend architecture lead (Felipe)
-Last verified: 2026-05-04
+Last verified: 2026-06-16
 Update policy: update when the multi-skill mesh topology or cross-skill orchestration contract changes.
 
 ## Status
@@ -10,8 +10,11 @@ Update policy: update when the multi-skill mesh topology or cross-skill orchestr
 This mesh layer is feature-flagged behind `NEXUS_MULTISKILL_MESH=on`.
 
 - When the flag is `off`, `/api/v1/plan/*` returns `404`.
-- The current iOS app does not consume these endpoints yet.
-- That makes the Stage 2 plan API `contract-ready for iOS`, not user-visible today.
+- Local full-product runners enable the flag for shared orchestration.
+- Treat iOS consumption as release-specific: verify the native workspace before
+  claiming a screen depends on these endpoints.
+- That makes the Stage 2 plan API a backend contract that is ready for native
+  clients, but not by itself proof of a shipped iOS surface.
 
 ## Product-Truth Guardrails
 

@@ -2,10 +2,10 @@
 
 Status: canonical
 Owner: backend runtime + on-call lead
-Last verified: 2026-05-04
+Last verified: 2026-06-16
 Update policy: update when health-check shape changes, when alert
 producers change, when log/metric semantics change. The runbook companion
-at `engine/docs/OBSERVABILITY-ONCALL.md` is preserved for alert lifecycle
+at `docs/OBSERVABILITY-ONCALL.md` is preserved for alert lifecycle
 detail.
 
 This standard is the single source of truth for how Nexus Hub's backend
@@ -121,7 +121,7 @@ pino-based dashboards.
 ## 7. Alert lifecycle (must — see OBSERVABILITY-ONCALL.md)
 
 The complete alert lifecycle (open → delivered → acknowledged → resolved
-→ recovered) is documented in `engine/docs/OBSERVABILITY-ONCALL.md`.
+→ recovered) is documented in `docs/OBSERVABILITY-ONCALL.md`.
 The standard-level rules are:
 
 1. **Every alert has a runbook URL.** The default is the
@@ -143,7 +143,7 @@ The standard-level rules are:
 
 Production rollback is **always available**. The contract:
 
-1. **`engine/scripts/rollback.sh` is tested in dry-run mode** before
+1. **`scripts/rollback.sh` is tested in dry-run mode** before
    each deploy. The `--dry-run` flag prints the mutation surface
    without applying.
 2. **Last-known-good production tag**: every deploy creates
@@ -167,7 +167,7 @@ When production is degraded:
    alert payload is sanitized too aggressively.
 4. **`pm2 logs content-engine --lines 200`** if the content-engine
    subprocess is the suspect.
-5. **`engine/scripts/rollback.sh --dry-run` before applying.** Confirm
+5. **`scripts/rollback.sh --dry-run` before applying.** Confirm
    the mutation surface matches the operator's intent.
 6. **Update `docs/release/CURRENT_RELEASE_STATE.md`** with the incident
    timeline within 24 h.
@@ -246,7 +246,7 @@ operator confirms manually if the auto-gate is bypassed.
 
 ### Per-deploy
 
-- [ ] Staging smoke 17/17 green.
+- [ ] Required staging smoke suite green; check count is release-dependent.
 - [ ] Production health-check green.
 - [ ] PM2 nexus-hub + content-engine online.
 - [ ] Smoke evidence JSON written.

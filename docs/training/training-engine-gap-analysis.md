@@ -1,9 +1,30 @@
 # Training Engine — Gap Analysis
 
-Status: **Phase 0 audit COMPLETE. Root causes confirmed. Awaiting check-in before Phase 1 rewrite.**
+Status: **Phase 1 implementation in progress. Training quality gate, split metadata, rolling Week 1, calendar sync-state normalization, and iOS truth-contract fields were added on 2026-06-16.**
 Audit date: 2026-04-27
 Anchor commit: `96c61fb` (= `origin/main` = `4.14.97`)
 Reference: see `training-engine-orchestration-overhaul-spec.md` for architectural target.
+
+---
+
+## 2026-06-16 implementation update
+
+The engine now has a deterministic quality-gate layer ahead of persistence for gym strength and hypertrophy plans:
+
+- `TrainingPlanSpec` normalizes route inputs into a rolling seven-day-from-start contract with goal, requested weekly strength days, experience, equipment, restrictions, recovery, endurance, progression model, and calendar preference.
+- The split-template library owns AB/ABC/ABCD/ABCDE/ABCDEF metadata and user-facing titles. The 5-day default is Push Hypertrophy A, Lower Quad B, Pull Hypertrophy C, Lower Posterior Chain D, and Upper Accessories E.
+- The training taxonomy defines canonical muscle groups, movement patterns, curated exercise definitions, direct set contribution, weekly volume targets, and universal fallback exercise names.
+- `TrainingPlanQualityGate` enriches sessions with split metadata, structured sections, prescriptions, muscle/movement metadata, deterministic repair actions, and validation findings before plan persistence.
+- The quality gate now enforces strength duration coherence with the shared session-coherence constants: sparse sessions are rebuilt or resized truthfully, overstuffed sessions are trimmed or blocked, and each split slot must prescribe its required movement patterns.
+- Weekly direct-set volume and major-muscle frequency now participate in the hard quality gate. Targets adapt by goal, experience, and requested days per week; compound sets count for every primary muscle instead of being diluted across muscles.
+- Exercise selection now uses movement-pattern candidate tiers and blocks unresolved conflicts with equipment, excluded exercises, or injury/limitation notes.
+- Spec-backed calendar writes now use only the spec/calendar preference provider. When the spec says `calendarPreference.provider = "none"`, initial persistence does not fall through to generic auto-provider writes.
+- Progression metadata is attached at the spec, plan-quality, session, and exercise-note levels so multi-week plans have deterministic overload/deload guidance instead of isolated single-week workouts.
+- Week 1 strength allocation now uses a rolling seven-day window from `startDate` instead of the remaining calendar week.
+- Calendar sync now has a normalized state model, bounded sync operations, and durable ownership metadata (`calendar_id`, `last_verified_at`, `sync_version`). Backend read models prefer verified ownership/sync state before stale presentation state, so linked fresh sessions should not render as unscheduled.
+- iOS Training Today can render structured prescription details, Plan can render `whyThisPlan`, verified links no longer fall through to `Needs slot`, and the week strip is constrained to horizontal interaction.
+
+Regression tests were added for the new quality gate and the rolling Week 1 day set, but full backend/iOS test execution is intentionally pending explicit authorization.
 
 ---
 
@@ -11,7 +32,7 @@ Reference: see `training-engine-orchestration-overhaul-spec.md` for architectura
 
 The three observed regressions trace to **three structural gaps in the engine**, not bugs:
 
-1. **No session coherence validator exists.** The duration is window-derived first, the exercise count is capped from duration second, but no function ever checks that the prescribed exercise list at realistic set/rest times actually fills the claimed duration. A 60-min session with 5 exercises × 3 sets × 2 min + 90s rest is ~87 min of real work — systematically over-prescribed. The 48-min "Dead Bug 2×10–15 only" session is the inverse: under-prescribed content for a duration claim that wasn't sanity-checked.
+1. **No session coherence validator exists in the historical baseline.** The duration is window-derived first, the exercise count is capped from duration second, but no function ever checks that the prescribed exercise list at realistic set/rest times actually fills the claimed duration. A 60-min session with 5 exercises × 3 sets × 2 min + 90s rest is ~87 min of real work — systematically over-prescribed. The 48-min "Dead Bug 2×10–15 only" session is the inverse: under-prescribed content for a duration claim that wasn't sanity-checked. As of the 2026-06-16 quality-gate slice, newly generated gym plans are repaired or blocked for this before persistence.
 
 2. **No multi-week variant rotation exists.** Within a single week, `strengthVariantFor(profile, targetSessions, index)` rotates by slot index (0→Lower A, 1→Upper A, 2→Lower B, 3→Upper B). But `index` resets from 0 at every week's generation. Week 1 day 1 = Week 5 day 1 = Week 12 day 1. Compounding this: `enforceRequestedTrainingPlanVolume → strengthSupportVariants()` injects HARDCODED EXERCISE NAME STRINGS (not IDs) for "missing" sessions, bypassing the substitution graph and the beginner-safe layer. Three "identical" consecutive strength days is the visible signature.
 

@@ -26,6 +26,20 @@
 - <Self-QA pass / hostile-QA verdict (PASS / PASS WITH MINOR ISSUES / PARTIAL / FAIL / NOT VERIFIED).>
 - <Link to the QA evidence doc or the prompt sent to the QA reviewer.>
 
+## Verifiable Reward Summary
+
+- **Verdict**: <PASS / WARN / FAIL / MANUAL_REQUIRED / NOT_APPLICABLE>
+- **Score**: <0-100 or "not scored">
+- **Area**: <backend / ios / docs / release / research / auto>
+- **Changed-area classifier**: <command + short result>
+- **Hard failures**: <none / list>
+- **Mandatory checks**: <pass/fail/skipped summary>
+- **Skipped checks and reasons**: <acceptable skip / warning / manual review required / hard failure>
+- **Evidence commands**: <commands actually run or evidence inspected>
+- **Evidence artifacts**: <paths to tracked evidence; raw reward JSON stays in `.local/reward-runs/`>
+- **Export eligibility**: <eligible / ineligible + reason>
+- **Prompt/process improvement**: <one durable improvement or "none">
+
 ## Prod-promote authorization
 
 - **Authorized**: <yes / no / explicit-string-from-user>

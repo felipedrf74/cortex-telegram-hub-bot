@@ -2,15 +2,15 @@
 
 Status: canonical
 Owner: QA + release lead
-Last verified: 2026-05-04
+Last verified: 2026-06-16
 Update policy: update when test categories, evidence requirements, or
 risk-based test selection rules change. The risk-based gate matrix at
-`engine/docs/release/risk-based-release-gate-matrix.md` is the runtime
+`docs/release/risk-based-release-gate-matrix.md` is the runtime
 companion that maps changed-area to test selection.
 
 This standard defines what "tested" means for Nexus Hub. It is grounded in
 the no-launch-only-validation rule that closed the v4.14.118 incident,
-the changed-area classifier at `engine/scripts/changed-area-classifier.sh`,
+the changed-area classifier at `scripts/changed-area-classifier.sh`,
 and the Apple/OWASP guidance referenced in the iOS architecture and
 security standards.
 
@@ -18,12 +18,12 @@ security standards.
 
 | Category | Where | What it proves |
 |---|---|---|
-| **Unit** | `engine/__tests__/services/`, `engine/__tests__/utils/`, `Nexus HubTests/` | Pure functions, decoders, derivations, view-model logic |
-| **Integration** | `engine/__tests__/api/`, `engine/__tests__/portal/` | Route + service + repository wired together with `:memory:` SQLite |
-| **Security** | `engine/__tests__/security/`, `engine/__tests__/scope/` | Tenant/identity isolation, prompt cleanliness, audit log emission |
-| **Contract** | `Nexus HubTests/<DTO>DecoderTests.swift`, `engine/__tests__/api/<route>.test.ts` | DTO shape, error envelope shape, idempotency semantics |
-| **Local smoke** | `engine/scripts/*-smoke.{sh,ts}`, `npm run smoke:*` | Multi-route sequence against a local backend |
-| **Staging smoke** | `engine/scripts/staging-smoke.sh` | 17 production-shape checks against staging |
+| **Unit** | `__tests__/services/`, `__tests__/utils/`, iOS `*Tests/` | Pure functions, decoders, derivations, view-model logic |
+| **Integration** | `__tests__/api/`, `__tests__/portal/` | Route + service + repository wired together with `:memory:` SQLite |
+| **Security** | `__tests__/security/`, `__tests__/scope/` | Tenant/identity isolation, prompt cleanliness, audit log emission |
+| **Contract** | iOS `<DTO>DecoderTests.swift`, `__tests__/api/<route>.test.ts` | DTO shape, error envelope shape, idempotency semantics |
+| **Local smoke** | `scripts/*-smoke.{sh,ts}`, `npm run smoke:*` | Multi-route sequence against a local backend |
+| **Staging smoke** | `scripts/staging-smoke.sh` plus domain smokes | Production-shape checks against staging; count is release-dependent |
 | **iOS XCUITest** | `Nexus HubUITests/` | SwiftUI workflow on simulator/device |
 | **iOS interaction (manual)** | QA report walk-through | Physical-device tap/scroll/navigation responsiveness |
 | **Production health** | `deploy.sh` postdeploy block | `/api/health`, `/api/snapshot`, PM2 state |
@@ -36,8 +36,9 @@ Every test must:
 1. **Assert behavior, not shape only.** A test that only checks
    `expect(response.body).toBeDefined()` is non-evidence.
 2. **Use frozen, named fixtures.** Inline `{ foo: 'bar' }` literals are
-   acceptable for single-case tests; reused fixtures live in
-   `engine/__tests__/fixtures/` and `Nexus HubTests/Fixtures/`.
+   acceptable for single-case tests; reused backend fixtures live in
+   `__tests__/fixtures/`; iOS fixtures live in the iOS repo's test fixture
+   folders.
 3. **Mock all external APIs.** Tests that hit real network fail CI by
    policy. Use the SDK wrapper mocks (`vi.mock('@google/...', ...)`).
 4. **Use `:memory:` SQLite for backend integration tests.** The
@@ -59,7 +60,8 @@ stale undefined exports to subsequent tests.
 1. **Every `vi.mock(modulePath, factory)` factory returns ALL exports**
    of the mocked module. Use `vi.importActual` to get the real exports
    and only override the ones the test needs.
-2. **Run `engine/scripts/vi-mock-completeness-lint.mjs` before merge.**
+2. **Run `scripts/vi-mock-completeness-lint.mjs` before merge when the diff
+   changes mocked module boundaries.**
    Strict mode runs nightly; advisory mode runs per-PR.
 3. **Top offenders today**: `logger.ts` (206 partial mocks across the
    suite), `database.ts` (161), `user-service.ts` (46). These are
@@ -68,14 +70,14 @@ stale undefined exports to subsequent tests.
 
 ## 4. Risk-based test selection (must)
 
-`engine/scripts/changed-area-classifier.sh` is the single source of
+`scripts/changed-area-classifier.sh` is the single source of
 truth for "what tests must run on this diff". It outputs JSON or
 markdown, used by:
 
 - `.husky/pre-commit` (focused vs skip)
 - `.husky/pre-push` (focused on feature, full on RC)
 - `.github/workflows/ci.yml` (parallel matrix dispatch)
-- `engine/scripts/promote-to-prod.sh` (smoke-evidence reuse window)
+- `scripts/promote-to-prod.sh` (smoke-evidence reuse window)
 
 The classifier maps changed files to:
 
@@ -130,17 +132,17 @@ Tests required:
 The `Nexus HubTests/AuthManagerFixtureLeakTests.swift` is the
 reference test for fixture-scoped account isolation.
 
-## 7. Calendar lifecycle (must, when calendar code touched)
+## 7. Calendar and agenda lifecycle (must, when calendar, Training, or Secretary scheduling code is touched)
 
 Calendar bugs are uniquely insidious because state lives in two systems
 (SQLite + Google/Outlook) and a stale cross-reference looks fine
-locally. Tests required when calendar code is touched:
+locally. Tests required when calendar or agenda code is touched:
 
-1. **Plan create → events created**, all events owned by the plan
+1. **Training plan create → events created**, all events owned by the plan
    (`training_agenda_event_ownership` rows).
-2. **Plan cancel → events deleted** (or marked `'orphaned'` with
+2. **Training plan cancel → events deleted** (or marked `'orphaned'` with
    reason).
-3. **Plan re-create with same plan_id but new plan_version** — new
+3. **Training plan re-create with same plan_id but new plan_version** — new
    events are created; old events are linked to the previous plan
    version, not the new one.
 4. **Provider-side delete reconciliation**: a calendar event deleted
@@ -148,11 +150,26 @@ locally. Tests required when calendar code is touched:
 5. **Stale calendar-link detection**: a session marked `synced` but
    missing the provider event surfaces as `unsynced` in the iOS read
    model.
+6. **Secretary scheduling intent persistence**: `submitSecretarySchedulingIntent`
+   creates or reuses exactly one `secretary_agenda_items` row for the
+   `(ownerUserId, tenantId, sourceSkill, sourceIntentId)` scope.
+7. **Secretary provider sync lifecycle**: provider create/update/retry/delete
+   uses exact provider event IDs, cleans duplicates, repairs missing provider
+   events, and leaves `provider_sync_state` recoverable on failure.
+8. **Cross-skill feedback**: Training, Cooking, Finance, and Content requests
+   that route through Secretary retain source attribution and tenant scope.
 
-The reference test file: `__tests__/api/training-plan-calendar-sync.test.ts`
-(23 cases). Provider-live testing requires dedicated non-prod
-Google/Outlook OAuth credentials; until provisioned, deterministic
-fixture coverage substitutes.
+Reference test files include:
+
+- `__tests__/api/training-plan-calendar-sync.test.ts`
+- `__tests__/services/secretary-scheduling-arbitrator.test.ts`
+- `__tests__/services/secretary-agenda-provider-sync.test.ts`
+- `__tests__/services/scheduler-secretary-agenda-sync.test.ts`
+
+Provider-live testing requires dedicated non-prod Google/Outlook OAuth
+credentials and explicit staging write gates. Until provisioned,
+deterministic fixture/no-write coverage substitutes, and live-provider proof
+must be reported as blocked rather than implied.
 
 ## 8. Provider fallback (must, when routing code touched)
 
@@ -189,6 +206,10 @@ wrapper changes:
 3. **Migration is idempotent** if it can re-run during deploy retries.
 4. **Down-migration applies cleanly** for any reversible migration.
 5. **Migration rehearsal job runs nightly.**
+6. **Partial-schema replay is tested for additive migrations that may have
+   been self-healed at runtime.** If a migration adds columns later referenced
+   defensively by startup code or tests, include fixtures for "column already
+   exists" and "previous migration applied only" cases.
 
 ## 11. iOS unit / contract tests (must, when iOS code touched)
 
@@ -220,21 +241,31 @@ that pattern.
 ## 13. Smoke matrix
 
 The closed-beta smoke matrix is the umbrella that aggregates per-domain
-smokes. Today (`engine/scripts/closed-beta-smoke.sh`) it includes:
+smokes. Today (`scripts/closed-beta-smoke.sh`) it includes:
 
 - Identity scan strict
-- Generic 17-check staging smoke
+- Generic staging smoke (check count is release-dependent; recent releases
+  have used 19, 22, and 26 checks)
 - Training cross-skill staging smoke
 - Training calendar staging smoke
+- Training full-flow staging smoke
 - Cooking portal browser smoke
 - Content full Nexus local smoke
+- Decision Center notification smoke where the changed area touches decision
+  delivery, notification count, or iOS decision surfaces
+- Secretary agenda/provider smoke when the changed area touches
+  `secretary-scheduling-arbitrator`, `secretary-agenda-provider-sync`,
+  scheduler agenda sync, calendar provider adapters, or cross-skill scheduling
 
 Adding a new domain smoke requires:
 
-1. A wrapper through `engine/scripts/with-smoke-evidence.sh` so JSON
+1. A wrapper through `scripts/with-smoke-evidence.sh` so JSON
    evidence is written.
 2. A line in `closed-beta-smoke.sh`.
 3. A line in the classifier output for the relevant changed area.
+4. A documented no-live-provider fallback when the smoke can run safely with
+   fixture adapters, plus a separate live/sandbox lane gated by explicit
+   staging env and cleanup identities.
 
 ## 14. Performance regression (should)
 
@@ -304,6 +335,8 @@ A "tests passed" claim without this block is not actionable evidence.
 - [ ] Two-user matrix added for new scoped surfaces.
 - [ ] Calendar/provider/migration tests added when those areas
       touched.
+- [ ] Secretary agenda/Decision Center lifecycle tests added when those
+      surfaces are touched.
 - [ ] iOS DTO test added for new DTO fields.
 - [ ] iOS XCUITest added for new tappable workflows.
 - [ ] Evidence block present in PR description or QA report.

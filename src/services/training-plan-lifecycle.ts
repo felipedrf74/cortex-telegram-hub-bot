@@ -58,6 +58,9 @@ export interface AgendaEventOwnership {
   user_id: number;
   calendar_event_id: string;
   calendar_source: string;
+  calendar_id: string;
+  last_verified_at: string | null;
+  sync_version: string;
   session_identity_key: string | null;
   session_shape_hash: string | null;
   status: AgendaOwnershipStatus;
@@ -74,6 +77,9 @@ export interface RecordCalendarOwnershipInput {
   userId: number;
   eventId: string;
   source: string;
+  calendarId?: string | null;
+  lastVerifiedAt?: string | null;
+  syncVersion?: string | null;
   sessionIdentityKey?: string | null;
   sessionShapeHash?: string | null;
 }
@@ -109,6 +115,10 @@ export function recordCalendarOwnership(
 ): RecordCalendarOwnershipResult {
   const db = getDb();
   const tenantId = requireTenantIdParam(input.tenantId, 'recordCalendarOwnership');
+  const calendarId = String(input.calendarId || 'primary').trim() || 'primary';
+  const lastVerifiedAt = input.lastVerifiedAt ?? new Date().toISOString();
+  const syncVersion = String(input.syncVersion || 'training_calendar_sync_v1').trim()
+    || 'training_calendar_sync_v1';
 
   const existing = db.prepare(`
     SELECT id FROM training_agenda_event_ownership
@@ -130,8 +140,9 @@ export function recordCalendarOwnership(
     const result = db.prepare(`
       INSERT INTO training_agenda_event_ownership (
         plan_id, plan_version, session_id, tenant_id, user_id,
-        calendar_event_id, calendar_source, session_identity_key, session_shape_hash, status
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active')
+        calendar_event_id, calendar_source, calendar_id, last_verified_at, sync_version,
+        session_identity_key, session_shape_hash, status
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active')
     `).run(
       input.planId,
       input.planVersion,
@@ -140,6 +151,9 @@ export function recordCalendarOwnership(
       input.userId,
       input.eventId,
       input.source,
+      calendarId,
+      lastVerifiedAt,
+      syncVersion,
       input.sessionIdentityKey ?? null,
       input.sessionShapeHash ?? null,
     );

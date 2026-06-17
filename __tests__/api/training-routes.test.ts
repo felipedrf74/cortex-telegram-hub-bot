@@ -2160,10 +2160,13 @@ describe('Training API routes', () => {
 
     const gymCreateInput = mockCreateSession.mock.calls.find((call) => call[0]?.session_type === 'gym')?.[0];
     expect(gymCreateInput).toBeTruthy();
-    expect(JSON.parse(gymCreateInput.exercises_json)).toEqual([
-      expect.objectContaining({ name: 'DB Floor Press' }),
-      expect.objectContaining({ name: 'Goblet Squat' }),
-    ]);
+    expect(JSON.parse(gymCreateInput.exercises_json)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ name: 'DB Floor Press' }),
+        expect.objectContaining({ name: 'Goblet Squat' }),
+        expect.objectContaining({ name: 'Romanian Deadlift' }),
+      ]),
+    );
   });
 
   it('rejects impossible race dates before plan generation starts', async () => {
@@ -2570,7 +2573,7 @@ describe('Training API routes', () => {
     });
     expect(res.body.data.weeks[1].sessions[0]).toMatchObject({
       title: 'Long Run',
-      calendarSyncState: 'missing',
+      calendarSyncState: 'not_requested',
     });
     expect(mockBuildCoachKernelTrainingPlan).not.toHaveBeenCalled();
     expect(mockCreateEvent).not.toHaveBeenCalled();

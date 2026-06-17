@@ -36,7 +36,7 @@ describe('training-plan-volume-enforcement', () => {
     expect(sessions.filter((session) => session.sessionType !== 'gym').every((session) => session.preferredStartTime === '07:00')).toBe(true);
   });
 
-  it('keeps week one anchored to the remaining calendar week when the plan starts mid-week', () => {
+  it('treats week one as the remaining start week instead of wrapping into prior weekdays', () => {
     const result = enforceRequestedTrainingPlanVolume(
       { sport: 'hybrid', weeks: [{ weekNumber: 1, sessions: [] }] },
       {

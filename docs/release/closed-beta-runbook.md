@@ -2,13 +2,15 @@
 
 Status: canonical
 Owner: closed-beta release lead (Felipe)
-Last verified: 2026-05-04
+Last verified: 2026-06-16
 Update policy: update when closed-beta sign-up, cohort-management, or audit-evidence requirements change.
 
 Date opened: 2026-05-03
 Owner: Felipe Dominguez (sole on-call)
 Backup on-call: none configured (single-operator deployment)
 Active production version at runbook open: `4.14.125` (`f974cb6`)
+Current production truth: `docs/release/current-release-index.md` and
+`docs/release/CURRENT_RELEASE_STATE.md`
 
 ---
 

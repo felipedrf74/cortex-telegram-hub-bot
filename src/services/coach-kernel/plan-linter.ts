@@ -63,6 +63,15 @@ export type PlanLintRuleId =
   | 'race_date_must_be_future'
   | 'plan_duration_overshoots_race_date'
   | 'no_consecutive_identical_strength_sessions'
+  | 'requested_strength_session_count'
+  | 'split_integrity'
+  | 'no_generic_strength_titles'
+  | 'no_repeated_universal_fallback'
+  | 'strength_prescription_completeness'
+  | 'strength_duration_coherence'
+  | 'weekly_volume_targets'
+  | 'exercise_constraint_compatibility'
+  | 'progression_model_integrity'
   | 'plan_linter_exception'
   | 'week_one_has_active_training'
   | 'no_sessions_outside_plan_window'
@@ -199,6 +208,15 @@ const PLAN_LINT_COACH_RULE_MAP: Partial<Record<PlanLintRuleId, string>> = {
   race_date_must_be_future: 'endurance-periodization-by-goal-horizon',
   plan_duration_overshoots_race_date: 'endurance-periodization-by-goal-horizon',
   no_consecutive_identical_strength_sessions: 'strength-progressive-overload-with-deloads',
+  requested_strength_session_count: 'strength-progressive-overload-with-deloads',
+  split_integrity: 'strength-progressive-overload-with-deloads',
+  no_generic_strength_titles: 'coach-communication-no-raw-dumps',
+  no_repeated_universal_fallback: 'strength-progressive-overload-with-deloads',
+  strength_prescription_completeness: 'coach-communication-no-raw-dumps',
+  strength_duration_coherence: 'coach-communication-no-raw-dumps',
+  weekly_volume_targets: 'strength-progressive-overload-with-deloads',
+  exercise_constraint_compatibility: 'strength-progressive-overload-with-deloads',
+  progression_model_integrity: 'strength-progressive-overload-with-deloads',
   week_one_has_active_training: 'endurance-periodization-by-goal-horizon',
   no_sessions_outside_plan_window: 'endurance-periodization-by-goal-horizon',
   session_prescription_completeness: 'coach-communication-no-raw-dumps',
@@ -700,6 +718,24 @@ const SUGGESTED_FIXES: Record<PlanLintRuleId, string> = {
     'Shorten the generated plan duration or ask the user to choose a later race/start date.',
   no_consecutive_identical_strength_sessions:
     'Bump strength variant index by `weekIndex` (slice 4.B/4.C) before the next regenerate.',
+  requested_strength_session_count:
+    'Use the deterministic split template to create every requested strength slot before persistence.',
+  split_integrity:
+    'Attach splitCode, splitSlot, muscles, movement patterns, and structured sections to each strength session.',
+  no_generic_strength_titles:
+    'Replace catalog/support fallback titles with split-aware user-facing titles.',
+  no_repeated_universal_fallback:
+    'Replace repeated universal fallback movements with slot-specific alternatives.',
+  strength_prescription_completeness:
+    'Add sets, reps, RIR/RPE, rest, and notes for every strength exercise.',
+  strength_duration_coherence:
+    'Rebuild, trim, or truthfully resize strength work so prescribed sets and rests match the claimed duration.',
+  weekly_volume_targets:
+    'Adjust split slots and accessories so direct weekly sets and frequency stay inside the target ranges.',
+  exercise_constraint_compatibility:
+    'Select exercises that fit the user equipment, excluded exercises, and injury or limitation constraints.',
+  progression_model_integrity:
+    'Attach a deterministic progression model and week-level prescription adjustments before persistence.',
   plan_linter_exception:
     'Retry after the quality gate can complete; do not persist strict-preflight plans that could not be linted.',
   week_one_has_active_training:

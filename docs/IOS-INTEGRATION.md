@@ -2,13 +2,15 @@
 
 Status: canonical
 Owner: backend ↔ iOS contract lead (Felipe)
-Last verified: 2026-05-04
+Last verified: 2026-06-16
 Update policy: update when the backend ↔ iOS REST contract or skill-execution shape changes.
 
 ## Status
 
 These endpoints are available only when `NEXUS_MULTISKILL_MESH=on`.
-The current iOS app does not call them yet, so this is a backend contract for future integration.
+Local full-product runners enable this flag for shared orchestration. Treat
+native usage as release-specific: verify the iOS workspace before claiming a
+screen depends on these endpoints.
 
 ## Endpoints
 

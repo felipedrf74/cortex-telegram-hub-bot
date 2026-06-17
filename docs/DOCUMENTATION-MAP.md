@@ -2,7 +2,7 @@
 
 Status: canonical
 Owner: backend lead (Felipe)
-Last verified: 2026-05-04
+Last verified: 2026-06-16
 Update policy: update when a new docs/ subdirectory is added or canonical doc moves.
 
 ## Purpose
@@ -27,8 +27,12 @@ Explicitly excluded from doc-audit status:
 
 ## Canonical Live Docs
 - `/Users/felipedominguez/Desktop/Custom Connectors/Cortex/cortex-telegram-hub-bot/CLAUDE.md`
+- `/Users/felipedominguez/Desktop/Custom Connectors/Cortex/cortex-telegram-hub-bot/BRANCHING.md`
 - `/Users/felipedominguez/Desktop/Custom Connectors/Cortex/cortex-telegram-hub-bot/DEPLOY.md`
 - `/Users/felipedominguez/Desktop/Custom Connectors/Cortex/cortex-telegram-hub-bot/STAGING.md`
+- `/Users/felipedominguez/Desktop/Custom Connectors/Cortex/cortex-telegram-hub-bot/docs/release/current-release-index.md`
+- `/Users/felipedominguez/Desktop/Custom Connectors/Cortex/cortex-telegram-hub-bot/docs/release/CURRENT_RELEASE_STATE.md`
+- `/Users/felipedominguez/Desktop/Custom Connectors/Cortex/cortex-telegram-hub-bot/docs/engineering/ENGINEERING_STANDARDS_INDEX.md`
 - `/Users/felipedominguez/Desktop/Custom Connectors/Cortex/cortex-telegram-hub-bot/docs/IOS-INTEGRATION.md`
 - `/Users/felipedominguez/Desktop/Custom Connectors/Cortex/cortex-telegram-hub-bot/docs/MESH.md`
 - `/Users/felipedominguez/Desktop/Custom Connectors/Cortex/cortex-telegram-hub-bot/docs/SKILL_ARCHITECTURE.md`
@@ -43,7 +47,6 @@ Explicitly excluded from doc-audit status:
 - `/Users/felipedominguez/Desktop/Nexus Hub IOS/specs/27-CLAUDE-CODE-HANDOVER.md`
   - cross-workspace handover for current ways of working and rollout discipline
 - `/Users/felipedominguez/Desktop/Custom Connectors/Cortex/cortex-telegram-hub-bot/CHANGELOG.md`
-- `/Users/felipedominguez/Desktop/Custom Connectors/Cortex/cortex-telegram-hub-bot/BRANCHING.md`
 - `/Users/felipedominguez/Desktop/Custom Connectors/Cortex/cortex-telegram-hub-bot/prompts/*.md`
 - `/Users/felipedominguez/Desktop/Custom Connectors/Cortex/cortex-telegram-hub-bot/src/skills/*/prompts/system.md`
 - `/Users/felipedominguez/Desktop/Custom Connectors/Cortex/cortex-telegram-hub-bot/knowledge/skills/*.md`

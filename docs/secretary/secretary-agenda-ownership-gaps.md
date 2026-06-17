@@ -1,115 +1,123 @@
-# Secretary Agenda Ownership Gaps
+# Secretary Agenda Ownership Status And Gaps
 
-Audit date: 2026-04-29
-Scope: agenda ownership, scheduling intents, event identity, lifecycle states, stale cleanup, duplicate prevention, and iOS contract readiness.
+Status: current architecture memo
+Last reviewed: 2026-06-16
+Scope: agenda ownership, scheduling intents, event identity, lifecycle states, stale cleanup, duplicate prevention, provider smoke readiness, and iOS contract readiness.
 
 ## Summary
 
-The codebase has the right direction of travel: Training proved a durable ownership/audit pattern, iOS can decode rich Secretary agenda metadata, and migration `083_secretary_agenda_ledger.sql` defines a general `secretary_agenda_items` table with source intent, lifecycle state, provider sync state, cancellation, supersession, and decision metadata.
+The universal Secretary ledger is no longer schema-only. The backend now has a runtime scheduling layer over `secretary_agenda_items`:
 
-The gap is runtime authority. The general ledger is not wired into services or routes, so agenda ownership is still split by feature path:
-- Training owns Training calendar events through `training_agenda_event_ownership`.
-- Content owns content-topic task/calendar refs on `content_topics`.
-- Generic calendar events are just provider events.
-- Reminders are simple user-scoped rows.
-- Weekly/daily planning produces projections, not durable agenda lifecycle transitions.
+- `src/services/secretary-scheduling-arbitrator.ts` normalizes skill scheduling intents, selects slots, persists agenda lifecycle state, stores decision reasons, and emits source-skill feedback.
+- `src/services/secretary-agenda-provider-sync.ts` owns provider create/update/attach/recreate/delete, duplicate cleanup, read-back repair, and provider sync state transitions.
+- `src/services/scheduler.ts` invokes Secretary agenda provider sync for the scheduled lifecycle path.
+- `src/services/secretary-unified-calendar-provider-adapter.ts` adapts Secretary agenda items to Google/Outlook calendar providers.
+- `src/state/reminders.ts` now carries `tenant_id`, `timezone`, and `agenda_item_id` for agenda-linked reminders.
+
+The remaining gap is **universal authority**. Secretary-owned structured intents have a ledger and lifecycle, but not every Nexus-created calendar/reminder path is forced through that ledger yet. Generic user calendar routes and some tool-executor calendar mutations can still write provider events without a universal `secretary_agenda_items` row.
+
+Live Google/Outlook proof is also a gated release item. `src/tools/secretary-calendar-staging-smoke.ts` exists and covers live create/update/move/retry/duplicate cleanup/external-delete repair/supersede/cancel/cleanup, but it requires explicit staging-only env, live-write approval flags, staging OAuth identities, and cleanup verification before it can be claimed as passed.
 
 ## Existing Ownership Inventory
 
-| Store/model | What it owns today | Ownership fields | Gaps |
+| Store/model | What it owns today | Ownership fields | Current gaps |
 | --- | --- | --- | --- |
-| `training_agenda_event_ownership` | Training-created calendar events and cancellation/reconciliation audit. | `plan_id`, `plan_version`, `session_id`, `user_id`, `calendar_event_id`, `calendar_source`, `session_identity_key`, `session_shape_hash`, `status`. | Training-only; no tenant_id; lifecycle states are `active/deleted/orphaned`, not the full Secretary state model. |
-| `secretary_agenda_items` | Intended universal Secretary agenda ledger. | `agenda_item_id`, `source_intent_id`, `source_skill`, `owner_user_id`, `tenant_id`, `lifecycle_state`, `provider_sync_state`, provider event metadata, version, reasons, segments, cancellation/supersession fields. | Schema-only. No runtime writer/reader/repair service found. |
-| `content_topics` | Content scheduling artifacts. | `secretary_task_external_id`, task list fields, `calendar_event_id`, `calendar_source`, `secretary_sync_status`, `secretary_sync_error`. | Idempotent sync refs, but no universal agenda item ID, source intent ID, lifecycle state, provider sync lifecycle, or repair queue. |
-| `training_sessions` | Session-level provider link. | `calendar_event_id`, `calendar_source`, identity/shape hash fields. | Session rows can disappear on plan deletion; Training ownership table mitigates this only for Training. |
-| `reminders` | Basic reminders. | `user_id`, `message`, `remind_at`, `recurring`, `status`. | No tenant_id, source skill/entity, lifecycle reason, dedupe fingerprint, snooze/defer/escalation, linked agenda item, or follow-up model. |
-| Provider event DTOs | Google/Outlook events surfaced to iOS. | `id`, `title`, `start`, `end`, `source`, categories/color. | Generic calendar API does not join or emit universal agenda metadata. |
-| iOS `CalendarEvent` | Client rendering model. | Supports `agendaItemId`, `sourceIntentId`, `sourceSkill`, `lifecycleState`, `providerSyncState`, decision metadata, conflicts, alternatives, segments. | Backend generic calendar responses usually do not populate these fields. |
+| `secretary_agenda_items` | Runtime ledger for Secretary/cross-skill structured scheduling intents. | `agenda_item_id`, `source_intent_id`, `source_skill`, `owner_user_id`, `tenant_id`, lifecycle/provider sync state, provider event metadata, version, reasons, segments, cancellation/supersession fields, reasoning trail. | Not yet the sole write authority for every calendar/reminder path; generic calendar API metadata join is incomplete; live provider proof remains gated. |
+| `training_agenda_event_ownership` | Training-created calendar events and cancellation/reconciliation audit. | `plan_id`, `plan_version`, `session_id`, `user_id`, `calendar_event_id`, `calendar_source`, `session_identity_key`, `session_shape_hash`, `status`. | Still Training-specific. It is useful as an audit mirror but not the universal Secretary model. |
+| `content_domain_objects` / `content_topics` | Content scheduling artifacts and some Secretary agenda linkage. | `secretary_agenda_item_id`, task/calendar refs, sync fields. | Content has partial integration; older topic/task paths may still rely on content-specific ids rather than full universal repair. |
+| `training_sessions` | Session-level provider link and Training read model. | `calendar_event_id`, `calendar_source`, identity/shape hash fields. | Training-specific rows still need audit mirror alignment when plans are regenerated or canceled. |
+| `reminders` | Agenda-linked and free-form reminders. | `user_id`, `tenant_id`, `timezone`, `message`, `remind_at`, `recurring`, `status`, `agenda_item_id`. | Agenda-linked dedupe is improved; free-form reminders still lack source/entity fingerprinting, snooze/defer/escalation, and richer follow-up lifecycle. |
+| Provider event DTOs | Google/Outlook events surfaced to app clients. | `id`, `title`, `start`, `end`, `source`, categories/color; Secretary adapter can include agenda markers for Secretary-owned events. | Generic calendar responses do not consistently join and emit the full agenda metadata expected by iOS. |
+| iOS `CalendarEvent` | Client rendering model. | Supports `agendaItemId`, `sourceIntentId`, `sourceSkill`, `lifecycleState`, `providerSyncState`, decision metadata, conflicts, alternatives, segments. | Decoder support is ahead of backend emission for generic calendar results. |
 
 ## Requested Gap Findings
 
 ### 1. Skills bypass Secretary
 
-Confirmed.
+Partially mitigated, still a gap.
 
-| Skill/path | Evidence | Gap |
+| Skill/path | Current state | Gap |
 | --- | --- | --- |
-| iOS/user calendar blocks | `src/api/routes/calendar.ts` creates/updates/deletes directly through `unified-calendar`. | No `secretary_agenda_items` row; no source intent; no lifecycle state. |
-| Secretary tools | `src/services/tool-executor.ts` calls `unifiedCal.createEvent/updateEvent/deleteEvent` directly. | Model/tool output can mutate calendar without durable agenda ownership. |
-| Training | `src/api/routes/training-plan-calendar-sync.ts` and cancellation routes own their own lifecycle. | Safe but separate; not universal Secretary arbitration. |
-| Content Creation | `src/services/content-topic-secretary-sync.ts` creates tasks and calendar blocks directly. | Content-specific idempotency, no shared Secretary ledger. |
-| Cooking | Weekly mesh only. | No durable meal-prep/grocery scheduling intent found. |
-| Finance | Weekly mesh only. | No durable bill/budget/subscription review scheduling intent found. |
+| Training | Plan calendar sync and persistence call `submitSecretarySchedulingIntent` for Secretary agenda ownership, while keeping Training ownership as a safety mirror. | Generic Training event ownership and Secretary ownership need continued alignment during regeneration/cancellation. |
+| Content | Editorial workflow can create/update `secretary_agenda_item_id` through Secretary scheduling. | Some legacy content-topic task/calendar paths can still rely on content-local sync ids. |
+| Cooking | Meal-prep scheduling integration exists through `cooking-secretary-integration.ts`. | Not every advisory cooking plan is guaranteed to become an executable Secretary agenda item. |
+| Finance | Finance scheduling integration exists through `finance-secretary-integration.ts`. | Advisory finance planning still needs full conversion to durable agenda/follow-up items. |
+| iOS/user calendar blocks | `src/api/routes/calendar.ts` still has direct generic calendar create/update/delete behavior. | Generic user calendar writes can bypass `secretary_agenda_items`. |
+| Secretary tools | Tool-executor calendar mutations can still call the unified calendar provider directly. | Model/tool calendar writes need forced ledger ownership or an explicit non-Nexus-owned escape hatch. |
 
 ### 2. Events lack source ownership
 
-Partially confirmed.
+Partially mitigated.
 
-Training-generated events have durable source ownership in `training_agenda_event_ownership`. Content topics retain provider IDs on topic rows. Generic calendar events returned by `/api/v1/calendar/events` do not include `sourceSkill`, `sourceIntentId`, `agendaItemId`, or decision reasons because `formatEvent` emits only provider basics.
+Secretary-owned items now carry `sourceSkill`, `sourceIntentId`, `sourceAction`, `sourceEntityId`, lifecycle state, provider sync state, decision reasons, and reasoning trail. Training and Content also have domain-specific ownership fields.
+
+The remaining gap is generic provider events returned through standard calendar APIs. Those responses can still lack `agendaItemId`, `sourceSkill`, `sourceIntentId`, lifecycle, provider sync, and decision reason metadata.
 
 ### 3. Agenda items lack lifecycle state
 
-Confirmed for generic agenda.
+Mostly mitigated for Secretary intents.
 
-The intended lifecycle states exist in migration `083`, and iOS has matching enums. The runtime generic calendar API does not populate those states, and no backend service currently transitions `secretary_agenda_items`.
+`secretary-scheduling-arbitrator.ts` persists lifecycle states such as `scheduled`, `synced`, `reflowed`, `compressed`, `deferred`, `canceled`, `superseded`, `unscheduled`, `failed_sync`, and `completed`. `secretary-agenda-provider-sync.ts` transitions provider sync states such as `synced`, `create_failed`, `update_failed`, `delete_failed`, `readback_failed`, and `deleted`.
 
-Training has narrower lifecycle/status semantics (`active`, `deleted`, `orphaned`; session statuses such as `pending`, `completed`, `skipped`, `deferred`, `unscheduled`), but those are not yet normalized into Secretary’s universal lifecycle model.
+The remaining issue is coverage: generic provider calendar events that bypass Secretary do not have that lifecycle state machine.
 
 ### 4. Cancellations leave stale events
 
-Mitigated for Training, still a gap generally.
+Mitigated for Secretary-owned and Training-owned paths, still a generic gap.
 
-Training cancellation:
-- builds deletion targets from linked sessions and ownership rows,
-- deletes by provider event ID/source,
-- marks ownership rows `deleted` or `orphaned`,
-- keeps orphan reconciliation available.
+Secretary provider sync deletes by exact provider event ID for canceled, superseded, unscheduled, deferred, and completed agenda items. Training cancellation also reads both Training ownership rows and Secretary-owned rows and handles provider cleanup.
 
-Generic calendar deletion and Content topic cancellation/update do not have a universal stale-event repair queue. Content can update an existing event if `calendar_event_id/source` remain valid, but there is no general read-back repair or orphan lifecycle outside Training.
+Generic calendar deletion and direct tool calendar writes still need the same universal stale-event repair and lifecycle guarantees.
 
 ### 5. Conflicts are not repaired
 
-Confirmed outside Training-specific sync.
+Partially mitigated.
 
-The planning mesh can detect conflicts and shadow lower-priority directives. `focus-planner` can find better focus windows. Training calendar sync can repair stale linked Training events. There is no general Secretary repair engine that takes conflicts and performs durable move/compress/defer/unscheduled transitions across all agenda items.
+The arbitrator can select alternatives, compress/reflow/defer/unschedule, and persist decision reasons. Provider sync can repair missing provider events and remove duplicates for Secretary-owned items.
+
+What is still missing is a universal repair worker that continuously reconciles every Nexus-owned calendar/reminder item, including older generic events and non-Secretary writes.
 
 ### 6. Reminders duplicate
 
-Risk confirmed.
+Partially mitigated.
 
-No dedupe key or source/entity identity exists in the reminders table. Repeated calls to `setReminder` with the same message/time/source can create duplicate rows. The route is user-scoped, but not lifecycle-rich enough for Secretary accountability.
+Agenda-linked reminders now include `agenda_item_id`, `tenant_id`, and `timezone`, and `cancelRemindersForAgendaItem` / `updateRemindersForAgendaItem` allow agenda lifecycle cleanup.
+
+Free-form reminders can still duplicate if they do not carry a durable source/entity fingerprint. Snooze, defer, escalation, and follow-up semantics remain incomplete.
 
 ### 7. Daily/weekly planning is unrealistic as executable schedule
 
-Partially confirmed.
+Partially mitigated.
 
-The planning layer is materially better than an optimistic list: it uses mesh contexts, conflict priority, Training load, calendar pressure, content/cooking/finance signals, and focus recommendations. The limitation is that it does not persist executable agenda blocks or prove that selected work fits into real time windows. It is realistic as advisory planning, not yet reliable as an agenda state machine.
+The planning layer now has a better path to executable scheduling because skills can submit typed Secretary scheduling intents. The limitation is conversion coverage: advisory weekly/daily directives are not guaranteed to become agenda items unless the flow calls the Secretary scheduling contract.
 
-## Universal Agenda Contract Needed
+## Implemented Secretary Agenda Contract
 
-Secretary should become the only write owner for new Nexus-created schedule load by adding a service around `secretary_agenda_items`.
+Current implemented foundation:
 
-Minimum service operations:
-- `createSchedulingIntent`
-- `createAgendaItemFromIntent`
-- `transitionAgendaItem`
-- `syncAgendaItemToProvider`
-- `cancelAgendaItem`
-- `markAgendaItemSuperseded`
-- `repairAgendaItemProviderState`
-- `listActiveAgendaItems`
-- `listAgendaItemsBySource`
-- `listProviderMappingsNeedingRepair`
+- `submitSecretarySchedulingIntent`
+- `previewSecretarySchedulingIntent`
+- `listSecretaryAgendaItems`
+- `getSecretaryAgendaItemById`
+- `cancelSecretaryAgendaItem`
+- `syncSecretaryAgendaItemToProvider`
+- `syncSecretaryAgendaItemsToProvider`
+- `markCompletedSecretaryAgendaItems`
+- source-skill feedback consumers for Training and cross-skill state
+- agenda-linked reminder cancellation/update helpers
 
-Minimum input contract:
+The service contract supports:
+
 - `intentId`
 - `sourceSkill`
+- `sourceAction`
 - `sourceEntityId`
 - `sourceEntityType`
 - `ownerUserId`
 - `tenantId`
 - `action`
 - `requestedDurationMinutes`
+- `minimumDurationMinutes`
 - `preferredWindows`
 - `hardConstraints`
 - `softPreferences`
@@ -121,21 +129,38 @@ Minimum input contract:
 - `energyCost`
 - `reason`
 - `sourceShapeHash`
+- `goalPhase`
 
-Minimum response contract:
-- `status`: `scheduled | reflowed | compressed | deferred | unscheduled | rejected | needs_more_context`
+Response/state fields include:
+
+- `status`
 - `agendaItemId`
 - `selectedSlot`
-- `alternatives`
+- `alternativeSlots`
 - `conflicts`
 - `reasonCodes`
 - `explanation`
 - `confidence`
 - `downstreamImplications`
+- `lifecycleState`
+- `providerSyncState`
+- `scheduledSegments`
+- `reasoningTrail`
+
+## Remaining Contract Work
+
+1. Force all Nexus-owned generic calendar creates/updates/deletes through Secretary, or tag them explicitly as external/user-owned events.
+2. Force tool-executor calendar mutations through Secretary agenda ownership.
+3. Join Secretary metadata into generic `/api/v1/calendar/events` responses for Secretary-owned provider events.
+4. Extend reminders with source/entity fingerprint, snooze/defer/escalation, and follow-up lifecycle semantics for non-agenda reminders.
+5. Add a universal reconciliation job that repairs stale, missing, duplicated, or externally moved provider events outside Training-only paths.
+6. Convert accepted daily/weekly planning directives into Secretary agenda items when the user approves executable schedule changes.
+7. Run and record the live/sandbox Google/Outlook Secretary calendar staging smoke with staging identities and cleanup proof.
 
 ## Backend API Contract Gap
 
-The iOS model expects:
+iOS can already decode rich agenda metadata:
+
 - `agendaItemId`
 - `sourceIntentId`
 - `sourceSkill`
@@ -157,7 +182,8 @@ The iOS model expects:
 - `alternatives`
 - `agendaDate`
 
-The backend generic calendar route currently emits:
+The generic backend calendar route can still emit only provider basics for many events:
+
 - `id`
 - `title`
 - `description`
@@ -169,72 +195,53 @@ The backend generic calendar route currently emits:
 - `color`
 - `isAllDay`
 
-This means iOS readiness is mostly blocked by backend ownership wiring, not decoder support.
+So iOS readiness is mostly a backend emission and authority-coverage issue, not a decoder issue.
 
 ## Priority Matrix
 
 | Priority | Gap | Why it matters |
 | --- | --- | --- |
-| P1 | `secretary_agenda_items` has no runtime service. | Central agenda ownership cannot be claimed until the ledger is authoritative. |
-| P1 | Generic calendar/tool writes bypass agenda ledger. | Provider events can lack source, lifecycle, decision, and repair metadata. |
-| P1 | No structured skill scheduling intent contract. | Cooking/Finance/Content/Training cannot consistently request time through Secretary. |
-| P1 | Calendar API does not emit agenda metadata. | iOS cannot show real source/lifecycle/reason data for normal agenda items. |
-| P1 | Reminder/follow-up model lacks source, tenant, dedupe, lifecycle. | Secretary cannot own accountability loops without duplicate/noise control. |
-| P1 | No universal stale/duplicate repair worker. | Broken provider/local states can persist outside Training. |
-| P2 | Daily/weekly accepted directives are not converted into agenda items. | Planning remains advisory instead of executable. |
-| P2 | Provider staging smoke is Training-oriented. | Secretary agenda lifecycle still needs its own Google/Outlook proof. |
-| P2 | Local calendar mock is not universal Secretary lifecycle coverage. | Full-product local smoke cannot prove non-Training agenda repair yet. |
-| P3 | More iOS polish for future Secretary states. | The main missing piece is backend emission; frontend already has the core model. |
+| P1 | Generic calendar/tool writes can bypass Secretary. | Provider events can still lack source, lifecycle, decision, and repair metadata. |
+| P1 | Live Google/Outlook Secretary agenda proof is gated. | The harness exists, but release claims need real staging/sandbox credentials, live-write gates, and cleanup evidence. |
+| P1 | Reminder/follow-up free-form model lacks source fingerprint, snooze/defer/escalation. | Secretary cannot fully own accountability loops without duplicate/noise control. |
+| P1 | Calendar API does not consistently emit agenda metadata. | iOS cannot show real source/lifecycle/reason data for normal agenda items. |
+| P2 | No universal stale/duplicate repair worker for all schedule load. | Broken provider/local states can persist outside Secretary-owned and Training-owned paths. |
+| P2 | Daily/weekly accepted directives are not always converted into agenda items. | Planning can remain advisory instead of executable. |
+| P2 | Secretary calendar staging smoke lacks a checked-in shell wrapper/package script. | The TypeScript smoke exists, but release operators need a standard script/evidence path like Training. |
+| P2 | Full product A-AN Secretary + Decision Center E2E evidence is not repo-canonical. | Temporary `/tmp` QA evidence should not be treated as durable release truth unless indexed. |
+| P3 | iOS polish for future Secretary states. | Backend emission and live provider proof are the main remaining blockers. |
 
-## Tests To Add Before Release Claims
+## Current Coverage
 
-Backend unit/integration:
-- create agenda item from scheduling intent,
-- source skill attribution persists,
-- user/tenant ownership enforced,
-- lifecycle transition matrix,
-- provider sync state transition matrix,
-- duplicate intent retry does not duplicate provider event,
-- canceled/superseded items excluded from active agenda,
-- generic calendar write creates agenda ledger row,
-- generic calendar delete transitions agenda row precisely,
-- Content topic sync writes/updates Secretary agenda row,
-- Cooking meal-prep intent scheduled/unscheduled,
-- Finance deadline reminder deduped and prioritized,
-- unauthorized mutation of another user/tenant agenda item denied.
+Backend coverage already present in the repo includes:
 
-Repair/reflow:
-- provider event deleted externally,
-- provider event moved externally,
-- provider update fails,
-- local source entity canceled while provider event remains,
-- duplicate provider events for same source intent,
-- no valid slot produces `unscheduled`,
-- overloaded day produces defer/compress/reflow decision,
-- stale ledger item repaired from read-back.
+- `__tests__/services/secretary-scheduling-arbitrator.test.ts`
+- `__tests__/services/secretary-agenda-provider-sync.test.ts`
+- `__tests__/services/scheduler-secretary-agenda-sync.test.ts`
+- `__tests__/services/training-plan-cancellation-cascade.test.ts`
+- `__tests__/services/secretary-source-skill-feedback-consumers.test.ts`
+- `__tests__/services/secretary-reasoning-trail.test.ts`
+- `__tests__/services/decision-center-secretary-trail.test.ts`
+- Content/Cooking/Finance tests that exercise Secretary scheduling integrations.
 
-iOS contract:
-- calendar API decodes full agenda metadata,
-- unknown lifecycle/provider state fallback,
-- reflowed/compressed/deferred/unscheduled presentation,
-- canceled/superseded hidden from active timeline,
-- decision explanation rendering,
-- source skill label rendering.
+Coverage still needed before universal release claims:
 
-Provider smoke:
-- Google Secretary agenda create/update/move/cancel/read-back/cleanup,
-- Outlook Secretary agenda create/update/move/cancel/read-back/cleanup,
-- duplicate retry,
-- stale mapping cleanup,
-- precise deletion by provider event ID,
-- no unrelated event cleanup.
+- generic calendar create/update/delete creates or transitions Secretary ledger rows,
+- direct tool-executor calendar writes cannot bypass Secretary for Nexus-owned events,
+- generic calendar list joins and emits agenda metadata,
+- free-form reminder dedupe by source/entity fingerprint,
+- universal stale/duplicate provider repair outside Training,
+- daily/weekly accepted directives become agenda items,
+- live/sandbox Google Secretary agenda create/update/move/cancel/read-back/cleanup,
+- live/sandbox Outlook Secretary agenda create/update/move/cancel/read-back/cleanup,
+- iOS unit/UI coverage for full agenda metadata display on generic calendar responses.
 
 ## Recommended Cutover Strategy
 
-1. Keep existing Training ownership as a proven safety lane.
-2. Add universal Secretary agenda service and dual-write Training/Content events into it behind a feature flag.
-3. Teach generic calendar routes/tools to create ledger rows for Nexus-owned events.
-4. Join ledger metadata into `/api/v1/calendar/events` responses.
-5. Add repair worker using universal ledger.
-6. Move Cooking/Finance scheduling into structured intents.
-7. When universal ledger is proven, decide whether Training-specific ownership remains as an audit mirror or is migrated.
+1. Keep existing Training ownership as a safety/audit mirror.
+2. Keep using `secretary_agenda_items` for new structured cross-skill scheduling intents.
+3. Move generic calendar routes and tool-executor calendar writes behind Secretary agenda ownership.
+4. Join ledger metadata into generic calendar responses.
+5. Add a standard `scripts/secretary-calendar-staging-smoke.sh` wrapper and release-gate evidence path around `src/tools/secretary-calendar-staging-smoke.ts`.
+6. Add the universal repair worker and free-form reminder lifecycle model.
+7. Re-run changed-area tests and live/sandbox provider smoke before claiming universal Secretary agenda ownership.

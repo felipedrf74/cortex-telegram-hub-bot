@@ -2,7 +2,7 @@
 
 Status: canonical
 Owner: backend integrations lead (Felipe)
-Last verified: 2026-05-04
+Last verified: 2026-06-16
 Update policy: update when Garmin reauth flow or MFA-aware notification contract changes.
 
 When Garmin passive refresh fails, the backend must NOT trigger a silent
@@ -23,8 +23,8 @@ durable inbox notification using the existing notification contract.
 
 ## iOS expectation
 
-No iOS code change is required for Stage 1.
+No iOS code change is required for the backend Stage 1 notification contract.
 
 The existing notification center / inbox contract can surface the notification
-as an action-required item. The dedicated Garmin reconnect UI can later read
-`data.reauthEndpoint` and launch the manual verification flow.
+as an action-required item. A dedicated Garmin reconnect UI must be verified in
+the iOS workspace before any release claims native reconnect completion.

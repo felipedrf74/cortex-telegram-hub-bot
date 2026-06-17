@@ -21,6 +21,7 @@ testing, or release-process task.
 | Standard | Path | Scope |
 |---|---|---|
 | Agent process standard | `docs/agent/AGENT_PROCESS_STANDARD.md` | How Claude/Codex should operate; evidence levels; two-agent validation; canonical-docs rule. |
+| Nexus Verifiable Reward Loop | `docs/agent/VERIFIABLE_REWARD_PROTOCOL.md` | Verifier-driven reward verdicts, score semantics, hard failures, hooks, handoff summaries, calibration, and export safety. |
 | Workspace operating context | `docs/agent/OPERATING_CONTEXT.md` | Workspace bootloader (must be read first). |
 | Current release state | `docs/release/CURRENT_RELEASE_STATE.md` | Current production identity and validation. |
 | Open items | `docs/release/OPEN_ITEMS.md` | P0/P1/P2/P3 items across the workspace. |
@@ -60,6 +61,8 @@ testing, or release-process task.
 ```
 docs/agent/AGENT_PROCESS_STANDARD.md
   └─ governs HOW Claude/Codex work
+     ├─ docs/agent/VERIFIABLE_REWARD_PROTOCOL.md
+     │  (verdicts, reward summaries, hard failures, export safety)
      ├─ engine/docs/engineering/ (backend WHAT)
      │  ├─ backend-api-contract-standard.md
      │  ├─ security-and-data-isolation-standard.md

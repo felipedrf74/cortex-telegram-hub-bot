@@ -539,7 +539,10 @@ export function getSessionById(sessionId: number): TrainingSession | null {
 
 export function updateSession(
   sessionId: number,
-  updates: Partial<Pick<TrainingSession, 'day_of_week' | 'title' | 'exercises_json' | 'duration_minutes' | 'intensity_text' | 'description' | 'status' | 'calendar_event_id' | 'calendar_source' | 'session_identity_key' | 'session_shape_hash' | 'preferred_time_unavailable'>>,
+  updates: Partial<Pick<TrainingSession, 'day_of_week' | 'title' | 'exercises_json' | 'duration_minutes' | 'intensity_text' | 'description' | 'status' | 'session_identity_key' | 'session_shape_hash' | 'preferred_time_unavailable'>> & {
+    calendar_event_id?: string | null;
+    calendar_source?: string | null;
+  },
 ): boolean {
   const db = getDb();
   const setClauses: string[] = [];

@@ -8,6 +8,8 @@ import {
 } from './exercise-metadata';
 import { incrementTrainingGenerationCounter } from '../training-generation-observability';
 import { loadTrainingCatalogSnapshot } from './training-catalog';
+import { formatSplitSessionTitle, selectSplitTemplate } from './split-template-library';
+import type { TrainingPlanGoal } from '../training-plan-spec';
 import type {
   AthleteState,
   Exercise,
@@ -117,7 +119,7 @@ export function selectStrengthExercisesFromCatalog(input: SelectStrengthExercise
 
   return {
     variant: {
-      title: titleFor(input.profile, input.sessionIndex),
+      title: titleFor(input.profile, input.sessionIndex, input.targetSessions),
       exerciseIds: selected.map((exercise) => exercise.id),
       tags: [
         'catalog_selector',
@@ -227,15 +229,15 @@ function pickedBecause(args: {
   return reasons;
 }
 
-function titleFor(profile: StrengthSelectorProfile, sessionIndex: number): string {
-  const label = profile === 'hypertrophy'
-    ? 'Hypertrophy'
+function titleFor(profile: StrengthSelectorProfile, sessionIndex: number, targetSessions: number): string {
+  const goal: TrainingPlanGoal = profile === 'hypertrophy'
+    ? 'hypertrophy'
     : profile === 'max_strength'
-      ? 'Strength'
-      : profile === 'maintenance'
-        ? 'Maintenance'
-        : profile === 'hybrid'
-          ? 'Hybrid'
-          : 'Athletic';
-  return `Catalog ${label} Strength ${sessionIndex + 1}`;
+      ? 'strength'
+      : profile === 'hybrid'
+        ? 'hybrid'
+        : 'general_fitness';
+  const split = selectSplitTemplate(Math.min(Math.max(targetSessions, 2), 6), goal);
+  const slot = split.slots[Math.max(0, sessionIndex) % split.slots.length];
+  return formatSplitSessionTitle(slot, goal);
 }

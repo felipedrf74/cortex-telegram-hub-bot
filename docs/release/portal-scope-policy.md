@@ -2,7 +2,7 @@
 
 Status: canonical
 Owner: release + portal-security lead (Felipe)
-Last verified: 2026-05-04
+Last verified: 2026-06-16
 Update policy: update when portal scope (admin/read/write) policy, BetaHardened guard, or session/actor signature requirements change.
 
 Date: 2026-05-03
@@ -44,8 +44,8 @@ operator-side console (the preferred direction).
 | Path prefix | Auth mechanism | Audience | Source |
 |---|---|---|---|
 | `/api/v1/*` | iOS JWT (`auth-middleware.ts`), `req.tenantId === req.userId` enforced. | Beta users (iOS app). | `src/api/auth-middleware.ts` |
-| `/api/*` (not `/api/v1/*`) | `requirePortalTokenByMethod` — `PORTAL_TOKEN` for reads, `PORTAL_ADMIN_TOKEN` for writes when split. | Operators only. | `src/portal/server.ts:281–287`, `src/api/secret-guards.ts` |
-| Portal HTML (`/`, `/portal.html`, static assets) | `PORTAL_TOKEN` via the same guard. | Operators only. | `src/portal/server.ts:289` |
+| `/api/*` (not `/api/v1/*`) | `requirePortalTokenByMethod` — `PORTAL_TOKEN` for reads, `PORTAL_ADMIN_TOKEN` for writes when split. | Operators only. | `src/portal/server.ts`, `src/api/secret-guards.ts` |
+| Portal HTML (`/`, `/portal.html`, static assets) | `PORTAL_TOKEN` via the same guard. | Operators only. | `src/portal/server.ts` |
 | OAuth callbacks (`/oauth/*`) | Provider-controlled state token. Successful callback redirects back to iOS via deep link OR portal. | Beta users (during the OAuth flow only). | `src/portal/oauth-routes.ts` |
 
 The split between `/api/v1/*` (iOS) and `/api/*` (operator) is the

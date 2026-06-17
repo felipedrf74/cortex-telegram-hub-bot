@@ -1,11 +1,12 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mockCreatePlan = vi.fn();
 const mockCreateWeek = vi.fn();
 const mockCreateSession = vi.fn();
 const mockLinkSessionToCalendar = vi.fn();
+const mockUpdateSession = vi.fn();
 const mockUpdatePlanPreferences = vi.fn();
 const mockCreateEvent = vi.fn();
 const mockLoggerWarn = vi.fn();
@@ -20,6 +21,7 @@ const mockFindExistingOwnership = vi.fn();
 const mockRecordCalendarOwnership = vi.fn();
 const mockSubmitSecretarySchedulingIntent = vi.fn();
 const mockMarkSecretaryAgendaProviderSyncSatisfied = vi.fn();
+const mockLoadLiveCalendarBusyWindowsForSecretaryIntent = vi.fn();
 
 vi.mock('../../src/services/training-plans', async () => {
   const actual = await vi.importActual<typeof import('../../src/services/training-plans')>(
@@ -31,6 +33,7 @@ vi.mock('../../src/services/training-plans', async () => {
     createWeek: (...args: unknown[]) => mockCreateWeek(...args),
     createSession: (...args: unknown[]) => mockCreateSession(...args),
     linkSessionToCalendar: (...args: unknown[]) => mockLinkSessionToCalendar(...args),
+    updateSession: (...args: unknown[]) => mockUpdateSession(...args),
     updatePlanPreferences: (...args: unknown[]) => mockUpdatePlanPreferences(...args),
   };
 });
@@ -68,6 +71,11 @@ vi.mock('../../src/services/secretary-scheduling-arbitrator', async () => {
   };
 });
 
+vi.mock('../../src/services/secretary-live-calendar-busy', () => ({
+  loadLiveCalendarBusyWindowsForSecretaryIntent: (...args: unknown[]) =>
+    mockLoadLiveCalendarBusyWindowsForSecretaryIntent(...args),
+}));
+
 vi.mock('../../src/utils/logger', () => ({
   logger: {
     warn: (...args: unknown[]) => mockLoggerWarn(...args),
@@ -94,9 +102,19 @@ import {
   persistGeneratedTrainingPlan,
   trainingCalendarCreateBatchSize,
 } from '../../src/api/routes/training-plan-persistence';
+import { _resetTrainingOperationLocksForTests } from '../../src/services/training-operation-locks';
+
+async function waitForMockCallCount(mock: { mock: { calls: unknown[] } }, count: number) {
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    if (mock.mock.calls.length >= count) return;
+    await Promise.resolve();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+}
 
 describe('training-plan-persistence', () => {
   beforeEach(() => {
+    _resetTrainingOperationLocksForTests();
     delete process.env.TRAINING_ENGINE_ENABLED;
     delete process.env.TRAINING_ENGINE_DISABLED;
     delete process.env.TRAINING_CALENDAR_WRITES_ENABLED;
@@ -111,6 +129,7 @@ describe('training-plan-persistence', () => {
     mockCreateWeek.mockReset();
     mockCreateSession.mockReset();
     mockLinkSessionToCalendar.mockReset();
+    mockUpdateSession.mockReset();
     mockUpdatePlanPreferences.mockReset();
     mockCreateEvent.mockReset();
     mockLoggerWarn.mockReset();
@@ -121,6 +140,7 @@ describe('training-plan-persistence', () => {
     mockRecordCalendarOwnership.mockReset();
     mockSubmitSecretarySchedulingIntent.mockReset();
     mockMarkSecretaryAgendaProviderSyncSatisfied.mockReset();
+    mockLoadLiveCalendarBusyWindowsForSecretaryIntent.mockReset();
 
     mockCreatePlan.mockReturnValue({ id: 901 });
     mockCreateWeek.mockImplementation(({ week_number }: any) => ({ id: 1000 + Number(week_number || 1) }));
@@ -134,6 +154,13 @@ describe('training-plan-persistence', () => {
     mockFindExistingOwnership.mockReturnValue(null);
     mockRecordCalendarOwnership.mockReturnValue({ ok: true, created: true, ownershipId: 1 });
     mockMarkSecretaryAgendaProviderSyncSatisfied.mockReturnValue({ ok: true, updated: true });
+    mockLoadLiveCalendarBusyWindowsForSecretaryIntent.mockResolvedValue({
+      windows: [],
+      degraded: false,
+      providerConfigured: false,
+      warningCodes: [],
+      warnings: [],
+    });
     mockSubmitSecretarySchedulingIntent.mockImplementation((intent: any) => ({
       status: 'scheduled',
       reasonCodes: ['scheduled_in_available_window'],
@@ -160,6 +187,10 @@ describe('training-plan-persistence', () => {
         downstreamImplications: [],
       },
     }));
+  });
+
+  afterEach(() => {
+    _resetTrainingOperationLocksForTests();
   });
 
   it('persists generated weeks and sessions, schedules events, and links created calendar events', async () => {
@@ -321,6 +352,11 @@ describe('training-plan-persistence', () => {
 
     expect(result.totalSessions).toBe(2);
     expect(result.eventsCreated).toBe(1);
+    expect(mockUpdateSession).toHaveBeenCalledWith(2001, {
+      status: 'unscheduled',
+      calendar_event_id: null,
+      calendar_source: null,
+    });
     expect(mockLinkSessionToCalendar).toHaveBeenCalledTimes(1);
     expect(mockLinkSessionToCalendar).toHaveBeenCalledWith(2002, 'evt-2', 'google');
     expect(mockLoggerWarn).toHaveBeenCalledWith(
@@ -716,6 +752,56 @@ describe('training-plan-persistence', () => {
     );
   });
 
+  it('does not auto-create calendar events when the spec calendar preference is none', async () => {
+    const result = await persistGeneratedTrainingPlan({
+      userId: 12,
+      tenantId: 12,
+      objective: 'Strength block',
+      durationWeeks: 1,
+      startDate: '2026-04-20',
+      endDate: '2026-04-27',
+      now: new Date('2026-04-20T00:00:00.000Z'),
+      preferencesJson: '{}',
+      normalizedPreferredTime: '12:00',
+      normalizedPreferredCardioTime: '07:00',
+      normalizedPreferredStrengthTime: '12:00',
+      busyWindows: [],
+      trainingPlanSpec: {
+        userId: '12',
+        planId: 'candidate',
+        goal: 'hypertrophy',
+        daysPerWeek: 2,
+        startDate: '2026-04-20',
+        weekModel: 'rolling_7_day_from_start',
+        experienceLevel: 'novice',
+        equipmentProfile: { label: 'full_gym', equipment: ['dumbbell'] },
+        progressionModel: { type: 'double_progression', weekCount: 1 },
+        calendarPreference: { provider: 'none' },
+      },
+      planData: {
+        weeks: [{
+          weekNumber: 1,
+          sessions: [
+            {
+              dayOfWeek: 'Monday',
+              sessionType: 'gym',
+              title: 'Push Hypertrophy A',
+              durationMinutes: 45,
+              exercises: [{ name: 'Dumbbell Bench Press' }],
+            },
+          ],
+        }],
+      },
+    });
+
+    expect(result.totalSessions).toBe(1);
+    expect(result.eventsCreated).toBe(0);
+    expect(result.sessionsLinked).toBe(0);
+    expect(mockCreateEvent).not.toHaveBeenCalled();
+    expect(mockLinkSessionToCalendar).not.toHaveBeenCalled();
+    expect(mockSubmitSecretarySchedulingIntent).not.toHaveBeenCalled();
+  });
+
   it('creates small calendar event sets in the same bounded batch', async () => {
     let resolveFirst!: (value: { id: string; source: string }) => void;
     mockCreateEvent
@@ -750,13 +836,17 @@ describe('training-plan-persistence', () => {
       },
     });
 
-    for (let i = 0; i < 5; i += 1) await Promise.resolve();
-    expect(mockCreateEvent).toHaveBeenCalledTimes(2);
+    let result: Awaited<ReturnType<typeof persistGeneratedTrainingPlan>> | undefined;
+    try {
+      await waitForMockCallCount(mockCreateEvent, 2);
+      expect(mockCreateEvent).toHaveBeenCalledTimes(2);
+    } finally {
+      resolveFirst({ id: 'evt-1', source: 'google' });
+      result = await pending;
+    }
 
-    resolveFirst({ id: 'evt-1', source: 'google' });
-    const result = await pending;
-
-    expect(result.eventsCreated).toBe(2);
+    expect(result).toBeDefined();
+    expect(result!.eventsCreated).toBe(2);
     expect(mockCreateEvent).toHaveBeenCalledTimes(2);
     expect(mockLinkSessionToCalendar).toHaveBeenCalledWith(2001, 'evt-1', 'google');
     expect(mockLinkSessionToCalendar).toHaveBeenCalledWith(2002, 'evt-2', 'google');

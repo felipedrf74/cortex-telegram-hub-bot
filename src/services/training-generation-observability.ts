@@ -5,6 +5,7 @@ export type TrainingGenerationCounterName =
   | 'unavailable_equipment_blocked_total'
   | 'selector_no_candidate_total'
   | 'final_validation_failure_total'
+  | 'spec_needs_clarification_total'
   | 'tenant_scope_missing_blocked_total'
   | 'calendar_capacity_reflow_total'
   | 'safety_guardrail_triggered_total';
@@ -21,6 +22,7 @@ const COUNTER_NAMES: TrainingGenerationCounterName[] = [
   'unavailable_equipment_blocked_total',
   'selector_no_candidate_total',
   'final_validation_failure_total',
+  'spec_needs_clarification_total',
   'tenant_scope_missing_blocked_total',
   'calendar_capacity_reflow_total',
   'safety_guardrail_triggered_total',

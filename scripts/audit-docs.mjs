@@ -72,6 +72,7 @@ const canonicalFiles = new Set([
   // `engine/docs/engineering/ENGINEERING_STANDARDS_INDEX.md`.
   path.join(workspaceRoot, 'docs', 'agent', 'AGENT_TECHNICAL_MASTERY.md'),
   path.join(backendRoot, 'CLAUDE.md'),
+  path.join(backendRoot, 'AGENTS.md'),
   path.join(backendRoot, 'README.md'),
   // Root docs registered in docs/DOCUMENTATION-MAP.md as canonical live or
   // active supporting docs. Keep this exact instead of allowing every root
@@ -83,6 +84,7 @@ const canonicalFiles = new Set([
   path.join(backendRoot, 'STAGING.md'),
   path.join(backendRoot, 'content-engine', 'README.md'),
   path.join(backendRoot, 'docs', 'DOCS_INDEX.md'),
+  path.join(backendRoot, 'docs', 'agents', 'VERIFIABLE_REWARD_PROTOCOL.md'),
   path.join(backendRoot, 'docs', 'DOCUMENTATION-MAP.md'),
   path.join(backendRoot, 'docs', 'qa', 'QA_BACKEND_REPORT.md'),
   path.join(backendRoot, 'docs', 'qa', 'PHASES_0_15_CODEX_QA_PROMPT.md'),
@@ -187,6 +189,7 @@ function isArchive(file) {
 function isProductMarkdownAsset(file) {
   const normalized = normalize(file);
   return normalized.includes(`${path.sep}prompts${path.sep}`)
+    || normalized.includes(`${path.sep}.agents${path.sep}skills${path.sep}`)
     || normalized.includes(`${path.sep}src${path.sep}skills${path.sep}`)
     || normalized.includes(`${path.sep}src${path.sep}services${path.sep}coach-kernel${path.sep}knowledge${path.sep}`)
     || normalized.includes(`${path.sep}knowledge${path.sep}skills${path.sep}`);

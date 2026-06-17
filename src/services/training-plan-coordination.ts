@@ -638,11 +638,11 @@ function buildStrengthSupportSession(dayOfWeek: string, sport?: string): Coordin
     return {
       dayOfWeek,
       sessionType: 'gym',
-      title: 'Strength Support Session',
+      title: 'Full Body Strength Support',
       durationMinutes: 45,
       description: 'Extra support slot added to hit the requested weekly strength frequency without turning it into a max-effort day.',
       exercises: [
-        { name: 'Goblet Squat', sets: 3, reps: 8, rpe: '7', restSec: 75 },
+        { name: 'Bulgarian Split Squat', sets: 3, reps: 8, rpe: '7', restSec: 75 },
         { name: 'DB Romanian Deadlift', sets: 3, reps: 8, rpe: '7', restSec: 75 },
         { name: 'One-Arm DB Row', sets: 3, reps: 10, rpe: '7', restSec: 60 },
         { name: 'Push-Up / DB Floor Press', sets: 3, reps: 10, rpe: '7', restSec: 60 },
@@ -673,7 +673,7 @@ function buildStrengthSupportSession(dayOfWeek: string, sport?: string): Coordin
     durationMinutes: 40,
     description: 'Support strength slot added to preserve basic force production and movement quality inside the requested weekly structure.',
     exercises: [
-      { name: 'Goblet Squat', sets: 3, reps: 8, rpe: '7', restSec: 75 },
+      { name: 'Step-Up', sets: 3, reps: 8, rpe: '7', restSec: 75 },
       { name: 'Romanian Deadlift', sets: 3, reps: 8, rpe: '7', restSec: 75 },
       { name: 'One-Arm Row', sets: 3, reps: 10, rpe: '7', restSec: 60 },
       { name: 'Front Plank', sets: 3, reps: 40, rpe: '6', restSec: 30 },

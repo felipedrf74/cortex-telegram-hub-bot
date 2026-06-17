@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$(git rev-parse --show-toplevel)/scripts/reward-check.mjs\" --area auto --advisory --json",
+            "timeout": 45,
+            "statusMessage": "Running Nexus reward check"
+          }
+        ]
+      }
+    ]
+  }
+}

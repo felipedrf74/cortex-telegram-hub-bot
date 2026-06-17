@@ -30,14 +30,15 @@ Adaptive questioning gives the Training engine a way to recognize weak coaching 
 
 ## Runtime Behavior
 
-The engine still produces a plan when data is missing. Missing data is surfaced as:
+The engine still produces a conservative plan when missing data is safe to default. Missing data is surfaced as:
 
 - `AthleteState.profileQuality.missingCriticalData`
 - `AthleteState.profileQuality.followUpQuestions`
 - `CoordinatedTrainingPlan.profileQuality`
 - high-priority `Profile follow-up:` notes in weekly plans
+- `needs_clarification` from the generation route when the missing data makes deterministic planning unsafe
 
-This keeps the product usable while telling the user and operators what information would materially improve planning.
+High-frequency strength plans with unknown equipment now stop before cancellation/persistence and ask a targeted equipment/session-duration clarification instead of saving generic filler. Lower-risk gaps still keep the product usable while telling the user and operators what information would materially improve planning.
 
 Repeated prompts can be suppressed with `recentlyAskedFollowUpIds` and `resolvedFollowUpIds`, while the missing-data risk remains visible until the actual profile data is present.
 

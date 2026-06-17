@@ -2,7 +2,7 @@
 
 Status: canonical
 Owner: backend security architect
-Last verified: 2026-06-04
+Last verified: 2026-06-16
 Update policy: update when threat model changes, when a new permanent gate
 is added, or when a new class of multi-tenant bug is shipped to production.
 Removing a gate requires owner approval.
@@ -133,7 +133,7 @@ is the gold-standard pattern. Copy that shape.
 ## 4. Prompt and memory scope (must)
 
 1. **Prompts must NOT contain owner identity.** The
-   `closed-beta-identity-scan` scanner (`engine/scripts/closed-beta-identity-scan.sh`)
+   `closed-beta-identity-scan` scanner (`scripts/closed-beta-identity-scan.sh`)
    greps for `Felipe's voice`, `Felipe's brand`, `felipes_angle`, etc.
    in `src/`, `prompts/`, `content-engine/`. Strict mode runs nightly
    and fails the build on any non-allowed match.
@@ -248,12 +248,12 @@ removal requires owner approval and a documented replacement.
 
 | Gate | Where | Frequency | Closes |
 |---|---|---|---|
-| `closed-beta-identity-scan` (advisor) | `engine/.github/workflows/ci.yml` | every PR | identity-leak (4.14.118 class) |
-| `closed-beta-identity-scan-strict` | `engine/.github/workflows/nightly.yml` | nightly | identity-leak strict gate |
+| `closed-beta-identity-scan` (advisor) | `.github/workflows/ci.yml` | every PR | identity-leak (4.14.118 class) |
+| `closed-beta-identity-scan-strict` | `.github/workflows/nightly.yml` | nightly | identity-leak strict gate |
 | `__tests__/security/p0-chat-identity-isolation.test.ts` | Vitest | every PR (auth/prompt diff) | chat identity contamination |
 | `__tests__/security/creator-config-neutrality.test.ts` | Vitest | every PR | prompt neutrality |
 | `__tests__/services/prompt-cleanliness.test.ts` (72 cases) | Vitest | every PR (prompt diff) | prompt static cleanliness |
-| `vi.mock` completeness lint | `engine/scripts/vi-mock-completeness-lint.mjs` | nightly strict | partial-mock leakage |
+| `vi.mock` completeness lint | `scripts/vi-mock-completeness-lint.mjs` | nightly strict | partial-mock leakage |
 | `release-doc-drift-check.sh` | nightly strict | nightly | release-state drift |
 | Two-user matrix test | `__tests__/security/<domain>-tenant-isolation.test.ts` | every PR (per-domain diff) | cross-tenant read leak |
 | Auth-route audit log assertion | `__tests__/api/auth-routes.test.ts` | every PR (auth diff) | missing audit row |

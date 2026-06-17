@@ -1,138 +1,121 @@
-# Nexus Hub — Git Branching & Release Strategy
+# Nexus Hub Branching And Release Workflow
 
-## Branch Structure
+Status: canonical
+Last verified: 2026-06-16
+
+Nexus Hub uses a **single-branch plus staging validation** workflow for the
+backend. The old `develop` branch model is retired. Do not create release plans
+that depend on `develop`, automatic deploy-on-merge, or GitHub-hosted SSH
+deploys unless Felipe explicitly approves a process change.
+
+## Branch Model
 
 ```
-main ─────────────────────────────────────────────────► (production)
-  │                                                      
-  ├── develop ────────────────────────────────────────► (staging/QA)
-  │     │                                                
-  │     ├── feature/NH-001-aiprovider-abstraction        
-  │     ├── feature/NH-002-message-adapter               
-  │     ├── feature/NH-003-vitest-setup                  
-  │     └── feature/NH-004-stripe-billing                
-  │                                                      
-  ├── hotfix/fix-garmin-auth-crash                       
-  └── release/v5.0.0                                     
+main  ───────────────────────────────────────────────► production source of truth
+  │
+  ├── codex/<short-task>      optional Codex work branch
+  ├── feature/<short-task>    optional risky feature branch
+  ├── fix/<short-task>        optional focused bug-fix branch
+  └── hotfix/<short-task>     urgent production fix branch
 ```
 
-## Branch Rules
+| Branch | Purpose | Merge target | Notes |
+|---|---|---|---|
+| `main` | Production source and normal integration branch | n/a | Production deploys are still gated by staging and release docs. |
+| `codex/*` | Codex-scoped implementation or QA work | `main` | Use for non-trivial work or when the user asks for a branch. |
+| `feature/*` | Larger feature work | `main` | Keep short-lived and focused. |
+| `fix/*` | Focused bug fix | `main` | Prefer when review isolation helps. |
+| `hotfix/*` | Urgent production repair | `main` | Still requires focused validation and staging gate unless owner waives. |
 
-| Branch | Purpose | Merges Into | Protection |
-|--------|---------|-------------|------------|
-| `main` | Production-ready code | — | Required: CI pass, 1 review (self-review OK for solo) |
-| `develop` | Integration/QA branch | `main` (via release) | Required: CI pass |
-| `feature/*` | New features | `develop` | CI must pass |
-| `hotfix/*` | Critical production fixes | `main` + `develop` | CI must pass |
-| `release/*` | Release preparation | `main` + `develop` | CI must pass, version bumped |
+Small local fixes may be made directly on `main` when the owner is driving the
+work and the promote pipeline will validate before production. Do not push,
+commit, deploy, or run production-impacting commands unless the user explicitly
+asks.
 
-## Workflow
+## Normal Development Loop
 
-### Normal Feature Development
 ```bash
-# 1. Create feature branch from develop
-git checkout develop
-git pull origin develop
-git checkout -b feature/NH-001-aiprovider-abstraction
-
-# 2. Work on feature (commit often)
-git add .
-git commit -m "feat(core): add AIProvider interface"
-
-# 3. Push and create PR to develop
-git push origin feature/NH-001-aiprovider-abstraction
-# → GitHub PR: feature/NH-001 → develop
-# → CI runs automatically
-# → Review + merge when green
-
-# 4. After merge, delete feature branch
-git branch -d feature/NH-001-aiprovider-abstraction
-```
-
-### Creating a Release
-```bash
-# 1. Create release branch from develop
-git checkout develop
-git pull origin develop
-git checkout -b release/v5.0.0
-
-# 2. Bump version, update changelog
-npm version 5.0.0 --no-git-tag-version
-# Update CHANGELOG.md
-
-# 3. PR to main
-git push origin release/v5.0.0
-# → GitHub PR: release/v5.0.0 → main
-# → CI runs, full test suite
-# → Merge triggers CD pipeline → production deploy
-
-# 4. Tag is created by GitHub Actions release workflow
-# 5. Merge main back to develop
-git checkout develop
-git merge main
-git push origin develop
-```
-
-### Hotfix (Critical Production Bug)
-```bash
-# 1. Branch from main (production)
+# 1. Start from main
 git checkout main
-git pull origin main
-git checkout -b hotfix/fix-garmin-auth-crash
+git pull --ff-only origin main
 
-# 2. Fix the bug
-git commit -m "fix(garmin): prevent MFA storm on concurrent 403s"
+# 2. Optional branch for isolated work
+git checkout -b codex/<short-task>
 
-# 3. PR to main (fast-track, skip develop)
-git push origin hotfix/fix-garmin-auth-crash
-# → PR to main, CI runs, deploy on merge
+# 3. Make the change, then inspect the diff
+git diff --stat
+git diff
 
-# 4. Also merge to develop
-git checkout develop
-git merge hotfix/fix-garmin-auth-crash
-git push origin develop
+# 4. Run the required focused checks from the changed-area classifier
+scripts/changed-area-classifier.sh --markdown
 ```
+
+Run tests only when the task or owner asks for validation, or when the current
+release/process doc requires it. When tests are run, record the exact commands
+and pass/fail counts in the PR, QA report, or release evidence.
+
+## Release Workflow
+
+Production promotion is local-script driven:
+
+1. Prepare/verify the candidate with the relevant release scripts from
+   `DEPLOY.md` and `docs/release/production-promotion-checklist-v2.md`.
+2. Deploy the exact candidate to staging with `./scripts/deploy-staging.sh`.
+3. Run the required staging smoke suite. The expected check count is
+   release-dependent; read `docs/release/risk-based-release-gate-matrix.md` and
+   the generated smoke evidence instead of copying historical counts.
+4. Promote with `./scripts/promote-to-prod.sh`.
+5. Verify production health, PM2 state, public health endpoints, and any scoped
+   authenticated probes required by the changed area.
+6. Update `docs/release/CURRENT_RELEASE_STATE.md` and
+   `docs/release/current-release-index.md`.
+
+Do not use the retired `develop -> release/* -> main` flow.
 
 ## Commit Convention
 
-Format: `type(scope): description`
+Format:
+
+```text
+type(scope): description
+```
+
+Common types:
 
 | Type | When |
-|------|------|
+|---|---|
 | `feat` | New feature |
 | `fix` | Bug fix |
-| `refactor` | Code change that neither fixes nor adds |
+| `refactor` | Code change that neither fixes nor adds behavior |
 | `test` | Adding or updating tests |
-| `docs` | Documentation only |
-| `ci` | CI/CD pipeline changes |
-| `chore` | Maintenance (deps, config) |
+| `docs` | Documentation-only change |
+| `ci` | CI/CD pipeline change |
+| `chore` | Maintenance, dependencies, config |
 | `perf` | Performance improvement |
-| `style` | Code style (formatting, no logic change) |
+| `style` | Formatting only, no logic change |
 
 Examples:
-```
-feat(core): add AIProvider interface with Claude/GPT/Gemini support
-fix(router): handle empty message in keyword match
-test(classifier): add PT-BR keyword matching tests
-ci(github): add production deploy workflow with rollback
-docs(readme): update setup instructions for Nexus Hub
-refactor(services): extract StorageProvider from direct SQLite calls
-```
 
-## Notion Integration
-
-Every release and deploy creates a record in the **Nexus Hub — Releases** Notion database with:
-- Version number
-- Deploy status (✅ Success / ❌ Failed)
-- Type (Release / Deploy / Rollback / Hotfix)
-- Date
-- Commit SHA
-- Release notes
+```text
+feat(training): expose load snapshot read model
+fix(secretary): prevent duplicate provider event retry
+test(decision-center): cover terminal dedupe replay
+docs(release): refresh current production state
+```
 
 ## Environment Mapping
 
-| Branch | Environment | Server | Auto-Deploy |
-|--------|-------------|--------|-------------|
-| `main` | Production | serverdominguez | ✅ On merge |
-| `develop` | Staging/QA | (same server, future: separate) | Manual |
-| `feature/*` | Local dev | localhost | — |
+| Environment | Source | Deployment |
+|---|---|---|
+| Local dev | current checkout | `scripts/local-up.sh`, cockpit, focused local commands |
+| Staging | exact candidate from `main` or short-lived branch | `./scripts/deploy-staging.sh` |
+| Production | validated release candidate | `./scripts/promote-to-prod.sh` |
+
+## Documentation Requirements
+
+- Current production truth lives in `docs/release/CURRENT_RELEASE_STATE.md`.
+- The active release index lives in `docs/release/current-release-index.md`.
+- One-off QA reports should stay under `/tmp` or PR comments unless the release
+  index intentionally links them as durable evidence.
+- If branch or release rules change, update this file, `CLAUDE.md`, `DEPLOY.md`,
+  and the relevant `docs/release/*` process docs in the same change.

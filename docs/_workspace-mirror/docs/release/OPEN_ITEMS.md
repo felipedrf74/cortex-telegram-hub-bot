@@ -23,6 +23,7 @@ closable without explicit authorization and live credentials/devices.
 
 | ID | Severity | Area | Status | Next step |
 | --- | --- | --- | --- | --- |
+| TR-REDESIGN-GATES | P1 | training redesign | IMPLEMENTED / CODEX GATES PENDING | Full zone redesign implemented: engine `training-redesign/phase-0-backend` (release:verify:full clean) + iOS `training-redesign/retirement` (merged tracks, suite green modulo documented noise). Felipe triggers Codex gates Q0-Q3 (work orders in iOS `docs/qa/work-orders/WO-training-redesign-q*.md`); merge to main after Q3 sign-off. Parked v1.1 follow-ups listed in the Q3 order. |
 | PHASE2B5-CHAT-FASTPATH | P2 | chat architecture | PARKED / REOPEN TRIGGER ONLY | Reopen only if beta usage shows fastpath cache/coalescing bugs, a third real fastpath implementation appears, or a planned feature needs a unified iOS/Telegram/WebSocket fastpath. |
 | GAP-CAL-1 | P1 | secretary | PARTIAL | Conflict-detection cron emits NotificationIntent, but broader Telegram-only cron migration remains open. |
 | GAP-FIN-2 | P1 | finance | OPEN / OWNER DECISION REQUIRED | Decide non-Brazil finance jurisdiction model and behavior contract. |

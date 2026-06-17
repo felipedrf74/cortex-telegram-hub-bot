@@ -541,7 +541,7 @@ markdown-outside-approved-current-or-archive-location: 350
 test-count-literal-outside-current-report: 154
 ```
 
-This is still a FAIL_BASELINE item. The seven workspace mirror misses from the previous report were fixed by running `engine/scripts/workspace-docs-mirror.sh`; the Phases 0-15 prompt's four broken shorthand retrospective-doc links now point at the real catalog docs; and the exact Phases 0-15 prompt/report/iOS fixture artifacts are registered as intentional current QA documents in `scripts/audit-docs.mjs`.
+This is still a FAIL_BASELINE item. The seven workspace mirror misses from the previous report were fixed by running `scripts/workspace-docs-mirror.sh`; the Phases 0-15 prompt's four broken shorthand retrospective-doc links now point at the real catalog docs; and the exact Phases 0-15 prompt/report/iOS fixture artifacts are registered as intentional current QA documents in `scripts/audit-docs.mjs`.
 
 Docs-audit warning triage:
 
