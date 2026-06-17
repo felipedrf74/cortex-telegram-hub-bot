@@ -4,7 +4,10 @@ import {
   prepareTrainingPlanForQualityGate,
 } from '../../src/services/coach-kernel/training-plan-quality-gate';
 import { EXERCISE_LIBRARY } from '../../src/services/coach-kernel/training-taxonomy';
-import type { TrainingPlanSpec } from '../../src/services/training-plan-spec';
+import {
+  buildTrainingPlanSpec,
+  type TrainingPlanSpec,
+} from '../../src/services/training-plan-spec';
 
 const fiveDayHypertrophySpec: TrainingPlanSpec = {
   userId: '42',
@@ -326,6 +329,38 @@ describe('training-plan-quality-gate', () => {
       durationMinutes: 45,
     });
     expect(weekOneStrengthSessions(result.planData)).toHaveLength(2);
+  });
+
+  it('does not block beginner four-week strength plans that do not yet need a scheduled deload', () => {
+    const spec = buildTrainingPlanSpec({
+      userId: 12,
+      objective: 'Beginner strength plan, dumbbells only',
+      daysPerWeek: 3,
+      startDate: '2026-06-22',
+      equipmentProfileLabel: 'dumbbells',
+      availableEquipment: ['dumbbells'],
+      fitnessProfile: { experience_level: 'Beginner' },
+      gymProfile: { equipment_access: 'Dumbbells' },
+      durationWeeks: 4,
+    });
+    const result = prepareTrainingPlanForQualityGate(
+      {
+        sport: 'gym',
+        weeks: [
+          { weekNumber: 1, focus: 'base', sessions: [] },
+          { weekNumber: 2, focus: 'base', sessions: [] },
+          { weekNumber: 3, focus: 'build', sessions: [] },
+          { weekNumber: 4, focus: 'build', sessions: [] },
+        ],
+      },
+      spec,
+    );
+
+    expect(spec.progressionModel.deloadPolicy).toMatchObject({
+      enabled: false,
+    });
+    expect(result.validation.passed).toBe(true);
+    expect(result.validation.errors.map((error) => error.code)).not.toContain('progression_model_integrity');
   });
 
   it('aligns deload progression with focus=deload instead of fixed week modulo', () => {

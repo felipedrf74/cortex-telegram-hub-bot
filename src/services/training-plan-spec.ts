@@ -208,6 +208,12 @@ function buildProgressionModel(
 ): ProgressionModel {
   const weekCount = Math.max(1, Math.round(Number.isFinite(durationWeeks) ? Number(durationWeeks) : 4));
   const beginner = experienceLevel === 'beginner' || experienceLevel === 'novice';
+  const deloadCadence = beginner
+    ? 5
+    : experienceLevel === 'advanced'
+      ? 3
+      : 4;
+  const deloadEnabled = weekCount >= deloadCadence;
   const type: ProgressionModel['type'] = beginner
     ? 'rir_progression'
     : goal === 'strength'
@@ -221,8 +227,8 @@ function buildProgressionModel(
     type,
     weekCount,
     deloadPolicy: {
-      enabled: weekCount >= 4,
-      ...(weekCount >= 4 ? { everyNWeeks: 4 } : {}),
+      enabled: deloadEnabled,
+      ...(deloadEnabled ? { everyNWeeks: deloadCadence } : {}),
       trigger: beginner ? 'soreness_high' : 'readiness_low',
     },
   };
