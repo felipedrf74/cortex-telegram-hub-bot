@@ -877,6 +877,56 @@ describe('generateTrainingPlanForUser', () => {
     expect(mockPersistGeneratedTrainingPlan).not.toHaveBeenCalled();
   });
 
+  it('does not synthesize run volume for pure strength preview requests', async () => {
+    mockBuildTrainingEquipmentAdaptation.mockReturnValue({
+      equipmentProfile: 'dumbbells',
+      canonicalProfile: { items: ['dumbbells'] },
+    });
+    mockBuildCoachKernelTrainingPlan.mockReturnValue({
+      planName: 'Dumbbell Strength',
+      sport: 'gym',
+      weeks: [1, 2, 3, 4].map((weekNumber) => ({
+        weekNumber,
+        focus: weekNumber === 4 ? 'deload' : 'base',
+        intensityPct: weekNumber === 4 ? 55 : 70,
+        sessions: [],
+      })),
+    });
+
+    const result = await generateTrainingPlanForUser({
+      userId: 12,
+      tenantId: 12,
+      objective: 'Beginner strength plan, dumbbells only',
+      durationWeeks: 4,
+      sessionsPerWeek: 3,
+      strengthSessionsPerWeek: 3,
+      previewOnly: true,
+      calendarSource: null,
+    });
+
+    expect(result.status).toBe('preview');
+    expect(mockBuildCoachKernelTrainingPlan).toHaveBeenCalledWith(expect.objectContaining({
+      objective: 'Beginner strength plan, dumbbells only',
+      sessionsPerWeek: 3,
+      runSessionsPerWeek: undefined,
+      strengthSessionsPerWeek: 3,
+    }));
+    if (result.status === 'preview') {
+      expect(result.data.weeklyTargets).toMatchObject({
+        sessionsPerWeek: 3,
+        runSessionsPerWeek: null,
+        strengthSessionsPerWeek: 3,
+      });
+      expect(result.data.totalSessions).toBe(12);
+      expect(result.data.phaseRoadmap).toHaveLength(4);
+      expect(result.data.phaseRoadmap.every((week) => week.sessionCount === 3)).toBe(true);
+      expect(result.data.blockers).not.toEqual(expect.arrayContaining([
+        expect.objectContaining({ code: 'progression_model_integrity' }),
+      ]));
+    }
+    expect(mockPersistGeneratedTrainingPlan).not.toHaveBeenCalled();
+  });
+
   it('falls back to the deterministic template when the coach kernel fails', async () => {
     mockBuildCoachKernelTrainingPlan.mockImplementation(() => {
       throw new Error('kernel unavailable');

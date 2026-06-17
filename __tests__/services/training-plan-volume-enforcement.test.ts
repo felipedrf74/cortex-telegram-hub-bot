@@ -225,6 +225,23 @@ describe('training-plan-volume-enforcement', () => {
     expect(sessions.filter((session) => session.sessionType === 'run')).toHaveLength(2);
   });
 
+  it('does not add implicit runs to pure gym requests when run volume is absent', () => {
+    const result = enforceRequestedTrainingPlanVolume(
+      { sport: 'gym', weeks: [{ weekNumber: 1, sessions: [] }] },
+      {
+        sessionsPerWeek: 3,
+        strengthSessionsPerWeek: 3,
+        preferredCardioTime: '07:00',
+        preferredStrengthTime: '12:00',
+        startDate: '2026-06-22',
+      },
+    );
+
+    const sessions = result.weeks?.[0]?.sessions ?? [];
+    expect(sessions).toHaveLength(3);
+    expect(sessions.every((session) => session.sessionType === 'gym')).toBe(true);
+  });
+
   it('spreads duplicate same-type sessions before allowing two-a-days', () => {
     const result = enforceRequestedTrainingPlanVolume(
       {

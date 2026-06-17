@@ -33,8 +33,11 @@ import {
   type BusyWindow,
 } from './training-schedule-utils';
 import {
+  objectiveNeedsCyclingProfile,
   objectiveNeedsGymProfile,
   objectiveNeedsRunningProfile,
+  objectiveNeedsSwimProfile,
+  objectiveNeedsTriathlonProfiles,
   resolveObjectiveProfileRequirement,
 } from './training-profile-requirements';
 import { buildDeterministicTrainingPlan } from './training-fallback-plan';
@@ -320,7 +323,7 @@ async function runPrePersistCancellationSaga(userId: number, tenantId: number): 
 
 export interface TrainingPlanWeeklyTargets {
   sessionsPerWeek: number;
-  runSessionsPerWeek: number;
+  runSessionsPerWeek: number | null;
   strengthSessionsPerWeek: number;
   bikeSessionsPerWeek: number | null;
   swimSessionsPerWeek: number | null;
@@ -515,12 +518,21 @@ export async function generateTrainingPlanForUser(
   });
 
   const normalizedSessionsPerWeek = clampNumber(sessionsPerWeek, 5, 3, 7);
+  const objectiveHasRunning = objectiveNeedsRunningProfile(objective);
+  const objectiveHasGym = objectiveNeedsGymProfile(objective);
+  const objectiveHasCycling = objectiveNeedsCyclingProfile(objective);
+  const objectiveHasSwimming = objectiveNeedsSwimProfile(objective);
+  const objectiveHasTriathlon = objectiveNeedsTriathlonProfiles(objective);
+  const explicitRunSessionsPerWeek = normalizeOptionalSessionTarget(runSessionsPerWeek, 0, 7);
   const normalizedRunSessionsPerWeek =
-    normalizeOptionalSessionTarget(runSessionsPerWeek, 0, 7) ?? normalizedSessionsPerWeek;
+    explicitRunSessionsPerWeek ?? (objectiveHasRunning && !objectiveHasTriathlon
+      ? normalizedSessionsPerWeek
+      : undefined);
   const normalizedBikeSessionsPerWeek = normalizeOptionalSessionTarget(bikeSessionsPerWeek, 0, 7);
   const normalizedSwimSessionsPerWeek = normalizeOptionalSessionTarget(swimSessionsPerWeek, 0, 7);
   const normalizedStrengthSessionsPerWeek = clampNumber(strengthSessionsPerWeek, 0, 0, 6);
-  const gymOnlyObjective = objectiveNeedsGymProfile(objective) && !objectiveNeedsRunningProfile(objective);
+  const gymOnlyObjective =
+    objectiveHasGym && !objectiveHasRunning && !objectiveHasCycling && !objectiveHasSwimming && !objectiveHasTriathlon;
   const effectiveStrengthSessionsPerWeek = normalizedStrengthSessionsPerWeek > 0
     ? normalizedStrengthSessionsPerWeek
     : gymOnlyObjective
@@ -848,7 +860,7 @@ export async function generateTrainingPlanForUser(
         resolvedStartDate: startStr,
         weeklyTargets: buildWeeklyTargets({
           sessionsPerWeek: normalizedSessionsPerWeek,
-          runSessionsPerWeek: normalizedRunSessionsPerWeek,
+          runSessionsPerWeek: normalizedRunSessionsPerWeek ?? null,
           strengthSessionsPerWeek: effectiveStrengthSessionsPerWeek,
           bikeSessionsPerWeek: normalizedBikeSessionsPerWeek,
           swimSessionsPerWeek: normalizedSwimSessionsPerWeek,
@@ -1021,7 +1033,7 @@ export async function generateTrainingPlanForUser(
       preferredStrengthTime: normalizedPreferredStrengthTime,
       weeklyTargets: buildWeeklyTargets({
         sessionsPerWeek: normalizedSessionsPerWeek,
-        runSessionsPerWeek: normalizedRunSessionsPerWeek,
+        runSessionsPerWeek: normalizedRunSessionsPerWeek ?? null,
         strengthSessionsPerWeek: effectiveStrengthSessionsPerWeek,
         bikeSessionsPerWeek: normalizedBikeSessionsPerWeek,
         swimSessionsPerWeek: normalizedSwimSessionsPerWeek,
