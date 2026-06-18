@@ -27,6 +27,7 @@ interface DashboardCalendarEvent {
   end?: string;
   title?: string;
   source?: string | null;
+  isAllDay?: boolean;
 }
 
 interface DashboardHomeSource {
@@ -160,6 +161,7 @@ function hasHomeSkillAccess(
 function selectNextEvent(events: Array<{ start?: string; end?: string } & Record<string, any>>) {
   const nowMinutes = currentLocalMinutes();
   const ongoing = events.find((event) => {
+    if (!isTimedCalendarEvent(event)) return false;
     const start = timeToMinutes(event.start);
     const end = timeToMinutes(event.end);
     return start != null && end != null && start <= nowMinutes && nowMinutes < end;
@@ -167,25 +169,27 @@ function selectNextEvent(events: Array<{ start?: string; end?: string } & Record
   if (ongoing) return ongoing;
 
   const upcoming = events.find((event) => {
+    if (!isTimedCalendarEvent(event)) return false;
     const start = timeToMinutes(event.start);
     return start != null && start > nowMinutes;
   });
-  return upcoming ?? events[0] ?? null;
+  return upcoming ?? null;
 }
 
 function buildSecretaryPreviewItems(
-  events: Array<{ id?: string; start?: string; end?: string; title?: string; source?: string | null }>,
+  events: Array<{ id?: string; start?: string; end?: string; title?: string; source?: string | null; isAllDay?: boolean }>,
   language: Lang,
 ): SecretaryPreviewItemModel[] {
   const nowMinutes = currentLocalMinutes();
   return events.slice(0, 3).map((event, index) => {
     const start = timeToMinutes(event.start);
     const end = timeToMinutes(event.end);
-    const isNow = start != null && end != null && start <= nowMinutes && nowMinutes < end;
-    const isPast = end != null && nowMinutes >= end;
+    const timed = isTimedCalendarEvent(event);
+    const isNow = timed && start != null && end != null && start <= nowMinutes && nowMinutes < end;
+    const isPast = timed && end != null && nowMinutes >= end;
     return {
       id: String(event.id ?? `event-${index}`),
-      time: formatEventRange(event.start, event.end),
+      time: formatEventRange(event.start, event.end, event.isAllDay, language),
       title: localizeTrainingTitle(event.title, null, language) ?? String(event.title ?? '(No title)'),
       source: event.source ?? null,
       isNow,
@@ -195,7 +199,7 @@ function buildSecretaryPreviewItems(
 }
 
 export function buildSecretarySummary(opts: {
-  events: Array<{ title?: string; start?: string; end?: string }>;
+  events: Array<{ title?: string; start?: string; end?: string; isAllDay?: boolean }>;
   tasksDue: number;
   overdueTasks: number;
   hasCalendarUnavailable: boolean;
@@ -221,6 +225,7 @@ export function buildSecretarySummary(opts: {
 
   const nowMinutes = currentLocalMinutes();
   const ongoing = opts.events.find((event) => {
+    if (!isTimedCalendarEvent(event)) return false;
     const start = timeToMinutes(event.start);
     const end = timeToMinutes(event.end);
     return start != null && end != null && start <= nowMinutes && nowMinutes < end;
@@ -235,6 +240,7 @@ export function buildSecretarySummary(opts: {
   }
 
   const upcoming = opts.events.find((event) => {
+    if (!isTimedCalendarEvent(event)) return false;
     const start = timeToMinutes(event.start);
     return start != null && start > nowMinutes;
   });
@@ -710,7 +716,20 @@ function quantifiedLabel(
   return `${count} ${count === 1 ? singularEN : pluralEN}`;
 }
 
-function formatEventRange(start?: string | null, end?: string | null): string {
+function isTimedCalendarEvent(event: { start?: string | null; end?: string | null; isAllDay?: boolean }): boolean {
+  if (event.isAllDay === true) return false;
+  if (isDateOnlyBoundary(event.start) || isDateOnlyBoundary(event.end)) return false;
+  return true;
+}
+
+function isDateOnlyBoundary(value?: string | null): boolean {
+  return typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value.trim());
+}
+
+function formatEventRange(start?: string | null, end?: string | null, isAllDay = false, language: Lang = 'en-US'): string {
+  if (isAllDay || isDateOnlyBoundary(start) || isDateOnlyBoundary(end)) {
+    return localizePT(language, 'Dia inteiro', 'All day');
+  }
   if (start && end) return `${start}–${end}`;
   return start ?? end ?? '';
 }

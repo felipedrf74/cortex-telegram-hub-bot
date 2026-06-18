@@ -255,6 +255,87 @@ describe('Home orchestration focus helpers', () => {
     expect(dial.warningCodes).not.toContain('SLEEP_DATA_UNAVAILABLE');
   });
 
+  it('keeps all-day calendar markers out of day dial occupied minutes', () => {
+    testDb.prepare(`
+      INSERT INTO apple_health_data (user_id, date, data_type, data_json, source)
+      VALUES (?, ?, 'sleep', ?, 'apple_health')
+    `).run(
+      42,
+      '2026-06-18',
+      JSON.stringify({
+        intervals: [
+          {
+            stage: 'asleepCore',
+            start: '2026-06-18T00:00:00.000Z',
+            end: '2026-06-18T04:00:00.000Z',
+          },
+        ],
+      }),
+    );
+
+    const dial = buildHomeDayDial({
+      userId: 42,
+      date: '2026-06-18',
+      timezone: 'UTC',
+      calendarEvents: [
+        {
+          id: 'outlook-checkin',
+          title: 'Check-in',
+          start: '00:00',
+          end: '00:00',
+          rawStart: '2026-06-18T00:00:00.0000000',
+          rawEnd: '2026-06-19T00:00:00.0000000',
+          isAllDay: true,
+          source: 'outlook',
+        } as any,
+        {
+          id: 'meet-1',
+          title: 'Timed meeting',
+          start: '2026-06-18T10:00:00.000Z',
+          end: '2026-06-18T10:30:00.000Z',
+          source: 'outlook',
+        } as any,
+      ],
+    });
+
+    expect(dial.totals.find((total) => total.kind === 'meet')?.minutes).toBe(30);
+    expect(dial.totals.find((total) => total.kind === 'sleep')?.minutes).toBe(240);
+    expect(dial.totals.find((total) => total.kind === 'open')?.minutes).toBe(1170);
+    expect(dial.segments.some((segment) => segment.title === 'Check-in')).toBe(false);
+  });
+
+  it('normalizes overlapping day dial intervals so totals never exceed the day', () => {
+    const dial = buildHomeDayDial({
+      userId: 42,
+      date: '2026-06-18',
+      timezone: 'UTC',
+      calendarEvents: [
+        {
+          id: 'focus-1',
+          title: 'Focus block',
+          start: '2026-06-18T10:00:00.000Z',
+          end: '2026-06-18T12:00:00.000Z',
+          category: 'focus',
+        } as any,
+        {
+          id: 'meet-1',
+          title: 'Team sync',
+          start: '2026-06-18T11:00:00.000Z',
+          end: '2026-06-18T13:00:00.000Z',
+        } as any,
+      ],
+    });
+
+    const occupied = dial.totals
+      .filter((total) => total.kind !== 'open' && total.unavailable !== true)
+      .reduce((sum, total) => sum + total.minutes, 0);
+
+    expect(dial.totals.find((total) => total.kind === 'focus')?.minutes).toBe(120);
+    expect(dial.totals.find((total) => total.kind === 'meet')?.minutes).toBe(60);
+    expect(dial.totals.find((total) => total.kind === 'open')?.minutes).toBe(1260);
+    expect(occupied + (dial.totals.find((total) => total.kind === 'open')?.minutes ?? 0)).toBe(1440);
+  });
+
   it('builds day dial sleep totals from HealthKit sleepIntervals payloads', () => {
     testDb.prepare(`
       INSERT INTO apple_health_data (user_id, date, data_type, data_json, source)

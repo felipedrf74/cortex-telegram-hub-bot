@@ -689,6 +689,37 @@ describe('Dashboard API route', () => {
     expect(res.body.data.skillQueue[0]?.whyNow).toBeTruthy();
   });
 
+  it('renders all-day calendar markers without treating them as the current block', async () => {
+    mockOutlookCalendarConfigured.mockReturnValue(true);
+    mockOutlookCalendarEvents.mockResolvedValue([
+      {
+        id: 'checkin',
+        subject: 'Check-in do(a) Dreamland Apartments',
+        start: { dateTime: todayAt(0) },
+        end: { dateTime: todayAt(0) },
+        isAllDay: true,
+      },
+      {
+        id: 'walk',
+        subject: 'Wake up / Prepare for walk',
+        start: { dateTime: todayAt(5) },
+        end: { dateTime: todayAt(5, 30) },
+      },
+    ]);
+
+    const res = await dispatch(4, { 'x-language': 'en' }, '/home');
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body.ok).toBe(true);
+    expect(res.body.data.secretaryPreview.items[0]).toMatchObject({
+      title: 'Check-in do(a) Dreamland Apartments',
+      time: 'All day',
+      isNow: false,
+      isPast: false,
+    });
+    expect(res.body.data.secretaryPreview.summary).not.toContain('Now: Check-in do(a) Dreamland Apartments');
+  });
+
   it('passes the authenticated tenant scope into the home Daily Brief', async () => {
     const res = await dispatch(4, {}, '/home', 44);
 

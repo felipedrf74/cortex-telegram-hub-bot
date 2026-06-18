@@ -47,6 +47,7 @@ type CalendarLikeEvent = {
   end?: string;
   rawStart?: string;
   rawEnd?: string;
+  isAllDay?: boolean;
   source?: string | null;
   categories?: string[] | null;
   category?: string | null;
@@ -71,6 +72,7 @@ export function buildHomeDayDial(input: {
 
   for (const event of input.calendarEvents || []) {
     if (isAppleHealthSleepEvent(event)) continue;
+    if (isAllDayCalendarEvent(event)) continue;
     const clipped = clipToDay(event.rawStart ?? event.start, event.rawEnd ?? event.end, dayStart, dayEnd, timezone);
     if (!clipped) continue;
     const kind = classifyEvent(event);
@@ -102,6 +104,7 @@ export function buildHomeDayDial(input: {
     minutes: segment.minutes,
     title: 'Sleep',
   })));
+  const resolvedSegments = resolveOverlappingSegments(segments, dayStart, dayEnd, timezone);
   const warningCodes: string[] = [];
   const warnings: string[] = [];
   if (sleepSegments.length === 0) {
@@ -109,9 +112,9 @@ export function buildHomeDayDial(input: {
     warnings.push('Sleep data is unavailable for this day.');
   }
 
-  const occupiedMinutes = clampMinutes(sumMinutes(segments.filter((segment) => segment.kind !== 'open')), 0, 1440);
+  const occupiedMinutes = clampMinutes(sumMinutes(resolvedSegments.filter((segment) => segment.kind !== 'open')), 0, 1440);
   if (occupiedMinutes < 1440) {
-    segments.push({
+    resolvedSegments.push({
       kind: 'open',
       start: dayStart.toUTC().toISO()!,
       end: dayEnd.toUTC().toISO()!,
@@ -121,7 +124,7 @@ export function buildHomeDayDial(input: {
   }
 
   const totals = ORDER.map((kind) => {
-    const minutes = clampMinutes(sumMinutes(segments.filter((segment) => segment.kind === kind)), 0, 1440);
+    const minutes = clampMinutes(sumMinutes(resolvedSegments.filter((segment) => segment.kind === kind)), 0, 1440);
     return {
       kind,
       minutes,
@@ -134,7 +137,7 @@ export function buildHomeDayDial(input: {
     date: dayStart.toISODate()!,
     timezone,
     generatedAt: DateTime.utc().toISO()!,
-    segments: segments.sort((a, b) => a.start.localeCompare(b.start)),
+    segments: resolvedSegments.sort((a, b) => a.start.localeCompare(b.start)),
     totals,
     warningCodes,
     warnings,
@@ -196,6 +199,110 @@ function isAppleHealthSleepEvent(event: CalendarLikeEvent): boolean {
   return event.source === 'apple_health'
     || String(event.category || '').toLowerCase() === 'sleep'
     || (Array.isArray(event.categories) && event.categories.some((category) => String(category).toLowerCase() === 'sleep'));
+}
+
+function isAllDayCalendarEvent(event: CalendarLikeEvent): boolean {
+  if (event.isAllDay === true) return true;
+  const start = String(event.rawStart ?? event.start ?? '').trim();
+  const end = String(event.rawEnd ?? event.end ?? '').trim();
+  return isDateOnlyBoundary(start) || isDateOnlyBoundary(end);
+}
+
+function isDateOnlyBoundary(value: string): boolean {
+  return /^\d{4}-\d{2}-\d{2}$/.test(value);
+}
+
+function resolveOverlappingSegments(
+  segments: DayDialSegment[],
+  dayStart: DateTime,
+  dayEnd: DateTime,
+  timezone: string,
+): DayDialSegment[] {
+  if (segments.length <= 1) return [...segments];
+  if (!hasOverlappingSegments(segments, dayStart, dayEnd, timezone)) return [...segments];
+
+  const occupied: Array<DayDialSegmentKind | null> = Array.from({ length: 1440 }, () => null);
+  for (const segment of segments) {
+    if (segment.kind === 'open') continue;
+    const clipped = clipToDay(segment.start, segment.end, dayStart, dayEnd, timezone);
+    if (!clipped) continue;
+    const startMinute = clampMinutes(Math.floor(clipped.start.diff(dayStart, 'minutes').minutes), 0, 1440);
+    const endMinute = clampMinutes(Math.ceil(clipped.end.diff(dayStart, 'minutes').minutes), 0, 1440);
+    for (let minute = startMinute; minute < endMinute; minute += 1) {
+      const current = occupied[minute];
+      if (current === null || segmentKindPriority(segment.kind) > segmentKindPriority(current)) {
+        occupied[minute] = segment.kind;
+      }
+    }
+  }
+
+  const resolved: DayDialSegment[] = [];
+  let cursor = 0;
+  while (cursor < occupied.length) {
+    const kind = occupied[cursor];
+    if (kind === null) {
+      cursor += 1;
+      continue;
+    }
+    let end = cursor + 1;
+    while (end < occupied.length && occupied[end] === kind) {
+      end += 1;
+    }
+    resolved.push({
+      kind,
+      start: dayStart.plus({ minutes: cursor }).toUTC().toISO()!,
+      end: dayStart.plus({ minutes: end }).toUTC().toISO()!,
+      minutes: end - cursor,
+      title: null,
+    });
+    cursor = end;
+  }
+
+  return resolved;
+}
+
+function hasOverlappingSegments(
+  segments: DayDialSegment[],
+  dayStart: DateTime,
+  dayEnd: DateTime,
+  timezone: string,
+): boolean {
+  const intervals = segments
+    .filter((segment) => segment.kind !== 'open')
+    .map((segment) => {
+      const clipped = clipToDay(segment.start, segment.end, dayStart, dayEnd, timezone);
+      if (!clipped) return null;
+      return {
+        start: Math.floor(clipped.start.diff(dayStart, 'minutes').minutes),
+        end: Math.ceil(clipped.end.diff(dayStart, 'minutes').minutes),
+      };
+    })
+    .filter((interval): interval is { start: number; end: number } => interval !== null && interval.end > interval.start)
+    .sort((a, b) => a.start - b.start || a.end - b.end);
+
+  let previousEnd = -1;
+  for (const interval of intervals) {
+    if (interval.start < previousEnd) return true;
+    previousEnd = Math.max(previousEnd, interval.end);
+  }
+  return false;
+}
+
+function segmentKindPriority(kind: DayDialSegmentKind): number {
+  switch (kind) {
+    case 'sleep':
+      return 60;
+    case 'train':
+      return 50;
+    case 'focus':
+      return 40;
+    case 'eat':
+      return 30;
+    case 'meet':
+      return 20;
+    case 'open':
+      return 0;
+  }
 }
 
 function clipToDay(
