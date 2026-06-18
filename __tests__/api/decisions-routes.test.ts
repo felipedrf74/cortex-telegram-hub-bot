@@ -22,6 +22,7 @@ const mockApplyDecisionTypeSuppression = vi.fn();
 const mockListDecisionTypeSuppressions = vi.fn();
 const mockSuppressDecisionType = vi.fn();
 const mockUnsuppressDecisionType = vi.fn();
+const mockMaterializeDecisionCenterDailyAttention = vi.fn();
 const mockCaptureError = vi.hoisted(() => vi.fn());
 
 vi.mock('../../src/services/decision-center', () => ({
@@ -75,6 +76,10 @@ const mockNotificationCacheInvalidation = vi.hoisted(() => ({
 
 vi.mock('../../src/services/notification-cache-invalidation', () => ({
   invalidateNotificationInboxCaches: (...args: unknown[]) => mockNotificationCacheInvalidation.invalidateNotificationInboxCaches(...args),
+}));
+
+vi.mock('../../src/services/decision-center-daily-attention', () => ({
+  materializeDecisionCenterDailyAttention: (...args: unknown[]) => mockMaterializeDecisionCenterDailyAttention(...args),
 }));
 
 vi.mock('../../src/utils/logger', () => ({
@@ -207,6 +212,7 @@ describe('Decision routes', () => {
     mockListDecisionTypeSuppressions.mockReset();
     mockSuppressDecisionType.mockReset();
     mockUnsuppressDecisionType.mockReset();
+    mockMaterializeDecisionCenterDailyAttention.mockReset();
     mockCaptureError.mockReset();
     mockNotificationCacheInvalidation.invalidateNotificationInboxCaches.mockReset();
 
@@ -214,6 +220,15 @@ describe('Decision routes', () => {
     // (flag OFF semantics) so the existing list assertions stay byte-identical.
     mockApplyDecisionTypeSuppression.mockImplementation((items: unknown) => items);
     mockListDecisionTypeSuppressions.mockReturnValue([]);
+    mockMaterializeDecisionCenterDailyAttention.mockResolvedValue({
+      status: 'skipped',
+      reason: 'no_task_attention_needed',
+      localDate: '2026-05-19',
+      timezone: 'Europe/Lisbon',
+      counts: { pending: 0, overdue: 0, dueToday: 0, highPriority: 0 },
+      dedupeKey: null,
+      decisionId: null,
+    });
 
     mockGetDecisionSummary.mockReturnValue({ openCount: 1, urgentCount: 0, todayCount: 1, ctaLabel: '1 Decision', previewItems: [], badgeCount: 1 });
     mockGetDecisionOverview.mockReturnValue({
@@ -262,23 +277,32 @@ describe('Decision routes', () => {
     expect(summary.body.data.ctaLabel).toBe('1 Decision');
     expect(summary.body.data.schemaVersion).toBeUndefined();
     expect(mockGetDecisionSummary).toHaveBeenCalledWith(7, 7, 3);
+    expect(mockMaterializeDecisionCenterDailyAttention).not.toHaveBeenCalled();
 
     const overview = await dispatch(router, 'GET', '/overview', { limit: 20, handledLimit: 4 });
     expect(overview.statusCode).toBe(200);
     expect(overview.body.data.topSuggestion.title).toBe('Schedule decision');
     expect(overview.body.data.schemaVersion).toBeUndefined();
+    expect(mockMaterializeDecisionCenterDailyAttention).toHaveBeenCalledWith({ userId: 7, tenantId: 7 });
     expect(mockGetDecisionOverview).toHaveBeenCalledWith(7, 7, { limit: 20, handledLimit: 4 });
+    expect(mockMaterializeDecisionCenterDailyAttention.mock.invocationCallOrder[0]).toBeLessThan(
+      mockGetDecisionOverview.mock.invocationCallOrder[0],
+    );
 
     const list = await dispatch(router, 'GET', '/', { limit: 10, status: 'all' });
     expect(list.statusCode).toBe(200);
     expect(list.body.data.count).toBe(1);
     expect(list.body.data.schemaVersion).toBeUndefined();
     expect(mockListDecisionItems).toHaveBeenCalledWith(7, 7, expect.objectContaining({ status: 'all', limit: 10 }));
+    expect(mockMaterializeDecisionCenterDailyAttention.mock.invocationCallOrder[1]).toBeLessThan(
+      mockListDecisionItems.mock.invocationCallOrder[0],
+    );
 
     mockListDecisionItems.mockClear();
     const activeList = await dispatch(router, 'GET', '/', { limit: 10 });
     expect(activeList.statusCode).toBe(200);
     expect(mockListDecisionItems).toHaveBeenCalledWith(7, 7, expect.objectContaining({ status: undefined, limit: 10 }));
+    expect(mockMaterializeDecisionCenterDailyAttention).toHaveBeenCalledTimes(3);
 
     const detail = await dispatch(router, 'GET', '/nc_1');
     expect(detail.statusCode).toBe(200);
@@ -305,6 +329,74 @@ describe('Decision routes', () => {
     expect(handled.statusCode).toBe(200);
     expect(handled.body.data.items[0].itemId).toBe('hbn_1');
     expect(mockListHandledByNexusItems).toHaveBeenCalledWith(7, 7, 5);
+  });
+
+  it('preserves overview and list behavior when daily task attention is flag-disabled upstream', async () => {
+    mockMaterializeDecisionCenterDailyAttention.mockResolvedValue({
+      status: 'skipped',
+      reason: 'flag_disabled',
+      localDate: '2026-05-19',
+      timezone: 'Europe/Lisbon',
+      counts: { pending: 0, overdue: 0, dueToday: 0, highPriority: 0 },
+      dedupeKey: null,
+      decisionId: null,
+    });
+    const router = decisionRoutes();
+
+    const overview = await dispatch(router, 'GET', '/overview');
+    const list = await dispatch(router, 'GET', '/');
+
+    expect(overview.statusCode).toBe(200);
+    expect(overview.body.data.topSuggestion.title).toBe('Schedule decision');
+    expect(list.statusCode).toBe(200);
+    expect(list.body.data.items).toHaveLength(1);
+    expect(mockMaterializeDecisionCenterDailyAttention).toHaveBeenCalledTimes(2);
+    expect(mockGetDecisionOverview).toHaveBeenCalledWith(7, 7, { limit: 80, handledLimit: 10 });
+    expect(mockListDecisionItems).toHaveBeenCalledWith(7, 7, expect.objectContaining({ limit: 80 }));
+  });
+
+  it('keeps repeated Decision Center opens bounded through the daily attention materializer contract', async () => {
+    mockMaterializeDecisionCenterDailyAttention.mockResolvedValue({
+      status: 'materialized',
+      reason: undefined,
+      localDate: '2026-05-19',
+      timezone: 'Europe/Lisbon',
+      counts: { pending: 3, overdue: 1, dueToday: 1, highPriority: 1 },
+      dedupeKey: 'secretary:daily-attention:tasks:7:7:2026-05-19',
+      decisionId: 'dc_task_attention',
+    });
+    const router = decisionRoutes();
+
+    const first = await dispatch(router, 'GET', '/overview');
+    const second = await dispatch(router, 'GET', '/overview');
+    const list = await dispatch(router, 'GET', '/');
+
+    expect(first.statusCode).toBe(200);
+    expect(second.statusCode).toBe(200);
+    expect(list.statusCode).toBe(200);
+    expect(first.body.data.items).toHaveLength(1);
+    expect(second.body.data.items).toHaveLength(1);
+    expect(list.body.data.items).toHaveLength(1);
+    expect(mockMaterializeDecisionCenterDailyAttention).toHaveBeenCalledTimes(3);
+    expect(mockMaterializeDecisionCenterDailyAttention).toHaveBeenNthCalledWith(1, { userId: 7, tenantId: 7 });
+    expect(mockMaterializeDecisionCenterDailyAttention).toHaveBeenNthCalledWith(2, { userId: 7, tenantId: 7 });
+    expect(mockMaterializeDecisionCenterDailyAttention).toHaveBeenNthCalledWith(3, { userId: 7, tenantId: 7 });
+  });
+
+  it('keeps overview and list reads available when daily task attention materialization rejects', async () => {
+    mockMaterializeDecisionCenterDailyAttention.mockRejectedValue(new Error('daily attention unavailable'));
+    const router = decisionRoutes();
+
+    const overview = await dispatch(router, 'GET', '/overview');
+    const list = await dispatch(router, 'GET', '/');
+
+    expect(overview.statusCode).toBe(200);
+    expect(overview.body.data.topSuggestion.title).toBe('Schedule decision');
+    expect(list.statusCode).toBe(200);
+    expect(list.body.data.items).toHaveLength(1);
+    expect(mockMaterializeDecisionCenterDailyAttention).toHaveBeenCalledTimes(2);
+    expect(mockGetDecisionOverview).toHaveBeenCalledWith(7, 7, { limit: 80, handledLimit: 10 });
+    expect(mockListDecisionItems).toHaveBeenCalledWith(7, 7, expect.objectContaining({ limit: 80 }));
   });
 
   it('keeps v2 schema fields opt-in and reads the full cursor universe through the service cap override', async () => {
@@ -355,16 +447,19 @@ describe('Decision routes', () => {
     expect(invalidLimit.statusCode).toBe(400);
     expect(invalidLimit.body.error.code).toBe('VALIDATION');
     expect(mockGetDecisionOverview).not.toHaveBeenCalled();
+    expect(mockMaterializeDecisionCenterDailyAttention).not.toHaveBeenCalled();
 
     const partialNumericLimit = await dispatch(router, 'GET', '/overview', { limit: '20abc' });
     expect(partialNumericLimit.statusCode).toBe(400);
     expect(partialNumericLimit.body.error.code).toBe('VALIDATION');
     expect(mockGetDecisionOverview).not.toHaveBeenCalled();
+    expect(mockMaterializeDecisionCenterDailyAttention).not.toHaveBeenCalled();
 
     const invalidHandledLimit = await dispatch(router, 'GET', '/overview', { handledLimit: '-1' });
     expect(invalidHandledLimit.statusCode).toBe(400);
     expect(invalidHandledLimit.body.error.code).toBe('VALIDATION');
     expect(mockGetDecisionOverview).not.toHaveBeenCalled();
+    expect(mockMaterializeDecisionCenterDailyAttention).not.toHaveBeenCalled();
 
     const clamped = await dispatch(router, 'GET', '/overview', { limit: '500', handledLimit: '500' });
     expect(clamped.statusCode).toBe(200);

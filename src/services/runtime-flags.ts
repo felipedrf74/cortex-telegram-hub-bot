@@ -190,6 +190,10 @@ export function isDecisionCenterGuidanceV1Enabled(env: RuntimeEnv = process.env,
   return scopedFlagEnabledByDefault(env, 'DECISION_CENTER_GUIDANCE_V1_ENABLED', scope);
 }
 
+export function isDecisionCenterDailyAttentionEnabled(env: RuntimeEnv = process.env, scope?: RuntimeFlagScope): boolean {
+  return scopedFlagEnabledByDefault(env, 'DECISION_CENTER_DAILY_ATTENTION_ENABLED', scope);
+}
+
 export function isDecisionCenterGuidanceSkillEnabled(
   sourceSkill: string | null | undefined,
   env: RuntimeEnv = process.env,

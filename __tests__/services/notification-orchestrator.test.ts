@@ -979,7 +979,7 @@ describe('Secretary Notification Orchestrator', () => {
     expect(() => performNotificationAction(valid.item!.itemId, 'mark_paid', 10, 10)).toThrow(/not allowed/);
   });
 
-  it('persists Decision Center context slots, timezone, locale, and reason codes for downstream enrichment', async () => {
+  it('persists Decision Center context slots, timezone, locale, reason codes, and task counts for downstream enrichment', async () => {
     const result = await createNotificationIntent(buildSkillNotificationFixtureIntent('secretary', 12, {
       dedupeKey: 'secretary:context-normalization',
       decisionContext: {
@@ -989,6 +989,7 @@ describe('Secretary Notification Orchestrator', () => {
           { startAt: '2026-05-08T14:00:00.000Z', endAt: '2026-05-08T15:00:00.000Z', label: '  Backup slot  ' },
         ],
         reasonCodes: [' training_schedule_request ', 'overcapacity'],
+        taskCounts: { pending: 5, overdue: 2, dueToday: 1, highPriority: 1 },
       },
     }));
 
@@ -1005,7 +1006,29 @@ describe('Secretary Notification Orchestrator', () => {
         label: 'Backup slot',
       }],
       reasonCodes: ['training_schedule_request', 'overcapacity'],
+      taskCounts: { pending: 5, overdue: 2, dueToday: 1, highPriority: 1 },
     });
+  });
+
+  it('drops unsafe Decision Center task counts while keeping valid count fields', async () => {
+    const result = await createNotificationIntent(buildSkillNotificationFixtureIntent('secretary', 13, {
+      dedupeKey: 'secretary:task-count-normalization',
+      decisionContext: {
+        recipe: 'daily_task_attention',
+        taskCounts: {
+          pending: Number.NaN,
+          overdue: -1,
+          dueToday: 1000,
+          highPriority: 2,
+        },
+      },
+    }));
+
+    const row = testDb.prepare('SELECT decision_context_json FROM notification_intents WHERE intent_id = ?').get(result.intent.intentId) as {
+      decision_context_json: string;
+    };
+    const context = JSON.parse(row.decision_context_json);
+    expect(context.taskCounts).toEqual({ highPriority: 2 });
   });
 
   it('provides deterministic skill fixtures for all notification-producing domains', () => {

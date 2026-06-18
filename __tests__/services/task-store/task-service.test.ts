@@ -77,6 +77,7 @@ import {
   completeTask,
   deleteTask,
   listTasks,
+  listTasksForUser,
   getTask,
 } from '../../../src/services/task-store/task-service';
 import {
@@ -289,5 +290,25 @@ describe('listTasks', () => {
 
     expect(listTasks(USER_ID, { status: 'pending' })).toHaveLength(0);
     expect(listTasks(USER_ID, { status: 'completed' })).toHaveLength(1);
+  });
+
+  it('listTasksForUser combines native Nexus tasks and unified synced-provider tasks through local reads', () => {
+    testDb.prepare('INSERT OR IGNORE INTO native_task_lists (user_id, name, is_default) VALUES (?, ?, 1)').run(USER_ID, 'Inbox');
+    const listId = (testDb.prepare('SELECT id FROM native_task_lists WHERE user_id = ?').get(USER_ID) as { id: number }).id;
+    testDb.prepare(`
+      INSERT INTO native_tasks (user_id, list_id, title, status, due_date_time, importance)
+      VALUES (?, ?, ?, 'notStarted', ?, 'high')
+    `).run(USER_ID, listId, 'Native private title', '2026-06-17');
+    testDb.prepare(`
+      INSERT INTO unified_tasks (user_id, provider, external_id, title, status, priority, due_date, project_name)
+      VALUES (?, 'ms_todo', 'ms-private-id', ?, 'pending', 3, ?, 'Microsoft To Do')
+    `).run(USER_ID, 'Synced private title', '2026-06-17');
+
+    const tasks = listTasksForUser(USER_ID, { status: 'pending' });
+
+    expect(tasks.map((task) => `${task.provider}:${task.title}`).sort()).toEqual([
+      'ms_todo:Synced private title',
+      'nexus:Native private title',
+    ]);
   });
 });

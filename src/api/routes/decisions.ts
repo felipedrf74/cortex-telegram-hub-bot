@@ -41,6 +41,7 @@ import { decodeDecisionCursor, paginateDecisions, sortDecisionsForKeyset } from 
 import type { DecisionListResponse } from '../../services/decision-center';
 import { isDecisionRefreshEnabled } from '../../services/runtime-flags';
 import { invalidateNotificationInboxCaches } from '../../services/notification-cache-invalidation';
+import { materializeDecisionCenterDailyAttention } from '../../services/decision-center-daily-attention';
 import { logger } from '../../utils/logger';
 
 function routeTenantId(
@@ -100,6 +101,17 @@ function decisionError(res: Response, err: unknown, fallbackCode = 'DECISION_ERR
   sendError(res, fallbackCode, 'Unable to process decision request', 400);
 }
 
+async function materializeDailyAttentionForDecisionRead(userId: number, tenantId: number): Promise<void> {
+  try {
+    await materializeDecisionCenterDailyAttention({ userId, tenantId });
+  } catch (err) {
+    logger.warn(
+      { errType: err instanceof Error ? err.name : typeof err, userId, tenantId },
+      'Decision route skipped daily attention materialization',
+    );
+  }
+}
+
 function positiveIntQuery(res: Response, raw: unknown, fallback: number, name: string, max: number): number | null {
   if (raw == null || raw === '') return fallback;
   const value = String(raw).trim();
@@ -146,6 +158,7 @@ export function decisionRoutes(): Router {
     if (limit == null) return;
     const handledLimit = positiveIntQuery(res, req.query.handledLimit, 10, 'handledLimit', 25);
     if (handledLimit == null) return;
+    await materializeDailyAttentionForDecisionRead(userId, tenantId);
     // BE-1 (Content Studio): optional skill-scoped overview. Absent param =>
     // byte-identical response to before.
     const sourceSkill = typeof req.query.sourceSkill === 'string' && req.query.sourceSkill.trim() !== ''
@@ -175,6 +188,7 @@ export function decisionRoutes(): Router {
     const type = typeof req.query.type === 'string' ? req.query.type as NotificationIntentType : undefined;
     const urgency = typeof req.query.urgency === 'string' ? req.query.urgency as DecisionUrgency : undefined;
     const { version, schemaVersion } = resolveDecisionApiVersion(authReq);
+    await materializeDailyAttentionForDecisionRead(userId, tenantId);
     // API v2 keyset cursor pagination — opt-in WITHIN v2 via ?cursor / ?pageSize. v1 and v2-without-cursor
     // responses are byte-identical to before (this branch only triggers on an explicit cursor/pageSize param).
     const cursorMode = version === 'v2' && (req.query.cursor !== undefined || req.query.pageSize !== undefined);

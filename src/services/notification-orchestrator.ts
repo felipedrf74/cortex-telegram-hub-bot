@@ -2411,7 +2411,25 @@ function normalizeDecisionContext(input: DecisionLogicContext | null | undefined
   assignContextBoolean(context, 'smoke', input.smoke);
   assignContextSlots(context, input.candidateSlots);
   assignContextReasonCodes(context, input.reasonCodes);
+  assignContextTaskCounts(context, input.taskCounts);
   return Object.keys(context).length ? context : null;
+}
+
+function assignContextTaskCounts(
+  context: DecisionLogicContext,
+  taskCounts: DecisionLogicContext['taskCounts'] | null | undefined,
+): void {
+  if (!taskCounts || typeof taskCounts !== 'object') return;
+  const counts: NonNullable<DecisionLogicContext['taskCounts']> = {};
+  for (const key of ['pending', 'overdue', 'dueToday', 'highPriority'] as const) {
+    const value = taskCounts[key];
+    if (Number.isInteger(value) && Number(value) >= 0 && Number(value) < 1000) {
+      counts[key] = Number(value);
+    }
+  }
+  if (Object.keys(counts).length > 0) {
+    context.taskCounts = counts;
+  }
 }
 
 function assignContextBoolean(

@@ -37,6 +37,12 @@ export interface DecisionLogicContext {
   locale?: string | null;
   recipe?: string | null;
   visibilityScope?: DecisionVisibilityScope | null;
+  taskCounts?: {
+    pending?: number | null;
+    overdue?: number | null;
+    dueToday?: number | null;
+    highPriority?: number | null;
+  } | null;
   internalOnly?: boolean | null;
   smoke?: boolean | null;
 }
@@ -610,6 +616,7 @@ function recipeForInput(input: DecisionLogicInput): DecisionLogicRecipe {
   if (input.type === 'sync_failure') return syncFailureRecipe(input);
   if (isOwnerAdminDecision(input)) return ownerAdminOpsRecipe(input);
   if (isOvercapacityDecision(input)) return overcapacityRecipe(input);
+  if (isDailyTaskAttentionDecision(input)) return dailyTaskAttentionRecipe(input);
   if (input.sourceSkill === 'secretary' || input.type === 'conflict_detected' || input.type === 'reflow_suggestion') {
     return secretaryRecipe(input);
   }
@@ -619,6 +626,150 @@ function recipeForInput(input: DecisionLogicInput): DecisionLogicRecipe {
   if (input.sourceSkill === 'cooking') return cookingRecipe(input);
   if (input.sourceSkill === 'chat') return chatRecipe(input);
   return genericRecipe(input);
+}
+
+function dailyTaskAttentionRecipe(input: DecisionLogicInput): DecisionLogicRecipe {
+  const pt = isPortugueseDecision(input);
+  const primary = primaryAction(input.actions);
+  const context = input.context ?? {};
+  const reasonCodes = new Set(context.reasonCodes ?? []);
+  const hasOverdue = context.sourceState === 'overdue_tasks' || reasonCodes.has('overdue_tasks');
+  const hasDueToday = reasonCodes.has('tasks_due_today');
+  const hasHighPriority = context.sourceState === 'important_tasks' || reasonCodes.has('high_priority_tasks');
+  const taskCounts = dailyTaskCountsFromContext(context);
+  const title = hasOverdue
+    ? (pt ? 'Limpar tarefas atrasadas' : 'Clear overdue tasks')
+    : (pt ? 'Escolher foco de tarefas de hoje' : 'Choose today\'s task focus');
+  const primaryFallback = hasOverdue
+    ? (pt ? 'Abrir tarefas atrasadas' : 'Open overdue tasks')
+    : (pt ? 'Abrir tarefas de hoje' : 'Open today\'s tasks');
+  const safePreviewBody = safeDailyTaskAttentionPreview({ pt, hasOverdue, hasDueToday, hasHighPriority, counts: taskCounts });
+
+  return {
+    title,
+    problemStatement: hasOverdue
+      ? (pt ? 'Há tarefas atrasadas que precisam de uma revisão curta antes de o resto do dia avançar.' : 'Overdue tasks need a short review before the rest of the day moves on.')
+      : (pt ? 'As tarefas de hoje precisam de uma escolha de foco para evitar dispersão.' : 'Today\'s tasks need a focus choice so the day does not scatter.'),
+    recommendation: hasOverdue
+      ? (pt ? 'Abra a lista de atrasos, escolha um pequeno lote e resolva o que destrava o dia primeiro.' : 'Open the overdue list, choose a small batch, and clear the work that unblocks the day first.')
+      : (pt ? 'Abra as tarefas de hoje e escolha o primeiro foco realista.' : 'Open today\'s tasks and choose the first realistic focus.'),
+    expectedEffect: hasOverdue
+      ? (pt ? 'O Nexus leva você para a lista filtrada de tarefas atrasadas sem concluir ou mover nada automaticamente.' : 'Nexus opens the filtered overdue task list without completing or moving anything automatically.')
+      : (pt ? 'O Nexus leva você para as tarefas de hoje sem alterar nenhuma tarefa automaticamente.' : 'Nexus opens today\'s task list without changing any task automatically.'),
+    impactIfIgnored: hasOverdue
+      ? (pt ? 'Tarefas atrasadas podem continuar competindo com decisões e compromissos novos.' : 'Overdue tasks can keep competing with new decisions and commitments.')
+      : (pt ? 'Tarefas importantes podem ficar sem prioridade clara até mais tarde.' : 'Important tasks may stay without a clear priority until later.'),
+    primaryActionLabel: concreteActionLabel(primary, primaryFallback),
+    secondaryActionLabels: secondaryActionLabels(input.actions, primary),
+    whySummary: safePreviewBody,
+    urgencyReason: hasOverdue
+      ? (pt ? 'Atrasos já passaram do prazo e merecem atenção antes de acumular mais pressão.' : 'Overdue work is already past due and deserves attention before more pressure builds.')
+      : (pt ? 'A escolha é para hoje, enquanto ainda há tempo para proteger o foco.' : 'The choice is for today, while there is still time to protect focus.'),
+    confidence: DECISION_CONFIDENCE_RUBRIC.highStructuredState,
+    relatedEntityReason: null,
+    why: {
+      facts: [
+        hasOverdue
+          ? (pt ? 'A leitura local encontrou pelo menos uma tarefa atrasada.' : 'The local read found at least one overdue task.')
+          : (pt ? 'A leitura local encontrou tarefas para hoje ou de alta prioridade.' : 'The local read found due-today or high-priority tasks.'),
+      ],
+      preferences: [],
+      rules: [
+        pt
+          ? 'Ações sobre tarefas pedem confirmação; este cartão só abre uma lista filtrada.'
+          : 'Task actions require confirmation; this card only opens a filtered list.',
+      ],
+      tradeoffs: [
+        pt
+          ? 'Agrupar atrasos reduz pressão sem fingir que o Nexus pode concluir tarefas por você.'
+          : 'Batching overdue work reduces pressure without pretending Nexus can complete tasks for you.',
+      ],
+      uncertainty: [],
+    },
+    whatWillChange: [{
+      item: pt ? 'Lista de tarefas' : 'Task list',
+      effect: hasOverdue
+        ? (pt ? 'Abrir o filtro de tarefas atrasadas.' : 'Open the overdue-task filter.')
+        : (pt ? 'Abrir o filtro de tarefas de hoje.' : 'Open the due-today task filter.'),
+      targetSkill: 'secretary',
+      verificationMethod: pt ? 'Conferir a lista filtrada no app.' : 'Check the filtered list in the app.',
+    }],
+    readBackVerifier: null,
+    automationEligibility: 'never',
+    autopilotPolicy: pt ? 'O Nexus não conclui nem reorganiza tarefas automaticamente por este cartão.' : 'Nexus does not complete or reorganize tasks automatically from this card.',
+    safePreviewTitle: title,
+    safePreviewBody,
+    riskIfIgnored: hasOverdue ? 'high' : 'medium',
+  };
+}
+
+function safeDailyTaskAttentionPreview(input: {
+  pt: boolean;
+  hasOverdue: boolean;
+  hasDueToday: boolean;
+  hasHighPriority: boolean;
+  counts: { overdue: number; dueToday: number; highPriority: number } | null;
+}): string {
+  if (input.counts) {
+    const phrases = [
+      input.counts.overdue > 0
+        ? localizedCountPhrase(input.counts.overdue, input.pt ? 'tarefa atrasada' : 'overdue task', input.pt ? 'tarefas atrasadas' : 'overdue tasks')
+        : null,
+      input.counts.dueToday > 0
+        ? localizedCountPhrase(input.counts.dueToday, input.pt ? 'tarefa para hoje' : 'task due today', input.pt ? 'tarefas para hoje' : 'tasks due today')
+        : null,
+      input.counts.highPriority > 0
+        ? localizedCountPhrase(input.counts.highPriority, input.pt ? 'tarefa importante' : 'high-priority task', input.pt ? 'tarefas importantes' : 'high-priority tasks')
+        : null,
+    ];
+    const joined = joinDailyTaskCountPhrases(phrases, input.pt);
+    if (joined) {
+      const verb = dailyTaskAttentionVerb(phrases, input.pt);
+      if (input.hasOverdue) return input.pt ? `${joined} ${verb} uma revisão curta.` : `${joined} ${verb} a short review.`;
+      return input.pt ? `${joined} ${verb} uma escolha de foco.` : `${joined} ${verb} a focus choice.`;
+    }
+  }
+  if (input.pt) {
+    if (input.hasOverdue && input.hasDueToday) return 'Tarefas atrasadas e de hoje precisam de uma revisão curta.';
+    if (input.hasOverdue) return 'Tarefas atrasadas precisam de uma revisão curta.';
+    if (input.hasHighPriority) return 'Tarefas importantes precisam de uma escolha de foco hoje.';
+    return 'Tarefas de hoje precisam de uma escolha de foco.';
+  }
+  if (input.hasOverdue && input.hasDueToday) return 'Overdue and due-today tasks need a short review.';
+  if (input.hasOverdue) return 'Overdue tasks need a short review.';
+  if (input.hasHighPriority) return 'Important tasks need a focus choice today.';
+  return 'Today\'s tasks need a focus choice.';
+}
+
+function dailyTaskCountsFromContext(context: DecisionLogicContext): { overdue: number; dueToday: number; highPriority: number } | null {
+  const counts = context.taskCounts;
+  if (!counts || typeof counts !== 'object') return null;
+  const overdue = boundedSafeCount(counts.overdue);
+  const dueToday = boundedSafeCount(counts.dueToday);
+  const highPriority = boundedSafeCount(counts.highPriority);
+  return overdue + dueToday + highPriority > 0 ? { overdue, dueToday, highPriority } : null;
+}
+
+function boundedSafeCount(value: unknown): number {
+  return Number.isInteger(value) && Number(value) > 0 && Number(value) < 1000 ? Number(value) : 0;
+}
+
+function localizedCountPhrase(count: number, singular: string, plural: string): string {
+  return `${count} ${count === 1 ? singular : plural}`;
+}
+
+function joinDailyTaskCountPhrases(values: Array<string | null>, pt: boolean): string {
+  const parts = values.filter((value): value is string => Boolean(value));
+  if (parts.length === 0) return '';
+  if (parts.length === 1) return parts[0];
+  if (parts.length === 2) return `${parts[0]} ${pt ? 'e' : 'and'} ${parts[1]}`;
+  return `${parts.slice(0, -1).join(', ')}, ${pt ? 'e' : 'and'} ${parts[parts.length - 1]}`;
+}
+
+function dailyTaskAttentionVerb(values: Array<string | null>, pt: boolean): string {
+  const parts = values.filter((value): value is string => Boolean(value));
+  if (parts.length === 1 && /^1\b/.test(parts[0])) return pt ? 'precisa de' : 'needs';
+  return pt ? 'precisam de' : 'need';
 }
 
 function overcapacityRecipe(input: DecisionLogicInput): DecisionLogicRecipe {
@@ -1130,9 +1281,18 @@ function isMutatingAction(action: NotificationActionButton): boolean {
 function requiresSecretaryRecommendation(input: DecisionLogicInput): boolean {
   if (input.type === 'sync_failure') return false;
   if (isOvercapacityDecision(input)) return false;
+  if (isDailyTaskAttentionDecision(input)) return false;
   return input.sourceSkill === 'secretary'
     || input.type === 'conflict_detected'
     || input.type === 'reflow_suggestion';
+}
+
+function isDailyTaskAttentionDecision(input: DecisionLogicInput): boolean {
+  return input.sourceSkill === 'secretary'
+    && (
+      input.context?.recipe === 'daily_task_attention'
+      || input.relatedEntityType === 'task_attention_day'
+    );
 }
 
 function isOvercapacityDecision(input: DecisionLogicInput): boolean {

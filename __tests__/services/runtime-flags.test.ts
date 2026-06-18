@@ -30,6 +30,7 @@ import {
   isContentModelQualityAuditDisabled,
   isDecisionCenterFatigueCapsEnabled,
   isDecisionCenterCommandBusEnabled,
+  isDecisionCenterDailyAttentionEnabled,
   isDecisionCenterGuidanceSkillEnabled,
   isDecisionCenterGuidanceV1Enabled,
   isDecisionChoiceOptionsEnabled,
@@ -110,6 +111,19 @@ describe('runtime-flags', () => {
     expect(isDecisionCenterGuidanceV1Enabled({
       DECISION_CENTER_GUIDANCE_V1_ENABLED: 'false',
       DECISION_CENTER_GUIDANCE_V1_ENABLED_TENANT_9: 'true',
+    }, { userId: 7, tenantId: 9 })).toBe(true);
+  });
+
+  it('enables Decision Center daily attention by default with scoped rollback overrides', () => {
+    expect(isDecisionCenterDailyAttentionEnabled({})).toBe(true);
+    expect(isDecisionCenterDailyAttentionEnabled({ DECISION_CENTER_DAILY_ATTENTION_ENABLED: 'off' })).toBe(false);
+    expect(isDecisionCenterDailyAttentionEnabled({
+      DECISION_CENTER_DAILY_ATTENTION_ENABLED: 'true',
+      DECISION_CENTER_DAILY_ATTENTION_ENABLED_USER_42: 'false',
+    }, { userId: 42, tenantId: 42 })).toBe(false);
+    expect(isDecisionCenterDailyAttentionEnabled({
+      DECISION_CENTER_DAILY_ATTENTION_ENABLED: 'false',
+      DECISION_CENTER_DAILY_ATTENTION_ENABLED_TENANT_9: 'on',
     }, { userId: 7, tenantId: 9 })).toBe(true);
   });
 

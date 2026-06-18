@@ -160,6 +160,53 @@ describe('Decision Center Logic v2', () => {
     expect(decision.quality.missingFields).not.toContain('secretaryRecommendation');
   });
 
+  it('passes daily task attention decisions without exposing raw task details or requiring calendar reflow context', () => {
+    const decision = buildDecisionLogicV2({
+      sourceSkill: 'secretary',
+      type: 'decision_required',
+      priority: 'active',
+      title: 'Clear overdue tasks',
+      body: '2 overdue tasks and 1 task due today need a short review.',
+      safeBody: '2 overdue tasks and 1 task due today need a short review.',
+      actions: [
+        { id: 'open_detail', label: 'Open overdue tasks', style: 'primary' },
+        { id: 'open_today_plan', label: 'Open today\'s plan', style: 'secondary' },
+      ],
+      relatedEntityType: 'task_attention_day',
+      relatedEntityId: '2026-06-17',
+      privacyClassification: 'standard',
+      context: {
+        recipe: 'daily_task_attention',
+        sourceState: 'overdue_tasks',
+        reasonCodes: ['daily_attention', 'overdue_tasks', 'tasks_due_today'],
+        taskCounts: { pending: 3, overdue: 2, dueToday: 1, highPriority: 0 },
+        timezone: 'Europe/Lisbon',
+      },
+    });
+
+    expect(decision.quality.status).toBe('pass');
+    expect(decision.quality.safeToShowUser).toBe(true);
+    expect(decision.quality.missingFields).not.toContain('secretaryRecommendation');
+    expect(decision.displayMode).toBe('needs_input');
+    expect(decision.frontendActionState).toBe('enabled');
+    expect(decision.title).toBe('Clear overdue tasks');
+    expect(decision.primaryActionLabel).toBe('Open overdue tasks');
+    expect(decision.recommendation).toContain('Open the overdue list');
+    expect(decision.expectedEffect).toContain('without completing or moving anything automatically');
+    expect(decision.safePreviewBody).toBe('2 overdue tasks and 1 task due today need a short review.');
+    const userFacingText = [
+      decision.title,
+      decision.problemStatement,
+      decision.recommendation,
+      decision.expectedEffect,
+      decision.safePreviewTitle,
+      decision.safePreviewBody,
+      decision.primaryActionLabel,
+      decision.whySummary,
+    ].join(' ');
+    expect(userFacingText).not.toMatch(/private task|ms_todo|provider|externalId|undefined|null|NaN|\[object Object\]/i);
+  });
+
   it('passes owner/admin operational decisions only as scoped review items', () => {
     const decision = buildDecisionLogicV2({
       sourceSkill: 'system',
