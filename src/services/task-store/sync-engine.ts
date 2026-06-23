@@ -36,6 +36,22 @@ import { SyncResult, TaskProvider } from './types';
 // ─── Adapter registry ──────────────────────────────────────────────────
 
 const adapters = new Map<TaskProvider, TaskProviderAdapter>();
+let builtInAdaptersAttempted = false;
+
+function ensureBuiltInAdaptersRegistered(provider?: TaskProvider): void {
+  if (builtInAdaptersAttempted) return;
+  if (provider && provider !== 'ms_todo') return;
+  builtInAdaptersAttempted = true;
+
+  try {
+    if (!adapters.has('ms_todo')) {
+      const { MicrosoftTodoAdapter } = require('./microsoft-todo-adapter');
+      registerAdapter(new MicrosoftTodoAdapter());
+    }
+  } catch (err) {
+    logger.warn({ err }, 'Built-in Microsoft To Do adapter registration failed');
+  }
+}
 
 /**
  * Register a TaskProviderAdapter at app startup. Subsequent calls with the
@@ -48,17 +64,20 @@ export function registerAdapter(adapter: TaskProviderAdapter): void {
 
 /** Look up a registered adapter (or undefined if none registered). */
 export function getAdapter(provider: TaskProvider): TaskProviderAdapter | undefined {
+  ensureBuiltInAdaptersRegistered(provider);
   return adapters.get(provider);
 }
 
 /** All currently registered adapter names — for diagnostics + portal display. */
 export function listRegisteredAdapters(): TaskProvider[] {
+  ensureBuiltInAdaptersRegistered();
   return Array.from(adapters.keys());
 }
 
 /** Test-only: clear the adapter registry between vitest runs. */
 export function _resetAdaptersForTests(): void {
   adapters.clear();
+  builtInAdaptersAttempted = false;
 }
 
 // ─── Sync orchestration ───────────────────────────────────────────────
@@ -72,6 +91,7 @@ export async function syncProvider(
   userId: number,
   provider: TaskProvider,
 ): Promise<SyncResult> {
+  ensureBuiltInAdaptersRegistered(provider);
   const start = Date.now();
   const errors: string[] = [];
   let tasksUpserted = 0;
@@ -179,6 +199,7 @@ export async function syncAllProviders(userId: number): Promise<SyncResult[]> {
     return [];
   }
 
+  ensureBuiltInAdaptersRegistered();
   const results: SyncResult[] = [];
   for (const [provider, adapter] of adapters) {
     if (!adapter.isConnected(userId)) continue;
