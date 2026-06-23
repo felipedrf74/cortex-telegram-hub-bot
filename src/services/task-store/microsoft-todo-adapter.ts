@@ -50,6 +50,30 @@ type ResolvedGraphTask = {
 };
 
 const MS_GRAPH_PAGE_SIZE = 100;
+const DEFAULT_MS_GRAPH_REQUEST_TIMEOUT_MS = 15_000;
+
+function microsoftGraphRequestTimeoutMs(): number {
+  const parsed = Number(process.env.MS_TODO_GRAPH_REQUEST_TIMEOUT_MS || '');
+  if (Number.isFinite(parsed) && parsed >= 1000) return Math.floor(parsed);
+  return DEFAULT_MS_GRAPH_REQUEST_TIMEOUT_MS;
+}
+
+async function withTimeout<T>(promise: Promise<T>, label: string, timeoutMs = microsoftGraphRequestTimeoutMs()): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      const err = new Error(`${label} timed out`);
+      (err as any).code = 'ETIMEDOUT';
+      reject(err);
+    }, timeoutMs);
+  });
+
+  try {
+    return await Promise.race([promise, timeout]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
 
 function normalizeMsGraphDateTime(dt?: { dateTime?: string; timeZone?: string } | string): string | undefined {
   if (!dt) return undefined;
@@ -206,10 +230,10 @@ function extractProviderListId(task: Partial<NormalizedTask>): string | null {
   return null;
 }
 
-async function withRetry<T>(fn: () => Promise<T>, maxRetries = 3): Promise<T> {
+async function withRetry<T>(fn: () => Promise<T>, maxRetries = 1): Promise<T> {
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
-      return await fn();
+      return await withTimeout(fn(), 'Microsoft To Do Graph request');
     } catch (err: any) {
       const status = Number(err?.statusCode || err?.status || err?.code || err?.response?.status);
       const retryable = status === 429 || status === 503;
@@ -379,4 +403,5 @@ export const __testing = {
   normalizeMsGraphDateTime,
   projectFromGraphList,
   taskFromGraphTask,
+  withTimeout,
 };

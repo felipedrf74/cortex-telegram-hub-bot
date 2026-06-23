@@ -228,6 +228,22 @@ describe('MicrosoftTodoAdapter', () => {
     })).toBe('2026-06-24T09:00:00Z');
   });
 
+  it('bounds stalled Microsoft Graph requests with a timeout', async () => {
+    vi.useFakeTimers();
+    try {
+      const pending = expect(
+        __testing.withTimeout(new Promise(() => undefined), 'Graph fixture', 5),
+      ).rejects.toMatchObject({
+        message: 'Graph fixture timed out',
+        code: 'ETIMEDOUT',
+      });
+      await vi.advanceTimersByTimeAsync(5);
+      await pending;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('is registered lazily by the task sync engine for provider imports', () => {
     const source = fs.readFileSync(path.resolve(__dirname, '../../../src/services/task-store/sync-engine.ts'), 'utf8');
 
