@@ -223,6 +223,7 @@ describe('portal oauth routes', () => {
     expect(services.storeTokens).toHaveBeenCalledWith(7, 'outlook', { access_token: 'token' });
     expect(services.invalidateIntegrationDerivedCaches).toHaveBeenCalledWith(7, 'outlook');
     expect(services.resetMicrosoftClients).toHaveBeenCalled();
+    expect(services.syncProvider).toHaveBeenCalledWith(7, 'ms_todo');
     expect(res.redirectedTo).toBe('me.nexushub.app://oauth/outlook?status=success');
   });
 
@@ -286,6 +287,24 @@ describe('portal oauth routes', () => {
     expect(services.invalidateIntegrationDerivedCaches).toHaveBeenCalledWith(7, 'todoist');
     expect(services.syncProvider).toHaveBeenCalledWith(7, 'todoist');
     expect(String(res.sent)).toContain('Your first sync is starting now');
+  });
+
+  it('starts Notion sync after a Notion callback stores tokens', async () => {
+    const services = createServices({
+      consumeNonce: vi.fn(() => ({ userId: 7, provider: 'notion' })),
+    });
+    const routes = captureRoutes(services);
+
+    const res = await invoke(findRoute(routes, '/oauth/notion/callback'), {
+      query: { code: 'code-4', state: 'tg:7:nonce-notion' },
+    });
+
+    expect(services.consumeNonce).toHaveBeenCalledWith('nonce-notion');
+    expect(services.exchangeCode).toHaveBeenCalledWith('notion', 'code-4', 7);
+    expect(services.storeTokens).toHaveBeenCalledWith(7, 'notion', { access_token: 'token' });
+    expect(services.invalidateIntegrationDerivedCaches).toHaveBeenCalledWith(7, 'notion');
+    expect(services.syncProvider).toHaveBeenCalledWith(7, 'notion');
+    expect(String(res.sent)).toContain('Notion account linked');
   });
 
   it('rejects legacy numeric Telegram OAuth state without exchanging tokens', async () => {

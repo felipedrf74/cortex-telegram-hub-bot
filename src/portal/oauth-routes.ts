@@ -212,6 +212,20 @@ function invalidateProviderConnectionCaches(
   }
 }
 
+function startInitialTaskProviderSync(
+  userId: number,
+  provider: 'ms_todo' | 'todoist' | 'notion',
+  providerLabel: string,
+  services: PortalOAuthServices,
+  logger: PortalOAuthLogger,
+): void {
+  try {
+    services.syncProvider?.(userId, provider).catch((err: unknown) =>
+      logger.warn({ err, userId }, `Initial ${providerLabel} sync failed (non-fatal)`),
+    );
+  } catch { /* sync engine optional */ }
+}
+
 async function handleIOSAwareOAuthCallback(
   provider: OAuthProvider,
   providerLabel: string,
@@ -431,7 +445,10 @@ export function registerPortalOAuthRoutes(app: Express, deps: PortalOAuthRouteDe
       loadServices,
       logger,
       getBotRef,
-      (_userId, oauthServices) => oauthServices.resetMicrosoftClients?.(),
+      (userId, oauthServices) => {
+        oauthServices.resetMicrosoftClients?.();
+        startInitialTaskProviderSync(userId, 'ms_todo', 'Microsoft To Do', oauthServices, logger);
+      },
     );
   });
 
@@ -492,11 +509,7 @@ export function registerPortalOAuthRoutes(app: Express, deps: PortalOAuthRouteDe
       services.storeTokens(userId, 'todoist', tokens);
       invalidateProviderConnectionCaches(userId, 'todoist', services, logger);
 
-      try {
-        services.syncProvider?.(userId, 'todoist').catch((err: unknown) =>
-          logger.warn({ err, userId }, 'Initial Todoist sync failed (non-fatal)'),
-        );
-      } catch { /* sync engine optional */ }
+      startInitialTaskProviderSync(userId, 'todoist', 'Todoist', services, logger);
 
       try {
         await notifyTelegramConnection(userId, 'Todoist', services, getBotRef);
@@ -528,6 +541,7 @@ export function registerPortalOAuthRoutes(app: Express, deps: PortalOAuthRouteDe
       const tokens = await services.exchangeCode('notion', code, userId);
       services.storeTokens(userId, 'notion', tokens);
       invalidateProviderConnectionCaches(userId, 'notion', services, logger);
+      startInitialTaskProviderSync(userId, 'notion', 'Notion', services, logger);
 
       try {
         await notifyTelegramConnection(userId, 'Notion', services, getBotRef);
