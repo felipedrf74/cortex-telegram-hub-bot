@@ -212,7 +212,48 @@ describe('training plan create cycle integration', () => {
       weekNumber: 1,
       sessionCount: expect.any(Number),
     });
+    const persistedPreferences = harness.db.prepare(`
+      SELECT preferences_json
+        FROM fitness_training_plans
+       WHERE id = ?
+    `).get(created.body.data.planId) as { preferences_json: string };
+    expect(JSON.parse(persistedPreferences.preferences_json)).toMatchObject({
+      twoADayPreference: 'preferred',
+    });
     expect(ruleIds(created.body.data.planLint.blockers)).not.toContain('no_heavy_lower_before_long_run');
+  });
+
+  it('persists every supported two-a-day preference on create', async () => {
+    vi.useFakeTimers({ now: new Date('2026-05-25T10:00:00.000Z') });
+    const preferences = ['preferred', 'optional', 'never'] as const;
+
+    for (const twoADayPreference of preferences) {
+      harness = createTrainingE2EHarness();
+      harness.seedTrainingUser();
+
+      const created = await harness.dispatch('POST', '/plan/generate', {
+        ...bugReproducerBody,
+        runSessionsPerWeek: 3,
+        strengthSessionsPerWeek: 2,
+        twoADayPreference,
+        durationWeeks: 1,
+        idempotencyKey: `training-e2e-two-a-day-${twoADayPreference}`,
+      });
+
+      expect(created.statusCode).toBe(201);
+      expect(created.body.ok).toBe(true);
+      const persistedPreferences = harness.db.prepare(`
+        SELECT preferences_json
+          FROM fitness_training_plans
+         WHERE id = ?
+      `).get(created.body.data.planId) as { preferences_json: string };
+      expect(JSON.parse(persistedPreferences.preferences_json)).toMatchObject({
+        twoADayPreference,
+      });
+
+      harness.close();
+      harness = null;
+    }
   });
 
   it('accepts explicit auto calendar source and falls back to provider preference mode', async () => {

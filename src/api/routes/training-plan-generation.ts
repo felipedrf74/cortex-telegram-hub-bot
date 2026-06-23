@@ -819,6 +819,7 @@ export async function generateTrainingPlanForUser(
       trainingPriority: normalizedTrainingPriority,
       raceDate: effectiveRaceDate,
       startPolicy: normalizedStartPolicy,
+      twoADayPreference: twoADayPreference ?? null,
       trainingPlanSpec,
       trainingPlanQuality: trainingQuality?.validation ?? null,
       trainingPlanRepairActions: trainingQuality?.repairActions ?? [],

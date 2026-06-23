@@ -130,11 +130,13 @@ function insertUsage(userId: number, costUsd: number, ts = '2026-05-20T12:00:00.
 
 describe('Nexus Points ledger', () => {
   beforeEach(() => {
+    vi.useFakeTimers({ now: new Date('2026-05-20T12:01:00.000Z') });
     testDb = new Database(':memory:');
     createSchema();
   });
 
   afterEach(() => {
+    vi.useRealTimers();
     testDb.close();
   });
 

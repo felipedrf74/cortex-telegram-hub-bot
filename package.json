@@ -38,6 +38,7 @@
     "reward:export": "node scripts/export-reward-dataset.mjs",
     "science-policy:check": "node scripts/ci/science-policy-version-check.mjs",
     "training:catalog:seed": "npx tsx scripts/seed-training-catalog.ts",
+    "training:plan-validation-matrix": "npm run build && node dist/tools/training-plan-creation-validation-matrix.js",
     "lint": "npm run typecheck",
     "verify": "npm run typecheck && npm run science-policy:check && npm run test",
     "release:prep": "scripts/release-prep.sh",
