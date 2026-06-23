@@ -742,12 +742,14 @@ function rowToDto(
   const syncState = row.sync_state || (row.provider === 'nexus' ? 'local_only' : 'synced');
   const listName = row.project_name || (row.project_id ? listNameById.get(row.project_id) : null) || null;
   const taskId = rowTaskId(row);
+  const status = row.is_deleted ? 'cancelled' : dtoStatus(row.status);
+  const completed = ['completed', 'cancelled'].includes(status);
   return {
     id: taskId,
     title: row.title || '(Untitled)',
     body: row.notes || row.description || null,
     importance: priorityToImportance(row.priority),
-    status: row.is_deleted ? 'cancelled' : dtoStatus(row.status),
+    status,
     dueDateTime: row.due_date || null,
     recurrence: providerData.recurrence || null,
     listId: row.project_id != null ? String(row.project_id) : null,
@@ -757,7 +759,7 @@ function rowToDto(
     syncProvider: row.provider || 'nexus',
     syncState,
     syncWarnings: [
-      ...warningForState(syncState, row.provider),
+      ...(completed && syncState === 'provider_missing' ? [] : warningForState(syncState, row.provider)),
       ...(issueMap?.get(taskId) || []),
     ],
     localVersion: row.local_version || 1,
@@ -1071,7 +1073,8 @@ export function getOfflineTaskLists(tenantId: number, userId: number): { lists: 
 	     ORDER BY p.is_default DESC, p.name ASC`,
   ).all(tenantId, userId, tenantId) as ProjectRow[];
   const active = activeRows(tenantId, userId);
-  const tasks = rowsToDtos(tenantId, userId, active, getProjectNameMap(tenantId, userId));
+  const tasks = rowsToDtos(tenantId, userId, active, getProjectNameMap(tenantId, userId))
+    .filter((task) => !isCompletedDto(task));
   return {
     lists: rows.map((row) => ({ id: String(row.id), name: row.name, taskCount: row.task_count || 0 })),
     freshness: buildFreshness(tenantId, userId, tasks),
@@ -1089,13 +1092,14 @@ export function getOfflineTaskSnapshot(
   ensureNativeTasksBackfilled(tenantId, userId);
   const listNameById = getProjectNameMap(tenantId, userId);
   const rows = activeRows(tenantId, userId);
-  const tasks = rowsToDtos(tenantId, userId, rows, listNameById);
+  const allTasks = rowsToDtos(tenantId, userId, rows, listNameById);
+  const tasks = allTasks.filter((task) => !isCompletedDto(task));
   const lists = getOfflineTaskLists(tenantId, userId).lists;
   const defaultList = lists.find((list) => /^(inbox|tasks|tarefas)$/i.test(list.name)) || lists[0] || null;
   const pageSize = Math.min(Math.max(Number(options.pageSize || 75), 1), 200);
   const activePageTasks = defaultList
-    ? tasks.filter((task) => task.listId === defaultList.id && !isCompletedDto(task)).slice(0, pageSize)
-    : tasks.filter((task) => !isCompletedDto(task)).slice(0, pageSize);
+    ? tasks.filter((task) => task.listId === defaultList.id).slice(0, pageSize)
+    : tasks.slice(0, pageSize);
   const freshness = buildFreshness(tenantId, userId, tasks);
   const cursor = latestTaskChangesCursor(rows);
 

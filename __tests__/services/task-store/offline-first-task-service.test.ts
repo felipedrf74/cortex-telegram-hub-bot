@@ -41,6 +41,7 @@ import {
   getOfflineTaskLists,
   getOfflineTaskChanges,
   getOfflineTaskSnapshot,
+  getOfflineTasksForList,
   recordLocalTaskMutation,
   retryOfflineTaskSync,
   toggleOfflineTaskChecklistItem,
@@ -84,6 +85,8 @@ describe('offline-first task service', () => {
     const snapshot = getOfflineTaskSnapshot(USER_ID, USER_ID, { pageSize: 75 });
     const activeTask = snapshot.tasks.find((task: any) => task.id === `task_native_${activeTaskId}`);
     const completedTask = snapshot.tasks.find((task: any) => task.id === `task_native_${completedTaskId}`);
+    const completedHistory = getOfflineTasksForList(USER_ID, USER_ID, String(listId), { status: 'completed' });
+    const completedHistoryTask = completedHistory.tasks.find((task: any) => task.id === `task_native_${completedTaskId}`);
     const unifiedCount = testDb.prepare(
       `SELECT COUNT(*) AS count
        FROM unified_tasks
@@ -106,7 +109,8 @@ describe('offline-first task service', () => {
     expect(activeTask?.checklistItems).toEqual([
       { id: '1', displayName: 'Checklist carry-over', isChecked: false },
     ]);
-    expect(completedTask).toEqual(expect.objectContaining({
+    expect(completedTask).toBeUndefined();
+    expect(completedHistoryTask).toEqual(expect.objectContaining({
       id: `task_native_${completedTaskId}`,
       title: 'Legacy done task',
       status: 'completed',
@@ -120,6 +124,40 @@ describe('offline-first task service', () => {
        WHERE user_id = ? AND external_id LIKE 'native_task_%'`,
     ).get(USER_ID) as { count: number };
     expect(repeatCount.count).toBe(2);
+  });
+
+  it('keeps completed provider-missing tasks out of active snapshots without surfacing stale provider warnings', () => {
+    const created = createOfflineFirstTask(USER_ID, USER_ID, {
+      title: 'Completed provider missing should stay in history',
+      listName: 'Tasks',
+      dueDateTime: '2026-06-01T09:00:00Z',
+      clientMutationId: 'ios-completed-provider-missing',
+      idempotencyKey: 'idem-ios-completed-provider-missing',
+    });
+    testDb.prepare(
+      `UPDATE unified_tasks
+       SET provider = 'ms_todo',
+           status = 'completed',
+           completed_at = '2026-06-02T09:00:00Z',
+           sync_state = 'provider_missing',
+           updated_at = '2026-06-02T09:00:00Z'
+       WHERE tenant_id = ? AND user_id = ? AND nexus_task_id = ?`,
+    ).run(USER_ID, USER_ID, created.task.id);
+
+    const snapshot = getOfflineTaskSnapshot(USER_ID, USER_ID, { pageSize: 75 });
+    const activeTask = snapshot.tasks.find((task: any) => task.id === created.task.id);
+    const completedHistory = getOfflineTasksForList(USER_ID, USER_ID, String(created.task.listId), { status: 'completed' });
+    const completedTask = completedHistory.tasks.find((task: any) => task.id === created.task.id);
+
+    expect(activeTask).toBeUndefined();
+    expect(snapshot.activePage.tasks.find((task: any) => task.id === created.task.id)).toBeUndefined();
+    expect(snapshot.smartCounts.overdue).toBe(0);
+    expect(completedTask).toEqual(expect.objectContaining({
+      id: created.task.id,
+      status: 'completed',
+      syncState: 'provider_missing',
+    }));
+    expect(completedTask?.syncWarnings.map((warning: any) => warning.code)).not.toContain('provider_task_missing');
   });
 
   it('does not let legacy native backfill overwrite app-side task edits', () => {
