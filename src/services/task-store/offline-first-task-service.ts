@@ -196,6 +196,41 @@ type TaskProviderLinkRow = {
   link_state: string;
 };
 
+type NativeTaskListRow = {
+  id: number;
+  user_id: number;
+  name: string;
+  is_default: number | null;
+  color: string | null;
+  position: number | null;
+  created_at: string | null;
+  updated_at: string | null;
+};
+
+type NativeTaskRow = {
+  id: number;
+  user_id: number;
+  list_id: number;
+  title: string;
+  body: string | null;
+  importance: string | null;
+  status: string | null;
+  due_date_time: string | null;
+  recurrence: string | null;
+  tags: string | null;
+  position: number | null;
+  created_at: string | null;
+  updated_at: string | null;
+  completed_at: string | null;
+};
+
+type NativeChecklistRow = {
+  id: number;
+  task_id: number;
+  display_name: string;
+  is_checked: number | null;
+};
+
 function assertScope(tenantId: number, userId: number): void {
   if (!Number.isSafeInteger(tenantId) || tenantId <= 0) {
     throw new Error('tenantId required');
@@ -405,6 +440,257 @@ function normalizeChecklistItems(value: unknown): ChecklistItemDto[] {
       };
     })
     .filter((item): item is ChecklistItemDto => item != null);
+}
+
+function dbTableExists(tableName: string): boolean {
+  try {
+    const row = getDb().prepare(
+      `SELECT 1 AS ok
+       FROM sqlite_master
+       WHERE type = 'table' AND name = ?
+       LIMIT 1`,
+    ).get(tableName) as { ok: number } | undefined;
+    return !!row;
+  } catch {
+    return false;
+  }
+}
+
+function legacyNativeTaskTablesAvailable(): boolean {
+  return dbTableExists('native_task_lists') && dbTableExists('native_tasks');
+}
+
+function nativeTaskExternalId(id: number): string {
+  return `native_task_${id}`;
+}
+
+function nativeTaskNexusId(id: number): string {
+  return `task_native_${id}`;
+}
+
+function nativeListExternalId(id: number): string {
+  return `native_list_${id}`;
+}
+
+function nativeStatusToDb(value: string | null | undefined): string {
+  switch (String(value || '').trim().toLowerCase().replace(/[\s_-]/g, '')) {
+    case 'completed':
+    case 'complete':
+    case 'done':
+      return 'completed';
+    case 'inprogress':
+    case 'active':
+      return 'in_progress';
+    case 'cancelled':
+    case 'canceled':
+      return 'cancelled';
+    default:
+      return 'pending';
+  }
+}
+
+function nativePriorityToDb(value: string | null | undefined): number {
+  switch (String(value || '').trim().toLowerCase()) {
+    case 'high':
+    case 'important':
+      return 3;
+    case 'normal':
+    case 'medium':
+      return 2;
+    case 'low':
+      return 1;
+    default:
+      return 0;
+  }
+}
+
+function nativeChecklistItemsForTasks(userId: number, taskIds: number[]): Map<number, ChecklistItemDto[]> {
+  const byTask = new Map<number, ChecklistItemDto[]>();
+  const validIds = taskIds.filter((id) => Number.isSafeInteger(id) && id > 0);
+  if (validIds.length === 0 || !dbTableExists('native_task_checklist_items')) return byTask;
+
+  const placeholders = validIds.map(() => '?').join(', ');
+  const rows = getDb().prepare(
+    `SELECT id, task_id, display_name, is_checked
+     FROM native_task_checklist_items
+     WHERE user_id = ? AND task_id IN (${placeholders})
+     ORDER BY task_id ASC, position ASC, id ASC`,
+  ).all(userId, ...validIds) as NativeChecklistRow[];
+
+  for (const row of rows) {
+    const taskId = Number(row.task_id);
+    const items = byTask.get(taskId) || [];
+    items.push({
+      id: String(row.id),
+      displayName: row.display_name,
+      isChecked: !!row.is_checked,
+    });
+    byTask.set(taskId, items);
+  }
+  return byTask;
+}
+
+function nativeTaskProviderData(row: NativeTaskRow, checklistItems: ChecklistItemDto[]): Record<string, unknown> {
+  return {
+    source: 'native_tasks_backfill',
+    nativeTaskId: row.id,
+    nativeListId: row.list_id,
+    recurrence: safeJsonParse(row.recurrence, null),
+    checklistItems,
+  };
+}
+
+function resolveBackfillProject(tenantId: number, userId: number, list: NativeTaskListRow): ProjectRow {
+  const db = getDb();
+  const normalizedName = String(list.name || '').trim() || 'Inbox';
+  const existingByName = db.prepare(
+    `SELECT *
+     FROM unified_projects
+     WHERE user_id = ? AND COALESCE(tenant_id, user_id) = ? AND provider = 'nexus'
+       AND lower(name) = lower(?)
+     ORDER BY is_default DESC, id ASC
+     LIMIT 1`,
+  ).get(userId, tenantId, normalizedName) as ProjectRow | undefined;
+  if (existingByName) return existingByName;
+
+  const externalId = nativeListExternalId(list.id);
+  db.prepare(
+    `INSERT INTO unified_projects (
+       user_id, tenant_id, provider, external_id, name, color, is_default, task_count, synced_at
+     ) VALUES (?, ?, 'nexus', ?, ?, ?, ?, 0, datetime('now'))
+     ON CONFLICT(user_id, provider, external_id) DO UPDATE SET
+       tenant_id = COALESCE(unified_projects.tenant_id, excluded.tenant_id),
+       name = excluded.name,
+       color = excluded.color,
+       is_default = excluded.is_default,
+       synced_at = datetime('now')`,
+  ).run(
+    userId,
+    tenantId,
+    externalId,
+    normalizedName,
+    list.color || null,
+    list.is_default ? 1 : 0,
+  );
+
+  return db.prepare(
+    `SELECT *
+     FROM unified_projects
+     WHERE user_id = ? AND COALESCE(tenant_id, user_id) = ? AND provider = 'nexus' AND external_id = ?
+     LIMIT 1`,
+  ).get(userId, tenantId, externalId) as ProjectRow;
+}
+
+function localMutationExistsForTask(tenantId: number, userId: number, taskId: string): boolean {
+  const row = getDb().prepare(
+    `SELECT 1 AS ok
+     FROM task_mutations
+     WHERE tenant_id = ? AND user_id = ? AND task_id = ?
+     LIMIT 1`,
+  ).get(tenantId, userId, taskId) as { ok: number } | undefined;
+  return !!row;
+}
+
+function ensureNativeTasksBackfilled(tenantId: number, userId: number): void {
+  assertScope(tenantId, userId);
+  if (!legacyNativeTaskTablesAvailable()) return;
+
+  const db = getDb();
+  const lists = db.prepare(
+    `SELECT id, user_id, name, is_default, color, position, created_at, updated_at
+     FROM native_task_lists
+     WHERE user_id = ?
+     ORDER BY is_default DESC, position ASC, id ASC`,
+  ).all(userId) as NativeTaskListRow[];
+  if (lists.length === 0) return;
+
+  const tasks = db.prepare(
+    `SELECT id, user_id, list_id, title, body, importance, status, due_date_time,
+            recurrence, tags, position, created_at, updated_at, completed_at
+     FROM native_tasks
+     WHERE user_id = ?
+     ORDER BY position ASC, created_at DESC, id ASC`,
+  ).all(userId) as NativeTaskRow[];
+  const checklistByTask = nativeChecklistItemsForTasks(userId, tasks.map((task) => Number(task.id)));
+
+  db.transaction(() => {
+    const projectByNativeListId = new Map<number, ProjectRow>();
+    for (const list of lists) {
+      projectByNativeListId.set(list.id, resolveBackfillProject(tenantId, userId, list));
+    }
+
+    for (const task of tasks) {
+      const project = projectByNativeListId.get(task.list_id);
+      if (!project) continue;
+      const taskId = nativeTaskNexusId(task.id);
+      if (localMutationExistsForTask(tenantId, userId, taskId)) continue;
+
+      const externalId = nativeTaskExternalId(task.id);
+      const dueDate = task.due_date_time || null;
+      const providerData = nativeTaskProviderData(task, checklistByTask.get(task.id) || []);
+      db.prepare(
+        `INSERT INTO unified_tasks (
+           user_id, tenant_id, provider, external_id, project_id, project_name,
+           title, description, status, priority, due_date, due_is_datetime,
+           tags, notes, completed_at, provider_data, content_hash, is_deleted,
+           synced_at, created_at, updated_at, nexus_task_id, local_version,
+           sync_state, source_of_truth
+         ) VALUES (?, ?, 'nexus', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 0,
+           datetime('now'), ?, ?, ?, 1, 'local_only', 'native_legacy')
+         ON CONFLICT(user_id, provider, external_id) DO UPDATE SET
+           tenant_id = COALESCE(unified_tasks.tenant_id, excluded.tenant_id),
+           project_id = excluded.project_id,
+           project_name = excluded.project_name,
+           title = excluded.title,
+           description = excluded.description,
+           status = excluded.status,
+           priority = excluded.priority,
+           due_date = excluded.due_date,
+           due_is_datetime = excluded.due_is_datetime,
+           tags = excluded.tags,
+           notes = excluded.notes,
+           completed_at = excluded.completed_at,
+           provider_data = excluded.provider_data,
+           is_deleted = 0,
+           updated_at = excluded.updated_at,
+           nexus_task_id = COALESCE(unified_tasks.nexus_task_id, excluded.nexus_task_id),
+           sync_state = CASE
+             WHEN unified_tasks.sync_state IN ('queued', 'syncing', 'conflict', 'failed_retryable') THEN unified_tasks.sync_state
+             ELSE 'local_only'
+           END,
+           source_of_truth = CASE
+             WHEN unified_tasks.source_of_truth = 'native_legacy' THEN 'native_legacy'
+             ELSE unified_tasks.source_of_truth
+           END
+         WHERE NOT EXISTS (
+           SELECT 1
+           FROM task_mutations m
+           WHERE m.tenant_id = excluded.tenant_id
+             AND m.user_id = excluded.user_id
+             AND m.task_id = excluded.nexus_task_id
+         )`,
+      ).run(
+        userId,
+        tenantId,
+        externalId,
+        project.id,
+        project.name,
+        String(task.title || '').trim() || '(Untitled)',
+        task.body || null,
+        nativeStatusToDb(task.status),
+        nativePriorityToDb(task.importance),
+        dueDate,
+        dueDate && String(dueDate).includes('T') ? 1 : 0,
+        task.tags || '[]',
+        task.body || null,
+        task.completed_at || null,
+        JSON.stringify(providerData),
+        task.created_at || nowIso(),
+        task.updated_at || task.created_at || nowIso(),
+        taskId,
+      );
+    }
+  })();
 }
 
 function warningForState(syncState: TaskSyncState, provider?: string): TaskSyncWarning[] {
@@ -650,12 +936,14 @@ function getTaskByNexusId(tenantId: number, userId: number, taskId: string): Off
 
 export function resolveOfflineNexusTaskId(tenantId: number, userId: number, taskId: string): string | null {
   assertScope(tenantId, userId);
+  ensureNativeTasksBackfilled(tenantId, userId);
   const row = getTaskRowByAnyTaskId(tenantId, userId, taskId);
   return row ? rowTaskId(row) : null;
 }
 
 export function getOfflineTaskById(tenantId: number, userId: number, taskId: string): OfflineTaskDto | null {
   assertScope(tenantId, userId);
+  ensureNativeTasksBackfilled(tenantId, userId);
   const row = getTaskRowByAnyTaskId(tenantId, userId, taskId);
   if (!row) return null;
   return rowsToDtos(tenantId, userId, [row], getProjectNameMap(tenantId, userId))[0] || null;
@@ -768,6 +1056,7 @@ export function countConflicts(tenantId: number, userId: number): number {
 
 export function getOfflineTaskLists(tenantId: number, userId: number): { lists: Array<{ id: string; name: string; taskCount: number }>; freshness: TaskFreshness; pendingMutationCount: number; conflictsCount: number } {
   assertScope(tenantId, userId);
+  ensureNativeTasksBackfilled(tenantId, userId);
   const rows = getDb().prepare(
     `SELECT p.*, COUNT(t.id) AS task_count
      FROM unified_projects p
@@ -797,6 +1086,7 @@ export function getOfflineTaskSnapshot(
   options: { pageSize?: number } = {},
 ) {
   assertScope(tenantId, userId);
+  ensureNativeTasksBackfilled(tenantId, userId);
   const listNameById = getProjectNameMap(tenantId, userId);
   const rows = activeRows(tenantId, userId);
   const tasks = rowsToDtos(tenantId, userId, rows, listNameById);
@@ -859,6 +1149,7 @@ export function getOfflineTasksForList(
   options: { status?: string; pageSize?: number } = {},
 ) {
   assertScope(tenantId, userId);
+  ensureNativeTasksBackfilled(tenantId, userId);
   const pageSize = Math.min(Math.max(Number(options.pageSize || 75), 1), 200);
   const listNameById = getProjectNameMap(tenantId, userId);
   const numericListId = Number(listId);
@@ -888,6 +1179,7 @@ export function getOfflineTasksForList(
 
 export function getOfflineFilteredTasks(tenantId: number, userId: number, filter: string) {
   assertScope(tenantId, userId);
+  ensureNativeTasksBackfilled(tenantId, userId);
   const listNameById = getProjectNameMap(tenantId, userId);
   let tasks = rowsToDtos(tenantId, userId, activeRows(tenantId, userId), listNameById).filter((task) => !isCompletedDto(task));
   if (filter === 'overdue') tasks = tasks.filter((task) => isOverdue(task, userId));
@@ -903,6 +1195,7 @@ export function getOfflineFilteredTasks(tenantId: number, userId: number, filter
 
 export function getOfflineTaskChanges(tenantId: number, userId: number, sinceCursor?: string) {
   assertScope(tenantId, userId);
+  ensureNativeTasksBackfilled(tenantId, userId);
   const cursor = decodeTaskChangesCursor(String(sinceCursor || '').trim());
   const listNameById = getProjectNameMap(tenantId, userId);
   const changeExpr = unifiedTasksHasChangeSeqColumn()

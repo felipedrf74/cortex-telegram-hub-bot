@@ -40,9 +40,11 @@ import {
   getOfflineTaskById,
   getOfflineTaskLists,
   getOfflineTaskChanges,
+  getOfflineTaskSnapshot,
   recordLocalTaskMutation,
   retryOfflineTaskSync,
   toggleOfflineTaskChecklistItem,
+  updateOfflineFirstTask,
 } from '../../../src/services/task-store/offline-first-task-service';
 
 const USER_ID = 42;
@@ -56,6 +58,100 @@ beforeEach(() => {
 });
 
 describe('offline-first task service', () => {
+  it('backfills legacy native task rows into the offline-first read model', () => {
+    const listId = Number(testDb.prepare(
+      `INSERT INTO native_task_lists (user_id, name, is_default)
+       VALUES (?, 'Inbox', 1)`,
+    ).run(USER_ID).lastInsertRowid);
+    const activeTaskId = Number(testDb.prepare(
+      `INSERT INTO native_tasks (
+         user_id, list_id, title, body, importance, status, due_date_time, created_at, updated_at
+       ) VALUES (?, ?, 'Legacy active task', 'Bring this forward', 'high', 'notStarted',
+         '2026-06-24T09:00:00Z', '2026-06-23 08:00:00', '2026-06-23 08:00:00')`,
+    ).run(USER_ID, listId).lastInsertRowid);
+    const completedTaskId = Number(testDb.prepare(
+      `INSERT INTO native_tasks (
+         user_id, list_id, title, importance, status, completed_at, created_at, updated_at
+       ) VALUES (?, ?, 'Legacy done task', 'normal', 'completed',
+         '2026-06-23T10:00:00Z', '2026-06-23 07:00:00', '2026-06-23 10:00:00')`,
+    ).run(USER_ID, listId).lastInsertRowid);
+    testDb.prepare(
+      `INSERT INTO native_task_checklist_items (user_id, task_id, display_name, is_checked, position)
+       VALUES (?, ?, 'Checklist carry-over', 0, 1)`,
+    ).run(USER_ID, activeTaskId);
+
+    const lists = getOfflineTaskLists(USER_ID, USER_ID);
+    const snapshot = getOfflineTaskSnapshot(USER_ID, USER_ID, { pageSize: 75 });
+    const activeTask = snapshot.tasks.find((task: any) => task.id === `task_native_${activeTaskId}`);
+    const completedTask = snapshot.tasks.find((task: any) => task.id === `task_native_${completedTaskId}`);
+    const unifiedCount = testDb.prepare(
+      `SELECT COUNT(*) AS count
+       FROM unified_tasks
+       WHERE user_id = ? AND external_id LIKE 'native_task_%'`,
+    ).get(USER_ID) as { count: number };
+
+    expect(lists.lists).toEqual([
+      expect.objectContaining({ name: 'Inbox', taskCount: 1 }),
+    ]);
+    expect(activeTask).toEqual(expect.objectContaining({
+      id: `task_native_${activeTaskId}`,
+      title: 'Legacy active task',
+      status: 'notStarted',
+      listName: 'Inbox',
+      importance: 'high',
+      dueDateTime: '2026-06-24T09:00:00Z',
+      syncProvider: 'nexus',
+      syncState: 'local_only',
+    }));
+    expect(activeTask?.checklistItems).toEqual([
+      { id: '1', displayName: 'Checklist carry-over', isChecked: false },
+    ]);
+    expect(completedTask).toEqual(expect.objectContaining({
+      id: `task_native_${completedTaskId}`,
+      title: 'Legacy done task',
+      status: 'completed',
+    }));
+    expect(unifiedCount.count).toBe(2);
+
+    getOfflineTaskSnapshot(USER_ID, USER_ID, { pageSize: 75 });
+    const repeatCount = testDb.prepare(
+      `SELECT COUNT(*) AS count
+       FROM unified_tasks
+       WHERE user_id = ? AND external_id LIKE 'native_task_%'`,
+    ).get(USER_ID) as { count: number };
+    expect(repeatCount.count).toBe(2);
+  });
+
+  it('does not let legacy native backfill overwrite app-side task edits', () => {
+    const listId = Number(testDb.prepare(
+      `INSERT INTO native_task_lists (user_id, name, is_default)
+       VALUES (?, 'Inbox', 1)`,
+    ).run(USER_ID).lastInsertRowid);
+    const nativeTaskId = Number(testDb.prepare(
+      `INSERT INTO native_tasks (user_id, list_id, title, importance, status, created_at, updated_at)
+       VALUES (?, ?, 'Native before edit', 'normal', 'notStarted',
+         '2026-06-23 08:00:00', '2026-06-23 08:00:00')`,
+    ).run(USER_ID, listId).lastInsertRowid);
+
+    getOfflineTaskSnapshot(USER_ID, USER_ID, { pageSize: 75 });
+    updateOfflineFirstTask(USER_ID, USER_ID, {
+      taskId: `task_native_${nativeTaskId}`,
+      title: 'Edited in app',
+      clientMutationId: 'ios-edit-native-bridge',
+      idempotencyKey: 'idem-ios-edit-native-bridge',
+    });
+    testDb.prepare(
+      `UPDATE native_tasks
+       SET title = 'Native stale echo', updated_at = '2026-06-23 09:00:00'
+       WHERE id = ? AND user_id = ?`,
+    ).run(nativeTaskId, USER_ID);
+
+    const snapshot = getOfflineTaskSnapshot(USER_ID, USER_ID, { pageSize: 75 });
+    const task = snapshot.tasks.find((item: any) => item.id === `task_native_${nativeTaskId}`);
+
+    expect(task?.title).toBe('Edited in app');
+  });
+
   it('accepts repeated create mutations idempotently', () => {
     const first = createOfflineFirstTask(USER_ID, USER_ID, {
       title: 'Write offline plan',
