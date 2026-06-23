@@ -23,6 +23,7 @@
 import { logger } from '../../utils/logger';
 import { getTokens, isConnected } from '../oauth-store';
 import { TaskProviderAdapter } from './adapter-interface';
+import { appendTodoistNexusMarker, parseTodoistNexusMarker } from './todoist-correlation';
 import { NormalizedProject, NormalizedTask, TaskProviderCapabilities } from './types';
 
 const TODOIST_REST_API = 'https://api.todoist.com/rest/v2';
@@ -183,6 +184,7 @@ export class TodoistAdapter implements TaskProviderAdapter {
   async createTask(
     userId: number,
     task: Omit<NormalizedTask, 'id' | 'provider' | 'externalId'>,
+    options: { idempotencyKey?: string } = {},
   ): Promise<NormalizedTask> {
     const token = this.getToken(userId);
     if (!token) throw new Error('Todoist not connected');
@@ -191,10 +193,14 @@ export class TodoistAdapter implements TaskProviderAdapter {
       content: task.title,
       priority: TODOIST_PRIORITY_FROM_NEXUS[task.priority] ?? 1,
     };
-    if (task.description) body.description = task.description;
     const projectId = typeof task.providerData?.project_id === 'string' || typeof task.providerData?.project_id === 'number'
       ? String(task.providerData.project_id)
       : null;
+    const nexusTaskId = typeof task.providerData?.nexus_task_id === 'string' || typeof task.providerData?.nexus_task_id === 'number'
+      ? String(task.providerData.nexus_task_id)
+      : null;
+    const descriptionWithMarker = appendTodoistNexusMarker(task.description, nexusTaskId);
+    if (descriptionWithMarker) body.description = descriptionWithMarker;
     if (projectId) body.project_id = projectId;
     if (task.dueDate) {
       // Todoist supports either due_date (date only) or due_datetime (with time).
@@ -208,6 +214,7 @@ export class TodoistAdapter implements TaskProviderAdapter {
       headers: {
         Authorization: `Bearer ${token}`,
         'Content-Type': 'application/json',
+        ...(options.idempotencyKey ? { 'X-Request-Id': options.idempotencyKey } : {}),
       },
       body: JSON.stringify(body),
     });
@@ -255,13 +262,20 @@ export class TodoistAdapter implements TaskProviderAdapter {
     userId: number,
     externalId: string,
     updates: Partial<NormalizedTask>,
+    options: { nexusTaskId?: string } = {},
   ): Promise<void> {
     const token = this.getToken(userId);
     if (!token) throw new Error('Todoist not connected');
 
     const body: Record<string, unknown> = {};
     if (updates.title !== undefined) body.content = updates.title;
-    if (updates.description !== undefined) body.description = updates.description;
+    if (updates.description !== undefined) {
+      const nexusTaskId = options.nexusTaskId
+        || (typeof updates.providerData?.nexus_task_id === 'string' || typeof updates.providerData?.nexus_task_id === 'number'
+          ? String(updates.providerData.nexus_task_id)
+          : undefined);
+      body.description = appendTodoistNexusMarker(updates.description, nexusTaskId);
+    }
     if (updates.priority !== undefined) {
       body.priority = TODOIST_PRIORITY_FROM_NEXUS[updates.priority] ?? 1;
     }
@@ -305,11 +319,18 @@ export class TodoistAdapter implements TaskProviderAdapter {
     const projectId = t.project_id != null ? String(t.project_id) : undefined;
     const projectName = projectId && projectsById?.get(projectId) || undefined;
 
+    const parsedDescription = parseTodoistNexusMarker(t.description);
+    const providerData = {
+      ...t,
+      description: parsedDescription.description,
+      ...(parsedDescription.nexusTaskId ? { nexus_task_id: parsedDescription.nexusTaskId } : {}),
+    };
+
     return {
       provider: 'todoist',
       externalId: String(t.id),
       title: t.content || '',
-      description: t.description || undefined,
+      description: parsedDescription.description,
       status: isCompleted ? 'completed' : 'pending',
       priority: TODOIST_PRIORITY_TO_NEXUS[t.priority] ?? 0,
       dueDate,
@@ -318,7 +339,7 @@ export class TodoistAdapter implements TaskProviderAdapter {
       completedAt: t.completed_at || undefined,
       url: t.url || undefined,
       projectName,
-      providerData: t,
+      providerData,
     };
   }
 

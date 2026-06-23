@@ -20,6 +20,7 @@ non-trivial changes.
 | **Security and data isolation** | `security-and-data-isolation-standard.md` | Any change to auth, session, tenant scope, prompt context, memory, tool call authorization, or audit logging. |
 | **Runtime, observability, ops** | `runtime-and-observability-standard.md` | Any change to logging, alerts, health checks, deploy/rollback scripts, or PM2 process model. |
 | **Testing and QA harness** | `testing-and-qa-harness-standard.md` | Any test addition, classifier change, smoke script change, or evidence-claim review. |
+| **Offline-first Tasks architecture** | `offline-first-tasks-architecture.md` | Any backend or iOS change to Tasks identity, sync state, mutation replay, provider mappings, or offline storage. |
 | **Backend Verifiable Reward Protocol companion** | `../agents/VERIFIABLE_REWARD_PROTOCOL.md` | Any change to reward verdicts, reward-check orchestration, hooks, handoff summaries, or export behavior. |
 | **Security threat model** | `../security/nexus-security-threat-model.md` | Any security scan, new deployed surface, new provider, new trust boundary, or incident review. |
 | **Security control matrix** | `../security/security-control-matrix.md` | Any auth, API, iOS storage, WebSocket, provider, CI, infra, logging, backup, or incident-response hardening. |

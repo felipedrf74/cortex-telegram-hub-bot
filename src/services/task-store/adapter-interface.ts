@@ -62,6 +62,7 @@ export interface TaskProviderAdapter {
   createTask(
     userId: number,
     task: Omit<NormalizedTask, 'id' | 'provider' | 'externalId'>,
+    options?: { idempotencyKey?: string },
   ): Promise<NormalizedTask>;
 
   /** Mark a task complete in the upstream provider. */
@@ -80,6 +81,7 @@ export interface TaskProviderAdapter {
     userId: number,
     externalId: string,
     updates: Partial<NormalizedTask>,
+    options?: { nexusTaskId?: string },
   ): Promise<void>;
 
   /**

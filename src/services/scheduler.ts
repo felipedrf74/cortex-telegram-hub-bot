@@ -141,6 +141,43 @@ function getActiveUserIds(): number[] {
   return ownerTarget ? [ownerTarget.tenantId] : [];
 }
 
+type TaskSyncScope = { tenantId: number; userId: number; importProviders: boolean };
+
+function getActiveTaskSyncScopes(userIds: number[]): TaskSyncScope[] {
+  const scopes = new Map<string, TaskSyncScope>();
+  for (const userId of userIds) {
+    scopes.set(`${userId}:${userId}`, { tenantId: userId, userId, importProviders: true });
+  }
+
+  try {
+    const rows = getDb().prepare(
+      `SELECT DISTINCT tenant_id, user_id
+       FROM task_mutations
+       WHERE status IN ('queued', 'accepted_local', 'syncing', 'failed', 'conflict')
+       UNION
+       SELECT DISTINCT tenant_id, user_id
+       FROM task_provider_links
+       WHERE provider != 'nexus_local'
+         AND link_state IN ('linked', 'stale', 'provider_missing', 'conflict', 'disconnected')`,
+    ).all() as Array<{ tenant_id: number | null; user_id: number | null }>;
+
+    for (const row of rows) {
+      const tenantId = Number(row.tenant_id);
+      const userId = Number(row.user_id);
+      if (!Number.isSafeInteger(tenantId) || tenantId <= 0) continue;
+      if (!Number.isSafeInteger(userId) || userId <= 0) continue;
+      const key = `${tenantId}:${userId}`;
+      if (!scopes.has(key)) {
+        scopes.set(key, { tenantId, userId, importProviders: tenantId === userId });
+      }
+    }
+  } catch (err) {
+    logUnexpectedTenantQueryError('getActiveTaskSyncScopes', err);
+  }
+
+  return Array.from(scopes.values());
+}
+
 /**
  * Get only owner-tier Telegram IDs (for admin-only notifications).
  */
@@ -1174,8 +1211,11 @@ export function startScheduler(bot?: any): void {
   cron.schedule('*/15 * * * *', wrapJob('task_sync', async () => {
     try {
       const { syncAllProviders } = require('./task-store/sync-engine');
+      const { runTaskMutationSyncBatch } = require('./task-store/task-mutation-sync-worker');
+      const { runTaskProviderLinkReconciliation } = require('./task-store/task-reconciliation-job');
       const users = getActiveUserIds();
-      if (users.length === 0) return 'skipped';
+      const taskSyncScopes = getActiveTaskSyncScopes(users);
+      if (taskSyncScopes.length === 0) return 'skipped';
 
       // Parallelize per-user sync with a concurrency bound. The previous
       // sequential loop (for...of + await) was O(N × per-user-latency) —
@@ -1188,24 +1228,45 @@ export function startScheduler(bot?: any): void {
       // them throw out of the settled result. Audit Month 2 #2.
       const CONCURRENCY = 5;
       let upsertedTotal = 0;
-      for (let i = 0; i < users.length; i += CONCURRENCY) {
-        const batch = users.slice(i, i + CONCURRENCY);
+      let mutationProcessedTotal = 0;
+      let reconciledTotal = 0;
+      for (let i = 0; i < taskSyncScopes.length; i += CONCURRENCY) {
+        const batch = taskSyncScopes.slice(i, i + CONCURRENCY);
         const settled = await Promise.allSettled(
-          batch.map(async (userId) => {
+          batch.map(async (scope) => {
             try {
-              const results = await syncAllProviders(userId);
+              const mutationResult = await runTaskMutationSyncBatch({
+                tenantId: scope.tenantId,
+                userId: scope.userId,
+                limit: 25,
+              });
+              const results = scope.importProviders ? await syncAllProviders(scope.userId) : [];
+              const reconciliationResult = await runTaskProviderLinkReconciliation({
+                tenantId: scope.tenantId,
+                userId: scope.userId,
+                limit: 50,
+              });
               const upserted = results.reduce((s: number, r: any) => s + (r.tasksUpserted || 0), 0);
-              return { userId, upserted, providers: results.length };
+              return {
+                userId: scope.userId,
+                tenantId: scope.tenantId,
+                upserted,
+                providers: results.length,
+                mutationsProcessed: mutationResult.processed,
+                reconciledLinks: reconciliationResult.scannedLinks,
+              };
             } catch (err) {
-              logger.warn({ err, userId }, 'Task sync failed for user');
-              return { userId, upserted: 0, providers: 0 };
+              logger.warn({ err, userId: scope.userId, tenantId: scope.tenantId }, 'Task sync failed for user scope');
+              return { userId: scope.userId, tenantId: scope.tenantId, upserted: 0, providers: 0, mutationsProcessed: 0, reconciledLinks: 0 };
             }
           }),
         );
         for (const s of settled) {
           if (s.status === 'fulfilled') {
             upsertedTotal += s.value.upserted;
-            if (s.value.upserted > 0) {
+            mutationProcessedTotal += s.value.mutationsProcessed;
+            reconciledTotal += s.value.reconciledLinks;
+            if (s.value.upserted > 0 || s.value.mutationsProcessed > 0 || s.value.reconciledLinks > 0) {
               logger.debug(s.value, 'Task sync completed');
             }
           }
@@ -1215,6 +1276,9 @@ export function startScheduler(bot?: any): void {
             logger.warn({ reason: s.reason }, 'Task sync batch rejection');
           }
         }
+      }
+      if (upsertedTotal > 0 || mutationProcessedTotal > 0 || reconciledTotal > 0) {
+        logger.info({ upsertedTotal, mutationProcessedTotal, reconciledTotal }, 'Task sync cron completed');
       }
     } catch (err) {
       logger.warn({ err }, 'Task sync cron failed (sync engine may not be loaded yet)');

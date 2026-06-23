@@ -70,6 +70,7 @@ vi.mock('../../src/services/database', () => ({
       get: (...args: unknown[]) => mockDbGet(sql, ...args),
       run: (...args: unknown[]) => mockDbRun(sql, ...args),
     }),
+    transaction: (fn: (...args: unknown[]) => unknown) => (...args: unknown[]) => fn(...args),
   }),
   initDatabase: vi.fn(),
   closeDatabase: vi.fn(),
@@ -750,10 +751,53 @@ describe('app-facing happy path smoke', () => {
     });
     mockUpdateFiscalCollectionProfile.mockReturnValue(undefined);
 
-    mockDbGet.mockImplementation((sql: string) => {
+    mockDbGet.mockImplementation((sql: string, ...args: unknown[]) => {
       if (sql.includes('SELECT status FROM users')) return { status: 'active' };
       if (sql.includes('FROM garmin_user_tokens')) return undefined;
       if (sql.includes('SELECT 1 as ok')) return { ok: 1 };
+      if (sql.includes('FROM task_mutations')) return undefined;
+      if (sql.includes('FROM unified_projects')) {
+        return {
+          id: 1,
+          user_id: 7001,
+          tenant_id: 7001,
+          provider: 'nexus',
+          external_id: 'list-1',
+          name: 'Tasks',
+          is_default: 1,
+          task_count: 0,
+        };
+      }
+      if (sql.includes('FROM unified_tasks') && sql.includes('nexus_task_id')) {
+        const taskId = String(args[2] || 'task-new');
+        const completed = taskId === 'task-1';
+        return {
+          id: 1,
+          user_id: 7001,
+          tenant_id: 7001,
+          provider: 'nexus',
+          external_id: taskId,
+          project_id: 1,
+          project_name: 'Tasks',
+          title: 'Enviar recibos',
+          description: null,
+          notes: null,
+          status: completed ? 'completed' : 'pending',
+          priority: 3,
+          due_date: null,
+          due_is_datetime: 0,
+          tags: '[]',
+          completed_at: completed ? `${todayIso}T12:00:00.000Z` : null,
+          provider_data: '{}',
+          created_at: `${todayIso}T12:00:00.000Z`,
+          updated_at: `${todayIso}T12:00:00.000Z`,
+          is_deleted: 0,
+          nexus_task_id: taskId,
+          local_version: 1,
+          sync_state: completed ? 'queued' : 'failed_permanent',
+          deleted_at: null,
+        };
+      }
       return undefined;
     });
     mockDbRun.mockReturnValue({ changes: 1 });
@@ -768,6 +812,12 @@ describe('app-facing happy path smoke', () => {
       if (sql.includes("FROM content_ideas WHERE stage = 'editing'")) return [];
       if (sql.includes("FROM content_ideas WHERE stage = 'published'")) {
         return [{ id: 3, title: 'Publicado ontem', score: 70, created_at: new Date().toISOString() }];
+      }
+      if (sql.includes('FROM unified_projects')) {
+        return [{ id: 1, name: 'Tasks' }];
+      }
+      if (sql.includes('FROM task_sync_issues')) {
+        return [];
       }
       return [];
     });
@@ -988,17 +1038,14 @@ describe('app-facing happy path smoke', () => {
         expectedStatus: 201,
         assert: (body) => {
           expect(body.data.task).toMatchObject({
-            id: 'task-new',
             title: 'Enviar recibos',
-            listId: 'list-1',
+            listId: '1',
             listName: 'Tasks',
-            syncProvider: 'ms_todo',
+            syncProvider: 'nexus',
+            syncState: 'failed_permanent',
           });
-          expect(mockTaskProvider.createTask).toHaveBeenCalledWith(
-            'list-1',
-            'Tasks',
-            expect.objectContaining({ title: 'Enviar recibos', importance: 'high' }),
-          );
+          expect(body.data.task.id).toMatch(/^task_/);
+          expect(mockTaskProvider.createTask).not.toHaveBeenCalled();
         },
       },
       {
@@ -1011,11 +1058,11 @@ describe('app-facing happy path smoke', () => {
             id: 'task-1',
             title: 'Enviar recibos',
             status: 'completed',
-            listId: 'list-1',
+            listId: '1',
             listName: 'Tasks',
           });
           expect(body.data.message).toContain('Completed');
-          expect(mockTaskProvider.completeTask).toHaveBeenCalledWith('list-1', 'task-1', 'Tasks');
+          expect(mockTaskProvider.completeTask).not.toHaveBeenCalled();
         },
       },
       {

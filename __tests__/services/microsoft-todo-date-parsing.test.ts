@@ -164,7 +164,7 @@ describe('MS Graph dueDateTime normalization', () => {
   });
 
   it('realigns recurrence on due-date PATCH instead of creating a second task', async () => {
-    const calls: Array<{ method: string; path: string; body?: any }> = [];
+    const calls: Array<{ method: string; path: string; body?: any; headers?: Record<string, string> }> = [];
     const mockClient = createMutationMockClient(calls);
     (getGraphClient as any).mockReturnValue(mockClient);
 
@@ -189,6 +189,63 @@ describe('MS Graph dueDateTime normalization', () => {
       },
     }));
     expect(calls.some((call) => call.method === 'POST')).toBe(false);
+  });
+
+  it('stamps Nexus task identity into Microsoft create payload and does not retry create POST failures', async () => {
+    const calls: Array<{ method: string; path: string; body?: any }> = [];
+    const mockClient = {
+      api: (path: string) => ({
+        post: async (body: any) => {
+          calls.push({ method: 'POST', path, body });
+          const err: any = new Error('Graph 503 after commit');
+          err.statusCode = 503;
+          throw err;
+        },
+      }),
+    };
+    (getGraphClient as any).mockReturnValue(mockClient);
+
+    const { createTask } = await import('../../src/services/microsoft-todo');
+    const result = await createTask(
+      'list-1',
+      'Family',
+      { title: 'Write back safely', nexusTaskId: 'nexus-task-1' },
+      { nexusTaskId: 'nexus-task-1', idempotencyKey: 'ms:key' },
+    );
+
+    expect(result.success).toBe(false);
+    expect(result.statusCode).toBe(503);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toEqual(expect.objectContaining({
+      method: 'POST',
+      path: '/me/todo/lists/list-1/tasks',
+      body: expect.objectContaining({
+        linkedResources: [{
+          applicationName: 'NexusHub',
+          externalId: 'nexus-task-1',
+          displayName: 'Write back safely',
+        }],
+      }),
+    }));
+  });
+
+  it('sends If-Match on Microsoft update when provider version is known', async () => {
+    const calls: Array<{ method: string; path: string; body?: any; headers?: Record<string, string> }> = [];
+    const mockClient = createMutationMockClient(calls);
+    (getGraphClient as any).mockReturnValue(mockClient);
+
+    const { updateTask } = await import('../../src/services/microsoft-todo');
+    const result = await updateTask(
+      'list-1',
+      'task-1',
+      { title: 'Preconditioned update' },
+      'Family',
+      { ifMatch: 'etag-v1' },
+    );
+
+    expect(result.success).toBe(true);
+    const patchCall = calls.find((call) => call.method === 'PATCH');
+    expect(patchCall?.headers).toEqual({ 'If-Match': 'etag-v1' });
   });
 
   it('rolls back copied Microsoft task when list move cannot delete the source task', async () => {
@@ -244,9 +301,10 @@ function createMockClient(
   };
 }
 
-function createMutationMockClient(calls: Array<{ method: string; path: string; body?: any }>) {
+function createMutationMockClient(calls: Array<{ method: string; path: string; body?: any; headers?: Record<string, string> }>) {
   return {
     api: (path: string) => {
+      const requestHeaders: Record<string, string> = {};
       const chain: any = {
         get: async () => {
           calls.push({ method: 'GET', path });
@@ -267,7 +325,7 @@ function createMutationMockClient(calls: Array<{ method: string; path: string; b
           return { value: [] };
         },
         patch: async (body: any) => {
-          calls.push({ method: 'PATCH', path, body });
+          calls.push({ method: 'PATCH', path, body, headers: { ...requestHeaders } });
           return {
             id: 'task-1',
             title: 'Take supplement',
@@ -279,12 +337,18 @@ function createMutationMockClient(calls: Array<{ method: string; path: string; b
           };
         },
         post: async (body: any) => {
-          calls.push({ method: 'POST', path, body });
+          calls.push({ method: 'POST', path, body, headers: { ...requestHeaders } });
           return {};
         },
         query: () => chain,
-        header: () => chain,
-        headers: () => chain,
+        header: (name: string, value: string) => {
+          requestHeaders[name] = value;
+          return chain;
+        },
+        headers: (values: Record<string, string>) => {
+          Object.assign(requestHeaders, values);
+          return chain;
+        },
       };
       return chain;
     },

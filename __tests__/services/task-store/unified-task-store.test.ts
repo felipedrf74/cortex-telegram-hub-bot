@@ -4,7 +4,7 @@
  * Covers:
  *   - hash-based upsert (inserted / updated / unchanged)
  *   - computeContentHash determinism + sensitivity
- *   - softDeleteMissing for full-pull diffs
+ *   - provider_missing/conflict marking for full-pull diffs
  *   - reader queries (pending / overdue / due today / due this week)
  *   - sync state CRUD
  *   - default provider preferences
@@ -189,30 +189,124 @@ describe('upsertTask', () => {
     upsertTask(USER_ID, { ...task, title: 'Resurrected' });
     expect(getPendingTasks(USER_ID)).toHaveLength(1);
   });
+
+  it('creates a provider-link row for provider-imported tasks', () => {
+    const task = makeTask({
+      provider: 'todoist',
+      externalId: 'todoist-provider-task-1',
+      providerData: { project_id: 'todoist-project-1', updated_at: '2026-06-23T10:00:00Z' },
+    });
+
+    upsertTask(USER_ID, task);
+
+    const row = testDb.prepare(
+      `SELECT task_id, tenant_id, user_id, provider, provider_account_id,
+              provider_task_id, provider_project_id, ownership, link_state
+       FROM task_provider_links
+       WHERE tenant_id = ? AND user_id = ? AND provider = 'todoist'`,
+    ).get(USER_ID, USER_ID) as Record<string, unknown>;
+
+    expect(row).toMatchObject({
+      tenant_id: USER_ID,
+      user_id: USER_ID,
+      provider: 'todoist',
+      provider_account_id: `todoist:${USER_ID}`,
+      provider_task_id: 'todoist-provider-task-1',
+      provider_project_id: 'todoist-project-1',
+      ownership: 'provider_imported',
+      link_state: 'linked',
+    });
+    expect(String(row.task_id)).toMatch(/^task_[a-f0-9]+$/);
+  });
+
+  it('keeps provider-link rows idempotent on unchanged provider imports', () => {
+    const task = makeTask({
+      provider: 'todoist',
+      externalId: 'todoist-provider-task-2',
+      providerData: { project_id: 'todoist-project-2' },
+    });
+
+    upsertTask(USER_ID, task);
+    upsertTask(USER_ID, task);
+
+    const row = testDb.prepare(
+      `SELECT COUNT(*) AS count
+       FROM task_provider_links
+       WHERE tenant_id = ? AND user_id = ?
+         AND provider = 'todoist'
+         AND provider_task_id = ?`,
+    ).get(USER_ID, USER_ID, 'todoist-provider-task-2') as { count: number };
+
+    expect(row.count).toBe(1);
+  });
+
+  it('marks conflicts instead of overwriting a task with pending local mutations', () => {
+    const task = makeTask({
+      provider: 'todoist',
+      externalId: 'todoist-conflict-task',
+      title: 'Local title',
+      providerData: { project_id: 'todoist-project-3' },
+    });
+    upsertTask(USER_ID, task);
+
+    testDb.prepare(
+      `UPDATE unified_tasks
+       SET sync_state = 'queued', title = 'Local edited title'
+       WHERE user_id = ? AND provider = 'todoist' AND external_id = ?`,
+    ).run(USER_ID, 'todoist-conflict-task');
+
+    const result = upsertTask(USER_ID, { ...task, title: 'Provider edited title' });
+    const row = testDb.prepare(
+      `SELECT title, sync_state
+       FROM unified_tasks
+       WHERE user_id = ? AND provider = 'todoist' AND external_id = ?`,
+    ).get(USER_ID, 'todoist-conflict-task') as { title: string; sync_state: string };
+
+    expect(result).toBe('unchanged');
+    expect(row).toEqual({ title: 'Local edited title', sync_state: 'conflict' });
+  });
 });
 
 // ── softDeleteMissing ──────────────────────────────────────────────
 
 describe('softDeleteMissing', () => {
-  it('marks tasks not in the current set as deleted', () => {
+  it('marks tasks not in the current set as provider_missing without hiding local data', () => {
     upsertTask(USER_ID, makeTask({ externalId: 'a' }));
     upsertTask(USER_ID, makeTask({ externalId: 'b' }));
     upsertTask(USER_ID, makeTask({ externalId: 'c' }));
 
-    const deleted = softDeleteMissing(USER_ID, 'todoist', ['a', 'c']);
-    expect(deleted).toBe(1);
+    const marked = softDeleteMissing(USER_ID, 'todoist', ['a', 'c']);
+    expect(marked).toBe(1);
 
-    const remaining = getPendingTasks(USER_ID).map(t => t.externalId).sort();
-    expect(remaining).toEqual(['a', 'c']);
+    const rows = testDb.prepare(
+      `SELECT external_id, is_deleted, sync_state
+       FROM unified_tasks
+       WHERE user_id = ? AND provider = 'todoist'
+       ORDER BY external_id`,
+    ).all(USER_ID) as Array<{ external_id: string; is_deleted: number; sync_state: string }>;
+
+    expect(rows).toEqual([
+      { external_id: 'a', is_deleted: 0, sync_state: 'synced' },
+      { external_id: 'b', is_deleted: 0, sync_state: 'provider_missing' },
+      { external_id: 'c', is_deleted: 0, sync_state: 'synced' },
+    ]);
   });
 
-  it('marks all tasks deleted when current set is empty', () => {
+  it('marks all provider tasks missing when current set is empty', () => {
     upsertTask(USER_ID, makeTask({ externalId: 'a' }));
     upsertTask(USER_ID, makeTask({ externalId: 'b' }));
 
-    const deleted = softDeleteMissing(USER_ID, 'todoist', []);
-    expect(deleted).toBe(2);
-    expect(getPendingTasks(USER_ID)).toHaveLength(0);
+    const marked = softDeleteMissing(USER_ID, 'todoist', []);
+    const states = testDb.prepare(
+      `SELECT sync_state
+       FROM unified_tasks
+       WHERE user_id = ? AND provider = 'todoist'
+       ORDER BY external_id`,
+    ).all(USER_ID) as Array<{ sync_state: string }>;
+
+    expect(marked).toBe(2);
+    expect(states.map((row) => row.sync_state)).toEqual(['provider_missing', 'provider_missing']);
+    expect(getPendingTasks(USER_ID)).toHaveLength(2);
   });
 
   it('only touches the specified provider', () => {
@@ -221,9 +315,36 @@ describe('softDeleteMissing', () => {
 
     softDeleteMissing(USER_ID, 'todoist', []);
 
-    const surviving = getPendingTasks(USER_ID);
-    expect(surviving).toHaveLength(1);
-    expect(surviving[0].provider).toBe('ms_todo');
+    const states = testDb.prepare(
+      `SELECT provider, sync_state
+       FROM unified_tasks
+       WHERE user_id = ?
+       ORDER BY provider`,
+    ).all(USER_ID) as Array<{ provider: string; sync_state: string }>;
+
+    expect(states).toEqual([
+      { provider: 'ms_todo', sync_state: 'synced' },
+      { provider: 'todoist', sync_state: 'provider_missing' },
+    ]);
+  });
+
+  it('marks missing provider tasks as conflict when local mutations are pending', () => {
+    upsertTask(USER_ID, makeTask({ provider: 'todoist', externalId: 'pending-local-delete' }));
+    testDb.prepare(
+      `UPDATE unified_tasks
+       SET sync_state = 'queued'
+       WHERE user_id = ? AND provider = 'todoist' AND external_id = 'pending-local-delete'`,
+    ).run(USER_ID);
+
+    const marked = softDeleteMissing(USER_ID, 'todoist', []);
+    const row = testDb.prepare(
+      `SELECT is_deleted, sync_state
+       FROM unified_tasks
+       WHERE user_id = ? AND provider = 'todoist' AND external_id = 'pending-local-delete'`,
+    ).get(USER_ID) as { is_deleted: number; sync_state: string };
+
+    expect(marked).toBe(1);
+    expect(row).toEqual({ is_deleted: 0, sync_state: 'conflict' });
   });
 });
 

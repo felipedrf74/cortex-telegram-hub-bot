@@ -351,6 +351,87 @@ describe('TodoistAdapter.createTask', () => {
     expect(body.due_datetime).toBe('2026-05-01T15:00:00');
     expect(body.due_date).toBeUndefined();
   });
+
+  it('sends X-Request-Id when Nexus provides a provider idempotency key', async () => {
+    setupOAuth();
+    const fetchMock = vi.fn().mockResolvedValue(mockFetchResponse({
+      id: 'request-id-task',
+      content: 'Idempotent task',
+      priority: 1,
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const adapter = new TodoistAdapter();
+    await adapter.createTask(USER_ID, {
+      title: 'Idempotent task',
+      status: 'pending',
+      priority: 1,
+    }, { idempotencyKey: 'todoist:acct:task:create:mutation' });
+
+    const init = fetchMock.mock.calls[0][1];
+    expect(init.headers['X-Request-Id']).toBe('todoist:acct:task:create:mutation');
+  });
+
+  it('round-trips Nexus task marker through Todoist description without exposing it', async () => {
+    setupOAuth();
+    const fetchMock = vi.fn().mockResolvedValue(mockFetchResponse({
+      id: 'marked-task',
+      content: 'Marked task',
+      description: 'Visible note\n\n<!-- nexus-task-id:task_nexus_123 -->',
+      priority: 1,
+      project_id: 'project-1',
+      labels: [],
+      is_completed: false,
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const adapter = new TodoistAdapter();
+    const task = await adapter.createTask(USER_ID, {
+      title: 'Marked task',
+      description: 'Visible note',
+      status: 'pending',
+      priority: 1,
+      providerData: {
+        project_id: 'project-1',
+        nexus_task_id: 'task_nexus_123',
+      },
+    });
+
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body);
+    expect(body.description).toBe('Visible note\n\n<!-- nexus-task-id:task_nexus_123 -->');
+    expect(task.description).toBe('Visible note');
+    expect(task.providerData?.nexus_task_id).toBe('task_nexus_123');
+  });
+
+  it('preserves the Nexus marker when updating a Todoist description', async () => {
+    setupOAuth();
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 204 } as Response);
+    vi.stubGlobal('fetch', fetchMock);
+
+    const adapter = new TodoistAdapter();
+    await adapter.updateTask(USER_ID, 'marked-task', {
+      description: 'Updated visible note',
+    }, { nexusTaskId: 'task_nexus_123' });
+
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body);
+    expect(body.description).toBe('Updated visible note\n\n<!-- nexus-task-id:task_nexus_123 -->');
+  });
+
+  it('strips Nexus markers even when Todoist text is appended after the marker', () => {
+    const adapter = new TodoistAdapter();
+    const task = adapter.mapTask({
+      id: 'marked-task',
+      content: 'Marked task',
+      description: 'Visible note\n\n<!-- nexus-task-id:task_nexus_123 -->\nAppended in Todoist',
+      priority: 1,
+      labels: [],
+      is_completed: false,
+    });
+
+    expect(task.description).toBe('Visible note\nAppended in Todoist');
+    expect(task.providerData?.description).toBe('Visible note\nAppended in Todoist');
+    expect(task.providerData?.nexus_task_id).toBe('task_nexus_123');
+  });
 });
 
 // ── completeTask / deleteTask ───────────────────────────────────────

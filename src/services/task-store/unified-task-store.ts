@@ -23,12 +23,14 @@ import {
   TaskProvider,
   SyncStateRow,
 } from './types';
+import { recordTaskSyncIssue } from './task-sync-issues';
 
 // ─── Row mapping ────────────────────────────────────────────────────────
 
 interface UnifiedTaskRow {
   id: number;
   user_id: number;
+  tenant_id: number | null;
   provider: TaskProvider;
   external_id: string;
   project_id: number | null;
@@ -50,11 +52,16 @@ interface UnifiedTaskRow {
   synced_at: string;
   created_at: string;
   updated_at: string;
+  nexus_task_id: string | null;
+  local_version: number | null;
+  sync_state: string | null;
+  deleted_at: string | null;
 }
 
 interface UnifiedProjectRow {
   id: number;
   user_id: number;
+  tenant_id: number | null;
   provider: TaskProvider;
   external_id: string;
   name: string;
@@ -133,6 +140,130 @@ export function computeContentHash(task: NormalizedTask): string {
   return crypto.createHash('sha256').update(hashInput).digest('hex').slice(0, 16);
 }
 
+function stableNexusTaskId(tenantId: number, userId: number, task: NormalizedTask): string {
+  if (task.provider === 'nexus' && /^task_[A-Za-z0-9_-]+$/.test(task.externalId || '')) {
+    return task.externalId;
+  }
+  const hash = crypto
+    .createHash('sha256')
+    .update(`${tenantId}:${userId}:${task.provider}:${task.externalId}`)
+    .digest('hex')
+    .slice(0, 28);
+  return `task_${hash}`;
+}
+
+function randomId(prefix: string): string {
+  if (typeof crypto.randomUUID === 'function') return `${prefix}_${crypto.randomUUID()}`;
+  return `${prefix}_${crypto.randomBytes(16).toString('hex')}`;
+}
+
+function stringProviderDataValue(task: NormalizedTask, keys: string[]): string | null {
+  for (const key of keys) {
+    const value = task.providerData?.[key];
+    if (value != null && String(value).trim()) return String(value);
+  }
+  return null;
+}
+
+function providerLinkProvider(provider: TaskProvider): 'ms_todo' | 'todoist' | 'nexus_local' | null {
+  if (provider === 'ms_todo' || provider === 'todoist') return provider;
+  if (provider === 'nexus') return 'nexus_local';
+  return null;
+}
+
+function providerContainerId(task: NormalizedTask): string | null {
+  return stringProviderDataValue(task, [
+    'listId',
+    'list_id',
+    'parentFolderId',
+    'project_id',
+    'projectId',
+  ]) || (task.projectId != null ? String(task.projectId) : null);
+}
+
+function ensureProviderLinkForTask(tenantId: number, userId: number, task: NormalizedTask, nexusTaskId: string): void {
+  const provider = providerLinkProvider(task.provider);
+  if (!provider) return;
+
+  const containerId = providerContainerId(task);
+  getDb().prepare(
+    `INSERT INTO task_provider_links (
+       id, task_id, tenant_id, user_id, provider, provider_account_id,
+       provider_task_id, provider_list_id, provider_project_id,
+       provider_version, provider_updated_at, last_synced_at, last_verified_at,
+       ownership, link_state
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'), ?, 'linked')
+     ON CONFLICT(tenant_id, user_id, provider, provider_account_id, provider_task_id)
+     DO UPDATE SET
+       task_id = excluded.task_id,
+       provider_list_id = COALESCE(excluded.provider_list_id, task_provider_links.provider_list_id),
+       provider_project_id = COALESCE(excluded.provider_project_id, task_provider_links.provider_project_id),
+       provider_updated_at = COALESCE(excluded.provider_updated_at, task_provider_links.provider_updated_at),
+       last_synced_at = datetime('now'),
+       last_verified_at = COALESCE(task_provider_links.last_verified_at, datetime('now')),
+       link_state = CASE
+         WHEN task_provider_links.link_state IN ('conflict', 'provider_missing') THEN task_provider_links.link_state
+         ELSE 'linked'
+       END,
+       updated_at = datetime('now')`,
+  ).run(
+    randomId('task_link'),
+    nexusTaskId,
+    tenantId,
+    userId,
+    provider,
+    `${provider}:${userId}`,
+    task.externalId || nexusTaskId,
+    provider === 'ms_todo' ? containerId : null,
+    provider === 'todoist' ? containerId : null,
+    stringProviderDataValue(task, ['etag', '@odata.etag', 'revision', 'sync_id']),
+    stringProviderDataValue(task, ['updated_at', 'lastModifiedDateTime', 'modified_at']),
+    provider === 'nexus_local' ? 'linked' : 'provider_imported',
+  );
+}
+
+function hasPendingLocalMutation(syncState: string | null | undefined): boolean {
+  return [
+    'queued',
+    'syncing',
+    'failed_retryable',
+    'conflict',
+  ].includes(String(syncState || ''));
+}
+
+function markProviderMissingTask(input: {
+  tenantId: number;
+  userId: number;
+  provider: TaskProvider;
+  row: { id: number; nexus_task_id: string | null; sync_state: string | null };
+}): void {
+  const db = getDb();
+  const taskId = input.row.nexus_task_id || `task_legacy_${input.row.id}`;
+  const pendingLocal = hasPendingLocalMutation(input.row.sync_state);
+  const nextSyncState = pendingLocal ? 'conflict' : 'provider_missing';
+  db.prepare(
+    `UPDATE unified_tasks
+     SET sync_state = ?, updated_at = datetime('now')
+     WHERE id = ?`,
+  ).run(nextSyncState, input.row.id);
+  db.prepare(
+    `UPDATE task_provider_links
+     SET link_state = 'provider_missing', updated_at = datetime('now')
+     WHERE tenant_id = ? AND user_id = ? AND task_id = ? AND provider = ?`,
+  ).run(input.tenantId, input.userId, taskId, input.provider === 'nexus' ? 'nexus_local' : input.provider);
+  recordTaskSyncIssue({
+    tenantId: input.tenantId,
+    userId: input.userId,
+    taskId,
+    provider: input.provider === 'nexus' ? 'nexus_local' : input.provider,
+    code: pendingLocal ? 'provider_conflict' : 'provider_task_missing',
+    message: pendingLocal
+      ? 'Provider deleted this task while Nexus has pending local changes. Review conflict.'
+      : 'Provider no longer has this task. Nexus kept the local copy.',
+    details: { reason: 'provider_full_pull_missing_task' },
+  });
+}
+
 // ─── Upsert ────────────────────────────────────────────────────────────
 
 export type UpsertResult = 'inserted' | 'updated' | 'unchanged';
@@ -149,25 +280,30 @@ export type UpsertResult = 'inserted' | 'updated' | 'unchanged';
  * It does ONE SELECT and zero writes, which is what makes 96 sync runs/day
  * across all providers fast enough to hide behind the existing scheduler.
  */
-export function upsertTask(userId: number, task: NormalizedTask): UpsertResult {
+export function upsertTask(userId: number, task: NormalizedTask, tenantId = userId): UpsertResult {
   const db = getDb();
   const hash = computeContentHash(task);
+  const nexusTaskId = stableNexusTaskId(tenantId, userId, task);
 
   const existing = db.prepare(
-    'SELECT id, content_hash FROM unified_tasks WHERE user_id = ? AND provider = ? AND external_id = ?',
-  ).get(userId, task.provider, task.externalId) as
-    | { id: number; content_hash: string }
+    `SELECT id, content_hash, sync_state, nexus_task_id
+     FROM unified_tasks
+     WHERE user_id = ? AND COALESCE(tenant_id, user_id) = ? AND provider = ? AND external_id = ?`,
+  ).get(userId, tenantId, task.provider, task.externalId) as
+    | { id: number; content_hash: string; sync_state: string | null; nexus_task_id: string | null }
     | undefined;
 
   if (!existing) {
     db.prepare(
       `INSERT INTO unified_tasks (
-        user_id, provider, external_id, project_id, project_name, title,
+        user_id, tenant_id, provider, external_id, project_id, project_name, title,
         description, status, priority, due_date, due_is_datetime, tags, notes,
-        completed_at, assignee, url, provider_data, content_hash, synced_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))`,
+        completed_at, assignee, url, provider_data, content_hash, synced_at,
+        nexus_task_id, local_version, sync_state, source_of_truth
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), ?, 1, 'synced', 'nexus')`,
     ).run(
       userId,
+      tenantId,
       task.provider,
       task.externalId,
       task.projectId ?? null,
@@ -185,12 +321,29 @@ export function upsertTask(userId: number, task: NormalizedTask): UpsertResult {
       task.url ?? null,
       JSON.stringify(task.providerData || {}),
       hash,
+      nexusTaskId,
     );
+    ensureProviderLinkForTask(tenantId, userId, task, nexusTaskId);
     return 'inserted';
   }
 
   // Hot path: hash unchanged → no write
-  if (existing.content_hash === hash) return 'unchanged';
+  const existingNexusTaskId = existing.nexus_task_id || nexusTaskId;
+  if (existing.content_hash === hash) {
+    ensureProviderLinkForTask(tenantId, userId, task, existingNexusTaskId);
+    return 'unchanged';
+  }
+
+  if (hasPendingLocalMutation(existing.sync_state)) {
+    ensureProviderLinkForTask(tenantId, userId, task, existingNexusTaskId);
+    db.prepare(
+      `UPDATE unified_tasks SET
+         sync_state = 'conflict',
+         updated_at = datetime('now')
+       WHERE id = ?`,
+    ).run(existing.id);
+    return 'unchanged';
+  }
 
   db.prepare(
     `UPDATE unified_tasks SET
@@ -198,6 +351,10 @@ export function upsertTask(userId: number, task: NormalizedTask): UpsertResult {
        due_date = ?, due_is_datetime = ?, tags = ?, notes = ?,
        completed_at = ?, project_name = ?, project_id = ?, url = ?,
        provider_data = ?, content_hash = ?, is_deleted = 0,
+       tenant_id = COALESCE(tenant_id, ?),
+       nexus_task_id = COALESCE(nexus_task_id, ?),
+       local_version = COALESCE(local_version, 1) + 1,
+       sync_state = 'synced',
        synced_at = datetime('now'), updated_at = datetime('now')
      WHERE id = ?`,
   ).run(
@@ -215,27 +372,33 @@ export function upsertTask(userId: number, task: NormalizedTask): UpsertResult {
     task.url ?? null,
     JSON.stringify(task.providerData || {}),
     hash,
+    tenantId,
+    nexusTaskId,
     existing.id,
   );
+  ensureProviderLinkForTask(tenantId, userId, task, existingNexusTaskId);
   return 'updated';
 }
 
 /** Upsert a project. Same idempotency contract as `upsertTask`. */
-export function upsertProject(userId: number, project: NormalizedProject): UpsertResult {
+export function upsertProject(userId: number, project: NormalizedProject, tenantId = userId): UpsertResult {
   const db = getDb();
   const existing = db.prepare(
-    'SELECT id, name, color, task_count FROM unified_projects WHERE user_id = ? AND provider = ? AND external_id = ?',
-  ).get(userId, project.provider, project.externalId) as
+    `SELECT id, name, color, task_count
+     FROM unified_projects
+     WHERE user_id = ? AND COALESCE(tenant_id, user_id) = ? AND provider = ? AND external_id = ?`,
+  ).get(userId, tenantId, project.provider, project.externalId) as
     | { id: number; name: string; color: string | null; task_count: number }
     | undefined;
 
   if (!existing) {
     db.prepare(
       `INSERT INTO unified_projects (
-        user_id, provider, external_id, name, color, is_default, task_count, synced_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))`,
+        user_id, tenant_id, provider, external_id, name, color, is_default, task_count, synced_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))`,
     ).run(
       userId,
+      tenantId,
       project.provider,
       project.externalId,
       project.name,
@@ -253,9 +416,10 @@ export function upsertProject(userId: number, project: NormalizedProject): Upser
   if (unchanged) return 'unchanged';
 
   db.prepare(
-    `UPDATE unified_projects SET name = ?, color = ?, is_default = ?, task_count = ?, synced_at = datetime('now')
+    `UPDATE unified_projects SET tenant_id = COALESCE(tenant_id, ?), name = ?, color = ?, is_default = ?, task_count = ?, synced_at = datetime('now')
      WHERE id = ?`,
   ).run(
+    tenantId,
     project.name,
     project.color ?? null,
     project.isDefault ? 1 : 0,
@@ -282,41 +446,37 @@ export function softDeleteMissing(
   userId: number,
   provider: TaskProvider,
   currentExternalIds: string[],
+  tenantId = userId,
 ): number {
   const db = getDb();
 
-  if (currentExternalIds.length === 0) {
-    // No tasks in provider → mark all this provider's rows as deleted
-    const result = db.prepare(
-      `UPDATE unified_tasks SET is_deleted = 1, updated_at = datetime('now')
-       WHERE user_id = ? AND provider = ? AND is_deleted = 0`,
-    ).run(userId, provider);
-    return result.changes;
-  }
-
-  // SQLite has a default LIMIT of ~999 host parameters per statement, so
-  // chunk the delete-set when a user has more than ~900 tasks per provider.
-  // Build the placeholder string once per chunk.
-  const CHUNK = 900;
-  let totalDeleted = 0;
+  let totalMarked = 0;
   const allRows = db.prepare(
-    `SELECT id, external_id FROM unified_tasks
-     WHERE user_id = ? AND provider = ? AND is_deleted = 0`,
-  ).all(userId, provider) as { id: number; external_id: string }[];
+    `SELECT id, external_id, nexus_task_id, sync_state
+     FROM unified_tasks
+     WHERE user_id = ? AND COALESCE(tenant_id, user_id) = ? AND provider = ? AND is_deleted = 0`,
+  ).all(userId, tenantId, provider) as Array<{
+    id: number;
+    external_id: string;
+    nexus_task_id: string | null;
+    sync_state: string | null;
+  }>;
 
   const seen = new Set(currentExternalIds);
-  const stale = allRows.filter((r) => !seen.has(r.external_id));
+  const stale = currentExternalIds.length === 0
+    ? allRows
+    : allRows.filter((r) => !seen.has(r.external_id));
 
-  for (let i = 0; i < stale.length; i += CHUNK) {
-    const chunk = stale.slice(i, i + CHUNK);
-    const placeholders = chunk.map(() => '?').join(',');
-    const result = db.prepare(
-      `UPDATE unified_tasks SET is_deleted = 1, updated_at = datetime('now')
-       WHERE id IN (${placeholders})`,
-    ).run(...chunk.map((r) => r.id));
-    totalDeleted += result.changes;
+  for (const row of stale) {
+    markProviderMissingTask({
+      tenantId,
+      userId,
+      provider,
+      row,
+    });
+    totalMarked += 1;
   }
-  return totalDeleted;
+  return totalMarked;
 }
 
 // ─── Reads ─────────────────────────────────────────────────────────────
@@ -329,9 +489,12 @@ export function getTaskById(taskId: number): NormalizedTask | null {
   return row ? rowToTask(row) : null;
 }
 
-export function getTaskByIdForUser(userId: number, taskId: number): NormalizedTask | null {
+export function getTaskByIdForUser(userId: number, taskId: number, tenantId = userId): NormalizedTask | null {
   const db = getDb();
-  const row = db.prepare('SELECT * FROM unified_tasks WHERE id = ? AND user_id = ? AND is_deleted = 0').get(taskId, userId) as
+  const row = db.prepare(
+    `SELECT * FROM unified_tasks
+     WHERE id = ? AND user_id = ? AND COALESCE(tenant_id, user_id) = ? AND is_deleted = 0`,
+  ).get(taskId, userId, tenantId) as
     | UnifiedTaskRow
     | undefined;
   return row ? rowToTask(row) : null;
@@ -350,57 +513,60 @@ export function getTaskWithUserId(taskId: number): { task: NormalizedTask; userI
   return { task: rowToTask(row), userId: row.user_id };
 }
 
-export function getPendingTasks(userId: number): NormalizedTask[] {
+export function getPendingTasks(userId: number, tenantId = userId): NormalizedTask[] {
   const db = getDb();
   const rows = db.prepare(
     `SELECT * FROM unified_tasks
-     WHERE user_id = ? AND status = 'pending' AND is_deleted = 0
+     WHERE user_id = ? AND COALESCE(tenant_id, user_id) = ? AND status = 'pending' AND is_deleted = 0
      ORDER BY priority DESC, due_date ASC NULLS LAST, updated_at DESC`,
-  ).all(userId) as UnifiedTaskRow[];
+  ).all(userId, tenantId) as UnifiedTaskRow[];
   return rows.map(rowToTask);
 }
 
-export function getOverdueTasks(userId: number): NormalizedTask[] {
+export function getOverdueTasks(userId: number, tenantId = userId): NormalizedTask[] {
   const db = getDb();
   const rows = db.prepare(
     `SELECT * FROM unified_tasks
      WHERE user_id = ?
+       AND COALESCE(tenant_id, user_id) = ?
        AND status = 'pending'
        AND is_deleted = 0
        AND due_date IS NOT NULL
        AND date(due_date) < date('now')
      ORDER BY due_date ASC`,
-  ).all(userId) as UnifiedTaskRow[];
+  ).all(userId, tenantId) as UnifiedTaskRow[];
   return rows.map(rowToTask);
 }
 
-export function getTasksDueToday(userId: number): NormalizedTask[] {
+export function getTasksDueToday(userId: number, tenantId = userId): NormalizedTask[] {
   const db = getDb();
   const rows = db.prepare(
     `SELECT * FROM unified_tasks
      WHERE user_id = ?
+       AND COALESCE(tenant_id, user_id) = ?
        AND status = 'pending'
        AND is_deleted = 0
        AND date(due_date) = date('now')
      ORDER BY priority DESC, due_date ASC`,
-  ).all(userId) as UnifiedTaskRow[];
+  ).all(userId, tenantId) as UnifiedTaskRow[];
   return rows.map(rowToTask);
 }
 
-export function getTasksDueThisWeek(userId: number): NormalizedTask[] {
+export function getTasksDueThisWeek(userId: number, tenantId = userId): NormalizedTask[] {
   const db = getDb();
   // SQLite's `date('now', 'weekday 0', '+7 days')` gives next Sunday — close
   // enough to "this week" for the briefing context.
   const rows = db.prepare(
     `SELECT * FROM unified_tasks
      WHERE user_id = ?
+       AND COALESCE(tenant_id, user_id) = ?
        AND status = 'pending'
        AND is_deleted = 0
        AND due_date IS NOT NULL
        AND date(due_date) >= date('now')
        AND date(due_date) <= date('now', '+7 days')
      ORDER BY due_date ASC, priority DESC`,
-  ).all(userId) as UnifiedTaskRow[];
+  ).all(userId, tenantId) as UnifiedTaskRow[];
   return rows.map(rowToTask);
 }
 
@@ -412,10 +578,10 @@ export interface TaskFilters {
 }
 
 /** Generic query — used by the high-level service when no special view fits. */
-export function getAllTasks(userId: number, filters?: TaskFilters): NormalizedTask[] {
+export function getAllTasks(userId: number, filters?: TaskFilters, tenantId = userId): NormalizedTask[] {
   const db = getDb();
-  const where: string[] = ['user_id = ?'];
-  const args: unknown[] = [userId];
+  const where: string[] = ['user_id = ?', 'COALESCE(tenant_id, user_id) = ?'];
+  const args: unknown[] = [userId, tenantId];
 
   if (!filters?.includeDeleted) where.push('is_deleted = 0');
   if (filters?.status) {
@@ -438,11 +604,13 @@ export function getAllTasks(userId: number, filters?: TaskFilters): NormalizedTa
   return rows.map(rowToTask);
 }
 
-export function getProjects(userId: number): NormalizedProject[] {
+export function getProjects(userId: number, tenantId = userId): NormalizedProject[] {
   const db = getDb();
   const rows = db.prepare(
-    `SELECT * FROM unified_projects WHERE user_id = ? ORDER BY name ASC`,
-  ).all(userId) as UnifiedProjectRow[];
+    `SELECT * FROM unified_projects
+     WHERE user_id = ? AND COALESCE(tenant_id, user_id) = ?
+     ORDER BY name ASC`,
+  ).all(userId, tenantId) as UnifiedProjectRow[];
   return rows.map(rowToProject);
 }
 
@@ -463,7 +631,12 @@ export function markTaskCompleted(taskId: number): void {
 export function markTaskDeleted(taskId: number): void {
   const db = getDb();
   db.prepare(
-    `UPDATE unified_tasks SET is_deleted = 1, updated_at = datetime('now') WHERE id = ?`,
+    `UPDATE unified_tasks SET
+       is_deleted = 1,
+       deleted_at = datetime('now'),
+       sync_state = 'deleted_pending_sync',
+       updated_at = datetime('now')
+     WHERE id = ?`,
   ).run(taskId);
 }
 
@@ -570,7 +743,7 @@ export interface TaskStoreStats {
   byProvider: Record<string, number>;
 }
 
-export function getTaskStats(userId: number): TaskStoreStats {
+export function getTaskStats(userId: number, tenantId = userId): TaskStoreStats {
   const db = getDb();
   const counts = db.prepare(
     `SELECT
@@ -578,8 +751,8 @@ export function getTaskStats(userId: number): TaskStoreStats {
        SUM(CASE WHEN status = 'pending' AND is_deleted = 0 AND date(due_date) < date('now') THEN 1 ELSE 0 END) AS total_overdue,
        SUM(CASE WHEN status = 'pending' AND is_deleted = 0 AND date(due_date) = date('now') THEN 1 ELSE 0 END) AS total_today,
        SUM(CASE WHEN status = 'pending' AND is_deleted = 0 AND date(due_date) >= date('now') AND date(due_date) <= date('now', '+7 days') THEN 1 ELSE 0 END) AS total_week
-     FROM unified_tasks WHERE user_id = ?`,
-  ).get(userId) as {
+     FROM unified_tasks WHERE user_id = ? AND COALESCE(tenant_id, user_id) = ?`,
+  ).get(userId, tenantId) as {
     total_pending: number | null;
     total_overdue: number | null;
     total_today: number | null;
@@ -589,9 +762,9 @@ export function getTaskStats(userId: number): TaskStoreStats {
   const byProviderRows = db.prepare(
     `SELECT provider, COUNT(*) AS cnt
      FROM unified_tasks
-     WHERE user_id = ? AND status = 'pending' AND is_deleted = 0
+     WHERE user_id = ? AND COALESCE(tenant_id, user_id) = ? AND status = 'pending' AND is_deleted = 0
      GROUP BY provider`,
-  ).all(userId) as { provider: string; cnt: number }[];
+  ).all(userId, tenantId) as { provider: string; cnt: number }[];
 
   const byProvider: Record<string, number> = {};
   for (const r of byProviderRows) byProvider[r.provider] = r.cnt;
@@ -613,6 +786,10 @@ export function _resetForTests(): void {
       DELETE FROM unified_tasks;
       DELETE FROM unified_projects;
       DELETE FROM task_sync_state;
+      DELETE FROM task_provider_links;
+      DELETE FROM task_mutations;
+      DELETE FROM task_container_mappings;
+      DELETE FROM task_sync_issues;
       DELETE FROM user_task_preferences;
       DELETE FROM daily_context_cache;
     `);

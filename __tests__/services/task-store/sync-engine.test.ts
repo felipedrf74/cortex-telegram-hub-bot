@@ -8,31 +8,13 @@
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
-import fs from 'fs';
-import path from 'path';
-
-const MIGRATIONS_DIR = path.resolve(__dirname, '../../../migrations');
+import { applyMigrations } from '../../helpers/apply-migrations';
 
 function createTestDb(): Database.Database {
   const db = new Database(':memory:');
   db.pragma('journal_mode = WAL');
   db.pragma('foreign_keys = ON');
   return db;
-}
-
-function applyMigrations(db: Database.Database): void {
-  db.exec(`CREATE TABLE IF NOT EXISTS _migrations (filename TEXT PRIMARY KEY, applied_at TEXT DEFAULT (datetime('now')))`);
-  const files = fs.readdirSync(MIGRATIONS_DIR).filter(f => f.endsWith('.sql')).sort();
-  for (const file of files) {
-    if (!db.prepare('SELECT 1 FROM _migrations WHERE filename = ?').get(file)) {
-      db.exec(fs.readFileSync(path.join(MIGRATIONS_DIR, file), 'utf-8'));
-      db.prepare('INSERT INTO _migrations (filename) VALUES (?)').run(file);
-    }
-  }
-  // Migration 042 added FK on unified_*.user_id — pre-seed users so tests
-  // can insert with arbitrary user IDs without FK violations.
-  const seedUser = db.prepare('INSERT OR IGNORE INTO users (id, telegram_id) VALUES (?, ?)');
-  for (let i = 1; i <= 1000; i++) seedUser.run(i, i);
 }
 
 let testDb: Database.Database;
@@ -117,6 +99,10 @@ function makeMockAdapter(opts: MockAdapterOptions = {}): TaskProviderAdapter & {
 beforeEach(() => {
   testDb = createTestDb();
   applyMigrations(testDb);
+  // Migration 042 added FK on unified_*.user_id; pre-seed users so tests
+  // can insert with arbitrary user IDs without FK violations.
+  const seedUser = testDb.prepare('INSERT OR IGNORE INTO users (id, telegram_id) VALUES (?, ?)');
+  for (let i = 1; i <= 1000; i++) seedUser.run(i, i);
   _resetAdaptersForTests();
 });
 
@@ -206,7 +192,7 @@ describe('syncProvider', () => {
     expect(getPendingTasks(USER_ID)).toHaveLength(1);
   });
 
-  it('soft-deletes missing tasks on full sync (no cursor)', async () => {
+  it('marks missing provider tasks provider_missing on full sync (no cursor)', async () => {
     const adapter = makeMockAdapter({
       provider: 'todoist',
       hasIncrementalSync: false,
@@ -224,8 +210,24 @@ describe('syncProvider', () => {
     expect(getPendingTasks(USER_ID)).toHaveLength(2);
 
     await syncProvider(USER_ID, 'todoist');
-    const remaining = getPendingTasks(USER_ID).map(t => t.externalId);
-    expect(remaining).toEqual(['a']);
+    const remaining = getPendingTasks(USER_ID).map(t => t.externalId).sort();
+    expect(remaining).toEqual(['a', 'b']);
+    const missingRow = testDb.prepare(
+      `SELECT sync_state, is_deleted
+       FROM unified_tasks
+       WHERE user_id = ? AND provider = 'todoist' AND external_id = 'b'`,
+    ).get(USER_ID) as { sync_state: string; is_deleted: number };
+    const issue = testDb.prepare(
+      `SELECT code, state, message
+       FROM task_sync_issues
+       WHERE user_id = ? AND provider = 'todoist' AND code = 'provider_task_missing'`,
+    ).get(USER_ID) as { code: string; state: string; message: string };
+    expect(missingRow).toEqual({ sync_state: 'provider_missing', is_deleted: 0 });
+    expect(issue).toMatchObject({
+      code: 'provider_task_missing',
+      state: 'open',
+      message: 'Provider no longer has this task. Nexus kept the local copy.',
+    });
   });
 
   it('returns error result on adapter exception without throwing', async () => {

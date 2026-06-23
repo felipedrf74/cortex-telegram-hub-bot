@@ -58,6 +58,7 @@ Official working path: `/Users/felipedominguez/Desktop/Nexus Hub`
 | Security and data isolation standard | `engine/docs/engineering/security-and-data-isolation-standard.md` |
 | Runtime and observability standard | `engine/docs/engineering/runtime-and-observability-standard.md` |
 | Testing and QA harness standard | `engine/docs/engineering/testing-and-qa-harness-standard.md` |
+| Offline-first Tasks architecture | `engine/docs/engineering/offline-first-tasks-architecture.md` |
 
 ### iOS
 

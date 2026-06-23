@@ -28,6 +28,27 @@ const todoistAdapter = new TodoistAdapter();
 
 export type TaskProviderType = 'ms_todo' | 'todoist' | 'nexus';
 
+function isTaskProviderConnected(userId: number, provider: TaskProviderType): boolean {
+  if (provider === 'nexus') return true;
+  return provider === 'ms_todo'
+    ? isConnected(userId, 'outlook')
+    : isConnected(userId, 'todoist');
+}
+
+function getStoredPreferredProvider(userId: number): TaskProviderType | null {
+  try {
+    const row = getDb().prepare(
+      'SELECT default_provider FROM user_task_preferences WHERE user_id = ? LIMIT 1',
+    ).get(userId) as { default_provider: string | null } | undefined;
+    if (row?.default_provider === 'ms_todo' || row?.default_provider === 'todoist' || row?.default_provider === 'nexus') {
+      return row.default_provider;
+    }
+  } catch {
+    // Preferences table may not exist during first boot/test bootstrap.
+  }
+  return null;
+}
+
 /**
  * Determine which task provider a user should use.
  * Checks oauth-store for connected providers.
@@ -39,6 +60,10 @@ export function resolveTaskProvider(userId: number): TaskProviderType {
   }
 
   try {
+    const preferred = getStoredPreferredProvider(userId);
+    if (preferred === 'nexus') return 'nexus';
+    if (preferred && isTaskProviderConnected(userId, preferred)) return preferred;
+
     // Priority: MS To-Do > Todoist > Native
     if (isConnected(userId, 'outlook')) return 'ms_todo';
     if (isConnected(userId, 'todoist')) return 'todoist';
@@ -59,8 +84,8 @@ export function resolveTaskProvider(userId: number): TaskProviderType {
  * matches the microsoft-todo module's function signatures so the
  * existing task routes work without changes.
  */
-export function getTaskProviderForUser(userId: number) {
-  const provider = resolveTaskProvider(userId);
+export function getTaskProviderForUser(userId: number, providerOverride?: TaskProviderType) {
+  const provider = providerOverride || resolveTaskProvider(userId);
 
   if (provider === 'ms_todo') {
     return createMicrosoftTodoWrapper(userId);
@@ -74,16 +99,33 @@ export function getTaskProviderForUser(userId: number) {
   return createNativeWrapper(userId);
 }
 
+type ProviderWriteOptions = {
+  idempotencyKey?: string;
+  nexusTaskId?: string;
+  ifMatch?: string;
+};
+
 function createMicrosoftTodoWrapper(userId: number) {
   const microsoftTodo = require('../microsoft-todo');
   const timezone = () => getUserTimezone(userId);
   return {
     ...microsoftTodo,
-    async createTask(listId: string, listName: string, data: any) {
-      return microsoftTodo.createTask(listId, listName, { ...data, timeZone: data?.timeZone || timezone() });
+    async createTask(listId: string, listName: string, data: any, options?: ProviderWriteOptions) {
+      return microsoftTodo.createTask(
+        listId,
+        listName,
+        { ...data, timeZone: data?.timeZone || timezone(), nexusTaskId: options?.nexusTaskId || data?.nexusTaskId },
+        options,
+      );
     },
-    async updateTask(listId: string, taskId: string, data: any, listName?: string) {
-      return microsoftTodo.updateTask(listId, taskId, { ...data, timeZone: data?.timeZone || timezone() }, listName);
+    async updateTask(listId: string, taskId: string, data: any, listName?: string, options?: ProviderWriteOptions) {
+      return microsoftTodo.updateTask(listId, taskId, { ...data, timeZone: data?.timeZone || timezone() }, listName, options);
+    },
+    async completeTask(listId: string, taskId: string, listName?: string, options?: ProviderWriteOptions) {
+      return microsoftTodo.completeTask(listId, taskId, listName, options);
+    },
+    async uncompleteTask(listId: string, taskId: string, listName?: string, options?: ProviderWriteOptions) {
+      return microsoftTodo.uncompleteTask(listId, taskId, listName, options);
     },
     async getTasksDueInRange(startDate: string, endDate: string) {
       return microsoftTodo.getTasksDueInRange(startDate, endDate, timezone());
@@ -145,7 +187,7 @@ function createTodoistWrapper(userId: number) {
       };
     },
 
-    async createTask(listId: string, listName: string, data: any) {
+    async createTask(listId: string, listName: string, data: any, options?: ProviderWriteOptions) {
       const dueDate = typeof data.dueDateTime === 'string' ? data.dueDateTime : undefined;
       const created = await todoistAdapter.createTask(userId, {
         title: data.title || '(Untitled)',
@@ -158,15 +200,16 @@ function createTodoistWrapper(userId: number) {
         recurrence: data.recurrence || undefined,
         providerData: {
           project_id: String(listId),
+          nexus_task_id: options?.nexusTaskId || data?.nexusTaskId,
         },
-      } as any);
+      } as any, { idempotencyKey: options?.idempotencyKey });
       return {
         success: true,
         data: taskToMsTodoShape(created, String(listId), listName),
       };
     },
 
-    async updateTask(listId: string, taskId: string, data: any) {
+    async updateTask(listId: string, taskId: string, data: any, _listName?: string, options?: ProviderWriteOptions) {
       if (data.status === 'completed') {
         await todoistAdapter.completeTask(userId, taskId);
         return { success: true, data: { id: taskId, status: 'completed' } };
@@ -179,13 +222,23 @@ function createTodoistWrapper(userId: number) {
         dueDate: data.dueDateTime || undefined,
         dueIsDatetime: typeof data.dueDateTime === 'string' && data.dueDateTime.includes('T'),
         recurrence: Object.prototype.hasOwnProperty.call(data, 'recurrence') ? data.recurrence : undefined,
-      });
-      return { success: true, data: { id: taskId, listId, status: data.status || 'notStarted' } };
+      }, { nexusTaskId: options?.nexusTaskId || data?.nexusTaskId });
+      const fresh = await readTodoistTask(userId, String(listId), taskId);
+      return {
+        success: true,
+        data: fresh ? taskToMsTodoShape(fresh, String(listId), fresh.projectName || '') : { id: taskId, listId, status: data.status || 'notStarted' },
+      };
     },
 
-    async completeTask(_listId: string, taskId: string) {
+    async completeTask(listId: string, taskId: string, listName?: string) {
       await todoistAdapter.completeTask(userId, taskId);
-      return { success: true, data: { id: taskId, status: 'completed' } };
+      const fresh = await readTodoistTask(userId, String(listId), taskId);
+      return {
+        success: true,
+        data: fresh
+          ? taskToMsTodoShape(fresh, String(listId), fresh.projectName || listName || '')
+          : { id: taskId, listId, status: 'completed' },
+      };
     },
 
     async deleteTask(_listId: string, taskId: string) {
@@ -584,7 +637,16 @@ function taskToMsTodoShape(t: any, listId: string, listName: string) {
       : null,
     createdDateTime: t.createdAt || t.createdDateTime || t.providerData?.created_at || t.providerData?.added_at || null,
     completedDateTime: t.completedAt || null,
+    providerVersion: t.providerVersion || t.providerData?.['@odata.etag'] || t.providerData?.etag || t.providerData?.revision || t.providerData?.sync_id || null,
+    providerUpdatedAt: t.providerUpdatedAt || t.providerData?.lastModifiedDateTime || t.providerData?.updated_at || t.providerData?.modified_at || null,
+    linkedResources: t.linkedResources || t.providerData?.linkedResources || [],
+    providerData: t.providerData || {},
   };
+}
+
+async function readTodoistTask(userId: number, projectId: string, taskId: string) {
+  const result = await todoistAdapter.getTasks(userId, { projectId });
+  return result.tasks.find((candidate) => String(candidate.externalId) === String(taskId)) || null;
 }
 
 function importanceToPriority(importance: unknown): number {

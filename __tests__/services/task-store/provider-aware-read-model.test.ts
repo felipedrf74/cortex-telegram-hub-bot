@@ -1,9 +1,8 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
 import Database from 'better-sqlite3';
-import fs from 'fs';
-import path from 'path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { applyMigrations } from '../../helpers/apply-migrations';
 import {
   getProviderAwarePendingTodoTasks,
   getProviderAwareTaskReadModel,
@@ -19,16 +18,9 @@ vi.mock('../../../src/services/database', () => ({
 describe('provider-aware task read model', () => {
   beforeEach(() => {
     testDb = new Database(':memory:');
-    testDb.exec(`
-      CREATE TABLE users (
-        id INTEGER PRIMARY KEY,
-        auth_provider TEXT
-      );
-    `);
-    testDb.exec(fs.readFileSync(path.resolve(__dirname, '../../../migrations/039_unified_task_store.sql'), 'utf8'));
-    testDb.exec(fs.readFileSync(path.resolve(__dirname, '../../../migrations/053_native_tasks.sql'), 'utf8'));
-    testDb.exec(fs.readFileSync(path.resolve(__dirname, '../../../migrations/116_chat_reasoning_engine_v1.sql'), 'utf8'));
-    testDb.prepare('INSERT INTO users (id, auth_provider) VALUES (?, ?)').run(42, 'ios');
+    testDb.pragma('foreign_keys = ON');
+    applyMigrations(testDb);
+    testDb.prepare('INSERT OR IGNORE INTO users (id, telegram_id, auth_provider) VALUES (?, ?, ?)').run(42, 42, 'ios');
     testDb.prepare('INSERT OR IGNORE INTO native_task_lists (user_id, name, is_default) VALUES (?, ?, 1)').run(42, 'Inbox');
   });
 

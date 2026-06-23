@@ -42,6 +42,10 @@ export interface TodoTask {
   completedDateTime?: string;
   checklistItems?: ChecklistItem[];
   recurrence?: NormalizedRecurrence;
+  providerVersion?: string;
+  providerUpdatedAt?: string;
+  linkedResources?: Array<{ applicationName?: string; externalId?: string; displayName?: string }>;
+  providerData?: Record<string, unknown>;
 }
 
 export interface ChecklistItem {
@@ -54,6 +58,7 @@ export interface ServiceResult<T = any> {
   success: boolean;
   data: T;
   error?: string;
+  statusCode?: number;
 }
 
 // Auth is handled by shared microsoft-auth.ts module
@@ -80,6 +85,28 @@ async function withRetry<T>(fn: () => Promise<T>, maxRetries = 3): Promise<T> {
     }
   }
   throw new Error('Unreachable');
+}
+
+function withIfMatch(request: any, ifMatch?: string): any {
+  if (!ifMatch) return request;
+  if (typeof request.header === 'function') return request.header('If-Match', ifMatch);
+  if (typeof request.headers === 'function') return request.headers({ 'If-Match': ifMatch });
+  return request;
+}
+
+function graphStatusCode(err: unknown): number | undefined {
+  const candidates = [
+    (err as any)?.statusCode,
+    (err as any)?.status,
+    (err as any)?.code,
+    (err as any)?.response?.status,
+    (err as any)?.response?.statusCode,
+  ];
+  for (const candidate of candidates) {
+    const statusCode = Number(candidate);
+    if (Number.isInteger(statusCode) && statusCode >= 100 && statusCode <= 599) return statusCode;
+  }
+  return undefined;
 }
 
 // ─── Helper: Parse Graph API task to our format ─────────────────────
@@ -131,6 +158,16 @@ function parseTask(task: any, listId: string, listName: string): TodoTask {
     createdDateTime: task.createdDateTime || '',
     completedDateTime: normalizeMsGraphDateTime(task.completedDateTime),
     recurrence: task.recurrence,
+    providerVersion: task['@odata.etag'] || task.etag || task.eTag,
+    providerUpdatedAt: task.lastModifiedDateTime || task.updatedDateTime,
+    linkedResources: Array.isArray(task.linkedResources)
+      ? task.linkedResources.map((resource: any) => ({
+          applicationName: resource.applicationName,
+          externalId: resource.externalId,
+          displayName: resource.displayName,
+        }))
+      : undefined,
+    providerData: task,
     // TASK-M8: include checklist items from the $expand=checklistItems response
     checklistItems: Array.isArray(task.checklistItems)
       ? task.checklistItems.map((ci: any) => ({
@@ -395,7 +432,7 @@ export async function getTasks(
     const query: Record<string, string> = {
       $orderby: 'createdDateTime DESC',
       $top: String(top),
-      $expand: 'checklistItems',
+      $expand: 'checklistItems,linkedResources',
     };
 
     if (filter?.status) {
@@ -448,7 +485,7 @@ export async function getTask(
     const client = getGraphClient();
     const response = await withRetry(() =>
       client.api(`/me/todo/lists/${listId}/tasks/${taskId}`)
-        .query({ $expand: 'checklistItems' })
+        .query({ $expand: 'checklistItems,linkedResources' })
         .get()
     );
 
@@ -470,7 +507,9 @@ export async function createTask(
     reminderDateTime?: string;
     recurrence?: NormalizedRecurrence;
     timeZone?: string;
-  }
+    nexusTaskId?: string;
+  },
+  options: { idempotencyKey?: string; nexusTaskId?: string } = {},
 ): Promise<ServiceResult<TodoTask>> {
   try {
     const client = getGraphClient();
@@ -498,9 +537,16 @@ export async function createTask(
       taskBody.recurrence = data.recurrence;
     }
 
-    const response = await withRetry(() =>
-      client.api(`/me/todo/lists/${listId}/tasks`).post(taskBody)
-    );
+    const nexusTaskId = options.nexusTaskId || data.nexusTaskId;
+    if (nexusTaskId) {
+      taskBody.linkedResources = [{
+        applicationName: 'NexusHub',
+        externalId: nexusTaskId,
+        displayName: data.title,
+      }];
+    }
+
+    const response = await client.api(`/me/todo/lists/${listId}/tasks`).post(taskBody);
 
     // Track self-created tasks so shared list notifications can filter them out
     if (response.id) selfCreatedTaskIds.add(response.id);
@@ -508,7 +554,7 @@ export async function createTask(
     return { success: true, data: parseTask(response, listId, listName) };
   } catch (err) {
     logger.error({ err, listId }, 'Failed to create To Do task');
-    return { success: false, data: null as any, error: (err as Error).message };
+    return { success: false, data: null as any, error: (err as Error).message, statusCode: graphStatusCode(err) };
   }
 }
 
@@ -525,7 +571,8 @@ export async function updateTask(
     recurrence?: NormalizedRecurrence | null;
     timeZone?: string;
   },
-  listName?: string
+  listName?: string,
+  options: { ifMatch?: string } = {},
 ): Promise<ServiceResult<TodoTask>> {
   try {
     const client = getGraphClient();
@@ -568,9 +615,10 @@ export async function updateTask(
       }
     }
 
-    const response = await withRetry(() =>
-      client.api(`/me/todo/lists/${listId}/tasks/${taskId}`).patch(patch)
-    );
+    const response = await withRetry(() => {
+      const request = withIfMatch(client.api(`/me/todo/lists/${listId}/tasks/${taskId}`), options.ifMatch);
+      return request.patch(patch);
+    });
 
     // Use provided listName, or fall back to cache lookup
     const resolvedName = listName || (await getLists()).data.find((l) => l.id === listId)?.displayName || '';
@@ -578,7 +626,7 @@ export async function updateTask(
     return { success: true, data: parseTask(response, listId, resolvedName) };
   } catch (err) {
     logger.error({ err, listId, taskId }, 'Failed to update To Do task');
-    return { success: false, data: null as any, error: (err as Error).message };
+    return { success: false, data: null as any, error: (err as Error).message, statusCode: graphStatusCode(err) };
   }
 }
 
@@ -603,12 +651,22 @@ async function recurrenceForMovedDueDate(
   }
 }
 
-export async function completeTask(listId: string, taskId: string, listName?: string): Promise<ServiceResult<TodoTask>> {
-  return updateTask(listId, taskId, { status: 'completed' }, listName);
+export async function completeTask(
+  listId: string,
+  taskId: string,
+  listName?: string,
+  options: { ifMatch?: string } = {},
+): Promise<ServiceResult<TodoTask>> {
+  return updateTask(listId, taskId, { status: 'completed' }, listName, options);
 }
 
-export async function uncompleteTask(listId: string, taskId: string, listName?: string): Promise<ServiceResult<TodoTask>> {
-  return updateTask(listId, taskId, { status: 'notStarted' }, listName);
+export async function uncompleteTask(
+  listId: string,
+  taskId: string,
+  listName?: string,
+  options: { ifMatch?: string } = {},
+): Promise<ServiceResult<TodoTask>> {
+  return updateTask(listId, taskId, { status: 'notStarted' }, listName, options);
 }
 
 export async function deleteTask(listId: string, taskId: string): Promise<ServiceResult<void>> {
@@ -620,7 +678,7 @@ export async function deleteTask(listId: string, taskId: string): Promise<Servic
     return { success: true, data: undefined };
   } catch (err) {
     logger.error({ err, listId, taskId }, 'Failed to delete To Do task');
-    return { success: false, data: undefined, error: (err as Error).message };
+    return { success: false, data: undefined, error: (err as Error).message, statusCode: graphStatusCode(err) };
   }
 }
 
@@ -646,7 +704,7 @@ export async function searchTasks(query: string): Promise<ServiceResult<TodoTask
         try {
           const response = await withRetry(() =>
             client.api(`/me/todo/lists/${list.id}/tasks`)
-              .query({ $filter: `contains(title,'${escaped}')`, $top: '50' })
+              .query({ $filter: `contains(title,'${escaped}')`, $top: '50', $expand: 'linkedResources' })
               .get()
           );
           return (response.value || []).map((t: any) => parseTask(t, list.id, list.displayName));
@@ -837,6 +895,51 @@ export async function addChecklistItem(
   } catch (err) {
     logger.error({ err, listId, taskId }, 'Failed to add checklist item');
     return { success: false, data: null as any, error: (err as Error).message };
+  }
+}
+
+export async function updateChecklistItem(
+  listId: string,
+  taskId: string,
+  checklistItemId: string,
+  isChecked: boolean,
+): Promise<ServiceResult<ChecklistItem>> {
+  try {
+    const client = getGraphClient();
+    const response = await withRetry(() =>
+      client.api(`/me/todo/lists/${listId}/tasks/${taskId}/checklistItems/${checklistItemId}`).patch({
+        isChecked,
+      })
+    );
+
+    return {
+      success: true,
+      data: {
+        id: response.id || checklistItemId,
+        displayName: response.displayName || '',
+        isChecked: response.isChecked ?? isChecked,
+      },
+    };
+  } catch (err) {
+    logger.error({ err, listId, taskId, checklistItemId }, 'Failed to update checklist item');
+    return { success: false, data: null as any, error: (err as Error).message };
+  }
+}
+
+export async function deleteChecklistItem(
+  listId: string,
+  taskId: string,
+  checklistItemId: string,
+): Promise<ServiceResult<void>> {
+  try {
+    const client = getGraphClient();
+    await withRetry(() =>
+      client.api(`/me/todo/lists/${listId}/tasks/${taskId}/checklistItems/${checklistItemId}`).delete()
+    );
+    return { success: true, data: undefined };
+  } catch (err) {
+    logger.error({ err, listId, taskId, checklistItemId }, 'Failed to delete checklist item');
+    return { success: false, data: undefined, error: (err as Error).message };
   }
 }
 
