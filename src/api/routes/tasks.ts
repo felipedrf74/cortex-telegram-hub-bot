@@ -307,6 +307,7 @@ export function taskRoutes(): Router {
       sendSuccess(res, getOfflineTasksForList(tenantId, userId, listId, {
         status,
         pageSize,
+        listName: typeof req.query.listName === 'string' ? req.query.listName : undefined,
       }));
       return;
     } catch (err: any) {

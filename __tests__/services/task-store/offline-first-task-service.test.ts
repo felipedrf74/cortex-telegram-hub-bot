@@ -446,11 +446,43 @@ describe('offline-first task service', () => {
        ) VALUES (?, ?, 'ms_todo', 'ms-task-1', ?, 'Tarefas',
          'Provider task', 'pending', 0, '[]', '{}', datetime('now'))`,
     ).run(USER_ID, USER_ID, providerListId);
+    testDb.prepare(
+      `INSERT INTO unified_tasks (
+         user_id, tenant_id, provider, external_id, project_id, project_name,
+         title, status, priority, tags, provider_data, synced_at
+       ) VALUES (?, ?, 'ms_todo', 'ms-task-orphan', NULL, 'Tarefas',
+         'Orphan provider task', 'pending', 0, '[]', '{}', datetime('now'))`,
+    ).run(USER_ID, USER_ID);
+    testDb.prepare(
+      `INSERT INTO unified_tasks (
+         user_id, tenant_id, provider, external_id, project_id, project_name,
+         title, status, priority, tags, provider_data, synced_at
+       ) VALUES (?, ?, 'ms_todo', 'ms-task-stale-project', 999999, 'Tarefas',
+         'Stale project task', 'pending', 0, '[]', '{}', datetime('now'))`,
+    ).run(USER_ID, USER_ID);
 
     const lists = getOfflineTaskLists(USER_ID, USER_ID).lists.filter((list) => list.name === 'Tarefas');
+    const providerListTasks = getOfflineTasksForList(USER_ID, USER_ID, String(providerListId), {
+      status: 'active',
+      listName: 'Tarefas',
+    });
+    const staleMirrorListTasks = getOfflineTasksForList(USER_ID, USER_ID, String(mirrorListId), {
+      status: 'active',
+      listName: 'Tarefas',
+    });
 
     expect(lists).toEqual([
-      expect.objectContaining({ id: String(providerListId), name: 'Tarefas', taskCount: 1 }),
+      expect.objectContaining({ id: String(providerListId), name: 'Tarefas', taskCount: 3 }),
+    ]);
+    expect(providerListTasks.tasks.map((task) => task.title).sort()).toEqual([
+      'Orphan provider task',
+      'Provider task',
+      'Stale project task',
+    ]);
+    expect(staleMirrorListTasks.tasks.map((task) => task.title).sort()).toEqual([
+      'Orphan provider task',
+      'Provider task',
+      'Stale project task',
     ]);
   });
 

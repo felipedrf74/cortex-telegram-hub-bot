@@ -1095,6 +1095,70 @@ function mappedNexusMirrorListIdsWithProviderRows(tenantId: number, userId: numb
   return new Set(rows.map((row) => row.nexus_list_id));
 }
 
+function normalizedListName(value: string | null | undefined): string {
+  return String(value || '').trim().toLowerCase();
+}
+
+function relatedProjectIdsForList(tenantId: number, userId: number, listId: number): Set<number> {
+  const ids = new Set<number>();
+  if (Number.isFinite(listId)) ids.add(listId);
+  if (!Number.isFinite(listId)) return ids;
+
+  const rows = getDb().prepare(
+    `SELECT CAST(m.nexus_list_id AS INTEGER) AS mirror_id, provider_project.id AS provider_id
+     FROM task_container_mappings m
+       LEFT JOIN unified_projects provider_project
+         ON provider_project.user_id = m.user_id
+        AND COALESCE(provider_project.tenant_id, provider_project.user_id) = m.tenant_id
+        AND provider_project.provider = m.provider
+        AND provider_project.external_id = m.provider_container_id
+     WHERE m.tenant_id = ? AND m.user_id = ? AND m.provider = 'ms_todo'
+       AND (
+         CAST(m.nexus_list_id AS INTEGER) = ?
+         OR provider_project.id = ?
+       )`,
+  ).all(tenantId, userId, listId, listId) as Array<{ mirror_id: number | null; provider_id: number | null }>;
+
+  for (const row of rows) {
+    if (Number.isFinite(Number(row.mirror_id))) ids.add(Number(row.mirror_id));
+    if (Number.isFinite(Number(row.provider_id))) ids.add(Number(row.provider_id));
+  }
+  return ids;
+}
+
+function taskRowMatchesList(
+  row: UnifiedTaskRow,
+  relatedProjectIds: Set<number>,
+  canonicalListName: string,
+  knownProjectIds: Set<number>,
+): boolean {
+  if (row.project_id != null && relatedProjectIds.has(row.project_id)) return true;
+  if (!canonicalListName) return false;
+  if (row.project_id != null && knownProjectIds.has(row.project_id)) return false;
+  return normalizedListName(row.project_name) === canonicalListName;
+}
+
+function isCompletedTaskRow(row: UnifiedTaskRow): boolean {
+  return row.is_deleted ? true : isCompletedDto({
+    id: rowTaskId(row),
+    title: row.title,
+    body: null,
+    importance: 'normal',
+    status: dtoStatus(row.status),
+    dueDateTime: null,
+    recurrence: null,
+    listId: null,
+    listName: null,
+    checklistItems: null,
+    createdDateTime: null,
+    syncProvider: row.provider,
+    syncState: row.sync_state || (row.provider === 'nexus' ? 'local_only' : 'synced'),
+    syncWarnings: [],
+    localVersion: row.local_version || 1,
+    deletedAt: row.deleted_at || null,
+  });
+}
+
 export function getOfflineTaskLists(tenantId: number, userId: number): { lists: Array<{ id: string; name: string; taskCount: number }>; freshness: TaskFreshness; pendingMutationCount: number; conflictsCount: number } {
   assertScope(tenantId, userId);
   ensureNativeTasksBackfilled(tenantId, userId);
@@ -1114,10 +1178,24 @@ export function getOfflineTaskLists(tenantId: number, userId: number): { lists: 
   const hiddenMirrorListIds = mappedNexusMirrorListIdsWithProviderRows(tenantId, userId);
   const visibleRows = rows.filter((row) => !(row.provider === 'nexus' && hiddenMirrorListIds.has(String(row.id))));
   const active = activeRows(tenantId, userId);
-  const tasks = rowsToDtos(tenantId, userId, active, getProjectNameMap(tenantId, userId))
+  const projectNameById = getProjectNameMap(tenantId, userId);
+  const knownProjectIds = new Set(projectNameById.keys());
+  const activeListCountById = new Map<number, number>();
+  for (const row of visibleRows) {
+    const relatedProjectIds = relatedProjectIdsForList(tenantId, userId, row.id);
+    const canonicalName = normalizedListName(row.name);
+    activeListCountById.set(
+      row.id,
+      active.filter((taskRow) =>
+        !isCompletedTaskRow(taskRow) &&
+        taskRowMatchesList(taskRow, relatedProjectIds, canonicalName, knownProjectIds),
+      ).length,
+    );
+  }
+  const tasks = rowsToDtos(tenantId, userId, active, projectNameById)
     .filter((task) => !isCompletedDto(task));
   return {
-    lists: visibleRows.map((row) => ({ id: String(row.id), name: row.name, taskCount: row.task_count || 0 })),
+    lists: visibleRows.map((row) => ({ id: String(row.id), name: row.name, taskCount: activeListCountById.get(row.id) || 0 })),
     freshness: buildFreshness(tenantId, userId, tasks),
     pendingMutationCount: countPendingMutations(tenantId, userId),
     conflictsCount: countConflicts(tenantId, userId),
@@ -1191,7 +1269,7 @@ export function getOfflineTasksForList(
   tenantId: number,
   userId: number,
   listId: string,
-  options: { status?: string; pageSize?: number } = {},
+  options: { status?: string; pageSize?: number; listName?: string } = {},
 ) {
   assertScope(tenantId, userId);
   ensureNativeTasksBackfilled(tenantId, userId);
@@ -1199,30 +1277,21 @@ export function getOfflineTasksForList(
   const listNameById = getProjectNameMap(tenantId, userId);
   const numericListId = Number(listId);
   const normalizedStatus = String(options.status || '').trim().toLowerCase();
-  const filters = [
-    'tenant_id = ?',
-    'user_id = ?',
-    'project_id = ?',
-    'is_deleted = 0',
-  ];
-  const args: unknown[] = [
-    tenantId,
-    userId,
-    Number.isFinite(numericListId) ? numericListId : -1,
-  ];
-  if (normalizedStatus === 'active') {
-    filters.push(activeLikeStatusSql('status'));
-    args.push(...COMPLETED_LIKE_STATUS_VALUES);
-  } else if (normalizedStatus === 'completed') {
-    filters.push(completedLikeStatusSql('status'));
-    args.push(...COMPLETED_LIKE_STATUS_VALUES);
-  }
-  const rows = getDb().prepare(
+  const relatedProjectIds = relatedProjectIdsForList(tenantId, userId, numericListId);
+  const canonicalListName = normalizedListName(options.listName) || normalizedListName(listNameById.get(numericListId));
+  const knownProjectIds = new Set(listNameById.keys());
+  let rows = getDb().prepare(
     `SELECT * FROM unified_tasks
-     WHERE ${filters.join(' AND ')}
-     ORDER BY priority DESC, due_date ASC NULLS LAST, updated_at DESC
-     LIMIT ?`,
-  ).all(...args, pageSize) as UnifiedTaskRow[];
+     WHERE tenant_id = ? AND user_id = ? AND is_deleted = 0
+     ORDER BY priority DESC, due_date ASC NULLS LAST, updated_at DESC`,
+  ).all(tenantId, userId) as UnifiedTaskRow[];
+  rows = rows.filter((row) => taskRowMatchesList(row, relatedProjectIds, canonicalListName, knownProjectIds));
+  if (normalizedStatus === 'active') {
+    rows = rows.filter((row) => !isCompletedTaskRow(row));
+  } else if (normalizedStatus === 'completed') {
+    rows = rows.filter(isCompletedTaskRow);
+  }
+  rows = rows.slice(0, pageSize);
   let tasks = rowsToDtos(tenantId, userId, rows, listNameById);
   if (options.status === 'active') tasks = tasks.filter((task) => !isCompletedDto(task));
   if (options.status === 'completed') tasks = tasks.filter(isCompletedDto);
@@ -1232,7 +1301,7 @@ export function getOfflineTasksForList(
       ? 'active'
       : 'all';
   return {
-    listName: listNameById.get(numericListId) || 'Tasks',
+    listName: options.listName || listNameById.get(numericListId) || 'Tasks',
     tasks,
     scope,
     freshness: buildFreshness(tenantId, userId, tasks),

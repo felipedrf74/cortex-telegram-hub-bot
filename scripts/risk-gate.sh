@@ -64,7 +64,7 @@ json_get() {
     const expr = process.argv[2].split(".");
     let value = data;
     for (const part of expr) value = value?.[part];
-    if (Array.isArray(value)) process.stdout.write(value.join("\n"));
+    if (Array.isArray(value)) process.stdout.write(value.length ? `${value.join("\n")}\n` : "");
     else if (value === null || value === undefined) process.stdout.write("");
     else process.stdout.write(String(value));
   ' "$CLASSIFIER_JSON_FILE" "$expr"
