@@ -12,6 +12,7 @@ concurrency:
 
 env:
   NODE_VERSION: '22'
+  TZ: Europe/Lisbon
 
 jobs:
   vitest-full:
