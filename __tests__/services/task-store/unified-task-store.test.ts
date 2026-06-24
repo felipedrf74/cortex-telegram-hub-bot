@@ -491,18 +491,23 @@ describe('upsertProject', () => {
       isDefault: true,
     });
 
-    const nexusList = testDb.prepare(
+    const providerList = testDb.prepare(
       `SELECT id, provider, name
        FROM unified_projects
-       WHERE user_id = ? AND provider = 'nexus' AND lower(name) = lower('Tasks')
+       WHERE user_id = ? AND provider = 'ms_todo' AND external_id = 'ms-list-1'
        LIMIT 1`,
     ).get(USER_ID) as { id: number; provider: string; name: string } | undefined;
+    const nexusListCount = testDb.prepare(
+      `SELECT COUNT(*) AS count
+       FROM unified_projects
+       WHERE user_id = ? AND provider = 'nexus' AND lower(name) = lower('Tasks')`,
+    ).get(USER_ID) as { count: number };
     const mapping = testDb.prepare(
       `SELECT provider, provider_container_type, provider_container_id, sync_direction
        FROM task_container_mappings
        WHERE tenant_id = ? AND user_id = ? AND nexus_list_id = ? AND provider = 'ms_todo'
        LIMIT 1`,
-    ).get(USER_ID, USER_ID, String(nexusList?.id ?? '')) as {
+    ).get(USER_ID, USER_ID, String(providerList?.id ?? '')) as {
       provider: string;
       provider_container_type: string;
       provider_container_id: string;
@@ -510,7 +515,8 @@ describe('upsertProject', () => {
     } | undefined;
 
     expect(result).toBe('inserted');
-    expect(nexusList).toMatchObject({ provider: 'nexus', name: 'Tasks' });
+    expect(providerList).toMatchObject({ provider: 'ms_todo', name: 'Tasks' });
+    expect(nexusListCount.count).toBe(0);
     expect(mapping).toMatchObject({
       provider: 'ms_todo',
       provider_container_type: 'todo_list',
@@ -526,23 +532,23 @@ describe('upsertProject', () => {
       name: 'Tasks',
       isDefault: true,
     });
-    const nexusList = testDb.prepare(
+    const providerList = testDb.prepare(
       `SELECT id
        FROM unified_projects
-       WHERE user_id = ? AND provider = 'nexus' AND lower(name) = lower('Tasks')
+       WHERE user_id = ? AND provider = 'ms_todo' AND external_id = 'ms-list-1'
        LIMIT 1`,
     ).get(USER_ID) as { id: number } | undefined;
-    expect(nexusList).toBeTruthy();
+    expect(providerList).toBeTruthy();
     testDb.prepare(
       `UPDATE task_container_mappings
        SET sync_direction = 'pull_only'
        WHERE tenant_id = ? AND user_id = ? AND nexus_list_id = ? AND provider = 'ms_todo'`,
-    ).run(USER_ID, USER_ID, String(nexusList!.id));
+    ).run(USER_ID, USER_ID, String(providerList!.id));
 
     upsertProject(USER_ID, {
       provider: 'ms_todo',
-      externalId: 'ms-list-1-renamed',
-      name: 'Tasks',
+      externalId: 'ms-list-1',
+      name: 'Tasks Updated',
       isDefault: true,
     });
     const mapping = testDb.prepare(
@@ -550,10 +556,10 @@ describe('upsertProject', () => {
        FROM task_container_mappings
        WHERE tenant_id = ? AND user_id = ? AND nexus_list_id = ? AND provider = 'ms_todo'
        LIMIT 1`,
-    ).get(USER_ID, USER_ID, String(nexusList!.id)) as { provider_container_id: string; sync_direction: string };
+    ).get(USER_ID, USER_ID, String(providerList!.id)) as { provider_container_id: string; sync_direction: string };
 
     expect(mapping).toMatchObject({
-      provider_container_id: 'ms-list-1-renamed',
+      provider_container_id: 'ms-list-1',
       sync_direction: 'pull_only',
     });
   });

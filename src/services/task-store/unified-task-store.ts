@@ -157,63 +157,36 @@ function randomId(prefix: string): string {
   return `${prefix}_${crypto.randomBytes(16).toString('hex')}`;
 }
 
-function stableNexusListExternalId(tenantId: number, userId: number, name: string): string {
-  const normalized = String(name || 'Inbox').trim().toLowerCase();
-  const hash = crypto.createHash('sha256').update(`${tenantId}:${userId}:${normalized}`).digest('hex').slice(0, 16);
-  return `nexus_list_${hash}`;
-}
-
 function isMappedTaskProvider(provider: TaskProvider): provider is 'ms_todo' {
   return provider === 'ms_todo';
 }
 
-function defaultNexusListFlag(name: string): number {
-  return /^inbox|tasks|tarefas$/i.test(name) ? 1 : 0;
-}
-
 function ensureTaskContainerMappingForProviderProject(userId: number, tenantId: number, project: NormalizedProject): void {
   if (!isMappedTaskProvider(project.provider)) return;
-  const normalizedName = String(project.name || '').trim() || 'Inbox';
   const db = getDb();
-
-  let nexusProject = db.prepare(
+  const providerProject = db.prepare(
     `SELECT id
      FROM unified_projects
-     WHERE user_id = ? AND COALESCE(tenant_id, user_id) = ? AND provider = 'nexus'
-       AND lower(name) = lower(?)
-     ORDER BY is_default DESC, id ASC
+     WHERE user_id = ? AND COALESCE(tenant_id, user_id) = ? AND provider = ? AND external_id = ?
      LIMIT 1`,
-  ).get(userId, tenantId, normalizedName) as { id: number } | undefined;
-
-  if (!nexusProject) {
-    const externalId = stableNexusListExternalId(tenantId, userId, normalizedName);
-    db.prepare(
-      `INSERT INTO unified_projects (
-         user_id, tenant_id, provider, external_id, name, is_default, task_count, synced_at
-       ) VALUES (?, ?, 'nexus', ?, ?, ?, 0, datetime('now'))
-       ON CONFLICT(user_id, provider, external_id) DO UPDATE SET
-         tenant_id = COALESCE(unified_projects.tenant_id, excluded.tenant_id),
-         name = excluded.name,
-         synced_at = datetime('now')`,
-    ).run(userId, tenantId, externalId, normalizedName, defaultNexusListFlag(normalizedName));
-
-    nexusProject = db.prepare(
-      `SELECT id
-       FROM unified_projects
-       WHERE user_id = ? AND COALESCE(tenant_id, user_id) = ? AND provider = 'nexus'
-         AND external_id = ?
-       LIMIT 1`,
-    ).get(userId, tenantId, externalId) as { id: number } | undefined;
-  }
-
-  if (!nexusProject) return;
+  ).get(userId, tenantId, project.provider, project.externalId) as { id: number } | undefined;
+  if (!providerProject) return;
 
   const providerContainerType = project.provider === 'ms_todo' ? 'todo_list' : 'project';
+  const existingPreference = db.prepare(
+    `SELECT sync_direction
+     FROM task_container_mappings
+     WHERE tenant_id = ? AND user_id = ? AND provider = ? AND provider_container_id = ?
+       AND sync_direction IN ('none', 'pull_only', 'push_only', 'bidirectional')
+     ORDER BY updated_at DESC
+     LIMIT 1`,
+  ).get(tenantId, userId, project.provider, project.externalId) as { sync_direction: string } | undefined;
+  const syncDirection = existingPreference?.sync_direction || 'bidirectional';
   db.prepare(
     `INSERT INTO task_container_mappings (
        id, tenant_id, user_id, nexus_list_id, provider, provider_container_type,
        provider_container_id, sync_direction
-     ) VALUES (?, ?, ?, ?, ?, ?, ?, 'bidirectional')
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(tenant_id, user_id, nexus_list_id, provider)
      DO UPDATE SET
        provider_container_type = excluded.provider_container_type,
@@ -228,10 +201,11 @@ function ensureTaskContainerMappingForProviderProject(userId: number, tenantId: 
     randomId('task_container_mapping'),
     tenantId,
     userId,
-    String(nexusProject.id),
+    String(providerProject.id),
     project.provider,
     providerContainerType,
     project.externalId,
+    syncDirection,
   );
 }
 

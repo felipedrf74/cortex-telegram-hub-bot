@@ -1076,6 +1076,25 @@ export function countConflicts(tenantId: number, userId: number): number {
   return row?.count || 0;
 }
 
+function mappedNexusMirrorListIdsWithProviderRows(tenantId: number, userId: number): Set<string> {
+  const rows = getDb().prepare(
+    `SELECT m.nexus_list_id
+     FROM task_container_mappings m
+       JOIN unified_projects mirror
+         ON mirror.user_id = m.user_id
+        AND COALESCE(mirror.tenant_id, mirror.user_id) = m.tenant_id
+        AND mirror.provider = 'nexus'
+        AND mirror.id = CAST(m.nexus_list_id AS INTEGER)
+       JOIN unified_projects provider_project
+         ON provider_project.user_id = m.user_id
+        AND COALESCE(provider_project.tenant_id, provider_project.user_id) = m.tenant_id
+        AND provider_project.provider = m.provider
+        AND provider_project.external_id = m.provider_container_id
+     WHERE m.tenant_id = ? AND m.user_id = ? AND m.provider = 'ms_todo'`,
+  ).all(tenantId, userId) as Array<{ nexus_list_id: string }>;
+  return new Set(rows.map((row) => row.nexus_list_id));
+}
+
 export function getOfflineTaskLists(tenantId: number, userId: number): { lists: Array<{ id: string; name: string; taskCount: number }>; freshness: TaskFreshness; pendingMutationCount: number; conflictsCount: number } {
   assertScope(tenantId, userId);
   ensureNativeTasksBackfilled(tenantId, userId);
@@ -1089,14 +1108,16 @@ export function getOfflineTaskLists(tenantId: number, userId: number): { lists: 
 	      AND t.is_deleted = 0
 	      AND ${activeLikeStatusSql('t.status')}
 	     WHERE p.user_id = ? AND COALESCE(p.tenant_id, p.user_id) = ?
-	     GROUP BY p.id
+     GROUP BY p.id
 	     ORDER BY p.is_default DESC, p.name ASC`,
   ).all(tenantId, ...COMPLETED_LIKE_STATUS_VALUES, userId, tenantId) as ProjectRow[];
+  const hiddenMirrorListIds = mappedNexusMirrorListIdsWithProviderRows(tenantId, userId);
+  const visibleRows = rows.filter((row) => !(row.provider === 'nexus' && hiddenMirrorListIds.has(String(row.id))));
   const active = activeRows(tenantId, userId);
   const tasks = rowsToDtos(tenantId, userId, active, getProjectNameMap(tenantId, userId))
     .filter((task) => !isCompletedDto(task));
   return {
-    lists: rows.map((row) => ({ id: String(row.id), name: row.name, taskCount: row.task_count || 0 })),
+    lists: visibleRows.map((row) => ({ id: String(row.id), name: row.name, taskCount: row.task_count || 0 })),
     freshness: buildFreshness(tenantId, userId, tasks),
     pendingMutationCount: countPendingMutations(tenantId, userId),
     conflictsCount: countConflicts(tenantId, userId),

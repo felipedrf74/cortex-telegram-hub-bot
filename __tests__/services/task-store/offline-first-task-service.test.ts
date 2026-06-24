@@ -422,6 +422,38 @@ describe('offline-first task service', () => {
     expect(task?.syncWarnings.map((warning) => warning.code)).toContain('provider_list_missing');
   });
 
+  it('hides legacy Nexus mirror lists when a mapped Microsoft To Do provider list exists', () => {
+    const providerListId = Number(testDb.prepare(
+      `INSERT INTO unified_projects (
+         user_id, tenant_id, provider, external_id, name, is_default, task_count, synced_at
+       ) VALUES (?, ?, 'ms_todo', 'ms-list-tarefas', 'Tarefas', 1, 0, datetime('now'))`,
+    ).run(USER_ID, USER_ID).lastInsertRowid);
+    const mirrorListId = Number(testDb.prepare(
+      `INSERT INTO unified_projects (
+         user_id, tenant_id, provider, external_id, name, is_default, task_count, synced_at
+       ) VALUES (?, ?, 'nexus', 'nexus-list-tarefas', 'Tarefas', 1, 0, datetime('now'))`,
+    ).run(USER_ID, USER_ID).lastInsertRowid);
+    testDb.prepare(
+      `INSERT INTO task_container_mappings (
+         id, tenant_id, user_id, nexus_list_id, provider, provider_container_type,
+         provider_container_id, sync_direction
+       ) VALUES ('mapping-legacy-ms-tarefas', ?, ?, ?, 'ms_todo', 'todo_list', 'ms-list-tarefas', 'bidirectional')`,
+    ).run(USER_ID, USER_ID, String(mirrorListId));
+    testDb.prepare(
+      `INSERT INTO unified_tasks (
+         user_id, tenant_id, provider, external_id, project_id, project_name,
+         title, status, priority, tags, provider_data, synced_at
+       ) VALUES (?, ?, 'ms_todo', 'ms-task-1', ?, 'Tarefas',
+         'Provider task', 'pending', 0, '[]', '{}', datetime('now'))`,
+    ).run(USER_ID, USER_ID, providerListId);
+
+    const lists = getOfflineTaskLists(USER_ID, USER_ID).lists.filter((list) => list.name === 'Tarefas');
+
+    expect(lists).toEqual([
+      expect.objectContaining({ id: String(providerListId), name: 'Tarefas', taskCount: 1 }),
+    ]);
+  });
+
   it('records assign-provider mutations without inventing missing provider containers', () => {
     const created = createOfflineFirstTask(USER_ID, USER_ID, {
       title: 'Assign provider later',

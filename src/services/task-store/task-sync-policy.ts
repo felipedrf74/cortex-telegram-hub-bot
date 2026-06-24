@@ -72,6 +72,30 @@ export function getTaskContainerMapping(
   };
 }
 
+function getDirectProviderProjectMapping(
+  tenantId: number,
+  userId: number,
+  nexusListId: string,
+  provider: 'ms_todo' | 'todoist',
+): TaskContainerMapping | null {
+  const numericListId = Number(nexusListId);
+  if (!Number.isFinite(numericListId)) return null;
+  const row = getDb().prepare(
+    `SELECT id, external_id
+     FROM unified_projects
+     WHERE COALESCE(tenant_id, user_id) = ? AND user_id = ? AND id = ? AND provider = ?
+     LIMIT 1`,
+  ).get(tenantId, userId, numericListId, provider) as { id: number; external_id: string } | undefined;
+  if (!row?.external_id) return null;
+  return {
+    nexusListId: String(row.id),
+    provider,
+    providerContainerType: provider === 'ms_todo' ? 'todo_list' : 'project',
+    providerContainerId: row.external_id,
+    syncDirection: 'bidirectional',
+  };
+}
+
 export function resolveTaskSyncTarget(input: {
   tenantId: number;
   userId: number;
@@ -91,7 +115,9 @@ export function resolveTaskSyncTarget(input: {
     };
   }
 
-  const mapping = getTaskContainerMapping(input.tenantId, input.userId, input.nexusListId, provider);
+  const mapping =
+    getTaskContainerMapping(input.tenantId, input.userId, input.nexusListId, provider) ||
+    getDirectProviderProjectMapping(input.tenantId, input.userId, input.nexusListId, provider);
   if (!mapping || mapping.syncDirection === 'none' || mapping.syncDirection === 'pull_only') {
     const isTodoist = provider === 'todoist';
     return {
