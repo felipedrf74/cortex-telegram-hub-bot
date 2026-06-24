@@ -81,6 +81,14 @@ Provider full-pull deletion is conflict-aware. A provider task that disappears f
 
 Task read routes (`/api/v1/tasks/lists`, `/working-set`, `/snapshot`, `/changes`, `/filtered`, `/list/:listId`, and `/:listId/:taskId`) must read local Nexus state only.
 
+Active read surfaces must exclude completed-like statuses before counting or
+page limiting. The completed-like set is `completed`, `complete`, `done`,
+`cancelled`, and `canceled`. Completed/history reads may include those statuses
+where the UI explicitly requests completed scope. Completed or cancelled tasks
+that still carry `provider_missing` state or an open `provider_task_missing`
+issue must remain available in completed/history surfaces without rendering the
+"provider no longer has this task" warning in active task-row presentation.
+
 Task mutation routes accept stable `clientMutationId` and `idempotencyKey` values where applicable:
 
 - `POST /api/v1/tasks`
@@ -146,7 +154,9 @@ iOS must:
 
 - Tasks first paint does not depend on Microsoft Graph, Todoist, or future provider reads.
 - Offline create/update/complete/reopen/delete/move/checklist add/checklist toggle mutates local UI immediately and survives restart.
+- Completed or cancelled provider rows never remain in active smart views, active list counts, or active list pages.
 - Provider failures degrade freshness and produce typed warnings; they do not break reads.
+- Active provider-missing tasks can show actionable warnings, while completed provider-missing tasks suppress stale provider-missing warning text.
 - Provider retries do not create duplicate Nexus tasks or provider tasks.
 - Provider assignment and retry are idempotent, tenant/user scoped, and never choose arbitrary provider containers.
 - Duplicate idempotent replays are recorded as `duplicate_prevention_hit` observability events.

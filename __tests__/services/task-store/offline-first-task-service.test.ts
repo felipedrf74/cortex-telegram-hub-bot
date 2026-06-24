@@ -47,6 +47,7 @@ import {
   toggleOfflineTaskChecklistItem,
   updateOfflineFirstTask,
 } from '../../../src/services/task-store/offline-first-task-service';
+import { recordTaskSyncIssue } from '../../../src/services/task-store/task-sync-issues';
 
 const USER_ID = 42;
 
@@ -143,6 +144,14 @@ describe('offline-first task service', () => {
            updated_at = '2026-06-02T09:00:00Z'
        WHERE tenant_id = ? AND user_id = ? AND nexus_task_id = ?`,
     ).run(USER_ID, USER_ID, created.task.id);
+    recordTaskSyncIssue({
+      tenantId: USER_ID,
+      userId: USER_ID,
+      taskId: created.task.id,
+      provider: 'ms_todo',
+      code: 'provider_task_missing',
+      message: 'Microsoft To Do no longer has this task.',
+    });
 
     const snapshot = getOfflineTaskSnapshot(USER_ID, USER_ID, { pageSize: 75 });
     const activeTask = snapshot.tasks.find((task: any) => task.id === created.task.id);
@@ -158,6 +167,86 @@ describe('offline-first task service', () => {
       syncState: 'provider_missing',
     }));
     expect(completedTask?.syncWarnings.map((warning: any) => warning.code)).not.toContain('provider_task_missing');
+  });
+
+  it('filters completed-like list rows before counting and before applying page limits', () => {
+    const active = createOfflineFirstTask(USER_ID, USER_ID, {
+      title: 'Active after completed rows',
+      listName: 'Limit Harness',
+      dueDateTime: '2026-12-31T10:00:00Z',
+      importance: 'low',
+      clientMutationId: 'ios-list-limit-active',
+      idempotencyKey: 'idem-ios-list-limit-active',
+    });
+    const completed = createOfflineFirstTask(USER_ID, USER_ID, {
+      title: 'Completed should not fill active page',
+      listName: 'Limit Harness',
+      dueDateTime: '2026-01-01T10:00:00Z',
+      importance: 'high',
+      clientMutationId: 'ios-list-limit-completed',
+      idempotencyKey: 'idem-ios-list-limit-completed',
+    });
+    const done = createOfflineFirstTask(USER_ID, USER_ID, {
+      title: 'Done should not count active',
+      listName: 'Limit Harness',
+      dueDateTime: '2026-01-02T10:00:00Z',
+      importance: 'high',
+      clientMutationId: 'ios-list-limit-done',
+      idempotencyKey: 'idem-ios-list-limit-done',
+    });
+    const cancelled = createOfflineFirstTask(USER_ID, USER_ID, {
+      title: 'Cancelled should not count active',
+      listName: 'Limit Harness',
+      dueDateTime: '2026-01-03T10:00:00Z',
+      importance: 'high',
+      clientMutationId: 'ios-list-limit-cancelled',
+      idempotencyKey: 'idem-ios-list-limit-cancelled',
+    });
+    testDb.prepare(
+      `UPDATE unified_tasks
+       SET status = ?, completed_at = '2026-01-04T10:00:00Z', priority = 3, updated_at = '2026-01-04 10:00:00'
+       WHERE tenant_id = ? AND user_id = ? AND nexus_task_id = ?`,
+    ).run('completed', USER_ID, USER_ID, completed.task.id);
+    testDb.prepare(
+      `UPDATE unified_tasks
+       SET status = ?, completed_at = '2026-01-04T10:00:00Z', priority = 3, updated_at = '2026-01-04 10:01:00'
+       WHERE tenant_id = ? AND user_id = ? AND nexus_task_id = ?`,
+    ).run('done', USER_ID, USER_ID, done.task.id);
+    testDb.prepare(
+      `UPDATE unified_tasks
+       SET status = ?, completed_at = '2026-01-04T10:00:00Z', priority = 3, updated_at = '2026-01-04 10:02:00'
+       WHERE tenant_id = ? AND user_id = ? AND nexus_task_id = ?`,
+    ).run('cancelled', USER_ID, USER_ID, cancelled.task.id);
+
+    const lists = getOfflineTaskLists(USER_ID, USER_ID);
+    const list = lists.lists.find((item) => item.id === active.task.listId);
+    const activePage = getOfflineTasksForList(USER_ID, USER_ID, active.task.listId!, {
+      status: 'active',
+      pageSize: 1,
+    });
+    const completedPage = getOfflineTasksForList(USER_ID, USER_ID, active.task.listId!, {
+      status: 'completed',
+      pageSize: 5,
+    });
+    const allPage = getOfflineTasksForList(USER_ID, USER_ID, active.task.listId!, { pageSize: 5 });
+
+    expect(list).toEqual(expect.objectContaining({ name: 'Limit Harness', taskCount: 1 }));
+    expect(activePage.scope).toBe('active');
+    expect(activePage.tasks.map((task) => task.title)).toEqual(['Active after completed rows']);
+    expect(completedPage.scope).toBe('completed');
+    expect(completedPage.tasks.map((task) => task.id).sort()).toEqual([
+      completed.task.id,
+      done.task.id,
+      cancelled.task.id,
+    ].sort());
+    expect(completedPage.tasks.map((task) => task.status).sort()).toEqual(['cancelled', 'completed', 'completed']);
+    expect(allPage.scope).toBe('all');
+    expect(allPage.tasks.map((task) => task.id).sort()).toEqual([
+      active.task.id,
+      completed.task.id,
+      done.task.id,
+      cancelled.task.id,
+    ].sort());
   });
 
   it('does not let legacy native backfill overwrite app-side task edits', () => {

@@ -374,6 +374,8 @@ function priorityToImportance(value: unknown): 'low' | 'normal' | 'high' {
 function dtoStatus(value: string | null | undefined): string {
   switch (String(value || '').trim().toLowerCase()) {
     case 'completed':
+    case 'complete':
+    case 'done':
       return 'completed';
     case 'in_progress':
     case 'inprogress':
@@ -413,6 +415,20 @@ function dbStatusForValue(value: unknown, fallback: string): string {
     default:
       return fallback || 'pending';
   }
+}
+
+const COMPLETED_LIKE_STATUS_VALUES = ['completed', 'complete', 'done', 'cancelled', 'canceled'];
+
+function normalizedStatusSql(column: string): string {
+  return `lower(replace(replace(coalesce(${column}, ''), '_', ''), '-', ''))`;
+}
+
+function completedLikeStatusSql(column: string): string {
+  return `${normalizedStatusSql(column)} IN (${COMPLETED_LIKE_STATUS_VALUES.map(() => '?').join(', ')})`;
+}
+
+function activeLikeStatusSql(column: string): string {
+  return `${normalizedStatusSql(column)} NOT IN (${COMPLETED_LIKE_STATUS_VALUES.map(() => '?').join(', ')})`;
 }
 
 function safeJsonParse<T>(value: string | null | undefined, fallback: T): T {
@@ -744,6 +760,10 @@ function rowToDto(
   const taskId = rowTaskId(row);
   const status = row.is_deleted ? 'cancelled' : dtoStatus(row.status);
   const completed = ['completed', 'cancelled'].includes(status);
+  const openIssueWarnings = issueMap?.get(taskId) || [];
+  const visibleIssueWarnings = completed
+    ? openIssueWarnings.filter((warning) => warning.code !== 'provider_task_missing')
+    : openIssueWarnings;
   return {
     id: taskId,
     title: row.title || '(Untitled)',
@@ -760,7 +780,7 @@ function rowToDto(
     syncState,
     syncWarnings: [
       ...(completed && syncState === 'provider_missing' ? [] : warningForState(syncState, row.provider)),
-      ...(issueMap?.get(taskId) || []),
+      ...visibleIssueWarnings,
     ],
     localVersion: row.local_version || 1,
     deletedAt: row.deleted_at || null,
@@ -1067,11 +1087,11 @@ export function getOfflineTaskLists(tenantId: number, userId: number): { lists: 
 	      AND t.tenant_id = ?
 	      AND t.project_id = p.id
 	      AND t.is_deleted = 0
-	      AND t.status != 'completed'
+	      AND ${activeLikeStatusSql('t.status')}
 	     WHERE p.user_id = ? AND COALESCE(p.tenant_id, p.user_id) = ?
 	     GROUP BY p.id
 	     ORDER BY p.is_default DESC, p.name ASC`,
-  ).all(tenantId, userId, tenantId) as ProjectRow[];
+  ).all(tenantId, ...COMPLETED_LIKE_STATUS_VALUES, userId, tenantId) as ProjectRow[];
   const active = activeRows(tenantId, userId);
   const tasks = rowsToDtos(tenantId, userId, active, getProjectNameMap(tenantId, userId))
     .filter((task) => !isCompletedDto(task));
@@ -1157,19 +1177,43 @@ export function getOfflineTasksForList(
   const pageSize = Math.min(Math.max(Number(options.pageSize || 75), 1), 200);
   const listNameById = getProjectNameMap(tenantId, userId);
   const numericListId = Number(listId);
+  const normalizedStatus = String(options.status || '').trim().toLowerCase();
+  const filters = [
+    'tenant_id = ?',
+    'user_id = ?',
+    'project_id = ?',
+    'is_deleted = 0',
+  ];
+  const args: unknown[] = [
+    tenantId,
+    userId,
+    Number.isFinite(numericListId) ? numericListId : -1,
+  ];
+  if (normalizedStatus === 'active') {
+    filters.push(activeLikeStatusSql('status'));
+    args.push(...COMPLETED_LIKE_STATUS_VALUES);
+  } else if (normalizedStatus === 'completed') {
+    filters.push(completedLikeStatusSql('status'));
+    args.push(...COMPLETED_LIKE_STATUS_VALUES);
+  }
   const rows = getDb().prepare(
     `SELECT * FROM unified_tasks
-     WHERE tenant_id = ? AND user_id = ? AND project_id = ? AND is_deleted = 0
+     WHERE ${filters.join(' AND ')}
      ORDER BY priority DESC, due_date ASC NULLS LAST, updated_at DESC
      LIMIT ?`,
-  ).all(tenantId, userId, Number.isFinite(numericListId) ? numericListId : -1, pageSize) as UnifiedTaskRow[];
+  ).all(...args, pageSize) as UnifiedTaskRow[];
   let tasks = rowsToDtos(tenantId, userId, rows, listNameById);
   if (options.status === 'active') tasks = tasks.filter((task) => !isCompletedDto(task));
   if (options.status === 'completed') tasks = tasks.filter(isCompletedDto);
+  const scope = normalizedStatus === 'completed'
+    ? 'completed'
+    : normalizedStatus === 'active'
+      ? 'active'
+      : 'all';
   return {
     listName: listNameById.get(numericListId) || 'Tasks',
     tasks,
-    scope: options.status === 'completed' ? 'completed' : 'active',
+    scope,
     freshness: buildFreshness(tenantId, userId, tasks),
     pageInfo: {
       pageSize,
