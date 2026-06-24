@@ -261,7 +261,7 @@ async function createChatFixerDecision(
       { id: 'accept_chat_action_fix', label: 'Accept correction', style: 'primary', mutating: true },
       { id: 'dismiss', label: 'Not now', style: 'secondary', mutating: true },
     ],
-    deeplink: `nexushub://decision-center/${encodeURIComponent(job.jobId)}`,
+    deeplink: `nexus://decision-center/${encodeURIComponent(job.jobId)}`,
     dedupeKey: `chat-action-fixer:${payload.tenantId}:${payload.userId}:${payload.messageId}:${payload.sourceSkill}:${payload.action}`,
     requiresUserAction: true,
     deliveryPolicy: 'in_app_only',

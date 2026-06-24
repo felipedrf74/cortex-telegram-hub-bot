@@ -157,13 +157,13 @@ describe('Decision Center daily attention materializer', () => {
     expect(intent.actionButtons[0]).toMatchObject({
       id: 'open_detail',
       label: 'Open overdue tasks',
-      deeplink: 'nexushub://tasks?filter=overdue',
+      deeplink: 'nexus://tasks?filter=overdue',
     });
     expect(JSON.stringify(intent)).not.toContain('Pay private invoice');
     expect(JSON.stringify(intent)).not.toContain('Call private person');
     expect(JSON.stringify(intent)).not.toContain('ms-private-id');
     expect(JSON.stringify(intent)).not.toContain('native-private-id');
-    expect([intent.title, intent.body, intent.actionButtons[0].label, intent.actionButtons[1].label].join(' ')).not.toMatch(
+    expect([intent.title, intent.body, intent.actionButtons[0].label].join(' ')).not.toMatch(
       /\b(undefined|null|NaN|\[object Object\])\b/,
     );
   });
@@ -184,7 +184,7 @@ describe('Decision Center daily attention materializer', () => {
     expect(intent.title).toBe('Choose today\'s task focus');
     expect(intent.actionButtons[0]).toMatchObject({
       label: 'Open today\'s tasks',
-      deeplink: 'nexushub://tasks?filter=dueToday',
+      deeplink: 'nexus://tasks?filter=dueToday',
     });
     expect(intent.decisionContext.sourceState).toBe('important_tasks');
   });

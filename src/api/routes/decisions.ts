@@ -484,6 +484,7 @@ export function decisionRoutes(): Router {
         {
           idempotencyKey: typeof req.body?.idempotencyKey === 'string' ? req.body.idempotencyKey : undefined,
           payload: typeof req.body?.payload === 'object' && req.body.payload ? req.body.payload : {},
+          channel: typeof req.body?.channel === 'string' ? req.body.channel : undefined,
         },
       );
       invalidateNotificationInboxCaches(userId, tenantId);

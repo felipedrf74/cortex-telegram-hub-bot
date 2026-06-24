@@ -47,6 +47,7 @@ import {
   expireStaleNotificationIntents,
   getNotificationDecisionLog,
   getNotificationDeliveryObservabilityMetrics,
+  getNotificationCenterItem,
   getNotificationReliabilityDashboard,
   getOrCreateNotificationProfile,
   listNotificationBridgeEntityIds,
@@ -61,6 +62,28 @@ import {
   updateNotificationProfile,
 } from '../../src/services/notification-orchestrator';
 import { deliveryPolicyForNotificationContract, resolveNotificationContract } from '../../src/services/notification-contracts';
+import { getDecisionOverview } from '../../src/services/decision-center';
+
+function ensureDecisionDependencyFixtureTable(): void {
+  testDb.exec(`
+    CREATE TABLE IF NOT EXISTS decision_dependencies (
+      dependency_id TEXT PRIMARY KEY,
+      decision_id TEXT NOT NULL,
+      depends_on_decision_id TEXT NOT NULL,
+      user_id INTEGER NOT NULL,
+      tenant_id INTEGER NOT NULL,
+      relationship TEXT NOT NULL DEFAULT 'blocks',
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      UNIQUE(decision_id, depends_on_decision_id, user_id, tenant_id, relationship)
+    );
+  `);
+}
+
+function ensureSecretaryAgendaFixtureTable(): void {
+  testDb.exec(readFileSync('migrations/083_secretary_agenda_ledger.sql', 'utf8'));
+  testDb.exec(readFileSync('migrations/098_secretary_decision_explanation.sql', 'utf8'));
+  testDb.exec('ALTER TABLE secretary_agenda_items ADD COLUMN reasoning_trail_json TEXT');
+}
 
 describe('Secretary Notification Orchestrator', () => {
   beforeEach(() => {
@@ -149,9 +172,9 @@ describe('Secretary Notification Orchestrator', () => {
     const insert = testDb.prepare(`
       INSERT INTO notification_center_items (
         item_id, intent_id, user_id, tenant_id, title, body, safe_body,
-        source_skill, type, priority, status, actions_json, dedupe_key
+        source_skill, type, priority, status, actions_json, dedupe_key, requires_user_action
       ) VALUES (?, ?, 15, 15, 'Content', 'Open Nexus.', 'Open Nexus.',
-        'content', 'approval_required', 'active', 'unread', '[]', ?)
+        'content', 'approval_required', 'active', 'unread', '[]', ?, 1)
     `);
     for (let index = 1; index <= 205; index += 1) {
       insert.run(`nc_bridge_${index}`, `ni_bridge_${index}`, `content:script_ready:${index}`);
@@ -258,6 +281,26 @@ describe('Secretary Notification Orchestrator', () => {
       source: 'ios_inbox',
       errorCode: 'network_timeout',
     });
+    testDb.prepare(`
+      INSERT INTO notification_center_items (
+        item_id, intent_id, user_id, tenant_id, title, body, safe_body,
+        source_skill, type, priority, status, deeplink, actions_json, dedupe_key, created_at
+      ) VALUES (
+        'legacy_dead_deeplink', 'legacy_dead_deeplink_intent', 12, 12, 'Legacy link', 'Legacy body', 'Legacy body',
+        'chat', 'decision_required', 'active', 'read', 'nexushub://decision-center/legacy',
+        '[]', 'legacy:dead-deeplink', datetime('now')
+      )
+    `).run();
+    testDb.prepare(`
+      INSERT INTO notification_center_items (
+        item_id, intent_id, user_id, tenant_id, title, body, safe_body,
+        source_skill, type, priority, status, deeplink, actions_json, dedupe_key, created_at
+      ) VALUES (
+        'unsupported_nexus_deeplink', 'unsupported_nexus_deeplink_intent', 12, 12, 'Unsupported route', 'Route body', 'Route body',
+        'secretary', 'decision_required', 'active', 'read', 'nexus://today',
+        '[]', 'unsupported:dead-deeplink', datetime('now')
+      )
+    `).run();
 
     const dashboard = getNotificationReliabilityDashboard(12, 12);
 
@@ -270,6 +313,13 @@ describe('Secretary Notification Orchestrator', () => {
     expect(dashboard.badge.drift).toBe(7 - dashboard.badge.expectedBadgeCount);
     expect(dashboard.readState.serverReadFailureCount).toBe(0);
     expect(dashboard.readState.clientReportedReadFailureCount).toBe(1);
+    expect(dashboard.quality.deadDeeplinkCount).toBe(2);
+    expect(dashboard.quality.byTopic).not.toContainEqual(expect.objectContaining({
+      sourceSkill: '*',
+      type: '*',
+      recipe: '*',
+    }));
+    expect(JSON.stringify(dashboard.quality.byTopic)).not.toContain('badgeDrift');
   });
 
   it('blocks generic decision-shaped notifications from visible push', async () => {
@@ -366,10 +416,10 @@ describe('Secretary Notification Orchestrator', () => {
       privacyPolicy: 'standard',
     }));
 
-    const item = listNotificationCenterItems(32, 32)[0];
     expect(result.item?.safeBody).toBe('Schedule decision — open Nexus to review the recommendation.');
-    expect(item.safeBody).not.toContain('John Doe');
-    expect(item.sensitiveBody).toBe('Meeting with John Doe about Acme acquisition at 16:00.');
+    expect(result.item?.safeBody).not.toContain('John Doe');
+    expect(result.item?.sensitiveBody).toBe('Meeting with John Doe about Acme acquisition at 16:00.');
+    expect(listNotificationCenterItems(32, 32)).toHaveLength(0);
   });
 
   it('deduplicates unresolved conflicts by dedupe key', async () => {
@@ -385,11 +435,206 @@ describe('Secretary Notification Orchestrator', () => {
     expect(first.item?.itemId).toBeDefined();
     expect(second.item?.itemId).toBe(first.item?.itemId);
     expect(second.decisionLog.decision).toBe('deduped');
-    expect(listNotificationCenterItems(4, 4)).toHaveLength(1);
+    expect(listNotificationCenterItems(4, 4)).toHaveLength(0);
+    const centerCount = (testDb.prepare(
+      'SELECT COUNT(*) AS cnt FROM notification_center_items WHERE user_id = ? AND tenant_id = ? AND source_skill = ? AND dedupe_key = ?',
+    ).get(4, 4, 'secretary', dedupeKey) as { cnt: number }).cnt;
+    expect(centerCount).toBe(1);
     const intentCount = (testDb.prepare(
       'SELECT COUNT(*) AS cnt FROM notification_intents WHERE user_id = ? AND tenant_id = ? AND source_skill = ? AND dedupe_key = ?',
     ).get(4, 4, 'secretary', dedupeKey) as { cnt: number }).cnt;
     expect(intentCount).toBe(1);
+  });
+
+  it('filters decision-shaped inbox rows that are admin, internal, smoke, unsafe, or stale', async () => {
+    const userId = 48;
+    const tenantId = 48;
+    const visible = await createNotificationIntent(buildSkillNotificationFixtureIntent('content', userId, {
+      tenantId,
+      dedupeKey: 'inbox-filter:visible',
+      deliveryPolicy: 'in_app_only',
+      decisionContext: {
+        entityTitle: 'Visible content draft',
+        sourceState: 'awaiting_approval',
+      },
+    }));
+    const admin = await createNotificationIntent(buildSkillNotificationFixtureIntent('content', userId, {
+      tenantId,
+      dedupeKey: 'inbox-filter:admin',
+      deliveryPolicy: 'in_app_only',
+      visibilityScope: 'tenant_admin',
+      decisionContext: {
+        entityTitle: 'Admin-only content draft',
+        sourceState: 'awaiting_approval',
+      },
+    }));
+    const internal = await createNotificationIntent(buildSkillNotificationFixtureIntent('content', userId, {
+      tenantId,
+      dedupeKey: 'inbox-filter:internal',
+      deliveryPolicy: 'in_app_only',
+      decisionContext: {
+        entityTitle: 'Internal content draft',
+        sourceState: 'awaiting_approval',
+        internalOnly: true,
+      },
+    }));
+    const smoke = await createNotificationIntent(buildSkillNotificationFixtureIntent('content', userId, {
+      tenantId,
+      dedupeKey: 'smoke:inbox-filter',
+      deliveryPolicy: 'in_app_only',
+      decisionContext: {
+        entityTitle: 'Smoke content draft',
+        sourceState: 'awaiting_approval',
+      },
+    }));
+    const unsafe = await createNotificationIntent(buildSkillNotificationFixtureIntent('content', userId, {
+      tenantId,
+      dedupeKey: 'inbox-filter:unsafe',
+      deliveryPolicy: 'in_app_only',
+      relatedEntityId: null,
+      relatedEntityType: null,
+      title: 'Decision details',
+      body: 'Review this decision.',
+      decisionContext: {},
+    }));
+    const stale = await createNotificationIntent(buildSkillNotificationFixtureIntent('secretary', userId, {
+      tenantId,
+      dedupeKey: 'inbox-filter:stale',
+      deliveryPolicy: 'in_app_only',
+      decisionContext: {
+        entityTitle: 'Stale calendar conflict',
+        sourceState: 'conflict_detected',
+        currentStartAt: '2026-05-07T13:00:00.000Z',
+        currentEndAt: '2026-05-07T13:30:00.000Z',
+        recommendedStartAt: '2026-05-07T14:00:00.000Z',
+        recommendedEndAt: '2026-05-07T14:30:00.000Z',
+        providerSyncState: 'not_synced',
+        providerSyncUpdatedAt: '2026-05-07T11:00:00.000Z',
+      },
+    }));
+
+    const hiddenIds = [admin, internal, smoke, unsafe, stale].map((result) => result.item?.itemId);
+    expect(hiddenIds.every(Boolean)).toBe(true);
+    const listedIds = listNotificationCenterItems(userId, tenantId, { status: 'all', limit: 20 }).map((item) => item.itemId);
+    expect(listedIds).toEqual([visible.item?.itemId]);
+    for (const hiddenId of hiddenIds) {
+      expect(listedIds).not.toContain(hiddenId);
+    }
+  });
+
+  it('keeps action state parity between single-item read and list projections', async () => {
+    const result = await createNotificationIntent(buildSkillNotificationFixtureIntent('content', 411, {
+      dedupeKey: 'inbox-single-read-parity',
+    }));
+    const itemId = result.item!.itemId;
+
+    const read = markNotificationCenterItemRead(itemId, 411, 411);
+    const listed = listNotificationCenterItems(411, 411, { status: 'all', limit: 20 })
+      .find((item) => item.itemId === itemId);
+
+    expect(read?.actionEffectiveStatuses).toEqual(listed?.actionEffectiveStatuses);
+    expect(read?.frontendActionState).toBe(listed?.frontendActionState);
+    expect(getNotificationCenterItem(itemId, 411, 411)?.actionEffectiveStatuses)
+      .toEqual(listed?.actionEffectiveStatuses);
+  });
+
+  it('fails closed for orphaned decision rows when intent context is missing', async () => {
+    const result = await createNotificationIntent(buildSkillNotificationFixtureIntent('secretary', 412, {
+      dedupeKey: 'inbox-orphan-fail-closed',
+    }));
+    const itemId = result.item!.itemId;
+
+    testDb.prepare('DELETE FROM notification_intents WHERE intent_id = ?').run(result.intent.intentId);
+
+    const orphan = listNotificationCenterItems(412, 412, { status: 'all', limit: 20 })
+      .find((item) => item.itemId === itemId);
+
+    expect(orphan).toBeTruthy();
+    expect(orphan?.frontendActionState).toBe('disabled_missing_details');
+    expect(orphan?.actionEffectiveStatuses[0]).toMatchObject({
+      actionId: 'open_detail',
+      effective: 'disabled_missing_details',
+    });
+  });
+
+  it('resolves inbox action states from list projection for snoozed unsafe and dependency-blocked decisions', async () => {
+    ensureDecisionDependencyFixtureTable();
+    const snoozed = await createNotificationIntent(buildSkillNotificationFixtureIntent('secretary', 413, {
+      dedupeKey: 'inbox-snoozed-missing-context',
+    }));
+    testDb.prepare('DELETE FROM notification_intents WHERE intent_id = ?').run(snoozed.intent.intentId);
+    testDb.prepare("UPDATE notification_center_items SET status = 'snoozed' WHERE item_id = ?").run(snoozed.item!.itemId);
+
+    const blocker = await createNotificationIntent(buildSkillNotificationFixtureIntent('content', 413, {
+      dedupeKey: 'inbox-dependency-blocker',
+    }));
+    const blocked = await createNotificationIntent(buildSkillNotificationFixtureIntent('content', 413, {
+      dedupeKey: 'inbox-dependency-blocked',
+    }));
+    testDb.prepare(`
+      INSERT INTO decision_dependencies (
+        dependency_id, decision_id, depends_on_decision_id, user_id, tenant_id, relationship
+      ) VALUES ('dep-inbox-blocked', ?, ?, 413, 413, 'blocks')
+    `).run(blocked.item!.itemId, blocker.item!.itemId);
+
+    const items = listNotificationCenterItems(413, 413, { status: 'all', limit: 20 });
+    const snoozedItem = items.find((item) => item.itemId === snoozed.item!.itemId);
+    const blockedItem = items.find((item) => item.itemId === blocked.item!.itemId);
+
+    expect(snoozedItem?.frontendActionState).toBe('disabled_missing_details');
+    expect(snoozedItem?.actionEffectiveStatuses[0]?.effective).toBe('disabled_missing_details');
+    expect(blockedItem?.frontendActionState).toBe('disabled_blocked_by_dependency');
+    expect(blockedItem?.actionEffectiveStatuses.find((status) => status.actionId === 'approve_script')?.effective)
+      .toBe('disabled_blocked_by_dependency');
+  });
+
+  it('hides live-stale secretary agenda decisions from both Decision Center and Notification Center', async () => {
+    ensureSecretaryAgendaFixtureTable();
+    testDb.prepare(`
+      INSERT INTO secretary_agenda_items (
+        agenda_item_id, source_intent_id, source_skill, source_action, intent_action,
+        source_entity_id, source_entity_type, owner_user_id, tenant_id, lifecycle_state,
+        provider_sync_state, provider_event_id, provider_source, version, title, start_at,
+        end_at, duration_minutes, decision_action, decision_reason_codes_json,
+        source_shape_hash, scheduled_segments_json, created_at, updated_at
+      ) VALUES (
+        'agenda-live-stale', 'source-live-stale', 'secretary', 'reschedule', 'reschedule_this',
+        'agenda-live-stale', 'secretary_agenda_item', 414, '414', 'scheduled',
+        'not_synced', NULL, NULL, 1, 'Live stale agenda item',
+        '2026-05-07T13:00:00.000Z', '2026-05-07T13:30:00.000Z', 30,
+        'reschedule_this', '["calendar_conflict"]', 'shape-live-stale', '[]',
+        '2026-05-07T10:00:00.000Z', '2026-05-07T11:00:00.000Z'
+      )
+    `).run();
+
+    const result = await createNotificationIntent(buildSkillNotificationFixtureIntent('secretary', 414, {
+      relatedEntityId: 'agenda-live-stale',
+      relatedEntityType: 'secretary_agenda_item',
+      deeplink: 'nexus://secretary/conflict/agenda-live-stale',
+      dedupeKey: 'inbox-live-stale-secretary-agenda',
+      decisionContext: {
+        entityTitle: 'Live stale agenda item',
+        sourceState: 'scheduled',
+        currentStartAt: '2026-05-07T13:00:00.000Z',
+        currentEndAt: '2026-05-07T13:30:00.000Z',
+        recommendedStartAt: '2026-05-07T14:00:00.000Z',
+        recommendedEndAt: '2026-05-07T14:30:00.000Z',
+        providerSyncState: 'synced',
+        providerSyncUpdatedAt: '2026-05-07T12:00:00.000Z',
+        candidateSlots: [{
+          startAt: '2026-05-07T14:00:00.000Z',
+          endAt: '2026-05-07T14:30:00.000Z',
+          label: '2:00 PM',
+        }],
+      },
+    }));
+
+    const inboxIds = listNotificationCenterItems(414, 414, { status: 'all', limit: 20 }).map((item) => item.itemId);
+    const decisionIds = getDecisionOverview(414, 414, { limit: 20 }).items.map((item) => item.itemId);
+
+    expect(result.item?.itemId).toBeDefined();
+    expect(inboxIds).not.toContain(result.item!.itemId);
+    expect(decisionIds).not.toContain(result.item!.itemId);
   });
 
   it('marks expired intent dedupe rows expired and allows a fresh intent for the same key', async () => {
@@ -492,7 +737,13 @@ describe('Secretary Notification Orchestrator', () => {
       dedupeKey,
     }));
 
-    expect(listNotificationCenterItems(404, 404)).toHaveLength(2);
+    const rawCount = (testDb.prepare(`
+      SELECT COUNT(*) AS cnt
+        FROM notification_center_items
+       WHERE user_id = ? AND tenant_id = ? AND dedupe_key = ?
+    `).get(404, 404, dedupeKey) as { cnt: number }).cnt;
+    expect(rawCount).toBe(2);
+    expect(listNotificationCenterItems(404, 404).map((item) => item.sourceSkill)).toEqual(['content']);
   });
 
   it('creates runtime dedupe indexes equivalent to the migration contract', () => {
@@ -543,6 +794,19 @@ describe('Secretary Notification Orchestrator', () => {
       contributesToBadge: true,
     });
 
+    expect(resolveNotificationContract({
+      sourceSkill: 'finance',
+      type: 'approval_required',
+      actionId: 'open_detail',
+    })).toMatchObject({
+      apnsCategory: 'DECISION_CLARIFICATION',
+      iosDestination: 'decision_center',
+      privacySafeCopyPolicy: 'financial',
+      supportedActions: ['open_detail'],
+      actionId: 'open_detail',
+      contributesToBadge: true,
+    });
+
     const digest = resolveNotificationContract({
       sourceSkill: 'secretary',
       type: 'daily_digest',
@@ -557,12 +821,24 @@ describe('Secretary Notification Orchestrator', () => {
 
     expect(resolveNotificationContract({
       sourceSkill: 'finance',
-      type: 'reminder',
+      type: 'decision_required',
       actionId: 'mark_paid',
     })).toMatchObject({
       apnsCategory: 'FINANCE_PAYMENT',
+      iosDestination: 'decision_center',
       supportedActions: ['mark_paid', 'open_detail', 'dismiss'],
       actionId: 'mark_paid',
+    });
+
+    expect(resolveNotificationContract({
+      sourceSkill: 'secretary',
+      type: 'reminder',
+      actionId: 'mark_done',
+    })).toMatchObject({
+      apnsCategory: 'reminder',
+      iosDestination: 'notification_detail',
+      supportedActions: ['open_detail', 'snooze', 'dismiss'],
+      actionId: null,
     });
 
     const crossSkill = resolveNotificationContract({
@@ -599,6 +875,120 @@ describe('Secretary Notification Orchestrator', () => {
 
     expect(result.intent.deliveryPolicy).toBe('digest_only');
     expect(result.decisionLog.decision).toBe('digest');
+  });
+
+  it('filters unsupported producer actions and exposes action effectiveness metadata', async () => {
+    const result = await createNotificationIntent(buildSkillNotificationFixtureIntent('secretary', 406, {
+      type: 'decision_required',
+      relatedEntityType: 'task_attention_day',
+      relatedEntityId: '2026-06-17',
+      actionButtons: [
+        { id: 'open_today_plan', label: 'Open today\'s plan', style: 'primary', deeplink: 'nexus://today' },
+      ],
+      deeplink: 'nexus://tasks?filter=dueToday',
+      dedupeKey: 'secretary:daily-attention:unsupported-action',
+      decisionContext: {
+        recipe: 'daily_task_attention',
+        sourceState: 'task_pressure',
+        entityTitle: 'Daily task attention',
+        visibilityScope: 'user_private',
+      },
+    }));
+
+    expect(result.item?.actions).toHaveLength(1);
+    expect(result.item?.actions[0]).toMatchObject({
+      id: 'open_detail',
+      label: 'Open',
+      style: 'primary',
+      deeplink: 'nexus://tasks?filter=dueToday',
+    });
+    expect(result.item?.actionEffectiveStatuses).toEqual([
+      {
+        actionId: 'open_detail',
+        effective: 'enabled',
+        implemented: true,
+        capabilityReason: null,
+      },
+    ]);
+    expect(result.item?.frontendActionState).toBe('enabled');
+  });
+
+  it('normalizes non-app-routable producer deeplinks to Notification Center fallback', async () => {
+    const result = await createNotificationIntent(buildSkillNotificationFixtureIntent('secretary', 407, {
+      type: 'decision_required',
+      relatedEntityType: 'task_attention_day',
+      relatedEntityId: '2026-06-18',
+      actionButtons: [
+        { id: 'open_detail', label: 'Open old route', style: 'primary', deeplink: 'nexushub://tasks?filter=dueToday' },
+      ],
+      deeplink: 'nexushub://tasks?filter=dueToday',
+      dedupeKey: 'secretary:daily-attention:legacy-deeplink',
+      decisionContext: {
+        recipe: 'daily_task_attention',
+        sourceState: 'task_pressure',
+        entityTitle: 'Daily task attention',
+        visibilityScope: 'user_private',
+      },
+    }));
+
+    expect(result.item?.deeplink).toBe('nexus://notifications');
+    expect(result.item?.actions[0]?.deeplink).toBe('nexus://notifications');
+    expect(result.item?.expiresAt).toBeTruthy();
+    expect(Date.parse(result.item!.expiresAt!)).toBeGreaterThan(Date.now());
+
+    const external = await createNotificationIntent(buildSkillNotificationFixtureIntent('content', 407, {
+      type: 'approval_required',
+      relatedEntityType: 'content_script',
+      relatedEntityId: 'https-route',
+      actionButtons: [
+        { id: 'open_detail', label: 'Open external URL', style: 'primary', deeplink: 'https://example.com/review' },
+      ],
+      deeplink: 'https://example.com/review',
+      dedupeKey: 'content:approval:https-route',
+      decisionContext: {
+        recipe: 'content_approval',
+        sourceState: 'approval_required',
+        entityTitle: 'HTTPS route',
+        visibilityScope: 'user_private',
+      },
+    }));
+
+    expect(external.item?.deeplink).toBe('nexus://notifications');
+    expect(external.item?.actions[0]?.deeplink).toBe('nexus://notifications');
+  });
+
+  it('does not allow producer privacy overrides to loosen source-skill policy', async () => {
+    const result = await createNotificationIntent(buildSkillNotificationFixtureIntent('finance', 408, {
+      type: 'decision_required',
+      relatedEntityType: 'finance_tax_event',
+      relatedEntityId: '2026-06',
+      actionButtons: [
+        { id: 'mark_paid', label: 'Mark paid', style: 'primary' },
+      ],
+      deeplink: 'nexus://finance/reminder/2026-06',
+      dedupeKey: 'finance:privacy-policy-gate',
+      privacyPolicy: 'public',
+      decisionContext: {
+        recipe: 'finance_payment',
+        entityTitle: 'Finance payment',
+        sourceState: 'payment_due',
+      },
+    }));
+
+    expect(result.intent.privacyPolicy).toBe('financial');
+  });
+
+  it('downgrades actionable intents that are missing source scope', async () => {
+    const result = await createNotificationIntent(buildSkillNotificationFixtureIntent('content', 409, {
+      relatedEntityType: null,
+      relatedEntityId: null,
+      requiresUserAction: true,
+      dedupeKey: 'content:missing-source-scope',
+    }));
+
+    expect(result.intent.requiresUserAction).toBe(false);
+    expect(result.intent.priority).toBe('passive');
+    expect(result.intent.deliveryPolicy).toBe('digest_only');
   });
 
   it('enforces active dedupe keys at the database layer', () => {
@@ -862,10 +1252,10 @@ describe('Secretary Notification Orchestrator', () => {
     testDb.prepare(`
       INSERT INTO notification_center_items (
         item_id, intent_id, user_id, tenant_id, title, body, safe_body,
-        source_skill, type, priority, status, actions_json, dedupe_key
+        source_skill, type, priority, status, actions_json, dedupe_key, requires_user_action
       ) VALUES ('nc_existing_badge_item', 'ni_existing_badge_item', 72, 72, 'Reminder',
         'Reminder', 'Reminder', 'cooking', 'reminder', 'passive', 'unread', '[]',
-        'existing-badge-item')
+        'existing-badge-item', 1)
     `).run();
 
     const decision = await createNotificationIntent(buildSkillNotificationFixtureIntent('training', 72, {
@@ -944,7 +1334,7 @@ describe('Secretary Notification Orchestrator', () => {
     }
   });
 
-  it('scopes list, read, dismiss, and action operations by authenticated user and tenant', async () => {
+  it('scopes list, read, dismiss, and safe generic actions by authenticated user and tenant', async () => {
     pushTokens = ['sandbox-token'];
     const result = await createNotificationIntent(buildSkillNotificationFixtureIntent('content', 8, {
       dedupeKey: 'content:scope',
@@ -956,13 +1346,19 @@ describe('Secretary Notification Orchestrator', () => {
     expect(dismissNotificationCenterItem(itemId, 9, 9)).toBeNull();
     expect(() => performNotificationAction(itemId, 'approve_script', 9, 9)).toThrow(/not found/);
 
-    const read = markNotificationCenterItemRead(itemId, 8, 8);
-    expect(read?.status).toBe('read');
-    const action = performNotificationAction(itemId, 'approve_script', 8, 8);
-    expect(action.item.status).toBe('actioned');
+    expect(() => performNotificationAction(itemId, 'approve_script', 8, 8)).toThrow(/deterministic executor/);
+    const afterRejected = listNotificationCenterItems(8, 8)[0];
+    expect(afterRejected.status).toBe('unread');
+    expect(getNotificationReliabilityDashboard(8, 8).quality.unsupportedActionBlockedCount).toBe(1);
+
+    const action = performNotificationAction(itemId, 'open_detail', 8, 8);
+    expect(action.item.status).toBe('read');
     const log = getNotificationDecisionLog(result.decisionLog.decisionLogId, 8, 8);
-    expect(log?.actionTaken).toBe('approve_script');
-    expect(() => performNotificationAction(itemId, 'approve_script', 8, 8)).toThrow(/already actioned/);
+    expect(log?.actionTaken).toBe('open_detail');
+
+    const dismissed = dismissNotificationCenterItem(itemId, 8, 8);
+    expect(dismissed?.status).toBe('dismissed');
+    expect(() => performNotificationAction(itemId, 'open_detail', 8, 8)).toThrow(/dismissed/);
   });
 
   it('rejects expired or invalid actions safely', async () => {

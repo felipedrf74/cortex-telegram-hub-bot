@@ -92,6 +92,8 @@ if [ "$FORCE_FULL" = "true" ] || [ "$VITEST_MODE" = "full" ]; then
   exit 0
 fi
 
+run_cmd scripts/notification-release-gate.sh
+
 if [ "$VITEST_MODE" = "skip" ] && [[ "$SKIP_REASON" == docs-only* ]]; then
   echo "🧾 Docs-only release diff: skipping Vitest and running docs checks."
   run_cmd ./scripts/release-doc-drift-check.sh --strict

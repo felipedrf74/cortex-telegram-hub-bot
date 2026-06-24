@@ -74,7 +74,7 @@ export async function notifyGarminMfaRequired(_legacyMessage?: string): Promise<
         sensitiveBody: 'Garmin requested an MFA code. Open Nexus on iOS and enter the code from your email.',
         actionButtons: [
           {
-            id: 'open_garmin_reauth',
+            id: 'open_detail',
             label: 'Open Garmin',
             style: 'primary',
             deeplink: 'nexus://connections/garmin/reauth',

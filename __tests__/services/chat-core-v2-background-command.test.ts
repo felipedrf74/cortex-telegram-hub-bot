@@ -305,6 +305,7 @@ describe('§5.E type-boundary conversions (string↔number at all four crossings
     expect(typeof payload.tenantId).toBe('string');
     expect(payload.userId).toBe('7');
     expect(typeof payload.userId).toBe('string');
+    expect(payload.resumeDeepLink).toBe('nexus://chat/turn/turn_1');
   });
 
   it('crossing 3: the worker calls executeChatCoreV2Command with NUMBER ids', async () => {

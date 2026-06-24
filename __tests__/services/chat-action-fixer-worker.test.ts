@@ -180,6 +180,7 @@ describe('chat action retry policy and fixer worker', () => {
     const fixerItem = overview.items.find((item) => item.relatedEntities.some((entity) => entity.type === CHAT_ACTION_FIXER_JOB_TYPE));
     expect(fixerItem).toBeTruthy();
     expect(fixerItem?.actions.some((action) => action.id === 'accept_chat_action_fix')).toBe(true);
+    expect(fixerItem?.deeplink).toMatch(/^nexus:\/\/decision-center\//);
     expect(fixerItem?.explanation?.userAction).toMatch(/Review|Accept|correction/i);
 
     const actionResult = await performDecisionAction(fixerItem!.itemId, 'accept_chat_action_fix', 9050, 850, {

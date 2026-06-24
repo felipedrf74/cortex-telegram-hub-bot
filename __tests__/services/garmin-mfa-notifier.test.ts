@@ -108,6 +108,13 @@ describe('Garmin MFA notifier', () => {
       }),
     }));
     const payload = mockCreateNotificationIntent.mock.calls[0][0];
+    expect(payload.actionButtons).toEqual([
+      expect.objectContaining({
+        id: 'open_detail',
+        label: 'Open Garmin',
+        deeplink: 'nexus://connections/garmin/reauth',
+      }),
+    ]);
     expect(payload.decisionDeadline).toBe(payload.expiresAt);
     expect(Date.parse(payload.decisionDeadline)).toBeGreaterThan(Date.now());
   });

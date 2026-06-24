@@ -1499,7 +1499,7 @@ export function cookingRoutes(): Router {
           sensitiveBody: description,
           actionButtons: [
             { id: 'open_detail', label: 'Open', style: 'primary' },
-            { id: 'not_now', label: 'Not now', style: 'secondary' },
+            { id: 'dismiss', label: 'Not now', style: 'secondary' },
           ],
           deeplink: `nexus://cooking/meal-plan/${encodeURIComponent(week)}`,
           dedupeKey: `cooking:meal-prep:${userId}:${week}:${event.id}`,

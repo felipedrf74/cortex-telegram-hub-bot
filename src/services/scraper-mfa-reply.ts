@@ -89,7 +89,7 @@ export async function notifyScraperMfaChallenge(
     sensitiveBody: `${label} needs a verification code to continue invoice collection for this account.`,
     actionButtons: [
       {
-        id: 'enter_scraper_mfa_code',
+        id: 'open_detail',
         label: 'Enter code',
         style: 'primary',
         deeplink: `nexus://finance/invoices/scraper-mfa?source=${input.source}`,

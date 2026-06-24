@@ -321,9 +321,12 @@ describe('Decision routes', () => {
     expect(detailV2.body.data.item.recommendedAction).toMatchObject({ id: 'open_detail', label: 'Review decision' });
     delete process.env.DECISION_API_V2_ENABLED;
 
-    const action = await dispatch(router, 'POST', '/nc_1/actions', {}, { actionId: 'open_detail', idempotencyKey: 'tap-1' });
+    const action = await dispatch(router, 'POST', '/nc_1/actions', {}, { actionId: 'open_detail', idempotencyKey: 'tap-1', channel: 'apns' });
     expect(action.statusCode).toBe(200);
-    expect(mockPerformDecisionAction).toHaveBeenCalledWith('nc_1', 'open_detail', 7, 7, expect.objectContaining({ idempotencyKey: 'tap-1' }));
+    expect(mockPerformDecisionAction).toHaveBeenCalledWith('nc_1', 'open_detail', 7, 7, expect.objectContaining({
+      idempotencyKey: 'tap-1',
+      channel: 'apns',
+    }));
 
     const handled = await dispatch(router, 'GET', '/handled', { limit: 5 });
     expect(handled.statusCode).toBe(200);

@@ -986,8 +986,9 @@ export function startScheduler(bot?: any): void {
               body: reminder.message,
               sensitiveBody: reminder.message,
               actionButtons: [
-                { id: 'mark_done', label: 'Done', style: 'primary' },
+                { id: 'open_detail', label: 'Open', style: 'primary' },
                 { id: 'snooze', label: 'Snooze', style: 'secondary' },
+                { id: 'dismiss', label: 'Dismiss', style: 'secondary' },
               ],
               deeplink: `nexus://notifications/reminder-${reminder.id}`,
               dedupeKey: `secretary:reminder:${targetTenantId}:${targetUserId}:${reminder.id}:${reminderOccurrence}`,

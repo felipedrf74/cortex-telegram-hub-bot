@@ -210,6 +210,8 @@ function formatCenterItemForApi(item: NotificationCenterItem): Record<string, un
     status: item.status,
     deeplink: item.deeplink,
     actions: item.actions,
+    actionEffectiveStatuses: item.actionEffectiveStatuses ?? [],
+    frontendActionState: item.frontendActionState ?? 'enabled',
     dedupeKey: item.dedupeKey,
     createdAt: item.createdAt,
     expiresAt: item.expiresAt,
@@ -1139,6 +1141,7 @@ export function notificationRoutes(): Router {
         const result = await performDecisionAction(itemId, actionId, userId, tenantId, {
           idempotencyKey: typeof req.body?.idempotencyKey === 'string' ? req.body.idempotencyKey : undefined,
           payload: typeof req.body?.payload === 'object' && req.body.payload ? req.body.payload : {},
+          channel: typeof req.body?.channel === 'string' ? req.body.channel : undefined,
         });
         invalidateNotificationInboxCaches(userId, tenantId);
         sendSuccess(res, result);

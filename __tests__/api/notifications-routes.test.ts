@@ -287,6 +287,14 @@ describe('Notification inbox routes', () => {
     mockGetNotificationReliabilityDashboard.mockReturnValue({
       badge: { expectedBadgeCount: 0, canonicalUnreadCount: 0, clientReportedBadgeCount: null, drift: null },
       readState: { serverReadFailureCount: 0, clientReportedReadFailureCount: 0 },
+      quality: {
+        suppressedOrGatedCount: 0,
+        unsupportedActionBlockedCount: 0,
+        actionFailureCount: 0,
+        deadDeeplinkCount: 0,
+        genericMutatingActionSuccessCount: 0,
+        byTopic: [],
+      },
     });
     mockUpdateNotificationProfile.mockImplementation((_userId, _tenantId, patch) => ({ ...patch }));
     mockRegisterNotificationDeviceToken.mockReturnValue({
@@ -495,6 +503,14 @@ describe('Notification inbox routes', () => {
     mockGetNotificationReliabilityDashboard.mockReturnValue({
       badge: { expectedBadgeCount: 4, canonicalUnreadCount: 6, clientReportedBadgeCount: 5, drift: 1 },
       readState: { serverReadFailureCount: 0, clientReportedReadFailureCount: 2 },
+      quality: {
+        suppressedOrGatedCount: 1,
+        unsupportedActionBlockedCount: 0,
+        actionFailureCount: 0,
+        deadDeeplinkCount: 0,
+        genericMutatingActionSuccessCount: 0,
+        byTopic: [],
+      },
     });
     mockCountUnreadNotificationCenterItems.mockReturnValue(4);
     mockGetUnreadCountExcludingNotificationIds.mockReturnValue(2);
@@ -734,6 +750,7 @@ describe('Notification inbox routes', () => {
       actionId: 'approve_script',
       idempotencyKey: 'tap-decision-1',
       payload: { source: 'notification' },
+      channel: 'apns',
     });
 
     expect(action.statusCode).toBe(200);
@@ -746,6 +763,7 @@ describe('Notification inbox routes', () => {
       {
         idempotencyKey: 'tap-decision-1',
         payload: { source: 'notification' },
+        channel: 'apns',
       },
     );
     expect(mockPerformNotificationAction).not.toHaveBeenCalled();

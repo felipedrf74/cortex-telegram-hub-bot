@@ -136,7 +136,6 @@ export async function materializeDecisionCenterDailyAttention(
       sensitiveBody: null,
       actionButtons: [
         { id: 'open_detail', label: primaryActionLabel, style: 'primary', deeplink },
-        { id: 'open_today_plan', label: 'Open today\'s plan', style: 'secondary', deeplink: 'nexushub://today' },
       ],
       deeplink,
       expiresAt: localDayEndIso(localDate, timezone),
@@ -242,7 +241,7 @@ function taskAttentionCopy(counts: DailyTaskAttentionCounts): {
       counts.highPriority > 0 ? countPhrase(counts.highPriority, 'high-priority task') : null,
     ];
     const body = `${joinCountPhrases(phrases)} ${attentionVerb(phrases)} a short review.`;
-    return { title, body, primaryActionLabel: 'Open overdue tasks', deeplink: 'nexushub://tasks?filter=overdue' };
+    return { title, body, primaryActionLabel: 'Open overdue tasks', deeplink: 'nexus://tasks?filter=overdue' };
   }
 
   const title = 'Choose today\'s task focus';
@@ -251,7 +250,7 @@ function taskAttentionCopy(counts: DailyTaskAttentionCounts): {
     counts.highPriority > 0 ? countPhrase(counts.highPriority, 'high-priority task') : null,
   ];
   const body = `${joinCountPhrases(phrases)} ${attentionVerb(phrases)} a focus choice.`;
-  return { title, body, primaryActionLabel: 'Open today\'s tasks', deeplink: 'nexushub://tasks?filter=dueToday' };
+  return { title, body, primaryActionLabel: 'Open today\'s tasks', deeplink: 'nexus://tasks?filter=dueToday' };
 }
 
 function taskAttentionReasonCodes(counts: DailyTaskAttentionCounts): string[] {

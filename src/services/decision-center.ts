@@ -19,6 +19,8 @@ import {
   dismissNotificationCenterItem,
   ensureNotificationTables,
   getOrCreateNotificationProfile,
+  getNotificationReliabilityDashboard,
+  listNotificationCenterItems,
   markNotificationCenterItemRead,
   updateNotificationProfile,
   type NotificationActionButton,
@@ -29,6 +31,7 @@ import {
   type NotificationPrivacyPolicy,
   type NotificationSourceSkill,
 } from './notification-orchestrator';
+import { listNotificationApnsActionExposures } from './notification-contracts';
 import {
   decideContentApproval,
   getContentWorkflowObject,
@@ -46,6 +49,8 @@ import {
   getTaxEvents,
   markTaxPaid,
 } from './finance-tracker';
+import { listTasksForUser } from './task-store/task-service';
+import type { NormalizedTask } from './task-store/types';
 import {
   clearPendingChatConfirmation,
   getPendingChatConfirmation,
@@ -59,9 +64,11 @@ import type { SecretaryTodaySummaryModel } from './secretary-orchestrator';
 import { secretaryTodayLabels } from './secretary-today-copy';
 import {
   buildDecisionActionTruthTableEntry,
+  isDecisionActionAllowedFromApns,
   isDecisionActionExecutable,
   type DecisionActionTruthTableEntry,
 } from './decision-center-action-truth-table';
+import { computeSharedNotificationActionEffectiveStatus } from './notification-action-state';
 import {
   adviseSecretaryDecision,
   buildDecisionLogicV2,
@@ -103,7 +110,7 @@ export type DecisionEffectiveStatus =
 export interface DecisionActionEffectiveStatus {
   actionId: string;
   effective:
-    | 'enabled' | 'disabled_not_implemented' | 'disabled_blocked_by_dependency'
+    | 'enabled' | 'disabled_unsupported' | 'disabled_not_implemented' | 'disabled_blocked_by_dependency'
     | 'disabled_expired' | 'disabled_superseded' | 'disabled_already_actioned' | 'disabled_missing_details'
     // A2: an unwired sync-retry on a connection/sync_failure decision — disabled, but the client should
     // route to connection settings (reconnect) rather than show a dead retry. Emitted only under the
@@ -276,6 +283,7 @@ export interface DecisionApiItem {
   priorityScore: number;
   title: string;
   summary: string;
+  deeplink: string | null;
   safePreviewTitle: string;
   safePreviewBody: string;
   recommendedActionLabel: string | null;
@@ -656,6 +664,11 @@ const MUTATING_ACTIONS = new Set([
 ]);
 const CONTENT_APPROVAL_ACTION_IDS = new Set(['approve_script', 'request_rewrite']);
 const SECRETARY_REFLOW_ACTION_IDS = new Set(['accept_reflow', 'choose_another_time']);
+const FINANCE_PAYMENT_ACTION_IDS = new Set(['mark_paid']);
+
+function appNowIso(): string {
+  return new Date(Date.now()).toISOString();
+}
 
 const DECISION_VERIFICATION_STATE_FIELDS: Record<string, string[]> = {
   content: ['contentApprovalState', 'approvalState', 'workflowState'],
@@ -998,10 +1011,10 @@ function listActiveDedupCandidates(userId: number, tenantId: number, excludeId: 
       LEFT JOIN notification_intents intents ON intents.intent_id = items.intent_id
      WHERE items.user_id = ? AND items.tenant_id = ? AND items.item_id != ?
        AND items.status IN ('unread', 'read', 'snoozed', 'failed', 'open')
-       AND (items.expires_at IS NULL OR datetime(items.expires_at) > datetime('now'))
+       AND (items.expires_at IS NULL OR datetime(items.expires_at) > datetime(?))
      ORDER BY items.created_at DESC
      LIMIT 200
-  `).all(userId, tenantId, excludeId) as Array<{ decisionId: string; sourceSkill: NotificationSourceSkill; type: NotificationIntentType; relatedEntityId: string | null; dedupeKey: string | null; createdAt: string }>;
+  `).all(userId, tenantId, excludeId, appNowIso()) as Array<{ decisionId: string; sourceSkill: NotificationSourceSkill; type: NotificationIntentType; relatedEntityId: string | null; dedupeKey: string | null; createdAt: string }>;
 }
 
 /**
@@ -1219,8 +1232,10 @@ export function listDecisionItems(
   if (opts.status !== 'expired') {
     // A1: keep hard-expired and future-snoozed rows out of the SQL window, not just the in-memory
     // projection, so a backlog of stale rows cannot consume LIMIT and starve valid active decisions.
-    clauses.push("(items.expires_at IS NULL OR datetime(items.expires_at) > datetime('now'))");
-    clauses.push("(items.snoozed_until IS NULL OR datetime(items.snoozed_until) <= datetime('now'))");
+    clauses.push('(items.expires_at IS NULL OR datetime(items.expires_at) > datetime(?))');
+    params.push(appNowIso());
+    clauses.push('(items.snoozed_until IS NULL OR datetime(items.snoozed_until) <= datetime(?))');
+    params.push(appNowIso());
   }
   const maxLimit = Math.min(Math.max(opts.maxLimit ?? 200, 1), 500);
   const requestedLimit = Math.min(Math.max(opts.limit ?? 80, 1), maxLimit);
@@ -1353,7 +1368,10 @@ export function findDecisionByRelatedEntity(
     SELECT items.*, intents.related_entity_id, intents.related_entity_type, intents.requires_user_action,
            intents.decision_deadline, intents.privacy_policy, intents.delivery_policy, intents.decision_context_json
       FROM notification_center_items items
-      JOIN notification_intents intents ON intents.intent_id = items.intent_id
+      JOIN notification_intents intents
+        ON intents.intent_id = items.intent_id
+       AND intents.user_id = items.user_id
+       AND intents.tenant_id = items.tenant_id
      WHERE items.user_id = ?
        AND items.tenant_id = ?
        AND intents.related_entity_type = ?
@@ -2070,10 +2088,10 @@ export function runDecisionExpiryJob(input: { batchSize?: number; maxBatches?: n
   const placeholders = statuses.map(() => '?').join(', ');
   const selectExpired = db.prepare(`
     SELECT item_id, user_id, tenant_id
-      FROM notification_center_items
+       FROM notification_center_items
      WHERE status IN (${placeholders})
        AND expires_at IS NOT NULL
-       AND datetime(expires_at) <= datetime('now')
+       AND datetime(expires_at) <= datetime(?)
      ORDER BY expires_at ASC
      LIMIT ?
   `);
@@ -2082,7 +2100,7 @@ export function runDecisionExpiryJob(input: { batchSize?: number; maxBatches?: n
       FROM notification_center_items
      WHERE status IN (${placeholders})
        AND expires_at IS NOT NULL
-       AND datetime(expires_at) <= datetime('now')
+       AND datetime(expires_at) <= datetime(?)
   `);
   const update = db.prepare("UPDATE notification_center_items SET status = 'expired' WHERE item_id = ?");
   const expireBatch = db.transaction((ids: string[]) => {
@@ -2092,7 +2110,7 @@ export function runDecisionExpiryJob(input: { batchSize?: number; maxBatches?: n
   let expired = 0;
   let batches = 0;
   while (batches < maxBatches) {
-    const rows = selectExpired.all(...statuses, batchSize) as Array<{ item_id: string; user_id: number; tenant_id: number }>;
+    const rows = selectExpired.all(...statuses, appNowIso(), batchSize) as Array<{ item_id: string; user_id: number; tenant_id: number }>;
     if (rows.length === 0) break;
     expireBatch(rows.map((row) => row.item_id));
     for (const row of rows) {
@@ -2107,7 +2125,7 @@ export function runDecisionExpiryJob(input: { batchSize?: number; maxBatches?: n
     if (rows.length < batchSize) break;
   }
 
-  const remaining = (countExpired.get(...statuses) as { n: number }).n;
+  const remaining = (countExpired.get(...statuses, appNowIso()) as { n: number }).n;
   return { inspected: expired, expired, remaining, batches, durationMs: Date.now() - start };
 }
 
@@ -2273,6 +2291,10 @@ export function runDecisionSourceStateSupersessionJob(opts: { userId?: number; t
   reasons: Record<string, number>;
 } {
   ensureDecisionCenterTables();
+  if (opts.userId != null || opts.tenantId != null) {
+    const scopedUserId = opts.userId ?? opts.tenantId!;
+    assertScope(scopedUserId, opts.tenantId ?? scopedUserId, 'decision_source_state_supersession_job', {});
+  }
   const clauses = ["items.status IN ('unread', 'read', 'failed', 'snoozed')"];
   const params: unknown[] = [];
   if (opts.userId != null) {
@@ -2287,7 +2309,10 @@ export function runDecisionSourceStateSupersessionJob(opts: { userId?: number; t
     SELECT items.*, intents.related_entity_id, intents.related_entity_type, intents.requires_user_action,
            intents.decision_deadline, intents.privacy_policy, intents.delivery_policy, intents.decision_context_json
       FROM notification_center_items items
-      JOIN notification_intents intents ON intents.intent_id = items.intent_id
+      JOIN notification_intents intents
+        ON intents.intent_id = items.intent_id
+       AND intents.user_id = items.user_id
+       AND intents.tenant_id = items.tenant_id
      WHERE ${clauses.join(' AND ')}
   `).all(...params) as any[];
 
@@ -2304,6 +2329,61 @@ export function runDecisionSourceStateSupersessionJob(opts: { userId?: number; t
 
   if (supersededCount > 0) {
     logger.info({ supersededCount, reasons }, 'Decision Center source-state supersession job closed stale decisions');
+  }
+  return { scannedCount: rows.length, supersededCount, reasons };
+}
+
+export function supersedeDecisionSourceStateForEntity(input: {
+  userId: number;
+  tenantId?: number;
+  sourceSkill: NotificationSourceSkill;
+  relatedEntityType: string;
+  relatedEntityId: string;
+}): {
+  scannedCount: number;
+  supersededCount: number;
+  reasons: Record<string, number>;
+} {
+  const tenantId = input.tenantId ?? input.userId;
+  assertScope(input.userId, tenantId, 'supersede_decision_source_state_for_entity', {
+    sourceSkill: input.sourceSkill,
+    relatedEntityType: input.relatedEntityType,
+    relatedEntityId: input.relatedEntityId,
+  });
+  ensureDecisionCenterTables();
+  const rows = getDb().prepare(`
+    SELECT items.*, intents.related_entity_id, intents.related_entity_type, intents.requires_user_action,
+           intents.decision_deadline, intents.privacy_policy, intents.delivery_policy, intents.decision_context_json
+      FROM notification_center_items items
+      JOIN notification_intents intents ON intents.intent_id = items.intent_id
+     WHERE items.user_id = ?
+       AND items.tenant_id = ?
+       AND items.source_skill = ?
+       AND intents.related_entity_type = ?
+       AND intents.related_entity_id = ?
+       AND items.status IN ('unread', 'read', 'failed', 'snoozed')
+  `).all(input.userId, tenantId, input.sourceSkill, input.relatedEntityType, input.relatedEntityId) as any[];
+
+  const reasons: Record<string, number> = {};
+  let supersededCount = 0;
+  for (const row of rows) {
+    const record = mapDecisionRecord(row);
+    const reason = sourceStateSupersessionReason(record);
+    if (!reason) continue;
+    supersedeDecision(record, reason);
+    supersededCount += 1;
+    reasons[reason] = (reasons[reason] ?? 0) + 1;
+  }
+  if (supersededCount > 0) {
+    logger.info({
+      userId: input.userId,
+      tenantId,
+      sourceSkill: input.sourceSkill,
+      relatedEntityType: input.relatedEntityType,
+      relatedEntityId: input.relatedEntityId,
+      supersededCount,
+      reasons,
+    }, 'Decision Center targeted source-state supersession closed stale decisions');
   }
   return { scannedCount: rows.length, supersededCount, reasons };
 }
@@ -2470,7 +2550,7 @@ export async function performDecisionAction(
   actionId: string,
   userId: number,
   tenantId = userId,
-  opts: { idempotencyKey?: string; payload?: Record<string, unknown> } = {},
+  opts: { idempotencyKey?: string; payload?: Record<string, unknown>; channel?: string } = {},
 ): Promise<DecisionActionResult> {
   assertScope(userId, tenantId, 'perform_decision_action', { decisionId, actionId });
   ensureDecisionCenterTables();
@@ -2488,6 +2568,14 @@ export async function performDecisionAction(
   const idempotencyKey = opts.idempotencyKey?.trim();
   if (!idempotencyKey) {
     throw new DecisionActionError('IDEMPOTENCY_KEY_REQUIRED', 'Decision actions require an idempotency key', 400);
+  }
+  if (opts.channel === 'apns' && !isDecisionActionAllowedFromApns(actionId)) {
+    throw new DecisionActionError(
+      'APNS_ACTION_NOT_ALLOWED',
+      'This notification action must be confirmed inside Nexus before it can change source data.',
+      409,
+      { channel: 'apns', actionId },
+    );
   }
   // Idempotency short-circuits BEFORE re-validating availability: a key we have already seen is replayed
   // based on its prior outcome regardless of whether the action is still "available" now. This matters for
@@ -2880,6 +2968,7 @@ function formatDecisionItemForApi(
     priorityScore,
     title: logic.title,
     summary: logic.problemStatement,
+    deeplink: item.deeplink,
     safePreviewTitle: safeTitle,
     safePreviewBody: logic.safePreviewBody || item.safeBody,
     recommendedActionLabel: logic.primaryActionLabel || (action?.label ?? null),
@@ -4556,21 +4645,14 @@ export function computeActionEffectiveStatus(
   action: NotificationActionButton,
   ctx: { dependencies: { blockedByDecisionIds: string[] }; logic: DecisionLogicV2; reconnectAffordance?: boolean },
 ): DecisionActionEffectiveStatus {
-  const implemented = isDecisionActionExecutable(action.id);
-  const base = { actionId: action.id, implemented };
-  if (!ctx.logic.quality.safeForFrontendAction) return { ...base, effective: 'disabled_missing_details', capabilityReason: 'Decision details incomplete' };
-  if (!implemented) {
-    // A2: reframe an unwired sync-retry as a reconnect path (flag-gated). OFF => disabled_not_implemented.
-    if (ctx.reconnectAffordance && isReconnectClassAction(record, action)) {
-      return { ...base, effective: 'disabled_requires_reconnect', capabilityReason: 'Reconnect this provider in connection settings to resume syncing' };
-    }
-    return { ...base, effective: 'disabled_not_implemented', capabilityReason: `No deterministic executor wired for '${action.id}' yet` };
-  }
-  if (isDecisionExpired(record) || record.status === 'expired') return { ...base, effective: 'disabled_expired', capabilityReason: null };
-  if (record.status === 'superseded' || record.status === 'dismissed') return { ...base, effective: 'disabled_superseded', capabilityReason: null };
-  if (record.status === 'actioned') return { ...base, effective: 'disabled_already_actioned', capabilityReason: null };
-  if (ctx.dependencies.blockedByDecisionIds.length > 0) return { ...base, effective: 'disabled_blocked_by_dependency', capabilityReason: 'Blocked by another decision' };
-  return { ...base, effective: 'enabled', capabilityReason: null };
+  return computeSharedNotificationActionEffectiveStatus({
+    actionId: action.id,
+    status: record.status,
+    expiresAt: record.expiresAt,
+    safeForFrontendAction: ctx.logic.quality.safeForFrontendAction,
+    blockedByDependency: ctx.dependencies.blockedByDecisionIds.length > 0,
+    reconnectRequired: Boolean(ctx.reconnectAffordance && isReconnectClassAction(record, action)),
+  }) as DecisionActionEffectiveStatus;
 }
 
 /** Classify the decision for differentiated client rendering. Pure; precedence is deliberate. */
@@ -5129,6 +5211,18 @@ export interface DecisionReleaseGateStatus {
   expiredButVisible: number;
   /** Decisions presented as actionable whose primary action has no deterministic executor. Must be 0 (invariant tripwire). */
   unimplementedActionableCtas: number;
+  /** Generic Notification Center attempts blocked because the action belongs to a Decision Center/domain executor. */
+  unsupportedNotificationActions: number;
+  /** Active notification rows whose deeplink cannot route to a supported destination. */
+  deadDeeplinks: number;
+  /** Latest client-reported badge drift. Null means no client badge report has been observed in the window. */
+  badgeDrift: number | null;
+  /** Mutating generic notification actions that incorrectly reported success. Must be 0. */
+  genericMutatingActionSuccesses: number;
+  /** APNs categories/contracts exposing actions that the truth table disallows from lock screen. */
+  apnsMutatingActionsExposed: number;
+  /** Stale action-source decisions still visible through the Notification Center inbox path. */
+  staleSourceVisibleInInbox: number;
   pass: boolean;
 }
 
@@ -5146,8 +5240,8 @@ export function getDecisionReleaseGateStatus(userId: number, tenantId = userId):
       FROM notification_center_items
      WHERE user_id = ? AND tenant_id = ?
        AND status IN ('unread', 'read', 'failed', 'snoozed')
-       AND expires_at IS NOT NULL AND datetime(expires_at) <= datetime('now')
-  `).get(userId, tenantId) as { n: number }).n;
+       AND expires_at IS NOT NULL AND datetime(expires_at) <= datetime(?)
+  `).get(userId, tenantId, appNowIso()) as { n: number }).n;
 
   const items = listDecisionItems(userId, tenantId, { status: 'all', limit: 200, recordExposure: false });
   const unimplementedActionableCtas = items.filter((item) => {
@@ -5155,12 +5249,61 @@ export function getDecisionReleaseGateStatus(userId: number, tenantId = userId):
     const primary = item.recommendedAction;
     return Boolean(actionable && primary && !isDecisionActionExecutable(primary.id));
   }).length;
+  const notificationReliability = getNotificationReliabilityDashboard(userId, tenantId);
+  const unsupportedNotificationActions = notificationReliability.quality.unsupportedActionBlockedCount;
+  const deadDeeplinks = notificationReliability.quality.deadDeeplinkCount;
+  const badgeDrift = notificationReliability.badge.drift;
+  const genericMutatingActionSuccesses = notificationReliability.quality.genericMutatingActionSuccessCount;
+  const apnsMutatingActionsExposed = listNotificationApnsActionExposures()
+    .filter((entry) => !isDecisionActionAllowedFromApns(entry.actionId))
+    .length;
+  const staleSourceVisibleInInbox = countStaleSourceVisibleInInbox(userId, tenantId);
 
   return {
     expiredButVisible,
     unimplementedActionableCtas,
-    pass: expiredButVisible === 0 && unimplementedActionableCtas === 0,
+    unsupportedNotificationActions,
+    deadDeeplinks,
+    badgeDrift,
+    genericMutatingActionSuccesses,
+    apnsMutatingActionsExposed,
+    staleSourceVisibleInInbox,
+    pass: expiredButVisible === 0
+      && unimplementedActionableCtas === 0
+      && unsupportedNotificationActions === 0
+      && deadDeeplinks === 0
+      && (badgeDrift == null || badgeDrift === 0)
+      && genericMutatingActionSuccesses === 0
+      && apnsMutatingActionsExposed === 0
+      && staleSourceVisibleInInbox === 0,
   };
+}
+
+function countStaleSourceVisibleInInbox(userId: number, tenantId: number): number {
+  const visibleDecisionIds = listNotificationCenterItems(userId, tenantId, { status: 'all', limit: 200 })
+    .filter((item) => DECISION_TYPES.has(item.type))
+    .map((item) => item.itemId);
+  if (visibleDecisionIds.length === 0) return 0;
+  const placeholders = visibleDecisionIds.map(() => '?').join(', ');
+  const rows = getDb().prepare(`
+    SELECT items.*, intents.related_entity_id, intents.related_entity_type, intents.requires_user_action,
+           intents.decision_deadline, intents.privacy_policy, intents.delivery_policy, intents.decision_context_json
+      FROM notification_center_items items
+      JOIN notification_intents intents
+        ON intents.intent_id = items.intent_id
+       AND intents.user_id = items.user_id
+       AND intents.tenant_id = items.tenant_id
+     WHERE items.user_id = ?
+       AND items.tenant_id = ?
+       AND items.item_id IN (${placeholders})
+       AND items.status IN ('unread', 'read', 'failed', 'snoozed')
+       AND COALESCE(intents.requires_user_action, items.requires_user_action) = 1
+  `).all(userId, tenantId, ...visibleDecisionIds) as any[];
+  return rows.filter((row) => {
+    const record = mapDecisionRecord(row);
+    const logic = decisionLogicForRecord(record);
+    return analysisForRecord(record, logic).sourceFreshness === 'stale';
+  }).length;
 }
 
 /** Active-decision breakdowns for the operator dashboard (counts by domain / persisted type / status). */
@@ -5187,9 +5330,9 @@ export function getDecisionActiveBreakdowns(userId: number, tenantId = userId): 
       FROM notification_center_items
      WHERE user_id = ? AND tenant_id = ?
        AND status IN ('unread', 'read', 'failed', 'snoozed')
-       AND (expires_at IS NULL OR datetime(expires_at) > datetime('now'))
+       AND (expires_at IS NULL OR datetime(expires_at) > datetime(?))
      GROUP BY source_skill, type, status
-  `).all(userId, tenantId) as Array<{ domain: string; type: string; status: string; n: number }>;
+  `).all(userId, tenantId, appNowIso()) as Array<{ domain: string; type: string; status: string; n: number }>;
   const byDomain: Record<string, number> = {};
   const byType: Record<string, number> = {};
   const byStatus: Record<string, number> = {};
@@ -5287,16 +5430,16 @@ export function listDecisionTypeSuppressions(userId: number, tenantId = userId):
 function listActiveDecisionTypeSuppressionKeys(userId: number, tenantId: number): { broad: Set<string>; recipes: Set<string> } {
   const broadRows = getDb().prepare(`
     SELECT source_skill AS sourceSkill, type
-      FROM decision_type_suppressions
+     FROM decision_type_suppressions
      WHERE user_id = ? AND tenant_id = ?
-       AND (mode = 'dont_show_type' OR (mode = 'snooze_type' AND until IS NOT NULL AND datetime(until) > datetime('now')))
-  `).all(userId, tenantId) as Array<{ sourceSkill: string; type: string }>;
+       AND (mode = 'dont_show_type' OR (mode = 'snooze_type' AND until IS NOT NULL AND datetime(until) > datetime(?)))
+  `).all(userId, tenantId, appNowIso()) as Array<{ sourceSkill: string; type: string }>;
   const recipeRows = getDb().prepare(`
     SELECT source_skill AS sourceSkill, type, recipe
       FROM decision_recipe_suppressions
      WHERE user_id = ? AND tenant_id = ?
-       AND (mode = 'dont_show_type' OR (mode = 'snooze_type' AND until IS NOT NULL AND datetime(until) > datetime('now')))
-  `).all(userId, tenantId) as Array<{ sourceSkill: string; type: string; recipe: string }>;
+       AND (mode = 'dont_show_type' OR (mode = 'snooze_type' AND until IS NOT NULL AND datetime(until) > datetime(?)))
+  `).all(userId, tenantId, appNowIso()) as Array<{ sourceSkill: string; type: string; recipe: string }>;
   return {
     broad: new Set(broadRows.map((row) => `${row.sourceSkill}:${row.type}`)),
     recipes: new Set(recipeRows
@@ -6340,6 +6483,10 @@ function sourceStateSupersessionReason(record: DecisionRecord): string | null {
       return 'content_approval_resolved_elsewhere';
     }
   }
+  if (record.sourceSkill === 'secretary' && record.relatedEntityType === 'task_attention_day') {
+    const reason = secretaryDailyTaskAttentionSupersessionReason(record);
+    if (reason) return reason;
+  }
   if (record.sourceSkill === 'secretary' && recordHasAction(record, SECRETARY_REFLOW_ACTION_IDS)) {
     if (record.relatedEntityType !== 'secretary_agenda_item' || !record.relatedEntityId) {
       return 'secretary_reflow_missing_agenda_item';
@@ -6376,7 +6523,45 @@ function sourceStateSupersessionReason(record: DecisionRecord): string | null {
       return 'training_race_date_added_elsewhere';
     }
   }
+  if (record.sourceSkill === 'finance' && recordHasAction(record, FINANCE_PAYMENT_ACTION_IDS)) {
+    if (record.relatedEntityType !== 'finance_tax_event' || !record.relatedEntityId) {
+      return 'finance_tax_event_missing';
+    }
+    if (!/^\d{4}-\d{2}$/.test(record.relatedEntityId)) return 'finance_tax_event_missing';
+    const year = Number(record.relatedEntityId.slice(0, 4));
+    const event = getTaxEvents(record.userId, { year, tenantId: record.tenantId })
+      .find((candidate) => candidate.month === record.relatedEntityId);
+    if (!event) return 'finance_tax_event_missing';
+    if (event.status === 'paid') return 'finance_payment_resolved_elsewhere';
+  }
   return null;
+}
+
+function secretaryDailyTaskAttentionSupersessionReason(record: DecisionRecord): string | null {
+  if (!record.relatedEntityId || !/^\d{4}-\d{2}-\d{2}$/.test(record.relatedEntityId)) return null;
+  let tasks: NormalizedTask[];
+  try {
+    tasks = listTasksForUser(record.userId, { status: 'pending' });
+  } catch {
+    return null;
+  }
+  const hasAttentionNeed = tasks.some((task) => secretaryTaskStillNeedsAttention(task, record.relatedEntityId!));
+  return hasAttentionNeed ? null : 'secretary_daily_attention_resolved_elsewhere';
+}
+
+function secretaryTaskStillNeedsAttention(task: NormalizedTask, localDate: string): boolean {
+  if (task.status !== 'pending') return false;
+  if (task.priority >= 3) return true;
+  const dueKey = secretaryTaskDueDateKey(task);
+  return Boolean(dueKey && dueKey <= localDate);
+}
+
+function secretaryTaskDueDateKey(task: NormalizedTask): string | null {
+  if (!task.dueDate) return null;
+  const parsed = DateTime.fromISO(task.dueDate, { setZone: true });
+  if (parsed.isValid) return parsed.toISODate();
+  const prefix = task.dueDate.slice(0, 10);
+  return /^\d{4}-\d{2}-\d{2}$/.test(prefix) ? prefix : null;
 }
 
 function supersedeIfSourceStateStale(record: DecisionRecord): string | null {

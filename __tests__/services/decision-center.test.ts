@@ -44,6 +44,7 @@ import {
   buildSkillDecisionFixtureIntent,
   cleanupDecisionCenterSmokeItems,
   createDecisionIntent,
+  DecisionActionError,
   DECISION_OUTCOME_LEDGER_RETENTION_POLICY,
   dismissDecision,
   ensureDecisionCenterTables,
@@ -88,7 +89,7 @@ import {
   markDecisionViewed,
   snoozeDecision,
 } from '../../src/services/decision-center';
-import { buildSkillNotificationFixtureIntent, createNotificationIntent, ensureNotificationTables } from '../../src/services/notification-orchestrator';
+import { buildSkillNotificationFixtureIntent, createNotificationIntent, ensureNotificationTables, listNotificationCenterItems } from '../../src/services/notification-orchestrator';
 import { trackPendingChatConfirmation } from '../../src/services/chat-pending-confirmations';
 
 async function createContentApprovalDecision(userId: number, tenantId: number, dedupeKey: string) {
@@ -649,7 +650,7 @@ describe('Decision Center facade', () => {
   it('applies each normal-user Decision Center filtering rule while keeping valid decisions visible', async () => {
     const userId = 97;
     const tenantId = 97;
-    const now = new Date('2026-05-10T10:00:00.000Z').toISOString();
+    const future = new Date('2026-05-10T11:00:00.000Z').toISOString();
     const oldSync = new Date('2026-05-10T08:00:00.000Z').toISOString();
     const before = getDecisionGuidanceStats().filteredByReason;
 
@@ -696,7 +697,7 @@ describe('Decision Center facade', () => {
         visibilityScope: overrides.visibilityScope ?? 'user_private',
         deliveryPolicy: 'in_app_only',
         privacyPolicy: 'private_content',
-        decisionDeadline: now,
+        decisionDeadline: future,
         decisionContext: {
           entityTitle: `${key} draft`,
           sourceState: 'awaiting_approval',
@@ -1549,6 +1550,44 @@ describe('Decision Center facade', () => {
     expect(event.paid_at).toBeTruthy();
   });
 
+  it('rejects APNs finance payment mutations while allowing in-app confirmation', async () => {
+    ensureFinanceFixtureTables();
+    testDb.prepare(`
+      INSERT INTO finance_tax_events (tenant_id, user_id, month, gross_income, deductions, taxable_income, tax_due, inss_due, status, darf_code)
+      VALUES (43, 43, '2026-06', 5000, 0, 5000, 450, 0, 'pending', '0190')
+    `).run();
+    const created = await createDecisionIntent(buildSkillDecisionFixtureIntent('finance', 43, {
+      type: 'decision_required',
+      requiresUserAction: true,
+      relatedEntityId: '2026-06',
+      relatedEntityType: 'finance_tax_event',
+      dedupeKey: 'finance:tax-payment-apns',
+    }));
+
+    await expect(performDecisionAction(created.item!.decisionId, 'mark_paid', 43, 43, {
+      idempotencyKey: 'apns-mark-tax-paid',
+      channel: 'apns',
+    })).rejects.toMatchObject({
+      code: 'APNS_ACTION_NOT_ALLOWED',
+      status: 409,
+    } satisfies Partial<DecisionActionError>);
+
+    const pending = testDb.prepare('SELECT status, paid_at FROM finance_tax_events WHERE user_id = 43 AND month = ?').get('2026-06') as any;
+    expect(pending.status).toBe('pending');
+    expect(pending.paid_at).toBeNull();
+    const executionCount = (testDb.prepare('SELECT COUNT(*) AS n FROM decision_action_executions WHERE decision_id = ?')
+      .get(created.item!.decisionId) as { n: number }).n;
+    expect(executionCount).toBe(0);
+
+    const result = await performDecisionAction(created.item!.decisionId, 'mark_paid', 43, 43, {
+      idempotencyKey: 'in-app-mark-tax-paid',
+    });
+    expect(result.status).toBe('succeeded');
+    const paid = testDb.prepare('SELECT status, paid_at FROM finance_tax_events WHERE user_id = 43 AND month = ?').get('2026-06') as any;
+    expect(paid.status).toBe('paid');
+    expect(paid.paid_at).toBeTruthy();
+  });
+
   it('executes Cooking meal decisions when a concrete meal slot payload is supplied', async () => {
     ensureCookingFixtureTables();
     const created = await createDecisionIntent(buildSkillNotificationFixtureIntent('cooking', 44, {
@@ -2043,6 +2082,33 @@ describe('Decision Center facade', () => {
     expect(getDecisionItem(created.item!.decisionId, 62, 62)?.status).toBe('superseded');
   });
 
+  it('supersedes finance payment decisions when the tax event was paid elsewhere', async () => {
+    ensureFinanceFixtureTables();
+    testDb.prepare(`
+      INSERT INTO finance_tax_events (tenant_id, user_id, month, gross_income, deductions, taxable_income, tax_due, inss_due, status, darf_code)
+      VALUES (62, 62, '2026-04', 5000, 0, 5000, 450, 0, 'pending', '0190')
+    `).run();
+    const created = await createDecisionIntent(buildSkillDecisionFixtureIntent('finance', 62, {
+      type: 'decision_required',
+      requiresUserAction: true,
+      relatedEntityId: '2026-04',
+      relatedEntityType: 'finance_tax_event',
+      actionButtons: [{ id: 'mark_paid', label: 'Mark paid', style: 'primary' }],
+      dedupeKey: 'finance:tax-payment:supersession',
+    }));
+    testDb.prepare(`
+      UPDATE finance_tax_events
+         SET status = 'paid', paid_at = datetime('now')
+       WHERE tenant_id = 62 AND user_id = 62 AND month = '2026-04'
+    `).run();
+
+    const result = runDecisionSourceStateSupersessionJob({ userId: 62, tenantId: 62 });
+
+    expect(result.supersededCount).toBe(1);
+    expect(result.reasons.finance_payment_resolved_elsewhere).toBe(1);
+    expect(getDecisionItem(created.item!.decisionId, 62, 62)?.status).toBe('superseded');
+  });
+
   it('does NOT supersede a training decision via free-text "race date" when its recipe is not missing-race-date (F1 hardening)', async () => {
     testDb.exec(readFileSync('migrations/023_onboarding.sql', 'utf8'));
     // A non-race-date RECIPE (dedupeKey) whose injected TITLE/BODY nonetheless mentions "race date" —
@@ -2114,9 +2180,6 @@ describe('Decision Center expiry (A1)', () => {
     testDb.prepare("UPDATE notification_center_items SET status = 'snoozed', snoozed_until = ? WHERE item_id = ?").run(snoozedUntil, decisionId);
   const statusOf = (decisionId: string) =>
     (testDb.prepare('SELECT status FROM notification_center_items WHERE item_id = ?').get(decisionId) as { status: string }).status;
-  const dbNowIso = () =>
-    (testDb.prepare("SELECT strftime('%Y-%m-%dT%H:%M:%fZ', 'now') AS now").get() as { now: string }).now;
-
   it('hides past-deadline decisions from the list and overview while keeping future-deadline ones', async () => {
     const expired = await createDecisionIntent(buildSkillDecisionFixtureIntent('training', 50, { dedupeKey: 'a1-expired' }));
     const active = await createDecisionIntent(buildSkillDecisionFixtureIntent('training', 50, { dedupeKey: 'a1-active' }));
@@ -2301,9 +2364,9 @@ describe('Decision Center expiry (A1)', () => {
     expect(getDecisionLifecycleEvents(wideOnlyId, 61, 61).map((event) => event.event)).not.toContain('surfaced');
   });
 
-  it('treats expires_at equal to the database clock as expired on active reads', async () => {
-    const nowExpired = await createDecisionIntent(buildSkillDecisionFixtureIntent('training', 55, { dedupeKey: 'a1-db-now' }));
-    setExpiry(nowExpired.item!.decisionId, dbNowIso());
+  it('treats expires_at equal to the app clock as expired on active reads', async () => {
+    const nowExpired = await createDecisionIntent(buildSkillDecisionFixtureIntent('training', 55, { dedupeKey: 'a1-app-now' }));
+    setExpiry(nowExpired.item!.decisionId, new Date(Date.now()).toISOString());
 
     expect(listDecisionItems(55, 55, { status: 'all', limit: 80 }).map((i) => i.decisionId)).not.toContain(nowExpired.item!.decisionId);
   });
@@ -2504,6 +2567,50 @@ describe('Decision Center layered status (Foundation)', () => {
     // Precedence preserved: the safeForFrontendAction gate is still checked before the !implemented branch,
     // so missing-details wins over the reconnect reframe (proves the reframe did not reorder the guards).
     expect(computeActionEffectiveStatus(syncFailure, retry, { ...ctxOf({ safeFrontend: false }), reconnectAffordance: true }).effective).toBe('disabled_missing_details');
+  });
+
+  it('keeps Notification Center and Decision Center action states aligned for unwired actions', async () => {
+    const created = await createDecisionIntent({
+      userId: 88,
+      tenantId: 88,
+      sourceSkill: 'secretary',
+      type: 'decision_required',
+      priority: 'active',
+      relatedEntityId: 'capacity-2026-06-24',
+      relatedEntityType: 'capacity_window',
+      title: 'Overcapacity choice',
+      body: 'A schedule window needs a priority choice.',
+      actionButtons: [
+        { id: 'choose_priority', label: 'Choose priority', style: 'primary' },
+        { id: 'open_detail', label: 'Open', style: 'secondary' },
+      ],
+      deeplink: 'nexus://decision-center/capacity-2026-06-24',
+      dedupeKey: 'secretary:overcapacity:state-parity',
+      requiresUserAction: true,
+      decisionContext: {
+        entityTitle: 'Wednesday schedule',
+        sourceState: 'overcapacity',
+        reasonCodes: ['overcapacity'],
+      },
+      privacyPolicy: 'standard',
+    });
+    expect(created.item?.actions.map((action) => action.id)).toContain('choose_priority');
+
+    const notificationItem = listNotificationCenterItems(88, 88, { status: 'all' })[0];
+    const decisionItem = getDecisionItem(created.item!.decisionId, 88, 88)!;
+    const notificationState = notificationItem.actionEffectiveStatuses?.find((state) => state.actionId === 'choose_priority');
+    const decisionState = decisionItem.actionEffectiveStatuses.find((state) => state.actionId === 'choose_priority');
+
+    expect(notificationState).toMatchObject({
+      actionId: 'choose_priority',
+      effective: 'disabled_not_implemented',
+      implemented: false,
+    });
+    expect(decisionState).toMatchObject({
+      actionId: 'choose_priority',
+      effective: 'disabled_not_implemented',
+      implemented: false,
+    });
   });
 
   it('maps legacy status to lifecycle + action outcome', () => {
@@ -2760,7 +2867,17 @@ describe('Decision Center lifecycle events (SI-4)', () => {
   });
 
   it('release-gate status: clean by default, fails on unswept expired rows, passes after the sweep', async () => {
-    expect(getDecisionReleaseGateStatus(95, 95)).toEqual({ expiredButVisible: 0, unimplementedActionableCtas: 0, pass: true });
+    expect(getDecisionReleaseGateStatus(95, 95)).toEqual({
+      expiredButVisible: 0,
+      unimplementedActionableCtas: 0,
+      unsupportedNotificationActions: 0,
+      deadDeeplinks: 0,
+      badgeDrift: null,
+      genericMutatingActionSuccesses: 0,
+      apnsMutatingActionsExposed: 0,
+      staleSourceVisibleInInbox: 0,
+      pass: true,
+    });
 
     const d = await createDecisionIntent(buildSkillDecisionFixtureIntent('training', 95, { tenantId: 95, dedupeKey: 'gate-exp' }));
     testDb.prepare('UPDATE notification_center_items SET expires_at = ? WHERE item_id = ?').run('2020-01-01T00:00:00.000Z', d.item!.decisionId);

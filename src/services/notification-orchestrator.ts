@@ -23,6 +23,7 @@ import { consumeResourceBudget } from './resource-budgets';
 import {
   NON_BADGE_NOTIFICATION_TYPES,
   deliveryPolicyForNotificationContract,
+  isNotificationActionMutating,
   resolveNotificationContract,
 } from './notification-contracts';
 import {
@@ -32,6 +33,14 @@ import {
   type DecisionLogicInput,
   type DecisionVisibilityScope,
 } from './decision-center-logic-v2';
+import {
+  isDecisionCenterGuidanceSkillEnabled,
+  isDecisionCenterGuidanceV1Enabled,
+  isDecisionReconnectAffordanceEnabled,
+} from './runtime-flags';
+import { computeSharedNotificationActionEffectiveStatus } from './notification-action-state';
+import { decisionRelationshipSemantics } from './decision-relationship-types';
+import { getSecretaryAgendaItemById } from './secretary-scheduling-arbitrator';
 
 export type NotificationSourceSkill =
   | 'secretary'
@@ -82,6 +91,24 @@ export interface NotificationActionButton {
   style?: 'primary' | 'secondary' | 'destructive';
   deeplink?: string;
   mutating?: boolean;
+}
+
+export type NotificationActionEffectiveState =
+  | 'enabled'
+  | 'disabled_unsupported'
+  | 'disabled_not_implemented'
+  | 'disabled_blocked_by_dependency'
+  | 'disabled_requires_reconnect'
+  | 'disabled_expired'
+  | 'disabled_superseded'
+  | 'disabled_already_actioned'
+  | 'disabled_missing_details';
+
+export interface NotificationActionEffectiveStatus {
+  actionId: string;
+  effective: NotificationActionEffectiveState;
+  implemented: boolean;
+  capabilityReason: string | null;
 }
 
 export interface NotificationIntentInput {
@@ -173,6 +200,8 @@ export interface NotificationCenterItem {
   status: NotificationCenterStatus;
   deeplink: string | null;
   actions: NotificationActionButton[];
+  actionEffectiveStatuses?: NotificationActionEffectiveStatus[];
+  frontendActionState?: NotificationActionEffectiveState;
   dedupeKey: string | null;
   priorityScore?: number | null;
   createdAt: string;
@@ -287,9 +316,37 @@ export interface NotificationReliabilityDashboard {
     serverReadFailureCount: number;
     clientReportedReadFailureCount: number | null;
   };
+  quality: {
+    suppressedOrGatedCount: number;
+    unsupportedActionBlockedCount: number;
+    actionFailureCount: number;
+    deadDeeplinkCount: number;
+    genericMutatingActionSuccessCount: number;
+    byTopic: NotificationReliabilityTopicBreakdown[];
+  };
 }
 
-export type NotificationReliabilityEventType = 'badge_reconciled' | 'read_state_failure';
+export interface NotificationReliabilityTopicBreakdown {
+  sourceSkill: string;
+  type: string | null;
+  recipe: string | null;
+  suppressedOrGatedCount: number;
+  dedupedCount: number;
+  supersededCount: number;
+  actionFailedCount: number;
+  unsupportedActionBlockedCount: number;
+  deadDeeplinkCount: number;
+  genericMutatingActionSuccessCount: number;
+}
+
+export type NotificationReliabilityEventType =
+  | 'badge_reconciled'
+  | 'read_state_failure'
+  | 'server_read_failure'
+  | 'action_failed'
+  | 'unsupported_action_blocked'
+  | 'dead_deeplink_detected'
+  | 'quality_gate_blocked';
 
 export interface NotificationReliabilityEventInput {
   userId: number;
@@ -340,10 +397,28 @@ const VALID_TYPES: NotificationIntentType[] = [
 ];
 
 const VALID_PRIORITIES: NotificationPriority[] = ['critical', 'time_sensitive', 'active', 'passive'];
+const DECISION_ACTION_TYPES = new Set<NotificationIntentType>([
+  'decision_required',
+  'conflict_detected',
+  'reflow_suggestion',
+  'approval_required',
+  'sync_failure',
+  'security_account',
+]);
+const TERMINAL_NOTIFICATION_STATUSES = new Set<NotificationCenterStatus>([
+  'actioned',
+  'dismissed',
+  'expired',
+  'superseded',
+]);
 const DEFAULT_TIMEZONE = 'Europe/Lisbon';
 const PUSH_RATE_LIMIT_WINDOW_MS = 60 * 60 * 1000;
 const PUSH_RATE_LIMIT_MAX_PER_SOURCE = 20;
 const pushRateLimitByScope = new Map<string, number[]>();
+
+function appNowIso(): string {
+  return new Date(Date.now()).toISOString();
+}
 
 export function ensureNotificationTables(): void {
   const db = getDb();
@@ -424,6 +499,7 @@ export function ensureNotificationTables(): void {
       deeplink TEXT,
       actions_json TEXT NOT NULL DEFAULT '[]',
       dedupe_key TEXT,
+      requires_user_action INTEGER NOT NULL DEFAULT 0,
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
       expires_at TEXT,
       read_at TEXT,
@@ -525,7 +601,13 @@ export function ensureNotificationTables(): void {
   ensureColumn('notification_center_items', 'sensitive_body', 'TEXT');
   ensureColumn('notification_center_items', 'snoozed_until', 'TEXT');
   ensureColumn('notification_center_items', 'priority_score', 'INTEGER');
+  ensureColumn('notification_center_items', 'requires_user_action', 'INTEGER NOT NULL DEFAULT 0');
   ensureColumn('notification_intents', 'decision_context_json', 'TEXT');
+  backfillNotificationCenterActionability();
+  getDb().prepare(`
+    CREATE INDEX IF NOT EXISTS idx_notification_center_badge_actionable
+      ON notification_center_items(user_id, tenant_id, status, requires_user_action, expires_at)
+  `).run();
 }
 
 export function getOrCreateNotificationProfile(userId: number, tenantId = userId): NotificationProfile {
@@ -907,10 +989,10 @@ export async function releaseDueNotificationDeliveries(now = new Date()): Promis
       AND datetime(logs.scheduled_for) <= datetime(?)
       AND logs.sent_at IS NULL
       AND items.status IN ('unread', 'read')
-      AND (items.expires_at IS NULL OR datetime(items.expires_at) > datetime('now'))
+      AND (items.expires_at IS NULL OR datetime(items.expires_at) > datetime(?))
     ORDER BY logs.scheduled_for ASC
     LIMIT 100
-  `).all(now.toISOString()) as any[];
+  `).all(now.toISOString(), now.toISOString()) as any[];
 
   let released = 0;
   let blocked = 0;
@@ -1056,31 +1138,168 @@ export function listNotificationCenterItems(
 ): NotificationCenterItem[] {
   assertScope(userId, tenantId, 'list_notification_center_items', opts);
   ensureNotificationTables();
-  const clauses = ['user_id = ?', 'tenant_id = ?'];
+  const clauses = ['items.user_id = ?', 'items.tenant_id = ?'];
   const params: unknown[] = [userId, tenantId];
   if (opts.status && opts.status !== 'all') {
-    clauses.push('status = ?');
+    clauses.push('items.status = ?');
     params.push(opts.status);
   } else {
-    clauses.push("status != 'expired'");
+    clauses.push("items.status != 'expired'");
   }
   // A1: hide items past their hard deadline (unless the caller explicitly asks for expired).
   if (opts.status !== 'expired') {
-    clauses.push("(expires_at IS NULL OR datetime(expires_at) > datetime('now'))");
+    clauses.push('(items.expires_at IS NULL OR datetime(items.expires_at) > datetime(?))');
+    params.push(appNowIso());
   }
   if (opts.sourceSkill) {
-    clauses.push('source_skill = ?');
+    clauses.push('items.source_skill = ?');
     params.push(opts.sourceSkill);
   }
   params.push(Math.min(Math.max(opts.limit ?? 50, 1), 200));
 
   const rows = getDb().prepare(`
-    SELECT * FROM notification_center_items
+    SELECT items.*, intents.intent_id AS intent_joined_intent_id,
+           intents.related_entity_id AS intent_related_entity_id,
+           intents.related_entity_type AS intent_related_entity_type,
+           COALESCE(intents.requires_user_action, items.requires_user_action) AS intent_requires_user_action,
+           intents.decision_deadline AS intent_decision_deadline,
+           intents.privacy_policy AS intent_privacy_policy,
+           intents.decision_context_json AS intent_decision_context_json
+      FROM notification_center_items items
+      LEFT JOIN notification_intents intents
+        ON intents.intent_id = items.intent_id
+       AND intents.user_id = items.user_id
+       AND intents.tenant_id = items.tenant_id
     WHERE ${clauses.join(' AND ')}
-    ORDER BY created_at DESC
+    ORDER BY items.created_at DESC
     LIMIT ?
   `).all(...params) as any[];
-  return rows.map(mapCenterItem);
+  return rows
+    .filter(isUserFacingNotificationCenterRow)
+    .map(mapCenterItem);
+}
+
+function isUserFacingNotificationCenterRow(row: any): boolean {
+  if (!DECISION_ACTION_TYPES.has(row.type as NotificationIntentType)) return true;
+  if (row.intent_joined_intent_id == null) return true;
+  const context = decisionContextForNotificationCenterRow(
+    row,
+    normalizeDecisionContext(safeParseJSON(row.intent_decision_context_json, null)),
+  );
+  const visibilityScope = context?.visibilityScope ?? 'user_private';
+  if (visibilityScope === 'system_admin' || visibilityScope === 'tenant_admin') return false;
+  if (context?.internalOnly === true) return false;
+  if (context?.smoke === true) return false;
+  if (typeof row.dedupe_key === 'string' && row.dedupe_key.startsWith('smoke:')) return false;
+  if (row.intent_related_entity_type === 'decision_center_smoke') return false;
+
+  const actions = safeParseJSON<NotificationActionButton[]>(row.actions_json, []);
+  const logic = buildDecisionLogicForNotificationCenterRow(row, actions, context, visibilityScope);
+  if (!logic.quality.safeToShowUser) return false;
+  if (!guidanceEnabledForNotificationCenterRow(row)) return true;
+
+  const actionQueue = ['unread', 'read', 'failed', 'open'].includes(String(row.status));
+  const requiresUserAction = Boolean(row.intent_requires_user_action);
+  if (
+    process.env.DECISION_CENTER_DEBUG_EVIDENCE !== '1'
+    && actionQueue
+    && requiresUserAction
+    && sourceFreshnessForNotificationCenterRow(row, context) === 'stale'
+  ) {
+    return false;
+  }
+  if (actionQueue && requiresUserAction && !logic.quality.safeForFrontendAction) return false;
+  if (actionQueue && !hasMinimumVisibleNotificationGuidance(row, logic, requiresUserAction)) return false;
+  return true;
+}
+
+function guidanceEnabledForNotificationCenterRow(row: any): boolean {
+  const scope = { userId: Number(row.user_id), tenantId: Number(row.tenant_id) };
+  return isDecisionCenterGuidanceV1Enabled(process.env, scope)
+    && isDecisionCenterGuidanceSkillEnabled(row.source_skill, process.env, scope);
+}
+
+function buildDecisionLogicForNotificationCenterRow(
+  row: any,
+  actions: NotificationActionButton[] = safeParseJSON<NotificationActionButton[]>(row.actions_json, []),
+  context: DecisionLogicContext | null = normalizeDecisionContext(safeParseJSON(row.intent_decision_context_json, null)),
+  visibilityScope: DecisionVisibilityScope = context?.visibilityScope ?? 'user_private',
+) {
+  return buildDecisionLogicV2({
+    sourceSkill: row.source_skill,
+    type: row.type,
+    priority: row.priority,
+    title: row.title,
+    body: row.body,
+    safeBody: row.safe_body,
+    actions,
+    relatedEntityType: row.intent_related_entity_type ?? null,
+    relatedEntityId: row.intent_related_entity_id ?? null,
+    deadlineAt: row.intent_decision_deadline ?? null,
+    expiresAt: row.expires_at ?? null,
+    privacyClassification: row.intent_privacy_policy ?? 'standard',
+    visibilityScope,
+    context,
+  } as DecisionLogicInput);
+}
+
+function sourceFreshnessForNotificationCenterRow(row: any, context: DecisionLogicContext | null): 'live' | 'fresh' | 'stale' | 'unknown' {
+  if (row.status === 'snoozed') return 'stale';
+  const state = String(context?.providerSyncState ?? '').toLowerCase();
+  if (state && state !== 'synced' && state !== 'deleted') {
+    const updatedAt = Date.parse(String(context?.providerSyncUpdatedAt ?? ''));
+    if (!Number.isFinite(updatedAt)) return 'unknown';
+    return (Date.now() - updatedAt) / 60_000 > 15 ? 'stale' : 'fresh';
+  }
+  if (context?.providerSyncUpdatedAt) {
+    const updatedAt = Date.parse(String(context.providerSyncUpdatedAt));
+    if (!Number.isFinite(updatedAt)) return 'unknown';
+    return (Date.now() - updatedAt) / 60_000 <= 15 ? 'fresh' : 'live';
+  }
+  return row.intent_related_entity_id ? 'live' : 'unknown';
+}
+
+function decisionContextForNotificationCenterRow(row: any, context: DecisionLogicContext | null): DecisionLogicContext | null {
+  if (
+    row.source_skill !== 'secretary'
+    || row.intent_related_entity_type !== 'secretary_agenda_item'
+    || !row.intent_related_entity_id
+    || !tableExistsForNotificationRead('secretary_agenda_items')
+  ) {
+    return context;
+  }
+
+  const agenda = getSecretaryAgendaItemById({
+    agendaItemId: String(row.intent_related_entity_id),
+    ownerUserId: Number(row.user_id),
+    tenantId: row.tenant_id,
+  });
+  if (!agenda) return context;
+  return {
+    ...(context ?? {}),
+    entityTitle: agenda.title,
+    currentStartAt: context?.currentStartAt ?? agenda.startAt ?? null,
+    currentEndAt: context?.currentEndAt ?? agenda.endAt ?? null,
+    sourceState: context?.sourceState ?? agenda.lifecycleState,
+    providerSyncState: agenda.providerSyncState,
+    providerSyncUpdatedAt: agenda.updatedAt,
+  };
+}
+
+function hasMinimumVisibleNotificationGuidance(row: any, logic: ReturnType<typeof buildDecisionLogicV2>, requiresUserAction: boolean): boolean {
+  const headline = firstNonEmptyString([logic.safePreviewTitle, logic.title, row.title]);
+  const whatHappened = firstNonEmptyString([logic.problemStatement, logic.safePreviewBody, row.safe_body, row.body]);
+  const userAction = firstNonEmptyString([logic.primaryActionLabel, logic.recommendation]);
+  if (!headline || !whatHappened || !userAction) return false;
+  if (requiresUserAction && row.type !== 'sync_failure' && !logic.primaryActionLabel) return false;
+  return true;
+}
+
+function firstNonEmptyString(values: unknown[]): string | null {
+  for (const value of values) {
+    if (typeof value === 'string' && value.trim()) return value.trim();
+  }
+  return null;
 }
 
 export function countUnreadNotificationCenterItems(userId: number, tenantId = userId): number {
@@ -1094,8 +1313,9 @@ export function countUnreadNotificationCenterItems(userId: number, tenantId = us
        AND tenant_id = ?
        AND status = 'unread'
        AND type NOT IN (${nonBadgePlaceholders})
-       AND (expires_at IS NULL OR datetime(expires_at) > datetime('now'))
-  `).get(userId, tenantId, ...NON_BADGE_NOTIFICATION_TYPES) as { count: number } | undefined;
+       AND requires_user_action = 1
+       AND (expires_at IS NULL OR datetime(expires_at) > datetime(?))
+  `).get(userId, tenantId, ...NON_BADGE_NOTIFICATION_TYPES, appNowIso()) as { count: number } | undefined;
   return row?.count ?? 0;
 }
 
@@ -1113,8 +1333,8 @@ export function listNotificationBridgeEntityIds(
        AND tenant_id = ?
        AND dedupe_key LIKE ?
        AND status != 'expired'
-       AND (expires_at IS NULL OR datetime(expires_at) > datetime('now'))
-  `).all(userId, tenantId, `${bridgePrefix}:%`) as Array<{ dedupeKey: string | null }>;
+       AND (expires_at IS NULL OR datetime(expires_at) > datetime(?))
+  `).all(userId, tenantId, `${bridgePrefix}:%`, appNowIso()) as Array<{ dedupeKey: string | null }>;
   const ids = new Set<number>();
   const pattern = new RegExp(`^${bridgePrefix}:[^:]+:(\\d+)$`);
   for (const row of rows) {
@@ -1190,8 +1410,19 @@ export function getNotificationCenterItem(itemId: string, userId: number, tenant
   assertScope(userId, tenantId, 'get_notification_center_item', { itemId });
   ensureNotificationTables();
   const row = getDb().prepare(`
-    SELECT * FROM notification_center_items
-    WHERE item_id = ? AND user_id = ? AND tenant_id = ?
+    SELECT items.*, intents.intent_id AS intent_joined_intent_id,
+           intents.related_entity_id AS intent_related_entity_id,
+           intents.related_entity_type AS intent_related_entity_type,
+           COALESCE(intents.requires_user_action, items.requires_user_action) AS intent_requires_user_action,
+           intents.decision_deadline AS intent_decision_deadline,
+           intents.privacy_policy AS intent_privacy_policy,
+           intents.decision_context_json AS intent_decision_context_json
+      FROM notification_center_items items
+      LEFT JOIN notification_intents intents
+        ON intents.intent_id = items.intent_id
+       AND intents.user_id = items.user_id
+       AND intents.tenant_id = items.tenant_id
+     WHERE items.item_id = ? AND items.user_id = ? AND items.tenant_id = ?
   `).get(itemId, userId, tenantId) as any;
   return row ? mapCenterItem(row) : null;
 }
@@ -1204,8 +1435,8 @@ export function markNotificationCenterItemRead(itemId: string, userId: number, t
     SET status = CASE WHEN status = 'unread' THEN 'read' ELSE status END,
         read_at = COALESCE(read_at, datetime('now'))
     WHERE item_id = ? AND user_id = ? AND tenant_id = ? AND status IN ('unread', 'read')
-      AND (expires_at IS NULL OR datetime(expires_at) > datetime('now'))
-  `).run(itemId, userId, tenantId);
+      AND (expires_at IS NULL OR datetime(expires_at) > datetime(?))
+  `).run(itemId, userId, tenantId, appNowIso());
   const item = getNotificationCenterItem(itemId, userId, tenantId);
   // A1: a past-deadline item is not marked read (guard above) and is not surfaced on open —
   // parity with getDecisionItem. The action path keeps its own DECISION_EXPIRED rejection.
@@ -1268,17 +1499,63 @@ export function performNotificationAction(
   if (item.status === 'dismissed') throw new Error('notification dismissed');
   if (item.status === 'actioned') throw new Error('notification already actioned');
   if (!item.actions.some((action) => action.id === actionId)) {
+    recordNotificationReliabilityEvent({
+      userId,
+      tenantId,
+      eventType: 'unsupported_action_blocked',
+      source: notificationReliabilityTopicSource(item),
+      errorCode: actionId,
+    });
     throw new Error('action not allowed for notification');
   }
-  getDb().prepare(`
-    UPDATE notification_center_items
-    SET status = 'actioned', actioned_at = datetime('now')
-    WHERE item_id = ? AND user_id = ? AND tenant_id = ?
-  `).run(itemId, userId, tenantId);
-  const updated = getNotificationCenterItem(itemId, userId, tenantId);
-  if (!updated) throw new Error('notification action failed');
-  markDecisionActionTaken(updated.decisionLogId, actionId);
-  return { item: updated, actionId, idempotent: false };
+
+  if (actionId === 'open_detail') {
+    const updated = markNotificationCenterItemRead(itemId, userId, tenantId);
+    if (!updated) throw new Error('notification action failed');
+    markDecisionActionTaken(updated.decisionLogId, actionId);
+    return { item: updated, actionId, idempotent: false };
+  }
+
+  if (actionId === 'dismiss') {
+    const updated = dismissNotificationCenterItem(itemId, userId, tenantId);
+    if (!updated) throw new Error('notification action failed');
+    markDecisionActionTaken(updated.decisionLogId, actionId);
+    return { item: updated, actionId, idempotent: false };
+  }
+
+  if (actionId === 'snooze') {
+    const updated = snoozeNotificationCenterItem(itemId, userId, tenantId);
+    if (!updated) throw new Error('notification action failed');
+    markDecisionActionTaken(updated.decisionLogId, actionId);
+    return { item: updated, actionId, idempotent: false };
+  }
+
+  recordNotificationReliabilityEvent({
+    userId,
+    tenantId,
+    eventType: isNotificationActionMutating(actionId) ? 'unsupported_action_blocked' : 'action_failed',
+    source: notificationReliabilityTopicSource(item),
+    errorCode: actionId,
+  });
+  throw new Error('notification action requires a deterministic executor');
+}
+
+function notificationReliabilityTopicSource(item: NotificationCenterItem): string {
+  let recipe = '';
+  try {
+    const row = getDb().prepare(`
+      SELECT decision_context_json AS decisionContextJson
+        FROM notification_intents
+       WHERE intent_id = ?
+         AND user_id = ?
+         AND tenant_id = ?
+       LIMIT 1
+    `).get(item.intentId, item.userId, item.tenantId) as { decisionContextJson: string | null } | undefined;
+    recipe = recipeFromDecisionContextJson(row?.decisionContextJson ?? null) ?? '';
+  } catch {
+    recipe = '';
+  }
+  return `topic:${item.sourceSkill}:${item.type}:${recipe}`;
 }
 
 function revokePriorActiveDeviceTokenOwners(
@@ -1464,7 +1741,15 @@ export function recordNotificationReliabilityEvent(input: NotificationReliabilit
     eventType: input.eventType,
     source: input.source ?? null,
   });
-  if (!['badge_reconciled', 'read_state_failure'].includes(input.eventType)) {
+  if (![
+    'badge_reconciled',
+    'read_state_failure',
+    'server_read_failure',
+    'action_failed',
+    'unsupported_action_blocked',
+    'dead_deeplink_detected',
+    'quality_gate_blocked',
+  ].includes(input.eventType)) {
     throw new Error('invalid notification reliability event type');
   }
   const badgeCount = Number.isInteger(input.badgeCount) && input.badgeCount! >= 0
@@ -1511,11 +1796,11 @@ export function getNotificationReliabilityDashboard(
   const digest = db.prepare(`
     SELECT
       SUM(CASE WHEN decision = 'digest' AND sent_at IS NULL THEN 1 ELSE 0 END) AS pendingCount,
-      SUM(CASE WHEN decision = 'digest' AND sent_at IS NULL AND scheduled_for IS NOT NULL AND datetime(scheduled_for) <= datetime('now') THEN 1 ELSE 0 END) AS dueCount,
+      SUM(CASE WHEN decision = 'digest' AND sent_at IS NULL AND scheduled_for IS NOT NULL AND datetime(scheduled_for) <= datetime(?) THEN 1 ELSE 0 END) AS dueCount,
       SUM(CASE WHEN reason LIKE 'digest notification released%' THEN 1 ELSE 0 END) AS releasedCount
       FROM notification_decision_logs
      WHERE user_id = ? AND tenant_id = ?
-  `).get(userId, tenantId) as { pendingCount: number | null; dueCount: number | null; releasedCount: number | null };
+  `).get(appNowIso(), userId, tenantId) as { pendingCount: number | null; dueCount: number | null; releasedCount: number | null };
   const latestBadgeEvent = db.prepare(`
     SELECT badge_count AS badgeCount
       FROM notification_reliability_events
@@ -1534,6 +1819,58 @@ export function getNotificationReliabilityDashboard(
        AND event_type = 'read_state_failure'
        AND datetime(created_at) >= datetime('now', '-24 hours')
   `).get(userId, tenantId) as { clientReportedReadFailureCount: number | null };
+  const qualityEvents = db.prepare(`
+    SELECT event_type AS eventType, COUNT(*) AS count
+      FROM notification_reliability_events
+     WHERE user_id = ?
+       AND tenant_id = ?
+       AND event_type IN ('unsupported_action_blocked', 'action_failed', 'dead_deeplink_detected', 'quality_gate_blocked', 'server_read_failure')
+       AND datetime(created_at) >= datetime('now', '-24 hours')
+     GROUP BY event_type
+  `).all(userId, tenantId) as Array<{ eventType: string; count: number }>;
+  const qualityEventCounts = Object.fromEntries(qualityEvents.map((row) => [row.eventType, row.count]));
+  const suppressedOrGatedCount = (db.prepare(`
+    SELECT COUNT(*) AS count
+      FROM notification_decision_logs
+     WHERE user_id = ?
+       AND tenant_id = ?
+       AND (
+         decision = 'suppressed'
+         OR reason LIKE 'decision quality gate%'
+         OR reason LIKE 'decision rank gate blocked%'
+         OR reason LIKE 'notifications disabled%'
+       )
+  `).get(userId, tenantId) as { count: number }).count;
+  const activeDeeplinkRows = db.prepare(`
+    SELECT deeplink
+      FROM notification_center_items
+     WHERE user_id = ?
+       AND tenant_id = ?
+       AND status IN ('unread', 'read', 'failed', 'snoozed')
+       AND (expires_at IS NULL OR datetime(expires_at) > datetime(?))
+  `).all(userId, tenantId, appNowIso()) as Array<{ deeplink: string | null }>;
+  const deadDeeplinkCount = activeDeeplinkRows
+    .filter((row) => !row.deeplink || !isSupportedNotificationDeeplink(row.deeplink))
+    .length;
+  const genericMutatingActionSuccessCount = (db.prepare(`
+    SELECT COUNT(*) AS count
+      FROM notification_decision_logs logs
+      JOIN notification_center_items items
+        ON items.item_id = logs.notification_id
+       AND items.user_id = logs.user_id
+       AND items.tenant_id = logs.tenant_id
+     WHERE logs.user_id = ?
+       AND logs.tenant_id = ?
+       AND logs.action_taken IN (
+         'approve_script', 'request_rewrite', 'accept_reflow', 'choose_another_time',
+         'retry', 'option_a', 'option_b', 'mark_paid', 'add_meal', 'undo_reflow',
+         'accept_chat_action_fix'
+       )
+       AND items.type NOT IN (
+         'decision_required', 'conflict_detected', 'reflow_suggestion',
+         'approval_required', 'sync_failure', 'security_account'
+       )
+  `).get(userId, tenantId) as { count: number }).count;
   const defaultCanonicalUnreadCount = countUnreadNotificationCenterItems(userId, tenantId);
   const expectedBadgeCount = Number.isInteger(opts.expectedBadgeCount)
     ? Math.max(0, opts.expectedBadgeCount!)
@@ -1542,6 +1879,8 @@ export function getNotificationReliabilityDashboard(
     ? Math.max(0, opts.canonicalUnreadCount!)
     : defaultCanonicalUnreadCount;
   const clientReportedBadgeCount = latestBadgeEvent?.badgeCount ?? null;
+  const badgeDrift = clientReportedBadgeCount == null ? null : clientReportedBadgeCount - expectedBadgeCount;
+  const byTopic = buildNotificationReliabilityTopicBreakdown(db, userId, tenantId);
   return {
     userId,
     tenantId,
@@ -1565,12 +1904,180 @@ export function getNotificationReliabilityDashboard(
       expectedBadgeCount,
       canonicalUnreadCount,
       clientReportedBadgeCount,
-      drift: clientReportedBadgeCount == null ? null : clientReportedBadgeCount - expectedBadgeCount,
+      drift: badgeDrift,
     },
     readState: {
-      serverReadFailureCount: 0,
+      serverReadFailureCount: qualityEventCounts.server_read_failure ?? 0,
       clientReportedReadFailureCount: readState.clientReportedReadFailureCount ?? 0,
     },
+    quality: {
+      suppressedOrGatedCount: suppressedOrGatedCount + (qualityEventCounts.quality_gate_blocked ?? 0),
+      unsupportedActionBlockedCount: qualityEventCounts.unsupported_action_blocked ?? 0,
+      actionFailureCount: qualityEventCounts.action_failed ?? 0,
+      deadDeeplinkCount: deadDeeplinkCount + (qualityEventCounts.dead_deeplink_detected ?? 0),
+      genericMutatingActionSuccessCount,
+      byTopic,
+    },
+  };
+}
+
+type TopicBreakdownAccumulator = NotificationReliabilityTopicBreakdown;
+
+function buildNotificationReliabilityTopicBreakdown(
+  db: ReturnType<typeof getDb>,
+  userId: number,
+  tenantId: number,
+): NotificationReliabilityTopicBreakdown[] {
+  const byKey = new Map<string, TopicBreakdownAccumulator>();
+  const get = (sourceSkill: string | null | undefined, type: string | null | undefined, recipe: string | null | undefined): TopicBreakdownAccumulator => {
+    const normalizedSource = sourceSkill || 'unknown';
+    const normalizedType = type || null;
+    const normalizedRecipe = recipe || null;
+    const key = `${normalizedSource}\u0000${normalizedType ?? ''}\u0000${normalizedRecipe ?? ''}`;
+    let entry = byKey.get(key);
+    if (!entry) {
+      entry = {
+        sourceSkill: normalizedSource,
+        type: normalizedType,
+        recipe: normalizedRecipe,
+        suppressedOrGatedCount: 0,
+        dedupedCount: 0,
+        supersededCount: 0,
+        actionFailedCount: 0,
+        unsupportedActionBlockedCount: 0,
+        deadDeeplinkCount: 0,
+        genericMutatingActionSuccessCount: 0,
+      };
+      byKey.set(key, entry);
+    }
+    return entry;
+  };
+
+  const logRows = db.prepare(`
+    SELECT logs.decision AS decision,
+           logs.reason AS reason,
+           logs.action_taken AS actionTaken,
+           COALESCE(intents.source_skill, items.source_skill, logs.source_skill) AS sourceSkill,
+           COALESCE(intents.type, items.type) AS type,
+           intents.decision_context_json AS decisionContextJson,
+           items.type AS itemType
+      FROM notification_decision_logs logs
+      LEFT JOIN notification_intents intents
+        ON intents.intent_id = logs.intent_id
+       AND intents.user_id = logs.user_id
+       AND intents.tenant_id = logs.tenant_id
+      LEFT JOIN notification_center_items items
+        ON items.item_id = logs.notification_id
+       AND items.user_id = logs.user_id
+       AND items.tenant_id = logs.tenant_id
+     WHERE logs.user_id = ?
+       AND logs.tenant_id = ?
+  `).all(userId, tenantId) as Array<{
+    decision: string;
+    reason: string;
+    actionTaken: string | null;
+    sourceSkill: string | null;
+    type: string | null;
+    decisionContextJson: string | null;
+    itemType: string | null;
+  }>;
+  for (const row of logRows) {
+    const entry = get(row.sourceSkill, row.type, recipeFromDecisionContextJson(row.decisionContextJson));
+    if (row.decision === 'deduped') entry.dedupedCount += 1;
+    const reason = row.reason ?? '';
+    if (
+      row.decision === 'suppressed'
+      || reason.startsWith('decision quality gate')
+      || reason.startsWith('decision rank gate blocked')
+      || reason.startsWith('notifications disabled')
+    ) {
+      entry.suppressedOrGatedCount += 1;
+    }
+    if (
+      row.actionTaken
+      && isNotificationActionMutating(row.actionTaken)
+      && !DECISION_ACTION_TYPES.has(row.itemType as NotificationIntentType)
+    ) {
+      entry.genericMutatingActionSuccessCount += 1;
+    }
+  }
+
+  const itemRows = db.prepare(`
+    SELECT items.source_skill AS sourceSkill,
+           items.type AS type,
+           items.status AS status,
+           items.deeplink AS deeplink,
+           intents.decision_context_json AS decisionContextJson
+      FROM notification_center_items items
+      LEFT JOIN notification_intents intents
+        ON intents.intent_id = items.intent_id
+       AND intents.user_id = items.user_id
+       AND intents.tenant_id = items.tenant_id
+     WHERE items.user_id = ?
+       AND items.tenant_id = ?
+  `).all(userId, tenantId) as Array<{
+    sourceSkill: string;
+    type: string;
+    status: string;
+    deeplink: string | null;
+    decisionContextJson: string | null;
+  }>;
+  for (const row of itemRows) {
+    const entry = get(row.sourceSkill, row.type, recipeFromDecisionContextJson(row.decisionContextJson));
+    if (row.status === 'superseded') entry.supersededCount += 1;
+    if (['unread', 'read', 'failed', 'snoozed'].includes(row.status) && (!row.deeplink || !isSupportedNotificationDeeplink(row.deeplink))) {
+      entry.deadDeeplinkCount += 1;
+    }
+  }
+
+  const reliabilityRows = db.prepare(`
+    SELECT event_type AS eventType, source
+      FROM notification_reliability_events
+     WHERE user_id = ?
+       AND tenant_id = ?
+       AND datetime(created_at) >= datetime('now', '-24 hours')
+  `).all(userId, tenantId) as Array<{ eventType: string; source: string | null }>;
+  for (const row of reliabilityRows) {
+    const topic = topicFromReliabilitySource(row.source);
+    if (!topic) continue;
+    const entry = get(topic.sourceSkill, topic.type, topic.recipe);
+    if (row.eventType === 'unsupported_action_blocked') entry.unsupportedActionBlockedCount += 1;
+    if (row.eventType === 'action_failed') entry.actionFailedCount += 1;
+    if (row.eventType === 'dead_deeplink_detected') entry.deadDeeplinkCount += 1;
+    if (row.eventType === 'quality_gate_blocked') entry.suppressedOrGatedCount += 1;
+  }
+
+  return [...byKey.values()]
+    .filter((entry) =>
+      entry.suppressedOrGatedCount > 0
+      || entry.dedupedCount > 0
+      || entry.supersededCount > 0
+      || entry.actionFailedCount > 0
+      || entry.unsupportedActionBlockedCount > 0
+      || entry.deadDeeplinkCount > 0
+      || entry.genericMutatingActionSuccessCount > 0
+    )
+    .sort((left, right) =>
+      left.sourceSkill.localeCompare(right.sourceSkill)
+      || String(left.type ?? '').localeCompare(String(right.type ?? ''))
+      || String(left.recipe ?? '').localeCompare(String(right.recipe ?? ''))
+    )
+    .slice(0, 200);
+}
+
+function recipeFromDecisionContextJson(value: string | null): string | null {
+  const parsed = safeParseJSON<Record<string, unknown> | null>(value, null);
+  return typeof parsed?.recipe === 'string' && parsed.recipe.trim() ? parsed.recipe.trim() : null;
+}
+
+function topicFromReliabilitySource(source: string | null): { sourceSkill: string; type: string | null; recipe: string | null } | null {
+  if (!source?.startsWith('topic:')) return null;
+  const [, sourceSkill, type = '', recipe = ''] = source.split(':');
+  if (!sourceSkill) return null;
+  return {
+    sourceSkill,
+    type: type || null,
+    recipe: recipe || null,
   };
 }
 
@@ -1672,7 +2179,7 @@ function fixtureBySkill(sourceSkill: NotificationSourceSkill, userId: number): N
       };
     case 'finance':
       return {
-        userId, tenantId, sourceSkill, type: 'reminder', priority: 'time_sensitive',
+        userId, tenantId, sourceSkill, type: 'decision_required', priority: 'time_sensitive',
         relatedEntityId: 'invoice-demo', relatedEntityType: 'invoice',
         title: 'Finance reminder',
         body: 'Finance reminder due tomorrow.',
@@ -1726,6 +2233,90 @@ function fixtureBySkill(sourceSkill: NotificationSourceSkill, userId: number): N
   }
 }
 
+const NOTIFICATION_CENTER_FALLBACK_DEEPLINK = 'nexus://notifications';
+
+function normalizeNotificationDeeplink(value: string | null | undefined): string {
+  const candidate = typeof value === 'string' ? value.trim() : '';
+  if (!candidate) return NOTIFICATION_CENTER_FALLBACK_DEEPLINK;
+  if (isSupportedNotificationDeeplink(candidate)) return candidate;
+  return NOTIFICATION_CENTER_FALLBACK_DEEPLINK;
+}
+
+function normalizeNotificationActionDeeplink(
+  value: string | undefined,
+  actionId: string,
+  fallbackDeeplink: string | null,
+): string | undefined {
+  const fallback = fallbackDeeplink ?? NOTIFICATION_CENTER_FALLBACK_DEEPLINK;
+  if (typeof value === 'string' && value.trim()) {
+    return normalizeNotificationDeeplink(value);
+  }
+  return actionId === 'open_detail' ? fallback : undefined;
+}
+
+function resolveNotificationExpiry(input: NotificationIntentInput, priority: NotificationPriority): string {
+  if (typeof input.expiresAt === 'string' && Number.isFinite(Date.parse(input.expiresAt))) {
+    return input.expiresAt;
+  }
+  if (typeof input.decisionDeadline === 'string' && Number.isFinite(Date.parse(input.decisionDeadline))) {
+    return input.decisionDeadline;
+  }
+  const hours = defaultNotificationExpiryHours(input.type, priority);
+  return new Date(Date.now() + hours * 3_600_000).toISOString();
+}
+
+function defaultNotificationExpiryHours(type: NotificationIntentType, priority: NotificationPriority): number {
+  if (type === 'security_account' || type === 'sync_failure') return 24;
+  if (type === 'daily_digest') return 48;
+  if (type === 'weekly_review') return 14 * 24;
+  if (type === 'insight') return 14 * 24;
+  if (priority === 'time_sensitive' || priority === 'critical') return 48;
+  return 7 * 24;
+}
+
+function effectiveNotificationPrivacyPolicy(
+  requested: NotificationPrivacyPolicy | undefined,
+  contractPolicy: NotificationPrivacyPolicy,
+): NotificationPrivacyPolicy {
+  if (!requested) return contractPolicy;
+  if (contractPolicy === 'public') return requested;
+  if (contractPolicy === 'standard') return requested === 'public' ? 'standard' : requested;
+  return requested === contractPolicy ? requested : contractPolicy;
+}
+
+function isSupportedNotificationDeeplink(value: string): boolean {
+  try {
+    const url = new URL(value);
+    const scheme = url.protocol.toLowerCase();
+    if (scheme !== 'nexus:') return false;
+    const host = url.hostname.toLowerCase();
+    const pathParts = url.pathname.split('/').filter(Boolean);
+    switch (host) {
+      case 'notifications':
+      case 'decision-center':
+      case 'tasks':
+      case 'connections':
+        return true;
+      case 'chat':
+        return pathParts[0] === 'turn';
+      case 'training':
+        return pathParts[0] === 'session' || pathParts[0] === 'plan';
+      case 'secretary':
+        return pathParts[0] === 'conflict';
+      case 'content':
+        return pathParts[0] === 'script';
+      case 'cooking':
+        return pathParts[0] === 'meal-plan';
+      case 'finance':
+        return pathParts[0] === 'reminder' || pathParts[0] === 'invoices';
+      default:
+        return false;
+    }
+  } catch {
+    return false;
+  }
+}
+
 function normalizeIntent(input: NotificationIntentInput): NotificationIntentRecord {
   const tenantId = input.tenantId ?? input.userId;
   assertScope(input.userId, tenantId, 'normalize_notification_intent', {
@@ -1737,9 +2328,16 @@ function normalizeIntent(input: NotificationIntentInput): NotificationIntentReco
   if (!VALID_PRIORITIES.includes(input.priority)) throw new Error('invalid notification priority');
   if (!input.title.trim()) throw new Error('notification title required');
   if (!input.body.trim()) throw new Error('notification body required');
+  const intentId = input.intentId ?? `ni_${randomUUID()}`;
   const relatedEntityId = input.relatedEntityId == null ? null : String(input.relatedEntityId);
   const relatedEntityType = input.relatedEntityType ?? null;
-  const actionButtons = normalizeActions(input.actionButtons ?? defaultActionsForType(input.type));
+  const hasSourceScope = Boolean(relatedEntityType && relatedEntityId);
+  const missingActionSourceScope = Boolean(input.requiresUserAction && !hasSourceScope);
+  const priority = missingActionSourceScope ? 'passive' : input.priority;
+  const requiresUserAction = Boolean(input.requiresUserAction && hasSourceScope);
+  const deeplink = normalizeNotificationDeeplink(input.deeplink);
+  const expiresAt = resolveNotificationExpiry(input, priority);
+  const candidateActions = normalizeActions(input.actionButtons ?? defaultActionsForType(input.type));
   const decisionContext = normalizeDecisionContext({
     ...(input.decisionContext ?? {}),
     ...(input.visibilityScope ? { visibilityScope: input.visibilityScope } : {}),
@@ -1747,33 +2345,38 @@ function normalizeIntent(input: NotificationIntentInput): NotificationIntentReco
   const contract = resolveNotificationContract({
     sourceSkill: input.sourceSkill,
     type: input.type,
-    actionId: actionButtons[0]?.id ?? null,
+    actionId: candidateActions[0]?.id ?? null,
     entityType: relatedEntityType,
     entityId: relatedEntityId,
     recipe: typeof decisionContext?.recipe === 'string' ? decisionContext.recipe : null,
   });
+  const actionButtons = enforceNotificationActionContract(
+    candidateActions,
+    contract.supportedActions,
+    deeplink,
+  );
 
   return {
-    intentId: input.intentId ?? `ni_${randomUUID()}`,
+    intentId,
     userId: input.userId,
     tenantId,
     sourceSkill: input.sourceSkill,
     type: input.type,
-    priority: input.priority,
+    priority,
     relatedEntityId,
     relatedEntityType,
     title: input.title.trim(),
     body: input.body.trim(),
     sensitiveBody: input.sensitiveBody?.trim() || null,
     actionButtons,
-    deeplink: input.deeplink ?? `nexus://notifications/${input.intentId ?? 'pending'}`,
-    expiresAt: input.expiresAt ?? null,
+    deeplink,
+    expiresAt,
     quietHoursPolicy: input.quietHoursPolicy ?? 'respect',
     dedupeKey: input.dedupeKey ?? defaultDedupeKey(input),
-    requiresUserAction: !!input.requiresUserAction,
+    requiresUserAction,
     decisionDeadline: input.decisionDeadline ?? null,
-    deliveryPolicy: input.deliveryPolicy ?? deliveryPolicyForNotificationContract(contract),
-    privacyPolicy: input.privacyPolicy ?? contract.privacySafeCopyPolicy,
+    deliveryPolicy: missingActionSourceScope ? 'digest_only' : input.deliveryPolicy ?? deliveryPolicyForNotificationContract(contract),
+    privacyPolicy: effectiveNotificationPrivacyPolicy(input.privacyPolicy, contract.privacySafeCopyPolicy),
     decisionContext,
     status: 'pending',
     createdAt: new Date().toISOString(),
@@ -1824,8 +2427,8 @@ function persistCenterItem(
   getDb().prepare(`
     INSERT INTO notification_center_items (
       item_id, intent_id, user_id, tenant_id, title, body, safe_body, sensitive_body, source_skill,
-      type, priority, status, deeplink, actions_json, dedupe_key, expires_at, created_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'unread', ?, ?, ?, ?, datetime('now'))
+      type, priority, status, deeplink, actions_json, dedupe_key, requires_user_action, expires_at, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'unread', ?, ?, ?, ?, ?, datetime('now'))
   `).run(
     itemId,
     intent.intentId,
@@ -1841,10 +2444,24 @@ function persistCenterItem(
     intent.deeplink,
     JSON.stringify(intent.actionButtons),
     intent.dedupeKey,
+    boolInt(intent.requiresUserAction),
     intent.expiresAt,
   );
   const row = getDb().prepare('SELECT * FROM notification_center_items WHERE item_id = ?').get(itemId) as any;
-  return mapCenterItem(row);
+  return mapCenterItem(rowWithIntentJoinAliases(row, intent));
+}
+
+function rowWithIntentJoinAliases(row: any, intent: NotificationIntentRecord): any {
+  return {
+    ...row,
+    intent_joined_intent_id: intent.intentId,
+    intent_related_entity_id: intent.relatedEntityId,
+    intent_related_entity_type: intent.relatedEntityType,
+    intent_requires_user_action: intent.requiresUserAction ? 1 : 0,
+    intent_decision_deadline: intent.decisionDeadline,
+    intent_privacy_policy: intent.privacyPolicy,
+    intent_decision_context_json: intent.decisionContext ? JSON.stringify(intent.decisionContext) : null,
+  };
 }
 
 async function attemptPushDelivery(
@@ -2096,16 +2713,27 @@ function isNotificationDedupeConstraintError(err: unknown): boolean {
 function findActiveDuplicate(intent: NotificationIntentRecord): NotificationCenterItem | null {
   if (!intent.dedupeKey) return null;
   const row = getDb().prepare(`
-    SELECT * FROM notification_center_items
-    WHERE user_id = ?
-      AND tenant_id = ?
-      AND source_skill = ?
-      AND dedupe_key = ?
-      AND status IN ('unread', 'read')
-      AND (expires_at IS NULL OR datetime(expires_at) > datetime('now'))
-    ORDER BY created_at DESC
+    SELECT items.*, intents.intent_id AS intent_joined_intent_id,
+           intents.related_entity_id AS intent_related_entity_id,
+           intents.related_entity_type AS intent_related_entity_type,
+           COALESCE(intents.requires_user_action, items.requires_user_action) AS intent_requires_user_action,
+           intents.decision_deadline AS intent_decision_deadline,
+           intents.privacy_policy AS intent_privacy_policy,
+           intents.decision_context_json AS intent_decision_context_json
+      FROM notification_center_items items
+      LEFT JOIN notification_intents intents
+        ON intents.intent_id = items.intent_id
+       AND intents.user_id = items.user_id
+       AND intents.tenant_id = items.tenant_id
+     WHERE items.user_id = ?
+       AND items.tenant_id = ?
+       AND items.source_skill = ?
+       AND items.dedupe_key = ?
+       AND items.status IN ('unread', 'read')
+       AND (items.expires_at IS NULL OR datetime(items.expires_at) > datetime(?))
+    ORDER BY items.created_at DESC
     LIMIT 1
-  `).get(intent.userId, intent.tenantId, intent.sourceSkill, intent.dedupeKey) as any;
+  `).get(intent.userId, intent.tenantId, intent.sourceSkill, intent.dedupeKey, appNowIso()) as any;
   return row ? mapCenterItem(row) : null;
 }
 
@@ -2119,10 +2747,10 @@ function findActiveDuplicateIntent(intent: NotificationIntentRecord): Notificati
        AND source_skill = ?
        AND dedupe_key = ?
        AND status != 'expired'
-       AND (expires_at IS NULL OR datetime(expires_at) > datetime('now'))
+       AND (expires_at IS NULL OR datetime(expires_at) > datetime(?))
      ORDER BY created_at DESC
      LIMIT 1
-  `).get(intent.userId, intent.tenantId, intent.sourceSkill, intent.dedupeKey) as any;
+  `).get(intent.userId, intent.tenantId, intent.sourceSkill, intent.dedupeKey, appNowIso()) as any;
   return row ? mapIntent(row) : null;
 }
 
@@ -2402,6 +3030,8 @@ function normalizeDecisionContext(input: DecisionLogicContext | null | undefined
   assignContextString(context, 'sourceState', input.sourceState);
   assignContextString(context, 'explicitNoRelatedEntityReason', input.explicitNoRelatedEntityReason);
   assignContextString(context, 'providerName', input.providerName);
+  assignContextString(context, 'providerSyncState', input.providerSyncState);
+  assignContextString(context, 'providerSyncUpdatedAt', input.providerSyncUpdatedAt);
   assignContextString(context, 'deadlineAt', input.deadlineAt);
   assignContextString(context, 'timezone', input.timezone);
   assignContextString(context, 'locale', input.locale);
@@ -2495,7 +3125,7 @@ function assignContextString<T extends keyof DecisionLogicContext>(
 }
 
 function mapCenterItem(row: any): NotificationCenterItem {
-  return {
+  const item: NotificationCenterItem = {
     itemId: row.item_id,
     intentId: row.intent_id,
     decisionLogId: row.decision_log_id,
@@ -2517,6 +3147,118 @@ function mapCenterItem(row: any): NotificationCenterItem {
     expiresAt: row.expires_at,
     snoozedUntil: row.snoozed_until ?? null,
   };
+  const actionEffectiveStatuses = buildNotificationActionEffectiveStatuses(item, notificationActionStateContextForRow(row));
+  return {
+    ...item,
+    actionEffectiveStatuses,
+    frontendActionState: frontendActionStateForActionStatuses(item, actionEffectiveStatuses),
+  };
+}
+
+function notificationActionStateContextForRow(row: any): {
+  entityType: string | null;
+  entityId: string | null;
+  safeForFrontendAction?: boolean;
+  blockedByDependency?: boolean;
+} {
+  const entityType = row.intent_related_entity_type ?? null;
+  const entityId = row.intent_related_entity_id ?? null;
+  if (!DECISION_ACTION_TYPES.has(row.type as NotificationIntentType)) {
+    return { entityType, entityId };
+  }
+  const blockedByDependency = hasBlockingDecisionDependency(row.item_id, row.user_id, row.tenant_id);
+  if (row.intent_joined_intent_id == null) {
+    return { entityType, entityId, safeForFrontendAction: false, blockedByDependency };
+  }
+  const actions = safeParseJSON<NotificationActionButton[]>(row.actions_json, []);
+  const context = decisionContextForNotificationCenterRow(
+    row,
+    normalizeDecisionContext(safeParseJSON(row.intent_decision_context_json, null)),
+  );
+  if (!context) {
+    return { entityType, entityId, safeForFrontendAction: false, blockedByDependency };
+  }
+  const logic = buildDecisionLogicForNotificationCenterRow(row, actions, context, context?.visibilityScope ?? 'user_private');
+  return {
+    entityType,
+    entityId,
+    safeForFrontendAction: logic.quality.safeForFrontendAction,
+    blockedByDependency,
+  };
+}
+
+function buildNotificationActionEffectiveStatuses(
+  item: NotificationCenterItem,
+  ctx: {
+    entityType?: string | null;
+    entityId?: string | null;
+    safeForFrontendAction?: boolean;
+    blockedByDependency?: boolean;
+  } = {},
+): NotificationActionEffectiveStatus[] {
+  const contract = resolveNotificationContract({
+    sourceSkill: item.sourceSkill,
+    type: item.type,
+    entityType: ctx.entityType ?? null,
+    entityId: ctx.entityId ?? null,
+  });
+  const supportedActions = new Set(contract.supportedActions);
+  return item.actions.map((action) => {
+    const supported = supportedActions.has(action.id);
+    return computeSharedNotificationActionEffectiveStatus({
+      actionId: action.id,
+      status: item.status,
+      expiresAt: item.expiresAt,
+      safeForFrontendAction: ctx.safeForFrontendAction,
+      blockedByDependency: ctx.blockedByDependency,
+      supported,
+      unsupportedReason: supported ? null : `Action '${action.id}' is not supported for ${item.sourceSkill}/${item.type}`,
+      reconnectRequired: isDecisionReconnectAffordanceEnabled(process.env, {
+        userId: item.userId,
+        tenantId: item.tenantId,
+      }) && action.id === 'retry' && item.type === 'sync_failure',
+    }) as NotificationActionEffectiveStatus;
+  });
+}
+
+function hasBlockingDecisionDependency(itemId: string, userId: number, tenantId: number): boolean {
+  if (!tableExistsForNotificationRead('decision_dependencies')) return false;
+  const unresolved = new Set(['unread', 'read', 'failed', 'snoozed']);
+  const rows = getDb().prepare(`
+    SELECT deps.relationship AS relationship, blocker.status AS blockerStatus
+      FROM decision_dependencies deps
+      LEFT JOIN notification_center_items blocker
+        ON blocker.item_id = deps.depends_on_decision_id
+       AND blocker.user_id = deps.user_id
+       AND blocker.tenant_id = deps.tenant_id
+     WHERE deps.decision_id = ?
+       AND deps.user_id = ?
+       AND deps.tenant_id = ?
+  `).all(itemId, userId, tenantId) as Array<{ relationship: string; blockerStatus: string | null }>;
+  return rows.some((row) => (
+    decisionRelationshipSemantics(row.relationship).blocksAction
+    && row.blockerStatus != null
+    && unresolved.has(row.blockerStatus)
+  ));
+}
+
+function tableExistsForNotificationRead(name: string): boolean {
+  const row = getDb().prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ? LIMIT 1").get(name);
+  return Boolean(row);
+}
+
+function frontendActionStateForActionStatuses(
+  item: NotificationCenterItem,
+  statuses: NotificationActionEffectiveStatus[],
+): NotificationActionEffectiveState {
+  if (TERMINAL_NOTIFICATION_STATUSES.has(item.status)) {
+    if (item.status === 'expired') return 'disabled_expired';
+    if (item.status === 'actioned') return 'disabled_already_actioned';
+    return 'disabled_superseded';
+  }
+  if (statuses.length === 0) return 'disabled_missing_details';
+  if (statuses.some((status) => status.effective === 'enabled')) return 'enabled';
+  return statuses[0]?.effective ?? 'disabled_missing_details';
 }
 
 function mapDecisionLog(row: any): NotificationDecisionLog {
@@ -2599,7 +3341,7 @@ function defaultActionsForType(type: NotificationIntentType): NotificationAction
   }
   if (type === 'reminder' || type === 'missed_item') {
     return [
-      { id: 'mark_done', label: 'Done', style: 'primary' },
+      { id: 'open_detail', label: 'Open', style: 'primary' },
       { id: 'snooze', label: 'Snooze', style: 'secondary' },
     ];
   }
@@ -2619,6 +3361,38 @@ function normalizeActions(actions: NotificationActionButton[]): NotificationActi
     }));
 }
 
+function enforceNotificationActionContract(
+  actions: NotificationActionButton[],
+  supportedActions: string[],
+  fallbackDeeplink: string | null,
+): NotificationActionButton[] {
+  const supported = new Set(supportedActions);
+  const accepted: NotificationActionButton[] = [];
+  const seen = new Set<string>();
+
+  for (const action of actions) {
+    if (!supported.has(action.id) || seen.has(action.id)) continue;
+    seen.add(action.id);
+    const deeplink = normalizeNotificationActionDeeplink(action.deeplink, action.id, fallbackDeeplink);
+    accepted.push({
+      ...action,
+      deeplink,
+      mutating: action.mutating === true || isNotificationActionMutating(action.id) ? true : undefined,
+    });
+  }
+
+  if (supported.has('open_detail') && !seen.has('open_detail')) {
+    accepted.push({
+      id: 'open_detail',
+      label: accepted.length > 0 ? 'Open details' : 'Open',
+      style: accepted.length > 0 ? 'secondary' : 'primary',
+      deeplink: fallbackDeeplink ?? undefined,
+    });
+  }
+
+  return accepted.slice(0, 4);
+}
+
 function defaultDedupeKey(input: NotificationIntentInput): string {
   const entity = input.relatedEntityId == null ? 'none' : String(input.relatedEntityId);
   return `${input.sourceSkill}:${input.type}:${input.relatedEntityType ?? 'entity'}:${entity}`;
@@ -2633,6 +3407,28 @@ function ensureColumn(table: string, column: string, definition: string): void {
   const columns = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
   if (columns.some((entry) => entry.name === column)) return;
   db.prepare(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`).run();
+}
+
+function backfillNotificationCenterActionability(): void {
+  getDb().prepare(`
+    UPDATE notification_center_items
+       SET requires_user_action = COALESCE((
+         SELECT intents.requires_user_action
+           FROM notification_intents intents
+          WHERE intents.intent_id = notification_center_items.intent_id
+            AND intents.user_id = notification_center_items.user_id
+            AND intents.tenant_id = notification_center_items.tenant_id
+          LIMIT 1
+       ), 0)
+     WHERE EXISTS (
+       SELECT 1
+         FROM notification_intents intents
+        WHERE intents.intent_id = notification_center_items.intent_id
+          AND intents.user_id = notification_center_items.user_id
+          AND intents.tenant_id = notification_center_items.tenant_id
+          AND intents.requires_user_action != notification_center_items.requires_user_action
+     )
+  `).run();
 }
 
 function positiveIntOr(value: number | undefined, fallback: number): number {

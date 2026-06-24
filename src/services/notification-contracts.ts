@@ -58,11 +58,40 @@ export const NON_BADGE_NOTIFICATION_TYPES: readonly NotificationIntentType[] = [
 
 const NON_BADGE_NOTIFICATION_TYPE_SET = new Set<NotificationIntentType>(NON_BADGE_NOTIFICATION_TYPES);
 
+export const SAFE_GENERIC_NOTIFICATION_ACTIONS = ['open_detail', 'dismiss', 'snooze'] as const;
+
+const DEFAULT_APNS_CATEGORY_ACTIONS: Record<string, readonly string[]> = {
+  decision_required: ['open_detail', 'dismiss'],
+  reminder: ['open_detail', 'snooze', 'dismiss'],
+  approval_required: ['open_detail', 'dismiss'],
+  DECISION_SCHEDULE_CONFLICT: ['snooze', 'open_detail'],
+  DECISION_APPROVAL: ['open_detail'],
+  DECISION_SYNC_ISSUE: ['open_detail'],
+  FINANCE_PAYMENT: ['open_detail', 'dismiss'],
+  DECISION_CLARIFICATION: ['open_detail', 'dismiss'],
+};
+
+let apnsCategoryActionOverridesForTests: Record<string, readonly string[]> | null = null;
+
+const MUTATING_NOTIFICATION_ACTIONS = new Set([
+  'approve_script',
+  'request_rewrite',
+  'accept_reflow',
+  'choose_another_time',
+  'retry',
+  'option_a',
+  'option_b',
+  'mark_paid',
+  'add_meal',
+  'undo_reflow',
+  'accept_chat_action_fix',
+]);
+
 const BASE_ACTIONS_BY_TYPE: Record<NotificationIntentType, string[]> = {
   decision_required: ['open_detail', 'dismiss'],
   conflict_detected: ['accept_reflow', 'choose_another_time', 'open_detail', 'snooze'],
   schedule_changed: ['open_detail'],
-  reminder: ['mark_done', 'snooze', 'open_detail', 'dismiss'],
+  reminder: ['open_detail', 'snooze', 'dismiss'],
   missed_item: ['open_detail', 'dismiss'],
   reflow_suggestion: ['accept_reflow', 'choose_another_time', 'open_detail', 'dismiss'],
   approval_required: ['open_detail'],
@@ -111,16 +140,42 @@ export function resolveNotificationContract(input: {
 }
 
 function supportedActionsFor(sourceSkill: NotificationSourceSkill, type: NotificationIntentType): string[] {
-  if (sourceSkill === 'finance' && type === 'reminder') {
+  if (sourceSkill === 'secretary' && type === 'decision_required') {
+    return ['choose_priority', 'open_detail', 'dismiss'];
+  }
+  if (sourceSkill === 'finance' && type === 'decision_required') {
     return ['mark_paid', 'open_detail', 'dismiss'];
+  }
+  if (sourceSkill === 'cooking' && type === 'decision_required') {
+    return ['add_meal', 'open_detail', 'dismiss'];
   }
   if (sourceSkill === 'content' && type === 'approval_required') {
     return ['approve_script', 'request_rewrite', 'open_detail'];
+  }
+  if (sourceSkill === 'chat' && type === 'decision_required') {
+    return ['option_a', 'option_b', 'accept_chat_action_fix', 'open_detail', 'dismiss'];
   }
   if (type === 'sync_failure') {
     return ['retry', 'open_detail'];
   }
   return BASE_ACTIONS_BY_TYPE[type] ?? ['open_detail'];
+}
+
+export function isNotificationActionMutating(actionId: string): boolean {
+  return MUTATING_NOTIFICATION_ACTIONS.has(actionId);
+}
+
+export function isSafeGenericNotificationAction(actionId: string): boolean {
+  return (SAFE_GENERIC_NOTIFICATION_ACTIONS as readonly string[]).includes(actionId);
+}
+
+export function listNotificationApnsActionExposures(): Array<{ apnsCategory: string; actionId: string }> {
+  const categories = apnsCategoryActionOverridesForTests ?? DEFAULT_APNS_CATEGORY_ACTIONS;
+  return Object.entries(categories).flatMap(([apnsCategory, actions]) => actions.map((actionId) => ({ apnsCategory, actionId })));
+}
+
+export function __setNotificationApnsCategoryActionOverridesForTests(overrides: Record<string, readonly string[]> | null): void {
+  apnsCategoryActionOverridesForTests = overrides;
 }
 
 export function deliveryPolicyForNotificationContract(contract: NotificationContract): NotificationDeliveryPolicy {
@@ -140,7 +195,8 @@ function iosDestinationFor(type: NotificationIntentType, sourceSkill: Notificati
 }
 
 function apnsCategoryFor(type: NotificationIntentType, sourceSkill: NotificationSourceSkill): string {
-  if (sourceSkill === 'finance' && type === 'reminder') return 'FINANCE_PAYMENT';
+  if (sourceSkill === 'finance' && type === 'decision_required') return 'FINANCE_PAYMENT';
+  if (type === 'approval_required' && sourceSkill !== 'content') return 'DECISION_CLARIFICATION';
   if (DECISION_TYPES.has(type)) return DECISION_APNS_CATEGORIES[type] ?? 'DECISION_CLARIFICATION';
   return type;
 }

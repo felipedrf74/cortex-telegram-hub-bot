@@ -4627,15 +4627,32 @@ table.legacy th {
 	        ['Push', 'Sent', reliability.pushOutcome?.sentCount, 'Blocked', reliability.pushOutcome?.blockedCount],
 	        ['Badge', 'Expected', reliability.badge?.expectedBadgeCount, 'Drift', reliability.badge?.drift],
 	        ['Read state', 'Client failures', reliability.readState?.clientReportedReadFailureCount, 'Server failures', reliability.readState?.serverReadFailureCount],
+	        ['Quality', 'Suppressed/gated', reliability.quality?.suppressedOrGatedCount, 'Dead links', reliability.quality?.deadDeeplinkCount],
+	        ['Actions', 'Unsupported', reliability.quality?.unsupportedActionBlockedCount, 'Failed', reliability.quality?.actionFailureCount],
 	      ].map(r =>
 	        '<tr><td><span class="badge badge-neutral">' + esc(r[0]) + '</span></td>' +
 	        '<td>' + esc(r[1]) + '</td><td class="mono">' + esc(String(r[2] ?? '—')) + '</td>' +
 	        '<td>' + esc(r[3]) + '</td><td class="mono">' + esc(String(r[4] ?? '—')) + '</td></tr>'
 	      ).join('');
+	      const topicRows = (reliability.quality?.byTopic || []).slice(0, 20).map(row => '<tr>' +
+	        '<td><span class="badge badge-neutral">' + esc(row.sourceSkill || 'unknown') + '</span></td>' +
+	        '<td>' + esc(row.type || '—') + '</td>' +
+	        '<td>' + esc(row.recipe || '—') + '</td>' +
+	        '<td class="mono">' + esc(String(row.suppressedOrGatedCount ?? 0)) + '</td>' +
+	        '<td class="mono">' + esc(String(row.dedupedCount ?? 0)) + '</td>' +
+	        '<td class="mono">' + esc(String(row.supersededCount ?? 0)) + '</td>' +
+	        '<td class="mono">' + esc(String(row.unsupportedActionBlockedCount ?? 0)) + '</td>' +
+	        '<td class="mono">' + esc(String(row.actionFailedCount ?? 0)) + '</td>' +
+	        '<td class="mono">' + esc(String(row.deadDeeplinkCount ?? 0)) + '</td>' +
+	      '</tr>').join('');
 	      document.getElementById('notification-reliability-content').innerHTML =
 	        '<div style="overflow-x:auto"><table class="data-table">' +
 	          '<thead><tr><th>Area</th><th>Metric</th><th>Value</th><th>Metric</th><th>Value</th></tr></thead>' +
 	          '<tbody>' + reliabilityRows + '</tbody>' +
+	        '</table></div>' +
+	        '<div style="overflow-x:auto;margin-top:var(--space-3)"><table class="data-table">' +
+	          '<thead><tr><th>Skill</th><th>Type</th><th>Recipe</th><th>Gated</th><th>Deduped</th><th>Superseded</th><th>Unsupported</th><th>Failed</th><th>Dead links</th></tr></thead>' +
+	          '<tbody>' + (topicRows || '<tr><td colspan="9"><div class="empty">No topic reliability events</div></td></tr>') + '</tbody>' +
 	        '</table></div>' +
 	        '<div class="text-muted" style="margin-top:var(--space-2);font-size:12px">Generated ' + esc(reliability.generatedAt || '—') + '</div>';
 

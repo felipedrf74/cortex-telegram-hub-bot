@@ -52,7 +52,8 @@ import { analyzeInvoiceImage, fileInvoice } from '../../services/invoice-filer';
 import { getFilingById, recordFiling } from '../../state/invoice-filings';
 import { verifyInvoiceObjectChecksum } from '../../services/invoice-object-storage';
 import { ensureValidTenantRouteScope } from '../tenant-route-scope';
-import { createNotificationIntent } from '../../services/notification-orchestrator';
+import { createDecisionIntent, supersedeDecisionSourceStateForEntity } from '../../services/decision-center';
+import { invalidateNotificationInboxCaches } from '../../services/notification-cache-invalidation';
 import { centsToNumber, parseUserAmount, toCents } from '../../services/money';
 import {
   buildFinanceSchedulingIntent,
@@ -475,14 +476,14 @@ export function financeRoutes(): Router {
         }
         try {
           const decisionDeadline = reminderWindow?.end ?? null;
-          await createNotificationIntent({
+          await createDecisionIntent({
             userId,
             tenantId,
             sourceSkill: 'finance',
-            type: 'reminder',
+            type: 'decision_required',
             priority: 'time_sensitive',
             relatedEntityId: month,
-            relatedEntityType: 'tax_event',
+            relatedEntityType: 'finance_tax_event',
             title: 'Finance deadline',
             body: 'Tax payment reminder is ready.',
             sensitiveBody: `Tax event ${month}: tax and contribution amounts are available in Finance.`,
@@ -541,9 +542,17 @@ export function financeRoutes(): Router {
         return;
       }
       invalidateFinanceDerivedCaches(userId);
+      const retired = supersedeDecisionSourceStateForEntity({
+        userId,
+        tenantId,
+        sourceSkill: 'finance',
+        relatedEntityType: 'finance_tax_event',
+        relatedEntityId: month,
+      });
+      invalidateNotificationInboxCaches(userId, tenantId);
 
-      logger.info({ userId, month }, 'iOS tax event marked paid');
-      sendSuccess(res, { updated: true, event });
+      logger.info({ userId, month, supersededNotifications: retired.supersededCount }, 'iOS tax event marked paid');
+      sendSuccess(res, { updated: true, event, supersededCount: retired.supersededCount });
     } catch (err: any) {
       logger.error({ err, userId, month }, 'iOS finance tax pay failed');
       sendInternalError(res, 'Failed to mark tax event as paid');

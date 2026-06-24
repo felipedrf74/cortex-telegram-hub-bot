@@ -126,7 +126,7 @@ describe('scraper MFA reply service', () => {
     expect(JSON.stringify(payload)).not.toContain('123456');
     expect(payload.actionButtons).toEqual([
       expect.objectContaining({
-        id: 'enter_scraper_mfa_code',
+        id: 'open_detail',
         label: 'Enter code',
         deeplink: 'nexus://finance/invoices/scraper-mfa?source=uber',
       }),

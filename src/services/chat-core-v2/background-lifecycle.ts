@@ -246,7 +246,7 @@ export function enqueueBackgroundChatCommand(
     turnId: input.turnId,
     contextHash: input.command.basedOn.contextHash,
     notificationPolicy,
-    resumeDeepLink: input.resumeDeepLink ?? `nexushub://chat/turn/${input.turnId}`,
+    resumeDeepLink: input.resumeDeepLink ?? `nexus://chat/turn/${input.turnId}`,
     expiresAt: input.command.expiresAt,
     locale: input.locale ?? null,
     command: input.command,

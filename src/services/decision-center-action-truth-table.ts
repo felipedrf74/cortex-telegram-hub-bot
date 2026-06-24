@@ -4,6 +4,7 @@ import type {
   NotificationPriority,
   NotificationSourceSkill,
 } from './notification-orchestrator';
+import { isSafeGenericNotificationAction } from './notification-contracts';
 
 export interface DecisionActionTruthTableEntry {
   actionType: string;
@@ -224,6 +225,11 @@ const ACTION_TRUTH_TABLE: Record<string, DecisionActionTruthTemplate> = {
 
 export function isDecisionActionExecutable(actionId: string): boolean {
   return ACTION_TRUTH_TABLE[actionId]?.implemented === true;
+}
+
+export function isDecisionActionAllowedFromApns(actionId: string): boolean {
+  if (isSafeGenericNotificationAction(actionId)) return true;
+  return ACTION_TRUTH_TABLE[actionId]?.apnsActionAllowed === true;
 }
 
 export function listDecisionActionTruthTable(): ReadonlyArray<DecisionActionTruthTemplate & { actionType: string }> {

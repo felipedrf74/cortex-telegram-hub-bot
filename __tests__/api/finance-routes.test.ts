@@ -9,6 +9,8 @@ import {
 } from '../../src/services/tenant-scope-observability';
 
 const MIGRATIONS_DIR = path.resolve(__dirname, '../../migrations');
+const ACTIVE_TAX_MONTH = '2099-05';
+const ACTIVE_TAX_DATE = '2099-05-10';
 
 let testDb: Database.Database;
 const mockIsUserOverDailyCap = vi.fn().mockReturnValue({
@@ -125,7 +127,12 @@ import {
   getTransactions,
 } from '../../src/services/finance-tracker';
 import { analyzeInvoiceImage } from '../../src/services/invoice-filer';
-import { listNotificationCenterItems } from '../../src/services/notification-orchestrator';
+import {
+  buildSkillNotificationFixtureIntent,
+  countUnreadNotificationCenterItems,
+  createNotificationIntent,
+  listNotificationCenterItems,
+} from '../../src/services/notification-orchestrator';
 import { listSecretaryAgendaItems } from '../../src/services/secretary-scheduling-arbitrator';
 
 function applyMigrations(db: Database.Database): void {
@@ -261,8 +268,8 @@ describe('Finance API — tax routes', () => {
   it('emits a finance notification intent when a tax event with due amounts is calculated', async () => {
     const user = getOrCreateUser(22013, { username: 'finance-notification' });
 
-    addTransaction(user.id, '2024-04-10', 'income', 12000);
-    const res = await dispatch('POST', '/tax/calculate', user.id, { month: '2024-04' });
+    addTransaction(user.id, ACTIVE_TAX_DATE, 'income', 12000);
+    const res = await dispatch('POST', '/tax/calculate', user.id, { month: ACTIVE_TAX_MONTH });
 
     expect(res.statusCode).toBe(200);
     expect(res.body.ok).toBe(true);
@@ -270,19 +277,106 @@ describe('Finance API — tax routes', () => {
     expect(notifications).toHaveLength(1);
     expect(notifications[0]).toMatchObject({
       sourceSkill: 'finance',
-      type: 'reminder',
+      type: 'decision_required',
       priority: 'time_sensitive',
       safeBody: 'Finance reminder needs review.',
     });
-    expect(notifications[0].sensitiveBody).toContain('Tax event 2024-04');
+    expect(notifications[0].sensitiveBody).toContain(`Tax event ${ACTIVE_TAX_MONTH}`);
     const agendaItems = listSecretaryAgendaItems({ ownerUserId: user.id, tenantId: user.id });
     expect(agendaItems).toHaveLength(1);
     expect(agendaItems[0]).toMatchObject({
       sourceSkill: 'finance',
       sourceAction: 'bill_reminder',
-      sourceEntityId: '2024-04',
+      sourceEntityId: ACTIVE_TAX_MONTH,
       providerSyncState: 'not_synced',
     });
+  });
+
+  it('retires the active finance payment notification when REST tax pay marks the source paid', async () => {
+    const user = getOrCreateUser(22015, { username: 'finance-payment-retire' });
+
+    addTransaction(user.id, ACTIVE_TAX_DATE, 'income', 12000);
+    const calculated = await dispatch('POST', '/tax/calculate', user.id, { month: ACTIVE_TAX_MONTH });
+    expect(calculated.statusCode).toBe(200);
+    expect(countUnreadNotificationCenterItems(user.id, user.id)).toBe(1);
+    const unrelatedContent = await createNotificationIntent(buildSkillNotificationFixtureIntent('content', user.id, {
+      tenantId: user.id,
+      dedupeKey: 'content:unrelated-missing-object',
+      relatedEntityId: 'missing-content-object',
+      relatedEntityType: 'content_workflow_object',
+      deliveryPolicy: 'in_app_only',
+    }));
+    expect(unrelatedContent.item?.itemId).toBeDefined();
+    testDb.prepare("UPDATE notification_center_items SET status = 'read' WHERE item_id = ?")
+      .run(unrelatedContent.item!.itemId);
+
+    const paid = await dispatch('POST', `/tax/events/${ACTIVE_TAX_MONTH}/pay`, user.id);
+    expect(paid.statusCode).toBe(200);
+    expect(paid.body.ok).toBe(true);
+    expect(paid.body.data.event.status).toBe('paid');
+    expect(paid.body.data.supersededCount).toBe(1);
+    expect(countUnreadNotificationCenterItems(user.id, user.id)).toBe(0);
+
+    const row = testDb.prepare(`
+      SELECT status, action_result_json AS actionResultJson
+        FROM notification_center_items
+       WHERE user_id = ? AND tenant_id = ? AND source_skill = 'finance'
+       LIMIT 1
+    `).get(user.id, user.id) as { status: string; actionResultJson: string };
+    expect(row.status).toBe('superseded');
+    expect(JSON.parse(row.actionResultJson).supersededReason).toBe('finance_payment_resolved_elsewhere');
+    const unrelatedRow = testDb.prepare(`
+      SELECT status
+        FROM notification_center_items
+       WHERE item_id = ?
+    `).get(unrelatedContent.item!.itemId) as { status: string };
+    expect(unrelatedRow.status).toBe('read');
+  });
+
+  it('retires only the paid finance month and double-pay is an idempotent supersession no-op', async () => {
+    const user = getOrCreateUser(22016, { username: 'finance-payment-month-isolation' });
+
+    addTransaction(user.id, ACTIVE_TAX_DATE, 'income', 12000);
+    addTransaction(user.id, '2099-06-10', 'income', 9000);
+    const may = await dispatch('POST', '/tax/calculate', user.id, { month: ACTIVE_TAX_MONTH });
+    const june = await dispatch('POST', '/tax/calculate', user.id, { month: '2099-06' });
+    expect(may.statusCode).toBe(200);
+    expect(june.statusCode).toBe(200);
+    expect(countUnreadNotificationCenterItems(user.id, user.id)).toBe(2);
+
+    const firstPay = await dispatch('POST', `/tax/events/${ACTIVE_TAX_MONTH}/pay`, user.id);
+    expect(firstPay.statusCode).toBe(200);
+    expect(firstPay.body.ok).toBe(true);
+    expect(firstPay.body.data.supersededCount).toBe(1);
+
+    const rowsAfterFirstPay = testDb.prepare(`
+      SELECT intents.related_entity_id AS relatedEntityId, items.status
+        FROM notification_center_items items
+        JOIN notification_intents intents ON intents.intent_id = items.intent_id
+       WHERE items.user_id = ? AND items.tenant_id = ? AND items.source_skill = 'finance'
+       ORDER BY intents.related_entity_id ASC
+    `).all(user.id, user.id) as Array<{ relatedEntityId: string; status: string }>;
+    expect(rowsAfterFirstPay).toEqual([
+      { relatedEntityId: ACTIVE_TAX_MONTH, status: 'superseded' },
+      { relatedEntityId: '2099-06', status: 'unread' },
+    ]);
+    expect(countUnreadNotificationCenterItems(user.id, user.id)).toBe(1);
+
+    const secondPay = await dispatch('POST', `/tax/events/${ACTIVE_TAX_MONTH}/pay`, user.id);
+    expect(secondPay.statusCode).toBe(200);
+    expect(secondPay.body.ok).toBe(true);
+    expect(secondPay.body.data.supersededCount).toBe(0);
+    expect(secondPay.body.data.event.status).toBe('paid');
+
+    const rowsAfterSecondPay = testDb.prepare(`
+      SELECT intents.related_entity_id AS relatedEntityId, items.status
+        FROM notification_center_items items
+        JOIN notification_intents intents ON intents.intent_id = items.intent_id
+       WHERE items.user_id = ? AND items.tenant_id = ? AND items.source_skill = 'finance'
+       ORDER BY intents.related_entity_id ASC
+    `).all(user.id, user.id) as Array<{ relatedEntityId: string; status: string }>;
+    expect(rowsAfterSecondPay).toEqual(rowsAfterFirstPay);
+    expect(countUnreadNotificationCenterItems(user.id, user.id)).toBe(1);
   });
 
   it('keeps tax calculation ledger-only when live calendar availability is degraded', async () => {
@@ -295,8 +389,8 @@ describe('Finance API — tax routes', () => {
       warnings: ['Google Calendar is unavailable right now.'],
     });
 
-    addTransaction(user.id, '2024-04-10', 'income', 12000);
-    const res = await dispatch('POST', '/tax/calculate', user.id, { month: '2024-04' });
+    addTransaction(user.id, ACTIVE_TAX_DATE, 'income', 12000);
+    const res = await dispatch('POST', '/tax/calculate', user.id, { month: ACTIVE_TAX_MONTH });
 
     expect(res.statusCode).toBe(200);
     expect(res.body.ok).toBe(true);

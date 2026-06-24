@@ -54,6 +54,7 @@ npm run science-policy:check
 npm run build
 node scripts/migration-safety-check.mjs
 scripts/cannot-skip-gate-dashboard.sh --json --no-evidence >/tmp/nexus-cannot-skip-dashboard.json
+scripts/notification-release-gate.sh
 
 if [ "$RUN_VITEST" = true ]; then
   if [ -n "$SHARD" ]; then

@@ -170,7 +170,7 @@ describe('Decision Center Logic v2', () => {
       safeBody: '2 overdue tasks and 1 task due today need a short review.',
       actions: [
         { id: 'open_detail', label: 'Open overdue tasks', style: 'primary' },
-        { id: 'open_today_plan', label: 'Open today\'s plan', style: 'secondary' },
+        { id: 'dismiss', label: 'Dismiss', style: 'secondary' },
       ],
       relatedEntityType: 'task_attention_day',
       relatedEntityId: '2026-06-17',

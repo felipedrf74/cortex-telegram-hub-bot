@@ -267,7 +267,15 @@ describe('portal Decision Center routes', () => {
       userId: 7,
       tenantId: 7,
       generatedAt: '2026-05-10T10:00:00.000Z',
-      releaseGate: { expiredButVisible: 0, unimplementedActionableCtas: 0, pass: true },
+      releaseGate: {
+        expiredButVisible: 0,
+        unimplementedActionableCtas: 0,
+        unsupportedNotificationActions: 0,
+        deadDeeplinks: 0,
+        badgeDrift: 0,
+        genericMutatingActionSuccesses: 0,
+        pass: true,
+      },
       today: null,
       feedbackBySkill: [],
       outcomes: { totalOutcomes: 0, decisionQualityScore: null, primaryActionRate: 0, dismissRate: 0, snoozeRate: 0, failedActionRate: 0, genericBlockedRate: 0 },
@@ -284,6 +292,14 @@ describe('portal Decision Center routes', () => {
         drift: -1,
       },
       readState: { clientReportedReadFailureCount: 1, serverReadFailureCount: 0 },
+      quality: {
+        suppressedOrGatedCount: 0,
+        unsupportedActionBlockedCount: 0,
+        actionFailureCount: 0,
+        deadDeeplinkCount: 0,
+        genericMutatingActionSuccessCount: 0,
+        byTopic: [],
+      },
     });
   });
 

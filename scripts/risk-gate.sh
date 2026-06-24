@@ -118,6 +118,10 @@ if [ "$SKIP_TYPECHECK" != "true" ]; then
   run_cmd npx tsc --noEmit
 fi
 
+if printf '%s\n' "$CANNOT_SKIP" | grep -qx 'notification-apns-delivery-and-tenant'; then
+  run_cmd scripts/notification-release-gate.sh
+fi
+
 case "$VITEST_MODE" in
   skip)
     REASON="$(json_get "vitest.skipReason")"
