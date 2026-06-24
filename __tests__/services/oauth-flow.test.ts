@@ -44,4 +44,14 @@ describe('oauth-flow URL state binding', () => {
     expect(url.searchParams.get('state')).toBe('tg:42:nonce-abc');
     expect(createOAuthNonceSession).toHaveBeenCalledWith(42, 'google');
   });
+
+  it('forces Outlook authorization codes to return in query parameters', async () => {
+    const { getOAuthUrl } = await import('../../src/services/oauth-flow');
+
+    const url = new URL(getOAuthUrl('outlook', 21));
+
+    expect(url.searchParams.get('response_mode')).toBe('query');
+    expect(url.searchParams.get('state')).toBe('tg:21:nonce-abc');
+    expect(createOAuthNonceSession).toHaveBeenCalledWith(21, 'outlook');
+  });
 });

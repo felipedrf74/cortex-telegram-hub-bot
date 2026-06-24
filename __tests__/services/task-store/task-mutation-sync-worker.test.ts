@@ -222,6 +222,15 @@ beforeEach(() => {
 describe('task mutation sync worker write-back safety', () => {
   it('passes provider idempotency keys into provider creates', async () => {
     const { taskId } = seedLinkedMutation({ taskId: 'task-idempotent-create' });
+    providerApi.createTask.mockImplementationOnce(async () => {
+      const { getCurrentContext } = await import('../../../src/utils/request-context');
+      expect(getCurrentContext()).toMatchObject({
+        source: 'cron:task_mutation_sync',
+        userId: USER_ID,
+        tenantId: USER_ID,
+      });
+      return { success: true, data: { id: 'provider-created-1', providerVersion: 'etag-created' } };
+    });
 
     await runTaskMutationSyncBatch({ tenantId: USER_ID, userId: USER_ID });
 

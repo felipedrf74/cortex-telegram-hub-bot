@@ -141,9 +141,53 @@ function htmlConnectionFailed(provider: string): string {
   return `<html><body style="font-family:system-ui;text-align:center;padding:60px"><h1>❌ Connection Failed</h1><p>Please return to Nexus Hub and try connecting ${provider.toLowerCase()} again.</p></body></html>`;
 }
 
+function htmlOAuthFragmentRecovery(provider: string): string {
+  const providerLabel = provider.charAt(0).toUpperCase() + provider.slice(1);
+  return `<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>${providerLabel} connection</title>
+</head>
+<body style="font-family:system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;padding:24px;color:#111">
+  <p id="message">Finishing ${providerLabel} connection...</p>
+  <script>
+    (function () {
+      var hash = window.location.hash ? window.location.hash.slice(1) : '';
+      if (!hash) {
+        document.getElementById('message').textContent = 'The ${providerLabel} sign-in response was incomplete. Return to Nexus Hub and try again.';
+        return;
+      }
+      var params = new URLSearchParams(hash);
+      if (!params.has('code') && !params.has('error')) {
+        document.getElementById('message').textContent = 'The ${providerLabel} sign-in response was incomplete. Return to Nexus Hub and try again.';
+        return;
+      }
+      window.location.replace(window.location.pathname + '?' + params.toString());
+    })();
+  </script>
+  <noscript>The ${providerLabel} sign-in response was incomplete. Return to Nexus Hub and try again.</noscript>
+</body>
+</html>`;
+}
+
 function redirectIOSOAuth(provider: OAuthProvider, res: Response, status: 'success' | 'error', message?: string): void {
   const suffix = message ? `&message=${encodeURIComponent(message)}` : '';
   res.redirect(`me.nexushub.app://oauth/${provider}?status=${status}${suffix}`);
+}
+
+function queryStringValue(value: unknown): string {
+  if (typeof value === 'string') return value;
+  if (Array.isArray(value) && typeof value[0] === 'string') return value[0];
+  return '';
+}
+
+function oauthErrorMessage(error: string, description: string): string {
+  const normalized = (description || error || 'Connection failed')
+    .replace(/\+/g, ' ')
+    .trim();
+  return normalized || 'Connection failed';
 }
 
 function parseNonceState(state: string, prefix: 'ios' | 'tg'): { userId: number; nonce: string } | null {
@@ -236,10 +280,33 @@ async function handleIOSAwareOAuthCallback(
   getBotRef: typeof defaultGetBotRef,
   afterStore?: (userId: number, services: PortalOAuthServices) => void,
 ): Promise<void> {
-  const code = req.query.code as string;
-  const state = req.query.state as string;
+  const code = queryStringValue(req.query.code);
+  const state = queryStringValue(req.query.state);
+  const providerError = queryStringValue(req.query.error);
+  const providerErrorDescription = queryStringValue(req.query.error_description);
+
+  if (providerError) {
+    const message = oauthErrorMessage(providerError, providerErrorDescription);
+    if (state.startsWith('ios:')) {
+      redirectIOSOAuth(provider, res, 'error', message);
+      return;
+    }
+    res.status(400).send(htmlConnectionFailed(provider));
+    return;
+  }
+
   if (!code || !state) {
-    res.status(400).send('Missing code or state parameter');
+    logger.warn(
+      {
+        provider,
+        hasCode: Boolean(code),
+        hasState: Boolean(state),
+        hasProviderError: Boolean(providerError),
+        flow: 'oauth_callback_missing_query',
+      },
+      'OAuth callback missing query parameters; serving fragment recovery page',
+    );
+    res.status(200).send(htmlOAuthFragmentRecovery(providerLabel));
     return;
   }
 

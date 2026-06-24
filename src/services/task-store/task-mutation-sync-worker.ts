@@ -2,6 +2,7 @@
 
 import { getDb } from '../database';
 import { logger } from '../../utils/logger';
+import { runWithContext } from '../../utils/request-context';
 import { isConnected } from '../oauth-store';
 import { getTaskProviderForUser } from './task-router';
 import { projectTaskForProvider } from './task-provider-capabilities';
@@ -1013,7 +1014,14 @@ async function processMutation(mutation: TaskMutationRow): Promise<'synced' | 'f
   }
 
   try {
-    const providerWrite = await writeProviderMutation(mutation, task, link, providerIdempotencyKey);
+    const providerWrite = await runWithContext(
+      {
+        source: 'cron:task_mutation_sync',
+        userId: mutation.user_id,
+        tenantId: mutation.tenant_id,
+      },
+      () => writeProviderMutation(mutation, task, link, providerIdempotencyKey),
+    );
     markSynced(mutation, task, link, {
       providerTaskId: providerWrite.providerTaskId,
       providerVersion: providerWrite.providerVersion,

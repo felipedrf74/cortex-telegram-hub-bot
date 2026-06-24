@@ -482,6 +482,81 @@ describe('upsertProject', () => {
     const result = upsertProject(USER_ID, { provider: 'todoist', externalId: 'p3', name: 'New Name' });
     expect(result).toBe('updated');
   });
+
+  it('creates a bidirectional Microsoft To Do container mapping for imported provider lists', () => {
+    const result = upsertProject(USER_ID, {
+      provider: 'ms_todo',
+      externalId: 'ms-list-1',
+      name: 'Tasks',
+      isDefault: true,
+    });
+
+    const nexusList = testDb.prepare(
+      `SELECT id, provider, name
+       FROM unified_projects
+       WHERE user_id = ? AND provider = 'nexus' AND lower(name) = lower('Tasks')
+       LIMIT 1`,
+    ).get(USER_ID) as { id: number; provider: string; name: string } | undefined;
+    const mapping = testDb.prepare(
+      `SELECT provider, provider_container_type, provider_container_id, sync_direction
+       FROM task_container_mappings
+       WHERE tenant_id = ? AND user_id = ? AND nexus_list_id = ? AND provider = 'ms_todo'
+       LIMIT 1`,
+    ).get(USER_ID, USER_ID, String(nexusList?.id ?? '')) as {
+      provider: string;
+      provider_container_type: string;
+      provider_container_id: string;
+      sync_direction: string;
+    } | undefined;
+
+    expect(result).toBe('inserted');
+    expect(nexusList).toMatchObject({ provider: 'nexus', name: 'Tasks' });
+    expect(mapping).toMatchObject({
+      provider: 'ms_todo',
+      provider_container_type: 'todo_list',
+      provider_container_id: 'ms-list-1',
+      sync_direction: 'bidirectional',
+    });
+  });
+
+  it('preserves an explicit non-bidirectional mapping preference on provider re-sync', () => {
+    upsertProject(USER_ID, {
+      provider: 'ms_todo',
+      externalId: 'ms-list-1',
+      name: 'Tasks',
+      isDefault: true,
+    });
+    const nexusList = testDb.prepare(
+      `SELECT id
+       FROM unified_projects
+       WHERE user_id = ? AND provider = 'nexus' AND lower(name) = lower('Tasks')
+       LIMIT 1`,
+    ).get(USER_ID) as { id: number } | undefined;
+    expect(nexusList).toBeTruthy();
+    testDb.prepare(
+      `UPDATE task_container_mappings
+       SET sync_direction = 'pull_only'
+       WHERE tenant_id = ? AND user_id = ? AND nexus_list_id = ? AND provider = 'ms_todo'`,
+    ).run(USER_ID, USER_ID, String(nexusList!.id));
+
+    upsertProject(USER_ID, {
+      provider: 'ms_todo',
+      externalId: 'ms-list-1-renamed',
+      name: 'Tasks',
+      isDefault: true,
+    });
+    const mapping = testDb.prepare(
+      `SELECT provider_container_id, sync_direction
+       FROM task_container_mappings
+       WHERE tenant_id = ? AND user_id = ? AND nexus_list_id = ? AND provider = 'ms_todo'
+       LIMIT 1`,
+    ).get(USER_ID, USER_ID, String(nexusList!.id)) as { provider_container_id: string; sync_direction: string };
+
+    expect(mapping).toMatchObject({
+      provider_container_id: 'ms-list-1-renamed',
+      sync_direction: 'pull_only',
+    });
+  });
 });
 
 // ── Stats ──────────────────────────────────────────────────────────

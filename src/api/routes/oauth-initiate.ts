@@ -119,6 +119,7 @@ function getOAuthUrlWithState(provider: string, state: string): string | null {
       client_id: config.outlook.clientId,
       redirect_uri: `${REDIRECT_BASE}/oauth/outlook/callback`,
       response_type: 'code',
+      response_mode: 'query',
       scope: [
         'https://graph.microsoft.com/Calendars.ReadWrite',
         'https://graph.microsoft.com/Mail.ReadWrite',

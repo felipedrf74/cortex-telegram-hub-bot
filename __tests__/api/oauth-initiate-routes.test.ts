@@ -127,6 +127,7 @@ describe('OAuth initiate routes', () => {
     expect(res.body.data.url).toContain('https://login.microsoftonline.com/');
     expect(res.body.data.url).toContain('/oauth2/v2.0/authorize?');
     expect(res.body.data.url).toContain('client_id=outlook-client');
+    expect(res.body.data.url).toContain('response_mode=query');
     expect(res.body.data.url).toContain('state=ios%3A21%3A');
     expect(res.body.data.url).toContain(encodeURIComponent('https://api.nexushub.me/oauth/outlook/callback'));
   });

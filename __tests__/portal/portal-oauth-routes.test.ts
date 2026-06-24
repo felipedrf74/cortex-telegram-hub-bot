@@ -227,6 +227,36 @@ describe('portal oauth routes', () => {
     expect(res.redirectedTo).toBe('me.nexushub.app://oauth/outlook?status=success');
   });
 
+  it('serves fragment recovery for Outlook callbacks missing query parameters', async () => {
+    const services = createServices();
+    const routes = captureRoutes(services);
+
+    const res = await invoke(findRoute(routes, '/oauth/outlook/callback'));
+
+    expect(res.statusCode).toBe(200);
+    expect(String(res.sent)).toContain('window.location.hash');
+    expect(String(res.sent)).toContain("window.location.replace(window.location.pathname + '?' + params.toString())");
+    expect(services.exchangeCode).not.toHaveBeenCalled();
+    expect(services.storeTokens).not.toHaveBeenCalled();
+  });
+
+  it('returns Microsoft OAuth errors to the iOS app instead of a blank localhost page', async () => {
+    const services = createServices();
+    const routes = captureRoutes(services);
+
+    const res = await invoke(findRoute(routes, '/oauth/outlook/callback'), {
+      query: {
+        error: 'access_denied',
+        error_description: 'User cancelled sign in',
+        state: 'ios:7:nonce-2',
+      },
+    });
+
+    expect(res.redirectedTo).toBe('me.nexushub.app://oauth/outlook?status=error&message=User%20cancelled%20sign%20in');
+    expect(services.exchangeCode).not.toHaveBeenCalled();
+    expect(services.storeTokens).not.toHaveBeenCalled();
+  });
+
   it('invalidates calendar-derived caches after a valid Google OAuth callback stores tokens', async () => {
     const services = createServices({
       consumeNonce: vi.fn(() => ({ userId: 7, provider: 'google' })),

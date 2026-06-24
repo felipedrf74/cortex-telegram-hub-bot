@@ -100,6 +100,7 @@ export function getOAuthUrl(provider: OAuthProvider, userId: number): string {
       client_id: config.outlook.clientId,
       redirect_uri: redirectUri,
       response_type: 'code',
+      response_mode: 'query',
       scope: OUTLOOK_SCOPES.join(' '),
       state,
     });

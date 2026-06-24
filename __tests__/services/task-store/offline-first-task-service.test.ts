@@ -38,6 +38,7 @@ import {
   assignOfflineTaskProvider,
   createOfflineFirstTask,
   getOfflineTaskById,
+  getOfflineFilteredTasks,
   getOfflineTaskLists,
   getOfflineTaskChanges,
   getOfflineTaskSnapshot,
@@ -167,6 +168,73 @@ describe('offline-first task service', () => {
       syncState: 'provider_missing',
     }));
     expect(completedTask?.syncWarnings.map((warning: any) => warning.code)).not.toContain('provider_task_missing');
+  });
+
+  it('completes provider-missing tasks locally even when the provider list mapping is absent', () => {
+    const created = createOfflineFirstTask(USER_ID, USER_ID, {
+      title: 'Provider orphan should still complete',
+      listName: 'Rotina Matinal',
+      dueDateTime: '2026-06-01T09:00:00Z',
+      clientMutationId: 'ios-provider-orphan-create',
+      idempotencyKey: 'idem-ios-provider-orphan-create',
+    });
+    testDb.prepare(
+      `UPDATE unified_tasks
+       SET provider = 'ms_todo',
+           project_id = NULL,
+           project_name = 'Rotina Matinal',
+           sync_state = 'provider_missing',
+           updated_at = '2026-06-02T09:00:00Z'
+       WHERE tenant_id = ? AND user_id = ? AND nexus_task_id = ?`,
+    ).run(USER_ID, USER_ID, created.task.id);
+    recordTaskSyncIssue({
+      tenantId: USER_ID,
+      userId: USER_ID,
+      taskId: created.task.id,
+      provider: 'ms_todo',
+      code: 'provider_task_missing',
+      message: 'Microsoft To Do no longer has this task.',
+    });
+
+    const before = getOfflineFilteredTasks(USER_ID, USER_ID, 'overdue');
+    const staleActive = before.tasks.find((task: any) => task.id === created.task.id);
+    expect(staleActive).toEqual(expect.objectContaining({
+      id: created.task.id,
+      listId: null,
+      listName: 'Rotina Matinal',
+      syncState: 'provider_missing',
+    }));
+    expect(staleActive?.syncWarnings.map((warning: any) => warning.code)).toContain('provider_task_missing');
+
+    const completed = recordLocalTaskMutation(USER_ID, USER_ID, {
+      taskId: created.task.id,
+      operation: 'task.complete',
+      clientMutationId: 'ios-complete-provider-orphan',
+      idempotencyKey: 'idem-ios-complete-provider-orphan',
+    });
+
+    const after = getOfflineFilteredTasks(USER_ID, USER_ID, 'overdue');
+    const completedRead = getOfflineTaskById(USER_ID, USER_ID, created.task.id);
+    const mutation = testDb.prepare(
+      `SELECT status, task_id
+       FROM task_mutations
+       WHERE operation = 'task.complete'`,
+    ).get() as { status: string; task_id: string };
+
+    expect(completed.task).toEqual(expect.objectContaining({
+      id: created.task.id,
+      status: 'completed',
+      listId: null,
+      syncState: 'queued',
+    }));
+    expect(completed.task.syncWarnings.map((warning: any) => warning.code)).not.toContain('provider_task_missing');
+    expect(after.tasks.find((task: any) => task.id === created.task.id)).toBeUndefined();
+    expect(completedRead).toEqual(expect.objectContaining({
+      id: created.task.id,
+      status: 'completed',
+      listId: null,
+    }));
+    expect(mutation).toEqual({ status: 'queued', task_id: created.task.id });
   });
 
   it('filters completed-like list rows before counting and before applying page limits', () => {
