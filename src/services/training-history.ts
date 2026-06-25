@@ -42,6 +42,7 @@ import type {
   RecentSession,
   SessionType,
   Sport,
+  ComplianceSummary,
   StrengthExerciseCompletionSignal,
 } from './coach-kernel/types';
 
@@ -90,6 +91,15 @@ export interface RealTrainingHistory {
   hasAnyHistory: boolean;
   rawCompletionCount: number;
   recentSessions: RecentSession[];
+}
+
+export interface RecentTrainingComplianceRead {
+  hasSignal: boolean;
+  actionCount: number;
+  completedCount: number;
+  partialCount: number;
+  skippedCount: number;
+  compliance: ComplianceSummary | null;
 }
 
 const SPORTS: ReadonlyArray<Sport> = ['running', 'strength', 'cycling', 'swimming'];
@@ -693,6 +703,10 @@ export interface TrainingHistoryPageOptions {
   cursor?: TrainingHistoryCursor | null;
   /** Optional canonical-sport filter (see SESSION_TYPE_TOKENS_BY_SPORT). */
   sport?: Sport | null;
+  /** Optional inclusive lower UTC boundary for action timestamps. */
+  startDate?: string | null;
+  /** Optional inclusive upper UTC boundary for action timestamps. */
+  endDate?: string | null;
 }
 
 export function encodeTrainingHistoryCursor(cursor: TrainingHistoryCursor): string {
@@ -801,6 +815,23 @@ function buildTrainingHistoryKeysetClause(
   return { clause: ` AND ${dateColumn} <= ?`, params: [cursor.date] };
 }
 
+function buildTrainingHistoryWindowClause(
+  dateColumn: string,
+  options: TrainingHistoryPageOptions,
+): { clause: string; params: unknown[] } {
+  let clause = '';
+  const params: unknown[] = [];
+  if (typeof options.startDate === 'string' && options.startDate.trim().length > 0) {
+    clause += ` AND datetime(${dateColumn}) >= datetime(?)`;
+    params.push(options.startDate);
+  }
+  if (typeof options.endDate === 'string' && options.endDate.trim().length > 0) {
+    clause += ` AND datetime(${dateColumn}) <= datetime(?)`;
+    params.push(options.endDate);
+  }
+  return { clause, params };
+}
+
 export function getTrainingHistoryPage(
   userId: number,
   tenantId: number,
@@ -842,6 +873,9 @@ export function getTrainingHistoryPage(
   const skippedKeyset = cursor
     ? buildTrainingHistoryKeysetClause('skipped', cursor, 'ts.updated_at', 'ts.id')
     : emptyKeyset;
+  const completionWindow = buildTrainingHistoryWindowClause('tc.completed_at', options);
+  const sessionWindow = buildTrainingHistoryWindowClause('ts.updated_at', options);
+  const skippedWindow = buildTrainingHistoryWindowClause('ts.updated_at', options);
 
   const db = getDb();
   // Fetch limit+1 per arm: enough to fill the page from any one arm
@@ -867,13 +901,14 @@ export function getTrainingHistoryPage(
     JOIN training_sessions ts ON ts.id = tc.session_id
     JOIN training_weeks tw ON tw.id = ts.week_id
     JOIN fitness_training_plans ftp ON ftp.id = tc.plan_id
-    WHERE ftp.user_id = ? AND ftp.tenant_id = ?${sportClause}${completionKeyset.clause}
+    WHERE ftp.user_id = ? AND ftp.tenant_id = ?${sportClause}${completionWindow.clause}${completionKeyset.clause}
     ORDER BY tc.completed_at DESC, tc.id DESC
     LIMIT ?
   `).all(
     userId,
     safeTenantId,
     ...sportParams,
+    ...completionWindow.params,
     ...completionKeyset.params,
     fetchCount,
   ) as TrainingHistoryCompletionRow[];
@@ -896,13 +931,14 @@ export function getTrainingHistoryPage(
     JOIN fitness_training_plans ftp ON ftp.id = ts.plan_id
     WHERE ftp.user_id = ? AND ftp.tenant_id = ? AND ts.status = 'completed'
       AND NOT EXISTS (SELECT 1 FROM training_completions tc WHERE tc.session_id = ts.id)
-      ${sportClause}${sessionKeyset.clause}
+      ${sportClause}${sessionWindow.clause}${sessionKeyset.clause}
     ORDER BY ts.updated_at DESC, ts.id DESC
     LIMIT ?
   `).all(
     userId,
     safeTenantId,
     ...sportParams,
+    ...sessionWindow.params,
     ...sessionKeyset.params,
     fetchCount,
   ) as TrainingHistorySessionRow[];
@@ -918,13 +954,14 @@ export function getTrainingHistoryPage(
     FROM training_sessions ts
     JOIN training_weeks tw ON tw.id = ts.week_id
     JOIN fitness_training_plans ftp ON ftp.id = ts.plan_id
-    WHERE ftp.user_id = ? AND ftp.tenant_id = ? AND ts.status = 'skipped'${sportClause}${skippedKeyset.clause}
+    WHERE ftp.user_id = ? AND ftp.tenant_id = ? AND ts.status = 'skipped'${sportClause}${skippedWindow.clause}${skippedKeyset.clause}
     ORDER BY ts.updated_at DESC, ts.id DESC
     LIMIT ?
   `).all(
     userId,
     safeTenantId,
     ...sportParams,
+    ...skippedWindow.params,
     ...skippedKeyset.params,
     fetchCount,
   ) as TrainingHistorySessionRow[];
@@ -1039,4 +1076,92 @@ export function getTrainingHistoryPage(
       ? encodeTrainingHistoryCursor({ date: last.dateKey, type: last.type, id: last.rowId })
       : null,
   };
+}
+
+export function readTrainingComplianceFromRecentHistory(
+  userId: number,
+  options: TrainingHistoryReadOptions = {},
+): RecentTrainingComplianceRead {
+  const asOf = options.asOf ?? new Date();
+  const tenantId = typeof options.tenantId === 'number' && Number.isFinite(options.tenantId)
+    ? Math.trunc(options.tenantId)
+    : null;
+  if (tenantId === null) {
+    logger.warn(
+      { userId },
+      'readTrainingComplianceFromRecentHistory: missing tenantId; refusing user-only compliance read',
+    );
+    return emptyComplianceRead();
+  }
+
+  const page = getTrainingHistoryPage(userId, tenantId, {
+    limit: TRAINING_HISTORY_MAX_LIMIT,
+    startDate: `${isoDateNDaysBefore(asOf, 14)}T00:00:00.000Z`,
+    endDate: asOf.toISOString(),
+  });
+  const recent = page.items;
+  if (recent.length === 0) return emptyComplianceRead();
+
+  let completedScore = 0;
+  let completedCount = 0;
+  let partialCount = 0;
+  let skippedCount = 0;
+  let missedKeySessions = 0;
+  const bySport: Partial<Record<Sport, number>> = {};
+
+  for (const item of recent) {
+    const sport = item.sport ?? normalizeSessionTypeToSport(item.sessionType);
+    if (item.status === 'completed') {
+      completedCount += 1;
+      completedScore += 1;
+      if (sport) bySport[sport] = (bySport[sport] ?? 0) + 1;
+    } else if (item.status === 'partial') {
+      partialCount += 1;
+      completedScore += 0.5;
+      if (sport) bySport[sport] = (bySport[sport] ?? 0) + 0.5;
+    } else if (item.status === 'skipped') {
+      skippedCount += 1;
+      const kernelType = normalizeSessionTypeToKernelType(item.sessionType);
+      if (kernelType && isLikelyKeySession(kernelType)) missedKeySessions += 1;
+    }
+  }
+
+  const denominator = completedCount + partialCount + skippedCount;
+  if (denominator <= 0) return emptyComplianceRead();
+
+  let consecutiveMisses = 0;
+  for (const item of recent) {
+    if (item.status !== 'skipped') break;
+    consecutiveMisses += 1;
+  }
+
+  return {
+    hasSignal: true,
+    actionCount: denominator,
+    completedCount,
+    partialCount,
+    skippedCount,
+    compliance: {
+      trailing14DayCompliance: clamp01(completedScore / denominator),
+      bySport,
+      missedKeySessions,
+      consecutiveMisses,
+    },
+  };
+}
+
+function emptyComplianceRead(): RecentTrainingComplianceRead {
+  return {
+    hasSignal: false,
+    actionCount: 0,
+    completedCount: 0,
+    partialCount: 0,
+    skippedCount: 0,
+    compliance: null,
+  };
+}
+
+function clamp01(value: number): number {
+  if (!Number.isFinite(value)) return 0;
+  return Math.max(0, Math.min(1, value));
 }

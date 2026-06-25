@@ -72,6 +72,7 @@ describe('oauth-store', () => {
   });
 
   afterEach(() => {
+    vi.unstubAllEnvs();
     testDb?.close();
   });
 
@@ -189,6 +190,10 @@ describe('oauth-store', () => {
   });
 
   describe('migrateOwnerTokens', () => {
+    beforeEach(() => {
+      vi.stubEnv('OWNER_TELEGRAM_ID', '111111');
+    });
+
     it('migrates Google tokens from config', () => {
       // Seed owner user first
       testDb.prepare(`

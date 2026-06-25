@@ -122,7 +122,7 @@ describe('training profile model overhaul', () => {
 
   it('keeps advanced strength loads high while capping novice strength-primary plans', () => {
     const advancedPlan = buildCoachKernelTrainingPlan(baseInput({
-      userId: 91015,
+      userId: 91003,
       startDate: '2026-06-15',
       sessionsPerWeek: 6,
       runSessionsPerWeek: 1,
@@ -152,7 +152,7 @@ describe('training profile model overhaul', () => {
       },
     }));
     const novicePlan = buildCoachKernelTrainingPlan(baseInput({
-      userId: 91016,
+      userId: 91004,
       startDate: '2026-06-15',
       sessionsPerWeek: 6,
       runSessionsPerWeek: 1,
@@ -536,5 +536,107 @@ describe('training profile model overhaul', () => {
 
     const ids = athlete.profileQuality?.followUpQuestions.map((question) => question.id) ?? [];
     expect(ids).not.toContain('injury_limitation_clarification');
+  });
+
+  it('tracks cycling and swim intake separately for triathlon planning quality', () => {
+    const complete = buildAthleteStateFromTrainingProfiles(baseInput({
+      userId: 91009,
+      objective: 'Sprint triathlon plan',
+      sessionsPerWeek: 6,
+      runSessionsPerWeek: 2,
+      bikeSessionsPerWeek: 2,
+      swimSessionsPerWeek: 2,
+      strengthSessionsPerWeek: 1,
+      runProfile: {
+        weekly_mileage_km: '25',
+        easy_pace_min_per_km: '5:50',
+        weekly_availability_days: '3',
+        cycling_ftp_watts: '235',
+        cycling_weekly_hours: '3-6 hours',
+        cycling_weekly_availability_days: '2',
+        swim_pool_access: 'Yes',
+        swim_sessions_per_week: '2',
+        swim_400m_freestyle_time: '8:15',
+        injury_history: 'none',
+      },
+    }));
+
+    expect(complete.normalizedTrainingProfile?.availableDays).toMatchObject({
+      running: 3,
+      cycling: 2,
+      swimming: 2,
+    });
+    expect(complete.normalizedTrainingProfile?.currentMarkers).toMatchObject({
+      cyclingFtpWatts: 235,
+      cyclingWeeklyHours: '3-6 hours',
+      swimPoolAccess: 'Yes',
+      swimSessionsPerWeek: 2,
+      swim400mFreestyleTime: '8:15',
+    });
+    expect(complete.profileQuality?.followUpQuestions.map((question) => question.id)).not.toEqual(
+      expect.arrayContaining(['cycling_baseline_clarification', 'swim_baseline_clarification']),
+    );
+
+    const missing = buildAthleteStateFromTrainingProfiles(baseInput({
+      userId: 91010,
+      objective: 'Sprint triathlon plan',
+      sessionsPerWeek: 6,
+      runSessionsPerWeek: 2,
+      bikeSessionsPerWeek: 2,
+      swimSessionsPerWeek: 2,
+      strengthSessionsPerWeek: 1,
+      runProfile: {
+        weekly_mileage_km: '25',
+        easy_pace_min_per_km: '5:50',
+        weekly_availability_days: '3',
+        injury_history: 'none',
+      },
+    }));
+
+    expect(missing.profileQuality?.followUpQuestions.map((question) => question.id)).toEqual(
+      expect.arrayContaining(['cycling_baseline_clarification', 'swim_baseline_clarification']),
+    );
+  });
+
+  it('extracts preferred and blocked training days as typed schedule constraints', () => {
+    const athlete = buildAthleteStateFromTrainingProfiles(baseInput({
+      userId: 91016,
+      longWorkoutDay: 'Sunday',
+      fitnessProfile: {
+        experience_level: 'Intermediate (1-3 years)',
+        weekly_frequency: '5 days',
+        training_goals: 'Hybrid fitness',
+        injuries: 'none',
+        available_equipment: 'Full gym',
+        session_duration_minutes: '60',
+        preferred_training_days: ['Monday', 'Wednesday'],
+        blocked_days: 'Friday, sábado',
+      },
+      gymProfile: {
+        training_age: '1-3 years',
+        primary_goal: 'Athletic',
+        equipment_access: 'Full commercial gym',
+        sessions_per_week: '2',
+        session_duration_minutes: '45',
+      },
+      runProfile: {
+        weekly_availability_days: '3',
+        weekly_mileage_km: '25',
+        easy_pace_min_per_km: '5:50',
+        preferred_training_days: 'quinta',
+        blocked_days: 'Tuesday',
+        injury_history: 'none',
+      },
+    }));
+
+    expect(athlete.normalizedTrainingProfile?.scheduleConstraints).toMatchObject({
+      preferredLongSessionDay: 'sunday',
+      preferredTrainingDays: ['sunday', 'monday', 'wednesday', 'thursday'],
+      blockedTrainingDays: ['friday', 'saturday', 'tuesday'],
+    });
+    const availabilityDays = [...new Set(athlete.availability.weeklyWindows.map((window) => window.dayOfWeek))];
+    expect(availabilityDays.slice(0, 4)).toEqual(['sunday', 'monday', 'wednesday', 'thursday']);
+    expect(availabilityDays).not.toEqual(expect.arrayContaining(['friday', 'saturday', 'tuesday']));
+    expect(athlete.profileQuality?.sourceSummary.schedule).toBe('provided');
   });
 });

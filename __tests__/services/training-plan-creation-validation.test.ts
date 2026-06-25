@@ -10,6 +10,7 @@ import {
   scoreTrainingPlanQuality,
   TRAINING_PLAN_CREATION_QA_ACCOUNT_EMAIL,
   TRAINING_PLAN_CREATION_VARIATION_AXES,
+  TRAINING_PLAN_QUALITY_PERSONA_SCENARIOS,
   TRAINING_PLAN_SCIENCE_EVIDENCE_BASELINE,
   validateTrainingPlanAgendaMatch,
   type TrainingPlanQualityCandidate,
@@ -25,9 +26,32 @@ describe('training plan creation validation matrix', () => {
     expect(matrix.strategy).toBe('axis-complete-boundary-matrix');
     expect(matrix.cartesianVariationCount).toBeGreaterThan(matrix.scenarios.length);
     expect(matrix.requiredE2EChecks).toEqual(expect.arrayContaining([
+      'Start a fresh isolated Training E2E backend container from the target worktree HEAD; record git SHA, image IDs, compose project, non-default ports, DB path, and /api/snapshot.',
+      'Run iOS on a dedicated simulator UDID with unique DerivedData/result bundle/test-summary paths; do not shut down or reuse another worktree simulator.',
       'Preview the plan and verify no persistence or agenda writes happened during preview.',
+      'Exercise Training Skill entry points: first-run/profile gate, plan builder, preview/review, create, Today, Plan, Progress, complete, skip, feedback, reflow/swap, and degraded/no-plan states.',
+      'Run feedback/progression checks: easy/normal/hard feedback, soreness, pain, skipped key sessions, partial completion, repeated misses, deload/reentry, and visible rationale.',
       'Run agenda matcher for identity, date, timezone, title/type, duration, status, version, and duplicate checks.',
       'Clean up only test-created plans and agenda/provider events.',
+    ]));
+    expect(matrix.personaScenarios.map((scenario) => scenario.id)).toEqual(
+      TRAINING_PLAN_QUALITY_PERSONA_SCENARIOS.map((scenario) => scenario.id),
+    );
+    expect(matrix.personaScenarios.map((scenario) => scenario.id)).toEqual(expect.arrayContaining([
+      'beginner_gym',
+      'intermediate_hypertrophy',
+      'hybrid_run_strength',
+      'cycling_gym',
+      'swim_triathlon',
+      'travel_week',
+      'limited_time_week',
+      'injury_discomfort',
+      'poor_adherence',
+      'fatigue_plateau',
+      'stale_wearable',
+      'no_wearable',
+      'calendar_conflicted',
+      'race_prep',
     ]));
 
     for (const axis of TRAINING_PLAN_CREATION_VARIATION_AXES) {
@@ -68,6 +92,9 @@ describe('training plan creation validation matrix', () => {
     expect(first.mode).toBe('static_offline');
     expect(first.authorizationRequiredForWrites).toBe(true);
     expect(first.localSimulatorAccountEmail).toBe('nexushubbot@gmail.com');
+    expect(first.personaScenarios).toHaveLength(TRAINING_PLAN_QUALITY_PERSONA_SCENARIOS.length);
+    expect(first.personaScorecard).toHaveLength(TRAINING_PLAN_QUALITY_PERSONA_SCENARIOS.length);
+    expect(first.personaScorecard.map((row) => row.id)).toEqual(TRAINING_PLAN_QUALITY_PERSONA_SCENARIOS.map((scenario) => scenario.id));
     expect(first.summary.rowCount).toBe(first.summary.scenarioCount);
     expect(first.summary.duplicateScenarioIds).toEqual([]);
     expect(first.summary.missingAxisCoverage).toEqual([]);
@@ -111,6 +138,24 @@ describe('training plan creation validation matrix', () => {
     const limitedCalendar = first.rows.find((row) => row.scenarioId === 'calendarCapacityState-limited_capacity');
     expect(limitedCalendar?.calendarCapacityState).toBe('limited_capacity');
     expect(limitedCalendar?.warnings.join(' ')).toContain('Limited calendar capacity');
+
+    for (const persona of first.personaScorecard) {
+      expect(persona.qualityVerdict).toMatch(/^(pass|warn|fail)$/);
+      expect(persona.totalScore).toBeGreaterThanOrEqual(80);
+      expect(Object.keys(persona.dimensionScores).sort()).toEqual([
+        'calendarCompatibility',
+        'exerciseVariety',
+        'explanationQuality',
+        'measurableOutcomes',
+        'modalityCorrectness',
+        'personalization',
+        'progression',
+        'safety',
+        'scheduleFit',
+      ].sort());
+      expect(persona.requiredSignals.length).toBeGreaterThanOrEqual(3);
+      expect(persona.failureConditions.length).toBeGreaterThanOrEqual(2);
+    }
   });
 
   it('prints CLI write-safety booleans and the local simulator account at the top level', () => {

@@ -29,8 +29,25 @@ function prependPath(binDir: string) {
   return `${binDir}:${process.env.PATH ?? ''}`;
 }
 
+function cleanGitEnv(overrides: NodeJS.ProcessEnv = {}) {
+  const env = { ...process.env };
+  for (const key of [
+    'GIT_DIR',
+    'GIT_WORK_TREE',
+    'GIT_INDEX_FILE',
+    'GIT_PREFIX',
+    'GIT_COMMON_DIR',
+    'GIT_OBJECT_DIRECTORY',
+    'GIT_ALTERNATE_OBJECT_DIRECTORIES',
+    'GIT_NAMESPACE',
+  ]) {
+    delete env[key];
+  }
+  return { ...env, ...overrides };
+}
+
 function git(cwd: string, args: string[]) {
-  return execFileSync('git', args, { cwd, encoding: 'utf8' }).trim();
+  return execFileSync('git', args, { cwd, env: cleanGitEnv(), encoding: 'utf8' }).trim();
 }
 
 function createReleaseHarnessRepo() {
@@ -159,8 +176,7 @@ function writeSignedEvidenceFiles(root: string, privateKeyPath: string) {
       ],
       {
         cwd: root,
-        env: {
-          ...process.env,
+        env: cleanGitEnv({
           NEXUS_RELEASE_EVIDENCE_PRIVATE_KEY_PATH: privateKeyPath,
           NEXUS_RELEASE_TYPECHECK_RESULT: 'passed',
           NEXUS_RELEASE_BUILD_RESULT: 'passed',
@@ -174,7 +190,7 @@ function writeSignedEvidenceFiles(root: string, privateKeyPath: string) {
           NEXUS_RELEASE_PYTEST_TEST_COUNT: '7',
           NEXUS_RELEASE_RUN_ID: runId,
           NEXUS_RELEASE_RUN_ATTEMPT: '1',
-        },
+        }),
       },
     );
   }
@@ -330,15 +346,14 @@ describe('release deploy dry-run harness', () => {
       const output = execFileSync('bash', ['scripts/deploy.sh', '--dry-run'], {
         cwd: root,
         encoding: 'utf8',
-        env: {
-          ...process.env,
+        env: cleanGitEnv({
           PATH: prependPath(binDir),
           NEXUS_DEPLOY_SKIP_VERIFY: 'auto-when-staged',
           NEXUS_RELEASE_EVIDENCE_REUSE_ENABLED: '1',
           NEXUS_RELEASE_MIN_CLEAN_RCS: '3',
           FAKE_RELEASE_EVIDENCE_OK: '1',
           FAKE_ROLLBACK_OK: '1',
-        },
+        }),
       });
 
       expect(output).toContain('signed evidence matches SHA + manifest digest + clean RC history + rollback drill');
@@ -359,14 +374,13 @@ describe('release deploy dry-run harness', () => {
       const output = execFileSync('bash', ['scripts/deploy.sh', '--dry-run'], {
         cwd: root,
         encoding: 'utf8',
-        env: {
-          ...process.env,
+        env: cleanGitEnv({
           PATH: prependPath(binDir),
           NEXUS_DEPLOY_SKIP_VERIFY: 'auto-when-staged',
           NEXUS_RELEASE_EVIDENCE_REUSE_ENABLED: '1',
           FAKE_RELEASE_EVIDENCE_OK: '0',
           FAKE_ROLLBACK_OK: '1',
-        },
+        }),
       });
 
       expect(output).toContain('no matching release evidence');
@@ -387,15 +401,14 @@ describe('release deploy dry-run harness', () => {
       const output = execFileSync('bash', ['scripts/deploy.sh', '--dry-run'], {
         cwd: root,
         encoding: 'utf8',
-        env: {
-          ...process.env,
+        env: cleanGitEnv({
           PATH: prependPath(binDir),
           NEXUS_DEPLOY_SKIP_VERIFY: 'auto-when-staged',
           NEXUS_RELEASE_EVIDENCE_REUSE_ENABLED: '1',
           NEXUS_RELEASE_MIN_CLEAN_RCS: '3',
           FAKE_RELEASE_EVIDENCE_OK: '1',
           FAKE_ROLLBACK_OK: '0',
-        },
+        }),
       });
 
       expect(output).toContain('Checking current rollback drill evidence');
@@ -415,15 +428,14 @@ describe('release deploy dry-run harness', () => {
       const output = execFileSync('bash', ['scripts/deploy.sh', '--dry-run'], {
         cwd: root,
         encoding: 'utf8',
-        env: {
-          ...process.env,
+        env: cleanGitEnv({
           PATH: prependPath(binDir),
           NEXUS_DEPLOY_SKIP_VERIFY: 'auto-when-staged',
           NEXUS_RELEASE_EVIDENCE_REUSE_ENABLED: '1',
           NEXUS_RELEASE_MIN_CLEAN_RCS: '4',
           FAKE_RELEASE_EVIDENCE_OK: '1',
           FAKE_ROLLBACK_OK: '1',
-        },
+        }),
       });
 
       expect(output).toContain('Duplicate signed RC run ID ignored: 1');
@@ -443,14 +455,13 @@ describe('release deploy dry-run harness', () => {
       const output = execFileSync('bash', ['scripts/deploy.sh', '--dry-run'], {
         cwd: root,
         encoding: 'utf8',
-        env: {
-          ...process.env,
+        env: cleanGitEnv({
           PATH: prependPath(binDir),
           NEXUS_DEPLOY_SKIP_VERIFY: 'auto-when-staged',
           NEXUS_RELEASE_EVIDENCE_REUSE_ENABLED: '0',
           FAKE_RELEASE_EVIDENCE_OK: '1',
           FAKE_ROLLBACK_OK: '1',
-        },
+        }),
       });
 
       expect(output).toContain('evidence reuse is still in shadow');
@@ -468,13 +479,12 @@ describe('release deploy dry-run harness', () => {
       const output = execFileSync('bash', ['scripts/deploy.sh', '--dry-run'], {
         cwd: root,
         encoding: 'utf8',
-        env: {
-          ...process.env,
+        env: cleanGitEnv({
           PATH: prependPath(binDir),
           NEXUS_DEPLOY_SKIP_VERIFY: 'unknown-mode',
           FAKE_RELEASE_EVIDENCE_OK: '1',
           FAKE_ROLLBACK_OK: '1',
-        },
+        }),
       });
 
       expect(output).toContain("Unrecognized NEXUS_DEPLOY_SKIP_VERIFY='unknown-mode'");
@@ -495,8 +505,7 @@ describe('release deploy dry-run harness', () => {
       try {
         execFileSync('bash', ['scripts/deploy.sh'], {
           cwd: root,
-          env: {
-            ...process.env,
+          env: cleanGitEnv({
             PATH: prependPath(binDir),
             NEXUS_DEPLOY_SKIP_VERIFY: 'auto-when-staged',
             NEXUS_RELEASE_EVIDENCE_REUSE_ENABLED: '1',
@@ -507,7 +516,7 @@ describe('release deploy dry-run harness', () => {
             FAKE_RELEASE_EVIDENCE_DIGEST: 'evidence-digest',
             FAKE_ARTIFACT_DIGEST: 'post-build-digest',
             FAKE_ROLLBACK_OK: '1',
-          },
+          }),
           stdio: ['ignore', 'pipe', 'pipe'],
         });
       } catch (error) {
@@ -535,10 +544,9 @@ describe('release deploy dry-run harness', () => {
       try {
         execFileSync('bash', ['scripts/deploy.sh'], {
           cwd: root,
-          env: {
-            ...process.env,
+          env: cleanGitEnv({
             PATH: prependPath(binDir),
-          },
+          }),
           stdio: ['ignore', 'pipe', 'pipe'],
         });
       } catch (error) {
@@ -564,13 +572,12 @@ describe('release deploy dry-run harness', () => {
       const output = execFileSync('bash', ['scripts/deploy.sh', '--dry-run'], {
         cwd: root,
         encoding: 'utf8',
-        env: {
-          ...process.env,
+        env: cleanGitEnv({
           PATH: prependPath(binDir),
           NEXUS_DEPLOY_SKIP_VERIFY: 'auto-when-staged',
           NEXUS_RELEASE_EVIDENCE_REUSE_ENABLED: '1',
           NEXUS_RELEASE_MIN_CLEAN_RCS: '3',
-        },
+        }),
       });
 
       expect(output).toContain('signed evidence matches SHA + manifest digest + clean RC history + rollback drill');
@@ -598,13 +605,12 @@ describe('release deploy dry-run harness', () => {
       const output = execFileSync('bash', ['scripts/deploy.sh', '--dry-run'], {
         cwd: root,
         encoding: 'utf8',
-        env: {
-          ...process.env,
+        env: cleanGitEnv({
           PATH: prependPath(binDir),
           NEXUS_DEPLOY_SKIP_VERIFY: 'auto-when-staged',
           NEXUS_RELEASE_EVIDENCE_REUSE_ENABLED: '1',
           NEXUS_RELEASE_MIN_CLEAN_RCS: '3',
-        },
+        }),
       });
 
       expect(output).toContain('no matching release evidence');
@@ -626,8 +632,7 @@ describe('release deploy dry-run harness', () => {
       try {
         execFileSync('bash', ['scripts/deploy.sh', '--dry-run'], {
           cwd: root,
-          env: {
-            ...process.env,
+          env: cleanGitEnv({
             PATH: prependPath(binDir),
             NEXUS_DEPLOY_ALLOW_DIRTY: '1',
             NEXUS_EMERGENCY_SKIP_REASON: 'dry-run-test',
@@ -635,7 +640,7 @@ describe('release deploy dry-run harness', () => {
             NEXUS_RELEASE_EVIDENCE_REUSE_ENABLED: '1',
             FAKE_RELEASE_EVIDENCE_OK: '1',
             FAKE_ROLLBACK_OK: '1',
-          },
+          }),
           stdio: ['ignore', 'pipe', 'pipe'],
         });
         throw new Error('expected dirty deploy evidence reuse to fail');
@@ -673,11 +678,10 @@ echo staging_smoke_ok
         cwd: root,
         encoding: 'utf8',
         input: 'YES\n',
-        env: {
-          ...process.env,
+        env: cleanGitEnv({
           PATH: prependPath(binDir),
           FAKE_RELEASE_EVIDENCE_OK: '1',
-        },
+        }),
       });
 
       expect(output).toContain('Staging install present');

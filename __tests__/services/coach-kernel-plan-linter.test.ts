@@ -670,6 +670,101 @@ describe('coach-kernel/plan-linter', () => {
     });
   });
 
+  describe('rules: endurance and triathlon quality gates', () => {
+    it('blocks when hard endurance work dominates the week', () => {
+      const result = lintPlan(input({
+        weeks: [week(1, [
+          session({ dayOfWeek: 'monday', sessionType: 'threshold_run', title: 'Threshold Run', isKey: true }),
+          session({ dayOfWeek: 'tuesday', sessionType: 'interval_ride', title: 'VO2 Bike Intervals', sport: 'cycling', isKey: true }),
+          session({ dayOfWeek: 'thursday', sessionType: 'tempo_run', title: 'Tempo Run', isKey: true }),
+          session({ dayOfWeek: 'saturday', sessionType: 'easy_run', title: 'Easy Run' }),
+        ])],
+      }));
+
+      expect(result.status).toBe('fail');
+      expect(result.blockers.map((blocker) => blocker.ruleId)).toContain('endurance_hard_easy_balance');
+    });
+
+    it('blocks when hard endurance sessions are back-to-back', () => {
+      const result = lintPlan(input({
+        weeks: [week(1, [
+          session({ dayOfWeek: 'tuesday', sessionType: 'threshold_run', title: 'Threshold Run', isKey: true }),
+          session({ dayOfWeek: 'wednesday', sessionType: 'interval_ride', title: 'Bike Intervals', sport: 'cycling', isKey: true }),
+          session({ dayOfWeek: 'saturday', sessionType: 'easy_run', title: 'Easy Run' }),
+        ])],
+      }));
+
+      expect(result.status).toBe('fail');
+      expect(result.blockers.map((blocker) => blocker.ruleId)).toContain('endurance_interval_density');
+    });
+
+    it('blocks a large long-session jump across weeks', () => {
+      const result = lintPlan(input({
+        weeks: [
+          week(1, [session({ title: 'Long Run', sessionType: 'long_run', durationMinutes: 60, isLongRun: true })]),
+          week(2, [session({ title: 'Long Run', sessionType: 'long_run', durationMinutes: 90, isLongRun: true })]),
+        ],
+      }));
+
+      expect(result.status).toBe('fail');
+      expect(result.blockers.map((blocker) => blocker.ruleId)).toContain('long_session_progression');
+    });
+
+    it('blocks swim prescriptions when intake says pool access is unavailable', () => {
+      const result = lintPlan(input({
+        hasPoolAccess: false,
+        weeks: [week(1, [
+          session({ title: 'Technique Swim', sessionType: 'technique_swim', sport: 'swimming' }),
+        ])],
+      }));
+
+      expect(result.status).toBe('fail');
+      expect(result.blockers[0]?.ruleId).toBe('swim_pool_access_required');
+    });
+
+    it('blocks swim prescriptions when pool access is unknown', () => {
+      const result = lintPlan(input({
+        weeks: [week(1, [
+          session({ title: 'Technique Swim', sessionType: 'technique_swim', sport: 'swimming' }),
+        ])],
+      }));
+
+      expect(result.status).toBe('fail');
+      expect(result.blockers[0]?.ruleId).toBe('swim_pool_access_required');
+    });
+
+    it('warns when cycling power zones are prescribed without a benchmark', () => {
+      const result = lintPlan(input({
+        cyclingBenchmarkAvailable: false,
+        weeks: [week(1, [
+          session({
+            title: 'FTP Bike Intervals',
+            sessionType: 'threshold_ride',
+            sport: 'cycling',
+            description: '5 x 4 min at 105% FTP / Zone 5 power.',
+          }),
+        ])],
+      }));
+
+      expect(result.warnings[0]?.ruleId).toBe('cycling_power_requires_benchmark');
+    });
+
+    it('warns when a four-week triathlon plan has no transition practice', () => {
+      const result = lintPlan(input({
+        triathlonMode: true,
+        hasPoolAccess: true,
+        durationWeeks: 4,
+        weeks: [week(1, [
+          session({ dayOfWeek: 'monday', sessionType: 'technique_swim', title: 'Technique Swim', sport: 'swimming' }),
+          session({ dayOfWeek: 'wednesday', sessionType: 'endurance_ride', title: 'Endurance Ride', sport: 'cycling' }),
+          session({ dayOfWeek: 'saturday', sessionType: 'long_run', title: 'Long Run', sport: 'running', isLongRun: true }),
+        ])],
+      }));
+
+      expect(result.warnings[0]?.ruleId).toBe('triathlon_brick_placement');
+    });
+  });
+
   describe('overall', () => {
     it('produces a fail status when ANY blocker fires (regardless of warnings)', () => {
       const result = lintPlan(input({

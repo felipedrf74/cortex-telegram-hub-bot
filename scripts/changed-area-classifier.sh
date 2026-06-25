@@ -88,7 +88,20 @@ resolve_base() {
   return 1
 }
 
-resolved_base="$(resolve_base)"
+# Explicit-file mode is used by cannot-skip wiring checks and release-test
+# containers. It should classify the supplied paths even when the container
+# does not have a fully resolvable git remote/base ref.
+if [ -n "$EXPLICIT_FILES" ]; then
+  if [ -n "$BASE_REF" ] && git -C "$LOCAL_DIR" rev-parse --verify "$BASE_REF^{commit}" >/dev/null 2>&1; then
+    resolved_base="$BASE_REF"
+  elif [ -n "$BASE_REF" ]; then
+    resolved_base="$BASE_REF"
+  else
+    resolved_base="explicit-files"
+  fi
+else
+  resolved_base="$(resolve_base)"
+fi
 head_sha="$(git -C "$LOCAL_DIR" rev-parse --short HEAD 2>/dev/null || printf 'unknown')"
 
 # Collect changed files. Two sources are merged:

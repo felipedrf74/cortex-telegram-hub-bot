@@ -8,7 +8,8 @@ export type TrainingGenerationCounterName =
   | 'spec_needs_clarification_total'
   | 'tenant_scope_missing_blocked_total'
   | 'calendar_capacity_reflow_total'
-  | 'safety_guardrail_triggered_total';
+  | 'safety_guardrail_triggered_total'
+  | 'fallback_template_blocked_total';
 
 export type TrainingProgressionStateName = 'build' | 'hold' | 'deload' | 'reentry';
 
@@ -26,6 +27,7 @@ const COUNTER_NAMES: TrainingGenerationCounterName[] = [
   'tenant_scope_missing_blocked_total',
   'calendar_capacity_reflow_total',
   'safety_guardrail_triggered_total',
+  'fallback_template_blocked_total',
 ];
 
 const PROGRESSION_STATES: TrainingProgressionStateName[] = ['build', 'hold', 'deload', 'reentry'];

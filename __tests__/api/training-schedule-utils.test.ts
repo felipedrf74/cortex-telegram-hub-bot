@@ -14,6 +14,24 @@ import {
   type BusyWindow,
 } from '../../src/api/routes/training-schedule-utils';
 
+const APP_ZONE = 'Europe/Lisbon';
+
+function lisbonDay(date: string): Date {
+  return DateTime.fromISO(`${date}T00:00:00`, { zone: APP_ZONE }).toUTC().toJSDate();
+}
+
+function lisbonTime(localDateTime: string): Date {
+  return DateTime.fromISO(localDateTime, { zone: APP_ZONE }).toUTC().toJSDate();
+}
+
+function lisbonHour(date: Date): number {
+  return DateTime.fromJSDate(date).setZone(APP_ZONE).hour;
+}
+
+function lisbonMinute(date: Date): number {
+  return DateTime.fromJSDate(date).setZone(APP_ZONE).minute;
+}
+
 describe('training schedule route utilities', () => {
   it('normalizes preferred times without accepting malformed values', () => {
     expect(normalizePreferredTime('07:30', '12:00')).toBe('07:30');
@@ -84,11 +102,9 @@ describe('training schedule route utilities', () => {
   });
 
   it('schedules the first non-overlapping candidate window and flags exact preference misses', () => {
-    const day = new Date(2026, 3, 20);
-    const busyStart = new Date(day);
-    busyStart.setHours(7, 0, 0, 0);
-    const busyEnd = new Date(day);
-    busyEnd.setHours(8, 0, 0, 0);
+    const day = lisbonDay('2026-04-20');
+    const busyStart = lisbonTime('2026-04-20T07:00:00');
+    const busyEnd = lisbonTime('2026-04-20T08:00:00');
     const busyWindows: BusyWindow[] = [{
       startMs: busyStart.getTime(),
       endMs: busyEnd.getTime(),
@@ -97,16 +113,16 @@ describe('training schedule route utilities', () => {
 
     const scheduled = scheduleSessionWindow(day, 60, '07:00', busyWindows, []);
 
-    expect(scheduled.start.getHours()).toBe(6);
-    expect(scheduled.end.getHours()).toBe(7);
+    expect(lisbonHour(scheduled.start)).toBe(6);
+    expect(lisbonHour(scheduled.end)).toBe(7);
     expect(scheduled.preferredTimeUnavailable).toBe(true);
   });
 
   it('returns preferredTimeUnavailable=false when the exact preferred time is free', () => {
-    const day = new Date(2026, 3, 20);
+    const day = lisbonDay('2026-04-20');
     const scheduled = scheduleSessionWindow(day, 60, '12:00', [], []);
 
-    expect(scheduled.start.getHours()).toBe(12);
+    expect(lisbonHour(scheduled.start)).toBe(12);
     expect(scheduled.preferredTimeUnavailable).toBe(false);
   });
 
@@ -121,11 +137,9 @@ describe('training schedule route utilities', () => {
     // Friendly-band candidates for `preferredTime: '12:00'` cover 09:30
     // through 14:30 (±150-min), with session ends up to 15:30. Block
     // 09:00–15:30 to force every candidate to overlap.
-    const day = new Date(2026, 3, 20);
-    const blockStart = new Date(day);
-    blockStart.setHours(9, 0, 0, 0);
-    const blockEnd = new Date(day);
-    blockEnd.setHours(15, 30, 0, 0);
+    const day = lisbonDay('2026-04-20');
+    const blockStart = lisbonTime('2026-04-20T09:00:00');
+    const blockEnd = lisbonTime('2026-04-20T15:30:00');
     const busyWindows: BusyWindow[] = [{
       startMs: blockStart.getTime(),
       endMs: blockEnd.getTime(),
@@ -136,8 +150,8 @@ describe('training schedule route utilities', () => {
 
     expect(scheduled.preferredTimeUnavailable).toBe(true);
     // Day-walk should land at the earliest free slot — 05:00–06:00.
-    expect(scheduled.start.getHours()).toBe(5);
-    expect(scheduled.end.getHours()).toBe(6);
+    expect(lisbonHour(scheduled.start)).toBe(5);
+    expect(lisbonHour(scheduled.end)).toBe(6);
     // Sanity: rendered slot must not overlap the busy window.
     const slotStart = scheduled.start.getTime();
     const slotEnd = scheduled.end.getTime();
@@ -145,15 +159,13 @@ describe('training schedule route utilities', () => {
   });
 
   it('returns an explicit noAvailableSlot marker when the entire 05:00-21:00 window is booked', () => {
-    const day = new Date(2026, 3, 20);
+    const day = lisbonDay('2026-04-20');
     // Block the whole working day. The planner should NOT silently land
     // a session on top of any of these — it should mark the slot
     // unavailable and drop to a deterministic safe time so iOS can show
     // a ⚠️ chip.
-    const blockStart = new Date(day);
-    blockStart.setHours(5, 0, 0, 0);
-    const blockEnd = new Date(day);
-    blockEnd.setHours(21, 0, 0, 0);
+    const blockStart = lisbonTime('2026-04-20T05:00:00');
+    const blockEnd = lisbonTime('2026-04-20T21:00:00');
     const busyWindows: BusyWindow[] = [{
       startMs: blockStart.getTime(),
       endMs: blockEnd.getTime(),
@@ -165,16 +177,14 @@ describe('training schedule route utilities', () => {
     expect(scheduled.preferredTimeUnavailable).toBe(true);
     expect(scheduled.noAvailableSlot).toBe(true);
     expect(scheduled.unavailableReason).toMatch(/No valid free calendar window/);
-    expect(scheduled.start.getHours()).toBe(6);
-    expect(scheduled.start.getMinutes()).toBe(30);
+    expect(lisbonHour(scheduled.start)).toBe(6);
+    expect(lisbonMinute(scheduled.start)).toBe(30);
   });
 
   it('treats already-scheduled siblings as busy (no two sessions on top of each other)', () => {
-    const day = new Date(2026, 3, 20);
-    const sib1Start = new Date(day);
-    sib1Start.setHours(7, 0, 0, 0);
-    const sib1End = new Date(day);
-    sib1End.setHours(8, 0, 0, 0);
+    const day = lisbonDay('2026-04-20');
+    const sib1Start = lisbonTime('2026-04-20T07:00:00');
+    const sib1End = lisbonTime('2026-04-20T08:00:00');
     const scheduledWindows: BusyWindow[] = [{
       startMs: sib1Start.getTime(),
       endMs: sib1End.getTime(),
@@ -185,28 +195,26 @@ describe('training schedule route utilities', () => {
 
     expect(scheduled.preferredTimeUnavailable).toBe(true);
     // 07:00 is taken by sibling, planner walks to 06:00 or 08:00
-    const hour = scheduled.start.getHours();
+    const hour = lisbonHour(scheduled.start);
     expect([6, 8]).toContain(hour);
   });
 
   it('does not schedule a same-day session before the notBefore floor', () => {
-    const day = new Date(2026, 3, 22);
-    const notBefore = new Date(day);
-    notBefore.setHours(14, 15, 0, 0);
+    const day = lisbonDay('2026-04-22');
+    const notBefore = lisbonTime('2026-04-22T14:15:00');
 
     const scheduled = scheduleSessionWindow(day, 60, '07:00', [], [], { notBefore });
 
     expect(scheduled.start.getTime()).toBeGreaterThanOrEqual(notBefore.getTime());
     expect(scheduled.preferredTimeUnavailable).toBe(true);
     // Day-walk should choose the first 30-minute slot after the floor.
-    expect(scheduled.start.getHours()).toBe(14);
-    expect(scheduled.start.getMinutes()).toBe(30);
+    expect(lisbonHour(scheduled.start)).toBe(14);
+    expect(lisbonMinute(scheduled.start)).toBe(30);
   });
 
   it('returns noAvailableSlot when every remaining same-day slot is behind the notBefore floor', () => {
-    const day = new Date(2026, 3, 22);
-    const notBefore = new Date(day);
-    notBefore.setHours(21, 30, 0, 0);
+    const day = lisbonDay('2026-04-22');
+    const notBefore = lisbonTime('2026-04-22T21:30:00');
 
     const scheduled = scheduleSessionWindow(day, 60, '07:00', [], [], { notBefore });
 

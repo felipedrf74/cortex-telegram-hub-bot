@@ -15,6 +15,10 @@ import { foldCalendarText } from '../../calendar-natural-language-parser';
 import { makeSlotProvenance, type ChatSlotProvenance } from '../../chat-action-state';
 import { makeStep, type StepKeyInputs } from '../step-builder';
 import type { ChatPlanStep } from '../../chat/types';
+import {
+  classifyTrainingPrescriptionIntent,
+  type TrainingPrescriptionModality,
+} from './intent-detectors';
 
 export const TRAINING_PLAN_REQUIRED_SLOTS = ['sport', 'goal', 'durationWeeks', 'startDate', 'weeklyVolumeKm'] as const;
 
@@ -86,6 +90,22 @@ export function extractTrainingPlanSlots(input: TrainingPlanStepInput): {
       normalizer: 'training_sport_v1',
       confidence: 0.9,
     });
+  }
+  if (slots.sport == null) {
+    const classification = classifyTrainingPrescriptionIntent(text);
+    const classifiedSport = normalizeTrainingSportFromClassifier(classification.modality);
+    if (classifiedSport) {
+      slots.sport = classifiedSport;
+      provenance.sport = makeSlotProvenance({
+        slot: 'sport',
+        value: classifiedSport,
+        rawText: text,
+        turnId: input.messageId,
+        sourceType: 'user_message',
+        normalizer: 'training_intent_modality_v1',
+        confidence: Math.min(0.86, Math.max(0.7, classification.confidence)),
+      });
+    }
   }
 
   const durationMatch = text.match(/\b(\d{1,2})\s*(?:weeks?|semanas?)\b/i);
@@ -185,6 +205,15 @@ export function normalizeTrainingSport(raw: string): string {
   if (/\b(triathlon)\b/.test(folded)) return 'triathlon';
   if (/\b(gym|ginasio|strength|forca)\b/.test(folded)) return 'strength';
   return folded;
+}
+
+function normalizeTrainingSportFromClassifier(modality: TrainingPrescriptionModality): string | null {
+  if (modality === 'running') return 'running';
+  if (modality === 'cycling') return 'cycling';
+  if (modality === 'swimming') return 'swimming';
+  if (modality === 'triathlon') return 'triathlon';
+  if (modality === 'strength') return 'strength';
+  return null;
 }
 
 function weekdayFromFoldedText(value: string): number | null {

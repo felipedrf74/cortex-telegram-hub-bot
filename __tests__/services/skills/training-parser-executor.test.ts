@@ -192,6 +192,34 @@ describe('training parser and executor hardening', () => {
     expect(extractWeeklyVolumeKm('Minha semana tem 42 km')).toBe(42);
   });
 
+  it('uses the training intent classifier to route triathlon plan creation', () => {
+    const step = parse('Build me an Ironman plan for 12 weeks starting Monday, 20 km per week');
+
+    expect(step?.skill).toBe('training');
+    expect(step?.action).toBe('training_plan_create');
+    expect(step?.args.sport).toBe('triathlon');
+    expect(step?.args.goal).toBe('Ironman');
+    expect(step?.requiredArgsPresent).toBe(true);
+  });
+
+  it('uses classifier modality as a sport slot fallback', () => {
+    const extracted = extractTrainingPlanSlots({
+      ...plannerInput('Build me an Ironman plan for 12 weeks starting Monday, 20 km per week'),
+      text: 'Build me an Ironman plan for 12 weeks starting Monday, 20 km per week',
+    });
+
+    expect(extracted.slots.sport).toBe('triathlon');
+    expect(extracted.provenance.sport?.normalizer).toBe('training_intent_modality_v1');
+  });
+
+  it('routes modality-specific prescriptions that older regex gates missed', () => {
+    const step = parse('Prescribe a threshold ride for tomorrow');
+
+    expect(step?.skill).toBe('training');
+    expect(step?.action).toBe('training_explain_session');
+    expect(step?.args.rawRequest).toBe('Prescribe a threshold ride for tomorrow');
+  });
+
   it('does not route generic plans, reports, or budget changes into training', () => {
     expect(parse('Generate a report generator plan')).toBeNull();
     expect(parse('Make a plan')).toBeNull();

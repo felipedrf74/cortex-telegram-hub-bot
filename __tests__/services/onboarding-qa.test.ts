@@ -383,13 +383,15 @@ describe('QA: Full completion flow — fitness', () => {
   });
   afterEach(() => { testDb.close(); });
 
-  it('completes all 5 fitness steps and saves profile', () => {
+  it('completes all 7 fitness steps and saves profile', () => {
     const userId = 42;
     startOrResume(userId, 'fitness');
 
     const answers = [
       'Intermediate (1-3 years)',
       '4-5 days',
+      'Monday, Wednesday, Saturday',
+      'none',
       'Strength',
       'none',
       'Full gym',
@@ -409,6 +411,8 @@ describe('QA: Full completion flow — fitness', () => {
     expect(profile).toBeTruthy();
     expect(profile.data.experience_level).toBe('Intermediate (1-3 years)');
     expect(profile.data.weekly_frequency).toBe('4-5 days');
+    expect(profile.data.preferred_training_days).toBe('Monday, Wednesday, Saturday');
+    expect(profile.data.blocked_days).toBe('none');
     expect(profile.data.training_goals).toBe('Strength');
     expect(profile.data.injuries).toBe('none');
     expect(profile.data.available_equipment).toBe('Full gym');
@@ -575,8 +579,17 @@ describe('QA: Questionnaire definition integrity', () => {
     }
   });
 
-  it('fitness questionnaire has exactly 5 steps', () => {
-    expect(QUESTIONNAIRES.fitness.steps).toHaveLength(5);
+  it('fitness questionnaire captures baseline scheduling preferences', () => {
+    expect(QUESTIONNAIRES.fitness.steps).toHaveLength(7);
+    expect(QUESTIONNAIRES.fitness.steps.map((step) => step.key)).toEqual([
+      'experience_level',
+      'weekly_frequency',
+      'preferred_training_days',
+      'blocked_days',
+      'training_goals',
+      'injuries',
+      'available_equipment',
+    ]);
   });
 
   it('diet questionnaire has exactly 6 steps', () => {

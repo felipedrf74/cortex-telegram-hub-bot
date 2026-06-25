@@ -36,6 +36,12 @@
  *      hidden Week 5 / out-of-window move suggestions in 4-week plans.)
  *  11. **Active sessions need executable prescription basics.**
  *      (duration plus detail/equipment blocks, not just a label.)
+ *  12. **Endurance hard/easy balance and interval density.** (run/bike/swim
+ *      quality sessions need easy spacing and should not dominate the week.)
+ *  13. **Long-session progression.**                         (large week to
+ *      week jumps need a benchmark/race exception or a smoother ramp.)
+ *  14. **Swim/cycling/triathlon constraints.**                (pool access,
+ *      power benchmark assumptions, and brick placement stay explicit.)
  *
  * Output shape mirrors `GuardrailResult` so the existing decision-trail
  * infrastructure can absorb findings without a parallel notification
@@ -72,6 +78,12 @@ export type PlanLintRuleId =
   | 'weekly_volume_targets'
   | 'exercise_constraint_compatibility'
   | 'progression_model_integrity'
+  | 'endurance_hard_easy_balance'
+  | 'endurance_interval_density'
+  | 'long_session_progression'
+  | 'swim_pool_access_required'
+  | 'cycling_power_requires_benchmark'
+  | 'triathlon_brick_placement'
   | 'plan_linter_exception'
   | 'week_one_has_active_training'
   | 'no_sessions_outside_plan_window'
@@ -120,6 +132,8 @@ export type EquipmentProfileLabel =
 
 export interface PlanLintSession {
   id?: string | number;
+  /** Optional sport from the coach-kernel/read-model. Falls back to sessionType/title inference. */
+  sport?: string;
   /** Lower-cased weekday string. */
   dayOfWeek: string;
   /** Lower-cased session-type token (e.g. `'run' | 'gym' | 'long_run' | 'rest'`). */
@@ -141,6 +155,10 @@ export interface PlanLintSession {
   scheduledDate?: string | Date;
   /** Free-form lower-cased exercise tokens (joined `name + equipment + tags`). */
   exerciseTokens?: string[];
+  /** Optional intensity/zone text from the generated session. Falls back to title/description inference. */
+  intensity?: string;
+  /** Optional tags/archetype hints from generated session metadata. */
+  tags?: string[];
   /** Caller-set; the linter trusts these flags. Use existing helpers if you have them. */
   isLowerHeavy?: boolean;
   isLongRun?: boolean;
@@ -167,6 +185,12 @@ export interface PlanLintInput {
   durationWeeks?: number;
   /** Vocab as produced by `training-plan-equipment-adaptation.ts`. Used by rule 2. */
   equipmentProfile?: EquipmentProfileLabel;
+  /** Explicit swim access from profile/intake; false blocks swim prescriptions. */
+  hasPoolAccess?: boolean | null;
+  /** True when FTP, threshold power, or equivalent cycling benchmark is known. */
+  cyclingBenchmarkAvailable?: boolean | null;
+  /** True when the request/profile is triathlon-specific. Also inferred from swim+bike+run weeks. */
+  triathlonMode?: boolean | null;
   weeks: PlanLintWeek[];
 }
 
@@ -217,6 +241,12 @@ const PLAN_LINT_COACH_RULE_MAP: Partial<Record<PlanLintRuleId, string>> = {
   weekly_volume_targets: 'strength-progressive-overload-with-deloads',
   exercise_constraint_compatibility: 'strength-progressive-overload-with-deloads',
   progression_model_integrity: 'strength-progressive-overload-with-deloads',
+  endurance_hard_easy_balance: 'endurance-intensity-distribution',
+  endurance_interval_density: 'endurance-intensity-distribution',
+  long_session_progression: 'endurance-periodization-by-goal-horizon',
+  swim_pool_access_required: 'triathlon-balance-and-bricks',
+  cycling_power_requires_benchmark: 'endurance-intensity-distribution',
+  triathlon_brick_placement: 'triathlon-balance-and-bricks',
   week_one_has_active_training: 'endurance-periodization-by-goal-horizon',
   no_sessions_outside_plan_window: 'endurance-periodization-by-goal-horizon',
   session_prescription_completeness: 'coach-communication-no-raw-dumps',
@@ -661,6 +691,216 @@ function ruleNoSessionsOutsidePlanWindow(input: PlanLintInput): PlanLintFinding 
   };
 }
 
+function ruleEnduranceHardEasyBalance(input: PlanLintInput): PlanLintFinding | null {
+  const offenders: PlanLintAffectedSession[] = [];
+  const evidenceByWeek: Array<Record<string, unknown>> = [];
+
+  for (const week of input.weeks) {
+    const endurance = week.sessions.filter(isEnduranceTrainingSession);
+    if (endurance.length < 3) continue;
+    const hard = endurance.filter(isHardEnduranceSession);
+    const easy = endurance.filter(isEasyEnduranceSession);
+    const hardRatio = hard.length / endurance.length;
+    if (hard.length >= 3 && (hardRatio > 0.5 || easy.length === 0)) {
+      offenders.push(...hard.map((session) => makeAffected(week.weekNumber, session)));
+      evidenceByWeek.push({
+        weekNumber: week.weekNumber,
+        enduranceSessionCount: endurance.length,
+        hardSessionCount: hard.length,
+        easySessionCount: easy.length,
+      });
+    }
+  }
+
+  if (offenders.length === 0) return null;
+  return {
+    ruleId: 'endurance_hard_easy_balance',
+    severity: 'blocker',
+    message:
+      'Endurance week is hard-session heavy. Keep most run/bike/swim work controlled and place hard sessions deliberately.',
+    affectedSessions: offenders,
+    evidence: { weeks: evidenceByWeek },
+  };
+}
+
+function ruleEnduranceIntervalDensity(input: PlanLintInput): PlanLintFinding | null {
+  const offenders: PlanLintAffectedSession[] = [];
+  const evidenceByWeek: Array<Record<string, unknown>> = [];
+
+  for (const week of input.weeks) {
+    const hardByDay = week.sessions
+      .filter((session) => isEnduranceTrainingSession(session) && isHardEnduranceSession(session))
+      .map((session) => ({ session, dayIndex: dayIndexFor(session.dayOfWeek) }))
+      .filter((entry) => entry.dayIndex >= 0)
+      .sort((left, right) => left.dayIndex - right.dayIndex);
+
+    if (hardByDay.length > 2) {
+      offenders.push(...hardByDay.map((entry) => makeAffected(week.weekNumber, entry.session)));
+      evidenceByWeek.push({
+        weekNumber: week.weekNumber,
+        hardSessionCount: hardByDay.length,
+        reason: 'more_than_two_hard_endurance_sessions',
+      });
+      continue;
+    }
+
+    for (let index = 0; index + 1 < hardByDay.length; index += 1) {
+      const current = hardByDay[index];
+      const next = hardByDay[index + 1];
+      if (next.dayIndex - current.dayIndex <= 1) {
+        offenders.push(
+          makeAffected(week.weekNumber, current.session),
+          makeAffected(week.weekNumber, next.session),
+        );
+        evidenceByWeek.push({
+          weekNumber: week.weekNumber,
+          reason: 'back_to_back_hard_endurance_sessions',
+          days: [current.session.dayOfWeek, next.session.dayOfWeek],
+        });
+      }
+    }
+  }
+
+  if (offenders.length === 0) return null;
+  return {
+    ruleId: 'endurance_interval_density',
+    severity: 'blocker',
+    message:
+      'Hard endurance sessions are too dense. Add easy/recovery spacing or explain why the athlete can tolerate this block.',
+    affectedSessions: dedupeAffected(offenders),
+    evidence: { weeks: evidenceByWeek },
+  };
+}
+
+function ruleLongSessionProgression(input: PlanLintInput): PlanLintFinding | null {
+  const offenders: PlanLintAffectedSession[] = [];
+  const evidence: Array<Record<string, unknown>> = [];
+  const sortedWeeks = [...input.weeks].sort((left, right) => left.weekNumber - right.weekNumber);
+  let previous: { weekNumber: number; session: PlanLintSession; duration: number } | null = null;
+
+  for (const week of sortedWeeks) {
+    const longest = week.sessions
+      .filter(isLongEnduranceCandidate)
+      .map((session) => ({ session, duration: Number(session.durationMinutes) }))
+      .filter((entry) => Number.isFinite(entry.duration) && entry.duration >= 30)
+      .sort((left, right) => right.duration - left.duration)[0];
+    if (!longest) continue;
+    if (previous && previous.duration >= 45) {
+      const increasePct = (longest.duration - previous.duration) / previous.duration;
+      if (increasePct > 0.25) {
+        offenders.push(makeAffected(week.weekNumber, longest.session));
+        evidence.push({
+          previousWeek: previous.weekNumber,
+          previousDurationMinutes: previous.duration,
+          weekNumber: week.weekNumber,
+          durationMinutes: longest.duration,
+          increasePct: Math.round(increasePct * 100),
+        });
+      }
+    }
+    previous = { weekNumber: week.weekNumber, session: longest.session, duration: longest.duration };
+  }
+
+  if (offenders.length === 0) return null;
+  return {
+    ruleId: 'long_session_progression',
+    severity: evidence.some((item) => Number(item.increasePct) > 40) ? 'blocker' : 'warning',
+    message:
+      'Longest endurance session jumps too quickly between weeks. Progress long sessions gradually or mark the change as a deliberate benchmark/race exception.',
+    affectedSessions: offenders,
+    evidence: { progressions: evidence },
+  };
+}
+
+function ruleSwimPoolAccessRequired(input: PlanLintInput): PlanLintFinding | null {
+  if (input.hasPoolAccess === true) return null;
+  const offenders: PlanLintAffectedSession[] = [];
+  for (const week of input.weeks) {
+    for (const session of week.sessions) {
+      if (inferSessionSport(session) === 'swimming') {
+        offenders.push(makeAffected(week.weekNumber, session));
+      }
+    }
+  }
+  if (offenders.length === 0) return null;
+  return {
+    ruleId: 'swim_pool_access_required',
+    severity: 'blocker',
+    message:
+      'Swim sessions require confirmed pool/open-water access. Replace with dryland, mobility, or ask for swim access before saving.',
+    affectedSessions: offenders,
+  };
+}
+
+function ruleCyclingPowerRequiresBenchmark(input: PlanLintInput): PlanLintFinding | null {
+  if (input.cyclingBenchmarkAvailable === true) return null;
+  const offenders: PlanLintAffectedSession[] = [];
+  for (const week of input.weeks) {
+    for (const session of week.sessions) {
+      if (inferSessionSport(session) !== 'cycling') continue;
+      if (/\b(?:ftp|watt|watts|power|zone\s*[4-7]|z[4-7])\b/i.test(sessionSearchText(session))) {
+        offenders.push(makeAffected(week.weekNumber, session));
+      }
+    }
+  }
+  if (offenders.length === 0) return null;
+  return {
+    ruleId: 'cycling_power_requires_benchmark',
+    severity: 'warning',
+    message:
+      'Cycling workout references power/FTP-style zones without a known cycling benchmark. Use RPE/cadence cues or ask for FTP/threshold data.',
+    affectedSessions: offenders,
+  };
+}
+
+function ruleTriathlonBrickPlacement(input: PlanLintInput): PlanLintFinding | null {
+  if (!isTriathlonPlan(input)) return null;
+  const offenders: PlanLintAffectedSession[] = [];
+  const allSessions = input.weeks.flatMap((week) =>
+    week.sessions.map((session) => ({ weekNumber: week.weekNumber, session, dayIndex: dayIndexFor(session.dayOfWeek) })),
+  );
+  const hasRun = allSessions.some((entry) => inferSessionSport(entry.session) === 'running');
+  const hasBike = allSessions.some((entry) => inferSessionSport(entry.session) === 'cycling');
+  const hasSwim = allSessions.some((entry) => inferSessionSport(entry.session) === 'swimming');
+  if (!hasRun || !hasBike || !hasSwim) return null;
+
+  const brickSessions = allSessions.filter((entry) => /\bbrick|transition\b/i.test(sessionSearchText(entry.session)));
+  if (brickSessions.length === 0 && (input.durationWeeks ?? 0) >= 4) {
+    return {
+      ruleId: 'triathlon_brick_placement',
+      severity: 'warning',
+      message:
+        'Triathlon plan includes swim, bike, and run but no visible brick/transition practice. Add a short bike-run brick or explain why this block skips it.',
+      affectedSessions: [],
+      evidence: { hasRun, hasBike, hasSwim, durationWeeks: input.durationWeeks },
+    };
+  }
+
+  for (const brick of brickSessions) {
+    const sameDayOrAdjacent = allSessions.filter((entry) =>
+      entry !== brick
+      && Math.abs(entry.dayIndex - brick.dayIndex) <= 1
+      && entry.weekNumber === brick.weekNumber
+    );
+    const hasBikeNearBrick = sameDayOrAdjacent.some((entry) => inferSessionSport(entry.session) === 'cycling')
+      || inferSessionSport(brick.session) === 'cycling';
+    const hasRunNearBrick = sameDayOrAdjacent.some((entry) => inferSessionSport(entry.session) === 'running')
+      || inferSessionSport(brick.session) === 'running';
+    if (!hasBikeNearBrick || !hasRunNearBrick) {
+      offenders.push(makeAffected(brick.weekNumber, brick.session));
+    }
+  }
+
+  if (offenders.length === 0) return null;
+  return {
+    ruleId: 'triathlon_brick_placement',
+    severity: 'warning',
+    message:
+      'Brick/transition session is not placed near both bike and run work. Put transition practice on a bike-run day or adjacent low-risk window.',
+    affectedSessions: offenders,
+  };
+}
+
 function ruleSessionPrescriptionCompleteness(input: PlanLintInput): PlanLintFinding | null {
   const offenders: PlanLintAffectedSession[] = [];
   for (const week of input.weeks) {
@@ -684,6 +924,102 @@ function ruleSessionPrescriptionCompleteness(input: PlanLintInput): PlanLintFind
   };
 }
 
+function sessionSearchText(session: PlanLintSession): string {
+  return [
+    session.sport,
+    session.sessionType,
+    session.title,
+    session.description,
+    session.intensity,
+    ...(session.tags ?? []),
+    ...(session.exerciseTokens ?? []),
+  ].filter(Boolean).join(' ').toLowerCase();
+}
+
+function sessionRoleText(session: PlanLintSession): string {
+  return [
+    session.sport,
+    session.sessionType,
+    session.title,
+    session.intensity,
+    ...(session.tags ?? []),
+  ].filter(Boolean).join(' ').toLowerCase();
+}
+
+function inferSessionSport(session: PlanLintSession): 'running' | 'cycling' | 'swimming' | 'strength' | null {
+  const explicit = String(session.sport || '').toLowerCase();
+  if (/^(run|running)$/.test(explicit)) return 'running';
+  if (/^(ride|bike|cycling)$/.test(explicit)) return 'cycling';
+  if (/^(swim|swimming)$/.test(explicit)) return 'swimming';
+  if (/^(gym|strength|lift|lifting)$/.test(explicit)) return 'strength';
+
+  const text = sessionSearchText(session);
+  if (/\b(strength|gym|lift|squat|deadlift|bench|hypertrophy)\b/.test(text)) return 'strength';
+  if (/\b(swim|swimming|freestyle|pool|open water|technique_swim|aerobic_swim|threshold_swim|speed_swim)\b/.test(text)) return 'swimming';
+  if (/\b(cycling|cycle|bike|ride|trainer|zwift|ftp|watt|cadence|endurance_ride|recovery_ride)\b/.test(text)) return 'cycling';
+  if (/\b(run|running|jog|tempo|threshold run|long run|easy run|race pace|recovery_run)\b/.test(text)) return 'running';
+  return null;
+}
+
+function isEnduranceTrainingSession(session: PlanLintSession): boolean {
+  const sport = inferSessionSport(session);
+  return sport === 'running' || sport === 'cycling' || sport === 'swimming';
+}
+
+function isHardEnduranceSession(session: PlanLintSession): boolean {
+  if (!isEnduranceTrainingSession(session)) return false;
+  const roleText = sessionRoleText(session);
+  const text = sessionSearchText(session);
+  const hardPattern = /\b(threshold|interval|tempo|vo2|speed|race\s*pace|hill|hard|anaerobic|zone\s*[4-7]|z[4-7])\b/;
+  if (session.isKey === true || hardPattern.test(roleText)) return true;
+  if (/\b(recovery|easy|aerobic|zone\s*[12]|z[12]|mobility|drill|technique)\b/.test(roleText)) return false;
+  return hardPattern.test(text);
+}
+
+function isEasyEnduranceSession(session: PlanLintSession): boolean {
+  if (!isEnduranceTrainingSession(session)) return false;
+  const text = sessionSearchText(session);
+  return /\b(recovery|easy|aerobic|zone\s*[12]|z[12]|mobility|drill|technique)\b/.test(text)
+    && !isHardEnduranceSession(session);
+}
+
+function isLongEnduranceCandidate(session: PlanLintSession): boolean {
+  if (!isEnduranceTrainingSession(session)) return false;
+  const duration = Number(session.durationMinutes);
+  return session.isLongRun === true
+    || duration >= 60
+    || /\b(long|endurance|aerobic base|long ride|long run|long swim)\b/i.test(sessionSearchText(session));
+}
+
+function isTriathlonPlan(input: PlanLintInput): boolean {
+  if (input.triathlonMode === true) return true;
+  const sports = new Set<string>();
+  for (const week of input.weeks) {
+    for (const session of week.sessions) {
+      const sport = inferSessionSport(session);
+      if (sport === 'running' || sport === 'cycling' || sport === 'swimming') sports.add(sport);
+    }
+  }
+  return sports.has('running') && sports.has('cycling') && sports.has('swimming');
+}
+
+function dedupeAffected(items: PlanLintAffectedSession[]): PlanLintAffectedSession[] {
+  const seen = new Set<string>();
+  const deduped: PlanLintAffectedSession[] = [];
+  for (const item of items) {
+    const key = [
+      item.weekNumber,
+      item.sessionId ?? '',
+      item.dayOfWeek ?? '',
+      item.title ?? '',
+    ].join(':');
+    if (seen.has(key)) continue;
+    seen.add(key);
+    deduped.push(item);
+  }
+  return deduped;
+}
+
 const RULES: Array<(input: PlanLintInput) => PlanLintFinding | null> = [
   ruleNoPastActiveSessions,
   ruleWeekOneHasActiveTraining,
@@ -696,6 +1032,12 @@ const RULES: Array<(input: PlanLintInput) => PlanLintFinding | null> = [
   ruleRaceDateMustBeFuture,
   rulePlanDurationDoesNotOvershootRaceDate,
   ruleNoConsecutiveIdenticalStrengthSessions,
+  ruleEnduranceHardEasyBalance,
+  ruleEnduranceIntervalDensity,
+  ruleLongSessionProgression,
+  ruleSwimPoolAccessRequired,
+  ruleCyclingPowerRequiresBenchmark,
+  ruleTriathlonBrickPlacement,
   ruleSessionPrescriptionCompleteness,
 ];
 
@@ -736,6 +1078,18 @@ const SUGGESTED_FIXES: Record<PlanLintRuleId, string> = {
     'Select exercises that fit the user equipment, excluded exercises, and injury or limitation constraints.',
   progression_model_integrity:
     'Attach a deterministic progression model and week-level prescription adjustments before persistence.',
+  endurance_hard_easy_balance:
+    'Reduce hard endurance density or convert one hard workout to easy aerobic/recovery work.',
+  endurance_interval_density:
+    'Space threshold/interval/race-pace sessions with easy days, recovery, or strength that does not compete.',
+  long_session_progression:
+    'Smooth the long-session ramp or label the jump as a benchmark/race exception with a recovery follow-up.',
+  swim_pool_access_required:
+    'Ask for pool/open-water access or replace swim work with dryland/mobility until access is confirmed.',
+  cycling_power_requires_benchmark:
+    'Use RPE/cadence cues or ask for FTP/threshold data before prescribing power-zone work.',
+  triathlon_brick_placement:
+    'Add or relocate bike-run transition practice so triathlon work is integrated instead of three disconnected sports.',
   plan_linter_exception:
     'Retry after the quality gate can complete; do not persist strict-preflight plans that could not be linted.',
   week_one_has_active_training:

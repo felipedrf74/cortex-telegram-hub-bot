@@ -140,6 +140,14 @@ describe('Phase 2 Slice B — sport questionnaire definitions', () => {
     expect(keys).toContain('time_400m_freestyle_min');
   });
 
+  it('sport questionnaires capture preferred and blocked training days', () => {
+    for (const sport of sports) {
+      const keys = QUESTIONNAIRES[sport].steps.map((s) => s.key);
+      expect(keys).toContain('preferred_training_days');
+      expect(keys).toContain('blocked_days');
+    }
+  });
+
   it('getAllQuestionnaires returns all defined questionnaires', () => {
     const all = getAllQuestionnaires();
     const ids = all.map((q) => q.id);

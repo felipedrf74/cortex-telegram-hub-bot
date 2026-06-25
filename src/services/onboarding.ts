@@ -91,6 +91,16 @@ export const QUESTIONNAIRES: Record<string, QuestionnaireDefinition> = {
         options: ['2-3 days', '4-5 days', '6+ days'],
       },
       {
+        key: 'preferred_training_days',
+        prompt: 'Which training days do you prefer? (example: Monday, Wednesday, Saturday)',
+        type: 'text',
+      },
+      {
+        key: 'blocked_days',
+        prompt: 'Any days the coach should avoid? (type "none" if none)',
+        type: 'text',
+      },
+      {
         key: 'training_goals',
         prompt: 'What are your primary training goals?',
         type: 'multi_choice',
@@ -194,8 +204,8 @@ export const QUESTIONNAIRES: Record<string, QuestionnaireDefinition> = {
   // ─── Phase 2 Slice B — Per-sport profiling questionnaires ────────
   //
   // Each sport coach (gym/running/cycling/swim) needs specific baseline
-  // data before it can generate useful prescriptions. These are 6-8
-  // questions each, 5-10 per the Phase 1 decision 1.5 anchor range.
+  // data before it can generate useful prescriptions. These are compact
+  // questionnaires, 5-10 per the Phase 1 decision 1.5 anchor range.
   // They're OPT-IN — the user only answers a sport's questionnaire
   // when they care about that sport. Running-only users never see
   // FTP questions; gym-only users never see 400m swim times.
@@ -250,6 +260,16 @@ export const QUESTIONNAIRES: Record<string, QuestionnaireDefinition> = {
         prompt: 'How many gym sessions can you realistically do per week?',
         type: 'choice',
         options: ['1-2', '3', '4', '5+'],
+      },
+      {
+        key: 'preferred_training_days',
+        prompt: 'Which days do you prefer for lifting? (example: Monday, Wednesday, Friday)',
+        type: 'text',
+      },
+      {
+        key: 'blocked_days',
+        prompt: 'Any days the strength coach should avoid? (type "none" if none)',
+        type: 'text',
       },
       {
         key: 'equipment_access',
@@ -311,6 +331,16 @@ export const QUESTIONNAIRES: Record<string, QuestionnaireDefinition> = {
         type: 'choice',
         options: ['2', '3', '4', '5', '6+'],
       },
+      {
+        key: 'preferred_training_days',
+        prompt: 'Which days do you prefer for running? (example: Tuesday, Thursday, Sunday)',
+        type: 'text',
+      },
+      {
+        key: 'blocked_days',
+        prompt: 'Any days the running coach should avoid? (type "none" if none)',
+        type: 'text',
+      },
     ],
   },
 
@@ -361,6 +391,16 @@ export const QUESTIONNAIRES: Record<string, QuestionnaireDefinition> = {
         type: 'choice',
         options: ['2', '3', '4', '5', '6+'],
       },
+      {
+        key: 'preferred_training_days',
+        prompt: 'Which days do you prefer for riding? (example: Wednesday, Saturday, Sunday)',
+        type: 'text',
+      },
+      {
+        key: 'blocked_days',
+        prompt: 'Any days the cycling coach should avoid? (type "none" if none)',
+        type: 'text',
+      },
     ],
   },
 
@@ -403,6 +443,16 @@ export const QUESTIONNAIRES: Record<string, QuestionnaireDefinition> = {
         prompt: 'How many swim sessions per week can you do?',
         type: 'choice',
         options: ['1', '2', '3', '4+'],
+      },
+      {
+        key: 'preferred_training_days',
+        prompt: 'Which days do you prefer for swimming? (example: Monday, Friday)',
+        type: 'text',
+      },
+      {
+        key: 'blocked_days',
+        prompt: 'Any days the swim coach should avoid? (type "none" if none)',
+        type: 'text',
       },
       {
         key: 'equipment_access',
@@ -843,6 +893,12 @@ const PROFILE_FIELD_LABELS: Record<string, string> = {
   // Shared fitness
   experience_level: 'Training experience',
   weekly_frequency: 'Weekly frequency',
+  preferred_training_days: 'Preferred training days',
+  preferred_days: 'Preferred training days',
+  available_days: 'Available training days',
+  blocked_days: 'Days to avoid',
+  avoid_days: 'Days to avoid',
+  unavailable_days: 'Unavailable days',
   training_goals: 'Goals',
   injuries: 'Injuries / limitations',
   available_equipment: 'Equipment access',

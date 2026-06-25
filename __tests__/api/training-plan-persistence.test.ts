@@ -1,6 +1,7 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { DateTime } from 'luxon';
 
 const mockCreatePlan = vi.fn();
 const mockCreateWeek = vi.fn();
@@ -665,8 +666,8 @@ describe('training-plan-persistence', () => {
 
   it('persists a session as unscheduled when real calendar busy windows leave no valid slot', async () => {
     const day = new Date('2026-04-20T00:00:00.000Z');
-    const blockStart = new Date(day); blockStart.setHours(5, 0, 0, 0);
-    const blockEnd = new Date(day); blockEnd.setHours(21, 0, 0, 0);
+    const blockStart = DateTime.fromISO('2026-04-20T05:00:00', { zone: 'Europe/Lisbon' }).toUTC().toJSDate();
+    const blockEnd = DateTime.fromISO('2026-04-20T21:00:00', { zone: 'Europe/Lisbon' }).toUTC().toJSDate();
 
     const result = await persistGeneratedTrainingPlan({
       userId: 12,

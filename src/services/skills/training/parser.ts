@@ -11,6 +11,7 @@ import {
   makeTrainingPlanStep,
   missingTrainingPlanSlots,
 } from './helpers';
+import { classifyTrainingPrescriptionIntent } from './intent-detectors';
 import type { ChatPlanStep } from '../../chat/types';
 
 function hasTrainingQualifier(folded: string): boolean {
@@ -38,6 +39,13 @@ export function parseTrainingActionStep(
   input: TrainingParserInput,
   folded: string,
 ): ChatPlanStep | null {
+  const classification = classifyTrainingPrescriptionIntent(input.text);
+  const classifierTrainingContext = /\b(training|train|workout|session|treino|treinar|entrenamiento|sess[aã]o|sesi[oó]n)\b/.test(folded);
+  const classifierPrescription = classification.isTrainingPrescription
+    && classification.confidence >= 0.78
+    && (classification.modality !== 'unknown' || classifierTrainingContext);
+  const classifierSemanticFallback = classification.requiresSemanticFallback && classifierTrainingContext;
+  const legacyGate = /\b(training|entrenamiento[s]?|treino|plano de treino|plan\s+de\s+entrenamiento|coach|corrida|gym|ginasio|ginásio|gimnasio|session|sessao|sessão|sesi[oó]n|reflow|reorganiza[r]?|reorganizado|ajusta[r]?|adjust|workout|run|correr|long\s+run|rodagem|marathon|maratona|race|prova|half[\s-]?marathon|(?:5|10|21|42|3|15)\s*k\s+plan|(?:5|10|21|42|3|15)\s*km\s+plan)\b/.test(folded);
   // Phase 5 batch 25 (2026-05-15): distance-plan bigrams ("10K plan", "5K
   // plan", etc.) added to the gate so "Build me a 10K plan in 12 weeks"
   // reaches parseTrainingActionStep. The original gate required an explicit
@@ -50,7 +58,7 @@ export function parseTrainingActionStep(
   // Phase 11 batch 58 (2026-05-16): "reorganiza[r]?"/"reorganizado" added
   // to the gate so reflow phrasings like "Aplica el reorganizado al plan"
   // reach the parser even without an explicit training-domain noun.
-  if (!/\b(training|entrenamiento[s]?|treino|plano de treino|plan\s+de\s+entrenamiento|coach|corrida|gym|ginasio|ginásio|gimnasio|session|sessao|sessão|sesi[oó]n|reflow|reorganiza[r]?|reorganizado|ajusta[r]?|adjust|workout|run|correr|long\s+run|rodagem|marathon|maratona|race|prova|half[\s-]?marathon|(?:5|10|21|42|3|15)\s*k\s+plan|(?:5|10|21|42|3|15)\s*km\s+plan)\b/.test(folded)) return null;
+  if (!legacyGate && !classifierPrescription && !classifierSemanticFallback) return null;
   // Phase 4 batch 22 (2026-05-15): adjust-plan check moved BEFORE plan-create.
   // The Phase 3 batch 16 extension to plan-create added "plan" as a create-
   // verb, which caused "Adjust my training plan" to claim plan_create
@@ -58,7 +66,7 @@ export function parseTrainingActionStep(
   // even though the user clearly wants to adjust an existing plan. Adjust
   // verbs are a more specific match — claim those first.
   // Phase 7 close-out: "tighten up" / "loosen up" English adjust idioms.
-  const trainingQualified = hasTrainingQualifier(folded);
+  const trainingQualified = hasTrainingQualifier(folded) || classifierPrescription || classifierSemanticFallback;
   const hasReflowSignal = /\b(reflow|remarca[r]?|reagenda[r]?|reorganiza[r]?|reorganizado)\b/.test(folded);
   if (!trainingQualified
     && !hasReflowSignal
@@ -96,9 +104,13 @@ export function parseTrainingActionStep(
   // plan_create from claiming reflow intent, skip this branch when a
   // reflow-class verb is also present. The reflow_preview / reflow_confirm
   // branches downstream will then handle the message.
+  const classifierPlanCreate = classification.kind === 'plan_create'
+    && classification.confidence >= 0.85
+    && !classification.requiresSemanticFallback;
   if (!hasReflowSignal
     && /\b(create|build|generate|make|cria|criar|gera|gerar|monta|montar|faz|fazer|plan)\b/.test(folded)
-    && (/\b(training\s+plan|plano\s+de\s+treino|plan\s+de\s+entrenamiento|programa\s+de\s+treino|(?:marathon|maratona|race|prova|running|half[\s-]?marathon|10k|5k|21k|42k)\s+plan)\b/.test(folded)
+    && (classifierPlanCreate
+        || /\b(training\s+plan|plano\s+de\s+treino|plan\s+de\s+entrenamiento|programa\s+de\s+treino|(?:marathon|maratona|race|prova|running|half[\s-]?marathon|10k|5k|21k|42k)\s+plan)\b/.test(folded)
         || (/\b(training|treino|run|marathon|maratona)\b/.test(folded)
             && /\bfor\s+(?:the\s+)?(?:next\s+)?\d+\s+weeks?\b/.test(folded)))) {
     const extracted = extractTrainingPlanSlots(input);

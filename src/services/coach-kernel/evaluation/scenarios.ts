@@ -252,6 +252,78 @@ export const trainingEvalScenarioBank: TrainingEvalScenario[] = [
     },
   },
   {
+    id: 'stale-wearable-readiness',
+    name: 'Stale Wearable Readiness',
+    category: 'profile_completeness',
+    description: 'Wearable readiness exists but is stale; the coach should not present it as fresh truth.',
+    tags: ['wearable', 'stale_provider', 'readiness'],
+    expectations: { shouldSurfaceProfileGap: true, shouldReduceLoad: true },
+    apply: ({ persona }: TrainingEvalScenarioContext) => {
+      const athlete = cloneAthlete(persona.athlete);
+      return withScenarioConstraint({
+        ...athlete,
+        readiness: {
+          ...athlete.readiness,
+          capturedAt: '2026-04-24T07:00:00.000Z',
+          level: 'yellow',
+          score: Math.min(athlete.readiness.score, 62),
+          confidence: 'stale_provider',
+          dataSource: 'wearable',
+          isStale: true,
+          reasonCode: 'wearable_sync_stale',
+          notes: ['Wearable readiness data is stale; use conservative planning and ask for a check-in.'],
+        },
+      }, 'eval-stale-wearable', 'Wearable readiness is stale; explain confidence and avoid aggressive progression.', 'fatigue', 'medium');
+    },
+  },
+  {
+    id: 'no-wearable-readiness',
+    name: 'No Wearable Readiness',
+    category: 'profile_completeness',
+    description: 'No wearable or manual readiness data is available; output should stay useful but transparent.',
+    tags: ['wearable', 'no_data', 'readiness'],
+    expectations: { shouldSurfaceProfileGap: true },
+    apply: ({ persona }: TrainingEvalScenarioContext) => {
+      const athlete = cloneAthlete(persona.athlete);
+      return withScenarioConstraint({
+        ...athlete,
+        readiness: {
+          capturedAt: '2026-04-27T07:00:00.000Z',
+          level: 'green',
+          score: 70,
+          confidence: 'no_data',
+          dataSource: 'fallback',
+          reasonCode: 'wearable_not_connected',
+          painFlags: athlete.readiness.painFlags,
+          notes: ['No wearable data connected; use manual check-in or conservative defaults.'],
+        },
+      }, 'eval-no-wearable', 'No wearable data is connected; surface the confidence gap instead of pretending precision.', 'time', 'low');
+    },
+  },
+  {
+    id: 'calendar-conflicted-week',
+    name: 'Calendar-Conflicted Week',
+    category: 'schedule',
+    description: 'Calendar pressure removes most normal windows; the coach should produce a schedule-compatible minimum effective week.',
+    tags: ['calendar', 'schedule_conflict', 'minimum_effective_dose'],
+    expectations: { shouldRespectShortWindows: true, maxSessionsPerDay: 1, maxTotalSessions: 4 },
+    apply: ({ persona }: TrainingEvalScenarioContext) => {
+      const athlete = cloneAthlete(persona.athlete);
+      return withScenarioConstraint({
+        ...athlete,
+        availability: {
+          ...athlete.availability,
+          weeklyWindows: [
+            { dayOfWeek: 'monday', start: '06:45', end: '07:25', sports: ['running', 'cycling'] },
+            { dayOfWeek: 'wednesday', start: '12:10', end: '12:50', sports: ['strength'] },
+            { dayOfWeek: 'saturday', start: '08:00', end: '09:00', sports: ['running', 'cycling', 'swimming'] },
+          ],
+          maxSessionsPerDay: 1,
+        },
+      }, 'eval-calendar-conflict', 'Calendar conflicts leave only three short windows; avoid duplicate or impossible scheduling.', 'interference', 'high');
+    },
+  },
+  {
     id: 'discomfort-substitution',
     name: 'Discomfort Requires Substitution',
     category: 'safety',
@@ -276,4 +348,3 @@ export const trainingEvalScenarioBank: TrainingEvalScenario[] = [
     },
   },
 ];
-

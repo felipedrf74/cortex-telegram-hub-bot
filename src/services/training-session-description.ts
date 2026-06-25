@@ -129,6 +129,8 @@ export interface AthleteProfiles {
   fitnessProfile?: Record<string, any> | null;
   runProfile?: Record<string, any> | null;
   gymProfile?: Record<string, any> | null;
+  cyclingProfile?: Record<string, any> | null;
+  swimProfile?: Record<string, any> | null;
 }
 
 // ── Output ─────────────────────────────────────────────────────────

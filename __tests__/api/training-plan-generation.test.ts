@@ -871,6 +871,8 @@ describe('generateTrainingPlanForUser', () => {
       });
       expect(result.data.totalSessions).toBeGreaterThan(0);
       expect(result.data.phaseRoadmap[0].sessionCount).toBeGreaterThan(0);
+      expect(result.data.trainingLearningPath?.weeklyPath[0]?.phaseGoal).toBeTruthy();
+      expect(result.data.phaseRoadmap[0].weeklyLearningFocus).toBeTruthy();
     }
     expect(mockGetEvents).toHaveBeenCalledWith(expect.any(String), expect.any(String), 12, ['outlook']);
     expect(mockCancelTrainingPlanForUser).not.toHaveBeenCalled();
@@ -920,6 +922,10 @@ describe('generateTrainingPlanForUser', () => {
       expect(result.data.totalSessions).toBe(12);
       expect(result.data.phaseRoadmap).toHaveLength(4);
       expect(result.data.phaseRoadmap.every((week) => week.sessionCount === 3)).toBe(true);
+      expect(result.data.trainingLearningPath?.measurableOutcomes).toEqual(expect.arrayContaining([
+        'Session completion and skip rate',
+        'Post-session RPE, soreness, and pain feedback',
+      ]));
       expect(result.data.blockers).not.toEqual(expect.arrayContaining([
         expect.objectContaining({ code: 'progression_model_integrity' }),
       ]));
@@ -927,7 +933,63 @@ describe('generateTrainingPlanForUser', () => {
     expect(mockPersistGeneratedTrainingPlan).not.toHaveBeenCalled();
   });
 
-  it('falls back to the deterministic template when the coach kernel fails', async () => {
+  it('passes cycling and swim profile modules into generation and preflight context', async () => {
+    mockGetProfile.mockImplementation((_userId: number, questionnaireId: string) => {
+      if (questionnaireId === 'fitness') return { experienceLevel: 'Intermediate' };
+      if (questionnaireId === 'triathlon-gym') return { equipment_access: 'Full gym' };
+      if (questionnaireId === 'triathlon-running') return { weekly_mileage_km: 28, easy_pace_min_per_km: '5:45' };
+      if (questionnaireId === 'triathlon-cycling') {
+        return {
+          ftp_watts: 235,
+          weekly_hours: '3-6 hours',
+          target_event: 'Triathlon bike leg',
+          preferred_training_days: ['Saturday'],
+          blocked_days: ['Friday'],
+        };
+      }
+      if (questionnaireId === 'triathlon-swim') {
+        return {
+          pool_access: 'Yes',
+          sessions_per_week: '2',
+          primary_stroke: 'Freestyle',
+          preferred_training_days: ['Wednesday'],
+          blocked_days: ['Sunday'],
+        };
+      }
+      return null;
+    });
+
+    const result = await generateTrainingPlanForUser({
+      userId: 12,
+      tenantId: 12,
+      objective: 'Sprint triathlon plan',
+      durationWeeks: 4,
+      bikeSessionsPerWeek: 2,
+      swimSessionsPerWeek: 2,
+      previewOnly: true,
+      calendarSource: null,
+    });
+
+    expect(result.status).toBe('preview');
+    expect(mockBuildCoachKernelTrainingPlan).toHaveBeenCalledWith(expect.objectContaining({
+      runProfile: expect.objectContaining({
+        ftp_watts: 235,
+        cycling_weekly_hours: '3-6 hours',
+        pool_access: 'Yes',
+        swim_sessions_per_week: '2',
+        preferred_training_days: ['Saturday', 'Wednesday'],
+        blocked_days: ['Friday', 'Sunday'],
+      }),
+    }));
+    expect(mockLintGeneratedTrainingPlanPreflight).toHaveBeenCalledWith(expect.objectContaining({
+      athleteProfiles: expect.objectContaining({
+        cyclingProfile: expect.objectContaining({ ftp_watts: 235 }),
+        swimProfile: expect.objectContaining({ pool_access: 'Yes' }),
+      }),
+    }));
+  });
+
+  it('blocks deterministic fallback persistence when the coach kernel fails', async () => {
     mockBuildCoachKernelTrainingPlan.mockImplementation(() => {
       throw new Error('kernel unavailable');
     });
@@ -941,9 +1003,12 @@ describe('generateTrainingPlanForUser', () => {
       strengthSessionsPerWeek: 1,
     });
 
-    expect(result.status).toBe('created');
+    expect(result.status).toBe('plan_quality_blocked');
     expect(result.data.fallbackTemplateUsed).toBe(true);
-    expect(String(result.data.message)).toContain('reliable fallback template');
+    expect(String(result.data.message)).toContain('did not save it');
+    expect(result.data.warnings).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: 'fallback_requires_review' }),
+    ]));
     expect(mockBuildDeterministicTrainingPlan).toHaveBeenCalledWith(
       'General running consistency',
       4,
@@ -956,6 +1021,7 @@ describe('generateTrainingPlanForUser', () => {
       expect.objectContaining({ userId: 12, objective: 'General running consistency' }),
       expect.stringContaining('Coach-kernel training plan generation unavailable'),
     );
+    expect(mockPersistGeneratedTrainingPlan).not.toHaveBeenCalled();
   });
 
   it('continues plan generation when calendar reads are unavailable', async () => {

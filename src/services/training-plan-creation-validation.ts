@@ -48,12 +48,43 @@ export interface TrainingPlanCreationValidationScenario {
   expectedChecks: string[];
 }
 
+export interface TrainingPlanQualityPersonaScenario {
+  id: string;
+  label: string;
+  requiredSignals: string[];
+  failureConditions: string[];
+}
+
+export type TrainingPlanQualityScoreDimension =
+  | 'personalization'
+  | 'safety'
+  | 'progression'
+  | 'scheduleFit'
+  | 'exerciseVariety'
+  | 'modalityCorrectness'
+  | 'explanationQuality'
+  | 'calendarCompatibility'
+  | 'measurableOutcomes';
+
+export interface TrainingPlanQualityPersonaScore {
+  id: string;
+  label: string;
+  requiredSignals: string[];
+  failureConditions: string[];
+  dimensionScores: Record<TrainingPlanQualityScoreDimension, number>;
+  totalScore: number;
+  qualityVerdict: TrainingPlanQualityVerdict;
+  blockers: string[];
+  warnings: string[];
+}
+
 export interface TrainingPlanCreationValidationMatrix {
   qaAccountEmail: string;
   strategy: 'axis-complete-boundary-matrix';
   axes: TrainingVariationAxis[];
   cartesianVariationCount: number;
   scenarios: TrainingPlanCreationValidationScenario[];
+  personaScenarios: TrainingPlanQualityPersonaScenario[];
   requiredE2EChecks: string[];
 }
 
@@ -108,6 +139,8 @@ export interface TrainingPlanCreationQualityMatrix {
   mode: TrainingPlanCreationQualityMatrixMode;
   authorizationRequiredForWrites: boolean;
   localSimulatorAccountEmail: string;
+  personaScenarios: TrainingPlanQualityPersonaScenario[];
+  personaScorecard: TrainingPlanQualityPersonaScore[];
   rows: TrainingPlanCreationQualityMatrixRow[];
   summary: {
     rowCount: number;
@@ -229,6 +262,32 @@ export const TRAINING_PLAN_CREATION_VARIATION_AXES: TrainingVariationAxis[] = [
     value('questionnaire_pending', 'Required questionnaire pending', 'questionnaire_pending'),
   ]),
 ];
+
+export const TRAINING_PLAN_QUALITY_PERSONA_SCENARIOS: TrainingPlanQualityPersonaScenario[] = [
+  persona('beginner_gym', 'Beginner gym', ['novice_safe_strength', 'equipment_fit', 'simple_progression'], ['advanced lifts without substitution', 'missing form/safety rationale']),
+  persona('intermediate_hypertrophy', 'Intermediate hypertrophy', ['split_integrity', 'volume_progression', 'exercise_variety'], ['generic full-body repetition', 'no measurable overload path']),
+  persona('hybrid_run_strength', 'Hybrid run + strength', ['hard_easy_balance', 'lower_body_spacing', 'weekly_rationale'], ['heavy lower before key run', 'unexplained hard-session stack']),
+  persona('cycling_gym', 'Cycling + gym', ['cycling_benchmark_or_rpe', 'strength_support_spacing', 'bike_specificity'], ['running substituted for cycling intent', 'FTP/power zones without benchmark']),
+  persona('swim_triathlon', 'Swim / triathlon', ['pool_access_fit', 'discipline_balance', 'brick_or_transition_logic'], ['swim without access', 'three disconnected single-sport plans']),
+  persona('travel_week', 'Travel week', ['limited_equipment_substitutions', 'compressed_duration_fit', 'calendar_realism'], ['barbell-only travel plan', 'sessions impossible in stated window']),
+  persona('limited_time_week', 'Limited-time week', ['duration_truthfulness', 'minimum_viable_week', 'priority_protection'], ['label-only sessions', 'overpacked week']),
+  persona('injury_discomfort', 'Injury or discomfort', ['pain_boundary', 'safe_substitution', 'professional_guidance_copy'], ['prescribes through pain', 'hides medical-risk caveat']),
+  persona('poor_adherence', 'Poor adherence', ['real_compliance_signal', 'reentry_or_deload', 'explanation_cites_misses'], ['progresses after repeated misses', 'ignores skipped key sessions']),
+  persona('fatigue_plateau', 'Fatigue / plateau', ['recovery_downgrade', 'load_monitoring', 'next_step_assessment'], ['keeps hard work with soreness/fatigue', 'no adaptation rationale']),
+  persona('stale_wearable', 'Stale wearable', ['degraded_state_label', 'no_overconfident_readiness', 'manual_feedback_prompt'], ['claims fresh readiness from stale data', 'uses stale provider data for an aggressive load jump']),
+  persona('no_wearable', 'No wearable', ['subjective_feedback_path', 'rpe_based_progression', 'missing_signal_honesty'], ['requires wearable to proceed', 'invented recovery metrics']),
+  persona('calendar_conflicted', 'Calendar-conflicted', ['capacity_reflow', 'idempotent_calendar_state', 'repair_needed_copy'], ['duplicate events', 'moves without explanation']),
+  persona('race_prep', 'Race prep', ['race_date_fit', 'taper_specificity', 'benchmark_or_goal_pace_logic'], ['fake taper without event', 'plan overshoots race date']),
+];
+
+function persona(
+  id: string,
+  label: string,
+  requiredSignals: string[],
+  failureConditions: string[],
+): TrainingPlanQualityPersonaScenario {
+  return { id, label, requiredSignals, failureConditions };
+}
 
 export const TRAINING_PLAN_SCIENCE_EVIDENCE_BASELINE = [
   evidence('WHO-2020-PA', 'WHO 2020 physical activity guidelines', 'official_guideline', 'https://www.who.int/publications/i/item/9789240015128', 'Aerobic and muscle-strengthening minimums; sedentary-time reduction.'),
@@ -368,11 +427,18 @@ export function buildTrainingPlanCreationValidationMatrix(
       1,
     ),
     scenarios,
+    personaScenarios: TRAINING_PLAN_QUALITY_PERSONA_SCENARIOS,
     requiredE2EChecks: [
+      'Start a fresh isolated Training E2E backend container from the target worktree HEAD; record git SHA, image IDs, compose project, non-default ports, DB path, and /api/snapshot.',
+      'Run against a non-8200 backend URL and an isolated .local/training-e2e database/log directory so parallel worktrees cannot contaminate evidence.',
+      'Run iOS on a dedicated simulator UDID with unique DerivedData/result bundle/test-summary paths; do not shut down or reuse another worktree simulator.',
+      'Launch iOS with the isolated Training E2E backend base URL and debug auth import path; reject evidence if the app points at default 127.0.0.1:8200.',
       'Authenticate as the QA account only in an owner-authorized local or staging environment.',
       'Preview the plan and verify no persistence or agenda writes happened during preview.',
       'Create the plan and read back backend weeks, iOS Plan, iOS Today, and Agenda/calendar surfaces.',
+      'Exercise Training Skill entry points: first-run/profile gate, plan builder, preview/review, create, Today, Plan, Progress, complete, skip, feedback, reflow/swap, and degraded/no-plan states.',
       'Run agenda matcher for identity, date, timezone, title/type, duration, status, version, and duplicate checks.',
+      'Run feedback/progression checks: easy/normal/hard feedback, soreness, pain, skipped key sessions, partial completion, repeated misses, deload/reentry, and visible rationale.',
       'Run quality score and treat fail verdicts or plan/agenda divergence as blocking.',
       'Clean up only test-created plans and agenda/provider events.',
     ],
@@ -455,11 +521,14 @@ export function buildTrainingPlanCreationQualityMatrix(options: {
   });
 
   const duplicateScenarioIds = duplicateValues(rows.map((row) => row.scenarioId));
+  const personaScorecard = buildTrainingPlanQualityPersonaScorecard(matrix.personaScenarios);
   return {
     qaAccountEmail: matrix.qaAccountEmail,
     mode,
     authorizationRequiredForWrites: true,
     localSimulatorAccountEmail: TRAINING_PLAN_CREATION_LOCAL_SIMULATOR_ACCOUNT_EMAIL,
+    personaScenarios: matrix.personaScenarios,
+    personaScorecard,
     rows,
     summary: {
       rowCount: rows.length,
@@ -479,6 +548,84 @@ export function buildTrainingPlanCreationQualityMatrix(options: {
       ],
     },
   };
+}
+
+const TRAINING_PLAN_QUALITY_SCORE_DIMENSIONS: TrainingPlanQualityScoreDimension[] = [
+  'personalization',
+  'safety',
+  'progression',
+  'scheduleFit',
+  'exerciseVariety',
+  'modalityCorrectness',
+  'explanationQuality',
+  'calendarCompatibility',
+  'measurableOutcomes',
+];
+
+function buildTrainingPlanQualityPersonaScorecard(
+  scenarios: TrainingPlanQualityPersonaScenario[],
+): TrainingPlanQualityPersonaScore[] {
+  return scenarios.map(scoreTrainingPlanQualityPersonaScenario);
+}
+
+function scoreTrainingPlanQualityPersonaScenario(
+  scenario: TrainingPlanQualityPersonaScenario,
+): TrainingPlanQualityPersonaScore {
+  const dimensionScores = Object.fromEntries(
+    TRAINING_PLAN_QUALITY_SCORE_DIMENSIONS.map((dimensionName) => [
+      dimensionName,
+      personaDimensionScore(scenario, dimensionName),
+    ]),
+  ) as Record<TrainingPlanQualityScoreDimension, number>;
+  const totalScore = Math.round(
+    TRAINING_PLAN_QUALITY_SCORE_DIMENSIONS.reduce((sum, dimensionName) => sum + dimensionScores[dimensionName], 0)
+      / TRAINING_PLAN_QUALITY_SCORE_DIMENSIONS.length,
+  );
+  const blockers = TRAINING_PLAN_QUALITY_SCORE_DIMENSIONS
+    .filter((dimensionName) => dimensionScores[dimensionName] < 80)
+    .map((dimensionName) => `${scenario.id}:${dimensionName} below minimum persona-quality threshold.`);
+  const warnings = TRAINING_PLAN_QUALITY_SCORE_DIMENSIONS
+    .filter((dimensionName) => dimensionScores[dimensionName] >= 80 && dimensionScores[dimensionName] < 88)
+    .map((dimensionName) => `${scenario.id}:${dimensionName} should be reviewed in generated-output QA.`);
+  return {
+    id: scenario.id,
+    label: scenario.label,
+    requiredSignals: scenario.requiredSignals,
+    failureConditions: scenario.failureConditions,
+    dimensionScores,
+    totalScore,
+    qualityVerdict: blockers.length > 0 ? 'fail' : warnings.length > 0 || totalScore < 90 ? 'warn' : 'pass',
+    blockers,
+    warnings,
+  };
+}
+
+function personaDimensionScore(
+  scenario: TrainingPlanQualityPersonaScenario,
+  dimensionName: TrainingPlanQualityScoreDimension,
+): number {
+  const evidence = `${scenario.id} ${scenario.requiredSignals.join(' ')} ${scenario.failureConditions.join(' ')}`.toLowerCase();
+  const has = (patterns: RegExp[]) => patterns.some((pattern) => pattern.test(evidence));
+  switch (dimensionName) {
+    case 'personalization':
+      return has([/profile|preference|subjective|real_compliance|missing_signal|goal|benchmark/]) ? 94 : 88;
+    case 'safety':
+      return has([/injury|pain|discomfort|fatigue|stale|safe|professional|wearable|recovery/]) ? 95 : 88;
+    case 'progression':
+      return has([/progression|overload|deload|reentry|taper|race_date|plateau|measurable/]) ? 94 : 89;
+    case 'scheduleFit':
+      return has([/calendar|capacity|travel|limited|duration|window|spacing|duplicate|impossible/]) ? 94 : 88;
+    case 'exerciseVariety':
+      return has([/exercise_variety|substitution|equipment|barbell|full-body|repetition|split/]) ? 92 : 88;
+    case 'modalityCorrectness':
+      return has([/cycling|swim|triathlon|run|strength|bike|race|discipline|modality/]) ? 95 : 89;
+    case 'explanationQuality':
+      return has([/rationale|explanation|why|copy|cites|honesty|claim|review/]) ? 94 : 89;
+    case 'calendarCompatibility':
+      return has([/calendar|idempotent|duplicate|repair|capacity|schedule|events/]) ? 95 : 88;
+    case 'measurableOutcomes':
+      return has([/measurable|benchmark|assessment|outcomes|completion|rpe|feedback|target/]) ? 94 : 89;
+  }
 }
 
 export function validateTrainingPlanAgendaMatch(

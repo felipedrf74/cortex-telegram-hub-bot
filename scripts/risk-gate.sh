@@ -4,7 +4,6 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$ROOT/scripts/lib/release-gates.sh"
 cd "$ROOT"
-release_require_git_worktree "$ROOT"
 
 BASE_REF=""
 EXPLICIT_FILES=""
@@ -48,6 +47,10 @@ while [ $# -gt 0 ]; do
     *) echo "Unknown arg: $1" >&2; usage >&2; exit 64 ;;
   esac
 done
+
+if [ "$DRY_RUN" != "true" ]; then
+  release_require_git_worktree "$ROOT"
+fi
 
 run_cmd() {
   printf '▶ %s\n' "$*"

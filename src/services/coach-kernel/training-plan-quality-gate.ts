@@ -790,6 +790,13 @@ function normalizeExercisesForSlot(
     if (!definition || !exerciseFitsSpec(definition, spec)) {
       finalName = fallbackName;
       definition = findExerciseDefinitionByName(finalName);
+      if (!definition || !exerciseFitsSpec(definition, spec)) {
+        const replacement = fallbackReplacementForSlot(slot, index + 1, spec);
+        if (replacement) {
+          finalName = replacement;
+          definition = findExerciseDefinitionByName(finalName);
+        }
+      }
       if (rawName && rawName !== finalName) {
         repairActions.push(`Replaced incompatible or unknown exercise "${rawName}" with "${finalName}" for ${slot.slot}.`);
       }
@@ -799,9 +806,12 @@ function normalizeExercisesForSlot(
       const count = (fallbackUse.get(key) ?? 0) + 1;
       fallbackUse.set(key, count);
       if (count > 1 || !slot.primaryMuscles.includes('quads')) {
-        finalName = fallbackReplacementForSlot(slot, count, spec);
-        definition = findExerciseDefinitionByName(finalName);
-        repairActions.push(`Replaced repeated fallback "${name}" with "${finalName}" for ${slot.slot}.`);
+        const replacement = fallbackReplacementForSlot(slot, count, spec);
+        if (replacement) {
+          finalName = replacement;
+          definition = findExerciseDefinitionByName(finalName);
+          repairActions.push(`Replaced repeated fallback "${name}" with "${finalName}" for ${slot.slot}.`);
+        }
       }
     }
     const prescription = prescriptionFor(spec.goal, index);
@@ -1374,13 +1384,36 @@ function weeklyVolumeTargetsForSpec(spec: TrainingPlanSpec): WeeklyVolumeTarget[
       ? spec.daysPerWeek >= 6 ? 24 : 16
       : 18;
   const targetFrequency = spec.daysPerWeek >= 4 && !supportBias ? 2 : 1;
-  return MAJOR_MUSCLE_GROUPS.map((muscle) => ({
-    muscle,
-    minDirectSets,
-    targetDirectSets,
-    maxDirectSets,
-    targetFrequency,
-  }));
+  return MAJOR_MUSCLE_GROUPS
+    .filter((muscle) =>
+      hasCompatibleDirectExerciseForMuscle(muscle, spec)
+      || !shouldRelaxSafetyLimitedVolumeTarget(muscle, spec)
+    )
+    .map((muscle) => ({
+      muscle,
+      minDirectSets,
+      targetDirectSets,
+      maxDirectSets,
+      targetFrequency,
+    }));
+}
+
+function hasCompatibleDirectExerciseForMuscle(muscle: MuscleGroup, spec: TrainingPlanSpec): boolean {
+  return EXERCISE_LIBRARY.some((definition) =>
+    definition.primaryMuscles.includes(muscle) && exerciseFitsSpec(definition, spec)
+  );
+}
+
+function shouldRelaxSafetyLimitedVolumeTarget(muscle: MuscleGroup, spec: TrainingPlanSpec): boolean {
+  const injuryText = normalizeTextToken((spec.injuriesOrLimitations ?? []).join(' '));
+  if (!injuryText || /\bnone\b/.test(injuryText)) return false;
+  return EXERCISE_LIBRARY.some((definition) =>
+    definition.primaryMuscles.includes(muscle)
+    && !violatesExcludedExercise(definition, spec)
+    && equipmentFits(definition, spec)
+    && goalFits(definition, spec)
+    && violatesInjuryLimitations(definition, spec)
+  );
 }
 
 function reconcileWeeklyVolume(strengthSessions: MutableSession[], spec: TrainingPlanSpec): number {
@@ -1973,7 +2006,15 @@ function prescriptionFor(goal: TrainingPlanSpec['goal'], index: number): { sets:
     : { sets: 3, reps: '10-20', rir: 2, rpe: '7-8', restSec: 75 };
 }
 
-function fallbackReplacementForSlot(slot: SplitSlotDefinition, occurrence: number, spec: TrainingPlanSpec): string {
+function firstCompatibleExerciseName(names: string[], spec: TrainingPlanSpec): string | null {
+  for (const name of names) {
+    const definition = findExerciseDefinitionByName(name);
+    if (definition && exerciseFitsSpec(definition, spec)) return definition.name;
+  }
+  return null;
+}
+
+function fallbackReplacementForSlot(slot: SplitSlotDefinition, occurrence: number, spec: TrainingPlanSpec): string | null {
   const used = new Set<string>();
   for (const pattern of slot.movementPatterns) {
     const candidate = selectExerciseForPattern(pattern, spec, used);
@@ -1981,12 +2022,22 @@ function fallbackReplacementForSlot(slot: SplitSlotDefinition, occurrence: numbe
     used.add(candidate.definition.id);
     if (occurrence <= used.size + 1) return candidate.definition.name;
   }
-  if (slot.primaryMuscles.includes('hamstrings')) return 'Romanian Deadlift';
-  if (slot.primaryMuscles.includes('quads')) return 'Leg Press';
-  if (slot.primaryMuscles.includes('chest')) return 'Dumbbell Bench Press';
-  if (slot.primaryMuscles.includes('lats') || slot.primaryMuscles.includes('upper_back')) return 'Lat Pulldown';
-  if (slot.primaryMuscles.includes('side_delts')) return 'Dumbbell Lateral Raise';
-  return 'Cable Row';
+  if (slot.primaryMuscles.includes('hamstrings')) {
+    return firstCompatibleExerciseName(['Romanian Deadlift', 'Glute Bridge', 'Single-Leg Hip Hinge', 'Bird Dog'], spec);
+  }
+  if (slot.primaryMuscles.includes('quads')) {
+    return firstCompatibleExerciseName(['Step-Up', 'Bodyweight Squat', 'Leg Press'], spec);
+  }
+  if (slot.primaryMuscles.includes('chest')) {
+    return firstCompatibleExerciseName(['Dumbbell Bench Press', 'DB Floor Press', 'Dumbbell Floor Press', 'Push-Up'], spec);
+  }
+  if (slot.primaryMuscles.includes('lats') || slot.primaryMuscles.includes('upper_back')) {
+    return firstCompatibleExerciseName(['Lat Pulldown', 'Band Pulldown', 'Band Row', 'Inverted Row'], spec);
+  }
+  if (slot.primaryMuscles.includes('side_delts')) {
+    return firstCompatibleExerciseName(['Dumbbell Lateral Raise', 'Side-Lying Y Raise'], spec);
+  }
+  return firstCompatibleExerciseName(['Cable Row', 'Band Row', 'Inverted Row', 'Dead Bug', 'Bird Dog'], spec);
 }
 
 function buildWhyThisPlan(split: SplitTemplate, spec: TrainingPlanSpec): string[] {
