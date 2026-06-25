@@ -369,6 +369,46 @@ describe('training-plan-quality-gate', () => {
     expect(result.validation.errors.map((error) => error.code)).not.toContain('progression_model_integrity');
   });
 
+  it('repairs four-week hypertrophy plans by marking the scheduled deload week before linting', () => {
+    const spec = buildTrainingPlanSpec({
+      userId: 12,
+      objective: 'Muscle Building',
+      daysPerWeek: 5,
+      startDate: '2026-06-22',
+      equipmentProfileLabel: 'full_gym',
+      availableEquipment: ['dumbbell', 'barbell', 'cable', 'machine'],
+      fitnessProfile: { experience_level: 'Intermediate' },
+      gymProfile: { equipment_access: 'Full gym' },
+      durationWeeks: 4,
+    });
+    const result = prepareTrainingPlanForQualityGate(
+      {
+        sport: 'gym',
+        weeks: [
+          { weekNumber: 1, focus: 'base', sessions: [] },
+          { weekNumber: 2, focus: 'base', sessions: [] },
+          { weekNumber: 3, focus: 'build', sessions: [] },
+          { weekNumber: 4, focus: 'build', sessions: [] },
+        ],
+      },
+      spec,
+    );
+
+    const weeks = (result.planData as any).weeks ?? [];
+    const week4 = weeks[3];
+
+    expect(spec.progressionModel.deloadPolicy).toMatchObject({
+      enabled: true,
+      everyNWeeks: 4,
+    });
+    expect(result.validation.passed).toBe(true);
+    expect(result.validation.errors.map((error) => error.message).join(' ')).not.toContain('focus="deload"');
+    expect(result.repairActions).toContain('Marked week 4 as scheduled deload because the progression cadence is 4 weeks.');
+    expect(week4.focus).toBe('deload');
+    expect(week4.intensityPct).toBeLessThanOrEqual(58);
+    expect(week4.sessions.every((session: any) => session.progression?.deload === true)).toBe(true);
+  });
+
   it('aligns deload progression with focus=deload instead of fixed week modulo', () => {
     const result = prepareTrainingPlanForQualityGate(
       {

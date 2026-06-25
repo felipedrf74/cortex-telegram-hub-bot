@@ -246,6 +246,7 @@ export function prepareTrainingPlanForQualityGate(
     ? plan.trainingPlanQuality.repairActions.filter((action): action is string => typeof action === 'string')
     : [];
 
+  applyScheduledDeloadFocus(plan, spec, repairActions);
   plan = enrichStrengthPlan(plan, spec, split, repairActions);
   let validation = validateTrainingPlanQuality(plan, spec, split);
   for (let repairAttempt = 0; repairAttempt < 2 && !validation.passed; repairAttempt += 1) {
@@ -1186,7 +1187,7 @@ function applyProgressionToExercises(
 }
 
 function progressionForWeek(spec: TrainingPlanSpec, weekNumber: number, weekFocus: unknown): Record<string, unknown> {
-  const deload = isDeloadFocus(weekFocus);
+  const deload = isLoadReductionFocus(weekFocus);
   const exerciseNote = deload
     ? 'Deload week: reduce load or sets and leave extra reps in reserve.'
     : spec.progressionModel.type === 'linear_load'
@@ -1207,6 +1208,48 @@ function progressionForWeek(spec: TrainingPlanSpec, weekNumber: number, weekFocu
 
 function isDeloadFocus(value: unknown): boolean {
   return /\bdeload\b/i.test(String(value || ''));
+}
+
+function isLoadReductionFocus(value: unknown): boolean {
+  return /\b(deload|taper|recovery|review)\b/i.test(String(value || ''));
+}
+
+function applyScheduledDeloadFocus(
+  planData: MutablePlan,
+  spec: TrainingPlanSpec,
+  repairActions: string[],
+): void {
+  const weeks = Array.isArray(planData.weeks) ? planData.weeks : [];
+  const policy = spec.progressionModel?.deloadPolicy;
+  const cadence = normalizePositiveInt(policy?.everyNWeeks, 0);
+  if (!policy?.enabled || cadence < 1 || weeks.length < cadence) return;
+  if (weeks.some((week) => isLoadReductionFocus(week.focus))) return;
+
+  const dueWeeks = weeks.filter((week, index) => {
+    const weekNumber = typeof week.weekNumber === 'number' ? week.weekNumber : index + 1;
+    return weekNumber >= cadence && weekNumber % cadence === 0;
+  });
+  const targets = dueWeeks.length > 0 ? dueWeeks : [weeks[cadence - 1]].filter((week): week is MutableWeek => Boolean(week));
+  if (targets.length === 0) return;
+
+  const markedWeekNumbers: number[] = [];
+  for (const [index, week] of targets.entries()) {
+    const weekNumber = typeof week.weekNumber === 'number'
+      ? week.weekNumber
+      : cadence * (index + 1);
+    if (!isLoadReductionFocus(week.focus)) {
+      week.focus = 'deload';
+      const intensityPct = typeof week.intensityPct === 'number' ? week.intensityPct : 58;
+      week.intensityPct = Math.min(intensityPct, 58);
+      markedWeekNumbers.push(weekNumber);
+    }
+  }
+
+  if (markedWeekNumbers.length > 0) {
+    repairActions.push(
+      `Marked week${markedWeekNumbers.length === 1 ? '' : 's'} ${markedWeekNumbers.join(', ')} as scheduled deload because the progression cadence is ${cadence} weeks.`,
+    );
+  }
 }
 
 function progressionStructureIssues(
@@ -1233,12 +1276,12 @@ function progressionStructureIssues(
     ));
   }
 
-  const deloadWeeks = weeks.filter((week) => isDeloadFocus(week.focus));
+  const deloadWeeks = weeks.filter((week) => isLoadReductionFocus(week.focus));
   if (deloadWeeks.length === 0) {
     errors.push(issue(
       'progression_model_integrity',
       'blocker',
-      'Progression model enables deloads but no week has focus="deload".',
+      'Progression model enables scheduled deloads but no week has a deload, taper, recovery, or review focus.',
       [],
       { weekCount, focusValues: weeks.map((week) => week.focus ?? null) },
     ));
