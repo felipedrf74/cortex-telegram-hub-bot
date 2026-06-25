@@ -19,6 +19,9 @@ Source of truth: `src/services/coach-kernel/evaluation/scenarios.ts`.
 | `feedback-too-hard-easy-long` | feedback | User reported calibration problems. | Reduce risk and explain calibration/adaptation. |
 | `missing-fueling-coverage` | feedback | Fueling context missing for key endurance work. | Surface fueling/cross-skill guidance where relevant. |
 | `weak-profile-completeness` | profile_completeness | Thresholds/equipment confidence missing. | Conservative output plus profile-gap surfacing. |
+| `stale-wearable-readiness` | profile_completeness | Wearable readiness exists but is stale. | Surface confidence/freshness limits and avoid aggressive progression. |
+| `no-wearable-readiness` | profile_completeness | No wearable or manual readiness data is available. | Use conservative defaults without pretending precise readiness. |
+| `calendar-conflicted-week` | schedule | Calendar pressure leaves only a few short windows. | Produce a schedule-compatible minimum effective week without duplicate/impossible sessions. |
 | `discomfort-substitution` | safety | Knee and low-back flags added. | Avoid painful movement conflicts and preserve intent. |
 
 ## Expectations Model
@@ -44,4 +47,3 @@ These expectations are consumed by the rubric, not by the planner. The benchmark
 - Prefer transforms that mutate `AthleteState` the same way real product signals would.
 - Avoid expected exact titles, exact exercises, or exact day placements unless the product requirement is absolute.
 - For lifecycle scenarios, compare stable identity and duplicate safety rather than deleting by broad date ranges.
-

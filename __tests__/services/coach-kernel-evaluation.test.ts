@@ -15,7 +15,7 @@ describe('training coach evaluation harness', () => {
   it('ships a representative persona bank for coach-quality coverage', () => {
     const ids = new Set(trainingEvalPersonaBank.map((persona) => persona.id));
 
-    expect(trainingEvalPersonaBank.length).toBeGreaterThanOrEqual(13);
+    expect(trainingEvalPersonaBank.length).toBeGreaterThanOrEqual(14);
     expect([...ids]).toEqual(expect.arrayContaining([
       'beginner-gym-dumbbells',
       'intermediate-hypertrophy-full-gym',
@@ -24,6 +24,7 @@ describe('training coach evaluation harness', () => {
       'cyclist-ftp-build',
       'hybrid-gym-running',
       'hybrid-gym-cycling',
+      'triathlon-swim-bike-run-race-prep',
       'low-time-user',
       'inconsistent-adherence-user',
       'equipment-limited-home',
@@ -43,7 +44,7 @@ describe('training coach evaluation harness', () => {
     const ids = new Set(trainingEvalScenarioBank.map((scenario) => scenario.id));
     const categories = new Set(trainingEvalScenarioBank.map((scenario) => scenario.category));
 
-    expect(trainingEvalScenarioBank.length).toBeGreaterThanOrEqual(12);
+    expect(trainingEvalScenarioBank.length).toBeGreaterThanOrEqual(15);
     expect([...ids]).toEqual(expect.arrayContaining([
       'baseline-current-profile',
       'missed-key-session',
@@ -56,6 +57,9 @@ describe('training coach evaluation harness', () => {
       'feedback-too-hard-easy-long',
       'missing-fueling-coverage',
       'weak-profile-completeness',
+      'stale-wearable-readiness',
+      'no-wearable-readiness',
+      'calendar-conflicted-week',
       'discomfort-substitution',
     ]));
     expect([...categories]).toEqual(expect.arrayContaining([

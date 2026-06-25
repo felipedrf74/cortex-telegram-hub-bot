@@ -5,6 +5,7 @@ const hoisted = vi.hoisted(() => ({
   calculateReadiness: vi.fn(),
   getActivitiesByDateForUser: vi.fn(),
   findExistingOwnership: vi.fn(),
+  isConnected: vi.fn(),
 }));
 
 let mockActivePlan: any = null;
@@ -50,6 +51,10 @@ vi.mock('../../src/services/training-plan-lifecycle', () => ({
   findExistingOwnership: hoisted.findExistingOwnership,
 }));
 
+vi.mock('../../src/services/oauth-store', () => ({
+  isConnected: hoisted.isConnected,
+}));
+
 import {
   adaptDtoSessionForReadiness,
   fetchCurrentReadinessForPlan,
@@ -74,11 +79,13 @@ describe('training-read-models', () => {
     hoisted.calculateReadiness.mockReset();
     hoisted.getActivitiesByDateForUser.mockReset();
     hoisted.findExistingOwnership.mockReset();
+    hoisted.isConnected.mockReset();
     (buildCalendarEventLookup as any).mockReset();
     (buildCalendarEventLookup as any).mockImplementation(async () => mockCalendarLookup);
     hoisted.calculateReadiness.mockImplementation(async () => mockReadinessResult);
     hoisted.getActivitiesByDateForUser.mockImplementation(async () => mockGarminActivities);
     hoisted.findExistingOwnership.mockReturnValue(null);
+    hoisted.isConnected.mockReturnValue(true);
   });
 
   it('surfaces an injury-safe swap for injury-affecting active sessions', () => {
@@ -265,6 +272,63 @@ describe('training-read-models', () => {
       calendarSyncState: 'repair_needed',
       legacyCalendarSyncState: 'stale',
     });
+  });
+
+  it('marks stored calendar links as provider_disconnected when OAuth was removed', async () => {
+    mockActivePlan = {
+      id: 14,
+      name: 'Disconnected Calendar Block',
+      periodization: 'base',
+      start_date: '2026-04-26',
+      preferences_json: JSON.stringify({ trainingCalendarSource: 'google' }),
+    };
+    mockCurrentWeek = { id: 214, week_number: 1, focus: 'base' };
+    mockWeekSessions = [
+      {
+        id: 704,
+        day_of_week: 'Monday',
+        title: 'Strength Session',
+        session_type: 'gym',
+        calendar_event_id: 'evt-disconnected',
+        calendar_source: 'google',
+        duration_minutes: 60,
+        status: 'planned',
+        description: 'Strength work.',
+        exercises_json: JSON.stringify([]),
+      },
+    ];
+    mockCalendarLookup = new Map([
+      ['evt-disconnected', {
+        time: '12:00',
+        event: {
+          id: 'evt-disconnected',
+          summary: '💪 Strength Session (60min)',
+          start: '2026-04-27T12:00:00.000Z',
+          end: '2026-04-27T13:00:00.000Z',
+        },
+      }],
+    ]);
+    hoisted.findExistingOwnership.mockReturnValue({
+      calendar_event_id: 'evt-disconnected',
+      calendar_source: 'google',
+      status: 'active',
+    });
+    hoisted.isConnected.mockReturnValue(false);
+
+    const result = await getWeekPlan(42, 42);
+
+    expect(hoisted.isConnected).toHaveBeenCalledWith(42, 'google');
+    expect(result.sessions[0]).toMatchObject({
+      id: '704',
+      title: 'Strength Session',
+      time: null,
+      calendarEventId: null,
+      calendarSource: null,
+      calendarSyncState: 'provider_disconnected',
+      legacyCalendarSyncState: 'stale',
+    });
+    expect(result.syncedSessionCount).toBe(0);
+    expect(result.missingSessionCount).toBe(1);
   });
 
   it('marks mismatched linked calendar events as repair_needed in the week plan read model', async () => {
@@ -583,6 +647,55 @@ describe('training-read-models', () => {
         goalMode: 'race',
       });
       expect(result.weeks).toHaveLength(1);
+    });
+
+    it('exposes per-week learning focus from the persisted trainingLearningPath', async () => {
+      mockActivePlan = {
+        id: 16,
+        name: 'Hybrid Learning Block',
+        duration_weeks: 4,
+        status: 'active',
+        start_date: '2026-04-20T00:00:00.000Z',
+        end_date: '2026-05-17T00:00:00.000Z',
+        periodization: 'base',
+        preferences_json: JSON.stringify({
+          trainingLearningPath: {
+            schemaVersion: 1,
+            objective: 'Build hybrid fitness',
+            planGoal: 'Create a repeatable training rhythm.',
+            measurableOutcomes: ['Session completion and skip rate'],
+            weeklyPath: [
+              {
+                weekNumber: 1,
+                title: 'Week 1: Establish baseline and rhythm',
+                phaseGoal: 'Establish baseline and rhythm',
+                weeklyLearningFocus: 'Separate easy running from quality work.',
+                whyThisMatters: 'Intent makes feedback useful.',
+                techniqueCards: ['Run easy enough to repeat tomorrow.'],
+                benchmarkSessionTitles: ['Threshold Run Benchmark'],
+                assessmentPrompt: 'Was the benchmark controlled?',
+              },
+            ],
+          },
+        }),
+      };
+      mockPlanWeeks = [{ id: 160, week_number: 1, focus: 'base', intensity_pct: 60 }];
+      mockWeekSessions = [];
+
+      const result = await getAllPlanWeeks(42, 42);
+
+      expect(result.weeks[0]).toMatchObject({
+        weekNumber: 1,
+        learningFocus: {
+          title: 'Week 1: Establish baseline and rhythm',
+          phaseGoal: 'Establish baseline and rhythm',
+          weeklyLearningFocus: 'Separate easy running from quality work.',
+          whyThisMatters: 'Intent makes feedback useful.',
+          techniqueCards: ['Run easy enough to repeat tomorrow.'],
+          benchmarkSessionTitles: ['Threshold Run Benchmark'],
+          assessmentPrompt: 'Was the benchmark controlled?',
+        },
+      });
     });
 
     it.each([

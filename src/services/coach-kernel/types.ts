@@ -572,6 +572,8 @@ export interface NormalizedTrainingProfile {
   };
   scheduleConstraints: {
     preferredLongSessionDay?: DayOfWeek;
+    preferredTrainingDays?: DayOfWeek[];
+    blockedTrainingDays?: DayOfWeek[];
     maxSessionsPerDay: number;
     declaredConstraints: string[];
   };
@@ -592,6 +594,10 @@ export interface NormalizedTrainingProfile {
     runningWeeklyMileageKm?: number;
     easyPaceMinPerKm?: string;
     cyclingFtpWatts?: number;
+    cyclingWeeklyHours?: string;
+    swimPoolAccess?: string;
+    swimSessionsPerWeek?: number;
+    swim400mFreestyleTime?: string;
     bodyWeightKg?: number;
     squat1RmKg?: number;
     bench1RmKg?: number;

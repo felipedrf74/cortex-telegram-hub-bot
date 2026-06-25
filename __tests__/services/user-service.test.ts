@@ -66,6 +66,7 @@ describe('user-service', () => {
     testDb = new Database(':memory:');
     testDb.pragma('journal_mode = WAL');
     applyMigrations(testDb);
+    vi.stubEnv('OWNER_TELEGRAM_ID', '');
   });
 
   afterEach(() => {

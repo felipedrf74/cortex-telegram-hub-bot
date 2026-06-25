@@ -35,7 +35,17 @@ fi
 
 cmd=(./scripts/release-verify.sh)
 git_mount=()
-if [ -e "$ROOT/.git" ]; then
+if [ -f "$ROOT/.git" ]; then
+  git_dir="$(git -C "$ROOT" rev-parse --absolute-git-dir 2>/dev/null || true)"
+  git_common_dir="$(git -C "$ROOT" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
+  git_mount=(-v "$ROOT/.git:/app/.git:ro")
+  if [ -n "$git_dir" ] && [ -d "$git_dir" ]; then
+    git_mount+=(-v "$git_dir:$git_dir:ro")
+  fi
+  if [ -n "$git_common_dir" ] && [ -d "$git_common_dir" ] && [ "$git_common_dir" != "$git_dir" ]; then
+    git_mount+=(-v "$git_common_dir:$git_common_dir:ro")
+  fi
+elif [ -d "$ROOT/.git" ]; then
   git_mount=(-v "$ROOT/.git:/app/.git:ro")
 fi
 

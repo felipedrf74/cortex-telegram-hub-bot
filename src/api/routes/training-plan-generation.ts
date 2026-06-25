@@ -50,12 +50,7 @@ import {
 } from './training-plan-persistence';
 import { cancelTrainingPlanForUser } from './training-plan-cancellation';
 import { enforceRequestedTrainingPlanVolume } from '../../services/training-plan-volume-enforcement';
-import { EQUIPMENT_VOCABULARY_VERSION } from '../../services/training-equipment-vocabulary';
-import {
-  GENERATION_PIPELINE_VERSION,
-  loadTrainingCatalogSnapshot,
-} from '../../services/coach-kernel/training-catalog';
-import { STRENGTH_SELECTOR_POLICY_VERSION } from '../../services/coach-kernel/strength-selector';
+import { loadTrainingCatalogSnapshot } from '../../services/coach-kernel/training-catalog';
 import * as trainingPlans from '../../services/training-plans';
 import { findOrphanedOwnerships } from '../../services/training-plan-lifecycle';
 import { reconcileOrphanedTrainingAgendaEvents } from '../../services/training-agenda-reconciliation';
@@ -88,6 +83,10 @@ import {
   wireHealthSignalToSafety,
   type WireHealthSignalOutput,
 } from '../../services/coach-kernel/safety-wiring';
+import {
+  attachTrainingLearningPathToPlan,
+  type TrainingLearningPath,
+} from '../../services/training-learning-path';
 
 export const TRAINING_PLAN_GENERATOR_POLICY_VERSION = 'training-plan-shape-v2';
 
@@ -164,7 +163,14 @@ export type TrainingPlanGenerationResult =
           phase: string;
           sessionCount: number;
           keySessions: string[];
+          phaseGoal?: string | null;
+          weeklyLearningFocus?: string | null;
+          whyThisMatters?: string | null;
+          techniqueCards?: string[];
+          benchmarkSessionTitles?: string[];
+          assessmentPrompt?: string | null;
         }>;
+        trainingLearningPath: TrainingLearningPath | null;
         planLint: PlanLintResult;
         warnings: Array<{ code: string; message: string }>;
         blockers: Array<{ code: string; message: string }>;
@@ -215,6 +221,7 @@ export type TrainingPlanGenerationResult =
         message: string;
         planLint: PlanLintResult;
         warnings: Array<{ code: string; message: string }>;
+        trainingLearningPath?: TrainingLearningPath | null;
         calendarFetchDegraded: boolean;
         calendarFetchError?: string;
         fallbackTemplateUsed: boolean;
@@ -360,6 +367,8 @@ export async function generateTrainingPlanForUser(
   const fitnessProfile = unwrapOnboardingProfileData(onboarding.getProfile?.(userId, 'fitness'));
   const gymProfile = unwrapOnboardingProfileData(onboarding.getProfile?.(userId, 'triathlon-gym'));
   const runProfile = unwrapOnboardingProfileData(onboarding.getProfile?.(userId, 'triathlon-running'));
+  const cyclingProfile = unwrapOnboardingProfileData(onboarding.getProfile?.(userId, 'triathlon-cycling'));
+  const swimProfile = unwrapOnboardingProfileData(onboarding.getProfile?.(userId, 'triathlon-swim'));
   const normalizedGoalMode = normalizeGoalMode(goalMode);
   const normalizedTrainingPriority = normalizeTrainingPriority(trainingPriority);
   const normalizedRaceDate = normalizeIsoDate(raceDate);
@@ -404,6 +413,7 @@ export async function generateTrainingPlanForUser(
           : objective,
       }
     : runProfile;
+  const enduranceProfileForPlan = mergeEnduranceProfileForPlan(runProfileForPlan, cyclingProfile, swimProfile);
   // Computed here (not at the lint-input site below) because the
   // duration clamp after start-date resolution needs the exact same
   // event-based definition the linter applies.
@@ -547,7 +557,7 @@ export async function generateTrainingPlanForUser(
     longWorkoutDay: normalizedLongWorkoutDay,
     fitnessProfile,
     gymProfile,
-    runProfile: runProfileForPlan,
+    runProfile: enduranceProfileForPlan,
     training: null,
     cooking: null,
     finance: null,
@@ -579,7 +589,7 @@ export async function generateTrainingPlanForUser(
       longWorkoutDay: normalizedLongWorkoutDay,
       fitnessProfile,
       gymProfile,
-      runProfile: runProfileForPlan,
+      runProfile: enduranceProfileForPlan,
       training: trainingContextResult.status === 'fulfilled' ? trainingContextResult.value : null,
       cooking: cookingContextResult.status === 'fulfilled' ? cookingContextResult.value : null,
       finance: financeContextResult.status === 'fulfilled' ? financeContextResult.value : null,
@@ -630,7 +640,7 @@ export async function generateTrainingPlanForUser(
       raceDate: effectiveRaceDate,
       fitnessProfile,
       gymProfile,
-      runProfile: runProfileForPlan,
+      runProfile: enduranceProfileForPlan,
       currentReadiness,
       twoADayPreference,
       capacityWindows: upstreamCapacityWindows,
@@ -706,6 +716,12 @@ export async function generateTrainingPlanForUser(
   }
   const safetyBlocked = safetyOutput?.effectiveSeverity === 'block'
     || generatedPlanContainsSafetyPause(planData);
+  planData = attachTrainingLearningPathToPlan(planData, {
+    objective,
+    goalMode: normalizedGoalMode,
+    trainingPriority: normalizedTrainingPriority,
+    durationWeeks,
+  });
 
   // training-expert-coach-knowledge-engine (2026-05-12):
   // Run the Training quality gate BEFORE the cancellation saga and
@@ -731,7 +747,7 @@ export async function generateTrainingPlanForUser(
       : typeof fitnessProfile?.available_equipment === 'string'
         ? String(fitnessProfile.available_equipment).toLowerCase().trim() || undefined
         : undefined;
-  const generationVersionPins = buildTrainingGenerationVersionPins();
+  const generationVersionPins = buildTrainingGenerationVersionPins(tenantId);
   const requestedStrengthDaysForQuality = effectiveStrengthSessionsPerWeek > 0
     ? effectiveStrengthSessionsPerWeek
     : gymOnlyObjective
@@ -823,6 +839,7 @@ export async function generateTrainingPlanForUser(
       trainingPlanSpec,
       trainingPlanQuality: trainingQuality?.validation ?? null,
       trainingPlanRepairActions: trainingQuality?.repairActions ?? [],
+      trainingLearningPath: extractTrainingLearningPath(planData),
       trainingCalendarSource: resolvedCalendarSource || null,
       generatorPolicyVersion: TRAINING_PLAN_GENERATOR_POLICY_VERSION,
       generationVersionPins,
@@ -834,7 +851,9 @@ export async function generateTrainingPlanForUser(
     athleteProfiles: {
       fitnessProfile,
       gymProfile,
-      runProfile: runProfileForPlan,
+      runProfile: enduranceProfileForPlan,
+      cyclingProfile,
+      swimProfile,
     },
     calendarSource: resolvedCalendarSource || undefined,
     equipmentProfile: equipmentProfileLabel,
@@ -849,6 +868,51 @@ export async function generateTrainingPlanForUser(
   const preflightLint = trainingQuality
     ? mergeTrainingQualityIntoPlanLint(basePreflightLint, trainingQuality.validation)
     : basePreflightLint;
+  if (usedFallbackTemplate && !previewOnly) {
+    incrementTrainingGenerationCounter('fallback_template_blocked_total');
+    logger.warn(
+      {
+        event: 'training_plan_generation.fallback_requires_review',
+        userId,
+        objective,
+        warningRuleIds: preflightLint.warnings.map((warning) => warning.ruleId),
+        blockerRuleIds: preflightLint.blockers.map((blocker) => blocker.ruleId),
+      },
+      'Training plan fallback template generated but blocked before persistence; user should review a preview and retry the coach kernel path',
+    );
+    return {
+      status: 'plan_quality_blocked',
+      data: {
+        status: 'plan_quality_blocked',
+        message:
+          'Nexus generated a safe fallback preview, but did not save it because the full coach engine was unavailable. Review the preview, retry generation, or adjust the inputs before saving a plan.',
+        planLint: preflightLint,
+        trainingLearningPath: extractTrainingLearningPath(planData),
+        warnings: [
+          {
+            code: 'fallback_requires_review',
+            message:
+              'The coach engine was unavailable, so Nexus stopped before saving a generic fallback plan.',
+          },
+          ...buildPlanWarnings({
+            calendarFetchDegraded,
+            calendarFetchError,
+            lintResult: preflightLint,
+            safetyOutput,
+          }),
+        ],
+        calendarFetchDegraded,
+        ...(calendarFetchError ? { calendarFetchError } : {}),
+        fallbackTemplateUsed: true,
+        goalMode: normalizedGoalMode,
+        trainingPriority: normalizedTrainingPriority,
+        raceDate: raceDateForLint,
+        generatorPolicyVersion: TRAINING_PLAN_GENERATOR_POLICY_VERSION,
+        generationVersionPins,
+        trainingSafety: buildTrainingSafetyGenerationSummary(safetyOutput),
+      },
+    };
+  }
   if (previewOnly) {
     return {
       status: 'preview',
@@ -869,6 +933,7 @@ export async function generateTrainingPlanForUser(
         totalSessions: countSchedulablePlanSessions(planData),
         calendarSource: resolvedCalendarSource || null,
         phaseRoadmap: buildPlanPhaseRoadmap(planData),
+        trainingLearningPath: extractTrainingLearningPath(planData),
         planLint: preflightLint,
         warnings: buildPlanWarnings({
           calendarFetchDegraded,
@@ -912,6 +977,7 @@ export async function generateTrainingPlanForUser(
         message:
           'Nexus blocked this plan before saving because it failed the Training quality gate. Review the coach warning, adjust the inputs, and generate again.',
         planLint: preflightLint,
+        trainingLearningPath: extractTrainingLearningPath(planData),
         warnings: buildPlanWarnings({
           calendarFetchDegraded,
           calendarFetchError,
@@ -1015,6 +1081,7 @@ export async function generateTrainingPlanForUser(
       resolvedStartDate: startStr,
       calendarSource: resolvedCalendarSource || null,
       phaseRoadmap: buildPlanPhaseRoadmap(planData),
+      trainingLearningPath: extractTrainingLearningPath(planData),
       totalSessions: persistedPlan.totalSessions,
       eventsCreated: persistedPlan.eventsCreated,
       calendarSync: {
@@ -1055,11 +1122,36 @@ export async function generateTrainingPlanForUser(
       ...(calendarFetchError ? { calendarFetchError } : {}),
       planLint: lintResult,
       warnings: planWarnings,
-      message: usedFallbackTemplate
-        ? `Plan created with a reliable fallback template. ${persistedPlan.totalSessions} sessions scheduled across ${durationWeeks} weeks. ${persistedPlan.eventsCreated} calendar events created.`
-        : `Plan created! ${persistedPlan.totalSessions} sessions scheduled across ${durationWeeks} weeks. ${persistedPlan.eventsCreated} calendar events created.`,
+      message: buildTrainingPlanCreatedMessage({
+        totalSessions: persistedPlan.totalSessions,
+        durationWeeks,
+        eventsCreated: persistedPlan.eventsCreated,
+        calendarSource: resolvedCalendarSource || null,
+      }),
     },
   };
+}
+
+function buildTrainingPlanCreatedMessage(input: {
+  totalSessions: number;
+  durationWeeks: number;
+  eventsCreated: number;
+  calendarSource: CalendarSource | null;
+}): string {
+  const sessionLabel = input.totalSessions === 1 ? 'session' : 'sessions';
+  const weekLabel = input.durationWeeks === 1 ? 'week' : 'weeks';
+  const base = `Plan created! ${input.totalSessions} ${sessionLabel} scheduled across ${input.durationWeeks} ${weekLabel}.`;
+  if (!input.calendarSource) {
+    return `${base} Calendar sync is not connected for this plan.`;
+  }
+
+  const providerName = input.calendarSource === 'google' ? 'Google Calendar' : 'Outlook Calendar';
+  if (input.eventsCreated <= 0) {
+    return `${base} No ${providerName} events were created yet; use calendar sync after reconnecting the provider.`;
+  }
+
+  const eventLabel = input.eventsCreated === 1 ? 'event' : 'events';
+  return `${base} ${input.eventsCreated} ${providerName} ${eventLabel} created.`;
 }
 
 function countSchedulablePlanSessions(planData: any): number {
@@ -1123,14 +1215,14 @@ function buildKernelCapacityWindows(input: {
   return windows;
 }
 
-function buildTrainingGenerationVersionPins(): TrainingGenerationVersionPins {
-  const snapshot = loadTrainingCatalogSnapshot();
+function buildTrainingGenerationVersionPins(tenantId: number): TrainingGenerationVersionPins {
+  const snapshot = loadTrainingCatalogSnapshot({ tenantId });
   return {
     catalogVersion: snapshot.catalogVersion,
     sciencePolicyVersion: snapshot.sciencePolicyVersion,
-    selectorPolicyVersion: STRENGTH_SELECTOR_POLICY_VERSION,
-    equipmentVocabularyVersion: EQUIPMENT_VOCABULARY_VERSION,
-    generationPipelineVersion: GENERATION_PIPELINE_VERSION,
+    selectorPolicyVersion: snapshot.selectorPolicyVersion,
+    equipmentVocabularyVersion: snapshot.equipmentVocabularyVersion,
+    generationPipelineVersion: snapshot.generationPipelineVersion,
   };
 }
 
@@ -1139,6 +1231,12 @@ function buildPlanPhaseRoadmap(planData: any): Array<{
   phase: string;
   sessionCount: number;
   keySessions: string[];
+  phaseGoal?: string | null;
+  weeklyLearningFocus?: string | null;
+  whyThisMatters?: string | null;
+  techniqueCards?: string[];
+  benchmarkSessionTitles?: string[];
+  assessmentPrompt?: string | null;
 }> {
   return (Array.isArray(planData?.weeks) ? planData.weeks : []).map((week: any, index: number) => {
     const sessions = Array.isArray(week?.sessions) ? week.sessions : [];
@@ -1150,13 +1248,41 @@ function buildPlanPhaseRoadmap(planData: any): Array<{
       .map((session: any) => String(session?.title || '').trim())
       .filter((title: string) => title.length > 0)
       .slice(0, 3);
+    const learningFocus = objectValue(week?.learningFocus);
     return {
       weekNumber: Number(week?.weekNumber) || index + 1,
       phase: String(week?.focus || 'base'),
       sessionCount: activeSessions.length,
       keySessions,
+      phaseGoal: nonEmptyString(learningFocus?.phaseGoal),
+      weeklyLearningFocus: nonEmptyString(learningFocus?.weeklyLearningFocus),
+      whyThisMatters: nonEmptyString(learningFocus?.whyThisMatters),
+      techniqueCards: stringArray(learningFocus?.techniqueCards, 4),
+      benchmarkSessionTitles: stringArray(learningFocus?.benchmarkSessionTitles, 3),
+      assessmentPrompt: nonEmptyString(learningFocus?.assessmentPrompt),
     };
   });
+}
+
+function extractTrainingLearningPath(planData: any): TrainingLearningPath | null {
+  const learningPath = objectValue(planData?.trainingLearningPath);
+  return learningPath ? learningPath as TrainingLearningPath : null;
+}
+
+function objectValue(value: unknown): Record<string, any> | null {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, any>
+    : null;
+}
+
+function nonEmptyString(value: unknown): string | null {
+  return typeof value === 'string' && value.trim() ? value.trim() : null;
+}
+
+function stringArray(value: unknown, limit: number): string[] {
+  return Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === 'string' && item.trim().length > 0).slice(0, limit)
+    : [];
 }
 
 function applyEquipmentAuthorityMode(
@@ -1636,6 +1762,103 @@ function unwrapOnboardingProfileData(profile: unknown): Record<string, any> | nu
   // directly. Keep that path supported while the production service returns
   // the persisted wrapper row { id, user_id, profile_type, data, ... }.
   return record;
+}
+
+function mergeEnduranceProfileForPlan(
+  runProfile: Record<string, any> | null,
+  cyclingProfile: Record<string, any> | null,
+  swimProfile: Record<string, any> | null,
+): Record<string, any> | null {
+  const merged: Record<string, any> = { ...(runProfile ?? {}) };
+
+  if (cyclingProfile) {
+    assignProfileValueIfEmpty(merged, 'ftp_watts', cyclingProfile.ftp_watts);
+    assignProfileValueIfEmpty(merged, 'cycling_ftp_watts', cyclingProfile.ftp_watts);
+    assignProfileValueIfEmpty(merged, 'weekly_hours', cyclingProfile.weekly_hours);
+    assignProfileValueIfEmpty(merged, 'cycling_weekly_hours', cyclingProfile.weekly_hours);
+    assignProfileValueIfEmpty(merged, 'cycling_power_meter', cyclingProfile.power_meter);
+    assignProfileValueIfEmpty(merged, 'cycling_primary_discipline', cyclingProfile.primary_discipline);
+    assignProfileValueIfEmpty(merged, 'cycling_target_event', cyclingProfile.target_event);
+    assignProfileValueIfEmpty(merged, 'cycling_weekly_availability_days', cyclingProfile.weekly_availability_days);
+    mergeProfileScheduleValues(
+      merged,
+      'preferred_training_days',
+      cyclingProfile.preferred_training_days,
+      cyclingProfile.preferred_days,
+      cyclingProfile.available_days,
+    );
+    mergeProfileScheduleValues(
+      merged,
+      'blocked_days',
+      cyclingProfile.blocked_days,
+      cyclingProfile.avoid_days,
+      cyclingProfile.unavailable_days,
+    );
+  }
+
+  if (swimProfile) {
+    assignProfileValueIfEmpty(merged, 'swim_experience', swimProfile.experience);
+    assignProfileValueIfEmpty(merged, 'swim_primary_stroke', swimProfile.primary_stroke);
+    assignProfileValueIfEmpty(merged, 'pool_access', swimProfile.pool_access);
+    assignProfileValueIfEmpty(merged, 'swim_pool_access', swimProfile.pool_access);
+    assignProfileValueIfEmpty(merged, 'swim_sessions_per_week', swimProfile.sessions_per_week);
+    assignProfileValueIfEmpty(merged, 'swim_400m_freestyle_time', swimProfile.time_400m_freestyle_min);
+    mergeProfileScheduleValues(
+      merged,
+      'preferred_training_days',
+      swimProfile.preferred_training_days,
+      swimProfile.preferred_days,
+      swimProfile.available_days,
+    );
+    mergeProfileScheduleValues(
+      merged,
+      'blocked_days',
+      swimProfile.blocked_days,
+      swimProfile.avoid_days,
+      swimProfile.unavailable_days,
+    );
+  }
+
+  return Object.keys(merged).length > 0 ? merged : null;
+}
+
+function assignProfileValueIfEmpty(target: Record<string, any>, key: string, value: unknown): void {
+  if (hasConcreteProfileValue(target[key]) || !hasConcreteProfileValue(value)) return;
+  target[key] = value;
+}
+
+function mergeProfileScheduleValues(target: Record<string, any>, key: string, ...values: unknown[]): void {
+  for (const value of values) {
+    if (!hasConcreteProfileValue(value)) continue;
+    const existing = profileScheduleValueList(target[key]);
+    const incoming = profileScheduleValueList(value);
+    if (incoming.length === 0) continue;
+    const merged = [...existing];
+    for (const dayText of incoming) {
+      if (!merged.some((existingText) => existingText.toLowerCase() === dayText.toLowerCase())) {
+        merged.push(dayText);
+      }
+    }
+    target[key] = merged.length === 1 ? merged[0] : merged;
+  }
+}
+
+function profileScheduleValueList(value: unknown): string[] {
+  if (Array.isArray(value)) return value.flatMap(profileScheduleValueList);
+  if (typeof value === 'string') {
+    return value
+      .split(/[;,]/)
+      .map((part) => part.trim())
+      .filter(Boolean);
+  }
+  return hasConcreteProfileValue(value) ? [String(value)] : [];
+}
+
+function hasConcreteProfileValue(value: unknown): boolean {
+  if (value === null || value === undefined) return false;
+  if (typeof value === 'string') return value.trim().length > 0;
+  if (Array.isArray(value)) return value.length > 0;
+  return true;
 }
 
 function clampNumber(raw: unknown, fallback: number, min: number, max: number): number {

@@ -1,0 +1,101 @@
+# Nexus Hub — isolated Training E2E Docker sandbox
+#
+# This compose file is intentionally separate from docker-compose.local.yml:
+# - no fixed container_name values;
+# - no default 8200/8100 host ports;
+# - project-scoped volumes by default;
+# - isolated host data/log mounts under .local/training-e2e/<run-id>/.
+#
+# Always run it through scripts/training-e2e-up.sh so the project name,
+# ports, DB path, metadata, and cleanup commands are recorded.
+
+services:
+  content-engine:
+    build:
+      context: .
+      dockerfile: Dockerfile.python
+    image: ${NEXUS_TRAINING_E2E_CONTENT_IMAGE:-nexus-hub-content-engine:training-e2e}
+    env_file:
+      - path: .env.local
+        required: false
+    environment:
+      ENV: development
+      CONTENT_ENGINE_PORT: "8100"
+      NEXUS_BACKEND_BASE_URL: "http://nexus-hub:8200"
+      NEXUS_LOCAL_ALLOW_MODEL_CALLS: "0"
+    ports:
+      - "127.0.0.1:${NEXUS_TRAINING_E2E_PORT_PY:-18100}:8100"
+    volumes:
+      - ./content-engine:/engine:cached
+      - ${NEXUS_TRAINING_E2E_ROOT:-./.local/training-e2e/default}/content-engine-venv:/engine/.venv
+      - ${NEXUS_TRAINING_E2E_ROOT:-./.local/training-e2e/default}/logs/content-engine:/engine/logs
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8100/health"]
+      interval: 10s
+      timeout: 5s
+      start_period: 20s
+      retries: 6
+    restart: "no"
+
+  nexus-hub:
+    build:
+      context: .
+      dockerfile: Dockerfile.node
+    image: ${NEXUS_TRAINING_E2E_NODE_IMAGE:-nexus-hub-node:training-e2e}
+    depends_on:
+      content-engine:
+        condition: service_healthy
+    env_file:
+      - path: .env.local
+        required: false
+    environment:
+      NODE_ENV: development
+      ENV: development
+      STAGING: "false"
+      PORTAL_ENABLED: "true"
+      PORTAL_PORT: "8200"
+      PORTAL_BIND: "0.0.0.0"
+      PORTAL_READ_TOKEN: ${NEXUS_TRAINING_E2E_PORTAL_READ_TOKEN:-nexus-training-e2e-read-token-2026-06-strong}
+      HEALTH_ALLOW_UNAUTHENTICATED: "true"
+      IOS_API_ENABLED: "true"
+      IOS_API_JWT_SECRET: ${NEXUS_TRAINING_E2E_IOS_API_JWT_SECRET:-nexus-training-e2e-ios-jwt-secret-2026-06-strong-48-byte}
+      IOS_INVITE_CODE: ${NEXUS_TRAINING_E2E_IOS_INVITE_CODE:-LOCAL-TRAINING-E2E}
+      PAYWALL_ENABLED: "false"
+      PORTAL_ALLOW_LOCAL_BYPASS: "true"
+      DATABASE_PATH: "/app/data/training-e2e.db"
+      # The E2E harness seeds and inspects this isolated DB from helper
+      # processes while the backend is running. WAL can leave the app
+      # holding deleted -wal/-shm handles on Docker Desktop bind mounts,
+      # which makes file-based evidence read a stale snapshot.
+      SQLITE_JOURNAL_MODE: "DELETE"
+      OAUTH_ENCRYPTION_KEY: ${NEXUS_TRAINING_E2E_OAUTH_KEY:-nexus-training-e2e-oauth-key-2026-06-strong-32-byte}
+      FINANCE_ENCRYPTION_ENABLED: "false"
+      BACKUP_ENABLED: "false"
+      TELEGRAM_LEGACY_DELIVERY: "false"
+      TELEGRAM_BOT_TOKEN: "training-e2e-telegram-disabled"
+      TELEGRAM_ALLOWED_USER_IDS: "100000001"
+      OWNER_TELEGRAM_ID: "100000001"
+      CONTENT_ENGINE_ENABLED: "true"
+      CONTENT_ENGINE_BASE_URL: "http://content-engine:8100"
+      INTERNAL_API_SECRET: ${NEXUS_TRAINING_E2E_INTERNAL_SECRET:-nexus-training-e2e-internal-secret}
+      INTERNAL_REQUIRE_LOOPBACK: "false"
+      TRAINING_CALENDAR_WRITES_ENABLED: "false"
+      TRAINING_CALENDAR_SYNC_ENABLED: "false"
+      NEXUS_LOCAL_ALLOW_MODEL_CALLS: "0"
+      NEXUS_MODEL_FIXTURE_MODE: "1"
+      NEXUS_MULTISKILL_MESH: "on"
+      TIMEZONE: "Europe/Lisbon"
+      LOG_LEVEL: ${NEXUS_TRAINING_E2E_LOG_LEVEL:-info}
+      NEXUS_TRAINING_E2E_RUN_ID: ${NEXUS_TRAINING_E2E_RUN_ID:-training-e2e-default}
+    ports:
+      - "127.0.0.1:${NEXUS_TRAINING_E2E_PORT_TS:-18200}:8200"
+    volumes:
+      - ${NEXUS_TRAINING_E2E_ROOT:-./.local/training-e2e/default}/data:/app/data
+      - ${NEXUS_TRAINING_E2E_ROOT:-./.local/training-e2e/default}/logs/backend:/app/logs
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8200/health"]
+      interval: 10s
+      timeout: 5s
+      start_period: 45s
+      retries: 12
+    restart: "no"

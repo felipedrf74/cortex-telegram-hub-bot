@@ -171,9 +171,24 @@ function tryWindowAt(
   scheduledWindows: BusyWindow[],
   notBefore?: Date,
 ): { start: Date; end: Date } | null {
-  const start = new Date(sessionDate);
-  start.setHours(Math.floor(startMinutes / 60), startMinutes % 60, 0, 0);
-  const end = new Date(start.getTime() + durationMinutes * 60 * 1000);
+  const zone = config.app.timezone || 'Europe/Lisbon';
+  const sessionDay = DateTime.fromJSDate(sessionDate).setZone(zone);
+  if (!sessionDay.isValid) return null;
+  const startDateTime = DateTime.fromObject(
+    {
+      year: sessionDay.year,
+      month: sessionDay.month,
+      day: sessionDay.day,
+      hour: Math.floor(startMinutes / 60),
+      minute: startMinutes % 60,
+      second: 0,
+      millisecond: 0,
+    },
+    { zone },
+  );
+  if (!startDateTime.isValid) return null;
+  const start = startDateTime.toUTC().toJSDate();
+  const end = startDateTime.plus({ minutes: durationMinutes }).toUTC().toJSDate();
   if (notBefore && start.getTime() < notBefore.getTime()) return null;
   if (overlapsRange(start.getTime(), end.getTime(), busyWindows)) return null;
   if (overlapsRange(start.getTime(), end.getTime(), scheduledWindows)) return null;
@@ -227,8 +242,23 @@ export function scheduleSessionWindow(
   // flag it as not schedulable. Training persistence and calendar sync
   // must treat this as an unscheduled session, never as an event to
   // create at 06:30.
-  const fallback = new Date(sessionDate);
-  fallback.setHours(Math.floor(SAFE_FALLBACK_TIME_MINUTES / 60), SAFE_FALLBACK_TIME_MINUTES % 60, 0, 0);
+  const zone = config.app.timezone || 'Europe/Lisbon';
+  const sessionDay = DateTime.fromJSDate(sessionDate).setZone(zone);
+  const fallbackDateTime = sessionDay.isValid
+    ? DateTime.fromObject(
+      {
+        year: sessionDay.year,
+        month: sessionDay.month,
+        day: sessionDay.day,
+        hour: Math.floor(SAFE_FALLBACK_TIME_MINUTES / 60),
+        minute: SAFE_FALLBACK_TIME_MINUTES % 60,
+        second: 0,
+        millisecond: 0,
+      },
+      { zone },
+    )
+    : DateTime.fromJSDate(sessionDate).toUTC();
+  const fallback = fallbackDateTime.toUTC().toJSDate();
   return {
     start: fallback,
     end: new Date(fallback.getTime() + durationMinutes * 60 * 1000),

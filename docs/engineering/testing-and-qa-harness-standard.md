@@ -2,7 +2,7 @@
 
 Status: canonical
 Owner: QA + release lead
-Last verified: 2026-06-16
+Last verified: 2026-06-24
 Update policy: update when test categories, evidence requirements, or
 risk-based test selection rules change. The risk-based gate matrix at
 `docs/release/risk-based-release-gate-matrix.md` is the runtime
@@ -238,7 +238,94 @@ The reference test file: `Nexus HubUITests/TrainingFixtureBypassUITests.swift`
 (11 cases). Fixture-bypass strategy avoids provider dependency; copy
 that pattern.
 
-## 13. Smoke matrix
+## 13. Isolated Training E2E lane (must, when Training plan generation, calendar sync, feedback, progression, or iOS Training surfaces are touched)
+
+Training spans backend generation, calendar ownership, read models, and iOS
+Today/Plan/Progress surfaces. Evidence must prove the tested app used the
+fresh target worktree, not another local engine or simulator.
+
+Use the isolated harness:
+
+- `npm run training:e2e:up`
+- `npm run training:e2e:smoke`
+- `npm run training:e2e:flow`
+- `npm run training:e2e:ios`
+- `npm run training:e2e:live-calendar` when, and only when, the run was
+  started with explicit live sandbox calendar authorization.
+- `npm run training:e2e:down`
+
+Required evidence:
+
+1. **Fresh backend/content containers from target HEAD.** Record git SHA,
+   compose project, image IDs/digests, `/api/snapshot`, backend/content
+   ports, DB path, and state directory from `.local/training-e2e/<run-id>/`.
+2. **No default or shared ports.** The lane refuses 8200/8100 and uses
+   project-scoped compose state plus isolated data/log mounts.
+3. **Provider-safe default.** Fixture/no-write mode is the default.
+   `TRAINING_CALENDAR_WRITES_ENABLED=false` and
+   `TRAINING_CALENDAR_SYNC_ENABLED=false` stay in the E2E compose file unless
+   Felipe explicitly authorizes live provider writes for a named run.
+4. **Dedicated simulator.** iOS E2E must run with `IOS_REQUIRE_UDID=1`,
+   unique DerivedData/result-bundle/summary paths, and
+   `IOS_SHUTDOWN_OTHER_SIMS=0`. Cleanup is UDID-specific; do not globally
+   shut down simulators that may belong to another worktree.
+5. **Active-plan seed for iOS assertions.** `npm run training:e2e:ios`
+   pre-seeds a backend-generated active plan through
+   `scripts/training-e2e-ios-seed.mjs prepare`, then cancels only that
+   seeded plan after simulator assertions unless
+   `NEXUS_TRAINING_E2E_IOS_KEEP_SEEDED_PLAN=1` is set for debugging.
+   This seed is not a replacement for the fixture-safe backend lifecycle
+   flow; it exists so XCUITest can inspect real remote Training content.
+6. **Base URL proof.** iOS tests must receive `NEXUS_TRAINING_E2E_BASE_URL`
+   from the isolated run metadata and must reject default `127.0.0.1:8200`
+   evidence.
+7. **Workflow coverage.** The flow must cover first-run/profile gate, plan
+   preview/review, generation, activation, Today rendering, Plan roadmap,
+   Progress, complete/skip/partial feedback, easy/normal/hard feedback,
+   soreness/pain signals, repeated misses, reflow/swap, calendar sync state,
+   stale/degraded states, cancel/no-plan recovery, and read-model verification.
+8. **Quality scenarios.** Plan-quality evidence must include beginner gym,
+   intermediate hypertrophy, hybrid run + strength, cycling + gym,
+   swim/triathlon, travel week, limited-time week, injury/discomfort, poor
+   adherence, fatigue/plateau, stale wearable, no wearable,
+   calendar-conflicted, and race-prep personas. Fail the gate if plans are
+   generic, unsafe, incoherent, repetitive, unschedulable, or lack rationale.
+
+Provider-live calendar lifecycle proof remains separate from fixture-safe E2E:
+activation, retry idempotency, cancellation/replacement cleanup, disconnect
+degradation, external delete/move repair-needed state, and duplicate prevention
+require dedicated non-prod provider credentials plus explicit owner
+authorization.
+
+Live sandbox execution starts the same isolated container lane but with a
+local-only compose override generated under `.local/training-e2e/<run-id>/`.
+Required operator environment:
+
+```bash
+NEXUS_TRAINING_E2E_LIVE_CALENDAR=1
+NEXUS_TRAINING_E2E_LIVE_CALENDAR_ACK=sandbox-non-prod-calendar
+NEXUS_TRAINING_E2E_LIVE_CALENDAR_PROVIDERS=google,outlook
+NEXUS_TRAINING_E2E_GOOGLE_ACCOUNT_LABEL=<sandbox/test/e2e label>
+NEXUS_TRAINING_E2E_GOOGLE_REFRESH_TOKEN=<sandbox refresh token>
+NEXUS_TRAINING_E2E_OUTLOOK_ACCOUNT_LABEL=<sandbox/test/e2e label>
+NEXUS_TRAINING_E2E_OUTLOOK_REFRESH_TOKEN=<sandbox refresh token>
+GOOGLE_CLIENT_ID=...
+GOOGLE_CLIENT_SECRET=...
+OUTLOOK_CLIENT_ID=...
+OUTLOOK_CLIENT_SECRET=...
+OUTLOOK_TENANT_ID=...
+OAUTH_ENCRYPTION_KEY=...
+```
+
+The live lane must abort if the backend URL is the default local engine, if
+the DB path is outside `.local/training-e2e/`, if production-looking account
+labels are supplied, or if provider tokens are missing. The harness seeds
+tokens into the isolated E2E user through the OAuth token store and leaves
+global owner refresh-token env vars empty inside the container. Cleanup must
+query provider calendars by the run marker and fail if any run-owned event
+remains.
+
+## 14. Smoke matrix
 
 The closed-beta smoke matrix is the umbrella that aggregates per-domain
 smokes. Today (`scripts/closed-beta-smoke.sh`) it includes:
@@ -267,7 +354,7 @@ Adding a new domain smoke requires:
    fixture adapters, plus a separate live/sandbox lane gated by explicit
    staging env and cleanup identities.
 
-## 14. Performance regression (should)
+## 15. Performance regression (should)
 
 Per the iOS architecture standard §4, hang fixes require physical
 device proof. The recommended additions to lock these in:
@@ -279,7 +366,7 @@ device proof. The recommended additions to lock these in:
    evidence JSON. Today the smoke records latency but does not assert
    bounds; promoting to bounds-asserted is a future improvement.
 
-## 15. Stale or skipped tests
+## 16. Stale or skipped tests
 
 Tests are removed only when:
 
@@ -291,7 +378,7 @@ Tests are removed only when:
 3. A test that "tests itself" (asserts its own mock) is removed
    without ceremony.
 
-## 16. Evidence requirements (per change)
+## 17. Evidence requirements (per change)
 
 Every PR records, in the description or the QA report:
 
@@ -312,7 +399,7 @@ Smoke evidence (if backend): <smoke-evidence file path>
 
 A "tests passed" claim without this block is not actionable evidence.
 
-## 17. Forbidden test patterns
+## 18. Forbidden test patterns
 
 - ❌ Tests that import from the source under test using a relative path
    that goes through `index.ts` re-exports — masks circular import
@@ -326,7 +413,7 @@ A "tests passed" claim without this block is not actionable evidence.
 - ❌ XCUITest that taps a coordinate instead of an accessibility id.
 - ❌ Smoke scripts that pass when the backend is offline.
 
-## 18. PR checklist (testing-relevant)
+## 19. PR checklist (testing-relevant)
 
 - [ ] Every new test has a clear "what does this prove" sentence in the
       describe/it block.

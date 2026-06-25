@@ -121,6 +121,33 @@ describe('training skill hardening source contracts', () => {
     expect(coach).toContain("{ userId: meteringScope.userId, tenantId: meteringScope.tenantId }");
   });
 
+  it('keeps Training generation version pins sourced from the canonical catalog snapshot', () => {
+    const generator = read('src/api/routes/training-plan-generation.ts');
+
+    expect(generator).toContain('const snapshot = loadTrainingCatalogSnapshot({ tenantId })');
+    expect(generator).toContain('catalogVersion: snapshot.catalogVersion');
+    expect(generator).toContain('sciencePolicyVersion: snapshot.sciencePolicyVersion');
+    expect(generator).toContain('selectorPolicyVersion: snapshot.selectorPolicyVersion');
+    expect(generator).toContain('equipmentVocabularyVersion: snapshot.equipmentVocabularyVersion');
+    expect(generator).toContain('generationPipelineVersion: snapshot.generationPipelineVersion');
+    expect(generator).not.toContain('STRENGTH_SELECTOR_POLICY_VERSION');
+    expect(generator).not.toContain('EQUIPMENT_VOCABULARY_VERSION');
+    expect(generator).not.toContain('GENERATION_PIPELINE_VERSION');
+  });
+
+  it('keeps strength exercise metadata sourced from the canonical catalog seed with emergency-only compatibility fallbacks', () => {
+    const taxonomy = read('src/services/coach-kernel/training-taxonomy.ts');
+
+    expect(taxonomy).toContain("import { buildRepoTrainingCatalogSnapshot, type ExerciseCatalogEntry } from './training-catalog'");
+    expect(taxonomy).toContain('const EMERGENCY_EXERCISE_LIBRARY');
+    expect(taxonomy).toContain('export const EXERCISE_LIBRARY: ExerciseDefinition[] = buildCanonicalExerciseLibrary()');
+    expect(taxonomy).toContain('const snapshot = buildRepoTrainingCatalogSnapshot()');
+    expect(taxonomy).toContain('return mergeExerciseDefinitions(catalogDefinitions, EMERGENCY_EXERCISE_LIBRARY)');
+    expect(taxonomy).toContain('function refineCatalogMuscles');
+    expect(taxonomy).toContain("movementPattern === 'lateral_raise'");
+    expect(taxonomy).toContain("movementPattern === 'knee_flexion'");
+  });
+
   it('does not introduce Training V2 or CoachKernelV2 pollution', () => {
     const trainingFiles = [
       ...listFiles('src/services/coach-kernel'),

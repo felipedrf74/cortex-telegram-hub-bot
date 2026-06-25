@@ -23,6 +23,7 @@ import {
   resolveCalendarSyncState,
 } from '../../services/training-calendar-sync-state';
 import { findExistingOwnership } from '../../services/training-plan-lifecycle';
+import { isConnected } from '../../services/oauth-store';
 import type { Session, SessionType, Sport, ReadinessSnapshot } from '../../services/coach-kernel/types';
 import { requireTenantIdParam } from '../../services/tenant-scope';
 
@@ -176,16 +177,19 @@ export async function getTodaySession(userId: number, tenantId: number) {
           } catch (err) {
             logger.debug({ err, userId }, 'getTodaySession: calendar enrichment failed — rendering session without start time');
           }
+          const providerDisconnected = isSessionCalendarProviderDisconnected(rawSession, userId);
           const linkedCalendarEvent = rawSession.calendar_event_id
             ? calendarLookup.get(rawSession.calendar_event_id)
             : null;
-          const verifiedCalendarEventId = resolveVerifiedCalendarEventId({
-            session: rawSession,
-            plan: activePlan,
-            linkedCalendarEvent,
-            userId,
-            tenantId,
-          });
+          const verifiedCalendarEventId = providerDisconnected
+            ? null
+            : resolveVerifiedCalendarEventId({
+                session: rawSession,
+                plan: activePlan,
+                linkedCalendarEvent,
+                userId,
+                tenantId,
+              });
           session = {
             id: rawSession.id != null ? String(rawSession.id) : null,
             planId: rawSession.plan_id != null ? String(rawSession.plan_id) : null,
@@ -201,6 +205,7 @@ export async function getTodaySession(userId: number, tenantId: number) {
             calendarSyncState: resolveCalendarSyncState({
               hasStoredCalendarEventId: Boolean(rawSession.calendar_event_id),
               verifiedCalendarEventId,
+              providerDisconnected,
               manualUnscheduled: normalizeTrainingStatus(rawSession.status) === 'unscheduled',
             }),
             duration: rawSession.duration_minutes || null,
@@ -427,6 +432,12 @@ export async function getAllPlanWeeks(userId: number, tenantId: number) {
     };
   }
 
+  // preferences_json is written by training-plan-generation (raceDate,
+  // goalMode, trainingLearningPath, ...) but legacy plans can carry null
+  // or malformed JSON — tolerate both rather than failing the whole read
+  // model.
+  const planPreferences = parsePlanPreferences(plan.preferences_json);
+  const learningByWeek = buildTrainingLearningWeekLookup(planPreferences?.trainingLearningPath);
   const weeks = trainingPlans.getWeeksForPlan(plan.id);
   const mappedWeeks = [];
 
@@ -452,22 +463,13 @@ export async function getAllPlanWeeks(userId: number, tenantId: number) {
       phase: week.focus || plan.periodization || null,
       intensityPct: typeof week.intensity_pct === 'number' ? week.intensity_pct : null,
       adjustmentReason: week.adjustment_reason || null,
+      learningFocus: learningByWeek.get(Number(week.week_number)) ?? null,
       sessions,
       activeSessionCount: syncSummary.activeSessionCount,
       syncedSessionCount: syncSummary.syncedSessionCount,
       missingSessionCount: syncSummary.missingSessionCount,
       weekSyncStatus: syncSummary.planSyncStatus,
     });
-  }
-
-  // preferences_json is written by training-plan-generation (raceDate,
-  // goalMode, ...) but legacy plans can carry null or malformed JSON —
-  // tolerate both rather than failing the whole read model.
-  let planPreferences: any = null;
-  try {
-    planPreferences = plan.preferences_json ? JSON.parse(plan.preferences_json) : null;
-  } catch {
-    planPreferences = null;
   }
 
   return {
@@ -499,6 +501,22 @@ function resolvePlanCalendarSource(plan: any): 'google' | 'outlook' | null {
   return source === 'google' || source === 'outlook' ? source : null;
 }
 
+function normalizeReadModelCalendarSource(value: unknown): 'google' | 'outlook' | null {
+  const normalized = String(value || '').trim().toLowerCase();
+  return normalized === 'google' || normalized === 'outlook' ? normalized : null;
+}
+
+function isSessionCalendarProviderDisconnected(session: any, userId: number): boolean {
+  if (!session?.calendar_event_id) return false;
+  const source = normalizeReadModelCalendarSource(session.calendar_source);
+  if (!source) return false;
+  try {
+    return !isConnected(userId, source);
+  } catch {
+    return true;
+  }
+}
+
 function parsePlanPreferences(raw: unknown): Record<string, any> | null {
   if (typeof raw !== 'string' || !raw.trim()) return null;
   try {
@@ -509,6 +527,49 @@ function parsePlanPreferences(raw: unknown): Record<string, any> | null {
   } catch {
     return null;
   }
+}
+
+function buildTrainingLearningWeekLookup(value: unknown): Map<number, Record<string, unknown>> {
+  const learningPath = value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, any>
+    : null;
+  const weeklyPath = Array.isArray(learningPath?.weeklyPath) ? learningPath.weeklyPath : [];
+  const byWeek = new Map<number, Record<string, unknown>>();
+  for (const item of weeklyPath) {
+    const mapped = mapTrainingLearningWeek(item);
+    if (mapped) byWeek.set(mapped.weekNumber, mapped);
+  }
+  return byWeek;
+}
+
+function mapTrainingLearningWeek(item: unknown): (Record<string, unknown> & { weekNumber: number }) | null {
+  if (!item || typeof item !== 'object' || Array.isArray(item)) return null;
+  const raw = item as Record<string, unknown>;
+  const weekNumber = Number(raw.weekNumber);
+  if (!Number.isFinite(weekNumber) || weekNumber <= 0) return null;
+  return {
+    weekNumber: Math.trunc(weekNumber),
+    title: readTrainingLearningString(raw.title),
+    phaseGoal: readTrainingLearningString(raw.phaseGoal),
+    weeklyLearningFocus: readTrainingLearningString(raw.weeklyLearningFocus),
+    whyThisMatters: readTrainingLearningString(raw.whyThisMatters),
+    techniqueCards: readTrainingLearningStringArray(raw.techniqueCards, 4),
+    benchmarkSessionTitles: readTrainingLearningStringArray(raw.benchmarkSessionTitles, 3),
+    assessmentPrompt: readTrainingLearningString(raw.assessmentPrompt),
+  };
+}
+
+function readTrainingLearningString(value: unknown): string | null {
+  return typeof value === 'string' && value.trim() ? value.trim() : null;
+}
+
+function readTrainingLearningStringArray(value: unknown, limit: number): string[] {
+  return Array.isArray(value)
+    ? value
+        .map((item) => readTrainingLearningString(item))
+        .filter((item): item is string => Boolean(item))
+        .slice(0, limit)
+    : [];
 }
 
 function resolveVerifiedCalendarEventId(input: {
@@ -549,16 +610,20 @@ function resolveVerifiedCalendarEventId(input: {
 }
 
 function buildWeekSessionDto(session: any, plan: any, linkedCalendarEvent: any, userId: number, tenantId: number) {
-  const verifiedCalendarEventId = resolveVerifiedCalendarEventId({
-    session,
-    plan,
-    linkedCalendarEvent,
-    userId,
-    tenantId,
-  });
+  const providerDisconnected = isSessionCalendarProviderDisconnected(session, userId);
+  const verifiedCalendarEventId = providerDisconnected
+    ? null
+    : resolveVerifiedCalendarEventId({
+        session,
+        plan,
+        linkedCalendarEvent,
+        userId,
+        tenantId,
+      });
   const calendarSyncState = resolveCalendarSyncState({
     hasStoredCalendarEventId: Boolean(session.calendar_event_id),
     verifiedCalendarEventId,
+    providerDisconnected,
     manualUnscheduled: normalizeTrainingStatus(session.status) === 'unscheduled',
   });
   return {
@@ -577,7 +642,7 @@ function buildWeekSessionDto(session: any, plan: any, linkedCalendarEvent: any, 
     calendarSyncState,
     legacyCalendarSyncState: calendarSyncState === 'verified'
       ? 'synced'
-      : calendarSyncState === 'repair_needed'
+      : calendarSyncState === 'repair_needed' || calendarSyncState === 'provider_disconnected'
         ? 'stale'
         : 'missing',
     lifecycleState: session.status || 'pending',

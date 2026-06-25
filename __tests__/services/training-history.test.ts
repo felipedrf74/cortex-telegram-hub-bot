@@ -63,7 +63,10 @@ function applyMigrations(db: Database.Database): void {
   }
 }
 
-import { readTrainingHistoryFromCompletions } from '../../src/services/training-history';
+import {
+  readTrainingComplianceFromRecentHistory,
+  readTrainingHistoryFromCompletions,
+} from '../../src/services/training-history';
 
 beforeEach(() => {
   testDb = new Database(':memory:');
@@ -109,6 +112,38 @@ function seed(opts: SeedOpts): void {
       (session_id, plan_id, completed_at, duration_minutes)
     VALUES (?, ?, ?, ?)
   `).run(opts.baseId, opts.baseId, completedAt, opts.durationMin);
+}
+
+function seedSessionAction(opts: SeedOpts & {
+  status: 'completed' | 'skipped';
+  actualDurationMin?: number;
+}): void {
+  const tenantId = opts.tenantId ?? opts.userId;
+  const actionAt = new Date(ASOF.getTime() - opts.daysAgo * 24 * 60 * 60 * 1000).toISOString();
+
+  testDb.prepare(`
+    INSERT INTO fitness_training_plans
+      (id, user_id, tenant_id, name, sport, duration_weeks, start_date, end_date, status)
+    VALUES (?, ?, ?, 'Compliance Test', ?, 12, '2026-01-01', '2026-04-01', 'active')
+  `).run(opts.baseId, opts.userId, tenantId, opts.sessionType);
+
+  testDb.prepare(`
+    INSERT INTO training_weeks (id, plan_id, week_number) VALUES (?, ?, 1)
+  `).run(opts.baseId, opts.baseId);
+
+  testDb.prepare(`
+    INSERT INTO training_sessions
+      (id, week_id, plan_id, day_of_week, session_type, title, duration_minutes, status, updated_at)
+    VALUES (?, ?, ?, 'Monday', ?, 'Session', ?, ?, ?)
+  `).run(opts.baseId, opts.baseId, opts.baseId, opts.sessionType, opts.durationMin, opts.status, actionAt);
+
+  if (opts.status === 'completed') {
+    testDb.prepare(`
+      INSERT INTO training_completions
+        (session_id, plan_id, completed_at, duration_minutes)
+      VALUES (?, ?, ?, ?)
+    `).run(opts.baseId, opts.baseId, actionAt, opts.actualDurationMin ?? opts.durationMin);
+  }
 }
 
 const ASOF = new Date('2026-04-27T12:00:00.000Z');
@@ -235,6 +270,144 @@ describe('training-history — sport normalization', () => {
     seed({ userId: 100, sessionType: 'something_unknown', daysAgo: 2, durationMin: 30, baseId: 2 });
     const result = READ(100);
     expect(result.hasAnyHistory).toBe(false);
+  });
+});
+
+describe('training-history — recent compliance', () => {
+  it('derives compliance from completed, partial, and skipped recent actions', () => {
+    seedSessionAction({
+      userId: 100,
+      sessionType: 'easy_run',
+      daysAgo: 1,
+      durationMin: 50,
+      baseId: 9001,
+      status: 'completed',
+    });
+    seedSessionAction({
+      userId: 100,
+      sessionType: 'threshold_run',
+      daysAgo: 2,
+      durationMin: 60,
+      actualDurationMin: 20,
+      baseId: 9002,
+      status: 'completed',
+    });
+    seedSessionAction({
+      userId: 100,
+      sessionType: 'long_run',
+      daysAgo: 3,
+      durationMin: 90,
+      baseId: 9003,
+      status: 'skipped',
+    });
+
+    const result = readTrainingComplianceFromRecentHistory(100, { tenantId: 100, asOf: ASOF });
+
+    expect(result.hasSignal).toBe(true);
+    expect(result.actionCount).toBe(3);
+    expect(result.completedCount).toBe(1);
+    expect(result.partialCount).toBe(1);
+    expect(result.skippedCount).toBe(1);
+    expect(result.compliance?.trailing14DayCompliance).toBeCloseTo(0.5, 5);
+    expect(result.compliance?.bySport.running).toBeCloseTo(1.5, 5);
+    expect(result.compliance?.missedKeySessions).toBe(1);
+    expect(result.compliance?.consecutiveMisses).toBe(0);
+  });
+
+  it('counts consecutive misses from the most recent history items', () => {
+    seedSessionAction({
+      userId: 100,
+      sessionType: 'long_run',
+      daysAgo: 1,
+      durationMin: 90,
+      baseId: 9011,
+      status: 'skipped',
+    });
+    seedSessionAction({
+      userId: 100,
+      sessionType: 'threshold_run',
+      daysAgo: 2,
+      durationMin: 50,
+      baseId: 9012,
+      status: 'skipped',
+    });
+    seedSessionAction({
+      userId: 100,
+      sessionType: 'easy_run',
+      daysAgo: 3,
+      durationMin: 40,
+      baseId: 9013,
+      status: 'completed',
+    });
+
+    const result = readTrainingComplianceFromRecentHistory(100, { tenantId: 100, asOf: ASOF });
+
+    expect(result.compliance?.consecutiveMisses).toBe(2);
+    expect(result.compliance?.missedKeySessions).toBe(2);
+    expect(result.compliance?.trailing14DayCompliance).toBeCloseTo(1 / 3, 5);
+  });
+
+  it('does not derive compliance from another tenant or without tenant scope', () => {
+    seedSessionAction({
+      userId: 100,
+      tenantId: 200,
+      sessionType: 'easy_run',
+      daysAgo: 1,
+      durationMin: 50,
+      baseId: 9021,
+      status: 'completed',
+    });
+
+    expect(readTrainingComplianceFromRecentHistory(100, { tenantId: 100, asOf: ASOF }).hasSignal).toBe(false);
+    expect(readTrainingComplianceFromRecentHistory(100, { asOf: ASOF }).hasSignal).toBe(false);
+  });
+
+  it('keeps SQLite no-offset timestamps on the UTC compliance boundary', () => {
+    const asOf = new Date('2026-04-27T00:30:00.000Z');
+    seedSessionAction({
+      userId: 100,
+      sessionType: 'easy_run',
+      daysAgo: 1,
+      durationMin: 45,
+      baseId: 9031,
+      status: 'completed',
+    });
+    seedSessionAction({
+      userId: 100,
+      sessionType: 'easy_run',
+      daysAgo: 2,
+      durationMin: 45,
+      baseId: 9032,
+      status: 'completed',
+    });
+
+    testDb.prepare(`
+      UPDATE training_completions
+         SET completed_at = '2026-04-13 00:15:00'
+       WHERE session_id = 9031
+    `).run();
+    testDb.prepare(`
+      UPDATE training_sessions
+         SET updated_at = '2026-04-13 00:15:00'
+       WHERE id = 9031
+    `).run();
+    testDb.prepare(`
+      UPDATE training_completions
+         SET completed_at = '2026-04-12 23:59:59'
+       WHERE session_id = 9032
+    `).run();
+    testDb.prepare(`
+      UPDATE training_sessions
+         SET updated_at = '2026-04-12 23:59:59'
+       WHERE id = 9032
+    `).run();
+
+    const result = readTrainingComplianceFromRecentHistory(100, { tenantId: 100, asOf });
+
+    expect(result.hasSignal).toBe(true);
+    expect(result.actionCount).toBe(1);
+    expect(result.completedCount).toBe(1);
+    expect(result.compliance?.bySport.running).toBe(1);
   });
 });
 

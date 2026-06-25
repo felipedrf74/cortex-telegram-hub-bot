@@ -43,6 +43,7 @@ describe('buildCoachKernelTrainingPlan — side effects', () => {
     durationWeeks: number;
     weekNumber: number;
     focus?: string;
+    hasPoolAccess?: boolean | null;
     sessions: NonNullable<ReturnType<typeof buildCoachKernelTrainingPlan>['weeks']>[number]['sessions'];
   }) {
     return lintPlan({
@@ -50,6 +51,7 @@ describe('buildCoachKernelTrainingPlan — side effects', () => {
       startDate: args.startDate,
       durationWeeks: args.durationWeeks,
       equipmentProfile: 'full_gym',
+      hasPoolAccess: args.hasPoolAccess,
       weeks: [{
         weekNumber: args.weekNumber,
         focus: args.focus,
@@ -895,6 +897,7 @@ describe('buildCoachKernelTrainingPlan — side effects', () => {
         weekNumber: 1,
         focus: plan.weeks?.[0]?.focus,
         sessions: plan.weeks?.[0]?.sessions,
+        hasPoolAccess: planCase.expectedSessionTypes.includes('swim') ? true : undefined,
       });
       expect(lintResult.blockers, planCase.label).toEqual([]);
     }

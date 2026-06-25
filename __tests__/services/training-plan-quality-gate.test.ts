@@ -3,7 +3,10 @@ import { describe, expect, it } from 'vitest';
 import {
   prepareTrainingPlanForQualityGate,
 } from '../../src/services/coach-kernel/training-plan-quality-gate';
-import { EXERCISE_LIBRARY } from '../../src/services/coach-kernel/training-taxonomy';
+import {
+  EXERCISE_LIBRARY,
+  findExerciseDefinitionByName,
+} from '../../src/services/coach-kernel/training-taxonomy';
 import {
   buildTrainingPlanSpec,
   type TrainingPlanSpec,
@@ -241,7 +244,10 @@ describe('training-plan-quality-gate', () => {
     expect(names).not.toContain('Front Squat');
     expect(names).not.toContain('Goblet Squat');
     expect(names).not.toContain('Leg Press');
-    expect(names).toContain('Step-Up');
+    expect(lowerExercises.every((exercise: any) => {
+      const definition = findExerciseDefinitionByName(exercise.name);
+      return definition?.jointStress.knee !== 'medium' && definition?.jointStress.knee !== 'high';
+    })).toBe(true);
   });
 
   it('fails closed when exclusions make every curated exercise unavailable', () => {

@@ -26,7 +26,9 @@ import { scoreToReadinessLevel } from './coach-kernel/readiness-snapshot-adapter
 import { recordWeeklyPlan } from './coach-plan-registry';
 import type { CoordinatedTrainingPlan, CoordinatedTrainingSession, CoordinatedTrainingWeek } from './training-plan-coordination';
 import {
+  readTrainingComplianceFromRecentHistory,
   readTrainingHistoryFromCompletions,
+  type RecentTrainingComplianceRead,
   type RealTrainingHistory,
 } from './training-history';
 import {
@@ -418,16 +420,21 @@ export function buildAthleteStateFromTrainingProfiles(input: CoachKernelTraining
   // Read failure (DB hiccup) degrades to undefined so the synthesis
   // fallback below keeps the planner alive.
   let realHistory: RealTrainingHistory | undefined;
+  let recentCompliance: RecentTrainingComplianceRead | undefined;
   try {
     realHistory = readTrainingHistoryFromCompletions(input.userId, {
+      tenantId: input.tenantId,
+    });
+    recentCompliance = readTrainingComplianceFromRecentHistory(input.userId, {
       tenantId: input.tenantId,
     });
   } catch (err) {
     logger.warn(
       { surface: 'coach-kernel.buildAthleteStateFromTrainingProfiles.realHistory', userId: input.userId, err },
-      'Failed to read real training history; falling back to synthesis',
+      'Failed to read real training history/compliance; falling back to synthesis',
     );
     realHistory = undefined;
+    recentCompliance = undefined;
   }
   if (realHistory && realHistory.hasAnyHistory) {
     logger.info(
@@ -441,6 +448,22 @@ export function buildAthleteStateFromTrainingProfiles(input: CoachKernelTraining
         hasSwimmingHistory: realHistory.lastWeekMinutesBySport.swimming !== undefined,
       },
       'Real training history loaded; ACWR math will run against actual completion data',
+    );
+  }
+  if (recentCompliance?.hasSignal && recentCompliance.compliance) {
+    logger.info(
+      {
+        surface: 'coach-kernel.buildAthleteStateFromTrainingProfiles.compliance',
+        userId: input.userId,
+        actionCount: recentCompliance.actionCount,
+        completedCount: recentCompliance.completedCount,
+        partialCount: recentCompliance.partialCount,
+        skippedCount: recentCompliance.skippedCount,
+        trailing14DayCompliance: recentCompliance.compliance.trailing14DayCompliance,
+        missedKeySessions: recentCompliance.compliance.missedKeySessions,
+        consecutiveMisses: recentCompliance.compliance.consecutiveMisses,
+      },
+      'Recent training compliance loaded; feedback and progression decisions will use actual adherence signal',
     );
   }
 
@@ -577,7 +600,7 @@ export function buildAthleteStateFromTrainingProfiles(input: CoachKernelTraining
     },
     recentSessions: realHistory?.recentSessions ?? [],
     readiness: buildReadinessSnapshot(input, constraints),
-    compliance: {
+    compliance: recentCompliance?.compliance ?? {
       trailing14DayCompliance: 0.82,
       bySport: {},
       missedKeySessions: 0,
@@ -1711,8 +1734,18 @@ function buildAvailabilityWindows(
     ?? normalizedProfile?.availableSessionDurations.genericMinutes
     ?? (weakProfile ? 35 : 90);
   const windows: AthleteState['availability']['weeklyWindows'] = [];
+  const blockedTrainingDays = new Set(normalizedProfile?.scheduleConstraints.blockedTrainingDays ?? []);
+  const preferredTrainingDays = (normalizedProfile?.scheduleConstraints.preferredTrainingDays ?? [])
+    .filter((day) => !blockedTrainingDays.has(day));
+  const candidateDays = DAY_ORDER.filter((day) => !blockedTrainingDays.has(day));
+  const orderedDays = preferredTrainingDays.length > 0
+    ? [
+        ...preferredTrainingDays,
+        ...candidateDays.filter((day) => !preferredTrainingDays.includes(day)),
+      ]
+    : candidateDays;
 
-  for (const dayOfWeek of DAY_ORDER) {
+  for (const dayOfWeek of (orderedDays.length > 0 ? orderedDays : DAY_ORDER)) {
     if ((targets.running ?? 0) > 0 || (targets.cycling ?? 0) > 0 || (targets.swimming ?? 0) > 0) {
       windows.push({
         dayOfWeek,

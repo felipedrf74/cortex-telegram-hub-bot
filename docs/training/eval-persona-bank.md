@@ -11,6 +11,8 @@ Source of truth: `src/services/coach-kernel/evaluation/personas.ts`.
 - Full gym, dumbbell-only, and travel/hotel-gym contexts.
 - Low-time and inconsistent-adherence constraints.
 - Explicit discomfort and substitution pressure.
+- Swim/triathlon and race-prep coverage with pool, bike, run, and support
+  strength expectations.
 - Explicit sex/gender-aware context only when user-provided and relevant.
 
 ## Personas
@@ -24,6 +26,7 @@ Source of truth: `src/services/coach-kernel/evaluation/personas.ts`.
 | `cyclist-ftp-build` | cycling | Cyclist building FTP with trainer access. | 3+ cycling sessions, no more than 2 strength sessions. |
 | `hybrid-gym-running` | hybrid | User who prefers morning runs and lunch strength. | Running plus strength, supports up to 2 sessions/day. |
 | `hybrid-gym-cycling` | hybrid | User mixing cycling and strength. | Cycling plus strength, differentiated hybrid week. |
+| `triathlon-swim-bike-run-race-prep` | triathlon | Sprint-triathlon user with pool access, bike/run targets, and one support strength window. | Swim, bike, run, and strength must all appear without over-scheduling race-prep week. |
 | `low-time-user` | constraints | Busy user with three 35-minute windows. | Compressed plan, no two-a-days, no overfilled sessions. |
 | `inconsistent-adherence-user` | adherence | Recent misses and lower compliance. | Realistic load, fewer key sessions, no catch-up stacking. |
 | `equipment-limited-home` | equipment | Home user with dumbbells only. | Avoid barbell/rack assumptions. |
@@ -38,4 +41,3 @@ Source of truth: `src/services/coach-kernel/evaluation/personas.ts`.
 - Store expected sports and high-level bounds in `expectations`; avoid exact exercise snapshots.
 - If adding sensitive context, include it only when explicit user-provided data exists.
 - If a persona exposes a known production risk, add a matching scenario or rubric check instead of embedding hidden pass/fail logic in the persona.
-

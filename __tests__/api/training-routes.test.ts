@@ -2199,7 +2199,7 @@ describe('Training API routes', () => {
     expect(mockCreatePlan).not.toHaveBeenCalled();
   });
 
-  it('falls back to the deterministic template when the coach kernel generation fails', async () => {
+  it('blocks deterministic fallback persistence when the coach kernel generation fails', async () => {
     mockGetProfile.mockImplementation((_userId: number, profile: string) => {
       if (profile === 'fitness') return { experienceLevel: 'Intermediate' };
       if (profile === 'triathlon-running') return { currentMileage: 24 };
@@ -2216,12 +2216,18 @@ describe('Training API routes', () => {
       strengthSessionsPerWeek: 1,
     });
 
-    expect(res.statusCode).toBe(201);
+    expect(res.statusCode).toBe(200);
     expect(res.body.ok).toBe(true);
+    expect(res.body.data.status).toBe('plan_quality_blocked');
     expect(res.body.data.fallbackTemplateUsed).toBe(true);
-    expect(res.body.data.message).toContain('reliable fallback template');
-    expect(mockCreatePlan).toHaveBeenCalled();
-    expect(mockCreateSession).toHaveBeenCalled();
+    expect(res.body.data.message).toContain('did not save it');
+    expect(res.body.data.warnings).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ code: 'fallback_requires_review' }),
+      ]),
+    );
+    expect(mockCreatePlan).not.toHaveBeenCalled();
+    expect(mockCreateSession).not.toHaveBeenCalled();
   });
 
   it('cancels an owned plan, removes linked calendar events, and hard-deletes the plan + cascades', async () => {

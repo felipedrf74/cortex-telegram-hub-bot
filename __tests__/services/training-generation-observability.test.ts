@@ -16,12 +16,14 @@ describe('training-generation-observability', () => {
     incrementTrainingGenerationCounter('equipment_default_conservative_total');
     incrementTrainingGenerationCounter('selector_no_candidate_total', 2);
     incrementTrainingGenerationCounter('final_validation_failure_total');
+    incrementTrainingGenerationCounter('fallback_template_blocked_total');
 
     const snapshot = getTrainingGenerationObservabilitySnapshot();
 
     expect(snapshot.counters.equipment_default_conservative_total).toBe(1);
     expect(snapshot.counters.selector_no_candidate_total).toBe(2);
     expect(snapshot.counters.final_validation_failure_total).toBe(1);
+    expect(snapshot.counters.fallback_template_blocked_total).toBe(1);
   });
 
   it('tracks progression states and ignores unknown values', () => {

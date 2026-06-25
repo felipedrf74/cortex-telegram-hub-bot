@@ -83,9 +83,22 @@ if [ -n "${NEXUS_RELEASE_EVIDENCE_PUBLIC_KEY_PATH:-}" ]; then
   docker_env+=(-e "NEXUS_RELEASE_EVIDENCE_PUBLIC_KEY_PATH=$public_path")
 fi
 
+git_mount=()
+if [ -f "$ROOT/.git" ]; then
+  git_dir="$(git -C "$ROOT" rev-parse --absolute-git-dir 2>/dev/null || true)"
+  git_common_dir="$(git -C "$ROOT" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
+  if [ -n "$git_dir" ] && [ -d "$git_dir" ]; then
+    git_mount+=(-v "$git_dir:$git_dir:ro")
+  fi
+  if [ -n "$git_common_dir" ] && [ -d "$git_common_dir" ] && [ "$git_common_dir" != "$git_dir" ]; then
+    git_mount+=(-v "$git_common_dir:$git_common_dir:ro")
+  fi
+fi
+
 docker run --rm \
   "${docker_env[@]}" \
   -v "$ROOT:/workspace" \
+  ${git_mount[@]+"${git_mount[@]}"} \
   -w /workspace \
   "$IMAGE" \
   node scripts/release-evidence.mjs "$@" --root /workspace

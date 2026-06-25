@@ -518,6 +518,46 @@ describe('training-plan-calendar-sync', () => {
     expect(mocks.createEvent).not.toHaveBeenCalled();
   });
 
+  it('returns no_calendar and performs no writes when a linked provider was disconnected', async () => {
+    mocks.isConnected.mockReturnValue(false);
+    mocks.getActivePlan.mockReturnValue({
+      id: 47,
+      user_id: 42,
+      tenant_id: 42,
+      start_date: '2026-04-20T00:00:00.000Z',
+      preferences_json: JSON.stringify({ trainingCalendarSource: 'google' }),
+    });
+    mocks.getWeeksForPlan.mockReturnValue([{ id: 470, week_number: 1 }]);
+    mocks.getSessionsForWeek.mockReturnValue([
+      {
+        id: 471,
+        day_of_week: 'Monday',
+        session_type: 'run',
+        title: 'Easy Run',
+        duration_minutes: 40,
+        description: 'Easy aerobic work.',
+        status: 'pending',
+        calendar_event_id: 'evt-revoked-google',
+        calendar_source: 'google',
+      },
+    ]);
+
+    const result = await syncTrainingPlanCalendar(42, now, undefined, 42);
+
+    expect(result.status).toBe('no_calendar');
+    if (result.status === 'no_calendar') {
+      expect(result.data.eventsCreated).toBe(0);
+      expect(result.data.sessionsAttempted).toBe(1);
+      expect(result.data.sessionsAlreadySynced).toBe(0);
+      expect(result.data.message).toContain('Reconnect');
+    }
+    expect(mocks.getEvents).not.toHaveBeenCalled();
+    expect(mocks.createEvent).not.toHaveBeenCalled();
+    expect(mocks.updateEvent).not.toHaveBeenCalled();
+    expect(mocks.linkSessionToCalendar).not.toHaveBeenCalled();
+    expect(mocks.recordCalendarOwnership).not.toHaveBeenCalled();
+  });
+
   it('creates calendar events for unsynced future sessions and links each one', async () => {
     mocks.getActivePlan.mockReturnValue({
       id: 7,

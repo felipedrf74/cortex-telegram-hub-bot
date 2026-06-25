@@ -38,10 +38,28 @@ const runtimeFiles = [
   'content-engine/pyproject.toml',
 ];
 
+function cleanGitEnv() {
+  const env = { ...process.env };
+  for (const key of [
+    'GIT_DIR',
+    'GIT_WORK_TREE',
+    'GIT_INDEX_FILE',
+    'GIT_PREFIX',
+    'GIT_COMMON_DIR',
+    'GIT_OBJECT_DIRECTORY',
+    'GIT_ALTERNATE_OBJECT_DIRECTORIES',
+    'GIT_NAMESPACE',
+  ]) {
+    delete env[key];
+  }
+  return env;
+}
+
 function gitValue(commandArgs) {
   try {
     return execFileSync('git', commandArgs, {
       cwd: root,
+      env: cleanGitEnv(),
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'ignore'],
     }).trim();

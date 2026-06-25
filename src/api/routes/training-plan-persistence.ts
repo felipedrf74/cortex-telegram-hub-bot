@@ -69,6 +69,7 @@ type GeneratedTrainingPlan = {
 };
 
 type GeneratedTrainingSession = {
+  sport?: string;
   dayOfWeek?: string;
   sessionType?: string;
   title?: string;
@@ -98,6 +99,7 @@ type GeneratedTrainingSession = {
   sections?: TrainingSessionSection[];
   intensitySummary?: SessionDescriptionInput['session']['intensitySummary'];
   intensityProfile?: Record<string, unknown>;
+  tags?: string[];
 };
 
 type PersistableSessionScheduleState =
@@ -161,6 +163,12 @@ export interface PersistGeneratedTrainingPlanInput {
   isRaceSpecific?: boolean;
   /** Request goal mode; `event_based` enables strict race-date semantics. */
   goalMode?: string | null;
+  /** Explicit swim access from profile/intake; false blocks swim prescriptions. */
+  hasPoolAccess?: boolean | null;
+  /** True when FTP, threshold power, or equivalent cycling benchmark is known. */
+  cyclingBenchmarkAvailable?: boolean | null;
+  /** True when request/profile is triathlon-specific. */
+  triathlonMode?: boolean | null;
   /** Deterministic training generation contract used by the strict quality gate. */
   trainingPlanSpec?: TrainingPlanSpec;
 }
@@ -884,6 +892,7 @@ function buildPlanLintWeek(
       // calendar-event sessionId when available so iOS can correlate
       // findings back to a row.
       id: undefined,
+      sport: typeof sessionData.sport === 'string' ? sessionData.sport : undefined,
       dayOfWeek,
       sessionType,
       title: String(sessionData.title || 'Training session'),
@@ -900,6 +909,10 @@ function buildPlanLintWeek(
       // past-day rule deliberately ignores non-active rows.
       scheduledDate,
       exerciseTokens,
+      intensity: sessionIntensityText(sessionData),
+      tags: Array.isArray(sessionData.tags)
+        ? sessionData.tags.filter((tag): tag is string => typeof tag === 'string')
+        : undefined,
       isLowerHeavy: inferTrainingSessionIsLowerHeavy(sessionData, exerciseTokens),
       isLongRun: inferTrainingSessionIsLongRun(sessionData),
       isKey: inferTrainingSessionIsLongRun(sessionData) || /\b(threshold|interval|race pace)\b/i.test(
@@ -913,6 +926,86 @@ function buildPlanLintWeek(
     intensityPct: weekData.intensityPct,
     sessions,
   };
+}
+
+function sessionIntensityText(sessionData: GeneratedTrainingSession): string | undefined {
+  const parts: string[] = [];
+  const summary = sessionData.intensitySummary;
+  if (summary && typeof summary === 'object') {
+    for (const value of Object.values(summary as Record<string, unknown>)) {
+      if (typeof value === 'string' && value.trim()) parts.push(value.trim());
+      if (typeof value === 'number' && Number.isFinite(value)) parts.push(String(value));
+    }
+  }
+  const profile = sessionData.intensityProfile;
+  if (profile && typeof profile === 'object') {
+    for (const value of Object.values(profile)) {
+      if (typeof value === 'string' && value.trim()) parts.push(value.trim());
+      if (typeof value === 'number' && Number.isFinite(value)) parts.push(String(value));
+    }
+  }
+  return parts.length > 0 ? parts.join(' ') : undefined;
+}
+
+function inferPoolAccessFromProfiles(profiles?: AthleteProfiles): boolean | null {
+  const swimProfile = profileRecord(profiles?.swimProfile ?? profiles?.fitnessProfile?.swim ?? profiles?.fitnessProfile?.swimming);
+  const text = [
+    profiles?.fitnessProfile?.pool_access,
+    profiles?.fitnessProfile?.has_pool,
+    profiles?.fitnessProfile?.available_equipment,
+    swimProfile?.pool_access,
+    swimProfile?.open_water_access,
+  ].filter((value) => value != null).join(' ').toLowerCase();
+  if (!text.trim()) return null;
+  if (/\b(no|none|without|unavailable|false)\b/.test(text)) return false;
+  if (/\b(pool|open water|open-water|access|yes|true|available)\b/.test(text)) return true;
+  return null;
+}
+
+function inferCyclingBenchmarkFromProfiles(profiles?: AthleteProfiles): boolean | null {
+  const values = [
+    profiles?.cyclingProfile?.ftp_watts,
+    profiles?.cyclingProfile?.cycling_ftp_watts,
+    profiles?.cyclingProfile?.cycling_threshold_power,
+    profiles?.runProfile?.ftp_watts,
+    profiles?.runProfile?.cycling_ftp_watts,
+    profiles?.fitnessProfile?.ftp_watts,
+    profiles?.fitnessProfile?.cycling_ftp_watts,
+    profiles?.fitnessProfile?.cycling_threshold_power,
+    profiles?.fitnessProfile?.cycling_benchmark,
+  ];
+  if (values.some((value) => numericProfileValue(value) != null)) return true;
+  const text = values.filter((value) => typeof value === 'string').join(' ').toLowerCase();
+  if (/\b(no|unknown|unsure|none)\b/.test(text)) return false;
+  return null;
+}
+
+function inferTriathlonModeFromInput(input: PersistGeneratedTrainingPlanInput): boolean | null {
+  const text = [
+    input.objective,
+    input.planData.sport,
+    input.athleteProfiles?.fitnessProfile?.target_race,
+    input.athleteProfiles?.runProfile?.target_race,
+    input.athleteProfiles?.cyclingProfile?.target_event,
+    input.athleteProfiles?.swimProfile?.target_event,
+  ].filter(Boolean).join(' ').toLowerCase();
+  if (/\b(triathlon|triatlo|tríatlo|ironman|70\.3|olympic tri|sprint tri)\b/.test(text)) return true;
+  return null;
+}
+
+function profileRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+function numericProfileValue(value: unknown): number | null {
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value === 'string') {
+    const parsed = Number(value.replace(/[^0-9.]/g, ''));
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+  }
+  return null;
 }
 
 function runPlanLintGuarded(args: {
@@ -933,6 +1026,9 @@ function runPlanLintGuarded(args: {
       goalMode: args.input.goalMode,
       raceDate: args.input.raceDate ?? null,
       equipmentProfile: args.input.equipmentProfile,
+      hasPoolAccess: args.input.hasPoolAccess ?? inferPoolAccessFromProfiles(args.input.athleteProfiles),
+      cyclingBenchmarkAvailable: args.input.cyclingBenchmarkAvailable ?? inferCyclingBenchmarkFromProfiles(args.input.athleteProfiles),
+      triathlonMode: args.input.triathlonMode ?? inferTriathlonModeFromInput(args.input),
       weeks: buildPlanLintWeeks(args.weeks, args.calendarEvents),
     };
     const lint = lintPlan(lintInput);

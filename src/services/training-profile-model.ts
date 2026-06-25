@@ -61,6 +61,7 @@ export function extractNormalizedTrainingProfile(
 ): NormalizedTrainingProfile {
   const availableDays = resolveAvailableDays(input, context.weeklyTargets);
   const availableSessionDurations = resolveAvailableSessionDurations(input);
+  const scheduleDayPreferences = resolveScheduleDayPreferences(input);
   const discomfortFlags = context.constraints
     .filter((constraint) => constraint.type === 'injury')
     .map((constraint) => ({
@@ -112,6 +113,8 @@ export function extractNormalizedTrainingProfile(
     },
     scheduleConstraints: {
       preferredLongSessionDay: normalizeDayOfWeek(input.longWorkoutDay) ?? undefined,
+      preferredTrainingDays: scheduleDayPreferences.preferredTrainingDays,
+      blockedTrainingDays: scheduleDayPreferences.blockedTrainingDays,
       maxSessionsPerDay: context.maxSessionsPerDay,
       declaredConstraints: compact([
         cleanText(input.notes),
@@ -134,7 +137,11 @@ export function extractNormalizedTrainingProfile(
     currentMarkers: {
       runningWeeklyMileageKm: numericOrUndefined(input.runProfile?.weekly_mileage_km),
       easyPaceMinPerKm: cleanText(input.runProfile?.easy_pace_min_per_km) ?? undefined,
-      cyclingFtpWatts: numericOrUndefined(input.runProfile?.ftp_watts ?? input.fitnessProfile?.ftp_watts),
+      cyclingFtpWatts: numericOrUndefined(input.runProfile?.ftp_watts ?? input.runProfile?.cycling_ftp_watts ?? input.fitnessProfile?.ftp_watts),
+      cyclingWeeklyHours: cleanText(input.runProfile?.cycling_weekly_hours ?? input.runProfile?.weekly_hours) ?? undefined,
+      swimPoolAccess: cleanText(input.runProfile?.swim_pool_access ?? input.runProfile?.pool_access) ?? undefined,
+      swimSessionsPerWeek: numericOrUndefined(input.runProfile?.swim_sessions_per_week),
+      swim400mFreestyleTime: cleanText(input.runProfile?.swim_400m_freestyle_time) ?? undefined,
       bodyWeightKg: numericOrUndefined(input.fitnessProfile?.weight_kg),
       squat1RmKg: numericOrUndefined(input.gymProfile?.squat_1rm_kg),
       bench1RmKg: numericOrUndefined(input.gymProfile?.bench_1rm_kg),
@@ -153,16 +160,14 @@ function buildSourceSummary(
   return {
     goals: cleanText(input.objective) ? 'provided' : 'missing',
     experience: context.experienceSource === 'provided' ? 'provided' : 'inferred',
-    schedule: hasAnyProfileValue(input.runProfile?.weekly_availability_days, input.gymProfile?.sessions_per_week, input.fitnessProfile?.weekly_frequency, input.longWorkoutDay)
-      ? 'provided'
-      : 'inferred',
+    schedule: hasScheduleEvidence(input) ? 'provided' : 'inferred',
     duration: durations.genericMinutes || durations.enduranceMinutes || durations.strengthMinutes ? 'provided' : 'missing',
     modality: context.primaryFocus === 'hybrid' && !hasExplicitModalityPriority(input) ? 'inferred' : 'provided',
     equipment: context.equipmentSource === 'provided' ? 'provided' : 'missing',
     limitations: hasAnyProfileValue(input.fitnessProfile?.injuries, input.runProfile?.injury_history) ? 'provided' : 'missing',
     recovery: input.currentReadiness ? 'provided' : 'missing',
     consistency: hasAnyProfileValue(input.fitnessProfile?.weekly_frequency, input.gymProfile?.sessions_per_week, input.runProfile?.weekly_availability_days, input.notes) ? 'provided' : 'inferred',
-    markers: hasAnyProfileValue(input.runProfile?.weekly_mileage_km, input.runProfile?.easy_pace_min_per_km, input.runProfile?.ftp_watts, input.gymProfile?.squat_1rm_kg, input.gymProfile?.bench_1rm_kg, input.gymProfile?.deadlift_1rm_kg)
+    markers: hasAnyProfileValue(input.runProfile?.weekly_mileage_km, input.runProfile?.easy_pace_min_per_km, input.runProfile?.ftp_watts, input.runProfile?.cycling_ftp_watts, input.runProfile?.cycling_weekly_hours, input.runProfile?.swim_pool_access, input.runProfile?.pool_access, input.runProfile?.swim_sessions_per_week, input.gymProfile?.squat_1rm_kg, input.gymProfile?.bench_1rm_kg, input.gymProfile?.deadlift_1rm_kg)
       ? 'provided'
       : 'missing',
     preferences: hasExplicitTrainingPreference(input) ? 'provided' : 'inferred',
@@ -180,6 +185,7 @@ function detectMissingProfileData(
   const needsStrength = (context.weeklyTargets.strength ?? 0) > 0 || context.primaryFocus === 'strength';
   const needsRunning = (context.weeklyTargets.running ?? 0) > 0 || context.primaryFocus === 'running' || context.primaryFocus === 'marathon';
   const needsCycling = (context.weeklyTargets.cycling ?? 0) > 0 || context.primaryFocus === 'cycling';
+  const needsSwimming = (context.weeklyTargets.swimming ?? 0) > 0 || context.primaryFocus === 'swimming' || context.primaryFocus === 'triathlon';
 
   if (sources.goals !== 'provided') {
     missing.push({ key: 'primary_goal', category: 'goals', severity: 'critical', reason: 'Primary training objective is missing, so the planner must infer the week shape.' });
@@ -202,8 +208,11 @@ function detectMissingProfileData(
   if (needsRunning && !hasAnyProfileValue(input.runProfile?.weekly_mileage_km, input.runProfile?.easy_pace_min_per_km)) {
     missing.push({ key: 'running_baseline', category: 'markers', severity: 'important', reason: 'Running load and paces are inferred without current mileage or easy pace.' });
   }
-  if (needsCycling && !hasAnyProfileValue(input.runProfile?.weekly_hours, input.runProfile?.ftp_watts, input.fitnessProfile?.ftp_watts)) {
+  if (needsCycling && !hasAnyProfileValue(input.runProfile?.weekly_hours, input.runProfile?.cycling_weekly_hours, input.runProfile?.ftp_watts, input.runProfile?.cycling_ftp_watts, input.fitnessProfile?.ftp_watts)) {
     missing.push({ key: 'cycling_baseline', category: 'markers', severity: 'important', reason: 'Cycling intensity and load are inferred without FTP or weekly cycling hours.' });
+  }
+  if (needsSwimming && !hasAnyProfileValue(input.runProfile?.swim_pool_access, input.runProfile?.pool_access, input.runProfile?.swim_sessions_per_week, input.runProfile?.swim_400m_freestyle_time)) {
+    missing.push({ key: 'swim_baseline', category: 'markers', severity: 'important', reason: 'Swim frequency, access, and benchmark context are inferred without pool access or recent swim baseline.' });
   }
   if (sources.schedule !== 'provided' && totalTargetSessions(context.weeklyTargets) >= 5) {
     missing.push({ key: 'schedule_priority', category: 'schedule', severity: 'important', reason: 'Higher-frequency weeks need explicit preferred days or priority windows.' });
@@ -327,6 +336,18 @@ function buildFollowUpQuestions(
           answerType: 'text',
           planningRisk: 'Cycling intensity and weekly load are less calibrated without a baseline.',
           resolvesMissingKeys: ['cycling_baseline'],
+        };
+      case 'swim_baseline':
+        return {
+          id: 'swim_baseline_clarification',
+          category: 'markers',
+          field: 'swim_baseline',
+          priority: 'medium',
+          prompt: 'What swim access, weekly swim frequency, and recent 400m/CSS benchmark should the coach use?',
+          reason: item.reason,
+          answerType: 'text',
+          planningRisk: 'Swim sessions can be unrealistic or unsafe when access and baseline ability are unknown.',
+          resolvesMissingKeys: ['swim_baseline'],
         };
       case 'strength_duration_detail':
         return {
@@ -452,9 +473,58 @@ function resolveAvailableDays(
 ): Partial<Record<Sport, number>> {
   return {
     running: parseDays(input.runProfile?.weekly_availability_days) ?? targets.running,
-    cycling: parseDays(input.runProfile?.weekly_availability_days) ?? targets.cycling,
-    swimming: targets.swimming,
+    cycling: parseDays(input.runProfile?.cycling_weekly_availability_days) ?? parseDays(input.runProfile?.weekly_availability_days) ?? targets.cycling,
+    swimming: parseDays(input.runProfile?.swim_sessions_per_week) ?? targets.swimming,
     strength: parseDays(input.gymProfile?.sessions_per_week) ?? parseDays(input.fitnessProfile?.weekly_frequency) ?? targets.strength,
+  };
+}
+
+function hasScheduleEvidence(input: TrainingProfileExtractionInput): boolean {
+  return hasAnyProfileValue(
+    input.runProfile?.weekly_availability_days,
+    input.runProfile?.cycling_weekly_availability_days,
+    input.runProfile?.swim_sessions_per_week,
+    input.gymProfile?.sessions_per_week,
+    input.fitnessProfile?.weekly_frequency,
+    input.longWorkoutDay,
+    input.fitnessProfile?.preferred_training_days,
+    input.fitnessProfile?.blocked_days,
+    input.gymProfile?.preferred_training_days,
+    input.gymProfile?.blocked_days,
+    input.runProfile?.preferred_training_days,
+    input.runProfile?.blocked_days,
+  );
+}
+
+function resolveScheduleDayPreferences(input: TrainingProfileExtractionInput): {
+  preferredTrainingDays: DayOfWeek[];
+  blockedTrainingDays: DayOfWeek[];
+} {
+  const preferredTrainingDays = extractDayList([
+    input.longWorkoutDay,
+    input.fitnessProfile?.preferred_training_days,
+    input.fitnessProfile?.preferred_days,
+    input.fitnessProfile?.available_days,
+    input.gymProfile?.preferred_training_days,
+    input.gymProfile?.preferred_days,
+    input.runProfile?.preferred_training_days,
+    input.runProfile?.preferred_days,
+  ]);
+  const blockedTrainingDays = extractDayList([
+    input.fitnessProfile?.blocked_days,
+    input.fitnessProfile?.avoid_days,
+    input.fitnessProfile?.unavailable_days,
+    input.gymProfile?.blocked_days,
+    input.gymProfile?.avoid_days,
+    input.gymProfile?.unavailable_days,
+    input.runProfile?.blocked_days,
+    input.runProfile?.avoid_days,
+    input.runProfile?.unavailable_days,
+  ]).filter((day) => !preferredTrainingDays.includes(day));
+
+  return {
+    preferredTrainingDays,
+    blockedTrainingDays,
   };
 }
 
@@ -585,6 +655,51 @@ function parseDays(value: unknown): number | undefined {
   return clamp(max, 1, 7);
 }
 
+function extractDayList(values: unknown[]): DayOfWeek[] {
+  const tokens = values.flatMap(dayTextCandidates);
+  const found: DayOfWeek[] = [];
+  const add = (day: DayOfWeek) => {
+    if (!found.includes(day)) found.push(day);
+  };
+
+  for (const token of tokens) {
+    const normalized = token.trim().toLowerCase();
+    if (!normalized) continue;
+    if (/\bweekends?\b|fim de semana/.test(normalized)) {
+      add('saturday');
+      add('sunday');
+    }
+    if (/\bweekdays?\b|dias úteis|dias uteis/.test(normalized)) {
+      add('monday');
+      add('tuesday');
+      add('wednesday');
+      add('thursday');
+      add('friday');
+    }
+    for (const [day, aliases] of DAY_ALIASES) {
+      if (aliases.some((alias) => normalized.includes(alias))) add(day);
+    }
+  }
+
+  return found;
+}
+
+function dayTextCandidates(value: unknown): string[] {
+  if (Array.isArray(value)) return value.flatMap(dayTextCandidates);
+  if (typeof value === 'string') return [value];
+  return [];
+}
+
+const DAY_ALIASES: Array<[DayOfWeek, string[]]> = [
+  ['monday', ['monday', 'mon', 'segunda']],
+  ['tuesday', ['tuesday', 'tue', 'tues', 'terça', 'terca']],
+  ['wednesday', ['wednesday', 'wed', 'quarta']],
+  ['thursday', ['thursday', 'thu', 'thur', 'quinta']],
+  ['friday', ['friday', 'fri', 'sexta']],
+  ['saturday', ['saturday', 'sat', 'sábado', 'sabado']],
+  ['sunday', ['sunday', 'sun', 'domingo']],
+];
+
 function hasExplicitModalityPriority(input: TrainingProfileExtractionInput): boolean {
   const haystack = [
     input.objective,
@@ -604,11 +719,17 @@ function hasExplicitTrainingPreference(input: TrainingProfileExtractionInput): b
     input.preferredTime,
     input.preferredCardioTime,
     input.preferredStrengthTime,
+    input.fitnessProfile?.preferred_training_days,
+    input.fitnessProfile?.blocked_days,
     input.fitnessProfile?.preferences,
     input.fitnessProfile?.dislikes,
     input.fitnessProfile?.avoid,
+    input.gymProfile?.preferred_training_days,
+    input.gymProfile?.blocked_days,
     input.gymProfile?.preferences,
     input.gymProfile?.dislikes,
+    input.runProfile?.preferred_training_days,
+    input.runProfile?.blocked_days,
     input.runProfile?.preferences,
     input.runProfile?.dislikes,
   );

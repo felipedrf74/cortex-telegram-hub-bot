@@ -5,7 +5,10 @@
 
 import { describe, expect, it } from 'vitest';
 
-import { isTrainingPrescriptionIntent } from '../../../src/services/skills/training/intent-detectors';
+import {
+  classifyTrainingPrescriptionIntent,
+  isTrainingPrescriptionIntent,
+} from '../../../src/services/skills/training/intent-detectors';
 
 describe('isTrainingPrescriptionIntent (Phase 13 batch 71)', () => {
   it.each([
@@ -32,5 +35,25 @@ describe('isTrainingPrescriptionIntent (Phase 13 batch 71)', () => {
     'Pay the credit card bill',
   ])('does not falsely flag "%s"', (text) => {
     expect(isTrainingPrescriptionIntent(text)).toBe(false);
+  });
+
+  it('returns a typed classification for modality-specific prescription requests', () => {
+    const result = classifyTrainingPrescriptionIntent('Build me a triathlon training plan');
+
+    expect(result).toMatchObject({
+      isTrainingPrescription: true,
+      kind: 'plan_create',
+      modality: 'triathlon',
+    });
+    expect(result.matchedSignals).toContain('triathlon_plan');
+  });
+
+  it('marks ambiguous training context for semantic fallback instead of silently routing by regex only', () => {
+    const result = classifyTrainingPrescriptionIntent('I am unsure about tomorrow training load');
+
+    expect(result).toMatchObject({
+      isTrainingPrescription: false,
+      requiresSemanticFallback: true,
+    });
   });
 });
