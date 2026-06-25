@@ -80,11 +80,17 @@ Content route scope.
 - `POST /agency/projects/:id/handoff`
 
 Every agency response includes scoped identity, platform, format, objective,
-source trace, reference ids, confidence, quality score, warnings, blockers,
-review requirement, and next best actions where applicable. Routes also return
-a shared `contract` envelope so Chat, iOS, and future Content surfaces can read
-the same tenant-safe summary, quality state, warnings/blockers, source trace,
-and next actions without scraping presentation fields.
+source trace, reference ids, `sourceMode`, `sourceCount`, `researchPackageId`,
+research publishability, confidence, quality score, warnings, blockers, review
+requirement, and next best actions where applicable. Routes also return a shared
+`contract` envelope so Chat, iOS, and future Content surfaces can read the same
+tenant-safe summary, quality state, warnings/blockers, source trace, research
+state, and next actions without scraping presentation fields.
+
+Agency studies and packages now use the shared `ContentResearchPackage`
+contract. Competitor and transcript inputs are treated as untrusted evidence and
+normalized into package sources; explicit mock or degraded research marks the
+package non-publishable and blocks direct pipeline handoff until reviewed.
 
 User-facing responses must not include raw prompts, provider output, raw
 transcript dumps, raw JSON fragments, copied competitor wording, unsupported
@@ -107,6 +113,9 @@ wording.
 Migration `129_content_agency_pipeline_handoff.sql` adds
 `content_pipeline.source_agency_package_id` so approved packages can move into
 the existing editorial pipeline exactly once with read-back traceability.
+The stage history for that handoff also records `researchPackageId`,
+`sourceMode`, `sourceCount`, quality score, platform, and review state so the
+pipeline item can be traced back to the exact agency research package.
 
 ## Quality Gate
 
@@ -205,6 +214,16 @@ Release expectation remains overall score `>= 90`, no critical failures, no
 tenant leaks, no copied competitor wording, no unsupported analytics claims,
 no missing disclosure in sponsored fixtures, no raw prompt artifacts, and no
 priority generic-output failures.
+
+End-to-end Content Creation validation must also exercise the full Content
+Studio skill flow with non-production data: Profile & Voice, pillars/niches,
+References, Radar/news research, Ideas Pipeline, Briefs/Agency, Script Studio,
+Calendar handoff, Feedback/Memory, Performance, and integrations/settings.
+`scripts/content-creation-e2e-validation.sh` is the local entrypoint for this
+run. It records the latest local backend/content-engine identity, runs focused
+backend checks, launches the content-focused iOS UI suites when `IOS_SIM_UDID`
+is provided, and writes Felipe's manual script-quality checklist under ignored
+`.local/content-creation-e2e/`.
 
 ## Open Limitations
 

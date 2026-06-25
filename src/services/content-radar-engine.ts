@@ -20,6 +20,10 @@ import {
   foldContentText,
   normalizeContentTopicText,
 } from './content-text-utils';
+import {
+  buildContentResearchPackage,
+  type ContentResearchPackage,
+} from './content-research-package';
 
 export type ContentRadarSourceType =
   | 'book'
@@ -85,6 +89,7 @@ export interface ContentRadarSignalInput extends ContentRadarScoreInput {
   summary?: string | null;
   evidence?: unknown[];
   provenance?: Record<string, unknown>;
+  researchPackage?: ContentResearchPackage;
   lifecycleState?: ContentRadarLifecycleState;
   forceReviewRequired?: boolean;
   reviewReasonCodes?: string[];
@@ -111,6 +116,7 @@ export interface ContentRadarSignal {
   score: ContentRadarScore;
   evidence: unknown[];
   provenance: Record<string, unknown>;
+  researchPackage: ContentResearchPackage | null;
   duplicateSignalIds: string[];
   relatedSignalIds: string[];
   lifecycleState: ContentRadarLifecycleState;
@@ -317,6 +323,25 @@ export function upsertContentRadarSignal(input: ContentRadarSignalInput): Conten
   const signalId = makeSignalId(tenantId, input.sourceType ?? 'manual', input.sourceReferenceId ?? '', normalizedTopic);
   const lifecycleState = input.lifecycleState
     ?? (reviewRequired ? 'review_required' : baseScore.total >= 0.72 ? 'shortlisted' : 'scored');
+  const researchPackage = input.researchPackage ?? buildContentResearchPackage({
+    topic: input.topic,
+    query: input.summary ?? input.topic,
+    route: 'radar',
+    rawSources: researchSourcesFromRadarEvidence(input.evidence, input.provenance),
+    sourceOrigin: 'server_fetched',
+    degraded: input.forceReviewRequired === true && (input.reviewReasonCodes ?? []).some((code) => /degraded|fallback/i.test(code)),
+    warnings: [
+      ...(input.reviewReasonCodes ?? []),
+      ...(baseScore.reasonCodes.includes('source_quality_low') ? ['radar_source_quality_low'] : []),
+    ],
+  });
+  const provenance = {
+    ...(input.provenance ?? {}),
+    researchPackage,
+    sourceMode: researchPackage.sourceMode,
+    sourceCount: researchPackage.sourceCount,
+    researchWarnings: researchPackage.warnings,
+  };
 
   db.prepare(`
     INSERT INTO content_radar_signals (
@@ -388,7 +413,7 @@ export function upsertContentRadarSignal(input: ContentRadarSignalInput): Conten
     baseScore.strategicValue,
     baseScore.total,
     JSON.stringify(input.evidence ?? []),
-    JSON.stringify(input.provenance ?? {}),
+    JSON.stringify(provenance),
     JSON.stringify(duplicates.map((signal) => signal.signalId)),
     JSON.stringify(related.map((signal) => signal.signalId)),
     JSON.stringify(reasonCodes),
@@ -772,6 +797,7 @@ function mapRadarSignal(row: any): ContentRadarSignal {
     },
     evidence: parseJsonArray(row.evidence_json),
     provenance: parseJsonObject(row.provenance_json),
+    researchPackage: readRadarResearchPackage(row.provenance_json),
     duplicateSignalIds: parseJsonArray(row.duplicate_signal_ids_json).filter((item): item is string => typeof item === 'string'),
     relatedSignalIds: parseJsonArray(row.related_signal_ids_json).filter((item): item is string => typeof item === 'string'),
     lifecycleState: normalizeLifecycle(row.lifecycle_state),
@@ -871,4 +897,52 @@ function parseJsonObject(value: unknown): Record<string, unknown> {
   } catch {
     return {};
   }
+}
+
+function researchSourcesFromRadarEvidence(
+  evidence: unknown[] | undefined,
+  provenance: Record<string, unknown> | undefined,
+) {
+  const fromEvidence = (evidence ?? [])
+    .filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === 'object' && !Array.isArray(item))
+    .map((item, index) => ({
+      title: stringField(item, ['title', 'sourceTitle', 'name']) || `Radar evidence ${index + 1}`,
+      url: stringField(item, ['url', 'sourceUrl', 'href']) || '',
+      source_type: stringField(item, ['sourceType', 'source_type', 'type']) || 'radar_evidence',
+      relevance_note: stringField(item, ['relevanceNote', 'relevance_note', 'summary', 'note']) || 'Radar evidence source.',
+    }));
+  const provenanceSources = Array.isArray(provenance?.sources)
+    ? provenance.sources
+      .filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === 'object' && !Array.isArray(item))
+      .map((item, index) => ({
+        title: stringField(item, ['title', 'name']) || `Radar provenance source ${index + 1}`,
+        url: stringField(item, ['url', 'href']) || '',
+        source_type: stringField(item, ['sourceType', 'source_type', 'type']) || 'radar_provenance',
+        relevance_note: stringField(item, ['relevanceNote', 'relevance_note', 'summary', 'note']) || 'Radar provenance source.',
+      }))
+    : [];
+  return [...fromEvidence, ...provenanceSources];
+}
+
+function readRadarResearchPackage(value: unknown): ContentResearchPackage | null {
+  const provenance = parseJsonObject(value);
+  const researchPackage = provenance.researchPackage;
+  if (
+    researchPackage
+    && typeof researchPackage === 'object'
+    && !Array.isArray(researchPackage)
+    && typeof (researchPackage as any).packageId === 'string'
+    && typeof (researchPackage as any).sourceMode === 'string'
+  ) {
+    return researchPackage as ContentResearchPackage;
+  }
+  return null;
+}
+
+function stringField(item: Record<string, unknown>, keys: string[]): string | null {
+  for (const key of keys) {
+    const value = item[key];
+    if (typeof value === 'string' && value.trim()) return value.trim();
+  }
+  return null;
 }

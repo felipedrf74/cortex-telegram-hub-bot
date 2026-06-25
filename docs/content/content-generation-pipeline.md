@@ -75,7 +75,34 @@ The existing `/api/v1/content/script` route now appends the generation package t
 - Review warnings
 - Tenant/user scope instructions
 
-The response remains backward compatible and adds optional `generationQuality` metadata.
+The response remains backward compatible and adds optional `generationQuality`
+metadata plus the public provenance fields needed by iOS and QA:
+
+- `sourceMode`, `sourceCount`, `researchWarnings`, and `qualityBlockers`
+- `research.package`, a compact `ContentResearchPackage` with source mode,
+  source counts, observed time, publishable state, source summaries, and claim
+  ledger
+- `voiceBrandCard`, a `creator-voice-brand-card-v2` summary with audience,
+  pillars, positioning, proof library, quality, provenance, and missing facts
+- `agentSignalsUsed`, populated only from real input signals sent into the
+  content engine
+
+The same package shape is also exposed by discovery, Radar, and Creator Agency:
+
+- Script edit and research-refresh responses return the same `research.package`,
+  top-level `sourceMode`, `sourceCount`, and `researchWarnings` fields. Edit
+  paths that only receive a user-supplied source summary remain review-required
+  (`sourceMode: none`) until a real source package is attached; explicit refresh
+  uses live search sources when available.
+- `POST /api/v1/content/discover` returns `research`, top-level `sourceMode`,
+  `sourceCount`, and `researchWarnings` for both live discovery and degraded
+  local fallback.
+- Radar signals store `researchPackage`, `sourceMode`, `sourceCount`, and
+  warnings in provenance JSON, then return the parsed package on the mapped
+  signal and preserve it through workflow conversion metadata.
+- Creator Agency briefs, competitor studies, transcript studies, packages, and
+  package handoff history carry `researchPackage`/`sourceMode`; mock or degraded
+  agency research is treated as non-publishable before pipeline handoff.
 
 ## Script Quality Contract
 
@@ -110,11 +137,22 @@ sound/editing notes, payoff, and visible pacing markers.
 
 ## Current Limits
 
-- The route still accepts only the existing app-facing script formats: YouTube and Reel.
-- The generation-quality service supports broader formats, but full API routes for all formats are not complete.
-- Full provider-output quality evaluation with real model calls was not run in this pass.
-- iOS rendering of script-quality metadata is covered by focused decode and
-  source-pin tests; portal rendering is not yet validated.
+- The script route accepts the broader Content ontology formats: YouTube long
+  form, YouTube Shorts, Reel, TikTok, LinkedIn post, X thread, newsletter, blog,
+  and carousel. iOS must still render unknown future formats defensively.
+- Degraded, fallback, mock, fixture, or no-source research is visible in the
+  response and treated as review/non-publishable provenance until real sources
+  are attached. `fixture` is intentionally retained as a deterministic local
+  source-mode for eval and E2E harnesses; it is not publishable provenance.
+- Full provider-output taste evaluation still requires Felipe's manual judgment
+  in the iOS Simulator. The local entrypoint is
+  `scripts/content-creation-e2e-validation.sh`, which boots the latest local
+  backend/content-engine containers, records runtime identity, runs the content
+  backend matrix (scripts, agency, Radar, discovery, profile, references,
+  feedback, memory, performance, operational agents, voice evolution, and Python
+  provenance), routes to Content Studio UI suites, and writes Felipe's manual
+  scenario fixture plus checklist under ignored `.local/content-creation-e2e/`.
+- Portal rendering of the richer script-quality metadata is not yet validated.
 
 ## Creator Agency Extension
 

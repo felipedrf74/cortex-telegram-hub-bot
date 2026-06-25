@@ -23,7 +23,7 @@ const mockCompleteOneShotWithFallback = vi.fn(async () => ({
 }));
 const mockCompleteOneShotWithSearch = vi.fn(async () => ({
   text: 'Source note: current compact research summary.',
-  sources: ['https://example.com/source-a'],
+  sources: ['https://www.theverge.com/creator-tools-source-a'],
 }));
 const mockPersistContentArtifacts = vi.fn(() => ({
   sourcePackageId: 'sp_1234567890abcdef_abcdef1234567890',
@@ -256,7 +256,9 @@ describe('Content API — script duration presets', () => {
     expect(response.statusCode).toBe(400);
     expect(response.body.ok).toBe(false);
     expect(response.body.error.code).toBe('VALIDATION');
-    expect(response.body.error.message).toBe('o formato deve ser YouTube ou Reel');
+    expect(response.body.error.message).toBe(
+      'o formato deve ser YouTube, Shorts, Reel, TikTok, LinkedIn, X Thread, Newsletter, Blog ou Carousel',
+    );
     expect(mockGetScript).not.toHaveBeenCalled();
   });
 
@@ -576,6 +578,15 @@ describe('Content API — script duration presets', () => {
     expect(response.body.data.appliedMode).toBe('expand');
     expect(response.body.data.research.route).toBe('reused_research');
     expect(response.body.data.research.sourceSummary).toEqual(['Prior compact source package.']);
+    expect(response.body.data.research).toMatchObject({
+      sourceMode: 'none',
+      sourceCount: 0,
+      publishable: false,
+    });
+    expect(response.body.data.sourceMode).toBe('none');
+    expect(response.body.data.researchWarnings).toContain('reused_source_summary_without_source_package');
+    expect(response.body.data.qualityBlockers).toContain('research_sources_missing_review_required');
+    expect(response.body.data.qualityReport.blockers).toContain('research_sources_missing_review_required');
     expect(mockCompleteOneShotWithFallback).toHaveBeenCalledTimes(1);
     expect(mockGetScript).not.toHaveBeenCalled();
   });
@@ -595,6 +606,11 @@ describe('Content API — script duration presets', () => {
     expect(response.body.data.requestedMode).toBe('rewrite');
     expect(response.body.data.appliedMode).toBe('rewrite');
     expect(response.body.data.research.route).toBe('reused_research');
+    expect(response.body.data.research.package).toMatchObject({
+      route: 'reused_research',
+      sourceMode: 'none',
+      publishable: false,
+    });
     expect(mockCompleteOneShotWithFallback).toHaveBeenCalledTimes(1);
     expect(mockGetScript).not.toHaveBeenCalled();
   });
@@ -625,6 +641,15 @@ describe('Content API — script duration presets', () => {
     expect(response.body.data.requestedMode).toBe('research_refresh');
     expect(response.body.data.research.route).toBe('fresh_compact');
     expect(response.body.data.research.sourceSummary.join(' ')).toContain('Source note');
+    expect(response.body.data.research).toMatchObject({
+      sourceMode: 'real',
+      sourceCount: 1,
+      publishable: true,
+    });
+    expect(response.body.data.sourceMode).toBe('real');
+    expect(response.body.data.sourceCount).toBe(1);
+    expect(response.body.data.researchWarnings).toEqual([]);
+    expect(response.body.data.qualityBlockers).toEqual([]);
     expect(mockCompleteOneShotWithSearch).toHaveBeenCalledTimes(1);
     expect(mockGetScript).not.toHaveBeenCalled();
   });

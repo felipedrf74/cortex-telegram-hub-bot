@@ -29,8 +29,23 @@ function prependPath(binDir: string) {
   return `${binDir}:${process.env.PATH ?? ''}`;
 }
 
+function cleanGitEnv(overrides: NodeJS.ProcessEnv = {}) {
+  const env = { ...process.env, ...overrides };
+  for (const key of [
+    'GIT_DIR',
+    'GIT_WORK_TREE',
+    'GIT_INDEX_FILE',
+    'GIT_PREFIX',
+    'GIT_OBJECT_DIRECTORY',
+    'GIT_ALTERNATE_OBJECT_DIRECTORIES',
+  ]) {
+    delete env[key];
+  }
+  return env;
+}
+
 function git(cwd: string, args: string[]) {
-  return execFileSync('git', args, { cwd, encoding: 'utf8' }).trim();
+  return execFileSync('git', args, { cwd, encoding: 'utf8', env: cleanGitEnv() }).trim();
 }
 
 function createReleaseHarnessRepo() {
@@ -160,7 +175,7 @@ function writeSignedEvidenceFiles(root: string, privateKeyPath: string) {
       {
         cwd: root,
         env: {
-          ...process.env,
+          ...cleanGitEnv(),
           NEXUS_RELEASE_EVIDENCE_PRIVATE_KEY_PATH: privateKeyPath,
           NEXUS_RELEASE_TYPECHECK_RESULT: 'passed',
           NEXUS_RELEASE_BUILD_RESULT: 'passed',
@@ -331,7 +346,7 @@ describe('release deploy dry-run harness', () => {
         cwd: root,
         encoding: 'utf8',
         env: {
-          ...process.env,
+          ...cleanGitEnv(),
           PATH: prependPath(binDir),
           NEXUS_DEPLOY_SKIP_VERIFY: 'auto-when-staged',
           NEXUS_RELEASE_EVIDENCE_REUSE_ENABLED: '1',
@@ -360,7 +375,7 @@ describe('release deploy dry-run harness', () => {
         cwd: root,
         encoding: 'utf8',
         env: {
-          ...process.env,
+          ...cleanGitEnv(),
           PATH: prependPath(binDir),
           NEXUS_DEPLOY_SKIP_VERIFY: 'auto-when-staged',
           NEXUS_RELEASE_EVIDENCE_REUSE_ENABLED: '1',
@@ -388,7 +403,7 @@ describe('release deploy dry-run harness', () => {
         cwd: root,
         encoding: 'utf8',
         env: {
-          ...process.env,
+          ...cleanGitEnv(),
           PATH: prependPath(binDir),
           NEXUS_DEPLOY_SKIP_VERIFY: 'auto-when-staged',
           NEXUS_RELEASE_EVIDENCE_REUSE_ENABLED: '1',
@@ -416,7 +431,7 @@ describe('release deploy dry-run harness', () => {
         cwd: root,
         encoding: 'utf8',
         env: {
-          ...process.env,
+          ...cleanGitEnv(),
           PATH: prependPath(binDir),
           NEXUS_DEPLOY_SKIP_VERIFY: 'auto-when-staged',
           NEXUS_RELEASE_EVIDENCE_REUSE_ENABLED: '1',
@@ -444,7 +459,7 @@ describe('release deploy dry-run harness', () => {
         cwd: root,
         encoding: 'utf8',
         env: {
-          ...process.env,
+          ...cleanGitEnv(),
           PATH: prependPath(binDir),
           NEXUS_DEPLOY_SKIP_VERIFY: 'auto-when-staged',
           NEXUS_RELEASE_EVIDENCE_REUSE_ENABLED: '0',
@@ -469,7 +484,7 @@ describe('release deploy dry-run harness', () => {
         cwd: root,
         encoding: 'utf8',
         env: {
-          ...process.env,
+          ...cleanGitEnv(),
           PATH: prependPath(binDir),
           NEXUS_DEPLOY_SKIP_VERIFY: 'unknown-mode',
           FAKE_RELEASE_EVIDENCE_OK: '1',
@@ -496,7 +511,7 @@ describe('release deploy dry-run harness', () => {
         execFileSync('bash', ['scripts/deploy.sh'], {
           cwd: root,
           env: {
-            ...process.env,
+            ...cleanGitEnv(),
             PATH: prependPath(binDir),
             NEXUS_DEPLOY_SKIP_VERIFY: 'auto-when-staged',
             NEXUS_RELEASE_EVIDENCE_REUSE_ENABLED: '1',
@@ -536,7 +551,7 @@ describe('release deploy dry-run harness', () => {
         execFileSync('bash', ['scripts/deploy.sh'], {
           cwd: root,
           env: {
-            ...process.env,
+            ...cleanGitEnv(),
             PATH: prependPath(binDir),
           },
           stdio: ['ignore', 'pipe', 'pipe'],
@@ -565,7 +580,7 @@ describe('release deploy dry-run harness', () => {
         cwd: root,
         encoding: 'utf8',
         env: {
-          ...process.env,
+          ...cleanGitEnv(),
           PATH: prependPath(binDir),
           NEXUS_DEPLOY_SKIP_VERIFY: 'auto-when-staged',
           NEXUS_RELEASE_EVIDENCE_REUSE_ENABLED: '1',
@@ -599,7 +614,7 @@ describe('release deploy dry-run harness', () => {
         cwd: root,
         encoding: 'utf8',
         env: {
-          ...process.env,
+          ...cleanGitEnv(),
           PATH: prependPath(binDir),
           NEXUS_DEPLOY_SKIP_VERIFY: 'auto-when-staged',
           NEXUS_RELEASE_EVIDENCE_REUSE_ENABLED: '1',
@@ -627,7 +642,7 @@ describe('release deploy dry-run harness', () => {
         execFileSync('bash', ['scripts/deploy.sh', '--dry-run'], {
           cwd: root,
           env: {
-            ...process.env,
+            ...cleanGitEnv(),
             PATH: prependPath(binDir),
             NEXUS_DEPLOY_ALLOW_DIRTY: '1',
             NEXUS_EMERGENCY_SKIP_REASON: 'dry-run-test',
@@ -674,7 +689,7 @@ echo staging_smoke_ok
         encoding: 'utf8',
         input: 'YES\n',
         env: {
-          ...process.env,
+          ...cleanGitEnv(),
           PATH: prependPath(binDir),
           FAKE_RELEASE_EVIDENCE_OK: '1',
         },

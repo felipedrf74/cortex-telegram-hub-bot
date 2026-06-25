@@ -2,6 +2,21 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 
+function cleanGitEnv() {
+  const env = { ...process.env };
+  for (const key of [
+    'GIT_DIR',
+    'GIT_WORK_TREE',
+    'GIT_INDEX_FILE',
+    'GIT_PREFIX',
+    'GIT_OBJECT_DIRECTORY',
+    'GIT_ALTERNATE_OBJECT_DIRECTORIES',
+  ]) {
+    delete env[key];
+  }
+  return env;
+}
+
 describe('risk-gate dry run', () => {
   it('focused mode includes classifier globs and graph-aware changed tests', () => {
     const raw = execFileSync(
@@ -15,7 +30,7 @@ describe('risk-gate dry run', () => {
         '--files',
         'src/services/content-radar-engine.ts',
       ],
-      { encoding: 'utf8' },
+      { encoding: 'utf8', env: cleanGitEnv() },
     );
 
     expect(raw).toContain('__tests__/services/content-radar-engine.test.ts');
@@ -34,7 +49,7 @@ describe('risk-gate dry run', () => {
         '--files',
         'src/api/routes/auth.ts',
       ],
-      { encoding: 'utf8' },
+      { encoding: 'utf8', env: cleanGitEnv() },
     );
 
     expect(raw).toContain('tenant-auth-security');
@@ -51,7 +66,7 @@ describe('risk-gate dry run', () => {
         '--files',
         'content-engine/main.py',
       ],
-      { encoding: 'utf8' },
+      { encoding: 'utf8', env: cleanGitEnv() },
     );
 
     expect(raw).toContain('-m pytest');
@@ -80,7 +95,7 @@ describe('risk-gate dry run', () => {
         '--base',
         'definitely-missing-release-base',
       ],
-      { encoding: 'utf8' },
+      { encoding: 'utf8', env: cleanGitEnv() },
     );
 
     expect(result.status).toBe(0);

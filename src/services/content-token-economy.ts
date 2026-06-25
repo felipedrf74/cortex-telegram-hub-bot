@@ -4,6 +4,7 @@ import crypto from 'crypto';
 import type { ScriptGenerationMode, SourceReference, ScriptResponse } from './content-engine';
 import type { DailyQuotaStatus } from './cost-guardrail';
 import { contentBigramDice, contentTokenJaccard } from './content-text-utils';
+import { isMockResearchSource } from './content-research-package';
 
 export type ExtendedScriptGenerationMode = ScriptGenerationMode | 'draft';
 export type ContentBudgetState = 'healthy' | 'watch' | 'constrained' | 'exhausted';
@@ -526,14 +527,7 @@ export function buildSourcePackage(input: {
 }
 
 export function isMockContentSource(source: SourceReference | null | undefined): boolean {
-  if (!source) return false;
-  const title = String(source.title || '').trim();
-  const url = String(source.url || '').trim();
-  const note = String(source.relevance_note || '').trim();
-  return /^\[mock\]/i.test(title)
-    || /\bexample\.com\b/i.test(url)
-    || /(?:[?&]mock=1\b|\/mock[_-]|watch\?v=mock[_-]|mock_react_|mock_walk_)/i.test(url)
-    || /\bmock\b/i.test(note);
+  return isMockResearchSource(source);
 }
 
 export function lintSourcePackage(pkg: SourcePackage): string[] {

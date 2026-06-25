@@ -210,8 +210,9 @@ describe('P0 identity: saved_ideas count is strictly user-scoped', () => {
     );
     // Function signature must take userId
     expect(source).toMatch(/export function getIdeasBySource\(\s*source:\s*string\s*,\s*userId:\s*number/);
-    // Query must filter by user_id
-    expect(source).toMatch(/saved_ideas WHERE source = \? AND user_id = \?/);
+    // Query must filter through the shared tenant/user scope predicate.
+    expect(source).toMatch(/saved_ideas WHERE source = \? AND \$\{contentScopePredicate\(\)\}/);
+    expect(source).toContain('.all(source, ...contentScopeParams(userId, tenantId), limit)');
   });
 });
 

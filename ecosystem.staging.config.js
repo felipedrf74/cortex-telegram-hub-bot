@@ -43,10 +43,10 @@ module.exports = {
       instances: 1,
       autorestart: true,
       watch: false,
-      // Staging gets a smaller memory cap because we're not paging in the
-      // full message history that prod accumulates.
-      max_memory_restart: '512M',
-      node_args: '--max-old-space-size=512',
+      // Keep staging aligned with prod: staging smoke exercises the same
+      // portal/snapshot surfaces and routinely sits above 512M.
+      max_memory_restart: '750M',
+      node_args: '--max-old-space-size=768',
       env: {
         NODE_ENV: 'staging',
         // Tell the bot it's the staging instance — code can branch on this

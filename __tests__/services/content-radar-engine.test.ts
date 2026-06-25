@@ -338,8 +338,26 @@ describe('Content radar opportunity engine', () => {
       summary: 'Turn the source insight into a practical content idea.',
       confidence: 0.9,
       sourceQuality: 0.9,
-      evidence: ['Source-backed creator system evidence.'],
+      evidence: [{
+        title: 'Creator System',
+        url: 'https://example.test/creator-system',
+        sourceType: 'book',
+        relevanceNote: 'Source-backed creator system evidence.',
+      }],
       provenance: { referenceId: 'book-to-idea', referenceType: 'book' },
+    });
+
+    expect(signal.researchPackage).toMatchObject({
+      sourceMode: 'real',
+      sourceCount: 1,
+      publishable: true,
+    });
+    expect(signal.provenance).toMatchObject({
+      sourceMode: 'real',
+      sourceCount: 1,
+      researchPackage: expect.objectContaining({
+        packageId: signal.researchPackage?.packageId,
+      }),
     });
 
     const result = convertContentRadarSignal({
@@ -363,7 +381,14 @@ describe('Content radar opportunity engine', () => {
     expect(result.object?.metadata).toMatchObject({
       generatedFromRadarSignalId: signal.signalId,
       radarSourceType: 'book',
-      provenance: { referenceId: 'book-to-idea', referenceType: 'book' },
+      provenance: expect.objectContaining({
+        referenceId: 'book-to-idea',
+        referenceType: 'book',
+        researchPackage: expect.objectContaining({
+          packageId: signal.researchPackage?.packageId,
+        }),
+      }),
     });
+    expect(result.signal?.researchPackage?.packageId).toBe(signal.researchPackage?.packageId);
   });
 });

@@ -1,0 +1,13 @@
+{
+  "version": "1",
+  "smokeName": "content-full-nexus-local",
+  "runStartedAt": "2026-06-25T08:47:39Z",
+  "runCompletedAt": "2026-06-25T08:47:39Z",
+  "branch": "",
+  "sha": "d3935c42",
+  "verdict": "failed",
+  "exitCode": 1,
+  "durationS": 0,
+  "stdoutTail": "== Content full Nexus local smoke ==\nContent full Nexus local smoke doctor\nRoot: /Users/felipedominguez/.codex/worktrees/28a9/cortex-telegram-hub-bot\nBranch: \nCommit: d3935c42\nState dir: /Users/felipedominguez/.codex/worktrees/28a9/cortex-telegram-hub-bot/.local/content-full-nexus-smoke\nSmoke DB: /Users/felipedominguez/.codex/worktrees/28a9/cortex-telegram-hub-bot/data/content-full-nexus-smoke.db\nEval DB: /Users/felipedominguez/.codex/worktrees/28a9/cortex-telegram-hub-bot/reports/content-eval/content-eval-history.sqlite\nEval JSON: /Users/felipedominguez/.codex/worktrees/28a9/cortex-telegram-hub-bot/reports/content-eval/content-eval-latest.json\nEval Markdown: /Users/felipedominguez/.codex/worktrees/28a9/cortex-telegram-hub-bot/docs/content/content-eval-baseline-results.md\nModel calls allowed: 0\nFixture mode: 1\nBackend PID: none\nBackend running: no\nBackend listener: yes\nContent PID: none\nContent running: no\nBase URL: http://127.0.0.1:8200\nDB: /Users/felipedominguez/.codex/worktrees/28a9/cortex-telegram-hub-bot/data/content-full-nexus-smoke.db\nAuth file: /Users/felipedominguez/.codex/worktrees/28a9/cortex-telegram-hub-bot/.local/content-full-nexus-smoke/local-ios-auth.json\nAuth token: absent\nListeners:\nCOMMAND     PID            USER   FD   TYPE             DEVICE SIZE/OFF NODE NAME\ncom.docke 73660 felipedominguez  327u  IPv4 0xbc74494a30aca18d      0t0  TCP 127.0.0.1:8200 (LISTEN)\ncontent engine: not running\nbackend: not running\nPort verification:\nCOMMAND     PID            USER   FD   TYPE             DEVICE SIZE/OFF NODE NAME\ncom.docke 73660 felipedominguez  327u  IPv4 0xbc74494a30aca18d      0t0  TCP 127.0.0.1:8200 (LISTEN)\nRemoved local smoke DB: /Users/felipedominguez/.codex/worktrees/28a9/cortex-telegram-hub-bot/data/content-full-nexus-smoke.db\nCleanup complete.\ncontent engine: not running\nbackend: not running\nPort verification:\nCOMMAND     PID            USER   FD   TYPE             DEVICE SIZE/OFF NODE NAME\ncom.docke 73660 felipedominguez  327u  IPv4 0xbc74494a30aca18d      0t0  TCP 127.0.0.1:8200 (LISTEN)\nRemoved local smoke DB: /Users/felipedominguez/.codex/worktrees/28a9/cortex-telegram-hub-bot/data/content-full-nexus-smoke.db\nCleanup complete.",
+  "stderrTail": "ERROR: port 8200 is already in use. Stop the owner before starting local Nexus."
+}

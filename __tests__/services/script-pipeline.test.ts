@@ -115,20 +115,25 @@ describe('script-pipeline: cache key hardening', () => {
       require('path').resolve(__dirname, '../../src/services/content-engine.ts'),
       'utf8',
     );
+    const runtimeSource = require('fs').readFileSync(
+      require('path').resolve(__dirname, '../../src/services/content-engine-script-runtime.ts'),
+      'utf8',
+    );
 
-    expect(engineSource).toContain('export function buildScriptCacheKey');
-    expect(engineSource).toContain("'script-v8'");
-    expect(engineSource).toContain('`duration:${maxDuration}`');
-    expect(engineSource).toContain('`target:${targetDurationSeconds ?? maxDuration * 60}`');
-    expect(engineSource).toContain('`mode:${mode}`');
-    expect(engineSource).toContain('`lang:${normalizeScriptLanguage(language)}`');
-    expect(engineSource).toContain('`voice:${hashBrandVoice(brandVoice)}`');
-    expect(engineSource).toContain('`render:${normalizeScriptRenderMode(renderMode)}`');
-    expect(engineSource).toContain('`style:${normalizeScriptStyle(scriptStyle)}`');
-    expect(engineSource).toContain('`ctx:${hashScriptContext(scriptContext)}`');
-    expect(engineSource).toContain("`scope:${userId ?? 'global'}`");
-    expect(engineSource).toContain('hashRegenerationSeed');
-    expect(engineSource).toContain("parts.push(`regen:${seedHash}`)");
+    expect(engineSource).toContain("from './content-engine-script-runtime'");
+    expect(runtimeSource).toContain('export function buildScriptCacheKey');
+    expect(runtimeSource).toContain("'script-v8'");
+    expect(runtimeSource).toContain('`duration:${maxDuration}`');
+    expect(runtimeSource).toContain('`target:${targetDurationSeconds ?? maxDuration * 60}`');
+    expect(runtimeSource).toContain('`mode:${mode}`');
+    expect(runtimeSource).toContain('`lang:${normalizeScriptLanguage(language)}`');
+    expect(runtimeSource).toContain('`voice:${hashBrandVoice(brandVoice)}`');
+    expect(runtimeSource).toContain('`render:${normalizeScriptRenderMode(renderMode)}`');
+    expect(runtimeSource).toContain('`style:${normalizeScriptStyle(scriptStyle)}`');
+    expect(runtimeSource).toContain('`ctx:${hashScriptContext(scriptContext)}`');
+    expect(runtimeSource).toContain("`scope:${userId ?? 'global'}`");
+    expect(runtimeSource).toContain('hashRegenerationSeed');
+    expect(runtimeSource).toContain("parts.push(`regen:${seedHash}`)");
     expect(engineSource).toContain('cfg.cacheTtl > 0 && !forceRefresh');
   });
 
@@ -357,7 +362,7 @@ describe('script-pipeline: iOS API route', () => {
     );
 
     expect(routeSource).toContain('targetDurationSeconds');
-    expect(durationUtilitySource).toContain('Reel duration must be one of 15, 30, 45, or 60 seconds');
+    expect(durationUtilitySource).toContain('${format} duration must be one of 15, 30, 45, or 60 seconds');
     expect(durationUtilitySource).toContain('YouTube duration must be one of 8, 10, or 15 minutes');
   });
 });

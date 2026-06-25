@@ -181,6 +181,64 @@ describe('Content generation quality pipeline', () => {
     expect(quality.reviewRequired).toBe(true);
   });
 
+  it('uses semantic voice criteria instead of memory-presence-only voice scoring', () => {
+    const generation = buildContentGenerationPackage({
+      userId: 501,
+      tenantId: 101,
+      topic: 'Brand voice systems for hybrid operators',
+      formatId: 'linkedin_post',
+      references: [scopedReference({ sourceId: 'book:1' })],
+      workflowState: 'drafted',
+    });
+
+    const aligned = evaluateContentGenerationQuality({
+      package: generation,
+      outputText: 'Hybrid operators need brand voice systems, source-backed scripts, and one quality gate. Reply with your weakest draft.',
+      voiceFitCriteria: {
+        audience: 'hybrid operators',
+        contentPillars: ['brand voice systems', 'source-backed scripts'],
+        preferredCtas: ['reply with your weakest draft'],
+        proofLibrary: ['quality gate'],
+        phrasesToAvoid: ['believe in yourself'],
+        confidence: 0.9,
+      },
+    });
+    const generic = evaluateContentGenerationQuality({
+      package: generation,
+      outputText: 'Believe in yourself and post more motivational content.',
+      voiceFitCriteria: {
+        audience: 'hybrid operators',
+        contentPillars: ['brand voice systems', 'source-backed scripts'],
+        preferredCtas: ['reply with your weakest draft'],
+        proofLibrary: ['quality gate'],
+        phrasesToAvoid: ['believe in yourself'],
+        confidence: 0.9,
+      },
+    });
+
+    expect(aligned.voiceFit).toBeGreaterThan(0.85);
+    expect(generic.voiceFit).toBeLessThan(0.7);
+  });
+
+  it('does not reward outputs without configured voice DNA over semantic voice criteria', () => {
+    const generation = buildContentGenerationPackage({
+      userId: 501,
+      tenantId: 101,
+      topic: 'Brand voice systems for hybrid operators',
+      formatId: 'linkedin_post',
+      references: [scopedReference({ sourceId: 'book:1' })],
+      workflowState: 'drafted',
+    });
+
+    const noVoice = evaluateContentGenerationQuality({
+      package: generation,
+      outputText: 'Post more content and stay consistent.',
+    });
+
+    expect(noVoice.voiceFit).toBeLessThan(0.6);
+    expect(noVoice.reviewWarnings).toContain('no_voice_dna_configured');
+  });
+
   it('preserves source provenance during refinements', () => {
     const plan = buildContentRefinementPlan({
       userId: 501,

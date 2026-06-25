@@ -7,6 +7,25 @@ const mockRunContentDiscovery = vi.hoisted(() => vi.fn(async (userId: number) =>
   fullContent: '# Content Ideas',
   filePath: `/tmp/content-${userId}.md`,
   searchCount: 1,
+  researchPackage: {
+    packageId: 'crp_default_discovery',
+    topic: 'daily content discovery',
+    query: 'daily content discovery',
+    route: 'discovery',
+    sourceMode: 'real',
+    freshnessClass: 'fresh',
+    sourceCount: 1,
+    realSourceCount: 1,
+    mockSourceCount: 0,
+    observedAt: '2026-05-05T09:00:00.000Z',
+    expiresAt: null,
+    confidence: 0.7,
+    publishable: true,
+    sources: [],
+    sourceSummaries: [],
+    claimLedger: [],
+    warnings: [],
+  },
 })));
 
 const mockSaveIdea = vi.hoisted(() => vi.fn());
@@ -273,6 +292,25 @@ describe('Content API — home route', () => {
       fullContent: '# Content Ideas',
       filePath: '/tmp/content-12.md',
       searchCount: 1,
+      researchPackage: {
+        packageId: 'crp_default_discovery',
+        topic: 'daily content discovery',
+        query: 'daily content discovery',
+        route: 'discovery',
+        sourceMode: 'real',
+        freshnessClass: 'fresh',
+        sourceCount: 1,
+        realSourceCount: 1,
+        mockSourceCount: 0,
+        observedAt: '2026-05-05T09:00:00.000Z',
+        expiresAt: null,
+        confidence: 0.7,
+        publishable: true,
+        sources: [],
+        sourceSummaries: [],
+        claimLedger: [],
+        warnings: [],
+      },
     });
     mockIsDuplicateIdea.mockResolvedValue({ isDuplicate: false, confidence: 0 });
     mockGetContentRadarPreferences.mockReturnValue({ topics: [], updatedAt: null });
@@ -334,6 +372,25 @@ describe('Content API — home route', () => {
       fullContent: '# Content Ideas',
       filePath: '/tmp/content-12.md',
       searchCount: 2,
+      researchPackage: {
+        packageId: 'crp_test_discovery',
+        topic: 'daily content discovery',
+        query: 'daily content discovery',
+        route: 'discovery',
+        sourceMode: 'real',
+        freshnessClass: 'fresh',
+        sourceCount: 1,
+        realSourceCount: 1,
+        mockSourceCount: 0,
+        observedAt: '2026-05-05T09:00:00.000Z',
+        expiresAt: null,
+        confidence: 0.7,
+        publishable: true,
+        sources: [],
+        sourceSummaries: [],
+        claimLedger: [],
+        warnings: [],
+      },
     });
 
     const response = await dispatch('/discover', 'POST', 12);
@@ -341,6 +398,11 @@ describe('Content API — home route', () => {
     expect(response.statusCode).toBe(200);
     expect(response.body.ok).toBe(true);
     expect(response.body.data.discovered).toBe(2);
+    expect(response.body.data.research).toMatchObject({
+      sourceMode: 'real',
+      sourceCount: 1,
+      publishable: true,
+    });
     expect(response.body.data.ideas).toEqual([
       expect.objectContaining({
         id: expect.stringContaining('discovery-'),
@@ -366,6 +428,11 @@ describe('Content API — home route', () => {
     expect(response.statusCode).toBe(200);
     expect(response.body.ok).toBe(true);
     expect(response.body.data.degraded).toBe(true);
+    expect(response.body.data.research).toMatchObject({
+      sourceMode: 'degraded',
+      publishable: false,
+    });
+    expect(response.body.data.researchWarnings).toContain('research_degraded_non_publishable');
     expect(response.body.data.generation.provider).toBe('local-fallback');
     expect(response.body.data.ideas[0]).toMatchObject({
       title: expect.stringContaining('AI automation'),

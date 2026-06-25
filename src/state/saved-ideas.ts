@@ -1,6 +1,14 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
 import { getDb } from '../services/database';
+import {
+  contentScopeForInsert,
+  contentScopeParams,
+  contentScopePredicate,
+  ensureContentTenantScopeColumns,
+  resolveContentTenantId,
+  type ContentVisibilityScope,
+} from '../services/content-tenant-scope';
 
 export interface SavedIdea {
   id: number;
@@ -14,6 +22,11 @@ export interface SavedIdea {
   niche: string | null;
   hook_idea: string | null;
   why_now: string | null;
+  tenant_id?: number | null;
+  owner_user_id?: number | null;
+  visibility_scope?: string | null;
+  lifecycle_state?: string | null;
+  scope_status?: string | null;
   created_at: string;
 }
 
@@ -28,6 +41,8 @@ export interface SaveIdeaOptions {
   hookIdea?: string;
   whyNow?: string;
   userId: number;
+  tenantId?: number | null;
+  visibilityScope?: ContentVisibilityScope;
 }
 
 export function saveIdea(opts: SaveIdeaOptions): SavedIdea;
@@ -47,9 +62,19 @@ export function saveIdea(
   if (!Number.isSafeInteger(opts.userId) || opts.userId <= 0) {
     throw new Error('userId required: must be a positive integer');
   }
+  ensureContentTenantScopeColumns(db);
+  const scopeMeta = contentScopeForInsert(
+    opts.userId,
+    opts.tenantId,
+    opts.visibilityScope ?? 'user_private',
+    'captured',
+  );
   const result = db.prepare(`
-    INSERT INTO saved_ideas (title, source_date, source, score, workflow_eligible, angle_tag, niche, hook_idea, why_now, user_id)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO saved_ideas (
+      title, source_date, source, score, workflow_eligible, angle_tag, niche, hook_idea, why_now, user_id,
+      tenant_id, owner_user_id, visibility_scope, lifecycle_state, scope_status, created_by, updated_by, audit_metadata_json
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     opts.title,
     opts.sourceDate,
@@ -61,6 +86,14 @@ export function saveIdea(
     opts.hookIdea || null,
     opts.whyNow || null,
     opts.userId,
+    scopeMeta.tenantId,
+    scopeMeta.ownerUserId,
+    scopeMeta.visibilityScope,
+    scopeMeta.lifecycleState,
+    scopeMeta.scopeStatus,
+    scopeMeta.createdBy,
+    scopeMeta.updatedBy,
+    scopeMeta.auditMetadataJson,
   );
   return db.prepare('SELECT * FROM saved_ideas WHERE id = ?').get(result.lastInsertRowid) as SavedIdea;
 }
@@ -76,14 +109,15 @@ export function saveIdea(
  * authenticated user's id explicitly; there is no all-users
  * variant.
  */
-export function getSavedIdeas(status = 'saved', userId: number): SavedIdea[] {
+export function getSavedIdeas(status = 'saved', userId: number, tenantId?: number | null): SavedIdea[] {
   if (!Number.isSafeInteger(userId) || userId <= 0) {
     throw new Error('userId required: must be a positive integer');
   }
   const db = getDb();
+  ensureContentTenantScopeColumns(db);
   return db.prepare(
-    'SELECT * FROM saved_ideas WHERE status = ? AND user_id = ? ORDER BY created_at DESC'
-  ).all(status, userId) as SavedIdea[];
+    `SELECT * FROM saved_ideas WHERE status = ? AND ${contentScopePredicate()} ORDER BY created_at DESC`
+  ).all(status, ...contentScopeParams(userId, tenantId)) as SavedIdea[];
 }
 
 /**
@@ -95,14 +129,15 @@ export function getSavedIdeas(status = 'saved', userId: number): SavedIdea[] {
  * caller currently relies on it. The required `userId` parameter forces
  * callers to declare scope at the type level.
  */
-export function getIdeasBySource(source: string, userId: number, limit = 20): SavedIdea[] {
+export function getIdeasBySource(source: string, userId: number, limit = 20, tenantId?: number | null): SavedIdea[] {
   if (!Number.isSafeInteger(userId) || userId <= 0) {
     throw new Error('userId required: must be a positive integer');
   }
   const db = getDb();
+  ensureContentTenantScopeColumns(db);
   return db.prepare(
-    'SELECT * FROM saved_ideas WHERE source = ? AND user_id = ? ORDER BY created_at DESC LIMIT ?'
-  ).all(source, userId, limit) as SavedIdea[];
+    `SELECT * FROM saved_ideas WHERE source = ? AND ${contentScopePredicate()} ORDER BY created_at DESC LIMIT ?`
+  ).all(source, ...contentScopeParams(userId, tenantId), limit) as SavedIdea[];
 }
 
 /**
@@ -114,51 +149,70 @@ export function getIdeasBySource(source: string, userId: number, limit = 20): Sa
  * `getIdeasBySource` (May 2026 audit fix) and `getSavedIdeas`
  * (this pass).
  */
-export function getWorkflowEligibleIdeas(userId: number): SavedIdea[] {
+export function getWorkflowEligibleIdeas(userId: number, tenantId?: number | null): SavedIdea[] {
   if (!Number.isSafeInteger(userId) || userId <= 0) {
     throw new Error('userId required: must be a positive integer');
   }
   const db = getDb();
+  ensureContentTenantScopeColumns(db);
   return db.prepare(`
     SELECT * FROM saved_ideas
     WHERE workflow_eligible = 1
       AND source = 'discovery'
       AND status = 'saved'
       AND created_at > datetime('now', '-7 days')
-      AND user_id = ?
+      AND ${contentScopePredicate()}
     ORDER BY score DESC
     LIMIT 10
-  `).all(userId) as SavedIdea[];
+  `).all(...contentScopeParams(userId, tenantId)) as SavedIdea[];
 }
 
 /** Mark an idea as promoted to workflow */
-export function markIdeaPromoted(id: number, userId: number): boolean {
+export function markIdeaPromoted(id: number, userId: number, tenantId?: number | null): boolean {
   if (!Number.isSafeInteger(userId) || userId <= 0) {
     throw new Error('userId required: must be a positive integer');
   }
   const db = getDb();
+  ensureContentTenantScopeColumns(db);
   const result = db.prepare(
-    "UPDATE saved_ideas SET status = 'promoted' WHERE id = ? AND user_id = ?"
-  ).run(id, userId);
+    `UPDATE saved_ideas SET status = 'promoted' WHERE id = ? AND ${ownerWritePredicate()}`
+  ).run(id, ...ownerWriteParams(userId, tenantId));
   return result.changes > 0;
 }
 
-export function markIdeaUsed(id: number, userId: number): boolean {
+export function markIdeaUsed(id: number, userId: number, tenantId?: number | null): boolean {
   if (!Number.isSafeInteger(userId) || userId <= 0) {
     throw new Error('userId required: must be a positive integer');
   }
   const db = getDb();
+  ensureContentTenantScopeColumns(db);
   const result = db.prepare(
-    "UPDATE saved_ideas SET status = 'used' WHERE id = ? AND user_id = ?"
-  ).run(id, userId);
+    `UPDATE saved_ideas SET status = 'used' WHERE id = ? AND ${ownerWritePredicate()}`
+  ).run(id, ...ownerWriteParams(userId, tenantId));
   return result.changes > 0;
 }
 
-export function deleteIdea(id: number, userId: number): boolean {
+export function deleteIdea(id: number, userId: number, tenantId?: number | null): boolean {
   if (!Number.isSafeInteger(userId) || userId <= 0) {
     throw new Error('userId required: must be a positive integer');
   }
   const db = getDb();
-  const result = db.prepare('DELETE FROM saved_ideas WHERE id = ? AND user_id = ?').run(id, userId);
+  ensureContentTenantScopeColumns(db);
+  const result = db.prepare(`DELETE FROM saved_ideas WHERE id = ? AND ${ownerWritePredicate()}`).run(
+    id,
+    ...ownerWriteParams(userId, tenantId),
+  );
   return result.changes > 0;
+}
+
+function ownerWritePredicate(): string {
+  return `(
+    COALESCE(scope_status, CASE WHEN user_id > 0 THEN 'active' ELSE 'quarantined' END) = 'active'
+    AND COALESCE(tenant_id, CASE WHEN user_id > 0 THEN user_id ELSE 0 END) = ?
+    AND COALESCE(owner_user_id, user_id, 0) = ?
+  )`;
+}
+
+function ownerWriteParams(userId: number, tenantId?: number | null): [number, number] {
+  return [resolveContentTenantId(userId, tenantId), userId];
 }

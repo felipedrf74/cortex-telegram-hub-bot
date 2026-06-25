@@ -77,4 +77,35 @@ describe('saved ideas user scoping', () => {
     expect(a.status).toBe('promoted');
     expect(b.status).toBe('used');
   });
+
+  it('writes explicit tenant scope metadata for new ideas', () => {
+    const idea = saveIdea({
+      title: 'Tenant-scoped idea',
+      sourceDate: '2026-06-24',
+      userId: 101,
+      tenantId: 500,
+      source: 'discovery',
+      workflowEligible: true,
+    });
+
+    const row = testDb.prepare(`
+      SELECT tenant_id, owner_user_id, visibility_scope, lifecycle_state, scope_status, created_by, updated_by
+      FROM saved_ideas
+      WHERE id = ?
+    `).get(idea.id) as any;
+
+    expect(row).toMatchObject({
+      tenant_id: 500,
+      owner_user_id: 101,
+      visibility_scope: 'user_private',
+      lifecycle_state: 'captured',
+      scope_status: 'active',
+      created_by: 101,
+      updated_by: 101,
+    });
+    expect(getSavedIdeas('saved', 101, 500).map((saved) => saved.title)).toContain('Tenant-scoped idea');
+    expect(getSavedIdeas('saved', 202, 500).map((saved) => saved.title)).not.toContain('Tenant-scoped idea');
+    expect(markIdeaPromoted(idea.id, 101, 999)).toBe(false);
+    expect(markIdeaPromoted(idea.id, 101, 500)).toBe(true);
+  });
 });

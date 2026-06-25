@@ -13,6 +13,7 @@ import path from 'path';
 import { spawnSync } from 'child_process';
 import crypto from 'crypto';
 import dotenv from 'dotenv';
+import { CURRENT_LEGAL_DOCUMENTS } from '../src/services/legal-consent';
 
 type RuntimePrompt = {
   text: string;
@@ -257,6 +258,11 @@ async function registerAuth(writePath?: string): Promise<RuntimeAuth> {
       deviceId: `chatv2-runtime-evidence-${Date.now()}`,
       deviceName: 'ChatV2 Runtime Evidence Smoke',
       inviteCode,
+      acceptedLegal: {
+        accepted: true,
+        termsVersion: CURRENT_LEGAL_DOCUMENTS.terms.version,
+        privacyVersion: CURRENT_LEGAL_DOCUMENTS.privacy.version,
+      },
     }),
   });
   const body = await safeJson(response);

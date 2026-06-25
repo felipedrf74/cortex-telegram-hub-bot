@@ -31,6 +31,10 @@ interface ContentAgencyResponseContract {
   objective: string;
   sourceTrace: string[];
   referenceIds: string[];
+  sourceMode: string | null;
+  sourceCount: number | null;
+  researchPackageId: string | null;
+  researchPublishable: boolean | null;
   confidence: number;
   qualityScore: number | null;
   warnings: string[];
@@ -78,7 +82,9 @@ function uniqueStrings(...values: unknown[]): string[] {
 function buildResponseContract(
   artifact: any,
   fallback: Partial<ContentAgencyResponseContract> = {},
+  options: { includeResearchProvenance?: boolean } = {},
 ): ContentAgencyResponseContract {
+  const includeResearchProvenance = options.includeResearchProvenance !== false;
   const brief = artifact?.brief && typeof artifact.brief === 'object' ? artifact.brief : artifact;
   const quality = artifact?.quality && typeof artifact.quality === 'object' ? artifact.quality : null;
   const warnings = uniqueStrings(artifact?.warnings, quality?.warnings, fallback.warnings);
@@ -86,6 +92,11 @@ function buildResponseContract(
   const nextBestActions = uniqueStrings(artifact?.nextBestActions, brief?.nextBestActions, fallback.nextBestActions);
   const sourceTrace = uniqueStrings(artifact?.sourceTrace, brief?.sourceTrace, fallback.sourceTrace);
   const referenceIds = uniqueStrings(artifact?.referenceIds, fallback.referenceIds);
+  const researchPackage = includeResearchProvenance && artifact?.researchPackage && typeof artifact.researchPackage === 'object'
+    ? artifact.researchPackage
+    : includeResearchProvenance && brief?.researchPackage && typeof brief.researchPackage === 'object'
+      ? brief.researchPackage
+      : null;
   const confidence = Number.isFinite(Number(artifact?.confidence ?? brief?.confidence ?? fallback.confidence))
     ? Number(artifact?.confidence ?? brief?.confidence ?? fallback.confidence)
     : 0.5;
@@ -103,6 +114,18 @@ function buildResponseContract(
     objective: String(artifact?.objective ?? brief?.objective ?? brief?.goal ?? fallback.objective ?? 'Build a useful content package'),
     sourceTrace,
     referenceIds,
+    sourceMode: includeResearchProvenance && typeof (artifact?.sourceMode ?? researchPackage?.sourceMode ?? fallback.sourceMode) === 'string'
+      ? String(artifact?.sourceMode ?? researchPackage?.sourceMode ?? fallback.sourceMode)
+      : null,
+    sourceCount: includeResearchProvenance && Number.isFinite(Number(researchPackage?.sourceCount ?? fallback.sourceCount))
+      ? Number(researchPackage?.sourceCount ?? fallback.sourceCount)
+      : null,
+    researchPackageId: includeResearchProvenance && typeof (researchPackage?.packageId ?? fallback.researchPackageId) === 'string'
+      ? String(researchPackage?.packageId ?? fallback.researchPackageId)
+      : null,
+    researchPublishable: includeResearchProvenance && typeof (artifact?.researchPublishable ?? researchPackage?.publishable ?? fallback.researchPublishable) === 'boolean'
+      ? Boolean(artifact?.researchPublishable ?? researchPackage?.publishable ?? fallback.researchPublishable)
+      : null,
     confidence,
     qualityScore: Number.isFinite(Number(quality?.score ?? (artifact as any)?.qualityScore ?? fallback.qualityScore))
       ? Number(quality?.score ?? (artifact as any)?.qualityScore ?? fallback.qualityScore)
@@ -301,7 +324,14 @@ export function registerContentAgencyRoutes(
         blockers: quality.blockers,
         sourceTrace: pkg.sourceTrace ?? [],
       });
-      sendSuccess(res, { quality, contract: buildResponseContract({ ...pkg, quality }, buildResponseContract(pkg)) });
+      sendSuccess(res, {
+        quality,
+        contract: buildResponseContract(
+          { ...pkg, quality },
+          buildResponseContract(pkg, {}, { includeResearchProvenance: false }),
+          { includeResearchProvenance: false },
+        ),
+      });
     } catch (err) {
       logger.error({ err, userId, tenantId }, 'content agency score failed');
       sendInternalError(res, 'Failed to score content agency package');
@@ -382,7 +412,7 @@ export function registerContentAgencyRoutes(
           blockers: result.blockers,
           nextBestActions: result.nextBestActions,
           sourceTrace: result.sourceTrace,
-          reviewRequired: result.blockers.length > 0,
+          reviewRequired: result.reviewRequired ?? (result.blockers.length > 0 || result.warnings.length > 0),
         }),
       }, { status: result.status === 'created' ? 201 : 200 });
     } catch (err) {

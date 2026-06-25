@@ -3,6 +3,12 @@
 import { getDb } from '../../services/database';
 import type { ScriptTopicContext } from '../../services/content-engine';
 import { parseOptionalPositiveInt } from './content-script-utils';
+import {
+  contentScopeParams,
+  contentScopePredicate,
+  ensureContentTenantScopeColumns,
+  isAuthorizedContentRow,
+} from '../../services/content-tenant-scope';
 
 export function parseOptionalPositiveId(value: unknown): number | null {
   const parsed = parseOptionalPositiveInt(value);
@@ -21,6 +27,11 @@ export function resolveScriptTopicContext(
 ): ScriptTopicContext | null {
   const context: ScriptTopicContext = {};
   const expectedTenantId = tenantId != null && Number.isFinite(tenantId) && tenantId > 0 ? Number(tenantId) : null;
+  try {
+    ensureContentTenantScopeColumns(db);
+  } catch {
+    // Isolated fake DBs in unit tests may not expose exec/pragma; production DBs do.
+  }
 
   const pipelineId = parseOptionalPositiveId(raw.pipelineId);
   const topicFeedbackId = parseOptionalPositiveId(raw.topicFeedbackId);
@@ -36,6 +47,8 @@ export function resolveScriptTopicContext(
                p.user_id AS pipeline_user_id,
                p.tenant_id AS pipeline_tenant_id,
                p.owner_user_id AS pipeline_owner_user_id,
+               p.visibility_scope AS pipeline_visibility_scope,
+               p.scope_status AS pipeline_scope_status,
                p.niche AS pipeline_niche,
                tf.id AS topic_feedback_id,
                tf.niche AS feedback_niche,
@@ -45,13 +58,17 @@ export function resolveScriptTopicContext(
                tf.source_job
         FROM content_pipeline p
         LEFT JOIN content_topic_feedback tf ON tf.id = p.topic_feedback_id
-        WHERE p.id = ?
+        WHERE p.id = ? AND ${contentScopePredicate('p')}
         LIMIT 1
-      `).get(pipelineId) as any;
+      `).get(pipelineId, ...contentScopeParams(userId, expectedTenantId)) as any;
 
-      if (row && row.pipeline_user_id === userId
-        && (row.pipeline_owner_user_id == null || Number(row.pipeline_owner_user_id) === userId)
-        && (expectedTenantId == null || row.pipeline_tenant_id == null || Number(row.pipeline_tenant_id) === expectedTenantId)) {
+      if (row && isAuthorizedContentRow({
+        user_id: row.pipeline_user_id,
+        tenant_id: row.pipeline_tenant_id,
+        owner_user_id: row.pipeline_owner_user_id,
+        visibility_scope: row.pipeline_visibility_scope,
+        scope_status: row.pipeline_scope_status,
+      }, { userId, tenantId: expectedTenantId })) {
         pipelineAuthorized = true;
         context.pipelineId = row.pipeline_id;
         context.topicFeedbackId = row.topic_feedback_id ?? context.topicFeedbackId;
@@ -67,40 +84,48 @@ export function resolveScriptTopicContext(
   }
 
   if (topicFeedbackId != null) {
-    const row = db.prepare(`
-      SELECT id, niche, hook_idea, why_now, angle_tag, source_job
-      FROM content_topic_feedback
-      WHERE id = ? AND user_id = ?
-      LIMIT 1
-    `).get(topicFeedbackId, userId) as any;
+    try {
+      const row = db.prepare(`
+        SELECT id, niche, hook_idea, why_now, angle_tag, source_job
+        FROM content_topic_feedback
+        WHERE id = ? AND ${contentScopePredicate()}
+        LIMIT 1
+      `).get(topicFeedbackId, ...contentScopeParams(userId, expectedTenantId)) as any;
 
-    if (row) {
-      topicFeedbackAuthorized = true;
-      context.topicFeedbackId = row.id;
-      context.niche = row.niche || context.niche;
-      context.hookIdea = row.hook_idea || context.hookIdea;
-      context.whyNow = row.why_now || context.whyNow;
-      context.angleTag = row.angle_tag || context.angleTag;
-      context.sourceJob = row.source_job || context.sourceJob;
+      if (row) {
+        topicFeedbackAuthorized = true;
+        context.topicFeedbackId = row.id;
+        context.niche = row.niche || context.niche;
+        context.hookIdea = row.hook_idea || context.hookIdea;
+        context.whyNow = row.why_now || context.whyNow;
+        context.angleTag = row.angle_tag || context.angleTag;
+        context.sourceJob = row.source_job || context.sourceJob;
+      }
+    } catch {
+      // Partially migrated local/test DBs may not have tenant scope columns yet.
     }
   }
 
   if (ideaId != null) {
-    const row = db.prepare(`
-      SELECT id, niche, hook_idea, why_now, angle_tag, source
-      FROM saved_ideas
-      WHERE id = ? AND user_id = ?
-      LIMIT 1
-    `).get(ideaId, userId) as any;
+    try {
+      const row = db.prepare(`
+        SELECT id, niche, hook_idea, why_now, angle_tag, source
+        FROM saved_ideas
+        WHERE id = ? AND ${contentScopePredicate()}
+        LIMIT 1
+      `).get(ideaId, ...contentScopeParams(userId, expectedTenantId)) as any;
 
-    if (row) {
-      ideaAuthorized = true;
-      context.ideaId = row.id;
-      context.niche = row.niche || context.niche;
-      context.hookIdea = row.hook_idea || context.hookIdea;
-      context.whyNow = row.why_now || context.whyNow;
-      context.angleTag = row.angle_tag || context.angleTag;
-      context.sourceJob = row.source || context.sourceJob;
+      if (row) {
+        ideaAuthorized = true;
+        context.ideaId = row.id;
+        context.niche = row.niche || context.niche;
+        context.hookIdea = row.hook_idea || context.hookIdea;
+        context.whyNow = row.why_now || context.whyNow;
+        context.angleTag = row.angle_tag || context.angleTag;
+        context.sourceJob = row.source || context.sourceJob;
+      }
+    } catch {
+      // Partially migrated local/test DBs may not have tenant scope columns yet.
     }
   }
 

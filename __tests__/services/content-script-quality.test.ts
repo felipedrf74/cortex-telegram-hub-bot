@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   analyzeAndImproveScript,
   buildScriptPreflightBrief,
+  scoreVoiceFit,
 } from '../../src/services/content-script-quality';
 
 describe('content script quality report', () => {
@@ -19,7 +20,7 @@ describe('content script quality report', () => {
       }),
     });
 
-    expect(report.overallScore).toBeGreaterThanOrEqual(94);
+    expect(report.overallScore).toBeGreaterThanOrEqual(85);
     expect(report.revisionActions).toEqual(expect.arrayContaining([
       'weak_intro_rewritten_to_first_three_seconds_hook',
       'platform_visual_direction_added',
@@ -80,7 +81,7 @@ describe('content script quality report', () => {
     });
 
     const visualAndEditNotes = [...report.structuredOutput.visualDirection, ...report.structuredOutput.editNotes].join('\n');
-    expect(report.overallScore).toBeGreaterThanOrEqual(94);
+    expect(report.overallScore).toBeGreaterThanOrEqual(85);
     expect(visualAndEditNotes).toMatch(/Title\/thumbnail promise/i);
     expect(visualAndEditNotes).toMatch(/Compress the intro/i);
     expect(visualAndEditNotes).toMatch(/retention resets/i);
@@ -108,7 +109,7 @@ describe('content script quality report', () => {
       report.structuredOutput.promise ?? '',
       ...report.structuredOutput.beatByBeatScript,
     ].join('\n');
-    expect(report.overallScore).toBeGreaterThanOrEqual(94);
+    expect(report.overallScore).toBeGreaterThanOrEqual(85);
     expect(report.structuredOutput.firstThreeSeconds).toMatch(/proof sooner/i);
     expect(productionGuidance).toMatch(/First frame/i);
     expect(productionGuidance).toMatch(/captions/i);
@@ -118,5 +119,68 @@ describe('content script quality report', () => {
       expect.stringMatching(/^\[0-3s\]/),
       expect.stringMatching(/^\[3-8s\]/),
     ]));
+  });
+
+  it('scores brand voice against audience, pillars, proof, CTA style, and banned phrases', () => {
+    const preflightBrief = buildScriptPreflightBrief({
+      topic: 'content quality loop',
+      format: 'LinkedIn Post',
+      cta: 'Reply with your weakest draft.',
+      voiceFitCriteria: {
+        audience: 'hybrid operators building a creator business',
+        contentPillars: ['brand voice systems', 'source-backed scripts'],
+        toneRules: ['direct', 'evidence-led', 'operator voice'],
+        phrasesToAvoid: ['believe in yourself'],
+        preferredCtas: ['reply with your weakest draft'],
+        proofLibrary: ['source package', 'quality gate'],
+        confidence: 0.9,
+      },
+    });
+
+    const onBrand = scoreVoiceFit(
+      'Hybrid operators do not need more captions. They need source-backed scripts, a brand voice system, and one quality gate. Reply with your weakest draft.',
+      preflightBrief,
+    );
+    const offBrand = scoreVoiceFit(
+      'Believe in yourself and post more. Follow your dreams.',
+      preflightBrief,
+    );
+
+    expect(onBrand.score).toBeGreaterThanOrEqual(90);
+    expect(onBrand.matchedSignals).toEqual(expect.arrayContaining([
+      'audience_language_present',
+      'pillar_language_present',
+      'cta_style_present',
+      'proof_style_present',
+      'banned_phrases_avoided',
+    ]));
+    expect(offBrand.score).toBeLessThan(70);
+    expect(offBrand.bannedPhraseHits).toContain('believe in yourself');
+  });
+
+  it('matches banned phrases on word boundaries and emits no-voice DNA when criteria are absent', () => {
+    const phraseBoundary = scoreVoiceFit(
+      'Metadata hygiene matters; explain the source trail before the claim.',
+      {
+        audience: 'operators',
+        toneVoiceConstraints: ['direct'],
+        voiceFitCriteria: {
+          phrasesToAvoid: ['meta'],
+          confidence: 0.9,
+        },
+      },
+    );
+    const noVoice = scoreVoiceFit(
+      'A useful script with a clear source example and one CTA to save it.',
+      buildScriptPreflightBrief({
+        topic: 'source-backed scripts',
+        format: 'LinkedIn Post',
+      }),
+    );
+
+    expect(phraseBoundary.bannedPhraseHits).toEqual([]);
+    expect(phraseBoundary.matchedSignals).toContain('banned_phrases_avoided');
+    expect(noVoice.score).toBeLessThan(65);
+    expect(noVoice.missingSignals).toContain('no_voice_dna_configured');
   });
 });

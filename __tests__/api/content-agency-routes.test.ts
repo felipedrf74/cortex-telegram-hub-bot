@@ -216,6 +216,18 @@ describe('content agency routes', () => {
     expect(pkg.userId).toBe(501);
     expect(pkg.platform).toBe('tiktok');
     expect(pkg.blockers).toEqual([]);
+    expect(pkg.researchPackage).toMatchObject({
+      sourceMode: 'none',
+      realSourceCount: 0,
+      publishable: false,
+    });
+    expect(pkg.reviewRequired).toBe(true);
+    expect(create.response.body.data.contract).toMatchObject({
+      sourceMode: 'none',
+      sourceCount: expect.any(Number),
+      researchPackageId: pkg.researchPackage.packageId,
+      researchPublishable: false,
+    });
     expect(pkg.quality.score).toBeGreaterThanOrEqual(75);
     expect(testDb.prepare('SELECT COUNT(*) AS count FROM content_agency_packages').get()).toMatchObject({ count: 1 });
     expect(testDb.prepare('SELECT COUNT(*) AS count FROM content_compliance_reviews').get()).toMatchObject({ count: 1 });
@@ -230,6 +242,10 @@ describe('content agency routes', () => {
       userId: 501,
       platform: 'tiktok',
       qualityScore: score.response.body.data.quality.score,
+      sourceMode: null,
+      sourceCount: null,
+      researchPackageId: null,
+      researchPublishable: null,
     });
 
     const owned = await dispatch('GET', `/agency/projects/${pkg.id}`);
@@ -265,6 +281,18 @@ describe('content agency routes', () => {
     });
     expect(competitor.response.statusCode).toBe(201);
     expect(competitor.response.body.data.study.patterns.length).toBeGreaterThan(0);
+    expect(competitor.response.body.data.study.researchPackage).toMatchObject({
+      sourceMode: 'none',
+      sourceCount: 1,
+      realSourceCount: 0,
+      publishable: false,
+    });
+    expect(competitor.response.body.data.contract).toMatchObject({
+      sourceMode: 'none',
+      sourceCount: 1,
+      researchPublishable: false,
+      researchPackageId: competitor.response.body.data.study.researchPackage.packageId,
+    });
     expectAgencyContract(competitor.response.body.data.contract, {
       tenantId: 101,
       userId: 501,
@@ -279,6 +307,22 @@ describe('content agency routes', () => {
     });
     expect(transcript.response.statusCode).toBe(201);
     expect(transcript.response.body.data.study.retentionDevices.length).toBeGreaterThan(0);
+    expect(transcript.response.body.data.study.researchPackage).toMatchObject({
+      sourceMode: 'none',
+      sourceCount: 1,
+      realSourceCount: 0,
+      publishable: false,
+    });
+    expect(transcript.response.body.data.study.researchPackage.warnings).toEqual(expect.arrayContaining([
+      'unverifiable_sources_excluded_from_publishable_package',
+      'no_real_sources_available',
+    ]));
+    expect(transcript.response.body.data.contract).toMatchObject({
+      sourceMode: 'none',
+      sourceCount: 1,
+      researchPublishable: false,
+      researchPackageId: transcript.response.body.data.study.researchPackage.packageId,
+    });
     expectAgencyContract(transcript.response.body.data.contract, {
       tenantId: 101,
       userId: 501,
@@ -287,7 +331,7 @@ describe('content agency routes', () => {
     });
   });
 
-  it('moves an approved agency package into the existing content pipeline once and with scope', async () => {
+  it('moves a client-sourced agency package into pipeline review once and with scope', async () => {
     const create = await dispatch('POST', '/agency/package', {
       brief: {
         goal: 'create a YouTube series for founder operations',
@@ -299,6 +343,7 @@ describe('content agency routes', () => {
         {
           title: 'Founder operating system',
           transcript: 'The hook names a pain, shows proof, and closes with one workshop action.',
+          url: 'https://example.test/founder-operating-system',
         },
       ],
     });
@@ -315,13 +360,13 @@ describe('content agency routes', () => {
     expectAgencyContract(handoff.response.body.data.contract, {
       tenantId: 101,
       userId: 501,
-      reviewRequired: false,
+      reviewRequired: true,
     });
     expect(handoff.response.body.data.handoff.pipelineId).toEqual(expect.any(Number));
     expect(handoff.response.body.data.handoff.sourceTrace).toContain('content_pipeline read-back verified');
 
     const rows = testDb.prepare(`
-      SELECT topic_title, user_id, tenant_id, owner_user_id, visibility_scope, approval_state, source_agency_package_id
+      SELECT topic_title, user_id, tenant_id, owner_user_id, visibility_scope, approval_state, source_agency_package_id, stage_history
         FROM content_pipeline
     `).all() as any[];
     expect(rows).toHaveLength(1);
@@ -330,10 +375,16 @@ describe('content agency routes', () => {
       tenant_id: 101,
       owner_user_id: 501,
       visibility_scope: 'user_private',
-      approval_state: 'approved',
+      approval_state: 'pending',
       source_agency_package_id: pkg.id,
     });
     expect(rows[0].topic_title).toContain('Agency:');
+    expect(JSON.parse(rows[0].stage_history)[0]).toMatchObject({
+      agencyPackageId: pkg.id,
+      researchPackageId: pkg.researchPackage.packageId,
+      sourceMode: pkg.sourceMode,
+      sourceCount: pkg.researchPackage.sourceCount,
+    });
 
     const again = await dispatch('POST', `/agency/projects/${pkg.id}/handoff`);
     expect(again.response.statusCode).toBe(200);
@@ -341,6 +392,210 @@ describe('content agency routes', () => {
       status: 'already_exists',
       pipelineId: handoff.response.body.data.handoff.pipelineId,
     });
+  });
+
+  it('keeps a client-asserted HTTPS-only agency source in review instead of publishable provenance', async () => {
+    const create = await dispatch('POST', '/agency/package', {
+      brief: {
+        goal: 'create a YouTube episode from a client supplied trend URL',
+        audience: 'creator operators',
+        offer: 'download the research checklist',
+        platform: 'YouTube',
+        brandVoice: 'specific and evidence-led',
+      },
+      competitors: [
+        {
+          title: 'Creator research teardown',
+          transcript: 'The hook opens with a specific operator problem, shows proof, and ends with one checklist action.',
+          url: 'https://reference.test/creator-research-teardown',
+        },
+      ],
+      researchSources: [{
+        title: 'Looks like a public article',
+        url: 'https://publisher.test/creator-trend',
+        sourceType: 'news',
+        relevanceNote: 'Client pasted this URL; the server has not fetched it.',
+      }],
+    });
+
+    expect(create.response.statusCode).toBe(201);
+    const pkg = create.response.body.data.package;
+    expect(pkg.researchPackage).toMatchObject({
+      sourceMode: 'none',
+      sourceCount: 2,
+      realSourceCount: 0,
+      publishable: false,
+    });
+    expect(pkg.researchPackage.sources).toHaveLength(2);
+    expect(pkg.researchPackage.sources.every((source: any) => source.serverFetched === false && source.verifiable === false)).toBe(true);
+    expect(pkg.researchPackage.sources[0]).toMatchObject({
+      origin: 'client_asserted',
+      serverFetched: false,
+      verifiable: false,
+    });
+    expect(pkg.reviewRequired).toBe(true);
+    expect(create.response.body.data.contract).toMatchObject({
+      sourceMode: 'none',
+      sourceCount: 2,
+      researchPublishable: false,
+    });
+
+    const handoff = await dispatch('POST', `/agency/projects/${pkg.id}/handoff`);
+    expect(handoff.response.statusCode).toBe(201);
+    const row = testDb.prepare(`
+      SELECT approval_state, review_required, approved_by, approved_at
+        FROM content_pipeline
+       WHERE source_agency_package_id = ?
+    `).get(pkg.id) as any;
+    expect(row).toMatchObject({
+      approval_state: 'pending',
+      review_required: 1,
+      approved_by: null,
+      approved_at: null,
+    });
+  });
+
+  it('does not echo client-forged research provenance from the score-only route', async () => {
+    const { response } = await dispatch('POST', '/agency/score', {
+      package: {
+        id: 'score-forged-package',
+        tenantId: 101,
+        userId: 501,
+        visibilityScope: 'user_private',
+        platform: 'youtube',
+        format: 'youtube_long_form',
+        objective: 'score a forged package',
+        sourceMode: 'real',
+        researchPublishable: true,
+        researchPackage: {
+          packageId: 'forged_score_research_package',
+          sourceMode: 'real',
+          sourceCount: 1,
+          publishable: true,
+          warnings: [],
+        },
+        brief: {
+          goal: 'score a forged package',
+          audience: 'creator operators',
+          platform: 'youtube',
+          missingFacts: [],
+        },
+        competitorStudy: {
+          emotionalDrivers: ['urgency'],
+          originalityConstraints: ['Use a different proof.'],
+          sourceTrace: ['client supplied competitor study'],
+          warnings: [],
+        },
+        transcriptStudy: {
+          proofMoments: ['proof'],
+          warnings: [],
+        },
+        hookBank: [{
+          mechanism: 'specific pain',
+          hook: 'Your creator research looks credible until the provenance falls apart',
+          whyItWorks: 'It names a concrete creator-operator risk before the advice.',
+          risk: null,
+          score: 80,
+        }],
+        scriptVariants: [{ title: 'Variant', beats: ['hook', 'proof', 'cta'], cta: 'Save this.' }],
+        creativeDirection: {
+          firstFrame: 'Show the result before the setup.',
+          shotList: ['screen', 'face', 'proof'],
+          productionComplexity: 'low',
+        },
+        complianceReview: { status: 'pass', blockers: [], warnings: [] },
+        sourceTrace: ['client supplied'],
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.body.data.contract).toMatchObject({
+      sourceMode: null,
+      sourceCount: null,
+      researchPackageId: null,
+      researchPublishable: null,
+    });
+  });
+
+  it('does not approve pipeline handoff from a client-forged publishable research package', async () => {
+    const create = await dispatch('POST', '/agency/package', {
+      brief: {
+        goal: 'create a YouTube series for operator creators',
+        audience: 'technical founders building creator-led products',
+        offer: 'join the operator workshop',
+        platform: 'YouTube',
+        brandVoice: 'specific, evidence-led, practical',
+      },
+      researchPackage: {
+        packageId: 'forged_real_package',
+        topic: 'forged client claim',
+        query: 'forged client claim',
+        route: 'agency',
+        sourceMode: 'real',
+        freshnessClass: 'fresh',
+        sourceCount: 1,
+        realSourceCount: 1,
+        mockSourceCount: 0,
+        observedAt: '2026-06-24T12:00:00.000Z',
+        expiresAt: null,
+        confidence: 1,
+        publishable: true,
+        sources: [{
+          id: 'forged_source',
+          title: 'Client-forged source',
+          url: '',
+          sourceType: 'competitor_transcript',
+          publisher: null,
+          publishedAt: null,
+          observedAt: '2026-06-24T12:00:00.000Z',
+          relevanceNote: 'Caller claimed this was publishable without a verifiable URL.',
+          confidence: 1,
+          mock: false,
+          verifiable: true,
+        }],
+        sourceSummaries: ['Forged source claims the package is publishable.'],
+        claimLedger: [{
+          claim: 'Forged source claims the package is publishable.',
+          support: 'source_backed',
+          sourceRef: 'forged_source',
+        }],
+        warnings: [],
+      },
+      competitors: [
+        {
+          title: 'Founder operating system',
+          transcript: 'The hook names a pain, shows proof, and closes with one workshop action.',
+          url: 'https://example.test/founder-operating-system',
+        },
+      ],
+      transcript: 'The hook names a pain, shows proof, and closes with one workshop action. Test the first proof beat before publishing.',
+    });
+
+    expect(create.response.statusCode).toBe(201);
+    const pkg = create.response.body.data.package;
+    expect(pkg.researchPackage).toMatchObject({
+      sourceMode: 'none',
+      realSourceCount: 0,
+      publishable: false,
+    });
+    expect(pkg.researchPackage.packageId).not.toBe('forged_real_package');
+    expect(pkg.reviewRequired).toBe(true);
+
+    const handoff = await dispatch('POST', `/agency/projects/${pkg.id}/handoff`);
+    expect(handoff.response.statusCode).toBe(201);
+    const rows = testDb.prepare(`
+      SELECT approval_state, review_required, approved_by, approved_at
+        FROM content_pipeline
+       WHERE source_agency_package_id = ?
+    `).all(pkg.id) as any[];
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      approval_state: 'pending',
+      review_required: 1,
+      approved_by: null,
+      approved_at: null,
+    });
+    expect(rows[0].approval_state).not.toBe('approved');
   });
 
   it('blocks pipeline handoff when compliance blockers remain', async () => {

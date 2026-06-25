@@ -10,8 +10,19 @@ export interface ScriptPreflightBrief {
   emotionalDriver: string;
   proofLibrary: string[];
   toneVoiceConstraints: string[];
+  voiceFitCriteria?: ScriptVoiceFitCriteria;
   retentionGoal: string;
   ctaGoal: string;
+}
+
+export interface ScriptVoiceFitCriteria {
+  audience?: string | null;
+  contentPillars?: string[];
+  toneRules?: string[];
+  phrasesToAvoid?: string[];
+  preferredCtas?: string[];
+  proofLibrary?: string[];
+  confidence?: number;
 }
 
 export interface ScriptStructuredOutput {
@@ -67,6 +78,7 @@ export function buildScriptPreflightBrief(params: {
   targetDurationSeconds?: number | null;
   sources?: Array<Partial<SourceReference>> | null;
   voiceMemory?: string | null;
+  voiceFitCriteria?: ScriptVoiceFitCriteria | null;
 }): ScriptPreflightBrief {
   const format = params.format?.trim() || 'YouTube';
   const lowerFormat = format.toLowerCase();
@@ -88,15 +100,22 @@ export function buildScriptPreflightBrief(params: {
       : '6-10min';
 
   return {
-    audience: params.niche?.trim() || 'specific audience for this topic',
+    audience: params.voiceFitCriteria?.audience?.trim() || params.niche?.trim() || 'specific audience for this topic',
     platform,
     format,
     objective: `Make ${params.topic.trim()} useful, memorable, and worth acting on.`,
     emotionalDriver: platform === 'short_form' ? 'tension plus immediate payoff' : 'curiosity plus credible progression',
     proofLibrary: proofLibrary.length > 0 ? proofLibrary : ['Add one concrete example, demo, source, or before/after proof before publishing.'],
     toneVoiceConstraints: params.voiceMemory?.trim()
-      ? ['Apply user-scoped Voice DNA without quoting it verbatim.']
-      : ['Use a clear creator voice; do not impersonate another creator.'],
+      ? [
+        'Apply user-scoped Voice DNA without quoting it verbatim.',
+        ...(params.voiceFitCriteria?.toneRules ?? []),
+      ].filter(Boolean).slice(0, 8)
+      : [
+        'Use a clear creator voice; do not impersonate another creator.',
+        ...(params.voiceFitCriteria?.toneRules ?? []),
+      ].filter(Boolean).slice(0, 8),
+    voiceFitCriteria: params.voiceFitCriteria ?? undefined,
     retentionGoal: platform === 'short_form'
       ? `Hold attention through ${duration} with a first-frame promise, quick proof, and one payoff.`
       : `Deliver the title/thumbnail promise early, then reset attention every major section.`,
@@ -164,6 +183,15 @@ export function analyzeAndImproveScript(input: {
   if (!PROOF_PATTERN.test(fullText)) revisionActions.push('proof_or_example_added_before_publish');
   if (!VISUAL_PATTERN.test(fullText)) revisionActions.push('platform_visual_direction_added');
   if (!CTA_PATTERN.test(fullText)) revisionActions.push('single_primary_cta_added');
+  const voiceFit = scoreVoiceFit(fullText, preflight);
+  if (voiceFit.missingSignals.includes('no_voice_dna_configured')) {
+    complianceWarnings.push('no_voice_dna_configured');
+  }
+  if (voiceFit.bannedPhraseHits.length > 0) {
+    complianceWarnings.push('brand_voice_banned_phrase_review_required');
+    revisionActions.push('remove_banned_or_off_brand_phrasing');
+  }
+  if (voiceFit.score < 65) revisionActions.push('strengthen_brand_voice_alignment');
   if (preflight.platform === 'short_form' && rawScript.length > 1800) complianceWarnings.push('short_form_script_too_long_for_platform');
 
   const hookScore = scoreBoolean(hook.length >= 18 && !WEAK_INTRO_PATTERN.test(hook), 96, 62);
@@ -172,7 +200,7 @@ export function analyzeAndImproveScript(input: {
   const ctaScore = scoreBoolean(Boolean(cta && CTA_PATTERN.test(cta)), 95, 70);
   const structureScore = scoreBoolean(structuredOutput.beatByBeatScript.length >= 5, 96, 68);
   const retentionScore = scoreBoolean(editNotes.length >= 3 && structuredOutput.firstThreeSeconds.length >= 18, 95, 70);
-  const voiceFitScore = scoreBoolean(preflight.toneVoiceConstraints.length > 0, 93, 78);
+  const voiceFitScore = voiceFit.score;
   const penalty = blockers.length * 25 + complianceWarnings.length * 4;
   const overallScore = clampScore(Math.round(
     (hookScore + retentionScore + proofScore + platformFitScore + voiceFitScore + ctaScore + structureScore) / 7 - penalty,
@@ -192,6 +220,67 @@ export function analyzeAndImproveScript(input: {
     blockers,
     revisedScript: renderStructuredScript(structuredOutput),
     structuredOutput,
+  };
+}
+
+export function scoreVoiceFit(
+  text: string,
+  preflight: Pick<ScriptPreflightBrief, 'audience' | 'toneVoiceConstraints' | 'voiceFitCriteria'>,
+): { score: number; matchedSignals: string[]; missingSignals: string[]; bannedPhraseHits: string[] } {
+  const criteria = preflight.voiceFitCriteria;
+  const folded = text.toLowerCase();
+  const matchedSignals: string[] = [];
+  const missingSignals: string[] = [];
+  const bannedPhraseHits = (criteria?.phrasesToAvoid ?? [])
+    .map((phrase) => phrase.trim())
+    .filter((phrase) => phrase.length >= 4 && phraseBoundaryHit(folded, phrase))
+    .slice(0, 5);
+
+  let score = criteria ? 58 : 42;
+  if (!criteria) missingSignals.push('no_voice_dna_configured');
+  if (preflight.toneVoiceConstraints.length > 0) {
+    score += criteria ? 8 : 15;
+    matchedSignals.push('tone_constraints_present');
+  }
+  if (criteria?.audience && tokenOverlapHit(folded, criteria.audience)) {
+    score += 8;
+    matchedSignals.push('audience_language_present');
+  } else if (criteria?.audience) {
+    missingSignals.push('audience_language_missing');
+  }
+  if ((criteria?.contentPillars ?? []).some((pillar) => tokenOverlapHit(folded, pillar))) {
+    score += 8;
+    matchedSignals.push('pillar_language_present');
+  } else if ((criteria?.contentPillars ?? []).length > 0) {
+    missingSignals.push('pillar_language_missing');
+  }
+  if (criteria && ((criteria.preferredCtas ?? []).some((cta) => tokenOverlapHit(folded, cta)) || CTA_PATTERN.test(text))) {
+    score += 6;
+    matchedSignals.push('cta_style_present');
+  } else if ((criteria?.preferredCtas ?? []).length > 0) {
+    missingSignals.push('cta_style_missing');
+  }
+  if (criteria && ((criteria.proofLibrary ?? []).some((proof) => tokenOverlapHit(folded, proof)) || PROOF_PATTERN.test(text))) {
+    score += 6;
+    matchedSignals.push('proof_style_present');
+  } else if ((criteria?.proofLibrary ?? []).length > 0) {
+    missingSignals.push('proof_style_missing');
+  }
+  if (bannedPhraseHits.length === 0 && (criteria?.phrasesToAvoid ?? []).length > 0) {
+    score += 8;
+    matchedSignals.push('banned_phrases_avoided');
+  }
+  score -= bannedPhraseHits.length * 16;
+  if ((criteria?.confidence ?? 0) < 0.4) {
+    score -= 5;
+    missingSignals.push('voice_card_low_confidence');
+  }
+
+  return {
+    score: clampScore(Math.round(score)),
+    matchedSignals,
+    missingSignals,
+    bannedPhraseHits,
   };
 }
 
@@ -308,4 +397,35 @@ function scoreBoolean(value: boolean, yes: number, no: number): number {
 
 function clampScore(value: number): number {
   return Math.max(0, Math.min(100, value));
+}
+
+function tokenOverlapHit(textLower: string, candidate: string): boolean {
+  const tokens = candidate
+    .toLowerCase()
+    .split(/[^a-z0-9à-ÿ]+/i)
+    .map((token) => token.trim())
+    .filter((token) => token.length >= 4);
+  if (tokens.length === 0) return false;
+  const boundedTokens = tokens.slice(0, 8);
+  const hits = boundedTokens.filter((token) => wordBoundaryHit(textLower, token)).length;
+  return hits >= Math.min(2, boundedTokens.length);
+}
+
+function phraseBoundaryHit(textLower: string, phrase: string): boolean {
+  const tokens = phrase
+    .toLowerCase()
+    .split(/\s+/)
+    .map((token) => token.trim())
+    .filter(Boolean);
+  if (tokens.length === 0) return false;
+  const escaped = tokens.map(escapeRegExp).join('\\s+');
+  return new RegExp(`(^|[^\\p{L}\\p{N}])${escaped}(?=$|[^\\p{L}\\p{N}])`, 'u').test(textLower);
+}
+
+function wordBoundaryHit(textLower: string, token: string): boolean {
+  return new RegExp(`(^|[^\\p{L}\\p{N}])${escapeRegExp(token)}(?=$|[^\\p{L}\\p{N}])`, 'u').test(textLower);
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }

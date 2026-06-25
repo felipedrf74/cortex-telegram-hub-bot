@@ -11,11 +11,13 @@ import {
   invalidScriptFormatMessage,
   normalizeScriptFormat,
   resolveScriptDurationPreset,
+  scriptPlatformIdForFormat,
 } from './content-script-utils';
 import {
   buildScriptCreatorProfile,
   buildScriptSuccessResponse,
   buildUserVoiceMemory,
+  publicQualityWarningText,
   resolveScriptGenerationMode,
   resolveScriptRenderMode,
   resolveScriptStyle,
@@ -37,7 +39,6 @@ import {
   buildClaimLedger,
   buildContentNextActions,
   buildContentOperationTrace,
-  buildCreatorVoiceCard,
   buildSourcePackage,
   compileContentPrompt,
   type ContentBudgetState,
@@ -62,6 +63,8 @@ import {
   recordContentVariantFeedback,
 } from '../../services/content-token-artifact-store';
 import { storeScript } from '../../services/content-learning-store';
+import { buildCreatorVoiceBrandCardV2 } from '../../services/content-voice-brand-card';
+import { buildContentResearchPackage, researchPublishabilityBlockers } from '../../services/content-research-package';
 
 type ResolveContentLanguage = (req: Pick<AuthenticatedRequest, 'header'>, userId: number) => Lang;
 type EnsureValidContentRouteScope = (
@@ -179,22 +182,25 @@ export function registerContentScriptRoutes(
           : `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`)
         : null;
       const authorizedReferences = buildAuthorizedContentReferenceContext(userId, tenantId);
+      const platformId = scriptPlatformIdForFormat(normalizedFormat);
       const generationPackage = buildContentGenerationPackage({
         tenantId,
         userId,
         topic: topic.trim(),
         contentGoal: scriptTopicContext?.whyNow || `Generate a ${normalizedFormat} script`,
         formatId: normalizeContentGenerationFormat(normalizedFormat),
-        platformId: normalizedFormat === 'Reel' ? 'instagram' : 'youtube',
+        platformId,
         contentPillar: scriptTopicContext?.angleTag ?? null,
+        audience: scriptTopicContext?.niche || niche || null,
         workflowState: scriptTopicContext ? 'selected' : 'drafted',
         references: authorizedReferences.references,
       });
-      const voiceCard = buildCreatorVoiceCard({
+      const voiceCard = buildCreatorVoiceBrandCardV2({
         tenantId,
         userId,
         language: targetLanguage,
         niche: scriptTopicContext?.niche || niche || 'general',
+        platform: platformId,
         voiceMemory,
       });
       let recentIdeaMemory: Array<{ topic: string; hook: string | null; angle: string | null; format: string | null }> = [];
@@ -431,11 +437,13 @@ export function registerContentScriptRoutes(
         targetDurationSeconds: durationPreset.targetDurationSeconds,
         sources: result.sources_used,
         voiceMemory: voiceCard.promptText,
+        voiceFitCriteria: voiceCard.voiceFitCriteria,
       });
       const generationQuality = evaluateContentGenerationQuality({
         package: generationPackage,
         outputText: result.script,
         voiceApplied: generationPackage.voiceContext.appliedMemoryKeys.length > 0 || Boolean(voiceMemory),
+        voiceFitCriteria: voiceCard.voiceFitCriteria,
       });
       const qualityGate = isContentModelQualityAuditDisabled(process.env, { userId, tenantId }) ? undefined : qualityGateContent({
         mode: genMode,
@@ -691,6 +699,7 @@ export function registerContentScriptRoutes(
         startMs,
         budgetState,
         sourceSummary: refreshedSummary,
+        sourceUrls: sources,
         requestedMode: 'research_refresh',
         appliedMode: 'research_refresh',
         warnings: refreshedSummary.length === 0 ? ['No fresh source summary was returned.'] : [],
@@ -859,6 +868,7 @@ function buildScriptEditResponse(input: {
   startMs: number;
   budgetState: string;
   sourceSummary: string[];
+  sourceUrls?: string[];
   requestedMode: string;
   appliedMode: string;
   warnings: string[];
@@ -878,6 +888,32 @@ function buildScriptEditResponse(input: {
     cacheStatus: input.kind === 'research_refresh' ? 'refreshed' : 'reused',
     latencyMs: Date.now() - input.startMs,
   });
+  const researchPackage = buildContentResearchPackage({
+    topic: input.topic,
+    query: input.topic,
+    route: input.kind === 'research_refresh' ? 'fresh_compact' : 'reused_research',
+    rawSources: input.kind === 'research_refresh'
+      ? (input.sourceUrls ?? []).map((url, index) => ({
+        title: `Research refresh source ${index + 1}`,
+        url,
+        source_type: 'google_search_grounding',
+        relevance_note: 'Source observed during script research refresh.',
+      }))
+      : [],
+    sourceOrigin: input.kind === 'research_refresh' ? 'server_fetched' : 'client_asserted',
+    warnings: [
+      ...input.warnings,
+      ...(input.kind !== 'research_refresh' && input.sourceSummary.length > 0
+        ? ['reused_source_summary_without_source_package']
+      : []),
+    ],
+  });
+  const rawPublicWarnings = [...new Set([
+    ...input.warnings,
+    ...researchPackage.warnings,
+  ])];
+  const publicWarnings = rawPublicWarnings.map(publicQualityWarningText);
+  const qualityBlockers = researchPublishabilityBlockers(researchPackage);
   return {
     topic: input.topic,
     script: input.script,
@@ -914,15 +950,30 @@ function buildScriptEditResponse(input: {
       reason: input.kind === 'research_refresh' ? 'explicit_refresh' : 'edit_reuses_existing_source_summary',
       allowDeepSearch: false,
       sourceSummary: input.sourceSummary,
+      sourceMode: researchPackage.sourceMode,
+      sourceCount: researchPackage.sourceCount,
+      realSourceCount: researchPackage.realSourceCount,
+      mockSourceCount: researchPackage.mockSourceCount,
+      observedAt: researchPackage.observedAt,
+      confidence: researchPackage.confidence,
+      publishable: researchPackage.publishable,
+      warnings: researchPackage.warnings,
+      package: researchPackage,
     },
+    voiceCardVersion: null,
+    voiceBrandCard: null,
+    sourceMode: researchPackage.sourceMode,
+    sourceCount: researchPackage.sourceCount,
+    researchWarnings: researchPackage.warnings,
     qualityScore: null,
-    qualityWarnings: input.warnings,
+    qualityBlockers,
+    qualityWarnings: publicWarnings,
     budgetState: input.budgetState,
     expandOptions: defaultEditExpandOptions(input.action),
     nextActions: buildContentNextActions({
       mode: 'draft',
       budgetState: input.budgetState as ContentBudgetState,
-      hasSourcePackage: input.sourceSummary.length > 0,
+      hasSourcePackage: researchPackage.publishable,
     }),
     artifactRefs: [],
     operationTrace,
@@ -932,12 +983,13 @@ function buildScriptEditResponse(input: {
     costTier: operationTrace.costTier,
     qualityReport: {
       score: null,
-      warnings: input.warnings,
+      blockers: qualityBlockers,
+      warnings: publicWarnings,
       needsExpansion: input.kind !== 'expand',
-      needsResearchRefresh: input.kind === 'research_refresh',
+      needsResearchRefresh: input.kind === 'research_refresh' || !researchPackage.publishable,
     },
     degraded: false,
-    warnings: input.warnings,
+    warnings: publicWarnings,
     model: input.provider,
   };
 }

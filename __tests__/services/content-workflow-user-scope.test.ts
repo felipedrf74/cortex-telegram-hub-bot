@@ -170,7 +170,7 @@ describe('content-workflow: user-scoped knowledge injection', () => {
     await generateTopicCandidates('youtube', 2, true, 42);
 
     expect(readSignals).toHaveBeenCalledWith('content-workflow', ['book_knowledge'], 20, 42);
-    expect(getWorkflowEligibleIdeas).toHaveBeenCalledWith(42);
+    expect(getWorkflowEligibleIdeas).toHaveBeenCalledWith(42, 42);
   });
 
   it('scopes topic feedback mutations and reads when userId is provided', () => {

@@ -18,16 +18,22 @@ import type {
 } from '../../services/content-token-economy';
 import {
   buildClaimLedger,
-  buildContentAgentSignalDigest,
   buildContentArtifactRefs,
   buildContentNextActions,
   buildContentOperationTrace,
   isMockContentSource,
   type ContentOperationKind,
 } from '../../services/content-token-economy';
+import {
+  buildContentResearchPackage,
+  researchPublishabilityBlockers,
+  type ContentResearchPackage,
+} from '../../services/content-research-package';
+import type { NormalizedScriptFormat } from './content-script-utils';
+import type { CreatorVoiceBrandCardV2 } from '../../services/content-voice-brand-card';
 
 export type ScriptRenderMode = 'structured' | 'chat';
-export type ScriptFormat = 'YouTube' | 'Reel';
+export type ScriptFormat = NormalizedScriptFormat;
 export type ScriptStyle = 'detailed' | 'bullets';
 
 interface ContentKnowledgeLike {
@@ -68,6 +74,11 @@ export interface ContentScriptEngineResult {
   actual_cost?: Record<string, unknown>;
   prompt_budget?: Record<string, unknown>;
   research_route?: Record<string, unknown>;
+  context_signals_used?: Array<{
+    type?: string;
+    source?: string;
+    value?: string;
+  }>;
 }
 
 export type ContentModeDowngradeReason =
@@ -211,6 +222,7 @@ export function buildScriptSuccessResponse(params: {
   estimatedCost?: ContentCostEstimate;
   budgetState?: ContentBudgetState;
   qualityGate?: ContentQualityGateResult;
+  researchPackage?: ContentResearchPackage;
 }) {
   const {
     result,
@@ -232,6 +244,7 @@ export function buildScriptSuccessResponse(params: {
     estimatedCost,
     budgetState,
     qualityGate,
+    researchPackage: providedResearchPackage,
   } = params;
 
   const rawSources = Array.isArray(result.sources_used) ? result.sources_used : [];
@@ -242,6 +255,18 @@ export function buildScriptSuccessResponse(params: {
     relevance_note: source.relevance_note || '',
   }));
   const excludedMockSources = rawSources.length - sources.length;
+  const researchPackage = providedResearchPackage ?? buildContentResearchPackage({
+    topic: result.topic,
+    query: result.topic,
+    route: researchRoute?.route ?? (result.research_route as any)?.route ?? null,
+    sourcePackage: sourcePackage ?? null,
+    rawSources,
+    sourceOrigin: 'server_fetched',
+    degraded: result.degraded,
+    cacheStatus: result.cache_status,
+    warnings: result.warnings,
+  });
+  const voiceBrandCard = creatorVoiceCard as CreatorVoiceBrandCardV2 | undefined;
   const scriptQuality = analyzeAndImproveScript({
     topic: result.topic,
     script: result.script,
@@ -255,6 +280,7 @@ export function buildScriptSuccessResponse(params: {
       format,
       cta: result.cta,
       sources,
+      voiceFitCriteria: voiceBrandCard?.voiceFitCriteria,
     }),
   });
   const generationQualityRecord = generationQuality ?? {};
@@ -264,14 +290,23 @@ export function buildScriptSuccessResponse(params: {
   const providerFallback = result.cache_status === 'fallback'
     || (result.quality_warnings ?? []).includes('provider_fallback_review_required');
   const lowTrustGeneration = providerFallback
-    || sourceGrounding === 'ungrounded';
+    || sourceGrounding === 'ungrounded'
+    || researchPackage.sourceMode === 'mock'
+    || researchPackage.sourceMode === 'degraded';
   const warnings = Array.from(new Set([
     ...(result.warnings ?? []),
+    ...researchPackage.warnings,
     ...scriptQuality.complianceWarnings,
     ...(qualityGate?.qualityWarnings ?? []),
     ...(providerFallback ? ['provider_fallback_review_required'] : []),
     ...(sourceGrounding === 'ungrounded' ? ['source_grounding_review_required'] : []),
     ...(excludedMockSources > 0 ? ['mock_sources_excluded'] : []),
+  ]));
+  const qualityBlockers = Array.from(new Set([
+    ...scriptQuality.blockers,
+    ...(providerFallback ? ['provider_fallback_review_required'] : []),
+    ...(sourceGrounding === 'ungrounded' ? ['source_grounding_review_required'] : []),
+    ...researchPublishabilityBlockers(researchPackage),
   ]));
   const rawQualityScore = qualityGate?.qualityScore
     ?? (typeof result.quality_score === 'number' ? result.quality_score : scriptQuality.overallScore);
@@ -323,17 +358,7 @@ export function buildScriptSuccessResponse(params: {
     sourcePackage: hasSourcePackageContents ? (sourcePackage ?? null) : null,
     voiceCard: creatorVoiceCard ?? null,
   });
-  // 2026-05-18 phase2-qa P1: `agentSignalsUsed` previously synthesized a
-  // digest from the script's OWN output (its hook + title_options), which
-  // is a misleading label — those aren't input signals consumed, they're
-  // the artefacts that were just produced. The real intelligence-bus
-  // signals (`context_signals`) that flow INTO the Python engine are not
-  // currently returned in `result`, so we cannot honestly populate this
-  // field yet. Return an empty digest; iOS already renders this as a
-  // count-only row so the visible change is "0 signals" instead of a
-  // fabricated count. Follow-up: plumb the actual `contextSignals` array
-  // back from `content-engine.ts:560` so the count reflects reality.
-  const agentSignalDigest = { signals: [] as ReturnType<typeof buildContentAgentSignalDigest>['signals'] };
+  const agentSignalDigest = buildEngineAgentSignalDigest(result.context_signals_used ?? []);
   // 2026-05-18 phase2-qa P2: previously defaulted to 'reused' even when
   // nothing was reused (no source package, non-deep mode). Now honestly
   // reports 'fresh' for that case.
@@ -380,15 +405,40 @@ export function buildScriptSuccessResponse(params: {
       route: researchRoute?.route ?? (result.research_route as any)?.route ?? null,
       reason: researchRoute?.reason ?? (result.research_route as any)?.reason ?? null,
       allowDeepSearch: researchRoute?.allowDeepSearch ?? (result.research_route as any)?.allowDeepSearch ?? null,
-      freshnessClass: hasSourcePackageContents ? (sourcePackage?.freshnessClass ?? null) : null,
+      freshnessClass: researchPackage.freshnessClass ?? 'unknown',
+      sourceMode: researchPackage.sourceMode,
+      sourceCount: researchPackage.sourceCount,
+      realSourceCount: researchPackage.realSourceCount,
+      mockSourceCount: researchPackage.mockSourceCount,
+      observedAt: researchPackage.observedAt,
+      confidence: researchPackage.confidence,
+      publishable: researchPackage.publishable,
+      warnings: researchPackage.warnings,
       ...(publicSourcePackageIds ? {
         sourcePackageId: publicSourcePackageIds.sourcePackageId,
         researchArtifactId: publicSourcePackageIds.researchArtifactId,
       } : {}),
       sourceSummary: hasSourcePackageContents ? (sourcePackage?.sourceSummaries ?? []) : [],
+      package: researchPackage,
     },
     voiceCardVersion: result.voice_card_version ?? creatorVoiceCard?.voiceCardVersion ?? null,
+    voiceBrandCard: voiceBrandCard ? {
+      schemaVersion: voiceBrandCard.schemaVersion,
+      version: voiceBrandCard.voiceCardVersion,
+      audience: voiceBrandCard.audience,
+      audienceSegments: voiceBrandCard.audienceSegments,
+      contentPillars: voiceBrandCard.contentPillars,
+      positioning: voiceBrandCard.positioning,
+      proofLibrary: voiceBrandCard.proofLibrary,
+      quality: voiceBrandCard.quality,
+      provenance: voiceBrandCard.provenance,
+      missingFacts: voiceBrandCard.missingFacts,
+    } : null,
+    sourceMode: researchPackage.sourceMode,
+    sourceCount: researchPackage.sourceCount,
+    researchWarnings: researchPackage.warnings,
     qualityScore: effectiveQualityScore,
+    qualityBlockers,
     qualityWarnings: publicQualityWarnings,
     budgetState: result.budget_state ?? budgetState ?? 'healthy',
     expandOptions,
@@ -401,9 +451,10 @@ export function buildScriptSuccessResponse(params: {
     costTier: operationTrace.costTier,
     qualityReport: {
       score: effectiveQualityScore,
+      blockers: qualityBlockers,
       warnings: publicQualityWarnings,
       needsExpansion: (qualityGate?.needsExpansion ?? generationMode === 'draft') || lowTrustGeneration,
-      needsResearchRefresh: (qualityGate?.needsResearchRefresh ?? false) || lowTrustGeneration || excludedMockSources > 0,
+      needsResearchRefresh: (qualityGate?.needsResearchRefresh ?? false) || lowTrustGeneration || excludedMockSources > 0 || !researchPackage.publishable,
     },
     scriptQuality: lowTrustGeneration ? null : publicScriptQualityReport(scriptQuality),
     scriptStructure: scriptQuality.structuredOutput,
@@ -422,6 +473,30 @@ export function buildScriptSuccessResponse(params: {
     cacheHit,
     usageImpact: cacheHit ? 'none' : generationMode === 'deep' ? 'high' : generationMode === 'draft' ? 'low' : generationMode,
   };
+}
+
+function buildEngineAgentSignalDigest(signals: NonNullable<ContentScriptEngineResult['context_signals_used']>) {
+  return {
+    signals: signals
+      .filter((signal) => signal.type || signal.source || signal.value)
+      .slice(0, 10)
+      .map((signal) => ({
+        key: signal.type || 'context_signal',
+        value: signal.value || signal.source || 'context signal used',
+        confidence: 'medium' as const,
+        source: sourceForAgentSignal(signal.source),
+        freshness: 'recent' as const,
+      })),
+  };
+}
+
+function sourceForAgentSignal(source: string | undefined): 'idea_memory' | 'performance' | 'creator_profile' | 'manual' | 'computed' {
+  const normalized = (source || '').toLowerCase();
+  if (normalized.includes('idea')) return 'idea_memory';
+  if (normalized.includes('performance') || normalized.includes('analytics')) return 'performance';
+  if (normalized.includes('voice') || normalized.includes('profile')) return 'creator_profile';
+  if (normalized.includes('manual')) return 'manual';
+  return 'computed';
 }
 
 function normalizeEnginePromptBudget(value: Record<string, unknown> | undefined): null | {
@@ -481,7 +556,7 @@ function publicPromptSectionSource(source: string | undefined): string {
   }
 }
 
-function publicQualityWarningText(code: string): string {
+export function publicQualityWarningText(code: string): string {
   switch (code) {
     case 'output_too_thin':
     case 'needs_expansion':

@@ -231,22 +231,22 @@ ssh "$SERVER" "
 "
 
 # ── 7. Start staging services ────────────────────────
-# If the PM2 entries already exist, restart them. If not (first deploy),
-# the user has to run `pm2 start ecosystem.staging.config.js` manually
-# from the staging dir — see the header comment.
+# Apply the ecosystem file on every deploy so PM2 picks up runtime config
+# changes such as max_memory_restart and node_args, not just new files.
 echo ""
 echo "🟢 Starting staging services..."
 ssh "$SERVER" "
   export PATH=\$PATH:$(dirname $PM2)
-  if $PM2 describe nexus-hub-staging > /dev/null 2>&1; then
-    $PM2 start content-engine-staging 2>/dev/null || true
-    $PM2 start nexus-hub-staging
+  cd $STAGING_DIR
+  if [ -f ecosystem.staging.config.js ]; then
+    $PM2 startOrRestart ecosystem.staging.config.js --only content-engine-staging --update-env
+    $PM2 startOrRestart ecosystem.staging.config.js --only nexus-hub-staging --update-env
     $PM2 save
     echo '   ✅ Staging running'
   else
-    echo '   ⚠️  PM2 entries not registered yet.'
-    echo '   First-time setup: ssh in and run:'
-    echo '     cd $STAGING_DIR && pm2 start ecosystem.staging.config.js && pm2 save'
+    echo '   ⚠️  ecosystem.staging.config.js missing after rsync.'
+    echo '   Check deploy exclusions and staging path.'
+    exit 1
   fi
 "
 

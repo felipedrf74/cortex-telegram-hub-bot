@@ -10,6 +10,7 @@ import {
   resolveScriptStyle,
   resolveScriptTargetLanguage,
 } from '../../src/api/routes/content-script-route-utils';
+import { buildContentResearchPackage } from '../../src/services/content-research-package';
 
 describe('content script route contract utilities', () => {
   afterEach(() => {
@@ -133,7 +134,7 @@ describe('content script route contract utilities', () => {
       caption: '',
       cta: 'Pick one action from this video and measure the result this week.',
       degraded: false,
-      warnings: [],
+      warnings: expect.arrayContaining(['no voice dna configured']),
       scriptQuality: {
         overallScore: expect.any(Number),
         hookScore: expect.any(Number),
@@ -161,6 +162,14 @@ describe('content script route contract utilities', () => {
       generationMode: 'deep',
       cacheHit: false,
       usageImpact: 'high',
+      sourceMode: 'real',
+      sourceCount: 1,
+    });
+    expect(response.research).toMatchObject({
+      sourceMode: 'real',
+      sourceCount: 1,
+      realSourceCount: 1,
+      publishable: true,
     });
   });
 
@@ -225,8 +234,12 @@ describe('content script route contract utilities', () => {
     expect(response.research).toMatchObject({
       route: 'evergreen_cached',
       allowDeepSearch: false,
+      freshnessClass: 'unknown',
       sourceSummary: [],
+      sourceMode: 'none',
+      publishable: false,
     });
+    expect(response.researchWarnings).toContain('research_sources_missing_review_required');
     expect(response.qualityScore).toBe(88);
     expect(response.qualityWarnings).toContain('Draft needs expansion before publishing.');
     expect(response.expandOptions.map((option) => option.action)).toContain('expand_full');
@@ -250,9 +263,13 @@ describe('content script route contract utilities', () => {
     expect(response.costTier).toBe('low');
     expect(response.qualityReport).toMatchObject({
       score: 88,
+      blockers: expect.any(Array),
       needsExpansion: true,
-      needsResearchRefresh: false,
+      needsResearchRefresh: true,
     });
+    expect(response.qualityBlockers).toEqual(expect.arrayContaining([
+      'research_sources_missing_review_required',
+    ]));
     expect(response.artifactRefs).toEqual([]);
     expect(response.claimLedger).toEqual(expect.any(Array));
     expect(response.agentSignalsUsed).toEqual(expect.any(Array));
@@ -261,6 +278,96 @@ describe('content script route contract utilities', () => {
     expect(response.downgradeReason).toBe('none');
     expect('sourcePackageId' in response.research).toBe(false);
     expect('researchArtifactId' in response.research).toBe(false);
+  });
+
+  it('exposes actual consumed agent signals and v2 voice-brand card metadata', () => {
+    const response = buildScriptSuccessResponse({
+      result: {
+        topic: 'Voice-aware scripts',
+        script: 'Hybrid operators need source-backed scripts, a brand voice system, and one quality gate. Reply with your weakest draft.',
+        hook: 'Your scripts are not generic because of AI; they are generic because the voice card is weak.',
+        sources_used: [{
+          title: 'Voice strategy source',
+          url: 'https://nexushub.example/research/voice',
+          source_type: 'reference',
+          relevance_note: 'Supports voice-card workflow',
+        }],
+        context_signals_used: [{
+          type: 'voice_pattern',
+          source: 'voice-evolution-agent',
+          value: 'Use direct contrast, then a concrete operator rule.',
+        }],
+      },
+      format: 'LinkedIn Post',
+      renderMode: 'structured',
+      scriptStyle: 'detailed',
+      generationMode: 'standard',
+      startMs: Date.now() - 100,
+      cacheHit: false,
+      creatorVoiceCard: {
+        creatorId: 7,
+        tenantId: 7,
+        voiceCardVersion: 'voice-v2',
+        schemaVersion: 'creator-voice-brand-card-v2',
+        tone: 'direct evidence-led operator voice',
+        pacing: 'tight',
+        phrasesToUse: ['quality gate'],
+        phrasesToAvoid: ['believe in yourself'],
+        contentPillars: ['brand voice systems', 'source-backed scripts'],
+        audience: 'hybrid operators',
+        audienceSegments: ['hybrid operators building a creator business'],
+        positioning: 'proof-first content operator',
+        formatPreferences: ['LinkedIn Post'],
+        preferredFormats: ['LinkedIn Post'],
+        ctaStyle: 'reply with your weakest draft',
+        examplesCompressed: 'Use contrast then proof.',
+        proofLibrary: ['source package', 'quality gate'],
+        platformOverrides: {},
+        bannedTopics: [],
+        trustedSources: [],
+        dislikedSources: [],
+        sourceHash: 'voice-v2',
+        updatedAt: '2026-06-24T12:00:00.000Z',
+        promptText: 'Voice card schema: creator-voice-brand-card-v2',
+        quality: {
+          completenessScore: 90,
+          specificityScore: 88,
+          confidenceScore: 0.9,
+          staleMemoryCount: 0,
+          missingCriticalKeys: [],
+          warnings: [],
+        },
+        provenance: {
+          profileUpdatedAt: '2026-06-24T12:00:00.000Z',
+          appliedMemoryKeys: ['voice.tone', 'brand.content_pillars'],
+          omittedPrivateMemoryKeys: [],
+          sourceHash: 'voice-v2',
+        },
+        missingFacts: [],
+        voiceFitCriteria: {
+          audience: 'hybrid operators building a creator business',
+          contentPillars: ['brand voice systems', 'source-backed scripts'],
+          toneRules: ['direct evidence-led operator voice'],
+          phrasesToAvoid: ['believe in yourself'],
+          preferredCtas: ['reply with your weakest draft'],
+          proofLibrary: ['source package', 'quality gate'],
+          confidence: 0.9,
+        },
+      } as any,
+    });
+
+    expect(response.agentSignalsUsed).toEqual([expect.objectContaining({
+      key: 'voice_pattern',
+      source: 'creator_profile',
+      value: expect.stringContaining('direct contrast'),
+    })]);
+    expect(response.voiceBrandCard).toMatchObject({
+      schemaVersion: 'creator-voice-brand-card-v2',
+      version: 'voice-v2',
+      contentPillars: ['brand voice systems', 'source-backed scripts'],
+      quality: { completenessScore: 90 },
+    });
+    expect(response.scriptQuality.voiceFitScore).toBeGreaterThanOrEqual(85);
   });
 
   it('prefers the actual engine prompt budget over the TypeScript estimate for cache metadata', () => {
@@ -334,8 +441,51 @@ describe('content script route contract utilities', () => {
     expect(response.caption).toBe('');
     expect(response.cta).toContain('Save this');
     expect(response.degraded).toBe(true);
-    expect(response.warnings).toEqual(['cached fallback']);
-    expect(response.scriptQuality.overallScore).toBeGreaterThanOrEqual(90);
+    expect(response.warnings).toContain('cached fallback');
+    expect(response.sourceMode).toBe('degraded');
+    expect(response.scriptQuality).toBeNull();
+    expect(response.qualityBlockers).toContain('research_package_non_publishable');
+    expect(response.qualityReport.blockers).toContain('research_package_non_publishable');
+    expect(response.qualityReport.needsResearchRefresh).toBe(true);
+  });
+
+  it('treats fixture research as a non-publishable blocker on the generate path', () => {
+    const researchPackage = buildContentResearchPackage({
+      topic: 'Fixture trend',
+      rawSources: [{
+        title: 'Fixture-only source',
+        url: 'https://publisher.test/fixture-trend',
+        source_type: 'web',
+        relevance_note: 'Synthetic source for fixture evaluation',
+      }],
+      warnings: ['fixture_source_mode_for_test_context'],
+    });
+
+    const response = buildScriptSuccessResponse({
+      result: {
+        topic: 'Fixture trend',
+        script: 'A fixture-backed script needs review before publishing. Save this.',
+        hook: 'Fixture data is not a publishing source.',
+        title_options: ['Fixture source review'],
+        sources_used: [],
+        duration_ms: 100,
+      },
+      format: 'TikTok',
+      renderMode: 'structured',
+      scriptStyle: 'bullets',
+      generationMode: 'standard',
+      startMs: Date.now() - 100,
+      cacheHit: false,
+      researchPackage,
+    });
+
+    expect(researchPackage).toMatchObject({
+      sourceMode: 'fixture',
+      publishable: false,
+    });
+    expect(response.sourceMode).toBe('fixture');
+    expect(response.qualityBlockers).toContain('research_package_non_publishable');
+    expect(response.qualityReport.blockers).toContain('research_package_non_publishable');
   });
 
   it('attaches script quality to fresh, cached, degraded, and regenerated-style responses', () => {
@@ -364,8 +514,12 @@ describe('content script route contract utilities', () => {
         cacheHit: variant.cacheHit,
       });
 
-      expect(response.scriptQuality.overallScore, variant.name).toBeGreaterThanOrEqual(90);
-      expect(response.scriptQuality.revisionActions, variant.name).toContain('weak_intro_rewritten_to_first_three_seconds_hook');
+      if (variant.degraded) {
+        expect(response.scriptQuality, variant.name).toBeNull();
+      } else {
+        expect(response.scriptQuality.overallScore, variant.name).toBeGreaterThanOrEqual(85);
+        expect(response.scriptQuality.revisionActions, variant.name).toContain('weak_intro_rewritten_to_first_three_seconds_hook');
+      }
       expect(response.scriptStructure.firstThreeSeconds, variant.name).not.toMatch(/^Today we are going to talk/i);
       expect(response.generation.cacheHit, variant.name).toBe(variant.cacheHit);
       expect(response.degraded, variant.name).toBe(variant.degraded);

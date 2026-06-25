@@ -98,6 +98,27 @@ describe('manual-report-triggers', () => {
       ideas: ['Idea A', 'Idea B'],
       filePath: '/tmp/ideas.md',
       searchCount: 3,
+      provider: 'gemini',
+      fullContent: '# Content Ideas',
+      researchPackage: {
+        packageId: 'crp_manual_report',
+        topic: 'daily content discovery',
+        query: 'daily content discovery',
+        route: 'discovery',
+        sourceMode: 'real',
+        freshnessClass: 'fresh',
+        sourceCount: 1,
+        realSourceCount: 1,
+        mockSourceCount: 0,
+        observedAt: '2026-05-05T09:00:00.000Z',
+        expiresAt: null,
+        confidence: 0.7,
+        publishable: true,
+        sources: [],
+        sourceSummaries: [],
+        claimLedger: [],
+        warnings: [],
+      },
     });
     const send = vi.fn().mockResolvedValue(undefined);
 

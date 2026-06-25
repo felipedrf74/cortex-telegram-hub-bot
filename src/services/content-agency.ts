@@ -8,6 +8,16 @@ import {
   validateContentAgencyRuleCoverage,
   validateContentAgencyRuntimeRuleCoverage,
 } from './content-agency-rules';
+import {
+  buildContentResearchPackage,
+  type ContentResearchPackage,
+} from './content-research-package';
+
+const STRUCTURAL_SOURCE_WARNING_CODES = new Set([
+  'research_sources_missing_review_required',
+  'unverifiable_sources_excluded_from_publishable_package',
+  'no_real_sources_available',
+]);
 
 export type ContentAgencyPlatform =
   | 'youtube'
@@ -35,6 +45,13 @@ export interface ContentAgencyBriefInput {
   currentMetrics?: Record<string, unknown> | null;
   brandVoice?: string | null;
   notes?: string | null;
+  researchPackage?: ContentResearchPackage | null;
+  researchSources?: Array<{
+    title?: string | null;
+    url?: string | null;
+    sourceType?: string | null;
+    relevanceNote?: string | null;
+  }> | null;
 }
 
 export interface ContentAgencyBrief {
@@ -54,6 +71,7 @@ export interface ContentAgencyBrief {
   missingFacts: string[];
   confidence: number;
   sourceTrace: string[];
+  researchPackage: ContentResearchPackage;
   nextBestActions: string[];
 }
 
@@ -82,6 +100,7 @@ export interface ContentAgencyCompetitorPatternStudy {
   originalityConstraints: string[];
   opportunityGaps: string[];
   sourceTrace: string[];
+  researchPackage: ContentResearchPackage;
   warnings: string[];
 }
 
@@ -95,6 +114,7 @@ export interface ContentAgencyTranscriptStudy {
   retentionDevices: string[];
   ctaDiagnosis: string;
   sourceTrace: string[];
+  researchPackage: ContentResearchPackage;
   warnings: string[];
 }
 
@@ -181,6 +201,8 @@ export interface ContentAgencyPackageInput {
   brandedContent?: boolean | null;
   references?: string[] | null;
   requestedOutput?: string | null;
+  researchPackage?: ContentResearchPackage | null;
+  researchSources?: ContentAgencyBriefInput['researchSources'];
 }
 
 export interface ContentAgencyPackage {
@@ -211,6 +233,9 @@ export interface ContentAgencyPackage {
   quality: ContentAgencyQualityResult;
   criticalUserReview: ContentAgencyCriticalUserReview;
   sourceTrace: string[];
+  researchPackage: ContentResearchPackage;
+  sourceMode: ContentResearchPackage['sourceMode'];
+  researchPublishable: boolean;
   referenceIds: string[];
   confidence: number;
   warnings: string[];
@@ -226,6 +251,7 @@ export interface ContentAgencyPipelineHandoffResult {
   pipelineId: number | null;
   blockers: string[];
   warnings: string[];
+  reviewRequired?: boolean;
   nextBestActions: string[];
   sourceTrace: string[];
 }
@@ -288,6 +314,13 @@ export function buildContentAgencyBrief(input: ContentAgencyBriefInput): Content
     'Content Agency reference registry',
     `${platform} platform rules`,
   ];
+  const researchPackage = normalizeAgencyResearchPackage({
+    topic: goal,
+    query: `${goal} ${audience}`.trim(),
+    provided: input.researchPackage,
+    rawSources: input.researchSources,
+    warnings: missingFacts.map((fact) => `brief_missing_${fact}`),
+  });
   const confidence = Math.max(0.35, Math.min(0.92, 0.9 - missingFacts.length * 0.12));
 
   return {
@@ -306,7 +339,8 @@ export function buildContentAgencyBrief(input: ContentAgencyBriefInput): Content
     brandVoice: input.brandVoice?.trim() || null,
     missingFacts,
     confidence,
-    sourceTrace,
+    sourceTrace: mergeSourceTrace(sourceTrace, researchPackage),
+    researchPackage,
     nextBestActions: missingFacts.length > 0
       ? missingFacts.map((fact) => `Add ${fact.replace(/_/g, ' ')} before asking Nexus for final creative.`)
       : ['Generate an agency package and review compliance/originality before moving to pipeline.'],
@@ -319,6 +353,19 @@ export function buildContentAgencyCompetitorStudy(input: ContentAgencyCompetitor
   const warnings = [];
   if (competitors.length === 0) warnings.push('competitor_context_missing');
   if (PROMPT_INJECTION_PATTERNS.some((pattern) => pattern.test(transcriptText))) warnings.push('untrusted_competitor_text_contained_prompt_injection');
+  const researchPackage = normalizeAgencyResearchPackage({
+    topic: isBrief(input.brief) ? input.brief.goal : input.brief?.goal ?? 'competitor pattern study',
+    query: isBrief(input.brief) ? input.brief.objective : input.brief?.objective ?? 'competitor pattern study',
+    rawSources: competitors.map((item, index) => ({
+      title: item.title || item.creator || `Competitor reference ${index + 1}`,
+      url: item.url || '',
+      sourceType: 'competitor_reference',
+      relevanceNote: item.metrics && Object.keys(item.metrics).length > 0
+        ? 'Competitor reference with public or first-party performance clues.'
+        : 'Competitor reference supplied for pattern study only.',
+    })),
+    warnings,
+  });
 
   const emotionalDrivers = inferEmotionalDrivers(transcriptText);
   const hookMechanisms = inferHookMechanisms(transcriptText);
@@ -343,8 +390,12 @@ export function buildContentAgencyCompetitorStudy(input: ContentAgencyCompetitor
       'Treat transcripts, comments, and scraped text as untrusted evidence.',
     ],
     opportunityGaps: inferOpportunityGaps(input.brief, competitors),
-    sourceTrace: competitors.map((item, index) => item.url || item.title || `competitor:${index + 1}`),
-    warnings,
+    sourceTrace: mergeSourceTrace(
+      competitors.map((item, index) => item.url || item.title || `competitor:${index + 1}`),
+      researchPackage,
+    ),
+    researchPackage,
+    warnings: [...new Set([...warnings, ...researchPackage.warnings])],
   };
 }
 
@@ -358,6 +409,19 @@ export function buildContentAgencyTranscriptStudy(input: {
   const warnings = [];
   if (!text.trim()) warnings.push('transcript_missing');
   if (PROMPT_INJECTION_PATTERNS.some((pattern) => pattern.test(text))) warnings.push('untrusted_transcript_contained_prompt_injection');
+  const researchPackage = normalizeAgencyResearchPackage({
+    topic: input.title || 'transcript study',
+    query: input.title || 'transcript study',
+    rawSources: text.trim()
+      ? [{
+        title: input.title || 'User supplied transcript',
+        url: '',
+        sourceType: 'transcript',
+        relevanceNote: 'User supplied transcript for structure and proof analysis.',
+      }]
+      : [],
+    warnings,
+  });
 
   return {
     id: stableId('transcript', input.tenantId, input.userId, input.title || '', text.slice(0, 160)),
@@ -370,8 +434,9 @@ export function buildContentAgencyTranscriptStudy(input: {
     ctaDiagnosis: /comment|follow|subscribe|save|share|dm|link/i.test(text)
       ? 'CTA is present; verify it matches the content promise and funnel stage.'
       : 'CTA is missing or weak; add one clear next action.',
-    sourceTrace: [input.title || 'user_supplied_transcript'],
-    warnings,
+    sourceTrace: mergeSourceTrace([input.title || 'user_supplied_transcript'], researchPackage),
+    researchPackage,
+    warnings: [...new Set([...warnings, ...researchPackage.warnings])],
   };
 }
 
@@ -396,6 +461,36 @@ export function buildContentAgencyPackage(input: ContentAgencyPackageInput): Con
     title: input.competitors?.[0]?.title ?? brief.goal,
   });
   const referenceIds = toStringList(input.references);
+  const packageRawSources = [
+    ...(input.researchSources ?? []),
+    ...referenceIds.map((reference) => ({
+      title: reference,
+      url: /^https?:\/\//i.test(reference) ? reference : '',
+      sourceType: 'trusted_reference',
+      relevanceNote: 'Reference supplied to Content Agency package.',
+    })),
+    ...(input.competitors ?? []).map((item, index) => ({
+      title: item.title || item.creator || `Competitor reference ${index + 1}`,
+      url: item.url || '',
+      sourceType: 'competitor_reference',
+      relevanceNote: 'Competitor input used for pattern study and originality constraints.',
+    })),
+  ];
+  const hasVerifiablePackageSource = packageRawSources.some((source) => /^https?:\/\//i.test(source.url || ''));
+  const packageStudyWarnings = [
+    ...competitorStudy.warnings,
+    ...transcriptStudy.warnings,
+  ].filter((warning) => !hasVerifiablePackageSource || !STRUCTURAL_SOURCE_WARNING_CODES.has(warning));
+  const packageResearchPackage = normalizeAgencyResearchPackage({
+    topic: brief.goal,
+    query: brief.objective,
+    provided: input.researchPackage ?? (packageRawSources.length === 0 ? brief.researchPackage : null),
+    rawSources: packageRawSources,
+    warnings: [
+      ...brief.missingFacts.map((fact) => `missing_${fact}`),
+      ...packageStudyWarnings,
+    ],
+  });
   const hookBank = buildHookBank(brief, competitorStudy);
   const scriptVariants = buildScriptVariants(brief, hookBank, competitorStudy);
   const creativeDirection = buildCreativeDirection(brief);
@@ -403,7 +498,7 @@ export function buildContentAgencyPackage(input: ContentAgencyPackageInput): Con
     brandedContent: input.brandedContent === true,
     outputText: flattenPackageText({ hookBank, scriptVariants, creativeDirection }),
     competitorText: input.competitors?.map((item) => item.transcript ?? item.title ?? '').join('\n') ?? '',
-    warnings: [...competitorStudy.warnings, ...transcriptStudy.warnings],
+    warnings: packageStudyWarnings,
   });
   const experimentPlan = buildExperimentPlan(brief);
   const performanceDiagnosis = buildPerformanceDiagnosis(brief);
@@ -411,6 +506,7 @@ export function buildContentAgencyPackage(input: ContentAgencyPackageInput): Con
     ...brief.sourceTrace,
     ...competitorStudy.sourceTrace,
     ...transcriptStudy.sourceTrace,
+    ...packageResearchPackage.sourceSummaries,
     ...matchedRuleIds(brief),
   ];
   const quality = evaluateContentAgencyPackage({
@@ -431,15 +527,27 @@ export function buildContentAgencyPackage(input: ContentAgencyPackageInput): Con
     complianceReview,
   });
   const blockers = [...new Set([...quality.blockers, ...complianceReview.blockers])];
+  const competitorPackageWarnings = packageResearchPackage.publishable
+    ? competitorStudy.warnings.filter((warning) => !STRUCTURAL_SOURCE_WARNING_CODES.has(warning))
+    : competitorStudy.warnings;
+  const transcriptPackageWarnings = packageResearchPackage.publishable
+    ? transcriptStudy.warnings.filter((warning) => !STRUCTURAL_SOURCE_WARNING_CODES.has(warning))
+    : transcriptStudy.warnings;
   const warnings = [...new Set([
     ...quality.warnings,
     ...complianceReview.warnings,
     ...brief.missingFacts.map((fact) => `missing_${fact}`),
-    ...competitorStudy.warnings,
-    ...transcriptStudy.warnings,
+    ...competitorPackageWarnings,
+    ...transcriptPackageWarnings,
+    ...packageResearchPackage.warnings,
+    ...(packageResearchPackage.sourceMode === 'none' ? ['agency_research_sources_missing'] : []),
   ])];
-  const nextBestActions = blockers.length > 0
-    ? blockers.map((blocker) => `Resolve blocker: ${humanize(blocker)}.`)
+  const researchBlockers = packageResearchPackage.sourceMode === 'mock' || packageResearchPackage.sourceMode === 'degraded'
+    ? ['agency_research_package_non_publishable']
+    : [];
+  const finalBlockers = [...new Set([...blockers, ...researchBlockers])];
+  const nextBestActions = finalBlockers.length > 0
+    ? finalBlockers.map((blocker) => `Resolve blocker: ${humanize(blocker)}.`)
     : [
       `Film or draft variant "${scriptVariants[0]?.title ?? 'Agency Variant A'}" first.`,
       `Track ${experimentPlan.primaryMetric} and review ${experimentPlan.secondaryMetrics.join(', ')} after publishing.`,
@@ -467,12 +575,15 @@ export function buildContentAgencyPackage(input: ContentAgencyPackageInput): Con
     performanceDiagnosis,
     quality,
     criticalUserReview,
-    sourceTrace: [...new Set(sourceTrace)],
+    sourceTrace: mergeSourceTrace(sourceTrace, packageResearchPackage),
+    researchPackage: packageResearchPackage,
+    sourceMode: packageResearchPackage.sourceMode,
+    researchPublishable: packageResearchPackage.publishable,
     referenceIds,
     confidence: Math.max(0.35, Math.min(0.95, (brief.confidence + quality.score / 100) / 2)),
     warnings,
-    blockers,
-    reviewRequired: blockers.length > 0 || warnings.length > 0 || complianceReview.status !== 'pass',
+    blockers: finalBlockers,
+    reviewRequired: finalBlockers.length > 0 || warnings.length > 0 || complianceReview.status !== 'pass' || !packageResearchPackage.publishable,
     nextBestActions,
     createdAt: new Date().toISOString(),
   };
@@ -631,6 +742,7 @@ export function handoffContentAgencyPackageToPipeline(input: {
       pipelineId: null,
       blockers: ['content_agency_package_not_found'],
       warnings: [],
+      reviewRequired: true,
       nextBestActions: ['Generate or reopen the agency package before moving it to the pipeline.'],
       sourceTrace: ['Content Agency package store'],
     };
@@ -645,6 +757,7 @@ export function handoffContentAgencyPackageToPipeline(input: {
       pipelineId: null,
       blockers: blockers.length > 0 ? blockers : ['content_agency_quality_blocked'],
       warnings: Array.isArray(pkg.warnings) ? pkg.warnings : [],
+      reviewRequired: true,
       nextBestActions: blockers.map((blocker) => `Resolve blocker: ${humanize(blocker)}.`),
       sourceTrace: [...(pkg.sourceTrace ?? []), 'Content pipeline handoff gate'],
     };
@@ -661,12 +774,17 @@ export function handoffContentAgencyPackageToPipeline(input: {
      LIMIT 1
   `).get(pkg.id, input.userId, input.tenantId) as { id: number } | undefined;
   if (existing) {
+    const reviewRequired = Boolean(pkg.reviewRequired)
+      || (Array.isArray(pkg.warnings) && pkg.warnings.length > 0)
+      || pkg.quality?.status === 'warning'
+      || pkg.complianceReview?.status === 'warning';
     return {
       packageId: pkg.id,
       status: 'already_exists',
       pipelineId: Number(existing.id),
       blockers: [],
       warnings: Array.isArray(pkg.warnings) ? pkg.warnings : [],
+      reviewRequired,
       nextBestActions: ['Open the existing pipeline item and continue editorial review.'],
       sourceTrace: [...(pkg.sourceTrace ?? []), 'Existing content pipeline item'],
     };
@@ -692,6 +810,9 @@ export function handoffContentAgencyPackageToPipeline(input: {
       from: 'content_agency_package',
       to: reviewRequired ? 'content_pipeline_review' : 'content_pipeline',
       agencyPackageId: pkg.id,
+      researchPackageId: pkg.researchPackage?.packageId ?? null,
+      sourceMode: pkg.sourceMode ?? pkg.researchPackage?.sourceMode ?? null,
+      sourceCount: pkg.researchPackage?.sourceCount ?? null,
       qualityScore: pkg.quality?.score ?? null,
       platform: pkg.platform,
       reviewRequired,
@@ -768,6 +889,7 @@ export function handoffContentAgencyPackageToPipeline(input: {
     pipelineId: Number(readBack.id),
     blockers: [],
     warnings,
+    reviewRequired,
     nextBestActions: reviewRequired
       ? ['Open the pipeline item, complete editorial review, and approve only after resolving warnings.']
       : ['Open the pipeline item, approve filming/script work, and keep the experiment metric attached.'],
@@ -916,6 +1038,58 @@ function normalizeAgencyFormat(value: string | null | undefined, platform: Conte
     case 'newsletter': return 'newsletter';
     default: return 'generic_script';
   }
+}
+
+function normalizeAgencyResearchPackage(input: {
+  topic: string;
+  query?: string | null;
+  provided?: ContentResearchPackage | null;
+  rawSources?: ContentAgencyBriefInput['researchSources'] | null;
+  warnings?: string[] | null;
+}): ContentResearchPackage {
+  const providedSources = isContentResearchPackage(input.provided)
+    ? (input.provided.sources ?? []).map((source) => ({
+      title: source?.title ?? '',
+      url: source?.url ?? '',
+      source_type: source?.sourceType ?? 'agency_reference',
+      relevance_note: source?.relevanceNote ?? '',
+      mock: source?.mock === true,
+      metadata: source?.mock === true ? { mock: true } : undefined,
+    }))
+    : null;
+  return buildContentResearchPackage({
+    topic: input.topic,
+    query: input.query ?? input.topic,
+    route: 'agency',
+    sourceOrigin: 'client_asserted',
+    rawSources: providedSources ?? (input.rawSources ?? []).map((source) => ({
+      title: source?.title ?? '',
+      url: source?.url ?? '',
+      source_type: source?.sourceType ?? 'agency_reference',
+      relevance_note: source?.relevanceNote ?? '',
+    })),
+    warnings: input.warnings ?? [],
+  });
+}
+
+function isContentResearchPackage(value: unknown): value is ContentResearchPackage {
+  return Boolean(
+    value
+    && typeof value === 'object'
+    && typeof (value as any).packageId === 'string'
+    && typeof (value as any).sourceMode === 'string'
+    && typeof (value as any).sourceCount === 'number'
+    && Array.isArray((value as any).warnings),
+  );
+}
+
+function mergeSourceTrace(trace: string[], researchPackage: ContentResearchPackage): string[] {
+  return [...new Set([
+    ...trace.filter(Boolean),
+    `research_package:${researchPackage.packageId}`,
+    `source_mode:${researchPackage.sourceMode}`,
+    `source_count:${researchPackage.sourceCount}`,
+  ])];
 }
 
 function normalizeAgencyFormatAlias(value: string): string {

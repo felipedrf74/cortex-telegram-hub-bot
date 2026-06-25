@@ -20,6 +20,7 @@ import * as http from 'http';
 import * as https from 'https';
 import dotenv from 'dotenv';
 import Database from 'better-sqlite3';
+import { CURRENT_LEGAL_DOCUMENTS } from '../src/services/legal-consent';
 
 import {
   buildChatV2LegacyParityObservation,
@@ -384,6 +385,11 @@ async function registerAuth(input: { baseUrl: string; writePath?: string }): Pro
       deviceId: `chatv2-parity-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`,
       deviceName: 'ChatV2 Legacy Parity Observer',
       inviteCode,
+      acceptedLegal: {
+        accepted: true,
+        termsVersion: CURRENT_LEGAL_DOCUMENTS.terms.version,
+        privacyVersion: CURRENT_LEGAL_DOCUMENTS.privacy.version,
+      },
     }),
   });
   const body = response.body;

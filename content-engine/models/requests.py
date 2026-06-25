@@ -46,12 +46,20 @@ class DeepSearchResponse(BaseModel):
     duration_ms: int                          # total wall-clock time
     degraded: bool = False
     warnings: list[str] = Field(default_factory=list)
+    source_mode: Literal["real", "fixture", "mock", "degraded", "none"] = "none"
+    source_count: int = 0
+    observed_at: str | None = None
 
 
 class SourcesResponse(BaseModel):
     """Response from /sources — curated source list for a topic."""
     query: str
     sources: list[SourceReference]
+    source_mode: Literal["real", "fixture", "mock", "degraded", "none"] = "none"
+    source_count: int = 0
+    observed_at: str | None = None
+    degraded: bool = False
+    warnings: list[str] = Field(default_factory=list)
 
 
 class HotNewsRequest(AttributionFields):
@@ -64,6 +72,11 @@ class HotNewsResponse(BaseModel):
     """Response from /hotnews — what's trending right now."""
     topics: list[TrendingTopic]
     generated_at: str                         # ISO timestamp
+    source_mode: Literal["real", "fixture", "mock", "degraded", "none"] = "none"
+    source_count: int = 0
+    observed_at: str | None = None
+    degraded: bool = False
+    warnings: list[str] = Field(default_factory=list)
 
 
 class TrendingResponse(BaseModel):
@@ -72,6 +85,11 @@ class TrendingResponse(BaseModel):
     niche: str
     duration_ms: int
     generated_at: str
+    source_mode: Literal["real", "fixture", "mock", "degraded", "none"] = "none"
+    source_count: int = 0
+    observed_at: str | None = None
+    degraded: bool = False
+    warnings: list[str] = Field(default_factory=list)
 
 
 class ReactionResponse(BaseModel):
@@ -79,6 +97,11 @@ class ReactionResponse(BaseModel):
     query: str
     briefs: list[ContentBrief]
     duration_ms: int
+    source_mode: Literal["real", "fixture", "mock", "degraded", "none"] = "none"
+    source_count: int = 0
+    observed_at: str | None = None
+    degraded: bool = False
+    warnings: list[str] = Field(default_factory=list)
 
 
 # ── Phase 3: Creative Intelligence ────────────────────────────────

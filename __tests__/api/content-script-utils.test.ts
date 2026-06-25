@@ -21,8 +21,15 @@ describe('content script route utilities', () => {
   it('normalizes supported script formats', () => {
     expect(normalizeScriptFormat(undefined)).toBe('YouTube');
     expect(normalizeScriptFormat('youtube')).toBe('YouTube');
-    expect(normalizeScriptFormat('shorts')).toBe('Reel');
+    expect(normalizeScriptFormat('shorts')).toBe('YouTube Shorts');
+    expect(normalizeScriptFormat('youtube_shorts')).toBe('YouTube Shorts');
     expect(normalizeScriptFormat('instagram short')).toBe('Reel');
+    expect(normalizeScriptFormat('tiktok')).toBe('TikTok');
+    expect(normalizeScriptFormat('linkedin_post')).toBe('LinkedIn Post');
+    expect(normalizeScriptFormat('x thread')).toBe('X Thread');
+    expect(normalizeScriptFormat('newsletter')).toBe('Newsletter');
+    expect(normalizeScriptFormat('blog')).toBe('Blog');
+    expect(normalizeScriptFormat('carousel')).toBe('Carousel');
     expect(normalizeScriptFormat('podcast')).toBeNull();
   });
 
@@ -40,6 +47,24 @@ describe('content script route utilities', () => {
     });
     expect(resolveScriptDurationPreset('Reel', undefined, 20)).toEqual({
       error: 'Reel duration must be one of 15, 30, 45, or 60 seconds',
+    });
+  });
+
+  it('resolves supported text-first duration presets', () => {
+    expect(resolveScriptDurationPreset('LinkedIn Post', undefined, undefined)).toEqual({
+      maxDurationMinutes: 5,
+      targetDurationSeconds: 300,
+    });
+    expect(resolveScriptDurationPreset('X Thread', undefined, 480)).toEqual({
+      maxDurationMinutes: 8,
+      targetDurationSeconds: 480,
+    });
+    expect(resolveScriptDurationPreset('Newsletter', 10, undefined)).toEqual({
+      maxDurationMinutes: 10,
+      targetDurationSeconds: 600,
+    });
+    expect(resolveScriptDurationPreset('Blog', 12, undefined)).toEqual({
+      error: 'Blog maxDurationMinutes must be one of 5, 8, or 10',
     });
   });
 
@@ -62,9 +87,9 @@ describe('content script route utilities', () => {
   });
 
   it('localizes script validation messages', () => {
-    expect(invalidScriptFormatMessage('pt-BR')).toBe('o formato deve ser YouTube ou Reel');
-    expect(invalidScriptFormatMessage('pt-PT')).toBe('o formato tem de ser YouTube ou Reel');
-    expect(invalidScriptFormatMessage('en')).toBe('format must be YouTube or Reel');
+    expect(invalidScriptFormatMessage('pt-BR')).toContain('TikTok');
+    expect(invalidScriptFormatMessage('pt-PT')).toContain('Newsletter');
+    expect(invalidScriptFormatMessage('en')).toContain('Carousel');
     expect(invalidTopicGeneratorFormatMessage('pt-BR')).toBe('o formato deve ser "reel" ou "youtube"');
     expect(invalidTopicGeneratorFormatMessage('pt-PT')).toBe('o formato tem de ser "reel" ou "youtube"');
     expect(invalidTopicGeneratorFormatMessage('en')).toBe('format must be "reel" or "youtube"');

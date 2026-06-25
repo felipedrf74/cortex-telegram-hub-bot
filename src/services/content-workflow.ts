@@ -256,7 +256,7 @@ export async function generateTopicCandidates(
   let discoveryBlock = '';
   let promotedDiscoveryIdeaIds: number[] = [];
   try {
-    const eligible = getWorkflowEligibleIdeas(userId);
+    const eligible = getWorkflowEligibleIdeas(userId, tenantId);
     if (eligible.length > 0) {
       const promotedIdeas = eligible.slice(0, 5);
       promotedDiscoveryIdeaIds = promotedIdeas.map((idea) => idea.id);
@@ -381,7 +381,7 @@ export async function generateTopicCandidates(
 
     if (deduped.length > 0 && promotedDiscoveryIdeaIds.length > 0) {
       for (const ideaId of promotedDiscoveryIdeaIds) {
-        markIdeaPromoted(ideaId, userId);
+        markIdeaPromoted(ideaId, userId, tenantId);
       }
     }
 

@@ -46,6 +46,7 @@ import { buildContentHomeViewState } from '../../services/content-home-view-stat
 import { saveIdea } from '../../state/saved-ideas';
 import { sendConditionalApiSuccess } from '../conditional-cache';
 import { ensureCachedRouteTenantScope, handleCachedRoute, routeCacheKey } from '../route-helpers/cached-route-handler';
+import { buildContentResearchPackage } from '../../services/content-research-package';
 
 const CONTENT_HOME_TTL_SECONDS = 120;
 const CONTENT_HOME_SWR_STALE_SECONDS = 600;
@@ -100,9 +101,30 @@ export function contentRoutes(): Router {
       const { runContentDiscovery } = await import('../../services/content-discovery');
       const result = await runContentDiscovery({ userId, tenantId });
       const ideas = normalizeDiscoveredIdeasForResponse(result?.ideas || [], startMs);
+      const researchPackage = result?.researchPackage ?? buildContentResearchPackage({
+        topic: 'content discovery',
+        query: 'content discovery',
+        route: 'discovery',
+        sourceOrigin: 'server_fetched',
+        warnings: ['research_package_missing_review_required'],
+      });
       sendSuccess(res, {
         discovered: ideas.length,
         ideas,
+        research: {
+          sourceMode: researchPackage.sourceMode,
+          sourceCount: researchPackage.sourceCount,
+          realSourceCount: researchPackage.realSourceCount,
+          mockSourceCount: researchPackage.mockSourceCount,
+          observedAt: researchPackage.observedAt,
+          confidence: researchPackage.confidence,
+          publishable: researchPackage.publishable,
+          warnings: researchPackage.warnings,
+          package: researchPackage,
+        },
+        sourceMode: researchPackage.sourceMode,
+        sourceCount: researchPackage.sourceCount,
+        researchWarnings: researchPackage.warnings,
         message: `Discovered ${ideas.length} new content ideas.`,
         generation: buildGenerationMeta({
           mode: 'standard',
@@ -122,9 +144,32 @@ export function contentRoutes(): Router {
         language,
       });
       if (fallback.length > 0) {
+        const fallbackResearchPackage = buildContentResearchPackage({
+          topic: typeof req.body?.topic === 'string' ? req.body.topic : 'local content discovery fallback',
+          query: typeof req.body?.topic === 'string' ? req.body.topic : 'local content discovery fallback',
+          route: 'discovery',
+          sourceOrigin: 'server_fetched',
+          degraded: true,
+          cacheStatus: 'fallback',
+          warnings: ['live_discovery_unavailable_local_radar_fallback'],
+        });
         sendSuccess(res, {
           discovered: fallback.length,
           ideas: fallback,
+          research: {
+            sourceMode: fallbackResearchPackage.sourceMode,
+            sourceCount: fallbackResearchPackage.sourceCount,
+            realSourceCount: fallbackResearchPackage.realSourceCount,
+            mockSourceCount: fallbackResearchPackage.mockSourceCount,
+            observedAt: fallbackResearchPackage.observedAt,
+            confidence: fallbackResearchPackage.confidence,
+            publishable: fallbackResearchPackage.publishable,
+            warnings: fallbackResearchPackage.warnings,
+            package: fallbackResearchPackage,
+          },
+          sourceMode: fallbackResearchPackage.sourceMode,
+          sourceCount: fallbackResearchPackage.sourceCount,
+          researchWarnings: fallbackResearchPackage.warnings,
           message: language.startsWith('pt')
             ? 'Radar local pronto. Revê antes de transformar em roteiro.'
             : 'Local radar is ready. Review before turning these into scripts.',
@@ -402,6 +447,7 @@ async function buildLocalDiscoveryFallback(params: {
           ? 'Gerado localmente a partir dos temas guardados enquanto a pesquisa ao vivo estava indisponível.'
           : 'Generated locally from saved radar topics while live discovery was unavailable.',
         userId: params.userId,
+        tenantId: params.tenantId,
       });
       saved.push(title);
     } catch (fallbackErr) {

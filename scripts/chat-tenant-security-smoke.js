@@ -88,12 +88,23 @@ async function request(method, urlPath, { token, body, headers = {} } = {}) {
   return { status: response.status, ok: response.ok, json, text };
 }
 
+function currentLegalDocuments() {
+  const { CURRENT_LEGAL_DOCUMENTS } = loadDist('services/legal-consent.js');
+  return CURRENT_LEGAL_DOCUMENTS;
+}
+
 async function registerUser(label) {
+  const legalDocuments = currentLegalDocuments();
   const response = await request('POST', '/api/v1/auth/register', {
     body: {
       deviceId: `${runId}-${label}`,
       deviceName: `Local Chat Tenant Smoke ${label}`,
       inviteCode: args.inviteCode,
+      acceptedLegal: {
+        accepted: true,
+        termsVersion: legalDocuments.terms.version,
+        privacyVersion: legalDocuments.privacy.version,
+      },
     },
   });
   if (!response.ok || !response.json?.data?.accessToken) {

@@ -8,8 +8,8 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 const script = path.resolve('scripts/release-artifact-manifest.mjs');
 const evidenceScript = path.resolve('scripts/release-evidence.mjs');
 
-function cleanGitEnv() {
-  const env = { ...process.env };
+function cleanGitEnv(overrides: NodeJS.ProcessEnv = {}) {
+  const env = { ...process.env, ...overrides };
   for (const key of [
     'GIT_DIR',
     'GIT_WORK_TREE',
@@ -46,7 +46,7 @@ describe('release-artifact-manifest', () => {
   });
 
   function digest() {
-    return execFileSync('node', [script, '--root', tmp, '--digest'], { encoding: 'utf8' }).trim();
+    return execFileSync('node', [script, '--root', tmp, '--digest'], { encoding: 'utf8', env: cleanGitEnv() }).trim();
   }
 
   it.each([
@@ -108,7 +108,7 @@ describe('release-evidence', () => {
     execFileSync('node', [evidenceScript, 'write', '--root', tmp, '--evidence', evidencePath], {
       encoding: 'utf8',
       env: {
-        ...process.env,
+        ...cleanGitEnv(),
         NEXUS_RELEASE_EVIDENCE_PRIVATE_KEY_PATH: privateKeyPath,
         NEXUS_RELEASE_TYPECHECK_RESULT: 'passed',
         NEXUS_RELEASE_BUILD_RESULT: 'passed',
@@ -128,7 +128,7 @@ describe('release-evidence', () => {
     const ok = execFileSync(
       'node',
       [evidenceScript, 'validate', '--root', tmp, '--evidence', evidencePath, '--public-key', publicKeyPath, '--json'],
-      { encoding: 'utf8' },
+      { encoding: 'utf8', env: cleanGitEnv() },
     );
     const okPayload = JSON.parse(ok);
     expect(okPayload.ok).toBe(true);
@@ -139,7 +139,7 @@ describe('release-evidence', () => {
     const failed = spawnSync(
       'node',
       [evidenceScript, 'validate', '--root', tmp, '--evidence', evidencePath, '--public-key', publicKeyPath, '--json'],
-      { encoding: 'utf8' },
+      { encoding: 'utf8', env: cleanGitEnv() },
     );
     expect(failed.status).toBe(1);
     expect(JSON.parse(failed.stdout).reasons).toEqual(
@@ -152,7 +152,7 @@ describe('release-evidence', () => {
     execFileSync('node', [evidenceScript, 'write', '--root', tmp, '--evidence', evidencePath], {
       encoding: 'utf8',
       env: {
-        ...process.env,
+        ...cleanGitEnv(),
         NEXUS_RELEASE_EVIDENCE_PRIVATE_KEY_PATH: privateKeyPath,
         NEXUS_RELEASE_TYPECHECK_RESULT: 'passed',
         NEXUS_RELEASE_BUILD_RESULT: 'passed',
@@ -170,7 +170,7 @@ describe('release-evidence', () => {
     const failed = spawnSync(
       'node',
       [evidenceScript, 'validate', '--root', tmp, '--evidence', evidencePath, '--public-key', publicKeyPath, '--json'],
-      { encoding: 'utf8' },
+      { encoding: 'utf8', env: cleanGitEnv() },
     );
 
     expect(failed.status).toBe(1);
@@ -185,7 +185,7 @@ describe('release-evidence', () => {
     execFileSync('node', [evidenceScript, 'write', '--root', tmp, '--evidence', evidencePath], {
       encoding: 'utf8',
       env: {
-        ...process.env,
+        ...cleanGitEnv(),
         NEXUS_RELEASE_EVIDENCE_PRIVATE_KEY_PATH: privateKeyPath,
         NEXUS_RELEASE_TYPECHECK_RESULT: 'passed',
         NEXUS_RELEASE_BUILD_RESULT: 'passed',
@@ -208,7 +208,7 @@ describe('release-evidence', () => {
     const failed = spawnSync(
       'node',
       [evidenceScript, 'validate', '--root', tmp, '--evidence', evidencePath, '--public-key', publicKeyPath, '--json'],
-      { encoding: 'utf8' },
+      { encoding: 'utf8', env: cleanGitEnv() },
     );
 
     expect(failed.status).toBe(1);
@@ -231,7 +231,7 @@ describe('release-evidence', () => {
     execFileSync('node', [evidenceScript, 'write', '--root', tmp, '--evidence', evidencePath], {
       encoding: 'utf8',
       env: {
-        ...process.env,
+        ...cleanGitEnv(),
         NEXUS_RELEASE_EVIDENCE_PRIVATE_KEY_PATH: attackerPrivatePath,
         NEXUS_RELEASE_TYPECHECK_RESULT: 'passed',
         NEXUS_RELEASE_BUILD_RESULT: 'passed',
@@ -249,7 +249,7 @@ describe('release-evidence', () => {
     const failed = spawnSync('node', [evidenceScript, 'validate', '--root', tmp, '--evidence', evidencePath, '--json'], {
       encoding: 'utf8',
       env: {
-        ...process.env,
+        ...cleanGitEnv(),
         NEXUS_RELEASE_EVIDENCE_PUBLIC_KEY_PATH: attackerPublicPath,
       },
     });
@@ -263,7 +263,7 @@ describe('release-evidence', () => {
     execFileSync('node', [evidenceScript, 'write', '--root', tmp, '--evidence', evidencePath], {
       encoding: 'utf8',
       env: {
-        ...process.env,
+        ...cleanGitEnv(),
         NEXUS_RELEASE_EVIDENCE_PRIVATE_KEY_PATH: privateKeyPath,
         NEXUS_RELEASE_TYPECHECK_RESULT: 'passed',
         NEXUS_RELEASE_BUILD_RESULT: 'passed',
@@ -280,7 +280,7 @@ describe('release-evidence', () => {
     const failed = spawnSync(
       'node',
       [evidenceScript, 'validate', '--root', tmp, '--evidence', evidencePath, '--public-key', publicKeyPath, '--json'],
-      { encoding: 'utf8' },
+      { encoding: 'utf8', env: cleanGitEnv() },
     );
 
     expect(failed.status).toBe(1);
@@ -292,7 +292,7 @@ describe('release-evidence', () => {
     execFileSync('node', [evidenceScript, 'write', '--root', tmp, '--evidence', evidencePath], {
       encoding: 'utf8',
       env: {
-        ...process.env,
+        ...cleanGitEnv(),
         NEXUS_RELEASE_EVIDENCE_PRIVATE_KEY_PATH: privateKeyPath,
         NEXUS_RELEASE_TYPECHECK_RESULT: 'passed',
         NEXUS_RELEASE_BUILD_RESULT: 'passed',
@@ -309,7 +309,7 @@ describe('release-evidence', () => {
     const failed = spawnSync(
       'node',
       [evidenceScript, 'validate', '--root', tmp, '--evidence', evidencePath, '--public-key', publicKeyPath, '--json'],
-      { encoding: 'utf8' },
+      { encoding: 'utf8', env: cleanGitEnv() },
     );
 
     expect(failed.status).toBe(1);
@@ -321,7 +321,7 @@ describe('release-evidence', () => {
     execFileSync('node', [evidenceScript, 'write', '--root', tmp, '--evidence', evidencePath], {
       encoding: 'utf8',
       env: {
-        ...process.env,
+        ...cleanGitEnv(),
         NEXUS_RELEASE_EVIDENCE_PRIVATE_KEY_PATH: privateKeyPath,
         NEXUS_RELEASE_TYPECHECK_RESULT: 'passed',
         NEXUS_RELEASE_BUILD_RESULT: 'passed',
@@ -345,7 +345,7 @@ describe('release-evidence', () => {
     const stale = spawnSync(
       'node',
       [evidenceScript, 'validate', '--root', tmp, '--evidence', evidencePath, '--public-key', publicKeyPath, '--json'],
-      { encoding: 'utf8' },
+      { encoding: 'utf8', env: cleanGitEnv() },
     );
     expect(stale.status).toBe(1);
     expect(JSON.parse(stale.stdout).reasons).toEqual(expect.arrayContaining([
@@ -362,7 +362,7 @@ describe('release-evidence', () => {
     const future = spawnSync(
       'node',
       [evidenceScript, 'validate', '--root', tmp, '--evidence', evidencePath, '--public-key', publicKeyPath, '--json'],
-      { encoding: 'utf8' },
+      { encoding: 'utf8', env: cleanGitEnv() },
     );
     expect(future.status).toBe(1);
     expect(JSON.parse(future.stdout).reasons).toEqual(expect.arrayContaining([
@@ -375,7 +375,7 @@ describe('release-evidence', () => {
     execFileSync('node', [evidenceScript, 'write', '--root', tmp, '--evidence', evidencePath], {
       encoding: 'utf8',
       env: {
-        ...process.env,
+        ...cleanGitEnv(),
         NEXUS_RELEASE_EVIDENCE_PRIVATE_KEY_PATH: privateKeyPath,
         NEXUS_RELEASE_TYPECHECK_RESULT: 'passed',
         NEXUS_RELEASE_BUILD_RESULT: 'passed',
@@ -400,7 +400,7 @@ describe('release-evidence', () => {
       const failed = spawnSync(
         'node',
         [evidenceScript, 'validate', '--root', tmp, '--evidence', evidencePath, '--public-key', publicKeyPath, '--json'],
-        { encoding: 'utf8', env: { ...process.env, NEXUS_RELEASE_EVIDENCE_MAX_AGE_S: value } },
+        { encoding: 'utf8', env: { ...cleanGitEnv(), NEXUS_RELEASE_EVIDENCE_MAX_AGE_S: value } },
       );
       expect(failed.status).toBe(1);
       expect(JSON.parse(failed.stdout).reasons).toEqual(expect.arrayContaining([
@@ -414,7 +414,7 @@ describe('release-evidence', () => {
     execFileSync('node', [evidenceScript, 'write', '--root', tmp, '--evidence', evidencePath], {
       encoding: 'utf8',
       env: {
-        ...process.env,
+        ...cleanGitEnv(),
         NEXUS_RELEASE_EVIDENCE_PRIVATE_KEY_PATH: privateKeyPath,
         NEXUS_RELEASE_TYPECHECK_RESULT: 'passed',
         NEXUS_RELEASE_BUILD_RESULT: 'passed',
@@ -433,7 +433,7 @@ describe('release-evidence', () => {
     const failed = spawnSync(
       'node',
       [evidenceScript, 'validate', '--root', tmp, '--evidence', evidencePath, '--public-key', publicKeyPath, '--json'],
-      { encoding: 'utf8' },
+      { encoding: 'utf8', env: cleanGitEnv() },
     );
 
     expect(failed.status).toBe(1);

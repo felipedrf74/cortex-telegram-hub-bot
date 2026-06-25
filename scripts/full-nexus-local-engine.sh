@@ -249,13 +249,26 @@ command_health() {
   fi
 }
 
+current_legal_versions() {
+  (cd "$ROOT" && node - <<'EOF'
+const { CURRENT_LEGAL_DOCUMENTS } = require('./dist/services/legal-consent.js');
+console.log(`${CURRENT_LEGAL_DOCUMENTS.terms.version} ${CURRENT_LEGAL_DOCUMENTS.privacy.version}`);
+EOF
+  )
+}
+
 command_auth_token() {
   ensure_dirs
   load_env
+  local LEGAL_TERMS_VERSION
+  local LEGAL_PRIVACY_VERSION
+  local legal_versions
+  legal_versions="$(current_legal_versions)"
+  read -r LEGAL_TERMS_VERSION LEGAL_PRIVACY_VERSION <<< "$legal_versions"
   local payload
   payload="$(mktemp)"
   cat > "$payload" <<EOF
-{"deviceId":"${LOCAL_DEVICE_ID}","deviceName":"Local Full Nexus Smoke","inviteCode":"${LOCAL_INVITE_CODE}"}
+{"deviceId":"${LOCAL_DEVICE_ID}","deviceName":"Local Full Nexus Smoke","inviteCode":"${LOCAL_INVITE_CODE}","acceptedLegal":{"accepted":true,"termsVersion":"${LEGAL_TERMS_VERSION}","privacyVersion":"${LEGAL_PRIVACY_VERSION}"}}
 EOF
   local response
   response="$(mktemp)"

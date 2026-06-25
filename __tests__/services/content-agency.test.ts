@@ -103,6 +103,15 @@ describe('Content Agency orchestrator', () => {
 
     expect(pkg.blockers).toEqual([]);
     expect(pkg.quality.score).toBeGreaterThanOrEqual(80);
+    expect(pkg.researchPackage).toMatchObject({
+      sourceMode: 'none',
+      sourceCount: expect.any(Number),
+      realSourceCount: 0,
+      publishable: false,
+    });
+    expect(pkg.sourceMode).toBe('none');
+    expect(pkg.researchPublishable).toBe(false);
+    expect(pkg.reviewRequired).toBe(true);
     expect(pkg.platform).toBe('tiktok');
     expect(pkg.hookBank.length).toBeGreaterThanOrEqual(4);
     expect(pkg.scriptVariants.length).toBeGreaterThanOrEqual(2);
@@ -135,6 +144,8 @@ describe('Content Agency orchestrator', () => {
     expect(pkg.complianceReview.notes.join(' ')).toMatch(/not legal advice/i);
     expect(pkg.sourceTrace).toEqual(expect.arrayContaining([
       'Content Agency reference registry',
+      `research_package:${pkg.researchPackage.packageId}`,
+      'source_mode:none',
       'https://example.test/video-a',
       'tiktok-first-structure-stimulation-sound',
       'arousal-story-retention',
@@ -232,6 +243,33 @@ describe('Content Agency orchestrator', () => {
     expect(pkg.nextBestActions.join('\n')).toMatch(/Resolve blocker/i);
   });
 
+  it('marks mock or degraded agency research as non-publishable before pipeline handoff', () => {
+    const pkg = buildContentAgencyPackage({
+      userId: 501,
+      tenantId: 101,
+      brief: {
+        userId: 501,
+        tenantId: 101,
+        goal: 'build a trend response from a fixture source',
+        audience: 'technical creator operators',
+        offer: 'download the review checklist',
+        platform: 'TikTok',
+      },
+      researchSources: [{
+        title: '[Mock] viral trend',
+        url: 'https://example.com/mock-trend',
+        sourceType: 'web',
+        relevanceNote: 'mock fixture',
+      }],
+    });
+
+    expect(pkg.sourceMode).toBe('mock');
+    expect(pkg.researchPublishable).toBe(false);
+    expect(pkg.blockers).toContain('agency_research_package_non_publishable');
+    expect(pkg.warnings).toContain('mock_research_sources_non_publishable');
+    expect(pkg.reviewRequired).toBe(true);
+  });
+
   it('persists agency artifacts with tenant scope and refuses cross-tenant reads', () => {
     const pkg = buildContentAgencyPackage({
       userId: 501,
@@ -314,7 +352,7 @@ describe('Content Agency orchestrator', () => {
     expect(handoff.status).toBe('created');
     expect(handoff.warnings).toContain('missing_audience');
     const row = testDb.prepare(`
-      SELECT stage, editorial_state, approval_state, review_required, approved_by, approved_at
+      SELECT stage, editorial_state, approval_state, review_required, approved_by, approved_at, stage_history
       FROM content_pipeline
       WHERE source_agency_package_id = ?
     `).get(pkg.id) as {
@@ -324,14 +362,21 @@ describe('Content Agency orchestrator', () => {
       review_required: number;
       approved_by: number | null;
       approved_at: string | null;
+      stage_history: string;
     };
-    expect(row).toEqual({
+    expect(row).toMatchObject({
       stage: 'review',
       editorial_state: 'review',
       approval_state: 'pending',
       review_required: 1,
       approved_by: null,
       approved_at: null,
+    });
+    expect(JSON.parse(row.stage_history)[0]).toMatchObject({
+      agencyPackageId: pkg.id,
+      researchPackageId: pkg.researchPackage.packageId,
+      sourceMode: pkg.sourceMode,
+      sourceCount: pkg.researchPackage.sourceCount,
     });
   });
 

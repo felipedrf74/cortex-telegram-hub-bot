@@ -22,6 +22,10 @@ import {
   type ContentNoveltyDecision,
 } from './content-novelty-reuse';
 import { contentTokenOverlap, foldContentText } from './content-text-utils';
+import {
+  scoreVoiceFit,
+  type ScriptVoiceFitCriteria,
+} from './content-script-quality';
 
 export type ContentGenerationIntent =
   | 'generate'
@@ -273,6 +277,7 @@ export function evaluateContentGenerationQuality(input: {
   outputText: string;
   claims?: ContentGenerationClaim[];
   voiceApplied?: boolean;
+  voiceFitCriteria?: ScriptVoiceFitCriteria | null;
 }): ContentGenerationQualityResult {
   const output = input.outputText.trim();
   const packageRefIds = new Set(input.package.referencesUsed.flatMap((ref) => [ref.sourceId, String(ref.id)]));
@@ -281,14 +286,21 @@ export function evaluateContentGenerationQuality(input: {
     return supportedBy.length === 0 || supportedBy.some((id) => !packageRefIds.has(id));
   });
   const formatFit = scoreFormatFit(output, input.package.formatId, input.package.outputContract.requiredFields);
-  const voiceFit = input.voiceApplied === false
-    ? 0.4
-    : input.package.voiceContext.appliedMemoryKeys.length > 0 ? 0.85 : 0.55;
+  const voiceFitResult = input.voiceApplied === false
+    ? null
+    : scoreVoiceFit(output, {
+      audience: input.package.topic,
+      toneVoiceConstraints: input.package.voiceContext.appliedMemoryKeys,
+      voiceFitCriteria: input.voiceFitCriteria ?? undefined,
+    });
+  const noVoiceDnaConfigured = input.voiceApplied !== false && !input.voiceFitCriteria;
+  const voiceFit = input.voiceApplied === false ? 0.4 : (voiceFitResult?.score ?? 0) / 100;
   const reviewWarnings = [
     ...input.package.reviewWarnings,
     ...(unsupportedClaims.length > 0 ? ['unsupported_claims_require_review'] : []),
     ...(formatFit < 0.55 ? ['format_contract_weak'] : []),
     ...(voiceFit < 0.5 ? ['voice_profile_not_applied'] : []),
+    ...(noVoiceDnaConfigured ? ['no_voice_dna_configured'] : []),
   ];
   const sourceGrounding = unsupportedClaims.length === 0
     ? input.package.sourceGrounding

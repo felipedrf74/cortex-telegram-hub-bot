@@ -1162,14 +1162,28 @@ function runtimeLaneScores(options: Pick<
   ContentEvalRunOptions,
   'iosExtractionScore' | 'iosExtractionEvidence' | 'realProviderSampleScore' | 'realProviderSampleEvidence'
 >): ContentEvalLaneScores {
+  const fixtureVoiceFitCriteria = {
+    audience: 'creator operators improving AI-assisted content systems',
+    contentPillars: ['AI creator operating system', 'YouTube retention diagnosis'],
+    toneRules: ['evidence-led operator voice', 'specific and practical'],
+    phrasesToAvoid: ['believe in yourself'],
+    preferredCtas: ['Save this.', 'Test one intro change and compare retention.'],
+    proofLibrary: ['retention proof', 'creator workflow proof'],
+    confidence: 0.88,
+  };
   const scriptSamples = [
     analyzeAndImproveScript({
       topic: 'AI creator operating system',
-      script: 'Today we are going to talk about AI tools.\nThis matters because creators waste hours.\nSave this.',
+      script: 'Creator operators do not need another AI tool list.\nThey need one workflow proof: where the draft slows down, where the source earns trust, and what to test next.\nSave this.',
       hook: '',
       format: 'Reel',
       cta: '',
-      preflightBrief: buildScriptPreflightBrief({ topic: 'AI creator operating system', format: 'Reel', cta: 'Save this.' }),
+      preflightBrief: buildScriptPreflightBrief({
+        topic: 'AI creator operating system',
+        format: 'Reel',
+        cta: 'Save this.',
+        voiceFitCriteria: fixtureVoiceFitCriteria,
+      }),
     }),
     analyzeAndImproveScript({
       topic: 'YouTube retention diagnosis',
@@ -1178,6 +1192,13 @@ function runtimeLaneScores(options: Pick<
       format: 'YouTube',
       cta: 'Test one intro change and compare retention.',
       sources: [{ title: 'YouTube retention report', url: 'https://example.test', source_type: 'analytics', relevance_note: 'Used for retention framing' }],
+      preflightBrief: buildScriptPreflightBrief({
+        topic: 'YouTube retention diagnosis',
+        format: 'YouTube',
+        cta: 'Test one intro change and compare retention.',
+        sources: [{ title: 'YouTube retention report', url: 'https://example.test', source_type: 'analytics', relevance_note: 'Used for retention framing' }],
+        voiceFitCriteria: fixtureVoiceFitCriteria,
+      }),
     }),
   ];
   const scriptQualityScore = Math.round(scriptSamples.reduce((sum, report) => sum + report.overallScore, 0) / scriptSamples.length);

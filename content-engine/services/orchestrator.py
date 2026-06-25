@@ -2,6 +2,7 @@ import asyncio
 import time
 import logging
 import re
+from urllib.parse import parse_qs, urlparse
 from types import SimpleNamespace
 from models.research import SearchResult, TrendingTopic, ContentBrief
 from models.requests import (
@@ -21,6 +22,106 @@ from config import cfg
 from datetime import datetime, timezone
 
 logger = logging.getLogger("content-engine")
+
+MOCK_NOTE_PATTERNS = (
+    re.compile(r"\[(mock|fixture)\]", re.IGNORECASE),
+    re.compile(r"\b(?:mock|mocked)\s+(?:source|data|fixture|research|response|result)\b", re.IGNORECASE),
+    re.compile(r"\b(?:source|data|fixture|research|response|result)\s+(?:mock|mocked)\b", re.IGNORECASE),
+    re.compile(r"\bfixture\s+mock\b", re.IGNORECASE),
+    re.compile(r"\bmock\s+fixture\b", re.IGNORECASE),
+)
+
+
+def _observed_at() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _item_title(item) -> str:
+    if isinstance(item, dict):
+        return str(item.get("original_title") or item.get("title") or item.get("topic") or "")
+    result = getattr(item, "result", item)
+    return str(getattr(result, "title", "") or "")
+
+
+def _item_url(item) -> str:
+    if isinstance(item, dict):
+        return str(item.get("url") or "")
+    result = getattr(item, "result", item)
+    return str(getattr(result, "url", "") or "")
+
+
+def _item_metadata(item) -> dict:
+    if isinstance(item, dict):
+        metadata = item.get("metadata") or {}
+        return metadata if isinstance(metadata, dict) else {}
+    result = getattr(item, "result", item)
+    metadata = getattr(result, "metadata", {}) or {}
+    return metadata if isinstance(metadata, dict) else {}
+
+
+def _item_relevance_note(item) -> str:
+    if isinstance(item, dict):
+        return str(item.get("relevance_note") or item.get("relevanceNote") or "")
+    result = getattr(item, "result", item)
+    return str(getattr(result, "relevance_note", "") or getattr(result, "relevanceNote", "") or "")
+
+
+def _is_mock_note(note: str) -> bool:
+    return any(pattern.search(note) for pattern in MOCK_NOTE_PATTERNS)
+
+
+def _is_mock_item(item) -> bool:
+    if isinstance(item, dict) and item.get("mock") is True:
+        return True
+    metadata = _item_metadata(item)
+    if metadata.get("mock") is True:
+        return True
+    title = _item_title(item).lower()
+    return title.startswith("[mock]") or _is_mock_url(_item_url(item)) or _is_mock_note(_item_relevance_note(item))
+
+
+def _is_mock_url(url: str) -> bool:
+    if not url:
+        return False
+    parsed = urlparse(url)
+    if parsed.scheme.lower() not in {"http", "https"}:
+        return False
+    host = (parsed.hostname or "").lower()
+    if host in {"example.com", "www.example.com", "example.org", "www.example.org"}:
+        return True
+    path_segments = [segment.lower() for segment in parsed.path.split("/") if segment]
+    if "mock" in path_segments:
+        return True
+    query = parse_qs(parsed.query)
+    return "1" in query.get("mock", [])
+
+
+def _is_verifiable_item(item) -> bool:
+    return _item_url(item).lower().startswith(("http://", "https://"))
+
+
+def _source_mode(items: list, degraded: bool = False) -> str:
+    if degraded:
+        return "degraded"
+    if not items:
+        return "none"
+    if any(_is_mock_item(item) for item in items):
+        return "mock"
+    if not any(_is_verifiable_item(item) for item in items):
+        return "none"
+    return "real"
+
+
+def _provenance_warnings(items: list, degraded: bool = False) -> list[str]:
+    warnings: list[str] = []
+    mode = _source_mode(items, degraded=degraded)
+    if mode == "degraded":
+        warnings.append("research_degraded_non_publishable")
+    if mode == "mock" or any(_is_mock_item(item) for item in items):
+        warnings.append("mock_research_sources_non_publishable")
+    if mode == "none":
+        warnings.append("research_sources_missing_review_required")
+    return warnings
 
 # Setup-safe broad-topic fallback niches. These fire ONLY when a caller
 # does not supply explicit niches (e.g. `trending(niche=None)` AND the
@@ -232,6 +333,9 @@ class ResearchOrchestrator:
             duration_ms=duration_ms,
             degraded=False,
             warnings=["Quick mode used shallow research without AI synthesis."],
+            source_mode=_source_mode(unique_scored),
+            source_count=len(unique_scored),
+            observed_at=_observed_at(),
         )
 
     async def deep_search(
@@ -299,11 +403,14 @@ class ResearchOrchestrator:
         for item in selected_scored[:25]:
             raw_sources.append({
                 "title": item.result.title.replace("[Mock] ", ""),
+                "original_title": item.result.title,
                 "url": item.result.url,
                 "snippet": (item.result.snippet or "")[:300],
                 "source_type": item.result.source,
                 "score": round(item.score.composite, 2),
                 "published": item.result.published_at.isoformat() if item.result.published_at else None,
+                "metadata": item.result.metadata,
+                "mock": _is_mock_item(item),
             })
 
         if not raw_sources:
@@ -317,7 +424,10 @@ class ResearchOrchestrator:
                 search_count=search_count,
                 duration_ms=duration_ms,
                 degraded=True,
-                warnings=warnings,
+                warnings=[*warnings, *_provenance_warnings(raw_sources, degraded=True)],
+                source_mode=_source_mode(raw_sources, degraded=True),
+                source_count=len(raw_sources),
+                observed_at=_observed_at(),
             )
 
         creator_context = _creator_context(creator_profile=creator_profile, language=language)
@@ -392,7 +502,10 @@ Return ONLY the JSON object."""
                 search_count=search_count,
                 duration_ms=duration_ms,
                 degraded=True,
-                warnings=warnings,
+                warnings=[*warnings, *_provenance_warnings(raw_sources, degraded=True)],
+                source_mode=_source_mode(raw_sources, degraded=True),
+                source_count=len(raw_sources),
+                observed_at=_observed_at(),
             )
 
         # Phase 3: Convert AI synthesis into ContentBrief objects
@@ -462,7 +575,10 @@ Return ONLY the JSON object."""
             search_count=search_count,
             duration_ms=duration_ms,
             degraded=False,
-            warnings=warnings,
+            warnings=[*warnings, *_provenance_warnings(raw_sources)],
+            source_mode=_source_mode(raw_sources),
+            source_count=len(raw_sources),
+            observed_at=_observed_at(),
         )
 
     async def get_sources(self, query: str) -> SourcesResponse:
@@ -484,7 +600,15 @@ Return ONLY the JSON object."""
                 relevance_note=f"Score: {item.score.composite:.2f}",
             ))
 
-        return SourcesResponse(query=query, sources=sources)
+        return SourcesResponse(
+            query=query,
+            sources=sources,
+            source_mode=_source_mode(sources),
+            source_count=len(sources),
+            observed_at=_observed_at(),
+            degraded=False,
+            warnings=_provenance_warnings(sources),
+        )
 
     async def hot_news(
         self,
@@ -508,16 +632,27 @@ Return ONLY the JSON object."""
             for item in scored[:4]:
                 all_raw.append({
                     "title": item.result.title.replace("[Mock] ", ""),
+                    "original_title": item.result.title,
                     "snippet": (item.result.snippet or "")[:200],
                     "source": item.result.source,
                     "url": item.result.url,
                     "heat": round(item.score.composite, 2),
                     "query_niche": HOT_NEWS_QUERIES[i].split()[0],
                     "published": item.result.published_at.isoformat() if item.result.published_at else None,
+                    "metadata": item.result.metadata,
+                    "mock": _is_mock_item(item),
                 })
 
         if not all_raw:
-            return HotNewsResponse(topics=[], generated_at=datetime.now(timezone.utc).isoformat())
+            return HotNewsResponse(
+                topics=[],
+                generated_at=datetime.now(timezone.utc).isoformat(),
+                source_mode="none",
+                source_count=0,
+                observed_at=_observed_at(),
+                degraded=False,
+                warnings=_provenance_warnings([]),
+            )
 
         # Phase 2: AI curation — filter and rank through creator lens
         import json
@@ -594,6 +729,11 @@ Only return the JSON array, nothing else."""
         return HotNewsResponse(
             topics=topics,
             generated_at=datetime.now(timezone.utc).isoformat(),
+            source_mode=_source_mode(all_raw),
+            source_count=len(all_raw),
+            observed_at=_observed_at(),
+            degraded=False,
+            warnings=_provenance_warnings(all_raw),
         )
 
     async def trending(self, niche: str | None = None) -> TrendingResponse:
@@ -637,6 +777,11 @@ Only return the JSON array, nothing else."""
             niche=niche or "all",
             duration_ms=duration_ms,
             generated_at=datetime.now(timezone.utc).isoformat(),
+            source_mode=_source_mode(scored),
+            source_count=len(scored),
+            observed_at=_observed_at(),
+            degraded=False,
+            warnings=_provenance_warnings(scored),
         )
 
     async def reaction_search(self, topic: str) -> ReactionResponse:
@@ -710,4 +855,9 @@ Only return the JSON array, nothing else."""
             query=topic,
             briefs=briefs,
             duration_ms=duration_ms,
+            source_mode=_source_mode(scored),
+            source_count=len(scored),
+            observed_at=_observed_at(),
+            degraded=False,
+            warnings=_provenance_warnings(scored),
         )

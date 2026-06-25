@@ -14,6 +14,10 @@ import { getUserLanguage } from './user-service';
 import { isValidTenantUserId } from './tenant-scope-observability';
 import { createLazyAnthropicClient } from './anthropic-lazy-client';
 import { requireTenantIdParam } from './tenant-scope';
+import {
+  buildContentResearchPackage,
+  type ContentResearchPackage,
+} from './content-research-package';
 
 const client = createLazyAnthropicClient();
 
@@ -73,6 +77,7 @@ export interface ContentDiscoveryResult {
   filePath: string;      // where it was saved
   searchCount: number;   // how many web searches were used
   provider: 'gemini' | 'anthropic';
+  researchPackage: ContentResearchPackage;
 }
 
 export interface RunContentDiscoveryOptions {
@@ -118,6 +123,7 @@ Remember: follow the creator configuration for audience fit, but keep the ideas 
   let fullContent = '';
   let searchCount = 0;
   let usedProvider: 'gemini' | 'anthropic' = 'anthropic';
+  let groundingSources: string[] = [];
 
   if (isGeminiProviderConfigured()) {
     try {
@@ -128,6 +134,7 @@ Remember: follow the creator configuration for audience fit, but keep the ideas 
         { maxTokens: 4096, temperature: 0.7, userId, tenantId },
       );
       fullContent = text;
+      groundingSources = sources;
       // Gemini reports sources via groundingChunks instead of a
       // server_tool_use counter — use that as the searchCount proxy.
       searchCount = sources.length;
@@ -191,6 +198,22 @@ Remember: follow the creator configuration for audience fit, but keep the ideas 
     searchCount = (finalResponse.usage as any)?.server_tool_use?.web_search_requests || 0;
   }
 
+  const researchPackage = buildContentResearchPackage({
+    topic: 'daily content discovery',
+    query: userMessage,
+    route: 'discovery',
+    rawSources: groundingSources.map((url, index) => ({
+      title: `Discovery source ${index + 1}`,
+      url,
+      source_type: usedProvider === 'gemini' ? 'google_search_grounding' : 'web_search',
+      relevance_note: 'Source observed during content discovery.',
+    })),
+    sourceOrigin: 'server_fetched',
+    warnings: searchCount > 0 && groundingSources.length === 0
+      ? ['discovery_provider_reported_search_without_exposed_sources']
+      : [],
+  });
+
   // Extract idea titles (lines starting with "## Idea" or "### Ideia" — model may use either format or language)
   const ideas = fullContent
     .split('\n')
@@ -237,6 +260,7 @@ Remember: follow the creator configuration for audience fit, but keep the ideas 
         workflowEligible: isMainIdea,
         niche: undefined,
         userId,
+        tenantId,
       });
       savedCount++;
     } catch (err) {
@@ -252,6 +276,7 @@ Remember: follow the creator configuration for audience fit, but keep the ideas 
     filePath,
     searchCount,
     provider: usedProvider,
+    researchPackage,
   };
 }
 
