@@ -230,6 +230,61 @@ describe('syncProvider', () => {
     });
   });
 
+  it('clears provider_missing when a later full sync returns the provider task again', async () => {
+    const adapter = makeMockAdapter({
+      provider: 'ms_todo',
+      hasIncrementalSync: false,
+      tasksByCall: [
+        [
+          {
+            provider: 'ms_todo',
+            externalId: 'ms-returning-task',
+            title: 'Apontar horas (Mendix)',
+            status: 'pending',
+            priority: 0,
+            providerData: { listId: 'ms-list-siemens', '@odata.etag': 'etag-v1' },
+          },
+        ],
+        [],
+        [
+          {
+            provider: 'ms_todo',
+            externalId: 'ms-returning-task',
+            title: 'Apontar horas (Mendix)',
+            status: 'pending',
+            priority: 0,
+            providerData: { listId: 'ms-list-siemens', '@odata.etag': 'etag-v1' },
+          },
+        ],
+      ],
+    });
+    registerAdapter(adapter);
+
+    await syncProvider(USER_ID, 'ms_todo');
+    await syncProvider(USER_ID, 'ms_todo');
+    await syncProvider(USER_ID, 'ms_todo');
+
+    const row = testDb.prepare(
+      `SELECT t.sync_state, l.link_state
+       FROM unified_tasks t
+       INNER JOIN task_provider_links l
+         ON l.tenant_id = t.tenant_id
+        AND l.user_id = t.user_id
+        AND l.task_id = t.nexus_task_id
+       WHERE t.user_id = ? AND t.provider = 'ms_todo' AND t.external_id = 'ms-returning-task'`,
+    ).get(USER_ID) as { sync_state: string; link_state: string };
+    const issue = testDb.prepare(
+      `SELECT state
+       FROM task_sync_issues
+       WHERE user_id = ? AND provider = 'ms_todo' AND code = 'provider_task_missing'
+       ORDER BY created_at DESC
+       LIMIT 1`,
+    ).get(USER_ID) as { state: string };
+
+    expect(row).toEqual({ sync_state: 'synced', link_state: 'linked' });
+    expect(issue.state).toBe('resolved');
+  });
+
   it('returns error result on adapter exception without throwing', async () => {
     const adapter = makeMockAdapter({ throwOnGetTasks: true });
     registerAdapter(adapter);

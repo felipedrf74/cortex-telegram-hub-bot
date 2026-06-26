@@ -240,6 +240,91 @@ describe('upsertTask', () => {
     expect(row.count).toBe(1);
   });
 
+  it('clears provider_missing when Microsoft returns the same task again unchanged', () => {
+    const task = makeTask({
+      provider: 'ms_todo',
+      externalId: 'ms-provider-task-1',
+      title: 'Apontar horas (Mendix)',
+      dueDate: '2026-06-29',
+      providerData: {
+        listId: 'ms-list-siemens',
+        lastModifiedDateTime: '2026-06-25T10:00:00Z',
+        '@odata.etag': 'etag-v1',
+      },
+    });
+
+    upsertTask(USER_ID, task);
+    softDeleteMissing(USER_ID, 'ms_todo', []);
+
+    const result = upsertTask(USER_ID, task);
+    const row = testDb.prepare(
+      `SELECT t.sync_state, l.link_state, l.provider_list_id
+       FROM unified_tasks t
+       INNER JOIN task_provider_links l
+         ON l.tenant_id = t.tenant_id
+        AND l.user_id = t.user_id
+        AND l.task_id = t.nexus_task_id
+       WHERE t.user_id = ? AND t.provider = 'ms_todo' AND t.external_id = ?`,
+    ).get(USER_ID, 'ms-provider-task-1') as {
+      sync_state: string;
+      link_state: string;
+      provider_list_id: string;
+    };
+    const issue = testDb.prepare(
+      `SELECT state
+       FROM task_sync_issues
+       WHERE user_id = ? AND provider = 'ms_todo' AND code = 'provider_task_missing'
+       ORDER BY created_at DESC
+       LIMIT 1`,
+    ).get(USER_ID) as { state: string };
+
+    expect(result).toBe('unchanged');
+    expect(row).toEqual({
+      sync_state: 'synced',
+      link_state: 'linked',
+      provider_list_id: 'ms-list-siemens',
+    });
+    expect(issue.state).toBe('resolved');
+  });
+
+  it('clears provider_missing when Microsoft returns the task with changed content', () => {
+    const task = makeTask({
+      provider: 'ms_todo',
+      externalId: 'ms-provider-task-2',
+      title: 'Emitir Nota MV',
+      providerData: { listId: 'ms-list-siemens', '@odata.etag': 'etag-v1' },
+    });
+
+    upsertTask(USER_ID, task);
+    softDeleteMissing(USER_ID, 'ms_todo', []);
+
+    const result = upsertTask(USER_ID, {
+      ...task,
+      dueDate: '2026-07-07',
+      providerData: { listId: 'ms-list-siemens', '@odata.etag': 'etag-v2' },
+    });
+    const row = testDb.prepare(
+      `SELECT t.sync_state, l.link_state, l.provider_version
+       FROM unified_tasks t
+       INNER JOIN task_provider_links l
+         ON l.tenant_id = t.tenant_id
+        AND l.user_id = t.user_id
+        AND l.task_id = t.nexus_task_id
+       WHERE t.user_id = ? AND t.provider = 'ms_todo' AND t.external_id = ?`,
+    ).get(USER_ID, 'ms-provider-task-2') as {
+      sync_state: string;
+      link_state: string;
+      provider_version: string;
+    };
+
+    expect(result).toBe('updated');
+    expect(row).toEqual({
+      sync_state: 'synced',
+      link_state: 'linked',
+      provider_version: 'etag-v2',
+    });
+  });
+
   it('marks conflicts instead of overwriting a task with pending local mutations', () => {
     const task = makeTask({
       provider: 'todoist',

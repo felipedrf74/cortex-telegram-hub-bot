@@ -23,7 +23,7 @@ import {
   TaskProvider,
   SyncStateRow,
 } from './types';
-import { recordTaskSyncIssue } from './task-sync-issues';
+import { recordTaskSyncIssue, resolveTaskSyncIssue } from './task-sync-issues';
 
 // ─── Row mapping ────────────────────────────────────────────────────────
 
@@ -250,11 +250,12 @@ function ensureProviderLinkForTask(tenantId: number, userId: number, task: Norma
        task_id = excluded.task_id,
        provider_list_id = COALESCE(excluded.provider_list_id, task_provider_links.provider_list_id),
        provider_project_id = COALESCE(excluded.provider_project_id, task_provider_links.provider_project_id),
+       provider_version = COALESCE(excluded.provider_version, task_provider_links.provider_version),
        provider_updated_at = COALESCE(excluded.provider_updated_at, task_provider_links.provider_updated_at),
        last_synced_at = datetime('now'),
-       last_verified_at = COALESCE(task_provider_links.last_verified_at, datetime('now')),
+       last_verified_at = datetime('now'),
        link_state = CASE
-         WHEN task_provider_links.link_state IN ('conflict', 'provider_missing') THEN task_provider_links.link_state
+         WHEN task_provider_links.link_state = 'conflict' THEN task_provider_links.link_state
          ELSE 'linked'
        END,
        updated_at = datetime('now')`,
@@ -272,6 +273,54 @@ function ensureProviderLinkForTask(tenantId: number, userId: number, task: Norma
     stringProviderDataValue(task, ['updated_at', 'lastModifiedDateTime', 'modified_at']),
     provider === 'nexus_local' ? 'linked' : 'provider_imported',
   );
+}
+
+function hasRecoverableProviderAbsenceState(syncState: string | null | undefined): boolean {
+  return [
+    'provider_missing',
+    'provider_disconnected',
+    'stale',
+    'failed_retryable',
+  ].includes(String(syncState || ''));
+}
+
+function markProviderTaskSeen(input: {
+  tenantId: number;
+  userId: number;
+  provider: TaskProvider;
+  nexusTaskId: string;
+}): void {
+  const provider = providerLinkProvider(input.provider);
+  if (!provider) return;
+
+  const db = getDb();
+  db.prepare(
+    `UPDATE unified_tasks
+     SET sync_state = 'synced',
+         is_deleted = 0,
+         deleted_at = NULL,
+         synced_at = datetime('now'),
+         updated_at = datetime('now')
+     WHERE tenant_id = ? AND user_id = ? AND nexus_task_id = ?
+       AND sync_state IN ('provider_missing', 'provider_disconnected', 'stale', 'failed_retryable')`,
+  ).run(input.tenantId, input.userId, input.nexusTaskId);
+  db.prepare(
+    `UPDATE task_provider_links
+     SET link_state = 'linked',
+         last_synced_at = datetime('now'),
+         last_verified_at = datetime('now'),
+         updated_at = datetime('now')
+     WHERE tenant_id = ? AND user_id = ? AND task_id = ? AND provider = ?
+       AND link_state IN ('provider_missing', 'disconnected', 'stale')`,
+  ).run(input.tenantId, input.userId, input.nexusTaskId, provider);
+
+  resolveTaskSyncIssue({
+    tenantId: input.tenantId,
+    userId: input.userId,
+    taskId: input.nexusTaskId,
+    provider,
+    code: 'provider_task_missing',
+  });
 }
 
 function hasPendingLocalMutation(syncState: string | null | undefined): boolean {
@@ -383,6 +432,14 @@ export function upsertTask(userId: number, task: NormalizedTask, tenantId = user
   const existingNexusTaskId = existing.nexus_task_id || nexusTaskId;
   if (existing.content_hash === hash) {
     ensureProviderLinkForTask(tenantId, userId, task, existingNexusTaskId);
+    if (hasRecoverableProviderAbsenceState(existing.sync_state)) {
+      markProviderTaskSeen({
+        tenantId,
+        userId,
+        provider: task.provider,
+        nexusTaskId: existingNexusTaskId,
+      });
+    }
     return 'unchanged';
   }
 
@@ -429,6 +486,14 @@ export function upsertTask(userId: number, task: NormalizedTask, tenantId = user
     existing.id,
   );
   ensureProviderLinkForTask(tenantId, userId, task, existingNexusTaskId);
+  if (hasRecoverableProviderAbsenceState(existing.sync_state)) {
+    markProviderTaskSeen({
+      tenantId,
+      userId,
+      provider: task.provider,
+      nexusTaskId: existingNexusTaskId,
+    });
+  }
   return 'updated';
 }
 
