@@ -2,10 +2,10 @@
 
 Status: canonical
 Owner: backend release lead (Felipe)
-Last verified: 2026-06-10
+Last verified: 2026-06-26
 Update policy: update after backend deploy or staging change. Workspace-level entry point is docs/release/CURRENT_RELEASE_STATE.md.
 
-Last updated: 2026-06-10
+Last updated: 2026-06-26
 
 Only the **Active Production Release** section states the current production
 truth. Dated sections below it are historical deploy evidence and may mention
@@ -14,20 +14,67 @@ older production versions.
 ## Active Production Release
 
 - Source branch: `main`
-- Production HEAD: `636910e2`
-- Production version: `4.14.208`
-- Source implementation commit before release evidence/docs: `6651085e`
-  (Content Studio backend contract).
-- Latest runtime deploy commit: `636910e2`. Post-deploy docs-only closeout may
+- Production HEAD: `b8bd0c29`
+- Production version: `4.14.210`
+- Source implementation commit before release evidence/docs: `b8bd0c29`
+  (offline-first Tasks provider-missing repair).
+- Latest runtime deploy commit: `b8bd0c29`. Post-deploy docs-only closeout may
   sit ahead of production runtime.
-- Staging and production are both on `4.14.208`. Content Studio backend
-  contract changes are live: Decision Center overview supports the
-  `sourceSkill=content` filter, capture provenance is persisted into topic
-  audit metadata, and Content topic creation is idempotent for iOS offline
-  capture retries. No Content Studio migration was added by this promote.
+- Staging and production are both on `4.14.210`. Offline-first Tasks
+  provider-import sync now clears stale `provider_missing` state when Microsoft
+  To Do returns the task again, preserving conflict states and resolving the
+  open `provider_task_missing` issue.
 - Production still has the immutable global Training catalog version
   `repo-seed-1.0.0` active with 131 exercises and 24 equipment items.
 - Backend workspace root: `/Users/felipedominguez/Desktop/Custom Connectors/Cortex/cortex-telegram-hub-bot`
+
+## 2026-06-26 Offline-First Tasks Provider-Missing Hotfix Production Promote
+
+- Scope: fixed Microsoft To Do tasks that still exist in the provider but were
+  shown in iOS as "Provider no longer has this task." Root cause was sticky
+  `provider_missing`/`link_state=provider_missing` state on unchanged provider
+  imports; the provider link was refreshed but the task warning was preserved.
+- Production version: `4.14.210`.
+- Production deploy commit: `b8bd0c29`
+  (`fix(tasks): clear provider-missing after provider reappears`).
+- Code changes: `src/services/task-store/unified-task-store.ts` now treats a
+  provider import/read-back as proof that recoverable absence states
+  (`provider_missing`, `provider_disconnected`, `stale`, `failed_retryable`)
+  should return to `synced`, updates provider link freshness/version metadata,
+  and resolves the open `provider_task_missing` sync issue. Conflict and
+  pending-local mutation states remain sticky.
+- Regression coverage: `__tests__/services/task-store/unified-task-store.test.ts`
+  covers unchanged and changed Microsoft re-imports after `provider_missing`;
+  `__tests__/services/task-store/sync-engine.test.ts` covers the full-sync
+  pipeline where a missing task later reappears.
+- Local verification before push: focused task-store suites passed **2 files /
+  55 tests**; `npx tsc --noEmit` passed; `scripts/risk-gate.sh` passed
+  changed-only Vitest with **236 files / 3,802 tests**.
+- GitHub push gate repeated changed-only Vitest with **236 files / 3,802
+  tests** before pushing `b8bd0c29` to `main`.
+- Staging deploy passed through `scripts/deploy-staging.sh`; staging readiness
+  passed with artifact digest
+  `090d5fd593cd587b2ae2ba688f0035a2683e863536208e68aa8e00c554cdfead`.
+- Promote-time staging smoke passed **19/19** before production mutation.
+- Production promotion completed through `scripts/promote-to-prod.sh`.
+  Deploy-time validation passed migration safety for **210 migrations**,
+  typecheck, science-policy pin validation, full Vitest with **864 files /
+  12,654 tests**, build, backup creation with `bot.db`, native module rebuild
+  under system Node `v22.23.0`, PM2 restart, SQLite integrity, `/health`,
+  content-engine readiness, native better-sqlite3 loading, and PM2 stability.
+- Post-production probes passed: public `https://api.nexushub.me/health`
+  returned `status: healthy`, PM2 showed `nexus-hub` and `content-engine`
+  online, and targeted Microsoft To Do sync for user `25` completed without
+  errors.
+- Data repair evidence: production Siemens tasks `Apontar horas (Mendix)` and
+  `Emitir Nota MV` now have `sync_state='synced'`, provider links
+  `link_state='linked'`, no open `provider_task_missing` issue, and
+  `change_seq='2026-06-26T15:00:38.000Z'` for iOS delta refresh.
+- Known caveats: release-evidence shadow check is stale for this hotfix and
+  reported a SHA/manifest mismatch, so the promote used strict local deploy
+  verification instead. Cloudflare edge smoke remained skipped because
+  `NEXUS_SMOKE_EDGE_VERIFY=1` is not configured. PM2 restart counters remain
+  historically high, but no restart occurred during readiness sampling.
 
 ## 2026-06-10 Content Studio Backend Contract Production Promote
 

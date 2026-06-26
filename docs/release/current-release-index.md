@@ -2,71 +2,61 @@
 
 Status: canonical
 Owner: release lead (Felipe)
-Last verified: 2026-06-10
+Last verified: 2026-06-26
 Update policy: update when the current RC identity, deploy-gate evidence, or canonical-doc cross-references change. Run `scripts/release-identity.sh --persist` to refresh auto-generated identity fields.
 
-Date: 2026-06-10
+Date: 2026-06-26
 
 ## Current Status
 
 Active production package:
 
 - source branch: `main`
-- production HEAD: `636910e2`
-- production version: `4.14.208`
-- runtime source commit: `6651085e` (Content Studio backend contract)
-- latest runtime deploy commit: `636910e2`; post-deploy docs-only closeout may
+- production HEAD: `b8bd0c29`
+- production version: `4.14.210`
+- runtime source commit: `b8bd0c29` (offline-first Tasks provider-missing repair)
+- latest runtime deploy commit: `b8bd0c29`; post-deploy docs-only closeout may
   sit ahead of production runtime
 - release state: `docs/release/CURRENT_RELEASE_STATE.md` (backend)
 - backend workspace root: `/Users/felipedominguez/Desktop/Custom Connectors/Cortex/cortex-telegram-hub-bot`
 
-Commits in this release (4.14.208 content-studio promote):
+Commits in this release (4.14.210 Tasks provider-missing hotfix):
 
-- `6651085e feat(content): studio backend contract - skill-scoped overview, capture provenance, idempotent topic create`
-- `c3be2cad docs(release): add content studio staging smoke evidence`
-- `7d529331 chore: restore notification cache license header`
-- `636910e2 docs(release): add content studio final staging smoke evidence`
+- `b8bd0c29 fix(tasks): clear provider-missing after provider reappears`
 
 Scope:
 
-- Content Studio backend contract:
-  - Decision Center overview supports `sourceSkill=content` and returns
-    `sourceSkillFilter` plus `sourceSkillTotalCount`.
-  - Content topic capture provenance is persisted into topic audit metadata.
-  - Content topic create is idempotent for iOS offline capture retries.
-  - no Content Studio migration was added by this promote.
-  - production catalog `repo-seed-1.0.0` remains active and immutable for
-    `__global__`, with 131 exercises and 24 equipment items.
+- Offline-first Tasks provider reconciliation:
+  - Microsoft To Do provider imports now clear stale `provider_missing` task
+    and provider-link state when the task is returned by a later provider pull.
+  - Open `provider_task_missing` issues are resolved after the provider task is
+    seen again; conflict and pending-local mutation states remain sticky.
+  - no migration was added by this hotfix.
 
 Validated through promotion:
 
-- `npm run release:focused-verify` passed
-- `npm run release:rollback-drill-check` passed
+- focused task-store regression suites passed 2 files / 55 tests
+- `scripts/risk-gate.sh` passed changed-only Vitest with 236 files / 3,802
+  tests; pre-commit and pre-push repeated the same gate
 - staging deploy/readiness passed with artifact digest
-  `350b468e03485d5151eceed28c79b37505ec37e4e3c239944613e686a7b62e13`
-- standalone staging smoke with `NEXUS_SMOKE_EDGE_VERIFY=1` passed 22/22 at
-  `docs/release/smoke-evidence/staging-smoke-7d529331-20260610T204235Z.json`
-- promote-time staging smoke with Cloudflare edge checks passed 22/22 before
-  production mutation
-- first promote verifier aborted before production mutation on a single MIT
-  header QA failure in `src/services/notification-cache-invalidation.ts`; the
-  header-only unblock landed in `7d529331`, and the targeted QA test passed
-  6/6 before retry
-- `promote-to-prod.sh` completed cleanly for 4.14.208 at `636910e2`
+  `090d5fd593cd587b2ae2ba688f0035a2683e863536208e68aa8e00c554cdfead`
+- promote-time staging smoke passed 19/19 before production mutation
+- `promote-to-prod.sh` completed cleanly for 4.14.210 at `b8bd0c29`
 - deploy-time validation passed typecheck, science-policy check, migration
-  safety for 204 migrations, and full Vitest with 842 files / 12,368 tests
+  safety for 210 migrations, and full Vitest with 864 files / 12,654 tests
 - post-deploy: PM2 `nexus-hub` and `content-engine` online
 - production readiness passed: SQLite integrity, `/health`, content-engine
   readiness, better-sqlite3 native binding, and PM2 stability
-- post-production public `health`/`public-status` probes passed
-- live authenticated
-  `https://api.nexushub.me/api/v1/decisions/overview?sourceSkill=content`
-  returned 200 with `sourceSkillFilter` and `sourceSkillTotalCount`
+- post-production public `health` probe passed
+- targeted Microsoft To Do sync repaired the two Siemens tasks reported from
+  iOS: both now have `sync_state='synced'`, provider links `linked`, no open
+  `provider_task_missing` issue, and `change_seq='2026-06-26T15:00:38.000Z'`
 - App Store Connect/TestFlight INTERNAL assignment is blocked in this shell by
   missing ASC credentials/session; no external cohort was touched
 
 ## Previous Production Versions On This Branch
 
+- 4.14.210 (`b8bd0c29`) — Offline-first Tasks provider-missing hotfix for Microsoft To Do provider reappearance.
 - 4.14.208 (`636910e2`) — Content Studio backend contract promote for source-skill overview filtering, capture provenance, and idempotent topic create (source commit `6651085e`)
 - 4.14.208 (`910b6d72`) — Training/Coach tenant and health-signal hotfix for fresh safety reads, tenant-gated mutations/reflow, and tenant-scoped adherence/missed-session reads (source commit `9c226007`)
 - 4.14.207 (`4f2927c1`) — Training/Coach remediation production promote with active immutable Training catalog (source commits `bc7aacc2`, `770ac929`)
