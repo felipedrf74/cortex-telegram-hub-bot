@@ -368,8 +368,9 @@ async function cleanupProviderEvent(
     }
     updateProviderMapping(agendaItem, {
       providerSyncState: 'deleted',
+      clearProviderLink: true,
     });
-    return result(agendaItem, idsToDelete.length > 0 ? 'deleted' : 'skipped', agendaItem.providerEventId, adapter.source, 'deleted', deletedDuplicateEventIds, idsToDelete.length > 0 ? 'provider_event_deleted' : 'no_provider_event_to_delete');
+    return result(agendaItem, idsToDelete.length > 0 ? 'deleted' : 'skipped', null, adapter.source, 'deleted', deletedDuplicateEventIds, idsToDelete.length > 0 ? 'provider_event_deleted' : 'no_provider_event_to_delete');
   } catch (error) {
     updateProviderMapping(agendaItem, { providerSyncState: 'delete_failed' });
     logger.warn({
@@ -463,6 +464,7 @@ function updateProviderMapping(
     providerSource?: SecretaryCalendarProviderSource | null;
     providerSyncState: SecretaryProviderSyncState;
     lifecycleState?: SecretaryAgendaLifecycleState;
+    clearProviderLink?: boolean;
   },
 ): void {
   const lifecycleState = patch.lifecycleState
@@ -473,10 +475,11 @@ function updateProviderMapping(
         : null);
   const requestedLifecycleIsActive = lifecycleState != null
     && ACTIVE_PROVIDER_STATES.has(lifecycleState);
+  const clearProviderLink = patch.clearProviderLink ? 1 : 0;
   const result = getDb().prepare(`
     UPDATE secretary_agenda_items
-    SET provider_event_id = COALESCE(?, provider_event_id),
-        provider_source = COALESCE(?, provider_source),
+    SET provider_event_id = CASE WHEN ? THEN NULL ELSE COALESCE(?, provider_event_id) END,
+        provider_source = CASE WHEN ? THEN NULL ELSE COALESCE(?, provider_source) END,
         provider_sync_state = ?,
         lifecycle_state = CASE
           WHEN ?
@@ -492,7 +495,9 @@ function updateProviderMapping(
       AND owner_user_id = ?
       AND tenant_id = ?
   `).run(
+    clearProviderLink,
     patch.providerEventId ?? null,
+    clearProviderLink,
     patch.providerSource ?? null,
     patch.providerSyncState,
     requestedLifecycleIsActive ? 1 : 0,

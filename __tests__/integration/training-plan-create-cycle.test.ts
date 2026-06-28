@@ -466,24 +466,29 @@ function persistedPreferences(planId: number): Record<string, any> {
 }
 
 function scheduledWeeklyTargetsForPlan(planId: number): {
+  sessionsPerWeek: number;
   runSessionsPerWeek: number;
   bikeSessionsPerWeek: number;
   swimSessionsPerWeek: number;
   strengthSessionsPerWeek: number;
 } {
+  const trainingDays = new Set<string>();
   const counts = {
+    sessionsPerWeek: 0,
     runSessionsPerWeek: 0,
     bikeSessionsPerWeek: 0,
     swimSessionsPerWeek: 0,
     strengthSessionsPerWeek: 0,
   };
   for (const session of persistedSessions(planId)) {
+    trainingDays.add(String(session.dayOfWeek).toLowerCase());
     const modality = sessionModality(session);
     if (modality === 'running') counts.runSessionsPerWeek += 1;
     if (modality === 'cycling') counts.bikeSessionsPerWeek += 1;
     if (modality === 'swimming') counts.swimSessionsPerWeek += 1;
     if (modality === 'strength') counts.strengthSessionsPerWeek += 1;
   }
+  counts.sessionsPerWeek = trainingDays.size;
   return counts;
 }
 
@@ -492,6 +497,7 @@ function expectWeeklyTargetsToMatchScheduled(
   scheduled: ReturnType<typeof scheduledWeeklyTargetsForPlan>,
 ): void {
   for (const field of [
+    'sessionsPerWeek',
     'runSessionsPerWeek',
     'bikeSessionsPerWeek',
     'swimSessionsPerWeek',

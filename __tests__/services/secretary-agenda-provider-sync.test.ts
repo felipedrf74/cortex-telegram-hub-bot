@@ -75,6 +75,7 @@ class MockSecretaryProvider implements SecretaryAgendaProviderAdapter {
   createInputs: SecretaryProviderEventInput[] = [];
   updateInputs: Array<{ eventId: string; input: SecretaryProviderEventInput }> = [];
   deletedEventIds: string[] = [];
+  findAgendaItemIds: string[] = [];
   createFailuresRemaining = 0;
   createAttempts = 0;
   createFailureFactory: (() => unknown) | null = null;
@@ -110,6 +111,7 @@ class MockSecretaryProvider implements SecretaryAgendaProviderAdapter {
   }
 
   async findEventsByAgendaItemId(agendaItemId: string): Promise<SecretaryProviderEvent[]> {
+    this.findAgendaItemIds.push(agendaItemId);
     return [...this.events.values()].filter((event) => event.agendaItemId === agendaItemId);
   }
 
@@ -362,9 +364,11 @@ describe('secretary-agenda-provider-sync', () => {
     expect(provider.deletedEventIds).toContain(created.providerEventId);
     expect(afterCleanup?.lifecycleState).toBe('canceled');
     expect(afterCleanup?.providerSyncState).toBe('deleted');
+    expect(afterCleanup?.providerEventId).toBeNull();
+    expect(afterCleanup?.providerSource).toBeNull();
   });
 
-  it('bulk sync includes canceled provider-backed cleanup rows even when inactive history is excluded', async () => {
+  it('terminalizes cleaned-up rows and excludes them from later bulk syncs', async () => {
     const provider = new MockSecretaryProvider();
     const decision = submitSecretarySchedulingIntent(intent({
       intentId: 'bulk-canceled-cleanup',
@@ -399,6 +403,19 @@ describe('secretary-agenda-provider-sync', () => {
     expect(provider.deletedEventIds).toContain(created.providerEventId);
     expect(stored?.lifecycleState).toBe('canceled');
     expect(stored?.providerSyncState).toBe('deleted');
+    expect(stored?.providerEventId).toBeNull();
+    expect(stored?.providerSource).toBeNull();
+
+    provider.findAgendaItemIds = [];
+    const repeated = await syncSecretaryAgendaItemsToProvider({
+      ownerUserId: OWNER_USER_ID,
+      tenantId: TENANT_ID,
+      includeInactive: true,
+    }, provider);
+
+    expect(repeated).toHaveLength(0);
+    expect(provider.findAgendaItemIds).toEqual([]);
+    expect(provider.createAttempts).toBe(1);
   });
 
   it('treats terminal deleted cleanup rows without provider IDs as no-op syncs', async () => {
@@ -482,6 +499,62 @@ describe('secretary-agenda-provider-sync', () => {
     expect(provider.deletedEventIds).toContain(created.providerEventId);
     expect(stored?.lifecycleState).toBe('canceled');
     expect(stored?.providerSyncState).toBe('deleted');
+    expect(stored?.providerEventId).toBeNull();
+    expect(stored?.providerSource).toBeNull();
+  });
+
+  it('keeps delete_failed rows provider-backed so cleanup retries the delete', async () => {
+    class FailingDeleteProvider extends MockSecretaryProvider {
+      async deleteEvent(eventId: string): Promise<void> {
+        this.deletedEventIds.push(eventId);
+        throw new Error('simulated transient provider delete failure');
+      }
+    }
+
+    const provider = new FailingDeleteProvider();
+    const decision = submitSecretarySchedulingIntent(intent({
+      intentId: 'delete-failed-retry',
+      sourceEntityId: 'session-delete-failed-retry',
+    }));
+    const created = await syncOne(decision.agendaItem.agendaItemId, provider);
+    cancelSecretaryAgendaItem({
+      agendaItemId: decision.agendaItem.agendaItemId,
+      ownerUserId: OWNER_USER_ID,
+      tenantId: TENANT_ID,
+      reason: 'training_plan_canceled',
+      now: '2026-05-01T10:00:00.000Z',
+    });
+
+    const failed = await syncOne(decision.agendaItem.agendaItemId, provider);
+    const afterFailure = getSecretaryAgendaItemById({
+      agendaItemId: decision.agendaItem.agendaItemId,
+      ownerUserId: OWNER_USER_ID,
+      tenantId: TENANT_ID,
+    });
+    const retried = await syncSecretaryAgendaItemsToProvider({
+      ownerUserId: OWNER_USER_ID,
+      tenantId: TENANT_ID,
+      includeInactive: false,
+    }, provider, { retryBudget: 0 });
+
+    expect(failed).toMatchObject({
+      action: 'failed',
+      providerEventId: created.providerEventId,
+      providerSyncState: 'delete_failed',
+      reasonCode: 'provider_delete_failed',
+    });
+    expect(afterFailure?.providerEventId).toBe(created.providerEventId);
+    expect(afterFailure?.providerSource).toBe('google');
+    expect(afterFailure?.providerSyncState).toBe('delete_failed');
+    expect(retried).toHaveLength(1);
+    expect(retried[0]).toMatchObject({
+      action: 'failed',
+      providerEventId: created.providerEventId,
+      providerSyncState: 'delete_failed',
+    });
+    expect(provider.deletedEventIds).toEqual([created.providerEventId, created.providerEventId]);
+    expect(provider.createAttempts).toBe(1);
+    expect(provider.createInputs).toHaveLength(1);
   });
 
   it('replaces a regenerated agenda item by deleting the superseded provider event and creating the new version', async () => {
@@ -817,7 +890,8 @@ describe('secretary-agenda-provider-sync', () => {
     expect(provider.deletedEventIds).toContain(first.providerEventId);
     expect(stored?.lifecycleState).toBe('canceled');
     expect(stored?.providerSyncState).toBe('deleted');
-    expect(stored?.providerEventId).toBe(first.providerEventId);
+    expect(stored?.providerEventId).toBeNull();
+    expect(stored?.providerSource).toBeNull();
   });
 
   it('repairs stale duplicate provider events for the same agenda item', async () => {

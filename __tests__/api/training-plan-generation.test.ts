@@ -199,10 +199,12 @@ function makePlanFromKernelInput(input: any, title = 'Coach Plan') {
   const requested = (value: unknown): number => (
     typeof value === 'number' && value > 0 ? Math.round(value) : 0
   );
+  const sessionsPerWeek = requested(input?.sessionsPerWeek) || 5;
+  const activeDays = days.slice(0, Math.max(1, Math.min(days.length, sessionsPerWeek)));
   const addSessions = (count: number, sessionType: string, sessionTitle: string) => {
     for (let index = 0; index < count; index += 1) {
       sessions.push({
-        dayOfWeek: days[dayIndex % days.length],
+        dayOfWeek: activeDays[dayIndex % activeDays.length],
         sessionType,
         title: `${sessionTitle} ${index + 1}`,
         durationMinutes: sessionType === 'swim' ? 35 : 45,
@@ -213,7 +215,6 @@ function makePlanFromKernelInput(input: any, title = 'Coach Plan') {
     }
   };
 
-  const sessionsPerWeek = requested(input?.sessionsPerWeek) || 5;
   const runCount = requested(input?.runSessionsPerWeek)
     || (sport === 'running' ? sessionsPerWeek : 0);
   const bikeCount = requested(input?.bikeSessionsPerWeek)
@@ -649,7 +650,7 @@ describe('generateTrainingPlanForUser', () => {
     });
   });
 
-  it('reports strength targets from the final scheduled plan when requested strength exceeds the day budget', async () => {
+  it('reports strength targets from the final repaired schedule when requested strength exceeds the day budget', async () => {
     mockBuildCoachKernelTrainingPlan.mockReturnValue({
       ...makePlan('Strength Plan'),
       sport: 'gym',
@@ -672,12 +673,12 @@ describe('generateTrainingPlanForUser', () => {
     }));
     const persistInput = mockPersistGeneratedTrainingPlan.mock.calls[0][0];
     expect(JSON.parse(persistInput.preferencesJson)).toMatchObject({
-      sessionsPerWeek: 3,
+      sessionsPerWeek: 5,
       strengthSessionsPerWeek: 5,
       trainingPriority: 'strength',
     });
     expect((result as any).data.weeklyTargets).toMatchObject({
-      sessionsPerWeek: 3,
+      sessionsPerWeek: 5,
       strengthSessionsPerWeek: 5,
     });
   });
@@ -705,6 +706,52 @@ describe('generateTrainingPlanForUser', () => {
       sessionsPerWeek: 5,
       runSessionsPerWeek: 2,
       strengthSessionsPerWeek: 5,
+    });
+  });
+
+  it('reports sessionsPerWeek as distinct scheduled training days, not modality totals', async () => {
+    mockBuildCoachKernelTrainingPlan.mockReturnValue({
+      planName: 'Two-a-day Headline Days Plan',
+      sport: 'running',
+      weeks: [
+        {
+          weekNumber: 1,
+          focus: 'base',
+          intensityPct: 70,
+          sessions: [
+            { dayOfWeek: 'Monday', sessionType: 'run', title: 'Run 1', durationMinutes: 45 },
+            { dayOfWeek: 'Monday', sessionType: 'gym', title: 'Strength 1', durationMinutes: 45, exercises: [{ name: 'Squat' }] },
+            { dayOfWeek: 'Tuesday', sessionType: 'run', title: 'Run 2', durationMinutes: 45 },
+            { dayOfWeek: 'Wednesday', sessionType: 'run', title: 'Run 3', durationMinutes: 45 },
+            { dayOfWeek: 'Thursday', sessionType: 'gym', title: 'Strength 2', durationMinutes: 45, exercises: [{ name: 'Hinge' }] },
+            { dayOfWeek: 'Friday', sessionType: 'run', title: 'Run 4', durationMinutes: 60 },
+          ],
+        },
+      ],
+    });
+
+    const result = await generateTrainingPlanForUser({
+      userId: 12,
+      tenantId: 12,
+      objective: 'Running with two-a-day support',
+      sessionsPerWeek: 5,
+      runSessionsPerWeek: 4,
+      strengthSessionsPerWeek: 2,
+      trainingPriority: 'running',
+      twoADayPreference: 'preferred',
+    });
+
+    expect(result.status).toBe('created');
+    const persistInput = mockPersistGeneratedTrainingPlan.mock.calls[0][0];
+    expect(JSON.parse(persistInput.preferencesJson)).toMatchObject({
+      sessionsPerWeek: 5,
+      runSessionsPerWeek: 4,
+      strengthSessionsPerWeek: 2,
+    });
+    expect((result as any).data.weeklyTargets).toMatchObject({
+      sessionsPerWeek: 5,
+      runSessionsPerWeek: 4,
+      strengthSessionsPerWeek: 2,
     });
   });
 
@@ -802,12 +849,12 @@ describe('generateTrainingPlanForUser', () => {
     const persistInput = mockPersistGeneratedTrainingPlan.mock.calls[0][0];
     expect(persistInput.planData.weeks[0].sessions.every((session: any) => session.scheduleState === 'unscheduled')).toBe(true);
     expect(JSON.parse(persistInput.preferencesJson)).toMatchObject({
-      sessionsPerWeek: 5,
+      sessionsPerWeek: 4,
       runSessionsPerWeek: 3,
       strengthSessionsPerWeek: 1,
     });
     expect((result as any).data.weeklyTargets).toMatchObject({
-      sessionsPerWeek: 5,
+      sessionsPerWeek: 4,
       runSessionsPerWeek: 3,
       strengthSessionsPerWeek: 1,
     });
@@ -1526,7 +1573,7 @@ describe('generateTrainingPlanForUser', () => {
       strengthSessionsPerWeek: 1,
     }));
     expect((result as any).data.weeklyTargets).toMatchObject({
-      sessionsPerWeek: 5,
+      sessionsPerWeek: 6,
       runSessionsPerWeek: 0,
       bikeSessionsPerWeek: 7,
       swimSessionsPerWeek: 2,
@@ -1534,7 +1581,7 @@ describe('generateTrainingPlanForUser', () => {
     });
     const persistInput = mockPersistGeneratedTrainingPlan.mock.calls[0][0];
     expect(JSON.parse(persistInput.preferencesJson)).toMatchObject({
-      sessionsPerWeek: 5,
+      sessionsPerWeek: 6,
       runSessionsPerWeek: 0,
       bikeSessionsPerWeek: 7,
       swimSessionsPerWeek: 2,

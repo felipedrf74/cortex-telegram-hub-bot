@@ -1190,11 +1190,13 @@ function buildScheduledWeeklyTargetsFromPlan(
   if (weeks.length === 0) return buildWeeklyTargets(fallback);
 
   const maxCounts = {
+    trainingDays: 0,
     running: 0,
     cycling: 0,
     swimming: 0,
     strength: 0,
   };
+  let sawAnyPlanSession = false;
 
   for (const week of weeks) {
     const weekCounts = {
@@ -1204,12 +1206,16 @@ function buildScheduledWeeklyTargetsFromPlan(
       strength: 0,
     };
     const sessions = Array.isArray(week?.sessions) ? week.sessions : [];
-    for (const session of sessions) {
+    sawAnyPlanSession = sawAnyPlanSession || sessions.length > 0;
+    const trainingDayKeys = new Set<string>();
+    for (const [index, session] of sessions.entries()) {
       if (!isSchedulableTrainingPlanSession(session)) continue;
+      trainingDayKeys.add(scheduledTrainingDayKey(session, index));
       const modality = scheduledWeeklyTargetModality(session);
       if (!modality) continue;
       weekCounts[modality] += 1;
     }
+    maxCounts.trainingDays = Math.max(maxCounts.trainingDays, trainingDayKeys.size);
     maxCounts.running = Math.max(maxCounts.running, weekCounts.running);
     maxCounts.cycling = Math.max(maxCounts.cycling, weekCounts.cycling);
     maxCounts.swimming = Math.max(maxCounts.swimming, weekCounts.swimming);
@@ -1217,12 +1223,25 @@ function buildScheduledWeeklyTargetsFromPlan(
   }
 
   return {
-    sessionsPerWeek: fallback.sessionsPerWeek,
+    sessionsPerWeek: sawAnyPlanSession ? maxCounts.trainingDays : fallback.sessionsPerWeek,
     runSessionsPerWeek: nullableScheduledTarget(maxCounts.running, fallback.runSessionsPerWeek),
     bikeSessionsPerWeek: nullableScheduledTarget(maxCounts.cycling, fallback.bikeSessionsPerWeek),
     swimSessionsPerWeek: nullableScheduledTarget(maxCounts.swimming, fallback.swimSessionsPerWeek),
     strengthSessionsPerWeek: maxCounts.strength,
   };
+}
+
+function scheduledTrainingDayKey(session: any, fallbackIndex: number): string {
+  const date = String(
+    session?.date
+      || session?.scheduledDate
+      || session?.sessionDate
+      || session?.startDate
+      || '',
+  ).trim();
+  if (/^\d{4}-\d{2}-\d{2}/.test(date)) return date.slice(0, 10);
+  const day = String(session?.dayOfWeek || session?.day || '').trim().toLowerCase();
+  return day || `session-${fallbackIndex}`;
 }
 
 function nullableScheduledTarget(count: number, requested: number | null): number | null {
