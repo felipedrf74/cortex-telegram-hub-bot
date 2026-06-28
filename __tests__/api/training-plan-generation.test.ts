@@ -755,6 +755,68 @@ describe('generateTrainingPlanForUser', () => {
     });
   });
 
+  it('reports zero weekly targets when every generated session is unschedulable', async () => {
+    mockBuildCoachKernelTrainingPlan.mockReturnValue({
+      planName: 'All Unschedulable Plan',
+      sport: 'hybrid',
+      weeks: [
+        {
+          weekNumber: 1,
+          focus: 'blocked',
+          intensityPct: 40,
+          sessions: [
+            { dayOfWeek: 'Monday', sessionType: 'run', title: 'Dropped Run', durationMinutes: 45, scheduleState: 'unscheduled' },
+            { dayOfWeek: 'Tuesday', sessionType: 'ride', title: 'Deferred Ride', durationMinutes: 60, scheduleState: 'deferred' },
+            { dayOfWeek: 'Wednesday', sessionType: 'swim', title: 'Canceled Swim', durationMinutes: 35, scheduleState: 'canceled' },
+            { dayOfWeek: 'Thursday', sessionType: 'rest', title: 'Rest Day', durationMinutes: 0 },
+          ],
+        },
+      ],
+    });
+    mockFinalizeGeneratedTrainingPlanForPersistence.mockImplementation((input: any) => ({
+      ...input,
+      planData: {
+        ...input.planData,
+        weeks: input.planData.weeks.map((week: any) => ({
+          ...week,
+          sessions: week.sessions.map((session: any) => ({
+            ...session,
+            scheduleState: 'unscheduled',
+          })),
+        })),
+      },
+    }));
+
+    const result = await generateTrainingPlanForUser({
+      userId: 12,
+      tenantId: 12,
+      objective: 'Blocked hybrid week',
+      sessionsPerWeek: 4,
+      runSessionsPerWeek: 2,
+      bikeSessionsPerWeek: 1,
+      swimSessionsPerWeek: 1,
+      strengthSessionsPerWeek: 1,
+      trainingPriority: 'triathlon',
+    });
+
+    expect(result.status).toBe('created');
+    const persistInput = mockPersistGeneratedTrainingPlan.mock.calls[0][0];
+    expect(JSON.parse(persistInput.preferencesJson)).toMatchObject({
+      sessionsPerWeek: 0,
+      runSessionsPerWeek: 0,
+      bikeSessionsPerWeek: 0,
+      swimSessionsPerWeek: 0,
+      strengthSessionsPerWeek: 0,
+    });
+    expect((result as any).data.weeklyTargets).toMatchObject({
+      sessionsPerWeek: 0,
+      runSessionsPerWeek: 0,
+      bikeSessionsPerWeek: 0,
+      swimSessionsPerWeek: 0,
+      strengthSessionsPerWeek: 0,
+    });
+  });
+
   it('derives triathlon zero bike and swim floors from the final scheduled plan', async () => {
     const result = await generateTrainingPlanForUser({
       userId: 12,

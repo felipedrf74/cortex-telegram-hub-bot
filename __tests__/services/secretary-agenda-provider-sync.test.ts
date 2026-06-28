@@ -455,6 +455,50 @@ describe('secretary-agenda-provider-sync', () => {
     expect(provider.deletedEventIds).toEqual([]);
   });
 
+  it('converges legacy deleted cleanup rows that still have provider IDs without deleting again', async () => {
+    const provider = new MockSecretaryProvider();
+    const legacyProviderEventId = 'google_evt_legacy_deleted';
+    const decision = submitSecretarySchedulingIntent(intent({
+      intentId: 'legacy-half-deleted-cleanup',
+      sourceEntityId: 'session-legacy-half-deleted',
+    }));
+    testDb.prepare(`
+      UPDATE secretary_agenda_items
+         SET lifecycle_state = 'canceled',
+             provider_sync_state = 'deleted',
+             provider_event_id = ?,
+             provider_source = 'google',
+             cancellation_reason = 'training_plan_canceled',
+             updated_at = '2026-05-01T10:00:00.000Z'
+       WHERE agenda_item_id = ?
+    `).run(legacyProviderEventId, decision.agendaItem.agendaItemId);
+
+    const cleanup = await syncOne(decision.agendaItem.agendaItemId, provider);
+    const stored = getSecretaryAgendaItemById({
+      agendaItemId: decision.agendaItem.agendaItemId,
+      ownerUserId: OWNER_USER_ID,
+      tenantId: TENANT_ID,
+    });
+    const repeated = await syncSecretaryAgendaItemsToProvider({
+      ownerUserId: OWNER_USER_ID,
+      tenantId: TENANT_ID,
+      includeInactive: true,
+    }, provider);
+
+    expect(cleanup).toMatchObject({
+      action: 'skipped',
+      providerEventId: null,
+      providerSyncState: 'deleted',
+      reasonCode: 'no_provider_event_to_delete',
+    });
+    expect(stored?.lifecycleState).toBe('canceled');
+    expect(stored?.providerSyncState).toBe('deleted');
+    expect(stored?.providerEventId).toBeNull();
+    expect(stored?.providerSource).toBeNull();
+    expect(provider.deletedEventIds).toEqual([]);
+    expect(repeated).toHaveLength(0);
+  });
+
   it('treats provider 410 Gone during cleanup as already deleted', async () => {
     class GoneOnDeleteProvider extends MockSecretaryProvider {
       async deleteEvent(eventId: string): Promise<void> {
@@ -503,6 +547,58 @@ describe('secretary-agenda-provider-sync', () => {
     expect(stored?.providerSource).toBeNull();
   });
 
+  it('treats provider not-found during null-input cleanup as already deleted', async () => {
+    class GoneOnNullInputDeleteProvider extends MockSecretaryProvider {
+      deleteInputs: Array<SecretaryProviderEventInput | null> = [];
+
+      async deleteEvent(eventId: string, input: SecretaryProviderEventInput | null): Promise<void> {
+        this.deletedEventIds.push(eventId);
+        this.deleteInputs.push(input);
+        throw { code: 'event_not_found', message: 'calendar event not found' };
+      }
+    }
+
+    const provider = new GoneOnNullInputDeleteProvider();
+    const legacyProviderEventId = 'google_evt_unscheduled_gone';
+    const decision = submitSecretarySchedulingIntent(intent({
+      intentId: 'unscheduled-null-input-gone',
+      sourceEntityId: 'session-unscheduled-null-input',
+    }));
+    testDb.prepare(`
+      UPDATE secretary_agenda_items
+         SET lifecycle_state = 'unscheduled',
+             provider_sync_state = 'synced',
+             provider_event_id = ?,
+             provider_source = 'google',
+             start_at = NULL,
+             end_at = NULL,
+             duration_minutes = NULL,
+             cancellation_reason = 'training_session_unscheduled',
+             updated_at = '2026-05-01T10:00:00.000Z'
+       WHERE agenda_item_id = ?
+    `).run(legacyProviderEventId, decision.agendaItem.agendaItemId);
+
+    const cleanup = await syncOne(decision.agendaItem.agendaItemId, provider);
+    const stored = getSecretaryAgendaItemById({
+      agendaItemId: decision.agendaItem.agendaItemId,
+      ownerUserId: OWNER_USER_ID,
+      tenantId: TENANT_ID,
+    });
+
+    expect(cleanup).toMatchObject({
+      action: 'deleted',
+      providerEventId: null,
+      providerSyncState: 'deleted',
+      reasonCode: 'provider_event_deleted',
+    });
+    expect(provider.deletedEventIds).toEqual([legacyProviderEventId]);
+    expect(provider.deleteInputs).toEqual([null]);
+    expect(stored?.lifecycleState).toBe('unscheduled');
+    expect(stored?.providerSyncState).toBe('deleted');
+    expect(stored?.providerEventId).toBeNull();
+    expect(stored?.providerSource).toBeNull();
+  });
+
   it('keeps delete_failed rows provider-backed so cleanup retries the delete', async () => {
     class FailingDeleteProvider extends MockSecretaryProvider {
       async deleteEvent(eventId: string): Promise<void> {
@@ -545,6 +641,7 @@ describe('secretary-agenda-provider-sync', () => {
     });
     expect(afterFailure?.providerEventId).toBe(created.providerEventId);
     expect(afterFailure?.providerSource).toBe('google');
+    expect(afterFailure?.lifecycleState).toBe('canceled');
     expect(afterFailure?.providerSyncState).toBe('delete_failed');
     expect(retried).toHaveLength(1);
     expect(retried[0]).toMatchObject({

@@ -240,6 +240,20 @@ describe('training plan create cycle integration', () => {
         expected: { strengthSessionsPerWeek: 6 },
       },
       {
+        id: 'genuine-two-a-day-distinct-days',
+        body: {
+          ...bugReproducerBody,
+          durationWeeks: 1,
+          sessionsPerWeek: 5,
+          runSessionsPerWeek: 5,
+          strengthSessionsPerWeek: 5,
+          twoADayPreference: 'preferred',
+          startPolicy: 'today',
+        },
+        expected: { sessionsPerWeek: 5, runSessionsPerWeek: 5, strengthSessionsPerWeek: 5 },
+        expectedDistinctTrainingDays: 5,
+      },
+      {
         id: 'explicit-run-strength-budget',
         body: {
           objective: 'Running plan with gym support',
@@ -309,6 +323,13 @@ describe('training plan create cycle integration', () => {
       expect(preferences).toMatchObject(planCase.expected);
       expectWeeklyTargetsToMatchScheduled(created.body.data.weeklyTargets, scheduledTargets);
       expectWeeklyTargetsToMatchScheduled(preferences, scheduledTargets);
+      if ('expectedDistinctTrainingDays' in planCase) {
+        const sessions = persistedSessions(planId);
+        expect(created.body.data.weeklyTargets.sessionsPerWeek).toBe(planCase.expectedDistinctTrainingDays);
+        expect(preferences.sessionsPerWeek).toBe(planCase.expectedDistinctTrainingDays);
+        expect(scheduledTargets.sessionsPerWeek).toBe(planCase.expectedDistinctTrainingDays);
+        expect(sessions.length).toBeGreaterThan(planCase.expectedDistinctTrainingDays);
+      }
 
       harness.close();
       harness = null;
