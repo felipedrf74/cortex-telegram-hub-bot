@@ -883,9 +883,9 @@ export function resolveWeeklyTargets(
       const defaultRunning = clamp(Math.round(enduranceTotal * 0.4), 3, 4);
       const defaultCycling = clamp(Math.round(enduranceTotal * 0.35), 2, 3);
       const defaultSwimming = clamp(Math.max(2, enduranceTotal - defaultRunning - defaultCycling), 2, 3);
-      const running = requestedRunning ?? defaultRunning;
-      const cycling = requestedCycling ?? defaultCycling;
-      const swimming = requestedSwimming ?? defaultSwimming;
+      const running = requestedRunning != null ? clamp(Math.max(1, requestedRunning), 1, 7) : defaultRunning;
+      const cycling = requestedCycling != null ? clamp(Math.max(1, requestedCycling), 1, 7) : defaultCycling;
+      const swimming = requestedSwimming != null ? clamp(Math.max(1, requestedSwimming), 1, 7) : defaultSwimming;
       return { running, cycling, swimming, strength: strengthTarget };
     }
     case 'marathon':
@@ -905,9 +905,9 @@ export function resolveWeeklyTargets(
       return { running, strength: strength };
     }
     case 'cycling':
-      return { cycling: requestedCycling ?? total, strength: strength };
+      return { cycling: requestedCycling != null ? clamp(Math.max(1, requestedCycling), 1, 7) : total, strength: strength };
     case 'swimming':
-      return { swimming: requestedSwimming ?? total, strength: strength };
+      return { swimming: requestedSwimming != null ? clamp(Math.max(1, requestedSwimming), 1, 7) : total, strength: strength };
     case 'strength': {
       const strengthTarget = Math.min(strength || Math.min(total, STRENGTH_CAP), total, STRENGTH_CAP);
       const aerobicSupport = Math.max(0, total - strengthTarget);

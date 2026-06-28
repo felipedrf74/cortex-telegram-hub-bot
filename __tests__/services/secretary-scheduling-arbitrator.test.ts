@@ -41,6 +41,7 @@ import {
   arbitrateSecretarySchedulingIntents,
   getSecretaryAgendaItemById,
   listSecretaryAgendaItems,
+  markSecretaryAgendaProviderCleanupRequired,
   markSecretaryAgendaProviderSyncSatisfied,
   submitSecretarySchedulingIntent,
   type SecretarySchedulingIntent,
@@ -156,6 +157,120 @@ describe('secretary-scheduling-arbitrator', () => {
       providerSyncState: 'synced',
       providerEventId: 'outlook-training-event-1',
       providerSource: 'outlook',
+    });
+  });
+
+  it('marks Training permanent provider failures as cleanup rows and clears stale provider ids', () => {
+    const scheduled = submitSecretarySchedulingIntent(intent({ intentId: 'cleanup-scheduled' }), {
+      now: '2026-05-01T08:00:00.000Z',
+    });
+    const completed = submitSecretarySchedulingIntent(intent({ intentId: 'cleanup-completed' }), {
+      now: '2026-05-01T08:00:00.000Z',
+    });
+
+    for (const [decision, eventId] of [
+      [scheduled, 'event-scheduled'],
+      [completed, 'event-completed'],
+    ] as const) {
+      markSecretaryAgendaProviderSyncSatisfied({
+        agendaItemId: decision.agendaItem.agendaItemId,
+        ownerUserId: OWNER_USER_ID,
+        tenantId: TENANT_ID,
+        providerEventId: eventId,
+        providerSource: 'google',
+        now: '2026-05-01T08:05:00.000Z',
+      });
+    }
+    testDb.prepare(`
+      UPDATE secretary_agenda_items
+         SET lifecycle_state = 'completed'
+       WHERE agenda_item_id = ?
+    `).run(completed.agendaItem.agendaItemId);
+
+    markSecretaryAgendaProviderCleanupRequired({
+      agendaItemId: scheduled.agendaItem.agendaItemId,
+      ownerUserId: OWNER_USER_ID,
+      tenantId: TENANT_ID,
+      providerSyncState: 'deleted',
+      lifecycleState: 'unscheduled',
+      reason: 'training_provider_ownership_record_failed',
+      clearProviderMapping: true,
+      now: '2026-05-01T08:10:00.000Z',
+    });
+    markSecretaryAgendaProviderCleanupRequired({
+      agendaItemId: completed.agendaItem.agendaItemId,
+      ownerUserId: OWNER_USER_ID,
+      tenantId: TENANT_ID,
+      providerSyncState: 'deleted',
+      lifecycleState: 'unscheduled',
+      reason: 'training_provider_ownership_record_failed',
+      clearProviderMapping: true,
+      now: '2026-05-01T08:10:00.000Z',
+    });
+
+    expect(getSecretaryAgendaItemById({
+      agendaItemId: scheduled.agendaItem.agendaItemId,
+      ownerUserId: OWNER_USER_ID,
+      tenantId: TENANT_ID,
+    })).toMatchObject({
+      lifecycleState: 'unscheduled',
+      providerSyncState: 'deleted',
+      providerEventId: null,
+      providerSource: null,
+      cancellationReason: 'training_provider_ownership_record_failed',
+    });
+    expect(getSecretaryAgendaItemById({
+      agendaItemId: completed.agendaItem.agendaItemId,
+      ownerUserId: OWNER_USER_ID,
+      tenantId: TENANT_ID,
+    })).toMatchObject({
+      lifecycleState: 'completed',
+      providerSyncState: 'synced',
+      providerEventId: 'event-completed',
+      providerSource: 'google',
+    });
+  });
+
+  it('retains provider mapping when provider cleanup delete fails for retry visibility', () => {
+    const decision = submitSecretarySchedulingIntent(intent({
+      intentId: 'cleanup-delete-failed',
+      sourceEntityId: 'session-cleanup-delete-failed',
+    }), {
+      now: '2026-05-01T08:00:00.000Z',
+    });
+
+    markSecretaryAgendaProviderSyncSatisfied({
+      agendaItemId: decision.agendaItem.agendaItemId,
+      ownerUserId: OWNER_USER_ID,
+      tenantId: TENANT_ID,
+      providerEventId: 'event-delete-retry',
+      providerSource: 'google',
+      now: '2026-05-01T08:05:00.000Z',
+    });
+
+    markSecretaryAgendaProviderCleanupRequired({
+      agendaItemId: decision.agendaItem.agendaItemId,
+      ownerUserId: OWNER_USER_ID,
+      tenantId: TENANT_ID,
+      providerEventId: 'event-delete-retry',
+      providerSource: 'google',
+      providerSyncState: 'delete_failed',
+      lifecycleState: 'unscheduled',
+      reason: 'training_provider_ownership_record_failed',
+      clearProviderMapping: false,
+      now: '2026-05-01T08:10:00.000Z',
+    });
+
+    expect(getSecretaryAgendaItemById({
+      agendaItemId: decision.agendaItem.agendaItemId,
+      ownerUserId: OWNER_USER_ID,
+      tenantId: TENANT_ID,
+    })).toMatchObject({
+      lifecycleState: 'unscheduled',
+      providerSyncState: 'delete_failed',
+      providerEventId: 'event-delete-retry',
+      providerSource: 'google',
+      cancellationReason: 'training_provider_ownership_record_failed',
     });
   });
 
@@ -466,6 +581,90 @@ describe('secretary-scheduling-arbitrator', () => {
     expect(decision.feedback.shouldRefreshSource).toBe(true);
   });
 
+  it('reuses a deferred same-shape request instead of creating a new agenda version', () => {
+    const request = intent({
+      intentId: 'deferred-idempotent',
+      sourceEntityId: 'session-deferred-idempotent',
+      requestedDurationMinutes: 120,
+      preferredWindows: [
+        timeWindow('2026-05-04T09:00:00.000Z', '2026-05-04T10:00:00.000Z', 'too short now'),
+      ],
+      deadline: '2026-05-07T10:00:00.000Z',
+      priority: 'normal',
+      flexibility: 'flexible',
+    });
+
+    const first = submitSecretarySchedulingIntent(request, {
+      now: '2026-05-01T08:00:00.000Z',
+    });
+    const second = submitSecretarySchedulingIntent(request, {
+      now: '2026-05-01T08:05:00.000Z',
+    });
+    const all = listSecretaryAgendaItems({
+      ownerUserId: OWNER_USER_ID,
+      tenantId: TENANT_ID,
+      includeInactive: true,
+    }).filter((item) => item.sourceIntentId === 'deferred-idempotent');
+
+    expect(first.status).toBe('deferred');
+    expect(second.status).toBe('deferred');
+    expect(second.agendaItem.agendaItemId).toBe(first.agendaItem.agendaItemId);
+    expect(second.agendaItem.version).toBe(1);
+    expect(second.agendaItem.lifecycleState).toBe('deferred');
+    expect(second.selectedSlot).toBeNull();
+    expect(all).toHaveLength(1);
+  });
+
+  it('reuses a completed same-slot request without deleting and recreating the provider row', () => {
+    const request = intent({
+      intentId: 'completed-idempotent',
+      sourceEntityId: 'session-completed-idempotent',
+      preferredWindows: [
+        timeWindow('2026-05-04T09:00:00.000Z', '2026-05-04T11:00:00.000Z', 'same-slot'),
+      ],
+    });
+    const first = submitSecretarySchedulingIntent(request, {
+      now: '2026-05-01T08:00:00.000Z',
+    });
+    markSecretaryAgendaProviderSyncSatisfied({
+      agendaItemId: first.agendaItem.agendaItemId,
+      ownerUserId: OWNER_USER_ID,
+      tenantId: TENANT_ID,
+      providerEventId: 'outlook-completed-event',
+      providerSource: 'outlook',
+      now: '2026-05-01T08:05:00.000Z',
+    });
+    testDb.prepare(`
+      UPDATE secretary_agenda_items
+         SET lifecycle_state = 'completed',
+             completed_at = ?
+       WHERE agenda_item_id = ?
+    `).run('2026-05-04T10:05:00.000Z', first.agendaItem.agendaItemId);
+
+    const second = submitSecretarySchedulingIntent(request, {
+      now: '2026-05-01T08:10:00.000Z',
+    });
+    const all = listSecretaryAgendaItems({
+      ownerUserId: OWNER_USER_ID,
+      tenantId: TENANT_ID,
+      includeInactive: true,
+    }).filter((item) => item.sourceIntentId === 'completed-idempotent');
+
+    expect(second.agendaItem.agendaItemId).toBe(first.agendaItem.agendaItemId);
+    expect(second.agendaItem.version).toBe(1);
+    expect(second.selectedSlot).toEqual({
+      start: '2026-05-04T09:00:00.000Z',
+      end: '2026-05-04T10:00:00.000Z',
+    });
+    expect(second.agendaItem).toMatchObject({
+      lifecycleState: 'completed',
+      providerSyncState: 'synced',
+      providerEventId: 'outlook-completed-event',
+      providerSource: 'outlook',
+    });
+    expect(all).toHaveLength(1);
+  });
+
   it('reflows a prior placement and supersedes the old agenda row when capacity changes', () => {
     const first = submitSecretarySchedulingIntent(intent({
       intentId: 'training-reflow',
@@ -503,5 +702,58 @@ describe('secretary-scheduling-arbitrator', () => {
     expect(second.feedback.shouldRefreshSource).toBe(true);
     expect(all.find((item) => item.agendaItemId === first.agendaItem.agendaItemId)?.lifecycleState).toBe('superseded');
     expect(all.find((item) => item.agendaItemId === second.agendaItem.agendaItemId)?.lifecycleState).toBe('reflowed');
+  });
+
+  it('creates a fresh active row when a same-slot reschedule follows a terminal cleanup row', () => {
+    const first = submitSecretarySchedulingIntent(intent({
+      intentId: 'cleanup-reschedule-same-slot',
+      sourceEntityId: 'session-cleanup-reschedule',
+      preferredWindows: [
+        timeWindow('2026-05-04T09:00:00.000Z', '2026-05-04T11:00:00.000Z', 'same-slot'),
+      ],
+    }), {
+      now: '2026-05-01T08:00:00.000Z',
+    });
+
+    markSecretaryAgendaProviderCleanupRequired({
+      agendaItemId: first.agendaItem.agendaItemId,
+      ownerUserId: OWNER_USER_ID,
+      tenantId: TENANT_ID,
+      providerSyncState: 'deleted',
+      lifecycleState: 'unscheduled',
+      reason: 'training_provider_ownership_record_failed',
+      clearProviderMapping: true,
+      now: '2026-05-01T08:05:00.000Z',
+    });
+
+    const second = submitSecretarySchedulingIntent(intent({
+      intentId: 'cleanup-reschedule-same-slot',
+      sourceEntityId: 'session-cleanup-reschedule',
+      preferredWindows: [
+        timeWindow('2026-05-04T09:00:00.000Z', '2026-05-04T11:00:00.000Z', 'same-slot'),
+      ],
+    }), {
+      now: '2026-05-01T08:10:00.000Z',
+    });
+    const all = listSecretaryAgendaItems({
+      ownerUserId: OWNER_USER_ID,
+      tenantId: TENANT_ID,
+      includeInactive: true,
+    }).filter((item) => item.sourceIntentId === 'cleanup-reschedule-same-slot');
+
+    expect(first.status).toBe('scheduled');
+    expect(second.status).toBe('scheduled');
+    expect(second.agendaItem.agendaItemId).not.toBe(first.agendaItem.agendaItemId);
+    expect(all).toHaveLength(2);
+    expect(all.find((item) => item.agendaItemId === first.agendaItem.agendaItemId)).toMatchObject({
+      lifecycleState: 'superseded',
+      providerSyncState: 'deleted',
+    });
+    expect(all.find((item) => item.agendaItemId === second.agendaItem.agendaItemId)).toMatchObject({
+      lifecycleState: 'scheduled',
+      providerSyncState: 'not_synced',
+      startAt: '2026-05-04T09:00:00.000Z',
+      endAt: '2026-05-04T10:00:00.000Z',
+    });
   });
 });

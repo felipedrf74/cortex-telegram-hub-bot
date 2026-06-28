@@ -190,6 +190,59 @@ describe('resolveWeeklyTargets — May 2 2026 expansion', () => {
     expect(targets.strength).toBe(2);
   });
 
+  it('triathlon: explicit zero bike and swim are floored to real modality minimums', () => {
+    const targets = resolveWeeklyTargets('triathlon', baseInput({
+      sessionsPerWeek: 6,
+      runSessionsPerWeek: 0,
+      bikeSessionsPerWeek: 0,
+      swimSessionsPerWeek: 0,
+      strengthSessionsPerWeek: 1,
+    }));
+
+    expect(targets.running).toBeGreaterThanOrEqual(1);
+    expect(targets.cycling).toBeGreaterThanOrEqual(1);
+    expect(targets.swimming).toBeGreaterThanOrEqual(1);
+  });
+
+  it('cycling and swimming priorities do not accept explicit zero own-modality targets', () => {
+    const cycling = resolveWeeklyTargets('cycling', baseInput({
+      bikeSessionsPerWeek: 0,
+      strengthSessionsPerWeek: 1,
+    }));
+    const swimming = resolveWeeklyTargets('swimming', baseInput({
+      swimSessionsPerWeek: 0,
+      strengthSessionsPerWeek: 1,
+    }));
+
+    expect(cycling.cycling).toBeGreaterThanOrEqual(1);
+    expect(swimming.swimming).toBeGreaterThanOrEqual(1);
+  });
+
+  it('triathlon, cycling, and swimming preserve non-zero own-modality targets', () => {
+    const triathlon = resolveWeeklyTargets('triathlon', baseInput({
+      sessionsPerWeek: 7,
+      runSessionsPerWeek: 2,
+      bikeSessionsPerWeek: 3,
+      swimSessionsPerWeek: 2,
+      strengthSessionsPerWeek: 1,
+    }));
+    const cycling = resolveWeeklyTargets('cycling', baseInput({
+      sessionsPerWeek: 5,
+      bikeSessionsPerWeek: 3,
+      strengthSessionsPerWeek: 1,
+    }));
+    const swimming = resolveWeeklyTargets('swimming', baseInput({
+      sessionsPerWeek: 5,
+      swimSessionsPerWeek: 3,
+      strengthSessionsPerWeek: 1,
+    }));
+
+    expect(triathlon.cycling).toBe(3);
+    expect(triathlon.swimming).toBe(2);
+    expect(cycling.cycling).toBe(3);
+    expect(swimming.swimming).toBe(3);
+  });
+
   it('hybrid: strength target is still bounded by total - 2 (preserves running headroom)', () => {
     const targets = resolveWeeklyTargets('hybrid', baseInput({
       sessionsPerWeek: 6,
