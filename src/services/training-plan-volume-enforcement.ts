@@ -23,12 +23,55 @@ const MAX_STRENGTH_SESSIONS_PER_WEEK = 6;
 
 export interface TrainingPlanVolumeRequest {
   sessionsPerWeek: number;
-  runSessionsPerWeek?: number;
+  runSessionsPerWeek?: number | null;
+  bikeSessionsPerWeek?: number | null;
+  swimSessionsPerWeek?: number | null;
   strengthSessionsPerWeek: number;
   preferredCardioTime: string;
   preferredStrengthTime: string;
   startDate: string;
   longWorkoutDay?: string | null;
+}
+
+function positiveSessionRequest(value: number | null | undefined): number {
+  return typeof value === 'number' && value > 0
+    ? clamp(Math.round(value), 1, 7)
+    : 0;
+}
+
+function requestedPrimarySessionsForSport(
+  planSport: string,
+  input: {
+    requestedTrainingDays: number;
+    requestedRunSessions: number;
+    requestedBikeSessions: number;
+    requestedSwimSessions: number;
+  },
+): number {
+  if (planSport === 'running') return input.requestedRunSessions || input.requestedTrainingDays;
+  if (planSport === 'cycling') return input.requestedBikeSessions || input.requestedTrainingDays;
+  if (planSport === 'swimming') return input.requestedSwimSessions || input.requestedTrainingDays;
+  return input.requestedTrainingDays;
+}
+
+function requestedTrainingDayBudgetForSport(
+  planSport: string,
+  input: {
+    requestedTrainingDays: number;
+    requestedPrimarySessions: number;
+    requestedRunSessions: number;
+    requestedBikeSessions: number;
+    requestedSwimSessions: number;
+    explicitEnduranceTotal: number;
+  },
+): number {
+  if (planSport === 'running' && input.requestedRunSessions > 0) return input.requestedRunSessions;
+  if (planSport === 'cycling' && input.requestedBikeSessions > 0) return input.requestedBikeSessions;
+  if (planSport === 'swimming' && input.requestedSwimSessions > 0) return input.requestedSwimSessions;
+  if (input.explicitEnduranceTotal > 0) {
+    return Math.min(input.requestedTrainingDays, Math.max(1, input.explicitEnduranceTotal));
+  }
+  return input.requestedPrimarySessions;
 }
 
 export function enforceRequestedTrainingPlanVolume(
@@ -39,26 +82,33 @@ export function enforceRequestedTrainingPlanVolume(
   if (!Array.isArray(cloned.weeks)) return cloned;
 
   const planSport = String(cloned.sport || '').toLowerCase();
-  const requestedPrimarySessions = planSport === 'running'
-    ? clamp(Math.round((request.runSessionsPerWeek ?? request.sessionsPerWeek) || 5), 1, 7)
-    : clamp(Math.round(request.sessionsPerWeek || 5), 3, 7);
+  const requestedTrainingDays = clamp(Math.round(request.sessionsPerWeek || 5), 3, 7);
+  const requestedRunSessions = positiveSessionRequest(request.runSessionsPerWeek);
+  const requestedBikeSessions = positiveSessionRequest(request.bikeSessionsPerWeek);
+  const requestedSwimSessions = positiveSessionRequest(request.swimSessionsPerWeek);
+  const requestedPrimarySessions = requestedPrimarySessionsForSport(planSport, {
+    requestedTrainingDays,
+    requestedRunSessions,
+    requestedBikeSessions,
+    requestedSwimSessions,
+  });
   const requestedStrength = clamp(Math.round(request.strengthSessionsPerWeek || 0), 0, MAX_STRENGTH_SESSIONS_PER_WEEK);
-  // 2026-05-25 Bug #2 fix — when the user provides BOTH explicit
-  // `runSessionsPerWeek` AND `strengthSessionsPerWeek`, the total
-  // active sessions for the week must be the sum, regardless of
-  // `planSport`. Pre-fix the enforcer only summed for `planSport ==
-  // 'running'` and silently dropped the strength count from the
-  // total for hybrid/gym plans, which capped weeks at the primary
-  // count and prevented true two-a-day scheduling. The math still
-  // respects MAX_STRENGTH_SESSIONS_PER_WEEK on the strength side
-  // and the existing `allowedDays.length * 2` ceiling below.
-  const hasExplicitRunRequest = typeof request.runSessionsPerWeek === 'number' && request.runSessionsPerWeek > 0;
+  const explicitEnduranceTotal = requestedRunSessions + requestedBikeSessions + requestedSwimSessions;
+  const hasExplicitEnduranceRequest = explicitEnduranceTotal > 0;
   const hasExplicitStrengthRequest = requestedStrength > 0;
-  const requestedTotal = (hasExplicitRunRequest && hasExplicitStrengthRequest)
-    ? clamp(Math.round(request.runSessionsPerWeek!), 1, 7) + requestedStrength
+  const requestedTotal = hasExplicitEnduranceRequest
+    ? explicitEnduranceTotal + (hasExplicitStrengthRequest ? requestedStrength : 0)
     : planSport === 'running'
       ? requestedPrimarySessions + requestedStrength
       : requestedPrimarySessions;
+  const requestedDayBudget = requestedTrainingDayBudgetForSport(planSport, {
+    requestedTrainingDays,
+    requestedPrimarySessions,
+    requestedRunSessions,
+    requestedBikeSessions,
+    requestedSwimSessions,
+    explicitEnduranceTotal,
+  });
   const defaultStrengthForGymPlan = planSport === 'gym'
     ? Math.min(MAX_STRENGTH_SESSIONS_PER_WEEK, requestedPrimarySessions)
     : 0;
@@ -67,22 +117,41 @@ export function enforceRequestedTrainingPlanVolume(
     const weekNumber = typeof week.weekNumber === 'number' ? week.weekNumber : 1;
     const allowedDays = constrainTrainingDays(
       allowedDaysForWeek(request.startDate, weekNumber),
-      requestedPrimarySessions,
+      requestedDayBudget,
       request.longWorkoutDay,
     );
     const activeTarget = Math.min(requestedTotal, Math.max(1, allowedDays.length * 2));
     const strengthTarget = Math.min(
       activeTarget,
       requestedStrength > 0 ? requestedStrength : defaultStrengthForGymPlan,
+      allowedDays.length,
     );
 
     let sessions = (week.sessions ?? [])
       .filter(isScheduledSession)
       .map((session) => normalizeSessionDay(session))
       .filter((session): session is CoordinatedTrainingSession => Boolean(session));
+    const hasDefaultMultisportFloors = requestedBikeSessions === 0
+      && requestedSwimSessions === 0
+      && sessions.some((session) => cardioModality(session) === 'cycling')
+      && sessions.some((session) => cardioModality(session) === 'swimming');
+    const cyclingTarget = requestedBikeSessions > 0
+      ? requestedBikeSessions
+      : hasDefaultMultisportFloors
+        ? 1
+        : null;
+    const swimmingTarget = requestedSwimSessions > 0
+      ? requestedSwimSessions
+      : hasDefaultMultisportFloors
+        ? 1
+        : null;
 
     sessions = convertExtraStrengthToCardio(sessions, strengthTarget, cloned.sport, request);
     sessions = spreadSameTypeCollisions(sessions, allowedDays);
+    sessions = trimCardioModalitiesToTargets(sessions, {
+      cycling: cyclingTarget,
+      swimming: swimmingTarget,
+    });
     sessions = trimToActiveTarget(sessions, activeTarget, strengthTarget);
     // Slice 4.C — pass weekNumber so the support-session-builder
     // rotation shifts each week (0-based shift = weekNumber - 1).
@@ -190,6 +259,28 @@ function trimToActiveTarget(
     next.splice(removableIndex, 1);
   }
   return next;
+}
+
+function trimCardioModalitiesToTargets(
+  sessions: CoordinatedTrainingSession[],
+  targets: {
+    cycling: number | null;
+    swimming: number | null;
+  },
+): CoordinatedTrainingSession[] {
+  const counts = {
+    cycling: 0,
+    swimming: 0,
+  };
+  return sessions.filter((session) => {
+    const modality = cardioModality(session);
+    if (modality !== 'cycling' && modality !== 'swimming') return true;
+    const target = targets[modality];
+    if (target == null) return true;
+    if (counts[modality] >= target) return false;
+    counts[modality] += 1;
+    return true;
+  });
 }
 
 function spreadSameTypeCollisions(
@@ -538,6 +629,16 @@ function removableScore(session: CoordinatedTrainingSession): number {
 
 function isStrengthSession(session: CoordinatedTrainingSession): boolean {
   return String(session.sessionType || '').toLowerCase() === 'gym';
+}
+
+function cardioModality(session: CoordinatedTrainingSession): 'running' | 'cycling' | 'swimming' | null {
+  const type = String(session.sessionType || '').toLowerCase();
+  const title = String(session.title || '').toLowerCase();
+  const combined = `${type} ${title}`;
+  if (/\b(swim|swimming)\b/.test(combined)) return 'swimming';
+  if (/\b(ride|bike|cycling|cycle)\b/.test(combined)) return 'cycling';
+  if (/\b(run|running|jog)\b/.test(combined)) return 'running';
+  return null;
 }
 
 function countStrength(sessions: CoordinatedTrainingSession[]): number {

@@ -9,6 +9,7 @@ import {
   inferTrainingSessionIsLongRun,
   inferTrainingSessionIsLowerHeavy,
 } from '../../src/services/training-session-classification';
+import { getQuestionnaire } from '../../src/services/onboarding';
 
 let harness: TrainingE2EHarness | null = null;
 
@@ -223,6 +224,97 @@ describe('training plan create cycle integration', () => {
     expect(ruleIds(created.body.data.planLint.blockers)).not.toContain('no_heavy_lower_before_long_run');
   });
 
+  it('persists and reports weekly targets from the final scheduled plan matrix', async () => {
+    vi.useFakeTimers({ now: new Date('2026-05-25T10:00:00.000Z') });
+    const cases = [
+      {
+        id: 'no-explicit-run-strength-budget',
+        body: {
+          objective: '10K running plan',
+          durationWeeks: 1,
+          sessionsPerWeek: 3,
+          strengthSessionsPerWeek: 6,
+          trainingPriority: 'running',
+          startPolicy: 'today',
+        },
+        expected: { strengthSessionsPerWeek: 6 },
+      },
+      {
+        id: 'explicit-run-strength-budget',
+        body: {
+          objective: 'Running plan with gym support',
+          durationWeeks: 1,
+          sessionsPerWeek: 5,
+          runSessionsPerWeek: 2,
+          strengthSessionsPerWeek: 5,
+          trainingPriority: 'running',
+          startPolicy: 'today',
+        },
+        expected: { runSessionsPerWeek: 2, strengthSessionsPerWeek: 5 },
+      },
+      {
+        id: 'triathlon-zero-bike-swim-floor',
+        body: {
+          objective: 'Olympic triathlon',
+          durationWeeks: 1,
+          sessionsPerWeek: 6,
+          runSessionsPerWeek: 0,
+          bikeSessionsPerWeek: 0,
+          swimSessionsPerWeek: 0,
+          strengthSessionsPerWeek: 1,
+          trainingPriority: 'triathlon',
+          startPolicy: 'today',
+        },
+        expected: { bikeSessionsPerWeek: 1, swimSessionsPerWeek: 0, strengthSessionsPerWeek: 1 },
+      },
+      {
+        id: 'cycling-nonzero-bike-passthrough',
+        body: {
+          objective: 'Cycling gran fondo',
+          durationWeeks: 1,
+          sessionsPerWeek: 5,
+          bikeSessionsPerWeek: 3,
+          strengthSessionsPerWeek: 1,
+          trainingPriority: 'cycling',
+          startPolicy: 'today',
+        },
+        expected: { bikeSessionsPerWeek: 3, strengthSessionsPerWeek: 1 },
+      },
+    ] as const;
+
+    for (const planCase of cases) {
+      harness = createTrainingE2EHarness();
+      harness.seedTrainingUser();
+      if (
+        planCase.id === 'triathlon-zero-bike-swim-floor'
+        || planCase.id === 'cycling-nonzero-bike-passthrough'
+      ) {
+        seedCompleteSportProfile('triathlon-cycling');
+      }
+      if (planCase.id === 'triathlon-zero-bike-swim-floor') {
+        seedCompleteSportProfile('triathlon-swim');
+      }
+
+      const created = await harness.dispatch('POST', '/plan/generate', {
+        ...planCase.body,
+        idempotencyKey: `training-e2e-targets-${planCase.id}`,
+      });
+      const planId = Number(created.body.data.planId);
+      const preferences = persistedPreferences(planId);
+      const scheduledTargets = scheduledWeeklyTargetsForPlan(planId);
+
+      expect(created.statusCode).toBe(201);
+      expect(created.body.ok).toBe(true);
+      expect(created.body.data.weeklyTargets).toMatchObject(planCase.expected);
+      expect(preferences).toMatchObject(planCase.expected);
+      expectWeeklyTargetsToMatchScheduled(created.body.data.weeklyTargets, scheduledTargets);
+      expectWeeklyTargetsToMatchScheduled(preferences, scheduledTargets);
+
+      harness.close();
+      harness = null;
+    }
+  });
+
   it('persists every supported two-a-day preference on create', async () => {
     vi.useFakeTimers({ now: new Date('2026-05-25T10:00:00.000Z') });
     const preferences = ['preferred', 'optional', 'never'] as const;
@@ -340,6 +432,84 @@ function persistedSessions(planId: number): Array<{
     title: row.title,
     exercises: parseExercises(row.exercises_json),
   }));
+}
+
+function seedCompleteSportProfile(profileType: string, userId = 12): void {
+  if (!harness) return;
+  const questionnaire = getQuestionnaire(profileType);
+  if (!questionnaire) throw new Error(`Missing questionnaire fixture: ${profileType}`);
+  const data = Object.fromEntries(questionnaire.steps.map((step) => [
+    step.key,
+    Array.isArray(step.options) && step.options.length > 0
+      ? step.options[0]
+      : step.type === 'number'
+        ? 1
+        : 'test',
+  ]));
+  harness.db.prepare(`
+    INSERT INTO user_profiles (user_id, profile_type, data)
+    VALUES (?, ?, ?)
+    ON CONFLICT(user_id, profile_type) DO UPDATE SET
+      data = excluded.data,
+      updated_at = datetime('now')
+  `).run(userId, profileType, JSON.stringify(data));
+}
+
+function persistedPreferences(planId: number): Record<string, any> {
+  if (!harness) return {};
+  const row = harness.db.prepare(`
+    SELECT preferences_json
+      FROM fitness_training_plans
+     WHERE id = ?
+  `).get(planId) as { preferences_json: string } | undefined;
+  return row ? JSON.parse(row.preferences_json) : {};
+}
+
+function scheduledWeeklyTargetsForPlan(planId: number): {
+  runSessionsPerWeek: number;
+  bikeSessionsPerWeek: number;
+  swimSessionsPerWeek: number;
+  strengthSessionsPerWeek: number;
+} {
+  const counts = {
+    runSessionsPerWeek: 0,
+    bikeSessionsPerWeek: 0,
+    swimSessionsPerWeek: 0,
+    strengthSessionsPerWeek: 0,
+  };
+  for (const session of persistedSessions(planId)) {
+    const modality = sessionModality(session);
+    if (modality === 'running') counts.runSessionsPerWeek += 1;
+    if (modality === 'cycling') counts.bikeSessionsPerWeek += 1;
+    if (modality === 'swimming') counts.swimSessionsPerWeek += 1;
+    if (modality === 'strength') counts.strengthSessionsPerWeek += 1;
+  }
+  return counts;
+}
+
+function expectWeeklyTargetsToMatchScheduled(
+  actual: Record<string, any>,
+  scheduled: ReturnType<typeof scheduledWeeklyTargetsForPlan>,
+): void {
+  for (const field of [
+    'runSessionsPerWeek',
+    'bikeSessionsPerWeek',
+    'swimSessionsPerWeek',
+    'strengthSessionsPerWeek',
+  ] as const) {
+    if (scheduled[field] > 0 || actual[field] != null) {
+      expect(actual[field] ?? 0).toBe(scheduled[field]);
+    }
+  }
+}
+
+function sessionModality(session: { sessionType: string; title: string }): 'running' | 'cycling' | 'swimming' | 'strength' | null {
+  const text = `${session.sessionType} ${session.title}`.toLowerCase();
+  if (/\b(gym|strength|lift)\b/.test(text)) return 'strength';
+  if (/\b(swim|swimming)\b/.test(text)) return 'swimming';
+  if (/\b(ride|bike|cycling|cycle)\b/.test(text)) return 'cycling';
+  if (/\b(run|running|jog)\b/.test(text)) return 'running';
+  return null;
 }
 
 function countActivePlans(): number {

@@ -9,6 +9,7 @@ const mockLinkSessionToCalendar = vi.fn();
 const mockUpdateSession = vi.fn();
 const mockUpdatePlanPreferences = vi.fn();
 const mockCreateEvent = vi.fn();
+const mockDeleteEvent = vi.fn();
 const mockLoggerWarn = vi.fn();
 const mockLoggerInfo = vi.fn();
 const mockLintPlan = vi.fn();
@@ -21,6 +22,7 @@ const mockFindExistingOwnership = vi.fn();
 const mockRecordCalendarOwnership = vi.fn();
 const mockSubmitSecretarySchedulingIntent = vi.fn();
 const mockMarkSecretaryAgendaProviderSyncSatisfied = vi.fn();
+const mockMarkSecretaryAgendaProviderCleanupRequired = vi.fn();
 const mockLoadLiveCalendarBusyWindowsForSecretaryIntent = vi.fn();
 
 vi.mock('../../src/services/training-plans', async () => {
@@ -45,6 +47,7 @@ vi.mock('../../src/services/unified-calendar', async () => {
   return {
     ...actual,
     createEvent: (...args: unknown[]) => mockCreateEvent(...args),
+    deleteEvent: (...args: unknown[]) => mockDeleteEvent(...args),
   };
 });
 
@@ -68,6 +71,7 @@ vi.mock('../../src/services/secretary-scheduling-arbitrator', async () => {
     ...actual,
     submitSecretarySchedulingIntent: (...args: unknown[]) => mockSubmitSecretarySchedulingIntent(...args),
     markSecretaryAgendaProviderSyncSatisfied: (...args: unknown[]) => mockMarkSecretaryAgendaProviderSyncSatisfied(...args),
+    markSecretaryAgendaProviderCleanupRequired: (...args: unknown[]) => mockMarkSecretaryAgendaProviderCleanupRequired(...args),
   };
 });
 
@@ -132,6 +136,7 @@ describe('training-plan-persistence', () => {
     mockUpdateSession.mockReset();
     mockUpdatePlanPreferences.mockReset();
     mockCreateEvent.mockReset();
+    mockDeleteEvent.mockReset();
     mockLoggerWarn.mockReset();
     mockLoggerInfo.mockReset();
     mockLintPlan.mockReset();
@@ -140,6 +145,7 @@ describe('training-plan-persistence', () => {
     mockRecordCalendarOwnership.mockReset();
     mockSubmitSecretarySchedulingIntent.mockReset();
     mockMarkSecretaryAgendaProviderSyncSatisfied.mockReset();
+    mockMarkSecretaryAgendaProviderCleanupRequired.mockReset();
     mockLoadLiveCalendarBusyWindowsForSecretaryIntent.mockReset();
 
     mockCreatePlan.mockReturnValue({ id: 901 });
@@ -148,12 +154,14 @@ describe('training-plan-persistence', () => {
     mockCreateSession.mockImplementation(() => ({ id: ++sessionId }));
     mockUpdatePlanPreferences.mockReturnValue(true);
     mockCreateEvent.mockResolvedValue({ id: 'evt-1', source: 'google' });
+    mockDeleteEvent.mockResolvedValue(undefined);
     // Slice 4.D defaults: fresh plan_version=1, no prior ownership rows,
     // ownership recorder reports clean inserts.
     mockGetPlanVersion.mockReturnValue(1);
     mockFindExistingOwnership.mockReturnValue(null);
     mockRecordCalendarOwnership.mockReturnValue({ ok: true, created: true, ownershipId: 1 });
     mockMarkSecretaryAgendaProviderSyncSatisfied.mockReturnValue({ ok: true, updated: true });
+    mockMarkSecretaryAgendaProviderCleanupRequired.mockReturnValue({ ok: true, updated: true });
     mockLoadLiveCalendarBusyWindowsForSecretaryIntent.mockResolvedValue({
       windows: [],
       degraded: false,
@@ -283,6 +291,7 @@ describe('training-plan-persistence', () => {
       session_shape_hash: expect.any(String),
     }));
     expect(mockCreateEvent).toHaveBeenCalledTimes(2);
+    expect(mockDeleteEvent).not.toHaveBeenCalled();
     expect(mockSubmitSecretarySchedulingIntent).toHaveBeenCalledTimes(2);
     expect(mockSubmitSecretarySchedulingIntent.mock.invocationCallOrder[0])
       .toBeLessThan(mockCreateEvent.mock.invocationCallOrder[0]);
@@ -357,6 +366,14 @@ describe('training-plan-persistence', () => {
       calendar_event_id: null,
       calendar_source: null,
     });
+    expect(mockMarkSecretaryAgendaProviderCleanupRequired).toHaveBeenCalledWith(expect.objectContaining({
+      agendaItemId: 'sec-2001',
+      ownerUserId: 12,
+      tenantId: 12,
+      providerSyncState: 'create_failed',
+      lifecycleState: 'unscheduled',
+      clearProviderMapping: true,
+    }));
     expect(mockLinkSessionToCalendar).toHaveBeenCalledTimes(1);
     expect(mockLinkSessionToCalendar).toHaveBeenCalledWith(2002, 'evt-2', 'google');
     expect(mockLoggerWarn).toHaveBeenCalledWith(
@@ -369,6 +386,110 @@ describe('training-plan-persistence', () => {
       'Failed to create calendar event for session',
     );
     expect(mockLoggerWarn.mock.calls[0]?.[0]).not.toHaveProperty('title');
+  });
+
+  it('does not count a provider event as synced when ownership recording fails', async () => {
+    mockRecordCalendarOwnership.mockReturnValueOnce({ ok: false, created: false, ownershipId: null });
+
+    const result = await persistGeneratedTrainingPlan({
+      userId: 12,
+      tenantId: 12,
+      objective: 'Ownership guarded block',
+      durationWeeks: 1,
+      startDate: '2026-04-19',
+      endDate: '2026-04-26',
+      now: new Date('2026-04-19T00:00:00.000Z'),
+      preferencesJson: '{}',
+      normalizedPreferredTime: '12:00',
+      normalizedPreferredCardioTime: '07:00',
+      normalizedPreferredStrengthTime: '12:30',
+      busyWindows: [],
+      planData: {
+        weeks: [
+          {
+            weekNumber: 1,
+            sessions: [
+              { dayOfWeek: 'Monday', sessionType: 'run', title: 'Run', durationMinutes: 35 },
+            ],
+          },
+        ],
+      },
+    });
+
+    expect(result.totalSessions).toBe(1);
+    expect(result.eventsCreated).toBe(0);
+    expect(result.sessionsLinked).toBe(0);
+    expect(mockLinkSessionToCalendar).toHaveBeenCalledWith(2001, 'evt-1', 'google');
+    expect(mockUpdateSession).toHaveBeenCalledWith(2001, {
+      status: 'unscheduled',
+      calendar_event_id: null,
+      calendar_source: null,
+    });
+    expect(mockDeleteEvent).toHaveBeenCalledWith('evt-1', 'google', 12);
+    expect(mockMarkSecretaryAgendaProviderSyncSatisfied).not.toHaveBeenCalled();
+    expect(mockMarkSecretaryAgendaProviderCleanupRequired).toHaveBeenCalledWith(expect.objectContaining({
+      agendaItemId: 'sec-2001',
+      ownerUserId: 12,
+      tenantId: 12,
+      providerEventId: null,
+      providerSource: null,
+      providerSyncState: 'deleted',
+      lifecycleState: 'unscheduled',
+      reason: 'training_provider_ownership_record_failed',
+      clearProviderMapping: true,
+    }));
+  });
+
+  it('keeps ownership-readback failure controlled when provider cleanup delete fails', async () => {
+    mockRecordCalendarOwnership.mockReturnValueOnce({ ok: false, created: false, ownershipId: null });
+    mockDeleteEvent.mockRejectedValueOnce(new Error('provider delete timeout'));
+
+    const result = await persistGeneratedTrainingPlan({
+      userId: 12,
+      tenantId: 12,
+      objective: 'Ownership guarded block',
+      durationWeeks: 1,
+      startDate: '2026-04-19',
+      endDate: '2026-04-26',
+      now: new Date('2026-04-19T00:00:00.000Z'),
+      preferencesJson: '{}',
+      normalizedPreferredTime: '12:00',
+      normalizedPreferredCardioTime: '07:00',
+      normalizedPreferredStrengthTime: '12:30',
+      busyWindows: [],
+      planData: {
+        weeks: [
+          {
+            weekNumber: 1,
+            sessions: [
+              { dayOfWeek: 'Monday', sessionType: 'run', title: 'Run', durationMinutes: 35 },
+            ],
+          },
+        ],
+      },
+    });
+
+    expect(result.eventsCreated).toBe(0);
+    expect(result.sessionsLinked).toBe(0);
+    expect(mockDeleteEvent).toHaveBeenCalledWith('evt-1', 'google', 12);
+    expect(mockLoggerWarn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        providerEventId: 'evt-1',
+        providerSource: 'google',
+      }),
+      'Failed to delete Training calendar event after ownership failure; agenda cleanup will retry provider deletion',
+    );
+    expect(mockMarkSecretaryAgendaProviderCleanupRequired).toHaveBeenCalledWith(expect.objectContaining({
+      agendaItemId: 'sec-2001',
+      ownerUserId: 12,
+      tenantId: 12,
+      providerEventId: 'evt-1',
+      providerSource: 'google',
+      providerSyncState: 'delete_failed',
+      lifecycleState: 'unscheduled',
+      reason: 'training_provider_ownership_record_failed',
+      clearProviderMapping: false,
+    }));
   });
 
   it('creates training calendar events in batches of five', async () => {

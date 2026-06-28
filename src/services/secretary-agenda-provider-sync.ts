@@ -147,9 +147,26 @@ export async function syncSecretaryAgendaItemToProvider(
     };
   }
 
+  if (isTerminalDeletedCleanupRow(agendaItem)) {
+    return result(
+      agendaItem,
+      'skipped',
+      null,
+      adapter.source,
+      'deleted',
+      [],
+      'terminal_cleanup_no_provider_event',
+    );
+  }
+
   if (agendaItem.cancellationReason && ACTIVE_PROVIDER_STATES.has(agendaItem.lifecycleState)) {
     const canceled = markCancellationReasonedItemCanceled(agendaItem);
     return cleanupProviderEvent(canceled, adapter);
+  }
+
+  const trainingBackedCleanup = markUnschedulableTrainingAgendaItemForCleanup(agendaItem);
+  if (trainingBackedCleanup) {
+    return cleanupProviderEvent(trainingBackedCleanup, adapter);
   }
 
   if (CLEANUP_PROVIDER_STATES.has(agendaItem.lifecycleState)) {
@@ -209,11 +226,18 @@ export async function syncSecretaryAgendaItemsToProvider(
 }
 
 function shouldSyncAgendaItem(item: SecretaryAgendaItem, includeInactive: boolean): boolean {
+  if (isTerminalDeletedCleanupRow(item)) return false;
   if (includeInactive) return true;
   if (!['canceled', 'superseded', 'completed'].includes(item.lifecycleState)) return true;
   return ['canceled', 'superseded'].includes(item.lifecycleState)
     && !!item.providerEventId
     && item.providerSyncState !== 'deleted';
+}
+
+function isTerminalDeletedCleanupRow(item: SecretaryAgendaItem): boolean {
+  return CLEANUP_PROVIDER_STATES.has(item.lifecycleState)
+    && item.providerSyncState === 'deleted'
+    && !item.providerEventId;
 }
 
 async function syncSecretaryAgendaItemToProviderWithRetry(
@@ -506,6 +530,92 @@ function markCancellationReasonedItemCanceled(agendaItem: SecretaryAgendaItem): 
     lifecycleState: 'canceled',
     updatedAt: new Date().toISOString(),
   };
+}
+
+function markUnschedulableTrainingAgendaItemForCleanup(agendaItem: SecretaryAgendaItem): SecretaryAgendaItem | null {
+  if (!ACTIVE_PROVIDER_STATES.has(agendaItem.lifecycleState)) return null;
+  if (agendaItem.sourceSkill !== 'training' || agendaItem.sourceEntityType !== 'training_session') return null;
+  if (!trainingSessionRequiresProviderCleanup(agendaItem)) return null;
+
+  const nowIso = new Date().toISOString();
+  const result = getDb().prepare(`
+    UPDATE secretary_agenda_items
+       SET lifecycle_state = 'unscheduled',
+           cancellation_reason = COALESCE(cancellation_reason, 'training_session_unscheduled'),
+           updated_at = ?
+     WHERE agenda_item_id = ?
+       AND owner_user_id = ?
+       AND tenant_id = ?
+       AND lifecycle_state IN ('scheduled', 'synced', 'reflowed', 'compressed', 'failed_sync')
+  `).run(
+    nowIso,
+    agendaItem.agendaItemId,
+    agendaItem.ownerUserId,
+    String(agendaItem.tenantId),
+  );
+  if (result.changes === 0) return null;
+  return {
+    ...agendaItem,
+    lifecycleState: 'unscheduled',
+    cancellationReason: agendaItem.cancellationReason ?? 'training_session_unscheduled',
+    updatedAt: nowIso,
+  };
+}
+
+function trainingSessionRequiresProviderCleanup(agendaItem: SecretaryAgendaItem): boolean {
+  const sessionId = Number(agendaItem.sourceEntityId);
+  // Persisted Training-session agenda rows are keyed by numeric
+  // `training_sessions.id`. Non-numeric source ids belong to legacy or
+  // pending-intent rows and are intentionally left to normal lifecycle
+  // cleanup instead of guessing across Training state.
+  if (!Number.isFinite(sessionId) || sessionId <= 0) return false;
+  const db = getDb();
+  if (!tableExists(db, 'training_sessions')) return false;
+
+  const status = readTrainingSessionStatus(db, sessionId, agendaItem);
+  return status === 'unscheduled' || status === 'canceled' || status === 'cancelled';
+}
+
+function readTrainingSessionStatus(
+  db: ReturnType<typeof getDb>,
+  sessionId: number,
+  agendaItem: SecretaryAgendaItem,
+): string | null {
+  if (tableExists(db, 'fitness_training_plans') && tableHasColumn(db, 'training_sessions', 'plan_id')) {
+    const scoped = db.prepare(`
+      SELECT LOWER(TRIM(s.status)) AS status
+        FROM training_sessions s
+        JOIN fitness_training_plans p ON p.id = s.plan_id
+       WHERE s.id = ?
+         AND p.user_id = ?
+         AND CAST(p.tenant_id AS TEXT) = ?
+       LIMIT 1
+    `).get(sessionId, agendaItem.ownerUserId, String(agendaItem.tenantId)) as { status?: string | null } | undefined;
+    if (scoped?.status) return scoped.status;
+  }
+
+  const row = db.prepare(`
+    SELECT LOWER(TRIM(status)) AS status
+      FROM training_sessions
+     WHERE id = ?
+     LIMIT 1
+  `).get(sessionId) as { status?: string | null } | undefined;
+  return row?.status ?? null;
+}
+
+function tableExists(db: ReturnType<typeof getDb>, tableName: string): boolean {
+  const row = db.prepare(`
+    SELECT name
+      FROM sqlite_master
+     WHERE type = 'table'
+       AND name = ?
+  `).get(tableName);
+  return Boolean(row);
+}
+
+function tableHasColumn(db: ReturnType<typeof getDb>, tableName: string, columnName: string): boolean {
+  const columns = db.prepare(`PRAGMA table_info(${tableName})`).all() as Array<{ name?: string }>;
+  return columns.some((column) => column.name === columnName);
 }
 
 function result(

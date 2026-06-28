@@ -342,7 +342,7 @@ export async function generateTrainingPlanForUser(
     runSessionsPerWeek,
     bikeSessionsPerWeek,
     swimSessionsPerWeek,
-    strengthSessionsPerWeek = 2,
+    strengthSessionsPerWeek,
     startPolicy,
     longWorkoutDay,
     notes,
@@ -530,14 +530,18 @@ export async function generateTrainingPlanForUser(
       : undefined);
   const normalizedBikeSessionsPerWeek = normalizeOptionalSessionTarget(bikeSessionsPerWeek, 0, 7);
   const normalizedSwimSessionsPerWeek = normalizeOptionalSessionTarget(swimSessionsPerWeek, 0, 7);
-  const normalizedStrengthSessionsPerWeek = clampNumber(strengthSessionsPerWeek, 0, 0, 6);
+  const normalizedStrengthSessionsPerWeek = normalizeOptionalSessionTarget(strengthSessionsPerWeek, 0, 6);
   const gymOnlyObjective =
-    objectiveHasGym && !objectiveHasRunning && !objectiveHasCycling && !objectiveHasSwimming && !objectiveHasTriathlon;
-  const effectiveStrengthSessionsPerWeek = normalizedStrengthSessionsPerWeek > 0
+    objectiveHasGym
+    && !objectiveHasRunning
+    && !objectiveHasCycling
+    && !objectiveHasSwimming
+    && !objectiveHasTriathlon;
+  const effectiveStrengthSessionsPerWeek = normalizedStrengthSessionsPerWeek != null
     ? normalizedStrengthSessionsPerWeek
     : gymOnlyObjective
       ? Math.min(normalizedSessionsPerWeek, 6)
-      : 0;
+      : 2;
   const normalizedLongWorkoutDay = typeof longWorkoutDay === 'string' ? longWorkoutDay.trim() : null;
 
   let sharedDecisionContext = '';
@@ -661,6 +665,8 @@ export async function generateTrainingPlanForUser(
   const volumeEnforcementInput = {
     sessionsPerWeek: normalizedSessionsPerWeek,
     runSessionsPerWeek: normalizedRunSessionsPerWeek,
+    bikeSessionsPerWeek: normalizedBikeSessionsPerWeek,
+    swimSessionsPerWeek: normalizedSwimSessionsPerWeek,
     strengthSessionsPerWeek: effectiveStrengthSessionsPerWeek,
     preferredCardioTime: normalizedPreferredCardioTime,
     preferredStrengthTime: normalizedPreferredStrengthTime,
@@ -794,6 +800,36 @@ export async function generateTrainingPlanForUser(
   if (trainingQuality) {
     planData = trainingQuality.planData;
   }
+  const requestedWeeklyTargets = buildWeeklyTargets({
+    sessionsPerWeek: normalizedSessionsPerWeek,
+    runSessionsPerWeek: normalizedRunSessionsPerWeek ?? null,
+    bikeSessionsPerWeek: normalizedBikeSessionsPerWeek,
+    swimSessionsPerWeek: normalizedSwimSessionsPerWeek,
+    strengthSessionsPerWeek: effectiveStrengthSessionsPerWeek,
+  });
+  const buildPreferencesJson = (weeklyTargets: TrainingPlanWeeklyTargets): string => JSON.stringify({
+    preferredTime: normalizedPreferredTime,
+    preferredCardioTime: normalizedPreferredCardioTime,
+    preferredStrengthTime: normalizedPreferredStrengthTime,
+    sessionsPerWeek: weeklyTargets.sessionsPerWeek,
+    runSessionsPerWeek: weeklyTargets.runSessionsPerWeek,
+    bikeSessionsPerWeek: weeklyTargets.bikeSessionsPerWeek,
+    swimSessionsPerWeek: weeklyTargets.swimSessionsPerWeek,
+    strengthSessionsPerWeek: weeklyTargets.strengthSessionsPerWeek,
+    longWorkoutDay: longWorkoutDay || null,
+    notes: notes || null,
+    goalMode: normalizedGoalMode,
+    trainingPriority: normalizedTrainingPriority,
+    raceDate: effectiveRaceDate,
+    startPolicy: normalizedStartPolicy,
+    twoADayPreference: twoADayPreference ?? null,
+    trainingPlanSpec,
+    trainingPlanQuality: trainingQuality?.validation ?? null,
+    trainingPlanRepairActions: trainingQuality?.repairActions ?? [],
+    trainingCalendarSource: resolvedCalendarSource || null,
+    generatorPolicyVersion: TRAINING_PLAN_GENERATOR_POLICY_VERSION,
+    generationVersionPins,
+  });
 
   const persistenceInput = {
     userId,
@@ -804,29 +840,7 @@ export async function generateTrainingPlanForUser(
     endDate: endStr,
     now,
     planData,
-    preferencesJson: JSON.stringify({
-      preferredTime: normalizedPreferredTime,
-      preferredCardioTime: normalizedPreferredCardioTime,
-      preferredStrengthTime: normalizedPreferredStrengthTime,
-      sessionsPerWeek,
-      runSessionsPerWeek: runSessionsPerWeek ?? null,
-      bikeSessionsPerWeek: bikeSessionsPerWeek ?? null,
-      swimSessionsPerWeek: swimSessionsPerWeek ?? null,
-      strengthSessionsPerWeek,
-      longWorkoutDay: longWorkoutDay || null,
-      notes: notes || null,
-      goalMode: normalizedGoalMode,
-      trainingPriority: normalizedTrainingPriority,
-      raceDate: effectiveRaceDate,
-      startPolicy: normalizedStartPolicy,
-      twoADayPreference: twoADayPreference ?? null,
-      trainingPlanSpec,
-      trainingPlanQuality: trainingQuality?.validation ?? null,
-      trainingPlanRepairActions: trainingQuality?.repairActions ?? [],
-      trainingCalendarSource: resolvedCalendarSource || null,
-      generatorPolicyVersion: TRAINING_PLAN_GENERATOR_POLICY_VERSION,
-      generationVersionPins,
-    }),
+    preferencesJson: buildPreferencesJson(requestedWeeklyTargets),
     normalizedPreferredTime,
     normalizedPreferredCardioTime,
     normalizedPreferredStrengthTime,
@@ -844,7 +858,13 @@ export async function generateTrainingPlanForUser(
     trainingPlanSpec: trainingPlanSpec ?? undefined,
   };
 
-  const finalizedPersistenceInput = finalizeGeneratedTrainingPlanForPersistence(persistenceInput);
+  let finalizedPersistenceInput = finalizeGeneratedTrainingPlanForPersistence(persistenceInput);
+  planData = finalizedPersistenceInput.planData;
+  const scheduledWeeklyTargets = buildScheduledWeeklyTargetsFromPlan(planData, requestedWeeklyTargets);
+  finalizedPersistenceInput = {
+    ...finalizedPersistenceInput,
+    preferencesJson: buildPreferencesJson(scheduledWeeklyTargets),
+  };
   const basePreflightLint = lintGeneratedTrainingPlanPreflight(finalizedPersistenceInput);
   const preflightLint = trainingQuality
     ? mergeTrainingQualityIntoPlanLint(basePreflightLint, trainingQuality.validation)
@@ -860,11 +880,11 @@ export async function generateTrainingPlanForUser(
         durationWeeks,
         resolvedStartDate: startStr,
         weeklyTargets: buildWeeklyTargets({
-          sessionsPerWeek: normalizedSessionsPerWeek,
-          runSessionsPerWeek: normalizedRunSessionsPerWeek ?? null,
-          strengthSessionsPerWeek: effectiveStrengthSessionsPerWeek,
-          bikeSessionsPerWeek: normalizedBikeSessionsPerWeek,
-          swimSessionsPerWeek: normalizedSwimSessionsPerWeek,
+          sessionsPerWeek: scheduledWeeklyTargets.sessionsPerWeek,
+          runSessionsPerWeek: scheduledWeeklyTargets.runSessionsPerWeek,
+          strengthSessionsPerWeek: scheduledWeeklyTargets.strengthSessionsPerWeek,
+          bikeSessionsPerWeek: scheduledWeeklyTargets.bikeSessionsPerWeek,
+          swimSessionsPerWeek: scheduledWeeklyTargets.swimSessionsPerWeek,
         }),
         totalSessions: countSchedulablePlanSessions(planData),
         calendarSource: resolvedCalendarSource || null,
@@ -1033,11 +1053,11 @@ export async function generateTrainingPlanForUser(
       preferredCardioTime: normalizedPreferredCardioTime,
       preferredStrengthTime: normalizedPreferredStrengthTime,
       weeklyTargets: buildWeeklyTargets({
-        sessionsPerWeek: normalizedSessionsPerWeek,
-        runSessionsPerWeek: normalizedRunSessionsPerWeek ?? null,
-        strengthSessionsPerWeek: effectiveStrengthSessionsPerWeek,
-        bikeSessionsPerWeek: normalizedBikeSessionsPerWeek,
-        swimSessionsPerWeek: normalizedSwimSessionsPerWeek,
+        sessionsPerWeek: scheduledWeeklyTargets.sessionsPerWeek,
+        runSessionsPerWeek: scheduledWeeklyTargets.runSessionsPerWeek,
+        strengthSessionsPerWeek: scheduledWeeklyTargets.strengthSessionsPerWeek,
+        bikeSessionsPerWeek: scheduledWeeklyTargets.bikeSessionsPerWeek,
+        swimSessionsPerWeek: scheduledWeeklyTargets.swimSessionsPerWeek,
       }),
       weeks: persistedPlan.weekSummaries,
       profileQuality: planData.profileQuality ?? null,
@@ -1066,11 +1086,91 @@ function countSchedulablePlanSessions(planData: any): number {
   return (Array.isArray(planData?.weeks) ? planData.weeks : []).reduce((sum: number, week: any) => {
     const sessions = Array.isArray(week?.sessions) ? week.sessions : [];
     return sum + sessions.filter((session: any) => {
-      const type = String(session?.sessionType || '').toLowerCase();
-      const status = String(session?.scheduleState || '').toLowerCase();
-      return type !== 'rest' && status !== 'dropped' && status !== 'deferred';
+      return isSchedulableTrainingPlanSession(session);
     }).length;
   }, 0);
+}
+
+function buildScheduledWeeklyTargetsFromPlan(
+  planData: any,
+  fallback: TrainingPlanWeeklyTargets,
+): TrainingPlanWeeklyTargets {
+  const weeks = Array.isArray(planData?.weeks) ? planData.weeks : [];
+  if (weeks.length === 0) return buildWeeklyTargets(fallback);
+
+  const maxCounts = {
+    running: 0,
+    cycling: 0,
+    swimming: 0,
+    strength: 0,
+  };
+
+  for (const week of weeks) {
+    const weekCounts = {
+      running: 0,
+      cycling: 0,
+      swimming: 0,
+      strength: 0,
+    };
+    const sessions = Array.isArray(week?.sessions) ? week.sessions : [];
+    for (const session of sessions) {
+      if (!isSchedulableTrainingPlanSession(session)) continue;
+      const modality = scheduledWeeklyTargetModality(session);
+      if (!modality) continue;
+      weekCounts[modality] += 1;
+    }
+    maxCounts.running = Math.max(maxCounts.running, weekCounts.running);
+    maxCounts.cycling = Math.max(maxCounts.cycling, weekCounts.cycling);
+    maxCounts.swimming = Math.max(maxCounts.swimming, weekCounts.swimming);
+    maxCounts.strength = Math.max(maxCounts.strength, weekCounts.strength);
+  }
+
+  return {
+    sessionsPerWeek: fallback.sessionsPerWeek,
+    runSessionsPerWeek: nullableScheduledTarget(maxCounts.running, fallback.runSessionsPerWeek),
+    bikeSessionsPerWeek: nullableScheduledTarget(maxCounts.cycling, fallback.bikeSessionsPerWeek),
+    swimSessionsPerWeek: nullableScheduledTarget(maxCounts.swimming, fallback.swimSessionsPerWeek),
+    strengthSessionsPerWeek: maxCounts.strength,
+  };
+}
+
+function nullableScheduledTarget(count: number, requested: number | null): number | null {
+  if (count > 0) return count;
+  return requested == null ? null : 0;
+}
+
+function isSchedulableTrainingPlanSession(session: any): boolean {
+  const type = String(session?.sessionType || '').toLowerCase();
+  const status = String(session?.scheduleState || '').toLowerCase();
+  return type !== 'rest'
+    && status !== 'dropped'
+    && status !== 'deferred'
+    && status !== 'unscheduled'
+    && status !== 'canceled'
+    && status !== 'cancelled';
+}
+
+function scheduledWeeklyTargetModality(
+  session: any,
+): 'running' | 'cycling' | 'swimming' | 'strength' | null {
+  const type = String(session?.sessionType || '').trim().toLowerCase();
+  const title = String(session?.title || '').trim().toLowerCase();
+  if (!type && !title) return null;
+  if (type === 'gym' || type === 'lift' || type.startsWith('strength')) return 'strength';
+  if (type === 'ride' || type === 'bike' || type === 'cycling' || type.includes('cycle')) return 'cycling';
+  if (type === 'swim' || type === 'swimming' || type.includes('swim')) return 'swimming';
+  if (
+    type === 'run'
+    || type === 'running'
+    || type === 'jog'
+    || type === 'brick'
+    || type.endsWith('_run')
+    || type.includes('run')
+    || title.includes('run')
+  ) {
+    return 'running';
+  }
+  return null;
 }
 
 function buildKernelCapacityWindows(input: {

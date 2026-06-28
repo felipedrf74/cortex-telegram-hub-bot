@@ -26,8 +26,10 @@ import {
 } from '../../services/training-operational-switches';
 import { validateRequestedTrainingCalendarSource } from '../../services/training-calendar-source';
 import { isPastIsoDate, isStrictIsoDate } from '../../services/training-date-utils';
+import * as trainingPlans from '../../services/training-plans';
 import {
   claimTrainingPlanGenerationIdempotency,
+  clearTrainingPlanGenerationIdempotency,
   completeTrainingPlanGenerationIdempotency,
   failTrainingPlanGenerationIdempotency,
   fingerprintTrainingPlanGenerationRequest,
@@ -69,7 +71,7 @@ export function registerTrainingPlanRoutes(
       runSessionsPerWeek,
       bikeSessionsPerWeek,
       swimSessionsPerWeek,
-      strengthSessionsPerWeek = 2,
+      strengthSessionsPerWeek,
       startPolicy,
       longWorkoutDay,
       notes,
@@ -79,9 +81,22 @@ export function registerTrainingPlanRoutes(
       twoADayPreference,
       calendarSource,
     } = req.body;
+    const normalizedTwoADayPreference = normalizeTrainingTwoADayPreference(twoADayPreference);
 
     if (!objective || typeof objective !== 'string') {
       sendError(res, 'VALIDATION', 'objective is required (e.g., "Lisbon Marathon October 2026")', 400);
+      return;
+    }
+
+    const planRequestValidation = validateTrainingPlanSelectedModelRequest(req.body ?? {});
+    if (!planRequestValidation.ok) {
+      sendError(
+        res,
+        planRequestValidation.code,
+        planRequestValidation.message,
+        400,
+        { field: planRequestValidation.field },
+      );
       return;
     }
 
@@ -129,10 +144,7 @@ export function registerTrainingPlanRoutes(
         // `undefined` and never reached the planner's two-a-day
         // heuristic explicitly. Now an explicit `'auto'` value flows
         // through; `resolveMaxSessionsPerDay` has a matching branch.
-        twoADayPreference: typeof twoADayPreference === 'string'
-          && (twoADayPreference === 'never' || twoADayPreference === 'optional' || twoADayPreference === 'preferred' || twoADayPreference === 'auto')
-          ? twoADayPreference
-          : undefined,
+        twoADayPreference: normalizedTwoADayPreference,
         calendarSource: calendarSourceValidation.source,
         previewOnly: true,
       });
@@ -197,7 +209,7 @@ export function registerTrainingPlanRoutes(
       runSessionsPerWeek,
       bikeSessionsPerWeek,
       swimSessionsPerWeek,
-      strengthSessionsPerWeek = 2,
+      strengthSessionsPerWeek,
       startPolicy,
       longWorkoutDay,
       notes,
@@ -207,9 +219,22 @@ export function registerTrainingPlanRoutes(
       twoADayPreference,
       calendarSource,
     } = req.body;
+    const normalizedTwoADayPreference = normalizeTrainingTwoADayPreference(twoADayPreference);
 
     if (!objective || typeof objective !== 'string') {
       sendError(res, 'VALIDATION', 'objective is required (e.g., "Lisbon Marathon October 2026")', 400);
+      return;
+    }
+
+    const planRequestValidation = validateTrainingPlanSelectedModelRequest(req.body ?? {});
+    if (!planRequestValidation.ok) {
+      sendError(
+        res,
+        planRequestValidation.code,
+        planRequestValidation.message,
+        400,
+        { field: planRequestValidation.field },
+      );
       return;
     }
 
@@ -247,7 +272,7 @@ export function registerTrainingPlanRoutes(
       goalMode,
       trainingPriority,
       raceDate,
-      twoADayPreference,
+      twoADayPreference: normalizedTwoADayPreference,
       calendarSource: calendarSourceValidation.source,
       generatorPolicyVersion: TRAINING_PLAN_GENERATOR_POLICY_VERSION,
     };
@@ -259,9 +284,53 @@ export function registerTrainingPlanRoutes(
     );
     const idempotencyKey = explicitIdempotencyKey
       ?? buildAutomaticTrainingPlanGenerationIdempotencyKey(requestHash);
-    const idempotencyClaim = claimTrainingPlanGenerationIdempotency(userId, tenantId, idempotencyKey, requestHash);
+    let idempotencyClaim = claimTrainingPlanGenerationIdempotency(userId, tenantId, idempotencyKey, requestHash);
     if (idempotencyClaim.kind === 'replay') {
-      sendSuccess(res, idempotencyClaim.responseData, { status: idempotencyClaim.statusCode });
+      const replayAssessment = assessTrainingPlanGenerationReplay({
+        userId,
+        tenantId,
+        responseData: idempotencyClaim.responseData,
+      });
+      if (replayAssessment.replayable) {
+        if (replayAssessment.createdPlan) {
+          invalidateCalendarCaches(userId);
+          invalidateTrainingScreenCaches(userId);
+        }
+        sendSuccess(res, idempotencyClaim.responseData, { status: idempotencyClaim.statusCode });
+        return;
+      }
+
+      const clearedRows = clearTrainingPlanGenerationIdempotency(
+        userId,
+        tenantId,
+        idempotencyKey,
+        requestHash,
+      );
+      logger.warn(
+        {
+          userId,
+          idempotencyKey,
+          reason: replayAssessment.reason,
+          planId: replayAssessment.planId ?? null,
+          clearedRows,
+        },
+        'Training plan idempotency replay discarded because active plan proof failed',
+      );
+
+      idempotencyClaim = claimTrainingPlanGenerationIdempotency(userId, tenantId, idempotencyKey, requestHash);
+    }
+    if (idempotencyClaim.kind === 'replay') {
+      logger.warn(
+        { userId, idempotencyKey },
+        'Training plan idempotency replay claim reappeared after discard; returning in-progress instead of generating with a stale claim',
+      );
+      sendError(
+        res,
+        'TRAINING_PLAN_GENERATION_IN_PROGRESS',
+        'This plan creation is being reconciled. Please wait for the current result instead of creating another plan.',
+        409,
+        { idempotencyKey: idempotencyClaim.idempotencyKey },
+      );
       return;
     }
     if (idempotencyClaim.kind === 'in_progress') {
@@ -330,15 +399,12 @@ export function registerTrainingPlanRoutes(
         // `undefined` and never reached the planner's two-a-day
         // heuristic explicitly. Now an explicit `'auto'` value flows
         // through; `resolveMaxSessionsPerDay` has a matching branch.
-        twoADayPreference: typeof twoADayPreference === 'string'
-          && (twoADayPreference === 'never' || twoADayPreference === 'optional' || twoADayPreference === 'preferred' || twoADayPreference === 'auto')
-          ? twoADayPreference
-          : undefined,
+        twoADayPreference: normalizedTwoADayPreference,
         calendarSource: calendarSourceValidation.source,
       });
 
       if (result.status === 'needs_profile') {
-        completeTrainingPlanGenerationIdempotency(userId, tenantId, idempotencyKey, requestHash, result.data, 200);
+        failTrainingPlanGenerationIdempotency(userId, tenantId, idempotencyKey, requestHash);
         sendSuccess(res, result.data);
         return;
       }
@@ -351,7 +417,7 @@ export function registerTrainingPlanRoutes(
           },
           'Training plan generation needs clarification before persistence',
         );
-        completeTrainingPlanGenerationIdempotency(userId, tenantId, idempotencyKey, requestHash, result.data, 200);
+        failTrainingPlanGenerationIdempotency(userId, tenantId, idempotencyKey, requestHash);
         sendSuccess(res, result.data);
         return;
       }
@@ -388,7 +454,7 @@ export function registerTrainingPlanRoutes(
           },
           'Training plan generation blocked by strict quality gate',
         );
-        completeTrainingPlanGenerationIdempotency(userId, tenantId, idempotencyKey, requestHash, result.data, 200);
+        failTrainingPlanGenerationIdempotency(userId, tenantId, idempotencyKey, requestHash);
         sendSuccess(res, result.data);
         return;
       }
@@ -609,6 +675,227 @@ export function registerTrainingPlanRoutes(
 
 function buildAutomaticTrainingPlanGenerationIdempotencyKey(requestHash: string): string {
   return `auto:${requestHash.slice(0, 48)}`;
+}
+
+type TrainingPlanGenerationReplayAssessment =
+  | { replayable: true; createdPlan: boolean; planId?: number }
+  | { replayable: false; reason: string; planId?: number | null };
+
+function assessTrainingPlanGenerationReplay(input: {
+  userId: number;
+  tenantId: number;
+  responseData: Record<string, unknown>;
+}): TrainingPlanGenerationReplayAssessment {
+  const planId = parseReplayPlanId(input.responseData);
+  const status = typeof input.responseData.status === 'string'
+    ? input.responseData.status.trim().toLowerCase()
+    : '';
+  const looksCreated = planId != null || status === 'created';
+
+  if (!looksCreated) {
+    return { replayable: false, reason: 'non_mutating_response', planId: null };
+  }
+  if (planId == null) {
+    return { replayable: false, reason: 'created_response_missing_plan_id', planId: null };
+  }
+
+  try {
+    const plan = trainingPlans.getPlanById(planId);
+    if (!plan) {
+      return { replayable: false, reason: 'plan_missing', planId };
+    }
+    const planTenantId = normalizeReplayPlanTenantId((plan as { tenant_id?: unknown }).tenant_id, input.tenantId);
+    if ((plan as { user_id?: unknown }).user_id !== input.userId || planTenantId !== input.tenantId) {
+      return { replayable: false, reason: 'plan_owner_mismatch', planId };
+    }
+    const lifecycleStatus = typeof (plan as { status?: unknown }).status === 'string'
+      ? String((plan as { status?: unknown }).status).trim().toLowerCase()
+      : 'active';
+    if (lifecycleStatus !== 'active') {
+      return { replayable: false, reason: 'plan_not_active', planId };
+    }
+
+    const weeks = trainingPlans.getWeeksForPlan(planId);
+    if (!Array.isArray(weeks) || weeks.length === 0) {
+      return { replayable: false, reason: 'plan_has_no_weeks', planId };
+    }
+    const sessionCount = weeks.reduce((total, week: any) => {
+      const weekId = Number(week?.id);
+      if (!Number.isFinite(weekId)) return total;
+      const sessions = trainingPlans.getSessionsForWeek(weekId);
+      return total + (Array.isArray(sessions) ? sessions.length : 0);
+    }, 0);
+    if (sessionCount === 0) {
+      return { replayable: false, reason: 'plan_has_no_sessions', planId };
+    }
+
+    return { replayable: true, createdPlan: true, planId };
+  } catch (err) {
+    logger.warn(
+      { err, userId: input.userId, tenantId: input.tenantId, planId },
+      'Training plan idempotency replay proof failed during plan lookup',
+    );
+    return { replayable: false, reason: 'plan_lookup_failed', planId };
+  }
+}
+
+function parseReplayPlanId(responseData: Record<string, unknown>): number | null {
+  const raw = responseData.planId ?? responseData.plan_id;
+  if (typeof raw === 'number' && Number.isFinite(raw) && raw > 0) return Math.trunc(raw);
+  if (typeof raw === 'string' && raw.trim()) {
+    const parsed = Number(raw);
+    if (Number.isFinite(parsed) && parsed > 0) return Math.trunc(parsed);
+  }
+  return null;
+}
+
+function normalizeReplayPlanTenantId(value: unknown, fallback: number): number {
+  const parsed = typeof value === 'number' ? value : Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? Math.trunc(parsed) : fallback;
+}
+
+type TrainingPlanSelectedModelValidation =
+  | { ok: true }
+  | { ok: false; field: string; code: string; message: string };
+
+const ALLOWED_TRAINING_GOAL_MODES = new Set([
+  'event_based',
+  'continuous',
+  'maintenance',
+  'return_to_training',
+]);
+
+const ALLOWED_TRAINING_PRIORITIES = new Set([
+  'running',
+  'cycling',
+  'swimming',
+  'strength',
+  'triathlon',
+  'hybrid',
+]);
+
+const ALLOWED_TRAINING_START_POLICIES = new Set([
+  'today',
+  'next_full_week',
+]);
+
+const ALLOWED_TRAINING_TWO_A_DAY_PREFERENCES = new Set([
+  'never',
+  'optional',
+  'preferred',
+  'auto',
+]);
+const MIN_ROUTE_TRAINING_PLAN_DURATION_WEEKS = 1;
+const MAX_ROUTE_TRAINING_PLAN_DURATION_WEEKS = 52;
+
+function normalizeTrainingTwoADayPreference(raw: unknown): 'never' | 'optional' | 'preferred' | 'auto' | undefined {
+  if (typeof raw !== 'string') return undefined;
+  const normalized = raw.trim().toLowerCase();
+  return ALLOWED_TRAINING_TWO_A_DAY_PREFERENCES.has(normalized)
+    ? (normalized as 'never' | 'optional' | 'preferred' | 'auto')
+    : undefined;
+}
+
+function validateTrainingPlanSelectedModelRequest(body: Record<string, unknown>): TrainingPlanSelectedModelValidation {
+  const durationValidation = validateIntegerField(
+    body,
+    'durationWeeks',
+    MIN_ROUTE_TRAINING_PLAN_DURATION_WEEKS,
+    MAX_ROUTE_TRAINING_PLAN_DURATION_WEEKS,
+    'INVALID_TRAINING_PLAN_DURATION',
+  );
+  if (!durationValidation.ok) return durationValidation;
+
+  const weeklyValidation = validateIntegerField(body, 'sessionsPerWeek', 3, 7, 'INVALID_TRAINING_SESSION_TARGET');
+  if (!weeklyValidation.ok) return weeklyValidation;
+
+  for (const field of ['runSessionsPerWeek', 'bikeSessionsPerWeek', 'swimSessionsPerWeek'] as const) {
+    const validation = validateIntegerField(body, field, 0, 7, 'INVALID_TRAINING_MODALITY_TARGET');
+    if (!validation.ok) return validation;
+  }
+
+  const strengthValidation = validateIntegerField(
+    body,
+    'strengthSessionsPerWeek',
+    0,
+    6,
+    'INVALID_TRAINING_MODALITY_TARGET',
+  );
+  if (!strengthValidation.ok) return strengthValidation;
+
+  const goalModeValidation = validateAllowedStringField(
+    body,
+    'goalMode',
+    ALLOWED_TRAINING_GOAL_MODES,
+    'INVALID_TRAINING_GOAL_MODE',
+  );
+  if (!goalModeValidation.ok) return goalModeValidation;
+
+  const priorityValidation = validateAllowedStringField(
+    body,
+    'trainingPriority',
+    ALLOWED_TRAINING_PRIORITIES,
+    'INVALID_TRAINING_PRIORITY',
+  );
+  if (!priorityValidation.ok) return priorityValidation;
+
+  const startPolicyValidation = validateAllowedStringField(
+    body,
+    'startPolicy',
+    ALLOWED_TRAINING_START_POLICIES,
+    'INVALID_TRAINING_START_POLICY',
+  );
+  if (!startPolicyValidation.ok) return startPolicyValidation;
+
+  const twoADayValidation = validateAllowedStringField(
+    body,
+    'twoADayPreference',
+    ALLOWED_TRAINING_TWO_A_DAY_PREFERENCES,
+    'INVALID_TRAINING_TWO_A_DAY_PREFERENCE',
+  );
+  if (!twoADayValidation.ok) return twoADayValidation;
+
+  return { ok: true };
+}
+
+function validateIntegerField(
+  body: Record<string, unknown>,
+  field: string,
+  min: number,
+  max: number,
+  code: string,
+): TrainingPlanSelectedModelValidation {
+  const raw = body[field];
+  if (raw == null || raw === '') return { ok: true };
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value < min || value > max) {
+    return {
+      ok: false,
+      field,
+      code,
+      message: `${field} must be an integer between ${min} and ${max}.`,
+    };
+  }
+  return { ok: true };
+}
+
+function validateAllowedStringField(
+  body: Record<string, unknown>,
+  field: string,
+  allowed: Set<string>,
+  code: string,
+): TrainingPlanSelectedModelValidation {
+  const raw = body[field];
+  if (raw == null || raw === '') return { ok: true };
+  if (typeof raw !== 'string' || !allowed.has(raw.trim().toLowerCase())) {
+    return {
+      ok: false,
+      field,
+      code,
+      message: `${field} is not supported for Training plan creation.`,
+    };
+  }
+  return { ok: true };
 }
 
 function validateRaceDateInput(raceDate: unknown): { ok: true } | { ok: false; code: string; message: string } {

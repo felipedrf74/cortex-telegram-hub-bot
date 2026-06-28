@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 
-import { enforceRequestedTrainingPlanVolume } from '../../src/services/training-plan-volume-enforcement';
+import {
+  enforceRequestedTrainingPlanVolume,
+} from '../../src/services/training-plan-volume-enforcement';
+import { buildCoachKernelTrainingPlan } from '../../src/services/training-coach-kernel-plan-generator';
 import { inferTrainingSessionIsLowerHeavy } from '../../src/services/training-session-classification';
 import type { CoordinatedTrainingPlan } from '../../src/services/training-plan-coordination';
 
@@ -83,6 +86,144 @@ describe('training-plan-volume-enforcement', () => {
     expect(sessions.some((session) => session.dayOfWeek.toLowerCase() === 'sunday')).toBe(false);
     expect(new Set(strengthDays).size).toBe(5);
     expect(strengthSessions.every((session) => session.preferredStartTime === '12:00')).toBe(true);
+  });
+
+  it('matches persisted strength target to real kernel plus enforcer output when explicit strength exceeds day budget', () => {
+    const rawPlan = buildCoachKernelTrainingPlan({
+      userId: 99,
+      objective: 'Strength block',
+      durationWeeks: 1,
+      startDate: '2026-04-27',
+      sessionsPerWeek: 3,
+      runSessionsPerWeek: null,
+      strengthSessionsPerWeek: 5,
+      preferredTime: '12:00',
+      preferredCardioTime: '07:00',
+      preferredStrengthTime: '18:00',
+      longWorkoutDay: 'Saturday',
+      notes: null,
+      trainingPriority: 'strength',
+      fitnessProfile: null,
+      gymProfile: null,
+      runProfile: null,
+    });
+    const result = enforceRequestedTrainingPlanVolume(rawPlan, {
+      sessionsPerWeek: 3,
+      runSessionsPerWeek: undefined,
+      strengthSessionsPerWeek: 5,
+      preferredCardioTime: '07:00',
+      preferredStrengthTime: '18:00',
+      startDate: '2026-04-27',
+      longWorkoutDay: 'Saturday',
+    });
+
+    const scheduledStrengthSessions = result.weeks?.[0]?.sessions
+      ?.filter((session) => session.sessionType === 'gym')
+      .length ?? 0;
+    expect(scheduledStrengthSessions).toBe(3);
+  });
+
+  it('matches persisted strength target when explicit run budget limits high strength requests', () => {
+    const rawPlan = buildCoachKernelTrainingPlan({
+      userId: 99,
+      objective: 'Running with strength support',
+      durationWeeks: 1,
+      startDate: '2026-04-27',
+      sessionsPerWeek: 5,
+      runSessionsPerWeek: 2,
+      strengthSessionsPerWeek: 5,
+      preferredTime: '12:00',
+      preferredCardioTime: '07:00',
+      preferredStrengthTime: '18:00',
+      longWorkoutDay: 'Saturday',
+      notes: null,
+      trainingPriority: 'running',
+      fitnessProfile: null,
+      gymProfile: null,
+      runProfile: null,
+    });
+    const result = enforceRequestedTrainingPlanVolume(rawPlan, {
+      sessionsPerWeek: 5,
+      runSessionsPerWeek: 2,
+      strengthSessionsPerWeek: 5,
+      preferredCardioTime: '07:00',
+      preferredStrengthTime: '18:00',
+      startDate: '2026-04-27',
+      longWorkoutDay: 'Saturday',
+    });
+
+    const sessions = result.weeks?.[0]?.sessions ?? [];
+    const scheduledStrengthSessions = sessions.filter((session) => session.sessionType === 'gym').length;
+    expect(scheduledStrengthSessions).toBe(2);
+    expect(sessions.filter((session) => session.sessionType === 'run' || session.sessionType === 'long_run')).toHaveLength(2);
+  });
+
+  it('keeps triathlon zero bike and swim requests floored in the final scheduled plan', () => {
+    const rawPlan = buildCoachKernelTrainingPlan({
+      userId: 99,
+      objective: 'Olympic triathlon',
+      durationWeeks: 1,
+      startDate: '2026-04-27',
+      sessionsPerWeek: 6,
+      runSessionsPerWeek: 0,
+      bikeSessionsPerWeek: 0,
+      swimSessionsPerWeek: 0,
+      strengthSessionsPerWeek: 1,
+      preferredTime: '12:00',
+      preferredCardioTime: '07:00',
+      preferredStrengthTime: '18:00',
+      longWorkoutDay: 'Saturday',
+      notes: null,
+      trainingPriority: 'triathlon',
+      fitnessProfile: null,
+      gymProfile: null,
+      runProfile: null,
+    });
+
+    const result = enforceRequestedTrainingPlanVolume(rawPlan, {
+      sessionsPerWeek: 6,
+      runSessionsPerWeek: 0,
+      bikeSessionsPerWeek: 0,
+      swimSessionsPerWeek: 0,
+      strengthSessionsPerWeek: 1,
+      preferredCardioTime: '07:00',
+      preferredStrengthTime: '18:00',
+      startDate: '2026-04-27',
+      longWorkoutDay: 'Saturday',
+    });
+
+    const sessions = result.weeks?.[0]?.sessions ?? [];
+    expect(sessions.filter((session) => ['ride', 'bike', 'cycling'].includes(String(session.sessionType).toLowerCase()))).toHaveLength(1);
+    expect(sessions.filter((session) => String(session.sessionType).toLowerCase() === 'swim')).toHaveLength(1);
+  });
+
+  it('does not inflate non-zero cycling targets to sessionsPerWeek during enforcement', () => {
+    const result = enforceRequestedTrainingPlanVolume({
+      sport: 'cycling',
+      weeks: [
+        {
+          weekNumber: 1,
+          sessions: [
+            { dayOfWeek: 'Monday', sessionType: 'ride', title: 'Endurance Ride', durationMinutes: 60 },
+            { dayOfWeek: 'Wednesday', sessionType: 'ride', title: 'Tempo Ride', durationMinutes: 50 },
+            { dayOfWeek: 'Saturday', sessionType: 'ride', title: 'Long Ride', durationMinutes: 120 },
+            { dayOfWeek: 'Thursday', sessionType: 'gym', title: 'Strength Support', durationMinutes: 45, exercises: [{ name: 'Split Squat' }] },
+          ],
+        },
+      ],
+    }, {
+      sessionsPerWeek: 5,
+      bikeSessionsPerWeek: 3,
+      strengthSessionsPerWeek: 1,
+      preferredCardioTime: '07:00',
+      preferredStrengthTime: '18:00',
+      startDate: '2026-04-27',
+    });
+
+    const sessions = result.weeks?.[0]?.sessions ?? [];
+    expect(sessions).toHaveLength(4);
+    expect(sessions.filter((session) => String(session.sessionType).toLowerCase() === 'ride')).toHaveLength(3);
+    expect(sessions.filter((session) => String(session.sessionType).toLowerCase() === 'gym')).toHaveLength(1);
   });
 
   it('does not leave lower-heavy strength on the day before a Saturday long run after volume fill-in', () => {

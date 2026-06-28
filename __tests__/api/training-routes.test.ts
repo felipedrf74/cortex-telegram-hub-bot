@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Request } from 'express';
 import Database from 'better-sqlite3';
 import { clearTenantScopeAnomaliesForTests, getTenantScopeAnomalies } from '../../src/services/tenant-scope-observability';
+import { config } from '../../src/config';
 
 let testDb: Database.Database;
 
@@ -50,6 +51,7 @@ const mockReadCookingMeshContext = vi.fn();
 const mockReadFinanceMeshContext = vi.fn();
 const mockReadContentMeshContext = vi.fn();
 const mockReadSecretaryMeshContext = vi.fn();
+const mockBuildTrainingEquipmentAdaptation = vi.fn();
 const mockSetLastCoachState = vi.fn();
 const mockClearLastCoachState = vi.fn();
 const mockClearStoredPlansForAthlete = vi.fn();
@@ -199,6 +201,19 @@ vi.mock('../../src/services/cross-agent-learning', () => ({
   readContentMeshContext: (...args: unknown[]) => mockReadContentMeshContext(...args),
   readSecretaryMeshContext: (...args: unknown[]) => mockReadSecretaryMeshContext(...args),
 }));
+
+vi.mock('../../src/services/training-plan-equipment-adaptation', async () => {
+  const actual = await vi.importActual<typeof import('../../src/services/training-plan-equipment-adaptation')>(
+    '../../src/services/training-plan-equipment-adaptation',
+  );
+  return {
+    ...actual,
+    buildTrainingEquipmentAdaptation: (...args: unknown[]) => {
+      const implementation = mockBuildTrainingEquipmentAdaptation.getMockImplementation();
+      return implementation ? mockBuildTrainingEquipmentAdaptation(...args) : actual.buildTrainingEquipmentAdaptation(...(args as [any]));
+    },
+  };
+});
 
 vi.mock('../../src/domains/domain-handler', () => ({
   setLastCoachState: (...args: unknown[]) => mockSetLastCoachState(...args),
@@ -407,6 +422,16 @@ function resetTrainingOperationalEnvForTests(): void {
   delete process.env.TRAINING_CALENDAR_SYNC_DISABLED;
 }
 
+function trainingGenerationIdempotencyRow(idempotencyKey: string): { status: string } | undefined {
+  return testDb.prepare(`
+    SELECT status
+      FROM training_plan_generation_idempotency_scoped
+     WHERE user_id = 12
+       AND tenant_id = 12
+       AND idempotency_key = ?
+  `).get(idempotencyKey) as { status: string } | undefined;
+}
+
 describe('Training API routes', () => {
   afterEach(() => {
     vi.useRealTimers();
@@ -416,6 +441,7 @@ describe('Training API routes', () => {
   beforeEach(async () => {
     testDb = new Database(':memory:');
     resetTrainingOperationalEnvForTests();
+    config.coaching.coachKernelEquipmentAuthorityEnabled = false;
 
     // Hardening audit 2026-04-20: reset the new calendar-lookup
     // coalescing cache between tests so a prior test's mocked
@@ -476,6 +502,7 @@ describe('Training API routes', () => {
     mockReadFinanceMeshContext.mockReset();
     mockReadContentMeshContext.mockReset();
     mockReadSecretaryMeshContext.mockReset();
+    mockBuildTrainingEquipmentAdaptation.mockReset();
     mockClearLastCoachState.mockReset();
     mockClearStoredPlansForAthlete.mockReset();
     mockGetStoredPlanCoveringDate.mockReset();
@@ -1164,6 +1191,47 @@ describe('Training API routes', () => {
     });
   });
 
+  it('marks quota-blocked plan generation idempotency rows failed so retry re-runs', async () => {
+    mockIsUserOverDailyCap
+      .mockReturnValueOnce({
+        over: true,
+        spentUsd: 0.2,
+        capUsd: 0.2,
+        plan: 'pro',
+        resetAt: '2026-04-15T00:00:00.000Z',
+      })
+      .mockReturnValue({
+        over: false,
+        spentUsd: 0,
+        capUsd: 0.2,
+        plan: 'pro',
+        resetAt: '2026-04-15T00:00:00.000Z',
+      });
+    mockGetProfile.mockImplementation((_userId: number, profile: string) => {
+      if (profile === 'fitness') return { experienceLevel: 'Intermediate', available_equipment: 'Full gym' };
+      return null;
+    });
+
+    const body = {
+      objective: 'General fitness',
+      preferredTime: '12:00',
+      sessionsPerWeek: 3,
+      strengthSessionsPerWeek: 2,
+      idempotencyKey: 'quota-retry-key',
+    };
+
+    const first = await dispatch('POST', '/plan/generate', {}, body);
+    expect(first.statusCode).toBe(429);
+    expect(trainingGenerationIdempotencyRow('quota-retry-key')?.status).toBe('failed');
+    expect(mockBuildCoachKernelTrainingPlan).not.toHaveBeenCalled();
+
+    const second = await dispatch('POST', '/plan/generate', {}, body);
+
+    expect(second.statusCode).toBe(201);
+    expect(mockBuildCoachKernelTrainingPlan).toHaveBeenCalled();
+    expect(trainingGenerationIdempotencyRow('quota-retry-key')?.status).toBe('succeeded');
+  });
+
   it('blocks plan generation when the Training generation kill switch is disabled', async () => {
     process.env.TRAINING_PLAN_GENERATION_ENABLED = 'false';
 
@@ -1236,6 +1304,30 @@ describe('Training API routes', () => {
     expect(mockBuildCoachKernelTrainingPlan).not.toHaveBeenCalled();
   });
 
+  it('marks needs-profile plan generation idempotency rows failed so retry re-runs', async () => {
+    mockGetProfile.mockReturnValue(null);
+    mockGetMissingProfileFields.mockReturnValue([{ key: 'fitness_goal', prompt: 'Goal?' }]);
+
+    const body = {
+      objective: 'General fitness',
+      preferredTime: '12:00',
+      idempotencyKey: 'needs-profile-retry-key',
+    };
+
+    const first = await dispatch('POST', '/plan/generate', {}, body);
+    expect(first.statusCode).toBe(200);
+    expect(first.body.data.needsProfile).toBe(true);
+    expect(trainingGenerationIdempotencyRow('needs-profile-retry-key')?.status).toBe('failed');
+
+    mockGetMissingProfileFields.mockClear();
+    const second = await dispatch('POST', '/plan/generate', {}, body);
+
+    expect(second.statusCode).toBe(200);
+    expect(second.body.data.needsProfile).toBe(true);
+    expect(mockGetMissingProfileFields).toHaveBeenCalled();
+    expect(trainingGenerationIdempotencyRow('needs-profile-retry-key')?.status).toBe('failed');
+  });
+
   it('blocks event-based generated plans before writes when the race date is missing', async () => {
     mockGetProfile.mockImplementation((_userId: number, profile: string) => {
       if (profile === 'fitness') return { experienceLevel: 'Intermediate', available_equipment: 'Full gym' };
@@ -1279,6 +1371,80 @@ describe('Training API routes', () => {
     expect(mockCreateSession).not.toHaveBeenCalled();
     expect(mockCreateEvent).not.toHaveBeenCalled();
     expect(mockInvalidateCalendarCaches).not.toHaveBeenCalled();
+  });
+
+  it('marks quality-gate idempotency rows failed so retry re-runs generation', async () => {
+    mockGetProfile.mockImplementation((_userId: number, profile: string) => {
+      if (profile === 'fitness') return { experienceLevel: 'Intermediate', available_equipment: 'Full gym' };
+      if (profile === 'triathlon-running') return { target_race: 'Marathon' };
+      return null;
+    });
+    mockBuildCoachKernelTrainingPlan.mockReturnValue(makeKernelPlan([
+      {
+        weekNumber: 1,
+        focus: 'base',
+        intensityPct: 70,
+        sessions: [
+          {
+            dayOfWeek: 'Wednesday',
+            sessionType: 'run',
+            title: 'Base Run',
+            durationMinutes: 50,
+            description: 'Easy aerobic run.',
+            exercises: [],
+          },
+        ],
+      },
+    ]));
+    const body = {
+      objective: 'Lisbon Marathon',
+      preferredTime: '07:00',
+      goalMode: 'event_based',
+      idempotencyKey: 'quality-gate-retry-key',
+    };
+
+    const first = await dispatch('POST', '/plan/generate', {}, body);
+    expect(first.body.data.status).toBe('plan_quality_blocked');
+    expect(trainingGenerationIdempotencyRow('quality-gate-retry-key')?.status).toBe('failed');
+
+    mockBuildCoachKernelTrainingPlan.mockClear();
+    const second = await dispatch('POST', '/plan/generate', {}, body);
+
+    expect(second.body.data.status).toBe('plan_quality_blocked');
+    expect(mockBuildCoachKernelTrainingPlan).toHaveBeenCalled();
+    expect(trainingGenerationIdempotencyRow('quality-gate-retry-key')?.status).toBe('failed');
+  });
+
+  it('marks clarification idempotency rows failed so retry re-runs generation', async () => {
+    mockGetProfile.mockImplementation((_userId: number, profile: string) => {
+      if (profile === 'fitness') return { experienceLevel: 'Intermediate' };
+      if (profile === 'triathlon-gym') return {};
+      return null;
+    });
+    mockBuildTrainingEquipmentAdaptation.mockReturnValue({
+      equipmentProfile: 'unknown',
+      canonicalProfile: { items: [] },
+    });
+
+    const body = {
+      objective: 'Build muscle with a 5-day gym plan',
+      sessionsPerWeek: 5,
+      strengthSessionsPerWeek: 5,
+      idempotencyKey: 'clarification-retry-key',
+    };
+
+    const first = await dispatch('POST', '/plan/generate', {}, body);
+    expect(first.statusCode).toBe(200);
+    expect(first.body.data.status).toBe('needs_clarification');
+    expect(trainingGenerationIdempotencyRow('clarification-retry-key')?.status).toBe('failed');
+
+    mockBuildCoachKernelTrainingPlan.mockClear();
+    const second = await dispatch('POST', '/plan/generate', {}, body);
+
+    expect(second.statusCode).toBe(200);
+    expect(second.body.data.status).toBe('needs_clarification');
+    expect(mockBuildCoachKernelTrainingPlan).toHaveBeenCalled();
+    expect(trainingGenerationIdempotencyRow('clarification-retry-key')?.status).toBe('failed');
   });
 
   it('creates continuous marathon-style plans without forcing a race date', async () => {
@@ -1417,6 +1583,9 @@ describe('Training API routes', () => {
     const createPlanCountAfterFirst = mockCreatePlan.mock.calls.length;
     const createSessionCountAfterFirst = mockCreateSession.mock.calls.length;
     const createEventCountAfterFirst = mockCreateEvent.mock.calls.length;
+    mockGetPlanById.mockReturnValue({ id: first.body.data.planId, user_id: 12, tenant_id: 12, status: 'active' });
+    mockGetWeeksForPlan.mockReturnValue([{ id: 3001, plan_id: first.body.data.planId, week_number: 1 }]);
+    mockGetSessionsForWeek.mockReturnValue([{ id: 4001, plan_id: first.body.data.planId, week_id: 3001, status: 'scheduled' }]);
     const second = await dispatch('POST', '/plan/generate', {}, body);
 
     expect(first.statusCode).toBe(201);
@@ -1428,6 +1597,198 @@ describe('Training API routes', () => {
     expect(mockCreatePlan).toHaveBeenCalledTimes(createPlanCountAfterFirst);
     expect(mockCreateSession).toHaveBeenCalledTimes(createSessionCountAfterFirst);
     expect(mockCreateEvent).toHaveBeenCalledTimes(createEventCountAfterFirst);
+  });
+
+  it('discards a stale confirmed plan replay when the referenced plan no longer exists', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(new Date('2026-04-15T06:00:00.000Z'));
+
+    mockGetProfile.mockImplementation((_userId: number, profile: string) => {
+      if (profile === 'fitness') return { experienceLevel: 'Intermediate', available_equipment: 'Full gym' };
+      return null;
+    });
+    mockBuildCoachKernelTrainingPlan.mockReturnValue(makeKernelPlan([
+      {
+        weekNumber: 1,
+        focus: 'base',
+        intensityPct: 70,
+        sessions: [
+          {
+            dayOfWeek: 'Wednesday',
+            sessionType: 'gym',
+            title: 'Strength + Core Support',
+            durationMinutes: 40,
+            description: 'Controlled strength work.',
+            exercises: [],
+          },
+        ],
+      },
+    ]));
+    mockCreatePlan
+      .mockReturnValueOnce({ id: 901 })
+      .mockReturnValueOnce({ id: 902 });
+
+    const body = {
+      objective: 'General fitness',
+      preferredTime: '12:00',
+      sessionsPerWeek: 3,
+      strengthSessionsPerWeek: 3,
+      idempotencyKey: 'plan-create-stale',
+    };
+
+    const first = await dispatch('POST', '/plan/generate', {}, body);
+    const createPlanCountAfterFirst = mockCreatePlan.mock.calls.length;
+    mockGetPlanById.mockReturnValue(null);
+
+    const second = await dispatch('POST', '/plan/generate', {}, body);
+
+    expect(first.statusCode).toBe(201);
+    expect(first.body.data.planId).toBe(901);
+    expect(second.statusCode).toBe(201);
+    expect(second.body.data.planId).toBe(902);
+    expect(mockCreatePlan).toHaveBeenCalledTimes(createPlanCountAfterFirst + 1);
+  });
+
+  it.each([
+    {
+      reason: 'plan_owner_mismatch',
+      configureProof: (planId: number) => {
+        mockGetPlanById.mockReturnValue({ id: planId, user_id: 99, tenant_id: 12, status: 'active' });
+      },
+    },
+    {
+      reason: 'plan_owner_mismatch',
+      configureProof: (planId: number) => {
+        mockGetPlanById.mockReturnValue({ id: planId, user_id: 12, tenant_id: 34, status: 'active' });
+      },
+    },
+    {
+      reason: 'plan_not_active',
+      configureProof: (planId: number) => {
+        mockGetPlanById.mockReturnValue({ id: planId, user_id: 12, tenant_id: 12, status: 'canceled' });
+      },
+    },
+    {
+      reason: 'plan_has_no_weeks',
+      configureProof: (planId: number) => {
+        mockGetPlanById.mockReturnValue({ id: planId, user_id: 12, tenant_id: 12, status: 'active' });
+        mockGetWeeksForPlan.mockReturnValue([]);
+      },
+    },
+    {
+      reason: 'plan_has_no_sessions',
+      configureProof: (planId: number) => {
+        mockGetPlanById.mockReturnValue({ id: planId, user_id: 12, tenant_id: 12, status: 'active' });
+        mockGetWeeksForPlan.mockReturnValue([{ id: 3003, plan_id: planId, week_number: 1 }]);
+        mockGetSessionsForWeek.mockReturnValue([]);
+      },
+    },
+  ])('discards stale confirmed plan replay when proof fails with $reason', async ({ configureProof }) => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(new Date('2026-04-15T06:00:00.000Z'));
+
+    mockGetProfile.mockImplementation((_userId: number, profile: string) => {
+      if (profile === 'fitness') return { experienceLevel: 'Intermediate', available_equipment: 'Full gym' };
+      return null;
+    });
+    mockBuildCoachKernelTrainingPlan.mockReturnValue(makeKernelPlan([
+      {
+        weekNumber: 1,
+        focus: 'base',
+        intensityPct: 70,
+        sessions: [
+          {
+            dayOfWeek: 'Wednesday',
+            sessionType: 'gym',
+            title: 'Strength + Core Support',
+            durationMinutes: 40,
+            description: 'Controlled strength work.',
+            exercises: [],
+          },
+        ],
+      },
+    ]));
+
+    const body = {
+      objective: 'General fitness',
+      preferredTime: '12:00',
+      sessionsPerWeek: 3,
+      strengthSessionsPerWeek: 3,
+      idempotencyKey: 'plan-create-stale-proof',
+    };
+
+    const first = await dispatch('POST', '/plan/generate', {}, body);
+    const createPlanCountAfterFirst = mockCreatePlan.mock.calls.length;
+    configureProof(Number(first.body.data.planId));
+
+    const second = await dispatch('POST', '/plan/generate', {}, body);
+
+    expect(first.statusCode).toBe(201);
+    expect(second.statusCode).toBe(201);
+    expect(mockCreatePlan).toHaveBeenCalledTimes(createPlanCountAfterFirst + 1);
+  });
+
+  it('returns 409 when a stale confirmed replay reappears after discard', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(new Date('2026-04-15T06:00:00.000Z'));
+
+    mockGetProfile.mockImplementation((_userId: number, profile: string) => {
+      if (profile === 'fitness') return { experienceLevel: 'Intermediate', available_equipment: 'Full gym' };
+      return null;
+    });
+    mockBuildCoachKernelTrainingPlan.mockReturnValue(makeKernelPlan([
+      {
+        weekNumber: 1,
+        focus: 'base',
+        intensityPct: 70,
+        sessions: [
+          {
+            dayOfWeek: 'Wednesday',
+            sessionType: 'gym',
+            title: 'Strength + Core Support',
+            durationMinutes: 40,
+            description: 'Controlled strength work.',
+            exercises: [],
+          },
+        ],
+      },
+    ]));
+
+    const body = {
+      objective: 'General fitness',
+      preferredTime: '12:00',
+      sessionsPerWeek: 3,
+      strengthSessionsPerWeek: 3,
+      idempotencyKey: 'plan-create-stale-reappears',
+    };
+
+    const first = await dispatch('POST', '/plan/generate', {}, body);
+    const createPlanCountAfterFirst = mockCreatePlan.mock.calls.length;
+    testDb.exec(`
+      CREATE TRIGGER training_idempotency_reappears_after_delete
+      AFTER DELETE ON training_plan_generation_idempotency_scoped
+      WHEN OLD.idempotency_key = 'plan-create-stale-reappears'
+      BEGIN
+        INSERT INTO training_plan_generation_idempotency_scoped (
+          user_id, tenant_id, idempotency_key, request_hash, status,
+          response_json, status_code, created_at, updated_at
+        ) VALUES (
+          OLD.user_id, OLD.tenant_id, OLD.idempotency_key, OLD.request_hash,
+          'succeeded', OLD.response_json, OLD.status_code, OLD.created_at, OLD.updated_at
+        );
+      END;
+    `);
+    mockGetPlanById.mockReturnValue(null);
+
+    const second = await dispatch('POST', '/plan/generate', {}, body);
+
+    expect(first.statusCode).toBe(201);
+    expect(second.statusCode).toBe(409);
+    expect(second.body.error.code).toBe('TRAINING_PLAN_GENERATION_IN_PROGRESS');
+    expect(second.body.error.details).toEqual(expect.objectContaining({
+      idempotencyKey: 'plan-create-stale-reappears',
+    }));
+    expect(mockCreatePlan).toHaveBeenCalledTimes(createPlanCountAfterFirst);
   });
 
   it('auto-dedupes rapid duplicate plan creation when the client omits an idempotency key', async () => {
@@ -1467,6 +1828,9 @@ describe('Training API routes', () => {
     const createPlanCountAfterFirst = mockCreatePlan.mock.calls.length;
     const createSessionCountAfterFirst = mockCreateSession.mock.calls.length;
     const createEventCountAfterFirst = mockCreateEvent.mock.calls.length;
+    mockGetPlanById.mockReturnValue({ id: first.body.data.planId, user_id: 12, tenant_id: 12, status: 'active' });
+    mockGetWeeksForPlan.mockReturnValue([{ id: 3002, plan_id: first.body.data.planId, week_number: 1 }]);
+    mockGetSessionsForWeek.mockReturnValue([{ id: 4002, plan_id: first.body.data.planId, week_id: 3002, status: 'scheduled' }]);
     const second = await dispatch('POST', '/plan/generate', {}, body);
 
     expect(first.statusCode).toBe(201);
@@ -1516,6 +1880,9 @@ describe('Training API routes', () => {
     const createEventCountAfterFirst = mockCreateEvent.mock.calls.length;
 
     vi.setSystemTime(new Date('2026-04-15T12:01:00.500Z'));
+    mockGetPlanById.mockReturnValue({ id: first.body.data.planId, user_id: 12, tenant_id: 12, status: 'active' });
+    mockGetWeeksForPlan.mockReturnValue([{ id: 3003, plan_id: first.body.data.planId, week_number: 1 }]);
+    mockGetSessionsForWeek.mockReturnValue([{ id: 4003, plan_id: first.body.data.planId, week_id: 3003, status: 'scheduled' }]);
     const second = await dispatch('POST', '/plan/generate', {}, body);
 
     expect(first.statusCode).toBe(201);
@@ -2169,6 +2536,48 @@ describe('Training API routes', () => {
     );
   });
 
+  it('uses the selected weekly structure for gym-only plans when strength count is omitted', async () => {
+    mockGetProfile.mockImplementation((_userId: number, profile: string) => {
+      if (profile === 'fitness') return { experienceLevel: 'intermediate', available_equipment: 'Full gym' };
+      if (profile === 'triathlon-gym') return { equipment_access: 'Full gym', training_age: 'intermediate' };
+      return null;
+    });
+    mockBuildCoachKernelTrainingPlan.mockReturnValue({
+      planName: 'Strength Plan',
+      sport: 'gym',
+      periodization: 'block',
+      weeks: [
+        {
+          weekNumber: 1,
+          focus: 'strength',
+          intensityPct: 70,
+          sessions: [
+            { dayOfWeek: 'Monday', sessionType: 'gym', title: 'Upper Strength', durationMinutes: 55 },
+            { dayOfWeek: 'Tuesday', sessionType: 'gym', title: 'Lower Strength', durationMinutes: 55 },
+            { dayOfWeek: 'Wednesday', sessionType: 'gym', title: 'Push Hypertrophy', durationMinutes: 55 },
+            { dayOfWeek: 'Friday', sessionType: 'gym', title: 'Pull Hypertrophy', durationMinutes: 55 },
+            { dayOfWeek: 'Saturday', sessionType: 'gym', title: 'Leg Hypertrophy', durationMinutes: 55 },
+          ],
+        },
+      ],
+    });
+
+    const res = await dispatch('POST', '/plan/generate', {}, {
+      objective: 'Build muscle in the gym',
+      sessionsPerWeek: 5,
+      preferredTime: '07:00',
+      trainingPriority: 'strength',
+    });
+
+    expect(res.statusCode).toBe(201);
+    expect(mockBuildCoachKernelTrainingPlan).toHaveBeenCalledWith(expect.objectContaining({
+      sessionsPerWeek: 5,
+      strengthSessionsPerWeek: 5,
+      trainingPriority: 'strength',
+    }));
+    expect(mockCreateSession).toHaveBeenCalledTimes(5);
+  });
+
   it('rejects impossible race dates before plan generation starts', async () => {
     mockGetProfile.mockReturnValue({ experienceLevel: 'intermediate' });
 
@@ -2197,6 +2606,73 @@ describe('Training API routes', () => {
     expect(res.body.error.code).toBe('PAST_RACE_DATE');
     expect(mockBuildCoachKernelTrainingPlan).not.toHaveBeenCalled();
     expect(mockCreatePlan).not.toHaveBeenCalled();
+  });
+
+  it('rejects unsupported selected-model parameters before generation starts', async () => {
+    mockGetProfile.mockReturnValue({ experienceLevel: 'intermediate' });
+
+    const res = await dispatch('POST', '/plan/generate', {}, {
+      objective: 'General running consistency',
+      goalMode: 'race',
+      trainingPriority: 'bodybuilding',
+    });
+
+    expect(res.statusCode).toBe(400);
+    expect(res.body.ok).toBe(false);
+    expect(res.body.error.code).toBe('INVALID_TRAINING_GOAL_MODE');
+    expect(res.body.error.details).toEqual({ field: 'goalMode' });
+    expect(mockBuildCoachKernelTrainingPlan).not.toHaveBeenCalled();
+    expect(mockCreatePlan).not.toHaveBeenCalled();
+  });
+
+  it('rejects out-of-range modality targets instead of silently clamping create requests', async () => {
+    mockGetProfile.mockReturnValue({ experienceLevel: 'intermediate' });
+
+    const res = await dispatch('POST', '/plan/generate', {}, {
+      objective: 'Olympic triathlon',
+      sessionsPerWeek: 7,
+      bikeSessionsPerWeek: 8,
+      swimSessionsPerWeek: 2,
+      strengthSessionsPerWeek: 1,
+      trainingPriority: 'triathlon',
+    });
+
+    expect(res.statusCode).toBe(400);
+    expect(res.body.ok).toBe(false);
+    expect(res.body.error.code).toBe('INVALID_TRAINING_MODALITY_TARGET');
+    expect(res.body.error.details).toEqual({ field: 'bikeSessionsPerWeek' });
+    expect(mockBuildCoachKernelTrainingPlan).not.toHaveBeenCalled();
+    expect(mockCreatePlan).not.toHaveBeenCalled();
+  });
+
+  it('rejects unsupported selected-model parameters on plan preview too', async () => {
+    mockGetProfile.mockReturnValue({ experienceLevel: 'intermediate' });
+
+    const res = await dispatch('POST', '/plan/preview', {}, {
+      objective: 'General running consistency',
+      twoADayPreference: 'sometimes',
+    });
+
+    expect(res.statusCode).toBe(400);
+    expect(res.body.ok).toBe(false);
+    expect(res.body.error.code).toBe('INVALID_TRAINING_TWO_A_DAY_PREFERENCE');
+    expect(mockBuildCoachKernelTrainingPlan).not.toHaveBeenCalled();
+    expect(mockCreatePlan).not.toHaveBeenCalled();
+  });
+
+  it('normalizes accepted two-a-day preference casing before forwarding', async () => {
+    mockGetProfile.mockReturnValue({ experienceLevel: 'intermediate' });
+
+    const res = await dispatch('POST', '/plan/preview', {}, {
+      objective: 'General running consistency',
+      twoADayPreference: ' Auto ',
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body.ok).toBe(true);
+    expect(mockBuildCoachKernelTrainingPlan).toHaveBeenCalledWith(expect.objectContaining({
+      twoADayPreference: 'auto',
+    }));
   });
 
   it('falls back to the deterministic template when the coach kernel generation fails', async () => {
