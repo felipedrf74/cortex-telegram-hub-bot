@@ -106,6 +106,8 @@ describe('Auth invite registration', () => {
     GOOGLE_CLIENT_SECRET: process.env.GOOGLE_CLIENT_SECRET,
     APPLE_WEB_CLIENT_ID: process.env.APPLE_WEB_CLIENT_ID,
     APPLE_WEB_REDIRECT_URI: process.env.APPLE_WEB_REDIRECT_URI,
+    PASSWORD_RESET_DEV_TOKEN: process.env.PASSWORD_RESET_DEV_TOKEN,
+    RESEND_API_KEY: process.env.RESEND_API_KEY,
   };
 
   function restoreEnv(key: keyof typeof originalEnv): void {
@@ -146,6 +148,9 @@ describe('Auth invite registration', () => {
     }));
     vi.doMock('../../src/services/audit-trail', () => ({
       logAudit: vi.fn(),
+    }));
+    vi.doMock('../../src/services/operator-alerts', () => ({
+      recordOperatorAlert: vi.fn(),
     }));
     vi.doMock('../../src/api/auth-middleware', () => ({
       authMiddleware: (req: any, _res: unknown, next: (err?: unknown) => void) => {
@@ -835,6 +840,71 @@ describe('Auth invite registration', () => {
     const row = testDb.prepare('SELECT attempt_count FROM email_verification_codes WHERE user_id = ?')
       .get(userId) as { attempt_count: number };
     expect(row.attempt_count).toBe(5);
+  });
+
+  it('does not return a verification code when email delivery is not configured', async () => {
+    delete process.env.RESEND_API_KEY;
+    vi.doMock('../../src/services/email-sender', () => ({
+      sendPasswordResetEmail: vi.fn(),
+      isEmailConfigured: () => false,
+      sendVerificationCode: vi.fn(),
+    }));
+
+    const userId = Number(testDb.prepare(`
+      INSERT INTO users (email, first_name, language, auth_provider, daily_cost_limit_usd, email_verified)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).run('needs-email@example.com', 'Needs Email', 'en', 'email', 0.05, 0).lastInsertRowid);
+
+    const res = await dispatchAuth(
+      '/send-verification',
+      {},
+      { headers: { 'x-test-user-id': String(userId) } },
+    );
+
+    expect(res.statusCode).toBe(503);
+    expect(res.body.ok).toBe(false);
+    expect(res.body.error.code).toBe('EMAIL_UNAVAILABLE');
+    expect(JSON.stringify(res.body)).not.toContain('devCode');
+    expect(JSON.stringify(res.body)).not.toMatch(/\b\d{6}\b/);
+  });
+
+  it('fails closed for password reset when email delivery is not configured', async () => {
+    process.env.PASSWORD_RESET_DEV_TOKEN = '1';
+    delete process.env.RESEND_API_KEY;
+    const sendPasswordResetEmail = vi.fn();
+    vi.doMock('../../src/services/email-sender', () => ({
+      sendPasswordResetEmail,
+      isEmailConfigured: () => false,
+      sendVerificationCode: vi.fn(),
+    }));
+
+    const userId = Number(testDb.prepare(`
+      INSERT INTO users (email, password_hash, first_name, language, auth_provider, daily_cost_limit_usd, email_verified)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      'reset-needs-email@example.com',
+      'bcrypt-placeholder-non-null',
+      'Reset',
+      'en',
+      'email',
+      0.05,
+      1,
+    ).lastInsertRowid);
+
+    const res = await dispatchAuth('/password-reset/request', {
+      email: 'reset-needs-email@example.com',
+    });
+
+    expect(res.statusCode).toBe(503);
+    expect(res.body.ok).toBe(false);
+    expect(res.body.error.code).toBe('EMAIL_UNAVAILABLE');
+    expect(JSON.stringify(res.body)).not.toContain('devToken');
+    expect(JSON.stringify(res.body)).not.toContain('expiresAt');
+    expect(sendPasswordResetEmail).not.toHaveBeenCalled();
+    expect(
+      testDb.prepare('SELECT COUNT(*) AS count FROM password_reset_tokens WHERE user_id = ?')
+        .get(userId),
+    ).toMatchObject({ count: 0 });
   });
 
 });

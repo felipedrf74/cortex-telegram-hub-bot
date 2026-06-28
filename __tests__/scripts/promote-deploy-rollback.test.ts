@@ -45,8 +45,11 @@ describe('deploy/promote rollback mutation marker', () => {
 
     expect(deploy).toContain('set -euo pipefail; cd $REMOTE_DIR && npm ci --production 2>&1 | tail -1');
     expect(deploy).toContain('set -euo pipefail; cd $REMOTE_DIR/content-engine && source .venv/bin/activate && pip install -q -r requirements.txt 2>&1 | tail -3');
-    expect(deploy).toContain("curl -sf -o /dev/null -H 'x-portal-session:");
-    expect(deploy).toContain("curl -sf -o /dev/null -H 'Authorization: Bearer $PORTAL_TOKEN'");
+    expect(deploy).toContain('printf \'x-portal-session: %s\\n\' "$PROD_SESSION" > "$HEADER_FILE"');
+    expect(deploy).toContain('printf \'Authorization: Bearer %s\\n\' "$PORTAL_TOKEN" > "$HEADER_FILE"');
+    expect(deploy).toContain('curl -sf -o /dev/null -H @"$HEADER_FILE"');
+    expect(deploy).not.toContain("curl -sf -o /dev/null -H 'x-portal-session:");
+    expect(deploy).not.toContain("curl -sf -o /dev/null -H 'Authorization: Bearer $PORTAL_TOKEN'");
     expect(deploy).toContain('curl -sf -o /dev/null http://localhost:8200/api/snapshot');
   });
 

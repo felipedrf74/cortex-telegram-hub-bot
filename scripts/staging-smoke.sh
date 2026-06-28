@@ -68,42 +68,39 @@ evidence_record() {
   EVIDENCE_RESULTS+=("$(printf '%s\t%s\t%s' "$name" "$status" "$detail")")
 }
 
-# Read staging portal auth once — saves N ssh round trips. Hardened beta
-# staging may require signed ps_ sessions, in which case the legacy
-# PORTAL_TOKEN must not be used.
+# Determine the staging portal auth mode. Hardened beta staging may require
+# signed ps_ sessions, in which case the legacy PORTAL_TOKEN must not be used.
+# Tokens are read/minted only inside the remote shell and passed to curl via a
+# 0600 header file so they never appear in local ssh or remote curl argv.
 PORTAL_REQUIRE_SESSION_AUTH=$(ssh "$SERVER" "grep -oP '(?<=^PORTAL_REQUIRE_SESSION_AUTH=).+' $STAGING_DIR/.env 2>/dev/null" || true)
-STAGING_TOKEN=""
-STAGING_SESSION=""
-if [ "$PORTAL_REQUIRE_SESSION_AUTH" = "true" ]; then
-  STAGING_SESSION=$(ssh "$SERVER" "
-    set -e
-    cd $STAGING_DIR
-    set -a
-    . ./.env
-    set +a
-    node dist/tools/portal-session-token.js --actor staging-smoke@nexushub.me --scope admin --ttl-ms 600000 --json \
-      | node -e \"let b=''; process.stdin.on('data', c => b += c); process.stdin.on('end', () => { const j = JSON.parse(b); process.stdout.write(j.token || ''); });\"
-  " 2>/dev/null || true)
-  if [ -z "$STAGING_SESSION" ]; then
-    echo "❌ Could not mint signed portal session from staging .env"
-    echo "   Ensure PORTAL_SESSION_SECRET is set and the deployed dist/tools/portal-session-token.js exists."
-    exit 1
-  fi
-else
-  STAGING_TOKEN=$(ssh "$SERVER" "grep -oP '(?<=^PORTAL_TOKEN=).+' $STAGING_DIR/.env 2>/dev/null" || true)
-  if [ -z "$STAGING_TOKEN" ]; then
-    echo "❌ Could not read PORTAL_TOKEN from $STAGING_DIR/.env"
-    echo "   Has staging been set up? See STAGING.md → first-time setup."
-    exit 1
-  fi
-fi
 
-portal_auth_header() {
-  if [ -n "$STAGING_SESSION" ]; then
-    printf "%s" "-H 'x-portal-session: $STAGING_SESSION'"
-  else
-    printf "%s" "-H 'Authorization: Bearer $STAGING_TOKEN'"
-  fi
+portal_auth_curl() {
+  local url="$1"
+  ssh "$SERVER" bash -s -- "$STAGING_DIR" "$PORTAL_REQUIRE_SESSION_AUTH" "$url" <<'REMOTE_PORTAL_CURL'
+set -e
+STAGING_DIR="$1"
+PORTAL_REQUIRE_SESSION_AUTH="$2"
+URL="$3"
+HEADER_FILE=$(mktemp)
+cleanup() { rm -f "$HEADER_FILE"; }
+trap cleanup EXIT
+chmod 600 "$HEADER_FILE"
+if [ "$PORTAL_REQUIRE_SESSION_AUTH" = "true" ]; then
+  cd "$STAGING_DIR"
+  set -a
+  . ./.env
+  set +a
+  STAGING_SESSION=$(node dist/tools/portal-session-token.js --actor staging-smoke@nexushub.me --scope admin --ttl-ms 600000 --json \
+    | node -e "let b=''; process.stdin.on('data', c => b += c); process.stdin.on('end', () => { const j = JSON.parse(b); process.stdout.write(j.token || ''); });")
+  [ -n "$STAGING_SESSION" ] || exit 1
+  printf 'x-portal-session: %s\n' "$STAGING_SESSION" > "$HEADER_FILE"
+else
+  STAGING_TOKEN=$(grep -oP '(?<=^PORTAL_TOKEN=).+' "$STAGING_DIR/.env" 2>/dev/null || true)
+  [ -n "$STAGING_TOKEN" ] || exit 1
+  printf 'Authorization: Bearer %s\n' "$STAGING_TOKEN" > "$HEADER_FILE"
+fi
+curl -sf -H @"$HEADER_FILE" "$URL" 2>/dev/null
+REMOTE_PORTAL_CURL
 }
 
 # test_endpoint NAME URL EXPECTED_FIELD  → curls URL, JSON-parses, asserts
@@ -113,14 +110,14 @@ test_endpoint() {
   local name="$1"
   local url="$2"
   local field="$3"
-  local auth_header=""
-  if [[ ! "$url" =~ /health ]]; then
-    auth_header="$(portal_auth_header)"
-  fi
 
   # Run on the server because staging is localhost-only
   local result
-  result=$(ssh "$SERVER" "curl -sf $auth_header '$url' 2>/dev/null" || echo "__CURL_FAILED__")
+  if [[ "$url" =~ /health ]]; then
+    result=$(ssh "$SERVER" "curl -sf '$url' 2>/dev/null" || echo "__CURL_FAILED__")
+  else
+    result=$(portal_auth_curl "$url" || echo "__CURL_FAILED__")
+  fi
 
   if [ "$result" = "__CURL_FAILED__" ] || [ -z "$result" ]; then
     echo "  ❌ $name — curl failed (URL not responding)"

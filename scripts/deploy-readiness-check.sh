@@ -190,7 +190,14 @@ case "$TARGET" in
     ;;
 esac
 if [ -n "$CONTENT_SECRET" ]; then
-  CONTENT_READY=$(curl -fsS -H "x-internal-secret: $CONTENT_SECRET" "http://127.0.0.1:$CONTENT_PORT/ready")
+  CONTENT_HEADER_FILE=$(mktemp)
+  cleanup_content_header() { rm -f "$CONTENT_HEADER_FILE"; }
+  trap cleanup_content_header EXIT
+  chmod 600 "$CONTENT_HEADER_FILE"
+  printf 'x-internal-secret: %s\n' "$CONTENT_SECRET" > "$CONTENT_HEADER_FILE"
+  CONTENT_READY=$(curl -fsS -H @"$CONTENT_HEADER_FILE" "http://127.0.0.1:$CONTENT_PORT/ready")
+  cleanup_content_header
+  trap - EXIT
 else
   CONTENT_READY=$(curl -fsS "http://127.0.0.1:$CONTENT_PORT/health")
 fi

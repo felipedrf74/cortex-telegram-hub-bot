@@ -566,21 +566,29 @@ ssh "$SERVER" "export PATH=\$PATH:$(dirname $PM2) && $PM2 stop nexus-hub 2>/dev/
 echo ""
 echo "💾 Creating backup on server (now WITH bot.db)..."
 ssh "$SERVER" "
+  set -e
+  umask 077
   BACKUP_DIR='/home/dominguez/backups/nexushub'
   TIMESTAMP=\$(date +%Y%m%d_%H%M%S)
-  mkdir -p \"\$BACKUP_DIR\"
+  install -d -m 700 \"\$BACKUP_DIR\"
   cd '$REMOTE_DIR'
   # Build the include list dynamically: code paths + DB + sidecars (if present)
   INCLUDES='dist/ prompts/ migrations/ package.json package-lock.json ecosystem.config.js data/bot.db'
   [ -f data/bot.db-wal ] && INCLUDES=\"\$INCLUDES data/bot.db-wal\"
   [ -f data/bot.db-shm ] && INCLUDES=\"\$INCLUDES data/bot.db-shm\"
   [ -d data/garmin-tokens ] && INCLUDES=\"\$INCLUDES data/garmin-tokens/\"
-  tar czf \"\$BACKUP_DIR/v${VERSION}_\${TIMESTAMP}.tar.gz\" \$INCLUDES 2>/dev/null || {
+  ARCHIVE=\"\$BACKUP_DIR/v${VERSION}_\${TIMESTAMP}.tar.gz\"
+  TMP_ARCHIVE=\"\$ARCHIVE.tmp\"
+  rm -f \"\$TMP_ARCHIVE\"
+  tar czf \"\$TMP_ARCHIVE\" \$INCLUDES 2>/dev/null || {
+    rm -f \"\$TMP_ARCHIVE\"
     echo '   ⚠️  Backup tar failed'; exit 1;
   }
+  chmod 600 \"\$TMP_ARCHIVE\"
+  mv -f \"\$TMP_ARCHIVE\" \"\$ARCHIVE\"
   # Show resulting size + verify bot.db is actually in there
-  SIZE=\$(du -h \"\$BACKUP_DIR/v${VERSION}_\${TIMESTAMP}.tar.gz\" | cut -f1)
-  HAS_DB=\$(tar tzf \"\$BACKUP_DIR/v${VERSION}_\${TIMESTAMP}.tar.gz\" 2>/dev/null | grep -c 'bot.db\$' || echo 0)
+  SIZE=\$(du -h \"\$ARCHIVE\" | cut -f1)
+  HAS_DB=\$(tar tzf \"\$ARCHIVE\" 2>/dev/null | grep -c 'bot.db\$' || echo 0)
   echo \"   ✅ Backup created (\$SIZE, bot.db included: \$HAS_DB)\"
   # Retention: keep 10 most recent
   ls -t \"\$BACKUP_DIR\"/*.tar.gz 2>/dev/null | tail -n +11 | xargs rm -f 2>/dev/null || true
@@ -722,16 +730,24 @@ fi
 # PORTAL_TOKEN. Use the same auth strategy as staging smoke/deploy.
 PORTAL_REQUIRE_SESSION_AUTH=$(ssh "$SERVER" "grep -oP '(?<=^PORTAL_REQUIRE_SESSION_AUTH=).+' $REMOTE_DIR/.env 2>/dev/null" || true)
 if [ "$PORTAL_REQUIRE_SESSION_AUTH" = "true" ]; then
-  PROD_SESSION=$(ssh "$SERVER" "
-    set -e
-    cd $REMOTE_DIR
-    set -a
-    . ./.env
-    set +a
-    node dist/tools/portal-session-token.js --actor deploy-production@nexushub.me --scope admin --ttl-ms 600000 --json \
-      | node -e \"let b=''; process.stdin.on('data', c => b += c); process.stdin.on('end', () => { const j = JSON.parse(b); process.stdout.write(j.token || ''); });\"
-  " 2>/dev/null || true)
-  if ssh "$SERVER" "curl -sf -o /dev/null -H 'x-portal-session: ${PROD_SESSION:-x}' http://localhost:8200/api/snapshot 2>/dev/null"; then
+  if ssh "$SERVER" bash -s -- "$REMOTE_DIR" <<'REMOTE_PORTAL_SESSION_HEALTH'
+set -e
+REMOTE_DIR="$1"
+cd "$REMOTE_DIR"
+set -a
+. ./.env
+set +a
+PROD_SESSION=$(node dist/tools/portal-session-token.js --actor deploy-production@nexushub.me --scope admin --ttl-ms 600000 --json \
+  | node -e "let b=''; process.stdin.on('data', c => b += c); process.stdin.on('end', () => { const j = JSON.parse(b); process.stdout.write(j.token || ''); });")
+[ -n "$PROD_SESSION" ] || exit 1
+HEADER_FILE=$(mktemp)
+cleanup() { rm -f "$HEADER_FILE"; }
+trap cleanup EXIT
+chmod 600 "$HEADER_FILE"
+printf 'x-portal-session: %s\n' "$PROD_SESSION" > "$HEADER_FILE"
+curl -sf -o /dev/null -H @"$HEADER_FILE" http://localhost:8200/api/snapshot 2>/dev/null
+REMOTE_PORTAL_SESSION_HEALTH
+  then
     echo " ✅ Status portal OK"
   else
     echo " ❌ Status portal not responding"
@@ -739,17 +755,23 @@ if [ "$PORTAL_REQUIRE_SESSION_AUTH" = "true" ]; then
     HEALTH_OK=false
   fi
 else
-  PORTAL_TOKEN=$(ssh "$SERVER" "grep -oP '(?<=^PORTAL_TOKEN=).+' $REMOTE_DIR/.env 2>/dev/null" || true)
-  if [ -n "$PORTAL_TOKEN" ]; then
-    if ssh "$SERVER" "curl -sf -o /dev/null -H 'Authorization: Bearer $PORTAL_TOKEN' http://localhost:8200/api/snapshot 2>/dev/null"; then
-      echo " ✅ Status portal OK"
-    else
-      echo " ❌ Status portal not responding"
-      DEPLOY_STATUS="❌ Failed"
-      HEALTH_OK=false
-    fi
+  if ssh "$SERVER" bash -s -- "$REMOTE_DIR" <<'REMOTE_PORTAL_TOKEN_HEALTH'
+set -e
+REMOTE_DIR="$1"
+PORTAL_TOKEN=$(grep -oP '(?<=^PORTAL_TOKEN=).+' "$REMOTE_DIR/.env" 2>/dev/null || true)
+[ -n "$PORTAL_TOKEN" ] || exit 2
+HEADER_FILE=$(mktemp)
+cleanup() { rm -f "$HEADER_FILE"; }
+trap cleanup EXIT
+chmod 600 "$HEADER_FILE"
+printf 'Authorization: Bearer %s\n' "$PORTAL_TOKEN" > "$HEADER_FILE"
+curl -sf -o /dev/null -H @"$HEADER_FILE" http://localhost:8200/api/snapshot 2>/dev/null
+REMOTE_PORTAL_TOKEN_HEALTH
+  then
+    echo " ✅ Status portal OK"
   else
-    if ssh "$SERVER" "curl -sf -o /dev/null http://localhost:8200/api/snapshot 2>/dev/null"; then
+    PORTAL_HEALTH_STATUS=$?
+    if [ "$PORTAL_HEALTH_STATUS" -eq 2 ] && ssh "$SERVER" "curl -sf -o /dev/null http://localhost:8200/api/snapshot 2>/dev/null"; then
       echo " ✅ Status portal OK"
     else
       echo " ❌ Status portal not responding"
@@ -789,24 +811,40 @@ if [ -n "$NOTION_TOKEN" ]; then
   echo "📋 Logging deploy to Notion..."
   DEPLOY_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)
   AUTHOR="Felipe Dominguez"
-
-  curl -s -X POST "https://api.notion.com/v1/pages" \
-    -H "Authorization: Bearer $NOTION_TOKEN" \
-    -H "Content-Type: application/json" \
-    -H "Notion-Version: 2022-06-28" \
-    -d "{
-      \"parent\": { \"database_id\": \"$NOTION_RELEASES_DB\" },
-      \"properties\": {
-        \"Release\": { \"title\": [{ \"text\": { \"content\": \"v${VERSION}\" } }] },
-        \"Status\": { \"select\": { \"name\": \"$DEPLOY_STATUS\" } },
-        \"Type\": { \"select\": { \"name\": \"Deploy\" } },
-        \"Environment\": { \"select\": { \"name\": \"Production\" } },
-        \"Date\": { \"date\": { \"start\": \"$DEPLOY_DATE\" } },
-        \"Commit\": { \"rich_text\": [{ \"text\": { \"content\": \"$COMMIT\" } }] },
-        \"Author\": { \"rich_text\": [{ \"text\": { \"content\": \"$AUTHOR\" } }] },
-        \"Notes\": { \"rich_text\": [{ \"text\": { \"content\": \"Manual deploy from Mac via deploy.sh\" } }] }
-      }
-    }" > /dev/null 2>&1 && echo "   ✅ Notion Releases DB updated" || echo "   ⚠️  Notion update failed"
+  NOTION_HEADERS=$(mktemp)
+  NOTION_PAYLOAD=$(mktemp)
+  cleanup_notion_files() { rm -f "$NOTION_HEADERS" "$NOTION_PAYLOAD"; }
+  trap 'cleanup_notion_files; release_cleanup_all_locks' EXIT
+  chmod 600 "$NOTION_HEADERS" "$NOTION_PAYLOAD"
+  {
+    printf 'Authorization: Bearer %s\n' "$NOTION_TOKEN"
+    printf 'Content-Type: application/json\n'
+    printf 'Notion-Version: 2022-06-28\n'
+  } > "$NOTION_HEADERS"
+  cat > "$NOTION_PAYLOAD" <<JSON
+{
+  "parent": { "database_id": "$NOTION_RELEASES_DB" },
+  "properties": {
+    "Release": { "title": [{ "text": { "content": "v${VERSION}" } }] },
+    "Status": { "select": { "name": "$DEPLOY_STATUS" } },
+    "Type": { "select": { "name": "Deploy" } },
+    "Environment": { "select": { "name": "Production" } },
+    "Date": { "date": { "start": "$DEPLOY_DATE" } },
+    "Commit": { "rich_text": [{ "text": { "content": "$COMMIT" } }] },
+    "Author": { "rich_text": [{ "text": { "content": "$AUTHOR" } }] },
+    "Notes": { "rich_text": [{ "text": { "content": "Manual deploy from Mac via deploy.sh" } }] }
+  }
+}
+JSON
+  if curl -s -X POST "https://api.notion.com/v1/pages" \
+    -H @"$NOTION_HEADERS" \
+    --data-binary @"$NOTION_PAYLOAD" > /dev/null 2>&1; then
+    echo "   ✅ Notion Releases DB updated"
+  else
+    echo "   ⚠️  Notion update failed"
+  fi
+  cleanup_notion_files
+  trap release_cleanup_all_locks EXIT
 else
   echo "📋 Skipping Notion log (set NOTION_TOKEN to enable)"
   echo "   NOTION_TOKEN=ntn_xxx ./scripts/deploy.sh"

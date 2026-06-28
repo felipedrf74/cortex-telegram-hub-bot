@@ -5,6 +5,7 @@ Analyses: title patterns, upload frequency, content mix, engagement patterns.
 """
 
 import time
+import hashlib
 import logging
 
 import httpx
@@ -22,6 +23,25 @@ YT_VIDEOS_URL = "https://www.googleapis.com/youtube/v3/videos"
 YT_CHANNELS_URL = "https://www.googleapis.com/youtube/v3/channels"
 
 
+def _input_fingerprint(value: str) -> str:
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()[:12]
+
+
+def _raise_sanitized_youtube_status(resp: httpx.Response, channel_query: str, stage: str) -> None:
+    try:
+        resp.raise_for_status()
+    except httpx.HTTPStatusError:
+        status_code = getattr(resp, "status_code", 0)
+        logger.warning(
+            "YouTube competitor request failed (stage=%s status=%d input_hash=%s input_len=%d)",
+            stage,
+            status_code,
+            _input_fingerprint(channel_query),
+            len(channel_query),
+        )
+        raise RuntimeError(f"YouTube competitor request failed at {stage} with status {status_code}") from None
+
+
 async def _fetch_channel_videos(channel_query: str, max_videos: int) -> list[dict]:
     """Fetch recent videos from a channel (by name/URL search)."""
     if not cfg.youtube_api_key:
@@ -37,7 +57,7 @@ async def _fetch_channel_videos(channel_query: str, max_videos: int) -> list[dic
             "key": cfg.youtube_api_key,
         }
         ch_resp = await client.get(YT_SEARCH_URL, params=ch_params)
-        ch_resp.raise_for_status()
+        _raise_sanitized_youtube_status(ch_resp, channel_query, "channel_search")
         ch_items = ch_resp.json().get("items", [])
         if not ch_items:
             return []
@@ -55,7 +75,7 @@ async def _fetch_channel_videos(channel_query: str, max_videos: int) -> list[dic
             "key": cfg.youtube_api_key,
         }
         vid_resp = await client.get(YT_SEARCH_URL, params=vid_params)
-        vid_resp.raise_for_status()
+        _raise_sanitized_youtube_status(vid_resp, channel_query, "video_search")
         vid_items = vid_resp.json().get("items", [])
 
         # Get stats for these videos
@@ -69,7 +89,7 @@ async def _fetch_channel_videos(channel_query: str, max_videos: int) -> list[dic
             "key": cfg.youtube_api_key,
         }
         stats_resp = await client.get(YT_VIDEOS_URL, params=stats_params)
-        stats_resp.raise_for_status()
+        _raise_sanitized_youtube_status(stats_resp, channel_query, "video_stats")
         stats_map = {v["id"]: v for v in stats_resp.json().get("items", [])}
 
     videos = []

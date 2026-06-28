@@ -273,31 +273,44 @@ ssh "$SERVER" "
 # when status is "degraded", which is expected for staging-without-bot.
 PORTAL_REQUIRE_SESSION_AUTH=$(ssh "$SERVER" "grep -oP '(?<=^PORTAL_REQUIRE_SESSION_AUTH=).+' $STAGING_DIR/.env 2>/dev/null" || true)
 if [ "$PORTAL_REQUIRE_SESSION_AUTH" = "true" ]; then
-  STAGING_SESSION=$(ssh "$SERVER" "
-    set -e
-    cd $STAGING_DIR
-    set -a
-    . ./.env
-    set +a
-    node dist/tools/portal-session-token.js --actor deploy-staging@nexushub.me --scope admin --ttl-ms 600000 --json \
-      | node -e \"let b=''; process.stdin.on('data', c => b += c); process.stdin.on('end', () => { const j = JSON.parse(b); process.stdout.write(j.token || ''); });\"
-  " 2>/dev/null || true)
-  ssh "$SERVER" "
-    if curl -sf -o /dev/null -H 'x-portal-session: ${STAGING_SESSION:-x}' http://localhost:8201/api/snapshot 2>/dev/null; then
-      echo ' ✅ Staging portal OK'
-    else
-      echo ' ⚠️  Staging portal not responding (port 8201)'
-    fi
-  "
+  ssh "$SERVER" bash -s -- "$STAGING_DIR" <<'REMOTE_STAGING_SESSION_HEALTH'
+set -e
+STAGING_DIR="$1"
+cd "$STAGING_DIR"
+set -a
+. ./.env
+set +a
+STAGING_SESSION=$(node dist/tools/portal-session-token.js --actor deploy-staging@nexushub.me --scope admin --ttl-ms 600000 --json \
+  | node -e "let b=''; process.stdin.on('data', c => b += c); process.stdin.on('end', () => { const j = JSON.parse(b); process.stdout.write(j.token || ''); });")
+[ -n "$STAGING_SESSION" ] || exit 1
+HEADER_FILE=$(mktemp)
+cleanup() { rm -f "$HEADER_FILE"; }
+trap cleanup EXIT
+chmod 600 "$HEADER_FILE"
+printf 'x-portal-session: %s\n' "$STAGING_SESSION" > "$HEADER_FILE"
+if curl -sf -o /dev/null -H @"$HEADER_FILE" http://localhost:8201/api/snapshot 2>/dev/null; then
+  echo ' ✅ Staging portal OK'
 else
-  STAGING_TOKEN=$(ssh "$SERVER" "grep -oP '(?<=^PORTAL_TOKEN=).+' $STAGING_DIR/.env 2>/dev/null" || true)
-  ssh "$SERVER" "
-    if curl -sf -o /dev/null -H 'Authorization: Bearer ${STAGING_TOKEN:-x}' http://localhost:8201/api/snapshot 2>/dev/null; then
-      echo ' ✅ Staging portal OK'
-    else
-      echo ' ⚠️  Staging portal not responding (port 8201)'
-    fi
-  "
+  echo ' ⚠️  Staging portal not responding (port 8201)'
+fi
+REMOTE_STAGING_SESSION_HEALTH
+else
+  ssh "$SERVER" bash -s -- "$STAGING_DIR" <<'REMOTE_STAGING_TOKEN_HEALTH'
+set -e
+STAGING_DIR="$1"
+STAGING_TOKEN=$(grep -oP '(?<=^PORTAL_TOKEN=).+' "$STAGING_DIR/.env" 2>/dev/null || true)
+[ -n "$STAGING_TOKEN" ] || exit 1
+HEADER_FILE=$(mktemp)
+cleanup() { rm -f "$HEADER_FILE"; }
+trap cleanup EXIT
+chmod 600 "$HEADER_FILE"
+printf 'Authorization: Bearer %s\n' "$STAGING_TOKEN" > "$HEADER_FILE"
+if curl -sf -o /dev/null -H @"$HEADER_FILE" http://localhost:8201/api/snapshot 2>/dev/null; then
+  echo ' ✅ Staging portal OK'
+else
+  echo ' ⚠️  Staging portal not responding (port 8201)'
+fi
+REMOTE_STAGING_TOKEN_HEALTH
 fi
 
 echo ""

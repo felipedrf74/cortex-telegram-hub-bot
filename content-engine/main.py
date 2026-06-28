@@ -29,6 +29,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from routers.research import router as research_router
 from routers.books import router as books_router
 from config import cfg
+from services.log_redaction import SecretRedactionFilter
 
 # ── Distributed tracing (Quarter audit item) ──────────────────────────
 #
@@ -134,28 +135,32 @@ class RequestIdFilter(logging.Filter):
 # handlers — those handlers don't inherit from root, so just configuring
 # root isn't enough. We rebuild the relevant loggers explicitly.
 _FORMAT = "%(asctime)s %(levelname)s [%(name)s] [reqId=%(request_id)s] %(message)s"
-_filter = RequestIdFilter()
+_request_filter = RequestIdFilter()
+_secret_filter = SecretRedactionFilter()
 
 
 def _make_handler() -> logging.StreamHandler:
     h = logging.StreamHandler()
     h.setFormatter(logging.Formatter(_FORMAT))
-    h.addFilter(_filter)
+    h.addFilter(_request_filter)
+    h.addFilter(_secret_filter)
     return h
 
 
 # Root + our app logger
 _root = logging.getLogger()
 _root.handlers = [_make_handler()]
+_root.addFilter(_secret_filter)
 _root.setLevel(logging.INFO)
 
 # Override uvicorn's loggers so the access log line ALSO carries reqId.
 # Without this, uvicorn writes its access log in its own bare format and
 # the trace ID is invisible on the request line — it'd only show up on
 # our application's logger.info() calls inside the handler.
-for _name in ("uvicorn", "uvicorn.access", "uvicorn.error", "fastapi"):
+for _name in ("content-engine", "uvicorn", "uvicorn.access", "uvicorn.error", "fastapi"):
     _lg = logging.getLogger(_name)
     _lg.handlers = [_make_handler()]
+    _lg.addFilter(_secret_filter)
     _lg.propagate = False  # don't double-log via root
     _lg.setLevel(logging.INFO)
 

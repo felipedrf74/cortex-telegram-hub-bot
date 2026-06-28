@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import time
 import logging
 import re
@@ -94,6 +95,10 @@ def _detect_query_language(query: str) -> str:
     if any(marker in padded for marker in en_markers):
         return "en"
     return "pt"
+
+
+def _query_fingerprint(query: str) -> str:
+    return hashlib.sha256(query.encode("utf-8")).hexdigest()[:12]
 
 
 def _is_evergreen_query(query: str) -> bool:
@@ -280,7 +285,13 @@ class ResearchOrchestrator:
         all_results: list[SearchResult] = []
         for i, results in enumerate(var_results):
             if isinstance(results, Exception):
-                logger.warning("Search variation failed for '%s': %s", search_variations[i], results)
+                variation = search_variations[i]
+                logger.warning(
+                    "Search variation failed (query_hash=%s query_len=%d): %s",
+                    _query_fingerprint(variation),
+                    len(variation),
+                    results,
+                )
                 continue
             all_results.extend(results)
 

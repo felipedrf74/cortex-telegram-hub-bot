@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { assertSafeExternalUrl, isSafeExternalUrl } from '../../src/security/url-guard';
-import { extractVideoId } from '../../src/services/youtube-transcript';
+import { assertSafeYouTubeCaptionUrl, extractVideoId } from '../../src/services/youtube-transcript';
 
 describe('SSRF URL guard', () => {
   it('accepts HTTPS allowlisted hosts', () => {
@@ -43,5 +43,16 @@ describe('SSRF URL guard', () => {
     expect(extractVideoId('https://evil-youtube.com/watch?v=dQw4w9WgXcQ')).toBeNull();
     expect(extractVideoId('https://youtube.com.evil.test/watch?v=dQw4w9WgXcQ')).toBeNull();
     expect(extractVideoId('https://[::1]/watch?v=dQw4w9WgXcQ')).toBeNull();
+  });
+
+  it('keeps YouTube caption fetches on allowlisted HTTPS caption hosts', () => {
+    expect(assertSafeYouTubeCaptionUrl('https://www.youtube.com/api/timedtext?v=dQw4w9WgXcQ').hostname)
+      .toBe('www.youtube.com');
+    expect(assertSafeYouTubeCaptionUrl('https://rr1---sn-a5mekn6k.googlevideo.com/videoplayback?mime=text').hostname)
+      .toBe('rr1---sn-a5mekn6k.googlevideo.com');
+
+    expect(() => assertSafeYouTubeCaptionUrl('https://youtube.com.evil.test/api/timedtext')).toThrow(/allowlisted/);
+    expect(() => assertSafeYouTubeCaptionUrl('https://169.254.169.254/latest/meta-data')).toThrow(/Private IPv4/);
+    expect(() => assertSafeYouTubeCaptionUrl('http://www.youtube.com/api/timedtext')).toThrow(/HTTPS/);
   });
 });
