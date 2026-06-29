@@ -329,6 +329,62 @@ describe('training-plan-persistence', () => {
     );
   });
 
+  it('passes the resolved Training calendar provider into Secretary availability and provider writes', async () => {
+    mockCreateEvent.mockResolvedValueOnce({ id: 'evt-outlook', source: 'outlook' });
+
+    await persistGeneratedTrainingPlan({
+      userId: 12,
+      tenantId: 12,
+      objective: 'Strength block',
+      durationWeeks: 1,
+      startDate: '2026-04-19',
+      endDate: '2026-04-26',
+      now: new Date('2026-04-19T00:00:00.000Z'),
+      preferencesJson: '{}',
+      normalizedPreferredTime: '12:00',
+      normalizedPreferredCardioTime: '07:00',
+      normalizedPreferredStrengthTime: '12:30',
+      busyWindows: [],
+      calendarSource: 'outlook',
+      planData: {
+        weeks: [
+          {
+            weekNumber: 1,
+            sessions: [
+              {
+                dayOfWeek: 'Monday',
+                sessionType: 'gym',
+                title: 'Upper Strength',
+                durationMinutes: 45,
+                exercises: [{ name: 'Dumbbell Bench Press', sets: 3, reps: '8-10', rpe: '7', restSec: 90 }],
+              },
+            ],
+          },
+        ],
+      },
+    });
+
+    expect(mockLoadLiveCalendarBusyWindowsForSecretaryIntent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sourceSkill: 'training',
+        softPreferences: { calendarProvider: 'outlook' },
+      }),
+    );
+    expect(mockSubmitSecretarySchedulingIntent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        softPreferences: { calendarProvider: 'outlook' },
+        minimumDurationMinutes: 34,
+      }),
+      expect.any(Object),
+    );
+    expect(mockCreateEvent).toHaveBeenCalledWith(
+      expect.objectContaining({ title: expect.stringContaining('Upper Strength (45min)') }),
+      'outlook',
+      12,
+      expect.objectContaining({ tenantId: 12 }),
+    );
+  });
+
   it('keeps plan persistence successful when individual calendar event creation fails', async () => {
     mockCreateEvent
       .mockRejectedValueOnce(new Error('calendar unavailable'))

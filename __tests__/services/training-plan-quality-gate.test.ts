@@ -120,6 +120,42 @@ describe('training-plan-quality-gate', () => {
     )).toBe(true);
   });
 
+  it('replaces stale ABCDE strength titles and too-short split durations before persistence', () => {
+    const result = prepareTrainingPlanForQualityGate(
+      {
+        sport: 'gym',
+        weeks: [
+          {
+            weekNumber: 1,
+            sessions: [
+              genericGobletSession('Tuesday', 'Upper Body Strength A', 17),
+              genericGobletSession('Wednesday', 'Lower Quad B', 17),
+              genericGobletSession('Thursday', 'Pull Hypertrophy C', 17),
+              genericGobletSession('Friday', 'Upper Body Strength A', 17),
+              genericGobletSession('Saturday', 'Upper Body Strength A', 17),
+            ],
+          },
+        ],
+      },
+      fiveDayHypertrophySpec,
+    );
+
+    const strengthSessions = weekOneStrengthSessions(result.planData);
+
+    expect(result.validation.passed).toBe(true);
+    expect(strengthSessions.map((session: any) => session.splitSlot)).toEqual(['A', 'B', 'C', 'D', 'E']);
+    expect(strengthSessions.map((session: any) => session.title)).toEqual([
+      'Push Hypertrophy A',
+      'Lower Quad B',
+      'Pull Hypertrophy C',
+      'Lower Posterior Chain D',
+      'Upper Accessories E',
+    ]);
+    expect(strengthSessions.every((session: any) => session.durationMinutes >= 40)).toBe(true);
+    expect(strengthSessions.find((session: any) => session.splitSlot === 'D')?.primaryMuscles).toContain('hamstrings');
+    expect(result.repairActions.some((action) => /stale or generic title/i.test(action))).toBe(true);
+  });
+
   it('repairs sparse claimed-duration sessions with movement coverage and truthful timing', () => {
     const result = prepareTrainingPlanForQualityGate(
       {
@@ -504,12 +540,12 @@ describe('training-plan-quality-gate', () => {
   });
 });
 
-function genericGobletSession(dayOfWeek: string, title: string) {
+function genericGobletSession(dayOfWeek: string, title: string, durationMinutes = 50) {
   return {
     dayOfWeek,
     sessionType: 'gym',
     title,
-    durationMinutes: 50,
+    durationMinutes,
     exercises: [
       { name: 'Goblet Squat', sets: 3, reps: '10', rpe: '7', restSec: 75 },
       { name: 'Goblet Squat', sets: 3, reps: '10', rpe: '7', restSec: 75 },

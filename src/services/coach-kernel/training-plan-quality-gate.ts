@@ -233,7 +233,11 @@ const SPACED_DAY_OFFSETS: Record<number, number[]> = {
   6: [0, 1, 2, 3, 4, 5],
 };
 
-const GENERIC_TITLE_RE = /\bCatalog\s+\w+\s+Strength\s+\d+\b|\bStrength Support Session\b/i;
+const GENERIC_TITLE_RE = /\bCatalog\s+\w+\s+Strength\s+\d+\b|\bStrength Support Session\b|\bStrength Session\b/i;
+// Structured split strength reserves a real block for warm-up, main work,
+// accessories, core, and cooldown instead of collapsing into token sessions.
+const MIN_STRUCTURED_SPLIT_STRENGTH_MINUTES = 40;
+const MIN_STRUCTURED_SPLIT_FLOOR_ESTIMATE_MINUTES = 22;
 
 export function prepareTrainingPlanForQualityGate(
   planData: Record<string, unknown>,
@@ -362,13 +366,15 @@ function enrichStrengthPlan(
       const nextTitle = formatSplitSessionTitle(slot, spec.goal);
       const wasSynthesized = synthesizedSessions.has(session);
       const hasConcreteDay = Boolean(normalizeWeekdayKey(session.dayOfWeek));
-      const shouldReplaceTitle = !previousTitle.trim() || GENERIC_TITLE_RE.test(previousTitle);
+      const titleAlreadyAssigned = normalizeTitleForComparison(previousTitle) === normalizeTitleForComparison(nextTitle);
+      const shouldReplaceTitle = shouldUseAssignedSplitTitle(previousTitle, nextTitle, slot);
       const alreadyPreparedSession = session.splitCode === split.code
         && session.splitSlot === slot.slot
         && Array.isArray(session.sections)
         && session.sections.length > 0;
       const preserveIncomingExercises = !wasSynthesized
         && !shouldReplaceTitle
+        && !titleAlreadyAssigned
         && hasSpecCompatibleExercises(session.exercises, spec);
       if (wasSynthesized || !hasConcreteDay) {
         session.dayOfWeek = DAY_LABEL[intendedDay] ?? session.dayOfWeek;
@@ -378,7 +384,14 @@ function enrichStrengthPlan(
       session.focus = slot.focus;
       session.splitCode = split.code;
       session.splitSlot = slot.slot;
-      session.durationMinutes = normalizeDuration(session.durationMinutes, spec.sessionDurationMinutes);
+      const previousDuration = normalizeDuration(session.durationMinutes, spec.sessionDurationMinutes);
+      const shouldApplyStructuredDurationFloor = wasSynthesized || shouldReplaceTitle || titleAlreadyAssigned;
+      session.durationMinutes = shouldApplyStructuredDurationFloor
+        ? normalizeSplitStrengthDuration(session.durationMinutes, spec.sessionDurationMinutes)
+        : normalizeDuration(session.durationMinutes, spec.sessionDurationMinutes);
+      if (session.durationMinutes > previousDuration) {
+        repairActions.push(`Raised ${session.title || slot.slot} from ${previousDuration} min to ${session.durationMinutes} min so the structured split has enough time for warm-up, main work, accessories, core, and cooldown.`);
+      }
       session.estimatedDurationMinutes = session.durationMinutes;
       session.exercises = normalizeExercisesForSlot(session.exercises, slot, spec, fallbackUse, repairActions, {
         preserveExisting: preserveIncomingExercises,
@@ -409,7 +422,7 @@ function enrichStrengthPlan(
       session.sections = buildSessionSections(session.exercises, slot);
       session.description = enrichDescriptionWithSplit(session.description, split, slot, spec);
       if (shouldReplaceTitle && previousTitle !== nextTitle) {
-        repairActions.push(`Replaced generic title "${previousTitle}" with "${nextTitle}".`);
+        repairActions.push(`Replaced stale or generic title "${previousTitle}" with "${nextTitle}".`);
       }
     }
     repairProtectedEndurancePlacement(strengthSessions, spec, repairActions);
@@ -590,6 +603,32 @@ function upperRepairTitle(value: unknown): string {
   return title
     .replace(/\bLower Body\b/gi, 'Upper Body')
     .replace(/\bLower\b/gi, 'Upper');
+}
+
+function shouldUseAssignedSplitTitle(
+  previousTitle: string,
+  assignedTitle: string,
+  slot: SplitSlotDefinition,
+): boolean {
+  const title = previousTitle.trim();
+  if (!title) return true;
+  if (GENERIC_TITLE_RE.test(title)) return true;
+  if (normalizeTitleForComparison(title) === normalizeTitleForComparison(assignedTitle)) return false;
+
+  const suffix = title.match(/\b([A-F])\b\s*$/i)?.[1]?.toUpperCase();
+  if (suffix) return true;
+
+  const lowerLabel = /\b(lower|legs?|quad|posterior|hamstrings?|glutes?|hinge)\b/i.test(title);
+  const upperLabel = /\b(upper|push|pull|chest|back|delts?|arms?|accessor(?:y|ies))\b/i.test(title);
+  if (slot.lowerHeavy && upperLabel) return true;
+  if (!slot.lowerHeavy && lowerLabel) return true;
+
+  return /\b(strength|hypertrophy|body|training)\b/i.test(title)
+    && (lowerLabel || upperLabel || /\bfull\s+body\b/i.test(title));
+}
+
+function normalizeTitleForComparison(value: string): string {
+  return value.trim().replace(/\s+/g, ' ').toLowerCase();
 }
 
 function upperBodyRepairSlot(session: MutableSession, goal: TrainingPlanSpec['goal']): SplitSlotDefinition {
@@ -985,7 +1024,7 @@ function ensureRequiredMovementCoverage(
 ): void {
   const covered = exercises.map(movementPatternForExercise).filter(Boolean) as MovementPattern[];
   const usedIds = new Set(exercises.map((exercise) => String(exercise.exerciseId || '')).filter(Boolean));
-  const required = slot.movementPatterns.filter((pattern) =>
+  const required = effectiveMovementPatternsForSlot(slot).filter((pattern) =>
     !covered.some((coveredPattern) => movementPatternSatisfies(pattern, coveredPattern, spec))
     && movementPatternFeasible(pattern, spec)
   );
@@ -1021,7 +1060,7 @@ function replaceableAccessoryIndex(
 function defaultExercisesForSlot(slot: SplitSlotDefinition, spec: TrainingPlanSpec): Array<Record<string, unknown>> {
   const used = new Set<string>();
   const selected: Array<Record<string, unknown>> = [];
-  const patterns = [...slot.movementPatterns];
+  const patterns = effectiveMovementPatternsForSlot(slot);
   for (const pattern of patterns) {
     const candidate = selectExerciseForPattern(pattern, spec, used);
     if (!candidate) continue;
@@ -1037,6 +1076,20 @@ function defaultExercisesForSlot(slot: SplitSlotDefinition, spec: TrainingPlanSp
     used.add(candidate.definition.id);
   }
   return selected.slice(0, 6);
+}
+
+function effectiveMovementPatternsForSlot(slot: SplitSlotDefinition): MovementPattern[] {
+  const patterns = [...slot.movementPatterns];
+  if (
+    slot.slot === 'A'
+    && /^Full Body Strength A$/i.test(slot.title)
+    && patterns.includes('squat')
+    && !patterns.includes('hinge')
+  ) {
+    const squatIndex = patterns.indexOf('squat');
+    patterns.splice(squatIndex + 1, 0, 'hinge');
+  }
+  return patterns;
 }
 
 function selectExerciseForPattern(
@@ -1848,8 +1901,8 @@ function repairSessionDurationCoherence(
     if (!verdict.ok && verdict.reason === 'underfilled' && (options.preserveExercises || verdict.estimatedMinutes >= MIN_CREDIBLE_STRENGTH_MINUTES)) {
       const previous = normalizeDuration(session.durationMinutes, spec.sessionDurationMinutes);
       session.durationMinutes = options.preserveExercises
-        ? Math.max(1, verdict.estimatedMinutes)
-        : normalizeDuration(verdict.estimatedMinutes, previous);
+        ? normalizeSplitStrengthDuration(verdict.estimatedMinutes, spec.sessionDurationMinutes, { honorRequestedFloor: false })
+        : normalizeSplitStrengthDuration(verdict.estimatedMinutes, previous, { honorRequestedFloor: false });
       repairActions.push(`Adjusted ${session.title || slot.slot} from ${previous} min to a truthful ${session.durationMinutes} min duration.`);
       verdict = sessionDurationCoherenceVerdict(session);
     }
@@ -1858,7 +1911,7 @@ function repairSessionDurationCoherence(
   if (!verdict.ok && verdict.reason === 'overstuffed') {
     if (options.preserveExercises && verdict.estimatedMinutes <= 90) {
       const previous = normalizeDuration(session.durationMinutes, spec.sessionDurationMinutes);
-      session.durationMinutes = Math.max(1, Math.round(verdict.estimatedMinutes));
+      session.durationMinutes = normalizeSplitStrengthDuration(verdict.estimatedMinutes, spec.sessionDurationMinutes, { honorRequestedFloor: false });
       repairActions.push(`Raised ${session.title || slot.slot} from ${previous} min to ${session.durationMinutes} min to preserve quality-gate volume truthfully.`);
       verdict = sessionDurationCoherenceVerdict(session);
     }
@@ -1869,7 +1922,7 @@ function repairSessionDurationCoherence(
     }
     if (!verdict.ok && verdict.reason === 'overstuffed' && !spec.sessionDurationMinutes && verdict.estimatedMinutes <= 90) {
       const previous = normalizeDuration(session.durationMinutes, spec.sessionDurationMinutes);
-      session.durationMinutes = normalizeDuration(verdict.estimatedMinutes, previous);
+      session.durationMinutes = normalizeSplitStrengthDuration(verdict.estimatedMinutes, previous, { honorRequestedFloor: false });
       repairActions.push(`Raised ${session.title || slot.slot} from ${previous} min to ${session.durationMinutes} min to keep duration truthful.`);
       verdict = sessionDurationCoherenceVerdict(session);
     }
@@ -1956,6 +2009,13 @@ function sessionDurationCoherenceVerdict(session: MutableSession): DurationCoher
   if (claimedMinutes <= 0) return { ok: true, estimatedMinutes, claimedMinutes };
   const deviationPct = Math.abs(estimatedMinutes - claimedMinutes) / claimedMinutes;
   if (deviationPct <= DEFAULT_COHERENCE_TOLERANCE_PCT) {
+    return { ok: true, estimatedMinutes, claimedMinutes };
+  }
+  if (
+    estimatedMinutes < claimedMinutes
+    && claimedMinutes === MIN_STRUCTURED_SPLIT_STRENGTH_MINUTES
+    && estimatedMinutes >= MIN_STRUCTURED_SPLIT_FLOOR_ESTIMATE_MINUTES
+  ) {
     return { ok: true, estimatedMinutes, claimedMinutes };
   }
   return {
@@ -2283,6 +2343,21 @@ function protectedEnduranceDayIndexes(enduranceSchedule?: EnduranceKeyDay[]): nu
 function normalizeDuration(value: unknown, fallback?: number): number {
   const numeric = typeof value === 'number' && Number.isFinite(value) ? value : fallback ?? 50;
   return Math.min(Math.max(Math.round(numeric), 30), 90);
+}
+
+function normalizeSplitStrengthDuration(
+  value: unknown,
+  fallback?: number,
+  options: { honorRequestedFloor?: boolean } = {},
+): number {
+  const requested = normalizeDuration(fallback, 45);
+  if (options.honorRequestedFloor === false) {
+    const numeric = typeof value === 'number' && Number.isFinite(value) ? value : requested;
+    return Math.min(Math.max(Math.round(numeric), 1), 90);
+  }
+  const normalized = normalizeDuration(value, requested);
+  const floor = Math.max(requested, MIN_STRUCTURED_SPLIT_STRENGTH_MINUTES);
+  return Math.max(normalized, Math.min(floor, 90));
 }
 
 function normalizePositiveInt(value: unknown, fallback: number): number {

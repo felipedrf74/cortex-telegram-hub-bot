@@ -64,6 +64,78 @@ describe('secretary-live-calendar-busy', () => {
     );
   });
 
+  it('keeps real other-provider meetings in the busy set when Training writes elsewhere', async () => {
+    mockGetEventsWithDiagnostics.mockResolvedValue({
+      events: [{
+        summary: 'Google client meeting',
+        start: '2026-06-01T10:00:00Z',
+        end: '2026-06-01T11:00:00Z',
+        source: 'google',
+      }],
+      status: 'ready',
+      warningCodes: [],
+      warnings: [],
+      sources: { configured: ['google', 'outlook'], fulfilled: ['google', 'outlook'], failed: [] },
+    });
+
+    const result = await loadLiveCalendarBusyWindowsForSecretaryIntent(intent({
+      sourceSkill: 'training',
+      softPreferences: { calendarProvider: 'outlook' },
+    }));
+
+    expect(mockGetEventsWithDiagnostics).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.any(String),
+      42,
+    );
+    expect(result.windows).toEqual([{
+      start: '2026-06-01T10:00:00.000Z',
+      end: '2026-06-01T11:00:00.000Z',
+      label: 'Google client meeting',
+    }]);
+  });
+
+  it('excludes Training-owned calendar events from either provider', async () => {
+    mockGetEventsWithDiagnostics.mockResolvedValue({
+      events: [
+        {
+          summary: 'Upper Body Strength',
+          start: '2026-06-01T09:00:00Z',
+          end: '2026-06-01T09:45:00Z',
+          source: 'google',
+          description: 'Workout\n\n[NEXUS_TRAINING_IDENTITY plan=1;version=2;session=3;key=abc;shape=def]',
+        },
+        {
+          summary: 'Lower Body Strength',
+          start: '2026-06-01T10:00:00Z',
+          end: '2026-06-01T10:45:00Z',
+          source: 'outlook',
+          description: [
+            'Workout',
+            'NEXUS_SECRETARY_SOURCE_SKILL:training',
+            'NEXUS_SECRETARY_SOURCE_INTENT:training:1:2:4',
+          ].join('\n'),
+        },
+      ],
+      status: 'ready',
+      warningCodes: [],
+      warnings: [],
+      sources: { configured: ['google', 'outlook'], fulfilled: ['google', 'outlook'], failed: [] },
+    });
+
+    const result = await loadLiveCalendarBusyWindowsForSecretaryIntent(intent({
+      sourceSkill: 'training',
+      softPreferences: { calendarProvider: 'outlook' },
+    }));
+
+    expect(result.windows).toEqual([]);
+    expect(mockGetEventsWithDiagnostics).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.any(String),
+      42,
+    );
+  });
+
   it('marks the result degraded when configured providers fail', async () => {
     mockGetEventsWithDiagnostics.mockResolvedValue({
       events: [],

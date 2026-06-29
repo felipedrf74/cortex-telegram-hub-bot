@@ -782,25 +782,6 @@ export function renderSectionsAsText(sections: SessionSections): string {
   lines.push(`${sections.badge.emoji} ${sections.badge.eyebrow} — ${sections.badge.title}`);
   lines.push('');
 
-  if (sections.blocks && sections.blocks.length > 0) {
-    for (const block of sections.blocks) {
-      lines.push(`${(block.title || block.type || 'DETAILS').toUpperCase()}:`);
-      if (block.subtitle) lines.push(`• ${block.subtitle}`);
-      if (block.summary) lines.push(`• ${block.summary}`);
-      for (const metric of block.metrics ?? []) {
-        lines.push(`• ${metric.label}: ${metric.value}${metric.note ? ` — ${metric.note}` : ''}`);
-      }
-      for (const item of block.items ?? []) {
-        lines.push(`• ${item}`);
-      }
-      for (const warning of block.warnings ?? []) {
-        lines.push(`• ${warning}`);
-      }
-      if (block.notes) lines.push(`• ${block.notes}`);
-      lines.push('');
-    }
-  }
-
   // Weekly progression
   if (sections.weeklyProgression && sections.weeklyProgression.length > 0) {
     lines.push('WEEKLY PROGRESSION:');
@@ -851,6 +832,26 @@ export function renderSectionsAsText(sections: SessionSections): string {
       }
     }
     lines.push('');
+  }
+
+  if (sections.blocks && sections.blocks.length > 0) {
+    for (const block of sections.blocks) {
+      lines.push(`${(block.title || block.type || 'DETAILS').toUpperCase()}:`);
+      if (block.subtitle) lines.push(`• ${block.subtitle}`);
+      if (block.summary) lines.push(`• ${block.summary}`);
+      for (const metric of block.metrics ?? []) {
+        lines.push(`• ${metric.label}: ${metric.value}${metric.note ? ` — ${metric.note}` : ''}`);
+      }
+      const items = block.type === 'session_prescription' ? [] : block.items ?? [];
+      for (const item of items) {
+        lines.push(`• ${item}`);
+      }
+      for (const warning of block.warnings ?? []) {
+        lines.push(`• ${warning}`);
+      }
+      if (block.notes && block.type !== 'session_prescription') lines.push(`• ${block.notes}`);
+      lines.push('');
+    }
   }
 
   if (sections.coachInsights && sections.coachInsights.length > 0) {

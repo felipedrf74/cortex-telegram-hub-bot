@@ -472,6 +472,7 @@ export async function previewTrainingSessionReflow(
     tenantId: effectiveTenantId,
     planId: scope.plan.id,
     planVersion: getPlanVersion(scope.plan.id) ?? 1,
+    calendarSource,
     item: {
       sessionId: scope.session.id,
       sessionIdentityKey: scope.session.session_identity_key || buildTrainingSessionIdentityKey({
@@ -1282,6 +1283,7 @@ async function syncTrainingPlanCalendarLocked(
         tenantId: effectiveTenantId,
         planId: plan.id,
         planVersion,
+        calendarSource,
         item,
         start: window.start,
         end: window.end,
@@ -1698,6 +1700,7 @@ function buildTrainingSyncSecretaryIntent(input: {
     title: string;
     durationMinutes: number;
   };
+  calendarSource?: CalendarSource | null;
   start: Date;
   end: Date;
 }): SecretarySchedulingIntent {
@@ -1720,6 +1723,7 @@ function buildTrainingSyncSecretaryIntent(input: {
     }],
     priority: 'high',
     flexibility: 'fixed',
+    softPreferences: input.calendarSource ? { calendarProvider: input.calendarSource } : undefined,
     reason: 'Training calendar sync requested Secretary-owned agenda placement.',
     context: `plan_id=${input.planId}; plan_version=${input.planVersion}; session_identity_key=${input.item.sessionIdentityKey}; session_shape_hash=${input.item.sessionShapeHash}`,
     createdAt: new Date().toISOString(),

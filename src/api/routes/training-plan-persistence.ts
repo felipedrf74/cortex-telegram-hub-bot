@@ -482,6 +482,7 @@ async function persistGeneratedTrainingPlanLocked(
         planId: plan.id,
         planVersion: planVersionForOwnership,
         eventPayload,
+        calendarSource: calendarWriteSource ?? null,
       });
       const liveBusyWindows = await loadLiveCalendarBusyWindowsForSecretaryIntent(secretaryIntent);
       if (liveBusyWindows.degraded) {
@@ -1174,6 +1175,7 @@ function buildTrainingSecretaryIntent(input: {
   tenantId: number;
   planId: number;
   planVersion: number;
+  calendarSource?: CalendarSource | null;
   eventPayload: {
     sessionId: number;
     title: string;
@@ -1203,6 +1205,7 @@ function buildTrainingSecretaryIntent(input: {
     }],
     priority: 'high',
     flexibility: 'fixed',
+    softPreferences: input.calendarSource ? { calendarProvider: input.calendarSource } : undefined,
     reason: 'Training generated a scheduleable workout session.',
     context: `plan_id=${input.planId}; plan_version=${input.planVersion}; session_identity_key=${input.eventPayload.sessionIdentityKey}; session_shape_hash=${input.eventPayload.sessionShapeHash}`,
     createdAt: new Date().toISOString(),

@@ -321,6 +321,44 @@ describe('training-session-description', () => {
       expect(text).not.toContain('⚠️ IMPORTANT:');
     });
 
+    it('keeps split diagnostics below the workout and avoids duplicate section dumps', () => {
+      const text = renderSectionsAsText({
+        header: { planName: 'Muscle Building Plan' },
+        badge: { emoji: '💪', eyebrow: 'FRIDAY GYM', title: 'Lower Posterior Chain D' },
+        blocks: [
+          {
+            id: 'split-ABCDE-D',
+            type: 'why_this_session',
+            title: 'WHY THIS SESSION',
+            subtitle: 'ABCDE slot D',
+            summary: 'Hamstrings and glutes',
+            items: ['Primary muscles: hamstrings, glutes'],
+            metrics: [{ label: 'Split', value: 'ABCDE D' }],
+          },
+          {
+            id: 'structured-prescription',
+            type: 'session_prescription',
+            title: 'SESSION STRUCTURE',
+            summary: 'Warm-up, main work, accessories, core, and cooldown are preserved as explicit sections.',
+            items: ['MAIN LIFT: Romanian Deadlift · 3×6-12 · RIR 2 · 120s rest'],
+            metrics: [],
+            warnings: [],
+          },
+        ],
+        warmup: { headline: 'WARM-UP (8 min)', items: ['5 min walk/bike'] },
+        exercises: [
+          { index: 1, name: 'Romanian Deadlift', detail: '3×6-12 @ RPE 7-8 | 2 min rest' },
+          { index: 2, name: 'Hip Thrust', detail: '3×6-12 @ RPE 7-8 | 2 min rest' },
+        ],
+        cooldown: { headline: 'COOL-DOWN', items: ['5 min mobility'] },
+        totalMinutesText: '~45 min total',
+      } as any);
+
+      expect(text.indexOf('MAIN WORKOUT — EXERCISES:')).toBeLessThan(text.indexOf('WHY THIS SESSION:'));
+      expect(text.indexOf('WHY THIS SESSION:')).toBeLessThan(text.indexOf('SESSION STRUCTURE:'));
+      expect(text).not.toContain('• MAIN LIFT: Romanian Deadlift');
+    });
+
     it('uses one clean main-workout label instead of stacked headings', () => {
       const { text: runningText } = buildRichSessionDescription(baseInput);
       expect(runningText).toContain('MAIN WORKOUT — EXECUTION:');

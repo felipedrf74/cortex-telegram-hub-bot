@@ -2,9 +2,10 @@
 
 import { DateTime } from 'luxon';
 import {
-  type SecretarySchedulingIntent,
   type SecretaryTimeWindow,
+  type SecretarySchedulingIntent,
 } from './secretary-scheduling-arbitrator';
+import { parseTrainingIdentityMarker } from './training-session-identity';
 import { getEventsWithDiagnostics, type UnifiedCalendarEvent } from './unified-calendar';
 import { logger } from '../utils/logger';
 
@@ -26,6 +27,7 @@ export async function loadLiveCalendarBusyWindowsForSecretaryIntent(
     const result = await getEventsWithDiagnostics(range.start, range.end, intent.ownerUserId);
     const providerConfigured = result.sources.configured.length > 0;
     const windows = result.events
+      .filter((event) => !isTrainingOwnedCalendarEvent(event))
       .map(calendarEventToBusyWindow)
       .filter((window): window is SecretaryTimeWindow => Boolean(window));
     return {
@@ -74,6 +76,14 @@ function resolveCalendarBusyRange(intent: SecretarySchedulingIntent): { start: s
     start: min.minus({ days: 1 }).toISO()!,
     end: max.plus({ days: 1 }).toISO()!,
   };
+}
+
+function isTrainingOwnedCalendarEvent(event: UnifiedCalendarEvent): boolean {
+  const description = String(event.description || '');
+  return parseTrainingIdentityMarker(description) !== null
+    || /\[NEXUS_TRAINING_IDENTITY\b/i.test(description)
+    || /^NEXUS_SECRETARY_SOURCE_SKILL:training$/mi.test(description)
+    || /^NEXUS_SECRETARY_SOURCE_INTENT:training:/mi.test(description);
 }
 
 function calendarEventToBusyWindow(event: UnifiedCalendarEvent): SecretaryTimeWindow | null {

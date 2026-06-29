@@ -257,6 +257,11 @@ describe('training-plan-calendar-sync', () => {
     const result = await previewTrainingSessionReflow(42, 100, 'outlook', 42);
 
     expect(result.status).toBe('preview');
+    expect(mocks.loadLiveCalendarBusyWindows).toHaveBeenCalledWith(expect.objectContaining({
+      sourceSkill: 'training',
+      softPreferences: { calendarProvider: 'outlook' },
+      minimumDurationMinutes: 30,
+    }));
     if (result.status === 'preview') {
       expect(result.data.provider).toBe('outlook');
       expect(result.data.current.start).toBeTruthy();
@@ -742,6 +747,19 @@ describe('training-plan-calendar-sync', () => {
 
     await syncTrainingPlanCalendar(42, now, undefined, 42);
 
+    expect(mocks.loadLiveCalendarBusyWindows).toHaveBeenCalledWith(expect.objectContaining({
+      sourceSkill: 'training',
+      softPreferences: { calendarProvider: 'outlook' },
+      minimumDurationMinutes: 30,
+    }));
+    expect(mocks.submitSecretarySchedulingIntent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sourceSkill: 'training',
+        softPreferences: { calendarProvider: 'outlook' },
+        minimumDurationMinutes: 30,
+      }),
+      expect.any(Object),
+    );
     expect(mocks.createEvent).toHaveBeenCalledWith(
       expect.any(Object),
       'outlook',

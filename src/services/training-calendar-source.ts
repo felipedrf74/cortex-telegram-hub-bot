@@ -73,17 +73,29 @@ export function resolveTrainingCalendarSource(input: {
   linkedSources?: Array<unknown>;
 }): CalendarSource | undefined {
   const tenantId = requireTenantIdParam(input.tenantId, 'resolveTrainingCalendarSource');
-  if (input.requestedSource && isTrainingCalendarSourceAvailable(input.userId, input.requestedSource)) {
-    return input.requestedSource;
+  if (input.requestedSource) {
+    return isTrainingCalendarSourceAvailable(input.userId, input.requestedSource)
+      ? input.requestedSource
+      : undefined;
+  }
+
+  // Current explicit calendar choices outrank stale plan/session links.
+  // Without this, a plan created while Google was active can keep reflowing
+  // workouts into Google after the user switches the main provider to Outlook.
+  const preference = resolveCalendarWritePreference(input.userId, tenantId);
+  if (preference.requested !== 'auto') {
+    return preference.source && isTrainingCalendarSourceAvailable(input.userId, preference.source)
+      ? preference.source
+      : undefined;
+  }
+  if (preference.source && isTrainingCalendarSourceAvailable(input.userId, preference.source)) {
+    return preference.source;
   }
 
   const preferred = readTrainingCalendarSourcePreference(input.planPreferencesJson);
   if (preferred) {
     if (isTrainingCalendarSourceAvailable(input.userId, preferred)) {
       return preferred;
-    }
-    if (!isTrainingCalendarSourceWritesEnabled(preferred)) {
-      return undefined;
     }
   }
 
@@ -95,24 +107,9 @@ export function resolveTrainingCalendarSource(input: {
   }
 
   // Match unified-calendar.createEvent's authenticated-user default, including
-  // tenant-scoped provider preferences. If the user explicitly selected a
-  // preferred provider and it is unavailable, do not silently switch providers.
-  const preference = resolveCalendarWritePreference(input.userId, tenantId);
-  if (preference.source) {
-    if (isTrainingCalendarSourceAvailable(input.userId, preference.source)) {
-      return preference.source;
-    }
-    if (!isTrainingCalendarSourceWritesEnabled(preference.source) && preference.requested !== 'auto') {
-      return undefined;
-    }
-  }
-  if (preference.requested !== 'auto') {
-    return undefined;
-  }
-
-  // In auto mode, preserve Training's legacy connected-source fallback. Some
-  // training flows are still backed by the OAuth store directly, and treating
-  // those as disconnected would strand already-valid Training agenda sync.
+  // tenant-scoped provider preferences. In auto mode, preserve Training's
+  // legacy connected-source fallback so a down preferred calendar does not
+  // strand sync when another writable calendar is connected.
   for (const source of TRAINING_CALENDAR_SOURCES) {
     if (isTrainingCalendarSourceAvailable(input.userId, source)) {
       return source;

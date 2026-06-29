@@ -52,6 +52,11 @@ describe('training-calendar-source', () => {
     expect(mocks.isConnected).not.toHaveBeenCalled();
   });
 
+  it('maps explicit Gmail calendar aliases to Google Calendar', () => {
+    expect(normalizeTrainingCalendarSource('gmail')).toBe('google');
+    expect(validateRequestedTrainingCalendarSource(42, 'gmail')).toEqual({ ok: true, source: 'google' });
+  });
+
   it('R-2026-05-25 — rejects requested Outlook sync when the kill switch is set', () => {
     process.env.TRAINING_CALENDAR_OUTLOOK_DISABLED = '1';
     const result = validateRequestedTrainingCalendarSource(42, 'outlook');
@@ -84,12 +89,24 @@ describe('training-calendar-source', () => {
     expect(source).toBe('outlook');
   });
 
-  it('R-2026-05-25 — does not silently switch an Outlook-pinned plan to Google when the kill switch is set', () => {
+  it('falls back from a stale Outlook-pinned plan preference in auto mode when the kill switch is set', () => {
     process.env.TRAINING_CALENDAR_OUTLOOK_DISABLED = '1';
     const source = resolveTrainingCalendarSource({
       userId: 42,
       tenantId: 42,
       planPreferencesJson: JSON.stringify({ trainingCalendarSource: 'outlook' }),
+    });
+    expect(source).toBe('google');
+  });
+
+  it('does not silently switch an explicit requested Outlook source to Google when the kill switch is set', () => {
+    process.env.TRAINING_CALENDAR_OUTLOOK_DISABLED = '1';
+    const source = resolveTrainingCalendarSource({
+      userId: 42,
+      tenantId: 42,
+      requestedSource: 'outlook',
+      planPreferencesJson: JSON.stringify({ trainingCalendarSource: 'google' }),
+      linkedSources: ['google'],
     });
     expect(source).toBeUndefined();
   });
@@ -98,6 +115,47 @@ describe('training-calendar-source', () => {
     mocks.resolveCalendarWritePreference.mockReturnValue({ requested: 'outlook', source: 'outlook' });
     const source = resolveTrainingCalendarSource({ userId: 42, tenantId: 42 });
     expect(source).toBe('outlook');
+  });
+
+  it('uses the selected main calendar provider before stale plan or session calendar links', () => {
+    mocks.resolveCalendarWritePreference.mockReturnValue({ requested: 'outlook', source: 'outlook' });
+
+    const source = resolveTrainingCalendarSource({
+      userId: 42,
+      tenantId: 42,
+      planPreferencesJson: JSON.stringify({ trainingCalendarSource: 'google' }),
+      linkedSources: ['google'],
+    });
+
+    expect(source).toBe('outlook');
+  });
+
+  it('does not silently fall back when the selected main calendar provider is unavailable', () => {
+    mocks.resolveCalendarWritePreference.mockReturnValue({ requested: 'outlook', source: null });
+    mocks.isConnected.mockImplementation((_userId: number, source: string) => source === 'google');
+
+    const source = resolveTrainingCalendarSource({
+      userId: 42,
+      tenantId: 42,
+      planPreferencesJson: JSON.stringify({ trainingCalendarSource: 'google' }),
+      linkedSources: ['google'],
+    });
+
+    expect(source).toBeUndefined();
+  });
+
+  it('falls back to a connected calendar in auto mode when the preferred auto source is unavailable', () => {
+    mocks.resolveCalendarWritePreference.mockReturnValue({ requested: 'auto', source: 'outlook' });
+    mocks.isConnected.mockImplementation((_userId: number, source: string) => source === 'google');
+
+    const source = resolveTrainingCalendarSource({
+      userId: 42,
+      tenantId: 42,
+      planPreferencesJson: JSON.stringify({ trainingCalendarSource: 'outlook' }),
+      linkedSources: ['outlook'],
+    });
+
+    expect(source).toBe('google');
   });
 
   it('R-2026-05-25 — does not silently switch an explicit Outlook provider preference to Google when the kill switch is set', () => {
