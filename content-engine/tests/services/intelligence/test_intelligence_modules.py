@@ -486,8 +486,10 @@ async def test_competitor_fetch_http_status_errors_are_not_swallowed(monkeypatch
     monkeypatch.setattr(competitor_analyzer, "cfg", SimpleNamespace(youtube_api_key="tenant-key"))
     monkeypatch.setattr(competitor_analyzer.httpx, "AsyncClient", lambda *args, **kwargs: FakeClient())
 
-    with pytest.raises(httpx.HTTPStatusError, match="tenant-42 forbidden"):
+    with pytest.raises(RuntimeError, match="YouTube competitor request failed at channel_search with status 0") as exc:
         await competitor_analyzer._fetch_channel_videos("tenant-42 channel", 5)
+    assert "tenant-42 forbidden" not in str(exc.value)
+    assert "tenant-key" not in str(exc.value)
 
 
 def test_competitor_rejects_invalid_channel():

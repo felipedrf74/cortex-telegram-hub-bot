@@ -7,6 +7,7 @@ No rate limit issues at modest volumes (< 60 req/min).
 Subreddits are pre-configured per niche for targeted discovery.
 """
 
+import hashlib
 import logging
 from datetime import datetime, timezone
 
@@ -27,6 +28,10 @@ ALL_SUBREDDITS = [s for subs in NICHE_SUBREDDITS.values() for s in subs]
 
 REDDIT_SEARCH_URL = "https://www.reddit.com/search.json"
 REDDIT_HEADERS = {"User-Agent": "CortexBot/1.0 (content research)"}
+
+
+def _query_fingerprint(query: str) -> str:
+    return hashlib.sha256(query.encode("utf-8")).hexdigest()[:12]
 
 
 class RedditSearcher:
@@ -80,7 +85,12 @@ class RedditSearcher:
                 },
             ))
 
-        logger.info("Reddit returned %d results for '%s'", len(results), query[:60])
+        logger.info(
+            "Reddit returned %d results (query_hash=%s query_len=%d)",
+            len(results),
+            _query_fingerprint(query),
+            len(query),
+        )
         return results
 
     @staticmethod

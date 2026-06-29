@@ -154,6 +154,44 @@ export function failTrainingPlanGenerationIdempotency(
   `).run(nowIso, userId, scopedTenantId, idempotencyKey, requestHash);
 }
 
+export function clearTrainingPlanGenerationIdempotency(
+  userId: number,
+  tenantId: number,
+  idempotencyKey: string | null,
+  requestHash?: string,
+): number {
+  if (!idempotencyKey) return 0;
+  const scopedTenantId = requireTenantIdParam(tenantId, 'clearTrainingPlanGenerationIdempotency');
+
+  const db = getOptionalDb();
+  if (!db) {
+    const key = memoryKey(userId, scopedTenantId, idempotencyKey);
+    const row = MEMORY_ROWS.get(key);
+    if (!row) return 0;
+    if (requestHash && row.request_hash !== requestHash) return 0;
+    MEMORY_ROWS.delete(key);
+    return 1;
+  }
+
+  ensureTrainingPlanGenerationIdempotencyTable(db);
+  if (requestHash) {
+    return db.prepare(`
+      DELETE FROM ${IDEMPOTENCY_TABLE}
+       WHERE user_id = ?
+         AND tenant_id = ?
+         AND idempotency_key = ?
+         AND request_hash = ?
+    `).run(userId, scopedTenantId, idempotencyKey, requestHash).changes;
+  }
+
+  return db.prepare(`
+    DELETE FROM ${IDEMPOTENCY_TABLE}
+     WHERE user_id = ?
+       AND tenant_id = ?
+       AND idempotency_key = ?
+  `).run(userId, scopedTenantId, idempotencyKey).changes;
+}
+
 export function _resetTrainingPlanGenerationIdempotencyForTests(): void {
   MEMORY_ROWS.clear();
 }

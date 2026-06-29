@@ -401,6 +401,43 @@ describe('secretary-agenda-provider-sync', () => {
     expect(stored?.providerSyncState).toBe('deleted');
   });
 
+  it('treats terminal deleted cleanup rows without provider IDs as no-op syncs', async () => {
+    const provider = new MockSecretaryProvider();
+    const decision = submitSecretarySchedulingIntent(intent({
+      intentId: 'terminal-cleanup-no-provider',
+      sourceEntityId: 'session-terminal-cleanup',
+    }));
+    testDb.prepare(`
+      UPDATE secretary_agenda_items
+      SET lifecycle_state = 'unscheduled',
+          provider_sync_state = 'deleted',
+          provider_event_id = NULL,
+          provider_source = NULL,
+          cancellation_reason = 'training_provider_ownership_record_failed',
+          updated_at = '2026-05-01T10:00:00.000Z'
+      WHERE agenda_item_id = ?
+    `).run(decision.agendaItem.agendaItemId);
+
+    const batch = await syncSecretaryAgendaItemsToProvider({
+      ownerUserId: OWNER_USER_ID,
+      tenantId: TENANT_ID,
+      includeInactive: true,
+    }, provider);
+    const direct = await syncOne(decision.agendaItem.agendaItemId, provider);
+
+    expect(batch).toHaveLength(0);
+    expect(direct).toMatchObject({
+      agendaItemId: decision.agendaItem.agendaItemId,
+      action: 'skipped',
+      providerSyncState: 'deleted',
+      providerEventId: null,
+      reasonCode: 'terminal_cleanup_no_provider_event',
+    });
+    expect(provider.createAttempts).toBe(0);
+    expect(provider.createInputs).toHaveLength(0);
+    expect(provider.deletedEventIds).toEqual([]);
+  });
+
   it('treats provider 410 Gone during cleanup as already deleted', async () => {
     class GoneOnDeleteProvider extends MockSecretaryProvider {
       async deleteEvent(eventId: string): Promise<void> {
@@ -684,6 +721,67 @@ describe('secretary-agenda-provider-sync', () => {
     expect(repaired.providerEventId).not.toBe(first.providerEventId);
     expect(stored?.providerSyncState).toBe('synced');
     expect(stored?.providerEventId).toBe(repaired.providerEventId);
+  });
+
+  it('does not resurrect a deleted provider event when the backing Training session is unscheduled', async () => {
+    testDb.exec(`
+      CREATE TABLE fitness_training_plans (
+        id INTEGER PRIMARY KEY,
+        user_id INTEGER NOT NULL,
+        tenant_id TEXT NOT NULL,
+        status TEXT NOT NULL
+      );
+      CREATE TABLE training_sessions (
+        id INTEGER PRIMARY KEY,
+        plan_id INTEGER NOT NULL,
+        status TEXT NOT NULL
+      );
+      INSERT INTO fitness_training_plans (id, user_id, tenant_id, status)
+      VALUES (9001, ${OWNER_USER_ID}, '${TENANT_ID}', 'active');
+      INSERT INTO training_sessions (id, plan_id, status)
+      VALUES (501, 9001, 'scheduled');
+    `);
+    const provider = new MockSecretaryProvider();
+    const decision = submitSecretarySchedulingIntent(intent({
+      intentId: 'unscheduled-training-session',
+      sourceEntityId: '501',
+      sourceEntityType: 'training_session',
+    }));
+    const first = await syncOne(decision.agendaItem.agendaItemId, provider);
+    provider.removeExternally(first.providerEventId!);
+    testDb.prepare(`
+      UPDATE training_sessions
+         SET status = 'unscheduled'
+       WHERE id = 501
+    `).run();
+    testDb.prepare(`
+      UPDATE secretary_agenda_items
+         SET lifecycle_state = 'failed_sync',
+             provider_sync_state = 'readback_failed',
+             updated_at = ?
+       WHERE agenda_item_id = ?
+    `).run(
+      '2026-06-07T18:00:00.000Z',
+      decision.agendaItem.agendaItemId,
+    );
+
+    const cleanup = await syncOne(decision.agendaItem.agendaItemId, provider);
+    const stored = getSecretaryAgendaItemById({
+      agendaItemId: decision.agendaItem.agendaItemId,
+      ownerUserId: OWNER_USER_ID,
+      tenantId: TENANT_ID,
+    });
+
+    expect(cleanup.action).toBe('deleted');
+    expect(cleanup.providerSyncState).toBe('deleted');
+    expect(cleanup.reasonCode).toBe('provider_event_deleted');
+    expect(provider.createAttempts).toBe(1);
+    expect(provider.createInputs).toHaveLength(1);
+    expect(provider.deletedEventIds).toContain(first.providerEventId);
+    expect(stored?.lifecycleState).toBe('unscheduled');
+    expect(stored?.providerSyncState).toBe('deleted');
+    expect(stored?.cancellationReason).toBe('training_session_unscheduled');
+    expect(stored?.providerSyncState).not.toBe('synced');
   });
 
   it('treats cancellation-reasoned active rows as cleanup rows instead of recreating deleted provider events', async () => {

@@ -11,7 +11,7 @@
  */
 
 import http from 'http';
-import { WebSocketServer, WebSocket } from 'ws';
+import { WebSocketServer, WebSocket, type RawData } from 'ws';
 import { logger } from '../utils/logger';
 import { routeMessage } from '../router';
 import type { DomainName } from '../domains/types';
@@ -38,11 +38,18 @@ import type { NexusChatOwnerSkill } from '../services/chat-answer-contract';
 import { enforceCostGuardrails } from '../services/cost-guardrail';
 
 const WEBSOCKET_RATE_WINDOW_MS = 60_000;
+const WEBSOCKET_PING_INTERVAL_MS = 30_000;
+export const DEFAULT_WEBSOCKET_MAX_FRAME_BYTES = 16 * 1024;
+export const DEFAULT_WEBSOCKET_AUTH_TIMEOUT_MS = 10_000;
+export const DEFAULT_WEBSOCKET_MAX_CONNECTIONS = 100;
+export const DEFAULT_WEBSOCKET_MAX_CONNECTIONS_PER_IP = 20;
 const DEFAULT_ALLOWED_WEBSOCKET_ORIGINS = [
   'https://nexushub.me',
   'https://www.nexushub.me',
   'https://api.nexushub.me',
 ];
+const activeWebSocketConnectionsByIp = new Map<string, number>();
+let activeWebSocketConnectionCount = 0;
 
 function normalizedAllowedWebSocketOrigins(): Set<string> {
   const configured = (process.env.IOS_WS_ALLOWED_ORIGINS || '')
@@ -93,6 +100,116 @@ export function consumeWebSocketMessageBudget(
   recent.push(now);
   state.messageTimestamps = recent;
   return recent.length <= safeLimit;
+}
+
+export function webSocketMaxPayloadBytes(): number {
+  const configured = Number.parseInt(process.env.IOS_WS_MAX_FRAME_BYTES || '', 10);
+  if (!Number.isFinite(configured) || configured <= 0) return DEFAULT_WEBSOCKET_MAX_FRAME_BYTES;
+  return Math.min(Math.max(configured, 1024), 64 * 1024);
+}
+
+function parseBoundedPositiveInteger(
+  value: string | undefined,
+  defaultValue: number,
+  min: number,
+  max: number,
+): number {
+  const parsed = Number.parseInt(value || '', 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) return defaultValue;
+  return Math.min(Math.max(parsed, min), max);
+}
+
+export function webSocketAuthTimeoutMs(): number {
+  return parseBoundedPositiveInteger(
+    process.env.IOS_WS_AUTH_TIMEOUT_MS,
+    DEFAULT_WEBSOCKET_AUTH_TIMEOUT_MS,
+    100,
+    60_000,
+  );
+}
+
+export function webSocketConnectionLimits(): { maxConnections: number; maxConnectionsPerIp: number } {
+  return {
+    maxConnections: parseBoundedPositiveInteger(
+      process.env.IOS_WS_MAX_CONNECTIONS,
+      DEFAULT_WEBSOCKET_MAX_CONNECTIONS,
+      1,
+      10_000,
+    ),
+    maxConnectionsPerIp: parseBoundedPositiveInteger(
+      process.env.IOS_WS_MAX_CONNECTIONS_PER_IP,
+      DEFAULT_WEBSOCKET_MAX_CONNECTIONS_PER_IP,
+      1,
+      1_000,
+    ),
+  };
+}
+
+export function resetWebSocketConnectionCountersForTests(): void {
+  activeWebSocketConnectionsByIp.clear();
+  activeWebSocketConnectionCount = 0;
+}
+
+export function webSocketFrameByteLength(data: RawData): number {
+  if (Buffer.isBuffer(data)) return data.byteLength;
+  if (Array.isArray(data)) {
+    return data.reduce((total, chunk) => total + chunk.byteLength, 0);
+  }
+  if (data instanceof ArrayBuffer) return data.byteLength;
+  return Buffer.byteLength(String(data), 'utf8');
+}
+
+function webSocketFrameToString(data: RawData): string {
+  if (Buffer.isBuffer(data)) return data.toString('utf8');
+  if (Array.isArray(data)) return Buffer.concat(data).toString('utf8');
+  if (data instanceof ArrayBuffer) return Buffer.from(data).toString('utf8');
+  return String(data);
+}
+
+function webSocketRemoteIp(request: http.IncomingMessage): string {
+  return request.socket.remoteAddress || 'unknown';
+}
+
+function rejectWebSocketUpgrade(socket: { write(data: string): void; destroy(): void }, status: number, reason: string): void {
+  const body = `${reason}\n`;
+  socket.write(
+    `HTTP/1.1 ${status} ${reason}\r\n` +
+    'Connection: close\r\n' +
+    'Content-Type: text/plain; charset=utf-8\r\n' +
+    `Content-Length: ${Buffer.byteLength(body)}\r\n` +
+    '\r\n' +
+    body,
+  );
+  socket.destroy();
+}
+
+function webSocketLimitRejectionReason(remoteIp: string): string | null {
+  const limits = webSocketConnectionLimits();
+  if (activeWebSocketConnectionCount >= limits.maxConnections) {
+    return 'WebSocket connection limit exceeded';
+  }
+  if ((activeWebSocketConnectionsByIp.get(remoteIp) || 0) >= limits.maxConnectionsPerIp) {
+    return 'WebSocket per-IP connection limit exceeded';
+  }
+  return null;
+}
+
+function registerWebSocketConnection(remoteIp: string): () => void {
+  activeWebSocketConnectionCount += 1;
+  activeWebSocketConnectionsByIp.set(remoteIp, (activeWebSocketConnectionsByIp.get(remoteIp) || 0) + 1);
+  let released = false;
+
+  return () => {
+    if (released) return;
+    released = true;
+    activeWebSocketConnectionCount = Math.max(0, activeWebSocketConnectionCount - 1);
+    const nextForIp = Math.max(0, (activeWebSocketConnectionsByIp.get(remoteIp) || 0) - 1);
+    if (nextForIp === 0) {
+      activeWebSocketConnectionsByIp.delete(remoteIp);
+    } else {
+      activeWebSocketConnectionsByIp.set(remoteIp, nextForIp);
+    }
+  };
 }
 
 function getDomainHandlers(): Record<string, (message: string, userId?: number, tenantId?: number) => Promise<{ text: string; domain: DomainName }>> {
@@ -160,7 +277,7 @@ function sendWebSocketQuotaExceeded(
  * Handles upgrade requests to /ws path.
  */
 export function attachWebSocket(server: http.Server): void {
-  const wss = new WebSocketServer({ noServer: true });
+  const wss = new WebSocketServer({ noServer: true, maxPayload: webSocketMaxPayloadBytes() });
 
   // Handle HTTP upgrade to WebSocket
   server.on('upgrade', (request, socket, head) => {
@@ -178,16 +295,103 @@ export function attachWebSocket(server: http.Server): void {
       return;
     }
 
+    const remoteIp = webSocketRemoteIp(request);
+    const limitRejectionReason = webSocketLimitRejectionReason(remoteIp);
+    if (limitRejectionReason) {
+      logger.warn({ remoteIp, activeWebSocketConnectionCount }, 'WebSocket upgrade rejected due to connection limit');
+      pushEvent({
+        ts: new Date().toISOString(),
+        type: 'auth',
+        summary: 'iOS WS connection limit exceeded',
+        detail: limitRejectionReason,
+        domain: 'secretary',
+      });
+      rejectWebSocketUpgrade(socket, 429, 'Too Many Requests');
+      return;
+    }
+
     // Accept connection without auth — auth happens via first message payload
     // (JWT in URL query params appears in server access logs, which is a security risk)
     wss.handleUpgrade(request, socket, head, (ws) => {
+      (ws as any).remoteIp = remoteIp;
+      (ws as any).releaseConnectionSlot = registerWebSocketConnection(remoteIp);
       (ws as any).authenticated = false;
       wss.emit('connection', ws, request);
     });
   });
 
   wss.on('connection', (ws: WebSocket) => {
-    logger.info({ platform: 'ios' }, 'WebSocket connected (pending auth)');
+    logger.info({ platform: 'ios', remoteIp: (ws as any).remoteIp }, 'WebSocket connected (pending auth)');
+
+    let authTimeout: ReturnType<typeof setTimeout> | undefined;
+    let pingInterval: ReturnType<typeof setInterval> | undefined;
+    let cleanedUp = false;
+
+    const clearAuthTimeout = () => {
+      if (!authTimeout) return;
+      clearTimeout(authTimeout);
+      authTimeout = undefined;
+    };
+
+    const cleanupConnection = () => {
+      if (cleanedUp) return;
+      cleanedUp = true;
+      clearAuthTimeout();
+      if (pingInterval) {
+        clearInterval(pingInterval);
+        pingInterval = undefined;
+      }
+      const releaseConnectionSlot = (ws as any).releaseConnectionSlot as (() => void) | undefined;
+      releaseConnectionSlot?.();
+      logger.debug({ userId: (ws as any).userId, tenantId: (ws as any).tenantId, platform: 'ios' }, 'WebSocket disconnected');
+    };
+
+    (ws as any).isAlive = true;
+    ws.on('pong', () => {
+      (ws as any).isAlive = true;
+    });
+
+    authTimeout = setTimeout(() => {
+      if ((ws as any).authenticated) return;
+      pushEvent({
+        ts: new Date().toISOString(),
+        type: 'auth',
+        summary: 'iOS WS auth timeout',
+        detail: 'WebSocket did not authenticate before timeout',
+        domain: 'secretary',
+      });
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'error', code: 'AUTH_TIMEOUT', message: 'Authentication timed out. Please reconnect.' }));
+        ws.close(4001, 'Auth timeout');
+        const terminateTimer = setTimeout(() => {
+          if (ws.readyState !== WebSocket.CLOSED) {
+            ws.terminate();
+          }
+        }, 250);
+        if (typeof (terminateTimer as any).unref === 'function') (terminateTimer as any).unref();
+        return;
+      }
+      ws.terminate();
+    }, webSocketAuthTimeoutMs());
+    if (typeof (authTimeout as any).unref === 'function') (authTimeout as any).unref();
+
+    pingInterval = setInterval(() => {
+      if (ws.readyState !== WebSocket.OPEN) return;
+      if ((ws as any).isAlive === false) {
+        pushEvent({
+          ts: new Date().toISOString(),
+          type: 'auth',
+          summary: 'iOS WS liveness timeout',
+          detail: 'WebSocket did not respond to ping',
+          domain: 'secretary',
+        });
+        ws.terminate();
+        return;
+      }
+      (ws as any).isAlive = false;
+      ws.ping();
+    }, WEBSOCKET_PING_INTERVAL_MS);
+    if (typeof (pingInterval as any).unref === 'function') (pingInterval as any).unref();
 
     ws.on('message', async (data) => {
       try {
@@ -204,7 +408,38 @@ export function attachWebSocket(server: http.Server): void {
           return;
         }
 
-        const msg = JSON.parse(data.toString());
+        const frameBytes = webSocketFrameByteLength(data);
+        if (frameBytes > webSocketMaxPayloadBytes()) {
+          pushEvent({
+            ts: new Date().toISOString(),
+            type: 'auth',
+            summary: 'iOS WS frame rejected',
+            detail: 'WebSocket frame exceeded maximum payload size',
+            domain: 'secretary',
+          });
+          ws.send(JSON.stringify({ type: 'error', code: 'PAYLOAD_TOO_LARGE', message: 'Message is too large.' }));
+          ws.close(1009, 'Message too large');
+          return;
+        }
+
+        let msg: any;
+        try {
+          msg = JSON.parse(webSocketFrameToString(data));
+        } catch (parseErr) {
+          if (!(ws as any).authenticated) {
+            pushEvent({
+              ts: new Date().toISOString(),
+              type: 'auth',
+              summary: 'iOS WS auth failed',
+              detail: 'First message was not valid JSON',
+              domain: 'secretary',
+            });
+            ws.send(JSON.stringify({ type: 'error', message: 'First message must be a valid auth JSON frame.' }));
+            ws.close(4001, 'Invalid auth frame');
+            return;
+          }
+          throw parseErr;
+        }
 
         // First message must be auth: { type: "auth", token: "jwt" }
         if (!(ws as any).authenticated) {
@@ -244,6 +479,7 @@ export function attachWebSocket(server: http.Server): void {
             (ws as any).tenantId = canonicalTenantId;
             (ws as any).deviceId = payload.deviceId;
             (ws as any).authenticated = true;
+            clearAuthTimeout();
             ws.send(JSON.stringify({ type: 'auth_ok', userId: payload.userId, tenantId: canonicalTenantId }));
             logger.info({ userId: payload.userId, tenantId: canonicalTenantId, platform: 'ios' }, 'WebSocket authenticated');
             return;
@@ -593,18 +829,8 @@ export function attachWebSocket(server: http.Server): void {
       }
     });
 
-    ws.on('close', () => {
-      logger.debug({ userId: (ws as any).userId, tenantId: (ws as any).tenantId, platform: 'ios' }, 'WebSocket disconnected');
-    });
-
-    // Ping/pong for keepalive
-    const pingInterval = setInterval(() => {
-      if (ws.readyState === WebSocket.OPEN) {
-        ws.ping();
-      }
-    }, 30000);
-
-    ws.on('close', () => clearInterval(pingInterval));
+    ws.on('close', cleanupConnection);
+    ws.on('error', cleanupConnection);
   });
 
   logger.info('WebSocket server attached on /ws');

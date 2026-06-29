@@ -23,6 +23,10 @@ import { assertSafeExternalUrl } from '../security/url-guard';
 
 const execFileAsync = promisify(execFile);
 const YT_DLP_PATH = path.join(os.homedir(), '.local/bin/yt-dlp');
+const YOUTUBE_CAPTION_URL_POLICY = {
+  allowedHostSuffixes: ['youtube.com', 'youtube-nocookie.com', 'googlevideo.com'],
+};
+const MAX_CAPTION_REDIRECTS = 3;
 
 // ─── Types ──────────────────────────────────────────────────────────
 
@@ -114,6 +118,38 @@ export function extractVideoId(input: string): string | null {
 // ─── Transcript Fetching ─────────────────────────────────────────────
 
 const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
+
+export function assertSafeYouTubeCaptionUrl(rawUrl: string): URL {
+  return assertSafeExternalUrl(rawUrl, YOUTUBE_CAPTION_URL_POLICY);
+}
+
+async function fetchYouTubeCaptionUrl(
+  rawUrl: string,
+  init: RequestInit = {},
+  redirectsRemaining = MAX_CAPTION_REDIRECTS,
+): Promise<Response> {
+  // Residual accepted: caption URLs originate from YouTube player metadata,
+  // and every redirect hop is re-allowlisted before fetch. This does not
+  // locally resolve-and-pin DNS for the selected host.
+  const url = assertSafeYouTubeCaptionUrl(rawUrl);
+  const response = await fetch(url.toString(), {
+    ...init,
+    redirect: 'manual',
+  });
+
+  if (response.status >= 300 && response.status < 400) {
+    if (redirectsRemaining <= 0) {
+      throw new Error('Too many YouTube caption redirects');
+    }
+    const location = response.headers.get('location');
+    if (!location) {
+      throw new Error('YouTube caption redirect missing location');
+    }
+    return fetchYouTubeCaptionUrl(new URL(location, url).toString(), init, redirectsRemaining - 1);
+  }
+
+  return response;
+}
 
 /**
  * Fetch the transcript for a YouTube video.
@@ -266,7 +302,7 @@ async function fetchWithHttp(videoId: string, lang: string): Promise<TranscriptR
     const language = track.languageCode || 'unknown';
 
     // Try fetching captions
-    const captionRes = await fetch(track.baseUrl, {
+    const captionRes = await fetchYouTubeCaptionUrl(track.baseUrl, {
       headers: { 'User-Agent': USER_AGENT },
     });
     if (!captionRes.ok) return null;
@@ -457,7 +493,7 @@ async function fetchCaptionsXml(
   durationSeconds: number,
 ): Promise<TranscriptResult | null> {
   try {
-    const res = await fetch(baseUrl, {
+    const res = await fetchYouTubeCaptionUrl(baseUrl, {
       headers: { 'User-Agent': USER_AGENT },
     });
     if (!res.ok) return null;

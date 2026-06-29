@@ -5,6 +5,7 @@ SerpAPI returns Google results as structured JSON — no scraping needed.
 Free tier: 100 searches/month.
 """
 
+import hashlib
 import logging
 from datetime import datetime
 
@@ -17,6 +18,11 @@ from searchers.mock_fixtures import is_evergreen_mock_query, mock_search_result,
 logger = logging.getLogger("content-engine.web")
 
 SERPAPI_ENDPOINT = "https://serpapi.com/search.json"
+
+
+def _query_fingerprint(query: str) -> str:
+    return hashlib.sha256(query.encode("utf-8")).hexdigest()[:12]
+
 
 class WebSearcher:
     name = "web"
@@ -35,7 +41,16 @@ class WebSearcher:
         }
         async with httpx.AsyncClient(timeout=cfg.searcher_timeout) as client:
             resp = await client.get(SERPAPI_ENDPOINT, params=params)
-            resp.raise_for_status()
+            try:
+                resp.raise_for_status()
+            except httpx.HTTPStatusError:
+                logger.warning(
+                    "SerpAPI request failed (status=%d query_hash=%s query_len=%d)",
+                    resp.status_code,
+                    _query_fingerprint(query),
+                    len(query),
+                )
+                raise RuntimeError(f"SerpAPI request failed with status {resp.status_code}") from None
             data = resp.json()
 
         results: list[SearchResult] = []
@@ -57,7 +72,12 @@ class WebSearcher:
                 metadata={"position": item.get("position"), "displayed_link": item.get("displayed_link")},
             ))
 
-        logger.info("SerpAPI returned %d results for '%s'", len(results), query[:60])
+        logger.info(
+            "SerpAPI returned %d results (query_hash=%s query_len=%d)",
+            len(results),
+            _query_fingerprint(query),
+            len(query),
+        )
         return results
 
     # ── fallback when no key ──────────────────────────────────────────

@@ -54,6 +54,7 @@ import {
 } from '../../services/account-lockout';
 import {
   sendPasswordResetEmail,
+  sendVerificationCode,
   isEmailConfigured,
 } from '../../services/email-sender';
 import { entitlementPlanToSkillTier, getEffectiveEntitlement } from '../../services/entitlement';
@@ -89,12 +90,6 @@ function authCopy(language: Lang, ptPT: string, ptBR: string, enUS: string): str
   if (language === 'pt-BR') return ptBR;
   if (language === 'pt-PT') return ptPT;
   return enUS;
-}
-
-function passwordResetDevTokenAllowed(): boolean {
-  return process.env.PASSWORD_RESET_DEV_TOKEN === '1'
-    && process.env.NODE_ENV !== 'production'
-    && !config.isStaging;
 }
 
 function sendInviteGateError(res: Response, language: Lang, code: 'INVITE_REQUIRED' | 'INVALID_INVITE'): void {
@@ -1136,18 +1131,17 @@ export function authRoutes(): Router {
         created_at = datetime('now')
     `).run(userId, user.email, code, expiresAt);
 
+    if (!isEmailConfigured()) {
+      logger.warn({ userId }, 'Email not configured — verification code not sent');
+      sendError(res, 'EMAIL_UNAVAILABLE', authCopy(language,
+        'O serviço de email não está configurado',
+        'O serviço de e-mail não está configurado',
+        'Email service not configured'), 503);
+      return;
+    }
+
     // Send email
     try {
-      const { sendVerificationCode, isEmailConfigured } = require('../../services/email-sender');
-      if (!isEmailConfigured()) {
-        logger.warn('Email not configured — verification code not sent');
-        // In dev, return the code so testing works
-        sendSuccess(res, { sent: false, message: authCopy(language,
-          'O serviço de email não está configurado',
-          'O serviço de e-mail não está configurado',
-          'Email service not configured'), devCode: code });
-        return;
-      }
       const sent = await sendVerificationCode(user.email, code, user.first_name || 'User');
       sendSuccess(res, {
         sent,
@@ -1247,6 +1241,8 @@ export function authRoutes(): Router {
   //     opaque token (256-bit, hashed at rest), email the user. ALWAYS
   //     returns 200 OK with the same body whether the email matched or
   //     not — closes account-existence enumeration via timing/HTTP code.
+  //     If email delivery is not configured, fail closed with 503 before
+  //     issuing a reset token.
   //
   //   POST /auth/password-reset/confirm — accept token + new password,
   //     verify hash match + not expired + not used + attempt cap not
@@ -1287,6 +1283,17 @@ export function authRoutes(): Router {
 
     const normalized = String(email).trim().toLowerCase();
     const emailHash = hashEmail(normalized, 16);
+
+    if (!isEmailConfigured()) {
+      logger.warn({ emailHash }, 'Email not configured — password reset unavailable');
+      await waitForPasswordResetRequestFloor(startedAt);
+      sendError(res, 'EMAIL_UNAVAILABLE', authCopy(language,
+        'Reposição de palavra-passe temporariamente indisponível.',
+        'Redefinição de senha temporariamente indisponível.',
+        'Password reset is temporarily unavailable.'), 503);
+      return;
+    }
+
     const user = getUserByEmail(normalized);
 
     // Best-effort prune; never blocks the request.
@@ -1301,7 +1308,7 @@ export function authRoutes(): Router {
       return;
     }
 
-    const { token, expiresAt } = issuePasswordResetToken(user.id, normalized);
+    const { token } = issuePasswordResetToken(user.id, normalized);
 
     // Build the reset URL. PASSWORD_RESET_BASE_URL is operator-configured;
     // fall back to the API host because the backend now serves the
@@ -1326,25 +1333,6 @@ export function authRoutes(): Router {
     });
 
     try {
-      if (!isEmailConfigured()) {
-        // Local test/development escape hatch only. Production and staging
-        // never return the raw token even if RESEND_API_KEY is missing or
-        // the email provider is misconfigured.
-        logger.warn(
-          { userId: user.id, devTokenAllowed: passwordResetDevTokenAllowed() },
-          'Email not configured — password reset link not sent',
-        );
-        if (passwordResetDevTokenAllowed()) {
-          await okEnvelope({
-            sent: false,
-            devToken: token,
-            expiresAt: expiresAt.toISOString(),
-          });
-          return;
-        }
-        await okEnvelope();
-        return;
-      }
       void sendPasswordResetEmail(normalized, resetUrl, user.first_name || 'there')
         .catch((err: any) => {
           logger.error(

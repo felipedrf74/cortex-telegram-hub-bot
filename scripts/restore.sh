@@ -28,6 +28,7 @@
 # Detects environment via the BACKUP_DIR + REMOTE_DIR env vars.
 # ─────────────────────────────────────────────────────
 set -euo pipefail
+umask 077
 
 BACKUP_DIR="${BACKUP_DIR:-/home/dominguez/backups/nexushub}"
 REMOTE_DIR="${REMOTE_DIR:-/home/dominguez/telegram-hub-bot}"
@@ -178,10 +179,21 @@ fi
 
 # Pre-restore safety: snapshot the CURRENT state into a fallback tarball
 # so an aborted restore can be undone.
+install -d -m 700 "$BACKUP_DIR"
 PRE_RESTORE_SNAPSHOT="$BACKUP_DIR/pre-restore-$(date +%Y%m%d_%H%M%S).tar.gz"
+TMP_PRE_RESTORE_SNAPSHOT="$PRE_RESTORE_SNAPSHOT.tmp"
 echo "📸 Pre-restore snapshot: $PRE_RESTORE_SNAPSHOT"
-(cd "$REMOTE_DIR" && tar czf "$PRE_RESTORE_SNAPSHOT" \
-  dist/ data/bot.db data/bot.db-wal data/bot.db-shm 2>/dev/null || true)
+rm -f "$TMP_PRE_RESTORE_SNAPSHOT"
+PRE_RESTORE_INCLUDES="dist/ data/bot.db"
+[ -f "$REMOTE_DIR/data/bot.db-wal" ] && PRE_RESTORE_INCLUDES="$PRE_RESTORE_INCLUDES data/bot.db-wal"
+[ -f "$REMOTE_DIR/data/bot.db-shm" ] && PRE_RESTORE_INCLUDES="$PRE_RESTORE_INCLUDES data/bot.db-shm"
+if (cd "$REMOTE_DIR" && tar czf "$TMP_PRE_RESTORE_SNAPSHOT" $PRE_RESTORE_INCLUDES 2>/dev/null); then
+  chmod 600 "$TMP_PRE_RESTORE_SNAPSHOT"
+  mv -f "$TMP_PRE_RESTORE_SNAPSHOT" "$PRE_RESTORE_SNAPSHOT"
+else
+  rm -f "$TMP_PRE_RESTORE_SNAPSHOT"
+  echo "⚠️  Pre-restore snapshot skipped; some expected paths were unavailable."
+fi
 
 echo "🔄 Replacing dist/, migrations/, prompts/, package.json, ecosystem.config.js..."
 for path in dist migrations prompts package.json package-lock.json ecosystem.config.js; do

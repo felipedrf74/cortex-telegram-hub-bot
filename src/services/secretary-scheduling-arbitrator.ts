@@ -325,6 +325,12 @@ const ACTIVE_BUSY_STATES = new Set<SecretaryAgendaLifecycleState>([
   'failed_sync',
 ]);
 
+const NON_REUSABLE_AGENDA_LIFECYCLE_STATES = new Set<SecretaryAgendaLifecycleState>([
+  'canceled',
+  'superseded',
+  'unscheduled',
+]);
+
 const VALID_SOURCE_SKILLS = new Set<SecretarySourceSkill>([
   'secretary',
   'training',
@@ -525,6 +531,58 @@ export function markSecretaryAgendaProviderSyncSatisfied(scope: {
   return getSecretaryAgendaItemById(scope);
 }
 
+export function markSecretaryAgendaProviderCleanupRequired(scope: {
+  agendaItemId: string;
+  ownerUserId: number;
+  tenantId: string | number;
+  providerEventId?: string | null;
+  providerSource?: 'google' | 'outlook' | null;
+  providerSyncState?: Extract<SecretaryProviderSyncState, 'create_failed' | 'delete_failed' | 'readback_failed' | 'deleted'>;
+  lifecycleState?: Extract<SecretaryAgendaLifecycleState, 'canceled' | 'unscheduled' | 'superseded' | 'deferred'>;
+  reason?: string | null;
+  clearProviderMapping?: boolean;
+  now?: string;
+}): SecretaryAgendaItem | null {
+  const nowIso = normalizeNow(scope.now);
+  const clearProviderMapping = scope.clearProviderMapping === true;
+  const providerSyncState = scope.providerSyncState ?? 'deleted';
+  const lifecycleState = scope.lifecycleState ?? 'unscheduled';
+  assertSecretaryAgendaSchemaReady();
+  getDb().prepare(`
+    UPDATE secretary_agenda_items
+       SET provider_event_id = CASE
+             WHEN ? THEN NULL
+             ELSE COALESCE(?, provider_event_id)
+           END,
+           provider_source = CASE
+             WHEN ? THEN NULL
+             ELSE COALESCE(?, provider_source)
+           END,
+           provider_sync_state = ?,
+           lifecycle_state = ?,
+           cancellation_reason = COALESCE(?, cancellation_reason),
+           updated_at = ?
+     WHERE agenda_item_id = ?
+       AND owner_user_id = ?
+       AND tenant_id = ?
+       AND lifecycle_state NOT IN ('completed')
+  `).run(
+    clearProviderMapping ? 1 : 0,
+    scope.providerEventId ?? null,
+    clearProviderMapping ? 1 : 0,
+    scope.providerSource ?? null,
+    providerSyncState,
+    lifecycleState,
+    scope.reason ?? null,
+    nowIso,
+    scope.agendaItemId,
+    scope.ownerUserId,
+    normalizeTenantId(scope.tenantId),
+  );
+  cancelRemindersForAgendaItem(scope.ownerUserId, scope.agendaItemId, scope.tenantId);
+  return getSecretaryAgendaItemById(scope);
+}
+
 export function cancelSecretaryAgendaItem(scope: {
   agendaItemId: string;
   ownerUserId: number;
@@ -620,7 +678,7 @@ function scheduleOne(
 
   if (exactSlot) {
     const reflowed = latest
-      && latest.lifecycleState !== 'superseded'
+      && isReusableAgendaItemForIntent(latest)
       && latest.startAt
       && latest.endAt
       && (Date.parse(latest.startAt) !== exactSlot.startMs || Date.parse(latest.endAt) !== exactSlot.endMs);
@@ -770,7 +828,7 @@ function persistDecision(input: {
     shouldPersist
     && latest
     && latest.sourceShapeHash === sourceShapeHash
-    && latest.lifecycleState !== 'superseded'
+    && isReusableAgendaItemForIntent(latest)
     && agendaSlotMatches(latest, input.selectedSlot)
   ) {
     return decisionFromExisting(
@@ -969,6 +1027,10 @@ function decisionScheduledSegments(
 function agendaSlotMatches(agendaItem: SecretaryAgendaItem, selectedSlot: SecretaryTimeWindow | null): boolean {
   if (!selectedSlot) return agendaItem.startAt === null && agendaItem.endAt === null;
   return agendaItem.startAt === selectedSlot.start && agendaItem.endAt === selectedSlot.end;
+}
+
+function isReusableAgendaItemForIntent(agendaItem: SecretaryAgendaItem): boolean {
+  return !NON_REUSABLE_AGENDA_LIFECYCLE_STATES.has(agendaItem.lifecycleState);
 }
 
 function decisionFromExisting(

@@ -24,6 +24,7 @@ import type { Request } from 'express';
 const MIGRATIONS_DIR = path.resolve(__dirname, '../../migrations');
 let testDb: Database.Database;
 const auditCalls: any[] = [];
+const passwordResetEmails: Array<{ email: string; resetUrl: string; firstName: string }> = [];
 
 function applyMigrations(db: Database.Database): void {
   db.exec(`CREATE TABLE IF NOT EXISTS _migrations (id INTEGER PRIMARY KEY, filename TEXT UNIQUE, applied_at TEXT DEFAULT (datetime('now')))`);
@@ -115,10 +116,11 @@ beforeEach(async () => {
   process.env.IOS_INVITE_CODE = 'TEST_INVITE';
   process.env.IOS_OWNER_CODE = 'TEST_OWNER';
   process.env.OWNER_TELEGRAM_ID = '991122';
-  process.env.PASSWORD_RESET_DEV_TOKEN = '1';
-  delete process.env.RESEND_API_KEY; // exercise dev-mode (returns devToken)
+  delete process.env.PASSWORD_RESET_DEV_TOKEN;
+  process.env.RESEND_API_KEY = 'test-resend-key';
 
   auditCalls.length = 0;
+  passwordResetEmails.length = 0;
   vi.resetModules();
 
   vi.doMock('../../src/services/database', () => ({
@@ -147,8 +149,11 @@ beforeEach(async () => {
     logAudit: vi.fn((entry: any) => { auditCalls.push(entry); }),
   }));
   vi.doMock('../../src/services/email-sender', async () => ({
-    isEmailConfigured: () => false,
-    sendPasswordResetEmail: vi.fn(async () => true),
+    isEmailConfigured: () => true,
+    sendPasswordResetEmail: vi.fn(async (email: string, resetUrl: string, firstName: string) => {
+      passwordResetEmails.push({ email, resetUrl, firstName });
+      return true;
+    }),
     sendVerificationCode: vi.fn(async () => true),
     sendFiscalBundleEmail: vi.fn(async () => true),
     isFiscalBundleDeliveryConfigured: () => false,
@@ -177,17 +182,32 @@ function seedUserWithPassword(email: string, plaintext: string): number {
   return Number(result.lastInsertRowid);
 }
 
+function lastPasswordResetToken(): string {
+  const sent = passwordResetEmails.at(-1);
+  expect(sent).toBeDefined();
+  const token = new URL(sent!.resetUrl).searchParams.get('token');
+  expect(token).toBeTypeOf('string');
+  expect(token!.length).toBeGreaterThan(20);
+  return token!;
+}
+
 describe('AUTH-O2 password reset — request', () => {
   it('issues a token row for a real email and returns generic 200 OK', async () => {
     const userId = seedUserWithPassword('alice@example.com', 'oldpass1');
     const res = await dispatch('/password-reset/request', { email: 'alice@example.com' });
     expect(res.statusCode).toBe(200);
     expect(res.body.ok).toBe(true);
-    // dev-mode (no RESEND_API_KEY) returns devToken
-    expect(typeof res.body.data.devToken).toBe('string');
-    expect(res.body.data.devToken.length).toBeGreaterThan(20);
+    expect(res.body.data.devToken).toBeUndefined();
+    expect(res.body.data.expiresAt).toBeUndefined();
+    const emailedToken = lastPasswordResetToken();
+    expect(passwordResetEmails.at(-1)).toMatchObject({
+      email: 'alice@example.com',
+      firstName: 'Test',
+    });
     const row = testDb.prepare('SELECT * FROM password_reset_tokens WHERE user_id = ?').get(userId) as any;
     expect(row).toBeDefined();
+    const { hashResetToken } = await import('../../src/services/password-reset');
+    expect(row.token_hash).toBe(hashResetToken(emailedToken));
     expect(row.attempt_count).toBe(0);
     expect(row.used_at).toBeNull();
     // expires_at ≈ now + 1h (allow drift)
@@ -200,7 +220,6 @@ describe('AUTH-O2 password reset — request', () => {
 
   it('returns same generic 200 for an unknown email and creates no row', async () => {
     const userId = seedUserWithPassword('alice@example.com', 'oldpass1');
-    delete process.env.PASSWORD_RESET_DEV_TOKEN;
 
     const known = await dispatch('/password-reset/request', { email: 'alice@example.com' });
     const res = await dispatch('/password-reset/request', { email: 'unknown@example.com' });
@@ -216,6 +235,7 @@ describe('AUTH-O2 password reset — request', () => {
     };
     expect(stripTimestamp(known.body)).toEqual(stripTimestamp(res.body));
     expect(known.body.data.devToken).toBeUndefined();
+    expect(res.body.data.devToken).toBeUndefined();
     expect(res.body.ok).toBe(true);
     const rows = testDb.prepare('SELECT COUNT(*) AS n FROM password_reset_tokens').get() as any;
     expect(rows.n).toBe(1);
@@ -235,10 +255,10 @@ describe('AUTH-O2 password reset — request', () => {
 
   it('upserts on user_id — a second request invalidates the first token', async () => {
     seedUserWithPassword('alice@example.com', 'oldpass1');
-    const r1 = await dispatch('/password-reset/request', { email: 'alice@example.com' });
-    const t1 = r1.body.data.devToken;
-    const r2 = await dispatch('/password-reset/request', { email: 'alice@example.com' });
-    const t2 = r2.body.data.devToken;
+    await dispatch('/password-reset/request', { email: 'alice@example.com' });
+    const t1 = lastPasswordResetToken();
+    await dispatch('/password-reset/request', { email: 'alice@example.com' });
+    const t2 = lastPasswordResetToken();
     expect(t1).not.toBe(t2);
     // Old token should not match the active row
     const confirm = await dispatch('/password-reset/confirm', { token: t1, newPassword: 'newpassword1' });
@@ -288,8 +308,8 @@ describe('AUTH-O2 password reset — confirm', () => {
       VALUES ('device-A', ?, 'old-rt')
     `).run(userId);
 
-    const issue = await dispatch('/password-reset/request', { email: 'alice@example.com' });
-    const token = issue.body.data.devToken;
+    await dispatch('/password-reset/request', { email: 'alice@example.com' });
+    const token = lastPasswordResetToken();
 
     const confirm = await dispatch('/password-reset/confirm', {
       token,
@@ -317,8 +337,8 @@ describe('AUTH-O2 password reset — confirm', () => {
 
   it('refuses re-use of a consumed token (single-use enforced)', async () => {
     seedUserWithPassword('alice@example.com', 'oldpass1');
-    const issue = await dispatch('/password-reset/request', { email: 'alice@example.com' });
-    const token = issue.body.data.devToken;
+    await dispatch('/password-reset/request', { email: 'alice@example.com' });
+    const token = lastPasswordResetToken();
     const first = await dispatch('/password-reset/confirm', { token, newPassword: 'fresh-password-1' });
     expect(first.statusCode).toBe(200);
     const second = await dispatch('/password-reset/confirm', { token, newPassword: 'another-password-1' });
@@ -329,8 +349,8 @@ describe('AUTH-O2 password reset — confirm', () => {
 
   it('refuses an expired token (past expires_at)', async () => {
     const userId = seedUserWithPassword('alice@example.com', 'oldpass1');
-    const issue = await dispatch('/password-reset/request', { email: 'alice@example.com' });
-    const token = issue.body.data.devToken;
+    await dispatch('/password-reset/request', { email: 'alice@example.com' });
+    const token = lastPasswordResetToken();
     // Force expiry into the past
     testDb.prepare(`UPDATE password_reset_tokens SET expires_at = ? WHERE user_id = ?`)
       .run(new Date(Date.now() - 60_000).toISOString(), userId);
@@ -347,10 +367,9 @@ describe('AUTH-O2 password reset — confirm', () => {
     // checks the attempt cap BEFORE doing any further work, so a valid
     // token is irrelevant — the cap is what closes the path.
     testDb.prepare('UPDATE password_reset_tokens SET attempt_count = 5 WHERE user_id = ?').run(userId);
-    const tokenRow = testDb.prepare('SELECT token_hash FROM password_reset_tokens WHERE user_id = ?').get(userId) as any;
     // We need the actual unhashed token to pass the lookup; reissue and
     // patch the attempt count again to keep the harness simple.
-    const { generatePasswordResetToken, hashResetToken } = await import('../../src/services/password-reset');
+    const { generatePasswordResetToken } = await import('../../src/services/password-reset');
     const fresh = generatePasswordResetToken();
     testDb.prepare('UPDATE password_reset_tokens SET token_hash = ?, attempt_count = 5 WHERE user_id = ?')
       .run(fresh.tokenHash, userId);

@@ -5,6 +5,7 @@ Free tier: 100 requests/day, developer use only (no production caching).
 Searches across 80 000+ sources worldwide, filterable by language.
 """
 
+import hashlib
 import logging
 from datetime import datetime, timedelta, timezone
 
@@ -17,6 +18,11 @@ from searchers.mock_fixtures import is_evergreen_mock_query, mock_search_result,
 logger = logging.getLogger("content-engine.news")
 
 NEWSAPI_ENDPOINT = "https://newsapi.org/v2/everything"
+
+
+def _query_fingerprint(query: str) -> str:
+    return hashlib.sha256(query.encode("utf-8")).hexdigest()[:12]
+
 
 class NewsSearcher:
     name = "news"
@@ -39,7 +45,16 @@ class NewsSearcher:
 
         async with httpx.AsyncClient(timeout=cfg.searcher_timeout) as client:
             resp = await client.get(NEWSAPI_ENDPOINT, params=params)
-            resp.raise_for_status()
+            try:
+                resp.raise_for_status()
+            except httpx.HTTPStatusError:
+                logger.warning(
+                    "NewsAPI request failed (status=%d query_hash=%s query_len=%d)",
+                    resp.status_code,
+                    _query_fingerprint(query),
+                    len(query),
+                )
+                raise RuntimeError(f"NewsAPI request failed with status {resp.status_code}") from None
             data = resp.json()
 
         results: list[SearchResult] = []
@@ -64,7 +79,12 @@ class NewsSearcher:
                 },
             ))
 
-        logger.info("NewsAPI returned %d results for '%s'", len(results), query[:60])
+        logger.info(
+            "NewsAPI returned %d results (query_hash=%s query_len=%d)",
+            len(results),
+            _query_fingerprint(query),
+            len(query),
+        )
         return results
 
     # ── fallback ──────────────────────────────────────────────────────

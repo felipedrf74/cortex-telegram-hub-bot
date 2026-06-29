@@ -142,6 +142,9 @@ function decrypt(value: string, userId: number): string {
 // than we'll have for a long while and costs ~100KB of memory.
 const DECRYPT_CACHE_TTL_MS = 10 * 60 * 1000;
 const DECRYPT_CACHE_SIZE = 256;
+const ENCRYPTED_VALUE_MIN_HEX_LENGTH = 56; // 12-byte IV + 16-byte tag, hex encoded.
+const OAUTH_MIGRATION_SUSPICIOUS_MIN_ROWS = 2;
+const OAUTH_MIGRATION_SUSPICIOUS_RATIO = 0.8;
 
 interface CachedEntry {
   tokens: OAuthTokens;
@@ -177,16 +180,20 @@ export function _resetDecryptCacheForTests(): void {
   _decryptedTokenCache.clear();
 }
 
-/**
- * Detect if a stored value looks like an encrypted blob from this module
- * (hex string of length ≥ 56 chars = 28 bytes = IV + tag + at least 0
- * bytes of ciphertext). Real Google/Outlook/Notion refresh tokens contain
- * non-hex characters (`/`, `_`, `.`, `-`) so they fail this test cleanly.
- */
-function looksEncrypted(value: string): boolean {
+function canDecryptStoredToken(value: string, key: string, userId: number): boolean {
   if (!value) return false;
-  if (value.length < 56) return false;
-  return /^[0-9a-f]+$/i.test(value);
+  try {
+    decryptValue(value, key, userId);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function looksLikeEncryptedOAuthValue(value: string): boolean {
+  return value.length >= ENCRYPTED_VALUE_MIN_HEX_LENGTH
+    && value.length % 2 === 0
+    && /^[0-9a-f]+$/i.test(value);
 }
 
 /**
@@ -219,10 +226,38 @@ export function encryptPlaintextOAuthTokens(): {
 
   let encryptedRows = 0;
   let alreadyEncrypted = 0;
+  let rowsWithStoredToken = 0;
+  let suspiciousEncryptedRows = 0;
 
   for (const row of rows) {
-    const accessNeedsEncryption = row.access_token !== '' && !looksEncrypted(row.access_token);
-    const refreshNeedsEncryption = row.refresh_token !== '' && !looksEncrypted(row.refresh_token);
+    const storedValues = [row.access_token, row.refresh_token].filter((value) => value !== '');
+    if (storedValues.length === 0) continue;
+    rowsWithStoredToken++;
+
+    const hasEncryptedLookingValueWithWrongKey = storedValues.some((value) => (
+      looksLikeEncryptedOAuthValue(value) && !canDecryptStoredToken(value, key, row.user_id)
+    ));
+    if (hasEncryptedLookingValueWithWrongKey) {
+      suspiciousEncryptedRows++;
+    }
+  }
+
+  if (
+    suspiciousEncryptedRows >= OAUTH_MIGRATION_SUSPICIOUS_MIN_ROWS
+    && suspiciousEncryptedRows / Math.max(rowsWithStoredToken, 1) >= OAUTH_MIGRATION_SUSPICIOUS_RATIO
+  ) {
+    logger.error(
+      { scanned: rows.length, rowsWithStoredToken, suspiciousEncryptedRows },
+      'OAuth token migration aborted because stored tokens look encrypted but cannot decrypt with the configured key',
+    );
+    throw new Error(
+      'OAuth token migration aborted: stored tokens look encrypted but cannot decrypt with the configured key',
+    );
+  }
+
+  for (const row of rows) {
+    const accessNeedsEncryption = row.access_token !== '' && !canDecryptStoredToken(row.access_token, key, row.user_id);
+    const refreshNeedsEncryption = row.refresh_token !== '' && !canDecryptStoredToken(row.refresh_token, key, row.user_id);
 
     if (!accessNeedsEncryption && !refreshNeedsEncryption) {
       alreadyEncrypted++;

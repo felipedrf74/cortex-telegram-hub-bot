@@ -6,6 +6,7 @@ Free tier: 10,000 quota units/day.  A search.list call costs 100 units,
 so ~100 searches/day on the free tier.
 """
 
+import hashlib
 import logging
 from datetime import datetime
 
@@ -19,6 +20,25 @@ logger = logging.getLogger("content-engine.youtube")
 
 YT_SEARCH_URL = "https://www.googleapis.com/youtube/v3/search"
 YT_VIDEOS_URL = "https://www.googleapis.com/youtube/v3/videos"
+
+
+def _query_fingerprint(query: str) -> str:
+    return hashlib.sha256(query.encode("utf-8")).hexdigest()[:12]
+
+
+def _raise_sanitized_youtube_status(resp: httpx.Response, query: str, stage: str) -> None:
+    try:
+        resp.raise_for_status()
+    except httpx.HTTPStatusError:
+        logger.warning(
+            "YouTube API request failed (stage=%s status=%d query_hash=%s query_len=%d)",
+            stage,
+            resp.status_code,
+            _query_fingerprint(query),
+            len(query),
+        )
+        raise RuntimeError(f"YouTube API request failed with status {resp.status_code}") from None
+
 
 class YouTubeSearcher:
     name = "youtube"
@@ -40,7 +60,7 @@ class YouTubeSearcher:
                 "key": cfg.youtube_api_key,
             }
             resp = await client.get(YT_SEARCH_URL, params=search_params)
-            resp.raise_for_status()
+            _raise_sanitized_youtube_status(resp, query, "search")
             search_data = resp.json()
 
             video_ids = [
@@ -59,7 +79,7 @@ class YouTubeSearcher:
                 "key": cfg.youtube_api_key,
             }
             stats_resp = await client.get(YT_VIDEOS_URL, params=stats_params)
-            stats_resp.raise_for_status()
+            _raise_sanitized_youtube_status(stats_resp, query, "stats")
             stats_map: dict[str, dict] = {}
             for v in stats_resp.json().get("items", []):
                 stats_map[v["id"]] = {
@@ -94,7 +114,12 @@ class YouTubeSearcher:
                 metadata=meta,
             ))
 
-        logger.info("YouTube API returned %d results for '%s'", len(results), query[:60])
+        logger.info(
+            "YouTube API returned %d results (query_hash=%s query_len=%d)",
+            len(results),
+            _query_fingerprint(query),
+            len(query),
+        )
         return results
 
     # ── fallback ──────────────────────────────────────────────────────

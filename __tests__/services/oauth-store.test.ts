@@ -349,6 +349,73 @@ describe('oauth-store', () => {
       expect(second.encryptedRows).toBe(0);
       expect(second.alreadyEncrypted).toBe(1);
     });
+
+    it('encrypts long hex plaintext tokens instead of trusting their shape', () => {
+      const hexPlaintextAccess = 'a'.repeat(64);
+      const hexPlaintextRefresh = 'b'.repeat(64);
+      testDb.prepare(`
+        INSERT INTO user_oauth_tokens (user_id, provider, access_token, refresh_token, token_type, expires_at, scopes)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+      `).run(654, 'todoist', hexPlaintextAccess, hexPlaintextRefresh, 'Bearer', null, '[]');
+
+      const result = encryptPlaintextOAuthTokens();
+      expect(result.scanned).toBe(1);
+      expect(result.encryptedRows).toBe(1);
+      expect(result.alreadyEncrypted).toBe(0);
+
+      const row = testDb.prepare(
+        'SELECT access_token, refresh_token FROM user_oauth_tokens WHERE user_id = 654'
+      ).get() as { access_token: string; refresh_token: string };
+      expect(row.access_token).not.toBe(hexPlaintextAccess);
+      expect(row.refresh_token).not.toBe(hexPlaintextRefresh);
+
+      const tokens = getTokens(654, 'todoist');
+      expect(tokens?.accessToken).toBe(hexPlaintextAccess);
+      expect(tokens?.refreshToken).toBe(hexPlaintextRefresh);
+    });
+
+    it('aborts before rewriting rows when encrypted-looking tokens were written with a different key', () => {
+      process.env.OAUTH_ENCRYPTION_KEY = 'old-oauth-key-for-rotation-test-32chars';
+      storeTokens(701, 'google', {
+        accessToken: 'old_access_google',
+        refreshToken: 'old_refresh_google',
+        tokenType: 'Bearer',
+        expiresAt: null,
+        scopes: [],
+      });
+      storeTokens(702, 'outlook', {
+        accessToken: 'old_access_outlook',
+        refreshToken: 'old_refresh_outlook',
+        tokenType: 'Bearer',
+        expiresAt: null,
+        scopes: [],
+      });
+      storeTokens(703, 'notion', {
+        accessToken: 'old_access_notion',
+        refreshToken: 'old_refresh_notion',
+        tokenType: 'Bearer',
+        expiresAt: null,
+        scopes: [],
+      });
+
+      const before = testDb.prepare(`
+        SELECT id, user_id, provider, access_token, refresh_token, updated_at
+        FROM user_oauth_tokens
+        ORDER BY id
+      `).all();
+
+      process.env.OAUTH_ENCRYPTION_KEY = 'new-oauth-key-for-rotation-test-32chars';
+      _resetDecryptCacheForTests();
+
+      expect(() => encryptPlaintextOAuthTokens()).toThrow(/stored tokens look encrypted/);
+
+      const after = testDb.prepare(`
+        SELECT id, user_id, provider, access_token, refresh_token, updated_at
+        FROM user_oauth_tokens
+        ORDER BY id
+      `).all();
+      expect(after).toEqual(before);
+    });
   });
 
   // ── Decrypted-token cache (Phase 0.C audit trail bomb fix) ─────────
