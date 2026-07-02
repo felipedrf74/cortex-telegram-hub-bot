@@ -253,16 +253,47 @@ predates them; the fixes are Debug-semantics-preserving and covered by
 Debug parity + blast-radius suites) and the live-calendar lane remains
 unauthorized/never run.
 
-Status: ready for Felipe's push/deploy decision. Push to origin, staging
-deploy, and any promote remain explicitly NOT authorized in this session.
-Local backend `main` fast-forward to origin/main also still pending.
+Status update (2026-07-02 evening): Felipe authorized push + production
+promote in-chat, including explicit authorization to answer both promote
+YES confirmations. Executed the full validated pipeline:
+
+- Pushed iOS `main` (`38b3bb5..c79e42a`) and engine
+  `codex/Trainingfixes` + `main` (`f0c3fc3e..6bb2affe`) to origin;
+  pre-push risk gates green (12 files / 232 tests).
+- Release sandbox trio green (compose health, local smoke 5/5,
+  deploy-harness vitest 28/28); sandbox shut down cleanly after.
+- Staging deploy + 5-minute soak + standalone staging smoke **19/19**;
+  evidence committed as `6bb2affe`
+  (`docs/release/smoke-evidence/staging-smoke-cfb5f33f-20260702T163904Z.json`).
+- Promote attempt 1 aborted on a stale `promote-to-prod.lock` from the
+  morning promote (dead pid 89742; a misnamed `owner 2` file defeats the
+  pid-based staleness check and the reclaim marker refreshes the lock
+  mtime the second check re-reads). Removed the lock after verifying the
+  owner pid dead; filed a fix task for the reclaim logic in
+  `scripts/lib/release-gates.sh`. Attempt 2 aborted on honest
+  artifact-manifest drift (the standalone smoke run wrote its evidence
+  JSON into the local tree after the staging rsync) — resolved by
+  committing the evidence and re-deploying staging.
+- Promote attempt 3 **COMPLETE**: local/staging manifest parity, internal
+  staging smoke re-run 19/19, migration safety 211 migrations, strict
+  deploy-time validation (typecheck, science-policy pin, full Vitest
+  **868 files / 12,761 tests passed**), PM2 online and stable, portal +
+  content-engine health green.
+
+Production now runs deploy commit `6bb2affe` at package version
+`4.14.211`. The version was intentionally not re-minted (no release-prep
+run was requested); `4.14.211` therefore spans two production artifacts —
+disambiguate by deploy commit / artifact digest
+(`2e75b0e0e2987280010c93710bfcfc23bc89fd4beb9fe1930a0d81de84935525`).
+Post-promote probes: read-only SSH `package.json` = `4.14.211`; public
+`/health` healthy.
 
 ## Open questions / decisions deferred to user
-- Push authorization for engine `codex/Trainingfixes` (ae75d178 + docs
-  commit) and iOS `main` (71def47, c79e42a).
-- Whether to fast-forward local backend `main` to origin/main.
-- Whether to re-run the isolated E2E lane post-commit for belt-and-braces
-  (authorized, ~25 min) before any push.
+- Fast-forward local backend `main` to origin/main (`6bb2affe`).
+- Mint `4.14.212` via release-prep on the next release so the version
+  number stops spanning two artifacts.
+- Optional: re-run the isolated Training E2E lane against the deployed
+  commit for belt-and-braces (authorized lane, ~25 min).
 
 ## Verifiable Reward Summary
 

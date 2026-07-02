@@ -17,22 +17,78 @@ Last updated: 2026-07-02
 
 - Repo: `engine`
 - Workspace HEAD / version / migrations / dirty state: see `docs/release/release-identity.md`
-- Production status (last manual update 2026-07-02): backend package version
-  `4.14.211` is deployed from commit `f0c3fc3e` (the 2026-07-01 Training
-  remediation round; see the 2026-07-02 section below). Verified this session
-  by read-only SSH: production `package.json` version returned `4.14.211`,
-  PM2 pidfiles for `nexus-hub` and `content-engine` are present, and public
-  `/health` returned healthy with database connected. The local checkout
-  branch is `codex/Trainingfixes`, which is commit-identical to `origin/main`
-  at `f0c3fc3e`; local `main` is behind and needs a fast-forward only. iOS
-  `main` is at `38b3bb5` with the paired Training decode robustness, running
-  template, and sync-state truthfulness coverage. Content Studio backend
+- Production status (last manual update 2026-07-02, evening): backend package
+  version `4.14.211` is deployed from commit `6bb2affe` (the Training UX
+  round promote; see the evening 2026-07-02 section below). The package
+  version was intentionally NOT re-minted for this promote (no release-prep
+  run), so `4.14.211` now spans two production artifacts — disambiguate by
+  deploy commit / artifact digest; the next release-prep should mint
+  `4.14.212`. The local checkout branch is `codex/Trainingfixes`, which is
+  commit-identical to `origin/main` at `6bb2affe`; local `main` is behind and
+  needs a fast-forward only. iOS `main` is at `c79e42a` (Training UX round:
+  coach-trust surfacing, zone deep links, provider visibility, plus the QA
+  work order), pushed to origin. Content Studio backend
   contract changes remain live for source-skill overview filtering, capture
   provenance, and idempotent topic create. The immutable global Training
   catalog version `repo-seed-1.0.0` remains active with 131 exercises and 24
   equipment items. Workspace audit evidence lives at
   `docs/release/worktree-recovery-audit-2026-05-18.md` and
   `docs/release/worktree-recovery-audit-2026-05-21/`.
+
+### 2026-07-02 Training UX Round Production Promote (evening)
+
+- Scope: promoted the Training UX round backend — requested-vs-scheduled
+  weekly targets exposed on the plan read model
+  (`plan.weeklyTargets {requested, scheduled}` on
+  `GET /api/v1/training/plan/weeks`), conditional calendar dead-letter
+  visibility (`calendarCleanup {deadLetteredCount} | null` on the all-weeks
+  and single-week read models), restored `trainingLearningPath` persistence
+  in `buildPreferencesJson` (regression introduced by the 4.14.210 mainline
+  rebase, caught by the isolated Training E2E lane), Training E2E harness
+  hardening (space-safe paths, provenance-xattr-proof DerivedData under
+  `/private/tmp`), and release/QA documentation incl. the workspace-docs
+  mirror snapshot.
+- Production version: `4.14.211` (unchanged — no release-prep version mint
+  was requested for this promote; disambiguate by deploy commit).
+- Production deploy commit: `6bb2affe`; artifact manifest digest
+  `2e75b0e0e2987280010c93710bfcfc23bc89fd4beb9fe1930a0d81de84935525`
+  (staging/prod parity enforced by the promote pipeline).
+- Included backend commits (`f0c3fc3e..6bb2affe`): `ae75d178`
+  (`fix(training): expose requested targets and dead-letter state, restore
+  learning-path persistence`), `cfb5f33f` (`docs(release): record 4.14.211
+  promote and Training UX round evidence`), `6bb2affe` (`docs(release):
+  staging smoke evidence 19/19 for cfb5f33f pre-promote`).
+- iOS main: `71def47` (`feat(training): coach-trust surfacing, zone deep
+  links, provider visibility`) + `c79e42a` (QA work order), pushed to origin.
+- QA: independent Codex audit round 1 found 2 MAJORs (Release UI Validation
+  scheme/fixture-gate mismatch; docs-audit budget misstatement), both fixed
+  and re-audited — final verdict GO with zero findings (R1–R5 PASS; recorded
+  in the iOS work order `WO-training-ux-round-20260702.md`).
+- Promotion evidence (this session): pre-commit/pre-push risk gates green
+  (12 files / 232 tests); release sandbox trio green (compose health, local
+  smoke 5/5, deploy-harness vitest 28/28); staging deploy + 5-minute soak +
+  standalone staging smoke **19/19** with evidence JSON committed at
+  `engine/docs/release/smoke-evidence/staging-smoke-cfb5f33f-20260702T163904Z.json`;
+  promote pipeline: local/staging artifact manifest parity, internal staging
+  smoke re-run **19/19**, migration safety **211 migrations**, strict
+  deploy-time validation (typecheck, science-policy pin, full Vitest
+  **868 files / 12,761 tests passed**), PM2 online and stable, portal +
+  content-engine health green.
+- Post-production probes: read-only SSH `package.json` returned `4.14.211`;
+  public `/health` healthy. Caveat (same class as the morning promote): the
+  production tree is an rsync copy with no git metadata, so the deployed
+  commit `6bb2affe` is asserted via the promote log and artifact-digest
+  parity rather than server-side git.
+- Operational residuals: first promote attempt aborted on a stale
+  `promote-to-prod.lock` left by the morning promote (dead pid, misnamed
+  `owner 2` file defeats the pid-based staleness check and the reclaim
+  refreshes the lock mtime it then re-reads) — lock removed after verifying
+  the owner pid was dead; a fix task for
+  `scripts/lib/release-gates.sh` reclaim logic was filed. Second attempt
+  aborted on honest artifact-manifest drift caused by the standalone smoke
+  run writing its evidence JSON after the staging rsync — resolved by
+  committing the evidence and re-deploying staging before the successful
+  promote.
 
 ### 2026-07-02 Training Remediation Production Promote
 

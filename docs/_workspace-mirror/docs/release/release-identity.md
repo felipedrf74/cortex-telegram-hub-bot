@@ -5,7 +5,7 @@
 
 | Area | Path | Branch | Commit | Dirty state | Version | Migrations |
 | --- | --- | --- | --- | --- | --- | --- |
-| Backend | `/Users/felipedominguez/Desktop/Nexus Hub/engine` | `codex/Trainingfixes` | `f0c3fc3e` | `clean` | `4.14.211` | `211` |
-| iOS | `/Users/felipedominguez/Desktop/Nexus Hub IOS/Nexus Hub` | `main` | `38b3bb5` | `dirty` | n/a | n/a |
+| Backend | `/Users/felipedominguez/Desktop/Nexus Hub/engine` | `codex/Trainingfixes` | `6bb2affe` | `dirty` | `4.14.211` | `211` |
+| iOS | `/Users/felipedominguez/Desktop/Nexus Hub IOS/Nexus Hub` | `main` | `c79e42a` | `dirty` | n/a | n/a |
 
-Generated at: `2026-07-02T12:38:43Z`
+Generated at: `2026-07-02T17:21:55Z`

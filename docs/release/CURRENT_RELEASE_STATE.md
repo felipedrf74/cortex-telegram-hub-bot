@@ -13,20 +13,44 @@ older production versions.
 
 ## Active Production Release
 
-- Source branch: `main` (`origin/main` at `f0c3fc3e`; local checkout branch
+- Source branch: `main` (`origin/main` at `6bb2affe`; local checkout branch
   `codex/Trainingfixes` is commit-identical).
-- Production HEAD: `f0c3fc3e`
-- Production version: `4.14.211`
-- Source implementation commits before the release prep: `b84b9940`
-  (agenda provider tightening), `5e2c0d1c` (risk-gate explicit-files base
-  fallback), `3f660296` (Training remediation round — targets honesty, taper
-  cutoff, sync dead-letter).
-- Latest runtime deploy commit: `f0c3fc3e`. Verified 2026-07-02 by read-only
-  SSH (`package.json` version `4.14.211`, PM2 pidfiles for `nexus-hub` and
-  `content-engine` present) and public `/health` healthy.
+- Production HEAD: `6bb2affe`
+- Production version: `4.14.211` (NOT re-minted for the evening Training UX
+  round promote — the version now spans two production artifacts;
+  disambiguate by deploy commit / artifact digest. Next release-prep should
+  mint `4.14.212`.)
+- Training UX round commits on top of the 4.14.211 release prep: `ae75d178`
+  (requested-vs-scheduled weekly targets + dead-letter visibility read
+  models, learning-path persistence restoration, E2E harness hardening),
+  `cfb5f33f` (release/mirror docs), `6bb2affe` (staging smoke evidence).
+- Latest runtime deploy commit: `6bb2affe` (2026-07-02 evening validated
+  promote: manifest parity, staging smoke 19/19, migration safety 211,
+  strict deploy validation with full Vitest 868 files / 12,761 tests).
+  Verified post-promote by read-only SSH (`package.json` version `4.14.211`)
+  and public `/health` healthy.
 - Production still has the immutable global Training catalog version
   `repo-seed-1.0.0` active with 131 exercises and 24 equipment items.
 - Backend workspace root: `/Users/felipedominguez/Desktop/Custom Connectors/Cortex/cortex-telegram-hub-bot`
+
+## 2026-07-02 Training UX Round Production Promote (evening)
+
+- Scope: Training UX round backend — `plan.weeklyTargets
+  {requested, scheduled}` on `GET /api/v1/training/plan/weeks`, conditional
+  `calendarCleanup {deadLetteredCount} | null` dead-letter visibility on the
+  plan read models, restored `trainingLearningPath` persistence in
+  `buildPreferencesJson` (4.14.210 rebase regression caught by the isolated
+  Training E2E lane), and Training E2E harness hardening.
+- Production version: `4.14.211` (unchanged, no version mint). Production
+  deploy commit: `6bb2affe`; artifact digest `2e75b0e0…723`… recorded in the
+  workspace canonical.
+- Paired iOS main commits `71def47` + `c79e42a` pushed to origin.
+- QA: Codex round-1 2 MAJORs fixed; re-audit GO with zero findings
+  (`ios/docs/qa/work-orders/WO-training-ux-round-20260702.md`).
+- Full promotion evidence, probes, and the stale-lock/manifest-drift
+  operational notes are recorded in the workspace canonical
+  `docs/release/CURRENT_RELEASE_STATE.md` (2026-07-02 evening section),
+  mirrored under `docs/_workspace-mirror/`.
 
 ## 2026-07-02 Training Remediation Production Promote
 

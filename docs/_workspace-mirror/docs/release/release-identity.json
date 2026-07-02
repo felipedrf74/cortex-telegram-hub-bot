@@ -1,17 +1,17 @@
 {
-  "generatedAt": "2026-07-02T12:38:43Z",
+  "generatedAt": "2026-07-02T17:21:55Z",
   "backend": {
     "path": "/Users/felipedominguez/Desktop/Nexus Hub/engine",
     "branch": "codex/Trainingfixes",
-    "commit": "f0c3fc3e",
-    "dirtyState": "clean",
+    "commit": "6bb2affe",
+    "dirtyState": "dirty",
     "packageVersion": "4.14.211",
     "migrationCount": "211"
   },
   "ios": {
     "path": "/Users/felipedominguez/Desktop/Nexus Hub IOS/Nexus Hub",
     "branch": "main",
-    "commit": "38b3bb5",
+    "commit": "c79e42a",
     "dirtyState": "dirty"
   }
 }
