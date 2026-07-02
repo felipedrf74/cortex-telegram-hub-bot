@@ -2,10 +2,10 @@
 
 Status: canonical
 Owner: backend release lead (Felipe)
-Last verified: 2026-06-26
+Last verified: 2026-07-02
 Update policy: update after backend deploy or staging change. Workspace-level entry point is docs/release/CURRENT_RELEASE_STATE.md.
 
-Last updated: 2026-06-26
+Last updated: 2026-07-02
 
 Only the **Active Production Release** section states the current production
 truth. Dated sections below it are historical deploy evidence and may mention
@@ -13,20 +13,38 @@ older production versions.
 
 ## Active Production Release
 
-- Source branch: `main`
-- Production HEAD: `b8bd0c29`
-- Production version: `4.14.210`
-- Source implementation commit before release evidence/docs: `b8bd0c29`
-  (offline-first Tasks provider-missing repair).
-- Latest runtime deploy commit: `b8bd0c29`. Post-deploy docs-only closeout may
-  sit ahead of production runtime.
-- Staging and production are both on `4.14.210`. Offline-first Tasks
-  provider-import sync now clears stale `provider_missing` state when Microsoft
-  To Do returns the task again, preserving conflict states and resolving the
-  open `provider_task_missing` issue.
+- Source branch: `main` (`origin/main` at `f0c3fc3e`; local checkout branch
+  `codex/Trainingfixes` is commit-identical).
+- Production HEAD: `f0c3fc3e`
+- Production version: `4.14.211`
+- Source implementation commits before the release prep: `b84b9940`
+  (agenda provider tightening), `5e2c0d1c` (risk-gate explicit-files base
+  fallback), `3f660296` (Training remediation round — targets honesty, taper
+  cutoff, sync dead-letter).
+- Latest runtime deploy commit: `f0c3fc3e`. Verified 2026-07-02 by read-only
+  SSH (`package.json` version `4.14.211`, PM2 pidfiles for `nexus-hub` and
+  `content-engine` present) and public `/health` healthy.
 - Production still has the immutable global Training catalog version
   `repo-seed-1.0.0` active with 131 exercises and 24 equipment items.
 - Backend workspace root: `/Users/felipedominguez/Desktop/Custom Connectors/Cortex/cortex-telegram-hub-bot`
+
+## 2026-07-02 Training Remediation Production Promote
+
+- Scope: 2026-07-01 Training remediation round — readiness snapshot fidelity
+  (`sleepDurationHours`, `reasoning`), explicit-vs-auto weekly-session dials
+  (`Goals.weeklySessionsTargetExplicit`), enforced pre-race taper strength
+  cutoff (`week.strengthCutoffActive` + `taper_strength_cutoff` reason code),
+  structured `safetyPause` flag, `requestedTargets` persisted in plan
+  `preferences_json`, secretary agenda provider-sync dead-lettering
+  (migration 220 `provider_sync_failure_count`, dead-letter after 5
+  consecutive `delete_failed` cleanup failures), calendar-source validation
+  tightening, and quality-gate expansion.
+- Production version: `4.14.211`. Production deploy commit: `f0c3fc3e`.
+- GitHub release `v4.14.211` published 2026-07-02T11:21:07Z.
+- Promotion evidence and caveats are recorded in the workspace canonical
+  `docs/release/CURRENT_RELEASE_STATE.md` (2026-07-02 section), including the
+  missing persisted staging-smoke JSON for `f0c3fc3e` and the dry-run author
+  identity on the release-prep commit.
 
 ## 2026-06-26 Offline-First Tasks Provider-Missing Hotfix Production Promote
 

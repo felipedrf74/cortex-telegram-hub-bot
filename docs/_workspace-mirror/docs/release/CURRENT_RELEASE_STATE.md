@@ -2,10 +2,10 @@
 
 Status: canonical
 Owner: release lead (Felipe)
-Last verified: 2026-06-10
+Last verified: 2026-07-02
 Update policy: update after merge / staging / production / deploy-gate changes. Live identity (branch/commit/version/migrations) auto-generated via engine/scripts/release-identity.sh --persist; do not type those by hand.
 
-Last updated: 2026-06-10
+Last updated: 2026-07-02
 
 > **Live identity** — branch / commit / version / migration count for the
 > current working tree are auto-generated. Do NOT type those values by
@@ -17,20 +17,124 @@ Last updated: 2026-06-10
 
 - Repo: `engine`
 - Workspace HEAD / version / migrations / dirty state: see `docs/release/release-identity.md`
-- Production status (last manual update 2026-06-10): backend package version
-  `4.14.208` is deployed from commit `636910e2`; both `nexus-hub` and
-  `content-engine` PM2 processes are online, production content health passed,
-  public `/health` plus `/public-status` passed, live authenticated
-  `/api/v1/decisions/overview?sourceSkill=content` returned HTTP 200 with
-  `sourceSkillFilter` plus `sourceSkillTotalCount`, and production readiness
-  passed SQLite integrity, `/health`, content-engine readiness, native
-  better-sqlite3 loading, and PM2 stability. Content Studio backend contract
-  changes are live for source-skill overview filtering, capture provenance, and
-  idempotent topic create. The immutable global Training catalog version
-  `repo-seed-1.0.0` is active with 131 exercises and 24 equipment items.
-  Workspace audit evidence lives at
+- Production status (last manual update 2026-07-02): backend package version
+  `4.14.211` is deployed from commit `f0c3fc3e` (the 2026-07-01 Training
+  remediation round; see the 2026-07-02 section below). Verified this session
+  by read-only SSH: production `package.json` version returned `4.14.211`,
+  PM2 pidfiles for `nexus-hub` and `content-engine` are present, and public
+  `/health` returned healthy with database connected. The local checkout
+  branch is `codex/Trainingfixes`, which is commit-identical to `origin/main`
+  at `f0c3fc3e`; local `main` is behind and needs a fast-forward only. iOS
+  `main` is at `38b3bb5` with the paired Training decode robustness, running
+  template, and sync-state truthfulness coverage. Content Studio backend
+  contract changes remain live for source-skill overview filtering, capture
+  provenance, and idempotent topic create. The immutable global Training
+  catalog version `repo-seed-1.0.0` remains active with 131 exercises and 24
+  equipment items. Workspace audit evidence lives at
   `docs/release/worktree-recovery-audit-2026-05-18.md` and
   `docs/release/worktree-recovery-audit-2026-05-21/`.
+
+### 2026-07-02 Training Remediation Production Promote
+
+- Scope: promoted the 2026-07-01 Training remediation round. The backend now
+  carries readiness snapshot fidelity (`sleepDurationHours` and `reasoning`
+  populated in the readiness summary and the today-session adaptation
+  snapshot), explicit-vs-auto weekly-session dials
+  (`Goals.weeklySessionsTargetExplicit`, with novice caps trimming auto
+  modalities before explicit asks and unified auto-dial resolution), enforced
+  pre-race taper strength cutoff (`week.strengthCutoffActive` honored by the
+  volume enforcer plus the `taper_strength_cutoff` decision-reason code), a
+  structured `safetyPause` session flag, `requestedTargets` persisted in plan
+  `preferences_json` alongside realized targets, secretary agenda
+  provider-sync dead-lettering (migration 220 `provider_sync_failure_count`;
+  `delete_failed` cleanup stops retrying after 5 consecutive failures while
+  keeping truthful state), tightened calendar-source validation, quality-gate
+  expansion, and a release risk-gate base fallback fix for explicit-files
+  mode.
+- Production version: `4.14.211`.
+- Production deploy commit: `f0c3fc3e` (`chore: prepare release 4.14.211`).
+- Included backend commits (`39f6d544..f0c3fc3e`): `b84b9940`
+  (`fix(training): tighten agenda provider and split repairs`), `5e2c0d1c`
+  (`fix(release): risk-gate base fallback for explicit-files mode`),
+  `3f660296` (`fix(training): remediation round — targets honesty, taper
+  cutoff, sync dead-letter`), and `f0c3fc3e`.
+- iOS main: `38b3bb5` (`fix(training): decode robustness, running template,
+  sync-state truthfulness`), pushed to origin.
+- Promotion evidence (recorded in the 2026-07-01/02 remediation session):
+  staging deploy plus staging smoke **19/19**, artifact digest parity,
+  deploy-time full validation through the promote pipeline, and migration 220
+  verified applied on the production database via PRAGMA. Caveat: no
+  staging-smoke evidence JSON for `f0c3fc3e` was persisted under
+  `engine/docs/release/smoke-evidence/` (newest tracked file remains
+  `staging-smoke-7d529331-20260610T204235Z.json`); this evidence-persistence
+  gap is tracked in `docs/release/OPEN_ITEMS.md`.
+- Post-production probes (2026-07-02, this session): public
+  `https://api.nexushub.me/health` healthy with database connected (uptime
+  42m at 12:01Z, consistent with a ~11:19Z restart); read-only SSH confirmed
+  production `package.json` version `4.14.211` and PM2 pidfiles for
+  `nexus-hub` and `content-engine`; GitHub release `v4.14.211` published
+  2026-07-02T11:21:07Z.
+- Known caveats: the release-prep commit `f0c3fc3e` is authored as
+  `Release Dry Run Test <test@example.invalid>` — a recurring release-hygiene
+  issue, tracked in `docs/release/OPEN_ITEMS.md`; the content-engine pytest
+  leg was dark locally during the remediation session (missing `.venv`
+  pytest), per the session record; local backend `main` still needs a
+  fast-forward to `origin/main`.
+
+### 2026-06-29 Training Plan Creation And Security Production Promote
+
+- Scope: promoted the consolidated Training plan creation fixes, post-merge
+  Training follow-ups, and backend security hardening. The release includes
+  strict selected-model/modality validation, normalized weekly-target
+  persistence through `buildPreferencesJson`, synchronized scheduled weekly
+  targets after finalization, agenda-provider sync consistency fixes, iOS plan
+  builder sport default resets, sanitized content-engine HTTP/log handling,
+  safer deploy-script secret headers, WebSocket connection/auth hardening,
+  OAuth token-migration fail-closed behavior, and password-reset fail-closed
+  `EMAIL_UNAVAILABLE` behavior.
+- Production version: `4.14.210`.
+- Production deploy commit: `39f6d544`.
+- Included backend commits: `f50009fb`
+  (`fix(training): stabilize plan creation targets`), `1f4bb0b0`
+  (`fix(security): close validation gap siblings`), `12ae8445`
+  (`fix(training): close post-merge minor follow-ups`), and `39f6d544`
+  (`test(training): cover post-merge minor edge cases`).
+- iOS main: `7b1dd34` (`test(training): cover plan builder default resets`);
+  it includes `251eae3` (`fix(training): stabilize plan builder sport
+  defaults`).
+- Local/final backend verification before push: changed-area classifier selected
+  T0/T1/T2/T4/T5-on-promote/T6-postdeploy; focused risk gate passed typecheck,
+  focused Vitest **209 files / 2,842 tests**, changed Vitest **327 files /
+  4,892 tests**, and content-engine pytest **192 tests**. Backend pre-push gate
+  repeated the same focused and changed coverage after one isolated
+  non-repeatable Telegram webhook test flake; the targeted Telegram webhook
+  test and full webhook file both passed on reproduction.
+- Staging deploy passed typecheck, build, env validation, owner-bootstrap
+  preflight, native module rebuild, PM2 restart, health checks, and production
+  readiness checks for the staging install. Promote-time staging smoke passed
+  **19/19** checks, including iOS-surface canonical 401 envelopes and an
+  isolated Training plan preview E2E.
+- Production promotion completed through `./scripts/promote-to-prod.sh`.
+  Deploy-time validation used strict full verification because no reusable
+  signed release evidence was present: migration safety passed **210
+  migrations**, `npm run verify` passed typecheck, science-policy pin
+  validation, and full Vitest **865 files / 12,713 tests**. The deploy then
+  built artifact digest
+  `fed03b55471843727eadb046a897fce1f44ee9f8cb200aa9d239a3d6178a85e2`,
+  created a server backup including `bot.db`, rebuilt native modules under
+  system Node `v22.23.0`, restarted PM2 services, and passed production
+  readiness.
+- Post-production probes passed: public `https://api.nexushub.me/health`, PM2
+  `nexus-hub` and `content-engine` online at version `4.14.210`, server package
+  version `4.14.210`, and deployed runtime marker checks for
+  `buildPreferencesJson`, WebSocket auth timeout, password-reset
+  `EMAIL_UNAVAILABLE`, and `SecretRedactionFilter`.
+- Known caveats: release-evidence shadow parity still reports the expected
+  `evidence_file_missing` shadow mismatch and therefore deploy ran strict full
+  verification; Cloudflare edge smoke remained skipped because
+  `NEXUS_SMOKE_EDGE_VERIFY=1` was not configured; PM2 historical restart
+  counters remain high (`nexus-hub` 43, `content-engine` 7), with no restart
+  during the production readiness sample.
 
 ### 2026-06-10 Content Studio Backend Contract Production Promote
 
@@ -487,7 +591,7 @@ Last updated: 2026-06-10
   UptimeRobot, `api.nexushub.me/health` still 403 to ClaudeBot,
   `robots.txt` no longer carries Cloudflare Managed content and explicitly
   allows ClaudeBot, `llms.txt` starts with `# Nexus Hub` and carries the
-  current Pro `$14.99/R$69.99` and Max `$24.99/R$119.99` prices.
+  current Pro `$14.99/R$74.99` and Max `$19.99/R$99.99` prices.
 - `--include-staging` was used so `api-staging.nexushub.me/public-status` is
   on the same allowlist as production.
 - Token: Felipe-supplied Cloudflare API token with TTL through

@@ -2,7 +2,7 @@
 
 Status: canonical
 Owner: workspace lead (Felipe)
-Last verified: 2026-05-04
+Last verified: 2026-06-24
 Update policy: update when a recurring agent failure mode is closed via
 process, or when a new evidence type is required. The companion docs are
 `docs/agent/OPERATING_CONTEXT.md` (workspace bootloader) and
@@ -288,7 +288,10 @@ After every agent session:
    agents).
 6. **Stop provider-call loops** if started (test scripts that hit
    real Anthropic/Gemini/OpenAI in a loop).
-7. **Shut down all simulators**: `xcrun simctl shutdown all`.
+7. **Shut down only simulators this session owns.** Prefer UDID-specific
+   cleanup (`xcrun simctl shutdown <UDID>` and, for throwaway E2E devices,
+   `xcrun simctl delete <UDID>`). Do not run `xcrun simctl shutdown all`
+   when another worktree or human session may be using Simulator.
 8. **Verify ports are clear** for the dev port range (8200 portal, 8201
    staging, 8203 dev backend).
 9. **Verify no orphan processes**:
@@ -473,7 +476,7 @@ Before declaring a run complete:
 - [ ] Evidence block present in the final report.
 - [ ] Cleanup performed and documented.
 - [ ] Prompt/process improvements section present.
-- [ ] No simulator/DB/tunnel/loop left running.
+- [ ] No simulator/DB/tunnel/loop owned by this run left running.
 - [ ] No `git push` without authorization (typically: ZERO pushes).
 - [ ] No deploy without authorization (typically: ZERO deploys).
 - [ ] Backup tag exists for any branch with uncommitted work.
