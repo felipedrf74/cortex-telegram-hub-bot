@@ -1,7 +1,7 @@
 {
-  "generatedAt": "2026-07-02T17:21:55Z",
+  "generatedAt": "2026-07-02T17:23:38Z",
   "backend": {
-    "path": "/Users/felipedominguez/Desktop/Nexus Hub/engine",
+    "path": "/Users/felipedominguez/Desktop/Custom Connectors/Cortex/cortex-telegram-hub-bot",
     "branch": "codex/Trainingfixes",
     "commit": "6bb2affe",
     "dirtyState": "dirty",

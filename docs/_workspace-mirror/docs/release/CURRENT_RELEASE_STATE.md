@@ -24,8 +24,11 @@ Last updated: 2026-07-02
   run), so `4.14.211` now spans two production artifacts — disambiguate by
   deploy commit / artifact digest; the next release-prep should mint
   `4.14.212`. The local checkout branch is `codex/Trainingfixes`, which is
-  commit-identical to `origin/main` at `6bb2affe`; local `main` is behind and
-  needs a fast-forward only. iOS `main` is at `c79e42a` (Training UX round:
+  commit-identical to `origin/main` at `2330f2b3` (one docs commit ahead of
+  the deployed `6bb2affe` — normal); local `main` (2617dfd7, behind 13) is
+  checked out in a linked git worktree, so fast-forward it from inside that
+  worktree rather than via `git fetch origin main:main`. iOS `main` is at
+  `c79e42a` (Training UX round:
   coach-trust surfacing, zone deep links, provider visibility, plus the QA
   work order), pushed to origin. Content Studio backend
   contract changes remain live for source-skill overview filtering, capture

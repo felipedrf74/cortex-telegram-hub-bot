@@ -13,8 +13,9 @@ older production versions.
 
 ## Active Production Release
 
-- Source branch: `main` (`origin/main` at `6bb2affe`; local checkout branch
-  `codex/Trainingfixes` is commit-identical).
+- Source branch: `main` (`origin/main` at `2330f2b3`, one docs commit ahead
+  of the deployed artifact; local checkout branch `codex/Trainingfixes` is
+  commit-identical).
 - Production HEAD: `6bb2affe`
 - Production version: `4.14.211` (NOT re-minted for the evening Training UX
   round promote — the version now spans two production artifacts;
