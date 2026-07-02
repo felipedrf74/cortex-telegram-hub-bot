@@ -74,11 +74,21 @@ json_get() {
 }
 
 resolve_base_for_changed() {
+  local candidate=""
   if [ -n "$BASE_REF" ]; then
-    printf '%s' "$BASE_REF"
-    return
+    candidate="$BASE_REF"
+  else
+    candidate="$(json_get "baseRef")"
   fi
-  json_get "baseRef"
+  # --files mode reports the sentinel label "explicit-files" as baseRef; any
+  # non-revision value crashes `vitest --changed` and migration-safety-check
+  # with `fatal: Needed a single revision`. Staged work in that mode is
+  # always relative to HEAD.
+  if [ -n "$candidate" ] && git rev-parse --verify --quiet "${candidate}^{commit}" >/dev/null 2>&1; then
+    printf '%s' "$candidate"
+  else
+    printf '%s' "HEAD"
+  fi
 }
 
 CLASSIFIER_JSON_FILE="$(mktemp)"
