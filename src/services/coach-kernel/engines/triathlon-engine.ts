@@ -147,6 +147,22 @@ function spreadTriathlonSessions(context: EngineContext, sessions: readonly Sess
 
 export const triathlonEngine: SportEngine = {
   buildCandidateSessions(context: EngineContext): Session[] {
+    // Explicit user asks (goals.weeklySessionsTargetExplicit) are consumed
+    // verbatim — the engine must not re-clamp what the user dialed in.
+    // Auto-derived targets arrive as the constraint layer's legacy floors
+    // and are expanded here to the triathlon viability bands (3-4 runs,
+    // 2-3 rides/swims), matching the historical default plan shape.
+    const explicit = context.athlete.goals.weeklySessionsTargetExplicit ?? {};
+    const targets = context.athlete.goals.weeklySessionsTarget;
+    const runningTarget = explicit.running
+      ? (targets.running ?? 3)
+      : Math.max(3, Math.min(4, targets.running ?? 3));
+    const cyclingTarget = explicit.cycling
+      ? (targets.cycling ?? 2)
+      : Math.max(2, Math.min(3, targets.cycling ?? 2));
+    const swimmingTarget = explicit.swimming
+      ? (targets.swimming ?? 2)
+      : Math.max(2, Math.min(3, targets.swimming ?? 2));
     const runs = runningEngine.buildCandidateSessions({
       ...context,
       athlete: {
@@ -155,7 +171,7 @@ export const triathlonEngine: SportEngine = {
           ...context.athlete.goals,
           weeklySessionsTarget: {
             ...context.athlete.goals.weeklySessionsTarget,
-            running: Math.max(3, Math.min(4, context.athlete.goals.weeklySessionsTarget.running ?? 3)),
+            running: runningTarget,
           },
         },
       },
@@ -168,7 +184,7 @@ export const triathlonEngine: SportEngine = {
           ...context.athlete.goals,
           weeklySessionsTarget: {
             ...context.athlete.goals.weeklySessionsTarget,
-            cycling: Math.max(2, Math.min(3, context.athlete.goals.weeklySessionsTarget.cycling ?? 2)),
+            cycling: cyclingTarget,
           },
         },
       },
@@ -181,7 +197,7 @@ export const triathlonEngine: SportEngine = {
           ...context.athlete.goals,
           weeklySessionsTarget: {
             ...context.athlete.goals.weeklySessionsTarget,
-            swimming: Math.max(2, Math.min(3, context.athlete.goals.weeklySessionsTarget.swimming ?? 2)),
+            swimming: swimmingTarget,
           },
         },
       },
@@ -197,7 +213,7 @@ export const triathlonEngine: SportEngine = {
               strengthGoal: context.athlete.goals.strengthGoal ?? 'maintenance',
               weeklySessionsTarget: {
                 ...context.athlete.goals.weeklySessionsTarget,
-                strength: Math.min(2, requestedStrength),
+                strength: requestedStrength,
               },
             },
           },

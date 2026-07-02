@@ -317,7 +317,7 @@ describe('training plan create cycle integration', () => {
       const preferences = persistedPreferences(planId);
       const scheduledTargets = scheduledWeeklyTargetsForPlan(planId);
 
-      expect(created.statusCode).toBe(201);
+      expect(created.statusCode, planCase.id).toBe(201);
       expect(created.body.ok).toBe(true);
       expect(created.body.data.weeklyTargets).toMatchObject(planCase.expected);
       expect(preferences).toMatchObject(planCase.expected);
@@ -421,6 +421,76 @@ describe('training plan create cycle integration', () => {
     expect(second.statusCode).toBe(201);
     expect(Number(second.body.data.planId)).not.toBe(firstPlanId);
     expect(countActivePlans()).toBe(1);
+  });
+
+  it('keeps preview and create weekly targets identical when time advances between the calls', async () => {
+    vi.useFakeTimers({ now: new Date('2026-05-25T10:00:00.000Z') });
+    harness = createTrainingE2EHarness();
+    harness.seedTrainingUser();
+
+    const preview = await harness.dispatch('POST', '/plan/preview', {
+      ...bugReproducerBody,
+      durationWeeks: 1,
+    });
+    expect(preview.statusCode).toBe(200);
+
+    // The user reviews the preview for six minutes before confirming — the
+    // historical "persisted != scheduled" defect class lived exactly in
+    // this gap (readiness/deload signals shifting between the two calls).
+    vi.setSystemTime(new Date('2026-05-25T10:06:00.000Z'));
+
+    const created = await harness.dispatch('POST', '/plan/generate', {
+      ...bugReproducerBody,
+      durationWeeks: 1,
+      idempotencyKey: 'training-e2e-preview-create-drift',
+    });
+    expect(created.statusCode).toBe(201);
+    expect(created.body.data.resolvedStartDate).toBe(preview.body.data.resolvedStartDate);
+    expect(created.body.data.weeklyTargets).toEqual(preview.body.data.weeklyTargets);
+    expect(created.body.data.totalSessions).toBe(preview.body.data.totalSessions);
+  });
+
+  it('reports create-response weekly targets that match the persisted schedule', async () => {
+    vi.useFakeTimers({ now: new Date('2026-05-25T10:00:00.000Z') });
+    harness = createTrainingE2EHarness();
+    harness.seedTrainingUser();
+
+    const created = await harness.dispatch('POST', '/plan/generate', {
+      ...bugReproducerBody,
+      durationWeeks: 2,
+      idempotencyKey: 'training-e2e-persisted-equals-scheduled',
+    });
+    expect(created.statusCode).toBe(201);
+
+    const sessions = persistedSessions(Number(created.body.data.planId));
+    const isRun = (type: string) => type === 'run' || type === 'long_run' || type.endsWith('_run');
+    const isGym = (type: string) => type === 'gym' || type === 'lift' || type.startsWith('strength');
+    // weeklyTargets are counted from the finalized plan with per-week MAX
+    // semantics — mirror that here against what actually persisted.
+    const weeks = harness.db.prepare(
+      'SELECT id FROM training_weeks WHERE plan_id = ? ORDER BY week_number',
+    ).all(Number(created.body.data.planId)) as Array<{ id: number }>;
+    let maxRuns = 0;
+    let maxGym = 0;
+    for (const week of weeks) {
+      const rows = harness.db.prepare(
+        'SELECT session_type FROM training_sessions WHERE week_id = ?',
+      ).all(week.id) as Array<{ session_type: string }>;
+      maxRuns = Math.max(maxRuns, rows.filter((row) => isRun(String(row.session_type).toLowerCase())).length);
+      maxGym = Math.max(maxGym, rows.filter((row) => isGym(String(row.session_type).toLowerCase())).length);
+    }
+    expect(sessions.length).toBeGreaterThan(0);
+    expect(created.body.data.weeklyTargets.runSessionsPerWeek).toBe(maxRuns);
+    expect(created.body.data.weeklyTargets.strengthSessionsPerWeek).toBe(maxGym);
+
+    // B9: preferences carry BOTH the realized targets (flat keys, asserted
+    // by the matrix test) and the original user ask for re-edit flows.
+    const preferences = persistedPreferences(Number(created.body.data.planId));
+    expect(preferences.requestedTargets).toMatchObject({
+      sessionsPerWeek: 5,
+      runSessionsPerWeek: 5,
+      strengthSessionsPerWeek: 5,
+    });
   });
 });
 

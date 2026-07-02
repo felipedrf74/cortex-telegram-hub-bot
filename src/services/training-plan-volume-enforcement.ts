@@ -120,17 +120,45 @@ export function enforceRequestedTrainingPlanVolume(
       requestedDayBudget,
       request.longWorkoutDay,
     );
-    const activeTarget = Math.min(requestedTotal, Math.max(1, allowedDays.length * 2));
-    const strengthTarget = Math.min(
+    let sessions = (week.sessions ?? [])
+      .filter(isScheduledSession)
+      .map((session) => normalizeSessionDay(session))
+      .filter((session): session is CoordinatedTrainingSession => Boolean(session));
+    const presentCardioModalities = new Set(
+      sessions
+        .map((session) => cardioModality(session))
+        .filter((modality): modality is 'running' | 'cycling' | 'swimming' => modality != null),
+    );
+    const explicitCardioAsk: Record<'running' | 'cycling' | 'swimming', number> = {
+      running: requestedRunSessions,
+      cycling: requestedBikeSessions,
+      swimming: requestedSwimSessions,
+    };
+    // Multisport weeks where only SOME modality dials carry an explicit ask:
+    // the zeroed dials mean "auto", so the week budget stays at the requested
+    // training days instead of collapsing to the explicit sum (a swim=2 ask
+    // on a 6-day triathlon week must not shrink the week to 3 sessions).
+    const partialExplicitMultisport = hasExplicitEnduranceRequest
+      && presentCardioModalities.size >= 2
+      && [...presentCardioModalities].some((modality) => explicitCardioAsk[modality] === 0);
+    const weekRequestedTotal = partialExplicitMultisport
+      ? Math.max(requestedTotal, requestedTrainingDays)
+      : requestedTotal;
+    // Weeks inside the pre-race strength cutoff window arrive marked by the
+    // plan generator (which owns the race calendar); refilling strength here
+    // — or backfilling the freed slots with extra cardio — would undo the
+    // taper, so the week budget shrinks by the requested strength too.
+    const weekStrengthCutoffActive = week.strengthCutoffActive === true;
+    const weekTotalBudget = weekStrengthCutoffActive
+      ? Math.max(1, weekRequestedTotal - requestedStrength)
+      : weekRequestedTotal;
+    const activeTarget = Math.min(weekTotalBudget, Math.max(1, allowedDays.length * 2));
+    const strengthTarget = weekStrengthCutoffActive ? 0 : Math.min(
       activeTarget,
       requestedStrength > 0 ? requestedStrength : defaultStrengthForGymPlan,
       allowedDays.length,
     );
 
-    let sessions = (week.sessions ?? [])
-      .filter(isScheduledSession)
-      .map((session) => normalizeSessionDay(session))
-      .filter((session): session is CoordinatedTrainingSession => Boolean(session));
     const hasDefaultMultisportFloors = requestedBikeSessions === 0
       && requestedSwimSessions === 0
       && sessions.some((session) => cardioModality(session) === 'cycling')
@@ -152,7 +180,10 @@ export function enforceRequestedTrainingPlanVolume(
       cycling: cyclingTarget,
       swimming: swimmingTarget,
     });
-    sessions = trimToActiveTarget(sessions, activeTarget, strengthTarget);
+    sessions = trimToActiveTarget(sessions, activeTarget, strengthTarget, {
+      cycling: cyclingTarget,
+      swimming: swimmingTarget,
+    });
     // Slice 4.C — pass weekNumber so the support-session-builder
     // rotation shifts each week (0-based shift = weekNumber - 1).
     sessions = fillMissingStrength(sessions, strengthTarget, allowedDays, cloned.sport, request, weekNumber);
@@ -247,18 +278,44 @@ function trimToActiveTarget(
   sessions: CoordinatedTrainingSession[],
   activeTarget: number,
   strengthTarget: number,
+  protectedCardioTargets: { cycling: number | null; swimming: number | null },
 ): CoordinatedTrainingSession[] {
   const next = [...sessions];
   while (next.length > activeTarget) {
+    // Sessions covering an explicit per-modality ask are protected from the
+    // score-based trim — otherwise a low removableScore (e.g. swims) can
+    // delete exactly the sessions the user asked for.
+    const protectedIndexes = protectedCardioIndexes(next, protectedCardioTargets);
     const removableIndex = next
       .map((session, index) => ({ session, index }))
       .sort((left, right) => removableScore(left.session) - removableScore(right.session))
-      .find(({ session }) => !isStrengthSession(session) || countStrength(next) > strengthTarget)
+      .find(({ session, index }) =>
+        !protectedIndexes.has(index)
+        && (!isStrengthSession(session) || countStrength(next) > strengthTarget))
       ?.index;
     if (removableIndex == null) break;
     next.splice(removableIndex, 1);
   }
   return next;
+}
+
+function protectedCardioIndexes(
+  sessions: CoordinatedTrainingSession[],
+  targets: { cycling: number | null; swimming: number | null },
+): Set<number> {
+  const kept = { cycling: 0, swimming: 0 };
+  const indexes = new Set<number>();
+  sessions.forEach((session, index) => {
+    const modality = cardioModality(session);
+    if (modality !== 'cycling' && modality !== 'swimming') return;
+    const target = targets[modality];
+    if (target == null || target <= 0) return;
+    if (kept[modality] < target) {
+      kept[modality] += 1;
+      indexes.add(index);
+    }
+  });
+  return indexes;
 }
 
 function trimCardioModalitiesToTargets(

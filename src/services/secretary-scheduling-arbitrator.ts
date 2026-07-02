@@ -175,6 +175,12 @@ export interface SecretaryAgendaItem {
    * column or when persistence was skipped.
    */
   reasoningTrail: ReasoningTrailNode[];
+  /**
+   * Consecutive provider-sync failures (migration 220). Rows at/over the
+   * dead-letter threshold are skipped by the cleanup loop. Decodes to 0
+   * on pre-migration rows.
+   */
+  providerSyncFailureCount: number;
 }
 
 export interface SecretarySchedulingDecision {
@@ -987,6 +993,7 @@ function decisionFromPreview(
     sourceCreatedAt: input.intent.createdAt ?? null,
     sourceUpdatedAt: input.intent.updatedAt ?? null,
     reasoningTrail,
+    providerSyncFailureCount: 0,
   };
   return {
     status: input.status,
@@ -1536,6 +1543,7 @@ function rowToAgendaItem(row: any): SecretaryAgendaItem {
     // W-E: legacy rows (pre-column-add) decode to []. The PRAGMA add is
     // idempotent so this is the only place that needs to be defensive.
     reasoningTrail: safeParseArray<ReasoningTrailNode>(row.reasoning_trail_json),
+    providerSyncFailureCount: Number(row.provider_sync_failure_count ?? 0) || 0,
   };
 }
 

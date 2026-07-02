@@ -211,6 +211,13 @@ export interface MarkOwnershipDeletedInput {
  * remains in the user's calendar — the reconciliation queue picks
  * those up.
  *
+ * INVARIANT: `calendar_event_id`/`calendar_source` are PRESERVED on
+ * terminal rows on purpose. `findOwnershipsForPlan` is the audit view of
+ * everything ever linked to a plan, and 'orphaned' rows NEED the event id
+ * for the reconciliation retry. Terminal-skip in every scan is by STATUS
+ * (see `findOrphanedOwnerships` / `findOwnershipsNeedingReconciliation`),
+ * never by FK-null — do not "clean up" these columns.
+ *
  * Returns the count of rows transitioned. Idempotent: re-running on
  * an already-deleted row is a no-op.
  */

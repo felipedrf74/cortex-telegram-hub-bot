@@ -282,6 +282,10 @@ function dedupeDecisionReasons(reasons: TrainingDecisionReason[]): TrainingDecis
   const seen = new Set<string>();
   const output: TrainingDecisionReason[] = [];
   for (const reason of reasons) {
+    // Normalized text stays in the key on purpose: the same code can fire on
+    // one entity for different causes (capacity vs coherence caps), and both
+    // reasons must survive in the decision trail. Only byte-identical
+    // repeats collapse.
     const key = [
       reason.code,
       reason.affectedEntity.type,

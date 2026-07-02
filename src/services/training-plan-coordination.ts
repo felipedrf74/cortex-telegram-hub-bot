@@ -21,6 +21,9 @@ export interface CoordinatedTrainingSession {
   description?: string;
   exercises?: any[];
   preferredStartTime?: string | null;
+  /** Structured marker for safety-pause shaped sessions — the pause gate
+   *  checks this flag, not the display title. */
+  safetyPause?: boolean;
   scheduleState?: string;
   scheduleAdjustments?: string[];
   scheduleReason?: string;
@@ -40,6 +43,10 @@ export interface CoordinatedTrainingWeek {
   intensityPct?: number;
   sessions?: CoordinatedTrainingSession[];
   decisionReasons?: TrainingDecisionReason[];
+  /** Set by the plan generator when the week falls inside the pre-race
+   *  strength cutoff window; the volume enforcer must not refill strength
+   *  into such weeks. */
+  strengthCutoffActive?: boolean;
 }
 
 export interface CoordinatedTrainingProfileQuality {

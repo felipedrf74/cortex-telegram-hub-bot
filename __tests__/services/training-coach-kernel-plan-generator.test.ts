@@ -360,6 +360,115 @@ describe('buildCoachKernelTrainingPlan — side effects', () => {
     expect(athlete.goals.priorityOrder[0]).toBe('running');
   });
 
+  it('treats zero, null, and absent triathlon modality dials as the same auto request', () => {
+    // iOS sends 0 for untouched dials; chat/legacy clients omit the fields.
+    // Availability windows and load math are sized from the resolved
+    // targets, so any 0-vs-null split materially changes session durations
+    // for the same user intent (Codex QA 2026-07-02).
+    const base = {
+      userId: 9903,
+      objective: 'Triathlon base',
+      durationWeeks: 1,
+      startDate: '2026-07-06',
+      sessionsPerWeek: 7,
+      strengthSessionsPerWeek: 1,
+      preferredTime: '06:30',
+      preferredCardioTime: '06:30',
+      preferredStrengthTime: '18:00',
+      longWorkoutDay: 'Sunday',
+      notes: null,
+      fitnessProfile: { experience_level: 'intermediate', training_goals: 'triathlon base' },
+      gymProfile: null,
+      runProfile: null,
+      trainingPriority: 'triathlon',
+      twoADayPreference: 'preferred',
+    } as const;
+
+    const zeroDials = buildCoachKernelTrainingPlan({
+      ...base,
+      runSessionsPerWeek: 0,
+      bikeSessionsPerWeek: 0,
+      swimSessionsPerWeek: 0,
+    });
+    const nullDials = buildCoachKernelTrainingPlan({
+      ...base,
+      runSessionsPerWeek: null,
+      bikeSessionsPerWeek: null,
+      swimSessionsPerWeek: null,
+    });
+    const absentDials = buildCoachKernelTrainingPlan({ ...base });
+
+    expect(JSON.stringify(zeroDials.weeks?.[0]?.sessions))
+      .toBe(JSON.stringify(nullDials.weeks?.[0]?.sessions));
+    expect(JSON.stringify(absentDials.weeks?.[0]?.sessions))
+      .toBe(JSON.stringify(nullDials.weeks?.[0]?.sessions));
+  });
+
+  it('keeps positive triathlon dials explicit while zero dials resolve as auto', () => {
+    const athlete = buildAthleteStateFromTrainingProfiles({
+      userId: 9904,
+      objective: 'Olympic triathlon build',
+      durationWeeks: 4,
+      startDate: '2026-07-06',
+      sessionsPerWeek: 7,
+      runSessionsPerWeek: 6,
+      bikeSessionsPerWeek: 0,
+      swimSessionsPerWeek: 2,
+      strengthSessionsPerWeek: 1,
+      preferredTime: '06:30',
+      preferredCardioTime: '06:30',
+      preferredStrengthTime: '18:00',
+      longWorkoutDay: 'Sunday',
+      notes: null,
+      fitnessProfile: { experience_level: 'advanced', available_equipment: 'Full commercial gym' },
+      gymProfile: { training_age: '5 years', equipment_access: 'Full commercial gym' },
+      runProfile: { weekly_mileage_km: '45' },
+      trainingPriority: 'triathlon',
+    });
+
+    expect(athlete.goals.weeklySessionsTarget.running).toBe(6);
+    expect(athlete.goals.weeklySessionsTarget.swimming).toBe(2);
+    // bike=0 is an auto dial: it resolves to the cap-calibration floor here;
+    // the triathlon engine re-expands non-explicit modalities to the
+    // viability band (2-3 rides) at candidate-build time.
+    expect(athlete.goals.weeklySessionsTarget.cycling).toBe(1);
+    expect(athlete.goals.weeklySessionsTargetExplicit).toMatchObject({
+      running: true,
+      cycling: false,
+      swimming: true,
+      strength: true,
+    });
+  });
+
+  it('drops strength sessions in the immediate pre-race week (strength cutoff)', () => {
+    const plan = buildCoachKernelTrainingPlan({
+      userId: 509,
+      objective: 'Marathon race week',
+      durationWeeks: 1,
+      startDate: '2026-04-27',
+      sessionsPerWeek: 5,
+      runSessionsPerWeek: 4,
+      strengthSessionsPerWeek: 2,
+      preferredTime: '12:00',
+      preferredCardioTime: '07:00',
+      preferredStrengthTime: '18:00',
+      longWorkoutDay: 'Saturday',
+      notes: null,
+      goalMode: 'event_based',
+      trainingPriority: 'running',
+      raceDate: '2026-04-29',
+      fitnessProfile: { experience_level: 'advanced', available_equipment: 'Full commercial gym' },
+      gymProfile: { training_age: '5 years', equipment_access: 'Full commercial gym' },
+      runProfile: { weekly_mileage_km: '45' },
+    });
+
+    const sessions = plan.weeks?.[0]?.sessions ?? [];
+    const strengthSessions = sessions.filter(
+      (session: any) => String(session.sessionType).toLowerCase() === 'gym',
+    );
+    expect(strengthSessions).toHaveLength(0);
+  });
+
   it('uses explicit triathlon modality targets when bike and swim counts are supplied', () => {
     const athlete = buildAthleteStateFromTrainingProfiles({
       userId: 518,

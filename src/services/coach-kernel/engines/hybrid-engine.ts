@@ -56,7 +56,7 @@ export function resolveHybridPriority(athlete: AthleteState, phase: BlockPhase):
   const defaultRunSessions = hasCyclingIntent ? 0 : 4;
 
   if (endurancePriority || raceSoon || phase === 'peak' || phase === 'taper') {
-    notes.push('Endurance priority is active, so strength drops to minimum effective dose.');
+    notes.push('Endurance priority is active, so strength drops to minimum effective dose (capped at 2 sessions/week).');
     return {
       adjustedRunSessions: requestedRun || defaultRunSessions,
       adjustedCyclingSessions: requestedCycling,

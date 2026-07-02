@@ -1,6 +1,7 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
 import { createHash } from 'crypto';
+import type Database from 'better-sqlite3';
 import { getDb } from './database';
 import { logger } from '../utils/logger';
 import { requireTenantIdParam } from './tenant-scope';
@@ -292,7 +293,7 @@ function shouldReplaceExistingAutoRow(row: IdempotencyRow): boolean {
 }
 
 function replaceExistingAutoRow(
-  db: any,
+  db: Database.Database,
   row: IdempotencyRow,
   requestHash: string,
 ): TrainingPlanGenerationIdempotencyClaim {
@@ -326,7 +327,7 @@ function isAutoRowFresh(row: IdempotencyRow): boolean {
   return Date.now() - parsed <= AUTO_IDEMPOTENCY_WINDOW_MS;
 }
 
-function ensureTrainingPlanGenerationIdempotencyTable(db: any): void {
+function ensureTrainingPlanGenerationIdempotencyTable(db: Database.Database): void {
   const existing = db.prepare(`
     SELECT name
       FROM sqlite_master
@@ -340,7 +341,7 @@ function ensureTrainingPlanGenerationIdempotencyTable(db: any): void {
   ensureTrainingPlanGenerationIdempotencyIndexes(db);
 }
 
-function createTrainingPlanGenerationIdempotencyTable(db: any): void {
+function createTrainingPlanGenerationIdempotencyTable(db: Database.Database): void {
   db.exec(`
     CREATE TABLE IF NOT EXISTS ${IDEMPOTENCY_TABLE} (
       user_id INTEGER NOT NULL,
@@ -358,7 +359,7 @@ function createTrainingPlanGenerationIdempotencyTable(db: any): void {
   ensureTrainingPlanGenerationIdempotencyIndexes(db);
 }
 
-function backfillTrainingPlanGenerationIdempotencyScopedTable(db: any): void {
+function backfillTrainingPlanGenerationIdempotencyScopedTable(db: Database.Database): void {
   const legacyTable = db.prepare(`
     SELECT name
       FROM sqlite_master
@@ -397,14 +398,14 @@ function backfillTrainingPlanGenerationIdempotencyScopedTable(db: any): void {
   `);
 }
 
-function ensureTrainingPlanGenerationIdempotencyIndexes(db: any): void {
+function ensureTrainingPlanGenerationIdempotencyIndexes(db: Database.Database): void {
   db.exec(`
     CREATE INDEX IF NOT EXISTS idx_training_plan_generation_idempotency_scoped_tenant_status
       ON ${IDEMPOTENCY_TABLE}(tenant_id, user_id, status);
   `);
 }
 
-function getRow(db: any, userId: number, tenantId: number, idempotencyKey: string): IdempotencyRow | null {
+function getRow(db: Database.Database, userId: number, tenantId: number, idempotencyKey: string): IdempotencyRow | null {
   return db.prepare(`
     SELECT user_id, tenant_id, idempotency_key, request_hash, status, response_json, status_code, created_at, updated_at
       FROM ${IDEMPOTENCY_TABLE}
@@ -412,7 +413,7 @@ function getRow(db: any, userId: number, tenantId: number, idempotencyKey: strin
   `).get(userId, tenantId, idempotencyKey) as IdempotencyRow | undefined ?? null;
 }
 
-function getOptionalDb(): any | null {
+function getOptionalDb(): Database.Database | null {
   try {
     return getDb();
   } catch {

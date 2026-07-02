@@ -285,7 +285,9 @@ export async function getTodaySession(userId: number, tenantId: number) {
       const readinessSummary = await getReadiness(userId);
       const snapshot = readinessResultToSnapshot({
         score: typeof readinessSummary?.score === 'number' ? readinessSummary.score : undefined,
-        sleepHours: readinessSummary?.factors?.sleepScore != null ? undefined : undefined,
+        sleepHours: typeof readinessSummary?.sleepDurationHours === 'number' && readinessSummary.sleepDurationHours > 0
+          ? readinessSummary.sleepDurationHours
+          : undefined,
         hrvStatus: readinessSummary?.factors?.hrvStatus === 'down'
           ? 'low'
           : readinessSummary?.factors?.hrvStatus === 'up'
@@ -296,8 +298,8 @@ export async function getTodaySession(userId: number, tenantId: number) {
         energyReserve: typeof readinessSummary?.factors?.bodyBattery === 'number'
           ? readinessSummary.factors.bodyBattery
           : undefined,
-        reasoning: typeof readinessSummary?.reasonCode === 'string'
-          ? undefined
+        reasoning: typeof readinessSummary?.reasoning === 'string'
+          ? readinessSummary.reasoning
           : undefined,
       });
       // Moderate-injury auto-swap is intentionally deferred on this read model.
@@ -706,7 +708,15 @@ export async function getReadiness(userId: number) {
     const reasonCode = typeof readiness?.reasonCode === 'string' ? readiness.reasonCode : null;
     const source = typeof readiness?.source === 'string' ? readiness.source : null;
     const asOf = typeof readiness?.asOf === 'string' ? readiness.asOf : null;
-    const result = { score, factors, recommendation, reasonCode, source, asOf };
+    // Adaptation snapshots need raw sleep duration and reasoning prose; the
+    // display-shaped `factors` above intentionally drops both.
+    const sleepDurationHours = typeof readiness?.factors?.sleep?.durationHours === 'number' && readiness.factors.sleep.durationHours > 0
+      ? readiness.factors.sleep.durationHours
+      : null;
+    const reasoning = typeof readiness?.reasoning === 'string' && readiness.reasoning.trim().length > 0
+      ? readiness.reasoning.trim()
+      : null;
+    const result = { score, factors, recommendation, reasonCode, source, asOf, sleepDurationHours, reasoning };
     setCache(cacheKey, result, READINESS_TTL);
     return result;
   } catch (err) {

@@ -161,6 +161,11 @@ export interface Goals {
   raceCalendar: RaceEvent[];
   priorityOrder: Array<Sport | 'strength' | 'maintenance' | 'return'>;
   weeklySessionsTarget: Partial<Record<Sport, number>>;
+  /** Which weeklySessionsTarget entries came from an EXPLICIT user ask
+   *  (positive dial value) versus auto-derived defaults. Engines expand
+   *  auto values to their discipline defaults but must consume explicit
+   *  asks verbatim. Absent = legacy caller, treat all values as auto. */
+  weeklySessionsTargetExplicit?: Partial<Record<Sport, boolean>>;
   weeklyMinutesTarget?: Partial<Record<Sport, number>>;
 }
 
@@ -791,6 +796,10 @@ export type TrainingDecisionReasonCode =
   | 'return_to_training_volume_capped'
   | 'continuous_plan_no_taper'
   | 'event_based_missing_race_date'
+  // Pre-race strength cutoff (taper wiring, 2026-07-01): strength sessions
+  // inside the priority-scaled cutoff window are dropped at generation time
+  // and the volume enforcer honors the week marker instead of refilling.
+  | 'taper_strength_cutoff'
   // Slice A4 — safety/health guardrail emissions. Internal codes are
   // factual (medical_referral, pain_flag, illness_flag); user-facing
   // copy uses gentler "seek_professional_support" phrasing.

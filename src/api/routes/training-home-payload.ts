@@ -221,7 +221,7 @@ function readjustForTodayFatigue(
   try {
     return adjustForFatigue(patchedAthlete, storedPlan);
   } catch (err) {
-    logger.debug({ err, athleteId: storedAthlete.profile.athleteId }, 'adjustForFatigue re-run failed — falling back to stored guardrails');
+    logger.warn({ err, athleteId: storedAthlete.profile.athleteId }, 'adjustForFatigue re-run failed — falling back to stored guardrails');
     return storedPlan;
   }
 }

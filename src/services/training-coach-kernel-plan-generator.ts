@@ -1,6 +1,9 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
 import { buildWeekPlan } from './coach-kernel/planner-engine';
+import { decideTaper } from './coach-kernel/taper';
+import { loadCoachKnowledge } from './coach-kernel/knowledge-loader';
+import { findNextRace, daysToRace, normalizeRacePriority } from './race-calendar';
 import type {
   AthleteState,
   BlockPhase,
@@ -196,6 +199,7 @@ export function buildCoachKernelTrainingPlan(input: CoachKernelTrainingPlanInput
   const athlete = buildAthleteStateFromTrainingProfiles(input);
   let rollingAthlete = athlete;
   const rawWeeklyPlans: WeeklyPlan[] = [];
+  const taperPrinciples = loadCoachKnowledge().principles;
 
   const weeks: CoordinatedTrainingWeek[] = Array.from({ length: input.durationWeeks }, (_, index) => {
     const weekNumber = index + 1;
@@ -229,7 +233,12 @@ export function buildCoachKernelTrainingPlan(input: CoachKernelTrainingPlanInput
     // converter below discards both fields.
     recordWeeklyPlan(weeklyPlan, weekAthlete);
     rollingAthlete = rollAthleteStateForward(weekAthlete, weeklyPlan);
-    return convertWeeklyPlanToLegacyWeek(weeklyPlan, weekNumber);
+    return applyPreRaceStrengthCutoff(
+      convertWeeklyPlanToLegacyWeek(weeklyPlan, weekNumber),
+      weekStart,
+      athlete.goals.raceCalendar,
+      taperPrinciples,
+    );
   });
 
   // TR-EC-QA-O1 + TR-EC-QA-O2 (2026-05-03 hostile QA closeout):
@@ -344,6 +353,7 @@ export function buildAthleteStateFromTrainingProfiles(input: CoachKernelTraining
     goalModeWeeklyTargets,
     experienceResolution.value,
     primaryFocus,
+    explicitWeeklyTargetKeys(input),
   );
   const constraints = resolveConstraints(input.fitnessProfile, input.runProfile, input.notes);
 
@@ -567,6 +577,12 @@ export function buildAthleteStateFromTrainingProfiles(input: CoachKernelTraining
       raceCalendar,
       priorityOrder,
       weeklySessionsTarget: weeklyTargets,
+      weeklySessionsTargetExplicit: {
+        running: (optionalSessionTarget(input.runSessionsPerWeek, 0, 7) ?? 0) > 0,
+        cycling: (optionalSessionTarget(input.bikeSessionsPerWeek, 0, 7) ?? 0) > 0,
+        swimming: (optionalSessionTarget(input.swimSessionsPerWeek, 0, 7) ?? 0) > 0,
+        strength: Number(input.strengthSessionsPerWeek) > 0,
+      },
       weeklyMinutesTarget: resolveWeeklyMinutesTarget(weeklyTargets, trainingHistory.lastWeekMinutesBySport),
     },
     constraints,
@@ -879,13 +895,31 @@ export function resolveWeeklyTargets(
   switch (primaryFocus) {
     case 'triathlon': {
       const strengthTarget = Math.min(strength, 2);
-      const enduranceTotal = Math.max(5, total);
-      const defaultRunning = clamp(Math.round(enduranceTotal * 0.4), 3, 4);
-      const defaultCycling = clamp(Math.round(enduranceTotal * 0.35), 2, 3);
-      const defaultSwimming = clamp(Math.max(2, enduranceTotal - defaultRunning - defaultCycling), 2, 3);
-      const running = requestedRunning != null ? clamp(Math.max(1, requestedRunning), 1, 7) : defaultRunning;
-      const cycling = requestedCycling != null ? clamp(Math.max(1, requestedCycling), 1, 7) : defaultCycling;
-      const swimming = requestedSwimming != null ? clamp(Math.max(1, requestedSwimming), 1, 7) : defaultSwimming;
+      // Zero, null, and absent all mean "auto" for triathlon modality dials
+      // (iOS sends 0 for untouched dials; chat/legacy clients omit the
+      // fields) and MUST resolve identically — availability windows, load
+      // math, and weekly-minutes are sized from these targets, so a
+      // 0-vs-null split produced materially different session durations for
+      // the same user intent (Codex QA 2026-07-02).
+      //
+      // Auto dials resolve to the cap-calibration floor of 1; the triathlon
+      // engine re-expands non-explicit modalities to the viability bands
+      // (3-4 runs, 2-3 rides/swims). Do NOT resolve auto dials to those
+      // band values here: novice caps and the intensity-distribution linter
+      // are calibrated against the floor-sized load model, and larger
+      // resolved targets tip default novice plans into hard-mix lint
+      // blockers. Positive asks are honored verbatim end-to-end
+      // (goals.weeklySessionsTargetExplicit tells the engine which is
+      // which).
+      const running = requestedRunning != null && requestedRunning > 0
+        ? clamp(requestedRunning, 1, 7)
+        : 1;
+      const cycling = requestedCycling != null && requestedCycling > 0
+        ? clamp(requestedCycling, 1, 7)
+        : 1;
+      const swimming = requestedSwimming != null && requestedSwimming > 0
+        ? clamp(requestedSwimming, 1, 7)
+        : 1;
       return { running, cycling, swimming, strength: strengthTarget };
     }
     case 'marathon':
@@ -944,10 +978,29 @@ export function resolveWeeklyTargets(
 
 type WeeklyTargetKey = keyof Goals['weeklySessionsTarget'];
 
+// Per-discipline novice planning rules. A Record over CoachingDiscipline is
+// deliberate: adding a discipline fails compilation here until its novice
+// total cap, trim order, and per-modality minimums are decided — previously
+// these lived in three separate switches that had to be updated in lockstep.
+const NOVICE_DISCIPLINE_RULES: Record<CoachingDiscipline, {
+  totalCap: number;
+  trimOrder: WeeklyTargetKey[];
+  minimums: Partial<Record<WeeklyTargetKey, number>>;
+}> = {
+  running: { totalCap: 4, trimOrder: ['strength', 'swimming', 'cycling', 'running'], minimums: { running: 3 } },
+  marathon: { totalCap: 4, trimOrder: ['strength', 'swimming', 'cycling', 'running'], minimums: { running: 3 } },
+  cycling: { totalCap: 4, trimOrder: ['strength', 'swimming', 'running', 'cycling'], minimums: { cycling: 3 } },
+  swimming: { totalCap: 4, trimOrder: ['strength', 'cycling', 'running', 'swimming'], minimums: { swimming: 3 } },
+  strength: { totalCap: 4, trimOrder: ['running', 'cycling', 'swimming', 'strength'], minimums: { strength: 3 } },
+  triathlon: { totalCap: 5, trimOrder: ['strength', 'swimming', 'cycling', 'running'], minimums: { running: 1, cycling: 1, swimming: 1 } },
+  hybrid: { totalCap: 4, trimOrder: ['swimming', 'cycling', 'strength', 'running'], minimums: {} },
+};
+
 function applyExperienceAwareWeeklyTargetCaps(
   targets: Goals['weeklySessionsTarget'],
   experienceLevel: AthleteState['profile']['experienceLevel'],
   primaryFocus: CoachingDiscipline,
+  explicitTargets: ReadonlySet<WeeklyTargetKey>,
 ): Goals['weeklySessionsTarget'] {
   if (experienceLevel !== 'novice') return targets;
 
@@ -956,14 +1009,25 @@ function applyExperienceAwareWeeklyTargetCaps(
     capped.strength = Math.min(capped.strength, 3);
   }
 
-  const totalCap = primaryFocus === 'triathlon' ? 5 : 4;
+  const rules = NOVICE_DISCIPLINE_RULES[primaryFocus] ?? NOVICE_DISCIPLINE_RULES.hybrid;
+  const totalCap = rules.totalCap;
   let runningTotal = totalTargetSessions(capped);
   if (runningTotal <= totalCap) return capped;
 
-  for (const key of noviceTargetTrimOrder(primaryFocus)) {
-    while ((capped[key] ?? 0) > minimumNoviceTargetFor(primaryFocus, key) && runningTotal > totalCap) {
-      capped[key] = Math.max(0, (capped[key] ?? 0) - 1);
-      runningTotal -= 1;
+  // Trim auto-derived modalities before explicitly-requested ones: a novice
+  // who dialed swim=2 should lose default run/bike volume first, and their
+  // explicit ask only if the total cap still binds afterwards.
+  const trimPasses: WeeklyTargetKey[][] = [
+    rules.trimOrder.filter((key) => !explicitTargets.has(key)),
+    rules.trimOrder.filter((key) => explicitTargets.has(key)),
+  ];
+  for (const pass of trimPasses) {
+    for (const key of pass) {
+      while ((capped[key] ?? 0) > (rules.minimums[key] ?? 0) && runningTotal > totalCap) {
+        capped[key] = Math.max(0, (capped[key] ?? 0) - 1);
+        runningTotal -= 1;
+      }
+      if (runningTotal <= totalCap) break;
     }
     if (runningTotal <= totalCap) break;
   }
@@ -971,35 +1035,13 @@ function applyExperienceAwareWeeklyTargetCaps(
   return capped;
 }
 
-function noviceTargetTrimOrder(primaryFocus: CoachingDiscipline): WeeklyTargetKey[] {
-  switch (primaryFocus) {
-    case 'strength':
-      return ['running', 'cycling', 'swimming', 'strength'];
-    case 'marathon':
-    case 'running':
-      return ['strength', 'swimming', 'cycling', 'running'];
-    case 'cycling':
-      return ['strength', 'swimming', 'running', 'cycling'];
-    case 'swimming':
-      return ['strength', 'cycling', 'running', 'swimming'];
-    case 'triathlon':
-      return ['strength', 'swimming', 'cycling', 'running'];
-    case 'hybrid':
-    default:
-      return ['swimming', 'cycling', 'strength', 'running'];
-  }
-}
-
-function minimumNoviceTargetFor(
-  primaryFocus: CoachingDiscipline,
-  key: WeeklyTargetKey,
-): number {
-  if (primaryFocus === 'strength' && key === 'strength') return 3;
-  if ((primaryFocus === 'running' || primaryFocus === 'marathon') && key === 'running') return 3;
-  if (primaryFocus === 'cycling' && key === 'cycling') return 3;
-  if (primaryFocus === 'swimming' && key === 'swimming') return 3;
-  if (primaryFocus === 'triathlon' && (key === 'running' || key === 'cycling' || key === 'swimming')) return 1;
-  return 0;
+function explicitWeeklyTargetKeys(input: CoachKernelTrainingPlanInput): Set<WeeklyTargetKey> {
+  const keys = new Set<WeeklyTargetKey>();
+  if ((optionalSessionTarget(input.runSessionsPerWeek, 0, 7) ?? 0) > 0) keys.add('running');
+  if ((optionalSessionTarget(input.bikeSessionsPerWeek, 0, 7) ?? 0) > 0) keys.add('cycling');
+  if ((optionalSessionTarget(input.swimSessionsPerWeek, 0, 7) ?? 0) > 0) keys.add('swimming');
+  if (Number(input.strengthSessionsPerWeek) > 0) keys.add('strength');
+  return keys;
 }
 
 function optionalSessionTarget(value: unknown, min: number, max: number): number | null {
@@ -2396,6 +2438,66 @@ export function resolveMaxSessionsPerDay(
   // optional / nullish — fall back to the volume-based inference that
   // was the existing default before slice 2.B added the explicit field.
   return weeklyTargets.strength && totalTargetSessions(weeklyTargets) >= 5 ? 2 : 1;
+}
+
+function isStrengthLegacySessionType(sessionType: unknown): boolean {
+  const type = String(sessionType || '').trim().toLowerCase();
+  return type === 'gym' || type === 'lift' || type.startsWith('strength');
+}
+
+/**
+ * Drop strength sessions whose scheduled day falls inside the pre-race
+ * strength cutoff window (priority-scaled via `decideTaper`). The race
+ * calendar is only known here in the kernel, so this is the single locus
+ * for the cutoff — the volume enforcer honors the week marker instead of
+ * refilling strength into cutoff weeks.
+ */
+function applyPreRaceStrengthCutoff(
+  week: CoordinatedTrainingWeek,
+  weekStart: string,
+  raceCalendar: RaceEvent[],
+  principles: Parameters<typeof decideTaper>[1],
+): CoordinatedTrainingWeek {
+  if (!Array.isArray(week.sessions) || week.sessions.length === 0 || raceCalendar.length === 0) {
+    return week;
+  }
+  const kept: CoordinatedTrainingSession[] = [];
+  const droppedDays: string[] = [];
+  for (const session of week.sessions) {
+    if (!isStrengthLegacySessionType(session.sessionType)) {
+      kept.push(session);
+      continue;
+    }
+    const dayIndex = (DAY_ORDER as readonly string[]).indexOf(String(session.dayOfWeek || '').trim().toLowerCase());
+    const sessionDate = offsetDate(weekStart, Math.max(0, dayIndex));
+    const race = findNextRace(raceCalendar, sessionDate);
+    const remaining = race ? daysToRace(race, sessionDate) : undefined;
+    if (race && remaining !== undefined && remaining >= 0) {
+      const taper = decideTaper(
+        { daysToRace: remaining, priority: normalizeRacePriority(race.priority) },
+        principles,
+      );
+      if (taper.strengthCutoffActive) {
+        droppedDays.push(String(session.dayOfWeek));
+        continue;
+      }
+    }
+    kept.push(session);
+  }
+  if (droppedDays.length === 0) return week;
+  const reason: TrainingDecisionReason = {
+    code: 'taper_strength_cutoff',
+    text: `Strength dropped (${droppedDays.join(', ')}) — inside the pre-race strength cutoff window.`,
+    severity: 'notice',
+    affectedEntity: { type: 'week', id: String(week.weekNumber) },
+    sourceConstraint: { type: 'safety', label: 'Pre-race strength cutoff' },
+  };
+  return {
+    ...week,
+    sessions: kept,
+    strengthCutoffActive: true,
+    decisionReasons: dedupeTrainingDecisionReasons([...(week.decisionReasons ?? []), reason]),
+  };
 }
 
 function offsetDate(startDate: string, offsetDays: number): string {

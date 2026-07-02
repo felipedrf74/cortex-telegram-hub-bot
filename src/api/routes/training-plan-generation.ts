@@ -832,6 +832,16 @@ export async function generateTrainingPlanForUser(
     bikeSessionsPerWeek: weeklyTargets.bikeSessionsPerWeek,
     swimSessionsPerWeek: weeklyTargets.swimSessionsPerWeek,
     strengthSessionsPerWeek: weeklyTargets.strengthSessionsPerWeek,
+    // The flat keys above are REALIZED targets (counted from the finalized
+    // plan). requestedTargets preserves what the user asked for, so re-edit
+    // flows and honest capacity messaging can compare the two.
+    requestedTargets: {
+      sessionsPerWeek: requestedWeeklyTargets.sessionsPerWeek,
+      runSessionsPerWeek: requestedWeeklyTargets.runSessionsPerWeek,
+      bikeSessionsPerWeek: requestedWeeklyTargets.bikeSessionsPerWeek,
+      swimSessionsPerWeek: requestedWeeklyTargets.swimSessionsPerWeek,
+      strengthSessionsPerWeek: requestedWeeklyTargets.strengthSessionsPerWeek,
+    },
     longWorkoutDay: longWorkoutDay || null,
     notes: notes || null,
     goalMode: normalizedGoalMode,
@@ -1617,6 +1627,26 @@ function applyTrainingSafetyOutputToGeneratedPlan(
 
   const safetyMessage = safetyReasons[0]?.text
     ?? 'Training is paused until the safety check is resolved.';
+  const buildSafetyPauseSession = (
+    base: Record<string, any>,
+    decisionReasons: TrainingDecisionReason[],
+  ) => ({
+    ...base,
+    sessionType: 'rest',
+    title: 'Safety pause',
+    // Structured marker — the pause gate must not depend on string-matching
+    // the display title (which is localizable and trim-sensitive).
+    safetyPause: true,
+    durationMinutes: 0,
+    description: safetyMessage,
+    exercises: [],
+    scheduleState: 'deferred',
+    scheduleAdjustments: [
+      'Training paused until the safety check is resolved.',
+    ],
+    scheduleReason: safetyMessage,
+    decisionReasons,
+  });
   const weeks = Array.isArray(planData?.weeks)
     ? planData.weeks.map((week: any, weekIndex: number) => {
         const weekReasons = dedupeDecisionReasons([
@@ -1624,37 +1654,14 @@ function applyTrainingSafetyOutputToGeneratedPlan(
           ...safetyReasons,
         ]);
         const sessions = Array.isArray(week?.sessions)
-          ? week.sessions.map((session: any) => ({
-              ...session,
-              sessionType: 'rest',
-              title: 'Safety pause',
-              durationMinutes: 0,
-              description: safetyMessage,
-              exercises: [],
-              scheduleState: 'deferred',
-              scheduleAdjustments: [
-                'Training paused until the safety check is resolved.',
-              ],
-              scheduleReason: safetyMessage,
-              decisionReasons: dedupeDecisionReasons([
+          ? week.sessions.map((session: any) => buildSafetyPauseSession(
+              session,
+              dedupeDecisionReasons([
                 ...safeDecisionReasons(session?.decisionReasons),
                 ...safetyReasons,
               ]),
-            }))
-          : [{
-              dayOfWeek: 'Monday',
-              sessionType: 'rest',
-              title: 'Safety pause',
-              durationMinutes: 0,
-              description: safetyMessage,
-              exercises: [],
-              scheduleState: 'deferred',
-              scheduleAdjustments: [
-                'Training paused until the safety check is resolved.',
-              ],
-              scheduleReason: safetyMessage,
-              decisionReasons: safetyReasons,
-            }];
+            ))
+          : [buildSafetyPauseSession({ dayOfWeek: 'Monday' }, safetyReasons)];
         return {
           ...week,
           focus: 'recovery',
@@ -1678,9 +1685,13 @@ function generatedPlanContainsSafetyPause(planData: any): boolean {
     && planData.weeks.some((week: any) =>
       Array.isArray(week?.sessions)
       && week.sessions.some((session: any) =>
-        String(session?.sessionType || '').toLowerCase() === 'rest'
-        && String(session?.title || '').toLowerCase() === 'safety pause'
-        && String(session?.scheduleState || '').toLowerCase() === 'deferred'
+        session?.safetyPause === true
+        // Legacy fallback: plans shaped before the structured flag existed
+        // only carry the title/type/state triple. Trimmed to tolerate
+        // whitespace drift in stored data.
+        || (String(session?.sessionType || '').trim().toLowerCase() === 'rest'
+          && String(session?.title || '').trim().toLowerCase() === 'safety pause'
+          && String(session?.scheduleState || '').trim().toLowerCase() === 'deferred')
       )
     );
 }

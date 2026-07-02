@@ -942,7 +942,7 @@ async function syncTrainingPlanCalendarLocked(
       result.status === 'fulfilled' ? result.value || [] : [],
     );
   } catch (err) {
-    logger.debug({ err, userId, calendarSource }, 'syncTrainingPlanCalendar: duplicate cleanup provider read failed');
+    logger.debug({ err, userId, calendarSource }, 'syncTrainingPlanCalendar: duplicate-cleanup provider read failed — skipping cross-provider duplicate cleanup for this sync pass');
   }
 
   const scheduledWindows: BusyWindow[] = [];

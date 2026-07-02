@@ -11,6 +11,10 @@ const MIGRATION_098 = path.resolve(
   __dirname,
   '../../migrations/098_secretary_decision_explanation.sql',
 );
+const MIGRATION_220 = path.resolve(
+  __dirname,
+  '../../migrations/220_secretary_agenda_provider_sync_failure_count.sql',
+);
 
 let testDb: Database.Database;
 
@@ -63,6 +67,7 @@ beforeEach(() => {
   testDb.exec(fs.readFileSync(MIGRATION_083, 'utf8'));
   testDb.exec(fs.readFileSync(MIGRATION_098, 'utf8'));
   testDb.exec('ALTER TABLE secretary_agenda_items ADD COLUMN reasoning_trail_json TEXT');
+  testDb.exec(fs.readFileSync(MIGRATION_220, 'utf8'));
 });
 
 afterEach(() => {
@@ -652,6 +657,102 @@ describe('secretary-agenda-provider-sync', () => {
     expect(provider.deletedEventIds).toEqual([created.providerEventId, created.providerEventId]);
     expect(provider.createAttempts).toBe(1);
     expect(provider.createInputs).toHaveLength(1);
+  });
+
+  it('dead-letters cleanup after the consecutive delete-failure threshold and stops retrying', async () => {
+    class FailingDeleteProvider extends MockSecretaryProvider {
+      async deleteEvent(eventId: string): Promise<void> {
+        this.deletedEventIds.push(eventId);
+        throw new Error('simulated permanent provider delete failure');
+      }
+    }
+
+    const provider = new FailingDeleteProvider();
+    const decision = submitSecretarySchedulingIntent(intent({
+      intentId: 'delete-failed-dead-letter',
+      sourceEntityId: 'session-delete-failed-dead-letter',
+    }));
+    await syncOne(decision.agendaItem.agendaItemId, provider);
+    cancelSecretaryAgendaItem({
+      agendaItemId: decision.agendaItem.agendaItemId,
+      ownerUserId: OWNER_USER_ID,
+      tenantId: TENANT_ID,
+      reason: 'training_plan_canceled',
+      now: '2026-05-01T10:00:00.000Z',
+    });
+
+    for (let attempt = 1; attempt <= 5; attempt += 1) {
+      const failed = await syncOne(decision.agendaItem.agendaItemId, provider);
+      expect(failed).toMatchObject({ action: 'failed', providerSyncState: 'delete_failed' });
+      const row = getSecretaryAgendaItemById({
+        agendaItemId: decision.agendaItem.agendaItemId,
+        ownerUserId: OWNER_USER_ID,
+        tenantId: TENANT_ID,
+      });
+      expect(row?.providerSyncFailureCount).toBe(attempt);
+    }
+
+    const deleteAttemptsBeforeDeadLetter = provider.deletedEventIds.length;
+    const skipped = await syncOne(decision.agendaItem.agendaItemId, provider);
+    expect(skipped).toMatchObject({
+      action: 'skipped',
+      providerSyncState: 'delete_failed',
+      reasonCode: 'provider_sync_dead_letter',
+    });
+    // No further provider calls once dead-lettered.
+    expect(provider.deletedEventIds).toHaveLength(deleteAttemptsBeforeDeadLetter);
+
+    // The row stays truthful: still delete_failed, still provider-backed,
+    // so a manual counter reset can resume cleanup.
+    const row = getSecretaryAgendaItemById({
+      agendaItemId: decision.agendaItem.agendaItemId,
+      ownerUserId: OWNER_USER_ID,
+      tenantId: TENANT_ID,
+    });
+    expect(row?.providerSyncState).toBe('delete_failed');
+    expect(row?.providerEventId).not.toBeNull();
+    expect(row?.providerSyncFailureCount).toBe(5);
+  });
+
+  it('resets the failure count once a provider delete finally succeeds', async () => {
+    class FlakyDeleteProvider extends MockSecretaryProvider {
+      deleteFailuresRemaining = 2;
+      async deleteEvent(eventId: string): Promise<void> {
+        this.deletedEventIds.push(eventId);
+        if (this.deleteFailuresRemaining > 0) {
+          this.deleteFailuresRemaining -= 1;
+          throw new Error('simulated transient provider delete failure');
+        }
+        this.events.delete(eventId);
+      }
+    }
+
+    const provider = new FlakyDeleteProvider();
+    const decision = submitSecretarySchedulingIntent(intent({
+      intentId: 'delete-failed-recovers',
+      sourceEntityId: 'session-delete-failed-recovers',
+    }));
+    await syncOne(decision.agendaItem.agendaItemId, provider);
+    cancelSecretaryAgendaItem({
+      agendaItemId: decision.agendaItem.agendaItemId,
+      ownerUserId: OWNER_USER_ID,
+      tenantId: TENANT_ID,
+      reason: 'training_plan_canceled',
+      now: '2026-05-01T10:00:00.000Z',
+    });
+
+    await syncOne(decision.agendaItem.agendaItemId, provider);
+    await syncOne(decision.agendaItem.agendaItemId, provider);
+    const recovered = await syncOne(decision.agendaItem.agendaItemId, provider);
+    expect(recovered).toMatchObject({ action: 'deleted', providerSyncState: 'deleted' });
+
+    const row = getSecretaryAgendaItemById({
+      agendaItemId: decision.agendaItem.agendaItemId,
+      ownerUserId: OWNER_USER_ID,
+      tenantId: TENANT_ID,
+    });
+    expect(row?.providerSyncFailureCount).toBe(0);
+    expect(row?.providerEventId).toBeNull();
   });
 
   it('replaces a regenerated agenda item by deleting the superseded provider event and creating the new version', async () => {

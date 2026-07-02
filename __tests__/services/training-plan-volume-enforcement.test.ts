@@ -197,6 +197,92 @@ describe('training-plan-volume-enforcement', () => {
     expect(sessions.filter((session) => String(session.sessionType).toLowerCase() === 'swim')).toHaveLength(1);
   });
 
+  it('honors an asymmetric partial-zero triathlon request without applying default multisport floors', () => {
+    const rawPlan = buildCoachKernelTrainingPlan({
+      userId: 99,
+      objective: 'Olympic triathlon',
+      durationWeeks: 1,
+      startDate: '2026-04-27',
+      sessionsPerWeek: 6,
+      runSessionsPerWeek: 0,
+      bikeSessionsPerWeek: 0,
+      swimSessionsPerWeek: 2,
+      strengthSessionsPerWeek: 1,
+      preferredTime: '12:00',
+      preferredCardioTime: '07:00',
+      preferredStrengthTime: '18:00',
+      longWorkoutDay: 'Saturday',
+      notes: null,
+      trainingPriority: 'triathlon',
+      fitnessProfile: null,
+      gymProfile: null,
+      runProfile: null,
+    });
+
+    const result = enforceRequestedTrainingPlanVolume(rawPlan, {
+      sessionsPerWeek: 6,
+      runSessionsPerWeek: 0,
+      bikeSessionsPerWeek: 0,
+      swimSessionsPerWeek: 2,
+      strengthSessionsPerWeek: 1,
+      preferredCardioTime: '07:00',
+      preferredStrengthTime: '18:00',
+      startDate: '2026-04-27',
+      longWorkoutDay: 'Saturday',
+    });
+
+    const sessions = result.weeks?.[0]?.sessions ?? [];
+    const swims = sessions.filter((session) => String(session.sessionType).toLowerCase() === 'swim');
+    expect(swims).toHaveLength(2);
+    // Regression guard: the zeroed dials mean "auto", so the week must keep
+    // its 6-day budget instead of collapsing to explicit-sum (swim 2 +
+    // strength 1 = 3 sessions was the bug).
+    expect(sessions.length).toBeGreaterThan(3);
+  });
+
+  it('does not refill strength into a pre-race strength-cutoff week', () => {
+    const rawPlan = buildCoachKernelTrainingPlan({
+      userId: 99,
+      objective: 'Marathon race week',
+      durationWeeks: 1,
+      startDate: '2026-04-27',
+      sessionsPerWeek: 5,
+      runSessionsPerWeek: 4,
+      strengthSessionsPerWeek: 2,
+      preferredTime: '12:00',
+      preferredCardioTime: '07:00',
+      preferredStrengthTime: '18:00',
+      longWorkoutDay: 'Saturday',
+      notes: null,
+      goalMode: 'event_based',
+      trainingPriority: 'running',
+      raceDate: '2026-04-29',
+      fitnessProfile: { experience_level: 'advanced', available_equipment: 'Full commercial gym' },
+      gymProfile: { training_age: '5 years', equipment_access: 'Full commercial gym' },
+      runProfile: { weekly_mileage_km: '45' },
+    });
+    expect(rawPlan.weeks?.[0]?.strengthCutoffActive).toBe(true);
+
+    const result = enforceRequestedTrainingPlanVolume(rawPlan, {
+      sessionsPerWeek: 5,
+      runSessionsPerWeek: 4,
+      strengthSessionsPerWeek: 2,
+      preferredCardioTime: '07:00',
+      preferredStrengthTime: '18:00',
+      startDate: '2026-04-27',
+      longWorkoutDay: 'Saturday',
+    });
+
+    const sessions = result.weeks?.[0]?.sessions ?? [];
+    const strengthSessions = sessions.filter(
+      (session) => String(session.sessionType).toLowerCase() === 'gym',
+    );
+    expect(strengthSessions).toHaveLength(0);
+    // The freed strength slots must not be backfilled with extra cardio —
+    // the week budget shrinks with the cutoff.
+    expect(sessions.length).toBeLessThanOrEqual(4);
+  });
+
   it('does not inflate non-zero cycling targets to sessionsPerWeek during enforcement', () => {
     const result = enforceRequestedTrainingPlanVolume({
       sport: 'cycling',

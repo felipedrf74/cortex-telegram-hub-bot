@@ -6,6 +6,7 @@ const hoisted = vi.hoisted(() => ({
   getActivitiesByDateForUser: vi.fn(),
   findExistingOwnership: vi.fn(),
   isConnected: vi.fn(),
+  readinessSnapshotSpy: vi.fn(),
 }));
 
 let mockActivePlan: any = null;
@@ -55,6 +56,19 @@ vi.mock('../../src/services/oauth-store', () => ({
   isConnected: hoisted.isConnected,
 }));
 
+// Passthrough spy: keeps the real snapshot behavior while letting tests pin
+// exactly which readiness fields reach the adaptation snapshot boundary.
+vi.mock('../../src/services/coach-kernel/readiness-snapshot-adapter', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../src/services/coach-kernel/readiness-snapshot-adapter')>();
+  return {
+    ...actual,
+    readinessResultToSnapshot: (input: any) => {
+      hoisted.readinessSnapshotSpy(input);
+      return actual.readinessResultToSnapshot(input);
+    },
+  };
+});
+
 import {
   adaptDtoSessionForReadiness,
   fetchCurrentReadinessForPlan,
@@ -80,6 +94,7 @@ describe('training-read-models', () => {
     hoisted.getActivitiesByDateForUser.mockReset();
     hoisted.findExistingOwnership.mockReset();
     hoisted.isConnected.mockReset();
+    hoisted.readinessSnapshotSpy.mockReset();
     (buildCalendarEventLookup as any).mockReset();
     (buildCalendarEventLookup as any).mockImplementation(async () => mockCalendarLookup);
     hoisted.calculateReadiness.mockImplementation(async () => mockReadinessResult);
@@ -445,11 +460,12 @@ describe('training-read-models', () => {
       source: 'garmin',
       asOf: '2026-06-11T07:30:00.000Z',
       factors: {
-        sleep: { score: 88 },
+        sleep: { score: 88, durationHours: 7.5 },
         hrv: { trend: 'stable' },
         bodyBattery: { current: 64 },
         trainingLoad: { acwr: 1.12 },
       },
+      reasoning: '  Recovered well overnight.  ',
     };
 
     const first = await getReadiness(42);
@@ -461,6 +477,8 @@ describe('training-read-models', () => {
       reasonCode: 'maintain',
       source: 'garmin',
       asOf: '2026-06-11T07:30:00.000Z',
+      sleepDurationHours: 7.5,
+      reasoning: 'Recovered well overnight.',
       factors: {
         sleepScore: 88,
         hrvStatus: 'stable',
@@ -483,6 +501,50 @@ describe('training-read-models', () => {
     const result = await getReadiness(42);
     expect(result.source).toBeNull();
     expect(result.asOf).toBeNull();
+    expect(result.sleepDurationHours).toBeNull();
+    expect(result.reasoning).toBeNull();
+  });
+
+  it('passes sleep duration and reasoning through to the readiness adaptation snapshot', async () => {
+    const todayName = new Date().toLocaleDateString('en-US', { weekday: 'long' });
+    mockActivePlan = {
+      id: 11,
+      name: 'Marathon Build',
+      periodization: 'build',
+      start_date: '2026-04-20T00:00:00.000Z',
+      preferences_json: JSON.stringify({}),
+    };
+    mockCurrentWeek = { id: 21, week_number: 1, focus: 'base' };
+    mockWeekSessions = [{
+      id: 31,
+      day_of_week: todayName,
+      title: 'Tempo Run',
+      session_type: 'run',
+      duration_minutes: 55,
+      status: 'planned',
+      description: 'Controlled threshold effort.',
+      exercises_json: JSON.stringify([]),
+    }];
+    mockReadinessResult = {
+      score: 41,
+      recommendation: 'easy',
+      reasonCode: 'poor_sleep',
+      reasoning: 'Short sleep and suppressed HRV overnight.',
+      factors: {
+        sleep: { score: 40, durationHours: 4.5 },
+        hrv: { trend: 'down' },
+        bodyBattery: { current: 22 },
+      },
+    };
+
+    await getTodaySession(42, 42);
+
+    expect(hoisted.readinessSnapshotSpy).toHaveBeenCalledWith(expect.objectContaining({
+      score: 41,
+      sleepHours: 4.5,
+      hrvStatus: 'low',
+      reasoning: 'Short sleep and suppressed HRV overnight.',
+    }));
   });
 
   it('maps readiness into coach-kernel plan input and returns null for missing useful data', async () => {

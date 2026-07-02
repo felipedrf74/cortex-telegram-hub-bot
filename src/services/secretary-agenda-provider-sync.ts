@@ -109,6 +109,11 @@ const FAILED_PROVIDER_SYNC_STATES = new Set<SecretaryProviderSyncState>([
   'readback_failed',
 ]);
 
+// Consecutive delete failures after which cleanup stops retrying every
+// sync cycle. Scoped to 'delete_failed' only — dead-lettering create/update
+// failures would silently strand an item the user still expects to sync.
+const PROVIDER_SYNC_DEAD_LETTER_THRESHOLD = 5;
+
 export function markCompletedSecretaryAgendaItems(now: Date = new Date()): number {
   const result = getDb().prepare(`
     UPDATE secretary_agenda_items
@@ -156,6 +161,26 @@ export async function syncSecretaryAgendaItemToProvider(
       'deleted',
       [],
       'terminal_cleanup_no_provider_event',
+    );
+  }
+
+  if (
+    agendaItem.providerSyncState === 'delete_failed'
+    && agendaItem.providerSyncFailureCount >= PROVIDER_SYNC_DEAD_LETTER_THRESHOLD
+  ) {
+    logger.debug({
+      agendaItemId: agendaItem.agendaItemId,
+      providerSyncFailureCount: agendaItem.providerSyncFailureCount,
+      providerSource: adapter.source,
+    }, 'Secretary agenda provider cleanup dead-lettered — skipping automatic retries until the failure count is reset');
+    return result(
+      agendaItem,
+      'skipped',
+      agendaItem.providerEventId,
+      adapter.source,
+      agendaItem.providerSyncState,
+      [],
+      'provider_sync_dead_letter',
     );
   }
 
@@ -378,6 +403,15 @@ async function cleanupProviderEvent(
       agendaItemId: agendaItem.agendaItemId,
       providerSource: adapter.source,
     }, 'Secretary agenda provider cleanup failed');
+    const nextFailureCount = agendaItem.providerSyncFailureCount + 1;
+    if (nextFailureCount === PROVIDER_SYNC_DEAD_LETTER_THRESHOLD) {
+      logger.warn({
+        agendaItemId: agendaItem.agendaItemId,
+        providerEventId: agendaItem.providerEventId,
+        providerSource: adapter.source,
+        providerSyncFailureCount: nextFailureCount,
+      }, 'Secretary agenda provider cleanup reached the dead-letter threshold — automatic retries stop; manual review required');
+    }
     return {
       ...result(agendaItem, 'failed', agendaItem.providerEventId, adapter.source, 'delete_failed', deletedDuplicateEventIds, 'provider_delete_failed'),
       retryAfterMs: retryAfterMs(error),
@@ -509,6 +543,28 @@ function updateProviderMapping(
   );
   if (result.changes === 0) {
     throw new Error(`SECRETARY_PROVIDER_MAPPING_UPDATE_MISSED: ${agendaItem.agendaItemId}`);
+  }
+
+  // Migration 220: track consecutive failures for the dead-letter skip.
+  // Guarded by a column check so pre-migration databases stay functional.
+  const isFailedTransition = FAILED_PROVIDER_SYNC_STATES.has(patch.providerSyncState);
+  const isSettledTransition = patch.providerSyncState === 'synced' || patch.providerSyncState === 'deleted';
+  if (
+    (isFailedTransition || isSettledTransition)
+    && tableHasColumn(getDb(), 'secretary_agenda_items', 'provider_sync_failure_count')
+  ) {
+    getDb().prepare(`
+      UPDATE secretary_agenda_items
+         SET provider_sync_failure_count = CASE WHEN ? THEN provider_sync_failure_count + 1 ELSE 0 END
+       WHERE agenda_item_id = ?
+         AND owner_user_id = ?
+         AND tenant_id = ?
+    `).run(
+      isFailedTransition ? 1 : 0,
+      agendaItem.agendaItemId,
+      agendaItem.ownerUserId,
+      String(agendaItem.tenantId),
+    );
   }
 }
 
