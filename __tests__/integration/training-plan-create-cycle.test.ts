@@ -491,6 +491,15 @@ describe('training plan create cycle integration', () => {
       runSessionsPerWeek: 5,
       strengthSessionsPerWeek: 5,
     });
+
+    // getAllPlanWeeks renders the per-week learning focus FROM
+    // preferences_json — generation must persist the attached learning
+    // path or the Plan zone can never show it for fresh plans (isolated
+    // Training E2E finding, 2026-07-02: the key was dropped in the
+    // 4.14.210 mainline rebase).
+    expect(preferences.trainingLearningPath).toBeTruthy();
+    expect(Array.isArray(preferences.trainingLearningPath?.weeklyPath)).toBe(true);
+    expect(preferences.trainingLearningPath.weeklyPath.length).toBeGreaterThan(0);
   });
 });
 

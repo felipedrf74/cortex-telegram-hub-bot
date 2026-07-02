@@ -842,6 +842,12 @@ export async function generateTrainingPlanForUser(
       swimSessionsPerWeek: requestedWeeklyTargets.swimSessionsPerWeek,
       strengthSessionsPerWeek: requestedWeeklyTargets.strengthSessionsPerWeek,
     },
+    // getAllPlanWeeks reads the per-week learning focus from
+    // preferences_json (training-read-models.ts) — without this key a
+    // freshly generated plan can never render its learning path on the
+    // Plan zone. Caught by the isolated Training E2E lane 2026-07-02
+    // after the field was dropped in the 4.14.210 mainline rebase.
+    trainingLearningPath: extractTrainingLearningPath(planData),
     longWorkoutDay: longWorkoutDay || null,
     notes: notes || null,
     goalMode: normalizedGoalMode,

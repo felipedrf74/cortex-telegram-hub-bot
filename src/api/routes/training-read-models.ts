@@ -2,6 +2,7 @@
 
 import { logger } from '../../utils/logger';
 import { getCached, setCache } from '../../services/cache-store';
+import { getDb } from '../../services/database';
 import * as trainingPlans from '../../services/training-plans';
 import { calculateReadiness } from '../../services/readiness-scorer';
 import type { CoachKernelReadinessInput } from '../../services/training-coach-kernel-plan-generator';
@@ -422,6 +423,7 @@ export async function getWeekPlan(userId: number, tenantId: number) {
     completedCount: sessions.filter((s: any) => s.status === 'completed').length,
     totalCount: sessions.filter((s: any) => !isInactiveTrainingReadModelStatus(s.status)).length,
     ...summarizeTrainingSyncState(sessions),
+    calendarCleanup: buildTrainingCalendarCleanupSnapshot(userId, tenantId),
   };
 }
 
@@ -431,6 +433,10 @@ export async function getAllPlanWeeks(userId: number, tenantId: number) {
     return {
       plan: null,
       weeks: [],
+      // Ghost provider events can outlive the plan that created them —
+      // a canceled plan whose deletes dead-lettered is exactly the case
+      // the count exists for, so it ships on the no-plan path too.
+      calendarCleanup: buildTrainingCalendarCleanupSnapshot(userId, tenantId),
     };
   }
 
@@ -486,6 +492,12 @@ export async function getAllPlanWeeks(userId: number, tenantId: number) {
       periodization: plan.periodization ?? null,
       raceDate: typeof planPreferences?.raceDate === 'string' ? planPreferences.raceDate : null,
       goalMode: typeof planPreferences?.goalMode === 'string' ? planPreferences.goalMode : null,
+      // Requested-vs-scheduled transparency: the flat preference keys are
+      // REALIZED targets (re-persisted from the finalized plan), while
+      // requestedTargets preserves what the user asked for. Legacy plans
+      // (pre-4.14.211) have no requestedTargets — `requested` stays null
+      // rather than guessing.
+      weeklyTargets: buildPlanWeeklyTargetsSnapshot(planPreferences),
       whyThisPlan: Array.isArray(planPreferences?.trainingPlanQuality?.whyThisPlan)
         ? planPreferences.trainingPlanQuality.whyThisPlan
             .map((value: unknown) => String(value || '').trim())
@@ -494,7 +506,49 @@ export async function getAllPlanWeeks(userId: number, tenantId: number) {
       calendarSource: resolvePlanCalendarSource(plan),
     },
     weeks: mappedWeeks,
+    calendarCleanup: buildTrainingCalendarCleanupSnapshot(userId, tenantId),
   };
+}
+
+// Dead-lettered calendar-cleanup visibility (migration 220): counts
+// Training-sourced agenda rows whose provider delete permanently failed
+// (`delete_failed` at/over the dead-letter threshold) — those events
+// still exist in the user's Google/Outlook calendar and the sync loop
+// has stopped retrying them. `null` means "nothing to report" (zero
+// rows, pre-migration DB, or the table is unavailable) so old clients
+// and healthy states stay byte-identical.
+// Mirrors PROVIDER_SYNC_DEAD_LETTER_THRESHOLD in
+// services/secretary-agenda-provider-sync.ts (module-private there).
+const TRAINING_CALENDAR_CLEANUP_DEAD_LETTER_THRESHOLD = 5;
+
+function buildTrainingCalendarCleanupSnapshot(
+  userId: number,
+  tenantId: number,
+): { deadLetteredCount: number } | null {
+  try {
+    const db = getDb();
+    const hasTable = db.prepare(
+      "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?",
+    ).get('secretary_agenda_items');
+    if (!hasTable) return null;
+    const columns = db.prepare('PRAGMA table_info(secretary_agenda_items)').all() as Array<{ name?: string }>;
+    if (!columns.some((column) => column?.name === 'provider_sync_failure_count')) return null;
+    const row = db.prepare(`
+      SELECT COUNT(*) AS deadLetteredCount
+      FROM secretary_agenda_items
+      WHERE owner_user_id = ?
+        AND tenant_id = ?
+        AND source_skill = 'training'
+        AND provider_sync_state = 'delete_failed'
+        AND provider_sync_failure_count >= ?
+    `).get(userId, String(tenantId), TRAINING_CALENDAR_CLEANUP_DEAD_LETTER_THRESHOLD) as
+      { deadLetteredCount?: number } | undefined;
+    const count = typeof row?.deadLetteredCount === 'number' ? row.deadLetteredCount : 0;
+    return count > 0 ? { deadLetteredCount: count } : null;
+  } catch (err) {
+    logger.debug({ err, userId, tenantId }, 'training calendar cleanup snapshot failed — omitting');
+    return null;
+  }
 }
 
 function resolvePlanCalendarSource(plan: any): 'google' | 'outlook' | null {
@@ -529,6 +583,44 @@ function parsePlanPreferences(raw: unknown): Record<string, any> | null {
   } catch {
     return null;
   }
+}
+
+type WeeklyTargetSnapshot = {
+  sessionsPerWeek: number | null;
+  runSessionsPerWeek: number | null;
+  bikeSessionsPerWeek: number | null;
+  swimSessionsPerWeek: number | null;
+  strengthSessionsPerWeek: number | null;
+};
+
+function normalizeWeeklyTargetSnapshot(raw: unknown): WeeklyTargetSnapshot | null {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const source = raw as Record<string, unknown>;
+  const pick = (key: string): number | null => {
+    const value = source[key];
+    return typeof value === 'number' && Number.isFinite(value) ? value : null;
+  };
+  const snapshot: WeeklyTargetSnapshot = {
+    sessionsPerWeek: pick('sessionsPerWeek'),
+    runSessionsPerWeek: pick('runSessionsPerWeek'),
+    bikeSessionsPerWeek: pick('bikeSessionsPerWeek'),
+    swimSessionsPerWeek: pick('swimSessionsPerWeek'),
+    strengthSessionsPerWeek: pick('strengthSessionsPerWeek'),
+  };
+  const hasAnyValue = Object.values(snapshot).some((value) => value != null);
+  return hasAnyValue ? snapshot : null;
+}
+
+function buildPlanWeeklyTargetsSnapshot(
+  planPreferences: Record<string, any> | null,
+): { requested: WeeklyTargetSnapshot | null; scheduled: WeeklyTargetSnapshot | null } | null {
+  // `requestedTargets` is the nested user-ask object; the SCHEDULED side
+  // reads the same five flat keys off the preferences root (realized
+  // targets, re-persisted after finalization).
+  const requested = normalizeWeeklyTargetSnapshot(planPreferences?.requestedTargets);
+  const scheduled = normalizeWeeklyTargetSnapshot(planPreferences);
+  if (!requested && !scheduled) return null;
+  return { requested, scheduled };
 }
 
 function buildTrainingLearningWeekLookup(value: unknown): Map<number, Record<string, unknown>> {

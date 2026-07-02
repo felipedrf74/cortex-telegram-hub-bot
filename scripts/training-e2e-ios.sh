@@ -3,6 +3,12 @@
 
 set -euo pipefail
 
+# Same guard as scripts/ios-single-simulator-test.sh: DerivedData lives
+# under the user tree here, where Finder/provenance extended attributes
+# land on build products and CodeSign then fails with "resource fork,
+# Finder information, or similar detritus not allowed".
+export COPYFILE_DISABLE="${COPYFILE_DISABLE:-1}"
+
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 # shellcheck source=scripts/training-e2e-env.sh
@@ -12,6 +18,13 @@ training_e2e_load_latest_env
 IOS_ROOT="${NEXUS_TRAINING_E2E_IOS_ROOT:-/Users/felipedominguez/Desktop/Nexus Hub/ios}"
 STATE_DIR="$NEXUS_TRAINING_E2E_ROOT/ios"
 mkdir -p "$STATE_DIR"
+
+# Reused state dirs accumulate Finder/provenance extended attributes on
+# build products (user-tree DerivedData), which fail CodeSign with
+# "resource fork ... detritus not allowed" on incremental re-signs.
+if [[ -d "$STATE_DIR/DerivedData/Build/Products" ]]; then
+  xattr -cr "$STATE_DIR/DerivedData/Build/Products" 2>/dev/null || true
+fi
 
 BASE_URL="$NEXUS_TRAINING_E2E_BASE_URL"
 if [[ "$BASE_URL" == "http://127.0.0.1:8200" || "$BASE_URL" == "http://localhost:8200" ]]; then
@@ -135,6 +148,16 @@ echo "  backend:   $BASE_URL"
 echo "  auth file: $NEXUS_TRAINING_E2E_AUTH_FILE"
 echo "  iOS config: ${IOS_CONFIG_PATHS[0]}"
 
+# DerivedData must live OUTSIDE the user tree: macOS provenance/Finder
+# extended attributes land nondeterministically on freshly built products
+# under ~/Desktop-rooted paths and CodeSign then fails with "resource
+# fork ... detritus not allowed" (2026-07-02 lane runs 1/3/4; run 2 got
+# lucky). /private/tmp is not provenance-tagged — the xcresult/evidence
+# stays in STATE_DIR.
+DERIVED_DATA_DIR="${NEXUS_TRAINING_E2E_DERIVED_DATA:-/private/tmp/nexus-training-e2e/${NEXUS_TRAINING_E2E_RUN_ID}/DerivedData}"
+mkdir -p "$DERIVED_DATA_DIR"
+echo "  derived data: $DERIVED_DATA_DIR"
+
 (
   cd "$IOS_ROOT"
   NEXUS_TRAINING_E2E_BASE_URL="$BASE_URL" \
@@ -149,7 +172,7 @@ echo "  iOS config: ${IOS_CONFIG_PATHS[0]}"
   IOS_ALLOW_MULTIPLE_BOOTED=1 \
   IOS_QUIT_SIMULATOR_APP=0 \
   IOS_TRIM_SIMULATOR_PROCESSES=0 \
-  IOS_DERIVED_DATA_PATH="$STATE_DIR/DerivedData" \
+  IOS_DERIVED_DATA_PATH="$DERIVED_DATA_DIR" \
   IOS_RESULT_BUNDLE_PATH="$STATE_DIR/TrainingE2E.xcresult" \
   IOS_TEST_SUMMARY_JSON="$STATE_DIR/test-summary.json" \
     scripts/ios-single-simulator-test.sh "${IOS_TEST_ARGS[@]}"

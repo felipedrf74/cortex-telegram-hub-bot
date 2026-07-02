@@ -4,9 +4,13 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import process from 'node:process';
+import { fileURLToPath } from 'node:url';
 import Database from 'better-sqlite3';
 
-const root = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..');
+// fileURLToPath, NOT URL.pathname — the canonical checkout lives under a
+// directory with a space ("Custom Connectors"), which URL.pathname leaves
+// percent-encoded so every fs call misses.
+const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const latestEnvPath = path.join(root, '.local/training-e2e/latest.env');
 
 function loadLatestEnv() {

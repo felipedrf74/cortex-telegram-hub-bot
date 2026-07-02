@@ -17,6 +17,37 @@ let mockWeeklyAdherence: any = null;
 let mockCalendarLookup = new Map<any, any>();
 let mockReadinessResult: any = null;
 let mockGarminActivities: any[] = [];
+// Controls the calendar-cleanup dead-letter snapshot (secretary_agenda_items).
+let mockAgendaDb: {
+  hasTable: boolean;
+  hasFailureCountColumn: boolean;
+  deadLetteredCount: number;
+  throwOnAccess: boolean;
+  lastCountArgs: any[] | null;
+} = { hasTable: true, hasFailureCountColumn: true, deadLetteredCount: 0, throwOnAccess: false, lastCountArgs: null };
+
+vi.mock('../../src/services/database', () => ({
+  getDb: () => {
+    if (mockAgendaDb.throwOnAccess) throw new Error('db unavailable');
+    return {
+      prepare: (sql: string) => ({
+        get: (...args: any[]) => {
+          if (sql.includes('sqlite_master')) {
+            return mockAgendaDb.hasTable ? { name: 'secretary_agenda_items' } : undefined;
+          }
+          if (sql.includes('COUNT(*)')) {
+            mockAgendaDb.lastCountArgs = args;
+            return { deadLetteredCount: mockAgendaDb.deadLetteredCount };
+          }
+          return undefined;
+        },
+        all: () => (mockAgendaDb.hasFailureCountColumn
+          ? [{ name: 'agenda_item_id' }, { name: 'provider_sync_failure_count' }]
+          : [{ name: 'agenda_item_id' }]),
+      }),
+    };
+  },
+}));
 
 vi.mock('../../src/utils/logger', () => ({
   logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn(), trace: vi.fn(), child: vi.fn().mockReturnThis() },
@@ -101,6 +132,13 @@ describe('training-read-models', () => {
     hoisted.getActivitiesByDateForUser.mockImplementation(async () => mockGarminActivities);
     hoisted.findExistingOwnership.mockReturnValue(null);
     hoisted.isConnected.mockReturnValue(true);
+    mockAgendaDb = {
+      hasTable: true,
+      hasFailureCountColumn: true,
+      deadLetteredCount: 0,
+      throwOnAccess: false,
+      lastCountArgs: null,
+    };
   });
 
   it('surfaces an injury-safe swap for injury-affecting active sessions', () => {
@@ -784,6 +822,179 @@ describe('training-read-models', () => {
         raceDate: null,
         goalMode: null,
       });
+      expect(result.weeks).toHaveLength(1);
+    });
+
+    it('exposes requested and scheduled weekly targets from preferences_json', async () => {
+      mockActivePlan = {
+        id: 17,
+        name: 'Triathlon Base',
+        duration_weeks: 12,
+        status: 'active',
+        start_date: '2026-04-20T00:00:00.000Z',
+        end_date: '2026-07-12T00:00:00.000Z',
+        periodization: 'base',
+        preferences_json: JSON.stringify({
+          // Flat keys = REALIZED targets, re-persisted from the finalized
+          // plan; requestedTargets = the user's original ask.
+          sessionsPerWeek: 5,
+          runSessionsPerWeek: 2,
+          bikeSessionsPerWeek: 2,
+          swimSessionsPerWeek: 1,
+          strengthSessionsPerWeek: 0,
+          requestedTargets: {
+            sessionsPerWeek: 6,
+            runSessionsPerWeek: 3,
+            bikeSessionsPerWeek: 2,
+            swimSessionsPerWeek: 1,
+            strengthSessionsPerWeek: 0,
+          },
+        }),
+      };
+      mockPlanWeeks = [{ id: 170, week_number: 1, focus: 'base' }];
+      mockWeekSessions = [];
+
+      const result = await getAllPlanWeeks(42, 42);
+
+      expect(result.plan?.weeklyTargets).toEqual({
+        requested: {
+          sessionsPerWeek: 6,
+          runSessionsPerWeek: 3,
+          bikeSessionsPerWeek: 2,
+          swimSessionsPerWeek: 1,
+          strengthSessionsPerWeek: 0,
+        },
+        scheduled: {
+          sessionsPerWeek: 5,
+          runSessionsPerWeek: 2,
+          bikeSessionsPerWeek: 2,
+          swimSessionsPerWeek: 1,
+          strengthSessionsPerWeek: 0,
+        },
+      });
+    });
+
+    it('returns null requested targets for legacy plans without requestedTargets', async () => {
+      mockActivePlan = {
+        id: 18,
+        name: 'Legacy Plan',
+        duration_weeks: 8,
+        status: 'active',
+        start_date: '2026-04-20T00:00:00.000Z',
+        end_date: '2026-06-15T00:00:00.000Z',
+        periodization: 'base',
+        preferences_json: JSON.stringify({
+          sessionsPerWeek: 4,
+          runSessionsPerWeek: 3,
+          strengthSessionsPerWeek: 1,
+        }),
+      };
+      mockPlanWeeks = [{ id: 180, week_number: 1, focus: 'base' }];
+      mockWeekSessions = [];
+
+      const result = await getAllPlanWeeks(42, 42);
+
+      expect(result.plan?.weeklyTargets).toEqual({
+        requested: null,
+        scheduled: {
+          sessionsPerWeek: 4,
+          runSessionsPerWeek: 3,
+          bikeSessionsPerWeek: null,
+          swimSessionsPerWeek: null,
+          strengthSessionsPerWeek: 1,
+        },
+      });
+    });
+
+    it.each([
+      ['null preferences_json', null],
+      ['malformed preferences_json', '{not json'],
+      ['junk-valued targets', JSON.stringify({
+        sessionsPerWeek: 'five',
+        runSessionsPerWeek: Number.NaN,
+        requestedTargets: { sessionsPerWeek: '6', runSessionsPerWeek: [] },
+      })],
+    ])('returns null weeklyTargets without throwing for %s', async (_label, preferencesJson) => {
+      mockActivePlan = {
+        id: 19,
+        name: 'Robustness Plan',
+        duration_weeks: 8,
+        status: 'active',
+        start_date: '2026-04-20T00:00:00.000Z',
+        end_date: '2026-06-15T00:00:00.000Z',
+        periodization: 'base',
+        preferences_json: preferencesJson,
+      };
+      mockPlanWeeks = [{ id: 190, week_number: 1, focus: 'base' }];
+      mockWeekSessions = [];
+
+      const result = await getAllPlanWeeks(42, 42);
+
+      expect(result.plan?.weeklyTargets ?? null).toBeNull();
+      expect(result.weeks).toHaveLength(1);
+    });
+  });
+
+  describe('calendarCleanup — dead-lettered provider events (migration 220)', () => {
+    const basePlan = {
+      id: 20,
+      name: 'Cleanup Plan',
+      duration_weeks: 8,
+      status: 'active',
+      start_date: '2026-04-20T00:00:00.000Z',
+      end_date: '2026-06-15T00:00:00.000Z',
+      periodization: 'base',
+      preferences_json: null,
+    };
+
+    it('exposes the dead-lettered count and scopes the query to the training user/tenant', async () => {
+      mockActivePlan = { ...basePlan };
+      mockPlanWeeks = [{ id: 200, week_number: 1, focus: 'base' }];
+      mockWeekSessions = [];
+      mockAgendaDb.deadLetteredCount = 2;
+
+      const result = await getAllPlanWeeks(42, 7);
+
+      expect(result.calendarCleanup).toEqual({ deadLetteredCount: 2 });
+      // user id, TEXT tenant id, dead-letter threshold — in bind order.
+      expect(mockAgendaDb.lastCountArgs).toEqual([42, '7', 5]);
+    });
+
+    it('returns null calendarCleanup when nothing is dead-lettered', async () => {
+      mockActivePlan = { ...basePlan };
+      mockPlanWeeks = [{ id: 200, week_number: 1, focus: 'base' }];
+      mockWeekSessions = [];
+      mockAgendaDb.deadLetteredCount = 0;
+
+      const result = await getAllPlanWeeks(42, 42);
+
+      expect(result.calendarCleanup).toBeNull();
+    });
+
+    it('still reports ghost events after the plan is gone (no-plan path)', async () => {
+      mockActivePlan = null;
+      mockAgendaDb.deadLetteredCount = 1;
+
+      const result = await getAllPlanWeeks(42, 42);
+
+      expect(result.plan).toBeNull();
+      expect(result.calendarCleanup).toEqual({ deadLetteredCount: 1 });
+    });
+
+    it.each([
+      ['pre-migration DB (column missing)', () => { mockAgendaDb.hasFailureCountColumn = false; }],
+      ['agenda table missing', () => { mockAgendaDb.hasTable = false; }],
+      ['db unavailable', () => { mockAgendaDb.throwOnAccess = true; }],
+    ])('returns null without throwing when %s', async (_label, arrange) => {
+      mockActivePlan = { ...basePlan };
+      mockPlanWeeks = [{ id: 200, week_number: 1, focus: 'base' }];
+      mockWeekSessions = [];
+      mockAgendaDb.deadLetteredCount = 3;
+      arrange();
+
+      const result = await getAllPlanWeeks(42, 42);
+
+      expect(result.calendarCleanup).toBeNull();
       expect(result.weeks).toHaveLength(1);
     });
   });
