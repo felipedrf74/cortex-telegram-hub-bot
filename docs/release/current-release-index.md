@@ -2,21 +2,25 @@
 
 Status: canonical
 Owner: release lead (Felipe)
-Last verified: 2026-06-26
+Last verified: 2026-07-03
 Update policy: update when the current RC identity, deploy-gate evidence, or canonical-doc cross-references change. Run `scripts/release-identity.sh --persist` to refresh auto-generated identity fields.
 
-Date: 2026-06-26
+Date: 2026-07-03
 
 ## Current Status
 
 Active production package:
 
-- source branch: `main`
-- production HEAD: `b8bd0c29`
-- production version: `4.14.210`
-- runtime source commit: `b8bd0c29` (offline-first Tasks provider-missing repair)
-- latest runtime deploy commit: `b8bd0c29`; post-deploy docs-only closeout may
+- source branch: `codex/Trainingfixes`
+- production HEAD: `0df62678`
+- production version: `4.14.212`
+- runtime source commit: `200e8a12` (token/notification optimization round +
+  per-user report schedules; `0df62678` adds pre-promote smoke evidence,
+  docs-only and manifest-identical)
+- latest runtime deploy commit: `0df62678`; post-deploy docs-only closeout may
   sit ahead of production runtime
+- full deploy evidence: see "2026-07-03 Optimization Round + Per-User
+  Schedules Promote" in `docs/release/CURRENT_RELEASE_STATE.md`
 - release state: `docs/release/CURRENT_RELEASE_STATE.md` (backend)
 - backend workspace root: `/Users/felipedominguez/Desktop/Custom Connectors/Cortex/cortex-telegram-hub-bot`
 

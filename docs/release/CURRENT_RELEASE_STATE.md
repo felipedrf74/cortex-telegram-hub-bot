@@ -2,10 +2,10 @@
 
 Status: canonical
 Owner: backend release lead (Felipe)
-Last verified: 2026-07-02
+Last verified: 2026-07-03
 Update policy: update after backend deploy or staging change. Workspace-level entry point is docs/release/CURRENT_RELEASE_STATE.md.
 
-Last updated: 2026-07-02
+Last updated: 2026-07-03
 
 Only the **Active Production Release** section states the current production
 truth. Dated sections below it are historical deploy evidence and may mention
@@ -13,26 +13,55 @@ older production versions.
 
 ## Active Production Release
 
-- Source branch: `main` (`origin/main` at `2330f2b3`, one docs commit ahead
-  of the deployed artifact; local checkout branch `codex/Trainingfixes` is
-  commit-identical).
-- Production HEAD: `6bb2affe`
-- Production version: `4.14.211` (NOT re-minted for the evening Training UX
-  round promote — the version now spans two production artifacts;
-  disambiguate by deploy commit / artifact digest. Next release-prep should
-  mint `4.14.212`.)
-- Training UX round commits on top of the 4.14.211 release prep: `ae75d178`
-  (requested-vs-scheduled weekly targets + dead-letter visibility read
-  models, learning-path persistence restoration, E2E harness hardening),
-  `cfb5f33f` (release/mirror docs), `6bb2affe` (staging smoke evidence).
-- Latest runtime deploy commit: `6bb2affe` (2026-07-02 evening validated
-  promote: manifest parity, staging smoke 19/19, migration safety 211,
-  strict deploy validation with full Vitest 868 files / 12,761 tests).
-  Verified post-promote by read-only SSH (`package.json` version `4.14.211`)
-  and public `/health` healthy.
+- Source branch: `codex/Trainingfixes` at `0df62678` (deployed artifact);
+  `200e8a12` carries the code, `0df62678` adds the pre-promote staging smoke
+  evidence (docs-only, manifest-identical).
+- Production HEAD: `0df62678`
+- Production version: `4.14.212` (minted per REL-VERSION-MINT; unique to this
+  artifact).
+- Scope: 2026-07-03 token/notification optimization round (audit-driven:
+  pricing sentinel fix + migration 221 reprice, Gemini one-shot
+  retry-before-fallback, deterministic content dedup, notification release
+  single-flight + CAS + delivery-decision truthfulness, GAP-CAL-1 alert
+  sinks fixed, secretary agenda sync fingerprint short-circuit (migration
+  224), task-sync polling gates, channel-relearn/autoresearch data-change
+  gates (migrations 222/223), cron cost governance, Telegram legacy delivery
+  removal ~3.6k lines) PLUS per-user report schedules (migration 225:
+  windowed dispatcher, profile schedule columns + claim ledger,
+  GET/PUT /api/v1/notifications/preferences `reportSchedule`).
+- Latest runtime deploy commit: `0df62678` (2026-07-03 validated promote:
+  env parity 144 keys, manifest parity after removing 207 stale local
+  dist duplicates, staging smoke 24/24 gate, migration count 235 with
+  221-225 applied, strict deploy validation; pre-commit full Vitest
+  865 files / 12,685 tests on the code commit).
+- Verified post-promote by read-only SSH: `package.json` version `4.14.212`,
+  PM2 `nexus-hub` + `content-engine` online, public `/health` healthy,
+  migrations 221-225 present in `_migrations`, api_usage 30d shows 0
+  `pricing_status='unresolved'` rows (recorded 30d spend corrected from
+  $1.85 to $0.558 by migration 221).
+- iOS companion: `main` at `d71895c` (report schedule pickers + DTO; decode
+  tests 6/6) pushed 2026-07-03.
 - Production still has the immutable global Training catalog version
   `repo-seed-1.0.0` active with 131 exercises and 24 equipment items.
+- Known residuals shipped with eyes open: content-engine local `.venv` is
+  py3.14 vs pinned py3.12 deps (pytest cannot run locally; covered by the
+  Docker image gate), NOTIFICATION_DIGEST_REQUIRE_DEVICE_TOKEN ships
+  default-off, LOCAL_LLM_CLASSIFY_SHADOW stays on as the O3-A24 evidence
+  pipeline.
 - Backend workspace root: `/Users/felipedominguez/Desktop/Custom Connectors/Cortex/cortex-telegram-hub-bot`
+
+## 2026-07-03 Optimization Round + Per-User Schedules Promote
+
+- Deploy commit `0df62678` (code `200e8a12`), version `4.14.212`.
+- Pipeline: deploy-staging → 5-min soak → staging-smoke 24/24 (evidence
+  committed pre-promote per REL-EVIDENCE-PERSISTENCE) → promote-to-prod
+  (fresh 24/24 gate smoke) → deploy.sh strict validation → health green.
+- Promote hygiene notes: first attempt refused on artifact manifest drift
+  caused by 207 macOS " 2"/" 3" duplicate files in local `dist/` (gitignored
+  build junk; deleted, digests matched exactly). Second attempt cancelled
+  silently because the piped confirmation was drained by inner ssh during
+  the gate smoke — promoted via expect PTY. Consider a
+  NEXUS_PROMOTE_ASSUME_YES env for scripted promotes.
 
 ## 2026-07-02 Training UX Round Production Promote (evening)
 
