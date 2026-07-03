@@ -3,7 +3,7 @@
 /**
  * Nexus Hub Status Portal — Express server.
  *
- * Runs inside the same Node.js process as the Grammy bot.
+ * Runs inside the main Nexus Hub Node.js process.
  * Provides:
  *   GET  /              → serves the single-page dashboard (portal.html)
  *   GET  /api/snapshot  → full JSON payload for the dashboard (cached 3s)
@@ -98,7 +98,7 @@ export function createResponseCompressionMiddleware() {
   });
 }
 
-export function createPortalServer(bot?: any): http.Server {
+export function createPortalServer(): http.Server {
   const app = express();
 
   app.use(createPortalSecurityHeadersMiddleware());
@@ -108,7 +108,7 @@ export function createPortalServer(bot?: any): http.Server {
   //   1. A request-context (Quarter: distributed tracing) so all log
   //      calls during the request automatically include reqId/src/userId.
   //      If the upstream sent us an X-Request-Id header, we honor it
-  //      (this is what makes "follow a single request through the bot
+  //      (this is what makes "follow a single request through the API
   //      → portal → content-engine" possible). Otherwise we generate a
   //      fresh ID and echo it back in the response so the client can
   //      reference it in bug reports.
@@ -160,18 +160,13 @@ export function createPortalServer(bot?: any): http.Server {
 
   app.use(createResponseCompressionMiddleware());
 
-  // ── Webhook router (TASK-16b + Month 2: Telegram webhooks) ─────────
+  // ── Webhook router (TASK-16b) ───────────────────────────────────────
   // Mounted BEFORE express.json() because the Todoist webhook needs the
   // raw bytes for HMAC verification. The router uses its own scoped
   // express.raw() parser and JSON.parses the body manually after verifying.
-  //
-  // The Telegram webhook handler (mounted ONLY when config.telegram.webhookUrl
-  // is set) uses its OWN scoped express.json() inside the route definition,
-  // so it works fine even though the global express.json() runs later.
-  // Passing `bot` here gives the router access to grammy's webhookCallback.
   try {
     const { createWebhookRouter } = require('../api/routes/webhooks');
-    app.use('/webhooks', createWebhookRouter(bot));
+    app.use('/webhooks', createWebhookRouter());
   } catch (err) {
     logger.warn({ err }, 'Webhook router failed to mount (non-fatal)');
   }
@@ -279,8 +274,8 @@ export function createPortalServer(bot?: any): http.Server {
   // matter what the routing config said.
   //
   // This block runs unconditionally (NOT inside the iOS-gated block below)
-  // because the Telegram bot also routes through the same AI providers and
-  // needs the routing system regardless of whether iOS is enabled.
+  // because scheduled jobs also route through the same AI providers and
+  // need the routing system regardless of whether iOS is enabled.
   try {
     const { initDomainRouting } = require('../services/domain-provider-router');
     initDomainRouting();
@@ -378,7 +373,7 @@ export function createPortalServer(bot?: any): http.Server {
 
   registerPortalDecisionCenterRoutes(app);
 
-  registerPortalActionRoutes(app, bot);
+  registerPortalActionRoutes(app);
 
   registerPortalIntelligenceRoutes(app);
 
@@ -418,10 +413,10 @@ export function createPortalServer(bot?: any): http.Server {
   // Expire stale webhook subscriptions on server start
   try { expireSubscriptions(); } catch { /* non-critical */ }
 
-  // Handle listen errors gracefully — EADDRINUSE should NOT crash the bot
+  // Handle listen errors gracefully — EADDRINUSE should NOT crash the process
   server.on('error', (err: NodeJS.ErrnoException) => {
     if (err.code === 'EADDRINUSE') {
-      logger.error({ port, bind }, `Portal port ${port} already in use — portal disabled but bot continues`);
+      logger.error({ port, bind }, `Portal port ${port} already in use — portal disabled but process continues`);
     } else {
       logger.error({ err, port, bind }, 'Portal server error');
     }

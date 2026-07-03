@@ -8,7 +8,7 @@ import { now, formatDateTime } from '../utils/date-parser';
 import { executeToolCall } from '../services/tool-executor';
 import { getActivePlanSummary } from '../services/training-plans';
 import { ensureActiveProvider, getActiveProvider } from '../services/provider-registry';
-import { getDailyContext } from '../services/context-engine';
+import { getOrBuildDailyContext } from '../services/context-engine';
 import { buildSharedDecisionContext } from '../services/shared-decision-context';
 import { buildChatPromptContextBlock } from '../services/chat-context-engine';
 import { inferChatTurnContract } from '../services/chat-turn-contract';
@@ -422,12 +422,15 @@ export async function buildSimpleStateContext(
   }
 
   // Daily cross-domain context summary (TASK-16a).
-  // Pre-built at 5 AM and refreshed on every task write — replaces the
-  // 5+ speculative tool calls the AI used to make to gather "what's my
-  // day looking like?" before answering. Cost: ~500 tokens per message
-  // instead of ~1350. See src/services/context-engine.ts.
+  // Lazy-built on first read each day (cached in daily_context_cache,
+  // invalidated on every task write) — replaces the 5+ speculative tool
+  // calls the AI used to make to gather "what's my day looking like?"
+  // before answering. Cost: ~500 tokens per message instead of ~1350.
+  // The 5 AM pre-build cron was removed 2026-07-03: nothing consumed it on
+  // schedule, and mid-day invalidations left chat context-less until the
+  // next morning. See src/services/context-engine.ts.
   if (includeScopedContext) {
-    const dailyContext = getDailyContext(userId!, tenantId);
+    const dailyContext = await getOrBuildDailyContext(userId!, tenantId);
     if (dailyContext) {
       parts.push('\n--- Daily Context ---\n' + dailyContext);
     }

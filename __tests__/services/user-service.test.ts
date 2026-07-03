@@ -225,15 +225,11 @@ describe('user-service', () => {
   });
 
   describe('bootstrap boundary structure', () => {
-    it('legacy Telegram factory does not reintroduce raw whitelist auth checks', () => {
-      const botSource = fs.readFileSync(
-        path.resolve(__dirname, '../../src/bot.ts'),
-        'utf8',
-      );
-
-      expect(botSource).not.toContain('config.telegram.allowedUserIds.includes(userId)');
-      expect(botSource).not.toContain('bot.command(');
-      expect(botSource).not.toContain('bot.on(');
+    it('legacy Telegram bot factory stays deleted (no whitelist auth reintroduction)', () => {
+      // The Grammy bot factory (src/bot.ts) was removed with the Telegram
+      // legacy delivery path (2026-07). Its raw allowedUserIds whitelist
+      // auth must not come back.
+      expect(fs.existsSync(path.resolve(__dirname, '../../src/bot.ts'))).toBe(false);
     });
   });
 

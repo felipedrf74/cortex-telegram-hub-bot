@@ -8,9 +8,8 @@ import './boot';
 import { config } from './config';
 import { logger } from './utils/logger';
 import { initDatabase, closeDatabase, getDb } from './services/database';
-import { createBot } from './bot';
 import { startScheduler } from './services/scheduler';
-import { setBotRef, setBotPollingActive, setDbProvider } from './portal/telemetry';
+import { setDbProvider } from './portal/telemetry';
 import {
   setDbProvider as setBusDbProvider,
   setPlanningInvalidator as setBusPlanningInvalidator,
@@ -26,13 +25,8 @@ import {
   setShutdownCallback,
 } from './services/error-monitor';
 import { init as initSentry, flush as flushSentry } from './services/error-tracker';
-import { escapeHtml } from './utils/telegram-formatter';
 import type http from 'http';
-import { isTelegramLegacyDeliveryEnabled } from './services/runtime-flags';
 import { registerGarminMfaNotifier } from './services/garmin-mfa-notifier';
-
-const MAX_RETRIES = 5;
-const INITIAL_RETRY_DELAY_MS = 45_000; // 45s — enough for Telegram to release the polling lock
 
 async function main(): Promise<void> {
   logger.info('Starting Nexus Hub...');
@@ -127,48 +121,31 @@ async function main(): Promise<void> {
 
   registerGarminMfaNotifier();
 
-  // ── Telegram is DEPRECATED (April 2026) ─────────────────────────
-  // The iOS app is the primary user experience. Telegram bot startup,
-  // polling, and webhook registration are disabled. All delivery now
-  // goes through durable reports, notifications/inbox, and APNs push.
-  //
-  // To re-enable Telegram temporarily: set TELEGRAM_LEGACY_DELIVERY=true
-  // in .env and restart. The scheduler's safeSend() gates all sends.
-  let bot: any = null;
-  if (isTelegramLegacyDeliveryEnabled() && config.telegram.botToken) {
-    try {
-      bot = createBot();
-      setBotRef(bot);
-      logger.info('Telegram bot created (LEGACY mode — TELEGRAM_LEGACY_DELIVERY=true)');
-    } catch (err) {
-      logger.warn({ err }, 'Telegram bot creation failed — continuing without it');
-    }
-  }
+  // ── Telegram delivery REMOVED (July 2026) ───────────────────────
+  // The iOS app is the primary user experience. All delivery goes
+  // through durable reports, notifications/inbox, and APNs push.
 
-  // Alert callbacks — log to portal telemetry (no more Telegram alerts by default)
+  // Alert callbacks — log to portal telemetry
   setAlertCallback(async (message: string) => {
-    logger.warn({ alert: message.slice(0, 200) }, 'System alert (Telegram delivery disabled)');
+    logger.warn({ alert: message.slice(0, 200) }, 'System alert');
   });
   const { setCostAlertCallback } = require('./services/cost-guardrail');
   setCostAlertCallback(async (message: string) => {
-    logger.warn({ alert: message.slice(0, 200) }, 'Cost alert (Telegram delivery disabled)');
+    logger.warn({ alert: message.slice(0, 200) }, 'Cost alert');
   });
 
-  // Start scheduler — bot parameter is optional (null when Telegram disabled)
-  startScheduler(bot);
+  // Start scheduler
+  startScheduler();
 
   // Start status portal (Express on :8200)
   let portalServer: http.Server | undefined;
   if (config.portal.enabled) {
-    portalServer = createPortalServer(bot);
+    portalServer = createPortalServer();
   }
 
-  // Graceful shutdown — stop polling and release port before exiting so the next instance starts clean
+  // Graceful shutdown — release port before exiting so the next instance starts clean
   const shutdown = async (signal: string) => {
     logger.info({ signal }, 'Shutting down...');
-    try {
-      if (bot) bot.stop();
-    } catch { /* already stopped or no bot */ }
     if (portalServer) {
       await new Promise<void>((resolve) => portalServer!.close(() => resolve()));
     }
@@ -189,26 +166,9 @@ async function main(): Promise<void> {
   // causing EADDRINUSE on the next deploy. See audit P0-4.
   setShutdownCallback(() => shutdown('error-handler'));
 
-  // ── Telegram polling/webhook is DISABLED ──────────────────────────
   // The process stays alive via portalServer (Express on port 8200).
   // All iOS API routes, scheduled jobs, and portal are served normally.
-  // Telegram long-polling and webhook registration are skipped entirely.
-  if (!bot) {
-    logger.info('✅ Nexus Hub started (Telegram disabled — iOS + Portal + API active)');
-    return; // Process stays alive via portalServer
-  }
-
-  // Legacy: if TELEGRAM_LEGACY_DELIVERY is true AND bot was created,
-  // skip polling anyway — the bot is only used for outbound sends.
-  logger.info('✅ Nexus Hub started (Telegram legacy mode — outbound only, no polling)');
-  return;
-
-  // ── DEPRECATED: Telegram webhook + polling removed April 2026 ──
-  // The code below was the Telegram webhook registration and long-polling
-  // loop. It has been removed as part of the Telegram deprecation.
-  // If you need to re-enable Telegram for debugging, set
-  // TELEGRAM_LEGACY_DELIVERY=true and use the bot instance for outbound
-  // sends only (no polling, no webhook).
+  logger.info('✅ Nexus Hub started (iOS + Portal + API active)');
 }
 
 main().catch((err) => {

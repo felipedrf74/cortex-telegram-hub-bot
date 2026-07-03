@@ -572,7 +572,36 @@ async function calculateAppleHealthReadiness(
 
 // ── Main Calculator ─────────────────────────────────────────────────
 
+// Short-lived per-user memo. Readiness inputs (sleep, HRV, body battery)
+// change at most a few times per day, but three independent callers — the
+// coach cron right after the briefing, weekly plan adjust, and the dashboard
+// route — each re-fetched six Garmin endpoints (2026-07-03 audit). Garmin is
+// rate-limit sensitive, so results are reused for 30 minutes unless the
+// caller forces a refresh.
+const READINESS_MEMO_TTL_MS = 30 * 60 * 1000;
+const readinessMemo = new Map<number, { at: number; result: ReadinessResult }>();
+
+export function _resetReadinessMemoForTests(): void {
+  readinessMemo.clear();
+}
+
 export async function calculateReadiness(
+  userId: number,
+  opts: { garminSilent?: boolean; forceRefresh?: boolean } = {},
+): Promise<ReadinessResult> {
+  // Memo is inert under vitest (same pattern as chat-action-retry-policy):
+  // tests assert distinct results per scenario for the same userId.
+  const memoDisabled = process.env.NODE_ENV === 'test' || process.env.VITEST === 'true';
+  const memoized = readinessMemo.get(userId);
+  if (!memoDisabled && !opts.forceRefresh && memoized && Date.now() - memoized.at < READINESS_MEMO_TTL_MS) {
+    return memoized.result;
+  }
+  const result = await calculateReadinessUncached(userId, opts);
+  if (!memoDisabled) readinessMemo.set(userId, { at: Date.now(), result });
+  return result;
+}
+
+async function calculateReadinessUncached(
   userId: number,
   opts: { garminSilent?: boolean } = {},
 ): Promise<ReadinessResult> {

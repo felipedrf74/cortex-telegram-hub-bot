@@ -44,18 +44,13 @@ import {
   isAnthropicRuntimeEnabled,
   isChatCoreV2ShadowRouteHookEnabled,
   isSecretaryHaikuRoutingEnabled,
-  isTelegramLegacyDeliveryEnabled,
 } from '../../src/services/runtime-flags';
 
 describe('runtime-flags', () => {
-  it('treats only literal true as enabled for anthropic and telegram runtime flags', () => {
+  it('treats only literal true as enabled for anthropic runtime flags', () => {
     expect(isAnthropicRuntimeEnabled({ ANTHROPIC_ENABLED: 'true' })).toBe(true);
     expect(isAnthropicRuntimeEnabled({ ANTHROPIC_ENABLED: 'yes' })).toBe(false);
     expect(isAnthropicRuntimeEnabled({})).toBe(false);
-
-    expect(isTelegramLegacyDeliveryEnabled({ TELEGRAM_LEGACY_DELIVERY: 'true' })).toBe(true);
-    expect(isTelegramLegacyDeliveryEnabled({ TELEGRAM_LEGACY_DELIVERY: '1' })).toBe(false);
-    expect(isTelegramLegacyDeliveryEnabled({})).toBe(false);
 
     expect(areGlobalInvoiceVendorsEnabled({ FISCAL_ENABLE_GLOBAL_BUILTIN_VENDORS: 'true' })).toBe(true);
     expect(areGlobalInvoiceVendorsEnabled({ FISCAL_ENABLE_GLOBAL_BUILTIN_VENDORS: '1' })).toBe(false);

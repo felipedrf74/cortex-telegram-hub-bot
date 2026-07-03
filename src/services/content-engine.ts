@@ -676,10 +676,6 @@ export async function getReport(period = 'week'): Promise<ReportResponse> {
   }, 45_000);
 }
 
-// Re-export for any remaining backward-compat imports:
-export {
-  formatDeepSearch, formatSources, formatHotNews,
-  formatTrending, formatReaction, formatHooks, formatScript, formatTitles,
-  formatThumbnail, formatCaption, formatCompetitor, formatGaps, formatSeo,
-  formatRepurpose, formatFeedback, formatReport,
-} from './content-telegram-formatter';
+// Legacy Telegram format-function re-exports removed with the Telegram
+// legacy delivery path (2026-07). Consumers use the structured Response
+// interfaces above.

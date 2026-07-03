@@ -81,11 +81,21 @@ export function invalidateContextCache(userId?: number, tenantId?: number): void
   }
 }
 
-/** Convenience: cached or freshly-built. Used by domain-handler. */
+/**
+ * Convenience: cached or freshly-built. Used by domain-handler on every
+ * scoped chat turn (the 5 AM pre-build cron was removed 2026-07-03), so it
+ * must keep getDailyContext's never-throw contract: a failed build returns
+ * '' and the chat proceeds without the context block.
+ */
 export async function getOrBuildDailyContext(userId: number, tenantId?: number): Promise<string> {
   const cached = getDailyContext(userId, tenantId);
   if (cached) return cached;
-  return await buildDailyContext(userId, tenantId);
+  try {
+    return await buildDailyContext(userId, tenantId);
+  } catch (err) {
+    logger.debug({ err, userId }, 'getOrBuildDailyContext build failed (continuing without context)');
+    return '';
+  }
 }
 
 // ─── Builder ───────────────────────────────────────────────────────────

@@ -51,6 +51,15 @@ export interface TaskProviderAdapter {
     options?: {
       projectId?: string;
       sinceCursor?: string;
+      /**
+       * Projects the caller already fetched from this adapter during the
+       * current sync (the engine's project pull). Adapters that would
+       * otherwise re-fetch their project/list catalogue inside `getTasks`
+       * (Microsoft To Do) can reuse these to avoid a duplicate provider
+       * round-trip. Optional — adapters must behave identically (minus the
+       * extra fetch) when omitted.
+       */
+      knownProjects?: NormalizedProject[];
     },
   ): Promise<{ tasks: NormalizedTask[]; nextCursor?: string }>;
 

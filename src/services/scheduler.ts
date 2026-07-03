@@ -5,7 +5,6 @@ import { createHash } from 'crypto';
 import type Database from 'better-sqlite3';
 import cron from 'node-cron';
 import { DateTime } from 'luxon';
-import { Bot } from 'grammy';
 import { config } from '../config';
 import { logger } from '../utils/logger';
 import { getDueReminders, markReminderFired, getRemindersForToday } from '../state/reminders';
@@ -13,7 +12,7 @@ import * as msTodo from './microsoft-todo';
 import type { TodoTask } from './microsoft-todo';
 import { getEvents, hasConnectedCalendarForUser, isAnyCalendarConfigured } from './unified-calendar';
 import { getUnreadCountForUser, isOutlookMailConfiguredForUser, isOutlookMailConfigured, getUnreadCount, sendEmail } from './outlook-mail';
-import { formatDailyBriefing, DailyBriefingData, escapeHtml, splitMessage } from '../utils/telegram-formatter';
+import { DailyBriefingData, escapeHtml } from '../utils/telegram-formatter';
 import { now, startOfDay, endOfDay, startOfWeek, endOfWeek, formatTime, formatDateTime } from '../utils/date-parser';
 // content-discovery.ts still exists for manual /discover but removed from scheduler
 import { collectMonthlyInvoices, formatCollectionNotification } from './invoice-collector';
@@ -42,15 +41,15 @@ import { runVoiceEvolutionAgent } from '../agents/voice-evolution-agent';
 import { expireStaleSignals } from './intelligence-bus';
 import { seedBooksIfEmpty } from '../commands/books';
 import { runAutoresearch, getScheduledTarget } from './autoresearch';
-import { getPreferredDisplayNameById, getUserLanguageById, getUserTimezoneById } from './user-service';
+import { resolveDueReportTargets } from './report-schedule-dispatcher';
+import { getUserTimezoneById } from './user-service';
 import { runDatabaseBackup, weeklyRestoreTest } from './backup';
 import { getDb } from './database';
 import { listActiveFiscalCollectionProfiles } from '../state/fiscal-collection-profiles';
 import { runWithContext } from '../utils/request-context';
-import { getOwnerBootstrapTarget, getUserById } from './user-service';
+import { getOwnerBootstrapTarget } from './user-service';
 import { getTaskProviderForUser } from './task-store/task-router';
 import { storeAndPushReport } from './report-document-store';
-import { isTelegramLegacyDeliveryEnabled } from './runtime-flags';
 import { processDueOperatorAlertDeliveries, recordOperatorAlert } from './operator-alerts';
 import { runEventBackboneOnce } from './event-backbone-worker';
 import { runEventBackboneCleanup } from '../tools/event-backbone-cleanup';
@@ -237,11 +236,102 @@ function getActiveUserTargets(): ActiveUserTarget[] {
   return ownerTarget ? [ownerTarget] : [];
 }
 
+// ── Cron cost governance + engagement gating (2026-07-03 audit) ─────────
+// Cron LLM paths meter spend to real users but historically bypassed every
+// cap (enforceCostGuardrails only runs on user-initiated API routes). These
+// gates fail OPEN: a governance bug must never silently kill a cron.
+
+function isCronUserOverDailyCap(userId: number, sourceJob: string, opts: { quiet?: boolean } = {}): boolean {
+  try {
+    const { isUserOverDailyCap } = require('./cost-guardrail');
+    const quota = isUserOverDailyCap(userId);
+    if (quota.over) {
+      // quiet: the coach eligibility gate re-checks every 5-minute dispatch
+      // tick inside the catch-up window — one warn per day is plenty, so the
+      // repeated checks log at debug.
+      const log = opts.quiet ? logger.debug.bind(logger) : logger.warn.bind(logger);
+      log(
+        { userId, sourceJob, spentUsd: quota.spentUsd, capUsd: quota.capUsd },
+        '[scheduler] cron LLM work skipped: user is over the daily AI cost cap',
+      );
+      return true;
+    }
+  } catch (err) {
+    logger.debug({ err, userId, sourceJob }, '[scheduler] cron cap check failed (failing open)');
+  }
+  return false;
+}
+
+// System actor (user 0) is not on a billing plan, so isUserOverDailyCap
+// would resolve a $0 cap and permanently disable system crons. It gets its
+// own env budget instead. 0 disables the budget check.
+function isSystemActorOverDailyBudget(sourceJob: string): boolean {
+  const raw = process.env.SYSTEM_ACTOR_DAILY_USD_CAP;
+  const capUsd = raw == null || raw.trim() === '' ? 1.0 : Number.parseFloat(raw);
+  if (!Number.isFinite(capUsd) || capUsd <= 0) return false;
+  try {
+    const row = getDb().prepare(
+      "SELECT COALESCE(SUM(cost_usd), 0) AS total FROM api_usage WHERE user_id = 0 AND ts >= date('now')",
+    ).get() as { total: number };
+    if (row.total >= capUsd) {
+      logger.warn(
+        { sourceJob, spentUsd: row.total, capUsd },
+        '[scheduler] system-actor cron LLM work skipped: over the daily system AI budget',
+      );
+      return true;
+    }
+  } catch (err) {
+    logger.debug({ err, sourceJob }, '[scheduler] system budget check failed (failing open)');
+  }
+  return false;
+}
+
+// Content topic generation only pays for itself when someone consumes the
+// output. Engagement = the user acted on a candidate (sentiment left
+// 'pending') or saved an idea in the last 30 days. First-time users (no
+// candidates ever) always get an initial batch. CONTENT_CRON_ENGAGEMENT_GATE
+// = 'off' restores unconditional generation.
+function shouldGenerateContentTopicsForUser(userId: number, sourceJob: string): boolean {
+  if ((process.env.CONTENT_CRON_ENGAGEMENT_GATE || 'on') === 'off') return true;
+  try {
+    const db = getDb();
+    const engaged = db.prepare(`
+      SELECT (
+        EXISTS(
+          SELECT 1 FROM content_topic_feedback
+           WHERE user_id = ? AND sentiment != 'pending'
+             AND created_at >= datetime('now', '-30 days')
+        )
+        OR EXISTS(
+          SELECT 1 FROM saved_ideas
+           WHERE created_at >= datetime('now', '-30 days')
+             AND COALESCE(owner_user_id, ?) = ?
+        )
+      ) AS engaged
+    `).get(userId, userId, userId) as { engaged: number };
+    if (engaged.engaged) return true;
+    const generatedBefore = db.prepare(
+      'SELECT EXISTS(SELECT 1 FROM content_topic_feedback WHERE user_id = ?) AS present',
+    ).get(userId) as { present: number };
+    if (!generatedBefore.present) return true;
+    logger.info(
+      { userId, sourceJob },
+      '[scheduler] content topic generation skipped: no Content-surface engagement in 30 days',
+    );
+    return false;
+  } catch (err) {
+    logger.debug({ err, userId, sourceJob }, '[scheduler] content engagement gate failed (failing open)');
+    return true;
+  }
+}
+
 export async function runContentTopicCronForActiveUsers(
   format: 'reel' | 'youtube',
   sourceJob: 'tuesday_reels' | 'thursday_youtube' | string,
 ): Promise<void> {
   for (const target of getActiveUserTargets()) {
+    if (isCronUserOverDailyCap(target.tenantId, sourceJob)) continue;
+    if (!shouldGenerateContentTopicsForUser(target.tenantId, sourceJob)) continue;
     try {
       await runWithContext({ source: `cron:${sourceJob}`, userId: target.tenantId }, async () => {
         await generateAndStoreTopicCandidates(target.tenantId, format, sourceJob, target.tenantId);
@@ -254,6 +344,8 @@ export async function runContentTopicCronForActiveUsers(
 
 export async function runWeeklyContentPackageCronForActiveUsers(): Promise<void> {
   for (const target of getActiveUserTargets()) {
+    if (isCronUserOverDailyCap(target.tenantId, 'friday_weekly')) continue;
+    if (!shouldGenerateContentTopicsForUser(target.tenantId, 'friday_weekly')) continue;
     try {
       await runWithContext({ source: 'cron:friday_weekly', userId: target.tenantId }, async () => {
         await generateWeeklyPackage(target.tenantId, target.tenantId);
@@ -809,29 +901,17 @@ export async function buildConflictAlertForUser(userId: number): Promise<string 
   return message;
 }
 
-export function startScheduler(bot?: any): void {
+export function startScheduler(): void {
   // Register sub-skill gating so disabled sub-skills skip their cron jobs
   setJobEnabledChecker(isCronJobEnabled);
 
-  // Telegram delivery is deprecated. All safeSend calls below
-  // are gated: they only fire if TELEGRAM_LEGACY_DELIVERY=true AND a bot
-  // instance is provided. The replacement delivery path is:
+  // Delivery paths (Telegram legacy delivery removed 2026-07):
   //   - durable reports (report-document-store)
   //   - durable notifications (content-notification-store)
   //   - APNs push
   //   - portal events / telemetry
-  const telegramEnabled = isTelegramLegacyDeliveryEnabled() && bot;
-  const safeSend = async (userId: number, message: string, opts?: any): Promise<boolean> => {
-    if (!telegramEnabled) return false;
-    try {
-      await bot.api.sendMessage(userId, message, opts);
-      return true;
-    } catch {
-      return false;
-    }
-  };
 
-  // Register failure notifier — logs to portal telemetry (always) + Telegram (if enabled)
+  // Register failure notifier — records a critical operator alert
   setJobFailureNotifier(async (jobLabel, errorMessage) => {
     const short = errorMessage.slice(0, 120);
     recordOperatorAlert({
@@ -849,29 +929,14 @@ export function startScheduler(bot?: any): void {
         errorMessage: short,
       },
     });
-    for (const userId of getOwnerUserIds()) {
-      await safeSend(userId,
-        `⚠️ <b>${escapeHtml(jobLabel)} failed</b>\n\n<code>${escapeHtml(short)}</code>\n\n<i>Check logs for details.</i>`,
-        { parse_mode: 'HTML' });
-    }
   });
 
   const tz = config.app.timezone;
 
-  // Telegram legacy delivery gate. When TELEGRAM_LEGACY_DELIVERY is not
-  // set to "true", Telegram safeSend calls are skipped for
-  // report flows. The durable report + APNs path is the primary delivery.
-  // Set TELEGRAM_LEGACY_DELIVERY=true to keep Telegram delivery active
-  // (e.g., during beta while some users still use Telegram).
-  const telegramLegacyEnabled = isTelegramLegacyDeliveryEnabled();
-  const dailyCron = (() => {
-    const [h, m] = config.todo.digestTime.split(':').map(Number);
-    return `${m ?? 0} ${h ?? 8} * * *`;
-  })();
-  const coachCron = (() => {
-    const [h, m] = config.garmin.coachTime.split(':').map(Number);
-    return `${m ?? 0} ${h ?? 21} * * *`;
-  })();
+  // dailyCron/coachCron expression builders removed 2026-07-03: the four
+  // user-facing report jobs run on 5-minute dispatch ticks and fire per user
+  // at the profile-preferred time (report-schedule-dispatcher.ts).
+  // config.todo.digestTime / config.garmin.coachTime remain the defaults.
   const backupCron = (() => {
     const [h, m] = config.backup.time.split(':').map(Number);
     return `${m ?? 0} ${h ?? 3} * * *`;
@@ -879,9 +944,9 @@ export function startScheduler(bot?: any): void {
 
   // ── Register all jobs for portal tracking ──────────────────────────
   registerJob('reminders',          'Reminders',             '* * * * *',       'secretary');
-  registerJob('end_of_day',         'End-of-Day Summary',    '0 21 * * *',      'secretary');
-  registerJob('daily_briefing',     'Morning Briefing',      dailyCron,         'secretary');
-  registerJob('weekly_review',      'Weekly Review',         '0 17 * * 5',      'secretary');
+  registerJob('end_of_day',         'End-of-Day Summary',    '*/5 * * * *',     'secretary');
+  registerJob('daily_briefing',     'Morning Briefing',      '*/5 * * * *',     'secretary');
+  registerJob('weekly_review',      'Weekly Review',         '*/5 * * * *',     'secretary');
   registerJob('shared_list',        'Shared List Check',     '*/5 * * * *',     'secretary');
   registerJob('midnight_cleanup',   'Midnight Cleanup',      '0 0 * * *',       'system');
   // content_discovery removed — replaced by content-workflow (tue/thu/fri topic candidates)
@@ -893,26 +958,25 @@ export function startScheduler(bot?: any): void {
   registerJob('conflict_detection', 'Conflict Detection',    '30 19 * * *',     'secretary');
   registerJob('secretary_agenda_sync', 'Secretary Agenda → Calendar Sync', '*/5 * * * *', 'secretary');
   registerJob('garmin_keepalive',   'Garmin Keep-Alive',     '*/30 * * * *',    'triathlon');
-  registerJob('garmin_coach',       'Garmin Coach',          coachCron,         'triathlon');
+  registerJob('garmin_coach',       'Garmin Coach',          '*/5 * * * *',     'triathlon');
   registerJob('garmin_tenant_isolation_watcher', 'Garmin Tenant Isolation Watcher', '45 6 * * *', 'triathlon');
   registerJob('invoice_queue',      'Invoice Queue Flush',   '*/15 * * * *',    'invoices');
-  registerJob('channel_relearn',   'Channel Re-Learn',      '0 3 * * 0',       'content');
-  registerJob('tuesday_reels',     'Tuesday Reel Topics',   '0 9 * * 2',       'content');
-  registerJob('thursday_youtube',  'Thursday YT Topic',     '0 9 * * 4',       'content');
-  registerJob('friday_weekly',     'Friday Weekly Package',  '30 18 * * 5',     'content');
+  registerJob('channel_relearn',   'Channel Re-Learn',      '37 3 * * 0',       'content');
+  registerJob('tuesday_reels',     'Tuesday Reel Topics',   '17 9 * * 2',       'content');
+  registerJob('thursday_youtube',  'Thursday YT Topic',     '23 9 * * 4',       'content');
+  registerJob('friday_weekly',     'Friday Weekly Package',  '41 18 * * 5',     'content');
   registerJob('pipeline_agent',   'Pipeline Tracker',       '0 20 * * *',      'content');
   registerJob('performance_agent','Performance Intel',        '0 6 * * 0',       'content');
   registerJob('voice_evolution', 'Voice Evolution',          '0 4 1 * *',       'content');
   registerJob('reaction_radar',   'Reaction Radar',          '0 8,14,20 * * *', 'content');
   registerJob('seo_agent',        'SEO Tracking',           '0 6 * * 1',       'content');
   registerJob('expire_signals',   'Signal Cleanup',         '0 * * * *',       'content');
-  registerJob('integration_health', 'Integration Health Probes', '*/5 * * * *', 'system');
+  registerJob('integration_health', 'Integration Health Probes', '*/15 * * * *', 'system');
   registerJob('training_plan_adjust', 'Training Plan Auto-Adjust', '0 19 * * 0', 'triathlon');
-  registerJob('autoresearch',     'Autoresearch',           '0 1 * * 0',       'system');
+  registerJob('autoresearch',     'Autoresearch',           '19 1 * * 0',       'system');
   registerJob('db_backup',        'Database Backup',        backupCron,        'system');
   registerJob('db_restore_test', 'Weekly Restore Test',   '0 4 * * 0',       'system');
   registerJob('task_sync',        'Task Provider Sync',     '*/15 * * * *',    'system');
-  registerJob('daily_context',    'Daily Context Builder',  '0 5 * * *',       'system');
   registerJob('operator_alert_delivery', 'Operator Alert Delivery', '* * * * *', 'system');
   registerJob('decision_source_supersession', 'Decision Source Supersession', '*/15 * * * *', 'system');
   registerJob('decision_handled_history_backfill', 'Decision Handled History Backfill', '22,52 * * * *', 'system');
@@ -963,14 +1027,7 @@ export function startScheduler(bot?: any): void {
         })();
         let delivered = false;
         try {
-          try {
-            let msg = `⏰ <b>Reminder:</b> ${escapeHtml(reminder.message)}`;
-            if (reminder.recurring) msg += `\n<i>(Recurring: ${reminder.recurring})</i>`;
-            delivered = await safeSend(targetUserId, msg, { parse_mode: 'HTML' }) || delivered;
-          } catch (err) {
-            logger.error({ err, userId: targetUserId, tenantId: targetTenantId, reminderId: reminder.id }, 'Failed to send reminder');
-          }
-          // Parallel iOS notification. The Secretary Notification Orchestrator
+          // iOS notification. The Secretary Notification Orchestrator
           // decides push vs in-app vs quiet-hours/digest; scheduler only emits
           // the intent.
           try {
@@ -1036,33 +1093,17 @@ export function startScheduler(bot?: any): void {
   }));
 
   // ── End-of-day task summary (21:00) ────────────────────────────────
-  cron.schedule('0 21 * * *', wrapJob('end_of_day', async () => {
-    for (const target of getActiveUserTargets()) {
-      const report = await buildEndOfDaySummaryForUser(target.tenantId);
-      if (!report) continue;
-
-      // Store durable evening report
+  // Per-user schedule (migration 225): a 5-minute dispatch tick fires each
+  // user at their preferred end-of-day time in their own timezone (default
+  // 21:00). Idle ticks return 'skipped' so job_history stays quiet.
+  cron.schedule('*/5 * * * *', wrapJob('end_of_day', async () => {
+    const due = resolveDueReportTargets('end_of_day', getActiveUserTargets());
+    if (due.length === 0) return 'skipped';
+    for (const target of due) {
       try {
-        await storeAndPushReport({
-          userId: target.tenantId,
-          type: 'evening_summary' as const,
-          title: 'End-of-day summary',
-          summary: report.summary,
-          documentJson: report.documentJson,
-          sourceJob: 'end_of_day',
-          pushCategory: 'evening_summary',
-        });
+        await runEndOfDaySummaryForTarget(target);
       } catch (err) {
-        logger.debug({ err, userId: target.tenantId }, 'Failed to store evening summary report (non-fatal)');
-      }
-
-      // Legacy Telegram delivery (gated by TELEGRAM_LEGACY_DELIVERY env)
-      if (telegramLegacyEnabled && target.telegramId) {
-        try {
-          await safeSend(target.telegramId, report.message, { parse_mode: 'HTML' });
-        } catch (err) {
-          logger.error({ err, userId: target.telegramId, tenantId: target.tenantId }, 'Failed to send end-of-day summary');
-        }
+        logger.error({ err, userId: target.tenantId }, 'End-of-day summary failed for user; continuing');
       }
     }
   }), { timezone: tz });
@@ -1076,9 +1117,19 @@ export function startScheduler(bot?: any): void {
   // here as a second notification — that path emitted a duplicate
   // without reportId, so the tap landed on Home instead of the
   // briefing. Removed to leave a single, deep-linkable push per run.
-  cron.schedule(dailyCron, wrapJob('daily_briefing', async () => {
-    if (!config.todo.digestEnabled) return;
-    await sendDailyBriefing(bot);
+  // Per-user schedule (migration 225): default remains TODO_DIGEST_TIME
+  // until a user picks their own morning time.
+  cron.schedule('*/5 * * * *', wrapJob('daily_briefing', async () => {
+    if (!config.todo.digestEnabled) return 'skipped';
+    const due = resolveDueReportTargets('morning_briefing', getActiveUserTargets());
+    if (due.length === 0) return 'skipped';
+    for (const target of due) {
+      try {
+        await sendDailyBriefingForTarget(target);
+      } catch (err) {
+        logger.error({ err, userId: target.tenantId }, 'Morning briefing failed for user; continuing');
+      }
+    }
   }), { timezone: tz });
 
   // ── Weekly review (Friday 17:00) ───────────────────────────────────
@@ -1086,8 +1137,18 @@ export function startScheduler(bot?: any): void {
   // Same shape as daily_briefing: sendWeeklyReview already pushes via
   // storeAndPushReport with the reportId. The duplicate terse push
   // that used to live here has been removed.
-  cron.schedule('0 17 * * 5', wrapJob('weekly_review', async () => {
-    await sendWeeklyReview(bot);
+  // Per-user schedule (migration 225): default remains Friday 17:00; the
+  // profile can move both the day (cron 0=Sun..6=Sat) and the time.
+  cron.schedule('*/5 * * * *', wrapJob('weekly_review', async () => {
+    const due = resolveDueReportTargets('weekly_review', getActiveUserTargets());
+    if (due.length === 0) return 'skipped';
+    for (const target of due) {
+      try {
+        await sendWeeklyReviewForTarget(target);
+      } catch (err) {
+        logger.error({ err, userId: target.tenantId }, 'Weekly review failed for user; continuing');
+      }
+    }
   }), { timezone: tz });
 
   // ── Shared list task notifications (every 5 min) ───────────────────
@@ -1123,14 +1184,6 @@ export function startScheduler(bot?: any): void {
       } catch (err) {
         logger.error({ err, tenantId: target.tenantId }, 'Failed to create shared list notification intent');
       }
-
-      if (target.telegramId) {
-        try {
-          await safeSend(target.telegramId, message, { parse_mode: 'HTML' });
-        } catch (err) {
-          logger.error({ err, userId: target.telegramId, tenantId: target.tenantId }, 'Failed to send shared list notification');
-        }
-      }
     }
   }), { timezone: tz });
 
@@ -1150,6 +1203,7 @@ export function startScheduler(bot?: any): void {
     const retentionTargets: Array<{ table: string; days: number; tsCol: string }> = [
       { table: 'video_transcripts', days: 90, tsCol: 'created_at' },
       { table: 'job_history',       days: 30, tsCol: 'ts' },
+      { table: 'report_schedule_ledger', days: 30, tsCol: 'fired_at' },
       { table: 'error_log',         days: 60, tsCol: 'ts' },
       { table: 'client_errors',     days: 90, tsCol: 'ts' },
       { table: 'api_usage',         days: 180, tsCol: 'ts' },
@@ -1298,13 +1352,22 @@ export function startScheduler(bot?: any): void {
   // Wave 2 escalation: raise to */15 + isCronJobEnabled gate if 429s spike.
   cron.schedule('*/5 * * * *', wrapJob('secretary_agenda_sync', async () => {
     try {
-      const { syncSecretaryAgendaItemsToProvider } = require('./secretary-agenda-provider-sync');
+      const { syncSecretaryAgendaItemsToProvider, markCompletedSecretaryAgendaItems } = require('./secretary-agenda-provider-sync');
       const { createUnifiedCalendarSecretaryProviderAdapter } = require('./secretary-unified-calendar-provider-adapter');
       const { reconcileOrphanedTrainingAgendaEvents } = require('./training-agenda-reconciliation');
       const googleCal = require('./google-calendar');
       const outlookCal = require('./outlook-calendar');
       const users = getActiveUserIds();
       if (users.length === 0) return 'skipped';
+
+      // Sweep past items out of the active set first. Without this the
+      // active set grows without bound and every past item keeps costing
+      // sync-eligibility checks each tick (the sweep existed since the
+      // provider-sync service shipped but was never wired into the cron).
+      const completedSwept = markCompletedSecretaryAgendaItems();
+      if (completedSwept > 0) {
+        logger.info({ completedSwept }, '[scheduler] secretary_agenda_sync marked past agenda items completed');
+      }
 
       const PER_USER_CAP = 50;
       const CONCURRENCY = 4;
@@ -1352,9 +1415,11 @@ export function startScheduler(bot?: any): void {
                   adapter,
                 );
                 // Bound the work this tick: take at most PER_USER_CAP results.
-                // Remaining items will be picked up next tick because
-                // `provider_sync_state` filtering inside the sync function
-                // already short-circuits already-synced rows.
+                // Remaining items are picked up next tick. Unchanged 'synced'
+                // rows are short-circuited by the last_synced_fingerprint
+                // check inside the sync function (migration 224) and re-
+                // verified against the provider every
+                // SECRETARY_SYNC_VERIFY_INTERVAL_MINUTES (default 6h).
                 const bounded = results.slice(0, PER_USER_CAP);
                 for (const r of bounded) {
                   if (r.providerSyncState === 'synced') userSynced += 1;
@@ -1388,22 +1453,11 @@ export function startScheduler(bot?: any): void {
     }
   }), { timezone: tz });
 
-  // ── Daily cross-domain context builder (5 AM local) ────────────────
-  // Pre-builds the ~500-token cross-domain summary that gets injected into
-  // every AI call as system context. Running at 5 AM means the morning
-  // briefing (which fires at config.todo.digestTime, usually 6-7 AM) and
-  // every subsequent message that day reads from a freshly-built cache,
-  // saving ~1300 tokens of speculative tool calls per AI message.
-  cron.schedule('0 5 * * *', wrapJob('daily_context', async () => {
-    try {
-      const { buildContextForAllUsers } = require('./context-engine');
-      const userIds = getActiveUserIds();
-      const stats = await buildContextForAllUsers(userIds);
-      logger.info({ ...stats, total: userIds.length }, 'Daily context build complete');
-    } catch (err) {
-      logger.warn({ err }, 'Daily context cron failed');
-    }
-  }), { timezone: tz });
+  // Daily cross-domain context cron removed 2026-07-03: nothing consumed the
+  // 5 AM pre-build (the morning briefing never read this cache, contrary to
+  // the old comment here), and mid-day cache invalidations left chat without
+  // context until the next rebuild. Chat read sites now lazy-build via
+  // context-engine getOrBuildDailyContext on first use.
 
   // Old content_discovery (16:43) removed — replaced by content-workflow (Tue/Thu/Fri)
 
@@ -1417,9 +1471,26 @@ export function startScheduler(bot?: any): void {
       try {
         const result = await collectMonthlyInvoices(tenantId, prev.year, prev.month);
         const notification = formatCollectionNotification(result);
-        const ownerTelegramId = getUserById(tenantId)?.telegram_id;
-        if (!ownerTelegramId) continue;
-        await safeSend(ownerTelegramId, notification, { parse_mode: 'HTML' });
+        // GAP-CAL-1 fix: durable in-app notification; Telegram was a no-op.
+        try {
+          await createNotificationIntent({
+            userId: tenantId,
+            tenantId,
+            sourceSkill: 'finance',
+            type: 'insight',
+            priority: 'passive',
+            relatedEntityId: `invoice_collection:${prev.year}-${prev.month}`,
+            relatedEntityType: 'finance_collection_run',
+            title: 'Invoice collection finished',
+            body: `Monthly invoice collection for ${prev.month}/${prev.year} finished.`,
+            sensitiveBody: safeHtmlNotificationBody(notification),
+            deeplink: 'nexus://finance/invoices',
+            dedupeKey: `finance:invoice_collection:${tenantId}:${prev.year}-${prev.month}`,
+            privacyPolicy: 'financial',
+          });
+        } catch (err) {
+          logger.warn({ err, tenantId }, 'Failed to create finance collection notification intent');
+        }
       } catch (err) {
         logger.error({ err, tenantId }, 'Invoice collection failed for tenant; continuing scheduler run');
       }
@@ -1499,9 +1570,26 @@ export function startScheduler(bot?: any): void {
           callbacks.waitForReply,
         );
         const notification = formatAmazonNotification(result);
-        const ownerTelegramId = getUserById(tenantId)?.telegram_id;
-        if (!ownerTelegramId) continue;
-        await safeSend(ownerTelegramId, notification, { parse_mode: 'HTML' });
+        // GAP-CAL-1 fix: durable in-app notification; Telegram was a no-op.
+        try {
+          await createNotificationIntent({
+            userId: tenantId,
+            tenantId,
+            sourceSkill: 'finance',
+            type: 'insight',
+            priority: 'passive',
+            relatedEntityId: `amazon_collection:${prev.year}-${prev.month}`,
+            relatedEntityType: 'finance_collection_run',
+            title: 'Amazon invoice collection finished',
+            body: `Amazon invoice collection for ${prev.month}/${prev.year} finished.`,
+            sensitiveBody: safeHtmlNotificationBody(notification),
+            deeplink: 'nexus://finance/invoices',
+            dedupeKey: `finance:amazon_collection:${tenantId}:${prev.year}-${prev.month}`,
+            privacyPolicy: 'financial',
+          });
+        } catch (err) {
+          logger.warn({ err, tenantId }, 'Failed to create finance collection notification intent');
+        }
       } catch (err) {
         logger.error({ err, tenantId }, 'Amazon collection failed for tenant; continuing scheduler run');
       }
@@ -1530,9 +1618,26 @@ export function startScheduler(bot?: any): void {
           callbacks.waitForReply,
         );
         const notification = formatUberNotification(result);
-        const ownerTelegramId = getUserById(tenantId)?.telegram_id;
-        if (!ownerTelegramId) continue;
-        await safeSend(ownerTelegramId, notification, { parse_mode: 'HTML' });
+        // GAP-CAL-1 fix: durable in-app notification; Telegram was a no-op.
+        try {
+          await createNotificationIntent({
+            userId: tenantId,
+            tenantId,
+            sourceSkill: 'finance',
+            type: 'insight',
+            priority: 'passive',
+            relatedEntityId: `uber_collection:${prev.year}-${prev.month}`,
+            relatedEntityType: 'finance_collection_run',
+            title: 'Uber receipt collection finished',
+            body: `Uber receipt collection for ${prev.month}/${prev.year} finished.`,
+            sensitiveBody: safeHtmlNotificationBody(notification),
+            deeplink: 'nexus://finance/invoices',
+            dedupeKey: `finance:uber_collection:${tenantId}:${prev.year}-${prev.month}`,
+            privacyPolicy: 'financial',
+          });
+        } catch (err) {
+          logger.warn({ err, tenantId }, 'Failed to create finance collection notification intent');
+        }
       } catch (err) {
         logger.error({ err, tenantId }, 'Uber collection failed for tenant; continuing scheduler run');
       }
@@ -1568,13 +1673,25 @@ export function startScheduler(bot?: any): void {
       todayNotifications.push(`📧 Email automático "Limpeza Fossa Séptica" enviado para ${fossaTo}`);
       logger.info({ to: fossaTo }, 'Fossa email sent successfully');
 
+      // GAP-CAL-1 fix: durable in-app notification; Telegram was a no-op.
       for (const userId of getOwnerUserIds()) {
         try {
-          await safeSend(userId,
-            `📧 <b>Email automático enviado</b>\n\n<b>Para:</b> ${fossaTo}\n<b>Assunto:</b> Limpeza Fossa Septica\n\n<i>Próximo envio em 2 semanas.</i>`,
-            { parse_mode: 'HTML' });
+          await createNotificationIntent({
+            userId,
+            tenantId: userId,
+            sourceSkill: 'secretary',
+            type: 'insight',
+            priority: 'passive',
+            relatedEntityId: `fossa_email:${new Date().toISOString().slice(0, 10)}`,
+            relatedEntityType: 'secretary_automated_email',
+            title: 'Automated email sent',
+            body: `Fossa septica cleaning request emailed to ${fossaTo}. Next send in 2 weeks.`,
+            deeplink: 'nexus://secretary/agenda',
+            dedupeKey: `secretary:fossa_email:${userId}:${new Date().toISOString().slice(0, 10)}`,
+            privacyPolicy: 'standard',
+          });
         } catch (err) {
-          logger.error({ err, userId }, 'Failed to send fossa email notification');
+          logger.warn({ err, userId }, 'Failed to create fossa email notification intent');
         }
       }
     }), { timezone: tz });
@@ -1622,13 +1739,6 @@ export function startScheduler(bot?: any): void {
       } catch (err) {
         logger.warn({ err, tenantId: target.tenantId }, 'Conflict notification intent emit failed');
       }
-
-      if (!target.telegramId) continue;
-      try {
-        await safeSend(target.telegramId, message, { parse_mode: 'HTML' });
-      } catch (err) {
-        logger.error({ err, userId: target.telegramId, tenantId: target.tenantId }, 'Failed to send conflict alert');
-      }
     }
   }), { timezone: tz });
 
@@ -1672,9 +1782,24 @@ export function startScheduler(bot?: any): void {
 
   // ── Garmin coach briefing (configurable time) ──────────────────────
   if (config.garmin.coachEnabled) {
-    cron.schedule(coachCron, wrapJob('garmin_coach', async () => {
+    // Per-user schedule (migration 225): default remains GARMIN_COACH_TIME
+    // until a user picks their own coach time. Garmin pre-auth runs only on
+    // ticks where at least one user is actually due.
+    cron.schedule('*/5 * * * *', wrapJob('garmin_coach', async () => {
+      // Eligibility runs BEFORE the ledger claim: a user with no health data
+      // yet (or over the daily AI cap) is left unclaimed and re-checked on
+      // every tick inside the catch-up window, so a late Apple Health sync
+      // still gets that day's briefing instead of losing it to a consumed
+      // claim (QA finding 3). The same gates remain inside
+      // sendCoachBriefingForTarget as the backstop for manual triggers.
+      const due = resolveDueReportTargets('coach_briefing', getActiveUserTargets(), undefined, {
+        eligible: (target) =>
+          hasCoachableHealthDataForUser(target.tenantId)
+          && !isCronUserOverDailyCap(target.tenantId, 'garmin_coach', { quiet: true }),
+      });
+      if (due.length === 0) return 'skipped';
       if (isGarminConfigured()) {
-        logger.info('Daily coach briefing starting — pre-authenticating Garmin (silent mode — no MFA email if session is dead)');
+        logger.info('Coach briefing dispatch — pre-authenticating Garmin (silent mode — no MFA email if session is dead)');
         // Silent mode: cron has no interactive user to answer an MFA
         // code, so the recovery path must skip full re-login. If tokens
         // are too stale even for OAuth2 refresh, the briefing runs with
@@ -1686,9 +1811,15 @@ export function startScheduler(bot?: any): void {
           logger.warn('Coach briefing: Garmin session unrecoverable in silent mode — proceeding with whatever cached/partial data the briefing can assemble');
         }
       } else {
-        logger.info('Daily coach briefing starting without global Garmin; users with Apple Health or other wearable data can still receive scoped briefings');
+        logger.info('Coach briefing dispatch without global Garmin; users with Apple Health or other wearable data can still receive scoped briefings');
       }
-      await sendCoachBriefings(bot);
+      for (const target of due) {
+        try {
+          await sendCoachBriefingForTarget(target);
+        } catch (err) {
+          logger.error({ err, userId: target.tenantId }, 'Coach briefing failed for user; continuing');
+        }
+      }
     }), { timezone: tz });
   }
 
@@ -1785,12 +1916,6 @@ export function startScheduler(bot?: any): void {
         msg += `<i>Reason: ${recommendation.reason}</i>`;
 
         try {
-          await safeSend(userId, msg, { parse_mode: 'HTML' });
-        } catch (err) {
-          logger.error({ err, userId }, 'Failed to send training adjustment notification');
-        }
-
-        try {
           await createNotificationIntent({
             userId,
             tenantId: userId,
@@ -1830,12 +1955,6 @@ export function startScheduler(bot?: any): void {
         renewMsg += `\n\nGo to <b>Training → Create Plan</b> to generate your next cycle.`;
 
         try {
-          await safeSend(userId, renewMsg, { parse_mode: 'HTML' });
-        } catch (err) {
-          logger.error({ err, userId }, 'Failed to send plan renewal Telegram notification');
-        }
-
-        try {
           await createNotificationIntent({
             userId,
             tenantId: userId,
@@ -1865,7 +1984,10 @@ export function startScheduler(bot?: any): void {
   // ── Invoice queue flush (every 15 min) ──────────────────────────────
   cron.schedule('*/15 * * * *', wrapJob('invoice_queue', async () => {
     const pending = getPendingCount();
-    if (pending === 0) return; // nothing to flush — skip silently
+    // Empty queue is the overwhelmingly common case (~2,830 no-op rows/month
+    // observed in prod) — return 'skipped' so wrapJob does not persist a
+    // job_history row, mirroring the reminders fast-path.
+    if (pending === 0) return 'skipped';
 
     const result = await flushQueue();
 
@@ -1878,27 +2000,41 @@ export function startScheduler(bot?: any): void {
       msg += `\n\n<i>O Mac voltou a estar disponível.</i>`;
 
       for (const userId of getOwnerUserIds()) {
+        // GAP-CAL-1 fix: durable in-app notification; Telegram was a no-op.
         try {
-          await safeSend(userId, msg, { parse_mode: 'HTML' });
+          await createNotificationIntent({
+            userId,
+            tenantId: userId,
+            sourceSkill: 'finance',
+            type: result.failed > 0 ? 'sync_failure' : 'insight',
+            priority: result.failed > 0 ? 'active' : 'passive',
+            relatedEntityId: `invoice_queue_flush:${new Date().toISOString().slice(0, 10)}`,
+            relatedEntityType: 'finance_queue_flush',
+            title: 'Invoice queue processed',
+            body: `${result.flushed} queued invoice${result.flushed === 1 ? '' : 's'} filed${result.failed > 0 ? `, ${result.failed} failed permanently` : ''}.`,
+            sensitiveBody: safeHtmlNotificationBody(msg),
+            deeplink: 'nexus://finance/invoices',
+            dedupeKey: `finance:invoice_queue_flush:${userId}:${new Date().toISOString().slice(0, 10)}`,
+            privacyPolicy: 'financial',
+          });
         } catch (err) {
-          logger.error({ err, userId }, 'Failed to send invoice queue flush notification');
+          logger.warn({ err, userId }, 'Failed to create invoice queue notification intent');
         }
       }
     }
   }), { timezone: tz });
 
-  // ── Weekly channel re-analysis (Sunday 03:00) ─────────────────
-  cron.schedule('0 3 * * 0', wrapJob('channel_relearn', async () => {
+  // ── Weekly channel re-analysis (Sunday 03:37) ─────────────────
+  // Off-minute schedule is deliberate: Gemini returns 503 UNAVAILABLE at
+  // top-of-hour global cron bursts, which was driving the expensive
+  // OpenAI-fallback storm (2026-07-03 audit). Same for the content and
+  // autoresearch crons below.
+  cron.schedule('37 3 * * 0', wrapJob('channel_relearn', async () => {
     const result = await processAllChannelScopes();
     if (result.analyzed > 0 || result.failed > 0) {
       const msg = `📚 <b>Weekly Channel Re-Learn</b>\n\n` +
         `✅ ${result.analyzed} analyzed · ❌ ${result.failed} failed · 🧠 ${result.synthesized ? 'Knowledge updated' : 'No changes'}`;
       for (const userId of getOwnerUserIds()) {
-        try {
-          await safeSend(userId, msg, { parse_mode: 'HTML' });
-        } catch (err) {
-          logger.error({ err, userId }, 'Failed to send channel relearn notification');
-        }
         await createNotificationIntent({
           userId,
           tenantId: userId,
@@ -1918,18 +2054,18 @@ export function startScheduler(bot?: any): void {
     }
   }), { timezone: tz });
 
-  // ── Content Workflow: Tuesday Reel Topics (09:00) ──────────────────
-  cron.schedule('0 9 * * 2', wrapJob('tuesday_reels', async () => {
+  // ── Content Workflow: Tuesday Reel Topics (09:17) ──────────────────
+  cron.schedule('17 9 * * 2', wrapJob('tuesday_reels', async () => {
     await runContentTopicCronForActiveUsers('reel', 'tuesday_reels');
   }), { timezone: tz });
 
-  // ── Content Workflow: Thursday YT Topic (09:00) ───────────────────
-  cron.schedule('0 9 * * 4', wrapJob('thursday_youtube', async () => {
+  // ── Content Workflow: Thursday YT Topic (09:23) ───────────────────
+  cron.schedule('23 9 * * 4', wrapJob('thursday_youtube', async () => {
     await runContentTopicCronForActiveUsers('youtube', 'thursday_youtube');
   }), { timezone: tz });
 
-  // ── Content Workflow: Friday Weekly Package (18:30) ────────────────
-  cron.schedule('30 18 * * 5', wrapJob('friday_weekly', async () => {
+  // ── Content Workflow: Friday Weekly Package (18:41) ────────────────
+  cron.schedule('41 18 * * 5', wrapJob('friday_weekly', async () => {
     await runWeeklyContentPackageCronForActiveUsers();
   }), { timezone: tz });
 
@@ -1956,30 +2092,33 @@ export function startScheduler(bot?: any): void {
   // ── SEO Tracking Agent (Monday 06:00) ────────────────────────────
   cron.schedule('0 6 * * 1', wrapJob('seo_agent', async () => {
     await runSEOAgent();
-    const msg = '🔍 <b>SEO Agent</b> — weekly keyword rank check complete. Use <code>/seorank</code> to see results.';
-    for (const userId of getOwnerUserIds()) {
-      try { await safeSend(userId, msg, { parse_mode: 'HTML' }); } catch {}
-    }
+    // Completion messaging removed: the agent is fail-closed paused and the
+    // old Telegram note was a no-op with legacy delivery disabled.
   }), { timezone: tz });
 
-  // ── Autoresearch (Sunday 01:00 — rotates through targets) ────────
-  cron.schedule('0 1 * * 0', wrapJob('autoresearch', async () => {
+  // ── Autoresearch (Sunday 01:19 — rotates through targets) ────────
+  cron.schedule('19 1 * * 0', wrapJob('autoresearch', async () => {
+    if (isSystemActorOverDailyBudget('autoresearch')) return 'skipped';
     const targetId = getScheduledTarget();
+    // GAP-CAL-1 fix: progress lines go to structured logs; the run summary
+    // goes to the operator-alert channel (this is ops telemetry, not a
+    // user-facing product notification).
     const onProgress = async (msg: string) => {
-      for (const userId of getOwnerUserIds()) {
-        try { await safeSend(userId, msg, { parse_mode: 'HTML' }); } catch {}
-      }
+      logger.info({ targetId, msg }, '[scheduler] autoresearch progress');
     };
     try {
       const result = await runAutoresearch(targetId, 3, false, onProgress);
       const kept = result.rounds.filter(r => r.decision === 'kept').length;
-      const summary = `🔬 <b>Autoresearch: ${targetId}</b>\n\n` +
-        `Score: <b>${(result.finalScore * 100).toFixed(1)}%</b>\n` +
-        `Kept ${kept}/${result.rounds.length} mutations\n` +
-        `Duration: ${(result.totalDurationMs / 1000).toFixed(0)}s`;
-      for (const userId of getOwnerUserIds()) {
-        try { await safeSend(userId, summary, { parse_mode: 'HTML' }); } catch {}
-      }
+      recordOperatorAlert({
+        severity: 'info',
+        source: 'autoresearch',
+        dedupeKey: `autoresearch:completed:${targetId}:${new Date().toISOString().slice(0, 10)}`,
+        title: `Autoresearch completed: ${targetId}`,
+        detail: `Score ${(result.finalScore * 100).toFixed(1)}% — kept ${kept}/${result.rounds.length} mutations in ${(result.totalDurationMs / 1000).toFixed(0)}s`,
+        owner: 'ops',
+        suspectedArea: 'ai_quality',
+        userImpact: 'None — scheduled prompt-optimization telemetry.',
+      });
     } catch (err) {
       logger.error({ err, targetId }, 'Scheduled autoresearch failed');
     }
@@ -1989,16 +2128,9 @@ export function startScheduler(bot?: any): void {
   if (config.backup.enabled) {
     cron.schedule(backupCron, wrapJob('db_backup', async () => {
       const backupPath = await runDatabaseBackup();
-      const short = path.basename(backupPath);
-      for (const userId of getOwnerUserIds()) {
-        try {
-          await safeSend(userId,
-            `💾 <b>Database Backup</b>\n\nBackup complete: <code>${escapeHtml(short)}</code>`,
-            { parse_mode: 'HTML' });
-        } catch {
-          // swallow — notification is best-effort
-        }
-      }
+      // Success confirmation is visible in job_history + the portal; the old
+      // Telegram note was a no-op with legacy delivery disabled (GAP-CAL-1).
+      logger.info({ backup: path.basename(backupPath) }, 'Database backup complete');
     }), { timezone: tz });
 
     // ── Weekly Restore Test (Sunday 04:00) ─────────────────────────
@@ -2006,16 +2138,12 @@ export function startScheduler(bot?: any): void {
       const result = await weeklyRestoreTest();
       if (!result.success) {
         logger.error({ details: result.details }, 'Weekly restore test FAILED');
-        for (const userId of getOwnerUserIds()) {
-          try {
-            await safeSend(userId,
-              `🚨 <b>Weekly Restore Test FAILED</b>\n\n<code>${escapeHtml(result.details.slice(0, 200))}</code>`,
-              { parse_mode: 'HTML' });
-          } catch {}
-        }
-      } else {
-        logger.info({ details: result.details }, 'Weekly restore test passed');
+        // GAP-CAL-1 fix: a failed restore test used to be log-only.
+        // Throwing routes through the wrapJob failure notifier, which
+        // records a critical operator alert.
+        throw new Error(`Weekly restore test failed: ${result.details.slice(0, 300)}`);
       }
+      logger.info({ details: result.details }, 'Weekly restore test passed');
     }), { timezone: tz });
   }
 
@@ -2034,7 +2162,7 @@ export function startScheduler(bot?: any): void {
   // user-facing flow needs them. Persisted to integration_health (60-day
   // retention via midnight_cleanup). The portal can render a status grid
   // from this table.
-  cron.schedule('*/5 * * * *', wrapJob('integration_health', async () => {
+  cron.schedule('*/15 * * * *', wrapJob('integration_health', async () => {
     const { runHealthProbes } = require('./integration-health');
     await runHealthProbes();
   }), { timezone: tz });
@@ -2110,9 +2238,7 @@ export function startScheduler(bot?: any): void {
   // Seed book library (only if table is empty)
   try {
     seedBooksIfEmpty(async (msg) => {
-      for (const userId of getOwnerUserIds()) {
-        try { await safeSend(userId, msg, { parse_mode: 'HTML' }); } catch {}
-      }
+      logger.info({ msg }, '[scheduler] book library seed progress');
     });
   } catch (err) {
     logger.warn({ err }, 'Failed to seed book library');
@@ -2359,15 +2485,30 @@ function intEnv(name: string, fallback: number, min: number, max: number): numbe
 
 // ── Exported for portal quick actions ─────────────────────────────────
 
-export async function sendCoachBriefings(bot?: any): Promise<void> {
-  const telegramEnabled = isTelegramLegacyDeliveryEnabled() && bot;
-  const safeSend = async (userId: number, msg: string, opts?: any) => {
-    if (!telegramEnabled) return;
-    try { await bot.api.sendMessage(userId, msg, opts); } catch {}
-  };
+function hasCoachableHealthDataForUser(userId: number): boolean {
+  try {
+    const { isOwnerUserRef } = require('./user-service');
+    if (isGarminConfigured() && isOwnerUserRef(userId)) return true;
+    const row = getDb().prepare(
+      "SELECT EXISTS(SELECT 1 FROM apple_health_data WHERE user_id = ? AND date = date('now')) AS present",
+    ).get(userId) as { present: number };
+    return !!row.present;
+  } catch {
+    return true; // fail open — the briefing has its own data-source fallbacks
+  }
+}
 
-  for (const target of getActiveUserTargets()) {
-    await runWithContext({ source: 'cron:garmin_coach', userId: target.tenantId }, async () => {
+export async function sendCoachBriefingForTarget(target: ActiveUserTarget): Promise<void> {
+  // Deliberate pre-flight replacing the old accidental gate (users without
+  // health data used to throw inside generateCoachBriefing AFTER burning
+  // calendar fetches). No health data source, or over the daily cap → no
+  // LLM briefing for this user today.
+  if (!hasCoachableHealthDataForUser(target.tenantId)) {
+    logger.debug({ userId: target.tenantId }, '[scheduler] coach briefing skipped: no health data source for user');
+    return;
+  }
+  if (isCronUserOverDailyCap(target.tenantId, 'garmin_coach')) return;
+  await runWithContext({ source: 'cron:garmin_coach', userId: target.tenantId }, async () => {
       let result;
       try {
         result = await generateCoachBriefing(target.tenantId, {
@@ -2431,16 +2572,6 @@ export async function sendCoachBriefings(bot?: any): Promise<void> {
         logger.debug({ err, userId: target.tenantId }, 'Failed to store coach report (non-fatal)');
       }
 
-      if (telegramEnabled && target.telegramId) {
-        try {
-          for (const chunk of splitMessage(result.message)) {
-            await safeSend(target.telegramId, chunk, { parse_mode: 'HTML' });
-          }
-        } catch (err) {
-          logger.error({ err, userId: target.telegramId, tenantId: target.tenantId }, 'Failed to send coach briefing');
-        }
-      }
-
       logger.info(
         {
           userId: target.tenantId,
@@ -2451,49 +2582,59 @@ export async function sendCoachBriefings(bot?: any): Promise<void> {
         'Daily coach briefing completed'
       );
     });
+}
+
+export async function sendCoachBriefings(): Promise<void> {
+  for (const target of getActiveUserTargets()) {
+    await sendCoachBriefingForTarget(target);
   }
 }
 
-export async function sendDailyBriefing(bot?: any): Promise<void> {
-  const _telegramEnabled = isTelegramLegacyDeliveryEnabled() && bot;
-  const safeSend = async (userId: number, msg: string, opts?: any) => {
-    if (!_telegramEnabled) return;
-    try { await bot.api.sendMessage(userId, msg, opts); } catch {}
-  };
+export async function runEndOfDaySummaryForTarget(target: ActiveUserTarget): Promise<void> {
+  const report = await buildEndOfDaySummaryForUser(target.tenantId);
+  if (!report) return;
+
+  // Store durable evening report
+  try {
+    await storeAndPushReport({
+      userId: target.tenantId,
+      type: 'evening_summary' as const,
+      title: 'End-of-day summary',
+      summary: report.summary,
+      documentJson: report.documentJson,
+      sourceJob: 'end_of_day',
+      pushCategory: 'evening_summary',
+    });
+  } catch (err) {
+    logger.debug({ err, userId: target.tenantId }, 'Failed to store evening summary report (non-fatal)');
+  }
+}
+
+export async function sendDailyBriefingForTarget(target: ActiveUserTarget): Promise<void> {
+  const data = await buildDailyBriefingDataForUser(target.tenantId, target.tenantId);
+
+  // ── Store durable report + push (April 2026) ────────────────────
+  try {
+    await storeAndPushReport({
+      userId: target.tenantId,
+      type: 'morning_briefing' as const,
+      title: `☀️ ${data.date}`,
+      summary: `${data.events.length} events, ${data.dueTodayTasks.length + data.overdueTasks.length} tasks`,
+      documentJson: data,
+      sourceJob: 'daily_briefing',
+      pushCategory: 'morning_briefing',
+    });
+  } catch (err) {
+    logger.debug({ err, userId: target.tenantId }, 'Failed to store morning briefing report (non-fatal)');
+  }
+}
+
+// Loops every active user regardless of per-user schedule — used by the
+// portal manual trigger and tests. Scheduled delivery goes through the
+// report-schedule dispatcher, which calls the ForTarget variant per due user.
+export async function sendDailyBriefing(): Promise<void> {
   for (const target of getActiveUserTargets()) {
-    const data = await buildDailyBriefingDataForUser(target.tenantId, target.tenantId);
-    // Identity-safety: resolve display name via the strict by-id helper so
-    // the briefing greets the actual recipient and never the legacy founder
-    // default. Empty string falls through to a name-less greeting.
-    const recipientDisplayName = getPreferredDisplayNameById(target.tenantId);
-    const msg = formatDailyBriefing(data, getUserLanguageById(target.tenantId), recipientDisplayName);
-    const chunks = splitMessage(msg);
-
-    // ── Store durable report + push (April 2026) ────────────────────
-    try {
-      await storeAndPushReport({
-        userId: target.tenantId,
-        type: 'morning_briefing' as const,
-        title: `☀️ ${data.date}`,
-        summary: `${data.events.length} events, ${data.dueTodayTasks.length + data.overdueTasks.length} tasks`,
-        documentJson: data,
-        sourceJob: 'daily_briefing',
-        pushCategory: 'morning_briefing',
-      });
-    } catch (err) {
-      logger.debug({ err, userId: target.tenantId }, 'Failed to store morning briefing report (non-fatal)');
-    }
-
-    // Legacy Telegram delivery (gated by TELEGRAM_LEGACY_DELIVERY env)
-    if (isTelegramLegacyDeliveryEnabled() && target.telegramId) {
-      try {
-        for (const chunk of chunks) {
-          await safeSend(target.telegramId, chunk, { parse_mode: 'HTML' });
-        }
-      } catch (err) {
-        logger.error({ err, userId: target.telegramId, tenantId: target.tenantId }, 'Failed to send daily briefing');
-      }
-    }
+    await sendDailyBriefingForTarget(target);
   }
 }
 
@@ -2502,34 +2643,26 @@ function isChatCoreV2AutoRevertEvalCronEnabled(env: NodeJS.ProcessEnv = process.
   return raw !== '0' && raw !== 'false' && raw !== 'off' && raw !== 'no';
 }
 
-async function sendWeeklyReview(bot?: any): Promise<void> {
-  const _telegramEnabled = isTelegramLegacyDeliveryEnabled() && bot;
-  const safeSend = async (userId: number, msg: string, opts?: any) => {
-    if (!_telegramEnabled) return;
-    try { await bot.api.sendMessage(userId, msg, opts); } catch {}
-  };
-  for (const target of getActiveUserTargets()) {
-    const payload = await buildWeeklyReviewPayloadForUser(target.tenantId);
-    // Store durable report + push
-    try {
-      await storeAndPushReport({
-        userId: target.tenantId,
-        type: 'weekly_review' as const,
-        title: '📊 Week in Review',
-        summary: payload.summary,
-        documentJson: payload.documentJson,
-        sourceJob: 'weekly_review',
-        pushCategory: 'weekly_review',
-      });
-    } catch (err) {
-      logger.debug({ err, userId: target.tenantId }, 'Failed to store weekly review report (non-fatal)');
-    }
+async function sendWeeklyReviewForTarget(target: ActiveUserTarget): Promise<void> {
+  const payload = await buildWeeklyReviewPayloadForUser(target.tenantId);
+  // Store durable report + push
+  try {
+    await storeAndPushReport({
+      userId: target.tenantId,
+      type: 'weekly_review' as const,
+      title: '📊 Week in Review',
+      summary: payload.summary,
+      documentJson: payload.documentJson,
+      sourceJob: 'weekly_review',
+      pushCategory: 'weekly_review',
+    });
+  } catch (err) {
+    logger.debug({ err, userId: target.tenantId }, 'Failed to store weekly review report (non-fatal)');
+  }
+}
 
-    // Legacy Telegram delivery (gated)
-    if (isTelegramLegacyDeliveryEnabled() && target.telegramId) try {
-      await safeSend(target.telegramId, payload.message, { parse_mode: 'HTML' });
-    } catch (err) {
-      logger.error({ err, userId: target.telegramId, tenantId: target.tenantId }, 'Failed to send weekly review');
-    }
+async function sendWeeklyReview(): Promise<void> {
+  for (const target of getActiveUserTargets()) {
+    await sendWeeklyReviewForTarget(target);
   }
 }

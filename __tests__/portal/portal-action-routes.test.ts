@@ -95,7 +95,7 @@ describe('portal action routes', () => {
   it('registers quick actions behind the portal admin token guard', () => {
     const { app, routes } = makeApp();
 
-    registerPortalActionRoutes(app as any, { api: { sendMessage: vi.fn() } });
+    registerPortalActionRoutes(app as any);
 
     expect(app.post).toHaveBeenCalledWith('/api/action/:name', hoisted.requirePortalAdminToken, expect.any(Function));
     expect(routes.get('/api/action/:name')?.[0]).toBe(hoisted.requirePortalAdminToken);
@@ -131,9 +131,8 @@ describe('portal action routes', () => {
   });
 
   it('executes actions, clears snapshot cache, and writes operator-attributed audit metadata', async () => {
-    const bot = { api: { sendMessage: vi.fn() } };
     const { app, routes } = makeApp();
-    registerPortalActionRoutes(app as any, bot);
+    registerPortalActionRoutes(app as any);
     const handler = routes.get('/api/action/:name')?.[1]!;
     const { payload, res } = makeResponse();
 
@@ -144,7 +143,7 @@ describe('portal action routes', () => {
     };
     await handler(req, res);
 
-    expect(hoisted.handlePortalAction).toHaveBeenCalledWith('clear-history', bot);
+    expect(hoisted.handlePortalAction).toHaveBeenCalledWith('clear-history');
     expect(hoisted.recordPortalAction).toHaveBeenCalledWith('clear-history');
     expect(hoisted.clearPortalSnapshotCache).toHaveBeenCalledTimes(1);
     expect(hoisted.buildPortalAdminAuditDetails).toHaveBeenCalledWith(req);

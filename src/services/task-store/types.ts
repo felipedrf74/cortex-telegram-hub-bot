@@ -96,6 +96,12 @@ export interface SyncResult {
   projectsUpserted: number;
   durationMs: number;
   errors: string[];
+  /**
+   * Set when the engine intentionally skipped this provider's pull without
+   * contacting it — currently only the poll-interval gate for full-pull
+   * (non-incremental) providers. Absent on real sync attempts.
+   */
+  skipped?: 'skipped_poll_interval';
 }
 
 /** Sync state row as stored in SQLite (snake_case fields). */

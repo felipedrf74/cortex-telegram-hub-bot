@@ -288,11 +288,15 @@ export class MicrosoftTodoAdapter implements TaskProviderAdapter {
 
   async getTasks(
     userId: number,
-    options?: { projectId?: string },
+    options?: { projectId?: string; knownProjects?: NormalizedProject[] },
   ): Promise<{ tasks: NormalizedTask[]; nextCursor?: string }> {
+    // Reuse the caller's already-fetched list set when provided (the sync
+    // engine pulls lists via getProjects immediately before calling us) —
+    // otherwise every sync fetched all lists from Graph a second time.
+    const allProjects = options?.knownProjects ?? await this.getProjects(userId);
     const projects = options?.projectId
-      ? (await this.getProjects(userId)).filter((project) => project.externalId === options.projectId)
-      : await this.getProjects(userId);
+      ? allProjects.filter((project) => project.externalId === options.projectId)
+      : allProjects;
     const client = getGraphClientForUser(userId);
     const tasks: NormalizedTask[] = [];
 

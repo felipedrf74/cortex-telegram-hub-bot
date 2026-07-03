@@ -27,7 +27,6 @@ import StripeLib from 'stripe';
 import { logger } from '../../utils/logger';
 import { config } from '../../config';
 import { webhookRateLimitMiddleware } from '../rate-limiter';
-import type { Bot } from 'grammy';
 import { getDb } from '../../services/database';
 import { syncProvider } from '../../services/task-store/sync-engine';
 import { findNexusUserByTodoistId } from '../../services/task-store/todoist-adapter';
@@ -99,14 +98,7 @@ export function verifyTodoistSignature(rawBody: Buffer, signature: string, secre
 
 // ─── Router factory ────────────────────────────────────────────────
 
-/**
- * @param bot — Optional grammy Bot instance. When provided AND
- * config.telegram.webhookUrl is set, mounts POST /webhooks/telegram with
- * grammy's webhookCallback. When omitted (e.g. tests), the telegram route
- * is silently skipped — long-polling mode in src/index.ts handles message
- * ingestion in that case.
- */
-export function createWebhookRouter(bot?: Bot): Router {
+export function createWebhookRouter(): Router {
   const router = Router();
 
   // Raw-body parser scoped to ONLY the webhook routes — global express.json()
@@ -240,49 +232,6 @@ export function createWebhookRouter(bot?: Bot): Router {
       });
     });
   });
-
-  // ── POST /webhooks/telegram (Month 2 audit item) ───────────────
-  // Mounted ONLY when both:
-  //   1. A bot instance was passed in (it isn't in tests)
-  //   2. config.telegram.webhookUrl is non-empty (the env var that
-  //      enables webhook mode in the first place)
-  // Long-polling mode is the default — webhook mode is opt-in. If we
-  // ever discover the webhook path is broken in prod, the operator
-  // unsets TELEGRAM_WEBHOOK_URL in .env and restarts: instant revert
-  // to long-polling, no code rollback needed.
-  //
-  // Telegram doesn't sign the body — it just compares the value in
-  // the X-Telegram-Bot-Api-Secret-Token header against the secret we
-  // gave it during setWebhook(). grammy's webhookCallback handles the
-  // header check internally when we pass `secretToken`.
-  //
-  // The route uses its OWN scoped express.json() parser. The rest of
-  // the portal mounts the global json() parser AFTER this router, so
-  // when this route runs, no parser has touched the body yet. We need
-  // grammy to receive a JSON-parsed body in req.body, hence the inline
-  // parser.
-  if (bot && config.telegram.webhookUrl) {
-    // Lazy require so the import isn't paid by tests / staging without
-    // a bot, where grammy isn't even loaded.
-    const { webhookCallback } = require('grammy');
-    const telegramJson = express.json({ limit: '5mb' }); // Telegram caps payloads at ~1MB
-    router.post(
-      '/telegram',
-      telegramJson,
-      webhookCallback(bot, 'express', {
-        secretToken: config.telegram.webhookSecret || undefined,
-        // grammy default is "throw" on timeout — we use "return" so a
-        // slow handler doesn't bubble a 500 to Telegram (which would
-        // trigger Telegram retries with the same update).
-        onTimeout: 'return',
-        timeoutMilliseconds: 25_000, // Telegram's own deadline is ~30s
-      }),
-    );
-    logger.info(
-      { url: config.telegram.webhookUrl, hasSecret: !!config.telegram.webhookSecret },
-      'Telegram webhook route mounted at POST /webhooks/telegram',
-    );
-  }
 
   return router;
 }

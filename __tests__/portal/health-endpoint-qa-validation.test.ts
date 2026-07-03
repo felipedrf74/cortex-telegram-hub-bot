@@ -132,15 +132,6 @@ vi.mock('../../src/skills/skill-manager', () => ({
   enableSubSkill: vi.fn(),
   disableSubSkill: vi.fn(),
 }));
-vi.mock('grammy', () => ({
-  Bot: vi.fn().mockImplementation(() => ({
-    stop: vi.fn(),
-    start: vi.fn(),
-    on: vi.fn(),
-    api: { sendMessage: vi.fn() },
-  })),
-}));
-
 // ── Tests ─────────────────────────────────────────────────────────
 
 describe('QA: Health endpoint — response structure', () => {

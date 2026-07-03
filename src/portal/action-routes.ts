@@ -38,7 +38,7 @@ function auditPortalAction(req: Request, name: string): void {
   }
 }
 
-export function registerPortalActionRoutes(app: Express, bot?: any): void {
+export function registerPortalActionRoutes(app: Express): void {
   app.post('/api/action/:name', requirePortalAdminToken, async (req: Request, res: Response) => {
     const name = String(req.params.name);
 
@@ -53,7 +53,7 @@ export function registerPortalActionRoutes(app: Express, bot?: any): void {
     }
 
     try {
-      const result = await handlePortalAction(name, bot);
+      const result = await handlePortalAction(name);
       recordPortalAction(name);
       clearPortalSnapshotCache();
       auditPortalAction(req, name);

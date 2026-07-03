@@ -63,6 +63,12 @@ import {
 } from '../../src/services/notification-orchestrator';
 import { deliveryPolicyForNotificationContract, resolveNotificationContract } from '../../src/services/notification-contracts';
 import { getDecisionOverview } from '../../src/services/decision-center';
+import {
+  createAndPushNotification,
+  getUnreadCountExcludingNotificationIds,
+  listUnreadContentNotificationIdsByTypes,
+} from '../../src/services/content-notification-store';
+import { logger } from '../../src/utils/logger';
 
 function ensureDecisionDependencyFixtureTable(): void {
   testDb.exec(`
@@ -83,6 +89,10 @@ function ensureSecretaryAgendaFixtureTable(): void {
   testDb.exec(readFileSync('migrations/083_secretary_agenda_ledger.sql', 'utf8'));
   testDb.exec(readFileSync('migrations/098_secretary_decision_explanation.sql', 'utf8'));
   testDb.exec('ALTER TABLE secretary_agenda_items ADD COLUMN reasoning_trail_json TEXT');
+}
+
+function ensureContentNotificationsFixtureTable(): void {
+  testDb.exec(readFileSync('migrations/061_content_notifications.sql', 'utf8'));
 }
 
 describe('Secretary Notification Orchestrator', () => {
@@ -139,6 +149,56 @@ describe('Secretary Notification Orchestrator', () => {
     expect(result.decisionLog.decision).toBe('blocked_user_preferences');
   });
 
+  it('defaults per-user report schedule preferences to null and persists explicit overrides', () => {
+    const fresh = getOrCreateNotificationProfile(31, 31);
+    expect(fresh.morningBriefingTime).toBeNull();
+    expect(fresh.coachBriefingTime).toBeNull();
+    expect(fresh.endOfDayTime).toBeNull();
+    expect(fresh.weeklyReviewReportDay).toBeNull();
+    expect(fresh.weeklyReviewReportTime).toBeNull();
+
+    const updated = updateNotificationProfile(31, 31, {
+      morningBriefingTime: '07:15',
+      weeklyReviewReportDay: 0,
+    });
+    expect(updated.morningBriefingTime).toBe('07:15');
+    expect(updated.weeklyReviewReportDay).toBe(0); // Sunday must survive as 0, not fall back
+    expect(updated.coachBriefingTime).toBeNull();
+    expect(updated.endOfDayTime).toBeNull();
+    expect(updated.weeklyReviewReportTime).toBeNull();
+
+    // Undefined fields keep the stored values.
+    const untouched = updateNotificationProfile(31, 31, { pushEnabled: false });
+    expect(untouched.morningBriefingTime).toBe('07:15');
+    expect(untouched.weeklyReviewReportDay).toBe(0);
+
+    // Explicit null clears back to the global default (NULL column).
+    const cleared = updateNotificationProfile(31, 31, {
+      morningBriefingTime: null,
+      weeklyReviewReportDay: null,
+    });
+    expect(cleared.morningBriefingTime).toBeNull();
+    expect(cleared.weeklyReviewReportDay).toBeNull();
+  });
+
+  it('rejects malformed report schedule values without persisting partial state', () => {
+    updateNotificationProfile(32, 32, { morningBriefingTime: '07:15' });
+
+    expect(() => updateNotificationProfile(32, 32, { endOfDayTime: '25:99' }))
+      .toThrow(/expected HH:MM/);
+    expect(() => updateNotificationProfile(32, 32, { morningBriefingTime: '9:00' }))
+      .toThrow(/expected HH:MM/);
+    expect(() => updateNotificationProfile(32, 32, { weeklyReviewReportDay: 9 }))
+      .toThrow(/expected 0 \(Sunday\) through 6 \(Saturday\)/);
+    expect(() => updateNotificationProfile(32, 32, { weeklyReviewReportDay: 2.5 }))
+      .toThrow(/expected 0 \(Sunday\) through 6 \(Saturday\)/);
+
+    const after = getOrCreateNotificationProfile(32, 32);
+    expect(after.morningBriefingTime).toBe('07:15');
+    expect(after.endOfDayTime).toBeNull();
+    expect(after.weeklyReviewReportDay).toBeNull();
+  });
+
   it('returns a deduped evaluation for duplicate suppressed intents instead of aborting on the intent index', async () => {
     updateNotificationProfile(14, 14, {
       skillPreferences: { finance: false },
@@ -169,6 +229,14 @@ describe('Secretary Notification Orchestrator', () => {
   });
 
   it('counts badge-contributing center unread and bridge entity ids without the UI list limit', () => {
+    // Legacy bridge key whose trailing id equals the userId (index 15 below)
+    // is interpreted as the entity-stable format and expanded through the
+    // legacy content_notifications table, so provide the covered unread row.
+    ensureContentNotificationsFixtureTable();
+    testDb.prepare(`
+      INSERT INTO content_notifications (id, user_id, type, title, body)
+      VALUES (15, 15, 'script_ready', 'Bridge', 'Bridge body')
+    `).run();
     const insert = testDb.prepare(`
       INSERT INTO notification_center_items (
         item_id, intent_id, user_id, tenant_id, title, body, safe_body,
@@ -338,7 +406,16 @@ describe('Secretary Notification Orchestrator', () => {
 
     expect(result.item?.sourceSkill).toBe('cooking');
     expect(result.decisionLog.decision).toBe('blocked_missing_device_token');
-    expect(result.deliveryAttempts[0].status).toBe('blocked_missing_device_token');
+    // The attempt never reached a provider: no delivery-attempt row is
+    // fabricated (previously a provider='mock' blocked row was inserted).
+    expect(result.deliveryAttempts).toHaveLength(0);
+    expect(result.decisionLog.deliveryAttemptIds).toHaveLength(0);
+    const attemptCount = (testDb.prepare(
+      'SELECT COUNT(*) AS count FROM notification_delivery_attempts WHERE user_id = 2',
+    ).get() as { count: number }).count;
+    expect(attemptCount).toBe(0);
+    // The in-app center item stays durable for push-less users.
+    expect(listNotificationCenterItems(2, 2)).toHaveLength(1);
   });
 
   it('sanitizes delivery error codes before structured reporting', () => {
@@ -1131,6 +1208,163 @@ describe('Secretary Notification Orchestrator', () => {
     expect(firstLog?.deliveryAttemptIds).toEqual(secondLog?.deliveryAttemptIds);
   });
 
+  it('single-flights concurrent release sweeps so a due row is pushed at most once', async () => {
+    pushTokens = ['sandbox-token'];
+    process.env.NOTIFICATION_DELIVERY_MODE = 'mock';
+    updateNotificationProfile(57, 57, {
+      quietHours: { start: '00:00', end: '23:59' },
+    });
+    const delayed = await createNotificationIntent(buildSkillNotificationFixtureIntent('cooking', 57, {
+      dedupeKey: 'release-single-flight',
+    }));
+    expect(delayed.decisionLog.decision).toBe('quiet_hours_delayed');
+    testDb.prepare(`
+      UPDATE notification_decision_logs
+      SET scheduled_for = ?
+      WHERE decision_log_id = ?
+    `).run('2026-05-07T11:59:00.000Z', delayed.decisionLog.decisionLogId);
+
+    const [first, second] = await Promise.all([
+      releaseDueNotificationDeliveries(),
+      releaseDueNotificationDeliveries(),
+    ]);
+
+    // The second concurrent caller joins the in-flight sweep instead of
+    // starting a competing one, so both see the same summary object.
+    expect(second).toBe(first);
+    expect(first.released).toBe(1);
+    const attemptCount = (testDb.prepare(`
+      SELECT COUNT(*) AS count
+        FROM notification_delivery_attempts
+       WHERE user_id = 57 AND channel = 'push'
+    `).get() as { count: number }).count;
+    expect(attemptCount).toBe(1);
+    const updated = getNotificationDecisionLog(delayed.decisionLog.decisionLogId, 57, 57);
+    expect(updated?.decision).toBe('sent_push');
+
+    // The latch is released once the sweep completes.
+    const third = await releaseDueNotificationDeliveries();
+    expect(third.inspected).toBe(0);
+  });
+
+  it('CAS-skips a due row that a concurrent sweep already claimed and does not count it as sent', async () => {
+    pushTokens = ['sandbox-token'];
+    process.env.NOTIFICATION_DELIVERY_MODE = 'apns';
+    apnsConfigured = true;
+    updateNotificationProfile(58, 58, {
+      quietHours: { start: '00:00', end: '23:59' },
+    });
+    const delayed = await createNotificationIntent(buildSkillNotificationFixtureIntent('cooking', 58, {
+      dedupeKey: 'release-cas-claimed',
+    }));
+    expect(delayed.decisionLog.decision).toBe('quiet_hours_delayed');
+    testDb.prepare(`
+      UPDATE notification_decision_logs
+      SET scheduled_for = ?
+      WHERE decision_log_id = ?
+    `).run('2026-05-07T11:59:00.000Z', delayed.decisionLog.decisionLogId);
+
+    mockSendPushNotification.mockImplementation(() => {
+      // Simulate another sweep claiming the row between this sweep's SELECT
+      // and its updateReleasedLogs UPDATE.
+      testDb.prepare(`
+        UPDATE notification_decision_logs
+        SET decision = 'sent_push', reason = 'released by concurrent sweep', sent_at = datetime('now')
+        WHERE decision_log_id = ?
+      `).run(delayed.decisionLog.decisionLogId);
+      return Promise.resolve({ sent: 1, failed: 0, skipped: 0, retriable: 0, unregistered: [] });
+    });
+
+    const result = await releaseDueNotificationDeliveries();
+    expect(result.inspected).toBe(1);
+    expect(result.released).toBe(0);
+    expect(result.blocked).toBe(0);
+    const updated = getNotificationDecisionLog(delayed.decisionLog.decisionLogId, 58, 58);
+    expect(updated?.reason).toBe('released by concurrent sweep');
+    expect(vi.mocked(logger.warn).mock.calls.some(
+      (call) => String(call[1]).includes('already claimed by a concurrent sweep'),
+    )).toBe(true);
+  });
+
+  it('records apns_delivery_failed when a due release fails at APNs with tokens present', async () => {
+    pushTokens = ['sandbox-token'];
+    process.env.NOTIFICATION_DELIVERY_MODE = 'apns';
+    apnsConfigured = true;
+    mockSendPushNotification.mockResolvedValue({ sent: 0, failed: 1, skipped: 0, retriable: 0, unregistered: [] });
+    updateNotificationProfile(59, 59, {
+      quietHours: { start: '00:00', end: '23:59' },
+    });
+    const delayed = await createNotificationIntent(buildSkillNotificationFixtureIntent('cooking', 59, {
+      dedupeKey: 'release-apns-failure',
+    }));
+    expect(delayed.decisionLog.decision).toBe('quiet_hours_delayed');
+    testDb.prepare(`
+      UPDATE notification_decision_logs
+      SET scheduled_for = ?
+      WHERE decision_log_id = ?
+    `).run('2026-05-07T11:59:00.000Z', delayed.decisionLog.decisionLogId);
+
+    const result = await releaseDueNotificationDeliveries();
+    expect(result.inspected).toBe(1);
+    expect(result.released).toBe(0);
+    expect(result.blocked).toBe(1);
+    const updated = getNotificationDecisionLog(delayed.decisionLog.decisionLogId, 59, 59);
+    expect(updated?.decision).toBe('apns_delivery_failed');
+    expect(updated?.reason).toContain('APNs delivery failed');
+    const attemptRow = testDb.prepare(`
+      SELECT provider, status FROM notification_delivery_attempts WHERE user_id = 59
+    `).get() as { provider: string; status: string };
+    expect(attemptRow).toEqual({ provider: 'apns', status: 'failed' });
+  });
+
+  it('dedupes recurring bridge events per user+type and keeps badge exclusion for both key formats', async () => {
+    ensureContentNotificationsFixtureTable();
+
+    // Garmin reauth is the live recurring producer: same user, same type.
+    const garminEvent = {
+      userId: 21,
+      type: 'content_action_required' as const,
+      title: 'Garmin needs re-authentication',
+      body: 'Your Garmin session expired. Reconnect Garmin to restore training data in Nexus Hub.',
+      data: { kind: 'garmin_reauth_required', provider: 'garmin' },
+    };
+    const firstId = await createAndPushNotification(garminEvent);
+    const secondId = await createAndPushNotification(garminEvent);
+    expect(firstId).toBeGreaterThan(0);
+    expect(secondId).toBeGreaterThan(firstId);
+
+    // One active center item under the entity-stable key — the second event
+    // deduped instead of minting a fresh key from the legacy rowid.
+    const centerRows = testDb.prepare(`
+      SELECT dedupe_key AS dedupeKey, status FROM notification_center_items WHERE user_id = 21
+    `).all() as Array<{ dedupeKey: string; status: string }>;
+    expect(centerRows).toHaveLength(1);
+    expect(centerRows[0].dedupeKey).toBe('content:content_action_required:21');
+    expect(centerRows[0].status).toBe('unread');
+
+    // Old-format bridge rows already in the DB keep excluding by legacy id.
+    testDb.prepare(`
+      INSERT INTO content_notifications (id, user_id, type, title, body)
+      VALUES (900, 21, 'script_ready', 'Old-format', 'Old-format body')
+    `).run();
+    testDb.prepare(`
+      INSERT INTO notification_center_items (
+        item_id, intent_id, user_id, tenant_id, title, body, safe_body,
+        source_skill, type, priority, status, actions_json, dedupe_key, requires_user_action
+      ) VALUES ('nc_bridge_old_format', 'ni_bridge_old_format', 21, 21, 'Content', 'Open Nexus.', 'Open Nexus.',
+        'content', 'approval_required', 'active', 'unread', '[]', 'content:script_ready:900', 1)
+    `).run();
+
+    const bridgedIds = listNotificationBridgeEntityIds(21, 21, 'content');
+    expect(bridgedIds).toEqual(expect.arrayContaining([firstId, secondId, 900]));
+    expect(listUnreadContentNotificationIdsByTypes(21, ['content_action_required']))
+      .toEqual(expect.arrayContaining([firstId, secondId]));
+
+    // Badge exclusion covers every legacy row represented in the center:
+    // the unread legacy count net of bridged ids is zero.
+    expect(getUnreadCountExcludingNotificationIds(21, bridgedIds)).toBe(0);
+  });
+
   it('does not let untrusted send_now intents bypass quiet hours', async () => {
     pushTokens = ['sandbox-token'];
     updateNotificationProfile(55, 55, {
@@ -1435,5 +1669,29 @@ describe('Secretary Notification Orchestrator', () => {
       expect(intent.sourceSkill).toBe(source);
       expect(intent.deeplink).toMatch(/^nexus:\/\//);
     }
+  });
+
+  it('profile shape stays backward-compatible for existing API clients (QA finding 5)', () => {
+    // iOS decodes the `profile` object from GET/PUT /preferences and ignores
+    // unknown keys. This pins the legacy key set so a rename/removal breaks
+    // loudly here instead of silently breaking old clients, and documents
+    // that migration 225 only ADDED the five reportSchedule fields.
+    const profile = getOrCreateNotificationProfile(21, 21) as unknown as Record<string, unknown>;
+    const legacyKeys = [
+      'userId', 'tenantId', 'quietHours', 'timezone', 'pushEnabled', 'localEnabled',
+      'emailEnabled', 'portalEnabled', 'inAppEnabled', 'skillPreferences',
+      'defaultReminderMinutes', 'workoutReminderMinutes', 'contentReminderMinutes',
+      'financeReminderDays', 'allowTimeSensitive', 'allowCritical', 'digestPassiveItems',
+      'dailyDigestTime', 'weeklyReviewDay', 'weeklyReviewTime', 'doNotNotifyRules',
+      'updatedAt', 'createdAt',
+    ];
+    for (const key of legacyKeys) {
+      expect(profile, key).toHaveProperty(key);
+    }
+    const addedKeys = Object.keys(profile).filter((key) => !legacyKeys.includes(key)).sort();
+    expect(addedKeys).toEqual([
+      'coachBriefingTime', 'endOfDayTime', 'morningBriefingTime',
+      'weeklyReviewReportDay', 'weeklyReviewReportTime',
+    ]);
   });
 });

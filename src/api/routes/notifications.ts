@@ -53,6 +53,7 @@ import {
   type NotificationCenterItem,
   type NotificationEvaluationResult,
   type NotificationIntentInput,
+  type NotificationProfile,
   type NotificationSourceSkill,
 } from '../../services/notification-orchestrator';
 import { DecisionActionError, getDecisionItem, performDecisionAction } from '../../services/decision-center';
@@ -192,6 +193,38 @@ function isInternalNotificationIntentRequest(req: AuthenticatedRequest): boolean
   const expected = process.env.INTERNAL_API_SECRET || '';
   const provided = req.header('x-internal-secret');
   return Boolean(expected) && secureSecretMatches(expected, provided);
+}
+
+// Global report-schedule fallbacks. NULL profile columns mean "use the global
+// default"; these mirror the resolution the report-schedule dispatcher applies
+// (morning = TODO digest time, coach = Garmin coach time, end of day 21:00,
+// weekly review Friday 17:00).
+import {
+  END_OF_DAY_DEFAULT_TIME,
+  WEEKLY_REVIEW_DEFAULT_DAY as WEEKLY_REVIEW_REPORT_DEFAULT_DAY,
+  WEEKLY_REVIEW_DEFAULT_TIME as WEEKLY_REVIEW_REPORT_DEFAULT_TIME,
+} from '../../services/report-schedule-dispatcher';
+
+function buildReportScheduleForApi(profile: NotificationProfile): Record<string, unknown> {
+  const morningBriefingTime = profile.morningBriefingTime ?? null;
+  const coachBriefingTime = profile.coachBriefingTime ?? null;
+  const endOfDayTime = profile.endOfDayTime ?? null;
+  const weeklyReviewReportDay = profile.weeklyReviewReportDay ?? null;
+  const weeklyReviewReportTime = profile.weeklyReviewReportTime ?? null;
+  return {
+    morningBriefingTime,
+    coachBriefingTime,
+    endOfDayTime,
+    weeklyReviewReportDay,
+    weeklyReviewReportTime,
+    effective: {
+      morningBriefingTime: morningBriefingTime ?? config.todo.digestTime,
+      coachBriefingTime: coachBriefingTime ?? config.garmin.coachTime,
+      endOfDayTime: endOfDayTime ?? END_OF_DAY_DEFAULT_TIME,
+      weeklyReviewReportDay: weeklyReviewReportDay ?? WEEKLY_REVIEW_REPORT_DEFAULT_DAY,
+      weeklyReviewReportTime: weeklyReviewReportTime ?? WEEKLY_REVIEW_REPORT_DEFAULT_TIME,
+    },
+  };
 }
 
 function formatCenterItemForApi(item: NotificationCenterItem): Record<string, unknown> {
@@ -986,7 +1019,8 @@ export function notificationRoutes(): Router {
     const { userId } = authReq;
     if (!ensureValidNotificationsRouteScope(res, userId, 'notifications_route_get_preferences')) return;
     const tenantId = routeTenantId(authReq, userId);
-    sendSuccess(res, { profile: getOrCreateNotificationProfile(userId, tenantId) });
+    const profile = getOrCreateNotificationProfile(userId, tenantId);
+    sendSuccess(res, { profile, reportSchedule: buildReportScheduleForApi(profile) });
   }));
 
   router.put('/preferences', asyncHandler(async (req, res: Response) => {
@@ -996,7 +1030,7 @@ export function notificationRoutes(): Router {
     const tenantId = routeTenantId(authReq, userId);
     try {
       const profile = updateNotificationProfile(userId, tenantId, req.body ?? {});
-      sendSuccess(res, { profile });
+      sendSuccess(res, { profile, reportSchedule: buildReportScheduleForApi(profile) });
     } catch (err: any) {
       logger.warn({ err, userId }, 'Notification preferences rejected');
       sendError(res, 'INVALID_NOTIFICATION_PREFERENCES', 'Unable to update notification preferences', 400);

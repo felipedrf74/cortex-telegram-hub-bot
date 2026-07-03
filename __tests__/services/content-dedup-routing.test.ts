@@ -2,7 +2,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import Database from 'better-sqlite3';
 
 let testDb: Database.Database;
-const completeOneShotWithFallback = vi.hoisted(() => vi.fn());
 
 vi.mock('../../src/services/database', () => ({
   getDb: () => testDb,
@@ -11,29 +10,13 @@ vi.mock('../../src/services/database', () => ({
   findUnexpectedMigrationPrefixCollisions: vi.fn(() => []),
 }));
 
-vi.mock('../../src/config', () => ({
-  config: {
-    anthropic: { apiKey: 'test-anthropic-key', classifierModel: 'claude-haiku-test' },
-    gemini: { model: 'gemini-test' },
-    openai: { apiKey: 'test-openai-key' },
-    aiSafety: { callTimeoutMs: 1000 },
-  },
-}));
-
-vi.mock('../../src/services/gemini-provider', () => ({
-  completeOneShotWithFallback,
-}));
-
-vi.mock('../../src/portal/anthropic-hook', () => ({
-  trackedCreate: vi.fn(),
-}));
-
 vi.mock('../../src/utils/logger', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(), trace: vi.fn(), child: vi.fn().mockReturnThis() },
   LOGGER_REDACTION_PATHS: [],
 }));
 
 import { isDuplicateIdea } from '../../src/services/content-dedup';
+import { logger } from '../../src/utils/logger';
 
 function seedIdea(userId: number, title: string, angleTag: string | null = null): void {
   testDb.prepare(`
@@ -42,7 +25,14 @@ function seedIdea(userId: number, title: string, angleTag: string | null = null)
   `).run(title, angleTag, userId);
 }
 
-describe('content dedup provider routing', () => {
+function seedFeedback(userId: number, topic: string, angleTag: string | null = null): void {
+  testDb.prepare(`
+    INSERT INTO content_topic_feedback (topic, angle_tag, user_id, created_at)
+    VALUES (?, ?, ?, datetime('now'))
+  `).run(topic, angleTag, userId);
+}
+
+describe('content dedup deterministic classifier', () => {
   beforeEach(() => {
     testDb = new Database(':memory:');
     testDb.exec(`
@@ -61,55 +51,112 @@ describe('content dedup provider routing', () => {
         created_at TEXT DEFAULT (datetime('now'))
       );
     `);
-    completeOneShotWithFallback.mockReset();
-    completeOneShotWithFallback.mockResolvedValue({
-      text: '{"isDuplicate":false,"similarTo":null,"confidence":0.1}',
-      provider: 'gemini',
-    });
+    vi.mocked(logger.warn).mockClear();
   });
 
   afterEach(() => {
-    testDb?.close();
+    if (testDb?.open) testDb.close();
   });
 
-  it('uses the live one-shot routing cascade with user-scoped context', async () => {
+  it('flags a byte-identical title as duplicate with confidence 0.95', async () => {
     seedIdea(42, 'Race week recap');
     seedIdea(42, 'Fueling mistakes before long runs');
     seedIdea(42, 'Creator workflow for endurance athletes');
-    seedIdea(77, 'Private tenant B launch plan');
 
-    const result = await isDuplicateIdea('Race week content workflow', 'framework', 42, 42);
+    const result = await isDuplicateIdea('Race week recap', undefined, 42, 42);
 
-    expect(result.isDuplicate).toBe(false);
-    expect(completeOneShotWithFallback).toHaveBeenCalledTimes(1);
-    const [systemPrompt, userPrompt, category, anthropicFallback, options] = completeOneShotWithFallback.mock.calls[0];
-    expect(systemPrompt).toContain('strict semantic duplicate detector');
-    expect(userPrompt).toContain('Race week recap');
-    expect(userPrompt).not.toContain('Private tenant B launch plan');
-    expect(category).toBe('content_dedup');
-    expect(typeof anthropicFallback).toBe('function');
-    expect(options).toMatchObject({
-      maxTokens: 256,
-      temperature: 0.1,
-      jsonMode: true,
-      userId: 42,
-    });
+    expect(result).toEqual({ isDuplicate: true, similarTo: 'Race week recap', confidence: 0.95 });
   });
 
-  it('partitions cache by user scope', async () => {
-    seedIdea(42, 'User A topic one');
-    seedIdea(42, 'User A topic two');
-    seedIdea(42, 'User A topic three');
-    seedIdea(77, 'User B topic one');
+  it('flags a normalized exact match (case, accents, punctuation) as duplicate 0.95', async () => {
+    seedIdea(42, 'Treino de força: guia completo!');
+    seedIdea(42, 'Fueling mistakes before long runs');
+    seedIdea(42, 'Creator workflow for endurance athletes');
+
+    const result = await isDuplicateIdea('treino de forca — guia completo', undefined, 42, 42);
+
+    expect(result).toEqual({ isDuplicate: true, similarTo: 'Treino de força: guia completo!', confidence: 0.95 });
+  });
+
+  it('flags a high-token-overlap paraphrase as duplicate 0.85', async () => {
+    seedIdea(42, '5 erros comuns no treino de força');
+    seedIdea(42, 'Fueling mistakes before long runs');
+    seedIdea(42, 'Creator workflow for endurance athletes');
+
+    const result = await isDuplicateIdea('os 5 erros comuns no treino de força', undefined, 42, 42);
+
+    expect(result).toEqual({ isDuplicate: true, similarTo: '5 erros comuns no treino de força', confidence: 0.85 });
+  });
+
+  it('does NOT flag same topic when both angle tags exist and differ', async () => {
+    seedIdea(42, '5 erros comuns no treino de força', 'opinion');
+    seedIdea(42, 'Fueling mistakes before long runs');
+    seedIdea(42, 'Creator workflow for endurance athletes');
+
+    const differentAngle = await isDuplicateIdea('5 erros comuns no treino de força', 'reaction', 42, 42);
+    expect(differentAngle).toEqual({ isDuplicate: false, similarTo: null, confidence: 0 });
+
+    // Control: the same angle (and no angle at all) still dedupes.
+    const sameAngle = await isDuplicateIdea('5 erros comuns no treino de força', 'opinion', 42, 42);
+    expect(sameAngle.isDuplicate).toBe(true);
+    const noAngle = await isDuplicateIdea('5 erros comuns no treino de força', undefined, 42, 42);
+    expect(noAngle.isDuplicate).toBe(true);
+  });
+
+  it('does not flag unrelated titles', async () => {
+    seedIdea(42, 'Race week recap');
+    seedIdea(42, 'Fueling mistakes before long runs');
+    seedIdea(42, 'Creator workflow for endurance athletes');
+
+    const result = await isDuplicateIdea('Por que o estado é seu inimigo', 'opinion', 42, 42);
+
+    expect(result).toEqual({ isDuplicate: false, similarTo: null, confidence: 0 });
+  });
+
+  it('skips dedup when fewer than 3 recent ideas exist', async () => {
+    seedIdea(42, 'Race week recap');
+    seedIdea(42, 'Fueling mistakes before long runs');
+
+    const result = await isDuplicateIdea('Race week recap', undefined, 42, 42);
+
+    expect(result).toEqual({ isDuplicate: false, similarTo: null, confidence: 0 });
+  });
+
+  it('counts content_topic_feedback rows toward the recent pool and matches against them', async () => {
+    seedIdea(42, 'Fueling mistakes before long runs');
+    seedIdea(42, 'Creator workflow for endurance athletes');
+    seedFeedback(42, 'Race week recap');
+
+    const result = await isDuplicateIdea('Race week recap', undefined, 42, 42);
+
+    expect(result).toEqual({ isDuplicate: true, similarTo: 'Race week recap', confidence: 0.95 });
+  });
+
+  it('scopes recent ideas per user', async () => {
+    seedIdea(42, 'Shared candidate');
+    seedIdea(42, 'Fueling mistakes before long runs');
+    seedIdea(42, 'Creator workflow for endurance athletes');
+    seedIdea(77, 'Private tenant B launch plan');
     seedIdea(77, 'User B topic two');
     seedIdea(77, 'User B topic three');
 
-    await isDuplicateIdea('Shared title', 'opinion', 42, 42);
-    await isDuplicateIdea('Shared title', 'opinion', 77, 77);
+    const asOwner = await isDuplicateIdea('Shared candidate', undefined, 42, 42);
+    const asOtherUser = await isDuplicateIdea('Shared candidate', undefined, 77, 77);
 
-    expect(completeOneShotWithFallback).toHaveBeenCalledTimes(2);
-    expect(completeOneShotWithFallback.mock.calls[0][1]).toContain('User A topic one');
-    expect(completeOneShotWithFallback.mock.calls[1][1]).toContain('User B topic one');
+    expect(asOwner.isDuplicate).toBe(true);
+    expect(asOtherUser).toEqual({ isDuplicate: false, similarTo: null, confidence: 0 });
+  });
+
+  it('fails open when the DB fetch throws', async () => {
+    testDb.close();
+
+    const result = await isDuplicateIdea('Anything at all', undefined, 42, 42);
+
+    expect(result).toEqual({ isDuplicate: false, similarTo: null, confidence: 0 });
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ userId: 42, tenantId: 42 }),
+      expect.stringContaining('Dedup check failed'),
+    );
   });
 
   // ─────────────────────────────────────────────────────────────────────
@@ -118,7 +165,8 @@ describe('content dedup provider routing', () => {
   // contract for `isDuplicateIdea` — only positive-path coverage. These
   // tests pin the throw paths so a future regression that loosens
   // `resolveRequiredContentDedupScope` (e.g., adds back a userId fallback)
-  // surfaces immediately.
+  // surfaces immediately. Scope errors must THROW — only the fetch/classify
+  // path fails open.
   // ─────────────────────────────────────────────────────────────────────
 
   it('throws when userId is provided but tenantId is missing', async () => {
@@ -126,9 +174,6 @@ describe('content dedup provider routing', () => {
       .rejects.toMatchObject({
         name: 'TenantScopeError',
       });
-
-    // No AI fan-out should have happened — refusal must precede the cascade.
-    expect(completeOneShotWithFallback).not.toHaveBeenCalled();
   });
 
   it('throws when userId is provided but tenantId is 0', async () => {
@@ -136,7 +181,6 @@ describe('content dedup provider routing', () => {
       .rejects.toMatchObject({
         name: 'TenantScopeError',
       });
-    expect(completeOneShotWithFallback).not.toHaveBeenCalled();
   });
 
   it('throws when userId is provided but tenantId is negative', async () => {
@@ -144,7 +188,6 @@ describe('content dedup provider routing', () => {
       .rejects.toMatchObject({
         name: 'TenantScopeError',
       });
-    expect(completeOneShotWithFallback).not.toHaveBeenCalled();
   });
 
   it('throws when userId is 0 (invalid) even with valid tenantId', async () => {
@@ -154,6 +197,5 @@ describe('content dedup provider routing', () => {
     // check.
     await expect(isDuplicateIdea('Shared title', 'opinion', 0 as any, 42 as any))
       .rejects.toThrow(/Content dedup requires authenticated user scope/);
-    expect(completeOneShotWithFallback).not.toHaveBeenCalled();
   });
 });

@@ -39,10 +39,13 @@ vi.mock('../../src/utils/logger', () => ({
   LOGGER_REDACTION_PATHS: [],
 }));
 
-import { reconcileOrphanedTrainingAgendaEvents } from '../../src/services/training-agenda-reconciliation';
+import { reconcileOrphanedTrainingAgendaEvents, _resetLegacyMarkerScanGateForTests } from '../../src/services/training-agenda-reconciliation';
 
 describe('training-agenda-reconciliation', () => {
   beforeEach(() => {
+    // The legacy-marker scan runs at most once per user per day; reset the
+    // in-memory gate so every test exercises a fresh scan window.
+    _resetLegacyMarkerScanGateForTests();
     vi.clearAllMocks();
     mocks.findOrphanedOwnerships.mockReturnValue([]);
     mocks.findOwnershipsNeedingReconciliation.mockReturnValue([]);

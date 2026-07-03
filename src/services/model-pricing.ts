@@ -20,10 +20,22 @@ export interface ModelPricing {
   cacheReadUsdPerMillion?: number;
   cacheWriteUsdPerMillion?: number;
   batchDiscount?: number;
-  // Deliberately unset today. Enabling suffix inheritance is a quota-cost
-  // decision and requires review per docs/MODEL-REVIEW-PROCESS.md.
+  // When true, dated snapshot names inherit this entry's pricing — but ONLY
+  // when the extra suffix looks like a snapshot tag (YYYY-MM-DD, YYYYMMDD,
+  // or "latest"; see VARIANT_SUFFIX_PATTERN). Arbitrary suffixes still fall
+  // through to the sentinel so a hypothetical "-high-cost-variant" can never
+  // silently inherit cheap pricing (review rationale:
+  // docs/MODEL-REVIEW-PROCESS.md). Enabled 2026-07-03 for OpenAI entries
+  // because the SDK logs response.model, which OpenAI resolves to dated
+  // snapshots (e.g. gpt-4o-mini → gpt-4o-mini-2024-07-18) — those rows were
+  // booking Sonnet-ceiling sentinel cost (~20x real) as pricing_status
+  // 'unresolved'. Migration 221 repriced the historical rows.
   acceptVariantSuffix?: boolean;
 }
+
+// Snapshot-style suffixes that may inherit base-model pricing when
+// acceptVariantSuffix is set: "2024-07-18", "20251001", "latest".
+const VARIANT_SUFFIX_PATTERN = /^(\d{4}-\d{2}-\d{2}|\d{8}|latest)$/;
 
 export interface ModelUsageForCost {
   inputTokens: number;
@@ -59,17 +71,17 @@ const MODEL_PRICING: ModelPricing[] = [
   { provider: 'gemini', model: 'gemini-1.5-pro', inputUsdPerMillion: 1.25, outputUsdPerMillion: 5.00 },
 
   // OpenAI API
-  { provider: 'openai', model: 'gpt-5.4-nano', inputUsdPerMillion: 0.20, outputUsdPerMillion: 1.25, cacheReadUsdPerMillion: 0.02, batchDiscount: 0.5 },
-  { provider: 'openai', model: 'gpt-5.4-mini', inputUsdPerMillion: 0.75, outputUsdPerMillion: 4.50, cacheReadUsdPerMillion: 0.075, batchDiscount: 0.5 },
-  { provider: 'openai', model: 'gpt-5.4', inputUsdPerMillion: 2.50, outputUsdPerMillion: 15.00, cacheReadUsdPerMillion: 0.25, batchDiscount: 0.5 },
-  { provider: 'openai', model: 'gpt-5-nano', inputUsdPerMillion: 0.05, outputUsdPerMillion: 0.40, cacheReadUsdPerMillion: 0.005, batchDiscount: 0.5 },
-  { provider: 'openai', model: 'gpt-5-mini', inputUsdPerMillion: 0.25, outputUsdPerMillion: 2.00, cacheReadUsdPerMillion: 0.025, batchDiscount: 0.5 },
-  { provider: 'openai', model: 'gpt-5', inputUsdPerMillion: 1.25, outputUsdPerMillion: 10.00, cacheReadUsdPerMillion: 0.125, batchDiscount: 0.5 },
-  { provider: 'openai', model: 'gpt-4.1-mini', inputUsdPerMillion: 0.40, outputUsdPerMillion: 1.60, cacheReadUsdPerMillion: 0.10, batchDiscount: 0.5 },
-  { provider: 'openai', model: 'gpt-4.1-nano', inputUsdPerMillion: 0.10, outputUsdPerMillion: 0.40, cacheReadUsdPerMillion: 0.025, batchDiscount: 0.5 },
-  { provider: 'openai', model: 'o4-mini', inputUsdPerMillion: 1.10, outputUsdPerMillion: 4.40, cacheReadUsdPerMillion: 0.275, batchDiscount: 0.5 },
-  { provider: 'openai', model: 'gpt-4o-mini', inputUsdPerMillion: 0.15, outputUsdPerMillion: 0.60, cacheReadUsdPerMillion: 0.075, batchDiscount: 0.5 },
-  { provider: 'openai', model: 'gpt-4o', inputUsdPerMillion: 2.50, outputUsdPerMillion: 10.00, cacheReadUsdPerMillion: 1.25, batchDiscount: 0.5 },
+  { provider: 'openai', model: 'gpt-5.4-nano', inputUsdPerMillion: 0.20, outputUsdPerMillion: 1.25, cacheReadUsdPerMillion: 0.02, batchDiscount: 0.5, acceptVariantSuffix: true },
+  { provider: 'openai', model: 'gpt-5.4-mini', inputUsdPerMillion: 0.75, outputUsdPerMillion: 4.50, cacheReadUsdPerMillion: 0.075, batchDiscount: 0.5, acceptVariantSuffix: true },
+  { provider: 'openai', model: 'gpt-5.4', inputUsdPerMillion: 2.50, outputUsdPerMillion: 15.00, cacheReadUsdPerMillion: 0.25, batchDiscount: 0.5, acceptVariantSuffix: true },
+  { provider: 'openai', model: 'gpt-5-nano', inputUsdPerMillion: 0.05, outputUsdPerMillion: 0.40, cacheReadUsdPerMillion: 0.005, batchDiscount: 0.5, acceptVariantSuffix: true },
+  { provider: 'openai', model: 'gpt-5-mini', inputUsdPerMillion: 0.25, outputUsdPerMillion: 2.00, cacheReadUsdPerMillion: 0.025, batchDiscount: 0.5, acceptVariantSuffix: true },
+  { provider: 'openai', model: 'gpt-5', inputUsdPerMillion: 1.25, outputUsdPerMillion: 10.00, cacheReadUsdPerMillion: 0.125, batchDiscount: 0.5, acceptVariantSuffix: true },
+  { provider: 'openai', model: 'gpt-4.1-mini', inputUsdPerMillion: 0.40, outputUsdPerMillion: 1.60, cacheReadUsdPerMillion: 0.10, batchDiscount: 0.5, acceptVariantSuffix: true },
+  { provider: 'openai', model: 'gpt-4.1-nano', inputUsdPerMillion: 0.10, outputUsdPerMillion: 0.40, cacheReadUsdPerMillion: 0.025, batchDiscount: 0.5, acceptVariantSuffix: true },
+  { provider: 'openai', model: 'o4-mini', inputUsdPerMillion: 1.10, outputUsdPerMillion: 4.40, cacheReadUsdPerMillion: 0.275, batchDiscount: 0.5, acceptVariantSuffix: true },
+  { provider: 'openai', model: 'gpt-4o-mini', inputUsdPerMillion: 0.15, outputUsdPerMillion: 0.60, cacheReadUsdPerMillion: 0.075, batchDiscount: 0.5, acceptVariantSuffix: true },
+  { provider: 'openai', model: 'gpt-4o', inputUsdPerMillion: 2.50, outputUsdPerMillion: 10.00, cacheReadUsdPerMillion: 1.25, batchDiscount: 0.5, acceptVariantSuffix: true },
 
   // Anthropic API
   { provider: 'anthropic', model: 'claude-haiku-4-5-20251001', inputUsdPerMillion: 1.00, outputUsdPerMillion: 5.00, cacheReadUsdPerMillion: 0.10, cacheWriteUsdPerMillion: 1.25 },
@@ -118,10 +130,16 @@ export function resolveModelPricing(
       return entry;
     }
   }
+  // Snapshot-suffix inheritance. The suffix must be date-like or "latest"
+  // (VARIANT_SUFFIX_PATTERN), which also disambiguates sibling prefixes:
+  // "gpt-4o-mini-2024-07-18" cannot match the "gpt-4o" entry because the
+  // remainder "mini-2024-07-18" is not a snapshot tag.
   for (const entry of MODEL_PRICING) {
     if (normalizedProvider && entry.provider !== normalizedProvider) continue;
     if (!entry.acceptVariantSuffix) continue;
-    if (normalizedModel.startsWith(`${entry.model}-`)) return entry;
+    if (!normalizedModel.startsWith(`${entry.model}-`)) continue;
+    const suffix = normalizedModel.slice(entry.model.length + 1);
+    if (VARIANT_SUFFIX_PATTERN.test(suffix)) return entry;
   }
   return null;
 }

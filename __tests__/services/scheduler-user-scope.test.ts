@@ -130,7 +130,7 @@ vi.mock('../../src/services/garmin-tenant-isolation-watcher', () => ({
 }));
 vi.mock('../../src/portal/telemetry', () => ({
   registerJob: vi.fn(),
-  wrapJob: (_name: string, fn: () => unknown) => fn,
+  wrapJob: (name: string, fn: () => unknown) => Object.assign(fn, { jobName: name }),
   recordGarminRefresh: vi.fn(),
   setJobFailureNotifier: vi.fn(),
   setJobEnabledChecker: vi.fn(),
@@ -182,6 +182,14 @@ vi.mock('../../src/services/database', () => ({
 }));
 vi.mock('../../src/services/report-document-store', () => ({
   storeAndPushReport: (...args: unknown[]) => mockStoreAndPushReport(...args),
+}));
+// The four report crons now run on */5 dispatch ticks (same expression as
+// shared_list), so expression-driven callback invocation reaches them in
+// this suite. Dispatch timing has its own suite
+// (report-schedule-dispatcher.test.ts); here nobody is ever "due" so the
+// scoping tests stay isolated.
+vi.mock('../../src/services/report-schedule-dispatcher', () => ({
+  resolveDueReportTargets: vi.fn(() => []),
 }));
 vi.mock('../../src/services/notification-orchestrator', () => ({
   createNotificationIntent: (...args: unknown[]) => mockCreateNotificationIntent(...args),
@@ -344,35 +352,6 @@ describe('scheduler tenant scoping', () => {
     await reminderJob!();
 
     expect(markReminderFired).not.toHaveBeenCalled();
-  });
-
-  it('marks one-shot reminders fired when Telegram delivery succeeds even if notification orchestration fails', async () => {
-    const previousTelegramLegacyDelivery = process.env.TELEGRAM_LEGACY_DELIVERY;
-    process.env.TELEGRAM_LEGACY_DELIVERY = 'true';
-    try {
-      vi.mocked(getDueReminders).mockReturnValue([
-        { id: 6, user_id: 42, tenant_id: 42, message: 'Telegram still works', remind_at: '2026-04-17T08:00:00.000Z', recurring: null },
-      ] as any);
-      mockCreateNotificationIntent.mockRejectedValueOnce(new Error('notification store down'));
-      const sendMessage = vi.fn(async () => undefined);
-
-      startScheduler({ api: { sendMessage } });
-      const reminderJob = mockCronSchedule.mock.calls.find((call) => call[0] === '* * * * *' && String(call[1]).includes('getDueReminders'))?.[1] as (() => Promise<unknown>) | undefined;
-      expect(reminderJob).toBeTypeOf('function');
-
-      await reminderJob!();
-
-      expect(sendMessage).toHaveBeenCalledWith(42, '⏰ <b>Reminder:</b> Telegram still works', { parse_mode: 'HTML' });
-      expect(mockCreateNotificationIntent).toHaveBeenCalledTimes(1);
-      expect(markReminderFired).toHaveBeenCalledTimes(1);
-      expect(markReminderFired).toHaveBeenCalledWith(6);
-    } finally {
-      if (previousTelegramLegacyDelivery === undefined) {
-        delete process.env.TELEGRAM_LEGACY_DELIVERY;
-      } else {
-        process.env.TELEGRAM_LEGACY_DELIVERY = previousTelegramLegacyDelivery;
-      }
-    }
   });
 
   it('uses per-occurrence dedupe keys for recurring reminder notifications', async () => {
@@ -564,7 +543,9 @@ describe('scheduler tenant scoping', () => {
     mockCreateNotificationIntent.mockClear();
 
     startScheduler();
-    const sharedListJob = mockCronSchedule.mock.calls.find((call) => call[0] === '*/5 * * * *')?.[1] as (() => Promise<void>) | undefined;
+    const sharedListJob = mockCronSchedule.mock.calls.find(
+      (call) => (call[1] as { jobName?: string }).jobName === 'shared_list',
+    )?.[1] as (() => Promise<void>) | undefined;
     expect(sharedListJob).toBeTypeOf('function');
 
     await sharedListJob!();

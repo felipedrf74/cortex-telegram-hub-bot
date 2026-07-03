@@ -117,7 +117,10 @@ export const defaultJobHandlers: JobHandler[] = [
     jobType: 'deliver_notification',
     idempotent: true,
     async handle(job) {
-      const result = await releaseDueNotificationDeliveries();
+      const sweep = await releaseDueNotificationDeliveries();
+      // Spread: the sweep summary is a named interface without an index
+      // signature, and recordProductDecision takes Record<string, unknown>.
+      const result = { ...sweep };
       if (!job.userId) return;
       recordProductDecision({
         tenantId: job.tenantId,

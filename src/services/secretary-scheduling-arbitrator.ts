@@ -181,6 +181,14 @@ export interface SecretaryAgendaItem {
    * on pre-migration rows.
    */
   providerSyncFailureCount: number;
+  /**
+   * Provider-sync short-circuit state (migration 224). Fingerprint of what
+   * was last pushed to the provider (source|shape-hash|slot|version) and
+   * when the provider event was last verified. Decode to null on
+   * pre-migration rows, which forces a full sync.
+   */
+  lastSyncedFingerprint: string | null;
+  lastSyncedVerifiedAt: string | null;
 }
 
 export interface SecretarySchedulingDecision {
@@ -994,6 +1002,8 @@ function decisionFromPreview(
     sourceUpdatedAt: input.intent.updatedAt ?? null,
     reasoningTrail,
     providerSyncFailureCount: 0,
+    lastSyncedFingerprint: null,
+    lastSyncedVerifiedAt: null,
   };
   return {
     status: input.status,
@@ -1544,6 +1554,8 @@ function rowToAgendaItem(row: any): SecretaryAgendaItem {
     // idempotent so this is the only place that needs to be defensive.
     reasoningTrail: safeParseArray<ReasoningTrailNode>(row.reasoning_trail_json),
     providerSyncFailureCount: Number(row.provider_sync_failure_count ?? 0) || 0,
+    lastSyncedFingerprint: row.last_synced_fingerprint ?? null,
+    lastSyncedVerifiedAt: row.last_synced_verified_at ?? null,
   };
 }
 

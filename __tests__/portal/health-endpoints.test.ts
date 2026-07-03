@@ -246,9 +246,7 @@ vi.mock('../../src/utils/logger', () => ({
 
 async function startServer(): Promise<{ server: http.Server; port: number }> {
   const { createPortalServer } = await import('../../src/portal/server');
-  const { Bot } = await import('grammy');
-  const bot = new Bot('test:token');
-  const server = createPortalServer(bot as any);
+  const server = createPortalServer();
   // Wait for 'listening' event since port 0 is async-assigned
   await new Promise<void>((resolve) => {
     if (server.listening) return resolve();

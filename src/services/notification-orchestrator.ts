@@ -13,6 +13,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { DateTime } from 'luxon';
 import { getDb } from './database';
+import { getUserTimezoneById } from './user-service';
 import { getPushTokensForUser, isApnsConfigured, sendPushNotification } from './apns-sender';
 import { config } from '../config';
 import { logger } from '../utils/logger';
@@ -41,6 +42,9 @@ import {
 import { computeSharedNotificationActionEffectiveStatus } from './notification-action-state';
 import { decisionRelationshipSemantics } from './decision-relationship-types';
 import { getSecretaryAgendaItemById } from './secretary-scheduling-arbitrator';
+// content-notification-store only imports this module lazily (await import),
+// so this static edge does not create a require cycle.
+import { listUnreadContentNotificationIdsByTypes } from './content-notification-store';
 
 export type NotificationSourceSkill =
   | 'secretary'
@@ -79,7 +83,8 @@ export type NotificationDecision =
   | 'quiet_hours_delayed'
   | 'blocked_missing_device_token'
   | 'blocked_user_preferences'
-  | 'blocked_privacy_policy';
+  | 'blocked_privacy_policy'
+  | 'apns_delivery_failed';
 export type NotificationCenterStatus = 'unread' | 'read' | 'viewed' | 'snoozed' | 'actioned' | 'dismissed' | 'failed' | 'expired' | 'superseded';
 export type NotificationPrivacyPolicy = 'public' | 'standard' | 'sensitive' | 'private_content' | 'financial' | 'health';
 export type NotificationDeliveryPolicy = 'auto' | 'in_app_only' | 'push_allowed' | 'digest_only' | 'portal_only';
@@ -179,6 +184,13 @@ export interface NotificationProfile {
   dailyDigestTime: string;
   weeklyReviewDay: number;
   weeklyReviewTime: string;
+  // Per-user report schedule (migration 225). NULL = global default; times
+  // are HH:MM in the profile timezone; day uses cron convention 0=Sun..6=Sat.
+  morningBriefingTime: string | null;
+  coachBriefingTime: string | null;
+  endOfDayTime: string | null;
+  weeklyReviewReportDay: number | null;
+  weeklyReviewReportTime: string | null;
   doNotNotifyRules: string[];
   updatedAt: string;
   createdAt: string;
@@ -383,6 +395,11 @@ export interface NotificationProfilePatch {
   dailyDigestTime?: string;
   weeklyReviewDay?: number;
   weeklyReviewTime?: string;
+  morningBriefingTime?: string | null;
+  coachBriefingTime?: string | null;
+  endOfDayTime?: string | null;
+  weeklyReviewReportDay?: number | null;
+  weeklyReviewReportTime?: string | null;
   doNotNotifyRules?: string[];
 }
 
@@ -452,6 +469,11 @@ export function ensureNotificationTables(): void {
       daily_digest_time TEXT NOT NULL DEFAULT '08:30',
       weekly_review_day INTEGER NOT NULL DEFAULT 1,
       weekly_review_time TEXT NOT NULL DEFAULT '09:00',
+      morning_briefing_time TEXT,
+      coach_briefing_time TEXT,
+      end_of_day_time TEXT,
+      weekly_review_report_day INTEGER,
+      weekly_review_report_time TEXT,
       do_not_notify_rules_json TEXT NOT NULL DEFAULT '[]',
       updated_at TEXT NOT NULL DEFAULT (datetime('now')),
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
@@ -610,15 +632,48 @@ export function ensureNotificationTables(): void {
   `).run();
 }
 
+/**
+ * Read-only profile lookup: returns null when no row exists, never inserts.
+ * The report-schedule dispatcher uses this on every 5-minute tick so idle
+ * resolution costs zero writes (QA finding: the get-or-create variant was
+ * attempting an INSERT per user/job/tick). Row creation stays with the
+ * preferences API and other explicit getOrCreate callers.
+ */
+export function getNotificationProfileIfExists(userId: number, tenantId = userId): NotificationProfile | null {
+  assertScope(userId, tenantId, 'get_notification_profile');
+  ensureNotificationTables();
+  const row = getDb().prepare(`
+    SELECT * FROM notification_profiles
+    WHERE user_id = ? AND tenant_id = ?
+  `).get(userId, tenantId) as any;
+  return row ? mapProfile(row) : null;
+}
+
+// New profile rows inherit the canonical user timezone (users.timezone via
+// user-service) instead of the schema default — otherwise quiet hours and
+// report schedules for a Sao Paulo user would silently run on Lisbon time
+// until they opened notification settings. Explicit profile timezone
+// preferences are untouched: seeding only happens at row creation.
+function resolveInitialProfileTimezone(userId: number): string {
+  try {
+    return getUserTimezoneById(userId) || DEFAULT_TIMEZONE;
+  } catch {
+    return DEFAULT_TIMEZONE;
+  }
+}
+
 export function getOrCreateNotificationProfile(userId: number, tenantId = userId): NotificationProfile {
   assertScope(userId, tenantId, 'get_notification_profile');
   ensureNotificationTables();
   const db = getDb();
+  const existing = getNotificationProfileIfExists(userId, tenantId);
+  if (existing) return existing;
+
   db.prepare(`
-    INSERT INTO notification_profiles (user_id, tenant_id)
-    VALUES (?, ?)
+    INSERT INTO notification_profiles (user_id, tenant_id, timezone)
+    VALUES (?, ?, ?)
     ON CONFLICT(user_id, tenant_id) DO NOTHING
-  `).run(userId, tenantId);
+  `).run(userId, tenantId, resolveInitialProfileTimezone(userId));
 
   const row = db.prepare(`
     SELECT * FROM notification_profiles
@@ -666,6 +721,11 @@ export function updateNotificationProfile(userId: number, tenantId: number, patc
       daily_digest_time = ?,
       weekly_review_day = ?,
       weekly_review_time = ?,
+      morning_briefing_time = ?,
+      coach_briefing_time = ?,
+      end_of_day_time = ?,
+      weekly_review_report_day = ?,
+      weekly_review_report_time = ?,
       do_not_notify_rules_json = ?,
       updated_at = datetime('now')
     WHERE user_id = ? AND tenant_id = ?
@@ -696,6 +756,11 @@ export function updateNotificationProfile(userId: number, tenantId: number, patc
     normalizeTime(patch.dailyDigestTime ?? current.dailyDigestTime, current.dailyDigestTime),
     boundedIntOr(patch.weeklyReviewDay, current.weeklyReviewDay, 0, 6),
     normalizeTime(patch.weeklyReviewTime ?? current.weeklyReviewTime, current.weeklyReviewTime),
+    normalizeNullableTime(patch.morningBriefingTime, current.morningBriefingTime),
+    normalizeNullableTime(patch.coachBriefingTime, current.coachBriefingTime),
+    normalizeNullableTime(patch.endOfDayTime, current.endOfDayTime),
+    normalizeNullableDay(patch.weeklyReviewReportDay, current.weeklyReviewReportDay),
+    normalizeNullableTime(patch.weeklyReviewReportTime, current.weeklyReviewReportTime),
     JSON.stringify(Array.isArray(patch.doNotNotifyRules) ? patch.doNotNotifyRules : current.doNotNotifyRules),
     userId,
     tenantId,
@@ -902,17 +967,24 @@ export async function evaluateNotificationIntent(
       reason = 'push rate limit reached for notification source; stored in-app only';
     } else {
       const attempt = await attemptPushDelivery(intent, item.itemId, pushPayload, profile);
-      deliveryAttempts.push(attempt);
-      decision = attempt.status === 'blocked_missing_device_token'
-        ? 'blocked_missing_device_token'
-        : 'sent_push';
+      if (attempt.attemptId !== null) deliveryAttempts.push(attempt);
+      // Same mapping as the release path: failed / credentials-blocked
+      // attempts must not be recorded as 'sent_push' (they previously were,
+      // hiding real APNs failures behind a success decision).
+      decision = attempt.status === 'sent' || attempt.status === 'mock_sent'
+        ? 'sent_push'
+        : attempt.status === 'blocked_missing_device_token'
+          ? 'blocked_missing_device_token'
+          : 'apns_delivery_failed';
       reason = attempt.status === 'mock_sent'
         ? 'mock push provider accepted privacy-safe payload'
         : attempt.status === 'sent'
           ? 'APNs accepted privacy-safe payload'
           : attempt.status === 'blocked_missing_credentials'
             ? 'APNs credentials missing; durable in-app item created'
-            : 'no active device token; durable in-app item created';
+            : attempt.status === 'blocked_missing_device_token'
+              ? 'no active device token; durable in-app item created'
+              : 'APNs delivery failed; durable in-app item created';
       sentAt = attempt.sentAt;
     }
   }
@@ -963,11 +1035,29 @@ export function expireStaleNotificationIntents(now = new Date()): number {
   return (intents.changes ?? 0) + (items.changes ?? 0);
 }
 
-export async function releaseDueNotificationDeliveries(now = new Date()): Promise<{
+export interface NotificationReleaseSweepSummary {
   inspected: number;
   released: number;
   blocked: number;
-}> {
+}
+
+// Single-flight latch for the release sweep (NOTIF-RELEASE-CAS). Both the
+// */15 cron and every deliver_notification event job call
+// releaseDueNotificationDeliveries() in the same PM2 process; without the
+// latch two overlapping sweeps can SELECT the same due decision-log rows and
+// double-push them before either UPDATE lands.
+let releaseSweepInFlight: Promise<NotificationReleaseSweepSummary> | null = null;
+
+export async function releaseDueNotificationDeliveries(now = new Date()): Promise<NotificationReleaseSweepSummary> {
+  if (releaseSweepInFlight) return releaseSweepInFlight;
+  const sweep = runReleaseDueNotificationDeliveriesSweep(now).finally(() => {
+    releaseSweepInFlight = null;
+  });
+  releaseSweepInFlight = sweep;
+  return sweep;
+}
+
+async function runReleaseDueNotificationDeliveriesSweep(now: Date): Promise<NotificationReleaseSweepSummary> {
   ensureNotificationTables();
   expireStaleNotificationIntents(now);
   const db = getDb();
@@ -1006,13 +1096,16 @@ export async function releaseDueNotificationDeliveries(now = new Date()): Promis
       regularRows.push(row);
     }
   }
+  // Belt-and-suspenders CAS (same idiom as revokePriorActiveDeviceTokenOwners):
+  // only claim rows still in a releasable state, so a row already claimed by a
+  // concurrent sweep is not re-counted as sent.
   const updateReleasedLogs = db.transaction((updates: Array<{
     row: any;
     decision: NotificationDecision;
     reason: string;
     sentAt: string | null;
     attemptIds: string[];
-  }>) => {
+  }>): number => {
     const stmt = db.prepare(`
       UPDATE notification_decision_logs
       SET decision = ?,
@@ -1022,9 +1115,12 @@ export async function releaseDueNotificationDeliveries(now = new Date()): Promis
       WHERE decision_log_id = ?
         AND user_id = ?
         AND tenant_id = ?
+        AND sent_at IS NULL
+        AND decision IN ('quiet_hours_delayed', 'digest')
     `);
+    let claimed = 0;
     for (const update of updates) {
-      stmt.run(
+      const result = stmt.run(
         update.decision,
         update.reason,
         update.sentAt,
@@ -1033,7 +1129,17 @@ export async function releaseDueNotificationDeliveries(now = new Date()): Promis
         update.row.user_id,
         update.row.tenant_id,
       );
+      if ((result.changes ?? 0) === 0) {
+        logger.warn({
+          decisionLogId: update.row.decision_log_id,
+          userId: update.row.user_id,
+          tenantId: update.row.tenant_id,
+        }, 'Notification release skipped: decision log already claimed by a concurrent sweep');
+        continue;
+      }
+      claimed += 1;
     }
+    return claimed;
   });
 
   for (const group of digestGroups.values()) {
@@ -1045,23 +1151,27 @@ export async function releaseDueNotificationDeliveries(now = new Date()): Promis
       const attempt = await attemptPushDelivery(digestIntent, first.item_id, payload, profile);
       const decision: NotificationDecision = attempt.status === 'sent' || attempt.status === 'mock_sent'
         ? 'sent_push'
-        : 'blocked_missing_device_token';
+        : attempt.status === 'blocked_missing_device_token'
+          ? 'blocked_missing_device_token'
+          : 'apns_delivery_failed';
       const reason = attempt.status === 'sent'
         ? 'digest notification released to APNs'
         : attempt.status === 'mock_sent'
           ? 'digest notification released to mock push provider'
           : attempt.status === 'blocked_missing_credentials'
             ? 'digest notification due but APNs credentials are missing'
-            : 'digest notification due but no active device token is available';
-      updateReleasedLogs(group.map((row) => ({
+            : attempt.status === 'blocked_missing_device_token'
+              ? 'digest notification due but no active device token is available'
+              : 'digest notification due but APNs delivery failed';
+      const claimed = updateReleasedLogs(group.map((row) => ({
         row,
         decision,
         reason,
         sentAt: attempt.sentAt,
-        attemptIds: [attempt.attemptId],
+        attemptIds: attempt.attemptId === null ? [] : [attempt.attemptId],
       })));
-      if (attempt.status === 'sent' || attempt.status === 'mock_sent') released += group.length;
-      else blocked += group.length;
+      if (attempt.status === 'sent' || attempt.status === 'mock_sent') released += claimed;
+      else blocked += claimed;
     } catch (err) {
       blocked += group.length;
       logger.warn({ err, userId: group[0]?.user_id, tenantId: group[0]?.tenant_id }, 'Notification digest release failed');
@@ -1079,27 +1189,32 @@ export async function releaseDueNotificationDeliveries(now = new Date()): Promis
         actions: intent.actionButtons,
       };
       const attempt = await attemptPushDelivery(intent, row.item_id, payload, profile);
+      // A real APNs failure ('failed'/'blocked_missing_credentials') is an
+      // apns_delivery_failed outcome; only the genuine no-token case may be
+      // recorded as blocked_missing_device_token.
       const decision: NotificationDecision = attempt.status === 'sent' || attempt.status === 'mock_sent'
         ? 'sent_push'
-        : attempt.status === 'blocked_missing_credentials'
+        : attempt.status === 'blocked_missing_device_token'
           ? 'blocked_missing_device_token'
-          : 'blocked_missing_device_token';
+          : 'apns_delivery_failed';
       const reason = attempt.status === 'sent'
         ? 'delayed notification released to APNs'
         : attempt.status === 'mock_sent'
           ? 'delayed notification released to mock push provider'
           : attempt.status === 'blocked_missing_credentials'
             ? 'delayed notification released but APNs credentials are missing'
-            : 'delayed notification released but no active device token is available';
-      updateReleasedLogs([{
+            : attempt.status === 'blocked_missing_device_token'
+              ? 'delayed notification released but no active device token is available'
+              : 'delayed notification released but APNs delivery failed';
+      const claimed = updateReleasedLogs([{
         row,
         decision,
         reason,
         sentAt: attempt.sentAt,
-        attemptIds: [attempt.attemptId],
+        attemptIds: attempt.attemptId === null ? [] : [attempt.attemptId],
       }]);
-      if (attempt.status === 'sent' || attempt.status === 'mock_sent') released += 1;
-      else blocked += 1;
+      if (attempt.status === 'sent' || attempt.status === 'mock_sent') released += claimed;
+      else blocked += claimed;
     } catch (err) {
       blocked += 1;
       logger.warn({ err, decisionLogId: row.decision_log_id }, 'Notification delayed/digest release failed');
@@ -1336,13 +1451,34 @@ export function listNotificationBridgeEntityIds(
        AND (expires_at IS NULL OR datetime(expires_at) > datetime(?))
   `).all(userId, tenantId, `${bridgePrefix}:%`, appNowIso()) as Array<{ dedupeKey: string | null }>;
   const ids = new Set<number>();
-  const pattern = new RegExp(`^${bridgePrefix}:[^:]+:(\\d+)$`);
+  // Two bridge key generations coexist in the DB:
+  //   legacy:        `content:<type>:<legacyRowId>` / `report:<type>:<reportId>`
+  //   entity-stable: `content:<type>:<userId>` (recurring events dedupe per user+type)
+  // A content key whose trailing id equals the scoped userId is treated as
+  // entity-stable and expanded to the unread legacy rows it covers, so badge
+  // exclusion keeps working for both formats.
+  const pattern = new RegExp(`^${bridgePrefix}:([^:]+):(\\d+)$`);
+  const userScopedContentTypes = new Set<string>();
   for (const row of rows) {
     if (!row.dedupeKey) continue;
     const match = row.dedupeKey.match(pattern);
     if (!match) continue;
-    const id = Number.parseInt(match[1], 10);
-    if (Number.isInteger(id) && id > 0) ids.add(id);
+    const id = Number.parseInt(match[2], 10);
+    if (!Number.isInteger(id) || id <= 0) continue;
+    if (bridgePrefix === 'content' && id === userId) {
+      userScopedContentTypes.add(match[1]);
+      continue;
+    }
+    ids.add(id);
+  }
+  if (userScopedContentTypes.size > 0) {
+    try {
+      for (const legacyId of listUnreadContentNotificationIdsByTypes(userId, [...userScopedContentTypes])) {
+        if (Number.isInteger(legacyId) && legacyId > 0) ids.add(legacyId);
+      }
+    } catch (err) {
+      logger.warn({ err, userId, tenantId }, 'Notification bridge legacy-id expansion degraded');
+    }
   }
   return [...ids];
 }
@@ -2464,6 +2600,35 @@ function rowWithIntentJoinAliases(row: any, intent: NotificationIntentRecord): a
   };
 }
 
+/**
+ * True when the user has at least one push-capable device token. Uses the
+ * same lookup as attemptPushDelivery's no-token branch so producer-side
+ * gates (e.g. report-document-store behind
+ * NOTIFICATION_DIGEST_REQUIRE_DEVICE_TOKEN) agree with the orchestrator.
+ * Fails open: on lookup errors the orchestrator keeps making the call.
+ */
+export function userHasActivePushDeviceToken(userId: number): boolean {
+  try {
+    return getPushTokensForUser(userId).length > 0;
+  } catch (err) {
+    logger.debug({ err, userId }, 'Notification device-token lookup failed; failing open');
+    return true;
+  }
+}
+
+/**
+ * Outcome of a push evaluation that never reached a provider. No
+ * notification_delivery_attempts row is fabricated for it — the attempt
+ * never existed; the decision log alone records the blocked outcome.
+ */
+interface SkippedPushDelivery {
+  attemptId: null;
+  status: 'blocked_missing_device_token';
+  sentAt: null;
+}
+
+type PushDeliveryOutcome = DeliveryAttempt | SkippedPushDelivery;
+
 async function attemptPushDelivery(
   intent: NotificationIntentRecord,
   notificationId: string,
@@ -2475,10 +2640,10 @@ async function attemptPushDelivery(
     interruptionLevel?: 'passive' | 'active' | 'time-sensitive';
   },
   profile: NotificationProfile,
-): Promise<DeliveryAttempt> {
+): Promise<PushDeliveryOutcome> {
   const tokens = getPushTokensForUser(intent.userId);
   if (tokens.length === 0) {
-    return persistDeliveryAttempt(intent, notificationId, 'push', 'mock', 'blocked_missing_device_token', null, 'no_active_device_token');
+    return { attemptId: null, status: 'blocked_missing_device_token', sentAt: null };
   }
 
   const deliveryMode = config.notificationDelivery?.mode
@@ -2954,6 +3119,29 @@ function notificationContractForIntent(intent: NotificationIntentRecord) {
   });
 }
 
+// Per-user report schedule normalizers: `undefined` keeps the current value,
+// explicit `null` clears back to the global default, and invalid values are
+// rejected loudly (the preferences PUT surfaces the error to the client).
+function normalizeNullableTime(patchValue: string | null | undefined, currentValue: string | null): string | null {
+  if (patchValue === undefined) return currentValue;
+  if (patchValue === null) return null;
+  const trimmed = String(patchValue).trim();
+  if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(trimmed)) {
+    throw new Error(`invalid schedule time '${patchValue}' — expected HH:MM`);
+  }
+  return trimmed;
+}
+
+function normalizeNullableDay(patchValue: number | null | undefined, currentValue: number | null): number | null {
+  if (patchValue === undefined) return currentValue;
+  if (patchValue === null) return null;
+  const parsed = Number(patchValue);
+  if (!Number.isInteger(parsed) || parsed < 0 || parsed > 6) {
+    throw new Error(`invalid schedule day '${patchValue}' — expected 0 (Sunday) through 6 (Saturday)`);
+  }
+  return parsed;
+}
+
 function mapProfile(row: any): NotificationProfile {
   return {
     userId: row.user_id,
@@ -2985,6 +3173,11 @@ function mapProfile(row: any): NotificationProfile {
     dailyDigestTime: row.daily_digest_time,
     weeklyReviewDay: row.weekly_review_day,
     weeklyReviewTime: row.weekly_review_time,
+    morningBriefingTime: row.morning_briefing_time ?? null,
+    coachBriefingTime: row.coach_briefing_time ?? null,
+    endOfDayTime: row.end_of_day_time ?? null,
+    weeklyReviewReportDay: row.weekly_review_report_day ?? null,
+    weeklyReviewReportTime: row.weekly_review_report_time ?? null,
     doNotNotifyRules: safeParseJSON(row.do_not_notify_rules_json, []),
     updatedAt: row.updated_at,
     createdAt: row.created_at,

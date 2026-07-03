@@ -4,7 +4,6 @@
  * Book Knowledge bot commands — /addbook, /booknote, /books, /bookidea
  */
 
-import type { Context } from 'grammy';
 import { getDb } from '../services/database';
 import { writeSignal } from '../services/intelligence-bus';
 import { escapeHtml } from '../utils/telegram-formatter';
@@ -272,6 +271,17 @@ export async function handleAddBookFromPortal(
 }
 
 // ── Bot Command Handlers ────────────────────────────────────────────
+//
+// Legacy chat-command handlers with no live callers (the Telegram bot
+// framework was removed 2026-07). Kept for reference; the live entry
+// points are handleAddBookFromPortal (content-admin routes) and
+// seedBooksIfEmpty (scheduler). Minimal structural stand-in for the
+// removed bot framework's Context type:
+type Context = {
+  match?: { toString(): string };
+  reply: (text: string, opts?: Record<string, unknown>) => Promise<unknown>;
+  replyWithChatAction: (action: string) => Promise<unknown>;
+};
 
 export async function handleAddBook(ctx: Context): Promise<void> {
   const input = ctx.match?.toString().trim() || '';

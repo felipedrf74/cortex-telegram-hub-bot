@@ -6,12 +6,10 @@
  * Owns:
  *  - Activity event ring buffer (200 entries, in-memory)
  *  - Scheduled job execution registry (name → last run metadata)
- *  - Bot reference storage (for restart polling action)
  *
  * This module has no project imports — it is a pure data store
  * with zero risk of circular dependencies.
  */
-import type { Bot } from 'grammy';
 import { logger } from '../utils/logger';
 import { runWithContext, generateRequestId } from '../utils/request-context';
 
@@ -102,14 +100,14 @@ export function isJobEnabled(jobName: string): boolean {
 
 let _failureNotifier: FailureNotifier | null = null;
 
-/** Register a callback to send Telegram alerts when jobs fail. */
+/** Register a callback invoked when jobs fail (records an operator alert). */
 export function setJobFailureNotifier(fn: FailureNotifier): void {
   _failureNotifier = fn;
 }
 
 /**
  * Wraps an async job callback with timing and success/failure tracking.
- * On failure, sends a Telegram notification (if notifier is registered)
+ * On failure, invokes the failure notifier (if registered)
  * and re-throws so existing logger.error calls continue to work.
  *
  * The callback may return the sentinel string `'skipped'` to indicate that
@@ -190,7 +188,7 @@ export function wrapJob(name: string, fn: () => Promise<JobResult>): () => Promi
             durationMs: status.lastDurationMs,
           });
           persistJobRun(name, 'failed', status.lastDurationMs, status.lastError);
-          // Notify user via Telegram (swallow notification errors to avoid masking the original)
+          // Invoke failure notifier (swallow notification errors to avoid masking the original)
           if (_failureNotifier) {
             _failureNotifier(status.label, status.lastError ?? 'unknown error').catch(() => {});
           }
@@ -218,18 +216,7 @@ export function getJobMap(): ReadonlyMap<string, JobStatus> {
   return jobMap;
 }
 
-// ─── Bot Reference (for restart polling) ─────────────────────────────
-
-let _bot: Bot | null = null;
 let _isRestarting = false;
-
-export function setBotRef(bot: Bot): void {
-  _bot = bot;
-}
-
-export function getBotRef(): Bot | null {
-  return _bot;
-}
 
 export function isRestarting(): boolean {
   return _isRestarting;
@@ -292,7 +279,6 @@ export function _resetTelemetryForTests(): void {
   inFlightJobs.clear();
   _jobEnabledChecker = null;
   _failureNotifier = null;
-  _bot = null;
   _isRestarting = false;
   _botPollingActive = false;
   _lastMessageAt = null;

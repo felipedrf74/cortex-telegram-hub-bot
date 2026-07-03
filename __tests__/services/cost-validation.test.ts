@@ -87,8 +87,10 @@ describe('Cost Validation — Gemini Model Pricing', () => {
     expect(priced.pricingModelKey).toBeNull();
   });
 
-  it('does not prefix-price hypothetical future model variants', () => {
-    for (const model of ['gpt-5-thinking', 'gpt-5-2026-05-30', 'gpt-5-pro']) {
+  it('does not prefix-price non-snapshot model variants', () => {
+    // Only date-like/"latest" suffixes may inherit base pricing; capability
+    // variants (thinking/pro/etc.) must stay on the conservative sentinel.
+    for (const model of ['gpt-5-thinking', 'gpt-5-pro', 'gpt-4o-mini-high-cost-variant']) {
       const priced = computeModelUsageCostUsd(model, {
         inputTokens: 1000,
         outputTokens: 500,
@@ -97,6 +99,34 @@ describe('Cost Validation — Gemini Model Pricing', () => {
       expect(priced.pricingModelKey, model).toBeNull();
       expect(priced.costUsd, model).toBeGreaterThan(0);
     }
+  });
+
+  it('prices dated OpenAI snapshots at the base-model rate', () => {
+    // OpenAI resolves aliases to dated snapshots in response.model
+    // (gpt-4o-mini → gpt-4o-mini-2024-07-18) and snapshots share base
+    // pricing. Before this rule every one-shot fallback call was booked at
+    // the Sonnet-ceiling sentinel (~20x real) as pricing_status=unresolved.
+    const snapshot = computeModelUsageCostUsd('gpt-4o-mini-2024-07-18', {
+      inputTokens: 1_000_000,
+      outputTokens: 1_000_000,
+    }, 'openai');
+    expect(snapshot.pricingResolved).toBe(true);
+    expect(snapshot.pricingModelKey).toBe('gpt-4o-mini');
+    expect(snapshot.costUsd).toBeCloseTo(0.75);
+
+    // Sibling-prefix disambiguation: the shorter gpt-4o entry must not
+    // shadow a gpt-4o-mini snapshot (remainder "mini-2024-07-18" is not a
+    // snapshot tag), and dated gpt-5 snapshots resolve to gpt-5.
+    const full = computeModelUsageCostUsd('gpt-4o-2024-08-06', {
+      inputTokens: 1000,
+      outputTokens: 500,
+    }, 'openai');
+    expect(full.pricingModelKey).toBe('gpt-4o');
+    const dated = computeModelUsageCostUsd('gpt-5-2026-05-30', {
+      inputTokens: 1000,
+      outputTokens: 500,
+    }, 'openai');
+    expect(dated.pricingModelKey).toBe('gpt-5');
   });
 
   it('raises a deduped operator alert for unresolved production model pricing', () => {

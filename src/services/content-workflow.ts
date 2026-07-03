@@ -4,7 +4,6 @@ import type Anthropic from '@anthropic-ai/sdk';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
-// grammy removed — Telegram adapters moved to src/adapters/telegram-content-adapter.ts
 import { config } from '../config';
 import { logger } from '../utils/logger';
 import { now } from '../utils/date-parser';
@@ -632,16 +631,10 @@ export async function generateWeeklyPackage(
 
 // ─── Telegram adapters REMOVED ─────────────────────────────────────
 //
-// sendTopicCandidates() and sendWeeklyPackage() (which took a grammy
-// Bot parameter) have been moved to:
-//   src/adapters/telegram-content-adapter.ts
-//
-// New callers should use:
+// The legacy sendTopicCandidates() / sendWeeklyPackage() Telegram delivery
+// adapters were deleted with the Telegram legacy delivery path (2026-07).
+// Callers use:
 //   1. generateAndStoreTopicCandidates() / generateWeeklyPackage()
 //      (transport-agnostic orchestrators above)
 //   2. createAndPushNotification() from content-notification-store.ts
 //      (durable inbox + APNs delivery)
-//
-// Re-exports for backward compatibility with existing imports:
-export { sendTopicCandidatesTelegram as sendTopicCandidates } from '../adapters/telegram-content-adapter';
-export { sendWeeklyPackageTelegram as sendWeeklyPackage } from '../adapters/telegram-content-adapter';

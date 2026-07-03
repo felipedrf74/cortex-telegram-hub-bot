@@ -1210,4 +1210,176 @@ describe('Notification inbox routes', () => {
       ]),
     );
   });
+
+  describe('report schedule preferences', () => {
+    function profileWithSchedule(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+      return {
+        userId: 7,
+        tenantId: 7,
+        pushEnabled: true,
+        skillPreferences: { secretary: true },
+        morningBriefingTime: null,
+        coachBriefingTime: null,
+        endOfDayTime: null,
+        weeklyReviewReportDay: null,
+        weeklyReviewReportTime: null,
+        ...overrides,
+      };
+    }
+
+    it('passes the profile object through unchanged next to reportSchedule (old-client decode safety)', async () => {
+      const profile = profileWithSchedule({ quietHours: { start: '22:00', end: '07:00' } });
+      mockGetOrCreateNotificationProfile.mockReturnValue(profile);
+
+      const res = await dispatch('GET', '/preferences', {}, 7, {}, {}, 17);
+
+      expect(res.statusCode).toBe(200);
+      // Backend-only change: reportSchedule is a SIBLING of profile, and the
+      // profile payload old iOS clients decode is byte-identical to what the
+      // orchestrator returned (additive fields only, nothing moved/renamed).
+      expect(res.body.data.profile).toEqual(profile);
+      expect(res.body.data.reportSchedule).toBeDefined();
+    });
+
+    it('returns null raw fields and global-default effective values for a fresh profile', async () => {
+      mockGetOrCreateNotificationProfile.mockReturnValue(profileWithSchedule());
+
+      const res = await dispatch('GET', '/preferences', {}, 7, {}, {}, 17);
+
+      expect(res.statusCode).toBe(200);
+      expect(mockGetOrCreateNotificationProfile).toHaveBeenCalledWith(7, 17);
+      expect(res.body.data.reportSchedule).toEqual({
+        morningBriefingTime: null,
+        coachBriefingTime: null,
+        endOfDayTime: null,
+        weeklyReviewReportDay: null,
+        weeklyReviewReportTime: null,
+        effective: {
+          morningBriefingTime: '06:00', // config.todo.digestTime default
+          coachBriefingTime: '21:00', // config.garmin.coachTime default
+          endOfDayTime: '21:00',
+          weeklyReviewReportDay: 5, // Friday
+          weeklyReviewReportTime: '17:00',
+        },
+      });
+    });
+
+    it('passes report schedule overrides through PUT and reflects raw plus effective values on GET', async () => {
+      mockUpdateNotificationProfile.mockImplementation((_userId, _tenantId, patch: any) =>
+        profileWithSchedule({
+          morningBriefingTime: patch.morningBriefingTime ?? null,
+          weeklyReviewReportDay: patch.weeklyReviewReportDay ?? null,
+        }));
+
+      const put = await dispatch('PUT', '/preferences', {}, 7, {
+        morningBriefingTime: '07:15',
+        weeklyReviewReportDay: 0,
+      }, {}, 17);
+
+      expect(put.statusCode).toBe(200);
+      expect(mockUpdateNotificationProfile).toHaveBeenCalledWith(7, 17, expect.objectContaining({
+        morningBriefingTime: '07:15',
+        weeklyReviewReportDay: 0,
+      }));
+      expect(put.body.data.reportSchedule).toMatchObject({
+        morningBriefingTime: '07:15',
+        weeklyReviewReportDay: 0,
+        coachBriefingTime: null,
+        effective: expect.objectContaining({
+          morningBriefingTime: '07:15',
+          weeklyReviewReportDay: 0, // Sunday must survive ?? (not be clobbered as falsy)
+          coachBriefingTime: '21:00',
+        }),
+      });
+
+      mockGetOrCreateNotificationProfile.mockReturnValue(profileWithSchedule({
+        morningBriefingTime: '07:15',
+        weeklyReviewReportDay: 0,
+      }));
+      const get = await dispatch('GET', '/preferences', {}, 7, {}, {}, 17);
+      expect(get.statusCode).toBe(200);
+      expect(get.body.data.reportSchedule.morningBriefingTime).toBe('07:15');
+      expect(get.body.data.reportSchedule.weeklyReviewReportDay).toBe(0);
+      expect(get.body.data.reportSchedule.effective.morningBriefingTime).toBe('07:15');
+      expect(get.body.data.reportSchedule.effective.weeklyReviewReportDay).toBe(0);
+      expect(get.body.data.reportSchedule.effective.endOfDayTime).toBe('21:00');
+    });
+
+    it('clears report schedule overrides back to global defaults on explicit null', async () => {
+      mockUpdateNotificationProfile.mockImplementation(() => profileWithSchedule());
+
+      const res = await dispatch('PUT', '/preferences', {}, 7, {
+        morningBriefingTime: null,
+        coachBriefingTime: null,
+        endOfDayTime: null,
+        weeklyReviewReportDay: null,
+        weeklyReviewReportTime: null,
+      });
+
+      expect(res.statusCode).toBe(200);
+      expect(mockUpdateNotificationProfile).toHaveBeenCalledWith(7, 7, expect.objectContaining({
+        morningBriefingTime: null,
+        coachBriefingTime: null,
+        endOfDayTime: null,
+        weeklyReviewReportDay: null,
+        weeklyReviewReportTime: null,
+      }));
+      expect(res.body.data.reportSchedule.morningBriefingTime).toBeNull();
+      expect(res.body.data.reportSchedule.effective).toEqual({
+        morningBriefingTime: '06:00',
+        coachBriefingTime: '21:00',
+        endOfDayTime: '21:00',
+        weeklyReviewReportDay: 5,
+        weeklyReviewReportTime: '17:00',
+      });
+    });
+
+    it('maps report schedule validation failures to the existing 400 preferences error', async () => {
+      // The real normalizers live in the orchestrator (covered by
+      // notification-orchestrator.test.ts); the route contract is that a
+      // thrown normalization error becomes INVALID_NOTIFICATION_PREFERENCES.
+      mockUpdateNotificationProfile.mockImplementation(() => {
+        throw new Error("invalid schedule time '25:99' — expected HH:MM");
+      });
+      const badTime = await dispatch('PUT', '/preferences', {}, 7, { endOfDayTime: '25:99' });
+      expect(badTime.statusCode).toBe(400);
+      expect(badTime.body.error.code).toBe('INVALID_NOTIFICATION_PREFERENCES');
+
+      mockUpdateNotificationProfile.mockImplementation(() => {
+        throw new Error("invalid schedule day '9' — expected 0 (Sunday) through 6 (Saturday)");
+      });
+      const badDay = await dispatch('PUT', '/preferences', {}, 7, { weeklyReviewReportDay: 9 });
+      expect(badDay.statusCode).toBe(400);
+      expect(badDay.body.error.code).toBe('INVALID_NOTIFICATION_PREFERENCES');
+    });
+
+    it('fails closed on invalid tenant scope for both preferences routes', async () => {
+      const get = await dispatch('GET', '/preferences', {}, 0);
+      expect(get.statusCode).toBe(401);
+      expect(get.body.error.code).toBe('UNAUTHORIZED');
+      expect(mockGetOrCreateNotificationProfile).not.toHaveBeenCalled();
+
+      const put = await dispatch('PUT', '/preferences', {}, 0, { morningBriefingTime: '07:15' });
+      expect(put.statusCode).toBe(401);
+      expect(put.body.error.code).toBe('UNAUTHORIZED');
+      expect(mockUpdateNotificationProfile).not.toHaveBeenCalled();
+
+      expect(getTenantScopeAnomalies()).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            layer: 'delivery',
+            operation: 'notifications_route_get_preferences',
+            reason: 'invalid_user_scope',
+            userId: 0,
+          }),
+          expect.objectContaining({
+            layer: 'delivery',
+            operation: 'notifications_route_update_preferences',
+            reason: 'invalid_user_scope',
+            userId: 0,
+          }),
+        ]),
+      );
+    });
+  });
 });

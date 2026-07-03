@@ -9,7 +9,9 @@
  *
  * Features:
  * - Token usage tracking (persisted to api_usage table)
- * - Retry on 429/503/500/RESOURCE_EXHAUSTED/UNAVAILABLE
+ * - Retry on 429/503/500/RESOURCE_EXHAUSTED/UNAVAILABLE/network resets
+ *   (chat path via GeminiProvider.withRetry; one-shot PRIMARY stage via
+ *   withOneShotPrimaryRetry, tunable with GEMINI_ONESHOT_MAX_RETRIES)
  * - Mapped errors with provider/status/retryable for FallbackProvider
  * - Deterministic tool call IDs (counter-based)
  * - Defensive tool conversation mapping
@@ -271,6 +273,137 @@ function resolveGeminiOneShotFallbackModel(primaryModel: string): string | null 
   return candidates.find((candidate) => candidate !== primaryModel) ?? null;
 }
 
+// ─── Shared retryable-error classification ──────────────────────────
+
+/** Node error codes that indicate a transient network failure worth retrying. */
+const TRANSIENT_NETWORK_CODES: readonly string[] = ['ECONNRESET', 'ETIMEDOUT', 'ECONNREFUSED', 'EPIPE', 'EAI_AGAIN'];
+
+type GeminiErrorInfo = { status?: number; code?: string; message: string };
+
+/**
+ * Extract HTTP status + short diagnostic code from an unknown Gemini/SDK
+ * error. `code` is either the Node network error code or the gRPC-style
+ * keyword embedded in the message (RESOURCE_EXHAUSTED / UNAVAILABLE), so
+ * warn logs stay greppable during provider storms.
+ */
+function extractGeminiErrorInfo(err: unknown): GeminiErrorInfo {
+  const e = err as { status?: number; code?: string | number; response?: { status?: number }; message?: string };
+  const message = typeof e?.message === 'string' ? e.message : '';
+  const status = typeof e?.status === 'number'
+    ? e.status
+    : (typeof e?.response?.status === 'number' ? e.response.status : undefined);
+  let code = typeof e?.code === 'string' ? e.code : undefined;
+  if (!code) {
+    const match = message.match(/\b(RESOURCE_EXHAUSTED|UNAVAILABLE|ECONNRESET|ETIMEDOUT|ECONNREFUSED|EPIPE|EAI_AGAIN)\b/);
+    if (match) code = match[1];
+  }
+  return { status, code, message };
+}
+
+/**
+ * Shared retryable-error predicate for Gemini calls — used by BOTH the
+ * chat-path GeminiProvider.withRetry and the one-shot primary retry so
+ * the two paths can't drift. Retryable: 429/503/500, RESOURCE_EXHAUSTED,
+ * UNAVAILABLE, and transient network resets. Everything else (plain 4xx,
+ * safety blocks, AITimeoutError) is non-retryable and falls through to
+ * the caller (fallback cascade / mapped error) immediately.
+ */
+function isRetryableGeminiError(info: GeminiErrorInfo): boolean {
+  if (info.status === 429 || info.status === 503 || info.status === 500) return true;
+  if (info.message.includes('RESOURCE_EXHAUSTED') || info.message.includes('UNAVAILABLE')) return true;
+  if (info.code && TRANSIENT_NETWORK_CODES.includes(info.code)) return true;
+  if (/socket hang up|fetch failed/i.test(info.message)) return true;
+  return false;
+}
+
+// ─── One-shot primary retry ─────────────────────────────────────────
+
+const ONESHOT_RETRY_DEFAULT_MAX_RETRIES = 2;
+// Safety cap so a fat-fingered env value can't unbound the worst case
+// (worst case = (maxRetries + 1) per-call timeouts + backoff sleeps).
+const ONESHOT_RETRY_MAX_RETRIES_CAP = 5;
+const ONESHOT_RETRY_BASE_BACKOFF_MS = 1000;
+
+/** Parse a non-negative integer env var, falling back to a default. */
+function parseNonNegativeIntEnv(name: string, defaultValue: number): number {
+  const raw = process.env[name]?.trim();
+  if (!raw) return defaultValue;
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isInteger(parsed) || parsed < 0) return defaultValue;
+  return parsed;
+}
+
+/**
+ * Extra attempts (beyond the first) for the one-shot PRIMARY Gemini call.
+ * GEMINI_ONESHOT_MAX_RETRIES: default 2 (3 attempts total), 0 disables
+ * retry (single attempt — the pre-2026-07 behavior). Read at call time so
+ * operators can flip it without a redeploy-triggering config change.
+ */
+function resolveOneShotMaxRetries(): number {
+  return Math.min(
+    parseNonNegativeIntEnv('GEMINI_ONESHOT_MAX_RETRIES', ONESHOT_RETRY_DEFAULT_MAX_RETRIES),
+    ONESHOT_RETRY_MAX_RETRIES_CAP,
+  );
+}
+
+/** Exponential backoff (1s, 2s, ...) with ±25% jitter to decorrelate top-of-hour cron bursts. */
+function oneShotBackoffMs(retryIndex: number): number {
+  const base = ONESHOT_RETRY_BASE_BACKOFF_MS * Math.pow(2, retryIndex);
+  const jitter = base * 0.25 * (Math.random() * 2 - 1);
+  return Math.max(0, Math.round(base + jitter));
+}
+
+/**
+ * Run the one-shot PRIMARY Gemini call with bounded retry on transient
+ * errors. Production logs showed 372 one-shot failures in ~5 weeks — all
+ * HTTP 503 "high demand" bursts clustered at top-of-hour crons — and each
+ * one skipped the cheap primary model entirely because the old path
+ * cascaded to fallbacks on the very first throw (while the chat path
+ * already had withRetry and the OpenAI hop retries internally).
+ *
+ * Each attempt keeps its own per-call timeout (applied inside
+ * completeOneShot / completeVisionOneShot via withTimeout), so the worst
+ * case stays bounded at (maxRetries + 1) timeouts plus ~3s of backoff.
+ * Non-retryable errors are re-thrown immediately so the fallback cascade
+ * behaves exactly as before.
+ *
+ * Applies ONLY to the primary stage: the flash-lite fallback stage is
+ * already the second chance, and the OpenAI stage retries internally.
+ * The final error is annotated with `geminiOneShotAttempts` so the
+ * fallback warn logs can report how many attempts were burned.
+ */
+async function withOneShotPrimaryRetry<T>(
+  fn: () => Promise<T>,
+  logContext: { category: string; model: string },
+): Promise<T> {
+  const maxRetries = resolveOneShotMaxRetries();
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      const info = extractGeminiErrorInfo(err);
+      try {
+        (err as { geminiOneShotAttempts?: number }).geminiOneShotAttempts = attempt;
+      } catch {
+        /* frozen or primitive error — attempt count defaults to 1 in fallback logs */
+      }
+      if (!isRetryableGeminiError(info) || attempt > maxRetries) throw err;
+      const backoffMs = oneShotBackoffMs(attempt - 1);
+      logger.warn({
+        category: logContext.category,
+        model: logContext.model,
+        attempt,
+        maxAttempts: maxRetries + 1,
+        status: info.status,
+        code: info.code,
+        backoffMs,
+        message: info.message.slice(0, 100),
+      }, 'Gemini one-shot primary retrying after transient error');
+      await _sleep.fn(backoffMs);
+    }
+  }
+}
+
 /**
  * Single-prompt completion with Google Search grounding enabled.
  *
@@ -470,13 +603,20 @@ export async function completeVisionOneShotWithFallback(
   anthropicFallback: () => Promise<string>,
   options?: { model?: string; maxTokens?: number; temperature?: number; userId?: number; tenantId?: number },
 ): Promise<{ text: string; provider: 'gemini' | 'openai' | 'anthropic' }> {
-  // Stage 1: Gemini (primary)
+  // Stage 1: Gemini (primary) — bounded retry on transient errors so a
+  // single 503 burst doesn't skip the cheap primary model entirely.
   if (isGeminiProviderConfigured()) {
+    const primaryModel = options?.model ?? config.gemini.model;
     try {
-      const text = await completeVisionOneShot(systemPrompt, userPrompt, image, category, options);
+      const text = await withOneShotPrimaryRetry(
+        () => completeVisionOneShot(systemPrompt, userPrompt, image, category, options),
+        { category, model: primaryModel },
+      );
       return { text, provider: 'gemini' };
     } catch (err) {
-      logger.warn({ err, category }, 'Gemini vision one-shot failed, trying OpenAI fallback');
+      const { status, code } = extractGeminiErrorInfo(err);
+      const attempts = (err as { geminiOneShotAttempts?: number })?.geminiOneShotAttempts ?? 1;
+      logger.warn({ err, category, primaryModel, status, code, attempts }, 'Gemini vision one-shot failed, trying OpenAI fallback');
     }
   }
 
@@ -546,17 +686,24 @@ export async function completeOneShotWithFallback(
   anthropicFallback: () => Promise<string>,
   options?: OneShotOptions,
 ): Promise<{ text: string; provider: 'gemini' | 'openai' | 'anthropic' }> {
-  // Stage 1: Gemini (primary)
+  // Stage 1: Gemini (primary) — bounded retry on transient errors so a
+  // single 503 burst doesn't skip the cheap primary model entirely.
   if (isGeminiProviderConfigured()) {
+    const primaryModel = options?.model ?? config.gemini.model;
     try {
-      const text = await completeOneShot(systemPrompt, userPrompt, category, options);
+      const text = await withOneShotPrimaryRetry(
+        () => completeOneShot(systemPrompt, userPrompt, category, options),
+        { category, model: primaryModel },
+      );
       return { text, provider: 'gemini' };
     } catch (err) {
-      const primaryModel = options?.model ?? config.gemini.model;
+      const { status, code } = extractGeminiErrorInfo(err);
+      const attempts = (err as { geminiOneShotAttempts?: number })?.geminiOneShotAttempts ?? 1;
       const fallbackModel = resolveGeminiOneShotFallbackModel(primaryModel);
       if (fallbackModel) {
         try {
-          logger.warn({ err, category, primaryModel, fallbackModel }, 'Gemini one-shot failed, trying Gemini fallback model');
+          logger.warn({ err, category, primaryModel, fallbackModel, status, code, attempts }, 'Gemini one-shot failed, trying Gemini fallback model');
+          // NOTE: no retry here — this stage IS the second chance.
           const text = await completeOneShot(
             systemPrompt,
             userPrompt,
@@ -565,10 +712,11 @@ export async function completeOneShotWithFallback(
           );
           return { text, provider: 'gemini' };
         } catch (fallbackErr) {
-          logger.warn({ err: fallbackErr, category, primaryModel, fallbackModel }, 'Gemini fallback model also failed, trying OpenAI fallback');
+          const fallbackInfo = extractGeminiErrorInfo(fallbackErr);
+          logger.warn({ err: fallbackErr, category, primaryModel, fallbackModel, status: fallbackInfo.status, code: fallbackInfo.code, attempts }, 'Gemini fallback model also failed, trying OpenAI fallback');
         }
       } else {
-        logger.warn({ err, category, primaryModel }, 'Gemini one-shot failed, trying OpenAI fallback');
+        logger.warn({ err, category, primaryModel, status, code, attempts }, 'Gemini one-shot failed, trying OpenAI fallback');
       }
     }
   }
@@ -755,27 +903,21 @@ export class GeminiProvider implements AIProvider {
       try {
         return await withTimeout(fn(), AI_CALL_TIMEOUT_MS);
       } catch (err: unknown) {
-        const e = err as { status?: number; response?: { status?: number }; message?: string };
-        const status = e?.status ?? e?.response?.status;
-        const message = e?.message ?? '';
-
-        const isRetryable =
-          status === 429 ||
-          status === 503 ||
-          status === 500 ||
-          message.includes('RESOURCE_EXHAUSTED') ||
-          message.includes('UNAVAILABLE');
+        // Classification shared with the one-shot primary retry path —
+        // see extractGeminiErrorInfo / isRetryableGeminiError above.
+        const info = extractGeminiErrorInfo(err);
+        const isRetryable = isRetryableGeminiError(info);
 
         if (!isRetryable || attempt === maxRetries) {
-          const mapped = new Error(`Gemini API error: ${message}`);
+          const mapped = new Error(`Gemini API error: ${info.message}`);
           (mapped as any).provider = 'gemini';
-          (mapped as any).status = status;
+          (mapped as any).status = info.status;
           (mapped as any).retryable = isRetryable;
           throw mapped;
         }
 
         const backoffMs = 1000 * Math.pow(2, attempt);
-        logger.warn({ attempt, status, backoffMs, message: message.slice(0, 100) }, 'Gemini retrying after error');
+        logger.warn({ attempt, status: info.status, code: info.code, backoffMs, message: info.message.slice(0, 100) }, 'Gemini retrying after error');
         await _sleep.fn(backoffMs);
       }
     }

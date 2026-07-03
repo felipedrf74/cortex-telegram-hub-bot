@@ -110,7 +110,8 @@ vi.mock('../../src/portal/telemetry', () => ({
 
 // ─── Imports ─────────────────────────────────────────────────────────
 
-import { GeminiProvider, _sleep, completeOneShotWithFallback, completeOneShotWithSearch } from '../../src/services/gemini-provider';
+import { GeminiProvider, _sleep, completeOneShotWithFallback, completeOneShotWithSearch, completeVisionOneShotWithFallback } from '../../src/services/gemini-provider';
+import { logger } from '../../src/utils/logger';
 import { pushEvent } from '../../src/portal/telemetry';
 import { _resetOverrides, setDomainModel } from '../../src/services/model-config';
 
@@ -252,7 +253,11 @@ describe('GeminiProvider', () => {
   });
 
   it('tries the configured Gemini fallback model before leaving Gemini', async () => {
+    // 3 primary rejections exhaust the default primary retry budget
+    // (GEMINI_ONESHOT_MAX_RETRIES=2 → 3 attempts) before the hop.
     mockGenerateContent
+      .mockRejectedValueOnce(Object.assign(new Error('Gemini primary unavailable'), { status: 503 }))
+      .mockRejectedValueOnce(Object.assign(new Error('Gemini primary unavailable'), { status: 503 }))
       .mockRejectedValueOnce(Object.assign(new Error('Gemini primary unavailable'), { status: 503 }))
       .mockResolvedValueOnce({
         text: 'fallback model text',
@@ -276,9 +281,164 @@ describe('GeminiProvider', () => {
 
     expect(result).toEqual({ text: 'fallback model text', provider: 'gemini' });
     expect(anthropicFallback).not.toHaveBeenCalled();
-    expect(mockGenerateContent).toHaveBeenCalledTimes(2);
+    expect(mockGenerateContent).toHaveBeenCalledTimes(4);
     expect(mockGenerateContent.mock.calls[0][0].model).toBe('gemini-2.0-pro');
-    expect(mockGenerateContent.mock.calls[1][0].model).toBe('gemini-2.0-flash');
+    expect(mockGenerateContent.mock.calls[1][0].model).toBe('gemini-2.0-pro');
+    expect(mockGenerateContent.mock.calls[2][0].model).toBe('gemini-2.0-pro');
+    expect(mockGenerateContent.mock.calls[3][0].model).toBe('gemini-2.0-flash');
+  });
+
+  // ── one-shot primary retry (GEMINI_ONESHOT_MAX_RETRIES) ──────────
+  //
+  // July 2026: 372 one-shot 503s in ~5 weeks each skipped the cheap
+  // primary model on the first throw. The primary stage now retries
+  // transient errors (up to 2 extra attempts by default) BEFORE any
+  // fallback hop. `_sleep.fn` is stubbed in the file-level beforeEach,
+  // so backoff sleeps resolve instantly.
+
+  describe('one-shot primary retry', () => {
+    const originalMaxRetries = process.env.GEMINI_ONESHOT_MAX_RETRIES;
+
+    beforeEach(() => {
+      delete process.env.GEMINI_ONESHOT_MAX_RETRIES;
+    });
+    afterEach(() => {
+      if (originalMaxRetries === undefined) delete process.env.GEMINI_ONESHOT_MAX_RETRIES;
+      else process.env.GEMINI_ONESHOT_MAX_RETRIES = originalMaxRetries;
+    });
+
+    const error503 = () => Object.assign(
+      new Error('The model is currently experiencing high demand'),
+      { status: 503 },
+    );
+
+    const successResponse = (text: string) => ({
+      text,
+      functionCalls: [],
+      candidates: [{ finishReason: 'STOP' }],
+      usageMetadata: { promptTokenCount: 100, candidatesTokenCount: 50, totalTokenCount: 150 },
+    });
+
+    it('retries the primary on 503 twice then succeeds without any fallback hop', async () => {
+      mockGenerateContent
+        .mockRejectedValueOnce(error503())
+        .mockRejectedValueOnce(error503())
+        .mockResolvedValueOnce(successResponse('primary text'));
+      const anthropicFallback = vi.fn(async () => 'anthropic text');
+
+      const result = await completeOneShotWithFallback(
+        'System prompt',
+        'User prompt',
+        'coach_analysis',
+        anthropicFallback,
+        { maxTokens: 32 },
+      );
+
+      expect(result).toEqual({ text: 'primary text', provider: 'gemini' });
+      expect(mockGenerateContent).toHaveBeenCalledTimes(3);
+      for (const call of mockGenerateContent.mock.calls) {
+        expect(call[0].model).toBe('gemini-2.0-pro');
+      }
+      // Usage logged under the PRIMARY category — no fallback suffix
+      expect(mockDbRun.mock.calls[0][0]).toBe('coach_analysis');
+      expect(anthropicFallback).not.toHaveBeenCalled();
+    });
+
+    it('persistent 503 → exactly 3 primary attempts, then the Gemini fallback-model hop', async () => {
+      mockGenerateContent
+        .mockRejectedValueOnce(error503())
+        .mockRejectedValueOnce(error503())
+        .mockRejectedValueOnce(error503())
+        .mockResolvedValueOnce(successResponse('fallback model text'));
+      const anthropicFallback = vi.fn(async () => 'anthropic text');
+
+      const result = await completeOneShotWithFallback(
+        'System prompt',
+        'User prompt',
+        'coach_analysis',
+        anthropicFallback,
+        { maxTokens: 32 },
+      );
+
+      expect(result).toEqual({ text: 'fallback model text', provider: 'gemini' });
+      expect(mockGenerateContent).toHaveBeenCalledTimes(4);
+      expect(mockGenerateContent.mock.calls.slice(0, 3).every((c) => c[0].model === 'gemini-2.0-pro')).toBe(true);
+      expect(mockGenerateContent.mock.calls[3][0].model).toBe('gemini-2.0-flash');
+      // Fallback usage row carries the model-fallback category suffix
+      expect(mockDbRun.mock.calls[0][0]).toBe('coach_analysis_gemini_model_fallback');
+      // Fallback warn log enriched with status + attempt count
+      expect(logger.warn).toHaveBeenCalledWith(
+        expect.objectContaining({ status: 503, attempts: 3 }),
+        'Gemini one-shot failed, trying Gemini fallback model',
+      );
+      expect(anthropicFallback).not.toHaveBeenCalled();
+    });
+
+    it('non-retryable 400 falls back immediately after a single primary attempt', async () => {
+      mockGenerateContent
+        .mockRejectedValueOnce(Object.assign(new Error('Bad request'), { status: 400 }))
+        .mockResolvedValueOnce(successResponse('fallback model text'));
+      const anthropicFallback = vi.fn(async () => 'anthropic text');
+
+      const result = await completeOneShotWithFallback(
+        'System prompt',
+        'User prompt',
+        'coach_analysis',
+        anthropicFallback,
+        { maxTokens: 32 },
+      );
+
+      expect(result).toEqual({ text: 'fallback model text', provider: 'gemini' });
+      expect(mockGenerateContent).toHaveBeenCalledTimes(2);
+      expect(mockGenerateContent.mock.calls[0][0].model).toBe('gemini-2.0-pro');
+      expect(mockGenerateContent.mock.calls[1][0].model).toBe('gemini-2.0-flash');
+      expect(logger.warn).toHaveBeenCalledWith(
+        expect.objectContaining({ status: 400, attempts: 1 }),
+        'Gemini one-shot failed, trying Gemini fallback model',
+      );
+    });
+
+    it('GEMINI_ONESHOT_MAX_RETRIES=0 disables primary retry (single attempt then fallback)', async () => {
+      process.env.GEMINI_ONESHOT_MAX_RETRIES = '0';
+      mockGenerateContent
+        .mockRejectedValueOnce(error503())
+        .mockResolvedValueOnce(successResponse('fallback model text'));
+      const anthropicFallback = vi.fn(async () => 'anthropic text');
+
+      const result = await completeOneShotWithFallback(
+        'System prompt',
+        'User prompt',
+        'coach_analysis',
+        anthropicFallback,
+        { maxTokens: 32 },
+      );
+
+      expect(result).toEqual({ text: 'fallback model text', provider: 'gemini' });
+      expect(mockGenerateContent).toHaveBeenCalledTimes(2);
+      expect(mockGenerateContent.mock.calls[0][0].model).toBe('gemini-2.0-pro');
+      expect(mockGenerateContent.mock.calls[1][0].model).toBe('gemini-2.0-flash');
+    });
+
+    it('vision primary retries transient 503s before hopping to OpenAI', async () => {
+      mockGenerateContent
+        .mockRejectedValueOnce(error503())
+        .mockRejectedValueOnce(error503())
+        .mockResolvedValueOnce(successResponse('vision text'));
+      const anthropicFallback = vi.fn(async () => 'anthropic text');
+
+      const result = await completeVisionOneShotWithFallback(
+        'System prompt',
+        'User prompt',
+        { base64: 'aW1n', mimeType: 'image/png' },
+        'invoice_vision',
+        anthropicFallback,
+        { maxTokens: 32 },
+      );
+
+      expect(result).toEqual({ text: 'vision text', provider: 'gemini' });
+      expect(mockGenerateContent).toHaveBeenCalledTimes(3);
+      expect(anthropicFallback).not.toHaveBeenCalled();
+    });
   });
 
   // ── classify ──────────────────────────────────────────────────────

@@ -15,6 +15,10 @@ const MIGRATION_220 = path.resolve(
   __dirname,
   '../../migrations/220_secretary_agenda_provider_sync_failure_count.sql',
 );
+const MIGRATION_224 = path.resolve(
+  __dirname,
+  '../../migrations/224_secretary_agenda_sync_fingerprint.sql',
+);
 
 let testDb: Database.Database;
 
@@ -68,6 +72,7 @@ beforeEach(() => {
   testDb.exec(fs.readFileSync(MIGRATION_098, 'utf8'));
   testDb.exec('ALTER TABLE secretary_agenda_items ADD COLUMN reasoning_trail_json TEXT');
   testDb.exec(fs.readFileSync(MIGRATION_220, 'utf8'));
+  testDb.exec(fs.readFileSync(MIGRATION_224, 'utf8'));
 });
 
 afterEach(() => {
@@ -981,6 +986,13 @@ describe('secretary-agenda-provider-sync', () => {
     const first = await syncOne(decision.agendaItem.agendaItemId, provider);
     provider.removeExternally(first.providerEventId!);
 
+    // Healing runs on the re-verification pass (migration 224): unchanged
+    // synced items skip provider round-trips inside the verification window,
+    // so expire the window to trigger the full pass that detects drift.
+    testDb.prepare(
+      'UPDATE secretary_agenda_items SET last_synced_verified_at = ? WHERE agenda_item_id = ?',
+    ).run(new Date(Date.now() - 7 * 60 * 60 * 1000).toISOString(), decision.agendaItem.agendaItemId);
+
     const repaired = await syncOne(decision.agendaItem.agendaItemId, provider);
     const stored = getSecretaryAgendaItemById({
       agendaItemId: decision.agendaItem.agendaItemId,
@@ -1103,6 +1115,13 @@ describe('secretary-agenda-provider-sync', () => {
     provider.seedEvent(input, 'google_evt_duplicate_b');
     provider.seedEvent(input, 'google_evt_duplicate_a');
 
+    // Healing runs on the re-verification pass (migration 224): unchanged
+    // synced items skip provider round-trips inside the verification window,
+    // so expire the window to trigger the full pass that detects drift.
+    testDb.prepare(
+      'UPDATE secretary_agenda_items SET last_synced_verified_at = ? WHERE agenda_item_id = ?',
+    ).run(new Date(Date.now() - 7 * 60 * 60 * 1000).toISOString(), decision.agendaItem.agendaItemId);
+
     const repaired = await syncOne(decision.agendaItem.agendaItemId, provider);
 
     expect(repaired.action).toBe('updated');
@@ -1135,5 +1154,95 @@ describe('secretary-agenda-provider-sync', () => {
       ownerUserId: OWNER_USER_ID,
       tenantId: 'other-tenant',
     }, provider)).rejects.toThrow('Secretary agenda item not found');
+  });
+});
+
+describe('provider-sync fingerprint short-circuit (migration 224)', () => {
+  const OLD_ENV = process.env.SECRETARY_SYNC_VERIFY_INTERVAL_MINUTES;
+
+  afterEach(() => {
+    if (OLD_ENV === undefined) delete process.env.SECRETARY_SYNC_VERIFY_INTERVAL_MINUTES;
+    else process.env.SECRETARY_SYNC_VERIFY_INTERVAL_MINUTES = OLD_ENV;
+  });
+
+  it('skips all provider round-trips for an unchanged synced item', async () => {
+    const provider = new MockSecretaryProvider();
+    const decision = submitSecretarySchedulingIntent(intent());
+    await syncOne(decision.agendaItem.agendaItemId, provider);
+    const findCallsAfterFirst = provider.findAgendaItemIds.length;
+
+    const second = await syncOne(decision.agendaItem.agendaItemId, provider);
+
+    expect(second).toMatchObject({
+      action: 'skipped',
+      providerSyncState: 'synced',
+      reasonCode: 'unchanged_since_last_sync',
+    });
+    // No readback, no duplicate-window scan, no update PATCH on the second pass.
+    expect(provider.findAgendaItemIds.length).toBe(findCallsAfterFirst);
+    expect(provider.updateInputs).toHaveLength(0);
+    expect(provider.createInputs).toHaveLength(1);
+  });
+
+  it('re-syncs when the scheduled slot changes', async () => {
+    const provider = new MockSecretaryProvider();
+    const decision = submitSecretarySchedulingIntent(intent());
+    await syncOne(decision.agendaItem.agendaItemId, provider);
+
+    testDb.prepare(`
+      UPDATE secretary_agenda_items
+         SET start_at = '2026-05-04T10:00:00.000Z', end_at = '2026-05-04T11:00:00.000Z'
+       WHERE agenda_item_id = ?
+    `).run(decision.agendaItem.agendaItemId);
+
+    const second = await syncOne(decision.agendaItem.agendaItemId, provider);
+    expect(second.action).toBe('updated');
+    expect(provider.updateInputs).toHaveLength(1);
+  });
+
+  it('re-verifies against the provider after the verification window elapses', async () => {
+    const provider = new MockSecretaryProvider();
+    const decision = submitSecretarySchedulingIntent(intent());
+    await syncOne(decision.agendaItem.agendaItemId, provider);
+
+    const sevenHoursAgo = new Date(Date.now() - 7 * 60 * 60 * 1000).toISOString();
+    testDb.prepare(`
+      UPDATE secretary_agenda_items SET last_synced_verified_at = ? WHERE agenda_item_id = ?
+    `).run(sevenHoursAgo, decision.agendaItem.agendaItemId);
+
+    const second = await syncOne(decision.agendaItem.agendaItemId, provider);
+    expect(second.action).toBe('updated');
+    // A full pass heals externally-drifted events and refreshes the window.
+    const verifiedAt = testDb.prepare(
+      'SELECT last_synced_verified_at AS v FROM secretary_agenda_items WHERE agenda_item_id = ?',
+    ).get(decision.agendaItem.agendaItemId) as { v: string };
+    expect(Date.parse(verifiedAt.v)).toBeGreaterThan(Date.now() - 60_000);
+  });
+
+  it('SECRETARY_SYNC_VERIFY_INTERVAL_MINUTES=0 disables the short-circuit', async () => {
+    process.env.SECRETARY_SYNC_VERIFY_INTERVAL_MINUTES = '0';
+    const provider = new MockSecretaryProvider();
+    const decision = submitSecretarySchedulingIntent(intent());
+    await syncOne(decision.agendaItem.agendaItemId, provider);
+
+    const second = await syncOne(decision.agendaItem.agendaItemId, provider);
+    expect(second.action).toBe('updated');
+    expect(provider.updateInputs).toHaveLength(1);
+  });
+
+  it('heals an externally deleted provider event on the stale-window pass', async () => {
+    const provider = new MockSecretaryProvider();
+    const decision = submitSecretarySchedulingIntent(intent());
+    const first = await syncOne(decision.agendaItem.agendaItemId, provider);
+    provider.removeExternally(first.providerEventId!);
+
+    const sevenHoursAgo = new Date(Date.now() - 7 * 60 * 60 * 1000).toISOString();
+    testDb.prepare(`
+      UPDATE secretary_agenda_items SET last_synced_verified_at = ? WHERE agenda_item_id = ?
+    `).run(sevenHoursAgo, decision.agendaItem.agendaItemId);
+
+    const second = await syncOne(decision.agendaItem.agendaItemId, provider);
+    expect(second.action).toBe('recreated');
+    expect(second.reasonCode).toBe('missing_provider_event_recreated');
   });
 });

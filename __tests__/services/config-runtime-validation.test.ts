@@ -9,8 +9,6 @@ async function loadConfigFresh() {
 
 function applyMinimalConfigEnv() {
   vi.stubEnv('NODE_ENV', 'test');
-  vi.stubEnv('TELEGRAM_BOT_TOKEN', 'test-token');
-  vi.stubEnv('TELEGRAM_ALLOWED_USER_IDS', '123456');
   vi.stubEnv('IOS_API_ENABLED', 'false');
   vi.stubEnv('STAGING', 'false');
 }
@@ -18,8 +16,6 @@ function applyMinimalConfigEnv() {
 function applySafeProductionEnv() {
   vi.stubEnv('NODE_ENV', 'production');
   vi.stubEnv('STAGING', 'false');
-  vi.stubEnv('TELEGRAM_BOT_TOKEN', 'prod-token');
-  vi.stubEnv('TELEGRAM_ALLOWED_USER_IDS', '123456');
   vi.stubEnv('FINANCE_ENCRYPTION_KEY', 'prod-finance-key-at-least-32-chars');
   vi.stubEnv('BACKUP_ENABLED', 'true');
   vi.stubEnv('BACKUP_ENCRYPT', 'true');

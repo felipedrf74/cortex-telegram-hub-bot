@@ -1,13 +1,12 @@
 /**
- * Transport Boundary Tests — legacy Telegram formatting isolation.
+ * Transport Boundary Tests — content services stay transport-agnostic.
  *
- * Verifies the content domain's transport boundary:
- *   1. Format functions live in content-telegram-formatter.ts (not content-engine.ts)
- *   2. content-engine.ts has no inline format functions
- *   3. content-engine.ts has no Telegram HTML tags
- *   4. Format functions produce Telegram HTML (not structured data)
- *   5. content-engine.ts re-exports for backward compat
- *   6. Core response types are structured (not strings)
+ * The legacy Telegram formatter (content-telegram-formatter.ts) and its
+ * re-exports were deleted with the Telegram legacy delivery path (2026-07).
+ * These tests pin the invariants that remain:
+ *   1. content-engine.ts has no inline format functions or Telegram HTML output
+ *   2. Core response types are structured (not strings)
+ *   3. No Telegram bot framework usage in content services
  */
 
 import { describe, it, expect } from 'vitest';
@@ -18,32 +17,7 @@ const SRC_DIR = path.resolve(__dirname, '../../src');
 const SERVICES_DIR = path.join(SRC_DIR, 'services');
 
 // ═══════════════════════════════════════════════════════════════════
-// 1. Format Functions — Physical Location
-// ═══════════════════════════════════════════════════════════════════
-
-describe('transport-boundary: format functions in correct file', () => {
-  const formatterSource = fs.readFileSync(
-    path.join(SERVICES_DIR, 'content-telegram-formatter.ts'),
-    'utf8',
-  );
-
-  const allFormatFunctions = [
-    'formatDeepSearch', 'formatSources', 'formatHotNews',
-    'formatTrending', 'formatReaction', 'formatHooks', 'formatScript',
-    'formatTitles', 'formatThumbnail', 'formatCaption',
-    'formatCompetitor', 'formatGaps', 'formatSeo',
-    'formatRepurpose', 'formatFeedback', 'formatReport',
-  ];
-
-  for (const fn of allFormatFunctions) {
-    it(`${fn} is defined in content-telegram-formatter.ts`, () => {
-      expect(formatterSource).toContain(`export function ${fn}`);
-    });
-  }
-});
-
-// ═══════════════════════════════════════════════════════════════════
-// 2. content-engine.ts — No Inline Format Implementations
+// 1. content-engine.ts — No Inline Format Implementations
 // ═══════════════════════════════════════════════════════════════════
 
 describe('transport-boundary: content-engine is format-free', () => {
@@ -59,7 +33,6 @@ describe('transport-boundary: content-engine is format-free', () => {
       if (trimmed.startsWith('//')) return false;
       return trimmed.startsWith('export function format');
     });
-    // Only re-exports, no function definitions
     expect(formatDefs).toHaveLength(0);
   });
 
@@ -91,76 +64,25 @@ describe('transport-boundary: content-engine is format-free', () => {
     const telegramOutputPatterns = lines.filter((line: string) => {
       const trimmed = line.trim();
       if (trimmed.startsWith('//') || trimmed.startsWith('*')) return false;
-      // Format functions characteristically use `msg +=` with <b> or escapeHtml
+      // Format functions characteristically use `msg +=` with <b> or parse_mode
       return (trimmed.includes('msg +=') && trimmed.includes('<b>'))
         || trimmed.includes('parse_mode');
     });
     expect(telegramOutputPatterns).toHaveLength(0);
   });
 
-  it('content-engine.ts is under 650 lines (was 965 before extraction)', () => {
+  it('content-engine.ts no longer references the deleted Telegram formatter module', () => {
+    expect(engineSource).not.toContain("from './content-telegram-formatter'");
+  });
+
+  it('content-engine.ts is under 700 lines', () => {
     const lineCount = engineSource.split('\n').length;
-    // Bumped from 650 to 700 after adding script cache layer (26 LOC)
     expect(lineCount).toBeLessThanOrEqual(700);
   });
 });
 
 // ═══════════════════════════════════════════════════════════════════
-// 3. content-telegram-formatter.ts — Proper Isolation
-// ═══════════════════════════════════════════════════════════════════
-
-describe('transport-boundary: formatter isolation', () => {
-  const formatterSource = fs.readFileSync(
-    path.join(SERVICES_DIR, 'content-telegram-formatter.ts'),
-    'utf8',
-  );
-
-  it('formatter file is marked @deprecated', () => {
-    expect(formatterSource).toContain('@deprecated');
-  });
-
-  it('formatter file imports response types from content-engine', () => {
-    expect(formatterSource).toContain("from './content-engine'");
-  });
-
-  it('formatter has its own escapeHtml (private, not exported)', () => {
-    expect(formatterSource).toContain('function escapeHtml');
-    // Private — not exported
-    const lines = formatterSource.split('\n');
-    const exportedEscapeHtml = lines.filter((l: string) =>
-      l.trim().startsWith('export') && l.includes('escapeHtml'),
-    );
-    expect(exportedEscapeHtml).toHaveLength(0);
-  });
-
-  it('formatter has its own isSafeUrl (private, not exported)', () => {
-    expect(formatterSource).toContain('function isSafeUrl');
-  });
-
-  it('all format functions produce strings with HTML tags', () => {
-    // Every format function returns a string containing <b> tags
-    expect(formatterSource).toContain('<b>');
-    expect(formatterSource).toContain('<i>');
-    expect(formatterSource).toContain('escapeHtml');
-  });
-});
-
-// 4. Backward Compat — Re-exports from content-engine.ts
-// ═══════════════════════════════════════════════════════════════════
-
-describe('transport-boundary: backward compat re-exports', () => {
-  const engineSource = fs.readFileSync(
-    path.join(SERVICES_DIR, 'content-engine.ts'),
-    'utf8',
-  );
-
-  it('content-engine.ts re-exports formatters for backward compat', () => {
-    expect(engineSource).toContain("from './content-telegram-formatter'");
-  });
-});
-
-// ═══════════════════════════════════════════════════════════════════
-// 5. Core Response Types — Structured (not strings)
+// 2. Core Response Types — Structured (not strings)
 // ═══════════════════════════════════════════════════════════════════
 
 describe('transport-boundary: core response types are structured', () => {
@@ -186,33 +108,30 @@ describe('transport-boundary: core response types are structured', () => {
 });
 
 // ═══════════════════════════════════════════════════════════════════
-// 7. No grammy in content services
+// 3. No Telegram bot framework in content services
 // ═══════════════════════════════════════════════════════════════════
 
-describe('transport-boundary: no grammy in content services', () => {
-  it('content-engine.ts has no grammy import', () => {
-    const source = fs.readFileSync(path.join(SERVICES_DIR, 'content-engine.ts'), 'utf8');
-    expect(source).not.toContain("from 'grammy'");
-  });
+describe('transport-boundary: no Telegram bot framework in content services', () => {
+  const files = [
+    'content-engine.ts',
+    'content-workflow.ts',
+    'content-notification-store.ts',
+  ];
 
-  it('content-workflow.ts has no grammy import', () => {
-    const source = fs.readFileSync(path.join(SERVICES_DIR, 'content-workflow.ts'), 'utf8');
-    const lines = source.split('\n');
-    const grammyImports = lines.filter((l: string) => {
-      const t = l.trim();
-      if (t.startsWith('//')) return false;
-      return t.startsWith('import') && t.includes("'grammy'");
+  for (const file of files) {
+    it(`${file} has no Telegram bot framework import`, () => {
+      const source = fs.readFileSync(path.join(SERVICES_DIR, file), 'utf8');
+      const lines = source.split('\n');
+      const botImports = lines.filter((l: string) => {
+        const t = l.trim();
+        if (t.startsWith('//')) return false;
+        return t.startsWith('import') && t.includes("'grammy'");
+      });
+      expect(botImports).toHaveLength(0);
     });
-    expect(grammyImports).toHaveLength(0);
-  });
+  }
 
-  it('content-telegram-formatter.ts has no grammy import', () => {
-    const source = fs.readFileSync(path.join(SERVICES_DIR, 'content-telegram-formatter.ts'), 'utf8');
-    expect(source).not.toContain("from 'grammy'");
-  });
-
-  it('content-notification-store.ts has no grammy import', () => {
-    const source = fs.readFileSync(path.join(SERVICES_DIR, 'content-notification-store.ts'), 'utf8');
-    expect(source).not.toContain("from 'grammy'");
+  it('the legacy content-telegram-formatter module is gone', () => {
+    expect(fs.existsSync(path.join(SERVICES_DIR, 'content-telegram-formatter.ts'))).toBe(false);
   });
 });

@@ -7,11 +7,18 @@
  *   1. Adapters self-register via `registerAdapter()` at app boot
  *   2. Scheduler cron calls `syncAllProviders(userId)` every 15 minutes
  *   3. For each connected adapter, the engine:
- *        a. updates sync_state.status = 'syncing'
- *        b. pulls projects → upserts via store
- *        c. pulls tasks (with sync cursor if supported) → upserts via store
- *        d. on full pull (no cursor), soft-deletes tasks that disappeared
- *        e. saves new cursor + status='idle' to sync_state
+ *        a. full-pull providers (hasIncrementalSync: false): skips the pull
+ *           entirely (result.skipped = 'skipped_poll_interval') unless
+ *           TASK_SYNC_POLL_INTERVAL_MINUTES have passed since the last
+ *           successful sync — mutation pushes still run every tick via
+ *           task-mutation-sync-worker, which does not go through here
+ *        b. updates sync_state.status = 'syncing'
+ *        c. pulls projects → upserts via store
+ *        d. pulls tasks (with sync cursor if supported) → upserts via store,
+ *           reusing the already-fetched project set so adapters don't
+ *           re-fetch their list catalogue
+ *        e. on full pull (no cursor), soft-deletes tasks that disappeared
+ *        f. saves new cursor + status='idle' to sync_state
  *   4. Errors are caught per provider so one bad adapter doesn't tank the
  *      others — the failure goes to sync_state.error_message and the next
  *      cron tick will retry.
@@ -31,7 +38,45 @@ import {
   updateSyncStatus,
   isSyncEnabled,
 } from './unified-task-store';
-import { SyncResult, TaskProvider } from './types';
+import { NormalizedProject, SyncResult, TaskProvider } from './types';
+
+// ─── Poll-interval gate for full-pull providers ────────────────────────
+// Providers without incremental sync (Notion, Microsoft To Do) re-download
+// their ENTIRE task set on every pull. Doing that on every 15-minute cron
+// tick is pure waste, so their pull only runs once the poll interval has
+// elapsed since the last SUCCESSFUL sync. Incremental/webhook providers
+// (Todoist) keep syncing every tick, and mutation pushes are unaffected —
+// the scheduler runs task-mutation-sync-worker on every tick regardless.
+
+const DEFAULT_POLL_INTERVAL_MINUTES = 45;
+
+let cachedPollIntervalMinutes: number | null = null;
+
+/**
+ * Minutes a full-pull provider's sync stays "fresh" before the engine pulls
+ * again. Read once from TASK_SYNC_POLL_INTERVAL_MINUTES (default 45); a
+ * value of 0 disables the gate and restores pull-every-tick behavior.
+ * Invalid/negative values fall back to the default.
+ */
+export function taskSyncPollIntervalMinutes(): number {
+  if (cachedPollIntervalMinutes === null) {
+    const raw = process.env.TASK_SYNC_POLL_INTERVAL_MINUTES;
+    if (raw === undefined || raw.trim() === '') {
+      cachedPollIntervalMinutes = DEFAULT_POLL_INTERVAL_MINUTES;
+    } else {
+      const parsed = Number(raw);
+      cachedPollIntervalMinutes = Number.isFinite(parsed) && parsed >= 0
+        ? Math.floor(parsed)
+        : DEFAULT_POLL_INTERVAL_MINUTES;
+    }
+  }
+  return cachedPollIntervalMinutes;
+}
+
+/** Test-only: re-read TASK_SYNC_POLL_INTERVAL_MINUTES on next access. */
+export function _resetPollIntervalForTests(): void {
+  cachedPollIntervalMinutes = null;
+}
 
 // ─── Adapter registry ──────────────────────────────────────────────────
 
@@ -90,6 +135,10 @@ export function _resetAdaptersForTests(): void {
 export async function syncProvider(
   userId: number,
   provider: TaskProvider,
+  options?: {
+    /** Bypass the poll-interval gate (manual "/sync now", webhook catch-up). */
+    force?: boolean;
+  },
 ): Promise<SyncResult> {
   ensureBuiltInAdaptersRegistered(provider);
   const start = Date.now();
@@ -108,12 +157,43 @@ export async function syncProvider(
 
   const syncState = getSyncState(userId, provider);
 
+  // ── Poll-interval gate (full-pull providers only) ──
+  // Skip the pull while the last SUCCESSFUL sync (status 'idle' — error and
+  // stale-'syncing' states retry immediately) is younger than the interval.
+  // Deliberately does NOT touch sync_state, so "Last synced" stays truthful
+  // and the stored timestamp keeps aging toward the next real pull.
+  if (!options?.force && !adapter.capabilities.hasIncrementalSync) {
+    const intervalMinutes = taskSyncPollIntervalMinutes();
+    if (intervalMinutes > 0 && syncState?.status === 'idle' && syncState.last_sync_at) {
+      const elapsedMs = Date.now() - Date.parse(syncState.last_sync_at);
+      if (Number.isFinite(elapsedMs) && elapsedMs >= 0 && elapsedMs < intervalMinutes * 60_000) {
+        logger.debug(
+          { userId, provider, lastSyncAt: syncState.last_sync_at, intervalMinutes },
+          'Task pull skipped — poll interval not yet elapsed for full-pull provider',
+        );
+        return {
+          provider,
+          tasksUpserted: 0,
+          tasksDeleted: 0,
+          projectsUpserted: 0,
+          durationMs: 0,
+          errors: [],
+          skipped: 'skipped_poll_interval',
+        };
+      }
+    }
+  }
+
   try {
     updateSyncStatus(userId, provider, 'syncing');
 
     // ── Sync projects first so task→project FK can be resolved later ──
+    // Keep the fetched set so getTasks can reuse it — the Microsoft To Do
+    // adapter would otherwise re-fetch every list a second time per sync.
+    let knownProjects: NormalizedProject[] | undefined;
     try {
       const projects = await adapter.getProjects(userId);
+      knownProjects = projects;
       for (const project of projects) {
         const result = upsertProject(userId, project);
         if (result !== 'unchanged') projectsUpserted++;
@@ -128,7 +208,10 @@ export async function syncProvider(
       ? syncState.sync_cursor
       : undefined;
 
-    const { tasks, nextCursor } = await adapter.getTasks(userId, { sinceCursor: cursor || undefined });
+    const { tasks, nextCursor } = await adapter.getTasks(userId, {
+      sinceCursor: cursor || undefined,
+      knownProjects,
+    });
 
     const seenExternalIds: string[] = [];
     for (const task of tasks) {

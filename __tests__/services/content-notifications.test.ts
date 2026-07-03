@@ -58,6 +58,8 @@ import {
   getNotifications,
   getNotificationById,
   getUnreadCount,
+  getUnreadCountExcludingNotificationIds,
+  listUnreadContentNotificationIdsByTypes,
   markRead,
   markAllRead,
   resolveNotification,
@@ -413,6 +415,27 @@ describe('content-notifications: unread count', () => {
     markRead(id, 1);
     expect(getUnreadCount(1)).toBe(1);
   });
+
+  it('lists unread ids by type for the entity-stable bridge exclusion contract', () => {
+    const reauthA = createNotification({ userId: 1, type: 'content_action_required', title: 'Garmin', body: 'Reconnect' });
+    const reauthB = createNotification({ userId: 1, type: 'content_action_required', title: 'Garmin', body: 'Reconnect again' });
+    const script = createNotification({ userId: 1, type: 'script_ready', title: 'Script', body: 'Ready' });
+    const otherUser = createNotification({ userId: 2, type: 'content_action_required', title: 'Garmin', body: 'Reconnect' });
+    markRead(reauthB, 1);
+
+    // Only unread rows of the requested types for the requested user.
+    expect(listUnreadContentNotificationIdsByTypes(1, ['content_action_required'])).toEqual([reauthA]);
+    expect(listUnreadContentNotificationIdsByTypes(1, ['content_action_required', 'script_ready']).sort())
+      .toEqual([reauthA, script].sort());
+    expect(listUnreadContentNotificationIdsByTypes(2, ['content_action_required'])).toEqual([otherUser]);
+    expect(listUnreadContentNotificationIdsByTypes(1, [])).toEqual([]);
+    expect(listUnreadContentNotificationIdsByTypes(1, ['', '  '])).toEqual([]);
+    expect(listUnreadContentNotificationIdsByTypes(0, ['content_action_required'])).toEqual([]);
+
+    // The expanded ids feed the existing unread-count exclusion unchanged.
+    expect(getUnreadCountExcludingNotificationIds(1, [reauthA, script])).toBe(0);
+    expect(getUnreadCountExcludingNotificationIds(1, [reauthA])).toBe(1);
+  });
 });
 
 // ═══════════════════════════════════════════════════════════════════
@@ -479,23 +502,9 @@ describe('content-notifications: no grammy in core workflow', () => {
     expect(grammyImports).toHaveLength(0);
   });
 
-  it('telegram-content-adapter.ts exists and contains grammy', () => {
+  it('the legacy telegram-content-adapter module is gone', () => {
     const adapterPath = path.resolve(__dirname, '../../src/adapters/telegram-content-adapter.ts');
-    expect(fs.existsSync(adapterPath)).toBe(true);
-
-    const source = fs.readFileSync(adapterPath, 'utf8');
-    expect(source).toContain("from 'grammy'");
-    expect(source).toContain('@deprecated');
-  });
-
-  it('content-workflow.ts re-exports from adapter for backward compat', () => {
-    const source = fs.readFileSync(
-      path.resolve(__dirname, '../../src/services/content-workflow.ts'),
-      'utf8',
-    );
-    expect(source).toContain('telegram-content-adapter');
-    expect(source).toContain('sendTopicCandidatesTelegram as sendTopicCandidates');
-    expect(source).toContain('sendWeeklyPackageTelegram as sendWeeklyPackage');
+    expect(fs.existsSync(adapterPath)).toBe(false);
   });
 });
 

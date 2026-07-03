@@ -2,16 +2,15 @@
 
 /**
  * Semantic deduplication for content ideas.
- * Uses the live provider-routing one-shot cascade to detect topically
- * similar ideas across scoped content sources.
+ * Deterministic classifier: a new title is a duplicate of a recent scoped title
+ * on normalized exact match (0.95) or token-set Jaccard >= 0.8 (0.85); ideas
+ * whose angle tags both exist and differ are never duplicates. Replaced the
+ * per-candidate LLM call (2026-07-03) — same rule the prompt encoded, without
+ * the cost, latency, or provider-error fail-open.
  */
 
-import { config } from '../config';
 import { getDb } from './database';
-import { completeOneShotWithFallback } from './gemini-provider';
-import { trackedCreate } from '../portal/anthropic-hook';
 import { logger } from '../utils/logger';
-import { createLazyAnthropicClient } from './anthropic-lazy-client';
 import {
   contentScopeParams,
   contentScopePredicate,
@@ -25,35 +24,73 @@ interface DedupResult {
   confidence: number;
 }
 
-// ─── In-memory cache to avoid re-checking the same idea within 5 minutes ───
-const dedupCache = new Map<string, { result: DedupResult; expiresAt: number }>();
-const CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+const EXACT_MATCH_CONFIDENCE = 0.95;
+const TOKEN_OVERLAP_CONFIDENCE = 0.85;
+const TOKEN_OVERLAP_THRESHOLD = 0.8;
 
-const anthropicClient = createLazyAnthropicClient();
-
-function getCacheKey(idea: string, angle?: string, userId?: number, tenantId?: number): string {
-  return `t:${tenantId ?? 'global'}|u:${userId ?? 'global'}|${idea.toLowerCase().trim()}|${angle ?? ''}`;
+// Lowercase, strip accents, strip punctuation, collapse whitespace.
+function normalizeTitle(raw: string): string {
+  return raw
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^\p{L}\p{N}\s]/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
 }
 
-function getCached(key: string): DedupResult | null {
-  const entry = dedupCache.get(key);
-  if (!entry) return null;
-  if (Date.now() > entry.expiresAt) {
-    dedupCache.delete(key);
-    return null;
+function tokenize(normalized: string): Set<string> {
+  return new Set(normalized.split(' ').filter(Boolean));
+}
+
+function jaccard(a: Set<string>, b: Set<string>): number {
+  if (a.size === 0 || b.size === 0) return 0;
+  let intersection = 0;
+  for (const token of a) {
+    if (b.has(token)) intersection++;
   }
-  return entry.result;
+  return intersection / (a.size + b.size - intersection);
 }
 
-function setCache(key: string, result: DedupResult): void {
-  dedupCache.set(key, { result, expiresAt: Date.now() + CACHE_TTL_MS });
-  // Evict expired entries periodically (keep cache small)
-  if (dedupCache.size > 200) {
-    const now = Date.now();
-    for (const [k, v] of dedupCache) {
-      if (now > v.expiresAt) dedupCache.delete(k);
+function normalizeAngle(angle?: string | null): string | null {
+  const trimmed = angle?.trim().toLowerCase();
+  return trimmed ? trimmed : null;
+}
+
+/**
+ * Classify one new idea against the recent scoped titles. Pure + deterministic.
+ * Exact normalized match wins (0.95); otherwise the first title with token
+ * Jaccard >= 0.8 (0.85). When BOTH ideas carry angle tags and they differ, the
+ * pair is never a duplicate — same topic, different angle is deliberate reuse.
+ */
+function classifyAgainstRecent(
+  newIdea: string,
+  angleTag: string | undefined,
+  existingIdeas: { title: string; angle_tag: string | null }[],
+): DedupResult {
+  const notDuplicate: DedupResult = { isDuplicate: false, similarTo: null, confidence: 0 };
+  const normalizedNew = normalizeTitle(newIdea);
+  if (!normalizedNew) return notDuplicate;
+
+  const newTokens = tokenize(normalizedNew);
+  const newAngle = normalizeAngle(angleTag);
+
+  let best = notDuplicate;
+  for (const idea of existingIdeas) {
+    const existingAngle = normalizeAngle(idea.angle_tag);
+    if (newAngle && existingAngle && newAngle !== existingAngle) continue;
+
+    const normalizedExisting = normalizeTitle(idea.title);
+    if (!normalizedExisting) continue;
+
+    if (normalizedExisting === normalizedNew) {
+      return { isDuplicate: true, similarTo: idea.title, confidence: EXACT_MATCH_CONFIDENCE };
+    }
+    if (!best.isDuplicate && jaccard(newTokens, tokenize(normalizedExisting)) >= TOKEN_OVERLAP_THRESHOLD) {
+      best = { isDuplicate: true, similarTo: idea.title, confidence: TOKEN_OVERLAP_CONFIDENCE };
     }
   }
+  return best;
 }
 
 function resolveRequiredContentDedupScope(
@@ -87,105 +124,51 @@ export async function isDuplicateIdea(
   userId?: number,
   tenantId?: number,
 ): Promise<DedupResult> {
-  const db = getDb();
-  ensureContentTenantScopeColumns(db);
-
+  // Scope-resolution failures must still THROW (pinned contract); only the
+  // fetch/classify path below fails open.
   const scope = resolveRequiredContentDedupScope(userId, tenantId);
   const uid = scope.userId;
   const tid = scope.tenantId;
 
-  // Check in-memory cache after resolving scope. Duplicate decisions depend
-  // on the user's prior content, so the cache key must never be global by
-  // accident when user scope is available.
-  const cacheKey = getCacheKey(newIdea, angleTag, uid, tid);
-  const cached = getCached(cacheKey);
-  if (cached) {
-    logger.debug({ newIdea, userId: uid, tenantId: tid }, 'Dedup cache hit');
-    return cached;
-  }
-
-  const scopeFilter = `AND ${contentScopePredicate()}`;
-  const scopeArgs = contentScopeParams(uid, tid);
-
-  // Gather recent ideas from both tables (per-user)
-  const recentSaved = db.prepare(`
-    SELECT title, angle_tag FROM saved_ideas
-    WHERE created_at > datetime('now', '-14 days') ${scopeFilter}
-    ORDER BY created_at DESC LIMIT 30
-  `).all(...scopeArgs) as { title: string; angle_tag: string | null }[];
-
-  const recentFeedback = db.prepare(`
-    SELECT topic as title, angle_tag FROM content_topic_feedback
-    WHERE created_at > datetime('now', '-14 days') ${scopeFilter}
-    ORDER BY created_at DESC LIMIT 30
-  `).all(...scopeArgs) as { title: string; angle_tag: string | null }[];
-
-  const existingIdeas = [...recentSaved, ...recentFeedback];
-
-  // If fewer than 3 recent ideas, skip dedup (not enough data)
-  if (existingIdeas.length < 3) {
-    const result: DedupResult = { isDuplicate: false, similarTo: null, confidence: 0 };
-    setCache(cacheKey, result);
-    return result;
-  }
-
-  const ideasList = existingIdeas
-    .map(i => `- ${i.title}${i.angle_tag ? ` [angle: ${i.angle_tag}]` : ''}`)
-    .join('\n');
-
-  const systemPrompt = `You are a strict semantic duplicate detector for a creator's scoped content archive.
-Return compact JSON only: { "isDuplicate": boolean, "similarTo": string | null, "confidence": number }.
-Do not infer from any content outside the supplied scoped idea list.`;
-
-  const prompt = `Given these existing content ideas from the last 14 days:
-${ideasList}
-
-Is this new idea semantically similar (>80% overlap in BOTH topic AND angle) to any of them?
-New idea: "${newIdea}"${angleTag ? ` [angle: ${angleTag}]` : ''}
-
-Important: Two ideas about the SAME topic but with DIFFERENT angles are NOT duplicates.
-Example: "Por que o estado é seu inimigo" (opinion) and "Reação: nova lei do governo" (reaction) are about government but have completely different angles — NOT duplicates.
-
-Respond with JSON only: { "isDuplicate": boolean, "similarTo": string | null, "confidence": number }`;
-
   try {
-    const { text, provider } = await completeOneShotWithFallback(
-      systemPrompt,
-      prompt,
-      'content_dedup',
-      async () => {
-        const response = await trackedCreate(anthropicClient.get(), {
-          model: config.anthropic.classifierModel,
-          max_tokens: 256,
-          temperature: 0.1,
-          system: systemPrompt,
-          messages: [{ role: 'user', content: prompt }],
-        }, 'content_dedup', { userId: uid, tenantId: tid });
-        return response.content
-          .filter((block: any) => block.type === 'text')
-          .map((block: any) => block.text)
-          .join('\n');
-      },
-      {
-        maxTokens: 256,
-        temperature: 0.1,
-        jsonMode: true,
-        userId: uid,
-        tenantId: tid,
-      },
-    );
-    const cleaned = text.replace(/```json?\n?/g, '').replace(/```/g, '').trim();
-    const result = JSON.parse(cleaned) as DedupResult;
+    const db = getDb();
+    ensureContentTenantScopeColumns(db);
 
-    if (result.isDuplicate && result.confidence > 0.8) {
+    const scopeFilter = `AND ${contentScopePredicate()}`;
+    const scopeArgs = contentScopeParams(uid, tid);
+
+    // Gather recent ideas from both tables (per-user)
+    const recentSaved = db.prepare(`
+      SELECT title, angle_tag FROM saved_ideas
+      WHERE created_at > datetime('now', '-14 days') ${scopeFilter}
+      ORDER BY created_at DESC LIMIT 30
+    `).all(...scopeArgs) as { title: string; angle_tag: string | null }[];
+
+    const recentFeedback = db.prepare(`
+      SELECT topic as title, angle_tag FROM content_topic_feedback
+      WHERE created_at > datetime('now', '-14 days') ${scopeFilter}
+      ORDER BY created_at DESC LIMIT 30
+    `).all(...scopeArgs) as { title: string; angle_tag: string | null }[];
+
+    const existingIdeas = [...recentSaved, ...recentFeedback];
+
+    // If fewer than 3 recent ideas, skip dedup (not enough data)
+    if (existingIdeas.length < 3) {
+      return { isDuplicate: false, similarTo: null, confidence: 0 };
+    }
+
+    const result = classifyAgainstRecent(newIdea, angleTag, existingIdeas);
+
+    logger.debug(
+      { newIdea, isDuplicate: result.isDuplicate, similarTo: result.similarTo, confidence: result.confidence, userId: uid, tenantId: tid },
+      'Content dedup decision',
+    );
+    if (result.isDuplicate) {
       logger.info(
-        { newIdea, similarTo: result.similarTo, confidence: result.confidence, provider, userId: uid, tenantId: tid },
+        { newIdea, similarTo: result.similarTo, confidence: result.confidence, userId: uid, tenantId: tid },
         'Duplicate idea detected',
       );
     }
-
-    // Cache the result
-    setCache(cacheKey, result);
 
     return result;
   } catch (err) {

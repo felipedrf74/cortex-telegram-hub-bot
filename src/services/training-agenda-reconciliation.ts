@@ -28,6 +28,26 @@ export interface TrainingAgendaReconciliationResult {
 const LEGACY_MARKER_LOOKBACK_DAYS = 14;
 const LEGACY_MARKER_LOOKAHEAD_DAYS = 90;
 
+// The legacy-marker sweep fetches a 104-day calendar window per user, which
+// is far too heavy for the every-5-minute agenda-sync tick it rides on
+// (2026-07-03 audit: dominant share of ~59h/month sync runtime). Ownership-
+// table-driven deletes stay on every tick (precise and cheap); the wide scan
+// runs at most once per interval per user. In-memory state is acceptable:
+// a restart just means one extra scan.
+const LEGACY_MARKER_SCAN_INTERVAL_MS = 24 * 60 * 60 * 1000;
+const legacyMarkerScanLastRunByUser = new Map<number, number>();
+
+export function _resetLegacyMarkerScanGateForTests(): void {
+  legacyMarkerScanLastRunByUser.clear();
+}
+
+function shouldRunLegacyMarkerScan(userId: number): boolean {
+  const last = legacyMarkerScanLastRunByUser.get(userId) ?? 0;
+  if (Date.now() - last < LEGACY_MARKER_SCAN_INTERVAL_MS) return false;
+  legacyMarkerScanLastRunByUser.set(userId, Date.now());
+  return true;
+}
+
 function isCalendarSource(value: string): value is CalendarSource {
   return value === 'google' || value === 'outlook';
 }
@@ -49,7 +69,9 @@ export async function reconcileOrphanedTrainingAgendaEvents(
   ]);
   const ownershipKeys = new Set(ownerships.map((ownership) =>
     ownershipKey(ownership.calendar_event_id, ownership.calendar_source)));
-  const legacyMarkerEvents = await findStaleLegacyMarkerEvents(userId, ownershipKeys);
+  const legacyMarkerEvents = shouldRunLegacyMarkerScan(userId)
+    ? await findStaleLegacyMarkerEvents(userId, ownershipKeys)
+    : [];
   let deleted = 0;
   let failed = 0;
 

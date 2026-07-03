@@ -64,6 +64,95 @@ type AIMeteringScope = {
   tenantId?: number;
 };
 
+// ─── Re-learn cost controls (migration 222) ──────────────────────────
+//
+// 2026-07-03 audit: the weekly channel_relearn cron re-ran the full
+// extraction + synthesis LLM pipeline for every active channel each cycle
+// even when the channel had published nothing new, and auto-retried failed
+// channels every cycle (12h threshold == below cron cadence) forever.
+//
+// Controls:
+//   1. New-video gate — analysis_fingerprint on content_ref_channels stores
+//      a deterministic fingerprint of the video set from the last successful
+//      analysis. On re-learn, if the freshly fetched video list fingerprints
+//      identically, extraction + synthesis are skipped for that channel.
+//      NULL fingerprint (pre-migration rows, first run) always analyzes.
+//   2. Failure backoff — consecutive_failure_count is incremented on every
+//      failed analysis and reset on success (including a fingerprint skip).
+//      At >= CHANNEL_FAILURE_BACKOFF_THRESHOLD the 12h auto-retry is backed
+//      off to at most one retry per 7 days.
+
+const CHANNEL_FAILURE_BACKOFF_THRESHOLD = 3;
+
+/** Extra columns added by migration 222 (not part of the shared state type). */
+type ChannelLearnerCostControlColumns = {
+  analysis_fingerprint?: string | null;
+  last_checked_at?: string | null;
+  consecutive_failure_count?: number | null;
+};
+
+/**
+ * Deterministic fingerprint of the video set an analysis is based on.
+ * Order-insensitive (IDs are sorted) so pure ranking shuffles of the same
+ * video set do not trigger a re-analysis.
+ */
+export function computeChannelAnalysisFingerprint(videos: Pick<VideoData, 'videoId'>[]): string {
+  const ids = videos.map((v) => v.videoId).filter(Boolean).sort();
+  return `v1:${ids.length}:${ids.join(',')}`;
+}
+
+/** Increment the consecutive failure counter; log when the channel enters backoff. */
+function recordChannelAnalysisFailure(channelId: number): void {
+  try {
+    const db = getDb();
+    db.prepare(`
+      UPDATE content_ref_channels
+         SET consecutive_failure_count = COALESCE(consecutive_failure_count, 0) + 1
+       WHERE id = ?
+    `).run(channelId);
+    const row = db.prepare(
+      'SELECT channel_name, COALESCE(consecutive_failure_count, 0) AS failures FROM content_ref_channels WHERE id = ?',
+    ).get(channelId) as { channel_name: string | null; failures: number } | undefined;
+    if (row && row.failures === CHANNEL_FAILURE_BACKOFF_THRESHOLD) {
+      logger.warn(
+        { channelId, channelName: row.channel_name, consecutiveFailures: row.failures },
+        'Channel entered failure backoff — auto-retry limited to once per 7 days until a successful analysis',
+      );
+    }
+  } catch (err) {
+    logger.warn({ err, channelId }, 'Failed to record channel analysis failure metadata (non-critical)');
+  }
+}
+
+/**
+ * Persist success metadata: fingerprint of the analyzed (or verified-unchanged)
+ * video set, last_checked_at, and a failure-count reset. Logs when a channel
+ * leaves failure backoff.
+ */
+function recordChannelAnalysisSuccess(channelId: number, fingerprint: string): void {
+  try {
+    const db = getDb();
+    const row = db.prepare(
+      'SELECT channel_name, COALESCE(consecutive_failure_count, 0) AS failures FROM content_ref_channels WHERE id = ?',
+    ).get(channelId) as { channel_name: string | null; failures: number } | undefined;
+    db.prepare(`
+      UPDATE content_ref_channels
+         SET analysis_fingerprint = ?,
+             last_checked_at = datetime('now'),
+             consecutive_failure_count = 0
+       WHERE id = ?
+    `).run(fingerprint, channelId);
+    if (row && row.failures >= CHANNEL_FAILURE_BACKOFF_THRESHOLD) {
+      logger.info(
+        { channelId, channelName: row.channel_name, previousConsecutiveFailures: row.failures },
+        'Channel left failure backoff after successful analysis',
+      );
+    }
+  } catch (err) {
+    logger.warn({ err, channelId }, 'Failed to record channel analysis success metadata (non-critical)');
+  }
+}
+
 function accessForChannel(channel: Pick<ContentRefChannel, 'user_id' | 'tenant_id'>): ContentReferencesAccess {
   return channel.user_id && channel.user_id > 0
     ? { userId: channel.user_id, tenantId: channel.tenant_id ?? undefined }
@@ -658,16 +747,30 @@ function writeChannelDNASignals(channels: ContentRefChannel[], userId?: number):
 /**
  * Analyze a single channel: fetch videos → extract patterns → store.
  * Returns a human-readable summary.
+ *
+ * When `options.skipIfUnchanged` is set (the scheduled re-learn path), the
+ * freshly fetched video list is fingerprinted and compared against the
+ * fingerprint persisted by the last successful analysis. If nothing new was
+ * published, extraction + synthesis are skipped (`skipped: true`), the
+ * channel is re-marked active (bumping last_analyzed_at / last_checked_at so
+ * the skip is observable), and the consecutive failure count is reset.
+ * A NULL stored fingerprint always analyzes (backward compatible).
  */
-export async function analyzeChannel(channelId: number): Promise<{
+export async function analyzeChannel(
+  channelId: number,
+  options: { skipIfUnchanged?: boolean } = {},
+): Promise<{
   success: boolean;
   summary: string;
   patternsFound: number;
   videosAnalyzed: number;
+  skipped?: boolean;
   error?: string;
 }> {
   const { getChannel } = await import('../state/content-references');
-  const channel = getChannel(channelId, { adminContext: CONTENT_LEARNER_ADMIN_CONTEXT });
+  const channel = getChannel(channelId, { adminContext: CONTENT_LEARNER_ADMIN_CONTEXT }) as
+    | (ContentRefChannel & ChannelLearnerCostControlColumns)
+    | undefined;
   if (!channel) {
     return { success: false, summary: '', patternsFound: 0, videosAnalyzed: 0, error: 'Channel not found' };
   }
@@ -686,6 +789,7 @@ export async function analyzeChannel(channelId: number): Promise<{
       updateChannelStatus(channelId, 'failed', {
         error_message: 'Could not resolve YouTube channel — check URL or API key',
       }, channelAccess);
+      recordChannelAnalysisFailure(channelId);
       return {
         success: false,
         summary: '',
@@ -706,12 +810,35 @@ export async function analyzeChannel(channelId: number): Promise<{
       updateChannelStatus(channelId, 'failed', {
         error_message: 'No videos found for this channel',
       }, channelAccess);
+      recordChannelAnalysisFailure(channelId);
       return {
         success: false,
         summary: '',
         patternsFound: 0,
         videosAnalyzed: 0,
         error: 'No videos found',
+      };
+    }
+
+    // Step 2.25: New-video gate. If the fetched video set fingerprints
+    // identically to the last successful analysis, there is nothing new to
+    // learn — skip the expensive extraction/synthesis LLM pipeline. The
+    // channel is re-marked active (bumps last_analyzed_at + updated_at via
+    // updateChannelStatus) and last_checked_at records the verification.
+    const fingerprint = computeChannelAnalysisFingerprint(videos);
+    if (options.skipIfUnchanged && channel.analysis_fingerprint && channel.analysis_fingerprint === fingerprint) {
+      updateChannelStatus(channelId, 'active', { error_message: null }, channelAccess);
+      recordChannelAnalysisSuccess(channelId, fingerprint);
+      logger.info(
+        { channelId, channelName: resolved.channelName, videoCount: videos.length },
+        'Channel re-learn skipped — no new videos since last successful analysis',
+      );
+      return {
+        success: true,
+        skipped: true,
+        summary: 'No new videos since last analysis — extraction and synthesis skipped',
+        patternsFound: 0,
+        videosAnalyzed: 0,
       };
     }
 
@@ -765,11 +892,13 @@ export async function analyzeChannel(channelId: number): Promise<{
       upsertPatterns(channelId, validPatterns, channelAccess);
     }
 
-    // Step 5: Mark as active
+    // Step 5: Mark as active + persist the fingerprint of the analyzed
+    // video set (drives the new-video gate on the next re-learn cycle).
     updateChannelStatus(channelId, 'active', {
       video_count_analyzed: videos.length,
       error_message: null,
     }, channelAccess);
+    recordChannelAnalysisSuccess(channelId, fingerprint);
 
     logger.info({
       channelName: resolved.channelName,
@@ -793,6 +922,7 @@ export async function analyzeChannel(channelId: number): Promise<{
     const message = (err as Error).message;
     logger.error({ err, channelId }, 'Channel analysis failed');
     updateChannelStatus(channelId, 'failed', { error_message: message }, channelAccess);
+    recordChannelAnalysisFailure(channelId);
     return {
       success: false,
       summary: '',
@@ -806,14 +936,25 @@ export async function analyzeChannel(channelId: number): Promise<{
 /**
  * Process all pending channels and re-analyze stale active channels.
  * Called by the scheduler weekly.
+ *
+ * Result fields (additive, migration 222 cost controls):
+ * - skipped_no_new_videos: channels whose fetched video list fingerprinted
+ *   identically to the last successful analysis, so extraction + synthesis
+ *   were skipped for them.
+ * - synthesis_skipped_all_unchanged: true when every channel processed in
+ *   this scope was skipped by the new-video gate (nothing failed, nothing
+ *   analyzed) so the scope's synthesis LLM calls were skipped entirely.
  */
 export async function processAllChannels(force = false, userId?: number): Promise<{
   analyzed: number;
   failed: number;
+  skipped_no_new_videos: number;
   synthesized: boolean;
+  synthesis_skipped_all_unchanged: boolean;
 }> {
   let analyzed = 0;
   let failed = 0;
+  let skippedNoNewVideos = 0;
   const { clause: scopeClause, params: scopeParams } = getScopeClause(userId);
 
   // ── Recovery: resurrect stuck / failed channels ────────────────
@@ -857,17 +998,32 @@ export async function processAllChannels(force = false, userId?: number): Promis
       );
     }
 
+    // Failure backoff (migration 222): channels below the consecutive
+    // failure threshold keep the original 12h auto-retry; channels at/over
+    // it are backed off to at most one retry per 7 days. updated_at is
+    // bumped on every failure, so the window restarts from the latest one.
     const failedRetryable = db.prepare(`
-      SELECT id, channel_name FROM content_ref_channels
+      SELECT id, channel_name, COALESCE(consecutive_failure_count, 0) AS consecutive_failure_count
+      FROM content_ref_channels
       WHERE status = 'failed'
         AND ${scopeClause}
-        AND updated_at < datetime('now', '-12 hours')
-    `).all(...scopeParams) as Array<{ id: number; channel_name: string | null }>;
+        AND (
+          (COALESCE(consecutive_failure_count, 0) < ${CHANNEL_FAILURE_BACKOFF_THRESHOLD}
+            AND updated_at < datetime('now', '-12 hours'))
+          OR (COALESCE(consecutive_failure_count, 0) >= ${CHANNEL_FAILURE_BACKOFF_THRESHOLD}
+            AND updated_at < datetime('now', '-7 days'))
+        )
+    `).all(...scopeParams) as Array<{ id: number; channel_name: string | null; consecutive_failure_count: number }>;
 
     for (const ch of failedRetryable) {
       updateChannelStatus(ch.id, 'pending', { error_message: null }, accessForUserId(userId));
       logger.info(
-        { channelId: ch.id, channelName: ch.channel_name },
+        {
+          channelId: ch.id,
+          channelName: ch.channel_name,
+          consecutiveFailures: ch.consecutive_failure_count,
+          inBackoff: ch.consecutive_failure_count >= CHANNEL_FAILURE_BACKOFF_THRESHOLD,
+        },
         'Previously failed channel reset to pending for auto-retry',
       );
     }
@@ -884,11 +1040,17 @@ export async function processAllChannels(force = false, userId?: number): Promis
     logger.error({ err }, 'Channel recovery query failed (non-critical, continuing)');
   }
 
-  // Process pending channels first (now includes any just-recovered ones)
+  // Process pending channels first (now includes any just-recovered ones).
+  // The new-video gate applies here too: recovered failed channels keep the
+  // fingerprint of their last SUCCESSFUL analysis, so an unchanged channel
+  // that repeatedly fails during re-extraction settles back to active
+  // instead of burning LLM calls. Brand-new channels have a NULL fingerprint
+  // and always analyze. `force` bypasses the gate.
   const pending = getScopedChannelsForProcessing('pending', userId);
   for (const ch of pending) {
-    const result = await analyzeChannel(ch.id);
-    if (result.success) analyzed++;
+    const result = await analyzeChannel(ch.id, { skipIfUnchanged: !force });
+    if (result.skipped) skippedNoNewVideos++;
+    else if (result.success) analyzed++;
     else failed++;
     // Rate limit: wait 2s between channels to avoid YouTube API quota issues
     await new Promise((r) => setTimeout(r, 2000));
@@ -901,30 +1063,51 @@ export async function processAllChannels(force = false, userId?: number): Promis
     if (!force && ch.last_analyzed_at && new Date(ch.last_analyzed_at).getTime() > staleThreshold) {
       continue; // Fresh enough
     }
-    const result = await analyzeChannel(ch.id);
-    if (result.success) analyzed++;
+    const result = await analyzeChannel(ch.id, { skipIfUnchanged: !force });
+    if (result.skipped) skippedNoNewVideos++;
+    else if (result.success) analyzed++;
     else failed++;
     await new Promise((r) => setTimeout(r, 2000));
   }
 
-  // Synthesize knowledge if anything was analyzed
+  // Synthesize knowledge if anything was actually (re-)analyzed. Channels
+  // skipped by the new-video gate contribute nothing new, so an all-skipped
+  // scope skips its synthesis LLM calls entirely.
   let synthesized = false;
+  const allSkippedNoNewVideos = skippedNoNewVideos > 0 && analyzed === 0 && failed === 0;
   if (analyzed > 0) {
     await synthesizeKnowledge(userId);
     synthesized = true;
+  } else if (allSkippedNoNewVideos) {
+    logger.info(
+      { userId: userId ?? null, skippedNoNewVideos },
+      'All channels in scope skipped by new-video gate — knowledge synthesis skipped (nothing new to synthesize)',
+    );
   }
 
-  return { analyzed, failed, synthesized };
+  return {
+    analyzed,
+    failed,
+    skipped_no_new_videos: skippedNoNewVideos,
+    synthesized,
+    synthesis_skipped_all_unchanged: allSkippedNoNewVideos,
+  };
 }
 
 export async function processAllChannelScopes(force = false): Promise<{
   analyzed: number;
   failed: number;
+  skipped_no_new_videos: number;
   synthesized: boolean;
+  synthesis_skipped_all_unchanged: boolean;
 }> {
   let analyzed = 0;
   let failed = 0;
+  let skippedNoNewVideos = 0;
   let synthesized = false;
+  // True when at least one scope skipped its synthesis calls because every
+  // channel it processed was unchanged (new-video gate).
+  let synthesisSkippedAllUnchanged = false;
 
   const scopes = [undefined, ...listContentChannelUserIds()];
   let systemScopeChanged = false;
@@ -932,7 +1115,9 @@ export async function processAllChannelScopes(force = false): Promise<{
     const result = await processAllChannels(force, scopeUserId);
     analyzed += result.analyzed;
     failed += result.failed;
+    skippedNoNewVideos += result.skipped_no_new_videos;
     synthesized = synthesized || result.synthesized;
+    synthesisSkippedAllUnchanged = synthesisSkippedAllUnchanged || result.synthesis_skipped_all_unchanged;
     if (scopeUserId == null) {
       systemScopeChanged = result.synthesized;
       continue;
@@ -947,7 +1132,13 @@ export async function processAllChannelScopes(force = false): Promise<{
     }
   }
 
-  return { analyzed, failed, synthesized };
+  return {
+    analyzed,
+    failed,
+    skipped_no_new_videos: skippedNoNewVideos,
+    synthesized,
+    synthesis_skipped_all_unchanged: synthesisSkippedAllUnchanged,
+  };
 }
 
 /**
@@ -968,8 +1159,11 @@ export async function addAndAnalyzeChannel(
     : addSystemChannel(channelUrl, addedVia, CONTENT_LEARNER_ADMIN_CONTEXT);
   const analysis = await analyzeChannel(channel.id);
 
-  // Re-synthesize if analysis was successful
-  if (analysis.success) {
+  // Re-synthesize if analysis was successful. Explicit add-and-analyze runs
+  // without the new-video gate (skipIfUnchanged defaults off), so `skipped`
+  // is never set today; the guard future-proofs against gated callers, since
+  // a skipped analysis produces nothing new to synthesize.
+  if (analysis.success && !analysis.skipped) {
     if (tenantId == null || tenantId === userId || userId === 0) {
       await synthesizeKnowledge(userId);
     } else {

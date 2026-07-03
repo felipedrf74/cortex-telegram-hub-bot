@@ -138,7 +138,28 @@ describe('Content operational agents direct health checks', () => {
     expect(activeSignals()).toEqual([]);
   });
 
+  it('reaction radar skips entirely when no user-scoped creator channel exists', async () => {
+    // Creator gate (2026-07-03 audit): without a verified own channel there
+    // is no consumer for radar signals, so the run must not burn YouTube
+    // quota at all — same fail-closed rationale as the SEO/performance agents.
+    await runReactionRadar();
+
+    expect(latestAgentRun('reaction-radar')).toMatchObject({
+      status: 'skipped',
+      signals_produced: 0,
+      error_message: 'No user-scoped creator YouTube channel configured',
+    });
+    expect(activeSignals('reaction_opportunity')).toEqual([]);
+  }, 8_000);
+
   it('reaction radar completes without fake opportunities when platform APIs are unavailable', async () => {
+    // Seed a verified own channel so the run passes the creator gate and
+    // exercises the API-unavailable path.
+    testDb.prepare(`
+      INSERT INTO content_ref_channels (channel_url, channel_name, channel_id, status, added_via, user_id, tenant_id, owner_user_id)
+      VALUES ('https://youtube.com/@creator', 'Test Creator', 'UC_test_creator', 'active', 'ios_own_channel', 7, 7, 7)
+    `).run();
+
     await runReactionRadar();
 
     expect(latestAgentRun('reaction-radar')).toMatchObject({

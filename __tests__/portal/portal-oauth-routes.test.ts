@@ -81,7 +81,6 @@ function captureRoutes(
   registerPortalOAuthRoutes(app as any, {
     loadServices: loadServices as any,
     logger: { warn: vi.fn(), error: vi.fn() },
-    getBotRef: () => ({ api: { sendMessage: vi.fn(async () => undefined) } }) as any,
     env: { OAUTH_REDIRECT_BASE: 'https://api.test' },
   });
   return routes;

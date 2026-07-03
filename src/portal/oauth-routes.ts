@@ -3,7 +3,6 @@
 import type { Express, Request, Response } from 'express';
 import express from 'express';
 import { logger as defaultLogger } from '../utils/logger';
-import { getBotRef as defaultGetBotRef } from './telemetry';
 
 type OAuthProvider = 'google' | 'outlook' | 'strava' | 'whoop' | 'fitbit' | 'todoist' | 'notion';
 
@@ -51,7 +50,6 @@ interface PortalOAuthServices {
 
 interface PortalOAuthRouteDeps {
   logger?: PortalOAuthLogger;
-  getBotRef?: typeof defaultGetBotRef;
   env?: NodeJS.ProcessEnv;
   loadServices?: () => PortalOAuthServices;
 }
@@ -230,19 +228,6 @@ function resolveOAuthUser(
   return { userId: parsed.userId, isIOS };
 }
 
-async function notifyTelegramConnection(
-  userId: number,
-  providerLabel: string,
-  services: PortalOAuthServices,
-  getBotRef: typeof defaultGetBotRef,
-): Promise<void> {
-  const lang = services.getUserLanguage(userId);
-  const botRef = getBotRef();
-  if (botRef) {
-    await botRef.api.sendMessage(userId, services.t('oauth_connected', lang, { provider: providerLabel }));
-  }
-}
-
 function invalidateProviderConnectionCaches(
   userId: number,
   provider: string,
@@ -277,7 +262,6 @@ async function handleIOSAwareOAuthCallback(
   res: Response,
   loadServices: () => PortalOAuthServices,
   logger: PortalOAuthLogger,
-  getBotRef: typeof defaultGetBotRef,
   afterStore?: (userId: number, services: PortalOAuthServices) => void,
 ): Promise<void> {
   const code = queryStringValue(req.query.code);
@@ -332,9 +316,6 @@ async function handleIOSAwareOAuthCallback(
       return;
     }
 
-    try {
-      await notifyTelegramConnection(resolved.userId, providerLabel, services, getBotRef);
-    } catch { /* notification is best-effort */ }
     res.send(htmlConnected(providerLabel));
   } catch (err) {
     logger.error({ err }, `${providerLabel} OAuth callback failed`);
@@ -348,7 +329,6 @@ async function handleIOSAwareOAuthCallback(
 
 export function registerPortalOAuthRoutes(app: Express, deps: PortalOAuthRouteDeps = {}): void {
   const logger = deps.logger ?? defaultLogger;
-  const getBotRef = deps.getBotRef ?? defaultGetBotRef;
   const env = deps.env ?? process.env;
   const loadServices = deps.loadServices ?? loadDefaultOAuthServices;
 
@@ -427,7 +407,6 @@ export function registerPortalOAuthRoutes(app: Express, deps: PortalOAuthRouteDe
         res,
         () => services,
         logger,
-        getBotRef,
         (_userId, oauthServices) => oauthServices.resetGoogleClients?.(),
       );
     } catch (err) {
@@ -511,7 +490,6 @@ export function registerPortalOAuthRoutes(app: Express, deps: PortalOAuthRouteDe
       res,
       loadServices,
       logger,
-      getBotRef,
       (userId, oauthServices) => {
         oauthServices.resetMicrosoftClients?.();
         startInitialTaskProviderSync(userId, 'ms_todo', 'Microsoft To Do', oauthServices, logger);
@@ -520,11 +498,11 @@ export function registerPortalOAuthRoutes(app: Express, deps: PortalOAuthRouteDe
   });
 
   app.get('/oauth/strava/callback', async (req: Request, res: Response) => {
-    await handleIOSAwareOAuthCallback('strava', 'Strava', req, res, loadServices, logger, getBotRef);
+    await handleIOSAwareOAuthCallback('strava', 'Strava', req, res, loadServices, logger);
   });
 
   app.get('/oauth/whoop/callback', async (req: Request, res: Response) => {
-    await handleIOSAwareOAuthCallback('whoop', 'Whoop', req, res, loadServices, logger, getBotRef);
+    await handleIOSAwareOAuthCallback('whoop', 'Whoop', req, res, loadServices, logger);
   });
 
   app.get('/oauth/fitbit/callback', async (req: Request, res: Response) => {
@@ -546,9 +524,6 @@ export function registerPortalOAuthRoutes(app: Express, deps: PortalOAuthRouteDe
       const tokens = await services.exchangeCode('fitbit', code, userId);
       services.storeTokens(userId, 'fitbit', tokens);
       invalidateProviderConnectionCaches(userId, 'fitbit', services, logger);
-      try {
-        await notifyTelegramConnection(userId, 'Fitbit', services, getBotRef);
-      } catch { /* notification is best-effort */ }
       res.send(htmlConnected('Fitbit'));
     } catch (err) {
       logger.error({ err }, 'Fitbit OAuth callback failed');
@@ -578,10 +553,6 @@ export function registerPortalOAuthRoutes(app: Express, deps: PortalOAuthRouteDe
 
       startInitialTaskProviderSync(userId, 'todoist', 'Todoist', services, logger);
 
-      try {
-        await notifyTelegramConnection(userId, 'Todoist', services, getBotRef);
-      } catch { /* notification is best-effort */ }
-
       res.send(htmlConnected('Todoist', 'Todoist account linked. Your first sync is starting now. Return to Nexus Hub to continue.'));
     } catch (err) {
       logger.error({ err }, 'Todoist OAuth callback failed');
@@ -609,19 +580,6 @@ export function registerPortalOAuthRoutes(app: Express, deps: PortalOAuthRouteDe
       services.storeTokens(userId, 'notion', tokens);
       invalidateProviderConnectionCaches(userId, 'notion', services, logger);
       startInitialTaskProviderSync(userId, 'notion', 'Notion', services, logger);
-
-      try {
-        await notifyTelegramConnection(userId, 'Notion', services, getBotRef);
-        const botRef = getBotRef();
-        if (botRef) {
-          await botRef.api.sendMessage(
-            userId,
-            '📋 <b>Next step:</b> Send me the URL of the Notion database you want to sync as your task list.\n\n' +
-            'Example: <code>https://notion.so/workspace/Tasks-abc123def456</code>',
-            { parse_mode: 'HTML' },
-          );
-        }
-      } catch { /* notification is best-effort */ }
 
       res.send(htmlConnected('Notion', 'Notion account linked. Return to Nexus Hub to finish setup.'));
     } catch (err) {

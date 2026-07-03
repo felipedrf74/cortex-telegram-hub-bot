@@ -188,7 +188,12 @@ export async function createAndPushNotification(opts: {
       sensitiveBody: opts.body,
       actionButtons: mapContentTypeToActions(opts.type, canExecuteContentApproval),
       deeplink: contentNotificationDeeplink(id, opts.data),
-      dedupeKey: `content:${opts.type}:${id}`,
+      // Entity-stable dedupe key: recurring events for the same user+type
+      // (e.g. Garmin reauth) collapse into one active center item instead of
+      // minting a fresh key from the legacy rowid and pushing every time.
+      // The orchestrator's listNotificationBridgeEntityIds understands both
+      // this shape and the legacy `content:<type>:<legacyRowId>` rows.
+      dedupeKey: `content:${opts.type}:${opts.userId}`,
       requiresUserAction: opts.type === 'script_ready' || opts.type === 'content_action_required',
       deliveryPolicy: 'auto',
       privacyPolicy: 'private_content',
@@ -287,9 +292,47 @@ export function getUnreadCount(userId: number): number {
 }
 
 /**
+ * List unread legacy notification ids for the given types. Backs the
+ * entity-stable bridge dedupe key (`content:<type>:<userId>`): one active
+ * center item covers every unread legacy row of that user+type, so the
+ * orchestrator expands the key into concrete legacy ids for badge exclusion
+ * (getUnreadCountExcludingNotificationIds and the unified-inbox list filter).
+ */
+export function listUnreadContentNotificationIdsByTypes(
+  userId: number,
+  types: string[],
+): number[] {
+  if (!isValidTenantUserId(userId)) {
+    reportInvalidNotificationScope('list_unread_content_notification_ids_by_types', userId, {
+      typeCount: types.length,
+    });
+    return [];
+  }
+
+  const validTypes = Array.from(new Set(
+    types.filter((type) => typeof type === 'string' && type.trim().length > 0),
+  ));
+  if (validTypes.length === 0) return [];
+
+  const placeholders = validTypes.map(() => '?').join(',');
+  const rows = getDb().prepare(`
+    SELECT id
+    FROM content_notifications
+    WHERE user_id = ?
+      AND status = 'unread'
+      AND type IN (${placeholders})
+  `).all(userId, ...validTypes) as Array<{ id: number }>;
+  return rows.map((row) => row.id);
+}
+
+/**
  * Count unread legacy content notifications while excluding rows that already
  * have a canonical Notification Center item. The legacy row remains domain
  * history; the central item owns badge/unread contribution.
+ *
+ * Callers pass concrete legacy row ids: for legacy bridge keys these come
+ * straight from the key; for entity-stable keys the orchestrator expands the
+ * key via listUnreadContentNotificationIdsByTypes before calling this.
  */
 export function getUnreadCountExcludingNotificationIds(
   userId: number,

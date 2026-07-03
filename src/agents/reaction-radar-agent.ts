@@ -16,6 +16,7 @@ import { getDb } from '../services/database';
 import { config } from '../config';
 import { logger } from '../utils/logger';
 import { ensureContentTenantScopeColumns } from '../services/content-tenant-scope';
+import { listUserScopedYoutubeChannelTargets } from '../services/youtube-channel-scope';
 
 const YOUTUBE_API_BASE = 'https://www.googleapis.com/youtube/v3';
 
@@ -367,6 +368,15 @@ export async function runReactionRadar(): Promise<void> {
   const start = Date.now();
   let signalsProduced = 0;
   let signalsConsumed = 0;
+
+  // Same fail-closed gate as the SEO/performance agents: without at least
+  // one user-scoped creator channel there is no consumer for these signals,
+  // and each run burns ~1.3k YouTube quota units (2026-07-03 audit).
+  if (listUserScopedYoutubeChannelTargets().length === 0) {
+    logger.info('Reaction Radar skipped: no user-scoped creator YouTube channel configured');
+    logAgentRun('reaction-radar', 'skipped', 0, 0, Date.now() - start, 'No user-scoped creator YouTube channel configured');
+    return;
+  }
 
   try {
     const db = getDb();

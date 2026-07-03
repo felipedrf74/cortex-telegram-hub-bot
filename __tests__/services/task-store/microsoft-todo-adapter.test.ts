@@ -1,6 +1,8 @@
 import fs from 'fs';
 import path from 'path';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import Database from 'better-sqlite3';
+import { applyMigrations } from '../../helpers/apply-migrations';
 
 const mocks = vi.hoisted(() => ({
   getGraphClientForUser: vi.fn(),
@@ -11,6 +13,17 @@ const mocks = vi.hoisted(() => ({
     info: vi.fn(),
     warn: vi.fn(),
   },
+}));
+
+// Real in-memory DB so the sync-engine integration test below can run the
+// full syncProvider() path (unified-task-store writes) against this adapter.
+let testDb: Database.Database;
+
+vi.mock('../../../src/services/database', () => ({
+  getDb: () => testDb,
+  initDatabase: vi.fn(),
+  closeDatabase: vi.fn(),
+  findUnexpectedMigrationPrefixCollisions: vi.fn(() => []),
 }));
 
 vi.mock('../../../src/services/microsoft-auth', () => ({
@@ -33,9 +46,17 @@ vi.mock('../../../src/utils/logger', () => ({
 }));
 
 import { MicrosoftTodoAdapter, __testing } from '../../../src/services/task-store/microsoft-todo-adapter';
+import {
+  registerAdapter,
+  syncProvider,
+  _resetAdaptersForTests,
+  _resetPollIntervalForTests,
+} from '../../../src/services/task-store/sync-engine';
 
 type MockGraphClient = {
   calls: Array<{ path: string; query?: Record<string, string> }>;
+  /** Number of GET round-trips per path — `calls` dedupes repeats, this doesn't. */
+  getCounts: Record<string, number>;
   api: (path: string) => {
     query: (query: Record<string, string>) => any;
     get: () => Promise<any>;
@@ -47,8 +68,10 @@ type MockGraphClient = {
 
 function makeGraphClient(responses: Record<string, any>): MockGraphClient {
   const calls: MockGraphClient['calls'] = [];
+  const getCounts: MockGraphClient['getCounts'] = {};
   return {
     calls,
+    getCounts,
     api(path: string) {
       const request = {
         query(query: Record<string, string>) {
@@ -56,6 +79,7 @@ function makeGraphClient(responses: Record<string, any>): MockGraphClient {
           return request;
         },
         async get() {
+          getCounts[path] = (getCounts[path] || 0) + 1;
           if (!calls.some((call) => call.path === path)) calls.push({ path });
           const response = responses[path];
           if (response instanceof Error) throw response;
@@ -250,5 +274,80 @@ describe('MicrosoftTodoAdapter', () => {
     expect(source).toContain("require('./microsoft-todo-adapter')");
     expect(source).toContain('registerAdapter(new MicrosoftTodoAdapter())');
     expect(source).toContain('ensureBuiltInAdaptersRegistered()');
+  });
+
+  it('reuses caller-provided projects in getTasks without re-fetching lists', async () => {
+    const client = makeGraphClient({
+      '/me/todo/lists/list-work/tasks': {
+        value: [{ id: 'task-9', title: 'From known list' }],
+      },
+    });
+    mocks.getGraphClientForUser.mockReturnValue(client);
+
+    const adapter = new MicrosoftTodoAdapter();
+    const result = await adapter.getTasks(42, {
+      knownProjects: [{ provider: 'ms_todo', externalId: 'list-work', name: 'Work' }],
+    });
+
+    expect(result.tasks).toEqual([
+      expect.objectContaining({ externalId: 'task-9', projectName: 'Work' }),
+    ]);
+    // The list catalogue was never fetched — knownProjects replaced it
+    expect(client.getCounts['/me/todo/lists']).toBeUndefined();
+    expect(client.getCounts['/me/todo/lists/list-work/tasks']).toBe(1);
+  });
+
+  it('still applies the projectId filter to caller-provided projects', async () => {
+    const client = makeGraphClient({
+      '/me/todo/lists/list-work/tasks': { value: [{ id: 'task-9', title: 'Kept' }] },
+      '/me/todo/lists/list-home/tasks': { value: [{ id: 'task-8', title: 'Filtered out' }] },
+    });
+    mocks.getGraphClientForUser.mockReturnValue(client);
+
+    const adapter = new MicrosoftTodoAdapter();
+    const result = await adapter.getTasks(42, {
+      projectId: 'list-work',
+      knownProjects: [
+        { provider: 'ms_todo', externalId: 'list-work', name: 'Work' },
+        { provider: 'ms_todo', externalId: 'list-home', name: 'Home' },
+      ],
+    });
+
+    expect(result.tasks).toEqual([
+      expect.objectContaining({ externalId: 'task-9' }),
+    ]);
+    expect(client.getCounts['/me/todo/lists/list-home/tasks']).toBeUndefined();
+  });
+
+  it('sync engine pull fetches the Microsoft To Do list catalogue exactly once', async () => {
+    testDb = new Database(':memory:');
+    testDb.pragma('foreign_keys = ON');
+    applyMigrations(testDb);
+    testDb.prepare('INSERT INTO users (id, telegram_id) VALUES (?, ?)').run(42, 42);
+
+    mocks.isConnected.mockReturnValue(true);
+    const client = makeGraphClient({
+      '/me/todo/lists': {
+        value: [
+          { id: 'list-default', displayName: 'Tasks', wellknownListName: 'defaultList' },
+          { id: 'list-work', displayName: 'Work' },
+        ],
+      },
+      '/me/todo/lists/list-default/tasks': { value: [{ id: 'task-1', title: 'One' }] },
+      '/me/todo/lists/list-work/tasks': { value: [{ id: 'task-2', title: 'Two' }] },
+    });
+    mocks.getGraphClientForUser.mockReturnValue(client);
+
+    _resetAdaptersForTests();
+    _resetPollIntervalForTests();
+    registerAdapter(new MicrosoftTodoAdapter());
+    const result = await syncProvider(42, 'ms_todo');
+
+    expect(result.errors).toEqual([]);
+    expect(result.tasksUpserted).toBe(2);
+    // One list fetch for the whole sync — getTasks reused the engine's set
+    expect(client.getCounts['/me/todo/lists']).toBe(1);
+    expect(client.getCounts['/me/todo/lists/list-default/tasks']).toBe(1);
+    expect(client.getCounts['/me/todo/lists/list-work/tasks']).toBe(1);
   });
 });

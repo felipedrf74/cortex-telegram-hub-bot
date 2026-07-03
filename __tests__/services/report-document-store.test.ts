@@ -32,6 +32,13 @@ vi.mock('../../src/config', () => ({
   config: { anthropic: { apiKey: 'test' }, app: { timezone: 'Europe/Lisbon' } },
 }));
 
+const mockCreateNotificationIntent = vi.fn(async (..._args: unknown[]) => ({ deliveryAttempts: [] }));
+let hasActivePushDeviceToken = false;
+vi.mock('../../src/services/notification-orchestrator', () => ({
+  createNotificationIntent: (...args: unknown[]) => mockCreateNotificationIntent(...args),
+  userHasActivePushDeviceToken: () => hasActivePushDeviceToken,
+}));
+
 function applyMigrations(db: Database.Database): void {
   db.exec(`CREATE TABLE IF NOT EXISTS _migrations (id INTEGER PRIMARY KEY, filename TEXT UNIQUE, applied_at TEXT DEFAULT (datetime('now')))`);
   const files = fs.readdirSync(MIGRATIONS_DIR).filter(f => f.endsWith('.sql')).sort();
@@ -46,7 +53,7 @@ function applyMigrations(db: Database.Database): void {
 }
 
 import {
-  storeReport, getRecentReports, getReportById, getLatestByType,
+  storeReport, storeAndPushReport, getRecentReports, getReportById, getLatestByType,
   getUnreadReportCount, markReportRead, getAllReports,
   isPushEnabled, getPushPreferences, setPushPreference,
 } from '../../src/services/report-document-store';
@@ -344,7 +351,67 @@ describe('report-document-store: admin view', () => {
 });
 
 // ═══════════════════════════════════════════════════════════════════
-// 7. Structural Checks
+// 7. storeAndPushReport device-token producer gate
+// ═══════════════════════════════════════════════════════════════════
+
+describe('report-document-store: storeAndPushReport device-token gate', () => {
+  beforeEach(() => {
+    testDb = new Database(':memory:');
+    testDb.pragma('journal_mode = WAL');
+    applyMigrations(testDb);
+    clearTenantScopeAnomaliesForTests();
+    mockCreateNotificationIntent.mockClear();
+    hasActivePushDeviceToken = false;
+    delete process.env.NOTIFICATION_DIGEST_REQUIRE_DEVICE_TOKEN;
+  });
+  afterEach(() => {
+    delete process.env.NOTIFICATION_DIGEST_REQUIRE_DEVICE_TOKEN;
+    testDb?.close();
+  });
+
+  it('default OFF: still creates the push intent for users without device tokens', async () => {
+    const id = await storeAndPushReport({
+      userId: 1, type: 'morning_briefing', title: 'Brief',
+      summary: 'summary', documentJson: {},
+    });
+    expect(id).toBeGreaterThan(0);
+    expect(getReportById(id, 1)).not.toBeNull();
+    expect(mockCreateNotificationIntent).toHaveBeenCalledTimes(1);
+  });
+
+  it('flag ON + no device token: stores the durable report without minting a push intent', async () => {
+    process.env.NOTIFICATION_DIGEST_REQUIRE_DEVICE_TOKEN = 'true';
+    hasActivePushDeviceToken = false;
+    const id = await storeAndPushReport({
+      userId: 1, type: 'morning_briefing', title: 'Brief',
+      summary: 'summary', documentJson: {},
+    });
+    expect(id).toBeGreaterThan(0);
+    expect(getReportById(id, 1)).not.toBeNull();
+    expect(getUnreadReportCount(1)).toBe(1);
+    expect(mockCreateNotificationIntent).not.toHaveBeenCalled();
+  });
+
+  it('flag ON + active device token: creates the push intent with the report dedupe key', async () => {
+    process.env.NOTIFICATION_DIGEST_REQUIRE_DEVICE_TOKEN = 'true';
+    hasActivePushDeviceToken = true;
+    const id = await storeAndPushReport({
+      userId: 1, type: 'morning_briefing', title: 'Brief',
+      summary: 'summary', documentJson: {},
+    });
+    expect(id).toBeGreaterThan(0);
+    expect(mockCreateNotificationIntent).toHaveBeenCalledTimes(1);
+    expect(mockCreateNotificationIntent.mock.calls[0][0]).toMatchObject({
+      userId: 1,
+      relatedEntityId: id,
+      relatedEntityType: 'report_document',
+      dedupeKey: `report:morning_briefing:${id}`,
+    });
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════
+// 8. Structural Checks
 // ═══════════════════════════════════════════════════════════════════
 
 describe('report-document-store: structural', () => {

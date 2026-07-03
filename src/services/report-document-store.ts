@@ -148,7 +148,23 @@ export async function storeAndPushReport(opts: {
   }
 
   try {
-    const { createNotificationIntent } = await import('./notification-orchestrator');
+    const { createNotificationIntent, userHasActivePushDeviceToken } = await import('./notification-orchestrator');
+
+    // Optional producer gate (default OFF): with
+    // NOTIFICATION_DIGEST_REQUIRE_DEVICE_TOKEN=true, push-less users keep the
+    // durable report but no push intent is minted — it could only ever end as
+    // a blocked_missing_device_token decision.
+    if (
+      process.env.NOTIFICATION_DIGEST_REQUIRE_DEVICE_TOKEN === 'true'
+      && !userHasActivePushDeviceToken(opts.userId)
+    ) {
+      logger.debug(
+        { userId: opts.userId, reportId: id, type: opts.type },
+        'Report stored without notification intent: no active device token',
+      );
+      return id;
+    }
+
     await createNotificationIntent({
       userId: opts.userId,
       tenantId: opts.userId,

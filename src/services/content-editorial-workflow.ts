@@ -1219,6 +1219,8 @@ export function requestContentScheduleThroughSecretary(
         sourceUpdatedAt: intent.updatedAt ?? null,
         reasoningTrail: preview.reasoningTrail,
         providerSyncFailureCount: 0,
+        lastSyncedFingerprint: null,
+        lastSyncedVerifiedAt: null,
       },
       reasonCodes: preview.reasonCodes,
       explanation: 'Secretary preview found no feasible Content slot.',

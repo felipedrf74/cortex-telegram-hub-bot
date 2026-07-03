@@ -9,6 +9,12 @@
  * 3. Apply mutation, re-run, compare scores
  * 4. Keep if improved (git commit), revert if worse
  * 5. Store each round in the database
+ *
+ * Scheduled runs are additionally guarded by a pre-flight skip gate: when
+ * the target's prompt/config fingerprint is unchanged since the last
+ * completed run AND that run's final score is at or above
+ * AUTORESEARCH_RESCORE_THRESHOLD (default 0.9), the run is skipped with
+ * zero LLM calls. Manual runs bypass the gate with { force: true }.
  */
 
 import { execSync } from 'child_process';
@@ -73,6 +79,23 @@ export interface AutoresearchResult {
   rounds: RoundResult[];
   finalScore: number;
   totalDurationMs: number;
+  /**
+   * Set when the pre-flight gate skipped the run because the prompt/config
+   * fingerprint is unchanged since the last completed run and that run's
+   * final score already met the re-score threshold. `finalScore` then
+   * carries the stored score and `rounds` is empty; consumers that only
+   * read rounds/finalScore/totalDurationMs are unaffected.
+   */
+  skipped?: 'skipped_unchanged';
+}
+
+export interface AutoresearchRunOptions {
+  /**
+   * Bypass the pre-flight skip gate. Manual/operator-triggered runs should
+   * pass { force: true } so a re-run can always be demanded; the scheduled
+   * cron path omits it and stays gated.
+   */
+  force?: boolean;
 }
 
 // ─── Core: Generate output from a prompt ─────────────────────────────
@@ -370,6 +393,81 @@ function storeRound(
   }
 }
 
+// ─── Pre-flight skip gate ────────────────────────────────────────────
+
+const DEFAULT_RESCORE_THRESHOLD = 0.9;
+
+function getRescoreThreshold(): number {
+  const raw = process.env.AUTORESEARCH_RESCORE_THRESHOLD;
+  if (raw === undefined || raw.trim() === '') return DEFAULT_RESCORE_THRESHOLD;
+  const parsed = Number.parseFloat(raw);
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    logger.warn({ raw }, 'Invalid AUTORESEARCH_RESCORE_THRESHOLD; using default');
+    return DEFAULT_RESCORE_THRESHOLD;
+  }
+  return parsed;
+}
+
+/**
+ * Stable sha256 fingerprint of everything a run mutates or judges: the
+ * on-disk prompt content plus the eval-target configuration (criteria,
+ * test inputs, models, token budget). If any of it changes, the
+ * fingerprint changes and the skip gate lets the run proceed.
+ */
+export function computePromptStateHash(target: EvalTarget): string {
+  const fingerprintSource = JSON.stringify({
+    promptContent: loadPrompt(target.promptFile),
+    criteria: target.criteria,
+    testInputs: target.testInputs,
+    model: target.model,
+    scorerModel: target.scorerModel,
+    maxTokens: target.maxTokens,
+  });
+  return crypto.createHash('sha256').update(fingerprintSource).digest('hex');
+}
+
+function readLastRunFingerprint(
+  targetId: string,
+): { promptHash: string | null; finalScore: number | null } | null {
+  try {
+    const db = getDb();
+    const row = db.prepare(`
+      SELECT prompt_hash AS promptHash, final_score AS finalScore
+      FROM autoresearch_experiments
+      WHERE target = ?
+      ORDER BY id DESC
+      LIMIT 1
+    `).get(targetId) as { promptHash: string | null; finalScore: number | null } | undefined;
+    return row ?? null;
+  } catch (err) {
+    logger.warn(
+      { err, target: targetId },
+      'Autoresearch pre-flight history lookup failed; running without skip gate',
+    );
+    return null;
+  }
+}
+
+/**
+ * Stamps every row of the just-completed run with the END-of-run prompt
+ * fingerprint and final score. Hashing after the run matters: kept
+ * mutations change the prompt on disk, and the stored score belongs to
+ * that final prompt state.
+ */
+function persistRunFingerprint(target: EvalTarget, runId: string, finalScore: number): void {
+  try {
+    const promptHash = computePromptStateHash(target);
+    const db = getDb();
+    db.prepare(`
+      UPDATE autoresearch_experiments
+      SET prompt_hash = ?, final_score = ?
+      WHERE run_id = ?
+    `).run(promptHash, finalScore, runId);
+  } catch (err) {
+    logger.error({ err, target: target.id, runId }, 'Failed to persist autoresearch run fingerprint');
+  }
+}
+
 // ─── Main Loop ───────────────────────────────────────────────────────
 
 export async function runAutoresearch(
@@ -377,6 +475,7 @@ export async function runAutoresearch(
   maxRounds: number,
   dryRun: boolean,
   onProgress?: (msg: string) => Promise<void>,
+  options?: AutoresearchRunOptions,
 ): Promise<AutoresearchResult> {
   const target = getEvalTarget(targetId);
   if (!target) throw new Error(`Unknown eval target: ${targetId}`);
@@ -389,6 +488,46 @@ export async function runAutoresearch(
     logger.info({ target: targetId, runId }, msg);
     if (onProgress) await onProgress(msg).catch(() => {});
   };
+
+  // Pre-flight skip gate: a scheduled run is pure LLM cost when nothing it
+  // would optimize has changed and the last completed run already scored
+  // at/above the re-score threshold. Any gate failure (missing history,
+  // legacy NULL columns, hash/lookup error) falls through to a normal run.
+  if (!options?.force) {
+    let currentHash: string | null = null;
+    try {
+      currentHash = computePromptStateHash(target);
+    } catch (err) {
+      logger.warn(
+        { err, target: targetId },
+        'Autoresearch pre-flight hash failed; running without skip gate',
+      );
+    }
+    const lastRun = currentHash !== null ? readLastRunFingerprint(targetId) : null;
+    const threshold = getRescoreThreshold();
+    if (
+      currentHash !== null &&
+      lastRun !== null &&
+      lastRun.promptHash !== null &&
+      lastRun.finalScore !== null &&
+      lastRun.promptHash === currentHash &&
+      lastRun.finalScore >= threshold
+    ) {
+      await report(
+        `Autoresearch skipped for <b>${targetId}</b> — prompt unchanged since last run and ` +
+        `stored score <b>${(lastRun.finalScore * 100).toFixed(1)}%</b> is at/above the ` +
+        `${(threshold * 100).toFixed(0)}% re-score threshold (0 LLM calls)`,
+      );
+      return {
+        targetId,
+        runId,
+        rounds: [],
+        finalScore: lastRun.finalScore,
+        totalDurationMs: Date.now() - startTime,
+        skipped: 'skipped_unchanged',
+      };
+    }
+  }
 
   await report(`Starting autoresearch for <b>${targetId}</b> — ${maxRounds} rounds${dryRun ? ' (DRY RUN)' : ''}`);
 
@@ -503,6 +642,10 @@ export async function runAutoresearch(
     `kept ${rounds.filter(r => r.decision === 'kept').length}/${rounds.length} mutations ` +
     `(${(totalDurationMs / 1000).toFixed(0)}s)`;
   await report(summary);
+
+  // Stamp this run's rows with the end-of-run fingerprint + final score so
+  // the next scheduled run can skip when nothing has changed.
+  persistRunFingerprint(target, runId, currentScore);
 
   return { targetId, runId, rounds, finalScore: currentScore, totalDurationMs };
 }

@@ -1,6 +1,6 @@
 {
   "name": "@nexushub/core",
-  "version": "4.14.211",
+  "version": "4.14.212",
   "description": "Nexus Hub — AI-powered creator operating system with multi-domain routing",
   "main": "dist/index.js",
   "scripts": {
@@ -98,7 +98,6 @@
     "express-rate-limit": "^8.5.2",
     "garmin-connect": "^1.6.2",
     "googleapis": "^171.4.0",
-    "grammy": "^1.41.1",
     "jsonwebtoken": "^9.0.3",
     "luxon": "^3.7.2",
     "mammoth": "^1.12.0",

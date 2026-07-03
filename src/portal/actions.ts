@@ -1,12 +1,10 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
-import type { Bot } from 'grammy';
 import { runPerformanceAgent } from '../agents/performance-agent';
 import { runVoiceEvolutionAgent } from '../agents/voice-evolution-agent';
 import { runReactionRadar } from '../agents/reaction-radar-agent';
 import { runSEOAgent } from '../agents/seo-agent';
 import { runPipelineAgent } from '../agents/pipeline-agent';
-import { dispatchCoachReports, dispatchContentReports } from '../services/manual-report-triggers';
 import { sendDailyBriefing } from '../services/scheduler';
 import { isGarminConfigured, keepAlive as garminKeepAlive } from '../services/garmin';
 import { isMicrosoftConfigured } from '../services/microsoft-auth';
@@ -15,25 +13,16 @@ import { getOwnerBootstrapTarget } from '../services/user-service';
 import { clearAllConversations } from '../state/conversation';
 import { synthesizeKnowledge as reSynthesizeKnowledge } from '../services/channel-learner';
 import { logger } from '../utils/logger';
-import {
-  getBotRef,
-  isRestarting,
-  setIsRestarting,
-  setBotPollingActive,
-  pushEvent,
-} from './telemetry';
+import { pushEvent } from './telemetry';
 
 export type PortalActionResult = { ok: boolean; message: string };
 
 export const VALID_PORTAL_ACTIONS = new Set([
   'refresh-garmin',
   'trigger-briefing',
-  'trigger-coach',
-  'trigger-content',
   'clear-history',
   'test-invoice-storage',
   'test-graph',
-  'restart-polling',
   'resynthesize-knowledge',
   'run-performance-agent',
   'run-voice-evolution',
@@ -60,7 +49,6 @@ export function resetPortalActionCooldownsForTests(): void {
 
 export async function handlePortalAction(
   name: string,
-  bot: Bot,
 ): Promise<PortalActionResult> {
   switch (name) {
     case 'refresh-garmin': {
@@ -71,30 +59,9 @@ export async function handlePortalAction(
     }
 
     case 'trigger-briefing': {
-      await sendDailyBriefing(bot);
+      await sendDailyBriefing();
       pushEvent({ ts: new Date().toISOString(), type: 'job', summary: 'Manual morning briefing sent' });
-      return { ok: true, message: 'Morning briefing sent to Telegram' };
-    }
-
-    case 'trigger-coach': {
-      if (!isGarminConfigured()) return { ok: false, message: 'Garmin not configured' };
-      await dispatchCoachReports(async (telegramId, message, parseMode) => {
-        await bot.api.sendMessage(telegramId, message, {
-          parse_mode: parseMode ?? 'HTML',
-        });
-      });
-      pushEvent({ ts: new Date().toISOString(), type: 'job', summary: 'Manual coach report sent' });
-      return { ok: true, message: 'Coach report sent to Telegram' };
-    }
-
-    case 'trigger-content': {
-      await dispatchContentReports(async (telegramId, message, parseMode) => {
-        await bot.api.sendMessage(telegramId, message, {
-          parse_mode: parseMode ?? 'HTML',
-        });
-      });
-      pushEvent({ ts: new Date().toISOString(), type: 'job', summary: 'Manual content discovery sent' });
-      return { ok: true, message: 'Content discovery sent to Telegram' };
+      return { ok: true, message: 'Morning briefing stored and pushed' };
     }
 
     case 'clear-history': {
@@ -130,54 +97,6 @@ export async function handlePortalAction(
         pushEvent({ ts: new Date().toISOString(), type: 'error', summary: 'Graph test: failed' });
         return { ok: false, message: 'Graph test failed' };
       }
-    }
-
-    case 'restart-polling': {
-      if (isRestarting()) return { ok: false, message: 'Already restarting - please wait' };
-      const botRef = getBotRef();
-      if (!botRef) return { ok: false, message: 'Bot reference not available' };
-
-      setIsRestarting(true);
-      setImmediate(async () => {
-        try {
-          logger.info('Portal: stopping bot polling for restart...');
-          botRef.stop();
-          setBotPollingActive(false);
-          pushEvent({ ts: new Date().toISOString(), type: 'job', summary: 'Bot polling stopped for restart' });
-
-          await new Promise((resolve) => setTimeout(resolve, 5_000));
-
-          for (let attempt = 1; attempt <= 3; attempt++) {
-            try {
-              logger.info({ attempt }, 'Portal: restarting bot polling...');
-              await botRef.start({
-                onStart: () => {
-                  logger.info('Portal: bot polling restarted successfully');
-                  setBotPollingActive(true);
-                  setIsRestarting(false);
-                  pushEvent({ ts: new Date().toISOString(), type: 'job', summary: 'Bot polling restarted successfully' });
-                },
-              });
-              break;
-            } catch (err: any) {
-              const is409 = err?.error_code === 409 || err?.message?.includes('409');
-              if (is409 && attempt < 3) {
-                logger.warn({ attempt }, 'Portal restart: 409 conflict, retrying...');
-                await new Promise((resolve) => setTimeout(resolve, 15_000));
-                continue;
-              }
-              throw err;
-            }
-          }
-        } catch (err) {
-          logger.error({ err }, 'Portal: bot restart failed');
-          pushEvent({ ts: new Date().toISOString(), type: 'error', summary: 'Bot restart failed' });
-        } finally {
-          setIsRestarting(false);
-        }
-      });
-
-      return { ok: true, message: 'Bot restart initiated - polling will resume in ~5s' };
     }
 
     case 'resynthesize-knowledge': {

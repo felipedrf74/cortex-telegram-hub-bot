@@ -31,21 +31,6 @@ function required(key: string): string {
   return value;
 }
 
-/**
- * Like required() but returns an empty string instead of throwing when
- * STAGING=true. Use this for env vars that are critical in production but
- * can be safely missing in a staging install (e.g. a second Telegram bot
- * token that the operator doesn't want to provision yet).
- */
-function requiredInProd(key: string): string {
-  const value = process.env[key];
-  if (!value) {
-    if (IS_STAGING) return '';
-    throw new Error(`Missing required environment variable: ${key}`);
-  }
-  return value;
-}
-
 function optional(key: string, fallback: string): string {
   return process.env[key] || fallback;
 }
@@ -110,28 +95,6 @@ function isStrongIosJwtSecret(secret: string): boolean {
 }
 
 export const config = {
-  telegram: {
-    botToken: requiredInProd('TELEGRAM_BOT_TOKEN'),
-    allowedUserIds: requiredInProd('TELEGRAM_ALLOWED_USER_IDS')
-      .split(',')
-      .map((id) => parseInt(id.trim(), 10))
-      .filter((id) => !isNaN(id)),
-    // Webhook mode (Month 2 audit item). When TELEGRAM_WEBHOOK_URL is set,
-    // the bot uses webhook delivery instead of long-polling. Default: empty
-    // (= long-polling). Setting/unsetting this env var is the safety switch
-    // — flip it back to "" and restart the bot to instantly revert to
-    // polling mode without any code rollback.
-    //
-    // The URL must be HTTPS and reachable by Telegram (not localhost).
-    // For Nexus Hub: https://api.nexushub.me/webhooks/telegram
-    //
-    // TELEGRAM_WEBHOOK_SECRET is an optional 1-256 char token from
-    // [A-Za-z0-9_-]. Telegram echoes it back in the
-    // X-Telegram-Bot-Api-Secret-Token header on every delivery, and
-    // grammy verifies it. Strongly recommended in production.
-    webhookUrl: process.env.TELEGRAM_WEBHOOK_URL || '',
-    webhookSecret: process.env.TELEGRAM_WEBHOOK_SECRET || '',
-  },
   isStaging: IS_STAGING,
   anthropic: {
     // April 9 2026 — Anthropic kill switch. The cost dashboard showed
@@ -748,15 +711,6 @@ export const config = {
     alertThresholdPercent: optionalFloat('COST_ALERT_THRESHOLD', 0.80, { min: 0, max: 1 }),
   },
 } as const;
-
-// Fail-fast: empty allowedUserIds would silently reject all Telegram ingress.
-// This list is no longer used as owner bootstrap state.
-// Skipped in staging because Telegram is optional there — see requiredInProd
-// above. In staging the bot may not even start, so an empty allowlist isn't
-// a security risk, just a "no fallback users registered" warning.
-if (!IS_STAGING && config.telegram.allowedUserIds.length === 0) {
-  throw new Error('TELEGRAM_ALLOWED_USER_IDS parsed to empty list — check env var format (comma-separated numeric IDs)');
-}
 
 if (!config.billing.paywallEnabled && !config.billing.allowUnsafePaywallBypass) {
   throw new Error(

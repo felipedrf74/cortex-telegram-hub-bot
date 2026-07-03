@@ -38,10 +38,6 @@ export function getAICallTimeoutMs(env: RuntimeEnv = process.env): number {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : configuredFallback;
 }
 
-export function isTelegramLegacyDeliveryEnabled(env: RuntimeEnv = process.env): boolean {
-  return env.TELEGRAM_LEGACY_DELIVERY === 'true';
-}
-
 export function areGlobalInvoiceVendorsEnabled(env: RuntimeEnv = process.env): boolean {
   return env.FISCAL_ENABLE_GLOBAL_BUILTIN_VENDORS === 'true';
 }

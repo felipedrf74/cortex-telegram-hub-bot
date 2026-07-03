@@ -2,8 +2,6 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mockGetDb = vi.fn();
 const mockIsGarminConfigured = vi.fn();
-const mockDispatchCoachReports = vi.fn();
-const mockDispatchContentReports = vi.fn();
 const mockClearAllConversations = vi.fn();
 const mockPushEvent = vi.fn();
 const mockGetOwnerBootstrapTarget = vi.fn();
@@ -11,7 +9,6 @@ const mockGetOwnerBootstrapTarget = vi.fn();
 vi.mock('../../src/config', () => ({
   config: {
     portal: { enabled: true, port: 0, bind: '127.0.0.1', token: 'test-portal-token' },
-    telegram: { allowedUserIds: [111111] },
     app: { timezone: 'Europe/Lisbon', databasePath: ':memory:' },
     health: { token: '' },
     webhooks: { enabled: false, secret: '', maxPayloadBytes: 1048576, eventRetentionDays: 30 },
@@ -53,7 +50,6 @@ vi.mock('../../src/services/database', () => ({
 vi.mock('../../src/portal/telemetry', () => ({
   getRecentEvents: vi.fn(() => []),
   getJobStatuses: vi.fn(() => []),
-  getBotRef: vi.fn(() => null),
   isBotPollingActive: vi.fn(() => true),
   getLastMessageAt: vi.fn(() => null),
   getGarminRefreshStatus: vi.fn(() => ({ at: null, ok: false })),
@@ -134,10 +130,6 @@ vi.mock('../../src/services/webhook-registry', () => ({
   replayEvent: vi.fn(),
   expireSubscriptions: vi.fn(),
 }));
-vi.mock('../../src/services/manual-report-triggers', () => ({
-  dispatchCoachReports: (...args: unknown[]) => mockDispatchCoachReports(...args),
-  dispatchContentReports: (...args: unknown[]) => mockDispatchContentReports(...args),
-}));
 vi.mock('../../src/services/user-service', () => ({
   getOwnerBootstrapTarget: (...args: unknown[]) => mockGetOwnerBootstrapTarget(...args),
 }));
@@ -190,34 +182,8 @@ describe('portal owner bootstrap hardening', () => {
     expect(getPortalUsageMeteringUserIds()).toEqual([42]);
   });
 
-  it('trigger-coach delegates to the scoped manual-report dispatcher', async () => {
-    const sendMessage = vi.fn().mockResolvedValue(undefined);
-    mockDispatchCoachReports.mockImplementation(async (send: (telegramId: number, message: string, mode?: 'HTML' | 'MarkdownV2') => Promise<void>) => {
-      await send(1042, 'coach message', 'HTML');
-    });
-
-    const result = await handleAction('trigger-coach', { api: { sendMessage } } as any);
-
-    expect(result.ok).toBe(true);
-    expect(mockDispatchCoachReports).toHaveBeenCalledTimes(1);
-    expect(sendMessage).toHaveBeenCalledWith(1042, 'coach message', { parse_mode: 'HTML' });
-  });
-
-  it('trigger-content delegates to the scoped manual-report dispatcher', async () => {
-    const sendMessage = vi.fn().mockResolvedValue(undefined);
-    mockDispatchContentReports.mockImplementation(async (send: (telegramId: number, message: string, mode?: 'HTML' | 'MarkdownV2') => Promise<void>) => {
-      await send(1042, 'content message', 'HTML');
-    });
-
-    const result = await handleAction('trigger-content', { api: { sendMessage } } as any);
-
-    expect(result.ok).toBe(true);
-    expect(mockDispatchContentReports).toHaveBeenCalledTimes(1);
-    expect(sendMessage).toHaveBeenCalledWith(1042, 'content message', { parse_mode: 'HTML' });
-  });
-
   it('clear-history uses the canonical owner bootstrap tenant instead of synthetic user 0', async () => {
-    const result = await handleAction('clear-history', { api: { sendMessage: vi.fn() } } as any);
+    const result = await handleAction('clear-history');
 
     expect(result.ok).toBe(true);
     expect(mockClearAllConversations).toHaveBeenCalledWith(42);
@@ -227,7 +193,7 @@ describe('portal owner bootstrap hardening', () => {
   it('clear-history fails honestly when no owner bootstrap target exists', async () => {
     mockGetOwnerBootstrapTarget.mockReturnValue(null);
 
-    const result = await handleAction('clear-history', { api: { sendMessage: vi.fn() } } as any);
+    const result = await handleAction('clear-history');
 
     expect(result).toEqual({
       ok: false,
@@ -237,11 +203,11 @@ describe('portal owner bootstrap hardening', () => {
   });
 
   it('keeps portal action allowlist and cooldown ownership outside the server factory', () => {
-    expect(VALID_PORTAL_ACTIONS.has('trigger-coach')).toBe(true);
-    expect(isPortalActionRateLimited('trigger-coach')).toBe(false);
+    expect(VALID_PORTAL_ACTIONS.has('trigger-briefing')).toBe(true);
+    expect(isPortalActionRateLimited('trigger-briefing')).toBe(false);
 
-    recordPortalAction('trigger-coach');
+    recordPortalAction('trigger-briefing');
 
-    expect(isPortalActionRateLimited('trigger-coach')).toBe(true);
+    expect(isPortalActionRateLimited('trigger-briefing')).toBe(true);
   });
 });

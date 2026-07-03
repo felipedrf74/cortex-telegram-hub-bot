@@ -66,7 +66,7 @@ describe('ConfigProvider — QA Validation', () => {
       provider.setOverrides('t1', { app: { timezone: 'UTC' } });
       const resolved = provider.resolve('t1');
       // Sections not mentioned in overrides should be the original objects
-      expect(resolved.telegram).toBe(config.telegram);
+      expect(resolved.aiSafety).toBe(config.aiSafety);
       expect(resolved.anthropic).toBe(config.anthropic);
     });
 

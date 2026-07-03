@@ -78,6 +78,7 @@ vi.mock('../../src/config', () => ({
 // onboarding path.
 vi.mock('../../src/services/context-engine', () => ({
   getDailyContext: vi.fn(() => ''),
+  getOrBuildDailyContext: vi.fn(async () => ''),
 }));
 
 // training-plans is exercised by other tests; stub the one function

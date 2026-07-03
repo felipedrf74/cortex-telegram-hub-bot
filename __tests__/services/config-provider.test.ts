@@ -171,7 +171,7 @@ describe('ConfigProvider', () => {
       expect(resolved.app.timezone).toBe('America/New_York');
       expect(resolved.rateLimit.maxMessagesPerMinute).toBe(10);
       // Unchanged sections stay the same
-      expect(resolved.telegram).toEqual(config.telegram);
+      expect(resolved.aiSafety).toEqual(config.aiSafety);
     });
   });
 

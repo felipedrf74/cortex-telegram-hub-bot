@@ -114,6 +114,67 @@ const FAILED_PROVIDER_SYNC_STATES = new Set<SecretaryProviderSyncState>([
 // failures would silently strand an item the user still expects to sync.
 const PROVIDER_SYNC_DEAD_LETTER_THRESHOLD = 5;
 
+// Provider-sync short-circuit (migration 224). Unchanged 'synced' items skip
+// all provider round-trips until the re-verification window elapses, so
+// external calendar drift still heals. 0 disables the short-circuit entirely.
+const DEFAULT_SYNC_VERIFY_INTERVAL_MINUTES = 360;
+
+function syncVerifyIntervalMinutes(): number {
+  const raw = process.env.SECRETARY_SYNC_VERIFY_INTERVAL_MINUTES;
+  if (raw == null || raw.trim() === '') return DEFAULT_SYNC_VERIFY_INTERVAL_MINUTES;
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed) || parsed < 0) return DEFAULT_SYNC_VERIFY_INTERVAL_MINUTES;
+  return parsed;
+}
+
+function computeProviderSyncFingerprint(
+  agendaItem: SecretaryAgendaItem,
+  source: SecretaryCalendarProviderSource,
+): string {
+  return [
+    source,
+    agendaItem.sourceShapeHash,
+    agendaItem.startAt ?? '',
+    agendaItem.endAt ?? '',
+    String(agendaItem.version),
+  ].join('|');
+}
+
+function isProviderSyncFingerprintFresh(
+  agendaItem: SecretaryAgendaItem,
+  fingerprint: string,
+): boolean {
+  const intervalMinutes = syncVerifyIntervalMinutes();
+  if (intervalMinutes === 0) return false;
+  if (agendaItem.lastSyncedFingerprint !== fingerprint) return false;
+  if (!agendaItem.lastSyncedVerifiedAt) return false;
+  const verifiedAtMs = Date.parse(agendaItem.lastSyncedVerifiedAt);
+  if (!Number.isFinite(verifiedAtMs)) return false;
+  return Date.now() - verifiedAtMs < intervalMinutes * 60_000;
+}
+
+function recordSyncedFingerprint(
+  agendaItem: Pick<SecretaryAgendaItem, 'agendaItemId' | 'ownerUserId' | 'tenantId'>,
+  fingerprint: string,
+): void {
+  const db = getDb();
+  if (!tableHasColumn(db, 'secretary_agenda_items', 'last_synced_fingerprint')) return;
+  db.prepare(`
+    UPDATE secretary_agenda_items
+       SET last_synced_fingerprint = ?,
+           last_synced_verified_at = ?
+     WHERE agenda_item_id = ?
+       AND owner_user_id = ?
+       AND tenant_id = ?
+  `).run(
+    fingerprint,
+    new Date().toISOString(),
+    agendaItem.agendaItemId,
+    agendaItem.ownerUserId,
+    String(agendaItem.tenantId),
+  );
+}
+
 export function markCompletedSecretaryAgendaItems(now: Date = new Date()): number {
   const result = getDb().prepare(`
     UPDATE secretary_agenda_items
@@ -225,7 +286,30 @@ export async function syncSecretaryAgendaItemToProvider(
     };
   }
 
-  return upsertProviderEvent(agendaItem, adapter);
+  // Short-circuit: the item is already synced and nothing we would push has
+  // changed since the last successful sync — skip the duplicate-window
+  // readback, the direct readback, and the unconditional update PATCH that
+  // otherwise fire every 5-minute tick. The fingerprint goes stale after
+  // SECRETARY_SYNC_VERIFY_INTERVAL_MINUTES so externally deleted/moved
+  // provider events are still detected and healed on the next full pass.
+  const fingerprint = computeProviderSyncFingerprint(agendaItem, adapter.source);
+  if (
+    agendaItem.providerSyncState === 'synced'
+    && agendaItem.providerEventId
+    && isProviderSyncFingerprintFresh(agendaItem, fingerprint)
+  ) {
+    return result(
+      agendaItem,
+      'skipped',
+      agendaItem.providerEventId,
+      adapter.source,
+      'synced',
+      [],
+      'unchanged_since_last_sync',
+    );
+  }
+
+  return upsertProviderEvent(agendaItem, adapter, fingerprint);
 }
 
 export async function syncSecretaryAgendaItemsToProvider(
@@ -297,7 +381,9 @@ async function syncSecretaryAgendaItemToProviderWithRetry(
 async function upsertProviderEvent(
   agendaItem: SecretaryAgendaItem,
   adapter: SecretaryAgendaProviderAdapter,
+  fingerprint?: string,
 ): Promise<SecretaryAgendaProviderSyncResult> {
+  const syncedFingerprint = fingerprint ?? computeProviderSyncFingerprint(agendaItem, adapter.source);
   const input = toProviderEventInput(agendaItem);
   const duplicates = await findProviderEventsForAgendaItem(agendaItem, adapter, input);
   const canonical = chooseCanonicalProviderEvent(agendaItem, duplicates);
@@ -313,6 +399,7 @@ async function upsertProviderEvent(
           providerSource: updated.source,
           providerSyncState: 'synced',
         });
+        recordSyncedFingerprint(agendaItem, syncedFingerprint);
         return result(agendaItem, 'updated', updated.eventId, updated.source, 'synced', deletedDuplicateEventIds, 'provider_event_updated');
       }
 
@@ -323,6 +410,7 @@ async function upsertProviderEvent(
           providerSource: updated.source,
           providerSyncState: 'synced',
         });
+        recordSyncedFingerprint(agendaItem, syncedFingerprint);
         return result(agendaItem, 'attached', updated.eventId, updated.source, 'synced', deletedDuplicateEventIds, 'provider_event_reattached');
       }
 
@@ -332,6 +420,7 @@ async function upsertProviderEvent(
         providerSource: recreated.source,
         providerSyncState: 'synced',
       });
+      recordSyncedFingerprint(agendaItem, syncedFingerprint);
       return result(agendaItem, 'recreated', recreated.eventId, recreated.source, 'synced', deletedDuplicateEventIds, 'missing_provider_event_recreated');
     }
 
@@ -342,6 +431,7 @@ async function upsertProviderEvent(
         providerSource: updated.source,
         providerSyncState: 'synced',
       });
+      recordSyncedFingerprint(agendaItem, syncedFingerprint);
       return result(agendaItem, 'attached', updated.eventId, updated.source, 'synced', deletedDuplicateEventIds, 'existing_provider_event_attached');
     }
 
@@ -351,6 +441,7 @@ async function upsertProviderEvent(
       providerSource: created.source,
       providerSyncState: 'synced',
     });
+    recordSyncedFingerprint(agendaItem, syncedFingerprint);
     return result(agendaItem, 'created', created.eventId, created.source, 'synced', deletedDuplicateEventIds, 'provider_event_created');
   } catch (error) {
     const providerSyncState: SecretaryProviderSyncState = agendaItem.providerEventId || canonical
