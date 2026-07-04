@@ -1196,6 +1196,16 @@ export function startScheduler(): void {
   // Each DELETE runs in its own try/catch so a failure on one table
   // doesn't block the others. Row counts are logged for visibility.
   cron.schedule('0 0 * * *', wrapJob('midnight_cleanup', async () => {
+    // Revoke device tokens with no activity signal in 90 days (registration
+    // or successful APNs delivery both refresh last_seen_at). 2026-07-04
+    // APNs round; NOTIFICATION_TOKEN_STALE_DAYS=0 disables.
+    try {
+      const { pruneStaleDeviceTokens } = require('./notification-orchestrator');
+      pruneStaleDeviceTokens();
+    } catch (err) {
+      logger.warn({ err }, '[scheduler] stale device token pruning failed');
+    }
+
     msTodo.clearSelfCreatedTasks();
     todayNotifications.length = 0;
     logger.info('Cleared self-created task cache and daily notifications');

@@ -147,7 +147,7 @@ export function buildDecisionCenterNotificationSmokeIntents(input: {
       actionButtons: [{ id: 'open_detail', label: 'Review', style: 'primary' }],
       deeplink: `nexus://notifications/decision-center-smoke/${input.runId}`,
       dedupeKey: `smoke:decision-center:visible:${input.userId}:${input.runId}`,
-      deliveryPolicy: 'push_allowed',
+      deliveryPolicy: 'auto',
       quietHoursPolicy: 'send_now',
       requiresUserAction: true,
       decisionDeadline: deadline,
@@ -232,7 +232,7 @@ function operationFromResult(result: NotificationEvaluationResult): SmokeOperati
     errorCode: attempt.errorCode,
   }));
   const visiblePassed = result.decisionLog.decision === 'sent_push'
-    && deliveryAttempts.some((attempt) => attempt.status === 'sent' || attempt.status === 'mock_sent');
+    && deliveryAttempts.some((attempt) => attempt.status === 'sent');
   const lowRankPassed = result.decisionLog.decision === 'in_app_only'
     || result.decisionLog.decision === 'digest'
     || result.deliveryAttempts.length === 0;

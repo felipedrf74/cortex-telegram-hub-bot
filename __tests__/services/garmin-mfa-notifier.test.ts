@@ -93,7 +93,7 @@ describe('Garmin MFA notifier', () => {
       sourceSkill: 'security',
       type: 'security_account',
       priority: 'time_sensitive',
-      deliveryPolicy: 'push_allowed',
+      deliveryPolicy: 'auto',
       privacyPolicy: 'sensitive',
       requiresUserAction: true,
       deeplink: 'nexus://connections/garmin/reauth',

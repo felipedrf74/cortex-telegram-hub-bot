@@ -116,7 +116,7 @@ describe('scraper MFA reply service', () => {
       quietHoursPolicy: 'allow_time_sensitive',
       dedupeKey: 'finance:scraper-mfa:99:99:uber',
       requiresUserAction: true,
-      deliveryPolicy: 'push_allowed',
+      deliveryPolicy: 'auto',
       privacyPolicy: 'financial',
       visibilityScope: 'user_private',
     }));

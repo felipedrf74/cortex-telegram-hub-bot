@@ -8,6 +8,8 @@
  *     offer inline buttons for applying coach suggestions to the calendar.
  */
 import Anthropic from '@anthropic-ai/sdk';
+import fs from 'fs';
+import path from 'path';
 import { config } from '../config';
 import { logger } from '../utils/logger';
 import { now, startOfDay, endOfDay } from '../utils/date-parser';
@@ -528,6 +530,26 @@ ${payloadStr}
       coachAnalysisMeteringOptions.tenantId !== coachAnalysisScopeBoundary.tenantId
     ) {
       throw new Error('Coach analysis metering scope mismatch');
+    }
+    // Local-LLM pilot (2026-07-04): optionally capture the exact prompt
+    // payload for offline side-by-side eval (scripts/coach-local-eval.mjs).
+    // Default off; never throws; no behavior change otherwise.
+    if (process.env.GARMIN_COACH_CAPTURE_PROMPT === 'true') {
+      try {
+        const captureDir = path.resolve(process.cwd(), '.local', 'coach-payloads');
+        fs.mkdirSync(captureDir, { recursive: true });
+        const capturePath = path.join(captureDir, `coach-${Date.now()}-u${meteringScope.userId}.json`);
+        fs.writeFileSync(capturePath, JSON.stringify({
+          capturedAt: new Date().toISOString(),
+          userId: meteringScope.userId,
+          systemPrompt,
+          userPrompt,
+          maxTokens: 2500,
+        }, null, 2));
+        logger.debug({ capturePath }, 'Coach: prompt payload captured for offline eval');
+      } catch (captureErr) {
+        logger.debug({ err: captureErr }, 'Coach: prompt payload capture failed (non-critical)');
+      }
     }
     const { text: rawText, provider: analysisProvider } = await completeOneShotWithFallback(
       systemPrompt,

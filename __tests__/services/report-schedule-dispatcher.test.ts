@@ -271,4 +271,12 @@ describe('report-schedule-dispatcher', () => {
     ).get() as { n: number };
     expect(rows.n).toBe(1);
   });
+
+  it('weekly review catches up for a full day (per-job window), dailies stay tight', () => {
+    // Friday 17:00 Lisbon slot missed (e.g. deploy restart) — Saturday
+    // 12:00 UTC is ~20h later: weekly still fires; a morning briefing that
+    // stale would not.
+    expect(resolveDueReportTargets('weekly_review', [USER], utc('2026-07-11T12:00:00Z'))).toEqual([USER]);
+    expect(resolveDueReportTargets('morning_briefing', [OTHER], utc(`${FRIDAY}T12:00:00Z`))).toEqual([]);
+  });
 });

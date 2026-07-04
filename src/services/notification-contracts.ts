@@ -64,6 +64,7 @@ const DEFAULT_APNS_CATEGORY_ACTIONS: Record<string, readonly string[]> = {
   decision_required: ['open_detail', 'dismiss'],
   reminder: ['open_detail', 'snooze', 'dismiss'],
   approval_required: ['open_detail', 'dismiss'],
+  risk_warning: ['open_detail', 'dismiss'],
   DECISION_SCHEDULE_CONFLICT: ['snooze', 'open_detail'],
   DECISION_APPROVAL: ['open_detail'],
   DECISION_SYNC_ISSUE: ['open_detail'],

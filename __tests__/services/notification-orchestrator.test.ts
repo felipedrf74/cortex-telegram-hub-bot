@@ -55,6 +55,8 @@ import {
   markNotificationCenterItemRead,
   performNotificationAction,
   recordNotificationReliabilityEvent,
+  buildApnsCollapseId,
+  pruneStaleDeviceTokens,
   registerNotificationDeviceToken,
   releaseDueNotificationDeliveries,
   revokeNotificationDeviceToken,
@@ -64,7 +66,6 @@ import {
 import { deliveryPolicyForNotificationContract, resolveNotificationContract } from '../../src/services/notification-contracts';
 import { getDecisionOverview } from '../../src/services/decision-center';
 import {
-  createAndPushNotification,
   getUnreadCountExcludingNotificationIds,
   listUnreadContentNotificationIdsByTypes,
 } from '../../src/services/content-notification-store';
@@ -100,10 +101,11 @@ describe('Secretary Notification Orchestrator', () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-05-07T12:00:00.000Z'));
     testDb = new Database(':memory:');
-    pushTokens = [];
-    apnsConfigured = false;
+    pushTokens = [{ token: 'tok-default', environment: 'production' }];
+    apnsConfigured = true;
     mockSendPushNotification.mockReset();
-    process.env.NOTIFICATION_DELIVERY_MODE = 'mock';
+    mockSendPushNotification.mockResolvedValue({ sent: 1, failed: 0, skipped: 0, retriable: 0, unregistered: [] });
+    process.env.NOTIFICATION_DELIVERY_MODE = 'apns';
     ensureNotificationTables();
   });
 
@@ -402,6 +404,7 @@ describe('Secretary Notification Orchestrator', () => {
   });
 
   it('handles missing device tokens without failing the durable notification', async () => {
+    pushTokens = []; // this case exercises the no-device-token path
     const result = await createNotificationIntent(buildSkillNotificationFixtureIntent('cooking', 2));
 
     expect(result.item?.sourceSkill).toBe('cooking');
@@ -1130,6 +1133,7 @@ describe('Secretary Notification Orchestrator', () => {
   });
 
   it('uses the notification profile timezone for quiet hours decisions', async () => {
+    pushTokens = []; // this case exercises the no-device-token path
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-05-07T22:30:00.000Z'));
 
@@ -1155,7 +1159,7 @@ describe('Secretary Notification Orchestrator', () => {
 
   it('releases due quiet-hours and digest notifications through the delivery provider', async () => {
     pushTokens = ['sandbox-token'];
-    process.env.NOTIFICATION_DELIVERY_MODE = 'mock';
+    process.env.NOTIFICATION_DELIVERY_MODE = 'apns';
     updateNotificationProfile(53, 53, {
       quietHours: { start: '00:00', end: '23:59' },
     });
@@ -1180,7 +1184,7 @@ describe('Secretary Notification Orchestrator', () => {
 
   it('assembles due passive items into a single daily digest release', async () => {
     pushTokens = ['sandbox-token'];
-    process.env.NOTIFICATION_DELIVERY_MODE = 'mock';
+    process.env.NOTIFICATION_DELIVERY_MODE = 'apns';
     const first = await createNotificationIntent(buildSkillNotificationFixtureIntent('system', 54, {
       dedupeKey: 'digest-item-1',
     }));
@@ -1210,7 +1214,7 @@ describe('Secretary Notification Orchestrator', () => {
 
   it('single-flights concurrent release sweeps so a due row is pushed at most once', async () => {
     pushTokens = ['sandbox-token'];
-    process.env.NOTIFICATION_DELIVERY_MODE = 'mock';
+    process.env.NOTIFICATION_DELIVERY_MODE = 'apns';
     updateNotificationProfile(57, 57, {
       quietHours: { start: '00:00', end: '23:59' },
     });
@@ -1317,32 +1321,16 @@ describe('Secretary Notification Orchestrator', () => {
     expect(attemptRow).toEqual({ provider: 'apns', status: 'failed' });
   });
 
-  it('dedupes recurring bridge events per user+type and keeps badge exclusion for both key formats', async () => {
+  it('legacy bridge write-path is retired; historical rows keep badge exclusion', async () => {
     ensureContentNotificationsFixtureTable();
 
-    // Garmin reauth is the live recurring producer: same user, same type.
-    const garminEvent = {
-      userId: 21,
-      type: 'content_action_required' as const,
-      title: 'Garmin needs re-authentication',
-      body: 'Your Garmin session expired. Reconnect Garmin to restore training data in Nexus Hub.',
-      data: { kind: 'garmin_reauth_required', provider: 'garmin' },
-    };
-    const firstId = await createAndPushNotification(garminEvent);
-    const secondId = await createAndPushNotification(garminEvent);
-    expect(firstId).toBeGreaterThan(0);
-    expect(secondId).toBeGreaterThan(firstId);
+    // 2026-07-04 retirement pin: the legacy-store -> orchestrator bridge is
+    // gone. Its last producer (Garmin reauth) emits a first-class intent now.
+    const legacyStore = await import('../../src/services/content-notification-store');
+    expect((legacyStore as Record<string, unknown>).createAndPushNotification).toBeUndefined();
 
-    // One active center item under the entity-stable key — the second event
-    // deduped instead of minting a fresh key from the legacy rowid.
-    const centerRows = testDb.prepare(`
-      SELECT dedupe_key AS dedupeKey, status FROM notification_center_items WHERE user_id = 21
-    `).all() as Array<{ dedupeKey: string; status: string }>;
-    expect(centerRows).toHaveLength(1);
-    expect(centerRows[0].dedupeKey).toBe('content:content_action_required:21');
-    expect(centerRows[0].status).toBe('unread');
-
-    // Old-format bridge rows already in the DB keep excluding by legacy id.
+    // Old-format rows already in the DB keep excluding by legacy id so
+    // historical badge math stays correct until phase-2 drains the table.
     testDb.prepare(`
       INSERT INTO content_notifications (id, user_id, type, title, body)
       VALUES (900, 21, 'script_ready', 'Old-format', 'Old-format body')
@@ -1356,13 +1344,34 @@ describe('Secretary Notification Orchestrator', () => {
     `).run();
 
     const bridgedIds = listNotificationBridgeEntityIds(21, 21, 'content');
-    expect(bridgedIds).toEqual(expect.arrayContaining([firstId, secondId, 900]));
-    expect(listUnreadContentNotificationIdsByTypes(21, ['content_action_required']))
-      .toEqual(expect.arrayContaining([firstId, secondId]));
-
-    // Badge exclusion covers every legacy row represented in the center:
-    // the unread legacy count net of bridged ids is zero.
+    expect(bridgedIds).toEqual(expect.arrayContaining([900]));
     expect(getUnreadCountExcludingNotificationIds(21, bridgedIds)).toBe(0);
+  });
+
+  it('Garmin reauth emits a deduped first-class orchestrator intent', async () => {
+    const intentInput = {
+      userId: 21,
+      tenantId: 21,
+      sourceSkill: 'training' as const,
+      type: 'sync_failure' as const,
+      priority: 'active' as const,
+      relatedEntityId: 'garmin_reauth:21',
+      relatedEntityType: 'garmin_session',
+      title: 'Garmin needs re-authentication',
+      body: 'Your Garmin session expired. Reconnect Garmin to restore training data in Nexus Hub.',
+      dedupeKey: 'training:garmin_reauth:21',
+      privacyPolicy: 'standard' as const,
+    };
+    const first = await createNotificationIntent(intentInput as Parameters<typeof createNotificationIntent>[0]);
+    const second = await createNotificationIntent(intentInput as Parameters<typeof createNotificationIntent>[0]);
+
+    expect(first.item?.dedupeKey).toBe('training:garmin_reauth:21');
+    // Recurring session expiries collapse into the active item.
+    expect(second.decisionLog.decision).toBe('deduped');
+    const rows = testDb.prepare(
+      "SELECT COUNT(*) AS n FROM notification_center_items WHERE user_id = 21 AND dedupe_key = 'training:garmin_reauth:21' AND status = 'unread'",
+    ).get() as { n: number };
+    expect(rows.n).toBe(1);
   });
 
   it('does not let untrusted send_now intents bypass quiet hours', async () => {
@@ -1405,6 +1414,7 @@ describe('Secretary Notification Orchestrator', () => {
   });
 
   it('allows configured time-sensitive deadlines through quiet hours and downgrades critical by default', async () => {
+    pushTokens = []; // this case exercises the no-device-token path
     updateNotificationProfile(6, 6, {
       quietHours: { start: '00:00', end: '23:59' },
       allowTimeSensitive: true,
@@ -1693,5 +1703,190 @@ describe('Secretary Notification Orchestrator', () => {
       'coachBriefingTime', 'endOfDayTime', 'morningBriefingTime',
       'weeklyReviewReportDay', 'weeklyReviewReportTime',
     ]);
+  });
+
+  describe('2026-07-04 APNs + engagement round', () => {
+    const OLD_STREAK_ENV = process.env.NOTIFICATION_DIGEST_UNREAD_STREAK_SUPPRESS;
+    const OLD_STALE_ENV = process.env.NOTIFICATION_TOKEN_STALE_DAYS;
+
+    afterEach(() => {
+      if (OLD_STREAK_ENV === undefined) delete process.env.NOTIFICATION_DIGEST_UNREAD_STREAK_SUPPRESS;
+      else process.env.NOTIFICATION_DIGEST_UNREAD_STREAK_SUPPRESS = OLD_STREAK_ENV;
+      if (OLD_STALE_ENV === undefined) delete process.env.NOTIFICATION_TOKEN_STALE_DAYS;
+      else process.env.NOTIFICATION_TOKEN_STALE_DAYS = OLD_STALE_ENV;
+    });
+
+    // Non-decision, time-sensitive reminder: bypasses the decision quality
+    // gate and the per-source rate limit, landing directly on the push path.
+    function activeIntent(userId: number, overrides: Record<string, unknown> = {}) {
+      return createNotificationIntent({
+        userId,
+        tenantId: userId,
+        sourceSkill: 'secretary',
+        type: 'reminder',
+        priority: 'time_sensitive',
+        title: 'Reminder',
+        body: 'A reminder is due.',
+        quietHoursPolicy: 'allow_time_sensitive',
+        dedupeKey: `round:${userId}`,
+        ...overrides,
+      } as Parameters<typeof createNotificationIntent>[0]);
+    }
+
+    it('revokes tokens APNs reports as 410 unregistered and labels the attempt', async () => {
+      registerNotificationDeviceToken({
+        userId: 88, tenantId: 88, token: 'tok-410', deviceId: 'iphone-410', appVersion: '1.5', environment: 'production',
+      });
+      pushTokens = [{ token: 'tok-410', environment: 'production' }];
+      mockSendPushNotification.mockResolvedValue({ sent: 0, failed: 1, skipped: 0, retriable: 0, unregistered: ['tok-410'] });
+
+      const result = await activeIntent(88);
+
+      expect(result.decisionLog.decision).toBe('apns_delivery_failed');
+      const attempt = testDb.prepare(
+        "SELECT status, error_code FROM notification_delivery_attempts WHERE user_id = 88 ORDER BY created_at DESC LIMIT 1",
+      ).get() as { status: string; error_code: string };
+      expect(attempt.error_code).toBe('apns_token_unregistered');
+      const tokenRow = testDb.prepare(
+        'SELECT revoked_at FROM notification_device_tokens WHERE user_id = 88',
+      ).get() as { revoked_at: string | null };
+      expect(tokenRow.revoked_at).not.toBeNull();
+      expect(logger.warn).toHaveBeenCalledWith(
+        expect.objectContaining({ unregisteredCount: 1 }),
+        expect.stringContaining('unregistered'),
+      );
+    });
+
+    it('refreshes last_seen_at on successful delivery so live devices never look stale', async () => {
+      registerNotificationDeviceToken({
+        userId: 89, tenantId: 89, token: 'tok-live', deviceId: 'iphone-89', appVersion: '1.5', environment: 'production',
+      });
+      testDb.prepare(
+        "UPDATE notification_device_tokens SET last_seen_at = '2026-01-01 00:00:00' WHERE user_id = 89",
+      ).run();
+      pushTokens = [{ token: 'tok-live', environment: 'production' }];
+
+      const result = await activeIntent(89);
+
+      expect(result.decisionLog.decision).toBe('sent_push');
+      const row = testDb.prepare(
+        'SELECT last_seen_at FROM notification_device_tokens WHERE user_id = 89',
+      ).get() as { last_seen_at: string };
+      expect(row.last_seen_at > '2026-01-01 00:00:00').toBe(true);
+    });
+
+    it('prunes tokens with no activity in the stale window, honoring the 0-disable knob', () => {
+      registerNotificationDeviceToken({
+        userId: 90, tenantId: 90, token: 'tok-stale', deviceId: 'iphone-90', appVersion: '1.5', environment: 'production',
+      });
+      testDb.prepare(
+        "UPDATE notification_device_tokens SET last_seen_at = datetime('now', '-120 days') WHERE user_id = 90",
+      ).run();
+
+      process.env.NOTIFICATION_TOKEN_STALE_DAYS = '0';
+      expect(pruneStaleDeviceTokens()).toBe(0);
+
+      delete process.env.NOTIFICATION_TOKEN_STALE_DAYS;
+      expect(pruneStaleDeviceTokens()).toBe(1);
+      const row = testDb.prepare(
+        'SELECT revoked_at FROM notification_device_tokens WHERE user_id = 90',
+      ).get() as { revoked_at: string | null };
+      expect(row.revoked_at).not.toBeNull();
+    });
+
+    it('suppresses the daily digest push after a fully-unread streak, item still created', async () => {
+      process.env.NOTIFICATION_DIGEST_UNREAD_STREAK_SUPPRESS = '3';
+      for (let i = 0; i < 3; i += 1) {
+        const prior = await createNotificationIntent({
+          userId: 91, tenantId: 91, sourceSkill: 'secretary', type: 'daily_digest',
+          priority: 'passive', title: 'Digest', body: `Day ${i}`, dedupeKey: `digest:91:${i}`,
+        } as Parameters<typeof createNotificationIntent>[0]);
+        expect(prior.item).toBeTruthy();
+      }
+
+      const fourth = await createNotificationIntent({
+        userId: 91, tenantId: 91, sourceSkill: 'secretary', type: 'daily_digest',
+        priority: 'passive', title: 'Digest', body: 'Day 3', dedupeKey: 'digest:91:3',
+      } as Parameters<typeof createNotificationIntent>[0]);
+
+      expect(fourth.decisionLog.decision).toBe('suppressed');
+      expect(fourth.item?.itemId).toBeTruthy();
+
+      // Reading one digest breaks the streak for the next evaluation.
+      testDb.prepare(
+        "UPDATE notification_center_items SET read_at = datetime('now') WHERE user_id = 91 AND type = 'daily_digest' AND item_id = ?",
+      ).run(fourth.item!.itemId);
+      const fifth = await createNotificationIntent({
+        userId: 91, tenantId: 91, sourceSkill: 'secretary', type: 'daily_digest',
+        priority: 'passive', title: 'Digest', body: 'Day 4', dedupeKey: 'digest:91:4',
+      } as Parameters<typeof createNotificationIntent>[0]);
+      expect(fifth.decisionLog.decision).not.toBe('suppressed');
+    });
+
+    it('records apns_delivery_mode_disabled when the delivery mode is not apns', async () => {
+      delete process.env.NOTIFICATION_DELIVERY_MODE;
+
+      const result = await activeIntent(92);
+
+      expect(result.decisionLog.decision).toBe('apns_delivery_failed');
+      const attempt = testDb.prepare(
+        "SELECT status, error_code FROM notification_delivery_attempts WHERE user_id = 92 ORDER BY created_at DESC LIMIT 1",
+      ).get() as { status: string; error_code: string };
+      expect(attempt.status).toBe('blocked_missing_credentials');
+      expect(attempt.error_code).toBe('apns_delivery_mode_disabled');
+    });
+  });
+
+  describe('2026-07-04 Codex QA fixes', () => {
+    it('preserves the Garmin reauth deeplink through normalization (no inbox downgrade)', async () => {
+      const result = await createNotificationIntent({
+        userId: 93,
+        tenantId: 93,
+        sourceSkill: 'training',
+        type: 'sync_failure',
+        priority: 'active',
+        relatedEntityId: 'garmin_reauth:93',
+        relatedEntityType: 'garmin_session',
+        title: 'Garmin needs re-authentication',
+        body: 'Reconnect Garmin.',
+        deeplink: 'nexus://connections/garmin/reauth',
+        dedupeKey: 'training:garmin_reauth:93',
+        privacyPolicy: 'standard',
+      } as Parameters<typeof createNotificationIntent>[0]);
+
+      expect(result.item?.deeplink).toBe('nexus://connections/garmin/reauth');
+      // Regression pin for the original bug: unsupported hosts DO downgrade.
+      const downgraded = await createNotificationIntent({
+        userId: 93,
+        tenantId: 93,
+        sourceSkill: 'training',
+        type: 'sync_failure',
+        priority: 'active',
+        title: 'Bad deeplink',
+        body: 'Should downgrade.',
+        deeplink: 'nexus://settings/integrations/garmin',
+        dedupeKey: 'training:bad_deeplink:93',
+        privacyPolicy: 'standard',
+      } as Parameters<typeof createNotificationIntent>[0]);
+      expect(downgraded.item?.deeplink).toBe('nexus://notifications');
+    });
+
+    it('caps apns-collapse-id at 64 UTF-8 bytes without breaking surrogate pairs', () => {
+      // Short ids pass through untouched.
+      expect(buildApnsCollapseId('decision:nc_abc123')).toBe('decision:nc_abc123');
+
+      // Long ASCII: capped, deterministic, distinct for distinct inputs.
+      const longA = buildApnsCollapseId(`secretary:daily_digest:${'a'.repeat(200)}`);
+      const longB = buildApnsCollapseId(`secretary:daily_digest:${'a'.repeat(200)}b`);
+      expect(Buffer.byteLength(longA, 'utf8')).toBeLessThanOrEqual(64);
+      expect(longA).toBe(buildApnsCollapseId(`secretary:daily_digest:${'a'.repeat(200)}`));
+      expect(longA).not.toBe(longB);
+
+      // Multibyte/emoji dedupe keys: byte cap holds and no lone surrogate
+      // fragment survives the cut (round-trips through UTF-8 unchanged).
+      const emoji = buildApnsCollapseId(`content:insight:${'🏋️‍♂️🇧🇷é'.repeat(20)}`);
+      expect(Buffer.byteLength(emoji, 'utf8')).toBeLessThanOrEqual(64);
+      expect(Buffer.from(emoji, 'utf8').toString('utf8')).toBe(emoji);
+    });
   });
 });

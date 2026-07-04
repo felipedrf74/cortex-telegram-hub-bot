@@ -2,11 +2,11 @@
 
 import { getDb } from './database';
 import { logger } from '../utils/logger';
+import { createNotificationIntent } from './notification-orchestrator';
 import { config } from '../config';
 import { decryptValue, encryptValue } from '../utils/encryption';
 import { getCurrentContext } from '../utils/request-context';
 import { getOwnerBootstrapUser, getUserById, getUserByTelegramId } from './user-service';
-import { createAndPushNotification } from './content-notification-store';
 import { invalidateTrainingDerivedCaches } from './cache-coherence-registry';
 
 export interface GarminSessionRecord {
@@ -379,21 +379,32 @@ export async function markGarminNeedsReauth(userId: number, reason: string): Pro
   `).run(userId, encryptGarminValue('{}', userId));
   invalidateGarminDerivedCaches(userId);
 
+  // 2026-07-04 legacy-store retirement: Garmin reauth was the LAST writer of
+  // the legacy content_notifications table (via the bridge). It now emits a
+  // first-class orchestrator intent — entity-stable dedupe means repeated
+  // session expiries collapse into one active item instead of re-pushing.
   try {
-    await createAndPushNotification({
+    await createNotificationIntent({
       userId,
-      type: 'content_action_required',
+      tenantId: userId,
+      sourceSkill: 'training',
+      type: 'sync_failure',
+      priority: 'active',
+      relatedEntityId: `garmin_reauth:${userId}`,
+      relatedEntityType: 'garmin_session',
       title: 'Garmin needs re-authentication',
       body: 'Your Garmin session expired. Reconnect Garmin to restore training data in Nexus Hub.',
-      data: {
-        kind: 'garmin_reauth_required',
-        provider: 'garmin',
-        reauthEndpoint: '/api/v1/garmin/reauth',
-        reason,
-      },
+      actionButtons: [{ id: 'open_detail', label: 'Reconnect', style: 'primary' }],
+      // Must be an allowlisted deeplink host (isSupportedNotificationDeeplink):
+      // 'settings' is rejected and would silently downgrade to the inbox
+      // fallback. 'connections/garmin/reauth' is the route iOS ships and the
+      // same one garmin-mfa-notifier already uses.
+      deeplink: 'nexus://connections/garmin/reauth',
+      dedupeKey: `training:garmin_reauth:${userId}`,
+      privacyPolicy: 'standard',
     });
   } catch (err) {
-    logger.debug({ err, userId }, 'Garmin re-auth notification creation skipped');
+    logger.debug({ err, userId, reason }, 'Garmin re-auth notification creation skipped');
   }
 }
 

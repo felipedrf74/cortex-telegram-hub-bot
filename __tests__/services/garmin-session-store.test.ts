@@ -4,7 +4,11 @@ const mockRun = vi.fn();
 const mockGet = vi.fn();
 const mockClearCache = vi.fn();
 const mockClearCacheByPrefix = vi.fn();
-const mockCreateAndPushNotification = vi.fn().mockResolvedValue(undefined);
+const mockCreateNotificationIntent = vi.fn().mockResolvedValue(undefined);
+
+vi.mock('../../src/services/notification-orchestrator', () => ({
+  createNotificationIntent: (...args: unknown[]) => mockCreateNotificationIntent(...args),
+}));
 
 function expectCachePrefixesCleared(...prefixes: string[]) {
   const cleared = mockClearCacheByPrefix.mock.calls.flatMap(([prefix]) => (
@@ -33,7 +37,7 @@ vi.mock('../../src/services/cache-store', () => ({
 }));
 
 vi.mock('../../src/services/content-notification-store', () => ({
-  createAndPushNotification: (...args: unknown[]) => mockCreateAndPushNotification(...args),
+  createNotification: vi.fn(),
 }));
 
 vi.mock('../../src/services/user-service', () => ({
@@ -60,7 +64,7 @@ describe('garmin-session-store cache invalidation', () => {
     mockGet.mockReset();
     mockClearCache.mockReset();
     mockClearCacheByPrefix.mockReset();
-    mockCreateAndPushNotification.mockClear();
+    mockCreateNotificationIntent.mockClear();
   });
 
   it('clears readiness and dashboard caches when Garmin becomes active', async () => {
@@ -79,7 +83,12 @@ describe('garmin-session-store cache invalidation', () => {
 
     expect(mockClearCache).toHaveBeenCalledWith('readiness:86');
     expectCachePrefixesCleared('training-summary:', 'dashboard:86:', 'dashboard-home:86:');
-    expect(mockCreateAndPushNotification).toHaveBeenCalled();
+    expect(mockCreateNotificationIntent).toHaveBeenCalledWith(expect.objectContaining({
+      sourceSkill: 'training',
+      type: 'sync_failure',
+      dedupeKey: 'training:garmin_reauth:86',
+      deeplink: 'nexus://connections/garmin/reauth',
+    }));
   });
 
   it('clears readiness and dashboard caches when Garmin disconnects', async () => {

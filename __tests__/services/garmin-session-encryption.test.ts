@@ -26,7 +26,7 @@ vi.mock('../../src/services/cache-store', () => ({
 }));
 
 vi.mock('../../src/services/content-notification-store', () => ({
-  createAndPushNotification: vi.fn().mockResolvedValue(undefined),
+  createNotification: vi.fn(),
 }));
 
 vi.mock('../../src/services/user-service', () => ({

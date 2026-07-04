@@ -596,25 +596,61 @@ async function synthesizeKnowledge(userId?: number): Promise<void> {
     // though per-call cost is small.
     try {
       const userPrompt = `Synthesize the ${sanitizeForPromptInterpolation(category)} patterns from ${byChannel.size} creators:\n\n${context}`;
-      const { text: synthText } = await completeOneShotWithFallback(
-        synthesisSystemPrompt,
-        userPrompt,
-        'knowledge_synthesis',
-        async () => {
-          const response = await trackedCreate(client, {
-            model: config.anthropic.classifierModel, // Haiku for synthesis (structured task)
-            max_tokens: 2048,
-            system: synthesisSystemPrompt,
-            messages: [{ role: 'user', content: userPrompt }],
-            temperature: 0.3,
-          }, 'knowledge_synthesis', { userId: scopedUserId, tenantId: scopedUserId });
-          return response.content
-            .filter((b): b is Anthropic.TextBlock => b.type === 'text')
-            .map((b) => b.text)
-            .join('');
-        },
-        { maxTokens: 2048, temperature: 0.3, userId: scopedUserId, tenantId: scopedUserId },
-      );
+
+      // ── Local-LLM pilot (2026-07-04): env-gated local-first synthesis ──
+      // When LOCAL_LLM_CHANNEL_SYNTHESIS=true AND Ollama is configured, try
+      // the local one-shot FIRST (category knowledge_synthesis_local, $0).
+      // On ANY failure — throw, timeout, capacity, rate limit, or empty
+      // output — warn and fall through to the cloud path UNCHANGED. With
+      // the env var unset (default) this block is a no-op and behavior is
+      // identical to before. Prompt content is identical on both paths.
+      // The dynamic import keeps the default module graph unchanged.
+      let synthText: string | null = null;
+      if (process.env.LOCAL_LLM_CHANNEL_SYNTHESIS === 'true') {
+        try {
+          const ollama = await import('./ollama-provider');
+          if (ollama.isOllamaConfigured()) {
+            const local = await ollama.completeLocalReasoningOneShot(
+              synthesisSystemPrompt,
+              userPrompt,
+              'knowledge_synthesis_local',
+              { maxTokens: 2048, temperature: 0.3, userId: scopedUserId, tenantId: scopedUserId },
+            );
+            if (local.text.trim()) {
+              synthText = local.text;
+            } else {
+              logger.warn({ category }, 'Local channel synthesis returned empty output — falling back to cloud');
+            }
+          } else {
+            logger.warn({ category }, 'LOCAL_LLM_CHANNEL_SYNTHESIS=true but Ollama is not configured — using cloud synthesis');
+          }
+        } catch (localErr) {
+          logger.warn({ err: localErr, category }, 'Local channel synthesis failed — falling back to cloud');
+        }
+      }
+
+      if (synthText === null) {
+        const { text: cloudText } = await completeOneShotWithFallback(
+          synthesisSystemPrompt,
+          userPrompt,
+          'knowledge_synthesis',
+          async () => {
+            const response = await trackedCreate(client, {
+              model: config.anthropic.classifierModel, // Haiku for synthesis (structured task)
+              max_tokens: 2048,
+              system: synthesisSystemPrompt,
+              messages: [{ role: 'user', content: userPrompt }],
+              temperature: 0.3,
+            }, 'knowledge_synthesis', { userId: scopedUserId, tenantId: scopedUserId });
+            return response.content
+              .filter((b): b is Anthropic.TextBlock => b.type === 'text')
+              .map((b) => b.text)
+              .join('');
+          },
+          { maxTokens: 2048, temperature: 0.3, userId: scopedUserId, tenantId: scopedUserId },
+        );
+        synthText = cloudText;
+      }
 
       let text = synthText;
 

@@ -37,6 +37,17 @@ export type ScheduledReportJob = 'morning_briefing' | 'coach_briefing' | 'end_of
 
 const CATCHUP_DEFAULT_MINUTES = 120;
 
+// Weekly artifacts stay valuable long after their slot — a deploy restart
+// landing minutes past a 2h window silently skipped the 2026-07-03 weekly
+// review. Daily reports keep the tight window (a stale morning briefing at
+// 14:00 is noise); the weekly review catches up for a full day.
+const PER_JOB_CATCHUP_DEFAULT_MINUTES: Record<ScheduledReportJob, number> = {
+  morning_briefing: CATCHUP_DEFAULT_MINUTES,
+  coach_briefing: CATCHUP_DEFAULT_MINUTES,
+  end_of_day: CATCHUP_DEFAULT_MINUTES,
+  weekly_review: 1440,
+};
+
 // Cron day-of-week convention (0=Sunday..6=Saturday). Luxon uses 1=Mon..7=Sun.
 // Exported so the preferences API reports the same effective defaults the
 // dispatcher resolves (morning/coach defaults come from config directly).
@@ -44,10 +55,14 @@ export const WEEKLY_REVIEW_DEFAULT_DAY = 5; // Friday
 export const WEEKLY_REVIEW_DEFAULT_TIME = '17:00';
 export const END_OF_DAY_DEFAULT_TIME = '21:00';
 
-function catchupWindowMs(): number {
+function catchupWindowMs(job: ScheduledReportJob): number {
+  // The env override applies to ALL jobs (operational escape hatch);
+  // otherwise each job uses its default above.
   const raw = process.env.REPORT_SCHEDULE_CATCHUP_MINUTES;
   const parsed = raw == null || raw.trim() === '' ? NaN : Number.parseInt(raw, 10);
-  const minutes = Number.isFinite(parsed) && parsed > 0 ? parsed : CATCHUP_DEFAULT_MINUTES;
+  const minutes = Number.isFinite(parsed) && parsed > 0
+    ? parsed
+    : PER_JOB_CATCHUP_DEFAULT_MINUTES[job];
   return minutes * 60_000;
 }
 
@@ -165,7 +180,7 @@ export function resolveDueReportTargets<T extends { tenantId: number }>(
     INSERT OR IGNORE INTO report_schedule_ledger (user_id, tenant_id, job_type, fired_for_local_date)
     VALUES (?, ?, ?, ?)
   `);
-  const windowMs = catchupWindowMs();
+  const windowMs = catchupWindowMs(job);
   const due: T[] = [];
 
   for (const target of targets) {

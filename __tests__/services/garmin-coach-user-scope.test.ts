@@ -1,6 +1,9 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import fs from 'fs';
+import os from 'os';
+import path from 'path';
 
 const mockNow = {
   toFormat: vi.fn(() => 'Friday, April 17 2026'),
@@ -242,5 +245,67 @@ describe('garmin-coach user scoping', () => {
     mockIsOwnerUserRef.mockReturnValue(true);
     await generateCoachBriefing(7, { tenantId: 7, garminSilent: true });
     expect(mockFetchDailyCoachData).toHaveBeenCalledWith({ silent: true });
+  });
+
+  // ── Local-LLM pilot: GARMIN_COACH_CAPTURE_PROMPT payload capture ──
+
+  it('captures the prompt payload to .local/coach-payloads when GARMIN_COACH_CAPTURE_PROMPT=true', async () => {
+    const scratchDir = fs.mkdtempSync(path.join(os.tmpdir(), 'coach-capture-'));
+    const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(scratchDir);
+    vi.stubEnv('GARMIN_COACH_CAPTURE_PROMPT', 'true');
+    try {
+      const result = await generateCoachBriefing(42, { tenantId: 42 });
+
+      const captureDir = path.join(scratchDir, '.local', 'coach-payloads');
+      const files = fs.readdirSync(captureDir).filter((f) => /^coach-\d+-u42\.json$/.test(f));
+      expect(files).toHaveLength(1);
+      const payload = JSON.parse(fs.readFileSync(path.join(captureDir, files[0]), 'utf8'));
+      expect(payload).toMatchObject({ userId: 42, maxTokens: 2500 });
+      expect(typeof payload.capturedAt).toBe('string');
+      expect(typeof payload.systemPrompt).toBe('string');
+      expect(payload.systemPrompt.length).toBeGreaterThan(0);
+      expect(payload.userPrompt).toContain('DAILY COACHING ANALYSIS');
+
+      // Capture is observe-only: the captured prompts are exactly what the
+      // LLM call receives, and the briefing itself is unchanged.
+      const [calledSystem, calledUser] = mockTryComplete.mock.calls[0];
+      expect(payload.systemPrompt).toBe(calledSystem);
+      expect(payload.userPrompt).toBe(calledUser);
+      expect(result.message).toContain('NEXUS HUB');
+    } finally {
+      vi.unstubAllEnvs();
+      cwdSpy.mockRestore();
+      fs.rmSync(scratchDir, { recursive: true, force: true });
+    }
+  });
+
+  it('never captures when the env flag is off (default)', async () => {
+    const scratchDir = fs.mkdtempSync(path.join(os.tmpdir(), 'coach-capture-off-'));
+    const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(scratchDir);
+    try {
+      await generateCoachBriefing(42, { tenantId: 42 });
+      expect(fs.existsSync(path.join(scratchDir, '.local', 'coach-payloads'))).toBe(false);
+    } finally {
+      cwdSpy.mockRestore();
+      fs.rmSync(scratchDir, { recursive: true, force: true });
+    }
+  });
+
+  it('capture failures never break the briefing', async () => {
+    const scratchDir = fs.mkdtempSync(path.join(os.tmpdir(), 'coach-capture-fail-'));
+    // Point cwd at a path UNDER a regular file so mkdirSync throws ENOTDIR.
+    const blockerFile = path.join(scratchDir, 'not-a-dir');
+    fs.writeFileSync(blockerFile, 'x');
+    const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(path.join(blockerFile, 'nested'));
+    vi.stubEnv('GARMIN_COACH_CAPTURE_PROMPT', 'true');
+    try {
+      const result = await generateCoachBriefing(42, { tenantId: 42 });
+      expect(result.message).toContain('NEXUS HUB');
+      expect(mockTryComplete).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.unstubAllEnvs();
+      cwdSpy.mockRestore();
+      fs.rmSync(scratchDir, { recursive: true, force: true });
+    }
   });
 });

@@ -1073,6 +1073,10 @@ export class OllamaProvider implements AIProvider {
     request: OllamaChatRequest;
     userId?: number;
     tenantId?: number;
+    /** Optional caller-side cancellation (chained into the fetch abort). */
+    externalSignal?: AbortSignal;
+    /** Optional per-call timeout override (defaults to config.ollama.timeoutMs). */
+    timeoutMsOverride?: number;
   }): Promise<{ response: OllamaChatResponse; modelDigest?: string }> {
     return this.callOllamaForTask(args);
   }
@@ -1219,4 +1223,135 @@ export class OllamaProvider implements AIProvider {
       return { response, modelDigest };
     });
   }
+}
+
+// ─── Module-level one-shot helper (local-LLM pilot, 2026-07-04) ─────
+//
+// Narrow public entry point for env-gated one-shot localReasoning
+// completions (first consumer: channel-learner knowledge synthesis via
+// LOCAL_LLM_CHANNEL_SYNTHESIS). Callers get the same guarantees as every
+// other Ollama path — it does NOT bypass the serialized queue, per-user
+// rate limits, per-task token caps, timeout handling, or the api_usage
+// write (cost_usd=0, local_request_units=1) — because it delegates to
+// OllamaProvider.chatPrimitive, which funnels into callOllamaForTask.
+// This is deliberately additive: no existing routing path changes.
+
+export interface LocalReasoningOneShotOptions {
+  userId?: number;
+  tenantId?: number;
+  /** Output cap (maps to num_predict). Defaults to outputCapFor('localReasoning'). */
+  maxTokens?: number;
+  /** Defaults to 0.2 (matches localReason). */
+  temperature?: number;
+  /** Context window. Defaults to 8192 (matches localReason). */
+  numCtx?: number;
+  /**
+   * Thinking toggle. Defaults to FALSE for one-shot calls: think:true on
+   * the 35B-A3B gen model measured 4-7 min per run, which structured
+   * synthesis-style callers don't need. Legacy localReason() keeps its
+   * think:true default — this helper is a separate, additive entry point.
+   */
+  think?: boolean;
+  /** Per-call timeout override. Defaults to config.ollama.timeoutMs. */
+  timeoutMs?: number;
+  /** Ollama model residency for keep_alive. Defaults to -1 (stay loaded). */
+  keepAliveSeconds?: number;
+  /** Optional caller abort signal composed into the Ollama fetch. */
+  abortSignal?: AbortSignal;
+}
+
+export interface LocalReasoningOneShotResult {
+  /** Response text with thinking traces stripped. May be empty — callers decide. */
+  text: string;
+  stopReason?: string;
+  providerMetadata?: AICallResult['providerMetadata'];
+}
+
+// Lazy module-level provider instance. Queue state and rate limits are
+// module-scoped (see queueState above), so this instance serializes with
+// any registry-owned OllamaProvider in the same process.
+let moduleOneShotProvider: OllamaProvider | null = null;
+
+function getModuleOneShotProvider(): OllamaProvider {
+  if (!moduleOneShotProvider) {
+    moduleOneShotProvider = new OllamaProvider();
+  }
+  return moduleOneShotProvider;
+}
+
+/** Test-only: drop the lazy singleton so construct-time guards re-run. */
+export function _resetLocalReasoningOneShotProviderForTests(): void {
+  moduleOneShotProvider = null;
+}
+
+/**
+ * One-shot local reasoning completion (system + user prompt → text).
+ *
+ * Throws LocalLLMError on every failure mode (not configured, queue
+ * capacity, rate limit, timeout, daemon unhealthy, token overflow) so
+ * callers can catch-and-fall-through to their existing cloud path.
+ */
+export async function completeLocalReasoningOneShot(
+  systemPrompt: string,
+  userPrompt: string,
+  category: string,
+  opts: LocalReasoningOneShotOptions = {},
+): Promise<LocalReasoningOneShotResult> {
+  if (!isOllamaConfigured()) {
+    throw new LocalLLMError('provider_unhealthy', { reason: 'ollama_not_configured', category });
+  }
+  enforceInputTokenCap('localReasoning', [systemPrompt, userPrompt]);
+
+  const numCtx = Number.isFinite(opts.numCtx) && (opts.numCtx ?? 0) > 0
+    ? Math.floor(opts.numCtx!)
+    : 8192;
+  const numPredict = Number.isFinite(opts.maxTokens) && (opts.maxTokens ?? 0) > 0
+    ? Math.floor(opts.maxTokens!)
+    : outputCapFor('localReasoning');
+
+  const request: OllamaChatRequest = {
+    model: config.ollama.model,
+    messages: [
+      { role: 'system', content: systemPrompt },
+      { role: 'user', content: userPrompt },
+    ],
+    think: opts.think ?? false,
+    stream: false,
+    keep_alive: opts.keepAliveSeconds ?? -1,
+    options: {
+      num_ctx: numCtx,
+      num_predict: numPredict,
+      temperature: Number.isFinite(opts.temperature) ? opts.temperature : 0.2,
+      top_p: 0.9,
+      top_k: 20,
+    },
+  };
+
+  const result = await getModuleOneShotProvider().chatPrimitive({
+    taskType: 'localReasoning',
+    category,
+    request,
+    userId: opts.userId,
+    tenantId: opts.tenantId,
+    externalSignal: opts.abortSignal,
+    timeoutMsOverride: opts.timeoutMs,
+  });
+
+  const text = stripThinkBlocks(result.response.message?.content);
+  const md = deriveMetrics(result.response);
+  return {
+    text,
+    stopReason: result.response.done_reason ?? 'stop',
+    providerMetadata: {
+      providerUsed: 'ollama',
+      modelUsed: request.model,
+      modelDigest: result.modelDigest,
+      fallbackUsed: false,
+      totalDurationNs: md.totalDurationNs,
+      promptEvalCount: md.promptEvalCount,
+      evalCount: md.evalCount,
+      generationTokensPerSec: md.generationTokensPerSec,
+      isColdLoad: md.isColdLoad,
+    },
+  };
 }

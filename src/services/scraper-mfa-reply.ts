@@ -102,7 +102,7 @@ export async function notifyScraperMfaChallenge(
     quietHoursPolicy: 'allow_time_sensitive',
     dedupeKey: `finance:scraper-mfa:${input.tenantId}:${input.userId}:${input.source}`,
     requiresUserAction: true,
-    deliveryPolicy: 'push_allowed',
+    deliveryPolicy: 'auto',
     privacyPolicy: 'financial',
     decisionContext: {
       entityTitle: `${label} invoice collection`,

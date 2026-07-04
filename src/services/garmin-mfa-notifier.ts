@@ -86,7 +86,7 @@ export async function notifyGarminMfaRequired(_legacyMessage?: string): Promise<
         dedupeKey: `security:garmin:mfa:${userId}`,
         requiresUserAction: true,
         quietHoursPolicy: 'allow_time_sensitive',
-        deliveryPolicy: 'push_allowed',
+        deliveryPolicy: 'auto',
         privacyPolicy: 'sensitive',
         visibilityScope: 'user_private',
         decisionContext: {

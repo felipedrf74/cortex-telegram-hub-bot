@@ -74,7 +74,6 @@ export type NotificationIntentType =
 export type NotificationPriority = 'critical' | 'time_sensitive' | 'active' | 'passive';
 export type NotificationDecision =
   | 'sent_push'
-  | 'sent_local'
   | 'in_app_only'
   | 'portal_only'
   | 'digest'
@@ -87,7 +86,11 @@ export type NotificationDecision =
   | 'apns_delivery_failed';
 export type NotificationCenterStatus = 'unread' | 'read' | 'viewed' | 'snoozed' | 'actioned' | 'dismissed' | 'failed' | 'expired' | 'superseded';
 export type NotificationPrivacyPolicy = 'public' | 'standard' | 'sensitive' | 'private_content' | 'financial' | 'health';
-export type NotificationDeliveryPolicy = 'auto' | 'in_app_only' | 'push_allowed' | 'digest_only' | 'portal_only';
+// 'push_allowed' pruned 2026-07-04: it was set by three producers but never
+// evaluated anywhere — behaviorally identical to 'auto'. Historical intent
+// rows carrying the string keep behaving as auto (unknown policies fall
+// through to the default branch).
+export type NotificationDeliveryPolicy = 'auto' | 'in_app_only' | 'digest_only' | 'portal_only';
 export type QuietHoursPolicy = 'respect' | 'allow_time_sensitive' | 'send_now';
 
 export interface NotificationActionButton {
@@ -264,7 +267,9 @@ export interface DeliveryAttempt {
   tenantId: number;
   channel: 'push' | 'local' | 'in_app' | 'portal' | 'email';
   provider: 'apns' | 'local' | 'portal' | 'mock';
-  status: 'sent' | 'mock_sent' | 'blocked_missing_device_token' | 'blocked_missing_credentials' | 'failed';
+  // 'mock_sent' retired 2026-07-04 with mock delivery mode; historical rows
+  // in notification_delivery_attempts keep the string, writers cannot.
+  status: 'sent' | 'blocked_missing_device_token' | 'blocked_missing_credentials' | 'failed';
   providerResponseCode: string | null;
   errorCode: string | null;
   createdAt: string;
@@ -947,6 +952,13 @@ export async function evaluateNotificationIntent(
   if (intent.deliveryPolicy === 'portal_only') {
     decision = 'portal_only';
     reason = 'delivery policy is portal only';
+  } else if (intent.type === 'daily_digest' && hasUnreadDigestStreak(intent.userId, intent.tenantId, item.itemId)) {
+    // Engagement gate (2026-07-04): prod showed 629 of 738 items were never
+    // read — pushing the Nth identical digest at a user who ignored the
+    // last N is pure notification fatigue. The center item above is still
+    // created; only the push/digest release is suppressed.
+    decision = 'suppressed';
+    reason = `daily digest push suppressed: last ${digestUnreadStreakThreshold()} digests were never opened`;
   } else if (intent.deliveryPolicy === 'digest_only' || (intent.priority === 'passive' && profile.digestPassiveItems)) {
     decision = 'digest';
     reason = 'passive notification held for digest';
@@ -971,14 +983,12 @@ export async function evaluateNotificationIntent(
       // Same mapping as the release path: failed / credentials-blocked
       // attempts must not be recorded as 'sent_push' (they previously were,
       // hiding real APNs failures behind a success decision).
-      decision = attempt.status === 'sent' || attempt.status === 'mock_sent'
+      decision = attempt.status === 'sent'
         ? 'sent_push'
         : attempt.status === 'blocked_missing_device_token'
           ? 'blocked_missing_device_token'
           : 'apns_delivery_failed';
-      reason = attempt.status === 'mock_sent'
-        ? 'mock push provider accepted privacy-safe payload'
-        : attempt.status === 'sent'
+      reason = attempt.status === 'sent'
           ? 'APNs accepted privacy-safe payload'
           : attempt.status === 'blocked_missing_credentials'
             ? 'APNs credentials missing; durable in-app item created'
@@ -1009,6 +1019,36 @@ export async function evaluateNotificationIntent(
     deliveryAttempts,
     pushPayload,
   };
+}
+
+// Engagement gate config: suppress daily-digest pushes after this many
+// consecutive unread digests (0 disables). Reading any digest resets the
+// streak naturally.
+function digestUnreadStreakThreshold(): number {
+  const raw = process.env.NOTIFICATION_DIGEST_UNREAD_STREAK_SUPPRESS;
+  const parsed = raw == null || raw.trim() === '' ? NaN : Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : 7;
+}
+
+function hasUnreadDigestStreak(userId: number, tenantId: number, excludeItemId: string): boolean {
+  const threshold = digestUnreadStreakThreshold();
+  if (threshold === 0) return false;
+  try {
+    const rows = getDb().prepare(`
+      SELECT read_at, actioned_at, dismissed_at
+        FROM notification_center_items
+       WHERE user_id = ? AND tenant_id = ? AND type = 'daily_digest' AND item_id != ?
+       ORDER BY created_at DESC, rowid DESC
+       LIMIT ?
+    `).all(userId, tenantId, excludeItemId, threshold) as Array<{
+      read_at: string | null; actioned_at: string | null; dismissed_at: string | null;
+    }>;
+    if (rows.length < threshold) return false;
+    return rows.every((row) => !row.read_at && !row.actioned_at && !row.dismissed_at);
+  } catch (err) {
+    logger.debug({ err, userId }, 'Digest unread streak check failed (not suppressing)');
+    return false;
+  }
 }
 
 export function expireStaleNotificationIntents(now = new Date()): number {
@@ -1149,16 +1189,14 @@ async function runReleaseDueNotificationDeliveriesSweep(now: Date): Promise<Noti
       const digestIntent = mapIntent(first);
       const payload = assembleDailyDigest(first.user_id, first.tenant_id, group.length);
       const attempt = await attemptPushDelivery(digestIntent, first.item_id, payload, profile);
-      const decision: NotificationDecision = attempt.status === 'sent' || attempt.status === 'mock_sent'
+      const decision: NotificationDecision = attempt.status === 'sent'
         ? 'sent_push'
         : attempt.status === 'blocked_missing_device_token'
           ? 'blocked_missing_device_token'
           : 'apns_delivery_failed';
       const reason = attempt.status === 'sent'
         ? 'digest notification released to APNs'
-        : attempt.status === 'mock_sent'
-          ? 'digest notification released to mock push provider'
-          : attempt.status === 'blocked_missing_credentials'
+        : attempt.status === 'blocked_missing_credentials'
             ? 'digest notification due but APNs credentials are missing'
             : attempt.status === 'blocked_missing_device_token'
               ? 'digest notification due but no active device token is available'
@@ -1170,7 +1208,7 @@ async function runReleaseDueNotificationDeliveriesSweep(now: Date): Promise<Noti
         sentAt: attempt.sentAt,
         attemptIds: attempt.attemptId === null ? [] : [attempt.attemptId],
       })));
-      if (attempt.status === 'sent' || attempt.status === 'mock_sent') released += claimed;
+      if (attempt.status === 'sent') released += claimed;
       else blocked += claimed;
     } catch (err) {
       blocked += group.length;
@@ -1192,15 +1230,13 @@ async function runReleaseDueNotificationDeliveriesSweep(now: Date): Promise<Noti
       // A real APNs failure ('failed'/'blocked_missing_credentials') is an
       // apns_delivery_failed outcome; only the genuine no-token case may be
       // recorded as blocked_missing_device_token.
-      const decision: NotificationDecision = attempt.status === 'sent' || attempt.status === 'mock_sent'
+      const decision: NotificationDecision = attempt.status === 'sent'
         ? 'sent_push'
         : attempt.status === 'blocked_missing_device_token'
           ? 'blocked_missing_device_token'
           : 'apns_delivery_failed';
       const reason = attempt.status === 'sent'
         ? 'delayed notification released to APNs'
-        : attempt.status === 'mock_sent'
-          ? 'delayed notification released to mock push provider'
           : attempt.status === 'blocked_missing_credentials'
             ? 'delayed notification released but APNs credentials are missing'
             : attempt.status === 'blocked_missing_device_token'
@@ -1213,7 +1249,7 @@ async function runReleaseDueNotificationDeliveriesSweep(now: Date): Promise<Noti
         sentAt: attempt.sentAt,
         attemptIds: attempt.attemptId === null ? [] : [attempt.attemptId],
       }]);
-      if (attempt.status === 'sent' || attempt.status === 'mock_sent') released += claimed;
+      if (attempt.status === 'sent') released += claimed;
       else blocked += claimed;
     } catch (err) {
       blocked += 1;
@@ -1797,6 +1833,76 @@ export function registerNotificationDeviceToken(opts: {
   return mapDeviceToken(row);
 }
 
+/**
+ * Revoke token rows the APNs sender reported as 410 Unregistered. The sender
+ * already cleared ios_devices.push_token; without this the
+ * notification_device_tokens rows stayed active forever (the stale May-08
+ * token found in the 2026-07-04 audit) and failures were mislabeled.
+ */
+export function markDeviceTokensUnregistered(userId: number, tenantId: number, rawTokens: string[]): void {
+  if (rawTokens.length === 0) return;
+  try {
+    const db = getDb();
+    const stmt = db.prepare(`
+      UPDATE notification_device_tokens
+         SET revoked_at = datetime('now')
+       WHERE user_id = ? AND tenant_id = ? AND token_hash = ? AND revoked_at IS NULL
+    `);
+    for (const token of rawTokens) {
+      stmt.run(userId, tenantId, hashToken(token));
+    }
+  } catch (err) {
+    logger.warn({ err, userId }, 'Failed to revoke unregistered device tokens');
+  }
+}
+
+/**
+ * Successful APNs delivery is proof the user's active tokens are alive —
+ * refresh last_seen_at so the stale-token pruning job (90d) never reaps a
+ * device that is actually receiving pushes. Registration was previously the
+ * only writer, so long-lived installs looked stale.
+ */
+export function touchDeviceTokenActivity(userId: number, tenantId: number): void {
+  try {
+    getDb().prepare(`
+      UPDATE notification_device_tokens
+         SET last_seen_at = datetime('now')
+       WHERE user_id = ? AND tenant_id = ? AND revoked_at IS NULL
+    `).run(userId, tenantId);
+  } catch (err) {
+    logger.debug({ err, userId }, 'Failed to touch device token activity');
+  }
+}
+
+/**
+ * Daily stale-token pruning: revoke active tokens with no activity signal
+ * (registration or successful delivery) in NOTIFICATION_TOKEN_STALE_DAYS
+ * (default 90, 0 disables). Returns the number of tokens revoked.
+ */
+export function pruneStaleDeviceTokens(): number {
+  const raw = process.env.NOTIFICATION_TOKEN_STALE_DAYS;
+  const parsed = raw == null || raw.trim() === '' ? NaN : Number.parseInt(raw, 10);
+  const staleDays = Number.isFinite(parsed) && parsed >= 0 ? parsed : 90;
+  if (staleDays === 0) return 0;
+  try {
+    ensureNotificationTables();
+    const result = getDb().prepare(`
+      UPDATE notification_device_tokens
+         SET revoked_at = datetime('now')
+       WHERE revoked_at IS NULL
+         AND last_seen_at < datetime('now', ?)
+    `).run(`-${staleDays} days`);
+    const revoked = Number(result.changes ?? 0);
+    if (revoked > 0) {
+      logger.info({ revoked, staleDays }, 'Pruned stale device tokens');
+    }
+    return revoked;
+  } catch (err) {
+    logger.warn({ err }, 'Stale device token pruning failed');
+    return 0;
+  }
+}
+
 export function revokeNotificationDeviceToken(tokenId: string, userId: number, tenantId = userId): boolean {
   assertScope(userId, tenantId, 'revoke_notification_device_token', { tokenId });
   ensureNotificationTables();
@@ -1861,7 +1967,9 @@ export function getNotificationDeliveryObservabilityMetrics(
     tenantId,
     totalDecisions: decisionRows.length,
     pushAttemptCount: attemptRows.length,
-    pushSentCount: attemptRows.filter((row) => row.status === 'sent' || row.status === 'mock_sent').length,
+    // Historical read: pre-2026-07-04 rows carry 'mock_sent'; keep counting
+    // them so observability over old data stays truthful.
+    pushSentCount: attemptRows.filter((row) => row.status === 'sent' || (row.status as string) === 'mock_sent').length,
     pushBlockedCount: attemptRows.filter((row) => row.status.startsWith('blocked_') || row.status === 'failed').length,
     visibleDecisionPushAllowedCount: decisionRows.filter((row) => row.decision === 'sent_push' && row.reason.includes('privacy-safe payload')).length,
     visibleDecisionPushBlockedCount: decisionRows.filter((row) => row.reason.startsWith('decision rank gate') || row.reason.startsWith('decision quality gate')).length,
@@ -2369,6 +2477,28 @@ function fixtureBySkill(sourceSkill: NotificationSourceSkill, userId: number): N
   }
 }
 
+/**
+ * Apple caps apns-collapse-id at 64 BYTES (not UTF-16 chars). Oversized ids
+ * keep a byte-safe ASCII-window prefix plus a 16-hex digest of the FULL raw
+ * id, so distinct long keys stay distinct and multibyte/emoji dedupe keys
+ * can never leave a broken surrogate fragment at the cut point. Deterministic
+ * by construction (pure function of the input).
+ */
+export function buildApnsCollapseId(raw: string): string {
+  if (Buffer.byteLength(raw, 'utf8') <= 64) return raw;
+  const digest = createHash('sha256').update(raw).digest('hex').slice(0, 16);
+  const budget = 64 - digest.length - 1; // "-" separator
+  let prefix = '';
+  let bytes = 0;
+  for (const codePoint of raw) { // for..of iterates full code points
+    const size = Buffer.byteLength(codePoint, 'utf8');
+    if (bytes + size > budget) break;
+    prefix += codePoint;
+    bytes += size;
+  }
+  return `${prefix}-${digest}`;
+}
+
 const NOTIFICATION_CENTER_FALLBACK_DEEPLINK = 'nexus://notifications';
 
 function normalizeNotificationDeeplink(value: string | null | undefined): string {
@@ -2646,10 +2776,12 @@ async function attemptPushDelivery(
     return { attemptId: null, status: 'blocked_missing_device_token', sentAt: null };
   }
 
-  const deliveryMode = config.notificationDelivery?.mode
-    ?? (process.env.NOTIFICATION_DELIVERY_MODE === 'apns' ? 'apns' : 'mock');
-  if (deliveryMode !== 'apns') {
-    return persistDeliveryAttempt(intent, notificationId, 'push', 'mock', 'mock_sent', 'mock', null);
+  // Mock delivery mode removed 2026-07-04 (dead-code sweep): APNs is the
+  // only real push channel; tests stub sendPushNotification directly. A
+  // non-'apns' NOTIFICATION_DELIVERY_MODE now behaves like missing
+  // credentials rather than fabricating mock_sent rows.
+  if (config.notificationDelivery.mode !== 'apns') {
+    return persistDeliveryAttempt(intent, notificationId, 'push', 'apns', 'blocked_missing_credentials', null, 'apns_delivery_mode_disabled');
   }
 
   if (!isApnsConfigured()) {
@@ -2687,10 +2819,34 @@ async function attemptPushDelivery(
       category: contract.apnsCategory,
       sound: effectiveSound(intent.priority, profile),
       interruptionLevel: payload.interruptionLevel,
-      collapseId: isDecisionPush ? `decision:${notificationId}` : undefined,
+      // Collapse non-decision pushes per source+type+dedupe scope so a fresh
+      // digest/insight replaces its stale predecessor on the lock screen
+      // instead of stacking (2026-07-04 APNs round).
+      collapseId: buildApnsCollapseId(
+        isDecisionPush
+          ? `decision:${notificationId}`
+          : `${intent.sourceSkill}:${intent.type}:${intent.dedupeKey ?? notificationId ?? intent.intentId}`,
+      ),
     });
+    // APNs 410 responses delete the token inside the sender; surface that
+    // here so decision logs explain WHY later attempts see no tokens
+    // (previously result.unregistered was silently dropped — the audit's
+    // top APNs finding).
+    if (result.unregistered.length > 0) {
+      logger.warn({
+        intentId: intent.intentId,
+        userId: intent.userId,
+        unregisteredCount: result.unregistered.length,
+        tokenSuffixes: result.unregistered.map((t) => t.slice(-8)),
+      }, 'APNs reported device token(s) unregistered (410) — tokens revoked');
+      markDeviceTokensUnregistered(intent.userId, intent.tenantId, result.unregistered);
+    }
     if (result.sent > 0) {
+      touchDeviceTokenActivity(intent.userId, intent.tenantId);
       return persistDeliveryAttempt(intent, notificationId, 'push', 'apns', 'sent', '2xx', null);
+    }
+    if (result.unregistered.length > 0) {
+      return persistDeliveryAttempt(intent, notificationId, 'push', 'apns', 'failed', '410', 'apns_token_unregistered');
     }
     if (result.skipped > 0) {
       return persistDeliveryAttempt(intent, notificationId, 'push', 'apns', 'blocked_missing_credentials', null, 'apns_credentials_missing');
@@ -2712,7 +2868,7 @@ function persistDeliveryAttempt(
   errorCode: string | null,
 ): DeliveryAttempt {
   const attemptId = `nda_${randomUUID()}`;
-  const sentAt = status === 'sent' || status === 'mock_sent' ? new Date().toISOString() : null;
+  const sentAt = status === 'sent' ? new Date().toISOString() : null;
   const safeErrorCode = sanitizeNotificationDeliveryErrorCode(errorCode);
   if (errorCode && safeErrorCode === 'opaque_error') {
     logger.warn({

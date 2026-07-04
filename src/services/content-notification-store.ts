@@ -158,64 +158,11 @@ export function createNotification(opts: {
  * The orchestrator decides whether push, digest, in-app only, or quiet-hours
  * delay is appropriate. Skills must not call APNs directly.
  */
-export async function createAndPushNotification(opts: {
-  userId: number;
-  type: NotificationType;
-  title: string;
-  body: string;
-  data?: Record<string, any>;
-}): Promise<number> {
-  const id = createNotification(opts);
-  if (id <= 0) {
-    return -1;
-  }
-
-  // Emit to the Secretary Notification Orchestrator (non-blocking, non-fatal).
-  try {
-    const { createNotificationIntent } = await import('./notification-orchestrator');
-    const workflowObjectId = firstScalar(opts.data ?? {}, ['contentObjectId', 'workflowObjectId', 'objectId', 'draftId', 'ideaId']);
-    const canExecuteContentApproval = isContentApprovalNotification(opts.type) && !!workflowObjectId;
-    const result = await createNotificationIntent({
-      userId: opts.userId,
-      tenantId: opts.userId,
-      sourceSkill: 'content',
-      type: mapContentTypeToIntentType(opts.type),
-      priority: mapContentTypeToPriority(opts.type),
-      relatedEntityId: canExecuteContentApproval ? workflowObjectId! : id,
-      relatedEntityType: canExecuteContentApproval ? 'content_workflow_object' : 'content_notification',
-      title: opts.title,
-      body: opts.body,
-      sensitiveBody: opts.body,
-      actionButtons: mapContentTypeToActions(opts.type, canExecuteContentApproval),
-      deeplink: contentNotificationDeeplink(id, opts.data),
-      // Entity-stable dedupe key: recurring events for the same user+type
-      // (e.g. Garmin reauth) collapse into one active center item instead of
-      // minting a fresh key from the legacy rowid and pushing every time.
-      // The orchestrator's listNotificationBridgeEntityIds understands both
-      // this shape and the legacy `content:<type>:<legacyRowId>` rows.
-      dedupeKey: `content:${opts.type}:${opts.userId}`,
-      requiresUserAction: opts.type === 'script_ready' || opts.type === 'content_action_required',
-      deliveryPolicy: 'auto',
-      privacyPolicy: 'private_content',
-    });
-
-    if (result.deliveryAttempts.some((attempt) => attempt.status === 'sent')) {
-      markPushSent(id);
-    }
-  } catch (err) {
-    logger.debug({ err, notificationId: id }, 'Notification intent delivery skipped (non-fatal)');
-  }
-
-  return id;
-}
-
-// ═══════════════════════════════════════════════════════════════════
-// Read
-// ═══════════════════════════════════════════════════════════════════
-
-/**
- * Get unread notifications for a user. Most recent first.
- */
+// createAndPushNotification (the legacy-store→orchestrator bridge) was
+// removed 2026-07-04: its last producer (Garmin reauth) now emits a
+// first-class orchestrator intent. The legacy table stays READ-ONLY for
+// historical rows; the read/merge/badge-exclusion paths below remain until
+// phase-2 retirement drains them.
 export function getUnreadNotifications(
   userId: number,
   limit = 20,

@@ -129,7 +129,7 @@ vi.mock('../../src/utils/logger', () => ({
 
 // Import AFTER all mocks so the provider picks them up.
 import { LocalLLMError } from '../../src/services/local-llm-error';
-import { OllamaProvider, stripThinkBlocks } from '../../src/services/ollama-provider';
+import { OllamaProvider, completeLocalReasoningOneShot, stripThinkBlocks } from '../../src/services/ollama-provider';
 
 // Bring fetch under our control.
 const originalFetch = globalThis.fetch;
@@ -318,5 +318,67 @@ describe('OllamaProvider — timeout maps to LocalLLMError(timeout)', () => {
     });
     const p = new OllamaProvider();
     await expect(p.classify('hello')).rejects.toMatchObject({ kind: 'timeout' });
+  });
+});
+
+describe('completeLocalReasoningOneShot — module-level one-shot helper (local-LLM pilot)', () => {
+  it('returns stripped text and writes exactly one api_usage row with the caller category', async () => {
+    fetchMock
+      .mockResolvedValueOnce(makeChatResponse({ content: '<think>internal chain</think>{"categories":[]}' }))
+      .mockResolvedValueOnce(makeTagsResponse());
+
+    const result = await completeLocalReasoningOneShot(
+      'You are a synthesizer.',
+      'Synthesize the patterns.',
+      'knowledge_synthesis_local',
+      { maxTokens: 512, temperature: 0.3, userId: 7, tenantId: 7 },
+    );
+
+    expect(result.text).toBe('{"categories":[]}');
+    expect(result.text).not.toContain('<think>');
+    expect(result.providerMetadata?.providerUsed).toBe('ollama');
+
+    // Usage plumbing reused: one api_usage row, category from the caller,
+    // user/tenant scope forwarded (cost 0 / local units are SQL literals).
+    expect(runMock).toHaveBeenCalledTimes(1);
+    const callArgs = runMock.mock.calls[0] as unknown[];
+    expect(callArgs[0]).toBe('knowledge_synthesis_local');
+    expect(callArgs[1]).toBe('qwen3.6:35b-a3b-q4_K_M');
+    expect(callArgs[2]).toBe(7); // tenant_id
+    expect(callArgs[3]).toBe(7); // user_id
+
+    // Request honored the one-shot defaults: think:false, keep_alive:-1,
+    // caller num_predict.
+    const [, fetchOpts] = fetchMock.mock.calls[0] as [string, { body: string }];
+    const sent = JSON.parse(fetchOpts.body);
+    expect(sent.think).toBe(false);
+    expect(sent.keep_alive).toBe(-1);
+    expect(sent.options.num_predict).toBe(512);
+    expect(sent.messages).toEqual([
+      { role: 'system', content: 'You are a synthesizer.' },
+      { role: 'user', content: 'Synthesize the patterns.' },
+    ]);
+  });
+
+  it('throws LocalLLMError(provider_unhealthy) when Ollama is not configured', async () => {
+    const mod = await import('../../src/config');
+    const orig = mod.config.ollama.enabled;
+    (mod.config.ollama as { enabled: boolean }).enabled = false;
+    try {
+      await expect(
+        completeLocalReasoningOneShot('sys', 'user', 'knowledge_synthesis_local'),
+      ).rejects.toMatchObject({ kind: 'provider_unhealthy' });
+      expect(fetchMock).not.toHaveBeenCalled();
+    } finally {
+      (mod.config.ollama as { enabled: boolean }).enabled = orig;
+    }
+  });
+
+  it('throws LocalLLMError(input_token_overflow) when the prompt exceeds the localReasoning cap', async () => {
+    const massive = 'x'.repeat(30000); // > localReasoningMaxInput=6000 with /3 estimator
+    await expect(
+      completeLocalReasoningOneShot('sys', massive, 'knowledge_synthesis_local'),
+    ).rejects.toMatchObject({ kind: 'input_token_overflow' });
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });

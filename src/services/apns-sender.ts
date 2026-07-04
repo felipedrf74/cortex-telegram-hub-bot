@@ -385,7 +385,26 @@ async function dispatchOne(
   const body: Record<string, unknown> = { aps: apsPayload };
   if (payload.data) Object.assign(body, payload.data);
 
-  const bodyStr = JSON.stringify(body);
+  let bodyStr = JSON.stringify(body);
+  // APNs rejects payloads over 4096 bytes with an opaque 413. Bodies are
+  // pre-truncated upstream, so overage means bloated custom data — degrade
+  // deterministically instead of failing delivery (2026-07-04 APNs round).
+  if (Buffer.byteLength(bodyStr) > 4096) {
+    logger.warn({
+      size: Buffer.byteLength(bodyStr),
+      tokenSuffix: deviceToken.slice(-8),
+    }, '[apns-sender] payload exceeds 4096 bytes — trimming custom data');
+    const data = (payload.data ?? {}) as Record<string, unknown>;
+    const trimmed: Record<string, unknown> = { aps: apsPayload };
+    for (const key of ['notificationId', 'userId', 'tenantId', 'deeplink', 'iosDestination']) {
+      if (data[key] !== undefined) trimmed[key] = data[key];
+    }
+    bodyStr = JSON.stringify(trimmed);
+    if (Buffer.byteLength(bodyStr) > 4096 && typeof apsPayload.alert === 'object' && apsPayload.alert) {
+      (apsPayload.alert as Record<string, unknown>).body = String((apsPayload.alert as Record<string, unknown>).body ?? '').slice(0, 100);
+      bodyStr = JSON.stringify(trimmed);
+    }
+  }
 
   return new Promise<SingleSendOutcome>((resolve) => {
     const headers: Record<string, string> = {
@@ -395,7 +414,12 @@ async function dispatchOne(
       'apns-topic': config.apns.bundleId,
       'apns-push-type': 'alert',
       'apns-priority': '10',
-      'apns-expiration': '0',
+      // apns-expiration is an epoch timestamp. 0 = deliver once, now-or-drop
+      // (~30s store). Time-sensitive alerts get a 1h window so an offline
+      // device still receives them on reconnect (2026-07-04 APNs round).
+      'apns-expiration': payload.interruptionLevel === 'time-sensitive'
+        ? String(Math.floor(Date.now() / 1000) + 3600)
+        : '0',
       'content-type': 'application/json',
       'content-length': Buffer.byteLength(bodyStr).toString(),
     };

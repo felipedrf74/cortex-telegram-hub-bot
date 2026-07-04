@@ -636,5 +636,6 @@ export async function generateWeeklyPackage(
 // Callers use:
 //   1. generateAndStoreTopicCandidates() / generateWeeklyPackage()
 //      (transport-agnostic orchestrators above)
-//   2. createAndPushNotification() from content-notification-store.ts
-//      (durable inbox + APNs delivery)
+//   2. createNotificationIntent() from notification-orchestrator.ts
+//      (durable inbox + APNs delivery; the legacy content-notification-store
+//      bridge was retired 2026-07-04)

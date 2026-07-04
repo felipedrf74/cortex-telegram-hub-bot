@@ -48,7 +48,7 @@ describe('Decision Center notification smoke helper', () => {
     const visible = intents[0];
     expect(visible.sourceSkill).toBe('secretary');
     expect(visible.priority).toBe('time_sensitive');
-    expect(visible.deliveryPolicy).toBe('push_allowed');
+    expect(visible.deliveryPolicy).toBe('auto');
     expect(visible.quietHoursPolicy).toBe('send_now');
     expect(visible.requiresUserAction).toBe(true);
     expect(visible.decisionDeadline).toBe('2026-05-22T10:30:00.000Z');
