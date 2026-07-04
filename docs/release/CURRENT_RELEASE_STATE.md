@@ -2,10 +2,10 @@
 
 Status: canonical
 Owner: backend release lead (Felipe)
-Last verified: 2026-07-03
+Last verified: 2026-07-04
 Update policy: update after backend deploy or staging change. Workspace-level entry point is docs/release/CURRENT_RELEASE_STATE.md.
 
-Last updated: 2026-07-03
+Last updated: 2026-07-04
 
 Only the **Active Production Release** section states the current production
 truth. Dated sections below it are historical deploy evidence and may mention
@@ -13,41 +13,30 @@ older production versions.
 
 ## Active Production Release
 
-- Source branch: `codex/Trainingfixes` at `0df62678` (deployed artifact);
-  `200e8a12` carries the code, `0df62678` adds the pre-promote staging smoke
-  evidence (docs-only, manifest-identical).
-- Production HEAD: `0df62678`
-- Production version: `4.14.212` (minted per REL-VERSION-MINT; unique to this
-  artifact).
-- Scope: 2026-07-03 token/notification optimization round (audit-driven:
-  pricing sentinel fix + migration 221 reprice, Gemini one-shot
-  retry-before-fallback, deterministic content dedup, notification release
-  single-flight + CAS + delivery-decision truthfulness, GAP-CAL-1 alert
-  sinks fixed, secretary agenda sync fingerprint short-circuit (migration
-  224), task-sync polling gates, channel-relearn/autoresearch data-change
-  gates (migrations 222/223), cron cost governance, Telegram legacy delivery
-  removal ~3.6k lines) PLUS per-user report schedules (migration 225:
-  windowed dispatcher, profile schedule columns + claim ledger,
-  GET/PUT /api/v1/notifications/preferences `reportSchedule`).
-- Latest runtime deploy commit: `0df62678` (2026-07-03 validated promote:
-  env parity 144 keys, manifest parity after removing 207 stale local
-  dist duplicates, staging smoke 24/24 gate, migration count 235 with
-  221-225 applied, strict deploy validation; pre-commit full Vitest
-  865 files / 12,685 tests on the code commit).
-- Verified post-promote by read-only SSH: `package.json` version `4.14.212`,
-  PM2 `nexus-hub` + `content-engine` online, public `/health` healthy,
-  migrations 221-225 present in `_migrations`, api_usage 30d shows 0
-  `pricing_status='unresolved'` rows (recorded 30d spend corrected from
-  $1.85 to $0.558 by migration 221).
-- iOS companion: `main` at `d71895c` (report schedule pickers + DTO; decode
-  tests 6/6) pushed 2026-07-03.
-- Production still has the immutable global Training catalog version
-  `repo-seed-1.0.0` active with 131 exercises and 24 equipment items.
-- Known residuals shipped with eyes open: content-engine local `.venv` is
-  py3.14 vs pinned py3.12 deps (pytest cannot run locally; covered by the
-  Docker image gate), NOTIFICATION_DIGEST_REQUIRE_DEVICE_TOKEN ships
-  default-off, LOCAL_LLM_CLASSIFY_SHADOW stays on as the O3-A24 evidence
-  pipeline.
+- Source branch: `main` at `7511266b` (deployed artifact; `a33b349d` carries the
+  code, `7511266b` adds the pre-promote staging smoke evidence, docs-only and
+  manifest-identical). Pushed to `origin/main`.
+- Production HEAD: `7511266b`
+- Production version: `4.14.213` (minted per REL-VERSION-MINT).
+- Scope: 2026-07-04 APNs reliability + engagement round with Codex QA fixes —
+  APNs 410 consumption (dead-token auto-revoke + truthful attempt labels),
+  4KB payload guard, byte-safe collapse-id (buildApnsCollapseId), 1h
+  expiration for time-sensitive pushes, mock delivery mode retired, per-job
+  report catch-up windows (weekly 24h), stale device-token pruning (90d),
+  last_seen refresh on delivery, daily-digest unread-streak push suppression
+  (default 7), sent_local/push_allowed enum prunes, Garmin reauth as a
+  first-class orchestrator intent with the nexus://connections/garmin/reauth
+  deeplink, legacy content-notification-store write path/bridge deleted,
+  local-LLM pilot rails (LOCAL_LLM_CHANNEL_SYNTHESIS default off,
+  GARMIN_COACH_CAPTURE_PROMPT, scripts/coach-local-eval.mjs).
+- Latest runtime deploy commit: `7511266b` (2026-07-04 validated promote:
+  staging smoke 19/19 with evidence committed pre-promote, promote gate
+  smoke green, strict deploy validation; pre-commit full Vitest 866 files /
+  12,705 tests on the code commit; no new migrations — count stays 235).
+- Verified post-promote by read-only SSH: version `4.14.213`, PM2
+  `nexus-hub` + `content-engine` online, public `/health` healthy,
+  migrations 235, zero active tokens past the 90-day stale window.
+- iOS companion unchanged this round: `main` remains `d71895c`.
 - Backend workspace root: `/Users/felipedominguez/Desktop/Custom Connectors/Cortex/cortex-telegram-hub-bot`
 
 ## 2026-07-03 Optimization Round + Per-User Schedules Promote
