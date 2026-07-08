@@ -555,10 +555,12 @@ git/docs/archive investigation. The dirty-cluster resolution pass added focused
 iOS source-pin/UI-smoke validation, release hardening validation, script guard
 smokes, and restored evidence-file status proof.
 
-Reward loop: `npm run reward:check -- --area auto --advisory --handoff
-docs/agents/handoffs/2026-07-08-training-skill-qa-and-fixes.md` returned
-`WARN`, score 98, no hard failures, mandatory checks PASS 5, and export
-ineligible pending manual human review.
+Reward loop: latest post-promote `npm run reward:check -- --area auto
+--advisory --handoff docs/agents/handoffs/2026-07-08-training-skill-qa-and-fixes.md`
+returned `WARN`, score 88, no hard failures, mandatory checks PASS 3,
+`verify-deliverable` warning, and export ineligible pending manual human
+review. Earlier pre-promote local reward reproduction was `WARN`, score 98,
+mandatory checks PASS 5.
 
 Skipped checks: live provider calendar writes, physical-device and TestFlight
 validation, App Store Connect live-build verification, two-account proof,
