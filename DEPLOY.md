@@ -32,6 +32,9 @@
 - **Rule:** it must not bump package versions. Run `scripts/release-prep.sh`
   before staging so the staged artifact digest is the production artifact
   digest.
+- **Version policy:** every production promote must mint a patch version before
+  `deploy-staging.sh` so staging and production runtime self-reporting are
+  unambiguous.
 
 ---
 
