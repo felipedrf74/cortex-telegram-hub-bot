@@ -24,3 +24,10 @@ node scripts/reward-check.mjs --area auto --handoff docs/agents/handoffs/<file>.
 Verdict and hard failures outrank score. Do not silently skip mandatory checks.
 Keep raw reward JSON under `.local/reward-runs/`, summarize only the compact
 verdict block in handoffs, and do not start provider fine-tuning.
+
+Goal-loop wiring: treat the verdict as a loop exit, not a one-shot gate —
+on `FAIL`, fix the named hard failures and re-run, capped at 3 iterations;
+`PASS`/`WARN` exits successfully; `MANUAL_REQUIRED` is terminal (human
+evidence — never retried; name the exact proof needed); `NOT_APPLICABLE`
+exits the loop without retry and is recorded as-is in the handoff. Loop
+fixes stay uncommitted for Felipe's review.
