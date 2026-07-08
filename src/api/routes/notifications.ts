@@ -184,6 +184,46 @@ function safeIso(input: unknown, fallback = new Date()): string {
   return fallback.toISOString();
 }
 
+const INBOX_METADATA_STRING_FIELDS = new Set([
+  'provider',
+  'providerMessageId',
+  'from',
+  'to',
+  'importance',
+  'taskId',
+  'dueDateTime',
+  'listId',
+  'listName',
+  'eventId',
+  'start',
+  'end',
+  'location',
+  'htmlLink',
+  'sourceJob',
+  'notificationId',
+  'deeplink',
+  'sourceSkill',
+]);
+
+function coerceInboxMetadataString(value: unknown): string | null {
+  if (value == null) return null;
+  if (typeof value === 'string') return value;
+  if (typeof value === 'number' && Number.isFinite(value)) return String(value);
+  if (typeof value === 'boolean') return String(value);
+  if (value instanceof Date && !Number.isNaN(value.getTime())) return value.toISOString();
+  return null;
+}
+
+function normalizeInboxMetadata(metadata: Record<string, any> | null | undefined): Record<string, any> {
+  const normalized = { ...(metadata || {}) };
+  for (const key of INBOX_METADATA_STRING_FIELDS) {
+    if (Object.prototype.hasOwnProperty.call(normalized, key)) {
+      normalized[key] = coerceInboxMetadataString(normalized[key]);
+    }
+  }
+  return normalized;
+}
+
 function routeTenantId(req: AuthenticatedRequest, userId: number): number {
   const candidate = (req as any).tenantId;
   return isValidTenantUserId(candidate) ? candidate : userId;
@@ -346,13 +386,13 @@ function centerItemsToInboxResult(centerItems: NotificationCenterItem[]): Unifie
         ? 'medium' as const
         : 'low' as const,
     action: 'open_content' as const,
-    metadata: {
-      notificationId: item.itemId,
+    metadata: normalizeInboxMetadata({
+      notificationId: item.itemId != null ? String(item.itemId) : null,
       deeplink: item.deeplink,
       sourceSkill: item.sourceSkill,
       actions: item.actions,
       dedupeKey: item.dedupeKey,
-    },
+    }),
   }));
   return { items, unreadCount: centerItems.filter((item) => item.status === 'unread').length };
 }
@@ -490,7 +530,7 @@ async function buildUnifiedInbox(userId: number, tenantId: number, limit: number
           source: 'content',
           priority: n.status === 'unread' ? 'medium' as const : 'low' as const,
           action: 'open_content' as const,
-          metadata: n.data || {},
+          metadata: normalizeInboxMetadata(n.data || {}),
         }));
         return { items, unreadCount: getUnreadCountExcludingNotificationIds(userId, bridgedContentNotificationIds) };
       },
@@ -514,7 +554,7 @@ async function buildUnifiedInbox(userId: number, tenantId: number, limit: number
           source: 'nexus',
           priority: r.status === 'unread' ? 'high' as const : 'medium' as const,
           action: 'open_report' as const,
-          metadata: { sourceJob: r.sourceJob || null },
+          metadata: normalizeInboxMetadata({ sourceJob: r.sourceJob || null }),
         }));
         return { items, unreadCount: getUnreadReportCountExcludingIds(userId, bridgedReportIds) };
       },
@@ -550,13 +590,13 @@ async function buildUnifiedInbox(userId: number, tenantId: number, limit: number
               source: task.provider === 'ms_todo' ? 'microsoft_todo' : task.provider,
               priority: isOverdue ? 'high' as const : isDueToday ? 'medium' as const : inboxTaskPriority(task),
               action: 'open_tasks' as const,
-              metadata: {
+              metadata: normalizeInboxMetadata({
                 taskId,
                 dueDateTime: dueIso,
-                listId: task.projectId || null,
+                listId: task.projectId,
                 listName: task.projectName || null,
                 importance: task.priority >= 3 ? 'high' : task.priority === 1 ? 'low' : 'normal',
-              },
+              }),
             };
           })
           .sort(compareInboxItems)
@@ -586,13 +626,13 @@ async function buildUnifiedInbox(userId: number, tenantId: number, limit: number
             source: 'outlook',
             priority: email.importance === 'high' ? 'high' as const : 'medium' as const,
             action: 'view_email' as const,
-            metadata: {
+            metadata: normalizeInboxMetadata({
               provider: 'outlook',
               providerMessageId: email.id,
               from: email.from || null,
               to: email.to || null,
               importance: email.importance || 'normal',
-            },
+            }),
           }));
           return { items, unreadCount: count || items.length };
         },
@@ -618,14 +658,14 @@ async function buildUnifiedInbox(userId: number, tenantId: number, limit: number
               source: 'outlook',
               priority: isSoon ? 'high' as const : 'medium' as const,
               action: 'view_event' as const,
-              metadata: {
+              metadata: normalizeInboxMetadata({
                 provider: 'outlook',
                 eventId: event.id,
                 start: startIso,
                 end: safeIso(event.end, new Date(startIso)),
                 location: event.location || null,
                 htmlLink: event.htmlLink || null,
-              },
+              }),
             };
           });
           return { items, unreadCount: 0 };
@@ -653,13 +693,13 @@ async function buildUnifiedInbox(userId: number, tenantId: number, limit: number
             source: 'gmail',
             priority: 'medium' as const,
             action: 'view_email' as const,
-            metadata: {
+            metadata: normalizeInboxMetadata({
               provider: 'gmail',
               providerMessageId: email.id,
               from: email.from || null,
               to: email.to || null,
               importance: 'normal',
-            },
+            }),
           }));
           return { items, unreadCount: items.length };
         },
@@ -685,14 +725,14 @@ async function buildUnifiedInbox(userId: number, tenantId: number, limit: number
               source: 'google',
               priority: isSoon ? 'high' as const : 'medium' as const,
               action: 'view_event' as const,
-              metadata: {
+              metadata: normalizeInboxMetadata({
                 provider: 'google',
                 eventId: event.id,
                 start: startIso,
                 end: safeIso(event.end, new Date(startIso)),
                 location: event.location || null,
                 htmlLink: event.htmlLink || null,
-              },
+              }),
             };
           });
           return { items, unreadCount: 0 };

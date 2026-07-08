@@ -560,7 +560,11 @@ describe('Notification inbox routes', () => {
         body: 'Your weekly package is ready.',
         status: 'unread',
         createdAt: '2026-04-13T11:00:00Z',
-        data: {},
+        data: {
+          notificationId: 9,
+          taskId: 123,
+          rawCount: 7,
+        },
       },
     ]);
     mockListNotificationCenterItems.mockReturnValue([
@@ -608,7 +612,11 @@ describe('Notification inbox routes', () => {
         body: 'Your weekly package is ready.',
         status: 'unread',
         createdAt: '2026-04-13T11:00:00Z',
-        data: {},
+        data: {
+          notificationId: 9,
+          taskId: 123,
+          rawCount: 7,
+        },
       },
     ]);
     mockListNotificationCenterItems.mockReturnValue([
@@ -820,7 +828,11 @@ describe('Notification inbox routes', () => {
         body: 'Your weekly package is ready.',
         status: 'unread',
         createdAt: '2026-04-13T11:00:00Z',
-        data: {},
+        data: {
+          notificationId: 9,
+          taskId: 123,
+          rawCount: 7,
+        },
       },
     ]);
     mockGetUnreadCount.mockReturnValue(1);
@@ -880,6 +892,17 @@ describe('Notification inbox routes', () => {
       title: 'Pay IVA',
       type: 'task_overdue',
       action: 'open_tasks',
+    });
+    const taskItem = res.body.data.items.find((item: any) => item.kind === 'task');
+    expect(taskItem.metadata).toMatchObject({
+      taskId: '1',
+      listId: '11',
+    });
+    const notificationItem = res.body.data.items.find((item: any) => item.id === 'notification:9');
+    expect(notificationItem.metadata).toMatchObject({
+      notificationId: '9',
+      taskId: '123',
+      rawCount: 7,
     });
     expect(res.body.data.items.map((item: any) => item.kind)).toEqual(
       expect.arrayContaining(['task', 'email', 'report', 'notification']),
