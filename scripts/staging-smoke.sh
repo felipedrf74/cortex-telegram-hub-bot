@@ -65,6 +65,8 @@ evidence_record() {
   local name="$1"
   local status="$2"
   local detail="${3:-}"
+  detail="${detail//$'\t'/ }"
+  detail="${detail//$'\n'/; }"
   EVIDENCE_RESULTS+=("$(printf '%s\t%s\t%s' "$name" "$status" "$detail")")
 }
 
@@ -326,18 +328,50 @@ PM2_STATUS=$(ssh "$SERVER" "/home/dominguez/.npm-global/bin/pm2 jlist 2>/dev/nul
     } catch (e) { console.log('parse_error:' + e.message); }
   });
 \"" 2>&1)
-if [[ "$PM2_STATUS" =~ ns=online && "$PM2_STATUS" =~ ce=online ]]; then
-  echo "  ✅ PM2 — both staging processes online"
+pm2_ns_status="absent"
+pm2_ce_status="absent"
+pm2_ns_restarts="unknown"
+if [[ "$PM2_STATUS" =~ ns=([^[:space:]]+) ]]; then
+  pm2_ns_status="${BASH_REMATCH[1]}"
+fi
+if [[ "$PM2_STATUS" =~ ce=([^[:space:]]+) ]]; then
+  pm2_ce_status="${BASH_REMATCH[1]}"
+fi
+if [[ "$PM2_STATUS" =~ ns_restarts=([0-9]+) ]]; then
+  pm2_ns_restarts="${BASH_REMATCH[1]}"
+fi
+
+if [[ "$pm2_ns_status" == "online" ]]; then
   PASS=$((PASS + 1))
-  evidence_record "PM2 staging processes" "passed" "$PM2_STATUS"
-  if [[ "$PM2_STATUS" =~ ns_restarts=([0-9]+) ]] && [ "${BASH_REMATCH[1]}" -gt 0 ]; then
-    echo "  ⚠️  nexus-hub-staging has ${BASH_REMATCH[1]} unstable restarts — investigate"
-  fi
+  evidence_record "pm2 nexus-hub online" "passed" "ns=$pm2_ns_status"
+else
+  FAIL=$((FAIL + 1))
+  FAILED_TESTS+=("PM2 nexus-hub online")
+  evidence_record "pm2 nexus-hub online" "failed" "ns=$pm2_ns_status raw=$PM2_STATUS"
+fi
+
+if [[ "$pm2_ce_status" == "online" ]]; then
+  PASS=$((PASS + 1))
+  evidence_record "pm2 content-engine online" "passed" "ce=$pm2_ce_status"
+else
+  FAIL=$((FAIL + 1))
+  FAILED_TESTS+=("PM2 content-engine online")
+  evidence_record "pm2 content-engine online" "failed" "ce=$pm2_ce_status raw=$PM2_STATUS"
+fi
+
+if [[ "$pm2_ns_restarts" == "0" ]]; then
+  PASS=$((PASS + 1))
+  evidence_record "pm2 nexus-hub restarts == 0" "passed" "ns_restarts=$pm2_ns_restarts"
+else
+  FAIL=$((FAIL + 1))
+  FAILED_TESTS+=("PM2 nexus-hub restarts == 0")
+  evidence_record "pm2 nexus-hub restarts == 0" "failed" "ns_restarts=$pm2_ns_restarts raw=$PM2_STATUS"
+fi
+
+if [[ "$pm2_ns_status" == "online" && "$pm2_ce_status" == "online" && "$pm2_ns_restarts" == "0" ]]; then
+  echo "  ✅ PM2 — both staging processes online"
 else
   echo "  ❌ PM2 — $PM2_STATUS"
-  FAIL=$((FAIL + 1))
-  FAILED_TESTS+=("PM2 process state")
-  evidence_record "PM2 staging processes" "failed" "$PM2_STATUS"
 fi
 
 echo ""
