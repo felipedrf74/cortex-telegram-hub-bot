@@ -19,7 +19,7 @@ import {
   cancelTrainingPlanCrossSkillDependents,
   findSecretaryAgendaCalendarEventsForPlan,
 } from '../../services/training-plan-cancellation-cascade';
-import { getTrainingCalendarEventOwners } from '../../services/training-calendar-scope';
+import { getTrainingCalendarEventOwners, isTrainingCalendarEventClaimedOutsideTenant } from '../../services/training-calendar-scope';
 import {
   buildTrainingSessionIdentityKey,
   computeTrainingSessionShapeHash,
@@ -697,6 +697,10 @@ async function buildMarkerOrphanDeletionTargetsForUser(userId: number, tenantId:
 }
 
 function hasActiveTrainingOwner(eventId: string, source: CalendarSource, userId: number, tenantId: number): boolean {
+  // Foreign-tenant claims veto deletion: provider event ids are shared across
+  // viewers of a shared calendar, and owner metadata is tenant-scoped, so the
+  // cross-tenant safety signal must come from the boolean-only claim check.
+  if (isTrainingCalendarEventClaimedOutsideTenant(eventId, source, tenantId)) return true;
   const owners = getTrainingCalendarEventOwners(eventId, source, tenantId);
   return owners.some((owner) =>
     owner.userId !== userId
@@ -723,6 +727,7 @@ function isOwnedByAnotherTrainingPlan(
   tenantId: number,
   planId: number,
 ): boolean {
+  if (isTrainingCalendarEventClaimedOutsideTenant(eventId, source, tenantId)) return true;
   const owners = getTrainingCalendarEventOwners(eventId, source, tenantId);
   return owners.some((owner) =>
     owner.userId !== userId

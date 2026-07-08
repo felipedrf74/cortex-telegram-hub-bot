@@ -254,6 +254,7 @@ vi.mock('../../src/services/training-plan-lifecycle', () => ({
 
 vi.mock('../../src/services/training-calendar-scope', () => ({
   isTrainingCalendarEventUnclaimed: vi.fn(() => true),
+  isTrainingCalendarEventClaimedOutsideTenant: vi.fn(() => false),
   getTrainingCalendarEventOwners: vi.fn(() => []),
   filterCalendarEventsForTrainingScope: (events: unknown[]) => events,
 }));

@@ -638,6 +638,98 @@ describe('training-read-models', () => {
     });
   });
 
+  it('maps old wearable readiness provenance to stale_provider for planning', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-07-08T12:00:00.000Z'));
+    try {
+      mockReadinessResult = {
+        score: 62,
+        recommendation: 'reduce_10pct',
+        reasoning: 'Garmin readiness is available but old.',
+        source: 'garmin',
+        asOf: '2026-07-06T06:00:00.000Z',
+        factors: {
+          sleep: { durationHours: 6.2 },
+          hrv: { trend: 'stable' },
+          bodyBattery: { current: 55 },
+        },
+      };
+
+      const mapped = await fetchCurrentReadinessForPlan(42, 42);
+
+      expect(mapped).toEqual({
+        score: 62,
+        confidence: 'stale_provider',
+        dataSource: 'wearable',
+        isStale: true,
+        reasonCode: 'wearable_sync_stale',
+        sleepHours: 6.2,
+        hrvStatus: 'normal',
+        energyReserve: 55,
+        reasoning: 'Garmin readiness is available but old.',
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('keeps readiness staleness classification honest across asOf edge cases', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-07-08T12:00:00.000Z'));
+    const baseReadiness = {
+      score: 70,
+      recommendation: 'normal',
+      reasoning: 'Edge-case readiness.',
+      source: 'garmin',
+      factors: { sleep: { durationHours: 7 }, hrv: { trend: 'stable' }, bodyBattery: { current: 60 } },
+    };
+    try {
+      // Recent same-day sync stays fresh.
+      mockReadinessResult = { ...baseReadiness, asOf: '2026-07-08T11:00:00.000Z' };
+      expect(await fetchCurrentReadinessForPlan(42, 42)).toMatchObject({
+        confidence: 'fresh_wearable',
+        isStale: false,
+        reasonCode: null,
+      });
+
+      // Exactly 36h is the boundary and stays fresh (strict '>' cutoff).
+      mockReadinessResult = { ...baseReadiness, asOf: '2026-07-07T00:00:00.000Z' };
+      expect(await fetchCurrentReadinessForPlan(42, 42)).toMatchObject({
+        confidence: 'fresh_wearable',
+        isStale: false,
+      });
+
+      // Unparseable and future timestamps must not flag staleness.
+      mockReadinessResult = { ...baseReadiness, asOf: 'not-a-date' };
+      expect(await fetchCurrentReadinessForPlan(42, 42)).toMatchObject({
+        confidence: 'fresh_wearable',
+        isStale: false,
+      });
+      mockReadinessResult = { ...baseReadiness, asOf: '2026-07-09T12:00:00.000Z' };
+      expect(await fetchCurrentReadinessForPlan(42, 42)).toMatchObject({
+        confidence: 'fresh_wearable',
+        isStale: false,
+      });
+
+      // Missing integration outranks staleness: no_data wins over an old asOf.
+      mockReadinessResult = {
+        ...baseReadiness,
+        score: 50,
+        reasonCode: 'WEARABLE_INTEGRATION_MISSING',
+        asOf: '2026-07-05T00:00:00.000Z',
+        factors: {},
+      };
+      expect(await fetchCurrentReadinessForPlan(42, 42)).toMatchObject({
+        confidence: 'no_data',
+        dataSource: 'fallback',
+        isStale: false,
+        reasonCode: 'WEARABLE_INTEGRATION_MISSING',
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   // ─── Bug fix 2026-04-28 (no-plan create-CTA) ────────────────────────
   //
   // Regression pin for the user-reported bug where deleting a Training
@@ -747,6 +839,58 @@ describe('training-read-models', () => {
         goalMode: 'race',
       });
       expect(result.weeks).toHaveLength(1);
+    });
+
+    it('surfaces whyThisPlan from the persisted full quality payload, trimmed and filtered', async () => {
+      mockActivePlan = {
+        id: 15,
+        name: 'Quality Payload Plan',
+        duration_weeks: 8,
+        status: 'active',
+        start_date: '2026-04-20T00:00:00.000Z',
+        end_date: '2026-06-14T00:00:00.000Z',
+        periodization: 'linear',
+        preferences_json: JSON.stringify({
+          trainingPlanQuality: {
+            schemaVersion: 1,
+            validation: { passed: true, score: 92, errors: [], warnings: [] },
+            whyThisPlan: ['  Progressive overload matched to 4 days/week  ', '', 'Deload every 4th week', 42],
+          },
+        }),
+      };
+      mockPlanWeeks = [{ id: 150, week_number: 1, focus: 'base', intensity_pct: 60 }];
+      mockWeekSessions = [];
+
+      const result = await getAllPlanWeeks(42, 42);
+
+      expect(result.plan?.whyThisPlan).toEqual([
+        'Progressive overload matched to 4 days/week',
+        'Deload every 4th week',
+        '42',
+      ]);
+    });
+
+    it('returns an empty whyThisPlan for legacy plans persisted with the validation-only quality shape', async () => {
+      mockActivePlan = {
+        id: 17,
+        name: 'Legacy Quality Plan',
+        duration_weeks: 8,
+        status: 'active',
+        start_date: '2026-04-20T00:00:00.000Z',
+        end_date: '2026-06-14T00:00:00.000Z',
+        periodization: 'linear',
+        preferences_json: JSON.stringify({
+          // Pre-fix persisted shape: the bare validation result, no
+          // schemaVersion/whyThisPlan. Readback must degrade gracefully.
+          trainingPlanQuality: { passed: true, score: 88, errors: [], warnings: [] },
+        }),
+      };
+      mockPlanWeeks = [{ id: 170, week_number: 1, focus: 'base', intensity_pct: 60 }];
+      mockWeekSessions = [];
+
+      const result = await getAllPlanWeeks(42, 42);
+
+      expect(result.plan?.whyThisPlan).toEqual([]);
     });
 
     it('exposes per-week learning focus from the persisted trainingLearningPath', async () => {

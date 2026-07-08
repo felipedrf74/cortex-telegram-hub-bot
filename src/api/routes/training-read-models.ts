@@ -29,6 +29,7 @@ import type { Session, SessionType, Sport, ReadinessSnapshot } from '../../servi
 import { requireTenantIdParam } from '../../services/tenant-scope';
 
 const READINESS_TTL = 5 * 60; // 5 minutes — intraday energy reserve should move during the day
+const READINESS_STALE_MAX_AGE_HOURS = 36;
 
 /**
  * Map the user-facing iOS sessionType label (e.g. `'gym'`, `'run'`) to a
@@ -406,7 +407,9 @@ export async function getWeekPlan(userId: number, tenantId: number) {
           ? adh.adherenceRate / 100
           : 0;
     }
-  } catch {}
+  } catch (err) {
+    logger.debug({ err, userId, tenantId }, 'getWeekPlan: primary read-model assembly failed — falling back to calendar-derived week');
+  }
 
   if (planSummary && sessions.length === 0) {
     sessions = await buildWeekFromCalendar(userId);
@@ -840,12 +843,15 @@ export async function fetchCurrentReadinessForPlan(userId: number, tenantId: num
       ? readiness.factors.bodyBattery.current
       : undefined;
 
+    const noData = readiness.reasonCode === 'WEARABLE_INTEGRATION_MISSING';
+    const isStale = !noData && isReadinessSnapshotStale(readiness.asOf);
+
     return {
       score: readiness.score,
-      confidence: readiness.reasonCode === 'WEARABLE_INTEGRATION_MISSING' ? 'no_data' : 'fresh_wearable',
-      dataSource: readiness.reasonCode === 'WEARABLE_INTEGRATION_MISSING' ? 'fallback' : 'wearable',
-      isStale: false,
-      reasonCode: readiness.reasonCode ?? null,
+      confidence: noData ? 'no_data' : isStale ? 'stale_provider' : 'fresh_wearable',
+      dataSource: noData ? 'fallback' : 'wearable',
+      isStale,
+      reasonCode: readiness.reasonCode ?? (isStale ? 'wearable_sync_stale' : null),
       sleepHours,
       hrvStatus,
       energyReserve,
@@ -855,6 +861,15 @@ export async function fetchCurrentReadinessForPlan(userId: number, tenantId: num
     logger.debug({ err, userId, tenantId: scopedTenantId }, 'fetchCurrentReadinessForPlan failed — plan generator will use neutral fallback');
     return null;
   }
+}
+
+function isReadinessSnapshotStale(asOf: string | null | undefined, now = new Date()): boolean {
+  if (typeof asOf !== 'string' || asOf.trim() === '') return false;
+  const capturedAt = Date.parse(asOf);
+  if (!Number.isFinite(capturedAt)) return false;
+  const ageMs = now.getTime() - capturedAt;
+  if (ageMs < 0) return false;
+  return ageMs > READINESS_STALE_MAX_AGE_HOURS * 60 * 60 * 1000;
 }
 
 function calendarEventMatchesSession(session: any, event: any): boolean {

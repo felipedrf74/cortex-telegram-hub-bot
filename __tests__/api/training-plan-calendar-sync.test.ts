@@ -22,6 +22,8 @@ const mocks = vi.hoisted(() => ({
   markCalendarOwnershipDeleted: vi.fn(),
   previewSecretarySchedulingIntent: vi.fn(),
   submitSecretarySchedulingIntent: vi.fn(),
+  markSecretaryAgendaProviderSyncSatisfied: vi.fn(),
+  markSecretaryAgendaProviderCleanupRequired: vi.fn(),
   loadLiveCalendarBusyWindows: vi.fn(),
   loggerDebug: vi.fn(),
   loggerInfo: vi.fn(),
@@ -65,6 +67,8 @@ vi.mock('../../src/services/training-plan-lifecycle', () => ({
 vi.mock('../../src/services/secretary-scheduling-arbitrator', () => ({
   previewSecretarySchedulingIntent: (...args: unknown[]) => mocks.previewSecretarySchedulingIntent(...args),
   submitSecretarySchedulingIntent: (...args: unknown[]) => mocks.submitSecretarySchedulingIntent(...args),
+  markSecretaryAgendaProviderSyncSatisfied: (...args: unknown[]) => mocks.markSecretaryAgendaProviderSyncSatisfied(...args),
+  markSecretaryAgendaProviderCleanupRequired: (...args: unknown[]) => mocks.markSecretaryAgendaProviderCleanupRequired(...args),
 }));
 
 vi.mock('../../src/services/secretary-live-calendar-busy', () => ({
@@ -595,6 +599,9 @@ describe('training-plan-calendar-sync', () => {
       expect(result.data.sessionsAttempted).toBe(2);
       expect(result.data.sessionsAlreadySynced).toBe(0);
       expect(result.data.sessionsFailed).toBe(0);
+      // Healthy sync must not carry a degraded signal.
+      expect(result.data.degraded).toBe(false);
+      expect(result.data.warnings).toBeUndefined();
       expect(result.data.message).toBe('2 sessions added to your calendar.');
       expect(result.data.sessionResults).toEqual([
         expect.objectContaining({
@@ -624,6 +631,23 @@ describe('training-plan-calendar-sync', () => {
     );
     expect(mocks.linkSessionToCalendar).toHaveBeenCalledWith(100, 'evt-mon', 'google');
     expect(mocks.linkSessionToCalendar).toHaveBeenCalledWith(101, 'evt-wed', 'google');
+    expect(mocks.markSecretaryAgendaProviderSyncSatisfied).toHaveBeenCalledTimes(2);
+    expect(mocks.markSecretaryAgendaProviderSyncSatisfied).toHaveBeenNthCalledWith(1, {
+      agendaItemId: 'sec-100',
+      ownerUserId: 42,
+      tenantId: 42,
+      providerEventId: 'evt-mon',
+      providerSource: 'google',
+      now: now.toISOString(),
+    });
+    expect(mocks.markSecretaryAgendaProviderSyncSatisfied).toHaveBeenNthCalledWith(2, {
+      agendaItemId: 'sec-101',
+      ownerUserId: 42,
+      tenantId: 42,
+      providerEventId: 'evt-wed',
+      providerSource: 'google',
+      now: now.toISOString(),
+    });
     expect(mocks.recordCalendarOwnership).toHaveBeenCalledWith(expect.objectContaining({
       planId: 7,
       planVersion: 3,
@@ -646,6 +670,235 @@ describe('training-plan-calendar-sync', () => {
     // Run title uses the runner emoji.
     const wedPayload = mocks.createEvent.mock.calls[1][0];
     expect(wedPayload.title).toBe('🏃 Tempo Run (35min)');
+  });
+
+  it('rolls back session linkage and leaves Secretary cleanup retryable when ownership recording fails', async () => {
+    mocks.getActivePlan.mockReturnValue({
+      id: 17,
+      user_id: 42,
+      tenant_id: 42,
+      start_date: '2026-04-20T00:00:00.000Z',
+      preferences_json: JSON.stringify({ preferredTime: '12:00' }),
+    });
+    mocks.getWeeksForPlan.mockReturnValue([{ id: 170, week_number: 1 }]);
+    mocks.getSessionsForWeek.mockReturnValue([
+      { id: 1701, day_of_week: 'Monday', session_type: 'run', title: 'Recovery Run', duration_minutes: 30, description: '', status: 'pending', calendar_event_id: null },
+    ]);
+    mocks.createEvent.mockResolvedValueOnce({ id: 'evt-created-unowned', source: 'google' });
+    mocks.recordCalendarOwnership.mockReturnValueOnce({ ok: false, created: false, ownershipId: null });
+    mocks.deleteEvent.mockRejectedValueOnce(new Error('delete failed'));
+
+    const result = await syncTrainingPlanCalendar(42, now, undefined, 42);
+
+    expect(result.status).toBe('synced');
+    if (result.status === 'synced') {
+      expect(result.data.eventsCreated).toBe(0);
+      expect(result.data.sessionsFailed).toBe(1);
+      expect(result.data.sessionResults).toEqual([
+        expect.objectContaining({
+          sessionId: 1701,
+          provider: 'google',
+          eventId: 'evt-created-unowned',
+          status: 'failed',
+          reason: 'training_calendar_ownership_record_failed',
+          retryable: true,
+        }),
+      ]);
+    }
+    // Infra failure rollback clears the linkage but must NOT demote the
+    // session to 'unscheduled': that status is excluded from candidate
+    // selection, so a demotion would contradict retryable:true by dropping
+    // the session from every future sync.
+    expect(mocks.updateSession).toHaveBeenCalledWith(1701, {
+      calendar_event_id: null,
+      calendar_source: null,
+    });
+    expect(mocks.updateSession).not.toHaveBeenCalledWith(1701, expect.objectContaining({ status: 'unscheduled' }));
+    expect(mocks.deleteEvent).toHaveBeenCalledWith('evt-created-unowned', 'google', 42);
+    expect(mocks.markSecretaryAgendaProviderCleanupRequired).toHaveBeenCalledWith({
+      agendaItemId: 'sec-1701',
+      ownerUserId: 42,
+      tenantId: 42,
+      providerEventId: 'evt-created-unowned',
+      providerSource: 'google',
+      providerSyncState: 'delete_failed',
+      lifecycleState: 'unscheduled',
+      reason: 'training_provider_ownership_record_failed',
+      clearProviderMapping: false,
+      now: now.toISOString(),
+    });
+    expect(mocks.markSecretaryAgendaProviderSyncSatisfied).not.toHaveBeenCalled();
+  });
+
+  it('clears the agenda provider mapping when the rollback delete succeeds after ownership recording fails', async () => {
+    mocks.getActivePlan.mockReturnValue({
+      id: 17,
+      user_id: 42,
+      tenant_id: 42,
+      start_date: '2026-04-20T00:00:00.000Z',
+      preferences_json: JSON.stringify({ preferredTime: '12:00' }),
+    });
+    mocks.getWeeksForPlan.mockReturnValue([{ id: 170, week_number: 1 }]);
+    mocks.getSessionsForWeek.mockReturnValue([
+      { id: 1702, day_of_week: 'Monday', session_type: 'run', title: 'Recovery Run', duration_minutes: 30, description: '', status: 'pending', calendar_event_id: null },
+    ]);
+    mocks.createEvent.mockResolvedValueOnce({ id: 'evt-rolled-back', source: 'google' });
+    mocks.recordCalendarOwnership.mockReturnValueOnce({ ok: false, created: false, ownershipId: null });
+    mocks.deleteEvent.mockResolvedValueOnce(undefined);
+
+    const result = await syncTrainingPlanCalendar(42, now, undefined, 42);
+
+    expect(result.status).toBe('synced');
+    if (result.status === 'synced') {
+      expect(result.data.eventsCreated).toBe(0);
+      expect(result.data.sessionsFailed).toBe(1);
+      expect(result.data.sessionResults?.[0]).toMatchObject({
+        sessionId: 1702,
+        status: 'failed',
+        reason: 'training_calendar_ownership_record_failed',
+        retryable: true,
+        eventId: null,
+      });
+    }
+    expect(mocks.deleteEvent).toHaveBeenCalledWith('evt-rolled-back', 'google', 42);
+    expect(mocks.markSecretaryAgendaProviderCleanupRequired).toHaveBeenCalledWith({
+      agendaItemId: 'sec-1702',
+      ownerUserId: 42,
+      tenantId: 42,
+      providerEventId: null,
+      providerSource: null,
+      providerSyncState: 'deleted',
+      lifecycleState: 'unscheduled',
+      reason: 'training_provider_ownership_record_failed',
+      clearProviderMapping: true,
+      now: now.toISOString(),
+    });
+    expect(mocks.markSecretaryAgendaProviderSyncSatisfied).not.toHaveBeenCalled();
+  });
+
+  it('fails the session without creating an event when the Secretary decision has no agenda item', async () => {
+    mocks.getActivePlan.mockReturnValue({
+      id: 17,
+      user_id: 42,
+      tenant_id: 42,
+      start_date: '2026-04-20T00:00:00.000Z',
+      preferences_json: JSON.stringify({ preferredTime: '12:00' }),
+    });
+    mocks.getWeeksForPlan.mockReturnValue([{ id: 170, week_number: 1 }]);
+    mocks.getSessionsForWeek.mockReturnValue([
+      { id: 1703, day_of_week: 'Monday', session_type: 'run', title: 'Recovery Run', duration_minutes: 30, description: '', status: 'pending', calendar_event_id: null },
+    ]);
+    mocks.submitSecretarySchedulingIntent.mockImplementationOnce((intent: any) => ({
+      status: 'scheduled',
+      reasonCodes: ['scheduled_in_available_window'],
+      selectedSlot: intent.preferredWindows[0],
+      agendaItem: undefined,
+      explanation: 'scheduled by Secretary',
+      alternativeSlots: [],
+      conflicts: [],
+      downstreamImplications: [],
+      confidence: 'high',
+    }));
+
+    const result = await syncTrainingPlanCalendar(42, now, undefined, 42);
+
+    expect(result.status).toBe('synced');
+    if (result.status === 'synced') {
+      expect(result.data.eventsCreated).toBe(0);
+      expect(result.data.sessionsFailed).toBe(1);
+      expect(result.data.sessionResults?.[0]).toMatchObject({
+        sessionId: 1703,
+        status: 'failed',
+        reason: 'secretary_agenda_item_missing',
+        retryable: true,
+      });
+    }
+    expect(mocks.createEvent).not.toHaveBeenCalled();
+    expect(mocks.markSecretaryAgendaProviderSyncSatisfied).not.toHaveBeenCalled();
+    expect(mocks.markSecretaryAgendaProviderCleanupRequired).not.toHaveBeenCalled();
+  });
+
+  it('marks provider-read failures as degraded instead of returning plain success copy', async () => {
+    mocks.getActivePlan.mockReturnValue({
+      id: 27,
+      user_id: 42,
+      tenant_id: 42,
+      start_date: '2026-04-20T00:00:00.000Z',
+      preferences_json: JSON.stringify({ trainingCalendarSource: 'google' }),
+    });
+    mocks.getWeeksForPlan.mockReturnValue([{ id: 270, week_number: 1 }]);
+    mocks.getSessionsForWeek.mockReturnValue([
+      { id: 2701, day_of_week: 'Monday', session_type: 'run', title: 'Linked Run', duration_minutes: 30, description: '', status: 'pending', calendar_event_id: 'evt-existing', calendar_source: 'google' },
+    ]);
+    mocks.getEvents.mockRejectedValue(new Error('provider read failed'));
+
+    const result = await syncTrainingPlanCalendar(42, now, undefined, 42);
+
+    expect(result.status).toBe('synced');
+    if (result.status === 'synced') {
+      expect(result.data.eventsCreated).toBe(0);
+      expect(result.data.sessionsAlreadySynced).toBe(1);
+      expect(result.data.degraded).toBe(true);
+      expect(result.data.warnings).toContain('calendar_provider_read_unavailable');
+      expect(result.data.sessionResults?.[0]).toMatchObject({
+        sessionId: 2701,
+        status: 'already_synced',
+        reason: 'provider_read_unavailable_existing_link_preserved',
+        retryable: true,
+      });
+    }
+    expect(mocks.markSecretaryAgendaProviderSyncSatisfied).not.toHaveBeenCalled();
+  });
+
+  it('carries the degraded flag on the main return path when the provider read fails but creation proceeds', async () => {
+    mocks.getActivePlan.mockReturnValue({
+      id: 27,
+      user_id: 42,
+      tenant_id: 42,
+      start_date: '2026-04-20T00:00:00.000Z',
+      preferences_json: JSON.stringify({ trainingCalendarSource: 'google', preferredTime: '12:00' }),
+    });
+    mocks.getWeeksForPlan.mockReturnValue([{ id: 270, week_number: 1 }]);
+    mocks.getSessionsForWeek.mockReturnValue([
+      { id: 2702, day_of_week: 'Wednesday', session_type: 'run', title: 'Tempo Run', duration_minutes: 35, description: '', status: 'pending', calendar_event_id: null },
+    ]);
+    mocks.getEvents.mockRejectedValue(new Error('provider read failed'));
+    mocks.createEvent.mockResolvedValueOnce({ id: 'evt-degraded-create', source: 'google' });
+
+    const result = await syncTrainingPlanCalendar(42, now, undefined, 42);
+
+    expect(result.status).toBe('synced');
+    if (result.status === 'synced') {
+      expect(result.data.eventsCreated).toBe(1);
+      expect(result.data.degraded).toBe(true);
+      expect(result.data.warnings).toContain('calendar_provider_read_unavailable');
+    }
+  });
+
+  it('warns when only the cross-provider duplicate-cleanup read fails', async () => {
+    mocks.getActivePlan.mockReturnValue({
+      id: 27,
+      user_id: 42,
+      tenant_id: 42,
+      start_date: '2026-04-20T00:00:00.000Z',
+      preferences_json: JSON.stringify({ trainingCalendarSource: 'google', preferredTime: '12:00' }),
+    });
+    mocks.getWeeksForPlan.mockReturnValue([{ id: 270, week_number: 1 }]);
+    mocks.getSessionsForWeek.mockReturnValue([
+      { id: 2703, day_of_week: 'Wednesday', session_type: 'run', title: 'Tempo Run', duration_minutes: 35, description: '', status: 'pending', calendar_event_id: null },
+    ]);
+    mocks.getEvents.mockImplementation((_start: string, _end: string, _userId: number, sources: string[]) =>
+      sources?.[0] === 'google' ? Promise.resolve([]) : Promise.reject(new Error('outlook read down')));
+    mocks.createEvent.mockResolvedValueOnce({ id: 'evt-cleanup-degraded', source: 'google' });
+
+    const result = await syncTrainingPlanCalendar(42, now, undefined, 42);
+
+    expect(result.status).toBe('synced');
+    if (result.status === 'synced') {
+      expect(result.data.eventsCreated).toBe(1);
+      expect(result.data.degraded).toBe(true);
+      expect(result.data.warnings).toEqual(['calendar_cleanup_read_unavailable']);
+    }
   });
 
   it('does not create a calendar event when Secretary returns a stale past slot during sync', async () => {

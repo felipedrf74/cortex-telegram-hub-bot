@@ -1,7 +1,7 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
 import { spawnSync } from 'node:child_process';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import {
   buildTrainingPlanCreationQualityMatrix,
@@ -64,6 +64,33 @@ describe('training plan creation validation matrix', () => {
       .toContain('optional');
     expect(TRAINING_PLAN_CREATION_VARIATION_AXES.find((axis) => axis.id === 'calendarCapacityState')?.values.map((value) => value.id))
       .toEqual(expect.arrayContaining(['normal_capacity', 'limited_capacity']));
+  });
+
+  it('keeps race-date buckets future-dated and aligned to their labels', async () => {
+    // The axis computes its dates once at module import. Freeze the clock and
+    // import a fresh module instance so the axis and the expected offsets
+    // share the same "today" — a run that crosses midnight UTC between the
+    // suite's import and this assertion must not flake by one day.
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-07-08T12:00:00.000Z'));
+    vi.resetModules();
+    try {
+      const freshModule = await import('../../src/services/training-plan-creation-validation');
+      const axis = freshModule.TRAINING_PLAN_CREATION_VARIATION_AXES.find((candidate) => candidate.id === 'raceDateBucket');
+      const values = new Map(axis?.values.map((value) => [value.id, value.requestValue]));
+      const todayUtc = Date.UTC(2026, 6, 8);
+      const dayOffset = (value: unknown) => {
+        const parsed = Date.parse(`${value}T00:00:00.000Z`);
+        return Math.round((parsed - todayUtc) / (24 * 60 * 60 * 1000));
+      };
+
+      expect(dayOffset(values.get('near_3_weeks'))).toBe(21);
+      expect(dayOffset(values.get('normal_16_weeks'))).toBe(112);
+      expect(dayOffset(values.get('far_40_weeks'))).toBe(280);
+    } finally {
+      vi.useRealTimers();
+      vi.resetModules();
+    }
   });
 
   it('keeps the science baseline source-backed and top-tier', () => {

@@ -856,7 +856,7 @@ export async function generateTrainingPlanForUser(
     startPolicy: normalizedStartPolicy,
     twoADayPreference: twoADayPreference ?? null,
     trainingPlanSpec,
-    trainingPlanQuality: trainingQuality?.validation ?? null,
+    trainingPlanQuality: trainingQuality?.planData.trainingPlanQuality ?? null,
     trainingPlanRepairActions: trainingQuality?.repairActions ?? [],
     trainingCalendarSource: resolvedCalendarSource || null,
     generatorPolicyVersion: TRAINING_PLAN_GENERATOR_POLICY_VERSION,

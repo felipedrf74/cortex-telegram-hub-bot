@@ -27,6 +27,8 @@ import {
   parseTrainingIdentityMarker,
 } from '../../services/training-session-identity';
 import {
+  markSecretaryAgendaProviderCleanupRequired,
+  markSecretaryAgendaProviderSyncSatisfied,
   previewSecretarySchedulingIntent,
   submitSecretarySchedulingIntent,
   type SecretarySchedulingDecision,
@@ -71,6 +73,8 @@ export type TrainingPlanCalendarSyncResult =
         sessionsAlreadySynced: number;
         sessionsLinked: number;
         sessionsFailed: number;
+        degraded?: boolean;
+        warnings?: string[];
         message: string;
         sessionResults?: TrainingCalendarSessionSyncResult[];
       };
@@ -914,6 +918,7 @@ async function syncTrainingPlanCalendarLocked(
   let calendarEvents: UnifiedCalendarEvent[] = [];
   let cleanupCalendarEvents: UnifiedCalendarEvent[] = [];
   let calendarFetchSucceeded = false;
+  const warnings: string[] = [];
   try {
     const events = await getEventsForSources(startStr, endStr, userId, [calendarSource]);
     calendarEvents = events || [];
@@ -932,6 +937,7 @@ async function syncTrainingPlanCalendarLocked(
     calendarFetchSucceeded = true;
   } catch (err) {
     logger.debug({ err, userId }, 'syncTrainingPlanCalendar: getEvents failed — scheduling without busy-window constraints');
+    warnings.push('calendar_provider_read_unavailable');
   }
   try {
     const otherSources = TRAINING_CALENDAR_SOURCES.filter((source) => source !== calendarSource);
@@ -941,8 +947,14 @@ async function syncTrainingPlanCalendarLocked(
     cleanupCalendarEvents = settled.flatMap((result) =>
       result.status === 'fulfilled' ? result.value || [] : [],
     );
+    if (settled.some((result) => result.status === 'rejected')) {
+      warnings.push('calendar_cleanup_read_unavailable');
+    }
   } catch (err) {
     logger.debug({ err, userId, calendarSource }, 'syncTrainingPlanCalendar: duplicate-cleanup provider read failed — skipping cross-provider duplicate cleanup for this sync pass');
+    if (!warnings.includes('calendar_cleanup_read_unavailable')) {
+      warnings.push('calendar_cleanup_read_unavailable');
+    }
   }
 
   const scheduledWindows: BusyWindow[] = [];
@@ -1161,6 +1173,7 @@ async function syncTrainingPlanCalendarLocked(
 
   if (pending.length === 0) {
     persistPlanTrainingCalendarSourcePreference(plan, calendarSource);
+    const degraded = warnings.length > 0;
     return {
       status: 'synced',
       data: {
@@ -1170,6 +1183,8 @@ async function syncTrainingPlanCalendarLocked(
         sessionsLinked: ownershipRelinked,
         sessionsFailed: 0,
         sessionResults,
+        degraded,
+        warnings: degraded ? warnings : undefined,
         message:
           ownershipRelinked > 0
             ? `${ownershipRelinked} existing ${ownershipRelinked === 1 ? 'session was' : 'sessions were'} linked to your calendar.`
@@ -1277,6 +1292,7 @@ async function syncTrainingPlanCalendarLocked(
       continue;
     }
     let secretaryWindow: { start: string; end: string } | null = null;
+    let secretaryDecision: SecretarySchedulingDecision | null = null;
     try {
       const secretaryIntent = buildTrainingSyncSecretaryIntent({
         userId,
@@ -1318,7 +1334,7 @@ async function syncTrainingPlanCalendarLocked(
         sessionResults.push(syncResult(item, calendarSource, 'failed', 'secretary_no_schedulable_slot', true, null, attemptedAt));
         continue;
       }
-      const secretaryDecision = submitSecretarySchedulingIntent(secretaryIntent, {
+      secretaryDecision = submitSecretarySchedulingIntent(secretaryIntent, {
         now: now.toISOString(),
         additionalBusyWindows: liveBusyWindows.windows,
       });
@@ -1370,6 +1386,15 @@ async function syncTrainingPlanCalendarLocked(
       sessionResults.push(syncResult(item, calendarSource, 'failed', 'secretary_past_slot', true, null, attemptedAt));
       continue;
     }
+    if (!secretaryDecision?.agendaItem?.agendaItemId) {
+      sessionsFailed += 1;
+      logger.warn(
+        { userId, planId: plan.id, planVersion, sessionId: item.sessionId },
+        'syncTrainingPlanCalendar: Secretary decision missing agenda item after confirmed slot',
+      );
+      sessionResults.push(syncResult(item, calendarSource, 'failed', 'secretary_agenda_item_missing', true, null, attemptedAt));
+      continue;
+    }
 
     scheduledWindows.push({
       startMs: Date.parse(secretaryWindow.start),
@@ -1401,8 +1426,7 @@ async function syncTrainingPlanCalendarLocked(
         },
       );
       trainingPlans.linkSessionToCalendar(item.sessionId, event.id, event.source);
-      markCalendarLinkedSessionState(item, event.start || secretaryWindow.start, preferences);
-      recordTrainingCalendarOwnership({
+      const ownership = recordTrainingCalendarOwnership({
         planId: plan.id,
         planVersion,
         sessionId: item.sessionId,
@@ -1414,6 +1438,56 @@ async function syncTrainingPlanCalendarLocked(
         sessionIdentityKey: item.sessionIdentityKey,
         sessionShapeHash: item.sessionShapeHash,
       });
+      if (!ownership.ok) {
+        // Ownership recording is an infrastructure failure (e.g. SQLITE_BUSY),
+        // not a scheduling verdict: clear the calendar linkage but keep the
+        // session's schedulable status so the next sync retries it — a
+        // demotion to 'unscheduled' would drop it from candidate selection
+        // permanently while the payload claims retryable:true.
+        trainingPlans.updateSession(item.sessionId, {
+          calendar_event_id: null,
+          calendar_source: null,
+        });
+        const providerDeleteSucceeded = await deleteCreatedTrainingProviderEventAfterOwnershipFailure({
+          eventId: event.id,
+          source: event.source,
+          userId,
+        });
+        markSecretaryAgendaProviderCleanupRequired({
+          agendaItemId: secretaryDecision.agendaItem.agendaItemId,
+          ownerUserId: userId,
+          tenantId: effectiveTenantId,
+          providerEventId: providerDeleteSucceeded ? null : event.id,
+          providerSource: providerDeleteSucceeded ? null : event.source,
+          providerSyncState: providerDeleteSucceeded ? 'deleted' : 'delete_failed',
+          lifecycleState: 'unscheduled',
+          reason: 'training_provider_ownership_record_failed',
+          clearProviderMapping: providerDeleteSucceeded,
+          now: attemptedAt,
+        });
+        sessionsFailed += 1;
+        sessionResults.push(syncResult(
+          item,
+          event.source,
+          'failed',
+          'training_calendar_ownership_record_failed',
+          true,
+          providerDeleteSucceeded ? null : event.id,
+          attemptedAt,
+          secretaryWindow.start,
+          secretaryWindow.end,
+        ));
+        continue;
+      }
+      markSecretaryAgendaProviderSyncSatisfied({
+        agendaItemId: secretaryDecision.agendaItem.agendaItemId,
+        ownerUserId: userId,
+        tenantId: effectiveTenantId,
+        providerEventId: event.id,
+        providerSource: event.source,
+        now: attemptedAt,
+      });
+      markCalendarLinkedSessionState(item, event.start || secretaryWindow.start, preferences);
       await deleteStaleLinkedTrainingEvent({
         userId,
         tenantId: effectiveTenantId,
@@ -1493,6 +1567,8 @@ async function syncTrainingPlanCalendarLocked(
       sessionsAlreadySynced: alreadySynced,
       sessionsLinked,
       sessionsFailed,
+      degraded: warnings.length > 0,
+      warnings: warnings.length > 0 ? warnings : undefined,
       message,
       sessionResults,
     },
@@ -1608,6 +1684,28 @@ async function deleteStaleLinkedTrainingEvent(input: {
   }
 }
 
+async function deleteCreatedTrainingProviderEventAfterOwnershipFailure(input: {
+  eventId: string;
+  source: CalendarSource;
+  userId: number;
+}): Promise<boolean> {
+  try {
+    await deleteEvent(input.eventId, input.source, input.userId);
+    return true;
+  } catch (err) {
+    logger.warn(
+      {
+        err,
+        userId: input.userId,
+        providerEventId: input.eventId,
+        providerSource: input.source,
+      },
+      'syncTrainingPlanCalendar: failed to delete provider event after ownership failure; agenda cleanup will retry',
+    );
+    return false;
+  }
+}
+
 function isWritableCalendarSource(value: unknown): value is CalendarSource {
   return value === 'google' || value === 'outlook';
 }
@@ -1672,7 +1770,7 @@ function recordTrainingCalendarOwnership(input: {
   calendarId?: string | null;
   sessionIdentityKey?: string | null;
   sessionShapeHash?: string | null;
-}): void {
+}): ReturnType<typeof recordCalendarOwnership> {
   const result = recordCalendarOwnership(input);
   if (!result.ok) {
     logger.warn(
@@ -1686,6 +1784,7 @@ function recordTrainingCalendarOwnership(input: {
       'syncTrainingPlanCalendar: failed to record agenda ownership',
     );
   }
+  return result;
 }
 
 function buildTrainingSyncSecretaryIntent(input: {

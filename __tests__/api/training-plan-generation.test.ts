@@ -535,6 +535,13 @@ describe('generateTrainingPlanForUser', () => {
     expect(mockBuildCoachKernelTrainingPlan.mock.calls[0][0].fitnessProfile).not.toHaveProperty('data');
     expect(mockBuildCoachKernelTrainingPlan.mock.calls[0][0].gymProfile).not.toHaveProperty('data');
     expect(mockBuildCoachKernelTrainingPlan.mock.calls[0][0].runProfile).not.toHaveProperty('data');
+    const persistInput = mockPersistGeneratedTrainingPlan.mock.calls[0][0];
+    const preferences = JSON.parse(persistInput.preferencesJson);
+    expect(preferences.trainingPlanQuality).toEqual(expect.objectContaining({
+      schemaVersion: 1,
+      validation: expect.any(Object),
+      whyThisPlan: expect.arrayContaining([expect.any(String)]),
+    }));
   });
 
   it('returns the objective-specific questionnaire requirement before planning', async () => {

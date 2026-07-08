@@ -18,6 +18,7 @@ const mocks = vi.hoisted(() => ({
   findOwnershipsForPlan: vi.fn(),
   markCalendarOwnershipDeleted: vi.fn(),
   getTrainingCalendarEventOwners: vi.fn(),
+  isTrainingCalendarEventClaimedOutsideTenant: vi.fn(),
   cancelTrainingPlanCrossSkillDependents: vi.fn(),
   // 2026-05-25 Bug #1 fix — buildCalendarDeletionTargetsForPlan now
   // also reads Secretary-owned events from secretary_agenda_items.
@@ -59,6 +60,7 @@ vi.mock('../../src/services/training-plan-lifecycle', () => ({
 
 vi.mock('../../src/services/training-calendar-scope', () => ({
   getTrainingCalendarEventOwners: mocks.getTrainingCalendarEventOwners,
+  isTrainingCalendarEventClaimedOutsideTenant: mocks.isTrainingCalendarEventClaimedOutsideTenant,
 }));
 
 vi.mock('../../src/services/training-plan-cancellation-cascade', () => ({
@@ -112,6 +114,7 @@ describe('training-plan-cancellation (hard delete)', () => {
     mocks.getSessionsForWeek.mockReturnValue([]);
     mocks.findOwnershipsForPlan.mockReturnValue([]);
     mocks.getTrainingCalendarEventOwners.mockReturnValue([]);
+    mocks.isTrainingCalendarEventClaimedOutsideTenant.mockReturnValue(false);
     mocks.cancelTrainingPlanCrossSkillDependents.mockReturnValue({
       canceledAgendaItems: 0,
       staleMemories: 0,
@@ -752,6 +755,39 @@ describe('training-plan-cancellation (hard delete)', () => {
       expect(result.data.message).toContain('1 scheduled workout removed');
     }
     expect(mocks.deleteEvent).toHaveBeenCalledWith('post-cancel-orphan', 'google', 12);
+  });
+
+  it('never deletes a marker-matched event that another tenant still claims on a shared calendar', async () => {
+    mocks.getEvents.mockImplementation(async (_start: string, _end: string, _userId: number, sources: string[]) => {
+      if (!sources.includes('google')) return [];
+      return [{
+        id: 'shared-calendar-foreign-claim',
+        source: 'google',
+        summary: '💪 Strength + Core Support (40min)',
+        start: '2026-05-26T07:00:00.000Z',
+        end: '2026-05-26T07:40:00.000Z',
+        description: appendTrainingIdentityMarker('Training session', {
+          planId: 88,
+          planVersion: 1,
+          sessionId: 8801,
+          sessionIdentityKey: 'plan:88|week:1|day:tuesday|type:gym|slot:1',
+          sessionShapeHash: 'shape-post-cancel',
+        }),
+      }];
+    });
+    // Tenant-scoped metadata sees nothing, but the boolean-only cross-tenant
+    // claim check reports a live foreign claim (shared provider calendar).
+    mocks.getTrainingCalendarEventOwners.mockReturnValue([]);
+    mocks.isTrainingCalendarEventClaimedOutsideTenant.mockReturnValue(true);
+
+    const result = await cancelTrainingPlanForUser(12, undefined, { tenantId: 12 });
+
+    expect(result.status).toBe('not_found');
+    if (result.status === 'not_found') {
+      expect(result.data.removedEvents).toBe(0);
+    }
+    expect(mocks.deleteEvent).not.toHaveBeenCalled();
+    expect(mocks.isTrainingCalendarEventClaimedOutsideTenant).toHaveBeenCalledWith('shared-calendar-foreign-claim', 'google', 12);
   });
 
   it('proceeds with the local hard delete when one calendar deletion fails', async () => {

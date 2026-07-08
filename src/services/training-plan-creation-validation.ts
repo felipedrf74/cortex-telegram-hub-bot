@@ -2,6 +2,13 @@
 
 export const TRAINING_PLAN_CREATION_QA_ACCOUNT_EMAIL = 'nexushubbot@hotmail.com';
 export const TRAINING_PLAN_CREATION_LOCAL_SIMULATOR_ACCOUNT_EMAIL = 'nexushubbot@gmail.com';
+const MS_PER_DAY = 24 * 60 * 60 * 1000;
+
+function futureDateFromToday(daysFromToday: number): string {
+  const today = new Date();
+  const todayUtc = Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate());
+  return new Date(todayUtc + daysFromToday * MS_PER_DAY).toISOString().slice(0, 10);
+}
 
 export type TrainingVariationAxisId =
   | 'objective'
@@ -178,9 +185,9 @@ export const TRAINING_PLAN_CREATION_VARIATION_AXES: TrainingVariationAxis[] = [
   ]),
   axis('raceDateBucket', 'Race date bucket', 'iOS race date picker + backend YYYY-MM-DD parser', true, [
     value('none', 'No race date', null),
-    value('near_3_weeks', 'Near race, 3 weeks', '2026-07-14'),
-    value('normal_16_weeks', 'Normal block, 16 weeks', '2026-10-13'),
-    value('far_40_weeks', 'Far race, 40 weeks', '2027-03-30'),
+    value('near_3_weeks', 'Near race, 3 weeks', futureDateFromToday(21)),
+    value('normal_16_weeks', 'Normal block, 16 weeks', futureDateFromToday(112)),
+    value('far_40_weeks', 'Far race, 40 weeks', futureDateFromToday(280)),
   ]),
   axis('durationBucket', 'Duration bucket', 'backend durationWeeks bounds + race-date derived duration', true, [
     value('engine_default', 'Engine default', null),

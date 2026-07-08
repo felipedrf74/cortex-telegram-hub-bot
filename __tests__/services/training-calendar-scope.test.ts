@@ -7,7 +7,17 @@ const mocks = vi.hoisted(() => ({
 
 let rows: any[] = [];
 const all = vi.fn(() => rows);
-const prepare = vi.fn(() => ({ all }));
+// Emulates the boolean-only cross-tenant EXISTS probes: every claim query
+// binds the event id first and the scoped tenant id last, so a row whose
+// tenantId differs from the bound tenant is an outside-tenant claim.
+const get = vi.fn((...params: unknown[]) => {
+  const eventIdParam = params[0];
+  const tenantParam = params[params.length - 1];
+  return rows.some((row) => row.eventId === eventIdParam && row.tenantId !== tenantParam)
+    ? { 1: 1 }
+    : undefined;
+});
+const prepare = vi.fn(() => ({ all, get }));
 
 vi.mock('../../src/services/database', () => ({
   getDb: mocks.getDb,
@@ -31,6 +41,7 @@ vi.mock('../../src/utils/logger', () => ({
 import {
   filterCalendarEventsForTrainingScope,
   getTrainingCalendarEventOwners,
+  isTrainingCalendarEventClaimedOutsideTenant,
   isTrainingCalendarEventUnclaimed,
 } from '../../src/services/training-calendar-scope';
 
@@ -38,6 +49,7 @@ describe('training-calendar-scope', () => {
   beforeEach(() => {
     rows = [];
     all.mockClear();
+    get.mockClear();
     prepare.mockClear();
     mocks.getDb.mockReset();
     mocks.loggerDebug.mockReset();
@@ -110,6 +122,57 @@ describe('training-calendar-scope', () => {
         planStatus: 'active',
       },
     ]);
+  });
+
+  it('hides cross-tenant owner metadata but keeps the event claimed for safety', () => {
+    rows = [
+      {
+        eventId: 'evt-cross-tenant',
+        source: 'google',
+        sessionId: 1,
+        planId: 2,
+        tenantId: 99,
+        userId: 99,
+        planStatus: 'active',
+      },
+    ];
+
+    // Metadata isolation: another tenant's rows never leave the module.
+    expect(getTrainingCalendarEventOwners('evt-cross-tenant', 'google', 3)).toEqual([]);
+    // Owner lookups bind (eventId, source, tenantId) in that order.
+    expect(all).toHaveBeenCalledWith('evt-cross-tenant', 'google', 3);
+    // Deletion/adoption safety: a provider event claimed by another tenant
+    // is NOT unclaimed — shared-calendar viewers see the same event ids, so
+    // adopting or deleting it would clobber the other tenant's event.
+    expect(isTrainingCalendarEventClaimedOutsideTenant('evt-cross-tenant', 'google', 3)).toBe(true);
+    expect(get).toHaveBeenCalledWith('evt-cross-tenant', 'google', 3);
+    expect(isTrainingCalendarEventUnclaimed('evt-cross-tenant', 'google', 3)).toBe(false);
+  });
+
+  it('reports no outside-tenant claim when only the requesting tenant owns the event', () => {
+    rows = [
+      {
+        eventId: 'evt-own-tenant',
+        source: 'google',
+        sessionId: 1,
+        planId: 2,
+        tenantId: 3,
+        userId: 3,
+        planStatus: 'active',
+      },
+    ];
+
+    expect(isTrainingCalendarEventClaimedOutsideTenant('evt-own-tenant', 'google', 3)).toBe(false);
+    expect(isTrainingCalendarEventUnclaimed('evt-own-tenant', 'google', 3)).toBe(false);
+  });
+
+  it('fails closed on the cross-tenant claim check so destructive paths are vetoed when the db is unavailable', () => {
+    mocks.getDb.mockImplementation(() => {
+      throw new Error('Database not initialized');
+    });
+
+    expect(isTrainingCalendarEventClaimedOutsideTenant('evt-unknown', 'google', 3)).toBe(true);
+    expect(isTrainingCalendarEventUnclaimed('evt-unknown', 'google', 3)).toBe(false);
   });
 
   it('treats ownership-table orphan rows as claimed so new plans do not adopt stale events', () => {

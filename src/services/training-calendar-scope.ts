@@ -47,7 +47,8 @@ export function getTrainingCalendarEventOwners(
           JOIN fitness_training_plans ftp ON ftp.id = ts.plan_id
           WHERE ts.calendar_event_id = ?
             AND (ts.calendar_source = ? OR ts.calendar_source IS NULL)
-        `).all(normalizedEventId, normalizedSource)
+            AND ftp.tenant_id = ?
+        `).all(normalizedEventId, normalizedSource, scopedTenantId)
       : db.prepare(`
           SELECT
             ts.calendar_event_id AS eventId,
@@ -60,7 +61,8 @@ export function getTrainingCalendarEventOwners(
           FROM training_sessions ts
           JOIN fitness_training_plans ftp ON ftp.id = ts.plan_id
           WHERE ts.calendar_event_id = ?
-        `).all(normalizedEventId);
+            AND ftp.tenant_id = ?
+        `).all(normalizedEventId, scopedTenantId);
     const ownershipRows = normalizedSource
       ? db.prepare(`
           SELECT
@@ -75,10 +77,12 @@ export function getTrainingCalendarEventOwners(
           LEFT JOIN fitness_training_plans ftp
             ON ftp.id = o.plan_id
            AND ftp.user_id = o.user_id
+           AND ftp.tenant_id = o.tenant_id
           WHERE o.calendar_event_id = ?
             AND o.calendar_source = ?
+            AND o.tenant_id = ?
             AND o.status IN ('active', 'orphaned')
-        `).all(normalizedEventId, normalizedSource)
+        `).all(normalizedEventId, normalizedSource, scopedTenantId)
       : db.prepare(`
           SELECT
             o.calendar_event_id AS eventId,
@@ -92,12 +96,18 @@ export function getTrainingCalendarEventOwners(
           LEFT JOIN fitness_training_plans ftp
             ON ftp.id = o.plan_id
            AND ftp.user_id = o.user_id
+           AND ftp.tenant_id = o.tenant_id
           WHERE o.calendar_event_id = ?
+            AND o.tenant_id = ?
             AND o.status IN ('active', 'orphaned')
-        `).all(normalizedEventId);
+        `).all(normalizedEventId, scopedTenantId);
 
     return dedupeOwners(
-      [...sessionRows, ...ownershipRows].map(normalizeOwnerRow).filter(Boolean) as TrainingCalendarEventOwner[],
+      [...sessionRows, ...ownershipRows]
+        .map(normalizeOwnerRow)
+        .filter((owner): owner is TrainingCalendarEventOwner =>
+          Boolean(owner && owner.tenantId === scopedTenantId)
+        ),
     );
   } catch (err) {
     logger.debug({ err, eventId: normalizedEventId, source, tenantId: scopedTenantId }, 'Training calendar scope lookup failed');
@@ -110,7 +120,77 @@ export function isTrainingCalendarEventUnclaimed(
   source?: string | null,
   tenantId?: number,
 ): boolean {
-  return getTrainingCalendarEventOwners(eventId, source, tenantId).length === 0;
+  if (getTrainingCalendarEventOwners(eventId, source, tenantId).length > 0) return false;
+  return !isTrainingCalendarEventClaimedOutsideTenant(eventId, source, tenantId);
+}
+
+/**
+ * Boolean-only cross-tenant claim check. Owner metadata stays tenant-scoped
+ * (see getTrainingCalendarEventOwners), but destructive paths — provider
+ * event deletion sweeps and existing-event adoption — still need to know
+ * whether ANY other tenant holds a live claim on the provider event, because
+ * provider event ids are shared across viewers of a shared calendar. Returns
+ * only existence, never foreign rows. Fails closed (claimed) on lookup
+ * errors since callers use it to gate destructive provider writes.
+ */
+export function isTrainingCalendarEventClaimedOutsideTenant(
+  eventId: string | null | undefined,
+  source?: string | null,
+  tenantId?: number,
+): boolean {
+  const normalizedEventId = normalizeEventId(eventId);
+  if (!normalizedEventId) return false;
+  const scopedTenantId = requireTenantIdParam(tenantId, 'isTrainingCalendarEventClaimedOutsideTenant');
+
+  try {
+    const db = getDb();
+    const normalizedSource = normalizeCalendarSource(source);
+    const sessionClaim = normalizedSource
+      ? db.prepare(`
+          SELECT 1
+          FROM training_sessions ts
+          JOIN fitness_training_plans ftp ON ftp.id = ts.plan_id
+          WHERE ts.calendar_event_id = ?
+            AND (ts.calendar_source = ? OR ts.calendar_source IS NULL)
+            AND ftp.tenant_id != ?
+          LIMIT 1
+        `).get(normalizedEventId, normalizedSource, scopedTenantId)
+      : db.prepare(`
+          SELECT 1
+          FROM training_sessions ts
+          JOIN fitness_training_plans ftp ON ftp.id = ts.plan_id
+          WHERE ts.calendar_event_id = ?
+            AND ftp.tenant_id != ?
+          LIMIT 1
+        `).get(normalizedEventId, scopedTenantId);
+    if (sessionClaim) return true;
+
+    const ownershipClaim = normalizedSource
+      ? db.prepare(`
+          SELECT 1
+          FROM training_agenda_event_ownership o
+          WHERE o.calendar_event_id = ?
+            AND o.calendar_source = ?
+            AND o.tenant_id != ?
+            AND o.status IN ('active', 'orphaned')
+          LIMIT 1
+        `).get(normalizedEventId, normalizedSource, scopedTenantId)
+      : db.prepare(`
+          SELECT 1
+          FROM training_agenda_event_ownership o
+          WHERE o.calendar_event_id = ?
+            AND o.tenant_id != ?
+            AND o.status IN ('active', 'orphaned')
+          LIMIT 1
+        `).get(normalizedEventId, scopedTenantId);
+    return Boolean(ownershipClaim);
+  } catch (err) {
+    logger.warn(
+      { err, eventId: normalizedEventId, source, tenantId: scopedTenantId },
+      'Training calendar cross-tenant claim check failed — treating event as claimed',
+    );
+    return true;
+  }
 }
 
 export function filterCalendarEventsForTrainingScope<T extends CalendarEventLike>(
