@@ -18,20 +18,21 @@ Last updated: 2026-07-08
 - Repo: `engine`
 - Workspace HEAD / version / migrations / dirty state: see `docs/release/release-identity.md`
 - Production status (last manual update 2026-07-08): backend package version
-  `4.14.213` is deployed from commit `b1916a76` (Training/calendar code
-  commit `b28a47b6`, branch `main`, pushed to origin) — the Training Skill QA
-  calendar lifecycle promote. Pipeline: backend risk gate -> staging deploy ->
-  5-min soak -> staging smoke 19/19 (evidence committed pre-promote) ->
-  promote gate smoke 19/19 -> strict deploy validation -> post-promote health
-  green. Deploy validation passed migration safety (216 migrations),
-  typecheck, science-policy check, and full Vitest 867 files / 12,725 tests.
-  Post-promote proof: public `/health` healthy, public `/public-status` ok,
-  PM2 `nexus-hub` + `content-engine` online on `4.14.213`, and authenticated
-  Decision Center overview `ok: true`. Full evidence: engine
+  `4.14.214` is deployed from commit `df21fd04` (version policy/mint
+  `dd7afaf8`, staging-smoke PM2 evidence fix `113b83a5`, branch `main`, pushed
+  to origin) — the P3 release-tooling promote after the Training Skill QA
+  production closeout. Pipeline: backend risk gate -> staging deploy -> 5-min
+  soak -> staging smoke 21/21 (evidence committed pre-promote) -> promote gate
+  smoke 21/21 -> strict deploy validation -> post-promote health green. Deploy
+  validation passed migration safety (216 migrations), typecheck,
+  science-policy check, and full Vitest 867 files / 12,725 tests.
+  Post-promote proof: public `/health` healthy, public `/public-status` ok
+  with exactly `{status, service, timestamp}`, PM2 `nexus-hub` +
+  `content-engine` online on `4.14.214`, and authenticated Decision Center
+  overview `ok: true`. Full evidence: engine
   `docs/release/CURRENT_RELEASE_STATE.md` Active Production Release section.
-  iOS `main` is at `e1d1ca0` (Training calendar cleanup/degraded sync
-  presentation, repeated Training deep-link token guard, Content Studio bottom
-  runway repair, TestFlight export guard hardening), pushed to origin.
+  iOS `main` is at `3030c71` (TestFlight export now defaults to local export
+  and requires `IOS_EXPORT_DESTINATION=upload` for upload), pushed to origin.
   TestFlight/App Store upload was not authorized. The local iOS
   `Nexus Hub.xcodeproj/project.pbxproj` build-number bump remains
   intentionally uncommitted pending Felipe's App Store Connect build-state
@@ -41,6 +42,37 @@ Last updated: 2026-07-08
   remains active with 131 exercises and 24 equipment items. Workspace audit
   evidence lives at `docs/release/worktree-recovery-audit-2026-05-18.md` and
   `docs/release/worktree-recovery-audit-2026-05-21/`.
+
+### 2026-07-08 P3 Release Tooling Promote
+
+- Scope: promoted the adversarial QA P3 closeout after owner authorization:
+  explicit patch-version policy for every production promote, backend version
+  `4.14.214`, status-bearing PM2 rows in staging-smoke evidence, and iOS local
+  export as the default TestFlight export destination.
+- Backend commits: `dd7afaf8`, `113b83a5`, `df21fd04`. Previous production
+  deploy commit was `b1916a76`.
+- iOS commit pushed to `origin/main`: `3030c71`. TestFlight/App Store upload
+  was not run. The local iOS `project.pbxproj` build-number bump remains
+  uncommitted.
+- Evidence: `scripts/changed-area-classifier.sh --json` selected
+  T0/T1/T3-recommended/T5-on-promote/T6-postdeploy; backend risk gate and
+  pre-push each passed typecheck plus full Vitest 867 files / 12,725 tests.
+  iOS `bash -n`, 12-case export guard matrix under `/bin/bash` 3.2, and
+  `scripts/ios-release-hardening-validate.sh` passed.
+- Staging/prod: `deploy-staging.sh` passed; soak ran from
+  `2026-07-08T19:02:05Z` to `2026-07-08T19:07:05Z`; staging smoke passed
+  21/21 with engine evidence
+  `docs/release/smoke-evidence/staging-smoke-113b83a5-20260708T190748Z.json`.
+  The 21/21 evidence intentionally differs from prior 19/19 evidence because
+  PM2 `nexus-hub online`, `content-engine online`, and
+  `nexus-hub restarts == 0` are now explicit checks with `status`.
+  Promote gate smoke passed 21/21; deploy validation passed 867 Vitest files /
+  12,725 tests; post-promote public health/status, PM2, and authenticated
+  Decision Center overview passed.
+- Blocked/not authorized: TestFlight/App Store upload, physical-device proof,
+  live Google/Outlook production calendar writes, two-account provider proof,
+  HealthKit, Garmin, APNs live push, production provider-state validation, and
+  App Store Connect build 51/52 manual confirmation.
 
 ### 2026-07-08 Training Skill QA Calendar Lifecycle Production Promote
 

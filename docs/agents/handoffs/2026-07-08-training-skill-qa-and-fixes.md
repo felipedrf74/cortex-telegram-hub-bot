@@ -540,6 +540,50 @@ was promoted.
   proof, HealthKit, Garmin, APNs live push, and production provider-state
   validation.
 
+### 2026-07-08 P3 Release Tooling Promote Closeout
+
+Felipe authorized fixing the three adversarial QA P3 findings, landing backend
+and iOS source, and promoting the backend through the validated staging path.
+TestFlight/App Store upload remained explicitly out of scope.
+
+- Backend commits pushed to `origin/main`:
+  - `dd7afaf8 chore(release): mint 4.14.214 + promote version policy`
+  - `113b83a5 fix(release): make staging smoke PM2 gates real checks`
+  - `df21fd04 docs(release): record 4.14.214 staging smoke`
+- iOS commit pushed to `origin/main`:
+  - `3030c71 chore(release-tooling): default testflight export to local export`
+- iOS `Nexus Hub.xcodeproj/project.pbxproj` remains the only dirty iOS file,
+  intentionally uncommitted pending Felipe's App Store Connect build-number
+  confirmation.
+- Backend version identity now reports `4.14.214`; `DEPLOY.md` documents that
+  every production promote must mint a patch version before `deploy-staging.sh`.
+- Staging-smoke PM2 evidence now records `pm2 nexus-hub online`,
+  `pm2 content-engine online`, and `pm2 nexus-hub restarts == 0` as explicit
+  checks with `status`; multiline details are sanitized before JSON output.
+- iOS export tooling now defaults `IOS_EXPORT_DESTINATION` to `export` and
+  prints the explicit `IOS_EXPORT_DESTINATION=upload` opt-in path.
+- iOS verification passed: `bash -n scripts/testflight-export.sh`, grep
+  assertion for the export default, 12-case guard matrix under `/bin/bash`
+  3.2, and `scripts/ios-release-hardening-validate.sh`.
+- Backend classifier selected T0/T1/T3-recommended/T5-on-promote/T6-postdeploy.
+  Backend `scripts/risk-gate.sh` passed typecheck plus full Vitest 867 files /
+  12,725 tests; backend pre-push repeated the same full gate and build
+  verification.
+- `deploy-staging.sh` passed; soak ran `2026-07-08T19:02:05Z` to
+  `2026-07-08T19:07:05Z`; standalone staging smoke passed 21/21 with evidence
+  `docs/release/smoke-evidence/staging-smoke-113b83a5-20260708T190748Z.json`.
+- `promote-to-prod.sh` completed. Production now runs `4.14.214` at
+  `df21fd04`; deploy-time validation passed migration safety (216 migrations),
+  typecheck, science-policy, and full Vitest 867 files / 12,725 tests.
+- Post-promote probes passed: public `/health` healthy, public
+  `/public-status` ok with exactly `{status, service, timestamp}`, PM2
+  `nexus-hub` and `content-engine` online on `4.14.214`, and authenticated
+  Decision Center overview returned `ok: true`.
+- Still not run / not authorized: TestFlight/App Store upload, physical-device
+  proof, live Google/Outlook production calendar writes, two-account provider
+  proof, HealthKit, Garmin, APNs live push, provider-state validation, and App
+  Store Connect build 51/52 manual confirmation.
+
 ## Verifiable Reward Summary
 
 Verdict: GO-WITH-FOLLOWUPS for local Training QA/fix readiness; not a production
@@ -555,12 +599,14 @@ git/docs/archive investigation. The dirty-cluster resolution pass added focused
 iOS source-pin/UI-smoke validation, release hardening validation, script guard
 smokes, and restored evidence-file status proof.
 
-Reward loop: latest post-promote `npm run reward:check -- --area auto
---advisory --handoff docs/agents/handoffs/2026-07-08-training-skill-qa-and-fixes.md`
-returned `WARN`, score 88, no hard failures, mandatory checks PASS 3,
+Reward loop: latest P3 tooling promote closeout
+`npm run reward:check -- --area auto --advisory --handoff
+docs/agents/handoffs/2026-07-08-training-skill-qa-and-fixes.md` returned
+`WARN`, score 98, no hard failures, mandatory checks PASS 5,
 `verify-deliverable` warning, and export ineligible pending manual human
-review. Earlier pre-promote local reward reproduction was `WARN`, score 98,
-mandatory checks PASS 5.
+review. The prior Training QA production closeout reward was `WARN`, score 88,
+mandatory checks PASS 3; earlier pre-promote local reward reproduction was
+`WARN`, score 98, mandatory checks PASS 5.
 
 Skipped checks: live provider calendar writes, physical-device and TestFlight
 validation, App Store Connect live-build verification, two-account proof,

@@ -12,54 +12,53 @@ Date: 2026-07-08
 Active production package:
 
 - source branch: `main` (pushed to origin)
-- production HEAD: `b1916a76`
-- production version: `4.14.213`
-- runtime source commit: `b28a47b6` (Training calendar lifecycle and iOS
-  contract hardening); `90d0a8a3` records the QA handoff and `b1916a76` records
-  pre-promote staging smoke evidence
-- latest runtime deploy commit: `b1916a76`; post-deploy docs-only closeout may
+- production HEAD: `df21fd04`
+- production version: `4.14.214`
+- runtime source commits: `dd7afaf8` (version mint and promote policy),
+  `113b83a5` (PM2 smoke evidence checks), and `df21fd04` (pre-promote staging
+  smoke evidence)
+- latest runtime deploy commit: `df21fd04`; post-deploy docs-only closeout may
   sit ahead of production runtime
 - full deploy evidence: see the Active Production Release section in
   `docs/release/CURRENT_RELEASE_STATE.md`
 - release state: `docs/release/CURRENT_RELEASE_STATE.md` (backend)
 - backend workspace root: `/Users/felipedominguez/Desktop/Custom Connectors/Cortex/cortex-telegram-hub-bot`
 
-Commits in this release (2026-07-08 Training Skill QA promote):
+Commits in this release (2026-07-08 P3 release-tooling promote):
 
-- `b28a47b6 fix(training): harden calendar sync lifecycle`
-- `90d0a8a3 docs(agents): capture training qa handoff`
-- `b1916a76 docs(release): record training qa staging smoke`
-- iOS companion main: `9093526`, `88e48bc`, `e1d1ca0`
+- `dd7afaf8 chore(release): mint 4.14.214 + promote version policy`
+- `113b83a5 fix(release): make staging smoke PM2 gates real checks`
+- `df21fd04 docs(release): record 4.14.214 staging smoke`
+- iOS companion main: `3030c71`
 
 Scope:
 
-- Training calendar lifecycle and iOS Training/Content Studio contract
-  hardening:
-  - tenant-safe Training calendar ownership, adoption, and deletion vetoes;
-  - rollback-safe calendar sync and Secretary agenda cleanup/read-model truth;
-  - degraded sync and `calendarCleanup` presentation on iOS;
-  - repeated Training deep-link token consumption instead of a one-shot boolean;
-  - Content Studio bottom runway source pin repair;
-  - TestFlight export stable-toolchain guard hardening.
+- Release-tooling P3 closeout:
+  - every production promote must mint a patch version before staging;
+  - staging-smoke PM2 online/restart gates now serialize as real checks with
+    explicit `status` fields;
+  - TestFlight export now defaults to local export and requires
+    `IOS_EXPORT_DESTINATION=upload` for upload.
 
 Validated through promotion:
 
 - `scripts/changed-area-classifier.sh --json` selected
-  T0/T1/T2/T4/T5-on-promote/T6-postdeploy.
-- `scripts/risk-gate.sh` passed focused Training/calendar 131 files / 2,086
-  tests and changed sweep 54 files / 1,431 tests; pre-push repeated the gate
-  and build verification.
-- iOS focused proof passed: source pins 43/43, touched Training bundle 154/154,
-  and Content Studio Debug UI Smoke 4/4.
+  T0/T1/T3-recommended/T5-on-promote/T6-postdeploy.
+- `scripts/risk-gate.sh` passed typecheck plus full Vitest 867 files / 12,725
+  tests; backend pre-push repeated the same full gate and build verification.
+- iOS release-tooling proof passed: `bash -n`, 12-case guard-function matrix,
+  and `scripts/ios-release-hardening-validate.sh`.
 - `deploy-staging.sh` passed; 5-minute soak completed; staging smoke passed
-  19/19 with
-  `docs/release/smoke-evidence/staging-smoke-90d0a8a3-20260708T173034Z.json`.
-- `promote-to-prod.sh` completed cleanly for 4.14.213 at `b1916a76`; promote
-  gate smoke passed 19/19 before production mutation.
+  21/21 with
+  `docs/release/smoke-evidence/staging-smoke-113b83a5-20260708T190748Z.json`.
+  This evidence intentionally differs from prior 19/19 evidence because the
+  PM2 gates now appear as explicit status-bearing checks.
+- `promote-to-prod.sh` completed cleanly for 4.14.214 at `df21fd04`; promote
+  gate smoke passed 21/21 before production mutation.
 - Deploy-time validation passed migration safety (216 migrations), typecheck,
   science-policy check, and full Vitest with 867 files / 12,725 tests.
 - Post-deploy: public `/health` healthy, public `/public-status` ok, PM2
-  `nexus-hub` and `content-engine` online on `4.14.213`, and authenticated
+  `nexus-hub` and `content-engine` online on `4.14.214`, and authenticated
   Decision Center overview returned `ok: true`.
 - TestFlight/App Store upload, physical-device proof, live provider calendar
   writes, HealthKit, Garmin, APNs, two-account provider proof, and production
@@ -67,6 +66,7 @@ Validated through promotion:
 
 ## Previous Production Versions On This Branch
 
+- 4.14.214 (`df21fd04`) — P3 release-tooling promote: explicit patch-version policy, PM2 smoke-evidence status checks, and iOS local-export default (source commits `dd7afaf8`, `113b83a5`; iOS companion `3030c71` pushed, no TestFlight upload).
 - 4.14.213 (`b1916a76`) — Training Skill QA calendar lifecycle promote (source commit `b28a47b6`; iOS companion `e1d1ca0` pushed, no TestFlight upload).
 - 4.14.210 (`b8bd0c29`) — Offline-first Tasks provider-missing hotfix for Microsoft To Do provider reappearance.
 - 4.14.208 (`636910e2`) — Content Studio backend contract promote for source-skill overview filtering, capture provenance, and idempotent topic create (source commit `6651085e`)

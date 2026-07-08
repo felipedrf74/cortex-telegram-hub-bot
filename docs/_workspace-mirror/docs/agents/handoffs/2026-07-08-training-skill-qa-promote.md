@@ -46,3 +46,46 @@ Status: production promoted, backend and iOS main pushed. TestFlight/App Store u
 - Backend `docs/release/feature-delivery-ledger.md`.
 - Workspace `docs/release/CURRENT_RELEASE_STATE.md`.
 - Workspace `docs/release/feature-delivery-ledger.md`.
+
+## 2026-07-08 P3 Release Tooling Promote Addendum
+
+Felipe authorized fixing the three P3 findings from adversarial QA and
+promoting the backend again. TestFlight/App Store upload remained out of scope.
+
+What shipped:
+
+- Backend production now runs `4.14.214` at `df21fd04`.
+- Backend commits pushed to `origin/main`: `dd7afaf8` version mint / promote
+  policy, `113b83a5` PM2 smoke-evidence status checks, and `df21fd04`
+  pre-promote staging-smoke evidence.
+- iOS `main` is pushed at `3030c71`; `scripts/testflight-export.sh` defaults
+  to local `export` and requires `IOS_EXPORT_DESTINATION=upload` for upload.
+- iOS `Nexus Hub.xcodeproj/project.pbxproj` remains intentionally dirty and
+  uncommitted pending App Store Connect build-number confirmation.
+
+Evidence:
+
+- iOS `bash -n`, grep assertion, 12-case guard matrix under `/bin/bash` 3.2,
+  and `scripts/ios-release-hardening-validate.sh` passed.
+- Backend classifier selected T0/T1/T3-recommended/T5-on-promote/T6-postdeploy.
+- Backend risk gate and pre-push each passed typecheck plus full Vitest 867
+  files / 12,725 tests.
+- Staging deploy passed; soak ran `2026-07-08T19:02:05Z` to
+  `2026-07-08T19:07:05Z`.
+- Standalone staging smoke passed 21/21 with engine evidence
+  `docs/release/smoke-evidence/staging-smoke-113b83a5-20260708T190748Z.json`.
+  The schema intentionally differs from previous 19/19 smoke evidence because
+  PM2 online/restart gates now appear as explicit status-bearing checks.
+- Promote gate smoke passed 21/21; strict deploy validation passed migration
+  safety (216 migrations), typecheck, science-policy, and full Vitest 867
+  files / 12,725 tests.
+- Post-promote probes passed: public `/health`, exact public `/public-status`
+  shape, PM2 `nexus-hub` + `content-engine` online on `4.14.214`, and
+  authenticated Decision Center overview `ok: true`.
+
+Still blocked / not authorized:
+
+- TestFlight/App Store upload, physical-device proof, live Google/Outlook
+  production calendar writes, two-account provider proof, HealthKit, Garmin,
+  APNs live push, provider-state validation, and App Store Connect build 51/52
+  manual confirmation.

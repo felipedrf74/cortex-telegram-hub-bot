@@ -13,37 +13,80 @@ older production versions.
 
 ## Active Production Release
 
-- Source branch: `main` at `b1916a76` (deployed artifact; `b28a47b6` carries
-  the Training/calendar code, `90d0a8a3` records the QA handoff, `b1916a76`
-  adds pre-promote staging-smoke evidence). Pushed to `origin/main`.
-- Production HEAD: `b1916a76`
-- Production version: `4.14.213` (unchanged; no version mint in this
-  QA/promote turn).
-- Previous production HEAD: `7511266b`.
-- Scope: 2026-07-08 Training Skill QA and fixes — tenant-safe Training
-  calendar ownership/adoption/deletion vetoes, rollback-safe calendar sync,
-  truthful degraded/conflict-copy propagation, persisted plan quality-gate
-  rationale, readiness stale mapping plumbing, read-model sync cleanup
-  visibility, iOS Training calendar cleanup/degraded sync presentation, repeated
-  Training deep-link token consumption, Content Studio bottom runway repair,
-  and TestFlight export stable-toolchain guard hardening.
-- Latest runtime deploy commit: `b1916a76` (2026-07-08 validated promote:
-  risk gate focused Training/calendar 131 files / 2,086 tests plus changed
-  sweep 54 files / 1,431 tests; staging deploy; 5-minute soak; staging smoke
-  19/19 with evidence committed pre-promote; promote gate smoke 19/19; deploy
-  strict validation typecheck + science-policy + full Vitest 867 files /
-  12,725 tests; migration safety passed with 216 migrations).
+- Source branch: `main` at `df21fd04` (deployed artifact; `dd7afaf8` minted
+  version `4.14.214` and documented the promote version policy, `113b83a5`
+  made staging-smoke PM2 gates real evidence checks, and `df21fd04` records
+  pre-promote staging-smoke evidence). Pushed to `origin/main`.
+- Production HEAD: `df21fd04`
+- Production version: `4.14.214`.
+- Previous production HEAD: `b1916a76`.
+- Scope: 2026-07-08 P3 release-tooling closeout — every production promote now
+  has an explicit pre-staging patch-version policy, this promote minted
+  `4.14.214`, staging-smoke evidence now records PM2 online/restart gates as
+  real checks with `status`, and the iOS TestFlight export helper now defaults
+  to local export unless `IOS_EXPORT_DESTINATION=upload` is set explicitly.
+- Latest runtime deploy commit: `df21fd04` (2026-07-08 P3 tooling promote:
+  classifier selected T0/T1/T3-recommended/T5-on-promote/T6-postdeploy; risk
+  gate and pre-push each passed typecheck plus full Vitest 867 files / 12,725
+  tests; staging deploy passed; 5-minute soak ran from
+  `2026-07-08T19:02:05Z` to `2026-07-08T19:07:05Z`; standalone staging smoke
+  passed 21/21 with evidence committed pre-promote; promote gate smoke passed
+  21/21; deploy strict validation passed migration safety (216 migrations),
+  typecheck, science-policy, and full Vitest 867 files / 12,725 tests).
 - Verified post-promote by read-only probes: public
-  `https://api.nexushub.me/health` returned `status: healthy` with server
-  online and database connected, public `/public-status` returned `status: ok`,
-  PM2 `nexus-hub` and `content-engine` were online on `4.14.213`, and an
-  authenticated production Decision Center overview check returned `ok: true`.
-- iOS companion pushed to `main` at `e1d1ca0` (`9093526` Training,
-  `88e48bc` Content Studio, `e1d1ca0` release tooling). TestFlight/App Store
-  upload was not authorized or run. Local iOS
+  `https://api.nexushub.me/health` returned `status: healthy`, public
+  `/public-status` returned exactly `status`, `service`, and `timestamp` with
+  `status: ok`, PM2 `nexus-hub` and `content-engine` were online on
+  `4.14.214`, and an authenticated production Decision Center overview check
+  returned `ok: true`.
+- iOS companion pushed to `main` at `3030c71` (`3030c71` release tooling on top
+  of `9093526` Training, `88e48bc` Content Studio, and `e1d1ca0` export guard
+  hardening). TestFlight/App Store upload was not authorized or run. Local iOS
   `Nexus Hub.xcodeproj/project.pbxproj` build-number bump remains uncommitted
   pending Felipe's App Store Connect build-state confirmation.
 - Backend workspace root: `/Users/felipedominguez/Desktop/Custom Connectors/Cortex/cortex-telegram-hub-bot`
+
+## 2026-07-08 P3 Release Tooling Promote
+
+- Scope: closed the three 2026-07-08 adversarial QA P3 findings after owner
+  authorization: explicit promote version-mint policy plus `4.14.214`, PM2
+  staging-smoke evidence rows with real `status` fields and sanitized
+  multiline details, and iOS TestFlight export defaulting to local export.
+- Backend commits: `dd7afaf8` (`chore(release): mint 4.14.214 + promote
+  version policy`), `113b83a5` (`fix(release): make staging smoke PM2 gates
+  real checks`), and `df21fd04` (`docs(release): record 4.14.214 staging
+  smoke`). Previous production deploy commit was `b1916a76`.
+- iOS commit pushed to `origin/main`: `3030c71` (`chore(release-tooling):
+  default testflight export to local export`). TestFlight/App Store upload was
+  not run. The local iOS `project.pbxproj` build-number bump remains
+  uncommitted.
+- Evidence: `scripts/release-identity.sh markdown` reported backend
+  `4.14.214`; `bash -n scripts/staging-smoke.sh` passed; iOS `bash -n`,
+  12-case guard-function matrix, and
+  `scripts/ios-release-hardening-validate.sh` passed; backend classifier
+  selected T0/T1/T3-recommended/T5-on-promote/T6-postdeploy; `scripts/risk-gate.sh`
+  passed typecheck plus full Vitest 867 files / 12,725 tests, and pre-push
+  repeated the same full gate.
+- Staging/prod: `deploy-staging.sh` passed; soak ran from
+  `2026-07-08T19:02:05Z` to `2026-07-08T19:07:05Z`; staging smoke passed
+  21/21 with engine evidence
+  `docs/release/smoke-evidence/staging-smoke-113b83a5-20260708T190748Z.json`.
+  The evidence schema difference from prior 19/19 runs is intentional: PM2
+  `nexus-hub online`, `content-engine online`, and `nexus-hub restarts == 0`
+  now appear as explicit checks with `status`.
+- Promote: `promote-to-prod.sh` passed env/artifact parity, ran a fresh
+  promotion-time staging smoke 21/21, then `deploy.sh` strict validation passed
+  migration safety (216 migrations), typecheck, science-policy, and full
+  Vitest 867 files / 12,725 tests. Production now runs `4.14.214` at
+  `df21fd04`.
+- Post-promote proof: public `/health` healthy, public `/public-status` ok with
+  exactly `{status, service, timestamp}`, PM2 `nexus-hub` and
+  `content-engine` online on `4.14.214`, and authenticated Decision Center
+  overview returned `ok: true`.
+- Blocked/not authorized: TestFlight/App Store upload, physical-device proof,
+  live Google/Outlook production calendar writes, two-account provider proof,
+  HealthKit, Garmin, APNs live push, provider-state validation, and App Store
+  Connect build 51/52 manual confirmation.
 
 ## 2026-07-08 Training Skill QA Calendar Lifecycle Production Promote
 
