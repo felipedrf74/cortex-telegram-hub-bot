@@ -2,10 +2,10 @@
 
 Status: canonical
 Owner: release lead (Felipe)
-Last verified: 2026-07-02
+Last verified: 2026-07-08
 Update policy: update after merge / staging / production / deploy-gate changes. Live identity (branch/commit/version/migrations) auto-generated via engine/scripts/release-identity.sh --persist; do not type those by hand.
 
-Last updated: 2026-07-02
+Last updated: 2026-07-08
 
 > **Live identity** — branch / commit / version / migration count for the
 > current working tree are auto-generated. Do NOT type those values by
@@ -17,26 +17,87 @@ Last updated: 2026-07-02
 
 - Repo: `engine`
 - Workspace HEAD / version / migrations / dirty state: see `docs/release/release-identity.md`
-- Production status (last manual update 2026-07-02, evening): backend package
-  version `4.14.211` is deployed from commit `6bb2affe` (the Training UX
-  round promote; see the evening 2026-07-02 section below). The package
-  version was intentionally NOT re-minted for this promote (no release-prep
-  run), so `4.14.211` now spans two production artifacts — disambiguate by
-  deploy commit / artifact digest; the next release-prep should mint
-  `4.14.212`. The local checkout branch is `codex/Trainingfixes`, which is
-  commit-identical to `origin/main` at `2330f2b3` (one docs commit ahead of
-  the deployed `6bb2affe` — normal); local `main` (2617dfd7, behind 13) is
-  checked out in a linked git worktree, so fast-forward it from inside that
-  worktree rather than via `git fetch origin main:main`. iOS `main` is at
-  `c79e42a` (Training UX round:
-  coach-trust surfacing, zone deep links, provider visibility, plus the QA
-  work order), pushed to origin. Content Studio backend
-  contract changes remain live for source-skill overview filtering, capture
-  provenance, and idempotent topic create. The immutable global Training
-  catalog version `repo-seed-1.0.0` remains active with 131 exercises and 24
-  equipment items. Workspace audit evidence lives at
-  `docs/release/worktree-recovery-audit-2026-05-18.md` and
+- Production status (last manual update 2026-07-08): backend package version
+  `4.14.213` is deployed from commit `b1916a76` (Training/calendar code
+  commit `b28a47b6`, branch `main`, pushed to origin) — the Training Skill QA
+  calendar lifecycle promote. Pipeline: backend risk gate -> staging deploy ->
+  5-min soak -> staging smoke 19/19 (evidence committed pre-promote) ->
+  promote gate smoke 19/19 -> strict deploy validation -> post-promote health
+  green. Deploy validation passed migration safety (216 migrations),
+  typecheck, science-policy check, and full Vitest 867 files / 12,725 tests.
+  Post-promote proof: public `/health` healthy, public `/public-status` ok,
+  PM2 `nexus-hub` + `content-engine` online on `4.14.213`, and authenticated
+  Decision Center overview `ok: true`. Full evidence: engine
+  `docs/release/CURRENT_RELEASE_STATE.md` Active Production Release section.
+  iOS `main` is at `e1d1ca0` (Training calendar cleanup/degraded sync
+  presentation, repeated Training deep-link token guard, Content Studio bottom
+  runway repair, TestFlight export guard hardening), pushed to origin.
+  TestFlight/App Store upload was not authorized. The local iOS
+  `Nexus Hub.xcodeproj/project.pbxproj` build-number bump remains
+  intentionally uncommitted pending Felipe's App Store Connect build-state
+  confirmation. Content Studio backend contract changes remain live for
+  source-skill overview filtering, capture provenance, and idempotent topic
+  create. The immutable global Training catalog version `repo-seed-1.0.0`
+  remains active with 131 exercises and 24 equipment items. Workspace audit
+  evidence lives at `docs/release/worktree-recovery-audit-2026-05-18.md` and
   `docs/release/worktree-recovery-audit-2026-05-21/`.
+
+### 2026-07-08 Training Skill QA Calendar Lifecycle Production Promote
+
+- Scope: promoted the 2026-07-08 Training QA fixes after Claude QA review:
+  tenant-isolated calendar ownership checks, rollback-safe Training calendar
+  sync, Secretary agenda cleanup/read-model truthfulness, plan quality-gate
+  rationale persistence, stale-readiness mapping coverage, iOS calendar cleanup
+  and degraded-sync copy, repeated Training deep-link consumption, Content
+  Studio bottom runway source-pin repair, and stable-toolchain TestFlight export
+  guard hardening.
+- Backend commits: `b28a47b6`, `90d0a8a3`, `b1916a76`; backend version
+  remains `4.14.213`. Previous production deploy commit was `7511266b`.
+- iOS commits pushed to `origin/main`: `9093526`, `88e48bc`, `e1d1ca0`.
+  TestFlight/App Store upload was not run. The local iOS
+  `project.pbxproj` build-number bump remains uncommitted.
+- Evidence: `scripts/changed-area-classifier.sh --json` selected
+  T0/T1/T2/T4/T5-on-promote/T6-postdeploy; backend focused risk gate passed
+  131 files / 2,086 tests and changed sweep 54 files / 1,431 tests; iOS source
+  pins passed 43/43, touched Training bundle passed 154/154, and Content
+  Studio Debug UI Smoke passed 4/4.
+- Staging/prod: `deploy-staging.sh` passed; soak ran from
+  `2026-07-08T17:24:35Z` to `2026-07-08T17:29:35Z`; staging smoke passed
+  19/19 with engine evidence
+  `docs/release/smoke-evidence/staging-smoke-90d0a8a3-20260708T173034Z.json`;
+  promote gate smoke passed 19/19; deploy validation passed 867 Vitest files /
+  12,725 tests; post-promote public health/status, PM2, and authenticated
+  Decision Center overview passed.
+- Blocked/not authorized: TestFlight/App Store upload, physical-device proof,
+  live Google/Outlook production calendar writes, two-account provider proof,
+  HealthKit, Garmin, APNs live push, and production provider-state validation.
+
+### 2026-07-03 iOS App Store Connect Upload
+
+- Scope: cleared the App Store upload blocker for the current iOS app by
+  replacing beta-built archives with a stable Xcode upload path. The rejected
+  Organizer archive was built with Xcode 27 beta
+  (`DTXcodeBuild=27A5194q`, `DTSDKName=iphoneos27.0`), which App Store Connect
+  rejects for App Store submission. Local command-line tools now target
+  `/Applications/Xcode.app` (`Xcode 26.6`, build `17F113`) with
+  `iphoneos26.5`, matching Apple's current App Store upload allowance.
+- iOS source state: app version remains `1.5.0`; build number is now `51`
+  because App Store Connect reported build `50` as the latest already uploaded
+  bundle version. `scripts/testflight-export.sh` now defaults to stable
+  `/Applications/Xcode.app` and rejects beta selected toolchains or beta-built
+  archives before upload unless explicitly overridden for TestFlight-only beta
+  validation.
+- Evidence: `scripts/ios-release-hardening-validate.sh` passed; the new export
+  guard rejected the exact failed beta archive locally; stable build `49`
+  archive/export succeeded and then reached App Store Connect, where it was
+  rejected only for build-number monotonicity; stable build `51` archive and
+  App Store Connect upload succeeded. App Store Connect reported:
+  `Uploaded package is processing`, `Upload succeeded`, and
+  `Uploaded Nexus Hub`.
+- Rollout boundary: this proves App Store Connect ingestion for build
+  `1.5.0 (51)`. It does not by itself prove TestFlight install, physical-device
+  smoke, App Review submission, App Review approval, or live App Store
+  availability.
 
 ### 2026-07-02 Training UX Round Production Promote (evening)
 

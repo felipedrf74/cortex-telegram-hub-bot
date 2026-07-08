@@ -5,7 +5,7 @@
 
 | Area | Path | Branch | Commit | Dirty state | Version | Migrations |
 | --- | --- | --- | --- | --- | --- | --- |
-| Backend | `/Users/felipedominguez/Desktop/Custom Connectors/Cortex/cortex-telegram-hub-bot` | `codex/Trainingfixes` | `6bb2affe` | `dirty` | `4.14.211` | `211` |
-| iOS | `/Users/felipedominguez/Desktop/Nexus Hub IOS/Nexus Hub` | `main` | `c79e42a` | `dirty` | n/a | n/a |
+| Backend | `/Users/felipedominguez/Desktop/Custom Connectors/Cortex/cortex-telegram-hub-bot` | `main` | `b1916a76` | `dirty` | `4.14.213` | `216` |
+| iOS | `/Users/felipedominguez/Desktop/Nexus Hub IOS/Nexus Hub` | `main` | `e1d1ca0` | `dirty` | n/a | n/a |
 
-Generated at: `2026-07-02T17:23:38Z`
+Generated at: `2026-07-08T17:46:55Z`

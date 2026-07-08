@@ -501,6 +501,45 @@ Fixes applied after Felipe authorized remediation of the QA findings:
   `.local/training-e2e/training-e2e-20260708161048-12d76196/ios/TrainingE2E.xcresult`;
   `training:e2e:down` removed the isolated containers/network.
 
+### 2026-07-08 Production Promote Closeout
+
+Felipe authorized landing and promoting this work, excluding TestFlight/App
+Store upload. Backend and iOS source were landed and pushed; production backend
+was promoted.
+
+- Backend commits pushed to `origin/main`:
+  - `b28a47b6 fix(training): harden calendar sync lifecycle`
+  - `90d0a8a3 docs(agents): capture training qa handoff`
+  - `b1916a76 docs(release): record training qa staging smoke`
+- iOS commits pushed to `origin/main`:
+  - `9093526 fix(training): harden plan and route state`
+  - `88e48bc fix(content-studio): preserve bottom scroll runway`
+  - `e1d1ca0 chore(release-tooling): harden testflight export guard`
+- iOS `Nexus Hub.xcodeproj/project.pbxproj` remains the only dirty iOS file,
+  intentionally uncommitted pending Felipe's App Store Connect build-number
+  confirmation.
+- Backend classifier selected T0/T1/T2/T4/T5-on-promote/T6-postdeploy.
+- Backend `scripts/risk-gate.sh` passed focused Training/calendar 131 files /
+  2,086 tests and changed sweep 54 files / 1,431 tests; pre-push repeated the
+  gate and build verification.
+- iOS release gates passed:
+  - `NavigationPerformanceSourcePinsTests`: 43/43.
+  - touched Training bundle: 154/154.
+  - `ContentStudioShellUITests` on `Nexus Hub Debug UI Smoke`: 4/4.
+- `deploy-staging.sh` passed; soak ran `2026-07-08T17:24:35Z` to
+  `2026-07-08T17:29:35Z`; staging smoke passed 19/19 with evidence
+  `docs/release/smoke-evidence/staging-smoke-90d0a8a3-20260708T173034Z.json`.
+- `promote-to-prod.sh` completed. Production now runs `4.14.213` at
+  `b1916a76`; deploy-time validation passed migration safety (216 migrations),
+  typecheck, science-policy, and full Vitest 867 files / 12,725 tests.
+- Post-promote probes passed: public `/health` healthy, public
+  `/public-status` ok, PM2 `nexus-hub` and `content-engine` online on
+  `4.14.213`, and authenticated Decision Center overview returned `ok: true`.
+- Still not run / not authorized: TestFlight/App Store upload, physical-device
+  proof, live Google/Outlook production calendar writes, two-account provider
+  proof, HealthKit, Garmin, APNs live push, and production provider-state
+  validation.
+
 ## Verifiable Reward Summary
 
 Verdict: GO-WITH-FOLLOWUPS for local Training QA/fix readiness; not a production

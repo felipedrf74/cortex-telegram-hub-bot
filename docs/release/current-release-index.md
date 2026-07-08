@@ -2,63 +2,72 @@
 
 Status: canonical
 Owner: release lead (Felipe)
-Last verified: 2026-07-04
+Last verified: 2026-07-08
 Update policy: update when the current RC identity, deploy-gate evidence, or canonical-doc cross-references change. Run `scripts/release-identity.sh --persist` to refresh auto-generated identity fields.
 
-Date: 2026-07-04
+Date: 2026-07-08
 
 ## Current Status
 
 Active production package:
 
 - source branch: `main` (pushed to origin)
-- production HEAD: `7511266b`
+- production HEAD: `b1916a76`
 - production version: `4.14.213`
-- runtime source commit: `a33b349d` (APNs reliability + engagement round;
-  `7511266b` adds pre-promote smoke evidence, docs-only and manifest-identical)
-- latest runtime deploy commit: `7511266b`; post-deploy docs-only closeout may
+- runtime source commit: `b28a47b6` (Training calendar lifecycle and iOS
+  contract hardening); `90d0a8a3` records the QA handoff and `b1916a76` records
+  pre-promote staging smoke evidence
+- latest runtime deploy commit: `b1916a76`; post-deploy docs-only closeout may
   sit ahead of production runtime
 - full deploy evidence: see the Active Production Release section in
   `docs/release/CURRENT_RELEASE_STATE.md`
 - release state: `docs/release/CURRENT_RELEASE_STATE.md` (backend)
 - backend workspace root: `/Users/felipedominguez/Desktop/Custom Connectors/Cortex/cortex-telegram-hub-bot`
 
-Commits in this release (4.14.210 Tasks provider-missing hotfix):
+Commits in this release (2026-07-08 Training Skill QA promote):
 
-- `b8bd0c29 fix(tasks): clear provider-missing after provider reappears`
+- `b28a47b6 fix(training): harden calendar sync lifecycle`
+- `90d0a8a3 docs(agents): capture training qa handoff`
+- `b1916a76 docs(release): record training qa staging smoke`
+- iOS companion main: `9093526`, `88e48bc`, `e1d1ca0`
 
 Scope:
 
-- Offline-first Tasks provider reconciliation:
-  - Microsoft To Do provider imports now clear stale `provider_missing` task
-    and provider-link state when the task is returned by a later provider pull.
-  - Open `provider_task_missing` issues are resolved after the provider task is
-    seen again; conflict and pending-local mutation states remain sticky.
-  - no migration was added by this hotfix.
+- Training calendar lifecycle and iOS Training/Content Studio contract
+  hardening:
+  - tenant-safe Training calendar ownership, adoption, and deletion vetoes;
+  - rollback-safe calendar sync and Secretary agenda cleanup/read-model truth;
+  - degraded sync and `calendarCleanup` presentation on iOS;
+  - repeated Training deep-link token consumption instead of a one-shot boolean;
+  - Content Studio bottom runway source pin repair;
+  - TestFlight export stable-toolchain guard hardening.
 
 Validated through promotion:
 
-- focused task-store regression suites passed 2 files / 55 tests
-- `scripts/risk-gate.sh` passed changed-only Vitest with 236 files / 3,802
-  tests; pre-commit and pre-push repeated the same gate
-- staging deploy/readiness passed with artifact digest
-  `090d5fd593cd587b2ae2ba688f0035a2683e863536208e68aa8e00c554cdfead`
-- promote-time staging smoke passed 19/19 before production mutation
-- `promote-to-prod.sh` completed cleanly for 4.14.210 at `b8bd0c29`
-- deploy-time validation passed typecheck, science-policy check, migration
-  safety for 210 migrations, and full Vitest with 864 files / 12,654 tests
-- post-deploy: PM2 `nexus-hub` and `content-engine` online
-- production readiness passed: SQLite integrity, `/health`, content-engine
-  readiness, better-sqlite3 native binding, and PM2 stability
-- post-production public `health` probe passed
-- targeted Microsoft To Do sync repaired the two Siemens tasks reported from
-  iOS: both now have `sync_state='synced'`, provider links `linked`, no open
-  `provider_task_missing` issue, and `change_seq='2026-06-26T15:00:38.000Z'`
-- App Store Connect/TestFlight INTERNAL assignment is blocked in this shell by
-  missing ASC credentials/session; no external cohort was touched
+- `scripts/changed-area-classifier.sh --json` selected
+  T0/T1/T2/T4/T5-on-promote/T6-postdeploy.
+- `scripts/risk-gate.sh` passed focused Training/calendar 131 files / 2,086
+  tests and changed sweep 54 files / 1,431 tests; pre-push repeated the gate
+  and build verification.
+- iOS focused proof passed: source pins 43/43, touched Training bundle 154/154,
+  and Content Studio Debug UI Smoke 4/4.
+- `deploy-staging.sh` passed; 5-minute soak completed; staging smoke passed
+  19/19 with
+  `docs/release/smoke-evidence/staging-smoke-90d0a8a3-20260708T173034Z.json`.
+- `promote-to-prod.sh` completed cleanly for 4.14.213 at `b1916a76`; promote
+  gate smoke passed 19/19 before production mutation.
+- Deploy-time validation passed migration safety (216 migrations), typecheck,
+  science-policy check, and full Vitest with 867 files / 12,725 tests.
+- Post-deploy: public `/health` healthy, public `/public-status` ok, PM2
+  `nexus-hub` and `content-engine` online on `4.14.213`, and authenticated
+  Decision Center overview returned `ok: true`.
+- TestFlight/App Store upload, physical-device proof, live provider calendar
+  writes, HealthKit, Garmin, APNs, two-account provider proof, and production
+  provider-state validation were not authorized/run.
 
 ## Previous Production Versions On This Branch
 
+- 4.14.213 (`b1916a76`) — Training Skill QA calendar lifecycle promote (source commit `b28a47b6`; iOS companion `e1d1ca0` pushed, no TestFlight upload).
 - 4.14.210 (`b8bd0c29`) — Offline-first Tasks provider-missing hotfix for Microsoft To Do provider reappearance.
 - 4.14.208 (`636910e2`) — Content Studio backend contract promote for source-skill overview filtering, capture provenance, and idempotent topic create (source commit `6651085e`)
 - 4.14.208 (`910b6d72`) — Training/Coach tenant and health-signal hotfix for fresh safety reads, tenant-gated mutations/reflow, and tenant-scoped adherence/missed-session reads (source commit `9c226007`)

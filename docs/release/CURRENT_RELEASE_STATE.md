@@ -2,10 +2,10 @@
 
 Status: canonical
 Owner: backend release lead (Felipe)
-Last verified: 2026-07-04
+Last verified: 2026-07-08
 Update policy: update after backend deploy or staging change. Workspace-level entry point is docs/release/CURRENT_RELEASE_STATE.md.
 
-Last updated: 2026-07-04
+Last updated: 2026-07-08
 
 Only the **Active Production Release** section states the current production
 truth. Dated sections below it are historical deploy evidence and may mention
@@ -13,31 +13,71 @@ older production versions.
 
 ## Active Production Release
 
-- Source branch: `main` at `7511266b` (deployed artifact; `a33b349d` carries the
-  code, `7511266b` adds the pre-promote staging smoke evidence, docs-only and
-  manifest-identical). Pushed to `origin/main`.
-- Production HEAD: `7511266b`
-- Production version: `4.14.213` (minted per REL-VERSION-MINT).
-- Scope: 2026-07-04 APNs reliability + engagement round with Codex QA fixes —
-  APNs 410 consumption (dead-token auto-revoke + truthful attempt labels),
-  4KB payload guard, byte-safe collapse-id (buildApnsCollapseId), 1h
-  expiration for time-sensitive pushes, mock delivery mode retired, per-job
-  report catch-up windows (weekly 24h), stale device-token pruning (90d),
-  last_seen refresh on delivery, daily-digest unread-streak push suppression
-  (default 7), sent_local/push_allowed enum prunes, Garmin reauth as a
-  first-class orchestrator intent with the nexus://connections/garmin/reauth
-  deeplink, legacy content-notification-store write path/bridge deleted,
-  local-LLM pilot rails (LOCAL_LLM_CHANNEL_SYNTHESIS default off,
-  GARMIN_COACH_CAPTURE_PROMPT, scripts/coach-local-eval.mjs).
-- Latest runtime deploy commit: `7511266b` (2026-07-04 validated promote:
-  staging smoke 19/19 with evidence committed pre-promote, promote gate
-  smoke green, strict deploy validation; pre-commit full Vitest 866 files /
-  12,705 tests on the code commit; no new migrations — count stays 235).
-- Verified post-promote by read-only SSH: version `4.14.213`, PM2
-  `nexus-hub` + `content-engine` online, public `/health` healthy,
-  migrations 235, zero active tokens past the 90-day stale window.
-- iOS companion unchanged this round: `main` remains `d71895c`.
+- Source branch: `main` at `b1916a76` (deployed artifact; `b28a47b6` carries
+  the Training/calendar code, `90d0a8a3` records the QA handoff, `b1916a76`
+  adds pre-promote staging-smoke evidence). Pushed to `origin/main`.
+- Production HEAD: `b1916a76`
+- Production version: `4.14.213` (unchanged; no version mint in this
+  QA/promote turn).
+- Previous production HEAD: `7511266b`.
+- Scope: 2026-07-08 Training Skill QA and fixes — tenant-safe Training
+  calendar ownership/adoption/deletion vetoes, rollback-safe calendar sync,
+  truthful degraded/conflict-copy propagation, persisted plan quality-gate
+  rationale, readiness stale mapping plumbing, read-model sync cleanup
+  visibility, iOS Training calendar cleanup/degraded sync presentation, repeated
+  Training deep-link token consumption, Content Studio bottom runway repair,
+  and TestFlight export stable-toolchain guard hardening.
+- Latest runtime deploy commit: `b1916a76` (2026-07-08 validated promote:
+  risk gate focused Training/calendar 131 files / 2,086 tests plus changed
+  sweep 54 files / 1,431 tests; staging deploy; 5-minute soak; staging smoke
+  19/19 with evidence committed pre-promote; promote gate smoke 19/19; deploy
+  strict validation typecheck + science-policy + full Vitest 867 files /
+  12,725 tests; migration safety passed with 216 migrations).
+- Verified post-promote by read-only probes: public
+  `https://api.nexushub.me/health` returned `status: healthy` with server
+  online and database connected, public `/public-status` returned `status: ok`,
+  PM2 `nexus-hub` and `content-engine` were online on `4.14.213`, and an
+  authenticated production Decision Center overview check returned `ok: true`.
+- iOS companion pushed to `main` at `e1d1ca0` (`9093526` Training,
+  `88e48bc` Content Studio, `e1d1ca0` release tooling). TestFlight/App Store
+  upload was not authorized or run. Local iOS
+  `Nexus Hub.xcodeproj/project.pbxproj` build-number bump remains uncommitted
+  pending Felipe's App Store Connect build-state confirmation.
 - Backend workspace root: `/Users/felipedominguez/Desktop/Custom Connectors/Cortex/cortex-telegram-hub-bot`
+
+## 2026-07-08 Training Skill QA Calendar Lifecycle Production Promote
+
+- Scope: landed the 2026-07-08 Training QA fixes after Claude QA review:
+  tenant-isolated calendar ownership checks, rollback-safe Training calendar
+  sync, Secretary agenda cleanup/read-model truthfulness, plan quality-gate
+  rationale persistence, stale-readiness mapping coverage, iOS calendar cleanup
+  and degraded-sync copy, repeated Training deep-link consumption, Content
+  Studio bottom runway source-pin repair, and stable-toolchain TestFlight export
+  guard hardening.
+- Backend commits: `b28a47b6` (`fix(training): harden calendar sync lifecycle`),
+  `90d0a8a3` (`docs(agents): capture training qa handoff`), and `b1916a76`
+  (`docs(release): record training qa staging smoke`).
+- iOS commits pushed to `origin/main`: `9093526`,
+  `88e48bc`, and `e1d1ca0`. `project.pbxproj` build-number bump remains local
+  and was not committed, reverted, uploaded, or included in TestFlight.
+- Evidence: `scripts/changed-area-classifier.sh --json` selected
+  T0/T1/T2/T4/T5-on-promote/T6-postdeploy; `scripts/risk-gate.sh` passed
+  focused Training/calendar 131 files / 2,086 tests and changed sweep 54 files
+  / 1,431 tests; pre-push repeated the same gate and build verification; iOS
+  source pins passed 43/43, touched Training bundle passed 154/154, and
+  Content Studio Debug UI Smoke passed 4/4.
+- Staging/prod: `deploy-staging.sh` passed, soak ran from
+  `2026-07-08T17:24:35Z` to `2026-07-08T17:29:35Z`, staging smoke passed 19/19
+  with evidence
+  `docs/release/smoke-evidence/staging-smoke-90d0a8a3-20260708T173034Z.json`,
+  promote gate smoke passed 19/19, and production deploy validation passed
+  867 Vitest files / 12,725 tests.
+- Post-promote proof: public `/health` healthy, public `/public-status` ok, PM2
+  `nexus-hub` and `content-engine` online on `4.14.213`, and authenticated
+  Decision Center overview returned `ok: true`.
+- Blocked/not authorized: TestFlight/App Store upload, physical-device proof,
+  live Google/Outlook production calendar writes, two-account provider proof,
+  HealthKit, Garmin, APNs live push, and provider-state validation.
 
 ## 2026-07-03 Optimization Round + Per-User Schedules Promote
 
