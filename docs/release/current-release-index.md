@@ -2,70 +2,87 @@
 
 Status: canonical
 Owner: release lead (Felipe)
-Last verified: 2026-07-08
+Last verified: 2026-07-09
 Update policy: update when the current RC identity, deploy-gate evidence, or canonical-doc cross-references change. Run `scripts/release-identity.sh --persist` to refresh auto-generated identity fields.
 
-Date: 2026-07-08
+Date: 2026-07-09
 
 ## Current Status
 
 Active production package:
 
 - source branch: `main` (pushed to origin)
-- production HEAD: `df21fd04`
-- production version: `4.14.214`
-- runtime source commits: `dd7afaf8` (version mint and promote policy),
-  `113b83a5` (PM2 smoke evidence checks), and `df21fd04` (pre-promote staging
-  smoke evidence)
-- latest runtime deploy commit: `df21fd04`; post-deploy docs-only closeout may
+- production HEAD: `cdfe9388`
+- production version: `4.14.215`
+- runtime source commits: `32114d72` (Training calendar ownership through
+  Secretary sync), `81b90b87` (Training split title/structure alignment),
+  `f8737377` (version `4.14.215`), `e700826f` (fresh-sync duplicate
+  reconciliation), `0f532094` (missing fresh provider event repair), and
+  `cdfe9388` (pre-promote staging smoke evidence)
+- latest runtime deploy commit: `cdfe9388`; post-deploy docs-only closeout may
   sit ahead of production runtime
 - full deploy evidence: see the Active Production Release section in
   `docs/release/CURRENT_RELEASE_STATE.md`
 - release state: `docs/release/CURRENT_RELEASE_STATE.md` (backend)
 - backend workspace root: `/Users/felipedominguez/Desktop/Custom Connectors/Cortex/cortex-telegram-hub-bot`
 
-Commits in this release (2026-07-08 P3 release-tooling promote):
+Commits in this release (2026-07-09 Training/Secretary calendar ownership promote):
 
-- `dd7afaf8 chore(release): mint 4.14.214 + promote version policy`
-- `113b83a5 fix(release): make staging smoke PM2 gates real checks`
-- `df21fd04 docs(release): record 4.14.214 staging smoke`
-- iOS companion main: `3030c71`
+- `32114d72 fix(secretary): preserve training calendar ownership`
+- `81b90b87 fix(training): align split titles with assigned structure`
+- `f8737377 chore: prepare release 4.14.215`
+- `e700826f fix(secretary): reconcile duplicate events on fresh sync`
+- `0f532094 fix(secretary): repair missing fresh provider events`
+- `cdfe9388 docs(release): record 4.14.215 staging smoke`
+- iOS companion main: `8d2ff0a` (clean, no source change required for this
+  backend contract)
 
 Scope:
 
-- Release-tooling P3 closeout:
-  - every production promote must mint a patch version before staging;
-  - staging-smoke PM2 online/restart gates now serialize as real checks with
-    explicit `status` fields;
-  - TestFlight export now defaults to local export and requires
-    `IOS_EXPORT_DESTINATION=upload` for upload.
+- Training/Secretary calendar ownership and QA hardening:
+  - Training-owned Outlook calendar events remain canonical when Secretary
+    agenda sync observes the same agenda item;
+  - stale Secretary duplicates are deleted, missing fresh provider events are
+    recreated or reattached, and canonical Training calendar titles/bodies are
+    reused across direct and agenda sync paths;
+  - Training split titles now match the actual ABCDE structure shown in session
+    details, so lower-body sessions do not display upper-body rationale.
 
 Validated through promotion:
 
-- `scripts/changed-area-classifier.sh --json` selected
-  T0/T1/T3-recommended/T5-on-promote/T6-postdeploy.
-- `scripts/risk-gate.sh` passed typecheck plus full Vitest 867 files / 12,725
-  tests; backend pre-push repeated the same full gate and build verification.
-- iOS release-tooling proof passed: `bash -n`, 12-case guard-function matrix,
-  and `scripts/ios-release-hardening-validate.sh`.
+- Local focused Secretary sync suites, `npx tsc --noEmit`,
+  `scripts/risk-gate.sh`, and full `npx vitest run` passed through the final
+  source commit; final source verification included full Vitest 867 files /
+  12,742 tests.
 - `deploy-staging.sh` passed; 5-minute soak completed; staging smoke passed
   21/21 with
-  `docs/release/smoke-evidence/staging-smoke-113b83a5-20260708T190748Z.json`.
-  This evidence intentionally differs from prior 19/19 evidence because the
-  PM2 gates now appear as explicit status-bearing checks.
-- `promote-to-prod.sh` completed cleanly for 4.14.214 at `df21fd04`; promote
+  `docs/release/smoke-evidence/staging-smoke-0f532094-20260709T093359Z.json`.
+- Live Outlook staging provider checks passed: Training calendar lifecycle
+  9/9, Secretary calendar lifecycle 8/8, and selected-provider duplicate/cancel
+  checks in the broader Training flow. One broader plan-shape assertion in
+  that Training flow remained a non-release-blocking QA-profile expectation
+  mismatch.
+- `promote-to-prod.sh` completed cleanly for 4.14.215 at `cdfe9388`; promote
   gate smoke passed 21/21 before production mutation.
 - Deploy-time validation passed migration safety (216 migrations), typecheck,
-  science-policy check, and full Vitest with 867 files / 12,725 tests.
+  science-policy check, build, and full Vitest with 867 files / 12,742 tests.
 - Post-deploy: public `/health` healthy, public `/public-status` ok, PM2
-  `nexus-hub` and `content-engine` online on `4.14.214`, and authenticated
-  Decision Center overview returned `ok: true`.
-- TestFlight/App Store upload, physical-device proof, live provider calendar
-  writes, HealthKit, Garmin, APNs, two-account provider proof, and production
-  provider-state validation were not authorized/run.
+  `nexus-hub` and `content-engine` online on `4.14.215`, authenticated
+  Decision Center overview returned HTTP 200 with `ok: true`, and the
+  post-restart scheduler/log sample showed a completed `secretary_agenda_sync`
+  tick with no high-severity application log lines in the sampled window.
+- TestFlight/App Store upload, physical-device proof, signed-device smoke,
+  HealthKit, Garmin, APNs, Google live calendar proof for the Outlook-only
+  staging QA account, two-account provider proof, production live calendar
+  writes, and production provider-state validation were not authorized/run.
 
 ## Previous Production Versions On This Branch
 
+- 4.14.215 (`cdfe9388`) — Training/Secretary calendar ownership promote:
+  Training-owned calendar events remain canonical through agenda sync,
+  duplicate/missing fresh provider event repair, and Training split
+  title/structure alignment (source commits `32114d72`, `81b90b87`,
+  `e700826f`, `0f532094`; no iOS source change required).
 - 4.14.214 (`df21fd04`) — P3 release-tooling promote: explicit patch-version policy, PM2 smoke-evidence status checks, and iOS local-export default (source commits `dd7afaf8`, `113b83a5`; iOS companion `3030c71` pushed, no TestFlight upload).
 - 4.14.213 (`b1916a76`) — Training Skill QA calendar lifecycle promote (source commit `b28a47b6`; iOS companion `e1d1ca0` pushed, no TestFlight upload).
 - 4.14.210 (`b8bd0c29`) — Offline-first Tasks provider-missing hotfix for Microsoft To Do provider reappearance.

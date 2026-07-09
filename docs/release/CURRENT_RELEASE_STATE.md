@@ -2,10 +2,10 @@
 
 Status: canonical
 Owner: backend release lead (Felipe)
-Last verified: 2026-07-08
+Last verified: 2026-07-09
 Update policy: update after backend deploy or staging change. Workspace-level entry point is docs/release/CURRENT_RELEASE_STATE.md.
 
-Last updated: 2026-07-08
+Last updated: 2026-07-09
 
 Only the **Active Production Release** section states the current production
 truth. Dated sections below it are historical deploy evidence and may mention
@@ -13,38 +13,88 @@ older production versions.
 
 ## Active Production Release
 
-- Source branch: `main` at `df21fd04` (deployed artifact; `dd7afaf8` minted
-  version `4.14.214` and documented the promote version policy, `113b83a5`
-  made staging-smoke PM2 gates real evidence checks, and `df21fd04` records
+- Source branch: `main` at `cdfe9388` (deployed artifact; `32114d72` preserved
+  Training calendar ownership through Secretary agenda sync, `81b90b87` aligned
+  Training split titles with assigned structures, `f8737377` minted version
+  `4.14.215`, `e700826f` reconciled duplicate provider events on fresh syncs,
+  `0f532094` repaired missing fresh provider events, and `cdfe9388` records
   pre-promote staging-smoke evidence). Pushed to `origin/main`.
-- Production HEAD: `df21fd04`
-- Production version: `4.14.214`.
-- Previous production HEAD: `b1916a76`.
-- Scope: 2026-07-08 P3 release-tooling closeout — every production promote now
-  has an explicit pre-staging patch-version policy, this promote minted
-  `4.14.214`, staging-smoke evidence now records PM2 online/restart gates as
-  real checks with `status`, and the iOS TestFlight export helper now defaults
-  to local export unless `IOS_EXPORT_DESTINATION=upload` is set explicitly.
-- Latest runtime deploy commit: `df21fd04` (2026-07-08 P3 tooling promote:
-  classifier selected T0/T1/T3-recommended/T5-on-promote/T6-postdeploy; risk
-  gate and pre-push each passed typecheck plus full Vitest 867 files / 12,725
-  tests; staging deploy passed; 5-minute soak ran from
-  `2026-07-08T19:02:05Z` to `2026-07-08T19:07:05Z`; standalone staging smoke
-  passed 21/21 with evidence committed pre-promote; promote gate smoke passed
-  21/21; deploy strict validation passed migration safety (216 migrations),
-  typecheck, science-policy, and full Vitest 867 files / 12,725 tests).
+- Production HEAD: `cdfe9388`
+- Production version: `4.14.215`.
+- Previous production HEAD: `df21fd04`.
+- Scope: 2026-07-09 Training/Secretary calendar ownership and QA hardening —
+  Training-owned Outlook calendar events remain canonical when Secretary agenda
+  sync reads the same slot, stale Secretary duplicates are deleted, missing
+  fresh provider events are recreated or reattached, canonical Training
+  calendar titles/bodies are reused across direct and agenda sync paths, and
+  Training split titles now match the actual ABCDE structure shown in session
+  details.
+- Latest runtime deploy commit: `cdfe9388` (release `4.14.215`: classifier and
+  risk gates selected Training/calendar/Secretary coverage; local focused
+  Secretary sync suites, typecheck, risk gate, and full Vitest passed through
+  the final source commit; staging deploy passed; 5-minute soak completed;
+  standalone staging smoke passed 21/21 with evidence committed in
+  `docs/release/smoke-evidence/staging-smoke-0f532094-20260709T093359Z.json`;
+  promotion-time staging smoke passed 21/21; deploy strict validation passed
+  migration safety (216 migrations), typecheck, science-policy, build, and
+  full Vitest 867 files / 12,742 tests).
 - Verified post-promote by read-only probes: public
   `https://api.nexushub.me/health` returned `status: healthy`, public
-  `/public-status` returned exactly `status`, `service`, and `timestamp` with
-  `status: ok`, PM2 `nexus-hub` and `content-engine` were online on
-  `4.14.214`, and an authenticated production Decision Center overview check
-  returned `ok: true`.
-- iOS companion pushed to `main` at `3030c71` (`3030c71` release tooling on top
-  of `9093526` Training, `88e48bc` Content Studio, and `e1d1ca0` export guard
-  hardening). TestFlight/App Store upload was not authorized or run. Local iOS
-  `Nexus Hub.xcodeproj/project.pbxproj` build-number bump remains uncommitted
-  pending Felipe's App Store Connect build-state confirmation.
+  `/public-status` returned `status: ok`, PM2 `nexus-hub` and `content-engine`
+  were online on `4.14.215`, an authenticated production Decision Center
+  overview check returned HTTP 200 with `ok: true` and the expected overview
+  contract, and the post-restart scheduler/log sample showed
+  `secretary_agenda_sync complete` with no high-severity app log lines in the
+  sampled post-deploy window.
+- iOS companion remains clean on `main` at `8d2ff0a` with no backend-contract
+  drift requiring an iOS source change. TestFlight/App Store upload,
+  physical-device proof, and signed-device smoke were not authorized or run.
 - Backend workspace root: `/Users/felipedominguez/Desktop/Custom Connectors/Cortex/cortex-telegram-hub-bot`
+
+## 2026-07-09 Training/Secretary Calendar Ownership Promote
+
+- Scope: fixed the two screenshots from 2026-07-09 — Training lower-body
+  sessions no longer display upper-body descriptions when the ABCDE slot is a
+  pull day, and Secretary/Training Outlook sync no longer duplicates the same
+  Training calendar event or leaves agenda state unsynchronized when the user
+  has a preferred-time empty slot.
+- Backend commits: `32114d72` (`fix(secretary): preserve training calendar
+  ownership`), `81b90b87` (`fix(training): align split titles with assigned
+  structure`), `f8737377` (`chore: prepare release 4.14.215`), `e700826f`
+  (`fix(secretary): reconcile duplicate events on fresh sync`), `0f532094`
+  (`fix(secretary): repair missing fresh provider events`), and `cdfe9388`
+  (`docs(release): record 4.14.215 staging smoke`).
+- Evidence: initial local `npx tsc --noEmit`, `scripts/risk-gate.sh`, and full
+  `npx vitest run` passed; after the duplicate-reconciliation fix, the focused
+  Secretary sync suite passed 33/33, typecheck passed, risk gate passed 17
+  files / 320 tests, and full Vitest passed 867 files / 12,740 tests; after the
+  missing-provider-event fix, the focused Secretary sync suite passed 35/35,
+  typecheck passed, risk gate passed 17 files / 322 tests, and full Vitest
+  passed 867 files / 12,742 tests. The final production deploy strict gate
+  repeated typecheck, science-policy, build, and full Vitest 867 files /
+  12,742 tests.
+- Staging/prod: staging deploy passed on `0f532094`/`cdfe9388`; standalone
+  staging smoke passed 21/21 with committed evidence
+  `docs/release/smoke-evidence/staging-smoke-0f532094-20260709T093359Z.json`;
+  live Outlook Training calendar lifecycle smoke for the staging QA account
+  passed 9/9; live Outlook Secretary calendar lifecycle smoke passed 8/8; the
+  full Training flow's selected-provider duplicate/cancel checks passed, while
+  one broader plan-shape assertion remained a non-release-blocking harness
+  expectation mismatch for that QA profile.
+- Promote: `promote-to-prod.sh` passed env/artifact parity, ran a fresh
+  promotion-time staging smoke 21/21, then `deploy.sh` strict validation passed
+  migration safety (216 migrations), typecheck, science-policy, build, backup,
+  PM2 restart/readiness, and full Vitest 867 files / 12,742 tests. Production
+  now runs `4.14.215` at `cdfe9388`.
+- Post-promote proof: public `/health` healthy, public `/public-status` ok, PM2
+  `nexus-hub` and `content-engine` online on `4.14.215`, authenticated
+  Decision Center overview returned HTTP 200 with `ok: true`, and
+  post-restart logs showed a completed `secretary_agenda_sync` tick with no
+  high-severity application log entries in the sampled post-deploy window.
+- Blocked/not authorized: TestFlight/App Store upload, physical-device proof,
+  signed-device smoke, HealthKit, Garmin, APNs live push, two-account provider
+  proof, Google live calendar proof for the Outlook-only staging QA account,
+  and production live calendar writes were not authorized/run.
 
 ## 2026-07-08 P3 Release Tooling Promote
 
