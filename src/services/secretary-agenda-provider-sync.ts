@@ -333,7 +333,30 @@ async function reconcileFreshSyncedProviderDuplicates(
   if (!adapter.findEventsByAgendaItemId) return null;
   const input = toProviderEventInput(agendaItem);
   const events = await findProviderEventsForAgendaItem(agendaItem, adapter, input);
-  if (events.length <= 1) return null;
+  if (events.length === 0) {
+    const current = await readProviderEvent(agendaItem, adapter, input);
+    return current ? null : upsertProviderEvent(agendaItem, adapter, fingerprint);
+  }
+  if (events.length === 1) {
+    const [only] = events;
+    if (only.eventId === agendaItem.providerEventId) return null;
+    const updated = await adapter.updateEvent(only.eventId, input);
+    updateProviderMapping(agendaItem, {
+      providerEventId: updated.eventId,
+      providerSource: updated.source,
+      providerSyncState: 'synced',
+    });
+    recordSyncedFingerprint(agendaItem, fingerprint);
+    return result(
+      agendaItem,
+      'attached',
+      updated.eventId,
+      updated.source,
+      'synced',
+      [],
+      'fresh_provider_event_reattached',
+    );
+  }
 
   const canonical = chooseCanonicalProviderEvent(agendaItem, events);
   const deletedDuplicateEventIds = await deleteDuplicateProviderEvents(canonical, events, adapter, input);

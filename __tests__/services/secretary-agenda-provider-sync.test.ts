@@ -1214,6 +1214,47 @@ describe('provider-sync fingerprint short-circuit (migration 224)', () => {
     expect([...provider.events.values()].filter((event) => event.agendaItemId === decision.agendaItem.agendaItemId)).toHaveLength(1);
   });
 
+  it('recreates an externally deleted provider event inside the fresh fingerprint window', async () => {
+    const provider = new MockSecretaryProvider();
+    const decision = submitSecretarySchedulingIntent(intent({
+      intentId: 'fresh-external-delete-repair',
+      sourceEntityId: 'session-fresh-external-delete',
+    }));
+    const first = await syncOne(decision.agendaItem.agendaItemId, provider);
+    provider.removeExternally(first.providerEventId!);
+
+    const repaired = await syncOne(decision.agendaItem.agendaItemId, provider);
+
+    expect(repaired.action).toBe('recreated');
+    expect(repaired.reasonCode).toBe('missing_provider_event_recreated');
+    expect(repaired.providerEventId).not.toBe(first.providerEventId);
+    expect(provider.createInputs).toHaveLength(2);
+  });
+
+  it('reattaches a single marker-matched event when the stored provider id is stale', async () => {
+    const provider = new MockSecretaryProvider();
+    const decision = submitSecretarySchedulingIntent(intent({
+      intentId: 'fresh-single-reattach',
+      sourceEntityId: 'session-fresh-single-reattach',
+    }));
+    const first = await syncOne(decision.agendaItem.agendaItemId, provider);
+    const input = providerInputFor(decision.agendaItem.agendaItemId);
+    provider.removeExternally(first.providerEventId!);
+    provider.seedEvent(input, 'google_evt_survivor');
+
+    const repaired = await syncOne(decision.agendaItem.agendaItemId, provider);
+    const stored = getSecretaryAgendaItemById({
+      agendaItemId: decision.agendaItem.agendaItemId,
+      ownerUserId: OWNER_USER_ID,
+      tenantId: TENANT_ID,
+    });
+
+    expect(repaired.action).toBe('attached');
+    expect(repaired.reasonCode).toBe('fresh_provider_event_reattached');
+    expect(repaired.providerEventId).toBe('google_evt_survivor');
+    expect(stored?.providerEventId).toBe('google_evt_survivor');
+  });
+
   it('short-circuits after Training marks the provider sync satisfied (markSatisfied handshake)', async () => {
     const provider = new MockSecretaryProvider();
     const decision = submitSecretarySchedulingIntent(intent());
@@ -1226,6 +1267,7 @@ describe('provider-sync fingerprint short-circuit (migration 224)', () => {
       providerEventId: 'training_direct_evt_1',
       providerSource: 'google',
     });
+    provider.seedEvent(providerInputFor(decision.agendaItem.agendaItemId), 'training_direct_evt_1');
 
     const result = await syncOne(decision.agendaItem.agendaItemId, provider);
 
