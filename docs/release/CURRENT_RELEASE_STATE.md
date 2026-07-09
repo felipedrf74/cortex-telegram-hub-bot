@@ -13,43 +13,48 @@ older production versions.
 
 ## Active Production Release
 
-- Source branch: `main` at `cdfe9388` (deployed artifact; `32114d72` preserved
-  Training calendar ownership through Secretary agenda sync, `81b90b87` aligned
-  Training split titles with assigned structures, `f8737377` minted version
-  `4.14.215`, `e700826f` reconciled duplicate provider events on fresh syncs,
-  `0f532094` repaired missing fresh provider events, and `cdfe9388` records
-  pre-promote staging-smoke evidence). Pushed to `origin/main`.
-- Production HEAD: `cdfe9388`
+- Source branch: `main` at `9c68db5a` (`fix(coach): gate briefings and
+  compact reports`). Pushed to `origin/main`.
+- Production HEAD: `9c68db5a`
 - Production version: `4.14.215`.
-- Previous production HEAD: `df21fd04`.
-- Scope: 2026-07-09 Training/Secretary calendar ownership and QA hardening —
-  Training-owned Outlook calendar events remain canonical when Secretary agenda
-  sync reads the same slot, stale Secretary duplicates are deleted, missing
-  fresh provider events are recreated or reattached, canonical Training
-  calendar titles/bodies are reused across direct and agenda sync paths, and
-  Training split titles now match the actual ABCDE structure shown in session
-  details.
-- Latest runtime deploy commit: `cdfe9388` (release `4.14.215`: classifier and
-  risk gates selected Training/calendar/Secretary coverage; local focused
-  Secretary sync suites, typecheck, risk gate, and full Vitest passed through
-  the final source commit; staging deploy passed; 5-minute soak completed;
-  standalone staging smoke passed 21/21 with evidence committed in
-  `docs/release/smoke-evidence/staging-smoke-0f532094-20260709T093359Z.json`;
-  promotion-time staging smoke passed 21/21; deploy strict validation passed
-  migration safety (216 migrations), typecheck, science-policy, build, and
-  full Vitest 867 files / 12,742 tests).
-- Verified post-promote by read-only probes: public
-  `https://api.nexushub.me/health` returned `status: healthy`, public
-  `/public-status` returned `status: ok`, PM2 `nexus-hub` and `content-engine`
-  were online on `4.14.215`, an authenticated production Decision Center
-  overview check returned HTTP 200 with `ok: true` and the expected overview
-  contract, and the post-restart scheduler/log sample showed
-  `secretary_agenda_sync complete` with no high-severity app log lines in the
-  sampled post-deploy window.
+- Previous production HEAD: `cdfe9388` (followed by docs-only closeout
+  `bbf0e50a`).
+- Scope: paid daily coach briefings now require both an active workout plan and
+  an eligible Pro/Max entitlement on cron and on-demand API paths. Free,
+  owner-only, beta-trial, and no-active-plan users stop before cache/calendar/
+  LLM/report/push/state work. Coach prompts and output are compacted, ISO event
+  ranges render as start/end/duration, and malformed `COACH_RECS` tails are
+  removed from user-visible text.
+- Latest runtime deploy commit: `9c68db5a` (direct production deploy explicitly
+  authorized to avoid a duplicate full-suite run; migration safety passed for
+  216 migrations, typecheck and build passed, focused coach/API/entitlement
+  suites passed 153 tests, the protected pre-commit matrix passed 2,338 tests,
+  and the changed dependency pass passed 1,383 tests).
+- Verified post-deploy by read-only probes: public
+  `https://api.nexushub.me/health` returned `status: healthy`; PM2 `nexus-hub`
+  and `content-engine` were online and stable; production reported version
+  `4.14.215`; the remote artifact digest matched local at
+  `2f2b0869e98522ad914cdb8cc6fb6ff1b4da33266caa437bf9f999874f9da88d`;
+  and compiled runtime markers for the active-plan gate, paid-entitlement gate,
+  and 1,800-token coach limit were present.
 - iOS companion remains clean on `main` at `8d2ff0a` with no backend-contract
   drift requiring an iOS source change. TestFlight/App Store upload,
   physical-device proof, and signed-device smoke were not authorized or run.
 - Backend workspace root: `/Users/felipedominguez/Desktop/Custom Connectors/Cortex/cortex-telegram-hub-bot`
+
+## 2026-07-09 Paid Coach Briefing Production Deploy
+
+- Backend commit: `9c68db5a` (`fix(coach): gate briefings and compact reports`).
+- Policy: Apple/Stripe Pro or Max and explicitly assigned founder Pro/Max are
+  eligible; Free, owner-only, beta sandbox, expired, and no-active-plan users
+  are denied before coach work begins.
+- Delivery: direct `deploy.sh` production path with the duplicate full Vitest
+  layer explicitly skipped after focused and protected matrices passed. The
+  script still passed migration policy, typecheck, build, backup, artifact
+  sync, dependency/native rebuild, SQLite integrity, PM2 stability, and
+  readiness checks.
+- Not run: staging deploy/smoke, live coach generation, live APNs delivery, and
+  production calendar writes. These were outside the requested scoped release.
 
 ## 2026-07-09 Training/Secretary Calendar Ownership Promote
 
