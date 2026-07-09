@@ -292,17 +292,25 @@ export async function syncSecretaryAgendaItemToProvider(
   }
 
   // Short-circuit: the item is already synced and nothing we would push has
-  // changed since the last successful sync — skip the duplicate-window
-  // readback, the direct readback, and the unconditional update PATCH that
-  // otherwise fire every 5-minute tick. The fingerprint goes stale after
-  // SECRETARY_SYNC_VERIFY_INTERVAL_MINUTES so externally deleted/moved
-  // provider events are still detected and healed on the next full pass.
+  // changed since the last successful sync. We still perform the marker-based
+  // duplicate scan when the adapter supports it so legacy duplicate pairs
+  // converge immediately, but we skip the direct readback and unconditional
+  // update PATCH that otherwise fire every 5-minute tick. The fingerprint goes
+  // stale after SECRETARY_SYNC_VERIFY_INTERVAL_MINUTES so externally
+  // deleted/moved provider events are still detected and healed on the next
+  // full pass.
   const fingerprint = computeProviderSyncFingerprint(agendaItem, adapter.source);
   if (
     agendaItem.providerSyncState === 'synced'
     && agendaItem.providerEventId
     && isProviderSyncFingerprintFresh(agendaItem, fingerprint)
   ) {
+    const reconciledDuplicate = await reconcileFreshSyncedProviderDuplicates(
+      agendaItem,
+      adapter,
+      fingerprint,
+    );
+    if (reconciledDuplicate) return reconciledDuplicate;
     return result(
       agendaItem,
       'skipped',
@@ -315,6 +323,51 @@ export async function syncSecretaryAgendaItemToProvider(
   }
 
   return upsertProviderEvent(agendaItem, adapter, fingerprint);
+}
+
+async function reconcileFreshSyncedProviderDuplicates(
+  agendaItem: SecretaryAgendaItem,
+  adapter: SecretaryAgendaProviderAdapter,
+  fingerprint: string,
+): Promise<SecretaryAgendaProviderSyncResult | null> {
+  if (!adapter.findEventsByAgendaItemId) return null;
+  const input = toProviderEventInput(agendaItem);
+  const events = await findProviderEventsForAgendaItem(agendaItem, adapter, input);
+  if (events.length <= 1) return null;
+
+  const canonical = chooseCanonicalProviderEvent(agendaItem, events);
+  const deletedDuplicateEventIds = await deleteDuplicateProviderEvents(canonical, events, adapter, input);
+  if (!canonical) return null;
+
+  if (canonical.eventId !== agendaItem.providerEventId) {
+    const updated = await adapter.updateEvent(canonical.eventId, input);
+    updateProviderMapping(agendaItem, {
+      providerEventId: updated.eventId,
+      providerSource: updated.source,
+      providerSyncState: 'synced',
+    });
+    recordSyncedFingerprint(agendaItem, fingerprint);
+    return result(
+      agendaItem,
+      'duplicate_deleted',
+      updated.eventId,
+      updated.source,
+      'synced',
+      deletedDuplicateEventIds,
+      'fresh_duplicate_provider_events_deleted',
+    );
+  }
+
+  recordSyncedFingerprint(agendaItem, fingerprint);
+  return result(
+    agendaItem,
+    'duplicate_deleted',
+    canonical.eventId,
+    canonical.source,
+    'synced',
+    deletedDuplicateEventIds,
+    'fresh_duplicate_provider_events_deleted',
+  );
 }
 
 export async function syncSecretaryAgendaItemsToProvider(

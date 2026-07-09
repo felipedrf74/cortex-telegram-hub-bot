@@ -1166,7 +1166,7 @@ describe('provider-sync fingerprint short-circuit (migration 224)', () => {
     else process.env.SECRETARY_SYNC_VERIFY_INTERVAL_MINUTES = OLD_ENV;
   });
 
-  it('skips all provider round-trips for an unchanged synced item', async () => {
+  it('skips provider writes for an unchanged synced item without duplicates', async () => {
     const provider = new MockSecretaryProvider();
     const decision = submitSecretarySchedulingIntent(intent());
     await syncOne(decision.agendaItem.agendaItemId, provider);
@@ -1179,10 +1179,39 @@ describe('provider-sync fingerprint short-circuit (migration 224)', () => {
       providerSyncState: 'synced',
       reasonCode: 'unchanged_since_last_sync',
     });
-    // No readback, no duplicate-window scan, no update PATCH on the second pass.
-    expect(provider.findAgendaItemIds.length).toBe(findCallsAfterFirst);
+    // The fast path may scan by marker to catch duplicates, but it must not
+    // write when the mapping is already canonical.
+    expect(provider.findAgendaItemIds.length).toBe(findCallsAfterFirst + 1);
     expect(provider.updateInputs).toHaveLength(0);
     expect(provider.createInputs).toHaveLength(1);
+  });
+
+  it('deletes duplicate provider events even inside the fresh fingerprint window', async () => {
+    const provider = new MockSecretaryProvider();
+    const decision = submitSecretarySchedulingIntent(intent({
+      intentId: 'fresh-duplicate-repair',
+      sourceEntityId: 'session-fresh-duplicate',
+    }));
+    const first = await syncOne(decision.agendaItem.agendaItemId, provider);
+    const input = providerInputFor(decision.agendaItem.agendaItemId);
+    provider.seedEvent(input, 'google_evt_duplicate_fresh_a');
+    provider.seedEvent(input, 'google_evt_duplicate_fresh_b');
+
+    const repaired = await syncOne(decision.agendaItem.agendaItemId, provider);
+
+    expect(repaired.action).toBe('duplicate_deleted');
+    expect(repaired.reasonCode).toBe('fresh_duplicate_provider_events_deleted');
+    expect(repaired.providerEventId).toBe(first.providerEventId);
+    expect(repaired.deletedDuplicateEventIds.sort()).toEqual([
+      'google_evt_duplicate_fresh_a',
+      'google_evt_duplicate_fresh_b',
+    ]);
+    expect(provider.deletedEventIds).toEqual(expect.arrayContaining([
+      'google_evt_duplicate_fresh_a',
+      'google_evt_duplicate_fresh_b',
+    ]));
+    expect(provider.updateInputs).toHaveLength(0);
+    expect([...provider.events.values()].filter((event) => event.agendaItemId === decision.agendaItem.agendaItemId)).toHaveLength(1);
   });
 
   it('short-circuits after Training marks the provider sync satisfied (markSatisfied handshake)', async () => {
@@ -1209,7 +1238,7 @@ describe('provider-sync fingerprint short-circuit (migration 224)', () => {
     });
     expect(provider.createInputs).toHaveLength(0);
     expect(provider.updateInputs).toHaveLength(0);
-    expect(provider.findAgendaItemIds).toHaveLength(0);
+    expect(provider.findAgendaItemIds).toEqual([decision.agendaItem.agendaItemId]);
   });
 
   it('keeps the trainingOwned event as canonical and deletes the Secretary copy instead', async () => {
