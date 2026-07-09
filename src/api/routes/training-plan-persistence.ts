@@ -19,6 +19,7 @@ import {
   type SecretarySchedulingIntent,
 } from '../../services/secretary-scheduling-arbitrator';
 import { loadLiveCalendarBusyWindowsForSecretaryIntent } from '../../services/secretary-live-calendar-busy';
+import { emojiForTrainingSession } from '../../services/training-calendar-format';
 import {
   appendTrainingIdentityMarker,
   buildTrainingSessionIdentityKey,
@@ -173,7 +174,6 @@ export interface PersistGeneratedTrainingPlanInput {
   /** Deterministic training generation contract used by the strict quality gate. */
   trainingPlanSpec?: TrainingPlanSpec;
 }
-
 export interface PersistGeneratedTrainingPlanResult {
   planId: number;
   totalSessions: number;
@@ -1621,19 +1621,4 @@ function buildSessionDescriptionInput(args: {
     },
     profiles: input.athleteProfiles,
   };
-}
-
-function emojiForTrainingSession(sessionType: unknown): string {
-  switch (sessionType) {
-    case 'gym':
-      return '💪';
-    case 'run':
-      return '🏃';
-    case 'ride':
-      return '🚴';
-    case 'swim':
-      return '🏊';
-    default:
-      return '🏋️';
-  }
 }

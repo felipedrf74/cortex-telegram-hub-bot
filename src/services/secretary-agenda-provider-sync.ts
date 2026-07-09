@@ -2,6 +2,7 @@
 
 import { getDb } from './database';
 import {
+  computeSecretaryAgendaProviderSyncFingerprint,
   getSecretaryAgendaItemById,
   listSecretaryAgendaItems,
   type SecretaryAgendaItem,
@@ -39,6 +40,13 @@ export interface SecretaryProviderEvent {
   startAt?: string;
   endAt?: string;
   version?: number;
+  /**
+   * Set by adapters when the provider event carries the Training identity
+   * marker for this agenda item's source session. Canonical-event selection
+   * prefers these so duplicate cleanup never deletes the event that
+   * `training_sessions.calendar_event_id` links to.
+   */
+  trainingOwned?: boolean;
 }
 
 export interface SecretaryAgendaProviderAdapter {
@@ -127,17 +135,14 @@ function syncVerifyIntervalMinutes(): number {
   return parsed;
 }
 
+// Single source of truth lives in the arbitrator so the fingerprint written
+// by markSecretaryAgendaProviderSyncSatisfied can never drift from the one
+// this module computes for the short-circuit comparison.
 function computeProviderSyncFingerprint(
   agendaItem: SecretaryAgendaItem,
   source: SecretaryCalendarProviderSource,
 ): string {
-  return [
-    source,
-    agendaItem.sourceShapeHash,
-    agendaItem.startAt ?? '',
-    agendaItem.endAt ?? '',
-    String(agendaItem.version),
-  ].join('|');
+  return computeSecretaryAgendaProviderSyncFingerprint(agendaItem, source);
 }
 
 function isProviderSyncFingerprintFresh(
@@ -537,11 +542,18 @@ function chooseCanonicalProviderEvent(
   events: SecretaryProviderEvent[],
 ): SecretaryProviderEvent | null {
   if (events.length === 0) return null;
+  // Training-owned events (identity marker for this item's source session)
+  // outrank everything, including the stored provider_event_id: in the legacy
+  // duplicate state the stored id points at the Secretary copy, and picking it
+  // would delete the event Training links to out of the user's calendar.
+  const pool = events.some((event) => event.trainingOwned)
+    ? events.filter((event) => event.trainingOwned)
+    : events;
   if (agendaItem.providerEventId) {
-    const current = events.find((event) => event.eventId === agendaItem.providerEventId);
+    const current = pool.find((event) => event.eventId === agendaItem.providerEventId);
     if (current) return current;
   }
-  return [...events].sort((left, right) => left.eventId.localeCompare(right.eventId))[0] ?? null;
+  return [...pool].sort((left, right) => left.eventId.localeCompare(right.eventId))[0] ?? null;
 }
 
 async function deleteDuplicateProviderEvents(

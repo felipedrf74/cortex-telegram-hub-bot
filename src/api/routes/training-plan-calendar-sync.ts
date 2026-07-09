@@ -10,6 +10,7 @@ import {
   type BusyWindow,
 } from './training-schedule-utils';
 import { createTrainingCalendarEvent } from './training-calendar-event-writer';
+import { emojiForTrainingSession } from '../../services/training-calendar-format';
 import { logger } from '../../utils/logger';
 import { isTrainingCalendarEventUnclaimed } from '../../services/training-calendar-scope';
 import { loadLiveCalendarBusyWindowsForSecretaryIntent } from '../../services/secretary-live-calendar-busy';
@@ -192,23 +193,6 @@ function readPlanPreferences(plan: trainingPlans.TrainingPlan): PlanPreferences 
 function normalizeCalendarId(value: unknown): string | null {
   const trimmed = typeof value === 'string' ? value.trim() : '';
   return trimmed || null;
-}
-
-function emojiForTrainingSession(sessionType: string | null | undefined): string {
-  switch ((sessionType || '').toLowerCase()) {
-    case 'gym':
-      return '💪';
-    case 'run':
-      return '🏃';
-    case 'ride':
-    case 'bike':
-    case 'cycling':
-      return '🚴';
-    case 'swim':
-      return '🏊';
-    default:
-      return '🏋️';
-  }
 }
 
 function sessionDateFor(planStart: Date, weekNumber: number, dayOfWeek: string): Date | null {

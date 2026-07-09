@@ -4,6 +4,12 @@ import { createHash } from 'crypto';
 
 const IDENTITY_MARKER_PREFIX = 'NEXUS_TRAINING_IDENTITY';
 const IDENTITY_MARKER_RE = /\n?\s*\[NEXUS_TRAINING_IDENTITY\s+([^\]]+)\]\s*$/i;
+// Provider readbacks are not guaranteed to return the marker at the end of a
+// plain-text body: Microsoft Graph returns event bodies as HTML even when the
+// event was created with contentType 'Text', wrapping the marker in tags that
+// defeat the end-of-string anchor above. Parsing must therefore also accept a
+// marker found anywhere in a tag-stripped copy of the description.
+const IDENTITY_MARKER_ANYWHERE_RE = /\[NEXUS_TRAINING_IDENTITY\s+([^\]]+)\]/i;
 
 export interface TrainingSessionShapeInput {
   sessionType?: unknown;
@@ -78,7 +84,9 @@ export function stripTrainingIdentityMarker(description: string | null | undefin
 export function parseTrainingIdentityMarker(
   description: string | null | undefined,
 ): TrainingCalendarIdentityMarker | null {
-  const match = String(description || '').match(IDENTITY_MARKER_RE);
+  const raw = String(description || '');
+  const match = raw.match(IDENTITY_MARKER_RE)
+    ?? normalizeProviderDescriptionForMarkerParse(raw).match(IDENTITY_MARKER_ANYWHERE_RE);
   if (!match) return null;
   const values = new Map<string, string>();
   for (const part of match[1].split(';')) {
@@ -99,6 +107,21 @@ export function parseTrainingIdentityMarker(
     sessionIdentityKey: nonEmpty(values.get('key')),
     sessionShapeHash: nonEmpty(values.get('shape')),
   };
+}
+
+// Strips HTML tags and decodes the entities Graph commonly injects so the
+// identity marker can be located inside an HTML-wrapped provider body. Only
+// used for marker parsing — never for rewriting descriptions.
+export function normalizeProviderDescriptionForMarkerParse(value: string): string {
+  if (!value.includes('<') && !value.includes('&')) return value;
+  return value
+    .replace(/<[^>]*>/g, '\n')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&amp;/gi, '&')
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;/gi, "'");
 }
 
 function parsePositiveInt(value: string | undefined): number | null {

@@ -16,6 +16,7 @@ const outlookCalendar = vi.hoisted(() => ({
 
 const trainingPlans = vi.hoisted(() => ({
   getSessionById: vi.fn(),
+  getPlanById: vi.fn(),
 }));
 
 vi.mock('../../src/services/unified-calendar', () => unifiedCalendar);
@@ -28,6 +29,7 @@ import {
   createUnifiedCalendarSecretaryProviderAdapter,
   extractSecretaryAgendaMarker,
 } from '../../src/services/secretary-unified-calendar-provider-adapter';
+import { appendTrainingIdentityMarker, parseTrainingIdentityMarker } from '../../src/services/training-session-identity';
 import type { SecretaryProviderEventInput } from '../../src/services/secretary-agenda-provider-sync';
 
 const input: SecretaryProviderEventInput = {
@@ -51,6 +53,7 @@ const input: SecretaryProviderEventInput = {
 beforeEach(() => {
   vi.clearAllMocks();
   trainingPlans.getSessionById.mockReturnValue(null);
+  trainingPlans.getPlanById.mockReturnValue(null);
 });
 
 describe('secretary-unified-calendar-provider-adapter', () => {
@@ -185,6 +188,250 @@ describe('secretary-unified-calendar-provider-adapter', () => {
       42,
     );
     expect(outlookCalendar.getEvents).not.toHaveBeenCalled();
+  });
+
+  it('recognizes Training-created calendar events without creating a Secretary duplicate', async () => {
+    const trainingInput: SecretaryProviderEventInput = {
+      ...input,
+      sourceIntentId: 'training:39:3:970',
+      sourceEntityId: '970',
+      title: 'Lower Body Strength B',
+      startAt: '2026-05-04T18:00:00.000Z',
+      endAt: '2026-05-04T18:40:00.000Z',
+      durationMinutes: 40,
+    };
+    trainingPlans.getSessionById.mockReturnValue({
+      id: 970,
+      session_type: 'gym',
+      duration_minutes: 40,
+      description: 'Lower work',
+    });
+    googleCalendar.getEvents.mockResolvedValue([
+      {
+        id: 'google_training_direct',
+        summary: '💪 Lower Body Strength B (40min)',
+        start: trainingInput.startAt,
+        end: trainingInput.endAt,
+        description: appendTrainingIdentityMarker('Lower work', {
+          planId: 39,
+          planVersion: 3,
+          sessionId: 970,
+          sessionIdentityKey: 'plan:39|week:1|day:monday|type:gym|slot:1',
+          sessionShapeHash: 'training-shape-970',
+        }),
+      },
+    ]);
+    const adapter = createUnifiedCalendarSecretaryProviderAdapter('google');
+
+    const events = await adapter.findEventsByAgendaItemId!('sec_agenda_123', trainingInput);
+
+    expect(events.map((event) => event.eventId)).toEqual(['google_training_direct']);
+    expect(events[0]).toMatchObject({
+      agendaItemId: 'sec_agenda_123',
+      title: '💪 Lower Body Strength B (40min)',
+    });
+  });
+
+  it('formats Training provider writes like direct Training calendar sync titles', async () => {
+    const trainingInput: SecretaryProviderEventInput = {
+      ...input,
+      sourceIntentId: 'training:39:3:970',
+      sourceEntityId: '970',
+      title: 'Lower Body Strength B',
+      startAt: '2026-05-04T18:00:00.000Z',
+      endAt: '2026-05-04T18:40:00.000Z',
+      durationMinutes: 40,
+    };
+    trainingPlans.getSessionById.mockReturnValue({
+      id: 970,
+      session_type: 'gym',
+      duration_minutes: 40,
+      description: 'Lower work',
+    });
+    unifiedCalendar.createEvent.mockResolvedValue({
+      id: 'outlook_training',
+      source: 'outlook',
+      summary: '💪 Lower Body Strength B (40min)',
+      start: trainingInput.startAt,
+      end: trainingInput.endAt,
+      description: buildSecretaryCalendarDescription(trainingInput),
+    });
+    const adapter = createUnifiedCalendarSecretaryProviderAdapter('outlook');
+
+    await adapter.createEvent(trainingInput);
+
+    expect(unifiedCalendar.createEvent).toHaveBeenCalledWith(expect.objectContaining({
+      title: '💪 Lower Body Strength B (40min)',
+      start: trainingInput.startAt,
+      end: trainingInput.endAt,
+    }), 'outlook', 42);
+  });
+
+  it('re-appends the Training identity marker on provider writes so adoption never destroys Training ownership', async () => {
+    const trainingInput: SecretaryProviderEventInput = {
+      ...input,
+      sourceIntentId: 'training:39:3:970',
+      sourceEntityId: '970',
+      title: 'Lower Body Strength B',
+      durationMinutes: 40,
+    };
+    trainingPlans.getSessionById.mockReturnValue({
+      id: 970,
+      plan_id: 39,
+      session_type: 'gym',
+      duration_minutes: 40,
+      description: 'Lower work',
+      session_identity_key: 'plan:39|week:1|day:monday|type:gym|slot:1',
+      session_shape_hash: 'training-shape-970',
+    });
+    unifiedCalendar.updateEvent.mockResolvedValue({
+      id: 'google_training_direct',
+      source: 'google',
+      summary: '💪 Lower Body Strength B (40min)',
+      start: trainingInput.startAt,
+      end: trainingInput.endAt,
+      description: 'rewritten',
+    });
+    const adapter = createUnifiedCalendarSecretaryProviderAdapter('google');
+
+    await adapter.updateEvent('google_training_direct', trainingInput);
+
+    const pushed = unifiedCalendar.updateEvent.mock.calls[0][0];
+    expect(pushed.new_title).toBe('💪 Lower Body Strength B (40min)');
+    expect(parseTrainingIdentityMarker(pushed.new_description)).toMatchObject({
+      planId: 39,
+      planVersion: 3,
+      sessionId: 970,
+      sessionIdentityKey: 'plan:39|week:1|day:monday|type:gym|slot:1',
+      sessionShapeHash: 'training-shape-970',
+    });
+    // The user-facing body builder itself stays marker-free (Bug #3 contract);
+    // the marker is a provider-write concern only.
+    expect(buildSecretaryCalendarDescription(trainingInput)).not.toContain('NEXUS_TRAINING_IDENTITY');
+  });
+
+  it('marks Training identity matches as trainingOwned so canonical selection never deletes them', async () => {
+    const trainingInput: SecretaryProviderEventInput = {
+      ...input,
+      sourceIntentId: 'training:39:3:970',
+      sourceEntityId: '970',
+      title: 'Lower Body Strength B',
+      durationMinutes: 40,
+    };
+    trainingPlans.getSessionById.mockReturnValue({
+      id: 970,
+      plan_id: 39,
+      session_type: 'gym',
+      duration_minutes: 40,
+      description: 'Lower work',
+    });
+    googleCalendar.getEvents.mockResolvedValue([
+      {
+        id: 'google_training_direct',
+        summary: '💪 Lower Body Strength B (40min)',
+        start: trainingInput.startAt,
+        end: trainingInput.endAt,
+        description: appendTrainingIdentityMarker('Lower work', {
+          planId: 39,
+          planVersion: 3,
+          sessionId: 970,
+          sessionIdentityKey: 'k',
+          sessionShapeHash: 's',
+        }),
+      },
+      {
+        id: 'google_secretary_copy',
+        summary: 'Lower Body Strength B',
+        start: trainingInput.startAt,
+        end: trainingInput.endAt,
+        description: 'Plain Secretary copy without markers',
+      },
+    ]);
+    const adapter = createUnifiedCalendarSecretaryProviderAdapter('google');
+
+    const events = await adapter.findEventsByAgendaItemId!('sec_agenda_123', trainingInput);
+
+    expect(events.map((event) => [event.eventId, event.trainingOwned === true])).toEqual([
+      ['google_training_direct', true],
+      ['google_secretary_copy', false],
+    ]);
+  });
+
+  it('matches Training events on Outlook despite HTML bodies and timezone-shifted readback instants', async () => {
+    const trainingInput: SecretaryProviderEventInput = {
+      ...input,
+      sourceIntentId: 'training:39:3:970',
+      sourceEntityId: '970',
+      title: 'Lower Body Strength B',
+      startAt: '2026-07-06T18:00:00.000Z',
+      endAt: '2026-07-06T18:40:00.000Z',
+      durationMinutes: 40,
+    };
+    trainingPlans.getSessionById.mockReturnValue({
+      id: 970,
+      plan_id: 39,
+      session_type: 'gym',
+      duration_minutes: 40,
+    });
+    outlookCalendar.getEvents.mockResolvedValue([
+      {
+        id: 'outlook_training_direct',
+        summary: '💪 Lower Body Strength B (40min)',
+        // Graph returned zone-naive local times: parsed instants are offset
+        // from the UTC agenda slot, so instant equality cannot be required.
+        start: '2026-07-06T19:00:00.0000000',
+        end: '2026-07-06T19:40:00.0000000',
+        description: '<html><body>Lower work<br>[NEXUS_TRAINING_IDENTITY plan=39;version=3;session=970;key=k;shape=s]</body></html>',
+      },
+    ]);
+    const adapter = createUnifiedCalendarSecretaryProviderAdapter('outlook');
+
+    const events = await adapter.findEventsByAgendaItemId!('sec_agenda_123', trainingInput);
+
+    expect(events.map((event) => event.eventId)).toEqual(['outlook_training_direct']);
+    expect(events[0].trainingOwned).toBe(true);
+  });
+
+  it('rejects Training marker matches from a different plan and tolerates non-training intent ids', async () => {
+    trainingPlans.getSessionById.mockReturnValue({
+      id: 970,
+      plan_id: 39,
+      session_type: 'gym',
+      duration_minutes: 40,
+    });
+    const otherPlanEvent = {
+      id: 'google_other_plan',
+      summary: 'Different Session',
+      start: input.startAt,
+      end: input.endAt,
+      description: appendTrainingIdentityMarker('Old plan work', {
+        planId: 41,
+        planVersion: 1,
+        sessionId: 970,
+        sessionIdentityKey: 'k',
+        sessionShapeHash: 's',
+      }),
+    };
+    googleCalendar.getEvents.mockResolvedValue([otherPlanEvent]);
+    const adapter = createUnifiedCalendarSecretaryProviderAdapter('google');
+
+    const withIntent = await adapter.findEventsByAgendaItemId!('sec_agenda_123', {
+      ...input,
+      sourceIntentId: 'training:39:3:970',
+      sourceEntityId: '970',
+      title: 'Lower Body Strength B',
+    });
+    expect(withIntent).toEqual([]);
+
+    // Without a parseable training intent the plan cross-check is skipped and
+    // the sessionId match stands (session ids are globally unique).
+    const withoutIntent = await adapter.findEventsByAgendaItemId!('sec_agenda_123', {
+      ...input,
+      sourceIntentId: 'intent_123',
+      sourceEntityId: '970',
+      title: 'Lower Body Strength B',
+    });
+    expect(withoutIntent.map((event) => event.eventId)).toEqual(['google_other_plan']);
   });
 
   it('extracts Secretary agenda markers conservatively', () => {

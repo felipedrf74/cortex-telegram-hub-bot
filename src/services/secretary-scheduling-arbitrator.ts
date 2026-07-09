@@ -526,7 +526,7 @@ export function markSecretaryAgendaProviderSyncSatisfied(scope: {
            provider_source = ?,
            provider_sync_state = 'synced',
            lifecycle_state = CASE
-             WHEN lifecycle_state IN ('scheduled', 'reflowed', 'compressed', 'synced')
+             WHEN lifecycle_state IN ('scheduled', 'reflowed', 'compressed', 'synced', 'failed_sync')
              THEN 'synced'
              ELSE lifecycle_state
            END,
@@ -542,6 +542,10 @@ export function markSecretaryAgendaProviderSyncSatisfied(scope: {
     scope.ownerUserId,
     normalizeTenantId(scope.tenantId),
   );
+  const updated = getSecretaryAgendaItemById(scope);
+  if (updated) {
+    recordAgendaProviderSyncFingerprint(updated, scope.providerSource, nowIso);
+  }
   return getSecretaryAgendaItemById(scope);
 }
 
@@ -1504,6 +1508,60 @@ function stableStringify(value: unknown): string {
 
 function normalizeTenantId(value: string | number): string {
   return String(value ?? '').trim();
+}
+
+/**
+ * Canonical provider-sync fingerprint for a secretary agenda item. This is
+ * the single source of truth shared by the sync engine's short-circuit
+ * comparison (secretary-agenda-provider-sync.ts) and the fingerprint written
+ * when Training satisfies the provider sync directly — the two must never
+ * drift, or satisfied items fall back to per-tick provider round-trips.
+ */
+export function computeSecretaryAgendaProviderSyncFingerprint(
+  item: Pick<SecretaryAgendaItem, 'sourceShapeHash' | 'startAt' | 'endAt' | 'version'>,
+  providerSource: 'google' | 'outlook',
+): string {
+  return [
+    providerSource,
+    item.sourceShapeHash,
+    item.startAt ?? '',
+    item.endAt ?? '',
+    String(item.version),
+  ].join('|');
+}
+
+function recordAgendaProviderSyncFingerprint(
+  item: SecretaryAgendaItem,
+  providerSource: 'google' | 'outlook',
+  nowIso: string,
+): void {
+  const db = getDb();
+  if (
+    !secretaryAgendaColumnExists('last_synced_fingerprint', db)
+    || !secretaryAgendaColumnExists('last_synced_verified_at', db)
+  ) {
+    return;
+  }
+  const fingerprint = computeSecretaryAgendaProviderSyncFingerprint(item, providerSource);
+  db.prepare(`
+    UPDATE secretary_agenda_items
+       SET last_synced_fingerprint = ?,
+           last_synced_verified_at = ?
+     WHERE agenda_item_id = ?
+       AND owner_user_id = ?
+       AND tenant_id = ?
+  `).run(
+    fingerprint,
+    nowIso,
+    item.agendaItemId,
+    item.ownerUserId,
+    item.tenantId,
+  );
+}
+
+function secretaryAgendaColumnExists(columnName: string, db = getDb()): boolean {
+  const columns = db.prepare('PRAGMA table_info(secretary_agenda_items)').all() as Array<{ name?: string }>;
+  return columns.some((column) => column.name === columnName);
 }
 
 function normalizeNow(now?: string): string {

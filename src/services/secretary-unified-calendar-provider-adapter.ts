@@ -15,8 +15,14 @@ import {
   type SecretaryProviderEvent,
   type SecretaryProviderEventInput,
 } from './secretary-agenda-provider-sync';
-import { getSessionById, type TrainingSession } from './training-plans';
-import { stripTrainingIdentityMarker } from './training-session-identity';
+import { getPlanById, getSessionById, type TrainingSession } from './training-plans';
+import {
+  appendTrainingIdentityMarker,
+  normalizeProviderDescriptionForMarkerParse,
+  parseTrainingIdentityMarker,
+  stripTrainingIdentityMarker,
+} from './training-session-identity';
+import { emojiForTrainingSession } from './training-calendar-format';
 import { renderSectionsAsText, type SessionSections } from './training-session-description';
 import { logger } from '../utils/logger';
 
@@ -30,10 +36,10 @@ export function createUnifiedCalendarSecretaryProviderAdapter(
     source,
     async createEvent(input) {
       const event = await createEvent({
-        title: input.title,
+        title: calendarTitleForSecretaryProviderEvent(input),
         start: input.startAt,
         end: input.endAt,
-        description: buildSecretaryCalendarDescription(input),
+        description: providerDescriptionForSecretaryEvent(input),
         categories: dedupeCategories(['Nexus', 'Secretary', input.sourceSkill]),
       }, source, input.ownerUserId);
       return toSecretaryProviderEvent(event, input);
@@ -41,10 +47,10 @@ export function createUnifiedCalendarSecretaryProviderAdapter(
     async updateEvent(eventId, input) {
       const event = await updateEvent({
         event_id: eventId,
-        new_title: input.title,
+        new_title: calendarTitleForSecretaryProviderEvent(input),
         new_start: input.startAt,
         new_end: input.endAt,
-        new_description: buildSecretaryCalendarDescription(input),
+        new_description: providerDescriptionForSecretaryEvent(input),
       }, source, input.ownerUserId);
       return toSecretaryProviderEvent(event, input);
     },
@@ -64,6 +70,7 @@ export function createUnifiedCalendarSecretaryProviderAdapter(
         .filter((event) => event.source === source)
         .filter((event) => (
           extractSecretaryAgendaMarker(event.description) === agendaItemId
+          || isLikelySameTrainingCalendarEvent(event, input)
           || isLikelySameSecretaryEvent(event, input)
         ))
         .map((event) => toSecretaryProviderEvent(event, input));
@@ -89,6 +96,39 @@ export function buildSecretaryCalendarDescription(input: SecretaryProviderEventI
     .map((section) => section?.trim() ?? '')
     .filter(Boolean);
   return sections.join('\n\n');
+}
+
+// What actually gets pushed to the provider. The user-facing body stays
+// marker-free (2026-05-25 Bug #3 contract on buildSecretaryCalendarDescription),
+// but training-backed events must carry the same [NEXUS_TRAINING_IDENTITY ...]
+// trailer the direct Training calendar sync writes: it is the only signal that
+// lets Training re-adopt the event after plan regeneration, lets the
+// cancellation sweep find it, keeps busy-classification treating it as
+// training-owned, and lets this adapter's own dedupe keep matching it after a
+// Secretary rewrite. Without re-appending it here, the first Secretary update
+// of an adopted Training event would destroy the fix's own match signal.
+function providerDescriptionForSecretaryEvent(input: SecretaryProviderEventInput): string {
+  const description = buildSecretaryCalendarDescription(input);
+  const session = trainingSessionForInput(input);
+  if (!session) return description;
+  const intent = parseTrainingSourceIntent(input.sourceIntentId);
+  const planVersion = intent?.planVersion
+    ?? getPlanById(session.plan_id)?.plan_version
+    ?? null;
+  return appendTrainingIdentityMarker(description, {
+    planId: session.plan_id,
+    planVersion,
+    sessionId: session.id,
+    sessionIdentityKey: session.session_identity_key ?? null,
+    sessionShapeHash: session.session_shape_hash ?? null,
+  });
+}
+
+function trainingSessionForInput(input: SecretaryProviderEventInput): TrainingSession | null {
+  if (input.sourceSkill !== 'training' || input.sourceEntityType !== 'training_session') return null;
+  const sessionId = Number(input.sourceEntityId);
+  if (!Number.isFinite(sessionId) || sessionId <= 0) return null;
+  return getSessionById(Math.floor(sessionId));
 }
 
 // 2026-05-25 Bug #3 (Stage 1) — body hydration. Pre-fix this function
@@ -163,9 +203,78 @@ function buildMinimalSessionFallback(session: TrainingSession): string | null {
   return parts.length > 0 ? parts.join(' · ') : null;
 }
 
+function calendarTitleForSecretaryProviderEvent(input: SecretaryProviderEventInput): string {
+  if (input.sourceSkill !== 'training' || input.sourceEntityType !== 'training_session') {
+    return input.title;
+  }
+  const sessionId = Number(input.sourceEntityId);
+  if (!Number.isFinite(sessionId) || sessionId <= 0) return input.title;
+  const session = getSessionById(Math.floor(sessionId));
+  const durationMinutes = typeof input.durationMinutes === 'number' && Number.isFinite(input.durationMinutes) && input.durationMinutes > 0
+    ? Math.round(input.durationMinutes)
+    : session?.duration_minutes;
+  const title = input.title.trim();
+  if (!title) return title;
+  const emoji = emojiForTrainingSession(session?.session_type);
+  if (durationMinutes && /\(\d+\s*min\)$/i.test(title)) {
+    // Already fully decorated (persistence-path intent titles). Only add the
+    // emoji when it is missing so the title matches the direct-sync format.
+    return hasLeadingTrainingEmoji(title) ? title : `${emoji} ${title}`;
+  }
+  const cleanTitle = stripLeadingTrainingEmoji(title);
+  return durationMinutes ? `${emoji} ${cleanTitle} (${durationMinutes}min)` : `${emoji} ${cleanTitle}`;
+}
+
+const LEADING_TRAINING_EMOJI_RE = /^\s*(?:💪|🏃|🚴|🏊|🏋️|🏋)/u;
+
+function hasLeadingTrainingEmoji(title: string): boolean {
+  return LEADING_TRAINING_EMOJI_RE.test(title);
+}
+
+function stripLeadingTrainingEmoji(title: string): string {
+  return title
+    .replace(/^\s*(?:💪|🏃|🚴|🏊|🏋️|🏋)\s*/u, '')
+    .trim();
+}
+
 function isLikelySameSecretaryEvent(event: UnifiedCalendarEvent, input: SecretaryProviderEventInput): boolean {
   if (!sameInstant(event.start, input.startAt) || !sameInstant(event.end, input.endAt)) return false;
-  return normalizeComparableText(event.summary) === normalizeComparableText(input.title);
+  const eventTitle = normalizeComparableText(event.summary);
+  return eventTitle === normalizeComparableText(input.title)
+    || eventTitle === normalizeComparableText(calendarTitleForSecretaryProviderEvent(input));
+}
+
+// Identity-marker match. Deliberately NOT gated on start/end equality: the
+// marker names the exact training session, so a same-session event at a
+// drifted slot is still the same provider event (adopt and move it, don't
+// duplicate it). This also keeps the match alive on Outlook, where Graph
+// returns timezone-naive datetimes that make instant comparison unreliable.
+// Candidates are already bounded to the ±24h readback window.
+function isLikelySameTrainingCalendarEvent(event: UnifiedCalendarEvent, input: SecretaryProviderEventInput): boolean {
+  if (input.sourceSkill !== 'training' || input.sourceEntityType !== 'training_session') return false;
+  const sessionId = Number(input.sourceEntityId);
+  if (!Number.isFinite(sessionId) || sessionId <= 0) return false;
+  const marker = parseTrainingIdentityMarker(event.description);
+  if (!marker?.sessionId || marker.sessionId !== Math.floor(sessionId)) return false;
+  const intent = parseTrainingSourceIntent(input.sourceIntentId);
+  // An agenda row whose intent and entity disagree is corrupt — never guess.
+  if (intent && intent.sessionId !== Math.floor(sessionId)) return false;
+  if (intent && marker.planId && marker.planId !== intent.planId) return false;
+  return true;
+}
+
+function parseTrainingSourceIntent(value: string): { planId: number; planVersion: number; sessionId: number } | null {
+  const match = value.match(/^training:(\d+):(\d+):(\d+)$/);
+  if (!match) return null;
+  const planId = Number(match[1]);
+  const planVersion = Number(match[2]);
+  const sessionId = Number(match[3]);
+  if (![planId, planVersion, sessionId].every((part) => Number.isFinite(part) && part > 0)) return null;
+  return {
+    planId: Math.floor(planId),
+    planVersion: Math.floor(planVersion),
+    sessionId: Math.floor(sessionId),
+  };
 }
 
 function sameInstant(a: string | undefined, b: string | undefined): boolean {
@@ -181,7 +290,9 @@ function normalizeComparableText(value: string | undefined): string {
 
 export function extractSecretaryAgendaMarker(description: string | undefined): string | null {
   if (!description) return null;
-  const marker = description
+  // Graph can return the body HTML-wrapped even for text events; strip tags
+  // so the line-oriented scan still finds a marker written into a text body.
+  const marker = normalizeProviderDescriptionForMarkerParse(description)
     .split(/\r?\n/)
     .map((line) => line.trim())
     .find((line) => line.startsWith(`${MARKER_PREFIX}:`));
@@ -214,6 +325,9 @@ function toSecretaryProviderEvent(
     startAt: event.start,
     endAt: event.end,
     version: input.version,
+    // Canonical-event selection must never delete the event Training links
+    // to; flag marker-bearing events so the sync engine prefers them.
+    trainingOwned: isLikelySameTrainingCalendarEvent(event, input) || undefined,
   };
 }
 

@@ -48,6 +48,7 @@ vi.mock('../../src/utils/logger', () => ({
 import {
   cancelSecretaryAgendaItem,
   getSecretaryAgendaItemById,
+  markSecretaryAgendaProviderSyncSatisfied,
   submitSecretarySchedulingIntent,
   type SecretarySchedulingIntent,
   type SecretaryTimeWindow,
@@ -1182,6 +1183,74 @@ describe('provider-sync fingerprint short-circuit (migration 224)', () => {
     expect(provider.findAgendaItemIds.length).toBe(findCallsAfterFirst);
     expect(provider.updateInputs).toHaveLength(0);
     expect(provider.createInputs).toHaveLength(1);
+  });
+
+  it('short-circuits after Training marks the provider sync satisfied (markSatisfied handshake)', async () => {
+    const provider = new MockSecretaryProvider();
+    const decision = submitSecretarySchedulingIntent(intent());
+
+    // Training created the provider event directly and recorded ownership.
+    markSecretaryAgendaProviderSyncSatisfied({
+      agendaItemId: decision.agendaItem.agendaItemId,
+      ownerUserId: OWNER_USER_ID,
+      tenantId: TENANT_ID,
+      providerEventId: 'training_direct_evt_1',
+      providerSource: 'google',
+    });
+
+    const result = await syncOne(decision.agendaItem.agendaItemId, provider);
+
+    // The arbitrator-recorded fingerprint must byte-match the sync engine's
+    // computation or every Training session reverts to per-tick round-trips.
+    expect(result).toMatchObject({
+      action: 'skipped',
+      providerSyncState: 'synced',
+      reasonCode: 'unchanged_since_last_sync',
+    });
+    expect(provider.createInputs).toHaveLength(0);
+    expect(provider.updateInputs).toHaveLength(0);
+    expect(provider.findAgendaItemIds).toHaveLength(0);
+  });
+
+  it('keeps the trainingOwned event as canonical and deletes the Secretary copy instead', async () => {
+    const provider = new MockSecretaryProvider();
+    const decision = submitSecretarySchedulingIntent(intent());
+    const agendaItemId = decision.agendaItem.agendaItemId;
+    // Legacy duplicate state: the agenda row points at the Secretary copy
+    // while the Training-created, marker-bearing event coexists.
+    const secretaryCopy = provider.seedEvent(providerInputFor(agendaItemId), 'zzz_secretary_copy');
+    testDb.prepare(`
+      UPDATE secretary_agenda_items
+         SET provider_event_id = ?,
+             provider_source = 'google',
+             provider_sync_state = 'synced'
+       WHERE agenda_item_id = ?
+    `).run(secretaryCopy.eventId, agendaItemId);
+    const trainingEvent: SecretaryProviderEvent = {
+      eventId: 'aaa_training_direct',
+      source: 'google',
+      agendaItemId,
+      title: '💪 Bike endurance session (60min)',
+      startAt: decision.agendaItem.startAt!,
+      endAt: decision.agendaItem.endAt!,
+      trainingOwned: true,
+    };
+    provider.events.set(trainingEvent.eventId, trainingEvent);
+
+    const result = await syncOne(agendaItemId, provider);
+
+    // Pre-fix, canonical selection preferred the stored provider_event_id
+    // (the Secretary copy) and DELETED the Training-linked event from the
+    // user's calendar. trainingOwned must outrank the stored id.
+    expect(result.action).toBe('attached');
+    expect(result.providerEventId).toBe('aaa_training_direct');
+    expect(provider.deletedEventIds).toEqual([secretaryCopy.eventId]);
+    const stored = getSecretaryAgendaItemById({
+      agendaItemId,
+      ownerUserId: OWNER_USER_ID,
+      tenantId: TENANT_ID,
+    });
+    expect(stored?.providerEventId).toBe('aaa_training_direct');
   });
 
   it('re-syncs when the scheduled slot changes', async () => {

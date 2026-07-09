@@ -11,6 +11,10 @@ const MIGRATION_098 = path.resolve(
   __dirname,
   '../../migrations/098_secretary_decision_explanation.sql',
 );
+const MIGRATION_224 = path.resolve(
+  __dirname,
+  '../../migrations/224_secretary_agenda_sync_fingerprint.sql',
+);
 
 let testDb: Database.Database;
 
@@ -39,6 +43,7 @@ vi.mock('../../src/utils/logger', () => ({
 
 import {
   arbitrateSecretarySchedulingIntents,
+  computeSecretaryAgendaProviderSyncFingerprint,
   getSecretaryAgendaItemById,
   listSecretaryAgendaItems,
   markSecretaryAgendaProviderCleanupRequired,
@@ -55,6 +60,7 @@ beforeEach(() => {
   testDb = new Database(':memory:');
   testDb.exec(fs.readFileSync(MIGRATION_083, 'utf8'));
   testDb.exec(fs.readFileSync(MIGRATION_098, 'utf8'));
+  testDb.exec(fs.readFileSync(MIGRATION_224, 'utf8'));
   testDb.exec('ALTER TABLE secretary_agenda_items ADD COLUMN reasoning_trail_json TEXT');
 });
 
@@ -158,6 +164,83 @@ describe('secretary-scheduling-arbitrator', () => {
       providerEventId: 'outlook-training-event-1',
       providerSource: 'outlook',
     });
+  });
+
+  it('records the provider-sync fingerprint on markSatisfied so the sync loop can short-circuit', () => {
+    const decision = submitSecretarySchedulingIntent(intent(), {
+      now: '2026-05-01T08:00:00.000Z',
+    });
+
+    const updated = markSecretaryAgendaProviderSyncSatisfied({
+      agendaItemId: decision.agendaItem.agendaItemId,
+      ownerUserId: OWNER_USER_ID,
+      tenantId: TENANT_ID,
+      providerEventId: 'outlook-training-event-1',
+      providerSource: 'outlook',
+      now: '2026-05-01T08:05:00.000Z',
+    });
+
+    expect(updated?.lastSyncedFingerprint).toBe(
+      computeSecretaryAgendaProviderSyncFingerprint(updated!, 'outlook'),
+    );
+    expect(updated?.lastSyncedVerifiedAt).toBe('2026-05-01T08:05:00.000Z');
+  });
+
+  it('promotes failed_sync rows back to synced when Training satisfies the provider sync', () => {
+    const decision = submitSecretarySchedulingIntent(intent(), {
+      now: '2026-05-01T08:00:00.000Z',
+    });
+    testDb.prepare(`
+      UPDATE secretary_agenda_items
+         SET lifecycle_state = 'failed_sync',
+             provider_sync_state = 'create_failed'
+       WHERE agenda_item_id = ?
+    `).run(decision.agendaItem.agendaItemId);
+
+    const updated = markSecretaryAgendaProviderSyncSatisfied({
+      agendaItemId: decision.agendaItem.agendaItemId,
+      ownerUserId: OWNER_USER_ID,
+      tenantId: TENANT_ID,
+      providerEventId: 'google-training-event-1',
+      providerSource: 'google',
+      now: '2026-05-01T08:05:00.000Z',
+    });
+
+    // Pre-fix the row stayed lifecycle 'failed_sync' while the fresh
+    // fingerprint short-circuited the loop that used to heal it, so Decision
+    // Center reported a failed session for up to 6h despite a correct event.
+    expect(updated).toMatchObject({
+      lifecycleState: 'synced',
+      providerSyncState: 'synced',
+      providerEventId: 'google-training-event-1',
+    });
+  });
+
+  it('markSatisfied stays functional on pre-fingerprint database schemas', () => {
+    testDb.close();
+    testDb = new Database(':memory:');
+    testDb.exec(fs.readFileSync(MIGRATION_083, 'utf8'));
+    testDb.exec(fs.readFileSync(MIGRATION_098, 'utf8'));
+    testDb.exec('ALTER TABLE secretary_agenda_items ADD COLUMN reasoning_trail_json TEXT');
+    const decision = submitSecretarySchedulingIntent(intent(), {
+      now: '2026-05-01T08:00:00.000Z',
+    });
+
+    const updated = markSecretaryAgendaProviderSyncSatisfied({
+      agendaItemId: decision.agendaItem.agendaItemId,
+      ownerUserId: OWNER_USER_ID,
+      tenantId: TENANT_ID,
+      providerEventId: 'outlook-training-event-1',
+      providerSource: 'outlook',
+      now: '2026-05-01T08:05:00.000Z',
+    });
+
+    expect(updated).toMatchObject({
+      lifecycleState: 'synced',
+      providerSyncState: 'synced',
+      providerEventId: 'outlook-training-event-1',
+    });
+    expect(updated?.lastSyncedFingerprint ?? null).toBeNull();
   });
 
   it('marks Training permanent provider failures as cleanup rows and clears stale provider ids', () => {
