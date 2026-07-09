@@ -40,12 +40,49 @@ const fiveDayHypertrophySpec: TrainingPlanSpec = {
 
 describe('training-plan-quality-gate', () => {
   it.each([
-    { daysPerWeek: 2 as const, splitCode: 'AB', slots: ['A', 'B'], days: ['Tuesday', 'Friday'] },
-    { daysPerWeek: 3 as const, splitCode: 'ABC', slots: ['A', 'B', 'C'], days: ['Tuesday', 'Thursday', 'Saturday'] },
-    { daysPerWeek: 4 as const, splitCode: 'ABCD', slots: ['A', 'B', 'C', 'D'], days: ['Tuesday', 'Wednesday', 'Friday', 'Sunday'] },
-    { daysPerWeek: 5 as const, splitCode: 'ABCDE', slots: ['A', 'B', 'C', 'D', 'E'], days: ['Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'] },
-    { daysPerWeek: 6 as const, splitCode: 'ABCDEF', slots: ['A', 'B', 'C', 'D', 'E', 'F'], days: ['Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'] },
-  ])('builds a deterministic $daysPerWeek-day $splitCode split with spaced lower-body work', ({ daysPerWeek, splitCode, slots, days }) => {
+    {
+      daysPerWeek: 2 as const,
+      splitCode: 'AB',
+      slots: ['A', 'B'],
+      days: ['Tuesday', 'Friday'],
+      titles: ['Full Body Strength A', 'Full Body Strength B'],
+    },
+    {
+      daysPerWeek: 3 as const,
+      splitCode: 'ABC',
+      slots: ['A', 'B', 'C'],
+      days: ['Tuesday', 'Thursday', 'Saturday'],
+      titles: ['Full Body Strength A', 'Full Body Strength B', 'Full Body Hypertrophy C'],
+    },
+    {
+      daysPerWeek: 4 as const,
+      splitCode: 'ABCD',
+      slots: ['A', 'B', 'C', 'D'],
+      days: ['Tuesday', 'Wednesday', 'Friday', 'Sunday'],
+      titles: ['Upper Strength A', 'Lower Quad B', 'Upper Hypertrophy C', 'Lower Posterior Chain D'],
+    },
+    {
+      daysPerWeek: 5 as const,
+      splitCode: 'ABCDE',
+      slots: ['A', 'B', 'C', 'D', 'E'],
+      days: ['Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'],
+      titles: ['Push Hypertrophy A', 'Lower Quad B', 'Pull Hypertrophy C', 'Lower Posterior Chain D', 'Upper Accessories E'],
+    },
+    {
+      daysPerWeek: 6 as const,
+      splitCode: 'ABCDEF',
+      slots: ['A', 'B', 'C', 'D', 'E', 'F'],
+      days: ['Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'],
+      titles: [
+        'Push Strength A',
+        'Pull Strength B',
+        'Lower Strength C',
+        'Push Hypertrophy D',
+        'Pull Hypertrophy E',
+        'Lower Hypertrophy F',
+      ],
+    },
+  ])('builds a deterministic $daysPerWeek-day $splitCode split with spaced lower-body work', ({ daysPerWeek, splitCode, slots, days, titles }) => {
     const result = prepareTrainingPlanForQualityGate(
       {
         sport: 'gym',
@@ -61,6 +98,7 @@ describe('training-plan-quality-gate', () => {
     expect(strengthSessions.map((session: any) => session.splitCode)).toEqual(Array(daysPerWeek).fill(splitCode));
     expect(strengthSessions.map((session: any) => session.splitSlot)).toEqual(slots);
     expect(strengthSessions.map((session: any) => session.dayOfWeek)).toEqual(days);
+    expect(strengthSessions.map((session: any) => session.title)).toEqual(titles);
     expect(strengthSessions.some((session: any) => /Catalog|Strength Support Session/.test(session.title))).toBe(false);
     expect(hasAdjacentLowerHeavySessions(strengthSessions)).toBe(false);
     expect(strengthSessions.every((session: any) =>
@@ -154,6 +192,109 @@ describe('training-plan-quality-gate', () => {
     expect(strengthSessions.every((session: any) => session.durationMinutes >= 40)).toBe(true);
     expect(strengthSessions.find((session: any) => session.splitSlot === 'D')?.primaryMuscles).toContain('hamstrings');
     expect(result.repairActions.some((action) => /stale or generic title/i.test(action))).toBe(true);
+  });
+
+  it('replaces catalog variant titles that conflict with the assigned split slot', () => {
+    const result = prepareTrainingPlanForQualityGate(
+      {
+        sport: 'gym',
+        weeks: [
+          {
+            weekNumber: 1,
+            sessions: [
+              genericGobletSession('Tuesday', 'Strength Technique - Speed/Trunk', 45),
+              genericGobletSession('Wednesday', 'Lower Body Strength B', 45),
+              genericGobletSession('Thursday', 'Lower Body Strength A', 45),
+              genericGobletSession('Friday', 'Strength Support - Posterior/Carry', 45),
+              genericGobletSession('Saturday', 'Upper Body Strength B', 45),
+            ],
+          },
+        ],
+      },
+      fiveDayHypertrophySpec,
+    );
+
+    const strengthSessions = weekOneStrengthSessions(result.planData);
+
+    expect(result.validation.passed).toBe(true);
+    expect(strengthSessions.map((session: any) => `${session.splitSlot}:${session.title}`)).toEqual([
+      'A:Push Hypertrophy A',
+      'B:Lower Quad B',
+      'C:Pull Hypertrophy C',
+      'D:Lower Posterior Chain D',
+      'E:Upper Accessories E',
+    ]);
+    expect(strengthSessions.find((session: any) => session.splitSlot === 'C')?.focus).toBe('Back and biceps');
+    expect(strengthSessions.find((session: any) => session.splitSlot === 'C')?.title).not.toMatch(/lower body/i);
+  });
+
+  it('preserves concrete custom titles while replacing muscle-region titles that contradict the slot', () => {
+    const result = prepareTrainingPlanForQualityGate(
+      {
+        sport: 'gym',
+        weeks: [
+          {
+            weekNumber: 1,
+            sessions: [
+              genericGobletSession('Tuesday', 'Runner Strength', 45),
+              genericGobletSession('Wednesday', 'Runner Strength Support', 45),
+              genericGobletSession('Thursday', 'Mobility + Strength Support', 45),
+              genericGobletSession('Friday', 'Glute Hypertrophy', 45),
+              genericGobletSession('Saturday', 'Chest and Back Strength', 45),
+            ],
+          },
+        ],
+      },
+      fiveDayHypertrophySpec,
+    );
+
+    const strengthSessions = weekOneStrengthSessions(result.planData);
+
+    expect(strengthSessions.map((session: any) => `${session.splitSlot}:${session.title}`)).toEqual([
+      // Sport-specific concrete titles survive — the stated goal of the fix.
+      'A:Runner Strength',
+      'B:Runner Strength Support',
+      'C:Mobility + Strength Support',
+      // Muscle-region + training-word titles are structural claims and must
+      // follow the assigned slot ("Glute" on the lower slot still differs
+      // from the assigned title; "Chest and Back" claims upper).
+      'D:Lower Posterior Chain D',
+      'E:Upper Accessories E',
+    ]);
+  });
+
+  it('retitles region-only titles that contradict the assigned slot side even without a training word', () => {
+    const result = prepareTrainingPlanForQualityGate(
+      {
+        sport: 'gym',
+        weeks: [
+          {
+            weekNumber: 1,
+            sessions: [
+              // "Leg Day" on the Tuesday slot (Push Hypertrophy A — upper)
+              // contradicts the slot's rewritten structure.
+              genericGobletSession('Tuesday', 'Leg Day', 45),
+              // "Back and Biceps Day" on the Wednesday slot (Lower Quad B).
+              genericGobletSession('Wednesday', 'Back and Biceps Day', 45),
+              genericGobletSession('Thursday', 'Lower Body Strength A', 45),
+              genericGobletSession('Friday', 'Lower Body Strength B', 45),
+              genericGobletSession('Saturday', 'Upper Body Strength A', 45),
+            ],
+          },
+        ],
+      },
+      fiveDayHypertrophySpec,
+    );
+
+    const strengthSessions = weekOneStrengthSessions(result.planData);
+
+    expect(strengthSessions.map((session: any) => `${session.splitSlot}:${session.title}`)).toEqual([
+      'A:Push Hypertrophy A',
+      'B:Lower Quad B',
+      'C:Pull Hypertrophy C',
+      'D:Lower Posterior Chain D',
+      'E:Upper Accessories E',
+    ]);
   });
 
   it('repairs sparse claimed-duration sessions with movement coverage and truthful timing', () => {

@@ -234,6 +234,17 @@ const SPACED_DAY_OFFSETS: Record<number, number[]> = {
 };
 
 const GENERIC_TITLE_RE = /\bCatalog\s+\w+\s+Strength\s+\d+\b|\bStrength Support Session\b|\bStrength Session\b/i;
+const SPLIT_SLOT_SUFFIX_RE = /\b[A-F]\b\s*$/i;
+// Region claims split by slot side so a title that contradicts the assigned
+// slot's structure is always retitled, even without a training word.
+const SPLIT_LOWER_REGION_TITLE_RE = /\b(lower|legs?|quads?|posterior|hamstrings?|glutes?|hinge|calves?)\b/i;
+const SPLIT_UPPER_REGION_TITLE_RE = /\b(upper|push|pull|chest|back|delts?|arms?|biceps?|triceps?|shoulders?|accessor(?:y|ies))\b/i;
+const SPLIT_FULL_BODY_TITLE_RE = /\bfull\s+body\b/i;
+const SPLIT_TRAINING_TITLE_RE = /\b(strength|hypertrophy|training|hybrid|maintenance|body)\b/i;
+// Anchored to the title start: catalog variants are bare "Strength Technique/
+// Support ..." titles. Sport-prefixed titles such as "Runner Strength Support"
+// are concrete custom titles and must be preserved.
+const CATALOG_VARIANT_TITLE_RE = /^\s*(?:strength\s+(?:technique|support)|limited\s+equipment)\b/i;
 // Structured split strength reserves a real block for warm-up, main work,
 // accessories, core, and cooldown instead of collapsing into token sessions.
 const MIN_STRUCTURED_SPLIT_STRENGTH_MINUTES = 40;
@@ -615,16 +626,19 @@ function shouldUseAssignedSplitTitle(
   if (GENERIC_TITLE_RE.test(title)) return true;
   if (normalizeTitleForComparison(title) === normalizeTitleForComparison(assignedTitle)) return false;
 
-  const suffix = title.match(/\b([A-F])\b\s*$/i)?.[1]?.toUpperCase();
-  if (suffix) return true;
-
-  const lowerLabel = /\b(lower|legs?|quad|posterior|hamstrings?|glutes?|hinge)\b/i.test(title);
-  const upperLabel = /\b(upper|push|pull|chest|back|delts?|arms?|accessor(?:y|ies))\b/i.test(title);
-  if (slot.lowerHeavy && upperLabel) return true;
-  if (!slot.lowerHeavy && lowerLabel) return true;
-
-  return /\b(strength|hypertrophy|body|training)\b/i.test(title)
-    && (lowerLabel || upperLabel || /\bfull\s+body\b/i.test(title));
+  // Split/catalog titles claim a body-region or slot. Once the quality gate
+  // assigns the deterministic split slot, that visible title must describe the
+  // same structure as the focus, muscles, sections, and exercises. Preserve
+  // concrete custom titles such as "Runner Strength".
+  if (SPLIT_SLOT_SUFFIX_RE.test(title)) return true;
+  if (CATALOG_VARIANT_TITLE_RE.test(title)) return true;
+  const lowerClaim = SPLIT_LOWER_REGION_TITLE_RE.test(title);
+  const upperClaim = SPLIT_UPPER_REGION_TITLE_RE.test(title);
+  const slotIsLower = isLowerSplitSlot(slot);
+  if (slotIsLower && upperClaim && !lowerClaim) return true;
+  if (!slotIsLower && lowerClaim && !upperClaim) return true;
+  return (lowerClaim || upperClaim || SPLIT_FULL_BODY_TITLE_RE.test(title))
+    && SPLIT_TRAINING_TITLE_RE.test(title);
 }
 
 function normalizeTitleForComparison(value: string): string {
