@@ -385,6 +385,7 @@ function mockReq(
     // Mirror iosAuthMiddleware setting tenantId alongside userId. Tests can
     // override tenantId to cover active-tenant behavior.
     tenantId,
+    entitlement: { plan: 'pro', source: 'stripe' },
   } as any;
 }
 
@@ -643,6 +644,7 @@ describe('Training API routes', () => {
   });
 
   it('returns a cache-only miss without triggering a new coach generation', async () => {
+    mockGetActivePlan.mockReturnValue({ id: 44, user_id: 12, tenant_id: 12, status: 'active' });
     const res = await dispatch('GET', '/coach', { cacheOnly: 'true' });
 
     expect(res.statusCode).toBe(200);
@@ -653,6 +655,7 @@ describe('Training API routes', () => {
   });
 
   it('returns a structured sanitized coach report without raw debug fragments', async () => {
+    mockGetActivePlan.mockReturnValue({ id: 44, user_id: 12, tenant_id: 12, status: 'active' });
     mockGetCached.mockImplementation((key: string) => {
       if (key === 'coach-briefing:12') {
         return {
@@ -688,6 +691,7 @@ describe('Training API routes', () => {
   });
 
   it('generates coach reports against the active tenant while billing the authenticated actor', async () => {
+    mockGetActivePlan.mockReturnValue({ id: 44, user_id: 12, tenant_id: 34, status: 'active' });
     const res = await dispatch('POST', '/coach/report', {}, { refresh: true }, 12, {}, 34);
 
     expect(res.statusCode).toBe(200);
@@ -960,6 +964,7 @@ describe('Training API routes', () => {
   });
 
   it('restores the cached coach briefing from the latest coach report document', async () => {
+    mockGetActivePlan.mockReturnValue({ id: 44, user_id: 12, tenant_id: 12, status: 'active' });
     mockGetLatestByType.mockReturnValue({
       createdAt: new Date().toISOString(),
       summary: 'Automatic coach update ready.',
@@ -1031,18 +1036,16 @@ describe('Training API routes', () => {
 
     const res = await dispatch('GET', '/coach', { cacheOnly: 'true' }, undefined, 0);
 
-    expect(res.statusCode).toBe(200);
-    expect(res.body.ok).toBe(true);
-    expect(res.body.data.cachedOnlyMiss).toBe(true);
+    expect(res.statusCode).toBe(400);
+    expect(res.body.ok).toBe(false);
+    expect(res.body.error.code).toBe('TENANT_SCOPE_REQUIRED');
     expect(mockGetLatestByType).not.toHaveBeenCalled();
     expect(getTenantScopeAnomalies()).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
-          layer: 'delivery',
-          operation: 'restore_coach_briefing_from_report',
-          reason: 'invalid_user_scope',
-          userId: 0,
-          details: { reportType: 'coach_briefing' },
+          layer: 'service',
+          operation: 'training.coach.eligibility',
+          reason: 'missing_tenant_scope',
         }),
       ]),
     );
@@ -1070,6 +1073,9 @@ describe('Training API routes', () => {
   });
 
   it('sanitizes degraded coach warnings when briefing generation fails', async () => {
+    mockGetActivePlan
+      .mockReturnValueOnce({ id: 44, user_id: 12, tenant_id: 12, status: 'active' })
+      .mockReturnValue(null);
     mockGenerateCoachBriefing.mockRejectedValueOnce(new Error('upstream garmin timeout: tenant=12'));
 
     const res = await dispatch('GET', '/coach');

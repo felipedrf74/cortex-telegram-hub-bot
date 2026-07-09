@@ -35,6 +35,7 @@ const mockUpdateWeekAdjustment = vi.hoisted(() => vi.fn());
 const mockGetWeeksForPlan = vi.hoisted(() => vi.fn());
 const mockCalculateReadiness = vi.hoisted(() => vi.fn());
 const mockPersistReadinessScore = vi.hoisted(() => vi.fn());
+const mockGetEffectiveEntitlement = vi.hoisted(() => vi.fn());
 
 vi.mock('node-cron', () => ({
   default: { schedule: (...args: unknown[]) => mockCronSchedule(...args) },
@@ -215,6 +216,11 @@ vi.mock('../../src/services/readiness-scorer', () => ({
   calculateReadiness: (...args: unknown[]) => mockCalculateReadiness(...args),
   persistReadinessScore: (...args: unknown[]) => mockPersistReadinessScore(...args),
 }));
+vi.mock('../../src/services/entitlement', () => ({
+  getEffectiveEntitlement: (...args: unknown[]) => mockGetEffectiveEntitlement(...args),
+  isCoachBriefingEntitlementEligible: (entitlement: { plan: string; source: string }) =>
+    (entitlement.plan === 'pro' || entitlement.plan === 'max') && entitlement.source !== 'beta',
+}));
 
 import * as globalMail from '../../src/services/outlook-mail';
 import * as globalTodo from '../../src/services/microsoft-todo';
@@ -285,6 +291,7 @@ describe('scheduler tenant scoping', () => {
       dataCollectionMs: 1,
       analysisMs: 2,
     });
+    mockGetEffectiveEntitlement.mockReturnValue({ plan: 'pro', source: 'stripe' });
     mockGetActivePlan.mockReturnValue(null);
     mockGetCurrentWeek.mockReturnValue(null);
     mockGetWeeklyAdherence.mockReturnValue({ completedSessions: 0, skippedSessions: 0 });
@@ -761,7 +768,15 @@ describe('scheduler tenant scoping', () => {
     expect(mockStoreAndPushReport).toHaveBeenCalledWith(expect.objectContaining({ userId: 99 }));
   });
 
-  it('sendCoachBriefings generates, stores, and scopes coach state for every active tenant', async () => {
+  it('sendCoachBriefings generates, stores, and scopes coach state for every paid active tenant', async () => {
+    mockGetActivePlan.mockReturnValue({
+      id: 701,
+      user_id: 11,
+      tenant_id: 11,
+      name: 'Coach plan',
+      sport: 'gym',
+      status: 'active',
+    });
     mockGenerateCoachBriefing.mockResolvedValue({
       message: 'coach briefing',
       recommendations: [{
@@ -810,5 +825,120 @@ describe('scheduler tenant scoping', () => {
     expect(mockStoreAndPushReport).toHaveBeenCalledWith(expect.objectContaining({ userId: 11, type: 'coach_briefing' }));
     expect(mockStoreAndPushReport).toHaveBeenCalledWith(expect.objectContaining({ userId: 22, type: 'coach_briefing' }));
     expect(mockStoreAndPushReport).not.toHaveBeenCalledWith(expect.objectContaining({ userId: 1011 }));
+  });
+
+  it('sendCoachBriefings skips free-plan users before generating or pushing coach reports', async () => {
+    mockGetActivePlan.mockReturnValue({
+      id: 701,
+      user_id: 11,
+      tenant_id: 11,
+      name: 'Coach plan',
+      sport: 'gym',
+      status: 'active',
+    });
+    mockGetEffectiveEntitlement.mockImplementation((userId: number) => (
+      userId === 22
+        ? { plan: 'free', source: 'free' }
+        : { plan: 'pro', source: 'stripe' }
+    ));
+
+    await sendCoachBriefings();
+
+    expect(mockGetEffectiveEntitlement).toHaveBeenCalledWith(11);
+    expect(mockGetEffectiveEntitlement).toHaveBeenCalledWith(22);
+    expect(mockGenerateCoachBriefing).toHaveBeenCalledTimes(1);
+    expect(mockGenerateCoachBriefing).toHaveBeenCalledWith(11, {
+      garminSilent: true,
+      tenantId: 11,
+      meteringUserId: 11,
+    });
+    expect(mockGenerateCoachBriefing).not.toHaveBeenCalledWith(22, expect.anything());
+    expect(mockGetActivePlan).not.toHaveBeenCalledWith(22, 22);
+    expect(mockStoreAndPushReport).toHaveBeenCalledTimes(1);
+    expect(mockStoreAndPushReport).toHaveBeenCalledWith(expect.objectContaining({ userId: 11, type: 'coach_briefing' }));
+    expect(mockStoreAndPushReport).not.toHaveBeenCalledWith(expect.objectContaining({ userId: 22 }));
+    expect(setLastCoachState).not.toHaveBeenCalledWith(22, expect.anything(), expect.anything());
+    expect(addToConversation).not.toHaveBeenCalledWith(22, expect.anything(), expect.anything(), expect.anything());
+    expect(setLastActiveDomain).not.toHaveBeenCalledWith(22, expect.anything());
+    expect(mockCalculateReadiness).not.toHaveBeenCalledWith(22, expect.anything());
+  });
+
+  it('sendCoachBriefings requires an actual pro or max plan, not owner-only entitlement', async () => {
+    mockGetActivePlan.mockReturnValue({
+      id: 701,
+      user_id: 11,
+      tenant_id: 11,
+      name: 'Coach plan',
+      sport: 'gym',
+      status: 'active',
+    });
+    mockGetEffectiveEntitlement.mockImplementation((userId: number) => (
+      userId === 22
+        ? { plan: 'owner', source: 'owner' }
+        : { plan: 'max', source: 'apple' }
+    ));
+
+    await sendCoachBriefings();
+
+    expect(mockGetEffectiveEntitlement).toHaveBeenCalledWith(11);
+    expect(mockGetEffectiveEntitlement).toHaveBeenCalledWith(22);
+    expect(mockGenerateCoachBriefing).toHaveBeenCalledTimes(1);
+    expect(mockGenerateCoachBriefing).toHaveBeenCalledWith(11, {
+      garminSilent: true,
+      tenantId: 11,
+      meteringUserId: 11,
+    });
+    expect(mockGenerateCoachBriefing).not.toHaveBeenCalledWith(22, expect.anything());
+    expect(mockStoreAndPushReport).toHaveBeenCalledTimes(1);
+    expect(mockStoreAndPushReport).toHaveBeenCalledWith(expect.objectContaining({ userId: 11, type: 'coach_briefing' }));
+    expect(mockStoreAndPushReport).not.toHaveBeenCalledWith(expect.objectContaining({ userId: 22 }));
+  });
+
+  it('sendCoachBriefings does not treat a beta Max trial as a paid coach entitlement', async () => {
+    mockGetActivePlan.mockReturnValue({
+      id: 701,
+      user_id: 11,
+      tenant_id: 11,
+      name: 'Coach plan',
+      sport: 'gym',
+      status: 'active',
+    });
+    mockGetEffectiveEntitlement.mockImplementation((userId: number) => (
+      userId === 22
+        ? { plan: 'max', source: 'beta' }
+        : { plan: 'max', source: 'founder' }
+    ));
+
+    await sendCoachBriefings();
+
+    expect(mockGenerateCoachBriefing).toHaveBeenCalledTimes(1);
+    expect(mockGenerateCoachBriefing).toHaveBeenCalledWith(11, expect.objectContaining({ tenantId: 11 }));
+    expect(mockGenerateCoachBriefing).not.toHaveBeenCalledWith(22, expect.anything());
+    expect(mockGetActivePlan).not.toHaveBeenCalledWith(22, 22);
+    expect(mockStoreAndPushReport).not.toHaveBeenCalledWith(expect.objectContaining({ userId: 22 }));
+  });
+
+  it('sendCoachBriefings skips paid users without an active workout plan before generating or pushing reports', async () => {
+    mockGetEffectiveEntitlement.mockReturnValue({ plan: 'pro', source: 'stripe' });
+    mockGetActivePlan.mockImplementation((userId: number) => (
+      userId === 11
+        ? { id: 701, user_id: 11, tenant_id: 11, name: 'Coach plan', sport: 'gym', status: 'active' }
+        : null
+    ));
+
+    await sendCoachBriefings();
+
+    expect(mockGetActivePlan).toHaveBeenCalledWith(11, 11);
+    expect(mockGetActivePlan).toHaveBeenCalledWith(22, 22);
+    expect(mockGenerateCoachBriefing).toHaveBeenCalledTimes(1);
+    expect(mockGenerateCoachBriefing).toHaveBeenCalledWith(11, {
+      garminSilent: true,
+      tenantId: 11,
+      meteringUserId: 11,
+    });
+    expect(mockGenerateCoachBriefing).not.toHaveBeenCalledWith(22, expect.anything());
+    expect(mockStoreAndPushReport).toHaveBeenCalledTimes(1);
+    expect(mockStoreAndPushReport).toHaveBeenCalledWith(expect.objectContaining({ userId: 11, type: 'coach_briefing' }));
+    expect(mockStoreAndPushReport).not.toHaveBeenCalledWith(expect.objectContaining({ userId: 22 }));
   });
 });

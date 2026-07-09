@@ -43,6 +43,9 @@ type AppleHealthCoachRow = {
   encrypted_data_json?: string | null;
 };
 
+type TodayCalendarEvent = { summary: string; start: string; end: string };
+type TomorrowCalendarEvent = TodayCalendarEvent & { id: string; source: CalendarSource };
+
 export type CoachAnalysisMeteringActor = 'user' | 'system';
 
 export interface CoachAnalysisMeteringScope {
@@ -53,6 +56,11 @@ export interface CoachAnalysisMeteringScope {
 
 export const COACH_ANALYSIS_SYSTEM_METERING_USER_ID = 0;
 export const COACH_ANALYSIS_SYSTEM_METERING_TENANT_ID = 0;
+const COACH_ANALYSIS_MAX_TOKENS = 1800;
+const COACH_PAYLOAD_MAX_CHARS = 16000;
+const MAX_ACTIVITY_SUMMARIES = 8;
+const MAX_SCHEDULE_CONTEXT_EVENTS = 6;
+const TRAINING_EVENT_PATTERN = /\b(gym|treino|training|workout|strength|run|running|corrida|bike|cycling|cycle|swim|yoga|walk|tempo|interval|long run|ride|lift|lower body|upper body|full body|mobility|pilates)\b/i;
 
 export function resolveCoachAnalysisMeteringScope(userId?: number | null, tenantId?: number | null): CoachAnalysisMeteringScope {
   if (typeof userId === 'number' && Number.isSafeInteger(userId) && userId > 0) {
@@ -75,19 +83,22 @@ const COACH_ANALYSIS_PROMPT = `You are analyzing daily health and training data 
 
 RULES:
 - Be direct, data-driven, no fluff — talk like a coach who uses this athlete's actual profile
-- Every recommendation MUST cite specific data points
+- Every recommendation MUST cite specific available data points. If recovery data is missing, say that once and base advice on training/rest/calendar context without inventing metrics.
 - Respect stored diet preferences and constraints when present. If none are present, give neutral recovery/fueling guidance.
 - Use plain text only. Do not use HTML tags, markdown tables, code fences, dividers, or markdown headings.
 - For tables/structured data, use aligned plain text with spaces or bullet points instead
 - For exercise blocks, use short indented plain text, NOT triple backticks
-- Keep the HUMAN-READABLE part under 3800 characters
+- Keep the HUMAN-READABLE part under 2200 characters
 - Use event timestamps exactly as provided in the payload. Do not assume timezone or delivery time.
+- Do NOT echo raw payload JSON, provider traces, internal ids except event ids inside COACH_RECS, or a full non-training calendar dump.
+- For visible event times, use the provided displayTime field only. Never print full ISO timestamps in the human-readable briefing.
 
 DATA INTERPRETATION:
-- bodyBatterySummary: pre-extracted body battery values (current, highest, lowest, charged, drained). ALWAYS use these in the snapshot section, even if the raw bodyBattery events data seems complex.
-- activities: today's recorded activities. Check activityDetails for training effect. For strength_training, look for exerciseSets.
-- tomorrowCalendar: the athlete's CALENDAR events for tomorrow, each with an "id" and "source" field. This is the PRIMARY source for tomorrow's training plan — training sessions are scheduled on the calendar. Look for events whose summary contains training-related keywords (gym, treino, corrida, bike, swim, yoga, strength, run, cycling, etc.).
-- tomorrowScheduledWorkouts and tomorrowTrainingPlan: Garmin's own workout scheduler (often empty — calendar may be the source of truth).
+- recovery: compact, present-only recovery signals. If recovery.available is false, do not print per-field "No data"; write "Recovery data unavailable today" once.
+- today.training: today's recorded activities, already summarized to key load metrics and activityDetails.
+- tomorrow.trainingEvents: the athlete's calendar training sessions for tomorrow, each with id/source/title/time. This is the PRIMARY source for recommendations and COACH_RECS.
+- tomorrow.scheduleContext: bounded non-training calendar context. Use it only to mention conflicts, tight windows, or recovery constraints; do not list every non-training event.
+- tomorrow.garminWorkouts/tomorrow.garminTrainingPlan: Garmin's own scheduler, often empty. Use only as supplemental evidence.
 
 OUTPUT FORMAT (follow exactly):
 
@@ -95,46 +106,27 @@ OUTPUT FORMAT (follow exactly):
 📅 {date}
 
 TODAY'S SNAPSHOT
-🛌 Sleep: {hours}h ({quality})
-💓 RHR: {bpm} | HRV: {ms}
-🔋 Body Battery: {current}/{highest recharged} (lowest: {lowest})
-😰 Stress: {avg} ({low/medium/high})
-🏃 Training Readiness: {score}/100
+{2-5 compact lines with available recovery signals only. If none: "Recovery data unavailable today."}
 
 TODAY'S TRAINING
-{For each activity in activities array:}
-• {activityName or activity_type}: {duration}, {distance if applicable}
-  Training Effect: {aerobic}/{anaerobic}
-  {Key metrics: calories, avg HR, max HR, sets/reps for strength}
-
-{If activities array is empty: "Rest day — no recorded activities."}
+{If today.training is empty: "Rest day — no recorded activities." Otherwise list each activity in one line with only key load metrics.}
 
 ANALYSIS
-{2-4 sentences: direct coaching assessment}
-{Flag concerns: overtraining, undereating, poor sleep, elevated RHR}
+{2-4 concise sentences: direct coaching assessment, flags only when supported by available data.}
 
 TOMORROW'S PLAN
-{Check BOTH tomorrowCalendar AND tomorrowScheduledWorkouts/tomorrowTrainingPlan.}
-{Calendar events with training keywords ARE planned sessions.}
-{For each planned session:}
+{For each tomorrow.trainingEvents item:}
 {✅/⚠️/🔄/❌} {session_name}
-  ⏰ {start_time} – {end_time}
+  ⏰ {displayTime}
   Recommendation: {KEEP/MODIFY details/SWAP details/REST}
-  Why: {1-2 sentence data-driven explanation}
+  Why: {1 concise data-driven explanation}
 
-{Non-training calendar events → list briefly as schedule context:}
-⏰ Schedule: {event1 time, event2 time, ...}
+{If scheduleContext creates a real constraint, add ONE line: "Schedule context: ...". Do not list every non-training event.}
 
-{If NO training found in calendar AND no Garmin workouts: "No training planned for tomorrow. Consider: {suggestion based on recovery data}."}
+{If NO training found: "No training planned for tomorrow. Consider: {suggestion based on recovery/rest context}."}
 
 TIP OF THE DAY
-{One actionable tip: recovery, nutrition, electrolytes, mobility, mindset}
-
-RECOMMENDATION KEY:
-- ✅ KEEP = Recovery supports planned session, execute as planned
-- ⚠️ MODIFY = Partial recovery, reduce intensity/volume (specify exact changes)
-- 🔄 SWAP = Wrong session type for current state, suggest alternative
-- ❌ REST = Insufficient recovery, injury risk, explain why
+{One actionable tip: recovery, nutrition, electrolytes, mobility, or mindset.}
 
 STRUCTURED RECOMMENDATIONS (REQUIRED):
 After the human-readable briefing, output a JSON block wrapped in markers. This block is machine-parsed — the bot uses it to offer the athlete buttons to apply your recommendations to the calendar.
@@ -156,7 +148,7 @@ Format:
 <!-- COACH_RECS_END -->
 
 RULES for the JSON block:
-- Include ONLY training events from tomorrowCalendar (skip non-training events)
+- Include ONLY events from tomorrow.trainingEvents (skip scheduleContext and non-training events)
 - For KEEP: summary should be "Manter como planeado"
 - For MODIFY: newTitle = modified name (e.g. "Corrida leve 30min" instead of "Corrida 10km"), summary = what changes
 - For SWAP: newTitle = the replacement activity, summary = what and why
@@ -361,6 +353,229 @@ async function tryAppleHealthFallback(userId: number | undefined, errors: string
   }
 }
 
+function isTrainingCalendarEvent(event: Pick<TomorrowCalendarEvent, 'summary'>): boolean {
+  return TRAINING_EVENT_PATTERN.test(event.summary);
+}
+
+function isMissingString(value: string): boolean {
+  return /^(no data|n\/a|null|undefined|unknown)$/i.test(value.trim());
+}
+
+function compactCoachValue(value: unknown, depth = 0): unknown | undefined {
+  if (value == null || depth > 6) return undefined;
+
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (!trimmed || isMissingString(trimmed)) return undefined;
+    return trimmed.length > 320 ? `${trimmed.slice(0, 317)}...` : trimmed;
+  }
+
+  if (typeof value === 'number') return Number.isFinite(value) ? value : undefined;
+  if (typeof value === 'boolean') return value;
+
+  if (Array.isArray(value)) {
+    const items = value
+      .slice(0, 12)
+      .map((item) => compactCoachValue(item, depth + 1))
+      .filter((item) => item !== undefined);
+    return items.length > 0 ? items : undefined;
+  }
+
+  if (typeof value === 'object') {
+    const out: Record<string, unknown> = {};
+    for (const [key, raw] of Object.entries(value as Record<string, unknown>).slice(0, 28)) {
+      const compacted = compactCoachValue(raw, depth + 1);
+      if (compacted !== undefined) out[key] = compacted;
+    }
+    return Object.keys(out).length > 0 ? out : undefined;
+  }
+
+  return undefined;
+}
+
+function pickCompactFields(source: unknown, keys: string[]): Record<string, unknown> | undefined {
+  if (!source || typeof source !== 'object') return undefined;
+  const src = source as Record<string, unknown>;
+  const picked: Record<string, unknown> = {};
+  for (const key of keys) {
+    if (Object.prototype.hasOwnProperty.call(src, key)) picked[key] = src[key];
+  }
+  return compactCoachValue(picked) as Record<string, unknown> | undefined;
+}
+
+function hasBodyBatterySignal(summary?: GarminCoachData['bodyBatterySummary'] | null): boolean {
+  if (!summary) return false;
+  return Object.values(summary).some((value) => typeof value === 'number' && Number.isFinite(value));
+}
+
+function buildRecoveryPayload(garminData: GarminCoachData): Record<string, unknown> {
+  const fallbackData = garminData as unknown as Record<string, unknown>;
+  const fallbackHeartRate = compactCoachValue({
+    restingHeartRate: fallbackData.restingHeartRate,
+  });
+  const fallbackHrv = compactCoachValue({
+    hrvMs: fallbackData.hrvMs,
+  });
+
+  const signals = compactCoachValue({
+    sleep: garminData.sleepSummary ?? fallbackData.sleep,
+    heartRate: garminData.heartRateSummary ?? fallbackHeartRate,
+    hrv: garminData.hrvSummary ?? fallbackHrv,
+    bodyBattery: hasBodyBatterySignal(garminData.bodyBatterySummary) ? garminData.bodyBatterySummary : fallbackData.bodyBattery,
+    stress: garminData.stressSummary ?? fallbackData.stress,
+    trainingReadiness: garminData.trainingReadiness ?? fallbackData.readiness,
+    trainingStatus: garminData.trainingStatus,
+  }) as Record<string, unknown> | undefined;
+
+  return signals
+    ? { available: true, signals }
+    : { available: false, note: 'Recovery data unavailable today' };
+}
+
+function extractClockMinutes(value: string): { label: string; minutes: number } | null {
+  const match = value.match(/T(\d{2}):(\d{2})/);
+  if (!match) return null;
+  const hours = Number(match[1]);
+  const minutes = Number(match[2]);
+  if (!Number.isInteger(hours) || !Number.isInteger(minutes)) return null;
+  return {
+    label: `${match[1]}:${match[2]}`,
+    minutes: hours * 60 + minutes,
+  };
+}
+
+function formatCoachDisplayTime(start: string, end: string): string {
+  const startClock = extractClockMinutes(start);
+  const endClock = extractClockMinutes(end);
+  if (!startClock || !endClock) {
+    const dateOnly = /^\d{4}-\d{2}-\d{2}$/;
+    return dateOnly.test(start) && dateOnly.test(end) ? 'All day' : 'Time unavailable';
+  }
+
+  let durationMin = endClock.minutes - startClock.minutes;
+  if (durationMin < 0) durationMin += 24 * 60;
+  const duration = durationMin > 0 ? ` (${durationMin} min)` : '';
+  return `${startClock.label}-${endClock.label}${duration}`;
+}
+
+function normalizeCoachVisibleTimestamps(text: string): string {
+  const iso = '\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}(?::\\d{2})?(?:\\.\\d+)?(?:Z|[+-]\\d{2}:\\d{2})?';
+  const pair = new RegExp(`(${iso})\\s*(?:–|—|-|to)\\s*(${iso})`, 'gi');
+  const single = new RegExp(iso, 'gi');
+  return text
+    .replace(pair, (_match, start: string, end: string) => formatCoachDisplayTime(start, end))
+    .replace(single, (value) => extractClockMinutes(value)?.label ?? 'Time unavailable');
+}
+
+function summarizeActivitiesForCoach(
+  activities: GarminCoachData['activities'],
+  activityDetails: Record<number, unknown>,
+): Record<string, unknown>[] {
+  return activities.slice(0, MAX_ACTIVITY_SUMMARIES).map((activity) => {
+    const distanceKm = typeof activity.distance === 'number'
+      ? Number((activity.distance / 1000).toFixed(2))
+      : undefined;
+    return compactCoachValue({
+      id: activity.activityId,
+      name: activity.activityName,
+      type: activity.activityType?.typeKey,
+      start: activity.startTimeLocal,
+      durationMin: Math.round((activity.duration || 0) / 60),
+      distanceKm,
+      avgHr: activity.averageHR,
+      maxHr: activity.maxHR,
+      calories: activity.calories,
+      cadence: activity.averageRunningCadenceInStepsPerMinute,
+      avgSpeed: activity.averageSpeed,
+      elevationGain: activity.elevationGain,
+      details: activityDetails[activity.activityId],
+    }) as Record<string, unknown>;
+  }).filter((activity) => Object.keys(activity).length > 0);
+}
+
+function toCoachCalendarEvent(event: TomorrowCalendarEvent): Record<string, unknown> {
+  return compactCoachValue({
+    id: event.id,
+    source: event.source,
+    title: event.summary,
+    start: event.start,
+    end: event.end,
+    displayTime: formatCoachDisplayTime(event.start, event.end),
+  }) as Record<string, unknown>;
+}
+
+function toScheduleContextEvent(event: TodayCalendarEvent): Record<string, unknown> {
+  return compactCoachValue({
+    title: event.summary,
+    start: event.start,
+    end: event.end,
+    displayTime: formatCoachDisplayTime(event.start, event.end),
+  }) as Record<string, unknown>;
+}
+
+function buildScheduleContext(events: TodayCalendarEvent[]): Record<string, unknown> | undefined {
+  if (events.length === 0) return undefined;
+  return compactCoachValue({
+    count: events.length,
+    events: events.slice(0, MAX_SCHEDULE_CONTEXT_EVENTS).map(toScheduleContextEvent),
+    omittedCount: Math.max(0, events.length - MAX_SCHEDULE_CONTEXT_EVENTS) || undefined,
+  }) as Record<string, unknown> | undefined;
+}
+
+function buildCoachAnalysisPayload(
+  garminData: GarminCoachData,
+  todayCalendarEvents: TodayCalendarEvent[],
+  tomorrowCalendarEvents: TomorrowCalendarEvent[],
+  activityDetails: Record<number, unknown>,
+): Record<string, unknown> {
+  const fallbackData = garminData as unknown as Record<string, unknown>;
+  const tomorrowTrainingEvents = tomorrowCalendarEvents.filter(isTrainingCalendarEvent);
+  const tomorrowScheduleEvents = tomorrowCalendarEvents.filter((event) => !isTrainingCalendarEvent(event));
+  const dailySummary = compactCoachValue({
+    ...pickCompactFields(garminData.summary, [
+    'totalSteps',
+    'steps',
+    'activeKilocalories',
+    'bmrKilocalories',
+    'consumedKilocalories',
+    'moderateIntensityMinutes',
+    'vigorousIntensityMinutes',
+    'intensityMinutesGoal',
+    'restingHeartRate',
+    'bodyBatteryMostRecentValue',
+    'bodyBatteryHighestValue',
+    'bodyBatteryLowestValue',
+    'bodyBatteryChargedValue',
+    'bodyBatteryDrainedValue',
+    ]),
+    steps: fallbackData.steps,
+    source: fallbackData.source,
+  }) as Record<string, unknown> | undefined;
+
+  return compactCoachValue({
+    date: garminData.date,
+    recovery: buildRecoveryPayload(garminData),
+    today: {
+      training: summarizeActivitiesForCoach(garminData.activities, activityDetails),
+      activityCount: garminData.activities.length,
+      omittedActivityCount: Math.max(0, garminData.activities.length - MAX_ACTIVITY_SUMMARIES) || undefined,
+      dailySummary,
+      calendarContext: buildScheduleContext(todayCalendarEvents),
+    },
+    tomorrow: {
+      trainingEvents: tomorrowTrainingEvents.map(toCoachCalendarEvent),
+      scheduleContext: buildScheduleContext(tomorrowScheduleEvents),
+      garminWorkouts: compactCoachValue(garminData.tomorrowWorkouts),
+      garminTrainingPlan: compactCoachValue(garminData.tomorrowTrainingPlan),
+    },
+    trends: compactCoachValue({
+      weeklyStress: garminData.weeklyStress,
+      weeklyIntensityMinutes: garminData.weeklyIntensityMinutes,
+    }),
+    dataGaps: compactCoachValue(garminData.errors),
+  }) as Record<string, unknown>;
+}
+
 // ─── Main coach function ──────────────────────────────────────────────
 
 export async function generateCoachBriefing(
@@ -406,8 +621,8 @@ export async function generateCoachBriefing(
 
   // Phase 2: Fetch today + tomorrow calendar (if configured)
   // Include id + source so Claude can reference them in structured recommendations
-  let todayCalendarEvents: { summary: string; start: string; end: string }[] = [];
-  let tomorrowCalendarEvents: { id: string; source: CalendarSource; summary: string; start: string; end: string }[] = [];
+  let todayCalendarEvents: TodayCalendarEvent[] = [];
+  let tomorrowCalendarEvents: TomorrowCalendarEvent[] = [];
   const hasCalendar = userId != null ? hasConnectedCalendarForUser(userId) : isAnyCalendarConfigured();
   if (hasCalendar) {
     try {
@@ -439,7 +654,7 @@ export async function generateCoachBriefing(
     todayCalendarCount: todayCalendarEvents.length,
     tomorrowCalendarCount: tomorrowCalendarEvents.length,
     tomorrowTraining: tomorrowCalendarEvents
-      .filter((e) => /gym|treino|corrida|bike|swim|yoga|strength|run|cycling|walk|easy|tempo|interval/i.test(e.summary))
+      .filter(isTrainingCalendarEvent)
       .map((e) => e.summary),
     activitiesCount: garminData.activities.length,
     activitiesNames: garminData.activities.map((a) => a.activityName),
@@ -449,44 +664,22 @@ export async function generateCoachBriefing(
   // Summarize activity details (~24KB raw → ~1KB) to prevent payload bloat
   const activityDetailsObj = summarizeActivityDetails(garminData.activityDetails);
 
-  // Build payload ordered by priority for the coach analysis:
-  //   1. Date + recovery metrics (critical for recommendations)
-  //   2. Tomorrow's calendar (PRIMARY training plan source)
-  //   3. Today's activities + details (training load context)
-  //   4. Health summaries + trends (supplementary)
-  const dataPayload = {
-    // ── Core context ──
-    date: garminData.date,
-    bodyBatterySummary: garminData.bodyBatterySummary,
-    sleepSummary: garminData.sleepSummary,
-    stressSummary: garminData.stressSummary,
-    heartRateSummary: garminData.heartRateSummary,
-    hrvSummary: garminData.hrvSummary,
-    trainingReadiness: garminData.trainingReadiness,
-    // ── Tomorrow's plan (calendar events = training schedule) ──
-    tomorrowCalendar: tomorrowCalendarEvents,
-    tomorrowScheduledWorkouts: garminData.tomorrowWorkouts,
-    tomorrowTrainingPlan: garminData.tomorrowTrainingPlan,
-    // ── Today's training ──
-    activities: garminData.activities,
-    activityDetails: activityDetailsObj,
-    todayCalendar: todayCalendarEvents,
-    // ── Extended context ──
-    trainingStatus: garminData.trainingStatus,
-    dailySummary: garminData.summary,
-    weeklyStress: garminData.weeklyStress,
-    weeklyIntensityMinutes: garminData.weeklyIntensityMinutes,
-    dataGaps: garminData.errors,
-  };
+  const dataPayload = buildCoachAnalysisPayload(
+    garminData,
+    todayCalendarEvents,
+    tomorrowCalendarEvents,
+    activityDetailsObj,
+  );
 
-  // Truncate payload — Claude handles 200K context, but we keep it reasonable
-  // to avoid wasting tokens on raw data. 40K chars ≈ ~12K tokens.
-  const rawPayload = JSON.stringify(dataPayload, null, 2);
-  const payloadStr = truncatePayload(rawPayload, 40000);
+  // Compact JSON keeps the prompt focused on coaching signal instead of
+  // whitespace, repeated nulls, and full non-training calendar dumps.
+  const rawPayload = JSON.stringify(dataPayload);
+  const payloadStr = truncatePayload(rawPayload, COACH_PAYLOAD_MAX_CHARS);
   logger.info({
     rawPayloadLength: rawPayload.length,
-    truncated: rawPayload.length > 40000,
-    tomorrowCalInPayload: dataPayload.tomorrowCalendar.length,
+    truncated: rawPayload.length > COACH_PAYLOAD_MAX_CHARS,
+    tomorrowTrainingInPayload: (dataPayload.tomorrow as any)?.trainingEvents?.length ?? 0,
+    tomorrowScheduleContextCount: (dataPayload.tomorrow as any)?.scheduleContext?.count ?? 0,
   }, 'Coach: payload stats');
 
   // Phase 4: AI analysis (Gemini primary, Anthropic fallback)
@@ -496,19 +689,20 @@ export async function generateCoachBriefing(
     const systemPrompt = `${getDomainSystemPrompt('triathlon')}\n\n${COACH_ANALYSIS_PROMPT}`;
     const userPrompt = `DAILY COACHING ANALYSIS — ${today}
 
-## RAW GARMIN DATA
+## COMPACT COACH INPUT
 ${payloadStr}
 
 ## INSTRUCTIONS
 1. Analyze my recovery status and today's training load
 2. For each scheduled workout tomorrow, recommend: KEEP / MODIFY / SWAP / REST
-3. Every recommendation must reference specific data points
+3. Every recommendation must reference specific available data points. If recovery.available=false, say recovery data is unavailable once and do not print per-field "No data" lines.
 4. Flag recovery, fueling, or schedule concerns only when supported by payload or profile data
 5. Include one actionable tip
 6. Be direct, no fluff — talk like a coach using this athlete's actual profile
 7. Use plain text only; no HTML tags
-8. Keep the human-readable briefing under 3800 characters
-9. At the END, include the structured COACH_RECS JSON block for calendar actions`;
+8. Keep the human-readable briefing under 2200 characters
+9. Use displayTime for visible event times; do not print full ISO timestamps in TOMORROW'S PLAN
+10. At the END, include the structured COACH_RECS JSON block for calendar actions`;
 
     // Gemini-first routing for cost reduction. coach_analysis is the single
     // largest cost line in the system (~$1.62/wk on Sonnet 4.6 at 1 user).
@@ -523,8 +717,8 @@ ${payloadStr}
     const meteringScopePayload = { userId: meteringScope.userId, tenantId: meteringScope.tenantId };
     const meteringUserId = meteringScopePayload.userId;
     const meteringTenantId = meteringScopePayload.tenantId;
-    const coachAnalysisMeteringOptions = { maxTokens: 2500, userId: meteringUserId, tenantId: meteringTenantId };
-    const coachAnalysisScopeBoundary = { maxTokens: 2500, userId: meteringScope.userId, tenantId: meteringScope.tenantId };
+    const coachAnalysisMeteringOptions = { maxTokens: COACH_ANALYSIS_MAX_TOKENS, userId: meteringUserId, tenantId: meteringTenantId };
+    const coachAnalysisScopeBoundary = { maxTokens: COACH_ANALYSIS_MAX_TOKENS, userId: meteringScope.userId, tenantId: meteringScope.tenantId };
     if (
       coachAnalysisMeteringOptions.userId !== coachAnalysisScopeBoundary.userId ||
       coachAnalysisMeteringOptions.tenantId !== coachAnalysisScopeBoundary.tenantId
@@ -544,7 +738,7 @@ ${payloadStr}
           userId: meteringScope.userId,
           systemPrompt,
           userPrompt,
-          maxTokens: 2500,
+          maxTokens: COACH_ANALYSIS_MAX_TOKENS,
         }, null, 2));
         logger.debug({ capturePath }, 'Coach: prompt payload captured for offline eval');
       } catch (captureErr) {
@@ -558,7 +752,7 @@ ${payloadStr}
       async () => {
         const response = await trackedCreate(client, {
           model: config.anthropic.model,
-          max_tokens: 2500,
+          max_tokens: COACH_ANALYSIS_MAX_TOKENS,
           system: [
             {
               type: 'text',
@@ -577,7 +771,7 @@ ${payloadStr}
           .map((c) => c.text)
           .join('');
       },
-      { maxTokens: 2500, userId: meteringUserId, tenantId: meteringTenantId },
+      { maxTokens: COACH_ANALYSIS_MAX_TOKENS, userId: meteringUserId, tenantId: meteringTenantId },
     );
 
     const analysisMs = Date.now() - analysisStart;
@@ -600,7 +794,7 @@ ${payloadStr}
     const { humanMessage, recommendations } = extractRecommendations(rawText);
 
     // Sanitize any markdown/unsafe fragments that the model may have output
-    const cleanMessage = sanitizeMarkdownForTelegram(humanMessage);
+    const cleanMessage = sanitizeMarkdownForTelegram(normalizeCoachVisibleTimestamps(humanMessage));
 
     // Append data collection info as a footer
     const footer = `\n\n📊 Data: ${(dataCollectionMs / 1000).toFixed(1)}s | Analysis: ${(analysisMs / 1000).toFixed(1)}s${errors.length > 0 ? ` | ⚠️ ${errors.length} data gap(s)` : ''}`;
@@ -643,11 +837,11 @@ function extractRecommendations(text: string): {
   if (startIdx === -1 || endIdx === -1 || endIdx <= startIdx) {
     // No structured block found — return the whole text as the message
     logger.warn('Coach: no COACH_RECS block found in response');
-    return { humanMessage: text.trim(), recommendations: [] };
+    return { humanMessage: stripCoachRecommendationArtifacts(text).trim(), recommendations: [] };
   }
 
   // Split human message from JSON block
-  const humanMessage = text.substring(0, startIdx).trim();
+  const humanMessage = stripCoachRecommendationArtifacts(text.substring(0, startIdx)).trim();
   const jsonStr = text.substring(startIdx + startMarker.length, endIdx).trim();
 
   try {
@@ -677,6 +871,40 @@ function extractRecommendations(text: string): {
     logger.warn({ err, jsonStr: jsonStr.substring(0, 200) }, 'Coach: failed to parse COACH_RECS JSON');
     return { humanMessage, recommendations: [] };
   }
+}
+
+function stripCoachRecommendationArtifacts(text: string): string {
+  const withoutMarkers = text
+    .replace(/<!--\s*COACH_RECS_START\s*-->[\s\S]*?(?:<!--\s*COACH_RECS_END\s*-->|$)/gi, '')
+    .replace(/<!--\s*COACH_RECS_END\s*-->/gi, '')
+    .replace(/\bCOACH_RECS_START\b[\s\S]*?(?:\bCOACH_RECS_END\b|$)/gi, '')
+    .replace(/\bCOACH_RECS_END\b/gi, '');
+  return stripTrailingCoachRecommendationJson(withoutMarkers);
+}
+
+function stripTrailingCoachRecommendationJson(text: string): string {
+  const arrayStart = text.lastIndexOf('[');
+  if (arrayStart === -1) return text;
+
+  const rawCandidate = text.slice(arrayStart).trim().replace(/```\s*$/i, '').trim();
+  let looksLikeRecommendationJson = /["']?(?:eventId|source|action)["']?\s*:/.test(rawCandidate);
+  try {
+    const parsed = JSON.parse(rawCandidate);
+    looksLikeRecommendationJson = Array.isArray(parsed) && (
+      parsed.length === 0
+      || parsed.every((item) => item && typeof item === 'object' && ('eventId' in item || 'action' in item))
+    );
+  } catch {
+    // A malformed recommendation tail is still internal output when it
+    // contains the machine-only action fields above.
+  }
+  if (!looksLikeRecommendationJson) return text;
+
+  const fenceStart = text.lastIndexOf('```', arrayStart);
+  const cutAt = fenceStart !== -1 && /^```(?:json)?\s*$/i.test(text.slice(fenceStart, arrayStart).trim())
+    ? fenceStart
+    : arrayStart;
+  return text.slice(0, cutAt).trimEnd();
 }
 
 /**

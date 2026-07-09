@@ -76,6 +76,7 @@ import { recordChatCoreV2GateCheck } from './chat-core-v2/gate-metrics-store';
 import { expireOldNexusPointCredits } from './nexus-points';
 import { getActivePlan, getCurrentWeek, getWeeklyAdherence, computeAdjustmentRecommendation, updateWeekAdjustment, getWeeksForPlan } from './training-plans';
 import { calculateReadiness, persistReadinessScore } from './readiness-scorer';
+import { getEffectiveEntitlement, isCoachBriefingEntitlementEligible } from './entitlement';
 
 interface ActiveUserTarget {
   tenantId: number;
@@ -1804,7 +1805,9 @@ export function startScheduler(): void {
       // sendCoachBriefingForTarget as the backstop for manual triggers.
       const due = resolveDueReportTargets('coach_briefing', getActiveUserTargets(), undefined, {
         eligible: (target) =>
-          hasCoachableHealthDataForUser(target.tenantId)
+          hasPaidCoachBriefingEntitlement(target.tenantId)
+          && hasActiveCoachWorkoutPlan(target.tenantId)
+          && hasCoachableHealthDataForUser(target.tenantId)
           && !isCronUserOverDailyCap(target.tenantId, 'garmin_coach', { quiet: true }),
       });
       if (due.length === 0) return 'skipped';
@@ -2508,11 +2511,39 @@ function hasCoachableHealthDataForUser(userId: number): boolean {
   }
 }
 
+function hasPaidCoachBriefingEntitlement(userId: number): boolean {
+  const entitlement = getEffectiveEntitlement(userId);
+  const allowed = isCoachBriefingEntitlementEligible(entitlement);
+  if (!allowed) {
+    logger.debug(
+      { userId, plan: entitlement.plan, entitlementSource: entitlement.source },
+      '[scheduler] coach briefing skipped: Pro or Max plan required',
+    );
+  }
+  return allowed;
+}
+
+function hasActiveCoachWorkoutPlan(userId: number): boolean {
+  try {
+    const plan = getActivePlan(userId, userId);
+    const allowed = !!plan;
+    if (!allowed) {
+      logger.debug({ userId }, '[scheduler] coach briefing skipped: active workout plan required');
+    }
+    return allowed;
+  } catch (err) {
+    logger.warn({ err, userId }, '[scheduler] coach briefing skipped: active workout plan check failed');
+    return false;
+  }
+}
+
 export async function sendCoachBriefingForTarget(target: ActiveUserTarget): Promise<void> {
   // Deliberate pre-flight replacing the old accidental gate (users without
   // health data used to throw inside generateCoachBriefing AFTER burning
   // calendar fetches). No health data source, or over the daily cap → no
   // LLM briefing for this user today.
+  if (!hasPaidCoachBriefingEntitlement(target.tenantId)) return;
+  if (!hasActiveCoachWorkoutPlan(target.tenantId)) return;
   if (!hasCoachableHealthDataForUser(target.tenantId)) {
     logger.debug({ userId: target.tenantId }, '[scheduler] coach briefing skipped: no health data source for user');
     return;

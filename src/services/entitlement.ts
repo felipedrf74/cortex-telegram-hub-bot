@@ -302,6 +302,18 @@ export function isSkillAllowedByEntitlement(
   return entitlement.allowedSkills.has(skillId);
 }
 
+/**
+ * Daily coach briefings are a paid-plan benefit. Founder assignments retain
+ * their explicitly assigned Pro/Max access, while beta sandbox trials and the
+ * owner bypass do not qualify for scheduled or on-demand briefing generation.
+ */
+export function isCoachBriefingEntitlementEligible(
+  entitlement: Pick<UserEntitlement, 'plan' | 'source'>,
+): boolean {
+  return (entitlement.plan === 'pro' || entitlement.plan === 'max')
+    && entitlement.source !== 'beta';
+}
+
 export function entitlementPlanToSkillTier(plan: BillingPlan): 'free' | 'pro' | 'max' | 'owner' {
   if (plan === 'owner' || plan === 'max' || plan === 'pro') return plan;
   if (plan === 'beta') return 'max';

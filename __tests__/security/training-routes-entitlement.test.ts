@@ -8,6 +8,7 @@ const mockSetCache = vi.fn();
 const mockGetEffectiveEntitlement = vi.fn();
 const mockIsSkillAllowedByEntitlement = vi.fn();
 const mockIsUserOverDailyCap = vi.fn();
+const mockGetActivePlan = vi.fn();
 
 let lockTail: Promise<unknown> = Promise.resolve();
 
@@ -121,6 +122,12 @@ vi.mock('../../src/services/entitlement', () => ({
   FREE_TIER_ALLOWED_SKILLS: new Set(['secretary', 'content']),
   getEffectiveEntitlement: (...args: unknown[]) => mockGetEffectiveEntitlement(...args),
   isSkillAllowedByEntitlement: (...args: unknown[]) => mockIsSkillAllowedByEntitlement(...args),
+  isCoachBriefingEntitlementEligible: (entitlement: { plan: string; source: string }) =>
+    (entitlement.plan === 'pro' || entitlement.plan === 'max') && entitlement.source !== 'beta',
+}));
+
+vi.mock('../../src/services/training-plans', () => ({
+  getActivePlan: (...args: unknown[]) => mockGetActivePlan(...args),
 }));
 
 vi.mock('../../src/services/user-service', () => ({
@@ -265,7 +272,9 @@ describe('training routes entitlement and AI cost guardrails', () => {
     mockGetEffectiveEntitlement.mockReset();
     mockIsSkillAllowedByEntitlement.mockReset();
     mockIsUserOverDailyCap.mockReset();
+    mockGetActivePlan.mockReset();
     mockGetCached.mockReturnValue(null);
+    mockGetActivePlan.mockReturnValue({ id: 1, user_id: 42, tenant_id: 42, status: 'active' });
     mockGenerateCoachBriefing.mockResolvedValue({ message: 'Coach ready.', recommendations: [] });
     mockIsUserOverDailyCap.mockReturnValue({
       over: false,
@@ -283,6 +292,52 @@ describe('training routes entitlement and AI cost guardrails', () => {
 
     expect(response.status).toBe(403);
     expect(response.body.error.code).toBe('TIER_REQUIRED');
+    expect(mockIsUserOverDailyCap).not.toHaveBeenCalled();
+    expect(mockGenerateCoachBriefing).not.toHaveBeenCalled();
+  });
+
+  it('blocks a free user even when the Training skill is temporarily allow-listed', async () => {
+    setPlan('free');
+    mockIsSkillAllowedByEntitlement.mockReturnValue(true);
+
+    const response = await getCoach();
+
+    expect(response.status).toBe(403);
+    expect(response.body.error.code).toBe('TIER_REQUIRED');
+    expect(mockGetActivePlan).not.toHaveBeenCalled();
+    expect(mockGetCached).not.toHaveBeenCalled();
+    expect(mockIsUserOverDailyCap).not.toHaveBeenCalled();
+    expect(mockGenerateCoachBriefing).not.toHaveBeenCalled();
+  });
+
+  it('blocks owner and beta bypass entitlements before coach work starts', async () => {
+    mockIsSkillAllowedByEntitlement.mockReturnValue(true);
+
+    for (const entitlement of [
+      { plan: 'owner', source: 'owner', allowedSkills: new Set(['training']) },
+      { plan: 'max', source: 'beta', allowedSkills: new Set(['training']) },
+    ]) {
+      mockGetEffectiveEntitlement.mockReturnValue(entitlement);
+      const response = await getCoach();
+      expect(response.status).toBe(403);
+      expect(response.body.error.code).toBe('TIER_REQUIRED');
+    }
+
+    expect(mockGetActivePlan).not.toHaveBeenCalled();
+    expect(mockGetCached).not.toHaveBeenCalled();
+    expect(mockGenerateCoachBriefing).not.toHaveBeenCalled();
+  });
+
+  it('blocks a paid user without an active plan before cache, calendar, or AI work', async () => {
+    setPlan('pro');
+    mockGetActivePlan.mockReturnValue(null);
+
+    const response = await getCoach();
+
+    expect(response.status).toBe(409);
+    expect(response.body.error.code).toBe('ACTIVE_TRAINING_PLAN_REQUIRED');
+    expect(mockGetActivePlan).toHaveBeenCalledWith(42, 42);
+    expect(mockGetCached).not.toHaveBeenCalled();
     expect(mockIsUserOverDailyCap).not.toHaveBeenCalled();
     expect(mockGenerateCoachBriefing).not.toHaveBeenCalled();
   });

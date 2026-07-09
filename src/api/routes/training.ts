@@ -50,6 +50,7 @@ import {
 import { registerTrainingAnalyticsRoutes } from './training-analytics-routes';
 import { registerTrainingPlanRoutes } from './training-plan-routes';
 import { requireTenantIdParam } from '../../services/tenant-scope';
+import { isCoachBriefingEntitlementEligible, type UserEntitlement } from '../../services/entitlement';
 
 export { looksLikeTrainingCalendarEvent } from './training-calendar-utils';
 
@@ -79,6 +80,48 @@ function rejectTrainingCostGuardrail(res: Response, decision: Extract<CostGuardr
     decision.status,
     decision.details,
   );
+}
+
+function requireCoachBriefingEligibility(req: AuthenticatedRequest, res: Response): boolean {
+  const entitlement = (req as AuthenticatedRequest & {
+    entitlement?: Pick<UserEntitlement, 'plan' | 'source'>;
+  }).entitlement;
+  if (!entitlement || !isCoachBriefingEntitlementEligible(entitlement)) {
+    sendError(
+      res,
+      'TIER_REQUIRED',
+      'A Pro or Max plan is required for coach briefings.',
+      403,
+      { requiredPlan: 'pro', currentPlan: entitlement?.plan ?? 'free', skill: 'training' },
+    );
+    return false;
+  }
+
+  let tenantId: number;
+  try {
+    tenantId = requireTenantIdParam(req.tenantId, 'training.coach.eligibility');
+  } catch {
+    sendError(res, 'TENANT_SCOPE_REQUIRED', 'Coach briefing requires a validated tenant scope.', 400);
+    return false;
+  }
+
+  try {
+    if (!trainingPlans.getActivePlan(req.userId, tenantId)) {
+      sendError(
+        res,
+        'ACTIVE_TRAINING_PLAN_REQUIRED',
+        'An active workout plan is required for coach briefings.',
+        409,
+      );
+      return false;
+    }
+  } catch (err) {
+    logger.warn({ err, userId: req.userId, tenantId }, 'Coach briefing eligibility check failed');
+    sendError(res, 'COACH_ELIGIBILITY_UNAVAILABLE', 'Coach briefing eligibility is temporarily unavailable.', 503);
+    return false;
+  }
+
+  return true;
 }
 
 function trainingCopy(language: Lang, ptPT: string, ptBR: string, en: string): string {
@@ -344,6 +387,7 @@ export function trainingRoutes(): Router {
    */
   router.get('/coach', async (req, res: Response) => {
     const { userId, tenantId } = req as AuthenticatedRequest;
+    if (!requireCoachBriefingEligibility(req as AuthenticatedRequest, res)) return;
     const dataUserId = tenantId;
     const forceRefresh = req.query.refresh === 'true';
     const cacheOnly = req.query.cacheOnly === 'true';
@@ -449,6 +493,7 @@ export function trainingRoutes(): Router {
       sendError(res, 'TENANT_SCOPE_REQUIRED', 'Training coach report requires a validated tenant scope.', 400);
       return;
     }
+    if (!requireCoachBriefingEligibility(req as AuthenticatedRequest, res)) return;
     const dataUserId = tenantId;
     const forceRefresh = req.body?.refresh === true;
     const cacheKey = `coach-briefing:${dataUserId}`;

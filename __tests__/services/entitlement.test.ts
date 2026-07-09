@@ -34,6 +34,7 @@ vi.mock('../../src/services/user-service', async () => {
 // Import under test AFTER mocks so the mocked modules are resolved.
 import {
   getEffectiveEntitlement,
+  isCoachBriefingEntitlementEligible,
   isSkillAllowedByEntitlement,
   FREE_TIER_ALLOWED_SKILLS,
 } from '../../src/services/entitlement';
@@ -170,6 +171,15 @@ describe('getEffectiveEntitlement', () => {
     expect(ent.source).toBe('free');
     expect(ent.plan).toBe('free');
     expect(ent.status).toBe('expired');
+  });
+
+  it('limits coach briefings to Pro/Max paid or founder entitlements', () => {
+    expect(isCoachBriefingEntitlementEligible({ plan: 'pro', source: 'stripe' })).toBe(true);
+    expect(isCoachBriefingEntitlementEligible({ plan: 'max', source: 'apple' })).toBe(true);
+    expect(isCoachBriefingEntitlementEligible({ plan: 'max', source: 'founder' })).toBe(true);
+    expect(isCoachBriefingEntitlementEligible({ plan: 'max', source: 'beta' })).toBe(false);
+    expect(isCoachBriefingEntitlementEligible({ plan: 'owner', source: 'owner' })).toBe(false);
+    expect(isCoachBriefingEntitlementEligible({ plan: 'free', source: 'free' })).toBe(false);
   });
 
   it('degrades canceled subscription to free with status=expired', () => {

@@ -175,7 +175,7 @@ describe('garmin-coach user scoping', () => {
     expect(mockTryComplete).toHaveBeenCalledTimes(1);
     const [, , category, fallback, options] = mockTryComplete.mock.calls[0];
     expect(category).toBe('coach_analysis');
-    expect(options).toMatchObject({ maxTokens: 2500, userId: 42, tenantId: 42 });
+    expect(options).toMatchObject({ maxTokens: 1800, userId: 42, tenantId: 42 });
 
     await fallback();
     expect(mockTrackedCreate).toHaveBeenCalledWith(
@@ -196,7 +196,7 @@ describe('garmin-coach user scoping', () => {
     });
     const [, , category, fallback, options] = mockTryComplete.mock.calls[0];
     expect(category).toBe('coach_analysis');
-    expect(options).toMatchObject({ maxTokens: 2500, userId: 42, tenantId: 77 });
+    expect(options).toMatchObject({ maxTokens: 1800, userId: 42, tenantId: 77 });
 
     await fallback();
     expect(mockTrackedCreate).toHaveBeenCalledWith(
@@ -247,6 +247,107 @@ describe('garmin-coach user scoping', () => {
     expect(mockFetchDailyCoachData).toHaveBeenCalledWith({ silent: true });
   });
 
+  it('sends a compact coach input without missing-data boilerplate or full schedule dumps', async () => {
+    mockIsOwnerUserRef.mockReturnValue(true);
+    mockFetchDailyCoachData.mockResolvedValue({
+      date: '2026-07-09',
+      summary: { totalSteps: 4200, bodyBatteryHighestValue: null, unusedVerboseBlob: 'x'.repeat(1000) },
+      sleepSummary: null,
+      stressSummary: null,
+      heartRateSummary: null,
+      hrvSummary: null,
+      trainingReadiness: null,
+      trainingStatus: null,
+      bodyBatterySummary: { current: null, highest: null, lowest: null, charged: null, drained: null },
+      activities: [],
+      activityDetails: new Map(),
+      tomorrowWorkouts: [],
+      tomorrowTrainingPlan: null,
+      weeklyStress: null,
+      weeklyIntensityMinutes: null,
+      errors: ['sleep unavailable', 'hrv unavailable'],
+    });
+    mockGetEvents
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([
+        { id: 'train-1', source: 'outlook', summary: 'Lower Body Strength A', start: '2026-07-10T11:00:00+01:00', end: '2026-07-10T11:42:00+01:00' },
+        { id: 'ctx-1', source: 'outlook', summary: 'Wake up', start: '2026-07-10T05:00:00+01:00', end: '2026-07-10T05:05:00+01:00' },
+        { id: 'ctx-2', source: 'outlook', summary: 'Meditation', start: '2026-07-10T05:30:00+01:00', end: '2026-07-10T05:45:00+01:00' },
+        { id: 'ctx-3', source: 'outlook', summary: 'SMS - Focus Work', start: '2026-07-10T08:00:00+01:00', end: '2026-07-10T09:00:00+01:00' },
+        { id: 'ctx-4', source: 'outlook', summary: 'SMS - SHERPAX DevOps Daily', start: '2026-07-10T09:15:00+01:00', end: '2026-07-10T09:30:00+01:00' },
+        { id: 'ctx-5', source: 'outlook', summary: 'EC - Focus Work', start: '2026-07-10T14:00:00+01:00', end: '2026-07-10T15:00:00+01:00' },
+        { id: 'ctx-6', source: 'outlook', summary: 'Construindo Familia', start: '2026-07-10T15:30:00+01:00', end: '2026-07-10T16:30:00+01:00' },
+        { id: 'ctx-7', source: 'outlook', summary: 'Content: Weekly retro', start: '2026-07-10T18:30:00+01:00', end: '2026-07-10T19:00:00+01:00' },
+        { id: 'ctx-8', source: 'outlook', summary: 'Late admin block', start: '2026-07-10T20:00:00+01:00', end: '2026-07-10T20:30:00+01:00' },
+      ]);
+
+    await generateCoachBriefing(7, { tenantId: 7 });
+
+    const [, userPrompt] = mockTryComplete.mock.calls[0];
+    expect(userPrompt).toContain('## COMPACT COACH INPUT');
+    expect(userPrompt).not.toContain('## RAW GARMIN DATA');
+    expect(userPrompt).toContain('"recovery":{"available":false');
+    expect(userPrompt).toContain('"note":"Recovery data unavailable today"');
+    expect(userPrompt).toContain('"trainingEvents":[{"id":"train-1"');
+    expect(userPrompt).toContain('"displayTime":"11:00-11:42 (42 min)"');
+    expect(userPrompt).toContain('"scheduleContext":{"count":8');
+    expect(userPrompt).toContain('"omittedCount":2');
+    expect(userPrompt).toContain('Use displayTime for visible event times');
+    expect(userPrompt).not.toContain('Sleep: No data');
+    expect(userPrompt).not.toContain('Late admin block');
+    expect(userPrompt).not.toContain('unusedVerboseBlob');
+    expect(userPrompt.length).toBeLessThan(5000);
+  });
+
+  it('preserves Apple Health fallback recovery signals in the compact coach input', async () => {
+    await generateCoachBriefing(42, { tenantId: 42 });
+
+    const [, userPrompt] = mockTryComplete.mock.calls[0];
+    expect(userPrompt).toContain('"recovery":{"available":true');
+    expect(userPrompt).toContain('"sleep"');
+    expect(userPrompt).toContain('"restingHeartRate":48');
+    expect(userPrompt).toContain('"dailySummary":{"steps":8000,"source":"apple_health"}');
+  });
+
+  it('strips malformed COACH_RECS artifacts from the user-visible message', async () => {
+    mockTryComplete.mockResolvedValueOnce({
+      text: [
+        '🏋️ NEXUS HUB — DAILY COACH BRIEFING',
+        'Coach-visible summary.',
+        '<!-- COACH_RECS_START -->',
+        '[',
+        '  { "eventId": "evt-1", "source": "outlook", "action": "KEEP" }',
+      ].join('\n'),
+      provider: 'gemini',
+    });
+
+    const result = await generateCoachBriefing(42, { tenantId: 42 });
+
+    expect(result.message).toContain('Coach-visible summary.');
+    expect(result.message).not.toMatch(/COACH_RECS_START|eventId|source|action/i);
+    expect(result.recommendations).toEqual([]);
+  });
+
+  it('strips an orphaned recommendation tail and normalizes visible ISO timestamps', async () => {
+    mockTryComplete.mockResolvedValueOnce({
+      text: [
+        '🏋️ NEXUS HUB — DAILY COACH BRIEFING',
+        '⏰ 2026-07-10T11:00:00.0000000+01:00 – 2026-07-10T11:42:00.0000000+01:00',
+        '[',
+        '  { "eventId": "evt-1", "source": "outlook", "action": "KEEP" }',
+        ']',
+        '<!-- COACH_RECS_END -->',
+      ].join('\n'),
+      provider: 'gemini',
+    });
+
+    const result = await generateCoachBriefing(42, { tenantId: 42 });
+
+    expect(result.message).toContain('⏰ 11:00-11:42 (42 min)');
+    expect(result.message).not.toMatch(/2026-07-10T|COACH_RECS_END|eventId|source|action/i);
+    expect(result.recommendations).toEqual([]);
+  });
+
   // ── Local-LLM pilot: GARMIN_COACH_CAPTURE_PROMPT payload capture ──
 
   it('captures the prompt payload to .local/coach-payloads when GARMIN_COACH_CAPTURE_PROMPT=true', async () => {
@@ -260,7 +361,7 @@ describe('garmin-coach user scoping', () => {
       const files = fs.readdirSync(captureDir).filter((f) => /^coach-\d+-u42\.json$/.test(f));
       expect(files).toHaveLength(1);
       const payload = JSON.parse(fs.readFileSync(path.join(captureDir, files[0]), 'utf8'));
-      expect(payload).toMatchObject({ userId: 42, maxTokens: 2500 });
+      expect(payload).toMatchObject({ userId: 42, maxTokens: 1800 });
       expect(typeof payload.capturedAt).toBe('string');
       expect(typeof payload.systemPrompt).toBe('string');
       expect(payload.systemPrompt.length).toBeGreaterThan(0);
