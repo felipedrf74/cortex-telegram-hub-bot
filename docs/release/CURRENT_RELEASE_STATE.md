@@ -2,7 +2,7 @@
 
 Status: canonical
 Owner: backend release lead (Felipe)
-Last verified: 2026-07-09
+Last verified: 2026-07-10
 Update policy: update after backend deploy or staging change. Workspace-level entry point is docs/release/CURRENT_RELEASE_STATE.md.
 
 Last updated: 2026-07-10
@@ -44,10 +44,14 @@ older production versions.
 
 ## Unreleased Paid-Only AI Cost Controls Candidate
 
-- Status: implemented in the isolated backend worktree branch
-  `codex/paid-ai-cost-controls`; it is not merged, staged, or deployed.
-- Companion iOS changes are isolated on `codex/paid-ai-cost-controls-ios` and
-  are likewise not merged, uploaded, or live.
+- Status as verified on 2026-07-10: implemented and committed in the isolated
+  backend worktree branch `codex/paid-ai-cost-controls` at `fa4de82e` (baseline
+  `3ce20473`). It is not pushed, merged, staged, or deployed.
+- Companion iOS changes are committed on `codex/paid-ai-cost-controls-ios`
+  (`feat(ai): add paid quota entitlement UX` followed by
+  `fix(ai): harden quota reset handling`) and are likewise not pushed, merged,
+  uploaded, or live. Exact companion SHAs are recorded in the workspace
+  canonical ledger and independent QA prompt.
 - The candidate adds canonical paid/founder entitlement resolution,
   daily/monthly/automation cost windows, SQLite-serialized reservations,
   provider-usage attribution, additive public quota fields and stable errors,
@@ -57,9 +61,17 @@ older production versions.
   `PAID_AI_COST_CONTROLS_ENFORCEMENT_ENABLED=false`. Staging persona tests,
   live-provider quality proof, and production promotion still require explicit
   owner authorization and are not evidence of the active production release.
-- Source tests were added, but the latest edits have no executed test, build,
-  typecheck, docs-audit, staging, or live validation because the owner
-  explicitly prohibited test execution in this implementation turn.
+- Verification on the committed 2026-07-10 candidate trees passed backend
+  typecheck, full Vitest (**873 files / 12,910 tests**), full Content Engine
+  pytest (**194 passed**), migration safety (**217 migrations**), the real
+  001-to-226 migration-runner rehearsal, the full iOS `Nexus HubTests` target
+  (**1,996/1,996**) and the iOS app simulator build. The canonical docs audit,
+  classifier, dry-run risk gate, and reward verdict are recorded only in
+  `docs/agents/handoffs/2026-07-10-paid-ai-cost-controls-fix-round.md` to avoid
+  competing verification claims.
+- No staging, live-provider, production, TestFlight, physical-device, or
+  30-day acceptance validation is claimed. Production remains `4.14.215` at
+  `9c68db5a`.
 
 ## 2026-07-09 Paid Coach Briefing Production Deploy
 

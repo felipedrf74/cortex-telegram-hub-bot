@@ -2,10 +2,10 @@
 
 Status: canonical
 Owner: release lead (Felipe)
-Last verified: 2026-07-08
+Last verified: 2026-07-10
 Update policy: update after merge / staging / production / deploy-gate changes. Live identity (branch/commit/version/migrations) auto-generated via engine/scripts/release-identity.sh --persist; do not type those by hand.
 
-Last updated: 2026-07-08
+Last updated: 2026-07-10
 
 > **Live identity** — branch / commit / version / migration count for the
 > current working tree are auto-generated. Do NOT type those values by
@@ -17,19 +17,17 @@ Last updated: 2026-07-08
 
 - Repo: `engine`
 - Workspace HEAD / version / migrations / dirty state: see `docs/release/release-identity.md`
-- Production status (last manual update 2026-07-08): backend package version
-  `4.14.214` is deployed from commit `df21fd04` (version policy/mint
-  `dd7afaf8`, staging-smoke PM2 evidence fix `113b83a5`, branch `main`, pushed
-  to origin) — the P3 release-tooling promote after the Training Skill QA
-  production closeout. Pipeline: backend risk gate -> staging deploy -> 5-min
-  soak -> staging smoke 21/21 (evidence committed pre-promote) -> promote gate
-  smoke 21/21 -> strict deploy validation -> post-promote health green. Deploy
-  validation passed migration safety (216 migrations), typecheck,
-  science-policy check, and full Vitest 867 files / 12,725 tests.
-  Post-promote proof: public `/health` healthy, public `/public-status` ok
-  with exactly `{status, service, timestamp}`, PM2 `nexus-hub` +
-  `content-engine` online on `4.14.214`, and authenticated Decision Center
-  overview `ok: true`. Full evidence: engine
+- Production status (last manual update 2026-07-09): backend package version
+  `4.14.215` is deployed from commit `9c68db5a` on `main`. Paid coach
+  briefings now require an active workout plan plus an eligible Pro/Max
+  entitlement on cron and API generation paths; Free, owner-only, beta-trial,
+  expired, and no-active-plan users are blocked before coach work. The direct
+  scoped deploy passed migration safety (216), typecheck, build, backup,
+  SQLite/native binding, PM2 stability, and readiness checks after focused and
+  protected test matrices passed. Post-deploy proof: public `/health` healthy,
+  PM2 `nexus-hub` + `content-engine` online, version `4.14.215`, matching local
+  and production artifact digest, and compiled coach policy markers present.
+  Full evidence: engine
   `docs/release/CURRENT_RELEASE_STATE.md` Active Production Release section.
   iOS `main` is at `3030c71` (TestFlight export now defaults to local export
   and requires `IOS_EXPORT_DESTINATION=upload` for upload), pushed to origin.
@@ -45,9 +43,11 @@ Last updated: 2026-07-08
 
 ### Unreleased Paid-Only AI Cost Controls Candidate
 
-- Backend worktree branch `codex/paid-ai-cost-controls` and iOS companion
-  branch `codex/paid-ai-cost-controls-ios` contain the implementation. Neither
-  branch is merged, staged, deployed, uploaded, or live.
+- Verification scope as of 2026-07-10: backend branch
+  `codex/paid-ai-cost-controls` is committed at `fa4de82e` (baseline
+  `3ce20473`) and iOS branch `codex/paid-ai-cost-controls-ios` is committed at
+  `8c48d7a` (baseline `c894636`). Neither branch is pushed, merged, staged,
+  deployed, uploaded, or live.
 - Scope includes canonical paid/founder AI eligibility, separate daily and
   monthly cost windows, a 30% automation ceiling, provider attribution and
   locked reservations, typed public quota state, portal administration, and
@@ -59,12 +59,28 @@ Last updated: 2026-07-08
 - Runtime enforcement defaults off behind
   `PAID_AI_COST_CONTROLS_ENFORCEMENT_ENABLED=false`; staging persona coverage,
   live-provider quality proof, and owner-authorized promotion remain pending.
-- Source-level test cases were added but not executed because the owner
-  explicitly prohibited test runs. The latest edits passed backend typecheck
-  and build, Python syntax parsing, the iOS release-hardening validator and an
-  unsigned app-only iOS build, diff whitespace checks, and the canonical docs
-  audit. Staging, live-provider, production, and 30-day acceptance evidence
-  remain pending owner-authorized validation.
+- The committed 2026-07-10 candidate trees passed backend typecheck, full
+  Vitest (**873 files / 12,910 tests**), full Content Engine pytest (**194
+  passed**), migration safety (**217 migrations**), the real 001-to-226
+  migration-runner rehearsal, the full iOS `Nexus HubTests` target
+  (**1,996/1,996**), and the iOS app simulator build. The single detailed
+  verification verdict and finding matrix live in engine
+  `docs/agents/handoffs/2026-07-10-paid-ai-cost-controls-fix-round.md`.
+  Staging, live-provider, production, TestFlight/device, and 30-day acceptance
+  evidence remain pending owner-authorized validation. Production truth is
+  unchanged at backend `4.14.215` / `9c68db5a`.
+
+### 2026-07-09 Paid Coach Briefing Production Deploy
+
+- Backend commit `9c68db5a` is on `origin/main` and live on production
+  `4.14.215`.
+- The scoped release used direct `deploy.sh`; the duplicate full Vitest layer
+  was explicitly skipped after focused coach tests and the repository's
+  protected/changed matrices passed.
+- Public health, PM2, runtime version, matching artifact digest, and compiled
+  coach-policy markers were verified after restart.
+- Staging smoke, live APNs, live coach generation, and production calendar
+  writes were not run.
 
 ### 2026-07-08 P3 Release Tooling Promote
 
