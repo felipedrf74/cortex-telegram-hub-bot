@@ -5,7 +5,7 @@
 
 | Area | Path | Branch | Commit | Dirty state | Version | Migrations |
 | --- | --- | --- | --- | --- | --- | --- |
-| Backend | `/Users/felipedominguez/.codex/worktrees/paid-ai-cost-controls-backend` | `codex/paid-ai-cost-controls` | `6c67c181` | `dirty` | `4.14.216` | `217` |
+| Backend | `/Users/felipedominguez/.codex/worktrees/paid-ai-cost-controls-backend` | `codex/paid-ai-cost-controls` | `ccc2001d` | `clean` | `4.14.216` | `217` |
 | iOS | `/Users/felipedominguez/.codex/worktrees/paid-ai-cost-controls-ios` | `codex/paid-ai-cost-controls-ios` | `8c48d7a` | `clean` | n/a | n/a |
 
-Generated at: `2026-07-10T12:09:10Z`
+Generated at: `2026-07-10T12:14:57Z`
