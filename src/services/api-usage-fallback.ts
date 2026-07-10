@@ -3,18 +3,20 @@
 import type Database from 'better-sqlite3';
 import { resolveApiUsageAttribution, type AiRequestSource } from './api-usage-attribution';
 
-export type ApiUsagePricingStatus = 'resolved' | 'unresolved' | 'legacy' | 'zero-cost';
+export type ApiUsagePricingStatus = 'resolved' | 'unresolved' | 'legacy' | 'zero-cost' | 'timeout-estimate';
 
 export interface ApiUsagePersistenceFailure {
   provider: string;
   category: string;
   occurredAt: string;
+  retryAt: string;
 }
 
 /**
  * A provider response without a durable api_usage row makes quota enforcement
- * unsafe. The first such failure trips a process-wide, restart-cleared latch;
- * all subsequent model calls fail through the shared SERVICE_DEGRADED gate.
+ * unsafe. The first such failure trips a process-wide latch; all subsequent
+ * model calls fail through SERVICE_DEGRADED until the honest 60-second retry
+ * window opens and a durable zero-cost probe succeeds.
  */
 export class ApiUsagePersistenceError extends Error {
   readonly code = 'AI_USAGE_PERSISTENCE_FAILED';
@@ -42,6 +44,7 @@ export function rethrowAiUsageFailClosedError(error: unknown): void {
   if (isAiUsageFailClosedError(error)) throw error;
 }
 
+const API_USAGE_RECOVERY_RETRY_MS = 60_000;
 let apiUsagePersistenceFailure: ApiUsagePersistenceFailure | null = null;
 
 export function tripApiUsagePersistenceFailure(
@@ -53,6 +56,7 @@ export function tripApiUsagePersistenceFailure(
       provider,
       category,
       occurredAt: new Date().toISOString(),
+      retryAt: new Date(Date.now() + API_USAGE_RECOVERY_RETRY_MS).toISOString(),
     };
   }
   return new ApiUsagePersistenceError(provider, category);
@@ -62,9 +66,45 @@ export function getApiUsagePersistenceFailure(): ApiUsagePersistenceFailure | nu
   return apiUsagePersistenceFailure ? { ...apiUsagePersistenceFailure } : null;
 }
 
-/** Test-only: production intentionally clears the latch only on restart. */
+/** Test-only latch reset. Production recovery uses the durable probe above. */
 export function _resetApiUsagePersistenceFailureForTests(): void {
   apiUsagePersistenceFailure = null;
+}
+
+/**
+ * Probe the exact durable api_usage write path once the advertised retry
+ * window opens. A successful zero-cost marker clears the process latch; a
+ * failed probe advances the retry window by another honest 60 seconds.
+ */
+export function tryRecoverApiUsagePersistenceFailure(db: Database.Database): boolean {
+  const failure = apiUsagePersistenceFailure;
+  if (!failure) return true;
+  const retryAtMs = Date.parse(failure.retryAt);
+  if (Number.isFinite(retryAtMs) && Date.now() < retryAtMs) return false;
+
+  try {
+    insertApiUsageFallback(db, {
+      category: 'api_usage_recovery_probe',
+      model: 'metering-probe',
+      provider: 'system',
+      tenantId: 0,
+      userId: 0,
+      inputTokens: 0,
+      outputTokens: 0,
+      costUsd: 0,
+      pricingStatus: 'zero-cost',
+      requestSource: 'system',
+      baseCategory: 'api_usage_recovery_probe',
+    });
+    apiUsagePersistenceFailure = null;
+    return true;
+  } catch {
+    apiUsagePersistenceFailure = {
+      ...failure,
+      retryAt: new Date(Date.now() + API_USAGE_RECOVERY_RETRY_MS).toISOString(),
+    };
+    return false;
+  }
 }
 
 export interface ApiUsageFallbackInsertInput {
@@ -95,6 +135,57 @@ export interface ApiUsageFallbackInsertInput {
   providerToolCostUsd?: number | null;
   webSearchRequests?: number | null;
   groundedSearchPrompts?: number | null;
+}
+
+export interface ApiUsageTimeoutEstimateInput {
+  category: string;
+  model: string;
+  provider: string;
+  tenantId?: number | null;
+  userId?: number | null;
+  maxCostUsd: number;
+  timeoutMs: number;
+  providerToolCostUsd?: number | null;
+  webSearchRequests?: number | null;
+  groundedSearchPrompts?: number | null;
+}
+
+/**
+ * Persist the provider-enforced upper cost bound when an SDK request outlives
+ * the caller timeout. The orphan may still be billed, but no reliable token
+ * metadata is available at the abandonment boundary. A distinct pricing
+ * status keeps this conservative row visible to owner/admin reconciliation.
+ */
+export function recordApiUsageTimeoutEstimate(
+  input: ApiUsageTimeoutEstimateInput,
+  db: Database.Database = getDbForTimeoutEstimate(),
+): number {
+  try {
+    return insertApiUsageFallback(db, {
+      category: input.category,
+      model: input.model,
+      provider: input.provider,
+      tenantId: input.tenantId ?? input.userId ?? 0,
+      userId: input.userId ?? 0,
+      inputTokens: 0,
+      outputTokens: 0,
+      costUsd: Math.max(0, input.maxCostUsd),
+      durationMs: Math.max(0, Math.floor(input.timeoutMs)),
+      pricingStatus: 'timeout-estimate',
+      providerToolCostUsd: input.providerToolCostUsd ?? 0,
+      webSearchRequests: input.webSearchRequests ?? 0,
+      groundedSearchPrompts: input.groundedSearchPrompts ?? 0,
+    });
+  } catch (err) {
+    if (err instanceof ApiUsagePersistenceError) throw err;
+    throw tripApiUsagePersistenceFailure(input.provider, input.category);
+  }
+}
+
+// Lazy load avoids a database -> migration -> provider import cycle during
+// application bootstrap while keeping the timeout callback synchronous.
+function getDbForTimeoutEstimate(): Database.Database {
+  return (require('./database') as typeof import('./database')).getDb();
 }
 
 const columnCache = new WeakMap<Database.Database, Set<string>>();

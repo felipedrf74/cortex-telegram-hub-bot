@@ -68,4 +68,32 @@ describe('content-engine client base URL', () => {
     await expect(deepSearch('safe topic')).rejects.toBeInstanceOf(ForwardedAiBudgetError);
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
+
+  it('allowlists forwarded details and clamps oversized Retry-After values', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({
+      error: {
+        code: 'AI_MONTHLY_LIMIT_REACHED',
+        message: 'Monthly AI quota reached.',
+        details: {
+          window: 'monthly',
+          requiredPlan: 'pro',
+          monthlyResetAt: '2026-08-01T00:00:00.000Z',
+          costUsd: 999,
+          providerRaw: 'secret',
+        },
+      },
+    }), {
+      status: 429,
+      headers: { 'Content-Type': 'application/json', 'Retry-After': '999999999' },
+    })));
+
+    const error = await getSources('safe topic').catch((caught) => caught) as ForwardedAiBudgetError;
+
+    expect(error.details).toEqual({
+      window: 'monthly',
+      requiredPlan: 'pro',
+      monthlyResetAt: '2026-08-01T00:00:00.000Z',
+      retryAfterSeconds: 2_678_400,
+    });
+  });
 });

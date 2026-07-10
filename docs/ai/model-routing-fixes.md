@@ -128,7 +128,7 @@ This preserves live routing while reducing the chance that OpenAI primary/fallba
 | Severity | Item | Why it remains open |
 | --- | --- | --- |
 | P1 | Python `/api/v1/internal/ai-complete` lacks user/tenant attribution | This batch focused on routed provider calls. Python proxy scope needs a small API contract update and content-engine caller changes. |
-| P1 | OpenAI native streaming is still off-path | `OpenAIProvider.streamDomain()` remains outside the provider-agnostic interface and central circuit/fallback layer. |
+| Resolved | OpenAI native streaming was off-path | The unused `OpenAIProvider.streamDomain()` extension was removed; model-backed runtime paths remain on provider routing abstractions. |
 | P1 | Legacy user-only context blocks still need tenant proof | This batch adds detection and metadata, but does not audit every underlying store/helper. |
 | P1 | Domain-specific fallback still needs gate-aware provider selection | This batch improves visibility; the provider-registry/domain-pair selection should still be made Anthropic-gate aware. |
 | P1 | Invoice vision provider-order drift remains | This batch did not change invoice parsing behavior. |

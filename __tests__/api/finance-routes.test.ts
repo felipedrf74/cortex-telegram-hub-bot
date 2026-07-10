@@ -22,6 +22,7 @@ const mockIsUserOverDailyCap = vi.fn().mockReturnValue({
 });
 const mockInvalidateFinanceDerivedCaches = vi.fn();
 const mockLoadLiveCalendarBusyWindows = vi.fn();
+const mockLoggerError = vi.fn();
 
 vi.mock('../../src/services/database', () => ({
   getDb: () => testDb,
@@ -35,7 +36,7 @@ vi.mock('../../src/services/database', () => ({
 }));
 
 vi.mock('../../src/utils/logger', () => ({
-  logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(), trace: vi.fn(), child: vi.fn().mockReturnThis() },
+  logger: { info: vi.fn(), warn: vi.fn(), error: (...args: unknown[]) => mockLoggerError(...args), debug: vi.fn(), trace: vi.fn(), child: vi.fn().mockReturnThis() },
   LOGGER_REDACTION_PATHS: [],
 }));
 
@@ -176,16 +177,22 @@ function applyMigrations(db: Database.Database): void {
 interface MockRes {
   statusCode: number;
   body: any;
+  headers: Record<string, string>;
   status(code: number): MockRes;
   json(body: any): MockRes;
+  setHeader(name: string, value: string): MockRes;
+  getHeader(name: string): string | undefined;
 }
 
 function mockRes(): MockRes {
   const r: MockRes = {
     statusCode: 200,
     body: null,
+    headers: {},
     status(code: number) { r.statusCode = code; return r; },
     json(body: any) { r.body = body; return r; },
+    setHeader(name: string, value: string) { r.headers[name.toLowerCase()] = value; return r; },
+    getHeader(name: string) { return r.headers[name.toLowerCase()]; },
   };
   return r;
 }
@@ -624,7 +631,7 @@ describe('Finance API — tax routes', () => {
       mimeType: 'image/jpeg',
     });
 
-    expect(res.statusCode).toBe(429);
+    expect(res.statusCode, JSON.stringify(res.body)).toBe(429);
     expect(res.body.ok).toBe(false);
     expect(res.body.error.code).toBe('AI_DAILY_LIMIT_REACHED');
     expect(res.body.error.details).toMatchObject({

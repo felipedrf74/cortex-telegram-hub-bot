@@ -19,10 +19,24 @@ export class AITimeoutError extends Error {
  * rejects with AITimeoutError. The original promise continues running in the
  * background (the API call isn't cancelled — just the wait is abandoned).
  */
-export function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+export function withTimeout<T>(
+  promise: Promise<T>,
+  ms: number,
+  options: { onTimeout?: () => void } = {},
+): Promise<T> {
   let timeoutId: ReturnType<typeof setTimeout>;
   const timeoutPromise = new Promise<never>((_, reject) => {
-    timeoutId = setTimeout(() => reject(new AITimeoutError(ms)), ms);
+    timeoutId = setTimeout(() => {
+      try {
+        // The SDK request cannot always be aborted. Persist a conservative
+        // estimate before abandoning the wait so quota truth still includes
+        // a provider request that may complete and bill in the background.
+        options.onTimeout?.();
+        reject(new AITimeoutError(ms));
+      } catch (err) {
+        reject(err);
+      }
+    }, ms);
   });
 
   return Promise.race([

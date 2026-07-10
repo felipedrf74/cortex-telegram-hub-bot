@@ -710,8 +710,48 @@ function formatKnowledgePromptBlock(knowledge: ContentKnowledge[]): string {
 
 export function buildKnowledgePromptBlock(userId: number, tenantId?: number): string {
   assertPositiveUserId(userId);
+  const resolvedTenantId = tenantId ?? userId;
   const knowledge = getAllKnowledge(userId, tenantId)
     .filter((row) => isAuthorizedContentRow(row, { userId, tenantId }));
+  const sourceChannelNames = [...new Set(knowledge.flatMap((row) => {
+    try {
+      const parsed = JSON.parse(row.source_channels);
+      return Array.isArray(parsed)
+        ? parsed.filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
+        : [];
+    } catch {
+      return [];
+    }
+  }))];
+  let usesSharedSystemKnowledge = knowledge.some((row) => effectiveContentOwnerScope(row) === 'system');
+  if (!usesSharedSystemKnowledge && sourceChannelNames.length > 0) {
+    try {
+      const placeholders = sourceChannelNames.map(() => '?').join(', ');
+      const row = getDb().prepare(`
+        SELECT 1 AS present
+          FROM content_ref_channels
+         WHERE channel_name IN (${placeholders})
+           AND ${platformContentScopePredicate()}
+         LIMIT 1
+      `).get(...sourceChannelNames) as { present?: number } | undefined;
+      usesSharedSystemKnowledge = row?.present === 1;
+    } catch {
+      usesSharedSystemKnowledge = false;
+    }
+  }
+  if (usesSharedSystemKnowledge) {
+    try {
+      getDb().prepare(`
+        INSERT OR IGNORE INTO shared_knowledge_consumption (
+          user_id, tenant_id, source, consumed_on
+        ) VALUES (?, ?, 'content_prompt', date('now'))
+      `).run(userId, resolvedTenantId);
+    } catch {
+      // Migration 226 may not exist during a rolling deploy. Knowledge remains
+      // usable; the platform learner fails closed until durable evidence can be
+      // recorded instead of guessing from unrelated provider traffic.
+    }
+  }
   return formatKnowledgePromptBlock(knowledge);
 }
 

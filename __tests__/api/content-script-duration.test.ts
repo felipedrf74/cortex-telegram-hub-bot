@@ -168,13 +168,17 @@ vi.mock('../../src/services/openai-provider', () => ({
   isOpenAIConfigured: (...args: unknown[]) => mockIsOpenAIConfigured(...args),
 }));
 
-vi.mock('../../src/services/api-usage-fallback', () => ({
-  rethrowAiUsageFailClosedError: (error: any) => {
+vi.mock('../../src/services/api-usage-fallback', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../src/services/api-usage-fallback')>();
+  return {
+    ...actual,
+    rethrowAiUsageFailClosedError: (error: any) => {
     if (error?.name === 'ApiUsagePersistenceError'
       || error?.code === 'AI_USAGE_PERSISTENCE_FAILED'
       || error?.name === 'AiBudgetError') throw error;
-  },
-}));
+    },
+  };
+});
 
 vi.mock('../../src/services/content-token-artifact-store', () => ({
   persistContentArtifacts: (...args: unknown[]) => mockPersistContentArtifacts(...args),
@@ -710,7 +714,7 @@ describe('Content API — script duration presets', () => {
     }, '/script/research-refresh');
 
     expect(response.statusCode).toBe(200);
-    expect(response.body.data.provider).toBe('openai-web-search');
+    expect(response.body.data.operationTrace.provider).toBe('openai-web-search');
     expect(mockCompleteOneShotWithSearch).toHaveBeenCalledTimes(1);
     expect(mockCompleteOneShotWithOpenAIWebSearch).toHaveBeenCalledTimes(1);
   });

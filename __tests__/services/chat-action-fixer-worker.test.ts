@@ -28,6 +28,10 @@ vi.mock('../../src/portal/anthropic-hook', () => ({
   trackedCreate: (...args: unknown[]) => aiMocks.trackedCreate(...args),
 }));
 
+vi.mock('../../src/services/anthropic-lazy-client', () => ({
+  createLazyAnthropicClient: vi.fn(() => ({ get: () => ({}) })),
+}));
+
 vi.mock('../../src/services/database', () => ({
   getDb: () => testDb,
   initDatabase: vi.fn(),

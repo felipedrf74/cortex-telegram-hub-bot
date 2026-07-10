@@ -272,6 +272,26 @@ describe('TaskRoutingProvider', () => {
   // ─── callDomain (routes based on domain → task type) ────────────
 
   describe('callDomain', () => {
+    it('does not fall back or advance the breaker for repeated budget denials', async () => {
+      const denial = Object.assign(new Error('daily limit'), {
+        name: 'AiBudgetError',
+        decision: { code: 'AI_DAILY_LIMIT_REACHED' },
+      });
+      anthropic.callDomain.mockRejectedValue(denial);
+
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        await expect(provider.callDomain('secretary', [], 'msg', '')).rejects.toBe(denial);
+      }
+
+      expect(anthropic.callDomain).toHaveBeenCalledTimes(3);
+      expect(gemini.callDomain).not.toHaveBeenCalled();
+      expect(onFallback).not.toHaveBeenCalled();
+      expect(provider.getAllCircuitStates().anthropic).toEqual({
+        state: CircuitState.CLOSED,
+        failures: 0,
+      });
+    });
+
     it('secretary routes to tool-use primary (anthropic)', async () => {
       anthropic.callDomain.mockResolvedValue(OK_RESULT);
       const result = await provider.callDomain('secretary', [], 'msg', '');

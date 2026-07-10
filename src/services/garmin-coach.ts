@@ -32,10 +32,11 @@ import { getDb } from './database';
 import { appleHealthJsonSelectColumns, parseAppleHealthDataJson } from './apple-health-encryption';
 import { requireTenantIdParam } from './tenant-scope';
 import { rethrowAiUsageFailClosedError } from './api-usage-fallback';
+import { withAiBudgetReservation, type AiRequestSource } from './cost-guardrail';
 
 const client = new Anthropic({
   apiKey: config.anthropic.apiKey,
-  maxRetries: 3,
+  maxRetries: 0,
 });
 
 type AppleHealthCoachRow = {
@@ -63,7 +64,7 @@ export const COACH_ANALYSIS_SYSTEM_METERING_TENANT_ID = 0;
 // and structured actions for the bounded calendar event set.
 const COACH_ANALYSIS_MAX_TOKENS = 1400;
 const COACH_PAYLOAD_MAX_CHARS = 9000;
-const COACH_SYSTEM_PROMPT_MAX_CHARS = 6500;
+export const COACH_SYSTEM_PROMPT_MAX_CHARS = 12_000;
 const MAX_ACTIVITY_SUMMARIES = 8;
 const MAX_SCHEDULE_CONTEXT_EVENTS = 6;
 const TRAINING_EVENT_PATTERN = /\b(gym|treino|training|workout|strength|run|running|corrida|bike|cycling|cycle|swim|yoga|walk|tempo|interval|long run|ride|lift|lower body|upper body|full body|mobility|pilates)\b/i;
@@ -201,6 +202,9 @@ export interface CoachBriefingOptions {
   tenantId?: number;
   /** Authenticated actor to charge when generating for an active tenant. */
   meteringUserId?: number;
+  /** Classification for the provider-only reservation boundary. */
+  budgetRequestSource?: AiRequestSource;
+  budgetJobName?: string;
 }
 
 export interface CoachRecommendationApplyScope {
@@ -698,10 +702,7 @@ export async function generateCoachBriefing(
   const analysisStart = Date.now();
   try {
     const today = now().toFormat('cccc, LLLL dd yyyy');
-    const systemPrompt = compactCoachPromptText(
-      `${getDomainSystemPrompt('triathlon')}\n\n${COACH_ANALYSIS_PROMPT}`,
-      COACH_SYSTEM_PROMPT_MAX_CHARS,
-    );
+    const systemPrompt = buildCoachAnalysisSystemPrompt();
     const userPrompt = `DAILY COACHING ANALYSIS — ${today}
 
 ## COMPACT COACH INPUT
@@ -760,34 +761,34 @@ ${payloadStr}
         logger.debug({ err: captureErr }, 'Coach: prompt payload capture failed (non-critical)');
       }
     }
-    const { text: rawText, provider: analysisProvider } = await completeOneShotWithFallback(
-      systemPrompt,
-      userPrompt,
-      'coach_analysis',
-      async () => {
-        const response = await trackedCreate(client, {
-          model: config.anthropic.model,
-          max_tokens: COACH_ANALYSIS_MAX_TOKENS,
-          system: [
-            {
-              type: 'text',
-              text: getDomainSystemPrompt('triathlon'),
-              cache_control: { type: 'ephemeral' },
-            },
-            {
-              type: 'text',
-              text: COACH_ANALYSIS_PROMPT,
-            },
-          ],
-          messages: [{ role: 'user', content: userPrompt }],
-        }, 'coach_analysis', { userId: meteringUserId, tenantId: meteringTenantId });
-        return response.content
-          .filter((c): c is Anthropic.TextBlock => c.type === 'text')
-          .map((c) => c.text)
-          .join('');
-      },
-      { maxTokens: COACH_ANALYSIS_MAX_TOKENS, userId: meteringUserId, tenantId: meteringTenantId },
-    );
+    const budgetRequestSource = opts.budgetRequestSource
+      ?? (meteringUserId > 0 ? 'interactive' : 'system');
+    const { text: rawText, provider: analysisProvider } = await withAiBudgetReservation({
+      userId: meteringUserId,
+      requestSource: budgetRequestSource,
+      baseCategory: 'coach_analysis',
+      jobName: opts.budgetJobName ?? (budgetRequestSource === 'automation' ? 'garmin_coach' : 'coach_refresh'),
+      automationPriority: budgetRequestSource === 'automation' ? 'coach' : undefined,
+    }, () => completeOneShotWithFallback(
+        systemPrompt,
+        userPrompt,
+        'coach_analysis',
+        async () => {
+          const response = await trackedCreate(client, {
+            model: config.anthropic.model,
+            max_tokens: COACH_ANALYSIS_MAX_TOKENS,
+            // Fallback receives the exact same compact, block-complete prompt
+            // as Gemini; provider switching cannot restore the discarded bulk.
+            system: systemPrompt,
+            messages: [{ role: 'user', content: userPrompt }],
+          }, 'coach_analysis', { userId: meteringUserId, tenantId: meteringTenantId });
+          return response.content
+            .filter((c): c is Anthropic.TextBlock => c.type === 'text')
+            .map((c) => c.text)
+            .join('');
+        },
+        { maxTokens: COACH_ANALYSIS_MAX_TOKENS, userId: meteringUserId, tenantId: meteringTenantId },
+      ));
 
     const analysisMs = Date.now() - analysisStart;
     logger.info(
@@ -954,12 +955,13 @@ function sanitizeMarkdownForTelegram(text: string): string {
   return s.trim();
 }
 
-function compactCoachPromptText(value: string, maxChars: number): string {
-  if (value.length <= maxChars) return value;
-  const marker = '\n...[budget-safe prompt compaction]...\n';
-  const available = Math.max(0, maxChars - marker.length);
-  const head = Math.floor(available * 0.65);
-  return `${value.slice(0, head)}${marker}${value.slice(value.length - (available - head))}`;
+export function buildCoachAnalysisSystemPrompt(persona = getDomainSystemPrompt('triathlon')): string {
+  const combined = `${persona.trim()}\n\n${COACH_ANALYSIS_PROMPT}`;
+  if (combined.length <= COACH_SYSTEM_PROMPT_MAX_CHARS) return combined;
+  // The coaching contract is one indivisible instruction block. If a future
+  // persona grows beyond the budget, drop that optional bulk instead of
+  // slicing DATA INTERPRETATION or the structured output contract mid-block.
+  return COACH_ANALYSIS_PROMPT;
 }
 
 function compactCoachJsonValue(

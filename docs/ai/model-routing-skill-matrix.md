@@ -19,7 +19,6 @@ Live env note: the older staging/production env grep set `AI_CHAT_FALLBACK=anthr
 | Tool continuations | `TaskRoutingProvider.continueWithToolResults` | Same resolved pair as initial domain call | Same optimization decision recomputed | Critical for stable tools/history across providers. |
 | Vision/image classification | `classifyAndExtractImage` | Gemini vision -> OpenAI vision -> Anthropic gated; GIF direct Anthropic | Vision helper options | Provider fallback does not use task router. |
 | Python content engine | `/api/v1/internal/ai-complete` | Gemini -> OpenAI -> Anthropic gated | One-shot helper options | `claude_client.py` name is compatibility-only; authenticated routes re-enter the live budget through an exact-category signed attribution marker, while intentional unsigned jobs remain system-scoped. |
-| Streaming | `OpenAIProvider.streamDomain` | OpenAI-only | OpenAI model | Not part of central fallback/circuit breaker layer. |
 
 Live chat surfaces that enter this matrix:
 

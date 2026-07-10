@@ -54,6 +54,23 @@ const DEFAULT_ALLOWED_WEBSOCKET_ORIGINS = [
 const activeWebSocketConnectionsByIp = new Map<string, number>();
 let activeWebSocketConnectionCount = 0;
 
+export function buildWebSocketAiBudgetErrorFrame(
+  error: unknown,
+  userId?: number,
+  tenantId?: number,
+): Record<string, unknown> | null {
+  const budgetError = toStableAiBudgetError(error);
+  if (!budgetError) return null;
+  return {
+    type: 'error',
+    code: budgetError.code,
+    message: budgetError.message,
+    details: budgetError.details,
+    userId,
+    tenantId,
+  };
+}
+
 function normalizedAllowedWebSocketOrigins(): Set<string> {
   const configured = (process.env.IOS_WS_ALLOWED_ORIGINS || '')
     .split(',')
@@ -920,21 +937,18 @@ export function attachWebSocket(server: http.Server): void {
           },
         );
       } catch (err: any) {
-        const budgetError = toStableAiBudgetError(err);
-        if (budgetError) {
+        const budgetErrorFrame = buildWebSocketAiBudgetErrorFrame(
+          err,
+          (ws as any).userId,
+          (ws as any).tenantId,
+        );
+        if (budgetErrorFrame) {
           logger.warn(
-            { userId: (ws as any).userId, tenantId: (ws as any).tenantId, code: budgetError.code, platform: 'ios_ws' },
+            { userId: (ws as any).userId, tenantId: (ws as any).tenantId, code: budgetErrorFrame.code, platform: 'ios_ws' },
             'iOS WebSocket blocked by AI budget policy',
           );
           if (ws.readyState === WebSocket.OPEN) {
-            ws.send(JSON.stringify({
-              type: 'error',
-              code: budgetError.code,
-              message: budgetError.message,
-              details: budgetError.details,
-              userId: (ws as any).userId,
-              tenantId: (ws as any).tenantId,
-            }));
+            ws.send(JSON.stringify(budgetErrorFrame));
           }
           return;
         }

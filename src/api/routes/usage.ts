@@ -44,6 +44,9 @@ export function usageRoutes(): Router {
       const usage = getDailyUsage(userId);
       const quota = getDailyQuotaStatus(userId);
       const safeQuota = buildQuotaUsagePayload(quota);
+      const legacyUsageLevel = quota.over
+        ? 'exhausted'
+        : quota.usageFraction >= 0.8 ? 'near_limit' : 'ok';
 
       sendSuccess(res, {
         date: usage.date,
@@ -55,8 +58,13 @@ export function usageRoutes(): Router {
         outputTokens: usage.outputTokens,
         apiCalls: usage.apiCalls,
         ...safeQuota,
+        // This route predates billing/status and its meter enum is consumed by
+        // legacy clients. Keep it stable while billing routes expose plan tiers.
+        usageLevel: legacyUsageLevel,
         allowed: !quota.over,
-        exceeded: quota.blockReason
+        exceeded: !quota.over
+          ? []
+          : quota.blockReason
           ? ['plan']
           : [quota.dailyOver ? 'daily' : null, quota.monthlyOver ? 'monthly' : null].filter(Boolean),
       });

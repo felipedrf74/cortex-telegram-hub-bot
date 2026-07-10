@@ -183,4 +183,28 @@ describe('state/content-references isolation contract', () => {
     expect(buildKnowledgePromptBlock(42)).toContain('User voice');
     expect(buildKnowledgePromptBlock(42)).not.toContain('System voice');
   });
+
+  it('records a durable marker when system-derived knowledge enters a user prompt', () => {
+    const systemChannel = addSystemChannel('https://youtube.com/@shared-source', 'manual', adminContext);
+    updateChannelStatus(systemChannel.id, 'active', { channel_name: 'Shared Source' }, { adminContext });
+    upsertKnowledge('brand_voice', 'Adapted shared guidance', ['Shared Source'], 42);
+
+    expect(buildKnowledgePromptBlock(42, 42)).toContain('Adapted shared guidance');
+    expect(testDb.prepare(`
+      SELECT user_id, tenant_id, source
+        FROM shared_knowledge_consumption
+       WHERE user_id = 42
+    `).get()).toEqual({
+      user_id: 42,
+      tenant_id: 42,
+      source: 'content_prompt',
+    });
+
+    // Daily uniqueness prevents prompt construction from inflating evidence.
+    buildKnowledgePromptBlock(42, 42);
+    expect(testDb.prepare(`
+      SELECT COUNT(*) AS count FROM shared_knowledge_consumption
+       WHERE user_id = 42
+    `).get()).toEqual({ count: 1 });
+  });
 });

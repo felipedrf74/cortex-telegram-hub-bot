@@ -82,7 +82,15 @@ function seedUsage(userId: number, amount: number): void {
   `).run(userId, userId, amount);
 }
 
-import { enforceCostGuardrails, _resetUserCostLocksForTests } from '../../src/services/cost-guardrail';
+import { checkAiBudget, _resetUserCostLocksForTests } from '../../src/services/cost-guardrail';
+
+function interactiveDecision(userId: number) {
+  return checkAiBudget({
+    userId,
+    requestSource: 'interactive',
+    baseCategory: 'chat_secretary',
+  });
+}
 
 describe('global cost guardrail for REST AI routes', () => {
   beforeEach(() => {
@@ -103,12 +111,12 @@ describe('global cost guardrail for REST AI routes', () => {
   it('blocks AI routes with SERVICE_DEGRADED when global daily spend is exhausted', () => {
     seedUsage(28, 11.0);
 
-    const decision = enforceCostGuardrails(25);
+    const decision = interactiveDecision(25);
 
     expect(decision).toMatchObject({
-      block: true,
+      allowed: false,
       status: 429,
-      reason: 'SERVICE_DEGRADED',
+      code: 'SERVICE_DEGRADED',
     });
   });
 
@@ -116,31 +124,30 @@ describe('global cost guardrail for REST AI routes', () => {
     seedUsage(28, 0.05);
     seedUsage(25, 0.61);
 
-    const decision = enforceCostGuardrails(25);
+    const decision = interactiveDecision(25);
 
     expect(decision).toMatchObject({
-      block: true,
+      allowed: false,
       status: 429,
-      reason: 'AI_DAILY_LIMIT_REACHED',
+      code: 'AI_DAILY_LIMIT_REACHED',
     });
   });
 
   it('allows clean routes under both global and per-user caps', () => {
     seedUsage(25, 0.05);
 
-    const decision = enforceCostGuardrails(25);
+    const decision = interactiveDecision(25);
 
     expect(decision).toMatchObject({
-      block: false,
+      allowed: true,
       status: 200,
-      reason: 'ok',
+      code: 'OK',
     });
   });
 
   it('keeps app-facing provider entry points on the canonical reservation APIs', () => {
     const callbackWrappedFiles = [
       'attachments.ts',
-      'training.ts',
       'content-script-routes.ts',
       'finance.ts',
       'internal.ts',
@@ -150,6 +157,10 @@ describe('global cost guardrail for REST AI routes', () => {
       const source = fs.readFileSync(path.join(ROUTE_ROOT, file), 'utf8');
       expect(source, `${file} should use the classified SQLite budget reservation`).toContain('withAiBudgetReservation');
     }
+    const trainingSource = fs.readFileSync(path.join(ROUTE_ROOT, 'training.ts'), 'utf8');
+    const coachSource = fs.readFileSync(path.resolve(ROUTE_ROOT, '../../services/garmin-coach.ts'), 'utf8');
+    expect(trainingSource).toContain("budgetRequestSource: 'interactive'");
+    expect(coachSource).toContain('withAiBudgetReservation({');
     const chatSource = fs.readFileSync(path.join(ROUTE_ROOT, 'chat-message-routes.ts'), 'utf8');
     expect(chatSource).toContain('acquireAiBudgetReservation');
 

@@ -39,6 +39,7 @@ vi.mock('../../src/services/entitlement', () => ({
   FREE_TIER_ALLOWED_SKILLS: new Set(['secretary']),
   getEffectiveEntitlement: (...args: unknown[]) => mockGetEffectiveEntitlement(...args),
   isSkillAllowedByEntitlement: (...args: unknown[]) => mockIsSkillAllowedByEntitlement(...args),
+  isPaidAiCostControlsEnforcementEnabled: () => false,
 }));
 
 vi.mock('../../src/utils/logger', () => ({

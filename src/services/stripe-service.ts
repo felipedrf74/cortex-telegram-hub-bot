@@ -765,9 +765,20 @@ function deriveApplePeriodStart(expiresDate: string | null, period: string | nul
   if (!expiresDate) return null;
   const end = new Date(expiresDate);
   if (!Number.isFinite(end.getTime())) return null;
-  if (period === 'yearly') end.setUTCFullYear(end.getUTCFullYear() - 1);
-  else end.setUTCMonth(end.getUTCMonth() - 1);
-  return end.toISOString();
+  const targetYear = end.getUTCFullYear() - (period === 'yearly' ? 1 : 0);
+  const rawTargetMonth = end.getUTCMonth() - (period === 'yearly' ? 0 : 1);
+  const normalizedYear = targetYear + Math.floor(rawTargetMonth / 12);
+  const normalizedMonth = ((rawTargetMonth % 12) + 12) % 12;
+  const lastDay = new Date(Date.UTC(normalizedYear, normalizedMonth + 1, 0)).getUTCDate();
+  return new Date(Date.UTC(
+    normalizedYear,
+    normalizedMonth,
+    Math.min(end.getUTCDate(), lastDay),
+    end.getUTCHours(),
+    end.getUTCMinutes(),
+    end.getUTCSeconds(),
+    end.getUTCMilliseconds(),
+  )).toISOString();
 }
 
 // ── Apple App Store Server Notifications V2 ───────────────────────

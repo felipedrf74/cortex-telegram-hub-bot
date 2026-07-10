@@ -104,6 +104,11 @@ function createUser(db: Database.Database, telegramId: number, tier: string = 'p
   if (tier === 'owner') process.env.OWNER_TELEGRAM_ID = String(telegramId);
 }
 
+function internalUserId(telegramId: number): number {
+  const row = testDb.prepare('SELECT id FROM users WHERE telegram_id = ?').get(telegramId) as { id: number };
+  return row.id;
+}
+
 // Helper: complete a questionnaire fully. Phase 2 Slice B: some text
 // steps carry format regexes (e.g. running pace `6:00`), so we pick
 // an answer that satisfies the most common patterns we ship.
@@ -216,7 +221,7 @@ describe('skill-gated onboarding', () => {
 
     it('excludes all triathlon sheets when triathlon skill is disabled', () => {
       createUser(testDb, 101);
-      setSkillAccess(101, 'triathlon', false);
+      setSkillAccess(internalUserId(101), 'triathlon', false);
       const result = getEnabledQuestionnaires(101);
       expect(result).not.toContain('fitness');
       expect(result).not.toContain('triathlon-gym');
@@ -228,7 +233,7 @@ describe('skill-gated onboarding', () => {
 
     it('excludes diet when cooking skill is disabled', () => {
       createUser(testDb, 102);
-      setSkillAccess(102, 'cooking', false);
+      setSkillAccess(internalUserId(102), 'cooking', false);
       const result = getEnabledQuestionnaires(102);
       // triathlon still enabled → fitness + sport-specific sheets all present
       expect(result).toContain('fitness');
@@ -239,16 +244,16 @@ describe('skill-gated onboarding', () => {
 
     it('returns empty when all skill-linked skills are disabled', () => {
       createUser(testDb, 103);
-      setSkillAccess(103, 'triathlon', false);
-      setSkillAccess(103, 'cooking', false);
+      setSkillAccess(internalUserId(103), 'triathlon', false);
+      setSkillAccess(internalUserId(103), 'cooking', false);
       const result = getEnabledQuestionnaires(103);
       expect(result).toHaveLength(0);
     });
 
     it('owner gets all questionnaires regardless of skill overrides', () => {
       createUser(testDb, 104, 'owner');
-      setSkillAccess(104, 'triathlon', false);
-      setSkillAccess(104, 'cooking', false);
+      setSkillAccess(internalUserId(104), 'triathlon', false);
+      setSkillAccess(internalUserId(104), 'cooking', false);
       const result = getEnabledQuestionnaires(104);
       // Owner bypasses skill restrictions and gets all available
       const allAvailable = getAvailableQuestionnaires();
@@ -294,8 +299,8 @@ describe('skill-gated onboarding', () => {
 
     it('returns empty when all skills are disabled', () => {
       createUser(testDb, 203);
-      setSkillAccess(203, 'triathlon', false);
-      setSkillAccess(203, 'cooking', false);
+      setSkillAccess(internalUserId(203), 'triathlon', false);
+      setSkillAccess(internalUserId(203), 'cooking', false);
 
       const pending = getPendingOnboardings(203);
       expect(pending).toHaveLength(0);
@@ -303,7 +308,7 @@ describe('skill-gated onboarding', () => {
 
     it('only shows pending for enabled skills', () => {
       createUser(testDb, 204);
-      setSkillAccess(204, 'triathlon', false);
+      setSkillAccess(internalUserId(204), 'triathlon', false);
       // cooking still enabled, diet not completed
       const pending = getPendingOnboardings(204);
       expect(pending).toEqual(['diet']);
@@ -315,12 +320,12 @@ describe('skill-gated onboarding', () => {
   describe('applySkillPreset', () => {
     it('disables skills marked false in preset', () => {
       createUser(testDb, 300);
-      applySkillPreset(300, { triathlon: true, cooking: false, finance: false });
+      applySkillPreset(internalUserId(300), { triathlon: true, cooking: false, finance: false });
 
       // Check the overrides in the DB
       const overrides = testDb.prepare(
         'SELECT skill, enabled FROM user_skill_overrides WHERE user_id = ?'
-      ).all(300) as { skill: string; enabled: number }[];
+      ).all(internalUserId(300)) as { skill: string; enabled: number }[];
 
       // Only disabled skills should have overrides (applySkillPreset only writes disabled)
       expect(overrides).toHaveLength(2);
@@ -332,7 +337,7 @@ describe('skill-gated onboarding', () => {
 
     it('affects getEnabledQuestionnaires', () => {
       createUser(testDb, 301);
-      applySkillPreset(301, { cooking: false });
+      applySkillPreset(internalUserId(301), { cooking: false });
 
       const result = getEnabledQuestionnaires(301);
       expect(result).toContain('fitness'); // triathlon not disabled

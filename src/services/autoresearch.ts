@@ -28,6 +28,7 @@ import { completeOneShotWithFallback } from './gemini-provider';
 import { sanitizeForPromptInterpolation } from '../utils/prompt-sanitizer';
 import { withAiBudgetReservation } from './cost-guardrail';
 import { rethrowAiUsageFailClosedError } from './api-usage-fallback';
+import { hasValidLiveTopicFields } from './content-workflow';
 
 const client = new Anthropic({
   apiKey: config.anthropic.apiKey,
@@ -195,22 +196,7 @@ function evaluateDeterministicCriterion(
     if (targetId === 'topic_gen' && criterionId === 'complete_fields') {
       const parsed = parseJsonOutput(output);
       if (!Array.isArray(parsed) || parsed.length === 0) return false;
-      const nonEmpty = (value: unknown): value is string => typeof value === 'string' && value.trim().length > 0;
-      const liveAngleTags = new Set([
-        'opinion', 'reaction', 'how-to', 'story', 'myth-bust', 'comparison',
-        'data', 'framework', 'listicle', 'trending-take', 'build-log', 'review',
-      ]);
-      return parsed.every((candidate: any) => (
-        nonEmpty(candidate?.title)
-        && nonEmpty(candidate?.niche)
-        && nonEmpty(candidate?.whyNow)
-        && nonEmpty(candidate?.hookIdea)
-        && nonEmpty(candidate?.angle_tag)
-        && liveAngleTags.has(candidate.angle_tag)
-        && typeof candidate?.pillar_emoji === 'string'
-        && nonEmpty(candidate?.time_sensitivity)
-        && /^(?:evergreen|react-today|\d+d)$/.test(candidate.time_sensitivity)
-      ));
+      return parsed.every(hasValidLiveTopicFields);
     }
 
     if (criterionId === 'valid_json') {
@@ -820,52 +806,56 @@ export async function runAutoresearch(
 
       // Step 3: Apply mutation and re-evaluate
       writePrompt(target.promptFile, mutation.mutatedPrompt);
+      let keepMutation = false;
+      try {
+        await report(`Round ${round}: evaluating mutated prompt...`);
+        const mutatedEval = await runEval(target, undefined, budgetContext);
+        const newScore = mutatedEval.score;
+        const improvement = newScore - currentScore;
 
-      await report(`Round ${round}: evaluating mutated prompt...`);
-      const mutatedEval = await runEval(target, undefined, budgetContext);
-      const newScore = mutatedEval.score;
-      const improvement = newScore - currentScore;
+        await report(
+          `Round ${round}: new score = <b>${(newScore * 100).toFixed(1)}%</b> ` +
+          `(${improvement >= 0 ? '+' : ''}${(improvement * 100).toFixed(1)}%)`,
+        );
 
-      await report(
-        `Round ${round}: new score = <b>${(newScore * 100).toFixed(1)}%</b> ` +
-        `(${improvement >= 0 ? '+' : ''}${(improvement * 100).toFixed(1)}%)`,
-      );
+        // Step 4: Decide keep or revert
+        let decision: 'kept' | 'reverted';
+        let gitHash: string | null = null;
 
-      // Step 4: Decide keep or revert
-      let decision: 'kept' | 'reverted';
-      let gitHash: string | null = null;
+        // Compute a simple diff description (character count change)
+        const promptDiff = `${originalPrompt.length} chars → ${mutation.mutatedPrompt.length} chars`;
 
-      // Compute a simple diff description (character count change)
-      const promptDiff = `${originalPrompt.length} chars → ${mutation.mutatedPrompt.length} chars`;
+        if (improvement > 0) {
+          decision = 'kept';
+          gitHash = gitCommitPrompt(target, round, currentScore, newScore);
+          keepMutation = true;
+          currentScore = newScore;
+          await report(`Round ${round}: <b>KEPT</b> — score improved${gitHash ? ` (${gitHash})` : ''}`);
+        } else {
+          decision = 'reverted';
+          await report(`Round ${round}: <b>REVERTED</b> — no improvement`);
+        }
 
-      if (improvement > 0) {
-        decision = 'kept';
-        gitHash = gitCommitPrompt(target, round, currentScore, newScore);
-        currentScore = newScore;
-        await report(`Round ${round}: <b>KEPT</b> — score improved${gitHash ? ` (${gitHash})` : ''}`);
-      } else {
-        decision = 'reverted';
-        writePrompt(target.promptFile, originalPrompt);
-        await report(`Round ${round}: <b>REVERTED</b> — no improvement`);
+        // Step 5: Store round
+        storeRound(
+          target, round, runId, baselineEval.score, newScore, improvement,
+          mutation.description, promptDiff, decision, target.testInputs.length,
+          { baseline: baselineEval.details, mutated: mutatedEval.details },
+          gitHash, Date.now() - roundStart,
+        );
+
+        rounds.push({
+          round,
+          baselineScore: baselineEval.score,
+          newScore,
+          improvement,
+          mutationDescription: mutation.description,
+          decision,
+          durationMs: Date.now() - roundStart,
+        });
+      } finally {
+        if (!keepMutation) writePrompt(target.promptFile, originalPrompt);
       }
-
-      // Step 5: Store round
-      storeRound(
-        target, round, runId, baselineEval.score, newScore, improvement,
-        mutation.description, promptDiff, decision, target.testInputs.length,
-        { baseline: baselineEval.details, mutated: mutatedEval.details },
-        gitHash, Date.now() - roundStart,
-      );
-
-      rounds.push({
-        round,
-        baselineScore: baselineEval.score,
-        newScore,
-        improvement,
-        mutationDescription: mutation.description,
-        decision,
-        durationMs: Date.now() - roundStart,
-      });
     } catch (err) {
       // Budget denials and usage-persistence failures are terminal for the
       // run. Continuing would either obscure the deferral or risk an

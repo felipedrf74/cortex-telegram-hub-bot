@@ -73,8 +73,8 @@ vi.mock('../../src/services/anthropic', () => ({
 // Stub database, telemetry, api-usage-fallback, and rate-limiter so the
 // provider's side effects don't touch SQLite or the real telemetry bus.
 const runMock = vi.fn();
-const assertBudgetMock = vi.fn();
-const rateLimitMock = vi.fn(() => ({ allowed: true }));
+const assertBudgetMock = vi.hoisted(() => vi.fn());
+const rateLimitMock = vi.hoisted(() => vi.fn(() => ({ allowed: true })));
 vi.mock('../../src/services/database', () => ({
   getDb: () => ({
     prepare: () => ({ run: runMock, all: () => [], get: () => undefined }),
@@ -117,7 +117,7 @@ vi.mock('../../src/services/cost-guardrail', () => ({
 }));
 vi.mock('../../src/services/local-llm-rate-limiter', () => ({
   _resetLocalLLMRateLimiterSchemaCacheForTests: vi.fn(),
-  checkAndConsumeLocalLLMRateLimit: rateLimitMock,
+  checkAndConsumeLocalLLMRateLimit: (...args: unknown[]) => rateLimitMock(...args),
 }));
 
 // Logger spy so we can assert thinking content never appears in logs.

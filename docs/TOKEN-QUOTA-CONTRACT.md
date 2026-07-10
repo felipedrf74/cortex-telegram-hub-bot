@@ -152,6 +152,11 @@ conservatively booked as output rather than discarded.
 Provider fallback suffixes must not split the base workload category. Scheduled
 and system work never consumes Nexus Points.
 
+The rolling p95 reservation history is intentionally workload-wide by request
+source and normalized base category, not tenant-specific. This gives new and
+low-volume tenants a conservative shared envelope; it is not a tenant cost
+allocation metric and must not be exposed as one.
+
 ## Nexus Points
 
 Nexus Points extend interactive usage only for active paid/founder users. They
@@ -252,6 +257,10 @@ contains both deterministic and model-backed behavior.
   runs shared platform scope only when an eligible Content user consumes that
   knowledge, preserves fingerprint/backoff skips, and performs one validated
   synthesis call per changed scope.
+  The current consumer-evidence query and `synthesizeKnowledge` user scope use
+  `tenant_id = user_id`; shared Channel Learning is therefore limited to the
+  default single-user tenant mapping. Multi-user tenant sharing must not be
+  enabled until those entry points accept and propagate an explicit tenant ID.
 - Production Autoresearch runs `evaluate_only`, only for changed prompt/eval
   hashes, with local deterministic checks and batched semantic scoring. It never
   writes prompts or runs Git operations.

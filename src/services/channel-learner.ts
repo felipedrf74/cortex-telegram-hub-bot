@@ -311,68 +311,19 @@ function listEligibleContentAutomationUserIds(): number[] {
   return eligible;
 }
 
-/**
- * Deterministic proxy for an eligible user actually consuming knowledge that
- * can be synthesized from shared channels. Recent Content model usage or a
- * reviewed/scripted/converted artifact establishes consumption even when the
- * paid user has no private reference channel of their own. Explicit channel
- * source-output lineage is the strongest signal when available. There is not
- * yet a dedicated
- * shared_knowledge_consumed event, so absence or schema uncertainty fails
- * closed and is an instrumentation caveat rather than a reason to spend.
- */
+/** Durable proof that shared system knowledge was injected into this user's prompt. */
 function hasSharedChannelKnowledgeConsumerEvidence(userId: number): boolean {
   try {
     const row = getDb().prepare(`
-      SELECT (
-          EXISTS(
-            SELECT 1
-             FROM api_usage
-             WHERE user_id = ?
-               AND request_source = 'interactive'
-               AND ts >= datetime('now', '-30 days')
-               AND (
-                 COALESCE(base_category, category) LIKE 'content_%'
-                 OR COALESCE(base_category, category) IN ('content', 'content_discovery')
-               )
-          )
-          OR EXISTS(
-            SELECT 1
-              FROM content_topic_feedback
-             WHERE user_id = ?
-               AND COALESCE(tenant_id, user_id) = ?
-               AND (
-                 (sentiment != 'pending' AND created_at >= datetime('now', '-30 days'))
-                 OR (COALESCE(script_generated, 0) = 1 AND created_at >= datetime('now', '-30 days'))
-                 OR converted_at >= datetime('now', '-30 days')
-               )
-          )
-          OR EXISTS(
-            SELECT 1
-              FROM content_scripts
-             WHERE user_id = ?
-               AND COALESCE(tenant_id, user_id) = ?
-               AND created_at >= datetime('now', '-30 days')
-          )
-          OR EXISTS(
-            SELECT 1
-              FROM content_source_output_links
-             WHERE tenant_id = ?
-               AND owner_user_id = ?
-               AND source_type = 'channel'
-               AND scope_status = 'active'
-               AND created_at >= datetime('now', '-30 days')
-          )
+      SELECT EXISTS(
+        SELECT 1
+          FROM shared_knowledge_consumption
+         WHERE user_id = ?
+           AND tenant_id = ?
+           AND source = 'content_prompt'
+           AND consumed_at >= datetime('now', '-30 days')
       ) AS consuming
-    `).get(
-      userId,
-      userId,
-      userId,
-      userId,
-      userId,
-      userId,
-      userId,
-    ) as { consuming: number };
+    `).get(userId, userId) as { consuming: number };
     return row.consuming === 1;
   } catch (err) {
     logger.warn(
@@ -380,6 +331,29 @@ function hasSharedChannelKnowledgeConsumerEvidence(userId: number): boolean {
       'Shared channel learning consumer evidence unavailable; platform scope skipped fail-closed',
     );
     return false;
+  }
+}
+
+function recordSharedKnowledgeEvidenceDeferral(): void {
+  try {
+    getDb().prepare(`
+      INSERT INTO ai_budget_deferrals (
+        user_id, request_source, job_name, base_category, run_id,
+        code, budget_window, reset_at
+      )
+      SELECT 0, 'system', 'channel_relearn', 'channel_learning', NULL,
+             'SHARED_KNOWLEDGE_CONSUMPTION_REQUIRED', 'policy', NULL
+      WHERE NOT EXISTS (
+        SELECT 1 FROM ai_budget_deferrals
+         WHERE user_id = 0
+           AND request_source = 'system'
+           AND job_name = 'channel_relearn'
+           AND code = 'SHARED_KNOWLEDGE_CONSUMPTION_REQUIRED'
+           AND created_at >= datetime('now', 'start of day')
+      )
+    `).run();
+  } catch (err) {
+    logger.warn({ err }, 'Channel platform-scope evidence deferral could not be persisted');
   }
 }
 
@@ -1584,6 +1558,8 @@ export async function processAllChannelScopes(force = false): Promise<{
   const eligibleSet = new Set(eligibleUserIds);
   const sharedKnowledgeConsumerIds = eligibleUserIds.filter(hasSharedChannelKnowledgeConsumerEvidence);
   if (sharedKnowledgeConsumerIds.length === 0) {
+    recordSharedKnowledgeEvidenceDeferral();
+    synthesisDeferred = true;
     logger.info(
       'Channel re-learn platform scope skipped: no eligible user has recent shared-knowledge consumption evidence',
     );

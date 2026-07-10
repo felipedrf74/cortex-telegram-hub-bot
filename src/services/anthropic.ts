@@ -15,7 +15,8 @@ import { rethrowAiUsageFailClosedError } from './api-usage-fallback';
 
 const client = new Anthropic({
   apiKey: config.anthropic.apiKey,
-  maxRetries: 4,        // retry up to 4 times on 429/5xx (SDK uses exponential backoff)
+  // Provider retries must stay visible to the shared budget boundary.
+  maxRetries: 0,
 });
 
 // ─── Domain System Prompts (loaded from prompts/*.md) ─────────────────

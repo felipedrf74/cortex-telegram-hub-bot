@@ -67,18 +67,6 @@ describe('script-pipeline: canonical path', () => {
     expect(typeof workflow.generateScript).toBe('function');
   });
 
-  it('generateReelScript is exported (backward compat, deprecated)', async () => {
-    const workflow = await import('../../src/services/content-workflow');
-    expect(workflow.generateReelScript).toBeDefined();
-    expect(typeof workflow.generateReelScript).toBe('function');
-  });
-
-  it('generateYouTubeScript is exported (backward compat, deprecated)', async () => {
-    const workflow = await import('../../src/services/content-workflow');
-    expect(workflow.generateYouTubeScript).toBeDefined();
-    expect(typeof workflow.generateYouTubeScript).toBe('function');
-  });
-
   it('formatScriptToText is exported', async () => {
     const workflow = await import('../../src/services/content-workflow');
     expect(workflow.formatScriptToText).toBeDefined();
@@ -382,21 +370,6 @@ describe('script-pipeline: iOS API route', () => {
 // ═══════════════════════════════════════════════════════════════════
 // 6. Workflow Script — Approval-Generated
 // ═══════════════════════════════════════════════════════════════════
-
-describe('script-pipeline: workflow approval scripts', () => {
-  it('deprecated wrappers call generateScript internally', () => {
-    const workflowSource = require('fs').readFileSync(
-      require('path').resolve(__dirname, '../../src/services/content-workflow.ts'),
-      'utf8',
-    );
-
-    // generateReelScript should call generateScript
-    expect(workflowSource).toContain("generateScript(topic, 'reel')");
-
-    // generateYouTubeScript should call generateScript
-    expect(workflowSource).toContain("generateScript(topic, 'youtube')");
-  });
-});
 
 // ═══════════════════════════════════════════════════════════════════
 // 7. Format Metadata

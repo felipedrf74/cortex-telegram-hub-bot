@@ -226,3 +226,33 @@ export function resolveDueReportTargets<T extends { tenantId: number }>(
   }
   return due;
 }
+
+/**
+ * Release only the fresh claim created by the current dispatch tick. Used for
+ * transient provider-budget lock contention so the same local-date report can
+ * retry on the next five-minute tick instead of being lost for the day.
+ */
+export function releaseFreshReportScheduleClaim(
+  userId: number,
+  job: ScheduledReportJob,
+  maxAgeMinutes = 10,
+): boolean {
+  try {
+    const db = getDb();
+    ensureLedgerTable(db);
+    const result = db.prepare(`
+      DELETE FROM report_schedule_ledger
+       WHERE rowid = (
+         SELECT rowid FROM report_schedule_ledger
+          WHERE user_id = ? AND tenant_id = ? AND job_type = ?
+            AND fired_at >= datetime('now', ?)
+          ORDER BY fired_at DESC
+          LIMIT 1
+       )
+    `).run(userId, userId, job, `-${Math.max(1, Math.floor(maxAgeMinutes))} minutes`);
+    return Number(result.changes) === 1;
+  } catch (err) {
+    logger.warn({ err, userId, job }, 'Fresh report schedule claim release failed');
+    return false;
+  }
+}

@@ -58,6 +58,7 @@ import { settleNexusPointOverageForUser } from './nexus-points';
 import {
   ApiUsagePersistenceError,
   insertApiUsageFallback,
+  recordApiUsageTimeoutEstimate,
   tripApiUsagePersistenceFailure,
 } from './api-usage-fallback';
 import { resolveApiUsageAttribution } from './api-usage-attribution';
@@ -281,6 +282,28 @@ async function logRequiredGeminiUsage(
   }, durationMs, userId, tenantId, nonTokenCostUsd, groundedSearchPrompts);
 }
 
+function recordGeminiTimeoutEstimate(input: {
+  category: string;
+  model: string;
+  userId: number;
+  tenantId: number;
+  maxCostUsd: number;
+  timeoutMs: number;
+  providerToolCostUsd?: number;
+  groundedSearchPrompts?: number;
+}): void {
+  const apiUsageId = recordApiUsageTimeoutEstimate({
+    ...input,
+    provider: 'gemini',
+  });
+  void settleNexusPointOverageForUser(input.userId, apiUsageId).catch((settleErr) => {
+    logger.warn(
+      { err: settleErr, apiUsageId, category: input.category },
+      'nexus_points: Gemini timeout estimate settlement failed',
+    );
+  });
+}
+
 function getGeminiGroundingMetadata(response: unknown): Record<string, unknown> | null {
   const metadata = (response as any)?.candidates?.[0]?.groundingMetadata;
   return metadata && typeof metadata === 'object' ? metadata as Record<string, unknown> : null;
@@ -372,20 +395,32 @@ export async function completeOneShot(
     },
   });
 
+  const maxCostUsd = computeProviderCallCostUpperBoundUsd({
+    provider: 'gemini',
+    model,
+    payload: { systemPrompt, userPrompt, maxTokens, temperature, jsonMode: options?.jsonMode ?? false },
+    maxOutputTokens: maxTokens,
+  });
   assertAiBudgetReservationForProvider({
     userId: options?.userId ?? 0,
     category,
-    maxCostUsd: computeProviderCallCostUpperBoundUsd({
-      provider: 'gemini',
-      model,
-      payload: { systemPrompt, userPrompt, maxTokens, temperature, jsonMode: options?.jsonMode ?? false },
-      maxOutputTokens: maxTokens,
-    }),
+    maxCostUsd,
   });
   const start = Date.now();
+  const timeoutMs = options?.timeoutMs ?? config.aiSafety.callTimeoutMs;
   const result = await withTimeout(
     genModel.generateContent([{ text: userPrompt }]),
-    options?.timeoutMs ?? config.aiSafety.callTimeoutMs,
+    timeoutMs,
+    {
+      onTimeout: () => recordGeminiTimeoutEstimate({
+        category,
+        model,
+        userId: options?.userId ?? 0,
+        tenantId: options?.tenantId ?? options?.userId ?? 0,
+        maxCostUsd,
+        timeoutMs,
+      }),
+    },
   );
   const durationMs = Date.now() - start;
 
@@ -591,22 +626,36 @@ export async function completeOneShotWithSearch(
     tools: [{ googleSearch: {} }] as any,
   });
 
+  const maxCostUsd = computeProviderCallCostUpperBoundUsd({
+    provider: 'gemini',
+    model,
+    payload: { safeSystemPrompt, safeUserPrompt, maxTokens, temperature, googleSearch: true },
+    maxOutputTokens: maxTokens,
+    nonTokenCostUpperBoundUsd: getProviderToolFeeUsd('gemini_grounded_prompt'),
+  });
   assertAiBudgetReservationForProvider({
     userId: options?.userId ?? 0,
     category,
     hasUnboundedProviderInjectedContext: true,
-    maxCostUsd: computeProviderCallCostUpperBoundUsd({
-      provider: 'gemini',
-      model,
-      payload: { safeSystemPrompt, safeUserPrompt, maxTokens, temperature, googleSearch: true },
-      maxOutputTokens: maxTokens,
-      nonTokenCostUpperBoundUsd: getProviderToolFeeUsd('gemini_grounded_prompt'),
-    }),
+    maxCostUsd,
   });
   const start = Date.now();
+  const timeoutMs = config.aiSafety.callTimeoutMs;
   const result = await withTimeout(
     genModel.generateContent([{ text: safeUserPrompt }]),
-    config.aiSafety.callTimeoutMs,
+    timeoutMs,
+    {
+      onTimeout: () => recordGeminiTimeoutEstimate({
+        category,
+        model,
+        userId: options?.userId ?? 0,
+        tenantId: options?.tenantId ?? options?.userId ?? 0,
+        maxCostUsd,
+        timeoutMs,
+        providerToolCostUsd: getProviderToolFeeUsd('gemini_grounded_prompt'),
+        groundedSearchPrompts: 1,
+      }),
+    },
   );
   const durationMs = Date.now() - start;
   const groundingUsed = didGeminiUseGrounding(result.response);
@@ -692,17 +741,19 @@ export async function completeVisionOneShot(
     },
   });
 
+  const maxCostUsd = computeProviderCallCostUpperBoundUsd({
+    provider: 'gemini',
+    model,
+    payload: { systemPrompt, userPrompt, image, maxTokens, temperature },
+    maxOutputTokens: maxTokens,
+  });
   assertAiBudgetReservationForProvider({
     userId: options?.userId ?? 0,
     category,
-    maxCostUsd: computeProviderCallCostUpperBoundUsd({
-      provider: 'gemini',
-      model,
-      payload: { systemPrompt, userPrompt, image, maxTokens, temperature },
-      maxOutputTokens: maxTokens,
-    }),
+    maxCostUsd,
   });
   const start = Date.now();
+  const timeoutMs = config.aiSafety.callTimeoutMs;
   const result = await withTimeout(
     genModel.generateContent([
       // Image MUST come before the text prompt — Gemini's own docs recommend
@@ -711,7 +762,17 @@ export async function completeVisionOneShot(
       { inlineData: { mimeType: image.mimeType, data: image.base64 } },
       { text: userPrompt },
     ]),
-    config.aiSafety.callTimeoutMs,
+    timeoutMs,
+    {
+      onTimeout: () => recordGeminiTimeoutEstimate({
+        category,
+        model,
+        userId: options?.userId ?? 0,
+        tenantId: options?.tenantId ?? options?.userId ?? 0,
+        maxCostUsd,
+        timeoutMs,
+      }),
+    },
   );
   const durationMs = Date.now() - start;
 
@@ -1049,13 +1110,22 @@ export class GeminiProvider implements AIProvider {
 
   // ─── Retry with exponential backoff ───────────────────────────────
 
-  private async withRetry<T>(fn: () => Promise<T>, maxRetries = 3): Promise<T> {
+  private async withRetry<T>(
+    fn: () => Promise<T>,
+    maxRetries = 3,
+    onTimeout?: () => void,
+  ): Promise<T> {
     const AI_CALL_TIMEOUT_MS = getAICallTimeoutMs();
 
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
       try {
-        return await withTimeout(fn(), AI_CALL_TIMEOUT_MS);
+        return await withTimeout(fn(), AI_CALL_TIMEOUT_MS, { onTimeout });
       } catch (err: unknown) {
+        // Budget and durable-metering denials are terminal policy errors, not
+        // provider availability failures. Preserve their identity so callers
+        // emit the stable 403/429 contract and the breaker/fallback layers do
+        // not count or spend past them.
+        rethrowUsagePersistenceFailure(err);
         // Classification shared with the one-shot primary retry path —
         // see extractGeminiErrorInfo / isRetryableGeminiError above.
         const info = extractGeminiErrorInfo(err);
@@ -1117,6 +1187,12 @@ export class GeminiProvider implements AIProvider {
       filteredTools,
     );
 
+    const maxCostUsd = computeProviderCallCostUpperBoundUsd({
+      provider: 'gemini',
+      model: routing.model,
+      payload: { request, systemPrompt, filteredTools: useTools ? filteredTools : [] },
+      maxOutputTokens,
+    });
     const start = Date.now();
     const result = await this.withRetry(() => {
       // Revalidate live lock ownership for every concrete SDK attempt, not
@@ -1124,15 +1200,17 @@ export class GeminiProvider implements AIProvider {
       assertAiBudgetReservationForProvider({
         userId: usageContext?.userId ?? 0,
         category: usageCategory,
-        maxCostUsd: computeProviderCallCostUpperBoundUsd({
-          provider: 'gemini',
-          model: routing.model,
-          payload: { request, systemPrompt, filteredTools: useTools ? filteredTools : [] },
-          maxOutputTokens,
-        }),
+        maxCostUsd,
       });
       return model.generateContent(request);
-    }, maxRetries);
+    }, maxRetries, () => recordGeminiTimeoutEstimate({
+      category: usageCategory,
+      model: routing.model,
+      userId: usageContext?.userId ?? 0,
+      tenantId: usageContext?.tenantId ?? usageContext?.userId ?? 0,
+      maxCostUsd,
+      timeoutMs: getAICallTimeoutMs(),
+    }));
     const durationMs = Date.now() - start;
 
     await logRequiredGeminiUsage(
@@ -1177,20 +1255,28 @@ ${message}`;
         generationConfig: { maxOutputTokens: classifierMaxOutputTokens },
       });
 
+      const maxCostUsd = computeProviderCallCostUpperBoundUsd({
+        provider: 'gemini',
+        model: config.gemini.classifierModel,
+        payload: { classifierSystemPrompt, userContent },
+        maxOutputTokens: classifierMaxOutputTokens,
+      });
       const start = Date.now();
       const result = await this.withRetry(() => {
         assertAiBudgetReservationForProvider({
           userId: usageUserId,
           category: 'gemini_classify',
-          maxCostUsd: computeProviderCallCostUpperBoundUsd({
-            provider: 'gemini',
-            model: config.gemini.classifierModel,
-            payload: { classifierSystemPrompt, userContent },
-            maxOutputTokens: classifierMaxOutputTokens,
-          }),
+          maxCostUsd,
         });
         return model.generateContent(userContent);
-      });
+      }, 3, () => recordGeminiTimeoutEstimate({
+        category: 'gemini_classify',
+        model: config.gemini.classifierModel,
+        userId: usageUserId,
+        tenantId: usageTenantId,
+        maxCostUsd,
+        timeoutMs: getAICallTimeoutMs(),
+      }));
       const durationMs = Date.now() - start;
 
       await logRequiredGeminiUsage(

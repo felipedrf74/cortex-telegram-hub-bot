@@ -10,7 +10,6 @@
  * Features:
  * - Token usage tracking (persisted to api_usage table, same as Anthropic)
  * - Retry on 429/5xx with exponential backoff
- * - Optional streaming via streamDomain() async generator
  */
 
 import OpenAI from 'openai';
@@ -45,6 +44,7 @@ import {
 import { settleNexusPointOverageForUser } from './nexus-points';
 import {
   insertApiUsageFallback,
+  recordApiUsageTimeoutEstimate,
   rethrowAiUsageFailClosedError,
   tripApiUsagePersistenceFailure,
 } from './api-usage-fallback';
@@ -84,10 +84,6 @@ export const OPENAI_COST_PER_MTK: Record<string, { in: number; out: number }> = 
 };
 
 type OpenAINonStreamingParams = OpenAI.ChatCompletionCreateParamsNonStreaming & {
-  max_completion_tokens?: number;
-};
-
-type OpenAIStreamingParams = OpenAI.ChatCompletionCreateParamsStreaming & {
   max_completion_tokens?: number;
 };
 
@@ -152,22 +148,42 @@ async function trackedCompletion(
 ): Promise<OpenAI.ChatCompletion> {
   const AI_CALL_TIMEOUT_MS = timeoutMs ?? getAICallTimeoutMs();
 
+  const maxCostUsd = computeProviderCallCostUpperBoundUsd({
+    provider: 'openai',
+    model: params.model,
+    payload: params,
+    maxOutputTokens: Number(
+      (params as { max_completion_tokens?: number; max_tokens?: number }).max_completion_tokens
+      ?? (params as { max_tokens?: number }).max_tokens
+      ?? Number.POSITIVE_INFINITY,
+    ),
+  });
   assertAiBudgetReservationForProvider({
     userId,
     category,
-    maxCostUsd: computeProviderCallCostUpperBoundUsd({
-      provider: 'openai',
-      model: params.model,
-      payload: params,
-      maxOutputTokens: Number(
-        (params as { max_completion_tokens?: number; max_tokens?: number }).max_completion_tokens
-        ?? (params as { max_tokens?: number }).max_tokens
-        ?? Number.POSITIVE_INFINITY,
-      ),
-    }),
+    maxCostUsd,
   });
   const start = Date.now();
-  const response = await withTimeout(client.chat.completions.create(params), AI_CALL_TIMEOUT_MS);
+  const response = await withTimeout(
+    client.chat.completions.create(params),
+    AI_CALL_TIMEOUT_MS,
+    {
+      onTimeout: () => {
+        const apiUsageId = recordApiUsageTimeoutEstimate({
+          category,
+          model: params.model,
+          provider: 'openai',
+          tenantId,
+          userId,
+          maxCostUsd,
+          timeoutMs: AI_CALL_TIMEOUT_MS,
+        });
+        void settleNexusPointOverageForUser(userId, apiUsageId).catch((settleErr) => {
+          logger.warn({ err: settleErr, apiUsageId, category }, 'nexus_points: OpenAI timeout estimate settlement failed');
+        });
+      },
+    },
+  );
   const durationMs = Date.now() - start;
 
   const usage = response.usage;
@@ -360,6 +376,7 @@ export async function completeOneShotWithWebSearch(
       maxToolCalls * getProviderToolFeeUsd('openai_web_search'),
   });
   const startedAt = Date.now();
+  const timeoutMs = options?.timeoutMs ?? getAICallTimeoutMs();
   const response = await withRetry(() => {
     assertAiBudgetReservationForProvider({
       userId: options?.userId ?? 0,
@@ -369,7 +386,26 @@ export async function completeOneShotWithWebSearch(
     });
     return withTimeout(
       getClient().responses.create(request, { maxRetries: 0 }),
-      options?.timeoutMs ?? getAICallTimeoutMs(),
+      timeoutMs,
+      {
+        onTimeout: () => {
+          const apiUsageId = recordApiUsageTimeoutEstimate({
+            category,
+            model,
+            provider: 'openai',
+            tenantId: options?.tenantId ?? options?.userId ?? 0,
+            userId: options?.userId ?? 0,
+            maxCostUsd,
+            timeoutMs,
+            providerToolCostUsd:
+              maxToolCalls * getProviderToolFeeUsd('openai_web_search'),
+            webSearchRequests: maxToolCalls,
+          });
+          void settleNexusPointOverageForUser(options?.userId ?? 0, apiUsageId).catch((settleErr) => {
+            logger.warn({ err: settleErr, apiUsageId, category }, 'nexus_points: OpenAI search timeout estimate settlement failed');
+          });
+        },
+      },
     );
   }) as any;
   const webSearchRequests = countOpenAiWebSearchCalls(response);
@@ -914,178 +950,4 @@ ${message}`;
     };
   }
 
-  /**
-   * Stream a domain response. Returns an async generator of text chunks.
-   * Token usage is tracked after the stream completes.
-   *
-   * Note: This is a WhatsApp-specific extension, NOT part of the AIProvider interface.
-   */
-  async *streamDomain(
-    domain: DomainName,
-    history: DomainMessage[],
-    currentMessage: string,
-    stateContext: string,
-    options: CallDomainOptions = {},
-  ): AsyncGenerator<string, AICallResult, undefined> {
-    if (typeof options.userId !== 'number' || options.userId <= 0) {
-      throw new Error('streamDomain requires options.userId: no userId=0 sentinel allowed for streaming usage');
-    }
-    const userId = options.userId;
-    const tenantId = options.tenantId ?? userId;
-    // v2.6 (angry-QA-found): streamDomain was the one model-resolution
-    // site missing the modelOverride wrap. callDomain and
-    // continueWithToolResults honored it; streaming silently used the
-    // default model, which would let cloud-reasoning-gate's approved
-    // model selection be ignored for any streaming consumer.
-    const baseRouting = getModelRouting(config.openai, domain, 'openai');
-    const routing = options.modelOverride
-      ? { model: options.modelOverride, maxTokens: baseRouting.maxTokens }
-      : baseRouting;
-    // Phase 2 Slice A: same persona routing for the streaming path.
-    const systemPrompt = getDomainSystemPrompt(domain, currentMessage);
-    const contextPrefix = buildScopedStateContextPrefix(stateContext);
-
-    const messages: OpenAI.ChatCompletionMessageParam[] = [
-      { role: 'system', content: systemPrompt },
-      ...history.map((m) => ({
-        role: m.role as 'user' | 'assistant',
-        content: m.content,
-      })),
-      { role: 'user', content: `${contextPrefix}${currentMessage}` },
-    ];
-
-    const category = `openai_stream_${domain}`;
-    const request = withTokenLimit({
-      model: routing.model,
-      messages,
-      stream: true,
-      stream_options: { include_usage: true },
-    }, routing.maxTokens) as OpenAIStreamingParams;
-    const maxCostUsd = computeProviderCallCostUpperBoundUsd({
-      provider: 'openai',
-      model: routing.model,
-      payload: request,
-      maxOutputTokens: routing.maxTokens,
-    });
-    const start = Date.now();
-    const stream = await withRetry(() => {
-      assertAiBudgetReservationForProvider({ userId, category, maxCostUsd });
-      return getClient().chat.completions.create(request, { maxRetries: 0 });
-    });
-
-    let fullText = '';
-    let finishReason = 'stop';
-    let usage: { prompt_tokens: number; completion_tokens: number; cached_tokens?: number } | null = null;
-
-    for await (const chunk of stream) {
-      const delta = chunk.choices[0]?.delta?.content;
-      if (delta) {
-        fullText += delta;
-        yield delta;
-      }
-      if (chunk.choices[0]?.finish_reason) {
-        finishReason = chunk.choices[0].finish_reason;
-      }
-      if (chunk.usage) {
-        usage = {
-          prompt_tokens: chunk.usage.prompt_tokens,
-          completion_tokens: chunk.usage.completion_tokens,
-          cached_tokens: chunk.usage.prompt_tokens_details?.cached_tokens ?? 0,
-        };
-      }
-    }
-
-    const durationMs = Date.now() - start;
-
-    if (
-      !usage
-      || !Number.isFinite(usage.prompt_tokens)
-      || usage.prompt_tokens < 0
-      || !Number.isFinite(usage.completion_tokens)
-      || usage.completion_tokens < 0
-      || (usage.cached_tokens != null && (!Number.isFinite(usage.cached_tokens) || usage.cached_tokens < 0))
-    ) {
-      const persistenceError = tripApiUsagePersistenceFailure('openai', category);
-      logger.error({ code: persistenceError.code, category, model: routing.model }, 'OpenAI stream omitted valid terminal usage metadata; AI usage persistence degraded');
-      throw persistenceError;
-    }
-
-    if (usage) {
-      const model = routing.model;
-      const priced = computeModelUsageCostUsd(model, {
-        inputTokens: usage.prompt_tokens,
-        outputTokens: usage.completion_tokens,
-        cacheReadTokens: usage.cached_tokens ?? 0,
-      }, 'openai');
-      if (!priced.pricingResolved) {
-        warnUnresolvedOpenAiPricing(model, `openai_stream_${domain}`, options.userId ?? 0);
-      }
-      const costUsd = priced.costUsd;
-      const pricingStatus = priced.pricingResolved ? 'resolved' : 'unresolved';
-      const attribution = resolveApiUsageAttribution(category, userId);
-      let apiUsageId: number | null = null;
-
-      try {
-        const db = getDb();
-        const result = db.prepare(`
-          INSERT INTO api_usage (category, model, tenant_id, user_id, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost_usd, duration_ms, provider, pricing_status, pricing_model_key, request_source, job_name, base_category, run_id)
-          VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, 'openai', ?, ?, ?, ?, ?, ?)
-        `).run(category, model, tenantId, userId, usage.prompt_tokens, usage.completion_tokens, usage.cached_tokens ?? 0, costUsd, durationMs, pricingStatus, priced.pricingModelKey, attribution.requestSource, attribution.jobName, attribution.baseCategory, attribution.runId);
-        apiUsageId = Number((result as { lastInsertRowid?: number | bigint } | undefined)?.lastInsertRowid ?? 0);
-      } catch (e) {
-        try {
-          const db = getDb();
-          apiUsageId = insertApiUsageFallback(db, {
-            category: `openai_stream_${domain}`,
-            model,
-            provider: 'openai',
-            tenantId,
-            userId,
-            inputTokens: usage.prompt_tokens,
-            outputTokens: usage.completion_tokens,
-            cacheReadTokens: usage.cached_tokens ?? 0,
-            cacheWriteTokens: 0,
-            costUsd,
-            durationMs,
-            pricingStatus: 'legacy',
-          });
-        } catch (fallbackErr) {
-          const persistenceError = tripApiUsagePersistenceFailure('openai', category);
-          logger.error({ err: fallbackErr, code: persistenceError.code }, 'Failed to log OpenAI streaming usage; AI usage persistence degraded');
-          throw persistenceError;
-        }
-      }
-
-      try {
-        pushEvent({
-          ts: new Date().toISOString(),
-          type: 'api_call',
-          summary: `OpenAI stream ${model} [${domain}] — ${usage.prompt_tokens}+${usage.completion_tokens} tokens`,
-          detail: `$${costUsd.toFixed(4)} in ${durationMs}ms`,
-        });
-      } catch (eventErr) {
-        logger.warn({ err: eventErr, userId, category }, 'Failed to publish OpenAI streaming usage telemetry');
-      }
-      // Codex QA: the streaming path wrote api_usage but skipped
-      // usage_metering, leaving per-user quota silently undercounting
-      // every OpenAI stream call. Mirror the non-streaming path.
-      try {
-        const { recordUsage } = require('./usage-metering') as typeof import('./usage-metering');
-        recordUsage(userId, usage.prompt_tokens, usage.completion_tokens, costUsd, false);
-      } catch (meterErr) {
-        logger.warn({ err: meterErr, userId }, 'Failed to record OpenAI streaming usage_metering');
-      }
-      try {
-        await settleNexusPointOverageForUser(userId, apiUsageId);
-      } catch (settleErr) {
-        logger.warn({ err: settleErr, apiUsageId, userId }, 'nexus_points: OpenAI stream settlement failed');
-      }
-    }
-
-    return {
-      text: fullText,
-      toolCalls: [],
-      stopReason: finishReason,
-    };
-  }
 }

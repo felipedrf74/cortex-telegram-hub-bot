@@ -24,6 +24,7 @@ const mockGetLastCoachState = vi.fn();
 const mockTrackedCreate = vi.fn();
 const mockIsOwnerUserRef = vi.fn();
 const mockGetDb = vi.fn();
+const mockWithAiBudgetReservation = vi.hoisted(() => vi.fn());
 
 vi.mock('../../src/config', () => ({
   config: { anthropic: { apiKey: 'test-key' } },
@@ -89,9 +90,15 @@ vi.mock('../../src/services/database', () => ({
   findUnexpectedMigrationPrefixCollisions: vi.fn(() => []),
 }));
 
+vi.mock('../../src/services/cost-guardrail', () => ({
+  withAiBudgetReservation: (...args: unknown[]) => mockWithAiBudgetReservation(...args),
+}));
+
 import {
   COACH_ANALYSIS_SYSTEM_METERING_TENANT_ID,
   COACH_ANALYSIS_SYSTEM_METERING_USER_ID,
+  COACH_SYSTEM_PROMPT_MAX_CHARS,
+  buildCoachAnalysisSystemPrompt,
   generateCoachBriefing,
   resolveCoachAnalysisMeteringScope,
 } from '../../src/services/garmin-coach';
@@ -99,6 +106,9 @@ import {
 describe('garmin-coach user scoping', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockWithAiBudgetReservation.mockImplementation(
+      async (_request: unknown, fn: () => Promise<unknown>) => fn(),
+    );
 
     mockFetchDailyCoachData.mockResolvedValue({
       sleepHours: 7,
@@ -167,6 +177,32 @@ describe('garmin-coach user scoping', () => {
     );
   });
 
+  it('lets same-user chat finish while Coach is still collecting calendar data', async () => {
+    let releaseCalendar!: () => void;
+    const calendarPending = new Promise<unknown[]>((resolve) => {
+      releaseCalendar = () => resolve([]);
+    });
+    mockGetEvents.mockImplementation(() => calendarPending);
+
+    const coach = generateCoachBriefing(42, {
+      tenantId: 42,
+      meteringUserId: 42,
+      budgetRequestSource: 'automation',
+      budgetJobName: 'garmin_coach',
+    });
+    await vi.waitFor(() => expect(mockGetEvents).toHaveBeenCalledTimes(2));
+    expect(mockWithAiBudgetReservation).not.toHaveBeenCalled();
+
+    await expect(mockWithAiBudgetReservation(
+      { userId: 42, requestSource: 'interactive', baseCategory: 'chat_secretary' },
+      async () => 'chat-complete',
+    )).resolves.toBe('chat-complete');
+
+    releaseCalendar();
+    await expect(coach).resolves.toMatchObject({ message: expect.stringContaining('DAILY COACH BRIEFING') });
+    expect(mockWithAiBudgetReservation).toHaveBeenCalledTimes(2);
+  });
+
   it('attributes coach explanation LLM cost to the scoped user and tenant', async () => {
     await generateCoachBriefing(42, { tenantId: 42 });
 
@@ -178,12 +214,13 @@ describe('garmin-coach user scoping', () => {
     expect(mockTryComplete).toHaveBeenCalledTimes(1);
     const [, , category, fallback, options] = mockTryComplete.mock.calls[0];
     expect(category).toBe('coach_analysis');
-    expect(options).toMatchObject({ maxTokens: 1800, userId: 42, tenantId: 42 });
+    expect(options).toMatchObject({ maxTokens: 1400, userId: 42, tenantId: 42 });
 
     await fallback();
+    const primarySystemPrompt = mockTryComplete.mock.calls[0][0];
     expect(mockTrackedCreate).toHaveBeenCalledWith(
       expect.anything(),
-      expect.anything(),
+      expect.objectContaining({ system: primarySystemPrompt }),
       'coach_analysis',
       { userId: 42, tenantId: 42 },
     );
@@ -199,7 +236,7 @@ describe('garmin-coach user scoping', () => {
     });
     const [, , category, fallback, options] = mockTryComplete.mock.calls[0];
     expect(category).toBe('coach_analysis');
-    expect(options).toMatchObject({ maxTokens: 1800, userId: 42, tenantId: 77 });
+    expect(options).toMatchObject({ maxTokens: 1400, userId: 42, tenantId: 77 });
 
     await fallback();
     expect(mockTrackedCreate).toHaveBeenCalledWith(
@@ -212,6 +249,15 @@ describe('garmin-coach user scoping', () => {
 
   it('requires tenant scope for coach briefing generation', async () => {
     await expect(generateCoachBriefing(42)).rejects.toThrow(/TENANT_SCOPE_REQUIRED|requires a validated tenantId/);
+  });
+
+  it('keeps the complete Coach instruction contract under the prompt cap', () => {
+    const prompt = buildCoachAnalysisSystemPrompt('persona '.repeat(4_000));
+    expect(prompt.length).toBeLessThanOrEqual(COACH_SYSTEM_PROMPT_MAX_CHARS);
+    expect(prompt).toContain('DATA INTERPRETATION:');
+    expect(prompt).toContain('<!-- COACH_RECS_START -->');
+    expect(prompt).toContain('<!-- COACH_RECS_END -->');
+    expect(prompt).toContain('Respond ONLY with the structured coach briefing');
   });
 
   it('classifies owner-bootstrap coach analysis as a system metering actor', () => {
@@ -368,7 +414,7 @@ describe('garmin-coach user scoping', () => {
       const files = fs.readdirSync(captureDir).filter((f) => /^coach-\d+-u42\.json$/.test(f));
       expect(files).toHaveLength(1);
       const payload = JSON.parse(fs.readFileSync(path.join(captureDir, files[0]), 'utf8'));
-      expect(payload).toMatchObject({ userId: 42, maxTokens: 1800 });
+      expect(payload).toMatchObject({ userId: 42, maxTokens: 1400 });
       expect(typeof payload.capturedAt).toBe('string');
       expect(typeof payload.systemPrompt).toBe('string');
       expect(payload.systemPrompt.length).toBeGreaterThan(0);

@@ -25,10 +25,11 @@ describe('training plan generation source contract', () => {
     expect(source).not.toContain('api_usage');
   });
 
-  it('documents that normal plan creation should not create a training-plan api_usage row', () => {
+  it('documents that normal plan creation is token-zero and future provider calls own reservations', () => {
     const source = read('src/api/routes/training-plan-routes.ts');
 
     expect(source).toContain('deterministic by default');
-    expect(source).toContain('should not create a training-plan api_usage row');
+    expect(source).toContain('Plan generation is deterministic and token-zero');
+    expect(source).toContain('that specific call must own its own classified');
   });
 });

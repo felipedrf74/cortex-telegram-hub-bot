@@ -120,7 +120,7 @@ The effective default cascade depends on route type and whether the domain provi
 | Content/Finance/Cooking domains | Gemini -> OpenAI | Domain routing keeps these baseline domains Gemini-first despite generic chat defaulting to OpenAI. |
 | One-shot helpers | Gemini -> OpenAI -> Anthropic gated | Uses `completeOneShotWithFallback`; Anthropic thunk executes only if enabled. |
 | Vision helper | Gemini -> OpenAI -> Anthropic gated | Uses `completeVisionOneShotWithFallback` for most image paths. |
-| Interactive web-grounded Content/research | Enforced: OpenAI one-call low-context -> Gemini -> Anthropic gated. Observe-only: Gemini -> OpenAI -> Anthropic gated. | Builds a public-query-only packet first. Budget/metering failures are terminal; only provider availability/quality failures advance the chain. |
+| Interactive web-grounded Content/research | Enforced: OpenAI one-call low-context -> Gemini -> Anthropic gated. Observe-only: Gemini -> OpenAI -> Anthropic gated. | Builds a public-query-only packet first. Budget/metering failures are terminal for that request and never advance to another paid provider; only provider availability/quality failures advance the chain. |
 | Scheduled Content trend context | Fresh Discovery/Radar signals -> validated evergreen generation | Enforcement never uses provider-hosted search in automation because retrieved context has no contractual token ceiling. |
 | Python content engine | TS proxy Gemini -> OpenAI -> Anthropic gated | Python no longer calls provider APIs directly for ordinary completions. |
 
@@ -254,7 +254,7 @@ These paths still have provider-aware fallback behavior, but they do not use `Ta
 - Interactive Content discovery/research-refresh and ChatV2 internet research use one-call, low-context OpenAI web search first while paid-AI enforcement is active. They compare Gemini and the gated Anthropic fallback only after non-budget provider failures. Observe-only keeps Gemini first for quality comparison.
 - Scheduled Content never uses provider-hosted search under enforcement; it reuses fresh tenant-scoped Discovery/Radar signals or produces explicitly evergreen output. Raw Nexus calendar/task/finance/health/email context is denied before any interactive web provider selection.
 - Legacy direct Anthropic domain calls remain available as a guarded safety path when the active routing provider cannot initialize.
-- `OpenAIProvider.streamDomain` is OpenAI-specific and does not use task routing/circuit breaker fallback.
+- The unused OpenAI-only streaming extension was removed; model-backed runtime paths stay on provider routing abstractions.
 
 ## Vestigial Or Misleading Names And Constants
 

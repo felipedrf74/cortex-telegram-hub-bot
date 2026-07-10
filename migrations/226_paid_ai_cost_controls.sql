@@ -41,6 +41,21 @@ CREATE INDEX IF NOT EXISTS idx_ai_budget_deferrals_user_created
 CREATE INDEX IF NOT EXISTS idx_ai_budget_deferrals_source_created
   ON ai_budget_deferrals(request_source, created_at);
 
+-- Durable evidence that shared system-owned channel knowledge was actually
+-- injected into a paid user's prompt. One marker per source/user/day is enough
+-- for the 30-day platform-scope learning gate without inflating api_usage.
+CREATE TABLE IF NOT EXISTS shared_knowledge_consumption (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id      INTEGER NOT NULL,
+  tenant_id    INTEGER NOT NULL,
+  source       TEXT NOT NULL,
+  consumed_on  TEXT NOT NULL DEFAULT (date('now')),
+  consumed_at  TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE (user_id, tenant_id, source, consumed_on)
+);
+CREATE INDEX IF NOT EXISTS idx_shared_knowledge_consumption_scope_time
+  ON shared_knowledge_consumption(user_id, tenant_id, consumed_at);
+
 -- Free and historical beta/manual grants do not receive model-backed usage.
 -- Secretary token-zero REST/read surfaces remain available independently of
 -- these cost caps.
@@ -100,12 +115,24 @@ WHERE tier = 'free' OR tier IS NULL;
 -- ambiguous user-scoped rows stay interactive rather than inventing provenance.
 UPDATE api_usage
 SET request_source = 'system',
-    base_category = category
+    base_category = CASE
+      WHEN lower(category) LIKE '%_gemini_model_fallback' THEN substr(category, 1, length(category) - 22)
+      WHEN lower(category) LIKE '%_anthropic_fallback' THEN substr(category, 1, length(category) - 19)
+      WHEN lower(category) LIKE '%_openai_fallback' THEN substr(category, 1, length(category) - 16)
+      WHEN lower(category) LIKE '%_fallback' THEN substr(category, 1, length(category) - 9)
+      ELSE category
+    END
 WHERE user_id = 0;
 
 UPDATE api_usage
 SET request_source = 'automation',
-    base_category = category
+    base_category = CASE
+      WHEN lower(category) LIKE '%_gemini_model_fallback' THEN substr(category, 1, length(category) - 22)
+      WHEN lower(category) LIKE '%_anthropic_fallback' THEN substr(category, 1, length(category) - 19)
+      WHEN lower(category) LIKE '%_openai_fallback' THEN substr(category, 1, length(category) - 16)
+      WHEN lower(category) LIKE '%_fallback' THEN substr(category, 1, length(category) - 9)
+      ELSE category
+    END
 WHERE user_id > 0
   AND (
     category LIKE 'coach_analysis%'
@@ -115,7 +142,13 @@ WHERE user_id > 0
   );
 
 UPDATE api_usage
-SET base_category = category
+SET base_category = CASE
+      WHEN lower(category) LIKE '%_gemini_model_fallback' THEN substr(category, 1, length(category) - 22)
+      WHEN lower(category) LIKE '%_anthropic_fallback' THEN substr(category, 1, length(category) - 19)
+      WHEN lower(category) LIKE '%_openai_fallback' THEN substr(category, 1, length(category) - 16)
+      WHEN lower(category) LIKE '%_fallback' THEN substr(category, 1, length(category) - 9)
+      ELSE category
+    END
 WHERE base_category IS NULL;
 
 CREATE INDEX IF NOT EXISTS idx_api_usage_user_source_ts
@@ -132,3 +165,14 @@ CREATE INDEX IF NOT EXISTS idx_api_usage_user_base_category_ts
 CREATE INDEX IF NOT EXISTS idx_api_usage_run_id
   ON api_usage(run_id)
   WHERE run_id IS NOT NULL;
+
+-- Rollback: this append-only migration intentionally keeps attribution and
+-- usage evidence if application code is rolled back. Disable
+-- PAID_AI_COST_CONTROLS_ENFORCEMENT_ENABLED first; older code ignores the new
+-- columns/tables. To restore the pre-226 included-cap behavior after the code
+-- rollback, run these repair statements explicitly on the backed-up database:
+--   UPDATE plan_configs SET daily_cost_usd = 0.005 WHERE plan_id = 'free';
+--   UPDATE plan_configs SET daily_cost_usd = 1.0 WHERE plan_id = 'beta';
+--   UPDATE users SET daily_cost_limit_usd = 0.005 WHERE tier = 'free' OR tier IS NULL;
+-- Do not drop api_usage attribution columns or shared_knowledge_consumption:
+-- they are non-destructive evidence and remain forward-compatible.

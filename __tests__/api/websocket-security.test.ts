@@ -7,6 +7,7 @@ import path from 'path';
 
 import {
   attachWebSocket,
+  buildWebSocketAiBudgetErrorFrame,
   DEFAULT_WEBSOCKET_AUTH_TIMEOUT_MS,
   DEFAULT_WEBSOCKET_MAX_CONNECTIONS,
   DEFAULT_WEBSOCKET_MAX_CONNECTIONS_PER_IP,
@@ -234,5 +235,43 @@ describe('WebSocket security boundary helpers', () => {
     expect(source).toContain("type: 'status'");
     expect(source).toContain("status: 'ACTION_CONFIRMATION_REQUIRED'");
     expect(source).toContain("actionStatus: 'ACTION_CONFIRMATION_REQUIRED'");
+  });
+
+  it('emits the stable typed WebSocket frame for a budget denial', () => {
+    const frame = buildWebSocketAiBudgetErrorFrame({
+      name: 'AiBudgetError',
+      decision: {
+        allowed: false,
+        status: 429,
+        code: 'AI_MONTHLY_LIMIT_REACHED',
+        window: 'monthly',
+        message: 'monthly limit',
+        quota: {
+          plan: 'pro',
+          usageFraction: 1,
+          dailyUsageFraction: 0.4,
+          monthlyUsageFraction: 1,
+          dailyOver: false,
+          monthlyOver: true,
+        },
+        reservedCostUsd: 0.01,
+        retryAfterSeconds: 120,
+        unblocksAt: '2026-08-01T00:00:00.000Z',
+      },
+    }, 42, 42);
+
+    expect(frame).toMatchObject({
+      type: 'error',
+      code: 'AI_MONTHLY_LIMIT_REACHED',
+      message: 'monthly limit',
+      userId: 42,
+      tenantId: 42,
+      details: {
+        window: 'monthly',
+        unblocksAt: '2026-08-01T00:00:00.000Z',
+        retryAfterSeconds: 120,
+        retryable: true,
+      },
+    });
   });
 });

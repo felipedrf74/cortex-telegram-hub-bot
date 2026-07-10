@@ -11,6 +11,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 // ─── Mock Gemini SDK ────────────────────────────────────────────────
 
 const mockGenerateContent = vi.fn();
+const mockAssertAiBudgetReservationForProvider = vi.fn();
 
 vi.mock('@google/genai', () => {
   return {
@@ -70,6 +71,14 @@ vi.mock('../../src/utils/logger', () => ({
   LOGGER_REDACTION_PATHS: [],
 }));
 
+vi.mock('../../src/services/cost-guardrail', async () => {
+  const actual = await vi.importActual<typeof import('../../src/services/cost-guardrail')>('../../src/services/cost-guardrail');
+  return {
+    ...actual,
+    assertAiBudgetReservationForProvider: (...args: unknown[]) => mockAssertAiBudgetReservationForProvider(...args),
+  };
+});
+
 // ─── Mock database and telemetry ────────────────────────────────────
 
 const mockDbRun = vi.fn();
@@ -111,6 +120,8 @@ vi.mock('../../src/portal/telemetry', () => ({
 // ─── Imports ─────────────────────────────────────────────────────────
 
 import { GeminiProvider, _sleep, completeOneShotWithFallback, completeOneShotWithSearch, completeVisionOneShotWithFallback } from '../../src/services/gemini-provider';
+import { AiBudgetError } from '../../src/services/cost-guardrail';
+import { _resetApiUsagePersistenceFailureForTests } from '../../src/services/api-usage-fallback';
 import { logger } from '../../src/utils/logger';
 import { pushEvent } from '../../src/portal/telemetry';
 import { _resetOverrides, setDomainModel } from '../../src/services/model-config';
@@ -175,6 +186,8 @@ describe('GeminiProvider', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockGenerateContent.mockReset();
+    mockAssertAiBudgetReservationForProvider.mockReset();
+    _resetApiUsagePersistenceFailureForTests();
     _resetOverrides();
     provider = new GeminiProvider();
   });
@@ -490,6 +503,31 @@ describe('GeminiProvider', () => {
   // ── callDomain ────────────────────────────────────────────────────
 
   describe('callDomain', () => {
+    it('rethrows a budget denial unchanged without retrying the Gemini SDK', async () => {
+      const denial = new AiBudgetError({
+        allowed: false,
+        status: 429,
+        code: 'AI_DAILY_LIMIT_REACHED',
+        window: 'daily',
+        message: 'daily limit',
+        quota: {} as any,
+        reservedCostUsd: 0.01,
+        retryAfterSeconds: 60,
+        unblocksAt: '2026-07-11T00:00:00.000Z',
+      });
+      mockAssertAiBudgetReservationForProvider.mockImplementationOnce(() => { throw denial; });
+
+      await expect(provider.callDomain(
+        'content',
+        [],
+        'write a hook',
+        '',
+        { userId: 42, tenantId: 42, filteredTools: [] },
+      )).rejects.toBe(denial);
+      expect(mockAssertAiBudgetReservationForProvider).toHaveBeenCalledTimes(1);
+      expect(mockGenerateContent).not.toHaveBeenCalled();
+    });
+
     it('returns text response when no function calls', async () => {
       mockGeminiResponse('You have a race in 3 weeks.');
 
@@ -759,6 +797,8 @@ describe('GeminiProvider', () => {
         null,
         'gemini_classify',
         null,
+        0,
+        0,
       );
     });
 
@@ -783,6 +823,8 @@ describe('GeminiProvider', () => {
         null,
         'gemini_classify',
         null,
+        0,
+        0,
       );
     });
 
@@ -807,6 +849,8 @@ describe('GeminiProvider', () => {
         null,
         'gemini_domain_secretary',
         null,
+        0,
+        0,
       );
     });
 
@@ -841,6 +885,8 @@ describe('GeminiProvider', () => {
         null,
         'gemini_domain_content',
         null,
+        0,
+        0,
       );
     });
 
@@ -869,7 +915,7 @@ describe('GeminiProvider', () => {
       expect(costArg).toBeCloseTo(0.10, 2);
     });
 
-    it('handles missing usageMetadata gracefully', async () => {
+    it('fails closed when usageMetadata is missing', async () => {
       mockGenerateContent.mockResolvedValue({
         text: '{"domain":"secretary","confidence":0.9}',
         functionCalls: [],
@@ -877,18 +923,21 @@ describe('GeminiProvider', () => {
         usageMetadata: undefined,
       });
 
-      const result = await provider.classify('hello');
-      expect(result.domain).toBe('secretary');
-      // No crash, no DB call
+      await expect(provider.classify('hello')).rejects.toMatchObject({
+        name: 'ApiUsagePersistenceError',
+        code: 'AI_USAGE_PERSISTENCE_FAILED',
+      });
       expect(mockDbRun).not.toHaveBeenCalled();
     });
 
-    it('continues normally if database write fails', async () => {
+    it('fails closed if both database write paths fail', async () => {
       mockDbRun.mockImplementationOnce(() => { throw new Error('DB error'); });
       mockGeminiResponse('works');
 
-      const result = await provider.callDomain('content', [], 'test', '');
-      expect(result.text).toBe('works');
+      await expect(provider.callDomain('content', [], 'test', '')).rejects.toMatchObject({
+        name: 'ApiUsagePersistenceError',
+        code: 'AI_USAGE_PERSISTENCE_FAILED',
+      });
     });
   });
 

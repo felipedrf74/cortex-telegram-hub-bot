@@ -32,13 +32,56 @@ vi.mock('../../src/services/user-service', () => ({
 }));
 
 import {
-  acquireCostLock,
+  acquireAiBudgetReservation,
   _resetUserCostLocksForTests,
 } from '../../src/services/cost-guardrail';
+
+function acquire(userId: number) {
+  return acquireAiBudgetReservation({
+    userId,
+    requestSource: 'interactive',
+    baseCategory: 'chat_secretary',
+  });
+}
 
 describe('cost guardrail SQLite advisory lock', () => {
   beforeEach(() => {
     testDb = new Database(':memory:');
+    testDb.exec(`
+      CREATE TABLE subscriptions (
+        user_id INTEGER UNIQUE, plan TEXT, status TEXT, provider TEXT,
+        current_period_start TEXT, current_period_end TEXT
+      );
+      CREATE TABLE api_usage (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        ts TEXT NOT NULL DEFAULT (datetime('now')),
+        category TEXT NOT NULL,
+        model TEXT NOT NULL DEFAULT 'test',
+        user_id INTEGER NOT NULL DEFAULT 0,
+        cost_usd REAL NOT NULL DEFAULT 0,
+        request_source TEXT NOT NULL DEFAULT 'interactive',
+        base_category TEXT,
+        run_id TEXT
+      );
+      CREATE TABLE user_ai_budget_overrides (
+        user_id INTEGER UNIQUE, daily_cost_usd REAL NOT NULL,
+        monthly_cost_usd REAL, reason TEXT, expires_at TEXT,
+        active INTEGER NOT NULL DEFAULT 1
+      );
+      CREATE TABLE nexus_point_credits (
+        user_id INTEGER, points_remaining REAL, usd_allowance_remaining REAL,
+        expires_at TEXT, status TEXT
+      );
+      CREATE TABLE nexus_point_debits (
+        user_id INTEGER, api_usage_id INTEGER, usd_cost_debited REAL,
+        created_at TEXT DEFAULT (datetime('now'))
+      );
+      CREATE TABLE ai_budget_deferrals (
+        user_id INTEGER, request_source TEXT, job_name TEXT,
+        base_category TEXT, run_id TEXT, code TEXT, budget_window TEXT,
+        reset_at TEXT, created_at TEXT DEFAULT (datetime('now'))
+      );
+    `);
   });
 
   afterEach(() => {
@@ -47,13 +90,13 @@ describe('cost guardrail SQLite advisory lock', () => {
   });
 
   it('stores a DB-backed lock row while held and queues same-user acquisitions across processes', async () => {
-    const releaseFirst = await acquireCostLock(42);
+    const releaseFirst = await acquire(42);
     const held = testDb.prepare('SELECT lock_key FROM cost_guardrail_locks WHERE lock_key = ?')
       .get('user:42') as { lock_key: string } | undefined;
     expect(held?.lock_key).toBe('user:42');
 
     let secondAcquired = false;
-    const second = acquireCostLock(42).then((release) => {
+    const second = acquire(42).then((release) => {
       secondAcquired = true;
       return release;
     });
@@ -94,6 +137,9 @@ describe('cost guardrail SQLite advisory lock', () => {
     testDb.close();
     testDb = undefined as unknown as Database.Database;
 
-    await expect(acquireCostLock(42)).rejects.toThrow(/COST_GUARDRAIL_LOCK_UNAVAILABLE/);
+    await expect(acquire(42)).rejects.toMatchObject({
+      name: 'AiBudgetError',
+      decision: { code: 'SERVICE_DEGRADED', internalReason: 'lock_unavailable' },
+    });
   });
 });

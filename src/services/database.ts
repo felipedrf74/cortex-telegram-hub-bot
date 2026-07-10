@@ -184,7 +184,7 @@ export function initDatabase(): Database.Database {
   return db;
 }
 
-function runMigrations(): void {
+function runMigrations(options: { stopBefore?: string } = {}): void {
   const migrationsDir = path.resolve(__dirname, '../../migrations');
   if (!fs.existsSync(migrationsDir)) {
     logger.warn('Migrations directory not found');
@@ -214,6 +214,7 @@ function runMigrations(): void {
   );
 
   for (const file of files) {
+    if (options.stopBefore && file >= options.stopBefore) break;
     if (applied.has(file)) continue;
     const sql = fs.readFileSync(path.join(migrationsDir, file), 'utf-8');
     applyMigration(file, sql);
@@ -268,11 +269,14 @@ export function stripWrappingTransactionStatements(sql: string): string {
     .join('\n');
 }
 
-export function runMigrationsForTest(testDb: Database.Database): void {
+export function runMigrationsForTest(
+  testDb: Database.Database,
+  options: { stopBefore?: string } = {},
+): void {
   const previousDb = db as Database.Database | undefined;
   (db as any) = testDb;
   try {
-    runMigrations();
+    runMigrations(options);
   } finally {
     (db as any) = previousDb;
   }

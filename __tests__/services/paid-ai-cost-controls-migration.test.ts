@@ -92,7 +92,11 @@ describe('migration 226 paid AI cost controls', () => {
     expect(rows.slice(0, 4).every((row) => row.request_source === 'automation')).toBe(true);
     expect(rows[4]).toMatchObject({ category: 'chat_secretary', request_source: 'interactive' });
     expect(rows[5]).toMatchObject({ category: 'autoresearch_topic_gen', request_source: 'system' });
-    expect(rows.every((row) => row.base_category === row.category)).toBe(true);
+    expect(rows[0]).toMatchObject({
+      category: 'coach_analysis_openai_fallback',
+      base_category: 'coach_analysis',
+    });
+    expect(rows.slice(1).every((row) => row.base_category === row.category)).toBe(true);
   });
 
   it('adds attribution, override, deferral, and query-index contracts', () => {

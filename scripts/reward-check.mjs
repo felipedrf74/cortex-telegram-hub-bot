@@ -615,12 +615,13 @@ function readHandoff(cwd, handoffPath) {
 
 function detectHardFailures(context) {
   const failures = [];
+  const allowedEnvironmentTemplates = new Set(['.env.example', '.env.local.example']);
   for (const file of context.changedFiles) {
     // Checked-in environment templates contain names/defaults only and are
     // the canonical place to document new rollout flags. Real `.env` variants
-    // remain secret-bearing. Treat every `*.example` template as safe instead
-    // of special-casing only `.env.local.example`.
-    if (/^\.env($|\.)/.test(file) && !file.endsWith('.example')) {
+    // remain secret-bearing. Only the two canonical templates are exempt;
+    // suffixes such as `.env.staging.example` may contain deploy secrets.
+    if (/^\.env($|\.)/.test(file) && !allowedEnvironmentTemplates.has(file)) {
       failures.push({
         id: 'env-file-touched',
         label: 'Environment file touched',

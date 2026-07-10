@@ -685,7 +685,7 @@ describe('OpenAIProvider', () => {
       );
     });
 
-    it('continues normally if database write fails', async () => {
+    it('fails closed if both primary and fallback usage persistence fail', async () => {
       mockDbRun.mockImplementationOnce(() => { throw new Error('DB error'); });
       mockCreate.mockResolvedValueOnce({
         choices: [{ message: { content: 'works' }, finish_reason: 'stop' }],
@@ -693,49 +693,10 @@ describe('OpenAIProvider', () => {
         usage: { prompt_tokens: 10, completion_tokens: 5 },
       });
 
-      const result = await provider.callDomain('content', [], 'test', '');
-      expect(result.text).toBe('works');
-    });
-
-    it('records streaming usage and settles Nexus Points for the actual user', async () => {
-      async function* stream() {
-        yield { choices: [{ delta: { content: 'Hi' }, finish_reason: null }] };
-        yield {
-          choices: [{ delta: {}, finish_reason: 'stop' }],
-          usage: {
-            prompt_tokens: 120,
-            completion_tokens: 20,
-            prompt_tokens_details: { cached_tokens: 30 },
-          },
-        };
-      }
-      mockDbRun.mockReturnValueOnce({ lastInsertRowid: 777 });
-      mockCreate.mockResolvedValueOnce(stream());
-
-      const iterator = provider.streamDomain('content', [], 'hello', '', { userId: 42, tenantId: 77 });
-      const first = await iterator.next();
-      const done = await iterator.next();
-
-      expect(first).toEqual({ done: false, value: 'Hi' });
-      expect(done.done).toBe(true);
-      expect(mockDbRun).toHaveBeenCalledWith(
-        'openai_stream_content',
-        'gpt-4o-mini',
-        77,
-        42,
-        120,
-        20,
-        30,
-        expect.any(Number),
-        expect.any(Number),
-        'resolved',
-        'gpt-4o-mini',
-        'interactive',
-        null,
-        'openai_stream_content',
-        null,
-      );
-      expect(mockSettleNexusPointOverageForUser).toHaveBeenCalledWith(42, 777);
+      await expect(provider.callDomain('content', [], 'test', '')).rejects.toMatchObject({
+        name: 'ApiUsagePersistenceError',
+        code: 'AI_USAGE_PERSISTENCE_FAILED',
+      });
     });
 
     it('settles Nexus Points after a legacy fallback usage insert', async () => {
@@ -769,12 +730,6 @@ describe('OpenAIProvider', () => {
       expect(mockSettleNexusPointOverageForUser).toHaveBeenCalledWith(42, 888);
     });
 
-    it('rejects streaming usage without a positive user id', async () => {
-      const iterator = provider.streamDomain('content', [], 'hello', '', { userId: 0, tenantId: 77 });
-
-      await expect(iterator.next()).rejects.toThrow('streamDomain requires options.userId');
-      expect(mockCreate).not.toHaveBeenCalled();
-    });
   });
 
   // ── Error handling and retry ──────────────────────────────────────

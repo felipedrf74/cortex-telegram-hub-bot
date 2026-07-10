@@ -199,6 +199,7 @@ describe('content-workflow: user-scoped knowledge injection', () => {
   });
 
   afterEach(() => {
+    delete process.env.ANTHROPIC_ENABLED;
     testDb?.close();
   });
 
@@ -345,6 +346,7 @@ describe('content-workflow: user-scoped knowledge injection', () => {
   });
 
   it('uses an explicitly grounded provider path when fresh tenant signals are absent', async () => {
+    isPaidAiCostControlsEnforcementEnabled.mockReturnValue(true);
     completeOneShotWithSearch.mockResolvedValue({
       sources: ['https://example.test/current'],
       text: JSON.stringify([{
@@ -391,6 +393,50 @@ describe('content-workflow: user-scoped knowledge injection', () => {
     expect(trackedCreate).not.toHaveBeenCalled();
   });
 
+  it('keeps scheduled trending generation ungrounded-first in observation mode', async () => {
+    completeOneShotWithFallback.mockResolvedValue({
+      provider: 'gemini',
+      text: JSON.stringify([{
+        title: 'Legacy scheduled topic',
+        niche: 'product',
+        whyNow: 'Useful for the audience',
+        hookIdea: 'Open with the recurring pain',
+        angle_tag: 'framework',
+        pillar_emoji: '',
+        time_sensitivity: 'evergreen',
+      }]),
+    });
+
+    const result = await generateTopicCandidates(
+      'reel',
+      1,
+      true,
+      42,
+      42,
+      { requestSource: 'automation', jobName: 'tuesday_reels' },
+    );
+
+    expect(result.map((item) => item.title)).toEqual(['Legacy scheduled topic']);
+    expect(completeOneShotWithFallback).toHaveBeenCalledTimes(1);
+    expect(completeOneShotWithSearch).not.toHaveBeenCalled();
+    expect(completeOneShotWithWebSearch).not.toHaveBeenCalled();
+  });
+
+  it('does not compare against Gemini after an enforced OpenAI budget denial', async () => {
+    isPaidAiCostControlsEnforcementEnabled.mockReturnValue(true);
+    isOpenAIConfigured.mockReturnValue(true);
+    const denial = Object.assign(new Error('daily limit'), {
+      name: 'AiBudgetError',
+      decision: { code: 'AI_DAILY_LIMIT_REACHED' },
+    });
+    completeOneShotWithWebSearch.mockRejectedValue(denial);
+
+    await expect(generateTopicCandidates('reel', 1, true, 42, 42)).rejects.toBe(denial);
+    expect(completeOneShotWithWebSearch).toHaveBeenCalledTimes(1);
+    expect(completeOneShotWithSearch).not.toHaveBeenCalled();
+    expect(completeOneShotWithFallback).not.toHaveBeenCalled();
+  });
+
   it('uses an explicitly evergreen provider prompt when paid grounding cannot fit automation', async () => {
     isPaidAiCostControlsEnforcementEnabled.mockReturnValue(true);
     completeOneShotWithFallback.mockResolvedValue({
@@ -423,6 +469,8 @@ describe('content-workflow: user-scoped knowledge injection', () => {
   });
 
   it('rejects an ungrounded Gemini search response and requires grounded Anthropic fallback', async () => {
+    isPaidAiCostControlsEnforcementEnabled.mockReturnValue(true);
+    process.env.ANTHROPIC_ENABLED = 'true';
     completeOneShotWithSearch.mockResolvedValue({
       sources: [],
       text: JSON.stringify([{ title: 'Unverified topic' }]),

@@ -254,6 +254,8 @@ function setPlan(plan: 'free' | 'pro'): void {
   mockGetEffectiveEntitlement.mockReturnValue({
     plan,
     source: 'subscription',
+    aiAccessAllowed: plan === 'pro',
+    blockReason: plan === 'free' ? 'plan_required' : null,
     allowedSkills: plan === 'free' ? new Set(['secretary']) : new Set(['training']),
     evaluatedAt: '2026-05-08T00:00:00.000Z',
   });
@@ -414,12 +416,20 @@ describe('training routes entitlement and AI cost guardrails', () => {
       plan: 'pro',
       resetAt: '2026-05-09T00:00:00.000Z',
     });
+    mockGenerateCoachBriefing.mockImplementationOnce(async () => {
+      const { withAiBudgetReservation } = await import('../../src/services/cost-guardrail');
+      return withAiBudgetReservation({
+        userId: 42,
+        requestSource: 'interactive',
+        baseCategory: 'coach_analysis',
+      }, async () => ({ message: 'unreachable', recommendations: [] }));
+    });
 
     const response = await getCoach();
 
     expect(response.status).toBe(429);
     expect(response.body.error.code).toBe('AI_DAILY_LIMIT_REACHED');
-    expect(mockGenerateCoachBriefing).not.toHaveBeenCalled();
+    expect(mockGenerateCoachBriefing).toHaveBeenCalledTimes(1);
   });
 
   it('allows pro users under cap and preserves the coach response shape', async () => {
@@ -430,13 +440,19 @@ describe('training routes entitlement and AI cost guardrails', () => {
     expect(response.status).toBe(200);
     expect(response.body.ok).toBe(true);
     expect(response.body.data.briefing).toBe('Coach ready.');
-    expect(mockGenerateCoachBriefing).toHaveBeenCalledWith(42, { tenantId: 42, meteringUserId: 42 });
+    expect(mockGenerateCoachBriefing).toHaveBeenCalledWith(42, {
+      tenantId: 42,
+      meteringUserId: 42,
+      budgetRequestSource: 'interactive',
+      budgetJobName: 'coach_refresh',
+    });
   });
 
   it('serializes concurrent pro refreshes so one remaining quota slot cannot race', async () => {
     process.env.PAID_AI_COST_CONTROLS_ENFORCEMENT_ENABLED = 'true';
     setPlan('pro');
     let remaining = 1;
+    let providerCalls = 0;
     mockIsUserOverDailyCap.mockImplementation(() => ({
       over: remaining <= 0,
       spentUsd: remaining <= 0 ? 0.21 : 0.19,
@@ -445,15 +461,24 @@ describe('training routes entitlement and AI cost guardrails', () => {
       resetAt: '2026-05-09T00:00:00.000Z',
     }));
     mockGenerateCoachBriefing.mockImplementation(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 20));
-      remaining -= 1;
-      return { message: 'Coach ready.', recommendations: [] };
+      const { withAiBudgetReservation } = await import('../../src/services/cost-guardrail');
+      return withAiBudgetReservation({
+        userId: 777,
+        requestSource: 'interactive',
+        baseCategory: 'coach_analysis',
+      }, async () => {
+        providerCalls += 1;
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        remaining -= 1;
+        return { message: 'Coach ready.', recommendations: [] };
+      });
     });
 
     const results = await Promise.all(Array.from({ length: 5 }, () => getCoach(777)));
 
     expect(results.filter((r) => r.status === 200)).toHaveLength(1);
     expect(results.filter((r) => r.status === 429)).toHaveLength(4);
-    expect(mockGenerateCoachBriefing).toHaveBeenCalledTimes(1);
+    expect(mockGenerateCoachBriefing).toHaveBeenCalledTimes(5);
+    expect(providerCalls).toBe(1);
   });
 });

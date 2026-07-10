@@ -200,10 +200,8 @@ describe('channel-learner: scoped synthesis', () => {
        WHERE id = ?
     `).run(systemChannel.id);
     testDb.prepare(`
-      INSERT INTO content_topic_feedback (
-        topic, format, sentiment, source_job, user_id, tenant_id,
-        owner_user_id, visibility_scope, scope_status
-      ) VALUES ('Consumed shared topic', 'reel', 'approved', 'tuesday_reels', 42, 42, 42, 'user_private', 'active')
+      INSERT INTO shared_knowledge_consumption (user_id, tenant_id, source)
+      VALUES (42, 42, 'content_prompt')
     `).run();
 
     vi.useFakeTimers();
@@ -254,10 +252,8 @@ describe('channel-learner: scoped synthesis', () => {
       },
     ], { userId: 42 });
     testDb.prepare(`
-      INSERT INTO content_topic_feedback (
-        topic, format, sentiment, source_job, user_id, tenant_id,
-        owner_user_id, visibility_scope, scope_status
-      ) VALUES ('Consumed topic', 'reel', 'approved', 'tuesday_reels', 42, 42, 42, 'user_private', 'active')
+      INSERT INTO shared_knowledge_consumption (user_id, tenant_id, source)
+      VALUES (42, 42, 'content_prompt')
     `).run();
 
     vi.useFakeTimers();
@@ -276,7 +272,7 @@ describe('channel-learner: scoped synthesis', () => {
     const userKnowledge = getKnowledgeByCategory('hook_style', 42);
 
     expect(systemKnowledge?.user_id).toBe(0);
-    expect(systemKnowledge?.synthesized_text).toContain('System hook pattern');
+    expect(systemKnowledge?.synthesized_text).toContain('System hook_style pattern');
     expect(userKnowledge?.user_id).toBe(42);
     expect(userKnowledge?.synthesized_text).toBe('Merged user + system hook guidance');
 
@@ -301,6 +297,45 @@ describe('channel-learner: scoped synthesis', () => {
     expect(resolveAiAutomationEligibility).toHaveBeenCalledWith(77, 'content');
     expect(fetch).not.toHaveBeenCalled();
     expect(completeOneShotWithFallback).not.toHaveBeenCalled();
+  });
+
+  it('defers platform scope when eligible users have no shared-consumption evidence', async () => {
+    testDb.prepare(
+      "INSERT INTO users (id, telegram_id, tier, status) VALUES (42, 4200, 'pro', 'active')",
+    ).run();
+    const systemChannel = addSystemChannel('https://www.youtube.com/channel/UCsystem', 'manual', adminContext);
+    testDb.prepare(`
+      UPDATE content_ref_channels
+         SET tenant_id = 0,
+             owner_user_id = 0,
+             visibility_scope = 'platform_internal',
+             scope_status = 'active',
+             lifecycle_state = 'active',
+             created_by = 0,
+             updated_by = 0
+       WHERE id = ?
+    `).run(systemChannel.id);
+
+    const result = await processAllChannelScopes(false);
+
+    expect(result).toMatchObject({
+      analyzed: 0,
+      failed: 0,
+      synthesized: false,
+      synthesis_deferred: true,
+    });
+    expect(fetch).not.toHaveBeenCalled();
+    expect(completeOneShotWithFallback).not.toHaveBeenCalled();
+    expect(testDb.prepare(`
+      SELECT request_source, job_name, base_category, code
+        FROM ai_budget_deferrals
+       WHERE code = 'SHARED_KNOWLEDGE_CONSUMPTION_REQUIRED'
+    `).get()).toEqual({
+      request_source: 'system',
+      job_name: 'channel_relearn',
+      base_category: 'channel_learning',
+      code: 'SHARED_KNOWLEDGE_CONSUMPTION_REQUIRED',
+    });
   });
 
   it('retains prior patterns and does not advance the fingerprint after invalid extraction output', async () => {

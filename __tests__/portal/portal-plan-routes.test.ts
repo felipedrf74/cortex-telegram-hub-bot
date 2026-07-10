@@ -293,7 +293,7 @@ describe('portal plan routes', () => {
     expect(payload.body).toEqual({ ok: true });
   });
 
-  it('preserves legacy null-limit update behavior when optional limits are omitted', () => {
+  it('preserves existing token and message limits when optional fields are omitted', () => {
     const recorder = makeDbRecorder();
     hoisted.getDb.mockReturnValue(recorder.db);
     const { app, routes } = makeApp();
@@ -304,8 +304,8 @@ describe('portal plan routes', () => {
     handler({ params: { planId: 'pro' }, body: { dailyCostUsd: 0.2 } }, res);
 
     expect(recorder.runs[0]).toEqual({
-      sql: "UPDATE plan_configs SET daily_cost_usd = ?, daily_token_limit = ?, daily_message_limit = ?, updated_at = datetime('now') WHERE plan_id = ?",
-      args: [0.2, null, null, 'pro'],
+      sql: "UPDATE plan_configs SET daily_cost_usd = ?, updated_at = datetime('now') WHERE plan_id = ?",
+      args: [0.2, 'pro'],
     });
     expect(hoisted.setPlanMonthlyCostCapOverride).not.toHaveBeenCalled();
     expect(payload.body).toEqual({ ok: true });

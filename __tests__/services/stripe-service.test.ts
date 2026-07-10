@@ -194,6 +194,27 @@ describe('stripe service billing reconciliation', () => {
     });
   });
 
+  it('derives a date-safe Apple monthly period start at month end', async () => {
+    const { handleAppleTransaction } = await import('../../src/services/stripe-service');
+    const userId = Number(testDb.prepare(
+      'INSERT INTO users (email, email_verified) VALUES (?, 1)',
+    ).run('apple-month-end@example.com').lastInsertRowid);
+
+    handleAppleTransaction(
+      userId,
+      '2000000123456790',
+      'me.nexushub.pro.monthly',
+      '2028-03-31T12:34:56.000Z',
+    );
+
+    expect(testDb.prepare(
+      'SELECT current_period_start, current_period_end FROM subscriptions WHERE user_id = ?',
+    ).get(userId)).toMatchObject({
+      current_period_start: '2028-02-29T12:34:56.000Z',
+      current_period_end: '2028-03-31T12:34:56.000Z',
+    });
+  });
+
   it('skips subscription updates with unknown Stripe price IDs', async () => {
     const { handleSubscriptionUpdated } = await import('../../src/services/stripe-service');
     testDb.prepare('INSERT INTO users (email, email_verified) VALUES (?, 1)').run('known@example.com');

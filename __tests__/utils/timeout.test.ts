@@ -4,7 +4,7 @@
  * Tests the withTimeout utility and AITimeoutError.
  */
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { withTimeout, AITimeoutError } from '../../src/utils/timeout';
 
 describe('withTimeout', () => {
@@ -40,5 +40,21 @@ describe('withTimeout', () => {
     // the test runner would report leaked handles
     const result = await withTimeout(Promise.resolve(42), 5000);
     expect(result).toBe(42);
+  });
+
+  it('runs the durable-metering continuation exactly once before abandoning the wait', async () => {
+    const onTimeout = vi.fn();
+    await expect(withTimeout(new Promise(() => {}), 5, { onTimeout }))
+      .rejects.toThrow(AITimeoutError);
+    expect(onTimeout).toHaveBeenCalledTimes(1);
+  });
+
+  it('surfaces a metering continuation failure instead of hiding it behind timeout', async () => {
+    const persistenceError = Object.assign(new Error('metering failed'), {
+      name: 'ApiUsagePersistenceError',
+    });
+    await expect(withTimeout(new Promise(() => {}), 5, {
+      onTimeout: () => { throw persistenceError; },
+    })).rejects.toBe(persistenceError);
   });
 });

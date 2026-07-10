@@ -97,14 +97,22 @@ export function registerPortalPlanRoutes(app: express.Express): void {
         return;
       }
 
-      const dailyTokenLimit = parseNullableNonNegativeNumber(body.dailyTokenLimit);
-      if (dailyTokenLimit !== null && (!Number.isFinite(dailyTokenLimit) || dailyTokenLimit < 0)) {
+      const hasDailyTokenLimit = Object.prototype.hasOwnProperty.call(body, 'dailyTokenLimit');
+      const dailyTokenLimit = hasDailyTokenLimit
+        ? parseNullableNonNegativeNumber(body.dailyTokenLimit)
+        : undefined;
+      if (hasDailyTokenLimit && dailyTokenLimit !== null && dailyTokenLimit !== undefined
+        && (!Number.isFinite(dailyTokenLimit) || dailyTokenLimit < 0)) {
         res.status(400).json({ ok: false, message: 'dailyTokenLimit must be null or a non-negative number' });
         return;
       }
 
-      const dailyMessageLimit = parseNullableNonNegativeNumber(body.dailyMessageLimit);
-      if (dailyMessageLimit !== null && (!Number.isFinite(dailyMessageLimit) || dailyMessageLimit < 0)) {
+      const hasDailyMessageLimit = Object.prototype.hasOwnProperty.call(body, 'dailyMessageLimit');
+      const dailyMessageLimit = hasDailyMessageLimit
+        ? parseNullableNonNegativeNumber(body.dailyMessageLimit)
+        : undefined;
+      if (hasDailyMessageLimit && dailyMessageLimit !== null && dailyMessageLimit !== undefined
+        && (!Number.isFinite(dailyMessageLimit) || dailyMessageLimit < 0)) {
         res.status(400).json({ ok: false, message: 'dailyMessageLimit must be null or a non-negative number' });
         return;
       }

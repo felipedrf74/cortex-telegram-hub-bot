@@ -120,7 +120,7 @@ describe('training skill hardening source contracts', () => {
     expect(coach).toContain('meteringActor: meteringScope.actor');
     expect(coach).toContain('const COACH_ANALYSIS_MAX_TOKENS = 1400;');
     expect(coach).toContain('const COACH_PAYLOAD_MAX_CHARS = 9000;');
-    expect(coach).toContain('const COACH_SYSTEM_PROMPT_MAX_CHARS = 6500;');
+    expect(coach).toContain('export const COACH_SYSTEM_PROMPT_MAX_CHARS = 12_000;');
     expect(coach).toContain('payloadCompactedToBudget: true');
     expect(coach).toContain('{ maxTokens: COACH_ANALYSIS_MAX_TOKENS, userId: meteringScope.userId, tenantId: meteringScope.tenantId }');
     expect(coach).toContain("{ userId: meteringScope.userId, tenantId: meteringScope.tenantId }");

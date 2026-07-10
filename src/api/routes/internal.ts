@@ -362,7 +362,7 @@ export function internalRoutes(): Router {
           async () => {
             const { trackedCreate } = require('../../portal/anthropic-hook');
             const Anthropic = require('@anthropic-ai/sdk');
-            const client = new Anthropic.default({ apiKey: config.anthropic?.apiKey || '', maxRetries: 2 });
+            const client = new Anthropic.default({ apiKey: config.anthropic?.apiKey || '', maxRetries: 0 });
             const anthropicModel = getEffectiveDomainModel('anthropic', 'content');
             const response = await trackedCreate(client, {
               model: anthropicModel,

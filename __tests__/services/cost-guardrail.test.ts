@@ -191,12 +191,14 @@ describe('checkGlobalCostGuardrail', () => {
  */
 describe('isUserOverDailyCap', () => {
   beforeEach(() => {
+    process.env.PAID_AI_COST_CONTROLS_ENFORCEMENT_ENABLED = 'true';
     testDb = new Database(':memory:');
     testDb.pragma('journal_mode = WAL');
     applyMigrations(testDb);
   });
 
   afterEach(() => {
+    delete process.env.PAID_AI_COST_CONTROLS_ENFORCEMENT_ENABLED;
     testDb?.close();
   });
 
@@ -232,8 +234,7 @@ describe('isUserOverDailyCap', () => {
     expect(result.callsToday).toBe(0);
   });
 
-  it('returns over=true when unsubscribed user spend exceeds the Free $0.005 cap', () => {
-    // Hardening 2026-04-21: Free cap is $0.005. $0.01 > $0.005 → over.
+  it('returns over=true when enforced paid-only policy blocks an unsubscribed user with spend', () => {
     testDb.prepare(`
       INSERT INTO api_usage (category, model, user_id, input_tokens, output_tokens, cost_usd, duration_ms)
       VALUES ('domain_content', 'gemini-2.5-flash', 42, 1000, 500, 0.01, 100)
@@ -246,13 +247,13 @@ describe('isUserOverDailyCap', () => {
   });
 
   it('isolates users from each other — spend by user 42 does not count against user 99', () => {
-    // User 42 spent $0.50 (well over Free's $0.005 cap → over)
+    // User 42 spent $0.50 and is blocked by enforced paid-only policy.
     testDb.prepare(`
       INSERT INTO api_usage (category, model, user_id, input_tokens, output_tokens, cost_usd, duration_ms)
       VALUES ('domain_content', 'gemini-2.5-flash', 42, 5000, 2000, 0.50, 200)
     `).run();
 
-    // User 99 spent $0.001 (under Free's $0.005 cap → NOT over)
+    // User 99 spent $0.001 but is still blocked by enforced paid-only policy.
     testDb.prepare(`
       INSERT INTO api_usage (category, model, user_id, input_tokens, output_tokens, cost_usd, duration_ms)
       VALUES ('domain_secretary', 'gemini-2.5-flash-lite', 99, 100, 50, 0.001, 50)
@@ -269,8 +270,8 @@ describe('isUserOverDailyCap', () => {
   it('ignores rows written without a userId (user_id=0 fallback)', () => {
     // A system call with no attached user (e.g. scheduled coach briefing)
     testDb.prepare(`
-      INSERT INTO api_usage (category, model, user_id, input_tokens, output_tokens, cost_usd, duration_ms)
-      VALUES ('coach_analysis', 'gemini-2.5-flash', 0, 3000, 1000, 0.80, 150)
+      INSERT INTO api_usage (category, model, user_id, input_tokens, output_tokens, cost_usd, duration_ms, request_source)
+      VALUES ('coach_analysis', 'gemini-2.5-flash', 0, 3000, 1000, 0.80, 150, 'system')
     `).run();
 
     // The system row is under user_id=0, not the owner (111111).

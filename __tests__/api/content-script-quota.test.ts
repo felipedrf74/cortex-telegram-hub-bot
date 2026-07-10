@@ -10,17 +10,29 @@ const mockIsUserOverDailyCap = vi.fn((..._args: unknown[]) => ({
 }));
 const mockWithAiBudgetReservation = vi.fn();
 const mockGetScriptProvider = vi.fn();
+const mockLoggerError = vi.fn();
 
 vi.mock('../../src/utils/logger', () => ({
   logger: {
     info: vi.fn(),
     warn: vi.fn(),
-    error: vi.fn(),
+    error: (...args: unknown[]) => mockLoggerError(...args),
     debug: vi.fn(),
     trace: vi.fn(),
     child: vi.fn().mockReturnThis(),
   },
   LOGGER_REDACTION_PATHS: [],
+}));
+
+vi.mock('../../src/services/database', () => ({
+  getDb: () => ({
+    prepare: () => ({ get: () => null, all: () => [], run: () => ({ changes: 0 }) }),
+    transaction: (fn: () => unknown) => fn,
+  }),
+  initDatabase: vi.fn(),
+  closeDatabase: vi.fn(),
+  findUnexpectedMigrationPrefixCollisions: vi.fn(() => []),
+  assertNoUnexpectedMigrationPrefixCollisions: vi.fn(),
 }));
 
 vi.mock('../../src/services/cost-guardrail', () => {
@@ -157,7 +169,12 @@ describe('Content API — script quota enforcement', () => {
       format: 'Reel',
     });
 
-    expect(response.statusCode).toBe(429);
+    const errorLogs = mockLoggerError.mock.calls.map(([entry]) => ({
+      name: (entry as any)?.err?.name,
+      message: (entry as any)?.err?.message,
+      decision: (entry as any)?.err?.decision,
+    }));
+    expect(response.statusCode, JSON.stringify({ body: response.body, logs: errorLogs })).toBe(429);
     expect(response.body.ok).toBe(false);
     expect(response.body.error.code).toBe('AI_DAILY_LIMIT_REACHED');
     expect(response.body.error.details).toEqual({

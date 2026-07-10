@@ -466,6 +466,23 @@ async function completeTopicGeneration(
       };
       const enforcementEnabled = isPaidAiCostControlsEnforcementEnabled();
 
+      // Observe-only rollout must preserve production delivery/cost behavior:
+      // ordinary Gemini first, provider fallback second. New grounded-first
+      // routing is policy behavior and therefore activates only with the flag.
+      if (!enforcementEnabled) {
+        const generated = await completeOneShotWithFallback(
+          boundedSystemPrompt,
+          boundedUserMessage,
+          category,
+          completeWithAnthropic,
+          { model: CONTENT_TOPIC_MODEL, maxTokens, userId, tenantId },
+        );
+        return {
+          ...generated,
+          grounded: generated.provider === 'anthropic',
+        };
+      }
+
       // Provider-hosted search has no exact injected-context token ceiling.
       // Under enforcement, background work must therefore use the validated
       // non-current prompt before any search network call. The ordinary model
@@ -519,19 +536,6 @@ async function completeTopicGeneration(
         }
         return { text: grounded.text, provider: 'gemini', grounded: true };
       } catch (err) {
-        // In observe-only mode Gemini remains primary. Keep the bounded OpenAI
-        // route as the lower-cost provider fallback before Anthropic.
-        if (!enforcementEnabled && isOpenAIConfigured()) {
-          try {
-            return await completeWithOpenAiSearch();
-          } catch (openAiError) {
-            rethrowAiUsageFailClosedError(openAiError);
-            logger.warn(
-              { err: openAiError, category },
-              'Bounded OpenAI topic search failed; evaluating Anthropic fallback',
-            );
-          }
-        }
         // Budget denials and usage-persistence failures are not provider
         // availability failures. Never spend on another provider after either.
         rethrowAiUsageFailClosedError(err);
@@ -565,7 +569,7 @@ function normalizeTopicCandidate(value: any): TopicCandidate {
   };
 }
 
-function hasValidLiveTopicFields(value: any): boolean {
+export function hasValidLiveTopicFields(value: any): boolean {
   const nonEmpty = (field: unknown): field is string => typeof field === 'string' && field.trim().length > 0;
   const angleTags = new Set([
     'opinion', 'reaction', 'how-to', 'story', 'myth-bust', 'comparison',
@@ -751,13 +755,6 @@ export async function generateTopicCandidates(
 // content-engine.ts, which calls the Python backend. That backend
 // does deep research → Claude Sonnet → structured ScriptResponse.
 //
-// The old `generateReelScript` / `generateYouTubeScript` functions
-// had a critical bug: they called `handleContent(prompt, 4096)`
-// where 4096 was silently consumed as the `userId` parameter —
-// not a token limit. The scripts ran under a phantom user context.
-//
-// Fixed in April 2026: both functions now call `getScript()` and
-// return a structured `ScriptResponse` instead of raw text.
 
 import type { ScriptResponse } from './content-engine';
 
@@ -849,26 +846,6 @@ function assertUsableReferencesForScriptGeneration(userId: number, format: 'reel
   );
   (err as Error & { code?: string }).code = 'CONTENT_GENERATION_REFUSED_NO_REFERENCES';
   throw err;
-}
-
-/**
- * @deprecated Use `generateScript(topic, 'reel')` instead.
- * Kept for backward compatibility with Telegram handler imports.
- * Returns just the script text (old contract).
- */
-export async function generateReelScript(topic: TopicCandidate): Promise<string> {
-  const result = await generateScript(topic, 'reel');
-  return formatScriptToText(result);
-}
-
-/**
- * @deprecated Use `generateScript(topic, 'youtube')` instead.
- * Kept for backward compatibility with Telegram handler imports.
- * Returns just the script text (old contract).
- */
-export async function generateYouTubeScript(topic: TopicCandidate): Promise<string> {
-  const result = await generateScript(topic, 'youtube');
-  return formatScriptToText(result);
 }
 
 /**

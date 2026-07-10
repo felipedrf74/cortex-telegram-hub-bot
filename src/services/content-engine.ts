@@ -8,6 +8,8 @@ import type { AgentSignal } from './intelligence-bus';
 import { buildCurrentCreatorProfilePayload } from './content-engine-profile-payload';
 import { createInternalAttributionToken } from './internal-attribution';
 import { requireTenantIdParam } from './tenant-scope';
+import { ForwardedAiBudgetError, parseForwardedAiBudgetError } from './content-engine-error-contract';
+export { ForwardedAiBudgetError, parseForwardedAiBudgetError, type ForwardedAiBudgetCode } from './content-engine-error-contract';
 
 // ── Types mirroring Python Pydantic models ──────────────────────────
 
@@ -172,91 +174,6 @@ export interface ReportResponse {
   period: string;
   report: Record<string, unknown>;
   duration_ms: number;
-}
-
-export type ForwardedAiBudgetCode =
-  | 'AI_PLAN_REQUIRED'
-  | 'AI_DAILY_LIMIT_REACHED'
-  | 'AI_MONTHLY_LIMIT_REACHED'
-  | 'SERVICE_DEGRADED';
-
-/**
- * Public-safe quota denial forwarded by the Python Content Engine.
- *
- * This is an exact public equivalent of AiBudgetError: response-helpers maps
- * it back to the stable app envelope without fabricating quota state or
- * exposing the Python/internal proxy response.
- */
-export class ForwardedAiBudgetError extends Error {
-  readonly code: ForwardedAiBudgetCode;
-  readonly status: 403 | 429;
-  readonly publicMessage: string;
-  readonly details: Record<string, unknown>;
-
-  constructor(input: {
-    code: ForwardedAiBudgetCode;
-    status: 403 | 429;
-    message: string;
-    details?: Record<string, unknown>;
-  }) {
-    super(input.code);
-    this.name = 'ForwardedAiBudgetError';
-    this.code = input.code;
-    this.status = input.status;
-    this.publicMessage = input.message;
-    this.details = input.details ?? {};
-  }
-}
-
-const FORWARDED_AI_BUDGET_CODES = new Set<ForwardedAiBudgetCode>([
-  'AI_PLAN_REQUIRED',
-  'AI_DAILY_LIMIT_REACHED',
-  'AI_MONTHLY_LIMIT_REACHED',
-  'SERVICE_DEGRADED',
-]);
-
-export function parseForwardedAiBudgetError(res: Response, rawBody: string): ForwardedAiBudgetError | null {
-  const status = res.status;
-  if (status !== 403 && status !== 429) return null;
-  let payload: unknown;
-  try {
-    payload = JSON.parse(rawBody);
-  } catch {
-    return null;
-  }
-  if (!payload || typeof payload !== 'object') return null;
-  const record = payload as Record<string, unknown>;
-  const directError = record.error;
-  const detail = record.detail;
-  const nestedError = detail && typeof detail === 'object'
-    ? (detail as Record<string, unknown>).error
-    : null;
-  const error = directError && typeof directError === 'object'
-    ? directError as Record<string, unknown>
-    : nestedError && typeof nestedError === 'object'
-      ? nestedError as Record<string, unknown>
-      : null;
-  if (!error) return null;
-  const code = error.code;
-  if (typeof code !== 'string' || !FORWARDED_AI_BUDGET_CODES.has(code as ForwardedAiBudgetCode)) return null;
-  const expectedStatus = code === 'AI_PLAN_REQUIRED' ? 403 : 429;
-  if (status !== expectedStatus) return null;
-  const rawDetails = error.details;
-  const details = rawDetails && typeof rawDetails === 'object' && !Array.isArray(rawDetails)
-    ? { ...(rawDetails as Record<string, unknown>) }
-    : {};
-  const retryAfter = Number(res.headers.get('retry-after'));
-  if (status === 429 && Number.isFinite(retryAfter) && retryAfter > 0) {
-    details.retryAfterSeconds = Math.ceil(retryAfter);
-  }
-  return new ForwardedAiBudgetError({
-    code: code as ForwardedAiBudgetCode,
-    status,
-    message: typeof error.message === 'string' && error.message.trim()
-      ? error.message
-      : code,
-    details,
-  });
 }
 
 export function contentEngineApiBaseUrl(rawBaseUrl = config.contentEngine.baseUrl): string {

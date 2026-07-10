@@ -18,6 +18,17 @@ const mockBuildActiveSignalsResponse = vi.fn();
 const mockCheckQuota = vi.fn();
 const mockGetDailyUsage = vi.fn();
 const mockGetUsageRange = vi.fn();
+const mockGetDailyQuotaStatus = vi.fn();
+const mockBuildQuotaUsagePayload = vi.fn((quota: any) => ({
+  usageFraction: quota.usageFraction,
+  usagePercent: Math.round(quota.usageFraction * 100),
+  isOverLimit: quota.over,
+  dailyUsageFraction: quota.dailyUsageFraction ?? quota.usageFraction,
+  dailyIsOverLimit: quota.dailyOver ?? false,
+  monthlyUsageFraction: quota.monthlyUsageFraction ?? 0,
+  monthlyIsOverLimit: quota.monthlyOver ?? false,
+  enforcementEnabled: quota.enforcementEnabled ?? false,
+}));
 
 vi.mock('../../src/services/database', () => ({
   getDb: () => ({
@@ -58,6 +69,11 @@ vi.mock('../../src/services/usage-metering', () => ({
   getDailyUsage: (...args: unknown[]) => mockGetDailyUsage(...args),
   getUsageRange: (...args: unknown[]) => mockGetUsageRange(...args),
   checkQuota: (...args: unknown[]) => mockCheckQuota(...args),
+}));
+
+vi.mock('../../src/services/cost-guardrail', () => ({
+  getDailyQuotaStatus: (...args: unknown[]) => mockGetDailyQuotaStatus(...args),
+  buildQuotaUsagePayload: (...args: unknown[]) => mockBuildQuotaUsagePayload(...args),
 }));
 
 vi.mock('../../src/utils/logger', () => ({
@@ -138,6 +154,24 @@ describe('Authenticated support routes scope guards', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     clearTenantScopeAnomaliesForTests();
+    mockGetDailyUsage.mockReturnValue({
+      userId: 12,
+      date: '2026-06-01',
+      messageCount: 8,
+      inputTokens: 1200,
+      outputTokens: 800,
+      totalTokens: 2000,
+      apiCalls: 9,
+      costUsd: 0.08,
+    });
+    mockGetDailyQuotaStatus.mockReturnValue({
+      over: false,
+      usageFraction: 0.8,
+      dailyOver: false,
+      monthlyOver: false,
+      blockReason: null,
+      enforcementEnabled: false,
+    });
   });
 
   it('fails closed on invalid tenant scope for audit trail', async () => {
@@ -212,14 +246,14 @@ describe('Authenticated support routes scope guards', () => {
 
     expect(res.statusCode).toBe(401);
     expect(res.body.error.code).toBe('UNAUTHORIZED');
-    expect(mockCheckQuota).not.toHaveBeenCalled();
+    expect(mockGetDailyQuotaStatus).not.toHaveBeenCalled();
     expect(getTenantScopeAnomalies(1)).toEqual([
       expect.objectContaining({ operation: 'usage_route', userId: 0 }),
     ]);
   });
 
   it('sanitizes usage failures instead of leaking internal quota errors', async () => {
-    mockCheckQuota.mockImplementationOnce(() => {
+    mockGetDailyQuotaStatus.mockImplementationOnce(() => {
       throw new Error('quota ledger exploded for tenant=12');
     });
 
@@ -233,36 +267,15 @@ describe('Authenticated support routes scope guards', () => {
   });
 
   it('returns customer-safe qualitative usage without raw USD spend or caps', async () => {
-    mockCheckQuota.mockReturnValueOnce({
-      allowed: true,
-      exceeded: [],
-      usage: {
-        userId: 12,
-        date: '2026-06-01',
-        messageCount: 8,
-        inputTokens: 1200,
-        outputTokens: 800,
-        totalTokens: 2000,
-        apiCalls: 9,
-        costUsd: 0.08,
-      },
-      quota: {
-        userId: 12,
-        dailyMessageLimit: 20,
-        dailyTokenLimit: 10_000,
-        dailyCostLimitUsd: 0.1,
-      },
-    });
-
     const res = await dispatch(usageRoutes, 'GET', '/', 12);
 
     expect(res.statusCode).toBe(200);
     expect(res.body.data).toMatchObject({
       date: '2026-06-01',
       messagesUsed: 8,
-      messagesLimit: 20,
+      messagesLimit: null,
       tokensUsed: 2000,
-      tokensLimit: 10_000,
+      tokensLimit: null,
       usageLevel: 'near_limit',
       usageFraction: 0.8,
       usagePercent: 80,

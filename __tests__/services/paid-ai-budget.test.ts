@@ -18,6 +18,7 @@ vi.mock('../../src/config', () => ({
   config: {
     billing: { paywallEnabled: true },
     aiSafety: { globalDailyLimitUsd: 10, alertThresholdPercent: 0.8 },
+    garmin: { email: '', password: '' },
   },
 }));
 
@@ -42,6 +43,12 @@ import {
   createInternalAttributionToken,
   verifyInternalAttributionToken,
 } from '../../src/services/internal-attribution';
+import {
+  _resetApiUsagePersistenceFailureForTests,
+  getApiUsagePersistenceFailure,
+  tripApiUsagePersistenceFailure,
+  recordApiUsageTimeoutEstimate,
+} from '../../src/services/api-usage-fallback';
 
 function createSchema(): void {
   db.exec(`
@@ -60,6 +67,8 @@ function createSchema(): void {
       model TEXT NOT NULL DEFAULT 'test-model',
       user_id INTEGER NOT NULL DEFAULT 0,
       cost_usd REAL NOT NULL DEFAULT 0,
+      duration_ms INTEGER NOT NULL DEFAULT 0,
+      pricing_status TEXT NOT NULL DEFAULT 'legacy',
       request_source TEXT NOT NULL DEFAULT 'interactive',
       job_name TEXT,
       base_category TEXT,
@@ -142,6 +151,17 @@ function createSchema(): void {
       scope_status TEXT NOT NULL DEFAULT 'active',
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
+    CREATE TABLE fitness_training_plans (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL,
+      tenant_id INTEGER NOT NULL,
+      status TEXT NOT NULL
+    );
+    CREATE TABLE apple_health_data (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL,
+      date TEXT NOT NULL
+    );
   `);
 }
 
@@ -153,17 +173,31 @@ function addPaidUser(userId: number, plan: 'pro' | 'max' = 'pro', status: 'activ
   `).run(userId, plan, status);
 }
 
+function makeCoachEligible(userId: number): void {
+  db.prepare(`
+    INSERT INTO fitness_training_plans (user_id, tenant_id, status)
+    VALUES (?, ?, 'active')
+  `).run(userId, userId);
+  db.prepare(`
+    INSERT INTO apple_health_data (user_id, date)
+    VALUES (?, date('now'))
+  `).run(userId);
+}
+
 describe('paid AI budget enforcement', () => {
   beforeEach(() => {
     vi.useFakeTimers({ now: new Date('2026-07-09T12:00:00.000Z') });
     delete process.env.PAID_AI_COST_CONTROLS_ENFORCEMENT_ENABLED;
     _resetPortalOverridesForTests();
+    _resetApiUsagePersistenceFailureForTests();
     db = new Database(':memory:');
     createSchema();
   });
 
   afterEach(() => {
     delete process.env.PAID_AI_COST_CONTROLS_ENFORCEMENT_ENABLED;
+    delete process.env.SYSTEM_ACTOR_DAILY_USD_CAP;
+    _resetApiUsagePersistenceFailureForTests();
     vi.unstubAllEnvs();
     vi.useRealTimers();
     db.close();
@@ -179,8 +213,8 @@ describe('paid AI budget enforcement', () => {
     expect(observed.quota.aiAccessAllowed).toBe(false);
     expect(observed.quota.blockReason).toBe('plan_required');
     expect(observed.quota.over).toBe(false);
-    expect(observed.quota.dailyOver).toBe(true);
-    expect(observed.quota.monthlyOver).toBe(true);
+    expect(observed.quota.dailyOver).toBe(false);
+    expect(observed.quota.monthlyOver).toBe(false);
     expect(observed.quota.unblocksAt).toBeNull();
 
     process.env.PAID_AI_COST_CONTROLS_ENFORCEMENT_ENABLED = 'true';
@@ -194,6 +228,50 @@ describe('paid AI budget enforcement', () => {
       status: 403,
       code: 'AI_PLAN_REQUIRED',
       window: 'plan',
+    });
+  });
+
+  it('preserves the legacy Free daily cap in observation mode without enabling new plan policy', () => {
+    db.prepare(`
+      INSERT INTO api_usage (ts, category, user_id, cost_usd, request_source, base_category)
+      VALUES ('2026-07-09T10:00:00.000Z', 'chat_secretary', 11, 0.005, 'interactive', 'chat_secretary')
+    `).run();
+
+    expect(checkAiBudget({
+      userId: 11,
+      requestSource: 'interactive',
+      baseCategory: 'chat_secretary',
+    })).toMatchObject({
+      allowed: false,
+      code: 'AI_DAILY_LIMIT_REACHED',
+      window: 'daily',
+      quota: { aiAccessAllowed: false, over: true },
+    });
+
+    // New plan/automation/monthly policy remains observe-only below the
+    // legacy daily stop.
+    expect(checkAiBudget({
+      userId: 12,
+      requestSource: 'automation',
+      baseCategory: 'channel_analysis',
+      jobName: 'channel_relearn',
+    })).toMatchObject({ allowed: true, code: 'OK' });
+  });
+
+  it('preserves the legacy shared system actor $1 daily stop in observation mode', () => {
+    db.prepare(`
+      INSERT INTO api_usage (ts, category, user_id, cost_usd, request_source, base_category)
+      VALUES ('2026-07-09T10:00:00.000Z', 'autoresearch', 0, 1, 'system', 'autoresearch')
+    `).run();
+
+    expect(checkAiBudget({
+      userId: 99,
+      requestSource: 'system',
+      baseCategory: 'autoresearch',
+    })).toMatchObject({
+      allowed: false,
+      code: 'AI_DAILY_LIMIT_REACHED',
+      quota: { plan: 'system', over: true },
     });
   });
 
@@ -219,6 +297,92 @@ describe('paid AI budget enforcement', () => {
     });
   });
 
+  it('maps entitlement lookup failures to retryable service degradation', () => {
+    process.env.PAID_AI_COST_CONTROLS_ENFORCEMENT_ENABLED = 'true';
+    db.exec('DROP TABLE subscriptions');
+
+    const result = checkAiBudget({
+      userId: 19,
+      requestSource: 'interactive',
+      baseCategory: 'chat_secretary',
+    });
+    expect(result).toMatchObject({
+      allowed: false,
+      status: 429,
+      code: 'SERVICE_DEGRADED',
+      window: 'global',
+      internalReason: 'entitlement_error',
+    });
+    expect(result.retryAfterSeconds).toBeGreaterThan(0);
+    expect(result.retryAfterSeconds).toBeLessThanOrEqual(60);
+  });
+
+  it('keeps the quota fallback non-blocking in observation mode', () => {
+    db.exec('DROP TABLE subscriptions');
+    const status = getDailyQuotaStatus(17);
+    expect(status.blockReason).toBe('entitlement_error');
+    expect(status.over).toBe(false);
+    expect(status.dailyOver).toBe(false);
+    expect(status.monthlyOver).toBe(false);
+  });
+
+  it('self-heals the metering latch after its advertised 60 second retry window', () => {
+    addPaidUser(18);
+    tripApiUsagePersistenceFailure('gemini', 'chat_secretary');
+    const blocked = checkAiBudget({
+      userId: 18,
+      requestSource: 'interactive',
+      baseCategory: 'chat_secretary',
+    });
+    expect(blocked).toMatchObject({
+      allowed: false,
+      code: 'SERVICE_DEGRADED',
+      internalReason: 'metering_unavailable',
+    });
+    expect(blocked.retryAfterSeconds).toBe(60);
+
+    vi.advanceTimersByTime(60_001);
+    const recovered = checkAiBudget({
+      userId: 18,
+      requestSource: 'interactive',
+      baseCategory: 'chat_secretary',
+    });
+    expect(recovered.allowed).toBe(true);
+    expect(getApiUsagePersistenceFailure()).toBeNull();
+    expect(db.prepare(`
+      SELECT pricing_status, request_source, cost_usd
+      FROM api_usage
+      WHERE category = 'api_usage_recovery_probe'
+    `).get()).toEqual({
+      pricing_status: 'zero-cost',
+      request_source: 'system',
+      cost_usd: 0,
+    });
+  });
+
+  it('records a conservative timeout estimate in quota truth', () => {
+    const id = recordApiUsageTimeoutEstimate({
+      category: 'coach_analysis',
+      model: 'gemini-2.5-flash',
+      provider: 'gemini',
+      userId: 18,
+      tenantId: 18,
+      maxCostUsd: 0.00936,
+      timeoutMs: 30_000,
+    }, db);
+    expect(id).toBeGreaterThan(0);
+    expect(db.prepare(`
+      SELECT category, user_id, cost_usd, pricing_status, duration_ms
+        FROM api_usage WHERE id = ?
+    `).get(id)).toEqual({
+      category: 'coach_analysis',
+      user_id: 18,
+      cost_usd: 0.00936,
+      pricing_status: 'timeout-estimate',
+      duration_ms: 30_000,
+    });
+  });
+
   it('resets daily usage at UTC midnight and monthly usage at the paid billing-cycle boundary', () => {
     addPaidUser(21);
     db.prepare(`
@@ -236,6 +400,18 @@ describe('paid AI budget enforcement', () => {
     expect(status.monthlyResetAt).toBe('2026-08-01T00:00:00.000Z');
     expect(status.resetAt).toBe(status.dailyResetAt);
     expect(status.unblocksAt).toBeNull();
+  });
+
+  it('uses a UTC calendar month for founder plan windows', () => {
+    db.prepare(`
+      INSERT INTO subscriptions (user_id, plan, status, provider, current_period_start, current_period_end)
+      VALUES (22, 'max', 'active', 'founder', NULL, NULL)
+    `).run();
+    const status = getDailyQuotaStatus(22);
+    expect(status.plan).toBe('max');
+    expect(status.monthlyCapUsd).toBe(1.8);
+    expect(status.monthlyResetAt).toBe('2026-08-01T00:00:00.000Z');
+    expect(status.entitlement?.isFounder).toBe(true);
   });
 
   it('uses one shared system pool even when a system job retains a positive target userId', () => {
@@ -282,11 +458,11 @@ describe('paid AI budget enforcement', () => {
     addPaidUser(62);
     db.prepare(`
       INSERT INTO api_usage (ts, category, user_id, cost_usd, request_source, base_category)
-      VALUES ('2026-07-09T09:00:00.000Z', 'scheduled_content', 61, 0.002, 'automation', 'scheduled_content')
+      VALUES ('2026-07-09T09:00:00.000Z', 'scheduled_content', 61, 0.010, 'automation', 'scheduled_content')
     `).run();
     db.prepare(`
       INSERT INTO api_usage (ts, category, user_id, cost_usd, request_source, base_category)
-      VALUES ('2026-07-02T09:00:00.000Z', 'scheduled_content', 62, 0.35, 'automation', 'scheduled_content')
+      VALUES ('2026-07-02T09:00:00.000Z', 'scheduled_content', 62, 0.359, 'automation', 'scheduled_content')
     `).run();
 
     expect(checkAiBudget({
@@ -303,6 +479,34 @@ describe('paid AI budget enforcement', () => {
       jobName: 'scheduled_content',
       automationPriority: 'content',
     })).toMatchObject({ allowed: false, code: 'AI_MONTHLY_LIMIT_REACHED', window: 'automation_monthly' });
+  });
+
+  it('never spends Nexus Points for automation requests', () => {
+    process.env.PAID_AI_COST_CONTROLS_ENFORCEMENT_ENABLED = 'true';
+    addPaidUser(60);
+    db.prepare(`
+      INSERT INTO nexus_point_credits (
+        user_id, points_remaining, usd_allowance_remaining, expires_at, status
+      ) VALUES (60, 500, 0.5, '2026-08-01T00:00:00.000Z', 'active')
+    `).run();
+    db.prepare(`
+      INSERT INTO api_usage (ts, category, user_id, cost_usd, request_source, base_category)
+      VALUES ('2026-07-09T09:00:00.000Z', 'scheduled_content', 60, 0.011,
+        'automation', 'content_workflow_reel')
+    `).run();
+
+    expect(checkAiBudget({
+      userId: 60,
+      requestSource: 'automation',
+      baseCategory: 'content_workflow_reel',
+      jobName: 'tuesday_reels',
+      automationPriority: 'content',
+    })).toMatchObject({
+      allowed: false,
+      status: 429,
+      code: 'AI_DAILY_LIMIT_REACHED',
+      window: 'automation_daily',
+    });
   });
 
   it('uses the monthly reset when both daily and monthly windows bind', () => {
@@ -329,6 +533,7 @@ describe('paid AI budget enforcement', () => {
   it('continues protecting todays Coach reserve when Coach ran earlier in the billing month', () => {
     process.env.PAID_AI_COST_CONTROLS_ENFORCEMENT_ENABLED = 'true';
     addPaidUser(64);
+    makeCoachEligible(64);
     db.prepare(`
       INSERT INTO api_usage (ts, category, user_id, cost_usd, request_source, job_name, base_category)
       VALUES
@@ -347,6 +552,7 @@ describe('paid AI budget enforcement', () => {
   it('does not release the Coach reserve for a metered attempt without a durable daily report', () => {
     process.env.PAID_AI_COST_CONTROLS_ENFORCEMENT_ENABLED = 'true';
     addPaidUser(65);
+    makeCoachEligible(65);
     db.prepare(`
       INSERT INTO api_usage (ts, category, user_id, cost_usd, request_source, job_name, base_category)
       VALUES ('2026-07-09T08:00:00.000Z', 'coach_analysis', 65, 0.002, 'automation', 'daily_coach', 'coach_analysis')
@@ -368,6 +574,7 @@ describe('paid AI budget enforcement', () => {
   it('releases the Coach reserve only after the daily report is durable', () => {
     process.env.PAID_AI_COST_CONTROLS_ENFORCEMENT_ENABLED = 'true';
     addPaidUser(66);
+    makeCoachEligible(66);
     db.prepare(`
       INSERT INTO api_usage (ts, category, user_id, cost_usd, request_source, job_name, base_category)
       VALUES ('2026-07-09T08:00:00.000Z', 'coach_analysis', 66, 0.002, 'automation', 'daily_coach', 'coach_analysis')
@@ -390,9 +597,10 @@ describe('paid AI budget enforcement', () => {
     vi.setSystemTime(new Date('2026-07-12T12:00:00.000Z'));
     process.env.PAID_AI_COST_CONTROLS_ENFORCEMENT_ENABLED = 'true';
     addPaidUser(67);
+    makeCoachEligible(67);
     db.prepare(`
       INSERT INTO api_usage (ts, category, user_id, cost_usd, request_source, base_category)
-      VALUES ('2026-07-02T09:00:00.000Z', 'scheduled_content', 67, 0.344, 'automation', 'scheduled_content')
+      VALUES ('2026-07-02T09:00:00.000Z', 'scheduled_content', 67, 0.347, 'automation', 'scheduled_content')
     `).run();
     db.prepare(`
       INSERT INTO report_documents (user_id, type, source_job, document_json, created_at)
@@ -406,7 +614,10 @@ describe('paid AI budget enforcement', () => {
       jobName: 'channel_relearn',
       automationPriority: 'channel_learning' as const,
     };
-    expect(checkAiBudget(channelRequest)).toMatchObject({
+    const protectedChannel = checkAiBudget(channelRequest);
+    expect(protectedChannel.quota.automationSpentMonthlyUsd).toBeCloseTo(0.347, 8);
+    expect(protectedChannel.reservedCostUsd).toBeCloseTo(0.01125, 8);
+    expect(protectedChannel).toMatchObject({
       allowed: false,
       code: 'AI_MONTHLY_LIMIT_REACHED',
       window: 'automation_monthly',
@@ -429,6 +640,7 @@ describe('paid AI budget enforcement', () => {
     vi.setSystemTime(new Date('2026-07-12T12:00:00.000Z'));
     process.env.PAID_AI_COST_CONTROLS_ENFORCEMENT_ENABLED = 'true';
     addPaidUser(68);
+    makeCoachEligible(68);
     db.prepare(`
       INSERT INTO api_usage (ts, category, user_id, cost_usd, request_source, base_category)
       VALUES ('2026-07-02T09:00:00.000Z', 'scheduled_content', 68, 0.344, 'automation', 'scheduled_content')
@@ -459,6 +671,7 @@ describe('paid AI budget enforcement', () => {
   it('allows no-history Pro Content while protecting one Coach reservation in both windows', () => {
     process.env.PAID_AI_COST_CONTROLS_ENFORCEMENT_ENABLED = 'true';
     addPaidUser(30);
+    makeCoachEligible(30);
     const result = checkAiBudget({
       userId: 30,
       requestSource: 'automation',
@@ -467,9 +680,54 @@ describe('paid AI budget enforcement', () => {
       automationPriority: 'content',
     });
     expect(result.allowed).toBe(true);
-    expect(result.reservedCostUsd).toBe(0.005);
+    expect(result.reservedCostUsd).toBe(0.0025);
     expect(result.quota.automationDailyCapUsd).toBeCloseTo(0.012, 8);
     expect(result.quota.automationMonthlyCapUsd).toBeCloseTo(0.36, 8);
+  });
+
+  it('admits Tuesday Content and the same-day 21:00 Coach call on Pro defaults', () => {
+    vi.setSystemTime(new Date('2026-07-07T09:17:00.000Z'));
+    process.env.PAID_AI_COST_CONTROLS_ENFORCEMENT_ENABLED = 'true';
+    addPaidUser(31);
+    makeCoachEligible(31);
+
+    const content = checkAiBudget({
+      userId: 31,
+      requestSource: 'automation',
+      baseCategory: 'content_workflow_reel',
+      jobName: 'tuesday_reels',
+      automationPriority: 'content',
+    });
+    expect(content.allowed).toBe(true);
+    db.prepare(`
+      INSERT INTO api_usage (ts, category, user_id, cost_usd, request_source, job_name, base_category)
+      VALUES ('2026-07-07T09:18:00.000Z', 'content_workflow_reel', 31, 0.002,
+        'automation', 'tuesday_reels', 'content_workflow_reel')
+    `).run();
+
+    vi.setSystemTime(new Date('2026-07-07T21:00:00.000Z'));
+    expect(checkAiBudget({
+      userId: 31,
+      requestSource: 'automation',
+      baseCategory: 'coach_analysis',
+      jobName: 'garmin_coach',
+      automationPriority: 'coach',
+      estimatedCostUsd: 0.00936,
+    })).toMatchObject({ allowed: true, reservedCostUsd: 0.00936 });
+  });
+
+  it('does not reserve Coach allowance for a paid user without scheduler eligibility', () => {
+    process.env.PAID_AI_COST_CONTROLS_ENFORCEMENT_ENABLED = 'true';
+    addPaidUser(32, 'max');
+    const result = checkAiBudget({
+      userId: 32,
+      requestSource: 'automation',
+      baseCategory: 'channel_analysis',
+      jobName: 'channel_relearn',
+      automationPriority: 'channel_learning',
+      estimatedCostUsd: 0.015,
+    });
+    expect(result.allowed).toBe(true);
   });
 
   it('uses workload-wide rolling 30-day p95 and applies the 125% reservation multiplier', () => {
@@ -495,7 +753,7 @@ describe('paid AI budget enforcement', () => {
       requestSource: 'automation',
       baseCategory: 'custom_job',
       estimatedCostUsd: 0.03,
-    })).toBeCloseTo(0.0375, 8);
+    })).toBeCloseTo(0.03, 8);
   });
 
   it('reserves only the remaining p95 envelope on a later stage of the same run', () => {
@@ -530,7 +788,7 @@ describe('paid AI budget enforcement', () => {
       baseCategory: 'custom_job',
       runId: 'active-run',
       estimatedCostUsd: 0.02,
-    })).toBeCloseTo(0.025, 8);
+    })).toBeCloseTo(0.02, 8);
   });
 
   it('does not double-count settled overage when calculating remaining Points headroom', () => {
@@ -554,8 +812,9 @@ describe('paid AI budget enforcement', () => {
       userId: 45,
       requestSource: 'interactive',
       baseCategory: 'chat_secretary',
-      // The guardrail reserves 125%, so this becomes exactly $0.295.
-      estimatedCostUsd: 0.236,
+      // A provider hard maximum is already conservative and is not
+      // multiplied by another 125%.
+      estimatedCostUsd: 0.295,
     });
 
     expect(fullRemainingAllowance.allowed).toBe(true);
@@ -571,7 +830,7 @@ describe('paid AI budget enforcement', () => {
       userId: 50,
       requestSource: 'interactive' as const,
       baseCategory: 'chat_secretary',
-      estimatedCostUsd: 0.018,
+      estimatedCostUsd: 0.021,
       runId: 'concurrent-run',
     };
     const spend = () => withAiBudgetReservation(request, async () => {
@@ -728,7 +987,7 @@ describe('paid AI budget enforcement', () => {
       assertAiBudgetReservationForProvider({
         userId: 501,
         category: 'autoresearch',
-        maxCostUsd: 0.09,
+        maxCostUsd: 0.101,
       });
       providerStarted = true;
     })).rejects.toMatchObject({
@@ -814,8 +1073,9 @@ describe('paid AI budget enforcement', () => {
       })).not.toThrow();
       db.prepare(`
         INSERT INTO api_usage (
-          category, user_id, cost_usd, request_source, base_category, run_id
-        ) VALUES ('chat_secretary', 73, 0.039, 'interactive', 'chat_secretary', 'multi-stage-run')
+          ts, category, user_id, cost_usd, request_source, base_category, run_id
+        ) VALUES ('2026-07-09T10:00:00.000Z', 'chat_secretary', 73, 0.039,
+          'interactive', 'chat_secretary', 'multi-stage-run')
       `).run();
       expect(() => assertAiBudgetReservationForProvider({
         userId: 73,

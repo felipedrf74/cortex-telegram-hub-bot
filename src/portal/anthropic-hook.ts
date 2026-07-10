@@ -21,7 +21,11 @@ import {
   type ModelCostResult,
 } from '../services/model-pricing';
 import { settleNexusPointOverageForUser } from '../services/nexus-points';
-import { insertApiUsageFallback, tripApiUsagePersistenceFailure } from '../services/api-usage-fallback';
+import {
+  insertApiUsageFallback,
+  recordApiUsageTimeoutEstimate,
+  tripApiUsagePersistenceFailure,
+} from '../services/api-usage-fallback';
 import { resolveApiUsageAttribution } from '../services/api-usage-attribution';
 import { assertAiBudgetReservationForProvider } from '../services/cost-guardrail';
 
@@ -155,18 +159,19 @@ export async function trackedCreate(
   // unbounded fee surface.
   const requestParams = withAnthropicWebSearchCaps(params);
   const maxWebSearchRequests = getAnthropicWebSearchMaxRequests(requestParams);
+  const maxCostUsd = computeProviderCallCostUpperBoundUsd({
+    provider: 'anthropic',
+    model: requestParams.model,
+    payload: requestParams,
+    maxOutputTokens: requestParams.max_tokens,
+    nonTokenCostUpperBoundUsd:
+      maxWebSearchRequests * getProviderToolFeeUsd('anthropic_web_search'),
+  });
   assertAiBudgetReservationForProvider({
     userId: options?.userId ?? 0,
     category,
     hasUnboundedProviderInjectedContext: maxWebSearchRequests > 0,
-    maxCostUsd: computeProviderCallCostUpperBoundUsd({
-      provider: 'anthropic',
-      model: requestParams.model,
-      payload: requestParams,
-      maxOutputTokens: requestParams.max_tokens,
-      nonTokenCostUpperBoundUsd:
-        maxWebSearchRequests * getProviderToolFeeUsd('anthropic_web_search'),
-    }),
+    maxCostUsd,
   });
   const start = Date.now();
 
@@ -179,6 +184,23 @@ export async function trackedCreate(
   // Timeout: use caller override, or auto-scale for streaming/large requests (90s), default 30s
   const defaultTimeout = getAICallTimeoutMs();
   const AI_CALL_TIMEOUT_MS = options?.timeoutMs ?? (useStreaming ? Math.max(defaultTimeout, 90_000) : defaultTimeout);
+  const recordTimeoutEstimate = () => {
+    const apiUsageId = recordApiUsageTimeoutEstimate({
+      category,
+      model: requestParams.model,
+      provider: 'anthropic',
+      tenantId: options?.tenantId ?? options?.userId ?? 0,
+      userId: options?.userId ?? 0,
+      maxCostUsd,
+      timeoutMs: AI_CALL_TIMEOUT_MS,
+      providerToolCostUsd:
+        maxWebSearchRequests * getProviderToolFeeUsd('anthropic_web_search'),
+      webSearchRequests: maxWebSearchRequests,
+    });
+    void settleNexusPointOverageForUser(options?.userId ?? 0, apiUsageId).catch((settleErr) => {
+      logger.warn({ err: settleErr, apiUsageId, category }, 'nexus_points: Anthropic timeout estimate settlement failed');
+    });
+  };
 
   let response: Anthropic.Message;
   if (useStreaming) {
@@ -192,11 +214,12 @@ export async function trackedCreate(
       );
       return stream.finalMessage();
     })();
-    response = await withTimeout(streamPromise, AI_CALL_TIMEOUT_MS);
+    response = await withTimeout(streamPromise, AI_CALL_TIMEOUT_MS, { onTimeout: recordTimeoutEstimate });
   } else {
     response = await withTimeout(
       client.messages.create(requestParams, { maxRetries: 0 }),
       AI_CALL_TIMEOUT_MS,
+      { onTimeout: recordTimeoutEstimate },
     );
   }
 

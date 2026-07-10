@@ -64,6 +64,32 @@ describe('reward-check verdict semantics', () => {
     expect(run.hardFailures.map((failure: { id: string }) => failure.id)).not.toContain('env-file-touched');
   });
 
+  it('flags non-canonical env variants while ignoring unrelated example files', () => {
+    const dir = tempDir();
+    const changed = join(dir, 'changed.txt');
+    const output = join(dir, 'run.json');
+    writeFileSync(changed, '.env.staging\n.env.staging.example\nfixtures/provider.example\n');
+
+    const result = runReward([
+      '--area',
+      'backend',
+      '--changed-files',
+      changed,
+      '--output',
+      output,
+      '--json',
+      '--advisory',
+    ]);
+
+    expect(result.status).toBe(0);
+    const run = JSON.parse(readFileSync(output, 'utf8'));
+    const envFailures = run.hardFailures.filter((failure: { id: string }) => failure.id === 'env-file-touched');
+    expect(envFailures.map((failure: { reason: string }) => failure.reason)).toEqual([
+      '.env.staging is a secret-bearing path and must not be modified or exposed by agents.',
+      '.env.staging.example is a secret-bearing path and must not be modified or exposed by agents.',
+    ]);
+  });
+
   it('exits non-zero in enforce mode when verdict is FAIL', () => {
     const dir = tempDir();
     const changed = join(dir, 'changed.txt');

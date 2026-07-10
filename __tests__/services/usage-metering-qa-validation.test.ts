@@ -51,7 +51,7 @@ describe('QA: AI background metering attribution source audit', () => {
         file: 'services/garmin-coach.ts',
         patterns: [
           /trackedCreate\([\s\S]*'coach_analysis',\s*\{\s*userId:\s*meteringUserId,\s*tenantId:\s*meteringTenantId\s*\}/,
-          /\{\s*maxTokens:\s*2500,\s*userId:\s*meteringUserId,\s*tenantId:\s*meteringTenantId\s*\}/,
+          /const coachAnalysisMeteringOptions = \{ maxTokens: COACH_ANALYSIS_MAX_TOKENS, userId: meteringUserId, tenantId: meteringTenantId \}/,
         ],
       },
       {
@@ -64,9 +64,9 @@ describe('QA: AI background metering attribution source audit', () => {
       {
         file: 'services/content-workflow.ts',
         patterns: [
-          /`content_workflow_\$\{format\}`,\s*\{\s*userId,\s*tenantId\s*\}/,
-          /`content_workflow_\$\{format\}_continuation`,\s*\{\s*userId,\s*tenantId\s*\}/,
-          /\{\s*maxTokens:\s*4096,\s*userId,\s*tenantId\s*\}/,
+          /\} as any, category, \{ userId, tenantId \}\)/,
+          /`\$\{category\}_continuation`, \{ userId, tenantId \}\)/,
+          /\{ model: CONTENT_TOPIC_MODEL, maxTokens, userId, tenantId \}/,
         ],
       },
       {

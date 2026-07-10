@@ -45,7 +45,10 @@ import { runVoiceEvolutionAgent } from '../agents/voice-evolution-agent';
 import { expireStaleSignals } from './intelligence-bus';
 import { seedBooksIfEmpty } from '../commands/books';
 import { runAutoresearch, getScheduledTarget } from './autoresearch';
-import { resolveDueReportTargets } from './report-schedule-dispatcher';
+import {
+  releaseFreshReportScheduleClaim,
+  resolveDueReportTargets,
+} from './report-schedule-dispatcher';
 import { getUserTimezoneById, isOwnerUserRef } from './user-service';
 import { runDatabaseBackup, weeklyRestoreTest } from './backup';
 import { getDb } from './database';
@@ -89,7 +92,7 @@ import {
   recordAiAutomationEligibilitySkip,
   resolveAiAutomationEligibility,
 } from './ai-automation-policy';
-import { AiBudgetError, withAiBudgetReservation } from './cost-guardrail';
+import { AiBudgetError } from './cost-guardrail';
 
 interface ActiveUserTarget {
   tenantId: number;
@@ -239,6 +242,7 @@ function shouldGenerateContentTopicsForUser(
   sourceJob: string,
   initialTargets: ReadonlyArray<{ format: 'reel' | 'youtube'; targetCount: number }>,
 ): boolean {
+  if (!isPaidAiCostControlsEnforcementEnabled()) return true;
   const localBypass = process.env.CONTENT_CRON_ENGAGEMENT_GATE === 'off'
     && ['development', 'test'].includes(process.env.NODE_ENV ?? '');
   if (localBypass) return true;
@@ -251,8 +255,8 @@ function shouldGenerateContentTopicsForUser(
            WHERE user_id = ?
              AND COALESCE(tenant_id, user_id) = ?
              AND (
-               (sentiment != 'pending' AND created_at >= datetime('now', '-30 days'))
-               OR (COALESCE(script_generated, 0) = 1 AND created_at >= datetime('now', '-30 days'))
+               (sentiment != 'pending' AND COALESCE(updated_at, created_at) >= datetime('now', '-30 days'))
+               OR (COALESCE(script_generated, 0) = 1 AND COALESCE(updated_at, created_at) >= datetime('now', '-30 days'))
                OR converted_at >= datetime('now', '-30 days')
              )
         )
@@ -317,13 +321,16 @@ export async function runContentTopicCronForActiveUsers(
       );
       continue;
     }
-    const missingCount = getMissingScheduledInventoryCount(target.tenantId, {
-      format,
-      sourceJob,
-      targetCount: 5,
-      windowDays: 7,
-    });
-    if (missingCount === 0) {
+    const enforcementEnabled = isPaidAiCostControlsEnforcementEnabled();
+    const missingCount = enforcementEnabled
+      ? getMissingScheduledInventoryCount(target.tenantId, {
+          format,
+          sourceJob,
+          targetCount: 5,
+          windowDays: 7,
+        })
+      : 5;
+    if (enforcementEnabled && missingCount === 0) {
       logger.info(
         { userId: target.tenantId, sourceJob, format },
         '[scheduler] content topic generation skipped: seven-day pending inventory is full',
@@ -367,19 +374,24 @@ export async function runWeeklyContentPackageCronForActiveUsers(): Promise<void>
       );
       continue;
     }
-    const missingReels = getMissingScheduledInventoryCount(target.tenantId, {
-      format: 'reel',
-      sourceJob: 'friday_weekly',
-      targetCount: 4,
-      windowDays: 7,
-    });
-    const missingYoutube = getMissingScheduledInventoryCount(target.tenantId, {
-      format: 'youtube',
-      sourceJob: 'friday_weekly',
-      targetCount: 2,
-      windowDays: 7,
-    });
-    if (missingReels === 0 && missingYoutube === 0) {
+    const enforcementEnabled = isPaidAiCostControlsEnforcementEnabled();
+    const missingReels = enforcementEnabled
+      ? getMissingScheduledInventoryCount(target.tenantId, {
+          format: 'reel',
+          sourceJob: 'friday_weekly',
+          targetCount: 4,
+          windowDays: 7,
+        })
+      : 4;
+    const missingYoutube = enforcementEnabled
+      ? getMissingScheduledInventoryCount(target.tenantId, {
+          format: 'youtube',
+          sourceJob: 'friday_weekly',
+          targetCount: 2,
+          windowDays: 7,
+        })
+      : 2;
+    if (enforcementEnabled && missingReels === 0 && missingYoutube === 0) {
       logger.info(
         { userId: target.tenantId, sourceJob: 'friday_weekly' },
         '[scheduler] Friday package skipped: seven-day pending inventory is full',
@@ -2536,7 +2548,7 @@ export function startScheduler(): void {
   }), { timezone: tz });
 
   logger.info(
-    `Scheduler started: reminders, daily briefing (${config.todo.digestTime}), end-of-day (21:00), weekly (Fri 17:00), shared list (*/5), content (16:43), invoices (1st 09:00/09:15/09:30), fiscal-bundle (daily 08:10 due-check), conflict (19:30), fossa (bi-weekly Mon 07:30), garmin-keepalive (*/30), coach (${config.garmin.coachTime}), invoice-queue (*/15), channel-relearn (Sun 03:00), tue-reels (Tue 09:00), thu-youtube (Thu 09:00), fri-weekly (Fri 18:30), pipeline-agent (20:00), notification-release (*/15), decision-source-supersession (*/15), chat-action-plan-expiry (*/2), chat-action-run-zombie-reaper (*/5), chat-action-run-retention (00:20), event-backbone-worker (* * * * *), event-backbone-cleanup (00:10), nexus-points-expiry (04:00 UTC), expire-signals (hourly), db-backup (${config.backup.time}), dst-watchdog (*/15)`
+    `Scheduler started: reminders, daily briefing (${config.todo.digestTime}), end-of-day (21:00), weekly (Fri 17:00), shared list (*/5), content topics (Tue 09:17/Thu 09:23/Fri 18:41), invoices (1st 09:00/09:15/09:30), fiscal-bundle (daily 08:10 due-check), conflict (19:30), fossa (bi-weekly Mon 07:30), garmin-keepalive (*/30), coach (${config.garmin.coachTime}), invoice-queue (*/15), channel-relearn (Sun 03:00), pipeline-agent (20:00), notification-release (*/15), decision-source-supersession (*/15), chat-action-plan-expiry (*/2), chat-action-run-zombie-reaper (*/5), chat-action-run-retention (00:20), event-backbone-worker (* * * * *), event-backbone-cleanup (00:10), nexus-points-expiry (04:00 UTC), expire-signals (hourly), db-backup (${config.backup.time}), dst-watchdog (*/15)`
   );
 }
 
@@ -2619,21 +2631,24 @@ export async function sendCoachBriefingForTarget(target: ActiveUserTarget): Prom
   await runWithContext({ source: 'cron:garmin_coach', userId: target.tenantId }, async () => {
       let result;
       try {
-        result = await withAiBudgetReservation({
-          userId: target.tenantId,
-          requestSource: 'automation',
-          baseCategory: 'coach_analysis',
-          jobName: 'garmin_coach',
-          automationPriority: 'coach',
-        }, () => generateCoachBriefing(target.tenantId, {
-            tenantId: target.tenantId,
-            meteringUserId: target.tenantId,
-            garminSilent: true,
-          }));
+        result = await generateCoachBriefing(target.tenantId, {
+          tenantId: target.tenantId,
+          meteringUserId: target.tenantId,
+          garminSilent: true,
+          budgetRequestSource: 'automation',
+          budgetJobName: 'garmin_coach',
+        });
       } catch (err) {
         if (err instanceof AiBudgetError) {
           // No report/state writes occur on deferral, so the latest valid
           // Coach report remains the durable read model.
+          const lockUnavailable = err.decision.internalReason === 'lock_unavailable';
+          if (lockUnavailable) {
+            // The report dispatcher claimed this local date before starting
+            // the job. Transient lock contention must release only that fresh
+            // claim so the next scheduler tick can retry the same report.
+            releaseFreshReportScheduleClaim(target.tenantId, 'coach_briefing');
+          }
           const resetKey = err.decision.unblocksAt?.replace(/[^0-9]/g, '').slice(0, 12)
             || new Date().toISOString().slice(0, 10);
           try {
@@ -2646,10 +2661,13 @@ export async function sendCoachBriefingForTarget(target: ActiveUserTarget): Prom
               relatedEntityId: `coach-budget-${err.decision.code}-${resetKey}`,
               relatedEntityType: 'coach_briefing_budget',
               title: 'Coach report deferred',
-              body: err.decision.window === 'monthly' || err.decision.window === 'automation_monthly'
-                ? 'Your next Coach report will resume when the monthly AI allowance resets.'
-                : 'Your next Coach report will resume when the daily AI allowance resets.',
+              body: err.decision.window === 'global'
+                ? 'Your next Coach report will retry automatically after a temporary service delay.'
+                : err.decision.window === 'monthly' || err.decision.window === 'automation_monthly'
+                  ? 'Your next Coach report will resume when the monthly AI allowance resets.'
+                  : 'Your next Coach report will resume when the daily AI allowance resets.',
               deeplink: 'nexus://training/coach',
+              expiresAt: err.decision.unblocksAt,
               dedupeKey: `training:coach_budget:${target.tenantId}:${err.decision.code}:${resetKey}`,
               privacyPolicy: 'health',
             });

@@ -722,6 +722,8 @@ describe('Training API routes', () => {
     expect(mockGenerateCoachBriefing).toHaveBeenCalledWith(34, {
       tenantId: 34,
       meteringUserId: 12,
+      budgetRequestSource: 'interactive',
+      budgetJobName: 'coach_report',
     });
     expect(mockSetCache).toHaveBeenCalledWith(
       'coach-briefing:34',
@@ -756,13 +758,26 @@ describe('Training API routes', () => {
       plan: 'pro',
       resetAt: '2026-04-15T00:00:00.000Z',
     });
+    mockGenerateCoachBriefing.mockImplementationOnce(async () => {
+      const { AiBudgetError } = await import('../../src/services/cost-guardrail');
+      throw new AiBudgetError({
+        allowed: false,
+        code: 'AI_DAILY_LIMIT_REACHED',
+        message: 'Daily AI quota reached for the pro plan.',
+        status: 429,
+        window: 'daily',
+        unblocksAt: '2026-04-15T00:00:00.000Z',
+        retryAfterSeconds: 60,
+        quota: mockIsUserOverDailyCap(12),
+      } as any);
+    });
 
     const res = await dispatch('GET', '/coach', { refresh: 'true' });
 
     expect(res.statusCode).toBe(429);
     expect(res.body.error.code).toBe('AI_DAILY_LIMIT_REACHED');
     expect(res.body.error.details.window).toBe('daily');
-    expect(mockGenerateCoachBriefing).not.toHaveBeenCalled();
+    expect(mockGenerateCoachBriefing).toHaveBeenCalledTimes(1);
   });
 
   it('returns render-ready training home state without triggering a fresh coach generation', async () => {
@@ -1235,7 +1250,7 @@ describe('Training API routes', () => {
     });
   });
 
-  it('returns 429 on plan generation when the user is over quota', async () => {
+  it('keeps deterministic plan generation token-zero when model quota is exhausted', async () => {
     mockIsUserOverDailyCap.mockReturnValue({
       over: true,
       spentUsd: 0.2,
@@ -1248,31 +1263,18 @@ describe('Training API routes', () => {
       objective: 'Lisbon Marathon October 2026',
     });
 
-    expect(res.statusCode).toBe(429);
-    expect(res.body.ok).toBe(false);
-    expect(res.body.error.code).toBe('daily_limit_exceeded');
-    expect(res.body.error.details).toEqual({
+    expect(res.statusCode).not.toBe(429);
+    expect(mockIsUserOverDailyCap).not.toHaveBeenCalled();
+  });
+
+  it('marks token-zero plan generation idempotency rows succeeded without checking model quota', async () => {
+    mockIsUserOverDailyCap.mockReturnValue({
+      over: true,
+      spentUsd: 0.2,
+      capUsd: 0.2,
       plan: 'pro',
       resetAt: '2026-04-15T00:00:00.000Z',
     });
-  });
-
-  it('marks quota-blocked plan generation idempotency rows failed so retry re-runs', async () => {
-    mockIsUserOverDailyCap
-      .mockReturnValueOnce({
-        over: true,
-        spentUsd: 0.2,
-        capUsd: 0.2,
-        plan: 'pro',
-        resetAt: '2026-04-15T00:00:00.000Z',
-      })
-      .mockReturnValue({
-        over: false,
-        spentUsd: 0,
-        capUsd: 0.2,
-        plan: 'pro',
-        resetAt: '2026-04-15T00:00:00.000Z',
-      });
     mockGetProfile.mockImplementation((_userId: number, profile: string) => {
       if (profile === 'fitness') return { experienceLevel: 'Intermediate', available_equipment: 'Full gym' };
       return null;
@@ -1286,16 +1288,12 @@ describe('Training API routes', () => {
       idempotencyKey: 'quota-retry-key',
     };
 
-    const first = await dispatch('POST', '/plan/generate', {}, body);
-    expect(first.statusCode).toBe(429);
-    expect(trainingGenerationIdempotencyRow('quota-retry-key')?.status).toBe('failed');
-    expect(mockBuildCoachKernelTrainingPlan).not.toHaveBeenCalled();
+    const response = await dispatch('POST', '/plan/generate', {}, body);
 
-    const second = await dispatch('POST', '/plan/generate', {}, body);
-
-    expect(second.statusCode).toBe(201);
+    expect(response.statusCode).toBe(201);
     expect(mockBuildCoachKernelTrainingPlan).toHaveBeenCalled();
     expect(trainingGenerationIdempotencyRow('quota-retry-key')?.status).toBe('succeeded');
+    expect(mockIsUserOverDailyCap).not.toHaveBeenCalled();
   });
 
   it('blocks plan generation when the Training generation kill switch is disabled', async () => {

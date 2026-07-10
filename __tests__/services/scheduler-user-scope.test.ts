@@ -41,6 +41,7 @@ const mockGenerateAndStoreTopicCandidates = vi.hoisted(() => vi.fn());
 const mockGenerateWeeklyPackage = vi.hoisted(() => vi.fn());
 const mockGetMissingScheduledInventoryCount = vi.hoisted(() => vi.fn());
 const mockWithAiBudgetReservation = vi.hoisted(() => vi.fn(async (_request: unknown, fn: () => Promise<unknown>) => fn()));
+const mockReleaseFreshReportScheduleClaim = vi.hoisted(() => vi.fn());
 
 vi.mock('node-cron', () => ({
   default: { schedule: (...args: unknown[]) => mockCronSchedule(...args) },
@@ -218,6 +219,7 @@ vi.mock('../../src/services/report-document-store', () => ({
 // scoping tests stay isolated.
 vi.mock('../../src/services/report-schedule-dispatcher', () => ({
   resolveDueReportTargets: vi.fn(() => []),
+  releaseFreshReportScheduleClaim: (...args: unknown[]) => mockReleaseFreshReportScheduleClaim(...args),
 }));
 vi.mock('../../src/services/notification-orchestrator', () => ({
   createNotificationIntent: (...args: unknown[]) => mockCreateNotificationIntent(...args),
@@ -270,6 +272,7 @@ import {
   runWeeklyContentPackageCronForActiveUsers,
   startScheduler,
   sendCoachBriefings,
+  sendCoachBriefingForTarget,
   sendDailyBriefing,
 } from '../../src/services/scheduler';
 import { setLastCoachState } from '../../src/domains/domain-handler';
@@ -277,6 +280,7 @@ import { setLastActiveDomain } from '../../src/api/routes/chat-message-context';
 import { addToConversation } from '../../src/state/conversation';
 import { getDueReminders, markReminderFired } from '../../src/state/reminders';
 import { logger } from '../../src/utils/logger';
+import { AiBudgetError } from '../../src/services/cost-guardrail';
 
 describe('scheduler tenant scoping', () => {
   beforeEach(() => {
@@ -344,6 +348,7 @@ describe('scheduler tenant scoping', () => {
     mockGenerateAndStoreTopicCandidates.mockResolvedValue({ candidates: [] });
     mockGenerateWeeklyPackage.mockResolvedValue({ youtube: [], reels: [] });
     mockWithAiBudgetReservation.mockImplementation(async (_request: unknown, fn: () => Promise<unknown>) => fn());
+    mockReleaseFreshReportScheduleClaim.mockReturnValue(true);
     mockGetActivePlan.mockReturnValue(null);
     mockGetCurrentWeek.mockReturnValue(null);
     mockGetWeeklyAdherence.mockReturnValue({ completedSessions: 0, skippedSessions: 0 });
@@ -376,6 +381,17 @@ describe('scheduler tenant scoping', () => {
     expect(source).toContain('Reminder delivery failed on all channels; not marking fired');
     expect(source).toContain('dedupeKey: `secretary:reminder:${targetTenantId}:${targetUserId}:${reminder.id}:${reminderOccurrence}`');
     expect(source).toContain('tenantId: targetTenantId');
+  });
+
+  it('pins the production autoresearch schedule to evaluate_only', () => {
+    const source = fs.readFileSync(path.resolve(__dirname, '../../src/services/scheduler.ts'), 'utf8');
+    const cronStart = source.indexOf("cron.schedule('19 1 * * 0'");
+    const cronEnd = source.indexOf('// ── Database Backup', cronStart);
+    const scheduledBlock = source.slice(cronStart, cronEnd);
+    expect(cronStart).toBeGreaterThan(-1);
+    expect(scheduledBlock).toContain("mode: 'evaluate_only'");
+    expect(scheduledBlock).not.toContain("mode: 'apply'");
+    expect(scheduledBlock).not.toContain("mode: 'propose'");
   });
 
   it('continues processing later reminders when one reminder delivery fails', async () => {
@@ -821,6 +837,7 @@ describe('scheduler tenant scoping', () => {
   });
 
   it('makes zero provider calls when Tuesday pending inventory is already full', async () => {
+    process.env.PAID_AI_COST_CONTROLS_ENFORCEMENT_ENABLED = 'true';
     mockGetMissingScheduledInventoryCount.mockReturnValue(0);
 
     await runContentTopicCronForActiveUsers('reel', 'tuesday_reels');
@@ -830,7 +847,41 @@ describe('scheduler tenant scoping', () => {
     expect(mockGenerateWeeklyPackage).not.toHaveBeenCalled();
   });
 
+  it('keeps legacy Content delivery counts when paid-AI enforcement is observing', async () => {
+    mockGetMissingScheduledInventoryCount.mockReturnValue(0);
+    mockGetDb.mockReturnValue({
+      prepare: vi.fn((sql: string) => {
+        if (sql.includes('FROM users')) {
+          return { all: () => [{ id: 11, telegram_id: null }, { id: 22, telegram_id: null }] };
+        }
+        throw new Error('engagement storage unavailable');
+      }),
+    });
+
+    await runContentTopicCronForActiveUsers('reel', 'tuesday_reels');
+    await runWeeklyContentPackageCronForActiveUsers();
+
+    expect(mockGetMissingScheduledInventoryCount).not.toHaveBeenCalled();
+    expect(mockGenerateAndStoreTopicCandidates).toHaveBeenCalledTimes(2);
+    expect(mockGenerateAndStoreTopicCandidates).toHaveBeenCalledWith(
+      11,
+      'reel',
+      'tuesday_reels',
+      11,
+      5,
+      expect.objectContaining({ requestSource: 'automation' }),
+    );
+    expect(mockGenerateWeeklyPackage).toHaveBeenCalledTimes(2);
+    expect(mockGenerateWeeklyPackage).toHaveBeenCalledWith(
+      11,
+      11,
+      { reels: 4, youtube: 2 },
+      expect.objectContaining({ requestSource: 'automation' }),
+    );
+  });
+
   it('makes zero provider calls for users without paid Content automation eligibility', async () => {
+    process.env.PAID_AI_COST_CONTROLS_ENFORCEMENT_ENABLED = 'true';
     mockResolveAiAutomationEligibility.mockReturnValue({
       allowed: false,
       reason: 'automation_entitlement_required',
@@ -844,6 +895,8 @@ describe('scheduler tenant scoping', () => {
   });
 
   it('passes only missing Friday inventory into one batched package call', async () => {
+    process.env.PAID_AI_COST_CONTROLS_ENFORCEMENT_ENABLED = 'true';
+    mockGetEffectiveEntitlement.mockReturnValue({ plan: 'pro', source: 'stripe', automationAllowed: true });
     mockGetMissingScheduledInventoryCount
       .mockReturnValueOnce(1)
       .mockReturnValueOnce(2);
@@ -861,6 +914,8 @@ describe('scheduler tenant scoping', () => {
   });
 
   it('fills a never-completed Friday format before requiring engagement', async () => {
+    process.env.PAID_AI_COST_CONTROLS_ENFORCEMENT_ENABLED = 'true';
+    mockGetEffectiveEntitlement.mockReturnValue({ plan: 'pro', source: 'stripe', automationAllowed: true });
     mockGetDb.mockReturnValue({
       prepare: vi.fn((sql: string) => ({
         all: vi.fn(() => sql.includes('FROM users') ? [{ id: 11, telegram_id: null }] : []),
@@ -887,6 +942,8 @@ describe('scheduler tenant scoping', () => {
   });
 
   it('treats a recent durable content script as measured engagement for replenishment', async () => {
+    process.env.PAID_AI_COST_CONTROLS_ENFORCEMENT_ENABLED = 'true';
+    mockGetEffectiveEntitlement.mockReturnValue({ plan: 'pro', source: 'stripe', automationAllowed: true });
     mockGetDb.mockReturnValue({
       prepare: vi.fn((sql: string) => ({
         all: vi.fn(() => sql.includes('FROM users') ? [{ id: 11, telegram_id: null }] : []),
@@ -913,6 +970,64 @@ describe('scheduler tenant scoping', () => {
       1,
       expect.objectContaining({ requestSource: 'automation' }),
     );
+  });
+
+  it('releases a fresh Coach claim and uses operations copy on lock contention', async () => {
+    mockGetActivePlan.mockReturnValue({ id: 701, user_id: 11, tenant_id: 11, status: 'active' });
+    mockGenerateCoachBriefing.mockRejectedValue(new AiBudgetError({
+      allowed: false,
+      status: 429,
+      code: 'SERVICE_DEGRADED',
+      window: 'global',
+      message: 'lock unavailable',
+      quota: {},
+      reservedCostUsd: 0,
+      retryAfterSeconds: null,
+      unblocksAt: null,
+      internalReason: 'lock_unavailable',
+    }));
+
+    await sendCoachBriefingForTarget({ tenantId: 11, telegramId: null });
+
+    expect(mockReleaseFreshReportScheduleClaim).toHaveBeenCalledWith(11, 'coach_briefing');
+    expect(mockCreateNotificationIntent).toHaveBeenCalledWith(expect.objectContaining({
+      userId: 11,
+      body: 'Your next Coach report will retry automatically after a temporary service delay.',
+      expiresAt: null,
+    }));
+    expect(mockStoreAndPushReport).not.toHaveBeenCalled();
+  });
+
+  it('keeps a month-long Coach block deduplicated until its true reset', async () => {
+    mockGetActivePlan.mockReturnValue({ id: 701, user_id: 11, tenant_id: 11, status: 'active' });
+    const reset = '2026-05-01T00:00:00.000Z';
+    mockGenerateCoachBriefing.mockRejectedValue(new AiBudgetError({
+      allowed: false,
+      status: 429,
+      code: 'AI_MONTHLY_LIMIT_REACHED',
+      window: 'automation_monthly',
+      message: 'monthly limit',
+      quota: {},
+      reservedCostUsd: 0.01,
+      retryAfterSeconds: 1_209_600,
+      unblocksAt: reset,
+    }));
+    const emitted = new Set<string>();
+    mockCreateNotificationIntent.mockImplementation(async (input: { dedupeKey: string }) => {
+      const duplicate = emitted.has(input.dedupeKey);
+      emitted.add(input.dedupeKey);
+      return { decision: duplicate ? 'deduped' : 'in_app_only' };
+    });
+
+    await sendCoachBriefingForTarget({ tenantId: 11, telegramId: null });
+    await sendCoachBriefingForTarget({ tenantId: 11, telegramId: null });
+
+    expect(emitted.size).toBe(1);
+    expect(mockCreateNotificationIntent).toHaveBeenCalledTimes(2);
+    for (const [intent] of mockCreateNotificationIntent.mock.calls) {
+      expect(intent).toMatchObject({ expiresAt: reset });
+    }
+    expect(mockReleaseFreshReportScheduleClaim).not.toHaveBeenCalled();
   });
 
   it('sendCoachBriefings generates, stores, and scopes coach state for every paid active tenant', async () => {
@@ -947,17 +1062,21 @@ describe('scheduler tenant scoping', () => {
     expect(mockGetEffectiveEntitlement).toHaveBeenCalledTimes(2);
     expect(mockGetActivePlan).toHaveBeenCalledTimes(2);
     expect(vi.mocked(logger.warn).mock.calls.filter(([, message]) => String(message).includes('health-data eligibility'))).toEqual([]);
-    expect(mockWithAiBudgetReservation).toHaveBeenCalledTimes(2);
+    expect(mockWithAiBudgetReservation).not.toHaveBeenCalled();
     expect(mockGenerateCoachBriefing).toHaveBeenCalledTimes(2);
     expect(mockGenerateCoachBriefing).toHaveBeenNthCalledWith(1, 11, {
       garminSilent: true,
       tenantId: 11,
       meteringUserId: 11,
+      budgetRequestSource: 'automation',
+      budgetJobName: 'garmin_coach',
     });
     expect(mockGenerateCoachBriefing).toHaveBeenNthCalledWith(2, 22, {
       garminSilent: true,
       tenantId: 22,
       meteringUserId: 22,
+      budgetRequestSource: 'automation',
+      budgetJobName: 'garmin_coach',
     });
     expect(mockRunWithContext).toHaveBeenCalledWith(
       expect.objectContaining({ source: 'cron:garmin_coach', userId: 11 }),
@@ -1002,6 +1121,8 @@ describe('scheduler tenant scoping', () => {
       garminSilent: true,
       tenantId: 11,
       meteringUserId: 11,
+      budgetRequestSource: 'automation',
+      budgetJobName: 'garmin_coach',
     });
     expect(mockGenerateCoachBriefing).not.toHaveBeenCalledWith(22, expect.anything());
     expect(mockGetActivePlan).not.toHaveBeenCalledWith(22, 22);
@@ -1038,6 +1159,8 @@ describe('scheduler tenant scoping', () => {
       garminSilent: true,
       tenantId: 11,
       meteringUserId: 11,
+      budgetRequestSource: 'automation',
+      budgetJobName: 'garmin_coach',
     });
     expect(mockGenerateCoachBriefing).not.toHaveBeenCalledWith(22, expect.anything());
     expect(mockStoreAndPushReport).toHaveBeenCalledTimes(1);
@@ -1086,6 +1209,8 @@ describe('scheduler tenant scoping', () => {
       garminSilent: true,
       tenantId: 11,
       meteringUserId: 11,
+      budgetRequestSource: 'automation',
+      budgetJobName: 'garmin_coach',
     });
     expect(mockGenerateCoachBriefing).not.toHaveBeenCalledWith(22, expect.anything());
     expect(mockStoreAndPushReport).toHaveBeenCalledTimes(1);
@@ -1141,8 +1266,8 @@ describe('scheduler tenant scoping', () => {
   it('retains the latest Coach report and emits one deduplicated notice when budget is deferred', async () => {
     const { AiBudgetError } = await import('../../src/services/cost-guardrail');
     mockGetActivePlan.mockReturnValue({ id: 701, status: 'active' });
-    mockWithAiBudgetReservation.mockImplementation(async (request: any, fn: () => Promise<unknown>) => {
-      if (request.userId === 11) {
+    mockGenerateCoachBriefing.mockImplementation(async (userId: number) => {
+      if (userId === 11) {
         throw new AiBudgetError({
           allowed: false,
           status: 429,
@@ -1155,19 +1280,21 @@ describe('scheduler tenant scoping', () => {
           unblocksAt: '2026-04-18T00:00:00.000Z',
         });
       }
-      return fn();
-    });
-    mockGenerateCoachBriefing.mockResolvedValue({
-      message: 'new report for eligible peer',
-      recommendations: [],
-      errors: [],
-      dataCollectionMs: 1,
-      analysisMs: 1,
+      return {
+        message: 'new report for eligible peer',
+        recommendations: [],
+        errors: [],
+        dataCollectionMs: 1,
+        analysisMs: 1,
+      };
     });
 
     await sendCoachBriefings();
 
-    expect(mockGenerateCoachBriefing).not.toHaveBeenCalledWith(11, expect.anything());
+    expect(mockGenerateCoachBriefing).toHaveBeenCalledWith(11, expect.objectContaining({
+      budgetRequestSource: 'automation',
+      budgetJobName: 'garmin_coach',
+    }));
     expect(mockStoreAndPushReport).not.toHaveBeenCalledWith(expect.objectContaining({
       userId: 11,
       type: 'coach_briefing',

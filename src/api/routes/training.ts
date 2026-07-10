@@ -5,7 +5,6 @@ import { AuthenticatedRequest } from '../auth-middleware';
 import { logger } from '../../utils/logger';
 import { runOutboxTransaction } from '../../services/event-outbox';
 import { consumeResourceBudget } from '../../services/resource-budgets';
-import { withAiBudgetReservation } from '../../services/cost-guardrail';
 import { normalizeLangHeader } from '../../services/secretary-fastpath';
 import { getUserLanguageById } from '../../services/user-service';
 import type { Lang } from '../../utils/i18n';
@@ -435,12 +434,12 @@ export function trainingRoutes(): Router {
     if (!requireCoachBriefingEligibility(req as AuthenticatedRequest, res)) return;
 
     try {
-      const briefing = await withAiBudgetReservation({
-        userId,
-        requestSource: 'interactive',
-        baseCategory: 'coach_analysis',
-        jobName: 'coach_refresh',
-      }, () => generateCoachBriefing(dataUserId, { tenantId: dataUserId, meteringUserId: userId }));
+      const briefing = await generateCoachBriefing(dataUserId, {
+        tenantId: dataUserId,
+        meteringUserId: userId,
+        budgetRequestSource: 'interactive',
+        budgetJobName: 'coach_refresh',
+      });
 
       // `briefing.message` is the only briefing text field on CoachBriefingResult;
       // garminData is hydrated later via syncCoachStateForUser and the cache-restore
@@ -524,12 +523,12 @@ export function trainingRoutes(): Router {
     if (!requireCoachBriefingEligibility(req as AuthenticatedRequest, res)) return;
 
     try {
-      const briefing = await withAiBudgetReservation({
-        userId,
-        requestSource: 'interactive',
-        baseCategory: 'coach_analysis',
-        jobName: 'coach_report',
-      }, () => generateCoachBriefing(dataUserId, { tenantId: dataUserId, meteringUserId: userId }));
+      const briefing = await generateCoachBriefing(dataUserId, {
+        tenantId: dataUserId,
+        meteringUserId: userId,
+        budgetRequestSource: 'interactive',
+        budgetJobName: 'coach_report',
+      });
       const payload = syncCoachStateForUser(dataUserId, {
         briefing: briefing?.message || 'No coach briefing available.',
         recommendations: briefing?.recommendations || [],
