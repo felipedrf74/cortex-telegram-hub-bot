@@ -1,17 +1,17 @@
 {
-  "generatedAt": "2026-07-08T19:24:06Z",
+  "generatedAt": "2026-07-10T12:09:10Z",
   "backend": {
-    "path": "/Users/felipedominguez/Desktop/Custom Connectors/Cortex/cortex-telegram-hub-bot",
-    "branch": "main",
-    "commit": "bb9b445c",
-    "dirtyState": "clean",
-    "packageVersion": "4.14.214",
-    "migrationCount": "216"
+    "path": "/Users/felipedominguez/.codex/worktrees/paid-ai-cost-controls-backend",
+    "branch": "codex/paid-ai-cost-controls",
+    "commit": "6c67c181",
+    "dirtyState": "dirty",
+    "packageVersion": "4.14.216",
+    "migrationCount": "217"
   },
   "ios": {
-    "path": "/Users/felipedominguez/Developer/Nexus Hub IOS/Nexus Hub",
-    "branch": "main",
-    "commit": "3030c71",
-    "dirtyState": "dirty"
+    "path": "/Users/felipedominguez/.codex/worktrees/paid-ai-cost-controls-ios",
+    "branch": "codex/paid-ai-cost-controls-ios",
+    "commit": "8c48d7a",
+    "dirtyState": "clean"
   }
 }

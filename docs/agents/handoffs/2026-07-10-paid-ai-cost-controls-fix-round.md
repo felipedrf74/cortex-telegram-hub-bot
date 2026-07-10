@@ -1,7 +1,7 @@
 # 2026-07-10 Paid-Only AI Cost Controls Fix Round
 
-Status: implementation complete and locally verified; not merged, staged,
-deployed, uploaded, or live.
+Status: implementation/fix round complete; backend code deployed to staging and
+production in observe mode; backend and iOS source published to `main`.
 
 ## Original Goal
 
@@ -20,14 +20,20 @@ and repaired the confirmed P1/P2 issues plus the requested quick P3 issues.
 - Backend base: `bbd8205b`
 - Backend implementation: `3ce20473` (`feat(ai): add paid-only cost controls`)
 - Backend fix round: `fa4de82e` (`fix(ai): harden paid cost controls`)
+- Backend verification docs: `82835940`, `3cf19dce`
+- Backend release: `6c67c181` (`chore: prepare release 4.14.216`)
 - iOS worktree: `/Users/felipedominguez/.codex/worktrees/paid-ai-cost-controls-ios`
-- iOS base: the supplied `origin/main` base in the companion worktree
-- iOS implementation: `feat(ai): add paid quota entitlement UX`
-- iOS fix round: `fix(ai): harden quota reset handling`
+- iOS base, implementation, and fix-round SHAs: see the workspace canonical
+  ledger and the final independent-QA prompt; the two commit subjects are
+  `feat(ai): add paid quota entitlement UX` and
+  `fix(ai): harden quota reset handling`.
 
-No commit was pushed or merged. No staging/production deploy, tunnel mutation,
-PM2 mutation, TestFlight upload, `.env` write, or `data/` write occurred.
-Production truth remains backend `4.14.215` at `9c68db5a`.
+Backend `origin/main` now points at `6c67c181`; iOS `origin/main` points at the
+companion SHA in the generated release identity. Backend 4.14.216 was deployed
+through staging and promoted to production. No TestFlight/App Store upload,
+physical-device run, production
+`.env` write, or manual `data/` mutation occurred. The enforcement flag is
+unset in production, so the runtime is intentionally observe-only.
 
 ## Implemented Behavior
 
@@ -129,7 +135,8 @@ limitation. No finding was silently discarded.
 
 ## Verification Evidence
 
-Executed on the committed feature trees; counts are not production claims.
+Executed on the committed feature trees and, where explicitly labeled, the
+4.14.216 staging/production release path.
 
 - Backend `npx tsc --noEmit`: passed in the normal commit gate for
   `fa4de82e`.
@@ -150,36 +157,66 @@ Executed on the committed feature trees; counts are not production claims.
   advisory are recorded in the final docs closeout below after they run on the
   reconciled documentation tree.
 
+### Release and publication evidence
+
+- Authorization: Felipe requested and authorized the staging/production
+  deployment and subsequent backend/iOS `main` pushes on 2026-07-10.
+- `scripts/release-prep.sh --patch` minted 4.14.216 at `6c67c181`; typecheck,
+  build, and the protected full Vitest gate passed with the exact counts in the
+  canonical current release state. Local artifact digest:
+  `13ff241c43533519cef7458ed3358ad56abb7ce6f33b5fabaafe28d36ca78d95`.
+- `scripts/deploy-staging.sh` passed staging env validation, build/digest,
+  SQLite integrity, native binding, content-engine/portal health, and stable
+  PM2 readiness.
+- `scripts/promote-to-prod.sh` passed environment parity, local/staging
+  artifact parity, all staging smoke checks, and the strict production gate
+  before mutation. Exact smoke, migration, and full-suite counts are kept in
+  the canonical current release state. Backup including `bot.db`, owner
+  bootstrap, native rebuild, health, and PM2 readiness also passed.
+- Independent post-deploy reads confirmed public `/health` `status: healthy`,
+  production package 4.14.216, both production PM2 apps online on 4.14.216,
+  migration 226 recorded once among 236 applied migrations, and remote/local
+  digest equality.
+- The first backend `git push origin HEAD:main` attempt was correctly rejected
+  before remote mutation because the default Python 3.14 lacked pytest. The
+  retry prepended the existing project pytest environment, reran the protected
+  typecheck/full Vitest/Content Engine gates, and fast-forwarded backend main
+  from `bbd8205b` to `6c67c181`. No hook was bypassed.
+- iOS `git push origin HEAD:main` fast-forwarded the supplied base to the exact
+  companion HEAD in the generated release identity. The previously recorded
+  full `Nexus HubTests` result and app simulator build cover that iOS HEAD.
+
 ## Acceptance Criteria That Require External State
 
-The code, regression coverage, migration rehearsal, app compatibility, and
-documentation work are complete locally. The following criteria cannot be
-completed in this session for specific reasons and are tracked in workspace
+The code, regression coverage, migration rehearsal, app compatibility,
+production code promotion, and documentation work are complete. The following
+criteria remain external-state acceptance gates and are tracked in workspace
 `docs/release/OPEN_ITEMS.md`:
 
-- Staging persona matrix and smoke: impossible here because no staging deploy
-  or mutation was authorized.
-- Production promotion, tunnel/PM2 proof, and read-only post-deploy aggregates:
-  impossible because production deploy/access was expressly out of scope.
+- Enforcement-on staging persona matrix: not run. The production flag remains
+  unset, so no new paid-plan/monthly/automation denial policy was activated.
+  Complete the matrix and obtain explicit owner authorization before changing
+  the flag.
 - Live-provider quality parity and real APNs/device proof: impossible without
-  authenticated provider/device execution and deployment authorization.
+  authenticated provider/device execution; TestFlight/device proof was not
+  part of this source-main publication.
 - Coach p95 input reduction and 30-day cost-per-consumed-artifact reduction:
   impossible before rollout plus a representative elapsed observation window.
 
 ## Verifiable Reward Summary
 
-- Claim: **L2 predeploy local evidence** for the committed backend and iOS
-  candidate branches. This does not claim staging, live-provider, device,
-  production runtime, or post-deploy health validation.
+- Claim: **L3 staging + production-release evidence** for backend code in
+  observe mode, plus source-main publication for backend and iOS. This does not
+  claim enforcement-on persona coverage, live-provider quality, TestFlight,
+  physical-device/APNs proof, or 30-day economics.
 - Verdict: **PASS**, score **100**, area `release`.
-- Evidence: full backend and iOS verification, migration rehearsal, docs audit,
-  changed-area classifier, dry-run risk gate, exact source/test disposition
-  matrix, and explicit rollout limits are recorded above.
+- Evidence: full backend/iOS verification, migration rehearsal, staging smoke,
+  strict production promotion, independent runtime proof, docs audit,
+  classifier/risk gate, and the exact source/test disposition matrix.
 - Hard failures: none.
-- Mandatory checks: **PASS 5** (changed-area classifier, docs audit, handoff
-  reward summary, scoped release-evidence disclosure, reward schema).
-- Optional checks: `verify-deliverable` passed the L2 handoff hygiene check.
-- Skipped checks: none. Staging smoke was not authorized and remains outside
-  the L2 claim, as do deployment, provider, and physical-device evidence.
+- Mandatory checks: **PASS 5**.
+- Skipped checks: none. The claim is deliberately scoped away from
+  enforcement-on personas, live providers, TestFlight/devices/APNs, and the
+  30-day economics window.
 - Raw reward JSON remains under ignored `.local/reward-runs/` and is not
   committed or export-eligible without human review.

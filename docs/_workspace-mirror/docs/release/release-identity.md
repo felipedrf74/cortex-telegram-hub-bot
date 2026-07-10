@@ -5,7 +5,7 @@
 
 | Area | Path | Branch | Commit | Dirty state | Version | Migrations |
 | --- | --- | --- | --- | --- | --- | --- |
-| Backend | `/Users/felipedominguez/Desktop/Custom Connectors/Cortex/cortex-telegram-hub-bot` | `main` | `bb9b445c` | `clean` | `4.14.214` | `216` |
-| iOS | `/Users/felipedominguez/Developer/Nexus Hub IOS/Nexus Hub` | `main` | `3030c71` | `dirty` | n/a | n/a |
+| Backend | `/Users/felipedominguez/.codex/worktrees/paid-ai-cost-controls-backend` | `codex/paid-ai-cost-controls` | `6c67c181` | `dirty` | `4.14.216` | `217` |
+| iOS | `/Users/felipedominguez/.codex/worktrees/paid-ai-cost-controls-ios` | `codex/paid-ai-cost-controls-ios` | `8c48d7a` | `clean` | n/a | n/a |
 
-Generated at: `2026-07-08T19:24:06Z`
+Generated at: `2026-07-10T12:09:10Z`

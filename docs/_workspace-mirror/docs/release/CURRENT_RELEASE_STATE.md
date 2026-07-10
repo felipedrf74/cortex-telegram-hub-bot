@@ -17,37 +17,33 @@ Last updated: 2026-07-10
 
 - Repo: `engine`
 - Workspace HEAD / version / migrations / dirty state: see `docs/release/release-identity.md`
-- Production status (last manual update 2026-07-09): backend package version
-  `4.14.215` is deployed from commit `9c68db5a` on `main`. Paid coach
-  briefings now require an active workout plan plus an eligible Pro/Max
-  entitlement on cron and API generation paths; Free, owner-only, beta-trial,
-  expired, and no-active-plan users are blocked before coach work. The direct
-  scoped deploy passed migration safety (216), typecheck, build, backup,
-  SQLite/native binding, PM2 stability, and readiness checks after focused and
-  protected test matrices passed. Post-deploy proof: public `/health` healthy,
-  PM2 `nexus-hub` + `content-engine` online, version `4.14.215`, matching local
-  and production artifact digest, and compiled coach policy markers present.
-  Full evidence: engine
-  `docs/release/CURRENT_RELEASE_STATE.md` Active Production Release section.
-  iOS `main` is at `3030c71` (TestFlight export now defaults to local export
-  and requires `IOS_EXPORT_DESTINATION=upload` for upload), pushed to origin.
-  TestFlight/App Store upload was not authorized. The local iOS
-  `Nexus Hub.xcodeproj/project.pbxproj` build-number bump remains
-  intentionally uncommitted pending Felipe's App Store Connect build-state
-  confirmation. Content Studio backend contract changes remain live for
+- Production status (last manual update 2026-07-10): backend package version
+  `4.14.216` is deployed from commit `6c67c181`, which is on `origin/main`.
+  Paid-only AI cost-control code, migration 226, additive quota contracts, and
+  workload optimizations are present, but production is intentionally in
+  observe mode because `PAID_AI_COST_CONTROLS_ENFORCEMENT_ENABLED` is unset.
+  The new plan/monthly/automation blocking policy is not yet active; legacy
+  daily user/system stops remain active. Release prep and production promotion
+  each passed full backend Vitest (**873 files / 12,910 tests**); staging
+  smoke passed **25/25**; public `/health` is healthy; PM2 `nexus-hub` and
+  `content-engine` are online on 4.14.216; migration 226 is applied once among
+  236 DB records; and local/remote artifact digest matches at
+  `13ff241c43533519cef7458ed3358ad56abb7ce6f33b5fabaafe28d36ca78d95`.
+  Full evidence: engine `docs/release/CURRENT_RELEASE_STATE.md` Active
+  Production Release section. iOS `origin/main` is at `8c48d7a`; no
+  TestFlight/App Store upload or signed-device proof is claimed. Content
+  Studio backend contract changes remain live for
   source-skill overview filtering, capture provenance, and idempotent topic
   create. The immutable global Training catalog version `repo-seed-1.0.0`
   remains active with 131 exercises and 24 equipment items. Workspace audit
   evidence lives at `docs/release/worktree-recovery-audit-2026-05-18.md` and
   `docs/release/worktree-recovery-audit-2026-05-21/`.
 
-### Unreleased Paid-Only AI Cost Controls Candidate
+### 2026-07-10 Paid-Only AI Cost Controls Production Promote
 
-- Verification scope as of 2026-07-10: backend branch
-  `codex/paid-ai-cost-controls` is committed at `fa4de82e` (baseline
-  `3ce20473`) and iOS branch `codex/paid-ai-cost-controls-ios` is committed at
-  `8c48d7a` (baseline `c894636`). Neither branch is pushed, merged, staged,
-  deployed, uploaded, or live.
+- Backend lineage `3ce20473` → `fa4de82e` → `82835940` → `3cf19dce` →
+  release `6c67c181` is on `origin/main` and deployed as 4.14.216. iOS lineage
+  `c894636` → `8c48d7a` is on iOS `origin/main`.
 - Scope includes canonical paid/founder AI eligibility, separate daily and
   monthly cost windows, a 30% automation ceiling, provider attribution and
   locked reservations, typed public quota state, portal administration, and
@@ -56,9 +52,10 @@ Last updated: 2026-07-10
   Gemini tool/thinking tokens are included in quota truth; signed Content
   Engine callbacks retain the outer source/category/run instead of becoming
   system spend.
-- Runtime enforcement defaults off behind
-  `PAID_AI_COST_CONTROLS_ENFORCEMENT_ENABLED=false`; staging persona coverage,
-  live-provider quality proof, and owner-authorized promotion remain pending.
+- Runtime enforcement remains off because
+  `PAID_AI_COST_CONTROLS_ENFORCEMENT_ENABLED` is unset. The code promotion is
+  complete; the enforcement-on staging persona matrix and owner-authorized
+  flag activation remain pending.
 - The committed 2026-07-10 candidate trees passed backend typecheck, full
   Vitest (**873 files / 12,910 tests**), full Content Engine pytest (**194
   passed**), migration safety (**217 migrations**), the real 001-to-226
@@ -66,9 +63,11 @@ Last updated: 2026-07-10
   (**1,996/1,996**), and the iOS app simulator build. The single detailed
   verification verdict and finding matrix live in engine
   `docs/agents/handoffs/2026-07-10-paid-ai-cost-controls-fix-round.md`.
-  Staging, live-provider, production, TestFlight/device, and 30-day acceptance
-  evidence remain pending owner-authorized validation. Production truth is
-  unchanged at backend `4.14.215` / `9c68db5a`.
+  Production promotion additionally passed artifact parity, 25/25 staging
+  smoke, strict full backend verification, backup/readiness, and independent
+  public-health, PM2, package-version, migration, and digest checks.
+  Enforcement-on staging personas, live-provider quality, TestFlight/device,
+  and 30-day acceptance evidence remain pending.
 
 ### 2026-07-09 Paid Coach Briefing Production Deploy
 
