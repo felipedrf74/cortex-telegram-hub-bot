@@ -8,7 +8,7 @@ import {
 } from './chat-tenant-scope';
 import { getConversationHistory } from '../state/conversation';
 import { getSharedMemoryByScope, type SharedMemoryEntry } from '../state/shared-memory';
-import { getDailyContext } from './context-engine';
+import { getDailyContextWithStatus } from './context-engine';
 import { buildSharedDecisionContext } from './shared-decision-context';
 import {
   analyzeChatSkillOrchestration,
@@ -24,10 +24,27 @@ export type ChatContextSource =
   | 'conversation_history'
   | 'shared_memory'
   | 'daily_context'
+  | 'tasks'
+  | 'calendar'
+  | 'training'
+  | 'readiness'
+  | 'content'
+  | 'mail'
+  | 'reminders'
+  | 'garmin'
   | 'shared_decision_context'
   | 'weak_context_guardrail';
 
 export type ChatContextFreshness = 'fresh' | 'recent' | 'stale' | 'unknown';
+export type ChatContextSourceStatus = 'available' | 'empty' | 'unknown' | 'stale' | 'failed' | 'permission_denied';
+
+export interface ChatContextSourceDiagnostic {
+  source: ChatContextSource;
+  status: ChatContextSourceStatus;
+  observedAt: string;
+  staleAfter?: string | null;
+  reasonCode?: string;
+}
 
 export interface ChatContextIntent {
   relevantDomains: DomainName[];
@@ -50,6 +67,8 @@ export interface ChatContextItem {
   scope: ChatVisibilityScope;
   source: ChatContextSource;
   sourceRef?: string;
+  observedAt?: string;
+  entityVersion?: string;
   content: string;
   freshness: ChatContextFreshness;
   confidence: number;
@@ -81,6 +100,7 @@ export interface ChatPromptContext {
   domain: DomainName;
   intent: ChatContextIntent;
   items: ChatContextItem[];
+  sourceDiagnostics?: ChatContextSourceDiagnostic[];
   weakSignals: ChatWeakContextSignal[];
   block: string;
   budgetChars: number;
@@ -152,6 +172,12 @@ export async function buildChatPromptContext(input: BuildChatPromptContextInput)
       domain: input.domain,
       intent,
       items: [],
+      sourceDiagnostics: [{
+        source: 'current_turn',
+        status: 'permission_denied',
+        observedAt: new Date().toISOString(),
+        reasonCode: 'authenticated_scope_unavailable',
+      }],
       weakSignals,
       block: renderChatPromptContextBlock({
         tenantId: null,
@@ -169,14 +195,14 @@ export async function buildChatPromptContext(input: BuildChatPromptContextInput)
     };
   }
 
-  const items = await selectChatContextItems({
+  const selection = await selectChatContextItemsWithDiagnostics({
     domain: input.domain,
     message: input.message,
     userId: scope.userId,
     tenantId: scope.tenantId,
     intent,
   });
-  const selected = applyContextBudget(items, budgetChars);
+  const selected = applyContextBudget(selection.items, budgetChars);
   const weakSignals = buildWeakContextSignals(intent, selected);
   const block = renderChatPromptContextBlock({
     tenantId: scope.tenantId,
@@ -186,6 +212,7 @@ export async function buildChatPromptContext(input: BuildChatPromptContextInput)
     skillRouting,
     groundingEnvelope,
     items: selected,
+    sourceDiagnostics: selection.sourceDiagnostics,
     weakSignals,
     budgetChars,
   });
@@ -196,6 +223,7 @@ export async function buildChatPromptContext(input: BuildChatPromptContextInput)
     domain: input.domain,
     intent,
     items: selected,
+    sourceDiagnostics: selection.sourceDiagnostics,
     weakSignals,
     block,
     budgetChars,
@@ -215,9 +243,21 @@ export async function selectChatContextItems(input: {
   tenantId: number;
   intent?: ChatContextIntent;
 }): Promise<ChatContextItem[]> {
+  return (await selectChatContextItemsWithDiagnostics(input)).items;
+}
+
+async function selectChatContextItemsWithDiagnostics(input: {
+  domain: DomainName;
+  message: string;
+  userId: number;
+  tenantId: number;
+  intent?: ChatContextIntent;
+}): Promise<{ items: ChatContextItem[]; sourceDiagnostics: ChatContextSourceDiagnostic[] }> {
   const intent = input.intent ?? analyzeChatContextIntent(input.message, input.domain);
   const items: ChatContextItem[] = [];
+  const sourceDiagnostics: ChatContextSourceDiagnostic[] = [];
   const now = new Date();
+  const observedAt = now.toISOString();
 
   items.push({
     id: 'current-turn',
@@ -226,6 +266,7 @@ export async function selectChatContextItems(input: {
     ownerUserId: input.userId,
     scope: DEFAULT_CHAT_VISIBILITY_SCOPE,
     source: 'current_turn',
+    observedAt,
     content: summarizeCurrentTurn(input.message, intent),
     freshness: 'fresh',
     confidence: 1,
@@ -236,15 +277,30 @@ export async function selectChatContextItems(input: {
     critical: true,
     reason: 'Current user message drives intent and context selection.',
   });
+  sourceDiagnostics.push({ source: 'current_turn', status: 'available', observedAt });
 
-  const displayName = getPreferredDisplayNameById(input.userId);
-  items.push({
+  let displayName: string | null = null;
+  let profileReadFailed = false;
+  try {
+    displayName = getPreferredDisplayNameById(input.userId);
+    sourceDiagnostics.push({ source: 'authenticated_profile', status: 'available', observedAt });
+  } catch {
+    profileReadFailed = true;
+    sourceDiagnostics.push({
+      source: 'authenticated_profile',
+      status: 'failed',
+      observedAt,
+      reasonCode: 'authenticated_profile_read_failed',
+    });
+  }
+  if (!profileReadFailed) items.push({
     id: 'authenticated-user',
     tenantId: input.tenantId,
     userId: input.userId,
     ownerUserId: input.userId,
     scope: DEFAULT_CHAT_VISIBILITY_SCOPE,
     source: 'authenticated_profile',
+    observedAt,
     content: displayName
       ? `Authenticated user display name: ${displayName}. This is the only person identity you may assert for this request. Do not use owner, founder, default, or prior-user names unless they appear in authorized context for this same user and tenant.`
       : 'Authenticated user profile has no saved display name. Do not infer a person name; ask the user to set a profile name if identity is required.',
@@ -258,62 +314,108 @@ export async function selectChatContextItems(input: {
     reason: 'Server-scoped authenticated profile prevents founder/default persona identity leakage.',
   });
 
-  const history = getConversationHistory(input.userId, input.domain, input.tenantId) ?? [];
-  if (history.length > 0 && shouldUseConversationHistory(intent)) {
-    items.push(...buildConversationItems(history, input, intent));
-  }
-
-  const memoryBuckets = getSharedMemoryByScope(input.userId, input.tenantId);
-  for (const memory of [...memoryBuckets.userPrivate, ...memoryBuckets.tenantShared]) {
-    const item = buildMemoryItem(memory, input, intent, now);
-    if (item.relevanceScore >= 0.28 || item.critical) {
-      items.push(item);
+  if (shouldUseConversationHistory(intent)) {
+    try {
+      const history = getConversationHistory(input.userId, input.domain, input.tenantId) ?? [];
+      if (history.length > 0) {
+        items.push(...buildConversationItems(history, input, intent, observedAt));
+        sourceDiagnostics.push({ source: 'conversation_history', status: 'available', observedAt });
+      } else {
+        sourceDiagnostics.push({ source: 'conversation_history', status: 'empty', observedAt, reasonCode: 'no_scoped_history' });
+      }
+    } catch {
+      sourceDiagnostics.push({ source: 'conversation_history', status: 'failed', observedAt, reasonCode: 'conversation_history_read_failed' });
     }
   }
 
-  const dailyContext = getDailyContext(input.userId, input.tenantId);
-  if (dailyContext && shouldUseDailyContext(intent, input.domain)) {
-    items.push({
-      id: 'daily-context',
-      tenantId: input.tenantId,
-      userId: input.userId,
-      ownerUserId: input.userId,
-      scope: DEFAULT_CHAT_VISIBILITY_SCOPE,
+  try {
+    const memoryBuckets = getSharedMemoryByScope(input.userId, input.tenantId);
+    let selectedMemoryCount = 0;
+    for (const memory of [...memoryBuckets.userPrivate, ...memoryBuckets.tenantShared]) {
+      const item = buildMemoryItem(memory, input, intent, now);
+      if (item.relevanceScore >= 0.28 || item.critical) {
+        items.push(item);
+        selectedMemoryCount += 1;
+      }
+    }
+    sourceDiagnostics.push({
+      source: 'shared_memory',
+      status: selectedMemoryCount > 0 ? 'available' : 'empty',
+      observedAt,
+      ...(selectedMemoryCount === 0 ? { reasonCode: 'no_relevant_scoped_memory' } : {}),
+    });
+  } catch {
+    sourceDiagnostics.push({ source: 'shared_memory', status: 'failed', observedAt, reasonCode: 'shared_memory_read_failed' });
+  }
+
+  if (shouldUseDailyContext(intent, input.domain)) {
+    const dailyContext = getDailyContextWithStatus(input.userId, input.tenantId);
+    sourceDiagnostics.push({
       source: 'daily_context',
-      content: truncateContextContent(dailyContext, 900),
-      freshness: 'fresh',
-      confidence: 0.78,
-      relevanceScore: intent.planning ? 0.92 : 0.66,
-      priority: intent.planning ? 82 : 58,
-      permissionRequirements: ['authenticated_user', 'active_tenant'],
-      staleAfter: new Date(now.getTime() + 24 * 60 * 60 * 1000).toISOString(),
-      reason: intent.planning
-        ? 'Daily planning context is relevant to schedule/action tradeoffs.'
-        : 'Daily context provides current state for this domain.',
+      status: dailyContext.status,
+      observedAt: dailyContext.observedAt,
+      staleAfter: dailyContext.staleAfter,
+      ...(dailyContext.reasonCode ? { reasonCode: dailyContext.reasonCode } : {}),
     });
+    if (dailyContext.status === 'available') {
+      items.push({
+        id: 'daily-context-cache',
+        tenantId: input.tenantId,
+        userId: input.userId,
+        ownerUserId: input.userId,
+        scope: DEFAULT_CHAT_VISIBILITY_SCOPE,
+        source: 'daily_context',
+        sourceRef: `daily_context_cache:${dailyContext.date}`,
+        observedAt: dailyContext.observedAt,
+        entityVersion: dailyContext.observedAt,
+        content: truncateContextContent(dailyContext.context, 900),
+        freshness: 'recent',
+        confidence: 0.62,
+        relevanceScore: intent.planning ? 0.72 : 0.5,
+        priority: intent.planning ? 58 : 42,
+        permissionRequirements: ['authenticated_user', 'active_tenant'],
+        staleAfter: dailyContext.staleAfter,
+        reason: 'Advisory cached daily summary; live operational collectors are required for actionable reasoning.',
+      });
+    }
   }
 
-  const sharedDecisionContext = await buildSharedDecisionContext(input.domain, input.userId, input.tenantId);
-  if (sharedDecisionContext && shouldUseSharedDecisionContext(intent, input.domain)) {
-    items.push({
-      id: `shared-decision-${input.domain}`,
-      tenantId: input.tenantId,
-      userId: input.userId,
-      ownerUserId: input.userId,
-      scope: DEFAULT_CHAT_VISIBILITY_SCOPE,
-      source: 'shared_decision_context',
-      content: truncateContextContent(sharedDecisionContext, 1000),
-      freshness: 'recent',
-      confidence: 0.74,
-      relevanceScore: intent.relevantDomains.length > 1 || intent.planning ? 0.88 : 0.62,
-      priority: intent.relevantDomains.length > 1 || intent.planning ? 78 : 54,
-      permissionRequirements: ['authenticated_user', 'active_tenant', 'skill_context_read'],
-      staleAfter: new Date(now.getTime() + 30 * 1000).toISOString(),
-      reason: 'Peer skill decision context is scoped to this tenant/user and domain.',
-    });
+  if (shouldUseSharedDecisionContext(intent, input.domain)) {
+    try {
+      const sharedDecisionContext = await buildSharedDecisionContext(input.domain, input.userId, input.tenantId);
+      if (sharedDecisionContext) {
+        items.push({
+          id: `shared-decision-${input.domain}`,
+          tenantId: input.tenantId,
+          userId: input.userId,
+          ownerUserId: input.userId,
+          scope: DEFAULT_CHAT_VISIBILITY_SCOPE,
+          source: 'shared_decision_context',
+          observedAt,
+          content: truncateContextContent(sharedDecisionContext, 1000),
+          freshness: 'recent',
+          confidence: 0.74,
+          relevanceScore: intent.relevantDomains.length > 1 || intent.planning ? 0.88 : 0.62,
+          priority: intent.relevantDomains.length > 1 || intent.planning ? 78 : 54,
+          permissionRequirements: ['authenticated_user', 'active_tenant', 'skill_context_read'],
+          staleAfter: new Date(now.getTime() + 30 * 1000).toISOString(),
+          reason: 'Peer skill decision context is scoped to this tenant/user and domain.',
+        });
+        sourceDiagnostics.push({
+          source: 'shared_decision_context',
+          status: 'available',
+          observedAt,
+          staleAfter: new Date(now.getTime() + 30 * 1000).toISOString(),
+        });
+      } else {
+        sourceDiagnostics.push({ source: 'shared_decision_context', status: 'empty', observedAt, reasonCode: 'no_active_shared_decisions' });
+      }
+    } catch {
+      sourceDiagnostics.push({ source: 'shared_decision_context', status: 'failed', observedAt, reasonCode: 'shared_decision_context_read_failed' });
+    }
   }
 
-  return dedupeAndSortContextItems(items);
+  return { items: dedupeAndSortContextItems(items), sourceDiagnostics };
 }
 
 export function analyzeChatContextIntent(message: string, fallbackDomain: DomainName): ChatContextIntent {
@@ -354,6 +456,7 @@ function buildConversationItems(
   history: DomainMessage[],
   input: { domain: DomainName; userId: number; tenantId: number },
   intent: ChatContextIntent,
+  observedAt: string = new Date().toISOString(),
 ): ChatContextItem[] {
   const recent = history.slice(-4);
   const content = recent
@@ -368,6 +471,7 @@ function buildConversationItems(
     scope: DEFAULT_CHAT_VISIBILITY_SCOPE,
     source: 'conversation_history',
     sourceRef: input.domain,
+    observedAt,
     content,
     freshness: 'recent',
     confidence: 0.82,
@@ -403,6 +507,8 @@ function buildMemoryItem(
     scope: (memory.visibility_scope as ChatVisibilityScope | undefined) ?? DEFAULT_CHAT_VISIBILITY_SCOPE,
     source: 'shared_memory',
     sourceRef: sanitizeForPromptInterpolation(memory.key),
+    observedAt: memory.updated_at || memory.created_at || now.toISOString(),
+    entityVersion: memory.updated_at || memory.created_at,
     content: `${sanitizeForPromptInterpolation(memory.key)}: ${sanitizeForPromptInterpolation(truncateContextContent(memory.value, 420))} (source: ${sanitizeForPromptInterpolation(memory.source_domain)})`,
     freshness,
     confidence,
@@ -621,6 +727,7 @@ function renderChatPromptContextBlock(input: {
   skillRouting: ReturnType<typeof analyzeChatSkillOrchestration>;
   groundingEnvelope?: ChatGroundingEnvelope | null;
   items: ChatContextItem[];
+  sourceDiagnostics?: ChatContextSourceDiagnostic[];
   weakSignals: ChatWeakContextSignal[];
   budgetChars: number;
 }): string {
@@ -636,6 +743,14 @@ function renderChatPromptContextBlock(input: {
   lines.push('</context_policy>');
   lines.push(`<intent domains="${input.intent.relevantDomains.join(',')}" ambiguous_follow_up="${input.intent.ambiguousFollowUp}" memory_recall="${input.intent.memoryRecall}" correction="${input.intent.correction}" planning="${input.intent.planning}" prompt_injection_attempt="${input.intent.promptInjectionAttempt}" />`);
   lines.push(buildChatSkillRoutingPromptBlock(input.skillRouting));
+
+  if ((input.sourceDiagnostics?.length ?? 0) > 0) {
+    lines.push('<source_health>');
+    for (const diagnostic of input.sourceDiagnostics!) {
+      lines.push(`- ${diagnostic.source}: ${diagnostic.status}${diagnostic.reasonCode ? ` (${escapeText(diagnostic.reasonCode)})` : ''}`);
+    }
+    lines.push('</source_health>');
+  }
 
   // Pre-call grounding: surface fields the user did NOT specify so the
   // model asks instead of inventing them. Only mutating intents
@@ -676,7 +791,8 @@ function summarizeCurrentTurn(message: string, intent: ChatContextIntent): strin
     intent.tenantBoundaryMention ? 'tenant_boundary_mentioned' : null,
     intent.planning ? 'planning_or_schedule' : null,
   ].filter(Boolean).join(', ');
-  return `Current message length=${message.length}; intent flags=${flags || 'none'}; relevant domains=${intent.relevantDomains.join(',')}`;
+  const request = sanitizeForPromptInterpolation(truncateContextContent(message, 700));
+  return `Current user request: ${request}\nIntent flags=${flags || 'none'}; relevant domains=${intent.relevantDomains.join(',')}`;
 }
 
 function truncateContextContent(content: string, maxChars: number = MAX_ITEM_CONTENT_CHARS): string {

@@ -20,7 +20,7 @@ import { logger } from '../utils/logger';
 import { isSubmoduleEnabled } from '../skills/registry';
 import { tryFastpath } from '../services/secretary-fastpath';
 import { analyzeIntent } from '../services/secretary-tools';
-import type { AIToolResultMessage } from '../services/ai-provider';
+import type { AICallResult, AIToolResultMessage, CallDomainOptions } from '../services/ai-provider';
 import { buildAIUnavailableResponse, canUseDirectAnthropicFallback } from './ai-unavailable';
 import { normalizeReplyForUserLanguage } from '../services/reply-language-normalizer';
 import {
@@ -37,6 +37,22 @@ import { buildChatPromptContextBlock } from '../services/chat-context-engine';
 import { buildChatGroundingEnvelope } from '../services/chat-grounding-layer';
 import { sanitizeForPromptInterpolation } from '../utils/prompt-sanitizer';
 import { getChatToolRisk } from '../services/chat-tool-authorization';
+import { getSecretaryReasoningV1Mode, type SecretaryReasoningV1Mode } from '../services/runtime-flags';
+import {
+  buildSecretaryContextSnapshot,
+  type SecretaryContextSnapshot,
+} from '../services/chat-core-v2/secretary-context-snapshot';
+import {
+  buildSecretaryReasoningPrompt,
+  buildSecretaryReasoningRepairPrompt,
+  parseAndValidateSecretaryReasoning,
+  type SecretaryActionDraft,
+  type SecretaryReasoningCandidate,
+  type SecretaryReasoningValidationIssue,
+  type SecretaryReasoningValidationResult,
+} from '../services/chat-core-v2/secretary-candidate-schema';
+import { selectSecretaryReasoningOutcome } from '../services/chat-core-v2/secretary-reasoning-coordinator';
+import { createSecretaryDecisionPreview } from '../services/chat-core-v2/secretary-decision-preview';
 
 // Codex QA round 5: untrusted text from user-controlled sources (task
 // titles, reminder messages, calendar summaries) was previously
@@ -65,6 +81,25 @@ const DOMAIN: DomainName = 'secretary';
 const _stateContextCache: Map<string, { value: string; expiresAt: number }> = new Map();
 const STATE_CONTEXT_TTL = 30_000; // 30 seconds
 const MAX_CACHE_ENTRIES = 50; // Prevent unbounded growth
+
+interface SecretaryReasoningSession {
+  mode: SecretaryReasoningV1Mode;
+  snapshot: SecretaryContextSnapshot | null;
+}
+
+export interface SecretaryReasoningFinalization {
+  text: string;
+  valid: boolean;
+  behavior: string;
+  reasonCodes: string[];
+  candidate: SecretaryReasoningCandidate | null;
+  actionDraft: SecretaryActionDraft | null;
+  snapshotId: string;
+  contextVersion: string;
+  repairAttempted: boolean;
+}
+
+type SecretaryStructuredModelCall = (prompt: string) => Promise<AICallResult>;
 
 function addScopedConversation(
   userId: number,
@@ -656,10 +691,60 @@ export async function handleSecretary(message: string, userId?: number, tenantId
   }
 
   const history = hasUserScope ? (getConversationHistory(userId, DOMAIN, tenantId) ?? []) : [];
+  const scopedTenantId = hasUserScope ? (typeof tenantId === 'number' ? tenantId : userId) : null;
+  const reasoningMode = hasUserScope
+    ? getSecretaryReasoningV1Mode(process.env, { userId, tenantId: scopedTenantId })
+    : 'off';
   // Layer 2: pass the message so buildStateContext can fetch only what
   // the message actually needs (saves ~1,000-2,000 input tokens on
   // intent-typed queries; ambiguous queries fall back to fetching all).
-  const stateContext = await buildStateContext(message, userId, tenantId);
+  const [baseStateContext, snapshot] = await Promise.all([
+    reasoningMode === 'active' ? Promise.resolve('') : buildStateContext(message, userId, tenantId),
+    reasoningMode !== 'off' && hasUserScope && scopedTenantId !== null
+      ? buildSecretaryContextSnapshot({
+        domain: DOMAIN,
+        message,
+        userId,
+        tenantId: scopedTenantId,
+      }).catch((err) => {
+        logger.warn({ err, userId, tenantId: scopedTenantId }, 'Secretary structured context snapshot failed');
+        return null;
+      })
+      : Promise.resolve(null),
+  ]);
+  const reasoningSession: SecretaryReasoningSession = { mode: reasoningMode, snapshot };
+  if (reasoningMode !== 'off' && snapshot) {
+    logger.info({
+      event: 'secretary.context_snapshot_built',
+      userId,
+      tenantId: scopedTenantId,
+      snapshotId: snapshot.snapshotId,
+      contextVersion: snapshot.contextVersion,
+      evidenceCount: snapshot.facts.length,
+      sourceHealth: snapshot.sourceHealth.map((source) => `${source.source}:${source.status}`),
+    }, 'Secretary structured reasoning context snapshot built');
+    for (const source of snapshot.sourceHealth) {
+      if (source.status === 'failed' || source.status === 'permission_denied' || source.status === 'stale') {
+        logger.warn({
+          event: 'secretary.context_source_unavailable',
+          userId,
+          tenantId: scopedTenantId,
+          snapshotId: snapshot.snapshotId,
+          source: source.source,
+          sourceStatus: source.status,
+          reasonCode: source.reasonCode ?? null,
+        }, 'Secretary structured context source is unavailable or stale');
+      }
+    }
+  }
+  if (reasoningMode === 'active' && !snapshot) {
+    return { text: structuredReasoningUnavailableReply(userId), domain: DOMAIN };
+  }
+  const stateContext = reasoningMode === 'active' && snapshot
+    // Active v1 has one evidence authority. The legacy presentation string is
+    // deliberately excluded so every factual claim must bind to snapshot IDs.
+    ? buildSecretaryReasoningPrompt(snapshot)
+    : baseStateContext;
 
   // ── Provider routing — TASK-17 Option B fix ────────────────────
   //
@@ -690,8 +775,44 @@ export async function handleSecretary(message: string, userId?: number, tenantId
       // can mock the imports normally without dynamic-require gotchas.
       return await handleSecretaryWithDirectAnthropic(
         userId, message, history, stateContext, directCallDomain, directContinueWithToolResults, userId, tenantId,
+        reasoningSession,
       );
     }
+
+  if (reasoningMode === 'active' && snapshot && scopedTenantId !== null && typeof userId === 'number') {
+    const selected = await runSecretaryStructuredReasoning({
+      snapshot,
+      userId,
+      tenantId: scopedTenantId,
+      mode: 'active',
+      call: (prompt) => provider.callDomain(DOMAIN, [], message, prompt, {
+        userId,
+        tenantId: scopedTenantId,
+        filteredTools: [],
+      }),
+    });
+    const finalization = await persistSecretaryPreviewIfNeeded(selected, snapshot, userId, scopedTenantId);
+    const finalText = normalizeReplyForUserLanguage(finalization.text, userId);
+    if (hasUserScope) {
+      addScopedConversation(userId, 'user', message, tenantId);
+      addScopedConversation(userId, 'assistant', finalText, tenantId);
+    }
+    return { text: finalText, domain: DOMAIN };
+  }
+
+  const shadowRun = reasoningMode === 'shadow' && snapshot
+    ? runSecretaryStructuredReasoning({
+      snapshot,
+      userId,
+      tenantId: scopedTenantId ?? undefined,
+      mode: 'shadow',
+      call: (prompt) => provider.callDomain(DOMAIN, [], message, prompt, {
+        userId,
+        tenantId: scopedTenantId ?? undefined,
+        filteredTools: [],
+      }),
+    })
+    : null;
 
   // Provider-agnostic tool loop — same shape as handleSimpleDomain
   // but with secretary's iteration cap (4 instead of 5) and the
@@ -729,6 +850,17 @@ export async function handleSecretary(message: string, userId?: number, tenantId
     // Execute all tool calls in parallel, truncate large results
     const toolResults = await Promise.all(
       result.toolCalls.map(async (tc) => {
+        if (reasoningSession.mode === 'active') {
+          return {
+            type: 'tool_result' as const,
+            tool_use_id: tc.id,
+            content: JSON.stringify({
+              ok: false,
+              code: 'STRUCTURED_SNAPSHOT_IS_AUTHORITATIVE',
+              message: 'Use only the evidence IDs in the current Secretary context snapshot.',
+            }),
+          };
+        }
         if (isLegacySecretaryWriteTool(tc.name)) {
           legacyWriteBlocked = true;
           logger.warn(
@@ -767,7 +899,19 @@ export async function handleSecretary(message: string, userId?: number, tenantId
 
   // Guard against empty response (can happen after errors exhaust tool iterations)
   if (!finalText || !finalText.trim()) {
-    finalText = '⚠️ I processed your request but encountered some issues. Some actions may have completed partially. Please check your task list and try again if needed.';
+    finalText = unverifiedCompletionReply(userId);
+  }
+
+  if (!legacyWriteBlocked && reasoningSession.mode === 'active' && reasoningSession.snapshot) {
+    const finalized = finalizeSecretaryReasoningText(finalText, reasoningSession.snapshot, userId);
+    logger.info({
+      userId,
+      tenantId: scopedTenantId,
+      valid: finalized.valid,
+      behavior: finalized.behavior,
+      reasonCodes: finalized.reasonCodes,
+    }, 'Secretary structured reasoning envelope finalized');
+    finalText = finalized.text;
   }
 
   // CHAT-M4: detect max_tokens truncation — if the AI hit the output
@@ -780,6 +924,22 @@ export async function handleSecretary(message: string, userId?: number, tenantId
   }
 
   finalText = normalizeReplyForUserLanguage(finalText, userId);
+
+  if (shadowRun) {
+    const shadow = await shadowRun;
+    logger.info({
+      event: 'secretary.shadow_outcome_compared',
+      userId,
+      tenantId: scopedTenantId,
+      snapshotId: shadow.snapshotId,
+      contextVersion: shadow.contextVersion,
+      structuredValid: shadow.valid,
+      structuredBehavior: shadow.behavior,
+      structuredReasonCodes: shadow.reasonCodes,
+      legacyResponsePresent: finalText.trim().length > 0,
+      repairAttempted: shadow.repairAttempted,
+    }, 'Secretary shadow reasoning outcome compared with legacy response');
+  }
 
   // Store conversation — include tool summary so future turns have context
   if (hasUserScope) {
@@ -813,7 +973,44 @@ async function handleSecretaryWithDirectAnthropic(
   continueWithToolResults: (...args: any[]) => Promise<{ text: string; toolCalls: any[]; stopReason: string }>,
   userId: number | undefined,
   tenantId?: number,
+  reasoningSession: SecretaryReasoningSession = { mode: 'off', snapshot: null },
 ): Promise<DomainResponse> {
+  const structuredCall: SecretaryStructuredModelCall = (prompt) => callDomain(
+    DOMAIN,
+    [],
+    message,
+    prompt,
+    { filteredTools: [], userId, tenantId } satisfies CallDomainOptions,
+    userId,
+  );
+  if (reasoningSession.mode === 'active' && reasoningSession.snapshot) {
+    const selected = await runSecretaryStructuredReasoning({
+      snapshot: reasoningSession.snapshot,
+      userId: uid,
+      tenantId,
+      mode: 'active',
+      call: structuredCall,
+    });
+    const finalization = typeof uid === 'number'
+      ? await persistSecretaryPreviewIfNeeded(selected, reasoningSession.snapshot, uid, tenantId ?? uid)
+      : selected;
+    const text = normalizeReplyForUserLanguage(finalization.text, uid);
+    if (typeof uid === 'number') {
+      addScopedConversation(uid, 'user', message, tenantId);
+      addScopedConversation(uid, 'assistant', text, tenantId);
+    }
+    return { text, domain: DOMAIN };
+  }
+  const shadowRun = reasoningSession.mode === 'shadow' && reasoningSession.snapshot
+    ? runSecretaryStructuredReasoning({
+      snapshot: reasoningSession.snapshot,
+      userId: uid,
+      tenantId,
+      mode: 'shadow',
+      call: structuredCall,
+    })
+    : null;
+
   let result = await callDomain(DOMAIN, history, message, stateContext, undefined, userId);
   let finalText = result.text;
 
@@ -833,6 +1030,17 @@ async function handleSecretaryWithDirectAnthropic(
 
     const toolResults = await Promise.all(
       result.toolCalls.map(async (tc: any) => {
+        if (reasoningSession.mode === 'active') {
+          return {
+            type: 'tool_result' as const,
+            tool_use_id: tc.id,
+            content: JSON.stringify({
+              ok: false,
+              code: 'STRUCTURED_SNAPSHOT_IS_AUTHORITATIVE',
+              message: 'Use only the evidence IDs in the current Secretary context snapshot.',
+            }),
+          };
+        }
         if (isLegacySecretaryWriteTool(tc.name)) {
           legacyWriteBlocked = true;
           logger.warn(
@@ -865,10 +1073,38 @@ async function handleSecretaryWithDirectAnthropic(
   }
 
   if (!finalText || !finalText.trim()) {
-    finalText = '⚠️ I processed your request but encountered some issues. Some actions may have completed partially. Please check your task list and try again if needed.';
+    finalText = unverifiedCompletionReply(uid);
+  }
+
+  if (!legacyWriteBlocked && reasoningSession.mode === 'active' && reasoningSession.snapshot) {
+    const finalized = finalizeSecretaryReasoningText(finalText, reasoningSession.snapshot, uid);
+    logger.info({
+      userId: uid,
+      tenantId,
+      valid: finalized.valid,
+      behavior: finalized.behavior,
+      reasonCodes: finalized.reasonCodes,
+    }, 'Secretary direct-provider structured reasoning envelope finalized');
+    finalText = finalized.text;
   }
 
   finalText = normalizeReplyForUserLanguage(finalText, uid);
+
+  if (shadowRun) {
+    const shadow = await shadowRun;
+    logger.info({
+      event: 'secretary.shadow_outcome_compared',
+      userId: uid,
+      tenantId,
+      snapshotId: shadow.snapshotId,
+      contextVersion: shadow.contextVersion,
+      structuredValid: shadow.valid,
+      structuredBehavior: shadow.behavior,
+      structuredReasonCodes: shadow.reasonCodes,
+      legacyResponsePresent: finalText.trim().length > 0,
+      repairAttempted: shadow.repairAttempted,
+    }, 'Secretary direct-provider shadow reasoning outcome compared with legacy response');
+  }
 
   if (typeof uid === 'number') {
     addScopedConversation(uid, 'user', message, tenantId);
@@ -879,4 +1115,251 @@ async function handleSecretaryWithDirectAnthropic(
   }
 
   return { text: finalText, domain: DOMAIN };
+}
+
+export function finalizeSecretaryReasoningText(
+  raw: string,
+  snapshot: SecretaryContextSnapshot,
+  userId?: number,
+  options: { phase?: 'read_only' | 'decision_preview'; repairAttempted?: boolean } = {},
+): SecretaryReasoningFinalization {
+  const parsed = parseAndValidateSecretaryReasoning(raw, snapshot);
+  if (!parsed.ok || !parsed.result) {
+    return {
+      text: structuredReasoningUnavailableReply(userId),
+      valid: false,
+      behavior: 'defer',
+      reasonCodes: [...new Set(parsed.issues.map((issue) => issue.code))],
+      candidate: null,
+      actionDraft: null,
+      snapshotId: snapshot.snapshotId,
+      contextVersion: snapshot.contextVersion,
+      repairAttempted: options.repairAttempted === true,
+    };
+  }
+  const outcome = selectSecretaryReasoningOutcome(snapshot, parsed.result, { phase: options.phase ?? 'read_only' });
+  const isPT = typeof userId === 'number' && getUserLanguage(userId).startsWith('pt');
+  if (outcome.behavior !== 'suppress' && outcome.userFacingText) {
+    return {
+      text: outcome.userFacingText,
+      valid: true,
+      behavior: outcome.behavior,
+      reasonCodes: outcome.reasonCodes,
+      candidate: outcome.candidate,
+      actionDraft: outcome.candidate?.actionDraft ?? null,
+      snapshotId: snapshot.snapshotId,
+      contextVersion: snapshot.contextVersion,
+      repairAttempted: options.repairAttempted === true,
+    };
+  }
+  const text = outcome.behavior === 'suppress'
+    ? (isPT
+      ? 'Não encontrei uma sugestão útil e verificável para mostrar agora.'
+      : 'I did not find a useful, verifiable suggestion to show right now.')
+    : structuredReasoningUnavailableReply(userId);
+  return {
+    text,
+    valid: true,
+    behavior: outcome.behavior,
+    reasonCodes: outcome.reasonCodes,
+    candidate: outcome.candidate,
+    actionDraft: outcome.candidate?.actionDraft ?? null,
+    snapshotId: snapshot.snapshotId,
+    contextVersion: snapshot.contextVersion,
+    repairAttempted: options.repairAttempted === true,
+  };
+}
+
+async function persistSecretaryPreviewIfNeeded(
+  finalization: SecretaryReasoningFinalization,
+  snapshot: SecretaryContextSnapshot,
+  userId: number,
+  tenantId: number,
+): Promise<SecretaryReasoningFinalization> {
+  if (!finalization.valid
+    || !finalization.candidate
+    || (finalization.behavior !== 'decision_center' && finalization.behavior !== 'conflict_review')) {
+    return finalization;
+  }
+  const preview = await createSecretaryDecisionPreview({
+    candidate: finalization.candidate,
+    snapshot,
+    userId,
+    tenantId,
+    locale: getUserLanguage(userId),
+  });
+  logger.info({
+    event: 'secretary.decision_preview_processed',
+    userId,
+    tenantId,
+    snapshotId: snapshot.snapshotId,
+    contextVersion: snapshot.contextVersion,
+    candidateId: finalization.candidate.candidateId,
+    capabilityId: finalization.candidate.capabilityId ?? null,
+    previewStatus: preview.status,
+    decisionId: preview.decisionId ?? null,
+    conflictDisposition: preview.conflictEvaluation?.disposition ?? null,
+    reasonCodes: preview.reasonCodes,
+  }, 'Secretary structured proposal processed through Decision Center');
+  return {
+    ...finalization,
+    text: preview.userFacingText,
+    reasonCodes: [...new Set([...finalization.reasonCodes, ...preview.reasonCodes])],
+  };
+}
+
+async function runSecretaryStructuredReasoning(input: {
+  snapshot: SecretaryContextSnapshot;
+  userId?: number;
+  tenantId?: number;
+  mode: 'active' | 'shadow';
+  call: SecretaryStructuredModelCall;
+}): Promise<SecretaryReasoningFinalization> {
+  let firstResult: AICallResult;
+  try {
+    firstResult = await input.call(buildSecretaryReasoningPrompt(input.snapshot));
+  } catch (err) {
+    logger.warn({
+      event: 'secretary.candidate_schema_failed',
+      failureType: err instanceof Error ? err.name : typeof err,
+      userId: input.userId,
+      tenantId: input.tenantId,
+      snapshotId: input.snapshot.snapshotId,
+      reasonCodes: ['model_call_failed'],
+      mode: input.mode,
+    }, 'Secretary structured candidate model call failed');
+    return unavailableReasoningFinalization(input.snapshot, input.userId, ['model_call_failed'], false);
+  }
+
+  logger.info({
+    event: 'secretary.candidate_generated',
+    userId: input.userId,
+    tenantId: input.tenantId,
+    snapshotId: input.snapshot.snapshotId,
+    contextVersion: input.snapshot.contextVersion,
+    mode: input.mode,
+    toolCallCount: firstResult.toolCalls.length,
+  }, 'Secretary structured candidate response generated');
+
+  const firstValidation: SecretaryReasoningValidationResult = firstResult.toolCalls.length > 0
+    ? invalidToolCallValidation()
+    : parseAndValidateSecretaryReasoning(firstResult.text, input.snapshot);
+  if (firstValidation.ok && firstValidation.result) {
+    const finalization = finalizeSecretaryReasoningText(firstResult.text, input.snapshot, input.userId, {
+      // Shadow evaluates the same candidate policy as active mode but callers
+      // never persist or execute its result. This makes parity telemetry useful
+      // without changing user-visible behavior.
+      phase: 'decision_preview',
+    });
+    emitSecretarySelectionTelemetry(finalization, input);
+    return finalization;
+  }
+
+  logger.warn({
+    event: 'secretary.candidate_schema_failed',
+    userId: input.userId,
+    tenantId: input.tenantId,
+    snapshotId: input.snapshot.snapshotId,
+    mode: input.mode,
+    reasonCodes: [...new Set(firstValidation.issues.map((issue) => issue.code))],
+    issueCount: firstValidation.issues.length,
+    repairAttempted: true,
+  }, 'Secretary structured candidate failed validation; one bounded repair will run');
+
+  let repairResult: AICallResult;
+  try {
+    repairResult = await input.call(buildSecretaryReasoningRepairPrompt(input.snapshot, firstValidation.issues));
+  } catch (err) {
+    logger.warn({
+      event: 'secretary.candidate_schema_failed',
+      failureType: err instanceof Error ? err.name : typeof err,
+      userId: input.userId,
+      tenantId: input.tenantId,
+      snapshotId: input.snapshot.snapshotId,
+      mode: input.mode,
+      reasonCodes: ['schema_repair_call_failed'],
+      repairAttempted: true,
+    }, 'Secretary structured candidate repair call failed');
+    return unavailableReasoningFinalization(input.snapshot, input.userId, ['schema_repair_call_failed'], true);
+  }
+
+  const repaired = repairResult.toolCalls.length > 0
+    ? unavailableReasoningFinalization(input.snapshot, input.userId, ['tool_calls_not_allowed'], true)
+    : finalizeSecretaryReasoningText(repairResult.text, input.snapshot, input.userId, {
+      phase: 'decision_preview',
+      repairAttempted: true,
+    });
+  if (!repaired.valid) {
+    logger.warn({
+      event: 'secretary.candidate_schema_failed',
+      userId: input.userId,
+      tenantId: input.tenantId,
+      snapshotId: input.snapshot.snapshotId,
+      mode: input.mode,
+      reasonCodes: repaired.reasonCodes,
+      repairAttempted: true,
+    }, 'Secretary structured candidate remained invalid after bounded repair');
+  }
+  emitSecretarySelectionTelemetry(repaired, input);
+  return repaired;
+}
+
+function invalidToolCallValidation(): SecretaryReasoningValidationResult {
+  return {
+    ok: false,
+    issues: [{ code: 'invalid_schema', path: '$.toolCalls' }],
+  };
+}
+
+function unavailableReasoningFinalization(
+  snapshot: SecretaryContextSnapshot,
+  userId: number | undefined,
+  reasonCodes: string[],
+  repairAttempted: boolean,
+): SecretaryReasoningFinalization {
+  return {
+    text: structuredReasoningUnavailableReply(userId),
+    valid: false,
+    behavior: 'defer',
+    reasonCodes,
+    candidate: null,
+    actionDraft: null,
+    snapshotId: snapshot.snapshotId,
+    contextVersion: snapshot.contextVersion,
+    repairAttempted,
+  };
+}
+
+function emitSecretarySelectionTelemetry(
+  finalization: SecretaryReasoningFinalization,
+  input: { snapshot: SecretaryContextSnapshot; userId?: number; tenantId?: number; mode: 'active' | 'shadow' },
+): void {
+  logger.info({
+    event: finalization.behavior === 'suppress' ? 'secretary.candidate_suppressed' : 'secretary.candidate_selected',
+    userId: input.userId,
+    tenantId: input.tenantId,
+    snapshotId: input.snapshot.snapshotId,
+    contextVersion: input.snapshot.contextVersion,
+    mode: input.mode,
+    valid: finalization.valid,
+    behavior: finalization.behavior,
+    candidateId: finalization.candidate?.candidateId ?? null,
+    capabilityId: finalization.candidate?.capabilityId ?? null,
+    reasonCodes: finalization.reasonCodes,
+    repairAttempted: finalization.repairAttempted,
+  }, 'Secretary structured reasoning candidate finalized');
+}
+
+function structuredReasoningUnavailableReply(userId?: number): string {
+  const isPT = typeof userId === 'number' && getUserLanguage(userId).startsWith('pt');
+  return isPT
+    ? 'Não consegui verificar contexto suficiente para responder com segurança. Tenta novamente ou faz uma pergunta mais específica.'
+    : 'I could not verify enough context to answer safely. Please try again or ask a more specific question.';
+}
+
+function unverifiedCompletionReply(userId?: number): string {
+  const isPT = typeof userId === 'number' && getUserLanguage(userId).startsWith('pt');
+  return isPT
+    ? 'Não consegui concluir nem verificar o pedido. Não estou a afirmar que qualquer alteração tenha sido feita.'
+    : 'I could not complete or verify the request. I am not claiming that any change was made.';
 }

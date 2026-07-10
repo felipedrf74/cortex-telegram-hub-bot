@@ -9,25 +9,30 @@ import {
   buildSkillDecisionFixtureIntent,
   applyDecisionTypeSuppression,
   createDecisionIntent,
+  decisionRefreshSupportedForScope,
   DecisionActionError,
   dismissDecision,
   getDecisionOverview,
   getDecisionItem,
+  getDecisionAuditHistory,
   getDecisionPreferences,
   getDecisionSummary,
   listDecisionTypeSuppressions,
   listHandledByNexusItems,
   listDecisionItems,
-  recordDecisionItemExposures,
   markDecisionViewed,
   refreshDecisionItem,
+  recordDecisionItemExposuresByIds,
   performDecisionAction,
+  reviewDecision,
+  reviseDecisionProposal,
   snoozeDecision,
   suppressDecisionType,
   unsuppressDecisionType,
   updateDecisionPreferences,
   type DecisionTypeSuppressionMode,
   type DecisionUrgency,
+  type DecisionReplacementChoice,
 } from '../../services/decision-center';
 import {
   registerNotificationDeviceToken,
@@ -38,10 +43,15 @@ import {
 import { assertTenantScope, requireMutationScope, TenantScopeError } from '../../services/tenant-scope';
 import { buildDecisionCardSummary, resolveDecisionApiVersion } from '../decision-api-version';
 import { decodeDecisionCursor, paginateDecisions, sortDecisionsForKeyset } from '../decision-cursor';
+
+const DECISION_REPLACEMENT_CHOICES = new Set<DecisionReplacementChoice>([
+  'keep_existing_commitment',
+  'replace_with_candidate',
+  'choose_another_time',
+  'review_tradeoff',
+]);
 import type { DecisionListResponse } from '../../services/decision-center';
-import { isDecisionRefreshEnabled } from '../../services/runtime-flags';
 import { invalidateNotificationInboxCaches } from '../../services/notification-cache-invalidation';
-import { materializeDecisionCenterDailyAttention } from '../../services/decision-center-daily-attention';
 import { logger } from '../../utils/logger';
 
 function routeTenantId(
@@ -101,17 +111,6 @@ function decisionError(res: Response, err: unknown, fallbackCode = 'DECISION_ERR
   sendError(res, fallbackCode, 'Unable to process decision request', 400);
 }
 
-async function materializeDailyAttentionForDecisionRead(userId: number, tenantId: number): Promise<void> {
-  try {
-    await materializeDecisionCenterDailyAttention({ userId, tenantId });
-  } catch (err) {
-    logger.warn(
-      { errType: err instanceof Error ? err.name : typeof err, userId, tenantId },
-      'Decision route skipped daily attention materialization',
-    );
-  }
-}
-
 function positiveIntQuery(res: Response, raw: unknown, fallback: number, name: string, max: number): number | null {
   if (raw == null || raw === '') return fallback;
   const value = String(raw).trim();
@@ -140,7 +139,8 @@ export function decisionRoutes(): Router {
     if (!ensureValidTenantRouteScope(res, userId, 'decisions_route_summary')) return;
     const tenantId = routeTenantId(authReq, res, userId, 'decisions_route');
     if (tenantId == null) return;
-    const limit = parseInt(String(req.query.limit || '3'), 10);
+    const limit = positiveIntQuery(res, req.query.limit, 3, 'limit', 100);
+    if (limit == null) return;
     const summary = getDecisionSummary(userId, tenantId, limit);
     const { version, schemaVersion } = resolveDecisionApiVersion(authReq);
     sendSuccess(res, version === 'v2'
@@ -158,7 +158,6 @@ export function decisionRoutes(): Router {
     if (limit == null) return;
     const handledLimit = positiveIntQuery(res, req.query.handledLimit, 10, 'handledLimit', 25);
     if (handledLimit == null) return;
-    await materializeDailyAttentionForDecisionRead(userId, tenantId);
     // BE-1 (Content Studio): optional skill-scoped overview. Absent param =>
     // byte-identical response to before.
     const sourceSkill = typeof req.query.sourceSkill === 'string' && req.query.sourceSkill.trim() !== ''
@@ -182,13 +181,13 @@ export function decisionRoutes(): Router {
     if (!ensureValidTenantRouteScope(res, userId, 'decisions_route_list')) return;
     const tenantId = routeTenantId(authReq, res, userId, 'decisions_route');
     if (tenantId == null) return;
-    const limit = parseInt(String(req.query.limit || '80'), 10);
+    const limit = positiveIntQuery(res, req.query.limit, 80, 'limit', 100);
+    if (limit == null) return;
     const status = typeof req.query.status === 'string' ? req.query.status : undefined;
     const sourceSkill = typeof req.query.sourceSkill === 'string' ? req.query.sourceSkill as NotificationSourceSkill : undefined;
     const type = typeof req.query.type === 'string' ? req.query.type as NotificationIntentType : undefined;
     const urgency = typeof req.query.urgency === 'string' ? req.query.urgency as DecisionUrgency : undefined;
     const { version, schemaVersion } = resolveDecisionApiVersion(authReq);
-    await materializeDailyAttentionForDecisionRead(userId, tenantId);
     // API v2 keyset cursor pagination — opt-in WITHIN v2 via ?cursor / ?pageSize. v1 and v2-without-cursor
     // responses are byte-identical to before (this branch only triggers on an explicit cursor/pageSize param).
     const cursorMode = version === 'v2' && (req.query.cursor !== undefined || req.query.pageSize !== undefined);
@@ -215,7 +214,6 @@ export function decisionRoutes(): Router {
       if (pageSize == null) return;
       const cursor = typeof req.query.cursor === 'string' ? decodeDecisionCursor(req.query.cursor) : null;
       const { page, nextCursor } = paginateDecisions(sortDecisionsForKeyset(items), cursor, pageSize);
-      recordDecisionItemExposures(page);
       const response: DecisionListResponse = {
         schemaVersion,
         count: page.length,
@@ -227,7 +225,6 @@ export function decisionRoutes(): Router {
       sendSuccess(res, response);
       return;
     }
-    recordDecisionItemExposures(items);
     const response = {
       count: items.length,
       openCount: items.filter((item) => ['unread', 'read', 'failed'].includes(item.status)).length,
@@ -256,6 +253,27 @@ export function decisionRoutes(): Router {
       sendSuccess(res, result, { status: result.item ? 201 : 202 });
     } catch (err) {
       decisionError(res, err, 'INVALID_DECISION_INTENT');
+    }
+  }));
+
+  // Explicit write-side exposure acknowledgement. List/detail GETs stay pure;
+  // clients call this only for cards that actually became visible.
+  router.post('/exposures', asyncHandler(async (req, res: Response) => {
+    const authReq = req as unknown as AuthenticatedRequest;
+    const { userId } = authReq;
+    if (!ensureValidTenantRouteScope(res, userId, 'decisions_route_exposures')) return;
+    const tenantId = routeTenantId(authReq, res, userId, 'decisions_route_exposures', 'decision_lifecycle_events');
+    if (tenantId == null) return;
+    const rawIds = req.body?.decisionIds;
+    if (!Array.isArray(rawIds) || rawIds.length === 0 || rawIds.length > 100
+        || rawIds.some((id) => typeof id !== 'string' || id.trim().length === 0 || id.length > 200)) {
+      sendError(res, 'VALIDATION', 'decisionIds must contain 1 to 100 non-empty decision IDs', 400);
+      return;
+    }
+    try {
+      sendSuccess(res, recordDecisionItemExposuresByIds(rawIds, userId, tenantId));
+    } catch (err) {
+      decisionError(res, err, 'DECISION_EXPOSURE_FAILED');
     }
   }));
 
@@ -379,7 +397,8 @@ export function decisionRoutes(): Router {
     if (!ensureValidTenantRouteScope(res, userId, 'decisions_route_handled')) return;
     const tenantId = routeTenantId(authReq, res, userId, 'decisions_route');
     if (tenantId == null) return;
-    const limit = parseInt(String(req.query.limit || '25'), 10);
+    const limit = positiveIntQuery(res, req.query.limit, 25, 'limit', 100);
+    if (limit == null) return;
     const items = listHandledByNexusItems(userId, tenantId, limit);
     sendSuccess(res, { count: items.length, items });
   }));
@@ -414,29 +433,115 @@ export function decisionRoutes(): Router {
     }
   }));
 
-  // Refresh-evidence: re-derive a decision's computed fields from current stored state (token-zero, read-only).
+  // Refresh-evidence: token-zero revalidation against current local authoritative state. This explicit
+  // POST may persist a new context evaluation and increment recordVersion when enforcement is active.
   // Flag-gated (DECISION_REFRESH_ENABLED, default OFF -> 404). Respects v2 card negotiation.
   router.post('/:id/refresh', asyncHandler(async (req, res: Response) => {
     const authReq = req as unknown as AuthenticatedRequest;
     const { userId } = authReq;
     if (!ensureValidTenantRouteScope(res, userId, 'decisions_route_refresh', { decisionId: req.params.id })) return;
-    const tenantId = routeTenantId(authReq, res, userId, 'decisions_route_refresh');
+    const tenantId = routeTenantId(authReq, res, userId, 'decisions_route_refresh', 'notification_center_items');
     if (tenantId == null) return;
-    if (!isDecisionRefreshEnabled(process.env, { userId, tenantId })) {
+    if (!decisionRefreshSupportedForScope(userId, tenantId)) {
       sendError(res, 'NOT_FOUND', 'Decision refresh is not enabled', 404);
       return;
     }
-    const result = refreshDecisionItem(String(req.params.id || ''), userId, tenantId);
-    if (!result) {
-      sendError(res, 'DECISION_NOT_FOUND', 'Decision not found', 404);
+    try {
+      const result = refreshDecisionItem(String(req.params.id || ''), userId, tenantId);
+      if (!result) {
+        sendError(res, 'DECISION_NOT_FOUND', 'Decision not found', 404);
+        return;
+      }
+      const { version, schemaVersion } = resolveDecisionApiVersion(authReq);
+      sendSuccess(res, {
+        schemaVersion,
+        item: version === 'v2' ? buildDecisionCardSummary(result.item) : result.item,
+        refreshedAt: result.refreshedAt,
+      });
+    } catch (err) {
+      decisionError(res, err, 'DECISION_REFRESH_FAILED');
+    }
+  }));
+
+  router.get('/:id/history', asyncHandler(async (req, res: Response) => {
+    const authReq = req as unknown as AuthenticatedRequest;
+    const { userId } = authReq;
+    if (!ensureValidTenantRouteScope(res, userId, 'decisions_route_history', { decisionId: req.params.id })) return;
+    const tenantId = routeTenantId(authReq, res, userId, 'decisions_route_history');
+    if (tenantId == null) return;
+    const decisionId = String(req.params.id || '');
+    try {
+      sendSuccess(res, { decisionId, ...getDecisionAuditHistory(decisionId, userId, tenantId) });
+    } catch (err) {
+      decisionError(res, err, 'DECISION_HISTORY_FAILED');
+    }
+  }));
+
+  router.post('/:id/review', asyncHandler(async (req, res: Response) => {
+    const authReq = req as unknown as AuthenticatedRequest;
+    const { userId } = authReq;
+    if (!ensureValidTenantRouteScope(res, userId, 'decisions_route_review', { decisionId: req.params.id })) return;
+    const tenantId = routeTenantId(authReq, res, userId, 'decisions_route_review', 'notification_center_items');
+    if (tenantId == null) return;
+    const outcome = req.body?.outcome;
+    if (outcome !== 'approve' && outcome !== 'reject' && outcome !== 'defer') {
+      sendError(res, 'VALIDATION', 'outcome must be approve, reject, or defer', 400);
       return;
     }
-    const { version, schemaVersion } = resolveDecisionApiVersion(authReq);
-    sendSuccess(res, {
-      schemaVersion,
-      item: version === 'v2' ? buildDecisionCardSummary(result.item) : result.item,
-      refreshedAt: result.refreshedAt,
-    });
+    const expectedVersion = req.body?.expectedVersion;
+    if (!Number.isSafeInteger(expectedVersion) || expectedVersion <= 0) {
+      sendError(res, 'VALIDATION', 'expectedVersion must be a positive integer', 400);
+      return;
+    }
+    const replacementChoiceId = typeof req.body?.replacementChoiceId === 'string'
+      && DECISION_REPLACEMENT_CHOICES.has(req.body.replacementChoiceId as DecisionReplacementChoice)
+      ? req.body.replacementChoiceId as DecisionReplacementChoice
+      : undefined;
+    if (req.body?.replacementChoiceId != null && !replacementChoiceId) {
+      sendError(res, 'VALIDATION', 'replacementChoiceId is not a supported conflict option', 400);
+      return;
+    }
+    try {
+      const item = reviewDecision(String(req.params.id || ''), userId, tenantId, {
+        outcome,
+        expectedVersion,
+        idempotencyKey: typeof req.body?.idempotencyKey === 'string' ? req.body.idempotencyKey : undefined,
+        deferUntil: typeof req.body?.deferUntil === 'string' ? req.body.deferUntil : undefined,
+        reasonCode: typeof req.body?.reasonCode === 'string' ? req.body.reasonCode : undefined,
+        replacementChoiceId,
+        strongConfirmationText: typeof req.body?.strongConfirmationText === 'string'
+          ? req.body.strongConfirmationText
+          : undefined,
+      });
+      invalidateNotificationInboxCaches(userId, tenantId);
+      sendSuccess(res, { item });
+    } catch (err) {
+      decisionError(res, err, 'DECISION_REVIEW_FAILED');
+    }
+  }));
+
+  router.patch('/:id/proposal', asyncHandler(async (req, res: Response) => {
+    const authReq = req as unknown as AuthenticatedRequest;
+    const { userId } = authReq;
+    if (!ensureValidTenantRouteScope(res, userId, 'decisions_route_revise', { decisionId: req.params.id })) return;
+    const tenantId = routeTenantId(authReq, res, userId, 'decisions_route_revise', 'notification_center_items');
+    if (tenantId == null) return;
+    const expectedVersion = req.body?.expectedVersion;
+    if (!Number.isSafeInteger(expectedVersion) || expectedVersion <= 0) {
+      sendError(res, 'VALIDATION', 'expectedVersion must be a positive integer', 400);
+      return;
+    }
+    try {
+      const item = reviseDecisionProposal(String(req.params.id || ''), userId, tenantId, {
+        expectedVersion,
+        recommendedStartAt: typeof req.body?.recommendedStartAt === 'string' ? req.body.recommendedStartAt : undefined,
+        recommendedEndAt: typeof req.body?.recommendedEndAt === 'string' ? req.body.recommendedEndAt : undefined,
+      });
+      invalidateNotificationInboxCaches(userId, tenantId);
+      sendSuccess(res, { item });
+    } catch (err) {
+      decisionError(res, err, 'DECISION_PROPOSAL_EDIT_FAILED');
+    }
   }));
 
   router.patch('/:id/snooze', asyncHandler(async (req, res: Response) => {
@@ -446,7 +551,13 @@ export function decisionRoutes(): Router {
     const tenantId = routeTenantId(authReq, res, userId, 'decisions_route_snooze', 'notification_center_items');
     if (tenantId == null) return;
     try {
-      const item = snoozeDecision(String(req.params.id || ''), userId, tenantId, Number(req.body?.minutes ?? 60));
+      const item = snoozeDecision(
+        String(req.params.id || ''),
+        userId,
+        tenantId,
+        Number(req.body?.minutes ?? 60),
+        typeof req.body?.expectedVersion === 'number' ? req.body.expectedVersion : undefined,
+      );
       invalidateNotificationInboxCaches(userId, tenantId);
       sendSuccess(res, { item });
     } catch (err) {
@@ -461,7 +572,13 @@ export function decisionRoutes(): Router {
     const tenantId = routeTenantId(authReq, res, userId, 'decisions_route_dismiss', 'notification_center_items');
     if (tenantId == null) return;
     try {
-      const item = dismissDecision(String(req.params.id || ''), userId, tenantId, typeof req.body?.reason === 'string' ? req.body.reason : undefined);
+      const item = dismissDecision(
+        String(req.params.id || ''),
+        userId,
+        tenantId,
+        typeof req.body?.reason === 'string' ? req.body.reason : undefined,
+        typeof req.body?.expectedVersion === 'number' ? req.body.expectedVersion : undefined,
+      );
       invalidateNotificationInboxCaches(userId, tenantId);
       sendSuccess(res, { item });
     } catch (err) {
@@ -475,6 +592,11 @@ export function decisionRoutes(): Router {
     if (!ensureValidTenantRouteScope(res, userId, 'decisions_route_action', { decisionId: req.params.id })) return;
     const tenantId = routeTenantId(authReq, res, userId, 'decisions_route_action', 'notification_center_items');
     if (tenantId == null) return;
+    const expectedVersion = req.body?.expectedVersion;
+    if (expectedVersion != null && (!Number.isSafeInteger(expectedVersion) || expectedVersion <= 0)) {
+      sendError(res, 'VALIDATION', 'expectedVersion must be a positive integer', 400);
+      return;
+    }
     try {
       const result = await performDecisionAction(
         String(req.params.id || ''),
@@ -485,6 +607,8 @@ export function decisionRoutes(): Router {
           idempotencyKey: typeof req.body?.idempotencyKey === 'string' ? req.body.idempotencyKey : undefined,
           payload: typeof req.body?.payload === 'object' && req.body.payload ? req.body.payload : {},
           channel: typeof req.body?.channel === 'string' ? req.body.channel : undefined,
+          expectedVersion: typeof expectedVersion === 'number' ? expectedVersion : undefined,
+          contextVersion: typeof req.body?.contextVersion === 'string' ? req.body.contextVersion : undefined,
         },
       );
       invalidateNotificationInboxCaches(userId, tenantId);

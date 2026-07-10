@@ -184,7 +184,10 @@ export function initDatabase(): Database.Database {
   return db;
 }
 
-function runMigrations(options: { stopBefore?: string } = {}): void {
+function runMigrations(options: {
+  excludeFiles?: ReadonlySet<string>;
+  stopBefore?: string;
+} = {}): void {
   const migrationsDir = path.resolve(__dirname, '../../migrations');
   if (!fs.existsSync(migrationsDir)) {
     logger.warn('Migrations directory not found');
@@ -214,6 +217,7 @@ function runMigrations(options: { stopBefore?: string } = {}): void {
   );
 
   for (const file of files) {
+    if (options.excludeFiles?.has(file)) continue;
     if (options.stopBefore && file >= options.stopBefore) break;
     if (applied.has(file)) continue;
     const sql = fs.readFileSync(path.join(migrationsDir, file), 'utf-8');
@@ -271,12 +275,52 @@ export function stripWrappingTransactionStatements(sql: string): string {
 
 export function runMigrationsForTest(
   testDb: Database.Database,
-  options: { stopBefore?: string } = {},
+  options: { excludeFiles?: readonly string[]; stopBefore?: string } = {},
 ): void {
   const previousDb = db as Database.Database | undefined;
   (db as any) = testDb;
   try {
-    runMigrations(options);
+    runMigrations({
+      excludeFiles: new Set(options.excludeFiles ?? []),
+      stopBefore: options.stopBefore,
+    });
+  } finally {
+    (db as any) = previousDb;
+  }
+}
+
+/**
+ * Exercise the exact production migration application path in migration tests,
+ * including duplicate-column filtering after runtime self-healing. This does
+ * not bypass ordering in production; callers must name an explicit test file.
+ */
+export function applyMigrationFileForTest(testDb: Database.Database, filename: string): void {
+  const previousDb = db as Database.Database | undefined;
+  (db as any) = testDb;
+  try {
+    const migrationsDir = path.resolve(__dirname, '../../migrations');
+    const filePath = path.join(migrationsDir, filename);
+    if (!fs.existsSync(filePath)) throw new Error(`Migration not found: ${filename}`);
+    testDb.exec(`
+      CREATE TABLE IF NOT EXISTS _migrations (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        filename TEXT NOT NULL UNIQUE,
+        applied_at TEXT DEFAULT (datetime('now'))
+      );
+    `);
+    if (testDb.prepare('SELECT 1 FROM _migrations WHERE filename = ?').get(filename)) return;
+    applyMigration(filename, fs.readFileSync(filePath, 'utf-8'));
+  } finally {
+    (db as any) = previousDb;
+  }
+}
+
+/** Bind getDb() to an in-memory database while exercising runtime self-heal code. */
+export function withDatabaseForTest<T>(testDb: Database.Database, callback: () => T): T {
+  const previousDb = db as Database.Database | undefined;
+  (db as any) = testDb;
+  try {
+    return callback();
   } finally {
     (db as any) = previousDb;
   }

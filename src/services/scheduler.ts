@@ -10,7 +10,7 @@ import { logger } from '../utils/logger';
 import { getDueReminders, markReminderFired, getRemindersForToday } from '../state/reminders';
 import * as msTodo from './microsoft-todo';
 import type { TodoTask } from './microsoft-todo';
-import { getEvents, hasConnectedCalendarForUser, isAnyCalendarConfigured } from './unified-calendar';
+import { getEvents, getEventsWithDiagnostics, hasConnectedCalendarForUser, isAnyCalendarConfigured, type UnifiedCalendarEvent, type UnifiedCalendarFetchStatus } from './unified-calendar';
 import { getUnreadCountForUser, isOutlookMailConfiguredForUser, isOutlookMailConfigured, getUnreadCount, sendEmail } from './outlook-mail';
 import { DailyBriefingData, escapeHtml } from '../utils/telegram-formatter';
 import { now, startOfDay, endOfDay, startOfWeek, endOfWeek, formatTime, formatDateTime } from '../utils/date-parser';
@@ -66,12 +66,21 @@ import { processChatActionFixerJobs } from './chat-action-fixer-worker';
 import { runGarminTenantIsolationWatcher } from './garmin-tenant-isolation-watcher';
 import {
   runDecisionCenterSmokeCleanupJob,
+  createDecisionIntent,
   runDecisionExpiryJob,
   runDecisionHandledHistoryBackfillJob,
   runDecisionLedgerRetentionPruneJob,
   runDecisionMetricsRollupJob,
   runDecisionSourceStateSupersessionJob,
 } from './decision-center';
+import { findCalendarConflictPairs, conflictPairKey, type CalendarConflictPair } from './calendar-conflict-analysis';
+import { listSecretaryAgendaItems, type SecretaryAgendaItem } from './secretary-scheduling-arbitrator';
+import { buildNormalizedDecisionAction } from './decision-action-contract';
+import { evaluateDecisionConflicts, type ConflictComparisonAction } from './decision-conflict-evaluator';
+import { secretaryAgendaStateRevision } from './secretary-agenda-state-revision';
+import { getDecisionConflictPolicyV1Mode } from './runtime-flags';
+import { hmacTenantScopedEvidenceFingerprint } from './chat-core-v2/cloud-allowlist-packet';
+import { materializeDecisionCenterDailyAttention } from './decision-center-daily-attention';
 import { resolveChatCoreV2ActivationConfig } from './chat-core-v2/activation-flags';
 import {
   computeChatCoreV2AutoRevertMetrics,
@@ -926,41 +935,455 @@ function safeHtmlNotificationBody(message: string): string {
     .slice(0, 500);
 }
 
-export async function buildConflictAlertForUser(userId: number): Promise<string | null> {
+export interface CalendarConflictAnalysis {
+  date: string;
+  dateLabel: string;
+  timezone?: string;
+  sourceStatus: UnifiedCalendarFetchStatus;
+  sourceWarningCodes: string[];
+  events: UnifiedCalendarEvent[];
+  conflicts: CalendarConflictPair[];
+  message: string;
+}
+
+export async function buildCalendarConflictAnalysisForUser(userId: number): Promise<CalendarConflictAnalysis | null> {
   if (!hasConnectedCalendarForUser(userId)) return null;
 
-  const tomorrow = now().plus({ days: 1 });
-  const events = await getEvents(
+  const timezone = getUserTimezoneById(userId) || config.app.timezone;
+  const tomorrow = now().setZone(timezone).plus({ days: 1 });
+  const calendarResult = await getEventsWithDiagnostics(
     tomorrow.startOf('day').toISO()!,
     tomorrow.endOf('day').toISO()!,
     userId,
   );
+  if (calendarResult.status === 'unavailable') {
+    logger.warn({
+      userId,
+      warningCodes: calendarResult.warningCodes,
+    }, 'Calendar conflict analysis skipped because all configured sources were unavailable');
+    return null;
+  }
+  const events = calendarResult.events;
 
   if (events.length < 2) return null;
 
-  const sorted = [...events].sort((a, b) =>
-    new Date(a.start).getTime() - new Date(b.start).getTime()
-  );
-
-  const conflicts: { a: typeof sorted[0]; b: typeof sorted[0] }[] = [];
-  for (let i = 0; i < sorted.length - 1; i++) {
-    const endA = new Date(sorted[i].end).getTime();
-    const startB = new Date(sorted[i + 1].start).getTime();
-    if (endA > startB) {
-      conflicts.push({ a: sorted[i], b: sorted[i + 1] });
-    }
-  }
+  const conflicts = findCalendarConflictPairs(events);
 
   if (conflicts.length === 0) return null;
 
-  let message = `⚠️ <b>Calendar Conflicts Tomorrow</b> (${tomorrow.toFormat('cccc, LLL dd')})\n\n`;
-  for (const { a, b } of conflicts) {
-    message += `🔴 <b>${escapeHtml(a.summary)}</b> (${formatTime(a.start)}-${formatTime(a.end)})\n`;
-    message += `   overlaps with <b>${escapeHtml(b.summary)}</b> (${formatTime(b.start)}-${formatTime(b.end)})\n\n`;
+  return {
+    date: tomorrow.toISODate()!,
+    dateLabel: tomorrow.toFormat('cccc, LLL dd'),
+    timezone,
+    sourceStatus: calendarResult.status,
+    sourceWarningCodes: calendarResult.warningCodes
+      .map((code) => code.trim().toLowerCase().replace(/[^a-z0-9_.:-]+/g, '_').slice(0, 80))
+      .filter(Boolean)
+      .slice(0, 8),
+    events,
+    conflicts,
+    message: formatCalendarConflictMessage(conflicts, tomorrow.toFormat('cccc, LLL dd'), timezone),
+  };
+}
+
+export async function buildConflictAlertForUser(userId: number): Promise<string | null> {
+  return (await buildCalendarConflictAnalysisForUser(userId))?.message ?? null;
+}
+
+export function formatCalendarConflictMessage(
+  conflicts: CalendarConflictPair[],
+  dateLabel: string,
+  timezone = config.app.timezone,
+): string {
+  let message = `⚠️ <b>Calendar Conflicts Tomorrow</b> (${dateLabel})\n\n`;
+  for (const { first, second } of conflicts) {
+    message += `🔴 <b>${escapeHtml(first.summary)}</b> (${formatCalendarConflictTime(first.start, timezone)}-${formatCalendarConflictTime(first.end, timezone)})\n`;
+    message += `   overlaps with <b>${escapeHtml(second.summary)}</b> (${formatCalendarConflictTime(second.start, timezone)}-${formatCalendarConflictTime(second.end, timezone)})\n\n`;
   }
   message += 'Consider rescheduling one of these events.';
-
   return message;
+}
+
+const MAX_SECRETARY_CONFLICT_COMPARISONS = 24;
+
+interface SecretaryCalendarConflictGroupEntry {
+  pair: CalendarConflictPair;
+  otherEvent: UnifiedCalendarEvent;
+}
+
+interface SecretaryCalendarConflictGroup {
+  agenda: SecretaryAgendaItem;
+  ownedEvent: UnifiedCalendarEvent;
+  entries: Map<string, SecretaryCalendarConflictGroupEntry>;
+}
+
+export interface SecretaryCalendarConflictDecisionPlan {
+  agenda: SecretaryAgendaItem;
+  ownedEvent: UnifiedCalendarEvent;
+  conflictPairs: CalendarConflictPair[];
+  representedPairKeys: string[];
+  candidate: ReturnType<typeof buildNormalizedDecisionAction>;
+  conflictComparisons: ConflictComparisonAction[];
+  evaluation: ReturnType<typeof evaluateDecisionConflicts>;
+  contextVersion: string;
+  deadlineAt: string;
+  expiresAt: string;
+}
+
+/**
+ * Build one bounded proposal per Secretary agenda item. The plan contains only
+ * opaque provider references and normalized action metadata; human event copy
+ * is retained solely in the authenticated sensitive body assembled by the
+ * caller. Pair keys are returned explicitly so the cron can suppress the
+ * generic notification for every conflict represented by the proposal.
+ */
+export function buildSecretaryCalendarConflictDecisionPlans(input: {
+  tenantId: number;
+  analysis: CalendarConflictAnalysis;
+  agendaItems: SecretaryAgendaItem[];
+  timezone: string;
+  evaluatedAt?: Date;
+}): SecretaryCalendarConflictDecisionPlan[] {
+  const groups = new Map<string, SecretaryCalendarConflictGroup>();
+
+  for (const pair of input.analysis.conflicts) {
+    const matches = [
+      { agenda: agendaForCalendarEvent(pair.first, input.agendaItems), event: pair.first, otherEvent: pair.second },
+      { agenda: agendaForCalendarEvent(pair.second, input.agendaItems), event: pair.second, otherEvent: pair.first },
+    ]
+      .filter((match): match is { agenda: SecretaryAgendaItem; event: UnifiedCalendarEvent; otherEvent: UnifiedCalendarEvent } => !!match.agenda)
+      .sort((left, right) => left.agenda.agendaItemId.localeCompare(right.agenda.agendaItemId)
+        || opaqueCalendarEventRef(left.event, input.tenantId).localeCompare(opaqueCalendarEventRef(right.event, input.tenantId)));
+    const selected = matches[0];
+    if (!selected) continue;
+
+    const pairKey = conflictPairKey(pair.first, pair.second);
+    const existing = groups.get(selected.agenda.agendaItemId) ?? {
+      agenda: selected.agenda,
+      ownedEvent: selected.event,
+      entries: new Map<string, SecretaryCalendarConflictGroupEntry>(),
+    };
+    existing.entries.set(pairKey, { pair, otherEvent: selected.otherEvent });
+    groups.set(selected.agenda.agendaItemId, existing);
+  }
+
+  return [...groups.values()]
+    .sort((left, right) => left.agenda.agendaItemId.localeCompare(right.agenda.agendaItemId))
+    .flatMap((group): SecretaryCalendarConflictDecisionPlan[] => {
+      const entries = [...group.entries.entries()]
+        .sort(([left], [right]) => left.localeCompare(right))
+        .slice(0, MAX_SECRETARY_CONFLICT_COMPARISONS);
+      if (entries.length === 0) return [];
+      const otherEvents = entries.map(([, entry]) => entry.otherEvent);
+      const contextVersion = calendarConflictContextVersion(
+        group.agenda,
+        group.ownedEvent,
+        otherEvents,
+        input.analysis.sourceStatus,
+        input.analysis.sourceWarningCodes,
+      );
+      const localDay = calendarConflictLocalDay(group.ownedEvent.start, input.timezone);
+      const calendarResourceId = `primary:${localDay}`;
+      const executionExclusivityKey = `calendar_timeline:${input.tenantId}:${localDay}`;
+      const candidate = buildNormalizedDecisionAction({
+        intent: 'review_calendar_conflict',
+        targetEntities: [{
+          type: 'secretary_agenda_item',
+          id: group.agenda.agendaItemId,
+          version: String(group.agenda.version),
+        }],
+        affectedResources: [{ type: 'calendar_day', id: calendarResourceId }],
+        requestedWindow: { start: group.ownedEvent.start, end: group.ownedEvent.end, timezone: input.timezone },
+        preconditions: [{
+          type: 'agenda_state',
+          ref: group.agenda.agendaItemId,
+          expectedVersion: secretaryAgendaStateRevision(group.agenda),
+          required: true,
+        }],
+        expectedEffects: [{ type: 'review_required', targetRef: `secretary_agenda_item:${group.agenda.agendaItemId}` }],
+        prohibitedEffects: [{ type: 'automatic_calendar_mutation', targetRef: `secretary_agenda_item:${group.agenda.agendaItemId}` }],
+        dependencies: [],
+        // This is an execution-serialization key, not a semantic identity. It
+        // is tenant and local-day scoped so unrelated dates never compete.
+        exclusivityKeys: [executionExclusivityKey],
+        authorizationScope: ['decision_center:read'],
+        risk: 'medium',
+        reversibility: 'reversible',
+        contextVersion,
+      });
+      const conflictComparisons: ConflictComparisonAction[] = otherEvents.map((otherEvent) => ({
+        action: buildNormalizedDecisionAction({
+          intent: 'preserve_confirmed_calendar_commitment',
+          targetEntities: [{ type: 'calendar_event', id: opaqueCalendarEventRef(otherEvent, input.tenantId) }],
+          affectedResources: [{ type: 'calendar_day', id: calendarResourceId }],
+          requestedWindow: { start: otherEvent.start, end: otherEvent.end, timezone: input.timezone },
+          preconditions: [],
+          expectedEffects: [{ type: 'preserve_commitment', targetRef: opaqueCalendarEventRef(otherEvent, input.tenantId) }],
+          prohibitedEffects: [],
+          dependencies: [],
+          exclusivityKeys: [executionExclusivityKey],
+          authorizationScope: ['calendar:read'],
+          risk: 'medium',
+          // Replacing a confirmed external commitment has no registered
+          // compensation adapter; precedence must treat it conservatively.
+          reversibility: 'irreversible',
+          contextVersion,
+        }),
+        authority: 'approved_commitment',
+        approved: true,
+        // Comparison freshness is when this authoritative calendar snapshot
+        // was observed, not the future start time of the commitment itself.
+        createdAt: (input.evaluatedAt ?? new Date()).toISOString(),
+        validUntil: otherEvent.end,
+      }));
+      const evaluation = evaluateDecisionConflicts({
+        candidate,
+        existing: conflictComparisons,
+        now: input.evaluatedAt ?? new Date(),
+        confidence: input.analysis.sourceStatus === 'degraded'
+          ? 'medium'
+          : group.agenda.providerSyncState === 'synced' ? 'high' : 'medium',
+        authorizationAllowed: true,
+      });
+      const relevantTimes = [group.ownedEvent, ...otherEvents];
+      return [{
+        agenda: group.agenda,
+        ownedEvent: group.ownedEvent,
+        conflictPairs: entries.map(([, entry]) => entry.pair),
+        representedPairKeys: entries.map(([pairKey]) => pairKey),
+        candidate,
+        conflictComparisons,
+        evaluation,
+        contextVersion,
+        deadlineAt: new Date(Math.min(...relevantTimes.map((event) => Date.parse(event.start)))).toISOString(),
+        expiresAt: new Date(Math.max(...relevantTimes.map((event) => Date.parse(event.end)))).toISOString(),
+      }];
+    });
+}
+
+async function emitSecretaryOwnedCalendarConflictDecisions(
+  target: ActiveUserTarget,
+  analysis: CalendarConflictAnalysis,
+  persist = true,
+): Promise<Set<string>> {
+  const handledPairs = new Set<string>();
+  let agendaItems: SecretaryAgendaItem[];
+  try {
+    agendaItems = listSecretaryAgendaItems({
+      ownerUserId: target.tenantId,
+      tenantId: target.tenantId,
+      includeInactive: false,
+    });
+  } catch (err) {
+    // Runtime self-healing can briefly expose a notification schema before the
+    // Secretary agenda schema is available. Fail back to the existing generic,
+    // informational conflict notification instead of aborting the whole cron.
+    logger.warn({ err, tenantId: target.tenantId }, 'Secretary agenda unavailable for calendar conflict classification');
+    return handledPairs;
+  }
+  const timezone = getUserTimezoneById(target.tenantId) || config.app.timezone;
+  const plans = buildSecretaryCalendarConflictDecisionPlans({
+    tenantId: target.tenantId,
+    analysis,
+    agendaItems,
+    timezone,
+    evaluatedAt: now().toJSDate(),
+  });
+
+  for (const plan of plans) {
+    const pairMessage = formatCalendarConflictMessage(plan.conflictPairs, analysis.dateLabel, timezone);
+
+    if (!persist) {
+      logger.info({
+        event: 'decision.conflict_evaluated',
+        mode: 'shadow',
+        tenantId: target.tenantId,
+        disposition: plan.evaluation.disposition,
+        conflictClasses: plan.evaluation.findings.map((finding) => finding.class),
+        representedConflictCount: plan.representedPairKeys.length,
+      }, 'Secretary calendar conflict shadow evaluation completed');
+      continue;
+    }
+
+    try {
+      const result = await createDecisionIntent({
+        userId: target.tenantId,
+        tenantId: target.tenantId,
+        sourceSkill: 'secretary',
+        type: 'conflict_detected',
+        priority: 'active',
+        relatedEntityId: plan.agenda.agendaItemId,
+        relatedEntityType: 'secretary_agenda_item',
+        title: 'Calendar commitments overlap',
+        body: `${plan.conflictComparisons.length === 1
+          ? 'A Secretary-owned agenda item overlaps a confirmed calendar commitment.'
+          : `A Secretary-owned agenda item overlaps ${plan.conflictComparisons.length} confirmed calendar commitments.`}${analysis.sourceStatus === 'degraded'
+          ? ' One connected calendar was unavailable, so review the full calendar before acting.'
+          : ''}`,
+        sensitiveBody: pairMessage.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim(),
+        actionButtons: [{ id: 'open_detail', label: 'Review commitments', style: 'primary' }],
+        deeplink: `nexus://secretary/conflict/${plan.agenda.agendaItemId}`,
+        expiresAt: plan.expiresAt,
+        dedupeKey: `secretary:calendar-conflict-preview:${plan.agenda.agendaItemId}:${plan.contextVersion}`,
+        requiresUserAction: true,
+        decisionDeadline: plan.deadlineAt,
+        decisionContext: {
+          // Keep user-authored agenda copy out of the structured policy/audit
+          // context. The authenticated sensitive body remains the presentation
+          // surface; policy works only with opaque agenda/event identifiers.
+          entityTitle: 'Secretary agenda item',
+          currentStartAt: plan.ownedEvent.start,
+          currentEndAt: plan.ownedEvent.end,
+          reasonCodes: [
+            'calendar_time_overlap',
+            'approved_commitment_requires_review',
+            'preview_only',
+            ...(analysis.sourceStatus === 'degraded' ? ['calendar_partial_provider_failure'] : []),
+          ],
+          sourceState: analysis.sourceStatus === 'degraded'
+            ? 'conflict_detected_partial_context'
+            : 'conflict_detected',
+          providerName: plan.agenda.providerSource,
+          providerSyncState: plan.agenda.providerSyncState,
+          providerSyncUpdatedAt: plan.agenda.updatedAt,
+          contextObservedAt: plan.agenda.updatedAt,
+          contextExpiresAt: plan.deadlineAt,
+          timezone,
+          recipe: 'calendar_conflict_preview_v1',
+          normalizedAction: plan.candidate,
+          conflictComparisons: plan.conflictComparisons,
+          conflictEvaluation: plan.evaluation,
+        },
+        quietHoursPolicy: 'respect',
+        deliveryPolicy: 'in_app_only',
+        privacyPolicy: 'sensitive',
+      });
+      const safelyHandledWithoutNewItem = (result.eligibility.reasons ?? []).some((reason) =>
+        reason === 'conflict_policy:duplicate' || reason === 'candidate_rejection_cooldown');
+      if (result.item || safelyHandledWithoutNewItem) {
+        for (const pairKey of plan.representedPairKeys) handledPairs.add(pairKey);
+        logger.info({
+          tenantId: target.tenantId,
+          disposition: plan.evaluation.disposition,
+          conflictClasses: plan.evaluation.findings.map((finding) => finding.class),
+          representedConflictCount: plan.representedPairKeys.length,
+          suppressedWithoutNewItem: safelyHandledWithoutNewItem,
+        }, safelyHandledWithoutNewItem
+          ? 'Secretary calendar conflict was already represented; generic fallback suppressed'
+          : 'Secretary calendar conflict evaluated and persisted for Decision Center review');
+      }
+    } catch (err) {
+      logger.warn({ err, tenantId: target.tenantId }, 'Secretary-owned calendar conflict decision emit failed');
+    }
+  }
+
+  return handledPairs;
+}
+
+async function emitGenericCalendarConflictNotification(
+  target: ActiveUserTarget,
+  conflicts: CalendarConflictPair[],
+  dateLabel: string,
+  localDate: string,
+  sourceStatus: UnifiedCalendarFetchStatus,
+  timezone = config.app.timezone,
+): Promise<void> {
+  if (conflicts.length === 0) return;
+  const message = formatCalendarConflictMessage(conflicts, dateLabel, timezone);
+  const conflictSignature = createHash('sha256')
+    .update(message.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim())
+    .digest('hex')
+    .slice(0, 16);
+
+  await createNotificationIntent({
+    userId: target.tenantId,
+    tenantId: target.tenantId,
+    sourceSkill: 'secretary',
+    type: 'conflict_detected',
+    priority: 'time_sensitive',
+    relatedEntityId: `conflict-detection-${localDate}-${conflictSignature}`,
+    relatedEntityType: 'calendar_conflict',
+    title: 'Schedule conflict detected',
+    body: sourceStatus === 'degraded'
+      ? 'Schedule conflict needs review. One connected calendar was unavailable, so this is a partial view.'
+      : 'Schedule conflict needs review.',
+    sensitiveBody: message.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim(),
+    actionButtons: [{ id: 'open_detail', label: 'Review', style: 'primary' }],
+    deeplink: 'nexus://secretary/conflict/daily',
+    dedupeKey: `secretary:conflict_detection:${target.tenantId}:${localDate}:${conflictSignature}`,
+    // External-only conflicts are informational because Nexus cannot prove
+    // ownership or safely offer a mutation. Secretary-owned conflicts use the
+    // Decision Center proposal funnel above and do require review.
+    requiresUserAction: false,
+    decisionDeadline: new Date(Date.now() + 3 * 3_600_000).toISOString(),
+    decisionContext: {
+      entityTitle: 'Daily schedule conflict',
+      sourceState: sourceStatus === 'degraded'
+        ? 'conflict_detected_partial_context'
+        : 'conflict_detected',
+      reasonCodes: sourceStatus === 'degraded' ? ['calendar_partial_provider_failure'] : [],
+      deadlineAt: new Date(Date.now() + 3 * 3_600_000).toISOString(),
+      explicitNoRelatedEntityReason: null,
+    },
+    quietHoursPolicy: 'allow_time_sensitive',
+    privacyPolicy: 'sensitive',
+  });
+}
+
+function agendaForCalendarEvent(
+  event: UnifiedCalendarEvent,
+  agendaItems: SecretaryAgendaItem[],
+): SecretaryAgendaItem | null {
+  return agendaItems.find((agenda) => agenda.providerEventId === event.id
+    && (!agenda.providerSource || agenda.providerSource === event.source)) ?? null;
+}
+
+function calendarConflictContextVersion(
+  agenda: SecretaryAgendaItem,
+  ownedEvent: UnifiedCalendarEvent,
+  otherEvents: UnifiedCalendarEvent[],
+  sourceStatus: UnifiedCalendarFetchStatus,
+  sourceWarningCodes: string[],
+): string {
+  const orderedOthers = otherEvents
+    .map((event) => [event.source, event.id, event.start, event.end])
+    .sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right)));
+  return `ctx_${createHash('sha256').update(JSON.stringify({
+    agendaItemId: agenda.agendaItemId,
+    agendaVersion: agenda.version,
+    sourceShapeHash: agenda.sourceShapeHash,
+    owned: [ownedEvent.source, ownedEvent.id, ownedEvent.start, ownedEvent.end],
+    others: orderedOthers,
+    sourceStatus,
+    sourceWarningCodes: [...sourceWarningCodes].sort(),
+  })).digest('hex').slice(0, 24)}`;
+}
+
+function calendarConflictLocalDay(startAt: string, timezone: string): string {
+  const local = DateTime.fromISO(startAt, { setZone: true }).setZone(timezone);
+  if (local.isValid && local.toISODate()) return local.toISODate()!;
+  const utcFallback = DateTime.fromISO(startAt, { zone: 'utc' }).toISODate();
+  // Calendar conflict analysis has already rejected invalid windows. Keep a
+  // stable final fallback so a bad profile timezone cannot create one global
+  // serialization key shared by unrelated dates.
+  return utcFallback ?? startAt.slice(0, 10);
+}
+
+function formatCalendarConflictTime(value: string, timezone: string): string {
+  const instant = DateTime.fromISO(value, { setZone: true }).setZone(timezone);
+  if (instant.isValid) return instant.toFormat('HH:mm');
+  return formatTime(value);
+}
+
+function opaqueCalendarEventRef(event: UnifiedCalendarEvent, tenantId: number): string {
+  const hmacSecret = process.env.CHAT_CORE_V2_DECISION_EVIDENCE_HMAC_SECRET?.trim() ?? '';
+  if (!hmacSecret) throw new Error('SECRETARY_DECISION_PREVIEW_HMAC_SECRET_REQUIRED');
+  return hmacTenantScopedEvidenceFingerprint({
+    tenantId: String(tenantId),
+    hmacSecret,
+    sourceType: 'calendar_event',
+    sourceValue: `${event.source}:${event.id}`,
+  });
 }
 
 export function startScheduler(): void {
@@ -1041,6 +1464,7 @@ export function startScheduler(): void {
   registerJob('task_sync',        'Task Provider Sync',     '*/15 * * * *',    'system');
   registerJob('operator_alert_delivery', 'Operator Alert Delivery', '* * * * *', 'system');
   registerJob('decision_source_supersession', 'Decision Source Supersession', '*/15 * * * *', 'system');
+  registerJob('decision_daily_attention', 'Decision Daily Attention Materialization', '12 * * * *', 'system');
   registerJob('decision_handled_history_backfill', 'Decision Handled History Backfill', '22,52 * * * *', 'system');
   registerJob('decision_expiry', 'Decision Expiry Sweep', '*/10 * * * *', 'system');
   registerJob('decision_metrics_rollup', 'Decision Metrics Daily Rollup', '15 0 * * *', 'system');
@@ -1772,44 +2196,32 @@ export function startScheduler(): void {
   // ── Conflict detection (19:30) ─────────────────────────────────────
   cron.schedule('30 19 * * *', wrapJob('conflict_detection', async () => {
     for (const target of getActiveUserTargets()) {
-      const message = await buildConflictAlertForUser(target.tenantId);
-      if (!message) continue;
-
-      const conflictSignature = createHash('sha256')
-        .update(message.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim())
-        .digest('hex')
-        .slice(0, 16);
-
       try {
-        await createNotificationIntent({
+        const analysis = await buildCalendarConflictAnalysisForUser(target.tenantId);
+        if (!analysis) continue;
+
+        let genericConflicts = analysis.conflicts;
+        const conflictMode = getDecisionConflictPolicyV1Mode(process.env, {
           userId: target.tenantId,
           tenantId: target.tenantId,
-          sourceSkill: 'secretary',
-          type: 'conflict_detected',
-          priority: 'time_sensitive',
-          relatedEntityId: `conflict-detection-${startOfDay()}-${conflictSignature}`,
-          relatedEntityType: 'calendar_conflict',
-          title: 'Schedule conflict detected',
-          body: 'Schedule conflict needs review.',
-          sensitiveBody: message.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim(),
-          actionButtons: [
-            { id: 'open_detail', label: 'Review', style: 'primary' },
-          ],
-          deeplink: 'nexus://secretary/conflict/daily',
-          dedupeKey: `secretary:conflict_detection:${target.tenantId}:${startOfDay()}:${conflictSignature}`,
-          requiresUserAction: true,
-          decisionDeadline: new Date(Date.now() + 3 * 3_600_000).toISOString(),
-          decisionContext: {
-            entityTitle: 'Daily schedule conflict',
-            sourceState: 'conflict_detected',
-            deadlineAt: new Date(Date.now() + 3 * 3_600_000).toISOString(),
-            explicitNoRelatedEntityReason: null,
-          },
-          quietHoursPolicy: 'allow_time_sensitive',
-          privacyPolicy: 'sensitive',
         });
+        if (conflictMode !== 'off') {
+          const handledPairs = await emitSecretaryOwnedCalendarConflictDecisions(target, analysis, conflictMode === 'active');
+          genericConflicts = analysis.conflicts.filter(
+            (pair) => !handledPairs.has(conflictPairKey(pair.first, pair.second)),
+          );
+        }
+
+        await emitGenericCalendarConflictNotification(
+          target,
+          genericConflicts,
+          analysis.dateLabel,
+          analysis.date,
+          analysis.sourceStatus,
+          analysis.timezone ?? getUserTimezoneById(target.tenantId) ?? config.app.timezone,
+        );
       } catch (err) {
-        logger.warn({ err, tenantId: target.tenantId }, 'Conflict notification intent emit failed');
+        logger.warn({ err, tenantId: target.tenantId }, 'Conflict detection failed for one user; continuing remaining users');
       }
     }
   }), { timezone: tz });
@@ -1868,6 +2280,7 @@ export function startScheduler(): void {
         eligible: (target) =>
           hasPaidCoachBriefingEntitlement(target.tenantId)
           && hasActiveCoachWorkoutPlan(target.tenantId)
+          && hasCoachableHealthDataForUser(target.tenantId)
           && hasCoachableHealthDataForUser(target.tenantId),
       });
       if (due.length === 0) return 'skipped';
@@ -2369,6 +2782,24 @@ export function startScheduler(): void {
     logger.info(result, 'Decision source-state supersession completed');
   }), { timezone: tz });
 
+  // Decision production belongs to the scheduler/event path, never a GET.
+  // The materializer is scoped and daily-idempotent, so hourly execution also
+  // handles users who become active after the first local morning window.
+  cron.schedule('12 * * * *', wrapJob('decision_daily_attention', async () => {
+    let materialized = 0;
+    let failed = 0;
+    for (const target of getActiveUserTargets()) {
+      const result = await materializeDecisionCenterDailyAttention({
+        userId: target.tenantId,
+        tenantId: target.tenantId,
+      });
+      if (result.status === 'materialized') materialized += 1;
+      if (result.status === 'failed') failed += 1;
+    }
+    if (materialized === 0 && failed === 0) return 'skipped';
+    logger.info({ materialized, failed }, 'Decision daily attention materialization completed');
+  }), { timezone: tz });
+
   cron.schedule('22,52 * * * *', wrapJob('decision_handled_history_backfill', async () => {
     const result = runDecisionHandledHistoryBackfillJob({ limit: 100 });
     if (result.backfilled === 0 && result.failed === 0) return 'skipped';
@@ -2395,7 +2826,10 @@ export function startScheduler(): void {
 
   cron.schedule('40 4 * * *', wrapJob('decision_ledger_retention_prune', async () => {
     const result = runDecisionLedgerRetentionPruneJob({ batchSize: 500, maxBatches: 200 });
-    if (result.outcomeLedgerPruned === 0 && result.qualityGateEventsPruned === 0) return 'skipped';
+    if (result.outcomeLedgerPruned === 0
+        && result.qualityGateEventsPruned === 0
+        && result.conflictEvaluationsPruned === 0
+        && result.terminalExclusivityClaimsPruned === 0) return 'skipped';
     logger.info(result, 'Decision ledger retention prune completed');
   }), { timezone: tz });
 

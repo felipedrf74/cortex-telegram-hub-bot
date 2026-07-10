@@ -13,6 +13,7 @@ const mockGetCompletedTasksInRange = vi.fn();
 const mockGetSharedListPendingTasks = vi.fn();
 const mockIsSelfCreatedTask = vi.fn();
 const mockGetEvents = vi.fn();
+const mockGetEventsWithDiagnostics = vi.fn();
 const mockHasConnectedCalendarForUser = vi.fn();
 const mockGetUnreadCountForUser = vi.fn();
 const mockIsOutlookMailConfiguredForUser = vi.fn();
@@ -24,6 +25,8 @@ const mockGetOwnerBootstrapTarget = vi.fn();
 const mockGenerateCoachBriefing = vi.hoisted(() => vi.fn());
 const mockCronSchedule = vi.hoisted(() => vi.fn());
 const mockCreateNotificationIntent = vi.hoisted(() => vi.fn());
+const mockCreateDecisionIntent = vi.hoisted(() => vi.fn());
+const mockListSecretaryAgendaItems = vi.hoisted(() => vi.fn());
 const mockRunEventBackboneOnce = vi.hoisted(() => vi.fn());
 const mockRunEventBackboneCleanup = vi.hoisted(() => vi.fn());
 const mockRunGarminTenantIsolationWatcher = vi.hoisted(() => vi.fn());
@@ -76,6 +79,7 @@ vi.mock('../../src/services/microsoft-todo', () => ({
 
 vi.mock('../../src/services/unified-calendar', () => ({
   getEvents: (...args: unknown[]) => mockGetEvents(...args),
+  getEventsWithDiagnostics: (...args: unknown[]) => mockGetEventsWithDiagnostics(...args),
   hasConnectedCalendarForUser: (...args: unknown[]) => mockHasConnectedCalendarForUser(...args),
   isAnyCalendarConfigured: vi.fn(() => false),
 }));
@@ -225,6 +229,18 @@ vi.mock('../../src/services/notification-orchestrator', () => ({
   createNotificationIntent: (...args: unknown[]) => mockCreateNotificationIntent(...args),
   releaseDueNotificationDeliveries: vi.fn(),
 }));
+vi.mock('../../src/services/decision-center', () => ({
+  createDecisionIntent: (...args: unknown[]) => mockCreateDecisionIntent(...args),
+  runDecisionCenterSmokeCleanupJob: vi.fn(),
+  runDecisionExpiryJob: vi.fn(),
+  runDecisionHandledHistoryBackfillJob: vi.fn(),
+  runDecisionLedgerRetentionPruneJob: vi.fn(),
+  runDecisionMetricsRollupJob: vi.fn(),
+  runDecisionSourceStateSupersessionJob: vi.fn(),
+}));
+vi.mock('../../src/services/secretary-scheduling-arbitrator', () => ({
+  listSecretaryAgendaItems: (...args: unknown[]) => mockListSecretaryAgendaItems(...args),
+}));
 vi.mock('../../src/services/event-backbone-worker', () => ({
   runEventBackboneOnce: (...args: unknown[]) => mockRunEventBackboneOnce(...args),
 }));
@@ -260,7 +276,9 @@ import * as globalMail from '../../src/services/outlook-mail';
 import * as globalTodo from '../../src/services/microsoft-todo';
 import {
   _resetSchedulerTenantStateForTesting,
+  buildCalendarConflictAnalysisForUser,
   buildConflictAlertForUser,
+  buildSecretaryCalendarConflictDecisionPlans,
   buildDailyBriefingDataForUser,
   buildEndOfDaySummaryForUser,
   buildSharedListNotificationForUser,
@@ -297,6 +315,13 @@ describe('scheduler tenant scoping', () => {
     });
     mockHasConnectedCalendarForUser.mockReturnValue(true);
     mockGetEvents.mockResolvedValue([]);
+    mockGetEventsWithDiagnostics.mockImplementation(async (...args: unknown[]) => ({
+      events: await mockGetEvents(...args),
+      status: 'ready',
+      warningCodes: [],
+      warnings: [],
+      sources: { configured: ['google'], fulfilled: ['google'], failed: [] },
+    }));
     mockIsOutlookMailConfiguredForUser.mockReturnValue(true);
     mockGetUnreadCountForUser.mockResolvedValue(0);
     mockGetRemindersForToday.mockReturnValue([]);
@@ -315,6 +340,13 @@ describe('scheduler tenant scoping', () => {
     });
     mockGetOwnerBootstrapTarget.mockReturnValue({ tenantId: 99, telegramId: 1999 });
     mockCreateNotificationIntent.mockResolvedValue({ decision: 'in_app_only' });
+    mockCreateDecisionIntent.mockResolvedValue({
+      item: { decisionId: 'decision_calendar_conflict' },
+      eligibility: { classification: 'decision' },
+    });
+    mockListSecretaryAgendaItems.mockReturnValue([]);
+    process.env.CHAT_CORE_V2_DECISION_EVIDENCE_HMAC_SECRET = 'scheduler-user-scope-test-secret';
+    delete process.env.DECISION_CONFLICT_POLICY_V1_ENABLED;
     mockRunEventBackboneOnce.mockResolvedValue({
       events: { processed: 0, failed: 0, deadLetter: 0 },
       jobs: { completed: 0, failed: 0, deadLetter: 0, skipped: 0 },
@@ -649,9 +681,9 @@ describe('scheduler tenant scoping', () => {
 
   it('buildConflictAlertForUser uses scoped calendar reads and only reports overlapping events', async () => {
     mockGetEvents.mockResolvedValue([
-      { summary: 'Event A', start: '2026-04-18T09:00:00.000Z', end: '2026-04-18T10:00:00.000Z' },
-      { summary: 'Event B', start: '2026-04-18T09:30:00.000Z', end: '2026-04-18T11:00:00.000Z' },
-      { summary: 'Event C', start: '2026-04-18T12:00:00.000Z', end: '2026-04-18T13:00:00.000Z' },
+      { id: 'event-a', source: 'google', summary: 'Event A', start: '2026-04-18T09:00:00.000Z', end: '2026-04-18T10:00:00.000Z' },
+      { id: 'event-b', source: 'outlook', summary: 'Event B', start: '2026-04-18T09:30:00.000Z', end: '2026-04-18T11:00:00.000Z' },
+      { id: 'event-c', source: 'google', summary: 'Event C', start: '2026-04-18T12:00:00.000Z', end: '2026-04-18T13:00:00.000Z' },
     ]);
 
     const message = await buildConflictAlertForUser(42);
@@ -664,10 +696,247 @@ describe('scheduler tenant scoping', () => {
     expect(message).not.toContain('Event C');
   });
 
+  it('preserves partial-provider health in calendar conflict analysis', async () => {
+    mockGetEventsWithDiagnostics.mockResolvedValue({
+      events: [
+        { id: 'event-a', source: 'google', summary: 'Event A', start: '2026-04-18T09:00:00.000Z', end: '2026-04-18T10:00:00.000Z' },
+        { id: 'event-b', source: 'google', summary: 'Event B', start: '2026-04-18T09:30:00.000Z', end: '2026-04-18T11:00:00.000Z' },
+      ],
+      status: 'degraded',
+      warningCodes: ['OUTLOOK_PROVIDER_FAILED'],
+      warnings: ['private provider error text'],
+      sources: { configured: ['google', 'outlook'], fulfilled: ['google'], failed: ['outlook'] },
+    });
+
+    const analysis = await buildCalendarConflictAnalysisForUser(42);
+
+    expect(analysis).toMatchObject({
+      sourceStatus: 'degraded',
+      sourceWarningCodes: ['outlook_provider_failed'],
+    });
+    expect(JSON.stringify(analysis)).not.toContain('private provider error text');
+  });
+
+  it('builds one privacy-safe, day-scoped decision plan for every represented overlap on an agenda item', () => {
+    const owned = {
+      id: 'owned-provider-event',
+      source: 'google',
+      summary: 'Private Secretary block',
+      start: '2026-04-18T09:00:00.000Z',
+      end: '2026-04-18T12:00:00.000Z',
+    } as any;
+    const firstExternal = {
+      id: 'external-provider-event-a',
+      source: 'outlook',
+      summary: 'Confidential external title A',
+      start: '2026-04-18T09:30:00.000Z',
+      end: '2026-04-18T10:00:00.000Z',
+    } as any;
+    const secondExternal = {
+      id: 'external-provider-event-b',
+      source: 'google',
+      summary: 'Confidential external title B',
+      start: '2026-04-18T10:30:00.000Z',
+      end: '2026-04-18T11:00:00.000Z',
+    } as any;
+    const agenda = {
+      agendaItemId: 'agenda-owned',
+      providerEventId: owned.id,
+      providerSource: owned.source,
+      providerSyncState: 'synced',
+      version: 4,
+      sourceShapeHash: 'shape-v4',
+      title: 'Private Secretary block',
+      updatedAt: '2026-04-17T20:00:00.000Z',
+    } as any;
+    const analysis = {
+      date: '2026-04-18',
+      dateLabel: 'Saturday, Apr 18',
+      sourceStatus: 'ready' as const,
+      sourceWarningCodes: [],
+      events: [owned, firstExternal, secondExternal],
+      conflicts: [
+        { first: owned, second: secondExternal },
+        { first: owned, second: firstExternal },
+      ],
+      message: 'sensitive presentation only',
+    };
+
+    const plans = buildSecretaryCalendarConflictDecisionPlans({
+      tenantId: 42,
+      analysis,
+      agendaItems: [agenda],
+      timezone: 'Europe/Lisbon',
+      evaluatedAt: new Date('2026-04-17T20:00:00.000Z'),
+    });
+
+    expect(plans).toHaveLength(1);
+    expect(plans[0].representedPairKeys).toHaveLength(2);
+    expect(plans[0].conflictComparisons).toHaveLength(2);
+    expect(plans[0].candidate.exclusivityKeys).toEqual(['calendar_timeline:42:2026-04-18']);
+    expect(plans[0].candidate.affectedResources).toEqual([{ type: 'calendar_day', id: 'primary:2026-04-18' }]);
+    expect(plans[0].conflictComparisons.every((comparison) => (
+      comparison.action.contextVersion === plans[0].contextVersion
+      && comparison.action.exclusivityKeys[0] === 'calendar_timeline:42:2026-04-18'
+      && comparison.authority === 'approved_commitment'
+      && comparison.approved
+    ))).toBe(true);
+
+    const persistedComparisons = JSON.stringify(plans[0].conflictComparisons);
+    expect(persistedComparisons).not.toContain('Confidential external title');
+    expect(persistedComparisons).not.toContain('external-provider-event');
+    expect(plans[0].conflictComparisons.every((comparison) => (
+      comparison.action.targetEntities[0]?.id.startsWith('hmac:evidence:calendar_event:')
+    ))).toBe(true);
+
+    const nextDayOwned = { ...owned, id: 'owned-next', start: '2026-04-19T09:00:00.000Z', end: '2026-04-19T12:00:00.000Z' };
+    const nextDayExternal = { ...firstExternal, id: 'external-next', start: '2026-04-19T09:30:00.000Z', end: '2026-04-19T10:00:00.000Z' };
+    const [nextDayPlan] = buildSecretaryCalendarConflictDecisionPlans({
+      tenantId: 42,
+      analysis: {
+        date: '2026-04-19',
+        dateLabel: 'Sunday, Apr 19',
+        sourceStatus: 'ready',
+        sourceWarningCodes: [],
+        events: [nextDayOwned, nextDayExternal],
+        conflicts: [{ first: nextDayOwned, second: nextDayExternal }],
+        message: 'sensitive presentation only',
+      },
+      agendaItems: [{ ...agenda, providerEventId: nextDayOwned.id }],
+      timezone: 'Europe/Lisbon',
+      evaluatedAt: new Date('2026-04-18T20:00:00.000Z'),
+    });
+    expect(nextDayPlan.candidate.exclusivityKeys).toEqual(['calendar_timeline:42:2026-04-19']);
+    expect(nextDayPlan.candidate.exclusivityKeys).not.toEqual(plans[0].candidate.exclusivityKeys);
+  });
+
+  it('bounds oversized agenda conflict groups deterministically so overflow can remain generic', () => {
+    const owned = {
+      id: 'owned-provider-event',
+      source: 'google',
+      summary: 'Owned',
+      start: '2026-04-18T08:00:00.000Z',
+      end: '2026-04-18T20:00:00.000Z',
+    } as any;
+    const externalEvents = Array.from({ length: 26 }, (_, index) => ({
+      id: `external-${String(index).padStart(2, '0')}`,
+      source: index % 2 === 0 ? 'google' : 'outlook',
+      summary: `External ${index}`,
+      start: `2026-04-18T${String(9 + Math.floor(index / 4)).padStart(2, '0')}:${String((index % 4) * 10).padStart(2, '0')}:00.000Z`,
+      end: `2026-04-18T${String(9 + Math.floor(index / 4)).padStart(2, '0')}:${String((index % 4) * 10 + 5).padStart(2, '0')}:00.000Z`,
+    })) as any[];
+    const conflicts = externalEvents.map((event) => ({ first: owned, second: event }));
+    const agenda = {
+      agendaItemId: 'agenda-owned',
+      providerEventId: owned.id,
+      providerSource: owned.source,
+      providerSyncState: 'synced',
+      version: 1,
+      sourceShapeHash: 'shape-v1',
+      title: 'Owned',
+      updatedAt: '2026-04-17T20:00:00.000Z',
+    } as any;
+    const build = (orderedConflicts: typeof conflicts) => buildSecretaryCalendarConflictDecisionPlans({
+      tenantId: 42,
+      analysis: {
+        date: '2026-04-18',
+        dateLabel: 'Saturday, Apr 18',
+        sourceStatus: 'ready',
+        sourceWarningCodes: [],
+        events: [owned, ...externalEvents],
+        conflicts: orderedConflicts,
+        message: 'sensitive presentation only',
+      },
+      agendaItems: [agenda],
+      timezone: 'Europe/Lisbon',
+      evaluatedAt: new Date('2026-04-17T20:00:00.000Z'),
+    })[0];
+
+    const forward = build(conflicts);
+    const reversed = build([...conflicts].reverse());
+    expect(forward.representedPairKeys).toHaveLength(24);
+    expect(forward.conflictComparisons).toHaveLength(24);
+    expect(reversed.representedPairKeys).toEqual(forward.representedPairKeys);
+    expect(reversed.contextVersion).toBe(forward.contextVersion);
+  });
+
+  it('aggregates Secretary-owned overlaps into one decision and suppresses every represented generic pair', async () => {
+    process.env.DECISION_CONFLICT_POLICY_V1_ENABLED = 'active';
+    const owned = {
+      id: 'owned-provider-event',
+      source: 'google',
+      summary: 'Private Secretary block',
+      start: '2026-04-18T09:00:00.000Z',
+      end: '2026-04-18T12:00:00.000Z',
+    };
+    const firstExternal = {
+      id: 'external-provider-event-a',
+      source: 'outlook',
+      summary: 'External A',
+      start: '2026-04-18T09:30:00.000Z',
+      end: '2026-04-18T10:00:00.000Z',
+    };
+    const secondExternal = {
+      id: 'external-provider-event-b',
+      source: 'google',
+      summary: 'External B',
+      start: '2026-04-18T10:30:00.000Z',
+      end: '2026-04-18T11:00:00.000Z',
+    };
+    mockGetEvents.mockResolvedValue([owned, firstExternal, secondExternal]);
+    mockListSecretaryAgendaItems.mockImplementation((scope: { ownerUserId: number }) => (
+      scope.ownerUserId === 11
+        ? [{
+            agendaItemId: 'agenda-owned',
+            providerEventId: owned.id,
+            providerSource: owned.source,
+            providerSyncState: 'synced',
+            version: 4,
+            sourceShapeHash: 'shape-v4',
+            title: 'Private Secretary block',
+            updatedAt: '2026-04-17T20:00:00.000Z',
+          }]
+        : []
+    ));
+
+    startScheduler();
+    const conflictJob = mockCronSchedule.mock.calls.find((call) => call[0] === '30 19 * * *')?.[1] as (() => Promise<void>) | undefined;
+    expect(conflictJob).toBeTypeOf('function');
+    await conflictJob!();
+
+    expect(mockCreateDecisionIntent).toHaveBeenCalledTimes(1);
+    const decisionInput = mockCreateDecisionIntent.mock.calls[0][0];
+    expect(decisionInput).toMatchObject({
+      userId: 11,
+      tenantId: 11,
+      relatedEntityId: 'agenda-owned',
+      relatedEntityType: 'secretary_agenda_item',
+      body: 'A Secretary-owned agenda item overlaps 2 confirmed calendar commitments.',
+      decisionContext: {
+        recipe: 'calendar_conflict_preview_v1',
+        conflictComparisons: expect.arrayContaining([
+          expect.objectContaining({ authority: 'approved_commitment', approved: true }),
+          expect.objectContaining({ authority: 'approved_commitment', approved: true }),
+        ]),
+      },
+    });
+    expect(decisionInput.decisionContext.conflictComparisons).toHaveLength(2);
+    expect(JSON.stringify(decisionInput.decisionContext.conflictComparisons)).not.toContain('External A');
+    expect(JSON.stringify(decisionInput.decisionContext.conflictComparisons)).not.toContain('External B');
+    expect(mockCreateNotificationIntent.mock.calls.some(([input]) => (
+      input.userId === 11 && input.relatedEntityType === 'calendar_conflict'
+    ))).toBe(false);
+    expect(mockCreateNotificationIntent).toHaveBeenCalledWith(expect.objectContaining({
+      userId: 22,
+      tenantId: 22,
+      relatedEntityType: 'calendar_conflict',
+    }));
+  });
+
   it('conflict detection cron emits Secretary NotificationIntent even when Telegram is unavailable', async () => {
     mockGetEvents.mockResolvedValue([
-      { summary: 'Event A', start: '2026-04-18T09:00:00.000Z', end: '2026-04-18T10:00:00.000Z' },
-      { summary: 'Event B', start: '2026-04-18T09:30:00.000Z', end: '2026-04-18T11:00:00.000Z' },
+      { id: 'event-a', source: 'google', summary: 'Event A', start: '2026-04-18T09:00:00.000Z', end: '2026-04-18T10:00:00.000Z' },
+      { id: 'event-b', source: 'outlook', summary: 'Event B', start: '2026-04-18T09:30:00.000Z', end: '2026-04-18T11:00:00.000Z' },
     ]);
 
     startScheduler();
@@ -1029,7 +1298,6 @@ describe('scheduler tenant scoping', () => {
     }
     expect(mockReleaseFreshReportScheduleClaim).not.toHaveBeenCalled();
   });
-
   it('sendCoachBriefings generates, stores, and scopes coach state for every paid active tenant', async () => {
     mockGetActivePlan.mockReturnValue({
       id: 701,
@@ -1191,7 +1459,6 @@ describe('scheduler tenant scoping', () => {
     expect(mockGetActivePlan).not.toHaveBeenCalledWith(22, 22);
     expect(mockStoreAndPushReport).not.toHaveBeenCalledWith(expect.objectContaining({ userId: 22 }));
   });
-
   it('sendCoachBriefings skips paid users without an active workout plan before generating or pushing reports', async () => {
     mockGetEffectiveEntitlement.mockReturnValue({ plan: 'pro', source: 'stripe' });
     mockGetActivePlan.mockImplementation((userId: number) => (

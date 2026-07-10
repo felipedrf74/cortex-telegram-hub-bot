@@ -5,9 +5,16 @@ const mockGetDecisionSummary = vi.fn();
 const mockGetDecisionOverview = vi.fn();
 const mockListDecisionItems = vi.fn();
 const mockRecordDecisionItemExposures = vi.fn();
+const mockRecordDecisionItemExposuresByIds = vi.fn();
+const mockDecisionRefreshSupportedForScope = vi.fn();
 const mockListHandledByNexusItems = vi.fn();
 const mockGetDecisionItem = vi.fn();
 const mockPerformDecisionAction = vi.fn();
+const mockReviewDecision = vi.fn();
+const mockReviseDecisionProposal = vi.fn();
+const mockGetDecisionLifecycleEvents = vi.fn();
+const mockGetDecisionAuditHistory = vi.fn();
+const mockRefreshDecisionItem = vi.fn();
 const mockCreateDecisionIntent = vi.fn();
 const mockBuildSkillDecisionFixtureIntent = vi.fn();
 const mockSnoozeDecision = vi.fn();
@@ -45,11 +52,18 @@ vi.mock('../../src/services/decision-center', () => ({
   getDecisionOverview: (...args: unknown[]) => mockGetDecisionOverview(...args),
   listDecisionItems: (...args: unknown[]) => mockListDecisionItems(...args),
   recordDecisionItemExposures: (...args: unknown[]) => mockRecordDecisionItemExposures(...args),
+  recordDecisionItemExposuresByIds: (...args: unknown[]) => mockRecordDecisionItemExposuresByIds(...args),
+  decisionRefreshSupportedForScope: (...args: unknown[]) => mockDecisionRefreshSupportedForScope(...args),
   listHandledByNexusItems: (...args: unknown[]) => mockListHandledByNexusItems(...args),
   listDecisionDependencies: vi.fn(),
   runDecisionSourceStateSupersessionJob: vi.fn(),
   getDecisionItem: (...args: unknown[]) => mockGetDecisionItem(...args),
   performDecisionAction: (...args: unknown[]) => mockPerformDecisionAction(...args),
+  reviewDecision: (...args: unknown[]) => mockReviewDecision(...args),
+  reviseDecisionProposal: (...args: unknown[]) => mockReviseDecisionProposal(...args),
+  getDecisionLifecycleEvents: (...args: unknown[]) => mockGetDecisionLifecycleEvents(...args),
+  getDecisionAuditHistory: (...args: unknown[]) => mockGetDecisionAuditHistory(...args),
+  refreshDecisionItem: (...args: unknown[]) => mockRefreshDecisionItem(...args),
   createDecisionIntent: (...args: unknown[]) => mockCreateDecisionIntent(...args),
   buildSkillDecisionFixtureIntent: (...args: unknown[]) => mockBuildSkillDecisionFixtureIntent(...args),
   ensureDecisionCenterTables: vi.fn(),
@@ -196,9 +210,14 @@ describe('Decision routes', () => {
     mockGetDecisionOverview.mockReset();
     mockListDecisionItems.mockReset();
     mockRecordDecisionItemExposures.mockReset();
+    mockRecordDecisionItemExposuresByIds.mockReset();
+    mockDecisionRefreshSupportedForScope.mockReset();
     mockListHandledByNexusItems.mockReset();
     mockGetDecisionItem.mockReset();
     mockPerformDecisionAction.mockReset();
+    mockReviewDecision.mockReset();
+    mockReviseDecisionProposal.mockReset();
+    mockGetDecisionLifecycleEvents.mockReset();
     mockCreateDecisionIntent.mockReset();
     mockBuildSkillDecisionFixtureIntent.mockReset();
     mockSnoozeDecision.mockReset();
@@ -215,6 +234,8 @@ describe('Decision routes', () => {
     mockMaterializeDecisionCenterDailyAttention.mockReset();
     mockCaptureError.mockReset();
     mockNotificationCacheInvalidation.invalidateNotificationInboxCaches.mockReset();
+    mockDecisionRefreshSupportedForScope.mockReturnValue(true);
+    mockRecordDecisionItemExposuresByIds.mockReturnValue({ recordedCount: 0 });
 
     // Type-suppression is a presentation post-filter; by default it passes the list through unchanged
     // (flag OFF semantics) so the existing list assertions stay byte-identical.
@@ -260,6 +281,18 @@ describe('Decision routes', () => {
       alternativeActions: [{ id: 'dismiss', label: 'Dismiss', style: 'secondary' }],
     });
     mockPerformDecisionAction.mockResolvedValue({ actionId: 'open_detail', idempotent: false, status: 'succeeded', item: { decisionId: 'nc_1', status: 'read' } });
+    mockReviewDecision.mockReturnValue({ decisionId: 'nc_1', status: 'read', recordVersion: 2, decisionState: 'approved' });
+    mockReviseDecisionProposal.mockReturnValue({ decisionId: 'nc_1', status: 'read', recordVersion: 2, decisionState: 'ready_for_review' });
+    mockGetDecisionLifecycleEvents.mockReturnValue([{ event: 'created', createdAt: '2026-05-19T10:00:00.000Z' }]);
+    mockGetDecisionAuditHistory.mockReturnValue({
+      events: [{ event: 'created', createdAt: '2026-05-19T10:00:00.000Z' }],
+      conflicts: [],
+      executions: [],
+    });
+    mockRefreshDecisionItem.mockReturnValue({
+      item: { decisionId: 'nc_1', status: 'read', recordVersion: 2 },
+      refreshedAt: '2026-05-19T10:05:00.000Z',
+    });
     mockSnoozeDecision.mockReturnValue({ decisionId: 'nc_1', status: 'snoozed' });
     mockDismissDecision.mockReturnValue({ decisionId: 'nc_1', status: 'dismissed' });
     mockMarkDecisionViewed.mockReturnValue({ decisionId: 'nc_1', status: 'read' });
@@ -283,26 +316,20 @@ describe('Decision routes', () => {
     expect(overview.statusCode).toBe(200);
     expect(overview.body.data.topSuggestion.title).toBe('Schedule decision');
     expect(overview.body.data.schemaVersion).toBeUndefined();
-    expect(mockMaterializeDecisionCenterDailyAttention).toHaveBeenCalledWith({ userId: 7, tenantId: 7 });
+    expect(mockMaterializeDecisionCenterDailyAttention).not.toHaveBeenCalled();
     expect(mockGetDecisionOverview).toHaveBeenCalledWith(7, 7, { limit: 20, handledLimit: 4 });
-    expect(mockMaterializeDecisionCenterDailyAttention.mock.invocationCallOrder[0]).toBeLessThan(
-      mockGetDecisionOverview.mock.invocationCallOrder[0],
-    );
 
     const list = await dispatch(router, 'GET', '/', { limit: 10, status: 'all' });
     expect(list.statusCode).toBe(200);
     expect(list.body.data.count).toBe(1);
     expect(list.body.data.schemaVersion).toBeUndefined();
     expect(mockListDecisionItems).toHaveBeenCalledWith(7, 7, expect.objectContaining({ status: 'all', limit: 10 }));
-    expect(mockMaterializeDecisionCenterDailyAttention.mock.invocationCallOrder[1]).toBeLessThan(
-      mockListDecisionItems.mock.invocationCallOrder[0],
-    );
 
     mockListDecisionItems.mockClear();
     const activeList = await dispatch(router, 'GET', '/', { limit: 10 });
     expect(activeList.statusCode).toBe(200);
     expect(mockListDecisionItems).toHaveBeenCalledWith(7, 7, expect.objectContaining({ status: undefined, limit: 10 }));
-    expect(mockMaterializeDecisionCenterDailyAttention).toHaveBeenCalledTimes(3);
+    expect(mockMaterializeDecisionCenterDailyAttention).not.toHaveBeenCalled();
 
     const detail = await dispatch(router, 'GET', '/nc_1');
     expect(detail.statusCode).toBe(200);
@@ -328,13 +355,36 @@ describe('Decision routes', () => {
       channel: 'apns',
     }));
 
+    const review = await dispatch(router, 'POST', '/nc_1/review', {}, {
+      outcome: 'approve', expectedVersion: 1, idempotencyKey: 'review-1', reasonCode: 'user_confirmed',
+      replacementChoiceId: 'replace_with_candidate', strongConfirmationText: 'CONFIRM',
+    });
+    expect(review.statusCode).toBe(200);
+    expect(mockReviewDecision).toHaveBeenCalledWith('nc_1', 7, 7, expect.objectContaining({
+      outcome: 'approve', expectedVersion: 1, idempotencyKey: 'review-1',
+      replacementChoiceId: 'replace_with_candidate', strongConfirmationText: 'CONFIRM',
+    }));
+
+    const revised = await dispatch(router, 'PATCH', '/nc_1/proposal', {}, {
+      expectedVersion: 1,
+      recommendedStartAt: '2026-05-20T10:00:00.000Z',
+      recommendedEndAt: '2026-05-20T11:00:00.000Z',
+    });
+    expect(revised.statusCode).toBe(200);
+    expect(mockReviseDecisionProposal).toHaveBeenCalledWith('nc_1', 7, 7, expect.objectContaining({ expectedVersion: 1 }));
+
+    const history = await dispatch(router, 'GET', '/nc_1/history');
+    expect(history.statusCode).toBe(200);
+    expect(history.body.data.events).toHaveLength(1);
+    expect(mockGetDecisionAuditHistory).toHaveBeenCalledWith('nc_1', 7, 7);
+
     const handled = await dispatch(router, 'GET', '/handled', { limit: 5 });
     expect(handled.statusCode).toBe(200);
     expect(handled.body.data.items[0].itemId).toBe('hbn_1');
     expect(mockListHandledByNexusItems).toHaveBeenCalledWith(7, 7, 5);
   });
 
-  it('preserves overview and list behavior when daily task attention is flag-disabled upstream', async () => {
+  it('keeps overview and list reads pure when daily task attention is flag-disabled upstream', async () => {
     mockMaterializeDecisionCenterDailyAttention.mockResolvedValue({
       status: 'skipped',
       reason: 'flag_disabled',
@@ -353,12 +403,12 @@ describe('Decision routes', () => {
     expect(overview.body.data.topSuggestion.title).toBe('Schedule decision');
     expect(list.statusCode).toBe(200);
     expect(list.body.data.items).toHaveLength(1);
-    expect(mockMaterializeDecisionCenterDailyAttention).toHaveBeenCalledTimes(2);
+    expect(mockMaterializeDecisionCenterDailyAttention).not.toHaveBeenCalled();
     expect(mockGetDecisionOverview).toHaveBeenCalledWith(7, 7, { limit: 80, handledLimit: 10 });
     expect(mockListDecisionItems).toHaveBeenCalledWith(7, 7, expect.objectContaining({ limit: 80 }));
   });
 
-  it('keeps repeated Decision Center opens bounded through the daily attention materializer contract', async () => {
+  it('does not materialize daily attention during repeated Decision Center reads', async () => {
     mockMaterializeDecisionCenterDailyAttention.mockResolvedValue({
       status: 'materialized',
       reason: undefined,
@@ -380,13 +430,10 @@ describe('Decision routes', () => {
     expect(first.body.data.items).toHaveLength(1);
     expect(second.body.data.items).toHaveLength(1);
     expect(list.body.data.items).toHaveLength(1);
-    expect(mockMaterializeDecisionCenterDailyAttention).toHaveBeenCalledTimes(3);
-    expect(mockMaterializeDecisionCenterDailyAttention).toHaveBeenNthCalledWith(1, { userId: 7, tenantId: 7 });
-    expect(mockMaterializeDecisionCenterDailyAttention).toHaveBeenNthCalledWith(2, { userId: 7, tenantId: 7 });
-    expect(mockMaterializeDecisionCenterDailyAttention).toHaveBeenNthCalledWith(3, { userId: 7, tenantId: 7 });
+    expect(mockMaterializeDecisionCenterDailyAttention).not.toHaveBeenCalled();
   });
 
-  it('keeps overview and list reads available when daily task attention materialization rejects', async () => {
+  it('keeps overview and list reads independent from daily task attention failures', async () => {
     mockMaterializeDecisionCenterDailyAttention.mockRejectedValue(new Error('daily attention unavailable'));
     const router = decisionRoutes();
 
@@ -397,7 +444,7 @@ describe('Decision routes', () => {
     expect(overview.body.data.topSuggestion.title).toBe('Schedule decision');
     expect(list.statusCode).toBe(200);
     expect(list.body.data.items).toHaveLength(1);
-    expect(mockMaterializeDecisionCenterDailyAttention).toHaveBeenCalledTimes(2);
+    expect(mockMaterializeDecisionCenterDailyAttention).not.toHaveBeenCalled();
     expect(mockGetDecisionOverview).toHaveBeenCalledWith(7, 7, { limit: 80, handledLimit: 10 });
     expect(mockListDecisionItems).toHaveBeenCalledWith(7, 7, expect.objectContaining({ limit: 80 }));
   });
@@ -422,10 +469,34 @@ describe('Decision routes', () => {
       maxLimit: 500,
       recordExposure: false,
     }));
-    expect(mockRecordDecisionItemExposures).toHaveBeenCalledWith([
-      expect.objectContaining({ decisionId: 'nc_1' }),
-      expect.objectContaining({ decisionId: 'nc_2' }),
-    ]);
+    expect(mockRecordDecisionItemExposures).not.toHaveBeenCalled();
+  });
+
+  it('records only explicit authenticated card exposures and validates the bounded ID list', async () => {
+    const router = decisionRoutes();
+    mockRecordDecisionItemExposuresByIds.mockReturnValue({ recordedCount: 2 });
+
+    const accepted = await dispatch(router, 'POST', '/exposures', {}, {
+      decisionIds: ['nc_1', 'nc_2', 'nc_1'],
+    }, {}, { tenantId: 17 });
+    expect(accepted.statusCode).toBe(200);
+    expect(accepted.body.data).toEqual({ recordedCount: 2 });
+    expect(mockRecordDecisionItemExposuresByIds).toHaveBeenCalledWith(
+      ['nc_1', 'nc_2', 'nc_1'],
+      7,
+      17,
+    );
+
+    const invalid = await dispatch(router, 'POST', '/exposures', {}, { decisionIds: [] }, {}, { tenantId: 17 });
+    expect(invalid.statusCode).toBe(400);
+    expect(invalid.body.error.code).toBe('VALIDATION');
+
+    mockRecordDecisionItemExposuresByIds.mockClear();
+    const missingScope = await dispatch(router, 'POST', '/exposures', {}, {
+      decisionIds: ['nc_1'],
+    }, {}, { tenantId: undefined });
+    expect(missingScope.statusCode).toBe(401);
+    expect(mockRecordDecisionItemExposuresByIds).not.toHaveBeenCalled();
   });
 
   it('invalidates notification inbox caches after decision mutations and successful intent creation', async () => {
@@ -441,6 +512,33 @@ describe('Decision routes', () => {
 
     expect(mockNotificationCacheInvalidation.invalidateNotificationInboxCaches).toHaveBeenCalledTimes(5);
     expect(mockNotificationCacheInvalidation.invalidateNotificationInboxCaches).toHaveBeenCalledWith(7, 17);
+  });
+
+  it('passes expectedVersion to snooze and maps refresh DecisionActionError responses', async () => {
+    const router = decisionRoutes();
+    await dispatch(router, 'PATCH', '/nc_1/snooze', {}, { minutes: 30, expectedVersion: 4 }, {}, { tenantId: 17 });
+    expect(mockSnoozeDecision).toHaveBeenCalledWith('nc_1', 7, 17, 30, 4);
+
+    process.env.DECISION_REFRESH_ENABLED_USER_7 = 'true';
+    mockRefreshDecisionItem.mockImplementationOnce(() => {
+      throw new DecisionActionError('DECISION_VERSION_CONFLICT', 'Decision changed.', 409, {
+        currentVersion: 5,
+        currentItem: { decisionId: 'nc_1', recordVersion: 5 },
+      });
+    });
+    try {
+      const response = await dispatch(router, 'POST', '/nc_1/refresh', {}, {}, {}, { tenantId: 17 });
+      expect(response.statusCode).toBe(409);
+      expect(response.body.error).toMatchObject({
+        code: 'DECISION_VERSION_CONFLICT',
+        details: {
+          currentVersion: 5,
+          currentItem: { decisionId: 'nc_1', recordVersion: 5 },
+        },
+      });
+    } finally {
+      delete process.env.DECISION_REFRESH_ENABLED_USER_7;
+    }
   });
 
   it('validates overview pagination before calling the service', async () => {

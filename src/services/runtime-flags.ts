@@ -10,6 +10,9 @@ export interface RuntimeFlagScope {
   tenantId?: number | string | null;
 }
 
+export type SecretaryReasoningV1Mode = 'off' | 'shadow' | 'active';
+export type DecisionConflictPolicyV1Mode = 'off' | 'shadow' | 'active';
+
 function parseOptionalBoolean(raw: string | undefined): boolean | null {
   if (raw === undefined || raw.trim() === '') return null;
   if (raw === 'true') return true;
@@ -301,6 +304,57 @@ export function isDecisionSemanticSupersedeEnabled(env: RuntimeEnv = process.env
 }
 
 /**
+ * Staged normalized-action/conflict-policy rollout. Shadow performs the same scoped deterministic
+ * classification and telemetry without changing persistence, visibility, or execution. Active may
+ * persist the evaluation and change Decision Center presentation, but still grants no execution
+ * authority. Only the documented off/shadow/active vocabulary is accepted;
+ * boolean-like aliases fail closed to off.
+ */
+export function getDecisionConflictPolicyV1Mode(
+  env: RuntimeEnv = process.env,
+  scope?: RuntimeFlagScope,
+): DecisionConflictPolicyV1Mode {
+  const raw = scopedEnvValue(env, 'DECISION_CONFLICT_POLICY_V1_ENABLED', scope)?.trim().toLowerCase();
+  if (raw === 'active') return 'active';
+  if (raw === 'shadow') return 'shadow';
+  return 'off';
+}
+
+export function isDecisionConflictPolicyV1Enabled(env: RuntimeEnv = process.env, scope?: RuntimeFlagScope): boolean {
+  return getDecisionConflictPolicyV1Mode(env, scope) === 'active';
+}
+
+export function isDecisionConflictPolicyV1ShadowEnabled(env: RuntimeEnv = process.env, scope?: RuntimeFlagScope): boolean {
+  return getDecisionConflictPolicyV1Mode(env, scope) === 'shadow';
+}
+
+/**
+ * Enables optimistic record-version enforcement for Decision Center writes.
+ * Supplying an expected version is always honored; this flag only controls
+ * whether upgraded cohorts must supply one. Default OFF for legacy clients.
+ */
+export function isDecisionFlowV1EnforceEnabled(env: RuntimeEnv = process.env, scope?: RuntimeFlagScope): boolean {
+  return scopedFlagEnabledByExplicitOptIn(env, 'DECISION_FLOW_V1_ENFORCE_ENABLED', scope);
+}
+
+/** Global/scoped half of the two-key low-risk resolver gate. A persisted user preference is also required. */
+export function isDecisionLowRiskAutoResolutionEnabled(env: RuntimeEnv = process.env, scope?: RuntimeFlagScope): boolean {
+  return scopedFlagEnabledByExplicitOptIn(env, 'DECISION_LOW_RISK_AUTO_RESOLUTION_ENABLED', scope);
+}
+
+/**
+ * Structured Secretary reasoning rollout. `shadow` builds and observes the typed context snapshot
+ * without changing the provider prompt; `active` requires a validated reasoning envelope before
+ * serving a non-fastpath response. Default off and scope-overridable.
+ */
+export function getSecretaryReasoningV1Mode(env: RuntimeEnv = process.env, scope?: RuntimeFlagScope): SecretaryReasoningV1Mode {
+  const raw = scopedEnvValue(env, 'SECRETARY_REASONING_V1_MODE', scope)?.trim().toLowerCase();
+  if (raw === 'active') return 'active';
+  if (raw === 'shadow') return 'shadow';
+  return 'off';
+}
+
+/**
  * Gates the T14 operator dashboard read route (buildDecisionDashboardSnapshot). The route is
  * additionally admin-gated by the portal guard stack; this flag keeps the endpoint dark by default
  * until the dashboard is ready. Default OFF; opt-in per user/tenant.
@@ -364,7 +418,8 @@ export function isDecisionHumanReviewGateEnabled(env: RuntimeEnv = process.env, 
 /**
  * Gates the Refresh-evidence endpoint (POST /decisions/:id/refresh): re-derives a decision's computed fields
  * (effectiveStatus / freshness / ranking / actionability) from CURRENT stored source state — token-zero, no
- * provider re-fetch — and returns the refreshed item. Read-only. Default OFF; opt-in per user/tenant.
+ * provider re-fetch — and persists changed context/lifecycle/version metadata. This is a mutation route.
+ * Default OFF; opt-in per user/tenant.
  */
 export function isDecisionRefreshEnabled(env: RuntimeEnv = process.env, scope?: RuntimeFlagScope): boolean {
   return scopedFlagEnabledByExplicitOptIn(env, 'DECISION_REFRESH_ENABLED', scope);

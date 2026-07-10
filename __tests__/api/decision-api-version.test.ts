@@ -3,8 +3,8 @@ import type { AuthenticatedRequest } from '../../src/api/auth-middleware';
 import type { DecisionApiItem } from '../../src/services/decision-center';
 import { buildDecisionCardSummary, deriveEvidenceStrengthLabel, resolveDecisionApiVersion } from '../../src/api/decision-api-version';
 
-const reqWith = (header?: string, userId = 1): AuthenticatedRequest =>
-  ({ headers: header ? { 'x-nexus-api-version': header } : {}, userId }) as unknown as AuthenticatedRequest;
+const reqWith = (header?: string, userId = 1, tenantId = userId): AuthenticatedRequest =>
+  ({ headers: header ? { 'x-nexus-api-version': header } : {}, userId, tenantId }) as unknown as AuthenticatedRequest;
 
 const fullItem = (): DecisionApiItem => ({
   decisionId: 'd1',
@@ -40,12 +40,23 @@ const fullItem = (): DecisionApiItem => ({
   expiresAt: null,
   badgeContribution: true,
   confidence: 0.82,
+  reviewSupported: true,
+  editableProposalFields: ['recommendedStartAt', 'recommendedEndAt'],
+  reversibility: 'reversible',
   // many other full-item fields omitted — the projection must not require them
 }) as unknown as DecisionApiItem;
 
 describe('Decision API version negotiation', () => {
   afterEach(() => {
     delete process.env.DECISION_API_V2_ENABLED;
+    delete process.env.DECISION_API_V2_ENABLED_TENANT_17;
+  });
+
+  it('honors tenant-scoped v2 rollout for the same authenticated user', () => {
+    process.env.DECISION_API_V2_ENABLED_TENANT_17 = 'true';
+
+    expect(resolveDecisionApiVersion(reqWith('v2', 7, 17)).version).toBe('v2');
+    expect(resolveDecisionApiVersion(reqWith('v2', 7, 18)).version).toBe('v1');
   });
 
   it('defaults to v1 unless the client asks for v2 AND the flag is opt-in', () => {
@@ -74,6 +85,9 @@ describe('Decision API version negotiation', () => {
     expect(card.actionability).toBe('confirmation_required');
     expect(card.safePreviewTitle).toBe('Move your session');
     expect(card.confidence).toBe(0.82);
+    expect(card.reviewSupported).toBe(true);
+    expect(card.editableProposalFields).toEqual(['recommendedStartAt', 'recommendedEndAt']);
+    expect(card.reversibility).toBe('reversible');
     expect(card.whyNow).toBe('The current slot conflicts with a protected session.');
     expect(card.costOfDelay).toBe('Waiting risks losing the safer window.');
     expect(card.primaryAction).toMatchObject({

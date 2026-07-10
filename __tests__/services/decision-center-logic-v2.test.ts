@@ -6,6 +6,8 @@ import {
   formatDecisionWindow,
   rankDecision,
 } from '../../src/services/decision-center-logic-v2';
+import { buildNormalizedDecisionAction } from '../../src/services/decision-action-contract';
+import { evaluateDecisionConflicts } from '../../src/services/decision-conflict-evaluator';
 
 describe('Decision Center Logic v2', () => {
   it('blocks screenshot-style generic Secretary decisions at the quality gate', () => {
@@ -89,6 +91,81 @@ describe('Decision Center Logic v2', () => {
       targetSkill: 'secretary',
       verificationMethod: 'Check the calendar item after the action.',
     });
+  });
+
+  it('passes a review-only Secretary conflict preview without inventing a calendar mutation', () => {
+    const normalizedAction = buildNormalizedDecisionAction({
+      intent: 'review_calendar_conflict',
+      targetEntities: [{ type: 'secretary_agenda_item', id: 'agenda-1', version: '4' }],
+      affectedResources: [{ type: 'calendar_timeline', id: 'primary' }],
+      requestedWindow: {
+        start: '2026-07-11T08:00:00.000Z',
+        end: '2026-07-11T09:00:00.000Z',
+        timezone: 'Europe/Lisbon',
+      },
+      preconditions: [{ type: 'agenda_version', ref: 'agenda-1', expectedVersion: '4', required: true }],
+      expectedEffects: [{ type: 'review_required', targetRef: 'secretary_agenda_item:agenda-1' }],
+      prohibitedEffects: [{ type: 'automatic_calendar_mutation', targetRef: 'secretary_agenda_item:agenda-1' }],
+      dependencies: [],
+      exclusivityKeys: ['calendar_timeline:42'],
+      authorizationScope: ['decision_center:read'],
+      risk: 'medium',
+      reversibility: 'reversible',
+      contextVersion: 'ctx_preview_1',
+    });
+    const otherCommitment = buildNormalizedDecisionAction({
+      ...normalizedAction,
+      intent: 'preserve_confirmed_calendar_commitment',
+      targetEntities: [{ type: 'calendar_event', id: 'opaque_event_2' }],
+      requestedWindow: {
+        start: '2026-07-11T08:30:00.000Z',
+        end: '2026-07-11T09:30:00.000Z',
+        timezone: 'Europe/Lisbon',
+      },
+      expectedEffects: [{ type: 'preserve_commitment', targetRef: 'opaque_event_2' }],
+      prohibitedEffects: [],
+      preconditions: [],
+    });
+    const conflictEvaluation = evaluateDecisionConflicts({
+      candidate: normalizedAction,
+      existing: [{
+        action: otherCommitment,
+        authority: 'approved_commitment',
+        approved: true,
+        createdAt: '2026-07-10T12:00:00.000Z',
+      }],
+      now: new Date('2026-07-10T12:00:00.000Z'),
+    });
+
+    const decision = buildDecisionLogicV2({
+      sourceSkill: 'secretary',
+      type: 'conflict_detected',
+      priority: 'active',
+      title: 'Calendar commitments overlap',
+      body: 'A Secretary-owned agenda item overlaps a confirmed calendar commitment.',
+      safeBody: 'Open Nexus to review the calendar conflict.',
+      actions: [{ id: 'open_detail', label: 'Review commitments', style: 'primary' }],
+      relatedEntityType: 'secretary_agenda_item',
+      relatedEntityId: 'agenda-1',
+      privacyClassification: 'sensitive',
+      context: {
+        entityTitle: 'Protected focus block',
+        currentStartAt: '2026-07-11T08:00:00.000Z',
+        currentEndAt: '2026-07-11T09:00:00.000Z',
+        timezone: 'Europe/Lisbon',
+        normalizedAction,
+        conflictEvaluation,
+      },
+    });
+
+    expect(decision.quality.status).toBe('pass');
+    expect(decision.quality.safeForFrontendAction).toBe(true);
+    expect(decision.primaryActionLabel).toBe('Review commitments');
+    expect(decision.recommendation).toContain('will not move either one automatically');
+    expect(decision.expectedEffect).toContain('does not change the calendar');
+    expect(decision.whatWillChange).toEqual([]);
+    expect(decision.readBackVerifier).toBeNull();
+    expect(decision.automationEligibility).toBe('ask_first');
   });
 
   it('passes concrete content approval and training missing-race-date recipes', () => {

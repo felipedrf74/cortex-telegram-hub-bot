@@ -76,6 +76,7 @@ vi.mock('../../src/services/training-plans', () => ({
 import {
   buildDailyContext,
   getDailyContext,
+  getDailyContextWithStatus,
   invalidateContextCache,
   buildContextForAllUsers,
   _resetContextCacheForTests,
@@ -224,6 +225,33 @@ describe('buildDailyContext', () => {
 describe('getDailyContext cache', () => {
   it('returns empty string when no cache entry exists', () => {
     expect(getDailyContext(USER_ID)).toBe('');
+  });
+
+  it('distinguishes an unmaterialized empty cache from a failed lookup', () => {
+    expect(getDailyContextWithStatus(USER_ID)).toMatchObject({
+      status: 'empty',
+      context: '',
+      reasonCode: 'daily_context_not_materialized',
+    });
+
+    testDb.close();
+    expect(getDailyContextWithStatus(USER_ID)).toMatchObject({
+      status: 'failed',
+      context: '',
+      reasonCode: 'daily_context_read_failed',
+    });
+  });
+
+  it('projects only present operational sections and leaves absence unknown', async () => {
+    upsertTask(USER_ID, makeTask({ title: 'Projected task' }));
+    await buildDailyContext(USER_ID);
+
+    const result = getDailyContextWithStatus(USER_ID);
+    expect(result.status).toBe('available');
+    expect(result.sourceProjections).toEqual(expect.arrayContaining([
+      expect.objectContaining({ source: 'tasks', status: 'available' }),
+      expect.objectContaining({ source: 'calendar', status: 'unknown', reasonCode: 'daily_context_projection_absent' }),
+    ]));
   });
 
   it('returns the cached summary after a build', async () => {

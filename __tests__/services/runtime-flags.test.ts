@@ -10,6 +10,8 @@ import {
   getGeminiDomainAllowlist,
   getGeminiIncludeSecretaryEnvOverride,
   getGeminiRoutingEnvOverride,
+  getDecisionConflictPolicyV1Mode,
+  getSecretaryReasoningV1Mode,
   isChatEscalationReviewerEnabled,
   isChatBilingualEvalGateEnabled,
   isChatContextCompilerEnabled,
@@ -31,6 +33,9 @@ import {
   isDecisionCenterFatigueCapsEnabled,
   isDecisionCenterCommandBusEnabled,
   isDecisionCenterDailyAttentionEnabled,
+  isDecisionConflictPolicyV1Enabled,
+  isDecisionFlowV1EnforceEnabled,
+  isDecisionLowRiskAutoResolutionEnabled,
   isDecisionCenterGuidanceSkillEnabled,
   isDecisionCenterGuidanceV1Enabled,
   isDecisionChoiceOptionsEnabled,
@@ -147,6 +152,63 @@ describe('runtime-flags', () => {
       DECISION_CENTER_COMMAND_BUS_ENABLED: 'true',
       DECISION_CENTER_COMMAND_BUS_ENABLED_USER_42: 'off',
     }, { userId: 42, tenantId: 9 })).toBe(false);
+  });
+
+  it('keeps deterministic decision conflict policy default-off with scoped opt-in', () => {
+    expect(isDecisionConflictPolicyV1Enabled({})).toBe(false);
+    expect(isDecisionConflictPolicyV1Enabled({ DECISION_CONFLICT_POLICY_V1_ENABLED: 'true' })).toBe(false);
+    expect(isDecisionConflictPolicyV1Enabled({ DECISION_CONFLICT_POLICY_V1_ENABLED: 'shadow' })).toBe(false);
+    expect(isDecisionConflictPolicyV1Enabled({
+      DECISION_CONFLICT_POLICY_V1_ENABLED: 'false',
+      DECISION_CONFLICT_POLICY_V1_ENABLED_TENANT_9: 'active',
+    }, { userId: 7, tenantId: 9 })).toBe(true);
+    expect(isDecisionConflictPolicyV1Enabled({
+      DECISION_CONFLICT_POLICY_V1_ENABLED: 'active',
+      DECISION_CONFLICT_POLICY_V1_ENABLED_USER_42: 'off',
+    }, { userId: 42, tenantId: 9 })).toBe(false);
+    expect(getDecisionConflictPolicyV1Mode({ DECISION_CONFLICT_POLICY_V1_ENABLED: 'shadow' })).toBe('shadow');
+    expect(getDecisionConflictPolicyV1Mode({ DECISION_CONFLICT_POLICY_V1_ENABLED: 'active' })).toBe('active');
+    expect(getDecisionConflictPolicyV1Mode({})).toBe('off');
+  });
+
+  it('requires explicit scoped rollout for low-risk automatic resolution', () => {
+    expect(isDecisionLowRiskAutoResolutionEnabled({})).toBe(false);
+    expect(isDecisionLowRiskAutoResolutionEnabled({ DECISION_LOW_RISK_AUTO_RESOLUTION_ENABLED: 'true' })).toBe(true);
+    expect(isDecisionLowRiskAutoResolutionEnabled({
+      DECISION_LOW_RISK_AUTO_RESOLUTION_ENABLED: 'false',
+      DECISION_LOW_RISK_AUTO_RESOLUTION_ENABLED_USER_42: 'on',
+    }, { userId: 42, tenantId: 9 })).toBe(true);
+    expect(isDecisionLowRiskAutoResolutionEnabled({
+      DECISION_CENTER_DARK_FLAGS_COHORT_PERCENT: '100',
+    }, { userId: 42, tenantId: 9 })).toBe(false);
+  });
+
+  it('keeps Decision flow concurrency enforcement dark and scoped', () => {
+    expect(isDecisionFlowV1EnforceEnabled({})).toBe(false);
+    expect(isDecisionFlowV1EnforceEnabled({ DECISION_FLOW_V1_ENFORCE_ENABLED: 'true' })).toBe(true);
+    expect(isDecisionFlowV1EnforceEnabled({ DECISION_FLOW_V1_ENFORCE_ENABLED: 'shadow' })).toBe(false);
+    expect(isDecisionFlowV1EnforceEnabled({
+      DECISION_FLOW_V1_ENFORCE_ENABLED: 'false',
+      DECISION_FLOW_V1_ENFORCE_ENABLED_USER_42: 'on',
+    }, { userId: 42, tenantId: 9 })).toBe(true);
+    expect(isDecisionFlowV1EnforceEnabled({
+      DECISION_CENTER_DARK_FLAGS_COHORT_PERCENT: '100',
+    }, { userId: 42, tenantId: 9 })).toBe(false);
+  });
+
+  it('rolls structured Secretary reasoning from off to shadow to scoped active', () => {
+    expect(getSecretaryReasoningV1Mode({})).toBe('off');
+    expect(getSecretaryReasoningV1Mode({ SECRETARY_REASONING_V1_MODE: 'shadow' })).toBe('shadow');
+    expect(getSecretaryReasoningV1Mode({ SECRETARY_REASONING_V1_MODE: 'active' })).toBe('active');
+    expect(getSecretaryReasoningV1Mode({ SECRETARY_REASONING_V1_MODE: 'true' })).toBe('off');
+    expect(getSecretaryReasoningV1Mode({
+      SECRETARY_REASONING_V1_MODE: 'off',
+      SECRETARY_REASONING_V1_MODE_TENANT_9: 'active',
+    }, { userId: 7, tenantId: 9 })).toBe('active');
+    expect(getSecretaryReasoningV1Mode({
+      SECRETARY_REASONING_V1_MODE: 'active',
+      SECRETARY_REASONING_V1_MODE_USER_42: 'off',
+    }, { userId: 42, tenantId: 9 })).toBe('off');
   });
 
   it('parses chat hybrid planner rollout flags conservatively', () => {

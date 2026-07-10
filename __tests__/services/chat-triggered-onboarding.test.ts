@@ -78,6 +78,7 @@ vi.mock('../../src/config', () => ({
 // onboarding path.
 vi.mock('../../src/services/context-engine', () => ({
   getDailyContext: vi.fn(() => ''),
+  getDailyContextWithStatus: vi.fn(() => ({ status: 'empty', context: '', reasonCode: 'not_materialized' })),
   getOrBuildDailyContext: vi.fn(async () => ''),
 }));
 

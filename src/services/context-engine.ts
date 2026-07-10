@@ -30,6 +30,56 @@ import { config } from '../config';
 import { resolveChatTenantId } from './chat-tenant-scope';
 import { sanitizeForPromptInterpolation } from '../utils/prompt-sanitizer';
 
+export type DailyContextReadStatus = 'available' | 'empty' | 'failed';
+
+export type DailyContextProjectedSource =
+  | 'tasks'
+  | 'calendar'
+  | 'training'
+  | 'readiness'
+  | 'content';
+
+export interface DailyContextSourceProjection {
+  source: DailyContextProjectedSource;
+  /**
+   * `unknown` is intentionally distinct from `empty`: the legacy cache stores
+   * only rendered sections, so an absent section cannot prove that its source
+   * was queried successfully and contained no facts.
+   */
+  status: 'available' | 'unknown';
+  observedAt: string;
+  content?: string;
+  reasonCode?: string;
+}
+
+export interface DailyContextReadResult {
+  status: DailyContextReadStatus;
+  context: string;
+  observedAt: string;
+  date: string;
+  staleAfter: string;
+  reasonCode?: string;
+  sourceProjections: DailyContextSourceProjection[];
+}
+
+export const DAILY_CONTEXT_PROJECTED_SOURCES: readonly DailyContextProjectedSource[] = [
+  'tasks',
+  'calendar',
+  'training',
+  'readiness',
+  'content',
+] as const;
+
+/**
+ * These Secretary sources are deliberately not represented by
+ * `daily_context_cache`. Mail and reminders have no section in the builder;
+ * readiness/training are derived projections and are not a complete Garmin
+ * read. Callers must collect these sources through their scoped adapters and
+ * must not interpret a missing daily-context section as "no mail/reminders/
+ * Garmin data".
+ */
+export const DAILY_CONTEXT_UNREPRESENTED_SOURCES = ['mail', 'reminders', 'garmin'] as const;
+
 // ─── Cache primitives ──────────────────────────────────────────────────
 
 /** Today's date in the user's local timezone (YYYY-MM-DD). */
@@ -43,17 +93,113 @@ function todayString(): string {
  * "either cached or freshly built" should use `getOrBuildDailyContext`.
  */
 export function getDailyContext(userId: number, tenantId?: number): string {
+  return getDailyContextWithStatus(userId, tenantId).context;
+}
+
+/**
+ * Status-preserving variant of `getDailyContext`.
+ *
+ * The legacy function must continue to return an empty string for both an
+ * empty cache and a lookup failure. Structured reasoning callers use this
+ * API so those states cannot be confused. The source projections expose only
+ * sections actually present in the persisted summary; absent projections are
+ * `unknown`, never asserted to be empty.
+ */
+export function getDailyContextWithStatus(userId: number, tenantId?: number): DailyContextReadResult {
+  const readAt = new Date().toISOString();
+  const date = todayString();
   try {
     const db = getDb();
     const scopedTenantId = resolveChatTenantId(userId, tenantId);
     const row = db.prepare(
-      'SELECT context_summary FROM daily_context_cache WHERE tenant_id = ? AND user_id = ? AND date = ? AND scope_status = ?',
-    ).get(scopedTenantId, userId, todayString(), 'active') as { context_summary: string } | undefined;
-    return row?.context_summary || '';
+      'SELECT context_summary, built_at FROM daily_context_cache WHERE tenant_id = ? AND user_id = ? AND date = ? AND scope_status = ?',
+    ).get(scopedTenantId, userId, date, 'active') as { context_summary: string; built_at: string | null } | undefined;
+    const observedAt = normalizeSqliteTimestamp(row?.built_at) ?? readAt;
+    const staleAfter = new Date(Date.parse(observedAt) + 24 * 60 * 60 * 1000).toISOString();
+    if (!row) {
+      return {
+        status: 'empty',
+        context: '',
+        observedAt,
+        date,
+        staleAfter,
+        reasonCode: 'daily_context_not_materialized',
+        sourceProjections: projectDailyContextSources('', observedAt),
+      };
+    }
+    const context = row.context_summary?.trim() ?? '';
+    if (!context) {
+      return {
+        status: 'empty',
+        context: '',
+        observedAt,
+        date,
+        staleAfter,
+        reasonCode: 'daily_context_materialized_without_facts',
+        sourceProjections: projectDailyContextSources('', observedAt),
+      };
+    }
+    return {
+      status: 'available',
+      context,
+      observedAt,
+      date,
+      staleAfter,
+      sourceProjections: projectDailyContextSources(context, observedAt),
+    };
   } catch (err) {
     logger.debug({ err, userId }, 'getDailyContext lookup failed');
-    return '';
+    return {
+      status: 'failed',
+      context: '',
+      observedAt: readAt,
+      date,
+      staleAfter: readAt,
+      reasonCode: 'daily_context_read_failed',
+      sourceProjections: projectDailyContextSources('', readAt),
+    };
   }
+}
+
+function projectDailyContextSources(context: string, observedAt: string): DailyContextSourceProjection[] {
+  const sections = new Map<DailyContextProjectedSource, string[]>();
+  let activeSource: DailyContextProjectedSource | null = null;
+  for (const line of context.split('\n').map((value) => value.trim()).filter(Boolean)) {
+    const heading = /^(TASKS|CALENDAR|TRAINING|READINESS|CONTENT):/.exec(line)?.[1]?.toLowerCase();
+    if (heading && DAILY_CONTEXT_PROJECTED_SOURCES.includes(heading as DailyContextProjectedSource)) {
+      activeSource = heading as DailyContextProjectedSource;
+      sections.set(activeSource, [line]);
+      continue;
+    }
+    if (activeSource) sections.get(activeSource)?.push(line);
+  }
+
+  return DAILY_CONTEXT_PROJECTED_SOURCES.map((source) => {
+    const lines = sections.get(source);
+    if (lines?.length) {
+      return {
+        source,
+        status: 'available',
+        observedAt,
+        content: lines.join('\n'),
+      };
+    }
+    return {
+      source,
+      status: 'unknown',
+      observedAt,
+      reasonCode: 'daily_context_projection_absent',
+    };
+  });
+}
+
+function normalizeSqliteTimestamp(value: string | null | undefined): string | null {
+  if (!value) return null;
+  const candidate = /Z$|[+-]\d{2}:?\d{2}$/.test(value)
+    ? value
+    : `${value.replace(' ', 'T')}Z`;
+  const parsed = Date.parse(candidate);
+  return Number.isFinite(parsed) ? new Date(parsed).toISOString() : null;
 }
 
 /**

@@ -40,6 +40,7 @@ import {
   addDecisionDependency,
   applyDecisionFatigueCaps,
   isDecisionItemPolicyFloored,
+  isUncertainDecisionExecutionOutcome,
   buildDecisionCenterReportDocument,
   buildSkillDecisionFixtureIntent,
   cleanupDecisionCenterSmokeItems,
@@ -59,6 +60,8 @@ import {
   listDecisionItems,
   listHandledByNexusItems,
   performDecisionAction,
+  reviewDecision,
+  reviseDecisionProposal,
   runDecisionHandledHistoryBackfillJob,
   runDecisionSourceStateSupersessionJob,
   sanitizeGuidanceString,
@@ -81,6 +84,7 @@ import {
   getDecisionMetricsDaily,
   getDecisionReleaseGateStatus,
   getDecisionActiveBreakdowns,
+  recordDecisionItemExposures,
   applyDecisionTypeSuppression,
   suppressDecisionType,
   unsuppressDecisionType,
@@ -88,9 +92,12 @@ import {
   getDecisionFeedbackSignals,
   markDecisionViewed,
   snoozeDecision,
+  updateDecisionPreferences,
 } from '../../src/services/decision-center';
 import { buildSkillNotificationFixtureIntent, createNotificationIntent, ensureNotificationTables, listNotificationCenterItems } from '../../src/services/notification-orchestrator';
-import { trackPendingChatConfirmation } from '../../src/services/chat-pending-confirmations';
+import { clearPendingChatConfirmation, trackPendingChatConfirmation } from '../../src/services/chat-pending-confirmations';
+import { buildNormalizedDecisionAction } from '../../src/services/decision-action-contract';
+import { evaluateDecisionConflicts } from '../../src/services/decision-conflict-evaluator';
 
 async function createContentApprovalDecision(userId: number, tenantId: number, dedupeKey: string) {
   const object = createContentWorkflowObject({
@@ -185,8 +192,31 @@ function insertHandledFixture(input: {
 
 function ensureSecretaryAgendaFixtureTables(): void {
   testDb.exec(readFileSync('migrations/083_secretary_agenda_ledger.sql', 'utf8'));
-  testDb.exec(readFileSync('migrations/098_secretary_decision_explanation.sql', 'utf8'));
-  testDb.exec('ALTER TABLE secretary_agenda_items ADD COLUMN reasoning_trail_json TEXT');
+  const columns = new Set((testDb.prepare('PRAGMA table_info(secretary_agenda_items)').all() as Array<{ name: string }>)
+    .map((column) => column.name));
+  if (!columns.has('decision_explanation')) {
+    testDb.exec('ALTER TABLE secretary_agenda_items ADD COLUMN decision_explanation TEXT');
+  }
+  if (!columns.has('reasoning_trail_json')) {
+    testDb.exec('ALTER TABLE secretary_agenda_items ADD COLUMN reasoning_trail_json TEXT');
+  }
+}
+
+function ensureTrainingCommitmentFixtureTables(): void {
+  testDb.exec(readFileSync('migrations/023_fitness_training_plans.sql', 'utf8'));
+  testDb.exec(readFileSync('migrations/081_training_agenda_event_ownership.sql', 'utf8'));
+  testDb.exec(readFileSync('migrations/140_training_tenant_id.sql', 'utf8'));
+  testDb.exec(readFileSync('migrations/180_plan_adaptation_revision.sql', 'utf8'));
+  testDb.exec(readFileSync('migrations/039_unified_task_store.sql', 'utf8'));
+  testDb.exec(readFileSync('migrations/216_offline_first_tasks.sql', 'utf8'));
+}
+
+function clearScopedDecisionFlowFlags(): void {
+  for (const key of Object.keys(process.env)) {
+    if (/^(DECISION_CONFLICT_POLICY_V1_ENABLED|DECISION_FLOW_V1_ENFORCE_ENABLED|DECISION_LOW_RISK_AUTO_RESOLUTION_ENABLED)_/.test(key)) {
+      delete process.env[key];
+    }
+  }
 }
 
 function ensureUserFixtureTable(): void {
@@ -224,14 +254,22 @@ describe('Decision Center facade', () => {
     process.env.NOTIFICATION_DELIVERY_MODE = 'mock';
     delete process.env.DECISION_TYPE_SUPPRESSION_ENABLED;
     delete process.env.DECISION_FEEDBACK_SUPPRESSION_ENABLED;
+    delete process.env.DECISION_CANDIDATE_REJECTION_COOLDOWN_DAYS;
+    delete process.env.DECISION_CONFLICT_POLICY_V1_ENABLED;
+    delete process.env.DECISION_FLOW_V1_ENFORCE_ENABLED;
     ensureNotificationTables();
     ensureDecisionCenterTables();
+    ensureTrainingCommitmentFixtureTables();
   });
 
   afterEach(() => {
     delete process.env.NOTIFICATION_DELIVERY_MODE;
     delete process.env.DECISION_TYPE_SUPPRESSION_ENABLED;
     delete process.env.DECISION_FEEDBACK_SUPPRESSION_ENABLED;
+    delete process.env.DECISION_CANDIDATE_REJECTION_COOLDOWN_DAYS;
+    delete process.env.DECISION_CONFLICT_POLICY_V1_ENABLED;
+    delete process.env.DECISION_FLOW_V1_ENFORCE_ENABLED;
+    clearScopedDecisionFlowFlags();
     vi.useRealTimers();
     testDb?.close();
   });
@@ -434,6 +472,104 @@ describe('Decision Center facade', () => {
     }));
 
     expect(getDecisionSummary(85, 85).ctaLabel).toBe('Conflito de agenda');
+  });
+
+  it('exposes a privacy-safe conflict summary only when conflict policy v1 is enabled', async () => {
+    process.env.DECISION_CONFLICT_POLICY_V1_ENABLED = 'active';
+    ensureSecretaryAgendaFixtureTables();
+    testDb.prepare(`
+      INSERT INTO secretary_agenda_items (
+        agenda_item_id, source_intent_id, source_skill, source_action, intent_action,
+        source_entity_id, source_entity_type, owner_user_id, tenant_id,
+        lifecycle_state, provider_sync_state, provider_event_id, provider_source,
+        version, title, start_at, end_at, duration_minutes, decision_action,
+        decision_reason_codes_json, decision_explanation, source_shape_hash,
+        scheduled_segments_json, created_at, updated_at
+      ) VALUES (
+        'agenda-conflict-1', 'intent-conflict-1', 'training', 'focus_block', 'protect_time_for_this',
+        'source-conflict-1', 'training_session', 85, '85',
+        'synced', 'synced', 'provider-event-1', 'google',
+        3, 'Protected focus block', '2026-05-11T08:00:00.000Z', '2026-05-11T09:00:00.000Z',
+        60, 'scheduled', '[]', 'Confirmed calendar overlap', 'shape-conflict-1',
+        '[]', '2026-05-10T09:00:00.000Z', '2026-05-10T09:00:00.000Z'
+      )
+    `).run();
+    const normalizedAction = buildNormalizedDecisionAction({
+      intent: 'review_calendar_conflict',
+      targetEntities: [{ type: 'secretary_agenda_item', id: 'agenda-conflict-1', version: '3' }],
+      affectedResources: [{ type: 'calendar_timeline', id: 'primary' }],
+      requestedWindow: {
+        start: '2026-05-11T08:00:00.000Z',
+        end: '2026-05-11T09:00:00.000Z',
+        timezone: 'Europe/Lisbon',
+      },
+      preconditions: [{ type: 'agenda_version', ref: 'agenda-conflict-1', expectedVersion: '3', required: true }],
+      expectedEffects: [{ type: 'review_required', targetRef: 'secretary_agenda_item:agenda-conflict-1' }],
+      prohibitedEffects: [{ type: 'automatic_calendar_mutation', targetRef: 'secretary_agenda_item:agenda-conflict-1' }],
+      dependencies: [],
+      exclusivityKeys: ['calendar_timeline:85'],
+      authorizationScope: ['decision_center:read'],
+      risk: 'medium',
+      reversibility: 'reversible',
+      contextVersion: 'ctx_conflict_1',
+    });
+    const existing = buildNormalizedDecisionAction({
+      ...normalizedAction,
+      intent: 'preserve_confirmed_calendar_commitment',
+      targetEntities: [{ type: 'calendar_event', id: 'opaque_event_2' }],
+      requestedWindow: {
+        start: '2026-05-11T08:30:00.000Z',
+        end: '2026-05-11T09:30:00.000Z',
+        timezone: 'Europe/Lisbon',
+      },
+      preconditions: [],
+      expectedEffects: [{ type: 'preserve_commitment', targetRef: 'opaque_event_2' }],
+      prohibitedEffects: [],
+    });
+    const conflictEvaluation = evaluateDecisionConflicts({
+      candidate: normalizedAction,
+      existing: [{ action: existing, authority: 'approved_commitment', approved: true, createdAt: '2026-05-10T09:00:00.000Z' }],
+      now: new Date('2026-05-10T10:00:00.000Z'),
+    });
+
+    const created = await createDecisionIntent(buildSkillDecisionFixtureIntent('secretary', 85, {
+      priority: 'active',
+      title: 'Calendar commitments overlap',
+      body: 'A Secretary-owned agenda item overlaps a confirmed calendar commitment.',
+      relatedEntityId: 'agenda-conflict-1',
+      relatedEntityType: 'secretary_agenda_item',
+      actionButtons: [{ id: 'open_detail', label: 'Review commitments', style: 'primary' }],
+      dedupeKey: 'secretary:calendar-conflict-preview:agenda-conflict-1:ctx_conflict_1',
+      decisionContext: {
+        entityTitle: 'Protected focus block',
+        currentStartAt: '2026-05-11T08:00:00.000Z',
+        currentEndAt: '2026-05-11T09:00:00.000Z',
+        reasonCodes: ['calendar_time_overlap', 'approved_commitment_requires_review', 'preview_only'],
+        timezone: 'Europe/Lisbon',
+        normalizedAction,
+        conflictComparisons: [{
+          action: existing,
+          authority: 'approved_commitment',
+          approved: true,
+          createdAt: '2026-05-10T09:00:00.000Z',
+        }],
+        conflictEvaluation,
+      },
+    }));
+
+    expect(created.item?.contextVersion).toBe('ctx_conflict_1');
+    expect(created.item?.conflictSummary).toMatchObject({
+      disposition: 'needs_confirmation',
+      requiresConfirmation: true,
+      blocking: false,
+    });
+    expect(created.item).toMatchObject({ approvalLevel: 'none', actionability: 'read_only' });
+    expect(JSON.stringify(created.item?.conflictSummary)).not.toContain('agenda-conflict-1');
+
+    process.env.DECISION_CONFLICT_POLICY_V1_ENABLED = 'false';
+    const hidden = getDecisionItem(created.item!.decisionId, 85, 85);
+    expect(hidden?.conflictSummary).toBeUndefined();
+    expect(hidden?.contextVersion).toBe('ctx_conflict_1');
   });
 
   it('does not create user-facing items for generic screenshot-style decisions', async () => {
@@ -1021,6 +1157,14 @@ describe('Decision Center facade', () => {
       const actionIds = on.alternativeActions.concat(on.recommendedAction ? [on.recommendedAction] : []).map((a) => a.id);
       expect(actionIds).toContain('choose_another_time');
 
+      await expect(performDecisionAction(id, 'choose_another_time', 97, 97, {
+        idempotencyKey: 'choice-option-not-advertised',
+        payload: {
+          startAt: '2026-05-12T01:00:00.000Z',
+          endAt: '2026-05-12T03:00:00.000Z',
+        },
+      })).rejects.toMatchObject({ code: 'DECISION_ACTION_PAYLOAD_MISMATCH' });
+
       // END-TO-END: selecting an alternative option actually reflows the agenda to that window.
       const alternative = on.options!.find((o) => !o.recommended)!;
       const result = await performDecisionAction(id, 'choose_another_time', 97, 97, {
@@ -1445,6 +1589,7 @@ describe('Decision Center facade', () => {
       decisionAction: 'reflowed',
       rollbackAvailable: true,
       rollbackActionId: 'undo_reflow',
+      rollbackExpectedRevision: expect.stringMatching(/^agenda_state_/),
     });
     expect(result.item.rollbackAvailable).toBe(true);
     expect(result.item.actions.map((action) => action.id)).toContain('undo_reflow');
@@ -1457,20 +1602,398 @@ describe('Decision Center facade', () => {
       verification: expect.stringContaining('Nexus checked Secretary'),
     });
     expect(handled[0].explanation?.nextStep).toContain('Undo');
+    expect(handled[0].rollbackAction).toMatchObject({
+      actionId: 'undo_reflow',
+      recordVersion: result.item.recordVersion,
+      contextVersion: result.item.contextVersion,
+    });
 
     const undo = await performDecisionAction(created.item!.decisionId, 'undo_reflow', 42, 42, {
       idempotencyKey: 'undo-secretary-reflow',
     });
     expect(undo.status).toBe('succeeded');
     expect(undo.verification.actualEffect).toMatchObject({
-      decisionStatus: 'read',
+      decisionStatus: 'actioned',
+      executionStatus: 'rolled_back',
       secretaryAgendaItemId: 'agenda-42',
       lifecycleState: 'proposed',
       decisionAction: 'deferred',
     });
+    expect(undo.item.actionOutcomeStatus).toBe('rolled_back');
+    expect(undo.item.rollbackAvailable).toBe(false);
+    expect(listHandledByNexusItems(42, 42, 5)[0].rollbackAction).toBeUndefined();
+    expect(undo.item.actions.map((action) => action.id)).not.toContain('undo_reflow');
     expect(getDecisionLifecycleEvents(created.item!.decisionId, 42, 42).map((e) => e.event)).toContain('rolled_back');
     const restored = testDb.prepare('SELECT lifecycle_state, decision_action FROM secretary_agenda_items WHERE agenda_item_id = ?').get('agenda-42') as any;
     expect(restored).toMatchObject({ lifecycle_state: 'proposed', decision_action: 'deferred' });
+
+    const sameAttemptReplay = await performDecisionAction(created.item!.decisionId, 'undo_reflow', 42, 42, {
+      idempotencyKey: 'undo-secretary-reflow',
+    });
+    expect(sameAttemptReplay.status).toBe('idempotent');
+    await expect(performDecisionAction(created.item!.decisionId, 'undo_reflow', 42, 42, {
+      idempotencyKey: 'undo-secretary-reflow-fresh-key',
+    })).rejects.toMatchObject({ code: 'DECISION_ACTION_NOT_ALLOWED' });
+  });
+
+  it('reconciles an uncertain Secretary rollback and releases its exclusivity claim', async () => {
+    ensureSecretaryAgendaFixtureTables();
+    testDb.prepare(`
+      INSERT INTO secretary_agenda_items (
+        agenda_item_id, source_intent_id, source_skill, source_action, intent_action,
+        source_entity_id, source_entity_type, owner_user_id, tenant_id,
+        lifecycle_state, provider_sync_state, version, title, start_at, end_at,
+        duration_minutes, decision_action, decision_reason_codes_json, decision_explanation,
+        source_shape_hash, scheduled_segments_json, created_at, updated_at
+      ) VALUES (
+        'agenda-rollback-reconcile', 'intent-rollback-reconcile', 'training', 'long_run', 'reschedule_this',
+        'session-rollback-reconcile', 'training_session', 420, '420',
+        'proposed', 'not_synced', 1, 'Move long run',
+        '2026-05-11T08:00:00.000Z', '2026-05-11T10:00:00.000Z',
+        120, 'deferred', '[]', 'Needs user approval',
+        'hash-rollback-reconcile', '[]', datetime('now'), datetime('now')
+      )
+    `).run();
+    const created = await createDecisionIntent(buildSkillDecisionFixtureIntent('secretary', 420, {
+      tenantId: 420,
+      relatedEntityId: 'agenda-rollback-reconcile',
+      relatedEntityType: 'secretary_agenda_item',
+      dedupeKey: 'secretary:agenda-rollback-reconcile',
+      actionButtons: [{ id: 'accept_reflow', label: 'Reflow', style: 'primary' }],
+      decisionContext: {
+        currentStartAt: '2026-05-10T08:00:00.000Z',
+        currentEndAt: '2026-05-10T10:00:00.000Z',
+        recommendedStartAt: '2026-05-11T08:00:00.000Z',
+        recommendedEndAt: '2026-05-11T10:00:00.000Z',
+      },
+    }));
+    await performDecisionAction(created.item!.decisionId, 'accept_reflow', 420, 420, {
+      idempotencyKey: 'rollback-reconcile-accept',
+    });
+    testDb.exec(`
+      CREATE TRIGGER ignore_rollback_reconcile_projection
+      BEFORE UPDATE OF action_result_json ON notification_center_items
+      WHEN NEW.item_id = '${created.item!.decisionId.replace(/'/g, "''")}'
+        AND NEW.action_result_json LIKE '%"actionId":"undo_reflow"%'
+      BEGIN
+        SELECT RAISE(IGNORE);
+      END;
+    `);
+
+    await expect(performDecisionAction(created.item!.decisionId, 'undo_reflow', 420, 420, {
+      idempotencyKey: 'rollback-reconcile-undo',
+    })).rejects.toMatchObject({ code: 'DECISION_SOURCE_EFFECT_VERIFIED_PROJECTION_FAILED' });
+    testDb.exec('DROP TRIGGER ignore_rollback_reconcile_projection');
+
+    process.env.DECISION_REFRESH_ENABLED_USER_420 = 'true';
+    try {
+      const refreshed = refreshDecisionItem(created.item!.decisionId, 420, 420)!.item;
+      expect(refreshed.execution.status).toBe('rolled_back');
+      expect(refreshed.actionOutcomeStatus).toBe('rolled_back');
+      const execution = testDb.prepare(`
+        SELECT action_execution_id AS executionId, status
+          FROM decision_action_executions
+         WHERE decision_id = ? AND action_id = 'undo_reflow'
+         ORDER BY rowid DESC LIMIT 1
+      `).get(created.item!.decisionId) as { executionId: string; status: string };
+      expect(execution.status).toBe('succeeded');
+      expect(testDb.prepare(`
+        SELECT status FROM decision_exclusivity_claims
+         WHERE action_execution_id = ? AND user_id = 420 AND tenant_id = 420
+      `).get(execution.executionId)).toMatchObject({ status: 'succeeded' });
+    } finally {
+      delete process.env.DECISION_REFRESH_ENABLED_USER_420;
+    }
+  });
+
+  it('auto-resolves only an opted-in low-risk reversible Secretary resource conflict and keeps undo', async () => {
+    ensureSecretaryAgendaFixtureTables();
+    testDb.prepare(`
+      INSERT INTO secretary_agenda_items (
+        agenda_item_id, source_intent_id, source_skill, source_action, intent_action,
+        source_entity_id, source_entity_type, owner_user_id, tenant_id,
+        lifecycle_state, provider_sync_state, version, title, start_at, end_at,
+        duration_minutes, decision_action, decision_reason_codes_json, decision_explanation,
+        source_shape_hash, scheduled_segments_json, created_at, updated_at
+      ) VALUES (
+        'agenda-auto-404', 'intent-auto-404', 'training', 'easy_run', 'reschedule_this',
+        'session-auto-404', 'training_session', 404, '404',
+        'proposed', 'not_synced', 1, 'Easy run',
+        '2026-05-11T14:00:00.000Z', '2026-05-11T15:00:00.000Z',
+        60, 'deferred', '[]', 'Low-risk move',
+        'hash-auto-404', '[]', datetime('now'), datetime('now')
+      )
+    `).run();
+    const competingAction = buildNormalizedDecisionAction({
+      intent: 'review_shared_schedule_resource',
+      targetEntities: [{ type: 'task', id: 'task-auto-404', version: '1' }],
+      affectedResources: [{ type: 'calendar_timeline', id: '404:shared' }],
+      preconditions: [],
+      expectedEffects: [{ type: 'reserve_resource', targetRef: 'task:task-auto-404' }],
+      prohibitedEffects: [],
+      dependencies: [],
+      exclusivityKeys: ['calendar_timeline:404:shared'],
+      authorizationScope: ['decision_center:read'],
+      risk: 'low',
+      reversibility: 'reversible',
+      contextVersion: 'ctx_auto_existing',
+    });
+    await createDecisionIntent(buildSkillDecisionFixtureIntent('training', 404, {
+      tenantId: 404,
+      dedupeKey: 'auto-existing-resource',
+      decisionContext: { entityTitle: 'Existing low-risk proposal', normalizedAction: competingAction },
+    }));
+
+    process.env.DECISION_CONFLICT_POLICY_V1_ENABLED_USER_404 = 'active';
+    process.env.DECISION_LOW_RISK_AUTO_RESOLUTION_ENABLED_USER_404 = 'true';
+    updateDecisionPreferences(404, 404, { allowLowRiskAutoReflow: true });
+    try {
+      const candidate = buildNormalizedDecisionAction({
+        intent: 'reflow_secretary_agenda',
+        targetEntities: [{ type: 'secretary_agenda_item', id: 'agenda-auto-404', version: '1' }],
+        affectedResources: [{ type: 'calendar_timeline', id: '404:shared' }],
+        preconditions: [],
+        expectedEffects: [{ type: 'move_agenda_window', targetRef: 'secretary_agenda_item:agenda-auto-404' }],
+        prohibitedEffects: [],
+        dependencies: [],
+        exclusivityKeys: ['calendar_timeline:404:shared'],
+        authorizationScope: ['decision_center:write'],
+        risk: 'low',
+        reversibility: 'reversible',
+        contextVersion: 'ctx_auto_candidate',
+      });
+      const created = await createDecisionIntent(buildSkillDecisionFixtureIntent('secretary', 404, {
+        tenantId: 404,
+        relatedEntityId: 'agenda-auto-404',
+        relatedEntityType: 'secretary_agenda_item',
+        dedupeKey: 'auto-low-risk-reflow',
+        actionButtons: [{ id: 'accept_reflow', label: 'Apply reflow', style: 'primary' }],
+        decisionContext: {
+          entityTitle: 'Schedule item',
+          currentStartAt: '2026-05-11T13:00:00.000Z',
+          currentEndAt: '2026-05-11T14:00:00.000Z',
+          recommendedStartAt: '2026-05-11T14:00:00.000Z',
+          recommendedEndAt: '2026-05-11T15:00:00.000Z',
+          candidateSlots: [{
+            startAt: '2026-05-11T14:00:00.000Z',
+            endAt: '2026-05-11T15:00:00.000Z',
+            label: 'Low-risk alternative',
+          }],
+          normalizedAction: candidate,
+        },
+      }));
+
+      expect(created.item?.status).toBe('actioned');
+      expect(created.item?.rollbackAvailable).toBe(true);
+      expect(getDecisionLifecycleEvents(created.item!.decisionId, 404, 404)).toEqual(expect.arrayContaining([
+        expect.objectContaining({ event: 'auto_resolved', reason: 'persisted_user_opt_in_low_risk_reversible' }),
+      ]));
+      expect(listHandledByNexusItems(404, 404, 5)[0].rollbackAction?.actionId).toBe('undo_reflow');
+    } finally {
+      delete process.env.DECISION_CONFLICT_POLICY_V1_ENABLED_USER_404;
+      delete process.env.DECISION_LOW_RISK_AUTO_RESOLUTION_ENABLED_USER_404;
+    }
+  });
+
+  it('normalizes serving Finance, Content, and Cooking producer actions before conflict persistence', async () => {
+    process.env.DECISION_CONFLICT_POLICY_V1_ENABLED = 'active';
+    ensureFinanceFixtureTables();
+    ensureCookingFixtureTables();
+    testDb.prepare(`
+      INSERT INTO finance_tax_events (
+        user_id, tenant_id, month, gross_income, deductions, taxable_income,
+        tax_due, inss_due, status, created_at, updated_at
+      ) VALUES (606, 606, '2026-05', 0, 0, 0, 0, 0, 'pending', datetime('now'), datetime('now'))
+    `).run();
+    const contentObject = createContentWorkflowObject({
+      userId: 606,
+      tenantId: 606,
+      objectType: 'script',
+      title: 'Private source test draft',
+      editorialState: 'drafted',
+    });
+    try {
+      const finance = await createDecisionIntent({
+        userId: 606,
+        tenantId: 606,
+        sourceSkill: 'finance',
+        type: 'decision_required',
+        priority: 'time_sensitive',
+        relatedEntityId: '2026-05',
+        relatedEntityType: 'finance_tax_event',
+        title: 'Finance deadline',
+        body: 'A finance deadline needs review.',
+        actionButtons: [{ id: 'mark_paid', label: 'Mark paid', style: 'primary' }],
+        requiresUserAction: true,
+        decisionDeadline: '2026-05-11T10:00:00.000Z',
+        decisionContext: { entityTitle: 'Tax payment', sourceState: 'payment_due' },
+        privacyPolicy: 'financial',
+        dedupeKey: 'finance:normalized:606:2026-05',
+      });
+      const content = await createDecisionIntent(buildSkillDecisionFixtureIntent('content', 606, {
+        tenantId: 606,
+        relatedEntityId: contentObject.id,
+        relatedEntityType: 'content_workflow_object',
+        dedupeKey: 'content:normalized:606',
+      }));
+      const cooking = await createDecisionIntent({
+        userId: 606,
+        tenantId: 606,
+        sourceSkill: 'cooking',
+        type: 'decision_required',
+        priority: 'active',
+        relatedEntityId: '2026-05-11:dinner',
+        relatedEntityType: 'meal_plan',
+        title: 'Meal slot review',
+        body: 'A meal slot is ready to add.',
+        actionButtons: [{ id: 'add_meal', label: 'Add meal', style: 'primary' }],
+        requiresUserAction: true,
+        decisionDeadline: '2026-05-11T18:00:00.000Z',
+        decisionContext: {
+          entityTitle: 'Dinner slot',
+          sourceState: 'slot_available',
+          deadlineAt: '2026-05-11T18:00:00.000Z',
+        },
+        privacyPolicy: 'standard',
+        dedupeKey: 'cooking:normalized:606:2026-05-11:dinner',
+      });
+
+      const persistedActions = [finance, content, cooking].map((created) => {
+        const row = testDb.prepare(`
+          SELECT normalized_action_json AS normalizedActionJson
+            FROM notification_intents
+           WHERE intent_id = ?
+        `).get(created.item!.intentId) as { normalizedActionJson: string | null };
+        return JSON.parse(row.normalizedActionJson!);
+      });
+      expect(persistedActions.map((action) => action.intent)).toEqual([
+        'finance.mark_tax_paid',
+        'content.approve_script',
+        'cooking.add_meal',
+      ]);
+      expect(persistedActions[0]).toMatchObject({ risk: 'high', reversibility: 'irreversible' });
+      expect(persistedActions[0].preconditions).toEqual([
+        expect.objectContaining({ type: 'finance_tax_state', ref: '2026-05', required: true }),
+      ]);
+      expect(persistedActions[1].targetEntities[0].type).toBe('content_workflow_object');
+      expect(persistedActions[1].preconditions).toEqual([
+        expect.objectContaining({ type: 'content_workflow_state', ref: String(contentObject.id), required: true }),
+      ]);
+      expect(persistedActions[2].targetEntities[0].id).toBe('2026-05-11:dinner');
+      expect(persistedActions[2].preconditions).toEqual([
+        expect.objectContaining({ type: 'meal_plan_slot_state', ref: '2026-05-11:dinner', required: true }),
+      ]);
+    } finally {
+      delete process.env.DECISION_CONFLICT_POLICY_V1_ENABLED;
+    }
+  });
+
+  it('blocks known producer actions when authoritative domain state changes before execution', async () => {
+    process.env.DECISION_CONFLICT_POLICY_V1_ENABLED = 'active';
+    ensureFinanceFixtureTables();
+    ensureCookingFixtureTables();
+    testDb.prepare(`
+      INSERT INTO finance_tax_events (
+        user_id, tenant_id, month, gross_income, deductions, taxable_income,
+        tax_due, inss_due, status, created_at, updated_at
+      ) VALUES (607, 607, '2026-05', 0, 0, 0, 0, 0, 'pending', datetime('now'), datetime('now'))
+    `).run();
+    const contentObject = createContentWorkflowObject({
+      userId: 608,
+      tenantId: 608,
+      objectType: 'script',
+      title: 'Private stale-state draft',
+      editorialState: 'drafted',
+    });
+    const contentStateBefore = testDb.prepare(`
+      SELECT approval_state AS approvalState FROM content_domain_objects
+       WHERE id = ? AND owner_user_id = 608 AND tenant_id = 608
+    `).get(contentObject.id) as { approvalState: string };
+
+    try {
+      const finance = await createDecisionIntent({
+        userId: 607,
+        tenantId: 607,
+        sourceSkill: 'finance',
+        type: 'decision_required',
+        priority: 'time_sensitive',
+        relatedEntityId: '2026-05',
+        relatedEntityType: 'finance_tax_event',
+        title: 'Finance state review',
+        body: 'Review the current tax-event action.',
+        actionButtons: [{ id: 'mark_paid', label: 'Mark paid', style: 'primary' }],
+        requiresUserAction: true,
+        decisionContext: { entityTitle: 'Tax event', sourceState: 'payment_due' },
+        privacyPolicy: 'financial',
+        dedupeKey: 'finance:state-revalidation:607',
+      });
+      const content = await createDecisionIntent(buildSkillDecisionFixtureIntent('content', 608, {
+        tenantId: 608,
+        relatedEntityId: contentObject.id,
+        relatedEntityType: 'content_workflow_object',
+        dedupeKey: 'content:state-revalidation:608',
+      }));
+      const cooking = await createDecisionIntent({
+        userId: 609,
+        tenantId: 609,
+        sourceSkill: 'cooking',
+        type: 'decision_required',
+        priority: 'active',
+        relatedEntityId: '2026-05-12:dinner',
+        relatedEntityType: 'meal_plan',
+        title: 'Meal slot state review',
+        body: 'Review the proposed meal slot.',
+        actionButtons: [{ id: 'add_meal', label: 'Add meal', style: 'primary' }],
+        requiresUserAction: true,
+        decisionContext: { entityTitle: 'Dinner slot', sourceState: 'slot_available' },
+        privacyPolicy: 'standard',
+        dedupeKey: 'cooking:state-revalidation:609',
+      });
+      testDb.prepare(`
+        UPDATE finance_tax_events
+           SET status = 'overdue', updated_at = '2026-05-10T10:01:00.000Z'
+         WHERE user_id = 607 AND tenant_id = 607 AND month = '2026-05'
+      `).run();
+      testDb.prepare(`
+        UPDATE content_domain_objects
+           SET workflow_version = workflow_version + 1,
+               updated_at = '2026-05-10T10:01:00.000Z'
+         WHERE id = ? AND owner_user_id = 608 AND tenant_id = 608
+      `).run(contentObject.id);
+      testDb.prepare(`
+        INSERT INTO meal_plans (
+          user_id, tenant_id, owner_user_id, visibility_scope, lifecycle_state,
+          scope_status, created_by, updated_by, audit_metadata_json,
+          date, meal_type, title, created_at
+        ) VALUES (609, 609, 609, 'user_private', 'planned', 'active', 609, 609, '{}',
+                  '2026-05-12', 'dinner', 'Meal added elsewhere', datetime('now'))
+      `).run();
+
+      await expect(performDecisionAction(finance.item!.decisionId, 'mark_paid', 607, 607, {
+        idempotencyKey: 'finance-stale-domain-state',
+      })).rejects.toMatchObject({ code: 'DECISION_CONTEXT_CHANGED', status: 409 });
+      await expect(performDecisionAction(content.item!.decisionId, 'approve_script', 608, 608, {
+        idempotencyKey: 'content-stale-domain-state',
+      })).rejects.toMatchObject({ code: 'DECISION_CONTEXT_CHANGED', status: 409 });
+      await expect(performDecisionAction(cooking.item!.decisionId, 'add_meal', 609, 609, {
+        idempotencyKey: 'cooking-stale-domain-state',
+        payload: { date: '2026-05-12', mealType: 'dinner', title: 'Original proposal' },
+      })).rejects.toMatchObject({ code: 'DECISION_CONTEXT_CHANGED', status: 409 });
+
+      expect(testDb.prepare(`
+        SELECT status FROM finance_tax_events WHERE user_id = 607 AND tenant_id = 607 AND month = '2026-05'
+      `).get()).toMatchObject({ status: 'overdue' });
+      expect(testDb.prepare(`
+        SELECT approval_state AS approvalState FROM content_domain_objects
+         WHERE id = ? AND owner_user_id = 608 AND tenant_id = 608
+      `).get(contentObject.id)).toEqual(contentStateBefore);
+      expect(testDb.prepare(`
+        SELECT title FROM meal_plans
+         WHERE user_id = 609 AND tenant_id = 609 AND date = '2026-05-12' AND meal_type = 'dinner'
+      `).get()).toMatchObject({ title: 'Meal added elsewhere' });
+    } finally {
+      delete process.env.DECISION_CONFLICT_POLICY_V1_ENABLED;
+    }
   });
 
   it('B2: redacts the rollback snapshot explanation for a sensitive decision (flag ON) while undo still restores state', async () => {
@@ -1548,6 +2071,42 @@ describe('Decision Center facade', () => {
     const event = testDb.prepare('SELECT status, paid_at FROM finance_tax_events WHERE user_id = 43 AND month = ?').get('2026-05') as any;
     expect(event.status).toBe('paid');
     expect(event.paid_at).toBeTruthy();
+    expect(getDecisionLifecycleEvents(created.item!.decisionId, 43, 43)).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        event: 'strong_confirmation_legacy_bypass',
+        reason: 'decision_flow_v1_enforcement_disabled',
+      }),
+    ]));
+  });
+
+  it('does not let a Finance action payload retarget the reviewed tax event', async () => {
+    ensureFinanceFixtureTables();
+    testDb.prepare(`
+      INSERT INTO finance_tax_events (tenant_id, user_id, month, gross_income, deductions, taxable_income, tax_due, inss_due, status, darf_code)
+      VALUES (43, 43, '2026-07', 5000, 0, 5000, 450, 0, 'pending', '0190'),
+             (43, 43, '2026-08', 5000, 0, 5000, 450, 0, 'pending', '0190')
+    `).run();
+    const created = await createDecisionIntent(buildSkillDecisionFixtureIntent('finance', 43, {
+      type: 'decision_required',
+      requiresUserAction: true,
+      relatedEntityId: '2026-07',
+      relatedEntityType: 'finance_tax_event',
+      dedupeKey: 'finance:tax-payment-target-binding',
+    }));
+
+    await expect(performDecisionAction(created.item!.decisionId, 'mark_paid', 43, 43, {
+      idempotencyKey: 'mark-wrong-tax-month',
+      payload: { month: '2026-08' },
+    })).rejects.toMatchObject({ code: 'DECISION_ACTION_PAYLOAD_MISMATCH' });
+
+    const events = testDb.prepare(`
+      SELECT month, status FROM finance_tax_events
+       WHERE user_id = 43 AND month IN ('2026-07', '2026-08') ORDER BY month
+    `).all() as Array<{ month: string; status: string }>;
+    expect(events).toEqual([
+      { month: '2026-07', status: 'pending' },
+      { month: '2026-08', status: 'pending' },
+    ]);
   });
 
   it('rejects APNs finance payment mutations while allowing in-app confirmation', async () => {
@@ -1599,6 +2158,15 @@ describe('Decision Center facade', () => {
       dedupeKey: 'cooking:add-meal',
     }));
 
+    await expect(performDecisionAction(created.item!.decisionId, 'add_meal', 44, 44, {
+      idempotencyKey: 'add-meal-wrong-slot',
+      payload: {
+        date: '2026-05-13',
+        mealType: 'lunch',
+        title: 'Retargeted meal',
+      },
+    })).rejects.toMatchObject({ code: 'DECISION_ACTION_PAYLOAD_MISMATCH' });
+
     const result = await performDecisionAction(created.item!.decisionId, 'add_meal', 44, 44, {
       idempotencyKey: 'add-meal',
       payload: {
@@ -1649,6 +2217,69 @@ describe('Decision Center facade', () => {
       selectedOption: 'option_a',
       involvedSkills: ['content'],
     });
+  });
+
+  it('reconciles a cleared chat confirmation and releases the uncertain exclusivity claim', async () => {
+    const pending = trackPendingChatConfirmation({
+      userId: 451,
+      tenantId: 451,
+      actionSummary: 'Choose the content workflow',
+      involvedSkills: ['content'],
+      reasonCodes: ['ambiguous_action'],
+    });
+    const normalizedAction = buildNormalizedDecisionAction({
+      intent: 'resolve_chat_confirmation',
+      targetEntities: [{ type: 'chat_confirmation', id: pending.id, version: '1' }],
+      affectedResources: [{ type: 'chat_confirmation', id: pending.id }],
+      preconditions: [],
+      expectedEffects: [{ type: 'chat_confirmation_cleared', targetRef: pending.id }],
+      prohibitedEffects: [],
+      dependencies: [],
+      exclusivityKeys: [`chat_confirmation:451:${pending.id}`],
+      authorizationScope: ['decision_center:read', 'decision_center:write'],
+      risk: 'low',
+      reversibility: 'reversible',
+      contextVersion: 'ctx_chat_confirmation_reconcile',
+    });
+    const created = await createDecisionIntent(buildSkillNotificationFixtureIntent('chat', 451, {
+      actionButtons: [{ id: 'option_a', label: 'Use the content draft', style: 'primary' }],
+      relatedEntityId: pending.id,
+      relatedEntityType: 'chat_confirmation',
+      dedupeKey: 'chat:clarification-reconcile',
+      decisionContext: { entityTitle: 'Content workflow', normalizedAction },
+    }));
+    const executionId = 'dae_chat_confirmation_reconcile';
+    testDb.prepare(`
+      INSERT INTO decision_action_executions (
+        action_execution_id, decision_id, action_id, user_id, tenant_id,
+        idempotency_key, executor_skill, status, expected_effect_json,
+        logical_action_hash, effect_results_json, recovery_json
+      ) VALUES (?, ?, 'option_a', 451, 451, 'chat-confirmation-reconcile', 'chat',
+        'partially_failed', ?, ?, '[]', '{}')
+    `).run(executionId, created.item!.decisionId, JSON.stringify({
+      verifier: 'chat_pending_confirmation',
+      targetRef: pending.id,
+      expectedStatus: 'cleared',
+    }), normalizedAction.logicalActionHash);
+    testDb.prepare(`
+      INSERT INTO decision_exclusivity_claims (
+        user_id, tenant_id, exclusivity_key, action_execution_id, decision_id,
+        context_version, status, lease_expires_at
+      ) VALUES (451, 451, ?, ?, ?, ?, 'partially_failed', datetime('now', '+5 minutes'))
+    `).run(normalizedAction.exclusivityKeys[0], executionId, created.item!.decisionId, normalizedAction.contextVersion);
+    clearPendingChatConfirmation(451, 451);
+
+    process.env.DECISION_REFRESH_ENABLED_USER_451 = 'true';
+    try {
+      const refreshed = refreshDecisionItem(created.item!.decisionId, 451, 451)!.item;
+      expect(refreshed.execution.status).toBe('succeeded');
+      expect(testDb.prepare(`
+        SELECT status FROM decision_exclusivity_claims
+         WHERE action_execution_id = ? AND user_id = 451 AND tenant_id = 451
+      `).get(executionId)).toMatchObject({ status: 'succeeded' });
+    } finally {
+      delete process.env.DECISION_REFRESH_ENABLED_USER_451;
+    }
   });
 
   it('denies wrong-user decision list/detail/action access by scope', async () => {
@@ -1720,6 +2351,467 @@ describe('Decision Center facade', () => {
     expect(workflow.approval_state).toBe('approved');
   });
 
+  it('coalesces concurrent different transport keys for the same logical mutation', async () => {
+    vi.useRealTimers();
+    const { object, created } = await createContentApprovalDecision(21, 21, 'content:logical-concurrent');
+
+    const settled = await Promise.all([
+      performDecisionAction(created.item!.decisionId, 'approve_script', 21, 21, {
+        idempotencyKey: 'device-a',
+        expectedVersion: created.item!.recordVersion,
+      }),
+      performDecisionAction(created.item!.decisionId, 'approve_script', 21, 21, {
+        idempotencyKey: 'device-b',
+        expectedVersion: created.item!.recordVersion,
+      }),
+    ]);
+
+    expect(settled.map((result) => result.status).sort()).toEqual(['idempotent', 'succeeded']);
+    const executions = testDb.prepare(`
+      SELECT COUNT(*) AS count
+      FROM decision_action_executions
+      WHERE decision_id = ? AND action_id = 'approve_script'
+    `).get(created.item!.decisionId) as { count: number };
+    expect(executions.count).toBe(1);
+    const workflow = testDb.prepare(`SELECT workflow_version, approval_state FROM content_domain_objects WHERE id = ?`).get(object.id) as { workflow_version: number; approval_state: string };
+    expect(workflow).toEqual({ workflow_version: 2, approval_state: 'approved' });
+  });
+
+  it('enforces expected proposal versions for opted-in mutating clients', async () => {
+    const { created } = await createContentApprovalDecision(22, 22, 'content:versioned');
+    process.env.DECISION_FLOW_V1_ENFORCE_ENABLED_USER_22 = 'true';
+    try {
+      await expect(performDecisionAction(created.item!.decisionId, 'approve_script', 22, 22, {
+        idempotencyKey: 'missing-version',
+      })).rejects.toMatchObject({ code: 'DECISION_VERSION_REQUIRED', status: 428 });
+
+      await expect(performDecisionAction(created.item!.decisionId, 'approve_script', 22, 22, {
+        idempotencyKey: 'stale-version',
+        expectedVersion: created.item!.recordVersion + 1,
+      })).rejects.toMatchObject({
+        code: 'DECISION_VERSION_CONFLICT',
+        status: 409,
+        details: {
+          currentVersion: created.item!.recordVersion,
+          currentItem: expect.objectContaining({ decisionId: created.item!.decisionId }),
+        },
+      });
+
+      const result = await performDecisionAction(created.item!.decisionId, 'approve_script', 22, 22, {
+        idempotencyKey: 'current-version',
+        expectedVersion: created.item!.recordVersion,
+      });
+      expect(result.item.recordVersion).toBe(created.item!.recordVersion + 1);
+      expect(result.item.decisionState).toBe('approved');
+    } finally {
+      delete process.env.DECISION_FLOW_V1_ENFORCE_ENABLED_USER_22;
+    }
+  });
+
+  it('requires and preserves the current version for snooze through the action path', async () => {
+    const created = await createDecisionIntent(buildSkillDecisionFixtureIntent('training', 221, {
+      tenantId: 221,
+      dedupeKey: 'versioned-snooze-action',
+      actionButtons: [{ id: 'snooze', label: 'Defer', style: 'secondary' }],
+    }));
+    process.env.DECISION_FLOW_V1_ENFORCE_ENABLED_USER_221 = 'true';
+    try {
+      await expect(performDecisionAction(created.item!.decisionId, 'snooze', 221, 221, {
+        idempotencyKey: 'snooze-without-version',
+        payload: { minutes: 30 },
+      })).rejects.toMatchObject({ code: 'DECISION_VERSION_REQUIRED', status: 428 });
+
+      const result = await performDecisionAction(created.item!.decisionId, 'snooze', 221, 221, {
+        idempotencyKey: 'snooze-current-version',
+        expectedVersion: created.item!.recordVersion,
+        payload: { minutes: 30 },
+      });
+      expect(result.status).toBe('succeeded');
+      expect(result.item.status).toBe('snoozed');
+      expect(result.item.recordVersion).toBe(created.item!.recordVersion + 1);
+    } finally {
+      delete process.env.DECISION_FLOW_V1_ENFORCE_ENABLED_USER_221;
+    }
+  });
+
+  it('rejects a mismatched context version before invoking an action', async () => {
+    const normalizedAction = buildNormalizedDecisionAction({
+      intent: 'review_calendar_conflict',
+      targetEntities: [{ type: 'secretary_agenda_item', id: 'agenda-context', version: '1' }],
+      affectedResources: [{ type: 'calendar_timeline', id: 'primary' }],
+      preconditions: [],
+      expectedEffects: [{ type: 'review_required', targetRef: 'secretary_agenda_item:agenda-context' }],
+      prohibitedEffects: [],
+      dependencies: [],
+      exclusivityKeys: ['calendar_timeline:23'],
+      authorizationScope: ['decision_center:read'],
+      risk: 'low',
+      reversibility: 'reversible',
+      contextVersion: 'ctx_current',
+    });
+    const created = await createDecisionIntent(buildSkillDecisionFixtureIntent('training', 23, {
+      dedupeKey: 'context-version-mismatch',
+      decisionContext: {
+        entityTitle: 'Training review',
+        sourceState: 'pending',
+        normalizedAction,
+      },
+    }));
+
+    await expect(performDecisionAction(created.item!.decisionId, 'open_detail', 23, 23, {
+      idempotencyKey: 'wrong-context',
+      contextVersion: 'ctx_stale',
+    })).rejects.toMatchObject({ code: 'DECISION_CONTEXT_CHANGED', status: 409 });
+    expect(testDb.prepare('SELECT COUNT(*) AS count FROM decision_action_executions WHERE decision_id = ?').get(created.item!.decisionId))
+      .toMatchObject({ count: 0 });
+  });
+
+  it('records versioned reviews idempotently without treating model output as execution authority', async () => {
+    process.env.DECISION_FLOW_V1_ENFORCE_ENABLED = 'true';
+    const normalizedAction = buildNormalizedDecisionAction({
+      intent: 'review_training_proposal',
+      targetEntities: [{ type: 'training_plan', id: 'plan-review-24', version: '1' }],
+      affectedResources: [{ type: 'training_state', id: 'primary' }],
+      preconditions: [],
+      expectedEffects: [{ type: 'review_required', targetRef: 'training_plan:plan-review-24' }],
+      prohibitedEffects: [],
+      dependencies: [],
+      exclusivityKeys: ['training_state:24'],
+      authorizationScope: ['decision_center:read'],
+      risk: 'medium',
+      reversibility: 'reversible',
+      contextVersion: 'ctx_review_24',
+    });
+    const created = await createDecisionIntent(buildSkillDecisionFixtureIntent('training', 24, {
+      dedupeKey: 'review-versioned',
+      decisionContext: {
+        entityTitle: 'Training proposal',
+        evidenceConfidence: 0.51,
+        candidateConfidence: 'medium',
+        normalizedAction,
+      },
+    }));
+    expect(created.item).toMatchObject({
+      reviewSupported: true,
+      editableProposalFields: [],
+      reversibility: 'reversible',
+      riskLevel: 'medium',
+      confidence: 0.51,
+    });
+    const approved = reviewDecision(created.item!.decisionId, 24, 24, {
+      outcome: 'approve',
+      expectedVersion: created.item!.recordVersion,
+      idempotencyKey: 'review-attempt-1',
+      reasonCode: 'user_confirmed',
+    });
+    expect(approved.decisionState).toBe('approved');
+    expect(approved.recordVersion).toBe(created.item!.recordVersion + 1);
+    expect(approved.status).toBe('read');
+    expect(testDb.prepare('SELECT COUNT(*) AS count FROM decision_action_executions WHERE decision_id = ?').get(created.item!.decisionId))
+      .toMatchObject({ count: 0 });
+
+    const replay = reviewDecision(created.item!.decisionId, 24, 24, {
+      outcome: 'approve',
+      expectedVersion: created.item!.recordVersion,
+      idempotencyKey: 'review-attempt-1',
+      reasonCode: 'user_confirmed',
+    });
+    expect(replay.recordVersion).toBe(approved.recordVersion);
+    expect(getDecisionLifecycleEvents(created.item!.decisionId, 24, 24).filter((event) => event.event === 'approved')).toHaveLength(1);
+  });
+
+  it('does not expose or accept approval for a structured Secretary review-only preview', async () => {
+    process.env.DECISION_FLOW_V1_ENFORCE_ENABLED = 'true';
+    const start = new Date(Date.now() + 6 * 3_600_000).toISOString();
+    const end = new Date(Date.now() + 7 * 3_600_000).toISOString();
+    const normalizedAction = buildNormalizedDecisionAction({
+      intent: 'secretary.schedule_event',
+      targetEntities: [{ type: 'calendar_event', id: 'opaque-event', version: '1' }],
+      affectedResources: [{ type: 'calendar_timeline', id: 'primary' }],
+      requestedWindow: { start, end, timezone: 'UTC' },
+      preconditions: [],
+      expectedEffects: [{ type: 'review_required', targetRef: 'calendar_event:opaque-event' }],
+      prohibitedEffects: [{ type: 'automatic_execution', targetRef: 'calendar_event:opaque-event' }],
+      dependencies: [],
+      exclusivityKeys: ['calendar_timeline:240'],
+      authorizationScope: ['decision_center:read'],
+      risk: 'medium',
+      reversibility: 'irreversible',
+      contextVersion: 'ctx_review_only',
+    });
+    const created = await createDecisionIntent(buildSkillDecisionFixtureIntent('secretary', 240, {
+      tenantId: 240,
+      type: 'decision_required',
+      title: 'Review a scoped schedule proposal',
+      body: 'A structured calendar proposal must be compared with current commitments before any change.',
+      relatedEntityId: normalizedAction.candidateFingerprint,
+      relatedEntityType: 'secretary_candidate',
+      actionButtons: [{ id: 'open_detail', label: 'Review proposal', style: 'primary' }],
+      dedupeKey: 'secretary:structured-preview:review-only-test',
+      decisionDeadline: start,
+      expiresAt: start,
+      requiresUserAction: true,
+      deliveryPolicy: 'in_app_only',
+      decisionContext: {
+        entityTitle: 'Calendar change proposed by Secretary',
+        recommendedStartAt: start,
+        recommendedEndAt: end,
+        timezone: 'UTC',
+        reasonCodes: ['structured_secretary_preview', 'preview_only', 'context_revalidation_required'],
+        sourceState: 'allow',
+        recipe: 'secretary_structured_preview_v1',
+        normalizedAction,
+      },
+    }));
+
+    expect(created.item).toMatchObject({ approvalLevel: 'none', actionability: 'read_only' });
+    try {
+      reviewDecision(created.item!.decisionId, 240, 240, {
+        outcome: 'approve',
+        expectedVersion: created.item!.recordVersion,
+        idempotencyKey: 'review-only-approve',
+      });
+      expect.fail('review-only preview must not accept approval');
+    } catch (error) {
+      expect(error).toMatchObject({ code: 'DECISION_REVIEW_NOT_APPLICABLE', status: 409 });
+    }
+  });
+
+  it('revises only a structured proposal window and invalidates prior conflict evaluation', async () => {
+    process.env.DECISION_FLOW_V1_ENFORCE_ENABLED = 'true';
+    ensureSecretaryAgendaFixtureTables();
+    const normalizedAction = buildNormalizedDecisionAction({
+      intent: 'reschedule_secretary_item',
+      targetEntities: [{ type: 'secretary_agenda_item', id: 'agenda-edit', version: '1' }],
+      affectedResources: [{ type: 'calendar_timeline', id: 'primary' }],
+      requestedWindow: { start: '2026-05-11T08:00:00.000Z', end: '2026-05-11T09:00:00.000Z', timezone: 'Europe/Lisbon' },
+      preconditions: [],
+      expectedEffects: [{ type: 'calendar_window_changed', targetRef: 'secretary_agenda_item:agenda-edit' }],
+      prohibitedEffects: [],
+      dependencies: [],
+      exclusivityKeys: ['calendar_timeline:25'],
+      authorizationScope: ['decision_center:write'],
+      risk: 'low',
+      reversibility: 'reversible',
+      contextVersion: 'ctx_before_edit',
+    });
+    const created = await createDecisionIntent(buildSkillDecisionFixtureIntent('secretary', 25, {
+      dedupeKey: 'proposal-edit',
+      relatedEntityId: 'agenda-edit',
+      relatedEntityType: 'secretary_agenda_item',
+      decisionContext: {
+        entityTitle: 'Schedule proposal',
+        sourceState: 'pending',
+        recommendedStartAt: '2026-05-11T08:00:00.000Z',
+        recommendedEndAt: '2026-05-11T09:00:00.000Z',
+        timezone: 'Europe/Lisbon',
+        recipe: 'secretary_reflow_window_v1',
+        normalizedAction,
+      },
+    }));
+
+    const revised = reviseDecisionProposal(created.item!.decisionId, 25, 25, {
+      expectedVersion: created.item!.recordVersion,
+      recommendedStartAt: '2026-05-11T10:00:00.000Z',
+      recommendedEndAt: '2026-05-11T11:30:00.000Z',
+    });
+    expect(revised.recordVersion).toBe(created.item!.recordVersion + 1);
+    expect(revised.decisionState).toBe('ready_for_review');
+    expect(revised.contextVersion).toMatch(/^ctx_revision_/);
+    const persisted = testDb.prepare('SELECT decision_context_json, context_version FROM notification_intents WHERE intent_id = ?').get(created.item!.intentId) as any;
+    const context = JSON.parse(persisted.decision_context_json);
+    expect(context.recommendedStartAt).toBe('2026-05-11T10:00:00.000Z');
+    expect(context.recommendedEndAt).toBe('2026-05-11T11:30:00.000Z');
+    expect(context.conflictEvaluation).toMatchObject({
+      contextVersion: revised.contextVersion,
+      disposition: 'allow',
+      findings: [],
+    });
+    expect(persisted.context_version).toBe(revised.contextVersion);
+  });
+
+  it('rejects proposal edits outside the Secretary reflow allowlist', async () => {
+    process.env.DECISION_FLOW_V1_ENFORCE_ENABLED = 'true';
+    const normalizedAction = buildNormalizedDecisionAction({
+      intent: 'review_training_window',
+      targetEntities: [{ type: 'training_plan', id: 'plan-edit-denied', version: '1' }],
+      affectedResources: [{ type: 'training_state', id: 'primary' }],
+      requestedWindow: {
+        start: '2026-05-11T08:00:00.000Z',
+        end: '2026-05-11T09:00:00.000Z',
+        timezone: 'Europe/Lisbon',
+      },
+      preconditions: [],
+      expectedEffects: [{ type: 'review_required', targetRef: 'training_plan:plan-edit-denied' }],
+      prohibitedEffects: [],
+      dependencies: [],
+      exclusivityKeys: ['training_state:25'],
+      authorizationScope: ['decision_center:read'],
+      risk: 'low',
+      reversibility: 'reversible',
+      contextVersion: 'ctx_training_edit_denied',
+    });
+    const created = await createDecisionIntent(buildSkillDecisionFixtureIntent('training', 251, {
+      tenantId: 251,
+      dedupeKey: 'proposal-edit-denied',
+      decisionContext: { entityTitle: 'Training window', normalizedAction },
+    }));
+
+    expect(created.item?.editableProposalFields).toEqual([]);
+    expect(() => reviseDecisionProposal(created.item!.decisionId, 251, 251, {
+      expectedVersion: created.item!.recordVersion,
+      recommendedStartAt: '2026-05-11T10:00:00.000Z',
+      recommendedEndAt: '2026-05-11T11:00:00.000Z',
+    })).toThrow(/not allowlisted/i);
+  });
+
+  it('requires an explicit replacement choice and strong confirmation when policy calls for them', async () => {
+    process.env.DECISION_FLOW_V1_ENFORCE_ENABLED = 'true';
+    ensureSecretaryAgendaFixtureTables();
+    const candidate = buildNormalizedDecisionAction({
+      intent: 'replace_calendar_commitment',
+      targetEntities: [{ type: 'secretary_agenda_item', id: 'agenda-replace', version: '1' }],
+      affectedResources: [{ type: 'calendar_timeline', id: 'primary' }],
+      requestedWindow: {
+        start: '2026-05-11T08:00:00.000Z',
+        end: '2026-05-11T09:00:00.000Z',
+        timezone: 'Europe/Lisbon',
+      },
+      preconditions: [],
+      expectedEffects: [{ type: 'calendar_window_changed', targetRef: 'secretary_agenda_item:agenda-replace' }],
+      prohibitedEffects: [],
+      dependencies: [],
+      exclusivityKeys: ['calendar_timeline:252'],
+      authorizationScope: ['decision_center:read'],
+      risk: 'high',
+      reversibility: 'reversible',
+      contextVersion: 'ctx_replacement_review',
+    });
+    const existing = buildNormalizedDecisionAction({
+      intent: 'preserve_calendar_commitment',
+      targetEntities: [{ type: 'calendar_event', id: 'event-existing', version: '1' }],
+      affectedResources: [{ type: 'calendar_timeline', id: 'primary' }],
+      requestedWindow: {
+        start: '2026-05-11T08:30:00.000Z',
+        end: '2026-05-11T09:30:00.000Z',
+        timezone: 'Europe/Lisbon',
+      },
+      preconditions: [],
+      expectedEffects: [{ type: 'commitment_preserved', targetRef: 'calendar_event:event-existing' }],
+      prohibitedEffects: [],
+      dependencies: [],
+      exclusivityKeys: ['calendar_timeline:252'],
+      authorizationScope: ['decision_center:read'],
+      risk: 'medium',
+      reversibility: 'reversible',
+      contextVersion: 'ctx_existing_commitment',
+    });
+    const conflictEvaluation = evaluateDecisionConflicts({
+      candidate,
+      existing: [{
+        action: existing,
+        decisionId: 'existing-commitment',
+        authority: 'approved_commitment',
+        approved: true,
+        createdAt: '2026-05-10T08:00:00.000Z',
+      }],
+      now: new Date('2026-05-10T10:00:00.000Z'),
+    });
+    const created = await createDecisionIntent(buildSkillDecisionFixtureIntent('secretary', 252, {
+      tenantId: 252,
+      dedupeKey: 'explicit-replacement-review',
+      relatedEntityId: 'agenda-replace',
+      relatedEntityType: 'secretary_agenda_item',
+      decisionContext: {
+        entityTitle: 'Replacement proposal',
+        currentStartAt: candidate.requestedWindow!.start,
+        currentEndAt: candidate.requestedWindow!.end,
+        normalizedAction: candidate,
+        conflictComparisons: [{
+          action: existing,
+          decisionId: 'existing-commitment',
+          authority: 'approved_commitment',
+          approved: true,
+          createdAt: '2026-05-10T08:00:00.000Z',
+        }],
+        conflictEvaluation,
+      },
+    }));
+
+    expect(created.item).toMatchObject({ approvalLevel: 'strong_confirmation', reviewSupported: true });
+    expect(() => reviewDecision(created.item!.decisionId, 252, 252, {
+      outcome: 'approve',
+      expectedVersion: created.item!.recordVersion,
+      idempotencyKey: 'replacement-without-choice',
+      strongConfirmationText: 'CONFIRM',
+    })).toThrow(/replacement explicitly/i);
+    expect(() => reviewDecision(created.item!.decisionId, 252, 252, {
+      outcome: 'approve',
+      expectedVersion: created.item!.recordVersion,
+      idempotencyKey: 'replacement-without-strong-confirmation',
+      replacementChoiceId: 'replace_with_candidate',
+    })).toThrow(/type CONFIRM/i);
+
+    const approved = reviewDecision(created.item!.decisionId, 252, 252, {
+      outcome: 'approve',
+      expectedVersion: created.item!.recordVersion,
+      idempotencyKey: 'replacement-approved',
+      replacementChoiceId: 'replace_with_candidate',
+      strongConfirmationText: 'CONFIRM',
+    });
+    expect(approved.decisionState).toBe('approved');
+    const approvedEvent = getDecisionLifecycleEvents(created.item!.decisionId, 252, 252)
+      .find((event) => event.event === 'approved');
+    expect(approvedEvent?.metadata).toMatchObject({
+      replacementChoiceId: 'replace_with_candidate',
+      confirmationStrength: 'strong',
+    });
+    expect(JSON.stringify(approvedEvent?.metadata)).not.toContain('CONFIRM');
+  });
+
+  it('suppresses a repeated low-risk rejected candidate until its context materially changes', async () => {
+    process.env.DECISION_FLOW_V1_ENFORCE_ENABLED = 'true';
+    const actionFor = (contextVersion: string) => buildNormalizedDecisionAction({
+      intent: 'review_low_risk_schedule_option',
+      targetEntities: [{ type: 'secretary_agenda_item', id: 'agenda-cooldown', version: contextVersion }],
+      affectedResources: [{ type: 'calendar_timeline', id: 'primary' }],
+      requestedWindow: { start: '2026-05-12T08:00:00.000Z', end: '2026-05-12T09:00:00.000Z', timezone: 'Europe/Lisbon' },
+      preconditions: [],
+      expectedEffects: [{ type: 'review_required', targetRef: 'secretary_agenda_item:agenda-cooldown' }],
+      prohibitedEffects: [],
+      dependencies: [],
+      exclusivityKeys: ['calendar_timeline:26'],
+      authorizationScope: ['decision_center:read'],
+      risk: 'low',
+      reversibility: 'reversible',
+      contextVersion,
+    });
+    const build = (dedupeKey: string, contextVersion: string) => buildSkillDecisionFixtureIntent('training', 26, {
+      priority: 'active',
+      dedupeKey,
+      decisionContext: {
+        entityTitle: 'Schedule review',
+        sourceState: 'pending',
+        normalizedAction: actionFor(contextVersion),
+      },
+    });
+    const first = await createDecisionIntent(build('cooldown:first', 'ctx_same'));
+    reviewDecision(first.item!.decisionId, 26, 26, {
+      outcome: 'reject',
+      expectedVersion: first.item!.recordVersion,
+      idempotencyKey: 'reject-cooldown',
+    });
+    process.env.DECISION_FEEDBACK_SUPPRESSION_ENABLED = 'true';
+    process.env.DECISION_CANDIDATE_REJECTION_COOLDOWN_DAYS = '14';
+
+    const repeated = await createDecisionIntent(build('cooldown:repeat', 'ctx_same'));
+    expect(repeated.item).toBeNull();
+    expect(repeated.eligibility.reasons).toContain('candidate_rejection_cooldown');
+
+    const changed = await createDecisionIntent(build('cooldown:changed', 'ctx_changed'));
+    expect(changed.item).not.toBeNull();
+  });
+
   it('denies expired, superseded, dismissed, and already-actioned decisions correctly', async () => {
     const expired = await createDecisionIntent(buildSkillDecisionFixtureIntent('training', 30, { dedupeKey: 'expired' }));
     testDb.prepare(`UPDATE notification_center_items SET expires_at = ? WHERE item_id = ?`)
@@ -1737,12 +2829,37 @@ describe('Decision Center facade', () => {
     await expect(performDecisionAction(dismissed.item!.decisionId, 'open_detail', 32, 32, { idempotencyKey: 'dismissed-tap' }))
       .rejects.toThrow(/dismissed/i);
 
+    const { created: rejectedMutation } = await createContentApprovalDecision(321, 321, 'rejected-mutation-replay');
+    dismissDecision(rejectedMutation.item!.decisionId, 321, 321, 'user_rejected');
+    await expect(performDecisionAction(rejectedMutation.item!.decisionId, 'approve_script', 321, 321, {
+      idempotencyKey: 'rejected-mutation-replay',
+    })).rejects.toMatchObject({ code: 'DECISION_DISMISSED' });
+
+    const { created: supersededMutation } = await createContentApprovalDecision(322, 322, 'superseded-mutation-replay');
+    testDb.prepare(`UPDATE notification_center_items SET status = 'superseded', decision_state = 'superseded' WHERE item_id = ?`)
+      .run(supersededMutation.item!.decisionId);
+    await expect(performDecisionAction(supersededMutation.item!.decisionId, 'approve_script', 322, 322, {
+      idempotencyKey: 'superseded-mutation-replay',
+    })).rejects.toMatchObject({ code: 'DECISION_SUPERSEDED' });
+
     const { created } = await createContentApprovalDecision(33, 33, 'already-actioned');
     await performDecisionAction(created.item!.decisionId, 'approve_script', 33, 33, { idempotencyKey: 'action-once' });
     const duplicate = await performDecisionAction(created.item!.decisionId, 'approve_script', 33, 33, { idempotencyKey: 'action-once' });
     expect(duplicate.status).toBe('idempotent');
     await expect(performDecisionAction(created.item!.decisionId, 'approve_script', 33, 33, { idempotencyKey: 'action-twice' }))
       .rejects.toThrow(/already actioned/i);
+  });
+
+  it('dismisses a snoozed decision truthfully and rejects a duplicate no-op', async () => {
+    const created = await createDecisionIntent(buildSkillDecisionFixtureIntent('training', 34, { dedupeKey: 'dismiss-snoozed' }));
+    const snoozed = snoozeDecision(created.item!.decisionId, 34, 34, 60);
+    expect(snoozed.status).toBe('snoozed');
+    const dismissed = dismissDecision(created.item!.decisionId, 34, 34, 'not_relevant');
+    expect(dismissed.status).toBe('dismissed');
+    expect(dismissed.decisionState).toBe('rejected');
+    expect(dismissed.recordVersion).toBe(created.item!.recordVersion + 2);
+    expect(() => dismissDecision(created.item!.decisionId, 34, 34, 'duplicate'))
+      .toThrow(/no longer in a dismissible state/i);
   });
 
   it('marks decisions failed when fresh read-back status does not match the expected effect', async () => {
@@ -1765,7 +2882,7 @@ describe('Decision Center facade', () => {
       FROM decision_action_executions
       WHERE decision_id = ? AND idempotency_key = 'mismatch-tap'
     `).get(created.item!.decisionId) as { status: string; error_code: string };
-    expect(execution).toMatchObject({ status: 'failed', error_code: 'DECISION_READBACK_MISMATCH' });
+    expect(execution).toMatchObject({ status: 'partially_failed', error_code: 'DECISION_READBACK_MISMATCH' });
     const ledger = testDb.prepare(`
       SELECT failed_reason, action_succeeded, partial_failure
       FROM decision_outcome_ledger
@@ -1778,6 +2895,123 @@ describe('Decision Center facade', () => {
     });
   });
 
+  it('durably revokes approval and audits when execution-time revalidation finds a new conflict', async () => {
+    process.env.DECISION_FLOW_V1_ENFORCE_ENABLED = 'true';
+    const actionFor = (id: string, contextVersion: string) => buildNormalizedDecisionAction({
+      intent: `review_chat_choice_${id}`,
+      targetEntities: [{ type: 'chat_choice', id, version: '1' }],
+      affectedResources: [{ type: 'shared_choice', id: 'primary' }],
+      preconditions: [],
+      expectedEffects: [{ type: 'choice_selected', targetRef: `chat_choice:${id}` }],
+      prohibitedEffects: [],
+      dependencies: [],
+      exclusivityKeys: ['shared_choice:253'],
+      authorizationScope: ['decision_center:read'],
+      risk: 'low',
+      reversibility: 'reversible',
+      contextVersion,
+    });
+    const first = await createDecisionIntent(buildSkillDecisionFixtureIntent('chat', 253, {
+      tenantId: 253,
+      dedupeKey: 'revalidation-revoke-first',
+      actionButtons: [{ id: 'option_a', label: 'Choose A', style: 'primary' }],
+      decisionContext: { entityTitle: 'First choice', normalizedAction: actionFor('first', 'ctx_revoke_first') },
+    }));
+    const approved = reviewDecision(first.item!.decisionId, 253, 253, {
+      outcome: 'approve',
+      expectedVersion: first.item!.recordVersion,
+      idempotencyKey: 'approve-before-new-conflict',
+    });
+    await createDecisionIntent(buildSkillDecisionFixtureIntent('chat', 253, {
+      tenantId: 253,
+      dedupeKey: 'revalidation-revoke-second',
+      actionButtons: [{ id: 'option_b', label: 'Choose B', style: 'primary' }],
+      decisionContext: { entityTitle: 'Second choice', normalizedAction: actionFor('second', 'ctx_revoke_second') },
+    }));
+
+    await expect(performDecisionAction(first.item!.decisionId, 'option_a', 253, 253, {
+      idempotencyKey: 'execute-after-new-conflict',
+      expectedVersion: approved.recordVersion,
+      contextVersion: approved.contextVersion,
+    })).rejects.toMatchObject({ code: 'DECISION_CONTEXT_CHANGED' });
+
+    const invalidated = getDecisionItem(first.item!.decisionId, 253, 253)!;
+    expect(invalidated.decisionState).toBe('ready_for_review');
+    expect(invalidated.recordVersion).toBe(approved.recordVersion + 1);
+    expect(getDecisionLifecycleEvents(first.item!.decisionId, 253, 253)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ event: 'revalidation_failed', reason: 'conflicts_changed_after_review' }),
+    ]));
+  });
+
+  it('treats an expired execution lease as an uncertain partial outcome and retains its exclusivity guard', async () => {
+    const uncertain = await createDecisionIntent(buildSkillDecisionFixtureIntent('training', 401, {
+      tenantId: 401,
+      dedupeKey: 'expired-execution-lease',
+    }));
+    testDb.prepare(`
+      INSERT INTO decision_action_executions (
+        action_execution_id, decision_id, action_id, user_id, tenant_id,
+        idempotency_key, executor_skill, status, logical_action_hash,
+        lease_expires_at, effect_results_json, recovery_json
+      ) VALUES (?, ?, 'approve_script', 401, 401, 'lease-attempt', 'content', 'started', ?, ?, '[]', '{}')
+    `).run('dae_expired_lease', uncertain.item!.decisionId, 'logical-expired-lease', '2026-05-09T10:00:00.000Z');
+    testDb.prepare(`
+      INSERT INTO decision_exclusivity_claims (
+        user_id, tenant_id, exclusivity_key, action_execution_id, decision_id,
+        status, lease_expires_at
+      ) VALUES (401, 401, 'training_state:401', 'dae_expired_lease', ?, 'started', ?)
+    `).run(uncertain.item!.decisionId, '2026-05-09T10:00:00.000Z');
+    const trigger = await createDecisionIntent(buildSkillDecisionFixtureIntent('training', 401, {
+      tenantId: 401,
+      dedupeKey: 'trigger-lease-reconciliation',
+    }));
+
+    await performDecisionAction(trigger.item!.decisionId, 'open_detail', 401, 401, {
+      idempotencyKey: 'trigger-lease-sweep',
+    });
+
+    expect(testDb.prepare(`
+      SELECT status, error_code, effect_results_json
+        FROM decision_action_executions WHERE action_execution_id = 'dae_expired_lease'
+    `).get()).toMatchObject({
+      status: 'partially_failed',
+      error_code: 'DECISION_EXECUTION_LEASE_EXPIRED',
+      effect_results_json: expect.stringContaining('"status":"unknown"'),
+    });
+    expect(testDb.prepare(`
+      SELECT status FROM decision_exclusivity_claims
+       WHERE user_id = 401 AND tenant_id = 401 AND exclusivity_key = 'training_state:401'
+    `).get()).toMatchObject({ status: 'partially_failed' });
+  });
+
+  it('blocks lifecycle mutations while an execution is active or awaiting reconciliation', async () => {
+    const created = await createDecisionIntent(buildSkillDecisionFixtureIntent('training', 402, {
+      tenantId: 402,
+      dedupeKey: 'lifecycle-blocked-by-partial-execution',
+    }));
+    testDb.prepare(`
+      INSERT INTO decision_action_executions (
+        action_execution_id, decision_id, action_id, user_id, tenant_id,
+        idempotency_key, executor_skill, status, effect_results_json, recovery_json
+      ) VALUES ('dae_partial_lifecycle', ?, 'retry', 402, 402,
+        'partial-lifecycle-attempt', 'training', 'partially_failed', '[]', '{}')
+    `).run(created.item!.decisionId);
+
+    expect(() => dismissDecision(created.item!.decisionId, 402, 402, 'not_relevant'))
+      .toThrow(/reconcile/i);
+    expect(() => snoozeDecision(created.item!.decisionId, 402, 402, 30))
+      .toThrow(/reconcile/i);
+  });
+
+  it('classifies transport timeouts as uncertain without weakening deterministic validation failures', () => {
+    expect(isUncertainDecisionExecutionOutcome('DECISION_ACTION_FAILED', { originalCode: 'ETIMEDOUT' })).toBe(true);
+    expect(isUncertainDecisionExecutionOutcome('DECISION_ACTION_FAILED', { originalCode: 'FETCH_FAILED', causeCode: 'ECONNRESET' })).toBe(true);
+    expect(isUncertainDecisionExecutionOutcome('DECISION_ACTION_FAILED', { outcomeState: 'dispatched_outcome_unknown' })).toBe(true);
+    expect(isUncertainDecisionExecutionOutcome('PROVIDER_NETWORK_ERROR')).toBe(true);
+    expect(isUncertainDecisionExecutionOutcome('DECISION_PERMISSION_REQUIRED')).toBe(false);
+    expect(isUncertainDecisionExecutionOutcome('DECISION_ACTION_PAYLOAD_REQUIRED')).toBe(false);
+  });
+
   it('rejects snooze when the scoped decision update misses the row', async () => {
     const created = await createDecisionIntent(buildSkillDecisionFixtureIntent('training', 41, {
       dedupeKey: 'snooze-stale-row',
@@ -1786,7 +3020,7 @@ describe('Decision Center facade', () => {
       .run(created.item!.decisionId);
 
     expect(() => snoozeDecision(created.item!.decisionId, 41, 41, 30))
-      .toThrow(/scoped update/i);
+      .toThrow(/changed/i);
   });
 
   it('marks execution failed when the final decision action update is ignored', async () => {
@@ -1803,17 +3037,69 @@ describe('Decision Center facade', () => {
 
     await expect(performDecisionAction(created.item!.decisionId, 'approve_script', 42, 42, {
       idempotencyKey: 'ignored-final-update',
-    })).rejects.toThrow(/scoped update/i);
+    })).rejects.toMatchObject({ code: 'DECISION_SOURCE_EFFECT_VERIFIED_PROJECTION_FAILED' });
 
     const execution = testDb.prepare(`
       SELECT status, error_code
       FROM decision_action_executions
       WHERE decision_id = ? AND idempotency_key = 'ignored-final-update'
     `).get(created.item!.decisionId) as { status: string; error_code: string };
-    expect(execution).toMatchObject({ status: 'failed', error_code: 'DECISION_READBACK_MISMATCH' });
+    expect(execution).toMatchObject({ status: 'partially_failed', error_code: 'DECISION_SOURCE_EFFECT_VERIFIED_PROJECTION_FAILED' });
     const rawDecision = testDb.prepare(`SELECT status FROM notification_center_items WHERE item_id = ?`)
       .get(created.item!.decisionId) as { status: string };
     expect(rawDecision.status).toBe('failed');
+
+    testDb.exec('DROP TRIGGER ignore_actioned_decision_update');
+    process.env.DECISION_REFRESH_ENABLED_USER_42 = 'true';
+    try {
+      const reconciled = refreshDecisionItem(created.item!.decisionId, 42, 42)!.item;
+      expect(reconciled.status).toBe('actioned');
+      expect(reconciled.execution.status).toBe('succeeded');
+      expect(getDecisionLifecycleEvents(created.item!.decisionId, 42, 42)).toEqual(expect.arrayContaining([
+        expect.objectContaining({ event: 'execution_reconciled', reason: 'authoritative_state_applied' }),
+      ]));
+    } finally {
+      delete process.env.DECISION_REFRESH_ENABLED_USER_42;
+    }
+  });
+
+  it('fails closed when durable normalized-action metadata cannot be persisted', async () => {
+    const action = buildNormalizedDecisionAction({
+      intent: 'review_metadata_failure',
+      targetEntities: [{ type: 'task', id: 'task-metadata-failure', version: '1' }],
+      affectedResources: [{ type: 'task_store', id: 'primary' }],
+      preconditions: [],
+      expectedEffects: [{ type: 'review_required', targetRef: 'task:task-metadata-failure' }],
+      prohibitedEffects: [],
+      dependencies: [],
+      exclusivityKeys: ['task_store:403:task-metadata-failure'],
+      authorizationScope: ['decision_center:read'],
+      risk: 'low',
+      reversibility: 'reversible',
+      contextVersion: 'ctx_metadata_failure',
+    });
+    testDb.exec(`
+      CREATE TRIGGER fail_decision_flow_metadata_update
+      BEFORE UPDATE OF context_version ON notification_intents
+      WHEN NEW.context_version IS NOT OLD.context_version
+      BEGIN
+        SELECT RAISE(ABORT, 'forced metadata failure');
+      END;
+    `);
+
+    const created = await createDecisionIntent(buildSkillDecisionFixtureIntent('training', 403, {
+      tenantId: 403,
+      dedupeKey: 'fail-closed-flow-metadata',
+      decisionContext: { entityTitle: 'Metadata failure fixture', normalizedAction: action },
+    }));
+
+    expect(created.item).toBeNull();
+    expect(created.eligibility.reasons).toContain('decision_flow_metadata_persistence_failed');
+    const retired = testDb.prepare(`
+      SELECT status, decision_state AS decisionState, actions_json AS actionsJson, requires_user_action AS requiresUserAction
+        FROM notification_center_items WHERE dedupe_key = 'fail-closed-flow-metadata'
+    `).get() as { status: string; decisionState: string; actionsJson: string; requiresUserAction: number };
+    expect(retired).toEqual({ status: 'failed', decisionState: 'blocked', actionsJson: '[]', requiresUserAction: 0 });
   });
 
   it('documents outcome ledger retention and aggregate-only admin reporting policy', () => {
@@ -2136,6 +3422,36 @@ describe('Decision Center facade', () => {
     }).not.toThrow();
   });
 
+  it('self-heals a partially applied Decision flow schema without dropping legacy data', () => {
+    testDb.prepare(`
+      INSERT INTO notification_center_items (
+        item_id, intent_id, user_id, tenant_id, title, body, safe_body,
+        source_skill, type, priority, status, created_at
+      ) VALUES ('partial-schema-item', 'partial-schema-intent', 71, 71,
+        'Retained decision', 'Retained body', 'Retained body',
+        'secretary', 'decision_required', 'active', 'unread', datetime('now'))
+    `).run();
+    testDb.exec(`
+      DROP TABLE decision_flow_preferences;
+      DROP TABLE decision_conflict_evaluations;
+      ALTER TABLE decision_action_executions DROP COLUMN recovery_json;
+    `);
+
+    expect(() => ensureDecisionCenterTables()).not.toThrow();
+
+    expect(testDb.prepare(`
+      SELECT title FROM notification_center_items WHERE item_id = 'partial-schema-item'
+    `).get()).toEqual({ title: 'Retained decision' });
+    expect(testDb.prepare(`
+      SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'decision_flow_preferences'
+    `).get()).toEqual({ name: 'decision_flow_preferences' });
+    expect(testDb.prepare(`
+      SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'decision_conflict_evaluations'
+    `).get()).toEqual({ name: 'decision_conflict_evaluations' });
+    const executionColumns = testDb.prepare('PRAGMA table_info(decision_action_executions)').all() as Array<{ name: string }>;
+    expect(executionColumns.map((column) => column.name)).toContain('recovery_json');
+  });
+
   it('logs unexpected action failures without serializing original messages', () => {
     const source = readFileSync('src/services/decision-center.ts', 'utf8');
     expect(source).toContain("'Decision action failed'");
@@ -2143,7 +3459,8 @@ describe('Decision Center facade', () => {
     expect(source).toContain('originalCode');
     expect(source).toContain('originalErrorLogged');
     expect(source).not.toContain('originalMessage:');
-    expect(source).toContain('markExecutionFailed(claimed.execution.action_execution_id, error.code, error.details)');
+    expect(source).toContain('const failureOutcome = markExecutionFailed(');
+    expect(source).toContain('claimed.execution.action_execution_id,\n      userId,\n      tenantId,\n      error.code,\n      error.details,');
 
     const apiRoute = readFileSync('src/api/routes/decisions.ts', 'utf8');
     const portalRoute = readFileSync('src/portal/decision-center-routes.ts', 'utf8');
@@ -2244,6 +3561,7 @@ describe('Decision Center expiry (A1)', () => {
     const page = listDecisionItems(58, 58, { status: 'all', limit: 1, maxLimit: 20 });
 
     expect(page).toHaveLength(1);
+    recordDecisionItemExposures(page);
     const renderedId = page[0].decisionId;
     const offPageId = allIds.find((id) => id !== renderedId)!;
     const scores = testDb.prepare(`
@@ -2279,6 +3597,7 @@ describe('Decision Center expiry (A1)', () => {
     const summary = getDecisionSummary(59, 59, 2);
 
     expect(summary.previewItems).toHaveLength(2);
+    recordDecisionItemExposures(summary.previewItems);
     const renderedIds = new Set(summary.previewItems.map((item) => item.decisionId));
     const offPreviewId = allIds.find((id) => !renderedIds.has(id))!;
     const scores = testDb.prepare(`
@@ -2345,6 +3664,10 @@ describe('Decision Center expiry (A1)', () => {
 
     expect(overview.items).toHaveLength(1);
     expect(overview.summary.previewItems).toHaveLength(3);
+    recordDecisionItemExposures([
+      ...overview.items,
+      ...overview.summary.previewItems,
+    ]);
     const renderedIds = new Set([
       ...overview.items.map((item) => item.decisionId),
       ...overview.summary.previewItems.map((item) => item.decisionId),
@@ -2495,9 +3818,14 @@ describe('Decision Center layered status (Foundation)', () => {
     process.env.NOTIFICATION_DELIVERY_MODE = 'mock';
     ensureNotificationTables();
     ensureDecisionCenterTables();
+    ensureTrainingCommitmentFixtureTables();
+    ensureSecretaryAgendaFixtureTables();
   });
   afterEach(() => {
     delete process.env.NOTIFICATION_DELIVERY_MODE;
+    delete process.env.DECISION_CONFLICT_POLICY_V1_ENABLED;
+    delete process.env.DECISION_FLOW_V1_ENFORCE_ENABLED;
+    clearScopedDecisionFlowFlags();
     vi.useRealTimers();
     testDb?.close();
   });
@@ -2720,22 +4048,264 @@ describe('Decision Center layered status (Foundation)', () => {
     expect(item.actionOutcomeStatus).toBe('none');
     expect(Array.isArray(item.actionEffectiveStatuses)).toBe(true);
     expect(item.actionEffectiveStatuses!.length).toBeGreaterThan(0);
+    expect(item.reviewSupported).toBe(false);
+    expect(item.editableProposalFields).toEqual([]);
     // v1 fields still present/unchanged
     expect(typeof item.status).toBe('string');
     expect(item.frontendActionState).toBeDefined();
     expect(item.displayMode).toBeDefined();
   });
 
-  it('refreshDecisionItem re-derives the item from current stored state (read-only) + stamps refreshedAt', async () => {
+  it('does not advertise a successful refresh for a legacy item without a normalized source contract', async () => {
     const created = await createDecisionIntent(buildSkillDecisionFixtureIntent('training', 91, { tenantId: 91, dedupeKey: 'refresh-1' }));
-    const result = refreshDecisionItem(created.item!.decisionId, 91, 91)!;
-    expect(result.item.decisionId).toBe(created.item!.decisionId);
-    expect(result.item.effectiveStatus).toBe('needs_action'); // recomputed, matches getDecisionItem
-    expect(typeof result.refreshedAt).toBe('string');
-    expect(Number.isFinite(Date.parse(result.refreshedAt))).toBe(true);
+    expect(created.item!.refreshSupported).toBe(false);
+    let refreshError: unknown;
+    try { refreshDecisionItem(created.item!.decisionId, 91, 91); } catch (error) { refreshError = error; }
+    expect(refreshError).toMatchObject({ code: 'DECISION_REFRESH_NOT_SUPPORTED' });
     // unknown / wrong-scope decision -> null (no throw).
     expect(refreshDecisionItem('nc_does_not_exist', 91, 91)).toBeNull();
     expect(refreshDecisionItem(created.item!.decisionId, 999, 999)).toBeNull(); // wrong user scope
+  });
+
+  it('retires an elapsed material context instead of reporting a successful no-op refresh', async () => {
+    process.env.DECISION_CONFLICT_POLICY_V1_ENABLED_USER_916 = 'active';
+    try {
+      const action = buildNormalizedDecisionAction({
+        intent: 'review_elapsed_context',
+        targetEntities: [{ type: 'task', id: 'task-expired-context', version: '1' }],
+        affectedResources: [{ type: 'task_store', id: 'primary' }],
+        preconditions: [],
+        expectedEffects: [{ type: 'review_required', targetRef: 'task:task-expired-context' }],
+        prohibitedEffects: [],
+        dependencies: [],
+        exclusivityKeys: ['task_store:916:task-expired-context'],
+        authorizationScope: ['decision_center:read'],
+        risk: 'low',
+        reversibility: 'reversible',
+        contextVersion: 'ctx_elapsed_refresh',
+      });
+      const created = await createDecisionIntent(buildSkillDecisionFixtureIntent('training', 916, {
+        tenantId: 916,
+        dedupeKey: 'elapsed-refresh-context',
+        decisionContext: {
+          entityTitle: 'Elapsed proposal',
+          normalizedAction: action,
+          contextExpiresAt: '2026-05-09T10:00:00.000Z',
+        },
+      }));
+
+      const refreshed = refreshDecisionItem(created.item!.decisionId, 916, 916)!.item;
+
+      expect(refreshed.status).toBe('expired');
+      expect(refreshed.decisionState).toBe('expired');
+      expect(refreshed.refreshSupported).toBe(false);
+    } finally {
+      delete process.env.DECISION_CONFLICT_POLICY_V1_ENABLED_USER_916;
+    }
+  });
+
+  it('preserves approval and record version when active refresh finds no material context change', async () => {
+    process.env.DECISION_CONFLICT_POLICY_V1_ENABLED_USER_911 = 'active';
+    process.env.DECISION_FLOW_V1_ENFORCE_ENABLED = 'true';
+    try {
+      const action = buildNormalizedDecisionAction({
+        intent: 'review_task_priority',
+        targetEntities: [{ type: 'task', id: 'task-refresh-stable', version: '1' }],
+        affectedResources: [{ type: 'task_store', id: 'primary' }],
+        preconditions: [],
+        expectedEffects: [{ type: 'review_required', targetRef: 'task:task-refresh-stable' }],
+        prohibitedEffects: [],
+        dependencies: [],
+        exclusivityKeys: ['task_store:911:task-refresh-stable'],
+        authorizationScope: ['decision_center:read'],
+        risk: 'low',
+        reversibility: 'reversible',
+        contextVersion: 'ctx_refresh_stable',
+      });
+      const created = await createDecisionIntent(buildSkillDecisionFixtureIntent('training', 911, {
+        tenantId: 911,
+        dedupeKey: 'refresh-stable',
+        decisionContext: { entityTitle: 'Task priority', normalizedAction: action },
+      }));
+      const approved = reviewDecision(created.item!.decisionId, 911, 911, {
+        outcome: 'approve',
+        expectedVersion: created.item!.recordVersion,
+        idempotencyKey: 'approve-refresh-stable',
+      });
+
+      const refreshed = refreshDecisionItem(created.item!.decisionId, 911, 911)!.item;
+
+      expect(refreshed.decisionState).toBe('approved');
+      expect(refreshed.recordVersion).toBe(approved.recordVersion);
+      expect(refreshed.contextVersion).toBe(approved.contextVersion);
+    } finally {
+      delete process.env.DECISION_CONFLICT_POLICY_V1_ENABLED_USER_911;
+    }
+  });
+
+  it('retains a persisted external-calendar comparison when refresh cannot reconstruct it from local tables', async () => {
+    process.env.DECISION_CONFLICT_POLICY_V1_ENABLED_USER_914 = 'active';
+    try {
+      const candidate = buildNormalizedDecisionAction({
+        intent: 'review_calendar_conflict',
+        targetEntities: [{ type: 'secretary_agenda_item', id: 'agenda-external-refresh', version: '1' }],
+        affectedResources: [{ type: 'calendar_day', id: 'primary:2026-05-11' }],
+        requestedWindow: { start: '2026-05-11T08:00:00.000Z', end: '2026-05-11T09:00:00.000Z', timezone: 'UTC' },
+        preconditions: [],
+        expectedEffects: [{ type: 'review_required', targetRef: 'secretary_agenda_item:agenda-external-refresh' }],
+        prohibitedEffects: [{ type: 'automatic_calendar_mutation', targetRef: 'secretary_agenda_item:agenda-external-refresh' }],
+        dependencies: [],
+        exclusivityKeys: ['calendar_timeline:914:2026-05-11'],
+        authorizationScope: ['decision_center:read'],
+        risk: 'medium',
+        reversibility: 'reversible',
+        contextVersion: 'ctx_external_refresh',
+      });
+      const external = {
+        action: buildNormalizedDecisionAction({
+          intent: 'preserve_confirmed_calendar_commitment',
+          targetEntities: [{ type: 'calendar_event', id: 'opaque-external-event' }],
+          affectedResources: [{ type: 'calendar_day', id: 'primary:2026-05-11' }],
+          requestedWindow: { start: '2026-05-11T08:30:00.000Z', end: '2026-05-11T09:30:00.000Z', timezone: 'UTC' },
+          preconditions: [],
+          expectedEffects: [{ type: 'preserve_commitment', targetRef: 'opaque-external-event' }],
+          prohibitedEffects: [],
+          dependencies: [],
+          exclusivityKeys: ['calendar_timeline:914:2026-05-11'],
+          authorizationScope: ['calendar:read'],
+          risk: 'medium',
+          reversibility: 'irreversible',
+          contextVersion: 'ctx_external_refresh',
+        }),
+        authority: 'approved_commitment' as const,
+        approved: true,
+        createdAt: '2026-05-10T08:00:00.000Z',
+        validUntil: '2026-05-11T09:30:00.000Z',
+      };
+      const created = await createDecisionIntent(buildSkillDecisionFixtureIntent('secretary', 914, {
+        tenantId: 914,
+        relatedEntityType: 'secretary_candidate',
+        relatedEntityId: 'external-refresh-candidate',
+        dedupeKey: 'external-refresh-comparison',
+        decisionContext: {
+          entityTitle: 'Secretary agenda item',
+          currentStartAt: candidate.requestedWindow!.start,
+          currentEndAt: candidate.requestedWindow!.end,
+          contextExpiresAt: '2026-05-11T08:00:00.000Z',
+          normalizedAction: candidate,
+          conflictComparisons: [external],
+          conflictEvaluation: evaluateDecisionConflicts({
+            candidate,
+            existing: [external],
+            now: new Date('2026-05-10T10:00:00.000Z'),
+          }),
+        },
+      }));
+
+      const refreshed = refreshDecisionItem(created.item!.decisionId, 914, 914)!.item;
+      expect(refreshed.conflictSummary?.disposition).toBe('needs_confirmation');
+      expect(refreshed.conflictSummary?.reasonCodes).toContain('overlaps_approved_commitment');
+    } finally {
+      delete process.env.DECISION_CONFLICT_POLICY_V1_ENABLED_USER_914;
+    }
+  });
+
+  it('never lets a producer soft-finding count replace a deterministic hard permission failure', async () => {
+    process.env.DECISION_CONFLICT_POLICY_V1_ENABLED_USER_915 = 'active';
+    try {
+      const candidate = buildNormalizedDecisionAction({
+        intent: 'review_restricted_change',
+        targetEntities: [{ type: 'task', id: 'restricted-task', version: '1' }],
+        affectedResources: [{ type: 'task_store', id: 'primary' }],
+        preconditions: [],
+        expectedEffects: [{ type: 'review_required', targetRef: 'task:restricted-task' }],
+        prohibitedEffects: [],
+        dependencies: [],
+        exclusivityKeys: ['task_store:915:restricted-task'],
+        authorizationScope: ['unsupported:permission'],
+        risk: 'low',
+        reversibility: 'reversible',
+        contextVersion: 'ctx_permission_precedence',
+      });
+      const comparison = {
+        action: buildNormalizedDecisionAction({
+          ...candidate,
+          intent: 'preserve_task_state',
+          targetEntities: [{ type: 'task', id: 'other-task', version: '1' }],
+          contextVersion: 'ctx_permission_precedence',
+        }),
+        authority: 'configured_preference' as const,
+        approved: false,
+        createdAt: '2026-05-10T09:00:00.000Z',
+      };
+      const producerEvaluation = evaluateDecisionConflicts({
+        candidate,
+        existing: [comparison],
+        authorizationAllowed: true,
+        now: new Date('2026-05-10T10:00:00.000Z'),
+      });
+      const created = await createDecisionIntent(buildSkillDecisionFixtureIntent('training', 915, {
+        tenantId: 915,
+        dedupeKey: 'hard-permission-precedence',
+        decisionContext: {
+          entityTitle: 'Restricted proposal',
+          normalizedAction: candidate,
+          conflictComparisons: [comparison],
+          conflictEvaluation: producerEvaluation,
+        },
+      }));
+
+      expect(created.item?.decisionState).toBe('blocked');
+      expect(created.item?.conflictSummary).toMatchObject({ disposition: 'block', severity: 'hard' });
+      expect(created.item?.conflictSummary?.reasonCodes).toContain('authorization_or_policy_denied');
+    } finally {
+      delete process.env.DECISION_CONFLICT_POLICY_V1_ENABLED_USER_915;
+    }
+  });
+
+  it('versions context and returns an approved decision to review when refresh finds a new conflict', async () => {
+    process.env.DECISION_CONFLICT_POLICY_V1_ENABLED_USER_912 = 'active';
+    process.env.DECISION_FLOW_V1_ENFORCE_ENABLED = 'true';
+    try {
+      const actionFor = (id: string, contextVersion: string) => buildNormalizedDecisionAction({
+        intent: `review_task_priority_${id}`,
+        targetEntities: [{ type: 'task', id, version: '1' }],
+        affectedResources: [{ type: 'task_store', id: 'primary' }],
+        preconditions: [],
+        expectedEffects: [{ type: 'review_required', targetRef: `task:${id}` }],
+        prohibitedEffects: [],
+        dependencies: [],
+        exclusivityKeys: ['task_store:912:priority'],
+        authorizationScope: ['decision_center:read'],
+        risk: 'low',
+        reversibility: 'reversible',
+        contextVersion,
+      });
+      const first = await createDecisionIntent(buildSkillDecisionFixtureIntent('training', 912, {
+        tenantId: 912,
+        dedupeKey: 'refresh-conflict-first',
+        decisionContext: { entityTitle: 'First task priority', normalizedAction: actionFor('task-a', 'ctx_refresh_before') },
+      }));
+      const approved = reviewDecision(first.item!.decisionId, 912, 912, {
+        outcome: 'approve',
+        expectedVersion: first.item!.recordVersion,
+        idempotencyKey: 'approve-refresh-conflict',
+      });
+      await createDecisionIntent(buildSkillDecisionFixtureIntent('training', 912, {
+        tenantId: 912,
+        dedupeKey: 'refresh-conflict-second',
+        decisionContext: { entityTitle: 'Second task priority', normalizedAction: actionFor('task-b', 'ctx_refresh_second') },
+      }));
+
+      const refreshed = refreshDecisionItem(first.item!.decisionId, 912, 912)!.item;
+
+      expect(refreshed.decisionState).toBe('ready_for_review');
+      expect(refreshed.recordVersion).toBe(approved.recordVersion + 1);
+      expect(refreshed.contextVersion).not.toBe(approved.contextVersion);
+      expect(refreshed.conflictSummary?.disposition).toBe('needs_confirmation');
+    } finally {
+      delete process.env.DECISION_CONFLICT_POLICY_V1_ENABLED_USER_912;
+    }
   });
 });
 
@@ -2759,6 +4329,7 @@ describe('Decision Center lifecycle events (SI-4)', () => {
     const created = await createDecisionIntent(buildSkillDecisionFixtureIntent('training', 80, { dedupeKey: 'lc-1' }));
     const id = created.item!.decisionId;
     expect(getDecisionLifecycleEvents(id, 80, 80).map((e) => e.event)).toEqual(['created']);
+    recordDecisionItemExposures([created.item!]);
     markDecisionViewed(id, 80, 80);
     dismissDecision(id, 80, 80);
     const events = getDecisionLifecycleEvents(id, 80, 80).map((e) => e.event);
@@ -2945,7 +4516,7 @@ describe('Decision Center lifecycle events (SI-4)', () => {
   it('respects the sinceDays decay window — older feedback excluded (C3b)', async () => {
     const recent = await createDecisionIntent(buildSkillDecisionFixtureIntent('training', 101, { tenantId: 101, dedupeKey: 'fb-recent' }));
     dismissDecision(recent.item!.decisionId, 101, 101, 'not_relevant');
-    const old = await createDecisionIntent(buildSkillDecisionFixtureIntent('content', 101, { tenantId: 101, dedupeKey: 'fb-old' }));
+    const { created: old } = await createContentApprovalDecision(101, 101, 'fb-old');
     dismissDecision(old.item!.decisionId, 101, 101, 'too_risky');
     // Back-date every 'content' event well outside a 7-day window. Both stored timestamps and the
     // window boundary use the SQLite clock, so this is deterministic under the suite's fake JS timers.
@@ -3114,8 +4685,26 @@ describe('runDecisionLedgerRetentionPruneJob (retention)', () => {
        VALUES (?, 1, 1, 'training', 'decision_required', 'passed', 'ok', ?)`,
     ).run(id, createdAt);
   };
+  const insertConflictEvaluation = (id: string, createdAt: string): void => {
+    testDb.prepare(`
+      INSERT INTO decision_conflict_evaluations (
+        conflict_evaluation_id, decision_id, user_id, tenant_id, policy_version,
+        context_version, disposition, created_at
+      ) VALUES (?, ?, 1, 1, 'decision_conflict_policy.v1', 'ctx_test', 'allow', ?)
+    `).run(id, `d_${id}`, createdAt);
+  };
+  const insertExclusivityClaim = (key: string, status: string, createdAt: string): void => {
+    testDb.prepare(`
+      INSERT INTO decision_exclusivity_claims (
+        user_id, tenant_id, exclusivity_key, action_execution_id, decision_id,
+        status, lease_expires_at, created_at, updated_at
+      ) VALUES (1, 1, ?, ?, ?, ?, '2030-01-01T00:00:00.000Z', ?, ?)
+    `).run(key, `exec_${key}`, `d_${key}`, status, createdAt, createdAt);
+  };
   const countOutcome = (): number => (testDb.prepare('SELECT COUNT(*) AS n FROM decision_outcome_ledger').get() as { n: number }).n;
   const countGate = (): number => (testDb.prepare('SELECT COUNT(*) AS n FROM decision_quality_gate_events').get() as { n: number }).n;
+  const countConflicts = (): number => (testDb.prepare('SELECT COUNT(*) AS n FROM decision_conflict_evaluations').get() as { n: number }).n;
+  const countClaims = (): number => (testDb.prepare('SELECT COUNT(*) AS n FROM decision_exclusivity_claims').get() as { n: number }).n;
 
   it('prunes rows older than the retention horizon from both raw telemetry tables and keeps recent ones', () => {
     insertOutcome('old1', '2020-01-01T00:00:00.000Z');
@@ -3123,14 +4712,26 @@ describe('runDecisionLedgerRetentionPruneJob (retention)', () => {
     insertOutcome('recent', new Date().toISOString());
     insertGate('gold', '2020-01-01T00:00:00.000Z');
     insertGate('grecent', new Date().toISOString());
+    insertConflictEvaluation('cold', '2020-01-01T00:00:00.000Z');
+    insertConflictEvaluation('crecent', new Date().toISOString());
+    insertExclusivityClaim('claim-old-succeeded', 'succeeded', '2020-01-01T00:00:00.000Z');
+    insertExclusivityClaim('claim-old-started', 'started', '2020-01-01T00:00:00.000Z');
+    insertExclusivityClaim('claim-old-partial', 'partially_failed', '2020-01-01T00:00:00.000Z');
+    insertExclusivityClaim('claim-recent-failed', 'failed', new Date().toISOString());
 
     const result = runDecisionLedgerRetentionPruneJob({ retentionDays: 180 });
     expect(result.outcomeLedgerPruned).toBe(2);
     expect(result.qualityGateEventsPruned).toBe(1);
+    expect(result.conflictEvaluationsPruned).toBe(1);
+    expect(result.terminalExclusivityClaimsPruned).toBe(1);
     expect(result.outcomeLedgerRemaining).toBe(0);
     expect(result.qualityGateEventsRemaining).toBe(0);
+    expect(result.conflictEvaluationsRemaining).toBe(0);
+    expect(result.terminalExclusivityClaimsRemaining).toBe(0);
     expect(countOutcome()).toBe(1); // only the recent outcome survives
     expect(countGate()).toBe(1); // only the recent gate event survives
+    expect(countConflicts()).toBe(1); // only the recent conflict evaluation survives
+    expect(countClaims()).toBe(3); // active, partial-recovery, and recent terminal claims survive
   });
 
   it('batches a large backlog of expired rows across multiple passes', () => {

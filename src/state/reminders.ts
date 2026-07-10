@@ -230,3 +230,34 @@ export function getRemindersForToday(
     return reminderTime?.setZone(reminderTimezone).toFormat('yyyy-MM-dd') === todayInReminderTimezone;
   });
 }
+
+/** Return active reminders whose next persisted occurrence falls in a scoped absolute window. */
+export function getRemindersForWindow(
+  userId: number,
+  tenantId: number | string | null | undefined,
+  startAt: string,
+  endAt: string,
+  timezone?: string | null,
+): Reminder[] {
+  const db = getDb();
+  assertReminderSchemaReady(db);
+  const start = DateTime.fromISO(startAt, { setZone: true });
+  const end = DateTime.fromISO(endAt, { setZone: true });
+  if (!start.isValid || !end.isValid || start.toMillis() >= end.toMillis()) {
+    throw new Error('REMINDER_WINDOW_INVALID');
+  }
+  const resolvedTenantId = resolveTenantId(userId, tenantId);
+  const defaultTimezone = normalizeTimezone(timezone);
+  const reminders = db.prepare(`
+    SELECT * FROM reminders
+     WHERE tenant_id = ? AND user_id = ? AND status = 'active'
+     ORDER BY remind_at ASC
+  `).all(resolvedTenantId, userId) as Reminder[];
+  return reminders.filter((reminder) => {
+    const reminderTimezone = normalizeTimezone(reminder.timezone || defaultTimezone);
+    const reminderTime = parseReminderTime(reminder.remind_at, reminderTimezone)?.toUTC();
+    return !!reminderTime
+      && reminderTime.toMillis() >= start.toUTC().toMillis()
+      && reminderTime.toMillis() <= end.toUTC().toMillis();
+  });
+}
