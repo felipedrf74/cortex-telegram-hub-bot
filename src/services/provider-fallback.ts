@@ -58,6 +58,7 @@ export class AIProviderTruncatedError extends Error {
 }
 
 function isRetryableError(err: any): boolean {
+  if (err?.name === 'ApiUsagePersistenceError' || err?.code === 'AI_USAGE_PERSISTENCE_FAILED' || err?.name === 'AiBudgetError') return false;
   const status = err?.status ?? err?.statusCode ?? err?.error_code;
   // 429 = rate limited (retryable after backoff)
   if (status === 429) return true;

@@ -27,6 +27,7 @@ import { isChatEscalationReviewerEnabled, isChatLlmTier1Enabled, isChatLlmTier2E
 import type { ChatActionPlan, ChatPlannerInput, ChatPlanStep } from '../types';
 import { logger } from '../../../utils/logger';
 import { sanitizePlannerArgs } from './arg-sanitizer';
+import { rethrowAiUsageFailClosedError } from '../../api-usage-fallback';
 import { buildTargetedClarificationQuestion } from './clarification';
 import {
   calibratePlanConfidence,
@@ -314,6 +315,7 @@ export async function tryBuildLlmStructuredPlan(input: ChatPlannerInput): Promis
     }
     return plan;
   } catch (err) {
+    rethrowAiUsageFailClosedError(err);
     logger.debug({ err, userId: input.userId, tenantId: input.tenantId }, 'chat action llm structured planner unavailable');
     return null;
   }
@@ -347,6 +349,7 @@ export async function tryBuildTier1ClassifierPlan(input: ChatPlannerInput): Prom
     }
     return plan;
   } catch (err) {
+    rethrowAiUsageFailClosedError(err);
     logger.debug({ err, userId: input.userId, tenantId: input.tenantId }, 'chat action tier1 classifier unavailable');
     return null;
   }
@@ -377,6 +380,7 @@ export async function tryBuildEscalationReviewerPlan(input: ChatPlannerInput): P
     }
     return plan;
   } catch (err) {
+    rethrowAiUsageFailClosedError(err);
     logger.debug({ err, userId: input.userId, tenantId: input.tenantId }, 'chat action escalation reviewer unavailable');
     return null;
   }
@@ -404,6 +408,7 @@ async function completeStructuredPlannerWithCascade(
       );
       return { text, provider: 'gemini', model: CHAT_LLM_TIER2_GEMINI_MODEL };
     } catch (err) {
+      rethrowAiUsageFailClosedError(err);
       logger.warn({ err, userId: input.userId, tenantId: input.tenantId }, 'Gemini chat action planner failed, trying OpenAI nano fallback');
     }
   }
@@ -451,6 +456,7 @@ async function completeEscalationReviewerWithCascade(
       );
       return { text, provider: 'gemini', model: CHAT_LLM_TIER3_GEMINI_MODEL };
     } catch (err) {
+      rethrowAiUsageFailClosedError(err);
       logger.warn({ err, userId: input.userId, tenantId: input.tenantId }, 'Gemini chat action reviewer failed, trying OpenAI mini fallback');
     }
   }

@@ -30,9 +30,11 @@ vi.mock('../../src/config', () => ({
   config: { telegram: { allowedUserIds: [111111] }, app: { timezone: 'Europe/Lisbon' } },
 }));
 
-// Mock user-service for isOwner check
-vi.mock('../../src/services/user-service', () => ({
-  isOwner: (telegramId: number) => telegramId === 111111,
+const entitlementMocks = vi.hoisted(() => ({ ownerIds: new Set<number>() }));
+vi.mock('../../src/services/entitlement', () => ({
+  getEffectiveEntitlement: (userId: number) => ({
+    isOwner: entitlementMocks.ownerIds.has(userId),
+  }),
 }));
 
 // Mock oauth-store for connection status
@@ -66,6 +68,7 @@ describe('user-skill-access', () => {
     testDb = new Database(':memory:');
     testDb.pragma('journal_mode = WAL');
     applyMigrations(testDb);
+    entitlementMocks.ownerIds.clear();
   });
 
   afterEach(() => {
@@ -89,16 +92,15 @@ describe('user-skill-access', () => {
       expect(isSkillEnabledForUser(USER_A, 'finance')).toBe(true);
     });
 
-    it('always returns true for owner (owner bypass via isOwner)', () => {
-      // The owner bypass uses require('./user-service').isOwner which is mocked.
-      // If the mock isn't intercepted correctly (dynamic require), the DB check runs.
-      // This test verifies the owner bypass when user-service mock is active.
+    it('always returns true for the canonical owner', () => {
+      entitlementMocks.ownerIds.add(OWNER);
       setSkillAccess(OWNER, 'finance', false);
-      // Owner bypass depends on user-service mock being intercepted at runtime.
-      // If not intercepted, DB override applies — both behaviors are acceptable.
-      const result = isSkillEnabledForUser(OWNER, 'finance');
-      // Either true (owner bypass worked) or false (mock not intercepted) is valid in test
-      expect(typeof result).toBe('boolean');
+      expect(isSkillEnabledForUser(OWNER, 'finance')).toBe(true);
+    });
+
+    it('does not grant owner bypass from an unverified numeric identity', () => {
+      setSkillAccess(OWNER, 'finance', false);
+      expect(isSkillEnabledForUser(OWNER, 'finance')).toBe(false);
     });
 
     it('checks sub-skill independently', () => {

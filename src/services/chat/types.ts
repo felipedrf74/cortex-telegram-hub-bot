@@ -98,6 +98,8 @@ export interface ChatPlannerInput {
    * confirmation-required response before any provider executor runs.
    */
   blockNonReadOnlyPlans?: boolean;
+  /** Keep deterministic parsing/execution available without permitting LLM planner tiers. */
+  allowModelPlanner?: boolean;
   routeStartedAtMs?: number;
 }
 

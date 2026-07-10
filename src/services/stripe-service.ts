@@ -227,6 +227,16 @@ export function isStripeConfigured(): boolean {
 
 // ── Subscription Status ─────────────────────────────────────────────
 
+function normalizeStoredBillingTimestamp(value: unknown): string | null {
+  if (typeof value !== 'string' || !value.trim()) return null;
+  const trimmed = value.trim();
+  const normalizedInput = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d+)?$/.test(trimmed)
+    ? `${trimmed.replace(' ', 'T')}Z`
+    : trimmed;
+  const milliseconds = Date.parse(normalizedInput);
+  return Number.isFinite(milliseconds) ? new Date(milliseconds).toISOString() : null;
+}
+
 export function getSubscriptionStatus(userId: number): SubscriptionStatus {
   const db = getDb();
   const row = db.prepare('SELECT * FROM subscriptions WHERE user_id = ?').get(userId) as any;
@@ -239,12 +249,13 @@ export function getSubscriptionStatus(userId: number): SubscriptionStatus {
     };
   }
 
-  const currentPeriodEndMs = row.current_period_end ? Date.parse(row.current_period_end) : NaN;
+  const normalizedPeriodEnd = normalizeStoredBillingTimestamp(row.current_period_end);
+  const currentPeriodEndMs = normalizedPeriodEnd ? Date.parse(normalizedPeriodEnd) : NaN;
   const periodExpired = Number.isFinite(currentPeriodEndMs) && currentPeriodEndMs <= Date.now();
   if (['active', 'trialing'].includes(row.status) && periodExpired) {
     return {
       plan: 'free', period: 'monthly', status: 'expired', provider: row.provider,
-      currentPeriodEnd: row.current_period_end, cancelAtPeriodEnd: !!row.cancel_at_period_end,
+      currentPeriodEnd: normalizedPeriodEnd, cancelAtPeriodEnd: !!row.cancel_at_period_end,
       isActive: false, isPro: false,
     };
   }
@@ -255,7 +266,7 @@ export function getSubscriptionStatus(userId: number): SubscriptionStatus {
     period: row.period,
     status: row.status,
     provider: row.provider,
-    currentPeriodEnd: row.current_period_end,
+    currentPeriodEnd: normalizedPeriodEnd,
     cancelAtPeriodEnd: !!row.cancel_at_period_end,
     isActive,
     isPro: isActive && (row.plan === 'pro' || row.plan === 'max'),
@@ -703,8 +714,10 @@ export function handleAppleTransaction(
   originalTransactionId: string,
   productId: string,
   expiresDate: string | null,
+  currentPeriodStart: string | null = null,
 ): void {
   const { plan, period } = resolveAppleProduct(productId);
+  const resolvedPeriodStart = currentPeriodStart ?? deriveApplePeriodStart(expiresDate, period);
 
   const db = getDb();
   const existingOwner = db.prepare(`
@@ -725,17 +738,18 @@ export function handleAppleTransaction(
   }
 
   db.prepare(`
-    INSERT INTO subscriptions (user_id, plan, period, status, provider, provider_subscription_id, current_period_end, updated_at)
-    VALUES (?, ?, ?, 'active', 'apple', ?, ?, datetime('now'))
+    INSERT INTO subscriptions (user_id, plan, period, status, provider, provider_subscription_id, current_period_start, current_period_end, updated_at)
+    VALUES (?, ?, ?, 'active', 'apple', ?, ?, ?, datetime('now'))
     ON CONFLICT(user_id) DO UPDATE SET
       plan = excluded.plan,
       period = excluded.period,
       status = 'active',
       provider = 'apple',
       provider_subscription_id = excluded.provider_subscription_id,
+      current_period_start = COALESCE(excluded.current_period_start, current_period_start),
       current_period_end = excluded.current_period_end,
       updated_at = datetime('now')
-  `).run(userId, plan, period, originalTransactionId, expiresDate);
+  `).run(userId, plan, period, originalTransactionId, resolvedPeriodStart, expiresDate);
 
   logger.info({ userId, productId, originalTransactionId }, 'Apple IAP transaction verified — subscription active');
 }
@@ -745,6 +759,15 @@ function resolveAppleProduct(productId: string): { plan: string; period: string 
   if (productId.includes('max'))                                   return { plan: 'max', period: 'monthly' };
   if (productId.includes('yearly'))                                return { plan: 'pro', period: 'yearly' };
   return { plan: 'pro', period: 'monthly' };
+}
+
+function deriveApplePeriodStart(expiresDate: string | null, period: string | null | undefined): string | null {
+  if (!expiresDate) return null;
+  const end = new Date(expiresDate);
+  if (!Number.isFinite(end.getTime())) return null;
+  if (period === 'yearly') end.setUTCFullYear(end.getUTCFullYear() - 1);
+  else end.setUTCMonth(end.getUTCMonth() - 1);
+  return end.toISOString();
 }
 
 // ── Apple App Store Server Notifications V2 ───────────────────────
@@ -872,17 +895,28 @@ export function handleAppleNotification(
   const expiresDate = payload.expiresDate
     ? new Date(payload.expiresDate).toISOString()
     : null;
+  let periodStart = payload.purchaseDate
+    ? new Date(payload.purchaseDate).toISOString()
+    : null;
 
   const db = getDb();
+  if (!periodStart && expiresDate) {
+    const subscription = db.prepare(`
+      SELECT period FROM subscriptions
+      WHERE provider_subscription_id = ? AND provider = 'apple'
+      LIMIT 1
+    `).get(String(originalTransactionId)) as { period: string | null } | undefined;
+    periodStart = deriveApplePeriodStart(expiresDate, subscription?.period);
+  }
 
   // Update subscription status based on the notification type.
   // For renewals, also update the expiry date.
   if (newStatus === 'active' && expiresDate) {
     db.prepare(`
       UPDATE subscriptions
-      SET status = 'active', current_period_end = ?, updated_at = datetime('now')
+      SET status = 'active', current_period_start = COALESCE(?, current_period_start), current_period_end = ?, updated_at = datetime('now')
       WHERE provider_subscription_id = ? AND provider = 'apple'
-    `).run(expiresDate, String(originalTransactionId));
+    `).run(periodStart, expiresDate, String(originalTransactionId));
   } else {
     db.prepare(`
       UPDATE subscriptions

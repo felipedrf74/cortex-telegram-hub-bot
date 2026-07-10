@@ -8,7 +8,7 @@ to identify gaps and opportunities.
 import time
 import logging
 from models.requests import GapsRequest, GapsResponse
-from services.claude_client import ask_claude_json
+from services.claude_client import AiProxyError, ask_claude_json
 from services.creative.operation_prompt_compilers import OperationPromptInput, build_operation_metadata, compile_operation_prompt
 
 logger = logging.getLogger("content-engine.gaps")
@@ -93,6 +93,8 @@ async def find(req: GapsRequest, orchestrator) -> GapsResponse:
 
     try:
         gaps = await ask_claude_json(compiled.prompt, system=SYSTEM_PROMPT, max_tokens=1600)
+    except AiProxyError:
+        raise
     except Exception as e:
         # 2026-05-18 phase2-qa P2: do NOT leak the raw exception message to
         # the client. The internal proxy error format

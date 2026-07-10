@@ -62,11 +62,12 @@ async function main(): Promise<void> {
     const db = getDb();
     const rows = db
       .prepare(
-        'SELECT plan_id, daily_cost_usd, allowed_skills_json FROM plan_configs WHERE active = 1',
+        'SELECT plan_id, daily_cost_usd, monthly_cost_usd, allowed_skills_json FROM plan_configs WHERE active = 1',
       )
       .all() as Array<{
         plan_id: string;
         daily_cost_usd: number;
+        monthly_cost_usd: number;
         allowed_skills_json: string | null;
       }>;
     const { applyPlanConfigRows } = require('./services/plan-quotas');

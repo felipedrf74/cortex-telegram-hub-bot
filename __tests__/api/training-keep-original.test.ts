@@ -209,6 +209,15 @@ vi.mock('../../src/services/integration-status', () => ({
 }));
 
 vi.mock('../../src/services/cost-guardrail', () => ({
+  AiBudgetError: class AiBudgetError extends Error {
+    decision: any;
+    constructor(decision: any) { super(decision.code); this.decision = decision; }
+  },
+  buildQuotaExceededPayload: vi.fn((quota: any) => ({
+    plan: quota.plan,
+    resetAt: quota.resetAt,
+  })),
+  withAiBudgetReservation: vi.fn(async (_request: unknown, fn: () => Promise<unknown>) => fn()),
   isUserOverDailyCap: (...args: unknown[]) => mockIsUserOverDailyCap(...args),
   buildQuotaExceededMessage: vi.fn((quota: { plan: string; resetAt: string }) => `Daily AI quota reached for the ${quota.plan} plan. Resets at ${quota.resetAt}.`),
   enforceCostGuardrails: (userId: number) => {

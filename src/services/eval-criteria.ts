@@ -177,7 +177,7 @@ const targets: EvalTarget[] = [
     scorerModel: 'claude-haiku-4-5-20251001',
     maxTokens: 2048,
     criteria: [
-      { id: 'complete_fields', question: 'Does each topic have ALL required fields: title, angle, format, hookIdea, whyNow, pillar?', weight: 2 },
+      { id: 'complete_fields', question: 'Does each topic match the live topic-generation contract with non-empty title, niche, whyNow, hookIdea, angle_tag, and time_sensitivity plus a present string pillar_emoji field (empty is valid when unset)?', weight: 2 },
       { id: 'angle_diversity', question: 'Are the topics diverse in angle and content pillar (not all the same theme)?', weight: 1.5 },
       { id: 'timely_whynow', question: 'Is the whyNow field specific and timely (references current events, trends, or seasons) rather than generic?', weight: 1.5 },
       { id: 'specific_hook', question: 'Is the hookIdea specific and actionable (a concrete opening line or visual), not vague?', weight: 1 },
@@ -210,7 +210,7 @@ const targets: EvalTarget[] = [
     scorerModel: 'claude-haiku-4-5-20251001',
     maxTokens: 4096,
     criteria: [
-      { id: 'all_categories', question: 'Does the analysis cover all 9 pattern categories: hook_style, title_pattern, content_structure, editing_style, storytelling, cta_pattern, audience_engagement, visual_branding, monetization?', weight: 2 },
+      { id: 'all_categories', question: 'Does the analysis cover all 9 live pattern categories: hook_style, title_pattern, content_structure, editing_style, storytelling, cta_pattern, audience_engagement, visual_style, and brand_voice?', weight: 2 },
       { id: 'specific_patterns', question: 'Are the extracted patterns specific and actionable (with examples from the videos), not generic advice?', weight: 2 },
       { id: 'valid_json', question: 'Is the output valid JSON that can be parsed without errors?', weight: 1.5 },
     ],

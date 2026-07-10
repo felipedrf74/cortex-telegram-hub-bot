@@ -36,6 +36,11 @@ const mockGetWeeksForPlan = vi.hoisted(() => vi.fn());
 const mockCalculateReadiness = vi.hoisted(() => vi.fn());
 const mockPersistReadinessScore = vi.hoisted(() => vi.fn());
 const mockGetEffectiveEntitlement = vi.hoisted(() => vi.fn());
+const mockResolveAiAutomationEligibility = vi.hoisted(() => vi.fn());
+const mockGenerateAndStoreTopicCandidates = vi.hoisted(() => vi.fn());
+const mockGenerateWeeklyPackage = vi.hoisted(() => vi.fn());
+const mockGetMissingScheduledInventoryCount = vi.hoisted(() => vi.fn());
+const mockWithAiBudgetReservation = vi.hoisted(() => vi.fn(async (_request: unknown, fn: () => Promise<unknown>) => fn()));
 
 vi.mock('node-cron', () => ({
   default: { schedule: (...args: unknown[]) => mockCronSchedule(...args) },
@@ -145,7 +150,28 @@ vi.mock('../../src/domains/domain-handler', () => ({ setLastCoachState: vi.fn() 
 vi.mock('../../src/api/routes/chat-message-context', () => ({ setLastActiveDomain: vi.fn() }));
 vi.mock('../../src/state/conversation', () => ({ addToConversation: vi.fn() }));
 vi.mock('../../src/services/channel-learner', () => ({ processAllChannelScopes: vi.fn(), seedDefaultChannels: vi.fn() }));
-vi.mock('../../src/services/content-workflow', () => ({ sendTopicCandidates: vi.fn(), sendWeeklyPackage: vi.fn() }));
+vi.mock('../../src/services/content-workflow', () => ({
+  generateAndStoreTopicCandidates: (...args: unknown[]) => mockGenerateAndStoreTopicCandidates(...args),
+  generateWeeklyPackage: (...args: unknown[]) => mockGenerateWeeklyPackage(...args),
+  getMissingScheduledInventoryCount: (...args: unknown[]) => mockGetMissingScheduledInventoryCount(...args),
+}));
+vi.mock('../../src/services/ai-automation-policy', () => ({
+  recordAiAutomationEligibilitySkip: vi.fn(),
+  resolveAiAutomationEligibility: (...args: unknown[]) => mockResolveAiAutomationEligibility(...args),
+}));
+vi.mock('../../src/services/cost-guardrail', () => {
+  class AiBudgetError extends Error {
+    decision: any;
+    constructor(decision: any) {
+      super(decision.code);
+      this.decision = decision;
+    }
+  }
+  return {
+    AiBudgetError,
+    withAiBudgetReservation: (...args: unknown[]) => mockWithAiBudgetReservation(...args),
+  };
+});
 vi.mock('../../src/agents/pipeline-agent', () => ({ runPipelineAgent: vi.fn() }));
 vi.mock('../../src/agents/seo-agent', () => ({ runSEOAgent: vi.fn(), seedKeywordsIfEmpty: vi.fn() }));
 vi.mock('../../src/agents/reaction-radar-agent', () => ({ runReactionRadar: vi.fn() }));
@@ -170,6 +196,7 @@ vi.mock('../../src/services/user-service', () => ({
   getUserTimezone: vi.fn(() => 'Europe/Lisbon'),
   getUserTimezoneById: vi.fn(() => 'Europe/Lisbon'),
   getOwnerBootstrapTarget: (...args: unknown[]) => mockGetOwnerBootstrapTarget(...args),
+  isOwnerUserRef: vi.fn(() => false),
 }));
 vi.mock('../../src/services/task-store/task-router', () => ({
   resolveTaskProvider: vi.fn(() => 'nexus'),
@@ -218,6 +245,11 @@ vi.mock('../../src/services/readiness-scorer', () => ({
 }));
 vi.mock('../../src/services/entitlement', () => ({
   getEffectiveEntitlement: (...args: unknown[]) => mockGetEffectiveEntitlement(...args),
+  isPaidAiCostControlsEnforcementEnabled: () => process.env.PAID_AI_COST_CONTROLS_ENFORCEMENT_ENABLED === 'true',
+  isAiAutomationAllowedForRuntime: (entitlement: { automationAllowed?: boolean }) => (
+    process.env.PAID_AI_COST_CONTROLS_ENFORCEMENT_ENABLED !== 'true'
+      || entitlement.automationAllowed === true
+  ),
   isCoachBriefingEntitlementEligible: (entitlement: { plan: string; source: string }) =>
     (entitlement.plan === 'pro' || entitlement.plan === 'max') && entitlement.source !== 'beta',
 }));
@@ -234,6 +266,8 @@ import {
   decisionMetricsRollupDateForScheduler,
   getActiveUserIds,
   getOwnerUserIds,
+  runContentTopicCronForActiveUsers,
+  runWeeklyContentPackageCronForActiveUsers,
   startScheduler,
   sendCoachBriefings,
   sendDailyBriefing,
@@ -242,10 +276,13 @@ import { setLastCoachState } from '../../src/domains/domain-handler';
 import { setLastActiveDomain } from '../../src/api/routes/chat-message-context';
 import { addToConversation } from '../../src/state/conversation';
 import { getDueReminders, markReminderFired } from '../../src/state/reminders';
+import { logger } from '../../src/utils/logger';
 
 describe('scheduler tenant scoping', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    delete process.env.PAID_AI_COST_CONTROLS_ENFORCEMENT_ENABLED;
+    delete process.env.OWNER_AI_AUTOMATIONS_ENABLED;
     _resetSchedulerTenantStateForTesting();
 
     mockGetTaskProviderForUser.mockReturnValue({
@@ -269,6 +306,7 @@ describe('scheduler tenant scoping', () => {
           { id: 11, telegram_id: 1011 },
           { id: 22, telegram_id: null },
         ]),
+        get: vi.fn(() => ({ present: 1, engaged: 1, total: 0 })),
       })),
     });
     mockGetOwnerBootstrapTarget.mockReturnValue({ tenantId: 99, telegramId: 1999 });
@@ -292,6 +330,20 @@ describe('scheduler tenant scoping', () => {
       analysisMs: 2,
     });
     mockGetEffectiveEntitlement.mockReturnValue({ plan: 'pro', source: 'stripe' });
+    mockResolveAiAutomationEligibility.mockImplementation((userId: number) => {
+      const entitlement = mockGetEffectiveEntitlement(userId);
+      const allowed = process.env.PAID_AI_COST_CONTROLS_ENFORCEMENT_ENABLED !== 'true'
+        || entitlement.automationAllowed === true;
+      return {
+        allowed,
+        reason: allowed ? 'eligible' : 'automation_entitlement_required',
+        entitlement,
+      };
+    });
+    mockGetMissingScheduledInventoryCount.mockReturnValue(5);
+    mockGenerateAndStoreTopicCandidates.mockResolvedValue({ candidates: [] });
+    mockGenerateWeeklyPackage.mockResolvedValue({ youtube: [], reels: [] });
+    mockWithAiBudgetReservation.mockImplementation(async (_request: unknown, fn: () => Promise<unknown>) => fn());
     mockGetActivePlan.mockReturnValue(null);
     mockGetCurrentWeek.mockReturnValue(null);
     mockGetWeeklyAdherence.mockReturnValue({ completedSessions: 0, skippedSessions: 0 });
@@ -768,6 +820,101 @@ describe('scheduler tenant scoping', () => {
     expect(mockStoreAndPushReport).toHaveBeenCalledWith(expect.objectContaining({ userId: 99 }));
   });
 
+  it('makes zero provider calls when Tuesday pending inventory is already full', async () => {
+    mockGetMissingScheduledInventoryCount.mockReturnValue(0);
+
+    await runContentTopicCronForActiveUsers('reel', 'tuesday_reels');
+
+    expect(mockResolveAiAutomationEligibility).toHaveBeenCalledTimes(2);
+    expect(mockGenerateAndStoreTopicCandidates).not.toHaveBeenCalled();
+    expect(mockGenerateWeeklyPackage).not.toHaveBeenCalled();
+  });
+
+  it('makes zero provider calls for users without paid Content automation eligibility', async () => {
+    mockResolveAiAutomationEligibility.mockReturnValue({
+      allowed: false,
+      reason: 'automation_entitlement_required',
+      entitlement: { source: 'free' },
+    });
+
+    await runContentTopicCronForActiveUsers('youtube', 'thursday_youtube');
+
+    expect(mockGetMissingScheduledInventoryCount).not.toHaveBeenCalled();
+    expect(mockGenerateAndStoreTopicCandidates).not.toHaveBeenCalled();
+  });
+
+  it('passes only missing Friday inventory into one batched package call', async () => {
+    mockGetMissingScheduledInventoryCount
+      .mockReturnValueOnce(1)
+      .mockReturnValueOnce(2);
+
+    await runWeeklyContentPackageCronForActiveUsers();
+
+    expect(mockGenerateWeeklyPackage).toHaveBeenCalledTimes(2);
+    expect(mockGenerateWeeklyPackage).toHaveBeenNthCalledWith(1, 11, 11, {
+      reels: 1,
+      youtube: 2,
+    }, {
+      requestSource: 'automation',
+      jobName: 'friday_weekly',
+    });
+  });
+
+  it('fills a never-completed Friday format before requiring engagement', async () => {
+    mockGetDb.mockReturnValue({
+      prepare: vi.fn((sql: string) => ({
+        all: vi.fn(() => sql.includes('FROM users') ? [{ id: 11, telegram_id: null }] : []),
+        get: vi.fn((...params: unknown[]) => {
+          if (sql.includes('AS engaged')) return { engaged: 0 };
+          if (sql.includes('COUNT(*) AS count')) {
+            return { count: params[3] === 'reel' ? 4 : 0 };
+          }
+          return { present: 1 };
+        }),
+      })),
+    });
+    mockGetMissingScheduledInventoryCount.mockImplementation((_userId: number, request: any) => (
+      request.format === 'reel' ? 0 : 2
+    ));
+
+    await runWeeklyContentPackageCronForActiveUsers();
+
+    expect(mockGenerateWeeklyPackage).toHaveBeenCalledTimes(1);
+    expect(mockGenerateWeeklyPackage).toHaveBeenCalledWith(11, 11, {
+      reels: 0,
+      youtube: 2,
+    }, expect.objectContaining({ requestSource: 'automation' }));
+  });
+
+  it('treats a recent durable content script as measured engagement for replenishment', async () => {
+    mockGetDb.mockReturnValue({
+      prepare: vi.fn((sql: string) => ({
+        all: vi.fn(() => sql.includes('FROM users') ? [{ id: 11, telegram_id: null }] : []),
+        get: vi.fn(() => {
+          if (sql.includes('AS engaged')) {
+            // The durable content_scripts table is authoritative even when a
+            // legacy topic feedback row missed its script_generated marker.
+            return { engaged: sql.includes('FROM content_scripts') ? 1 : 0 };
+          }
+          return { count: 5, present: 1 };
+        }),
+      })),
+    });
+    mockGetMissingScheduledInventoryCount.mockReturnValue(1);
+
+    await runContentTopicCronForActiveUsers('reel', 'tuesday_reels');
+
+    expect(mockGenerateAndStoreTopicCandidates).toHaveBeenCalledTimes(1);
+    expect(mockGenerateAndStoreTopicCandidates).toHaveBeenCalledWith(
+      11,
+      'reel',
+      'tuesday_reels',
+      11,
+      1,
+      expect.objectContaining({ requestSource: 'automation' }),
+    );
+  });
+
   it('sendCoachBriefings generates, stores, and scopes coach state for every paid active tenant', async () => {
     mockGetActivePlan.mockReturnValue({
       id: 701,
@@ -797,6 +944,10 @@ describe('scheduler tenant scoping', () => {
 
     await sendCoachBriefings();
 
+    expect(mockGetEffectiveEntitlement).toHaveBeenCalledTimes(2);
+    expect(mockGetActivePlan).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(logger.warn).mock.calls.filter(([, message]) => String(message).includes('health-data eligibility'))).toEqual([]);
+    expect(mockWithAiBudgetReservation).toHaveBeenCalledTimes(2);
     expect(mockGenerateCoachBriefing).toHaveBeenCalledTimes(2);
     expect(mockGenerateCoachBriefing).toHaveBeenNthCalledWith(1, 11, {
       garminSilent: true,
@@ -940,5 +1091,91 @@ describe('scheduler tenant scoping', () => {
     expect(mockStoreAndPushReport).toHaveBeenCalledTimes(1);
     expect(mockStoreAndPushReport).toHaveBeenCalledWith(expect.objectContaining({ userId: 11, type: 'coach_briefing' }));
     expect(mockStoreAndPushReport).not.toHaveBeenCalledWith(expect.objectContaining({ userId: 22 }));
+  });
+
+  it('blocks trial Coach automation before health/provider work when paid controls are enabled', async () => {
+    process.env.PAID_AI_COST_CONTROLS_ENFORCEMENT_ENABLED = 'true';
+    mockGetActivePlan.mockReturnValue({ id: 701, status: 'active' });
+    mockGetEffectiveEntitlement.mockImplementation((userId: number) => (
+      userId === 11
+        ? { plan: 'pro', source: 'stripe', isTrial: true, automationAllowed: false }
+        : { plan: 'pro', source: 'stripe', isTrial: false, automationAllowed: true }
+    ));
+    mockGenerateCoachBriefing.mockResolvedValue({
+      message: 'paid report', recommendations: [], errors: [], dataCollectionMs: 1, analysisMs: 1,
+    });
+
+    await sendCoachBriefings();
+
+    expect(mockGenerateCoachBriefing).toHaveBeenCalledTimes(1);
+    expect(mockGenerateCoachBriefing).toHaveBeenCalledWith(22, expect.any(Object));
+  });
+
+  it('keeps owner Coach automation off by default and honors the explicit owner flag', async () => {
+    process.env.PAID_AI_COST_CONTROLS_ENFORCEMENT_ENABLED = 'true';
+    mockGetActivePlan.mockReturnValue({ id: 701, status: 'active' });
+    mockGetEffectiveEntitlement.mockImplementation((userId: number) => (
+      userId === 11
+        ? {
+          plan: 'owner',
+          source: 'owner',
+          automationAllowed: process.env.OWNER_AI_AUTOMATIONS_ENABLED === 'true',
+        }
+        : { plan: 'pro', source: 'stripe', automationAllowed: true }
+    ));
+    mockGenerateCoachBriefing.mockResolvedValue({
+      message: 'report', recommendations: [], errors: [], dataCollectionMs: 1, analysisMs: 1,
+    });
+
+    await sendCoachBriefings();
+    expect(mockGenerateCoachBriefing).toHaveBeenCalledTimes(1);
+    expect(mockGenerateCoachBriefing).toHaveBeenCalledWith(22, expect.any(Object));
+
+    mockGenerateCoachBriefing.mockClear();
+    process.env.OWNER_AI_AUTOMATIONS_ENABLED = 'true';
+    await sendCoachBriefings();
+    expect(mockGenerateCoachBriefing).toHaveBeenCalledTimes(2);
+    expect(mockGenerateCoachBriefing).toHaveBeenCalledWith(11, expect.any(Object));
+  });
+
+  it('retains the latest Coach report and emits one deduplicated notice when budget is deferred', async () => {
+    const { AiBudgetError } = await import('../../src/services/cost-guardrail');
+    mockGetActivePlan.mockReturnValue({ id: 701, status: 'active' });
+    mockWithAiBudgetReservation.mockImplementation(async (request: any, fn: () => Promise<unknown>) => {
+      if (request.userId === 11) {
+        throw new AiBudgetError({
+          allowed: false,
+          status: 429,
+          code: 'AI_DAILY_LIMIT_REACHED',
+          window: 'automation_daily',
+          message: 'deferred',
+          quota: {},
+          reservedCostUsd: 0.01,
+          retryAfterSeconds: 3600,
+          unblocksAt: '2026-04-18T00:00:00.000Z',
+        });
+      }
+      return fn();
+    });
+    mockGenerateCoachBriefing.mockResolvedValue({
+      message: 'new report for eligible peer',
+      recommendations: [],
+      errors: [],
+      dataCollectionMs: 1,
+      analysisMs: 1,
+    });
+
+    await sendCoachBriefings();
+
+    expect(mockGenerateCoachBriefing).not.toHaveBeenCalledWith(11, expect.anything());
+    expect(mockStoreAndPushReport).not.toHaveBeenCalledWith(expect.objectContaining({
+      userId: 11,
+      type: 'coach_briefing',
+    }));
+    expect(mockCreateNotificationIntent).toHaveBeenCalledWith(expect.objectContaining({
+      userId: 11,
+      type: 'insight',
+      dedupeKey: 'training:coach_budget:11:AI_DAILY_LIMIT_REACHED:202604180000',
+    }));
   });
 });

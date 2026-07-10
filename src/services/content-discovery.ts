@@ -8,12 +8,16 @@ import { now } from '../utils/date-parser';
 import { logger } from '../utils/logger';
 import { trackedCreate } from '../portal/anthropic-hook';
 import { completeOneShotWithSearch, isGeminiProviderConfigured } from './gemini-provider';
+import { completeOneShotWithWebSearch, isOpenAIConfigured } from './openai-provider';
 import { saveIdea } from '../state/saved-ideas';
 import { isDuplicateIdea } from './content-dedup';
 import { getUserLanguage } from './user-service';
 import { isValidTenantUserId } from './tenant-scope-observability';
 import { createLazyAnthropicClient } from './anthropic-lazy-client';
 import { requireTenantIdParam } from './tenant-scope';
+import { withAiBudgetReservation } from './cost-guardrail';
+import { rethrowAiUsageFailClosedError } from './api-usage-fallback';
+import { isPaidAiCostControlsEnforcementEnabled } from './entitlement';
 
 const client = createLazyAnthropicClient();
 
@@ -72,7 +76,7 @@ export interface ContentDiscoveryResult {
   fullContent: string;   // the complete detailed output
   filePath: string;      // where it was saved
   searchCount: number;   // how many web searches were used
-  provider: 'gemini' | 'anthropic';
+  provider: 'gemini' | 'openai' | 'anthropic';
 }
 
 export interface RunContentDiscoveryOptions {
@@ -106,39 +110,91 @@ Remember: follow the creator configuration for audience fit, but keep the ideas 
 
   logger.info('Starting daily content discovery with web search...');
 
-  // Gemini-first routing with Google Search grounding (post-webhook cost
-  // optimization). Gemini 2.5 Flash supports live Google Search as a
-  // built-in tool — cheaper than Anthropic's web_search_* surface, and
-  // the search infrastructure IS Google's index, so for news/trending
-  // discovery specifically it's the obvious right tool regardless of cost.
-  //
-  // Falls back to Anthropic Haiku with web_search_* if Gemini is down
-  // or GEMINI_API_KEY is unset. The fallback preserves the existing
-  // pause_turn handling for Anthropic's long-running web_search tool.
-  let fullContent = '';
-  let searchCount = 0;
-  let usedProvider: 'gemini' | 'anthropic' = 'anthropic';
-
-  if (isGeminiProviderConfigured()) {
-    try {
-      const { text, sources } = await completeOneShotWithSearch(
+  // One serialized interactive reservation owns the complete provider chain.
+  // Keeping Gemini and the bounded OpenAI/Anthropic fallbacks inside the same callback means
+  // a plan/quota denial is raised before either provider is touched and cannot
+  // be mistaken for a Gemini failure that should fall through to Anthropic.
+  const providerResult = await withAiBudgetReservation({
+    userId,
+    requestSource: 'interactive',
+    baseCategory: 'content_discovery',
+    jobName: 'content_discovery',
+  }, async (): Promise<Pick<ContentDiscoveryResult, 'fullContent' | 'searchCount' | 'provider'>> => {
+    let openAiAttempted = false;
+    const completeWithBoundedOpenAi = async (): Promise<Pick<ContentDiscoveryResult, 'fullContent' | 'searchCount' | 'provider'>> => {
+      openAiAttempted = true;
+      const { text, sources } = await completeOneShotWithWebSearch(
         systemPrompt,
         userMessage,
-        'content_discovery',
+        'content_discovery_openai_web_search',
         { maxTokens: 4096, temperature: 0.7, userId, tenantId },
       );
-      fullContent = text;
-      // Gemini reports sources via groundingChunks instead of a
-      // server_tool_use counter — use that as the searchCount proxy.
-      searchCount = sources.length;
-      usedProvider = 'gemini';
-      logger.info({ sourceCount: sources.length }, 'Content discovery via Gemini Google Search grounding');
-    } catch (err) {
-      logger.warn({ err }, 'Gemini content discovery failed, falling back to Anthropic');
-    }
-  }
+      if (sources.length === 0) {
+        throw new Error('OpenAI Content Discovery returned without grounding sources');
+      }
+      logger.info({ sourceCount: sources.length }, 'Content discovery via bounded OpenAI web search');
+      return { fullContent: text, searchCount: sources.length, provider: 'openai' };
+    };
 
-  if (usedProvider !== 'gemini') {
+    // Enforcement mode chooses the lower-cost, one-call/low-context provider
+    // first. Gemini remains first in observation mode so rollout can compare
+    // quality without making the conservative $0.035 ceiling a Pro blocker.
+    if (isPaidAiCostControlsEnforcementEnabled() && isOpenAIConfigured()) {
+      try {
+        return await completeWithBoundedOpenAi();
+      } catch (err) {
+        rethrowAiUsageFailClosedError(err);
+        logger.warn({ err }, 'Bounded OpenAI content discovery failed; trying Gemini grounding');
+      }
+    }
+
+    // Gemini-first routing with Google Search grounding (post-webhook cost
+    // optimization). Gemini 2.5 Flash supports live Google Search as a
+    // built-in tool. Bounded OpenAI search is the lower-cost fallback;
+    // Anthropic Haiku remains the final provider fallback when enabled.
+    if (isGeminiProviderConfigured()) {
+      try {
+        const { text, sources } = await completeOneShotWithSearch(
+          systemPrompt,
+          userMessage,
+          'content_discovery',
+          { maxTokens: 4096, temperature: 0.7, userId, tenantId },
+        );
+        if (sources.length === 0) {
+          throw new Error('Gemini Content Discovery returned without grounding sources');
+        }
+        logger.info({ sourceCount: sources.length }, 'Content discovery via Gemini Google Search grounding');
+        return {
+          fullContent: text,
+          // Gemini reports sources via groundingChunks instead of a
+          // server_tool_use counter — use that as the searchCount proxy.
+          searchCount: sources.length,
+          provider: 'gemini',
+        };
+      } catch (err) {
+        // A provider-maximum quota denial happens before network I/O. It is
+        // safe to try a cheaper, separately bounded provider under this same
+        // locked reservation; metering/lock failures still fail closed.
+        if (isProviderHeadroomDenial(err) && openAiAttempted) throw err;
+        if (!isProviderHeadroomDenial(err)) {
+          rethrowAiUsageFailClosedError(err);
+        }
+        logger.warn({ err }, 'Gemini content discovery unavailable; trying bounded OpenAI web search');
+      }
+    }
+
+    // One Responses web_search call is provider-capped and list-priced at
+    // $0.01, keeping a full grounded discovery answer inside Pro headroom when
+    // Gemini's $0.035 grounded-prompt maximum would not fit.
+    if (!openAiAttempted && isOpenAIConfigured()) {
+      try {
+        return await completeWithBoundedOpenAi();
+      } catch (err) {
+        rethrowAiUsageFailClosedError(err);
+        logger.warn({ err }, 'OpenAI content discovery failed, falling back to Anthropic');
+      }
+    }
+
     // Anthropic fallback — preserves the pause_turn handling because
     // Claude's web_search_* tool can return pause_turn mid-search.
     const cachedSystem: Anthropic.TextBlockParam[] = [
@@ -158,8 +214,11 @@ Remember: follow the creator configuration for audience fit, but keep the ideas 
         } as any,
       ],
     } as any, 'content_discovery', { userId, tenantId });
+    let searchCount = Number(
+      (response.usage as any)?.server_tool_use?.web_search_requests ?? 0,
+    );
 
-    // Handle pause_turn — Claude may need to continue after a long search session
+    // Handle pause_turn — Claude may need to continue after a long search session.
     let finalResponse = response;
     if (response.stop_reason === 'pause_turn') {
       logger.info('Content discovery paused, continuing...');
@@ -179,17 +238,28 @@ Remember: follow the creator configuration for audience fit, but keep the ideas 
           } as any,
         ],
       } as any, 'content_discovery_continuation', { userId, tenantId });
+      searchCount += Number(
+        (finalResponse.usage as any)?.server_tool_use?.web_search_requests ?? 0,
+      );
+    }
+    if (searchCount <= 0) {
+      throw new Error('Anthropic Content Discovery returned without executing required web search grounding');
     }
 
-    // Extract text content (skip search result blocks)
-    fullContent = finalResponse.content
-      .filter((b): b is Anthropic.TextBlock => b.type === 'text')
-      .map((b) => b.text)
-      .join('\n\n');
-
-    // Count web searches used
-    searchCount = (finalResponse.usage as any)?.server_tool_use?.web_search_requests || 0;
-  }
+    return {
+      fullContent: finalResponse.content
+        .filter((b): b is Anthropic.TextBlock => b.type === 'text')
+        .map((b) => b.text)
+        .join('\n\n'),
+      searchCount,
+      provider: 'anthropic',
+    };
+  });
+  const {
+    fullContent,
+    searchCount,
+    provider: usedProvider,
+  } = providerResult;
 
   // Extract idea titles (lines starting with "## Idea" or "### Ideia" — model may use either format or language)
   const ideas = fullContent
@@ -253,6 +323,13 @@ Remember: follow the creator configuration for audience fit, but keep the ideas 
     searchCount,
     provider: usedProvider,
   };
+}
+
+function isProviderHeadroomDenial(error: unknown): boolean {
+  const candidate = error as { name?: string; decision?: { code?: string } } | null;
+  return candidate?.name === 'AiBudgetError'
+    && (candidate.decision?.code === 'AI_DAILY_LIMIT_REACHED'
+      || candidate.decision?.code === 'AI_MONTHLY_LIMIT_REACHED');
 }
 
 function extractQuickFireShorts(content: string): string[] {

@@ -65,11 +65,12 @@ describe('Garmin MFA notifier', () => {
     testDb.close();
   });
 
-  it('records an operator alert and sends APNs intents to active owner tenants only', async () => {
+  it('records an operator alert and sends APNs only to the canonical owner target', async () => {
     seedUsersTable();
     testDb.prepare('INSERT INTO users (id, telegram_id, tier, status) VALUES (?, ?, ?, ?)').run(11, 1011, 'owner', 'active');
     testDb.prepare('INSERT INTO users (id, telegram_id, tier, status) VALUES (?, ?, ?, ?)').run(22, 1022, 'pro', 'active');
     testDb.prepare('INSERT INTO users (id, telegram_id, tier, status) VALUES (?, ?, ?, ?)').run(33, 1033, 'owner', 'suspended');
+    mockGetOwnerBootstrapTarget.mockReturnValue({ tenantId: 11, telegramId: 1011 });
 
     const { notifyGarminMfaRequired } = await import('../../src/services/garmin-mfa-notifier');
 

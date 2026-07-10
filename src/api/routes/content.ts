@@ -3,7 +3,7 @@
 import { Router, Request, Response } from 'express';
 import { AuthenticatedRequest } from '../auth-middleware';
 import { logger } from '../../utils/logger';
-import { sendSuccess, sendError, sendInternalError, asyncHandler } from '../response-helpers';
+import { sendAiBudgetError, sendSuccess, sendError, sendInternalError, asyncHandler } from '../response-helpers';
 import { buildScreenContractMeta } from '../../services/screen-contract-meta';
 import { buildGenerationMeta } from './content-generation-meta';
 import {
@@ -113,6 +113,11 @@ export function contentRoutes(): Router {
       });
     } catch (err: any) {
       logger.error({ err }, 'iOS content/discover failed');
+
+      // Plan/quota denials are authoritative. Do not disguise a stable
+      // AI_PLAN_REQUIRED / daily / monthly response as a successful local
+      // discovery fallback; iOS needs the typed code and reset window.
+      if (sendAiBudgetError(res, err)) return;
 
       const language = resolveContentLanguage(req, userId);
       const fallback = await buildLocalDiscoveryFallback({

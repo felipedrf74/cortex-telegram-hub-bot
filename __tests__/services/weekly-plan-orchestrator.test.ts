@@ -13,6 +13,7 @@ const mockIsUserOverDailyCap = vi.fn(() => ({ over: false }));
 const mockGetUserById = vi.fn();
 const mockGetWeeksForPlan = vi.fn();
 const mockGetWeeklyAdherence = vi.fn();
+let mockEffectivePlan: 'free' | 'pro' | 'max' | 'owner' = 'max';
 
 let garminStatus = 'active';
 let writtenSignals: Array<Record<string, unknown>> = [];
@@ -86,6 +87,17 @@ vi.mock('../../src/services/cost-guardrail', () => ({
 
 vi.mock('../../src/services/user-service', () => ({
   getUserById: (...args: unknown[]) => mockGetUserById(...args),
+}));
+
+vi.mock('../../src/services/entitlement', () => ({
+  getEffectiveEntitlement: vi.fn(() => ({ plan: mockEffectivePlan })),
+  entitlementPlanToSkillTier: vi.fn((plan: string) => plan),
+}));
+
+vi.mock('../../src/services/skill-tiers', () => ({
+  checkSkillAccess: vi.fn((user: { tier: string } | null, skill: string) => ({
+    allowed: Boolean(user) && (user!.tier !== 'free' || skill === 'secretary'),
+  })),
 }));
 
 vi.mock('../../src/services/training-plans', () => ({
@@ -415,6 +427,7 @@ describe('weekly-plan-orchestrator', () => {
     });
     mockIsUserOverDailyCap.mockReturnValue({ over: false });
     mockGetUserById.mockReturnValue({ id: 12, tier: 'max' });
+    mockEffectivePlan = 'max';
     mockGetWeeksForPlan.mockReturnValue([
       { id: 7, week_number: 2 },
       { id: 8, week_number: 3 },
@@ -428,6 +441,7 @@ describe('weekly-plan-orchestrator', () => {
 
   it('returns only training and secretary while gating other skills for free users', async () => {
     mockGetUserById.mockReturnValue({ id: 12, tier: 'free' });
+    mockEffectivePlan = 'free';
 
     const { composeWeeklyPlan } = await import('../../src/services/weekly-plan-orchestrator');
     const result = await composeWeeklyPlan({ userId: 12, weekStart: '2026-04-13', forceRefresh: true });
@@ -517,15 +531,25 @@ describe('weekly-plan-orchestrator', () => {
     expect(mockSetCache).toHaveBeenCalledWith(expect.stringContaining('plan:week:u:12:t:34:'), expect.anything(), 1800);
   });
 
-  it('keeps the weekly plan available when the user record is missing', async () => {
+  it('keeps the weekly plan available but fails paid skill context closed when the user record is missing', async () => {
     mockGetUserById.mockReturnValue(null);
 
     const { composeWeeklyPlan } = await import('../../src/services/weekly-plan-orchestrator');
     const result = await composeWeeklyPlan({ userId: 12, weekStart: '2026-04-13', forceRefresh: true });
 
-    expect(result.gated.skills).toEqual([]);
+    expect(result.gated.skills).toEqual(['cooking', 'content', 'finance']);
     expect(result.days).toHaveLength(7);
     expect(result.summary.sessionCount).toBeGreaterThanOrEqual(1);
+  });
+
+  it('ignores a stale paid users.tier when canonical entitlement is Free', async () => {
+    mockGetUserById.mockReturnValue({ id: 12, tier: 'max' });
+    mockEffectivePlan = 'free';
+
+    const { composeWeeklyPlan } = await import('../../src/services/weekly-plan-orchestrator');
+    const result = await composeWeeklyPlan({ userId: 12, weekStart: '2026-04-13', forceRefresh: true });
+
+    expect(result.gated.skills).toEqual(['cooking', 'content', 'finance']);
   });
 
   it('marks the plan degraded and blanks creative copy when the user is over cap', async () => {

@@ -10,6 +10,7 @@ const mockCreateNexusPointsCheckoutSession = vi.fn();
 const mockIsStripeNexusPointsConfigured = vi.fn(() => true);
 const mockLogAudit = vi.fn();
 const mockRecordCurrentLegalConsentForUser = vi.fn();
+const mockGetEffectiveEntitlement = vi.fn();
 
 vi.mock('../../src/services/stripe-service', async () => {
   const actual = await vi.importActual<typeof import('../../src/services/stripe-service')>('../../src/services/stripe-service');
@@ -36,11 +37,23 @@ vi.mock('../../src/services/stripe-service', async () => {
 
 vi.mock('../../src/services/cost-guardrail', () => ({
   buildQuotaUsagePayload: (usage: any) => ({
+    plan: usage.plan,
     resetAt: usage.resetAt,
     usageLevel: usage.usageLevel,
     usageFraction: usage.usageFraction,
     usagePercent: Math.round((usage.usageFraction || 0) * 100),
     isOverLimit: usage.over,
+    aiAccessAllowed: usage.aiAccessAllowed,
+    blockReason: usage.blockReason,
+    dailyUsageFraction: usage.dailyUsageFraction,
+    dailyUsagePercent: Math.round((usage.dailyUsageFraction || 0) * 100),
+    dailyIsOverLimit: usage.dailyOver,
+    dailyResetsAt: usage.dailyResetAt,
+    monthlyUsageFraction: usage.monthlyUsageFraction,
+    monthlyUsagePercent: Math.round((usage.monthlyUsageFraction || 0) * 100),
+    monthlyIsOverLimit: usage.monthlyOver,
+    monthlyResetsAt: usage.monthlyResetAt,
+    unblocksAt: usage.unblocksAt,
     boostAvailable: usage.boostAvailable,
     nexusPointsBalance: usage.nexusPointsBalance,
     nexusPointsExpiringSoon: usage.nexusPointsExpiringSoon,
@@ -59,6 +72,10 @@ vi.mock('../../src/services/cost-guardrail', () => ({
     plan: 'pro',
     usageLevel: 'enhanced',
     usageFraction: 0,
+    dailyUsageFraction: 0,
+    monthlyUsageFraction: 0,
+    dailyOver: false,
+    monthlyOver: false,
     callsToday: 0,
     boostAvailable: true,
     limitUsd: 0.04,
@@ -74,7 +91,21 @@ vi.mock('../../src/services/cost-guardrail', () => ({
     totalRemainingUsd: 0.04,
     pointsPurchaseAvailable: true,
     resetAt: '2026-05-21T00:00:00.000Z',
+    dailyResetAt: '2026-05-21T00:00:00.000Z',
+    monthlyResetAt: '2026-06-01T00:00:00.000Z',
+    unblocksAt: '2026-05-21T00:00:00.000Z',
+    aiAccessAllowed: true,
+    blockReason: null,
+    entitlement: {
+      plan: 'pro',
+      source: 'stripe',
+      status: 'active',
+    },
   })),
+}));
+
+vi.mock('../../src/services/entitlement', () => ({
+  getEffectiveEntitlement: (...args: unknown[]) => mockGetEffectiveEntitlement(...args),
 }));
 
 vi.mock('../../src/services/nexus-points', () => ({
@@ -213,6 +244,13 @@ describe('billing routes', () => {
     mockIsStripeNexusPointsConfigured.mockReturnValue(true);
     mockLogAudit.mockReset();
     mockRecordCurrentLegalConsentForUser.mockReset();
+    mockGetEffectiveEntitlement.mockReset();
+    mockGetEffectiveEntitlement.mockReturnValue({
+      plan: 'pro',
+      source: 'stripe',
+      status: 'active',
+      nexusPointsAllowed: true,
+    });
   });
 
   it('rejects authenticated checkout without current legal acceptance', async () => {
@@ -352,11 +390,19 @@ describe('billing routes', () => {
 
     expect(res.statusCode).toBe(200);
     expect(res.body.data).toMatchObject({
+      plan: 'pro',
+      isActive: true,
+      isPro: true,
       nexusPointsBalance: 0,
       usageFraction: 0,
       usagePercent: 0,
       isOverLimit: false,
       pointsPurchaseAvailable: true,
+      aiAccessAllowed: true,
+      dailyUsageFraction: 0,
+      monthlyUsageFraction: 0,
+      dailyResetsAt: '2026-05-21T00:00:00.000Z',
+      monthlyResetsAt: '2026-06-01T00:00:00.000Z',
     });
     expect(res.body.data.nexusPointPackages).toEqual(expect.arrayContaining([
       expect.objectContaining({ productId: 'me.nexushub.points.small', points: 300 }),
@@ -466,6 +512,21 @@ describe('billing routes', () => {
         source: 'web',
       }),
     }));
+  });
+
+  it('blocks Free and trial users from buying unusable Nexus Points', async () => {
+    for (const entitlement of [
+      { plan: 'free', source: 'free', status: 'none', nexusPointsAllowed: false },
+      { plan: 'pro', source: 'stripe', status: 'trialing', nexusPointsAllowed: false },
+    ]) {
+      mockGetEffectiveEntitlement.mockReturnValueOnce(entitlement);
+      const res = await dispatch('POST', '/nexus-points/stripe-checkout', {
+        packageId: 'me.nexushub.points.small',
+      }, 42);
+      expect(res.statusCode).toBe(403);
+      expect(res.body.error.code).toBe('AI_PLAN_REQUIRED');
+    }
+    expect(mockCreateNexusPointsCheckoutSession).not.toHaveBeenCalled();
   });
 
   it('rejects oversized and body-spoofed Stripe Nexus Points checkout requests', async () => {

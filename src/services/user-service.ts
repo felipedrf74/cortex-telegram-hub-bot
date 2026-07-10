@@ -405,12 +405,28 @@ export function resolveIosInviteRegistrationTarget(inviteCode: string, deviceId:
   return { kind: 'invalid' };
 }
 
-export function isOwnerUserRef(userRef: number): boolean {
+export function isOwnerUserRef(
+  userRef: number,
+  options: {
+    /** Legacy product/ops callers may still recognize an explicit owner tier. */
+    allowPersistedTier?: boolean;
+    /** AI entitlement must require the configured owner identity, not a tier. */
+    requireConfiguredIdentity?: boolean;
+  } = {},
+): boolean {
   const user = getUserByAnyIdentifier(userRef);
-  if (user?.tier === 'owner') return true;
+  if (options.allowPersistedTier !== false && user?.tier === 'owner') return true;
 
-  const ownerTelegramId = getOwnerBootstrapTelegramId();
+  const ownerTelegramId = options.requireConfiguredIdentity
+    ? getConfiguredOwnerBootstrapTelegramId()
+    : getOwnerBootstrapTelegramId();
   if (!ownerTelegramId) return false;
+  if (options.requireConfiguredIdentity) {
+    // AI callers pass the canonical database user id. Requiring the resolved
+    // row's Telegram identity avoids an id-vs-telegram numeric collision from
+    // granting owner model access to an unrelated account.
+    return user?.telegram_id === ownerTelegramId;
+  }
   if (userRef === ownerTelegramId) return true;
   return user?.telegram_id === ownerTelegramId;
 }

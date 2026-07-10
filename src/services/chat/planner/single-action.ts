@@ -24,6 +24,7 @@ export async function buildSingleActionChatActionPlan(
 ): Promise<ChatActionPlan | null> {
   const deterministic = buildDeterministicPlan(input);
   if (deterministic) return deterministic;
+  if (input.allowModelPlanner === false) return null;
 
   const folded = foldCalendarText(input.text);
   const looksComplex = /(?:\be\b|\band\b|\+|,).{8,}/.test(folded) || selectRegistrySubsetForMessage(input.text).length > 1;

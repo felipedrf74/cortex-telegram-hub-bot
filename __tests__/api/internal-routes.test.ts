@@ -28,6 +28,17 @@ describe('Internal Routes — structural', () => {
 
   it('ai-complete uses completeOneShotWithFallback', () => {
     expect(routesSrc).toContain('completeOneShotWithFallback');
+    expect(routesSrc).toContain('withAiBudgetReservation');
+    expect(routesSrc).toContain('withSignedOuterAiBudgetReservation');
+    expect(routesSrc).toContain('sendAiBudgetError');
+  });
+
+  it('bounds internal generation and usage inputs before quota truth or provider calls', () => {
+    expect(routesSrc).toContain('normalizeInternalCategory');
+    expect(routesSrc).toContain('normalizeNonNegativeInteger');
+    expect(routesSrc).toContain('normalizePositiveInteger(rawMaxTokens, 32_768)');
+    expect(routesSrc).toContain('normalizeFiniteNumber(rawTemperature, 0, 2)');
+    expect(routesSrc).toContain("sendError(res, 'BAD_REQUEST', 'invalid usage fields', 400)");
   });
 
   it('ai-complete passes long-running content timeouts and JSON mode into the provider cascade', () => {

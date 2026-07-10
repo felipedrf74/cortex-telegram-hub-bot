@@ -83,7 +83,41 @@ vi.mock('../../src/services/resource-budgets', () => ({
   capSyncPageSize: vi.fn((rawLimit: unknown) => Number(rawLimit) || 100),
 }));
 
-vi.mock('../../src/services/cost-guardrail', () => ({
+vi.mock('../../src/services/cost-guardrail', () => {
+  class AiBudgetError extends Error {
+    decision: any;
+    constructor(decision: any) { super(decision.code); this.name = 'AiBudgetError'; this.decision = decision; }
+  }
+  const withAiBudgetReservation = vi.fn(async (request: any, fn: () => Promise<unknown>) => {
+    let releaseGate: () => void = () => {};
+    const gate = new Promise<void>((resolve) => { releaseGate = resolve; });
+    const prior = lockTail;
+    lockTail = prior.catch(() => undefined).then(() => gate);
+    await prior.catch(() => undefined);
+    try {
+      const quota = mockIsUserOverDailyCap(request.userId);
+      if (process.env.PAID_AI_COST_CONTROLS_ENFORCEMENT_ENABLED === 'true' && quota.over) {
+        throw new AiBudgetError({
+          allowed: false,
+          code: 'AI_DAILY_LIMIT_REACHED',
+          message: `Daily AI quota reached for the ${quota.plan} plan.`,
+          status: 429,
+          window: 'daily',
+          unblocksAt: quota.resetAt,
+          retryAfterSeconds: 60,
+          reservedCostUsd: 0.01,
+          quota,
+        });
+      }
+      return await fn();
+    } finally {
+      releaseGate();
+    }
+  });
+  return {
+  AiBudgetError,
+  buildQuotaExceededPayload: vi.fn((quota: any) => ({ plan: quota.plan, resetAt: quota.resetAt })),
+  withAiBudgetReservation,
   isUserOverDailyCap: (...args: unknown[]) => mockIsUserOverDailyCap(...args),
   buildQuotaExceededMessage: vi.fn((quota: { plan: string; resetAt: string }) => `Daily AI quota reached for the ${quota.plan} plan. Resets at ${quota.resetAt}.`),
   enforceCostGuardrails: (userId: number) => {
@@ -116,7 +150,8 @@ vi.mock('../../src/services/cost-guardrail', () => ({
       releaseGate();
     };
   }),
-}));
+  };
+});
 
 vi.mock('../../src/services/entitlement', () => ({
   FREE_TIER_ALLOWED_SKILLS: new Set(['secretary', 'content']),
@@ -124,6 +159,9 @@ vi.mock('../../src/services/entitlement', () => ({
   isSkillAllowedByEntitlement: (...args: unknown[]) => mockIsSkillAllowedByEntitlement(...args),
   isCoachBriefingEntitlementEligible: (entitlement: { plan: string; source: string }) =>
     (entitlement.plan === 'pro' || entitlement.plan === 'max') && entitlement.source !== 'beta',
+  isPaidAiCostControlsEnforcementEnabled: () => process.env.PAID_AI_COST_CONTROLS_ENFORCEMENT_ENABLED === 'true',
+  isAiInteractiveAllowedForRuntime: (entitlement: { aiAccessAllowed?: boolean }) =>
+    process.env.PAID_AI_COST_CONTROLS_ENFORCEMENT_ENABLED !== 'true' || entitlement.aiAccessAllowed === true,
 }));
 
 vi.mock('../../src/services/training-plans', () => ({
@@ -276,6 +314,7 @@ describe('training routes entitlement and AI cost guardrails', () => {
     mockGetCached.mockReturnValue(null);
     mockGetActivePlan.mockReturnValue({ id: 1, user_id: 42, tenant_id: 42, status: 'active' });
     mockGenerateCoachBriefing.mockResolvedValue({ message: 'Coach ready.', recommendations: [] });
+    delete process.env.PAID_AI_COST_CONTROLS_ENFORCEMENT_ENABLED;
     mockIsUserOverDailyCap.mockReturnValue({
       over: false,
       spentUsd: 0,
@@ -315,7 +354,7 @@ describe('training routes entitlement and AI cost guardrails', () => {
 
     for (const entitlement of [
       { plan: 'owner', source: 'owner', allowedSkills: new Set(['training']) },
-      { plan: 'max', source: 'beta', allowedSkills: new Set(['training']) },
+      { plan: 'beta', source: 'beta', allowedSkills: new Set(['training']) },
     ]) {
       mockGetEffectiveEntitlement.mockReturnValue(entitlement);
       const response = await getCoach();
@@ -326,6 +365,29 @@ describe('training routes entitlement and AI cost guardrails', () => {
     expect(mockGetActivePlan).not.toHaveBeenCalled();
     expect(mockGetCached).not.toHaveBeenCalled();
     expect(mockGenerateCoachBriefing).not.toHaveBeenCalled();
+  });
+
+  it('uses the stable paid-AI code for Free when enforcement is enabled', async () => {
+    process.env.PAID_AI_COST_CONTROLS_ENFORCEMENT_ENABLED = 'true';
+    setPlan('free');
+    mockIsSkillAllowedByEntitlement.mockReturnValue(true);
+    const response = await getCoach();
+    expect(response.status).toBe(403);
+    expect(response.body.error.code).toBe('AI_PLAN_REQUIRED');
+  });
+
+  it('allows owner and paid-trial interactive coach requests when enforcement is enabled', async () => {
+    process.env.PAID_AI_COST_CONTROLS_ENFORCEMENT_ENABLED = 'true';
+    mockIsSkillAllowedByEntitlement.mockReturnValue(true);
+    for (const entitlement of [
+      { plan: 'owner', source: 'owner', aiAccessAllowed: true, allowedSkills: new Set(['training']) },
+      { plan: 'pro', source: 'stripe', status: 'trialing', aiAccessAllowed: true, allowedSkills: new Set(['training']) },
+    ]) {
+      mockGetEffectiveEntitlement.mockReturnValue(entitlement);
+      const response = await getCoach();
+      expect(response.status).toBe(200);
+    }
+    expect(mockGenerateCoachBriefing).toHaveBeenCalledTimes(2);
   });
 
   it('blocks a paid user without an active plan before cache, calendar, or AI work', async () => {
@@ -343,6 +405,7 @@ describe('training routes entitlement and AI cost guardrails', () => {
   });
 
   it('blocks pro users with exhausted daily quota before coach AI fires', async () => {
+    process.env.PAID_AI_COST_CONTROLS_ENFORCEMENT_ENABLED = 'true';
     setPlan('pro');
     mockIsUserOverDailyCap.mockReturnValue({
       over: true,
@@ -355,7 +418,7 @@ describe('training routes entitlement and AI cost guardrails', () => {
     const response = await getCoach();
 
     expect(response.status).toBe(429);
-    expect(response.body.error.code).toBe('daily_limit_exceeded');
+    expect(response.body.error.code).toBe('AI_DAILY_LIMIT_REACHED');
     expect(mockGenerateCoachBriefing).not.toHaveBeenCalled();
   });
 
@@ -371,6 +434,7 @@ describe('training routes entitlement and AI cost guardrails', () => {
   });
 
   it('serializes concurrent pro refreshes so one remaining quota slot cannot race', async () => {
+    process.env.PAID_AI_COST_CONTROLS_ENFORCEMENT_ENABLED = 'true';
     setPlan('pro');
     let remaining = 1;
     mockIsUserOverDailyCap.mockImplementation(() => ({

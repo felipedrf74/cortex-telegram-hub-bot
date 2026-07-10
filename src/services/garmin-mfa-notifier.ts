@@ -1,31 +1,12 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
 import { logger } from '../utils/logger';
-import { getDb } from './database';
 import { setMfaNotifier } from './garmin';
 import { createNotificationIntent } from './notification-orchestrator';
 import { recordOperatorAlert } from './operator-alerts';
 import { getOwnerBootstrapTarget } from './user-service';
 
 function listOwnerTenantIds(): number[] {
-  try {
-    const rows = getDb().prepare(`
-      SELECT id
-      FROM users
-      WHERE tier = 'owner' AND status = 'active'
-      ORDER BY id ASC
-    `).all() as Array<{ id: number }>;
-    const ids = rows
-      .map((row) => Number(row.id))
-      .filter((id) => Number.isInteger(id) && id > 0);
-    if (ids.length > 0) return ids;
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    if (!/no such table/i.test(message)) {
-      logger.warn({ err }, 'Failed to load owner tenant ids for Garmin MFA notification');
-    }
-  }
-
   const ownerTarget = getOwnerBootstrapTarget();
   return ownerTarget ? [ownerTarget.tenantId] : [];
 }

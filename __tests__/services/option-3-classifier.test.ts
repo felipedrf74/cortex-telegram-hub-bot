@@ -8,8 +8,8 @@
  *
  *   1. ClassifyOptions interface exists with the right fields (compile check)
  *   2. OllamaProvider.classify accepts ClassifyOptions
- *   3. source='shadow' skips api_usage write (O3-A12 OPTION 1)
- *   4. source='shadow' bypasses local-llm-rate-limiter
+ *   3. Runtime shadow work is independently budgeted and metered
+ *   4. Free/ineligible users do not trigger shadow model calls
  *   5. abortSignal forwarded to fetch via callOllamaForTask (O3-A18)
  *   6. Compact prompt used when OLLAMA_CLASSIFIER_PROMPT_VERSION=v1 (O3-A14)
  *   7. Compact prompt absent → long prompt fallback
@@ -81,6 +81,8 @@ const {
   insertedRowIds,
   updateCalls,
   providerHolder,
+  budgetRequests,
+  entitlementState,
 } = vi.hoisted(() => {
   const _logCalls: Array<{ level: string; obj: unknown; msg: string }> = [];
   const _dbRows: Array<Record<string, unknown>> = [];
@@ -91,12 +93,16 @@ const {
     ollama: { name: string; classify?: (...args: unknown[]) => Promise<unknown> } | null;
     nextRowId: number;
   } = { active: null, ollama: null, nextRowId: 1 };
+  const _budgetRequests: unknown[] = [];
+  const _entitlementState = { aiAccessAllowed: true };
   return {
     logCalls: _logCalls,
     dbRows: _dbRows,
     insertedRowIds: _insertedRowIds,
     updateCalls: _updateCalls,
     providerHolder: _providerHolder,
+    budgetRequests: _budgetRequests,
+    entitlementState: _entitlementState,
   };
 });
 
@@ -142,6 +148,17 @@ vi.mock('../../src/services/provider-registry', () => ({
   ensureActiveProvider: vi.fn(),
 }));
 
+vi.mock('../../src/services/cost-guardrail', () => ({
+  withAiBudgetReservation: async (request: unknown, fn: () => Promise<unknown>) => {
+    budgetRequests.push(request);
+    return fn();
+  },
+}));
+
+vi.mock('../../src/services/entitlement', () => ({
+  getEffectiveEntitlement: () => ({ aiAccessAllowed: entitlementState.aiAccessAllowed }),
+}));
+
 // ─── Imports under test (after mocks) ──────────────────────────────
 
 import { hmacSha256 } from '../../src/utils/hmac';
@@ -158,6 +175,8 @@ beforeEach(() => {
   dbRows.length = 0;
   insertedRowIds.length = 0;
   updateCalls.length = 0;
+  budgetRequests.length = 0;
+  entitlementState.aiAccessAllowed = true;
   providerHolder.nextRowId = 1;
   providerHolder.active = null;
   providerHolder.ollama = null;
@@ -394,7 +413,7 @@ describe('runOllamaShadowClassification', () => {
     expect(insertArgs[7]).toBe('unknown');
   });
 
-  it('O3-A12 OPTION 1: shadow path passes source="shadow" + recordUsage:false to ollama.classify', async () => {
+  it('meters eligible shadow work under a fresh shared-system reservation', async () => {
     process.env.CLASSIFY_SHADOW_HASH_SECRET = 'test-secret-' + 'x'.repeat(32);
 
     providerHolder.active = { name: 'gemini' };
@@ -413,8 +432,36 @@ describe('runOllamaShadowClassification', () => {
     const passedOptions = ollamaClassify.mock.calls[0][2] as ClassifyOptions | undefined;
     expect(passedOptions).toBeDefined();
     expect(passedOptions!.source).toBe('shadow');
-    expect(passedOptions!.recordUsage).toBe(false);
+    expect(passedOptions!.recordUsage).toBe(true);
     expect(passedOptions!.abortSignal).toBeInstanceOf(AbortSignal);
+    expect(budgetRequests).toEqual([expect.objectContaining({
+      userId: 1,
+      requestSource: 'system',
+      baseCategory: 'classify_shadow',
+      jobName: 'classify_shadow',
+      runId: 'r1',
+    })]);
+  });
+
+  it('skips shadow model work for an ineligible user', async () => {
+    process.env.CLASSIFY_SHADOW_HASH_SECRET = 'test-secret-' + 'x'.repeat(32);
+    entitlementState.aiAccessAllowed = false;
+    providerHolder.active = { name: 'gemini' };
+    const ollamaClassify = vi.fn().mockResolvedValue({ domain: 'cooking', confidence: 0.95 });
+    providerHolder.ollama = { name: 'ollama', classify: ollamaClassify };
+
+    await runOllamaShadowClassification({
+      message: 'test',
+      userId: 1,
+      tenantId: 1,
+      requestId: 'free-r1',
+      geminiResult: { domain: 'cooking', confidence: 0.9 },
+      geminiDurationMs: 1000,
+    });
+
+    expect(ollamaClassify).not.toHaveBeenCalled();
+    expect(budgetRequests).toHaveLength(0);
+    expect(dbRows).toHaveLength(0);
   });
 
   it('O3-A18: timeout fires abortSignal so abort propagates to fetch', async () => {

@@ -1,8 +1,9 @@
 # Model Routing Current State
 
 Generated: 2026-05-19
-Updated: 2026-05-26 (Phase K + Option 3 addendum below)
-Audited branch: `codex/chat-reliability`
+Updated: 2026-07-10 (paid-AI cost-control attribution/search addendum)
+Original audited branch: `codex/chat-reliability`; current addendum:
+`codex/paid-ai-cost-controls`
 
 > **2026-05-26 ADDENDUM — read this first.** The body below describes the
 > routing architecture as of 2026-05-19 and is still accurate at the
@@ -119,8 +120,8 @@ The effective default cascade depends on route type and whether the domain provi
 | Content/Finance/Cooking domains | Gemini -> OpenAI | Domain routing keeps these baseline domains Gemini-first despite generic chat defaulting to OpenAI. |
 | One-shot helpers | Gemini -> OpenAI -> Anthropic gated | Uses `completeOneShotWithFallback`; Anthropic thunk executes only if enabled. |
 | Vision helper | Gemini -> OpenAI -> Anthropic gated | Uses `completeVisionOneShotWithFallback` for most image paths. |
-| Content discovery with web search | Gemini Search -> Anthropic gated | Uses Gemini Google Search grounding first; falls back to Anthropic web search. |
-| ChatV2 internet research | Gemini Search -> Anthropic gated | Builds a public-query-only packet first; denied private-context queries do not hit either web provider. |
+| Interactive web-grounded Content/research | Enforced: OpenAI one-call low-context -> Gemini -> Anthropic gated. Observe-only: Gemini -> OpenAI -> Anthropic gated. | Builds a public-query-only packet first. Budget/metering failures are terminal; only provider availability/quality failures advance the chain. |
+| Scheduled Content trend context | Fresh Discovery/Radar signals -> validated evergreen generation | Enforcement never uses provider-hosted search in automation because retrieved context has no contractual token ceiling. |
 | Python content engine | TS proxy Gemini -> OpenAI -> Anthropic gated | Python no longer calls provider APIs directly for ordinary completions. |
 
 ## Routing By Task Type
@@ -250,8 +251,8 @@ These paths still have provider-aware fallback behavior, but they do not use `Ta
 - Channel learner/video study/content workflow/autoresearch/voice evolution one-shots use `completeOneShotWithFallback`.
 - Image classification uses `completeVisionOneShotWithFallback`.
 - Python content engine uses `/internal/ai-complete`, then `completeOneShotWithFallback`.
-- Content discovery uses Gemini Search first, then Anthropic web search fallback.
-- ChatV2 internet research uses Gemini Search first, then Anthropic web search fallback only after its safe public query packet is built. Raw Nexus calendar/task/finance/health/email context is denied before provider selection.
+- Interactive Content discovery/research-refresh and ChatV2 internet research use one-call, low-context OpenAI web search first while paid-AI enforcement is active. They compare Gemini and the gated Anthropic fallback only after non-budget provider failures. Observe-only keeps Gemini first for quality comparison.
+- Scheduled Content never uses provider-hosted search under enforcement; it reuses fresh tenant-scoped Discovery/Radar signals or produces explicitly evergreen output. Raw Nexus calendar/task/finance/health/email context is denied before any interactive web provider selection.
 - Legacy direct Anthropic domain calls remain available as a guarded safety path when the active routing provider cannot initialize.
 - `OpenAIProvider.streamDomain` is OpenAI-specific and does not use task routing/circuit breaker fallback.
 
@@ -272,16 +273,19 @@ What exists:
 - Sentry-visible warning capture on fallback.
 - Circuit breaker state and in-memory provider metrics.
 - Portal `/api/provider-stats` and `/api/model-intelligence` surfaces.
-- `api_usage` rows with category, provider, model, token counts, cost, duration, and user ID when provided.
+- `api_usage` rows with category, provider, model, token/cache counts, complete
+  token-plus-hosted-tool cost, duration, user/tenant ID, request source, job,
+  base workload category, and run ID.
 - Telemetry events for provider calls.
 - Chat responses can persist `chatTurnContract`, `contextCompiler`, route kind, grounding, risk, and research metadata.
 - `cacheablePrefixHash` is emitted by the context compiler for prompt-cache observability and future cache-key validation.
 
 Gaps:
 
-- `api_usage` has no tenant ID.
-- Gemini/OpenAI provider-domain calls often log `user_id=0` because the provider-agnostic interface does not carry user ID.
-- Tool continuation calls through Gemini/OpenAI also generally log `user_id=0`.
+- Provider helpers still require every caller to pass the authenticated
+  user/tenant scope; the provider boundary fails closed under enforcement when
+  no live matching reservation exists, but source review remains necessary for
+  newly added call sites.
 - Streaming is OpenAI-only and not represented in the central task-routing fallback layer.
 - There is no single request trace joining Chat request ID, provider choice, model, fallback path, tool calls, cost, latency, tenant, and final response.
 - `cacheablePrefixHash` is not consumed by Gemini/OpenAI SDK calls yet, so prompt-caching savings remain theoretical until provider-specific cache primitives are wired and measured.
@@ -291,11 +295,14 @@ Gaps:
 
 The routing layer does not enforce tenant isolation; tenant isolation must be enforced before prompt construction, tool execution, memory retrieval, and persistence.
 
-Current risks for future Chat work:
+Current rules for future Chat work:
 
-- Provider calls and usage rows lack tenant ID.
-- Some Chat/domain helper APIs still pass only user ID.
-- Internal AI proxy calls are system-scoped (`user_id=0`) and should not receive tenant-private user prompts unless tenant/user attribution is added.
+- Provider calls must carry the authenticated user/tenant scope and execute
+  inside the matching canonical reservation.
+- Internal AI proxy calls that originate from an authenticated Content route
+  use a short-lived signed attribution token. Invalid, expired, or
+  category-mismatched re-entry fails closed instead of falling back to system
+  billing; intentional unsigned internal jobs remain system-scoped.
 - Provider fallback must receive exactly the same already-scoped context as the primary provider. It must never rebuild broader context during fallback.
 
 ## Required Rule For Future Chat Work
@@ -335,5 +342,3 @@ Architectural details in `docs/runbooks/ollama-local-llm.md#option-3---dedicated
 The compact <400-token classifier prompt is in `services/anthropic.getOllamaClassifierSystemPromptCompact()`, versioned by `OLLAMA_CLASSIFIER_PROMPT_VERSION=v1`. Future iterations bump the version without changing source.
 
 Privacy: message bodies are NEVER stored. `classify_shadow_runs.message_hash` is HMAC-SHA256 keyed by `CLASSIFY_SHADOW_HASH_SECRET` (generate-once at deploy time per O3-A20; rotation is a deliberate operator action documented in the runbook).
-
-

@@ -46,6 +46,11 @@ vi.mock('../../src/services/gemini-provider', () => ({
   completeOneShotWithFallback,
 }));
 
+vi.mock('../../src/services/cost-guardrail', () => ({
+  AiBudgetError: class AiBudgetError extends Error {},
+  withAiBudgetReservation: vi.fn(async (_request: unknown, fn: () => Promise<unknown>) => fn()),
+}));
+
 vi.mock('../../src/portal/anthropic-hook', () => ({
   trackedCreate: vi.fn(),
 }));
@@ -85,6 +90,7 @@ import {
   addSystemChannel,
   createContentReferencesAdminContext,
   getSystemKnowledgeByCategory,
+  PATTERN_CATEGORIES,
   updateChannelStatus,
 } from '../../src/state/content-references';
 import {
@@ -177,13 +183,13 @@ describe('channel-learner: re-learn new-video gate + failure backoff (migration 
         return {
           text: JSON.stringify({
             channel_summary: 'Summary',
-            patterns: [{
-              category: 'hook_style',
-              pattern_text: 'Hook pattern',
-              examples: ['Example'],
+            patterns: PATTERN_CATEGORIES.map((category) => ({
+              category,
+              pattern_text: `${category} pattern`,
+              examples: [`${category} example`],
               confidence: 0.9,
               source_videos: ['vid'],
-            }],
+            })),
           }),
           provider: 'gemini',
         };
@@ -191,11 +197,11 @@ describe('channel-learner: re-learn new-video gate + failure backoff (migration 
       if (jobName === 'knowledge_synthesis') {
         return {
           text: JSON.stringify({
-            categories: [{
-              category: 'hook_style',
-              synthesized_text: 'Merged hook guidance',
+            categories: PATTERN_CATEGORIES.map((category) => ({
+              category,
+              synthesized_text: `Merged ${category} guidance`,
               source_channels: ['Channel A', 'Channel B'],
-            }],
+            })),
           }),
           provider: 'gemini',
         };

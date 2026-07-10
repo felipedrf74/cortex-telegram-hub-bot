@@ -34,9 +34,22 @@ import { withTimeout } from '../utils/timeout';
 import { getAICallTimeoutMs } from './runtime-flags';
 import { buildScopedStateContextPrefix } from './provider-state-context';
 import { getDomainModelOverride, type DomainModelRole } from './model-config';
-import { computeModelUsageCostUsd, getModelPricingTable, recordUnresolvedModelPricingAlert } from './model-pricing';
+import {
+  computeModelUsageCostUsd,
+  computeProviderCallCostUpperBoundUsd,
+  getOpenAiWebSearchMaxCalls,
+  getModelPricingTable,
+  getProviderToolFeeUsd,
+  recordUnresolvedModelPricingAlert,
+} from './model-pricing';
 import { settleNexusPointOverageForUser } from './nexus-points';
-import { insertApiUsageFallback } from './api-usage-fallback';
+import {
+  insertApiUsageFallback,
+  rethrowAiUsageFailClosedError,
+  tripApiUsagePersistenceFailure,
+} from './api-usage-fallback';
+import { resolveApiUsageAttribution } from './api-usage-attribution';
+import { assertAiBudgetReservationForProvider } from './cost-guardrail';
 
 // ─── Client (lazy init — only created if API key is set) ────────────
 
@@ -47,7 +60,10 @@ function getClient(): OpenAI {
     if (!config.openai.apiKey) {
       throw new Error('OPENAI_API_KEY is not configured');
     }
-    _client = new OpenAI({ apiKey: config.openai.apiKey });
+    // Retry loops in this module re-run the provider budget boundary before
+    // every attempt. Disable opaque SDK retries so no network retry can bypass
+    // that fresh daily/monthly/automation headroom decision.
+    _client = new OpenAI({ apiKey: config.openai.apiKey, maxRetries: 0 });
   }
   return _client;
 }
@@ -136,11 +152,38 @@ async function trackedCompletion(
 ): Promise<OpenAI.ChatCompletion> {
   const AI_CALL_TIMEOUT_MS = timeoutMs ?? getAICallTimeoutMs();
 
+  assertAiBudgetReservationForProvider({
+    userId,
+    category,
+    maxCostUsd: computeProviderCallCostUpperBoundUsd({
+      provider: 'openai',
+      model: params.model,
+      payload: params,
+      maxOutputTokens: Number(
+        (params as { max_completion_tokens?: number; max_tokens?: number }).max_completion_tokens
+        ?? (params as { max_tokens?: number }).max_tokens
+        ?? Number.POSITIVE_INFINITY,
+      ),
+    }),
+  });
   const start = Date.now();
   const response = await withTimeout(client.chat.completions.create(params), AI_CALL_TIMEOUT_MS);
   const durationMs = Date.now() - start;
 
   const usage = response.usage;
+  if (
+    !usage
+    || !Number.isFinite(usage.prompt_tokens)
+    || usage.prompt_tokens < 0
+    || !Number.isFinite(usage.completion_tokens)
+    || usage.completion_tokens < 0
+    || (usage.prompt_tokens_details?.cached_tokens != null
+      && (!Number.isFinite(usage.prompt_tokens_details.cached_tokens) || usage.prompt_tokens_details.cached_tokens < 0))
+  ) {
+    const persistenceError = tripApiUsagePersistenceFailure('openai', category);
+    logger.error({ code: persistenceError.code, category, model: response.model || params.model }, 'OpenAI response omitted valid usage metadata; AI usage persistence degraded');
+    throw persistenceError;
+  }
   if (usage) {
     const model = response.model || params.model;
     const cacheReadTokens = usage.prompt_tokens_details?.cached_tokens ?? 0;
@@ -154,14 +197,15 @@ async function trackedCompletion(
     }
     const costUsd = priced.costUsd;
     const pricingStatus = priced.pricingResolved ? 'resolved' : 'unresolved';
+    const attribution = resolveApiUsageAttribution(category, userId);
     let apiUsageId: number | null = null;
 
     try {
       const db = getDb();
       const result = db.prepare(`
-        INSERT INTO api_usage (category, model, tenant_id, user_id, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost_usd, duration_ms, provider, pricing_status, pricing_model_key)
-        VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, 'openai', ?, ?)
-      `).run(category, model, tenantId, userId, usage.prompt_tokens, usage.completion_tokens, cacheReadTokens, costUsd, durationMs, pricingStatus, priced.pricingModelKey);
+        INSERT INTO api_usage (category, model, tenant_id, user_id, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost_usd, duration_ms, provider, pricing_status, pricing_model_key, request_source, job_name, base_category, run_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, 'openai', ?, ?, ?, ?, ?, ?)
+      `).run(category, model, tenantId, userId, usage.prompt_tokens, usage.completion_tokens, cacheReadTokens, costUsd, durationMs, pricingStatus, priced.pricingModelKey, attribution.requestSource, attribution.jobName, attribution.baseCategory, attribution.runId);
       apiUsageId = Number((result as { lastInsertRowid?: number | bigint } | undefined)?.lastInsertRowid ?? 0);
     } catch (e) {
       try {
@@ -181,16 +225,22 @@ async function trackedCompletion(
           pricingStatus: 'legacy',
         });
       } catch (fallbackErr) {
-        logger.warn({ err: fallbackErr }, 'Failed to log OpenAI usage to database');
+        const persistenceError = tripApiUsagePersistenceFailure('openai', category);
+        logger.error({ err: fallbackErr, code: persistenceError.code }, 'Failed to log OpenAI usage; AI usage persistence degraded');
+        throw persistenceError;
       }
     }
 
-    pushEvent({
-      ts: new Date().toISOString(),
-      type: 'api_call',
-      summary: `OpenAI ${model} [${category}] — ${usage.prompt_tokens}+${usage.completion_tokens} tokens`,
-      detail: `$${costUsd.toFixed(4)} in ${durationMs}ms`,
-    });
+    try {
+      pushEvent({
+        ts: new Date().toISOString(),
+        type: 'api_call',
+        summary: `OpenAI ${model} [${category}] — ${usage.prompt_tokens}+${usage.completion_tokens} tokens`,
+        detail: `$${costUsd.toFixed(4)} in ${durationMs}ms`,
+      });
+    } catch (eventErr) {
+      logger.warn({ err: eventErr, userId, category }, 'Failed to publish OpenAI usage telemetry');
+    }
     // April 2026 follow-up: per-user metering for OpenAI mirrors
     // anthropic-hook and gemini-provider so quota enforcement sees
     // every provider's traffic, not only the disabled Anthropic path.
@@ -287,25 +337,53 @@ export async function completeOneShotWithWebSearch(
   }
   const model = options?.model ?? process.env.OPENAI_WEB_SEARCH_MODEL ?? 'gpt-4o-mini';
   const maxOutputTokens = options?.maxTokens ?? 900;
+  const maxToolCalls = getOpenAiWebSearchMaxCalls();
+  const request = {
+    model,
+    instructions: systemPrompt,
+    input: userPrompt,
+    // `low` limits retrieved context for cost/latency, while max_tool_calls
+    // below bounds the separately billed search action. Provider-hosted search
+    // context is still not a contractual token ceiling, so automation callers
+    // must use deterministic fresh signals or evergreen generation instead.
+    tools: [{ type: 'web_search', search_context_size: 'low' }],
+    tool_choice: 'auto',
+    max_output_tokens: maxOutputTokens,
+    max_tool_calls: maxToolCalls,
+  } as any;
+  const maxCostUsd = computeProviderCallCostUpperBoundUsd({
+    provider: 'openai',
+    model,
+    payload: request,
+    maxOutputTokens,
+    nonTokenCostUpperBoundUsd:
+      maxToolCalls * getProviderToolFeeUsd('openai_web_search'),
+  });
   const startedAt = Date.now();
-  const response = await withRetry(() =>
-    withTimeout(getClient().responses.create({
-      model,
-      instructions: systemPrompt,
-      input: userPrompt,
-      tools: [{ type: 'web_search' }],
-      tool_choice: 'auto',
-      max_output_tokens: maxOutputTokens,
-    } as any), options?.timeoutMs ?? getAICallTimeoutMs()),
-  ) as any;
+  const response = await withRetry(() => {
+    assertAiBudgetReservationForProvider({
+      userId: options?.userId ?? 0,
+      category,
+      maxCostUsd,
+      hasUnboundedProviderInjectedContext: true,
+    });
+    return withTimeout(
+      getClient().responses.create(request, { maxRetries: 0 }),
+      options?.timeoutMs ?? getAICallTimeoutMs(),
+    );
+  }) as any;
+  const webSearchRequests = countOpenAiWebSearchCalls(response);
 
-  recordOpenAIResponseUsage({
+  await recordOpenAIResponseUsage({
     response,
     model: String(response?.model ?? model),
     category,
     userId: options?.userId ?? 0,
     tenantId: options?.tenantId ?? options?.userId ?? 0,
     durationMs: Date.now() - startedAt,
+    nonTokenCostUsd:
+      webSearchRequests * getProviderToolFeeUsd('openai_web_search'),
+    webSearchRequests,
   });
 
   const text = extractOpenAIResponseText(response);
@@ -316,6 +394,16 @@ export async function completeOneShotWithWebSearch(
     text,
     sources: collectHttpUrlsFromUnknown(response),
   };
+}
+
+function countOpenAiWebSearchCalls(response: unknown): number {
+  const output = (response as { output?: unknown })?.output;
+  if (!Array.isArray(output)) return 0;
+  return output.filter((item) => (
+    item != null
+    && typeof item === 'object'
+    && (item as { type?: unknown }).type === 'web_search_call'
+  )).length;
 }
 
 /**
@@ -375,34 +463,46 @@ export async function completeVisionOneShot(
   return response.choices[0]?.message?.content ?? '';
 }
 
-function recordOpenAIResponseUsage(input: {
+async function recordOpenAIResponseUsage(input: {
   response: any;
   model: string;
   category: string;
   userId: number;
   tenantId: number;
   durationMs: number;
-}): void {
+  nonTokenCostUsd?: number;
+  webSearchRequests?: number;
+}): Promise<void> {
   const usage = input.response?.usage;
-  if (!usage || typeof usage !== 'object') return;
+  if (!usage || typeof usage !== 'object') {
+    const persistenceError = tripApiUsagePersistenceFailure('openai', input.category);
+    logger.error({ code: persistenceError.code, category: input.category, model: input.model }, 'OpenAI Responses API omitted usage metadata; AI usage persistence degraded');
+    throw persistenceError;
+  }
   const inputTokens = numberFromUnknown(usage.input_tokens ?? usage.prompt_tokens);
   const outputTokens = numberFromUnknown(usage.output_tokens ?? usage.completion_tokens);
-  if (inputTokens === null || outputTokens === null) return;
+  if (inputTokens === null || inputTokens < 0 || outputTokens === null || outputTokens < 0) {
+    const persistenceError = tripApiUsagePersistenceFailure('openai', input.category);
+    logger.error({ code: persistenceError.code, category: input.category, model: input.model }, 'OpenAI Responses API returned invalid usage metadata; AI usage persistence degraded');
+    throw persistenceError;
+  }
   const cacheReadTokens = numberFromUnknown(usage.input_tokens_details?.cached_tokens) ?? 0;
   const priced = computeModelUsageCostUsd(input.model, {
     inputTokens,
     outputTokens,
     cacheReadTokens,
+    nonTokenCostUsd: input.nonTokenCostUsd ?? 0,
   }, 'openai');
   if (!priced.pricingResolved) {
     warnUnresolvedOpenAiPricing(input.model, input.category, input.userId);
   }
   let apiUsageId: number | null = null;
+  const attribution = resolveApiUsageAttribution(input.category, input.userId);
   try {
     const db = getDb();
     const result = db.prepare(`
-      INSERT INTO api_usage (category, model, tenant_id, user_id, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost_usd, duration_ms, provider, pricing_status, pricing_model_key)
-      VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, 'openai', ?, ?)
+      INSERT INTO api_usage (category, model, tenant_id, user_id, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost_usd, duration_ms, provider, pricing_status, pricing_model_key, request_source, job_name, base_category, run_id, provider_tool_cost_usd, web_search_requests, grounded_search_prompts)
+      VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, 'openai', ?, ?, ?, ?, ?, ?, ?, ?, 0)
     `).run(
       input.category,
       input.model,
@@ -415,6 +515,12 @@ function recordOpenAIResponseUsage(input: {
       input.durationMs,
       priced.pricingResolved ? 'resolved' : 'unresolved',
       priced.pricingModelKey,
+      attribution.requestSource,
+      attribution.jobName,
+      attribution.baseCategory,
+      attribution.runId,
+      input.nonTokenCostUsd ?? 0,
+      input.webSearchRequests ?? 0,
     );
     apiUsageId = Number((result as { lastInsertRowid?: number | bigint } | undefined)?.lastInsertRowid ?? 0);
   } catch (err) {
@@ -433,18 +539,36 @@ function recordOpenAIResponseUsage(input: {
         costUsd: priced.costUsd,
         durationMs: input.durationMs,
         pricingStatus: 'legacy',
+        providerToolCostUsd: input.nonTokenCostUsd ?? 0,
+        webSearchRequests: input.webSearchRequests ?? 0,
+        groundedSearchPrompts: 0,
       });
     } catch (fallbackErr) {
-      logger.warn({ err: fallbackErr }, 'Failed to log OpenAI Responses usage to database');
+      const persistenceError = tripApiUsagePersistenceFailure('openai', input.category);
+      logger.error({ err: fallbackErr, code: persistenceError.code }, 'Failed to log OpenAI Responses usage; AI usage persistence degraded');
+      throw persistenceError;
     }
   }
-  pushEvent({
-    ts: new Date().toISOString(),
-    type: 'api_call',
-    summary: `OpenAI ${input.model} [${input.category}] — ${inputTokens}+${outputTokens} tokens`,
-    detail: `$${priced.costUsd.toFixed(4)} in ${input.durationMs}ms`,
-  });
-  void settleNexusPointOverageForUser(input.userId, apiUsageId).catch((settleErr) => {
+  try {
+    pushEvent({
+      ts: new Date().toISOString(),
+      type: 'api_call',
+      summary: `OpenAI ${input.model} [${input.category}] — ${inputTokens}+${outputTokens} tokens`,
+      detail: `$${priced.costUsd.toFixed(4)} in ${input.durationMs}ms`,
+    });
+  } catch (eventErr) {
+    logger.warn({ err: eventErr, userId: input.userId, category: input.category }, 'Failed to publish OpenAI Responses usage telemetry');
+  }
+  // Analytics remains calendar-aligned in usage_metering, while api_usage
+  // above is the sole blocking truth. Keep this best-effort and outside the
+  // INSERT fallback catch so an analytics failure cannot duplicate quota rows.
+  try {
+    const { recordUsage } = require('./usage-metering') as typeof import('./usage-metering');
+    recordUsage(input.userId, inputTokens, outputTokens, priced.costUsd, false);
+  } catch (meterErr) {
+    logger.warn({ err: meterErr, userId: input.userId }, 'Failed to record OpenAI Responses usage_metering');
+  }
+  await settleNexusPointOverageForUser(input.userId, apiUsageId).catch((settleErr) => {
     logger.warn({ err: settleErr, apiUsageId, userId: input.userId }, 'nexus_points: OpenAI Responses usage settlement failed');
   });
 }
@@ -660,6 +784,7 @@ ${message}`;
       if (confidence < 0.6) return { domain: 'secretary', confidence };
       return { domain, confidence };
     } catch (err) {
+      rethrowAiUsageFailClosedError(err);
       logger.error({ err }, 'OpenAI classification failed, defaulting to secretary');
       return { domain: 'secretary', confidence: 0 };
     }
@@ -829,15 +954,24 @@ ${message}`;
       { role: 'user', content: `${contextPrefix}${currentMessage}` },
     ];
 
+    const category = `openai_stream_${domain}`;
+    const request = withTokenLimit({
+      model: routing.model,
+      messages,
+      stream: true,
+      stream_options: { include_usage: true },
+    }, routing.maxTokens) as OpenAIStreamingParams;
+    const maxCostUsd = computeProviderCallCostUpperBoundUsd({
+      provider: 'openai',
+      model: routing.model,
+      payload: request,
+      maxOutputTokens: routing.maxTokens,
+    });
     const start = Date.now();
-    const stream = await withRetry(() =>
-      getClient().chat.completions.create(withTokenLimit({
-        model: routing.model,
-        messages,
-        stream: true,
-        stream_options: { include_usage: true },
-      }, routing.maxTokens) as OpenAIStreamingParams)
-    );
+    const stream = await withRetry(() => {
+      assertAiBudgetReservationForProvider({ userId, category, maxCostUsd });
+      return getClient().chat.completions.create(request, { maxRetries: 0 });
+    });
 
     let fullText = '';
     let finishReason = 'stop';
@@ -863,6 +997,19 @@ ${message}`;
 
     const durationMs = Date.now() - start;
 
+    if (
+      !usage
+      || !Number.isFinite(usage.prompt_tokens)
+      || usage.prompt_tokens < 0
+      || !Number.isFinite(usage.completion_tokens)
+      || usage.completion_tokens < 0
+      || (usage.cached_tokens != null && (!Number.isFinite(usage.cached_tokens) || usage.cached_tokens < 0))
+    ) {
+      const persistenceError = tripApiUsagePersistenceFailure('openai', category);
+      logger.error({ code: persistenceError.code, category, model: routing.model }, 'OpenAI stream omitted valid terminal usage metadata; AI usage persistence degraded');
+      throw persistenceError;
+    }
+
     if (usage) {
       const model = routing.model;
       const priced = computeModelUsageCostUsd(model, {
@@ -875,14 +1022,15 @@ ${message}`;
       }
       const costUsd = priced.costUsd;
       const pricingStatus = priced.pricingResolved ? 'resolved' : 'unresolved';
+      const attribution = resolveApiUsageAttribution(category, userId);
       let apiUsageId: number | null = null;
 
       try {
         const db = getDb();
         const result = db.prepare(`
-          INSERT INTO api_usage (category, model, tenant_id, user_id, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost_usd, duration_ms, provider, pricing_status, pricing_model_key)
-          VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, 'openai', ?, ?)
-        `).run(`openai_stream_${domain}`, model, tenantId, userId, usage.prompt_tokens, usage.completion_tokens, usage.cached_tokens ?? 0, costUsd, durationMs, pricingStatus, priced.pricingModelKey);
+          INSERT INTO api_usage (category, model, tenant_id, user_id, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost_usd, duration_ms, provider, pricing_status, pricing_model_key, request_source, job_name, base_category, run_id)
+          VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, 'openai', ?, ?, ?, ?, ?, ?)
+        `).run(category, model, tenantId, userId, usage.prompt_tokens, usage.completion_tokens, usage.cached_tokens ?? 0, costUsd, durationMs, pricingStatus, priced.pricingModelKey, attribution.requestSource, attribution.jobName, attribution.baseCategory, attribution.runId);
         apiUsageId = Number((result as { lastInsertRowid?: number | bigint } | undefined)?.lastInsertRowid ?? 0);
       } catch (e) {
         try {
@@ -902,16 +1050,22 @@ ${message}`;
             pricingStatus: 'legacy',
           });
         } catch (fallbackErr) {
-          logger.warn({ err: fallbackErr }, 'Failed to log OpenAI streaming usage');
+          const persistenceError = tripApiUsagePersistenceFailure('openai', category);
+          logger.error({ err: fallbackErr, code: persistenceError.code }, 'Failed to log OpenAI streaming usage; AI usage persistence degraded');
+          throw persistenceError;
         }
       }
 
-      pushEvent({
-        ts: new Date().toISOString(),
-        type: 'api_call',
-        summary: `OpenAI stream ${model} [${domain}] — ${usage.prompt_tokens}+${usage.completion_tokens} tokens`,
-        detail: `$${costUsd.toFixed(4)} in ${durationMs}ms`,
-      });
+      try {
+        pushEvent({
+          ts: new Date().toISOString(),
+          type: 'api_call',
+          summary: `OpenAI stream ${model} [${domain}] — ${usage.prompt_tokens}+${usage.completion_tokens} tokens`,
+          detail: `$${costUsd.toFixed(4)} in ${durationMs}ms`,
+        });
+      } catch (eventErr) {
+        logger.warn({ err: eventErr, userId, category }, 'Failed to publish OpenAI streaming usage telemetry');
+      }
       // Codex QA: the streaming path wrote api_usage but skipped
       // usage_metering, leaving per-user quota silently undercounting
       // every OpenAI stream call. Mirror the non-streaming path.

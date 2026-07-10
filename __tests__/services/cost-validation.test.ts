@@ -30,7 +30,10 @@ import {
   _resetModelPricingAlertDedupeForTests,
   _setRecordOperatorAlertForTests,
   computeModelUsageCostUsd,
+  computeProviderCallCostUpperBoundUsd,
+  getOpenAiWebSearchMaxCalls,
   getModelPricingTable,
+  getProviderToolFeeUsd,
   recordUnresolvedModelPricingAlert,
   resolveModelPricing,
 } from '../../src/services/model-pricing';
@@ -46,6 +49,20 @@ describe('Cost Validation — Gemini Model Pricing', () => {
     const expected = (1000 / 1_000_000) * 0.30 + (500 / 1_000_000) * 2.50;
     expect(cost).toBeCloseTo(expected, 10);
     expect(cost).toBeCloseTo(0.00155, 5); // $0.0003 + $0.00125
+  });
+
+  it('includes Gemini tool-result input and thinking output in billable cost', () => {
+    const cost = computeGeminiCost('gemini-2.5-flash', {
+      promptTokenCount: 1_000,
+      candidatesTokenCount: 500,
+      toolUsePromptTokenCount: 200,
+      thoughtsTokenCount: 300,
+      totalTokenCount: 2_000,
+    });
+    expect(cost).toBeCloseTo(
+      (1_200 / 1_000_000) * 0.30 + (800 / 1_000_000) * 2.50,
+      10,
+    );
   });
 
   it('gemini-2.5-flash-lite: 200 in + 30 out = correct cost', () => {
@@ -85,6 +102,102 @@ describe('Cost Validation — Gemini Model Pricing', () => {
     expect(priced.pricingResolved).toBe(false);
     expect(priced.costUsd).toBeGreaterThan(0);
     expect(priced.pricingModelKey).toBeNull();
+  });
+
+  it('fails provider preflight closed for unresolved model pricing', () => {
+    expect(computeProviderCallCostUpperBoundUsd({
+      provider: 'gemini',
+      model: 'gemini-unknown-future-model',
+      payload: { prompt: 'hello' },
+      maxOutputTokens: 100,
+    })).toBe(Number.POSITIVE_INFINITY);
+  });
+
+  it('adds provider-hosted search fees to cost-equivalent usage', () => {
+    const searchFee = getProviderToolFeeUsd('anthropic_web_search', {});
+    const priced = computeModelUsageCostUsd('claude-haiku-4-5', {
+      inputTokens: 1_000,
+      outputTokens: 100,
+      nonTokenCostUsd: searchFee * 2,
+    }, 'anthropic');
+    expect(searchFee).toBe(0.01);
+    expect(priced.costUsd).toBeCloseTo(0.0215, 10);
+    expect(getProviderToolFeeUsd('anthropic_web_search', {
+      ANTHROPIC_WEB_SEARCH_COST_USD_PER_REQUEST: '',
+    })).toBe(0.01);
+  });
+
+  it('caps one-shot OpenAI web research at one paid search call by default', () => {
+    expect(getOpenAiWebSearchMaxCalls({})).toBe(1);
+  });
+
+  it('keeps the provider hard bound above token and paid-tool actuals', () => {
+    const fee = getProviderToolFeeUsd('openai_web_search', {});
+    const upperBound = computeProviderCallCostUpperBoundUsd({
+      provider: 'openai',
+      model: 'gpt-4o-mini',
+      payload: { input: 'x'.repeat(1_000), max_output_tokens: 500, max_tool_calls: 1 },
+      maxOutputTokens: 500,
+      nonTokenCostUpperBoundUsd: fee,
+    });
+    const actual = computeModelUsageCostUsd('gpt-4o-mini', {
+      inputTokens: 1_000,
+      outputTokens: 500,
+      nonTokenCostUsd: fee,
+    }, 'openai').costUsd;
+    expect(upperBound).toBeGreaterThanOrEqual(actual);
+  });
+
+  it('keeps validated Channel extraction and synthesis envelopes within Pro automation', () => {
+    for (const payload of [
+      { systemPrompt: 's'.repeat(3_000), userPrompt: 'u'.repeat(7_000) },
+      { systemPrompt: 's'.repeat(3_000), userPrompt: 'u'.repeat(6_000) },
+    ]) {
+      const upperBound = computeProviderCallCostUpperBoundUsd({
+        provider: 'gemini',
+        model: 'gemini-2.5-flash',
+        payload: { ...payload, maxTokens: 2_304, temperature: 0.3 },
+        maxOutputTokens: 2_304,
+      });
+      expect(upperBound * 1.25).toBeLessThanOrEqual(0.012);
+    }
+  });
+
+  it('keeps the validated daily Coach envelope within Pro automation', () => {
+    const upperBound = computeProviderCallCostUpperBoundUsd({
+      provider: 'gemini',
+      model: 'gemini-2.5-flash',
+      payload: {
+        systemPrompt: 's'.repeat(6_500),
+        userPrompt: 'u'.repeat(11_000),
+        maxTokens: 1_400,
+        temperature: 0.7,
+      },
+      maxOutputTokens: 1_400,
+    });
+    expect(upperBound * 1.25).toBeLessThanOrEqual(0.012);
+  });
+
+  it('keeps the largest scheduled Content batch envelope within Pro automation', () => {
+    const upperBound = computeProviderCallCostUpperBoundUsd({
+      provider: 'gemini',
+      model: 'gemini-2.5-flash',
+      payload: {
+        systemPrompt: 's'.repeat(6_500),
+        userPrompt: 'u'.repeat(6_500),
+        maxTokens: 1_832,
+        temperature: 0.7,
+      },
+      maxOutputTokens: 1_832,
+    });
+    expect(upperBound * 1.25).toBeLessThanOrEqual(0.012);
+  });
+
+  it('falls back to conservative tool fees for invalid configuration', () => {
+    expect(getProviderToolFeeUsd('openai_web_search', {
+      OPENAI_WEB_SEARCH_COST_USD_PER_CALL: 'not-a-number',
+    })).toBe(0.01);
+    expect(getProviderToolFeeUsd('gemini_grounded_prompt', {})).toBe(0.035);
   });
 
   it('does not prefix-price non-snapshot model variants', () => {
@@ -202,7 +315,10 @@ describe('Cost Validation — api_usage fallback writes', () => {
           duration_ms INTEGER NOT NULL DEFAULT 0,
           provider TEXT,
           pricing_status TEXT NOT NULL DEFAULT 'resolved',
-          pricing_model_key TEXT
+          pricing_model_key TEXT,
+          provider_tool_cost_usd REAL NOT NULL DEFAULT 0,
+          web_search_requests INTEGER NOT NULL DEFAULT 0,
+          grounded_search_prompts INTEGER NOT NULL DEFAULT 0
         );
       `);
 
@@ -217,9 +333,11 @@ describe('Cost Validation — api_usage fallback writes', () => {
         costUsd: 0.01,
         durationMs: 123,
         pricingStatus: 'legacy',
+        providerToolCostUsd: 0.02,
+        webSearchRequests: 2,
       });
 
-      const row = db.prepare('SELECT id, provider, tenant_id, user_id, pricing_status, pricing_model_key FROM api_usage').get() as any;
+      const row = db.prepare('SELECT id, provider, tenant_id, user_id, pricing_status, pricing_model_key, provider_tool_cost_usd, web_search_requests, grounded_search_prompts FROM api_usage').get() as any;
       expect(row).toMatchObject({
         id,
         provider: 'openai',
@@ -227,6 +345,9 @@ describe('Cost Validation — api_usage fallback writes', () => {
         user_id: 34,
         pricing_status: 'legacy',
         pricing_model_key: null,
+        provider_tool_cost_usd: 0.02,
+        web_search_requests: 2,
+        grounded_search_prompts: 0,
       });
     } finally {
       db.close();

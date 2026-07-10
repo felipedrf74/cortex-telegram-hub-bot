@@ -1,6 +1,6 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
-import { isOwnerUserRef } from './user-service';
+import { getEffectiveEntitlement } from './entitlement';
 
 export type GlobalInvoiceCollectorProvider = 'Amazon' | 'Uber';
 
@@ -18,7 +18,11 @@ export class GlobalInvoiceCollectorScopeError extends Error {
 }
 
 export function isGlobalInvoiceCollectorOwnerUser(userId: number): boolean {
-  return isOwnerUserRef(userId);
+  try {
+    return getEffectiveEntitlement(userId).isOwner;
+  } catch {
+    return false;
+  }
 }
 
 export function assertGlobalInvoiceCollectorOwnerScope(

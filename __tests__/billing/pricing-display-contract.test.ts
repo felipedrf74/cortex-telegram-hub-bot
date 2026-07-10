@@ -37,13 +37,13 @@ describe('owner-confirmed subscription price display contract', () => {
 
   it('keeps active quota and release docs aligned', () => {
     expect(read('docs/TOKEN-QUOTA-CONTRACT.md')).toContain(
-      `Pro at \`${CANONICAL.proUsd}\` and Max at \`${CANONICAL.maxUsd}\` keep included AI cost below 10%`,
+      `Pro at \`${CANONICAL.proUsd}\` and Max at \`${CANONICAL.maxUsd}\``,
     );
     expect(read('docs/release/nexus-points-usage-limits.md')).toContain(
-      `| Pro | ${CANONICAL.proUsd} | $0.04/day | $1.22/mo | 8.1% | 91.9% |`,
+      `| Pro | ${CANONICAL.proUsd} | $0.04 | $1.20 | 30% of both windows |`,
     );
     expect(read('docs/release/nexus-points-usage-limits.md')).toContain(
-      `| Max | ${CANONICAL.maxUsd} | $0.06/day | $1.83/mo | 9.2% | 90.8% |`,
+      `| Max | ${CANONICAL.maxUsd} | $0.06 | $1.80 | 30% of both windows |`,
     );
     expect(read('docs/release/CURRENT_RELEASE_STATE.md')).toContain(
       'current Pro `$14.99/R$74.99` and Max `$19.99/R$99.99` prices',

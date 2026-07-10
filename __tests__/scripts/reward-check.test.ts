@@ -42,6 +42,28 @@ describe('reward-check verdict semantics', () => {
     expect(run.score).toBeLessThan(80);
   });
 
+  it('allows checked-in environment example templates', () => {
+    const dir = tempDir();
+    const changed = join(dir, 'changed.txt');
+    const output = join(dir, 'run.json');
+    writeFileSync(changed, '.env.example\n.env.local.example\n');
+
+    const result = runReward([
+      '--area',
+      'backend',
+      '--changed-files',
+      changed,
+      '--output',
+      output,
+      '--json',
+      '--advisory',
+    ]);
+
+    expect(result.status).toBe(0);
+    const run = JSON.parse(readFileSync(output, 'utf8'));
+    expect(run.hardFailures.map((failure: { id: string }) => failure.id)).not.toContain('env-file-touched');
+  });
+
   it('exits non-zero in enforce mode when verdict is FAIL', () => {
     const dir = tempDir();
     const changed = join(dir, 'changed.txt');

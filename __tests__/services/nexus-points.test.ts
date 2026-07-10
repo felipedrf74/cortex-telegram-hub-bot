@@ -46,7 +46,10 @@ function createSchema(): void {
     CREATE TABLE subscriptions (
       user_id INTEGER UNIQUE,
       plan TEXT,
-      status TEXT
+      status TEXT,
+      provider TEXT,
+      current_period_start TEXT,
+      current_period_end TEXT
     );
     CREATE TABLE api_usage (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -57,11 +60,14 @@ function createSchema(): void {
       input_tokens INTEGER NOT NULL DEFAULT 0,
       output_tokens INTEGER NOT NULL DEFAULT 0,
       cost_usd REAL NOT NULL DEFAULT 0,
-      duration_ms INTEGER NOT NULL DEFAULT 0
+      duration_ms INTEGER NOT NULL DEFAULT 0,
+      request_source TEXT NOT NULL DEFAULT 'interactive',
+      base_category TEXT
     );
     CREATE TABLE user_ai_budget_overrides (
       user_id INTEGER PRIMARY KEY,
       daily_cost_usd REAL NOT NULL,
+      monthly_cost_usd REAL,
       reason TEXT,
       expires_at TEXT,
       active INTEGER NOT NULL DEFAULT 1,
@@ -117,14 +123,23 @@ function createSchema(): void {
 
 function createProUser(userId: number): void {
   testDb.prepare('INSERT INTO users (id, telegram_id, tier) VALUES (?, ?, ?)').run(userId, userId, 'pro');
-  testDb.prepare('INSERT INTO subscriptions (user_id, plan, status) VALUES (?, ?, ?)').run(userId, 'pro', 'active');
+  testDb.prepare(`
+    INSERT INTO subscriptions (
+      user_id, plan, status, provider, current_period_start, current_period_end
+    ) VALUES (?, 'pro', 'active', 'stripe', '2026-05-01T00:00:00.000Z', '2026-06-01T00:00:00.000Z')
+  `).run(userId);
 }
 
-function insertUsage(userId: number, costUsd: number, ts = '2026-05-20T12:00:00.000Z'): number {
+function insertUsage(
+  userId: number,
+  costUsd: number,
+  ts = '2026-05-20T12:00:00.000Z',
+  requestSource: 'interactive' | 'automation' | 'system' = 'interactive',
+): number {
   const result = testDb.prepare(`
-    INSERT INTO api_usage (ts, category, model, user_id, input_tokens, output_tokens, cost_usd, duration_ms)
-    VALUES (?, 'domain_content', 'gpt-5.4-nano', ?, 1000, 500, ?, 100)
-  `).run(ts, userId, costUsd);
+    INSERT INTO api_usage (ts, category, model, user_id, input_tokens, output_tokens, cost_usd, duration_ms, request_source, base_category)
+    VALUES (?, 'domain_content', 'gpt-5.4-nano', ?, 1000, 500, ?, 100, ?, 'domain_content')
+  `).run(ts, userId, costUsd, requestSource);
   return Number(result.lastInsertRowid);
 }
 
@@ -342,6 +357,79 @@ describe('Nexus Points ledger', () => {
     const rows = testDb.prepare('SELECT usd_cost_debited FROM nexus_point_debits WHERE api_usage_id = ?').all(apiUsageId) as Array<{ usd_cost_debited: number }>;
     expect(rows).toHaveLength(1);
     expect(rows[0].usd_cost_debited).toBeCloseTo(0.01, 8);
+  });
+
+  it('uses total all-source spend when an interactive call crosses the included cap', async () => {
+    createProUser(21);
+    grantNexusPoints({
+      userId: 21,
+      provider: 'apple',
+      providerTransactionId: 'tx-mixed-source-overage',
+      productId: 'me.nexushub.points.small',
+      purchasedAt: new Date('2026-05-20T12:00:00.000Z'),
+    });
+    insertUsage(21, 0.012, '2026-05-20T09:00:00.000Z', 'automation');
+    const interactiveUsageId = insertUsage(21, 0.03, '2026-05-20T12:00:00.000Z', 'interactive');
+
+    await settleNexusPointOverageForUser(21, interactiveUsageId);
+
+    const debit = testDb.prepare(`
+      SELECT usd_cost_debited FROM nexus_point_debits WHERE api_usage_id = ?
+    `).get(interactiveUsageId) as { usd_cost_debited: number };
+    expect(debit.usd_cost_debited).toBeCloseTo(0.002, 8);
+  });
+
+  it('never spends Points for automation even when that row is over budget', async () => {
+    createProUser(22);
+    grantNexusPoints({
+      userId: 22,
+      provider: 'apple',
+      providerTransactionId: 'tx-automation-no-points',
+      productId: 'me.nexushub.points.small',
+      purchasedAt: new Date('2026-05-20T12:00:00.000Z'),
+    });
+    const automationUsageId = insertUsage(22, 0.08, '2026-05-20T12:00:00.000Z', 'automation');
+
+    await settleNexusPointOverageForUser(22, automationUsageId);
+
+    expect(testDb.prepare('SELECT COUNT(*) AS count FROM nexus_point_debits WHERE user_id = 22').get()).toEqual({ count: 0 });
+    expect(getNexusPointBalance(22, new Date('2026-05-20T12:01:00.000Z')).usdBalance).toBeCloseTo(0.3, 8);
+  });
+
+  it('keeps purchased Points dormant for a Free account', async () => {
+    grantNexusPoints({
+      userId: 23,
+      provider: 'apple',
+      providerTransactionId: 'tx-free-dormant',
+      productId: 'me.nexushub.points.small',
+      purchasedAt: new Date('2026-05-20T12:00:00.000Z'),
+    });
+    const usageId = insertUsage(23, 0.02);
+
+    await settleNexusPointOverageForUser(23, usageId);
+
+    expect(testDb.prepare('SELECT COUNT(*) AS count FROM nexus_point_debits WHERE user_id = 23').get()).toEqual({ count: 0 });
+    expect(getNexusPointBalance(23, new Date('2026-05-20T12:01:00.000Z')).usdBalance).toBeCloseTo(0.3, 8);
+  });
+
+  it('settles the larger monthly overage when the daily allowance is still available', async () => {
+    createProUser(24);
+    grantNexusPoints({
+      userId: 24,
+      provider: 'apple',
+      providerTransactionId: 'tx-monthly-overage',
+      productId: 'me.nexushub.points.small',
+      purchasedAt: new Date('2026-05-20T12:00:00.000Z'),
+    });
+    insertUsage(24, 1.19, '2026-05-05T12:00:00.000Z', 'automation');
+    const interactiveUsageId = insertUsage(24, 0.02, '2026-05-20T12:00:00.000Z', 'interactive');
+
+    await settleNexusPointOverageForUser(24, interactiveUsageId);
+
+    const debit = testDb.prepare(`
+      SELECT usd_cost_debited FROM nexus_point_debits WHERE api_usage_id = ?
+    `).get(interactiveUsageId) as { usd_cost_debited: number };
+    expect(debit.usd_cost_debited).toBeCloseTo(0.01, 8);
   });
 
   it('settles overage against the api_usage row day across UTC midnight rollover', async () => {

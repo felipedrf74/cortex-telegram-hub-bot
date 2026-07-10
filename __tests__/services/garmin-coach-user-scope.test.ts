@@ -143,7 +143,10 @@ describe('garmin-coach user scoping', () => {
 
   it('does not use global Garmin data for a non-owner scoped user', async () => {
     await generateCoachBriefing(42, { tenantId: 42 });
-    expect(mockIsOwnerUserRef).toHaveBeenCalledWith(42);
+    expect(mockIsOwnerUserRef).toHaveBeenCalledWith(42, {
+      allowPersistedTier: false,
+      requireConfiguredIdentity: true,
+    });
     expect(mockFetchDailyCoachData).not.toHaveBeenCalled();
   });
 
@@ -238,6 +241,10 @@ describe('garmin-coach user scoping', () => {
   it('still allows Garmin for owner-scoped users', async () => {
     mockIsOwnerUserRef.mockReturnValue(true);
     await generateCoachBriefing(7, { tenantId: 7 });
+    expect(mockIsOwnerUserRef).toHaveBeenCalledWith(7, {
+      allowPersistedTier: false,
+      requireConfiguredIdentity: true,
+    });
     expect(mockFetchDailyCoachData).toHaveBeenCalledWith({ silent: undefined });
   });
 

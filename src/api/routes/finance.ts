@@ -27,7 +27,7 @@ import { createHash } from 'node:crypto';
 import { Router, type Request, Response } from 'express';
 import { AuthenticatedRequest } from '../auth-middleware';
 import { logger } from '../../utils/logger';
-import { sendSuccess, sendError, sendInternalError, asyncHandler } from '../response-helpers';
+import { sendSuccess, sendError, sendInternalError, asyncHandler, sendAiBudgetError } from '../response-helpers';
 import { emitDomainEvent, runOutboxTransaction } from '../../services/event-outbox';
 import { consumeResourceBudget } from '../../services/resource-budgets';
 import { invalidateFinanceDerivedCaches } from '../../services/cache-coherence-registry';
@@ -47,7 +47,7 @@ import {
   normalizeFinanceCategory,
   updateTransaction,
 } from '../../services/finance-tracker';
-import { acquireCostLock, enforceCostGuardrails } from '../../services/cost-guardrail';
+import { withAiBudgetReservation } from '../../services/cost-guardrail';
 import { analyzeInvoiceImage, fileInvoice } from '../../services/invoice-filer';
 import { getFilingById, recordFiling } from '../../state/invoice-filings';
 import { verifyInvoiceObjectChecksum } from '../../services/invoice-object-storage';
@@ -658,45 +658,18 @@ export function financeRoutes(): Router {
       return;
     }
 
-    // ── Cost cap (TOCTOU-safe) ────────────────────────────────
-    // Per-user daily USD cap from cost-guardrail. Rejects before
-    // the Gemini call so the user never gets charged past their
-    // PER_USER_DAILY_USD_CAP. Since vision calls are cheap
-    // (~$0.0001 each), the cap is mostly a stuck-retry-loop guard.
-    // Acquire the per-user lock so concurrent parse-receipt calls
-    // from the same user can't both pass the cap check.
-    const releaseCostLock = await acquireCostLock(userId);
-    const guardrail = enforceCostGuardrails(userId);
-    if (guardrail.block) {
-      releaseCostLock();
-      logger.warn(
-        {
-          userId,
-          reason: guardrail.reason,
-          spentUsd: guardrail.quota.spentUsd,
-          capUsd: guardrail.quota.capUsd,
-          globalTotalUsd: guardrail.global.totalUsd,
-          globalLimitUsd: guardrail.global.limitUsd,
-        },
-        'iOS parse-receipt blocked by cost guardrail',
-      );
-      sendError(
-        res,
-        guardrail.reason,
-        `${guardrail.message} Try manual entry.`,
-        guardrail.status,
-        guardrail.details,
-      );
-      return;
-    }
-
     try {
-      const { analysis, provider } = await analyzeInvoiceImage(
+      const { analysis, provider } = await withAiBudgetReservation({
+        userId,
+        requestSource: 'interactive',
+        baseCategory: 'invoice_filing',
+        jobName: 'finance_receipt_parse',
+      }, () => analyzeInvoiceImage(
         imageBase64,
         normalizeMimeType(mimeType),
         normalizedOcrHint,
         { userId, tenantId },
-      );
+      ));
 
       const result = {
         merchant: typeof analysis.vendor === 'string' ? analysis.vendor.trim() : null,
@@ -791,6 +764,7 @@ export function financeRoutes(): Router {
       });
     } catch (err: any) {
       logger.error({ err, userId }, 'iOS parse-receipt: vision pipeline failed');
+      if (sendAiBudgetError(res, err)) return;
       if (ocrFallback) {
         sendSuccess(res, {
           parsed: ocrFallback.parsed,
@@ -801,8 +775,6 @@ export function financeRoutes(): Router {
         return;
       }
       sendInternalError(res, 'Receipt parsing failed');
-    } finally {
-      releaseCostLock();
     }
   }));
 

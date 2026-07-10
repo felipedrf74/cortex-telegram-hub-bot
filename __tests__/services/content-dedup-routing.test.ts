@@ -15,7 +15,7 @@ vi.mock('../../src/utils/logger', () => ({
   LOGGER_REDACTION_PATHS: [],
 }));
 
-import { isDuplicateIdea } from '../../src/services/content-dedup';
+import { isDuplicateIdea, isDuplicateIdeaInBatch } from '../../src/services/content-dedup';
 import { logger } from '../../src/utils/logger';
 
 function seedIdea(userId: number, title: string, angleTag: string | null = null): void {
@@ -64,6 +64,22 @@ describe('content dedup deterministic classifier', () => {
     seedIdea(42, 'Creator workflow for endurance athletes');
 
     const result = await isDuplicateIdea('Race week recap', undefined, 42, 42);
+
+    expect(result).toEqual({ isDuplicate: true, similarTo: 'Race week recap', confidence: 0.95 });
+  });
+
+  it('detects an unpersisted duplicate already accepted in the same batch', () => {
+    const result = isDuplicateIdeaInBatch('Race week recap!', 'opinion', [
+      { title: 'Race week recap', angleTag: 'opinion' },
+    ]);
+
+    expect(result).toEqual({ isDuplicate: true, similarTo: 'Race week recap', confidence: 0.95 });
+  });
+
+  it('can forbid the same topic across weekly formats even when angles differ', () => {
+    const result = isDuplicateIdeaInBatch('Race week recap', 'reaction', [
+      { title: 'Race week recap', angleTag: 'opinion' },
+    ], { allowDifferentAngles: false });
 
     expect(result).toEqual({ isDuplicate: true, similarTo: 'Race week recap', confidence: 0.95 });
   });

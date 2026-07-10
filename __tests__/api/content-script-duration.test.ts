@@ -25,6 +25,12 @@ const mockCompleteOneShotWithSearch = vi.fn(async () => ({
   text: 'Source note: current compact research summary.',
   sources: ['https://example.com/source-a'],
 }));
+const mockCompleteOneShotWithOpenAIWebSearch = vi.fn(async () => ({
+  text: 'Lower-cost source note.',
+  sources: ['https://example.com/lower-cost-source'],
+}));
+const mockIsOpenAIConfigured = vi.fn(() => false);
+const mockWithAiBudgetReservation = vi.fn(async (_request: unknown, providerCall: () => Promise<unknown>) => providerCall());
 const mockPersistContentArtifacts = vi.fn(() => ({
   sourcePackageId: 'sp_1234567890abcdef_abcdef1234567890',
   researchArtifactId: 'ra_1234567890abcdef_abcdef1234567890',
@@ -73,6 +79,11 @@ vi.mock('../../src/utils/logger', () => ({
 }));
 
 vi.mock('../../src/services/cost-guardrail', () => ({
+  AiBudgetError: class AiBudgetError extends Error {
+    decision: any;
+    constructor(decision: any) { super(decision.code); this.name = 'AiBudgetError'; this.decision = decision; }
+  },
+  buildQuotaExceededPayload: vi.fn(() => ({})),
   isUserOverDailyCap: vi.fn(() => ({
     over: false,
     spentUsd: 0,
@@ -95,12 +106,27 @@ vi.mock('../../src/services/cost-guardrail', () => ({
   })),
   buildQuotaExceededMessage: vi.fn(() => 'quota exceeded'),
   acquireCostLock: vi.fn(async () => () => { /* no-op */ }),
+  getDailyQuotaStatus: vi.fn(() => ({
+    over: false,
+    usageFraction: 0,
+    spentUsd: 0,
+    capUsd: 0.2,
+    plan: 'pro',
+    resetAt: '2026-04-15T00:00:00.000Z',
+  })),
+  withAiBudgetReservation: (request: unknown, providerCall: () => Promise<unknown>) => (
+    mockWithAiBudgetReservation(request, providerCall)
+  ),
 }));
 
 vi.mock('../../src/services/user-service', () => ({
   // Identity-safety: content-script-routes uses the strict by-id helper.
   getUserLanguage: vi.fn(() => 'pt-BR'),
   getUserLanguageById: vi.fn(() => 'pt-BR'),
+}));
+
+vi.mock('../../src/services/entitlement', () => ({
+  isPaidAiCostControlsEnforcementEnabled: vi.fn(() => false),
 }));
 
 vi.mock('../../src/state/content-references', () => ({
@@ -125,12 +151,29 @@ vi.mock('../../src/services/database', () => ({
 }));
 
 vi.mock('../../src/services/content-engine', () => ({
-  getScript: (...args: unknown[]) => mockGetScript(...args),
+  getScript: (...args: unknown[]) => {
+    const providerBoundary = args[16] as ((providerCall: () => Promise<unknown>) => Promise<unknown>) | undefined;
+    const providerCall = () => mockGetScript(...args.slice(0, 16));
+    return providerBoundary ? providerBoundary(providerCall) : providerCall();
+  },
 }));
 
 vi.mock('../../src/services/gemini-provider', () => ({
   completeOneShotWithFallback: (...args: unknown[]) => mockCompleteOneShotWithFallback(...args),
   completeOneShotWithSearch: (...args: unknown[]) => mockCompleteOneShotWithSearch(...args),
+}));
+
+vi.mock('../../src/services/openai-provider', () => ({
+  completeOneShotWithWebSearch: (...args: unknown[]) => mockCompleteOneShotWithOpenAIWebSearch(...args),
+  isOpenAIConfigured: (...args: unknown[]) => mockIsOpenAIConfigured(...args),
+}));
+
+vi.mock('../../src/services/api-usage-fallback', () => ({
+  rethrowAiUsageFailClosedError: (error: any) => {
+    if (error?.name === 'ApiUsagePersistenceError'
+      || error?.code === 'AI_USAGE_PERSISTENCE_FAILED'
+      || error?.name === 'AiBudgetError') throw error;
+  },
 }));
 
 vi.mock('../../src/services/content-token-artifact-store', () => ({
@@ -218,11 +261,15 @@ describe('Content API — script duration presets', () => {
     mockGetScript.mockClear();
     mockCompleteOneShotWithFallback.mockClear();
     mockCompleteOneShotWithSearch.mockClear();
+    mockCompleteOneShotWithOpenAIWebSearch.mockClear();
+    mockIsOpenAIConfigured.mockReset();
+    mockIsOpenAIConfigured.mockReturnValue(false);
     mockPersistContentArtifacts.mockClear();
     mockGetContentSourcePackage.mockClear();
     mockGetContentResearchArtifact.mockClear();
     mockStoreScript.mockClear();
     mockRecordContentVariantFeedback.mockClear();
+    mockWithAiBudgetReservation.mockClear();
   });
 
   afterEach(() => {
@@ -307,6 +354,15 @@ describe('Content API — script duration presets', () => {
     expect(args[5]).toContain('[hook_style] Open with a misconception.');
     expect(args[11]).toBe('bullets');
     expect(args[15]).toBe(12);
+    expect(mockWithAiBudgetReservation).toHaveBeenCalledWith(
+      expect.objectContaining({
+        userId: 12,
+        requestSource: 'interactive',
+        baseCategory: 'content_engine_script_draft',
+        jobName: 'content_script_generate',
+      }),
+      expect.any(Function),
+    );
   });
 
   it('defaults script generation to draft-first metadata and low usage impact', async () => {
@@ -578,6 +634,10 @@ describe('Content API — script duration presets', () => {
     expect(response.body.data.research.sourceSummary).toEqual(['Prior compact source package.']);
     expect(mockCompleteOneShotWithFallback).toHaveBeenCalledTimes(1);
     expect(mockGetScript).not.toHaveBeenCalled();
+    expect(mockWithAiBudgetReservation).toHaveBeenCalledWith(
+      expect.objectContaining({ baseCategory: 'content_script_expand', jobName: 'content_script_expand' }),
+      expect.any(Function),
+    );
   });
 
   it('rewrites an existing draft through the cheap edit route without rerunning script generation', async () => {
@@ -597,6 +657,10 @@ describe('Content API — script duration presets', () => {
     expect(response.body.data.research.route).toBe('reused_research');
     expect(mockCompleteOneShotWithFallback).toHaveBeenCalledTimes(1);
     expect(mockGetScript).not.toHaveBeenCalled();
+    expect(mockWithAiBudgetReservation).toHaveBeenCalledWith(
+      expect.objectContaining({ baseCategory: 'content_script_rewrite', jobName: 'content_script_rewrite' }),
+      expect.any(Function),
+    );
   });
 
   it('rejects unsupported edit topics before spending edit tokens', async () => {
@@ -627,6 +691,28 @@ describe('Content API — script duration presets', () => {
     expect(response.body.data.research.sourceSummary.join(' ')).toContain('Source note');
     expect(mockCompleteOneShotWithSearch).toHaveBeenCalledTimes(1);
     expect(mockGetScript).not.toHaveBeenCalled();
+    expect(mockWithAiBudgetReservation).toHaveBeenCalledWith(
+      expect.objectContaining({ baseCategory: 'content_research_refresh', jobName: 'content_research_refresh' }),
+      expect.any(Function),
+    );
+  });
+
+  it('refreshes through bounded OpenAI search when Gemini maximum cost does not fit', async () => {
+    mockIsOpenAIConfigured.mockReturnValue(true);
+    mockCompleteOneShotWithSearch.mockRejectedValueOnce(Object.assign(
+      new Error('AI_DAILY_LIMIT_REACHED'),
+      { name: 'AiBudgetError', decision: { code: 'AI_DAILY_LIMIT_REACHED', window: 'daily' } },
+    ));
+
+    const response = await dispatch({
+      topic: 'latest creator tools today',
+      script: 'Keep this current script.',
+    }, '/script/research-refresh');
+
+    expect(response.statusCode).toBe(200);
+    expect(response.body.data.provider).toBe('openai-web-search');
+    expect(mockCompleteOneShotWithSearch).toHaveBeenCalledTimes(1);
+    expect(mockCompleteOneShotWithOpenAIWebSearch).toHaveBeenCalledTimes(1);
   });
 
   it('localizes topic-generation format validation for Portuguese requests', async () => {
@@ -663,6 +749,9 @@ describe('Content API — script duration presets', () => {
     expect(routeSource).toContain("scriptTopicContext?.niche || niche || 'general'");
     expect(routeSource).toContain('durationPreset.targetDurationSeconds,');
     expect(routeSource).toContain('scriptTopicContext,');
+    expect(routeSource).not.toContain('draftFirst=true');
+    expect(routeSource).not.toContain('budgetState=${budgetState}');
+    expect(routeSource).toContain("Budget enforcement is external to the model and must not shorten, simplify, or reduce delivery quality.");
     expect(topicContextSource).toContain('function resolveScriptTopicContext(');
     expect(topicContextSource).toContain('parseOptionalPositiveId(raw.pipelineId)');
     expect(topicContextSource).toContain('parseOptionalPositiveId(raw.topicFeedbackId)');

@@ -5,10 +5,6 @@ import { AuthenticatedRequest } from '../auth-middleware';
 import { logger } from '../../utils/logger';
 import { invalidateCalendarCaches } from '../../services/cache-coherence-registry';
 import { sendSuccess, sendError, sendInternalError } from '../response-helpers';
-import {
-  acquireCostLock,
-  enforceCostGuardrails,
-} from '../../services/cost-guardrail';
 import { cancelTrainingPlanForUser } from './training-plan-cancellation';
 import {
   TRAINING_PLAN_GENERATOR_POLICY_VERSION,
@@ -354,24 +350,9 @@ export function registerTrainingPlanRoutes(
       return;
     }
 
-    // TOCTOU-safe cost window for any downstream AI-backed fallback or
-    // future explanation call. The normal plan path is deterministic and
-    // should not create a training-plan api_usage row.
-    const releaseCostLock = await acquireCostLock(userId);
-    const guardrail = enforceCostGuardrails(userId);
-    if (guardrail.block) {
-      releaseCostLock();
-      failTrainingPlanGenerationIdempotency(userId, tenantId, idempotencyKey, requestHash);
-      sendError(
-        res,
-        guardrail.reason,
-        guardrail.message,
-        guardrail.status,
-        guardrail.details,
-      );
-      return;
-    }
-
+    // Plan generation is deterministic and token-zero. If a future model
+    // explanation is added, that specific call must own its own classified
+    // withAiBudgetReservation instead of gating this entire route.
     try {
       const result = await generateTrainingPlanForUser({
         userId,
@@ -487,8 +468,6 @@ export function registerTrainingPlanRoutes(
       logger.error({ err, userId }, 'Training plan generation failed');
       failTrainingPlanGenerationIdempotency(userId, tenantId, idempotencyKey, requestHash);
       sendError(res, 'INTERNAL', 'Failed to generate training plan. Please try again.', 500);
-    } finally {
-      releaseCostLock();
     }
   });
 

@@ -1,11 +1,8 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
-import { Response } from 'express';
-import { enforceCostGuardrails } from '../../services/cost-guardrail';
 import { normalizeLangHeader } from '../../services/secretary-fastpath';
 import { getUserLanguageById, setUserLanguage } from '../../services/user-service';
 import { logger } from '../../utils/logger';
-import { sendError } from '../response-helpers';
 import { normalizeChatAttachment, type ChatImageAttachment } from './chat-attachments';
 
 type HeaderReadable = {
@@ -57,38 +54,4 @@ export function persistChatLanguagePreference(req: HeaderReadable, userId: numbe
   } catch (err) {
     logger.warn({ err }, 'iOS X-Language header handling failed — continuing with existing preference');
   }
-}
-
-export function sendChatQuotaExceededIfNeeded(
-  res: Response,
-  userId: number,
-  logMessage: string,
-): boolean {
-  const decision = enforceCostGuardrails(userId);
-  if (!decision.block) return false;
-
-  logger.warn(
-    {
-      userId,
-      reason: decision.reason,
-      spentUsd: decision.quota.spentUsd,
-      capUsd: decision.quota.capUsd,
-      globalTotalUsd: decision.global.totalUsd,
-      globalLimitUsd: decision.global.limitUsd,
-      platform: 'ios',
-    },
-    logMessage,
-  );
-  sendError(
-    res,
-    decision.reason,
-    decision.message,
-    decision.status,
-    {
-      ...decision.details,
-      error: 'rate_limited',
-      retryable: true,
-    },
-  );
-  return true;
 }

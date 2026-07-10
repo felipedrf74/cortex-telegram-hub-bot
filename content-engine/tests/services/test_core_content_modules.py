@@ -179,16 +179,52 @@ async def test_claude_client_ask_json_parses_proxy_text(monkeypatch):
 
 
 async def test_claude_client_json_repair_path(monkeypatch):
-    async def fake_ask(*args, **kwargs):
-        return "{not json"
+    calls = []
 
-    async def fake_repair(*args, **kwargs):
-        return {"repaired": True}
+    async def fake_ask(*args, **kwargs):
+        calls.append(kwargs)
+        return "{not json" if len(calls) == 1 else '{"repaired": true}'
 
     monkeypatch.setattr(claude_client, "ask_claude", fake_ask)
-    monkeypatch.setattr(claude_client, "_repair_json_response", fake_repair)
 
-    assert await claude_client.ask_claude_json("prompt") == {"repaired": True}
+    assert await claude_client.ask_claude_json(
+        "prompt",
+        category="content_engine_report",
+        user_id=7,
+        tenant_id=44,
+        attribution_token="signed-token",
+    ) == {"repaired": True}
+    assert [call["category"] for call in calls] == [
+        "content_engine_report",
+        "content_engine_report",
+    ]
+    assert calls[1]["attribution_token"] == "signed-token"
+
+
+def test_claude_client_parses_stable_ai_proxy_error():
+    request = claude_client.httpx.Request("POST", "http://backend.test/api/v1/internal/ai-complete")
+    response = claude_client.httpx.Response(
+        429,
+        request=request,
+        headers={"Retry-After": "321"},
+        json={
+            "ok": False,
+            "error": {
+                "code": "AI_MONTHLY_LIMIT_REACHED",
+                "message": "Monthly AI quota reached.",
+                "details": {"window": "monthly", "unblocksAt": "2026-08-01T00:00:00.000Z"},
+            },
+        },
+    )
+
+    error = claude_client._stable_ai_proxy_error(response)
+
+    assert isinstance(error, claude_client.AiProxyError)
+    assert error.status_code == 429
+    assert error.code == "AI_MONTHLY_LIMIT_REACHED"
+    assert error.public_message == "Monthly AI quota reached."
+    assert error.details["window"] == "monthly"
+    assert error.retry_after == "321"
 
 
 async def test_claude_client_raw_fallback_when_repair_fails(monkeypatch):

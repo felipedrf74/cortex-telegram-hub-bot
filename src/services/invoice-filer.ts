@@ -10,6 +10,7 @@ import { trackedCreate } from '../portal/anthropic-hook';
 import { completeVisionOneShotWithFallback } from './gemini-provider';
 import { sanitizeForPromptInterpolation } from '../utils/prompt-sanitizer';
 import { centsToNumber, parseUserAmount } from './money';
+import { rethrowAiUsageFailClosedError } from './api-usage-fallback';
 import {
   buildInvoiceObjectKey,
   isInvoiceObjectStorageConfigured,
@@ -154,6 +155,7 @@ export async function analyzeInvoiceImage(
       .map((b) => b.text)
       .join('');
   } catch (err) {
+    rethrowAiUsageFailClosedError(err);
     logger.warn({ err }, 'Anthropic Haiku invoice analysis failed — falling back to alternate vision providers');
     const fallback = await completeVisionOneShotWithFallback(
       INVOICE_SYSTEM_PROMPT,

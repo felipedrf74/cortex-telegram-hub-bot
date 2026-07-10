@@ -25,6 +25,7 @@ import { config } from '../config';
 import { logger } from '../utils/logger';
 import { trackedCreate } from '../portal/anthropic-hook';
 import { completeOneShotWithFallback } from './gemini-provider';
+import { withAiBudgetReservation } from './cost-guardrail';
 import { pushEvent } from '../portal/telemetry';
 import { uploadToDrive } from './google-drive';
 import {
@@ -348,7 +349,11 @@ Provide the complete study analysis.`;
 
   // Gemini-first: gemini-2.5-flash matches Sonnet quality for structured
   // analytical breakdown of long-form transcripts at ~9× lower cost.
-  const { text: studyText } = await completeOneShotWithFallback(
+  const { text: studyText } = await withAiBudgetReservation({
+    userId: scopedUserId,
+    requestSource: scopedUserId > 0 ? 'interactive' : 'system',
+    baseCategory: 'video_study',
+  }, () => completeOneShotWithFallback(
     studySystemPrompt,
     prompt,
     'video_study',
@@ -366,7 +371,7 @@ Provide the complete study analysis.`;
         .join('');
     },
     { maxTokens: 4096, temperature: 0.4, userId: scopedUserId, tenantId: scopedTenantId },
-  );
+  ));
 
   let text = studyText;
 

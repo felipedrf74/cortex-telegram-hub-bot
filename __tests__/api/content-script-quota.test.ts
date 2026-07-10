@@ -1,14 +1,15 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Request } from 'express';
 
-const mockIsUserOverDailyCap = vi.fn(() => ({
+const mockIsUserOverDailyCap = vi.fn((..._args: unknown[]) => ({
   over: false,
   spentUsd: 0,
   capUsd: 0.2,
   plan: 'pro',
   resetAt: '2026-04-15T00:00:00.000Z',
 }));
-const mockAcquireCostLock = vi.fn(async () => () => { /* no-op */ });
+const mockWithAiBudgetReservation = vi.fn();
+const mockGetScriptProvider = vi.fn();
 
 vi.mock('../../src/utils/logger', () => ({
   logger: {
@@ -22,27 +23,33 @@ vi.mock('../../src/utils/logger', () => ({
   LOGGER_REDACTION_PATHS: [],
 }));
 
-vi.mock('../../src/services/cost-guardrail', () => ({
-  isUserOverDailyCap: (...args: unknown[]) => mockIsUserOverDailyCap(...args),
-  buildQuotaExceededMessage: vi.fn((quota: { plan: string; resetAt: string }) => `Daily AI quota reached for the ${quota.plan} plan. Resets at ${quota.resetAt}.`),
-  enforceCostGuardrails: (userId: number) => {
-    const quota = mockIsUserOverDailyCap(userId);
-    const global = { totalUsd: 0, limitUsd: 100, exceeded: false };
-    if (!quota.over) return { block: false, status: 200, reason: 'ok', quota, global };
-    return {
-      block: true,
-      status: 429,
-      reason: 'daily_limit_exceeded',
-      message: `Daily AI quota reached for the ${quota.plan} plan. Resets at ${quota.resetAt}.`,
-      quota,
-      global,
-      details: {
-        plan: quota.plan,
-        resetAt: quota.resetAt,
-      },
-    };
+vi.mock('../../src/services/cost-guardrail', () => {
+  class AiBudgetError extends Error {
+    decision: any;
+    constructor(decision: any) { super(decision.code); this.name = 'AiBudgetError'; this.decision = decision; }
+  }
+  return {
+    AiBudgetError,
+    buildQuotaExceededPayload: vi.fn((quota: { plan: string; resetAt: string }) => ({
+      plan: quota.plan,
+      resetAt: quota.resetAt,
+    })),
+    isUserOverDailyCap: (...args: unknown[]) => mockIsUserOverDailyCap(...args),
+    getDailyQuotaStatus: (...args: unknown[]) => {
+      const quota = mockIsUserOverDailyCap(...args);
+      return { ...quota, usageFraction: quota.over ? 1 : 0 };
+    },
+    withAiBudgetReservation: (...args: unknown[]) => mockWithAiBudgetReservation(...args),
+    buildQuotaExceededMessage: vi.fn((quota: { plan: string; resetAt: string }) => `Daily AI quota reached for the ${quota.plan} plan. Resets at ${quota.resetAt}.`),
+  };
+});
+
+vi.mock('../../src/services/content-engine', () => ({
+  getScript: (...args: unknown[]) => {
+    const providerBoundary = args[16] as ((providerCall: () => Promise<unknown>) => Promise<unknown>) | undefined;
+    const providerCall = () => mockGetScriptProvider(...args.slice(0, 16));
+    return providerBoundary ? providerBoundary(providerCall) : providerCall();
   },
-  acquireCostLock: (...args: unknown[]) => mockAcquireCostLock(...args),
 }));
 
 vi.mock('../../src/services/user-service', () => ({
@@ -51,19 +58,29 @@ vi.mock('../../src/services/user-service', () => ({
   getUserLanguageById: () => 'pt-BR',
 }));
 
+vi.mock('../../src/services/entitlement', () => ({
+  isPaidAiCostControlsEnforcementEnabled: vi.fn(() => true),
+}));
+
 interface MockRes {
   statusCode: number;
   body: any;
+  headers: Record<string, string>;
   status(code: number): MockRes;
   json(body: any): MockRes;
+  setHeader(name: string, value: string): MockRes;
+  getHeader(name: string): string | undefined;
 }
 
 function mockRes(): MockRes {
   const response: MockRes = {
     statusCode: 200,
     body: null,
+    headers: {},
     status(code: number) { response.statusCode = code; return response; },
     json(body: any) { response.body = body; return response; },
+    setHeader(name: string, value: string) { response.headers[name.toLowerCase()] = value; return response; },
+    getHeader(name: string) { return response.headers[name.toLowerCase()]; },
   };
   return response;
 }
@@ -103,13 +120,34 @@ async function dispatch(body: any, userId: number | null = 12): Promise<MockRes>
 describe('Content API — script quota enforcement', () => {
   beforeEach(() => {
     mockIsUserOverDailyCap.mockReset();
-    mockAcquireCostLock.mockClear();
+    mockWithAiBudgetReservation.mockReset();
+    mockGetScriptProvider.mockReset();
     mockIsUserOverDailyCap.mockReturnValue({
       over: true,
       spentUsd: 0.2,
       capUsd: 0.2,
       plan: 'pro',
       resetAt: '2026-04-15T00:00:00.000Z',
+    });
+    mockWithAiBudgetReservation.mockImplementation(async (_request: unknown, providerCall: () => Promise<unknown>) => {
+      const quota = mockIsUserOverDailyCap(12);
+      if (quota.over) {
+        const error = new Error('AI_DAILY_LIMIT_REACHED') as Error & { name: string; decision: Record<string, unknown> };
+        error.name = 'AiBudgetError';
+        error.decision = {
+          allowed: false,
+          status: 429,
+          code: 'AI_DAILY_LIMIT_REACHED',
+          window: 'daily',
+          message: `Daily AI quota reached for the ${quota.plan} plan.`,
+          quota: { ...quota, usageFraction: 1 },
+          reservedCostUsd: 0.01,
+          retryAfterSeconds: 60,
+          unblocksAt: quota.resetAt,
+        };
+        throw error;
+      }
+      return providerCall();
     });
   });
 
@@ -121,14 +159,20 @@ describe('Content API — script quota enforcement', () => {
 
     expect(response.statusCode).toBe(429);
     expect(response.body.ok).toBe(false);
-    expect(response.body.error.code).toBe('daily_limit_exceeded');
+    expect(response.body.error.code).toBe('AI_DAILY_LIMIT_REACHED');
     expect(response.body.error.details).toEqual({
       plan: 'pro',
       resetAt: '2026-04-15T00:00:00.000Z',
+      window: 'daily',
+      unblocksAt: '2026-04-15T00:00:00.000Z',
+      retryAfterSeconds: 60,
+      error: 'rate_limited',
+      retryable: true,
     });
+    expect(mockGetScriptProvider).not.toHaveBeenCalled();
   });
 
-  it('rejects invalid authenticated user scope before acquiring the cost lock', async () => {
+  it('rejects invalid authenticated user scope before starting a budget reservation', async () => {
     const response = await dispatch({
       topic: 'How to recover after hard intervals',
       format: 'Reel',
@@ -138,7 +182,7 @@ describe('Content API — script quota enforcement', () => {
     expect(response.body.ok).toBe(false);
     expect(response.body.error.code).toBe('UNAUTHORIZED');
     expect(response.body.error.message).toBe('Invalid authenticated user scope');
-    expect(mockAcquireCostLock).not.toHaveBeenCalled();
+    expect(mockWithAiBudgetReservation).not.toHaveBeenCalled();
     expect(mockIsUserOverDailyCap).not.toHaveBeenCalled();
   });
 });

@@ -1,16 +1,27 @@
 # Nexus Points Usage Limits
 
-Status: implemented on `codex/chat-reliability`
-Date: 2026-05-20
+Status: canonical policy; paid-only update implemented on
+`codex/paid-ai-cost-controls`, not yet promoted
+Date: 2026-07-10
 
-## Included Daily AI Budgets
+## Included AI Budgets
 
-| Tier | Monthly price | Daily AI budget | Monthly AI allowance | AI cost % | AI-only margin |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| Pro | $14.99 | $0.04/day | $1.22/mo | 8.1% | 91.9% |
-| Max | $19.99 | $0.06/day | $1.83/mo | 9.2% | 90.8% |
+| Tier | Monthly price | Daily included | Monthly included | Automation ceiling |
+| --- | ---: | ---: | ---: | ---: |
+| Pro | $14.99 | $0.04 | $1.20 | 30% of both windows |
+| Max | $19.99 | $0.06 | $1.80 | 30% of both windows |
+| Founder | assigned plan | assigned Pro/Max | assigned Pro/Max | same 30% ceiling |
+| Free / beta / manual | — | $0 | $0 | disabled |
 
-Portal plan caps remain editable through `/api/plans/:planId`. Per-user AI budget overrides can be written through `/api/users/:userId/limits` using `daily_ai_cost_limit_usd`.
+Portal plan caps remain editable through `/api/plans/:planId`. Per-user AI
+budget overrides can be written through `/api/users/:userId/limits` using
+`daily_ai_cost_limit_usd` and `monthly_ai_cost_limit_usd`. Overrides do not
+grant model eligibility. Free and beta/manual effective caps are fixed at zero;
+stale positive rows or dormant user overrides cannot surface included budget.
+
+Daily windows reset at 00:00 UTC. Active Apple/Stripe subscriptions use their
+validated billing period for the monthly window; founders use the UTC calendar
+month. Cost is enforced; token and message limits are telemetry.
 
 ## Nexus Points
 
@@ -18,9 +29,23 @@ Nexus Points are the public usage-credit unit. Raw provider tokens should not be
 
 - `1 Nexus Point = $0.001` of internal AI provider cost allowance.
 - Credits expire 30 days after purchase.
-- Daily included budget is consumed first.
-- Nexus Points are debited only for spend above the included daily cap.
-- Paid AI is hard-blocked when both included budget and active Nexus Points are exhausted.
+- Included daily and monthly budgets are consumed first.
+- Nexus Points are debited only for eligible **interactive** paid/founder spend
+  above the included allowance.
+- Nexus Points never unlock Free, beta/manual, trial, expired, or past-due AI.
+- Self-service checkout is available only while the canonical entitlement is
+  active paid/founder and `nexusPointsAllowed=true`; do not sell unusable
+  credits to an ineligible account.
+- Native iOS must offer a Nexus Points purchase only from server-gated eligible
+  UI (`pointsPurchaseAvailable`/`boostAvailable`). Apple verification still
+  fulfills an already-completed, cryptographically verified consumable purchase
+  idempotently if entitlement changes between StoreKit charge and server
+  verification; otherwise the customer would be charged without receiving the
+  credit. Such credit remains dormant and cannot fund AI until the canonical
+  entitlement is active paid/founder again.
+- Automations and system jobs never debit Nexus Points.
+- Paid interactive AI is hard-blocked when the applicable included window and
+  eligible active Nexus Points are exhausted.
 - Token-zero reads remain available after AI quota is exhausted.
 
 | Package | Product ID | Price | Points | AI allowance | AI-only margin | Net margin after Apple cut |
@@ -53,7 +78,7 @@ Refund / clawback policy:
 
 Model pricing is centralized in `src/services/model-pricing.ts`.
 
-Every provider usage path should record `provider`, `model`, input/output/cache token counts, `cost_usd`, `pricing_status`, and `pricing_model_key` when the DB schema supports it. Unknown production models must not silently inherit another model's price. They are marked `pricing_status='unresolved'`, charged at the Sonnet-4.6 sentinel ceiling rate (`$3/M` input, `$15/M` output), and emit a deduped operator alert until `src/services/model-pricing.ts` is updated.
+Every provider usage path should record `provider`, `model`, input/output/cache token counts, complete `cost_usd`, `pricing_status`, and `pricing_model_key` when the DB schema supports it. Provider-hosted search fees are included in `cost_usd` and attributed separately through `provider_tool_cost_usd`, `web_search_requests`, and `grounded_search_prompts`. Unknown production models must not silently inherit another model's price: provider preflight fails closed until the model has a registered hard price. Historical/unexpected response rows retain the Sonnet-4.6 sentinel (`$3/M` input, `$15/M` output) and a deduped operator alert for analytics, but that sentinel is not treated as a dispatch ceiling.
 
 Run:
 
@@ -65,6 +90,10 @@ npx tsx scripts/chat-cost-scenarios.ts
 `chat-cost-scenarios.ts` uses Batch estimates only for offline eval/backfill rows. Batch and Flex are not production live-chat defaults.
 
 ## Claude QA Pass 1 Review
+
+The QA sections below are retained as historical evidence for the original
+Nexus Points release. Where an older finding mentions Free allowance, beta
+bypass, or daily-only enforcement, the paid-only policy above supersedes it.
 
 Part A findings:
 

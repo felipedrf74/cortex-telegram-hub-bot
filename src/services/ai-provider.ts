@@ -248,9 +248,9 @@ export interface CallDomainOptions {
  *     `classify-shadow.ts` so OllamaProvider can suppress side effects
  *     (api_usage write, rate-limit increment) for shadow runs (O3-A12
  *     OPTION 1, O3-A19).
- *   - `recordUsage`: explicit "do not write api_usage" flag. Redundant
- *     with `source==='shadow'` but kept as an explicit override; useful
- *     for offline evals or smoke runs.
+ *   - `recordUsage`: explicit "do not write api_usage" flag for controlled
+ *     offline evals or smoke runs only. Runtime shadow work sets this true
+ *     and owns a separate budget reservation.
  *   - `timeoutMs`: per-call timeout. Providers should treat it as an
  *     advisory cap on their own AbortController setup.
  *   - `abortSignal`: external cancellation. Providers MUST forward this
@@ -388,6 +388,13 @@ export function normalizeCallDomainOptions(
 
 // ─── Fallback Provider ──────────────────────────────────────────────
 
+function isUsagePersistenceFailure(error: unknown): boolean {
+  const candidate = error as { name?: string; code?: string } | null;
+  return candidate?.name === 'ApiUsagePersistenceError'
+    || candidate?.code === 'AI_USAGE_PERSISTENCE_FAILED'
+    || candidate?.name === 'AiBudgetError';
+}
+
 /**
  * Wraps a primary and fallback provider. If the primary throws, the
  * fallback is used transparently. Useful for high-availability setups.
@@ -411,6 +418,7 @@ export class FallbackProvider implements AIProvider {
     try {
       return await this.primary.classify(message, activeContext, options);
     } catch (err) {
+      if (isUsagePersistenceFailure(err)) throw err;
       this.onFallback?.(err as Error, 'classify');
       return this.fallback.classify(message, activeContext, options);
     }
@@ -426,6 +434,7 @@ export class FallbackProvider implements AIProvider {
     try {
       return await this.primary.callDomain(domain, history, currentMessage, stateContext, optionsOrMaxTokens);
     } catch (err) {
+      if (isUsagePersistenceFailure(err)) throw err;
       this.onFallback?.(err as Error, 'callDomain');
       return this.fallback.callDomain(domain, history, currentMessage, stateContext, optionsOrMaxTokens);
     }
@@ -442,6 +451,7 @@ export class FallbackProvider implements AIProvider {
     try {
       return await this.primary.continueWithToolResults(domain, history, currentMessage, stateContext, toolConversation, options);
     } catch (err) {
+      if (isUsagePersistenceFailure(err)) throw err;
       this.onFallback?.(err as Error, 'continueWithToolResults');
       return this.fallback.continueWithToolResults(domain, history, currentMessage, stateContext, toolConversation, options);
     }

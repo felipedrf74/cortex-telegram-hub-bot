@@ -6,6 +6,8 @@ import path from 'path';
 let testDb: Database.Database;
 
 const mockCompleteOneShotWithFallback = vi.fn();
+const mockResolveAiAutomationEligibility = vi.fn();
+const mockWithAiBudgetReservation = vi.fn(async (_request: unknown, fn: () => Promise<unknown>) => fn());
 const mockLogger = {
   info: vi.fn(),
   warn: vi.fn(),
@@ -48,6 +50,15 @@ vi.mock('../../src/services/gemini-provider', () => ({
   completeVisionOneShotWithFallback: vi.fn(),
   isGeminiProviderConfigured: vi.fn(() => true),
   scrubSearchGroundingPromptForPrivacy: vi.fn((prompt: string) => prompt),
+}));
+
+vi.mock('../../src/services/ai-automation-policy', () => ({
+  recordAiAutomationEligibilitySkip: vi.fn(),
+  resolveAiAutomationEligibility: (...args: unknown[]) => mockResolveAiAutomationEligibility(...args),
+}));
+
+vi.mock('../../src/services/cost-guardrail', () => ({
+  withAiBudgetReservation: (...args: unknown[]) => mockWithAiBudgetReservation(...args),
 }));
 
 vi.mock('../../src/utils/logger', () => ({
@@ -102,6 +113,14 @@ describe('Voice Evolution Agent — multi-tenant scope', () => {
   beforeEach(async () => {
     vi.resetModules();
     mockCompleteOneShotWithFallback.mockReset();
+    mockResolveAiAutomationEligibility.mockReset();
+    mockResolveAiAutomationEligibility.mockReturnValue({
+      allowed: true,
+      reason: 'eligible',
+      entitlement: { source: 'founder' },
+    });
+    mockWithAiBudgetReservation.mockReset();
+    mockWithAiBudgetReservation.mockImplementation(async (_request: unknown, fn: () => Promise<unknown>) => fn());
     Object.values(mockLogger).forEach((fn) => {
       if (typeof fn === 'function' && 'mockClear' in fn) fn.mockClear();
     });
@@ -211,5 +230,42 @@ describe('Voice Evolution Agent — multi-tenant scope', () => {
       expect.objectContaining({ user_id: 25, tenant_id: 25, pattern_text: 'founder-signal' }),
       expect.objectContaining({ user_id: 28, tenant_id: 28, pattern_text: 'knitter-signal' }),
     ]);
+  });
+
+  it('skips Free/trial scopes before data or model work and attributes the paid call as automation', async () => {
+    const { runVoiceEvolutionAgent } = await import('../../src/agents/voice-evolution-agent');
+    seedUser(25, 'paid');
+    seedUser(28, 'trial');
+    seedTranscript(25, 'paid-video', 'paid transcript');
+    seedTranscript(28, 'trial-video', 'trial transcript must not enter a prompt');
+    mockResolveAiAutomationEligibility.mockImplementation((userId: number) => ({
+      allowed: userId === 25,
+      reason: userId === 25 ? 'eligible' : 'automation_entitlement_required',
+      entitlement: { source: userId === 25 ? 'stripe' : 'stripe' },
+    }));
+    mockCompleteOneShotWithFallback.mockResolvedValue({
+      text: JSON.stringify({
+        additions: [], removals: [], rephrasing: [], recurring_phrases: [], book_influences: [], voice_summary: 'paid summary',
+      }),
+    });
+
+    await runVoiceEvolutionAgent();
+
+    expect(mockResolveAiAutomationEligibility).toHaveBeenCalledWith(25, 'content');
+    expect(mockResolveAiAutomationEligibility).toHaveBeenCalledWith(28, 'content');
+    expect(mockCompleteOneShotWithFallback).toHaveBeenCalledTimes(1);
+    expect(String(mockCompleteOneShotWithFallback.mock.calls[0][1])).toContain('paid transcript');
+    expect(String(mockCompleteOneShotWithFallback.mock.calls[0][1])).not.toContain('trial transcript');
+    expect(mockWithAiBudgetReservation).toHaveBeenCalledWith(expect.objectContaining({
+      userId: 25,
+      requestSource: 'automation',
+      baseCategory: 'voice_evolution',
+      jobName: 'voice_evolution',
+      automationPriority: 'other',
+    }), expect.any(Function));
+    expect(mockWithAiBudgetReservation).not.toHaveBeenCalledWith(
+      expect.objectContaining({ userId: 28 }),
+      expect.any(Function),
+    );
   });
 });

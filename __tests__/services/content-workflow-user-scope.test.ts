@@ -8,18 +8,32 @@ const MIGRATIONS_DIR = path.resolve(__dirname, '../../migrations');
 let testDb: Database.Database;
 const {
   completeOneShotWithFallback,
+  completeOneShotWithSearch,
+  completeOneShotWithWebSearch,
+  isOpenAIConfigured,
+  isPaidAiCostControlsEnforcementEnabled,
   getWorkflowEligibleIdeas,
   readSignals,
   getScript,
   storeScript,
   getUserLanguage,
+  trackedCreate,
+  isDuplicateIdeaInBatch,
+  markIdeaPromoted,
 } = vi.hoisted(() => ({
   completeOneShotWithFallback: vi.fn(),
+  completeOneShotWithSearch: vi.fn(),
+  completeOneShotWithWebSearch: vi.fn(),
+  isOpenAIConfigured: vi.fn(() => false),
+  isPaidAiCostControlsEnforcementEnabled: vi.fn(() => false),
   getWorkflowEligibleIdeas: vi.fn(() => []),
   readSignals: vi.fn(() => []),
   getScript: vi.fn(),
   storeScript: vi.fn(),
   getUserLanguage: vi.fn(() => 'pt-BR'),
+  trackedCreate: vi.fn(),
+  isDuplicateIdeaInBatch: vi.fn(),
+  markIdeaPromoted: vi.fn(),
 }));
 
 vi.mock('../../src/services/database', () => ({
@@ -43,10 +57,24 @@ vi.mock('../../src/config', () => ({
 
 vi.mock('../../src/services/gemini-provider', () => ({
   completeOneShotWithFallback,
+  completeOneShotWithSearch,
+}));
+
+vi.mock('../../src/services/openai-provider', () => ({
+  completeOneShotWithWebSearch,
+  isOpenAIConfigured,
+}));
+
+vi.mock('../../src/services/cost-guardrail', () => ({
+  withAiBudgetReservation: vi.fn(async (_request: unknown, fn: () => Promise<unknown>) => fn()),
+}));
+
+vi.mock('../../src/services/entitlement', () => ({
+  isPaidAiCostControlsEnforcementEnabled,
 }));
 
 vi.mock('../../src/portal/anthropic-hook', () => ({
-  trackedCreate: vi.fn(),
+  trackedCreate,
 }));
 
 vi.mock('../../src/utils/prompt-loader', () => ({
@@ -59,11 +87,12 @@ vi.mock('../../src/utils/prompt-loader', () => ({
 vi.mock('../../src/services/content-dedup', () => ({
   buildAngleDiversityBlock: () => '',
   isDuplicateIdea: vi.fn(async () => ({ isDuplicate: false, confidence: 0, similarTo: null })),
+  isDuplicateIdeaInBatch,
 }));
 
 vi.mock('../../src/state/saved-ideas', () => ({
   getWorkflowEligibleIdeas,
-  markIdeaPromoted: vi.fn(),
+  markIdeaPromoted,
 }));
 
 vi.mock('../../src/services/intelligence-bus', () => ({
@@ -117,10 +146,15 @@ function seedGroundedReference(userId: number): void {
 }
 
 import {
+  generateAndStoreTopicCandidates,
+  generateWeeklyPackage,
   generateScript,
   generateTopicCandidates,
+  getMissingScheduledInventoryCount,
   getTopicById,
   markScriptGenerated,
+  storeTopicCandidates,
+  shouldAttachTrendingWebSearch,
   updateFeedback,
 } from '../../src/services/content-workflow';
 
@@ -130,18 +164,38 @@ describe('content-workflow: user-scoped knowledge injection', () => {
     testDb.pragma('journal_mode = WAL');
     applyMigrations(testDb);
     completeOneShotWithFallback.mockReset();
+    completeOneShotWithSearch.mockReset();
+    completeOneShotWithWebSearch.mockReset();
+    isOpenAIConfigured.mockReset();
+    isPaidAiCostControlsEnforcementEnabled.mockReset();
     getWorkflowEligibleIdeas.mockReset();
     readSignals.mockReset();
     getScript.mockReset();
     storeScript.mockReset();
     getUserLanguage.mockReset();
+    trackedCreate.mockReset();
+    isDuplicateIdeaInBatch.mockReset();
+    markIdeaPromoted.mockReset();
     completeOneShotWithFallback.mockResolvedValue({
       text: '[]',
       provider: 'gemini',
     });
+    completeOneShotWithSearch.mockResolvedValue({ text: '[]', sources: [] });
+    completeOneShotWithWebSearch.mockResolvedValue({ text: '[]', sources: [] });
+    isOpenAIConfigured.mockReturnValue(false);
+    isPaidAiCostControlsEnforcementEnabled.mockReturnValue(false);
     getWorkflowEligibleIdeas.mockReturnValue([]);
     readSignals.mockReturnValue([]);
     getUserLanguage.mockReturnValue('pt-BR');
+    isDuplicateIdeaInBatch.mockImplementation((newIdea: string, _angleTag: string | undefined, accepted: Array<{ title: string }>) => {
+      const normalized = newIdea.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+      const match = accepted.find((candidate) => (
+        candidate.title.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim() === normalized
+      ));
+      return match
+        ? { isDuplicate: true, confidence: 0.95, similarTo: match.title }
+        : { isDuplicate: false, confidence: 0, similarTo: null };
+    });
   });
 
   afterEach(() => {
@@ -171,6 +225,357 @@ describe('content-workflow: user-scoped knowledge injection', () => {
 
     expect(readSignals).toHaveBeenCalledWith('content-workflow', ['book_knowledge'], 20, 42);
     expect(getWorkflowEligibleIdeas).toHaveBeenCalledWith(42);
+  });
+
+  it('reuses fresh Discovery/Radar context without attaching a paid Anthropic web-search tool', async () => {
+    getWorkflowEligibleIdeas.mockReturnValue([{
+      id: 9,
+      title: 'Fresh discovery idea',
+      created_at: new Date().toISOString(),
+    }]);
+    readSignals.mockImplementation((_consumer: string, signalTypes: string[]) => (
+      signalTypes.includes('trending_spike')
+        ? [{ payload: { title: 'Fresh radar topic', reason: 'Spiking today' } }]
+        : []
+    ));
+    completeOneShotWithFallback.mockResolvedValue({
+      provider: 'gemini',
+      text: JSON.stringify([{
+          title: 'Fresh topic',
+          niche: 'product',
+          whyNow: 'Spiking today',
+          hookIdea: 'Open with the spike',
+          angle_tag: 'trending-take',
+          pillar_emoji: '',
+          time_sensitivity: 'react-today',
+        }]),
+    });
+
+    const result = await generateTopicCandidates('reel', 1, true, 42, 42);
+
+    expect(result).toHaveLength(1);
+    expect(trackedCreate).not.toHaveBeenCalled();
+    expect(completeOneShotWithSearch).not.toHaveBeenCalled();
+    expect(completeOneShotWithFallback.mock.calls[0][1]).toContain('Fresh Content Radar Signals');
+    expect(String(completeOneShotWithFallback.mock.calls[0][0]).length).toBeLessThanOrEqual(6500);
+    expect(String(completeOneShotWithFallback.mock.calls[0][1]).length).toBeLessThanOrEqual(6500);
+    expect(completeOneShotWithFallback.mock.calls[0][4]).toMatchObject({
+      model: 'gemini-2.5-flash',
+    });
+    expect(shouldAttachTrendingWebSearch(true, true)).toBe(false);
+    expect(shouldAttachTrendingWebSearch(true, false)).toBe(true);
+  });
+
+  it('marks Discovery ideas only after generated candidates are durably stored', async () => {
+    getWorkflowEligibleIdeas.mockReturnValue([{
+      id: 91,
+      title: 'Fresh discovery source',
+      created_at: new Date().toISOString(),
+    }]);
+    completeOneShotWithFallback.mockResolvedValue({
+      provider: 'gemini',
+      text: JSON.stringify([{
+        title: 'Stored candidate',
+        niche: 'product',
+        whyNow: 'Useful now',
+        hookIdea: 'Open with proof',
+        angle_tag: 'framework',
+        pillar_emoji: '',
+        time_sensitivity: 'evergreen',
+      }]),
+    });
+
+    const result = await generateAndStoreTopicCandidates(42, 'reel', 'tuesday_reels', 42, 1);
+
+    expect(result.candidates).toHaveLength(1);
+    expect((testDb.prepare(
+      "SELECT COUNT(*) AS count FROM content_topic_feedback WHERE user_id = 42 AND source_job = 'tuesday_reels'",
+    ).get() as { count: number }).count).toBe(1);
+    expect(markIdeaPromoted).toHaveBeenCalledWith(91, 42);
+  });
+
+  it('does not consume a Discovery marker when the generated batch is empty', async () => {
+    getWorkflowEligibleIdeas.mockReturnValue([{
+      id: 92,
+      title: 'Unconsumed discovery source',
+      created_at: new Date().toISOString(),
+    }]);
+    completeOneShotWithFallback.mockResolvedValue({ provider: 'gemini', text: '[]' });
+
+    const result = await generateAndStoreTopicCandidates(42, 'reel', 'tuesday_reels', 42, 1);
+
+    expect(result.candidates).toEqual([]);
+    expect(markIdeaPromoted).not.toHaveBeenCalled();
+  });
+
+  it('rolls back candidate inserts and keeps Discovery unpromoted when persistence fails', async () => {
+    getWorkflowEligibleIdeas.mockReturnValue([{
+      id: 93,
+      title: 'Retryable discovery source',
+      created_at: new Date().toISOString(),
+    }]);
+    completeOneShotWithFallback.mockResolvedValue({
+      provider: 'gemini',
+      text: JSON.stringify([{
+        title: 'Candidate whose insert fails',
+        niche: 'product',
+        whyNow: 'Useful now',
+        hookIdea: 'Open with proof',
+        angle_tag: 'framework',
+        pillar_emoji: '',
+        time_sensitivity: 'evergreen',
+      }]),
+    });
+    testDb.exec(`
+      CREATE TRIGGER fail_scheduled_candidate_insert
+      BEFORE INSERT ON content_topic_feedback
+      WHEN NEW.source_job = 'tuesday_reels'
+      BEGIN
+        SELECT RAISE(ABORT, 'scheduled insert failed');
+      END;
+    `);
+
+    await expect(generateAndStoreTopicCandidates(42, 'reel', 'tuesday_reels', 42, 1))
+      .rejects.toThrow('scheduled insert failed');
+
+    expect((testDb.prepare(
+      "SELECT COUNT(*) AS count FROM content_topic_feedback WHERE user_id = 42 AND source_job = 'tuesday_reels'",
+    ).get() as { count: number }).count).toBe(0);
+    expect(markIdeaPromoted).not.toHaveBeenCalled();
+  });
+
+  it('uses an explicitly grounded provider path when fresh tenant signals are absent', async () => {
+    completeOneShotWithSearch.mockResolvedValue({
+      sources: ['https://example.test/current'],
+      text: JSON.stringify([{
+        title: 'Grounded topic',
+        niche: 'product',
+        whyNow: 'Current source',
+        hookIdea: 'Open with the new evidence',
+        angle_tag: 'trending-take',
+        pillar_emoji: '',
+        time_sensitivity: 'react-today',
+      }]),
+    });
+
+    const result = await generateTopicCandidates('reel', 1, true, 42, 42);
+
+    expect(result).toHaveLength(1);
+    expect(completeOneShotWithSearch).toHaveBeenCalledTimes(1);
+    expect(completeOneShotWithFallback).not.toHaveBeenCalled();
+    expect(trackedCreate).not.toHaveBeenCalled();
+  });
+
+  it('uses one bounded OpenAI search first for enforced interactive research', async () => {
+    isPaidAiCostControlsEnforcementEnabled.mockReturnValue(true);
+    isOpenAIConfigured.mockReturnValue(true);
+    completeOneShotWithWebSearch.mockResolvedValue({
+      sources: ['https://example.test/bounded-search'],
+      text: JSON.stringify([{
+        title: 'Bounded grounded topic',
+        niche: 'product',
+        whyNow: 'Verified by current search',
+        hookIdea: 'Open with the verified evidence',
+        angle_tag: 'trending-take',
+        pillar_emoji: '',
+        time_sensitivity: 'react-today',
+      }]),
+    });
+
+    const result = await generateTopicCandidates('reel', 1, true, 42, 42);
+
+    expect(result.map((item) => item.title)).toEqual(['Bounded grounded topic']);
+    expect(completeOneShotWithWebSearch).toHaveBeenCalledTimes(1);
+    expect(completeOneShotWithWebSearch.mock.calls[0][2]).toContain('openai_web_search');
+    expect(completeOneShotWithSearch).not.toHaveBeenCalled();
+    expect(trackedCreate).not.toHaveBeenCalled();
+  });
+
+  it('uses an explicitly evergreen provider prompt when paid grounding cannot fit automation', async () => {
+    isPaidAiCostControlsEnforcementEnabled.mockReturnValue(true);
+    completeOneShotWithFallback.mockResolvedValue({
+      provider: 'gemini',
+      text: JSON.stringify([{
+        title: 'Durable audience topic',
+        niche: 'product',
+        whyNow: 'A recurring audience need',
+        hookIdea: 'Open with the durable pain point',
+        angle_tag: 'framework',
+        pillar_emoji: '',
+        time_sensitivity: 'evergreen',
+      }]),
+    });
+
+    const result = await generateTopicCandidates(
+      'reel',
+      1,
+      true,
+      42,
+      42,
+      { requestSource: 'automation', jobName: 'tuesday_reels' },
+    );
+
+    expect(result.map((item) => item.title)).toEqual(['Durable audience topic']);
+    expect(completeOneShotWithSearch).not.toHaveBeenCalled();
+    expect(completeOneShotWithWebSearch).not.toHaveBeenCalled();
+    expect(completeOneShotWithFallback.mock.calls[0][1]).toContain('without live web search');
+    expect(completeOneShotWithFallback.mock.calls[0][1]).toContain('Do not claim that a topic is currently trending');
+  });
+
+  it('rejects an ungrounded Gemini search response and requires grounded Anthropic fallback', async () => {
+    completeOneShotWithSearch.mockResolvedValue({
+      sources: [],
+      text: JSON.stringify([{ title: 'Unverified topic' }]),
+    });
+    trackedCreate.mockResolvedValue({
+      stop_reason: 'end_turn',
+      usage: { server_tool_use: { web_search_requests: 1 } },
+      content: [{
+        type: 'text',
+        text: JSON.stringify([{
+          title: 'Grounded fallback topic',
+          niche: 'product',
+          whyNow: 'Verified today',
+          hookIdea: 'Open with the verified change',
+          angle_tag: 'trending-take',
+          pillar_emoji: '',
+          time_sensitivity: 'react-today',
+        }]),
+      }],
+    });
+
+    const result = await generateTopicCandidates('reel', 1, true, 42, 42);
+
+    expect(result).toHaveLength(1);
+    expect(result[0].title).toBe('Grounded fallback topic');
+    expect(completeOneShotWithSearch).toHaveBeenCalledTimes(1);
+    expect(trackedCreate).toHaveBeenCalledTimes(1);
+  });
+
+  it('generates only the missing portion of seven-day pending inventory', () => {
+    storeTopicCandidates([
+      { title: 'A', niche: 'product', whyNow: 'Now', hookIdea: 'Hook A' },
+      { title: 'B', niche: 'product', whyNow: 'Now', hookIdea: 'Hook B' },
+      { title: 'C', niche: 'product', whyNow: 'Now', hookIdea: 'Hook C' },
+    ], 'reel', 'tuesday_reels', 42, 42);
+    storeTopicCandidates([
+      { title: 'Other tenant', niche: 'product', whyNow: 'Now', hookIdea: 'Other hook' },
+    ], 'reel', 'tuesday_reels', 77, 77);
+    const oldId = storeTopicCandidates([
+      { title: 'Expired inventory', niche: 'product', whyNow: 'Old', hookIdea: 'Old hook' },
+    ], 'reel', 'tuesday_reels', 42, 42)[0];
+    testDb.prepare("UPDATE content_topic_feedback SET created_at = datetime('now', '-8 days') WHERE id = ?").run(oldId);
+
+    expect(getMissingScheduledInventoryCount(42, {
+      format: 'reel',
+      sourceJob: 'tuesday_reels',
+      targetCount: 5,
+      windowDays: 7,
+    })).toBe(2);
+  });
+
+  it('builds and stores the Friday package with one validated provider call', async () => {
+    completeOneShotWithFallback.mockResolvedValue({
+      provider: 'gemini',
+      text: JSON.stringify({
+        youtube: [
+          { title: 'YT A', niche: 'product', whyNow: 'Evergreen A', hookIdea: 'YT hook A', angle_tag: 'comparison', pillar_emoji: '', time_sensitivity: 'evergreen' },
+          { title: 'YT B', niche: 'product', whyNow: 'Evergreen B', hookIdea: 'YT hook B', angle_tag: 'framework', pillar_emoji: '', time_sensitivity: 'evergreen' },
+        ],
+        reels: [
+          { title: 'Reel A', niche: 'product', whyNow: 'Evergreen C', hookIdea: 'Reel hook A', angle_tag: 'opinion', pillar_emoji: '', time_sensitivity: 'evergreen' },
+          { title: 'Reel B', niche: 'product', whyNow: 'Evergreen D', hookIdea: 'Reel hook B', angle_tag: 'how-to', pillar_emoji: '', time_sensitivity: 'evergreen' },
+          { title: 'Reel C', niche: 'product', whyNow: 'Evergreen E', hookIdea: 'Reel hook C', angle_tag: 'story', pillar_emoji: '', time_sensitivity: 'evergreen' },
+          { title: 'Reel D', niche: 'product', whyNow: 'Evergreen F', hookIdea: 'Reel hook D', angle_tag: 'myth-bust', pillar_emoji: '', time_sensitivity: 'evergreen' },
+        ],
+      }),
+    });
+
+    const result = await generateWeeklyPackage(42, 42);
+
+    expect(result.youtube).toHaveLength(2);
+    expect(result.reels).toHaveLength(4);
+    expect(completeOneShotWithFallback).toHaveBeenCalledTimes(1);
+    expect(completeOneShotWithFallback.mock.calls[0][2]).toBe('content_workflow_weekly');
+    expect(completeOneShotWithFallback.mock.calls[0][4]).toMatchObject({
+      model: 'gemini-2.5-flash',
+      maxTokens: 1832,
+    });
+    const rows = testDb.prepare(`
+      SELECT format, COUNT(*) AS count
+        FROM content_topic_feedback
+       WHERE user_id = 42 AND source_job = 'friday_weekly'
+       GROUP BY format
+       ORDER BY format
+    `).all();
+    expect(rows).toEqual([
+      { format: 'reel', count: 4 },
+      { format: 'youtube', count: 2 },
+    ]);
+  });
+
+  it('persists nothing when the Friday batch is short or violates the live contract', async () => {
+    const valid = (title: string) => ({
+      title,
+      niche: 'product',
+      whyNow: 'Evergreen',
+      hookIdea: 'Open strong',
+      angle_tag: 'framework',
+      pillar_emoji: '',
+      time_sensitivity: 'evergreen',
+    });
+    completeOneShotWithFallback.mockResolvedValue({
+      provider: 'gemini',
+      text: JSON.stringify({
+        youtube: [valid('Only one YouTube topic')],
+        reels: [valid('Reel A'), valid('Reel B'), valid('Reel C'), valid('')],
+      }),
+    });
+
+    const result = await generateWeeklyPackage(42, 42);
+
+    expect(result).toEqual({ youtube: [], reels: [] });
+    expect(completeOneShotWithFallback).toHaveBeenCalledTimes(1);
+    const stored = (testDb.prepare(
+      "SELECT COUNT(*) AS count FROM content_topic_feedback WHERE user_id = 42 AND source_job = 'friday_weekly'",
+    ).get() as { count: number }).count;
+    expect(stored).toBe(0);
+  });
+
+  it('rejects the whole Friday package when a topic repeats across formats', async () => {
+    const valid = (title: string, angle_tag: string) => ({
+      title,
+      niche: 'product',
+      whyNow: 'Evergreen',
+      hookIdea: `Open ${title}`,
+      angle_tag,
+      pillar_emoji: '',
+      time_sensitivity: 'evergreen',
+    });
+    completeOneShotWithFallback.mockResolvedValue({
+      provider: 'gemini',
+      text: JSON.stringify({
+        youtube: [
+          valid('Shared package topic', 'framework'),
+          valid('YouTube B', 'comparison'),
+        ],
+        reels: [
+          valid('Shared package topic', 'opinion'),
+          valid('Reel B', 'how-to'),
+          valid('Reel C', 'story'),
+          valid('Reel D', 'myth-bust'),
+        ],
+      }),
+    });
+
+    const result = await generateWeeklyPackage(42, 42);
+
+    expect(result).toEqual({ youtube: [], reels: [] });
+    expect(isDuplicateIdeaInBatch).toHaveBeenCalled();
+    const stored = (testDb.prepare(
+      "SELECT COUNT(*) AS count FROM content_topic_feedback WHERE user_id = 42 AND source_job = 'friday_weekly'",
+    ).get() as { count: number }).count;
+    expect(stored).toBe(0);
   });
 
   it('scopes topic feedback mutations and reads when userId is provided', () => {

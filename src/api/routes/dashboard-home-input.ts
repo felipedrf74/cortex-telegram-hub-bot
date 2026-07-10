@@ -11,6 +11,10 @@ import {
 } from '../../services/dashboard-home-view-state';
 import { checkSkillAccess } from '../../services/skill-tiers';
 import { getUserById, getUserByTelegramId } from '../../services/user-service';
+import {
+  entitlementPlanToSkillTier,
+  getEffectiveEntitlement,
+} from '../../services/entitlement';
 import type { Lang } from '../../utils/i18n';
 import { dedupeStrings } from './dashboard-data-fetchers';
 
@@ -133,7 +137,11 @@ export function buildDashboardHomeInput(opts: {
 function buildHomeSkillAvailability(userId: number): SkillAvailabilityModel {
   const user = getUserById(userId) || getUserByTelegramId(userId);
   const skills: HomeImpactDomain[] = ['secretary', 'training', 'cooking', 'content', 'finance'];
-  const availableSkills = skills.filter((skill) => hasHomeSkillAccess(userId, user, skill));
+  const entitlement = user ? getEffectiveEntitlement(user.id) : null;
+  const effectiveUser = user && entitlement
+    ? { id: user.id, tier: entitlementPlanToSkillTier(entitlement.plan) }
+    : null;
+  const availableSkills = skills.filter((skill) => hasHomeSkillAccess(effectiveUser, skill));
   const hiddenSkills = skills.filter((skill) => !availableSkills.includes(skill));
 
   return {
@@ -150,8 +158,7 @@ function buildHomeSkillAvailability(userId: number): SkillAvailabilityModel {
 }
 
 function hasHomeSkillAccess(
-  _userId: number,
-  user: { id: number; tier: string } | null | undefined,
+  user: { id: number; tier: string } | null,
   skill: HomeImpactDomain,
 ): boolean {
   const skillId = skill === 'training' ? 'triathlon' : skill;

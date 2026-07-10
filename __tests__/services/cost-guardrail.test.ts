@@ -200,15 +200,27 @@ describe('isUserOverDailyCap', () => {
     testDb?.close();
   });
 
-  it('allows unsubscribed user with zero spend under the Free $0.005 daily cap', () => {
-    // Hardening audit 2026-04-21: Free tier cap was $0.00 (no AI at
-    // all); business rule now sets it to $0.005/day so Secretary
-    // still works for unsubscribed users. A user with $0 spend is
-    // NOT over cap anymore.
+  it('reports paid-plan model access required for an unsubscribed user while token-zero remains separate', () => {
     const result = isUserOverDailyCap(12345);
-    expect(result.over).toBe(false);
-    expect(result.capUsd).toBe(0.005);
+    expect(result.over).toBe(true);
+    expect(result.capUsd).toBe(0);
+    expect(result.aiAccessAllowed).toBe(false);
+    expect(result.blockReason).toBe('plan_required');
     expect(result.callsToday).toBe(0);
+    expect(result.boostAvailable).toBe(false);
+  });
+
+  it('keeps dormant per-user overrides from surfacing Free included budget', () => {
+    testDb.prepare(`
+      INSERT INTO user_ai_budget_overrides (
+        user_id, daily_cost_usd, monthly_cost_usd, reason, active
+      ) VALUES (12345, 0.5, 5, 'future paid support grant', 1)
+    `).run();
+
+    const result = isUserOverDailyCap(12345);
+    expect(result.aiAccessAllowed).toBe(false);
+    expect(result.capUsd).toBe(0);
+    expect(result.monthlyCapUsd).toBe(0);
     expect(result.boostAvailable).toBe(false);
   });
 
@@ -250,7 +262,7 @@ describe('isUserOverDailyCap', () => {
     const r99 = isUserOverDailyCap(99);
     expect(r42.over).toBe(true);
     expect(r42.callsToday).toBe(1);
-    expect(r99.over).toBe(false);
+    expect(r99.over).toBe(true);
     expect(r99.callsToday).toBe(1);
   });
 
@@ -276,8 +288,8 @@ describe('isUserOverDailyCap', () => {
       VALUES (5001, 5001, 'Pro', 'pro', 'active', 'telegram', 200, 500000, 0.2)
     `).run();
     testDb.prepare(`
-      INSERT INTO subscriptions (user_id, plan, period, status, provider, updated_at)
-      VALUES (5001, 'pro', 'monthly', 'active', 'stripe', datetime('now'))
+      INSERT INTO subscriptions (user_id, plan, period, status, provider, current_period_start, current_period_end, updated_at)
+      VALUES (5001, 'pro', 'monthly', 'active', 'stripe', datetime('now', '-1 day'), datetime('now', '+29 days'), datetime('now'))
     `).run();
     testDb.prepare(`
       INSERT INTO api_usage (category, model, user_id, input_tokens, output_tokens, cost_usd, duration_ms)
@@ -299,8 +311,8 @@ describe('isUserOverDailyCap', () => {
       VALUES (5002, 5002, 'Max', 'max', 'active', 'telegram', 200, 500000, 0.6)
     `).run();
     testDb.prepare(`
-      INSERT INTO subscriptions (user_id, plan, period, status, provider, updated_at)
-      VALUES (5002, 'max', 'monthly', 'trialing', 'stripe', datetime('now'))
+      INSERT INTO subscriptions (user_id, plan, period, status, provider, current_period_start, current_period_end, updated_at)
+      VALUES (5002, 'max', 'monthly', 'trialing', 'stripe', datetime('now', '-1 day'), datetime('now', '+29 days'), datetime('now'))
     `).run();
     testDb.prepare(`
       INSERT INTO api_usage (category, model, user_id, input_tokens, output_tokens, cost_usd, duration_ms)
@@ -321,8 +333,8 @@ describe('isUserOverDailyCap', () => {
       VALUES (5004, 5004, 'Pro Override', 'pro', 'active', 'telegram', 200, 500000, 0.04)
     `).run();
     testDb.prepare(`
-      INSERT INTO subscriptions (user_id, plan, period, status, provider, updated_at)
-      VALUES (5004, 'pro', 'monthly', 'active', 'stripe', datetime('now'))
+      INSERT INTO subscriptions (user_id, plan, period, status, provider, current_period_start, current_period_end, updated_at)
+      VALUES (5004, 'pro', 'monthly', 'active', 'stripe', datetime('now', '-1 day'), datetime('now', '+29 days'), datetime('now'))
     `).run();
     testDb.prepare(`
       INSERT INTO user_ai_budget_overrides (user_id, daily_cost_usd, reason, expires_at, active)
@@ -346,8 +358,8 @@ describe('isUserOverDailyCap', () => {
       VALUES (5003, 5003, 'Pro Points', 'pro', 'active', 'telegram', 200, 500000, 0.04)
     `).run();
     testDb.prepare(`
-      INSERT INTO subscriptions (user_id, plan, period, status, provider, updated_at)
-      VALUES (5003, 'pro', 'monthly', 'active', 'stripe', datetime('now'))
+      INSERT INTO subscriptions (user_id, plan, period, status, provider, current_period_start, current_period_end, updated_at)
+      VALUES (5003, 'pro', 'monthly', 'active', 'stripe', datetime('now', '-1 day'), datetime('now', '+29 days'), datetime('now'))
     `).run();
     testDb.prepare(`
       INSERT INTO nexus_point_credits (
@@ -381,6 +393,10 @@ describe('customer-facing quota payloads', () => {
       plan: 'pro',
       usageLevel: 'exhausted',
       usageFraction: 1,
+      dailyUsageFraction: 1,
+      monthlyUsageFraction: 0.5,
+      dailyOver: true,
+      monthlyOver: false,
       callsToday: 7,
       boostAvailable: true,
       limitUsd: 0.1,
@@ -396,6 +412,25 @@ describe('customer-facing quota payloads', () => {
       totalRemainingUsd: 0.3,
       pointsPurchaseAvailable: true,
       resetAt: '2026-06-02T00:00:00.000Z',
+      dailyResetAt: '2026-06-02T00:00:00.000Z',
+      monthlyResetAt: '2026-07-01T00:00:00.000Z',
+      unblocksAt: '2026-06-02T00:00:00.000Z',
+      monthlySpentUsd: 0.6,
+      monthlyCapUsd: 1.2,
+      monthlyRemainingUsd: 0.6,
+      automationSpentTodayUsd: 0.01,
+      automationSpentMonthlyUsd: 0.1,
+      automationDailyCapUsd: 0.03,
+      automationMonthlyCapUsd: 0.36,
+      automationDailyOver: false,
+      automationMonthlyOver: false,
+      automationDailyRemainingUsd: 0.02,
+      automationMonthlyRemainingUsd: 0.26,
+      requestSource: 'interactive',
+      aiAccessAllowed: true,
+      automationAllowed: true,
+      blockReason: null,
+      entitlement: null,
     };
 
     const usagePayload = buildQuotaUsagePayload(quota);
@@ -489,8 +524,7 @@ describe('getSpendByProvider', () => {
 
 describe('150_nexus_points_usage_limits.sql', () => {
   it('keeps beta per-user daily cap below the global workspace daily cap', () => {
-    expect(getEffectiveDailyCostLimitUsd('beta')).toBeGreaterThan(0);
-    expect(getEffectiveDailyCostLimitUsd('beta')).toBeLessThan(10.0);
+    expect(getEffectiveDailyCostLimitUsd('beta')).toBe(0);
   });
 
   it('supersedes the original plan caps with the current Pro and Max daily budgets', () => {

@@ -2,8 +2,8 @@
 
 import { getDb } from './database';
 import { logger } from '../utils/logger';
-import { getEffectiveDailyCostLimitUsd, resolveBillingPlanForUser } from './plan-quotas';
 import { getActiveUserAiBudgetOverride } from './ai-budget-overrides';
+import { getEffectiveEntitlement } from './entitlement';
 import { logAudit } from './audit-trail';
 
 export const NEXUS_POINT_USD_ALLOWANCE = 0.001;
@@ -452,36 +452,56 @@ export async function settleNexusPointOverageForUser(userId: number, apiUsageId:
     const db = getDb();
     const tx = db.transaction(() => {
       const usageRow = db.prepare(`
-        SELECT id, user_id, ts, category
+        SELECT *
         FROM api_usage
         WHERE id = ? AND user_id = ?
         LIMIT 1
-      `).get(apiUsageId, userId) as { id: number; user_id: number; ts: string; category: string } | undefined;
+      `).get(apiUsageId, userId) as { id: number; user_id: number; ts: string; category: string; request_source?: string } | undefined;
       if (!usageRow) return;
+      if ((usageRow.request_source ?? 'interactive') !== 'interactive') return;
 
-      const plan = resolveBillingPlanForUser(userId);
-      const capUsd = getActiveUserAiBudgetOverride(userId)?.dailyCostUsd ?? getEffectiveDailyCostLimitUsd(plan);
+      const entitlement = getEffectiveEntitlement(userId);
+      if (!entitlement.aiAccessAllowed || !entitlement.nexusPointsAllowed) return;
+      if (!entitlement.billingPeriodStart || !entitlement.billingPeriodEnd) return;
+      const override = getActiveUserAiBudgetOverride(userId, new Date(usageRow.ts));
+      const dailyCapUsd = override?.dailyCostUsd ?? entitlement.dailyCostCapUsd;
+      const monthlyCapUsd = override?.monthlyCostUsd ?? entitlement.monthlyCostCapUsd;
       const spent = db.prepare(`
-        SELECT COALESCE(SUM(cost_usd), 0) AS spent
+        SELECT
+          COALESCE(SUM(CASE WHEN date(ts) = date(?) THEN cost_usd ELSE 0 END), 0) AS daily_spent,
+          COALESCE(SUM(CASE WHEN ts >= datetime(?) AND ts < datetime(?) THEN cost_usd ELSE 0 END), 0) AS monthly_spent
         FROM api_usage
-        WHERE user_id = ? AND date(ts) = date(?)
-      `).get(userId, usageRow.ts) as { spent: number };
+        WHERE user_id = ?
+          AND COALESCE(request_source, 'interactive') <> 'system'
+      `).get(
+        usageRow.ts,
+        entitlement.billingPeriodStart,
+        entitlement.billingPeriodEnd,
+        userId,
+      ) as { daily_spent: number; monthly_spent: number };
       const debited = db.prepare(`
-        SELECT COALESCE(SUM(d.usd_cost_debited), 0) AS debited
+        SELECT
+          COALESCE(SUM(CASE WHEN date(COALESCE(u.ts, d.created_at)) = date(?) THEN d.usd_cost_debited ELSE 0 END), 0) AS daily_debited,
+          COALESCE(SUM(CASE WHEN COALESCE(u.ts, d.created_at) >= datetime(?) AND COALESCE(u.ts, d.created_at) < datetime(?) THEN d.usd_cost_debited ELSE 0 END), 0) AS monthly_debited
         FROM nexus_point_debits d
         LEFT JOIN api_usage u ON u.id = d.api_usage_id
         WHERE d.user_id = ?
-          AND (
-            (d.api_usage_id IS NOT NULL AND date(u.ts) = date(?))
-            OR (d.api_usage_id IS NULL AND date(d.created_at) = date(?))
-          )
-      `).get(userId, usageRow.ts, usageRow.ts) as { debited: number };
-      const unsettledOverage = roundUsd((spent.spent || 0) - capUsd - (debited.debited || 0));
+      `).get(
+        usageRow.ts,
+        entitlement.billingPeriodStart,
+        entitlement.billingPeriodEnd,
+        userId,
+      ) as { daily_debited: number; monthly_debited: number };
+      const unsettledOverage = roundUsd(Math.max(
+        (spent.daily_spent || 0) - dailyCapUsd - (debited.daily_debited || 0),
+        (spent.monthly_spent || 0) - monthlyCapUsd - (debited.monthly_debited || 0),
+        0,
+      ));
       if (unsettledOverage <= 0) return;
       debitNexusPointsCore(db, userId, unsettledOverage, {
         apiUsageId: Number(apiUsageId),
-        category: 'daily_ai_overage',
-        description: `AI spend above included ${plan} daily budget for ${usageRow.category || 'api_usage'}`,
+        category: 'interactive_ai_overage',
+        description: `Interactive AI spend above included ${entitlement.plan} budget for ${usageRow.category || 'api_usage'}`,
       });
     });
     tx();

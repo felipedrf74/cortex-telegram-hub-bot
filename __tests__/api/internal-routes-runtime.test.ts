@@ -35,6 +35,15 @@ vi.mock('@anthropic-ai/sdk', () => ({
   },
 }));
 
+vi.mock('../../src/services/cost-guardrail', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../src/services/cost-guardrail')>();
+  return {
+    ...actual,
+    withAiBudgetReservation: vi.fn(async (_request: unknown, fn: () => Promise<unknown>) => fn()),
+    withSignedOuterAiBudgetReservation: vi.fn(async (_request: unknown, _marker: unknown, fn: () => Promise<unknown>) => fn()),
+  };
+});
+
 async function fetchJson(
   app: express.Express,
   pathname: string,
@@ -283,6 +292,48 @@ describe('internal routes runtime hardening', () => {
       tenantId: 456,
       jsonMode: false,
     });
+  });
+
+  it('rejects a signed-token category mismatch instead of billing a system call', async () => {
+    const complete = vi.fn(async () => ({ text: '{"ok":true}', provider: 'gemini' }));
+    vi.doMock('../../src/services/gemini-provider', () => ({
+      completeOneShotWithFallback: complete,
+    }));
+    const { createInternalAttributionToken } = await import('../../src/services/internal-attribution');
+    const token = createInternalAttributionToken({
+      userId: 123,
+      tenantId: 456,
+      category: 'content_engine_script_draft',
+    });
+
+    const { internalRoutes } = await import('../../src/api/routes/internal');
+    const app = express();
+    app.use(express.json());
+    app.use('/api/v1/internal', internalRoutes());
+
+    const res = await fetchJson(app, '/api/v1/internal/ai-complete', {
+      method: 'POST',
+      headers: {
+        'x-internal-secret': 'test-internal-secret',
+        'content-type': 'application/json',
+      },
+      body: {
+        prompt: 'repair a scoped draft',
+        category: 'content_engine_script_draft_json_repair',
+        userId: 123,
+        tenantId: 456,
+        attributionToken: token,
+      },
+    });
+
+    expect(res.status).toBe(429);
+    expect(res.body.error.code).toBe('SERVICE_DEGRADED');
+    expect(res.body.error.details).toMatchObject({
+      window: 'global',
+      unblocksAt: null,
+      retryAfterSeconds: 60,
+    });
+    expect(complete).not.toHaveBeenCalled();
   });
 
   it('fails closed when the owner bootstrap tenant is unavailable', async () => {

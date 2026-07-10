@@ -110,7 +110,9 @@ describe('Python claude_client.py — routes through TS AI proxy', () => {
   it('repairs fenced or malformed JSON instead of immediately degrading research synthesis', () => {
     expect(src).toContain('def _extract_json_candidate');
     expect(src).toContain('def _repair_json_response');
-    expect(src).toContain("_json_repair");
+    expect(src).toContain('category=category');
+    expect(src).toContain('attribution_token=attribution_token');
+    expect(src).toContain('except AiProxyError:');
     expect(src).toContain('AI JSON response repaired');
   });
 });
@@ -167,6 +169,9 @@ describe('TypeScript content-engine callers — outbound internal auth', () => {
     const src = fs.readFileSync(path.join(__dirname, '..', '..', 'src', 'commands', 'books.ts'), 'utf-8');
     expect(src).toContain('X-Internal-Secret');
     expect(src).toContain('config.contentEngine.internalApiSecret');
+    expect(src).toContain("baseCategory: 'content_engine_book'");
+    expect(src).toContain("category: 'content_engine_book'");
+    expect(src).toContain('parseForwardedAiBudgetError');
   });
 });
 

@@ -3,7 +3,7 @@ import http from 'http';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mockExtractPhotoAttachment = vi.fn();
-const mockEnforceCostGuardrails = vi.fn();
+const mockWithAiBudgetReservation = vi.fn();
 const mockGetUserLanguageById = vi.fn();
 
 vi.mock('../../src/services/photo-extraction', async () => {
@@ -15,7 +15,13 @@ vi.mock('../../src/services/photo-extraction', async () => {
 });
 
 vi.mock('../../src/services/cost-guardrail', () => ({
-  enforceCostGuardrails: (...args: unknown[]) => mockEnforceCostGuardrails(...args),
+  AiBudgetError: class MockAiBudgetError extends Error {},
+  buildQuotaExceededPayload: (quota: Record<string, unknown>) => ({
+    plan: quota.plan,
+    dailyResetAt: quota.dailyResetAt,
+    monthlyResetAt: quota.monthlyResetAt,
+  }),
+  withAiBudgetReservation: (...args: unknown[]) => mockWithAiBudgetReservation(...args),
 }));
 
 vi.mock('../../src/services/user-service', () => ({
@@ -23,30 +29,6 @@ vi.mock('../../src/services/user-service', () => ({
 }));
 
 import { attachmentRoutes } from '../../src/api/routes/attachments';
-
-function allowQuota() {
-  mockEnforceCostGuardrails.mockReturnValue({
-    block: false,
-  });
-}
-
-function blockQuota() {
-  mockEnforceCostGuardrails.mockReturnValue({
-    block: true,
-    reason: 'DAILY_LIMIT',
-    message: 'Daily limit reached.',
-    status: 429,
-    details: { retryable: true },
-    quota: {
-      spentUsd: 1,
-      capUsd: 1,
-    },
-    global: {
-      totalUsd: 1,
-      limitUsd: 10,
-    },
-  });
-}
 
 async function requestApp(
   body: unknown,
@@ -116,9 +98,9 @@ describe('attachment extraction routes', () => {
 
   beforeEach(() => {
     mockExtractPhotoAttachment.mockReset();
-    mockEnforceCostGuardrails.mockReset();
+    mockWithAiBudgetReservation.mockReset();
     mockGetUserLanguageById.mockReset();
-    allowQuota();
+    mockWithAiBudgetReservation.mockImplementation((_request, fn) => fn());
     mockGetUserLanguageById.mockReturnValue('en-US');
   });
 
@@ -223,8 +205,26 @@ describe('attachment extraction routes', () => {
     expect(mockExtractPhotoAttachment).not.toHaveBeenCalled();
   });
 
-  it('returns rate-limit errors before invoking vision extraction', async () => {
-    blockQuota();
+  it('returns stable AI quota errors before invoking vision extraction', async () => {
+    const budgetError = Object.assign(new Error('AI_DAILY_LIMIT_REACHED'), {
+      name: 'AiBudgetError',
+      decision: {
+      allowed: false,
+      code: 'AI_DAILY_LIMIT_REACHED',
+      status: 429,
+      window: 'daily',
+      message: 'Daily AI quota reached for the pro plan.',
+      quota: {
+        plan: 'pro',
+        dailyResetAt: '2026-07-10T00:00:00.000Z',
+        monthlyResetAt: '2026-08-01T00:00:00.000Z',
+      },
+      reservedCostUsd: 0.01,
+      retryAfterSeconds: 60,
+      unblocksAt: '2026-07-10T00:00:00.000Z',
+      },
+    });
+    mockWithAiBudgetReservation.mockRejectedValueOnce(budgetError);
 
     const res = await requestApp({
       attachment: {
@@ -235,7 +235,13 @@ describe('attachment extraction routes', () => {
 
     expect(res.statusCode).toBe(429);
     expect(res.body.ok).toBe(false);
-    expect(res.body.error.code).toBe('DAILY_LIMIT');
+    expect(res.body.error.code).toBe('AI_DAILY_LIMIT_REACHED');
+    expect(res.body.error.details).toMatchObject({
+      window: 'daily',
+      unblocksAt: '2026-07-10T00:00:00.000Z',
+      retryAfterSeconds: 60,
+    });
+    expect(JSON.stringify(res.body.error.details)).not.toMatch(/usd|allowance/i);
     expect(mockExtractPhotoAttachment).not.toHaveBeenCalled();
   });
 });

@@ -24,7 +24,10 @@ import {
   sendError,
   sendInternalError,
   asyncHandler,
+  toStableAiBudgetError,
 } from '../../src/api/response-helpers';
+import { ApiUsagePersistenceError } from '../../src/services/api-usage-fallback';
+import { AiBudgetError } from '../../src/services/cost-guardrail';
 
 beforeEach(() => {
   mockRecordOperatorAlert.mockReset();
@@ -104,6 +107,14 @@ describe('sendSuccess (express helper)', () => {
     expect(res.status).toHaveBeenCalledWith(201);
   });
 
+  it('sets Retry-After for quota 429 responses with a server reset delay', () => {
+    const res = mockResponse();
+    sendError(res, 'AI_DAILY_LIMIT_REACHED', 'Daily AI quota reached', 429, {
+      retryAfterSeconds: 321.2,
+    });
+    expect(res.headers['retry-after']).toBe('322');
+  });
+
   it('passes the cached flag through', () => {
     const res = mockResponse();
     sendSuccess(res, { x: 1 }, { cached: true });
@@ -173,6 +184,81 @@ describe('sendError (express helper)', () => {
       }),
     );
     expect(mockRecordOperatorAlert.mock.calls[0][0].metadata).not.toHaveProperty('rawBackendError');
+  });
+});
+
+describe('stable AI budget errors', () => {
+  it('preserves a public-safe Content Engine quota denial across the service hop', () => {
+    const forwarded = Object.assign(new Error('AI_MONTHLY_LIMIT_REACHED'), {
+      name: 'ForwardedAiBudgetError',
+      code: 'AI_MONTHLY_LIMIT_REACHED',
+      status: 429,
+      publicMessage: 'Monthly AI quota reached.',
+      details: {
+        window: 'monthly',
+        unblocksAt: '2026-08-01T00:00:00.000Z',
+        retryAfterSeconds: 900,
+      },
+    });
+
+    expect(toStableAiBudgetError(forwarded)).toEqual({
+      code: 'AI_MONTHLY_LIMIT_REACHED',
+      status: 429,
+      message: 'Monthly AI quota reached.',
+      details: {
+        window: 'monthly',
+        unblocksAt: '2026-08-01T00:00:00.000Z',
+        retryAfterSeconds: 900,
+      },
+    });
+  });
+
+  it('gives usage-persistence degradation a bounded retry delay', () => {
+    const stable = toStableAiBudgetError(new ApiUsagePersistenceError('openai', 'chat'));
+
+    expect(stable).toEqual(expect.objectContaining({
+      code: 'SERVICE_DEGRADED',
+      status: 429,
+      details: expect.objectContaining({
+        window: 'global',
+        unblocksAt: null,
+        retryAfterSeconds: 60,
+        retryable: true,
+      }),
+    }));
+  });
+
+  it('gives lock and reservation degradation a bounded retry delay', () => {
+    const stable = toStableAiBudgetError(new AiBudgetError({
+      allowed: false,
+      status: 429,
+      code: 'SERVICE_DEGRADED',
+      window: 'global',
+      message: 'Usage reservation unavailable',
+      quota: {
+        usageFraction: 0,
+        dailyUsageFraction: 0,
+        monthlyUsageFraction: 0,
+        over: false,
+        dailyOver: false,
+        monthlyOver: false,
+        requestSource: 'interactive',
+      } as any,
+      reservedCostUsd: 0,
+      retryAfterSeconds: null,
+      unblocksAt: null,
+    }));
+
+    expect(stable).toEqual(expect.objectContaining({
+      code: 'SERVICE_DEGRADED',
+      status: 429,
+      message: 'Usage reservation unavailable',
+      details: expect.objectContaining({
+        window: 'global',
+        unblocksAt: null,
+        retryAfterSeconds: 60,
+      }),
+    }));
   });
 });
 

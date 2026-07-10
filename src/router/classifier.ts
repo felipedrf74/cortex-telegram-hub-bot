@@ -7,6 +7,7 @@ import { getClassificationHints } from '../skills/skill-config';
 import { logger } from '../utils/logger';
 import { config } from '../config';
 import { runOllamaShadowClassification } from '../services/classify-shadow';
+import { rethrowAiUsageFailClosedError } from '../services/api-usage-fallback';
 import { getCurrentContext } from '../utils/request-context';
 
 export interface ConversationContext {
@@ -256,6 +257,7 @@ export async function classifyWithClaude(
       }
       result = raw;
     } catch (err) {
+      rethrowAiUsageFailClosedError(err);
       // Routing-provider classify failures should not block the chat
       // turn — log and fall through to the legacy classifier so the
       // request keeps moving. The routing provider's circuit-breaker
@@ -280,7 +282,8 @@ export async function classifyWithClaude(
   //   - skips if the live path is already Ollama (O3-A19, anti-recursion)
   //   - bounds itself with AbortController timeout (O3-A18)
   //   - never throws to this caller (the .catch swallows + logs)
-  //   - does not write api_usage / consume rate limits (O3-A12 OPTION 1)
+  //   - preflights paid eligibility, owns a separate shared-system budget
+  //     reservation, and writes zero-cost api_usage telemetry
   //
   // The shadow row is correlated to the live chat turn via requestId
   // (pulled from AsyncLocalStorage if available — null otherwise).

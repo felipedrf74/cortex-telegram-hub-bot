@@ -10,7 +10,15 @@ import { escapeHtml } from '../utils/telegram-formatter';
 import { logger } from '../utils/logger';
 import { getCurrentRequestId, generateRequestId } from '../utils/request-context';
 import { config } from '../config';
-import { contentEngineApiBaseUrl } from '../services/content-engine';
+import {
+  contentEngineApiBaseUrl,
+  parseForwardedAiBudgetError,
+} from '../services/content-engine';
+import {
+  AiBudgetError,
+  withAiBudgetReservation,
+} from '../services/cost-guardrail';
+import { createInternalAttributionToken } from '../services/internal-attribution';
 import { getContentCreatorProfile } from '../state/content-creator-profile';
 import {
   contentScopeForInsert,
@@ -146,13 +154,29 @@ async function extractAndStore(title: string, author: string, scope?: PortalBook
         'X-Request-Id': requestId,
         'X-Internal-Secret': config.contentEngine.internalApiSecret,
       },
-      body: JSON.stringify({ title, author, creator_profile: creatorProfile, language }),
+      body: JSON.stringify({
+        title,
+        author,
+        creator_profile: creatorProfile,
+        language,
+        user_id: scope?.userId,
+        tenant_id: scope?.tenantId ?? scope?.userId,
+        internal_attribution_token: scope
+          ? createInternalAttributionToken({
+              userId: scope.userId,
+              tenantId: scope.tenantId ?? scope.userId,
+              category: 'content_engine_book',
+            }) ?? undefined
+          : undefined,
+      }),
       signal: controller.signal,
     });
     clearTimeout(timer);
 
     if (!resp.ok) {
-      throw new Error(`Content Engine ${resp.status}: ${await resp.text()}`);
+      const body = await resp.text();
+      throw parseForwardedAiBudgetError(resp, body)
+        ?? new Error(`Content Engine ${resp.status}: ${body}`);
     }
 
     const data = await resp.json() as any;
@@ -263,9 +287,26 @@ export async function handleAddBookFromPortal(
   }
 
   try {
-    await extractAndStore(title, author, scope);
+    if (scope) {
+      const runId = getCurrentRequestId() || generateRequestId();
+      await withAiBudgetReservation({
+        userId: scope.userId,
+        requestSource: 'interactive',
+        baseCategory: 'content_engine_book',
+        jobName: 'content_book_extract',
+        runId,
+      }, () => extractAndStore(title, author, scope));
+    } else {
+      // Unsigned platform seed/operator work acquires the shared system
+      // reservation inside /internal/ai-complete. Do not hold a second outer
+      // system lock here without a signed re-entry token.
+      await extractAndStore(title, author);
+    }
     return { ok: true, message: `${title} extracted successfully` };
   } catch (err: any) {
+    if (err instanceof AiBudgetError || err?.name === 'AiBudgetError' || err?.name === 'ForwardedAiBudgetError') {
+      throw err;
+    }
     return { ok: false, message: `Extraction failed: ${err.message?.slice(0, 100)}` };
   }
 }

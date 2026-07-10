@@ -1564,7 +1564,7 @@ table.legacy th {
       <div class="section-header">
         <div>
           <h1 class="section-title">Users</h1>
-          <div class="section-subtitle">Manage user accounts, tiers, and skill access</div>
+          <div class="section-subtitle">Manage user accounts, legacy tier telemetry, and canonical entitlement</div>
         </div>
         <div class="section-actions">
           <button class="btn btn-ghost btn-sm" id="users-refresh-btn">
@@ -1578,7 +1578,7 @@ table.legacy th {
         <div class="table-toolbar">
           <input class="input" type="search" placeholder="Search by name, username, or ID…" id="users-search">
           <select class="input" id="users-filter-tier" style="max-width:140px">
-            <option value="">All tiers</option>
+            <option value="">All legacy tiers</option>
             <option value="owner">Owner</option>
             <option value="pro">Pro</option>
             <option value="free">Free</option>
@@ -1595,9 +1595,9 @@ table.legacy th {
             <thead>
               <tr>
                 <th class="sortable" data-sort="name">User <span class="sort-arrow">↕</span></th>
-                <th class="sortable" data-sort="tier">Tier <span class="sort-arrow">↕</span></th>
+                <th class="sortable" data-sort="tier">Legacy tier <span class="sort-arrow">↕</span></th>
                 <th class="sortable" data-sort="status">Status <span class="sort-arrow">↕</span></th>
-                <th class="sortable text-right" data-sort="limit">Daily limit <span class="sort-arrow">↕</span></th>
+                <th class="sortable text-right" data-sort="limit">Message telemetry <span class="sort-arrow">↕</span></th>
                 <th class="sortable" data-sort="lastActive">Last active <span class="sort-arrow">↕</span></th>
                 <th></th>
               </tr>
@@ -1635,6 +1635,28 @@ table.legacy th {
           <div class="kpi-value" id="ai-calls-month">—</div>
           <div class="kpi-sub" id="ai-cost-month">$—</div>
         </div>
+      </div>
+
+      <div class="card mt-4">
+        <div class="card-header">
+          <div class="card-title">AI Plan Budgets</div>
+          <span class="card-subtitle">Exact owner-only limits; customer apps receive percentages only</span>
+        </div>
+        <table class="legacy" id="ai-plan-limits-table">
+          <thead>
+            <tr>
+              <th>Plan</th>
+              <th>Daily USD</th>
+              <th>Monthly USD</th>
+              <th>Automation ceiling</th>
+              <th>Token/message fields</th>
+              <th class="text-right">Action</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr><td colspan="6"><div class="empty">Loading plan budgets…</div></td></tr>
+          </tbody>
+        </table>
       </div>
 
       <div class="grid grid-cols-2 mt-4">
@@ -3016,6 +3038,7 @@ table.legacy th {
     if (section === 'audit') loadAuditTrail();
     if (section === 'jobs') loadQuickActions();
     if (section === 'skills') loadSkillsUserSelector();
+    if (section === 'ai') loadAiPlanLimits();
     if (section === 'content') loadContentDashboard();
     if (section === 'cooking') renderCookingPortal();
     if (section === 'notifications') loadNotificationPortal();
@@ -3033,6 +3056,85 @@ table.legacy th {
       navigateTo(el.dataset.jumpTo);
     });
   });
+
+  let aiPlanLimits = [];
+
+  async function loadAiPlanLimits() {
+    const tbody = document.querySelector('#ai-plan-limits-table tbody');
+    if (!tbody) return;
+    try {
+      const response = await apiFetch('/api/plans');
+      if (!response.ok) throw new Error('plan budgets unavailable');
+      const payload = await response.json();
+      // Beta/manual grants are deliberately fixed at zero model allowance and
+      // are not an editable paid plan. Keep their seeded row out of this editor
+      // instead of rendering a Save action that the API correctly rejects.
+      aiPlanLimits = (payload.plans || []).filter(plan =>
+        ['free', 'pro', 'max', 'owner'].includes(String(plan.planId || '').toLowerCase())
+      );
+      renderAiPlanLimits();
+    } catch {
+      tbody.innerHTML = '<tr><td colspan="6"><div class="empty">Unable to load plan budgets</div></td></tr>';
+    }
+  }
+
+  function renderAiPlanLimits() {
+    const tbody = document.querySelector('#ai-plan-limits-table tbody');
+    if (!tbody) return;
+    if (aiPlanLimits.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="6"><div class="empty">No plan budgets configured</div></td></tr>';
+      return;
+    }
+    tbody.innerHTML = aiPlanLimits.map(plan => {
+      const id = String(plan.planId || '').toLowerCase();
+      const fixedZero = id === 'free';
+      const backgroundDaily = Number(plan.dailyCostUsd || 0) * 0.30;
+      const backgroundMonthly = Number(plan.monthlyCostUsd || 0) * 0.30;
+      const tokenLabel = plan.dailyTokenLimit == null ? 'tokens: —' : 'tokens: ' + fmtNum(plan.dailyTokenLimit);
+      const messageLabel = plan.dailyMessageLimit == null ? 'messages: —' : 'messages: ' + fmtNum(plan.dailyMessageLimit);
+      return '<tr>' +
+        '<td><span class="tier-badge tier-' + esc(id) + '">' + esc(plan.displayName || id) + '</span></td>' +
+        '<td><input class="input mono" style="max-width:110px" type="number" min="0" step="0.001" id="plan-daily-' + esc(id) + '" value="' + Number(plan.dailyCostUsd || 0) + '"' + (fixedZero ? ' disabled title="Paid-only invariant"' : '') + '></td>' +
+        '<td><input class="input mono" style="max-width:110px" type="number" min="0" step="0.01" id="plan-monthly-' + esc(id) + '" value="' + Number(plan.monthlyCostUsd || 0) + '"' + (fixedZero ? ' disabled title="Paid-only invariant"' : '') + '></td>' +
+        '<td class="mono">$' + backgroundDaily.toFixed(3) + '/day · $' + backgroundMonthly.toFixed(2) + '/month</td>' +
+        '<td class="text-muted" style="font-size:11px">' + tokenLabel + '<br>' + messageLabel + ' (telemetry)</td>' +
+        '<td class="text-right"><button class="btn btn-xs" data-save-plan="' + esc(id) + '"' + (fixedZero ? ' disabled title="Free AI budget is fixed at zero"' : '') + '>Save</button></td>' +
+      '</tr>';
+    }).join('');
+    tbody.querySelectorAll('[data-save-plan]').forEach(button => {
+      button.addEventListener('click', () => saveAiPlanLimit(button.dataset.savePlan));
+    });
+  }
+
+  async function saveAiPlanLimit(planId) {
+    const plan = aiPlanLimits.find(item => String(item.planId) === String(planId));
+    const dailyEl = document.getElementById('plan-daily-' + planId);
+    const monthlyEl = document.getElementById('plan-monthly-' + planId);
+    const dailyCostUsd = Number(dailyEl && dailyEl.value);
+    const monthlyCostUsd = Number(monthlyEl && monthlyEl.value);
+    if (!plan || !Number.isFinite(dailyCostUsd) || dailyCostUsd < 0 || !Number.isFinite(monthlyCostUsd) || monthlyCostUsd < 0) {
+      showToast('Daily and monthly limits must be non-negative numbers', false);
+      return;
+    }
+    try {
+      const response = await apiFetch('/api/plans/' + encodeURIComponent(planId), {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          dailyCostUsd,
+          monthlyCostUsd,
+          dailyTokenLimit: plan.dailyTokenLimit,
+          dailyMessageLimit: plan.dailyMessageLimit,
+          allowedSkills: plan.allowedSkills,
+        }),
+      });
+      if (!response.ok) throw new Error('plan update failed');
+      showToast('AI plan budget updated');
+      await loadAiPlanLimits();
+    } catch {
+      showToast('AI plan budget update failed', false);
+    }
+  }
   window.addEventListener('hashchange', () => {
     const section = location.hash.replace('#', '') || 'dashboard';
     navigateTo(section);
@@ -3700,16 +3802,18 @@ table.legacy th {
     body.innerHTML = '<div class="empty">Loading…</div>';
 
     try {
-      const [skillsRes, summaryRes, pointsRes] = await Promise.all([
+      const [skillsRes, summaryRes, pointsRes, budgetRes] = await Promise.all([
         apiFetch('/api/users/' + user.id + '/skills'),
         apiFetch('/api/users/' + user.id + '/data-summary'),
         apiFetch('/api/billing/nexus-points/packages').catch(() => null),
+        apiFetch('/api/users/' + user.id + '/ai-budget').catch(() => null),
       ]);
       const skillsData = skillsRes.ok ? await skillsRes.json() : { skills: [] };
       const summary = summaryRes.ok ? await summaryRes.json() : {};
       const pointsData = pointsRes && pointsRes.ok ? await pointsRes.json() : { packages: [], stripeEnabled: false };
+      const budgetData = budgetRes && budgetRes.ok ? await budgetRes.json() : null;
 
-      const tier = '<span class="tier-badge tier-' + (user.tier || 'free') + '">' + esc(user.tier || 'free') + '</span>';
+      const tier = '<span class="tier-badge tier-' + (user.tier || 'free') + '" title="Legacy telemetry only">legacy:' + esc(user.tier || 'free') + '</span>';
       const limit = user.daily_message_limit === 0 ? '∞' : (user.daily_message_limit || 0) + '/day';
 
       const skillIcons = { secretary: '📋', triathlon: '🏋️', content: '🎬', cooking: '🍳', finance: '💰' };
@@ -3762,12 +3866,56 @@ table.legacy th {
           '$' + Number(pkg.priceUsd || 0).toFixed(0) + ' · ' + Number(pkg.points || 0).toLocaleString() + ' NP' +
         '</option>'
       ).join('');
+      const budget = budgetData || {};
+      const budgetEntitlement = budget.entitlement || {};
+      const effectiveBudget = budget.effective || {};
+      const budgetUsage = budget.usage || {};
+      const budgetOverride = budget.override || {};
+      const budgetResets = budget.resets || {};
+      const pointsCheckoutEnabled = Boolean(pointsData.stripeEnabled && budgetEntitlement.nexusPointsAllowed);
+      const budgetPct = value => Math.max(0, Math.min(100, Math.round(Number(value || 0) * 100)));
+      const budgetRow = (label, used, cap, fraction, resetAt) =>
+        '<div style="padding:7px 0;border-bottom:1px solid var(--border)">' +
+          '<div class="flex-between"><span class="text-muted" style="font-size:12px">' + esc(label) + '</span>' +
+          '<span class="mono" style="font-size:11px">$' + Number(used || 0).toFixed(4) + ' / $' + Number(cap || 0).toFixed(2) + '</span></div>' +
+          '<div class="progress" style="margin:5px 0 3px"><div class="progress-fill" style="width:' + budgetPct(fraction) + '%"></div></div>' +
+          '<div class="text-muted" style="font-size:10px">' + budgetPct(fraction) + '% · resets ' + esc(resetAt || '—') + '</div>' +
+        '</div>';
+      const deferrals = (budget.recentDeferrals || []).slice(0, 5).map(item =>
+        '<div class="flex-between" style="padding:5px 0;border-bottom:1px solid var(--border)">' +
+          '<span style="font-size:11px">' + esc(item.jobName || item.baseCategory || item.requestSource || 'AI work') + '</span>' +
+          '<span class="badge badge-neutral" title="' + esc(item.createdAt || '') + '">' + esc(item.code || 'deferred') + '</span>' +
+        '</div>'
+      ).join('') || '<div class="text-muted" style="font-size:11px">No recorded deferrals.</div>';
+      const budgetPanel = '<div class="card-title" style="margin-bottom:var(--space-3)">AI budget and entitlement</div>' +
+        '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px">' +
+          '<span class="badge badge-neutral">Effective plan: ' + esc(budgetEntitlement.plan || 'free') + '</span>' +
+          '<span class="badge badge-' + (budgetEntitlement.aiAccessAllowed ? 'success' : 'error') + '">' +
+            (budgetEntitlement.aiAccessAllowed ? 'Interactive AI enabled' : 'AI blocked') + '</span>' +
+          '<span class="badge badge-' + (budgetEntitlement.automationAllowed ? 'success' : 'neutral') + '">' +
+            (budgetEntitlement.automationAllowed ? 'Automations enabled' : 'Automations disabled') + '</span>' +
+          '<span class="badge badge-neutral">' + esc(budgetEntitlement.source || 'unknown') + ':' + esc(budgetEntitlement.status || 'none') + '</span>' +
+        '</div>' +
+        (budgetEntitlement.blockReason ? '<div class="text-muted" style="font-size:11px;margin-bottom:8px">Block reason: <code>' + esc(budgetEntitlement.blockReason) + '</code></div>' : '') +
+        budgetRow('Daily included', budgetUsage.dailyCostUsd, effectiveBudget.dailyCostUsd, budgetUsage.dailyFraction, budgetResets.dailyAt) +
+        budgetRow('Monthly included', budgetUsage.monthlyCostUsd, effectiveBudget.monthlyCostUsd, budgetUsage.monthlyFraction, budgetResets.monthlyAt) +
+        budgetRow('Automation · daily', budgetUsage.automationDailyCostUsd, effectiveBudget.automationDailyCostUsd, budgetUsage.automationDailyFraction, budgetResets.dailyAt) +
+        budgetRow('Automation · monthly', budgetUsage.automationMonthlyCostUsd, effectiveBudget.automationMonthlyCostUsd, budgetUsage.automationMonthlyFraction, budgetResets.monthlyAt) +
+        '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:10px 0 8px">' +
+          '<label class="text-muted" style="font-size:11px">Daily override USD<input id="slideout-ai-daily" class="input" type="number" min="0" step="0.001" value="' + esc(budgetOverride.dailyCostUsd ?? '') + '" placeholder="Plan default"></label>' +
+          '<label class="text-muted" style="font-size:11px">Monthly override USD<input id="slideout-ai-monthly" class="input" type="number" min="0" step="0.01" value="' + esc(budgetOverride.monthlyCostUsd ?? '') + '" placeholder="Plan default"></label>' +
+        '</div>' +
+        '<input id="slideout-ai-reason" class="input" maxlength="280" value="' + esc(budgetOverride.reason || '') + '" placeholder="Audit reason" style="margin-bottom:8px">' +
+        '<button class="btn btn-sm" onclick="saveUserAiBudget(' + user.id + ')" style="width:100%;margin-bottom:10px">Save AI overrides</button>' +
+        '<div class="card-subtitle" style="font-size:11px;margin-bottom:4px">Recent skip reasons</div>' + deferrals +
+        '<div style="margin-bottom:var(--space-5)"></div>';
       const pointsPanel = '<div class="card-title" style="margin-bottom:var(--space-3)">Nexus Points checkout</div>' +
         '<div style="display:grid;gap:var(--space-2);margin-bottom:var(--space-5)">' +
-          '<select id="slideout-points-package" class="input" ' + (pointsData.stripeEnabled ? '' : 'disabled') + '>' + pointOptions + '</select>' +
-          '<textarea id="slideout-points-note" class="input" rows="2" maxlength="280" placeholder="Required support note" ' + (pointsData.stripeEnabled ? '' : 'disabled') + '></textarea>' +
-          '<button class="btn btn-sm" onclick="createPortalNexusPointsCheckout(' + user.id + ')" ' + (pointsData.stripeEnabled ? '' : 'disabled') + '>Create Stripe checkout URL</button>' +
-          '<div id="slideout-points-result" class="text-muted" style="font-size:12px"></div>' +
+          '<select id="slideout-points-package" class="input" ' + (pointsCheckoutEnabled ? '' : 'disabled') + '>' + pointOptions + '</select>' +
+          '<textarea id="slideout-points-note" class="input" rows="2" maxlength="280" placeholder="Required support note" ' + (pointsCheckoutEnabled ? '' : 'disabled') + '></textarea>' +
+          '<button class="btn btn-sm" onclick="createPortalNexusPointsCheckout(' + user.id + ')" ' + (pointsCheckoutEnabled ? '' : 'disabled') + '>Create Stripe checkout URL</button>' +
+          '<div id="slideout-points-result" class="text-muted" style="font-size:12px">' +
+            (!budgetEntitlement.nexusPointsAllowed ? 'Available only for active paid/founder entitlements.' : '') + '</div>' +
         '</div>';
 
       body.innerHTML =
@@ -3780,6 +3928,7 @@ table.legacy th {
         '<div class="grid" style="gap:var(--space-3);margin-bottom:var(--space-5)">' + skillsHtml + '</div>' +
         '<div class="card-title" style="margin-bottom:var(--space-3)">Data Summary</div>' +
         '<div style="margin-bottom:var(--space-4)">' + dataRows + '</div>' +
+        budgetPanel +
         pointsPanel +
         '<button class="btn btn-sm" onclick="openCookingManagerForUser(' + user.id + ')" style="width:100%">Open Cooking setup →</button>';
     } catch (err) {
@@ -3826,6 +3975,36 @@ table.legacy th {
     }
   }
   window.createPortalNexusPointsCheckout = createPortalNexusPointsCheckout;
+
+  async function saveUserAiBudget(userId) {
+    const dailyEl = document.getElementById('slideout-ai-daily');
+    const monthlyEl = document.getElementById('slideout-ai-monthly');
+    const reasonEl = document.getElementById('slideout-ai-reason');
+    const daily = dailyEl && dailyEl.value !== '' ? Number(dailyEl.value) : null;
+    const monthly = monthlyEl && monthlyEl.value !== '' ? Number(monthlyEl.value) : null;
+    if ((daily !== null && (!Number.isFinite(daily) || daily < 0)) ||
+        (monthly !== null && (!Number.isFinite(monthly) || monthly < 0))) {
+      showToast('AI overrides must be non-negative numbers', false);
+      return;
+    }
+    const response = await apiFetch('/api/users/' + userId + '/limits', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        daily_ai_cost_limit_usd: daily,
+        monthly_ai_cost_limit_usd: monthly,
+        daily_ai_cost_limit_reason: reasonEl && reasonEl.value ? reasonEl.value.trim() : null,
+      }),
+    });
+    if (!response.ok) {
+      const body = await response.json().catch(() => ({}));
+      showToast(body.message || 'Failed to save AI overrides', false);
+      return;
+    }
+    showToast(daily === null && monthly === null ? 'AI overrides cleared' : 'AI overrides saved');
+    if (currentSlideoutUser) openUserSlideout(currentSlideoutUser);
+  }
+  window.saveUserAiBudget = saveUserAiBudget;
 
   document.getElementById('slideout-suspend-btn').addEventListener('click', async () => {
     if (!currentSlideoutUser) return;

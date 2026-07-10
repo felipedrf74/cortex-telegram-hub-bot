@@ -52,7 +52,31 @@ vi.mock('../../src/config', () => ({
   },
 }));
 
-vi.mock('../../src/services/cost-guardrail', () => ({
+vi.mock('../../src/services/cost-guardrail', () => {
+  class AiBudgetError extends Error {
+    decision: any;
+    constructor(decision: any) { super(decision.code); this.name = 'AiBudgetError'; this.decision = decision; }
+  }
+  return {
+  AiBudgetError,
+  buildQuotaExceededPayload: vi.fn((quota: any) => ({ plan: quota.plan, resetAt: quota.resetAt })),
+  withAiBudgetReservation: vi.fn(async (request: any, fn: () => Promise<unknown>) => {
+    const quota = mockIsUserOverDailyCap(request.userId);
+    if (quota.over) {
+      throw new AiBudgetError({
+        allowed: false,
+        code: 'AI_DAILY_LIMIT_REACHED',
+        message: `Daily AI quota reached for the ${quota.plan} plan.`,
+        status: 429,
+        window: 'daily',
+        unblocksAt: quota.resetAt,
+        retryAfterSeconds: 60,
+        reservedCostUsd: 0.01,
+        quota,
+      });
+    }
+    return fn();
+  }),
   isUserOverDailyCap: (...args: unknown[]) => mockIsUserOverDailyCap(...args),
   buildQuotaExceededMessage: vi.fn((quota: { plan: string; resetAt: string }) => `Daily AI quota reached for the ${quota.plan} plan. Resets at ${quota.resetAt}.`),
   enforceCostGuardrails: (userId: number) => {
@@ -73,7 +97,8 @@ vi.mock('../../src/services/cost-guardrail', () => ({
     };
   },
   acquireCostLock: vi.fn(async () => () => { /* no-op */ }),
-}));
+  };
+});
 
 vi.mock('../../src/services/invoice-filer', () => ({
   analyzeInvoiceImage: vi.fn(),
@@ -601,10 +626,13 @@ describe('Finance API — tax routes', () => {
 
     expect(res.statusCode).toBe(429);
     expect(res.body.ok).toBe(false);
-    expect(res.body.error.code).toBe('daily_limit_exceeded');
-    expect(res.body.error.details).toEqual({
+    expect(res.body.error.code).toBe('AI_DAILY_LIMIT_REACHED');
+    expect(res.body.error.details).toMatchObject({
       plan: 'pro',
       resetAt: '2026-04-15T00:00:00.000Z',
+      window: 'daily',
+      unblocksAt: '2026-04-15T00:00:00.000Z',
+      retryAfterSeconds: 60,
     });
   });
 

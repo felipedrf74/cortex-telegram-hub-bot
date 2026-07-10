@@ -5,7 +5,7 @@ Owner: backend release lead (Felipe)
 Last verified: 2026-07-09
 Update policy: update after backend deploy or staging change. Workspace-level entry point is docs/release/CURRENT_RELEASE_STATE.md.
 
-Last updated: 2026-07-09
+Last updated: 2026-07-10
 
 Only the **Active Production Release** section states the current production
 truth. Dated sections below it are historical deploy evidence and may mention
@@ -41,6 +41,25 @@ older production versions.
   drift requiring an iOS source change. TestFlight/App Store upload,
   physical-device proof, and signed-device smoke were not authorized or run.
 - Backend workspace root: `/Users/felipedominguez/Desktop/Custom Connectors/Cortex/cortex-telegram-hub-bot`
+
+## Unreleased Paid-Only AI Cost Controls Candidate
+
+- Status: implemented in the isolated backend worktree branch
+  `codex/paid-ai-cost-controls`; it is not merged, staged, or deployed.
+- Companion iOS changes are isolated on `codex/paid-ai-cost-controls-ios` and
+  are likewise not merged, uploaded, or live.
+- The candidate adds canonical paid/founder entitlement resolution,
+  daily/monthly/automation cost windows, SQLite-serialized reservations,
+  provider-usage attribution, additive public quota fields and stable errors,
+  portal controls, and cost-aware Coach, Content, Channel Learning,
+  Voice Evolution, and Autoresearch execution.
+- Rollout remains observe-only by default through
+  `PAID_AI_COST_CONTROLS_ENFORCEMENT_ENABLED=false`. Staging persona tests,
+  live-provider quality proof, and production promotion still require explicit
+  owner authorization and are not evidence of the active production release.
+- Source tests were added, but the latest edits have no executed test, build,
+  typecheck, docs-audit, staging, or live validation because the owner
+  explicitly prohibited test execution in this implementation turn.
 
 ## 2026-07-09 Paid Coach Briefing Production Deploy
 

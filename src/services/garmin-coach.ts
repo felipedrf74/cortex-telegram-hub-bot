@@ -31,6 +31,7 @@ import { getUserTimezoneById, isOwnerUserRef } from './user-service';
 import { getDb } from './database';
 import { appleHealthJsonSelectColumns, parseAppleHealthDataJson } from './apple-health-encryption';
 import { requireTenantIdParam } from './tenant-scope';
+import { rethrowAiUsageFailClosedError } from './api-usage-fallback';
 
 const client = new Anthropic({
   apiKey: config.anthropic.apiKey,
@@ -56,8 +57,13 @@ export interface CoachAnalysisMeteringScope {
 
 export const COACH_ANALYSIS_SYSTEM_METERING_USER_ID = 0;
 export const COACH_ANALYSIS_SYSTEM_METERING_TENANT_ID = 0;
-const COACH_ANALYSIS_MAX_TOKENS = 1800;
-const COACH_PAYLOAD_MAX_CHARS = 16000;
+// Validated against the Pro $0.012 automation envelope at the concrete Gemini
+// Flash ceiling: bounded system + payload input and 1,400 output tokens remain
+// below the 125% reservation limit while retaining the 2,200-character brief
+// and structured actions for the bounded calendar event set.
+const COACH_ANALYSIS_MAX_TOKENS = 1400;
+const COACH_PAYLOAD_MAX_CHARS = 9000;
+const COACH_SYSTEM_PROMPT_MAX_CHARS = 6500;
 const MAX_ACTIVITY_SUMMARIES = 8;
 const MAX_SCHEDULE_CONTEXT_EVENTS = 6;
 const TRAINING_EVENT_PATTERN = /\b(gym|treino|training|workout|strength|run|running|corrida|bike|cycling|cycle|swim|yoga|walk|tempo|interval|long run|ride|lift|lower body|upper body|full body|mobility|pilates)\b/i;
@@ -586,7 +592,13 @@ export async function generateCoachBriefing(
   const errors: string[] = [];
   const collectStart = Date.now();
   let garminData: GarminCoachData | null = null;
-  const canUseScopedGarmin = isGarminConfigured() && (userId == null || isOwnerUserRef(userId));
+  const canUseScopedGarmin = isGarminConfigured() && (
+    userId == null
+    || isOwnerUserRef(userId, {
+      allowPersistedTier: false,
+      requireConfiguredIdentity: true,
+    })
+  );
 
   // ── Data source resolution ─────────────────────────────────
   // Priority: Garmin (richer data) → Apple Health (HealthKit sync)
@@ -686,7 +698,10 @@ export async function generateCoachBriefing(
   const analysisStart = Date.now();
   try {
     const today = now().toFormat('cccc, LLLL dd yyyy');
-    const systemPrompt = `${getDomainSystemPrompt('triathlon')}\n\n${COACH_ANALYSIS_PROMPT}`;
+    const systemPrompt = compactCoachPromptText(
+      `${getDomainSystemPrompt('triathlon')}\n\n${COACH_ANALYSIS_PROMPT}`,
+      COACH_SYSTEM_PROMPT_MAX_CHARS,
+    );
     const userPrompt = `DAILY COACHING ANALYSIS — ${today}
 
 ## COMPACT COACH INPUT
@@ -807,6 +822,7 @@ ${payloadStr}
       analysisMs,
     };
   } catch (err) {
+    rethrowAiUsageFailClosedError(err);
     logger.error({ err }, 'Coach analysis failed');
     return {
       message: '⚠️ Coach analysis failed\n\nAI provider error. Try /coach later.',
@@ -938,11 +954,59 @@ function sanitizeMarkdownForTelegram(text: string): string {
   return s.trim();
 }
 
-/**
- * Truncate a JSON payload to maxChars while keeping valid structure.
- * Cuts from the end and adds an ellipsis marker.
- */
+function compactCoachPromptText(value: string, maxChars: number): string {
+  if (value.length <= maxChars) return value;
+  const marker = '\n...[budget-safe prompt compaction]...\n';
+  const available = Math.max(0, maxChars - marker.length);
+  const head = Math.floor(available * 0.65);
+  return `${value.slice(0, head)}${marker}${value.slice(value.length - (available - head))}`;
+}
+
+function compactCoachJsonValue(
+  value: unknown,
+  stringMax: number,
+  arrayMax: number,
+  depth = 0,
+): unknown {
+  if (typeof value === 'string') {
+    return value.length <= stringMax ? value : `${value.slice(0, Math.max(0, stringMax - 1))}…`;
+  }
+  if (Array.isArray(value)) {
+    return value.slice(0, arrayMax).map((entry) => (
+      compactCoachJsonValue(entry, stringMax, arrayMax, depth + 1)
+    ));
+  }
+  if (value && typeof value === 'object') {
+    if (depth >= 6) return '[nested data omitted]';
+    return Object.fromEntries(Object.entries(value as Record<string, unknown>).map(([key, entry]) => [
+      key,
+      compactCoachJsonValue(entry, stringMax, arrayMax, depth + 1),
+    ]));
+  }
+  return value;
+}
+
+/** Keep budget compaction valid JSON so Coach never reasons over a cut object. */
 function truncatePayload(payload: string, maxChars: number): string {
   if (payload.length <= maxChars) return payload;
-  return payload.substring(0, maxChars) + '\n\n... [DATA TRUNCATED — remaining data omitted to fit context window]';
+  try {
+    const parsed = JSON.parse(payload) as Record<string, unknown>;
+    for (const [stringMax, arrayMax] of [[256, 6], [160, 4], [96, 3], [64, 2]] as const) {
+      const compacted = compactCoachJsonValue(parsed, stringMax, arrayMax) as Record<string, unknown>;
+      const candidate = JSON.stringify({ ...compacted, payloadCompactedToBudget: true });
+      if (candidate.length <= maxChars) return candidate;
+    }
+    return JSON.stringify({
+      payloadCompactedToBudget: true,
+      recovery: compactCoachJsonValue(parsed.recovery, 64, 2),
+      today: compactCoachJsonValue(parsed.today, 64, 2),
+      tomorrow: compactCoachJsonValue(parsed.tomorrow, 64, 2),
+      dataGaps: compactCoachJsonValue(parsed.dataGaps, 64, 2),
+    });
+  } catch {
+    return JSON.stringify({
+      payloadCompactedToBudget: true,
+      dataUnavailable: 'Coach input could not be safely compacted as JSON',
+    });
+  }
 }

@@ -2,8 +2,14 @@
 
 import { Router, Response } from 'express';
 import { AuthenticatedRequest } from '../auth-middleware';
-import { asyncHandler, sendError, sendInternalError, sendSuccess } from '../response-helpers';
-import { acquireCostLock, enforceCostGuardrails } from '../../services/cost-guardrail';
+import {
+  asyncHandler,
+  sendAiBudgetError,
+  sendError,
+  sendInternalError,
+  sendSuccess,
+} from '../response-helpers';
+import { getDailyQuotaStatus, withAiBudgetReservation } from '../../services/cost-guardrail';
 import { getUserLanguageById } from '../../services/user-service';
 import { logger } from '../../utils/logger';
 import type { Lang } from '../../utils/i18n';
@@ -27,6 +33,8 @@ import { getScript } from '../../services/content-engine';
 import { buildScriptPreflightBrief } from '../../services/content-script-quality';
 import { buildAuthorizedContentReferenceContext } from '../../services/content-reference-context';
 import { completeOneShotWithFallback, completeOneShotWithSearch } from '../../services/gemini-provider';
+import { completeOneShotWithWebSearch, isOpenAIConfigured } from '../../services/openai-provider';
+import { rethrowAiUsageFailClosedError } from '../../services/api-usage-fallback';
 import {
   buildContentGenerationPackage,
   evaluateContentGenerationQuality,
@@ -62,6 +70,8 @@ import {
   recordContentVariantFeedback,
 } from '../../services/content-token-artifact-store';
 import { storeScript } from '../../services/content-learning-store';
+import { isPaidAiCostControlsEnforcementEnabled } from '../../services/entitlement';
+import { getCurrentRequestId } from '../../utils/request-context';
 
 type ResolveContentLanguage = (req: Pick<AuthenticatedRequest, 'header'>, userId: number) => Lang;
 type EnsureValidContentRouteScope = (
@@ -145,23 +155,7 @@ export function registerContentScriptRoutes(
     const targetScriptStyle = resolveScriptStyle(scriptStyle ?? style);
     const startMs = Date.now();
 
-    // TOCTOU-safe cost window — serialize check + AI + api_usage row
-    // per user. See acquireCostLock docs in services/cost-guardrail.ts.
-    const releaseCostLock = await acquireCostLock(userId);
     try {
-      const guardrail = enforceCostGuardrails(userId);
-      if (guardrail.block) {
-        sendError(
-          res,
-          guardrail.reason,
-          guardrail.message,
-          guardrail.status,
-          guardrail.details,
-        );
-        return;
-      }
-      const budgetState = budgetStateFromQuota(guardrail.quota);
-
       // CONT-M4: load the user's Voice DNA memory from content_knowledge
       // and pass it to the script engine so scripts reflect tone, structure,
       // phrases, and creator preferences instead of only topic research.
@@ -238,13 +232,24 @@ export function registerContentScriptRoutes(
         return;
       }
 
+      // Quota proximity is response telemetry only. The canonical reservation
+      // below is the sole authority that can allow or deny provider work.
+      // Keeping this read outside the provider callback also lets getScript()
+      // return a token-zero cache hit without requiring paid headroom.
+      const budgetState: ContentBudgetState = isPaidAiCostControlsEnforcementEnabled()
+        ? budgetStateFromQuota(getDailyQuotaStatus(userId, { requestSource: 'interactive' }))
+        : 'healthy';
+
       const forceDraftFlag = isContentForceDraftOnlyEnabled(process.env, { userId, tenantId });
       const longformDisabled = isContentFullLongformDisabled(process.env, { userId, tenantId })
         && requestedMode !== 'draft'
         && normalizedFormat === 'YouTube';
       const highRiskDraftOnly = routeDecision.route === 'high_risk_review' && requestedMode !== 'draft';
+      // Included-window proximity is telemetry, not a quality switch. The
+      // reservation layer either uses valid interactive Nexus Points headroom
+      // or returns the stable quota error; it must not silently shrink a paid
+      // user's requested delivery before that decision.
       const forcedDraft = forceDraftFlag
-        || budgetState === 'constrained'
         || longformDisabled
         || highRiskDraftOnly;
       const disabledDeep = isContentDeepResearchDisabled(process.env, { userId, tenantId }) && requestedMode === 'deep';
@@ -252,17 +257,15 @@ export function registerContentScriptRoutes(
       const genMode = forcedDraft || disabledDeep || disabledFresh ? 'draft' : requestedMode;
       const downgradeReason = forceDraftFlag
         ? 'force_draft_only'
-        : budgetState === 'constrained'
-          ? 'budget_constrained'
-          : longformDisabled
-            ? 'longform_disabled'
-            : highRiskDraftOnly
-              ? 'high_risk_draft_only'
-              : disabledDeep
-                ? 'deep_research_disabled'
-                : disabledFresh
-                  ? 'fresh_research_disabled'
-                  : 'none';
+        : longformDisabled
+          ? 'longform_disabled'
+          : highRiskDraftOnly
+            ? 'high_risk_draft_only'
+            : disabledDeep
+              ? 'deep_research_disabled'
+              : disabledFresh
+                ? 'fresh_research_disabled'
+                : 'none';
       const effectiveRouteDecision = routeContentResearch({
         topic: topic.trim(),
         mode: genMode,
@@ -342,11 +345,11 @@ export function registerContentScriptRoutes(
             maxChars: 700,
           },
           {
-            sectionName: 'budget_hints',
-            text: `budgetState=${budgetState}; draftFirst=true; prefer compact source packages and section expansion over full long-form by default.`,
+            sectionName: 'delivery_quality_contract',
+            text: `Effective mode=${genMode}. Satisfy this mode's requested output contract fully. Budget enforcement is external to the model and must not shorten, simplify, or reduce delivery quality.`,
             required: true,
             cacheable: false,
-            source: 'cost-guardrail',
+            source: 'code',
             maxChars: 500,
           },
         ],
@@ -373,6 +376,14 @@ export function registerContentScriptRoutes(
         resolvedRegenerationSeed,
         creatorProfile,
         tenantId,
+        (providerCall) => withAiBudgetReservation({
+          userId,
+          requestSource: 'interactive',
+          baseCategory: `content_engine_script_${genMode}`,
+          jobName: 'content_script_generate',
+          runId: getCurrentRequestId() ?? null,
+          estimatedCostUsd: estimatedCost.estimatedCostUsd,
+        }, providerCall),
       );
       const elapsedMs = Date.now() - startMs;
       // 2026-05-18 phase2-qa P1: previously `cacheHit = elapsedMs < 500` —
@@ -551,9 +562,8 @@ export function registerContentScriptRoutes(
       sendSuccess(res, savedIdea ? { ...scriptResponse, savedIdea } : scriptResponse);
     } catch (err: any) {
       logger.error({ err, topic }, 'iOS content/script failed');
+      if (sendAiBudgetError(res, err)) return;
       sendInternalError(res, 'Script generation failed');
-    } finally {
-      releaseCostLock();
     }
   }));
 
@@ -651,19 +661,11 @@ export function registerContentScriptRoutes(
       return;
     }
 
-    const releaseCostLock = await acquireCostLock(userId);
     const startMs = Date.now();
     try {
-      const guardrail = enforceCostGuardrails(userId);
-      if (guardrail.block) {
-        sendError(res, guardrail.reason, guardrail.message, guardrail.status, guardrail.details);
-        return;
-      }
-      const budgetState = budgetStateFromQuota(guardrail.quota);
-      if (budgetState === 'exhausted') {
-        sendError(res, 'CONTENT_BUDGET_EXHAUSTED', requestLanguage.startsWith('pt') ? 'Orçamento de conteúdo esgotado.' : 'Content budget exhausted.', 429);
-        return;
-      }
+      const budgetState: ContentBudgetState = isPaidAiCostControlsEnforcementEnabled()
+        ? budgetStateFromQuota(getDailyQuotaStatus(userId, { requestSource: 'interactive' }))
+        : 'healthy';
 
       const searchPrompt = [
         `Topic: ${topic}`,
@@ -671,12 +673,63 @@ export function registerContentScriptRoutes(
         'Return 3 to 5 short source notes. No long quotes, no raw article text, no private data.',
         requestLanguage.startsWith('pt') ? 'Escreva as notas no idioma do usuário.' : 'Write source notes in the user language.',
       ].join('\n');
-      const { text, sources } = await completeOneShotWithSearch(
-        'Nexus Content research refresh. Summarize sources compactly; do not generate a script.',
-        searchPrompt,
-        'content_research_refresh',
-        { maxTokens: 900, temperature: 0.2, userId, tenantId: routeTenantId },
-      );
+      const { text, sources, researchProvider } = await withAiBudgetReservation({
+        userId,
+        requestSource: 'interactive',
+        baseCategory: 'content_research_refresh',
+        jobName: 'content_research_refresh',
+        runId: getCurrentRequestId() ?? null,
+      }, async () => {
+        const systemPrompt = 'Nexus Content research refresh. Summarize sources compactly; do not generate a script.';
+        const providerOptions = { maxTokens: 900, temperature: 0.2, userId, tenantId: routeTenantId };
+        let openAiAttempted = false;
+        const completeWithBoundedOpenAi = async () => {
+          openAiAttempted = true;
+          const result = await completeOneShotWithWebSearch(
+            systemPrompt,
+            searchPrompt,
+            'content_research_refresh_openai_web_search',
+            providerOptions,
+          );
+          return { ...result, researchProvider: 'openai-web-search' };
+        };
+
+        if (isPaidAiCostControlsEnforcementEnabled() && isOpenAIConfigured()) {
+          try {
+            return await completeWithBoundedOpenAi();
+          } catch (err) {
+            rethrowAiUsageFailClosedError(err);
+            logger.warn({ err }, 'Bounded OpenAI research refresh failed; trying Gemini grounding');
+          }
+        }
+
+        let geminiError: unknown;
+        try {
+          const result = await completeOneShotWithSearch(
+            systemPrompt,
+            searchPrompt,
+            'content_research_refresh',
+            providerOptions,
+          );
+          return { ...result, researchProvider: 'gemini-search' };
+        } catch (err) {
+          geminiError = err;
+          if (!isProviderHeadroomDenial(err)) rethrowAiUsageFailClosedError(err);
+        }
+
+        // Gemini grounding's list-price maximum alone can exceed Pro
+        // headroom. One provider-capped OpenAI web search is cheaper and is
+        // rechecked under this same locked reservation before network I/O.
+        if (!openAiAttempted && isOpenAIConfigured()) {
+          try {
+            return await completeWithBoundedOpenAi();
+          } catch (err) {
+            rethrowAiUsageFailClosedError(err);
+            if (!isProviderHeadroomDenial(geminiError)) throw err;
+          }
+        }
+        throw geminiError;
+      });
       const refreshedSummary = compactSourceSummary([
         ...sanitizeSourceSummary([text]),
         ...sources.slice(0, 4).map((source) => `Source: ${source}`),
@@ -686,7 +739,7 @@ export function registerContentScriptRoutes(
         topic,
         script,
         action: 'refresh_research',
-        provider: 'gemini-search',
+        provider: researchProvider,
         kind: 'research_refresh',
         startMs,
         budgetState,
@@ -697,11 +750,17 @@ export function registerContentScriptRoutes(
       }));
     } catch (err: any) {
       logger.error({ err, topic }, 'iOS content/script research refresh failed');
+      if (sendAiBudgetError(res, err)) return;
       sendInternalError(res, 'Research refresh failed');
-    } finally {
-      releaseCostLock();
     }
   }));
+}
+
+function isProviderHeadroomDenial(error: unknown): boolean {
+  const candidate = error as { name?: string; decision?: { code?: string } } | null;
+  return candidate?.name === 'AiBudgetError'
+    && (candidate.decision?.code === 'AI_DAILY_LIMIT_REACHED'
+      || candidate.decision?.code === 'AI_MONTHLY_LIMIT_REACHED');
 }
 
 type ScriptEditKind = 'expand' | 'rewrite';
@@ -755,19 +814,11 @@ async function handleScriptEditRoute(
     return;
   }
 
-  const releaseCostLock = await acquireCostLock(userId);
   const startMs = Date.now();
   try {
-    const guardrail = enforceCostGuardrails(userId);
-    if (guardrail.block) {
-      sendError(res, guardrail.reason, guardrail.message, guardrail.status, guardrail.details);
-      return;
-    }
-    const budgetState = budgetStateFromQuota(guardrail.quota);
-    if (budgetState === 'exhausted') {
-      sendError(res, 'CONTENT_BUDGET_EXHAUSTED', requestLanguage.startsWith('pt') ? 'Orçamento de conteúdo esgotado.' : 'Content budget exhausted.', 429);
-      return;
-    }
+    const budgetState: ContentBudgetState = isPaidAiCostControlsEnforcementEnabled()
+      ? budgetStateFromQuota(getDailyQuotaStatus(userId, { requestSource: 'interactive' }))
+      : 'healthy';
     const systemPrompt = buildScriptEditSystemPrompt(options.kind, requestLanguage);
     const userPrompt = buildScriptEditUserPrompt({
       kind: options.kind,
@@ -778,20 +829,27 @@ async function handleScriptEditRoute(
       sourceSummary,
       requestLanguage,
     });
-    const { text, provider } = await completeOneShotWithFallback(
-      systemPrompt,
-      userPrompt,
-      options.kind === 'expand' ? 'content_script_expand' : 'content_script_rewrite',
-      async () => {
-        throw new Error('Anthropic fallback disabled for content script edit path');
-      },
-      {
-        maxTokens: options.kind === 'expand' ? 1800 : 900,
-        temperature: options.kind === 'expand' ? 0.45 : 0.35,
-        userId,
-        tenantId: routeTenantId,
-      },
-    );
+    const baseCategory = options.kind === 'expand' ? 'content_script_expand' : 'content_script_rewrite';
+    const { text, provider } = await withAiBudgetReservation({
+      userId,
+      requestSource: 'interactive',
+      baseCategory,
+      jobName: baseCategory,
+      runId: getCurrentRequestId() ?? null,
+    }, () => completeOneShotWithFallback(
+        systemPrompt,
+        userPrompt,
+        baseCategory,
+        async () => {
+          throw new Error('Anthropic fallback disabled for content script edit path');
+        },
+        {
+          maxTokens: options.kind === 'expand' ? 1800 : 900,
+          temperature: options.kind === 'expand' ? 0.45 : 0.35,
+          userId,
+          tenantId: routeTenantId,
+        },
+      ));
     const edited = cleanRequiredString(text, 24_000) ?? '';
     sendSuccess(res, buildScriptEditResponse({
       topic,
@@ -808,9 +866,8 @@ async function handleScriptEditRoute(
     }));
   } catch (err: any) {
     logger.error({ err, topic, action }, `iOS content/script ${options.kind} failed`);
+    if (sendAiBudgetError(res, err)) return;
     sendInternalError(res, options.kind === 'expand' ? 'Script expansion failed' : 'Script rewrite failed');
-  } finally {
-    releaseCostLock();
   }
 }
 

@@ -43,7 +43,9 @@ import { DomainName, DomainMessage, ClassificationResult } from '../domains/type
 import { getClassifierSystemPrompt, getDomainSystemPrompt, getOllamaClassifierSystemPromptCompact } from './anthropic';
 import { LocalLLMError, type LocalLLMErrorKind } from './local-llm-error';
 import { estimateTokens, estimateTokensTotal } from './token-estimator';
-import { insertApiUsageFallback } from './api-usage-fallback';
+import { insertApiUsageFallback, tripApiUsagePersistenceFailure } from './api-usage-fallback';
+import { resolveApiUsageAttribution } from './api-usage-attribution';
+import { assertAiBudgetReservationForProvider } from './cost-guardrail';
 import {
   checkAndConsumeLocalLLMRateLimit,
   type LocalLLMRateLimitScope,
@@ -532,14 +534,15 @@ async function logOllamaUsage(
 ): Promise<void> {
   try {
     const db = getDb();
+    const attribution = resolveApiUsageAttribution(category, userId);
     db.prepare(`
       INSERT INTO api_usage (
         category, model, tenant_id, user_id,
         input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
         cost_usd, duration_ms, provider, pricing_status, pricing_model_key,
-        local_request_units
+        local_request_units, request_source, job_name, base_category, run_id
       )
-      VALUES (?, ?, ?, ?, ?, ?, 0, 0, 0, ?, 'ollama', 'zero-cost', ?, 1)
+      VALUES (?, ?, ?, ?, ?, ?, 0, 0, 0, ?, 'ollama', 'zero-cost', ?, 1, ?, ?, ?, ?)
     `).run(
       category,
       model,
@@ -549,13 +552,11 @@ async function logOllamaUsage(
       metrics.evalCount ?? 0,
       durationMs,
       modelDigest ?? model,
+      attribution.requestSource,
+      attribution.jobName,
+      attribution.baseCategory,
+      attribution.runId,
     );
-    pushEvent({
-      ts: new Date().toISOString(),
-      type: 'api_call',
-      summary: `Ollama ${model}: ${metrics.promptEvalCount ?? 0}+${metrics.evalCount ?? 0} tokens (local, $0)`,
-      durationMs,
-    });
   } catch (err) {
     // Fall back to the shared inserter. It tolerates schema drift if the
     // local_request_units column is missing on an older DB.
@@ -577,8 +578,23 @@ async function logOllamaUsage(
         localRequestUnits: 1,
       });
     } catch (fallbackErr) {
-      logger.warn({ err: fallbackErr }, 'Failed to log Ollama usage');
+      const persistenceError = tripApiUsagePersistenceFailure('ollama', category);
+      logger.error({ err: fallbackErr, code: persistenceError.code }, 'Failed to log Ollama usage; AI usage persistence degraded');
+      throw persistenceError;
     }
+  }
+
+  // Telemetry is best-effort and intentionally outside the INSERT fallback
+  // boundary so a post-insert event failure cannot duplicate the usage row.
+  try {
+    pushEvent({
+      ts: new Date().toISOString(),
+      type: 'api_call',
+      summary: `Ollama ${model}: ${metrics.promptEvalCount ?? 0}+${metrics.evalCount ?? 0} tokens (local, $0)`,
+      durationMs,
+    });
+  } catch (eventErr) {
+    logger.warn({ err: eventErr, userId, category }, 'Failed to publish Ollama usage telemetry');
   }
 }
 
@@ -797,9 +813,11 @@ export class OllamaProvider implements AIProvider {
       },
     };
 
-    // O3-A12 OPTION 1 + O3-A19: shadow path suppresses api_usage and
-    // bypasses local LLM rate-limiting; live path is unchanged.
-    const recordUsage = options?.recordUsage !== false && options?.source !== 'shadow';
+    // Shadow calls are explicitly metered by classify-shadow.ts under their
+    // own reservation. Keep `recordUsage:false` only as an operator/offline
+    // escape hatch; the source label alone must never make a model call
+    // invisible to canonical usage accounting.
+    const recordUsage = options?.recordUsage !== false;
 
     let lastBadText = '';
     for (let attempt = 0; attempt < 2; attempt++) {
@@ -1140,11 +1158,10 @@ export class OllamaProvider implements AIProvider {
     userId?: number;
     tenantId?: number;
     /**
-     * O3-A12 OPTION 1: when false, suppress api_usage write AND skip the
-     * rate-limit check. Used by shadow-classify so:
-     *   - shadow calls don't burn per-user local LLM quota
-     *   - cost/usage dashboards stay clean (no api_usage rows to filter)
-     * Telemetry still flows via classify_shadow_runs.
+     * When false, suppress api_usage write AND skip the rate-limit check.
+     * Runtime shadow classification no longer uses this bypass: all model
+     * calls must be gated and recorded. It remains only for explicitly
+     * controlled offline/operator evaluations.
      */
     recordUsage?: boolean;
     /**
@@ -1170,7 +1187,13 @@ export class OllamaProvider implements AIProvider {
       externalSignal,
       timeoutMsOverride,
     } = args;
-    // O3-A12 OPTION 1: shadow calls bypass rate-limiting (no quota burn).
+    // Entitlement/budget denial must happen before the local capacity meter.
+    // Otherwise an ineligible request could consume a per-user/global Ollama
+    // rate-limit unit even though it is forbidden from reaching the model.
+    assertAiBudgetReservationForProvider({ userId, category, maxCostUsd: 0 });
+
+    // Explicit offline recordUsage=false calls bypass rate-limiting. Runtime
+    // shadow calls are metered and therefore take the normal path.
     if (recordUsage) {
       const scope = rateLimitScope(taskType);
       const rate = checkAndConsumeLocalLLMRateLimit({ userId, scope });
@@ -1184,6 +1207,10 @@ export class OllamaProvider implements AIProvider {
     }
 
     return withQueueSlot(taskType, async () => {
+      // Queue wait can be non-trivial. Revalidate immediately before the HTTP
+      // request so a provider call never relies only on a stale pre-queue
+      // decision (the first check above still keeps ineligible work out early).
+      assertAiBudgetReservationForProvider({ userId, category, maxCostUsd: 0 });
       const t0 = Date.now();
       const effectiveTimeoutMs = timeoutMsOverride ?? config.ollama.timeoutMs;
       const response = await ollamaChat(request, effectiveTimeoutMs, externalSignal);
@@ -1215,7 +1242,7 @@ export class OllamaProvider implements AIProvider {
         recordUsage ? 'OllamaProvider call complete' : 'OllamaProvider shadow call complete',
       );
 
-      // O3-A12 OPTION 1: only write api_usage when recordUsage=true.
+      // Controlled offline calls may opt out; runtime paths keep this true.
       if (recordUsage) {
         await logOllamaUsage(category, request.model, modelDigest, durationMs, md, userId, tenantId);
       }

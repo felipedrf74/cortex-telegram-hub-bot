@@ -1,19 +1,14 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
-import { config } from '../config';
-import { getDb } from './database';
-import { isOwnerUserRef } from './user-service';
-
 /**
  * Central plan-quota registry + portal override layer.
  *
- * Hardening audit 2026-04-21:
- *   - Free tier daily cost cap was `0` (i.e. "no AI at all"). Business
- *     rule is `$0.005/day` so Free users get a taste of the secretary
- *     AI path before needing to upgrade.
- *   - Defaults now live alongside a runtime override (`setPlanConfig`)
+ * Paid-only cost controls 2026-07-09:
+ *   - Free and beta/manual grants have zero model-backed allowance.
+ *     Deterministic Secretary reads/actions are gated separately.
+ *   - Daily and monthly defaults live alongside runtime overrides
  *     so the portal admin surface can mutate the cap without a
  *     redeploy. Persistence is the caller's concern (DB-backed portal
- *     route uses `plan_configs` table — see migration 075).
+ *     route uses `plan_configs` table — see migrations 075 and 226).
  *
  * This module is the SINGLE source of truth for "what cap applies to
  * plan X"; every enforcement path (cost-guardrail, entitlement
@@ -23,18 +18,14 @@ import { isOwnerUserRef } from './user-service';
 export type BillingPlan = 'free' | 'pro' | 'max' | 'owner' | 'beta';
 export type UsageLevel = 'none' | 'enhanced' | 'maximum' | 'owner';
 
-/**
- * Free tier daily cost budget per business rule (2026-04-21):
- * users without an active subscription + no founder assignment get
- * a tiny daily AI budget so the Secretary skill is still usable, but
- * heavier skills remain locked behind the paid plans.
- */
-export const FREE_DAILY_COST_CAP_USD = 0.005;
-const GLOBAL_DAILY_COST_LIMIT_USD = config.aiSafety?.globalDailyLimitUsd ?? 10;
-export const BETA_DAILY_COST_CAP_USD = Math.min(
-  1.0,
-  Math.max(0, GLOBAL_DAILY_COST_LIMIT_USD - 0.01),
-);
+/** Free has no model-backed budget; token-zero Secretary remains available. */
+export const FREE_DAILY_COST_CAP_USD = 0;
+export const FREE_MONTHLY_COST_CAP_USD = 0;
+export const BETA_DAILY_COST_CAP_USD = 0;
+export const BETA_MONTHLY_COST_CAP_USD = 0;
+export const SYSTEM_DAILY_COST_CAP_USD = 0.10;
+export const SYSTEM_MONTHLY_COST_CAP_USD = 0.30;
+export const AUTOMATION_BUDGET_FRACTION = 0.30;
 
 const DEFAULT_EFFECTIVE_DAILY_COST_LIMITS: Record<BillingPlan, number> = {
   free: FREE_DAILY_COST_CAP_USD,
@@ -42,6 +33,14 @@ const DEFAULT_EFFECTIVE_DAILY_COST_LIMITS: Record<BillingPlan, number> = {
   max: 0.06,
   owner: 100,
   beta: BETA_DAILY_COST_CAP_USD,
+};
+
+const DEFAULT_EFFECTIVE_MONTHLY_COST_LIMITS: Record<BillingPlan, number> = {
+  free: FREE_MONTHLY_COST_CAP_USD,
+  pro: 1.20,
+  max: 1.80,
+  owner: 3000,
+  beta: BETA_MONTHLY_COST_CAP_USD,
 };
 
 /**
@@ -52,7 +51,8 @@ const DEFAULT_EFFECTIVE_DAILY_COST_LIMITS: Record<BillingPlan, number> = {
  * `loadPlanConfigOverridesFromDb()` on startup so the in-memory
  * registry reflects persisted values across restarts.
  */
-const portalOverrides: Partial<Record<BillingPlan, number>> = {};
+const portalDailyOverrides: Partial<Record<BillingPlan, number>> = {};
+const portalMonthlyOverrides: Partial<Record<BillingPlan, number>> = {};
 
 /**
  * Parallel override for per-plan allowed-skills sets. Populated from
@@ -76,15 +76,37 @@ const PLAN_USAGE_LEVELS: Record<BillingPlan, UsageLevel> = {
   pro: 'enhanced',
   max: 'maximum',
   owner: 'owner',
-  beta: 'owner',
+  beta: 'none',
 };
 
+function isZeroModelBudgetPlan(plan: BillingPlan): boolean {
+  return plan === 'free' || plan === 'beta';
+}
+
 export function getEffectiveDailyCostLimitUsd(plan: BillingPlan): number {
+  // Paid-only invariant: neither stale DB rows nor runtime portal setters may
+  // manufacture included model budget for Free/beta accounts.
+  if (isZeroModelBudgetPlan(plan)) return 0;
   // Portal override wins when present — lets admin tune caps live.
-  if (plan in portalOverrides && typeof portalOverrides[plan] === 'number') {
-    return portalOverrides[plan] as number;
+  if (plan in portalDailyOverrides && typeof portalDailyOverrides[plan] === 'number') {
+    return portalDailyOverrides[plan] as number;
   }
   return DEFAULT_EFFECTIVE_DAILY_COST_LIMITS[plan];
+}
+
+export function getEffectiveMonthlyCostLimitUsd(plan: BillingPlan): number {
+  if (isZeroModelBudgetPlan(plan)) return 0;
+  if (plan in portalMonthlyOverrides && typeof portalMonthlyOverrides[plan] === 'number') {
+    return portalMonthlyOverrides[plan] as number;
+  }
+  return DEFAULT_EFFECTIVE_MONTHLY_COST_LIMITS[plan];
+}
+
+export function getAutomationCostLimits(plan: BillingPlan): { dailyCostUsd: number; monthlyCostUsd: number } {
+  return {
+    dailyCostUsd: getEffectiveDailyCostLimitUsd(plan) * AUTOMATION_BUDGET_FRACTION,
+    monthlyCostUsd: getEffectiveMonthlyCostLimitUsd(plan) * AUTOMATION_BUDGET_FRACTION,
+  };
 }
 
 export function getStoredDailyCostLimitUsdForTier(tier: 'free' | 'pro' | 'max' | 'owner'): number {
@@ -95,19 +117,6 @@ export function getUsageLevelForPlan(plan: BillingPlan): UsageLevel {
   return PLAN_USAGE_LEVELS[plan];
 }
 
-function isStagingRuntime(): boolean {
-  return process.env.STAGING === 'true' || process.env.NODE_ENV === 'staging';
-}
-
-function stagingBypassTierAllowlist(): Set<string> {
-  return new Set(
-    (process.env.NEXUS_STAGING_BILLING_BYPASS_TIERS || 'owner,beta')
-      .split(',')
-      .map((tier) => tier.trim().toLowerCase())
-      .filter(Boolean),
-  );
-}
-
 /**
  * Resolve the billing plan from canonical server-side state.
  *
@@ -115,45 +124,15 @@ function stagingBypassTierAllowlist(): Set<string> {
  * Nexus Points settlement so both paths agree on the included daily budget.
  */
 export function resolveBillingPlanForUser(userId: number): BillingPlan {
-  const db = getDb();
-
-  let isOwner = isOwnerUserRef(userId);
-  let userTier: string | null = null;
-
+  // Keep this compatibility export, but delegate to the canonical entitlement
+  // resolver. Dynamic require avoids the plan-quotas <-> entitlement import
+  // cycle at module initialization time.
   try {
-    const user = db.prepare(
-      'SELECT telegram_id, tier FROM users WHERE id = ?'
-    ).get(userId) as { telegram_id: number | null; tier: string | null } | undefined;
-    userTier = user?.tier ?? null;
-    if (user?.tier === 'owner') isOwner = true;
+    const { getEffectiveEntitlement } = require('./entitlement') as typeof import('./entitlement');
+    return getEffectiveEntitlement(userId).plan;
   } catch {
-    userTier = null;
+    return 'free';
   }
-
-  if (isOwner) return 'owner';
-
-  if (!config.billing.paywallEnabled && isStagingRuntime()) {
-    const allowlist = stagingBypassTierAllowlist();
-    if (userTier && allowlist.has(userTier.toLowerCase())) return 'beta';
-  }
-
-  try {
-    const sub = db.prepare(
-      'SELECT plan, status FROM subscriptions WHERE user_id = ?'
-    ).get(userId) as { plan: string; status: string } | undefined;
-
-    if (sub && ['active', 'trialing'].includes(sub.status) && (sub.plan === 'pro' || sub.plan === 'max')) {
-      return sub.plan;
-    }
-  } catch {
-    // Fall back to the users table below.
-  }
-
-  if (userTier === 'beta') return 'beta';
-  if (userTier === 'max') return 'max';
-  if (userTier === 'pro') return 'pro';
-
-  return 'free';
 }
 
 /**
@@ -165,12 +144,29 @@ export function resolveBillingPlanForUser(userId: number): BillingPlan {
  * default.
  */
 export function setPlanDailyCostCapOverride(plan: BillingPlan, capUsd: number | null): void {
+  if (isZeroModelBudgetPlan(plan)) {
+    delete portalDailyOverrides[plan];
+    return;
+  }
   if (capUsd === null) {
-    delete portalOverrides[plan];
+    delete portalDailyOverrides[plan];
     return;
   }
   if (!Number.isFinite(capUsd) || capUsd < 0) return;
-  portalOverrides[plan] = capUsd;
+  portalDailyOverrides[plan] = capUsd;
+}
+
+export function setPlanMonthlyCostCapOverride(plan: BillingPlan, capUsd: number | null): void {
+  if (isZeroModelBudgetPlan(plan)) {
+    delete portalMonthlyOverrides[plan];
+    return;
+  }
+  if (capUsd === null) {
+    delete portalMonthlyOverrides[plan];
+    return;
+  }
+  if (!Number.isFinite(capUsd) || capUsd < 0) return;
+  portalMonthlyOverrides[plan] = capUsd;
 }
 
 /**
@@ -206,8 +202,11 @@ export function getPlanAllowedSkillsOverride(plan: BillingPlan): ReadonlySet<str
 
 /** Test-only: reset all portal overrides between cases. */
 export function _resetPortalOverridesForTests(): void {
-  for (const key of Object.keys(portalOverrides) as BillingPlan[]) {
-    delete portalOverrides[key];
+  for (const key of Object.keys(portalDailyOverrides) as BillingPlan[]) {
+    delete portalDailyOverrides[key];
+  }
+  for (const key of Object.keys(portalMonthlyOverrides) as BillingPlan[]) {
+    delete portalMonthlyOverrides[key];
   }
   for (const key of Object.keys(portalAllowedSkills) as BillingPlan[]) {
     delete portalAllowedSkills[key];
@@ -217,8 +216,17 @@ export function _resetPortalOverridesForTests(): void {
 /** Returns the current effective registry (for admin/debug/telemetry). */
 export function snapshotPlanCaps(): Record<BillingPlan, number> {
   const snap = { ...DEFAULT_EFFECTIVE_DAILY_COST_LIMITS };
-  for (const key of Object.keys(portalOverrides) as BillingPlan[]) {
-    const override = portalOverrides[key];
+  for (const key of Object.keys(portalDailyOverrides) as BillingPlan[]) {
+    const override = portalDailyOverrides[key];
+    if (typeof override === 'number') snap[key] = override;
+  }
+  return snap;
+}
+
+export function snapshotPlanMonthlyCaps(): Record<BillingPlan, number> {
+  const snap = { ...DEFAULT_EFFECTIVE_MONTHLY_COST_LIMITS };
+  for (const key of Object.keys(portalMonthlyOverrides) as BillingPlan[]) {
+    const override = portalMonthlyOverrides[key];
     if (typeof override === 'number') snap[key] = override;
   }
   return snap;
@@ -226,9 +234,9 @@ export function snapshotPlanCaps(): Record<BillingPlan, number> {
 
 /**
  * Hydrate the in-memory portal-override registry from the DB's
- * `plan_configs` table (see migration 075). Called once at startup
- * and again whenever the portal UI writes a new config. Silently
- * no-ops if the table is missing — this lets legacy environments
+ * `plan_configs` table (created by migration 075 and extended by migration
+ * 226). Called once at startup and again whenever the portal UI writes a new
+ * config. Silently no-ops if the table is missing — this lets legacy environments
  * (pre-migration) still boot.
  *
  * The DB is queried through a callback (avoid importing `database`
@@ -245,14 +253,27 @@ export function applyPlanConfigRows(
   rows: ReadonlyArray<{
     plan_id: string;
     daily_cost_usd: number;
+    monthly_cost_usd?: number | null;
     allowed_skills_json?: string | null;
   }>,
 ): void {
   for (const row of rows) {
     const plan = row.plan_id as BillingPlan;
     if (!(plan in DEFAULT_EFFECTIVE_DAILY_COST_LIMITS)) continue; // unknown plan name — skip
-    if (typeof row.daily_cost_usd === 'number' && Number.isFinite(row.daily_cost_usd)) {
-      portalOverrides[plan] = row.daily_cost_usd;
+    if (isZeroModelBudgetPlan(plan)) {
+      delete portalDailyOverrides[plan];
+      delete portalMonthlyOverrides[plan];
+    } else {
+      if (typeof row.daily_cost_usd === 'number' && Number.isFinite(row.daily_cost_usd) && row.daily_cost_usd >= 0) {
+        portalDailyOverrides[plan] = row.daily_cost_usd;
+      } else {
+        delete portalDailyOverrides[plan];
+      }
+      if (typeof row.monthly_cost_usd === 'number' && Number.isFinite(row.monthly_cost_usd) && row.monthly_cost_usd >= 0) {
+        portalMonthlyOverrides[plan] = row.monthly_cost_usd;
+      } else if (row.monthly_cost_usd !== undefined) {
+        delete portalMonthlyOverrides[plan];
+      }
     }
     // Best-effort parse of the allowed_skills_json column. A malformed
     // JSON payload leaves the compiled-in rule intact — we never want

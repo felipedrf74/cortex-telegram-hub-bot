@@ -78,6 +78,8 @@ export interface UsageMetadata {
   candidatesTokenCount: number;
   totalTokenCount: number;
   cachedContentTokenCount?: number;
+  toolUsePromptTokenCount?: number;
+  thoughtsTokenCount?: number;
 }
 
 export interface GenerateContentCandidate {

@@ -242,6 +242,30 @@ vi.mock('../../src/services/integration-status', () => ({
 }));
 
 vi.mock('../../src/services/cost-guardrail', () => ({
+  AiBudgetError: class AiBudgetError extends Error {
+    decision: any;
+    constructor(decision: any) { super(decision.code); this.decision = decision; }
+  },
+  buildQuotaExceededPayload: vi.fn((quota: any) => ({
+    plan: quota.plan,
+    resetAt: quota.resetAt,
+  })),
+  withAiBudgetReservation: vi.fn(async (request: any, fn: () => Promise<unknown>) => {
+    const quota = mockIsUserOverDailyCap(request.userId);
+    if (quota.over) {
+      const { AiBudgetError } = await import('../../src/services/cost-guardrail');
+      throw new AiBudgetError({
+        code: 'AI_DAILY_LIMIT_REACHED',
+        message: `Daily AI quota reached for the ${quota.plan} plan.`,
+        status: 429,
+        window: 'daily',
+        unblocksAt: quota.resetAt,
+        retryAfterSeconds: 60,
+        quota,
+      });
+    }
+    return fn();
+  }),
   isUserOverDailyCap: (...args: unknown[]) => mockIsUserOverDailyCap(...args),
   buildQuotaExceededMessage: vi.fn((quota: { plan: string; resetAt: string }) => `Daily AI quota reached for the ${quota.plan} plan. Resets at ${quota.resetAt}.`),
   enforceCostGuardrails: (userId: number) => {
@@ -706,6 +730,41 @@ describe('Training API routes', () => {
     );
   });
 
+  it('serves cached Coach reads before the model-backed quota gate', async () => {
+    mockIsUserOverDailyCap.mockReturnValue({
+      over: true,
+      spentUsd: 0.2,
+      capUsd: 0.2,
+      plan: 'pro',
+      resetAt: '2026-04-15T00:00:00.000Z',
+    });
+    mockGetCached.mockReturnValue({ briefing: 'Latest valid report', recommendations: [], garminData: null });
+
+    const res = await dispatch('GET', '/coach');
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body.data.briefing).toBe('Latest valid report');
+    expect(mockGenerateCoachBriefing).not.toHaveBeenCalled();
+  });
+
+  it('returns the stable daily AI limit instead of masking it with Coach fallback copy', async () => {
+    mockGetActivePlan.mockReturnValue({ id: 44, user_id: 12, tenant_id: 12, status: 'active' });
+    mockIsUserOverDailyCap.mockReturnValue({
+      over: true,
+      spentUsd: 0.2,
+      capUsd: 0.2,
+      plan: 'pro',
+      resetAt: '2026-04-15T00:00:00.000Z',
+    });
+
+    const res = await dispatch('GET', '/coach', { refresh: 'true' });
+
+    expect(res.statusCode).toBe(429);
+    expect(res.body.error.code).toBe('AI_DAILY_LIMIT_REACHED');
+    expect(res.body.error.details.window).toBe('daily');
+    expect(mockGenerateCoachBriefing).not.toHaveBeenCalled();
+  });
+
   it('returns render-ready training home state without triggering a fresh coach generation', async () => {
     mockGetActivePlan.mockReturnValue({
       id: 44,
@@ -1044,7 +1103,7 @@ describe('Training API routes', () => {
       expect.arrayContaining([
         expect.objectContaining({
           layer: 'service',
-          operation: 'training.coach.eligibility',
+          operation: 'training.coach',
           reason: 'missing_tenant_scope',
         }),
       ]),

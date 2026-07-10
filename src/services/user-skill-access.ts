@@ -11,6 +11,7 @@
 import { getDb } from './database';
 import { logger } from '../utils/logger';
 import { checkSkillAccess } from './skill-tiers';
+import { getEffectiveEntitlement } from './entitlement';
 
 // ─── Skill Catalog ──────────────────────────────────────────────────
 
@@ -87,11 +88,10 @@ export const SKILL_CATALOG: SkillDefinition[] = [
 
 // ─── Access Check ───────────────────────────────────────────────────
 
-function legacyToggleUser(userId: number): { id: number; tier: 'max' | 'owner' } {
+function toggleEvaluationUser(userId: number): { id: number; tier: 'max' | 'owner' } {
   try {
-    const { isOwner } = require('./user-service');
-    if (isOwner(userId)) return { id: userId, tier: 'owner' };
-  } catch { /* user-service not loaded */ }
+    if (getEffectiveEntitlement(userId).isOwner) return { id: userId, tier: 'owner' };
+  } catch { /* entitlement storage not loaded */ }
   // Deprecated compatibility mode: this helper historically answered only
   // "is this skill toggle disabled?", not "does this user's plan include it?".
   // Runtime gates use checkSkillAccess with the real user tier.
@@ -104,7 +104,7 @@ function legacyToggleUser(userId: number): { id: number; tier: 'max' | 'owner' }
  */
 export function isSkillEnabledForUser(userId: number, skill: string, subSkill?: string): boolean {
   const skillId = subSkill ? `${skill}.${subSkill}` : skill;
-  const result = checkSkillAccess(legacyToggleUser(userId), skillId);
+  const result = checkSkillAccess(toggleEvaluationUser(userId), skillId);
   if (result.reason === 'db_error') {
     logger.warn({ skill, subSkill, userId }, 'user-skill-access: DB lookup failed — failing closed');
   }

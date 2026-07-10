@@ -17,6 +17,8 @@ import { logger } from '../utils/logger';
 import { completeOneShotWithWebSearch, isOpenAIConfigured } from './openai-provider';
 import { isResearchProviderRefusal } from './chat-research-refusal-policy';
 import { assessChatResearchAnswerCompleteness } from './chat-research-answer-quality';
+import { ApiUsagePersistenceError } from './api-usage-fallback';
+import { isPaidAiCostControlsEnforcementEnabled } from './entitlement';
 
 const anthropicWebSearchClient = createLazyAnthropicClient({ maxRetries: 2 });
 
@@ -100,6 +102,7 @@ export async function buildChatInternetResearchAnswer(
       },
     };
   } catch (err) {
+    rethrowUsagePersistenceFailure(err);
     logger.warn(
       { err, userId: input.userId, tenantId: input.tenantId, skill: input.skill },
       'Chat internet research unavailable',
@@ -122,6 +125,25 @@ async function completeOneShotWithSearchWithRetry(
 ): Promise<{ text: string; sources: string[] }> {
   const maxAttempts = researchProviderMaxAttempts();
   let lastError: unknown;
+  let openAiAttempted = false;
+  if (isPaidAiCostControlsEnforcementEnabled() && isOpenAIConfigured()) {
+    openAiAttempted = true;
+    try {
+      return ensureUsableResearchResult(
+        await completeOneShotWithWebSearch(systemPrompt, userPrompt, `${category}_openai_web_search`, options),
+        language,
+      );
+    } catch (err) {
+      // A denial or metering failure on the cheapest grounded provider is
+      // terminal. Availability/quality failures may still compare Gemini.
+      rethrowUsagePersistenceFailure(err);
+      lastError = err;
+      logger.warn(
+        { err, userId: options.userId, tenantId: options.tenantId },
+        'Enforced bounded OpenAI web search failed; trying Gemini grounding',
+      );
+    }
+  }
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     try {
       return ensureUsableResearchResult(
@@ -129,6 +151,14 @@ async function completeOneShotWithSearchWithRetry(
         language,
       );
     } catch (err) {
+      if (isProviderHeadroomDenial(err)) {
+        // This is a pre-network denial for Gemini's concrete maximum, not a
+        // failed paid call. Stop retrying the unaffordable provider and try the
+        // cheaper bounded search route below under the same reservation.
+        lastError = err;
+        break;
+      }
+      rethrowUsagePersistenceFailure(err);
       lastError = err;
       if (attempt >= maxAttempts) break;
       logger.warn(
@@ -138,6 +168,25 @@ async function completeOneShotWithSearchWithRetry(
       await sleep(researchProviderRetryDelayMs(attempt));
     }
   }
+  if (isProviderHeadroomDenial(lastError) && !openAiAttempted && isOpenAIConfigured()) {
+    try {
+      logger.info(
+        { userId: options.userId, tenantId: options.tenantId },
+        'Gemini grounded maximum does not fit current headroom; trying bounded OpenAI web search',
+      );
+      return ensureUsableResearchResult(
+        await completeOneShotWithWebSearch(systemPrompt, userPrompt, `${category}_openai_web_search`, options),
+        language,
+      );
+    } catch (fallbackErr) {
+      rethrowUsagePersistenceFailure(fallbackErr);
+      logger.warn(
+        { err: fallbackErr, userId: options.userId, tenantId: options.tenantId },
+        'Cost-aware OpenAI web-search fallback failed',
+      );
+    }
+  }
+  if (isProviderHeadroomDenial(lastError) && openAiAttempted) throw lastError;
   if (canUseAnthropicRuntimeFallback()) {
     try {
       logger.warn(
@@ -149,6 +198,7 @@ async function completeOneShotWithSearchWithRetry(
         language,
       );
     } catch (fallbackErr) {
+      rethrowUsagePersistenceFailure(fallbackErr);
       logger.warn(
         { err: fallbackErr, userId: options.userId, tenantId: options.tenantId },
         'Chat internet research Anthropic web search fallback failed',
@@ -166,6 +216,7 @@ async function completeOneShotWithSearchWithRetry(
         language,
       );
     } catch (fallbackErr) {
+      rethrowUsagePersistenceFailure(fallbackErr);
       logger.warn(
         { err: fallbackErr, userId: options.userId, tenantId: options.tenantId },
         'Chat internet research OpenAI web search fallback failed',
@@ -173,6 +224,21 @@ async function completeOneShotWithSearchWithRetry(
     }
   }
   throw lastError;
+}
+
+function isProviderHeadroomDenial(error: unknown): boolean {
+  const candidate = error as { name?: string; decision?: { code?: string } } | null;
+  return candidate?.name === 'AiBudgetError'
+    && (candidate.decision?.code === 'AI_DAILY_LIMIT_REACHED'
+      || candidate.decision?.code === 'AI_MONTHLY_LIMIT_REACHED');
+}
+
+function rethrowUsagePersistenceFailure(error: unknown): void {
+  if (error instanceof ApiUsagePersistenceError || (error as { name?: string; code?: string })?.name === 'ApiUsagePersistenceError'
+    || (error as { name?: string })?.name === 'AiBudgetError'
+    || (error as { code?: string })?.code === 'AI_USAGE_PERSISTENCE_FAILED') {
+    throw error;
+  }
 }
 
 function ensureUsableResearchResult(

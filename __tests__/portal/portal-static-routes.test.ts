@@ -182,6 +182,23 @@ describe('portal static routes', () => {
     expect(html).toContain("esc(a.lastDeliveryError)");
   });
 
+  it('renders owner-only daily/monthly AI budgets, overrides, automation share, and deferrals', () => {
+    const htmlPath = path.resolve(__dirname, '../../src/portal/portal.html');
+    const html = fs.readFileSync(htmlPath, 'utf8');
+
+    expect(html).toContain('AI Plan Budgets');
+    expect(html).toContain('Effective plan: ');
+    expect(html).toContain('Legacy tier');
+    expect(html).toContain("apiFetch('/api/users/' + user.id + '/ai-budget')");
+    expect(html).toContain('id="slideout-ai-daily"');
+    expect(html).toContain('id="slideout-ai-monthly"');
+    expect(html).toContain('Automation · daily');
+    expect(html).toContain('Recent skip reasons');
+    expect(html).toContain('monthly_ai_cost_limit_usd: monthly');
+    expect(html).toContain("const fixedZero = id === 'free'");
+    expect(html).toContain('Free AI budget is fixed at zero');
+  });
+
   it('user login page includes live Apple and Google browser sign-in flows', () => {
     const htmlPath = path.resolve(__dirname, '../../src/portal/user-login.html');
     const html = fs.readFileSync(htmlPath, 'utf8');

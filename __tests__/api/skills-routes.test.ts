@@ -97,6 +97,23 @@ function applyMigrations(db: Database.Database): void {
 import { skillsRoutes } from '../../src/api/routes/skills';
 import { getOrCreateUser, setUserTier } from '../../src/services/user-service';
 
+function grantFounderEntitlement(user: { id: number }, plan: 'pro' | 'max' = 'pro'): void {
+  testDb.prepare(`
+    INSERT INTO subscriptions (user_id, plan, status, provider, current_period_end)
+    VALUES (?, ?, 'active', 'founder', '2099-12-31T23:59:59.000Z')
+    ON CONFLICT(user_id) DO UPDATE SET
+      plan = excluded.plan,
+      status = excluded.status,
+      provider = excluded.provider,
+      current_period_end = excluded.current_period_end
+  `).run(user.id, plan);
+}
+
+function configureCanonicalOwner(telegramId: number): void {
+  setUserTier(telegramId, 'owner');
+  process.env.OWNER_TELEGRAM_ID = String(telegramId);
+}
+
 // ─── Mock req/res helpers ───────────────────────────────────────────
 
 interface MockRes {
@@ -181,7 +198,10 @@ describe('Skills API — GET /catalog', () => {
     applyMigrations(testDb);
     clearTenantScopeAnomaliesForTests();
   });
-  afterEach(() => testDb?.close());
+  afterEach(() => {
+    delete process.env.OWNER_TELEGRAM_ID;
+    testDb?.close();
+  });
 
   it('returns 404 for unknown user', async () => {
     const res = await dispatch('GET', '/catalog', 99999);
@@ -207,6 +227,7 @@ describe('Skills API — GET /catalog', () => {
 
   it('returns the full catalog for a pro user with all parents accessible', async () => {
     const user = getOrCreateUser(1001, { username: 'pro' });
+    grantFounderEntitlement(user);
     expect(user.tier).toBe('pro'); // Phase 1 default
 
     const res = await dispatch('GET', '/catalog', 1001);
@@ -230,7 +251,8 @@ describe('Skills API — GET /catalog', () => {
   });
 
   it('triathlon exposes 4 sport persona sub-skills + 6 capability sub-skills', async () => {
-    getOrCreateUser(1003, { username: 'pro3' });
+    const user = getOrCreateUser(1003, { username: 'pro3' });
+    grantFounderEntitlement(user);
     const res = await dispatch('GET', '/catalog', 1003);
     const triathlon = res.body.data.skills.find((s: any) => s.name === 'triathlon');
     expect(triathlon).toBeDefined();
@@ -311,7 +333,10 @@ describe('Skills API — version registry', () => {
     applyMigrations(testDb);
     cacheMocks.invalidateDashboardCoordinationCaches.mockClear();
   });
-  afterEach(() => testDb?.close());
+  afterEach(() => {
+    delete process.env.OWNER_TELEGRAM_ID;
+    testDb?.close();
+  });
 
   it('returns current skill version metadata for an authenticated user', async () => {
     getOrCreateUser(1501, { username: 'version-reader' });
@@ -359,9 +384,27 @@ describe('Skills API — version registry', () => {
     expect(res.body.error.code).toBe('FORBIDDEN');
   });
 
+  it('does not accept a stale persisted owner tier as owner authority', async () => {
+    getOrCreateUser(1510, { username: 'stale-owner' });
+    setUserTier(1510, 'owner');
+    delete process.env.OWNER_TELEGRAM_ID;
+
+    const res = await dispatch('POST', '/versions', 1510, {
+      skillId: 'content',
+      skillName: 'Content Creation',
+      version: '2.1.0',
+      releaseType: 'minor',
+      releaseTitle: 'Unauthorized stale tier write',
+      releaseSummary: 'Should not be accepted.',
+    });
+
+    expect(res.statusCode).toBe(403);
+    expect(res.body.error.code).toBe('FORBIDDEN');
+  });
+
   it('owner can create version metadata without exposing internal notes in release history', async () => {
     getOrCreateUser(1504, { username: 'owner' });
-    setUserTier(1504, 'owner');
+    configureCanonicalOwner(1504);
 
     const createRes = await dispatch('POST', '/versions', 1504, {
       skillId: 'content',
@@ -389,7 +432,7 @@ describe('Skills API — version registry', () => {
 
   it('owner can activate tenant-specific rollout metadata without changing global users', async () => {
     getOrCreateUser(1505, { username: 'owner' });
-    setUserTier(1505, 'owner');
+    configureCanonicalOwner(1505);
 
     await dispatch('POST', '/versions', 1505, {
       skillId: 'secretary',
@@ -430,7 +473,10 @@ describe('Skills API — POST /override', () => {
     applyMigrations(testDb);
     cacheMocks.invalidateDashboardCoordinationCaches.mockClear();
   });
-  afterEach(() => testDb?.close());
+  afterEach(() => {
+    delete process.env.OWNER_TELEGRAM_ID;
+    testDb?.close();
+  });
 
   it('returns 403 for non-owner caller', async () => {
     getOrCreateUser(2001, { username: 'pro' }); // defaults to pro
@@ -445,7 +491,7 @@ describe('Skills API — POST /override', () => {
 
   it('returns 400 for missing body fields', async () => {
     getOrCreateUser(2003, { username: 'owner' });
-    setUserTier(2003, 'owner');
+    configureCanonicalOwner(2003);
     const res = await dispatch('POST', '/override', 2003, {});
     expect(res.statusCode).toBe(400);
     expect(res.body.error.code).toBe('BAD_REQUEST');
@@ -453,7 +499,7 @@ describe('Skills API — POST /override', () => {
 
   it('returns 404 when target user does not exist', async () => {
     getOrCreateUser(2004, { username: 'owner' });
-    setUserTier(2004, 'owner');
+    configureCanonicalOwner(2004);
     const res = await dispatch('POST', '/override', 2004, {
       targetUserId: 99999,
       skillId: 'triathlon.gym',
@@ -463,7 +509,7 @@ describe('Skills API — POST /override', () => {
 
   it('owner can grant an override, unblocking a free user for a pro skill', async () => {
     const owner = getOrCreateUser(2005, { username: 'owner' });
-    setUserTier(2005, 'owner');
+    configureCanonicalOwner(2005);
     const target = getOrCreateUser(2006, { username: 'free' });
     setUserTier(2006, 'free');
 
@@ -493,7 +539,7 @@ describe('Skills API — POST /override', () => {
 
   it('sanitizes override grant failures instead of leaking persistence internals', async () => {
     getOrCreateUser(2007, { username: 'owner' });
-    setUserTier(2007, 'owner');
+    configureCanonicalOwner(2007);
     getOrCreateUser(2008, { username: 'target' });
 
     const originalPrepare = testDb.prepare.bind(testDb);
@@ -527,7 +573,10 @@ describe('Skills API — DELETE /override', () => {
     testDb.pragma('journal_mode = WAL');
     applyMigrations(testDb);
   });
-  afterEach(() => testDb?.close());
+  afterEach(() => {
+    delete process.env.OWNER_TELEGRAM_ID;
+    testDb?.close();
+  });
 
   it('returns 403 for non-owner caller', async () => {
     getOrCreateUser(3001, { username: 'pro' });
@@ -540,7 +589,7 @@ describe('Skills API — DELETE /override', () => {
 
   it('owner can revoke an existing override', async () => {
     const owner = getOrCreateUser(3003, { username: 'owner' });
-    setUserTier(3003, 'owner');
+    configureCanonicalOwner(3003);
     const target = getOrCreateUser(3004, { username: 'free' });
     setUserTier(3004, 'free');
 
@@ -569,7 +618,7 @@ describe('Skills API — DELETE /override', () => {
     // SkillsService encodes targetUserId + skillId as query params.
     // The backend route must accept both forms. This test locks that.
     getOrCreateUser(3005, { username: 'owner' });
-    setUserTier(3005, 'owner');
+    configureCanonicalOwner(3005);
     const target = getOrCreateUser(3006, { username: 'free' });
     setUserTier(3006, 'free');
 

@@ -10,8 +10,9 @@
 
 import { getDb } from './database';
 import { logger } from '../utils/logger';
-import { getUserById, getUserByTelegramId, isOwner } from './user-service';
+import { getUserById, getUserByTelegramId } from './user-service';
 import { checkSkillAccess } from './skill-tiers';
+import { entitlementPlanToSkillTier, getEffectiveEntitlement } from './entitlement';
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -1070,16 +1071,18 @@ function questionnairesForSkill(skill: string): string[] {
  */
 export function getEnabledQuestionnaires(userId: number): string[] {
   try {
-    if (isOwner(userId)) {
-      return getAvailableQuestionnaires();
-    }
-
     const user = getUserById(userId) || getUserByTelegramId(userId);
     if (!user) return [];
+    const entitlement = getEffectiveEntitlement(user.id);
+    if (entitlement.isOwner) return getAvailableQuestionnaires();
+    const effectiveUser = {
+      id: user.id,
+      tier: entitlementPlanToSkillTier(entitlement.plan),
+    };
 
     const enabled: string[] = [];
     for (const [skill] of Object.entries(SKILL_ONBOARDING_MAP)) {
-      if (!checkSkillAccess({ id: userId, tier: user.tier }, skill).allowed) continue;
+      if (!checkSkillAccess(effectiveUser, skill).allowed) continue;
       for (const qId of questionnairesForSkill(skill)) {
         if (getQuestionnaire(qId)) enabled.push(qId);
       }

@@ -38,6 +38,8 @@ import {
 import { formatCurrencyAmount } from './finance-tracker';
 import { logger } from '../utils/logger';
 import { getUserById, type User } from './user-service';
+import { entitlementPlanToSkillTier, getEffectiveEntitlement } from './entitlement';
+import { checkSkillAccess } from './skill-tiers';
 import { getWeeksForPlan, getWeeklyAdherence, type TrainingSession } from './training-plans';
 import type { MealPlan } from './cooking-chef';
 import { isValidTenantUserId, recordTenantScopeAnomaly } from './tenant-scope-observability';
@@ -271,7 +273,7 @@ export async function composeWeeklyPlan(opts: {
   if (!user) {
     logger.warn(
       { userId: opts.userId },
-      'weekly plan user record missing — defaulting to ungated planning context',
+      'weekly plan user record missing — failing closed for paid skill context',
     );
   }
 
@@ -1953,13 +1955,16 @@ function resolveWeekWindow(weekStart?: string): { start: DateTime; weekStart: st
 }
 
 function resolveGatedSkills(user: User | null): string[] {
+  const paidDomains = ['cooking', 'content', 'finance'] as const;
   if (!user) {
-    return [];
+    return [...paidDomains];
   }
-  if (user.tier === 'free') {
-    return ['cooking', 'content', 'finance'];
-  }
-  return [];
+  const entitlement = getEffectiveEntitlement(user.id);
+  const effectiveUser = {
+    id: user.id,
+    tier: entitlementPlanToSkillTier(entitlement.plan),
+  };
+  return paidDomains.filter((skill) => !checkSkillAccess(effectiveUser, skill).allowed);
 }
 
 function isGarminMarkedStale(userId: number): boolean {

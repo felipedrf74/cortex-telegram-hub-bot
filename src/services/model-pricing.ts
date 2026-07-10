@@ -42,6 +42,8 @@ export interface ModelUsageForCost {
   outputTokens: number;
   cacheReadTokens?: number;
   cacheWriteTokens?: number;
+  /** Provider-billed search/grounding/tool fees not represented by tokens. */
+  nonTokenCostUsd?: number;
 }
 
 export interface ModelCostResult {
@@ -49,6 +51,64 @@ export interface ModelCostResult {
   pricingResolved: boolean;
   pricingModelKey: string | null;
   pricing: ModelPricing | null;
+}
+
+export interface ProviderCallCostUpperBoundInput {
+  provider: ModelPricingProvider;
+  model: string;
+  /** Exact provider request payload before network dispatch. */
+  payload: unknown;
+  /** Provider-enforced hard output-token cap. */
+  maxOutputTokens: number;
+  /** Hard upper bound for provider-billed search/grounding/tool fees. */
+  nonTokenCostUpperBoundUsd?: number;
+}
+
+export type ProviderToolFeeKind =
+  | 'anthropic_web_search'
+  | 'openai_web_search'
+  | 'gemini_grounded_prompt';
+
+const PROVIDER_TOOL_FEE_DEFAULTS_USD: Record<ProviderToolFeeKind, number> = {
+  // Official list prices verified 2026-07-09. Gemini includes a project-wide
+  // free allowance, but this process cannot observe calls made outside Nexus.
+  // Defaulting to the billable price is therefore the only safe hard ceiling.
+  anthropic_web_search: 0.01,
+  openai_web_search: 0.01,
+  gemini_grounded_prompt: 0.035,
+};
+
+const PROVIDER_TOOL_FEE_ENV: Record<ProviderToolFeeKind, string> = {
+  anthropic_web_search: 'ANTHROPIC_WEB_SEARCH_COST_USD_PER_REQUEST',
+  openai_web_search: 'OPENAI_WEB_SEARCH_COST_USD_PER_CALL',
+  gemini_grounded_prompt: 'GEMINI_GROUNDING_COST_USD_PER_PROMPT',
+};
+
+/**
+ * Effective billable fee used by both preflight ceilings and api_usage truth.
+ * Invalid configuration fails safely to the conservative list-price default.
+ * Gemini may be configured to zero only when operations has independently
+ * guaranteed that the API project remains inside its shared free allowance.
+ */
+export function getProviderToolFeeUsd(
+  kind: ProviderToolFeeKind,
+  env: NodeJS.ProcessEnv = process.env,
+): number {
+  const raw = env[PROVIDER_TOOL_FEE_ENV[kind]]?.trim();
+  const configured = raw ? Number(raw) : Number.NaN;
+  const configuredIsSafe = Number.isFinite(configured)
+    && (configured > 0 || (kind === 'gemini_grounded_prompt' && configured === 0));
+  return configuredIsSafe
+    ? configured
+    : PROVIDER_TOOL_FEE_DEFAULTS_USD[kind];
+}
+
+/** Provider-enforced cap for one OpenAI Responses web-search request. */
+export function getOpenAiWebSearchMaxCalls(env: NodeJS.ProcessEnv = process.env): number {
+  const configured = Number(env.OPENAI_WEB_SEARCH_MAX_CALLS);
+  return Number.isInteger(configured) && configured >= 1 && configured <= 10
+    ? configured
+    : 1;
 }
 
 export class ModelPricingUnresolvedError extends Error {
@@ -104,6 +164,92 @@ const UNRESOLVED_MODEL_SENTINEL_PRICING = {
   outputUsdPerMillion: 15.00,
 };
 
+// JSON bytes are a conservative ceiling for byte-level text tokenizers: one
+// token cannot encode less than one payload byte. Provider protocol framing is
+// not present in the caller payload, so retain a fixed margin. Remote media can
+// carry tokenized content that is not represented by URL bytes; one million
+// tokens per remote item deliberately makes automation defer unless the cap
+// can cover the provider's worst case. Inline/base64 media is already covered
+// by serialized byte length.
+const PROVIDER_PROTOCOL_OVERHEAD_TOKEN_CEILING = 2_048;
+const REMOTE_MEDIA_TOKEN_CEILING = 1_000_000;
+
+function countRemoteMediaReferences(value: unknown, seen = new Set<object>()): number {
+  if (!value || typeof value !== 'object') return 0;
+  if (seen.has(value as object)) return 0;
+  seen.add(value as object);
+  if (Array.isArray(value)) {
+    return value.reduce((sum, entry) => sum + countRemoteMediaReferences(entry, seen), 0);
+  }
+
+  let count = 0;
+  for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
+    const normalizedKey = key.toLowerCase();
+    const isRemoteMediaKey = normalizedKey === 'image_url'
+      || normalizedKey === 'video_url'
+      || normalizedKey === 'audio_url'
+      || normalizedKey === 'file_uri'
+      || normalizedKey === 'filedata';
+    if (isRemoteMediaKey) {
+      const candidate = typeof entry === 'string'
+        ? entry
+        : entry && typeof entry === 'object'
+          ? String((entry as Record<string, unknown>).url ?? (entry as Record<string, unknown>).fileUri ?? '')
+          : '';
+      if (/^https?:\/\//i.test(candidate)) count++;
+    }
+    count += countRemoteMediaReferences(entry, seen);
+  }
+  return count;
+}
+
+/**
+ * Worst-case cost of a concrete provider request's caller-controlled input,
+ * provider-enforced output cap, and explicitly supplied tool fee ceiling.
+ * Provider-hosted search may inject retrieved context whose token count has no
+ * contractual request cap; automation/system work must not treat this helper
+ * as a hard bound for those tools and instead uses fresh signals, evergreen
+ * output, or defers before provider network I/O.
+ */
+export function computeProviderCallCostUpperBoundUsd(
+  input: ProviderCallCostUpperBoundInput,
+): number {
+  const maxOutputTokens = Number(input.maxOutputTokens);
+  if (!Number.isFinite(maxOutputTokens) || maxOutputTokens < 0) return Number.POSITIVE_INFINITY;
+  const nonTokenCostUpperBoundUsd = Number(input.nonTokenCostUpperBoundUsd ?? 0);
+  if (!Number.isFinite(nonTokenCostUpperBoundUsd) || nonTokenCostUpperBoundUsd < 0) {
+    return Number.POSITIVE_INFINITY;
+  }
+
+  let serialized: string;
+  try {
+    serialized = JSON.stringify(input.payload) ?? '';
+  } catch {
+    return Number.POSITIVE_INFINITY;
+  }
+  const inputTokenCeiling = Buffer.byteLength(serialized, 'utf8')
+    + PROVIDER_PROTOCOL_OVERHEAD_TOKEN_CEILING
+    + countRemoteMediaReferences(input.payload) * REMOTE_MEDIA_TOKEN_CEILING;
+  const pricing = resolveModelPricing(input.model, input.provider);
+  // The sentinel keeps historical accounting conservative, but it is not a
+  // contractual maximum for a future/unknown provider model. Every quota class
+  // therefore fails closed before network I/O until the model is registered.
+  if (!pricing) return Number.POSITIVE_INFINITY;
+  const inputRate = Math.max(
+    pricing.inputUsdPerMillion,
+    pricing.cacheReadUsdPerMillion ?? 0,
+    pricing.cacheWriteUsdPerMillion ?? 0,
+  );
+  const outputRate = pricing.outputUsdPerMillion;
+  const upperBound = (
+    inputTokenCeiling * inputRate
+    + Math.ceil(maxOutputTokens) * outputRate
+  ) / 1_000_000 + nonTokenCostUpperBoundUsd;
+  // Round upward at sub-micro-dollar precision so floating-point truncation can
+  // never turn an exact ceiling comparison into an accidental allow.
+  return Math.ceil(upperBound * 1_000_000_000) / 1_000_000_000;
+}
+
 const unresolvedPricingAlertDedupe = new Set<string>();
 let unresolvedAlertCallCount = 0;
 let recordOperatorAlertOverride: typeof import('./operator-alerts').recordOperatorAlert | null = null;
@@ -158,6 +304,10 @@ export function computeModelUsageCostUsd(
   usage: ModelUsageForCost,
   provider?: string | null,
 ): ModelCostResult {
+  const nonTokenCostUsd = Number(usage.nonTokenCostUsd ?? 0);
+  const safeNonTokenCostUsd = Number.isFinite(nonTokenCostUsd) && nonTokenCostUsd >= 0
+    ? nonTokenCostUsd
+    : 0;
   const pricing = resolveModelPricing(model, provider);
   if (!pricing) {
     const inputTokens = Math.max(0, usage.inputTokens || 0);
@@ -167,7 +317,8 @@ export function computeModelUsageCostUsd(
     const regularInputTokens = Math.max(0, inputTokens - cacheReadTokens - cacheWriteTokens);
     const costUsd =
       ((regularInputTokens + cacheReadTokens + cacheWriteTokens) / 1_000_000) * UNRESOLVED_MODEL_SENTINEL_PRICING.inputUsdPerMillion +
-      (outputTokens / 1_000_000) * UNRESOLVED_MODEL_SENTINEL_PRICING.outputUsdPerMillion;
+      (outputTokens / 1_000_000) * UNRESOLVED_MODEL_SENTINEL_PRICING.outputUsdPerMillion +
+      safeNonTokenCostUsd;
     return {
       costUsd,
       pricingResolved: false,
@@ -185,7 +336,8 @@ export function computeModelUsageCostUsd(
     (regularInputTokens / 1_000_000) * pricing.inputUsdPerMillion +
     (outputTokens / 1_000_000) * pricing.outputUsdPerMillion +
     (cacheReadTokens / 1_000_000) * (pricing.cacheReadUsdPerMillion ?? pricing.inputUsdPerMillion) +
-    (cacheWriteTokens / 1_000_000) * (pricing.cacheWriteUsdPerMillion ?? pricing.inputUsdPerMillion);
+    (cacheWriteTokens / 1_000_000) * (pricing.cacheWriteUsdPerMillion ?? pricing.inputUsdPerMillion) +
+    safeNonTokenCostUsd;
 
   return {
     costUsd,

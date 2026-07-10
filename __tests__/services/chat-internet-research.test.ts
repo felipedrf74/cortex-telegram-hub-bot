@@ -11,6 +11,9 @@ const { mockCompleteOneShotWithOpenAIWebSearch, mockIsOpenAIConfigured } = vi.ho
   mockCompleteOneShotWithOpenAIWebSearch: vi.fn(),
   mockIsOpenAIConfigured: vi.fn(),
 }));
+const { mockIsPaidAiCostControlsEnforcementEnabled } = vi.hoisted(() => ({
+  mockIsPaidAiCostControlsEnforcementEnabled: vi.fn(),
+}));
 
 vi.mock('../../src/services/gemini-provider', () => ({
   completeOneShotWithSearch: mockCompleteOneShotWithSearch,
@@ -28,6 +31,9 @@ vi.mock('../../src/services/anthropic-lazy-client', () => ({
 vi.mock('../../src/services/openai-provider', () => ({
   completeOneShotWithWebSearch: mockCompleteOneShotWithOpenAIWebSearch,
   isOpenAIConfigured: mockIsOpenAIConfigured,
+}));
+vi.mock('../../src/services/entitlement', () => ({
+  isPaidAiCostControlsEnforcementEnabled: mockIsPaidAiCostControlsEnforcementEnabled,
 }));
 
 import {
@@ -47,6 +53,8 @@ describe('chat internet research', () => {
     mockCompleteOneShotWithOpenAIWebSearch.mockReset();
     mockIsOpenAIConfigured.mockReset();
     mockIsOpenAIConfigured.mockReturnValue(false);
+    mockIsPaidAiCostControlsEnforcementEnabled.mockReset();
+    mockIsPaidAiCostControlsEnforcementEnabled.mockReturnValue(false);
     mockAnthropicGet.mockReturnValue({ messages: { create: vi.fn() } });
   });
 
@@ -242,6 +250,58 @@ describe('chat internet research', () => {
     expect(result.degraded).toBe(false);
     expect(result.sources).toEqual(['https://example.com/public-knee-warning-signs']);
     expect(result.text).toContain('Sources consulted: https://example.com/public-knee-warning-signs');
+  });
+
+  it('uses bounded OpenAI search when Gemini maximum cost does not fit even without the optional fallback flag', async () => {
+    mockIsOpenAIConfigured.mockReturnValue(true);
+    mockCompleteOneShotWithSearch.mockRejectedValueOnce(Object.assign(
+      new Error('AI_DAILY_LIMIT_REACHED'),
+      {
+        name: 'AiBudgetError',
+        decision: { code: 'AI_DAILY_LIMIT_REACHED', window: 'daily' },
+      },
+    ));
+    mockCompleteOneShotWithOpenAIWebSearch.mockResolvedValueOnce({
+      text: 'A bounded lower-cost search still returns a complete grounded answer.',
+      sources: ['https://example.com/bounded-search'],
+    });
+
+    const result = await buildChatInternetResearchAnswer({
+      message: 'latest public AI product changes',
+      language: 'en',
+      skill: 'content',
+      expectedResponseShape: 'direct_answer',
+      userId: 123,
+      tenantId: 456,
+    });
+
+    expect(mockCompleteOneShotWithSearch).toHaveBeenCalledTimes(1);
+    expect(mockCompleteOneShotWithOpenAIWebSearch).toHaveBeenCalledTimes(1);
+    expect(mockTrackedCreate).not.toHaveBeenCalled();
+    expect(result.degraded).toBe(false);
+    expect(result.sources).toEqual(['https://example.com/bounded-search']);
+  });
+
+  it('uses bounded low-cost OpenAI search before Gemini while enforcement is enabled', async () => {
+    mockIsPaidAiCostControlsEnforcementEnabled.mockReturnValue(true);
+    mockIsOpenAIConfigured.mockReturnValue(true);
+    mockCompleteOneShotWithOpenAIWebSearch.mockResolvedValueOnce({
+      text: 'The lower-cost provider returned a complete answer first.',
+      sources: ['https://example.com/enforced-first'],
+    });
+
+    const result = await buildChatInternetResearchAnswer({
+      message: 'latest public AI product changes',
+      language: 'en',
+      skill: 'content',
+      expectedResponseShape: 'direct_answer',
+      userId: 123,
+      tenantId: 456,
+    });
+
+    expect(mockCompleteOneShotWithOpenAIWebSearch).toHaveBeenCalledTimes(1);
+    expect(mockCompleteOneShotWithSearch).not.toHaveBeenCalled();
+    expect(result.degraded).toBe(false);
   });
 
   it('treats provider safe-answer refusals as failures so configured fallbacks can answer', async () => {

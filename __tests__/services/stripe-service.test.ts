@@ -276,6 +276,22 @@ describe('stripe service billing reconciliation', () => {
     expect(getSubscriptionStatus(userId)).toMatchObject({ plan: 'free', status: 'expired', isActive: false });
   });
 
+  it('normalizes legacy SQLite-space billing timestamps in public status', async () => {
+    const { getSubscriptionStatus } = await import('../../src/services/stripe-service');
+    const userId = Number(testDb.prepare('INSERT INTO users (email, email_verified) VALUES (?, 1)').run('legacy-time@example.com').lastInsertRowid);
+    const futureIso = new Date(Date.now() + 7 * 86400000).toISOString();
+    const sqliteFuture = futureIso.slice(0, 19).replace('T', ' ');
+    testDb.prepare(`
+      INSERT INTO subscriptions (
+        user_id, plan, period, status, provider, current_period_end
+      ) VALUES (?, 'pro', 'monthly', 'active', 'stripe', ?)
+    `).run(userId, sqliteFuture);
+
+    expect(getSubscriptionStatus(userId).currentPeriodEnd).toBe(
+      new Date(`${sqliteFuture.replace(' ', 'T')}Z`).toISOString(),
+    );
+  });
+
   it('revokes stale users.tier and sends cancellation email when Stripe subscription is deleted', async () => {
     const { handleSubscriptionDeleted } = await import('../../src/services/stripe-service');
     const userId = Number(testDb.prepare('INSERT INTO users (email, email_verified) VALUES (?, 1)').run('cancel@example.com').lastInsertRowid);

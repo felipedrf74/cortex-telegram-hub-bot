@@ -51,11 +51,13 @@ describe('requireEntitlement middleware — defense-in-depth (L-2)', () => {
   beforeEach(() => {
     _resetPortalOverridesForTests();
     mockIsOwnerUserRef.mockReturnValue(false);
+    delete process.env.PAID_AI_COST_CONTROLS_ENFORCEMENT_ENABLED;
   });
 
   afterEach(() => {
     mockGetDb.mockReset();
     mockIsOwnerUserRef.mockReset();
+    delete process.env.PAID_AI_COST_CONTROLS_ENFORCEMENT_ENABLED;
   });
 
   it('returns 401 UNAUTHORIZED when req.userId is missing (mis-mounted order)', () => {
@@ -104,10 +106,12 @@ describe('requireEntitlement middleware — tier gating', () => {
   beforeEach(() => {
     _resetPortalOverridesForTests();
     mockIsOwnerUserRef.mockReturnValue(false);
+    delete process.env.PAID_AI_COST_CONTROLS_ENFORCEMENT_ENABLED;
   });
 
   afterEach(() => {
     mockGetDb.mockReset();
+    delete process.env.PAID_AI_COST_CONTROLS_ENFORCEMENT_ENABLED;
   });
 
   it('denies a Free user with 403 TIER_REQUIRED on a paid skill', () => {
@@ -122,6 +126,59 @@ describe('requireEntitlement middleware — tier gating', () => {
     expect((res as any).body.error.code).toBe('TIER_REQUIRED');
     expect((res as any).body.error.details.currentPlan).toBe('free');
     expect((res as any).body.error.details.skill).toBe('content');
+  });
+
+  it('keeps token-zero Secretary product access when paid enforcement is enabled', () => {
+    process.env.PAID_AI_COST_CONTROLS_ENFORCEMENT_ENABLED = 'true';
+    mockGetDb.mockReturnValue({ prepare: () => ({ get: () => undefined }) });
+    const mw = requireEntitlement({ skill: 'secretary' });
+    const res = mockRes();
+    const next = vi.fn();
+    mw(mockReq({ userId: 905 }), res, next as NextFunction);
+    expect(next).toHaveBeenCalledOnce();
+    expect((res as any).statusCode).toBe(200);
+  });
+
+  it('uses AI_PLAN_REQUIRED when enforcement denies an ineligible paid skill', () => {
+    process.env.PAID_AI_COST_CONTROLS_ENFORCEMENT_ENABLED = 'true';
+    mockGetDb.mockReturnValue({ prepare: () => ({ get: () => undefined }) });
+    const mw = requireEntitlement({ skill: 'content' });
+    const res = mockRes();
+    const next = vi.fn();
+    mw(mockReq({ userId: 907 }), res, next as NextFunction);
+    expect(next).not.toHaveBeenCalled();
+    expect((res as any).statusCode).toBe(403);
+    expect((res as any).body.error).toMatchObject({
+      code: 'AI_PLAN_REQUIRED',
+      details: {
+        currentPlan: 'free',
+        skill: 'content',
+        window: 'plan',
+        unblocksAt: null,
+        retryable: false,
+      },
+    });
+  });
+
+  it.each([false, true])('preserves beta product access with enforcement=%s', (enforcementEnabled) => {
+    if (enforcementEnabled) process.env.PAID_AI_COST_CONTROLS_ENFORCEMENT_ENABLED = 'true';
+    mockGetDb.mockReturnValue({
+      prepare: () => ({
+        get: () => ({
+          plan: 'max',
+          status: 'trialing',
+          provider: 'beta',
+          current_period_start: null,
+          current_period_end: null,
+        }),
+      }),
+    });
+    const mw = requireEntitlement({ skill: 'content' });
+    const res = mockRes();
+    const next = vi.fn();
+    mw(mockReq({ userId: 906 }), res, next as NextFunction);
+    expect(next).toHaveBeenCalledOnce();
+    expect((res as any).statusCode).toBe(200);
   });
 
   it('permits a Pro (active stripe) user on a paid skill', () => {

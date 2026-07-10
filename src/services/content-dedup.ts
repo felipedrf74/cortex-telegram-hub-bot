@@ -18,10 +18,15 @@ import {
 } from './content-tenant-scope';
 import { requireTenantIdParam } from './tenant-scope';
 
-interface DedupResult {
+export interface DedupResult {
   isDuplicate: boolean;
   similarTo: string | null;
   confidence: number;
+}
+
+export interface ContentDedupCandidate {
+  title: string;
+  angleTag?: string | null;
 }
 
 const EXACT_MATCH_CONFIDENCE = 0.95;
@@ -91,6 +96,30 @@ function classifyAgainstRecent(
     }
   }
   return best;
+}
+
+/**
+ * Compare a candidate with peers already accepted in the current provider
+ * response. Database-backed dedup cannot see those peers until persistence,
+ * so this pure check closes the within-batch and cross-array gap without an
+ * extra model call. Weekly packages can disable angle exceptions because the
+ * package contract forbids repeating the same topic across formats.
+ */
+export function isDuplicateIdeaInBatch(
+  newIdea: string,
+  angleTag: string | undefined,
+  accepted: readonly ContentDedupCandidate[],
+  options: { allowDifferentAngles?: boolean } = {},
+): DedupResult {
+  const allowDifferentAngles = options.allowDifferentAngles ?? true;
+  return classifyAgainstRecent(
+    newIdea,
+    allowDifferentAngles ? angleTag : undefined,
+    accepted.map((candidate) => ({
+      title: candidate.title,
+      angle_tag: allowDifferentAngles ? candidate.angleTag ?? null : null,
+    })),
+  );
 }
 
 function resolveRequiredContentDedupScope(

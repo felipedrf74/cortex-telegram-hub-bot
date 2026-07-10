@@ -105,10 +105,11 @@ describe('training skill hardening source contracts', () => {
     const generator = read('src/api/routes/training-plan-generation.ts');
     const coach = read('src/services/garmin-coach.ts');
 
-    expect(routes).toContain('acquireCostLock');
-    expect(routes).toContain('enforceCostGuardrails');
-    expect(routes).toContain('future explanation call');
-    expect(routes).toContain('should not create a training-plan api_usage row');
+    expect(routes).toContain('Plan generation is deterministic and token-zero');
+    expect(routes).toContain('future model');
+    expect(routes).toContain('withAiBudgetReservation');
+    expect(routes).not.toContain('acquireCostLock');
+    expect(routes).not.toContain('enforceCostGuardrails');
     expect(generator).toContain('buildCoachKernelTrainingPlan');
     expect(generator).not.toMatch(/\bGemini\b|\bOpenAI\b|\banthropic\b|\bgenerateText\b|\bapi_usage\b/i);
     expect(coach).toContain("'coach_analysis'");
@@ -117,7 +118,10 @@ describe('training skill hardening source contracts', () => {
     expect(coach).toContain('COACH_ANALYSIS_SYSTEM_METERING_TENANT_ID');
     expect(coach).toContain("requireTenantIdParam(opts.tenantId, 'generateCoachBriefing')");
     expect(coach).toContain('meteringActor: meteringScope.actor');
-    expect(coach).toContain('const COACH_ANALYSIS_MAX_TOKENS = 1800;');
+    expect(coach).toContain('const COACH_ANALYSIS_MAX_TOKENS = 1400;');
+    expect(coach).toContain('const COACH_PAYLOAD_MAX_CHARS = 9000;');
+    expect(coach).toContain('const COACH_SYSTEM_PROMPT_MAX_CHARS = 6500;');
+    expect(coach).toContain('payloadCompactedToBudget: true');
     expect(coach).toContain('{ maxTokens: COACH_ANALYSIS_MAX_TOKENS, userId: meteringScope.userId, tenantId: meteringScope.tenantId }');
     expect(coach).toContain("{ userId: meteringScope.userId, tenantId: meteringScope.tenantId }");
   });

@@ -13,7 +13,7 @@ import time
 import logging
 from models.requests import ScriptRequest, ScriptResponse
 from models.research import SourceReference
-from services.claude_client import ask_claude, MODEL
+from services.claude_client import AiProxyError, ask_claude, MODEL
 from services.creative.prompt_compiler import PromptSection, compile_prompt
 
 logger = logging.getLogger("content-engine.script")
@@ -1269,6 +1269,8 @@ This metadata block is mandatory in draft, quick, standard, and deep modes."""
             tenant_id=req.tenant_id,
             attribution_token=req.internal_attribution_token,
         )
+    except AiProxyError:
+        raise
     except Exception as exc:
         logger.warning("AI generation unavailable for script_writer.generate: %s", exc)
         return _build_degraded_script_response(
@@ -1321,6 +1323,8 @@ This metadata block is mandatory in draft, quick, standard, and deep modes."""
             if _needs_script_repair(script_text, req, normalized_script_style):
                 parse_degraded = True
                 warnings.append("Script body remained incomplete after repair; review before publishing.")
+        except AiProxyError:
+            raise
         except Exception as exc:
             logger.warning("AI script repair unavailable for script_writer.generate: %s", exc)
             parse_degraded = True

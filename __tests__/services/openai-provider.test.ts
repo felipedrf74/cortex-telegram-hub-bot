@@ -517,6 +517,10 @@ describe('OpenAIProvider', () => {
         expect.any(Number),
         'resolved',
         'gpt-4o',
+        'system',
+        null,
+        'openai_domain_secretary',
+        null,
       );
     });
 
@@ -545,6 +549,10 @@ describe('OpenAIProvider', () => {
         expect.any(Number),
         'resolved',
         'gpt-4o',
+        'system',
+        null,
+        'openai_domain_content',
+        null,
       );
     });
 
@@ -616,6 +624,10 @@ describe('OpenAIProvider', () => {
         expect.any(Number),
         'resolved',
         'gpt-4o-mini',
+        'system',
+        null,
+        'openai_classify',
+        null,
       );
     });
 
@@ -639,6 +651,10 @@ describe('OpenAIProvider', () => {
         expect.any(Number),
         'resolved',
         'gpt-4o-mini',
+        'interactive',
+        null,
+        'openai_classify',
+        null,
       );
     });
 
@@ -662,6 +678,10 @@ describe('OpenAIProvider', () => {
         expect.any(Number),
         'resolved',
         'gpt-4o',
+        'system',
+        null,
+        'openai_tool_continuation',
+        null,
       );
     });
 
@@ -710,6 +730,10 @@ describe('OpenAIProvider', () => {
         expect.any(Number),
         'resolved',
         'gpt-4o-mini',
+        'interactive',
+        null,
+        'openai_stream_content',
+        null,
       );
       expect(mockSettleNexusPointOverageForUser).toHaveBeenCalledWith(42, 777);
     });

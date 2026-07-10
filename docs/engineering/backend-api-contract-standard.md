@@ -2,7 +2,7 @@
 
 Status: canonical
 Owner: backend architecture lead
-Last verified: 2026-06-16
+Last verified: 2026-07-10
 Update policy: update when REST contract conventions, route shape, or
 migration discipline changes. The risk-based gate matrix at
 `docs/release/risk-based-release-gate-matrix.md` is the runtime
@@ -110,6 +110,29 @@ Rules:
    register errors collapse to `REGISTRATION_REJECTED 400` regardless of
    "email taken" vs "weak password".
 
+### 4.1 Model-access and quota contract (must)
+
+Every cost-bearing REST or WebSocket path uses the canonical entitlement and
+budget wrapper before provider execution. Mixed endpoints evaluate their
+deterministic token-zero behavior first, so exhausting or lacking model access
+does not disable reads/actions that do not call a model.
+
+The public model-access errors are stable and dollar-free:
+
+| HTTP | Code | Meaning |
+| ---: | --- | --- |
+| 403 | `AI_PLAN_REQUIRED` | the resolved entitlement cannot use model-backed AI |
+| 429 | `AI_DAILY_LIMIT_REACHED` | daily eligible capacity is exhausted |
+| 429 | `AI_MONTHLY_LIMIT_REACHED` | monthly eligible capacity is exhausted |
+| 429 | `SERVICE_DEGRADED` | global breaker, lock, reservation, or usage-persistence protection is active |
+
+Every 429 response sets `Retry-After`. Error details may include `window`,
+reset fields, `unblocksAt`, and retry metadata, but never raw caps, spend, model
+responses, or provider credentials. Billing/status and usage reads expose the
+additive daily/monthly fraction and reset fields while preserving legacy
+aliases. The complete field, entitlement, reset-window, Nexus Points, and
+automation contract is canonical in `docs/TOKEN-QUOTA-CONTRACT.md`.
+
 ## 5. Service / repository separation (should)
 
 The recommended layer order is:
@@ -207,9 +230,11 @@ Nexus runtime model routing is **configurable**. Do not hardcode "Gemini",
    `userId` parameter and authorize the call against that user before
    executing. The tool dispatcher in `src/services/tool-executor.ts` is
    the single point of authorization.
-3. **Cost guardrails are global and per-user.** Daily caps are enforced at
-   `src/services/cost-guardrail.ts`; a per-user cap exists for any
-   user-driven generative path.
+3. **Cost guardrails are global, per-user, daily, monthly, and
+   automation-aware.** Every provider call is covered by the serialized
+   reservation contract in `src/services/cost-guardrail.ts`; `api_usage` is
+   quota truth. Do not use `users.tier`, `usage_metering`, prompt instructions,
+   or a route-local counter as an access/blocking authority.
 
 ## 11. OpenAPI/contract documentation (should)
 

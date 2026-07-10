@@ -755,6 +755,10 @@ describe('GeminiProvider', () => {
         expect.any(Number),
         'resolved',
         'gemini-2.0-flash',
+        'system',
+        null,
+        'gemini_classify',
+        null,
       );
     });
 
@@ -775,6 +779,10 @@ describe('GeminiProvider', () => {
         expect.any(Number),
         'resolved',
         'gemini-2.0-flash',
+        'interactive',
+        null,
+        'gemini_classify',
+        null,
       );
     });
 
@@ -795,6 +803,10 @@ describe('GeminiProvider', () => {
         expect.any(Number),
         'resolved',
         'gemini-2.0-pro',
+        'system',
+        null,
+        'gemini_domain_secretary',
+        null,
       );
     });
 
@@ -825,6 +837,10 @@ describe('GeminiProvider', () => {
         expect.any(Number),
         'resolved',
         'gemini-2.0-flash',
+        'system',
+        null,
+        'gemini_domain_content',
+        null,
       );
     });
 

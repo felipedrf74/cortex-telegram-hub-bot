@@ -2,7 +2,7 @@
 
 import { Router, Request, Response, NextFunction } from 'express';
 import { AuthenticatedRequest } from '../auth-middleware';
-import { asyncHandler, sendError, sendSuccess } from '../response-helpers';
+import { asyncHandler, sendAiBudgetError, sendError, sendSuccess } from '../response-helpers';
 import { getDb } from '../../services/database';
 import { invalidateContentDerivedCaches } from '../../services/cache-coherence-registry';
 import {
@@ -83,11 +83,15 @@ export function registerContentLearningRoutes(
     }
 
     const startMs = Date.now();
-    const { generateAndStoreTopicCandidates } = await import('../../services/content-workflow');
-    const result = await generateAndStoreTopicCandidates(userId, format, sourceJob, tenantId);
-    invalidateContentDerivedCaches(userId);
-
-    sendSuccess(res, buildGeneratedTopicCandidatesResponse(result, format, sourceJob, startMs));
+    try {
+      const { generateAndStoreTopicCandidates } = await import('../../services/content-workflow');
+      const result = await generateAndStoreTopicCandidates(userId, format, sourceJob, tenantId);
+      invalidateContentDerivedCaches(userId);
+      sendSuccess(res, buildGeneratedTopicCandidatesResponse(result, format, sourceJob, startMs));
+    } catch (err) {
+      if (sendAiBudgetError(res, err)) return;
+      throw err;
+    }
   }));
 
   /**
@@ -252,11 +256,15 @@ export function registerContentLearningRoutes(
     const { userId, tenantId } = req as unknown as AuthenticatedRequest;
     const startMs = Date.now();
 
-    const { generateWeeklyPackage } = await import('../../services/content-workflow');
-    const result = await generateWeeklyPackage(userId, tenantId);
-    invalidateContentDerivedCaches(userId);
-
-    sendSuccess(res, buildWeeklyPackageResponse(result, startMs));
+    try {
+      const { generateWeeklyPackage } = await import('../../services/content-workflow');
+      const result = await generateWeeklyPackage(userId, tenantId);
+      invalidateContentDerivedCaches(userId);
+      sendSuccess(res, buildWeeklyPackageResponse(result, startMs));
+    } catch (err) {
+      if (sendAiBudgetError(res, err)) return;
+      throw err;
+    }
   }));
 
   /**

@@ -7,6 +7,7 @@ const hoisted = vi.hoisted(() => ({
   sendPortalInternalError: vi.fn(),
   setPlanAllowedSkillsOverride: vi.fn(),
   setPlanDailyCostCapOverride: vi.fn(),
+  setPlanMonthlyCostCapOverride: vi.fn(),
   loggerWarn: vi.fn(),
 }));
 
@@ -33,6 +34,7 @@ vi.mock('../../src/portal/http', () => ({
 vi.mock('../../src/services/plan-quotas', () => ({
   setPlanAllowedSkillsOverride: (...args: unknown[]) => hoisted.setPlanAllowedSkillsOverride(...args),
   setPlanDailyCostCapOverride: (...args: unknown[]) => hoisted.setPlanDailyCostCapOverride(...args),
+  setPlanMonthlyCostCapOverride: (...args: unknown[]) => hoisted.setPlanMonthlyCostCapOverride(...args),
 }));
 
 vi.mock('../../src/utils/logger', () => ({
@@ -101,6 +103,7 @@ describe('portal plan routes', () => {
     vi.clearAllMocks();
     hoisted.setPlanAllowedSkillsOverride.mockImplementation(() => undefined);
     hoisted.setPlanDailyCostCapOverride.mockImplementation(() => undefined);
+    hoisted.setPlanMonthlyCostCapOverride.mockImplementation(() => undefined);
     hoisted.getDb.mockReturnValue(makeDbRecorder().db);
   });
 
@@ -120,7 +123,9 @@ describe('portal plan routes', () => {
       {
         plan_id: 'free',
         display_name: 'Free',
-        daily_cost_usd: 0.005,
+        // A stale pre-migration row must still render the paid-only invariant.
+        daily_cost_usd: 0.5,
+        monthly_cost_usd: 5,
         daily_token_limit: null,
         daily_message_limit: 20,
         allowed_skills_json: '["secretary"]',
@@ -143,7 +148,8 @@ describe('portal plan routes', () => {
       plans: [{
         planId: 'free',
         displayName: 'Free',
-        dailyCostUsd: 0.005,
+        dailyCostUsd: 0,
+        monthlyCostUsd: 0,
         dailyTokenLimit: null,
         dailyMessageLimit: 20,
         allowedSkills: ['secretary'],
@@ -204,10 +210,47 @@ describe('portal plan routes', () => {
     const handler = routes.get('PUT /api/plans/:planId')?.[2]!;
     const { payload, res } = makeResponse();
 
-    handler({ params: { planId: 'free' }, body: { dailyCostUsd: 0.005, dailyTokenLimit: -1 } }, res);
+    handler({ params: { planId: 'pro' }, body: { dailyCostUsd: 0.04, dailyTokenLimit: -1 } }, res);
 
     expect(payload.statusCode).toBe(400);
     expect(payload.body).toEqual({ ok: false, message: 'dailyTokenLimit must be null or a non-negative number' });
+    expect(recorder.runs).toEqual([]);
+    expect(hoisted.setPlanDailyCostCapOverride).not.toHaveBeenCalled();
+  });
+
+  it('rejects an invalid monthly cost cap before mutating state', () => {
+    const recorder = makeDbRecorder();
+    hoisted.getDb.mockReturnValue(recorder.db);
+    const { app, routes } = makeApp();
+    registerPortalPlanRoutes(app as any);
+    const handler = routes.get('PUT /api/plans/:planId')?.[2]!;
+    const { payload, res } = makeResponse();
+
+    handler({ params: { planId: 'pro' }, body: { dailyCostUsd: 0.04, monthlyCostUsd: -1 } }, res);
+
+    expect(payload.statusCode).toBe(400);
+    expect(payload.body).toEqual({ ok: false, message: 'monthlyCostUsd must be a non-negative number' });
+    expect(recorder.runs).toEqual([]);
+  });
+
+  it('keeps the Free model-backed budget fixed at zero', () => {
+    const recorder = makeDbRecorder();
+    hoisted.getDb.mockReturnValue(recorder.db);
+    const { app, routes } = makeApp();
+    registerPortalPlanRoutes(app as any);
+    const handler = routes.get('PUT /api/plans/:planId')?.[2]!;
+    const { payload, res } = makeResponse();
+
+    handler({
+      params: { planId: 'free' },
+      body: { dailyCostUsd: 0.001, monthlyCostUsd: 0.03 },
+    }, res);
+
+    expect(payload.statusCode).toBe(400);
+    expect(payload.body).toEqual({
+      ok: false,
+      message: 'Free model-backed daily and monthly limits must remain zero',
+    });
     expect(recorder.runs).toEqual([]);
     expect(hoisted.setPlanDailyCostCapOverride).not.toHaveBeenCalled();
   });
@@ -219,6 +262,7 @@ describe('portal plan routes', () => {
       params: { planId: 'MAX' },
       body: {
         dailyCostUsd: '0.75',
+        monthlyCostUsd: '1.80',
         dailyTokenLimit: 1000,
         dailyMessageLimit: 50,
         allowedSkills: ['secretary', 'training', 12],
@@ -232,14 +276,16 @@ describe('portal plan routes', () => {
     handler(req, res);
 
     expect(recorder.runs).toEqual([{
-      sql: "UPDATE plan_configs SET daily_cost_usd = ?, daily_token_limit = ?, daily_message_limit = ?, allowed_skills_json = ?, updated_at = datetime('now') WHERE plan_id = ?",
-      args: [0.75, 1000, 50, JSON.stringify(['secretary', 'training']), 'max'],
+      sql: "UPDATE plan_configs SET daily_cost_usd = ?, monthly_cost_usd = ?, daily_token_limit = ?, daily_message_limit = ?, allowed_skills_json = ?, updated_at = datetime('now') WHERE plan_id = ?",
+      args: [0.75, 1.8, 1000, 50, JSON.stringify(['secretary', 'training']), 'max'],
     }]);
     expect(hoisted.setPlanDailyCostCapOverride).toHaveBeenCalledWith('max', 0.75);
+    expect(hoisted.setPlanMonthlyCostCapOverride).toHaveBeenCalledWith('max', 1.8);
     expect(hoisted.setPlanAllowedSkillsOverride).toHaveBeenCalledWith('max', ['secretary', 'training']);
     expect(hoisted.logPortalAdminMutation).toHaveBeenCalledWith(req, 0, 'plan_config.update', {
       planId: 'max',
       dailyCostUsd: 0.75,
+      monthlyCostUsd: 1.8,
       dailyTokenLimit: 1000,
       dailyMessageLimit: 50,
       allowedSkills: ['secretary', 'training'],
@@ -261,6 +307,7 @@ describe('portal plan routes', () => {
       sql: "UPDATE plan_configs SET daily_cost_usd = ?, daily_token_limit = ?, daily_message_limit = ?, updated_at = datetime('now') WHERE plan_id = ?",
       args: [0.2, null, null, 'pro'],
     });
+    expect(hoisted.setPlanMonthlyCostCapOverride).not.toHaveBeenCalled();
     expect(payload.body).toEqual({ ok: true });
   });
 
@@ -273,12 +320,12 @@ describe('portal plan routes', () => {
     const handler = routes.get('PUT /api/plans/:planId')?.[2]!;
     const { payload, res } = makeResponse();
 
-    handler({ params: { planId: 'free' }, body: { dailyCostUsd: 0.005 } }, res);
+    handler({ params: { planId: 'pro' }, body: { dailyCostUsd: 0.04 } }, res);
 
     expect(payload.body).toEqual({ ok: true });
     expect(hoisted.loggerWarn).toHaveBeenCalledWith(expect.objectContaining({
       err: expect.any(Error),
-      planId: 'free',
+      planId: 'pro',
     }), 'plan-quotas override apply failed');
   });
 
@@ -295,7 +342,7 @@ describe('portal plan routes', () => {
     const handler = routes.get('PUT /api/plans/:planId')?.[2]!;
     const { payload, res } = makeResponse();
 
-    handler({ params: { planId: 'free' }, body: { dailyCostUsd: 0.005 } }, res);
+    handler({ params: { planId: 'pro' }, body: { dailyCostUsd: 0.04 } }, res);
 
     expect(payload.statusCode).toBe(200);
     expect(payload.body).toBeUndefined();

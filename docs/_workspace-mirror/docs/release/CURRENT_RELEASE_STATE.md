@@ -43,6 +43,29 @@ Last updated: 2026-07-08
   evidence lives at `docs/release/worktree-recovery-audit-2026-05-18.md` and
   `docs/release/worktree-recovery-audit-2026-05-21/`.
 
+### Unreleased Paid-Only AI Cost Controls Candidate
+
+- Backend worktree branch `codex/paid-ai-cost-controls` and iOS companion
+  branch `codex/paid-ai-cost-controls-ios` contain the implementation. Neither
+  branch is merged, staged, deployed, uploaded, or live.
+- Scope includes canonical paid/founder AI eligibility, separate daily and
+  monthly cost windows, a 30% automation ceiling, provider attribution and
+  locked reservations, typed public quota state, portal administration, and
+  workload-specific reductions for Coach, Content, Channel Learning, Voice
+  Evolution, and scheduled Autoresearch. Provider-hosted search fees and
+  Gemini tool/thinking tokens are included in quota truth; signed Content
+  Engine callbacks retain the outer source/category/run instead of becoming
+  system spend.
+- Runtime enforcement defaults off behind
+  `PAID_AI_COST_CONTROLS_ENFORCEMENT_ENABLED=false`; staging persona coverage,
+  live-provider quality proof, and owner-authorized promotion remain pending.
+- Source-level test cases were added but not executed because the owner
+  explicitly prohibited test runs. The latest edits passed backend typecheck
+  and build, Python syntax parsing, the iOS release-hardening validator and an
+  unsigned app-only iOS build, diff whitespace checks, and the canonical docs
+  audit. Staging, live-provider, production, and 30-day acceptance evidence
+  remain pending owner-authorized validation.
+
 ### 2026-07-08 P3 Release Tooling Promote
 
 - Scope: promoted the adversarial QA P3 closeout after owner authorization:

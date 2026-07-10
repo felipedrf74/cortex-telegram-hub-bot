@@ -31,6 +31,7 @@ import {
   buildScriptUnavailableResponse,
   getUserBrandVoiceForChatScript,
 } from './chat-script-shortcut-response';
+import { rethrowAiUsageFailClosedError } from '../../services/api-usage-fallback';
 
 type ActiveChatContext = {
   domain: DomainName;
@@ -128,6 +129,7 @@ async function tryBuildContentShortcutResponse(input: {
         metadata: buildScriptShortcutMetadata(scriptResult, scriptShortcut.format),
       });
     } catch (err) {
+      rethrowAiUsageFailClosedError(err);
       logger.warn(
         {
           err,
@@ -184,6 +186,7 @@ async function tryBuildContentShortcutResponse(input: {
         },
       });
     } catch (err) {
+      rethrowAiUsageFailClosedError(err);
       logger.warn(
         {
           err,

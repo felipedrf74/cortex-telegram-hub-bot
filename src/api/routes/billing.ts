@@ -43,6 +43,7 @@ import {
   recordCurrentLegalConsentForUser,
   validateCurrentLegalAcceptance,
 } from '../../services/legal-consent';
+import { getEffectiveEntitlement } from '../../services/entitlement';
 
 const STRIPE_NEXUS_CHECKOUT_BODY_LIMIT_BYTES = 8 * 1024;
 const STRIPE_NEXUS_CHECKOUT_BODY_FIELDS = new Set(['packageId']);
@@ -66,8 +67,21 @@ function unexpectedStripeCheckoutBodyFields(body: unknown): string[] {
 function buildBillingStatusPayload(userId: number): Record<string, unknown> {
   const status = getSubscriptionStatus(userId);
   const usage = isUserOverDailyCap(userId);
+  const entitlement = usage.entitlement;
+  const canonicalProductActive = entitlement
+    ? !['free', 'error'].includes(entitlement.source)
+      && (entitlement.status === 'active' || entitlement.status === 'trialing')
+    : status.isActive;
+  const canonicalIsPro = entitlement
+    ? canonicalProductActive && (entitlement.plan === 'pro' || entitlement.plan === 'max')
+    : status.isPro;
   return {
     ...status,
+    // Do not let stale/manual subscription rows keep `isPro=true` after the
+    // canonical entitlement has resolved the account to Free. iOS uses these
+    // compatibility booleans as a fallback while additive fields roll out.
+    isActive: canonicalProductActive,
+    isPro: canonicalIsPro,
     ...buildQuotaUsagePayload(usage),
   };
 }
@@ -233,6 +247,24 @@ export function billingRoutes(): Router {
     const packageId = String(req.body?.packageId ?? '').trim();
     if (!isNexusPointProductId(packageId)) {
       sendError(res, 'BAD_REQUEST', 'packageId must be a known Nexus Points package', 400);
+      return;
+    }
+    const entitlement = getEffectiveEntitlement(userId);
+    if (!entitlement.nexusPointsAllowed) {
+      sendError(
+        res,
+        'AI_PLAN_REQUIRED',
+        'Nexus Points are available only with an active paid plan.',
+        403,
+        {
+          requiredPlan: 'pro',
+          currentPlan: entitlement.plan,
+          blockReason: entitlement.blockReason,
+          window: 'plan',
+          unblocksAt: null,
+          retryable: false,
+        },
+      );
       return;
     }
 
@@ -431,7 +463,10 @@ export function billingRoutes(): Router {
       }
 
       try {
-        handleAppleTransaction(userId, String(originalTransactionId), productId, expiresDate);
+        const currentPeriodStart = payload.purchaseDate
+          ? new Date(payload.purchaseDate).toISOString()
+          : null;
+        handleAppleTransaction(userId, String(originalTransactionId), productId, expiresDate, currentPeriodStart);
       } catch (err) {
         if (isAppleTransactionAlreadyClaimedError(err)) {
           sendError(

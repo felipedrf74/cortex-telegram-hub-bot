@@ -1,20 +1,18 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
 /**
- * Autoresearch — automated prompt optimization loop.
+ * Autoresearch — prompt evaluation and operator-controlled optimization.
  *
- * For each target prompt:
- * 1. Run test inputs against the current prompt, score with Haiku
- * 2. Ask Sonnet to propose a mutation to improve the weakest criterion
- * 3. Apply mutation, re-run, compare scores
- * 4. Keep if improved (git commit), revert if worse
- * 5. Store each round in the database
+ * Modes:
+ * 1. evaluate_only scores the current prompt and never proposes or writes.
+ * 2. propose scores and returns one candidate edit without writing it.
+ * 3. apply evaluates mutations and may write/commit, but is limited to an
+ *    explicitly non-production runtime.
  *
- * Scheduled runs are additionally guarded by a pre-flight skip gate: when
- * the target's prompt/config fingerprint is unchanged since the last
- * completed run AND that run's final score is at or above
- * AUTORESEARCH_RESCORE_THRESHOLD (default 0.9), the run is skipped with
- * zero LLM calls. Manual runs bypass the gate with { force: true }.
+ * Production scheduling always uses evaluate_only. Its prompt+eval fingerprint
+ * gate reuses any prior valid score when unchanged, yielding zero model calls.
+ * Propose/apply retain the quality threshold gate; explicit operator runs can
+ * bypass either gate with { force: true }.
  */
 
 import { execSync } from 'child_process';
@@ -24,10 +22,12 @@ import { config } from '../config';
 import { getDb } from './database';
 import { logger } from '../utils/logger';
 import { loadPrompt, writePrompt, getPromptPath } from '../utils/prompt-loader';
-import { getEvalTarget, getAllTargets, EvalTarget, EvalCriterion, TestInput } from './eval-criteria';
+import { getEvalTarget, getAllTargets, EvalTarget, TestInput } from './eval-criteria';
 import { trackedCreate } from '../portal/anthropic-hook';
 import { completeOneShotWithFallback } from './gemini-provider';
 import { sanitizeForPromptInterpolation } from '../utils/prompt-sanitizer';
+import { withAiBudgetReservation } from './cost-guardrail';
+import { rethrowAiUsageFailClosedError } from './api-usage-fallback';
 
 const client = new Anthropic({
   apiKey: config.anthropic.apiKey,
@@ -69,7 +69,7 @@ export interface RoundResult {
   newScore: number | null;
   improvement: number | null;
   mutationDescription: string | null;
-  decision: 'kept' | 'reverted' | 'baseline_only';
+  decision: 'kept' | 'reverted' | 'baseline_only' | 'proposed';
   durationMs: number;
 }
 
@@ -79,6 +79,7 @@ export interface AutoresearchResult {
   rounds: RoundResult[];
   finalScore: number;
   totalDurationMs: number;
+  mode: AutoresearchMode;
   /**
    * Set when the pre-flight gate skipped the run because the prompt/config
    * fingerprint is unchanged since the last completed run and that run's
@@ -96,6 +97,46 @@ export interface AutoresearchRunOptions {
    * cron path omits it and stays gated.
    */
   force?: boolean;
+  /**
+   * evaluate_only: score the current prompt without proposing or writing.
+   * propose: score and return one candidate edit without writing it.
+   * apply: evaluate mutations and write prompts; forbidden in production.
+   */
+  mode?: AutoresearchMode;
+}
+
+export type AutoresearchMode = 'evaluate_only' | 'propose' | 'apply';
+
+type AutoresearchBudgetContext = {
+  runId: string;
+  baseCategory: string;
+  jobNamePrefix: string;
+};
+
+function createAutoresearchBudgetContext(
+  target: EvalTarget,
+  runId = crypto.randomUUID(),
+): AutoresearchBudgetContext {
+  const workload = `autoresearch_${target.id}`;
+  return {
+    runId,
+    baseCategory: workload,
+    jobNamePrefix: workload,
+  };
+}
+
+function autoresearchStageJobName(
+  budgetContext: AutoresearchBudgetContext,
+  stage: 'generate' | 'score' | 'propose',
+): string {
+  return `${budgetContext.jobNamePrefix}:${stage}`;
+}
+
+export class InvalidAutoresearchScorerOutputError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'InvalidAutoresearchScorerOutputError';
+  }
 }
 
 // ─── Core: Generate output from a prompt ─────────────────────────────
@@ -104,13 +145,20 @@ async function generateOutput(
   prompt: string,
   testInput: TestInput,
   target: EvalTarget,
+  budgetContext: AutoresearchBudgetContext,
 ): Promise<string> {
   const userContent = testInput.stateContext
     ? `[Current State]\n${sanitizeForPromptInterpolation(testInput.stateContext)}\n\n${sanitizeForPromptInterpolation(testInput.userMessage)}`
     : sanitizeForPromptInterpolation(testInput.userMessage);
 
   // Provider-aware: try Gemini/OpenAI first, fall back to Anthropic
-  const { text } = await completeOneShotWithFallback(
+  const { text } = await withAiBudgetReservation({
+    userId: 0,
+    requestSource: 'system',
+    baseCategory: budgetContext.baseCategory,
+    jobName: autoresearchStageJobName(budgetContext, 'generate'),
+    runId: budgetContext.runId,
+  }, () => completeOneShotWithFallback(
     prompt,
     userContent,
     `autoresearch_gen_${target.id}`,
@@ -127,81 +175,194 @@ async function generateOutput(
         .join('\n');
     },
     { maxTokens: target.maxTokens, ...SYSTEM_AI_METERING_SCOPE },
-  );
+  ));
   return text;
 }
 
-// ─── Core: Score a single output against criteria ────────────────────
+// ─── Core: deterministic checks + batched semantic scoring ──────────
 
-async function scoreOutput(
+function parseJsonOutput(output: string): unknown {
+  const stripped = output.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
+  return JSON.parse(stripped);
+}
+
+function evaluateDeterministicCriterion(
+  targetId: string,
+  criterionId: string,
   output: string,
-  testInput: TestInput,
-  criteria: EvalCriterion[],
-  scorerModel: string,
-): Promise<CriterionResult[]> {
-  const criteriaList = criteria
-    .map((c, i) => `${i + 1}. [${c.id}] ${c.question}`)
-    .join('\n');
-
-  const scoringPrompt = `You are an eval scorer. Given an AI assistant's output for a specific test input, evaluate each criterion with YES or NO.
-
-TEST INPUT: "${testInput.userMessage}"
-${testInput.stateContext ? `STATE CONTEXT: ${testInput.stateContext}` : ''}
-TEST DESCRIPTION: ${testInput.description}
-
-CRITERIA:
-${criteriaList}
-
-Return ONLY a JSON array of objects with "id" (criterion id) and "passed" (boolean). No other text.
-Example: [{"id":"tool_efficiency","passed":true},{"id":"template_format","passed":false}]`;
-
-  // Gemini-first scoring (small structured-JSON task — perfect for Flash)
-  const scorerSystem = 'You are a strict eval scorer. Return only valid JSON. No markdown fences.';
-  const scorerUser = `${scoringPrompt}\n\nASSISTANT OUTPUT TO EVALUATE:\n${output}`;
-  const { text: scoreText } = await completeOneShotWithFallback(
-    scorerSystem,
-    scorerUser,
-    'autoresearch_score',
-    async () => {
-      const response = await trackedCreate(client, {
-        model: scorerModel,
-        max_tokens: 512,
-        system: scorerSystem,
-        messages: [{ role: 'user', content: scorerUser }],
-      }, 'autoresearch_score', SYSTEM_AI_METERING_SCOPE);
-      return response.content
-        .filter((b): b is Anthropic.TextBlock => b.type === 'text')
-        .map((b) => b.text)
-        .join('');
-    },
-    { maxTokens: 512, ...SYSTEM_AI_METERING_SCOPE },
-  );
-
-  let text = scoreText;
-
-  // Strip markdown fences
-  text = text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
-
+): boolean | null {
   try {
-    const results: Array<{ id: string; passed: boolean }> = JSON.parse(text);
-    return criteria.map((c) => {
-      const result = results.find((r) => r.id === c.id);
+    if (targetId === 'topic_gen' && criterionId === 'complete_fields') {
+      const parsed = parseJsonOutput(output);
+      if (!Array.isArray(parsed) || parsed.length === 0) return false;
+      const nonEmpty = (value: unknown): value is string => typeof value === 'string' && value.trim().length > 0;
+      const liveAngleTags = new Set([
+        'opinion', 'reaction', 'how-to', 'story', 'myth-bust', 'comparison',
+        'data', 'framework', 'listicle', 'trending-take', 'build-log', 'review',
+      ]);
+      return parsed.every((candidate: any) => (
+        nonEmpty(candidate?.title)
+        && nonEmpty(candidate?.niche)
+        && nonEmpty(candidate?.whyNow)
+        && nonEmpty(candidate?.hookIdea)
+        && nonEmpty(candidate?.angle_tag)
+        && liveAngleTags.has(candidate.angle_tag)
+        && typeof candidate?.pillar_emoji === 'string'
+        && nonEmpty(candidate?.time_sensitivity)
+        && /^(?:evergreen|react-today|\d+d)$/.test(candidate.time_sensitivity)
+      ));
+    }
+
+    if (criterionId === 'valid_json') {
+      const parsed = parseJsonOutput(output);
+      if (targetId === 'classifier') {
+        if (!parsed || Array.isArray(parsed) || typeof parsed !== 'object') return false;
+        const value = parsed as Record<string, unknown>;
+        return Object.keys(value).sort().join(',') === 'confidence,domain'
+          && typeof value.domain === 'string'
+          && typeof value.confidence === 'number';
+      }
+      if (targetId === 'channel_learner') {
+        const value = parsed as { channel_summary?: unknown; patterns?: unknown };
+        return typeof value?.channel_summary === 'string' && Array.isArray(value?.patterns);
+      }
+      return true;
+    }
+  } catch {
+    if (criterionId === 'valid_json' || (targetId === 'topic_gen' && criterionId === 'complete_fields')) {
+      return false;
+    }
+  }
+  return null;
+}
+
+type GeneratedEvalOutput = { testInput: TestInput; output: string };
+
+async function scoreOutputsBatch(
+  outputs: GeneratedEvalOutput[],
+  target: EvalTarget,
+  budgetContext: AutoresearchBudgetContext,
+): Promise<Map<string, CriterionResult[]>> {
+  const deterministic = new Map<string, Map<string, boolean>>();
+  const semanticCriteria = target.criteria.filter((criterion) => {
+    let semantic = false;
+    for (const entry of outputs) {
+      const result = evaluateDeterministicCriterion(target.id, criterion.id, entry.output);
+      if (result === null) semantic = true;
+      else {
+        const perInput = deterministic.get(entry.testInput.id) ?? new Map<string, boolean>();
+        perInput.set(criterion.id, result);
+        deterministic.set(entry.testInput.id, perInput);
+      }
+    }
+    return semantic;
+  });
+
+  const semanticResults = new Map<string, Map<string, boolean>>();
+  if (semanticCriteria.length > 0) {
+    const criteriaList = semanticCriteria
+      .map((criterion, index) => `${index + 1}. [${criterion.id}] ${criterion.question}`)
+      .join('\n');
+    const cases = outputs.map((entry) => ({
+      inputId: entry.testInput.id,
+      userMessage: entry.testInput.userMessage,
+      stateContext: entry.testInput.stateContext ?? null,
+      description: entry.testInput.description,
+      assistantOutput: entry.output,
+    }));
+    const scorerSystem = 'You are a strict eval scorer. Return only valid JSON. No markdown fences.';
+    const scorerUser = `Evaluate every case against every semantic criterion.\n\nCRITERIA:\n${criteriaList}\n\nCASES:\n${JSON.stringify(cases)}\n\nReturn ONLY a JSON array shaped as [{"inputId":"case-id","criteria":[{"id":"criterion-id","passed":true}]}]. Include each input and each criterion exactly once.`;
+    const maxTokens = Math.max(512, Math.min(4096, outputs.length * semanticCriteria.length * 48));
+    const { text: scoreText } = await withAiBudgetReservation({
+      userId: 0,
+      requestSource: 'system',
+      baseCategory: budgetContext.baseCategory,
+      jobName: autoresearchStageJobName(budgetContext, 'score'),
+      runId: budgetContext.runId,
+    }, () => completeOneShotWithFallback(
+      scorerSystem,
+      scorerUser,
+      'autoresearch_score',
+      async () => {
+        const response = await trackedCreate(client, {
+          model: target.scorerModel,
+          max_tokens: maxTokens,
+          system: scorerSystem,
+          messages: [{ role: 'user', content: scorerUser }],
+        }, 'autoresearch_score', SYSTEM_AI_METERING_SCOPE);
+        return response.content
+          .filter((block): block is Anthropic.TextBlock => block.type === 'text')
+          .map((block) => block.text)
+          .join('');
+      },
+      { maxTokens, ...SYSTEM_AI_METERING_SCOPE },
+    ));
+
+    let parsed: unknown;
+    try {
+      parsed = parseJsonOutput(scoreText);
+    } catch {
+      throw new InvalidAutoresearchScorerOutputError('Scorer returned invalid JSON');
+    }
+    if (!Array.isArray(parsed)) {
+      throw new InvalidAutoresearchScorerOutputError('Scorer response root must be an array');
+    }
+    const expectedInputIds = new Set(outputs.map((entry) => entry.testInput.id));
+    if (
+      parsed.length !== outputs.length
+      || parsed.some((row: any) => !expectedInputIds.has(row?.inputId))
+    ) {
+      throw new InvalidAutoresearchScorerOutputError('Scorer response input set does not match the requested cases');
+    }
+
+    for (const entry of outputs) {
+      const matching = parsed.filter((row: any) => row?.inputId === entry.testInput.id);
+      if (matching.length !== 1 || !Array.isArray(matching[0]?.criteria)) {
+        throw new InvalidAutoresearchScorerOutputError(`Scorer omitted or duplicated input ${entry.testInput.id}`);
+      }
+      const expectedCriterionIds = new Set(semanticCriteria.map((criterion) => criterion.id));
+      if (
+        matching[0].criteria.length !== semanticCriteria.length
+        || matching[0].criteria.some((row: any) => !expectedCriterionIds.has(row?.id))
+      ) {
+        throw new InvalidAutoresearchScorerOutputError(
+          `Scorer criterion set does not match ${entry.testInput.id}`,
+        );
+      }
+      const perInput = new Map<string, boolean>();
+      for (const criterion of semanticCriteria) {
+        const matches = matching[0].criteria.filter((row: any) => row?.id === criterion.id);
+        if (matches.length !== 1 || typeof matches[0]?.passed !== 'boolean') {
+          throw new InvalidAutoresearchScorerOutputError(
+            `Scorer omitted, duplicated, or invalidated ${entry.testInput.id}/${criterion.id}`,
+          );
+        }
+        perInput.set(criterion.id, matches[0].passed);
+      }
+      semanticResults.set(entry.testInput.id, perInput);
+    }
+  }
+
+  const merged = new Map<string, CriterionResult[]>();
+  for (const entry of outputs) {
+    const results = target.criteria.map((criterion) => {
+      const passed = deterministic.get(entry.testInput.id)?.get(criterion.id)
+        ?? semanticResults.get(entry.testInput.id)?.get(criterion.id);
+      if (typeof passed !== 'boolean') {
+        throw new InvalidAutoresearchScorerOutputError(
+          `No deterministic or semantic result for ${entry.testInput.id}/${criterion.id}`,
+        );
+      }
       return {
-        criterionId: c.id,
-        question: c.question,
-        passed: result?.passed ?? false,
-        weight: c.weight,
+        criterionId: criterion.id,
+        question: criterion.question,
+        passed,
+        weight: criterion.weight,
       };
     });
-  } catch (err) {
-    logger.warn({ err, text }, 'Failed to parse scoring JSON, treating all as failed');
-    return criteria.map((c) => ({
-      criterionId: c.id,
-      question: c.question,
-      passed: false,
-      weight: c.weight,
-    }));
+    merged.set(entry.testInput.id, results);
   }
+  return merged;
 }
 
 // ─── Core: Compute weighted score ────────────────────────────────────
@@ -215,13 +376,26 @@ function computeScore(results: CriterionResult[]): number {
 
 // ─── Core: Full eval run ─────────────────────────────────────────────
 
-export async function runEval(target: EvalTarget, prompt?: string): Promise<EvalResult> {
+export async function runEval(
+  target: EvalTarget,
+  prompt?: string,
+  budgetContext = createAutoresearchBudgetContext(target),
+): Promise<EvalResult> {
   const currentPrompt = prompt ?? loadPrompt(target.promptFile);
   const details: TestInputResult[] = [];
+  const generated: GeneratedEvalOutput[] = [];
 
   for (const testInput of target.testInputs) {
-    const output = await generateOutput(currentPrompt, testInput, target);
-    const criteria = await scoreOutput(output, testInput, target.criteria, target.scorerModel);
+    const output = await generateOutput(currentPrompt, testInput, target, budgetContext);
+    generated.push({ testInput, output });
+  }
+
+  const scored = await scoreOutputsBatch(generated, target, budgetContext);
+  for (const { testInput, output } of generated) {
+    const criteria = scored.get(testInput.id);
+    if (!criteria) {
+      throw new InvalidAutoresearchScorerOutputError(`Scorer omitted input ${testInput.id}`);
+    }
     const score = computeScore(criteria);
     details.push({ inputId: testInput.id, output, criteria, score });
   }
@@ -264,6 +438,7 @@ async function proposeMutation(
   currentPrompt: string,
   evalResult: EvalResult,
   target: EvalTarget,
+  budgetContext: AutoresearchBudgetContext,
 ): Promise<{ mutatedPrompt: string; description: string }> {
   const weakCriterion = target.criteria.find((c) => c.id === evalResult.weakestCriterion);
   const failingExamples = evalResult.details
@@ -294,7 +469,13 @@ Return ONLY valid JSON. No markdown fences.`;
 
   // Gemini-first prompt mutation (analytical, structured output)
   const mutateSystem = 'You are a prompt optimization expert. Return only valid JSON with "description" and "mutated_prompt" fields.';
-  const { text: mutateText } = await completeOneShotWithFallback(
+  const { text: mutateText } = await withAiBudgetReservation({
+    userId: 0,
+    requestSource: 'system',
+    baseCategory: budgetContext.baseCategory,
+    jobName: autoresearchStageJobName(budgetContext, 'propose'),
+    runId: budgetContext.runId,
+  }, () => completeOneShotWithFallback(
     mutateSystem,
     mutationPrompt,
     'autoresearch_mutate',
@@ -311,7 +492,7 @@ Return ONLY valid JSON. No markdown fences.`;
         .join('');
     },
     { maxTokens: 4096, ...SYSTEM_AI_METERING_SCOPE },
-  );
+  ));
 
   let text = mutateText;
 
@@ -479,8 +660,16 @@ export async function runAutoresearch(
 ): Promise<AutoresearchResult> {
   const target = getEvalTarget(targetId);
   if (!target) throw new Error(`Unknown eval target: ${targetId}`);
+  const mode: AutoresearchMode = options?.mode ?? (dryRun ? 'propose' : 'apply');
+  // Apply is an explicitly non-production capability. Fail closed when the
+  // runtime identity is missing or unfamiliar so a misconfigured production
+  // process can never write prompt files or invoke Git operations.
+  if (mode === 'apply' && !['development', 'test'].includes(process.env.NODE_ENV ?? '')) {
+    throw new Error('AUTORESEARCH_APPLY_DISABLED_IN_PRODUCTION');
+  }
 
   const runId = crypto.randomUUID();
+  const budgetContext = createAutoresearchBudgetContext(target, runId);
   const rounds: RoundResult[] = [];
   const startTime = Date.now();
 
@@ -505,33 +694,91 @@ export async function runAutoresearch(
     }
     const lastRun = currentHash !== null ? readLastRunFingerprint(targetId) : null;
     const threshold = getRescoreThreshold();
+    const priorScoreIsValid = typeof lastRun?.finalScore === 'number'
+      && Number.isFinite(lastRun.finalScore)
+      && lastRun.finalScore >= 0
+      && lastRun.finalScore <= 1;
+    const unchangedScoreIsReusable = mode === 'evaluate_only'
+      ? priorScoreIsValid
+      : priorScoreIsValid && (lastRun?.finalScore ?? -1) >= threshold;
     if (
       currentHash !== null &&
       lastRun !== null &&
       lastRun.promptHash !== null &&
-      lastRun.finalScore !== null &&
       lastRun.promptHash === currentHash &&
-      lastRun.finalScore >= threshold
+      unchangedScoreIsReusable
     ) {
+      const finalScore = lastRun.finalScore ?? 0;
       await report(
         `Autoresearch skipped for <b>${targetId}</b> — prompt unchanged since last run and ` +
-        `stored score <b>${(lastRun.finalScore * 100).toFixed(1)}%</b> is at/above the ` +
-        `${(threshold * 100).toFixed(0)}% re-score threshold (0 LLM calls)`,
+        `stored score <b>${(finalScore * 100).toFixed(1)}%</b> is reusable for ${mode} (0 LLM calls)`,
       );
       return {
         targetId,
         runId,
         rounds: [],
-        finalScore: lastRun.finalScore,
+        finalScore,
         totalDurationMs: Date.now() - startTime,
+        mode,
         skipped: 'skipped_unchanged',
       };
     }
   }
 
-  await report(`Starting autoresearch for <b>${targetId}</b> — ${maxRounds} rounds${dryRun ? ' (DRY RUN)' : ''}`);
+  await report(`Starting autoresearch for <b>${targetId}</b> — mode ${mode}`);
 
   let currentScore = 0;
+
+  if (mode === 'evaluate_only' || mode === 'propose') {
+    const roundStart = Date.now();
+    const baselineEval = await runEval(target, undefined, budgetContext);
+    currentScore = baselineEval.score;
+    let mutationDescription: string | null = null;
+    let promptDiff: string | null = null;
+    let decision: RoundResult['decision'] = 'baseline_only';
+
+    if (mode === 'propose' && currentScore < 0.99) {
+      const originalPrompt = loadPrompt(target.promptFile);
+      const mutation = await proposeMutation(originalPrompt, baselineEval, target, budgetContext);
+      mutationDescription = mutation.description;
+      promptDiff = `${originalPrompt.length} chars → ${mutation.mutatedPrompt.length} chars`;
+      decision = 'proposed';
+      await report(`Proposed mutation for <b>${targetId}</b>: "${mutation.description}" (prompt not written)`);
+    }
+
+    const durationMs = Date.now() - roundStart;
+    storeRound(
+      target,
+      1,
+      runId,
+      currentScore,
+      null,
+      null,
+      mutationDescription,
+      promptDiff,
+      decision,
+      target.testInputs.length,
+      baselineEval.details,
+      null,
+      durationMs,
+    );
+    rounds.push({
+      round: 1,
+      baselineScore: currentScore,
+      newScore: null,
+      improvement: null,
+      mutationDescription,
+      decision,
+      durationMs,
+    });
+    persistRunFingerprint(target, runId, currentScore);
+    const totalDurationMs = Date.now() - startTime;
+    await report(
+      `Autoresearch <b>${targetId}</b> ${mode} complete: score <b>${(currentScore * 100).toFixed(1)}%</b> ` +
+      `(${(totalDurationMs / 1000).toFixed(0)}s)`,
+    );
+    return { targetId, runId, rounds, finalScore: currentScore, totalDurationMs, mode };
+  }
 
   for (let round = 1; round <= maxRounds; round++) {
     const roundStart = Date.now();
@@ -539,7 +786,7 @@ export async function runAutoresearch(
     try {
       // Step 1: Evaluate current prompt
       await report(`Round ${round}/${maxRounds}: evaluating current prompt...`);
-      const baselineEval = await runEval(target);
+      const baselineEval = await runEval(target, undefined, budgetContext);
       currentScore = baselineEval.score;
 
       await report(
@@ -567,7 +814,7 @@ export async function runAutoresearch(
       // Step 2: Propose mutation
       await report(`Round ${round}: proposing mutation...`);
       const originalPrompt = loadPrompt(target.promptFile);
-      const mutation = await proposeMutation(originalPrompt, baselineEval, target);
+      const mutation = await proposeMutation(originalPrompt, baselineEval, target, budgetContext);
 
       await report(`Round ${round}: mutation — "${mutation.description}"`);
 
@@ -575,7 +822,7 @@ export async function runAutoresearch(
       writePrompt(target.promptFile, mutation.mutatedPrompt);
 
       await report(`Round ${round}: evaluating mutated prompt...`);
-      const mutatedEval = await runEval(target);
+      const mutatedEval = await runEval(target, undefined, budgetContext);
       const newScore = mutatedEval.score;
       const improvement = newScore - currentScore;
 
@@ -593,9 +840,7 @@ export async function runAutoresearch(
 
       if (improvement > 0) {
         decision = 'kept';
-        if (!dryRun) {
-          gitHash = gitCommitPrompt(target, round, currentScore, newScore);
-        }
+        gitHash = gitCommitPrompt(target, round, currentScore, newScore);
         currentScore = newScore;
         await report(`Round ${round}: <b>KEPT</b> — score improved${gitHash ? ` (${gitHash})` : ''}`);
       } else {
@@ -622,6 +867,14 @@ export async function runAutoresearch(
         durationMs: Date.now() - roundStart,
       });
     } catch (err) {
+      // Budget denials and usage-persistence failures are terminal for the
+      // run. Continuing would either obscure the deferral or risk an
+      // unmetered follow-up provider call in a later round.
+      rethrowAiUsageFailClosedError(err);
+      if (err instanceof InvalidAutoresearchScorerOutputError) {
+        logger.error({ err, target: targetId, round }, 'Autoresearch aborted: invalid scorer output');
+        throw err;
+      }
       logger.error({ err, target: targetId, round }, 'Autoresearch round failed');
       await report(`Round ${round}: ERROR — ${(err as Error).message}`);
       rounds.push({
@@ -647,7 +900,7 @@ export async function runAutoresearch(
   // the next scheduled run can skip when nothing has changed.
   persistRunFingerprint(target, runId, currentScore);
 
-  return { targetId, runId, rounds, finalScore: currentScore, totalDurationMs };
+  return { targetId, runId, rounds, finalScore: currentScore, totalDurationMs, mode };
 }
 
 // ─── Single eval (no mutation) ───────────────────────────────────────

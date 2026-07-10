@@ -249,7 +249,7 @@ class ResearchOrchestrator:
     ) -> DeepSearchResponse:
         """Full research pipeline: fan-out → score → AI synthesis → actionable briefs."""
         import json
-        from services.claude_client import ask_claude_json, MODEL
+        from services.claude_client import AiProxyError, ask_claude_json, MODEL
 
         start = time.monotonic()
         warnings: list[str] = []
@@ -392,6 +392,8 @@ Return ONLY the JSON object."""
             )
             if isinstance(synthesis, dict) and "raw" in synthesis and len(synthesis) == 1:
                 raise ValueError("JSON parse failed")
+        except AiProxyError:
+            raise
         except Exception as e:
             logger.warning("AI synthesis failed, falling back to basic briefs: %s", e)
             briefs = build_briefs(selected_scored, max_briefs=max_results, language=language)
@@ -503,7 +505,7 @@ Return ONLY the JSON object."""
         language: str | None = None,
     ) -> HotNewsResponse:
         """What's trending right now — curated through the creator's saved worldview lens."""
-        from services.claude_client import ask_claude_json, FAST_MODEL
+        from services.claude_client import AiProxyError, ask_claude_json, FAST_MODEL
 
         # Phase 1: Gather raw results from targeted queries
         query_tasks = [self._fan_out(q, max_per_searcher=3) for q in HOT_NEWS_QUERIES]
@@ -572,6 +574,8 @@ Only return the JSON array, nothing else."""
             curated = await ask_claude_json(curation_prompt, model=FAST_MODEL, max_tokens=4096, temperature=0.6)
             if isinstance(curated, dict) and "raw" in curated:
                 curated = []  # JSON parse failed
+        except AiProxyError:
+            raise
         except Exception as e:
             logger.warning("AI curation failed, falling back to raw: %s", e)
             curated = []

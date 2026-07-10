@@ -26,9 +26,12 @@
  *   skip shadow entirely. Belt+suspenders: the live classifier also
  *   sets `source: 'live'` explicitly.
  *
- * O3-A12 OPTION 1 — Shadow calls write ZERO `api_usage` rows and
- *   bypass `local-llm-rate-limiter` (no quota burn). All telemetry
- *   flows via `classify_shadow_runs`.
+ * Paid-AI cost controls supersede O3-A12 Option 1: every eligible shadow
+ *   model invocation owns a fresh shared-system budget reservation and writes
+ *   a zero-cost `api_usage` row in addition to `classify_shadow_runs`.
+ *   This prevents queued work from inheriting or waiting on a live-chat lock,
+ *   while the entitlement preflight guarantees Free/ineligible users never
+ *   trigger a shadow model call.
  *
  * O3-A21 — Row schema includes `request_id`, `ollama_model`,
  *   `ollama_prompt_version`, `gemini_model`, `schema_version`.
@@ -49,6 +52,8 @@ import { getProvider, getActiveProvider } from './provider-registry';
 import { hmacSha256 } from '../utils/hmac';
 import { generateRequestId } from '../utils/request-context';
 import type { ClassificationResult, DomainName } from '../domains/types';
+import { withAiBudgetReservation } from './cost-guardrail';
+import { getEffectiveEntitlement } from './entitlement';
 
 // ─── Knobs ────────────────────────────────────────────────────────
 
@@ -103,6 +108,14 @@ export interface ShadowClassifyInput {
 export async function runOllamaShadowClassification(input: ShadowClassifyInput): Promise<void> {
   if (!config.localLLM?.classifyShadow) return;
   if (MAX_IN_FLIGHT === 0) return;
+  // Shadow evaluation is never a reason to run a model for a Free or otherwise
+  // ineligible user. Fail closed when identity/entitlement lookup is absent.
+  if (!input.userId || input.userId <= 0) return;
+  try {
+    if (!getEffectiveEntitlement(input.userId).aiAccessAllowed) return;
+  } catch {
+    return;
+  }
 
   const requestId = input.requestId ?? generateRequestId();
   const geminiModel = input.geminiModel ?? 'unknown';
@@ -207,15 +220,24 @@ export async function runOllamaShadowClassification(input: ShadowClassifyInput):
   let ollamaResult: ClassificationResult | null = null;
   let ollamaError: string | null = null;
   try {
-    ollamaResult = await ollama.classify(input.message, input.activeContext, {
+    ollamaResult = await withAiBudgetReservation({
+      userId: input.userId ?? 0,
+      // This is internal evaluation overhead, not user-delivered interactive
+      // value. Use the shared system lock/budget so fire-and-forget shadow work
+      // cannot wait on the live chat's same-user lock or spend Nexus Points.
+      requestSource: 'system',
+      baseCategory: 'classify_shadow',
+      jobName: 'classify_shadow',
+      runId: requestId,
+    }, () => ollama.classify(input.message, input.activeContext, {
       userId: input.userId,
       tenantId: input.tenantId,
       requestId,
-      source: 'shadow',         // O3-A19: opt-in to shadow path
-      recordUsage: false,       // O3-A12 OPTION 1: skip api_usage / rate-limit
+      source: 'shadow',         // O3-A19: label this as shadow telemetry
+      recordUsage: true,        // zero-cost api_usage row + local capacity accounting
       timeoutMs: SHADOW_TIMEOUT_MS,
       abortSignal: controller.signal,  // O3-A18: real cancellation
-    });
+    }));
   } catch (err) {
     ollamaError = err instanceof Error ? err.message : String(err);
   } finally {

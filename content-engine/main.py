@@ -30,6 +30,7 @@ from routers.research import router as research_router
 from routers.books import router as books_router
 from config import cfg
 from services.log_redaction import SecretRedactionFilter
+from services.claude_client import AiProxyError
 
 # ── Distributed tracing (Quarter audit item) ──────────────────────────
 #
@@ -180,6 +181,26 @@ app.add_middleware(RequestIdMiddleware)
 
 app.include_router(research_router)
 app.include_router(books_router)
+
+
+@app.exception_handler(AiProxyError)
+async def stable_ai_proxy_error_handler(_request: Request, exc: AiProxyError) -> JSONResponse:
+    """Preserve the TS model-access contract across the Python service hop."""
+    headers = {}
+    if exc.status_code == 429 and exc.retry_after:
+        headers["Retry-After"] = exc.retry_after
+    return JSONResponse(
+        status_code=exc.status_code,
+        headers=headers,
+        content={
+            "ok": False,
+            "error": {
+                "code": exc.code,
+                "message": exc.public_message,
+                "details": exc.details,
+            },
+        },
+    )
 
 
 @app.get("/health")

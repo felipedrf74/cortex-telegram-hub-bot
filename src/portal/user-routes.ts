@@ -7,7 +7,12 @@ import { listUsers, setUserStatusById } from '../services/user-service';
 import { logPortalAdminMutation } from './admin-audit';
 import { requireOperatorTargetUser } from './admin-target-user';
 import { sendPortalInternalError } from './http';
-import { clearUserAiBudgetOverride, setUserAiBudgetOverride } from '../services/ai-budget-overrides';
+import {
+  clearUserAiBudgetOverride,
+  getActiveUserAiBudgetOverride,
+  setUserAiBudgetOverride,
+} from '../services/ai-budget-overrides';
+import { getDailyQuotaStatus } from '../services/cost-guardrail';
 import {
   createNexusPointsCheckoutSession,
   isStripeNexusPointsIdempotencyConflictError,
@@ -15,6 +20,7 @@ import {
 } from '../services/stripe-nexus-points-service';
 import { isNexusPointProductId, listNexusPointPackages } from '../services/nexus-points';
 import { getPortalAuthContext } from '../api/secret-guards';
+import { getEffectiveEntitlement } from '../services/entitlement';
 
 const VALID_TIERS = new Set(['free', 'pro', 'max', 'owner']);
 const STRIPE_NEXUS_POINTS_PORTAL_NOTE_MAX_LENGTH = 280;
@@ -64,6 +70,88 @@ export function registerPortalUserRoutes(app: express.Express): void {
     }
   });
 
+  app.get('/api/users/:userId/ai-budget', requirePortalAdminToken, requireOperatorTargetUser('userId'), (req: Request, res: Response) => {
+    try {
+      const userId = parsePositiveUserId(req.params.userId);
+      if (!userId) {
+        res.status(400).json({ ok: false, message: 'invalid userId' });
+        return;
+      }
+
+      const quota = getDailyQuotaStatus(userId, { requestSource: 'interactive' });
+      const override = getActiveUserAiBudgetOverride(userId);
+      let recentDeferrals: Array<Record<string, unknown>> = [];
+      try {
+        recentDeferrals = getDb().prepare(`
+          SELECT request_source AS requestSource,
+                 job_name AS jobName,
+                 base_category AS baseCategory,
+                 run_id AS runId,
+                 code,
+                 budget_window AS window,
+                 reset_at AS resetAt,
+                 created_at AS createdAt
+          FROM ai_budget_deferrals
+          WHERE user_id = ?
+          ORDER BY created_at DESC, id DESC
+          LIMIT 20
+        `).all(userId) as Array<Record<string, unknown>>;
+      } catch {
+        // During an additive rollout an older DB may not have migration 226.
+        recentDeferrals = [];
+      }
+
+      const entitlement = quota.entitlement;
+      res.json({
+        ok: true,
+        userId,
+        entitlement: {
+          plan: quota.plan,
+          source: entitlement?.source ?? 'error',
+          status: entitlement?.status ?? 'none',
+          aiAccessAllowed: quota.aiAccessAllowed,
+          automationAllowed: quota.automationAllowed,
+          nexusPointsAllowed: entitlement?.nexusPointsAllowed ?? false,
+          blockReason: quota.blockReason,
+          automationBlockReason: entitlement?.automationBlockReason ?? null,
+          billingPeriodStart: entitlement?.billingPeriodStart ?? null,
+          billingPeriodEnd: entitlement?.billingPeriodEnd ?? null,
+        },
+        effective: {
+          dailyCostUsd: quota.capUsd,
+          monthlyCostUsd: quota.monthlyCapUsd,
+          automationDailyCostUsd: quota.automationDailyCapUsd,
+          automationMonthlyCostUsd: quota.automationMonthlyCapUsd,
+        },
+        usage: {
+          dailyCostUsd: quota.spentUsd,
+          monthlyCostUsd: quota.monthlySpentUsd,
+          dailyFraction: quota.dailyUsageFraction,
+          monthlyFraction: quota.monthlyUsageFraction,
+          dailyOverLimit: quota.dailyOver,
+          monthlyOverLimit: quota.monthlyOver,
+          automationDailyCostUsd: quota.automationSpentTodayUsd,
+          automationMonthlyCostUsd: quota.automationSpentMonthlyUsd,
+          automationDailyFraction: quota.automationDailyCapUsd > 0
+            ? Math.min(quota.automationSpentTodayUsd / quota.automationDailyCapUsd, 1)
+            : 0,
+          automationMonthlyFraction: quota.automationMonthlyCapUsd > 0
+            ? Math.min(quota.automationSpentMonthlyUsd / quota.automationMonthlyCapUsd, 1)
+            : 0,
+        },
+        resets: {
+          dailyAt: quota.dailyResetAt,
+          monthlyAt: quota.monthlyResetAt,
+          unblocksAt: quota.unblocksAt,
+        },
+        override,
+        recentDeferrals,
+      });
+    } catch (err) {
+      sendPortalInternalError(res, err, 'Failed to load AI budget', 'Portal: user AI budget failed');
+    }
+  });
+
   app.get('/api/billing/nexus-points/packages', requirePortalAdminToken, (_req: Request, res: Response) => {
     res.json({
       ok: true,
@@ -91,6 +179,17 @@ export function registerPortalUserRoutes(app: express.Express): void {
       const note = sanitizePortalCheckoutNote(req.body?.note);
       if (!note) {
         res.status(400).json({ ok: false, error: { code: 'NOTE_REQUIRED', message: 'note is required for portal-created Stripe checkout sessions' } });
+        return;
+      }
+      const entitlement = getEffectiveEntitlement(userId);
+      if (!entitlement.nexusPointsAllowed) {
+        res.status(403).json({
+          ok: false,
+          error: {
+            code: 'AI_PLAN_REQUIRED',
+            message: 'Nexus Points are available only with an active paid or founder entitlement.',
+          },
+        });
         return;
       }
       const auth = getPortalAuthContext(req);
@@ -192,6 +291,7 @@ export function registerPortalUserRoutes(app: express.Express): void {
         daily_token_limit,
         daily_cost_limit_usd,
         daily_ai_cost_limit_usd,
+        monthly_ai_cost_limit_usd,
         daily_ai_cost_limit_expires_at,
         daily_ai_cost_limit_reason,
       } = req.body ?? {};
@@ -199,6 +299,7 @@ export function registerPortalUserRoutes(app: express.Express): void {
       const tokenLimit = nonNegNumOrUndef(daily_token_limit);
       const costLimit = nonNegNumOrUndef(daily_cost_limit_usd);
       let aiCostLimit: number | null | undefined;
+      let monthlyAiCostLimit: number | null | undefined;
       if (hasOwn(req.body, 'daily_ai_cost_limit_usd')) {
         if (daily_ai_cost_limit_usd === null) {
           aiCostLimit = null;
@@ -210,20 +311,40 @@ export function registerPortalUserRoutes(app: express.Express): void {
           }
         }
       }
+      if (hasOwn(req.body, 'monthly_ai_cost_limit_usd')) {
+        if (monthly_ai_cost_limit_usd === null) {
+          monthlyAiCostLimit = null;
+        } else {
+          monthlyAiCostLimit = nonNegNumOrUndef(monthly_ai_cost_limit_usd);
+          if (monthlyAiCostLimit === undefined) {
+            res.status(400).json({ ok: false, message: 'monthly_ai_cost_limit_usd must be null or a non-negative number' });
+            return;
+          }
+        }
+      }
 
       if (msgLimit !== undefined) db.prepare('UPDATE users SET daily_message_limit = ? WHERE id = ?').run(msgLimit, userId);
       if (tokenLimit !== undefined) db.prepare('UPDATE users SET daily_token_limit = ? WHERE id = ?').run(tokenLimit, userId);
       if (costLimit !== undefined) db.prepare('UPDATE users SET daily_cost_limit_usd = ? WHERE id = ?').run(costLimit, userId);
-      if (aiCostLimit === null) {
+      if (aiCostLimit === null && (monthlyAiCostLimit === null || monthlyAiCostLimit === undefined)) {
         clearUserAiBudgetOverride(userId, 0);
-      } else if (aiCostLimit !== undefined) {
+      } else if (aiCostLimit !== undefined || monthlyAiCostLimit !== undefined) {
         const expiresAt = typeof daily_ai_cost_limit_expires_at === 'string' && daily_ai_cost_limit_expires_at.trim()
           ? daily_ai_cost_limit_expires_at.trim()
           : null;
         const reason = typeof daily_ai_cost_limit_reason === 'string' && daily_ai_cost_limit_reason.trim()
           ? daily_ai_cost_limit_reason.trim()
           : null;
-        setUserAiBudgetOverride({ userId, dailyCostUsd: aiCostLimit, expiresAt, reason, updatedBy: 0 });
+        const activeOverride = getActiveUserAiBudgetOverride(userId);
+        const quota = getDailyQuotaStatus(userId, { requestSource: 'interactive' });
+        setUserAiBudgetOverride({
+          userId,
+          dailyCostUsd: aiCostLimit ?? activeOverride?.dailyCostUsd ?? quota.capUsd,
+          monthlyCostUsd: monthlyAiCostLimit,
+          expiresAt,
+          reason,
+          updatedBy: 0,
+        });
       }
 
       logPortalAdminMutation(req, userId, 'user.limits', {
@@ -231,6 +352,7 @@ export function registerPortalUserRoutes(app: express.Express): void {
         daily_token_limit: tokenLimit,
         daily_cost_limit_usd: costLimit,
         daily_ai_cost_limit_usd: aiCostLimit,
+        monthly_ai_cost_limit_usd: monthlyAiCostLimit,
       });
       res.json({ ok: true, message: 'Limits updated' });
     } catch (err) {

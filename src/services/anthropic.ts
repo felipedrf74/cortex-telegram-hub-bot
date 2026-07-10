@@ -11,6 +11,7 @@ import { loadPrompt } from '../utils/prompt-loader';
 import { readTrainingContextAll, formatTrainingContextForPrompt } from './training-signals';
 import { getTriathlonPromptNameForMessage } from '../router/sport-classifier';
 import { buildScopedStateContextPrefix } from './provider-state-context';
+import { rethrowAiUsageFailClosedError } from './api-usage-fallback';
 
 const client = new Anthropic({
   apiKey: config.anthropic.apiKey,
@@ -965,6 +966,7 @@ export async function classifyAndExtractImage(
     try {
       rawText = await anthropicFallback();
     } catch (err) {
+      rethrowAiUsageFailClosedError(err);
       logger.warn({ err, mediaType }, 'GIF image classification fell back to task because Anthropic provider is disabled');
       try {
         const { captureError } = require('./error-monitor') as typeof import('./error-monitor');
@@ -1262,6 +1264,7 @@ ${message}`;
     }
     return { domain, confidence };
   } catch (err) {
+    rethrowAiUsageFailClosedError(err);
     const fallbackDomain = inferFallbackDomain();
     logger.error(
       {

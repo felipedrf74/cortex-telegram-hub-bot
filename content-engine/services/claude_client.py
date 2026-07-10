@@ -55,6 +55,70 @@ _ATTRIBUTION_CONTEXT: ContextVar[dict[str, Any] | None] = ContextVar(
     default=None,
 )
 
+_STABLE_AI_BUDGET_CODES = {
+    "AI_PLAN_REQUIRED",
+    "AI_DAILY_LIMIT_REACHED",
+    "AI_MONTHLY_LIMIT_REACHED",
+    "SERVICE_DEGRADED",
+}
+
+
+class AiProxyError(Exception):
+    """Typed, public-safe model-access denial returned by the TS proxy.
+
+    FastAPI maps this exception back to the same stable envelope. Keeping the
+    public fields separate from the raw httpx response prevents provider or
+    internal error text from leaking through the Content Engine hop.
+    """
+
+    def __init__(
+        self,
+        *,
+        status_code: int,
+        code: str,
+        message: str,
+        details: dict[str, Any] | None = None,
+        retry_after: str | None = None,
+    ) -> None:
+        super().__init__(code)
+        self.status_code = status_code
+        self.code = code
+        self.public_message = message
+        self.details = details or {}
+        self.retry_after = retry_after
+
+
+def _stable_ai_proxy_error(response: httpx.Response) -> AiProxyError | None:
+    if response.status_code not in (403, 429):
+        return None
+    try:
+        payload = response.json()
+    except Exception:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    error = payload.get("error")
+    if not isinstance(error, dict):
+        detail = payload.get("detail")
+        error = detail.get("error") if isinstance(detail, dict) else None
+    if not isinstance(error, dict):
+        return None
+    code = error.get("code")
+    if code not in _STABLE_AI_BUDGET_CODES:
+        return None
+    expected_status = 403 if code == "AI_PLAN_REQUIRED" else 429
+    if response.status_code != expected_status:
+        return None
+    message = error.get("message")
+    details = error.get("details")
+    return AiProxyError(
+        status_code=response.status_code,
+        code=code,
+        message=message if isinstance(message, str) and message else code,
+        details=details if isinstance(details, dict) else {},
+        retry_after=response.headers.get("retry-after"),
+    )
+
 
 def set_attribution_context(
     user_id: int | None = None,
@@ -126,6 +190,7 @@ async def _repair_json_response(
     max_tokens: int,
     user_id: int | None = None,
     tenant_id: int | None = None,
+    attribution_token: str | None = None,
 ) -> dict | list | None:
     repair_prompt = f"""Repair the following model output into valid JSON only.
 Preserve the original structure and data. Do not summarize. Do not add markdown.
@@ -139,12 +204,20 @@ BROKEN OUTPUT:
             system=system,
             max_tokens=min(max_tokens, 4096),
             temperature=0.0,
-            category=f"{category}_json_repair",
+            # A repair is another stage of the same signed workload/run, not
+            # a new billable category. Reusing the original category lets the
+            # TS proxy re-enter the live outer reservation exactly.
+            category=category,
             json_mode=True,
             user_id=user_id,
             tenant_id=tenant_id,
+            attribution_token=attribution_token,
         )
         return json.loads(_extract_json_candidate(repaired))
+    except AiProxyError:
+        # Plan/quota errors are authoritative and must survive the repair hop;
+        # returning a raw/degraded success would hide the user's reset state.
+        raise
     except Exception as exc:
         logger.warning("AI JSON repair failed for category=%s: %s", category, exc)
         return None
@@ -205,6 +278,9 @@ async def ask_claude(
             })
             resp.raise_for_status()
         except httpx.HTTPStatusError as e:
+            stable_error = _stable_ai_proxy_error(e.response)
+            if stable_error is not None:
+                raise stable_error from None
             logger.error(
                 "AI proxy HTTP error %d for category=%s (%d chars)",
                 e.response.status_code,
@@ -258,7 +334,15 @@ async def ask_claude_json(
     try:
         return json.loads(cleaned)
     except json.JSONDecodeError:
-        repaired = await _repair_json_response(raw, system, category, max_tokens, user_id, tenant_id)
+        repaired = await _repair_json_response(
+            raw,
+            system,
+            category,
+            max_tokens,
+            user_id,
+            tenant_id,
+            attribution_token,
+        )
         if repaired is not None:
             logger.info("AI JSON response repaired for category=%s", category)
             return repaired

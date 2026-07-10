@@ -33,6 +33,10 @@ vi.mock('../../src/services/user-service', () => ({
   getUserLanguageById: vi.fn(() => 'pt-BR'),
 }));
 
+vi.mock('../../src/services/entitlement', () => ({
+  isPaidAiCostControlsEnforcementEnabled: vi.fn(() => false),
+}));
+
 vi.mock('../../src/services/tenant-scope-observability', () => ({
   isValidTenantUserId: vi.fn(() => true),
   recordTenantScopeAnomaly: vi.fn(),
@@ -107,6 +111,11 @@ vi.mock('../../src/services/intelligence-bus', () => ({
 }));
 
 vi.mock('../../src/services/cost-guardrail', () => ({
+  AiBudgetError: class AiBudgetError extends Error {
+    decision: any;
+    constructor(decision: any) { super(decision.code); this.name = 'AiBudgetError'; this.decision = decision; }
+  },
+  buildQuotaExceededPayload: vi.fn(() => ({})),
   isUserOverDailyCap: vi.fn(() => ({
     over: false,
     spentUsd: 0,
@@ -129,6 +138,15 @@ vi.mock('../../src/services/cost-guardrail', () => ({
   })),
   buildQuotaExceededMessage: vi.fn(() => 'quota exceeded'),
   acquireCostLock: vi.fn(async () => () => { /* no-op */ }),
+  getDailyQuotaStatus: vi.fn(() => ({
+    over: false,
+    usageFraction: 0,
+    spentUsd: 0,
+    capUsd: 0.2,
+    plan: 'pro',
+    resetAt: '2026-04-15T00:00:00.000Z',
+  })),
+  withAiBudgetReservation: vi.fn(async (_request: unknown, providerCall: () => Promise<unknown>) => providerCall()),
 }));
 
 vi.mock('../../src/services/cache-coherence-registry', () => ({

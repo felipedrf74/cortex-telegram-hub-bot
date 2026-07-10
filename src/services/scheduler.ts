@@ -32,7 +32,11 @@ import { setLastCoachState } from '../domains/domain-handler';
 import { setLastActiveDomain } from '../api/routes/chat-message-context';
 import { addToConversation } from '../state/conversation';
 import { processAllChannelScopes, seedDefaultChannels } from './channel-learner';
-import { generateAndStoreTopicCandidates, generateWeeklyPackage } from './content-workflow';
+import {
+  generateAndStoreTopicCandidates,
+  generateWeeklyPackage,
+  getMissingScheduledInventoryCount,
+} from './content-workflow';
 import { runPipelineAgent } from '../agents/pipeline-agent';
 import { runSEOAgent, seedKeywordsIfEmpty } from '../agents/seo-agent';
 import { runReactionRadar } from '../agents/reaction-radar-agent';
@@ -42,7 +46,7 @@ import { expireStaleSignals } from './intelligence-bus';
 import { seedBooksIfEmpty } from '../commands/books';
 import { runAutoresearch, getScheduledTarget } from './autoresearch';
 import { resolveDueReportTargets } from './report-schedule-dispatcher';
-import { getUserTimezoneById } from './user-service';
+import { getUserTimezoneById, isOwnerUserRef } from './user-service';
 import { runDatabaseBackup, weeklyRestoreTest } from './backup';
 import { getDb } from './database';
 import { listActiveFiscalCollectionProfiles } from '../state/fiscal-collection-profiles';
@@ -76,7 +80,16 @@ import { recordChatCoreV2GateCheck } from './chat-core-v2/gate-metrics-store';
 import { expireOldNexusPointCredits } from './nexus-points';
 import { getActivePlan, getCurrentWeek, getWeeklyAdherence, computeAdjustmentRecommendation, updateWeekAdjustment, getWeeksForPlan } from './training-plans';
 import { calculateReadiness, persistReadinessScore } from './readiness-scorer';
-import { getEffectiveEntitlement, isCoachBriefingEntitlementEligible } from './entitlement';
+import {
+  isAiAutomationAllowedForRuntime,
+  isCoachBriefingEntitlementEligible,
+  isPaidAiCostControlsEnforcementEnabled,
+} from './entitlement';
+import {
+  recordAiAutomationEligibilitySkip,
+  resolveAiAutomationEligibility,
+} from './ai-automation-policy';
+import { AiBudgetError, withAiBudgetReservation } from './cost-guardrail';
 
 interface ActiveUserTarget {
   tenantId: number;
@@ -182,20 +195,6 @@ function getActiveTaskSyncScopes(userIds: number[]): TaskSyncScope[] {
  * Get only owner-tier Telegram IDs (for admin-only notifications).
  */
 function getOwnerUserIds(): number[] {
-  try {
-    const db = getDb();
-    const rows = db.prepare(
-      "SELECT telegram_id FROM users WHERE tier = 'owner' AND status = 'active'"
-    ).all() as { telegram_id: number | null }[];
-    if (rows.length > 0) {
-      return rows
-        .map((row) => row.telegram_id)
-        .filter((telegramId): telegramId is number => telegramId != null);
-    }
-  } catch (err) {
-    logUnexpectedTenantQueryError('getOwnerUserIds', err);
-  }
-
   const ownerTarget = getOwnerBootstrapTarget();
   return ownerTarget?.telegramId != null ? [ownerTarget.telegramId] : [];
 }
@@ -203,16 +202,6 @@ function getOwnerUserIds(): number[] {
 export { getActiveUserIds, getOwnerUserIds };
 
 function getOwnerTenantIds(): number[] {
-  try {
-    const db = getDb();
-    const rows = db.prepare(
-      "SELECT id FROM users WHERE tier = 'owner' AND status = 'active'"
-    ).all() as { id: number }[];
-    if (rows.length > 0) return rows.map((row) => row.id);
-  } catch (err) {
-    logUnexpectedTenantQueryError('getOwnerTenantIds', err);
-  }
-
   const ownerTarget = getOwnerBootstrapTarget();
   return ownerTarget ? [ownerTarget.tenantId] : [];
 }
@@ -237,92 +226,72 @@ function getActiveUserTargets(): ActiveUserTarget[] {
   return ownerTarget ? [ownerTarget] : [];
 }
 
-// ── Cron cost governance + engagement gating (2026-07-03 audit) ─────────
-// Cron LLM paths meter spend to real users but historically bypassed every
-// cap (enforceCostGuardrails only runs on user-initiated API routes). These
-// gates fail OPEN: a governance bug must never silently kill a cron.
-
-function isCronUserOverDailyCap(userId: number, sourceJob: string, opts: { quiet?: boolean } = {}): boolean {
-  try {
-    const { isUserOverDailyCap } = require('./cost-guardrail');
-    const quota = isUserOverDailyCap(userId);
-    if (quota.over) {
-      // quiet: the coach eligibility gate re-checks every 5-minute dispatch
-      // tick inside the catch-up window — one warn per day is plenty, so the
-      // repeated checks log at debug.
-      const log = opts.quiet ? logger.debug.bind(logger) : logger.warn.bind(logger);
-      log(
-        { userId, sourceJob, spentUsd: quota.spentUsd, capUsd: quota.capUsd },
-        '[scheduler] cron LLM work skipped: user is over the daily AI cost cap',
-      );
-      return true;
-    }
-  } catch (err) {
-    logger.debug({ err, userId, sourceJob }, '[scheduler] cron cap check failed (failing open)');
-  }
-  return false;
-}
-
-// System actor (user 0) is not on a billing plan, so isUserOverDailyCap
-// would resolve a $0 cap and permanently disable system crons. It gets its
-// own env budget instead. 0 disables the budget check.
-function isSystemActorOverDailyBudget(sourceJob: string): boolean {
-  const raw = process.env.SYSTEM_ACTOR_DAILY_USD_CAP;
-  const capUsd = raw == null || raw.trim() === '' ? 1.0 : Number.parseFloat(raw);
-  if (!Number.isFinite(capUsd) || capUsd <= 0) return false;
-  try {
-    const row = getDb().prepare(
-      "SELECT COALESCE(SUM(cost_usd), 0) AS total FROM api_usage WHERE user_id = 0 AND ts >= date('now')",
-    ).get() as { total: number };
-    if (row.total >= capUsd) {
-      logger.warn(
-        { sourceJob, spentUsd: row.total, capUsd },
-        '[scheduler] system-actor cron LLM work skipped: over the daily system AI budget',
-      );
-      return true;
-    }
-  } catch (err) {
-    logger.debug({ err, sourceJob }, '[scheduler] system budget check failed (failing open)');
-  }
-  return false;
-}
-
 // Content topic generation only pays for itself when someone consumes the
-// output. Engagement = the user acted on a candidate (sentiment left
-// 'pending') or saved an idea in the last 30 days. First-time users (no
-// candidates ever) always get an initial batch. CONTENT_CRON_ENGAGEMENT_GATE
-// = 'off' restores unconditional generation.
-function shouldGenerateContentTopicsForUser(userId: number, sourceJob: string): boolean {
-  if ((process.env.CONTENT_CRON_ENGAGEMENT_GATE || 'on') === 'off') return true;
+// output. Measured engagement includes a review, script generation, or
+// conversion in the last 30 days. First-time users (no candidates
+// ever) always get an initial batch. This is a deterministic consumption proxy;
+// downstream publishing/conversion instrumentation is still incomplete.
+// A local/test-only escape hatch supports fixtures and development. Production
+// always enforces the consumption gate so an environment typo cannot restore
+// unbounded candidate generation.
+function shouldGenerateContentTopicsForUser(
+  userId: number,
+  sourceJob: string,
+  initialTargets: ReadonlyArray<{ format: 'reel' | 'youtube'; targetCount: number }>,
+): boolean {
+  const localBypass = process.env.CONTENT_CRON_ENGAGEMENT_GATE === 'off'
+    && ['development', 'test'].includes(process.env.NODE_ENV ?? '');
+  if (localBypass) return true;
   try {
     const db = getDb();
     const engaged = db.prepare(`
       SELECT (
         EXISTS(
           SELECT 1 FROM content_topic_feedback
-           WHERE user_id = ? AND sentiment != 'pending'
-             AND created_at >= datetime('now', '-30 days')
+           WHERE user_id = ?
+             AND COALESCE(tenant_id, user_id) = ?
+             AND (
+               (sentiment != 'pending' AND created_at >= datetime('now', '-30 days'))
+               OR (COALESCE(script_generated, 0) = 1 AND created_at >= datetime('now', '-30 days'))
+               OR converted_at >= datetime('now', '-30 days')
+             )
         )
         OR EXISTS(
-          SELECT 1 FROM saved_ideas
-           WHERE created_at >= datetime('now', '-30 days')
-             AND COALESCE(owner_user_id, ?) = ?
+          SELECT 1 FROM content_scripts
+           WHERE user_id = ?
+             AND COALESCE(tenant_id, user_id) = ?
+             AND COALESCE(scope_status, 'active') = 'active'
+             AND created_at >= datetime('now', '-30 days')
         )
       ) AS engaged
-    `).get(userId, userId, userId) as { engaged: number };
+    `).get(userId, userId, userId, userId) as { engaged: number };
     if (engaged.engaged) return true;
-    const generatedBefore = db.prepare(
-      'SELECT EXISTS(SELECT 1 FROM content_topic_feedback WHERE user_id = ?) AS present',
-    ).get(userId) as { present: number };
-    if (!generatedBefore.present) return true;
+    const historicalCount = db.prepare(`
+      SELECT COUNT(*) AS count
+        FROM content_topic_feedback
+       WHERE user_id = ?
+         AND COALESCE(tenant_id, user_id) = ?
+         AND source_job = ?
+         AND format = ?
+    `);
+    const initialInventoryComplete = initialTargets.every((target) => {
+      const row = historicalCount.get(
+        userId,
+        userId,
+        sourceJob,
+        target.format,
+      ) as { count: number };
+      return Number(row.count || 0) >= target.targetCount;
+    });
+    if (!initialInventoryComplete) return true;
     logger.info(
       { userId, sourceJob },
       '[scheduler] content topic generation skipped: no Content-surface engagement in 30 days',
     );
     return false;
   } catch (err) {
-    logger.debug({ err, userId, sourceJob }, '[scheduler] content engagement gate failed (failing open)');
-    return true;
+    logger.warn({ err, userId, sourceJob }, '[scheduler] content engagement gate failed closed');
+    return false;
   }
 }
 
@@ -331,11 +300,47 @@ export async function runContentTopicCronForActiveUsers(
   sourceJob: 'tuesday_reels' | 'thursday_youtube' | string,
 ): Promise<void> {
   for (const target of getActiveUserTargets()) {
-    if (isCronUserOverDailyCap(target.tenantId, sourceJob)) continue;
-    if (!shouldGenerateContentTopicsForUser(target.tenantId, sourceJob)) continue;
+    const eligibility = resolveAiAutomationEligibility(target.tenantId, 'content');
+    if (!eligibility.allowed) {
+      recordAiAutomationEligibilitySkip(target.tenantId, eligibility, {
+        jobName: sourceJob,
+        baseCategory: `content_workflow_${format}`,
+      });
+      logger.debug(
+        {
+          userId: target.tenantId,
+          sourceJob,
+          reason: eligibility.reason,
+          entitlementSource: eligibility.entitlement.source,
+        },
+        '[scheduler] content automation skipped: user is not eligible',
+      );
+      continue;
+    }
+    const missingCount = getMissingScheduledInventoryCount(target.tenantId, {
+      format,
+      sourceJob,
+      targetCount: 5,
+      windowDays: 7,
+    });
+    if (missingCount === 0) {
+      logger.info(
+        { userId: target.tenantId, sourceJob, format },
+        '[scheduler] content topic generation skipped: seven-day pending inventory is full',
+      );
+      continue;
+    }
+    if (!shouldGenerateContentTopicsForUser(target.tenantId, sourceJob, [{ format, targetCount: 5 }])) continue;
     try {
       await runWithContext({ source: `cron:${sourceJob}`, userId: target.tenantId }, async () => {
-        await generateAndStoreTopicCandidates(target.tenantId, format, sourceJob, target.tenantId);
+        await generateAndStoreTopicCandidates(
+          target.tenantId,
+          format,
+          sourceJob,
+          target.tenantId,
+          missingCount,
+          { requestSource: 'automation', jobName: sourceJob },
+        );
       });
     } catch (err) {
       logger.error({ err, userId: target.tenantId, tenantId: target.tenantId, sourceJob, format }, 'Content topic cron failed');
@@ -345,11 +350,55 @@ export async function runContentTopicCronForActiveUsers(
 
 export async function runWeeklyContentPackageCronForActiveUsers(): Promise<void> {
   for (const target of getActiveUserTargets()) {
-    if (isCronUserOverDailyCap(target.tenantId, 'friday_weekly')) continue;
-    if (!shouldGenerateContentTopicsForUser(target.tenantId, 'friday_weekly')) continue;
+    const eligibility = resolveAiAutomationEligibility(target.tenantId, 'content');
+    if (!eligibility.allowed) {
+      recordAiAutomationEligibilitySkip(target.tenantId, eligibility, {
+        jobName: 'friday_weekly',
+        baseCategory: 'content_workflow_weekly',
+      });
+      logger.debug(
+        {
+          userId: target.tenantId,
+          sourceJob: 'friday_weekly',
+          reason: eligibility.reason,
+          entitlementSource: eligibility.entitlement.source,
+        },
+        '[scheduler] Friday package skipped: user is not eligible for Content automation',
+      );
+      continue;
+    }
+    const missingReels = getMissingScheduledInventoryCount(target.tenantId, {
+      format: 'reel',
+      sourceJob: 'friday_weekly',
+      targetCount: 4,
+      windowDays: 7,
+    });
+    const missingYoutube = getMissingScheduledInventoryCount(target.tenantId, {
+      format: 'youtube',
+      sourceJob: 'friday_weekly',
+      targetCount: 2,
+      windowDays: 7,
+    });
+    if (missingReels === 0 && missingYoutube === 0) {
+      logger.info(
+        { userId: target.tenantId, sourceJob: 'friday_weekly' },
+        '[scheduler] Friday package skipped: seven-day pending inventory is full',
+      );
+      continue;
+    }
+    if (!shouldGenerateContentTopicsForUser(target.tenantId, 'friday_weekly', [
+      { format: 'reel', targetCount: 4 },
+      { format: 'youtube', targetCount: 2 },
+    ])) continue;
     try {
       await runWithContext({ source: 'cron:friday_weekly', userId: target.tenantId }, async () => {
-        await generateWeeklyPackage(target.tenantId, target.tenantId);
+        await generateWeeklyPackage(target.tenantId, target.tenantId, {
+          reels: missingReels,
+          youtube: missingYoutube,
+        }, {
+          requestSource: 'automation',
+          jobName: 'friday_weekly',
+        });
       });
     } catch (err) {
       logger.error({ err, userId: target.tenantId, tenantId: target.tenantId }, 'Friday weekly content package failed');
@@ -1798,7 +1847,7 @@ export function startScheduler(): void {
     // ticks where at least one user is actually due.
     cron.schedule('*/5 * * * *', wrapJob('garmin_coach', async () => {
       // Eligibility runs BEFORE the ledger claim: a user with no health data
-      // yet (or over the daily AI cap) is left unclaimed and re-checked on
+      // yet is left unclaimed and re-checked on
       // every tick inside the catch-up window, so a late Apple Health sync
       // still gets that day's briefing instead of losing it to a consumed
       // claim (QA finding 3). The same gates remain inside
@@ -1807,8 +1856,7 @@ export function startScheduler(): void {
         eligible: (target) =>
           hasPaidCoachBriefingEntitlement(target.tenantId)
           && hasActiveCoachWorkoutPlan(target.tenantId)
-          && hasCoachableHealthDataForUser(target.tenantId)
-          && !isCronUserOverDailyCap(target.tenantId, 'garmin_coach', { quiet: true }),
+          && hasCoachableHealthDataForUser(target.tenantId),
       });
       if (due.length === 0) return 'skipped';
       if (isGarminConfigured()) {
@@ -2111,7 +2159,6 @@ export function startScheduler(): void {
 
   // ── Autoresearch (Sunday 01:19 — rotates through targets) ────────
   cron.schedule('19 1 * * 0', wrapJob('autoresearch', async () => {
-    if (isSystemActorOverDailyBudget('autoresearch')) return 'skipped';
     const targetId = getScheduledTarget();
     // GAP-CAL-1 fix: progress lines go to structured logs; the run summary
     // goes to the operator-alert channel (this is ops telemetry, not a
@@ -2120,17 +2167,21 @@ export function startScheduler(): void {
       logger.info({ targetId, msg }, '[scheduler] autoresearch progress');
     };
     try {
-      const result = await runAutoresearch(targetId, 3, false, onProgress);
+      const result = await runAutoresearch(targetId, 1, true, onProgress, {
+        mode: 'evaluate_only',
+      });
       const kept = result.rounds.filter(r => r.decision === 'kept').length;
       recordOperatorAlert({
         severity: 'info',
         source: 'autoresearch',
         dedupeKey: `autoresearch:completed:${targetId}:${new Date().toISOString().slice(0, 10)}`,
-        title: `Autoresearch completed: ${targetId}`,
-        detail: `Score ${(result.finalScore * 100).toFixed(1)}% — kept ${kept}/${result.rounds.length} mutations in ${(result.totalDurationMs / 1000).toFixed(0)}s`,
+        title: `Autoresearch evaluated: ${targetId}`,
+        detail: result.skipped === 'skipped_unchanged'
+          ? `Skipped unchanged prompt/eval fingerprint with stored score ${(result.finalScore * 100).toFixed(1)}% (0 model calls).`
+          : `Score ${(result.finalScore * 100).toFixed(1)}% — evaluate-only mode made no prompt or Git writes in ${(result.totalDurationMs / 1000).toFixed(0)}s.`,
         owner: 'ops',
         suspectedArea: 'ai_quality',
-        userImpact: 'None — scheduled prompt-optimization telemetry.',
+        userImpact: `None — scheduled evaluation telemetry${kept > 0 ? ` (${kept} unexpected kept mutations)` : ''}.`,
       });
     } catch (err) {
       logger.error({ err, targetId }, 'Scheduled autoresearch failed');
@@ -2500,23 +2551,40 @@ function intEnv(name: string, fallback: number, min: number, max: number): numbe
 
 function hasCoachableHealthDataForUser(userId: number): boolean {
   try {
-    const { isOwnerUserRef } = require('./user-service');
-    if (isGarminConfigured() && isOwnerUserRef(userId)) return true;
+    if (isGarminConfigured() && isOwnerUserRef(userId, {
+      allowPersistedTier: false,
+      requireConfiguredIdentity: true,
+    })) return true;
     const row = getDb().prepare(
       "SELECT EXISTS(SELECT 1 FROM apple_health_data WHERE user_id = ? AND date = date('now')) AS present",
     ).get(userId) as { present: number };
     return !!row.present;
-  } catch {
-    return true; // fail open — the briefing has its own data-source fallbacks
+  } catch (err) {
+    logger.warn({ err, userId }, '[scheduler] coach briefing skipped: health-data eligibility check failed closed');
+    return false;
   }
 }
 
 function hasPaidCoachBriefingEntitlement(userId: number): boolean {
-  const entitlement = getEffectiveEntitlement(userId);
-  const allowed = isCoachBriefingEntitlementEligible(entitlement);
+  const automationEligibility = resolveAiAutomationEligibility(userId, 'triathlon');
+  const entitlement = automationEligibility.entitlement;
+  const allowed = isPaidAiCostControlsEnforcementEnabled()
+    ? automationEligibility.allowed && isAiAutomationAllowedForRuntime(entitlement)
+    : automationEligibility.allowed && isCoachBriefingEntitlementEligible(entitlement);
   if (!allowed) {
+    if (!automationEligibility.allowed) {
+      recordAiAutomationEligibilitySkip(userId, automationEligibility, {
+        jobName: 'garmin_coach',
+        baseCategory: 'coach_analysis',
+      });
+    }
     logger.debug(
-      { userId, plan: entitlement.plan, entitlementSource: entitlement.source },
+      {
+        userId,
+        plan: entitlement.plan,
+        entitlementSource: entitlement.source,
+        automationReason: automationEligibility.reason,
+      },
       '[scheduler] coach briefing skipped: Pro or Max plan required',
     );
   }
@@ -2540,24 +2608,60 @@ function hasActiveCoachWorkoutPlan(userId: number): boolean {
 export async function sendCoachBriefingForTarget(target: ActiveUserTarget): Promise<void> {
   // Deliberate pre-flight replacing the old accidental gate (users without
   // health data used to throw inside generateCoachBriefing AFTER burning
-  // calendar fetches). No health data source, or over the daily cap → no
-  // LLM briefing for this user today.
+  // calendar fetches). The serialized daily/monthly budget reservation wraps
+  // the provider boundary below.
   if (!hasPaidCoachBriefingEntitlement(target.tenantId)) return;
   if (!hasActiveCoachWorkoutPlan(target.tenantId)) return;
   if (!hasCoachableHealthDataForUser(target.tenantId)) {
     logger.debug({ userId: target.tenantId }, '[scheduler] coach briefing skipped: no health data source for user');
     return;
   }
-  if (isCronUserOverDailyCap(target.tenantId, 'garmin_coach')) return;
   await runWithContext({ source: 'cron:garmin_coach', userId: target.tenantId }, async () => {
       let result;
       try {
-        result = await generateCoachBriefing(target.tenantId, {
-          tenantId: target.tenantId,
-          meteringUserId: target.tenantId,
-          garminSilent: true,
-        });
+        result = await withAiBudgetReservation({
+          userId: target.tenantId,
+          requestSource: 'automation',
+          baseCategory: 'coach_analysis',
+          jobName: 'garmin_coach',
+          automationPriority: 'coach',
+        }, () => generateCoachBriefing(target.tenantId, {
+            tenantId: target.tenantId,
+            meteringUserId: target.tenantId,
+            garminSilent: true,
+          }));
       } catch (err) {
+        if (err instanceof AiBudgetError) {
+          // No report/state writes occur on deferral, so the latest valid
+          // Coach report remains the durable read model.
+          const resetKey = err.decision.unblocksAt?.replace(/[^0-9]/g, '').slice(0, 12)
+            || new Date().toISOString().slice(0, 10);
+          try {
+            await createNotificationIntent({
+              userId: target.tenantId,
+              tenantId: target.tenantId,
+              sourceSkill: 'training',
+              type: 'insight',
+              priority: 'active',
+              relatedEntityId: `coach-budget-${err.decision.code}-${resetKey}`,
+              relatedEntityType: 'coach_briefing_budget',
+              title: 'Coach report deferred',
+              body: err.decision.window === 'monthly' || err.decision.window === 'automation_monthly'
+                ? 'Your next Coach report will resume when the monthly AI allowance resets.'
+                : 'Your next Coach report will resume when the daily AI allowance resets.',
+              deeplink: 'nexus://training/coach',
+              dedupeKey: `training:coach_budget:${target.tenantId}:${err.decision.code}:${resetKey}`,
+              privacyPolicy: 'health',
+            });
+          } catch (notificationErr) {
+            logger.warn({ err: notificationErr, userId: target.tenantId }, 'Coach budget deferral notice failed');
+          }
+          logger.info(
+            { userId: target.tenantId, code: err.decision.code, window: err.decision.window },
+            'Coach briefing deferred by AI budget; latest valid report retained',
+          );
+          return;
+        }
         logger.warn({ err, userId: target.tenantId }, 'Coach briefing skipped for user');
         return;
       }

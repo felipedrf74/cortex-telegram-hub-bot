@@ -22,6 +22,11 @@ import { completeOneShotWithFallback } from '../services/gemini-provider';
 import { getActiveUserTargets, type UserTarget } from '../services/user-service';
 import { contentScopeParams, contentScopePredicate, ensureContentTenantScopeColumns } from '../services/content-tenant-scope';
 import { createLazyAnthropicClient } from '../services/anthropic-lazy-client';
+import {
+  recordAiAutomationEligibilitySkip,
+  resolveAiAutomationEligibility,
+} from '../services/ai-automation-policy';
+import { AiBudgetError, withAiBudgetReservation } from '../services/cost-guardrail';
 
 const client = createLazyAnthropicClient({ maxRetries: 2 });
 
@@ -99,9 +104,33 @@ export async function runVoiceEvolutionAgent(): Promise<void> {
     }
 
     for (const target of targets) {
-      const result = await runVoiceEvolutionForTarget(target);
-      signalsProduced += result.signalsProduced;
-      signalsConsumed += result.signalsConsumed;
+      const eligibility = resolveAiAutomationEligibility(target.tenantId, 'content');
+      if (!eligibility.allowed) {
+        recordAiAutomationEligibilitySkip(target.tenantId, eligibility, {
+          jobName: 'voice_evolution',
+          baseCategory: 'voice_evolution',
+        });
+        logger.debug(
+          {
+            userId: target.tenantId,
+            reason: eligibility.reason,
+            entitlementSource: eligibility.entitlement.source,
+          },
+          'Voice Evolution skipped before tenant data/provider work: Content automation is not eligible',
+        );
+        continue;
+      }
+      try {
+        const result = await runVoiceEvolutionForTarget(target);
+        signalsProduced += result.signalsProduced;
+        signalsConsumed += result.signalsConsumed;
+      } catch (err) {
+        if (!(err instanceof AiBudgetError)) throw err;
+        logger.info(
+          { userId: target.tenantId, code: err.decision.code, window: err.decision.window },
+          'Voice Evolution deferred by the user automation budget',
+        );
+      }
     }
 
     logAgentRun('voice-evolution', 'success', signalsProduced, signalsConsumed, Date.now() - start);
@@ -201,7 +230,16 @@ async function runVoiceEvolutionForTarget(target: UserTarget): Promise<{ signals
     // Gemini-first deep analysis with Sonnet fallback. This is a low-frequency
     // call (~weekly) but each invocation is large (~4K output tokens). Voice
     // pattern extraction works well on gemini-2.5-flash for this prompt shape.
-    const { text: voiceText } = await completeOneShotWithFallback(
+    const { text: voiceText } = await withAiBudgetReservation({
+      userId,
+      requestSource: 'automation',
+      baseCategory: 'voice_evolution',
+      jobName: 'voice_evolution',
+      // Voice learning is useful, but it is not one of the scheduled Content
+      // delivery slots. Keep it below Coach and scheduled topic inventory so
+      // it cannot consume the allowance those user-visible artifacts need.
+      automationPriority: 'other',
+    }, () => completeOneShotWithFallback(
       '',  // no system prompt — instructions are in the user prompt
       prompt,
       'voice_evolution',
@@ -218,7 +256,7 @@ async function runVoiceEvolutionForTarget(target: UserTarget): Promise<{ signals
           .join('');
       },
       { maxTokens: 4096, temperature: 0.3, userId, tenantId },
-    );
+    ));
 
     let text = voiceText;
 

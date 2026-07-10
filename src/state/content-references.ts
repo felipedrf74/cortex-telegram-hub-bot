@@ -451,9 +451,6 @@ export function upsertPatterns(
     patternUserId > 0 ? channel?.tenant_id ?? undefined : 0,
     visibilityScopeForSystemOrUser(patternUserId, channel?.visibility_scope),
   );
-  // Clear old patterns for this channel before inserting new ones
-  db.prepare('DELETE FROM content_patterns WHERE channel_id = ?').run(channelId);
-
   const stmt = db.prepare(`
     INSERT INTO content_patterns (
       channel_id, category, pattern_text, examples, confidence, source_videos,
@@ -464,6 +461,10 @@ export function upsertPatterns(
   `);
 
   const insertMany = db.transaction((items: typeof patterns) => {
+    // Replacement is one atomic state transition: a constraint/disk failure
+    // during any insert rolls the delete back and preserves the latest valid
+    // pattern set used by Content generation.
+    db.prepare('DELETE FROM content_patterns WHERE channel_id = ?').run(channelId);
     for (const p of items) {
       stmt.run(
         channelId,

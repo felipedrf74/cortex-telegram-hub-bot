@@ -14,6 +14,7 @@
  * structures, storytelling techniques, etc. from the best creators.
  */
 import Anthropic from '@anthropic-ai/sdk';
+import { randomUUID } from 'crypto';
 import { config } from '../config';
 import { logger } from '../utils/logger';
 import { trackedCreate } from '../portal/anthropic-hook';
@@ -51,6 +52,12 @@ import {
   ensureContentTenantScopeColumns,
 } from './content-tenant-scope';
 import { sanitizeForPromptInterpolation } from '../utils/prompt-sanitizer';
+import {
+  recordAiAutomationEligibilitySkip,
+  resolveAiAutomationEligibility,
+} from './ai-automation-policy';
+import { AiBudgetError, withAiBudgetReservation, type AiBudgetRequest } from './cost-guardrail';
+import { ApiUsagePersistenceError } from './api-usage-fallback';
 
 const client = new Anthropic({
   apiKey: config.anthropic.apiKey,
@@ -59,10 +66,69 @@ const client = new Anthropic({
 
 const CONTENT_LEARNER_ADMIN_CONTEXT = createContentReferencesAdminContext('channel-learner system-scope processing');
 
+// Flash remains the parity-approved extraction/synthesis model. Compact,
+// balanced inputs plus a validated 2,304-token JSON cap keep the concrete
+// worst-case reservation below the Pro $0.012 daily automation ceiling when
+// no higher-priority work/spend is outstanding; Max retains more headroom.
+const CHANNEL_LEARNING_MODEL = 'gemini-2.5-flash';
+const CHANNEL_LEARNING_MAX_OUTPUT_TOKENS = 2_304;
+const CHANNEL_EXTRACTION_SYSTEM_PROMPT_MAX_CHARS = 3_000;
+const CHANNEL_EXTRACTION_USER_PROMPT_MAX_CHARS = 7_000;
+const CHANNEL_SYNTHESIS_SYSTEM_PROMPT_MAX_CHARS = 3_000;
+const CHANNEL_SYNTHESIS_USER_PROMPT_MAX_CHARS = 6_000;
+const CHANNEL_LEARNING_BASE_CATEGORY = 'channel_learning';
+
+function compactBalancedText(value: string, maxChars: number): string {
+  if (value.length <= maxChars) return value;
+  const marker = '\n...[budget-safe compacted context]...\n';
+  const available = Math.max(0, maxChars - marker.length);
+  const head = Math.floor(available * 0.7);
+  return `${value.slice(0, head)}${marker}${value.slice(value.length - (available - head))}`;
+}
+
+function channelStageJobName(base: string | null | undefined, stage: 'extract' | 'synthesize'): string {
+  const normalized = String(base || 'channel_relearn').trim() || 'channel_relearn';
+  return `${normalized}:${stage}`;
+}
+
 type AIMeteringScope = {
   userId?: number;
   tenantId?: number;
 };
+
+type ChannelAiBudgetContext = Pick<
+  AiBudgetRequest,
+  'requestSource' | 'jobName' | 'runId' | 'estimatedCostUsd'
+>;
+
+function recordChannelSynthesisContractDeferral(
+  userId: number,
+  budgetContext: ChannelAiBudgetContext,
+): void {
+  const jobName = channelStageJobName(budgetContext.jobName, 'synthesize');
+  try {
+    getDb().prepare(`
+      INSERT INTO ai_budget_deferrals (
+        user_id, request_source, job_name, base_category, run_id,
+        code, budget_window, reset_at
+      ) VALUES (?, ?, ?, ?, ?, ?, 'global', NULL)
+    `).run(
+      userId,
+      budgetContext.requestSource,
+      jobName,
+      CHANNEL_LEARNING_BASE_CATEGORY,
+      budgetContext.runId ?? null,
+      'CHANNEL_SYNTHESIS_PROMPT_CONTRACT_EXCEEDED',
+    );
+  } catch (err) {
+    // Migration 226 is additive and may not exist during an observe-only
+    // rolling deploy. The provider call still remains fail-closed.
+    logger.warn(
+      { err, userId, jobName, runId: budgetContext.runId ?? null },
+      'Channel synthesis contract deferral persistence unavailable',
+    );
+  }
+}
 
 // ─── Re-learn cost controls (migration 222) ──────────────────────────
 //
@@ -207,6 +273,114 @@ function listContentChannelUserIds(): number[] {
       ORDER BY user_id ASC`,
   ).all() as Array<{ user_id: number }>;
   return rows.map((row) => row.user_id);
+}
+
+function listEligibleContentAutomationUserIds(): number[] {
+  const candidateIds = new Set<number>(listContentChannelUserIds());
+  try {
+    const rows = getDb().prepare(
+      "SELECT id FROM users WHERE status = 'active' ORDER BY id ASC",
+    ).all() as Array<{ id: number }>;
+    for (const row of rows) {
+      if (Number.isSafeInteger(row.id) && row.id > 0) candidateIds.add(row.id);
+    }
+  } catch (err) {
+    logger.warn({ err }, 'Unable to enumerate active Content automation consumers');
+  }
+
+  const eligible: number[] = [];
+  for (const userId of candidateIds) {
+    const result = resolveAiAutomationEligibility(userId, 'content');
+    if (result.allowed) {
+      eligible.push(userId);
+    } else {
+      recordAiAutomationEligibilitySkip(userId, result, {
+        jobName: 'channel_relearn',
+        baseCategory: 'channel_learning',
+      });
+      logger.debug(
+        {
+          userId,
+          reason: result.reason,
+          entitlementSource: result.entitlement.source,
+        },
+        'Channel re-learn scope skipped before YouTube/provider work',
+      );
+    }
+  }
+  return eligible;
+}
+
+/**
+ * Deterministic proxy for an eligible user actually consuming knowledge that
+ * can be synthesized from shared channels. Recent Content model usage or a
+ * reviewed/scripted/converted artifact establishes consumption even when the
+ * paid user has no private reference channel of their own. Explicit channel
+ * source-output lineage is the strongest signal when available. There is not
+ * yet a dedicated
+ * shared_knowledge_consumed event, so absence or schema uncertainty fails
+ * closed and is an instrumentation caveat rather than a reason to spend.
+ */
+function hasSharedChannelKnowledgeConsumerEvidence(userId: number): boolean {
+  try {
+    const row = getDb().prepare(`
+      SELECT (
+          EXISTS(
+            SELECT 1
+             FROM api_usage
+             WHERE user_id = ?
+               AND request_source = 'interactive'
+               AND ts >= datetime('now', '-30 days')
+               AND (
+                 COALESCE(base_category, category) LIKE 'content_%'
+                 OR COALESCE(base_category, category) IN ('content', 'content_discovery')
+               )
+          )
+          OR EXISTS(
+            SELECT 1
+              FROM content_topic_feedback
+             WHERE user_id = ?
+               AND COALESCE(tenant_id, user_id) = ?
+               AND (
+                 (sentiment != 'pending' AND created_at >= datetime('now', '-30 days'))
+                 OR (COALESCE(script_generated, 0) = 1 AND created_at >= datetime('now', '-30 days'))
+                 OR converted_at >= datetime('now', '-30 days')
+               )
+          )
+          OR EXISTS(
+            SELECT 1
+              FROM content_scripts
+             WHERE user_id = ?
+               AND COALESCE(tenant_id, user_id) = ?
+               AND created_at >= datetime('now', '-30 days')
+          )
+          OR EXISTS(
+            SELECT 1
+              FROM content_source_output_links
+             WHERE tenant_id = ?
+               AND owner_user_id = ?
+               AND source_type = 'channel'
+               AND scope_status = 'active'
+               AND created_at >= datetime('now', '-30 days')
+          )
+      ) AS consuming
+    `).get(
+      userId,
+      userId,
+      userId,
+      userId,
+      userId,
+      userId,
+      userId,
+    ) as { consuming: number };
+    return row.consuming === 1;
+  } catch (err) {
+    logger.warn(
+      { err, userId },
+      'Shared channel learning consumer evidence unavailable; platform scope skipped fail-closed',
+    );
+    return false;
+  }
 }
 
 // ─── YouTube Data API helpers ────────────────────────────────────────
@@ -373,6 +547,77 @@ interface ExtractionResult {
   }[];
 }
 
+class InvalidChannelExtractionError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'InvalidChannelExtractionError';
+  }
+}
+
+function validateChannelExtraction(value: unknown): ExtractionResult {
+  if (!value || Array.isArray(value) || typeof value !== 'object') {
+    throw new InvalidChannelExtractionError('Channel extraction root must be an object');
+  }
+  const candidate = value as Record<string, unknown>;
+  if (typeof candidate.channel_summary !== 'string' || !candidate.channel_summary.trim()) {
+    throw new InvalidChannelExtractionError('Channel extraction is missing a non-empty channel_summary');
+  }
+  if (!Array.isArray(candidate.patterns) || candidate.patterns.length === 0) {
+    throw new InvalidChannelExtractionError('Channel extraction is missing actionable patterns');
+  }
+
+  const patterns: ExtractionResult['patterns'] = candidate.patterns.map((raw, index) => {
+    if (!raw || Array.isArray(raw) || typeof raw !== 'object') {
+      throw new InvalidChannelExtractionError(`Channel extraction pattern ${index} is not an object`);
+    }
+    const pattern = raw as Record<string, unknown>;
+    const examples = Array.isArray(pattern.examples)
+      ? pattern.examples.filter((entry): entry is string => typeof entry === 'string' && entry.trim().length > 0)
+      : [];
+    const sourceVideos = Array.isArray(pattern.source_videos)
+      ? pattern.source_videos.filter((entry): entry is string => typeof entry === 'string' && entry.trim().length > 0)
+      : [];
+    if (
+      typeof pattern.category !== 'string'
+      || !PATTERN_CATEGORIES.includes(pattern.category as PatternCategory)
+      || typeof pattern.pattern_text !== 'string'
+      || !pattern.pattern_text.trim()
+      || examples.length === 0
+      || typeof pattern.confidence !== 'number'
+      || !Number.isFinite(pattern.confidence)
+      || pattern.confidence < 0
+      || pattern.confidence > 1
+      || sourceVideos.length === 0
+    ) {
+      throw new InvalidChannelExtractionError(`Channel extraction pattern ${index} is incomplete or non-actionable`);
+    }
+    return {
+      category: pattern.category as PatternCategory,
+      pattern_text: pattern.pattern_text.trim(),
+      examples,
+      confidence: pattern.confidence,
+      source_videos: sourceVideos,
+    };
+  });
+  const actionableCategories = new Set(
+    patterns
+      .filter((pattern) => pattern.confidence > 0.2)
+      .map((pattern) => pattern.category),
+  );
+  const missingCategories = PATTERN_CATEGORIES.filter(
+    (category) => !actionableCategories.has(category),
+  );
+  if (missingCategories.length > 0) {
+    throw new InvalidChannelExtractionError(
+      `Channel extraction is missing actionable coverage for: ${missingCategories.join(', ')}`,
+    );
+  }
+  return {
+    channel_summary: candidate.channel_summary.trim(),
+    patterns,
+  };
+}
+
 /**
  * Send video data to Claude for pattern extraction.
  */
@@ -396,19 +641,23 @@ function buildChannelLearnerExtractionPromptFromContext(
   creator: CreatorPromptContext,
   transcriptData?: string,
 ): string {
-  // Build a concise video summary for Claude
-  const videoSummary = videos.map((v, i) => {
+  // Preserve all ten-video coverage while bounding descriptive prose. Titles,
+  // engagement, duration, and a concise description remain available for
+  // every item; transcript compaction below keeps both opening and trailing
+  // examples instead of dropping whole required categories.
+  const videoSummary = compactBalancedText(videos.map((v, i) => {
     const views = v.viewCount > 1000 ? `${(v.viewCount / 1000).toFixed(1)}K` : v.viewCount;
     const likes = v.likeCount > 1000 ? `${(v.likeCount / 1000).toFixed(1)}K` : v.likeCount;
     return `${i + 1}. ${sanitizeForPromptInterpolation(v.title)}
    Views: ${views} | Likes: ${likes} | Comments: ${v.commentCount} | Duration: ${v.duration}
-   Desc: ${sanitizeForPromptInterpolation(v.description.substring(0, 200))}${v.description.length > 200 ? '...' : ''}`;
-  }).join('\n\n');
+   Desc: ${sanitizeForPromptInterpolation(v.description.substring(0, 120))}${v.description.length > 120 ? '...' : ''}`;
+  }).join('\n\n'), 3_000);
+  const creatorBlock = compactBalancedText(creator.block, 1_200);
 
   let prompt = `Analyze the YouTube channel ${sanitizeForPromptInterpolation(channelName)} based on their ${videos.length} most recent videos.
 
 AUTHENTICATED CREATOR CONTEXT:
-${creator.block}
+${creatorBlock}
 
 VIDEOS:
 ${videoSummary}`;
@@ -419,14 +668,14 @@ ${videoSummary}`;
 
 TRANSCRIPTS FROM TOP-PERFORMING VIDEOS:
 (Use these to extract EXACT hook phrases, transition words, storytelling beats, and pacing patterns — not just title-level patterns)
-${sanitizeForPromptInterpolation(transcriptData)}`;
+${compactBalancedText(sanitizeForPromptInterpolation(transcriptData), 2_200)}`;
   }
 
   prompt += `
 
 Extract content creation patterns across all 9 categories. Focus on what makes this creator successful — patterns that can be adapted (not copied) for the authenticated creator's language, audience, pillars, and niches above.`;
 
-  return prompt;
+  return compactBalancedText(prompt, CHANNEL_EXTRACTION_USER_PROMPT_MAX_CHARS);
 }
 
 export function buildChannelLearnerSynthesisPrompt(
@@ -436,10 +685,10 @@ export function buildChannelLearnerSynthesisPrompt(
 }
 
 function buildChannelLearnerSynthesisPromptFromContext(creator: CreatorPromptContext): string {
-  return `You are a content strategy synthesizer. You receive patterns extracted from multiple successful YouTube creators. Your job: merge them into a unified, actionable knowledge base.
+  return compactBalancedText(`You are a content strategy synthesizer. You receive patterns extracted from multiple successful YouTube creators. Your job: merge them into a unified, actionable knowledge base.
 
 AUTHENTICATED CREATOR CONTEXT:
-${creator.block}
+${compactBalancedText(creator.block, 1_200)}
 
 Rules:
 - Combine similar patterns into a single, richer description
@@ -459,7 +708,7 @@ Return ONLY valid JSON:
       "source_channels": ["Channel A", "Channel B"]
     }
   ]
-}`;
+}`, CHANNEL_SYNTHESIS_SYSTEM_PROMPT_MAX_CHARS);
 }
 
 async function extractPatterns(
@@ -484,20 +733,33 @@ async function extractPatternsForCreatorContext(
   transcriptData: string | undefined,
   creator: CreatorPromptContext,
   meteringScope: AIMeteringScope = {},
+  budgetContext: ChannelAiBudgetContext = { requestSource: 'interactive' },
 ): Promise<ExtractionResult> {
   const prompt = buildChannelLearnerExtractionPromptFromContext(channelName, videos, creator, transcriptData);
+  const extractionSystemPrompt = compactBalancedText(
+    loadPrompt('channel-learner'),
+    CHANNEL_EXTRACTION_SYSTEM_PROMPT_MAX_CHARS,
+  );
 
   // Gemini-first: gemini-2.5-flash matches Sonnet for analytical pattern
   // extraction at ~9× lower cost. Falls back to Anthropic on failure.
-  const { text: rawAnalysisText } = await completeOneShotWithFallback(
-    loadPrompt('channel-learner'),
+  const { text: rawAnalysisText } = await withAiBudgetReservation({
+    userId: meteringScope.userId ?? 0,
+    requestSource: budgetContext.requestSource,
+    baseCategory: CHANNEL_LEARNING_BASE_CATEGORY,
+    jobName: channelStageJobName(budgetContext.jobName, 'extract'),
+    runId: budgetContext.runId ?? null,
+    estimatedCostUsd: budgetContext.estimatedCostUsd,
+    automationPriority: 'channel_learning',
+  }, () => completeOneShotWithFallback(
+    extractionSystemPrompt,
     prompt,
     'channel_analysis',
     async () => {
       const response = await trackedCreate(client, {
         model: config.anthropic.model, // Sonnet for quality analysis
-        max_tokens: 8192,
-        system: loadPrompt('channel-learner'),
+        max_tokens: CHANNEL_LEARNING_MAX_OUTPUT_TOKENS,
+        system: extractionSystemPrompt,
         messages: [{ role: 'user', content: prompt }],
         temperature: 0.3, // Lower temp for more consistent analysis
       }, 'channel_analysis', meteringScope);
@@ -506,8 +768,13 @@ async function extractPatternsForCreatorContext(
         .map((b) => b.text)
         .join('');
     },
-    { maxTokens: 8192, temperature: 0.3, ...meteringScope },
-  );
+    {
+      model: CHANNEL_LEARNING_MODEL,
+      maxTokens: CHANNEL_LEARNING_MAX_OUTPUT_TOKENS,
+      temperature: 0.3,
+      ...meteringScope,
+    },
+  ));
 
   let text = rawAnalysisText;
 
@@ -524,16 +791,25 @@ async function extractPatternsForCreatorContext(
   }
 
   try {
-    return JSON.parse(text) as ExtractionResult;
+    return validateChannelExtraction(JSON.parse(text));
   } catch (err) {
-    logger.warn({ err, textLength: text.length }, 'Failed to parse extraction result');
-    return { channel_summary: '', patterns: [] };
+    logger.warn(
+      { err, textLength: text.length },
+      'Channel extraction failed validation; retaining prior patterns and success fingerprint',
+    );
+    if (err instanceof InvalidChannelExtractionError) throw err;
+    throw new InvalidChannelExtractionError('Channel extraction returned invalid JSON');
   }
 }
 
 // ─── Synthesis (merge patterns across all channels) ──────────────────
 
-async function synthesizeKnowledge(userId?: number): Promise<void> {
+async function synthesizeKnowledge(
+  userId?: number,
+  budgetContext: ChannelAiBudgetContext = {
+    requestSource: userId != null && userId > 0 ? 'interactive' : 'system',
+  },
+): Promise<boolean> {
   const scopedUserId = userId != null && userId > 0 ? userId : 0;
   const creatorContext = scopedUserId > 0 ? loadCreatorPromptContextForUser(scopedUserId, scopedUserId) : buildCreatorPromptContext(null);
   const synthesisSystemPrompt = buildChannelLearnerSynthesisPromptFromContext(creatorContext);
@@ -546,10 +822,34 @@ async function synthesizeKnowledge(userId?: number): Promise<void> {
   const channels = Array.from(channelsById.values());
   if (channels.length === 0) {
     logger.info({ userId: userId ?? null }, 'No active channels to synthesize knowledge from');
-    return;
+    return false;
   }
 
   logger.info({ channelCount: channels.length, userId: userId ?? null }, 'Synthesizing cross-channel knowledge');
+
+  type SynthesisInput = {
+    category: PatternCategory;
+    byChannel: Map<string, ReturnType<typeof getPatternsForChannel>>;
+    context: string;
+  };
+  const synthesisInputs: SynthesisInput[] = [];
+  const directKnowledge: Array<{
+    category: PatternCategory;
+    text: string;
+    sourceChannels: string[];
+  }> = [];
+
+  const persistKnowledge = (
+    category: PatternCategory,
+    text: string,
+    sourceChannels: string[],
+  ): void => {
+    if (scopedUserId > 0) {
+      upsertKnowledge(category, text, sourceChannels, scopedUserId);
+    } else {
+      upsertSystemKnowledge(category, text, sourceChannels, CONTENT_LEARNER_ADMIN_CONTEXT);
+    }
+  };
 
   for (const category of PATTERN_CATEGORIES) {
     // Group by channel
@@ -564,12 +864,12 @@ async function synthesizeKnowledge(userId?: number): Promise<void> {
     if (byChannel.size === 0) continue;
 
     // Build context for Claude
-    const context = [...byChannel.entries()].map(([name, pats]) => {
+    const context = compactBalancedText([...byChannel.entries()].map(([name, pats]) => {
       return `From ${sanitizeForPromptInterpolation(name)}:\n${pats.map((p) => {
         const examples = JSON.parse(p.examples) as string[];
         return `  - ${sanitizeForPromptInterpolation(p.pattern_text)} (confidence: ${p.confidence})\n    Examples: ${examples.map((example) => sanitizeForPromptInterpolation(example)).join('; ')}`;
       }).join('\n')}`;
-    }).join('\n\n');
+    }).join('\n\n'), 500);
 
     // If only one channel contributes to this category, skip synthesis — use directly
     if (byChannel.size === 1) {
@@ -582,134 +882,148 @@ async function synthesizeKnowledge(userId?: number): Promise<void> {
         return `${p.pattern_text}\nExamples from ${channelName}: ${examples.slice(0, 3).join('; ')}`;
       }).join('\n');
 
-      if (scopedUserId > 0) {
-        upsertKnowledge(category, directText, [channelName], scopedUserId);
-      } else {
-        upsertSystemKnowledge(category, directText, [channelName], CONTENT_LEARNER_ADMIN_CONTEXT);
-      }
+      directKnowledge.push({ category, text: directText, sourceChannels: [channelName] });
       continue;
     }
 
-    // Multiple channels → synthesize via Gemini (Anthropic Haiku fallback).
-    // knowledge_synthesis is the highest-frequency line in the audit
-    // (~18 calls/wk avg) so cumulative savings here are meaningful even
-    // though per-call cost is small.
+    synthesisInputs.push({ category, byChannel, context });
+  }
+
+  // One structured synthesis request per changed scope. The former
+  // per-category loop repeated the system prompt up to nine times and was the
+  // channel learner's highest-frequency cost line. Local synthesis remains
+  // deliberately disabled until it demonstrates full category and actionable
+  // pattern parity with this cloud path.
+  if (synthesisInputs.length > 0) {
+    const categoryBlocks = synthesisInputs.map((input) => (
+      `CATEGORY ${input.category} (${input.byChannel.size} creators):\n${input.context}`
+    )).join('\n\n---\n\n');
+    const userPrompt = `Synthesize every category below in one response. Return exactly one entry for each requested category (${synthesisInputs.map((input) => input.category).join(', ')}).\n\n${categoryBlocks}`;
+    if (userPrompt.length > CHANNEL_SYNTHESIS_USER_PROMPT_MAX_CHARS) {
+      recordChannelSynthesisContractDeferral(scopedUserId, budgetContext);
+      logger.warn(
+        {
+          userId: scopedUserId,
+          promptChars: userPrompt.length,
+          runId: budgetContext.runId ?? null,
+        },
+        'Channel synthesis retained prior knowledge because the complete category batch exceeded its validated budget-safe contract',
+      );
+      return false;
+    }
+
     try {
-      const userPrompt = `Synthesize the ${sanitizeForPromptInterpolation(category)} patterns from ${byChannel.size} creators:\n\n${context}`;
+      const { text: cloudText } = await withAiBudgetReservation({
+        userId: scopedUserId,
+        requestSource: budgetContext.requestSource,
+        baseCategory: CHANNEL_LEARNING_BASE_CATEGORY,
+        jobName: channelStageJobName(budgetContext.jobName, 'synthesize'),
+        runId: budgetContext.runId ?? null,
+        estimatedCostUsd: budgetContext.estimatedCostUsd,
+        automationPriority: 'channel_learning',
+      }, () => completeOneShotWithFallback(
+        synthesisSystemPrompt,
+        userPrompt,
+        'knowledge_synthesis',
+        async () => {
+          const response = await trackedCreate(client, {
+            model: config.anthropic.classifierModel,
+            max_tokens: CHANNEL_LEARNING_MAX_OUTPUT_TOKENS,
+            system: synthesisSystemPrompt,
+            messages: [{ role: 'user', content: userPrompt }],
+            temperature: 0.3,
+          }, 'knowledge_synthesis', { userId: scopedUserId, tenantId: scopedUserId });
+          return response.content
+            .filter((block): block is Anthropic.TextBlock => block.type === 'text')
+            .map((block) => block.text)
+            .join('');
+        },
+        {
+          model: CHANNEL_LEARNING_MODEL,
+          maxTokens: CHANNEL_LEARNING_MAX_OUTPUT_TOKENS,
+          temperature: 0.3,
+          userId: scopedUserId,
+          tenantId: scopedUserId,
+        },
+      ));
 
-      // ── Local-LLM pilot (2026-07-04): env-gated local-first synthesis ──
-      // When LOCAL_LLM_CHANNEL_SYNTHESIS=true AND Ollama is configured, try
-      // the local one-shot FIRST (category knowledge_synthesis_local, $0).
-      // On ANY failure — throw, timeout, capacity, rate limit, or empty
-      // output — warn and fall through to the cloud path UNCHANGED. With
-      // the env var unset (default) this block is a no-op and behavior is
-      // identical to before. Prompt content is identical on both paths.
-      // The dynamic import keeps the default module graph unchanged.
-      let synthText: string | null = null;
-      if (process.env.LOCAL_LLM_CHANNEL_SYNTHESIS === 'true') {
-        try {
-          const ollama = await import('./ollama-provider');
-          if (ollama.isOllamaConfigured()) {
-            const local = await ollama.completeLocalReasoningOneShot(
-              synthesisSystemPrompt,
-              userPrompt,
-              'knowledge_synthesis_local',
-              { maxTokens: 2048, temperature: 0.3, userId: scopedUserId, tenantId: scopedUserId },
-            );
-            if (local.text.trim()) {
-              synthText = local.text;
-            } else {
-              logger.warn({ category }, 'Local channel synthesis returned empty output — falling back to cloud');
-            }
-          } else {
-            logger.warn({ category }, 'LOCAL_LLM_CHANNEL_SYNTHESIS=true but Ollama is not configured — using cloud synthesis');
-          }
-        } catch (localErr) {
-          logger.warn({ err: localErr, category }, 'Local channel synthesis failed — falling back to cloud');
-        }
-      }
-
-      if (synthText === null) {
-        const { text: cloudText } = await completeOneShotWithFallback(
-          synthesisSystemPrompt,
-          userPrompt,
-          'knowledge_synthesis',
-          async () => {
-            const response = await trackedCreate(client, {
-              model: config.anthropic.classifierModel, // Haiku for synthesis (structured task)
-              max_tokens: 2048,
-              system: synthesisSystemPrompt,
-              messages: [{ role: 'user', content: userPrompt }],
-              temperature: 0.3,
-            }, 'knowledge_synthesis', { userId: scopedUserId, tenantId: scopedUserId });
-            return response.content
-              .filter((b): b is Anthropic.TextBlock => b.type === 'text')
-              .map((b) => b.text)
-              .join('');
-          },
-          { maxTokens: 2048, temperature: 0.3, userId: scopedUserId, tenantId: scopedUserId },
-        );
-        synthText = cloudText;
-      }
-
-      let text = synthText;
-
-      // Extract JSON from potential markdown fences or surrounding text
-      const fenceMatch = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
-      if (fenceMatch) {
-        text = fenceMatch[1].trim();
-      } else {
-        // Try to find the JSON object directly
-        const jsonStart = text.indexOf('{');
-        const jsonEnd = text.lastIndexOf('}');
-        if (jsonStart !== -1 && jsonEnd > jsonStart) {
-          text = text.slice(jsonStart, jsonEnd + 1);
-        }
-      }
-
-      const result = JSON.parse(text) as {
-        categories: { category: string; synthesized_text: string; source_channels: string[] }[];
+      const fenceMatch = cloudText.match(/```(?:json)?\s*([\s\S]*?)```/i);
+      const jsonText = fenceMatch?.[1]?.trim()
+        ?? cloudText.slice(cloudText.indexOf('{'), cloudText.lastIndexOf('}') + 1);
+      const parsed = JSON.parse(jsonText) as {
+        categories?: Array<{ category?: unknown; synthesized_text?: unknown; source_channels?: unknown }>;
       };
+      if (!Array.isArray(parsed.categories)) throw new Error('Synthesis response is missing categories array');
 
-      for (const cat of result.categories) {
-        if (cat.category === category) {
-          if (scopedUserId > 0) {
-            upsertKnowledge(category as PatternCategory, cat.synthesized_text, cat.source_channels, scopedUserId);
-          } else {
-            upsertSystemKnowledge(
-              category as PatternCategory,
-              cat.synthesized_text,
-              cat.source_channels,
-              CONTENT_LEARNER_ADMIN_CONTEXT,
-            );
-          }
-          break;
+      const validated = synthesisInputs.map((input) => {
+        const matching = parsed.categories!.filter((candidate) => candidate.category === input.category);
+        const result = matching[0];
+        const sourceChannels = Array.isArray(result?.source_channels)
+          ? result.source_channels.filter((name): name is string => typeof name === 'string' && name.trim().length > 0)
+          : [];
+        if (
+          matching.length !== 1
+          || typeof result?.synthesized_text !== 'string'
+          || !result.synthesized_text.trim()
+          || sourceChannels.length < 2
+        ) {
+          throw new Error(`Invalid or incomplete category ${input.category}`);
         }
+        return {
+          category: input.category,
+          text: result.synthesized_text.trim(),
+          sourceChannels,
+        };
+      });
+      const unexpectedCategories = parsed.categories.filter(
+        (candidate) => !synthesisInputs.some((input) => input.category === candidate.category),
+      );
+      if (unexpectedCategories.length > 0 || parsed.categories.length !== synthesisInputs.length) {
+        throw new Error('Synthesis response category set does not match the requested set');
       }
+
+      // Validate the complete category set before opening the transaction,
+      // then persist it atomically so a SQLite failure cannot leave a scope
+      // with a half-old/half-new knowledge set.
+      getDb().transaction(() => {
+        for (const result of directKnowledge) {
+          persistKnowledge(result.category, result.text, result.sourceChannels);
+        }
+        for (const result of validated) {
+          persistKnowledge(result.category, result.text, result.sourceChannels);
+        }
+      })();
     } catch (err) {
-      logger.warn({ err, category }, 'Failed to synthesize category — using concatenation fallback');
-      // Fallback: concatenate all patterns
-      const allText = [...byChannel.values()]
-        .flat()
-        .map((p) => p.pattern_text)
-        .join('\n');
-      if (allText) {
-        if (scopedUserId > 0) {
-          upsertKnowledge(
-            category,
-            allText,
-            [...byChannel.keys()],
-            scopedUserId,
-          );
-        } else {
-          upsertSystemKnowledge(
-            category,
-            allText,
-            [...byChannel.keys()],
-            CONTENT_LEARNER_ADMIN_CONTEXT,
-          );
-        }
+      // An unmetered provider response is a process-wide fail-closed event for
+      // every request source. Do not turn it into an ordinary synthesis skip.
+      if (
+        err instanceof ApiUsagePersistenceError
+        || (err as { name?: string })?.name === 'ApiUsagePersistenceError'
+      ) {
+        throw err;
       }
+      if (budgetContext.requestSource === 'interactive' && err instanceof AiBudgetError) {
+        throw err;
+      }
+      logger.warn(
+        { err, categories: synthesisInputs.map((input) => input.category) },
+        'Batched channel synthesis deferred — retaining latest valid knowledge for every category',
+      );
+      return false;
+    }
+  } else if (directKnowledge.length > 0) {
+    try {
+      getDb().transaction(() => {
+        for (const result of directKnowledge) {
+          persistKnowledge(result.category, result.text, result.sourceChannels);
+        }
+      })();
+    } catch (err) {
+      logger.warn(
+        { err, categories: directKnowledge.map((entry) => entry.category) },
+        'Direct channel knowledge persistence deferred — retaining latest valid category set',
+      );
+      return false;
     }
   }
 
@@ -726,6 +1040,7 @@ async function synthesizeKnowledge(userId?: number): Promise<void> {
   if (scopedUserId === 0) {
     writeChannelDNASignals(channels);
   }
+  return true;
 }
 
 /**
@@ -794,13 +1109,14 @@ function writeChannelDNASignals(channels: ContentRefChannel[], userId?: number):
  */
 export async function analyzeChannel(
   channelId: number,
-  options: { skipIfUnchanged?: boolean } = {},
+  options: { skipIfUnchanged?: boolean; budgetContext?: ChannelAiBudgetContext } = {},
 ): Promise<{
   success: boolean;
   summary: string;
   patternsFound: number;
   videosAnalyzed: number;
   skipped?: boolean;
+  deferred?: boolean;
   error?: string;
 }> {
   const { getChannel } = await import('../state/content-references');
@@ -811,6 +1127,37 @@ export async function analyzeChannel(
     return { success: false, summary: '', patternsFound: 0, videosAnalyzed: 0, error: 'Channel not found' };
   }
   const channelAccess = accessForChannel(channel);
+  const channelMeteringScope = {
+    userId: channel.user_id && channel.user_id > 0 ? channel.user_id : 0,
+    tenantId: channel.tenant_id ?? channel.user_id ?? 0,
+  };
+  const budgetContext = options.budgetContext ?? {
+    requestSource: channel.user_id && channel.user_id > 0 ? 'interactive' as const : 'system' as const,
+    jobName: 'channel_analysis',
+  };
+
+  if (budgetContext.requestSource === 'automation' && channelMeteringScope.userId > 0) {
+    const eligibility = resolveAiAutomationEligibility(channelMeteringScope.userId, 'content');
+    if (!eligibility.allowed) {
+      recordAiAutomationEligibilitySkip(channelMeteringScope.userId, eligibility, {
+        jobName: budgetContext.jobName ?? 'channel_relearn',
+        baseCategory: CHANNEL_LEARNING_BASE_CATEGORY,
+        runId: budgetContext.runId ?? null,
+      });
+      logger.debug(
+        { channelId, userId: channelMeteringScope.userId, reason: eligibility.reason },
+        'Channel analysis skipped before YouTube/provider work: automation is not eligible',
+      );
+      return {
+        success: false,
+        deferred: true,
+        summary: '',
+        patternsFound: 0,
+        videosAnalyzed: 0,
+        error: eligibility.reason,
+      };
+    }
+  }
   const creatorProfile = channel.user_id && channel.user_id > 0
     ? loadCreatorPromptContextForUser(channel.user_id, channel.tenant_id ?? channel.user_id)
     : buildCreatorPromptContext(null);
@@ -819,6 +1166,20 @@ export async function analyzeChannel(
   updateChannelStatus(channelId, 'analyzing', undefined, channelAccess);
 
   try {
+    // Cheap no-op reservation preflight prevents YouTube quota/transcript work
+    // when the canonical plan, daily, monthly, automation, system, or global
+    // allowance already denies the eventual model call. The provider boundary
+    // repeats the locked check after external reads to close the race.
+    await withAiBudgetReservation({
+      userId: channelMeteringScope.userId,
+      requestSource: budgetContext.requestSource,
+      baseCategory: CHANNEL_LEARNING_BASE_CATEGORY,
+      jobName: channelStageJobName(budgetContext.jobName, 'extract'),
+      runId: budgetContext.runId ?? null,
+      estimatedCostUsd: budgetContext.estimatedCostUsd,
+      automationPriority: 'channel_learning',
+    }, async () => undefined);
+
     // Step 1: Resolve channel
     const resolved = await resolveChannel(channel.channel_url);
     if (!resolved) {
@@ -907,16 +1268,13 @@ export async function analyzeChannel(
     }
 
     // Step 3: Extract patterns via Claude (now with optional transcript data)
-    const channelMeteringScope = {
-      userId: channel.user_id && channel.user_id > 0 ? channel.user_id : 0,
-      tenantId: channel.tenant_id ?? channel.user_id ?? 0,
-    };
     const extraction = await extractPatternsForCreatorContext(
       resolved.channelName,
       videos,
       transcriptData,
       creatorProfile,
       channelMeteringScope,
+      budgetContext,
     );
 
     // Step 4: Store patterns
@@ -955,6 +1313,35 @@ export async function analyzeChannel(
       videosAnalyzed: videos.length,
     };
   } catch (err) {
+    if (err instanceof AiBudgetError) {
+      const restoreStatus: ContentRefChannel['status'] = channel.analysis_fingerprint ? 'active' : 'pending';
+      updateChannelStatus(channelId, restoreStatus, {
+        error_message: `AI budget deferred (${err.decision.code})`,
+      }, channelAccess);
+      if (budgetContext.requestSource === 'interactive') throw err;
+      logger.info(
+        { channelId, code: err.decision.code, window: err.decision.window },
+        'Channel analysis deferred by AI budget without entering failure backoff',
+      );
+      return {
+        success: false,
+        deferred: true,
+        summary: '',
+        patternsFound: 0,
+        videosAnalyzed: 0,
+        error: err.decision.code,
+      };
+    }
+    if (
+      err instanceof ApiUsagePersistenceError
+      || (err as { name?: string })?.name === 'ApiUsagePersistenceError'
+    ) {
+      const restoreStatus: ContentRefChannel['status'] = channel.analysis_fingerprint ? 'active' : 'pending';
+      updateChannelStatus(channelId, restoreStatus, {
+        error_message: 'AI usage persistence degraded',
+      }, channelAccess);
+      throw err;
+    }
     const message = (err as Error).message;
     logger.error({ err, channelId }, 'Channel analysis failed');
     updateChannelStatus(channelId, 'failed', { error_message: message }, channelAccess);
@@ -981,17 +1368,29 @@ export async function analyzeChannel(
  *   this scope was skipped by the new-video gate (nothing failed, nothing
  *   analyzed) so the scope's synthesis LLM calls were skipped entirely.
  */
-export async function processAllChannels(force = false, userId?: number): Promise<{
+export async function processAllChannels(
+  force = false,
+  userId?: number,
+  options: { requestSource?: 'interactive' | 'automation' | 'system'; jobName?: string; runId?: string | null } = {},
+): Promise<{
   analyzed: number;
   failed: number;
   skipped_no_new_videos: number;
   synthesized: boolean;
   synthesis_skipped_all_unchanged: boolean;
+  synthesis_deferred: boolean;
 }> {
   let analyzed = 0;
   let failed = 0;
   let skippedNoNewVideos = 0;
   const { clause: scopeClause, params: scopeParams } = getScopeClause(userId);
+  const requestSource = options.requestSource
+    ?? (userId != null && userId > 0 ? 'automation' : 'system');
+  const jobName = options.jobName ?? (requestSource === 'interactive' ? 'channel_relearn_manual' : 'channel_relearn');
+  // One scope/cycle is one workload run. Extraction and synthesis keep their
+  // provider categories, but share this run id and channel_learning base so
+  // rolling p95 represents the complete cycle instead of isolated stages.
+  const scopeRunId = options.runId ?? randomUUID();
 
   // ── Recovery: resurrect stuck / failed channels ────────────────
   //
@@ -1084,8 +1483,16 @@ export async function processAllChannels(force = false, userId?: number): Promis
   // and always analyze. `force` bypasses the gate.
   const pending = getScopedChannelsForProcessing('pending', userId);
   for (const ch of pending) {
-    const result = await analyzeChannel(ch.id, { skipIfUnchanged: !force });
+    const result = await analyzeChannel(ch.id, {
+      skipIfUnchanged: !force,
+      budgetContext: {
+        requestSource: ch.user_id && ch.user_id > 0 ? requestSource : 'system',
+        jobName,
+        runId: scopeRunId,
+      },
+    });
     if (result.skipped) skippedNoNewVideos++;
+    else if (result.deferred) { /* budget deferral is neither analysis nor failure */ }
     else if (result.success) analyzed++;
     else failed++;
     // Rate limit: wait 2s between channels to avoid YouTube API quota issues
@@ -1099,8 +1506,16 @@ export async function processAllChannels(force = false, userId?: number): Promis
     if (!force && ch.last_analyzed_at && new Date(ch.last_analyzed_at).getTime() > staleThreshold) {
       continue; // Fresh enough
     }
-    const result = await analyzeChannel(ch.id, { skipIfUnchanged: !force });
+    const result = await analyzeChannel(ch.id, {
+      skipIfUnchanged: !force,
+      budgetContext: {
+        requestSource: ch.user_id && ch.user_id > 0 ? requestSource : 'system',
+        jobName,
+        runId: scopeRunId,
+      },
+    });
     if (result.skipped) skippedNoNewVideos++;
+    else if (result.deferred) { /* budget deferral is neither analysis nor failure */ }
     else if (result.success) analyzed++;
     else failed++;
     await new Promise((r) => setTimeout(r, 2000));
@@ -1110,10 +1525,15 @@ export async function processAllChannels(force = false, userId?: number): Promis
   // skipped by the new-video gate contribute nothing new, so an all-skipped
   // scope skips its synthesis LLM calls entirely.
   let synthesized = false;
+  let synthesisDeferred = false;
   const allSkippedNoNewVideos = skippedNoNewVideos > 0 && analyzed === 0 && failed === 0;
   if (analyzed > 0) {
-    await synthesizeKnowledge(userId);
-    synthesized = true;
+    synthesized = await synthesizeKnowledge(userId, {
+      requestSource: userId != null && userId > 0 ? requestSource : 'system',
+      jobName,
+      runId: scopeRunId,
+    });
+    synthesisDeferred = !synthesized;
   } else if (allSkippedNoNewVideos) {
     logger.info(
       { userId: userId ?? null, skippedNoNewVideos },
@@ -1127,6 +1547,7 @@ export async function processAllChannels(force = false, userId?: number): Promis
     skipped_no_new_videos: skippedNoNewVideos,
     synthesized,
     synthesis_skipped_all_unchanged: allSkippedNoNewVideos,
+    synthesis_deferred: synthesisDeferred,
   };
 }
 
@@ -1136,6 +1557,7 @@ export async function processAllChannelScopes(force = false): Promise<{
   skipped_no_new_videos: number;
   synthesized: boolean;
   synthesis_skipped_all_unchanged: boolean;
+  synthesis_deferred: boolean;
 }> {
   let analyzed = 0;
   let failed = 0;
@@ -1144,16 +1566,47 @@ export async function processAllChannelScopes(force = false): Promise<{
   // True when at least one scope skipped its synthesis calls because every
   // channel it processed was unchanged (new-video gate).
   let synthesisSkippedAllUnchanged = false;
+  let synthesisDeferred = false;
 
-  const scopes = [undefined, ...listContentChannelUserIds()];
+  const eligibleUserIds = listEligibleContentAutomationUserIds();
+  if (eligibleUserIds.length === 0) {
+    logger.info('Channel re-learn skipped: no eligible paid Content automation consumer');
+    return {
+      analyzed: 0,
+      failed: 0,
+      skipped_no_new_videos: 0,
+      synthesized: false,
+      synthesis_skipped_all_unchanged: false,
+      synthesis_deferred: false,
+    };
+  }
+
+  const eligibleSet = new Set(eligibleUserIds);
+  const sharedKnowledgeConsumerIds = eligibleUserIds.filter(hasSharedChannelKnowledgeConsumerEvidence);
+  if (sharedKnowledgeConsumerIds.length === 0) {
+    logger.info(
+      'Channel re-learn platform scope skipped: no eligible user has recent shared-knowledge consumption evidence',
+    );
+  }
+  const scopes = [
+    ...(sharedKnowledgeConsumerIds.length > 0 ? [undefined] : []),
+    ...listContentChannelUserIds().filter((userId) => eligibleSet.has(userId)),
+  ];
   let systemScopeChanged = false;
   for (const scopeUserId of scopes) {
-    const result = await processAllChannels(force, scopeUserId);
+    const scopeRunId = randomUUID();
+    const scopeRequestSource = scopeUserId != null && scopeUserId > 0 ? 'automation' as const : 'system' as const;
+    const result = await processAllChannels(force, scopeUserId, {
+      requestSource: scopeRequestSource,
+      jobName: 'channel_relearn',
+      runId: scopeRunId,
+    });
     analyzed += result.analyzed;
     failed += result.failed;
     skippedNoNewVideos += result.skipped_no_new_videos;
     synthesized = synthesized || result.synthesized;
     synthesisSkippedAllUnchanged = synthesisSkippedAllUnchanged || result.synthesis_skipped_all_unchanged;
+    synthesisDeferred = synthesisDeferred || result.synthesis_deferred;
     if (scopeUserId == null) {
       systemScopeChanged = result.synthesized;
       continue;
@@ -1163,8 +1616,13 @@ export async function processAllChannelScopes(force = false): Promise<{
     // knowledge too so user prompts do not keep stale copies of the shared base.
     const hasActiveUserChannels = getScopedChannelsForProcessing('active', scopeUserId).length > 0;
     if (systemScopeChanged && hasActiveUserChannels && !result.synthesized) {
-      await synthesizeKnowledge(scopeUserId);
-      synthesized = true;
+      const userSynthesisSucceeded = await synthesizeKnowledge(scopeUserId, {
+        requestSource: 'automation',
+        jobName: 'channel_relearn',
+        runId: scopeRunId,
+      });
+      synthesized = synthesized || userSynthesisSucceeded;
+      synthesisDeferred = synthesisDeferred || !userSynthesisSucceeded;
     }
   }
 
@@ -1174,6 +1632,7 @@ export async function processAllChannelScopes(force = false): Promise<{
     skipped_no_new_videos: skippedNoNewVideos,
     synthesized,
     synthesis_skipped_all_unchanged: synthesisSkippedAllUnchanged,
+    synthesis_deferred: synthesisDeferred,
   };
 }
 

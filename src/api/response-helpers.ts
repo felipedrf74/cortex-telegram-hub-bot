@@ -24,6 +24,12 @@ import { logger } from '../utils/logger';
 import { captureError } from '../services/error-monitor';
 import { recordOperatorAlert } from '../services/operator-alerts';
 import { getCurrentRequestId } from '../utils/request-context';
+import {
+  AiBudgetError,
+  buildQuotaExceededPayload,
+  type AiBudgetDecision,
+} from '../services/cost-guardrail';
+import { ApiUsagePersistenceError } from '../services/api-usage-fallback';
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -57,6 +63,13 @@ export interface ApiError {
 }
 
 export type ApiResponse<T> = ApiSuccess<T> | ApiError;
+
+export interface StableAiBudgetErrorResponse {
+  code: Exclude<AiBudgetDecision['code'], 'OK'>;
+  message: string;
+  status: 403 | 429;
+  details: Record<string, unknown>;
+}
 
 // ── Builders ─────────────────────────────────────────────────────────
 
@@ -155,6 +168,9 @@ export function sendError(
   status = 400,
   details?: Record<string, unknown>,
 ): void {
+  if (status === 429 && typeof details?.retryAfterSeconds === 'number' && Number.isFinite(details.retryAfterSeconds)) {
+    res.setHeader('Retry-After', String(Math.max(1, Math.ceil(details.retryAfterSeconds))));
+  }
   const existingCacheControl = typeof res.getHeader === 'function'
     ? res.getHeader('Cache-Control')
     : undefined;
@@ -207,6 +223,96 @@ export function sendError(
   res.status(status).json(apiError(code, message, details));
 }
 
+/** Convert a thrown budget denial into the public, dollar-free API contract. */
+export function toStableAiBudgetError(error: unknown): StableAiBudgetErrorResponse | null {
+  const forwarded = error as {
+    name?: string;
+    code?: unknown;
+    status?: unknown;
+    publicMessage?: unknown;
+    details?: unknown;
+  } | null;
+  const forwardedCodes = new Set([
+    'AI_PLAN_REQUIRED',
+    'AI_DAILY_LIMIT_REACHED',
+    'AI_MONTHLY_LIMIT_REACHED',
+    'SERVICE_DEGRADED',
+  ]);
+  if (
+    forwarded?.name === 'ForwardedAiBudgetError'
+    && typeof forwarded.code === 'string'
+    && forwardedCodes.has(forwarded.code)
+    && (forwarded.status === 403 || forwarded.status === 429)
+    && typeof forwarded.publicMessage === 'string'
+  ) {
+    const expectedStatus = forwarded.code === 'AI_PLAN_REQUIRED' ? 403 : 429;
+    if (forwarded.status !== expectedStatus) return null;
+    const details = forwarded.details && typeof forwarded.details === 'object' && !Array.isArray(forwarded.details)
+      ? { ...(forwarded.details as Record<string, unknown>) }
+      : {};
+    if (forwarded.status === 429 && !(typeof details.retryAfterSeconds === 'number' && Number.isFinite(details.retryAfterSeconds))) {
+      details.retryAfterSeconds = 60;
+    }
+    return {
+      code: forwarded.code as StableAiBudgetErrorResponse['code'],
+      message: forwarded.publicMessage,
+      status: forwarded.status,
+      details,
+    };
+  }
+  if (error instanceof ApiUsagePersistenceError
+    || (error as { name?: string })?.name === 'ApiUsagePersistenceError'
+    || (error as { code?: string })?.code === 'AI_USAGE_PERSISTENCE_FAILED') {
+    return {
+      code: 'SERVICE_DEGRADED',
+      message: 'AI-backed features are temporarily degraded because usage metering is unavailable. Token-zero reads remain available.',
+      status: 429,
+      details: {
+        serviceDegraded: true,
+        window: 'global',
+        unblocksAt: null,
+        // Persistence recovery has no deterministic reset, but clients still
+        // need a bounded retry cadence and HTTP Retry-After on every stable
+        // 429 response. Match the dedicated AI-budget response mapper.
+        retryAfterSeconds: 60,
+        error: 'rate_limited',
+        retryable: true,
+      },
+    };
+  }
+  const candidate = error as { name?: string; decision?: AiBudgetDecision } | null;
+  if (!(error instanceof AiBudgetError) && candidate?.name !== 'AiBudgetError') return null;
+  const decision = candidate?.decision;
+  if (!decision || decision.allowed || decision.code === 'OK') return null;
+  if (decision.status !== 403 && decision.status !== 429) return null;
+  return {
+    code: decision.code as Exclude<AiBudgetDecision['code'], 'OK'>,
+    message: decision.message,
+    status: decision.status,
+    details: {
+      ...buildQuotaExceededPayload(decision.quota),
+      window: decision.window,
+      unblocksAt: decision.unblocksAt,
+      // Lock/metering/marker degradation has no deterministic reset. Keep a
+      // bounded client retry cadence (and HTTP Retry-After) instead of
+      // emitting a stable 429 with no retry guidance.
+      retryAfterSeconds: decision.code === 'SERVICE_DEGRADED'
+        ? decision.retryAfterSeconds ?? 60
+        : decision.retryAfterSeconds,
+      error: decision.status === 403 ? 'plan_required' : 'rate_limited',
+      retryable: decision.status === 429,
+    },
+  };
+}
+
+/** Send a stable AiBudgetError response, including Retry-After for 429s. */
+export function sendAiBudgetError(res: Response, error: unknown): boolean {
+  const stable = toStableAiBudgetError(error);
+  if (!stable) return false;
+  sendError(res, stable.code, stable.message, stable.status, stable.details);
+  return true;
+}
+
 /**
  * Convenience: send a stable, client-safe internal error envelope.
  *
@@ -256,6 +362,11 @@ export function asyncHandler<T extends (req: any, res: Response) => Promise<void
     try {
       await handler(req, res);
     } catch (err: any) {
+      // Provider wrappers throw AiBudgetError after entitlement/budget checks.
+      // Map it before generic 500 capture so every REST surface preserves the
+      // stable paid-AI contract and Retry-After semantics.
+      if (!res.headersSent && sendAiBudgetError(res, err)) return;
+
       // 2026-05-18 (skill-hardening QA P1 follow-up): TenantScopeError
       // thrown by `assertTenantScope` / `requireTenantIdParam` is a
       // *client* error (the request lacked a valid tenant tuple), not a

@@ -5,11 +5,7 @@ import { AuthenticatedRequest } from '../auth-middleware';
 import { logger } from '../../utils/logger';
 import { runOutboxTransaction } from '../../services/event-outbox';
 import { consumeResourceBudget } from '../../services/resource-budgets';
-import {
-  acquireCostLock,
-  enforceCostGuardrails,
-  type CostGuardrailDecision,
-} from '../../services/cost-guardrail';
+import { withAiBudgetReservation } from '../../services/cost-guardrail';
 import { normalizeLangHeader } from '../../services/secretary-fastpath';
 import { getUserLanguageById } from '../../services/user-service';
 import type { Lang } from '../../utils/i18n';
@@ -17,7 +13,7 @@ import { getCached, setCache } from '../../services/cache-store';
 import { invalidateTrainingDerivedCaches } from '../../services/cache-coherence-registry';
 import { markKeepOriginalForToday } from '../../services/training-keep-original';
 import * as trainingPlans from '../../services/training-plans';
-import { sendSuccess, sendError, sendInternalError } from '../response-helpers';
+import { sendAiBudgetError, sendSuccess, sendError, sendInternalError } from '../response-helpers';
 import { applyCoachRecommendations, generateCoachBriefing } from '../../services/garmin-coach';
 import { buildActiveSignalsResponse } from '../../services/signals-observability';
 import {
@@ -50,7 +46,12 @@ import {
 import { registerTrainingAnalyticsRoutes } from './training-analytics-routes';
 import { registerTrainingPlanRoutes } from './training-plan-routes';
 import { requireTenantIdParam } from '../../services/tenant-scope';
-import { isCoachBriefingEntitlementEligible, type UserEntitlement } from '../../services/entitlement';
+import {
+  isAiInteractiveAllowedForRuntime,
+  isCoachBriefingEntitlementEligible,
+  isPaidAiCostControlsEnforcementEnabled,
+  type UserEntitlement,
+} from '../../services/entitlement';
 
 export { looksLikeTrainingCalendarEvent } from './training-calendar-utils';
 
@@ -72,27 +73,29 @@ function invalidateTrainingScreenCaches(userId: number) {
   invalidateTrainingDerivedCaches(userId);
 }
 
-function rejectTrainingCostGuardrail(res: Response, decision: Extract<CostGuardrailDecision, { block: true }>): void {
-  sendError(
-    res,
-    decision.reason,
-    decision.message,
-    decision.status,
-    decision.details,
-  );
-}
-
 function requireCoachBriefingEligibility(req: AuthenticatedRequest, res: Response): boolean {
   const entitlement = (req as AuthenticatedRequest & {
-    entitlement?: Pick<UserEntitlement, 'plan' | 'source'>;
+    entitlement?: UserEntitlement;
   }).entitlement;
-  if (!entitlement || !isCoachBriefingEntitlementEligible(entitlement)) {
+  const enforcementEnabled = isPaidAiCostControlsEnforcementEnabled();
+  const eligible = entitlement && (enforcementEnabled
+    ? isAiInteractiveAllowedForRuntime(entitlement)
+    : isCoachBriefingEntitlementEligible(entitlement));
+  if (!eligible) {
     sendError(
       res,
-      'TIER_REQUIRED',
+      enforcementEnabled ? 'AI_PLAN_REQUIRED' : 'TIER_REQUIRED',
       'A Pro or Max plan is required for coach briefings.',
       403,
-      { requiredPlan: 'pro', currentPlan: entitlement?.plan ?? 'free', skill: 'training' },
+      {
+        requiredPlan: 'pro',
+        currentPlan: entitlement?.plan ?? 'free',
+        skill: 'training',
+        blockReason: entitlement?.blockReason ?? 'plan_required',
+        window: 'plan',
+        unblocksAt: null,
+        retryable: false,
+      },
     );
     return false;
   }
@@ -387,8 +390,13 @@ export function trainingRoutes(): Router {
    */
   router.get('/coach', async (req, res: Response) => {
     const { userId, tenantId } = req as AuthenticatedRequest;
-    if (!requireCoachBriefingEligibility(req as AuthenticatedRequest, res)) return;
-    const dataUserId = tenantId;
+    let dataUserId: number;
+    try {
+      dataUserId = requireTenantIdParam(tenantId, 'training.coach');
+    } catch {
+      sendError(res, 'TENANT_SCOPE_REQUIRED', 'Coach briefing requires a validated tenant scope.', 400);
+      return;
+    }
     const forceRefresh = req.query.refresh === 'true';
     const cacheOnly = req.query.cacheOnly === 'true';
     const cacheKey = `coach-briefing:${dataUserId}`;
@@ -424,15 +432,15 @@ export function trainingRoutes(): Router {
       return;
     }
 
-    const releaseCostLock = await acquireCostLock(userId);
-    try {
-      const guardrail = enforceCostGuardrails(userId);
-      if (guardrail.block) {
-        rejectTrainingCostGuardrail(res, guardrail);
-        return;
-      }
+    if (!requireCoachBriefingEligibility(req as AuthenticatedRequest, res)) return;
 
-      const briefing = await generateCoachBriefing(dataUserId, { tenantId: dataUserId, meteringUserId: userId });
+    try {
+      const briefing = await withAiBudgetReservation({
+        userId,
+        requestSource: 'interactive',
+        baseCategory: 'coach_analysis',
+        jobName: 'coach_refresh',
+      }, () => generateCoachBriefing(dataUserId, { tenantId: dataUserId, meteringUserId: userId }));
 
       // `briefing.message` is the only briefing text field on CoachBriefingResult;
       // garminData is hydrated later via syncCoachStateForUser and the cache-restore
@@ -452,6 +460,7 @@ export function trainingRoutes(): Router {
       sendSuccess(res, hydratedPayload);
     } catch (err: any) {
       logger.error({ err }, 'iOS training/coach failed');
+      if (sendAiBudgetError(res, err)) return;
       const fallback = await buildDeterministicCoachFallback(dataUserId, dataUserId, language).catch((fallbackErr) => {
         logger.debug({ err: fallbackErr, userId, tenantId: dataUserId }, 'training/coach deterministic fallback failed');
         return null;
@@ -479,8 +488,6 @@ export function trainingRoutes(): Router {
         degraded: true,
         warnings: ['Coach briefing unavailable.'],
       });
-    } finally {
-      releaseCostLock();
     }
   });
 
@@ -493,7 +500,6 @@ export function trainingRoutes(): Router {
       sendError(res, 'TENANT_SCOPE_REQUIRED', 'Training coach report requires a validated tenant scope.', 400);
       return;
     }
-    if (!requireCoachBriefingEligibility(req as AuthenticatedRequest, res)) return;
     const dataUserId = tenantId;
     const forceRefresh = req.body?.refresh === true;
     const cacheKey = `coach-briefing:${dataUserId}`;
@@ -515,15 +521,15 @@ export function trainingRoutes(): Router {
       }
     }
 
-    const releaseCostLock = await acquireCostLock(userId);
-    try {
-      const guardrail = enforceCostGuardrails(userId);
-      if (guardrail.block) {
-        rejectTrainingCostGuardrail(res, guardrail);
-        return;
-      }
+    if (!requireCoachBriefingEligibility(req as AuthenticatedRequest, res)) return;
 
-      const briefing = await generateCoachBriefing(dataUserId, { tenantId: dataUserId, meteringUserId: userId });
+    try {
+      const briefing = await withAiBudgetReservation({
+        userId,
+        requestSource: 'interactive',
+        baseCategory: 'coach_analysis',
+        jobName: 'coach_report',
+      }, () => generateCoachBriefing(dataUserId, { tenantId: dataUserId, meteringUserId: userId }));
       const payload = syncCoachStateForUser(dataUserId, {
         briefing: briefing?.message || 'No coach briefing available.',
         recommendations: briefing?.recommendations || [],
@@ -534,6 +540,7 @@ export function trainingRoutes(): Router {
       sendSuccess(res, buildCoachReportResponse(payload, language));
     } catch (err: any) {
       logger.error({ err, userId, tenantId: dataUserId }, 'iOS training/coach/report failed');
+      if (sendAiBudgetError(res, err)) return;
       const fallback = await buildDeterministicCoachFallback(dataUserId, dataUserId, language).catch(() => null);
       if (fallback) {
         const payload = syncCoachStateForUser(dataUserId, fallback);
@@ -547,8 +554,6 @@ export function trainingRoutes(): Router {
         degraded: true,
         warnings: ['Coach report unavailable.'],
       }, language));
-    } finally {
-      releaseCostLock();
     }
   });
 

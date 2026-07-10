@@ -3,13 +3,11 @@
 /**
  * Tests for the autoresearch pre-flight skip gate (src/services/autoresearch.ts).
  *
- * The scheduled Sunday run must SKIP (zero LLM calls) when the target's
- * prompt/config fingerprint is unchanged since the last completed run AND
- * that run's stored final score is at/above AUTORESEARCH_RESCORE_THRESHOLD
- * (default 0.9). It must RUN when the hash changed, the score is low, the
- * history is missing/legacy-NULL, or { force: true } is passed. Completed
- * runs must persist the end-of-run prompt hash + final score (migration 223
- * columns on autoresearch_experiments).
+ * The scheduled evaluate-only run must SKIP (zero model calls) whenever the
+ * prompt/config fingerprint is unchanged and a prior valid score exists,
+ * regardless of that score. Propose/apply mode keeps the configurable quality
+ * threshold. Hash changes, missing/legacy-NULL history, and { force: true }
+ * trigger a run. Completed runs persist the end-of-run prompt hash + score.
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
@@ -50,13 +48,16 @@ vi.mock('../../src/config', () => ({
 
 // Controllable in-memory "prompt file" so tests can change the prompt
 // content (and therefore the fingerprint) between seeded run and gate check.
-const promptState = vi.hoisted(() => ({ content: 'PROMPT V1' }));
+const promptState = vi.hoisted(() => ({
+  content: 'PROMPT V1',
+  writePrompt: vi.fn((_: string, content: string) => {
+    promptState.content = content;
+  }),
+}));
 
 vi.mock('../../src/utils/prompt-loader', () => ({
   loadPrompt: vi.fn(() => promptState.content),
-  writePrompt: vi.fn((_name: string, content: string) => {
-    promptState.content = content;
-  }),
+  writePrompt: promptState.writePrompt,
   getPromptPath: vi.fn((name: string) => `/tmp/test-prompts/${name}.md`),
 }));
 
@@ -71,9 +72,31 @@ const TEST_TARGET = vi.hoisted(() => ({
   testInputs: [{ id: 'input1', userMessage: 'hello', description: 'basic input' }],
 }));
 
+const TOPIC_TARGET = vi.hoisted(() => ({
+  id: 'topic_gen',
+  promptFile: 'topic-generation',
+  description: 'topic generation',
+  model: 'claude-haiku-4-5-20251001',
+  scorerModel: 'claude-haiku-4-5-20251001',
+  maxTokens: 2048,
+  criteria: [
+    { id: 'complete_fields', question: 'Matches the live contract?', weight: 2 },
+    { id: 'quality', question: 'Are the ideas high quality?', weight: 1 },
+  ],
+  testInputs: [
+    { id: 'topic1', userMessage: 'topics one', description: 'one' },
+    { id: 'topic2', userMessage: 'topics two', description: 'two' },
+    { id: 'topic3', userMessage: 'topics three', description: 'three' },
+  ],
+}));
+
 vi.mock('../../src/services/eval-criteria', () => ({
-  getEvalTarget: vi.fn((id: string) => (id === TEST_TARGET.id ? TEST_TARGET : undefined)),
-  getAllTargets: vi.fn(() => [TEST_TARGET]),
+  getEvalTarget: vi.fn((id: string) => (
+    id === TEST_TARGET.id ? TEST_TARGET
+      : id === TOPIC_TARGET.id ? TOPIC_TARGET
+        : undefined
+  )),
+  getAllTargets: vi.fn(() => [TEST_TARGET, TOPIC_TARGET]),
 }));
 
 // Every LLM call in autoresearch (generate, score, mutate) goes through
@@ -81,14 +104,49 @@ vi.mock('../../src/services/eval-criteria', () => ({
 const provider = vi.hoisted(() => ({
   calls: [] as string[],
   scorePassed: true,
+  invalidScore: false,
+  staleTopicAliases: false,
 }));
 
 vi.mock('../../src/services/gemini-provider', () => ({
   completeOneShotWithFallback: vi.fn(async (_system: string, _user: string, scope: string) => {
     provider.calls.push(scope);
+    if (scope === 'autoresearch_gen_topic_gen') {
+      if (provider.staleTopicAliases) {
+        return {
+          text: JSON.stringify([{
+            title: 'A stale-contract topic',
+            niche: 'product',
+            why_now: 'Relevant now',
+            hook_idea: 'Start with proof',
+            angleTag: 'framework',
+            pillar_emoji: '',
+            time_sensitivity: 'evergreen',
+          }]),
+        };
+      }
+      return {
+        text: JSON.stringify([{
+          title: 'A useful topic',
+          niche: 'product',
+          whyNow: 'Relevant now',
+          hookIdea: 'Start with proof',
+          angle_tag: 'framework',
+          pillar_emoji: '',
+          time_sensitivity: 'evergreen',
+        }]),
+      };
+    }
     if (scope.startsWith('autoresearch_gen')) return { text: 'generated output' };
     if (scope === 'autoresearch_score') {
-      return { text: JSON.stringify([{ id: 'crit1', passed: provider.scorePassed }]) };
+      if (provider.invalidScore) return { text: '{not valid json' };
+      const inputs = scope && _user.includes('topic1')
+        ? ['topic1', 'topic2', 'topic3'].map((inputId) => ({
+          inputId,
+          criteria: [{ id: 'quality', passed: provider.scorePassed }],
+        }))
+        : [{ inputId: 'input1', criteria: [{ id: 'crit1', passed: provider.scorePassed }] }];
+      return { text: JSON.stringify(inputs) };
     }
     if (scope === 'autoresearch_mutate') {
       return { text: JSON.stringify({ description: 'test tweak', mutated_prompt: 'PROMPT MUTATED' }) };
@@ -97,12 +155,17 @@ vi.mock('../../src/services/gemini-provider', () => ({
   }),
 }));
 
+vi.mock('../../src/services/cost-guardrail', () => ({
+  withAiBudgetReservation: vi.fn(async (_request: unknown, fn: () => Promise<unknown>) => fn()),
+}));
+
 vi.mock('../../src/portal/anthropic-hook', () => ({
   trackedCreate: vi.fn(),
 }));
 
 import { runAutoresearch, computePromptStateHash } from '../../src/services/autoresearch';
 import { getEvalTarget, EvalTarget } from '../../src/services/eval-criteria';
+import { withAiBudgetReservation } from '../../src/services/cost-guardrail';
 
 const target = (): EvalTarget => getEvalTarget('secretary')!;
 
@@ -133,12 +196,17 @@ beforeEach(() => {
   promptState.content = 'PROMPT V1';
   provider.calls = [];
   provider.scorePassed = true;
+  provider.invalidScore = false;
+  provider.staleTopicAliases = false;
+  promptState.writePrompt.mockClear();
+  vi.mocked(withAiBudgetReservation).mockClear();
   delete process.env.AUTORESEARCH_RESCORE_THRESHOLD;
 });
 
 afterEach(() => {
   testDb.close();
   delete process.env.AUTORESEARCH_RESCORE_THRESHOLD;
+  vi.unstubAllEnvs();
 });
 
 describe('autoresearch pre-flight skip gate', () => {
@@ -261,5 +329,124 @@ describe('autoresearch pre-flight skip gate', () => {
     expect(computePromptStateHash(modified)).not.toBe(baseHash);
     // Stable for identical input
     expect(computePromptStateHash(target())).toBe(baseHash);
+  });
+
+  it('evaluate_only skips an unchanged low-scoring fingerprint with zero model calls', async () => {
+    seedCompletedRun(computePromptStateHash(target()), 0.2);
+
+    const result = await runAutoresearch('secretary', 1, true, undefined, {
+      mode: 'evaluate_only',
+    });
+
+    expect(result.mode).toBe('evaluate_only');
+    expect(result.skipped).toBe('skipped_unchanged');
+    expect(result.finalScore).toBe(0.2);
+    expect(provider.calls).toHaveLength(0);
+  });
+
+  it('does not reuse an unchanged fingerprint when the stored score is outside the valid range', async () => {
+    seedCompletedRun(computePromptStateHash(target()), 1.5);
+
+    const result = await runAutoresearch('secretary', 1, true, undefined, {
+      mode: 'evaluate_only',
+    });
+
+    expect(result.skipped).toBeUndefined();
+    expect(provider.calls).toEqual(['autoresearch_gen_secretary', 'autoresearch_score']);
+  });
+
+  it('batches topic semantic scoring so scheduled evaluation uses four calls instead of the historical 39', async () => {
+    const result = await runAutoresearch('topic_gen', 1, true, undefined, {
+      mode: 'evaluate_only',
+      force: true,
+    });
+
+    expect(result.mode).toBe('evaluate_only');
+    expect(provider.calls.filter((scope) => scope === 'autoresearch_gen_topic_gen')).toHaveLength(3);
+    expect(provider.calls.filter((scope) => scope === 'autoresearch_score')).toHaveLength(1);
+    expect(provider.calls).toHaveLength(4);
+    expect(1 - provider.calls.length / 39).toBeGreaterThanOrEqual(0.85);
+    const reservations = vi.mocked(withAiBudgetReservation).mock.calls.map(([request]) => request as {
+      baseCategory?: string;
+      jobName?: string;
+      runId?: string | null;
+    });
+    expect(reservations).toHaveLength(4);
+    expect(new Set(reservations.map((request) => request.baseCategory))).toEqual(
+      new Set(['autoresearch_topic_gen']),
+    );
+    expect(new Set(reservations.map((request) => request.runId))).toEqual(new Set([result.runId]));
+    expect(reservations.filter((request) => request.jobName === 'autoresearch_topic_gen:generate')).toHaveLength(3);
+    expect(reservations.filter((request) => request.jobName === 'autoresearch_topic_gen:score')).toHaveLength(1);
+    expect(result.rounds[0].decision).toBe('baseline_only');
+    expect(promptState.writePrompt).not.toHaveBeenCalled();
+  });
+
+  it('fails the deterministic live-contract criterion when topic output uses stale field aliases', async () => {
+    provider.staleTopicAliases = true;
+
+    const result = await runAutoresearch('topic_gen', 1, true, undefined, {
+      mode: 'evaluate_only',
+      force: true,
+    });
+
+    expect(result.rounds[0].baselineScore).toBeCloseTo(1 / 3);
+    expect(result.rounds[0].decision).toBe('baseline_only');
+    expect(promptState.writePrompt).not.toHaveBeenCalled();
+  });
+
+  it('propose returns a mutation without writing the prompt', async () => {
+    provider.scorePassed = false;
+
+    const result = await runAutoresearch('secretary', 1, true, undefined, {
+      mode: 'propose',
+      force: true,
+    });
+
+    expect(result.rounds[0]).toMatchObject({
+      decision: 'proposed',
+      mutationDescription: 'test tweak',
+    });
+    const reservations = vi.mocked(withAiBudgetReservation).mock.calls.map(([request]) => request as {
+      baseCategory?: string;
+      jobName?: string;
+      runId?: string | null;
+    });
+    expect(new Set(reservations.map((request) => request.baseCategory))).toEqual(
+      new Set(['autoresearch_secretary']),
+    );
+    expect(new Set(reservations.map((request) => request.runId))).toEqual(new Set([result.runId]));
+    expect(reservations.map((request) => request.jobName)).toEqual([
+      'autoresearch_secretary:generate',
+      'autoresearch_secretary:score',
+      'autoresearch_secretary:propose',
+    ]);
+    expect(promptState.writePrompt).not.toHaveBeenCalled();
+    expect(promptState.content).toBe('PROMPT V1');
+  });
+
+  it('aborts invalid scorer output instead of silently converting it to a zero score', async () => {
+    provider.invalidScore = true;
+
+    await expect(runAutoresearch('secretary', 1, true, undefined, {
+      mode: 'evaluate_only',
+      force: true,
+    })).rejects.toThrow('Scorer returned invalid JSON');
+
+    expect(promptState.writePrompt).not.toHaveBeenCalled();
+    const rows = (testDb.prepare('SELECT COUNT(*) AS count FROM autoresearch_experiments').get() as { count: number }).count;
+    expect(rows).toBe(0);
+  });
+
+  it('rejects apply mode in production before any model, prompt, or Git work', async () => {
+    vi.stubEnv('NODE_ENV', 'production');
+
+    await expect(runAutoresearch('secretary', 1, false, undefined, {
+      mode: 'apply',
+      force: true,
+    })).rejects.toThrow('AUTORESEARCH_APPLY_DISABLED_IN_PRODUCTION');
+
+    expect(provider.calls).toHaveLength(0);
+    expect(promptState.writePrompt).not.toHaveBeenCalled();
   });
 });

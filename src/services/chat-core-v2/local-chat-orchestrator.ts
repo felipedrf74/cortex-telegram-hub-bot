@@ -2,6 +2,7 @@
 
 import { config } from '../../config';
 import { logger } from '../../utils/logger';
+import { rethrowAiUsageFailClosedError } from '../api-usage-fallback';
 import { safeRecordChatV2CloudAllowlistEvidence } from '../chat-cloud-allowlist-evidence';
 import { ensureActiveProvider } from '../provider-registry';
 import type { LocalReasoningResult, LocalReasoningTask } from '../ollama-provider';
@@ -353,6 +354,7 @@ export async function runChatCoreV2LocalChatTurn(
         degraded: false,
       };
     } catch (err) {
+      rethrowAiUsageFailClosedError(err);
       logger.warn(
         {
           requestId: input.requestId,
@@ -516,6 +518,7 @@ export async function runChatCoreV2LocalChatTurn(
       degraded: false,
     };
   } catch (err) {
+    rethrowAiUsageFailClosedError(err);
     logger.warn(
       {
         requestId: input.requestId,
@@ -1034,6 +1037,7 @@ async function tryRepairLocaleDrift(
     const repairedText = truncate(String(result.text ?? '').trim(), 1600);
     return repairedText ? { text: repairedText } : null;
   } catch (err) {
+    rethrowAiUsageFailClosedError(err);
     logger.warn(
       {
         requestId: input.requestId,
@@ -1381,6 +1385,7 @@ async function tryRepairRecipeDraft(
     const text = String(result.text ?? '').trim();
     return shouldRepairRecipeDraft(text, String(result.stopReason ?? ''), false) ? null : { text };
   } catch (err) {
+    rethrowAiUsageFailClosedError(err);
     logger.warn(
       {
         requestId: input.requestId,

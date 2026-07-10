@@ -153,6 +153,23 @@ describe('script-pipeline: cache key hardening', () => {
     expect(engineSource).toContain('force_refresh: forceRefresh || undefined');
     expect(engineSource).toContain('regeneration_seed: regenerationSeed || undefined');
   });
+
+  it('checks the token-zero script cache before entering the fresh-provider budget boundary', () => {
+    const engineSource = require('fs').readFileSync(
+      require('path').resolve(__dirname, '../../src/services/content-engine.ts'),
+      'utf8',
+    );
+
+    const cacheLookup = engineSource.indexOf('const cached = getCached<ScriptResponse>(normalizedKey)');
+    const providerBoundary = engineSource.indexOf('const result = providerBoundary');
+    const tokenMint = engineSource.indexOf('internal_attribution_token: createInternalAttributionToken');
+    const freshProviderCallback = engineSource.indexOf('const invokeFreshProviderPath');
+    expect(cacheLookup).toBeGreaterThan(-1);
+    expect(providerBoundary).toBeGreaterThan(cacheLookup);
+    expect(freshProviderCallback).toBeGreaterThan(cacheLookup);
+    expect(tokenMint).toBeGreaterThan(freshProviderCallback);
+    expect(engineSource).toContain('? await providerBoundary(invokeFreshProviderPath)');
+  });
 });
 
 // ═══════════════════════════════════════════════════════════════════

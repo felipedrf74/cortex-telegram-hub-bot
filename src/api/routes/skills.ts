@@ -41,6 +41,10 @@ import {
   type SkillVersionStatus,
 } from '../../services/skill-version-registry';
 import { getUserByTelegramId, getUserById } from '../../services/user-service';
+import {
+  entitlementPlanToSkillTier,
+  getEffectiveEntitlement,
+} from '../../services/entitlement';
 import { logger } from '../../utils/logger';
 import { ensureValidTenantRouteScope } from '../tenant-route-scope';
 import { invalidateDashboardCoordinationCaches } from '../../services/cache-coherence-registry';
@@ -121,7 +125,8 @@ function getCaller(userId: number) {
 
 function requireOwner(res: Response, userId: number): boolean {
   const caller = getCaller(userId);
-  if (!caller || caller.tier !== 'owner') {
+  const entitlement = caller ? getEffectiveEntitlement(caller.id) : null;
+  if (!caller || !entitlement?.isOwner) {
     sendError(res, 'FORBIDDEN', 'Only owner can mutate skill version metadata', 403);
     return false;
   }
@@ -241,7 +246,9 @@ export function skillsRoutes(): Router {
       return;
     }
 
-    const userCtx = { id: user.id, tier: user.tier as SkillTier };
+    const entitlement = getEffectiveEntitlement(user.id);
+    const effectiveTier = entitlementPlanToSkillTier(entitlement.plan);
+    const userCtx = { id: user.id, tier: effectiveTier };
     const skills: CatalogSkill[] = Object.values(DEFAULT_SKILLS).map((def) =>
       skillToCatalog(def, userCtx),
     );
@@ -255,7 +262,7 @@ export function skillsRoutes(): Router {
     });
 
     const payload: CatalogResponse = {
-      userTier: user.tier as SkillTier,
+      userTier: effectiveTier,
       skills,
       catalogRowCount: listSkillTiers().length,
     };
@@ -391,11 +398,7 @@ export function skillsRoutes(): Router {
    */
   router.post('/override', (req, res: Response) => {
     const { userId } = req as AuthenticatedRequest;
-    const caller = getCaller(userId);
-    if (!caller || caller.tier !== 'owner') {
-      sendError(res, 'FORBIDDEN', 'Only owner can grant skill overrides', 403);
-      return;
-    }
+    if (!requireOwner(res, userId)) return;
 
     const { targetUserId, skillId, reason, expiresAt } = req.body ?? {};
     if (typeof targetUserId !== 'number' || typeof skillId !== 'string') {
@@ -439,11 +442,7 @@ export function skillsRoutes(): Router {
    */
   router.delete('/override', (req, res: Response) => {
     const { userId } = req as AuthenticatedRequest;
-    const caller = getCaller(userId);
-    if (!caller || caller.tier !== 'owner') {
-      sendError(res, 'FORBIDDEN', 'Only owner can revoke skill overrides', 403);
-      return;
-    }
+    if (!requireOwner(res, userId)) return;
 
     // Accept from body OR query string — body takes precedence.
     const bodyTarget = req.body?.targetUserId;

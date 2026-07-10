@@ -1,320 +1,286 @@
-# Token Quota Contract
+# AI Entitlement and Quota Contract
 
 Status: canonical
 Owner: backend cost-guardrail lead (Felipe)
-Last verified: 2026-05-20
-Update policy: update when iOS quota contract fields or per-tier daily caps change.
+Last verified: 2026-07-10
+Update policy: update when entitlement eligibility, AI budget windows, public
+quota fields, Nexus Points rules, or provider-call attribution changes.
 
-This document defines the iOS-facing quota contract for AI-backed endpoints
-plus the canonical entitlement resolver that gates every paid route.
+Rollout state: implemented on the paid-AI cost-controls worktree. This document
+does not assert staging or production promotion; runtime truth remains in
+`docs/release/CURRENT_RELEASE_STATE.md`.
 
-**Last substantive update: 2026-05-20** (Nexus Points usage limits — Pro and
-Max daily AI budgets lowered to margin-safe defaults, per-user AI budget
-overrides added, and paid 30-day Nexus Point allowances added).
+This is the canonical contract for model-backed access. Deterministic Secretary
+reads and actions are token-zero and remain available independently of AI
+eligibility or quota state.
 
----
+## Eligibility is the authority
 
-## Plans (compiled defaults)
+`src/services/entitlement.ts#getEffectiveEntitlement()` is the only authority
+for model access, automation access, Nexus Points eligibility, billing windows,
+and effective plan. Never make an AI decision from `users.tier`.
 
-| Plan    | Daily cost cap | Daily tokens | Daily messages | Allowed skills                                      |
-|---------|---------------:|-------------:|---------------:|-----------------------------------------------------|
-| `free`  |       `$0.005` |     `100000` |           `40` | `secretary` only                                    |
-| `pro`   |        `$0.04` |     `500000` |          `200` | `secretary, training, content, cooking, finance`    |
-| `max`   |        `$0.06` |     `500000` |          `500` | `secretary, training, content, cooking, finance`    |
-| `owner` |      `$100.00` |   unlimited  |     unlimited  | all                                                 |
+| Entitlement | Interactive AI | Automations | Nexus Points overage |
+| --- | --- | --- | --- |
+| Active Apple/Stripe Pro or Max | yes | yes | yes |
+| Founder assigned Pro or Max | yes | yes | yes |
+| Apple/Stripe `trialing` | yes | no | no |
+| Free, beta/manual grant, expired, past-due | no | no | no |
+| Owner | yes | off by default | no |
 
-- **Free is the default** for any account without an active paid subscription.
-  Registration (Apple / Google / email) provisions the user as `free`; tier
-  is elevated only by Apple/Stripe webhook, founder assignment via the
-  portal, or owner-ref match.
-- **`$0.005`** on Free is deliberately small but non-zero. It covers ~1
-  Gemini Flash-Lite secretary turn per day, which matches the business rule
-  ("let people feel the product, then upsell").
-- Owner and staging-beta bypass caps internally.
-- These caps are conservative because production is Gemini-first and
-  token-zero for deterministic lookups.
-- Pro at `$14.99` and Max at `$19.99` keep included AI cost below 10% of
-  subscription revenue before fixed costs, Apple cuts, and support overhead.
+Owner automation requires `OWNER_AI_AUTOMATIONS_ENABLED=true`. A missing or
+invalid Apple/Stripe billing period fails closed for cost-bearing work. Founder
+and system windows use UTC calendar months.
 
-### Nexus Points
+Owner AI identity must match the explicit `OWNER_TELEGRAM_ID` bootstrap
+identity. A stale `users.tier='owner'` row is not sufficient to grant model
+access.
 
-Nexus Points are the user-facing paid usage unit. App copy should refer to
-Nexus Points, not raw provider tokens.
+Blocking is rollout-gated by
+`PAID_AI_COST_CONTROLS_ENFORCEMENT_ENABLED=true`. The default is observe-only so
+the additive schema, attribution, and public fields can land before staging
+policy activation. Production enablement is a separate owner-authorized step.
 
-| Package | Product ID | Price | Points | AI allowance | Expiry |
-|---------|------------|------:|-------:|-------------:|--------|
-| Small   | `me.nexushub.points.small`  | `$5`  |  `300` | `$0.30` | 30 days |
-| Medium  | `me.nexushub.points.medium` | `$10` |  `600` | `$0.60` | 30 days |
-| Large   | `me.nexushub.points.large`  | `$20` | `1200` | `$1.20` | 30 days |
-
-`1 Nexus Point = $0.001` of internal AI provider cost allowance. Included
-daily budget is consumed first; active non-expired Nexus Points are debited
-only for AI spend above the daily included cap, FIFO by earliest expiry.
-Paid AI remains hard-blocked when both included budget and active Nexus
-Points are exhausted.
-
-### Portal overrides
-
-The canonical source of truth for per-plan caps is the `plan_configs` SQLite
-table (migration `075_plan_configs.sql`). On boot, `src/index.ts` hydrates
-in-memory overrides from this table via `applyPlanConfigRows()`. Runtime
-edits through the portal's `PUT /api/plans/:planId` route update the table
-**and** call `setPlanDailyCostCapOverride()` so the change is visible
-without a restart.
-
-Precedence used by `getEffectiveDailyCostLimitUsd(plan)`:
-
-```
-portal override (setPlanDailyCostCapOverride)
-  > plan_configs DB row (hydrated at boot)
-  > DEFAULT_EFFECTIVE_DAILY_COST_LIMITS compiled constants
-```
-
-If the `plan_configs` migration has not yet been applied on an older
-environment, hydration logs a warning and the compiled defaults remain in
-effect. Failing closed is intentional — no override never means a higher
-cap is accidentally applied.
-
----
-
-## Entitlement resolver (canonical)
-
-All paid-route gating goes through `src/services/entitlement.ts`.
-
-```typescript
-getEffectiveEntitlement(userId: number): UserEntitlement
-```
-
-**Precedence** (highest wins):
-
-1. `owner` — `isOwnerUserRef(userId)` returns true.
-2. `founder` — `subscriptions.provider === 'founder'` AND `status === 'active'`.
-3. `apple` — `subscriptions.provider === 'apple'` AND `status IN ('active','trialing')`.
-4. `stripe` — `subscriptions.provider === 'stripe'` AND `status IN ('active','trialing')`.
-5. `beta` — `status === 'trialing'` AND any non-canonical provider (staging sandboxes).
-6. `free` — anything else, including missing row, canceled row, or DB error.
-
-When `PAYWALL_ENABLED=false`, the high-cap staging bypass is available only in
-staging runtimes and only for owner/beta allowlisted tiers
-(`NEXUS_STAGING_BILLING_BYPASS_TIERS`, default `owner,beta`). It is not a
-global bypass for every user in that environment.
-
-**Fail-closed**: DB error returns `{ plan: 'free', source: 'error', ... }`.
-Never allow access on exception.
-
-### UserEntitlement shape
+The additive `UserEntitlement` fields used by callers are:
 
 ```typescript
 interface UserEntitlement {
-  plan: 'free' | 'pro' | 'max' | 'owner';
+  plan: 'free' | 'beta' | 'pro' | 'max' | 'owner';
   source: 'owner' | 'founder' | 'apple' | 'stripe' | 'beta' | 'free' | 'error';
-  status: 'active' | 'trialing' | 'expired' | 'none';
-  isOwner: boolean;
-  isFounder: boolean;
-  allowedSkills: ReadonlySet<string>;           // Free = {'secretary'}, paid = UNRESTRICTED
-  dailyCostCapUsd: number;                      // reads plan-quotas override chain
-  subscriptionProvider?: string;
-  subscriptionExpiresAt?: string;               // ISO-8601 UTC
+  status: 'active' | 'trialing' | 'past_due' | 'expired' | 'none';
+  subscriptionStatus: string | null;
+  subscriptionProvider: string | null;
+  billingPeriodStart: string | null;
+  billingPeriodEnd: string | null;
+  aiAccessAllowed: boolean;
+  automationAllowed: boolean;
+  nexusPointsAllowed: boolean;
+  blockReason: string | null;
+  automationBlockReason: string | null;
+  dailyCostCapUsd: number;
+  monthlyCostCapUsd: number;
+  allowedSkills: ReadonlySet<string>;
 }
 ```
 
-### Middleware wiring
+An entitlement lookup error returns a blocked `source='error'` result. Feature
+access and model access are separate: Free retains the Secretary product
+surface, while active legacy beta/manual grants retain their former Max-style
+product skills (`secretary`, `triathlon`, `training`, `content`, `cooking`, and
+`finance`). Neither product grant permits a provider call; expired/inactive
+grants resolve to Free.
 
-```typescript
-// src/api/router.ts
-router.use('/content',  requireEntitlement({ skill: 'content'  }), contentRoutes());
-router.use('/cooking',  requireEntitlement({ skill: 'cooking'  }), cookingRoutes());
-router.use('/finance',  requireEntitlement({ skill: 'finance'  }), financeRoutes());
-router.use('/invoices', requireEntitlement({ skill: 'finance'  }), invoicesRoutes());
-```
+## Included AI budgets
 
-Denied requests return HTTP `403 FORBIDDEN` with:
+Cost-equivalent provider usage is the hard enforcement unit. It includes token
+charges and separately billed provider-hosted search/grounding tools. Raw token
+and message counts remain telemetry only.
+
+Subscription display prices remain Pro at `$14.99` and Max at `$19.99`;
+included AI cost is bounded independently by both daily and monthly windows.
+
+| Plan | Daily included | Monthly included | Automation ceiling |
+| --- | ---: | ---: | ---: |
+| Pro | $0.04 | $1.20 | $0.012/day and $0.36/month |
+| Max | $0.06 | $1.80 | $0.018/day and $0.54/month |
+| Founder | assigned Pro/Max limits | assigned Pro/Max limits | same 30% ceiling |
+| Free and beta/manual | $0 | $0 | disabled |
+| System jobs | $0.10 | $0.30 | no Nexus Points |
+| Owner | internal cap | internal monthly cap | disabled unless explicitly enabled |
+
+- Daily windows reset at 00:00 UTC.
+- Apple/Stripe monthly windows use the active subscription's
+  `current_period_start` and `current_period_end`.
+- Founder, owner, and system windows use UTC calendar months.
+- Unused automation allowance remains available for interactive usage.
+- Automation spend must stay within 30% of both the daily and monthly included
+  windows. Coach has first priority, then scheduled Content, then Channel
+  Learning. Lower-priority work preserves one expected Coach reservation.
+
+The canonical plan values live in `plan_configs.daily_cost_usd` and
+`plan_configs.monthly_cost_usd`. Active user overrides live in
+`user_ai_budget_overrides`; overrides can set daily and monthly caps but cannot
+make an ineligible entitlement eligible. Free and beta/manual effective caps
+are immutable zeroes: stale positive plan rows, runtime setters, and dormant
+per-user overrides are ignored until a canonical paid/founder entitlement is
+eligible.
+
+## Atomic provider-call guard
+
+Every provider call must execute through the SQLite-locked budget wrapper.
+Inside one user-scoped lock, it must:
+
+1. Resolve the canonical entitlement and window.
+2. Classify the request as `interactive`, `automation`, or `system`.
+3. Reserve 125% of the workload-wide (`request_source` + `base_category`)
+   rolling 30-day p95 cost, using centrally configured conservative defaults
+   when history is absent. The active partial run is not a history sample;
+   later stages reserve only the unspent remainder of the 125% whole-run
+   envelope, with a conservative unexpected-stage floor.
+4. Check daily, monthly, and (for background work) automation headroom before
+   every concrete provider attempt. Automation also supplies the full-quality
+   request's provider-enforced maximum cost as a floor, so a call defers rather
+   than crossing either 30% ceiling.
+5. Invoke the provider only when allowed. Opaque SDK retries are disabled where
+   the runtime has an explicit retry loop, so each retry repeats the check.
+6. Persist actual `api_usage` before releasing the lock and settle only an
+   eligible interactive Nexus Points overage.
+
+`api_usage` is quota truth. `usage_metering` is retained for analytics and must
+not block a request. Provider writes add:
+
+- `request_source`
+- `job_name`
+- `base_category`
+- `run_id`
+- `provider_tool_cost_usd`
+- `web_search_requests`
+- `grounded_search_prompts`
+
+Anthropic and OpenAI web search are metered at their per-call list prices;
+Gemini grounding is metered at its post-free-tier per-prompt list price. The
+Gemini free allowance is project-wide and may be consumed outside this runtime,
+so it is not allocated to individual user budgets by default. An operator may
+override the centralized fee only after independently guaranteeing project
+isolation and tracking the shared allowance. Unknown provider models fail
+preflight closed until a hard price is registered; the unresolved-model
+sentinel remains an analytics fallback, not a dispatch ceiling.
+Gemini token cost includes the SDK's separate tool-result input tokens and
+thinking output tokens; unexplained positive `totalTokenCount` remainder is
+conservatively booked as output rather than discarded.
+
+Provider fallback suffixes must not split the base workload category. Scheduled
+and system work never consumes Nexus Points.
+
+## Nexus Points
+
+Nexus Points extend interactive usage only for active paid/founder users. They
+do not unlock Free, beta/manual, trial, expired, or past-due access and they do
+not fund automations or system jobs.
+
+| Package | Product ID | Price | Points | AI allowance | Expiry |
+| --- | --- | ---: | ---: | ---: | --- |
+| Small | `me.nexushub.points.small` | $5 | 300 | $0.30 | 30 days |
+| Medium | `me.nexushub.points.medium` | $10 | 600 | $0.60 | 30 days |
+| Large | `me.nexushub.points.large` | $20 | 1200 | $1.20 | 30 days |
+
+`1 Nexus Point = $0.001` of internal provider-cost allowance. App copy uses
+Nexus Points rather than raw tokens or dollar values.
+
+## Public billing and status payload
+
+Billing/status responses preserve the legacy fields and add the following
+fields. Exact cost values are owner/admin-only.
 
 ```json
 {
-  "ok": false,
-  "error": {
-    "code": "TIER_REQUIRED",
-    "message": "This feature requires a Pro or Max plan.",
-    "details": {
-      "requiredPlan": "pro",
-      "currentPlan": "free",
-      "skill": "content",
-      "source": "free"
-    }
-  }
+  "enforcementEnabled": false,
+  "aiAccessAllowed": true,
+  "blockReason": null,
+  "dailyUsageFraction": 0.45,
+  "dailyUsagePercent": 45,
+  "dailyIsOverLimit": false,
+  "dailyResetsAt": "2026-07-10T00:00:00.000Z",
+  "monthlyUsageFraction": 0.31,
+  "monthlyUsagePercent": 31,
+  "monthlyIsOverLimit": false,
+  "monthlyResetsAt": "2026-08-01T00:00:00.000Z",
+  "unblocksAt": null,
+  "usageFraction": 0.45,
+  "usagePercent": 45,
+  "isOverLimit": false,
+  "resetAt": "2026-07-10T00:00:00.000Z",
+  "resetsAt": "2026-07-10T00:00:00.000Z"
 }
 ```
 
----
+Legacy `usageFraction` and `usagePercent` represent the maximum of the daily and
+monthly fractions. Legacy `isOverLimit` remains the effective blocking verdict,
+so it stays false while an eligible interactive user still has Nexus Points
+headroom even if an included-window flag is true. `unblocksAt` is the
+authoritative reset for a blocked request; plan blocks have no time-based
+unblock and therefore return it as `null`.
 
-## Dashboard contract
+iOS treats absent/false `enforcementEnabled` as observe-only during rollout;
+stable plan/quota errors from the server remain authoritative.
 
-`GET /api/v1/dashboard` includes:
+All timestamps are ISO-8601 UTC. Optional iOS decoding must retain conservative
+defaults when a cached or older server payload lacks the additive fields.
 
-```json
-{
-  "quota": {
-    "used_usd": 0.12,
-    "limit_usd": 0.04,
-    "remaining_usd": 0.02,
-    "plan": "pro",
-    "resetAt": "2026-05-21T00:00:00.000Z",
-    "includedRemainingUsd": 0.02,
-    "nexusPointsBalance": 300,
-    "nexusPointsRemainingUsd": 0.30,
-    "nexusPointsExpiringSoon": 0,
-    "totalRemainingUsd": 0.32,
-    "pointsPurchaseAvailable": true
-  }
-}
-```
+## Stable model-access errors
 
-For Free users, `limit_usd` is `0.005`. iOS must render the quota banner
-regardless of tier — the difference is only in the numeric cap and whether
-paid Nexus Point purchases are available.
+Cost-bearing routes use these stable codes:
 
-All timestamps are ISO-8601 UTC.
+| HTTP | Code | Meaning |
+| ---: | --- | --- |
+| 403 | `AI_PLAN_REQUIRED` | entitlement cannot use model-backed AI |
+| 429 | `AI_DAILY_LIMIT_REACHED` | daily included/eligible overage is exhausted |
+| 429 | `AI_MONTHLY_LIMIT_REACHED` | monthly included/eligible overage is exhausted |
+| 429 | `SERVICE_DEGRADED` | global cost breaker or budget-lock/metering/reservation-integrity protection is active |
 
----
+Every stable 429 includes `Retry-After`. Daily, monthly, and global-budget
+denials derive it from the known reset. Lock, usage-persistence, or outer
+reservation-marker failures use a bounded 60-second retry when no deterministic
+reset exists. Responses expose the relevant `window`, reset timestamp, and
+`unblocksAt` when known, and never expose dollar values. iOS maps the codes to
+upgrade, daily-reset, monthly-reset, or service-degradation messaging.
+WebSocket errors use the same codes and details.
 
-## Quota exceeded contract
+Content Engine calls preserve this contract across both service hops. Python
+forwards the original status, code, safe details, and `Retry-After`; the
+TypeScript client reconstructs the stable denial and never retries it. JSON and
+script repair calls reuse the original signed category, source, and run so they
+remain inside the same outer reservation instead of becoming system spend.
 
-Any AI-invoking iOS route must check quota before spending tokens. Chat
-acquires the per-user cost lock first, then runs the quota gate, then allows
-token-zero deterministic shortcut reads, and only then reaches any LLM-backed
-planner/reasoning/provider path. When the user is over cap, the route returns
-HTTP `429 Too Many Requests`:
+Token-zero routes are evaluated before the model gate where a mixed endpoint
+contains both deterministic and model-backed behavior.
 
-```json
-{
-  "ok": false,
-  "error": {
-    "code": "QUOTA_EXCEEDED",
-    "message": "Daily AI quota reached for the free plan. Resets at 2026-05-21T00:00:00.000Z.",
-    "details": {
-      "plan": "free",
-      "resetAt": "2026-05-21T00:00:00.000Z",
-      "includedRemainingUsd": 0,
-      "nexusPointsBalance": 0,
-      "nexusPointsRemainingUsd": 0,
-      "totalRemainingUsd": 0,
-      "pointsPurchaseAvailable": true
-    }
-  },
-  "timestamp": "2026-05-20T21:00:00.000Z"
-}
-```
+## Workload policy
 
-For Free users, the message can additionally surface "Upgrade to Pro or Max
-for higher limits." iOS renders the upsell.
+- Coach retains the last valid report when deferred and emits no more than one
+  notice per blocked window.
+- Scheduled Content requires eligible automation entitlement and Content access,
+  fills only missing seven-day pending inventory, and produces Friday's package
+  in one validated JSON call with strict within-batch deduplication. Grounded
+  interactive research starts with one provider-capped, low-context OpenAI
+  search while enforcement is active and can compare Gemini only after a
+  non-budget provider failure. Because provider-injected search context has no
+  contractual token ceiling, scheduled generation never uses hosted search
+  under enforcement: it reuses fresh signals or switches to an explicitly
+  evergreen prompt rather than claiming current grounding.
+- Channel Learning skips ineligible user scopes before YouTube/provider work,
+  runs shared platform scope only when an eligible Content user consumes that
+  knowledge, preserves fingerprint/backoff skips, and performs one validated
+  synthesis call per changed scope.
+- Production Autoresearch runs `evaluate_only`, only for changed prompt/eval
+  hashes, with local deterministic checks and batched semantic scoring. It never
+  writes prompts or runs Git operations.
 
----
+## Admin and portal surface
 
-## Product-truth guardrail
+- `GET /api/plans` returns daily and monthly plan caps plus telemetry limits.
+- `PUT /api/plans/:planId` updates daily/monthly caps and in-memory overrides;
+  the Free row is display-only for cost because both caps must remain zero.
+- `GET /api/users/:userId/ai-budget` returns exact effective caps, daily/monthly
+  progress, automation share, entitlement state, active override, and recent
+  skip reasons to an authorized portal admin.
+- `PUT /api/users/:userId/limits` accepts daily and monthly AI overrides.
+- Portal `users.tier` labels and token/message counters are legacy telemetry;
+  the adjacent effective-plan/entitlement panel is the access authority.
 
-Quota enforcement applies only to AI-backed routes. Deterministic token-zero
-routes must remain available even when quota is exhausted — the user can
-still see their tasks, calendar, and readiness even after the daily $0.005
-on Free has been spent.
+Plan and user mutations are audited. Portal exact-cost reads and writes require
+`PORTAL_ADMIN_TOKEN` (or an equivalent signed admin session). Public app routes
+must never reuse the admin budget shape.
 
-Provider usage rows are the accounting source of truth. Nexus Point settlement
-is awaited while the caller still holds the per-user cost lock, scoped to the
-specific `api_usage.id`, and idempotent via `nexus_point_debits.api_usage_id`.
-Rows with unresolved model pricing are charged at the unresolved sentinel
-ceiling and marked `pricing_status='unresolved'`; historical rows predating the
-pricing registry are `pricing_status='legacy'`.
+## Verification requirements
 
----
+Tests must cover Free and beta zero-provider behavior, trial interactive-only
+behavior, active/founder billing windows, invalid paid bounds, stale
+`users.tier`, dormant Points, daily/monthly rollover, concurrent reservations,
+automation ceilings, no background Points debit, token-zero availability, and
+the stable HTTP/WebSocket contracts.
 
-## Covered (AI-backed) routes
-
-- `POST /api/v1/chat/message`
-- `POST /api/v1/content/script`
-- `POST /api/v1/training/plan/generate`
-- `POST /api/v1/finance/parse-receipt`
-
-Structured token-zero endpoints (`GET /api/v1/tasks/*`, `GET /api/v1/dashboard`,
-`GET /api/v1/training/home`) remain available even when quota is exhausted.
-
----
-
-## Admin / portal surface
-
-The admin can manage plan caps and entitlement via:
-
-- `GET /api/plans` — list every plan_config row (plan_id, display_name,
-  daily_cost_usd, daily_token_limit, allowed_skills).
-- `PUT /api/plans/:planId` — update daily_cost_usd (non-negative), token/
-  message limits, allowed skills. Writes to `plan_configs` table, updates
-  in-memory override via `setPlanDailyCostCapOverride`, and emits an
-  `audit_trail` row with `action = 'admin_mutation'`,
-  `resource = 'plan_config.<planId>'`.
-- `POST /api/founders` / `DELETE /api/founders/:email` — add or remove
-  founder-tier entitlement by email. Validated, lowercased, audited.
-- `PUT /api/users/:userId/tier` — manual tier override, audited.
-- `PUT /api/users/:userId/limits` — per-user override on daily caps,
-  audited.
-
-Portal API routes use scoped bearer credentials:
-
-- read routes accept `PORTAL_READ_TOKEN`, `PORTAL_WRITE_TOKEN`, or
-  `PORTAL_ADMIN_TOKEN`.
-- ordinary write routes accept `PORTAL_WRITE_TOKEN` or `PORTAL_ADMIN_TOKEN`.
-- sensitive admin routes require `PORTAL_ADMIN_TOKEN` through
-  `requirePortalAdminToken`.
-
-Legacy `PORTAL_TOKEN` is accepted only when no scoped tokens are configured,
-or when `PORTAL_ALLOW_LEGACY_FALLBACK=true` is deliberately enabled during a
-migration. Remote admin mutations fail closed without a dedicated admin token
-unless explicit legacy fallback or loopback-only local bypass is active.
-
-Actor-aware admin hardening is available through:
-
-- `PORTAL_ADMIN_REQUIRE_ACTOR=true` — require a valid
-  `x-portal-actor`, `x-admin-actor`, or `x-operator-email` header.
-- `PORTAL_ADMIN_ACTORS=alice@example.com,bob@example.com` — require the
-  actor header to match the allowlist for sensitive admin mutations.
-- `PORTAL_ADMIN_ACTOR_SIGNATURE_SECRET=<random secret>` — require the actor
-  hint to be signed by a trusted gateway/session layer. Requests must include
-  `x-portal-actor`, `x-portal-actor-timestamp` (Unix milliseconds), and
-  `x-portal-actor-signature` as `sha256=<HMAC_SHA256(actor.timestamp)>`.
-- `PORTAL_ADMIN_ACTOR_SIGNATURE_TOLERANCE_MS=300000` — optional timestamp
-  skew tolerance for signed actor headers.
-
-Short-lived portal operator sessions are available through:
-
-- `PORTAL_SESSION_SECRET=<random secret>` — enables signed `ps_...` session
-  tokens generated by a trusted portal/gateway layer. The signed payload carries
-  actor, scope, issue time, expiry, and optional `jti`.
-- `PORTAL_SESSION_MAX_AGE_MS=28800000` — maximum accepted session lifetime.
-  Tokens with longer payload lifetimes are rejected even when the HMAC is valid.
-- `PORTAL_REQUIRE_SESSION_AUTH=true` — require signed portal sessions and reject
-  static portal bearer credentials. Leave this disabled until the portal/gateway
-  actually mints sessions.
-
-Signed sessions can be sent as `x-portal-session`, `x-admin-session`,
-`Authorization: Bearer ps_...`, or a `portal_session` cookie. The backend
-validates the signature, actor shape, scope hierarchy (`admin > write > read`),
-expiry, and admin actor allowlist where configured. This is an acceptance seam,
-not a full operator-session/RBAC product by itself.
-
-Operators or a trusted gateway can mint a compatible short-lived session with:
-
-```bash
-npm run build
-PORTAL_SESSION_SECRET=<random secret> npm run portal:session:mint -- \
-  --actor operator@nexushub.me \
-  --scope admin \
-  --ttl-ms 900000
-```
-
-The mint tool refuses invalid actors/scopes, refuses TTLs longer than
-`PORTAL_SESSION_MAX_AGE_MS`, and only prints the signed `ps_...` token. It does
-not create a server-side session record, so real portal login/lifecycle/RBAC is
-still owned by the portal/gateway layer.
-
-All audited admin mutations write to `audit_trail` with portal credential
-metadata and the sanitized actor hint when present, so a security review can
-reconstruct "who changed what, when" more reliably than with anonymous shared
-tokens alone.
+Release promotion additionally requires migration rehearsal, classifier-selected
+backend verification, iOS focused tests/build, staging matrix smoke, docs audit,
+and the Verifiable Reward Loop. Production promotion requires separate owner
+authorization and live tunnel/PM2/runtime/aggregate proof.

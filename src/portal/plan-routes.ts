@@ -7,6 +7,7 @@ import type { BillingPlan } from '../services/plan-quotas';
 import {
   setPlanAllowedSkillsOverride,
   setPlanDailyCostCapOverride,
+  setPlanMonthlyCostCapOverride,
 } from '../services/plan-quotas';
 import { logger } from '../utils/logger';
 import { logPortalAdminMutation } from './admin-audit';
@@ -32,11 +33,12 @@ export function registerPortalPlanRoutes(app: express.Express): void {
     try {
       const db = getDb();
       const rows = db.prepare(
-        'SELECT plan_id, display_name, daily_cost_usd, daily_token_limit, daily_message_limit, allowed_skills_json, per_skill_caps_json, metadata_json, active, updated_at FROM plan_configs ORDER BY plan_id',
+        'SELECT plan_id, display_name, daily_cost_usd, monthly_cost_usd, daily_token_limit, daily_message_limit, allowed_skills_json, per_skill_caps_json, metadata_json, active, updated_at FROM plan_configs ORDER BY plan_id',
       ).all() as Array<{
         plan_id: string;
         display_name: string;
         daily_cost_usd: number;
+        monthly_cost_usd: number;
         daily_token_limit: number | null;
         daily_message_limit: number | null;
         allowed_skills_json: string;
@@ -50,7 +52,12 @@ export function registerPortalPlanRoutes(app: express.Express): void {
         plans: rows.map((row) => ({
           planId: row.plan_id,
           displayName: row.display_name,
-          dailyCostUsd: row.daily_cost_usd,
+          dailyCostUsd: row.plan_id === 'free' || row.plan_id === 'beta'
+            ? 0
+            : row.daily_cost_usd,
+          monthlyCostUsd: row.plan_id === 'free' || row.plan_id === 'beta'
+            ? 0
+            : row.monthly_cost_usd,
           dailyTokenLimit: row.daily_token_limit,
           dailyMessageLimit: row.daily_message_limit,
           allowedSkills: safeJsonArray(row.allowed_skills_json),
@@ -80,6 +87,16 @@ export function registerPortalPlanRoutes(app: express.Express): void {
         return;
       }
 
+      const monthlyCostUsd = body.monthlyCostUsd == null ? undefined : Number(body.monthlyCostUsd);
+      if (monthlyCostUsd !== undefined && (!Number.isFinite(monthlyCostUsd) || monthlyCostUsd < 0)) {
+        res.status(400).json({ ok: false, message: 'monthlyCostUsd must be a non-negative number' });
+        return;
+      }
+      if (planId === 'free' && (dailyCostUsd !== 0 || (monthlyCostUsd !== undefined && monthlyCostUsd !== 0))) {
+        res.status(400).json({ ok: false, message: 'Free model-backed daily and monthly limits must remain zero' });
+        return;
+      }
+
       const dailyTokenLimit = parseNullableNonNegativeNumber(body.dailyTokenLimit);
       if (dailyTokenLimit !== null && (!Number.isFinite(dailyTokenLimit) || dailyTokenLimit < 0)) {
         res.status(400).json({ ok: false, message: 'dailyTokenLimit must be null or a non-negative number' });
@@ -99,6 +116,10 @@ export function registerPortalPlanRoutes(app: express.Express): void {
       const db = getDb();
       const sets: string[] = ['daily_cost_usd = ?'];
       const values: unknown[] = [dailyCostUsd];
+      if (monthlyCostUsd !== undefined) {
+        sets.push('monthly_cost_usd = ?');
+        values.push(monthlyCostUsd);
+      }
       if (dailyTokenLimit !== undefined) {
         sets.push('daily_token_limit = ?');
         values.push(dailyTokenLimit);
@@ -117,6 +138,7 @@ export function registerPortalPlanRoutes(app: express.Express): void {
 
       try {
         setPlanDailyCostCapOverride(planId, dailyCostUsd);
+        if (monthlyCostUsd !== undefined) setPlanMonthlyCostCapOverride(planId, monthlyCostUsd);
         if (allowedSkills) {
           setPlanAllowedSkillsOverride(planId, allowedSkills);
         }
@@ -127,6 +149,7 @@ export function registerPortalPlanRoutes(app: express.Express): void {
       logPortalAdminMutation(req, 0, 'plan_config.update', {
         planId,
         dailyCostUsd,
+        monthlyCostUsd,
         dailyTokenLimit,
         dailyMessageLimit,
         allowedSkills: allowedSkills ?? undefined,

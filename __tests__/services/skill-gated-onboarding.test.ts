@@ -89,6 +89,19 @@ function createUser(db: Database.Database, telegramId: number, tier: string = 'p
     INSERT OR IGNORE INTO users (telegram_id, first_name, tier, status, daily_message_limit, daily_token_limit, daily_cost_limit_usd)
     VALUES (?, 'Test', ?, 'active', 40, 100000, 0)
   `).run(telegramId, tier);
+  const user = db.prepare('SELECT id FROM users WHERE telegram_id = ?').get(telegramId) as { id: number };
+  if (tier === 'pro' || tier === 'max') {
+    db.prepare(`
+      INSERT INTO subscriptions (user_id, plan, status, provider, current_period_end)
+      VALUES (?, ?, 'active', 'founder', '2099-12-31T23:59:59.000Z')
+      ON CONFLICT(user_id) DO UPDATE SET
+        plan = excluded.plan,
+        status = excluded.status,
+        provider = excluded.provider,
+        current_period_end = excluded.current_period_end
+    `).run(user.id, tier);
+  }
+  if (tier === 'owner') process.env.OWNER_TELEGRAM_ID = String(telegramId);
 }
 
 // Helper: complete a questionnaire fully. Phase 2 Slice B: some text
@@ -124,11 +137,13 @@ function completeQuestionnaire(userId: number, qId: string): void {
 
 describe('skill-gated onboarding', () => {
   beforeEach(() => {
+    delete process.env.OWNER_TELEGRAM_ID;
     testDb = createTestDb();
     applyMigrations(testDb);
   });
 
   afterEach(() => {
+    delete process.env.OWNER_TELEGRAM_ID;
     testDb.close();
   });
 

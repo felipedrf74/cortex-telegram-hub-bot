@@ -254,7 +254,25 @@ vi.mock('../../src/services/skill-tiers', () => ({
   checkTierAccess: (...args: unknown[]) => mockCheckSkillAccess(...args),
 }));
 
-vi.mock('../../src/services/cost-guardrail', () => ({
+vi.mock('../../src/services/cost-guardrail', () => {
+  class AiBudgetError extends Error {
+    decision: any;
+    constructor(decision: any) { super(decision.code); this.name = 'AiBudgetError'; this.decision = decision; }
+  }
+  const stableQuotaPayload = (quota: any) => ({
+    plan: quota.plan,
+    resetAt: quota.resetAt,
+    usageLevel: quota.usageLevel,
+    usageFraction: quota.usageFraction,
+    usagePercent: Math.round((quota.usageFraction || 0) * 100),
+    isOverLimit: quota.over,
+    boostAvailable: quota.boostAvailable,
+    nexusPointsBalance: quota.nexusPointsBalance,
+    pointsPurchaseAvailable: quota.pointsPurchaseAvailable,
+  });
+  return {
+  AiBudgetError,
+  buildQuotaExceededPayload: vi.fn(stableQuotaPayload),
   isUserOverDailyCap: (...args: unknown[]) => mockIsUserOverDailyCap(...args),
   buildQuotaExceededMessage: vi.fn((quota: { plan: string; resetAt: string }) => `Daily AI quota reached for the ${quota.plan} plan. Resets at ${quota.resetAt}.`),
   enforceCostGuardrails: (userId: number) => {
@@ -281,11 +299,31 @@ vi.mock('../../src/services/cost-guardrail', () => ({
       },
     };
   },
-  // M-2 (2026-04-21 pass 2): route handlers wrap their check+AI+spend
-  // in acquireCostLock to serialize concurrent same-user requests.
-  // Tests don't exercise concurrency, so stub with a no-op release.
+  // Legacy compatibility export; runtime chat uses the classified reservation
+  // below. These tests do not exercise cross-process lock timing.
   acquireCostLock: vi.fn(async () => () => { /* no-op */ }),
-}));
+  acquireAiBudgetReservation: vi.fn(async (request: any) => {
+    const quota = mockIsUserOverDailyCap(request.userId);
+    if (quota.over) {
+      const planRequired = quota.plan === 'free';
+      throw new AiBudgetError({
+        allowed: false,
+        code: planRequired ? 'AI_PLAN_REQUIRED' : 'AI_DAILY_LIMIT_REACHED',
+        message: planRequired
+          ? 'Model-backed AI requires an active paid plan. Token-zero reads and actions remain available.'
+          : `Daily AI quota reached for the ${quota.plan} plan.`,
+        status: planRequired ? 403 : 429,
+        window: planRequired ? 'plan' : 'daily',
+        unblocksAt: planRequired ? null : quota.resetAt,
+        retryAfterSeconds: planRequired ? null : 60,
+        reservedCostUsd: 0.01,
+        quota,
+      });
+    }
+    return () => { /* no-op */ };
+  }),
+  };
+});
 
 vi.mock('../../src/state/conversation', () => ({
   getLastAssistantMessage: (...args: unknown[]) => mockGetLastAssistantMessage(...args),
@@ -6519,7 +6557,7 @@ describe('Chat API routes', () => {
     });
   });
 
-  it('returns 429 with quota details when a free user tries an AI chat request', async () => {
+  it('returns 403 AI_PLAN_REQUIRED when a free user tries an AI chat request', async () => {
     mockIsUserOverDailyCap.mockReturnValue({
       over: true,
       spentUsd: 0,
@@ -6543,10 +6581,10 @@ describe('Chat API routes', () => {
       text: 'Help me plan my week',
     });
 
-    expect(messageRes.statusCode, JSON.stringify(messageRes.body)).toBe(429);
+    expect(messageRes.statusCode, JSON.stringify(messageRes.body)).toBe(403);
     expect(messageRes.body.ok).toBe(false);
-    expect(messageRes.body.error.code).toBe('daily_limit_exceeded');
-    expect(messageRes.body.error.details).toEqual({
+    expect(messageRes.body.error.code).toBe('AI_PLAN_REQUIRED');
+    expect(messageRes.body.error.details).toMatchObject({
       plan: 'free',
       resetAt: '2026-04-15T00:00:00.000Z',
       usageLevel: 'exhausted',
@@ -6556,8 +6594,10 @@ describe('Chat API routes', () => {
           boostAvailable: false,
           nexusPointsBalance: 0,
           pointsPurchaseAvailable: false,
-      error: 'rate_limited',
-      retryable: true,
+      window: 'plan',
+      unblocksAt: null,
+      error: 'plan_required',
+      retryable: false,
     });
     expect(JSON.stringify(messageRes.body.error.details)).not.toMatch(/usd|allowance/i);
   });

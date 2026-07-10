@@ -1,15 +1,6 @@
-// Local-LLM pilot (2026-07-04): LOCAL_LLM_CHANNEL_SYNTHESIS env gate for
-// channel-learner knowledge synthesis.
-//
-// Covers:
-//  (a) env on + local success → cloud synthesis provider NOT called for
-//      knowledge_synthesis; local one-shot called with category
-//      'knowledge_synthesis_local' and the IDENTICAL prompts; result shape
-//      identical (knowledge upserted, run result synthesized:true)
-//  (b) env on + local throws (capacity) → cloud path runs (fallback proven)
-//  (b2) env on + local returns empty output → cloud path runs
-//  (c) env off (default) → local one-shot never called, cloud path only
-//  (d) env on but Ollama not configured → local one-shot never called
+// Channel synthesis cost control: one cloud request per changed scope. The
+// former LOCAL_LLM_CHANNEL_SYNTHESIS experiment stays disabled until a local
+// model demonstrates category coverage and actionable-pattern quality parity.
 //
 // Harness mirrors channel-learner-relearn-gate.test.ts (in-memory SQLite +
 // migrations, stubbed YouTube fetch, hoisted provider mocks).
@@ -26,11 +17,13 @@ const {
   writeSignal,
   completeLocalReasoningOneShot,
   isOllamaConfigured,
+  withAiBudgetReservation,
 } = vi.hoisted(() => ({
   completeOneShotWithFallback: vi.fn(),
   writeSignal: vi.fn(),
   completeLocalReasoningOneShot: vi.fn(),
   isOllamaConfigured: vi.fn(),
+  withAiBudgetReservation: vi.fn(async (_request: unknown, fn: () => Promise<unknown>) => fn()),
 }));
 vi.hoisted(() => {
   process.env.YOUTUBE_API_KEY = 'test-youtube-key';
@@ -56,6 +49,11 @@ vi.mock('../../src/config', () => ({
 
 vi.mock('../../src/services/gemini-provider', () => ({
   completeOneShotWithFallback,
+}));
+
+vi.mock('../../src/services/cost-guardrail', () => ({
+  AiBudgetError: class AiBudgetError extends Error {},
+  withAiBudgetReservation,
 }));
 
 // channel-learner loads ollama-provider lazily (dynamic import) only when
@@ -104,6 +102,8 @@ import {
   addSystemChannel,
   createContentReferencesAdminContext,
   getSystemKnowledgeByCategory,
+  PATTERN_CATEGORIES,
+  upsertSystemKnowledge,
 } from '../../src/state/content-references';
 import { processAllChannels } from '../../src/services/channel-learner';
 import { logger } from '../../src/utils/logger';
@@ -161,23 +161,19 @@ function seedTwoChannels(): void {
   videosByChannel.UCloc2 = [video('vid-l21')];
 }
 
-const LOCAL_SYNTH_JSON = JSON.stringify({
-  categories: [{
-    category: 'hook_style',
-    synthesized_text: 'Merged hook guidance (LOCAL)',
-    source_channels: ['Channel UCloc1', 'Channel UCloc2'],
-  }],
-});
-
 const CLOUD_SYNTH_JSON = JSON.stringify({
-  categories: [{
-    category: 'hook_style',
-    synthesized_text: 'Merged hook guidance (CLOUD)',
+  categories: PATTERN_CATEGORIES.map((category) => ({
+    category,
+    synthesized_text: category === 'hook_style'
+      ? 'Merged hook guidance (CLOUD)'
+      : category === 'title_pattern'
+        ? 'Merged title guidance (CLOUD)'
+        : `Merged ${category} guidance (CLOUD)`,
     source_channels: ['Channel UCloc1', 'Channel UCloc2'],
-  }],
+  })),
 });
 
-describe('channel-learner: LOCAL_LLM_CHANNEL_SYNTHESIS local-first synthesis pilot', () => {
+describe('channel-learner: batched cloud synthesis', () => {
   beforeEach(() => {
     testDb = new Database(':memory:');
     testDb.pragma('journal_mode = WAL');
@@ -187,6 +183,7 @@ describe('channel-learner: LOCAL_LLM_CHANNEL_SYNTHESIS local-first synthesis pil
     isOllamaConfigured.mockReset();
     isOllamaConfigured.mockReturnValue(true);
     writeSignal.mockReset();
+    withAiBudgetReservation.mockClear();
     vi.mocked(logger.warn).mockClear();
     videosByChannel = {};
     resolvableChannels = new Set();
@@ -196,13 +193,13 @@ describe('channel-learner: LOCAL_LLM_CHANNEL_SYNTHESIS local-first synthesis pil
         return {
           text: JSON.stringify({
             channel_summary: 'Summary',
-            patterns: [{
-              category: 'hook_style',
-              pattern_text: 'Hook pattern',
-              examples: ['Example'],
+            patterns: PATTERN_CATEGORIES.map((category) => ({
+              category,
+              pattern_text: `${category} pattern`,
+              examples: [`${category} example`],
               confidence: 0.9,
               source_videos: ['vid'],
-            }],
+            })),
           }),
           provider: 'gemini',
         };
@@ -211,12 +208,6 @@ describe('channel-learner: LOCAL_LLM_CHANNEL_SYNTHESIS local-first synthesis pil
         return { text: CLOUD_SYNTH_JSON, provider: 'gemini' };
       }
       throw new Error(`Unexpected job ${jobName}`);
-    });
-
-    completeLocalReasoningOneShot.mockResolvedValue({
-      text: LOCAL_SYNTH_JSON,
-      stopReason: 'stop',
-      providerMetadata: { providerUsed: 'ollama', modelUsed: 'qwen3.6:35b-a3b-q4_K_M', fallbackUsed: false },
     });
 
     vi.stubGlobal('fetch', vi.fn(async (url: string | URL) => {
@@ -261,13 +252,11 @@ describe('channel-learner: LOCAL_LLM_CHANNEL_SYNTHESIS local-first synthesis pil
     testDb?.close();
   });
 
-  it('(a) env on + local success: cloud synthesis NOT called, prompts identical to the cloud contract, result shape identical', async () => {
+  it('uses one cloud synthesis call for every multi-channel category and ignores the retired local flag', async () => {
     vi.stubEnv('LOCAL_LLM_CHANNEL_SYNTHESIS', 'true');
     seedTwoChannels();
 
     const run = await runProcessAllChannels();
-    // Result shape identical to the cloud path: both channels analyzed and
-    // the scope synthesized.
     expect(run).toMatchObject({
       analyzed: 2,
       failed: 0,
@@ -276,87 +265,81 @@ describe('channel-learner: LOCAL_LLM_CHANNEL_SYNTHESIS local-first synthesis pil
       synthesis_skipped_all_unchanged: false,
     });
 
-    // Local one-shot used for synthesis; cloud synthesis never called.
-    // (Extraction still flows through the cloud — the pilot covers ONLY
-    // knowledge synthesis.)
-    expect(completeLocalReasoningOneShot).toHaveBeenCalledTimes(1);
-    expect(cloudCalls('knowledge_synthesis')).toBe(0);
-    expect(cloudCalls('channel_analysis')).toBe(2);
-
-    // Category + metering scope + caps flow through.
-    const [localSystem, localUser, localCategory, localOpts] = completeLocalReasoningOneShot.mock.calls[0];
-    expect(localCategory).toBe('knowledge_synthesis_local');
-    expect(localOpts).toMatchObject({ maxTokens: 2048, temperature: 0.3, userId: 0, tenantId: 0 });
-    // Prompt content identical to the cloud contract: the synthesis system
-    // prompt and per-category user prompt are the same strings the cloud
-    // call sites use.
-    expect(localSystem).toContain('content strategy synthesizer');
-    expect(localUser).toContain('Synthesize the "hook_style" patterns from 2 creators:');
-
-    // The LOCAL synthesis text is what lands in the knowledge base.
-    expect(getSystemKnowledgeByCategory('hook_style', adminContext)?.synthesized_text).toBe('Merged hook guidance (LOCAL)');
-  });
-
-  it('(b) env on + local throws (capacity): cloud path runs unchanged with identical prompts', async () => {
-    vi.stubEnv('LOCAL_LLM_CHANNEL_SYNTHESIS', 'true');
-    completeLocalReasoningOneShot.mockRejectedValue(
-      Object.assign(new Error('capacity_exceeded'), { kind: 'capacity_exceeded' }),
-    );
-    seedTwoChannels();
-
-    const run = await runProcessAllChannels();
-    expect(run).toMatchObject({ analyzed: 2, failed: 0, synthesized: true });
-
-    expect(completeLocalReasoningOneShot).toHaveBeenCalledTimes(1);
-    expect(cloudCalls('knowledge_synthesis')).toBe(1);
-    expect(getSystemKnowledgeByCategory('hook_style', adminContext)?.synthesized_text).toBe('Merged hook guidance (CLOUD)');
-
-    // Fallback is observable and prompts are byte-identical across paths.
-    expect(vi.mocked(logger.warn).mock.calls.some(
-      ([, msg]) => typeof msg === 'string' && msg.includes('Local channel synthesis failed'),
-    )).toBe(true);
-    const [localSystem, localUser] = completeLocalReasoningOneShot.mock.calls[0];
-    const cloudSynthCall = completeOneShotWithFallback.mock.calls.find((call) => call[2] === 'knowledge_synthesis')!;
-    expect(cloudSynthCall[0]).toBe(localSystem);
-    expect(cloudSynthCall[1]).toBe(localUser);
-  });
-
-  it('(b2) env on + local returns empty output: cloud path runs', async () => {
-    vi.stubEnv('LOCAL_LLM_CHANNEL_SYNTHESIS', 'true');
-    completeLocalReasoningOneShot.mockResolvedValue({ text: '   \n', stopReason: 'stop' });
-    seedTwoChannels();
-
-    const run = await runProcessAllChannels();
-    expect(run).toMatchObject({ analyzed: 2, failed: 0, synthesized: true });
-    expect(completeLocalReasoningOneShot).toHaveBeenCalledTimes(1);
-    expect(cloudCalls('knowledge_synthesis')).toBe(1);
-    expect(getSystemKnowledgeByCategory('hook_style', adminContext)?.synthesized_text).toBe('Merged hook guidance (CLOUD)');
-    expect(vi.mocked(logger.warn).mock.calls.some(
-      ([, msg]) => typeof msg === 'string' && msg.includes('empty output'),
-    )).toBe(true);
-  });
-
-  it('(c) env off (default): local one-shot is never called and the cloud path is untouched', async () => {
-    // LOCAL_LLM_CHANNEL_SYNTHESIS deliberately unset.
-    seedTwoChannels();
-
-    const run = await runProcessAllChannels();
-    expect(run).toMatchObject({ analyzed: 2, failed: 0, synthesized: true });
     expect(completeLocalReasoningOneShot).not.toHaveBeenCalled();
     expect(isOllamaConfigured).not.toHaveBeenCalled();
     expect(cloudCalls('knowledge_synthesis')).toBe(1);
+    expect(cloudCalls('channel_analysis')).toBe(2);
+    for (const extractionCall of completeOneShotWithFallback.mock.calls.filter((call) => call[2] === 'channel_analysis')) {
+      expect(extractionCall[4]).toMatchObject({
+        model: 'gemini-2.5-flash',
+        maxTokens: 2304,
+      });
+      expect(String(extractionCall[1]).length).toBeLessThanOrEqual(7000);
+    }
+
+    const synthCall = completeOneShotWithFallback.mock.calls.find((call) => call[2] === 'knowledge_synthesis')!;
+    expect(synthCall[0]).toContain('content strategy synthesizer');
+    expect(synthCall[1]).toContain('CATEGORY hook_style (2 creators)');
+    expect(synthCall[1]).toContain('CATEGORY title_pattern (2 creators)');
+    expect(String(synthCall[1]).length).toBeLessThanOrEqual(6000);
+    expect(synthCall[4]).toMatchObject({
+      model: 'gemini-2.5-flash',
+      maxTokens: 2304,
+      userId: 0,
+      tenantId: 0,
+    });
+    const reservations = withAiBudgetReservation.mock.calls.map(([request]) => request as {
+      baseCategory?: string;
+      jobName?: string;
+      runId?: string | null;
+    });
+    expect(reservations.length).toBeGreaterThan(0);
+    expect(new Set(reservations.map((request) => request.baseCategory))).toEqual(new Set(['channel_learning']));
+    expect(new Set(reservations.map((request) => request.runId)).size).toBe(1);
+    expect(reservations.some((request) => request.jobName?.endsWith(':extract'))).toBe(true);
+    expect(reservations.some((request) => request.jobName?.endsWith(':synthesize'))).toBe(true);
     expect(getSystemKnowledgeByCategory('hook_style', adminContext)?.synthesized_text).toBe('Merged hook guidance (CLOUD)');
+    expect(getSystemKnowledgeByCategory('title_pattern', adminContext)?.synthesized_text).toBe('Merged title guidance (CLOUD)');
   });
 
-  it('(d) env on but Ollama not configured: local one-shot never called, cloud path runs', async () => {
-    vi.stubEnv('LOCAL_LLM_CHANNEL_SYNTHESIS', 'true');
-    isOllamaConfigured.mockReturnValue(false);
+  it('retains the entire latest valid knowledge set when a batch omits a category', async () => {
+    upsertSystemKnowledge('hook_style', 'Previous hook guidance', ['Old A', 'Old B'], adminContext);
+    upsertSystemKnowledge('title_pattern', 'Previous title guidance', ['Old A', 'Old B'], adminContext);
+    completeOneShotWithFallback.mockImplementation(async (_system, _prompt, jobName) => {
+      if (jobName === 'channel_analysis') {
+        return {
+          text: JSON.stringify({
+            channel_summary: 'Summary',
+            patterns: PATTERN_CATEGORIES.map((category) => ({
+              category,
+              pattern_text: `New ${category}`,
+              examples: ['Example'],
+              confidence: 0.9,
+              source_videos: ['vid'],
+            })),
+          }),
+          provider: 'gemini',
+        };
+      }
+      if (jobName === 'knowledge_synthesis') {
+        return {
+          text: JSON.stringify({ categories: [{
+            category: 'hook_style',
+            synthesized_text: 'Partial replacement',
+            source_channels: ['Channel UCloc1', 'Channel UCloc2'],
+          }] }),
+          provider: 'gemini',
+        };
+      }
+      throw new Error(`Unexpected job ${jobName}`);
+    });
     seedTwoChannels();
 
     const run = await runProcessAllChannels();
-    expect(run).toMatchObject({ analyzed: 2, failed: 0, synthesized: true });
-    expect(completeLocalReasoningOneShot).not.toHaveBeenCalled();
+
+    expect(run).toMatchObject({ synthesized: false, synthesis_deferred: true });
     expect(cloudCalls('knowledge_synthesis')).toBe(1);
-    expect(getSystemKnowledgeByCategory('hook_style', adminContext)?.synthesized_text).toBe('Merged hook guidance (CLOUD)');
+    expect(getSystemKnowledgeByCategory('hook_style', adminContext)?.synthesized_text).toBe('Previous hook guidance');
+    expect(getSystemKnowledgeByCategory('title_pattern', adminContext)?.synthesized_text).toBe('Previous title guidance');
   });
 });

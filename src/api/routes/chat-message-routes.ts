@@ -11,7 +11,7 @@ import {
   listChatMessages,
 } from '../../services/chat-history-store';
 import { getUserLanguageById, getUserTimezoneById } from '../../services/user-service';
-import { acquireCostLock, enforceCostGuardrails } from '../../services/cost-guardrail';
+import { acquireAiBudgetReservation } from '../../services/cost-guardrail';
 import { getCurrentRequestId } from '../../utils/request-context';
 import {
   buildDefaultButtonsForChatDomain,
@@ -47,7 +47,7 @@ import {
   validateChatConfirmationToken,
 } from '../../services/chat-confirmation-token';
 import { buildChatResponseSufficiencyMetadata } from '../../services/chat-response-sufficiency';
-import { asyncHandler, sendInternalError } from '../response-helpers';
+import { asyncHandler, sendAiBudgetError, sendInternalError } from '../response-helpers';
 import {
   persistExchange,
   syncConversationStateForShortcut,
@@ -65,7 +65,6 @@ import { parseContentScriptShortcut } from './chat-shortcut-parsers';
 import {
   normalizeChatMessageRequest,
   persistChatLanguagePreference,
-  sendChatQuotaExceededIfNeeded,
 } from './chat-message-request';
 import { sendChatTierRequiredIfNeeded } from './chat-message-tier-gate';
 import { sendRetryableChatFailureResponseIfNeeded } from './chat-message-degraded-response';
@@ -1633,14 +1632,16 @@ export function registerChatMessageRoutes(
 
     persistChatLanguagePreference(req, userId);
 
-    // ── TOCTOU-safe cost window ─────────────────────────────────
-    // Acquire the per-user cost lock BEFORE the quota check so that
-    // concurrent iOS requests from the same user serialize through
-    // the check → AI → api_usage INSERT boundary. Without this,
-    // two parallel calls could both pass the cap check, both spend,
-    // and together exceed the daily budget. See
-    // `acquireCostLock` docs in services/cost-guardrail.ts.
-    const releaseCostLock = await acquireCostLock(userId);
+    // Token-zero reads/actions must never queue behind a long model call.
+    // Acquire the per-user lock lazily only when this turn is definitely
+    // entering a model-backed planner/provider path.
+    // Keep the release callback in a mutable holder. TypeScript cannot track
+    // assignments to a local variable made inside `ensureModelBudget`, and
+    // otherwise narrows the finally-path optional call to `never`.
+    const aiBudgetReservation = {
+      release: null as (() => void) | null,
+    };
+    let modelBudgetAllowed = false;
     // Codex QA round 5: hoist idempotency ids OUT of the try block so
     // the catch can pass them to the degraded-response path. Without
     // this hoist the previous round-4 fix did not compile.
@@ -1650,6 +1651,20 @@ export function registerChatMessageRoutes(
     );
     const userMessageId = buildUserMessageId(scopedClientMessageId, requestStartedAt);
     try {
+      const ensureModelBudget = async (_logMessage: string): Promise<boolean> => {
+        if (modelBudgetAllowed) return true;
+        if (!aiBudgetReservation.release) {
+          aiBudgetReservation.release = await acquireAiBudgetReservation({
+            userId,
+            requestSource: 'interactive',
+            baseCategory: 'ios_chat_message',
+            jobName: 'ios_chat_message',
+            runId: getCurrentRequestId() || (req as any).requestId || `chat-${requestStartedAt}`,
+          });
+        }
+        modelBudgetAllowed = true;
+        return true;
+      };
       const latency = createChatLatencyTracker(requestStartedAt);
       const chatRequestId = getCurrentRequestId() || (req as any).requestId || `chat-${Date.now()}`;
 
@@ -1763,7 +1778,6 @@ export function registerChatMessageRoutes(
       );
       latency.mark('request_validated');
 
-      const quotaDecision = enforceCostGuardrails(userId);
       const recordDeterministicReadEvidence = (
         response: Parameters<typeof safeRecordChatV2DeterministicReadEvidence>[0]['response'],
         tokenZeroSurface?: Parameters<typeof safeRecordChatV2DeterministicReadEvidence>[0]['tokenZeroSurface'],
@@ -2063,12 +2077,6 @@ export function registerChatMessageRoutes(
         return;
       }
 
-      // ── Cost cap enforcement ─────────────────────────────────────
-      // Run before any model-backed planner/reasoning path. Token-zero
-      // deterministic reads and pending-work cancellation above remain
-      // available after quota exhaustion.
-      if (quotaDecision.block && sendChatQuotaExceededIfNeeded(res, userId, 'iOS chat: user over daily cost cap')) return;
-
       // ── ChatCoreV2 Action Gateway ───────────────────────────────
       // Natural-language write intents are now a firewall, not a legacy
       // best-effort model/tool path: resolve to a command preview, ask for
@@ -2355,12 +2363,44 @@ export function registerChatMessageRoutes(
         }
       }
 
+      // Cache is deterministic and must remain available before entitlement
+      // or budget enforcement.
+      if (normalizedText && normalizedAttachments.length === 0) {
+        const cached = getCachedChatCommandResponse(userId, normalizedTextLower, tenantId);
+        if (cached) {
+          logger.debug({ cmdLength: normalizedText.length, platform: 'ios', tenantId, userId }, 'Returning cached chat command');
+          const cachedResponse = enrichChatResponseForContract(cached, {
+            normalizedText,
+            userId,
+            tenantId,
+            chatRequestId,
+            tracker: latency,
+            latencyTier: 'tier0_local',
+            actionability: 'answer_only',
+            verificationStatus: 'not_required',
+            compositionMode: 'templated',
+            groundingFacts: [deterministicReadGroundingFact('chat.fast_path_cache')],
+          });
+          persistExchange(userId, userMessageId, normalizedText, cachedResponse.id, cachedResponse, tenantId, {
+            clientMessageId: scopedClientMessageId,
+            requestId: chatRequestId,
+          });
+          syncConversationStateForShortcut(userId, cachedResponse.domain, normalizedText, cachedResponse.text, tenantId);
+          recordDeterministicReadEvidence(
+            cachedResponse,
+            normalizedText.trim().startsWith('/') ? 'slash' : undefined,
+          );
+          res.json(cachedResponse);
+          return;
+        }
+      }
+
       // ── General Action Planner ─────────────────────────────────
       // Natural-language write intents must be routed before read-only
       // fast paths. Example: "agenda do Gmail" with event semantics means
       // Google Calendar, not Gmail unread count.
       if (normalizedText && normalizedAttachments.length === 0 && !parseContentScriptShortcut(normalizedText)) {
-        const actionResult = await tryHandleChatActionPlan({
+        const plannerInput = {
           text: normalizedText,
           userId,
           tenantId,
@@ -2370,6 +2410,13 @@ export function registerChatMessageRoutes(
           locale: chatCoreV2RouteLocale,
           timezone: getUserTimezoneById(userId),
           requireSafeWriteConfirmation: true,
+        } as const;
+        // First pass is strictly token-zero. Only if deterministic planning
+        // cannot own the turn do we acquire/check the AI budget and permit
+        // model-assisted planner tiers.
+        const actionResult = await tryHandleChatActionPlan({
+          ...plannerInput,
+          allowModelPlanner: false,
         });
         if (actionResult) {
           latency.mark('action_planner_completed');
@@ -2458,39 +2505,8 @@ export function registerChatMessageRoutes(
         }
       }
 
-      // Check cache for known deterministic commands (saves $0.02-0.05 per hit)
-      if (normalizedText && normalizedAttachments.length === 0) {
-        const cached = getCachedChatCommandResponse(userId, normalizedTextLower, tenantId);
-        if (cached) {
-          logger.debug({ cmdLength: normalizedText.length, platform: 'ios', tenantId, userId }, 'Returning cached chat command');
-          const cachedResponse = enrichChatResponseForContract(cached, {
-            normalizedText,
-            userId,
-            tenantId,
-            chatRequestId,
-            tracker: latency,
-            latencyTier: 'tier0_local',
-            actionability: 'answer_only',
-            verificationStatus: 'not_required',
-            compositionMode: 'templated',
-            groundingFacts: [deterministicReadGroundingFact('chat.fast_path_cache')],
-          });
-          persistExchange(userId, userMessageId, normalizedText, cachedResponse.id, cachedResponse, tenantId, {
-            clientMessageId: scopedClientMessageId,
-            requestId: chatRequestId,
-          });
-          syncConversationStateForShortcut(userId, cachedResponse.domain, normalizedText, cachedResponse.text, tenantId);
-          recordDeterministicReadEvidence(
-            cachedResponse,
-            normalizedText.trim().startsWith('/') ? 'slash' : undefined,
-          );
-          res.json(cachedResponse);
-          return;
-        }
-      }
-
       if (normalizedAttachments.length > 0) {
-        if (sendChatQuotaExceededIfNeeded(res, userId, 'iOS chat attachment blocked by quota')) return;
+        if (!await ensureModelBudget('iOS chat attachment blocked by AI budget')) return;
 
         const attachment = normalizedAttachments[0];
         const lang = getUserLanguageById(userId) || 'pt-BR';
@@ -2573,8 +2589,8 @@ export function registerChatMessageRoutes(
       // ── Token-zero fast-path ─────────────────────────────────────
       // Slash commands like /todo, /day, /overdue are pure data lookups.
       // Handle them directly without ever touching the AI pipeline.
-      // They intentionally remain behind the quota gate above until product
-      // explicitly approves them as cap-bypass reads.
+      // They intentionally run before the lazy AI lock/quota gate, so Free
+      // and quota-exhausted paid users retain deterministic Secretary access.
       // This is the difference between an instant ~200ms response and a
       // 30-50 second Claude tool-use loop. See specs/08-TOKEN-ZERO-ARCHITECTURE.md.
       const fastPath = bypassReadFastPathsForWriteIntent
@@ -2647,6 +2663,104 @@ export function registerChatMessageRoutes(
         return;
       }
 
+      // Deterministic/cache/identity/fast-path work has now had first refusal.
+      // Only at this boundary may the model-assisted action planner run.
+      if (normalizedText && normalizedAttachments.length === 0 && !parseContentScriptShortcut(normalizedText)) {
+        if (!await ensureModelBudget('iOS chat model planner blocked by AI budget')) return;
+        const actionResult = await tryHandleChatActionPlan({
+          text: normalizedText,
+          userId,
+          tenantId,
+          conversationId: scopedClientMessageId ?? chatRequestId,
+          messageId: userMessageId,
+          channel: 'ios',
+          locale: chatCoreV2RouteLocale,
+          timezone: getUserTimezoneById(userId),
+          requireSafeWriteConfirmation: true,
+        });
+        if (actionResult) {
+          latency.mark('action_planner_completed');
+          const response = actionResult.response;
+          if (actionResult.status === 'needs_confirmation') {
+            const isPT = chatCoreV2RouteLocale.startsWith('pt');
+            const involvedSkills = [...new Set(actionResult.plan.steps.map((step) => mapActionPlannerSkillToNexusSkill(step.skill)))];
+            const reasonCodes = [...new Set(actionResult.plan.steps.map((step) => `${step.risk}_requires_confirmation`))];
+            const intentClass = intentClassForAction(actionResult.plan.steps[0]?.action, involvedSkills);
+            const summary = {
+              text: response.text || normalizedText,
+              steps: actionResult.plan.steps.map((step) => ({
+                skill: step.skill,
+                action: step.action,
+                risk: step.risk,
+                args: step.args,
+              })),
+            };
+            const pendingConfirmation = trackPendingChatConfirmation({
+              userId,
+              tenantId,
+              actionSummary: response.text || normalizedText,
+              involvedSkills,
+              reasonCodes,
+              intentClass,
+              summary,
+              sourceMessageId: userMessageId,
+            });
+            const decisionResult = await createDecisionIntent({
+              userId,
+              tenantId,
+              sourceSkill: 'chat',
+              type: 'decision_required',
+              priority: 'active',
+              relatedEntityId: pendingConfirmation.id,
+              relatedEntityType: 'chat_confirmation',
+              title: isPT ? 'Nexus precisa de confirmação' : 'Nexus needs confirmation',
+              body: pendingConfirmation.actionSummary,
+              sensitiveBody: pendingConfirmation.actionSummary,
+              actionButtons: [
+                { id: 'option_a', label: isPT ? 'Confirmar' : 'Confirm', style: 'primary' },
+                { id: 'option_b', label: isPT ? 'Não executar' : 'Do not run', style: 'secondary' },
+                { id: 'open_detail', label: isPT ? 'Abrir decisão' : 'Open decision', style: 'secondary' },
+              ],
+              deeplink: `nexus://notifications/${pendingConfirmation.id}`,
+              expiresAt: pendingConfirmation.expiresAt,
+              dedupeKey: `chat:action-confirmation:${tenantId}:${userId}:${pendingConfirmation.id}`,
+              requiresUserAction: true,
+              deliveryPolicy: 'in_app_only',
+              privacyPolicy: 'standard',
+            });
+            attachPendingConfirmationContract({
+              response,
+              pendingConfirmation,
+              intentClass,
+              summary,
+              decisionId: decisionResult.item?.decisionId ?? null,
+            });
+          }
+          rememberChatActiveDomain(userId, response.domain, Date.now(), tenantId);
+          persistExchange(userId, userMessageId, normalizedText, response.id, response, tenantId, {
+            clientMessageId: scopedClientMessageId,
+            requestId: chatRequestId,
+          });
+          syncConversationStateForShortcut(userId, response.domain, normalizedText, response.text, tenantId);
+          logger.info({
+            chatRequestId,
+            tenantId,
+            userId,
+            routeMethod: response.routeMethod,
+            actionStatus: actionResult.status,
+            planner: actionResult.plan.planner,
+            involvedSkills: actionResult.plan.steps.map((step) => step.skill),
+          }, 'iOS chat model-assisted action planner handled request');
+          recordLegacyFallbackSample(true, {
+            domain: response.domain,
+            routeOwner: 'chat_action_planner',
+            routeMethod: response.routeMethod,
+          });
+          res.status(statusForChatActionResponse(actionResult.status, response)).json(response);
+          return;
+        }
+      }
+
       const activeContext = resolveChatActiveContext(userId, Date.now(), tenantId);
       const preRoutingDecision = analyzeChatSkillOrchestration({
         message: normalizedText,
@@ -2668,6 +2782,7 @@ export function registerChatMessageRoutes(
         && preTurnContract?.routeKind === 'internet_research'
         && (preTurnContract.groundingRequired === 'web' || preTurnContract.groundingRequired === 'local_and_web')
       ) {
+        if (!await ensureModelBudget('iOS chat internet research blocked by AI budget')) return;
         const researchDomain = domainForTurnContractSkill(preTurnContract.skill) ?? 'chat';
         const localContext = preTurnContract.groundingRequired === 'local_and_web' && researchDomain !== 'chat'
           ? await buildSimpleStateContext(researchDomain, userId, normalizedText, tenantId)
@@ -2959,6 +3074,7 @@ export function registerChatMessageRoutes(
         && normalizedAttachments.length === 0
         && !normalizedText.trim().startsWith('/')
       ) {
+        if (!await ensureModelBudget('iOS chat local answer blocked by AI budget')) return;
         const localChatResult = await runChatCoreV2LocalChatTurn({
           normalizedText,
           userId,
@@ -3113,6 +3229,7 @@ export function registerChatMessageRoutes(
         return;
       }
 
+      if (!await ensureModelBudget('iOS chat provider routing blocked by AI budget')) return;
       const rawRoute = await routeMessage(normalizedText, activeContext, userId, tenantId);
       latency.mark('routed');
       const contractAwareRoute = preTurnContract ? applyTurnContractRouteHint(rawRoute, preTurnContract) : rawRoute;
@@ -3278,6 +3395,7 @@ export function registerChatMessageRoutes(
       res.json(response);
     } catch (err: any) {
       const chatRequestId = getCurrentRequestId() || (req as any).requestId || `chat-${Date.now()}`;
+      if (!res.headersSent && sendAiBudgetError(res, err)) return;
       // Codex QA round 4 / 5: the idempotency ids are now hoisted above
       // the try block, so they're in scope here and can flow into the
       // degraded-response persistence path.
@@ -3301,9 +3419,9 @@ export function registerChatMessageRoutes(
       logger.error({ err, textLength: normalizedText.length, platform: 'ios', chatRequestId, tenantId, userId }, 'iOS chat/message failed');
       sendInternalError(res, 'Failed to process message');
     } finally {
-      // Release the per-user cost lock so the next concurrent request
-      // from this user can run its own check → AI → spend cycle.
-      releaseCostLock();
+      // Release the classified source/job/base/run reservation so the next
+      // concurrent request can run its own check -> provider -> usage cycle.
+      aiBudgetReservation.release?.();
     }
   });
 }

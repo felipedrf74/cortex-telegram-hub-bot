@@ -1,8 +1,8 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
 import { Router, Response } from 'express';
-import { asyncHandler, sendError, sendSuccess } from '../response-helpers';
-import { enforceCostGuardrails } from '../../services/cost-guardrail';
+import { asyncHandler, sendAiBudgetError, sendError, sendSuccess } from '../response-helpers';
+import { withAiBudgetReservation } from '../../services/cost-guardrail';
 import {
   extractPhotoAttachment,
   normalizePhotoExtractionAttachment,
@@ -37,36 +37,6 @@ function resolveRequestLanguage(req: any, userId: number): string {
   return getUserLanguageById(userId) || 'pt-BR';
 }
 
-function sendAttachmentQuotaExceededIfNeeded(res: Response, userId: number): boolean {
-  const decision = enforceCostGuardrails(userId);
-  if (!decision.block) return false;
-
-  logger.warn(
-    {
-      userId,
-      reason: decision.reason,
-      spentUsd: decision.quota.spentUsd,
-      capUsd: decision.quota.capUsd,
-      globalTotalUsd: decision.global.totalUsd,
-      globalLimitUsd: decision.global.limitUsd,
-      platform: 'ios',
-    },
-    'iOS attachment extraction blocked by quota',
-  );
-  sendError(
-    res,
-    decision.reason,
-    decision.message,
-    decision.status,
-    {
-      ...decision.details,
-      error: 'rate_limited',
-      retryable: true,
-    },
-  );
-  return true;
-}
-
 export function attachmentRoutes(): Router {
   const router = Router();
 
@@ -92,45 +62,52 @@ export function attachmentRoutes(): Router {
       }
       throw err;
     }
-    if (sendAttachmentQuotaExceededIfNeeded(res, userId)) return;
-
     const attachment = normalizePhotoExtractionAttachment(requestAttachment(req.body));
     if (!attachment) {
       sendError(res, 'BAD_REQUEST', 'A supported image attachment is required.');
       return;
     }
 
-    const result = await extractPhotoAttachment({
-      attachment,
-      caption: requestCaption(req.body),
-      userId,
-      tenantId,
-      language: resolveRequestLanguage(req, userId),
-    });
+    try {
+      const result = await withAiBudgetReservation({
+        userId,
+        requestSource: 'interactive',
+        baseCategory: 'photo_attachment_extract',
+      }, () => extractPhotoAttachment({
+        attachment,
+        caption: requestCaption(req.body),
+        userId,
+        tenantId,
+        language: resolveRequestLanguage(req, userId),
+      }));
 
-    if (result.degraded) {
-      logger.warn(
-        {
-          err: result.error,
-          userId,
-          tenantId,
-          reason: result.degradedReason,
-        },
-        'iOS attachment extraction degraded',
-      );
+      if (result.degraded) {
+        logger.warn(
+          {
+            err: result.error,
+            userId,
+            tenantId,
+            reason: result.degradedReason,
+          },
+          'iOS attachment extraction degraded',
+        );
+      }
+
+      sendSuccess(res, {
+        type: 'photo_extraction_preview',
+        routeMethod: result.degraded ? 'attachment_degraded' : 'attachment',
+        domain: result.conversationDomain,
+        text: result.preview.text,
+        confidence: result.preview.confidence,
+        metadata: result.preview.metadata,
+        degraded: result.degraded,
+        degradedReason: result.degradedReason,
+        userText: result.userText,
+      });
+    } catch (err) {
+      if (sendAiBudgetError(res, err)) return;
+      throw err;
     }
-
-    sendSuccess(res, {
-      type: 'photo_extraction_preview',
-      routeMethod: result.degraded ? 'attachment_degraded' : 'attachment',
-      domain: result.conversationDomain,
-      text: result.preview.text,
-      confidence: result.preview.confidence,
-      metadata: result.preview.metadata,
-      degraded: result.degraded,
-      degradedReason: result.degradedReason,
-      userText: result.userText,
-    });
   }));
 
   return router;

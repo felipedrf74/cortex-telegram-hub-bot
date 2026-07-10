@@ -33,7 +33,11 @@
 import type { Request, Response, NextFunction } from 'express';
 import type { AuthenticatedRequest } from './auth-middleware';
 import { sendError } from './response-helpers';
-import { getEffectiveEntitlement, isSkillAllowedByEntitlement } from '../services/entitlement';
+import {
+  getEffectiveEntitlement,
+  isPaidAiCostControlsEnforcementEnabled,
+  isSkillAllowedByEntitlement,
+} from '../services/entitlement';
 import { logger } from '../utils/logger';
 
 export interface RequireEntitlementOptions {
@@ -66,22 +70,38 @@ export function requireEntitlement(opts: RequireEntitlementOptions) {
 
     const entitlement = getEffectiveEntitlement(userId);
 
+    // This middleware gates product surfaces, not provider spend. A broad
+    // skill router can contain deterministic/token-zero reads alongside model
+    // actions, so rejecting the whole router on `aiAccessAllowed` would remove
+    // valid Free Secretary and legacy beta/manual product access. Every actual
+    // provider boundary is independently protected by the canonical paid-AI
+    // reservation, which returns AI_PLAN_REQUIRED before tokens are spent.
     // Skill-allowlist check: free tier only has Secretary.
     if (!isSkillAllowedByEntitlement(entitlement, opts.skill)) {
+      const modelPlanRequired = isPaidAiCostControlsEnforcementEnabled()
+        && !entitlement.aiAccessAllowed;
       logger.info(
         { userId, skill: opts.skill, plan: entitlement.plan, source: entitlement.source },
         'entitlement: rejected free-tier call to paid skill',
       );
       sendError(
         res,
-        'TIER_REQUIRED',
-        `Upgrade required to access ${opts.skill}`,
+        modelPlanRequired ? 'AI_PLAN_REQUIRED' : 'TIER_REQUIRED',
+        modelPlanRequired
+          ? 'Model-backed AI requires an active paid plan.'
+          : `Upgrade required to access ${opts.skill}`,
         403,
         {
-          requiredPlan: minPlan,
+          requiredPlan: modelPlanRequired ? 'pro' : minPlan,
           currentPlan: entitlement.plan,
           skill: opts.skill,
           source: entitlement.source,
+          ...(modelPlanRequired ? {
+            blockReason: entitlement.blockReason,
+            window: 'plan',
+            unblocksAt: null,
+            retryable: false,
+          } : {}),
         },
       );
       return;

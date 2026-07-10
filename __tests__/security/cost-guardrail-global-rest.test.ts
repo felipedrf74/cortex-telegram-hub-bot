@@ -68,8 +68,10 @@ function seedUser(userId: number, plan: 'pro' | 'max' = 'pro'): void {
     VALUES (?, ?, 'active', ?, 'email')
   `).run(userId, `User ${userId}`, plan);
   testDb.prepare(`
-    INSERT INTO subscriptions (user_id, plan, status, provider)
-    VALUES (?, ?, 'active', 'stripe')
+    INSERT INTO subscriptions (
+      user_id, plan, status, provider, current_period_start, current_period_end
+    )
+    VALUES (?, ?, 'active', 'stripe', datetime('now', '-1 day'), datetime('now', '+29 days'))
   `).run(userId, plan);
 }
 
@@ -84,6 +86,7 @@ import { enforceCostGuardrails, _resetUserCostLocksForTests } from '../../src/se
 
 describe('global cost guardrail for REST AI routes', () => {
   beforeEach(() => {
+    process.env.PAID_AI_COST_CONTROLS_ENFORCEMENT_ENABLED = 'true';
     testDb = new Database(':memory:');
     testDb.pragma('journal_mode = WAL');
     applyMigrations(testDb);
@@ -92,6 +95,7 @@ describe('global cost guardrail for REST AI routes', () => {
   });
 
   afterEach(() => {
+    delete process.env.PAID_AI_COST_CONTROLS_ENFORCEMENT_ENABLED;
     _resetUserCostLocksForTests();
     testDb.close();
   });
@@ -117,7 +121,7 @@ describe('global cost guardrail for REST AI routes', () => {
     expect(decision).toMatchObject({
       block: true,
       status: 429,
-      reason: 'daily_limit_exceeded',
+      reason: 'AI_DAILY_LIMIT_REACHED',
     });
   });
 
@@ -133,31 +137,41 @@ describe('global cost guardrail for REST AI routes', () => {
     });
   });
 
-  it('keeps all app-facing REST AI entry points wired to the shared helper', () => {
-    const requiredFiles = [
-      'chat-message-request.ts',
-      'training-plan-routes.ts',
+  it('keeps app-facing provider entry points on the canonical reservation APIs', () => {
+    const callbackWrappedFiles = [
+      'attachments.ts',
       'training.ts',
       'content-script-routes.ts',
       'finance.ts',
+      'internal.ts',
     ];
 
-    for (const file of requiredFiles) {
+    for (const file of callbackWrappedFiles) {
       const source = fs.readFileSync(path.join(ROUTE_ROOT, file), 'utf8');
-      expect(source, `${file} should import/call enforceCostGuardrails`).toContain('enforceCostGuardrails');
+      expect(source, `${file} should use the classified SQLite budget reservation`).toContain('withAiBudgetReservation');
     }
+    const chatSource = fs.readFileSync(path.join(ROUTE_ROOT, 'chat-message-routes.ts'), 'utf8');
+    expect(chatSource).toContain('acquireAiBudgetReservation');
+
+    const deterministicTrainingPlan = fs.readFileSync(path.join(ROUTE_ROOT, 'training-plan-routes.ts'), 'utf8');
+    expect(deterministicTrainingPlan).toContain('Plan generation is deterministic and token-zero');
+    expect(deterministicTrainingPlan).not.toContain('enforceCostGuardrails');
+    expect(deterministicTrainingPlan).not.toContain('acquireCostLock');
   });
 
-  it('keeps iOS WebSocket quota and tier gates before action planning', () => {
+  it('keeps iOS WebSocket token-zero work before the model reservation', () => {
     const source = fs.readFileSync(path.resolve(__dirname, '../../src/api/websocket.ts'), 'utf8');
-    const quotaIndex = source.indexOf('const quotaDecision = enforceCostGuardrails(userId)');
-    const tierIndex = source.indexOf('const tierResult = checkSkillAccess');
-    const actionPlanIndex = source.indexOf('const actionResult = await tryHandleChatActionPlan');
+    const tokenZeroIndex = source.indexOf('if (await trySendTokenZeroSecretaryRead(ws');
+    const actionPlanIndex = source.indexOf('const deterministicAction = await tryHandleChatActionPlan');
+    const reservationIndex = source.indexOf('await withAiBudgetReservation({');
+    const providerRoutingIndex = source.indexOf('const rawRoute = await routeMessage');
 
-    expect(quotaIndex).toBeGreaterThan(-1);
-    expect(tierIndex).toBeGreaterThan(-1);
+    expect(tokenZeroIndex).toBeGreaterThan(-1);
     expect(actionPlanIndex).toBeGreaterThan(-1);
-    expect(quotaIndex).toBeLessThan(actionPlanIndex);
-    expect(tierIndex).toBeLessThan(actionPlanIndex);
+    expect(reservationIndex).toBeGreaterThan(-1);
+    expect(providerRoutingIndex).toBeGreaterThan(-1);
+    expect(tokenZeroIndex).toBeLessThan(reservationIndex);
+    expect(actionPlanIndex).toBeLessThan(reservationIndex);
+    expect(reservationIndex).toBeLessThan(providerRoutingIndex);
   });
 });

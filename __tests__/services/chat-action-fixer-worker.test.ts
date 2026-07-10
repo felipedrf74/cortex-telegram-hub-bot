@@ -3,6 +3,31 @@ import Database from 'better-sqlite3';
 
 let testDb: Database.Database;
 
+const aiMocks = vi.hoisted(() => ({
+  eligibility: {
+    allowed: true,
+    reason: 'eligible',
+    entitlement: { source: 'stripe' },
+  } as any,
+  recordSkip: vi.fn(),
+  trackedCreate: vi.fn(),
+  withAiBudgetReservation: vi.fn(async (_request: unknown, fn: () => Promise<unknown>) => fn()),
+}));
+
+vi.mock('../../src/services/ai-automation-policy', () => ({
+  resolveAiAutomationEligibility: vi.fn(() => aiMocks.eligibility),
+  recordAiAutomationEligibilitySkip: (...args: unknown[]) => aiMocks.recordSkip(...args),
+}));
+
+vi.mock('../../src/services/cost-guardrail', () => ({
+  AiBudgetError: class AiBudgetError extends Error {},
+  withAiBudgetReservation: (...args: unknown[]) => aiMocks.withAiBudgetReservation(...args),
+}));
+
+vi.mock('../../src/portal/anthropic-hook', () => ({
+  trackedCreate: (...args: unknown[]) => aiMocks.trackedCreate(...args),
+}));
+
 vi.mock('../../src/services/database', () => ({
   getDb: () => testDb,
   initDatabase: vi.fn(),
@@ -36,6 +61,7 @@ vi.mock('../../src/utils/logger', () => ({
 import { ensureBackgroundJobTables } from '../../src/services/background-job-queue';
 import {
   CHAT_ACTION_FIXER_JOB_TYPE,
+  callAnthropicChatActionFixer,
   enqueueChatActionFixerReview,
   processChatActionFixerJobs,
 } from '../../src/services/chat-action-fixer-worker';
@@ -105,6 +131,21 @@ describe('chat action retry policy and fixer worker', () => {
     ensureBackgroundJobTables(testDb);
     ensureNotificationTables();
     ensureDecisionCenterTables();
+    aiMocks.eligibility = {
+      allowed: true,
+      reason: 'eligible',
+      entitlement: { source: 'stripe' },
+    };
+    aiMocks.recordSkip.mockReset();
+    aiMocks.trackedCreate.mockReset();
+    aiMocks.trackedCreate.mockResolvedValue({
+      content: [{
+        type: 'text',
+        text: JSON.stringify({ proposed_step: null, reasoning: 'No safe correction.' }),
+      }],
+    });
+    aiMocks.withAiBudgetReservation.mockReset();
+    aiMocks.withAiBudgetReservation.mockImplementation(async (_request: unknown, fn: () => Promise<unknown>) => fn());
   });
 
   afterEach(() => {
@@ -216,4 +257,52 @@ describe('chat action retry policy and fixer worker', () => {
     expect(processed.completed).toBe(1);
     expect(getDecisionOverview(9050, 850).items).toHaveLength(0);
   });
+
+  it('skips ineligible background fixer work before prompt/provider use', async () => {
+    aiMocks.eligibility = {
+      allowed: false,
+      reason: 'automation_entitlement_required',
+      entitlement: { source: 'free' },
+    };
+
+    const result = await callAnthropicChatActionFixer({
+      ...buildPayloadForDirectCall(),
+      sourceSkill: 'secretary',
+    });
+
+    expect(result.proposed_step).toBeNull();
+    expect(aiMocks.recordSkip).toHaveBeenCalled();
+    expect(aiMocks.withAiBudgetReservation).not.toHaveBeenCalled();
+    expect(aiMocks.trackedCreate).not.toHaveBeenCalled();
+  });
+
+  it('attributes eligible background fixer work to the automation budget without Points', async () => {
+    await callAnthropicChatActionFixer(buildPayloadForDirectCall());
+
+    expect(aiMocks.withAiBudgetReservation).toHaveBeenCalledWith(expect.objectContaining({
+      userId: 9050,
+      requestSource: 'automation',
+      baseCategory: 'chat_action_fixer',
+      jobName: 'chat_action_fixer',
+      automationPriority: 'other',
+    }), expect.any(Function));
+    expect(aiMocks.trackedCreate).toHaveBeenCalledTimes(1);
+  });
 });
+
+function buildPayloadForDirectCall() {
+  return {
+    userId: input.userId,
+    tenantId: input.tenantId,
+    conversationId: input.conversationId,
+    messageId: input.messageId,
+    planner: plan.planner,
+    redactedText: 'Schedule a client review.',
+    originalStep: step as unknown as Record<string, unknown>,
+    errorReason: 'verifier_mismatch',
+    providerReadBack: { title: 'Client review' },
+    riskClass: 'R1',
+    sourceSkill: 'secretary',
+    action: 'schedule_event',
+  };
+}

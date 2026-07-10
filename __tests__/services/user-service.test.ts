@@ -50,7 +50,7 @@ function applyMigrations(db: Database.Database): void {
 import {
   getOrCreateUser, getUserByTelegramId, isUserAuthorized, isOwner,
   isOwnerBootstrapTelegramId,
-  getOwnerBootstrapTelegramId,
+  getOwnerBootstrapTelegramId, isOwnerUserRef,
   assertOwnerBootstrapReadyForRuntime,
   touchUser, getUserLanguage, setUserLanguage, listUsers, setUserStatus,
   setUserTier, seedOwnerUser,
@@ -137,6 +137,27 @@ describe('user-service', () => {
     it('returns false for free tier', () => {
       getOrCreateUser(123, {});
       expect(isOwner(123)).toBe(false);
+    });
+
+    it('does not treat a persisted owner tier as canonical AI owner identity', () => {
+      getOrCreateUser(123, {});
+      setUserTier(123, 'owner');
+
+      expect(isOwnerUserRef(123)).toBe(true);
+      expect(isOwnerUserRef(123, {
+        allowPersistedTier: false,
+        requireConfiguredIdentity: true,
+      })).toBe(false);
+    });
+
+    it('recognizes the configured owner identity for canonical AI access', () => {
+      vi.stubEnv('OWNER_TELEGRAM_ID', '123');
+      getOrCreateUser(123, {});
+
+      expect(isOwnerUserRef(123, {
+        allowPersistedTier: false,
+        requireConfiguredIdentity: true,
+      })).toBe(true);
     });
   });
 

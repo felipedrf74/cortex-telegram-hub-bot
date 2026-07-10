@@ -73,6 +73,8 @@ vi.mock('../../src/services/anthropic', () => ({
 // Stub database, telemetry, api-usage-fallback, and rate-limiter so the
 // provider's side effects don't touch SQLite or the real telemetry bus.
 const runMock = vi.fn();
+const assertBudgetMock = vi.fn();
+const rateLimitMock = vi.fn(() => ({ allowed: true }));
 vi.mock('../../src/services/database', () => ({
   getDb: () => ({
     prepare: () => ({ run: runMock, all: () => [], get: () => undefined }),
@@ -110,9 +112,12 @@ vi.mock('../../src/services/api-usage-fallback', () => ({
   getApiUsageColumns: vi.fn(() => new Set<string>()),
   insertApiUsageFallback: vi.fn(() => 0),
 }));
+vi.mock('../../src/services/cost-guardrail', () => ({
+  assertAiBudgetReservationForProvider: assertBudgetMock,
+}));
 vi.mock('../../src/services/local-llm-rate-limiter', () => ({
   _resetLocalLLMRateLimiterSchemaCacheForTests: vi.fn(),
-  checkAndConsumeLocalLLMRateLimit: vi.fn(() => ({ allowed: true })),
+  checkAndConsumeLocalLLMRateLimit: rateLimitMock,
 }));
 
 // Logger spy so we can assert thinking content never appears in logs.
@@ -167,6 +172,9 @@ function makeTagsResponse() {
 beforeEach(() => {
   fetchMock.mockReset();
   runMock.mockReset();
+  assertBudgetMock.mockReset();
+  rateLimitMock.mockReset();
+  rateLimitMock.mockReturnValue({ allowed: true });
   logCalls.length = 0;
   globalThis.fetch = fetchMock as unknown as typeof fetch;
   delete process.env.NODE_APP_INSTANCE;
@@ -199,6 +207,18 @@ describe('OllamaProvider — construction guards', () => {
 });
 
 describe('OllamaProvider — classify', () => {
+  it('rejects an ineligible request before consuming local rate-limit capacity', async () => {
+    assertBudgetMock.mockImplementationOnce(() => {
+      throw new Error('AI_PLAN_REQUIRED');
+    });
+
+    const p = new OllamaProvider();
+    await expect(p.classify('hello')).rejects.toThrow('AI_PLAN_REQUIRED');
+
+    expect(rateLimitMock).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it('returns parsed domain on a healthy call', async () => {
     fetchMock
       .mockResolvedValueOnce(makeChatResponse({ content: '{"domain":"content","confidence":0.91}' }))

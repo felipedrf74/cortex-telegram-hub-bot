@@ -11,6 +11,11 @@ import { enqueueJob, processPendingJobs, type JobHandler, type JobRecord } from 
 import { createLazyAnthropicClient } from './anthropic-lazy-client';
 import { createDecisionIntent } from './decision-center';
 import type { ChatActionPlan, ChatPlannerInput, ChatPlanStep, ChatStepExecutionResult } from './chat/types';
+import {
+  recordAiAutomationEligibilitySkip,
+  resolveAiAutomationEligibility,
+} from './ai-automation-policy';
+import { AiBudgetError, withAiBudgetReservation } from './cost-guardrail';
 
 export const CHAT_ACTION_FIXER_JOB_TYPE = 'chat_action_fixer_review';
 
@@ -133,18 +138,64 @@ export function buildFixerPayload(review: EnqueueChatActionFixerReviewInput): Ch
 }
 
 export async function callAnthropicChatActionFixer(payload: ChatActionFixerPayload): Promise<ChatActionFixerProposal> {
+  const eligibility = resolveAiAutomationEligibility(payload.userId, payload.sourceSkill);
+  if (!eligibility.allowed) {
+    recordAiAutomationEligibilitySkip(payload.userId, eligibility, {
+      jobName: 'chat_action_fixer',
+      baseCategory: 'chat_action_fixer',
+    });
+    logger.info(
+      {
+        userId: payload.userId,
+        tenantId: payload.tenantId,
+        sourceSkill: payload.sourceSkill,
+        reason: eligibility.reason,
+        entitlementSource: eligibility.entitlement.source,
+      },
+      'Chat action fixer skipped before provider work: automation is not eligible',
+    );
+    return {
+      proposed_step: null,
+      reasoning: 'The model-backed background review is not available for this account.',
+    };
+  }
+
   const prompt = buildChatActionFixerPrompt(payload);
-  const response = await trackedCreate(client.get(), {
-    model: process.env.CHAT_ACTION_FIXER_MODEL || config.anthropic.model,
-    max_tokens: 900,
-    temperature: 0,
-    system: 'You are a Nexus Hub reliability reviewer. Return strict JSON only and never execute actions.',
-    messages: [{ role: 'user', content: prompt }],
-  }, 'chat_action_fixer', {
-    userId: payload.userId,
-    tenantId: payload.tenantId,
-    timeoutMs: 30_000,
-  });
+  let response;
+  try {
+    response = await withAiBudgetReservation({
+      userId: payload.userId,
+      requestSource: 'automation',
+      baseCategory: 'chat_action_fixer',
+      jobName: 'chat_action_fixer',
+      automationPriority: 'other',
+    }, () => trackedCreate(client.get(), {
+      model: process.env.CHAT_ACTION_FIXER_MODEL || config.anthropic.model,
+      max_tokens: 900,
+      temperature: 0,
+      system: 'You are a Nexus Hub reliability reviewer. Return strict JSON only and never execute actions.',
+      messages: [{ role: 'user', content: prompt }],
+    }, 'chat_action_fixer', {
+      userId: payload.userId,
+      tenantId: payload.tenantId,
+      timeoutMs: 30_000,
+    }));
+  } catch (err) {
+    if (!(err instanceof AiBudgetError)) throw err;
+    logger.info(
+      {
+        userId: payload.userId,
+        tenantId: payload.tenantId,
+        code: err.decision.code,
+        window: err.decision.window,
+      },
+      'Chat action fixer deferred by the automation AI budget',
+    );
+    return {
+      proposed_step: null,
+      reasoning: 'The background review was deferred until the AI allowance resets.',
+    };
+  }
   return parseChatActionFixerResponse(response.content
     .filter((block) => block.type === 'text' && typeof (block as { text?: unknown }).text === 'string')
     .map((block) => (block as { text: string }).text)

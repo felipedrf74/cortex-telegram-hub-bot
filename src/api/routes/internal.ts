@@ -22,7 +22,7 @@
 import { Router, Request, Response } from 'express';
 import { logger } from '../../utils/logger';
 import { config } from '../../config';
-import { sendError } from '../response-helpers';
+import { sendAiBudgetError, sendError } from '../response-helpers';
 import { isLoopbackRequest, secureSecretMatches } from '../secret-guards';
 import {
   internalAiCompleteRateLimitMiddleware,
@@ -35,7 +35,14 @@ import { getEffectiveDomainModel } from '../../services/model-config';
 import { completeOneShotWithFallback } from '../../services/gemini-provider';
 import { verifyInternalAttributionToken } from '../../services/internal-attribution';
 import { computeModelUsageCostUsd, recordUnresolvedModelPricingAlert } from '../../services/model-pricing';
-import { insertApiUsageFallback } from '../../services/api-usage-fallback';
+import { insertApiUsageFallback, tripApiUsagePersistenceFailure } from '../../services/api-usage-fallback';
+import { resolveApiUsageAttribution } from '../../services/api-usage-attribution';
+import {
+  withAiBudgetReservation,
+  withSignedOuterAiBudgetReservation,
+  type AiBudgetRequest,
+} from '../../services/cost-guardrail';
+import { settleNexusPointOverageForUser } from '../../services/nexus-points';
 
 function resolveInternalAiTimeoutMs(category: string, maxTokens: number): number | undefined {
   const normalized = String(category || '').toLowerCase();
@@ -43,6 +50,27 @@ function resolveInternalAiTimeoutMs(category: string, maxTokens: number): number
   if (normalized.startsWith('content_engine_deepsearch')) return 180_000;
   if (normalized.startsWith('content_engine')) return Math.max(90_000, Math.min(180_000, maxTokens * 25));
   return undefined;
+}
+
+function sendInvalidInternalAiAttribution(res: Response): void {
+  // Invalid/expired signed re-entry is a metering-integrity failure. Surface a
+  // stable degraded response so Python and the outer app route can preserve it
+  // instead of converting it to a generic 500 or a separately billed system
+  // call.
+  sendError(
+    res,
+    'SERVICE_DEGRADED',
+    'AI-backed features are temporarily degraded because usage attribution could not be verified. Token-zero reads remain available.',
+    429,
+    {
+      serviceDegraded: true,
+      window: 'global',
+      unblocksAt: null,
+      retryAfterSeconds: 60,
+      error: 'rate_limited',
+      retryable: true,
+    },
+  );
 }
 
 export function internalRoutes(): Router {
@@ -88,26 +116,38 @@ export function internalRoutes(): Router {
   //   durationMs: number,
   //   requestId?: string, // for tracing
   // }
-  router.post('/report-usage', (req: Request, res: Response) => {
+  router.post('/report-usage', async (req: Request, res: Response) => {
     try {
       const {
-        category, model,
-        inputTokens, outputTokens,
-        cacheReadTokens = 0, cacheWriteTokens = 0,
-        durationMs,
+        category: rawCategory, model: rawModel,
+        inputTokens: rawInputTokens, outputTokens: rawOutputTokens,
+        cacheReadTokens: rawCacheReadTokens = 0, cacheWriteTokens: rawCacheWriteTokens = 0,
+        durationMs: rawDurationMs,
         userId,
         tenantId,
         attributionToken,
       } = req.body;
 
-      if (!category || !model || inputTokens == null || outputTokens == null) {
-        sendError(res, 'BAD_REQUEST', 'missing required fields', 400);
+      const category = normalizeInternalCategory(rawCategory);
+      const model = normalizeBoundedString(rawModel, 160);
+      const inputTokens = normalizeNonNegativeInteger(rawInputTokens, 1_000_000_000);
+      const outputTokens = normalizeNonNegativeInteger(rawOutputTokens, 1_000_000_000);
+      const cacheReadTokens = normalizeNonNegativeInteger(rawCacheReadTokens, 1_000_000_000);
+      const cacheWriteTokens = normalizeNonNegativeInteger(rawCacheWriteTokens, 1_000_000_000);
+      const durationMs = normalizeFiniteNumber(rawDurationMs ?? 0, 0, 600_000);
+      if (!category || !model || inputTokens == null || outputTokens == null
+        || cacheReadTokens == null || cacheWriteTokens == null || durationMs == null) {
+        sendError(res, 'BAD_REQUEST', 'invalid usage fields', 400);
         return;
       }
 
       const suppliedUserId = normalizeOptionalScopeId(userId);
       const suppliedTenantId = normalizeOptionalScopeId(tenantId);
       const verifiedAttribution = verifyInternalAttributionToken(attributionToken, category);
+      if (attributionToken != null && !verifiedAttribution) {
+        sendInvalidInternalAiAttribution(res);
+        return;
+      }
       const scopedUserId = verifiedAttribution?.userId ?? 0;
       const scopedTenantId = verifiedAttribution?.tenantId ?? 0;
       if ((suppliedUserId || suppliedTenantId) && !verifiedAttribution) {
@@ -129,54 +169,94 @@ export function internalRoutes(): Router {
       }
       const cost = priced.costUsd;
       const pricingStatus = priced.pricingResolved ? 'resolved' : 'unresolved';
+      const usageAttribution = resolveApiUsageAttribution(category, scopedUserId, {
+        requestSource: verifiedAttribution?.outerReservation?.requestSource
+          ?? (scopedUserId > 0 ? 'interactive' : 'system'),
+        baseCategory: verifiedAttribution?.outerReservation?.baseCategory ?? category,
+        jobName: verifiedAttribution?.outerReservation?.jobName ?? null,
+        runId: verifiedAttribution?.outerReservation?.runId ?? null,
+      });
 
       // Write to api_usage table (same as anthropic-hook.ts)
       const { getDb } = require('../../services/database');
+      let apiUsageId: number | null = null;
       try {
-        getDb().prepare(`
+        const result = getDb().prepare(`
           INSERT INTO api_usage
             (category, model, tenant_id, user_id, input_tokens, output_tokens,
              cache_read_tokens, cache_write_tokens, cost_usd, duration_ms,
-             provider, pricing_status, pricing_model_key)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'anthropic', ?, ?)
+             provider, pricing_status, pricing_model_key,
+             request_source, job_name, base_category, run_id)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'anthropic', ?, ?, ?, ?, ?, ?)
         `).run(
           category, model, scopedTenantId, scopedUserId,
           inputTokens, outputTokens,
           cacheReadTokens, cacheWriteTokens,
           cost, durationMs ?? 0,
           pricingStatus, priced.pricingModelKey,
+          usageAttribution.requestSource,
+          usageAttribution.jobName,
+          usageAttribution.baseCategory,
+          usageAttribution.runId,
         );
+        apiUsageId = Number((result as { lastInsertRowid?: number | bigint } | undefined)?.lastInsertRowid ?? 0) || null;
       } catch {
-        insertApiUsageFallback(getDb(), {
-          category,
-          model,
-          provider: 'anthropic',
-          tenantId: scopedTenantId,
-          userId: scopedUserId,
-          inputTokens,
-          outputTokens,
-          cacheReadTokens,
-          cacheWriteTokens,
-          costUsd: cost,
-          durationMs: durationMs ?? 0,
-          pricingStatus: 'legacy',
-        });
+        try {
+          apiUsageId = insertApiUsageFallback(getDb(), {
+            category,
+            model,
+            provider: 'anthropic',
+            tenantId: scopedTenantId,
+            userId: scopedUserId,
+            inputTokens,
+            outputTokens,
+            cacheReadTokens,
+            cacheWriteTokens,
+            costUsd: cost,
+            durationMs: durationMs ?? 0,
+            pricingStatus: 'legacy',
+            requestSource: usageAttribution.requestSource,
+            jobName: usageAttribution.jobName,
+            baseCategory: usageAttribution.baseCategory,
+            runId: usageAttribution.runId,
+          });
+        } catch (fallbackErr) {
+          const persistenceError = tripApiUsagePersistenceFailure('anthropic', category);
+          logger.error({ err: fallbackErr, code: persistenceError.code }, 'Internal usage persistence degraded');
+          throw persistenceError;
+        }
+      }
+
+      if (usageAttribution.requestSource === 'interactive') {
+        try {
+          await settleNexusPointOverageForUser(scopedUserId, apiUsageId);
+        } catch (settleErr) {
+          logger.warn({ err: settleErr, apiUsageId, userId: scopedUserId }, 'Internal usage Nexus Points settlement failed');
+        }
       }
 
       // Write to usage_metering aggregate. Signed attribution preserves the
       // real user; unsigned legacy calls remain system-scoped.
-      const { recordUsage } = require('../../services/usage-metering');
-      recordUsage(scopedUserId, inputTokens, outputTokens, cost, false);
+      try {
+        const { recordUsage } = require('../../services/usage-metering');
+        recordUsage(scopedUserId, inputTokens, outputTokens, cost, false);
+      } catch (meterErr) {
+        logger.warn({ err: meterErr, userId: scopedUserId, category }, 'Internal usage analytics persistence failed');
+      }
 
       // Push telemetry event
-      const { pushEvent } = require('../../portal/telemetry');
       const totalTokens = inputTokens + outputTokens;
-      pushEvent({
-        ts: new Date().toISOString(),
-        type: 'api_call',
-        summary: `py:${category}: ${totalTokens.toLocaleString()} tok, $${cost.toFixed(4)}, ${durationMs ?? 0}ms`,
-        durationMs: durationMs ?? 0,
-      });
+      try {
+        const { pushEvent } = require('../../portal/telemetry');
+        pushEvent({
+          ts: new Date().toISOString(),
+          type: 'api_call',
+          summary: `py:${category}: ${totalTokens.toLocaleString()} tok, $${cost.toFixed(4)}, ${durationMs ?? 0}ms`,
+          durationMs: durationMs ?? 0,
+        });
+      } catch (eventErr) {
+        logger.warn({ err: eventErr, userId: scopedUserId, category }, 'Internal usage telemetry publish failed');
+      }
 
       logger.info(
         { category, model, inputTokens, outputTokens, cost: cost.toFixed(4), userId: scopedUserId, tenantId: scopedTenantId },
@@ -186,6 +266,7 @@ export function internalRoutes(): Router {
       res.json({ ok: true, costUsd: cost });
     } catch (err: any) {
       logger.error({ err }, 'Internal report-usage failed');
+      if (sendAiBudgetError(res, err)) return;
       sendError(res, 'INTERNAL', 'Internal report-usage failure', 500);
     }
   });
@@ -214,16 +295,21 @@ export function internalRoutes(): Router {
   router.post('/ai-complete', internalAiCompleteRateLimitMiddleware, async (req: Request, res: Response) => {
     try {
       const {
-        prompt, system = '', category,
-        maxTokens = 4096, temperature = 0.7,
+        prompt: rawPrompt, system: rawSystem = '', category: rawCategory,
+        maxTokens: rawMaxTokens = 4096, temperature: rawTemperature = 0.7,
         jsonMode = false,
         userId,
         tenantId,
         attributionToken,
       } = req.body;
 
-      if (!prompt || !category) {
-        sendError(res, 'BAD_REQUEST', 'missing required fields: prompt, category', 400);
+      const prompt = normalizeBoundedString(rawPrompt, 200_000);
+      const system = rawSystem === '' ? '' : normalizeBoundedString(rawSystem, 100_000);
+      const category = normalizeInternalCategory(rawCategory);
+      const maxTokens = normalizePositiveInteger(rawMaxTokens, 32_768);
+      const temperature = normalizeFiniteNumber(rawTemperature, 0, 2);
+      if (!prompt || system == null || !category || maxTokens == null || temperature == null || typeof jsonMode !== 'boolean') {
+        sendError(res, 'BAD_REQUEST', 'invalid prompt, category, or generation options', 400);
         return;
       }
 
@@ -233,6 +319,13 @@ export function internalRoutes(): Router {
       const suppliedUserId = normalizeOptionalScopeId(userId);
       const suppliedTenantId = normalizeOptionalScopeId(tenantId);
       const verifiedAttribution = verifyInternalAttributionToken(attributionToken, category);
+      if (attributionToken != null && !verifiedAttribution) {
+        // Never silently convert a failed signed re-entry into a separately
+        // billed system call. The caller must retry with the original signed
+        // category/run or omit attribution for an intentional system job.
+        sendInvalidInternalAiAttribution(res);
+        return;
+      }
       const scopedUserId = verifiedAttribution?.userId ?? 0;
       const scopedTenantId = verifiedAttribution?.tenantId ?? 0;
       if ((suppliedUserId || suppliedTenantId) && !verifiedAttribution) {
@@ -252,37 +345,53 @@ export function internalRoutes(): Router {
         }, 'Internal AI attribution token verified; body scope ignored in favor of signed claims');
       }
 
-      const { text, provider } = await completeOneShotWithFallback(
-        system,
-        userPrompt,
-        category,
-        // Anthropic fallback thunk — only fires if ANTHROPIC_ENABLED=true
-        // and ANTHROPIC_API_KEY is configured.
-        async () => {
-          const { trackedCreate } = require('../../portal/anthropic-hook');
-          const Anthropic = require('@anthropic-ai/sdk');
-          const client = new Anthropic.default({ apiKey: config.anthropic?.apiKey || '', maxRetries: 2 });
-          const anthropicModel = getEffectiveDomainModel('anthropic', 'content');
-          const response = await trackedCreate(client, {
-            model: anthropicModel,
-            max_tokens: maxTokens,
-            system: system || undefined,
-            messages: [{ role: 'user', content: userPrompt }],
-          }, category, { userId: scopedUserId, tenantId: scopedTenantId });
-          return response.content
-            .filter((b: any) => b.type === 'text')
-            .map((b: any) => b.text)
-            .join('\n');
-        },
-        {
-          maxTokens,
-          temperature,
-          timeoutMs: resolveInternalAiTimeoutMs(category, maxTokens),
-          jsonMode,
-          userId: scopedUserId,
-          tenantId: scopedTenantId,
-        },
-      );
+      const outerReservation = verifiedAttribution?.outerReservation ?? null;
+      const budgetRequest: AiBudgetRequest = {
+        userId: scopedUserId,
+        requestSource: outerReservation?.requestSource ?? (scopedUserId > 0 ? 'interactive' : 'system'),
+        baseCategory: outerReservation?.baseCategory ?? category,
+        jobName: outerReservation?.jobName ?? null,
+        runId: outerReservation?.runId ?? null,
+      };
+      const invokeProvider = () => completeOneShotWithFallback(
+          system,
+          userPrompt,
+          category,
+          // Anthropic fallback thunk — only fires if ANTHROPIC_ENABLED=true
+          // and ANTHROPIC_API_KEY is configured.
+          async () => {
+            const { trackedCreate } = require('../../portal/anthropic-hook');
+            const Anthropic = require('@anthropic-ai/sdk');
+            const client = new Anthropic.default({ apiKey: config.anthropic?.apiKey || '', maxRetries: 2 });
+            const anthropicModel = getEffectiveDomainModel('anthropic', 'content');
+            const response = await trackedCreate(client, {
+              model: anthropicModel,
+              max_tokens: maxTokens,
+              system: system || undefined,
+              messages: [{ role: 'user', content: userPrompt }],
+            }, category, { userId: scopedUserId, tenantId: scopedTenantId });
+            return response.content
+              .filter((b: any) => b.type === 'text')
+              .map((b: any) => b.text)
+              .join('\n');
+          },
+          {
+            maxTokens,
+            temperature,
+            timeoutMs: resolveInternalAiTimeoutMs(category, maxTokens),
+            jsonMode,
+            userId: scopedUserId,
+            tenantId: scopedTenantId,
+          },
+        );
+
+      // Signed re-entry proves the outer TS route still owns this user's
+      // SQLite lock, avoiding a same-user nested-lock deadlock. Every other
+      // call (including unsigned legacy/system traffic) gets its own canonical
+      // reservation before any provider is invoked.
+      const { text, provider } = outerReservation
+        ? await withSignedOuterAiBudgetReservation(budgetRequest, outerReservation, invokeProvider)
+        : await withAiBudgetReservation(budgetRequest, invokeProvider);
 
       logger.info({
         category,
@@ -294,6 +403,7 @@ export function internalRoutes(): Router {
       res.json({ text, provider });
     } catch (err: any) {
       logger.error({ err }, 'Internal ai-complete failed');
+      if (sendAiBudgetError(res, err)) return;
       sendError(res, 'AI_COMPLETE_FAILED', 'AI completion failed', 500);
     }
   });
@@ -356,4 +466,32 @@ function normalizeOptionalScopeId(value: unknown): number | undefined {
   if (value == null || value === '') return undefined;
   const parsed = typeof value === 'number' ? value : Number(value);
   return Number.isInteger(parsed) && parsed > 0 ? parsed : undefined;
+}
+
+function normalizeBoundedString(value: unknown, maxLength: number): string | null {
+  if (typeof value !== 'string') return null;
+  const normalized = value.trim();
+  if (!normalized || normalized.length > maxLength) return null;
+  return normalized;
+}
+
+function normalizeInternalCategory(value: unknown): string | null {
+  const category = normalizeBoundedString(value, 160);
+  if (!category || !/^[a-zA-Z0-9._:-]+$/.test(category)) return null;
+  return category;
+}
+
+function normalizeNonNegativeInteger(value: unknown, max: number): number | null {
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0 || value > max) return null;
+  return value;
+}
+
+function normalizePositiveInteger(value: unknown, max: number): number | null {
+  const normalized = normalizeNonNegativeInteger(value, max);
+  return normalized != null && normalized > 0 ? normalized : null;
+}
+
+function normalizeFiniteNumber(value: unknown, min: number, max: number): number | null {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < min || value > max) return null;
+  return value;
 }

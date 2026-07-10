@@ -15,7 +15,10 @@
 import { Router, Request, Response } from 'express';
 import { logger } from '../../utils/logger';
 import { getDb } from '../../services/database';
-import { sendInternalError as sendApiInternalError } from '../response-helpers';
+import {
+  sendAiBudgetError,
+  sendInternalError as sendApiInternalError,
+} from '../response-helpers';
 import { requirePortalTokenByMethod } from '../secret-guards';
 import {
   contentDirectScopePredicate,
@@ -513,6 +516,7 @@ export function contentAdminWriteRoutes(): Router {
       });
     } catch (err: any) {
       logger.error({ err }, 'Portal: add channel failed');
+      if (sendAiBudgetError(res, err)) return;
       sendInternalError(res, 'Failed to add channel');
     }
   });
@@ -564,6 +568,7 @@ export function contentAdminWriteRoutes(): Router {
       sendSuccess(res, { analysis: result });
     } catch (err: any) {
       logger.error({ err }, 'Portal: reanalyze channel failed');
+      if (sendAiBudgetError(res, err)) return;
       sendInternalError(res, 'Failed to reanalyze');
     }
   });
@@ -582,10 +587,14 @@ export function contentAdminWriteRoutes(): Router {
     }
     try {
       const { processAllChannels } = await import('../../services/channel-learner');
-      const result = await processAllChannels(true, scope.userId);
+      const result = await processAllChannels(true, scope.userId, {
+        requestSource: 'interactive',
+        jobName: 'channel_relearn_manual',
+      });
       sendSuccess(res, { result });
     } catch (err: any) {
       logger.error({ err }, 'Portal: channel relearn failed');
+      if (sendAiBudgetError(res, err)) return;
       sendInternalError(res, 'Failed to run channel relearn');
     }
   });
@@ -612,6 +621,7 @@ export function contentAdminWriteRoutes(): Router {
       }
     } catch (err: any) {
       logger.error({ err }, 'Portal: add book failed');
+      if (sendAiBudgetError(res, err)) return;
       sendInternalError(res, 'Failed to add book');
     }
   });
@@ -665,9 +675,14 @@ export function contentAdminWriteRoutes(): Router {
       `).run(id, ...contentScopeParams(scope.userId, scope.tenantId));
       const { handleAddBookFromPortal } = await import('../../commands/books');
       const result = await handleAddBookFromPortal(book.title, book.author, scope);
-      sendSuccess(res, { retried: true, message: result.message, scope });
+      if (result.ok) {
+        sendSuccess(res, { retried: true, message: result.message, scope });
+      } else {
+        sendError(res, 'EXTRACTION_FAILED', result.message, 500);
+      }
     } catch (err: any) {
       logger.error({ err }, 'Portal: retry book extraction failed');
+      if (sendAiBudgetError(res, err)) return;
       sendInternalError(res, 'Failed to retry extraction');
     }
   });

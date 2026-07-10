@@ -1,33 +1,54 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
 /**
- * Cost Guardrail — global daily spend monitoring and alerting + per-user cap.
+ * Cost Guardrail — global monitoring plus canonical daily/monthly AI budgets.
  *
  * Checks total API spend for the day against configurable limits and
- * enforces a per-user daily cost cap. Call after each AI API call to fire
- * tier alerts; call before each AI call to enforce per-user caps.
+ * enforces entitlement, per-user daily/monthly cost windows, and background
+ * ceilings. api_usage is enforcement truth; usage_metering is analytics only.
  *
  * Telegram alerting fires at 50% / 80% / 100% of the global daily limit
  * (each tier fires once per UTC day).
  *
- * Per-user enforcement uses PER_USER_DAILY_USD_CAP env var (default $1.00).
- * The chat handler should reject requests with 429 when this returns over=true.
+ * Paid-only blocking is rollout-gated by
+ * PAID_AI_COST_CONTROLS_ENFORCEMENT_ENABLED=true.
  */
 
 import { getDb } from './database';
 import { config } from '../config';
 import { logger } from '../utils/logger';
 import crypto from 'crypto';
+import { AsyncLocalStorage } from 'async_hooks';
+import { DateTime } from 'luxon';
 import {
+  AUTOMATION_BUDGET_FRACTION,
+  SYSTEM_DAILY_COST_CAP_USD,
+  SYSTEM_MONTHLY_COST_CAP_USD,
   getEffectiveDailyCostLimitUsd,
+  getEffectiveMonthlyCostLimitUsd,
   getUsageLevelForPlan,
-  resolveBillingPlanForUser,
   type BillingPlan,
   type UsageLevel,
 } from './plan-quotas';
 import { recordOperatorAlert } from './operator-alerts';
 import { getNexusPointBalance, listNexusPointPackages, usdToPoints } from './nexus-points';
 import { getActiveUserAiBudgetOverride } from './ai-budget-overrides';
+import {
+  getEffectiveEntitlement,
+  isPaidAiCostControlsEnforcementEnabled,
+  type AiEntitlementBlockReason,
+  type UserEntitlement,
+} from './entitlement';
+import {
+  enterApiUsageAttribution,
+  resolveApiUsageAttribution,
+  runWithApiUsageAttribution,
+  type AiRequestSource,
+} from './api-usage-attribution';
+import { getApiUsagePersistenceFailure } from './api-usage-fallback';
+import { getCurrentRequestId } from '../utils/request-context';
+
+export type { AiRequestSource } from './api-usage-attribution';
 
 // ── Telegram Alert Callback ──────────────────────────────────────
 
@@ -52,21 +73,58 @@ function todayKey(): string {
   return new Date().toISOString().slice(0, 10);
 }
 
-// ── Per-user cap (USD) ───────────────────────────────────────────
-//
-// Margin-safe daily cost caps derived from the current Gemini-heavy
-// production mix. Local usage traces put routine assistant calls around
-// ~$0.0007–$0.0023 and heavy content/deep-search calls around
-// ~$0.0026–$0.0076. Caps are sized so that a fully-utilized month still
-// leaves room for platform fees, support, retries, and provider mix drift.
-//
-//   Pro ($14.99/mo): $0.04/day × 30 = $1.20/mo AI COGS
-//   Max ($19.99/mo): $0.06/day × 30 = $1.80/mo AI COGS
-//
-// Typical users should land materially below cap, especially because
-// token-zero routes avoid AI spend entirely for deterministic lookups.
-// No free tier — unsubscribed users are blocked from AI entirely.
+// ── Canonical daily/monthly AI budget status ─────────────────────
 const DEFAULT_DAILY_CAP_USD = Number(process.env.PER_USER_DAILY_USD_CAP || '0.00');
+const RESERVATION_MULTIPLIER = 1.25;
+const DEFAULT_ESTIMATED_COST_USD: Record<AiRequestSource, number> = {
+  interactive: 0.003,
+  automation: 0.006,
+  system: 0.01,
+};
+const WORKLOAD_DEFAULT_ESTIMATED_COST_USD: ReadonlyArray<[RegExp, number]> = [
+  [/coach/i, 0.005],
+  [/content(?:_workflow)?/i, 0.004],
+  [/(?:channel_analysis|knowledge_synthesis|channel_learning)/i, 0.009],
+  [/autoresearch/i, 0.012],
+];
+
+export type AiAutomationPriority = 'coach' | 'content' | 'channel_learning' | 'other';
+
+export type AiBudgetWindow = 'plan' | 'daily' | 'monthly' | 'automation_daily' | 'automation_monthly' | 'global';
+
+export interface AiBudgetRequest {
+  userId: number;
+  requestSource: AiRequestSource;
+  baseCategory: string;
+  jobName?: string | null;
+  runId?: string | null;
+  /** Pre-multiplier expected provider cost. Rolling p95 is used when absent. */
+  estimatedCostUsd?: number;
+  automationPriority?: AiAutomationPriority;
+}
+
+/**
+ * Cross-process proof carried inside the signed internal-attribution token.
+ * The opaque reservationId is also the owner token of the live SQLite lock,
+ * so the internal AI proxy can prove that it is re-entering the exact outer
+ * reservation instead of trusting user-supplied scope metadata.
+ */
+export interface SignedOuterAiBudgetReservation {
+  reservationId: string;
+  requestSource: AiRequestSource;
+  baseCategory: string;
+  jobName: string | null;
+  runId: string | null;
+}
+
+interface ActiveAiBudgetReservationContext extends SignedOuterAiBudgetReservation {
+  userId: number;
+  active: boolean;
+  approved: boolean;
+}
+
+const activeAiBudgetReservation = new AsyncLocalStorage<ActiveAiBudgetReservationContext | null>();
+const activeAiBudgetReservationByRequestId = new Map<string, ActiveAiBudgetReservationContext>();
 
 export interface DailyQuotaStatus {
   over: boolean;
@@ -75,6 +133,10 @@ export interface DailyQuotaStatus {
   plan: BillingPlan | string;
   usageLevel: UsageLevel;
   usageFraction: number;
+  dailyUsageFraction: number;
+  monthlyUsageFraction: number;
+  dailyOver: boolean;
+  monthlyOver: boolean;
   callsToday: number;
   boostAvailable: boolean;
   limitUsd: number;
@@ -90,6 +152,25 @@ export interface DailyQuotaStatus {
   totalRemainingUsd: number;
   pointsPurchaseAvailable: boolean;
   resetAt: string;
+  dailyResetAt: string;
+  monthlyResetAt: string;
+  unblocksAt: string | null;
+  monthlySpentUsd: number;
+  monthlyCapUsd: number;
+  monthlyRemainingUsd: number;
+  automationSpentTodayUsd: number;
+  automationSpentMonthlyUsd: number;
+  automationDailyCapUsd: number;
+  automationMonthlyCapUsd: number;
+  automationDailyOver: boolean;
+  automationMonthlyOver: boolean;
+  automationDailyRemainingUsd: number;
+  automationMonthlyRemainingUsd: number;
+  requestSource: AiRequestSource;
+  aiAccessAllowed: boolean;
+  automationAllowed: boolean;
+  blockReason: AiEntitlementBlockReason | null;
+  entitlement: UserEntitlement | null;
 }
 
 function getQuotaResetAt(now = new Date()): string {
@@ -104,51 +185,190 @@ function getQuotaResetAt(now = new Date()): string {
   )).toISOString();
 }
 
-export function getDailyQuotaStatus(userId: number): DailyQuotaStatus {
+function getUtcDayWindow(now = new Date()): { start: string; end: string } {
+  const start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+  return { start: start.toISOString(), end: getQuotaResetAt(now) };
+}
+
+function getUtcMonthWindow(now = new Date()): { start: string; end: string } {
+  return {
+    start: new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1)).toISOString(),
+    end: new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1)).toISOString(),
+  };
+}
+
+function safeFraction(spent: number, cap: number): number {
+  if (cap <= 0) return spent > 0 ? 1 : 0;
+  return Math.max(0, Math.min(spent / cap, 1));
+}
+
+export function getDailyQuotaStatus(
+  userId: number,
+  options: { requestSource?: AiRequestSource; now?: Date } = {},
+): DailyQuotaStatus {
+  const requestSource = options.requestSource ?? (userId > 0 ? 'interactive' : 'system');
+  const now = options.now ?? new Date();
   try {
     const db = getDb();
-    const plan = resolveBillingPlanForUser(userId);
-    const userOverride = getActiveUserAiBudgetOverride(userId);
-    const capUsd = userOverride?.dailyCostUsd ?? getEffectiveDailyCostLimitUsd(plan as BillingPlan);
-    const usageLevel = getUsageLevelForPlan(plan as BillingPlan);
-    const nexusPoints = getNexusPointBalance(userId);
+    // requestSource is the authority for the shared system pool. System jobs
+    // may retain a positive target userId for attribution, but must never
+    // inherit that user's/owner's entitlement or budget.
+    const isSystem = requestSource === 'system';
+    const entitlement = isSystem ? null : getEffectiveEntitlement(userId);
+    const plan = isSystem ? 'system' : entitlement!.plan;
+    // Per-user overrides tune included budgets only for an entitlement that is
+    // currently allowed to spend. Dormant overrides on Free, beta/manual,
+    // expired, or past-due accounts must not surface phantom allowance in the
+    // public quota contract (and become effective only after paid eligibility).
+    const userOverride = isSystem || !entitlement!.aiAccessAllowed
+      ? null
+      : getActiveUserAiBudgetOverride(userId, now);
+    const capUsd = isSystem
+      ? SYSTEM_DAILY_COST_CAP_USD
+      : userOverride?.dailyCostUsd ?? entitlement!.dailyCostCapUsd;
+    const monthlyCapUsd = isSystem
+      ? SYSTEM_MONTHLY_COST_CAP_USD
+      : userOverride?.monthlyCostUsd ?? entitlement!.monthlyCostCapUsd;
+    const usageLevel = isSystem ? 'owner' : getUsageLevelForPlan(plan as BillingPlan);
+    const nexusPoints = !isSystem && requestSource === 'interactive' && entitlement!.nexusPointsAllowed
+      ? getNexusPointBalance(userId, now)
+      : { pointsBalance: 0, usdBalance: 0, nextCreditExpiryAt: null, pointsExpiringSoon: 0, usdExpiringSoon: 0 };
 
+    const day = getUtcDayWindow(now);
+    const month = isSystem
+      ? getUtcMonthWindow(now)
+      : {
+          start: entitlement!.billingPeriodStart ?? getUtcMonthWindow(now).start,
+          end: entitlement!.billingPeriodEnd ?? getUtcMonthWindow(now).end,
+        };
+
+    // Positive target user IDs are retained on system rows for attribution,
+    // but those rows belong exclusively to the shared system pool. Excluding
+    // them here prevents the same spend from also reducing a user's paid
+    // allowance or Points headroom. Legacy NULL sources remain user spend.
+    const usageScopePredicate = isSystem
+      ? "request_source = 'system'"
+      : "user_id = ? AND COALESCE(request_source, 'interactive') <> 'system'";
+    const usageScopeParams = isSystem ? [] : [userId];
     const row = db.prepare(`
-      SELECT COALESCE(SUM(cost_usd), 0) as total, COUNT(*) as calls
-      FROM api_usage WHERE user_id = ? AND ts >= date('now')
-    `).get(userId) as { total: number; calls: number };
+      SELECT
+        COALESCE(SUM(CASE WHEN ts >= datetime(?) AND ts < datetime(?) THEN cost_usd ELSE 0 END), 0) AS daily_total,
+        COALESCE(SUM(CASE WHEN ts >= datetime(?) AND ts < datetime(?) THEN cost_usd ELSE 0 END), 0) AS monthly_total,
+        COALESCE(SUM(CASE WHEN request_source = 'automation' AND ts >= datetime(?) AND ts < datetime(?) THEN cost_usd ELSE 0 END), 0) AS automation_daily,
+        COALESCE(SUM(CASE WHEN request_source = 'automation' AND ts >= datetime(?) AND ts < datetime(?) THEN cost_usd ELSE 0 END), 0) AS automation_monthly,
+        SUM(CASE WHEN ts >= datetime(?) AND ts < datetime(?) THEN 1 ELSE 0 END) AS calls
+      FROM api_usage
+      WHERE ${usageScopePredicate}
+        AND ts >= datetime(?)
+        AND ts < datetime(?)
+    `).get(
+      day.start, day.end,
+      month.start, month.end,
+      day.start, day.end,
+      month.start, month.end,
+      day.start, day.end,
+      ...usageScopeParams,
+      month.start < day.start ? month.start : day.start,
+      month.end > day.end ? month.end : day.end,
+    ) as {
+      daily_total: number;
+      monthly_total: number;
+      automation_daily: number;
+      automation_monthly: number;
+      calls: number;
+    };
+    const dailySpent = Number(row.daily_total || 0);
+    const monthlySpent = Number(row.monthly_total || 0);
+    const automationDailySpent = Number(row.automation_daily || 0);
+    const automationMonthlySpent = Number(row.automation_monthly || 0);
     let debitedTodayUsd = 0;
-    try {
-      const debitRow = db.prepare(`
-        SELECT COALESCE(SUM(usd_cost_debited), 0) AS debited
-        FROM nexus_point_debits
-        WHERE user_id = ? AND created_at >= date('now')
-      `).get(userId) as { debited: number };
-      debitedTodayUsd = debitRow.debited || 0;
-    } catch {
-      debitedTodayUsd = 0;
+    let debitedMonthlyUsd = 0;
+    if (!isSystem) {
+      try {
+        const debitRow = db.prepare(`
+          SELECT
+            COALESCE(SUM(CASE WHEN COALESCE(u.ts, d.created_at) >= datetime(?) AND COALESCE(u.ts, d.created_at) < datetime(?) THEN d.usd_cost_debited ELSE 0 END), 0) AS daily_debited,
+            COALESCE(SUM(CASE WHEN COALESCE(u.ts, d.created_at) >= datetime(?) AND COALESCE(u.ts, d.created_at) < datetime(?) THEN d.usd_cost_debited ELSE 0 END), 0) AS monthly_debited
+          FROM nexus_point_debits d
+          LEFT JOIN api_usage u ON u.id = d.api_usage_id
+          WHERE d.user_id = ?
+        `).get(day.start, day.end, month.start, month.end, userId) as { daily_debited: number; monthly_debited: number };
+        debitedTodayUsd = debitRow.daily_debited || 0;
+        debitedMonthlyUsd = debitRow.monthly_debited || 0;
+      } catch {
+        debitedTodayUsd = 0;
+        debitedMonthlyUsd = 0;
+      }
     }
 
-    const includedRemainingUsd = capUsd > 0 ? Math.max(capUsd - row.total, 0) : 0;
-    const unsettledOverageUsd = Math.max(row.total - capUsd - debitedTodayUsd, 0);
+    const dailyIncludedRemaining = Math.max(capUsd - dailySpent, 0);
+    const monthlyIncludedRemaining = Math.max(monthlyCapUsd - monthlySpent, 0);
+    const includedRemainingUsd = Math.min(dailyIncludedRemaining, monthlyIncludedRemaining);
+    const unsettledOverageUsd = Math.max(
+      dailySpent - capUsd - debitedTodayUsd,
+      monthlySpent - monthlyCapUsd - debitedMonthlyUsd,
+      0,
+    );
     const nexusPointsRemainingUsd = Math.max(nexusPoints.usdBalance - unsettledOverageUsd, 0);
     const nexusPointsRemaining = Math.max(nexusPoints.pointsBalance - usdToPoints(unsettledOverageUsd), 0);
     const totalRemainingUsd = includedRemainingUsd + nexusPointsRemainingUsd;
-    const fraction = capUsd > 0 ? Math.min(row.total / capUsd, 1.0) : 1.0;
-    const over = totalRemainingUsd <= 0 && row.total >= capUsd;
+    const dailyFraction = safeFraction(dailySpent, capUsd);
+    const monthlyFraction = safeFraction(monthlySpent, monthlyCapUsd);
+    const fraction = Math.max(dailyFraction, monthlyFraction);
+    const dailyOver = dailySpent >= capUsd;
+    const monthlyOver = monthlySpent >= monthlyCapUsd;
+    const automationDailyCapUsd = capUsd * AUTOMATION_BUDGET_FRACTION;
+    const automationMonthlyCapUsd = monthlyCapUsd * AUTOMATION_BUDGET_FRACTION;
+    const automationDailyOver = automationDailySpent >= automationDailyCapUsd;
+    const automationMonthlyOver = automationMonthlySpent >= automationMonthlyCapUsd;
+    const accessAllowed = isSystem || Boolean(entitlement?.aiAccessAllowed);
+    const automationAllowed = isSystem || Boolean(entitlement?.automationAllowed);
+    const policyOver = !accessAllowed
+      || (requestSource === 'automation' && (!automationAllowed || automationDailyOver || automationMonthlyOver))
+      || ((dailyOver || monthlyOver) && totalRemainingUsd <= 0);
+    // During attribution/observe-only rollout the new paid policy must not
+    // silently flip legacy public `isOverLimit`/`allowed` contracts. Preserve
+    // all daily/monthly/automation telemetry below, but expose an effective
+    // blocking verdict only after enforcement is explicitly enabled. The
+    // pre-existing global safety cap remains enforced separately.
+    const over = isPaidAiCostControlsEnforcementEnabled() ? policyOver : false;
     const remainingUsd = Math.max(totalRemainingUsd, 0);
-    const pointsPurchaseAvailable = plan === 'pro' || plan === 'max' || plan === 'beta';
+    const pointsPurchaseAvailable = requestSource === 'interactive' && Boolean(entitlement?.nexusPointsAllowed);
+    const automationBlocked = requestSource === 'automation'
+      && (automationDailyOver || automationMonthlyOver);
+    const exhaustedByCost = (dailyOver || monthlyOver) && totalRemainingUsd <= 0;
+    const policyUnblocksAt = !accessAllowed || (requestSource === 'automation' && !automationAllowed)
+      ? null
+      : automationBlocked
+        ? (automationMonthlyOver ? month.end : day.end)
+        : exhaustedByCost
+          ? (monthlyOver ? month.end : day.end)
+          : null;
+    // `unblocksAt` describes an effective denial, not a hypothetical policy
+    // decision. Observe-only clients still receive both reset timestamps.
+    const unblocksAt = isPaidAiCostControlsEnforcementEnabled() ? policyUnblocksAt : null;
+    // The legacy fraction is max(daily, monthly), so the legacy reset must
+    // describe that same window. Resolve ties to monthly because a daily
+    // reset cannot clear a simultaneously exhausted monthly window.
+    const tiedAndBothExhausted = monthlyOver && dailyOver && monthlyFraction === dailyFraction;
+    const legacyResetAt = monthlyFraction > dailyFraction || tiedAndBothExhausted
+      ? month.end
+      : day.end;
 
     return {
       over,
-      spentUsd: row.total,
+      spentUsd: dailySpent,
       capUsd,
       plan,
       usageLevel,
       usageFraction: Math.round(fraction * 100) / 100,
-      callsToday: row.calls,
+      dailyUsageFraction: Math.round(dailyFraction * 100) / 100,
+      monthlyUsageFraction: Math.round(monthlyFraction * 100) / 100,
+      dailyOver,
+      monthlyOver,
+      callsToday: Number(row.calls || 0),
       limitUsd: capUsd,
-      usedUsd: row.total,
+      usedUsd: dailySpent,
       remainingUsd,
       planDailyLimitUsd: capUsd,
       includedRemainingUsd,
@@ -158,13 +378,32 @@ export function getDailyQuotaStatus(userId: number): DailyQuotaStatus {
       nexusPointsExpiringSoonUsd: nexusPoints.usdExpiringSoon,
       nextCreditExpiryAt: nexusPoints.nextCreditExpiryAt,
       totalRemainingUsd,
-      resetAt: getQuotaResetAt(),
+      resetAt: legacyResetAt,
+      dailyResetAt: day.end,
+      monthlyResetAt: month.end,
+      unblocksAt,
+      monthlySpentUsd: monthlySpent,
+      monthlyCapUsd,
+      monthlyRemainingUsd: Math.max(monthlyCapUsd - monthlySpent, 0),
+      automationSpentTodayUsd: automationDailySpent,
+      automationSpentMonthlyUsd: automationMonthlySpent,
+      automationDailyCapUsd,
+      automationMonthlyCapUsd,
+      automationDailyOver,
+      automationMonthlyOver,
+      automationDailyRemainingUsd: Math.max(automationDailyCapUsd - automationDailySpent, 0),
+      automationMonthlyRemainingUsd: Math.max(automationMonthlyCapUsd - automationMonthlySpent, 0),
+      requestSource,
+      aiAccessAllowed: accessAllowed,
+      automationAllowed,
+      blockReason: entitlement?.blockReason ?? null,
+      entitlement,
       boostAvailable: pointsPurchaseAvailable,
       pointsPurchaseAvailable,
     };
   } catch {
     return {
-      over: false, spentUsd: 0, capUsd: DEFAULT_DAILY_CAP_USD,
+      over: true, spentUsd: 0, capUsd: DEFAULT_DAILY_CAP_USD,
       plan: 'none', usageLevel: 'none', usageFraction: 0,
       callsToday: 0, boostAvailable: false,
       limitUsd: DEFAULT_DAILY_CAP_USD,
@@ -179,18 +418,43 @@ export function getDailyQuotaStatus(userId: number): DailyQuotaStatus {
       nextCreditExpiryAt: null,
       totalRemainingUsd: DEFAULT_DAILY_CAP_USD,
       pointsPurchaseAvailable: false,
-      resetAt: getQuotaResetAt(),
+      resetAt: getQuotaResetAt(now),
+      dailyResetAt: getQuotaResetAt(now),
+      monthlyResetAt: getUtcMonthWindow(now).end,
+      unblocksAt: null,
+      monthlySpentUsd: 0,
+      monthlyCapUsd: 0,
+      monthlyRemainingUsd: 0,
+      automationSpentTodayUsd: 0,
+      automationSpentMonthlyUsd: 0,
+      automationDailyCapUsd: 0,
+      automationMonthlyCapUsd: 0,
+      automationDailyOver: true,
+      automationMonthlyOver: true,
+      automationDailyRemainingUsd: 0,
+      automationMonthlyRemainingUsd: 0,
+      requestSource,
+      aiAccessAllowed: false,
+      automationAllowed: false,
+      blockReason: 'entitlement_error',
+      entitlement: null,
+      dailyUsageFraction: 0,
+      monthlyUsageFraction: 0,
+      dailyOver: true,
+      monthlyOver: true,
     };
   }
 }
 
-export function buildQuotaExceededMessage(quota: Pick<DailyQuotaStatus, 'plan' | 'limitUsd' | 'resetAt' | 'pointsPurchaseAvailable'>): string {
-  if (quota.plan === 'free' || quota.limitUsd <= 0) {
+export function buildQuotaExceededMessage(quota: Pick<DailyQuotaStatus, 'plan' | 'limitUsd' | 'dailyResetAt' | 'monthlyResetAt' | 'monthlyOver' | 'pointsPurchaseAvailable' | 'aiAccessAllowed'>): string {
+  if (!quota.aiAccessAllowed || quota.plan === 'free' || quota.limitUsd <= 0) {
     return 'AI access is not available on the free plan. Upgrade to Pro or Max to continue.';
   }
 
-  const points = quota.pointsPurchaseAvailable ? ' Buy Nexus Points for more AI usage, or wait for the daily reset.' : '';
-  return `Daily AI quota reached for the ${quota.plan} plan. Resets at ${quota.resetAt}.${points}`;
+  const resetAt = quota.monthlyOver ? quota.monthlyResetAt : quota.dailyResetAt;
+  const period = quota.monthlyOver ? 'Monthly' : 'Daily';
+  const points = quota.pointsPurchaseAvailable ? ' Buy Nexus Points for more interactive AI usage, or wait for the reset.' : '';
+  return `${period} AI quota reached for the ${quota.plan} plan. Resets at ${resetAt}.${points}`;
 }
 
 export function buildQuotaUsagePayload(quota: DailyQuotaStatus): Record<string, unknown> {
@@ -198,10 +462,44 @@ export function buildQuotaUsagePayload(quota: DailyQuotaStatus): Record<string, 
   return {
     plan: quota.plan,
     resetAt: quota.resetAt,
+    resetsAt: quota.resetAt,
+    dailyResetAt: quota.dailyResetAt,
+    monthlyResetAt: quota.monthlyResetAt,
+    unblocksAt: quota.unblocksAt,
     usageLevel: quota.usageLevel,
     usageFraction,
     usagePercent: Math.round(usageFraction * 100),
     isOverLimit: quota.over,
+    aiAccessAllowed: quota.aiAccessAllowed,
+    blockReason: quota.blockReason,
+    enforcementEnabled: isPaidAiCostControlsEnforcementEnabled(),
+    dailyUsageFraction: quota.dailyUsageFraction,
+    dailyUsagePercent: Math.round(quota.dailyUsageFraction * 100),
+    dailyIsOverLimit: quota.dailyOver,
+    dailyResetsAt: quota.dailyResetAt,
+    monthlyUsageFraction: quota.monthlyUsageFraction,
+    monthlyUsagePercent: Math.round(quota.monthlyUsageFraction * 100),
+    monthlyIsOverLimit: quota.monthlyOver,
+    monthlyResetsAt: quota.monthlyResetAt,
+    daily: {
+      usageFraction: quota.dailyUsageFraction,
+      usagePercent: Math.round(quota.dailyUsageFraction * 100),
+      isOverLimit: quota.dailyOver,
+      resetAt: quota.dailyResetAt,
+    },
+    monthly: {
+      usageFraction: quota.monthlyUsageFraction,
+      usagePercent: Math.round(quota.monthlyUsageFraction * 100),
+      isOverLimit: quota.monthlyOver,
+      resetAt: quota.monthlyResetAt,
+    },
+    automation: {
+      enabled: quota.automationAllowed,
+      dailyUsageFraction: safeFraction(quota.automationSpentTodayUsd, quota.automationDailyCapUsd),
+      monthlyUsageFraction: safeFraction(quota.automationSpentMonthlyUsd, quota.automationMonthlyCapUsd),
+      dailyOverLimit: quota.automationDailyOver,
+      monthlyOverLimit: quota.automationMonthlyOver,
+    },
     boostAvailable: quota.boostAvailable,
     nexusPointsBalance: quota.nexusPointsBalance,
     nexusPointsExpiringSoon: quota.nexusPointsExpiringSoon,
@@ -238,8 +536,8 @@ export type CostGuardrailDecision =
     }
   | {
       block: true;
-      status: 429;
-      reason: 'daily_limit_exceeded';
+      status: 403 | 429;
+      reason: 'AI_PLAN_REQUIRED' | 'AI_DAILY_LIMIT_REACHED' | 'AI_MONTHLY_LIMIT_REACHED';
       message: string;
       global: ReturnType<typeof checkGlobalCostGuardrail>;
       quota: DailyQuotaStatus;
@@ -325,38 +623,924 @@ export function isUserOverDailyCap(userId: number): DailyQuotaStatus {
   return getDailyQuotaStatus(userId);
 }
 
-export function enforceCostGuardrails(userId: number): CostGuardrailDecision {
+export interface AiBudgetDecision {
+  allowed: boolean;
+  status: 200 | 403 | 429;
+  code: 'OK' | 'AI_PLAN_REQUIRED' | 'AI_DAILY_LIMIT_REACHED' | 'AI_MONTHLY_LIMIT_REACHED' | 'SERVICE_DEGRADED';
+  window: AiBudgetWindow | null;
+  message: string;
+  quota: DailyQuotaStatus;
+  reservedCostUsd: number;
+  retryAfterSeconds: number | null;
+  unblocksAt: string | null;
+}
+
+function secondsUntil(iso: string): number {
+  const milliseconds = Date.parse(iso) - Date.now();
+  return Math.max(1, Math.ceil(milliseconds / 1000));
+}
+
+function getRollingP95CostUsd(request: AiBudgetRequest): number | null {
+  try {
+    // Reservation history describes the workload, not an individual tenant.
+    // User isolation remains enforced by the quota windows below; sharing the
+    // source/category p95 prevents a new or low-volume user from under-reserving
+    // a workload that already has representative production history.
+    // The active run is partial by definition and must not become its own
+    // historical p95 sample. Its already-recorded spend is accounted for
+    // separately below when computing the remaining run envelope.
+    const currentRunPredicate = request.runId
+      ? "AND COALESCE(run_id, '') <> ?"
+      : '';
+    const params = request.runId
+      ? [request.requestSource, request.baseCategory, request.runId]
+      : [request.requestSource, request.baseCategory];
+    const rows = getDb().prepare(`
+      SELECT SUM(cost_usd) AS cost_usd
+      FROM api_usage
+      WHERE request_source = ?
+        AND base_category = ?
+        ${currentRunPredicate}
+        AND cost_usd > 0
+        AND ts >= datetime('now', '-30 days')
+      GROUP BY CASE
+        WHEN run_id IS NOT NULL AND trim(run_id) <> '' THEN 'run:' || run_id
+        ELSE 'row:' || id
+      END
+      ORDER BY cost_usd ASC
+    `).all(...params) as Array<{ cost_usd: number }>;
+    if (rows.length === 0) return null;
+    const index = Math.max(0, Math.ceil(rows.length * 0.95) - 1);
+    const value = Number(rows[index]?.cost_usd);
+    return Number.isFinite(value) && value > 0 ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+function getCurrentRunSpentUsd(request: AiBudgetRequest): number {
+  if (!request.runId) return 0;
+  try {
+    const systemPool = request.requestSource === 'system';
+    const userPredicate = systemPool ? '' : 'AND user_id = ?';
+    const params = systemPool
+      ? [request.requestSource, request.baseCategory, request.runId]
+      : [request.requestSource, request.baseCategory, request.runId, request.userId];
+    const row = getDb().prepare(`
+      SELECT COALESCE(SUM(cost_usd), 0) AS cost_usd
+      FROM api_usage
+      WHERE request_source = ?
+        AND base_category = ?
+        AND run_id = ?
+        ${userPredicate}
+        AND cost_usd > 0
+    `).get(...params) as { cost_usd?: number } | undefined;
+    const value = Number(row?.cost_usd ?? 0);
+    return Number.isFinite(value) && value > 0 ? value : 0;
+  } catch {
+    // Failing to read current-run spend must not reduce the reservation.
+    return 0;
+  }
+}
+
+export function estimateAiBudgetReservationUsd(request: AiBudgetRequest): number {
+  const explicit = Number(request.estimatedCostUsd);
+  const validExplicit = Number.isFinite(explicit) && explicit > 0 ? explicit : null;
+  const rollingP95 = getRollingP95CostUsd(request);
+  const workloadDefault = WORKLOAD_DEFAULT_ESTIMATED_COST_USD
+    .find(([pattern]) => pattern.test(`${request.baseCategory}:${request.jobName ?? ''}`))?.[1];
+  const safeDefault = workloadDefault ?? DEFAULT_ESTIMATED_COST_USD[request.requestSource];
+  const currentRunSpentUsd = getCurrentRunSpentUsd(request);
+  const workloadBaseline = rollingP95 ?? safeDefault;
+  // p95 describes the complete workload run. On a second or later provider
+  // stage, quota already includes the earlier rows, so reserve only what
+  // remains of the 125% run envelope instead of counting the whole p95 twice.
+  const remainingRunEnvelopeUsd = Math.max(
+    workloadBaseline * RESERVATION_MULTIPLIER - currentRunSpentUsd,
+    0,
+  );
+  // An explicit estimate is a concrete-call floor (automation supplies a hard
+  // provider maximum). It may increase, never reduce, remaining p95 headroom.
+  const explicitFloorUsd = (validExplicit ?? 0) * RESERVATION_MULTIPLIER;
+  // If an unexpected extra stage has already exhausted the historical run
+  // envelope, retain the centrally configured per-call default instead of
+  // allowing an unreserved call solely because remaining p95 reached zero.
+  const unexpectedStageFloorUsd = currentRunSpentUsd > 0
+    ? safeDefault * RESERVATION_MULTIPLIER
+    : 0;
+  return Number(Math.max(
+    remainingRunEnvelopeUsd,
+    explicitFloorUsd,
+    unexpectedStageFloorUsd,
+  ).toFixed(8));
+}
+
+function inferAutomationPriority(request: AiBudgetRequest): AiAutomationPriority {
+  if (request.automationPriority) return request.automationPriority;
+  const value = `${request.baseCategory}:${request.jobName ?? ''}`;
+  if (/coach/i.test(value)) return 'coach';
+  if (/(?:channel_analysis|knowledge_synthesis|channel_learning)/i.test(value)) return 'channel_learning';
+  if (/content/i.test(value)) return 'content';
+  return 'other';
+}
+
+interface ScheduledContentPrioritySlot {
+  weekday: 2 | 4 | 5;
+  hour: number;
+  minute: number;
+  jobName: 'tuesday_reels' | 'thursday_youtube' | 'friday_weekly';
+  baseCategory: 'content_workflow_reel' | 'content_workflow_youtube' | 'content_workflow_weekly';
+  targets: ReadonlyArray<{ format: 'reel' | 'youtube'; count: number }>;
+}
+
+const SCHEDULED_CONTENT_PRIORITY_SLOTS: ReadonlyArray<ScheduledContentPrioritySlot> = [
+  {
+    weekday: 2,
+    hour: 9,
+    minute: 17,
+    jobName: 'tuesday_reels',
+    baseCategory: 'content_workflow_reel',
+    targets: [{ format: 'reel', count: 5 }],
+  },
+  {
+    weekday: 4,
+    hour: 9,
+    minute: 23,
+    jobName: 'thursday_youtube',
+    baseCategory: 'content_workflow_youtube',
+    targets: [{ format: 'youtube', count: 5 }],
+  },
+  {
+    weekday: 5,
+    hour: 18,
+    minute: 41,
+    jobName: 'friday_weekly',
+    baseCategory: 'content_workflow_weekly',
+    targets: [{ format: 'reel', count: 4 }, { format: 'youtube', count: 2 }],
+  },
+];
+
+function isContentPriorityEnabled(quota: DailyQuotaStatus): boolean {
+  if (!quota.entitlement?.allowedSkills.has('content')) return false;
+  try {
+    const row = getDb().prepare(`
+      SELECT enabled
+        FROM user_skill_overrides
+       WHERE user_id = ?
+         AND skill = 'content'
+         AND sub_skill IS NULL
+       ORDER BY updated_at DESC, id DESC
+       LIMIT 1
+    `).get(quota.entitlement.userId) as { enabled?: number } | undefined;
+    return row?.enabled !== 0;
+  } catch {
+    // The default policy is enabled. Preserve the higher-priority allowance
+    // when the optional override table cannot be read.
+    return true;
+  }
+}
+
+function scheduledContentWorkNeeded(userId: number, slot: ScheduledContentPrioritySlot): boolean {
+  try {
+    const db = getDb();
+    const inventory = db.prepare(`
+      SELECT
+        SUM(CASE
+          WHEN sentiment = 'pending'
+           AND created_at >= datetime('now', '-7 days')
+          THEN 1 ELSE 0 END
+        ) AS pending_count,
+        COUNT(*) AS historical_count
+      FROM content_topic_feedback
+      WHERE user_id = ?
+        AND COALESCE(tenant_id, user_id) = ?
+        AND source_job = ?
+        AND format = ?
+    `);
+    let hasMissingInventory = false;
+    let initialBatchIncomplete = false;
+    for (const target of slot.targets) {
+      const row = inventory.get(
+        userId,
+        userId,
+        slot.jobName,
+        target.format,
+      ) as { pending_count?: number; historical_count?: number };
+      if (Number(row.pending_count ?? 0) < target.count) hasMissingInventory = true;
+      if (Number(row.historical_count ?? 0) < target.count) initialBatchIncomplete = true;
+    }
+    if (!hasMissingInventory) return false;
+    if (initialBatchIncomplete) return true;
+
+    const engagement = db.prepare(`
+      SELECT (
+        EXISTS(
+          SELECT 1 FROM content_topic_feedback
+           WHERE user_id = ?
+             AND COALESCE(tenant_id, user_id) = ?
+             AND created_at >= datetime('now', '-30 days')
+             AND (
+               sentiment != 'pending'
+               OR COALESCE(script_generated, 0) = 1
+               OR converted_at IS NOT NULL
+             )
+        )
+        OR EXISTS(
+          SELECT 1 FROM content_scripts
+           WHERE user_id = ?
+             AND COALESCE(tenant_id, user_id) = ?
+             AND COALESCE(scope_status, 'active') = 'active'
+             AND created_at >= datetime('now', '-30 days')
+        )
+      ) AS engaged
+    `).get(userId, userId, userId, userId) as { engaged?: number };
+    return engagement.engaged === 1;
+  } catch {
+    // Content outranks Channel Learning. If delivery state cannot be read,
+    // keep one scheduled-call reserve instead of letting lower-priority work
+    // consume allowance that may already be owed.
+    return true;
+  }
+}
+
+function scheduledContentOccurrence(
+  slot: ScheduledContentPrioritySlot,
+  localNow: DateTime,
+): DateTime {
+  const daysUntil = (slot.weekday - localNow.weekday + 7) % 7;
+  let occurrence = localNow.startOf('day').plus({ days: daysUntil }).set({
+    hour: slot.hour,
+    minute: slot.minute,
+  });
+  // Keep a missed-today slot due for the rest of that local day; on the next
+  // day it naturally rolls to next week and cannot strand the current month.
+  if (daysUntil === 0 && occurrence.toMillis() < localNow.toMillis()) occurrence = localNow;
+  return occurrence;
+}
+
+function expectedScheduledContentReserveByWindow(
+  request: AiBudgetRequest,
+  quota: DailyQuotaStatus,
+): { dailyUsd: number; monthlyUsd: number } {
+  const priority = inferAutomationPriority(request);
+  if (priority === 'coach' || priority === 'content' || !isContentPriorityEnabled(quota)) {
+    return { dailyUsd: 0, monthlyUsd: 0 };
+  }
+
+  const zone = config.app?.timezone || 'UTC';
+  const localNow = DateTime.fromJSDate(new Date(), { zone });
+  const monthlyReset = DateTime.fromISO(quota.monthlyResetAt, { setZone: true });
+  const next = SCHEDULED_CONTENT_PRIORITY_SLOTS
+    .filter((slot) => scheduledContentWorkNeeded(request.userId, slot))
+    .map((slot) => ({ slot, occurrence: scheduledContentOccurrence(slot, localNow) }))
+    .sort((a, b) => a.occurrence.toMillis() - b.occurrence.toMillis())[0];
+  if (
+    !next
+    || !monthlyReset.isValid
+    || next.occurrence.toMillis() >= monthlyReset.toMillis()
+  ) {
+    return { dailyUsd: 0, monthlyUsd: 0 };
+  }
+
+  // Protect exactly one next scheduled Content envelope. Once that inventory
+  // is durable this query advances to the following slot, while full or
+  // engagement-gated inventory releases the reserve for Channel Learning.
+  const reserveUsd = estimateAiBudgetReservationUsd({
+    userId: request.userId,
+    requestSource: 'automation',
+    baseCategory: next.slot.baseCategory,
+    jobName: next.slot.jobName,
+    automationPriority: 'content',
+  });
+  return {
+    dailyUsd: next.slot.weekday === localNow.weekday ? reserveUsd : 0,
+    monthlyUsd: reserveUsd,
+  };
+}
+
+function hasSuccessfulCoachDeliveryInWindow(userId: number, start: string, end: string): boolean {
+  try {
+    const row = getDb().prepare(`
+      SELECT 1 AS delivered
+      FROM report_documents
+      WHERE user_id = ?
+        AND type = 'coach_briefing'
+        AND source_job = 'garmin_coach'
+        AND created_at >= datetime(?)
+        AND created_at < datetime(?)
+        AND length(trim(COALESCE(document_json, ''))) > 2
+      LIMIT 1
+    `).get(userId, start, end) as { delivered?: number } | undefined;
+    return row?.delivered === 1;
+  } catch {
+    // Fail safe: keep protecting the Coach reserve when delivery truth cannot
+    // be read. This may defer lower-priority work but cannot overspend.
+    return false;
+  }
+}
+
+function expectedCoachReserveByWindow(
+  request: AiBudgetRequest,
+): { dailyUsd: number; monthlyUsd: number } {
+  if (inferAutomationPriority(request) === 'coach') return { dailyUsd: 0, monthlyUsd: 0 };
+  const reserveUsd = estimateAiBudgetReservationUsd({
+    userId: request.userId,
+    requestSource: 'automation',
+    baseCategory: 'coach_analysis',
+    jobName: 'daily_coach',
+    automationPriority: 'coach',
+  });
+  const now = new Date();
+  const day = getUtcDayWindow(now);
+  const coachDeliveredToday = hasSuccessfulCoachDeliveryInWindow(request.userId, day.start, day.end);
+  return {
+    dailyUsd: coachDeliveredToday ? 0 : reserveUsd,
+    // The monthly ceiling must also preserve today's expected call. A Coach
+    // call earlier in the billing month does not satisfy today's delivery.
+    monthlyUsd: coachDeliveredToday ? 0 : reserveUsd,
+  };
+}
+
+export function getAutomationBudgetHeadroom(quota: DailyQuotaStatus): {
+  dailyRemainingUsd: number;
+  monthlyRemainingUsd: number;
+} {
+  return {
+    dailyRemainingUsd: quota.automationDailyRemainingUsd,
+    monthlyRemainingUsd: quota.automationMonthlyRemainingUsd,
+  };
+}
+
+function deniedDecision(
+  quota: DailyQuotaStatus,
+  reservedCostUsd: number,
+  input: {
+    code: AiBudgetDecision['code'];
+    status: 403 | 429;
+    window: AiBudgetWindow;
+    message: string;
+    unblocksAt: string | null;
+  },
+): AiBudgetDecision {
+  return {
+    allowed: false,
+    status: input.status,
+    code: input.code,
+    window: input.window,
+    message: input.message,
+    quota,
+    reservedCostUsd,
+    retryAfterSeconds: input.unblocksAt ? secondsUntil(input.unblocksAt) : null,
+    unblocksAt: input.unblocksAt,
+  };
+}
+
+/**
+ * Read-only budget decision. Callers that will spend must use
+ * withAiBudgetReservation so this check is serialized with the api_usage write.
+ */
+export function checkAiBudget(request: AiBudgetRequest): AiBudgetDecision {
+  const quota = getDailyQuotaStatus(request.userId, { requestSource: request.requestSource });
+  const reservedCostUsd = estimateAiBudgetReservationUsd(request);
   const global = checkGlobalCostGuardrail();
-  const quota = isUserOverDailyCap(userId);
+
+  if (getApiUsagePersistenceFailure()) {
+    return deniedDecision(quota, reservedCostUsd, {
+      code: 'SERVICE_DEGRADED',
+      status: 429,
+      window: 'global',
+      message: 'AI-backed features are temporarily degraded because usage metering is unavailable. Token-zero reads remain available.',
+      unblocksAt: null,
+    });
+  }
 
   if (global.exceeded) {
+    return deniedDecision(quota, reservedCostUsd, {
+      code: 'SERVICE_DEGRADED',
+      status: 429,
+      window: 'global',
+      message: 'AI-backed features are temporarily degraded because the workspace daily AI budget has been reached. Token-zero reads remain available.',
+      unblocksAt: quota.dailyResetAt,
+    });
+  }
+
+  if (!isPaidAiCostControlsEnforcementEnabled()) {
+    return {
+      allowed: true,
+      status: 200,
+      code: 'OK',
+      window: null,
+      message: 'Paid AI cost controls are observing only',
+      quota,
+      reservedCostUsd,
+      retryAfterSeconds: null,
+      unblocksAt: null,
+    };
+  }
+
+  if (!quota.aiAccessAllowed || (request.requestSource === 'automation' && !quota.automationAllowed)) {
+    return deniedDecision(quota, reservedCostUsd, {
+      code: 'AI_PLAN_REQUIRED',
+      status: 403,
+      window: 'plan',
+      message: 'Model-backed AI requires an active paid plan. Token-zero reads and actions remain available.',
+      unblocksAt: null,
+    });
+  }
+
+  if (request.requestSource === 'automation') {
+    const protectedCoachReserve = expectedCoachReserveByWindow(request);
+    const protectedContentReserve = expectedScheduledContentReserveByWindow(request, quota);
+    const automationDailyInsufficient = quota.automationSpentTodayUsd
+      + reservedCostUsd
+      + protectedCoachReserve.dailyUsd
+      + protectedContentReserve.dailyUsd
+      > quota.automationDailyCapUsd;
+    const automationMonthlyInsufficient = quota.automationSpentMonthlyUsd
+      + reservedCostUsd
+      + protectedCoachReserve.monthlyUsd
+      + protectedContentReserve.monthlyUsd
+      > quota.automationMonthlyCapUsd;
+    // Monthly takes precedence when both windows are exhausted: a daily
+    // reset alone would not actually unblock the job.
+    if (automationMonthlyInsufficient) {
+      return deniedDecision(quota, reservedCostUsd, {
+        code: 'AI_MONTHLY_LIMIT_REACHED',
+        status: 429,
+        window: 'automation_monthly',
+        message: `Monthly automation AI quota reached for the ${quota.plan} plan.`,
+        unblocksAt: quota.monthlyResetAt,
+      });
+    }
+    if (automationDailyInsufficient) {
+      return deniedDecision(quota, reservedCostUsd, {
+        code: 'AI_DAILY_LIMIT_REACHED',
+        status: 429,
+        window: 'automation_daily',
+        message: `Daily automation AI quota reached for the ${quota.plan} plan.`,
+        unblocksAt: quota.dailyResetAt,
+      });
+    }
+  }
+
+  const pointsHeadroom = request.requestSource === 'interactive' ? quota.nexusPointsRemainingUsd : 0;
+  // The Points balance is already reduced by settled overage (and the quota
+  // snapshot also subtracts any unsettled overage). Comparing total spend to
+  // cap + remaining Points would therefore charge settled overage twice.
+  // Compare the new reservation with each window's remaining headroom instead.
+  const dailyHeadroomUsd = Math.max(quota.capUsd - quota.spentUsd, 0) + pointsHeadroom;
+  const monthlyHeadroomUsd = Math.max(quota.monthlyCapUsd - quota.monthlySpentUsd, 0) + pointsHeadroom;
+  const dailyInsufficient = reservedCostUsd > dailyHeadroomUsd;
+  const monthlyInsufficient = reservedCostUsd > monthlyHeadroomUsd;
+  // Monthly takes precedence when both windows are exhausted: a daily reset
+  // would not unblock the caller while the billing-period cap still binds.
+  if (monthlyInsufficient) {
+    return deniedDecision(quota, reservedCostUsd, {
+      code: 'AI_MONTHLY_LIMIT_REACHED',
+      status: 429,
+      window: 'monthly',
+      message: `Monthly AI quota reached for the ${quota.plan} plan.`,
+      unblocksAt: quota.monthlyResetAt,
+    });
+  }
+  if (dailyInsufficient) {
+    return deniedDecision(quota, reservedCostUsd, {
+      code: 'AI_DAILY_LIMIT_REACHED',
+      status: 429,
+      window: 'daily',
+      message: `Daily AI quota reached for the ${quota.plan} plan.`,
+      unblocksAt: quota.dailyResetAt,
+    });
+  }
+
+  return {
+    allowed: true,
+    status: 200,
+    code: 'OK',
+    window: null,
+    message: 'AI budget available',
+    quota,
+    reservedCostUsd,
+    retryAfterSeconds: null,
+    unblocksAt: null,
+  };
+}
+
+export class AiBudgetError extends Error {
+  readonly decision: AiBudgetDecision;
+
+  constructor(decision: AiBudgetDecision) {
+    super(decision.code);
+    this.name = 'AiBudgetError';
+    this.decision = decision;
+  }
+}
+
+function createActiveReservationContext(
+  lease: SqliteCostLockLease,
+  userId: number,
+  input: Partial<Pick<AiBudgetRequest, 'requestSource' | 'baseCategory' | 'jobName' | 'runId'>> = {},
+): ActiveAiBudgetReservationContext {
+  return {
+    userId,
+    reservationId: lease.ownerToken,
+    requestSource: input.requestSource ?? (userId > 0 ? 'interactive' : 'system'),
+    baseCategory: input.baseCategory ?? 'interactive',
+    jobName: input.jobName ?? null,
+    runId: input.runId ?? crypto.randomUUID(),
+    active: true,
+    approved: false,
+  };
+}
+
+function approveActiveAiBudgetReservation(userId: number): void {
+  const active = activeAiBudgetReservation.getStore();
+  if (active?.active && active.userId === userId) active.approved = true;
+  const requestId = getCurrentRequestId();
+  const requestScoped = requestId ? activeAiBudgetReservationByRequestId.get(requestId) : undefined;
+  if (requestScoped?.active && requestScoped.userId === userId) requestScoped.approved = true;
+}
+
+function currentActiveAiBudgetReservation(): ActiveAiBudgetReservationContext | null {
+  const asyncLocal = activeAiBudgetReservation.getStore();
+  if (asyncLocal?.active) return asyncLocal;
+  const requestId = getCurrentRequestId();
+  return requestId ? activeAiBudgetReservationByRequestId.get(requestId) ?? null : null;
+}
+
+/**
+ * Returns marker material only inside the async chain that owns a live,
+ * approved SQLite reservation for the same user. internal-attribution signs
+ * this object; callers cannot manufacture a usable marker from body fields.
+ */
+export function getActiveAiBudgetReservationMarker(
+  userId: number,
+  providerCategory: string,
+): SignedOuterAiBudgetReservation | null {
+  const active = currentActiveAiBudgetReservation();
+  if (!active || !active.active || !active.approved || active.userId !== userId) return null;
+  // The provider category is independently signed in the attribution claims.
+  // The marker must retain the outer workload's canonical base category so
+  // Python re-entry keeps the same p95/run/budget lineage.
+  if (!String(providerCategory || '').trim() || !active.baseCategory.trim()) return null;
+  return {
+    reservationId: active.reservationId,
+    requestSource: active.requestSource,
+    baseCategory: active.baseCategory,
+    jobName: active.jobName,
+    runId: active.runId,
+  };
+}
+
+/**
+ * Provider-boundary invariant. With enforcement enabled, no cloud/local model
+ * network call may start unless an approved live reservation owns the shared
+ * system lock or the matching user lock. This catches missed call sites and
+ * fails closed before tokens are spent.
+ */
+export function assertAiBudgetReservationForProvider(input: {
+  userId: number;
+  category: string;
+  /** Worst-case cost of this concrete request at its hard provider token cap. */
+  maxCostUsd: number;
+  /** Provider can inject tokenized context without an exact request cap. */
+  hasUnboundedProviderInjectedContext?: boolean;
+}): void {
+  if (!isPaidAiCostControlsEnforcementEnabled()) return;
+  const active = currentActiveAiBudgetReservation();
+  const userMatches = active?.requestSource === 'system'
+    || active?.userId === input.userId;
+  const lockUserId = active?.requestSource === 'system' ? 0 : active?.userId;
+  if (
+    !active
+    || !active.active
+    || !active.approved
+    || !userMatches
+    || lockUserId == null
+    || !isLiveOuterReservation(lockUserId, active.reservationId)
+  ) {
+    throw new AiBudgetError(serviceDegradedDecision({
+      userId: input.userId,
+      requestSource: active?.requestSource ?? (input.userId > 0 ? 'interactive' : 'system'),
+      baseCategory: input.category,
+      jobName: active?.jobName ?? null,
+      runId: active?.runId ?? null,
+    }, 'AI-backed features are temporarily degraded because no active usage reservation was found. Token-zero reads remain available.'));
+  }
+
+  // A single reserved workflow can contain several concrete provider attempts
+  // (multi-stage generation, repair, or fallback). Re-read api_usage before
+  // every attempt while the same SQLite lock is still held so usage recorded by
+  // an earlier stage in this run reduces the next stage's headroom. The live
+  // reservation proves serialization; this fresh decision proves budget.
+  const request: AiBudgetRequest = {
+    userId: active.userId,
+    requestSource: active.requestSource,
+    baseCategory: active.baseCategory,
+    jobName: active.jobName,
+    runId: active.runId,
+  };
+  if (input.hasUnboundedProviderInjectedContext && active.requestSource !== 'interactive') {
+    const decision = serviceDegradedDecision(
+      request,
+      'Background AI search was deferred because the provider cannot expose an exact all-in context-cost ceiling. No model call was made.',
+    );
+    recordAiBudgetDeferral(request, decision);
+    throw new AiBudgetError(decision);
+  }
+  const hardMaximum = Number(input.maxCostUsd);
+  if (!Number.isFinite(hardMaximum) || hardMaximum < 0) {
+    const decision = serviceDegradedDecision(
+      request,
+      'AI work was deferred because the provider request did not expose resolved pricing and a verifiable maximum cost. No model call was made.',
+    );
+    recordAiBudgetDeferral(request, decision);
+    throw new AiBudgetError(decision);
+  }
+  if (active.requestSource === 'automation' || active.requestSource === 'system') {
+    // A provider-enforced output cap plus a conservative serialized-input
+    // ceiling makes this an actual upper bound, not a forecast. Feed it into
+    // the canonical reservation estimator (which adds the normal 125% safety
+    // margin and never drops below p95) before any network I/O. This guarantees
+    // the recorded background cost cannot cross its included windows; jobs
+    // defer at full requested quality rather than truncating output.
+    request.estimatedCostUsd = hardMaximum;
+  }
+  const decision = checkAiBudget(request);
+  if (!decision.allowed) {
+    recordAiBudgetDeferral(request, decision);
+    throw new AiBudgetError(decision);
+  }
+}
+
+function isLiveOuterReservation(userId: number, reservationId: string): boolean {
+  try {
+    const db = getDb();
+    ensureCostLockTable(db);
+    const row = db.prepare(`
+      SELECT 1 AS active
+      FROM cost_guardrail_locks
+      WHERE lock_key = ?
+        AND owner_token = ?
+        AND expires_at_ms > ?
+      LIMIT 1
+    `).get(`user:${userId}`, reservationId, Date.now()) as { active?: number } | undefined;
+    return row?.active === 1;
+  } catch {
+    return false;
+  }
+}
+
+function serviceDegradedDecision(request: AiBudgetRequest, message: string): AiBudgetDecision {
+  const quota = getDailyQuotaStatus(request.userId, { requestSource: request.requestSource });
+  return deniedDecision(quota, estimateAiBudgetReservationUsd(request), {
+    code: 'SERVICE_DEGRADED',
+    status: 429,
+    window: 'global',
+    message,
+    unblocksAt: null,
+  });
+}
+
+/**
+ * Re-enter a reservation held by a TS route while the Python content-engine
+ * calls back into /internal/ai-complete. This intentionally does not acquire
+ * the same user lock again (which would deadlock), but it verifies the signed
+ * marker against the live cross-process SQLite owner token and performs a
+ * fresh per-call budget check before provider execution.
+ */
+export async function withSignedOuterAiBudgetReservation<T>(
+  request: AiBudgetRequest,
+  marker: SignedOuterAiBudgetReservation,
+  fn: () => Promise<T>,
+): Promise<T> {
+  const lockUserId = request.requestSource === 'system' ? 0 : request.userId;
+  const markerMatchesRequest = marker.requestSource === request.requestSource
+    && marker.baseCategory === request.baseCategory
+    && (marker.jobName ?? null) === (request.jobName ?? null)
+    && (marker.runId ?? null) === (request.runId ?? null)
+    && typeof marker.reservationId === 'string'
+    && marker.reservationId.length >= 16;
+  if (!markerMatchesRequest || !isLiveOuterReservation(lockUserId, marker.reservationId)) {
+    throw new AiBudgetError(serviceDegradedDecision(
+      request,
+      'AI-backed features are temporarily degraded because the outer usage reservation could not be verified. Token-zero reads remain available.',
+    ));
+  }
+
+  const decision = checkAiBudget(request);
+  if (!decision.allowed) {
+    recordAiBudgetDeferral(request, decision);
+    throw new AiBudgetError(decision);
+  }
+  const activeContext: ActiveAiBudgetReservationContext = {
+    userId: request.userId,
+    ...marker,
+    active: true,
+    approved: true,
+  };
+  try {
+    return await activeAiBudgetReservation.run(activeContext, () => runWithApiUsageAttribution({
+      requestSource: marker.requestSource,
+      baseCategory: marker.baseCategory,
+      jobName: marker.jobName,
+      runId: marker.runId,
+    }, fn));
+  } finally {
+    activeContext.active = false;
+  }
+}
+
+function recordAiBudgetDeferral(request: AiBudgetRequest, decision: AiBudgetDecision): void {
+  try {
+    const attribution = resolveApiUsageAttribution(request.baseCategory, request.userId, {
+      requestSource: request.requestSource,
+      baseCategory: request.baseCategory,
+      jobName: request.jobName ?? null,
+      runId: request.runId ?? null,
+    });
+    getDb().prepare(`
+      INSERT INTO ai_budget_deferrals (
+        user_id, request_source, job_name, base_category, run_id,
+        code, budget_window, reset_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      request.userId,
+      attribution.requestSource,
+      attribution.jobName,
+      attribution.baseCategory,
+      attribution.runId,
+      decision.code,
+      decision.window,
+      decision.unblocksAt,
+    );
+  } catch (err) {
+    logger.warn({ err, userId: request.userId, code: decision.code }, 'AI budget deferral persistence failed');
+  }
+}
+
+/**
+ * Serialize entitlement+budget check, provider call, api_usage INSERT, and
+ * Nexus Points settlement. Provider instrumentation reads the async-local
+ * attribution established here.
+ */
+export async function withAiBudgetReservation<T>(
+  request: AiBudgetRequest,
+  fn: () => Promise<T>,
+): Promise<T> {
+  const lockUserId = request.requestSource === 'system' ? 0 : request.userId;
+  let lease: SqliteCostLockLease;
+  try {
+    lease = await acquireSqliteUserCostLock(lockUserId);
+  } catch (err) {
+    logger.error({ err, userId: request.userId, requestSource: request.requestSource }, 'AI budget lock unavailable');
+    throw new AiBudgetError(serviceDegradedDecision(
+      request,
+      'AI-backed features are temporarily degraded because the usage budget lock is unavailable. Token-zero reads remain available.',
+    ));
+  }
+  const effectiveRequest: AiBudgetRequest = {
+    ...request,
+    runId: request.runId ?? crypto.randomUUID(),
+  };
+  const activeContext = createActiveReservationContext(lease, request.userId, effectiveRequest);
+  try {
+    return await activeAiBudgetReservation.run(activeContext, async () => {
+      const decision = checkAiBudget(effectiveRequest);
+      if (!decision.allowed) {
+        recordAiBudgetDeferral(effectiveRequest, decision);
+        throw new AiBudgetError(decision);
+      }
+      activeContext.approved = true;
+      return runWithApiUsageAttribution({
+        requestSource: effectiveRequest.requestSource,
+        baseCategory: effectiveRequest.baseCategory,
+        jobName: effectiveRequest.jobName ?? null,
+        runId: effectiveRequest.runId ?? null,
+      }, fn);
+    });
+  } finally {
+    activeContext.active = false;
+    lease.release();
+  }
+}
+
+/**
+ * Explicit-release canonical reservation for mixed token-zero/model routes.
+ * This is the lazy equivalent of withAiBudgetReservation: it acquires the
+ * classified lock, checks the same policy, approves provider-boundary access,
+ * and installs the exact source/job/base/run attribution until release.
+ */
+export async function acquireAiBudgetReservation(
+  request: AiBudgetRequest,
+): Promise<() => void> {
+  const effectiveRequest: AiBudgetRequest = {
+    ...request,
+    runId: request.runId ?? crypto.randomUUID(),
+  };
+  const lockUserId = effectiveRequest.requestSource === 'system' ? 0 : effectiveRequest.userId;
+  let lease: SqliteCostLockLease;
+  try {
+    lease = await acquireSqliteUserCostLock(lockUserId);
+  } catch (err) {
+    logger.error({ err, userId: request.userId, requestSource: request.requestSource }, 'AI budget lock unavailable');
+    throw new AiBudgetError(serviceDegradedDecision(
+      effectiveRequest,
+      'AI-backed features are temporarily degraded because the usage budget lock is unavailable. Token-zero reads remain available.',
+    ));
+  }
+
+  const previousContext = activeAiBudgetReservation.getStore() ?? null;
+  const activeContext = createActiveReservationContext(lease, effectiveRequest.userId, effectiveRequest);
+  const requestId = getCurrentRequestId();
+  if (requestId) activeAiBudgetReservationByRequestId.set(requestId, activeContext);
+  activeAiBudgetReservation.enterWith(activeContext);
+  const restoreAttribution = enterApiUsageAttribution({
+    requestSource: effectiveRequest.requestSource,
+    baseCategory: effectiveRequest.baseCategory,
+    jobName: effectiveRequest.jobName ?? null,
+    runId: effectiveRequest.runId ?? null,
+  });
+
+  let released = false;
+  const release = () => {
+    if (released) return;
+    released = true;
+    activeContext.active = false;
+    lease.release();
+    if (requestId && activeAiBudgetReservationByRequestId.get(requestId) === activeContext) {
+      activeAiBudgetReservationByRequestId.delete(requestId);
+    }
+    restoreAttribution();
+    activeAiBudgetReservation.enterWith(previousContext);
+  };
+
+  try {
+    const decision = checkAiBudget(effectiveRequest);
+    if (!decision.allowed) {
+      recordAiBudgetDeferral(effectiveRequest, decision);
+      throw new AiBudgetError(decision);
+    }
+    activeContext.approved = true;
+    return release;
+  } catch (err) {
+    release();
+    throw err;
+  }
+}
+
+export function enforceCostGuardrails(userId: number): CostGuardrailDecision {
+  const global = checkGlobalCostGuardrail();
+  const decision = checkAiBudget({
+    userId,
+    requestSource: 'interactive',
+    baseCategory: 'interactive',
+  });
+  const quota = decision.quota;
+
+  if (decision.code === 'SERVICE_DEGRADED' || global.exceeded) {
+    const decisionIsDegraded = decision.code === 'SERVICE_DEGRADED';
     return {
       block: true,
       status: 429,
       reason: 'SERVICE_DEGRADED',
-      message: 'AI-backed features are temporarily degraded because the workspace daily AI budget has been reached. Token-zero reads remain available.',
+      message: decisionIsDegraded
+        ? decision.message
+        : 'AI-backed features are temporarily degraded because the workspace daily AI budget has been reached. Token-zero reads remain available.',
       global,
       quota,
       details: {
-        serviceDegraded: true,
+        // Quota telemetry comes first; authoritative denial metadata below
+        // must not be overwritten by quota-level compatibility fields.
         ...buildQuotaExceededPayload(quota),
+        serviceDegraded: true,
+        window: decisionIsDegraded ? decision.window ?? 'global' : 'global',
+        unblocksAt: decisionIsDegraded ? decision.unblocksAt : quota.dailyResetAt,
+        retryAfterSeconds: decisionIsDegraded
+          ? decision.retryAfterSeconds ?? 60
+          : Math.max(1, secondsUntil(quota.dailyResetAt)),
       },
     };
   }
 
-  if (quota.over) {
+  if (!decision.allowed) {
     return {
       block: true,
-      status: 429,
-      reason: 'daily_limit_exceeded',
-      message: buildQuotaExceededMessage(quota),
+      status: decision.status as 403 | 429,
+      reason: decision.code as 'AI_PLAN_REQUIRED' | 'AI_DAILY_LIMIT_REACHED' | 'AI_MONTHLY_LIMIT_REACHED',
+      message: decision.message,
       global,
       quota,
       details: {
         ...buildQuotaExceededPayload(quota),
+        window: decision.window,
+        unblocksAt: decision.unblocksAt,
+        retryAfterSeconds: decision.retryAfterSeconds,
       },
     };
   }
+
+  approveActiveAiBudgetReservation(userId);
 
   return {
     block: false,
@@ -387,9 +1571,19 @@ export function enforceCostGuardrails(userId: number): CostGuardrailDecision {
 // run multiple Node processes, the lock is SQLite-backed instead of a
 // process-local Map. If SQLite locking is unavailable, callers fail closed.
 
-const SQLITE_COST_LOCK_TTL_MS = 120_000;
+// Provider calls may legitimately run for 180s and the Python proxy waits up
+// to 300s. Keep a ten-minute lease and renew it while the owner is alive so
+// another process can never enter the same budget window mid-call.
+const SQLITE_COST_LOCK_TTL_MS = 600_000;
+const SQLITE_COST_LOCK_HEARTBEAT_MS = 30_000;
 const SQLITE_COST_LOCK_WAIT_MS = 30_000;
 const SQLITE_COST_LOCK_POLL_MS = 25;
+
+interface SqliteCostLockLease {
+  lockKey: string;
+  ownerToken: string;
+  release: () => void;
+}
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -414,7 +1608,7 @@ function ensureCostLockTable(db: ReturnType<typeof getDb>): void {
   `);
 }
 
-async function acquireSqliteUserCostLock(userId: number): Promise<(() => void) | null> {
+async function acquireSqliteUserCostLock(userId: number): Promise<SqliteCostLockLease> {
   const db = tryGetCostLockDb();
   if (!db) {
     throw new Error('COST_GUARDRAIL_LOCK_UNAVAILABLE');
@@ -435,9 +1629,27 @@ async function acquireSqliteUserCostLock(userId: number): Promise<(() => void) |
     `).run(lockKey, ownerToken, nowMs, nowMs + SQLITE_COST_LOCK_TTL_MS);
     if (result.changes > 0) {
       let released = false;
-      return () => {
+      const heartbeat = setInterval(() => {
+        if (released) return;
+        try {
+          const heartbeatResult = db.prepare(`
+            UPDATE cost_guardrail_locks
+            SET expires_at_ms = ?
+            WHERE lock_key = ? AND owner_token = ?
+          `).run(Date.now() + SQLITE_COST_LOCK_TTL_MS, lockKey, ownerToken);
+          if (heartbeatResult.changes === 0) {
+            logger.error({ userId, lockKey }, 'Cost guardrail SQLite lock heartbeat lost ownership');
+          }
+        } catch (err) {
+          logger.error({ err, userId, lockKey }, 'Cost guardrail SQLite lock heartbeat failed');
+        }
+      }, SQLITE_COST_LOCK_HEARTBEAT_MS);
+      if (typeof (heartbeat as any).unref === 'function') (heartbeat as any).unref();
+
+      const release = () => {
         if (released) return;
         released = true;
+        clearInterval(heartbeat);
         try {
           db.prepare('DELETE FROM cost_guardrail_locks WHERE lock_key = ? AND owner_token = ?')
             .run(lockKey, ownerToken);
@@ -445,6 +1657,7 @@ async function acquireSqliteUserCostLock(userId: number): Promise<(() => void) |
           logger.warn({ err, userId }, 'Cost guardrail SQLite lock release failed');
         }
       };
+      return { lockKey, ownerToken, release };
     }
     await sleep(SQLITE_COST_LOCK_POLL_MS);
   }
@@ -479,11 +1692,23 @@ export async function withUserCostLock<T>(
     // a real user's request.
     return fn();
   }
-  const releaseSqliteLock = await acquireSqliteUserCostLock(userId);
+  let lease: SqliteCostLockLease;
   try {
-    return await fn();
+    lease = await acquireSqliteUserCostLock(userId);
+  } catch (err) {
+    logger.error({ err, userId }, 'Legacy AI budget lock unavailable');
+    throw new AiBudgetError(serviceDegradedDecision({
+      userId,
+      requestSource: 'interactive',
+      baseCategory: 'legacy_cost_lock',
+    }, 'AI-backed features are temporarily degraded because the usage budget lock is unavailable. Token-zero reads remain available.'));
+  }
+  const activeContext = createActiveReservationContext(lease, userId);
+  try {
+    return await activeAiBudgetReservation.run(activeContext, fn);
   } finally {
-    releaseSqliteLock?.();
+    activeContext.active = false;
+    lease.release();
   }
 }
 
@@ -508,14 +1733,40 @@ export async function acquireCostLock(userId: number): Promise<() => void> {
   if (!Number.isFinite(userId) || userId <= 0) {
     return () => { /* no-op for invalid userId */ };
   }
-  const releaseSqliteLock = await acquireSqliteUserCostLock(userId);
-  return releaseSqliteLock ?? (() => { /* unreachable; acquire throws on unavailable DB */ });
+  const previousContext = activeAiBudgetReservation.getStore() ?? null;
+  let lease: SqliteCostLockLease;
+  try {
+    lease = await acquireSqliteUserCostLock(userId);
+  } catch (err) {
+    logger.error({ err, userId }, 'Legacy AI budget lock unavailable');
+    throw new AiBudgetError(serviceDegradedDecision({
+      userId,
+      requestSource: 'interactive',
+      baseCategory: 'legacy_cost_lock',
+    }, 'AI-backed features are temporarily degraded because the usage budget lock is unavailable. Token-zero reads remain available.'));
+  }
+  const activeContext = createActiveReservationContext(lease, userId);
+  const requestId = getCurrentRequestId();
+  if (requestId) activeAiBudgetReservationByRequestId.set(requestId, activeContext);
+  activeAiBudgetReservation.enterWith(activeContext);
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    activeContext.active = false;
+    lease.release();
+    if (requestId && activeAiBudgetReservationByRequestId.get(requestId) === activeContext) {
+      activeAiBudgetReservationByRequestId.delete(requestId);
+    }
+    activeAiBudgetReservation.enterWith(previousContext);
+  };
 }
 
 /** Test-only: drop every in-flight per-user lock. */
 export function _resetUserCostLocksForTests(): void {
   // Kept for backwards-compatible tests; SQLite lock rows are released by
   // test DB teardown or explicit release functions.
+  activeAiBudgetReservationByRequestId.clear();
 }
 
 /**
@@ -527,7 +1778,9 @@ export function getUserDailySpend(userId: number): { totalUsd: number; messageCo
     const row = db.prepare(`
       SELECT COALESCE(SUM(cost_usd), 0) as total, COUNT(*) as count
       FROM api_usage
-      WHERE user_id = ? AND ts >= date('now')
+      WHERE user_id = ?
+        AND COALESCE(request_source, 'interactive') <> 'system'
+        AND ts >= date('now')
     `).get(userId) as { total: number; count: number };
     return { totalUsd: row.total, messageCount: row.count };
   } catch {

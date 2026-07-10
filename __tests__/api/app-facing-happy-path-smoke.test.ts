@@ -284,7 +284,11 @@ vi.mock('../../src/services/training-plan-coordination', () => ({
 }));
 
 vi.mock('../../src/services/cost-guardrail', () => ({
+  AiBudgetError: class AiBudgetError extends Error {},
   acquireCostLock: vi.fn(async () => () => {}),
+  acquireAiBudgetReservation: vi.fn(async () => () => {}),
+  withAiBudgetReservation: vi.fn(async (_request: unknown, fn: () => Promise<unknown>) => fn()),
+  buildQuotaExceededPayload: vi.fn(() => ({})),
   buildQuotaExceededMessage: vi.fn((quota: { plan: string; resetAt: string }) => `Daily AI quota reached for the ${quota.plan} plan. Resets at ${quota.resetAt}.`),
   isUserOverDailyCap: vi.fn(() => ({
     over: false,

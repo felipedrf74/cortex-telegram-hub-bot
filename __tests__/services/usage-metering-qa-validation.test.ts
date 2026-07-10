@@ -427,6 +427,30 @@ describe('QA: Anthropic hook metering integration', () => {
   });
 });
 
+describe('QA: provider-hosted search budget contracts', () => {
+  it('marks every hosted-search boundary as unbounded for background enforcement', () => {
+    const sources = [
+      fs.readFileSync(path.resolve(__dirname, '../../src/portal/anthropic-hook.ts'), 'utf-8'),
+      fs.readFileSync(path.resolve(__dirname, '../../src/services/gemini-provider.ts'), 'utf-8'),
+      fs.readFileSync(path.resolve(__dirname, '../../src/services/openai-provider.ts'), 'utf-8'),
+    ];
+    for (const source of sources) {
+      expect(source).toContain('hasUnboundedProviderInjectedContext');
+    }
+  });
+
+  it('caps interactive OpenAI search to one low-context call and records complete cost', () => {
+    const source = fs.readFileSync(
+      path.resolve(__dirname, '../../src/services/openai-provider.ts'), 'utf-8',
+    );
+    expect(source).toContain("search_context_size: 'low'");
+    expect(source).toContain('max_tool_calls: maxToolCalls');
+    expect(source).toContain("getProviderToolFeeUsd('openai_web_search')");
+    expect(source).toContain('provider_tool_cost_usd');
+    expect(source).toContain('recordUsage(input.userId, inputTokens, outputTokens, priced.costUsd, false)');
+  });
+});
+
 // ── Portal snapshot integration ───────────────────────────────────
 
 describe('QA: Portal snapshot includes metering', () => {

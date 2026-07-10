@@ -1,6 +1,7 @@
 # Model Routing Skill Matrix
 
 Generated: 2026-05-19
+Updated: 2026-07-10 (paid-AI search and signed Content Engine attribution)
 
 ## Summary Matrix
 
@@ -12,12 +13,12 @@ Live env note: the older staging/production env grep set `AI_CHAT_FALLBACK=anthr
 | General Chat domain handling | `domains/domain-handler.ts` | Active `TaskRoutingProvider` | `getModelRouting` plus model-config overrides | Persists conversation after final domain response. |
 | Secretary | `domains/secretary.ts` | OpenAI -> Gemini through domain-specific pair | Chat tier by default | Direct Anthropic fallback only if routing provider unavailable and Anthropic gate enabled. |
 | Training/Triathlon | `domains/domain-handler.ts`, legacy `services/plan-generator.ts` | Gemini -> OpenAI in default task state | Classifier tier unless overridden; Anthropic direct path in legacy generator | Training context is injected into Anthropic direct call path and provider-backed domain calls through shared context. |
-| Content Creation | Chat domain, shortcuts, content engine | Gemini -> OpenAI for Chat domains; Gemini Search -> Anthropic gated for discovery; TS proxy for Python engine | Classifier tier for domain calls unless overridden | Content shortcuts can bypass domain routing for deterministic REST responses. |
+| Content Creation | Chat domain, shortcuts, content engine | Gemini -> OpenAI for Chat domains; enforced interactive research starts with one bounded OpenAI search, then Gemini/Anthropic gated only after non-budget failure; scheduled Content uses fresh signals or evergreen generation without hosted search | Classifier tier for domain calls unless overridden | Content shortcuts can bypass domain routing for deterministic REST responses. |
 | Finance | Chat domain, image/invoice tools | Gemini -> OpenAI for domain; vision paths vary | Classifier tier unless overridden | Invoice analysis currently tries Anthropic first before fallback helper. |
 | Cooking | Chat domain | Gemini -> OpenAI through domain provider router | Classifier tier unless overridden | Cooking recipes are nano candidates behind quality gates and domain experiment overrides. |
 | Tool continuations | `TaskRoutingProvider.continueWithToolResults` | Same resolved pair as initial domain call | Same optimization decision recomputed | Critical for stable tools/history across providers. |
 | Vision/image classification | `classifyAndExtractImage` | Gemini vision -> OpenAI vision -> Anthropic gated; GIF direct Anthropic | Vision helper options | Provider fallback does not use task router. |
-| Python content engine | `/api/v1/internal/ai-complete` | Gemini -> OpenAI -> Anthropic gated | One-shot helper options | `claude_client.py` name is compatibility-only. |
+| Python content engine | `/api/v1/internal/ai-complete` | Gemini -> OpenAI -> Anthropic gated | One-shot helper options | `claude_client.py` name is compatibility-only; authenticated routes re-enter the live budget through an exact-category signed attribution marker, while intentional unsigned jobs remain system-scoped. |
 | Streaming | `OpenAIProvider.streamDomain` | OpenAI-only | OpenAI model | Not part of central fallback/circuit breaker layer. |
 
 Live chat surfaces that enter this matrix:
@@ -71,7 +72,10 @@ Both live inbound surfaces now infer a chat turn contract before domain executio
 - Content script shortcut may call deterministic content services rather than Chat.
 - Content refinement shortcut uses `completeOneShotWithFallback`.
 - Python content engine calls the TypeScript internal proxy and inherits Gemini/OpenAI/Anthropic-gated behavior.
-- Content discovery uses Gemini Search grounding, with Anthropic web-search fallback.
+- Enforced interactive Content discovery/research uses one low-context OpenAI
+  web-search call first, with Gemini/Anthropic considered only after non-budget
+  provider failure. Scheduled Content uses fresh signals or validated evergreen
+  generation and never provider-hosted search while enforcement is active.
 
 ### Finance
 

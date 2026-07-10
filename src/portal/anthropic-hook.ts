@@ -13,20 +13,77 @@ import { pushEvent } from './telemetry';
 import { logger } from '../utils/logger';
 import { withTimeout } from '../utils/timeout';
 import { getAICallTimeoutMs, isAnthropicRuntimeEnabled } from '../services/runtime-flags';
-import { computeModelUsageCostUsd, recordUnresolvedModelPricingAlert, type ModelCostResult } from '../services/model-pricing';
+import {
+  computeModelUsageCostUsd,
+  computeProviderCallCostUpperBoundUsd,
+  getProviderToolFeeUsd,
+  recordUnresolvedModelPricingAlert,
+  type ModelCostResult,
+} from '../services/model-pricing';
 import { settleNexusPointOverageForUser } from '../services/nexus-points';
-import { insertApiUsageFallback } from '../services/api-usage-fallback';
+import { insertApiUsageFallback, tripApiUsagePersistenceFailure } from '../services/api-usage-fallback';
+import { resolveApiUsageAttribution } from '../services/api-usage-attribution';
+import { assertAiBudgetReservationForProvider } from '../services/cost-guardrail';
 
 // ─── Per-million-token pricing (update when Anthropic changes rates) ─
 
 const warnedModels = new Set<string>();
 
-function computeCost(model: string, usage: Anthropic.Usage, category?: string, userId?: number): ModelCostResult {
+const DEFAULT_ANTHROPIC_WEB_SEARCH_MAX_USES = 5;
+
+function isAnthropicWebSearchTool(tool: unknown): boolean {
+  if (!tool || typeof tool !== 'object') return false;
+  const value = tool as { type?: unknown; name?: unknown };
+  return String(value.name ?? '') === 'web_search'
+    || String(value.type ?? '').startsWith('web_search_');
+}
+
+function withAnthropicWebSearchCaps(
+  params: Anthropic.MessageCreateParamsNonStreaming,
+): Anthropic.MessageCreateParamsNonStreaming {
+  if (!Array.isArray(params.tools)) return params;
+  let changed = false;
+  const tools = params.tools.map((tool) => {
+    if (!isAnthropicWebSearchTool(tool)) return tool;
+    const configured = Number((tool as { max_uses?: unknown }).max_uses);
+    if (Number.isInteger(configured) && configured >= 1) return tool;
+    changed = true;
+    return { ...tool, max_uses: DEFAULT_ANTHROPIC_WEB_SEARCH_MAX_USES } as typeof tool;
+  });
+  return changed ? { ...params, tools } : params;
+}
+
+function getAnthropicWebSearchMaxRequests(
+  params: Anthropic.MessageCreateParamsNonStreaming,
+): number {
+  if (!Array.isArray(params.tools)) return 0;
+  return params.tools.reduce((sum, tool) => {
+    if (!isAnthropicWebSearchTool(tool)) return sum;
+    const maxUses = Number((tool as { max_uses?: unknown }).max_uses);
+    return sum + (Number.isInteger(maxUses) && maxUses >= 1 ? maxUses : 0);
+  }, 0);
+}
+
+function getAnthropicWebSearchRequestCount(usage: Anthropic.Usage): number | null {
+  const raw = usage.server_tool_use?.web_search_requests;
+  if (raw == null) return 0;
+  const count = Number(raw);
+  return Number.isInteger(count) && count >= 0 ? count : null;
+}
+
+function computeCost(
+  model: string,
+  usage: Anthropic.Usage,
+  webSearchRequests: number,
+  category?: string,
+  userId?: number,
+): ModelCostResult {
   const priced = computeModelUsageCostUsd(model, {
     inputTokens: usage.input_tokens,
     outputTokens: usage.output_tokens,
     cacheReadTokens: usage.cache_read_input_tokens ?? 0,
     cacheWriteTokens: usage.cache_creation_input_tokens ?? 0,
+    nonTokenCostUsd: webSearchRequests * getProviderToolFeeUsd('anthropic_web_search'),
   }, 'anthropic');
   if (!priced.pricingResolved) {
     if (!warnedModels.has(model)) {
@@ -93,12 +150,30 @@ export async function trackedCreate(
     throw new Error(msg);
   }
 
+  // Make the provider's paid-search maximum explicit before calculating the
+  // bound. Future callers that omit max_uses cannot silently create an
+  // unbounded fee surface.
+  const requestParams = withAnthropicWebSearchCaps(params);
+  const maxWebSearchRequests = getAnthropicWebSearchMaxRequests(requestParams);
+  assertAiBudgetReservationForProvider({
+    userId: options?.userId ?? 0,
+    category,
+    hasUnboundedProviderInjectedContext: maxWebSearchRequests > 0,
+    maxCostUsd: computeProviderCallCostUpperBoundUsd({
+      provider: 'anthropic',
+      model: requestParams.model,
+      payload: requestParams,
+      maxOutputTokens: requestParams.max_tokens,
+      nonTokenCostUpperBoundUsd:
+        maxWebSearchRequests * getProviderToolFeeUsd('anthropic_web_search'),
+    }),
+  });
   const start = Date.now();
 
   // Use streaming for long operations: high max_tokens or Sonnet model
   // The Anthropic SDK requires stream:true for operations that may take 10+ minutes
-  const isSonnet = params.model.includes('sonnet');
-  const isLargeRequest = params.max_tokens >= 4096;
+  const isSonnet = requestParams.model.includes('sonnet');
+  const isLargeRequest = requestParams.max_tokens >= 4096;
   const useStreaming = isSonnet || isLargeRequest;
 
   // Timeout: use caller override, or auto-scale for streaming/large requests (90s), default 30s
@@ -108,22 +183,55 @@ export async function trackedCreate(
   let response: Anthropic.Message;
   if (useStreaming) {
     const streamPromise = (async () => {
-      const stream = await client.messages.stream({ ...params, stream: true });
+      // Budget ownership is checked immediately above. Disable opaque SDK
+      // retries so a second HTTP attempt cannot occur without another live
+      // headroom decision. Callers retain their explicit provider fallback.
+      const stream = await client.messages.stream(
+        { ...requestParams, stream: true },
+        { maxRetries: 0 },
+      );
       return stream.finalMessage();
     })();
     response = await withTimeout(streamPromise, AI_CALL_TIMEOUT_MS);
   } else {
-    response = await withTimeout(client.messages.create(params), AI_CALL_TIMEOUT_MS);
+    response = await withTimeout(
+      client.messages.create(requestParams, { maxRetries: 0 }),
+      AI_CALL_TIMEOUT_MS,
+    );
   }
 
   const durationMs = Date.now() - start;
   const usage = response.usage;
-  const priced = computeCost(params.model, usage, category, options?.userId ?? 0);
+  const webSearchRequests = usage ? getAnthropicWebSearchRequestCount(usage) : null;
+  if (
+    !usage
+    || !Number.isFinite(usage.input_tokens)
+    || usage.input_tokens < 0
+    || !Number.isFinite(usage.output_tokens)
+    || usage.output_tokens < 0
+    || webSearchRequests == null
+  ) {
+    const persistenceError = tripApiUsagePersistenceFailure('anthropic', category);
+    logger.error({ code: persistenceError.code, category, model: params.model }, 'Anthropic response omitted valid usage metadata; AI usage persistence degraded');
+    throw persistenceError;
+  }
+  const priced = computeCost(
+    requestParams.model,
+    usage,
+    webSearchRequests,
+    category,
+    options?.userId ?? 0,
+  );
   const cost = priced.costUsd;
+  const providerToolCostUsd =
+    webSearchRequests * getProviderToolFeeUsd('anthropic_web_search');
   const pricingStatus = priced.pricingResolved ? 'resolved' : 'unresolved';
+  const userId = options?.userId ?? 0;
+  const attribution = resolveApiUsageAttribution(category, userId);
   let apiUsageId: number | null = null;
 
-  // Persist to SQLite (non-critical — swallow errors)
+  // Persist to SQLite. This is quota truth, so both INSERT paths failing is
+  // fatal and trips the process-wide metering-degraded latch.
   //
   // April 9 2026: fixed a long-standing latent bug where the INSERT
   // omitted `user_id` entirely. Migration 029 added the `user_id`
@@ -148,8 +256,10 @@ export async function trackedCreate(
       INSERT INTO api_usage
         (category, model, tenant_id, user_id, input_tokens, output_tokens,
          cache_read_tokens, cache_write_tokens, cost_usd, duration_ms,
-         provider, pricing_status, pricing_model_key)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'anthropic', ?, ?)
+         provider, pricing_status, pricing_model_key,
+         request_source, job_name, base_category, run_id,
+         provider_tool_cost_usd, web_search_requests, grounded_search_prompts)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'anthropic', ?, ?, ?, ?, ?, ?, ?, ?, 0)
     `).run(
       category,
       params.model,
@@ -163,6 +273,12 @@ export async function trackedCreate(
       durationMs,
       pricingStatus,
       priced.pricingModelKey,
+      attribution.requestSource,
+      attribution.jobName,
+      attribution.baseCategory,
+      attribution.runId,
+      providerToolCostUsd,
+      webSearchRequests,
     );
     apiUsageId = Number((result as { lastInsertRowid?: number | bigint } | undefined)?.lastInsertRowid ?? 0);
   } catch (err) {
@@ -180,9 +296,14 @@ export async function trackedCreate(
         costUsd: cost,
         durationMs,
         pricingStatus: 'legacy',
+        providerToolCostUsd,
+        webSearchRequests,
+        groundedSearchPrompts: 0,
       });
     } catch (fallbackErr) {
-      logger.warn({ err: fallbackErr }, 'Failed to record api_usage');
+      const persistenceError = tripApiUsagePersistenceFailure('anthropic', category);
+      logger.error({ err: fallbackErr, code: persistenceError.code }, 'Failed to record Anthropic api_usage; AI usage persistence degraded');
+      throw persistenceError;
     }
   }
 
@@ -202,13 +323,21 @@ export async function trackedCreate(
 
   // Push activity event
   const totalTokens = usage.input_tokens + usage.output_tokens;
-  pushEvent({
-    ts: new Date().toISOString(),
-    type: 'api_call',
-    summary: `${category}: ${totalTokens.toLocaleString()} tok, $${cost.toFixed(4)}, ${durationMs}ms`,
-    durationMs,
-  });
-  await settleNexusPointOverageForUser(options?.userId ?? 0, apiUsageId);
+  try {
+    pushEvent({
+      ts: new Date().toISOString(),
+      type: 'api_call',
+      summary: `${category}: ${totalTokens.toLocaleString()} tok, $${cost.toFixed(4)}, ${durationMs}ms`,
+      durationMs,
+    });
+  } catch (eventErr) {
+    logger.warn({ err: eventErr, userId, category }, 'Failed to publish Anthropic usage telemetry');
+  }
+  try {
+    await settleNexusPointOverageForUser(options?.userId ?? 0, apiUsageId);
+  } catch (settleErr) {
+    logger.warn({ err: settleErr, apiUsageId, userId }, 'nexus_points: Anthropic usage settlement failed');
+  }
 
   return response;
 }

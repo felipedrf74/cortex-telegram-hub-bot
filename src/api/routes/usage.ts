@@ -3,10 +3,10 @@
 /**
  * Usage routes — token-zero read of the user's API usage and quota state.
  *
- * Both endpoints are pure SQL reads against the usage_metering and
- * usage_quotas tables. NO AI involvement. The data they expose lets the
- * iOS client render a "messages used today" indicator and warn the user
- * before they hit a limit.
+ * Both endpoints are token-zero SQL reads. `api_usage` is the canonical
+ * blocking source for daily/monthly cost windows; `usage_metering` remains
+ * calendar-aligned analytics for legacy message/token telemetry. The data
+ * lets clients render current progress and reset-aware quota guidance.
  */
 
 import { Router, Response } from 'express';
@@ -15,42 +15,10 @@ import { logger } from '../../utils/logger';
 import {
   getDailyUsage,
   getUsageRange,
-  checkQuota,
 } from '../../services/usage-metering';
+import { buildQuotaUsagePayload, getDailyQuotaStatus } from '../../services/cost-guardrail';
 import { sendSuccess, sendError, sendInternalError, asyncHandler } from '../response-helpers';
 import { ensureValidTenantRouteScope } from '../tenant-route-scope';
-
-type UsageLevel = 'ok' | 'near_limit' | 'exhausted';
-
-function quotaFraction(used: number, limit: number | null | undefined): number | null {
-  if (!Number.isFinite(used) || !Number.isFinite(Number(limit)) || Number(limit) <= 0) return null;
-  return Math.max(0, Math.min(1, used / Number(limit)));
-}
-
-function usageLevelFor(fraction: number, allowed: boolean): UsageLevel {
-  if (!allowed || fraction >= 1) return 'exhausted';
-  if (fraction >= 0.8) return 'near_limit';
-  return 'ok';
-}
-
-function buildSafeUsageQuotaPayload(status: ReturnType<typeof checkQuota>) {
-  const usage = status.usage;
-  const quota = status.quota;
-  const fractions = [
-    quotaFraction(usage.messageCount, quota?.dailyMessageLimit),
-    quotaFraction(usage.totalTokens, quota?.dailyTokenLimit),
-    // Cost remains an internal input to the qualitative meter only. Never
-    // expose raw USD spend/caps on customer-facing usage endpoints.
-    quotaFraction(usage.costUsd, quota?.dailyCostLimitUsd),
-  ].filter((value): value is number => value != null);
-  const usageFraction = fractions.length > 0 ? Math.round(Math.max(...fractions) * 10_000) / 10_000 : 0;
-  return {
-    usageLevel: usageLevelFor(usageFraction, status.allowed),
-    usageFraction,
-    usagePercent: Math.round(usageFraction * 100),
-    isOverLimit: !status.allowed || status.exceeded.length > 0,
-  };
-}
 
 export function usageRoutes(): Router {
   const router = Router();
@@ -73,23 +41,24 @@ export function usageRoutes(): Router {
     const { userId } = req as AuthenticatedRequest;
 
     try {
-      const status = checkQuota(userId);
-      const usage = status.usage;
-      const quota = status.quota;
-      const safeQuota = buildSafeUsageQuotaPayload(status);
+      const usage = getDailyUsage(userId);
+      const quota = getDailyQuotaStatus(userId);
+      const safeQuota = buildQuotaUsagePayload(quota);
 
       sendSuccess(res, {
         date: usage.date,
         messagesUsed: usage.messageCount,
-        messagesLimit: quota?.dailyMessageLimit ?? null,
+        messagesLimit: null,
         tokensUsed: usage.totalTokens,
-        tokensLimit: quota?.dailyTokenLimit ?? null,
+        tokensLimit: null,
         inputTokens: usage.inputTokens,
         outputTokens: usage.outputTokens,
         apiCalls: usage.apiCalls,
         ...safeQuota,
-        allowed: status.allowed,
-        exceeded: status.exceeded,
+        allowed: !quota.over,
+        exceeded: quota.blockReason
+          ? ['plan']
+          : [quota.dailyOver ? 'daily' : null, quota.monthlyOver ? 'monthly' : null].filter(Boolean),
       });
     } catch (err: any) {
       logger.error({ err, userId }, 'iOS usage fetch failed');

@@ -58,7 +58,7 @@ describe('internal attribution tokens', () => {
     )).toBeNull();
   });
 
-  it('allows the direct json-repair child category without opening sibling categories', () => {
+  it('requires repair stages to reuse the exact signed category', () => {
     vi.stubEnv('INTERNAL_ATTRIBUTION_SECRET', 'test-secret');
     const token = createInternalAttributionToken({
       userId: 42,
@@ -69,9 +69,14 @@ describe('internal attribution tokens', () => {
 
     expect(verifyInternalAttributionToken(
       token,
-      'content_engine_report_json_repair',
+      'content_engine_report',
       Date.parse('2026-05-18T12:00:10Z'),
     )).toMatchObject({ userId: 42, tenantId: 77, category: 'content_engine_report' });
+    expect(verifyInternalAttributionToken(
+      token,
+      'content_engine_report_json_repair',
+      Date.parse('2026-05-18T12:00:10Z'),
+    )).toBeNull();
     expect(verifyInternalAttributionToken(
       token,
       'content_engine_feedback_json_repair',

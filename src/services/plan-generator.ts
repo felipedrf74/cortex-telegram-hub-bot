@@ -9,6 +9,7 @@
 
 import { callDomain } from './anthropic';
 import { logger } from '../utils/logger';
+import { withAiBudgetReservation } from './cost-guardrail';
 
 // ── Types ───────────────────────────────────────────────────────────
 
@@ -146,14 +147,18 @@ export function parsePlanResponse(text: string): GeneratedPlan {
 export async function generateWeeklyPlan(input: PlanGenerationInput): Promise<GeneratedPlan> {
   const prompt = buildPlanPrompt(input);
 
-  const result = await callDomain(
+  const result = await withAiBudgetReservation({
+    userId: input.userId,
+    requestSource: 'interactive',
+    baseCategory: 'weekly_training_plan_generation',
+  }, () => callDomain(
     'triathlon',
     [],
     prompt,
     '',
     4096,
     input.userId,
-  );
+  ));
 
   try {
     return parsePlanResponse(result.text);

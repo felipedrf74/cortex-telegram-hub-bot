@@ -47,9 +47,21 @@ import { withTimeout } from '../utils/timeout';
 import { canUseAnthropicRuntimeFallback, getAICallTimeoutMs } from './runtime-flags';
 import { buildScopedStateContextPrefix } from './provider-state-context';
 import { getDomainModelOverride, type DomainModelRole } from './model-config';
-import { computeModelUsageCostUsd, recordUnresolvedModelPricingAlert, resolveModelPricing } from './model-pricing';
+import {
+  computeModelUsageCostUsd,
+  computeProviderCallCostUpperBoundUsd,
+  getProviderToolFeeUsd,
+  recordUnresolvedModelPricingAlert,
+  resolveModelPricing,
+} from './model-pricing';
 import { settleNexusPointOverageForUser } from './nexus-points';
-import { insertApiUsageFallback } from './api-usage-fallback';
+import {
+  ApiUsagePersistenceError,
+  insertApiUsageFallback,
+  tripApiUsagePersistenceFailure,
+} from './api-usage-fallback';
+import { resolveApiUsageAttribution } from './api-usage-attribution';
+import { assertAiBudgetReservationForProvider } from './cost-guardrail';
 
 // ─── Client (lazy init — only created if API key is set) ────────────
 
@@ -85,10 +97,40 @@ function warnUnresolvedGeminiPricing(model: string, category: string, userId: nu
   recordUnresolvedModelPricingAlert({ provider: 'gemini', model, category, userId });
 }
 
-export function computeGeminiCost(model: string, usage: { promptTokenCount: number; candidatesTokenCount: number; cachedContentTokenCount?: number }): number {
+type GeminiUsageForBilling = {
+  promptTokenCount: number;
+  candidatesTokenCount: number;
+  cachedContentTokenCount?: number;
+  toolUsePromptTokenCount?: number;
+  thoughtsTokenCount?: number;
+  totalTokenCount?: number;
+};
+
+function getBillableGeminiTokenCounts(usage: GeminiUsageForBilling): {
+  inputTokens: number;
+  outputTokens: number;
+} {
+  const toolUseInput = usage.toolUsePromptTokenCount ?? 0;
+  const thoughtsOutput = usage.thoughtsTokenCount ?? 0;
+  const accounted = usage.promptTokenCount
+    + usage.candidatesTokenCount
+    + toolUseInput
+    + thoughtsOutput;
+  // Gemini documents totalTokenCount as prompt + candidates + tool-use input
+  // + thoughts. If a future SDK omits a component but returns the total, book
+  // the unexplained remainder at the more expensive output rate.
+  const unexplained = Math.max(0, (usage.totalTokenCount ?? accounted) - accounted);
+  return {
+    inputTokens: usage.promptTokenCount + toolUseInput,
+    outputTokens: usage.candidatesTokenCount + thoughtsOutput + unexplained,
+  };
+}
+
+export function computeGeminiCost(model: string, usage: GeminiUsageForBilling): number {
+  const billable = getBillableGeminiTokenCounts(usage);
   return computeModelUsageCostUsd(model, {
-    inputTokens: usage.promptTokenCount,
-    outputTokens: usage.candidatesTokenCount,
+    inputTokens: billable.inputTokens,
+    outputTokens: billable.outputTokens,
     cacheReadTokens: usage.cachedContentTokenCount ?? 0,
   }, 'gemini').costUsd;
 }
@@ -96,22 +138,27 @@ export function computeGeminiCost(model: string, usage: { promptTokenCount: numb
 async function logGeminiUsage(
   model: string,
   category: string,
-  usage: { promptTokenCount: number; candidatesTokenCount: number; cachedContentTokenCount?: number },
+  usage: GeminiUsageForBilling,
   durationMs: number,
   userId: number = 0,
   tenantId: number = userId,
+  nonTokenCostUsd: number = 0,
+  groundedSearchPrompts: number = 0,
 ): Promise<void> {
   const cacheReadTokens = usage.cachedContentTokenCount ?? 0;
+  const billable = getBillableGeminiTokenCounts(usage);
   const priced = computeModelUsageCostUsd(model, {
-    inputTokens: usage.promptTokenCount,
-    outputTokens: usage.candidatesTokenCount,
+    inputTokens: billable.inputTokens,
+    outputTokens: billable.outputTokens,
     cacheReadTokens,
+    nonTokenCostUsd,
   }, 'gemini');
   if (!priced.pricingResolved) {
     warnUnresolvedGeminiPricing(model, category, userId);
   }
   const cost = priced.costUsd;
   const pricingStatus = priced.pricingResolved ? 'resolved' : 'unresolved';
+  const attribution = resolveApiUsageAttribution(category, userId);
   let apiUsageId: number | null = null;
   try {
     const db = getDb();
@@ -123,27 +170,10 @@ async function logGeminiUsage(
     // was effectively disabled until both INSERT statements were
     // updated.
     const result = db.prepare(`
-      INSERT INTO api_usage (category, model, tenant_id, user_id, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost_usd, duration_ms, provider, pricing_status, pricing_model_key)
-      VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, 'gemini', ?, ?)
-    `).run(category, model, tenantId, userId, usage.promptTokenCount, usage.candidatesTokenCount, cacheReadTokens, cost, durationMs, pricingStatus, priced.pricingModelKey);
+      INSERT INTO api_usage (category, model, tenant_id, user_id, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost_usd, duration_ms, provider, pricing_status, pricing_model_key, request_source, job_name, base_category, run_id, provider_tool_cost_usd, web_search_requests, grounded_search_prompts)
+      VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, 'gemini', ?, ?, ?, ?, ?, ?, ?, 0, ?)
+    `).run(category, model, tenantId, userId, billable.inputTokens, billable.outputTokens, cacheReadTokens, cost, durationMs, pricingStatus, priced.pricingModelKey, attribution.requestSource, attribution.jobName, attribution.baseCategory, attribution.runId, nonTokenCostUsd, groundedSearchPrompts);
     apiUsageId = Number((result as { lastInsertRowid?: number | bigint } | undefined)?.lastInsertRowid ?? 0);
-
-    pushEvent({
-      ts: new Date().toISOString(),
-      type: 'api_call',
-      summary: `Gemini ${model}: ${usage.promptTokenCount}+${usage.candidatesTokenCount} tokens ($${cost.toFixed(4)})`,
-      durationMs,
-    });
-    // April 2026 follow-up: mirror anthropic-hook's per-user metering so
-    // `usage_metering` aggregates reflect Gemini traffic (the dominant
-    // provider). Without this, checkQuota silently sees an empty table.
-    try {
-      const { recordUsage } = require('./usage-metering') as typeof import('./usage-metering');
-      recordUsage(userId, usage.promptTokenCount, usage.candidatesTokenCount, cost, false);
-    } catch (meterErr) {
-      logger.warn({ err: meterErr, userId }, 'Failed to record Gemini usage_metering');
-    }
-    await settleNexusPointOverageForUser(userId, apiUsageId);
   } catch (err) {
     try {
       const db = getDb();
@@ -153,18 +183,123 @@ async function logGeminiUsage(
         provider: 'gemini',
         tenantId,
         userId,
-        inputTokens: usage.promptTokenCount,
-        outputTokens: usage.candidatesTokenCount,
+        inputTokens: billable.inputTokens,
+        outputTokens: billable.outputTokens,
         cacheReadTokens,
         cacheWriteTokens: 0,
         costUsd: cost,
         durationMs,
         pricingStatus: 'legacy',
+        providerToolCostUsd: nonTokenCostUsd,
+        webSearchRequests: 0,
+        groundedSearchPrompts,
       });
-      await settleNexusPointOverageForUser(userId, apiUsageId);
     } catch (fallbackErr) {
-      logger.warn({ err: fallbackErr }, 'Failed to log Gemini usage');
+      const persistenceError = tripApiUsagePersistenceFailure('gemini', category);
+      logger.error({ err: fallbackErr, code: persistenceError.code }, 'Failed to log Gemini usage; AI usage persistence degraded');
+      throw persistenceError;
     }
+  }
+
+  // Everything below is post-quota-truth analytics/settlement. Keep it out of
+  // the INSERT fallback catch: a telemetry or Points failure after a successful
+  // INSERT must never create a duplicate api_usage row for the same call.
+  try {
+    pushEvent({
+      ts: new Date().toISOString(),
+      type: 'api_call',
+      summary: `Gemini ${model}: ${billable.inputTokens}+${billable.outputTokens} billable tokens ($${cost.toFixed(4)})`,
+      durationMs,
+    });
+  } catch (eventErr) {
+    logger.warn({ err: eventErr, userId, category }, 'Failed to publish Gemini usage telemetry');
+  }
+  // April 2026 follow-up: mirror anthropic-hook's per-user metering so
+  // `usage_metering` aggregates reflect Gemini traffic (the dominant
+  // provider). Without this, checkQuota silently sees an empty table.
+  try {
+    const { recordUsage } = require('./usage-metering') as typeof import('./usage-metering');
+    recordUsage(userId, billable.inputTokens, billable.outputTokens, cost, false);
+  } catch (meterErr) {
+    logger.warn({ err: meterErr, userId }, 'Failed to record Gemini usage_metering');
+  }
+  try {
+    await settleNexusPointOverageForUser(userId, apiUsageId);
+  } catch (settleErr) {
+    logger.warn({ err: settleErr, apiUsageId, userId }, 'nexus_points: Gemini usage settlement failed');
+  }
+}
+
+async function logRequiredGeminiUsage(
+  model: string,
+  category: string,
+  usage: {
+    promptTokenCount?: unknown;
+    candidatesTokenCount?: unknown;
+    cachedContentTokenCount?: unknown;
+    toolUsePromptTokenCount?: unknown;
+    thoughtsTokenCount?: unknown;
+    totalTokenCount?: unknown;
+  } | null | undefined,
+  durationMs: number,
+  userId = 0,
+  tenantId = userId,
+  nonTokenCostUsd = 0,
+  groundedSearchPrompts = 0,
+): Promise<void> {
+  const promptTokenCount = Number(usage?.promptTokenCount);
+  const candidatesTokenCount = Number(usage?.candidatesTokenCount);
+  const rawCacheRead = usage?.cachedContentTokenCount == null ? 0 : Number(usage.cachedContentTokenCount);
+  const toolUsePromptTokenCount = usage?.toolUsePromptTokenCount == null ? 0 : Number(usage.toolUsePromptTokenCount);
+  const thoughtsTokenCount = usage?.thoughtsTokenCount == null ? 0 : Number(usage.thoughtsTokenCount);
+  const totalTokenCount = usage?.totalTokenCount == null ? undefined : Number(usage.totalTokenCount);
+  if (
+    !usage
+    || !Number.isFinite(promptTokenCount)
+    || promptTokenCount < 0
+    || !Number.isFinite(candidatesTokenCount)
+    || candidatesTokenCount < 0
+    || !Number.isFinite(rawCacheRead)
+    || rawCacheRead < 0
+    || !Number.isFinite(toolUsePromptTokenCount)
+    || toolUsePromptTokenCount < 0
+    || !Number.isFinite(thoughtsTokenCount)
+    || thoughtsTokenCount < 0
+    || (totalTokenCount != null && (!Number.isFinite(totalTokenCount) || totalTokenCount < 0))
+  ) {
+    const persistenceError = tripApiUsagePersistenceFailure('gemini', category);
+    logger.error({ code: persistenceError.code, category, model }, 'Gemini response omitted valid usage metadata; AI usage persistence degraded');
+    throw persistenceError;
+  }
+  await logGeminiUsage(model, category, {
+    promptTokenCount,
+    candidatesTokenCount,
+    cachedContentTokenCount: rawCacheRead,
+    toolUsePromptTokenCount,
+    thoughtsTokenCount,
+    totalTokenCount,
+  }, durationMs, userId, tenantId, nonTokenCostUsd, groundedSearchPrompts);
+}
+
+function getGeminiGroundingMetadata(response: unknown): Record<string, unknown> | null {
+  const metadata = (response as any)?.candidates?.[0]?.groundingMetadata;
+  return metadata && typeof metadata === 'object' ? metadata as Record<string, unknown> : null;
+}
+
+function didGeminiUseGrounding(response: unknown): boolean {
+  const metadata = getGeminiGroundingMetadata(response);
+  if (!metadata) return false;
+  return (Array.isArray(metadata.groundingChunks) && metadata.groundingChunks.length > 0)
+    || (Array.isArray(metadata.webSearchQueries) && metadata.webSearchQueries.length > 0)
+    || (Array.isArray(metadata.groundingSupports) && metadata.groundingSupports.length > 0)
+    || (metadata.searchEntryPoint != null && typeof metadata.searchEntryPoint === 'object');
+}
+
+function rethrowUsagePersistenceFailure(error: unknown): void {
+  if (error instanceof ApiUsagePersistenceError
+    || (error as { name?: string })?.name === 'ApiUsagePersistenceError'
+    || (error as { name?: string })?.name === 'AiBudgetError') {
+    throw error;
   }
 }
 
@@ -237,6 +372,16 @@ export async function completeOneShot(
     },
   });
 
+  assertAiBudgetReservationForProvider({
+    userId: options?.userId ?? 0,
+    category,
+    maxCostUsd: computeProviderCallCostUpperBoundUsd({
+      provider: 'gemini',
+      model,
+      payload: { systemPrompt, userPrompt, maxTokens, temperature, jsonMode: options?.jsonMode ?? false },
+      maxOutputTokens: maxTokens,
+    }),
+  });
   const start = Date.now();
   const result = await withTimeout(
     genModel.generateContent([{ text: userPrompt }]),
@@ -244,21 +389,14 @@ export async function completeOneShot(
   );
   const durationMs = Date.now() - start;
 
-  const usage = result.response.usageMetadata;
-  if (usage) {
-    await logGeminiUsage(
-      model,
-      category,
-      {
-        promptTokenCount: usage.promptTokenCount ?? 0,
-        candidatesTokenCount: usage.candidatesTokenCount ?? 0,
-        cachedContentTokenCount: usage.cachedContentTokenCount ?? 0,
-      },
-      durationMs,
-      options?.userId ?? 0,
-      options?.tenantId ?? options?.userId ?? 0,
-    );
-  }
+  await logRequiredGeminiUsage(
+    model,
+    category,
+    result.response.usageMetadata,
+    durationMs,
+    options?.userId ?? 0,
+    options?.tenantId ?? options?.userId ?? 0,
+  );
 
   return extractText(result);
 }
@@ -417,10 +555,10 @@ async function withOneShotPrimaryRetry<T>(
  * As of 2026-04, gemini-2.5-flash and gemini-2.5-pro both support it;
  * flash-lite does NOT. Default here is flash.
  *
- * Cost note: grounded calls have a small surcharge (Google's published
- * list is ~$0.035/1K grounded queries). Still cheaper than Anthropic
- * web_search by a wide margin because the base Gemini tokens are so
- * much cheaper to begin with.
+ * Cost note: Gemini's project-wide free grounding allowance cannot be proven
+ * from this process because other clients may share the API project. The
+ * canonical fee helper therefore defaults to the billable per-prompt price;
+ * operations may set an effective zero only after guaranteeing isolation.
  *
  * Throws on Gemini errors so the caller can fall back to Anthropic.
  */
@@ -453,28 +591,36 @@ export async function completeOneShotWithSearch(
     tools: [{ googleSearch: {} }] as any,
   });
 
+  assertAiBudgetReservationForProvider({
+    userId: options?.userId ?? 0,
+    category,
+    hasUnboundedProviderInjectedContext: true,
+    maxCostUsd: computeProviderCallCostUpperBoundUsd({
+      provider: 'gemini',
+      model,
+      payload: { safeSystemPrompt, safeUserPrompt, maxTokens, temperature, googleSearch: true },
+      maxOutputTokens: maxTokens,
+      nonTokenCostUpperBoundUsd: getProviderToolFeeUsd('gemini_grounded_prompt'),
+    }),
+  });
   const start = Date.now();
   const result = await withTimeout(
     genModel.generateContent([{ text: safeUserPrompt }]),
     config.aiSafety.callTimeoutMs,
   );
   const durationMs = Date.now() - start;
+  const groundingUsed = didGeminiUseGrounding(result.response);
 
-  const usage = result.response.usageMetadata;
-  if (usage) {
-    await logGeminiUsage(
-      model,
-      category,
-      {
-        promptTokenCount: usage.promptTokenCount ?? 0,
-        candidatesTokenCount: usage.candidatesTokenCount ?? 0,
-        cachedContentTokenCount: usage.cachedContentTokenCount ?? 0,
-      },
-      durationMs,
-      options?.userId ?? 0,
-      options?.tenantId ?? options?.userId ?? 0,
-    );
-  }
+  await logRequiredGeminiUsage(
+    model,
+    category,
+    result.response.usageMetadata,
+    durationMs,
+    options?.userId ?? 0,
+    options?.tenantId ?? options?.userId ?? 0,
+    groundingUsed ? getProviderToolFeeUsd('gemini_grounded_prompt') : 0,
+    groundingUsed ? 1 : 0,
+  );
 
   const finishReason = String((result.response as any).candidates?.[0]?.finishReason ?? '').trim();
   if (finishReason && !/^stop$/i.test(finishReason)) {
@@ -491,9 +637,8 @@ export async function completeOneShotWithSearch(
   // or log which URLs the model consulted.
   const sources: string[] = [];
   try {
-    const candidates = (result.response as any).candidates;
-    const metadata = candidates?.[0]?.groundingMetadata;
-    const chunks = metadata?.groundingChunks || [];
+    const metadata = getGeminiGroundingMetadata(result.response);
+    const chunks = Array.isArray(metadata?.groundingChunks) ? metadata.groundingChunks : [];
     for (const chunk of chunks) {
       const uri = chunk?.web?.uri;
       if (typeof uri === 'string') sources.push(uri);
@@ -547,6 +692,16 @@ export async function completeVisionOneShot(
     },
   });
 
+  assertAiBudgetReservationForProvider({
+    userId: options?.userId ?? 0,
+    category,
+    maxCostUsd: computeProviderCallCostUpperBoundUsd({
+      provider: 'gemini',
+      model,
+      payload: { systemPrompt, userPrompt, image, maxTokens, temperature },
+      maxOutputTokens: maxTokens,
+    }),
+  });
   const start = Date.now();
   const result = await withTimeout(
     genModel.generateContent([
@@ -560,21 +715,14 @@ export async function completeVisionOneShot(
   );
   const durationMs = Date.now() - start;
 
-  const usage = result.response.usageMetadata;
-  if (usage) {
-    await logGeminiUsage(
-      model,
-      category,
-      {
-        promptTokenCount: usage.promptTokenCount ?? 0,
-        candidatesTokenCount: usage.candidatesTokenCount ?? 0,
-        cachedContentTokenCount: usage.cachedContentTokenCount ?? 0,
-      },
-      durationMs,
-      options?.userId ?? 0,
-      options?.tenantId ?? options?.userId ?? 0,
-    );
-  }
+  await logRequiredGeminiUsage(
+    model,
+    category,
+    result.response.usageMetadata,
+    durationMs,
+    options?.userId ?? 0,
+    options?.tenantId ?? options?.userId ?? 0,
+  );
 
   return extractText(result);
 }
@@ -614,6 +762,7 @@ export async function completeVisionOneShotWithFallback(
       );
       return { text, provider: 'gemini' };
     } catch (err) {
+      rethrowUsagePersistenceFailure(err);
       const { status, code } = extractGeminiErrorInfo(err);
       const attempts = (err as { geminiOneShotAttempts?: number })?.geminiOneShotAttempts ?? 1;
       logger.warn({ err, category, primaryModel, status, code, attempts }, 'Gemini vision one-shot failed, trying OpenAI fallback');
@@ -636,6 +785,7 @@ export async function completeVisionOneShotWithFallback(
       return { text, provider: 'openai' };
     }
   } catch (err) {
+    rethrowUsagePersistenceFailure(err);
     logger.warn({ err, category }, 'OpenAI vision fallback also failed, trying Anthropic (if enabled)');
   }
 
@@ -697,6 +847,7 @@ export async function completeOneShotWithFallback(
       );
       return { text, provider: 'gemini' };
     } catch (err) {
+      rethrowUsagePersistenceFailure(err);
       const { status, code } = extractGeminiErrorInfo(err);
       const attempts = (err as { geminiOneShotAttempts?: number })?.geminiOneShotAttempts ?? 1;
       const fallbackModel = resolveGeminiOneShotFallbackModel(primaryModel);
@@ -712,6 +863,7 @@ export async function completeOneShotWithFallback(
           );
           return { text, provider: 'gemini' };
         } catch (fallbackErr) {
+          rethrowUsagePersistenceFailure(fallbackErr);
           const fallbackInfo = extractGeminiErrorInfo(fallbackErr);
           logger.warn({ err: fallbackErr, category, primaryModel, fallbackModel, status: fallbackInfo.status, code: fallbackInfo.code, attempts }, 'Gemini fallback model also failed, trying OpenAI fallback');
         }
@@ -736,6 +888,7 @@ export async function completeOneShotWithFallback(
       return { text, provider: 'openai' };
     }
   } catch (err) {
+    rethrowUsagePersistenceFailure(err);
     logger.warn({ err, category }, 'OpenAI fallback also failed, trying Anthropic (if enabled)');
   }
 
@@ -955,26 +1108,41 @@ export class GeminiProvider implements AIProvider {
     usageContext?: { userId?: number; tenantId?: number },
     maxRetries = 3,
   ): Promise<GenerateContentResult> {
+    const maxOutputTokens = maxTokensOverride || routing.maxTokens;
     const model = this.buildModel(
       routing.model,
       systemPrompt,
-      maxTokensOverride || routing.maxTokens,
+      maxOutputTokens,
       useTools,
       filteredTools,
     );
 
     const start = Date.now();
-    const result = await this.withRetry(() => model.generateContent(request), maxRetries);
+    const result = await this.withRetry(() => {
+      // Revalidate live lock ownership for every concrete SDK attempt, not
+      // only once before the provider's retry loop begins.
+      assertAiBudgetReservationForProvider({
+        userId: usageContext?.userId ?? 0,
+        category: usageCategory,
+        maxCostUsd: computeProviderCallCostUpperBoundUsd({
+          provider: 'gemini',
+          model: routing.model,
+          payload: { request, systemPrompt, filteredTools: useTools ? filteredTools : [] },
+          maxOutputTokens,
+        }),
+      });
+      return model.generateContent(request);
+    }, maxRetries);
     const durationMs = Date.now() - start;
 
-    const usage = result.response.usageMetadata;
-    if (usage) {
-      await logGeminiUsage(routing.model, usageCategory, {
-        promptTokenCount: usage.promptTokenCount ?? 0,
-        candidatesTokenCount: usage.candidatesTokenCount ?? 0,
-        cachedContentTokenCount: usage.cachedContentTokenCount ?? 0,
-      }, durationMs, usageContext?.userId ?? 0, usageContext?.tenantId ?? usageContext?.userId ?? 0);
-    }
+    await logRequiredGeminiUsage(
+      routing.model,
+      usageCategory,
+      result.response.usageMetadata,
+      durationMs,
+      usageContext?.userId ?? 0,
+      usageContext?.tenantId ?? usageContext?.userId ?? 0,
+    );
 
     return result;
   }
@@ -1001,23 +1169,38 @@ Last assistant message: "${activeContext.lastAssistantMessage.substring(0, 300)}
 ${message}`;
       }
 
+      const classifierMaxOutputTokens = 256;
+      const classifierSystemPrompt = getClassifierSystemPrompt();
       const model = getClient().getGenerativeModel({
         model: config.gemini.classifierModel,
-        systemInstruction: getClassifierSystemPrompt(),
+        systemInstruction: classifierSystemPrompt,
+        generationConfig: { maxOutputTokens: classifierMaxOutputTokens },
       });
 
       const start = Date.now();
-      const result = await this.withRetry(() => model.generateContent(userContent));
+      const result = await this.withRetry(() => {
+        assertAiBudgetReservationForProvider({
+          userId: usageUserId,
+          category: 'gemini_classify',
+          maxCostUsd: computeProviderCallCostUpperBoundUsd({
+            provider: 'gemini',
+            model: config.gemini.classifierModel,
+            payload: { classifierSystemPrompt, userContent },
+            maxOutputTokens: classifierMaxOutputTokens,
+          }),
+        });
+        return model.generateContent(userContent);
+      });
       const durationMs = Date.now() - start;
 
-      const usage = result.response.usageMetadata;
-      if (usage) {
-        await logGeminiUsage(config.gemini.classifierModel, 'gemini_classify', {
-          promptTokenCount: usage.promptTokenCount ?? 0,
-          candidatesTokenCount: usage.candidatesTokenCount ?? 0,
-          cachedContentTokenCount: usage.cachedContentTokenCount ?? 0,
-        }, durationMs, usageUserId, usageTenantId);
-      }
+      await logRequiredGeminiUsage(
+        config.gemini.classifierModel,
+        'gemini_classify',
+        result.response.usageMetadata,
+        durationMs,
+        usageUserId,
+        usageTenantId,
+      );
 
       let text = extractText(result);
       text = text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
@@ -1029,6 +1212,7 @@ ${message}`;
       if (confidence < 0.6) return { domain: 'secretary', confidence };
       return { domain, confidence };
     } catch (err: unknown) {
+      rethrowUsagePersistenceFailure(err);
       const e = err as { provider?: string; status?: number; retryable?: boolean };
       logger.error({
         err,

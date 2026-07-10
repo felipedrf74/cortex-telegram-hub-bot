@@ -202,6 +202,40 @@ def test_report_post_installs_request_attribution_context(monkeypatch):
     }
 
 
+def test_ai_proxy_quota_error_preserves_public_contract(monkeypatch):
+    main = _reload_content_engine(monkeypatch, secret="valid-secret")
+    hook_generator = importlib.import_module("services.creative.hook_generator")
+    claude_client = importlib.import_module("services.claude_client")
+
+    async def denied(_req):
+        raise claude_client.AiProxyError(
+            status_code=429,
+            code="AI_DAILY_LIMIT_REACHED",
+            message="Daily AI quota reached.",
+            details={"window": "daily", "unblocksAt": "2026-07-10T00:00:00.000Z"},
+            retry_after="600",
+        )
+
+    monkeypatch.setattr(hook_generator, "generate", denied)
+    client = TestClient(main.app, raise_server_exceptions=False)
+    response = client.post(
+        "/api/v1/hooks",
+        json={"topic": "safe creator workflow"},
+        headers={"x-internal-secret": "valid-secret", "x-request-id": "req-ai-quota"},
+    )
+
+    assert response.status_code == 429
+    assert response.headers["retry-after"] == "600"
+    assert response.json() == {
+        "ok": False,
+        "error": {
+            "code": "AI_DAILY_LIMIT_REACHED",
+            "message": "Daily AI quota reached.",
+            "details": {"window": "daily", "unblocksAt": "2026-07-10T00:00:00.000Z"},
+        },
+    }
+
+
 def test_hotnews_get_installs_empty_attribution_context(monkeypatch):
     main = _reload_content_engine(monkeypatch, secret="valid-secret")
     research = importlib.import_module("routers.research")

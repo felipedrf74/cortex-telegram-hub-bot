@@ -7,14 +7,18 @@
  *   • Free is the default when nothing privileged applies.
  *   • Founder / Apple / Stripe active subscription → pro or max.
  *   • DB errors fail closed to free (never grant accidental access).
- *   • Free daily cost cap = $0.005 per business rule.
+ *   • Free model-backed cost cap is zero; Secretary token-zero work remains.
  *   • Free users have only the Secretary skill.
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mockGetDb = vi.fn();
-const mockIsOwnerUserRef = vi.fn<[number], boolean>();
+type OwnerLookupOptions = {
+  allowPersistedTier?: boolean;
+  requireConfiguredIdentity?: boolean;
+};
+const mockIsOwnerUserRef = vi.fn<[number, OwnerLookupOptions?], boolean>();
 
 vi.mock('../../src/services/database', () => ({
   getDb: (...args: unknown[]) => mockGetDb(...args),
@@ -27,7 +31,7 @@ vi.mock('../../src/services/user-service', async () => {
   const actual = await vi.importActual<typeof import('../../src/services/user-service')>('../../src/services/user-service');
   return {
     ...actual,
-    isOwnerUserRef: (...args: [number]) => mockIsOwnerUserRef(...args),
+    isOwnerUserRef: (...args: [number, OwnerLookupOptions?]) => mockIsOwnerUserRef(...args),
   };
 });
 
@@ -35,6 +39,9 @@ vi.mock('../../src/services/user-service', async () => {
 import {
   getEffectiveEntitlement,
   isCoachBriefingEntitlementEligible,
+  isAiAutomationEntitlementEligible,
+  isAiAutomationAllowedForRuntime,
+  isAiInteractiveEntitlementEligible,
   isSkillAllowedByEntitlement,
   FREE_TIER_ALLOWED_SKILLS,
 } from '../../src/services/entitlement';
@@ -43,6 +50,8 @@ import {
   _resetPortalOverridesForTests,
   setPlanAllowedSkillsOverride,
   applyPlanConfigRows,
+  setPlanDailyCostCapOverride,
+  setPlanMonthlyCostCapOverride,
 } from '../../src/services/plan-quotas';
 
 function mockSubscriptionRow(row: {
@@ -50,10 +59,21 @@ function mockSubscriptionRow(row: {
   status: string | null;
   provider: string | null;
   current_period_end?: string | null;
+  current_period_start?: string | null;
+  cancel_at_period_end?: number;
 }): void {
+  const canonicalPaid = row.provider === 'apple' || row.provider === 'stripe';
   mockGetDb.mockReturnValue({
     prepare: () => ({
-      get: () => row,
+      get: () => ({
+        ...row,
+        current_period_start: Object.prototype.hasOwnProperty.call(row, 'current_period_start')
+          ? row.current_period_start
+          : canonicalPaid ? '2026-01-01T00:00:00.000Z' : null,
+        current_period_end: Object.prototype.hasOwnProperty.call(row, 'current_period_end')
+          ? row.current_period_end
+          : canonicalPaid ? '2026-12-31T23:59:59.000Z' : null,
+      }),
     }),
   });
 }
@@ -77,11 +97,13 @@ describe('getEffectiveEntitlement', () => {
     _resetPortalOverridesForTests();
     mockIsOwnerUserRef.mockReturnValue(false);
     delete process.env.PAYWALL_ENABLED;
+    delete process.env.OWNER_AI_AUTOMATIONS_ENABLED;
   });
 
   afterEach(() => {
     mockGetDb.mockReset();
     mockIsOwnerUserRef.mockReset();
+    delete process.env.OWNER_AI_AUTOMATIONS_ENABLED;
   });
 
   it('returns free for unauthenticated (userId=0) without hitting the DB', () => {
@@ -102,6 +124,18 @@ describe('getEffectiveEntitlement', () => {
     expect(ent.source).toBe('owner');
     expect(ent.isOwner).toBe(true);
     expect(ent.dailyCostCapUsd).toBeGreaterThan(FREE_DAILY_COST_CAP_USD);
+    expect(ent.aiAccessAllowed).toBe(true);
+    expect(ent.automationAllowed).toBe(false);
+    expect(mockIsOwnerUserRef).toHaveBeenCalledWith(1, {
+      allowPersistedTier: false,
+      requireConfiguredIdentity: true,
+    });
+  });
+
+  it('enables owner automations only through the explicit owner flag', () => {
+    mockIsOwnerUserRef.mockReturnValue(true);
+    process.env.OWNER_AI_AUTOMATIONS_ENABLED = 'true';
+    expect(getEffectiveEntitlement(1).automationAllowed).toBe(true);
   });
 
   it('maps active founder subscription to source=founder with the founder plan', () => {
@@ -130,7 +164,23 @@ describe('getEffectiveEntitlement', () => {
     const ent = getEffectiveEntitlement(7);
     expect(ent.plan).toBe('pro');
     expect(ent.source).toBe('apple');
-    expect(ent.subscriptionExpiresAt).toBe('2026-12-31T23:59:59Z');
+    expect(ent.subscriptionExpiresAt).toBe('2026-12-31T23:59:59.000Z');
+  });
+
+  it('normalizes valid SQLite billing timestamps to public UTC ISO-8601', () => {
+    mockSubscriptionRow({
+      plan: 'pro',
+      status: 'active',
+      provider: 'stripe',
+      current_period_start: '2026-01-01 00:00:00',
+      current_period_end: '2026-12-31 23:59:59',
+    });
+
+    const ent = getEffectiveEntitlement(8);
+    expect(ent.aiAccessAllowed).toBe(true);
+    expect(ent.billingPeriodStart).toBe('2026-01-01T00:00:00.000Z');
+    expect(ent.billingPeriodEnd).toBe('2026-12-31T23:59:59.000Z');
+    expect(ent.subscriptionExpiresAt).toBe('2026-12-31T23:59:59.000Z');
   });
 
   it('maps active Stripe subscription to source=stripe', () => {
@@ -156,7 +206,92 @@ describe('getEffectiveEntitlement', () => {
 
     const ent = getEffectiveEntitlement(12);
     expect(ent.source).toBe('beta');
-    expect(ent.plan).toBe('max');
+    expect(ent.plan).toBe('beta');
+    expect(ent.aiAccessAllowed).toBe(false);
+    expect(ent.automationAllowed).toBe(false);
+    expect(isSkillAllowedByEntitlement(ent, 'triathlon')).toBe(true);
+    expect(isSkillAllowedByEntitlement(ent, 'content')).toBe(true);
+  });
+
+  it('keeps active manual and beta product access while blocking model access', () => {
+    for (const provider of ['manual', 'beta']) {
+      mockSubscriptionRow({
+        plan: 'max',
+        status: 'active',
+        provider,
+        current_period_end: '2026-12-31T23:59:59.000Z',
+      });
+      const ent = getEffectiveEntitlement(120);
+      expect(ent.aiAccessAllowed).toBe(false);
+      expect(ent.automationAllowed).toBe(false);
+      expect(ent.nexusPointsAllowed).toBe(false);
+      expect(ent.plan).toBe('beta');
+      expect(ent.status).toBe('active');
+      expect(isSkillAllowedByEntitlement(ent, 'triathlon')).toBe(true);
+      expect(isSkillAllowedByEntitlement(ent, 'content')).toBe(true);
+      expect(isSkillAllowedByEntitlement(ent, 'training')).toBe(true);
+    }
+  });
+
+  it('keeps an explicit active beta plan as product-only access', () => {
+    mockSubscriptionRow({
+      plan: 'beta',
+      status: 'active',
+      provider: 'beta',
+      current_period_end: '2026-12-31T23:59:59.000Z',
+    });
+
+    const ent = getEffectiveEntitlement(120);
+    expect(ent.plan).toBe('beta');
+    expect(ent.source).toBe('beta');
+    expect(ent.aiAccessAllowed).toBe(false);
+    expect(ent.automationAllowed).toBe(false);
+    expect(ent.nexusPointsAllowed).toBe(false);
+    expect(isSkillAllowedByEntitlement(ent, 'content')).toBe(true);
+  });
+
+  it('blocks past-due paid rows even when their billing bounds remain current', () => {
+    mockSubscriptionRow({
+      plan: 'pro',
+      status: 'past_due',
+      provider: 'stripe',
+    });
+
+    const ent = getEffectiveEntitlement(121);
+    expect(ent.status).toBe('past_due');
+    expect(ent.aiAccessAllowed).toBe(false);
+    expect(ent.nexusPointsAllowed).toBe(false);
+  });
+
+  it('keeps cancel-at-period-end subscriptions active until the paid period ends', () => {
+    mockSubscriptionRow({
+      plan: 'pro',
+      status: 'active',
+      provider: 'stripe',
+      cancel_at_period_end: 1,
+    });
+
+    const ent = getEffectiveEntitlement(122);
+    expect(ent.aiAccessAllowed).toBe(true);
+    expect(ent.automationAllowed).toBe(true);
+    expect(ent.nexusPointsAllowed).toBe(true);
+  });
+
+  it('fails cancel-at-period-end subscriptions closed after their paid period ends', () => {
+    mockSubscriptionRow({
+      plan: 'pro',
+      status: 'active',
+      provider: 'apple',
+      cancel_at_period_end: 1,
+      current_period_start: '2025-12-01T00:00:00.000Z',
+      current_period_end: '2026-01-01T00:00:00.000Z',
+    });
+
+    const ent = getEffectiveEntitlement(123);
+    expect(ent.aiAccessAllowed).toBe(false);
+    expect(ent.automationAllowed).toBe(false);
+    expect(ent.nexusPointsAllowed).toBe(false);
+    expect(ent.blockReason).toBe('invalid_billing_period');
   });
 
   it('treats expired beta trial rows as free', () => {
@@ -213,16 +348,16 @@ describe('getEffectiveEntitlement', () => {
     expect(ent.dailyCostCapUsd).toBe(FREE_DAILY_COST_CAP_USD);
   });
 
-  it('keeps the beta bypass available in test/dev runtimes without normalizing it as production behavior', async () => {
+  it('does not grant owner AI globally when a local paywall bypass flag is disabled', async () => {
     process.env.PAYWALL_ENABLED = 'false';
     // Re-import to pick up the env flip — simplest is a fresh require.
     vi.resetModules();
     try {
       const mod = await import('../../src/services/entitlement');
       const ent = mod.getEffectiveEntitlement(99);
-      expect(ent.plan).toBe('owner');
-      expect(ent.subscriptionProvider).toBe('paywall_disabled');
-      expect(ent.dailyCostCapUsd).toBeGreaterThan(FREE_DAILY_COST_CAP_USD);
+      expect(ent.plan).toBe('free');
+      expect(ent.aiAccessAllowed).toBe(false);
+      expect(ent.isOwner).toBe(false);
     } finally {
       // ALWAYS restore — otherwise the leaked env flips subsequent
       // test files in the same worker (observed: cost-guardrail.ts
@@ -230,6 +365,37 @@ describe('getEffectiveEntitlement', () => {
       delete process.env.PAYWALL_ENABLED;
       vi.resetModules();
     }
+  });
+
+  it('fails closed for active paid subscriptions with invalid billing bounds', () => {
+    mockSubscriptionRow({
+      plan: 'pro',
+      status: 'active',
+      provider: 'stripe',
+      current_period_start: null,
+      current_period_end: null,
+    });
+    const ent = getEffectiveEntitlement(102);
+    expect(ent.plan).toBe('pro');
+    expect(ent.aiAccessAllowed).toBe(false);
+    expect(ent.blockReason).toBe('invalid_billing_period');
+  });
+
+  it('allows paid trials interactively but not for automation or Points', () => {
+    mockSubscriptionRow({ plan: 'max', status: 'trialing', provider: 'apple' });
+    const ent = getEffectiveEntitlement(103);
+    expect(isAiInteractiveEntitlementEligible(ent)).toBe(true);
+    expect(isAiAutomationEntitlementEligible(ent)).toBe(false);
+    expect(ent.nexusPointsAllowed).toBe(false);
+  });
+
+  it('keeps runtime enforcement disabled by default and enables paid-only automation explicitly', () => {
+    mockNoSubscription();
+    const ent = getEffectiveEntitlement(104);
+    expect(isAiAutomationAllowedForRuntime(ent, {} as NodeJS.ProcessEnv)).toBe(true);
+    expect(isAiAutomationAllowedForRuntime(ent, {
+      PAID_AI_COST_CONTROLS_ENFORCEMENT_ENABLED: 'true',
+    } as NodeJS.ProcessEnv)).toBe(false);
   });
 });
 
@@ -347,7 +513,7 @@ describe('portal allowed-skills override (M-4)', () => {
     ]);
 
     const entFree = getEffectiveEntitlement(505);
-    expect(entFree.dailyCostCapUsd).toBe(0.010);
+    expect(entFree.dailyCostCapUsd).toBe(0);
     expect(isSkillAllowedByEntitlement(entFree, 'training')).toBe(true);
 
     mockSubscriptionRow({ plan: 'pro', status: 'active', provider: 'stripe', current_period_end: null });
@@ -365,5 +531,39 @@ describe('portal allowed-skills override (M-4)', () => {
     const ent = getEffectiveEntitlement(507);
     expect(isSkillAllowedByEntitlement(ent, 'secretary')).toBe(true);  // compiled-in rule still applies
     expect(isSkillAllowedByEntitlement(ent, 'training')).toBe(false);
+  });
+
+  it('keeps Free and beta model budgets at zero despite stale positive overrides', () => {
+    setPlanDailyCostCapOverride('free', 0.5);
+    setPlanMonthlyCostCapOverride('free', 5);
+    applyPlanConfigRows([
+      { plan_id: 'free', daily_cost_usd: 0.5, monthly_cost_usd: 5 },
+      { plan_id: 'beta', daily_cost_usd: 0.5, monthly_cost_usd: 5 },
+    ]);
+    expect(getEffectiveEntitlement(508).dailyCostCapUsd).toBe(0);
+    expect(getEffectiveEntitlement(508).monthlyCostCapUsd).toBe(0);
+
+    mockSubscriptionRow({ plan: 'max', status: 'trialing', provider: 'beta' });
+    const beta = getEffectiveEntitlement(509);
+    expect(beta.plan).toBe('beta');
+    expect(beta.dailyCostCapUsd).toBe(0);
+    expect(beta.monthlyCostCapUsd).toBe(0);
+  });
+
+  it('clears stale paid overrides when corrupt negative plan caps are hydrated', () => {
+    applyPlanConfigRows([
+      { plan_id: 'pro', daily_cost_usd: 0.5, monthly_cost_usd: 5 },
+    ]);
+    mockSubscriptionRow({ plan: 'pro', status: 'active', provider: 'stripe' });
+    expect(getEffectiveEntitlement(510).dailyCostCapUsd).toBe(0.5);
+    expect(getEffectiveEntitlement(510).monthlyCostCapUsd).toBe(5);
+
+    applyPlanConfigRows([
+      { plan_id: 'pro', daily_cost_usd: -1, monthly_cost_usd: -30 },
+    ]);
+
+    const ent = getEffectiveEntitlement(510);
+    expect(ent.dailyCostCapUsd).toBe(0.04);
+    expect(ent.monthlyCostCapUsd).toBe(1.2);
   });
 });

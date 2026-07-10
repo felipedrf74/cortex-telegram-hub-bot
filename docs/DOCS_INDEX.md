@@ -2,7 +2,7 @@
 
 Status: canonical
 Owner: backend architecture lead (Felipe)
-Last verified: 2026-06-16
+Last verified: 2026-07-10
 Update policy: update when a new canonical backend doc location is added
 or a canonical path moves. The workspace-level entry point is
 `docs/DOCS_INDEX.md`.
@@ -22,6 +22,7 @@ This is the backend repo's markdown routing map for Codex and Claude Code.
 | Risk-based gate matrix | canonical | `docs/release/risk-based-release-gate-matrix.md` | Update when changed-file gating changes. |
 | Engineering standards index | canonical | `docs/engineering/ENGINEERING_STANDARDS_INDEX.md` | Update when a new backend engineering standard is added. |
 | Backend API contract standard | canonical | `docs/engineering/backend-api-contract-standard.md` | Update when REST contract conventions change. |
+| Paid AI entitlement and quota contract | canonical | `docs/TOKEN-QUOTA-CONTRACT.md` | Update when model eligibility, daily/monthly/automation limits, Nexus Points rules, stable errors, or provider-call attribution changes. |
 | Security and data isolation standard | canonical | `docs/engineering/security-and-data-isolation-standard.md` | Update when threat model or permanent gates change. |
 | Nexus security threat model | canonical | `docs/security/nexus-security-threat-model.md` | Update when deployed surfaces, trust boundaries, or attacker-controlled inputs change. |
 | Security control matrix | canonical | `docs/security/security-control-matrix.md` | Update when route families, mobile storage, providers, or release security gates change. |

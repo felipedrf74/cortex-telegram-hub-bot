@@ -5,6 +5,7 @@ import {
   classifyAndExtractImage,
   type ImageClassificationResult,
 } from './anthropic';
+import { rethrowAiUsageFailClosedError } from './api-usage-fallback';
 
 export const PHOTO_EXTRACTION_TIMEOUT_MS = 40_000;
 export const PHOTO_EXTRACTION_MAX_BASE64_CHARS = 6_000_000;
@@ -209,6 +210,7 @@ export async function extractPhotoAttachment({
       degradedReason: null,
     };
   } catch (err) {
+    rethrowAiUsageFailClosedError(err);
     const reason = err instanceof PhotoExtractionTimeoutError ? 'timeout' : 'classification_failed';
     return {
       userText,

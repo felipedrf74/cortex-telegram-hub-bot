@@ -13,6 +13,9 @@ const hoisted = vi.hoisted(() => {
     sendPortalInternalError: vi.fn(),
     setUserAiBudgetOverride: vi.fn(),
     clearUserAiBudgetOverride: vi.fn(),
+    getActiveUserAiBudgetOverride: vi.fn(),
+    getDailyQuotaStatus: vi.fn(),
+    getEffectiveEntitlement: vi.fn(),
     createNexusPointsCheckoutSession: vi.fn(),
     isStripeNexusPointsConfigured: vi.fn(() => true),
     listNexusPointPackages: vi.fn(),
@@ -54,6 +57,15 @@ vi.mock('../../src/portal/http', () => ({
 vi.mock('../../src/services/ai-budget-overrides', () => ({
   setUserAiBudgetOverride: (...args: unknown[]) => hoisted.setUserAiBudgetOverride(...args),
   clearUserAiBudgetOverride: (...args: unknown[]) => hoisted.clearUserAiBudgetOverride(...args),
+  getActiveUserAiBudgetOverride: (...args: unknown[]) => hoisted.getActiveUserAiBudgetOverride(...args),
+}));
+
+vi.mock('../../src/services/cost-guardrail', () => ({
+  getDailyQuotaStatus: (...args: unknown[]) => hoisted.getDailyQuotaStatus(...args),
+}));
+
+vi.mock('../../src/services/entitlement', () => ({
+  getEffectiveEntitlement: (...args: unknown[]) => hoisted.getEffectiveEntitlement(...args),
 }));
 
 vi.mock('../../src/services/stripe-nexus-points-service', () => ({
@@ -173,6 +185,41 @@ describe('portal user routes', () => {
       checkoutUrl: 'https://checkout.stripe.test/portal-points',
     });
     hoisted.isStripeNexusPointsConfigured.mockReturnValue(true);
+    hoisted.getActiveUserAiBudgetOverride.mockReturnValue(null);
+    hoisted.getEffectiveEntitlement.mockReturnValue({
+      plan: 'pro',
+      source: 'stripe',
+      status: 'active',
+      nexusPointsAllowed: true,
+    });
+    hoisted.getDailyQuotaStatus.mockReturnValue({
+      plan: 'pro',
+      capUsd: 0.04,
+      monthlyCapUsd: 1.2,
+      spentUsd: 0.01,
+      monthlySpentUsd: 0.2,
+      dailyUsageFraction: 0.25,
+      monthlyUsageFraction: 0.17,
+      dailyOver: false,
+      monthlyOver: false,
+      automationSpentTodayUsd: 0.002,
+      automationSpentMonthlyUsd: 0.05,
+      automationDailyCapUsd: 0.012,
+      automationMonthlyCapUsd: 0.36,
+      dailyResetAt: '2026-07-10T00:00:00.000Z',
+      monthlyResetAt: '2026-08-01T00:00:00.000Z',
+      unblocksAt: '2026-07-10T00:00:00.000Z',
+      aiAccessAllowed: true,
+      automationAllowed: true,
+      blockReason: null,
+      entitlement: {
+        source: 'stripe',
+        status: 'active',
+        automationBlockReason: null,
+        billingPeriodStart: '2026-07-01T00:00:00.000Z',
+        billingPeriodEnd: '2026-08-01T00:00:00.000Z',
+      },
+    });
     const recorder = makeDbRecorder();
     hoisted.getDb.mockReturnValue(recorder.db);
   });
@@ -183,6 +230,7 @@ describe('portal user routes', () => {
     registerPortalUserRoutes(app as any);
 
     expect(app.get).toHaveBeenCalledWith('/api/users', expect.any(Function));
+    expect(app.get).toHaveBeenCalledWith('/api/users/:userId/ai-budget', hoisted.requirePortalAdminToken, hoisted.targetUserGuard, expect.any(Function));
     expect(app.post).toHaveBeenCalledWith('/api/users/:userId/suspend', hoisted.requirePortalAdminToken, hoisted.targetUserGuard, expect.any(Function));
     expect(app.post).toHaveBeenCalledWith('/api/users/:userId/activate', hoisted.requirePortalAdminToken, hoisted.targetUserGuard, expect.any(Function));
     expect(app.put).toHaveBeenCalledWith('/api/users/:userId/tier', hoisted.requirePortalAdminToken, hoisted.targetUserGuard, expect.any(Function), expect.any(Function));
@@ -197,6 +245,56 @@ describe('portal user routes', () => {
     expect(routes.get('POST /api/users/:userId/billing/nexus-points/stripe-checkout')?.[0]).toBe(hoisted.requirePortalAdminToken);
     expect(routes.get('POST /api/users/:userId/billing/nexus-points/stripe-checkout')?.[1]).toBe(hoisted.targetUserGuard);
     expect(hoisted.requireOperatorTargetUser).toHaveBeenCalledWith('userId');
+  });
+
+  it('returns admin-only effective daily/monthly budget progress and recent deferrals', () => {
+    hoisted.getActiveUserAiBudgetOverride.mockReturnValue({
+      userId: 12,
+      dailyCostUsd: 0.05,
+      monthlyCostUsd: 1.4,
+      reason: 'support adjustment',
+      expiresAt: null,
+    });
+    hoisted.getDb.mockReturnValue({
+      prepare: vi.fn(() => ({
+        all: vi.fn(() => [{
+          requestSource: 'automation',
+          jobName: 'content_friday',
+          code: 'AI_MONTHLY_LIMIT_REACHED',
+        }]),
+      })),
+    });
+    const { app, routes } = makeApp();
+    registerPortalUserRoutes(app as any);
+    const handler = routes.get('GET /api/users/:userId/ai-budget')?.[2]!;
+    const { payload, res } = makeResponse();
+
+    handler({ params: { userId: '12' } }, res);
+
+    expect(payload.body).toMatchObject({
+      ok: true,
+      userId: 12,
+      entitlement: {
+        plan: 'pro',
+        source: 'stripe',
+        aiAccessAllowed: true,
+        automationAllowed: true,
+      },
+      effective: {
+        dailyCostUsd: 0.04,
+        monthlyCostUsd: 1.2,
+        automationDailyCostUsd: 0.012,
+        automationMonthlyCostUsd: 0.36,
+      },
+      usage: {
+        dailyCostUsd: 0.01,
+        monthlyCostUsd: 0.2,
+        dailyFraction: 0.25,
+        monthlyFraction: 0.17,
+      },
+      override: { dailyCostUsd: 0.05, monthlyCostUsd: 1.4 },
+      recentDeferrals: [expect.objectContaining({ code: 'AI_MONTHLY_LIMIT_REACHED' })],
+    });
   });
 
   it('lists Nexus Points packages for portal admins', () => {
@@ -282,6 +380,31 @@ describe('portal user routes', () => {
     }, res);
 
     expect(payload.statusCode).toBe(400);
+    expect(hoisted.createNexusPointsCheckoutSession).not.toHaveBeenCalled();
+  });
+
+  it('rejects portal Stripe Nexus Points checkout for an ineligible entitlement', async () => {
+    hoisted.getEffectiveEntitlement.mockReturnValueOnce({
+      plan: 'free',
+      source: 'free',
+      status: 'none',
+      nexusPointsAllowed: false,
+    });
+    const { app, routes } = makeApp();
+    registerPortalUserRoutes(app as any);
+    const handler = routes.get('POST /api/users/:userId/billing/nexus-points/stripe-checkout')?.[4]!;
+    const { payload, res } = makeResponse();
+
+    await handler({
+      params: { userId: '42' },
+      body: { packageId: 'me.nexushub.points.small', note: 'support request' },
+    }, res);
+
+    expect(payload.statusCode).toBe(403);
+    expect(payload.body).toMatchObject({
+      ok: false,
+      error: { code: 'AI_PLAN_REQUIRED' },
+    });
     expect(hoisted.createNexusPointsCheckoutSession).not.toHaveBeenCalled();
   });
 
@@ -471,6 +594,8 @@ describe('portal user routes', () => {
       daily_message_limit: 20,
       daily_token_limit: undefined,
       daily_cost_limit_usd: 0.25,
+      daily_ai_cost_limit_usd: undefined,
+      monthly_ai_cost_limit_usd: undefined,
     });
     expect(payload.body).toEqual({ ok: true, message: 'Limits updated' });
   });
@@ -487,6 +612,7 @@ describe('portal user routes', () => {
       params: { userId: '12' },
       body: {
         daily_ai_cost_limit_usd: '0.09',
+        monthly_ai_cost_limit_usd: '1.40',
         daily_ai_cost_limit_expires_at: '2026-06-20T00:00:00.000Z',
         daily_ai_cost_limit_reason: 'support adjustment',
       },
@@ -495,6 +621,7 @@ describe('portal user routes', () => {
     expect(hoisted.setUserAiBudgetOverride).toHaveBeenCalledWith({
       userId: 12,
       dailyCostUsd: 0.09,
+      monthlyCostUsd: 1.4,
       expiresAt: '2026-06-20T00:00:00.000Z',
       reason: 'support adjustment',
       updatedBy: 0,

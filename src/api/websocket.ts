@@ -35,7 +35,10 @@ import {
 } from '../services/runtime-flags';
 import { buildSimpleStateContext } from '../domains/domain-handler';
 import type { NexusChatOwnerSkill } from '../services/chat-answer-contract';
-import { enforceCostGuardrails } from '../services/cost-guardrail';
+import { withAiBudgetReservation } from '../services/cost-guardrail';
+import { toStableAiBudgetError } from './response-helpers';
+import { tryBuildChatCoreV2DeterministicReadRoute } from '../services/chat-core-v2';
+import { buildChatCoreV2DeterministicReadShortcutResponse } from './routes/chat-core-v2-deterministic-read-response';
 
 const WEBSOCKET_RATE_WINDOW_MS = 60_000;
 const WEBSOCKET_PING_INTERVAL_MS = 30_000;
@@ -252,24 +255,106 @@ async function streamTextFrame(
   }
 }
 
-function sendWebSocketQuotaExceeded(
+async function trySendTokenZeroSecretaryRead(
   ws: WebSocket,
-  decision: ReturnType<typeof enforceCostGuardrails>,
-  input: { userId: number; tenantId: number },
-): void {
-  if (!decision.block || ws.readyState !== WebSocket.OPEN) return;
-  ws.send(JSON.stringify({
-    type: 'error',
-    code: decision.reason,
-    message: decision.message,
-    details: {
-      ...decision.details,
-      error: 'rate_limited',
-      retryable: true,
-    },
+  input: { text: string; messageId: string; userId: number; tenantId: number },
+): Promise<boolean> {
+  const read = tryBuildChatCoreV2DeterministicReadRoute({
+    normalizedText: input.text,
     userId: input.userId,
     tenantId: input.tenantId,
-  }));
+    surface: 'ios',
+    locale: getUserLanguageById(input.userId),
+    timezone: getUserTimezoneById(input.userId),
+  });
+  if (!read) return false;
+  const built = buildChatCoreV2DeterministicReadShortcutResponse({
+    result: read,
+    requestStartedAt: Date.now(),
+  });
+  // The Free contract preserves deterministic Secretary reads/actions. Other
+  // skill read models continue through their normal entitlement checks.
+  if (built.conversationDomain !== 'secretary') return false;
+  await streamTextFrame(ws, {
+    text: built.response.text,
+    messageId: input.messageId,
+    userId: input.userId,
+    tenantId: input.tenantId,
+  });
+  if (ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({
+      type: 'done',
+      messageId: input.messageId,
+      domain: 'secretary',
+      userId: input.userId,
+      tenantId: input.tenantId,
+      metadata: { ...built.response.metadata, tokenZero: true },
+    }));
+  }
+  return true;
+}
+
+type WebSocketActionResult = NonNullable<Awaited<ReturnType<typeof tryHandleChatActionPlan>>>;
+
+async function sendWebSocketActionResult(
+  ws: WebSocket,
+  actionResult: WebSocketActionResult,
+  input: { messageId: string; userId: number; tenantId: number },
+): Promise<void> {
+  const response = actionResult.response;
+  const actionError = response.metadata?.error as { code?: string; message?: string; details?: unknown } | undefined;
+  if (actionError?.code === 'TIER_REQUIRED' || actionError?.code === 'ACCESS_CHECK_UNAVAILABLE') {
+    if (ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({
+        type: 'error',
+        code: actionError.code,
+        message: actionError.message || response.text,
+        details: actionError.details ?? null,
+        ...input,
+      }));
+    }
+    return;
+  }
+  const hasWriteStep = actionResult.plan.steps.some((step) => step.risk !== 'read_only');
+  const actionStatus = hasWriteStep && actionResult.status === 'needs_confirmation'
+    ? 'ACTION_CONFIRMATION_REQUIRED'
+    : response.metadata?.actionStatus ?? actionResult.status;
+  if (ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({
+      type: 'status',
+      messageId: input.messageId,
+      status: actionStatus,
+      metadata: {
+        type: response.metadata?.type,
+        actionStatus,
+        involvedSkills: response.metadata?.involvedSkills,
+      },
+      userId: input.userId,
+      tenantId: input.tenantId,
+    }));
+  }
+  await streamTextFrame(ws, {
+    text: response.text,
+    messageId: input.messageId,
+    userId: input.userId,
+    tenantId: input.tenantId,
+  });
+  if (ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({
+      type: 'done',
+      messageId: input.messageId,
+      domain: response.domain,
+      userId: input.userId,
+      tenantId: input.tenantId,
+      metadata: {
+        ...response.metadata,
+        ...(hasWriteStep && actionResult.status === 'needs_confirmation'
+          ? { actionStatus: 'ACTION_CONFIRMATION_REQUIRED' }
+          : {}),
+        tokenZero: true,
+      },
+    }));
+  }
 }
 
 /**
@@ -512,25 +597,44 @@ export function attachWebSocket(server: http.Server): void {
             const messageId = `msg-${Date.now()}`;
             const messageText = String(msg.text);
 
-            const quotaDecision = enforceCostGuardrails(userId);
-            if (quotaDecision.block) {
-              logger.warn(
-                {
-                  userId,
-                  tenantId,
-                  reason: quotaDecision.reason,
-                  spentUsd: quotaDecision.quota.spentUsd,
-                  capUsd: quotaDecision.quota.capUsd,
-                  globalTotalUsd: quotaDecision.global.totalUsd,
-                  globalLimitUsd: quotaDecision.global.limitUsd,
-                  platform: 'ios_ws',
-                },
-                'iOS WebSocket blocked by cost guardrail before planning',
-              );
-              sendWebSocketQuotaExceeded(ws, quotaDecision, { userId, tenantId });
+            // Resolve deterministic Secretary reads before acquiring the AI
+            // lock. Free users and quota-exhausted paid users must not queue
+            // behind a long provider call for token-zero state access.
+            if (await trySendTokenZeroSecretaryRead(ws, {
+              text: messageText,
+              messageId,
+              userId,
+              tenantId,
+            })) {
               return;
             }
 
+            const deterministicAction = await tryHandleChatActionPlan({
+              text: messageText,
+              userId,
+              tenantId,
+              conversationId: typeof msg.clientMessageId === 'string' && msg.clientMessageId.trim()
+                ? msg.clientMessageId.trim()
+                : messageId,
+              messageId,
+              channel: 'ios',
+              locale: getUserLanguageById(userId) || undefined,
+              timezone: getUserTimezoneById(userId),
+              requireSafeWriteConfirmation: true,
+              blockNonReadOnlyPlans: true,
+              allowModelPlanner: false,
+            });
+            if (deterministicAction) {
+              await sendWebSocketActionResult(ws, deterministicAction, { messageId, userId, tenantId });
+              return;
+            }
+
+            await withAiBudgetReservation({
+              userId,
+              requestSource: 'interactive',
+              baseCategory: 'ios_websocket_chat',
+              jobName: 'ios_websocket',
+            }, async () => {
             const preRoutingDecision = analyzeChatSkillOrchestration({
               message: messageText,
               userId,
@@ -812,9 +916,28 @@ export function attachWebSocket(server: http.Server): void {
                 metadata: null,
               }));
             }
+            });
           },
         );
       } catch (err: any) {
+        const budgetError = toStableAiBudgetError(err);
+        if (budgetError) {
+          logger.warn(
+            { userId: (ws as any).userId, tenantId: (ws as any).tenantId, code: budgetError.code, platform: 'ios_ws' },
+            'iOS WebSocket blocked by AI budget policy',
+          );
+          if (ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({
+              type: 'error',
+              code: budgetError.code,
+              message: budgetError.message,
+              details: budgetError.details,
+              userId: (ws as any).userId,
+              tenantId: (ws as any).tenantId,
+            }));
+          }
+          return;
+        }
         pushEvent({
           ts: new Date().toISOString(),
           type: 'error',
