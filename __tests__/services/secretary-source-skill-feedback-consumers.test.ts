@@ -28,6 +28,7 @@ vi.mock('../../src/services/database', () => ({
   stripWrappingTransactionStatements: vi.fn((sql: string) => sql),
   applyMigrationFileForTest: vi.fn(),
   withDatabaseForTest: vi.fn(),
+  withDatabaseForTestAsync: vi.fn(),
 }));
 
 vi.mock('../../src/utils/logger', () => ({

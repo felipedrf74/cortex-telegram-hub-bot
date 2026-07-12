@@ -47,6 +47,7 @@ vi.mock('../../src/services/database', () => ({
   runMigrationsForTest: vi.fn(),
   stripWrappingTransactionStatements: vi.fn((sql: string) => sql),
   withDatabaseForTest: vi.fn(),
+  withDatabaseForTestAsync: vi.fn(),
 }));
 
 // AUTH-O12 (closed-beta-auth-hardening, 2026-05-04): the portal token

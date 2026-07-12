@@ -33,6 +33,7 @@ vi.mock('../../src/services/database', () => ({
   runMigrationsForTest: vi.fn(),
   stripWrappingTransactionStatements: vi.fn((sql: string) => sql),
   withDatabaseForTest: vi.fn(),
+  withDatabaseForTestAsync: vi.fn(),
 }));
 
 const { mockGetActivities } = vi.hoisted(() => ({

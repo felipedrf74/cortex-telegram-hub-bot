@@ -26,6 +26,7 @@ vi.mock('../../src/services/database', () => ({
   closeDatabase: vi.fn(),
   findUnexpectedMigrationPrefixCollisions: vi.fn(() => []),
   assertNoUnexpectedMigrationPrefixCollisions: vi.fn(),
+  withDatabaseForTestAsync: vi.fn(),
 }));
 vi.mock('../../src/services/user-service', async () => {
   const actual = await vi.importActual<typeof import('../../src/services/user-service')>('../../src/services/user-service');

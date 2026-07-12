@@ -37,6 +37,7 @@ vi.mock('../../src/services/database', () => ({
   runMigrationsForTest: vi.fn(),
   stripWrappingTransactionStatements: vi.fn((sql: string) => sql),
   withDatabaseForTest: vi.fn(),
+  withDatabaseForTestAsync: vi.fn(),
 }));
 
 import { buildChatActionPlan, executeChatActionPlan } from '../../src/services/chat';

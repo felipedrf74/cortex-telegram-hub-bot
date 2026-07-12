@@ -29,6 +29,7 @@ vi.mock('../../src/api/secret-guards', () => ({
 
 vi.mock('../../src/services/database', () => ({
   getDb: (...args: unknown[]) => mocks.getDb(...args),
+  withDatabaseForTestAsync: vi.fn(),
 }));
 
 vi.mock('../../src/services/chat-eval-history', () => ({

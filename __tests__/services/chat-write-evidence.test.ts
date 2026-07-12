@@ -14,6 +14,7 @@ let testDb: Database.Database;
 
 vi.mock('../../src/services/database', () => ({
   getDb: () => testDb,
+  withDatabaseForTestAsync: vi.fn(),
 }));
 
 describe('chat-write-evidence', () => {

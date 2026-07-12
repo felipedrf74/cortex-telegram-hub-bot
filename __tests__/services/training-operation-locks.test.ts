@@ -8,6 +8,7 @@ const MIGRATIONS_DIR = path.resolve(__dirname, '../../migrations');
 
 vi.mock('../../src/services/database', () => ({
   getDb: () => testDb,
+  withDatabaseForTestAsync: vi.fn(),
 }));
 
 vi.mock('../../src/utils/logger', () => ({
