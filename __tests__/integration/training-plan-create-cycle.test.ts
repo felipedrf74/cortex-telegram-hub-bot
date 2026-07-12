@@ -41,6 +41,76 @@ const bugReproducerBody = {
   calendarSource: 'outlook',
 };
 
+const weeklyTargetCases = [
+  {
+    id: 'no-explicit-run-strength-budget',
+    body: {
+      objective: '10K running plan',
+      durationWeeks: 1,
+      sessionsPerWeek: 3,
+      strengthSessionsPerWeek: 6,
+      trainingPriority: 'running',
+      startPolicy: 'today',
+    },
+    expected: { strengthSessionsPerWeek: 6 },
+  },
+  {
+    id: 'genuine-two-a-day-distinct-days',
+    body: {
+      ...bugReproducerBody,
+      durationWeeks: 1,
+      sessionsPerWeek: 5,
+      runSessionsPerWeek: 5,
+      strengthSessionsPerWeek: 5,
+      twoADayPreference: 'preferred',
+      startPolicy: 'today',
+    },
+    expected: { sessionsPerWeek: 5, runSessionsPerWeek: 5, strengthSessionsPerWeek: 5 },
+    expectedDistinctTrainingDays: 5,
+  },
+  {
+    id: 'explicit-run-strength-budget',
+    body: {
+      objective: 'Running plan with gym support',
+      durationWeeks: 1,
+      sessionsPerWeek: 5,
+      runSessionsPerWeek: 2,
+      strengthSessionsPerWeek: 5,
+      trainingPriority: 'running',
+      startPolicy: 'today',
+    },
+    expected: { runSessionsPerWeek: 2, strengthSessionsPerWeek: 5 },
+  },
+  {
+    id: 'triathlon-zero-bike-swim-floor',
+    body: {
+      objective: 'Olympic triathlon',
+      durationWeeks: 1,
+      sessionsPerWeek: 6,
+      runSessionsPerWeek: 0,
+      bikeSessionsPerWeek: 0,
+      swimSessionsPerWeek: 0,
+      strengthSessionsPerWeek: 1,
+      trainingPriority: 'triathlon',
+      startPolicy: 'today',
+    },
+    expected: { bikeSessionsPerWeek: 1, swimSessionsPerWeek: 0, strengthSessionsPerWeek: 1 },
+  },
+  {
+    id: 'cycling-nonzero-bike-passthrough',
+    body: {
+      objective: 'Cycling gran fondo',
+      durationWeeks: 1,
+      sessionsPerWeek: 5,
+      bikeSessionsPerWeek: 3,
+      strengthSessionsPerWeek: 1,
+      trainingPriority: 'cycling',
+      startPolicy: 'today',
+    },
+    expected: { bikeSessionsPerWeek: 3, strengthSessionsPerWeek: 1 },
+  },
+] as const;
+
 describe('training plan create cycle integration', () => {
   afterEach(() => {
     vi.useRealTimers();
@@ -224,115 +294,40 @@ describe('training plan create cycle integration', () => {
     expect(ruleIds(created.body.data.planLint.blockers)).not.toContain('no_heavy_lower_before_long_run');
   });
 
-  it('persists and reports weekly targets from the final scheduled plan matrix', async () => {
+  it.each(weeklyTargetCases)('$id: persists and reports weekly targets from the final scheduled plan matrix', async (planCase) => {
     vi.useFakeTimers({ now: new Date('2026-05-25T10:00:00.000Z') });
-    const cases = [
-      {
-        id: 'no-explicit-run-strength-budget',
-        body: {
-          objective: '10K running plan',
-          durationWeeks: 1,
-          sessionsPerWeek: 3,
-          strengthSessionsPerWeek: 6,
-          trainingPriority: 'running',
-          startPolicy: 'today',
-        },
-        expected: { strengthSessionsPerWeek: 6 },
-      },
-      {
-        id: 'genuine-two-a-day-distinct-days',
-        body: {
-          ...bugReproducerBody,
-          durationWeeks: 1,
-          sessionsPerWeek: 5,
-          runSessionsPerWeek: 5,
-          strengthSessionsPerWeek: 5,
-          twoADayPreference: 'preferred',
-          startPolicy: 'today',
-        },
-        expected: { sessionsPerWeek: 5, runSessionsPerWeek: 5, strengthSessionsPerWeek: 5 },
-        expectedDistinctTrainingDays: 5,
-      },
-      {
-        id: 'explicit-run-strength-budget',
-        body: {
-          objective: 'Running plan with gym support',
-          durationWeeks: 1,
-          sessionsPerWeek: 5,
-          runSessionsPerWeek: 2,
-          strengthSessionsPerWeek: 5,
-          trainingPriority: 'running',
-          startPolicy: 'today',
-        },
-        expected: { runSessionsPerWeek: 2, strengthSessionsPerWeek: 5 },
-      },
-      {
-        id: 'triathlon-zero-bike-swim-floor',
-        body: {
-          objective: 'Olympic triathlon',
-          durationWeeks: 1,
-          sessionsPerWeek: 6,
-          runSessionsPerWeek: 0,
-          bikeSessionsPerWeek: 0,
-          swimSessionsPerWeek: 0,
-          strengthSessionsPerWeek: 1,
-          trainingPriority: 'triathlon',
-          startPolicy: 'today',
-        },
-        expected: { bikeSessionsPerWeek: 1, swimSessionsPerWeek: 0, strengthSessionsPerWeek: 1 },
-      },
-      {
-        id: 'cycling-nonzero-bike-passthrough',
-        body: {
-          objective: 'Cycling gran fondo',
-          durationWeeks: 1,
-          sessionsPerWeek: 5,
-          bikeSessionsPerWeek: 3,
-          strengthSessionsPerWeek: 1,
-          trainingPriority: 'cycling',
-          startPolicy: 'today',
-        },
-        expected: { bikeSessionsPerWeek: 3, strengthSessionsPerWeek: 1 },
-      },
-    ] as const;
+    harness = createTrainingE2EHarness();
+    harness.seedTrainingUser();
+    if (
+      planCase.id === 'triathlon-zero-bike-swim-floor'
+      || planCase.id === 'cycling-nonzero-bike-passthrough'
+    ) {
+      seedCompleteSportProfile('triathlon-cycling');
+    }
+    if (planCase.id === 'triathlon-zero-bike-swim-floor') {
+      seedCompleteSportProfile('triathlon-swim');
+    }
 
-    for (const planCase of cases) {
-      harness = createTrainingE2EHarness();
-      harness.seedTrainingUser();
-      if (
-        planCase.id === 'triathlon-zero-bike-swim-floor'
-        || planCase.id === 'cycling-nonzero-bike-passthrough'
-      ) {
-        seedCompleteSportProfile('triathlon-cycling');
-      }
-      if (planCase.id === 'triathlon-zero-bike-swim-floor') {
-        seedCompleteSportProfile('triathlon-swim');
-      }
+    const created = await harness.dispatch('POST', '/plan/generate', {
+      ...planCase.body,
+      idempotencyKey: `training-e2e-targets-${planCase.id}`,
+    });
+    const planId = Number(created.body.data.planId);
+    const preferences = persistedPreferences(planId);
+    const scheduledTargets = scheduledWeeklyTargetsForPlan(planId);
 
-      const created = await harness.dispatch('POST', '/plan/generate', {
-        ...planCase.body,
-        idempotencyKey: `training-e2e-targets-${planCase.id}`,
-      });
-      const planId = Number(created.body.data.planId);
-      const preferences = persistedPreferences(planId);
-      const scheduledTargets = scheduledWeeklyTargetsForPlan(planId);
-
-      expect(created.statusCode, planCase.id).toBe(201);
-      expect(created.body.ok).toBe(true);
-      expect(created.body.data.weeklyTargets).toMatchObject(planCase.expected);
-      expect(preferences).toMatchObject(planCase.expected);
-      expectWeeklyTargetsToMatchScheduled(created.body.data.weeklyTargets, scheduledTargets);
-      expectWeeklyTargetsToMatchScheduled(preferences, scheduledTargets);
-      if ('expectedDistinctTrainingDays' in planCase) {
-        const sessions = persistedSessions(planId);
-        expect(created.body.data.weeklyTargets.sessionsPerWeek).toBe(planCase.expectedDistinctTrainingDays);
-        expect(preferences.sessionsPerWeek).toBe(planCase.expectedDistinctTrainingDays);
-        expect(scheduledTargets.sessionsPerWeek).toBe(planCase.expectedDistinctTrainingDays);
-        expect(sessions.length).toBeGreaterThan(planCase.expectedDistinctTrainingDays);
-      }
-
-      harness.close();
-      harness = null;
+    expect(created.statusCode, planCase.id).toBe(201);
+    expect(created.body.ok).toBe(true);
+    expect(created.body.data.weeklyTargets).toMatchObject(planCase.expected);
+    expect(preferences).toMatchObject(planCase.expected);
+    expectWeeklyTargetsToMatchScheduled(created.body.data.weeklyTargets, scheduledTargets);
+    expectWeeklyTargetsToMatchScheduled(preferences, scheduledTargets);
+    if ('expectedDistinctTrainingDays' in planCase) {
+      const sessions = persistedSessions(planId);
+      expect(created.body.data.weeklyTargets.sessionsPerWeek).toBe(planCase.expectedDistinctTrainingDays);
+      expect(preferences.sessionsPerWeek).toBe(planCase.expectedDistinctTrainingDays);
+      expect(scheduledTargets.sessionsPerWeek).toBe(planCase.expectedDistinctTrainingDays);
+      expect(sessions.length).toBeGreaterThan(planCase.expectedDistinctTrainingDays);
     }
   });
 
