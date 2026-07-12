@@ -7,6 +7,7 @@ import {
   getTrainingPlanRevisionV1Mode,
   isTrainingPlanRevisionV1ExplicitlyEnrolled,
   isDecisionFlowV1EnforceEnabled,
+  isTrainingTypedWorkoutV1Enabled,
   type RuntimeFlagScope,
 } from './runtime-flags';
 import {
@@ -169,7 +170,11 @@ export function createTrainingPlanCandidateRevision(input: {
   const built = bindCandidateToAuthoritativeContext(
     db,
     input.scope,
-    buildTrainingPlanRevisionCandidate(input.request, { env: input.env, scope: input.scope }),
+    buildTrainingPlanRevisionCandidate(input.request, {
+      env: input.env,
+      scope: input.scope,
+      typedWorkoutValidationEnabled: isTrainingTypedWorkoutV1Enabled(input.env, input.scope),
+    }),
   );
 
   return db.transaction(() => {
@@ -205,7 +210,10 @@ export function computeTrainingPlanRevisionShadow(
   request: TrainingPlanCandidateRequest,
   options: { env?: NodeJS.ProcessEnv; scope?: RuntimeFlagScope } = {},
 ): BuiltTrainingPlanRevisionCandidate {
-  return buildTrainingPlanRevisionCandidate(request, options);
+  return buildTrainingPlanRevisionCandidate(request, {
+    ...options,
+    typedWorkoutValidationEnabled: isTrainingTypedWorkoutV1Enabled(options.env, options.scope),
+  });
 }
 
 export function computeTrainingRevisionAuthoritativeContext(
@@ -463,7 +471,11 @@ export function editTrainingPlanRevisionPreview(input: {
   const built = bindCandidateToAuthoritativeContext(
     db,
     input.scope,
-    buildTrainingPlanRevisionCandidate(nextRequest, { env: input.env, scope: input.scope }),
+    buildTrainingPlanRevisionCandidate(nextRequest, {
+      env: input.env,
+      scope: input.scope,
+      typedWorkoutValidationEnabled: isTrainingTypedWorkoutV1Enabled(input.env, input.scope),
+    }),
   );
 
   return db.transaction(() => {

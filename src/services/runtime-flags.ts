@@ -388,6 +388,18 @@ export function getTrainingExerciseIdentityV1Mode(
   return 'off';
 }
 
+/**
+ * Milestone 2 typed phase/block/prescription validation. This is a validation
+ * seam only: it does not enable generation, activation, or any legacy writer.
+ * Default off and scope-overridable through the standard suffix convention.
+ */
+export function isTrainingTypedWorkoutV1Enabled(
+  env: RuntimeEnv = process.env,
+  scope?: RuntimeFlagScope,
+): boolean {
+  return scopedFlagEnabledByExplicitOptIn(env, 'TRAINING_TYPED_WORKOUT_V1_ENABLED', scope);
+}
+
 export function isTrainingPlanRevisionV1ExplicitlyEnrolled(
   env: RuntimeEnv = process.env,
   scope?: RuntimeFlagScope,

@@ -8,6 +8,7 @@ import {
   isDecisionFlowV1EnforceEnabled,
   getTrainingPlanRevisionV1Mode,
   isTrainingPlanRevisionV1ExplicitlyEnrolled,
+  isTrainingTypedWorkoutV1Enabled,
 } from './runtime-flags';
 import { withTrainingCalendarOperationLock } from './training-operation-locks';
 import {
@@ -317,6 +318,7 @@ function validateActivationInput(db: Database.Database, input: {
   const rebuilt = buildTrainingPlanRevisionCandidate(snapshot.body.request, {
     env: input.env,
     scope: input.scope,
+    typedWorkoutValidationEnabled: isTrainingTypedWorkoutV1Enabled(input.env, input.scope),
   });
   const rebuiltContextVersion = deriveTrainingRevisionCreationContextVersion(
     rebuilt.creationContextVersion,

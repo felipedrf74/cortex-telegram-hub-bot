@@ -53,6 +53,29 @@ describe('training-plan-revision-candidate-builder', () => {
     ]);
   });
 
+  it('keeps flag-off candidate bytes stable and adds typed validation evidence only when enabled', () => {
+    const defaultCandidate = buildTrainingPlanRevisionCandidate(beginnerHome);
+    const explicitlyOff = buildTrainingPlanRevisionCandidate(beginnerHome, {
+      typedWorkoutValidationEnabled: false,
+    });
+    const enabled = buildTrainingPlanRevisionCandidate(beginnerHome, {
+      typedWorkoutValidationEnabled: true,
+    });
+
+    expect(explicitlyOff).toEqual(defaultCandidate);
+    expect(enabled.document).toEqual(defaultCandidate.document);
+    expect(enabled.contentHash).toBe(defaultCandidate.contentHash);
+    expect(enabled.creationContextVersion).not.toBe(defaultCandidate.creationContextVersion);
+    expect(defaultCandidate.qualityReport.checks.some((check) =>
+      check.code === 'TYPED_CANONICAL_SESSION_COVERAGE')).toBe(false);
+    expect(enabled.qualityReport.checks).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: 'TYPED_CANONICAL_SESSION_COVERAGE' }),
+      expect.objectContaining({ code: 'TYPED_BLOCK_AND_PRESCRIPTION_VALIDATION' }),
+      expect.objectContaining({ code: 'TYPED_STANDALONE_PHASE_OMISSION' }),
+      expect.objectContaining({ code: 'TYPED_UNKNOWN_FALLBACK' }),
+    ]));
+  });
+
   it('produces materially different plans from the causal profile inputs', () => {
     const beginner = buildTrainingPlanRevisionCandidate(beginnerHome);
     const experienced = buildTrainingPlanRevisionCandidate(experiencedGym);
@@ -145,5 +168,23 @@ describe('training-plan-revision-candidate-builder', () => {
     invalidWorkout.weeks[0].workouts.find((workout) => workout.sessionType === 'rest')!.sessionType = 'mobility';
     expect(() => validateTrainingPlanRevisionDocument(invalidWorkout))
       .toThrow(/TARGET_WORKOUT_DISTRIBUTION_MATCH/);
+  });
+
+  it('runs the consolidated modality validator only behind its explicit option', () => {
+    const candidate = buildTrainingPlanRevisionCandidate(beginnerHome);
+    const invalid = structuredClone(candidate.document);
+    const strength = invalid.weeks.flatMap((week) => week.workouts)
+      .find((workout) => workout.sessionType === 'strength_hypertrophy')!;
+    strength.blocks.find((block) => block.blockType === 'PRIMARY_WORK')!.prescription = {
+      kind: 'unknown',
+      rawPrescriptionType: 'strength_hypertrophy',
+      summary: 'Incorrectly generic strength prescription.',
+      newlyPrescribable: false,
+    };
+
+    expect(() => validateTrainingPlanRevisionDocument(invalid)).not.toThrow();
+    expect(() => validateTrainingPlanRevisionDocument(invalid, {
+      typedWorkoutValidationEnabled: true,
+    })).toThrow(/TYPED_CANONICAL_UNKNOWN_PRESCRIPTION_FORBIDDEN|TYPED_SESSION_PRESCRIPTION_MISMATCH/);
   });
 });
