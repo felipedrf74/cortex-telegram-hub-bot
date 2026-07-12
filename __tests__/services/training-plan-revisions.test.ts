@@ -69,6 +69,35 @@ describe('training-plan-revisions', () => {
         approvalState: 'UNREVIEWED',
         document: { planMode: 'continuous', goal: 'general_fitness' },
       });
+      expect(first.candidates[0].qualityReport.checks.some((check) =>
+        check.code.startsWith('TYPED_'))).toBe(false);
+    });
+  });
+
+  it('persists typed workout validation evidence only for the explicitly enabled scope', () => {
+    withDatabaseForTest(db, () => {
+      const created = createTrainingPlanCandidateRevision({
+        scope: { userId: 7, tenantId: 7 },
+        idempotencyKey: 'typed-workout-validation',
+        request,
+        env: {
+          ...activeEnv,
+          TRAINING_TYPED_WORKOUT_V1_ENABLED_USER_7: 'true',
+        },
+      });
+      const revision = created.candidates[0];
+      expect(revision.document).toMatchObject({ schemaVersion: 'training-plan-revision.v1' });
+      expect(revision.qualityReport.checks).toEqual(expect.arrayContaining([
+        expect.objectContaining({ code: 'TYPED_CANONICAL_SESSION_COVERAGE' }),
+        expect.objectContaining({ code: 'TYPED_PHASE_AND_WEEK_CONTIGUITY' }),
+        expect.objectContaining({ code: 'TYPED_BLOCK_AND_PRESCRIPTION_VALIDATION' }),
+      ]));
+      const stored = db.prepare('SELECT quality_report_json AS quality FROM training_plan_revisions').get() as {
+        quality: string;
+      };
+      expect(JSON.parse(stored.quality).qualityReport.checks).toEqual(expect.arrayContaining([
+        expect.objectContaining({ code: 'TYPED_UNKNOWN_FALLBACK' }),
+      ]));
     });
   });
 

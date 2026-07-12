@@ -14,6 +14,7 @@ import {
   getSecretaryReasoningV1Mode,
   getTrainingPlanRevisionV1Mode,
   isTrainingPlanRevisionV1ExplicitlyEnrolled,
+  isTrainingTypedWorkoutV1Enabled,
   isChatEscalationReviewerEnabled,
   isChatBilingualEvalGateEnabled,
   isChatContextCompilerEnabled,
@@ -298,6 +299,21 @@ describe('runtime-flags', () => {
       TRAINING_PLAN_REVISION_V1_MODE: 'active',
       TRAINING_PLAN_REVISION_V1_MODE_USER_42: 'off',
     }, { userId: 42, tenantId: 9 })).toBe('off');
+  });
+
+  it('keeps typed Training workout validation default-off and scope-overridable', () => {
+    expect(isTrainingTypedWorkoutV1Enabled({})).toBe(false);
+    expect(isTrainingTypedWorkoutV1Enabled({ TRAINING_TYPED_WORKOUT_V1_ENABLED: 'true' })).toBe(true);
+    expect(isTrainingTypedWorkoutV1Enabled({ TRAINING_TYPED_WORKOUT_V1_ENABLED: 'false' })).toBe(false);
+    expect(isTrainingTypedWorkoutV1Enabled({ TRAINING_TYPED_WORKOUT_V1_ENABLED: 'yes' })).toBe(false);
+    expect(isTrainingTypedWorkoutV1Enabled({
+      TRAINING_TYPED_WORKOUT_V1_ENABLED: 'false',
+      TRAINING_TYPED_WORKOUT_V1_ENABLED_TENANT_9: 'true',
+    }, { userId: 7, tenantId: 9 })).toBe(true);
+    expect(isTrainingTypedWorkoutV1Enabled({
+      TRAINING_TYPED_WORKOUT_V1_ENABLED: 'true',
+      TRAINING_TYPED_WORKOUT_V1_ENABLED_USER_42: 'off',
+    }, { userId: 42, tenantId: 9 })).toBe(false);
   });
 
   it('keeps chat reliability rollout flags on by default with scoped rollback support', () => {
