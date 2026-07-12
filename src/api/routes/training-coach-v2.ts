@@ -87,6 +87,11 @@ import {
   type DbSessionRow,
 } from './training-coach-v2-hydration';
 import { requireTenantIdParam } from '../../services/tenant-scope';
+import {
+  assertLegacyPlanMutationAllowed,
+  assertLegacyWeekMutationAllowed,
+} from '../../services/training-plan-revision-legacy-guard';
+import { TrainingPlanRevisionError } from '../../services/training-plan-revision-errors';
 
 export { isStrictIsoDate };
 
@@ -532,6 +537,19 @@ export function mountCoachV2Routes(parent: Router): Router {
     const owned = resolveOwnedWeek(req, res, rawWeekId);
     if (!owned) return;
     const { weekId, planId: ownedPlanId } = owned;
+    const auth = req as AuthenticatedRequest;
+    try {
+      assertLegacyWeekMutationAllowed({
+        userId: auth.userId,
+        tenantId: requireTenantIdParam(auth.tenantId, 'training.coach.reflow'),
+      }, weekId);
+    } catch (error) {
+      if (error instanceof TrainingPlanRevisionError) {
+        sendError(res, error.code, error.message, error.statusCode);
+        return;
+      }
+      throw error;
+    }
     const body = (req.body ?? {}) as Record<string, unknown>;
     // Body planId, if supplied, MUST match the owned plan derived
     // from the week. This prevents a caller from passing a foreign
@@ -584,8 +602,6 @@ export function mountCoachV2Routes(parent: Router): Router {
     const knowledge = loadCoachKnowledge();
     const principles = knowledge.principles;
     const sciencePolicyVersion = getSciencePolicyVersion(principles);
-    const auth = req as AuthenticatedRequest;
-
     try {
       // Codex R2 P1 fix — compute the CoachAction[] for the week
       // here so apply mode actually mutates something. The classifier
@@ -1014,6 +1030,19 @@ export function mountCoachV2Routes(parent: Router): Router {
     const owned = resolveOwnedPlan(req, res, rawPlanId);
     if (!owned) return;
     const planId = owned.planId;
+    const auth = req as AuthenticatedRequest;
+    try {
+      assertLegacyPlanMutationAllowed({
+        userId: auth.userId,
+        tenantId: requireTenantIdParam(auth.tenantId, 'training.coach.policy'),
+      }, planId);
+    } catch (error) {
+      if (error instanceof TrainingPlanRevisionError) {
+        sendError(res, error.code, error.message, error.statusCode);
+        return;
+      }
+      throw error;
+    }
     const body = (req.body ?? {}) as Record<string, unknown>;
     try {
       const updated = setCoachPlanPolicy(planId, body);

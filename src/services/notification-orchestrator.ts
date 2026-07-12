@@ -2571,7 +2571,7 @@ function isSupportedNotificationDeeplink(value: string): boolean {
       case 'chat':
         return pathParts[0] === 'turn';
       case 'training':
-        return pathParts[0] === 'session' || pathParts[0] === 'plan';
+        return pathParts[0] === 'session' || pathParts[0] === 'plan' || pathParts[0] === 'revision';
       case 'secretary':
         return pathParts[0] === 'conflict';
       case 'content':

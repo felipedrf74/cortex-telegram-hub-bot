@@ -31,6 +31,9 @@ import {
   fingerprintTrainingPlanGenerationRequest,
   normalizeTrainingPlanGenerationIdempotencyKey,
 } from '../../services/training-plan-generation-idempotency';
+import { assertLegacyPlanGenerationAllowed } from '../../services/training-plan-revision-legacy-guard';
+import { TrainingPlanRevisionError } from '../../services/training-plan-revision-errors';
+import { runTrainingPlanRevisionShadowForLegacyRequest } from '../../services/training-plan-revision-shadow';
 
 type TrainingScreenCacheInvalidator = (userId: number) => void;
 
@@ -56,6 +59,8 @@ export function registerTrainingPlanRoutes(
       );
       return;
     }
+    runTrainingPlanRevisionShadowForLegacyRequest({ scope: { userId, tenantId }, body: req.body });
+    if (!allowLegacyGenerationRoute(res, { userId, tenantId })) return;
 
     const {
       objective,
@@ -194,6 +199,8 @@ export function registerTrainingPlanRoutes(
       );
       return;
     }
+    runTrainingPlanRevisionShadowForLegacyRequest({ scope: { userId, tenantId }, body: req.body });
+    if (!allowLegacyGenerationRoute(res, { userId, tenantId })) return;
 
     const {
       objective,
@@ -525,6 +532,7 @@ export function registerTrainingPlanRoutes(
       invalidateTrainingScreenCaches(userId);
       sendSuccess(res, result.data);
     } catch (err: any) {
+      if (sendLegacyRevisionGuardError(res, err)) return;
       logger.error({ err, userId }, 'Training plan calendar sync failed');
       sendInternalError(res, 'Failed to sync training plan to calendar');
     }
@@ -565,6 +573,7 @@ export function registerTrainingPlanRoutes(
       }
       sendSuccess(res, result.data);
     } catch (err: any) {
+      if (sendLegacyRevisionGuardError(res, err)) return;
       logger.error({ err, userId, sessionId }, 'Training session reflow preview failed');
       sendInternalError(res, 'Failed to preview training session reflow');
     }
@@ -624,6 +633,7 @@ export function registerTrainingPlanRoutes(
       invalidateTrainingScreenCaches(userId);
       sendSuccess(res, result.data, { status: result.status === 'partial_failure' ? 202 : 200 });
     } catch (err: any) {
+      if (sendLegacyRevisionGuardError(res, err)) return;
       logger.error({ err, userId, sessionId }, 'Training session reflow confirm failed');
       sendInternalError(res, 'Failed to confirm training session reflow');
     }
@@ -646,10 +656,30 @@ export function registerTrainingPlanRoutes(
       invalidateTrainingScreenCaches(userId);
       sendSuccess(res, result.data);
     } catch (err: any) {
+      if (sendLegacyRevisionGuardError(res, err)) return;
       logger.error({ err, userId }, 'Training plan cancellation failed');
       sendInternalError(res, 'Failed to cancel training plan');
     }
   });
+}
+
+function allowLegacyGenerationRoute(
+  res: Response,
+  scope: { userId: number; tenantId: number },
+): boolean {
+  try {
+    assertLegacyPlanGenerationAllowed(scope);
+    return true;
+  } catch (error) {
+    if (sendLegacyRevisionGuardError(res, error)) return false;
+    throw error;
+  }
+}
+
+function sendLegacyRevisionGuardError(res: Response, error: unknown): boolean {
+  if (!(error instanceof TrainingPlanRevisionError)) return false;
+  sendError(res, error.code, error.message, error.statusCode);
+  return true;
 }
 
 function buildAutomaticTrainingPlanGenerationIdempotencyKey(requestHash: string): string {

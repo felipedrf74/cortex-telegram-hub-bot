@@ -31,6 +31,7 @@ import {
   type TrainingCalendarDeleteResult,
 } from '../../services/training-calendar-provider-retry';
 import { withTrainingCalendarOperationLock } from '../../services/training-operation-locks';
+import { assertLegacyPlanMutationAllowed } from '../../services/training-plan-revision-legacy-guard';
 import { requireTenantIdParam } from '../../services/tenant-scope';
 import { hashOwnerIdForLog } from './_ownership-audit';
 
@@ -192,6 +193,12 @@ async function cancelTrainingPlanForUserLocked(
 
   if (plans.length === 0) {
     return buildNoActivePlanResult(userId, tenantId);
+  }
+
+  // Guard the whole batch before any provider or local write so a mixed
+  // cancellation cannot partially delete a revision-owned projection.
+  for (const plan of plans) {
+    assertLegacyPlanMutationAllowed({ userId, tenantId }, plan.id);
   }
 
   // Step 1 — remove calendar events first, while the plan_id linkage is

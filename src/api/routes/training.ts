@@ -44,6 +44,10 @@ import {
 } from './training-read-models';
 import { registerTrainingAnalyticsRoutes } from './training-analytics-routes';
 import { registerTrainingPlanRoutes } from './training-plan-routes';
+import {
+  registerTrainingPlanRevisionRoutes,
+  trainingPlanRevisionCapabilitiesForScope,
+} from './training-plan-revision-routes';
 import { requireTenantIdParam } from '../../services/tenant-scope';
 import {
   isAiInteractiveAllowedForRuntime,
@@ -280,7 +284,11 @@ export function trainingRoutes(): Router {
 
     const cached = getCached(cacheKey);
     if (cached) {
-      sendSuccess(res, cached, { cached: true });
+      const revisionCapabilities = trainingPlanRevisionCapabilitiesForScope({ userId, tenantId });
+      sendSuccess(res, {
+        ...(cached as Record<string, unknown>),
+        ...(revisionCapabilities ? { revisionCapabilities } : {}),
+      }, { cached: true });
       return;
     }
 
@@ -293,7 +301,11 @@ export function trainingRoutes(): Router {
         getCoachBriefingSnapshot,
       });
       setCache(cacheKey, payload, HOME_TTL);
-      sendSuccess(res, payload);
+      const revisionCapabilities = trainingPlanRevisionCapabilitiesForScope({ userId, tenantId });
+      sendSuccess(res, {
+        ...payload,
+        ...(revisionCapabilities ? { revisionCapabilities } : {}),
+      });
     } catch (err: any) {
       logger.error({ err, userId }, 'iOS training/home failed');
       sendInternalError(res, 'Failed to build training home state');
@@ -988,6 +1000,7 @@ export function trainingRoutes(): Router {
 
   registerTrainingAnalyticsRoutes(router, resolveTrainingLanguage);
   registerTrainingPlanRoutes(router, { invalidateTrainingScreenCaches });
+  registerTrainingPlanRevisionRoutes(router);
 
   return router;
 }

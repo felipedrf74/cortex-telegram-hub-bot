@@ -15,6 +15,8 @@ import type { Transaction, TaxEvent, AnnualTaxSummary } from './finance-tracker'
 import { getTokens, type OAuthProvider } from './oauth-store';
 import { clearGarminSession } from './garmin-session-store';
 import { logger } from '../utils/logger';
+import { randomUUID } from 'node:crypto';
+import { decryptTrainingProfileSnapshot } from './training-profile-snapshot-encryption';
 
 // ── Finance Export (existing) ───────────────────────────────────────
 
@@ -246,6 +248,15 @@ export interface FullUserExport {
     createdAt: string;
     updatedAt: string;
   }>;
+  trainingPlanRevisionV1: {
+    profileSnapshots: Array<Record<string, unknown>>;
+    planFamilies: Array<Record<string, unknown>>;
+    planRevisions: Array<Record<string, unknown>>;
+    approvalReceipts: Array<Record<string, unknown>>;
+    currentContexts: Array<Record<string, unknown>>;
+    activeReferences: Array<Record<string, unknown>>;
+    operations: Array<Record<string, unknown>>;
+  };
 }
 
 export function exportAllUserData(userId: number): FullUserExport {
@@ -357,6 +368,106 @@ export function exportAllUserData(userId: number): FullUserExport {
     WHERE user_id = ?
     ORDER BY created_at
   `, userId);
+  const rawTrainingSnapshots = safeAll(db, `
+    SELECT snapshot_id AS snapshotId, tenant_id AS tenantId,
+           snapshot_sequence AS snapshotSequence, schema_version AS schemaVersion,
+           content_hash AS contentHash, encrypted_snapshot_body AS encryptedSnapshotBody,
+           snapshot_body_key_version AS keyVersion, observed_at AS observedAt,
+           captured_at AS capturedAt, created_at AS createdAt
+      FROM training_profile_snapshots
+     WHERE user_id = ?
+     ORDER BY tenant_id, snapshot_sequence
+  `, userId) as Array<Record<string, any>>;
+  const trainingProfileSnapshots = rawTrainingSnapshots.map((row) => {
+    const { encryptedSnapshotBody, ...metadata } = row;
+    return {
+      ...metadata,
+      snapshotBody: decryptTrainingProfileSnapshot({
+        encryptedBody: encryptedSnapshotBody,
+        keyVersion: row.keyVersion,
+        userId,
+      }),
+    };
+  });
+  const trainingPlanFamilies = safeAll(db, `
+    SELECT family_id AS familyId, tenant_id AS tenantId, family_key AS familyKey,
+           plan_mode AS planMode, discipline, origin, legacy_plan_id AS legacyPlanId,
+           created_at AS createdAt, updated_at AS updatedAt
+      FROM training_plan_families WHERE user_id = ?
+     ORDER BY tenant_id, created_at, family_id
+  `, userId);
+  const rawTrainingRevisions = safeAll(db, `
+    SELECT revision_id AS revisionId, tenant_id AS tenantId, family_id AS familyId,
+           revision_sequence AS revisionSequence, parent_revision_id AS parentRevisionId,
+           profile_snapshot_id AS profileSnapshotId, origin,
+           lifecycle_state AS lifecycleState, approval_state AS approvalState,
+           decision_id AS decisionId, creation_context_version AS creationContextVersion,
+           policy_version AS policyVersion, catalog_version AS catalogVersion,
+           catalog_source_hash AS catalogSourceHash,
+           capability_registry_version AS capabilityRegistryVersion,
+           document_schema_version AS documentSchemaVersion,
+           revision_document_json AS revisionDocumentJson, content_hash AS contentHash,
+           quality_report_json AS qualityReportJson, created_at AS createdAt,
+           review_requested_at AS reviewRequestedAt, activated_at AS activatedAt,
+           superseded_at AS supersededAt, expired_at AS expiredAt
+      FROM training_plan_revisions WHERE user_id = ?
+     ORDER BY tenant_id, family_id, revision_sequence
+  `, userId) as Array<Record<string, any>>;
+  const trainingPlanRevisions = rawTrainingRevisions.map((row) => {
+    const { revisionDocumentJson, qualityReportJson, ...metadata } = row;
+    return {
+      ...metadata,
+      revisionDocument: parseExportJson(revisionDocumentJson),
+      qualityReport: parseExportJson(qualityReportJson),
+    };
+  });
+  const trainingApprovalReceipts = safeAll(db, `
+    SELECT approval_id AS approvalId, tenant_id AS tenantId, family_id AS familyId,
+           revision_id AS revisionId, decision_id AS decisionId,
+           decision_record_version AS decisionRecordVersion,
+           action_execution_id AS actionExecutionId,
+           approved_content_hash AS approvedContentHash,
+           approved_context_version AS approvedContextVersion,
+           actor_type AS actorType, approval_source AS approvalSource,
+           approved_at AS approvedAt, created_at AS createdAt
+      FROM training_plan_revision_approvals WHERE user_id = ?
+     ORDER BY tenant_id, approved_at, approval_id
+  `, userId);
+  const trainingCurrentContexts = safeAll(db, `
+    SELECT tenant_id AS tenantId, family_id AS familyId,
+           current_revision_id AS currentRevisionId,
+           current_profile_snapshot_id AS currentProfileSnapshotId,
+           current_context_version AS currentContextVersion,
+           base_context_version AS baseContextVersion,
+           profile_source_version AS profileSourceVersion,
+           calendar_source_version AS calendarSourceVersion,
+           conflict_source_version AS conflictSourceVersion,
+           pointer_version AS pointerVersion, created_at AS createdAt, updated_at AS updatedAt
+      FROM training_plan_current_contexts WHERE user_id = ?
+     ORDER BY tenant_id, family_id
+  `, userId);
+  const trainingActiveReferences = safeAll(db, `
+    SELECT tenant_id AS tenantId, family_id AS familyId,
+           active_revision_id AS activeRevisionId, projection_plan_id AS projectionPlanId,
+           pointer_version AS pointerVersion, created_at AS createdAt, updated_at AS updatedAt
+      FROM training_active_plan_references WHERE user_id = ?
+     ORDER BY tenant_id, family_id
+  `, userId);
+  const rawTrainingOperations = safeAll(db, `
+    SELECT operation_id AS operationId, tenant_id AS tenantId,
+           operation_type AS operationType, idempotency_key AS idempotencyKey,
+           request_hash AS requestHash, status, result_family_id AS resultFamilyId,
+           result_revision_id AS resultRevisionId, result_decision_id AS resultDecisionId,
+           response_json AS responseJson, attempt_count AS attemptCount,
+           last_error_code AS lastErrorCode, created_at AS createdAt,
+           updated_at AS updatedAt, completed_at AS completedAt
+      FROM training_plan_revision_operations WHERE user_id = ?
+     ORDER BY tenant_id, created_at, operation_id
+  `, userId) as Array<Record<string, any>>;
+  const trainingOperations = rawTrainingOperations.map((row) => {
+    const { responseJson, ...metadata } = row;
+    return { ...metadata, response: responseJson == null ? null : parseExportJson(responseJson) };
+  });
 
   return {
     exportedAt: new Date().toISOString(),
@@ -387,7 +498,21 @@ export function exportAllUserData(userId: number): FullUserExport {
     skillMemories,
     trainingFeedbackDecisions,
     secretarySourceSkillFeedback,
+    trainingPlanRevisionV1: {
+      profileSnapshots: trainingProfileSnapshots,
+      planFamilies: trainingPlanFamilies,
+      planRevisions: trainingPlanRevisions,
+      approvalReceipts: trainingApprovalReceipts,
+      currentContexts: trainingCurrentContexts,
+      activeReferences: trainingActiveReferences,
+      operations: trainingOperations,
+    },
   };
+}
+
+function parseExportJson(raw: unknown): unknown {
+  if (typeof raw !== 'string') return raw ?? null;
+  try { return JSON.parse(raw); } catch { return raw; }
 }
 
 // ── Full User Deletion (GDPR Article 17 — right to erasure) ────────
@@ -539,6 +664,15 @@ export function deleteAllUserData(userId: number): Record<string, number> {
   const counts: Record<string, number> = {};
 
   const deleteAll = db.transaction(() => {
+    const trainingErasureId = `training-erasure-${randomUUID()}`;
+    const hasTrainingErasureGate = tableExistsForDeletion(db, 'training_revision_erasure_authorizations');
+    if (hasTrainingErasureGate) {
+      db.prepare(`
+        INSERT INTO training_revision_erasure_authorizations (
+          erasure_id, subject_user_id, reason, expires_at
+        ) VALUES (?, ?, 'ACCOUNT_DELETION', datetime('now', '+5 minutes'))
+      `).run(trainingErasureId, userId);
+    }
     for (const { table, column } of accountDeletionTablesForDb(db)) {
       try {
         const result = db.prepare(`DELETE FROM ${table} WHERE ${column} = ?`).run(userId);
@@ -546,6 +680,26 @@ export function deleteAllUserData(userId: number): Record<string, number> {
       } catch {
         counts[table] = 0; // table may not exist
       }
+    }
+
+    if (hasTrainingErasureGate) {
+      const remaining = [
+        'training_profile_snapshots',
+        'training_plan_families',
+        'training_plan_revisions',
+        'training_plan_revision_approvals',
+        'training_plan_current_contexts',
+        'training_active_plan_references',
+        'training_plan_revision_operations',
+      ].reduce((total, table) => {
+        const row = db.prepare(`SELECT COUNT(*) AS count FROM ${table} WHERE user_id = ?`).get(userId) as { count: number };
+        return total + row.count;
+      }, 0);
+      if (remaining !== 0) {
+        throw new Error('Account deletion could not erase immutable Training revision data.');
+      }
+      db.prepare('DELETE FROM training_revision_erasure_authorizations WHERE erasure_id = ?')
+        .run(trainingErasureId);
     }
 
     // KV store per-user settings
@@ -568,6 +722,14 @@ export function deleteAllUserData(userId: number): Record<string, number> {
   deleteAll();
 
   return counts;
+}
+
+function tableExistsForDeletion(db: any, table: string): boolean {
+  try {
+    return !!db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(table);
+  } catch {
+    return false;
+  }
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────

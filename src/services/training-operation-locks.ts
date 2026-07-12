@@ -9,7 +9,8 @@ export type TrainingOperationName =
   | 'calendar_generate'
   | 'calendar_sync'
   | 'calendar_reflow'
-  | 'calendar_cancel';
+  | 'calendar_cancel'
+  | 'plan_activate';
 
 export interface TrainingOperationLockInput {
   userId: number;
@@ -25,6 +26,7 @@ const TRAINING_OPERATION_LOCK_TTL_MS_BY_OPERATION: Record<TrainingOperationName,
   calendar_sync: 15 * 60_000,
   calendar_reflow: 10 * 60_000,
   calendar_cancel: 15 * 60_000,
+  plan_activate: 10 * 60_000,
 };
 
 const memoryLocks = new Map<string, Promise<void>>();

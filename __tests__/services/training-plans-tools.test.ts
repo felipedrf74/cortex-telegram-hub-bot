@@ -215,4 +215,67 @@ describe('Training Plan Tool Handlers', () => {
     }, testUserId);
     expect(result.success).toBe(true);
   });
+
+  it('allows legacy session tools but blocks revision-owned projection rewrites', async () => {
+    await executeToolCall('create_training_plan', {
+      name: 'Plan', sport: 'strength', duration_weeks: 4,
+      start_date: '2026-04-01', end_date: '2026-04-29',
+    }, testUserId);
+    await executeToolCall('add_training_week', { plan_id: 1, week_number: 1 }, testUserId);
+    await executeToolCall('add_training_session', {
+      week_id: 1, plan_id: 1, day_of_week: 'Monday',
+      session_type: 'strength', title: 'Original',
+    }, testUserId);
+
+    const modeKey = `TRAINING_PLAN_REVISION_V1_MODE_USER_${testUserId}`;
+    process.env[modeKey] = 'active';
+    try {
+      const legacyUpdate = await executeToolCall('update_training_session', {
+        session_id: 1, title: 'Allowed legacy update',
+      }, testUserId);
+      const legacyLink = await executeToolCall('link_session_calendar', {
+        session_id: 1, calendar_event_id: 'legacy-event', calendar_source: 'google',
+      }, testUserId);
+      expect(legacyUpdate.success).toBe(true);
+      expect(legacyLink.success).toBe(true);
+
+      testDb.prepare("UPDATE fitness_training_plans SET source_revision_id = 'revision-1' WHERE id = 1").run();
+      const blockedUpdate = await executeToolCall('update_training_session', {
+        session_id: 1, title: 'Forbidden rewrite',
+      }, testUserId);
+      const blockedStatusOnly = await executeToolCall('update_training_session', {
+        session_id: 1, status: 'completed',
+      }, testUserId);
+      const blockedLink = await executeToolCall('link_session_calendar', {
+        session_id: 1, calendar_event_id: 'forbidden-event', calendar_source: 'outlook',
+      }, testUserId);
+
+      for (const result of [blockedUpdate, blockedStatusOnly, blockedLink]) {
+        expect(result).toMatchObject({
+          success: false,
+          code: 'TRAINING_REVISION_MANAGED_LEGACY_MUTATION_BLOCKED',
+        });
+      }
+      expect(testDb.prepare(`
+        SELECT title, status, calendar_event_id AS calendarEventId, calendar_source AS calendarSource
+          FROM training_sessions WHERE id = 1
+      `).get()).toEqual({
+        title: 'Allowed legacy update',
+        status: 'pending',
+        calendarEventId: 'legacy-event',
+        calendarSource: 'google',
+      });
+
+      const completion = await executeToolCall('log_training_completion', {
+        session_id: 1, rpe_overall: 7,
+      }, testUserId);
+      expect(completion.success).toBe(true);
+      expect(testDb.prepare('SELECT status FROM training_sessions WHERE id = 1').get())
+        .toEqual({ status: 'completed' });
+      expect(testDb.prepare('SELECT COUNT(*) AS count FROM training_completions WHERE session_id = 1').get())
+        .toEqual({ count: 1 });
+    } finally {
+      delete process.env[modeKey];
+    }
+  });
 });

@@ -24,6 +24,7 @@ const PROJECTABLE_EVENT_TYPES = new Set([
   'secretary.reflow.suggested',
   'training.plan.created',
   'training.plan.updated',
+  'training.plan_revision.activated.v1',
   'training.session.updated',
   'training.feedback.recorded',
   'content.profile.updated',

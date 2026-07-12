@@ -749,6 +749,7 @@ const MUTATING_ACTIONS = new Set([
   'add_meal',
   'undo_reflow',
   'accept_chat_action_fix',
+  'activate_training_plan_revision',
 ]);
 const VERSIONED_DECISION_ACTIONS = new Set([
   ...MUTATING_ACTIONS,
@@ -2159,6 +2160,7 @@ export function refreshDecisionItem(decisionId: string, userId: number, tenantId
         decisionVersionConflictDetails(getDecisionRecord(decisionId, userId, tenantId)),
       );
     }
+    expireTrainingPlanRevisionForDecision(getDb(), decisionId, userId, tenantId);
     emitDecisionLifecycleEvent({
       decisionId,
       userId,
@@ -3124,8 +3126,11 @@ export function runDecisionExpiryJob(input: { batchSize?: number; maxBatches?: n
        AND datetime(expires_at) <= datetime(?)
   `);
   const update = db.prepare("UPDATE notification_center_items SET status = 'expired', decision_state = 'expired', record_version = record_version + 1, updated_at = datetime('now') WHERE item_id = ?");
-  const expireBatch = db.transaction((ids: string[]) => {
-    for (const id of ids) update.run(id);
+  const expireBatch = db.transaction((rows: Array<{ item_id: string; user_id: number; tenant_id: number }>) => {
+    for (const row of rows) {
+      update.run(row.item_id);
+      expireTrainingPlanRevisionForDecision(db, row.item_id, row.user_id, row.tenant_id);
+    }
   });
 
   let expired = 0;
@@ -3145,7 +3150,7 @@ export function runDecisionExpiryJob(input: { batchSize?: number; maxBatches?: n
       `).get(row.item_id, row.user_id, row.tenant_id);
       return interacted ? [] : [record];
     });
-    expireBatch(rows.map((row) => row.item_id));
+    expireBatch(rows);
     for (const row of rows) {
       resolveDecisionConflictAudit(row.item_id, row.user_id, row.tenant_id, 'expired');
       emitDecisionLifecycleEvent({ decisionId: row.item_id, userId: row.user_id, tenantId: row.tenant_id, event: 'expired', toStatus: 'expired' });
@@ -3654,7 +3659,17 @@ export async function performDecisionAction(
   if (existing && existing.status === 'started') {
     return waitForExistingExecution(decisionId, actionId, userId, tenantId, idempotencyKey);
   }
-  if (existing && (existing.status === 'failed' || existing.status === 'partially_failed')) {
+  if (existing && existing.status === 'partially_failed') {
+    const reconciliation = reconcilePartialDecisionExecution(record);
+    const reconciled = getExistingExecution(decisionId, actionId, userId, tenantId, idempotencyKey);
+    if (reconciliation === 'applied' && reconciled?.status === 'succeeded') {
+      return idempotentActionResult(decisionId, actionId, userId, tenantId, reconciled);
+    }
+    throw executionReplayError(reconciled ?? existing, reconciliation === 'unknown'
+      ? 'Prior decision action outcome still requires recovery review'
+      : 'Prior decision action attempt was verified as not applied');
+  }
+  if (existing && existing.status === 'failed') {
     throw executionReplayError(existing, 'Prior decision action attempt failed');
   }
   if (opts.contextVersion && opts.contextVersion !== decisionContextVersion(record)) {
@@ -3802,6 +3817,7 @@ export async function performDecisionAction(
       idempotencyKey,
       actionPayload,
       opts.expectedVersion,
+      claimed.execution.action_execution_id,
     );
     completedExecution = execution;
     // From this point onward the authoritative domain executor returned after its read-back.
@@ -4148,6 +4164,20 @@ export function reviewDecision(
         confirmationStrength: approvalLevel === 'strong_confirmation' ? 'strong' : 'standard',
       }),
     );
+    if (input.outcome === 'reject'
+        && record.sourceSkill === 'training'
+        && record.relatedEntityType === 'training_plan_revision'
+        && record.relatedEntityId
+        && tableExists('training_plan_revisions')) {
+      getDb().prepare(`
+        UPDATE training_plan_revisions
+           SET lifecycle_state = 'EXPIRED', approval_state = 'REJECTED',
+               expired_at = datetime('now')
+         WHERE revision_id = ? AND user_id = ? AND tenant_id = ?
+           AND decision_id = ? AND lifecycle_state = 'PENDING_REVIEW'
+           AND approval_state = 'PENDING'
+      `).run(record.relatedEntityId, userId, tenantId, decisionId);
+    }
   })();
 
   const updated = getDecisionRecord(decisionId, userId, tenantId);
@@ -7979,6 +8009,7 @@ function guardActionable(record: DecisionRecord, actionId: string): void {
         AND status != 'expired'
     `).run(record.itemId, record.userId, record.tenantId);
     if ((expire.changes ?? 0) > 0) {
+      expireTrainingPlanRevisionForDecision(getDb(), record.itemId, record.userId, record.tenantId);
       emitDecisionLifecycleEvent({ decisionId: record.itemId, userId: record.userId, tenantId: record.tenantId, event: 'expired', toStatus: 'expired' });
       emitUnblockedDependentsForBlockers(
         [{ decisionId: record.itemId, userId: record.userId, tenantId: record.tenantId }],
@@ -7992,6 +8023,25 @@ function guardActionable(record: DecisionRecord, actionId: string): void {
   if (record.status === 'actioned' && rollbackContractForRecord(record).actionId !== actionId) {
     throw new DecisionActionError('DECISION_ALREADY_ACTIONED', 'Decision was already actioned', 409);
   }
+}
+
+function expireTrainingPlanRevisionForDecision(
+  db: ReturnType<typeof getDb>,
+  decisionId: string,
+  userId: number,
+  tenantId: number,
+): void {
+  const table = db.prepare(`
+    SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'training_plan_revisions'
+  `).get();
+  if (!table) return;
+  db.prepare(`
+    UPDATE training_plan_revisions
+       SET lifecycle_state = 'EXPIRED', approval_state = 'EXPIRED',
+           expired_at = datetime('now')
+     WHERE decision_id = ? AND user_id = ? AND tenant_id = ?
+       AND lifecycle_state = 'PENDING_REVIEW' AND approval_state = 'PENDING'
+  `).run(decisionId, userId, tenantId);
 }
 
 function guardDecisionLifecycleMutation(
@@ -8667,6 +8717,13 @@ function expectedExecutionStateForAttempt(
   if (actionId === 'accept_chat_action_fix') {
     return { verifier: 'decision_projection_only', expectedStatus: 'actioned' };
   }
+  if (actionId === 'activate_training_plan_revision') {
+    return {
+      verifier: 'training_active_plan_reference',
+      targetRef: record.relatedEntityId,
+      expectedStatus: 'ACTIVE',
+    };
+  }
   return { verifier: 'registered_executor_readback', actionId };
 }
 
@@ -8830,6 +8887,99 @@ function verifyUncertainDecisionExecution(
 ): { outcome: Exclude<DecisionExecutionReconciliationOutcome, 'none'>; actualEffect: Record<string, unknown> } {
   if (record.status === 'actioned' && record.actionResult?.actionId === actionId) {
     return { outcome: 'applied', actualEffect: { decisionProjectionAlreadyActioned: true } };
+  }
+  if (actionId === 'activate_training_plan_revision'
+      && record.relatedEntityType === 'training_plan_revision'
+      && record.relatedEntityId) {
+    const evidence = getDb().prepare(`
+      SELECT revisions.lifecycle_state AS revisionState,
+             revisions.approval_state AS approvalState,
+             refs.active_revision_id AS activeRevisionId,
+             refs.projection_plan_id AS projectionPlanId,
+             refs.pointer_version AS pointerVersion,
+             plans.status AS planStatus,
+             plans.source_revision_id AS planSourceRevisionId,
+             approvals.action_execution_id AS approvalExecutionId,
+             approvals.approved_content_hash AS approvedContentHash
+        FROM training_plan_revisions revisions
+        LEFT JOIN training_active_plan_references refs
+          ON refs.tenant_id = revisions.tenant_id
+         AND refs.user_id = revisions.user_id
+         AND refs.family_id = revisions.family_id
+         AND refs.active_revision_id = revisions.revision_id
+        LEFT JOIN fitness_training_plans plans
+          ON plans.id = refs.projection_plan_id
+         AND plans.tenant_id = revisions.tenant_id
+         AND plans.user_id = revisions.user_id
+        LEFT JOIN training_plan_revision_approvals approvals
+          ON approvals.tenant_id = revisions.tenant_id
+         AND approvals.user_id = revisions.user_id
+         AND approvals.revision_id = revisions.revision_id
+         AND approvals.decision_id = ?
+       WHERE revisions.revision_id = ?
+         AND revisions.user_id = ? AND revisions.tenant_id = ?
+       LIMIT 1
+    `).get(
+      record.itemId,
+      record.relatedEntityId,
+      record.userId,
+      record.tenantId,
+    ) as {
+      revisionState: string;
+      approvalState: string;
+      activeRevisionId: string | null;
+      projectionPlanId: number | null;
+      pointerVersion: number | null;
+      planStatus: string | null;
+      planSourceRevisionId: string | null;
+      approvalExecutionId: string | null;
+      approvedContentHash: string | null;
+    } | undefined;
+    const outbox = getDb().prepare(`
+      SELECT idempotency_key AS idempotencyKey
+        FROM event_outbox
+       WHERE tenant_id = ? AND user_id = ?
+         AND event_type = 'training.plan_revision.activated.v1'
+         AND entity_id = ?
+         AND idempotency_key = ?
+       LIMIT 1
+    `).get(
+      record.tenantId,
+      record.userId,
+      record.relatedEntityId,
+      `training.plan_revision.activated:${record.relatedEntityId}`,
+    ) as { idempotencyKey: string } | undefined;
+    const applied = evidence?.revisionState === 'ACTIVE'
+      && evidence.approvalState === 'APPROVED'
+      && evidence.activeRevisionId === record.relatedEntityId
+      && evidence.projectionPlanId != null
+      && evidence.planStatus === 'active'
+      && evidence.planSourceRevisionId === record.relatedEntityId
+      && !!evidence.approvalExecutionId
+      && !!evidence.approvedContentHash
+      && !!outbox;
+    if (applied) {
+      return {
+        outcome: 'applied',
+        actualEffect: {
+          trainingState: 'ACTIVE',
+          activeRevisionId: record.relatedEntityId,
+          projectionPlanId: evidence.projectionPlanId,
+          pointerVersion: evidence.pointerVersion,
+          activationOutboxPresent: true,
+        },
+      };
+    }
+    const cleanlyNotApplied = !!evidence
+      && evidence.revisionState === 'PENDING_REVIEW'
+      && evidence.approvalState === 'PENDING'
+      && evidence.activeRevisionId == null
+      && evidence.projectionPlanId == null
+      && evidence.approvalExecutionId == null
+      && !outbox;
+    return cleanlyNotApplied
+      ? { outcome: 'not_applied', actualEffect: { trainingState: 'PENDING_REVIEW' } }
+      : { outcome: 'unknown', actualEffect: { trainingState: evidence?.revisionState ?? 'missing', partialEvidence: true } };
   }
   if (actionId === 'mark_paid' && record.relatedEntityType === 'finance_tax_event' && record.relatedEntityId) {
     const year = Number(record.relatedEntityId.slice(0, 4));
@@ -9220,6 +9370,7 @@ async function executeDecisionAction(
   idempotencyKey: string,
   payload: Record<string, unknown>,
   expectedVersion?: number,
+  actionExecutionId?: string,
 ): Promise<{
   readBackOk: boolean;
   expectedEffect: Record<string, unknown>;
@@ -9288,6 +9439,80 @@ async function executeDecisionAction(
 
   if (action.id === 'accept_chat_action_fix') {
     return executeChatFixerDecision(record, userId, tenantId);
+  }
+
+  if (action.id === 'activate_training_plan_revision') {
+    if (record.sourceSkill !== 'training'
+        || record.relatedEntityType !== 'training_plan_revision'
+        || !record.relatedEntityId
+        || !actionExecutionId) {
+      throw new DecisionActionError(
+        'TRAINING_REVISION_DECISION_CONTRACT_INVALID',
+        'This Training activation decision is missing its immutable revision contract.',
+        409,
+      );
+    }
+    const normalized = normalizeDecisionAction(decisionContextForRecord(record).normalizedAction);
+    const target = normalized?.targetEntities.find((entry) =>
+      entry.type === 'training_plan_revision' && entry.id === record.relatedEntityId);
+    if (!normalized || !target?.version) {
+      throw new DecisionActionError(
+        'TRAINING_REVISION_DECISION_CONTRACT_INVALID',
+        'This Training activation decision cannot prove the approved revision version.',
+        409,
+      );
+    }
+    const activation = await import('./training-plan-revision-activation');
+    try {
+      const result = await activation.activateApprovedTrainingPlanRevision({
+        scope: { userId, tenantId },
+        revisionId: record.relatedEntityId,
+        approval: {
+          decisionId: record.itemId,
+          decisionRecordVersion: expectedVersion ?? record.recordVersion,
+          actionExecutionId,
+          approvedContentHash: target.version,
+          approvedContextVersion: normalized.contextVersion,
+        },
+      });
+      const readBackOk = result.activeReference.activeRevisionId === record.relatedEntityId
+        && result.projection.planId === result.activeReference.projectionPlanId;
+      return persistProjectionAfterVerifiedSourceEffect('training_activation_effect', () => {
+        const projection = markDecisionActioned(record, action.id, {
+          trainingState: 'ACTIVE',
+          planState: 'active',
+          activeRevisionId: result.revisionId,
+          familyId: result.familyId,
+          projectionPlanId: result.projection.planId,
+          pointerVersion: result.activeReference.pointerVersion,
+          rollbackAvailable: false,
+        }, 'The approved Training plan revision was activated and verified.');
+        return {
+          readBackOk: readBackOk && projection.readBackOk,
+        expectedEffect: {
+          trainingState: 'ACTIVE',
+          activeRevisionId: record.relatedEntityId,
+          decisionStatus: 'actioned',
+        },
+        actualEffect: {
+          ...projection.actualEffect,
+          trainingState: 'ACTIVE',
+          planState: 'active',
+          activeRevisionId: result.revisionId,
+          familyId: result.familyId,
+          projectionPlanId: result.projection.planId,
+          pointerVersion: result.activeReference.pointerVersion,
+          rollbackAvailable: false,
+        },
+        message: 'The approved Training plan revision was activated and verified.',
+        };
+      });
+    } catch (error) {
+      if (error instanceof activation.TrainingPlanRevisionError) {
+        throw new DecisionActionError(error.code, error.message, error.statusCode);
+      }
+      throw error;
+    }
   }
 
   if (MUTATING_ACTIONS.has(action.id)) {
@@ -10283,6 +10508,42 @@ function sourceStateSupersessionReason(record: DecisionRecord): string | null {
     }
   }
   if (record.sourceSkill === 'training') {
+    if (record.relatedEntityType === 'training_plan_revision' && record.relatedEntityId
+        && tableExists('training_plan_revisions')) {
+      const revision = getDb().prepare(`
+        SELECT lifecycle_state AS lifecycleState, approval_state AS approvalState,
+               decision_id AS decisionId, content_hash AS contentHash,
+               creation_context_version AS contextVersion
+          FROM training_plan_revisions
+         WHERE revision_id = ? AND user_id = ? AND tenant_id = ?
+         LIMIT 1
+      `).get(record.relatedEntityId, record.userId, record.tenantId) as {
+        lifecycleState: string;
+        approvalState: string;
+        decisionId: string | null;
+        contentHash: string;
+        contextVersion: string;
+      } | undefined;
+      if (!revision) return 'training_plan_revision_missing';
+      if (revision.lifecycleState === 'ACTIVE') return 'training_plan_revision_activated_elsewhere';
+      // During createDecisionIntent the Decision row exists a few statements
+      // before the producer CAS-binds its ID to the immutable candidate. This
+      // narrow initial state is safe because no action can execute before the
+      // producer finishes the bind and returns the candidate response.
+      if (revision.lifecycleState === 'CANDIDATE'
+          && revision.approvalState === 'UNREVIEWED'
+          && revision.decisionId == null) return null;
+      if (revision.lifecycleState !== 'PENDING_REVIEW'
+          || revision.approvalState !== 'PENDING'
+          || revision.decisionId !== record.itemId) return 'training_plan_revision_changed_elsewhere';
+      const normalized = normalizeDecisionAction(decisionContextForRecord(record).normalizedAction);
+      const targetVersion = normalized?.targetEntities.find((entry) =>
+        entry.type === 'training_plan_revision' && entry.id === record.relatedEntityId)?.version;
+      if (!normalized || targetVersion !== revision.contentHash
+          || normalized.contextVersion !== revision.contextVersion) {
+        return 'training_plan_revision_changed_elsewhere';
+      }
+    }
     if (record.relatedEntityType === 'training_plan' && tableExists('fitness_training_plans')) {
       const plan = getDb().prepare(`
         SELECT status, updated_at FROM fitness_training_plans
@@ -10347,6 +10608,16 @@ function secretaryTaskDueDateKey(task: NormalizedTask): string | null {
 
 function supersedeIfSourceStateStale(record: DecisionRecord): string | null {
   if (!['unread', 'read', 'failed', 'snoozed'].includes(record.status)) return null;
+  const uncertainExecution = getDb().prepare(`
+    SELECT 1 FROM decision_action_executions
+     WHERE decision_id = ? AND user_id = ? AND tenant_id = ?
+       AND status IN ('started', 'partially_failed')
+     LIMIT 1
+  `).get(record.itemId, record.userId, record.tenantId);
+  // A potentially committed source effect must be reconciled before normal
+  // stale-source retirement. Reads remain available and cannot supersede away
+  // the recovery contract.
+  if (uncertainExecution) return null;
   const reason = sourceStateSupersessionReason(record);
   if (!reason) return null;
   supersedeDecision(record, reason);

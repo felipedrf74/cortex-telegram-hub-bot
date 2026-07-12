@@ -12,6 +12,8 @@ import {
   getGeminiRoutingEnvOverride,
   getDecisionConflictPolicyV1Mode,
   getSecretaryReasoningV1Mode,
+  getTrainingPlanRevisionV1Mode,
+  isTrainingPlanRevisionV1ExplicitlyEnrolled,
   isChatEscalationReviewerEnabled,
   isChatBilingualEvalGateEnabled,
   isChatContextCompilerEnabled,
@@ -271,6 +273,31 @@ describe('runtime-flags', () => {
     expect(isContentDeepResearchDisabled(env, { userId: 7, tenantId: 99 })).toBe(true);
     expect(isContentFullLongformDisabled(env, { userId: 7, tenantId: 1 })).toBe(true);
     expect(isContentModelQualityAuditDisabled(env, { userId: 42, tenantId: 1 })).toBe(true);
+  });
+
+  it('keeps Training plan revisions fail-closed and scope-overridable', () => {
+    expect(getTrainingPlanRevisionV1Mode({})).toBe('off');
+    expect(getTrainingPlanRevisionV1Mode({ TRAINING_PLAN_REVISION_V1_MODE: 'off' })).toBe('off');
+    expect(getTrainingPlanRevisionV1Mode({ TRAINING_PLAN_REVISION_V1_MODE: 'shadow' })).toBe('shadow');
+    expect(getTrainingPlanRevisionV1Mode({ TRAINING_PLAN_REVISION_V1_MODE: 'active' })).toBe('active');
+    expect(isTrainingPlanRevisionV1ExplicitlyEnrolled(
+      { TRAINING_PLAN_REVISION_V1_MODE: 'active' },
+      { userId: 7, tenantId: 7 },
+    )).toBe(false);
+    expect(isTrainingPlanRevisionV1ExplicitlyEnrolled(
+      { TRAINING_PLAN_REVISION_V1_MODE_USER_7: 'active' },
+      { userId: 7, tenantId: 7 },
+    )).toBe(true);
+    expect(getTrainingPlanRevisionV1Mode({ TRAINING_PLAN_REVISION_V1_MODE: 'true' })).toBe('off');
+    expect(getTrainingPlanRevisionV1Mode({ TRAINING_PLAN_REVISION_V1_MODE: 'enabled' })).toBe('off');
+    expect(getTrainingPlanRevisionV1Mode({
+      TRAINING_PLAN_REVISION_V1_MODE: 'off',
+      TRAINING_PLAN_REVISION_V1_MODE_TENANT_9: 'shadow',
+    }, { userId: 7, tenantId: 9 })).toBe('shadow');
+    expect(getTrainingPlanRevisionV1Mode({
+      TRAINING_PLAN_REVISION_V1_MODE: 'active',
+      TRAINING_PLAN_REVISION_V1_MODE_USER_42: 'off',
+    }, { userId: 42, tenantId: 9 })).toBe('off');
   });
 
   it('keeps chat reliability rollout flags on by default with scoped rollback support', () => {

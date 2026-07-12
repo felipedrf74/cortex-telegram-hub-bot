@@ -79,6 +79,7 @@ import {
   revokeThirdPartyOAuthTokensForUser,
 } from '../../src/services/user-data-export';
 import { logAudit, getAuditTrail } from '../../src/services/audit-trail';
+import { encryptTrainingProfileSnapshot } from '../../src/services/training-profile-snapshot-encryption';
 
 // ── Helper: seed a user record ──
 function seedUser(db: Database.Database, telegramId: number, opts?: { username?: string; language?: string }) {
@@ -382,6 +383,89 @@ describe('exportAllUserData', () => {
     ]);
   });
 
+  it('exports the complete Training plan revision graph with decrypted snapshot content', () => {
+    const previousKey = process.env.TRAINING_PROFILE_SNAPSHOT_ENCRYPTION_KEY;
+    process.env.TRAINING_PROFILE_SNAPSHOT_ENCRYPTION_KEY = 'training-export-dedicated-key-000000000001';
+    try {
+      const encrypted = encryptTrainingProfileSnapshot({
+        userId: 1,
+        body: {
+          profileKind: 'legacy', request: null,
+          legacySource: { planId: 10, planVersion: 1, adaptationRevision: 0, sourceHash: 'a'.repeat(64) },
+          catalogVersion: 'legacy-unversioned', catalogSourceHash: 'a'.repeat(64),
+          policyVersion: 'legacy-preservation.v1',
+          consentContext: { optionalPermissionsUsed: [] }, missingInputs: ['profile'],
+        },
+      });
+      testDb.prepare(`
+        INSERT INTO training_profile_snapshots (
+          snapshot_id, tenant_id, user_id, snapshot_sequence, schema_version,
+          content_hash, encrypted_snapshot_body, snapshot_body_key_version,
+          display_factor_index_json, normalized_goals_json, normalized_constraints_json,
+          factor_evidence_json, source_versions_json, consent_context_json,
+          missing_inputs_json, observed_at, captured_at
+        ) VALUES (
+          'snapshot-export', 1, 1, 1, 'legacy-training-profile-snapshot.v1',
+          ?, ?, ?, '[]', '{}', '{}', '[]', '{}', '{}', '["profile"]',
+          datetime('now'), datetime('now')
+        )
+      `).run('b'.repeat(64), encrypted.encryptedBody, encrypted.keyVersion);
+      testDb.prepare(`
+        INSERT INTO training_plan_families (
+          family_id, tenant_id, user_id, family_key, plan_mode, discipline, origin
+        ) VALUES ('family-export', 1, 1, 'legacy:10', 'continuous', 'strength', 'LEGACY_BACKFILL')
+      `).run();
+      testDb.prepare(`
+        INSERT INTO training_plan_revisions (
+          revision_id, tenant_id, user_id, family_id, revision_sequence,
+          profile_snapshot_id, origin, lifecycle_state, approval_state,
+          creation_context_version, policy_version, catalog_version,
+          catalog_source_hash, capability_registry_version, document_schema_version,
+          revision_document_json, content_hash, quality_report_json
+        ) VALUES (
+          'revision-export', 1, 1, 'family-export', 1, 'snapshot-export',
+          'LEGACY_BACKFILL', 'LEGACY_ACTIVE', 'APPROVED', 'context-export',
+          'legacy-preservation.v1', 'legacy-unversioned', ?,
+          'training-workout-capabilities.v1', 'legacy-training-plan-revision.v1',
+          '{"title":"Exported plan"}', ?, '{"status":"LEGACY_COMPATIBILITY"}'
+        )
+      `).run('a'.repeat(64), 'c'.repeat(64));
+      testDb.prepare(`
+        INSERT INTO training_plan_current_contexts (
+          tenant_id, user_id, family_id, current_revision_id,
+          current_profile_snapshot_id, current_context_version, base_context_version,
+          profile_source_version, calendar_source_version, conflict_source_version
+        ) VALUES (
+          1, 1, 'family-export', 'revision-export', 'snapshot-export', 'context-export',
+          'base-context-export', 'profile_export', 'calendar_export', 'conflict_export'
+        )
+      `).run();
+      testDb.prepare(`
+        INSERT INTO training_plan_revision_operations (
+          operation_id, tenant_id, user_id, operation_type, idempotency_key,
+          request_hash, status, result_family_id, result_revision_id, response_json
+        ) VALUES (
+          'operation-export', 1, 1, 'CREATE_CANDIDATE', 'export-key', ?, 'SUCCEEDED',
+          'family-export', 'revision-export', '{"result":"ok"}'
+        )
+      `).run('d'.repeat(64));
+
+      const graph = exportAllUserData(1).trainingPlanRevisionV1;
+      expect(graph.profileSnapshots).toEqual([
+        expect.objectContaining({ snapshotId: 'snapshot-export', snapshotBody: expect.objectContaining({ profileKind: 'legacy' }) }),
+      ]);
+      expect(graph.planFamilies).toEqual([expect.objectContaining({ familyId: 'family-export' })]);
+      expect(graph.planRevisions).toEqual([
+        expect.objectContaining({ revisionId: 'revision-export', revisionDocument: { title: 'Exported plan' } }),
+      ]);
+      expect(graph.currentContexts).toEqual([expect.objectContaining({ currentRevisionId: 'revision-export' })]);
+      expect(graph.operations).toEqual([expect.objectContaining({ operationId: 'operation-export', response: { result: 'ok' } })]);
+    } finally {
+      if (previousKey === undefined) delete process.env.TRAINING_PROFILE_SNAPSHOT_ENCRYPTION_KEY;
+      else process.env.TRAINING_PROFILE_SNAPSHOT_ENCRYPTION_KEY = previousKey;
+    }
+  });
+
   it('does NOT include other users data', () => {
     seedUser(testDb, 1);
     seedUser(testDb, 2, { username: 'other' });
@@ -466,6 +550,86 @@ describe('deleteAllUserData', () => {
 
     const auditRows = testDb.prepare('SELECT * FROM audit_trail WHERE user_id = 1').all();
     expect(auditRows).toHaveLength(1);
+  });
+
+  it('authorizes and verifies erasure of immutable Training revision data', () => {
+    seedUser(testDb, 1);
+    testDb.prepare(`
+      INSERT INTO training_profile_snapshots (
+        snapshot_id, tenant_id, user_id, snapshot_sequence, schema_version,
+        content_hash, encrypted_snapshot_body, snapshot_body_key_version,
+        display_factor_index_json, normalized_goals_json, normalized_constraints_json,
+        factor_evidence_json, source_versions_json, consent_context_json,
+        missing_inputs_json, observed_at, captured_at
+      ) VALUES (
+        'snapshot-gdpr', 1, 1, 1, 'training-profile-snapshot.v1',
+        ?, 'encrypted-private-profile', 'training-profile-snapshot-aes256gcm.v1',
+        '[]', '{}', '{}', '[]', '{}', '{}', '[]', datetime('now'), datetime('now')
+      )
+    `).run('a'.repeat(64));
+    testDb.prepare(`
+      INSERT INTO training_plan_families (
+        family_id, tenant_id, user_id, family_key, plan_mode, discipline, origin
+      ) VALUES ('family-gdpr', 1, 1, 'continuous:general_fitness', 'continuous', 'strength', 'GENERATED')
+    `).run();
+    testDb.prepare(`
+      INSERT INTO training_plan_revisions (
+        revision_id, tenant_id, user_id, family_id, revision_sequence,
+        profile_snapshot_id, origin, lifecycle_state, approval_state, decision_id,
+        creation_context_version, policy_version, catalog_version, catalog_source_hash,
+        capability_registry_version, document_schema_version, revision_document_json,
+        content_hash, quality_report_json
+      ) VALUES (
+        'revision-gdpr', 1, 1, 'family-gdpr', 1, 'snapshot-gdpr', 'GENERATED',
+        'ACTIVE', 'APPROVED', 'decision-gdpr', 'context-gdpr', 'policy-gdpr',
+        'catalog-gdpr', ?, 'training-workout-capabilities.v1',
+        'training-plan-revision.v1', '{}', ?, '{}'
+      )
+    `).run('b'.repeat(64), 'c'.repeat(64));
+    testDb.prepare(`
+      INSERT INTO training_plan_revision_approvals (
+        approval_id, tenant_id, user_id, family_id, revision_id, decision_id,
+        decision_record_version, action_execution_id, approved_content_hash,
+        approved_context_version, actor_type, approval_source, approved_at
+      ) VALUES (
+        'approval-gdpr', 1, 1, 'family-gdpr', 'revision-gdpr', 'decision-gdpr',
+        2, 'execution-gdpr', ?, 'context-gdpr', 'user', 'DECISION_CENTER', datetime('now')
+      )
+    `).run('c'.repeat(64));
+    testDb.prepare(`
+      INSERT INTO training_plan_current_contexts (
+        tenant_id, user_id, family_id, current_revision_id,
+        current_profile_snapshot_id, current_context_version, base_context_version,
+        profile_source_version, calendar_source_version, conflict_source_version,
+        pointer_version
+      ) VALUES (
+        1, 1, 'family-gdpr', 'revision-gdpr', 'snapshot-gdpr', 'context-gdpr',
+        'base-context-gdpr', 'profile_gdpr', 'calendar_gdpr', 'conflict_gdpr', 1
+      )
+    `).run();
+    testDb.prepare(`
+      INSERT INTO training_active_plan_references (
+        tenant_id, user_id, family_id, active_revision_id, pointer_version
+      ) VALUES (1, 1, 'family-gdpr', 'revision-gdpr', 1)
+    `).run();
+    expect(() => testDb.prepare("DELETE FROM training_plan_revisions WHERE revision_id = 'revision-gdpr'").run())
+      .toThrow(/immutable records/i);
+
+    deleteAllUserData(1);
+
+    for (const table of [
+      'training_profile_snapshots',
+      'training_plan_families',
+      'training_plan_revisions',
+      'training_plan_revision_approvals',
+      'training_plan_current_contexts',
+      'training_active_plan_references',
+    ]) {
+      expect(testDb.prepare(`SELECT COUNT(*) AS count FROM ${table} WHERE user_id = 1`).get())
+        .toEqual({ count: 0 });
+    }
+    expect(testDb.prepare('SELECT COUNT(*) AS count FROM training_revision_erasure_authorizations').get())
+      .toEqual({ count: 0 });
   });
 
   it('deletes Wave 1 notification, Garmin, agent-signal, encryption, and config rows while retaining audit trail', () => {
