@@ -1,11 +1,40 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
 import { canonicalTrainingDay } from './training-schedule-utils';
+import { materializeCanonicalTrainingExercise } from '../../services/training-exercise-identity';
+import {
+  getTrainingExerciseIdentityV1Mode,
+  type RuntimeFlagScope,
+  type TrainingExerciseIdentityV1Mode,
+} from '../../services/runtime-flags';
+
+type FallbackPlanOptions = {
+  sessionsPerWeek?: number;
+  strengthSessionsPerWeek?: number;
+  longWorkoutDay?: string | null;
+  exerciseIdentityMode?: TrainingExerciseIdentityV1Mode;
+  env?: NodeJS.ProcessEnv;
+  scope?: RuntimeFlagScope;
+};
+
+const FALLBACK_EMITTER_CANONICAL_IDS: Readonly<Record<string, string>> = Object.freeze({
+  'Push-Up / DB Press': 'push_up',
+  'One-Arm Row': 'one_arm_dumbbell_row',
+  'Lateral Raise': 'dumbbell_lateral_raise',
+  'Cable / Band Triceps Pressdown': 'cable_triceps_pressdown',
+  'Leg Curl': 'seated_leg_curl',
+  'Hanging Knee Raise': 'dead_bug',
+  'Overhead Press': 'barbell_overhead_press',
+  'Lat Pulldown / Pull-Up': 'lat_pulldown',
+  'Incline Curl': 'dumbbell_curl',
+  'Hip Thrust': 'barbell_hip_thrust',
+  'Seated Calf Raise': 'calf_raise',
+});
 
 export function buildDeterministicTrainingPlan(
   objective: string,
   durationWeeks: number,
-  options: { sessionsPerWeek?: number; strengthSessionsPerWeek?: number; longWorkoutDay?: string | null } = {},
+  options: FallbackPlanOptions = {},
 ) {
   const template = inferTrainingTemplate(objective.toLowerCase(), options);
   const weeks = Array.from({ length: durationWeeks }, (_, index) => {
@@ -35,17 +64,20 @@ export function buildDeterministicTrainingPlan(
     };
   });
 
-  return {
+  const plan = {
     planName: `${objective.trim()} — ${durationWeeks} Week Plan`,
     sport: template.sport,
     periodization: 'undulating',
     weeks,
   };
+  const identityMode = options.exerciseIdentityMode
+    ?? getTrainingExerciseIdentityV1Mode(options.env ?? process.env, options.scope);
+  return normalizeFallbackExerciseIdentities(plan, identityMode);
 }
 
 function inferTrainingTemplate(
   lowerObjective: string,
-  options: { sessionsPerWeek?: number; strengthSessionsPerWeek?: number; longWorkoutDay?: string | null } = {},
+  options: FallbackPlanOptions = {},
 ) {
   const targetSessionsPerWeek = Math.max(3, Math.min(7, options.sessionsPerWeek || 5));
   const targetStrengthSessions = Math.max(0, Math.min(6, options.strengthSessionsPerWeek || 0));
@@ -220,6 +252,32 @@ function inferTrainingTemplate(
       },
     ],
   };
+}
+
+function normalizeFallbackExerciseIdentities<T extends { weeks: any[] }>(
+  plan: T,
+  mode: TrainingExerciseIdentityV1Mode,
+): T {
+  if (mode === 'off') return plan;
+  plan.weeks = plan.weeks.map((week) => ({
+    ...week,
+    sessions: Array.isArray(week.sessions)
+      ? week.sessions.map((session: any) => ({
+          ...session,
+          exercises: Array.isArray(session.exercises)
+            ? session.exercises.map((exercise: any) => {
+                const name = typeof exercise?.name === 'string' ? exercise.name.trim() : '';
+                return materializeCanonicalTrainingExercise(exercise, {
+                  canonicalId: FALLBACK_EMITTER_CANONICAL_IDS[name],
+                  env: { TRAINING_EXERCISE_IDENTITY_V1_MODE: mode },
+                  source: 'training-fallback-plan',
+                });
+              })
+            : [],
+        }))
+      : [],
+  }));
+  return plan;
 }
 
 function buildRunnerFallbackSessions(

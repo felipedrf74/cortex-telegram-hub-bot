@@ -10,6 +10,17 @@ import {
 import type { AthleteState, DayOfWeek, Exercise, SessionType } from './coach-kernel/types';
 import { buildRepoTrainingCatalogSnapshot } from './coach-kernel/training-catalog';
 import type { TrainingPlanMode } from './training-workout-capability-registry';
+import {
+  assertTrainingExerciseIdentityCatalogIntegrity,
+  buildTrainingExerciseIdentityCatalogSnapshot,
+  materializeCanonicalTrainingExercise,
+  TRAINING_EXERCISE_IDENTITY_POLICY_VERSION,
+} from './training-exercise-identity';
+import {
+  getTrainingExerciseIdentityV1Mode,
+  type RuntimeFlagScope,
+  type TrainingExerciseIdentityV1Mode,
+} from './runtime-flags';
 
 export const TRAINING_PLAN_REVISION_DOCUMENT_SCHEMA = 'training-plan-revision.v1' as const;
 export const TRAINING_PLAN_REVISION_POLICY_VERSION = 'training-plan-revision-m1-policy.v1' as const;
@@ -156,16 +167,31 @@ export interface TrainingPlanRevisionQualityCheck {
   evidence: string;
 }
 
+export interface TrainingPlanRevisionCandidateBuildOptions {
+  env?: NodeJS.ProcessEnv;
+  scope?: RuntimeFlagScope;
+}
+
 const DAY_ORDER: DayOfWeek[] = [
   'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday',
 ];
 
 export function buildTrainingPlanRevisionCandidate(
   request: TrainingPlanCandidateRequest,
+  options: TrainingPlanRevisionCandidateBuildOptions = {},
 ): BuiltTrainingPlanRevisionCandidate {
   const knowledge = loadCoachKnowledge();
   const catalog = buildRepoTrainingCatalogSnapshot(knowledge);
-  const normalized = validateAndNormalizeRequest(request, catalog);
+  const identityMode = getTrainingExerciseIdentityV1Mode(options.env ?? process.env, options.scope);
+  const identityCatalog = identityMode === 'active'
+    ? buildTrainingExerciseIdentityCatalogSnapshot()
+    : null;
+  if (identityCatalog) assertTrainingExerciseIdentityCatalogIntegrity(identityCatalog);
+  const normalized = validateAndNormalizeRequest(
+    request,
+    catalog,
+    identityCatalog ? new Set(identityCatalog.entries.map((entry) => entry.exerciseId)) : undefined,
+  );
   const horizonWeeks = normalized.horizonWeeks;
   const phaseSpecs = buildPhases(horizonWeeks, normalized.profile.experienceLevel);
   const causalFactors = buildCausalFactors(normalized);
@@ -235,19 +261,25 @@ export function buildTrainingPlanRevisionCandidate(
     ],
     missingInputs: [],
   };
+  normalizeRevisionDocumentExerciseIdentities(document, identityMode);
   const qualityChecks = validateTrainingPlanRevisionDocument(document);
   const contentHash = stableTrainingRevisionHash(document);
+  const catalogVersion = identityCatalog?.catalogVersion ?? catalog.catalogVersion;
+  const catalogSourceHash = identityCatalog?.sourceHash ?? catalog.sourceHash;
   return {
     document,
     contentHash,
     creationContextVersion: `ctx_${stableTrainingRevisionHash({
       request: normalized,
-      catalogVersion: catalog.catalogVersion,
-      catalogSourceHash: catalog.sourceHash,
+      catalogVersion,
+      catalogSourceHash,
       policyVersion: TRAINING_PLAN_REVISION_POLICY_VERSION,
+      ...(identityMode === 'active'
+        ? { exerciseIdentityPolicyVersion: TRAINING_EXERCISE_IDENTITY_POLICY_VERSION }
+        : {}),
     }).slice(0, 32)}`,
-    catalogVersion: catalog.catalogVersion,
-    catalogSourceHash: catalog.sourceHash,
+    catalogVersion,
+    catalogSourceHash,
     selectorPolicyVersion: STRENGTH_SELECTOR_POLICY_VERSION,
     policyVersion: TRAINING_PLAN_REVISION_POLICY_VERSION,
     capabilityRegistryVersion: TRAINING_WORKOUT_CAPABILITY_REGISTRY_VERSION,
@@ -256,6 +288,11 @@ export function buildTrainingPlanRevisionCandidate(
       status: 'PASS',
       checks: [
         ...qualityChecks,
+        ...(identityMode === 'active' ? [{
+          code: 'EXERCISE_IDENTITY_CLOSURE',
+          status: 'PASS' as const,
+          evidence: `${identityCatalog?.entries.length ?? 0} canonical identities at ${TRAINING_EXERCISE_IDENTITY_POLICY_VERSION}`,
+        }] : []),
         { code: 'CAUSAL_PERSONALIZATION', status: 'PASS', evidence: `${causalFactors.length} explicit input-to-output mappings` },
       ],
     },
@@ -372,6 +409,7 @@ export function validateTrainingPlanRevisionDocument(
 function validateAndNormalizeRequest(
   request: TrainingPlanCandidateRequest,
   catalog: ReturnType<typeof buildRepoTrainingCatalogSnapshot>,
+  authoritativeExerciseIds?: Set<string>,
 ): TrainingPlanCandidateRequest & { horizonWeeks: number } {
   if (!request || typeof request !== 'object' || !request.profile || typeof request.profile !== 'object') {
     throw new Error('TRAINING_REVISION_PROFILE_REQUIRED');
@@ -426,7 +464,8 @@ function validateAndNormalizeRequest(
     equipmentAliases.get(normalizeCatalogToken(value)));
   if (resolvedEquipment.some((value) => value == null)) throw new Error('TRAINING_REVISION_EQUIPMENT_UNKNOWN');
   const equipmentIds = [...new Set(['bodyweight', ...(resolvedEquipment as string[])])].sort();
-  const activeExerciseIds = new Set(catalog.exercises.filter((exercise) => exercise.active).map((exercise) => exercise.id));
+  const activeExerciseIds = authoritativeExerciseIds
+    ?? new Set(catalog.exercises.filter((exercise) => exercise.active).map((exercise) => exercise.id));
   const exclusions = normalizeStringList(request.profile.exclusions);
   if (exclusions.some((exerciseId) => !activeExerciseIds.has(exerciseId))) {
     throw new Error('TRAINING_REVISION_EXCLUSION_UNKNOWN');
@@ -444,6 +483,25 @@ function validateAndNormalizeRequest(
       exclusions,
     },
   };
+}
+
+function normalizeRevisionDocumentExerciseIdentities(
+  document: TrainingPlanRevisionDocument,
+  mode: TrainingExerciseIdentityV1Mode,
+): void {
+  if (mode === 'off') return;
+  for (const week of document.weeks) {
+    for (const workout of week.workouts) {
+      for (const block of workout.blocks) {
+        if (!Array.isArray(block.exercises)) continue;
+        block.exercises = block.exercises.map((exercise) =>
+          materializeCanonicalTrainingExercise(exercise as unknown as Record<string, unknown>, {
+            env: { TRAINING_EXERCISE_IDENTITY_V1_MODE: mode },
+            source: 'training-plan-revision-candidate-builder',
+          }) as unknown as TrainingPlanExercisePrescription);
+      }
+    }
+  }
 }
 
 function buildPhases(horizonWeeks: number, experience: TrainingExperienceLevel): TrainingPlanRevisionDocument['phases'] {

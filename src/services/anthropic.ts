@@ -12,6 +12,7 @@ import { readTrainingContextAll, formatTrainingContextForPrompt } from './traini
 import { getTriathlonPromptNameForMessage } from '../router/sport-classifier';
 import { buildScopedStateContextPrefix } from './provider-state-context';
 import { rethrowAiUsageFailClosedError } from './api-usage-fallback';
+import { trainingExerciseToolJsonDescription } from './training-exercise-identity';
 
 const client = new Anthropic({
   apiKey: config.anthropic.apiKey,
@@ -587,7 +588,7 @@ export const TOOLS: Anthropic.Tool[] = [
       session_type: { type: 'string', description: 'strength, running, cycling, swim, recovery, mobility' },
       title: { type: 'string', description: 'Session title e.g. "Upper Body Push"' },
       description: { type: 'string' },
-      exercises_json: { type: 'string', description: 'JSON array: [{name, sets, reps, weight, rpe, rest_sec, tempo}]' },
+      exercises_json: { type: 'string', description: trainingExerciseToolJsonDescription() },
       duration_minutes: { type: 'number' },
       intensity_text: { type: 'string', description: 'e.g. "RPE 7", "Zone 2", "80% 1RM"' },
     }, required: ['week_id', 'plan_id', 'day_of_week', 'session_type', 'title'] },
@@ -615,7 +616,7 @@ export const TOOLS: Anthropic.Tool[] = [
     input_schema: { type: 'object' as const, properties: {
       session_id: { type: 'number' },
       title: { type: 'string' },
-      exercises_json: { type: 'string' },
+      exercises_json: { type: 'string', description: trainingExerciseToolJsonDescription() },
       duration_minutes: { type: 'number' },
       intensity_text: { type: 'string' },
       description: { type: 'string' },

@@ -314,7 +314,10 @@ function validateActivationInput(db: Database.Database, input: {
       409,
     );
   }
-  const rebuilt = buildTrainingPlanRevisionCandidate(snapshot.body.request);
+  const rebuilt = buildTrainingPlanRevisionCandidate(snapshot.body.request, {
+    env: input.env,
+    scope: input.scope,
+  });
   const rebuiltContextVersion = deriveTrainingRevisionCreationContextVersion(
     rebuilt.creationContextVersion,
     liveAuthoritativeContext,

@@ -12,6 +12,7 @@ import {
   getGeminiRoutingEnvOverride,
   getDecisionConflictPolicyV1Mode,
   getSecretaryReasoningV1Mode,
+  getTrainingExerciseIdentityV1Mode,
   getTrainingPlanRevisionV1Mode,
   isTrainingPlanRevisionV1ExplicitlyEnrolled,
   isChatEscalationReviewerEnabled,
@@ -54,6 +55,21 @@ import {
 } from '../../src/services/runtime-flags';
 
 describe('runtime-flags', () => {
+  it('keeps Training exercise identity off by default and scopes explicit shadow or active rollout', () => {
+    expect(getTrainingExerciseIdentityV1Mode({})).toBe('off');
+    expect(getTrainingExerciseIdentityV1Mode({ TRAINING_EXERCISE_IDENTITY_V1_MODE: 'true' })).toBe('off');
+    expect(getTrainingExerciseIdentityV1Mode({ TRAINING_EXERCISE_IDENTITY_V1_MODE: 'shadow' })).toBe('shadow');
+    expect(getTrainingExerciseIdentityV1Mode({ TRAINING_EXERCISE_IDENTITY_V1_MODE: 'active' })).toBe('active');
+    expect(getTrainingExerciseIdentityV1Mode({
+      TRAINING_EXERCISE_IDENTITY_V1_MODE: 'off',
+      TRAINING_EXERCISE_IDENTITY_V1_MODE_TENANT_9: 'shadow',
+    }, { userId: 7, tenantId: 9 })).toBe('shadow');
+    expect(getTrainingExerciseIdentityV1Mode({
+      TRAINING_EXERCISE_IDENTITY_V1_MODE: 'active',
+      TRAINING_EXERCISE_IDENTITY_V1_MODE_USER_42: 'off',
+    }, { userId: 42, tenantId: 9 })).toBe('off');
+  });
+
   it('treats only literal true as enabled for anthropic runtime flags', () => {
     expect(isAnthropicRuntimeEnabled({ ANTHROPIC_ENABLED: 'true' })).toBe(true);
     expect(isAnthropicRuntimeEnabled({ ANTHROPIC_ENABLED: 'yes' })).toBe(false);
