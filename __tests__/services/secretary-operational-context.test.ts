@@ -15,22 +15,56 @@ const mocks = vi.hoisted(() => ({
   composeDailyBrief: vi.fn(),
 }));
 
-vi.mock('../../src/services/task-store/task-router', () => ({
-  getTaskProviderForUser: () => ({ getAllPendingTasks: mocks.getAllPendingTasks }),
-}));
-vi.mock('../../src/services/unified-calendar', () => ({ getEventsWithDiagnostics: mocks.getEventsWithDiagnostics }));
+vi.mock('../../src/services/task-store/task-router', async () => {
+  const actual = await vi.importActual<typeof import('../../src/services/task-store/task-router')>(
+    '../../src/services/task-store/task-router',
+  );
+  return {
+    ...actual,
+    getTaskProviderForUser: () => ({ getAllPendingTasks: mocks.getAllPendingTasks }),
+  };
+});
+vi.mock('../../src/services/unified-calendar', async () => {
+  const actual = await vi.importActual<typeof import('../../src/services/unified-calendar')>(
+    '../../src/services/unified-calendar',
+  );
+  return {
+    ...actual,
+    getEventsWithDiagnostics: mocks.getEventsWithDiagnostics,
+  };
+});
 vi.mock('../../src/services/unified-mail-pressure', () => ({
   getUnreadMailSummaryForUser: mocks.getUnreadMailSummaryForUser,
   isAnyMailConfiguredForUser: mocks.isAnyMailConfiguredForUser,
 }));
-vi.mock('../../src/state/reminders', () => ({ getRemindersForWindow: mocks.getRemindersForWindow }));
-vi.mock('../../src/services/garmin', () => ({
-  getActivitiesByDateForUser: mocks.getActivitiesByDateForUser,
-  isGarminConfiguredForUser: mocks.isGarminConfiguredForUser,
-}));
-vi.mock('../../src/services/readiness-events', () => ({ getLatestReadinessEvent: mocks.getLatestReadinessEvent }));
-vi.mock('../../src/services/user-service', () => ({ getUserTimezone: () => 'UTC' }));
-vi.mock('../../src/skills/registry', () => ({ isSubmoduleEnabled: mocks.isSubmoduleEnabled }));
+vi.mock('../../src/state/reminders', async () => {
+  const actual = await vi.importActual<typeof import('../../src/state/reminders')>('../../src/state/reminders');
+  return { ...actual, getRemindersForWindow: mocks.getRemindersForWindow };
+});
+vi.mock('../../src/services/garmin', async () => {
+  const actual = await vi.importActual<typeof import('../../src/services/garmin')>('../../src/services/garmin');
+  return {
+    ...actual,
+    getActivitiesByDateForUser: mocks.getActivitiesByDateForUser,
+    isGarminConfiguredForUser: mocks.isGarminConfiguredForUser,
+  };
+});
+vi.mock('../../src/services/readiness-events', async () => {
+  const actual = await vi.importActual<typeof import('../../src/services/readiness-events')>(
+    '../../src/services/readiness-events',
+  );
+  return { ...actual, getLatestReadinessEvent: mocks.getLatestReadinessEvent };
+});
+vi.mock('../../src/services/user-service', async () => {
+  const actual = await vi.importActual<typeof import('../../src/services/user-service')>(
+    '../../src/services/user-service',
+  );
+  return { ...actual, getUserTimezone: () => 'UTC' };
+});
+vi.mock('../../src/skills/registry', async () => {
+  const actual = await vi.importActual<typeof import('../../src/skills/registry')>('../../src/skills/registry');
+  return { ...actual, isSubmoduleEnabled: mocks.isSubmoduleEnabled };
+});
 vi.mock('../../src/services/daily-brief-orchestrator', () => ({ composeDailyBrief: mocks.composeDailyBrief }));
 
 import { collectSecretaryOperationalContext } from '../../src/services/chat-core-v2/secretary-operational-context';
