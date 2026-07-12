@@ -8,15 +8,36 @@ const state = vi.hoisted(() => ({
   context: null as LoadedDecisionConflictContext | null,
 }));
 
-vi.mock('../../src/services/decision-conflict-context', () => ({
-  loadDecisionConflictContext: () => state.context,
-}));
-vi.mock('../../src/services/unified-calendar', () => ({
-  hasConnectedCalendarForUser: () => true,
-  hasWritableCalendarForUser: () => true,
-}));
+vi.mock('../../src/services/decision-conflict-context', async () => {
+  const actual = await vi.importActual<typeof import('../../src/services/decision-conflict-context')>(
+    '../../src/services/decision-conflict-context',
+  );
+  return {
+    ...actual,
+    loadDecisionConflictContext: () => state.context,
+  };
+});
+vi.mock('../../src/services/unified-calendar', async () => {
+  const actual = await vi.importActual<typeof import('../../src/services/unified-calendar')>(
+    '../../src/services/unified-calendar',
+  );
+  return {
+    ...actual,
+    hasConnectedCalendarForUser: () => true,
+    hasWritableCalendarForUser: () => true,
+  };
+});
 vi.mock('../../src/services/database', () => ({
   getDb: () => ({ prepare: () => ({ get: () => undefined }) }),
+  applyMigrationFileForTest: vi.fn(),
+  assertNoUnexpectedMigrationPrefixCollisions: vi.fn(),
+  closeDatabase: vi.fn(),
+  filterAlreadyAppliedAddColumnStatements: vi.fn((sql: string) => sql),
+  findUnexpectedMigrationPrefixCollisions: vi.fn(() => []),
+  initDatabase: vi.fn(),
+  runMigrationsForTest: vi.fn(),
+  stripWrappingTransactionStatements: vi.fn((sql: string) => sql),
+  withDatabaseForTest: vi.fn(),
 }));
 
 import {

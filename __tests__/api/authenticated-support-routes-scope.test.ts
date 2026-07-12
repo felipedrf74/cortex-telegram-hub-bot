@@ -45,6 +45,8 @@ vi.mock('../../src/services/database', () => ({
   filterAlreadyAppliedAddColumnStatements: vi.fn((sql: string) => sql),
   runMigrationsForTest: vi.fn(),
   stripWrappingTransactionStatements: vi.fn((sql: string) => sql),
+  applyMigrationFileForTest: vi.fn(),
+  withDatabaseForTest: vi.fn(),
 }));
 
 vi.mock('../../src/state/notes', () => ({
