@@ -68,6 +68,33 @@ describe('Training plan revision API contracts', () => {
     });
   });
 
+  it('distinguishes active enrollment with a disabled Decision dependency from an absent rollout', async () => {
+    await withDatabaseForTestAsync(db, async () => {
+      process.env.TRAINING_PLAN_REVISION_V1_MODE_USER_7 = 'active';
+      process.env.DECISION_FLOW_V1_ENFORCE_ENABLED = 'false';
+
+      for (const path of ['/plan/revision-capabilities', '/capabilities']) {
+        const response = await fetch(`${baseUrl}${path}`);
+        expect(response.status).toBe(409);
+        expect(await response.json()).toMatchObject({
+          ok: false,
+          error: {
+            code: 'TRAINING_REVISION_EXECUTION_DEPENDENCY_DISABLED',
+          },
+        });
+      }
+
+      const mutation = await fetch(`${baseUrl}/plan/candidates`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'idempotency-key': 'mixed-rollout-blocked' },
+        body: JSON.stringify({}),
+      });
+      expect(mutation.status).toBe(404);
+      expect(await mutation.json()).toMatchObject({ ok: false, error: { code: 'NOT_FOUND' } });
+      expect(db.prepare('SELECT COUNT(*) AS count FROM training_plan_revisions').get()).toEqual({ count: 0 });
+    });
+  });
+
   it('serves explicit capabilities and versioned candidate/revision/edit envelopes in active mode', async () => {
     await withDatabaseForTestAsync(db, async () => {
       process.env.TRAINING_PLAN_REVISION_V1_MODE_USER_7 = 'active';

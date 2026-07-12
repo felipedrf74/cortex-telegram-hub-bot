@@ -52,7 +52,7 @@ export interface RevisionCapabilitiesResource extends RevisionApiMeta {
 export function registerTrainingPlanRevisionRoutes(router: Router): void {
   const capabilities = (req: Request, res: Response) => {
     const scope = resolveScope(req as unknown as AuthenticatedRequest, res);
-    if (!scope || !requireActiveRoute(scope, res)) return;
+    if (!scope || !requireCapabilityRoute(scope, res)) return;
     const data = trainingPlanRevisionCapabilitiesForScope(scope)!;
     sendSuccess(res, data);
   };
@@ -197,6 +197,31 @@ function requireActiveRoute(scope: { userId: number; tenantId: number }, res: Re
   }
   sendError(res, 'NOT_FOUND', 'Route not found.', 404);
   return false;
+}
+
+/**
+ * Capability discovery must distinguish an absent rollout from a partially
+ * enabled one. Legacy writers are already blocked for active, enrolled
+ * scopes, so returning the same hidden 404 when Decision Flow is disabled
+ * would let clients incorrectly reopen a writer that is guaranteed to fail.
+ */
+function requireCapabilityRoute(scope: { userId: number; tenantId: number }, res: Response): boolean {
+  if (getTrainingPlanRevisionV1Mode(process.env, scope) !== 'active'
+      || !isTrainingPlanRevisionV1ExplicitlyEnrolled(process.env, scope)
+      || scope.userId !== scope.tenantId) {
+    sendError(res, 'NOT_FOUND', 'Route not found.', 404);
+    return false;
+  }
+  if (!isDecisionFlowV1EnforceEnabled(process.env, scope)) {
+    sendError(
+      res,
+      'TRAINING_REVISION_EXECUTION_DEPENDENCY_DISABLED',
+      'Training plan revisions are enrolled, but Decision Flow execution is not enabled.',
+      409,
+    );
+    return false;
+  }
+  return true;
 }
 
 function sendRevisionError(res: Response, error: unknown, operation: string): void {
