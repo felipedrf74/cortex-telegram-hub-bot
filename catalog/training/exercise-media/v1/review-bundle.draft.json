@@ -30,6 +30,7 @@
       "status": "PENDING",
       "evidenceRequired": [
         "Independent movement and equipment representation review for every selected asset.",
+        "Cross-catalog visual consistency review must reconcile the current mixed painterly and photoreal rendering styles before approval.",
         "Immutable review subject hash bound to the selected asset bytes."
       ]
     },
@@ -54,6 +55,7 @@
       "status": "PENDING",
       "evidenceRequired": [
         "Asset-level owner review.",
+        "Owner sign-off must confirm one coherent visual style across the final asset set after style reconciliation.",
         "Immutable owner approval bound to the final compiled package hash."
       ]
     },
@@ -29988,5 +29990,5 @@
       ]
     }
   ],
-  "bundleHash": "7c378344b517a67ee27838b455b41916ffa4c2b595a23689fbe106df574a8de0"
+  "bundleHash": "6afc1831369b2ae43f1c7b6c7b408dcbfcc4e52cc2ebf5696cd4a837a2cdc636"
 }

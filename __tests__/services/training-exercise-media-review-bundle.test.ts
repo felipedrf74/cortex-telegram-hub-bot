@@ -51,6 +51,10 @@ describe('Training exercise media DRAFT review bundle', () => {
     });
     expect(bundle.gateRequirements).toHaveLength(6);
     expect(bundle.gateRequirements.every((gate) => gate.status === 'PENDING')).toBe(true);
+    expect(bundle.gateRequirements.find((gate) => gate.gate === 'DOMAIN')?.evidenceRequired)
+      .toContain('Cross-catalog visual consistency review must reconcile the current mixed painterly and photoreal rendering styles before approval.');
+    expect(bundle.gateRequirements.find((gate) => gate.gate === 'OWNER')?.evidenceRequired)
+      .toContain('Owner sign-off must confirm one coherent visual style across the final asset set after style reconciliation.');
     expect(JSON.stringify(bundle)).not.toContain('/Users/');
     expect(JSON.stringify(bundle)).not.toContain('file://');
     expect(JSON.stringify(bundle)).not.toContain('deliveryUrl');
