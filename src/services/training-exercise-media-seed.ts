@@ -18,6 +18,7 @@ import {
 export interface TrainingExerciseMediaSeedResult {
   manifestId: string;
   packageHash: string;
+  publicationState: string;
   inserted: boolean;
   staged: boolean;
   activated: boolean;
@@ -523,8 +524,9 @@ function readSeedResult(
   return {
     manifestId: compiled.manifest.manifestId,
     packageHash: compiled.packageHash,
+    publicationState: row.publication_state,
     inserted,
-    staged: ['STAGED', 'ACTIVE', 'DEPRECATED', 'REVOKED'].includes(row.publication_state),
+    staged: row.publication_state === 'STAGED' || row.publication_state === 'ACTIVE',
     activated: row.publication_state === 'ACTIVE',
     validationAttestationHash: row.validation_attestation_hash,
   };

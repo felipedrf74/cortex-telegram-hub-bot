@@ -36,6 +36,7 @@ This is the backend repo's markdown routing map for Codex and Claude Code.
 | Testing and QA harness standard | canonical | `docs/engineering/testing-and-qa-harness-standard.md` | Update when test categories or evidence requirements change. |
 | Offline-first Tasks architecture | canonical | `docs/engineering/offline-first-tasks-architecture.md` | Update when Tasks identity, sync state, mutation replay, provider mappings, or iOS offline storage contracts change. |
 | Notification Center boundary | canonical | `docs/notifications/notification-center-boundary.md` | Update when user notifications, operator alerts, badges, or legacy delivery boundaries change. |
+| Training Exercise Media V1 operator runbook | canonical | `docs/engineering/training-exercise-media-v1-operator-runbook.md` | Update when authored-content, materialization, approval, staging activation, or production-validation contracts change. |
 | Privacy policy draft | lawyer-review | `docs/legal/privacy-policy-draft.md` | Owner/counsel must approve before publication. |
 | Terms of service draft | lawyer-review | `docs/legal/terms-of-service-draft.md` | Owner/counsel must approve before publication. |
 | Content Agency model | current | `docs/content/content-agency-model.md` | Update when creator-agency rules, routes, persistence, iOS behavior, or quality gates change. |

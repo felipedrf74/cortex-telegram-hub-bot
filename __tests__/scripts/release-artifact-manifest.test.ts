@@ -29,10 +29,15 @@ describe('release-artifact-manifest', () => {
   beforeEach(() => {
     tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'nexus-artifact-manifest-'));
     fs.mkdirSync(path.join(tmp, 'dist'), { recursive: true });
+    fs.mkdirSync(path.join(tmp, 'catalog/training/exercise-media/v1'), { recursive: true });
     fs.mkdirSync(path.join(tmp, 'migrations'), { recursive: true });
     fs.mkdirSync(path.join(tmp, 'prompts'), { recursive: true });
     fs.mkdirSync(path.join(tmp, 'content-engine/services'), { recursive: true });
     fs.writeFileSync(path.join(tmp, 'dist/index.js'), 'console.log("one");\n');
+    fs.writeFileSync(
+      path.join(tmp, 'catalog/training/exercise-media/v1/compiled-manifest.json'),
+      '{"packageHash":"one"}\n',
+    );
     fs.writeFileSync(path.join(tmp, 'migrations/001_init.sql'), 'CREATE TABLE x(id INTEGER);\n');
     fs.writeFileSync(path.join(tmp, 'prompts/content.md'), 'prompt one\n');
     fs.writeFileSync(path.join(tmp, 'package.json'), '{"version":"1.0.0"}\n');
@@ -55,6 +60,7 @@ describe('release-artifact-manifest', () => {
     ['package-lock', 'package-lock.json'],
     ['python source', 'content-engine/services/orchestrator.py'],
     ['dist', 'dist/index.js'],
+    ['runtime catalog', 'catalog/training/exercise-media/v1/compiled-manifest.json'],
   ])('changes digest when %s changes', (_label, relativePath) => {
     const before = digest();
     fs.appendFileSync(path.join(tmp, relativePath), 'changed\n');

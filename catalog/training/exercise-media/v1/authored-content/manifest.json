@@ -1,0 +1,28 @@
+{
+  "schemaVersion": "training-exercise-media-authored-content-manifest.v1",
+  "status": "AUTHORING_COMPLETE_UNAPPROVED",
+  "catalogVersion": "training-exercise-identity-catalog.v1",
+  "catalogSourceHash": "50ed5bdd523af02dcd36cd258f195d144e3a4ee86aaed8dcf057fe45532e0ed8",
+  "eligibilityManifestSha256": "45eb4a62d83417dbe5cb797940e21bbf2567c1b1b5a1d1c489c2533cd1072e10",
+  "artifactIndexSha256": "29e3d9becd6d02a815c17496b5fb5aaba451d698be753ba30fbe14bb26372481",
+  "requiredLocales": [
+    "en-US",
+    "pt-PT",
+    "pt-BR"
+  ],
+  "expectedExerciseCount": 158,
+  "expectedAssetMappingCount": 200,
+  "contentCreatedAt": "2026-07-13T18:23:53.000Z",
+  "instructionChunks": [
+    "instructions-000-039.json",
+    "instructions-040-079.json",
+    "instructions-080-119.json",
+    "instructions-120-157.json"
+  ],
+  "accessibilityChunks": [
+    "accessibility-000-039.json",
+    "accessibility-040-079.json",
+    "accessibility-080-119.json",
+    "accessibility-120-157.json"
+  ]
+}

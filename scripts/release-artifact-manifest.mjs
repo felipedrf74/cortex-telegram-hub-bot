@@ -18,6 +18,7 @@ const writePath = readArg('--write', '');
 
 const runtimeRoots = [
   'dist',
+  'catalog',
   'migrations',
   'prompts',
   'content-engine/models',

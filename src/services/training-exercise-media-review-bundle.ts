@@ -211,7 +211,7 @@ export interface TrainingExerciseMediaReviewBundle {
   schemaVersion: typeof TRAINING_EXERCISE_MEDIA_REVIEW_BUNDLE_SCHEMA_VERSION;
   status: typeof TRAINING_EXERCISE_MEDIA_REVIEW_BUNDLE_STATUS;
   productionReleaseEligible: false;
-  generatedDate: '2026-07-12';
+  generatedDate: '2026-07-13';
   source: {
     candidateManifestId: string;
     candidateManifestSha256: string;
@@ -341,7 +341,7 @@ export function buildTrainingExerciseMediaReviewBundle(input: {
     schemaVersion: TRAINING_EXERCISE_MEDIA_REVIEW_BUNDLE_SCHEMA_VERSION,
     status: TRAINING_EXERCISE_MEDIA_REVIEW_BUNDLE_STATUS,
     productionReleaseEligible: false as const,
-    generatedDate: '2026-07-12' as const,
+    generatedDate: '2026-07-13' as const,
     source: {
       candidateManifestId: input.eligibilityManifest.manifestId,
       candidateManifestSha256: input.candidateManifestSha256,

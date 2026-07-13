@@ -191,9 +191,9 @@ ssh "$SERVER" '
 
 # ── 3. Run restore.sh --apply on the server ─────────
 # The restore script handles:
-#   - Pre-restore snapshot of current dist + bot.db (for undo)
+#   - Pre-restore snapshot of current dist + catalog + bot.db (for undo)
 #   - Integrity check on the backup DB before replacing
-#   - Atomic file swap (dist, migrations, prompts, bot.db, garmin-tokens)
+#   - Atomic file swap (dist, catalog, migrations, prompts, bot.db, garmin-tokens)
 # We pipe "YES" to confirm non-interactively since we already prompted above.
 echo ""
 echo "📥 Restoring from $BACKUP_NAME..."

@@ -4,7 +4,7 @@
 #
 # Audit QW-10. Backups are created by deploy.sh into
 # /home/dominguez/backups/nexushub/ and contain:
-#   dist/ prompts/ migrations/ package.json package-lock.json
+#   dist/ catalog/ prompts/ migrations/ package.json package-lock.json
 #   ecosystem.config.js data/bot.db [data/bot.db-wal] [data/bot.db-shm]
 #   [data/garmin-tokens/]
 #
@@ -83,6 +83,7 @@ tar xzf "$TARBALL" -C "$TMP"
 echo ""
 echo "📋 Backup contents:"
 echo "   - dist/                : $([ -d "$TMP/dist" ] && echo present || echo MISSING)"
+echo "   - catalog/             : $([ -d "$TMP/catalog" ] && echo present || echo MISSING)"
 echo "   - migrations/          : $([ -d "$TMP/migrations" ] && echo present || echo MISSING) ($(ls "$TMP/migrations" 2>/dev/null | wc -l | xargs) files)"
 echo "   - prompts/             : $([ -d "$TMP/prompts" ] && echo present || echo MISSING)"
 echo "   - package.json         : $([ -f "$TMP/package.json" ] && echo present || echo MISSING)"
@@ -90,6 +91,21 @@ echo "   - ecosystem.config.js  : $([ -f "$TMP/ecosystem.config.js" ] && echo pr
 echo "   - data/bot.db          : $([ -f "$TMP/data/bot.db" ] && echo "$(du -h "$TMP/data/bot.db" | cut -f1)" || echo "❌ MISSING — backup is code-only")"
 echo "   - data/bot.db-wal      : $([ -f "$TMP/data/bot.db-wal" ] && echo "$(du -h "$TMP/data/bot.db-wal" | cut -f1)" || echo none)"
 echo "   - data/garmin-tokens/  : $([ -d "$TMP/data/garmin-tokens" ] && echo present || echo none)"
+
+# Applying a partial code archive would combine an older dist/package/DB with
+# whatever runtime metadata happened to remain on disk. In particular, media
+# catalog metadata is now part of the signed release-artifact digest and must
+# roll back atomically with the compiled runtime.
+MISSING_RUNTIME_PATHS=""
+for required in dist catalog migrations prompts package.json package-lock.json ecosystem.config.js; do
+  if [ ! -e "$TMP/$required" ]; then
+    MISSING_RUNTIME_PATHS="$MISSING_RUNTIME_PATHS $required"
+  fi
+done
+if [ "$APPLY" = true ] && [ -n "$MISSING_RUNTIME_PATHS" ]; then
+  echo "❌ Refusing --apply: backup is missing required runtime paths:$MISSING_RUNTIME_PATHS"
+  exit 1
+fi
 
 # ── 3. SQLite integrity check ───────────────────────
 DB="$TMP/data/bot.db"
@@ -184,7 +200,7 @@ PRE_RESTORE_SNAPSHOT="$BACKUP_DIR/pre-restore-$(date +%Y%m%d_%H%M%S).tar.gz"
 TMP_PRE_RESTORE_SNAPSHOT="$PRE_RESTORE_SNAPSHOT.tmp"
 echo "📸 Pre-restore snapshot: $PRE_RESTORE_SNAPSHOT"
 rm -f "$TMP_PRE_RESTORE_SNAPSHOT"
-PRE_RESTORE_INCLUDES="dist/ data/bot.db"
+PRE_RESTORE_INCLUDES="dist/ catalog/ data/bot.db"
 [ -f "$REMOTE_DIR/data/bot.db-wal" ] && PRE_RESTORE_INCLUDES="$PRE_RESTORE_INCLUDES data/bot.db-wal"
 [ -f "$REMOTE_DIR/data/bot.db-shm" ] && PRE_RESTORE_INCLUDES="$PRE_RESTORE_INCLUDES data/bot.db-shm"
 if (cd "$REMOTE_DIR" && tar czf "$TMP_PRE_RESTORE_SNAPSHOT" $PRE_RESTORE_INCLUDES 2>/dev/null); then
@@ -195,8 +211,8 @@ else
   echo "⚠️  Pre-restore snapshot skipped; some expected paths were unavailable."
 fi
 
-echo "🔄 Replacing dist/, migrations/, prompts/, package.json, ecosystem.config.js..."
-for path in dist migrations prompts package.json package-lock.json ecosystem.config.js; do
+echo "🔄 Replacing dist/, catalog/, migrations/, prompts/, package.json, ecosystem.config.js..."
+for path in dist catalog migrations prompts package.json package-lock.json ecosystem.config.js; do
   if [ -e "$TMP/$path" ]; then
     rm -rf "$REMOTE_DIR/$path"
     cp -r "$TMP/$path" "$REMOTE_DIR/$path"

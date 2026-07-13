@@ -581,7 +581,7 @@ ssh "$SERVER" "
   install -d -m 700 \"\$BACKUP_DIR\"
   cd '$REMOTE_DIR'
   # Build the include list dynamically: code paths + DB + sidecars (if present)
-  INCLUDES='dist/ prompts/ migrations/ package.json package-lock.json ecosystem.config.js data/bot.db'
+  INCLUDES='dist/ catalog/ prompts/ migrations/ package.json package-lock.json ecosystem.config.js data/bot.db'
   [ -f data/bot.db-wal ] && INCLUDES=\"\$INCLUDES data/bot.db-wal\"
   [ -f data/bot.db-shm ] && INCLUDES=\"\$INCLUDES data/bot.db-shm\"
   [ -d data/garmin-tokens ] && INCLUDES=\"\$INCLUDES data/garmin-tokens/\"
@@ -659,6 +659,7 @@ if command -v rsync &>/dev/null; then
 else
   echo "   ⚠️  rsync not found — using scp (slower)"
   scp -r "$LOCAL_DIR/dist/" "$SERVER:$REMOTE_DIR/dist/"
+  scp -r "$LOCAL_DIR/catalog/" "$SERVER:$REMOTE_DIR/catalog/"
   scp -r "$LOCAL_DIR/src/" "$SERVER:$REMOTE_DIR/src/"
   scp -r "$LOCAL_DIR/migrations/" "$SERVER:$REMOTE_DIR/migrations/"
   scp -r "$LOCAL_DIR/prompts/" "$SERVER:$REMOTE_DIR/prompts/"

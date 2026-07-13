@@ -1,0 +1,36 @@
+{
+  "schemaVersion": "training-exercise-media-materialization-policy.v1",
+  "status": "READY_TO_MATERIALIZE",
+  "phase0Subjects": {
+    "eligibilityManifestSha256": "45eb4a62d83417dbe5cb797940e21bbf2567c1b1b5a1d1c489c2533cd1072e10",
+    "artifactIndexSha256": "29e3d9becd6d02a815c17496b5fb5aaba451d698be753ba30fbe14bb26372481",
+    "approvalPackageSha256": "c7eaa1448b2259a75922a4782139e78429951c073a55c873498f65b8cf4aea3f",
+    "publicationEvidenceSha256": "c7d8b39afcc68617b423a628f200789c443831246a33282c5d989f1396f7be9b"
+  },
+  "approvedOrigin": "https://media.nexushub.me",
+  "phase0ReviewImport": {
+    "approvalId": "training-media-owner-approval-2026-07-13-manifest-45eb4a62-artifacts-29e3d9be",
+    "reviewerRef": "owner:felipe-dominguez",
+    "reviewedAt": "2026-07-13T21:57:46.000Z",
+    "expiresAt": null
+  },
+  "contentReview": {
+    "approvalRef": "training-media-owner-approval-2026-07-13-manifest-45eb4a62-artifacts-29e3d9be",
+    "reviewerRef": "owner:felipe-dominguez",
+    "reviewedAt": "2026-07-13T21:57:46.000Z",
+    "expiresAt": null,
+    "subjectAuthoredContentPackageHash": "91829bc7100c27e8d5ae17435d91df02fae252343a70a6f2affd8aa9ee4629f2"
+  },
+  "rights": {
+    "status": "APPROVED",
+    "sourceKind": "GENERATED",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "publicationAllowed": true
+  }
+}

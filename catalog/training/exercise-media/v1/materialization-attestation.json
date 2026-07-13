@@ -1,0 +1,68 @@
+{
+  "schemaVersion": "training-exercise-media-materialization-attestation.v2",
+  "status": "MATERIALIZED_FINAL_OWNER_APPROVED",
+  "catalogVersion": "training-exercise-identity-catalog.v1",
+  "catalogSourceHash": "50ed5bdd523af02dcd36cd258f195d144e3a4ee86aaed8dcf057fe45532e0ed8",
+  "releaseSubject": {
+    "schemaVersion": "training-exercise-media-release-subject.v2",
+    "compiledPackageHash": "51c1089cceb8a916abf200b5cb3688b19f5f7553990467ee0f8ef01c7c4f74bb",
+    "authoredContentPackageHash": "91829bc7100c27e8d5ae17435d91df02fae252343a70a6f2affd8aa9ee4629f2",
+    "rawMaterializationPolicySha256": "dc495eb55eb093a14a6620243f829b2cdf8f89c06159c158eff7be20512496a8",
+    "canonicalPreOwnerGovernanceLedgerHash": "b0ff260aa209177bf3d29aed738a57b809ad56f2414955d0167fa9f05f5415cc",
+    "phase0Subjects": {
+      "eligibilityManifestSha256": "45eb4a62d83417dbe5cb797940e21bbf2567c1b1b5a1d1c489c2533cd1072e10",
+      "artifactIndexSha256": "29e3d9becd6d02a815c17496b5fb5aaba451d698be753ba30fbe14bb26372481",
+      "approvalPackageSha256": "c7eaa1448b2259a75922a4782139e78429951c073a55c873498f65b8cf4aea3f",
+      "publicationEvidenceSha256": "c7d8b39afcc68617b423a628f200789c443831246a33282c5d989f1396f7be9b"
+    },
+    "approvedOrigin": "https://media.nexushub.me",
+    "activationPolicyHash": "5259705cd341df86f7aaa1b4402681c37c0d1d9eca032e1b4cc0a391685f69a9"
+  },
+  "releaseSubjectHash": "27b97ebc96e1b3bb1ee3612e63c5609b5572c9d4b58e59b8ea3e77642fb1cea3",
+  "compiledPackageHash": "51c1089cceb8a916abf200b5cb3688b19f5f7553990467ee0f8ef01c7c4f74bb",
+  "manifestId": "training-exercise-media-v1-materialized-91829bc7100c-c7d8b39afcc6",
+  "counts": {
+    "exercises": 158,
+    "assets": 200,
+    "instructions": 474,
+    "mediaLocalizations": 600,
+    "provenance": 200,
+    "assetReviews": 800,
+    "localizationReviews": 1074,
+    "hostApprovals": 1,
+    "ownerApprovals": 1
+  },
+  "finalOwnerApprovalRequired": true,
+  "supplementalOwnerApprovalRequired": true,
+  "finalOwnerApprovalRef": "training-media-final-owner-approval-2026-07-13-51c1089c",
+  "finalPackageOwnerApproval": {
+    "schemaVersion": "training-exercise-media-final-owner-approval.v1",
+    "status": "APPROVED",
+    "approvalId": "training-media-final-owner-approval-2026-07-13-51c1089c",
+    "reviewerRef": "owner:felipe-dominguez",
+    "subjectPackageHash": "51c1089cceb8a916abf200b5cb3688b19f5f7553990467ee0f8ef01c7c4f74bb",
+    "reasonCodes": [
+      "FINAL_PACKAGE_HASH_REVIEWED"
+    ],
+    "reviewedAt": "2026-07-13T21:59:00.000Z",
+    "expiresAt": null,
+    "activatedAt": "2026-07-13T21:59:00.000Z"
+  },
+  "supplementalOwnerApproval": {
+    "schemaVersion": "training-exercise-media-release-subject-owner-approval.v2",
+    "status": "APPROVED",
+    "approvalId": "training-media-release-subject-owner-approval-2026-07-13-27b97ebc",
+    "reviewerRef": "owner:felipe-dominguez",
+    "subjectPackageHash": "51c1089cceb8a916abf200b5cb3688b19f5f7553990467ee0f8ef01c7c4f74bb",
+    "subjectReleaseHash": "27b97ebc96e1b3bb1ee3612e63c5609b5572c9d4b58e59b8ea3e77642fb1cea3",
+    "priorFinalOwnerApprovalRef": "training-media-final-owner-approval-2026-07-13-51c1089c",
+    "reasonCodes": [
+      "FINAL_RELEASE_SUBJECT_HASH_REVIEWED"
+    ],
+    "statement": "I approve final activation of Training exercise-media release subject 27b97ebc96e1b3bb1ee3612e63c5609b5572c9d4b58e59b8ea3e77642fb1cea3, binding compiled package 51c1089cceb8a916abf200b5cb3688b19f5f7553990467ee0f8ef01c7c4f74bb, authored content 91829bc7100c27e8d5ae17435d91df02fae252343a70a6f2affd8aa9ee4629f2, raw materialization policy dc495eb55eb093a14a6620243f829b2cdf8f89c06159c158eff7be20512496a8, canonical pre-owner governance ledger b0ff260aa209177bf3d29aed738a57b809ad56f2414955d0167fa9f05f5415cc, Phase 0 eligibility manifest 45eb4a62d83417dbe5cb797940e21bbf2567c1b1b5a1d1c489c2533cd1072e10, artifact index 29e3d9becd6d02a815c17496b5fb5aaba451d698be753ba30fbe14bb26372481, approval package c7eaa1448b2259a75922a4782139e78429951c073a55c873498f65b8cf4aea3f, publication evidence c7d8b39afcc68617b423a628f200789c443831246a33282c5d989f1396f7be9b, approved origin https://media.nexushub.me, and activation policy 5259705cd341df86f7aaa1b4402681c37c0d1d9eca032e1b4cc0a391685f69a9.",
+    "reviewedAt": "2026-07-13T22:26:36.000Z",
+    "expiresAt": null,
+    "activatedAt": "2026-07-13T22:26:36.000Z"
+  },
+  "finalOwnerApprovalHash": "1108f01773e9bac67a7d667989bfc8bf160ae338fef5520c239f2aa5569d6be5"
+}
