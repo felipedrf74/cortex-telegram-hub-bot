@@ -23,6 +23,54 @@ function buildStrengthSessions(athlete: AthleteState, weekStart = '2026-05-04') 
 }
 
 describe('coach-kernel strength engine', () => {
+  it('resolves the jumping-lunge template identity through explicit scoped active context only', () => {
+    const previousSelector = config.coaching.trainingSelectorPolicyV2Enabled;
+    config.coaching.trainingSelectorPolicyV2Enabled = false;
+    try {
+      const knowledge = loadCoachKnowledge();
+      let replacedTemplate = false;
+      const identityTemplateKnowledge = {
+        ...knowledge,
+        workoutTemplates: knowledge.workoutTemplates.map((template) => {
+          if (replacedTemplate || template.sessionType !== 'strength_hypertrophy') return template;
+          replacedTemplate = true;
+          return { ...template, defaultExercises: ['jumping_lunge'] };
+        }),
+      };
+      const athlete: AthleteState = {
+        ...sampleHybridAthlete,
+        profile: { ...sampleHybridAthlete.profile, experienceLevel: 'advanced' },
+        goals: {
+          ...sampleHybridAthlete.goals,
+          strengthGoal: 'hypertrophy',
+          weeklySessionsTarget: {
+            ...sampleHybridAthlete.goals.weeklySessionsTarget,
+            strength: 1,
+          },
+        },
+      };
+      const baseContext = {
+        athlete,
+        phase: athlete.currentBlock.phase,
+        knowledge: identityTemplateKnowledge,
+        weekStart: '2026-05-04',
+      };
+
+      const off = strengthEngine.buildCandidateSessions(baseContext);
+      const active = strengthEngine.buildCandidateSessions({
+        ...baseContext,
+        exerciseIdentityMode: 'active',
+      });
+
+      expect(off.flatMap((session) => session.exercises ?? []).map((exercise) => exercise.exerciseId))
+        .not.toContain('jumping_lunge');
+      expect(active.flatMap((session) => session.exercises ?? []).map((exercise) => exercise.exerciseId))
+        .toContain('jumping_lunge');
+    } finally {
+      config.coaching.trainingSelectorPolicyV2Enabled = previousSelector;
+    }
+  });
+
   it('uses explicit strength windows instead of a hardcoded thursday slot', () => {
     const sessions = buildStrengthSessions(sampleMarathonAthlete);
 

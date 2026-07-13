@@ -1,0 +1,119 @@
+{
+  "ok": true,
+  "data": {
+    "schemaVersion": "training_exercise_media_api.v1",
+    "manifestVersion": "manifest-global-1",
+    "catalogVersion": "training-exercise-identity-catalog.v1",
+    "catalogSourceHash": "50ed5bdd523af02dcd36cd258f195d144e3a4ee86aaed8dcf057fe45532e0ed8",
+    "requestedLocale": "pt-PT",
+    "items": [
+      {
+        "kind": "AVAILABLE",
+        "requestedExerciseId": "push_up",
+        "exerciseId": "push_up",
+        "canonicalName": "Fixture push_up",
+        "resolvedBy": "CANONICAL_ID",
+        "instruction": {
+          "locale": "en-US",
+          "fallbackFromLocale": "pt-PT",
+          "displayName": "Fixture push_up",
+          "steps": ["Set a stable position.", "Move with control."],
+          "cues": ["Keep a neutral spine."],
+          "cautions": ["Stop if the movement is painful."],
+          "textFallback": "Use the complete written instructions when media is unavailable."
+        },
+        "requiredViews": ["PRIMARY"],
+        "assets": [
+          {
+            "assetId": "manifest-global-1-asset-primary",
+            "exerciseId": "push_up",
+            "version": 1,
+            "viewRole": "PRIMARY",
+            "ordinal": 0,
+            "mediaKind": "IMAGE",
+            "contentType": "image/png",
+            "url": "https://media.nexushub.test/cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc.png",
+            "integritySha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            "widthPixels": 390,
+            "heightPixels": 390,
+            "byteSize": 4096,
+            "accessibilityDescription": "Person demonstrating the approved primary position with anatomically consistent alignment.",
+            "caption": "Primary movement position",
+            "locale": "en-US",
+            "fallbackFromLocale": "pt-PT",
+            "immutableCacheKey": "training-exercise-media:manifest-global-1:manifest-global-1-asset-primary:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            "governance": {
+              "publicationState": "PUBLISHED",
+              "reviewState": "APPROVED",
+              "safetyState": "APPROVED",
+              "approvalReference": "abc547027d32c0786c0368574fecafc097e6bcb70e6311c56846963d275299ee",
+              "reviewedAt": "2026-07-12T00:09:00.000Z",
+              "licenseIdentifier": "fixture-owned-license-v1",
+              "licenseTermsURL": "https://nexushub.test/licenses/fixture",
+              "rightsExpiresAt": "2030-01-01T00:00:00.000Z",
+              "provenanceSource": "GENERATED"
+            }
+          }
+        ]
+      },
+      {
+        "kind": "AVAILABLE",
+        "requestedExerciseId": "press_up",
+        "exerciseId": "push_up",
+        "canonicalName": "Fixture push_up",
+        "resolvedBy": "REVIEWED_ALIAS",
+        "instruction": {
+          "locale": "en-US",
+          "fallbackFromLocale": "pt-PT",
+          "displayName": "Fixture push_up",
+          "steps": ["Set a stable position.", "Move with control."],
+          "cues": ["Keep a neutral spine."],
+          "cautions": ["Stop if the movement is painful."],
+          "textFallback": "Use the complete written instructions when media is unavailable."
+        },
+        "requiredViews": ["PRIMARY"],
+        "assets": [
+          {
+            "assetId": "manifest-global-1-asset-primary",
+            "exerciseId": "push_up",
+            "version": 1,
+            "viewRole": "PRIMARY",
+            "ordinal": 0,
+            "mediaKind": "IMAGE",
+            "contentType": "image/png",
+            "url": "https://media.nexushub.test/cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc.png",
+            "integritySha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            "widthPixels": 390,
+            "heightPixels": 390,
+            "byteSize": 4096,
+            "accessibilityDescription": "Person demonstrating the approved primary position with anatomically consistent alignment.",
+            "caption": "Primary movement position",
+            "locale": "en-US",
+            "fallbackFromLocale": "pt-PT",
+            "immutableCacheKey": "training-exercise-media:manifest-global-1:manifest-global-1-asset-primary:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            "governance": {
+              "publicationState": "PUBLISHED",
+              "reviewState": "APPROVED",
+              "safetyState": "APPROVED",
+              "approvalReference": "abc547027d32c0786c0368574fecafc097e6bcb70e6311c56846963d275299ee",
+              "reviewedAt": "2026-07-12T00:09:00.000Z",
+              "licenseIdentifier": "fixture-owned-license-v1",
+              "licenseTermsURL": "https://nexushub.test/licenses/fixture",
+              "rightsExpiresAt": "2030-01-01T00:00:00.000Z",
+              "provenanceSource": "GENERATED"
+            }
+          }
+        ]
+      },
+      {
+        "kind": "UNAVAILABLE",
+        "requestedExerciseId": "future_modal_xyz",
+        "rawIdentifier": "future_modal_xyz",
+        "reason": "UNKNOWN_EXERCISE",
+        "textFallbackRequired": true
+      }
+    ]
+  },
+  "cached": false,
+  "timestamp": "2026-07-12T12:00:00.000Z"
+}

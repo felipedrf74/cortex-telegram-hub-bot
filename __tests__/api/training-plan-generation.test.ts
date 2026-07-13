@@ -157,6 +157,10 @@ import {
   resolveTrainingPlanStartDate,
 } from '../../src/api/routes/training-plan-generation';
 import { config } from '../../src/config';
+import {
+  TRAINING_EXERCISE_IDENTITY_CATALOG_VERSION,
+  TRAINING_EXERCISE_IDENTITY_EXPECTED_SOURCE_HASH,
+} from '../../src/services/training-exercise-identity';
 
 function makePlan(title = 'Coach Plan') {
   return {
@@ -1685,6 +1689,61 @@ describe('generateTrainingPlanForUser', () => {
         selectorPolicyVersion: 'selector-policy-v2',
       }),
     });
+  });
+
+  it('preserves the exact legacy version-pin shape off and adds identity pins only while active', async () => {
+    const scopedKey = 'TRAINING_EXERCISE_IDENTITY_V1_MODE_USER_12';
+    const priorMode = process.env[scopedKey];
+    try {
+      process.env[scopedKey] = 'off';
+      const off = await generateTrainingPlanForUser({
+        userId: 12,
+        tenantId: 12,
+        objective: 'Build consistency',
+      });
+      expect(off.status).toBe('created');
+      const offPins = (off as any).data.generationVersionPins;
+      expect(Object.keys(offPins).sort()).toEqual([
+        'catalogVersion',
+        'equipmentVocabularyVersion',
+        'generationPipelineVersion',
+        'sciencePolicyVersion',
+        'selectorPolicyVersion',
+      ]);
+      expect(offPins).not.toHaveProperty('catalogSourceHash');
+      expect(mockBuildCoachKernelTrainingPlan.mock.calls.at(-1)?.[0])
+        .not.toHaveProperty('exerciseIdentityMode');
+      expect(JSON.parse(mockPersistGeneratedTrainingPlan.mock.calls.at(-1)?.[0].preferencesJson)
+        .generationVersionPins).toEqual(offPins);
+
+      process.env[scopedKey] = 'active';
+      const active = await generateTrainingPlanForUser({
+        userId: 12,
+        tenantId: 12,
+        objective: 'Build consistency',
+      });
+      expect(active.status).toBe('created');
+      const activePins = (active as any).data.generationVersionPins;
+      expect(activePins).toMatchObject({
+        catalogVersion: TRAINING_EXERCISE_IDENTITY_CATALOG_VERSION,
+        catalogSourceHash: TRAINING_EXERCISE_IDENTITY_EXPECTED_SOURCE_HASH,
+      });
+      expect(mockBuildCoachKernelTrainingPlan.mock.calls.at(-1)?.[0])
+        .toMatchObject({ exerciseIdentityMode: 'active' });
+      expect(Object.keys(activePins).sort()).toEqual([
+        'catalogSourceHash',
+        'catalogVersion',
+        'equipmentVocabularyVersion',
+        'generationPipelineVersion',
+        'sciencePolicyVersion',
+        'selectorPolicyVersion',
+      ]);
+      expect(JSON.parse(mockPersistGeneratedTrainingPlan.mock.calls.at(-1)?.[0].preferencesJson)
+        .generationVersionPins).toEqual(activePins);
+    } finally {
+      if (priorMode === undefined) delete process.env[scopedKey];
+      else process.env[scopedKey] = priorMode;
+    }
   });
 
   it('respects the requested gym volume for English muscle-building goals', async () => {

@@ -76,6 +76,26 @@ describe('training-session-description', () => {
       const { sections } = buildRichSessionDescription(baseInput);
       expect(sections.execution?.some((i) => i.label === 'Walk breaks')).toBe(true);
     });
+
+    it('marks warm-up and cooldown text as non-catalog only in active identity mode', () => {
+      const off = buildRichSessionDescription(baseInput).sections;
+      const active = buildRichSessionDescription({
+        ...baseInput,
+        exerciseIdentityMode: 'active',
+      }).sections;
+      const shadow = buildRichSessionDescription({
+        ...baseInput,
+        exerciseIdentityMode: 'shadow',
+      }).sections;
+
+      expect(shadow).toEqual(off);
+      expect(off.warmup).not.toHaveProperty('newlyPrescribable');
+      expect(off.warmup).not.toHaveProperty('mediaEligible');
+      expect(off.cooldown).not.toHaveProperty('newlyPrescribable');
+      expect(off.cooldown).not.toHaveProperty('mediaEligible');
+      expect(active.warmup).toMatchObject({ newlyPrescribable: false, mediaEligible: false });
+      expect(active.cooldown).toMatchObject({ newlyPrescribable: false, mediaEligible: false });
+    });
   });
 
   describe('running tempo run', () => {

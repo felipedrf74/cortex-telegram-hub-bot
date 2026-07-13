@@ -87,11 +87,23 @@ import {
   attachTrainingLearningPathToPlan,
   type TrainingLearningPath,
 } from '../../services/training-learning-path';
+import {
+  assertTrainingExerciseIdentityCatalogIntegrity,
+  buildTrainingExerciseIdentityCatalogSnapshot,
+} from '../../services/training-exercise-identity';
+import {
+  getTrainingExerciseIdentityV1Mode,
+  type TrainingExerciseIdentityV1Mode,
+} from '../../services/runtime-flags';
 
 export const TRAINING_PLAN_GENERATOR_POLICY_VERSION = 'training-plan-shape-v2';
 
 type TrainingGenerationVersionPins = {
   catalogVersion: string;
+  /** Present only when exercise-identity enforcement is active. Keeping this
+   * optional preserves the exact legacy off/shadow payload and preferences
+   * shape. */
+  catalogSourceHash?: string;
   sciencePolicyVersion: string;
   selectorPolicyVersion: string;
   equipmentVocabularyVersion: string;
@@ -362,6 +374,7 @@ export async function generateTrainingPlanForUser(
     plannerNow,
   } = input;
   const tenantId = requireTenantIdParam(input.tenantId, 'generateTrainingPlanForUser');
+  const exerciseIdentityMode = getTrainingExerciseIdentityV1Mode(process.env, { tenantId, userId });
   const requestedDurationWeeks = normalizeTrainingPlanDurationWeeks(input.durationWeeks, 4);
 
   const fitnessProfile = unwrapOnboardingProfileData(onboarding.getProfile?.(userId, 'fitness'));
@@ -525,6 +538,8 @@ export async function generateTrainingPlanForUser(
     fitnessProfile,
     gymProfile,
     conservativeUnknown: equipmentAuthorityEnabled,
+    env: process.env,
+    scope: { userId, tenantId },
   });
 
   const normalizedSessionsPerWeek = clampNumber(sessionsPerWeek, 5, 3, 7);
@@ -567,6 +582,8 @@ export async function generateTrainingPlanForUser(
     finance: null,
     content: null,
     secretary: null,
+    env: process.env,
+    scope: { userId, tenantId },
   });
 
   try {
@@ -600,6 +617,8 @@ export async function generateTrainingPlanForUser(
       content: contentContextResult.status === 'fulfilled' ? contentContextResult.value : null,
       secretary: secretaryContextResult.status === 'fulfilled' ? secretaryContextResult.value : null,
       sharedDecisionContext,
+      env: process.env,
+      scope: { userId, tenantId },
     });
   } catch (err) {
     logger.warn({ err, userId }, 'training plan coordination context unavailable — falling back to profile/calendar only');
@@ -648,7 +667,8 @@ export async function generateTrainingPlanForUser(
       currentReadiness,
       twoADayPreference,
       capacityWindows: upstreamCapacityWindows,
-    }), coordination);
+      ...(exerciseIdentityMode === 'active' ? { exerciseIdentityMode } : {}),
+    }), coordination, { exerciseIdentityMode });
     planData = applyEquipmentAuthorityMode(
       kernelEquipmentCandidate,
       equipmentAdaptation,
@@ -663,7 +683,9 @@ export async function generateTrainingPlanForUser(
       sessionsPerWeek: normalizedSessionsPerWeek,
       strengthSessionsPerWeek: effectiveStrengthSessionsPerWeek,
       longWorkoutDay: normalizedLongWorkoutDay,
-    }), coordination);
+      env: process.env,
+      scope: { userId, tenantId },
+    }), coordination, { exerciseIdentityMode });
     planData = applyEquipmentAuthorityMode(
       kernelEquipmentCandidate,
       equipmentAdaptation,
@@ -753,7 +775,7 @@ export async function generateTrainingPlanForUser(
       : typeof fitnessProfile?.available_equipment === 'string'
         ? String(fitnessProfile.available_equipment).toLowerCase().trim() || undefined
         : undefined;
-  const generationVersionPins = buildTrainingGenerationVersionPins(tenantId);
+  const generationVersionPins = buildTrainingGenerationVersionPins(tenantId, exerciseIdentityMode);
   const requestedStrengthDaysForQuality = effectiveStrengthSessionsPerWeek > 0
     ? effectiveStrengthSessionsPerWeek
     : gymOnlyObjective
@@ -811,7 +833,7 @@ export async function generateTrainingPlanForUser(
     };
   }
   const trainingQuality = trainingPlanSpec && !safetyBlocked
-    ? prepareTrainingPlanForQualityGate(planData, trainingPlanSpec)
+    ? prepareTrainingPlanForQualityGate(planData, trainingPlanSpec, { exerciseIdentityMode })
     : null;
   if (trainingQuality) {
     planData = trainingQuality.planData;
@@ -1349,10 +1371,18 @@ function buildKernelCapacityWindows(input: {
   return windows;
 }
 
-function buildTrainingGenerationVersionPins(tenantId: number): TrainingGenerationVersionPins {
+function buildTrainingGenerationVersionPins(
+  tenantId: number,
+  exerciseIdentityMode: TrainingExerciseIdentityV1Mode,
+): TrainingGenerationVersionPins {
   const snapshot = loadTrainingCatalogSnapshot({ tenantId });
+  const identityCatalog = exerciseIdentityMode === 'active'
+    ? buildTrainingExerciseIdentityCatalogSnapshot()
+    : null;
+  if (identityCatalog) assertTrainingExerciseIdentityCatalogIntegrity(identityCatalog);
   return {
-    catalogVersion: snapshot.catalogVersion,
+    catalogVersion: identityCatalog?.catalogVersion ?? snapshot.catalogVersion,
+    ...(identityCatalog ? { catalogSourceHash: identityCatalog.sourceHash } : {}),
     sciencePolicyVersion: snapshot.sciencePolicyVersion,
     selectorPolicyVersion: snapshot.selectorPolicyVersion,
     equipmentVocabularyVersion: snapshot.equipmentVocabularyVersion,

@@ -1,0 +1,9 @@
+{
+  "schemaVersion": "training-exercise-media-approval-ledger.v1",
+  "approvedHostRef": null,
+  "ownerApprovalRef": null,
+  "assetReviews": [],
+  "localizationReviews": [],
+  "hostApprovals": [],
+  "ownerApprovals": []
+}

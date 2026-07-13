@@ -76,6 +76,7 @@ vi.mock('../../src/services/microsoft-todo', () => ({
 
 import { executeToolCall as executeToolCallRaw } from '../../src/services/tool-executor';
 import { runWithChatToolAuthorization } from '../../src/services/chat-tool-authorization';
+import * as trainingPlans from '../../src/services/training-plans';
 
 function executeToolCall(toolName: string, input: Record<string, any>, userId?: number, tenantId = userId): Promise<any> {
   if (!userId || !tenantId) {
@@ -137,6 +138,90 @@ describe('Training Plan Tool Handlers', () => {
     expect(result.success).toBe(true);
     expect(result.session_id).toBe(1);
     expect(result.title).toBe('Upper Body Push');
+  });
+
+  it('normalizes new exercise prescriptions at both tool and persistence boundaries only when active', async () => {
+    const priorMode = process.env.TRAINING_EXERCISE_IDENTITY_V1_MODE;
+    process.env.TRAINING_EXERCISE_IDENTITY_V1_MODE = 'active';
+    try {
+      await executeToolCall('create_training_plan', {
+        name: 'Identity Plan', sport: 'strength', duration_weeks: 4,
+        start_date: '2026-04-01', end_date: '2026-04-29',
+      }, testUserId);
+      await executeToolCall('add_training_week', { plan_id: 1, week_number: 1 }, testUserId);
+      const created = await executeToolCall('add_training_session', {
+        week_id: 1, plan_id: 1, day_of_week: 'Monday',
+        session_type: 'strength', title: 'Canonical session',
+        exercises_json: JSON.stringify([{ name: 'Tempo Split Squat', sets: 3, reps: 10 }]),
+      }, testUserId);
+
+      expect(created.success).toBe(true);
+      expect(JSON.parse((testDb.prepare('SELECT exercises_json FROM training_sessions WHERE id = 1')
+        .get() as { exercises_json: string }).exercises_json)).toEqual([{
+        name: 'Split Squat',
+        sets: 3,
+        reps: 10,
+        exerciseId: 'split_squat',
+        tempo: '3-1-1-0',
+      }]);
+
+      const updated = await executeToolCall('update_training_session', {
+        session_id: 1,
+        exercises_json: JSON.stringify([{ name: 'Band Face Pull', sets: 2, reps: 15 }]),
+      }, testUserId);
+      expect(updated.success).toBe(true);
+      expect(JSON.parse((testDb.prepare('SELECT exercises_json FROM training_sessions WHERE id = 1')
+        .get() as { exercises_json: string }).exercises_json)).toEqual([{
+        name: 'Face Pull',
+        sets: 2,
+        reps: 15,
+        exerciseId: 'face_pull',
+      }]);
+    } finally {
+      if (priorMode === undefined) delete process.env.TRAINING_EXERCISE_IDENTITY_V1_MODE;
+      else process.env.TRAINING_EXERCISE_IDENTITY_V1_MODE = priorMode;
+    }
+  });
+
+  it('preserves legacy service writes with missing user scope off and fails closed only when active', async () => {
+    await executeToolCall('create_training_plan', {
+      name: 'Legacy Scope Plan', sport: 'strength', duration_weeks: 4,
+      start_date: '2026-04-01', end_date: '2026-04-29',
+    }, testUserId);
+    await executeToolCall('add_training_week', { plan_id: 1, week_number: 1 }, testUserId);
+    testDb.pragma('foreign_keys = OFF');
+    testDb.prepare('UPDATE fitness_training_plans SET user_id = 0 WHERE id = 1').run();
+
+    const globalKey = 'TRAINING_EXERCISE_IDENTITY_V1_MODE';
+    const tenantKey = `TRAINING_EXERCISE_IDENTITY_V1_MODE_TENANT_${testUserId}`;
+    const priorGlobal = process.env[globalKey];
+    const priorTenant = process.env[tenantKey];
+    const legacyExercises = JSON.stringify([{ name: 'Legacy Custom Move', sets: 2, reps: 12 }]);
+    try {
+      process.env[globalKey] = 'off';
+      process.env[tenantKey] = 'off';
+      const created = trainingPlans.createSession({
+        week_id: 1,
+        plan_id: 1,
+        day_of_week: 'Monday',
+        session_type: 'strength',
+        title: 'Legacy custom session',
+        exercises_json: legacyExercises,
+      });
+      expect(created.exercises_json).toBe(legacyExercises);
+      expect(trainingPlans.updateSession(created.id, { exercises_json: legacyExercises })).toBe(true);
+      expect(trainingPlans.getSessionById(created.id)?.exercises_json).toBe(legacyExercises);
+
+      process.env[globalKey] = 'active';
+      process.env[tenantKey] = 'active';
+      expect(() => trainingPlans.updateSession(created.id, { exercises_json: legacyExercises }))
+        .toThrow(/TRAINING_SESSION_SCOPE_MISSING/);
+    } finally {
+      if (priorGlobal === undefined) delete process.env[globalKey];
+      else process.env[globalKey] = priorGlobal;
+      if (priorTenant === undefined) delete process.env[tenantKey];
+      else process.env[tenantKey] = priorTenant;
+    }
   });
 
   it('get_training_plan returns plan with sessions', async () => {

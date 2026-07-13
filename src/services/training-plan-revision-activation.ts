@@ -316,8 +316,18 @@ function validateActivationInput(db: Database.Database, input: {
       409,
     );
   }
+  const typedWorkoutEnabled = isTrainingTypedWorkoutV1Enabled(input.env, input.scope);
+  if (revision.documentSchemaVersion === 'training-plan-revision.v2' && !typedWorkoutEnabled) {
+    throw new TrainingPlanRevisionError(
+      'TRAINING_REVISION_REVALIDATION_STALE',
+      'The approved typed plan is no longer enabled for this scope.',
+      409,
+    );
+  }
   const rebuilt = buildTrainingPlanRevisionCandidate(snapshot.body.request, {
-    typedWorkoutValidationEnabled: isTrainingTypedWorkoutV1Enabled(input.env, input.scope),
+    env: input.env,
+    scope: input.scope,
+    typedWorkoutValidationEnabled: typedWorkoutEnabled,
   });
   const rebuiltContextVersion = deriveTrainingRevisionCreationContextVersion(
     rebuilt.creationContextVersion,
@@ -479,7 +489,15 @@ function materializeCompatibilityProjection(
     document.periodization === 'NON_PERIODIZED' ? 'continuous' : 'block',
     activationDate,
     endDate,
-    JSON.stringify({ source: 'training_plan_revision_v1', revisionId }),
+    JSON.stringify({
+      source: 'training_plan_revision_v1',
+      revisionId,
+      revisionSchemaVersion: document.schemaVersion,
+      goalMode: document.planMode,
+      raceDate: document.event?.date ?? null,
+      trainingPriority: document.event?.priority ?? null,
+      event: document.event ?? null,
+    }),
     revisionId,
   );
   const planId = Number(plan.lastInsertRowid);

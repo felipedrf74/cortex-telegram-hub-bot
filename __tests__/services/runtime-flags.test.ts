@@ -12,7 +12,9 @@ import {
   getGeminiRoutingEnvOverride,
   getDecisionConflictPolicyV1Mode,
   getSecretaryReasoningV1Mode,
+  getTrainingExerciseIdentityV1Mode,
   getTrainingPlanRevisionV1Mode,
+  isTrainingExerciseMediaV1Enabled,
   isTrainingPlanRevisionV1ExplicitlyEnrolled,
   isTrainingTypedWorkoutV1Enabled,
   isChatEscalationReviewerEnabled,
@@ -55,6 +57,21 @@ import {
 } from '../../src/services/runtime-flags';
 
 describe('runtime-flags', () => {
+  it('keeps Training exercise identity off by default and scopes explicit shadow or active rollout', () => {
+    expect(getTrainingExerciseIdentityV1Mode({})).toBe('off');
+    expect(getTrainingExerciseIdentityV1Mode({ TRAINING_EXERCISE_IDENTITY_V1_MODE: 'true' })).toBe('off');
+    expect(getTrainingExerciseIdentityV1Mode({ TRAINING_EXERCISE_IDENTITY_V1_MODE: 'shadow' })).toBe('shadow');
+    expect(getTrainingExerciseIdentityV1Mode({ TRAINING_EXERCISE_IDENTITY_V1_MODE: 'active' })).toBe('active');
+    expect(getTrainingExerciseIdentityV1Mode({
+      TRAINING_EXERCISE_IDENTITY_V1_MODE: 'off',
+      TRAINING_EXERCISE_IDENTITY_V1_MODE_TENANT_9: 'shadow',
+    }, { userId: 7, tenantId: 9 })).toBe('shadow');
+    expect(getTrainingExerciseIdentityV1Mode({
+      TRAINING_EXERCISE_IDENTITY_V1_MODE: 'active',
+      TRAINING_EXERCISE_IDENTITY_V1_MODE_USER_42: 'off',
+    }, { userId: 42, tenantId: 9 })).toBe('off');
+  });
+
   it('treats only literal true as enabled for anthropic runtime flags', () => {
     expect(isAnthropicRuntimeEnabled({ ANTHROPIC_ENABLED: 'true' })).toBe(true);
     expect(isAnthropicRuntimeEnabled({ ANTHROPIC_ENABLED: 'yes' })).toBe(false);
@@ -313,6 +330,21 @@ describe('runtime-flags', () => {
     expect(isTrainingTypedWorkoutV1Enabled({
       TRAINING_TYPED_WORKOUT_V1_ENABLED: 'true',
       TRAINING_TYPED_WORKOUT_V1_ENABLED_USER_42: 'off',
+    }, { userId: 42, tenantId: 9 })).toBe(false);
+  });
+
+  it('keeps Training exercise media default-off and scope-overridable', () => {
+    expect(isTrainingExerciseMediaV1Enabled({})).toBe(false);
+    expect(isTrainingExerciseMediaV1Enabled({ TRAINING_EXERCISE_MEDIA_V1_ENABLED: 'true' })).toBe(true);
+    expect(isTrainingExerciseMediaV1Enabled({ TRAINING_EXERCISE_MEDIA_V1_ENABLED: '1' })).toBe(true);
+    expect(isTrainingExerciseMediaV1Enabled({ TRAINING_EXERCISE_MEDIA_V1_ENABLED: 'yes' })).toBe(false);
+    expect(isTrainingExerciseMediaV1Enabled({
+      TRAINING_EXERCISE_MEDIA_V1_ENABLED: 'false',
+      TRAINING_EXERCISE_MEDIA_V1_ENABLED_TENANT_9: 'true',
+    }, { userId: 7, tenantId: 9 })).toBe(true);
+    expect(isTrainingExerciseMediaV1Enabled({
+      TRAINING_EXERCISE_MEDIA_V1_ENABLED: 'true',
+      TRAINING_EXERCISE_MEDIA_V1_ENABLED_USER_42: 'off',
     }, { userId: 42, tenantId: 9 })).toBe(false);
   });
 
