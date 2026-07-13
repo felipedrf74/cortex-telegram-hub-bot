@@ -49,16 +49,20 @@ Validated through promotion:
 - TestFlight/App Store upload, physical-device proof, and signed-device smoke
   were not run for that release.
 
-### Training exercise-media source gate — STAGED/DORMANT
+### Training M1–M5 gate — STAGING DEPLOYED/DORMANT
 
-- `origin/main` at `66fd6b7a` contains the additive exercise-media schema and
-  fail-closed code path, including migration 229. This is source staged in Git,
-  not a claim that migration 229 ran or that any manifest reached `STAGED` or
-  `ACTIVE` in production.
+- `origin/main` at `032d8ffe` contains the default-off M1–M5 source and the
+  external exercise-media publication gate. The exact artifact digest
+  `5e4daeac8d4896895caf7a93fb904774b64b899a246aac6a2df9666cc48ce8b6`
+  is deployed to staging only.
+- Staging applied migrations 228–230. All Training rollout variables remained
+  unset, and no media manifest reached `STAGED` or `ACTIVE`. Readiness and the
+  final **24/24** smoke, including Cloudflare edge checks, passed; see
+  `docs/release/smoke-evidence/staging-smoke-032d8ffe-20260713T135646Z.json`.
 - Training exercise media is **not production-active**. The
   `TRAINING_EXERCISE_MEDIA_V1_ENABLED` default remains `false`; no publication,
-  flag activation, media hosting, migration execution, or runtime deployment
-  is authorized by this source merge.
+  flag activation, media hosting, production migration, or production runtime
+  deployment is authorized by the staging result.
 - Production-approved catalog coverage is **0/158**. Activation/publication is
   blocked on exactly six independent gates: `DOMAIN_APPROVAL`,
   `LEGAL_LICENSE`, `ACCESSIBILITY`, `OWNER_PUBLICATION`, `LOCALIZATION`, and

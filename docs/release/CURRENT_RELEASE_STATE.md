@@ -47,27 +47,35 @@ older production versions.
   physical-device proof, and signed-device smoke were not run.
 - Backend workspace root: `/Users/felipedominguez/Desktop/Custom Connectors/Cortex/cortex-telegram-hub-bot`
 
-## 2026-07-13 Training Exercise-Media Source Gate — STAGED/DORMANT
+## 2026-07-13 Training M1–M5 Staging Gate — DEPLOYED/DORMANT
 
-- `origin/main` at `66fd6b7a` now contains the additive Training
-  exercise-media schema and fail-closed delivery code, including migration
-  229. The source is staged in Git and dormant; this is **not** evidence that
-  migration 229 was executed or that a manifest reached database publication
-  state `STAGED` or `ACTIVE` in production.
+- `origin/main` at `032d8ffe` contains the default-off Training M1–M5 source
+  plus the external publication gate. The exact artifact digest
+  `5e4daeac8d4896895caf7a93fb904774b64b899a246aac6a2df9666cc48ce8b6`
+  was deployed to the isolated staging install only.
+- Staging applied migrations 228, 229, and 230 through the normal startup
+  runner. All four Training rollout variables were read back as unset, so the
+  new plan revision, adaptation, event/multisport, and exercise-media paths
+  remain dormant. No manifest reached database publication state `STAGED` or
+  `ACTIVE`.
+- Staging readiness passed, including SQLite integrity and stable PM2 state.
+  Canonical smoke passed **24/24**, including the isolated Training preview,
+  iOS unauthenticated contract envelopes, and Cloudflare edge allow/block
+  checks. Evidence:
+  `docs/release/smoke-evidence/staging-smoke-032d8ffe-20260713T135646Z.json`.
 - Training exercise media is **not production-active**. The
   `TRAINING_EXERCISE_MEDIA_V1_ENABLED` default remains `false`, and no
-  publication, activation, approved-host delivery, migration execution,
-  staging deploy, or production deploy is authorized or claimed by the source
-  merge. The Active Production Release above remains `4.14.216` at
-  `6c67c181`.
+  publication, activation, approved-host delivery, production migration, or
+  production deploy is authorized or claimed. The Active Production Release
+  above remains `4.14.216` at `6c67c181`.
 - Production-approved catalog coverage is **0/158**. Publication and activation
   remain blocked on exactly these six gates: `DOMAIN_APPROVAL`,
   `LEGAL_LICENSE`, `ACCESSIBILITY`, `OWNER_PUBLICATION`, `LOCALIZATION`, and
   `APPROVED_HOST`.
 - Release posture: **DO NOT RELEASE Training exercise media** until all six
   gates pass against immutable reviewed assets and the owner separately
-  authorizes rollout. No environment or live runtime was mutated or probed by
-  this documentation-only update.
+  authorizes rollout. The successful non-production smoke does not waive that
+  production gate.
 
 ## 2026-07-10 Paid-Only AI Cost Controls Production Promote
 
