@@ -164,6 +164,8 @@ export function createTrainingPlanCandidateRevision(input: {
   idempotencyKey: string;
   request: TrainingPlanCandidateRequest;
   env?: NodeJS.ProcessEnv;
+  /** Internal deterministic clock seam. API routes never bind request data to it. */
+  referenceTime?: Date;
 }): TrainingPlanCandidateSetResource {
   requireActiveMode(input.scope, input.env);
   const generationOptions = trainingGenerationOptions(input.request, input.env, input.scope);
@@ -181,6 +183,7 @@ export function createTrainingPlanCandidateRevision(input: {
       env: input.env,
       scope: input.scope,
       ...generationOptions,
+      referenceTime: input.referenceTime,
     }),
   );
 
@@ -215,7 +218,7 @@ export function createTrainingPlanCandidateRevision(input: {
 
 export function computeTrainingPlanRevisionShadow(
   request: TrainingPlanCandidateRequest,
-  options: { env?: NodeJS.ProcessEnv; scope?: RuntimeFlagScope } = {},
+  options: { env?: NodeJS.ProcessEnv; scope?: RuntimeFlagScope; referenceTime?: Date } = {},
 ): BuiltTrainingPlanRevisionCandidate {
   const generationOptions = trainingGenerationOptions(request, options.env, options.scope);
   return buildTrainingPlanRevisionCandidate(request, {
@@ -409,6 +412,8 @@ export function editTrainingPlanRevisionPreview(input: {
   edits: Partial<TrainingPlanCandidateRequest['profile']> & { horizonWeeks?: number };
   rationale: string;
   env?: NodeJS.ProcessEnv;
+  /** Internal deterministic clock seam. API routes never bind request data to it. */
+  referenceTime?: Date;
 }): TrainingPlanEditPreviewResource {
   requireActiveMode(input.scope, input.env);
   requireIdempotencyKey(input.idempotencyKey);
@@ -485,6 +490,7 @@ export function editTrainingPlanRevisionPreview(input: {
       env: input.env,
       scope: input.scope,
       ...generationOptions,
+      referenceTime: input.referenceTime,
     }),
   );
 

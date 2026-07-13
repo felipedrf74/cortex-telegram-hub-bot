@@ -39,6 +39,7 @@ import {
 } from './training-typed-workout-v1';
 import {
   buildTrainingTypedPlanRevision,
+  validateTrainingM4PlanRevisionDocument,
   validateTrainingTypedPlanRevisionDocument,
 } from './training-typed-plan-generator';
 import {
@@ -217,6 +218,8 @@ export interface TrainingPlanRevisionCandidateBuildOptions {
   typedWorkoutValidationEnabled?: boolean;
   m4StrategyEnabled?: boolean;
   authoritativeCapacityContext?: TrainingM4AuthoritativeCapacityContext | null;
+  /** Internal deterministic clock seam. HTTP callers cannot supply it. */
+  referenceTime?: Date;
 }
 
 export type TrainingPlanCandidateBuildOptions = TrainingPlanRevisionCandidateBuildOptions;
@@ -263,6 +266,7 @@ function buildTrainingPlanRevisionCandidateInternal(
   if (options.typedWorkoutValidationEnabled) {
     const typed = buildTrainingTypedPlanRevision(normalized, {
       m4StrategyEnabled: options.m4StrategyEnabled === true,
+      referenceTime: options.referenceTime ?? new Date(),
     });
     normalizeRevisionDocumentExerciseIdentities(typed.document, identityMode);
     // The immutable hash is over the exact JSON representation that is
@@ -423,7 +427,10 @@ export function validateTrainingPlanRevisionDocument(
   options: TrainingPlanCandidateBuildOptions = {},
 ): TrainingPlanRevisionQualityCheck[] {
   if (document.schemaVersion === TRAINING_TYPED_PLAN_REVISION_DOCUMENT_SCHEMA) {
-    return validateTrainingTypedPlanRevisionDocument(document);
+    return [
+      ...validateTrainingTypedPlanRevisionDocument(document),
+      ...(document.m4 ? validateTrainingM4PlanRevisionDocument(document) : []),
+    ];
   }
   const failures: string[] = [];
   const allowedSessionTypes = new Set<SessionType>([
@@ -604,7 +611,10 @@ function validateAndNormalizeRequest(
     throw new Error('TRAINING_REVISION_LOCATION_INVALID');
   }
   if (!Array.isArray(request.profile.availableDays)
-      || !request.profile.availableDays.every((day) => typeof day === 'string')) {
+      || request.profile.availableDays.length === 0
+      || request.profile.availableDays.length > DAY_ORDER.length
+      || new Set(request.profile.availableDays).size !== request.profile.availableDays.length
+      || !request.profile.availableDays.every((day) => DAY_ORDER.includes(day))) {
     throw new Error('TRAINING_REVISION_AVAILABILITY_INVALID');
   }
   if (!Array.isArray(request.profile.equipmentIds)
@@ -646,6 +656,12 @@ function validateAndNormalizeRequest(
     if (!request.goalPriority) throw new Error('TRAINING_M4_GOAL_PRIORITY_REQUIRED');
     if (!request.capacity || !['AUTHORITATIVE', 'EXPLICIT_USER'].includes(request.capacity.source)) {
       throw new Error('TRAINING_M4_CAPACITY_SOURCE_REQUIRED');
+    }
+    const capacityKeys = Object.keys(request.capacity as unknown as Record<string, unknown>).sort();
+    if (!capacityKeys.includes('source')
+        || !capacityKeys.includes('windows')
+        || capacityKeys.some((key) => !['contextVersion', 'source', 'windows'].includes(key))) {
+      throw new Error('TRAINING_M4_CAPACITY_ENVELOPE_INVALID');
     }
     if (!Array.isArray(request.capacity.windows)) throw new Error('TRAINING_M4_CAPACITY_WINDOWS_REQUIRED');
     validateTrainingM4ResourceAccess(request.discipline, request.resourceAccess);
@@ -733,8 +749,10 @@ function normalizeTrainingM4Capacity(
   authoritative: TrainingM4AuthoritativeCapacityContext | null,
 ): NonNullable<TrainingPlanCandidateRequest['capacity']> & { contextVersion: string } {
   const windows = capacity.windows.map((window) => ({
-    ...window,
-    timezone: window.timezone.trim(),
+    dayOfWeek: window.dayOfWeek,
+    startTime: window.startTime,
+    endTime: window.endTime,
+    timezone: window.timezone,
     ...(window.allowedDisciplines
       ? { allowedDisciplines: [...new Set(window.allowedDisciplines)].sort() }
       : {}),

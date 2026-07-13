@@ -7,8 +7,8 @@ import {
   stableTrainingRevisionHash,
   type TrainingPlanCandidateRequest,
 } from '../../src/services/training-plan-revision-candidate-builder';
-import { activateApprovedTrainingPlanRevision } from '../../src/services/training-plan-revision-activation';
-import { createTrainingPlanCandidateRevision } from '../../src/services/training-plan-revisions';
+import { activateApprovedTrainingPlanRevision as activateApprovedTrainingPlanRevisionAtRuntime } from '../../src/services/training-plan-revision-activation';
+import { createTrainingPlanCandidateRevision as createTrainingPlanCandidateRevisionAtRuntime } from '../../src/services/training-plan-revisions';
 import { runLegacyActivePlanBackfill } from '../../src/services/training-plan-revision-legacy-backfill';
 import {
   TRAINING_EXERCISE_IDENTITY_CATALOG_VERSION,
@@ -20,6 +20,25 @@ const activeEnv = {
   DECISION_FLOW_V1_ENFORCE_ENABLED: 'true',
   TRAINING_PROFILE_SNAPSHOT_ENCRYPTION_KEY: 'training-revision-test-encryption-key-0001',
 };
+const FIXED_NOW = new Date('2026-07-13T12:00:00.000Z');
+
+function createTrainingPlanCandidateRevision(
+  input: Parameters<typeof createTrainingPlanCandidateRevisionAtRuntime>[0],
+) {
+  return createTrainingPlanCandidateRevisionAtRuntime({
+    ...input,
+    referenceTime: input.referenceTime ?? FIXED_NOW,
+  });
+}
+
+function activateApprovedTrainingPlanRevision(
+  input: Parameters<typeof activateApprovedTrainingPlanRevisionAtRuntime>[0],
+) {
+  return activateApprovedTrainingPlanRevisionAtRuntime({
+    ...input,
+    referenceTime: input.referenceTime ?? FIXED_NOW,
+  });
+}
 
 const request: TrainingPlanCandidateRequest = {
   planMode: 'continuous',
@@ -220,8 +239,22 @@ describe('training-plan-revision-activation', () => {
           approvedContentHash: revision.contentHash, approvedContextVersion: revision.creationContextVersion,
         },
         activationDate: '2026-07-13',
-        env: { ...activeEnv, TRAINING_EXERCISE_IDENTITY_V1_MODE_USER_7: 'active' },
+        env: {
+          ...activeEnv,
+          TRAINING_EXERCISE_IDENTITY_V1_MODE_USER_7: 'active',
+          TRAINING_PLAN_M4_ALLOWLIST_USER_7: 'event_based:triathlon',
+        },
       })).rejects.toMatchObject({ code: 'TRAINING_REVISION_REVALIDATION_STALE' });
+      await expect(activateApprovedTrainingPlanRevision({
+        scope: { userId: 7, tenantId: 7 }, revisionId: revision.revisionId,
+        approval: {
+          decisionId: 'decision-1', decisionRecordVersion: 3, actionExecutionId: 'execution-typed',
+          approvedContentHash: revision.contentHash, approvedContextVersion: revision.creationContextVersion,
+        },
+        activationDate: '2026-07-13',
+        env: typedEnv,
+        referenceTime: new Date('2027-01-01T00:00:00.000Z'),
+      })).rejects.toMatchObject({ code: 'TRAINING_M4_INITIAL_SCHEDULE_STALE' });
       expect(db.prepare('SELECT COUNT(*) AS count FROM fitness_training_plans').get()).toEqual({ count: 0 });
 
       const result = await activateApprovedTrainingPlanRevision({

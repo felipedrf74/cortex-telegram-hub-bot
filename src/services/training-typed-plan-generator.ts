@@ -47,7 +47,8 @@ import {
   selectTrainingM4CapacityWindow,
   selectTrainingM4SessionTypes,
   trainingM4ScheduledWindow,
-  trainingM4ConflictSetHash,
+  trainingM4ConflictSetHashForDocument,
+  validateTrainingM4InitialScheduleFreshness,
   validateTrainingM4WorkoutCapacity,
 } from './training-m4-plan-strategies';
 
@@ -66,7 +67,7 @@ const DAY_ORDER: DayOfWeek[] = [
 
 export function buildTrainingTypedPlanRevision(
   request: TrainingPlanCandidateRequest & { horizonWeeks: number },
-  options: { m4StrategyEnabled?: boolean } = {},
+  options: { m4StrategyEnabled?: boolean; referenceTime?: Date } = {},
 ): BuiltTrainingTypedPlanRevision {
   const m4Enabled = options.m4StrategyEnabled === true;
   const activeTypes = m4Enabled
@@ -191,24 +192,13 @@ export function buildTrainingTypedPlanRevision(
   if (m4Enabled) {
     document.m4 = {
       strategyVersion: TRAINING_M4_PLAN_STRATEGY_VERSION,
-      conflictSetHash: trainingM4ConflictSetHash({
-        planStartDate: document.planStartDate,
-        event: document.event,
-        capacityContextVersion: document.capacityContextVersion,
-        capacitySource: document.capacityContext?.source,
-        resources: document.resourceAccess,
-        goalPriority: document.goalPriority,
-        schedule: document.weeks.flatMap((week) => week.workouts.map((workout) => ({
-          date: workout.scheduledDate,
-          type: workout.sessionType,
-          eventRole: workout.eventRole,
-        }))),
-      }),
+      conflictSetHash: trainingM4ConflictSetHashForDocument(document),
       validationScope: 'PLAN_CANDIDATE',
       ...(request.planMode === 'event_based' && request.event?.priority
         ? { eventPriorityTreatment: 'REVIEW_ONLY_NO_AUTOMATIC_LOAD_CHANGE' as const }
         : {}),
     };
+    validateTrainingM4InitialScheduleFreshness(document, options.referenceTime ?? new Date());
   }
   const qualityChecks = [
     ...validateTrainingTypedPlanRevisionDocument(document),
@@ -761,7 +751,8 @@ export function validateTrainingM4PlanRevisionDocument(
   const failures: string[] = [];
   if (!document.m4
       || document.m4.strategyVersion !== TRAINING_M4_PLAN_STRATEGY_VERSION
-      || !/^[a-f0-9]{64}$/.test(document.m4.conflictSetHash)) {
+      || !/^[a-f0-9]{64}$/.test(document.m4.conflictSetHash)
+      || document.m4.conflictSetHash !== trainingM4ConflictSetHashForDocument(document)) {
     failures.push('TRAINING_M4_STRATEGY_AND_CONFLICT_IDENTITY');
   }
   if (!document.capacityContext
@@ -778,7 +769,11 @@ export function validateTrainingM4PlanRevisionDocument(
   if (activeWorkouts.some((workout) => !workout.scheduledStartAt
       || !workout.scheduledEndAt
       || !workout.scheduleTimeZone
-      || Date.parse(workout.scheduledEndAt) <= Date.parse(workout.scheduledStartAt))) {
+      || !Number.isFinite(Date.parse(workout.scheduledStartAt))
+      || !Number.isFinite(Date.parse(workout.scheduledEndAt))
+      || Date.parse(workout.scheduledEndAt) <= Date.parse(workout.scheduledStartAt)
+      || Date.parse(workout.scheduledEndAt) - Date.parse(workout.scheduledStartAt)
+        !== workout.plannedDurationMinutes * 60_000)) {
     failures.push('TRAINING_M4_SCHEDULE_WINDOWS_REQUIRED');
   }
   if (document.planMode === 'event_based') {

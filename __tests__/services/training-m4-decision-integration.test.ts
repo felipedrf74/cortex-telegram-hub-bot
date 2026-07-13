@@ -1,10 +1,10 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
 import Database from 'better-sqlite3';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { runMigrationsForTest, withDatabaseForTestAsync } from '../../src/services/database';
 import { bindTrainingPlanRevisionDecision } from '../../src/services/training-plan-revision-decision';
-import { createTrainingPlanCandidateRevision } from '../../src/services/training-plan-revisions';
+import { createTrainingPlanCandidateRevision as createTrainingPlanCandidateRevisionAtRuntime } from '../../src/services/training-plan-revisions';
 import type { TrainingPlanCandidateRequest } from '../../src/services/training-plan-revision-candidate-builder';
 import { revalidateNormalizedDecisionAction } from '../../src/services/decision-preexecution-revalidator';
 import type { NormalizedDecisionAction } from '../../src/services/decision-action-contract';
@@ -14,6 +14,17 @@ import {
   _resetTrainingGenerationObservabilityForTests,
   getTrainingGenerationObservabilitySnapshot,
 } from '../../src/services/training-generation-observability';
+
+const FIXED_NOW = new Date('2026-07-13T12:00:00.000Z');
+
+function createTrainingPlanCandidateRevision(
+  input: Parameters<typeof createTrainingPlanCandidateRevisionAtRuntime>[0],
+) {
+  return createTrainingPlanCandidateRevisionAtRuntime({
+    ...input,
+    referenceTime: input.referenceTime ?? FIXED_NOW,
+  });
+}
 
 const request: TrainingPlanCandidateRequest = {
   planMode: 'event_based', goal: 'event_performance', discipline: 'marathon',
@@ -53,6 +64,8 @@ describe('training M4 single-Decision conflict and activation gates', () => {
   ];
 
   beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(FIXED_NOW);
     _resetTrainingGenerationObservabilityForTests();
     authoritativeCapacityVersion = 'calendar-capacity-v1';
     db = new Database(':memory:');
@@ -82,6 +95,7 @@ describe('training M4 single-Decision conflict and activation gates', () => {
       else process.env[key] = original[key];
     }
     db.close();
+    vi.useRealTimers();
   });
 
   it('uses one Decision and recovers after calendar and persisted-precondition drift are removed', async () => {

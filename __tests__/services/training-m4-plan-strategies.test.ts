@@ -4,16 +4,42 @@ import Database from 'better-sqlite3';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { runMigrationsForTest, withDatabaseForTest } from '../../src/services/database';
 import {
-  buildTrainingPlanRevisionCandidate,
+  buildTrainingPlanRevisionCandidate as buildTrainingPlanRevisionCandidateAtRuntime,
   type TrainingPlanCandidateRequest,
 } from '../../src/services/training-plan-revision-candidate-builder';
 import { validateTrainingM4PlanRevisionDocument } from '../../src/services/training-typed-plan-generator';
-import { createTrainingPlanCandidateRevision } from '../../src/services/training-plan-revisions';
+import { createTrainingPlanCandidateRevision as createTrainingPlanCandidateRevisionAtRuntime } from '../../src/services/training-plan-revisions';
 import {
   getTrainingM4Allowlist,
   isTrainingM4PlanCombinationAllowed,
 } from '../../src/services/runtime-flags';
-import { selectTrainingM4SessionTypes } from '../../src/services/training-m4-plan-strategies';
+import {
+  trainingM4ConflictSetHashForDocument,
+  selectTrainingM4SessionTypes,
+  validateTrainingM4CapacityWindowShapes,
+  validateTrainingM4InitialScheduleFreshness,
+} from '../../src/services/training-m4-plan-strategies';
+
+const FIXED_NOW = new Date('2026-07-13T12:00:00.000Z');
+
+function buildTrainingPlanRevisionCandidate(
+  request: Parameters<typeof buildTrainingPlanRevisionCandidateAtRuntime>[0],
+  options: Parameters<typeof buildTrainingPlanRevisionCandidateAtRuntime>[1] = {},
+) {
+  return buildTrainingPlanRevisionCandidateAtRuntime(request, {
+    ...options,
+    referenceTime: options.referenceTime ?? FIXED_NOW,
+  });
+}
+
+function createTrainingPlanCandidateRevision(
+  input: Parameters<typeof createTrainingPlanCandidateRevisionAtRuntime>[0],
+) {
+  return createTrainingPlanCandidateRevisionAtRuntime({
+    ...input,
+    referenceTime: input.referenceTime ?? FIXED_NOW,
+  });
+}
 
 const eventRequest: TrainingPlanCandidateRequest = {
   planMode: 'event_based',
@@ -216,6 +242,118 @@ describe('training M4 deterministic strategies and conflict foundation', () => {
       capacity: { ...eventRequest.capacity!, contextVersion: 'client-claims-authority' },
     }, { typedWorkoutValidationEnabled: true, m4StrategyEnabled: true }))
       .toThrow(/TRAINING_M4_CLIENT_AUTHORITY_VERSION_FORBIDDEN/);
+  });
+
+  it('rejects malformed, unbounded and duplicate capacity shapes before hashing or persistence', () => {
+    const base = eventRequest.capacity!.windows[0];
+    const invalid = [
+      [{ ...base, dayOfWeek: 'funday' }],
+      [{ ...base, allowedDisciplines: ['teleportation'] }],
+      [{ ...base, allowedDisciplines: ['running', 'running'] }],
+      [{ ...base, timezone: 'x'.repeat(101) }],
+      [{ ...base, unexpected: true }],
+      [base, { ...base }],
+      Array.from({ length: 50 }, (_, index) => ({
+        ...base,
+        startTime: `${String(Math.floor(index / 60)).padStart(2, '0')}:${String(index % 60).padStart(2, '0')}`,
+        endTime: '23:59',
+      })),
+    ];
+    for (const windows of invalid) {
+      expect(() => validateTrainingM4CapacityWindowShapes(windows as never)).toThrow(/TRAINING_M4_CAPACITY/);
+    }
+    const boundary = Array.from({ length: 49 }, (_, index) => ({
+      dayOfWeek: 'monday' as const,
+      startTime: `00:${String(index).padStart(2, '0')}`,
+      endTime: `01:${String(index).padStart(2, '0')}`,
+      timezone: 'UTC',
+      allowedDisciplines: ['running' as const],
+    }));
+    expect(() => validateTrainingM4CapacityWindowShapes(boundary)).not.toThrow();
+    expect(() => buildTrainingPlanRevisionCandidate({
+      ...eventRequest,
+      capacity: { ...eventRequest.capacity!, unexpected: true } as never,
+    }, { typedWorkoutValidationEnabled: true, m4StrategyEnabled: true }))
+      .toThrow(/TRAINING_M4_CAPACITY_ENVELOPE_INVALID/);
+
+    withDatabaseForTest(db, () => {
+      expect(() => createTrainingPlanCandidateRevision({
+        scope: { userId: 7, tenantId: 7 },
+        idempotencyKey: 'm4-invalid-capacity-no-write',
+        request: {
+          ...eventRequest,
+          capacity: {
+            source: 'EXPLICIT_USER',
+            windows: [{ ...base, dayOfWeek: 'funday' as never }],
+          },
+          profile: { ...eventRequest.profile, availableDays: ['funday' as never] },
+        },
+        env: {
+          TRAINING_PLAN_REVISION_V1_MODE_USER_7: 'active',
+          TRAINING_TYPED_WORKOUT_V1_ENABLED_USER_7: 'true',
+          TRAINING_PLAN_M4_ALLOWLIST_USER_7: 'event_based:triathlon',
+          DECISION_FLOW_V1_ENFORCE_ENABLED: 'true',
+          TRAINING_PROFILE_SNAPSHOT_ENCRYPTION_KEY: 'training-revision-test-encryption-key-0001',
+        },
+      })).toThrow(/TRAINING_REVISION_AVAILABILITY_INVALID/);
+      expect(db.prepare('SELECT COUNT(*) AS count FROM training_plan_revisions').get()).toEqual({ count: 0 });
+      expect(db.prepare('SELECT COUNT(*) AS count FROM training_profile_snapshots').get()).toEqual({ count: 0 });
+      expect(db.prepare('SELECT COUNT(*) AS count FROM training_plan_revision_operations').get()).toEqual({ count: 0 });
+    });
+  });
+
+  it('binds conflict identity to exact duration and schedule windows', () => {
+    const document = buildTrainingPlanRevisionCandidate(eventRequest, {
+      typedWorkoutValidationEnabled: true,
+      m4StrategyEnabled: true,
+      referenceTime: new Date('2026-07-13T12:00:00.000Z'),
+    }).document;
+    const active = document.weeks.flatMap((week) => week.workouts)
+      .find((workout) => workout.sessionType !== 'rest')!;
+
+    const durationTamper = structuredClone(document);
+    const durationWorkout = durationTamper.weeks.flatMap((week) => week.workouts)
+      .find((workout) => workout.workoutKey === active.workoutKey)!;
+    durationWorkout.plannedDurationMinutes -= 5;
+    expect(() => validateTrainingM4PlanRevisionDocument(durationTamper))
+      .toThrow(/TRAINING_M4_SCHEDULE_WINDOWS_REQUIRED/);
+
+    const endTamper = structuredClone(document);
+    const endWorkout = endTamper.weeks.flatMap((week) => week.workouts)
+      .find((workout) => workout.workoutKey === active.workoutKey)!;
+    endWorkout.scheduledEndAt = new Date(Date.parse(endWorkout.scheduledEndAt!) - 5 * 60_000).toISOString();
+    endTamper.m4!.conflictSetHash = trainingM4ConflictSetHashForDocument(endTamper);
+    expect(() => validateTrainingM4PlanRevisionDocument(endTamper))
+      .toThrow(/TRAINING_M4_SCHEDULE_WINDOWS_REQUIRED/);
+
+    const hashTamper = structuredClone(document);
+    hashTamper.m4!.conflictSetHash = 'f'.repeat(64);
+    expect(() => validateTrainingM4PlanRevisionDocument(hashTamper))
+      .toThrow(/TRAINING_M4_STRATEGY_AND_CONFLICT_IDENTITY/);
+  });
+
+  it('fails closed when every initial M4 session is already in the past', () => {
+    expect(() => buildTrainingPlanRevisionCandidate({
+      ...eventRequest,
+      planStartDate: '2020-01-06',
+      event: { ...eventRequest.event!, date: '2020-03-29' },
+    }, {
+      typedWorkoutValidationEnabled: true,
+      m4StrategyEnabled: true,
+      referenceTime: new Date('2026-07-13T12:00:00.000Z'),
+    })).toThrow(/TRAINING_M4_INITIAL_SCHEDULE_STALE/);
+
+    const document = buildTrainingPlanRevisionCandidate(eventRequest, {
+      typedWorkoutValidationEnabled: true,
+      m4StrategyEnabled: true,
+      referenceTime: new Date('2026-07-13T12:00:00.000Z'),
+    }).document;
+    const firstStart = Math.min(...document.weeks.flatMap((week) => week.workouts)
+      .filter((workout) => workout.sessionType !== 'rest')
+      .map((workout) => Date.parse(workout.scheduledStartAt!)));
+    expect(() => validateTrainingM4InitialScheduleFreshness(document, new Date(firstStart - 1))).not.toThrow();
+    expect(() => validateTrainingM4InitialScheduleFreshness(document, new Date(firstStart + 1)))
+      .toThrow(/TRAINING_M4_INITIAL_SCHEDULE_STALE/);
   });
 
   it('rejects mismatched event horizons, missing pool access and conflicting goals', () => {

@@ -16,6 +16,8 @@ import {
   getTrainingAdaptationV1Mode,
   getTrainingPlanRevisionV1Mode,
   isDecisionFlowV1EnforceEnabled,
+  isTrainingM4OwnedCombination,
+  isTrainingM4PlanCombinationAllowed,
   isTrainingPlanRevisionV1ExplicitlyEnrolled,
   isTrainingTypedWorkoutV1Enabled,
 } from './runtime-flags';
@@ -49,6 +51,10 @@ import {
   type TrainingAdaptationTriggerKind,
 } from './training-adaptation-types';
 import { incrementTrainingGenerationCounter } from './training-generation-observability';
+import {
+  contractTrainingM4ScheduledWindow,
+  trainingM4ConflictSetHashForDocument,
+} from './training-m4-plan-strategies';
 
 const PREVIEW_TTL_MINUTES = 30;
 const TIRED_EVIDENCE_WINDOW_DAYS = 7;
@@ -570,17 +576,37 @@ async function bindPendingProposalDecision(
   }
   const child = getScopedTrainingPlanRevision(input.scope, row.proposed_revision_id, db);
   if (!child) throw error('TRAINING_ADAPTATION_CHILD_MISSING', 'The immutable adaptation revision is missing.', 409);
+  const childDocument = child.document as TrainingPlanRevisionDocument;
+  const authoritativeSchedule = Boolean(childDocument.m4
+    && childDocument.capacityContext?.source === 'AUTHORITATIVE');
   const normalizedAction = buildNormalizedDecisionAction({
     intent: 'training.activate_adaptation_revision',
     targetEntities: [{ type: 'training_plan_revision', id: child.revisionId, version: child.contentHash }],
     affectedResources: [
       { type: 'training_plan_family', id: child.familyId },
       { type: 'training_adaptation_material', id: row.material_fingerprint },
+      ...(childDocument.m4 ? [{ type: 'training_schedule', id: child.revisionId }] : []),
+      ...(authoritativeSchedule ? [{ type: 'calendar_timeline_overlap', id: 'primary' }] : []),
+      ...Object.entries(childDocument.resourceAccess ?? {})
+        .filter(([, available]) => available)
+        .map(([resource]) => ({ type: 'training_resource', id: resource })),
     ],
     preconditions: [
       { type: 'training_revision_content', ref: row.source_revision_id, expectedVersion: row.expected_source_content_hash, required: true },
       { type: 'training_active_pointer', ref: child.familyId, expectedVersion: `pointer:${row.expected_active_pointer_version}:revision:${row.source_revision_id}`, required: true },
       { type: 'training_adaptation_option', ref: row.selected_option_id, expectedVersion: row.option_hash, required: true },
+      ...(childDocument.m4?.conflictSetHash ? [{
+        type: 'training_revision_conflict_set',
+        ref: child.revisionId,
+        expectedVersion: childDocument.m4.conflictSetHash,
+        required: true,
+      }] : []),
+      ...(authoritativeSchedule && childDocument.capacityContextVersion ? [{
+        type: 'training_capacity_context',
+        ref: child.revisionId,
+        expectedVersion: childDocument.capacityContextVersion,
+        required: true,
+      }] : []),
     ],
     expectedEffects: [{ type: 'activate_training_plan_revision', targetRef: `training_plan_revision:${child.revisionId}` }],
     prohibitedEffects: [
@@ -588,7 +614,11 @@ async function bindPendingProposalDecision(
       { type: 'provider_calendar_write', targetRef: `training_plan_family:${child.familyId}` },
     ],
     dependencies: [],
-    exclusivityKeys: [`training_plan_family:${input.scope.tenantId}:${child.familyId}`],
+    exclusivityKeys: [
+      `training_plan_family:${input.scope.tenantId}:${child.familyId}`,
+      ...(childDocument.m4 ? [`training_schedule:${input.scope.tenantId}:${child.familyId}`] : []),
+      ...(authoritativeSchedule ? ['calendar_timeline:primary'] : []),
+    ],
     authorizationScope: ['decision_center:write', 'training:plan:write'],
     risk: row.scope === 'SESSION' ? 'medium' : 'high',
     reversibility: 'compensatable',
@@ -821,6 +851,34 @@ function requireFreshActiveSource(
       || source.lifecycleState !== 'ACTIVE' || source.approvalState !== 'APPROVED') {
     throw error('TRAINING_ADAPTATION_TYPED_ACTIVE_REQUIRED', 'Only an active typed generated revision can be adapted.', 409);
   }
+  if (stableTrainingRevisionHash(source.document) !== source.contentHash) {
+    throw error(
+      'TRAINING_ADAPTATION_SOURCE_INTEGRITY_FAILED',
+      'The active source revision failed immutable content verification.',
+      409,
+    );
+  }
+  const sourceDocument = source.document as TrainingPlanRevisionDocument;
+  if (isTrainingM4OwnedCombination(sourceDocument.planMode, sourceDocument.discipline)
+      && !sourceDocument.m4) {
+    throw error(
+      'TRAINING_M4_REVISION_CONTRACT_REQUIRED',
+      'This plan mode or discipline requires an M4-reviewed revision.',
+      409,
+    );
+  }
+  if (sourceDocument.m4 && !isTrainingM4PlanCombinationAllowed(
+    sourceDocument.planMode,
+    sourceDocument.discipline,
+    input.env ?? process.env,
+    input.scope,
+  )) {
+    throw error(
+      'TRAINING_M4_ALLOWLIST_REQUIRED',
+      'This M4 plan is no longer enrolled for new adaptation proposals.',
+      404,
+    );
+  }
   if (source.contentHash !== input.expectedContentHash || source.creationContextVersion !== input.contextVersion) {
     throw error('TRAINING_ADAPTATION_SOURCE_STALE', 'The active revision content or context changed.', 409);
   }
@@ -884,6 +942,10 @@ function finalizeOption(
   option: InternalTrainingAdaptationOption,
 ): InternalTrainingAdaptationOption {
   if (option.eligible && option.proposedDocument) {
+    reconcileTrainingM4AdaptationDocument(
+      source.document as TrainingPlanRevisionDocument,
+      option,
+    );
     validateTrainingPlanRevisionDocument(option.proposedDocument, { typedWorkoutValidationEnabled: true });
   }
   return {
@@ -893,6 +955,85 @@ function finalizeOption(
       proposedHash: option.proposedDocument ? stableTrainingRevisionHash(option.proposedDocument) : null,
     }).slice(0, 32)}`,
   };
+}
+
+function reconcileTrainingM4AdaptationDocument(
+  source: TrainingPlanRevisionDocument,
+  option: InternalTrainingAdaptationOption,
+): void {
+  const proposed = option.proposedDocument;
+  if (!proposed) return;
+  if (Boolean(source.m4) !== Boolean(proposed.m4)) {
+    throw error(
+      'TRAINING_M4_ADAPTATION_CONTRACT_MISMATCH',
+      'An adaptation cannot add or remove the M4 plan contract.',
+      409,
+    );
+  }
+  if (!source.m4 || !proposed.m4) return;
+  const immutablePlanContext = (document: TrainingPlanRevisionDocument) => ({
+    schemaVersion: document.schemaVersion,
+    planMode: document.planMode,
+    goal: document.goal,
+    discipline: document.discipline,
+    planStartDate: document.planStartDate,
+    event: document.event,
+    resourceAccess: document.resourceAccess,
+    capacityContextVersion: document.capacityContextVersion,
+    capacityContext: document.capacityContext,
+    goalPriority: document.goalPriority,
+    title: document.title,
+    horizonWeeks: document.horizonWeeks,
+    weeklyStructure: document.weeklyStructure,
+    phases: document.phases,
+    progression: document.progression,
+    recovery: document.recovery,
+    assumptions: document.assumptions,
+    missingInputs: document.missingInputs,
+    weeks: document.weeks.map((week) => ({
+      weekKey: week.weekKey,
+      weekNumber: week.weekNumber,
+      phaseKey: week.phaseKey,
+      loadDirection: week.loadDirection,
+      workoutKeys: week.workouts.map((workout) => workout.workoutKey),
+    })),
+  });
+  if (stableTrainingRevisionHash(immutablePlanContext(source))
+      !== stableTrainingRevisionHash(immutablePlanContext(proposed))) {
+    throw error(
+      'TRAINING_M4_ADAPTATION_PLAN_CONTEXT_CHANGE_FORBIDDEN',
+      'An adaptation cannot silently change the reviewed M4 plan context.',
+      409,
+    );
+  }
+  const sourceWorkouts = new Map(source.weeks
+    .flatMap((week) => week.workouts)
+    .map((workout) => [workout.workoutKey, workout]));
+  for (const workout of proposed.weeks.flatMap((week) => week.workouts)) {
+    if (workout.sessionType === 'rest') continue;
+    const current = sourceWorkouts.get(workout.workoutKey);
+    if (!current || current.sessionType !== workout.sessionType
+        || current.dayOfWeek !== workout.dayOfWeek
+        || current.eventRole !== workout.eventRole
+        || current.phaseKey !== workout.phaseKey
+        || current.isStandalone !== workout.isStandalone) {
+      throw error(
+        'TRAINING_M4_ADAPTATION_WORKOUT_CONTEXT_CHANGE_FORBIDDEN',
+        'An adaptation cannot silently change a reviewed M4 workout identity.',
+        409,
+      );
+    }
+    const previousEnd = workout.scheduledEndAt;
+    contractTrainingM4ScheduledWindow(current, workout);
+    if (previousEnd !== workout.scheduledEndAt) {
+      option.exactDifferences.push({
+        path: `workouts.${workout.workoutKey}.scheduledEndAt`,
+        before: current.scheduledEndAt,
+        after: workout.scheduledEndAt,
+      });
+    }
+  }
+  proposed.m4.conflictSetHash = trainingM4ConflictSetHashForDocument(proposed);
 }
 
 function publicOption(option: InternalTrainingAdaptationOption): TrainingAdaptationOption {
@@ -983,8 +1124,8 @@ function presentApiOption(
     proposedRevision,
     currentSummary: summaryText(current),
     proposedSummary: summaryText(proposed),
-    currentScheduledStart: null,
-    proposedScheduledStart: null,
+    currentScheduledStart: stringSummaryValue(current, 'scheduledStartAt'),
+    proposedScheduledStart: stringSummaryValue(proposed, 'scheduledStartAt'),
     differences: option.exactDifferences,
     rationale: option.rationale,
     evidence: option.evidence,
@@ -1045,6 +1186,10 @@ function asSummary(value: unknown): Record<string, unknown> | null {
 
 function numericSummaryValue(value: Record<string, unknown> | null, key: string): number | null {
   return typeof value?.[key] === 'number' ? value[key] as number : null;
+}
+
+function stringSummaryValue(value: Record<string, unknown> | null, key: string): string | null {
+  return typeof value?.[key] === 'string' ? value[key] as string : null;
 }
 
 function summaryText(value: Record<string, unknown> | null): string {

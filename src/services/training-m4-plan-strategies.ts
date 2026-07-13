@@ -3,6 +3,10 @@
 import { createHash } from 'node:crypto';
 import { DateTime } from 'luxon';
 import type { CoachingDiscipline, DayOfWeek, SessionType } from './coach-kernel/types';
+import type {
+  TrainingPlanRevisionDocument,
+  TrainingPlanRevisionWorkout,
+} from './training-plan-revision-candidate-builder';
 import type { TrainingPlanMode } from './training-workout-capability-registry';
 
 export const TRAINING_M4_PLAN_STRATEGY_VERSION = 'training-m4-plan-strategy.v1' as const;
@@ -35,6 +39,16 @@ export interface TrainingM4GoalPriority {
   primaryDiscipline: CoachingDiscipline;
   secondaryDisciplines: CoachingDiscipline[];
 }
+
+export const MAX_TRAINING_M4_CAPACITY_WINDOWS = 49;
+export const TRAINING_M4_DAYS: readonly DayOfWeek[] = [
+  'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday',
+];
+export const TRAINING_M4_DISCIPLINES: readonly CoachingDiscipline[] = [
+  'running', 'cycling', 'swimming', 'strength', 'triathlon', 'hybrid', 'marathon',
+];
+const TRAINING_M4_DAY_SET = new Set<string>(TRAINING_M4_DAYS);
+const TRAINING_M4_DISCIPLINE_SET = new Set<string>(TRAINING_M4_DISCIPLINES);
 
 const MODE_ARCHETYPES: Readonly<Record<TrainingPlanMode, Readonly<Record<CoachingDiscipline, readonly SessionType[]>>>> = {
   event_based: {
@@ -236,25 +250,15 @@ export function validateTrainingM4CapacityWindows(
   discipline: CoachingDiscipline,
   windows: readonly TrainingM4CapacityWindow[],
 ): void {
-  if (windows.length === 0) throw new Error('TRAINING_M4_CAPACITY_WINDOWS_REQUIRED');
-  for (const window of windows) {
-    if (!window || typeof window !== 'object'
-        || !availableDays.includes(window.dayOfWeek)
-        || typeof window.startTime !== 'string'
-        || typeof window.endTime !== 'string'
-        || typeof window.timezone !== 'string'
-        || !/^([01]\d|2[0-3]):[0-5]\d$/.test(window.startTime)
-        || !/^([01]\d|2[0-3]):[0-5]\d$/.test(window.endTime)
-        || window.startTime >= window.endTime
-        || !window.timezone.trim()
-        || !validTimeZone(window.timezone)) {
-      throw new Error('TRAINING_M4_CAPACITY_WINDOW_INVALID');
-    }
-    if (window.allowedDisciplines != null
-        && (!Array.isArray(window.allowedDisciplines)
-          || !window.allowedDisciplines.every((value) => typeof value === 'string'))) {
-      throw new Error('TRAINING_M4_CAPACITY_WINDOW_INVALID');
-    }
+  validateTrainingM4CapacityWindowShapes(windows);
+  if (!availableDays.length
+      || availableDays.length > TRAINING_M4_DAYS.length
+      || new Set(availableDays).size !== availableDays.length
+      || availableDays.some((day) => !TRAINING_M4_DAY_SET.has(day))) {
+    throw new Error('TRAINING_M4_CAPACITY_AVAILABLE_DAYS_INVALID');
+  }
+  if (windows.some((window) => !availableDays.includes(window.dayOfWeek))) {
+    throw new Error('TRAINING_M4_CAPACITY_WINDOW_INVALID');
   }
   if (availableDays.some((day) => !windows.some((window) => window.dayOfWeek === day))) {
     throw new Error('TRAINING_M4_CAPACITY_DAY_UNCOVERED');
@@ -266,6 +270,54 @@ export function validateTrainingM4CapacityWindows(
     const supported = windows.some((window) => !window.allowedDisciplines?.length
       || window.allowedDisciplines.includes(required));
     if (!supported) throw new Error(`TRAINING_M4_CAPACITY_${required.toUpperCase()}_REQUIRED`);
+  }
+}
+
+export function validateTrainingM4CapacityWindowShapes(
+  windows: readonly TrainingM4CapacityWindow[],
+): void {
+  if (!Array.isArray(windows)
+      || windows.length === 0
+      || windows.length > MAX_TRAINING_M4_CAPACITY_WINDOWS) {
+    throw new Error('TRAINING_M4_CAPACITY_WINDOWS_REQUIRED');
+  }
+  const identities = new Set<string>();
+  for (const window of windows) {
+    const keys = window && typeof window === 'object'
+      ? Object.keys(window as unknown as Record<string, unknown>)
+      : [];
+    if (!window || typeof window !== 'object'
+        || keys.some((key) => !['allowedDisciplines', 'dayOfWeek', 'endTime', 'startTime', 'timezone'].includes(key))
+        || !TRAINING_M4_DAY_SET.has(window.dayOfWeek)
+        || typeof window.startTime !== 'string'
+        || typeof window.endTime !== 'string'
+        || typeof window.timezone !== 'string'
+        || !/^([01]\d|2[0-3]):[0-5]\d$/.test(window.startTime)
+        || !/^([01]\d|2[0-3]):[0-5]\d$/.test(window.endTime)
+        || window.startTime >= window.endTime
+        || !window.timezone.trim()
+        || window.timezone !== window.timezone.trim()
+        || window.timezone.length > 100
+        || !validTimeZone(window.timezone)) {
+      throw new Error('TRAINING_M4_CAPACITY_WINDOW_INVALID');
+    }
+    if (window.allowedDisciplines != null
+        && (!Array.isArray(window.allowedDisciplines)
+          || window.allowedDisciplines.length > TRAINING_M4_DISCIPLINES.length
+          || new Set(window.allowedDisciplines).size !== window.allowedDisciplines.length
+          || !window.allowedDisciplines.every((value: unknown) =>
+            typeof value === 'string' && TRAINING_M4_DISCIPLINE_SET.has(value)))) {
+      throw new Error('TRAINING_M4_CAPACITY_WINDOW_INVALID');
+    }
+    const identity = JSON.stringify({
+      dayOfWeek: window.dayOfWeek,
+      startTime: window.startTime,
+      endTime: window.endTime,
+      timezone: window.timezone,
+      allowedDisciplines: [...(window.allowedDisciplines ?? [])].sort(),
+    });
+    if (identities.has(identity)) throw new Error('TRAINING_M4_CAPACITY_WINDOW_DUPLICATE');
+    identities.add(identity);
   }
 }
 
@@ -350,6 +402,95 @@ function requiredCapacityDisciplines(
 
 export function trainingM4ConflictSetHash(input: unknown): string {
   return createHash('sha256').update(JSON.stringify(stableValue(input))).digest('hex');
+}
+
+export function trainingM4ConflictSetProjection(document: TrainingPlanRevisionDocument): unknown {
+  return {
+    planStartDate: document.planStartDate,
+    event: document.event,
+    capacityContextVersion: document.capacityContextVersion,
+    capacitySource: document.capacityContext?.source,
+    resources: document.resourceAccess,
+    goalPriority: document.goalPriority,
+    schedule: document.weeks.flatMap((week) => week.workouts.map((workout) => ({
+      date: workout.scheduledDate,
+      startAt: workout.scheduledStartAt,
+      endAt: workout.scheduledEndAt,
+      timeZone: workout.scheduleTimeZone,
+      durationMinutes: workout.plannedDurationMinutes,
+      type: workout.sessionType,
+      eventRole: workout.eventRole,
+    }))),
+  };
+}
+
+export function trainingM4ConflictSetHashForDocument(
+  document: TrainingPlanRevisionDocument,
+): string {
+  return trainingM4ConflictSetHash(trainingM4ConflictSetProjection(document));
+}
+
+export function contractTrainingM4ScheduledWindow(
+  source: TrainingPlanRevisionWorkout,
+  proposed: TrainingPlanRevisionWorkout,
+): void {
+  if (!source.scheduledDate || !source.scheduledStartAt || !source.scheduledEndAt || !source.scheduleTimeZone
+      || proposed.scheduledDate !== source.scheduledDate
+      || proposed.scheduledStartAt !== source.scheduledStartAt
+      || proposed.scheduleTimeZone !== source.scheduleTimeZone
+      || proposed.plannedDurationMinutes > source.plannedDurationMinutes) {
+    throw new Error('TRAINING_M4_ADAPTATION_SCHEDULE_CHANGE_FORBIDDEN');
+  }
+  const start = DateTime.fromISO(source.scheduledStartAt, { setZone: true });
+  const sourceEnd = DateTime.fromISO(source.scheduledEndAt, { setZone: true });
+  const proposedEnd = start.plus({ minutes: proposed.plannedDurationMinutes });
+  if (!start.isValid || !sourceEnd.isValid || !proposedEnd.isValid
+      || proposedEnd.toMillis() > sourceEnd.toMillis()
+      || proposedEnd.setZone(source.scheduleTimeZone).toISODate() !== source.scheduledDate) {
+    throw new Error('TRAINING_M4_ADAPTATION_SCHEDULE_CHANGE_FORBIDDEN');
+  }
+  const endAt = proposedEnd.toUTC().toISO();
+  if (!endAt) throw new Error('TRAINING_M4_ADAPTATION_SCHEDULE_CHANGE_FORBIDDEN');
+  proposed.scheduledDate = source.scheduledDate;
+  proposed.scheduledStartAt = source.scheduledStartAt;
+  proposed.scheduledEndAt = endAt;
+  proposed.scheduleTimeZone = source.scheduleTimeZone;
+}
+
+export function validateTrainingM4InitialScheduleFreshness(
+  document: TrainingPlanRevisionDocument,
+  referenceTime: Date,
+): void {
+  if (!Number.isFinite(referenceTime.getTime())) throw new Error('TRAINING_M4_REFERENCE_TIME_INVALID');
+  const active = document.weeks.flatMap((week) => week.workouts)
+    .filter((workout) => workout.sessionType !== 'rest');
+  if (!active.length || active.some((workout) => !workout.scheduledStartAt
+      || Date.parse(workout.scheduledStartAt) < referenceTime.getTime())) {
+    throw new Error('TRAINING_M4_INITIAL_SCHEDULE_STALE');
+  }
+  const timeZones = new Set(active.map((workout) => workout.scheduleTimeZone).filter(Boolean) as string[]);
+  if (!document.planStartDate || [...timeZones].some((timeZone) => {
+    const localDate = DateTime.fromJSDate(referenceTime, { zone: timeZone }).toISODate();
+    return !localDate || document.planStartDate! < localDate;
+  })) {
+    throw new Error('TRAINING_M4_INITIAL_SCHEDULE_STALE');
+  }
+}
+
+export function validateTrainingM4AdaptationFreshness(
+  document: TrainingPlanRevisionDocument,
+  changedWorkoutKeys: readonly string[],
+  referenceTime: Date,
+): void {
+  if (!Number.isFinite(referenceTime.getTime())) throw new Error('TRAINING_M4_REFERENCE_TIME_INVALID');
+  const changed = new Set(changedWorkoutKeys);
+  const targets = document.weeks.flatMap((week) => week.workouts)
+    .filter((workout) => changed.has(workout.workoutKey));
+  if (!targets.length || targets.some((workout) => workout.sessionType === 'rest'
+      || !workout.scheduledStartAt
+      || Date.parse(workout.scheduledStartAt) < referenceTime.getTime())) {
+    throw new Error('TRAINING_M4_ADAPTATION_TARGET_STALE');
+  }
 }
 
 function parseIsoDate(value: string, code: string): Date {

@@ -5,12 +5,32 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { runMigrationsForTest, withDatabaseForTest } from '../../src/services/database';
 import type { TrainingPlanCandidateRequest } from '../../src/services/training-plan-revision-candidate-builder';
 import {
-  createTrainingPlanCandidateRevision,
-  editTrainingPlanRevisionPreview,
+  createTrainingPlanCandidateRevision as createTrainingPlanCandidateRevisionAtRuntime,
+  editTrainingPlanRevisionPreview as editTrainingPlanRevisionPreviewAtRuntime,
   getScopedTrainingPlanRevision,
   getScopedTrainingProfileSnapshot,
   TrainingPlanRevisionError,
 } from '../../src/services/training-plan-revisions';
+
+const FIXED_NOW = new Date('2026-07-13T12:00:00.000Z');
+
+function createTrainingPlanCandidateRevision(
+  input: Parameters<typeof createTrainingPlanCandidateRevisionAtRuntime>[0],
+) {
+  return createTrainingPlanCandidateRevisionAtRuntime({
+    ...input,
+    referenceTime: input.referenceTime ?? FIXED_NOW,
+  });
+}
+
+function editTrainingPlanRevisionPreview(
+  input: Parameters<typeof editTrainingPlanRevisionPreviewAtRuntime>[0],
+) {
+  return editTrainingPlanRevisionPreviewAtRuntime({
+    ...input,
+    referenceTime: input.referenceTime ?? FIXED_NOW,
+  });
+}
 
 const request: TrainingPlanCandidateRequest = {
   planMode: 'continuous',

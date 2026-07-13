@@ -76,13 +76,20 @@ describe('Training plan revision API contracts', () => {
       });
       expect(capabilities.data.typedGenerationSessionTypes).toHaveLength(21);
 
+      const today = new Date();
+      const start = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate() + 7));
+      start.setUTCDate(start.getUTCDate() + ((8 - start.getUTCDay()) % 7));
+      const eventDate = new Date(start.getTime() + 55 * 86_400_000);
+      const planStartDate = start.toISOString().slice(0, 10);
+      const targetEventDate = eventDate.toISOString().slice(0, 10);
+
       const response = await fetch(`${baseUrl}/plan/candidates`, {
         method: 'POST',
         headers: { 'content-type': 'application/json', 'idempotency-key': 'typed-event-api' },
         body: JSON.stringify({
           planMode: 'event_based', goal: 'event_performance', discipline: 'running', horizonWeeks: 8,
-          planStartDate: '2026-08-17',
-          event: { name: 'Target 10K', date: '2026-10-11', priority: 'A', subtype: 'running_race' },
+          planStartDate,
+          event: { name: 'Target 10K', date: targetEventDate, priority: 'A', subtype: 'running_race' },
           resourceAccess: {
             pool: false, bicycle: false, indoorTrainer: false,
             safeRunEnvironment: true, outdoorRideEnvironment: false,

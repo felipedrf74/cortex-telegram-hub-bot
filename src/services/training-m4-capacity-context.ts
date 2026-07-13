@@ -1,6 +1,9 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
-import type { TrainingM4CapacityWindow } from './training-m4-plan-strategies';
+import {
+  validateTrainingM4CapacityWindowShapes,
+  type TrainingM4CapacityWindow,
+} from './training-m4-plan-strategies';
 
 export interface TrainingM4AuthoritativeCapacityContext {
   source: 'AUTHORITATIVE';
@@ -45,9 +48,7 @@ export function getTrainingM4AuthoritativeCapacityContext(
       || context.source !== 'AUTHORITATIVE'
       || !/^[0-9A-Za-z_.:-]{1,200}$/.test(context.contextVersion)
       || !Array.isArray(context.windows)
-      || context.windows.length === 0
-      || context.windows.length > 49
-      || !context.windows.every(validWindow)
+      || !validCapacityWindows(context.windows)
       || !Number.isFinite(Date.parse(context.observedAt))
       || !Number.isFinite(Date.parse(context.expiresAt))
       || Date.parse(context.observedAt) > now.getTime()
@@ -62,25 +63,9 @@ export function getTrainingM4AuthoritativeCapacityContext(
   };
 }
 
-function validWindow(window: TrainingM4CapacityWindow): boolean {
-  const days = new Set(['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday']);
-  const disciplines = new Set(['running', 'cycling', 'swimming', 'strength', 'triathlon', 'hybrid', 'marathon']);
-  return Boolean(window)
-    && days.has(window.dayOfWeek)
-    && /^([01]\d|2[0-3]):[0-5]\d$/.test(window.startTime)
-    && /^([01]\d|2[0-3]):[0-5]\d$/.test(window.endTime)
-    && window.startTime < window.endTime
-    && typeof window.timezone === 'string'
-    && window.timezone.trim().length > 0
-    && validTimeZone(window.timezone)
-    && (window.allowedDisciplines == null
-      || (Array.isArray(window.allowedDisciplines)
-        && window.allowedDisciplines.every((value) => disciplines.has(value))));
-}
-
-function validTimeZone(value: string): boolean {
+function validCapacityWindows(windows: TrainingM4CapacityWindow[]): boolean {
   try {
-    new Intl.DateTimeFormat('en', { timeZone: value }).format(new Date(0));
+    validateTrainingM4CapacityWindowShapes(windows);
     return true;
   } catch {
     return false;
