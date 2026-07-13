@@ -51,8 +51,9 @@ Validated through promotion:
 
 ### Training M1–M5 gate — STAGING DEPLOYED/DORMANT
 
-- `origin/main` at `032d8ffe` contains the default-off M1–M5 source and the
-  external exercise-media publication gate. The exact artifact digest
+- Staging was built from default-off M1–M5 source commit `032d8ffe`, now
+  contained in `origin/main`; release evidence was merged by PR #169 as
+  `aa8a8e76`. The exact artifact digest
   `5e4daeac8d4896895caf7a93fb904774b64b899a246aac6a2df9666cc48ce8b6`
   is deployed to staging only.
 - Staging applied migrations 228–230. All Training rollout variables remained
