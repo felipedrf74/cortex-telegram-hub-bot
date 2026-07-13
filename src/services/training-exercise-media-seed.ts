@@ -5,6 +5,7 @@ import {
   TRAINING_EXERCISE_MEDIA_PACKAGE_SCHEMA_VERSION,
   assertCompiledTrainingExerciseMediaPackage,
   buildTrainingExerciseMediaApprovedAssetBindings,
+  buildTrainingExerciseMediaAccessibilityBundleHash,
   buildTrainingExerciseMediaValidationAttestationHash,
   computeTrainingExerciseMediaFrozenPackageHash,
   validateCompiledTrainingExerciseMediaPackage,
@@ -79,6 +80,8 @@ export function seedCompiledTrainingExerciseMediaPackage(
       throw new Error('Manifest ID already exists with a different immutable package hash.');
     }
     const result = db.transaction(() => {
+      updateDraftApprovalReferences(db, compiled);
+      insertAppendOnlyGovernanceRows(db, compiled);
       assertStoredTrainingExerciseMediaPackageMatches(db, compiled);
       if (shouldStage && existing.publication_state === 'DRAFT') {
         attestAndStageTrainingExerciseMediaPackage(
@@ -98,9 +101,10 @@ export function seedCompiledTrainingExerciseMediaPackage(
         catalog_source_hash, package_hash, publication_state, validation_status,
         expected_exercise_count, expected_exercise_ids_json,
         expected_approved_asset_bindings_json, required_locales_json,
-        required_review_types_json, allowed_origins_json, owner_approval_ref,
+        required_review_types_json, allowed_origins_json, approved_host_ref,
+        owner_approval_ref,
         created_at, activated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, 'DRAFT', 'PENDING', ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, 'DRAFT', 'PENDING', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       compiled.manifest.manifestId,
       compiled.manifest.manifestVersion,
@@ -114,6 +118,7 @@ export function seedCompiledTrainingExerciseMediaPackage(
       JSON.stringify(compiled.manifest.requiredLocales),
       JSON.stringify(compiled.manifest.requiredReviewTypes),
       JSON.stringify(compiled.manifest.allowedOrigins),
+      compiled.manifest.approvedHostRef,
       compiled.manifest.ownerApprovalRef,
       compiled.manifest.createdAt,
       compiled.manifest.activatedAt,
@@ -140,8 +145,9 @@ export function seedCompiledTrainingExerciseMediaPackage(
       INSERT INTO training_exercise_media_assets (
         asset_id, manifest_id, scope_key, exercise_id, view_role, ordinal,
         media_kind, content_type, delivery_url, integrity_sha256,
-        width_pixels, height_pixels, byte_size, publication_state, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        width_pixels, height_pixels, byte_size, accessibility_bundle_hash,
+        publication_state, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     for (const asset of compiled.assets) {
       insertAsset.run(
@@ -149,6 +155,7 @@ export function seedCompiledTrainingExerciseMediaPackage(
         asset.exerciseId, asset.viewRole, asset.ordinal, asset.mediaKind,
         asset.contentType, asset.deliveryUrl, asset.integritySha256,
         asset.widthPixels, asset.heightPixels, asset.byteSize,
+        buildTrainingExerciseMediaAccessibilityBundleHash(asset.assetId, compiled.mediaLocalizations),
         asset.publicationState, asset.createdAt,
       );
     }
@@ -206,35 +213,7 @@ export function seedCompiledTrainingExerciseMediaPackage(
       );
     }
 
-    const insertReview = db.prepare(`
-      INSERT INTO training_exercise_media_reviews (
-        review_id, manifest_id, scope_key, asset_id, review_type, status,
-        reviewer_ref, subject_content_hash, reason_codes_json,
-        reviewed_at, expires_at, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `);
-    for (const review of compiled.reviews) {
-      insertReview.run(
-        review.reviewId, compiled.manifest.manifestId, compiled.manifest.scopeKey,
-        review.assetId, review.reviewType, review.status, review.reviewerRef,
-        review.subjectContentHash, JSON.stringify(review.reasonCodes),
-        review.reviewedAt, review.expiresAt, review.createdAt,
-      );
-    }
-
-    const insertTakedown = db.prepare(`
-      INSERT INTO training_exercise_media_takedown_events (
-        event_id, manifest_id, scope_key, asset_id, action, reason_code,
-        authority_ref, replacement_asset_id, evidence_hash, effective_at, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `);
-    for (const event of compiled.takedowns) {
-      insertTakedown.run(
-        event.eventId, compiled.manifest.manifestId, compiled.manifest.scopeKey,
-        event.assetId, event.action, event.reasonCode, event.authorityRef,
-        event.replacementAssetId, event.evidenceHash, event.effectiveAt, event.createdAt,
-      );
-    }
+    insertAppendOnlyGovernanceRows(db, compiled);
 
     assertStoredTrainingExerciseMediaPackageMatches(db, compiled);
     if (shouldStage) {
@@ -253,6 +232,202 @@ export function computeStoredTrainingExerciseMediaFrozenPackageHash(
   manifestId: string,
 ): string {
   return computeTrainingExerciseMediaFrozenPackageHash(readStoredPackageSources(db, manifestId));
+}
+
+function updateDraftApprovalReferences(
+  db: Database.Database,
+  compiled: CompiledTrainingExerciseMediaPackage,
+): void {
+  const current = db.prepare(`
+    SELECT approved_host_ref, owner_approval_ref
+      FROM training_exercise_media_manifests
+     WHERE manifest_id = ?
+  `).get(compiled.manifest.manifestId) as {
+    approved_host_ref: string | null;
+    owner_approval_ref: string | null;
+  } | undefined;
+  if (!current
+    || (current.approved_host_ref != null
+      && current.approved_host_ref !== compiled.manifest.approvedHostRef)
+    || (current.owner_approval_ref != null
+      && current.owner_approval_ref !== compiled.manifest.ownerApprovalRef)) {
+    throw new Error('Stored exercise media approvals cannot be replaced or erased by catalog synchronization.');
+  }
+  db.prepare(`
+    UPDATE training_exercise_media_manifests
+       SET approved_host_ref = COALESCE(approved_host_ref, ?),
+           owner_approval_ref = COALESCE(owner_approval_ref, ?)
+     WHERE manifest_id = ? AND publication_state = 'DRAFT'
+  `).run(
+    compiled.manifest.approvedHostRef,
+    compiled.manifest.ownerApprovalRef,
+    compiled.manifest.manifestId,
+  );
+  const row = db.prepare(`
+    SELECT approved_host_ref, owner_approval_ref
+      FROM training_exercise_media_manifests
+     WHERE manifest_id = ?
+  `).get(compiled.manifest.manifestId) as {
+    approved_host_ref: string | null;
+    owner_approval_ref: string | null;
+  } | undefined;
+  if (!row || row.approved_host_ref !== compiled.manifest.approvedHostRef
+    || row.owner_approval_ref !== compiled.manifest.ownerApprovalRef) {
+    throw new Error('Stored exercise media approval references do not match the durable approval ledger.');
+  }
+}
+
+function insertAppendOnlyGovernanceRows(
+  db: Database.Database,
+  compiled: CompiledTrainingExerciseMediaPackage,
+): void {
+  const manifestId = compiled.manifest.manifestId;
+  const scopeKey = compiled.manifest.scopeKey;
+  const insertReview = db.prepare(`
+    INSERT OR IGNORE INTO training_exercise_media_reviews (
+      review_id, manifest_id, scope_key, asset_id, review_type, status,
+      reviewer_ref, subject_content_hash, reason_codes_json,
+      reviewed_at, expires_at, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  for (const review of compiled.reviews) {
+    const expected = {
+      manifest_id: manifestId,
+      scope_key: scopeKey,
+      asset_id: review.assetId,
+      review_type: review.reviewType,
+      status: review.status,
+      reviewer_ref: review.reviewerRef,
+      subject_content_hash: review.subjectContentHash,
+      reason_codes_json: JSON.stringify(review.reasonCodes),
+      reviewed_at: review.reviewedAt,
+      expires_at: review.expiresAt,
+      created_at: review.createdAt,
+    };
+    insertReview.run(review.reviewId, ...Object.values(expected));
+    assertAppendOnlyRow(db, 'training_exercise_media_reviews', 'review_id', review.reviewId, expected);
+  }
+
+  const insertInstructionReview = db.prepare(`
+    INSERT OR IGNORE INTO training_exercise_instruction_localization_reviews (
+      review_id, manifest_id, scope_key, exercise_id, locale, status,
+      reviewer_ref, subject_content_hash, reason_codes_json,
+      reviewed_at, expires_at, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  const insertMediaReview = db.prepare(`
+    INSERT OR IGNORE INTO training_exercise_media_localization_reviews (
+      review_id, manifest_id, scope_key, asset_id, locale, status,
+      reviewer_ref, subject_content_hash, reason_codes_json,
+      reviewed_at, expires_at, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  for (const review of compiled.localizationReviews) {
+    const idColumn = review.targetKind === 'INSTRUCTION' ? 'exercise_id' : 'asset_id';
+    const table = review.targetKind === 'INSTRUCTION'
+      ? 'training_exercise_instruction_localization_reviews'
+      : 'training_exercise_media_localization_reviews';
+    const expected = {
+      manifest_id: manifestId,
+      scope_key: scopeKey,
+      [idColumn]: review.targetId,
+      locale: review.locale,
+      status: review.status,
+      reviewer_ref: review.reviewerRef,
+      subject_content_hash: review.subjectContentHash,
+      reason_codes_json: JSON.stringify(review.reasonCodes),
+      reviewed_at: review.reviewedAt,
+      expires_at: review.expiresAt,
+      created_at: review.createdAt,
+    };
+    const statement = review.targetKind === 'INSTRUCTION' ? insertInstructionReview : insertMediaReview;
+    statement.run(review.reviewId, ...Object.values(expected));
+    assertAppendOnlyRow(db, table, 'review_id', review.reviewId, expected);
+  }
+
+  const insertHostApproval = db.prepare(`
+    INSERT OR IGNORE INTO training_exercise_media_host_approvals (
+      approval_id, manifest_id, scope_key, status, reviewer_ref,
+      subject_origins_json, subject_origins_hash, reason_codes_json,
+      reviewed_at, expires_at, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  for (const approval of compiled.hostApprovals) {
+    const expected = {
+      manifest_id: manifestId,
+      scope_key: scopeKey,
+      status: approval.status,
+      reviewer_ref: approval.reviewerRef,
+      subject_origins_json: JSON.stringify(approval.subjectOrigins),
+      subject_origins_hash: approval.subjectOriginsHash,
+      reason_codes_json: JSON.stringify(approval.reasonCodes),
+      reviewed_at: approval.reviewedAt,
+      expires_at: approval.expiresAt,
+      created_at: approval.createdAt,
+    };
+    insertHostApproval.run(approval.approvalId, ...Object.values(expected));
+    assertAppendOnlyRow(db, 'training_exercise_media_host_approvals', 'approval_id', approval.approvalId, expected);
+  }
+
+  const insertOwnerApproval = db.prepare(`
+    INSERT OR IGNORE INTO training_exercise_media_owner_approvals (
+      approval_id, manifest_id, scope_key, status, reviewer_ref,
+      subject_package_hash, reason_codes_json, reviewed_at, expires_at, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  for (const approval of compiled.ownerApprovals) {
+    const expected = {
+      manifest_id: manifestId,
+      scope_key: scopeKey,
+      status: approval.status,
+      reviewer_ref: approval.reviewerRef,
+      subject_package_hash: approval.subjectPackageHash,
+      reason_codes_json: JSON.stringify(approval.reasonCodes),
+      reviewed_at: approval.reviewedAt,
+      expires_at: approval.expiresAt,
+      created_at: approval.createdAt,
+    };
+    insertOwnerApproval.run(approval.approvalId, ...Object.values(expected));
+    assertAppendOnlyRow(db, 'training_exercise_media_owner_approvals', 'approval_id', approval.approvalId, expected);
+  }
+
+  const insertTakedown = db.prepare(`
+    INSERT OR IGNORE INTO training_exercise_media_takedown_events (
+      event_id, manifest_id, scope_key, asset_id, action, reason_code,
+      authority_ref, replacement_asset_id, evidence_hash, effective_at, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  for (const event of compiled.takedowns) {
+    const expected = {
+      manifest_id: manifestId,
+      scope_key: scopeKey,
+      asset_id: event.assetId,
+      action: event.action,
+      reason_code: event.reasonCode,
+      authority_ref: event.authorityRef,
+      replacement_asset_id: event.replacementAssetId,
+      evidence_hash: event.evidenceHash,
+      effective_at: event.effectiveAt,
+      created_at: event.createdAt,
+    };
+    insertTakedown.run(event.eventId, ...Object.values(expected));
+    assertAppendOnlyRow(db, 'training_exercise_media_takedown_events', 'event_id', event.eventId, expected);
+  }
+}
+
+function assertAppendOnlyRow(
+  db: Database.Database,
+  table: string,
+  idColumn: string,
+  id: string,
+  expected: Record<string, unknown>,
+): void {
+  const columns = Object.keys(expected);
+  const row = db.prepare(`SELECT ${columns.join(', ')} FROM ${table} WHERE ${idColumn} = ?`)
+    .get(id) as Record<string, unknown> | undefined;
+  if (!row || columns.some((column) => row[column] !== expected[column])) {
+    throw new Error(`Append-only exercise media governance ID collision: ${id}`);
+  }
 }
 
 function assertStoredTrainingExerciseMediaPackageMatches(
@@ -364,7 +539,8 @@ function readStoredPackageSources(
            catalog_source_hash, publication_state, validation_status,
            expected_exercise_count, expected_exercise_ids_json,
            required_locales_json, required_review_types_json,
-           allowed_origins_json, owner_approval_ref, created_at, activated_at
+           allowed_origins_json, approved_host_ref, owner_approval_ref,
+           created_at, activated_at
       FROM training_exercise_media_manifests
      WHERE manifest_id = ?
   `).get(manifestId) as Record<string, unknown> | undefined;
@@ -480,6 +656,7 @@ function readStoredPackageSources(
       requiredLocales: parseStringArray(String(manifest.required_locales_json)) as TrainingExerciseMediaPackageSources['manifest']['requiredLocales'],
       requiredReviewTypes: parseStringArray(String(manifest.required_review_types_json)) as TrainingExerciseMediaPackageSources['manifest']['requiredReviewTypes'],
       allowedOrigins: parseStringArray(String(manifest.allowed_origins_json)),
+      approvedHostRef: nullableString(manifest.approved_host_ref),
       ownerApprovalRef: nullableString(manifest.owner_approval_ref),
       createdAt: String(manifest.created_at),
       activatedAt: nullableString(manifest.activated_at),
@@ -490,6 +667,9 @@ function readStoredPackageSources(
     mediaLocalizations,
     provenance,
     reviews: [],
+    localizationReviews: [],
+    hostApprovals: [],
+    ownerApprovals: [],
     takedowns: [],
   };
 }

@@ -1,6 +1,6 @@
 {
   "compiledSchemaVersion": "training-exercise-media-package.v1",
-  "packageHash": "e621ee25a1d4210279cffa4c3c10ea94e40d86a257acd366778b15e2f6a8d8e7",
+  "packageHash": "464ac052a08368f711d611fd5bec22395bbd5fad9518360b505b9c709fb0a7d9",
   "manifest": {
     "schemaVersion": "training-exercise-media-package.v1",
     "manifestId": "training-exercise-media-v1-draft-20260712",
@@ -183,6 +183,7 @@
       "OWNER"
     ],
     "allowedOrigins": [],
+    "approvedHostRef": null,
     "ownerApprovalRef": null,
     "createdAt": "2026-07-12T00:00:00.000Z",
     "activatedAt": null
@@ -193,6 +194,9 @@
   "mediaLocalizations": [],
   "provenance": [],
   "reviews": [],
+  "localizationReviews": [],
+  "hostApprovals": [],
+  "ownerApprovals": [],
   "takedowns": [],
   "coverage": {
     "expectedExercises": 158,

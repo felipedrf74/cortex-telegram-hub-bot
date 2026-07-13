@@ -164,6 +164,40 @@ describe('Training exercise media repository', () => {
     )?.items[0]).toMatchObject({ kind: 'UNAVAILABLE', reason: 'MEDIA_UNAVAILABLE' });
   });
 
+  it('rejects accessibility approval bound only to the image binary instead of localized AX content', () => {
+    const fixture = seedApprovedExerciseMedia(db);
+    db.prepare(`
+      INSERT INTO training_exercise_media_reviews (
+        review_id, manifest_id, scope_key, asset_id, review_type, status,
+        reviewer_ref, subject_content_hash, reason_codes_json,
+        reviewed_at, expires_at, created_at
+      ) VALUES ('accessibility-binary-only', ?, '__global__', ?, 'ACCESSIBILITY', 'APPROVED',
+        'accessibility-red-team', ?, '[]', '2026-07-12T03:00:00.000Z',
+        '2030-01-01T00:00:00.000Z', '2026-07-12T03:00:00.000Z')
+    `).run(fixture.manifestId, fixture.assetId, fixture.integritySha256);
+    expect(lookupTrainingExerciseMedia(
+      7, 7, ['push_up'], 'en-US',
+      { db, now: new Date('2026-07-12T12:00:00.000Z') },
+    )?.items[0]).toMatchObject({ kind: 'UNAVAILABLE', reason: 'MEDIA_UNAVAILABLE' });
+  });
+
+  it('rejects a localization approval whose evidence hash is stale', () => {
+    const fixture = seedApprovedExerciseMedia(db);
+    db.prepare(`
+      INSERT INTO training_exercise_media_localization_reviews (
+        review_id, manifest_id, scope_key, asset_id, locale, status,
+        reviewer_ref, subject_content_hash, reason_codes_json,
+        reviewed_at, expires_at, created_at
+      ) VALUES ('media-localization-stale', ?, '__global__', ?, 'en-US', 'APPROVED',
+        'localization-red-team', ?, '[]', '2026-07-12T03:00:00.000Z',
+        '2030-01-01T00:00:00.000Z', '2026-07-12T03:00:00.000Z')
+    `).run(fixture.manifestId, fixture.assetId, 'f'.repeat(64));
+    expect(lookupTrainingExerciseMedia(
+      7, 7, ['push_up'], 'en-US',
+      { db, now: new Date('2026-07-12T12:00:00.000Z') },
+    )?.items[0]).toMatchObject({ kind: 'UNAVAILABLE', reason: 'MEDIA_UNAVAILABLE' });
+  });
+
   it('ignores a future approval until its reviewedAt instant becomes effective', () => {
     const fixture = seedApprovedExerciseMedia(db);
     const insert = db.prepare(`

@@ -3,8 +3,10 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import {
+  TRAINING_EXERCISE_MEDIA_APPROVAL_LEDGER_SCHEMA_VERSION,
   buildCompiledTrainingExerciseMediaPackage,
   type CompiledTrainingExerciseMediaPackage,
+  type TrainingExerciseMediaApprovalLedgerSource,
   type TrainingExerciseMediaPackageSources,
 } from '../../src/services/training-exercise-media-manifest';
 
@@ -27,6 +29,7 @@ const SOURCE_FILES = {
   reviews: 'reviews.json',
   takedowns: 'takedowns.json',
 } as const;
+const APPROVAL_LEDGER_FILE = 'approval-ledger.json';
 
 const FORBIDDEN_BINARY_EXTENSIONS = new Set([
   '.png', '.jpg', '.jpeg', '.webp', '.gif', '.heic', '.mp4', '.mov', '.pdf',
@@ -38,11 +41,38 @@ export function loadTrainingExerciseMediaPackageSources(
   const loaded = Object.fromEntries(Object.entries(SOURCE_FILES).map(([key, filename]) => (
     [key, readJson(path.join(root, filename))]
   ))) as unknown as TrainingExerciseMediaPackageSources;
+  const approvalLedger = readJson(path.join(root, APPROVAL_LEDGER_FILE)) as TrainingExerciseMediaApprovalLedgerSource;
   if (!loaded.manifest || typeof loaded.manifest !== 'object') throw new Error('Media manifest must be an object.');
   for (const key of ['exercises', 'assets', 'instructions', 'mediaLocalizations', 'provenance', 'reviews', 'takedowns'] as const) {
     if (!Array.isArray(loaded[key])) throw new Error(`${SOURCE_FILES[key]} must contain a JSON array.`);
   }
-  return loaded;
+  if (!approvalLedger || typeof approvalLedger !== 'object'
+    || approvalLedger.schemaVersion !== TRAINING_EXERCISE_MEDIA_APPROVAL_LEDGER_SCHEMA_VERSION) {
+    throw new Error(`${APPROVAL_LEDGER_FILE} must use ${TRAINING_EXERCISE_MEDIA_APPROVAL_LEDGER_SCHEMA_VERSION}.`);
+  }
+  for (const key of ['assetReviews', 'localizationReviews', 'hostApprovals', 'ownerApprovals'] as const) {
+    if (!Array.isArray(approvalLedger[key])) {
+      throw new Error(`${APPROVAL_LEDGER_FILE}.${key} must contain a JSON array.`);
+    }
+  }
+  if (approvalLedger.approvedHostRef != null && typeof approvalLedger.approvedHostRef !== 'string') {
+    throw new Error(`${APPROVAL_LEDGER_FILE}.approvedHostRef must be a string or null.`);
+  }
+  if (approvalLedger.ownerApprovalRef != null && typeof approvalLedger.ownerApprovalRef !== 'string') {
+    throw new Error(`${APPROVAL_LEDGER_FILE}.ownerApprovalRef must be a string or null.`);
+  }
+  return {
+    ...loaded,
+    manifest: {
+      ...loaded.manifest,
+      approvedHostRef: approvalLedger.approvedHostRef,
+      ownerApprovalRef: approvalLedger.ownerApprovalRef,
+    },
+    reviews: [...loaded.reviews, ...approvalLedger.assetReviews],
+    localizationReviews: approvalLedger.localizationReviews,
+    hostApprovals: approvalLedger.hostApprovals,
+    ownerApprovals: approvalLedger.ownerApprovals,
+  };
 }
 
 export function compileTrainingExerciseMediaPackage(

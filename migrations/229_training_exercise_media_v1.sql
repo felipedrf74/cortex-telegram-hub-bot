@@ -49,6 +49,7 @@ CREATE TABLE IF NOT EXISTS training_exercise_media_manifests (
   allowed_origins_json TEXT NOT NULL CHECK (
     json_valid(allowed_origins_json) AND json_type(allowed_origins_json) = 'array'
   ),
+  approved_host_ref TEXT,
   owner_approval_ref TEXT,
   validation_attested_package_hash TEXT CHECK (
     validation_attested_package_hash IS NULL OR (
@@ -81,6 +82,8 @@ CREATE TABLE IF NOT EXISTS training_exercise_media_manifests (
   CHECK (
     publication_state <> 'ACTIVE' OR (
       expected_exercise_count > 0 AND
+      approved_host_ref IS NOT NULL AND
+      length(trim(approved_host_ref)) > 0 AND
       owner_approval_ref IS NOT NULL AND
       length(trim(owner_approval_ref)) > 0 AND
       activated_at IS NOT NULL AND
@@ -152,6 +155,12 @@ CREATE TABLE IF NOT EXISTS training_exercise_media_assets (
   width_pixels INTEGER NOT NULL CHECK (width_pixels > 0),
   height_pixels INTEGER NOT NULL CHECK (height_pixels > 0),
   byte_size INTEGER NOT NULL CHECK (byte_size > 0),
+  accessibility_bundle_hash TEXT CHECK (
+    accessibility_bundle_hash IS NULL OR (
+      length(accessibility_bundle_hash) = 64 AND
+      accessibility_bundle_hash NOT GLOB '*[^0-9a-f]*'
+    )
+  ),
   publication_state TEXT NOT NULL CHECK (publication_state IN (
     'DRAFT', 'APPROVED', 'REJECTED', 'REMOVED'
   )),
@@ -272,6 +281,101 @@ CREATE TABLE IF NOT EXISTS training_exercise_media_reviews (
 CREATE INDEX IF NOT EXISTS idx_training_exercise_media_review_latest
   ON training_exercise_media_reviews(asset_id, review_type, reviewed_at DESC, review_id DESC);
 
+CREATE TABLE IF NOT EXISTS training_exercise_instruction_localization_reviews (
+  review_id TEXT PRIMARY KEY,
+  manifest_id TEXT NOT NULL,
+  scope_key TEXT NOT NULL DEFAULT '__global__',
+  exercise_id TEXT NOT NULL,
+  locale TEXT NOT NULL,
+  status TEXT NOT NULL CHECK (status IN ('PENDING', 'APPROVED', 'REJECTED', 'EXPIRED')),
+  reviewer_ref TEXT NOT NULL,
+  subject_content_hash TEXT NOT NULL CHECK (
+    length(subject_content_hash) = 64 AND subject_content_hash NOT GLOB '*[^0-9a-f]*'
+  ),
+  reason_codes_json TEXT NOT NULL CHECK (
+    json_valid(reason_codes_json) AND json_type(reason_codes_json) = 'array'
+  ),
+  reviewed_at TEXT NOT NULL,
+  expires_at TEXT,
+  created_at TEXT NOT NULL,
+  FOREIGN KEY (manifest_id, scope_key, exercise_id, locale)
+    REFERENCES training_exercise_instruction_localizations(manifest_id, scope_key, exercise_id, locale)
+      ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_training_exercise_instruction_localization_review_latest
+  ON training_exercise_instruction_localization_reviews(
+    manifest_id, scope_key, exercise_id, locale, reviewed_at DESC, review_id DESC
+  );
+
+CREATE TABLE IF NOT EXISTS training_exercise_media_localization_reviews (
+  review_id TEXT PRIMARY KEY,
+  manifest_id TEXT NOT NULL,
+  scope_key TEXT NOT NULL DEFAULT '__global__',
+  asset_id TEXT NOT NULL,
+  locale TEXT NOT NULL,
+  status TEXT NOT NULL CHECK (status IN ('PENDING', 'APPROVED', 'REJECTED', 'EXPIRED')),
+  reviewer_ref TEXT NOT NULL,
+  subject_content_hash TEXT NOT NULL CHECK (
+    length(subject_content_hash) = 64 AND subject_content_hash NOT GLOB '*[^0-9a-f]*'
+  ),
+  reason_codes_json TEXT NOT NULL CHECK (
+    json_valid(reason_codes_json) AND json_type(reason_codes_json) = 'array'
+  ),
+  reviewed_at TEXT NOT NULL,
+  expires_at TEXT,
+  created_at TEXT NOT NULL,
+  FOREIGN KEY (asset_id, locale)
+    REFERENCES training_exercise_media_localizations(asset_id, locale)
+      ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_training_exercise_media_localization_review_latest
+  ON training_exercise_media_localization_reviews(
+    manifest_id, scope_key, asset_id, locale, reviewed_at DESC, review_id DESC
+  );
+
+CREATE TABLE IF NOT EXISTS training_exercise_media_host_approvals (
+  approval_id TEXT PRIMARY KEY,
+  manifest_id TEXT NOT NULL,
+  scope_key TEXT NOT NULL DEFAULT '__global__',
+  status TEXT NOT NULL CHECK (status IN ('PENDING', 'APPROVED', 'REJECTED', 'EXPIRED')),
+  reviewer_ref TEXT NOT NULL,
+  subject_origins_json TEXT NOT NULL CHECK (
+    json_valid(subject_origins_json) AND json_type(subject_origins_json) = 'array'
+  ),
+  subject_origins_hash TEXT NOT NULL CHECK (
+    length(subject_origins_hash) = 64 AND subject_origins_hash NOT GLOB '*[^0-9a-f]*'
+  ),
+  reason_codes_json TEXT NOT NULL CHECK (
+    json_valid(reason_codes_json) AND json_type(reason_codes_json) = 'array'
+  ),
+  reviewed_at TEXT NOT NULL,
+  expires_at TEXT,
+  created_at TEXT NOT NULL,
+  FOREIGN KEY (manifest_id, scope_key)
+    REFERENCES training_exercise_media_manifests(manifest_id, scope_key) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS training_exercise_media_owner_approvals (
+  approval_id TEXT PRIMARY KEY,
+  manifest_id TEXT NOT NULL,
+  scope_key TEXT NOT NULL DEFAULT '__global__',
+  status TEXT NOT NULL CHECK (status IN ('PENDING', 'APPROVED', 'REJECTED', 'EXPIRED')),
+  reviewer_ref TEXT NOT NULL,
+  subject_package_hash TEXT NOT NULL CHECK (
+    length(subject_package_hash) = 64 AND subject_package_hash NOT GLOB '*[^0-9a-f]*'
+  ),
+  reason_codes_json TEXT NOT NULL CHECK (
+    json_valid(reason_codes_json) AND json_type(reason_codes_json) = 'array'
+  ),
+  reviewed_at TEXT NOT NULL,
+  expires_at TEXT,
+  created_at TEXT NOT NULL,
+  FOREIGN KEY (manifest_id, scope_key)
+    REFERENCES training_exercise_media_manifests(manifest_id, scope_key) ON DELETE CASCADE
+);
+
 CREATE TABLE IF NOT EXISTS training_exercise_media_takedown_events (
   event_id TEXT PRIMARY KEY,
   manifest_id TEXT NOT NULL,
@@ -321,10 +425,19 @@ WHEN
   NEW.required_locales_json <> OLD.required_locales_json OR
   NEW.required_review_types_json <> OLD.required_review_types_json OR
   NEW.allowed_origins_json <> OLD.allowed_origins_json OR
-  COALESCE(NEW.owner_approval_ref, '') <> COALESCE(OLD.owner_approval_ref, '') OR
   NEW.created_at <> OLD.created_at
 BEGIN
   SELECT RAISE(ABORT, 'exercise media manifest content is immutable');
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_training_exercise_media_manifest_approval_refs_guard
+BEFORE UPDATE OF approved_host_ref, owner_approval_ref ON training_exercise_media_manifests
+WHEN (
+  COALESCE(NEW.approved_host_ref, '') <> COALESCE(OLD.approved_host_ref, '') OR
+  COALESCE(NEW.owner_approval_ref, '') <> COALESCE(OLD.owner_approval_ref, '')
+) AND OLD.publication_state <> 'DRAFT'
+BEGIN
+  SELECT RAISE(ABORT, 'exercise media approval references freeze at staging');
 END;
 
 CREATE TRIGGER IF NOT EXISTS trg_training_exercise_media_manifest_attestation_guard
@@ -487,6 +600,30 @@ BEGIN
        )
   ) THEN RAISE(ABORT, 'exercise media manifest exercise identity set does not match its immutable snapshot') END;
 
+  SELECT CASE WHEN OLD.approved_host_ref IS NULL OR NOT EXISTS (
+    SELECT 1
+      FROM training_exercise_media_host_approvals h
+     WHERE h.approval_id = OLD.approved_host_ref
+       AND h.manifest_id = OLD.manifest_id
+       AND h.scope_key = OLD.scope_key
+       AND h.status = 'APPROVED'
+       AND h.subject_origins_json = OLD.allowed_origins_json
+       AND datetime(h.reviewed_at) <= datetime('now')
+       AND (h.expires_at IS NULL OR datetime(h.expires_at) > datetime('now'))
+  ) THEN RAISE(ABORT, 'exercise media manifest approved host gate failed') END;
+
+  SELECT CASE WHEN OLD.owner_approval_ref IS NULL OR NOT EXISTS (
+    SELECT 1
+      FROM training_exercise_media_owner_approvals o
+     WHERE o.approval_id = OLD.owner_approval_ref
+       AND o.manifest_id = OLD.manifest_id
+       AND o.scope_key = OLD.scope_key
+       AND o.status = 'APPROVED'
+       AND o.subject_package_hash = OLD.package_hash
+       AND datetime(o.reviewed_at) <= datetime('now')
+       AND (o.expires_at IS NULL OR datetime(o.expires_at) > datetime('now'))
+  ) THEN RAISE(ABORT, 'exercise media manifest owner package approval gate failed') END;
+
   SELECT CASE WHEN (
     SELECT COUNT(*)
       FROM training_exercise_media_assets a
@@ -547,6 +684,42 @@ BEGIN
 
   SELECT CASE WHEN EXISTS (
     SELECT 1
+      FROM training_exercise_instruction_localizations l
+      JOIN training_exercise_media_exercises e
+        ON e.manifest_id = l.manifest_id
+       AND e.scope_key = l.scope_key
+       AND e.exercise_id = l.exercise_id
+     WHERE e.manifest_id = OLD.manifest_id
+       AND e.scope_key = OLD.scope_key
+       AND e.publication_state = 'APPROVED'
+       AND NOT EXISTS (
+         SELECT 1
+           FROM training_exercise_instruction_localization_reviews r
+          WHERE r.manifest_id = l.manifest_id
+            AND r.scope_key = l.scope_key
+            AND r.exercise_id = l.exercise_id
+            AND r.locale = l.locale
+            AND r.status = 'APPROVED'
+            AND r.subject_content_hash = l.content_hash
+            AND datetime(r.reviewed_at) <= datetime('now')
+            AND (r.expires_at IS NULL OR datetime(r.expires_at) > datetime('now'))
+            AND NOT EXISTS (
+              SELECT 1 FROM training_exercise_instruction_localization_reviews newer
+               WHERE newer.manifest_id = r.manifest_id
+                 AND newer.scope_key = r.scope_key
+                 AND newer.exercise_id = r.exercise_id
+                 AND newer.locale = r.locale
+                 AND datetime(newer.reviewed_at) <= datetime('now')
+                 AND (
+                   datetime(newer.reviewed_at) > datetime(r.reviewed_at) OR
+                   (datetime(newer.reviewed_at) = datetime(r.reviewed_at) AND newer.review_id > r.review_id)
+                 )
+            )
+       )
+  ) THEN RAISE(ABORT, 'exercise media manifest instruction localization review gate failed') END;
+
+  SELECT CASE WHEN EXISTS (
+    SELECT 1
       FROM training_exercise_media_exercises e,
            json_each(e.required_views_json) required_view
      WHERE e.manifest_id = OLD.manifest_id
@@ -582,6 +755,42 @@ BEGIN
 
   SELECT CASE WHEN EXISTS (
     SELECT 1
+      FROM training_exercise_media_localizations l
+      JOIN training_exercise_media_assets a
+        ON a.asset_id = l.asset_id
+       AND a.manifest_id = l.manifest_id
+       AND a.scope_key = l.scope_key
+     WHERE a.manifest_id = OLD.manifest_id
+       AND a.scope_key = OLD.scope_key
+       AND a.publication_state = 'APPROVED'
+       AND NOT EXISTS (
+         SELECT 1
+           FROM training_exercise_media_localization_reviews r
+          WHERE r.asset_id = l.asset_id
+            AND r.manifest_id = l.manifest_id
+            AND r.scope_key = l.scope_key
+            AND r.locale = l.locale
+            AND r.status = 'APPROVED'
+            AND r.subject_content_hash = l.content_hash
+            AND datetime(r.reviewed_at) <= datetime('now')
+            AND (r.expires_at IS NULL OR datetime(r.expires_at) > datetime('now'))
+            AND NOT EXISTS (
+              SELECT 1 FROM training_exercise_media_localization_reviews newer
+               WHERE newer.asset_id = r.asset_id
+                 AND newer.manifest_id = r.manifest_id
+                 AND newer.scope_key = r.scope_key
+                 AND newer.locale = r.locale
+                 AND datetime(newer.reviewed_at) <= datetime('now')
+                 AND (
+                   datetime(newer.reviewed_at) > datetime(r.reviewed_at) OR
+                   (datetime(newer.reviewed_at) = datetime(r.reviewed_at) AND newer.review_id > r.review_id)
+                 )
+            )
+       )
+  ) THEN RAISE(ABORT, 'exercise media manifest media localization review gate failed') END;
+
+  SELECT CASE WHEN EXISTS (
+    SELECT 1
       FROM training_exercise_media_assets a
      WHERE a.manifest_id = OLD.manifest_id
        AND a.scope_key = OLD.scope_key
@@ -612,7 +821,10 @@ BEGIN
             AND r.scope_key = a.scope_key
             AND r.review_type = required_review.value
             AND r.status = 'APPROVED'
-            AND r.subject_content_hash = a.integrity_sha256
+            AND r.subject_content_hash = CASE
+              WHEN required_review.value = 'ACCESSIBILITY' THEN a.accessibility_bundle_hash
+              ELSE a.integrity_sha256
+            END
             AND datetime(r.reviewed_at) <= datetime('now')
             AND (r.expires_at IS NULL OR datetime(r.expires_at) > datetime('now'))
             AND NOT EXISTS (
@@ -650,10 +862,10 @@ BEGIN
   ) THEN RAISE(ABORT, 'exercise media manifest contains an active takedown') END;
 END;
 
--- Frozen package content cannot gain new rows after staging attestation. Reviews and
--- takedowns are intentionally excluded: they remain append-only governance
--- ledgers so a later rejection, expiry, removal, or reinstatement can take
--- effect without mutating the approved package snapshot.
+-- Frozen package content cannot gain new rows after staging attestation. Asset,
+-- localization, host, and owner reviews plus takedowns are intentionally excluded:
+-- they remain append-only governance ledgers so a later rejection, expiry,
+-- removal, or reinstatement can take effect without mutating the approved package.
 CREATE TRIGGER IF NOT EXISTS trg_training_exercise_media_exercise_no_finalized_insert
 BEFORE INSERT ON training_exercise_media_exercises
 WHEN EXISTS (
@@ -752,6 +964,34 @@ BEGIN SELECT RAISE(ABORT, 'exercise media reviews are append-only'); END;
 CREATE TRIGGER IF NOT EXISTS trg_training_exercise_media_review_immutable_delete
 BEFORE DELETE ON training_exercise_media_reviews
 BEGIN SELECT RAISE(ABORT, 'exercise media reviews are append-only'); END;
+
+CREATE TRIGGER IF NOT EXISTS trg_training_exercise_instruction_localization_review_immutable_update
+BEFORE UPDATE ON training_exercise_instruction_localization_reviews
+BEGIN SELECT RAISE(ABORT, 'exercise instruction localization reviews are append-only'); END;
+CREATE TRIGGER IF NOT EXISTS trg_training_exercise_instruction_localization_review_immutable_delete
+BEFORE DELETE ON training_exercise_instruction_localization_reviews
+BEGIN SELECT RAISE(ABORT, 'exercise instruction localization reviews are append-only'); END;
+
+CREATE TRIGGER IF NOT EXISTS trg_training_exercise_media_localization_review_immutable_update
+BEFORE UPDATE ON training_exercise_media_localization_reviews
+BEGIN SELECT RAISE(ABORT, 'exercise media localization reviews are append-only'); END;
+CREATE TRIGGER IF NOT EXISTS trg_training_exercise_media_localization_review_immutable_delete
+BEFORE DELETE ON training_exercise_media_localization_reviews
+BEGIN SELECT RAISE(ABORT, 'exercise media localization reviews are append-only'); END;
+
+CREATE TRIGGER IF NOT EXISTS trg_training_exercise_media_host_approval_immutable_update
+BEFORE UPDATE ON training_exercise_media_host_approvals
+BEGIN SELECT RAISE(ABORT, 'exercise media host approvals are append-only'); END;
+CREATE TRIGGER IF NOT EXISTS trg_training_exercise_media_host_approval_immutable_delete
+BEFORE DELETE ON training_exercise_media_host_approvals
+BEGIN SELECT RAISE(ABORT, 'exercise media host approvals are append-only'); END;
+
+CREATE TRIGGER IF NOT EXISTS trg_training_exercise_media_owner_approval_immutable_update
+BEFORE UPDATE ON training_exercise_media_owner_approvals
+BEGIN SELECT RAISE(ABORT, 'exercise media owner approvals are append-only'); END;
+CREATE TRIGGER IF NOT EXISTS trg_training_exercise_media_owner_approval_immutable_delete
+BEFORE DELETE ON training_exercise_media_owner_approvals
+BEGIN SELECT RAISE(ABORT, 'exercise media owner approvals are append-only'); END;
 
 CREATE TRIGGER IF NOT EXISTS trg_training_exercise_media_takedown_immutable_update
 BEFORE UPDATE ON training_exercise_media_takedown_events

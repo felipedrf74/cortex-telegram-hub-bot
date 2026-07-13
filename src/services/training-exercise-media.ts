@@ -10,6 +10,7 @@ import {
 import {
   TRAINING_EXERCISE_MEDIA_API_SCHEMA_VERSION,
   TRAINING_EXERCISE_MEDIA_REQUIRED_REVIEW_TYPES,
+  buildTrainingExerciseMediaOriginsHash,
   buildTrainingExerciseMediaValidationAttestationHash,
   sha256TrainingExerciseMedia,
   type TrainingExerciseMediaApprovedAssetBinding,
@@ -111,6 +112,8 @@ interface ManifestRow {
   expected_exercise_ids_json: string;
   required_review_types_json: string;
   allowed_origins_json: string;
+  approved_host_ref: string | null;
+  owner_approval_ref: string | null;
 }
 
 interface ExerciseRow {
@@ -133,6 +136,7 @@ interface AssetRow {
   width_pixels: number;
   height_pixels: number;
   byte_size: number;
+  accessibility_bundle_hash: string | null;
 }
 
 interface InstructionRow {
@@ -143,6 +147,7 @@ interface InstructionRow {
   cues_json: string;
   cautions_json: string;
   text_fallback: string;
+  content_hash: string;
 }
 
 interface MediaLocalizationRow {
@@ -150,6 +155,7 @@ interface MediaLocalizationRow {
   locale: TrainingExerciseMediaLocale;
   caption: string | null;
   accessibility_description: string;
+  content_hash: string;
 }
 
 interface ProvenanceRow {
@@ -176,6 +182,33 @@ interface TakedownRow {
   asset_id: string;
   action: 'REMOVE' | 'REINSTATE';
   effective_at: string;
+}
+
+interface LocalizationReviewRow {
+  review_id: string;
+  target_id: string;
+  locale: TrainingExerciseMediaLocale;
+  status: 'PENDING' | 'APPROVED' | 'REJECTED' | 'EXPIRED';
+  subject_content_hash: string;
+  reviewed_at: string;
+  expires_at: string | null;
+}
+
+interface HostApprovalRow {
+  approval_id: string;
+  status: 'PENDING' | 'APPROVED' | 'REJECTED' | 'EXPIRED';
+  subject_origins_json: string;
+  subject_origins_hash: string;
+  reviewed_at: string;
+  expires_at: string | null;
+}
+
+interface OwnerApprovalRow {
+  approval_id: string;
+  status: 'PENDING' | 'APPROVED' | 'REJECTED' | 'EXPIRED';
+  subject_package_hash: string;
+  reviewed_at: string;
+  expires_at: string | null;
 }
 
 export interface TrainingExerciseMediaLookupOptions {
@@ -226,6 +259,25 @@ export function lookupTrainingExerciseMedia(
     .filter((origin): origin is string => origin != null);
   if (allowedOrigins.length === 0 || allowedOrigins.length !== rawAllowedOrigins.length
     || new Set(allowedOrigins).size !== allowedOrigins.length) return null;
+  if (!manifest.approved_host_ref || !manifest.owner_approval_ref) return null;
+  const hostApproval = db.prepare(`
+    SELECT approval_id, status, subject_origins_json, subject_origins_hash, reviewed_at, expires_at
+      FROM training_exercise_media_host_approvals
+     WHERE approval_id = ? AND manifest_id = ? AND scope_key = ?
+  `).get(manifest.approved_host_ref, manifest.manifest_id, manifest.scope_key) as HostApprovalRow | undefined;
+  const approvedOrigins = hostApproval ? parseStringArray(hostApproval.subject_origins_json) : [];
+  if (!hostApproval || hostApproval.status !== 'APPROVED'
+    || !isEffectiveApproval(hostApproval.reviewed_at, hostApproval.expires_at, now)
+    || JSON.stringify(approvedOrigins) !== JSON.stringify(rawAllowedOrigins)
+    || hostApproval.subject_origins_hash !== buildTrainingExerciseMediaOriginsHash(approvedOrigins)) return null;
+  const ownerApproval = db.prepare(`
+    SELECT approval_id, status, subject_package_hash, reviewed_at, expires_at
+      FROM training_exercise_media_owner_approvals
+     WHERE approval_id = ? AND manifest_id = ? AND scope_key = ?
+  `).get(manifest.owner_approval_ref, manifest.manifest_id, manifest.scope_key) as OwnerApprovalRow | undefined;
+  if (!ownerApproval || ownerApproval.status !== 'APPROVED'
+    || ownerApproval.subject_package_hash !== manifest.package_hash
+    || !isEffectiveApproval(ownerApproval.reviewed_at, ownerApproval.expires_at, now)) return null;
   const requiredReviewTypes = parseStringArray(manifest.required_review_types_json)
     .filter((value): value is TrainingExerciseMediaReviewType => (
       (TRAINING_EXERCISE_MEDIA_REQUIRED_REVIEW_TYPES as readonly string[]).includes(value)
@@ -290,7 +342,8 @@ export function lookupTrainingExerciseMedia(
   const canonicalIds = [...new Set(resolved.flatMap((entry) => entry.exercise ? [entry.exercise.exercise_id] : []))];
   const assets = queryForIds<AssetRow>(db, `
     SELECT asset_id, exercise_id, view_role, ordinal, media_kind, content_type,
-           delivery_url, integrity_sha256, width_pixels, height_pixels, byte_size
+           delivery_url, integrity_sha256, width_pixels, height_pixels, byte_size,
+           accessibility_bundle_hash
       FROM training_exercise_media_assets
      WHERE manifest_id = ? AND scope_key = ? AND publication_state = 'APPROVED'
        AND exercise_id IN (__IDS__)
@@ -298,14 +351,15 @@ export function lookupTrainingExerciseMedia(
   `, [manifest.manifest_id, manifest.scope_key], canonicalIds);
   const assetIds = assets.map((asset) => asset.asset_id);
   const instructions = queryForIds<InstructionRow>(db, `
-    SELECT exercise_id, locale, display_name, steps_json, cues_json, cautions_json, text_fallback
+    SELECT exercise_id, locale, display_name, steps_json, cues_json, cautions_json,
+           text_fallback, content_hash
       FROM training_exercise_instruction_localizations
      WHERE manifest_id = ? AND scope_key = ?
        AND exercise_id IN (__IDS__)
        AND locale IN (?, 'en-US')
   `, [manifest.manifest_id, manifest.scope_key], canonicalIds, [requestedLocale]);
   const mediaLocalizations = queryForIds<MediaLocalizationRow>(db, `
-    SELECT asset_id, locale, caption, accessibility_description
+    SELECT asset_id, locale, caption, accessibility_description, content_hash
       FROM training_exercise_media_localizations
      WHERE manifest_id = ? AND scope_key = ?
        AND asset_id IN (__IDS__) AND locale IN (?, 'en-US')
@@ -316,6 +370,22 @@ export function lookupTrainingExerciseMedia(
       FROM training_exercise_media_provenance
      WHERE manifest_id = ? AND scope_key = ? AND asset_id IN (__IDS__)
   `, [manifest.manifest_id, manifest.scope_key], assetIds);
+  const instructionLocalizationReviews = queryForIds<LocalizationReviewRow>(db, `
+    SELECT review_id, exercise_id AS target_id, locale, status, subject_content_hash,
+           reviewed_at, expires_at
+      FROM training_exercise_instruction_localization_reviews
+     WHERE manifest_id = ? AND scope_key = ? AND exercise_id IN (__IDS__)
+       AND locale IN (?, 'en-US')
+     ORDER BY reviewed_at DESC, review_id DESC
+  `, [manifest.manifest_id, manifest.scope_key], canonicalIds, [requestedLocale]);
+  const mediaLocalizationReviews = queryForIds<LocalizationReviewRow>(db, `
+    SELECT review_id, asset_id AS target_id, locale, status, subject_content_hash,
+           reviewed_at, expires_at
+      FROM training_exercise_media_localization_reviews
+     WHERE manifest_id = ? AND scope_key = ? AND asset_id IN (__IDS__)
+       AND locale IN (?, 'en-US')
+     ORDER BY reviewed_at DESC, review_id DESC
+  `, [manifest.manifest_id, manifest.scope_key], assetIds, [requestedLocale]);
   const reviews = queryForIds<ReviewRow>(db, `
     SELECT review_id, asset_id, review_type, status, subject_content_hash, reviewed_at, expires_at
       FROM training_exercise_media_reviews
@@ -332,6 +402,10 @@ export function lookupTrainingExerciseMedia(
   const instructionByKey = new Map(instructions.map((entry) => [`${entry.exercise_id}:${entry.locale}`, entry]));
   const mediaLocalizationByKey = new Map(mediaLocalizations.map((entry) => [`${entry.asset_id}:${entry.locale}`, entry]));
   const provenanceByAsset = new Map(provenance.map((entry) => [entry.asset_id, entry]));
+  const latestInstructionLocalizationReviewByKey = latestLocalizationReviews(
+    instructionLocalizationReviews, now,
+  );
+  const latestMediaLocalizationReviewByKey = latestLocalizationReviews(mediaLocalizationReviews, now);
   const latestReviewByKey = new Map<string, ReviewRow>();
   const invalidReviewKeys = new Set<string>();
   for (const review of reviews) {
@@ -378,12 +452,16 @@ export function lookupTrainingExerciseMedia(
     if (provenanceRow.license_url != null && licenseTermsURL == null) continue;
     if (invalidTakedownAssets.has(asset.asset_id)
       || latestTakedownByAsset.get(asset.asset_id)?.action === 'REMOVE') continue;
+    if (!asset.accessibility_bundle_hash
+      || !/^[0-9a-f]{64}$/.test(asset.accessibility_bundle_hash)) continue;
     const effectiveReviews = requiredReviewTypes.map((reviewType) => {
       const key = `${asset.asset_id}:${reviewType}`;
       const review = latestReviewByKey.get(key);
       return review?.status === 'APPROVED'
         && !invalidReviewKeys.has(key)
-        && review.subject_content_hash === asset.integrity_sha256
+        && review.subject_content_hash === (
+          reviewType === 'ACCESSIBILITY' ? asset.accessibility_bundle_hash : asset.integrity_sha256
+        )
         && isUnexpired(review.expires_at, now) ? review : null;
     });
     if (effectiveReviews.some((review) => review == null)) continue;
@@ -405,6 +483,12 @@ export function lookupTrainingExerciseMedia(
     const fallbackLocalization = mediaLocalizationByKey.get(`${asset.asset_id}:en-US`);
     const localization = requestedLocalization ?? fallbackLocalization;
     if (!localization?.accessibility_description.trim()) continue;
+    const localizationReview = latestMediaLocalizationReviewByKey.get(
+      `${localization.asset_id}:${localization.locale}`,
+    );
+    if (!localizationReview || localizationReview.status !== 'APPROVED'
+      || localizationReview.subject_content_hash !== localization.content_hash
+      || !isEffectiveApproval(localizationReview.reviewed_at, localizationReview.expires_at, now)) continue;
     validAssets.set(asset.asset_id, {
       assetId: asset.asset_id,
       exerciseId: asset.exercise_id,
@@ -454,7 +538,13 @@ export function lookupTrainingExerciseMedia(
       && requiredViews.includes('PRIMARY')
       && requiredViews.every((role) => exerciseAssets.some((asset) => asset.viewRole === role));
     const steps = instruction ? parseStringArray(instruction.steps_json) : [];
-    if (!instruction || steps.length === 0 || !instruction.text_fallback.trim() || !requiredViewsPresent) {
+    const instructionReview = instruction ? latestInstructionLocalizationReviewByKey.get(
+      `${instruction.exercise_id}:${instruction.locale}`,
+    ) : null;
+    if (!instruction || !instructionReview || instructionReview.status !== 'APPROVED'
+      || instructionReview.subject_content_hash !== instruction.content_hash
+      || !isEffectiveApproval(instructionReview.reviewed_at, instructionReview.expires_at, now)
+      || steps.length === 0 || !instruction.text_fallback.trim() || !requiredViewsPresent) {
       return unavailable(entry.requestedExerciseId, 'MEDIA_UNAVAILABLE');
     }
     return {
@@ -500,7 +590,7 @@ function findActiveManifest(db: Database.Database, tenantId: number): ManifestRo
     catalog_source_hash, package_hash, expected_exercise_count,
     expected_exercise_ids_json, expected_approved_asset_bindings_json,
     validation_attested_package_hash, validation_attestation_hash,
-    required_review_types_json, allowed_origins_json
+    required_review_types_json, allowed_origins_json, approved_host_ref, owner_approval_ref
   `;
   const tenantScoped = db.prepare(`
     SELECT ${fields}
@@ -622,6 +712,31 @@ function isExactSafeIdentifierSet(actual: readonly string[], expected: readonly 
 function isLaterDatedId(leftDate: string, leftId: string, rightDate: string, rightId: string): boolean {
   const byDate = Date.parse(leftDate) - Date.parse(rightDate);
   return byDate > 0 || (byDate === 0 && leftId > rightId);
+}
+
+function latestLocalizationReviews(
+  reviews: readonly LocalizationReviewRow[],
+  now: Date,
+): Map<string, LocalizationReviewRow> {
+  const latest = new Map<string, LocalizationReviewRow>();
+  for (const review of reviews) {
+    if (!Number.isFinite(Date.parse(review.reviewed_at))
+      || Date.parse(review.reviewed_at) > now.getTime()
+      || (review.expires_at != null && !Number.isFinite(Date.parse(review.expires_at)))) continue;
+    const key = `${review.target_id}:${review.locale}`;
+    const current = latest.get(key);
+    if (!current || isLaterDatedId(
+      review.reviewed_at, review.review_id, current.reviewed_at, current.review_id,
+    )) latest.set(key, review);
+  }
+  return latest;
+}
+
+function isEffectiveApproval(reviewedAt: string, expiresAt: string | null, now: Date): boolean {
+  const reviewedTimestamp = Date.parse(reviewedAt);
+  return Number.isFinite(reviewedTimestamp)
+    && reviewedTimestamp <= now.getTime()
+    && isUnexpired(expiresAt, now);
 }
 
 function optionalSafeHttpsUrl(raw: string | null): string | null {

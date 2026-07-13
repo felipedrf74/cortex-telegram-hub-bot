@@ -12,6 +12,12 @@ export const TRAINING_EXERCISE_MEDIA_PACKAGE_SCHEMA_VERSION = 'training-exercise
 export const TRAINING_EXERCISE_MEDIA_API_SCHEMA_VERSION = 'training_exercise_media_api.v1' as const;
 export const TRAINING_EXERCISE_MEDIA_VALIDATION_ATTESTATION_SCHEMA_VERSION =
   'training-exercise-media-validation-attestation.v1' as const;
+export const TRAINING_EXERCISE_MEDIA_APPROVAL_LEDGER_SCHEMA_VERSION =
+  'training-exercise-media-approval-ledger.v1' as const;
+export const TRAINING_EXERCISE_MEDIA_ACCESSIBILITY_BUNDLE_SCHEMA_VERSION =
+  'training-exercise-media-accessibility-bundle.v1' as const;
+export const TRAINING_EXERCISE_MEDIA_ORIGINS_APPROVAL_SCHEMA_VERSION =
+  'training-exercise-media-origins-approval.v1' as const;
 export const TRAINING_EXERCISE_MEDIA_REQUIRED_LOCALES = ['en-US', 'pt-PT', 'pt-BR'] as const;
 export const TRAINING_EXERCISE_MEDIA_REQUIRED_REVIEW_TYPES = [
   'DOMAIN', 'LEGAL', 'ACCESSIBILITY', 'OWNER',
@@ -23,6 +29,8 @@ export type TrainingExerciseMediaPublicationState = 'DRAFT' | 'STAGED' | 'ACTIVE
 export type TrainingExerciseMediaExerciseState = 'DRAFT' | 'APPROVED' | 'EXCLUDED' | 'REMOVED';
 export type TrainingExerciseMediaAssetState = 'DRAFT' | 'APPROVED' | 'REJECTED' | 'REMOVED';
 export type TrainingExerciseMediaViewRole = 'PRIMARY' | 'START' | 'END' | 'PHASE' | 'ALTERNATE';
+export type TrainingExerciseMediaLocalizationReviewTarget = 'INSTRUCTION' | 'MEDIA_ACCESSIBILITY';
+export type TrainingExerciseMediaApprovalStatus = 'PENDING' | 'APPROVED' | 'REJECTED' | 'EXPIRED';
 
 export interface TrainingExerciseMediaApprovedAssetBinding {
   assetId: string;
@@ -46,6 +54,7 @@ export interface TrainingExerciseMediaManifestSource {
   requiredLocales: TrainingExerciseMediaLocale[];
   requiredReviewTypes: TrainingExerciseMediaReviewType[];
   allowedOrigins: string[];
+  approvedHostRef: string | null;
   ownerApprovalRef: string | null;
   createdAt: string;
   activatedAt: string | null;
@@ -132,6 +141,60 @@ export interface TrainingExerciseMediaReviewSource {
   createdAt: string;
 }
 
+export interface TrainingExerciseMediaLocalizationReviewSource {
+  reviewId: string;
+  targetKind: TrainingExerciseMediaLocalizationReviewTarget;
+  targetId: string;
+  locale: TrainingExerciseMediaLocale;
+  status: TrainingExerciseMediaApprovalStatus;
+  reviewerRef: string;
+  subjectContentHash: string;
+  reasonCodes: string[];
+  reviewedAt: string;
+  expiresAt: string | null;
+  createdAt: string;
+}
+
+export interface TrainingExerciseMediaHostApprovalSource {
+  approvalId: string;
+  status: TrainingExerciseMediaApprovalStatus;
+  reviewerRef: string;
+  subjectOrigins: string[];
+  subjectOriginsHash: string;
+  reasonCodes: string[];
+  reviewedAt: string;
+  expiresAt: string | null;
+  createdAt: string;
+}
+
+export interface TrainingExerciseMediaOwnerApprovalSource {
+  approvalId: string;
+  status: TrainingExerciseMediaApprovalStatus;
+  reviewerRef: string;
+  subjectPackageHash: string;
+  reasonCodes: string[];
+  reviewedAt: string;
+  expiresAt: string | null;
+  createdAt: string;
+}
+
+/**
+ * Human approval evidence lives separately from generated catalog sources so
+ * candidate-sync reruns cannot erase or rewrite it. The compiler imports this
+ * ledger, merges asset reviews, and pins the selected host/owner approval refs
+ * into the compiled manifest. Empty arrays/null refs are the only checked-in
+ * DRAFT defaults.
+ */
+export interface TrainingExerciseMediaApprovalLedgerSource {
+  schemaVersion: typeof TRAINING_EXERCISE_MEDIA_APPROVAL_LEDGER_SCHEMA_VERSION;
+  approvedHostRef: string | null;
+  ownerApprovalRef: string | null;
+  assetReviews: TrainingExerciseMediaReviewSource[];
+  localizationReviews: TrainingExerciseMediaLocalizationReviewSource[];
+  hostApprovals: TrainingExerciseMediaHostApprovalSource[];
+  ownerApprovals: TrainingExerciseMediaOwnerApprovalSource[];
+}
+
 export interface TrainingExerciseMediaTakedownSource {
   eventId: string;
   assetId: string;
@@ -152,6 +215,9 @@ export interface TrainingExerciseMediaPackageSources {
   mediaLocalizations: TrainingExerciseMediaLocalizationSource[];
   provenance: TrainingExerciseMediaProvenanceSource[];
   reviews: TrainingExerciseMediaReviewSource[];
+  localizationReviews: TrainingExerciseMediaLocalizationReviewSource[];
+  hostApprovals: TrainingExerciseMediaHostApprovalSource[];
+  ownerApprovals: TrainingExerciseMediaOwnerApprovalSource[];
   takedowns: TrainingExerciseMediaTakedownSource[];
 }
 
@@ -238,6 +304,27 @@ export function buildTrainingExerciseMediaValidationAttestationHash(
   });
 }
 
+export function buildTrainingExerciseMediaAccessibilityBundleHash(
+  assetId: string,
+  localizations: readonly TrainingExerciseMediaLocalizationSource[],
+): string {
+  return sha256TrainingExerciseMedia({
+    schemaVersion: TRAINING_EXERCISE_MEDIA_ACCESSIBILITY_BUNDLE_SCHEMA_VERSION,
+    assetId,
+    localizations: localizations
+      .filter((entry) => entry.assetId === assetId)
+      .map((entry) => ({ locale: entry.locale, contentHash: entry.contentHash }))
+      .sort((left, right) => left.locale.localeCompare(right.locale)),
+  });
+}
+
+export function buildTrainingExerciseMediaOriginsHash(origins: readonly string[]): string {
+  return sha256TrainingExerciseMedia({
+    schemaVersion: TRAINING_EXERCISE_MEDIA_ORIGINS_APPROVAL_SCHEMA_VERSION,
+    origins: [...origins].sort(),
+  });
+}
+
 export function buildCompiledTrainingExerciseMediaPackage(
   sources: TrainingExerciseMediaPackageSources,
 ): CompiledTrainingExerciseMediaPackage {
@@ -314,6 +401,12 @@ export function validateCompiledTrainingExerciseMediaPackage(
   }
   if (!isIsoInstant(manifest.createdAt) || (manifest.activatedAt != null && !isIsoInstant(manifest.activatedAt))) {
     errors.push('Manifest timestamps must be valid ISO-8601 instants.');
+  }
+  if (manifest.approvedHostRef != null && !nonEmpty(manifest.approvedHostRef)) {
+    errors.push('Manifest approved host reference is invalid.');
+  }
+  if (manifest.ownerApprovalRef != null && !nonEmpty(manifest.ownerApprovalRef)) {
+    errors.push('Manifest owner approval reference is invalid.');
   }
 
   const allowedOrigins = new Set<string>();
@@ -469,6 +562,76 @@ export function validateCompiledTrainingExerciseMediaPackage(
     }
   }
 
+  const localizationReviewIds = new Set<string>();
+  const latestLocalizationReview = new Map<string, TrainingExerciseMediaLocalizationReviewSource>();
+  for (const review of canonical.localizationReviews) {
+    if (localizationReviewIds.has(review.reviewId)) {
+      errors.push(`Localization review ID is duplicated: ${review.reviewId}`);
+    }
+    localizationReviewIds.add(review.reviewId);
+    if (!['INSTRUCTION', 'MEDIA_ACCESSIBILITY'].includes(review.targetKind)) {
+      errors.push(`Localization review target kind is invalid: ${review.reviewId}`);
+    }
+    if (review.targetKind === 'INSTRUCTION' && !exerciseById.has(review.targetId)) {
+      errors.push(`Localization review references an unknown exercise: ${review.reviewId}`);
+    }
+    if (review.targetKind === 'MEDIA_ACCESSIBILITY' && !assetById.has(review.targetId)) {
+      errors.push(`Localization review references an unknown asset: ${review.reviewId}`);
+    }
+    if (!(TRAINING_EXERCISE_MEDIA_REQUIRED_LOCALES as readonly string[]).includes(review.locale)) {
+      errors.push(`Localization review locale is unsupported: ${review.reviewId}`);
+    }
+    if (!REVIEW_STATUSES.has(review.status)) errors.push(`Localization review status is invalid: ${review.reviewId}`);
+    if (!nonEmpty(review.reviewerRef) || !HASH_PATTERN.test(review.subjectContentHash)) {
+      errors.push(`Localization review evidence is invalid: ${review.reviewId}`);
+    }
+    if (!isIsoInstant(review.reviewedAt) || (review.expiresAt != null && !isIsoInstant(review.expiresAt))) {
+      errors.push(`Localization review timestamps are invalid: ${review.reviewId}`);
+    }
+    if (isIsoInstant(review.reviewedAt) && Date.parse(review.reviewedAt) <= now.getTime()) {
+      const key = `${review.targetKind}:${review.targetId}:${review.locale}`;
+      const prior = latestLocalizationReview.get(key);
+      if (!prior || compareDatedIds(review.reviewedAt, review.reviewId, prior.reviewedAt, prior.reviewId) > 0) {
+        latestLocalizationReview.set(key, review);
+      }
+    }
+  }
+
+  const hostApprovalById = new Map<string, TrainingExerciseMediaHostApprovalSource>();
+  for (const approval of canonical.hostApprovals) {
+    if (hostApprovalById.has(approval.approvalId)) errors.push(`Host approval ID is duplicated: ${approval.approvalId}`);
+    hostApprovalById.set(approval.approvalId, approval);
+    if (!nonEmpty(approval.approvalId) || !nonEmpty(approval.reviewerRef)
+      || !REVIEW_STATUSES.has(approval.status) || !HASH_PATTERN.test(approval.subjectOriginsHash)) {
+      errors.push(`Host approval evidence is invalid: ${approval.approvalId}`);
+    }
+    const normalizedOrigins = approval.subjectOrigins.map(safeHttpsOrigin);
+    if (normalizedOrigins.some((origin) => origin == null)
+      || new Set(normalizedOrigins).size !== normalizedOrigins.length) {
+      errors.push(`Host approval origins are invalid: ${approval.approvalId}`);
+    } else if (approval.subjectOriginsHash !== buildTrainingExerciseMediaOriginsHash(
+      normalizedOrigins as string[],
+    )) {
+      errors.push(`Host approval origins hash is invalid: ${approval.approvalId}`);
+    }
+    if (!isIsoInstant(approval.reviewedAt) || (approval.expiresAt != null && !isIsoInstant(approval.expiresAt))) {
+      errors.push(`Host approval timestamps are invalid: ${approval.approvalId}`);
+    }
+  }
+
+  const ownerApprovalById = new Map<string, TrainingExerciseMediaOwnerApprovalSource>();
+  for (const approval of canonical.ownerApprovals) {
+    if (ownerApprovalById.has(approval.approvalId)) errors.push(`Owner approval ID is duplicated: ${approval.approvalId}`);
+    ownerApprovalById.set(approval.approvalId, approval);
+    if (!nonEmpty(approval.approvalId) || !nonEmpty(approval.reviewerRef)
+      || !REVIEW_STATUSES.has(approval.status) || !HASH_PATTERN.test(approval.subjectPackageHash)) {
+      errors.push(`Owner approval evidence is invalid: ${approval.approvalId}`);
+    }
+    if (!isIsoInstant(approval.reviewedAt) || (approval.expiresAt != null && !isIsoInstant(approval.expiresAt))) {
+      errors.push(`Owner approval timestamps are invalid: ${approval.approvalId}`);
+    }
+  }
+
   const takedownIds = new Set<string>();
   const latestTakedown = new Map<string, TrainingExerciseMediaTakedownSource>();
   for (const event of canonical.takedowns) {
@@ -492,9 +655,30 @@ export function validateCompiledTrainingExerciseMediaPackage(
 
   if (manifest.publicationState !== 'ACTIVE') activationBlockers.push('Manifest publication state is not ACTIVE.');
   if (manifest.validationStatus !== 'PASSED') activationBlockers.push('Manifest validation status is not PASSED.');
-  if (!manifest.ownerApprovalRef) activationBlockers.push('Manifest has no immutable owner approval reference.');
   if (!manifest.activatedAt) activationBlockers.push('Manifest has no activation timestamp.');
   if (allowedOrigins.size === 0) activationBlockers.push('Manifest has no approved delivery origin.');
+  if (!manifest.approvedHostRef) {
+    activationBlockers.push('Manifest has no immutable approved host reference.');
+  } else {
+    const approval = hostApprovalById.get(manifest.approvedHostRef);
+    if (!approval || approval.status !== 'APPROVED'
+      || approval.subjectOriginsHash !== buildTrainingExerciseMediaOriginsHash([...allowedOrigins])
+      || Date.parse(approval.reviewedAt) > now.getTime()
+      || (approval.expiresAt != null && Date.parse(approval.expiresAt) <= now.getTime())) {
+      activationBlockers.push('Manifest approved host reference is not valid for its exact delivery origins.');
+    }
+  }
+  if (!manifest.ownerApprovalRef) {
+    activationBlockers.push('Manifest has no immutable owner approval reference.');
+  } else {
+    const approval = ownerApprovalById.get(manifest.ownerApprovalRef);
+    if (!approval || approval.status !== 'APPROVED'
+      || approval.subjectPackageHash !== compiled.packageHash
+      || Date.parse(approval.reviewedAt) > now.getTime()
+      || (approval.expiresAt != null && Date.parse(approval.expiresAt) <= now.getTime())) {
+      activationBlockers.push('Manifest owner approval is not valid for its exact package hash.');
+    }
+  }
   if (coverage.approvedExercises !== manifest.expectedExerciseCount) {
     activationBlockers.push(`Approved exercise coverage is ${coverage.approvedExercises}/${manifest.expectedExerciseCount}.`);
   }
@@ -505,8 +689,19 @@ export function validateCompiledTrainingExerciseMediaPackage(
 
   for (const exercise of canonical.exercises.filter((entry) => entry.publicationState === 'APPROVED')) {
     for (const locale of manifest.requiredLocales) {
-      if (!instructionKey.has(`${exercise.exerciseId}:${locale}`)) {
+      const key = `${exercise.exerciseId}:${locale}`;
+      const localization = canonical.instructions.find((entry) => (
+        entry.exerciseId === exercise.exerciseId && entry.locale === locale
+      ));
+      if (!instructionKey.has(key) || !localization) {
         activationBlockers.push(`Missing ${locale} instruction text for ${exercise.exerciseId}.`);
+      } else {
+        const review = latestLocalizationReview.get(`INSTRUCTION:${key}`);
+        if (!review || review.status !== 'APPROVED'
+          || review.subjectContentHash !== localization.contentHash
+          || (review.expiresAt != null && Date.parse(review.expiresAt) <= now.getTime())) {
+          activationBlockers.push(`Latest ${locale} instruction localization review is not valid for ${exercise.exerciseId}.`);
+        }
       }
     }
     for (const view of exercise.requiredViews) {
@@ -523,13 +718,31 @@ export function validateCompiledTrainingExerciseMediaPackage(
       activationBlockers.push(`Asset rights have expired: ${asset.assetId}.`);
     }
     for (const locale of manifest.requiredLocales) {
-      if (!mediaLocalizationKey.has(`${asset.assetId}:${locale}`)) {
+      const key = `${asset.assetId}:${locale}`;
+      const localization = canonical.mediaLocalizations.find((entry) => (
+        entry.assetId === asset.assetId && entry.locale === locale
+      ));
+      if (!mediaLocalizationKey.has(key) || !localization) {
         activationBlockers.push(`Missing ${locale} media accessibility description for ${asset.assetId}.`);
+      } else {
+        const review = latestLocalizationReview.get(`MEDIA_ACCESSIBILITY:${key}`);
+        if (!review || review.status !== 'APPROVED'
+          || review.subjectContentHash !== localization.contentHash
+          || (review.expiresAt != null && Date.parse(review.expiresAt) <= now.getTime())) {
+          activationBlockers.push(`Latest ${locale} media localization review is not valid for ${asset.assetId}.`);
+        }
       }
     }
+    const accessibilityBundleHash = buildTrainingExerciseMediaAccessibilityBundleHash(
+      asset.assetId,
+      canonical.mediaLocalizations,
+    );
     for (const reviewType of manifest.requiredReviewTypes) {
       const review = latestReview.get(`${asset.assetId}:${reviewType}`);
-      if (!review || review.status !== 'APPROVED' || review.subjectContentHash !== asset.integritySha256
+      const expectedSubjectHash = reviewType === 'ACCESSIBILITY'
+        ? accessibilityBundleHash
+        : asset.integritySha256;
+      if (!review || review.status !== 'APPROVED' || review.subjectContentHash !== expectedSubjectHash
         || (review.expiresAt != null && Date.parse(review.expiresAt) <= now.getTime())) {
         activationBlockers.push(`Latest ${reviewType} review is not valid for ${asset.assetId}.`);
       }
@@ -566,7 +779,9 @@ function canonicalizeSources(sources: TrainingExerciseMediaPackageSources): Trai
       expectedExerciseIds: [...sources.manifest.expectedExerciseIds].sort(),
       requiredLocales: [...sources.manifest.requiredLocales],
       requiredReviewTypes: [...sources.manifest.requiredReviewTypes],
-      allowedOrigins: [...sources.manifest.allowedOrigins].sort(),
+      allowedOrigins: sources.manifest.allowedOrigins
+        .map((origin) => safeHttpsOrigin(origin) ?? origin)
+        .sort(),
     },
     exercises: [...sources.exercises].map((entry) => ({
       ...entry,
@@ -584,6 +799,17 @@ function canonicalizeSources(sources: TrainingExerciseMediaPackageSources): Trai
     })).sort((left, right) => left.assetId.localeCompare(right.assetId)),
     reviews: [...sources.reviews].map((entry) => ({ ...entry, reasonCodes: [...entry.reasonCodes].sort() }))
       .sort((left, right) => left.reviewId.localeCompare(right.reviewId)),
+    localizationReviews: [...sources.localizationReviews]
+      .map((entry) => ({ ...entry, reasonCodes: [...entry.reasonCodes].sort() }))
+      .sort((left, right) => left.reviewId.localeCompare(right.reviewId)),
+    hostApprovals: [...sources.hostApprovals].map((entry) => ({
+      ...entry,
+      subjectOrigins: entry.subjectOrigins.map((origin) => safeHttpsOrigin(origin) ?? origin).sort(),
+      reasonCodes: [...entry.reasonCodes].sort(),
+    })).sort((left, right) => left.approvalId.localeCompare(right.approvalId)),
+    ownerApprovals: [...sources.ownerApprovals]
+      .map((entry) => ({ ...entry, reasonCodes: [...entry.reasonCodes].sort() }))
+      .sort((left, right) => left.approvalId.localeCompare(right.approvalId)),
     takedowns: [...sources.takedowns].sort((left, right) => left.eventId.localeCompare(right.eventId)),
   };
 }
@@ -627,7 +853,6 @@ function frozenPackageProjection(sources: TrainingExerciseMediaPackageSources): 
       requiredLocales: sources.manifest.requiredLocales,
       requiredReviewTypes: sources.manifest.requiredReviewTypes,
       allowedOrigins: sources.manifest.allowedOrigins,
-      ownerApprovalRef: sources.manifest.ownerApprovalRef,
       createdAt: sources.manifest.createdAt,
     },
     exercises: sources.exercises,

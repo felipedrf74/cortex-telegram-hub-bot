@@ -15,6 +15,10 @@ const TABLES = [
   'training_exercise_instruction_localizations',
   'training_exercise_media_localizations',
   'training_exercise_media_reviews',
+  'training_exercise_instruction_localization_reviews',
+  'training_exercise_media_localization_reviews',
+  'training_exercise_media_host_approvals',
+  'training_exercise_media_owner_approvals',
   'training_exercise_media_takedown_events',
 ];
 
@@ -120,6 +124,18 @@ describe('migration 229 — Training exercise media v1', () => {
       expect(() => db.prepare(`
         UPDATE training_exercise_media_reviews SET status = 'REJECTED'
          WHERE review_id = 'manifest-global-1-review-DOMAIN'
+      `).run()).toThrow(/append-only/i);
+      expect(() => db.prepare(`
+        UPDATE training_exercise_instruction_localization_reviews SET status = 'REJECTED'
+         WHERE review_id = 'manifest-global-1-instruction-localization-review'
+      `).run()).toThrow(/append-only/i);
+      expect(() => db.prepare(`
+        UPDATE training_exercise_media_host_approvals SET status = 'REJECTED'
+         WHERE approval_id = 'host-approval:manifest-global-1'
+      `).run()).toThrow(/append-only/i);
+      expect(() => db.prepare(`
+        UPDATE training_exercise_media_owner_approvals SET status = 'REJECTED'
+         WHERE approval_id = 'owner-approval:manifest-global-1'
       `).run()).toThrow(/append-only/i);
       expect(() => db.prepare(`
         INSERT INTO training_exercise_media_takedown_events (
