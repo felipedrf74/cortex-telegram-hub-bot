@@ -2,10 +2,10 @@
 
 Status: canonical
 Owner: backend release lead (Felipe)
-Last verified: 2026-07-10
+Last verified: 2026-07-13
 Update policy: update after backend deploy or staging change. Workspace-level entry point is docs/release/CURRENT_RELEASE_STATE.md.
 
-Last updated: 2026-07-10
+Last updated: 2026-07-13
 
 Only the **Active Production Release** section states the current production
 truth. Dated sections below it are historical deploy evidence and may mention
@@ -46,6 +46,28 @@ older production versions.
   release identity. TestFlight/App Store upload,
   physical-device proof, and signed-device smoke were not run.
 - Backend workspace root: `/Users/felipedominguez/Desktop/Custom Connectors/Cortex/cortex-telegram-hub-bot`
+
+## 2026-07-13 Training Exercise-Media Source Gate — STAGED/DORMANT
+
+- `origin/main` at `66fd6b7a` now contains the additive Training
+  exercise-media schema and fail-closed delivery code, including migration
+  229. The source is staged in Git and dormant; this is **not** evidence that
+  migration 229 was executed or that a manifest reached database publication
+  state `STAGED` or `ACTIVE` in production.
+- Training exercise media is **not production-active**. The
+  `TRAINING_EXERCISE_MEDIA_V1_ENABLED` default remains `false`, and no
+  publication, activation, approved-host delivery, migration execution,
+  staging deploy, or production deploy is authorized or claimed by the source
+  merge. The Active Production Release above remains `4.14.216` at
+  `6c67c181`.
+- Production-approved catalog coverage is **0/158**. Publication and activation
+  remain blocked on exactly these six gates: `DOMAIN_APPROVAL`,
+  `LEGAL_LICENSE`, `ACCESSIBILITY`, `OWNER_PUBLICATION`, `LOCALIZATION`, and
+  `APPROVED_HOST`.
+- Release posture: **DO NOT RELEASE Training exercise media** until all six
+  gates pass against immutable reviewed assets and the owner separately
+  authorizes rollout. No environment or live runtime was mutated or probed by
+  this documentation-only update.
 
 ## 2026-07-10 Paid-Only AI Cost Controls Production Promote
 

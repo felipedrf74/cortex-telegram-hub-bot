@@ -2,82 +2,75 @@
 
 Status: canonical
 Owner: release lead (Felipe)
-Last verified: 2026-07-09
+Last verified: 2026-07-13
 Update policy: update when the current RC identity, deploy-gate evidence, or canonical-doc cross-references change. Run `scripts/release-identity.sh --persist` to refresh auto-generated identity fields.
 
-Date: 2026-07-09
+Date: 2026-07-13
 
 ## Current Status
 
 Active production package:
 
 - source branch: `main` (pushed to origin)
-- production HEAD: `cdfe9388`
-- production version: `4.14.215`
-- runtime source commits: `32114d72` (Training calendar ownership through
-  Secretary sync), `81b90b87` (Training split title/structure alignment),
-  `f8737377` (version `4.14.215`), `e700826f` (fresh-sync duplicate
-  reconciliation), `0f532094` (missing fresh provider event repair), and
-  `cdfe9388` (pre-promote staging smoke evidence)
-- latest runtime deploy commit: `cdfe9388`; post-deploy docs-only closeout may
+- production HEAD: `6c67c181`
+- production version: `4.14.216`
+- runtime source commits: `3ce20473` (paid-only AI cost controls), `fa4de82e`
+  (adversarial-QA hardening), `82835940` and `3cf19dce` (verification and
+  release-state records), and `6c67c181` (release preparation)
+- latest runtime deploy commit: `6c67c181`; post-deploy source-only work may
   sit ahead of production runtime
 - full deploy evidence: see the Active Production Release section in
   `docs/release/CURRENT_RELEASE_STATE.md`
 - release state: `docs/release/CURRENT_RELEASE_STATE.md` (backend)
 - backend workspace root: `/Users/felipedominguez/Desktop/Custom Connectors/Cortex/cortex-telegram-hub-bot`
 
-Commits in this release (2026-07-09 Training/Secretary calendar ownership promote):
+Commits in this release (2026-07-10 paid-only AI cost controls promote):
 
-- `32114d72 fix(secretary): preserve training calendar ownership`
-- `81b90b87 fix(training): align split titles with assigned structure`
-- `f8737377 chore: prepare release 4.14.215`
-- `e700826f fix(secretary): reconcile duplicate events on fresh sync`
-- `0f532094 fix(secretary): repair missing fresh provider events`
-- `cdfe9388 docs(release): record 4.14.215 staging smoke`
-- iOS companion main: `8d2ff0a` (clean, no source change required for this
-  backend contract)
+- `3ce20473 feat(ai): add paid-only cost controls`
+- `fa4de82e fix(ai): harden paid cost controls`
+- `82835940 docs(ai): record cost control fix verification`
+- `3cf19dce docs(release): sync paid AI open items`
+- `6c67c181 chore: prepare release 4.14.216`
 
 Scope:
 
-- Training/Secretary calendar ownership and QA hardening:
-  - Training-owned Outlook calendar events remain canonical when Secretary
-    agenda sync observes the same agenda item;
-  - stale Secretary duplicates are deleted, missing fresh provider events are
-    recreated or reattached, and canonical Training calendar titles/bodies are
-    reused across direct and agenda sync paths;
-  - Training split titles now match the actual ABCDE structure shown in session
-    details, so lower-body sessions do not display upper-body rationale.
+- Paid-only AI cost-control implementation and adversarial-QA hardening are
+  deployed in observe mode. `PAID_AI_COST_CONTROLS_ENFORCEMENT_ENABLED` remains
+  unset, so the new paid-plan, monthly, and automation blocking policy is not
+  active.
 
 Validated through promotion:
 
-- Local focused Secretary sync suites, `npx tsc --noEmit`,
-  `scripts/risk-gate.sh`, and full `npx vitest run` passed through the final
-  source commit; final source verification included full Vitest 867 files /
-  12,742 tests.
-- `deploy-staging.sh` passed; 5-minute soak completed; staging smoke passed
-  21/21 with
-  `docs/release/smoke-evidence/staging-smoke-0f532094-20260709T093359Z.json`.
-- Live Outlook staging provider checks passed: Training calendar lifecycle
-  9/9, Secretary calendar lifecycle 8/8, and selected-provider duplicate/cancel
-  checks in the broader Training flow. One broader plan-shape assertion in
-  that Training flow remained a non-release-blocking QA-profile expectation
-  mismatch.
-- `promote-to-prod.sh` completed cleanly for 4.14.215 at `cdfe9388`; promote
-  gate smoke passed 21/21 before production mutation.
-- Deploy-time validation passed migration safety (216 migrations), typecheck,
-  science-policy check, build, and full Vitest with 867 files / 12,742 tests.
-- Post-deploy: public `/health` healthy, public `/public-status` ok, PM2
-  `nexus-hub` and `content-engine` online on `4.14.215`, authenticated
-  Decision Center overview returned HTTP 200 with `ok: true`, and the
-  post-restart scheduler/log sample showed a completed `secretary_agenda_sync`
-  tick with no high-severity application log lines in the sampled window.
-- TestFlight/App Store upload, physical-device proof, signed-device smoke,
-  HealthKit, Garmin, APNs, Google live calendar proof for the Outlook-only
-  staging QA account, two-account provider proof, production live calendar
-  writes, and production provider-state validation were not authorized/run.
+- The recorded release evidence in `docs/release/CURRENT_RELEASE_STATE.md`
+  reports typecheck/build and full Vitest (873 files / 12,910 tests), staging
+  readiness, promotion-time staging smoke (25/25), migration 226 applied once,
+  and healthy post-deploy runtime probes. Those historical release checks were
+  not rerun by this documentation-only update.
+- TestFlight/App Store upload, physical-device proof, and signed-device smoke
+  were not run for that release.
+
+### Training exercise-media source gate — STAGED/DORMANT
+
+- `origin/main` at `66fd6b7a` contains the additive exercise-media schema and
+  fail-closed code path, including migration 229. This is source staged in Git,
+  not a claim that migration 229 ran or that any manifest reached `STAGED` or
+  `ACTIVE` in production.
+- Training exercise media is **not production-active**. The
+  `TRAINING_EXERCISE_MEDIA_V1_ENABLED` default remains `false`; no publication,
+  flag activation, media hosting, migration execution, or runtime deployment
+  is authorized by this source merge.
+- Production-approved catalog coverage is **0/158**. Activation/publication is
+  blocked on exactly six independent gates: `DOMAIN_APPROVAL`,
+  `LEGAL_LICENSE`, `ACCESSIBILITY`, `OWNER_PUBLICATION`, `LOCALIZATION`, and
+  `APPROVED_HOST`.
+- Until all six gates pass against the immutable reviewed assets and the owner
+  authorizes rollout, the release decision is **DO NOT RELEASE Training
+  exercise media**.
 
 ## Previous Production Versions On This Branch
 
+- 4.14.216 (`6c67c181`) — paid-only AI cost controls and adversarial-QA
+  hardening deployed in observe mode (source commits `3ce20473`, `fa4de82e`).
 - 4.14.215 (`cdfe9388`) — Training/Secretary calendar ownership promote:
   Training-owned calendar events remain canonical through agenda sync,
   duplicate/missing fresh provider event repair, and Training split
