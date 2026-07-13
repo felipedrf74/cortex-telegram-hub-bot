@@ -430,7 +430,8 @@ export function editTrainingPlanRevisionPreview(input: {
   // intentionally supersedes its parent. The immutable scoped parent and
   // expected content hash were still verified above.
   if (operation) return replayOperation<TrainingPlanEditPreviewResource>(operation, requestHash);
-  if (current.origin !== 'GENERATED' || current.documentSchemaVersion !== 'training-plan-revision.v1') {
+  if (current.origin !== 'GENERATED'
+      || !['training-plan-revision.v1', 'training-plan-revision.v2'].includes(current.documentSchemaVersion)) {
     throw new TrainingPlanRevisionError('TRAINING_LEGACY_REVISION_EDIT_NOT_IN_M1', 'Legacy active revisions are read-only in Milestone 1.', 409);
   }
   if (!['CANDIDATE', 'PENDING_REVIEW'].includes(current.lifecycleState)
@@ -784,7 +785,19 @@ function findOrCreatePlanFamily(
   scope: TrainingPlanRevisionScope,
   request: TrainingPlanCandidateRequest,
 ): string {
-  const familyKey = `${request.planMode}:${request.goal}`;
+  const m1CompatibilityIdentity = request.planMode === 'continuous'
+    && request.goal === 'general_fitness'
+    && request.discipline === 'strength';
+  const eventIdentity = request.event
+    ? `:event_${stableTrainingRevisionHash({
+      name: request.event.name.trim(),
+      date: request.event.date ?? null,
+      priority: request.event.priority ?? null,
+    }).slice(0, 16)}`
+    : '';
+  const familyKey = m1CompatibilityIdentity
+    ? 'continuous:general_fitness'
+    : `${request.planMode}:${request.goal}:${request.discipline}${eventIdentity}`;
   const existing = db.prepare(`
     SELECT family_id FROM training_plan_families
      WHERE tenant_id = ? AND user_id = ? AND family_key = ?

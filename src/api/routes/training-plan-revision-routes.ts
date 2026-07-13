@@ -8,6 +8,7 @@ import {
   getTrainingPlanRevisionV1Mode,
   isDecisionFlowV1EnforceEnabled,
   isTrainingPlanRevisionV1ExplicitlyEnrolled,
+  isTrainingTypedWorkoutV1Enabled,
 } from '../../services/runtime-flags';
 import {
   CANONICAL_TRAINING_SESSION_TYPES,
@@ -25,6 +26,7 @@ import {
   supersedeTrainingPlanRevisionForBoundChild,
 } from '../../services/training-plan-revisions';
 import type { TrainingPlanCandidateRequest } from '../../services/training-plan-revision-candidate-builder';
+import { buildTrainingPlanRevisionReviewReadModel } from '../../services/training-plan-revision-read-model';
 import { logger } from '../../utils/logger';
 import { bindTrainingPlanRevisionDecision } from '../../services/training-plan-revision-decision';
 import { supersedeDecisionSourceStateForEntity } from '../../services/decision-center';
@@ -41,6 +43,9 @@ export interface RevisionCapabilitiesResource extends RevisionApiMeta {
   workoutCapabilities: typeof TRAINING_WORKOUT_CAPABILITY_REGISTRY;
   planModes: typeof TRAINING_PLAN_MODE_CAPABILITIES;
   milestone1GenerationSessionTypes: string[];
+  typedWorkoutGenerationEnabled: boolean;
+  typedGenerationSessionTypes: string[];
+  typedGenerationPlanModes: string[];
   unknownFallback: {
     presentationFamily: 'unknown';
     presentationLabel: 'Unknown workout type';
@@ -90,7 +95,13 @@ export function registerTrainingPlanRevisionRoutes(router: Router): void {
       return;
     }
     res.setHeader('ETag', `"${revision.contentHash}"`);
-    sendSuccess(res, { ...meta(), revision });
+    sendSuccess(res, {
+      ...meta(),
+      revision,
+      ...(isTrainingTypedWorkoutV1Enabled(process.env, scope)
+        ? { reviewModel: buildTrainingPlanRevisionReviewReadModel(revision) }
+        : {}),
+    });
   });
 
   router.post('/plan/revisions/:revisionId/edit-preview', async (req, res: Response) => {
@@ -150,6 +161,7 @@ export function trainingPlanRevisionCapabilitiesForScope(
       || !isTrainingPlanRevisionV1ExplicitlyEnrolled(env, scope)
       || !isDecisionFlowV1EnforceEnabled(env, scope)
       || scope.userId !== scope.tenantId) return null;
+  const typedWorkoutGenerationEnabled = isTrainingTypedWorkoutV1Enabled(env, scope);
   return {
     ...meta(),
     registryVersion: 'training-workout-capabilities.v1',
@@ -159,6 +171,13 @@ export function trainingPlanRevisionCapabilitiesForScope(
     milestone1GenerationSessionTypes: TRAINING_WORKOUT_CAPABILITY_REGISTRY
       .filter((entry) => entry.milestone1GenerationEnabled)
       .map((entry) => entry.sessionType),
+    typedWorkoutGenerationEnabled,
+    typedGenerationSessionTypes: typedWorkoutGenerationEnabled
+      ? [...CANONICAL_TRAINING_SESSION_TYPES]
+      : [],
+    typedGenerationPlanModes: typedWorkoutGenerationEnabled
+      ? TRAINING_PLAN_MODE_CAPABILITIES.map((entry) => entry.planMode)
+      : [],
     unknownFallback: {
       presentationFamily: 'unknown',
       presentationLabel: 'Unknown workout type',

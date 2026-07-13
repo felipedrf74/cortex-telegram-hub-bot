@@ -389,9 +389,9 @@ export function getTrainingExerciseIdentityV1Mode(
 }
 
 /**
- * Milestone 2 typed phase/block/prescription validation. This is a validation
- * seam only: it does not enable generation, activation, or any legacy writer.
- * Default off and scope-overridable through the standard suffix convention.
+ * Milestone 2 typed phase/block/prescription generation and activation for
+ * immutable revision candidates. It remains default off, scope-overridable,
+ * and does not change legacy plan writers or existing active plans.
  */
 export function isTrainingTypedWorkoutV1Enabled(
   env: RuntimeEnv = process.env,

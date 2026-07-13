@@ -230,7 +230,8 @@ function validateActivationInput(db: Database.Database, input: {
 }): NonNullable<ReturnType<typeof getScopedTrainingPlanRevision>> {
   const revision = getScopedTrainingPlanRevision(input.scope, input.revisionId, db);
   if (!revision) throw new TrainingPlanRevisionError('TRAINING_REVISION_NOT_FOUND', 'Training plan revision not found.', 404);
-  if (revision.origin !== 'GENERATED' || revision.documentSchemaVersion !== 'training-plan-revision.v1') {
+  if (revision.origin !== 'GENERATED'
+      || !['training-plan-revision.v1', 'training-plan-revision.v2'].includes(revision.documentSchemaVersion)) {
     throw new TrainingPlanRevisionError('TRAINING_LEGACY_ACTIVE_REPLACEMENT_NOT_IN_M1', 'Legacy revisions cannot be activated through the Milestone 1 generator.', 409);
   }
   if (revision.decisionId !== input.approval.decisionId) {
@@ -315,10 +316,18 @@ function validateActivationInput(db: Database.Database, input: {
       409,
     );
   }
+  const typedWorkoutEnabled = isTrainingTypedWorkoutV1Enabled(input.env, input.scope);
+  if (revision.documentSchemaVersion === 'training-plan-revision.v2' && !typedWorkoutEnabled) {
+    throw new TrainingPlanRevisionError(
+      'TRAINING_REVISION_REVALIDATION_STALE',
+      'The approved typed plan is no longer enabled for this scope.',
+      409,
+    );
+  }
   const rebuilt = buildTrainingPlanRevisionCandidate(snapshot.body.request, {
     env: input.env,
     scope: input.scope,
-    typedWorkoutValidationEnabled: isTrainingTypedWorkoutV1Enabled(input.env, input.scope),
+    typedWorkoutValidationEnabled: typedWorkoutEnabled,
   });
   const rebuiltContextVersion = deriveTrainingRevisionCreationContextVersion(
     rebuilt.creationContextVersion,
@@ -469,15 +478,26 @@ function materializeCompatibilityProjection(
     INSERT INTO fitness_training_plans (
       user_id, tenant_id, name, sport, goal, duration_weeks, periodization,
       status, start_date, end_date, preferences_json, source_revision_id
-    ) VALUES (?, ?, ?, 'strength', 'general_fitness', ?, 'block', 'active', ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?)
   `).run(
     scope.userId,
     scope.tenantId,
     document.title,
+    document.discipline === 'marathon' ? 'running' : document.discipline,
+    document.goal,
     document.horizonWeeks,
+    document.periodization === 'NON_PERIODIZED' ? 'continuous' : 'block',
     activationDate,
     endDate,
-    JSON.stringify({ source: 'training_plan_revision_v1', revisionId }),
+    JSON.stringify({
+      source: 'training_plan_revision_v1',
+      revisionId,
+      revisionSchemaVersion: document.schemaVersion,
+      goalMode: document.planMode,
+      raceDate: document.event?.date ?? null,
+      trainingPriority: document.event?.priority ?? null,
+      event: document.event ?? null,
+    }),
     revisionId,
   );
   const planId = Number(plan.lastInsertRowid);
@@ -492,7 +512,7 @@ function materializeCompatibilityProjection(
     `).run(
       planId,
       week.weekNumber,
-      phase?.phaseType.toLowerCase() ?? 'foundation',
+      phase?.phaseType.toLowerCase() ?? 'general',
       week.loadDirection === 'REDUCE' ? 60 : week.loadDirection === 'INCREASE' ? 80 : 70,
       week.workouts.filter((workout) => workout.sessionType !== 'rest').length,
       phase?.purpose ?? null,
@@ -531,9 +551,9 @@ function insertProjectionSession(db: Database.Database, input: {
     tempo: exercise.prescription.tempo,
     restSec: exercise.prescription.restSeconds,
   }));
-  const primaryStrength = input.workout.blocks
-    .map((block) => block.prescription)
-    .find((prescription) => prescription.kind === 'strength');
+  const primaryPrescription = input.workout.blocks
+    .find((block) => block.blockType === 'PRIMARY_WORK')?.prescription
+    ?? input.workout.blocks[0]?.prescription;
   db.prepare(`
     INSERT INTO training_sessions (
       week_id, plan_id, tenant_id, day_of_week, session_type, title, description,
@@ -552,9 +572,7 @@ function insertProjectionSession(db: Database.Database, input: {
     JSON.stringify({ schemaVersion: 'training-workout-blocks.v1', blocks: input.workout.blocks }),
     JSON.stringify(exercises),
     input.workout.plannedDurationMinutes,
-    primaryStrength?.kind === 'strength'
-      ? `RPE ${primaryStrength.targetRpe}, RIR ${primaryStrength.targetRir}`
-      : input.workout.sessionType === 'rest' ? 'Rest' : 'Controlled range',
+    intensityText(primaryPrescription, input.workout.sessionType),
     input.workout.sessionType === 'rest' ? 'rest' : 'pending',
     input.workout.workoutKey,
     stableSessionShape(input.workout),
@@ -626,4 +644,26 @@ function stableSessionShape(workout: TrainingPlanRevisionWorkout): string {
     objective: workout.objective,
     blocks: workout.blocks,
   })).digest('hex');
+}
+
+function intensityText(
+  prescription: TrainingPlanRevisionWorkout['blocks'][number]['prescription'] | undefined,
+  sessionType: string,
+): string {
+  if (!prescription) return sessionType === 'rest' ? 'Rest' : 'See structured prescription';
+  switch (prescription.kind) {
+    case 'strength': return `RPE ${prescription.targetRpe}, RIR ${prescription.targetRir}`;
+    case 'steady_endurance': return prescription.paceGuidance
+      ? `${prescription.effortZone} · ${prescription.paceGuidance}`
+      : prescription.effortZone;
+    case 'intervals': return `${prescription.targetIntensity} · ${prescription.repetitions} repetitions`;
+    case 'mobility': return prescription.rangeGuidance;
+    case 'swimming': return `${prescription.targetIntensity} · ${prescription.totalDistanceMeters} m`;
+    case 'cycling': return prescription.powerGuidance
+      ? `${prescription.effortZone} · ${prescription.powerGuidance}`
+      : prescription.effortZone;
+    case 'mixed_session': return `${prescription.segments.length} ordered modality segments`;
+    case 'recovery': return sessionType === 'rest' ? 'Rest' : prescription.effortGuidance;
+    case 'unknown': return 'Unknown prescription type';
+  }
 }

@@ -63,8 +63,9 @@ describe('training-plan-revision-candidate-builder', () => {
     });
 
     expect(explicitlyOff).toEqual(defaultCandidate);
-    expect(enabled.document).toEqual(defaultCandidate.document);
-    expect(enabled.contentHash).toBe(defaultCandidate.contentHash);
+    expect(enabled.document.schemaVersion).toBe('training-plan-revision.v2');
+    expect(enabled.document).not.toEqual(defaultCandidate.document);
+    expect(enabled.contentHash).not.toBe(defaultCandidate.contentHash);
     expect(enabled.creationContextVersion).not.toBe(defaultCandidate.creationContextVersion);
     expect(defaultCandidate.qualityReport.checks.some((check) =>
       check.code === 'TYPED_CANONICAL_SESSION_COVERAGE')).toBe(false);
@@ -73,6 +74,8 @@ describe('training-plan-revision-candidate-builder', () => {
       expect.objectContaining({ code: 'TYPED_BLOCK_AND_PRESCRIPTION_VALIDATION' }),
       expect.objectContaining({ code: 'TYPED_STANDALONE_PHASE_OMISSION' }),
       expect.objectContaining({ code: 'TYPED_UNKNOWN_FALLBACK' }),
+      expect.objectContaining({ code: 'PHASE_SEQUENCE_FOR_PLAN_MODE' }),
+      expect.objectContaining({ code: 'TYPED_REVISION_PHASE_DISTRIBUTION_MATCH' }),
     ]));
   });
 
@@ -105,6 +108,20 @@ describe('training-plan-revision-candidate-builder', () => {
       'profile.equipmentIds',
       'profile.location',
     ]));
+  });
+
+  it('keeps equipment and experience causal in the typed M2 strength generator', () => {
+    const beginner = buildTrainingPlanRevisionCandidate(beginnerHome, { typedWorkoutValidationEnabled: true });
+    const experienced = buildTrainingPlanRevisionCandidate(experiencedGym, { typedWorkoutValidationEnabled: true });
+    const exerciseIds = (candidate: typeof beginner) => candidate.document.weeks
+      .flatMap((week) => week.workouts)
+      .flatMap((workout) => workout.blocks)
+      .flatMap((block) => block.exercises ?? [])
+      .map((exercise) => exercise.exerciseId);
+    expect(exerciseIds(beginner)).not.toEqual(exerciseIds(experienced));
+    expect(beginner.contentHash).not.toBe(experienced.contentHash);
+    expect(experienced.document.weeks.flatMap((week) => week.workouts)
+      .some((workout) => workout.sessionType === 'strength_max')).toBe(true);
   });
 
   it('uses ordered priority-bearing workout blocks', () => {

@@ -44,6 +44,7 @@ export interface TrainingWorkoutCapability {
   presentationFamily: Exclude<TrainingWorkoutPresentationFamily, 'unknown'>;
   presentationLabel: string;
   milestone1GenerationEnabled: boolean;
+  typedWorkoutGenerationEnabled: true;
 }
 
 const MILESTONE_1_GENERATION_TYPES = new Set<SessionType>([
@@ -94,16 +95,18 @@ export const TRAINING_WORKOUT_CAPABILITY_REGISTRY: readonly TrainingWorkoutCapab
     presentationFamily: presentationFamily(sessionType),
     presentationLabel: LABELS[sessionType],
     milestone1GenerationEnabled: MILESTONE_1_GENERATION_TYPES.has(sessionType),
+    typedWorkoutGenerationEnabled: true,
   }));
 
 export const TRAINING_PLAN_MODE_CAPABILITIES: ReadonlyArray<{
   planMode: TrainingPlanMode;
   milestone1GenerationEnabled: boolean;
+  typedWorkoutGenerationEnabled: true;
 }> = [
-  { planMode: 'event_based', milestone1GenerationEnabled: false },
-  { planMode: 'continuous', milestone1GenerationEnabled: true },
-  { planMode: 'maintenance', milestone1GenerationEnabled: false },
-  { planMode: 'return_to_training', milestone1GenerationEnabled: false },
+  { planMode: 'event_based', milestone1GenerationEnabled: false, typedWorkoutGenerationEnabled: true },
+  { planMode: 'continuous', milestone1GenerationEnabled: true, typedWorkoutGenerationEnabled: true },
+  { planMode: 'maintenance', milestone1GenerationEnabled: false, typedWorkoutGenerationEnabled: true },
+  { planMode: 'return_to_training', milestone1GenerationEnabled: false, typedWorkoutGenerationEnabled: true },
 ];
 
 const BY_SESSION_TYPE = new Map(
@@ -118,6 +121,7 @@ export function resolveTrainingWorkoutCapability(rawSessionType: unknown):
     presentationFamily: 'unknown';
     presentationLabel: 'Unknown workout type';
     milestone1GenerationEnabled: false;
+    typedWorkoutGenerationEnabled: false;
   } {
   const sessionType = String(rawSessionType ?? '').trim() || 'unknown';
   return BY_SESSION_TYPE.get(sessionType as SessionType) ?? {
@@ -126,5 +130,6 @@ export function resolveTrainingWorkoutCapability(rawSessionType: unknown):
     presentationFamily: 'unknown',
     presentationLabel: 'Unknown workout type',
     milestone1GenerationEnabled: false,
+    typedWorkoutGenerationEnabled: false,
   };
 }
