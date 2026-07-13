@@ -516,6 +516,20 @@ describe('sendPushNotification (gating)', () => {
 // ═══════════════════════════════════════════════════════════════════
 
 describe('sendPushNotification (error handling)', () => {
+  it('never includes invalid APNs auth-key contents in propagated errors', async () => {
+    const secretValue = 'private-apns-key-material-that-must-not-reach-logs';
+    mockedApnsConfig.authKey = secretValue;
+    mockPushTokensForUser[1] = ['configured-token'];
+
+    await expect(sendPushNotification(1, { title: 'T', body: 'B' })).rejects.toSatisfy((error: unknown) => {
+      expect(error).toBeInstanceOf(Error);
+      expect((error as Error).message).toContain(`Got ${secretValue.length} chars`);
+      expect((error as Error).message).not.toContain(secretValue);
+      expect((error as Error).message).not.toContain(secretValue.slice(0, 20));
+      return true;
+    });
+  });
+
   it('tallies 410 Gone responses as unregistered and clears the token', async () => {
     mockPushTokensForUser[1] = ['dead-token', 'live-token'];
     mockHttp2Responses = [
