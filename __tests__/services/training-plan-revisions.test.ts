@@ -86,7 +86,7 @@ describe('training-plan-revisions', () => {
         },
       });
       const revision = created.candidates[0];
-      expect(revision.document).toMatchObject({ schemaVersion: 'training-plan-revision.v1' });
+      expect(revision.document).toMatchObject({ schemaVersion: 'training-plan-revision.v2' });
       expect(revision.qualityReport.checks).toEqual(expect.arrayContaining([
         expect.objectContaining({ code: 'TYPED_CANONICAL_SESSION_COVERAGE' }),
         expect.objectContaining({ code: 'TYPED_PHASE_AND_WEEK_CONTIGUITY' }),
@@ -98,6 +98,60 @@ describe('training-plan-revisions', () => {
       expect(JSON.parse(stored.quality).qualityReport.checks).toEqual(expect.arrayContaining([
         expect.objectContaining({ code: 'TYPED_UNKNOWN_FALLBACK' }),
       ]));
+    });
+  });
+
+  it('persists and reads a phase-aware event revision through the immutable M1 snapshot tables', () => {
+    withDatabaseForTest(db, () => {
+      const eventRequest: TrainingPlanCandidateRequest = {
+        planMode: 'event_based', goal: 'event_performance', discipline: 'triathlon', horizonWeeks: 10,
+        event: { name: 'A-priority triathlon', date: '2026-10-04', priority: 'A' },
+        profile: {
+          experienceLevel: 'intermediate', sessionsPerWeek: 5, sessionDurationMinutes: 60,
+          availableDays: ['monday', 'tuesday', 'thursday', 'saturday', 'sunday'],
+          equipmentIds: [], location: 'home', preferences: [], exclusions: [],
+        },
+      };
+      const created = createTrainingPlanCandidateRevision({
+        scope: { userId: 7, tenantId: 7 },
+        idempotencyKey: 'typed-event-revision',
+        request: eventRequest,
+        env: { ...activeEnv, TRAINING_TYPED_WORKOUT_V1_ENABLED_USER_7: 'true' },
+      });
+      const revision = created.candidates[0];
+      expect(revision.documentSchemaVersion).toBe('training-plan-revision.v2');
+      expect(revision.document).toMatchObject({
+        planMode: 'event_based', discipline: 'triathlon',
+        phases: [
+          { phaseType: 'BASE' }, { phaseType: 'BUILD' }, { phaseType: 'PEAK' },
+          { phaseType: 'TAPER' }, { phaseType: 'RACE' },
+        ],
+      });
+      expect(getScopedTrainingPlanRevision({ userId: 7, tenantId: 7 }, revision.revisionId))
+        .toEqual(revision);
+      expect(db.prepare(`
+        SELECT document_schema_version AS schemaVersion, revision_document_json AS document
+          FROM training_plan_revisions WHERE revision_id = ?
+      `).get(revision.revisionId)).toMatchObject({ schemaVersion: 'training-plan-revision.v2' });
+      expect(db.prepare('SELECT COUNT(*) AS count FROM training_profile_snapshots').get()).toEqual({ count: 1 });
+    });
+  });
+
+  it('keeps typed plan families separated by discipline while preserving the M1 family key', () => {
+    withDatabaseForTest(db, () => {
+      createTrainingPlanCandidateRevision({
+        scope: { userId: 7, tenantId: 7 }, idempotencyKey: 'm1-family', request, env: activeEnv,
+      });
+      createTrainingPlanCandidateRevision({
+        scope: { userId: 7, tenantId: 7 }, idempotencyKey: 'hybrid-family',
+        request: { ...request, discipline: 'hybrid' },
+        env: { ...activeEnv, TRAINING_TYPED_WORKOUT_V1_ENABLED_USER_7: 'true' },
+      });
+      expect(db.prepare('SELECT family_key AS familyKey FROM training_plan_families ORDER BY family_key').all())
+        .toEqual([
+          { familyKey: 'continuous:general_fitness' },
+          { familyKey: 'continuous:general_fitness:hybrid' },
+        ]);
     });
   });
 

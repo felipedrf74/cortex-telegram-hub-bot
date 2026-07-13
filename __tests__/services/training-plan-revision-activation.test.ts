@@ -133,6 +133,50 @@ describe('training-plan-revision-activation', () => {
     });
   });
 
+  it('materializes typed event blocks and modality prescriptions without changing flag-off projection behavior', async () => {
+    await withDb(async () => {
+      const typedRequest: TrainingPlanCandidateRequest = {
+        planMode: 'event_based', goal: 'event_performance', discipline: 'triathlon', horizonWeeks: 8,
+        event: { name: 'Target triathlon', date: '2026-10-18', priority: 'A' },
+        profile: {
+          experienceLevel: 'intermediate', sessionsPerWeek: 4, sessionDurationMinutes: 45,
+          availableDays: ['monday', 'wednesday', 'friday', 'sunday'],
+          equipmentIds: [], location: 'home',
+        },
+      };
+      const typedEnv = { ...activeEnv, TRAINING_TYPED_WORKOUT_V1_ENABLED_USER_7: 'true' };
+      const revision = createBoundRevision(typedRequest, typedEnv);
+      seedApprovalEvidence(revision.revisionId, revision.contentHash, revision.creationContextVersion, 'execution-typed');
+      const result = await activateApprovedTrainingPlanRevision({
+        scope: { userId: 7, tenantId: 7 }, revisionId: revision.revisionId,
+        approval: {
+          decisionId: 'decision-1', decisionRecordVersion: 3, actionExecutionId: 'execution-typed',
+          approvedContentHash: revision.contentHash, approvedContextVersion: revision.creationContextVersion,
+        },
+        activationDate: '2026-07-13', env: typedEnv,
+      });
+      expect(result.projection).toMatchObject({ weekCount: 8, sessionCount: 56 });
+      expect(db.prepare(`
+        SELECT sport, goal, periodization, source_revision_id AS sourceRevisionId
+          FROM fitness_training_plans
+      `).get()).toEqual({
+        sport: 'triathlon', goal: 'event_performance', periodization: 'block', sourceRevisionId: revision.revisionId,
+      });
+      const structured = db.prepare(`
+        SELECT description_json AS descriptionJson, intensity_text AS intensityText
+          FROM training_sessions WHERE session_type = 'brick' LIMIT 1
+      `).get() as { descriptionJson: string; intensityText: string };
+      const parsedDescription = JSON.parse(structured.descriptionJson) as {
+        schemaVersion: string;
+        blocks: Array<{ blockType: string; prescription: { kind: string } }>;
+      };
+      expect(parsedDescription.schemaVersion).toBe('training-workout-blocks.v1');
+      expect(parsedDescription.blocks.find((block) => block.blockType === 'PRIMARY_WORK'))
+        .toMatchObject({ prescription: { kind: 'mixed_session' } });
+      expect(structured.intensityText).toMatch(/ordered modality segments/);
+    });
+  });
+
   it('never replaces an existing legacy active plan in Milestone 1', async () => {
     await withDb(async () => {
       const revision = createBoundRevision();
@@ -185,10 +229,13 @@ describe('training-plan-revision-activation', () => {
     });
   });
 
-  function createBoundRevision() {
+  function createBoundRevision(
+    candidateRequest: TrainingPlanCandidateRequest = request,
+    env: NodeJS.ProcessEnv = activeEnv,
+  ) {
     const created = createTrainingPlanCandidateRevision({
       scope: { userId: 7, tenantId: 7 }, idempotencyKey: `candidate-${Math.random()}`,
-      request, env: activeEnv,
+      request: candidateRequest, env,
     });
     const revision = created.candidates[0];
     db.prepare(`
