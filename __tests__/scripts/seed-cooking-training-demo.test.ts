@@ -18,6 +18,7 @@ vi.mock('../../src/services/database', () => ({
   },
   initDatabase: vi.fn(),
   closeDatabase: vi.fn(),
+  withDatabaseForTestAsync: vi.fn(),
 }));
 
 vi.mock('../../src/services/user-service', () => ({

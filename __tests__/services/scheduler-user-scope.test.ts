@@ -212,6 +212,13 @@ vi.mock('../../src/services/database', () => ({
   initDatabase: vi.fn(),
   closeDatabase: vi.fn(),
   findUnexpectedMigrationPrefixCollisions: vi.fn(() => []),
+  applyMigrationFileForTest: vi.fn(),
+  assertNoUnexpectedMigrationPrefixCollisions: vi.fn(),
+  filterAlreadyAppliedAddColumnStatements: vi.fn((sql: string) => sql),
+  runMigrationsForTest: vi.fn(),
+  stripWrappingTransactionStatements: vi.fn((sql: string) => sql),
+  withDatabaseForTest: vi.fn(),
+  withDatabaseForTestAsync: vi.fn(),
 }));
 vi.mock('../../src/services/report-document-store', () => ({
   storeAndPushReport: (...args: unknown[]) => mockStoreAndPushReport(...args),
@@ -229,18 +236,30 @@ vi.mock('../../src/services/notification-orchestrator', () => ({
   createNotificationIntent: (...args: unknown[]) => mockCreateNotificationIntent(...args),
   releaseDueNotificationDeliveries: vi.fn(),
 }));
-vi.mock('../../src/services/decision-center', () => ({
-  createDecisionIntent: (...args: unknown[]) => mockCreateDecisionIntent(...args),
-  runDecisionCenterSmokeCleanupJob: vi.fn(),
-  runDecisionExpiryJob: vi.fn(),
-  runDecisionHandledHistoryBackfillJob: vi.fn(),
-  runDecisionLedgerRetentionPruneJob: vi.fn(),
-  runDecisionMetricsRollupJob: vi.fn(),
-  runDecisionSourceStateSupersessionJob: vi.fn(),
-}));
-vi.mock('../../src/services/secretary-scheduling-arbitrator', () => ({
-  listSecretaryAgendaItems: (...args: unknown[]) => mockListSecretaryAgendaItems(...args),
-}));
+vi.mock('../../src/services/decision-center', async () => {
+  const actual = await vi.importActual<typeof import('../../src/services/decision-center')>(
+    '../../src/services/decision-center',
+  );
+  return {
+    ...actual,
+    createDecisionIntent: (...args: unknown[]) => mockCreateDecisionIntent(...args),
+    runDecisionCenterSmokeCleanupJob: vi.fn(),
+    runDecisionExpiryJob: vi.fn(),
+    runDecisionHandledHistoryBackfillJob: vi.fn(),
+    runDecisionLedgerRetentionPruneJob: vi.fn(),
+    runDecisionMetricsRollupJob: vi.fn(),
+    runDecisionSourceStateSupersessionJob: vi.fn(),
+  };
+});
+vi.mock('../../src/services/secretary-scheduling-arbitrator', async () => {
+  const actual = await vi.importActual<typeof import('../../src/services/secretary-scheduling-arbitrator')>(
+    '../../src/services/secretary-scheduling-arbitrator',
+  );
+  return {
+    ...actual,
+    listSecretaryAgendaItems: (...args: unknown[]) => mockListSecretaryAgendaItems(...args),
+  };
+});
 vi.mock('../../src/services/event-backbone-worker', () => ({
   runEventBackboneOnce: (...args: unknown[]) => mockRunEventBackboneOnce(...args),
 }));

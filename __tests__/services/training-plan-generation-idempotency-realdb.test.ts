@@ -12,6 +12,7 @@ vi.mock('../../src/services/database', () => ({
     if (!realDb) throw new Error('test db not initialized');
     return realDb;
   },
+  withDatabaseForTestAsync: vi.fn(),
 }));
 
 vi.mock('../../src/utils/logger', () => ({

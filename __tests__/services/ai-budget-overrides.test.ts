@@ -5,6 +5,7 @@ let db: Database.Database;
 
 vi.mock('../../src/services/database', () => ({
   getDb: () => db,
+  withDatabaseForTestAsync: vi.fn(),
 }));
 
 import {

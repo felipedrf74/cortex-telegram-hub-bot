@@ -9,12 +9,24 @@ const mocks = vi.hoisted(() => ({
   createDecisionIntent: vi.fn(),
 }));
 
-vi.mock('../../src/services/decision-preexecution-revalidator', () => ({
-  revalidateNormalizedDecisionAction: mocks.revalidate,
-}));
-vi.mock('../../src/services/decision-center', () => ({
-  createDecisionIntent: mocks.createDecisionIntent,
-}));
+vi.mock('../../src/services/decision-preexecution-revalidator', async () => {
+  const actual = await vi.importActual<typeof import('../../src/services/decision-preexecution-revalidator')>(
+    '../../src/services/decision-preexecution-revalidator',
+  );
+  return {
+    ...actual,
+    revalidateNormalizedDecisionAction: mocks.revalidate,
+  };
+});
+vi.mock('../../src/services/decision-center', async () => {
+  const actual = await vi.importActual<typeof import('../../src/services/decision-center')>(
+    '../../src/services/decision-center',
+  );
+  return {
+    ...actual,
+    createDecisionIntent: mocks.createDecisionIntent,
+  };
+});
 
 import {
   createSecretaryDecisionPreview,

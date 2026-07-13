@@ -35,6 +35,7 @@ vi.mock('../../src/services/training-plans', () => ({
 
 vi.mock('../../src/services/database', () => ({
   getDb: vi.fn(),
+  withDatabaseForTestAsync: vi.fn(),
 }));
 
 const FIXED_NOW = new Date('2026-05-24T10:00:00.000Z');

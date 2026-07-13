@@ -12,6 +12,7 @@ vi.mock('../../src/services/database', () => ({
   assertNoUnexpectedMigrationPrefixCollisions: vi.fn(),
   filterAlreadyAppliedAddColumnStatements: vi.fn((sql: string) => sql),
   stripWrappingTransactionStatements: vi.fn((sql: string) => sql),
+  withDatabaseForTestAsync: vi.fn(),
 }));
 
 const mockGetUserTimezoneById = vi.fn((userId: number) =>
