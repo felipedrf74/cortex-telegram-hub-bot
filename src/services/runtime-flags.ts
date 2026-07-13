@@ -14,6 +14,7 @@ export type SecretaryReasoningV1Mode = 'off' | 'shadow' | 'active';
 export type DecisionConflictPolicyV1Mode = 'off' | 'shadow' | 'active';
 export type TrainingPlanRevisionV1Mode = 'off' | 'shadow' | 'active';
 export type TrainingAdaptationV1Mode = 'off' | 'shadow' | 'active';
+export type TrainingExerciseIdentityV1Mode = 'off' | 'shadow' | 'active';
 
 function parseOptionalBoolean(raw: string | undefined): boolean | null {
   if (raw === undefined || raw.trim() === '') return null;
@@ -372,9 +373,26 @@ export function getTrainingPlanRevisionV1Mode(
 }
 
 /**
- * Milestone 2 typed phase/block/prescription validation. This is a validation
- * seam only: it does not enable generation, activation, or any legacy writer.
- * Default off and scope-overridable through the standard suffix convention.
+ * Canonical Training exercise-identity rollout. The policy is deliberately
+ * fail-closed: unset and unrecognised values are `off`; `shadow` may inspect
+ * and report identity closure without rewriting or rejecting legacy payloads;
+ * only the explicit `active` value may normalize or reject a new
+ * prescription. Scope overrides follow the shared runtime-flag convention.
+ */
+export function getTrainingExerciseIdentityV1Mode(
+  env: RuntimeEnv = process.env,
+  scope?: RuntimeFlagScope,
+): TrainingExerciseIdentityV1Mode {
+  const raw = scopedEnvValue(env, 'TRAINING_EXERCISE_IDENTITY_V1_MODE', scope)?.trim().toLowerCase();
+  if (raw === 'active') return 'active';
+  if (raw === 'shadow') return 'shadow';
+  return 'off';
+}
+
+/**
+ * Milestone 2 typed phase/block/prescription generation and activation for
+ * immutable revision candidates. It remains default off, scope-overridable,
+ * and does not change legacy plan writers or existing active plans.
  */
 export function isTrainingTypedWorkoutV1Enabled(
   env: RuntimeEnv = process.env,
@@ -396,6 +414,20 @@ export function getTrainingAdaptationV1Mode(
   if (raw === 'active') return 'active';
   if (raw === 'shadow') return 'shadow';
   return 'off';
+}
+
+/**
+ * Governs delivery of reviewed Training exercise-media metadata. The flag is
+ * deliberately narrower than exercise identity and typed workouts: enabling
+ * it cannot activate a draft manifest or bypass review/provenance/takedown
+ * validation. Unset and unrecognised values remain off, with the standard
+ * user/tenant override precedence.
+ */
+export function isTrainingExerciseMediaV1Enabled(
+  env: RuntimeEnv = process.env,
+  scope?: RuntimeFlagScope,
+): boolean {
+  return scopedFlagEnabledByExplicitOptIn(env, 'TRAINING_EXERCISE_MEDIA_V1_ENABLED', scope);
 }
 
 export function isTrainingPlanRevisionV1ExplicitlyEnrolled(

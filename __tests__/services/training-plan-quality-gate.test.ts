@@ -39,6 +39,17 @@ const fiveDayHypertrophySpec: TrainingPlanSpec = {
 };
 
 describe('training-plan-quality-gate', () => {
+  it('keeps the complete quality-gate output identical while identity mode is shadow', () => {
+    const plan = {
+      sport: 'gym',
+      weeks: [{ weekNumber: 1, sessions: [] }],
+    };
+    const spec = specFor({ daysPerWeek: 3 });
+
+    expect(prepareTrainingPlanForQualityGate(plan, spec, { exerciseIdentityMode: 'shadow' }))
+      .toEqual(prepareTrainingPlanForQualityGate(plan, spec));
+  });
+
   it.each([
     {
       daysPerWeek: 2 as const,

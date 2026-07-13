@@ -1,4 +1,4 @@
--- 229: Training adaptation proposals v1 — additive, dormant, and immutable.
+-- 230: Training adaptation proposals v1 — additive, dormant, and immutable.
 --
 -- This migration does not alter an active plan. It records explicit busy-day,
 -- tired-day, and substitution proposals that can create immutable child plan

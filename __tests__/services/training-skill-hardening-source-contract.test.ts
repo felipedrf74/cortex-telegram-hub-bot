@@ -126,11 +126,15 @@ describe('training skill hardening source contracts', () => {
     expect(coach).toContain("{ userId: meteringScope.userId, tenantId: meteringScope.tenantId }");
   });
 
-  it('keeps Training generation version pins sourced from the canonical catalog snapshot', () => {
+  it('keeps Training generation pins on the canonical snapshot unless reviewed identity mode is active', () => {
     const generator = read('src/api/routes/training-plan-generation.ts');
 
     expect(generator).toContain('const snapshot = loadTrainingCatalogSnapshot({ tenantId })');
-    expect(generator).toContain('catalogVersion: snapshot.catalogVersion');
+    expect(generator).toContain('const exerciseIdentityMode = getTrainingExerciseIdentityV1Mode(process.env, { tenantId, userId })');
+    expect(generator).toContain("const identityCatalog = exerciseIdentityMode === 'active'");
+    expect(generator).toContain('assertTrainingExerciseIdentityCatalogIntegrity(identityCatalog)');
+    expect(generator).toContain('catalogVersion: identityCatalog?.catalogVersion ?? snapshot.catalogVersion');
+    expect(generator).toContain('...(identityCatalog ? { catalogSourceHash: identityCatalog.sourceHash } : {})');
     expect(generator).toContain('sciencePolicyVersion: snapshot.sciencePolicyVersion');
     expect(generator).toContain('selectorPolicyVersion: snapshot.selectorPolicyVersion');
     expect(generator).toContain('equipmentVocabularyVersion: snapshot.equipmentVocabularyVersion');

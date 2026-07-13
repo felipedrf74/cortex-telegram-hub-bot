@@ -1,0 +1,72 @@
+-- STAGING REHEARSAL ONLY.
+--
+-- Production incident rollback is application-level: set
+-- TRAINING_EXERCISE_MEDIA_V1_ENABLED=false, retain the immutable metadata,
+-- and deprecate/revoke the affected manifest. This destructive inverse exists
+-- solely to prove reversibility against disposable staging snapshots. Do not
+-- execute it against production.
+
+BEGIN TRANSACTION;
+
+DROP TRIGGER IF EXISTS trg_training_exercise_media_takedown_immutable_delete;
+DROP TRIGGER IF EXISTS trg_training_exercise_media_takedown_immutable_update;
+DROP TRIGGER IF EXISTS trg_training_exercise_media_owner_approval_immutable_delete;
+DROP TRIGGER IF EXISTS trg_training_exercise_media_owner_approval_immutable_update;
+DROP TRIGGER IF EXISTS trg_training_exercise_media_host_approval_immutable_delete;
+DROP TRIGGER IF EXISTS trg_training_exercise_media_host_approval_immutable_update;
+DROP TRIGGER IF EXISTS trg_training_exercise_media_localization_review_immutable_delete;
+DROP TRIGGER IF EXISTS trg_training_exercise_media_localization_review_immutable_update;
+DROP TRIGGER IF EXISTS trg_training_exercise_instruction_localization_review_immutable_delete;
+DROP TRIGGER IF EXISTS trg_training_exercise_instruction_localization_review_immutable_update;
+DROP TRIGGER IF EXISTS trg_training_exercise_media_review_immutable_delete;
+DROP TRIGGER IF EXISTS trg_training_exercise_media_review_immutable_update;
+DROP TRIGGER IF EXISTS trg_training_exercise_media_localization_no_finalized_insert;
+DROP TRIGGER IF EXISTS trg_training_exercise_media_localization_immutable_delete;
+DROP TRIGGER IF EXISTS trg_training_exercise_media_localization_immutable_update;
+DROP TRIGGER IF EXISTS trg_training_exercise_instruction_localization_no_finalized_insert;
+DROP TRIGGER IF EXISTS trg_training_exercise_instruction_localization_immutable_delete;
+DROP TRIGGER IF EXISTS trg_training_exercise_instruction_localization_immutable_update;
+DROP TRIGGER IF EXISTS trg_training_exercise_media_provenance_no_finalized_insert;
+DROP TRIGGER IF EXISTS trg_training_exercise_media_provenance_immutable_delete;
+DROP TRIGGER IF EXISTS trg_training_exercise_media_provenance_immutable_update;
+DROP TRIGGER IF EXISTS trg_training_exercise_media_asset_no_finalized_insert;
+DROP TRIGGER IF EXISTS trg_training_exercise_media_asset_immutable_delete;
+DROP TRIGGER IF EXISTS trg_training_exercise_media_asset_immutable_update;
+DROP TRIGGER IF EXISTS trg_training_exercise_media_exercise_no_finalized_insert;
+DROP TRIGGER IF EXISTS trg_training_exercise_media_exercise_immutable_delete;
+DROP TRIGGER IF EXISTS trg_training_exercise_media_exercise_immutable_update;
+DROP TRIGGER IF EXISTS trg_training_exercise_media_manifest_no_delete;
+DROP TRIGGER IF EXISTS trg_training_exercise_media_manifest_activation_gate;
+DROP TRIGGER IF EXISTS trg_training_exercise_media_manifest_staging_gate;
+DROP TRIGGER IF EXISTS trg_training_exercise_media_manifest_transition_guard;
+DROP TRIGGER IF EXISTS trg_training_exercise_media_manifest_attestation_guard;
+DROP TRIGGER IF EXISTS trg_training_exercise_media_manifest_content_immutable;
+DROP TRIGGER IF EXISTS trg_training_exercise_media_manifest_approval_refs_guard;
+DROP TRIGGER IF EXISTS trg_training_exercise_media_manifest_draft_only_insert;
+DROP TRIGGER IF EXISTS trg_training_exercise_media_manifest_no_active_insert;
+
+DROP INDEX IF EXISTS idx_training_exercise_media_takedown_latest;
+DROP INDEX IF EXISTS idx_training_exercise_media_review_latest;
+DROP INDEX IF EXISTS idx_training_exercise_media_localization_review_latest;
+DROP INDEX IF EXISTS idx_training_exercise_instruction_localization_review_latest;
+DROP INDEX IF EXISTS idx_training_exercise_media_asset_lookup;
+DROP INDEX IF EXISTS idx_training_exercise_media_exercise_lookup;
+DROP INDEX IF EXISTS idx_training_exercise_media_manifest_scope_state;
+DROP INDEX IF EXISTS idx_training_exercise_media_one_active_scope;
+
+DROP TABLE IF EXISTS training_exercise_media_takedown_events;
+DROP TABLE IF EXISTS training_exercise_media_owner_approvals;
+DROP TABLE IF EXISTS training_exercise_media_host_approvals;
+DROP TABLE IF EXISTS training_exercise_media_localization_reviews;
+DROP TABLE IF EXISTS training_exercise_instruction_localization_reviews;
+DROP TABLE IF EXISTS training_exercise_media_reviews;
+DROP TABLE IF EXISTS training_exercise_media_localizations;
+DROP TABLE IF EXISTS training_exercise_instruction_localizations;
+DROP TABLE IF EXISTS training_exercise_media_provenance;
+DROP TABLE IF EXISTS training_exercise_media_assets;
+DROP TABLE IF EXISTS training_exercise_media_exercises;
+DROP TABLE IF EXISTS training_exercise_media_manifests;
+
+DELETE FROM _migrations WHERE filename = '229_training_exercise_media_v1.sql';
+
+COMMIT TRANSACTION;

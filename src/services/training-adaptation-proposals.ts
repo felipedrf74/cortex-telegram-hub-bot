@@ -9,6 +9,10 @@ import { buildBusyDayOptions } from './training-busy-day-policy';
 import { buildRepoTrainingCatalogSnapshot } from './coach-kernel/training-catalog';
 import { loadCoachKnowledge } from './coach-kernel/knowledge-loader';
 import {
+  assertTrainingExerciseIdentityCatalogIntegrity,
+  buildTrainingExerciseIdentityCatalogSnapshot,
+} from './training-exercise-identity';
+import {
   getTrainingAdaptationV1Mode,
   getTrainingPlanRevisionV1Mode,
   isDecisionFlowV1EnforceEnabled,
@@ -1134,10 +1138,25 @@ function immutableWorkoutKeysForSource(
 }
 
 function assertPinnedCatalog(source: TrainingPlanRevisionResource): void {
-  const snapshot = buildRepoTrainingCatalogSnapshot(loadCoachKnowledge());
-  if (snapshot.catalogVersion !== source.catalog.version || snapshot.sourceHash !== source.catalog.sourceHash) {
-    throw error('TRAINING_ADAPTATION_CATALOG_STALE', 'The source revision catalog is no longer the active pinned catalog.', 409);
+  const baseCatalog = buildRepoTrainingCatalogSnapshot(loadCoachKnowledge());
+  if (baseCatalog.catalogVersion === source.catalog.version
+      && baseCatalog.sourceHash === source.catalog.sourceHash) return;
+
+  try {
+    const identityCatalog = buildTrainingExerciseIdentityCatalogSnapshot();
+    assertTrainingExerciseIdentityCatalogIntegrity(identityCatalog);
+    if (identityCatalog.catalogVersion === source.catalog.version
+        && identityCatalog.sourceHash === source.catalog.sourceHash) return;
+  } catch {
+    // Identity authority is optional for base-catalog revisions but must remain
+    // integrity-verified before it can authorize an identity-backed source.
   }
+
+  throw error(
+    'TRAINING_ADAPTATION_CATALOG_STALE',
+    'The source revision catalog is no longer an integrity-verified active catalog.',
+    409,
+  );
 }
 
 function authoritativeProfileContext(

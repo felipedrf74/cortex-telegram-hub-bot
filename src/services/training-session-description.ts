@@ -20,6 +20,8 @@
  * available at plan-persistence time.
  */
 import { logger } from '../utils/logger';
+import { TRAINING_NON_CATALOG_INSTRUCTIONAL_TEXT_POLICY } from './training-exercise-identity';
+import type { TrainingExerciseIdentityV1Mode } from './runtime-flags';
 
 // ── Inputs ─────────────────────────────────────────────────────────
 
@@ -48,6 +50,9 @@ export interface SessionDescriptionInput {
   session: SessionInput;
   /** Optional athlete profile data — gates pace/HR zone rendering. */
   profiles?: AthleteProfiles;
+  /** Controls additive identity-policy metadata only. Off preserves the
+   * legacy serialized section shape. */
+  exerciseIdentityMode?: TrainingExerciseIdentityV1Mode;
 }
 
 export interface PlanWeekSummary {
@@ -187,9 +192,19 @@ export interface SessionSections {
     note?: string;
   }>;
   /** Warm-up block (head + bullet items + optional duration). */
-  warmup?: { headline: string; items: string[] };
+  warmup?: {
+    headline: string;
+    items: string[];
+    newlyPrescribable?: false;
+    mediaEligible?: false;
+  };
   /** Cool-down (single line is fine). */
-  cooldown?: { headline: string; items: string[] };
+  cooldown?: {
+    headline: string;
+    items: string[];
+    newlyPrescribable?: false;
+    mediaEligible?: false;
+  };
   /** ⚠️ IMPORTANT callouts — deload reminders, hard-day warnings. */
   important?: string[];
   /** Free-text AI commentary (if the planner supplied any). */
@@ -234,8 +249,14 @@ function buildSections(input: SessionDescriptionInput): SessionSections {
     execution: buildExecution(input, sport),
     coachInsights: buildCoachInsights(input),
     exercises: buildExercises(input.session.exercises),
-    warmup: buildWarmup(input.session.sessionType, sport),
-    cooldown: buildCooldown(input.session.sessionType, sport),
+    warmup: markInstructionalTextAsNonCatalog(
+      buildWarmup(input.session.sessionType, sport),
+      input.exerciseIdentityMode,
+    ),
+    cooldown: markInstructionalTextAsNonCatalog(
+      buildCooldown(input.session.sessionType, sport),
+      input.exerciseIdentityMode,
+    ),
     important: buildImportant(input, sport),
     notes: cleanFreeText(input.session.description, sport),
     totalMinutesText: buildTotalMinutesText(input.session.durationMinutes),
@@ -662,6 +683,17 @@ function buildCooldown(sessionType: string, sport: SportFamily): SessionSections
     default:
       return undefined;
   }
+}
+
+function markInstructionalTextAsNonCatalog<T extends SessionSections['warmup'] | SessionSections['cooldown']>(
+  block: T,
+  mode: TrainingExerciseIdentityV1Mode | undefined,
+): T {
+  if (!block || mode !== 'active') return block;
+  return {
+    ...block,
+    ...TRAINING_NON_CATALOG_INSTRUCTIONAL_TEXT_POLICY,
+  } as T;
 }
 
 // ── ⚠️ Important callouts ──────────────────────────────────────────

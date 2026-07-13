@@ -14,6 +14,10 @@ import {
 } from '../../src/services/training-adaptation-proposals';
 import type { TrainingPlanRevisionDocument } from '../../src/services/training-plan-revision-candidate-builder';
 import { dismissDecision, reviewDecision } from '../../src/services/decision-center';
+import {
+  TRAINING_EXERCISE_IDENTITY_CATALOG_VERSION,
+  TRAINING_EXERCISE_IDENTITY_EXPECTED_SOURCE_HASH,
+} from '../../src/services/training-exercise-identity';
 
 const activeEnv = {
   TRAINING_PLAN_REVISION_V1_MODE_USER_7: 'active',
@@ -375,9 +379,51 @@ describe('Training adaptation proposal service', () => {
     });
   });
 
-  async function createActiveRevision() {
+  it('accepts the exact base catalog for purposeful substitutions', async () => {
+    await withDb(async () => {
+      const source = await createActiveRevision();
+      const substitution = findEligibleSubstitutionPreview(source, activeEnv, 'base-catalog-substitution');
+      expect(substitution.preview.options).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          action: 'SUBSTITUTE_EXERCISE',
+          approvalRequirement: 'DECISION_CENTER',
+          substitution: expect.objectContaining({ equipmentCompatible: true }),
+        }),
+      ]));
+    });
+  });
+
+  it('accepts only an integrity-verified identity catalog and rejects forged pins', async () => {
+    await withDb(async () => {
+      const identityEnv = {
+        ...activeEnv,
+        TRAINING_EXERCISE_IDENTITY_V1_MODE_USER_7: 'active',
+      };
+      const source = await createActiveRevision(identityEnv, 'candidate-active-identity');
+      expect(source.catalog).toMatchObject({
+        version: TRAINING_EXERCISE_IDENTITY_CATALOG_VERSION,
+        sourceHash: TRAINING_EXERCISE_IDENTITY_EXPECTED_SOURCE_HASH,
+      });
+      expect(findEligibleSubstitutionPreview(source, identityEnv, 'identity-catalog-substitution').preview.options)
+        .toEqual(expect.arrayContaining([expect.objectContaining({ action: 'SUBSTITUTE_EXERCISE' })]));
+
+      db.exec('DROP TRIGGER trg_training_plan_revisions_content_immutable');
+      db.prepare(`
+        UPDATE training_plan_revisions
+           SET catalog_version = 'forged-catalog', catalog_source_hash = ?
+         WHERE revision_id = ?
+      `).run('f'.repeat(64), source.revisionId);
+      expect(() => findEligibleSubstitutionPreview(source, identityEnv, 'forged-catalog-substitution'))
+        .toThrow(expect.objectContaining({ code: 'TRAINING_ADAPTATION_CATALOG_STALE' }));
+    });
+  });
+
+  async function createActiveRevision(
+    env: NodeJS.ProcessEnv = activeEnv,
+    idempotencyKey = 'candidate-active',
+  ) {
     const created = createTrainingPlanCandidateRevision({
-      scope: { userId: 7, tenantId: 7 }, idempotencyKey: 'candidate-active', env: activeEnv,
+      scope: { userId: 7, tenantId: 7 }, idempotencyKey, env,
       request: {
         planMode: 'continuous', goal: 'general_fitness', discipline: 'strength', horizonWeeks: 4,
         profile: {
@@ -401,7 +447,7 @@ describe('Training adaptation proposal service', () => {
         decisionId: 'source-decision', decisionRecordVersion: 3, actionExecutionId: 'source-execution',
         approvedContentHash: revision.contentHash, approvedContextVersion: revision.creationContextVersion,
       },
-      activationDate: '2026-07-13', env: activeEnv,
+      activationDate: '2026-07-13', env,
     });
     return getScopedTrainingPlanRevision({ userId: 7, tenantId: 7 }, revision.revisionId, db)!;
   }
@@ -445,6 +491,39 @@ describe('Training adaptation proposal service', () => {
       target: { workoutKey }, explicitInput: { kind: 'BUSY_DAY' as const, availableMinutes: essentialMinimum + 5 },
       env: activeEnv, db,
     };
+  }
+
+  function findEligibleSubstitutionPreview(
+    source: ReturnType<typeof getScopedTrainingPlanRevision> & {},
+    env: NodeJS.ProcessEnv,
+    eventPrefix: string,
+  ) {
+    const candidates = (source.document as TrainingPlanRevisionDocument).weeks
+      .flatMap((week) => week.workouts)
+      .flatMap((workout) => workout.blocks.flatMap((block) => (block.exercises ?? []).map((exercise) => ({
+        workoutKey: workout.workoutKey,
+        blockId: block.blockId,
+        exerciseId: exercise.exerciseId,
+      }))));
+    for (const [index, candidate] of candidates.entries()) {
+      const eventId = `${eventPrefix}-${index + 1}`;
+      const preview = previewTrainingAdaptation({
+        scope: { userId: 7, tenantId: 7 }, eventId,
+        idempotencyKey: `training-adaptation:${eventId}`,
+        currentRevisionId: source.revisionId,
+        expectedContentHash: source.contentHash,
+        contextVersion: source.creationContextVersion,
+        adaptationScope: 'SESSION',
+        target: candidate,
+        explicitInput: {
+          kind: 'SUBSTITUTION', reason: 'EXCLUSION', originalExerciseId: candidate.exerciseId,
+          unavailableEquipmentIds: [], exclusions: [candidate.exerciseId],
+        },
+        env, db,
+      });
+      if (preview.preview.options.some((option) => option.action === 'SUBSTITUTE_EXERCISE')) return preview;
+    }
+    throw new Error('No eligible purposeful substitution fixture was found.');
   }
 
   async function withDb<T>(operation: () => Promise<T>): Promise<T> {

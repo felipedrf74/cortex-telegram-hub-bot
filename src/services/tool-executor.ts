@@ -32,6 +32,7 @@ import { authorizeChatToolCall, formatToolAuthorizationFailure } from './chat-to
 import { sanitizeForPromptInterpolation } from '../utils/prompt-sanitizer';
 import { assertLegacySessionMutationAllowed } from './training-plan-revision-legacy-guard';
 import { TrainingPlanRevisionError } from './training-plan-revision-errors';
+import { normalizeTrainingExercisesJsonForWrite } from './training-exercise-identity';
 
 // ─── Phase 3 Slice A — profile field whitelist ───────────────────
 //
@@ -810,6 +811,10 @@ export async function executeToolCall(
         if (!weekBelongsToPlan) {
           return { error: 'add_training_session cannot write to a week outside the authenticated user plan' };
         }
+        const exercisesJson = normalizeTrainingExercisesJsonForWrite(input.exercises_json, {
+          scope: { userId: scope.userId, tenantId: scope.tenantId },
+          source: 'tool-executor.add_training_session',
+        });
         const session = trainingPlans.createSession({
           week_id: input.week_id,
           plan_id: input.plan_id,
@@ -817,7 +822,7 @@ export async function executeToolCall(
           session_type: input.session_type,
           title: input.title,
           description: input.description,
-          exercises_json: input.exercises_json,
+          exercises_json: exercisesJson ?? undefined,
           duration_minutes: input.duration_minutes,
           intensity_text: input.intensity_text,
         });
@@ -1182,9 +1187,13 @@ export async function executeToolCall(
           { userId: scope.userId, tenantId: scope.tenantId },
           scope.session.id,
         );
+        const exercisesJson = normalizeTrainingExercisesJsonForWrite(input.exercises_json, {
+          scope: { userId: scope.userId, tenantId: scope.tenantId },
+          source: 'tool-executor.update_training_session',
+        });
         const updated = trainingPlans.updateSession(input.session_id, {
           title: input.title,
-          exercises_json: input.exercises_json,
+          exercises_json: exercisesJson ?? undefined,
           duration_minutes: input.duration_minutes,
           intensity_text: input.intensity_text,
           description: input.description,

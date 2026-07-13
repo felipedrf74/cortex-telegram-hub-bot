@@ -41,6 +41,7 @@ import type { TrainingDecisionReason } from '../../services/coach-kernel/types';
 import { logger } from '../../utils/logger';
 import { withTrainingCalendarOperationLock } from '../../services/training-operation-locks';
 import { requireTenantIdParam } from '../../services/tenant-scope';
+import { getTrainingExerciseIdentityV1Mode } from '../../services/runtime-flags';
 import {
   preferredTimeForSessionType,
   scheduleSessionWindow,
@@ -1620,5 +1621,9 @@ function buildSessionDescriptionInput(args: {
       decisionReasons: sessionData.decisionReasons,
     },
     profiles: input.athleteProfiles,
+    exerciseIdentityMode: getTrainingExerciseIdentityV1Mode(process.env, {
+      userId: input.userId,
+      tenantId: input.tenantId,
+    }),
   };
 }

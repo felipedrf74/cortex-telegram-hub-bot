@@ -6,14 +6,14 @@ import Database from 'better-sqlite3';
 import { describe, expect, it } from 'vitest';
 import { applyMigrationFileForTest, runMigrationsForTest } from '../../src/services/database';
 
-describe('migration 229 — Training adaptation proposals v1', () => {
+describe('migration 230 — Training adaptation proposals v1', () => {
   it('applies additively, replays idempotently, and keeps the scoped graph valid', () => {
     const db = new Database(':memory:');
     try {
       runMigrationsForTest(db);
-      applyMigrationFileForTest(db, '229_training_adaptation_proposals_v1.sql');
-      expect(db.prepare("SELECT filename FROM _migrations WHERE filename = '229_training_adaptation_proposals_v1.sql'").get())
-        .toEqual({ filename: '229_training_adaptation_proposals_v1.sql' });
+      applyMigrationFileForTest(db, '230_training_adaptation_proposals_v1.sql');
+      expect(db.prepare("SELECT filename FROM _migrations WHERE filename = '230_training_adaptation_proposals_v1.sql'").get())
+        .toEqual({ filename: '230_training_adaptation_proposals_v1.sql' });
       expect(db.prepare(`
         SELECT name FROM sqlite_master
          WHERE type = 'table' AND name LIKE 'training_adaptation_%'
@@ -86,7 +86,7 @@ describe('migration 229 — Training adaptation proposals v1', () => {
     const db = new Database(':memory:');
     try {
       runMigrationsForTest(db);
-      db.exec(readFileSync(resolve(process.cwd(), 'migrations/down/229_training_adaptation_proposals_v1.sql'), 'utf8'));
+      db.exec(readFileSync(resolve(process.cwd(), 'migrations/down/230_training_adaptation_proposals_v1.sql'), 'utf8'));
       expect(db.prepare("SELECT name FROM sqlite_master WHERE name LIKE 'training_adaptation_%'").all()).toEqual([]);
       expect(db.prepare("SELECT name FROM sqlite_master WHERE name = 'training_plan_revisions'").get())
         .toEqual({ name: 'training_plan_revisions' });

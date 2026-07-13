@@ -171,6 +171,8 @@ export function createTrainingPlanCandidateRevision(input: {
     db,
     input.scope,
     buildTrainingPlanRevisionCandidate(input.request, {
+      env: input.env,
+      scope: input.scope,
       typedWorkoutValidationEnabled: isTrainingTypedWorkoutV1Enabled(input.env, input.scope),
     }),
   );
@@ -209,6 +211,7 @@ export function computeTrainingPlanRevisionShadow(
   options: { env?: NodeJS.ProcessEnv; scope?: RuntimeFlagScope } = {},
 ): BuiltTrainingPlanRevisionCandidate {
   return buildTrainingPlanRevisionCandidate(request, {
+    ...options,
     typedWorkoutValidationEnabled: isTrainingTypedWorkoutV1Enabled(options.env, options.scope),
   });
 }
@@ -470,6 +473,8 @@ export function editTrainingPlanRevisionPreview(input: {
     db,
     input.scope,
     buildTrainingPlanRevisionCandidate(nextRequest, {
+      env: input.env,
+      scope: input.scope,
       typedWorkoutValidationEnabled: isTrainingTypedWorkoutV1Enabled(input.env, input.scope),
     }),
   );

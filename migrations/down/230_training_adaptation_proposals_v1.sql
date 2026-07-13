@@ -21,6 +21,6 @@ DROP INDEX IF EXISTS idx_training_adaptation_previews_scope_expiry;
 DROP TABLE IF EXISTS training_adaptation_lifecycle_events;
 DROP TABLE IF EXISTS training_adaptation_proposals;
 DROP TABLE IF EXISTS training_adaptation_previews;
-DELETE FROM _migrations WHERE filename = '229_training_adaptation_proposals_v1.sql';
+DELETE FROM _migrations WHERE filename = '230_training_adaptation_proposals_v1.sql';
 
 COMMIT TRANSACTION;

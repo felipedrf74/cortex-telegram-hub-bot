@@ -12,6 +12,12 @@ import type {
   TrainingProfileFollowUpQuestion,
   TrainingProfileMissingData,
 } from './coach-kernel/types';
+import { materializeCanonicalTrainingExercise } from './training-exercise-identity';
+import {
+  getTrainingExerciseIdentityV1Mode,
+  type RuntimeFlagScope,
+  type TrainingExerciseIdentityV1Mode,
+} from './runtime-flags';
 
 export interface CoordinatedTrainingSession {
   dayOfWeek: string;
@@ -81,6 +87,8 @@ export interface TrainingPlanCoordinationInput {
   content: ContentMeshContext | null;
   secretary: SecretaryMeshContext | null;
   sharedDecisionContext?: string;
+  env?: NodeJS.ProcessEnv;
+  scope?: RuntimeFlagScope;
 }
 
 export interface TrainingPlanCoordination {
@@ -103,6 +111,19 @@ export interface TrainingPlanCoordination {
   protectFocusDay: string | null;
   selectiveTrainingSpend: boolean;
 }
+
+export interface TrainingPlanCoordinationApplyOptions {
+  exerciseIdentityMode?: TrainingExerciseIdentityV1Mode;
+}
+
+const COORDINATION_EMITTER_CANONICAL_IDS: Readonly<Record<string, string>> = Object.freeze({
+  'Push-Up / DB Floor Press': 'dumbbell_floor_press',
+  'One-Arm Row': 'one_arm_dumbbell_row',
+});
+
+// Runtime-only rollout context must not become part of the enumerable
+// coordination contract (which is serialized/compared by legacy callers).
+const COORDINATION_IDENTITY_MODES = new WeakMap<TrainingPlanCoordination, TrainingExerciseIdentityV1Mode>();
 
 const VALID_DAYS = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'] as const;
 
@@ -250,7 +271,7 @@ export function buildTrainingPlanCoordination(input: TrainingPlanCoordinationInp
       : null,
   ]);
 
-  return {
+  const coordination: TrainingPlanCoordination = {
     promptBlock: guidance.length > 0
       ? guidance.map((line) => `- ${line}`).join('\n')
       : '- No extra cross-skill coaching constraints detected.',
@@ -272,11 +293,17 @@ export function buildTrainingPlanCoordination(input: TrainingPlanCoordinationInp
     protectFocusDay,
     selectiveTrainingSpend,
   };
+  const exerciseIdentityMode = getTrainingExerciseIdentityV1Mode(input.env ?? process.env, input.scope);
+  if (exerciseIdentityMode !== 'off') {
+    COORDINATION_IDENTITY_MODES.set(coordination, exerciseIdentityMode);
+  }
+  return coordination;
 }
 
 export function applyTrainingPlanCoordination(
   plan: CoordinatedTrainingPlan,
   coordination: TrainingPlanCoordination,
+  options: TrainingPlanCoordinationApplyOptions = {},
 ): CoordinatedTrainingPlan {
   const cloned: CoordinatedTrainingPlan = JSON.parse(JSON.stringify(plan ?? {}));
   if (!Array.isArray(cloned.weeks)) return cloned;
@@ -338,7 +365,48 @@ export function applyTrainingPlanCoordination(
 
   capWeekToWeekProgression(cloned.weeks, coordination.progressionRampCapPct);
 
-  return cloned;
+  return normalizeCoordinatedExerciseIdentities(
+    cloned,
+    options.exerciseIdentityMode
+      ?? COORDINATION_IDENTITY_MODES.get(coordination)
+      ?? getTrainingExerciseIdentityV1Mode(process.env),
+  );
+}
+
+function normalizeCoordinatedExerciseIdentities(
+  plan: CoordinatedTrainingPlan,
+  mode: TrainingExerciseIdentityV1Mode,
+): CoordinatedTrainingPlan {
+  if (mode === 'off' || !Array.isArray(plan.weeks)) return plan;
+  plan.weeks = plan.weeks.map((week) => ({
+    ...week,
+    sessions: Array.isArray(week.sessions)
+      ? week.sessions.map((session) => ({
+          ...session,
+          exercises: Array.isArray(session.exercises)
+            ? session.exercises.map((exercise) => {
+                if ((!exercise || typeof exercise !== 'object' || Array.isArray(exercise)) && mode === 'shadow') {
+                  materializeCanonicalTrainingExercise({ name: String(exercise ?? '') }, {
+                    env: { TRAINING_EXERCISE_IDENTITY_V1_MODE: mode },
+                    source: 'training-plan-coordination',
+                  });
+                  return exercise;
+                }
+                const record = exercise && typeof exercise === 'object'
+                  ? exercise as Record<string, unknown>
+                  : { name: String(exercise ?? '') };
+                const name = typeof record.name === 'string' ? record.name.trim() : '';
+                return materializeCanonicalTrainingExercise(record, {
+                  canonicalId: COORDINATION_EMITTER_CANONICAL_IDS[name],
+                  env: { TRAINING_EXERCISE_IDENTITY_V1_MODE: mode },
+                  source: 'training-plan-coordination',
+                });
+              })
+            : session.exercises,
+        }))
+      : week.sessions,
+  }));
+  return plan;
 }
 
 function moveLongSessionToPreferredDay(sessions: CoordinatedTrainingSession[], preferredDay: string): void {

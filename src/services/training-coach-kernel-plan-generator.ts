@@ -38,6 +38,7 @@ import {
   extractNormalizedTrainingProfile,
 } from './training-profile-model';
 import { logger } from '../utils/logger';
+import type { TrainingExerciseIdentityV1Mode } from './runtime-flags';
 
 export const MIN_TRAINING_PLAN_DURATION_WEEKS = 1;
 export const MAX_TRAINING_PLAN_DURATION_WEEKS = 52;
@@ -145,6 +146,7 @@ export interface CoachKernelTrainingPlanInput {
   capacityWindows?: CapacityWindow[] | null;
   recentlyAskedFollowUpIds?: string[] | null;
   resolvedFollowUpIds?: string[] | null;
+  exerciseIdentityMode?: TrainingExerciseIdentityV1Mode;
 }
 
 const DAY_NAME_MAP: Record<DayOfWeek, string> = {
@@ -225,7 +227,9 @@ export function buildCoachKernelTrainingPlan(input: CoachKernelTrainingPlanInput
       },
     };
 
-    const weeklyPlan = buildWeekPlan(weekAthlete, weekStart);
+    const weeklyPlan = buildWeekPlan(weekAthlete, weekStart, {
+      exerciseIdentityMode: input.exerciseIdentityMode,
+    });
     rawWeeklyPlans.push(weeklyPlan);
     // Retain the raw WeeklyPlan (for guardrail reasoning) AND the
     // AthleteState that produced it (so the home-view route can re-run

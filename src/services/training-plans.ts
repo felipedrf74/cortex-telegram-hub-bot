@@ -10,6 +10,8 @@
 import { DateTime } from 'luxon';
 import { getDb } from './database';
 import { logger } from '../utils/logger';
+import { normalizeTrainingExercisesJsonForWrite } from './training-exercise-identity';
+import { getTrainingExerciseIdentityV1Mode } from './runtime-flags';
 import { config } from '../config';
 import { requireTenantIdParam } from './tenant-scope';
 
@@ -493,11 +495,26 @@ export function updateWeekAdjustment(weekId: number, intensityPct: number, reaso
 export function createSession(input: CreateSessionInput): TrainingSession {
   const db = getDb();
   const normalizedDay = canonicalDayOfWeek(input.day_of_week);
-  const tenantId = (db.prepare('SELECT tenant_id AS tenantId FROM fitness_training_plans WHERE id = ?')
-    .get(input.plan_id) as { tenantId?: number | null } | undefined)?.tenantId ?? null;
+  const planScope = db.prepare('SELECT tenant_id AS tenantId, user_id AS userId FROM fitness_training_plans WHERE id = ?')
+    .get(input.plan_id) as { tenantId?: number | null; userId?: number | null } | undefined;
+  const tenantId = planScope?.tenantId ?? null;
   if (!Number.isFinite(tenantId) || Number(tenantId) <= 0) {
     throw new Error(`TRAINING_PLAN_TENANT_SCOPE_MISSING: ${input.plan_id}`);
   }
+  const userId = Number.isSafeInteger(planScope?.userId) && Number(planScope?.userId) > 0
+    ? Number(planScope?.userId)
+    : null;
+  const exerciseIdentityMode = getTrainingExerciseIdentityV1Mode(process.env, {
+    tenantId: Number(tenantId),
+    userId,
+  });
+  if (exerciseIdentityMode === 'active' && userId == null) {
+    throw new Error(`TRAINING_PLAN_USER_SCOPE_MISSING: ${input.plan_id}`);
+  }
+  const exercisesJson = normalizeTrainingExercisesJsonForWrite(input.exercises_json, {
+    scope: { tenantId: Number(tenantId), userId },
+    source: 'training-plans.createSession',
+  });
   const result = db.prepare(`
     INSERT INTO training_sessions
       (week_id, plan_id, tenant_id, day_of_week, session_type, title, description,
@@ -508,7 +525,7 @@ export function createSession(input: CreateSessionInput): TrainingSession {
   `).run(
     input.week_id, input.plan_id, tenantId, normalizedDay, input.session_type,
     input.title, input.description ?? null, input.description_json ?? null,
-    input.exercises_json ?? null,
+    exercisesJson ?? null,
     input.duration_minutes ?? null, input.intensity_text ?? null,
     input.calendar_event_id ?? null, input.calendar_source ?? null,
     input.session_identity_key ?? null, input.session_shape_hash ?? null,
@@ -548,7 +565,31 @@ export function updateSession(
   const setClauses: string[] = [];
   const values: any[] = [];
 
-  for (const [key, value] of Object.entries(updates)) {
+  const normalizedUpdates = { ...updates };
+  if (typeof updates.exercises_json === 'string') {
+    const scope = db.prepare(`
+      SELECT plans.user_id AS userId, sessions.tenant_id AS tenantId
+        FROM training_sessions sessions
+        JOIN fitness_training_plans plans ON plans.id = sessions.plan_id
+       WHERE sessions.id = ?
+    `).get(sessionId) as { userId?: number | null; tenantId?: number | null } | undefined;
+    const tenantId = Number.isSafeInteger(scope?.tenantId) && Number(scope?.tenantId) > 0
+      ? Number(scope?.tenantId)
+      : null;
+    const userId = Number.isSafeInteger(scope?.userId) && Number(scope?.userId) > 0
+      ? Number(scope?.userId)
+      : null;
+    const exerciseIdentityMode = getTrainingExerciseIdentityV1Mode(process.env, { tenantId, userId });
+    if (exerciseIdentityMode === 'active' && (userId == null || tenantId == null)) {
+      throw new Error(`TRAINING_SESSION_SCOPE_MISSING: ${sessionId}`);
+    }
+    normalizedUpdates.exercises_json = normalizeTrainingExercisesJsonForWrite(updates.exercises_json, {
+      scope: { tenantId, userId },
+      source: 'training-plans.updateSession',
+    });
+  }
+
+  for (const [key, value] of Object.entries(normalizedUpdates)) {
     if (value !== undefined) {
       if (!TRAINING_SESSION_UPDATE_COLUMNS.has(key)) {
         throw new Error(`TRAINING_SESSION_UPDATE_INVALID_FIELD: ${key}`);

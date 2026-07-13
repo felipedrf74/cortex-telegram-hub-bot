@@ -12,6 +12,8 @@ import type {
   StrengthExerciseCompletionSignal,
   WorkoutTemplate,
 } from '../types';
+import { authoritativeTrainingExerciseLibrary } from '../../training-exercise-identity';
+import type { TrainingExerciseIdentityV1Mode } from '../../runtime-flags';
 import {
   DAY_ORDER,
   clamp,
@@ -803,10 +805,17 @@ function resolveExercises(
     allowTemplateDefaults?: boolean;
     allowHardcodedFillers?: boolean;
     selectorTrace?: StrengthSelectorTrace;
+    exerciseIdentityMode?: TrainingExerciseIdentityV1Mode;
   } = {},
 ): ExercisePrescription[] {
   const equipment = availableEquipment(athlete);
-  const libraryById = new Map(library.map((exercise) => [exercise.id, exercise]));
+  const identityClosedLibrary = authoritativeTrainingExerciseLibrary(library, {
+    env: {
+      TRAINING_EXERCISE_IDENTITY_V1_MODE: selectorOptions.exerciseIdentityMode ?? 'off',
+    },
+    source: 'coach_kernel.strength_template',
+  });
+  const libraryById = new Map(identityClosedLibrary.map((exercise) => [exercise.id, exercise]));
   const usedIds = new Set<string>();
   const experience = athlete.profile.experienceLevel;
   const desiredExerciseIds = [
@@ -1586,6 +1595,7 @@ export const strengthEngine: SportEngine = {
           allowTemplateDefaults: !catalogSelection,
           allowHardcodedFillers: !catalogSelection,
           selectorTrace: catalogSelection?.trace,
+          exerciseIdentityMode: context.exerciseIdentityMode,
         },
       );
       // Slice 4.H — biomechanics-aware substitution. After equipment
