@@ -22,6 +22,49 @@ export const TRAINING_EXERCISE_MEDIA_REVIEW_BUNDLE_STATUS =
   'DRAFT_PENDING_ALL_APPROVALS' as const;
 export const TRAINING_EXERCISE_MEDIA_DRAFT_CREATED_AT = '2026-07-12T00:00:00.000Z' as const;
 
+const ALLOWED_IDENTITY_SOURCES = new Set([
+  'repo_seed',
+  'promoted_emergency',
+  'resolved_template',
+]);
+const ALLOWED_SELECTION_SOURCES = new Set([
+  'accepted_base_primary',
+  'accepted_native_resolution_remediation',
+  'accepted_provisional_supplemental_mapping',
+  'accepted_versioned_primary',
+  'promoted_unambiguous_contracted_primary_after_machine_review',
+  'resolved_template_primary',
+  'retained_original_primary_after_comparison',
+]);
+const LEGACY_CANDIDATE_SCREENING_STATUSES = new Set([
+  'PASS_DRAFT_CANDIDATE',
+  'PASS_DRAFT_CANDIDATE_WITH_FORM_REVIEW_NOTE',
+  'PASS_DRAFT_SELECTED_MAPPING',
+  'PASS_DRAFT_SELECTED_PRIMARY_WITH_MACHINE_REVIEW_NOTE',
+  'PASS_DRAFT_SELECTED_REMEDIATION',
+  'PASS_DRAFT_SHARED_CANDIDATE',
+  'PASS_DRAFT_SHARED_CANDIDATE_WITH_FORM_REVIEW_NOTE',
+  'PASS_DRAFT_SHARED_CANDIDATE_WITH_GRIP_REVIEW_NOTE',
+  'PASS_PRIMARY',
+  'PASS_PRIMARY_CANDIDATE',
+  'PASS_PRIMARY_CANDIDATE_WHEN_PAIRED',
+  'PASS_PRIMARY_CANDIDATE_WITH_FORM_REVIEW_NOTE',
+  'PASS_PRIMARY_SUPPLEMENTAL_VIEW_REQUIRED',
+  'PASS_SUPPLEMENTAL_CANDIDATE',
+  'PASS_SUPPLEMENTAL_CANDIDATE_WITH_FORM_REVIEW_NOTE',
+  'PASS_SUPPLEMENTAL_CANDIDATE_WITH_RANGE_REVIEW_NOTE',
+  'PASS_SUPPLEMENTAL_MECHANICS_CANDIDATE',
+]);
+const NORMALIZED_PRIMARY_SCREENING_STATUS = 'MACHINE_CANDIDATE_SCREENING_PASS' as const;
+const ALLOWED_SOURCE_SCREENING_STATUSES = new Set([
+  ...LEGACY_CANDIDATE_SCREENING_STATUSES,
+  NORMALIZED_PRIMARY_SCREENING_STATUS,
+]);
+const ALLOWED_BUNDLE_SCREENING_STATUSES = new Set([
+  ...[...LEGACY_CANDIDATE_SCREENING_STATUSES].filter((status) => status !== 'PASS_PRIMARY'),
+  NORMALIZED_PRIMARY_SCREENING_STATUS,
+]);
+
 export interface TrainingExerciseMediaCandidateEligibilityManifest {
   manifestId: string;
   status: string;
@@ -51,7 +94,7 @@ export interface TrainingExerciseMediaCandidateEligibilityManifest {
       path: string;
       selectionSource: string;
       selectionStatus: string;
-      provenanceLedger: string;
+      provenanceLedger?: string | null;
       sha256: string;
       width: number;
       height: number;
@@ -86,7 +129,7 @@ export interface TrainingExerciseMediaCandidateArtifactIndex {
     role: 'primary' | 'supplemental';
     ordinal: number;
     candidatePath: string;
-    provenanceLedger: string;
+    provenanceLedger: string | null;
     provenanceSidecar: string | null;
     sha256: string;
     objectKey: string;
@@ -111,7 +154,7 @@ export interface TrainingExerciseMediaInstructionScaffold extends TrainingExerci
   sourceReferences: {
     candidatePath: string;
     sha256: string;
-    provenanceLedger: string;
+    provenanceLedger: string | null;
     visualAuditStatus: string;
   };
 }
@@ -141,7 +184,7 @@ export interface TrainingExerciseMediaReviewBundleAsset {
   selectionSource: string;
   selectionStatus: 'DRAFT_SELECTED';
   visualAuditStatus: string;
-  provenanceLedger: string;
+  provenanceLedger: string | null;
   provenanceSidecar: string | null;
   publicationState: 'DRAFT';
   accessibilityScaffolds: TrainingExerciseMediaAccessibilityScaffold[];
@@ -214,7 +257,10 @@ export function buildTrainingExerciseMediaReviewBundle(input: {
 
   const exercises = identity.entries.map((identityEntry): TrainingExerciseMediaReviewBundleExercise => {
     const source = exerciseById.get(identityEntry.exerciseId);
-    if (!source || source.canonicalName !== identityEntry.canonicalName || source.active !== true) {
+    if (!source
+        || source.canonicalName !== identityEntry.canonicalName
+        || source.identitySource !== identityEntry.source
+        || source.active !== true) {
       throw new Error(`Candidate identity mismatch: ${identityEntry.exerciseId}`);
     }
     const candidateAssets = source.candidateAssets.map((candidate): TrainingExerciseMediaReviewBundleAsset => {
@@ -225,10 +271,19 @@ export function buildTrainingExerciseMediaReviewBundle(input: {
           || mapping.sha256 !== candidate.sha256
           || mapping.role !== candidate.role
           || mapping.ordinal !== candidate.ordinal
-          || object.objectKey !== mapping.objectKey) {
+          || mapping.selectionStatus !== candidate.selectionStatus
+          || mapping.reviewStatus !== candidate.reviewStatus
+          || mapping.visualAuditStatus !== candidate.visualAuditStatus
+          || mapping.provenanceLedger !== (candidate.provenanceLedger ?? null)
+          || object.objectKey !== mapping.objectKey
+          || object.byteSize !== candidate.byteSize
+          || object.width !== candidate.width
+          || object.height !== candidate.height
+          || object.format !== candidate.format) {
         throw new Error(`Candidate artifact mapping mismatch: ${source.exerciseId}:${candidate.path}`);
       }
       const proposedViewRole = candidate.role === 'primary' ? 'PRIMARY' : 'ALTERNATE';
+      const candidateScreeningStatus = normalizeCandidateScreeningStatus(candidate.visualAuditStatus);
       const assetDraftId = `draft_${sha256TrainingExerciseMedia({
         exerciseId: source.exerciseId,
         candidatePath: candidate.path,
@@ -249,7 +304,7 @@ export function buildTrainingExerciseMediaReviewBundle(input: {
         format: object.format,
         selectionSource: candidate.selectionSource,
         selectionStatus: 'DRAFT_SELECTED',
-        visualAuditStatus: candidate.visualAuditStatus,
+        visualAuditStatus: candidateScreeningStatus,
         provenanceLedger: mapping.provenanceLedger,
         provenanceSidecar: mapping.provenanceSidecar,
         publicationState: 'DRAFT',
@@ -340,8 +395,22 @@ function assertCandidateSources(input: {
     || entry.accessibilityReviewStatus !== 'pending'
     || entry.ownerReviewStatus !== 'pending'
     || entry.mediaEligibility !== 'DRAFT_CANDIDATE_ONLY'
+    || entry.mediaStatus !== 'CANDIDATE_MAPPING_COMPLETE_NOT_PRODUCTION_APPROVED'
     || entry.requiredViewPolicyStatus !== 'PROVISIONAL_PENDING_CONTENT_OWNER_REVIEW')) {
     throw new Error('Candidate eligibility source contains non-pending approval state.');
+  }
+  if (eligibility.entries.some((entry) => !ALLOWED_IDENTITY_SOURCES.has(entry.identitySource)
+    || entry.candidateAssets.some((candidate) => (
+      candidate.selectionStatus !== 'DRAFT_SELECTED'
+      || candidate.reviewStatus !== 'DRAFT_REQUIRES_DOMAIN_LEGAL_ACCESSIBILITY_OWNER_REVIEW'
+      || !ALLOWED_SELECTION_SOURCES.has(candidate.selectionSource)
+      || !ALLOWED_SOURCE_SCREENING_STATUSES.has(candidate.visualAuditStatus)
+      || candidate.format !== 'PNG'
+      || !candidate.path.startsWith('images/')
+      || !isPortableRelativePath(candidate.path)
+      || !isOptionalPortableReference(candidate.provenanceLedger)
+    )))) {
+    throw new Error('Candidate eligibility source contains an unknown identity, selection, screening, or path value.');
   }
   if (artifacts.schemaVersion !== 'training-exercise-media-artifact-index.v2'
       || artifacts.status !== 'DRAFT_NOT_PRODUCTION_APPROVED'
@@ -360,9 +429,12 @@ function assertCandidateSources(input: {
   }
   if (!/^[a-f0-9]{64}$/.test(input.candidateManifestSha256)
       || !/^[a-f0-9]{64}$/.test(input.artifactIndexSha256)
-      || JSON.stringify(input).includes('/Users/')
-      || JSON.stringify(input).includes('file://')) {
-    throw new Error('Candidate sources contain invalid hashes or a forbidden absolute artifact path.');
+      || containsForbiddenExternalReference(input)) {
+    throw new Error('Candidate sources contain invalid hashes, URLs, or absolute artifact paths.');
+  }
+  if (new Set(artifacts.objects.map((object) => object.sha256)).size !== artifacts.objects.length
+      || new Set(artifacts.mappings.map((mapping) => mapping.candidatePath)).size !== artifacts.mappings.length) {
+    throw new Error('Candidate artifact index contains duplicate object hashes or candidate paths.');
   }
   for (const object of artifacts.objects) {
     if (!/^[a-f0-9]{64}$/.test(object.sha256)
@@ -375,10 +447,14 @@ function assertCandidateSources(input: {
     }
   }
   if (artifacts.mappings.some((mapping) => mapping.selectionStatus !== 'DRAFT_SELECTED'
+    || mapping.reviewStatus !== 'DRAFT_REQUIRES_DOMAIN_LEGAL_ACCESSIBILITY_OWNER_REVIEW'
+    || !ALLOWED_SOURCE_SCREENING_STATUSES.has(mapping.visualAuditStatus)
     || !mapping.candidatePath.startsWith('images/')
-    || mapping.candidatePath.includes('..')
-    || mapping.objectKey.includes('..'))) {
-    throw new Error('Candidate artifact mapping contains a non-draft or unsafe path.');
+    || !isPortableRelativePath(mapping.candidatePath)
+    || !isPortableRelativePath(mapping.objectKey)
+    || !isOptionalPortableReference(mapping.provenanceLedger)
+    || !isOptionalPortableReference(mapping.provenanceSidecar))) {
+    throw new Error('Candidate artifact mapping contains an unknown screening value or unsafe portable path.');
   }
 }
 
@@ -391,25 +467,51 @@ export function validateTrainingExerciseMediaReviewBundle(bundle: TrainingExerci
   if (bundle.productionReleaseEligible !== false) errors.push('Review bundle cannot be production eligible.');
   if (bundleHash !== sha256TrainingExerciseMedia(withoutHash)) errors.push('Review-bundle hash mismatch.');
   if (bundle.source.catalogVersion !== TRAINING_EXERCISE_IDENTITY_CATALOG_VERSION
-      || bundle.source.catalogSourceHash !== TRAINING_EXERCISE_IDENTITY_EXPECTED_SOURCE_HASH) {
+      || bundle.source.catalogSourceHash !== TRAINING_EXERCISE_IDENTITY_EXPECTED_SOURCE_HASH
+      || bundle.source.artifactIndexSchemaVersion !== 'training-exercise-media-artifact-index.v2'
+      || !/^[a-f0-9]{64}$/.test(bundle.source.candidateManifestSha256)
+      || !/^[a-f0-9]{64}$/.test(bundle.source.artifactIndexSha256)) {
     errors.push('Review bundle is not pinned to the frozen exercise identity authority.');
   }
   if (bundle.source.externalArtifactRootRecorded !== false
-      || JSON.stringify(bundle).includes('/Users/')
-      || JSON.stringify(bundle).includes('file://')) {
-    errors.push('Review bundle must not record a local artifact root.');
+      || containsForbiddenExternalReference(bundle)) {
+    errors.push('Review bundle must not record URLs or absolute artifact paths.');
   }
   if (bundle.exercises.length !== 158 || bundle.objects.length !== 202) errors.push('Review-bundle coverage counts are incomplete.');
-  if (bundle.coverage.approvedExercises !== 0
+  if (bundle.coverage.canonicalExercises !== 158
+      || bundle.coverage.draftExercises !== 158
+      || bundle.coverage.candidateAssetMappings !== 200
+      || bundle.coverage.uniqueExternalObjects !== 202
+      || bundle.coverage.instructionScaffolds !== 474
+      || bundle.coverage.accessibilityScaffolds !== 600
+      || bundle.coverage.approvedExercises !== 0
       || bundle.coverage.approvedAssets !== 0
       || bundle.coverage.approvedReviews !== 0
       || bundle.coverage.completeLocalizedExercises !== 0) {
-    errors.push('Review bundle cannot claim approvals.');
+    errors.push('Review bundle coverage must match the frozen draft inventory and cannot claim approvals.');
+  }
+  const objectByHash = new Map(bundle.objects.map((object) => [object.sha256, object]));
+  if (objectByHash.size !== bundle.objects.length) errors.push('Review bundle contains duplicate object hashes.');
+  for (const object of bundle.objects) {
+    if (!/^[a-f0-9]{64}$/.test(object.sha256)
+        || object.objectKey !== `objects/sha256/${object.sha256.slice(0, 2)}/${object.sha256}.png`
+        || object.format !== 'PNG'
+        || !Number.isInteger(object.byteSize) || object.byteSize <= 0
+        || !Number.isInteger(object.width) || object.width <= 0
+        || !Number.isInteger(object.height) || object.height <= 0) {
+      errors.push(`Review bundle object metadata is invalid: ${object.sha256}`);
+    }
   }
   const bundleById = new Map(bundle.exercises.map((entry) => [entry.exerciseId, entry]));
+  if (bundleById.size !== bundle.exercises.length) errors.push('Review bundle contains duplicate exercise identities.');
+  const assetDraftIds = new Set<string>();
+  const candidatePaths = new Set<string>();
   for (const entry of identity.entries) {
     const candidate = bundleById.get(entry.exerciseId);
-    if (!candidate || candidate.canonicalName !== entry.canonicalName) {
+    if (!candidate
+        || candidate.canonicalName !== entry.canonicalName
+        || candidate.identitySource !== entry.source
+        || !ALLOWED_IDENTITY_SOURCES.has(candidate.identitySource)) {
       errors.push(`Missing canonical review entry: ${entry.exerciseId}`);
       continue;
     }
@@ -423,8 +525,12 @@ export function validateTrainingExerciseMediaReviewBundle(bundle: TrainingExerci
     for (const draft of candidate.instructionScaffolds) {
       const primary = candidate.candidateAssets.find((asset) => asset.candidateRole === 'primary');
       if (draft.status !== 'DRAFT_SCAFFOLD_PENDING_DOMAIN_AUTHORING'
+          || draft.sourceBasis !== 'CANONICAL_NAME_AND_SELECTED_ASSET_METADATA_ONLY'
           || draft.contentHash !== instructionContentHash(draft)
           || !primary
+          || !isPortableRelativePath(draft.sourceReferences.candidatePath)
+          || !isOptionalPortableReference(draft.sourceReferences.provenanceLedger)
+          || !ALLOWED_BUNDLE_SCREENING_STATUSES.has(draft.sourceReferences.visualAuditStatus)
           || draft.sourceReferences.candidatePath !== primary.candidatePath
           || draft.sourceReferences.sha256 !== primary.sha256
           || draft.sourceReferences.provenanceLedger !== primary.provenanceLedger
@@ -433,7 +539,35 @@ export function validateTrainingExerciseMediaReviewBundle(bundle: TrainingExerci
       }
     }
     for (const asset of candidate.candidateAssets) {
-      if (asset.publicationState !== 'DRAFT' || asset.selectionStatus !== 'DRAFT_SELECTED') {
+      const object = objectByHash.get(asset.sha256);
+      const expectedDraftId = `draft_${sha256TrainingExerciseMedia({
+        exerciseId: candidate.exerciseId,
+        candidatePath: asset.candidatePath,
+        sha256: asset.sha256,
+      }).slice(0, 24)}`;
+      if (assetDraftIds.has(asset.assetDraftId) || candidatePaths.has(asset.candidatePath)) {
+        errors.push(`Review bundle contains a duplicate draft asset or candidate path: ${asset.assetDraftId}`);
+      }
+      assetDraftIds.add(asset.assetDraftId);
+      candidatePaths.add(asset.candidatePath);
+      if (asset.publicationState !== 'DRAFT'
+          || asset.selectionStatus !== 'DRAFT_SELECTED'
+          || asset.assetDraftId !== expectedDraftId
+          || asset.exerciseId !== candidate.exerciseId
+          || !ALLOWED_SELECTION_SOURCES.has(asset.selectionSource)
+          || !ALLOWED_BUNDLE_SCREENING_STATUSES.has(asset.visualAuditStatus)
+          || !asset.candidatePath.startsWith('images/')
+          || !isPortableRelativePath(asset.candidatePath)
+          || !isPortableRelativePath(asset.objectKey)
+          || !isOptionalPortableReference(asset.provenanceLedger)
+          || !isOptionalPortableReference(asset.provenanceSidecar)
+          || asset.proposedViewRole !== (asset.candidateRole === 'primary' ? 'PRIMARY' : 'ALTERNATE')
+          || !object
+          || object.objectKey !== asset.objectKey
+          || object.byteSize !== asset.byteSize
+          || object.width !== asset.width
+          || object.height !== asset.height
+          || object.format !== asset.format) {
         errors.push(`Asset is not safely draft-scoped: ${asset.assetDraftId}`);
       }
       if (!sameSet(asset.accessibilityScaffolds.map((draft) => draft.locale), TRAINING_EXERCISE_MEDIA_REQUIRED_LOCALES)) {
@@ -441,6 +575,7 @@ export function validateTrainingExerciseMediaReviewBundle(bundle: TrainingExerci
       }
       for (const draft of asset.accessibilityScaffolds) {
         if (draft.status !== 'DRAFT_SCAFFOLD_PENDING_ACCESSIBILITY_AUTHORING'
+            || draft.sourceBasis !== 'CANONICAL_NAME_AND_SELECTED_ASSET_METADATA_ONLY'
             || draft.contentHash !== accessibilityContentHash(asset.assetDraftId, draft)) {
           errors.push(`Accessibility scaffold is invalid: ${asset.assetDraftId}:${draft.locale}`);
         }
@@ -623,6 +758,44 @@ function accessibilityCopy(
     caption: `${canonicalName} — candidate ${role} view.`,
     accessibilityDescription: `Draft candidate image for ${canonicalName}, identified only as the ${role} view. Visual accuracy and final wording remain pending independent domain, accessibility, and localization review.`,
   };
+}
+
+function normalizeCandidateScreeningStatus(status: string): string {
+  if (!ALLOWED_SOURCE_SCREENING_STATUSES.has(status)) {
+    throw new Error(`Candidate screening status is not in the frozen allowlist: ${status}`);
+  }
+  return status === 'PASS_PRIMARY' ? NORMALIZED_PRIMARY_SCREENING_STATUS : status;
+}
+
+function containsForbiddenExternalReference(value: unknown): boolean {
+  if (typeof value === 'string') {
+    return /[A-Za-z][A-Za-z0-9+.-]*:\/\//.test(value)
+      || /^(?:data|file|s3|gs|ftp|mailto):/i.test(value)
+      || /^(?:\/|~\/|[A-Za-z]:[\\/]|\\\\)/.test(value);
+  }
+  if (Array.isArray(value)) return value.some((entry) => containsForbiddenExternalReference(entry));
+  if (value && typeof value === 'object') {
+    return Object.values(value as Record<string, unknown>)
+      .some((entry) => containsForbiddenExternalReference(entry));
+  }
+  return false;
+}
+
+function isPortableRelativePath(value: string): boolean {
+  if (typeof value !== 'string'
+      || value.length === 0
+      || value.trim() !== value
+      || value.includes('\\')
+      || containsForbiddenExternalReference(value)
+      || /(^|[_.\-/])(approved|human[-_ ]?reviewed|domain[-_ ]?approved|accessibility[-_ ]?approved|localization[-_ ]?approved)(?=$|[_.\-/])/i.test(value)) {
+    return false;
+  }
+  const segments = value.split('/');
+  return segments.every((segment) => segment.length > 0 && segment !== '.' && segment !== '..');
+}
+
+function isOptionalPortableReference(value: string | null | undefined): boolean {
+  return value == null || isPortableRelativePath(value);
 }
 
 function gateRequirements(): TrainingExerciseMediaReviewBundle['gateRequirements'] {

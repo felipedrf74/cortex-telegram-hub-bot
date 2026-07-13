@@ -1727,7 +1727,7 @@
             "candidatePath": "images/ab_wheel_rollout.png",
             "sha256": "1e2260c8162b0e97deb15979edc79b7a1ae8524ca6115db1c7dccc831c40292e",
             "provenanceLedger": "generation-group-000-039.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -1753,7 +1753,7 @@
             "candidatePath": "images/ab_wheel_rollout.png",
             "sha256": "1e2260c8162b0e97deb15979edc79b7a1ae8524ca6115db1c7dccc831c40292e",
             "provenanceLedger": "generation-group-000-039.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -1779,7 +1779,7 @@
             "candidatePath": "images/ab_wheel_rollout.png",
             "sha256": "1e2260c8162b0e97deb15979edc79b7a1ae8524ca6115db1c7dccc831c40292e",
             "provenanceLedger": "generation-group-000-039.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         }
       ],
@@ -1799,7 +1799,7 @@
           "format": "PNG",
           "selectionSource": "accepted_base_primary",
           "selectionStatus": "DRAFT_SELECTED",
-          "visualAuditStatus": "PASS_PRIMARY",
+          "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS",
           "provenanceLedger": "generation-group-000-039.json",
           "provenanceSidecar": null,
           "publicationState": "DRAFT",
@@ -2049,7 +2049,7 @@
             "candidatePath": "images/archer_push_up.png",
             "sha256": "5fda23fb58208e7c3887ec62ff11d9b71737667f0fdb0b60d2ea4d7fa9423bfe",
             "provenanceLedger": "generation-group-000-039.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -2075,7 +2075,7 @@
             "candidatePath": "images/archer_push_up.png",
             "sha256": "5fda23fb58208e7c3887ec62ff11d9b71737667f0fdb0b60d2ea4d7fa9423bfe",
             "provenanceLedger": "generation-group-000-039.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -2101,7 +2101,7 @@
             "candidatePath": "images/archer_push_up.png",
             "sha256": "5fda23fb58208e7c3887ec62ff11d9b71737667f0fdb0b60d2ea4d7fa9423bfe",
             "provenanceLedger": "generation-group-000-039.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         }
       ],
@@ -2121,7 +2121,7 @@
           "format": "PNG",
           "selectionSource": "accepted_base_primary",
           "selectionStatus": "DRAFT_SELECTED",
-          "visualAuditStatus": "PASS_PRIMARY",
+          "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS",
           "provenanceLedger": "generation-group-000-039.json",
           "provenanceSidecar": null,
           "publicationState": "DRAFT",
@@ -2210,7 +2210,7 @@
             "candidatePath": "images/archer_ring_row.png",
             "sha256": "2a5cdbbf3f742cb727511c8ed561f493ff02cd3ef423d1211ced28530eda58ff",
             "provenanceLedger": "generation-group-000-039.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -2236,7 +2236,7 @@
             "candidatePath": "images/archer_ring_row.png",
             "sha256": "2a5cdbbf3f742cb727511c8ed561f493ff02cd3ef423d1211ced28530eda58ff",
             "provenanceLedger": "generation-group-000-039.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -2262,7 +2262,7 @@
             "candidatePath": "images/archer_ring_row.png",
             "sha256": "2a5cdbbf3f742cb727511c8ed561f493ff02cd3ef423d1211ced28530eda58ff",
             "provenanceLedger": "generation-group-000-039.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         }
       ],
@@ -2282,7 +2282,7 @@
           "format": "PNG",
           "selectionSource": "accepted_base_primary",
           "selectionStatus": "DRAFT_SELECTED",
-          "visualAuditStatus": "PASS_PRIMARY",
+          "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS",
           "provenanceLedger": "generation-group-000-039.json",
           "provenanceSidecar": null,
           "publicationState": "DRAFT",
@@ -2371,7 +2371,7 @@
             "candidatePath": "images/assisted_pistol_squat.png",
             "sha256": "3ddc008dff6d6a87be8eb8c117df799c8affe2547a392ae5a049588edba6c598",
             "provenanceLedger": "generation-group-000-039.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -2397,7 +2397,7 @@
             "candidatePath": "images/assisted_pistol_squat.png",
             "sha256": "3ddc008dff6d6a87be8eb8c117df799c8affe2547a392ae5a049588edba6c598",
             "provenanceLedger": "generation-group-000-039.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -2423,7 +2423,7 @@
             "candidatePath": "images/assisted_pistol_squat.png",
             "sha256": "3ddc008dff6d6a87be8eb8c117df799c8affe2547a392ae5a049588edba6c598",
             "provenanceLedger": "generation-group-000-039.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         }
       ],
@@ -2443,7 +2443,7 @@
           "format": "PNG",
           "selectionSource": "accepted_base_primary",
           "selectionStatus": "DRAFT_SELECTED",
-          "visualAuditStatus": "PASS_PRIMARY",
+          "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS",
           "provenanceLedger": "generation-group-000-039.json",
           "provenanceSidecar": null,
           "publicationState": "DRAFT",
@@ -2532,7 +2532,7 @@
             "candidatePath": "images/back_extension.png",
             "sha256": "0a0cbf6723685cddd6dbd60ded15847c1fa809057ddce92ab2f76c8224de604a",
             "provenanceLedger": "generation-group-000-039.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -2558,7 +2558,7 @@
             "candidatePath": "images/back_extension.png",
             "sha256": "0a0cbf6723685cddd6dbd60ded15847c1fa809057ddce92ab2f76c8224de604a",
             "provenanceLedger": "generation-group-000-039.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -2584,7 +2584,7 @@
             "candidatePath": "images/back_extension.png",
             "sha256": "0a0cbf6723685cddd6dbd60ded15847c1fa809057ddce92ab2f76c8224de604a",
             "provenanceLedger": "generation-group-000-039.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         }
       ],
@@ -2604,7 +2604,7 @@
           "format": "PNG",
           "selectionSource": "accepted_base_primary",
           "selectionStatus": "DRAFT_SELECTED",
-          "visualAuditStatus": "PASS_PRIMARY",
+          "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS",
           "provenanceLedger": "generation-group-000-039.json",
           "provenanceSidecar": null,
           "publicationState": "DRAFT",
@@ -2693,7 +2693,7 @@
             "candidatePath": "images/back_squat.png",
             "sha256": "79a1d86c156eaa88219fb1cb1975e51a654a947fcf20a6ff8ecfd622b67e1f74",
             "provenanceLedger": "generation-group-000-039.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -2719,7 +2719,7 @@
             "candidatePath": "images/back_squat.png",
             "sha256": "79a1d86c156eaa88219fb1cb1975e51a654a947fcf20a6ff8ecfd622b67e1f74",
             "provenanceLedger": "generation-group-000-039.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -2745,7 +2745,7 @@
             "candidatePath": "images/back_squat.png",
             "sha256": "79a1d86c156eaa88219fb1cb1975e51a654a947fcf20a6ff8ecfd622b67e1f74",
             "provenanceLedger": "generation-group-000-039.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         }
       ],
@@ -2765,7 +2765,7 @@
           "format": "PNG",
           "selectionSource": "accepted_base_primary",
           "selectionStatus": "DRAFT_SELECTED",
-          "visualAuditStatus": "PASS_PRIMARY",
+          "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS",
           "provenanceLedger": "generation-group-000-039.json",
           "provenanceSidecar": null,
           "publicationState": "DRAFT",
@@ -3176,7 +3176,7 @@
             "candidatePath": "images/band_row.png",
             "sha256": "dad3b7ed2999d33cac5891bfc8025d41e73f00aaa161c6ec625e363a57f1e40c",
             "provenanceLedger": "generation-group-000-039.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -3202,7 +3202,7 @@
             "candidatePath": "images/band_row.png",
             "sha256": "dad3b7ed2999d33cac5891bfc8025d41e73f00aaa161c6ec625e363a57f1e40c",
             "provenanceLedger": "generation-group-000-039.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -3228,7 +3228,7 @@
             "candidatePath": "images/band_row.png",
             "sha256": "dad3b7ed2999d33cac5891bfc8025d41e73f00aaa161c6ec625e363a57f1e40c",
             "provenanceLedger": "generation-group-000-039.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         }
       ],
@@ -3248,7 +3248,7 @@
           "format": "PNG",
           "selectionSource": "accepted_base_primary",
           "selectionStatus": "DRAFT_SELECTED",
-          "visualAuditStatus": "PASS_PRIMARY",
+          "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS",
           "provenanceLedger": "generation-group-000-039.json",
           "provenanceSidecar": null,
           "publicationState": "DRAFT",
@@ -3337,7 +3337,7 @@
             "candidatePath": "images/barbell_bent_row.png",
             "sha256": "a26850fa3b9df48ca38eec14188a3a79274eef21c987d1af02c401cebb15db26",
             "provenanceLedger": "generation-group-000-039.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -3363,7 +3363,7 @@
             "candidatePath": "images/barbell_bent_row.png",
             "sha256": "a26850fa3b9df48ca38eec14188a3a79274eef21c987d1af02c401cebb15db26",
             "provenanceLedger": "generation-group-000-039.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -3389,7 +3389,7 @@
             "candidatePath": "images/barbell_bent_row.png",
             "sha256": "a26850fa3b9df48ca38eec14188a3a79274eef21c987d1af02c401cebb15db26",
             "provenanceLedger": "generation-group-000-039.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         }
       ],
@@ -3409,7 +3409,7 @@
           "format": "PNG",
           "selectionSource": "accepted_base_primary",
           "selectionStatus": "DRAFT_SELECTED",
-          "visualAuditStatus": "PASS_PRIMARY",
+          "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS",
           "provenanceLedger": "generation-group-000-039.json",
           "provenanceSidecar": null,
           "publicationState": "DRAFT",
@@ -3498,7 +3498,7 @@
             "candidatePath": "images/barbell_hip_thrust.png",
             "sha256": "68c03c18ef57e49d33e0220a426173adcc91545785f00ee9466278a0004a9f59",
             "provenanceLedger": "generation-group-000-039.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -3524,7 +3524,7 @@
             "candidatePath": "images/barbell_hip_thrust.png",
             "sha256": "68c03c18ef57e49d33e0220a426173adcc91545785f00ee9466278a0004a9f59",
             "provenanceLedger": "generation-group-000-039.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -3550,7 +3550,7 @@
             "candidatePath": "images/barbell_hip_thrust.png",
             "sha256": "68c03c18ef57e49d33e0220a426173adcc91545785f00ee9466278a0004a9f59",
             "provenanceLedger": "generation-group-000-039.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         }
       ],
@@ -3570,7 +3570,7 @@
           "format": "PNG",
           "selectionSource": "accepted_base_primary",
           "selectionStatus": "DRAFT_SELECTED",
-          "visualAuditStatus": "PASS_PRIMARY",
+          "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS",
           "provenanceLedger": "generation-group-000-039.json",
           "provenanceSidecar": null,
           "publicationState": "DRAFT",
@@ -3659,7 +3659,7 @@
             "candidatePath": "images/barbell_overhead_press.png",
             "sha256": "6e28d85cf78cc811bbfc0370e4266a48fd5817c8e83d1599eaf2233d8ecd3454",
             "provenanceLedger": "generation-group-000-039.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -3685,7 +3685,7 @@
             "candidatePath": "images/barbell_overhead_press.png",
             "sha256": "6e28d85cf78cc811bbfc0370e4266a48fd5817c8e83d1599eaf2233d8ecd3454",
             "provenanceLedger": "generation-group-000-039.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -3711,7 +3711,7 @@
             "candidatePath": "images/barbell_overhead_press.png",
             "sha256": "6e28d85cf78cc811bbfc0370e4266a48fd5817c8e83d1599eaf2233d8ecd3454",
             "provenanceLedger": "generation-group-000-039.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         }
       ],
@@ -3731,7 +3731,7 @@
           "format": "PNG",
           "selectionSource": "accepted_base_primary",
           "selectionStatus": "DRAFT_SELECTED",
-          "visualAuditStatus": "PASS_PRIMARY",
+          "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS",
           "provenanceLedger": "generation-group-000-039.json",
           "provenanceSidecar": null,
           "publicationState": "DRAFT",
@@ -4210,7 +4210,7 @@
             "candidatePath": "images/bear_crawl.png",
             "sha256": "89a363e4315b1795501b1680aa8908c8a5bd9308946c9a0eca00d6e62397cdba",
             "provenanceLedger": "generation-group-000-039.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -4236,7 +4236,7 @@
             "candidatePath": "images/bear_crawl.png",
             "sha256": "89a363e4315b1795501b1680aa8908c8a5bd9308946c9a0eca00d6e62397cdba",
             "provenanceLedger": "generation-group-000-039.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -4262,7 +4262,7 @@
             "candidatePath": "images/bear_crawl.png",
             "sha256": "89a363e4315b1795501b1680aa8908c8a5bd9308946c9a0eca00d6e62397cdba",
             "provenanceLedger": "generation-group-000-039.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         }
       ],
@@ -4282,7 +4282,7 @@
           "format": "PNG",
           "selectionSource": "accepted_base_primary",
           "selectionStatus": "DRAFT_SELECTED",
-          "visualAuditStatus": "PASS_PRIMARY",
+          "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS",
           "provenanceLedger": "generation-group-000-039.json",
           "provenanceSidecar": null,
           "publicationState": "DRAFT",
@@ -4371,7 +4371,7 @@
             "candidatePath": "images/bench_press.png",
             "sha256": "2b631115a568cb84c5fbf24b35cefb871b06c15a4bd5a431a2ab6436f2ad5b85",
             "provenanceLedger": "generation-group-000-039.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -4397,7 +4397,7 @@
             "candidatePath": "images/bench_press.png",
             "sha256": "2b631115a568cb84c5fbf24b35cefb871b06c15a4bd5a431a2ab6436f2ad5b85",
             "provenanceLedger": "generation-group-000-039.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -4423,7 +4423,7 @@
             "candidatePath": "images/bench_press.png",
             "sha256": "2b631115a568cb84c5fbf24b35cefb871b06c15a4bd5a431a2ab6436f2ad5b85",
             "provenanceLedger": "generation-group-000-039.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         }
       ],
@@ -4443,7 +4443,7 @@
           "format": "PNG",
           "selectionSource": "accepted_base_primary",
           "selectionStatus": "DRAFT_SELECTED",
-          "visualAuditStatus": "PASS_PRIMARY",
+          "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS",
           "provenanceLedger": "generation-group-000-039.json",
           "provenanceSidecar": null,
           "publicationState": "DRAFT",
@@ -4532,7 +4532,7 @@
             "candidatePath": "images/bird_dog.png",
             "sha256": "f033f3fdbe97b0ca095a5d6a9593f8acae6217372174da3eae978d7e95180ab6",
             "provenanceLedger": "generation-group-000-039.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -4558,7 +4558,7 @@
             "candidatePath": "images/bird_dog.png",
             "sha256": "f033f3fdbe97b0ca095a5d6a9593f8acae6217372174da3eae978d7e95180ab6",
             "provenanceLedger": "generation-group-000-039.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -4584,7 +4584,7 @@
             "candidatePath": "images/bird_dog.png",
             "sha256": "f033f3fdbe97b0ca095a5d6a9593f8acae6217372174da3eae978d7e95180ab6",
             "provenanceLedger": "generation-group-000-039.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         }
       ],
@@ -4604,7 +4604,7 @@
           "format": "PNG",
           "selectionSource": "accepted_base_primary",
           "selectionStatus": "DRAFT_SELECTED",
-          "visualAuditStatus": "PASS_PRIMARY",
+          "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS",
           "provenanceLedger": "generation-group-000-039.json",
           "provenanceSidecar": null,
           "publicationState": "DRAFT",
@@ -4693,7 +4693,7 @@
             "candidatePath": "images/bodyweight_squat.png",
             "sha256": "ae185db1359eaa9d8a4d94452e3bdc19de1d3ba28620c2273f392b5e9cfd02dc",
             "provenanceLedger": "generation-group-000-039.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -4719,7 +4719,7 @@
             "candidatePath": "images/bodyweight_squat.png",
             "sha256": "ae185db1359eaa9d8a4d94452e3bdc19de1d3ba28620c2273f392b5e9cfd02dc",
             "provenanceLedger": "generation-group-000-039.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -4745,7 +4745,7 @@
             "candidatePath": "images/bodyweight_squat.png",
             "sha256": "ae185db1359eaa9d8a4d94452e3bdc19de1d3ba28620c2273f392b5e9cfd02dc",
             "provenanceLedger": "generation-group-000-039.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         }
       ],
@@ -4765,7 +4765,7 @@
           "format": "PNG",
           "selectionSource": "accepted_base_primary",
           "selectionStatus": "DRAFT_SELECTED",
-          "visualAuditStatus": "PASS_PRIMARY",
+          "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS",
           "provenanceLedger": "generation-group-000-039.json",
           "provenanceSidecar": null,
           "publicationState": "DRAFT",
@@ -4854,7 +4854,7 @@
             "candidatePath": "images/box_jump.png",
             "sha256": "f35d4373ec53c3a510e6ec9454da4ccb67b0ec85af50d0b1b46b7395ee576e27",
             "provenanceLedger": "generation-group-000-039.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -4880,7 +4880,7 @@
             "candidatePath": "images/box_jump.png",
             "sha256": "f35d4373ec53c3a510e6ec9454da4ccb67b0ec85af50d0b1b46b7395ee576e27",
             "provenanceLedger": "generation-group-000-039.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -4906,7 +4906,7 @@
             "candidatePath": "images/box_jump.png",
             "sha256": "f35d4373ec53c3a510e6ec9454da4ccb67b0ec85af50d0b1b46b7395ee576e27",
             "provenanceLedger": "generation-group-000-039.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         }
       ],
@@ -4926,7 +4926,7 @@
           "format": "PNG",
           "selectionSource": "accepted_base_primary",
           "selectionStatus": "DRAFT_SELECTED",
-          "visualAuditStatus": "PASS_PRIMARY",
+          "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS",
           "provenanceLedger": "generation-group-000-039.json",
           "provenanceSidecar": null,
           "publicationState": "DRAFT",
@@ -5083,7 +5083,7 @@
             "candidatePath": "images/box_pistol_squat.png",
             "sha256": "76cab9bd90ba84f0b893d1daf37e639cdb33e10a18c94b8d8b9e6c33a30f9c57",
             "provenanceLedger": "generation-group-000-039.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -5109,7 +5109,7 @@
             "candidatePath": "images/box_pistol_squat.png",
             "sha256": "76cab9bd90ba84f0b893d1daf37e639cdb33e10a18c94b8d8b9e6c33a30f9c57",
             "provenanceLedger": "generation-group-000-039.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -5135,7 +5135,7 @@
             "candidatePath": "images/box_pistol_squat.png",
             "sha256": "76cab9bd90ba84f0b893d1daf37e639cdb33e10a18c94b8d8b9e6c33a30f9c57",
             "provenanceLedger": "generation-group-000-039.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         }
       ],
@@ -5155,7 +5155,7 @@
           "format": "PNG",
           "selectionSource": "accepted_base_primary",
           "selectionStatus": "DRAFT_SELECTED",
-          "visualAuditStatus": "PASS_PRIMARY",
+          "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS",
           "provenanceLedger": "generation-group-000-039.json",
           "provenanceSidecar": null,
           "publicationState": "DRAFT",
@@ -6024,7 +6024,7 @@
             "candidatePath": "images/cable_triceps_pressdown.png",
             "sha256": "9d4ab4b1d8a0a0005caeb6632a913eb829513711737098ebfefe061418b8581e",
             "provenanceLedger": "generation-group-000-039.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -6050,7 +6050,7 @@
             "candidatePath": "images/cable_triceps_pressdown.png",
             "sha256": "9d4ab4b1d8a0a0005caeb6632a913eb829513711737098ebfefe061418b8581e",
             "provenanceLedger": "generation-group-000-039.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -6076,7 +6076,7 @@
             "candidatePath": "images/cable_triceps_pressdown.png",
             "sha256": "9d4ab4b1d8a0a0005caeb6632a913eb829513711737098ebfefe061418b8581e",
             "provenanceLedger": "generation-group-000-039.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         }
       ],
@@ -6096,7 +6096,7 @@
           "format": "PNG",
           "selectionSource": "accepted_base_primary",
           "selectionStatus": "DRAFT_SELECTED",
-          "visualAuditStatus": "PASS_PRIMARY",
+          "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS",
           "provenanceLedger": "generation-group-000-039.json",
           "provenanceSidecar": null,
           "publicationState": "DRAFT",
@@ -6185,7 +6185,7 @@
             "candidatePath": "images/calf_raise.png",
             "sha256": "f2468f759dbb6ba49f24776aedd561e10c500512e0bcce877f94647807545772",
             "provenanceLedger": "generation-group-000-039.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -6211,7 +6211,7 @@
             "candidatePath": "images/calf_raise.png",
             "sha256": "f2468f759dbb6ba49f24776aedd561e10c500512e0bcce877f94647807545772",
             "provenanceLedger": "generation-group-000-039.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -6237,7 +6237,7 @@
             "candidatePath": "images/calf_raise.png",
             "sha256": "f2468f759dbb6ba49f24776aedd561e10c500512e0bcce877f94647807545772",
             "provenanceLedger": "generation-group-000-039.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         }
       ],
@@ -6257,7 +6257,7 @@
           "format": "PNG",
           "selectionSource": "accepted_base_primary",
           "selectionStatus": "DRAFT_SELECTED",
-          "visualAuditStatus": "PASS_PRIMARY",
+          "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS",
           "provenanceLedger": "generation-group-000-039.json",
           "provenanceSidecar": null,
           "publicationState": "DRAFT",
@@ -6575,7 +6575,7 @@
             "candidatePath": "images/chest_supported_row.png",
             "sha256": "441ca6561efc19a679814dd4fd7f88a6ad4881f6de3b7f369fdadb24ff87cfb3",
             "provenanceLedger": "generation-group-000-039.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -6601,7 +6601,7 @@
             "candidatePath": "images/chest_supported_row.png",
             "sha256": "441ca6561efc19a679814dd4fd7f88a6ad4881f6de3b7f369fdadb24ff87cfb3",
             "provenanceLedger": "generation-group-000-039.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -6627,7 +6627,7 @@
             "candidatePath": "images/chest_supported_row.png",
             "sha256": "441ca6561efc19a679814dd4fd7f88a6ad4881f6de3b7f369fdadb24ff87cfb3",
             "provenanceLedger": "generation-group-000-039.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         }
       ],
@@ -6647,7 +6647,7 @@
           "format": "PNG",
           "selectionSource": "accepted_base_primary",
           "selectionStatus": "DRAFT_SELECTED",
-          "visualAuditStatus": "PASS_PRIMARY",
+          "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS",
           "provenanceLedger": "generation-group-000-039.json",
           "provenanceSidecar": null,
           "publicationState": "DRAFT",
@@ -6736,7 +6736,7 @@
             "candidatePath": "images/childs_pose.png",
             "sha256": "810f64722af48a9a3cb5274188da5900cc397731f835f192086cef1c174f0ebd",
             "provenanceLedger": "generation-group-000-039.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -6762,7 +6762,7 @@
             "candidatePath": "images/childs_pose.png",
             "sha256": "810f64722af48a9a3cb5274188da5900cc397731f835f192086cef1c174f0ebd",
             "provenanceLedger": "generation-group-000-039.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -6788,7 +6788,7 @@
             "candidatePath": "images/childs_pose.png",
             "sha256": "810f64722af48a9a3cb5274188da5900cc397731f835f192086cef1c174f0ebd",
             "provenanceLedger": "generation-group-000-039.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         }
       ],
@@ -6808,7 +6808,7 @@
           "format": "PNG",
           "selectionSource": "accepted_base_primary",
           "selectionStatus": "DRAFT_SELECTED",
-          "visualAuditStatus": "PASS_PRIMARY",
+          "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS",
           "provenanceLedger": "generation-group-000-039.json",
           "provenanceSidecar": null,
           "publicationState": "DRAFT",
@@ -6897,7 +6897,7 @@
             "candidatePath": "images/chin_up.png",
             "sha256": "f9248ff59ff13694e2fc76aa1c28ee9c82252dfa80cd2775c1e6ad345238b122",
             "provenanceLedger": "generation-group-000-039.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -6923,7 +6923,7 @@
             "candidatePath": "images/chin_up.png",
             "sha256": "f9248ff59ff13694e2fc76aa1c28ee9c82252dfa80cd2775c1e6ad345238b122",
             "provenanceLedger": "generation-group-000-039.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -6949,7 +6949,7 @@
             "candidatePath": "images/chin_up.png",
             "sha256": "f9248ff59ff13694e2fc76aa1c28ee9c82252dfa80cd2775c1e6ad345238b122",
             "provenanceLedger": "generation-group-000-039.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         }
       ],
@@ -6969,7 +6969,7 @@
           "format": "PNG",
           "selectionSource": "accepted_base_primary",
           "selectionStatus": "DRAFT_SELECTED",
-          "visualAuditStatus": "PASS_PRIMARY",
+          "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS",
           "provenanceLedger": "generation-group-000-039.json",
           "provenanceSidecar": null,
           "publicationState": "DRAFT",
@@ -7219,7 +7219,7 @@
             "candidatePath": "images/close_grip_push_up.png",
             "sha256": "f0e5fcc5ae53f72d9164762079f6a7709de4db771ca225645df3f52eb9e26606",
             "provenanceLedger": "generation-group-000-039.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -7245,7 +7245,7 @@
             "candidatePath": "images/close_grip_push_up.png",
             "sha256": "f0e5fcc5ae53f72d9164762079f6a7709de4db771ca225645df3f52eb9e26606",
             "provenanceLedger": "generation-group-000-039.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -7271,7 +7271,7 @@
             "candidatePath": "images/close_grip_push_up.png",
             "sha256": "f0e5fcc5ae53f72d9164762079f6a7709de4db771ca225645df3f52eb9e26606",
             "provenanceLedger": "generation-group-000-039.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         }
       ],
@@ -7291,7 +7291,7 @@
           "format": "PNG",
           "selectionSource": "accepted_base_primary",
           "selectionStatus": "DRAFT_SELECTED",
-          "visualAuditStatus": "PASS_PRIMARY",
+          "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS",
           "provenanceLedger": "generation-group-000-039.json",
           "provenanceSidecar": null,
           "publicationState": "DRAFT",
@@ -7380,7 +7380,7 @@
             "candidatePath": "images/conventional_deadlift.png",
             "sha256": "060ef48df9af6eae140a8f64480dc99a1e7865c3f666d5652f99b3b8706fb7a9",
             "provenanceLedger": "generation-group-000-039.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -7406,7 +7406,7 @@
             "candidatePath": "images/conventional_deadlift.png",
             "sha256": "060ef48df9af6eae140a8f64480dc99a1e7865c3f666d5652f99b3b8706fb7a9",
             "provenanceLedger": "generation-group-000-039.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -7432,7 +7432,7 @@
             "candidatePath": "images/conventional_deadlift.png",
             "sha256": "060ef48df9af6eae140a8f64480dc99a1e7865c3f666d5652f99b3b8706fb7a9",
             "provenanceLedger": "generation-group-000-039.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         }
       ],
@@ -7452,7 +7452,7 @@
           "format": "PNG",
           "selectionSource": "accepted_base_primary",
           "selectionStatus": "DRAFT_SELECTED",
-          "visualAuditStatus": "PASS_PRIMARY",
+          "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS",
           "provenanceLedger": "generation-group-000-039.json",
           "provenanceSidecar": null,
           "publicationState": "DRAFT",
@@ -7541,7 +7541,7 @@
             "candidatePath": "images/cossack_squat.png",
             "sha256": "36a0c1a29cd5ac88a49e325138bec36e4a6efcea7549fa1fb2e8e04fa3ead5bb",
             "provenanceLedger": "generation-group-000-039.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -7567,7 +7567,7 @@
             "candidatePath": "images/cossack_squat.png",
             "sha256": "36a0c1a29cd5ac88a49e325138bec36e4a6efcea7549fa1fb2e8e04fa3ead5bb",
             "provenanceLedger": "generation-group-000-039.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -7593,7 +7593,7 @@
             "candidatePath": "images/cossack_squat.png",
             "sha256": "36a0c1a29cd5ac88a49e325138bec36e4a6efcea7549fa1fb2e8e04fa3ead5bb",
             "provenanceLedger": "generation-group-000-039.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         }
       ],
@@ -7613,7 +7613,7 @@
           "format": "PNG",
           "selectionSource": "accepted_base_primary",
           "selectionStatus": "DRAFT_SELECTED",
-          "visualAuditStatus": "PASS_PRIMARY",
+          "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS",
           "provenanceLedger": "generation-group-000-039.json",
           "provenanceSidecar": null,
           "publicationState": "DRAFT",
@@ -7702,7 +7702,7 @@
             "candidatePath": "images/couch_stretch.png",
             "sha256": "84d7149dfab576f4fc49f0a5a3ddf09308d85fec5a4a4cb75939c0f77fd25c19",
             "provenanceLedger": "generation-group-000-039.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -7728,7 +7728,7 @@
             "candidatePath": "images/couch_stretch.png",
             "sha256": "84d7149dfab576f4fc49f0a5a3ddf09308d85fec5a4a4cb75939c0f77fd25c19",
             "provenanceLedger": "generation-group-000-039.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -7754,7 +7754,7 @@
             "candidatePath": "images/couch_stretch.png",
             "sha256": "84d7149dfab576f4fc49f0a5a3ddf09308d85fec5a4a4cb75939c0f77fd25c19",
             "provenanceLedger": "generation-group-000-039.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         }
       ],
@@ -7774,7 +7774,7 @@
           "format": "PNG",
           "selectionSource": "accepted_base_primary",
           "selectionStatus": "DRAFT_SELECTED",
-          "visualAuditStatus": "PASS_PRIMARY",
+          "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS",
           "provenanceLedger": "generation-group-000-039.json",
           "provenanceSidecar": null,
           "publicationState": "DRAFT",
@@ -7863,7 +7863,7 @@
             "candidatePath": "images/dead_bug.png",
             "sha256": "a54a9d720704e5658ba8e9de354a77fda1437bb384ebe4bf05c56602ad144866",
             "provenanceLedger": "generation-group-000-039.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -7889,7 +7889,7 @@
             "candidatePath": "images/dead_bug.png",
             "sha256": "a54a9d720704e5658ba8e9de354a77fda1437bb384ebe4bf05c56602ad144866",
             "provenanceLedger": "generation-group-000-039.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -7915,7 +7915,7 @@
             "candidatePath": "images/dead_bug.png",
             "sha256": "a54a9d720704e5658ba8e9de354a77fda1437bb384ebe4bf05c56602ad144866",
             "provenanceLedger": "generation-group-000-039.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         }
       ],
@@ -7935,7 +7935,7 @@
           "format": "PNG",
           "selectionSource": "accepted_base_primary",
           "selectionStatus": "DRAFT_SELECTED",
-          "visualAuditStatus": "PASS_PRIMARY",
+          "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS",
           "provenanceLedger": "generation-group-000-039.json",
           "provenanceSidecar": null,
           "publicationState": "DRAFT",
@@ -8024,7 +8024,7 @@
             "candidatePath": "images/decline_push_up.png",
             "sha256": "3970db48dc6880304e73a4802ce66e4a41addb4a79e6d50f59d407568bef45af",
             "provenanceLedger": "generation-group-000-039.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -8050,7 +8050,7 @@
             "candidatePath": "images/decline_push_up.png",
             "sha256": "3970db48dc6880304e73a4802ce66e4a41addb4a79e6d50f59d407568bef45af",
             "provenanceLedger": "generation-group-000-039.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -8076,7 +8076,7 @@
             "candidatePath": "images/decline_push_up.png",
             "sha256": "3970db48dc6880304e73a4802ce66e4a41addb4a79e6d50f59d407568bef45af",
             "provenanceLedger": "generation-group-000-039.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         }
       ],
@@ -8096,7 +8096,7 @@
           "format": "PNG",
           "selectionSource": "accepted_base_primary",
           "selectionStatus": "DRAFT_SELECTED",
-          "visualAuditStatus": "PASS_PRIMARY",
+          "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS",
           "provenanceLedger": "generation-group-000-039.json",
           "provenanceSidecar": null,
           "publicationState": "DRAFT",
@@ -8185,7 +8185,7 @@
             "candidatePath": "images/deficit_deadlift.png",
             "sha256": "df3f5098eb54151d40b6dec808a3964e7aef6b874f5ee5c00f2b57916c464791",
             "provenanceLedger": "generation-group-000-039.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -8211,7 +8211,7 @@
             "candidatePath": "images/deficit_deadlift.png",
             "sha256": "df3f5098eb54151d40b6dec808a3964e7aef6b874f5ee5c00f2b57916c464791",
             "provenanceLedger": "generation-group-000-039.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -8237,7 +8237,7 @@
             "candidatePath": "images/deficit_deadlift.png",
             "sha256": "df3f5098eb54151d40b6dec808a3964e7aef6b874f5ee5c00f2b57916c464791",
             "provenanceLedger": "generation-group-000-039.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         }
       ],
@@ -8257,7 +8257,7 @@
           "format": "PNG",
           "selectionSource": "accepted_base_primary",
           "selectionStatus": "DRAFT_SELECTED",
-          "visualAuditStatus": "PASS_PRIMARY",
+          "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS",
           "provenanceLedger": "generation-group-000-039.json",
           "provenanceSidecar": null,
           "publicationState": "DRAFT",
@@ -8804,7 +8804,7 @@
             "candidatePath": "images/dip.png",
             "sha256": "e692f175dbd792eddc8a2750bb6530232acfdf99bbee955ab42476eb0dd8faa7",
             "provenanceLedger": "generation-group-040-079.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -8830,7 +8830,7 @@
             "candidatePath": "images/dip.png",
             "sha256": "e692f175dbd792eddc8a2750bb6530232acfdf99bbee955ab42476eb0dd8faa7",
             "provenanceLedger": "generation-group-040-079.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -8856,7 +8856,7 @@
             "candidatePath": "images/dip.png",
             "sha256": "e692f175dbd792eddc8a2750bb6530232acfdf99bbee955ab42476eb0dd8faa7",
             "provenanceLedger": "generation-group-040-079.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         }
       ],
@@ -8876,7 +8876,7 @@
           "format": "PNG",
           "selectionSource": "accepted_base_primary",
           "selectionStatus": "DRAFT_SELECTED",
-          "visualAuditStatus": "PASS_PRIMARY",
+          "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS",
           "provenanceLedger": "generation-group-040-079.json",
           "provenanceSidecar": null,
           "publicationState": "DRAFT",
@@ -8965,7 +8965,7 @@
             "candidatePath": "images/dragon_flag.png",
             "sha256": "a121a6dfc888c892990700fb357395436cf5fb88f5f8e84e47ecd146368b75f4",
             "provenanceLedger": "generation-group-040-079.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -8991,7 +8991,7 @@
             "candidatePath": "images/dragon_flag.png",
             "sha256": "a121a6dfc888c892990700fb357395436cf5fb88f5f8e84e47ecd146368b75f4",
             "provenanceLedger": "generation-group-040-079.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -9017,7 +9017,7 @@
             "candidatePath": "images/dragon_flag.png",
             "sha256": "a121a6dfc888c892990700fb357395436cf5fb88f5f8e84e47ecd146368b75f4",
             "provenanceLedger": "generation-group-040-079.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         }
       ],
@@ -9037,7 +9037,7 @@
           "format": "PNG",
           "selectionSource": "accepted_base_primary",
           "selectionStatus": "DRAFT_SELECTED",
-          "visualAuditStatus": "PASS_PRIMARY",
+          "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS",
           "provenanceLedger": "generation-group-040-079.json",
           "provenanceSidecar": null,
           "publicationState": "DRAFT",
@@ -9126,7 +9126,7 @@
             "candidatePath": "images/dragon_flag_tuck.png",
             "sha256": "b3b69a911a3a2b8c508ada5ac573e9d98789f3c165ff8b09d9fbdc4ff1b2ea40",
             "provenanceLedger": "generation-group-040-079.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -9152,7 +9152,7 @@
             "candidatePath": "images/dragon_flag_tuck.png",
             "sha256": "b3b69a911a3a2b8c508ada5ac573e9d98789f3c165ff8b09d9fbdc4ff1b2ea40",
             "provenanceLedger": "generation-group-040-079.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -9178,7 +9178,7 @@
             "candidatePath": "images/dragon_flag_tuck.png",
             "sha256": "b3b69a911a3a2b8c508ada5ac573e9d98789f3c165ff8b09d9fbdc4ff1b2ea40",
             "provenanceLedger": "generation-group-040-079.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         }
       ],
@@ -9198,7 +9198,7 @@
           "format": "PNG",
           "selectionSource": "accepted_base_primary",
           "selectionStatus": "DRAFT_SELECTED",
-          "visualAuditStatus": "PASS_PRIMARY",
+          "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS",
           "provenanceLedger": "generation-group-040-079.json",
           "provenanceSidecar": null,
           "publicationState": "DRAFT",
@@ -9287,7 +9287,7 @@
             "candidatePath": "images/dumbbell_bench_press.png",
             "sha256": "c13660c4ba9ed21e7738e9f3a891093bbce5d28c5f2b23ee7472074322fe1e74",
             "provenanceLedger": "generation-group-040-079.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -9313,7 +9313,7 @@
             "candidatePath": "images/dumbbell_bench_press.png",
             "sha256": "c13660c4ba9ed21e7738e9f3a891093bbce5d28c5f2b23ee7472074322fe1e74",
             "provenanceLedger": "generation-group-040-079.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -9339,7 +9339,7 @@
             "candidatePath": "images/dumbbell_bench_press.png",
             "sha256": "c13660c4ba9ed21e7738e9f3a891093bbce5d28c5f2b23ee7472074322fe1e74",
             "provenanceLedger": "generation-group-040-079.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         }
       ],
@@ -9359,7 +9359,7 @@
           "format": "PNG",
           "selectionSource": "accepted_base_primary",
           "selectionStatus": "DRAFT_SELECTED",
-          "visualAuditStatus": "PASS_PRIMARY",
+          "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS",
           "provenanceLedger": "generation-group-040-079.json",
           "provenanceSidecar": null,
           "publicationState": "DRAFT",
@@ -9448,7 +9448,7 @@
             "candidatePath": "images/dumbbell_curl.png",
             "sha256": "2fbde20ec69d4b0468e583feb4492da371fe35e699d7c4f231760900cbb34e72",
             "provenanceLedger": "generation-group-040-079.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -9474,7 +9474,7 @@
             "candidatePath": "images/dumbbell_curl.png",
             "sha256": "2fbde20ec69d4b0468e583feb4492da371fe35e699d7c4f231760900cbb34e72",
             "provenanceLedger": "generation-group-040-079.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -9500,7 +9500,7 @@
             "candidatePath": "images/dumbbell_curl.png",
             "sha256": "2fbde20ec69d4b0468e583feb4492da371fe35e699d7c4f231760900cbb34e72",
             "provenanceLedger": "generation-group-040-079.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         }
       ],
@@ -9520,7 +9520,7 @@
           "format": "PNG",
           "selectionSource": "accepted_base_primary",
           "selectionStatus": "DRAFT_SELECTED",
-          "visualAuditStatus": "PASS_PRIMARY",
+          "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS",
           "provenanceLedger": "generation-group-040-079.json",
           "provenanceSidecar": null,
           "publicationState": "DRAFT",
@@ -9609,7 +9609,7 @@
             "candidatePath": "images/dumbbell_floor_press.png",
             "sha256": "73bc83d275e7371e4b4c84f1c84c290323da4980736517425b45be7430828d9d",
             "provenanceLedger": "generation-group-040-079.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -9635,7 +9635,7 @@
             "candidatePath": "images/dumbbell_floor_press.png",
             "sha256": "73bc83d275e7371e4b4c84f1c84c290323da4980736517425b45be7430828d9d",
             "provenanceLedger": "generation-group-040-079.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -9661,7 +9661,7 @@
             "candidatePath": "images/dumbbell_floor_press.png",
             "sha256": "73bc83d275e7371e4b4c84f1c84c290323da4980736517425b45be7430828d9d",
             "provenanceLedger": "generation-group-040-079.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         }
       ],
@@ -9681,7 +9681,7 @@
           "format": "PNG",
           "selectionSource": "accepted_base_primary",
           "selectionStatus": "DRAFT_SELECTED",
-          "visualAuditStatus": "PASS_PRIMARY",
+          "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS",
           "provenanceLedger": "generation-group-040-079.json",
           "provenanceSidecar": null,
           "publicationState": "DRAFT",
@@ -9770,7 +9770,7 @@
             "candidatePath": "images/dumbbell_hip_thrust.png",
             "sha256": "cd50e5d51605a5830db3c63df75bdd56eaa91a8a7ea2941d202bd489d14d0d69",
             "provenanceLedger": "generation-group-040-079.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -9796,7 +9796,7 @@
             "candidatePath": "images/dumbbell_hip_thrust.png",
             "sha256": "cd50e5d51605a5830db3c63df75bdd56eaa91a8a7ea2941d202bd489d14d0d69",
             "provenanceLedger": "generation-group-040-079.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -9822,7 +9822,7 @@
             "candidatePath": "images/dumbbell_hip_thrust.png",
             "sha256": "cd50e5d51605a5830db3c63df75bdd56eaa91a8a7ea2941d202bd489d14d0d69",
             "provenanceLedger": "generation-group-040-079.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         }
       ],
@@ -9842,7 +9842,7 @@
           "format": "PNG",
           "selectionSource": "accepted_base_primary",
           "selectionStatus": "DRAFT_SELECTED",
-          "visualAuditStatus": "PASS_PRIMARY",
+          "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS",
           "provenanceLedger": "generation-group-040-079.json",
           "provenanceSidecar": null,
           "publicationState": "DRAFT",
@@ -9931,7 +9931,7 @@
             "candidatePath": "images/dumbbell_lateral_raise.png",
             "sha256": "fe922d429725a9c438019a76388a0a4a48339097cd152bdf3d80aa040767e048",
             "provenanceLedger": "generation-group-040-079.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -9957,7 +9957,7 @@
             "candidatePath": "images/dumbbell_lateral_raise.png",
             "sha256": "fe922d429725a9c438019a76388a0a4a48339097cd152bdf3d80aa040767e048",
             "provenanceLedger": "generation-group-040-079.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -9983,7 +9983,7 @@
             "candidatePath": "images/dumbbell_lateral_raise.png",
             "sha256": "fe922d429725a9c438019a76388a0a4a48339097cd152bdf3d80aa040767e048",
             "provenanceLedger": "generation-group-040-079.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         }
       ],
@@ -10003,7 +10003,7 @@
           "format": "PNG",
           "selectionSource": "accepted_base_primary",
           "selectionStatus": "DRAFT_SELECTED",
-          "visualAuditStatus": "PASS_PRIMARY",
+          "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS",
           "provenanceLedger": "generation-group-040-079.json",
           "provenanceSidecar": null,
           "publicationState": "DRAFT",
@@ -10092,7 +10092,7 @@
             "candidatePath": "images/dumbbell_overhead_press.png",
             "sha256": "92b9e97c1f9a74e96163b0bf0c77e289d093e85a7dd68206563c3f94d3163075",
             "provenanceLedger": "generation-group-040-079.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -10118,7 +10118,7 @@
             "candidatePath": "images/dumbbell_overhead_press.png",
             "sha256": "92b9e97c1f9a74e96163b0bf0c77e289d093e85a7dd68206563c3f94d3163075",
             "provenanceLedger": "generation-group-040-079.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -10144,7 +10144,7 @@
             "candidatePath": "images/dumbbell_overhead_press.png",
             "sha256": "92b9e97c1f9a74e96163b0bf0c77e289d093e85a7dd68206563c3f94d3163075",
             "provenanceLedger": "generation-group-040-079.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         }
       ],
@@ -10164,7 +10164,7 @@
           "format": "PNG",
           "selectionSource": "accepted_base_primary",
           "selectionStatus": "DRAFT_SELECTED",
-          "visualAuditStatus": "PASS_PRIMARY",
+          "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS",
           "provenanceLedger": "generation-group-040-079.json",
           "provenanceSidecar": null,
           "publicationState": "DRAFT",
@@ -10482,7 +10482,7 @@
             "candidatePath": "images/dumbbell_triceps_extension.png",
             "sha256": "28a684c3d8462e7cfaf97a9de48599fc6e790822a0d98623cf50cdcef7b5cf70",
             "provenanceLedger": "generation-group-040-079.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -10508,7 +10508,7 @@
             "candidatePath": "images/dumbbell_triceps_extension.png",
             "sha256": "28a684c3d8462e7cfaf97a9de48599fc6e790822a0d98623cf50cdcef7b5cf70",
             "provenanceLedger": "generation-group-040-079.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -10534,7 +10534,7 @@
             "candidatePath": "images/dumbbell_triceps_extension.png",
             "sha256": "28a684c3d8462e7cfaf97a9de48599fc6e790822a0d98623cf50cdcef7b5cf70",
             "provenanceLedger": "generation-group-040-079.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         }
       ],
@@ -10554,7 +10554,7 @@
           "format": "PNG",
           "selectionSource": "accepted_base_primary",
           "selectionStatus": "DRAFT_SELECTED",
-          "visualAuditStatus": "PASS_PRIMARY",
+          "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS",
           "provenanceLedger": "generation-group-040-079.json",
           "provenanceSidecar": null,
           "publicationState": "DRAFT",
@@ -10872,7 +10872,7 @@
             "candidatePath": "images/face_pull.png",
             "sha256": "b97efb05b0587a4608961fd8c01ee8ab6b4dc7e715ec0eccae78b0b6da2a6be4",
             "provenanceLedger": "generation-group-040-079.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -10898,7 +10898,7 @@
             "candidatePath": "images/face_pull.png",
             "sha256": "b97efb05b0587a4608961fd8c01ee8ab6b4dc7e715ec0eccae78b0b6da2a6be4",
             "provenanceLedger": "generation-group-040-079.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -10924,7 +10924,7 @@
             "candidatePath": "images/face_pull.png",
             "sha256": "b97efb05b0587a4608961fd8c01ee8ab6b4dc7e715ec0eccae78b0b6da2a6be4",
             "provenanceLedger": "generation-group-040-079.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         }
       ],
@@ -10944,7 +10944,7 @@
           "format": "PNG",
           "selectionSource": "accepted_base_primary",
           "selectionStatus": "DRAFT_SELECTED",
-          "visualAuditStatus": "PASS_PRIMARY",
+          "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS",
           "provenanceLedger": "generation-group-040-079.json",
           "provenanceSidecar": null,
           "publicationState": "DRAFT",
@@ -11033,7 +11033,7 @@
             "candidatePath": "images/farmer_carry.png",
             "sha256": "9a37adbfe69ec10420ff69aae75d252455af195b6da1cc086af0ce12742f1658",
             "provenanceLedger": "generation-group-040-079.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -11059,7 +11059,7 @@
             "candidatePath": "images/farmer_carry.png",
             "sha256": "9a37adbfe69ec10420ff69aae75d252455af195b6da1cc086af0ce12742f1658",
             "provenanceLedger": "generation-group-040-079.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -11085,7 +11085,7 @@
             "candidatePath": "images/farmer_carry.png",
             "sha256": "9a37adbfe69ec10420ff69aae75d252455af195b6da1cc086af0ce12742f1658",
             "provenanceLedger": "generation-group-040-079.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         }
       ],
@@ -11105,7 +11105,7 @@
           "format": "PNG",
           "selectionSource": "accepted_base_primary",
           "selectionStatus": "DRAFT_SELECTED",
-          "visualAuditStatus": "PASS_PRIMARY",
+          "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS",
           "provenanceLedger": "generation-group-040-079.json",
           "provenanceSidecar": null,
           "publicationState": "DRAFT",
@@ -11194,7 +11194,7 @@
             "candidatePath": "images/front_squat.png",
             "sha256": "9c13e379f74e262d7747a89752300e65ce4f8b811b7be0b574dca28356841185",
             "provenanceLedger": "generation-group-040-079.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -11220,7 +11220,7 @@
             "candidatePath": "images/front_squat.png",
             "sha256": "9c13e379f74e262d7747a89752300e65ce4f8b811b7be0b574dca28356841185",
             "provenanceLedger": "generation-group-040-079.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -11246,7 +11246,7 @@
             "candidatePath": "images/front_squat.png",
             "sha256": "9c13e379f74e262d7747a89752300e65ce4f8b811b7be0b574dca28356841185",
             "provenanceLedger": "generation-group-040-079.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         }
       ],
@@ -11266,7 +11266,7 @@
           "format": "PNG",
           "selectionSource": "accepted_base_primary",
           "selectionStatus": "DRAFT_SELECTED",
-          "visualAuditStatus": "PASS_PRIMARY",
+          "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS",
           "provenanceLedger": "generation-group-040-079.json",
           "provenanceSidecar": null,
           "publicationState": "DRAFT",
@@ -11355,7 +11355,7 @@
             "candidatePath": "images/glute_bridge.png",
             "sha256": "8a8ba2aa6e99e07f8f1a886f0a38571bb999c31b05cd95c0f397ccbd76506f89",
             "provenanceLedger": "generation-group-040-079.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -11381,7 +11381,7 @@
             "candidatePath": "images/glute_bridge.png",
             "sha256": "8a8ba2aa6e99e07f8f1a886f0a38571bb999c31b05cd95c0f397ccbd76506f89",
             "provenanceLedger": "generation-group-040-079.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -11407,7 +11407,7 @@
             "candidatePath": "images/glute_bridge.png",
             "sha256": "8a8ba2aa6e99e07f8f1a886f0a38571bb999c31b05cd95c0f397ccbd76506f89",
             "provenanceLedger": "generation-group-040-079.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         }
       ],
@@ -11427,7 +11427,7 @@
           "format": "PNG",
           "selectionSource": "accepted_base_primary",
           "selectionStatus": "DRAFT_SELECTED",
-          "visualAuditStatus": "PASS_PRIMARY",
+          "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS",
           "provenanceLedger": "generation-group-040-079.json",
           "provenanceSidecar": null,
           "publicationState": "DRAFT",
@@ -11516,7 +11516,7 @@
             "candidatePath": "images/goblet_squat.png",
             "sha256": "0ca0abb4aa30946004e2948cf02554506e648ca6a80c20b97f6681000397c4d2",
             "provenanceLedger": "generation-group-040-079.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -11542,7 +11542,7 @@
             "candidatePath": "images/goblet_squat.png",
             "sha256": "0ca0abb4aa30946004e2948cf02554506e648ca6a80c20b97f6681000397c4d2",
             "provenanceLedger": "generation-group-040-079.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -11568,7 +11568,7 @@
             "candidatePath": "images/goblet_squat.png",
             "sha256": "0ca0abb4aa30946004e2948cf02554506e648ca6a80c20b97f6681000397c4d2",
             "provenanceLedger": "generation-group-040-079.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         }
       ],
@@ -11588,7 +11588,7 @@
           "format": "PNG",
           "selectionSource": "accepted_base_primary",
           "selectionStatus": "DRAFT_SELECTED",
-          "visualAuditStatus": "PASS_PRIMARY",
+          "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS",
           "provenanceLedger": "generation-group-040-079.json",
           "provenanceSidecar": null,
           "publicationState": "DRAFT",
@@ -11677,7 +11677,7 @@
             "candidatePath": "images/good_morning.png",
             "sha256": "790975e999004ec0d1801383f11d8a0826194d13af158d1cc57edc63b052ffe4",
             "provenanceLedger": "generation-group-040-079.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -11703,7 +11703,7 @@
             "candidatePath": "images/good_morning.png",
             "sha256": "790975e999004ec0d1801383f11d8a0826194d13af158d1cc57edc63b052ffe4",
             "provenanceLedger": "generation-group-040-079.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -11729,7 +11729,7 @@
             "candidatePath": "images/good_morning.png",
             "sha256": "790975e999004ec0d1801383f11d8a0826194d13af158d1cc57edc63b052ffe4",
             "provenanceLedger": "generation-group-040-079.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         }
       ],
@@ -11749,7 +11749,7 @@
           "format": "PNG",
           "selectionSource": "accepted_base_primary",
           "selectionStatus": "DRAFT_SELECTED",
-          "visualAuditStatus": "PASS_PRIMARY",
+          "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS",
           "provenanceLedger": "generation-group-040-079.json",
           "provenanceSidecar": null,
           "publicationState": "DRAFT",
@@ -11999,7 +11999,7 @@
             "candidatePath": "images/hammer_curl.png",
             "sha256": "ae87531a8f7a42c4f23163eacf8d26d1425689934f0b7cb5c612596805baa9d8",
             "provenanceLedger": "generation-group-040-079.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -12025,7 +12025,7 @@
             "candidatePath": "images/hammer_curl.png",
             "sha256": "ae87531a8f7a42c4f23163eacf8d26d1425689934f0b7cb5c612596805baa9d8",
             "provenanceLedger": "generation-group-040-079.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -12051,7 +12051,7 @@
             "candidatePath": "images/hammer_curl.png",
             "sha256": "ae87531a8f7a42c4f23163eacf8d26d1425689934f0b7cb5c612596805baa9d8",
             "provenanceLedger": "generation-group-040-079.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         }
       ],
@@ -12071,7 +12071,7 @@
           "format": "PNG",
           "selectionSource": "accepted_base_primary",
           "selectionStatus": "DRAFT_SELECTED",
-          "visualAuditStatus": "PASS_PRIMARY",
+          "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS",
           "provenanceLedger": "generation-group-040-079.json",
           "provenanceSidecar": null,
           "publicationState": "DRAFT",
@@ -12160,7 +12160,7 @@
             "candidatePath": "images/handstand_hold.png",
             "sha256": "5edbe8ea11ea4e459e2d9762ce2d59b76b380a96becf7bab1ec770c8f53eff0e",
             "provenanceLedger": "generation-group-040-079.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -12186,7 +12186,7 @@
             "candidatePath": "images/handstand_hold.png",
             "sha256": "5edbe8ea11ea4e459e2d9762ce2d59b76b380a96becf7bab1ec770c8f53eff0e",
             "provenanceLedger": "generation-group-040-079.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -12212,7 +12212,7 @@
             "candidatePath": "images/handstand_hold.png",
             "sha256": "5edbe8ea11ea4e459e2d9762ce2d59b76b380a96becf7bab1ec770c8f53eff0e",
             "provenanceLedger": "generation-group-040-079.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         }
       ],
@@ -12232,7 +12232,7 @@
           "format": "PNG",
           "selectionSource": "accepted_base_primary",
           "selectionStatus": "DRAFT_SELECTED",
-          "visualAuditStatus": "PASS_PRIMARY",
+          "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS",
           "provenanceLedger": "generation-group-040-079.json",
           "provenanceSidecar": null,
           "publicationState": "DRAFT",
@@ -12321,7 +12321,7 @@
             "candidatePath": "images/handstand_push_up.png",
             "sha256": "dd9260f9cbb69f68b7cef43c9c1f0ca0007766d3f5267f3c067963d439f1e703",
             "provenanceLedger": "generation-group-040-079.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -12347,7 +12347,7 @@
             "candidatePath": "images/handstand_push_up.png",
             "sha256": "dd9260f9cbb69f68b7cef43c9c1f0ca0007766d3f5267f3c067963d439f1e703",
             "provenanceLedger": "generation-group-040-079.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -12373,7 +12373,7 @@
             "candidatePath": "images/handstand_push_up.png",
             "sha256": "dd9260f9cbb69f68b7cef43c9c1f0ca0007766d3f5267f3c067963d439f1e703",
             "provenanceLedger": "generation-group-040-079.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         }
       ],
@@ -12393,7 +12393,7 @@
           "format": "PNG",
           "selectionSource": "accepted_base_primary",
           "selectionStatus": "DRAFT_SELECTED",
-          "visualAuditStatus": "PASS_PRIMARY",
+          "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS",
           "provenanceLedger": "generation-group-040-079.json",
           "provenanceSidecar": null,
           "publicationState": "DRAFT",
@@ -13169,7 +13169,7 @@
             "candidatePath": "images/hip_flexor_stretch.png",
             "sha256": "7ea68cd8a9df88f8c0a227957a217c66d7eb0abcdd56213a97c98a907991f150",
             "provenanceLedger": "generation-group-040-079.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -13195,7 +13195,7 @@
             "candidatePath": "images/hip_flexor_stretch.png",
             "sha256": "7ea68cd8a9df88f8c0a227957a217c66d7eb0abcdd56213a97c98a907991f150",
             "provenanceLedger": "generation-group-040-079.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -13221,7 +13221,7 @@
             "candidatePath": "images/hip_flexor_stretch.png",
             "sha256": "7ea68cd8a9df88f8c0a227957a217c66d7eb0abcdd56213a97c98a907991f150",
             "provenanceLedger": "generation-group-040-079.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         }
       ],
@@ -13241,7 +13241,7 @@
           "format": "PNG",
           "selectionSource": "accepted_base_primary",
           "selectionStatus": "DRAFT_SELECTED",
-          "visualAuditStatus": "PASS_PRIMARY",
+          "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS",
           "provenanceLedger": "generation-group-040-079.json",
           "provenanceSidecar": null,
           "publicationState": "DRAFT",
@@ -13330,7 +13330,7 @@
             "candidatePath": "images/hip_hinge_band.png",
             "sha256": "da52c92f7a4c7b551bfcb02fbb73b9064897d394e2160acc1cbc9c8c3644aa9e",
             "provenanceLedger": "generation-group-040-079.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -13356,7 +13356,7 @@
             "candidatePath": "images/hip_hinge_band.png",
             "sha256": "da52c92f7a4c7b551bfcb02fbb73b9064897d394e2160acc1cbc9c8c3644aa9e",
             "provenanceLedger": "generation-group-040-079.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -13382,7 +13382,7 @@
             "candidatePath": "images/hip_hinge_band.png",
             "sha256": "da52c92f7a4c7b551bfcb02fbb73b9064897d394e2160acc1cbc9c8c3644aa9e",
             "provenanceLedger": "generation-group-040-079.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         }
       ],
@@ -13402,7 +13402,7 @@
           "format": "PNG",
           "selectionSource": "accepted_base_primary",
           "selectionStatus": "DRAFT_SELECTED",
-          "visualAuditStatus": "PASS_PRIMARY",
+          "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS",
           "provenanceLedger": "generation-group-040-079.json",
           "provenanceSidecar": null,
           "publicationState": "DRAFT",
@@ -13491,7 +13491,7 @@
             "candidatePath": "images/hip_thrust.png",
             "sha256": "f20eb90f84cce23eb4a505d5b1d03c8fdfb0aeeb736c8db5526e22e48add6f92",
             "provenanceLedger": "generation-group-040-079.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -13517,7 +13517,7 @@
             "candidatePath": "images/hip_thrust.png",
             "sha256": "f20eb90f84cce23eb4a505d5b1d03c8fdfb0aeeb736c8db5526e22e48add6f92",
             "provenanceLedger": "generation-group-040-079.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -13543,7 +13543,7 @@
             "candidatePath": "images/hip_thrust.png",
             "sha256": "f20eb90f84cce23eb4a505d5b1d03c8fdfb0aeeb736c8db5526e22e48add6f92",
             "provenanceLedger": "generation-group-040-079.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         }
       ],
@@ -13563,7 +13563,7 @@
           "format": "PNG",
           "selectionSource": "accepted_base_primary",
           "selectionStatus": "DRAFT_SELECTED",
-          "visualAuditStatus": "PASS_PRIMARY",
+          "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS",
           "provenanceLedger": "generation-group-040-079.json",
           "provenanceSidecar": null,
           "publicationState": "DRAFT",
@@ -13652,7 +13652,7 @@
             "candidatePath": "images/hollow_hold.png",
             "sha256": "f9dcda945488eb9b4b3012e5e5ed13486eafefe8fb87b3b7cc8ec0419079fd32",
             "provenanceLedger": "generation-group-040-079.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -13678,7 +13678,7 @@
             "candidatePath": "images/hollow_hold.png",
             "sha256": "f9dcda945488eb9b4b3012e5e5ed13486eafefe8fb87b3b7cc8ec0419079fd32",
             "provenanceLedger": "generation-group-040-079.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -13704,7 +13704,7 @@
             "candidatePath": "images/hollow_hold.png",
             "sha256": "f9dcda945488eb9b4b3012e5e5ed13486eafefe8fb87b3b7cc8ec0419079fd32",
             "provenanceLedger": "generation-group-040-079.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         }
       ],
@@ -13724,7 +13724,7 @@
           "format": "PNG",
           "selectionSource": "accepted_base_primary",
           "selectionStatus": "DRAFT_SELECTED",
-          "visualAuditStatus": "PASS_PRIMARY",
+          "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS",
           "provenanceLedger": "generation-group-040-079.json",
           "provenanceSidecar": null,
           "publicationState": "DRAFT",
@@ -14042,7 +14042,7 @@
             "candidatePath": "images/incline_bench_press.png",
             "sha256": "02c6f04a88a6345eb6b5c6c075797eb3e845df68a0cc1ebbe4867ee2ad0b964b",
             "provenanceLedger": "generation-group-040-079.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -14068,7 +14068,7 @@
             "candidatePath": "images/incline_bench_press.png",
             "sha256": "02c6f04a88a6345eb6b5c6c075797eb3e845df68a0cc1ebbe4867ee2ad0b964b",
             "provenanceLedger": "generation-group-040-079.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -14094,7 +14094,7 @@
             "candidatePath": "images/incline_bench_press.png",
             "sha256": "02c6f04a88a6345eb6b5c6c075797eb3e845df68a0cc1ebbe4867ee2ad0b964b",
             "provenanceLedger": "generation-group-040-079.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         }
       ],
@@ -14114,7 +14114,7 @@
           "format": "PNG",
           "selectionSource": "accepted_base_primary",
           "selectionStatus": "DRAFT_SELECTED",
-          "visualAuditStatus": "PASS_PRIMARY",
+          "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS",
           "provenanceLedger": "generation-group-040-079.json",
           "provenanceSidecar": null,
           "publicationState": "DRAFT",
@@ -14203,7 +14203,7 @@
             "candidatePath": "images/incline_dumbbell_press.png",
             "sha256": "9d595342617f608b14a9dcc9aad44b9aa405adccc1339e332a2caa57e7f9715e",
             "provenanceLedger": "generation-group-040-079.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -14229,7 +14229,7 @@
             "candidatePath": "images/incline_dumbbell_press.png",
             "sha256": "9d595342617f608b14a9dcc9aad44b9aa405adccc1339e332a2caa57e7f9715e",
             "provenanceLedger": "generation-group-040-079.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -14255,7 +14255,7 @@
             "candidatePath": "images/incline_dumbbell_press.png",
             "sha256": "9d595342617f608b14a9dcc9aad44b9aa405adccc1339e332a2caa57e7f9715e",
             "provenanceLedger": "generation-group-040-079.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         }
       ],
@@ -14275,7 +14275,7 @@
           "format": "PNG",
           "selectionSource": "accepted_base_primary",
           "selectionStatus": "DRAFT_SELECTED",
-          "visualAuditStatus": "PASS_PRIMARY",
+          "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS",
           "provenanceLedger": "generation-group-040-079.json",
           "provenanceSidecar": null,
           "publicationState": "DRAFT",
@@ -14364,7 +14364,7 @@
             "candidatePath": "images/incline_inverted_row.png",
             "sha256": "7aac942d5be1ac99954570baa737c14d93468c570e82705b6988b59a5a8bafe8",
             "provenanceLedger": "generation-group-040-079.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -14390,7 +14390,7 @@
             "candidatePath": "images/incline_inverted_row.png",
             "sha256": "7aac942d5be1ac99954570baa737c14d93468c570e82705b6988b59a5a8bafe8",
             "provenanceLedger": "generation-group-040-079.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -14416,7 +14416,7 @@
             "candidatePath": "images/incline_inverted_row.png",
             "sha256": "7aac942d5be1ac99954570baa737c14d93468c570e82705b6988b59a5a8bafe8",
             "provenanceLedger": "generation-group-040-079.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         }
       ],
@@ -14436,7 +14436,7 @@
           "format": "PNG",
           "selectionSource": "accepted_base_primary",
           "selectionStatus": "DRAFT_SELECTED",
-          "visualAuditStatus": "PASS_PRIMARY",
+          "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS",
           "provenanceLedger": "generation-group-040-079.json",
           "provenanceSidecar": null,
           "publicationState": "DRAFT",
@@ -14525,7 +14525,7 @@
             "candidatePath": "images/incline_push_up.png",
             "sha256": "ccd0383b0326ebe8e5160b1706979bf234d438008b054d8c5120118808507ca8",
             "provenanceLedger": "generation-group-040-079.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -14551,7 +14551,7 @@
             "candidatePath": "images/incline_push_up.png",
             "sha256": "ccd0383b0326ebe8e5160b1706979bf234d438008b054d8c5120118808507ca8",
             "provenanceLedger": "generation-group-040-079.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -14577,7 +14577,7 @@
             "candidatePath": "images/incline_push_up.png",
             "sha256": "ccd0383b0326ebe8e5160b1706979bf234d438008b054d8c5120118808507ca8",
             "provenanceLedger": "generation-group-040-079.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         }
       ],
@@ -14597,7 +14597,7 @@
           "format": "PNG",
           "selectionSource": "accepted_base_primary",
           "selectionStatus": "DRAFT_SELECTED",
-          "visualAuditStatus": "PASS_PRIMARY",
+          "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS",
           "provenanceLedger": "generation-group-040-079.json",
           "provenanceSidecar": null,
           "publicationState": "DRAFT",
@@ -14847,7 +14847,7 @@
             "candidatePath": "images/jefferson_curl.png",
             "sha256": "5502367d7664cd72254667147bec51260ff65f70a95a7285268df6b3fc2cef11",
             "provenanceLedger": "generation-group-040-079.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -14873,7 +14873,7 @@
             "candidatePath": "images/jefferson_curl.png",
             "sha256": "5502367d7664cd72254667147bec51260ff65f70a95a7285268df6b3fc2cef11",
             "provenanceLedger": "generation-group-040-079.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -14899,7 +14899,7 @@
             "candidatePath": "images/jefferson_curl.png",
             "sha256": "5502367d7664cd72254667147bec51260ff65f70a95a7285268df6b3fc2cef11",
             "provenanceLedger": "generation-group-040-079.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         }
       ],
@@ -14919,7 +14919,7 @@
           "format": "PNG",
           "selectionSource": "accepted_base_primary",
           "selectionStatus": "DRAFT_SELECTED",
-          "visualAuditStatus": "PASS_PRIMARY",
+          "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS",
           "provenanceLedger": "generation-group-040-079.json",
           "provenanceSidecar": null,
           "publicationState": "DRAFT",
@@ -15008,7 +15008,7 @@
             "candidatePath": "images/jump_squat.png",
             "sha256": "3e6eb8dae245249cd645d86af414befcf472f7f8dfcb4bbbf8d4eca605fc718e",
             "provenanceLedger": "generation-group-040-079.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -15034,7 +15034,7 @@
             "candidatePath": "images/jump_squat.png",
             "sha256": "3e6eb8dae245249cd645d86af414befcf472f7f8dfcb4bbbf8d4eca605fc718e",
             "provenanceLedger": "generation-group-040-079.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -15060,7 +15060,7 @@
             "candidatePath": "images/jump_squat.png",
             "sha256": "3e6eb8dae245249cd645d86af414befcf472f7f8dfcb4bbbf8d4eca605fc718e",
             "provenanceLedger": "generation-group-040-079.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         }
       ],
@@ -15080,7 +15080,7 @@
           "format": "PNG",
           "selectionSource": "accepted_base_primary",
           "selectionStatus": "DRAFT_SELECTED",
-          "visualAuditStatus": "PASS_PRIMARY",
+          "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS",
           "provenanceLedger": "generation-group-040-079.json",
           "provenanceSidecar": null,
           "publicationState": "DRAFT",
@@ -15466,7 +15466,7 @@
             "candidatePath": "images/kettlebell_clean.png",
             "sha256": "7f015534cea02088c4c47de611ec1798ee47daf9ce4e0315792c503ccdae52c5",
             "provenanceLedger": "generation-group-040-079.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -15492,7 +15492,7 @@
             "candidatePath": "images/kettlebell_clean.png",
             "sha256": "7f015534cea02088c4c47de611ec1798ee47daf9ce4e0315792c503ccdae52c5",
             "provenanceLedger": "generation-group-040-079.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -15518,7 +15518,7 @@
             "candidatePath": "images/kettlebell_clean.png",
             "sha256": "7f015534cea02088c4c47de611ec1798ee47daf9ce4e0315792c503ccdae52c5",
             "provenanceLedger": "generation-group-040-079.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         }
       ],
@@ -15538,7 +15538,7 @@
           "format": "PNG",
           "selectionSource": "accepted_base_primary",
           "selectionStatus": "DRAFT_SELECTED",
-          "visualAuditStatus": "PASS_PRIMARY",
+          "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS",
           "provenanceLedger": "generation-group-040-079.json",
           "provenanceSidecar": null,
           "publicationState": "DRAFT",
@@ -15695,7 +15695,7 @@
             "candidatePath": "images/kettlebell_rdl.png",
             "sha256": "78fbc0d46b7bebfffebe5e050c348d656a725f272bb3a2ad087e99336d169ada",
             "provenanceLedger": "generation-group-040-079.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -15721,7 +15721,7 @@
             "candidatePath": "images/kettlebell_rdl.png",
             "sha256": "78fbc0d46b7bebfffebe5e050c348d656a725f272bb3a2ad087e99336d169ada",
             "provenanceLedger": "generation-group-040-079.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -15747,7 +15747,7 @@
             "candidatePath": "images/kettlebell_rdl.png",
             "sha256": "78fbc0d46b7bebfffebe5e050c348d656a725f272bb3a2ad087e99336d169ada",
             "provenanceLedger": "generation-group-040-079.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         }
       ],
@@ -15767,7 +15767,7 @@
           "format": "PNG",
           "selectionSource": "accepted_base_primary",
           "selectionStatus": "DRAFT_SELECTED",
-          "visualAuditStatus": "PASS_PRIMARY",
+          "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS",
           "provenanceLedger": "generation-group-040-079.json",
           "provenanceSidecar": null,
           "publicationState": "DRAFT",
@@ -16085,7 +16085,7 @@
             "candidatePath": "images/kickstand_rdl.png",
             "sha256": "cae41da09e0f33ad69b279c4e249c8ae55b913c0efb8b55b027ba0e4d0db4a66",
             "provenanceLedger": "generation-group-080-119.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -16111,7 +16111,7 @@
             "candidatePath": "images/kickstand_rdl.png",
             "sha256": "cae41da09e0f33ad69b279c4e249c8ae55b913c0efb8b55b027ba0e4d0db4a66",
             "provenanceLedger": "generation-group-080-119.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -16137,7 +16137,7 @@
             "candidatePath": "images/kickstand_rdl.png",
             "sha256": "cae41da09e0f33ad69b279c4e249c8ae55b913c0efb8b55b027ba0e4d0db4a66",
             "provenanceLedger": "generation-group-080-119.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         }
       ],
@@ -16157,7 +16157,7 @@
           "format": "PNG",
           "selectionSource": "accepted_base_primary",
           "selectionStatus": "DRAFT_SELECTED",
-          "visualAuditStatus": "PASS_PRIMARY",
+          "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS",
           "provenanceLedger": "generation-group-080-119.json",
           "provenanceSidecar": null,
           "publicationState": "DRAFT",
@@ -16246,7 +16246,7 @@
             "candidatePath": "images/knee_push_up.png",
             "sha256": "eb6527f2e2cf2a443194e1a9e34b7c0884a2e99c7fa7bce8369a8a8bbbd0964d",
             "provenanceLedger": "generation-group-080-119.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -16272,7 +16272,7 @@
             "candidatePath": "images/knee_push_up.png",
             "sha256": "eb6527f2e2cf2a443194e1a9e34b7c0884a2e99c7fa7bce8369a8a8bbbd0964d",
             "provenanceLedger": "generation-group-080-119.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -16298,7 +16298,7 @@
             "candidatePath": "images/knee_push_up.png",
             "sha256": "eb6527f2e2cf2a443194e1a9e34b7c0884a2e99c7fa7bce8369a8a8bbbd0964d",
             "provenanceLedger": "generation-group-080-119.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         }
       ],
@@ -16318,7 +16318,7 @@
           "format": "PNG",
           "selectionSource": "accepted_base_primary",
           "selectionStatus": "DRAFT_SELECTED",
-          "visualAuditStatus": "PASS_PRIMARY",
+          "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS",
           "provenanceLedger": "generation-group-080-119.json",
           "provenanceSidecar": null,
           "publicationState": "DRAFT",
@@ -16407,7 +16407,7 @@
             "candidatePath": "images/l_sit_hold.png",
             "sha256": "0823ca54e08fefc94a6ae8bdecc36a28239a96da4ab2b85f2566eb71343dcecb",
             "provenanceLedger": "generation-group-080-119.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -16433,7 +16433,7 @@
             "candidatePath": "images/l_sit_hold.png",
             "sha256": "0823ca54e08fefc94a6ae8bdecc36a28239a96da4ab2b85f2566eb71343dcecb",
             "provenanceLedger": "generation-group-080-119.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -16459,7 +16459,7 @@
             "candidatePath": "images/l_sit_hold.png",
             "sha256": "0823ca54e08fefc94a6ae8bdecc36a28239a96da4ab2b85f2566eb71343dcecb",
             "provenanceLedger": "generation-group-080-119.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         }
       ],
@@ -16479,7 +16479,7 @@
           "format": "PNG",
           "selectionSource": "accepted_base_primary",
           "selectionStatus": "DRAFT_SELECTED",
-          "visualAuditStatus": "PASS_PRIMARY",
+          "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS",
           "provenanceLedger": "generation-group-080-119.json",
           "provenanceSidecar": null,
           "publicationState": "DRAFT",
@@ -16568,7 +16568,7 @@
             "candidatePath": "images/l_sit_pull_up.png",
             "sha256": "7ef64961f02e9ecd9217be9e881af9e72c889b632808fc0b377a077484723f3e",
             "provenanceLedger": "generation-group-080-119.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -16594,7 +16594,7 @@
             "candidatePath": "images/l_sit_pull_up.png",
             "sha256": "7ef64961f02e9ecd9217be9e881af9e72c889b632808fc0b377a077484723f3e",
             "provenanceLedger": "generation-group-080-119.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -16620,7 +16620,7 @@
             "candidatePath": "images/l_sit_pull_up.png",
             "sha256": "7ef64961f02e9ecd9217be9e881af9e72c889b632808fc0b377a077484723f3e",
             "provenanceLedger": "generation-group-080-119.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         }
       ],
@@ -16640,7 +16640,7 @@
           "format": "PNG",
           "selectionSource": "accepted_base_primary",
           "selectionStatus": "DRAFT_SELECTED",
-          "visualAuditStatus": "PASS_PRIMARY",
+          "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS",
           "provenanceLedger": "generation-group-080-119.json",
           "provenanceSidecar": null,
           "publicationState": "DRAFT",
@@ -16729,7 +16729,7 @@
             "candidatePath": "images/l_sit_tuck.png",
             "sha256": "76c6fc57fcdc8140a8ccb0e24287a7448b6c4679e69b582a245f111d63b5f347",
             "provenanceLedger": "generation-group-080-119.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -16755,7 +16755,7 @@
             "candidatePath": "images/l_sit_tuck.png",
             "sha256": "76c6fc57fcdc8140a8ccb0e24287a7448b6c4679e69b582a245f111d63b5f347",
             "provenanceLedger": "generation-group-080-119.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -16781,7 +16781,7 @@
             "candidatePath": "images/l_sit_tuck.png",
             "sha256": "76c6fc57fcdc8140a8ccb0e24287a7448b6c4679e69b582a245f111d63b5f347",
             "provenanceLedger": "generation-group-080-119.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         }
       ],
@@ -16801,7 +16801,7 @@
           "format": "PNG",
           "selectionSource": "accepted_base_primary",
           "selectionStatus": "DRAFT_SELECTED",
-          "visualAuditStatus": "PASS_PRIMARY",
+          "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS",
           "provenanceLedger": "generation-group-080-119.json",
           "provenanceSidecar": null,
           "publicationState": "DRAFT",
@@ -17280,7 +17280,7 @@
             "candidatePath": "images/lateral_lunge.png",
             "sha256": "93b1fc8240145bc67f0d6f1cf6178aaa34f4f50b376778874aa1573fc5f616e9",
             "provenanceLedger": "generation-group-080-119.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -17306,7 +17306,7 @@
             "candidatePath": "images/lateral_lunge.png",
             "sha256": "93b1fc8240145bc67f0d6f1cf6178aaa34f4f50b376778874aa1573fc5f616e9",
             "provenanceLedger": "generation-group-080-119.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -17332,7 +17332,7 @@
             "candidatePath": "images/lateral_lunge.png",
             "sha256": "93b1fc8240145bc67f0d6f1cf6178aaa34f4f50b376778874aa1573fc5f616e9",
             "provenanceLedger": "generation-group-080-119.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         }
       ],
@@ -17352,7 +17352,7 @@
           "format": "PNG",
           "selectionSource": "accepted_base_primary",
           "selectionStatus": "DRAFT_SELECTED",
-          "visualAuditStatus": "PASS_PRIMARY",
+          "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS",
           "provenanceLedger": "generation-group-080-119.json",
           "provenanceSidecar": null,
           "publicationState": "DRAFT",
@@ -17602,7 +17602,7 @@
             "candidatePath": "images/lunging_iso_hold.png",
             "sha256": "9df97651e05b240e692040502826282224eb8604eed49be3175238476084f3fd",
             "provenanceLedger": "generation-group-080-119.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -17628,7 +17628,7 @@
             "candidatePath": "images/lunging_iso_hold.png",
             "sha256": "9df97651e05b240e692040502826282224eb8604eed49be3175238476084f3fd",
             "provenanceLedger": "generation-group-080-119.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -17654,7 +17654,7 @@
             "candidatePath": "images/lunging_iso_hold.png",
             "sha256": "9df97651e05b240e692040502826282224eb8604eed49be3175238476084f3fd",
             "provenanceLedger": "generation-group-080-119.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         }
       ],
@@ -17674,7 +17674,7 @@
           "format": "PNG",
           "selectionSource": "accepted_base_primary",
           "selectionStatus": "DRAFT_SELECTED",
-          "visualAuditStatus": "PASS_PRIMARY",
+          "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS",
           "provenanceLedger": "generation-group-080-119.json",
           "provenanceSidecar": null,
           "publicationState": "DRAFT",
@@ -17924,7 +17924,7 @@
             "candidatePath": "images/med_ball_chest_pass.png",
             "sha256": "b8b4aff47a2f6399d77174f8cfc84f463882f910057b0aa6952ac69aa0609f1a",
             "provenanceLedger": "generation-group-080-119.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -17950,7 +17950,7 @@
             "candidatePath": "images/med_ball_chest_pass.png",
             "sha256": "b8b4aff47a2f6399d77174f8cfc84f463882f910057b0aa6952ac69aa0609f1a",
             "provenanceLedger": "generation-group-080-119.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -17976,7 +17976,7 @@
             "candidatePath": "images/med_ball_chest_pass.png",
             "sha256": "b8b4aff47a2f6399d77174f8cfc84f463882f910057b0aa6952ac69aa0609f1a",
             "provenanceLedger": "generation-group-080-119.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         }
       ],
@@ -17996,7 +17996,7 @@
           "format": "PNG",
           "selectionSource": "accepted_base_primary",
           "selectionStatus": "DRAFT_SELECTED",
-          "visualAuditStatus": "PASS_PRIMARY",
+          "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS",
           "provenanceLedger": "generation-group-080-119.json",
           "provenanceSidecar": null,
           "publicationState": "DRAFT",
@@ -18153,7 +18153,7 @@
             "candidatePath": "images/med_ball_rotational_throw.png",
             "sha256": "1284530f47c061312be0a098ab5d3b4325d82e60442a9cdc328ff5b251f168ad",
             "provenanceLedger": "generation-group-080-119.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -18179,7 +18179,7 @@
             "candidatePath": "images/med_ball_rotational_throw.png",
             "sha256": "1284530f47c061312be0a098ab5d3b4325d82e60442a9cdc328ff5b251f168ad",
             "provenanceLedger": "generation-group-080-119.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -18205,7 +18205,7 @@
             "candidatePath": "images/med_ball_rotational_throw.png",
             "sha256": "1284530f47c061312be0a098ab5d3b4325d82e60442a9cdc328ff5b251f168ad",
             "provenanceLedger": "generation-group-080-119.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         }
       ],
@@ -18225,7 +18225,7 @@
           "format": "PNG",
           "selectionSource": "accepted_base_primary",
           "selectionStatus": "DRAFT_SELECTED",
-          "visualAuditStatus": "PASS_PRIMARY",
+          "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS",
           "provenanceLedger": "generation-group-080-119.json",
           "provenanceSidecar": null,
           "publicationState": "DRAFT",
@@ -19137,7 +19137,7 @@
             "candidatePath": "images/ninety_ninety_hip_switch.png",
             "sha256": "95796daca2cee9cef7faaae1e70a3a40017bbdce51c644203c0898e96a18d998",
             "provenanceLedger": "generation-group-080-119.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -19163,7 +19163,7 @@
             "candidatePath": "images/ninety_ninety_hip_switch.png",
             "sha256": "95796daca2cee9cef7faaae1e70a3a40017bbdce51c644203c0898e96a18d998",
             "provenanceLedger": "generation-group-080-119.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -19189,7 +19189,7 @@
             "candidatePath": "images/ninety_ninety_hip_switch.png",
             "sha256": "95796daca2cee9cef7faaae1e70a3a40017bbdce51c644203c0898e96a18d998",
             "provenanceLedger": "generation-group-080-119.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         }
       ],
@@ -19209,7 +19209,7 @@
           "format": "PNG",
           "selectionSource": "accepted_base_primary",
           "selectionStatus": "DRAFT_SELECTED",
-          "visualAuditStatus": "PASS_PRIMARY",
+          "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS",
           "provenanceLedger": "generation-group-080-119.json",
           "provenanceSidecar": null,
           "publicationState": "DRAFT",
@@ -19366,7 +19366,7 @@
             "candidatePath": "images/one_arm_dumbbell_row.png",
             "sha256": "7a37625ed9f0c7481c85aec6a9c978c0d681ae4bffde524a9b425adcfde0af12",
             "provenanceLedger": "generation-group-080-119.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -19392,7 +19392,7 @@
             "candidatePath": "images/one_arm_dumbbell_row.png",
             "sha256": "7a37625ed9f0c7481c85aec6a9c978c0d681ae4bffde524a9b425adcfde0af12",
             "provenanceLedger": "generation-group-080-119.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -19418,7 +19418,7 @@
             "candidatePath": "images/one_arm_dumbbell_row.png",
             "sha256": "7a37625ed9f0c7481c85aec6a9c978c0d681ae4bffde524a9b425adcfde0af12",
             "provenanceLedger": "generation-group-080-119.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         }
       ],
@@ -19438,7 +19438,7 @@
           "format": "PNG",
           "selectionSource": "accepted_base_primary",
           "selectionStatus": "DRAFT_SELECTED",
-          "visualAuditStatus": "PASS_PRIMARY",
+          "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS",
           "provenanceLedger": "generation-group-080-119.json",
           "provenanceSidecar": null,
           "publicationState": "DRAFT",
@@ -19527,7 +19527,7 @@
             "candidatePath": "images/one_arm_push_up.png",
             "sha256": "f45b230cd000e73850b4ffb643bd792fc6441ce595e74d8c5f1e463aa4eeda13",
             "provenanceLedger": "generation-group-080-119.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -19553,7 +19553,7 @@
             "candidatePath": "images/one_arm_push_up.png",
             "sha256": "f45b230cd000e73850b4ffb643bd792fc6441ce595e74d8c5f1e463aa4eeda13",
             "provenanceLedger": "generation-group-080-119.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -19579,7 +19579,7 @@
             "candidatePath": "images/one_arm_push_up.png",
             "sha256": "f45b230cd000e73850b4ffb643bd792fc6441ce595e74d8c5f1e463aa4eeda13",
             "provenanceLedger": "generation-group-080-119.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         }
       ],
@@ -19599,7 +19599,7 @@
           "format": "PNG",
           "selectionSource": "accepted_base_primary",
           "selectionStatus": "DRAFT_SELECTED",
-          "visualAuditStatus": "PASS_PRIMARY",
+          "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS",
           "provenanceLedger": "generation-group-080-119.json",
           "provenanceSidecar": null,
           "publicationState": "DRAFT",
@@ -19688,7 +19688,7 @@
             "candidatePath": "images/one_arm_ring_row.png",
             "sha256": "0617fa7b03de17e1a5287c2a9cfdfe1b18ca840dcb613d5aa9e827c36df47b6e",
             "provenanceLedger": "generation-group-080-119.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -19714,7 +19714,7 @@
             "candidatePath": "images/one_arm_ring_row.png",
             "sha256": "0617fa7b03de17e1a5287c2a9cfdfe1b18ca840dcb613d5aa9e827c36df47b6e",
             "provenanceLedger": "generation-group-080-119.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -19740,7 +19740,7 @@
             "candidatePath": "images/one_arm_ring_row.png",
             "sha256": "0617fa7b03de17e1a5287c2a9cfdfe1b18ca840dcb613d5aa9e827c36df47b6e",
             "provenanceLedger": "generation-group-080-119.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         }
       ],
@@ -19760,7 +19760,7 @@
           "format": "PNG",
           "selectionSource": "accepted_base_primary",
           "selectionStatus": "DRAFT_SELECTED",
-          "visualAuditStatus": "PASS_PRIMARY",
+          "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS",
           "provenanceLedger": "generation-group-080-119.json",
           "provenanceSidecar": null,
           "publicationState": "DRAFT",
@@ -20010,7 +20010,7 @@
             "candidatePath": "images/overhead_triceps_extension.png",
             "sha256": "fbd7911cb333d45c72729750a8d084d5908289f2c683ccd2771a85f6c5cd97d0",
             "provenanceLedger": "generation-group-080-119.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -20036,7 +20036,7 @@
             "candidatePath": "images/overhead_triceps_extension.png",
             "sha256": "fbd7911cb333d45c72729750a8d084d5908289f2c683ccd2771a85f6c5cd97d0",
             "provenanceLedger": "generation-group-080-119.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -20062,7 +20062,7 @@
             "candidatePath": "images/overhead_triceps_extension.png",
             "sha256": "fbd7911cb333d45c72729750a8d084d5908289f2c683ccd2771a85f6c5cd97d0",
             "provenanceLedger": "generation-group-080-119.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         }
       ],
@@ -20082,7 +20082,7 @@
           "format": "PNG",
           "selectionSource": "accepted_base_primary",
           "selectionStatus": "DRAFT_SELECTED",
-          "visualAuditStatus": "PASS_PRIMARY",
+          "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS",
           "provenanceLedger": "generation-group-080-119.json",
           "provenanceSidecar": null,
           "publicationState": "DRAFT",
@@ -20171,7 +20171,7 @@
             "candidatePath": "images/pallof_press.png",
             "sha256": "2ec8418f0a314d5ad5eb87895487619d35b41f16025ae10b7d2d4311f70d3ba8",
             "provenanceLedger": "generation-group-080-119.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -20197,7 +20197,7 @@
             "candidatePath": "images/pallof_press.png",
             "sha256": "2ec8418f0a314d5ad5eb87895487619d35b41f16025ae10b7d2d4311f70d3ba8",
             "provenanceLedger": "generation-group-080-119.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -20223,7 +20223,7 @@
             "candidatePath": "images/pallof_press.png",
             "sha256": "2ec8418f0a314d5ad5eb87895487619d35b41f16025ae10b7d2d4311f70d3ba8",
             "provenanceLedger": "generation-group-080-119.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         }
       ],
@@ -20243,7 +20243,7 @@
           "format": "PNG",
           "selectionSource": "retained_original_primary_after_comparison",
           "selectionStatus": "DRAFT_SELECTED",
-          "visualAuditStatus": "PASS_PRIMARY",
+          "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS",
           "provenanceLedger": "generation-group-080-119.json",
           "provenanceSidecar": null,
           "publicationState": "DRAFT",
@@ -20400,7 +20400,7 @@
             "candidatePath": "images/paused_back_squat.png",
             "sha256": "3105d98f15b25f3f76fc186e1509923d4c823bcabcf14668945f0acded288caf",
             "provenanceLedger": "generation-group-080-119.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -20426,7 +20426,7 @@
             "candidatePath": "images/paused_back_squat.png",
             "sha256": "3105d98f15b25f3f76fc186e1509923d4c823bcabcf14668945f0acded288caf",
             "provenanceLedger": "generation-group-080-119.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -20452,7 +20452,7 @@
             "candidatePath": "images/paused_back_squat.png",
             "sha256": "3105d98f15b25f3f76fc186e1509923d4c823bcabcf14668945f0acded288caf",
             "provenanceLedger": "generation-group-080-119.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         }
       ],
@@ -20472,7 +20472,7 @@
           "format": "PNG",
           "selectionSource": "accepted_base_primary",
           "selectionStatus": "DRAFT_SELECTED",
-          "visualAuditStatus": "PASS_PRIMARY",
+          "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS",
           "provenanceLedger": "generation-group-080-119.json",
           "provenanceSidecar": null,
           "publicationState": "DRAFT",
@@ -20951,7 +20951,7 @@
             "candidatePath": "images/pike_push_up.png",
             "sha256": "e4ec1e79016bad6bfb42ff2714c51a902ce52452cdaf2b267e239791fef68119",
             "provenanceLedger": "generation-group-080-119.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -20977,7 +20977,7 @@
             "candidatePath": "images/pike_push_up.png",
             "sha256": "e4ec1e79016bad6bfb42ff2714c51a902ce52452cdaf2b267e239791fef68119",
             "provenanceLedger": "generation-group-080-119.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -21003,7 +21003,7 @@
             "candidatePath": "images/pike_push_up.png",
             "sha256": "e4ec1e79016bad6bfb42ff2714c51a902ce52452cdaf2b267e239791fef68119",
             "provenanceLedger": "generation-group-080-119.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         }
       ],
@@ -21023,7 +21023,7 @@
           "format": "PNG",
           "selectionSource": "accepted_base_primary",
           "selectionStatus": "DRAFT_SELECTED",
-          "visualAuditStatus": "PASS_PRIMARY",
+          "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS",
           "provenanceLedger": "generation-group-080-119.json",
           "provenanceSidecar": null,
           "publicationState": "DRAFT",
@@ -21112,7 +21112,7 @@
             "candidatePath": "images/pistol_squat.png",
             "sha256": "466a97090b2a941edf3de47768bec8f9904714db26ad45806a8880acfdb85d78",
             "provenanceLedger": "generation-group-080-119.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -21138,7 +21138,7 @@
             "candidatePath": "images/pistol_squat.png",
             "sha256": "466a97090b2a941edf3de47768bec8f9904714db26ad45806a8880acfdb85d78",
             "provenanceLedger": "generation-group-080-119.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -21164,7 +21164,7 @@
             "candidatePath": "images/pistol_squat.png",
             "sha256": "466a97090b2a941edf3de47768bec8f9904714db26ad45806a8880acfdb85d78",
             "provenanceLedger": "generation-group-080-119.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         }
       ],
@@ -21184,7 +21184,7 @@
           "format": "PNG",
           "selectionSource": "accepted_base_primary",
           "selectionStatus": "DRAFT_SELECTED",
-          "visualAuditStatus": "PASS_PRIMARY",
+          "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS",
           "provenanceLedger": "generation-group-080-119.json",
           "provenanceSidecar": null,
           "publicationState": "DRAFT",
@@ -21273,7 +21273,7 @@
             "candidatePath": "images/plank.png",
             "sha256": "7c56c8621398a038cc229324753c3bca7d878dcdec2c0854101c6f096f5bc8e1",
             "provenanceLedger": "generation-group-080-119.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -21299,7 +21299,7 @@
             "candidatePath": "images/plank.png",
             "sha256": "7c56c8621398a038cc229324753c3bca7d878dcdec2c0854101c6f096f5bc8e1",
             "provenanceLedger": "generation-group-080-119.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -21325,7 +21325,7 @@
             "candidatePath": "images/plank.png",
             "sha256": "7c56c8621398a038cc229324753c3bca7d878dcdec2c0854101c6f096f5bc8e1",
             "provenanceLedger": "generation-group-080-119.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         }
       ],
@@ -21345,7 +21345,7 @@
           "format": "PNG",
           "selectionSource": "accepted_base_primary",
           "selectionStatus": "DRAFT_SELECTED",
-          "visualAuditStatus": "PASS_PRIMARY",
+          "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS",
           "provenanceLedger": "generation-group-080-119.json",
           "provenanceSidecar": null,
           "publicationState": "DRAFT",
@@ -21434,7 +21434,7 @@
             "candidatePath": "images/plyo_push_up.png",
             "sha256": "bca65748091f622f51401d19e1738a901432a55e123da73bbf62fd993ebf2bc9",
             "provenanceLedger": "generation-group-080-119.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -21460,7 +21460,7 @@
             "candidatePath": "images/plyo_push_up.png",
             "sha256": "bca65748091f622f51401d19e1738a901432a55e123da73bbf62fd993ebf2bc9",
             "provenanceLedger": "generation-group-080-119.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -21486,7 +21486,7 @@
             "candidatePath": "images/plyo_push_up.png",
             "sha256": "bca65748091f622f51401d19e1738a901432a55e123da73bbf62fd993ebf2bc9",
             "provenanceLedger": "generation-group-080-119.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         }
       ],
@@ -21506,7 +21506,7 @@
           "format": "PNG",
           "selectionSource": "accepted_base_primary",
           "selectionStatus": "DRAFT_SELECTED",
-          "visualAuditStatus": "PASS_PRIMARY",
+          "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS",
           "provenanceLedger": "generation-group-080-119.json",
           "provenanceSidecar": null,
           "publicationState": "DRAFT",
@@ -21892,7 +21892,7 @@
             "candidatePath": "images/prone_lat_pulldown.png",
             "sha256": "79ae4517d642e915142073da247b7c84c7550a67e3de325119ed089d48cdd8b0",
             "provenanceLedger": "generation-group-080-119.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -21918,7 +21918,7 @@
             "candidatePath": "images/prone_lat_pulldown.png",
             "sha256": "79ae4517d642e915142073da247b7c84c7550a67e3de325119ed089d48cdd8b0",
             "provenanceLedger": "generation-group-080-119.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -21944,7 +21944,7 @@
             "candidatePath": "images/prone_lat_pulldown.png",
             "sha256": "79ae4517d642e915142073da247b7c84c7550a67e3de325119ed089d48cdd8b0",
             "provenanceLedger": "generation-group-080-119.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         }
       ],
@@ -21964,7 +21964,7 @@
           "format": "PNG",
           "selectionSource": "accepted_base_primary",
           "selectionStatus": "DRAFT_SELECTED",
-          "visualAuditStatus": "PASS_PRIMARY",
+          "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS",
           "provenanceLedger": "generation-group-080-119.json",
           "provenanceSidecar": null,
           "publicationState": "DRAFT",
@@ -22121,7 +22121,7 @@
             "candidatePath": "images/prone_y_raise.png",
             "sha256": "8a8a5253170ee05f1a9a70919bf3dc1a1ef5fa907d46003bdbd1771e6b8f9a01",
             "provenanceLedger": "generation-group-080-119.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -22147,7 +22147,7 @@
             "candidatePath": "images/prone_y_raise.png",
             "sha256": "8a8a5253170ee05f1a9a70919bf3dc1a1ef5fa907d46003bdbd1771e6b8f9a01",
             "provenanceLedger": "generation-group-080-119.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -22173,7 +22173,7 @@
             "candidatePath": "images/prone_y_raise.png",
             "sha256": "8a8a5253170ee05f1a9a70919bf3dc1a1ef5fa907d46003bdbd1771e6b8f9a01",
             "provenanceLedger": "generation-group-080-119.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         }
       ],
@@ -22193,7 +22193,7 @@
           "format": "PNG",
           "selectionSource": "accepted_base_primary",
           "selectionStatus": "DRAFT_SELECTED",
-          "visualAuditStatus": "PASS_PRIMARY",
+          "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS",
           "provenanceLedger": "generation-group-080-119.json",
           "provenanceSidecar": null,
           "publicationState": "DRAFT",
@@ -22282,7 +22282,7 @@
             "candidatePath": "images/prowler_push.png",
             "sha256": "2f58b14f1b957ceb8bb0e53fcbff26b32aa29422bc769ec2cc058ff3946f8a59",
             "provenanceLedger": "generation-group-080-119.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -22308,7 +22308,7 @@
             "candidatePath": "images/prowler_push.png",
             "sha256": "2f58b14f1b957ceb8bb0e53fcbff26b32aa29422bc769ec2cc058ff3946f8a59",
             "provenanceLedger": "generation-group-080-119.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -22334,7 +22334,7 @@
             "candidatePath": "images/prowler_push.png",
             "sha256": "2f58b14f1b957ceb8bb0e53fcbff26b32aa29422bc769ec2cc058ff3946f8a59",
             "provenanceLedger": "generation-group-080-119.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         }
       ],
@@ -22354,7 +22354,7 @@
           "format": "PNG",
           "selectionSource": "accepted_base_primary",
           "selectionStatus": "DRAFT_SELECTED",
-          "visualAuditStatus": "PASS_PRIMARY",
+          "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS",
           "provenanceLedger": "generation-group-080-119.json",
           "provenanceSidecar": null,
           "publicationState": "DRAFT",
@@ -22443,7 +22443,7 @@
             "candidatePath": "images/pull_up.png",
             "sha256": "24c2a44123ac8f54ba81fc5b62fe83ff05714a0b1bfca9ac98eb44c3f31f495f",
             "provenanceLedger": "generation-group-080-119.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -22469,7 +22469,7 @@
             "candidatePath": "images/pull_up.png",
             "sha256": "24c2a44123ac8f54ba81fc5b62fe83ff05714a0b1bfca9ac98eb44c3f31f495f",
             "provenanceLedger": "generation-group-080-119.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -22495,7 +22495,7 @@
             "candidatePath": "images/pull_up.png",
             "sha256": "24c2a44123ac8f54ba81fc5b62fe83ff05714a0b1bfca9ac98eb44c3f31f495f",
             "provenanceLedger": "generation-group-080-119.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         }
       ],
@@ -22515,7 +22515,7 @@
           "format": "PNG",
           "selectionSource": "accepted_base_primary",
           "selectionStatus": "DRAFT_SELECTED",
-          "visualAuditStatus": "PASS_PRIMARY",
+          "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS",
           "provenanceLedger": "generation-group-080-119.json",
           "provenanceSidecar": null,
           "publicationState": "DRAFT",
@@ -22604,7 +22604,7 @@
             "candidatePath": "images/push_jerk.png",
             "sha256": "c445bf6372242fefc99ed005a95f217d57cfd826187a78f63cb86a0a9712e140",
             "provenanceLedger": "generation-group-080-119.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -22630,7 +22630,7 @@
             "candidatePath": "images/push_jerk.png",
             "sha256": "c445bf6372242fefc99ed005a95f217d57cfd826187a78f63cb86a0a9712e140",
             "provenanceLedger": "generation-group-080-119.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -22656,7 +22656,7 @@
             "candidatePath": "images/push_jerk.png",
             "sha256": "c445bf6372242fefc99ed005a95f217d57cfd826187a78f63cb86a0a9712e140",
             "provenanceLedger": "generation-group-080-119.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         }
       ],
@@ -22676,7 +22676,7 @@
           "format": "PNG",
           "selectionSource": "accepted_base_primary",
           "selectionStatus": "DRAFT_SELECTED",
-          "visualAuditStatus": "PASS_PRIMARY",
+          "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS",
           "provenanceLedger": "generation-group-080-119.json",
           "provenanceSidecar": null,
           "publicationState": "DRAFT",
@@ -23062,7 +23062,7 @@
             "candidatePath": "images/push_up.png",
             "sha256": "66cf83de526fe7855f38edb666e299c580e5ec2ddf026e2b0be95cc635e7d456",
             "provenanceLedger": "generation-group-080-119.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -23088,7 +23088,7 @@
             "candidatePath": "images/push_up.png",
             "sha256": "66cf83de526fe7855f38edb666e299c580e5ec2ddf026e2b0be95cc635e7d456",
             "provenanceLedger": "generation-group-080-119.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -23114,7 +23114,7 @@
             "candidatePath": "images/push_up.png",
             "sha256": "66cf83de526fe7855f38edb666e299c580e5ec2ddf026e2b0be95cc635e7d456",
             "provenanceLedger": "generation-group-080-119.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         }
       ],
@@ -23134,7 +23134,7 @@
           "format": "PNG",
           "selectionSource": "accepted_base_primary",
           "selectionStatus": "DRAFT_SELECTED",
-          "visualAuditStatus": "PASS_PRIMARY",
+          "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS",
           "provenanceLedger": "generation-group-080-119.json",
           "provenanceSidecar": null,
           "publicationState": "DRAFT",
@@ -23223,7 +23223,7 @@
             "candidatePath": "images/rear_delt_fly.png",
             "sha256": "9f80fdc56ce34a32241151490de1d8cb88e40979d00997ba63a6e2dff5b967bd",
             "provenanceLedger": "generation-group-080-119.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -23249,7 +23249,7 @@
             "candidatePath": "images/rear_delt_fly.png",
             "sha256": "9f80fdc56ce34a32241151490de1d8cb88e40979d00997ba63a6e2dff5b967bd",
             "provenanceLedger": "generation-group-080-119.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -23275,7 +23275,7 @@
             "candidatePath": "images/rear_delt_fly.png",
             "sha256": "9f80fdc56ce34a32241151490de1d8cb88e40979d00997ba63a6e2dff5b967bd",
             "provenanceLedger": "generation-group-080-119.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         }
       ],
@@ -23295,7 +23295,7 @@
           "format": "PNG",
           "selectionSource": "accepted_base_primary",
           "selectionStatus": "DRAFT_SELECTED",
-          "visualAuditStatus": "PASS_PRIMARY",
+          "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS",
           "provenanceLedger": "generation-group-080-119.json",
           "provenanceSidecar": null,
           "publicationState": "DRAFT",
@@ -23384,7 +23384,7 @@
             "candidatePath": "images/ring_push_up.png",
             "sha256": "35bdd605492b17be184627d13a88d42902e1e8f48c7f65c6d146882f52491dde",
             "provenanceLedger": "generation-group-120-138.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -23410,7 +23410,7 @@
             "candidatePath": "images/ring_push_up.png",
             "sha256": "35bdd605492b17be184627d13a88d42902e1e8f48c7f65c6d146882f52491dde",
             "provenanceLedger": "generation-group-120-138.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -23436,7 +23436,7 @@
             "candidatePath": "images/ring_push_up.png",
             "sha256": "35bdd605492b17be184627d13a88d42902e1e8f48c7f65c6d146882f52491dde",
             "provenanceLedger": "generation-group-120-138.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         }
       ],
@@ -23456,7 +23456,7 @@
           "format": "PNG",
           "selectionSource": "accepted_base_primary",
           "selectionStatus": "DRAFT_SELECTED",
-          "visualAuditStatus": "PASS_PRIMARY",
+          "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS",
           "provenanceLedger": "generation-group-120-138.json",
           "provenanceSidecar": null,
           "publicationState": "DRAFT",
@@ -23545,7 +23545,7 @@
             "candidatePath": "images/ring_row.png",
             "sha256": "cd474f03467ef0889305f5af0576999441e1a37edeebf7fe86244518c75b12db",
             "provenanceLedger": "generation-group-120-138.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -23571,7 +23571,7 @@
             "candidatePath": "images/ring_row.png",
             "sha256": "cd474f03467ef0889305f5af0576999441e1a37edeebf7fe86244518c75b12db",
             "provenanceLedger": "generation-group-120-138.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -23597,7 +23597,7 @@
             "candidatePath": "images/ring_row.png",
             "sha256": "cd474f03467ef0889305f5af0576999441e1a37edeebf7fe86244518c75b12db",
             "provenanceLedger": "generation-group-120-138.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         }
       ],
@@ -23617,7 +23617,7 @@
           "format": "PNG",
           "selectionSource": "accepted_base_primary",
           "selectionStatus": "DRAFT_SELECTED",
-          "visualAuditStatus": "PASS_PRIMARY",
+          "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS",
           "provenanceLedger": "generation-group-120-138.json",
           "provenanceSidecar": null,
           "publicationState": "DRAFT",
@@ -23706,7 +23706,7 @@
             "candidatePath": "images/romanian_deadlift.png",
             "sha256": "6c3350ad77fb92109e6b179209060fa95b48411856f2ac8b32cfb03b678120f4",
             "provenanceLedger": "generation-group-120-138.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -23732,7 +23732,7 @@
             "candidatePath": "images/romanian_deadlift.png",
             "sha256": "6c3350ad77fb92109e6b179209060fa95b48411856f2ac8b32cfb03b678120f4",
             "provenanceLedger": "generation-group-120-138.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -23758,7 +23758,7 @@
             "candidatePath": "images/romanian_deadlift.png",
             "sha256": "6c3350ad77fb92109e6b179209060fa95b48411856f2ac8b32cfb03b678120f4",
             "provenanceLedger": "generation-group-120-138.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         }
       ],
@@ -23778,7 +23778,7 @@
           "format": "PNG",
           "selectionSource": "accepted_base_primary",
           "selectionStatus": "DRAFT_SELECTED",
-          "visualAuditStatus": "PASS_PRIMARY",
+          "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS",
           "provenanceLedger": "generation-group-120-138.json",
           "provenanceSidecar": null,
           "publicationState": "DRAFT",
@@ -23867,7 +23867,7 @@
             "candidatePath": "images/sandbag_hold.png",
             "sha256": "a426136f27d33af97f7d884c2e9cbd4908ae9fa57abe411cacb80104f7e4547d",
             "provenanceLedger": "generation-group-120-138.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -23893,7 +23893,7 @@
             "candidatePath": "images/sandbag_hold.png",
             "sha256": "a426136f27d33af97f7d884c2e9cbd4908ae9fa57abe411cacb80104f7e4547d",
             "provenanceLedger": "generation-group-120-138.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -23919,7 +23919,7 @@
             "candidatePath": "images/sandbag_hold.png",
             "sha256": "a426136f27d33af97f7d884c2e9cbd4908ae9fa57abe411cacb80104f7e4547d",
             "provenanceLedger": "generation-group-120-138.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         }
       ],
@@ -23939,7 +23939,7 @@
           "format": "PNG",
           "selectionSource": "accepted_base_primary",
           "selectionStatus": "DRAFT_SELECTED",
-          "visualAuditStatus": "PASS_PRIMARY",
+          "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS",
           "provenanceLedger": "generation-group-120-138.json",
           "provenanceSidecar": null,
           "publicationState": "DRAFT",
@@ -24418,7 +24418,7 @@
             "candidatePath": "images/seated_dumbbell_shoulder_press.png",
             "sha256": "97989394271cf57949f507f211916263579ad5b0d0529b9064af2575699965be",
             "provenanceLedger": "generation-group-120-138.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -24444,7 +24444,7 @@
             "candidatePath": "images/seated_dumbbell_shoulder_press.png",
             "sha256": "97989394271cf57949f507f211916263579ad5b0d0529b9064af2575699965be",
             "provenanceLedger": "generation-group-120-138.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -24470,7 +24470,7 @@
             "candidatePath": "images/seated_dumbbell_shoulder_press.png",
             "sha256": "97989394271cf57949f507f211916263579ad5b0d0529b9064af2575699965be",
             "provenanceLedger": "generation-group-120-138.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         }
       ],
@@ -24490,7 +24490,7 @@
           "format": "PNG",
           "selectionSource": "accepted_base_primary",
           "selectionStatus": "DRAFT_SELECTED",
-          "visualAuditStatus": "PASS_PRIMARY",
+          "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS",
           "provenanceLedger": "generation-group-120-138.json",
           "provenanceSidecar": null,
           "publicationState": "DRAFT",
@@ -24740,7 +24740,7 @@
             "candidatePath": "images/shrimp_squat.png",
             "sha256": "2c4b259f091084183700fb684cb6bec78860cded2b8858a5c109607c09f0bd85",
             "provenanceLedger": "generation-group-120-138.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -24766,7 +24766,7 @@
             "candidatePath": "images/shrimp_squat.png",
             "sha256": "2c4b259f091084183700fb684cb6bec78860cded2b8858a5c109607c09f0bd85",
             "provenanceLedger": "generation-group-120-138.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -24792,7 +24792,7 @@
             "candidatePath": "images/shrimp_squat.png",
             "sha256": "2c4b259f091084183700fb684cb6bec78860cded2b8858a5c109607c09f0bd85",
             "provenanceLedger": "generation-group-120-138.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         }
       ],
@@ -24812,7 +24812,7 @@
           "format": "PNG",
           "selectionSource": "accepted_base_primary",
           "selectionStatus": "DRAFT_SELECTED",
-          "visualAuditStatus": "PASS_PRIMARY",
+          "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS",
           "provenanceLedger": "generation-group-120-138.json",
           "provenanceSidecar": null,
           "publicationState": "DRAFT",
@@ -24901,7 +24901,7 @@
             "candidatePath": "images/side_lying_y_raise.png",
             "sha256": "1a0bf30538d74d5f979e8a2b7a8877f9b61f2cf808fd4ebb8abff9c33b33a5de",
             "provenanceLedger": "generation-group-120-138.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -24927,7 +24927,7 @@
             "candidatePath": "images/side_lying_y_raise.png",
             "sha256": "1a0bf30538d74d5f979e8a2b7a8877f9b61f2cf808fd4ebb8abff9c33b33a5de",
             "provenanceLedger": "generation-group-120-138.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -24953,7 +24953,7 @@
             "candidatePath": "images/side_lying_y_raise.png",
             "sha256": "1a0bf30538d74d5f979e8a2b7a8877f9b61f2cf808fd4ebb8abff9c33b33a5de",
             "provenanceLedger": "generation-group-120-138.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         }
       ],
@@ -24973,7 +24973,7 @@
           "format": "PNG",
           "selectionSource": "accepted_base_primary",
           "selectionStatus": "DRAFT_SELECTED",
-          "visualAuditStatus": "PASS_PRIMARY",
+          "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS",
           "provenanceLedger": "generation-group-120-138.json",
           "provenanceSidecar": null,
           "publicationState": "DRAFT",
@@ -25062,7 +25062,7 @@
             "candidatePath": "images/side_plank.png",
             "sha256": "d8d7d55af6ad325331506204dc6eea5fcc935f99a6e1a2a99a30b4610652047d",
             "provenanceLedger": "generation-group-120-138.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -25088,7 +25088,7 @@
             "candidatePath": "images/side_plank.png",
             "sha256": "d8d7d55af6ad325331506204dc6eea5fcc935f99a6e1a2a99a30b4610652047d",
             "provenanceLedger": "generation-group-120-138.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -25114,7 +25114,7 @@
             "candidatePath": "images/side_plank.png",
             "sha256": "d8d7d55af6ad325331506204dc6eea5fcc935f99a6e1a2a99a30b4610652047d",
             "provenanceLedger": "generation-group-120-138.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         }
       ],
@@ -25134,7 +25134,7 @@
           "format": "PNG",
           "selectionSource": "accepted_base_primary",
           "selectionStatus": "DRAFT_SELECTED",
-          "visualAuditStatus": "PASS_PRIMARY",
+          "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS",
           "provenanceLedger": "generation-group-120-138.json",
           "provenanceSidecar": null,
           "publicationState": "DRAFT",
@@ -25452,7 +25452,7 @@
             "candidatePath": "images/single_leg_calf_raise.png",
             "sha256": "2ecf77e767e3d12a81e7ee7f062f2218f2db8d6cbc38854ced1b10ce05642447",
             "provenanceLedger": "generation-group-120-138.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -25478,7 +25478,7 @@
             "candidatePath": "images/single_leg_calf_raise.png",
             "sha256": "2ecf77e767e3d12a81e7ee7f062f2218f2db8d6cbc38854ced1b10ce05642447",
             "provenanceLedger": "generation-group-120-138.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -25504,7 +25504,7 @@
             "candidatePath": "images/single_leg_calf_raise.png",
             "sha256": "2ecf77e767e3d12a81e7ee7f062f2218f2db8d6cbc38854ced1b10ce05642447",
             "provenanceLedger": "generation-group-120-138.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         }
       ],
@@ -25524,7 +25524,7 @@
           "format": "PNG",
           "selectionSource": "accepted_base_primary",
           "selectionStatus": "DRAFT_SELECTED",
-          "visualAuditStatus": "PASS_PRIMARY",
+          "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS",
           "provenanceLedger": "generation-group-120-138.json",
           "provenanceSidecar": null,
           "publicationState": "DRAFT",
@@ -25613,7 +25613,7 @@
             "candidatePath": "images/single_leg_glute_bridge.png",
             "sha256": "383dfc30c8d718f6d5d79af61067f21f2573ebe011a3ddc7149142a57ecc5ad2",
             "provenanceLedger": "generation-group-120-138.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -25639,7 +25639,7 @@
             "candidatePath": "images/single_leg_glute_bridge.png",
             "sha256": "383dfc30c8d718f6d5d79af61067f21f2573ebe011a3ddc7149142a57ecc5ad2",
             "provenanceLedger": "generation-group-120-138.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -25665,7 +25665,7 @@
             "candidatePath": "images/single_leg_glute_bridge.png",
             "sha256": "383dfc30c8d718f6d5d79af61067f21f2573ebe011a3ddc7149142a57ecc5ad2",
             "provenanceLedger": "generation-group-120-138.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         }
       ],
@@ -25685,7 +25685,7 @@
           "format": "PNG",
           "selectionSource": "accepted_base_primary",
           "selectionStatus": "DRAFT_SELECTED",
-          "visualAuditStatus": "PASS_PRIMARY",
+          "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS",
           "provenanceLedger": "generation-group-120-138.json",
           "provenanceSidecar": null,
           "publicationState": "DRAFT",
@@ -25774,7 +25774,7 @@
             "candidatePath": "images/single_leg_hip_hinge.png",
             "sha256": "748aa412863bc9e9c8264182aebcb015af51d26cb23a38193cfbb5f6bef36279",
             "provenanceLedger": "generation-group-120-138.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -25800,7 +25800,7 @@
             "candidatePath": "images/single_leg_hip_hinge.png",
             "sha256": "748aa412863bc9e9c8264182aebcb015af51d26cb23a38193cfbb5f6bef36279",
             "provenanceLedger": "generation-group-120-138.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -25826,7 +25826,7 @@
             "candidatePath": "images/single_leg_hip_hinge.png",
             "sha256": "748aa412863bc9e9c8264182aebcb015af51d26cb23a38193cfbb5f6bef36279",
             "provenanceLedger": "generation-group-120-138.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         }
       ],
@@ -25846,7 +25846,7 @@
           "format": "PNG",
           "selectionSource": "accepted_base_primary",
           "selectionStatus": "DRAFT_SELECTED",
-          "visualAuditStatus": "PASS_PRIMARY",
+          "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS",
           "provenanceLedger": "generation-group-120-138.json",
           "provenanceSidecar": null,
           "publicationState": "DRAFT",
@@ -25935,7 +25935,7 @@
             "candidatePath": "images/single_leg_rdl.png",
             "sha256": "17cb40902373814f26bb0f1f93121f0c9a011dbf951325119baa59d813ac23e9",
             "provenanceLedger": "generation-group-120-138.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -25961,7 +25961,7 @@
             "candidatePath": "images/single_leg_rdl.png",
             "sha256": "17cb40902373814f26bb0f1f93121f0c9a011dbf951325119baa59d813ac23e9",
             "provenanceLedger": "generation-group-120-138.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -25987,7 +25987,7 @@
             "candidatePath": "images/single_leg_rdl.png",
             "sha256": "17cb40902373814f26bb0f1f93121f0c9a011dbf951325119baa59d813ac23e9",
             "provenanceLedger": "generation-group-120-138.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         }
       ],
@@ -26007,7 +26007,7 @@
           "format": "PNG",
           "selectionSource": "accepted_base_primary",
           "selectionStatus": "DRAFT_SELECTED",
-          "visualAuditStatus": "PASS_PRIMARY",
+          "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS",
           "provenanceLedger": "generation-group-120-138.json",
           "provenanceSidecar": null,
           "publicationState": "DRAFT",
@@ -26096,7 +26096,7 @@
             "candidatePath": "images/single_leg_rdl_bodyweight.png",
             "sha256": "9747362be5b33c889c9d128eacfecd34e3cdb600e2f1be4589d530ccd8860ea0",
             "provenanceLedger": "generation-group-120-138.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -26122,7 +26122,7 @@
             "candidatePath": "images/single_leg_rdl_bodyweight.png",
             "sha256": "9747362be5b33c889c9d128eacfecd34e3cdb600e2f1be4589d530ccd8860ea0",
             "provenanceLedger": "generation-group-120-138.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -26148,7 +26148,7 @@
             "candidatePath": "images/single_leg_rdl_bodyweight.png",
             "sha256": "9747362be5b33c889c9d128eacfecd34e3cdb600e2f1be4589d530ccd8860ea0",
             "provenanceLedger": "generation-group-120-138.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         }
       ],
@@ -26168,7 +26168,7 @@
           "format": "PNG",
           "selectionSource": "accepted_base_primary",
           "selectionStatus": "DRAFT_SELECTED",
-          "visualAuditStatus": "PASS_PRIMARY",
+          "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS",
           "provenanceLedger": "generation-group-120-138.json",
           "provenanceSidecar": null,
           "publicationState": "DRAFT",
@@ -26257,7 +26257,7 @@
             "candidatePath": "images/skater_jump.png",
             "sha256": "e1a9457549ee6ccc1ae0642673d5fb39d192654a6a6a6ed5c4bc0abd99238580",
             "provenanceLedger": "generation-group-120-138.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -26283,7 +26283,7 @@
             "candidatePath": "images/skater_jump.png",
             "sha256": "e1a9457549ee6ccc1ae0642673d5fb39d192654a6a6a6ed5c4bc0abd99238580",
             "provenanceLedger": "generation-group-120-138.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -26309,7 +26309,7 @@
             "candidatePath": "images/skater_jump.png",
             "sha256": "e1a9457549ee6ccc1ae0642673d5fb39d192654a6a6a6ed5c4bc0abd99238580",
             "provenanceLedger": "generation-group-120-138.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         }
       ],
@@ -26329,7 +26329,7 @@
           "format": "PNG",
           "selectionSource": "accepted_base_primary",
           "selectionStatus": "DRAFT_SELECTED",
-          "visualAuditStatus": "PASS_PRIMARY",
+          "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS",
           "provenanceLedger": "generation-group-120-138.json",
           "provenanceSidecar": null,
           "publicationState": "DRAFT",
@@ -26486,7 +26486,7 @@
             "candidatePath": "images/sled_drag.png",
             "sha256": "82b25b530dd2e296c4c14666a136359e10f3b1e9776360e2152db23799aeae40",
             "provenanceLedger": "generation-group-120-138.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -26512,7 +26512,7 @@
             "candidatePath": "images/sled_drag.png",
             "sha256": "82b25b530dd2e296c4c14666a136359e10f3b1e9776360e2152db23799aeae40",
             "provenanceLedger": "generation-group-120-138.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -26538,7 +26538,7 @@
             "candidatePath": "images/sled_drag.png",
             "sha256": "82b25b530dd2e296c4c14666a136359e10f3b1e9776360e2152db23799aeae40",
             "provenanceLedger": "generation-group-120-138.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         }
       ],
@@ -26558,7 +26558,7 @@
           "format": "PNG",
           "selectionSource": "accepted_base_primary",
           "selectionStatus": "DRAFT_SELECTED",
-          "visualAuditStatus": "PASS_PRIMARY",
+          "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS",
           "provenanceLedger": "generation-group-120-138.json",
           "provenanceSidecar": null,
           "publicationState": "DRAFT",
@@ -26647,7 +26647,7 @@
             "candidatePath": "images/slider_leg_curl.png",
             "sha256": "d1f046b9dad58aae92da321c1d83ba53b78888123344b58cbabb430ece0fcba0",
             "provenanceLedger": "generation-group-139-156.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -26673,7 +26673,7 @@
             "candidatePath": "images/slider_leg_curl.png",
             "sha256": "d1f046b9dad58aae92da321c1d83ba53b78888123344b58cbabb430ece0fcba0",
             "provenanceLedger": "generation-group-139-156.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -26699,7 +26699,7 @@
             "candidatePath": "images/slider_leg_curl.png",
             "sha256": "d1f046b9dad58aae92da321c1d83ba53b78888123344b58cbabb430ece0fcba0",
             "provenanceLedger": "generation-group-139-156.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         }
       ],
@@ -26719,7 +26719,7 @@
           "format": "PNG",
           "selectionSource": "accepted_base_primary",
           "selectionStatus": "DRAFT_SELECTED",
-          "visualAuditStatus": "PASS_PRIMARY",
+          "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS",
           "provenanceLedger": "generation-group-139-156.json",
           "provenanceSidecar": null,
           "publicationState": "DRAFT",
@@ -26876,7 +26876,7 @@
             "candidatePath": "images/snatch_grip_deadlift.png",
             "sha256": "abebfe20f3878d173cd5d29a0b50b26d7f878480ae318c883c34176995db8679",
             "provenanceLedger": "generation-group-139-156.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -26902,7 +26902,7 @@
             "candidatePath": "images/snatch_grip_deadlift.png",
             "sha256": "abebfe20f3878d173cd5d29a0b50b26d7f878480ae318c883c34176995db8679",
             "provenanceLedger": "generation-group-139-156.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -26928,7 +26928,7 @@
             "candidatePath": "images/snatch_grip_deadlift.png",
             "sha256": "abebfe20f3878d173cd5d29a0b50b26d7f878480ae318c883c34176995db8679",
             "provenanceLedger": "generation-group-139-156.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         }
       ],
@@ -26948,7 +26948,7 @@
           "format": "PNG",
           "selectionSource": "accepted_base_primary",
           "selectionStatus": "DRAFT_SELECTED",
-          "visualAuditStatus": "PASS_PRIMARY",
+          "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS",
           "provenanceLedger": "generation-group-139-156.json",
           "provenanceSidecar": null,
           "publicationState": "DRAFT",
@@ -27037,7 +27037,7 @@
             "candidatePath": "images/split_squat.png",
             "sha256": "a4cd2721139adc757e792e62993da17a42f295032c9cad29c8cf941fdb8c0658",
             "provenanceLedger": "generation-group-139-156.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -27063,7 +27063,7 @@
             "candidatePath": "images/split_squat.png",
             "sha256": "a4cd2721139adc757e792e62993da17a42f295032c9cad29c8cf941fdb8c0658",
             "provenanceLedger": "generation-group-139-156.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -27089,7 +27089,7 @@
             "candidatePath": "images/split_squat.png",
             "sha256": "a4cd2721139adc757e792e62993da17a42f295032c9cad29c8cf941fdb8c0658",
             "provenanceLedger": "generation-group-139-156.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         }
       ],
@@ -27109,7 +27109,7 @@
           "format": "PNG",
           "selectionSource": "accepted_base_primary",
           "selectionStatus": "DRAFT_SELECTED",
-          "visualAuditStatus": "PASS_PRIMARY",
+          "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS",
           "provenanceLedger": "generation-group-139-156.json",
           "provenanceSidecar": null,
           "publicationState": "DRAFT",
@@ -27198,7 +27198,7 @@
             "candidatePath": "images/standing_calf_raise.png",
             "sha256": "75ccdf9292f1e339fd83d026d23177b95dbbe4ae1ff147ebc781b7cb4f1a6646",
             "provenanceLedger": "generation-group-139-156.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -27224,7 +27224,7 @@
             "candidatePath": "images/standing_calf_raise.png",
             "sha256": "75ccdf9292f1e339fd83d026d23177b95dbbe4ae1ff147ebc781b7cb4f1a6646",
             "provenanceLedger": "generation-group-139-156.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -27250,7 +27250,7 @@
             "candidatePath": "images/standing_calf_raise.png",
             "sha256": "75ccdf9292f1e339fd83d026d23177b95dbbe4ae1ff147ebc781b7cb4f1a6646",
             "provenanceLedger": "generation-group-139-156.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         }
       ],
@@ -27270,7 +27270,7 @@
           "format": "PNG",
           "selectionSource": "accepted_base_primary",
           "selectionStatus": "DRAFT_SELECTED",
-          "visualAuditStatus": "PASS_PRIMARY",
+          "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS",
           "provenanceLedger": "generation-group-139-156.json",
           "provenanceSidecar": null,
           "publicationState": "DRAFT",
@@ -27359,7 +27359,7 @@
             "candidatePath": "images/step_up.png",
             "sha256": "0192f957438bb0f3607102c74959d49d1e84b75eb7fd6b23fec1965f2b15b744",
             "provenanceLedger": "generation-group-139-156.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -27385,7 +27385,7 @@
             "candidatePath": "images/step_up.png",
             "sha256": "0192f957438bb0f3607102c74959d49d1e84b75eb7fd6b23fec1965f2b15b744",
             "provenanceLedger": "generation-group-139-156.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -27411,7 +27411,7 @@
             "candidatePath": "images/step_up.png",
             "sha256": "0192f957438bb0f3607102c74959d49d1e84b75eb7fd6b23fec1965f2b15b744",
             "provenanceLedger": "generation-group-139-156.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         }
       ],
@@ -27431,7 +27431,7 @@
           "format": "PNG",
           "selectionSource": "accepted_base_primary",
           "selectionStatus": "DRAFT_SELECTED",
-          "visualAuditStatus": "PASS_PRIMARY",
+          "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS",
           "provenanceLedger": "generation-group-139-156.json",
           "provenanceSidecar": null,
           "publicationState": "DRAFT",
@@ -27520,7 +27520,7 @@
             "candidatePath": "images/suitcase_carry.png",
             "sha256": "32b6c4701861e660c8d75f757819200b21d5db4ac388ccb93f6f96d1d301d887",
             "provenanceLedger": "generation-group-139-156.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -27546,7 +27546,7 @@
             "candidatePath": "images/suitcase_carry.png",
             "sha256": "32b6c4701861e660c8d75f757819200b21d5db4ac388ccb93f6f96d1d301d887",
             "provenanceLedger": "generation-group-139-156.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -27572,7 +27572,7 @@
             "candidatePath": "images/suitcase_carry.png",
             "sha256": "32b6c4701861e660c8d75f757819200b21d5db4ac388ccb93f6f96d1d301d887",
             "provenanceLedger": "generation-group-139-156.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         }
       ],
@@ -27592,7 +27592,7 @@
           "format": "PNG",
           "selectionSource": "accepted_base_primary",
           "selectionStatus": "DRAFT_SELECTED",
-          "visualAuditStatus": "PASS_PRIMARY",
+          "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS",
           "provenanceLedger": "generation-group-139-156.json",
           "provenanceSidecar": null,
           "publicationState": "DRAFT",
@@ -28139,7 +28139,7 @@
             "candidatePath": "images/thoracic_rotation_open.png",
             "sha256": "75a9d4ab08c1a4522d4e9e86b73b7f6990fd9166267ce6b701a50613d644a40e",
             "provenanceLedger": "generation-group-139-156.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -28165,7 +28165,7 @@
             "candidatePath": "images/thoracic_rotation_open.png",
             "sha256": "75a9d4ab08c1a4522d4e9e86b73b7f6990fd9166267ce6b701a50613d644a40e",
             "provenanceLedger": "generation-group-139-156.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -28191,7 +28191,7 @@
             "candidatePath": "images/thoracic_rotation_open.png",
             "sha256": "75a9d4ab08c1a4522d4e9e86b73b7f6990fd9166267ce6b701a50613d644a40e",
             "provenanceLedger": "generation-group-139-156.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         }
       ],
@@ -28211,7 +28211,7 @@
           "format": "PNG",
           "selectionSource": "accepted_base_primary",
           "selectionStatus": "DRAFT_SELECTED",
-          "visualAuditStatus": "PASS_PRIMARY",
+          "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS",
           "provenanceLedger": "generation-group-139-156.json",
           "provenanceSidecar": null,
           "publicationState": "DRAFT",
@@ -28368,7 +28368,7 @@
             "candidatePath": "images/towel_curl.png",
             "sha256": "a93ad500c8216fdcb290d002e401e87e7a3fedf6e44bb77781121d5068d353e9",
             "provenanceLedger": "generation-group-139-156.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -28394,7 +28394,7 @@
             "candidatePath": "images/towel_curl.png",
             "sha256": "a93ad500c8216fdcb290d002e401e87e7a3fedf6e44bb77781121d5068d353e9",
             "provenanceLedger": "generation-group-139-156.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -28420,7 +28420,7 @@
             "candidatePath": "images/towel_curl.png",
             "sha256": "a93ad500c8216fdcb290d002e401e87e7a3fedf6e44bb77781121d5068d353e9",
             "provenanceLedger": "generation-group-139-156.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         }
       ],
@@ -28440,7 +28440,7 @@
           "format": "PNG",
           "selectionSource": "accepted_base_primary",
           "selectionStatus": "DRAFT_SELECTED",
-          "visualAuditStatus": "PASS_PRIMARY",
+          "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS",
           "provenanceLedger": "generation-group-139-156.json",
           "provenanceSidecar": null,
           "publicationState": "DRAFT",
@@ -28529,7 +28529,7 @@
             "candidatePath": "images/tuck_jump.png",
             "sha256": "6d394a2ee4d6aaa9603bc1398d3fdd2ab8a43898b2481386727aaffa2233270c",
             "provenanceLedger": "generation-group-139-156.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -28555,7 +28555,7 @@
             "candidatePath": "images/tuck_jump.png",
             "sha256": "6d394a2ee4d6aaa9603bc1398d3fdd2ab8a43898b2481386727aaffa2233270c",
             "provenanceLedger": "generation-group-139-156.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -28581,7 +28581,7 @@
             "candidatePath": "images/tuck_jump.png",
             "sha256": "6d394a2ee4d6aaa9603bc1398d3fdd2ab8a43898b2481386727aaffa2233270c",
             "provenanceLedger": "generation-group-139-156.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         }
       ],
@@ -28601,7 +28601,7 @@
           "format": "PNG",
           "selectionSource": "accepted_base_primary",
           "selectionStatus": "DRAFT_SELECTED",
-          "visualAuditStatus": "PASS_PRIMARY",
+          "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS",
           "provenanceLedger": "generation-group-139-156.json",
           "provenanceSidecar": null,
           "publicationState": "DRAFT",
@@ -28758,7 +28758,7 @@
             "candidatePath": "images/v_sit.png",
             "sha256": "a7b0d65eee862ef295ab02258b518545a5a13f3a918206fbad1e5ed22899ef57",
             "provenanceLedger": "generation-group-139-156.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -28784,7 +28784,7 @@
             "candidatePath": "images/v_sit.png",
             "sha256": "a7b0d65eee862ef295ab02258b518545a5a13f3a918206fbad1e5ed22899ef57",
             "provenanceLedger": "generation-group-139-156.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -28810,7 +28810,7 @@
             "candidatePath": "images/v_sit.png",
             "sha256": "a7b0d65eee862ef295ab02258b518545a5a13f3a918206fbad1e5ed22899ef57",
             "provenanceLedger": "generation-group-139-156.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         }
       ],
@@ -28830,7 +28830,7 @@
           "format": "PNG",
           "selectionSource": "accepted_base_primary",
           "selectionStatus": "DRAFT_SELECTED",
-          "visualAuditStatus": "PASS_PRIMARY",
+          "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS",
           "provenanceLedger": "generation-group-139-156.json",
           "provenanceSidecar": null,
           "publicationState": "DRAFT",
@@ -28919,7 +28919,7 @@
             "candidatePath": "images/walking_lunge.png",
             "sha256": "24584542dab3a88a948fbdbabc8ac4c59a3c30bdb80bdb5753db4de5f43c9030",
             "provenanceLedger": "generation-group-139-156.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -28945,7 +28945,7 @@
             "candidatePath": "images/walking_lunge.png",
             "sha256": "24584542dab3a88a948fbdbabc8ac4c59a3c30bdb80bdb5753db4de5f43c9030",
             "provenanceLedger": "generation-group-139-156.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -28971,7 +28971,7 @@
             "candidatePath": "images/walking_lunge.png",
             "sha256": "24584542dab3a88a948fbdbabc8ac4c59a3c30bdb80bdb5753db4de5f43c9030",
             "provenanceLedger": "generation-group-139-156.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         }
       ],
@@ -28991,7 +28991,7 @@
           "format": "PNG",
           "selectionSource": "accepted_base_primary",
           "selectionStatus": "DRAFT_SELECTED",
-          "visualAuditStatus": "PASS_PRIMARY",
+          "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS",
           "provenanceLedger": "generation-group-139-156.json",
           "provenanceSidecar": null,
           "publicationState": "DRAFT",
@@ -29080,7 +29080,7 @@
             "candidatePath": "images/wall_walk.png",
             "sha256": "436e10e48cc1687a571396040602417eddf2f27068216f3206e150f024542002",
             "provenanceLedger": "generation-group-139-156.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -29106,7 +29106,7 @@
             "candidatePath": "images/wall_walk.png",
             "sha256": "436e10e48cc1687a571396040602417eddf2f27068216f3206e150f024542002",
             "provenanceLedger": "generation-group-139-156.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -29132,7 +29132,7 @@
             "candidatePath": "images/wall_walk.png",
             "sha256": "436e10e48cc1687a571396040602417eddf2f27068216f3206e150f024542002",
             "provenanceLedger": "generation-group-139-156.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         }
       ],
@@ -29152,7 +29152,7 @@
           "format": "PNG",
           "selectionSource": "accepted_base_primary",
           "selectionStatus": "DRAFT_SELECTED",
-          "visualAuditStatus": "PASS_PRIMARY",
+          "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS",
           "provenanceLedger": "generation-group-139-156.json",
           "provenanceSidecar": null,
           "publicationState": "DRAFT",
@@ -29309,7 +29309,7 @@
             "candidatePath": "images/weighted_dip.png",
             "sha256": "1910aeceacb75dcc78b9513e39aaa0e2475c703229f9feb7ba9b0d64b4d141fc",
             "provenanceLedger": "generation-group-139-156.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -29335,7 +29335,7 @@
             "candidatePath": "images/weighted_dip.png",
             "sha256": "1910aeceacb75dcc78b9513e39aaa0e2475c703229f9feb7ba9b0d64b4d141fc",
             "provenanceLedger": "generation-group-139-156.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -29361,7 +29361,7 @@
             "candidatePath": "images/weighted_dip.png",
             "sha256": "1910aeceacb75dcc78b9513e39aaa0e2475c703229f9feb7ba9b0d64b4d141fc",
             "provenanceLedger": "generation-group-139-156.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         }
       ],
@@ -29381,7 +29381,7 @@
           "format": "PNG",
           "selectionSource": "accepted_base_primary",
           "selectionStatus": "DRAFT_SELECTED",
-          "visualAuditStatus": "PASS_PRIMARY",
+          "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS",
           "provenanceLedger": "generation-group-139-156.json",
           "provenanceSidecar": null,
           "publicationState": "DRAFT",
@@ -29470,7 +29470,7 @@
             "candidatePath": "images/weighted_pull_up.png",
             "sha256": "f5c54860e66315e1dac92ee29584e6f3030d09980c71e4f6666eebca93c1204e",
             "provenanceLedger": "generation-group-139-156.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -29496,7 +29496,7 @@
             "candidatePath": "images/weighted_pull_up.png",
             "sha256": "f5c54860e66315e1dac92ee29584e6f3030d09980c71e4f6666eebca93c1204e",
             "provenanceLedger": "generation-group-139-156.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -29522,7 +29522,7 @@
             "candidatePath": "images/weighted_pull_up.png",
             "sha256": "f5c54860e66315e1dac92ee29584e6f3030d09980c71e4f6666eebca93c1204e",
             "provenanceLedger": "generation-group-139-156.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         }
       ],
@@ -29542,7 +29542,7 @@
           "format": "PNG",
           "selectionSource": "accepted_base_primary",
           "selectionStatus": "DRAFT_SELECTED",
-          "visualAuditStatus": "PASS_PRIMARY",
+          "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS",
           "provenanceLedger": "generation-group-139-156.json",
           "provenanceSidecar": null,
           "publicationState": "DRAFT",
@@ -29631,7 +29631,7 @@
             "candidatePath": "images/worlds_greatest_stretch.png",
             "sha256": "36aa8d69367314d21d90fcabfd4f9540871c707dc3ca9399fe942d14f2e12ba4",
             "provenanceLedger": "generation-group-139-156.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -29657,7 +29657,7 @@
             "candidatePath": "images/worlds_greatest_stretch.png",
             "sha256": "36aa8d69367314d21d90fcabfd4f9540871c707dc3ca9399fe942d14f2e12ba4",
             "provenanceLedger": "generation-group-139-156.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         },
         {
@@ -29683,7 +29683,7 @@
             "candidatePath": "images/worlds_greatest_stretch.png",
             "sha256": "36aa8d69367314d21d90fcabfd4f9540871c707dc3ca9399fe942d14f2e12ba4",
             "provenanceLedger": "generation-group-139-156.json",
-            "visualAuditStatus": "PASS_PRIMARY"
+            "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS"
           }
         }
       ],
@@ -29703,7 +29703,7 @@
           "format": "PNG",
           "selectionSource": "accepted_base_primary",
           "selectionStatus": "DRAFT_SELECTED",
-          "visualAuditStatus": "PASS_PRIMARY",
+          "visualAuditStatus": "MACHINE_CANDIDATE_SCREENING_PASS",
           "provenanceLedger": "generation-group-139-156.json",
           "provenanceSidecar": null,
           "publicationState": "DRAFT",
@@ -29988,5 +29988,5 @@
       ]
     }
   ],
-  "bundleHash": "d243ad1e5b4dce0fb29b0c9db8bae2d2a4f9518294181b5da47c41ae6fa2f8ca"
+  "bundleHash": "7a58a6ac3191e1fbc80773018dbc7be2020b492986e10b7b8313389b9b29b936"
 }

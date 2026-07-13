@@ -16,16 +16,24 @@ const candidateRoot = readAbsoluteArgument('--candidate-root');
 const artifactRoot = readAbsoluteArgument('--artifact-root');
 const write = process.argv.includes('--write');
 const check = process.argv.includes('--check');
+const metadataOnlyCheck = process.argv.includes('--metadata-only-check');
 const validateCheckedIn = process.argv.includes('--validate-checked-in');
 
 if (validateCheckedIn) {
   const bundle = readJson<TrainingExerciseMediaReviewBundle>(outputPath);
   const errors = validateTrainingExerciseMediaReviewBundle(bundle);
-  printResult(bundle, errors, false, true, false);
+  printResult(bundle, errors, false, true, false, false);
   if (errors.length > 0) process.exitCode = 1;
 } else {
-  if (!candidateRoot || (!write && !check)) {
-    throw new Error('Usage: --candidate-root=/absolute/path [--artifact-root=/absolute/path] --write|--check');
+  const selectedModes = [write, check, metadataOnlyCheck].filter(Boolean).length;
+  if (!candidateRoot || selectedModes !== 1) {
+    throw new Error('Usage: --candidate-root=/absolute/path --artifact-root=/absolute/path --write|--check, or --candidate-root=/absolute/path --metadata-only-check');
+  }
+  if ((write || check) && !artifactRoot) {
+    throw new Error('--artifact-root is required for --write and --check so external PNG bytes are verified. Use --metadata-only-check for an explicit metadata-only comparison.');
+  }
+  if (metadataOnlyCheck && artifactRoot) {
+    throw new Error('--metadata-only-check must not accept --artifact-root; use --check for full external-object verification.');
   }
   const candidateRealRoot = requireExternalDirectory(candidateRoot, 'candidate root');
   const eligibilityPath = safeChild(candidateRealRoot, 'eligibility-manifest.json');
@@ -46,11 +54,11 @@ if (validateCheckedIn) {
   if (artifactRoot) errors.push(...verifyExternalObjects(artifactIndex, artifactRoot));
   const expected = `${JSON.stringify(bundle, null, 2)}\n`;
   if (write && errors.length === 0) fs.writeFileSync(outputPath, expected, 'utf8');
-  if (check) {
+  if (check || metadataOnlyCheck) {
     const current = fs.existsSync(outputPath) ? fs.readFileSync(outputPath, 'utf8') : '';
     if (current !== expected) errors.push('Checked-in review bundle is missing or stale.');
   }
-  printResult(bundle, errors, write, check, !!artifactRoot);
+  printResult(bundle, errors, write, check || metadataOnlyCheck, !!artifactRoot, metadataOnlyCheck);
   if (errors.length > 0) process.exitCode = 1;
 }
 
@@ -119,6 +127,7 @@ function printResult(
   wrote: boolean,
   checked: boolean,
   externalObjectsVerified: boolean,
+  metadataOnlyChecked: boolean,
 ): void {
   process.stdout.write(`${JSON.stringify({
     verdict: errors.length === 0 ? 'PASS_DRAFT_REVIEW_BUNDLE' : 'FAIL',
@@ -127,6 +136,7 @@ function printResult(
     bundleHash: bundle.bundleHash,
     coverage: bundle.coverage,
     externalObjectsVerified,
+    metadataOnlyChecked,
     wrote,
     checked,
     errors,

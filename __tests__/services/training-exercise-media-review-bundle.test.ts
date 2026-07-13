@@ -2,6 +2,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { spawnSync } from 'node:child_process';
 import { describe, expect, it } from 'vitest';
 import {
   buildTrainingExerciseMediaReviewBundle,
@@ -12,6 +13,7 @@ import {
   type TrainingExerciseMediaReviewBundle,
 } from '../../src/services/training-exercise-media-review-bundle';
 import {
+  sha256TrainingExerciseMedia,
   validateCompiledTrainingExerciseMediaPackage,
 } from '../../src/services/training-exercise-media-manifest';
 import {
@@ -52,6 +54,9 @@ describe('Training exercise media DRAFT review bundle', () => {
     expect(JSON.stringify(bundle)).not.toContain('/Users/');
     expect(JSON.stringify(bundle)).not.toContain('file://');
     expect(JSON.stringify(bundle)).not.toContain('deliveryUrl');
+    expect(JSON.stringify(bundle)).not.toContain('"visualAuditStatus":"PASS_PRIMARY"');
+    expect(bundle.exercises.flatMap((exercise) => exercise.candidateAssets)
+      .some((asset) => asset.visualAuditStatus === 'MACHINE_CANDIDATE_SCREENING_PASS')).toBe(true);
   });
 
   it('labels localized text as scaffolding and binds it only to canonical names and selected asset metadata', () => {
@@ -147,7 +152,69 @@ describe('Training exercise media DRAFT review bundle', () => {
       artifactIndexSha256: bundle.source.artifactIndexSha256,
     })).toThrow(/mapping mismatch/);
   });
+
+  it('rejects URLs, absolute paths, and approval-like claims in candidate metadata', () => {
+    const eligibilityManifest = sourceEligibility(bundle);
+    const artifactIndex = sourceArtifacts(bundle);
+    const build = (
+      eligibility: TrainingExerciseMediaCandidateEligibilityManifest,
+      artifacts: TrainingExerciseMediaCandidateArtifactIndex,
+    ) => buildTrainingExerciseMediaReviewBundle({
+      eligibilityManifest: eligibility,
+      artifactIndex: artifacts,
+      candidateManifestSha256: bundle.source.candidateManifestSha256,
+      artifactIndexSha256: bundle.source.artifactIndexSha256,
+    });
+
+    const withURL = structuredClone(eligibilityManifest);
+    withURL.entries[0].candidateAssets[0].selectionSource = 'https://unapproved.example/asset.png';
+    expect(() => build(withURL, artifactIndex)).toThrow(/unknown identity, selection, screening, or path value/);
+
+    const withAbsolutePath = structuredClone(artifactIndex);
+    withAbsolutePath.mappings[0].provenanceLedger = '/tmp/forged-provenance.json';
+    expect(() => build(eligibilityManifest, withAbsolutePath)).toThrow(/URLs, or absolute artifact paths/);
+
+    const withApprovalClaim = structuredClone(eligibilityManifest);
+    withApprovalClaim.entries[0].candidateAssets[0].visualAuditStatus = 'APPROVED_BY_INDEPENDENT_DOMAIN_EXPERT';
+    expect(() => build(withApprovalClaim, artifactIndex)).toThrow(/unknown identity, selection, screening, or path value/);
+
+    const withIdentityClaim = structuredClone(eligibilityManifest);
+    withIdentityClaim.entries[0].identitySource = 'HUMAN_DOMAIN_ACCESSIBILITY_LOCALIZATION_APPROVED';
+    expect(() => build(withIdentityClaim, artifactIndex)).toThrow(/unknown identity, selection, screening, or path value/);
+  });
+
+  it('rejects a hash-valid checked-in bundle containing an external reference or unknown screening claim', () => {
+    const withURL = structuredClone(bundle);
+    withURL.exercises[0].candidateAssets[0].selectionSource = 'https://unapproved.example/asset.png';
+    rehash(withURL);
+    expect(validateTrainingExerciseMediaReviewBundle(withURL)).toContain(
+      'Review bundle must not record URLs or absolute artifact paths.',
+    );
+
+    const withApprovalClaim = structuredClone(bundle);
+    withApprovalClaim.exercises[0].candidateAssets[0].visualAuditStatus = 'APPROVED_BY_INDEPENDENT_DOMAIN_EXPERT';
+    rehash(withApprovalClaim);
+    expect(validateTrainingExerciseMediaReviewBundle(withApprovalClaim)).toContain(
+      `Asset is not safely draft-scoped: ${withApprovalClaim.exercises[0].candidateAssets[0].assetDraftId}`,
+    );
+  });
+
+  it('requires external object verification before the generator can write', () => {
+    const result = spawnSync('npx', [
+      'tsx',
+      'scripts/training-exercise-media-review-bundle.ts',
+      '--candidate-root=/tmp',
+      '--write',
+    ], { cwd: process.cwd(), encoding: 'utf8' });
+    expect(result.status).not.toBe(0);
+    expect(`${result.stdout}${result.stderr}`).toContain('--artifact-root is required for --write and --check');
+  });
 });
+
+function rehash(value: TrainingExerciseMediaReviewBundle): void {
+  const { bundleHash: _priorHash, ...withoutHash } = value;
+  value.bundleHash = sha256TrainingExerciseMedia(withoutHash);
+}
 
 function readJson<T>(filename: string): T {
   return JSON.parse(fs.readFileSync(path.join(root, filename), 'utf8')) as T;
