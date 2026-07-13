@@ -259,9 +259,10 @@ export function targetWorkoutDistributionForPhase(
     throw new Error('TRAINING_PHASE_MODEL_INVALID:EVENT_DAY_INDEX');
   }
   active[input.eventDayIndex] = input.eventSessionType;
+  const preEventAndEvent = active.slice(0, input.eventDayIndex + 1);
   const counts = new Map<SessionType, number>();
-  for (const type of active) counts.set(type, (counts.get(type) ?? 0) + 1);
-  counts.set('rest', 7 - active.length);
+  for (const type of preEventAndEvent) counts.set(type, (counts.get(type) ?? 0) + 1);
+  counts.set('rest', 7 - preEventAndEvent.length);
   return [...counts.entries()]
     .map(([sessionType, targetPerWeek]) => ({ sessionType, targetPerWeek }))
     .sort((left, right) => CANONICAL_ORDER.indexOf(left.sessionType) - CANONICAL_ORDER.indexOf(right.sessionType));

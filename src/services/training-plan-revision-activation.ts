@@ -11,6 +11,7 @@ import {
   isTrainingPlanRevisionV1ExplicitlyEnrolled,
   isTrainingTypedWorkoutV1Enabled,
   isTrainingM4PlanCombinationAllowed,
+  isTrainingM4OwnedCombination,
 } from './runtime-flags';
 import { withTrainingCalendarOperationLock } from './training-operation-locks';
 import {
@@ -144,11 +145,14 @@ function activateUnderLock(input: {
     }
     assertNoExistingActivePlan(db, input.scope);
 
-    const activationDate = normalizeIsoDate(input.activationDate);
+    const document = revision.document as TrainingPlanRevisionDocument;
+    const activationDate = document.m4 && document.planStartDate
+      ? normalizeIsoDate(document.planStartDate)
+      : normalizeIsoDate(input.activationDate);
     const projection = materializeCompatibilityProjection(
       db,
       input.scope,
-      revision.document as TrainingPlanRevisionDocument,
+      document,
       input.revisionId,
       activationDate,
     );
@@ -573,6 +577,13 @@ function validateActivationInput(db: Database.Database, input: {
 }): NonNullable<ReturnType<typeof getScopedTrainingPlanRevision>> {
   const revision = getScopedTrainingPlanRevision(input.scope, input.revisionId, db);
   if (!revision) throw new TrainingPlanRevisionError('TRAINING_REVISION_NOT_FOUND', 'Training plan revision not found.', 404);
+  if (stableTrainingRevisionHash(revision.document) !== revision.contentHash) {
+    throw new TrainingPlanRevisionError(
+      'TRAINING_REVISION_DOCUMENT_HASH_MISMATCH',
+      'The immutable Training revision failed integrity validation.',
+      409,
+    );
+  }
   if (revision.origin !== 'GENERATED'
       || !['training-plan-revision.v1', 'training-plan-revision.v2'].includes(revision.documentSchemaVersion)) {
     throw new TrainingPlanRevisionError('TRAINING_LEGACY_ACTIVE_REPLACEMENT_NOT_IN_M1', 'Legacy revisions cannot be activated through the Milestone 1 generator.', 409);
@@ -678,6 +689,14 @@ function validateActivationInput(db: Database.Database, input: {
     input.env ?? process.env,
     input.scope,
   );
+  if (isTrainingM4OwnedCombination(snapshot.body.request.planMode, snapshot.body.request.discipline)
+      && !(revision.document as TrainingPlanRevisionDocument).m4) {
+    throw new TrainingPlanRevisionError(
+      'TRAINING_M4_REVISION_CONTRACT_REQUIRED',
+      'This plan mode or discipline requires an M4-reviewed revision.',
+      409,
+    );
+  }
   if ((revision.document as TrainingPlanRevisionDocument).m4 && !m4StrategyEnabled) {
     throw new TrainingPlanRevisionError(
       'TRAINING_M4_ALLOWLIST_REQUIRED',
@@ -1081,7 +1100,14 @@ function insertProjectionSession(db: Database.Database, input: {
     input.workout.sessionType,
     input.workout.title,
     input.workout.objective,
-    JSON.stringify({ schemaVersion: 'training-workout-blocks.v1', blocks: input.workout.blocks }),
+    JSON.stringify({
+      schemaVersion: 'training-workout-blocks.v1',
+      blocks: input.workout.blocks,
+      ...(input.workout.scheduledDate ? { scheduledDate: input.workout.scheduledDate } : {}),
+      ...(input.workout.scheduledStartAt ? { scheduledStartAt: input.workout.scheduledStartAt } : {}),
+      ...(input.workout.scheduledEndAt ? { scheduledEndAt: input.workout.scheduledEndAt } : {}),
+      ...(input.workout.scheduleTimeZone ? { scheduleTimeZone: input.workout.scheduleTimeZone } : {}),
+    }),
     JSON.stringify(exercises),
     input.workout.plannedDurationMinutes,
     intensityText(primaryPrescription, input.workout.sessionType),

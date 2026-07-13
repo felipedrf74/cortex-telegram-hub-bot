@@ -109,6 +109,7 @@ describe('training M4 deterministic strategies and conflict foundation', () => {
         strategyVersion: 'training-m4-plan-strategy.v1',
         conflictSetHash: expect.stringMatching(/^[a-f0-9]{64}$/),
         validationScope: 'PLAN_CANDIDATE',
+        eventPriorityTreatment: 'REVIEW_ONLY_NO_AUTOMATIC_LOAD_CHANGE',
       },
       capacityContext: {
         source: 'EXPLICIT_USER',
@@ -136,6 +137,28 @@ describe('training M4 deterministic strategies and conflict foundation', () => {
       expect.objectContaining({ code: 'TRAINING_M4_EVENT_TAPER_RACE_INVARIANTS' }),
       expect.objectContaining({ code: 'TRAINING_M4_RECOVERY_AND_INTERFERENCE' }),
     ]));
+  });
+
+  it('treats event priority as review metadata without silently changing load', () => {
+    const aPriority = buildTrainingPlanRevisionCandidate(eventRequest, {
+      typedWorkoutValidationEnabled: true, m4StrategyEnabled: true,
+    }).document;
+    const bPriority = buildTrainingPlanRevisionCandidate({
+      ...eventRequest, event: { ...eventRequest.event!, priority: 'B' },
+    }, { typedWorkoutValidationEnabled: true, m4StrategyEnabled: true }).document;
+    const loadShape = (document: typeof aPriority) => ({
+      phases: document.phases.map((phase) => ({
+        type: phase.phaseType, start: phase.startWeek, end: phase.endWeek,
+        distribution: phase.targetWorkoutTypeDistribution,
+      })),
+      workouts: document.weeks.map((week) => week.workouts.map((workout) => ({
+        type: workout.sessionType, duration: workout.plannedDurationMinutes, date: workout.scheduledDate,
+      }))),
+    });
+    expect(loadShape(bPriority)).toEqual(loadShape(aPriority));
+    expect(aPriority.event?.priority).toBe('A');
+    expect(bPriority.event?.priority).toBe('B');
+    expect(bPriority.m4?.eventPriorityTreatment).toBe('REVIEW_ONLY_NO_AUTOMATIC_LOAD_CHANGE');
   });
 
   it('accepts only fresh authoritative capacity and narrowing-only client windows', () => {
@@ -229,6 +252,64 @@ describe('training M4 deterministic strategies and conflict foundation', () => {
       .toThrow(/TRAINING_M4_SCHEDULE_CAPACITY_CONFLICT:monday:easy_run/);
   });
 
+  it('rejects capacity windows shorter than the immutable workout duration', () => {
+    expect(() => buildTrainingPlanRevisionCandidate({
+      ...eventRequest,
+      capacity: {
+        ...eventRequest.capacity!,
+        windows: eventRequest.capacity!.windows.map((window) => ({
+          ...window, startTime: '06:00', endTime: '06:30',
+        })),
+      },
+    }, { typedWorkoutValidationEnabled: true, m4StrategyEnabled: true }))
+      .toThrow(/TRAINING_M4_SCHEDULE_CAPACITY_CONFLICT/);
+  });
+
+  it('requires usable cycling resources for cycling and hybrid plans', () => {
+    const unusable = {
+      ...eventRequest.resourceAccess!, bicycle: true, indoorTrainer: false, outdoorRideEnvironment: false,
+    };
+    expect(() => buildTrainingPlanRevisionCandidate({
+      ...eventRequest, discipline: 'cycling',
+      event: { ...eventRequest.event!, subtype: 'cycling_event' },
+      goalPriority: { primaryDiscipline: 'cycling', secondaryDisciplines: [] },
+      resourceAccess: unusable,
+      capacity: {
+        ...eventRequest.capacity!,
+        windows: eventRequest.capacity!.windows.map((window) => ({ ...window, allowedDisciplines: ['cycling'] })),
+      },
+    }, { typedWorkoutValidationEnabled: true, m4StrategyEnabled: true }))
+      .toThrow(/TRAINING_M4_RESOURCE_BICYCLE_REQUIRED/);
+    expect(() => buildTrainingPlanRevisionCandidate({
+      ...eventRequest, planMode: 'continuous', goal: 'general_fitness', discipline: 'hybrid',
+      horizonWeeks: 6, event: undefined,
+      goalPriority: { primaryDiscipline: 'running', secondaryDisciplines: ['strength'] },
+      resourceAccess: unusable,
+    }, { typedWorkoutValidationEnabled: true, m4StrategyEnabled: true }))
+      .toThrow(/TRAINING_M4_RESOURCE_HYBRID_BICYCLE_REQUIRED/);
+  });
+
+  it('does not generate active sessions after a non-Sunday event', () => {
+    const saturday = buildTrainingPlanRevisionCandidate({
+      ...eventRequest,
+      event: { ...eventRequest.event!, date: '2026-11-07' },
+      profile: {
+        ...eventRequest.profile,
+        availableDays: ['monday', 'tuesday', 'thursday', 'saturday', 'sunday'],
+      },
+      capacity: {
+        ...eventRequest.capacity!,
+        windows: ['monday', 'tuesday', 'thursday', 'saturday', 'sunday'].map((dayOfWeek) => ({
+          dayOfWeek: dayOfWeek as 'monday', startTime: '06:00', endTime: '08:00', timezone: 'Europe/Lisbon',
+          allowedDisciplines: ['running' as const, 'cycling' as const, 'swimming' as const, 'strength' as const],
+        })),
+      },
+    }, { typedWorkoutValidationEnabled: true, m4StrategyEnabled: true }).document;
+    const postEvent = saturday.weeks.flatMap((week) => week.workouts)
+      .filter((workout) => workout.sessionType !== 'rest' && workout.scheduledDate! > '2026-11-07');
+    expect(postEvent).toEqual([]);
+  });
+
   it('blocks both hard-day recovery collisions and heavy-strength interference', () => {
     const hybridRequest: TrainingPlanCandidateRequest = {
       ...eventRequest,
@@ -262,6 +343,12 @@ describe('training M4 deterministic strategies and conflict foundation', () => {
     interference.weeks[0].workouts[0].sessionType = 'strength_hypertrophy';
     interference.weeks[0].workouts[1].sessionType = 'threshold_run';
     expect(() => validateTrainingM4PlanRevisionDocument(interference))
+      .toThrow(/TRAINING_M4_HYBRID_INTERFERENCE/);
+
+    const reverseInterference = structuredClone(valid);
+    reverseInterference.weeks[0].workouts[0].sessionType = 'threshold_run';
+    reverseInterference.weeks[0].workouts[1].sessionType = 'strength_hypertrophy';
+    expect(() => validateTrainingM4PlanRevisionDocument(reverseInterference))
       .toThrow(/TRAINING_M4_HYBRID_INTERFERENCE/);
   });
 
@@ -349,5 +436,37 @@ describe('training M4 deterministic strategies and conflict foundation', () => {
       })).toThrowError(expect.objectContaining({ code: 'TRAINING_M4_ALLOWLIST_REQUIRED' }));
       expect(db.prepare('SELECT COUNT(*) AS count FROM training_plan_revisions').get()).toEqual({ count: 0 });
     });
+  });
+
+  it('cannot bypass the M4 allowlist by omitting optional M4 request fields', () => {
+    withDatabaseForTest(db, () => {
+      const legacyShapedEvent: TrainingPlanCandidateRequest = {
+        planMode: 'event_based', goal: 'event_performance', discipline: 'triathlon', horizonWeeks: 8,
+        event: { name: 'Legacy-shaped event', date: '2026-10-18', priority: 'A' },
+        profile: {
+          experienceLevel: 'intermediate', sessionsPerWeek: 4, sessionDurationMinutes: 45,
+          availableDays: ['monday', 'wednesday', 'friday', 'sunday'], equipmentIds: [], location: 'home',
+        },
+      };
+      expect(() => createTrainingPlanCandidateRevision({
+        scope: { userId: 7, tenantId: 7 }, idempotencyKey: 'm4-legacy-shape-denied', request: legacyShapedEvent,
+        env: {
+          TRAINING_PLAN_REVISION_V1_MODE_USER_7: 'active',
+          TRAINING_TYPED_WORKOUT_V1_ENABLED_USER_7: 'true',
+          DECISION_FLOW_V1_ENFORCE_ENABLED: 'true',
+          TRAINING_PROFILE_SNAPSHOT_ENCRYPTION_KEY: 'training-revision-test-encryption-key-0001',
+        },
+      })).toThrowError(expect.objectContaining({ code: 'TRAINING_M4_ALLOWLIST_REQUIRED' }));
+      expect(db.prepare('SELECT COUNT(*) AS count FROM training_plan_revisions').get()).toEqual({ count: 0 });
+    });
+  });
+
+  it('constrains continuous M4 plans to the reviewed general-fitness goal', () => {
+    expect(() => buildTrainingPlanRevisionCandidate({
+      ...eventRequest, planMode: 'continuous', goal: 'maintenance', discipline: 'hybrid',
+      horizonWeeks: 6, event: undefined,
+      goalPriority: { primaryDiscipline: 'running', secondaryDisciplines: ['strength'] },
+    }, { typedWorkoutValidationEnabled: true, m4StrategyEnabled: true }))
+      .toThrow(/TRAINING_CONTINUOUS_PLAN_GOAL_MISMATCH/);
   });
 });

@@ -10,6 +10,10 @@ import { revalidateNormalizedDecisionAction } from '../../src/services/decision-
 import type { NormalizedDecisionAction } from '../../src/services/decision-action-contract';
 import { performDecisionAction, reviewDecision } from '../../src/services/decision-center';
 import { registerTrainingM4CapacityContextProvider } from '../../src/services/training-m4-capacity-context';
+import {
+  _resetTrainingGenerationObservabilityForTests,
+  getTrainingGenerationObservabilitySnapshot,
+} from '../../src/services/training-generation-observability';
 
 const request: TrainingPlanCandidateRequest = {
   planMode: 'event_based', goal: 'event_performance', discipline: 'marathon',
@@ -49,6 +53,7 @@ describe('training M4 single-Decision conflict and activation gates', () => {
   ];
 
   beforeEach(() => {
+    _resetTrainingGenerationObservabilityForTests();
     authoritativeCapacityVersion = 'calendar-capacity-v1';
     db = new Database(':memory:');
     runMigrationsForTest(db);
@@ -87,6 +92,10 @@ describe('training M4 single-Decision conflict and activation gates', () => {
       const revision = await bindTrainingPlanRevisionDecision({
         scope: { userId: 7, tenantId: 7 }, revisionId: created.candidates[0].revisionId,
       });
+      expect(getTrainingGenerationObservabilitySnapshot().counters).toMatchObject({
+        m4_candidate_valid_total: 1,
+        m4_decision_routed_total: 1,
+      });
       expect(db.prepare('SELECT COUNT(*) AS count FROM notification_center_items').get()).toEqual({ count: 1 });
       const row = db.prepare(`
         SELECT normalized_action_json AS action
@@ -100,11 +109,18 @@ describe('training M4 single-Decision conflict and activation gates', () => {
       expect(action.affectedResources).toEqual(expect.arrayContaining([
         expect.objectContaining({ type: 'training_schedule', id: revision.revisionId }),
         expect.objectContaining({ type: 'training_resource', id: 'safeRunEnvironment' }),
+        expect.objectContaining({ type: 'calendar_timeline_overlap', id: 'primary' }),
       ]));
+      expect(action.exclusivityKeys).toContain('calendar_timeline:primary');
 
       const initial = revalidateNormalizedDecisionAction({ scope: { userId: 7, tenantId: 7 }, action });
       expect(initial.preconditions.every((precondition) => precondition.ok)).toBe(true);
 
+      const firstScheduled = created.candidates[0].document.weeks
+        .flatMap((week) => week.workouts)
+        .find((workout) => workout.sessionType !== 'rest' && workout.scheduledStartAt && workout.scheduledEndAt)!;
+      const overlapStart = new Date(Date.parse(firstScheduled.scheduledStartAt!) + 15 * 60_000).toISOString();
+      const overlapEnd = new Date(Date.parse(firstScheduled.scheduledStartAt!) + 45 * 60_000).toISOString();
       db.prepare(`
         INSERT INTO secretary_agenda_items (
           agenda_item_id, source_intent_id, source_skill, intent_action,
@@ -113,13 +129,20 @@ describe('training M4 single-Decision conflict and activation gates', () => {
           decision_reason_codes_json, source_shape_hash, scheduled_segments_json,
           created_at, updated_at
         ) VALUES (?, ?, 'secretary', 'schedule_this', 7, '7', 'scheduled', 'not_synced',
-          1, 'Private fixture', '2026-09-01T06:00:00.000Z', '2026-09-01T07:00:00.000Z',
+          1, 'Private fixture', ?, ?,
           60, 'schedule', '[]', 'shape-v1', '[]', datetime('now'), datetime('now'))
-      `).run('agenda-m4-drift', 'intent-m4-drift');
+      `).run('agenda-m4-drift', 'intent-m4-drift', overlapStart, overlapEnd);
       const calendarDrift = revalidateNormalizedDecisionAction({ scope: { userId: 7, tenantId: 7 }, action });
       expect(calendarDrift.preconditions).toEqual(expect.arrayContaining([
         expect.objectContaining({ type: 'training_revision_context', ok: false }),
       ]));
+      expect(calendarDrift.conflictEvaluation).toMatchObject({ disposition: 'block' });
+      expect(calendarDrift.conflictEvaluation.findings).toEqual(expect.arrayContaining([
+        expect.objectContaining({ class: 'time_overlap' }),
+        expect.objectContaining({ class: 'approved_commitment' }),
+      ]));
+      expect(getTrainingGenerationObservabilitySnapshot().counters.m4_cross_domain_conflict_total)
+        .toBeGreaterThanOrEqual(1);
       db.prepare('DELETE FROM secretary_agenda_items WHERE agenda_item_id = ?').run('agenda-m4-drift');
       expect(revalidateNormalizedDecisionAction({ scope: { userId: 7, tenantId: 7 }, action })
         .preconditions.every((precondition) => precondition.ok)).toBe(true);
@@ -136,9 +159,13 @@ describe('training M4 single-Decision conflict and activation gates', () => {
         .toEqual(expect.arrayContaining([
           expect.objectContaining({ type: 'training_revision_context', ok: false }),
         ]));
+      expect(getTrainingGenerationObservabilitySnapshot().counters.m4_partial_sync_blocked_total)
+        .toBeGreaterThanOrEqual(1);
       db.prepare("DELETE FROM training_agenda_event_ownership WHERE calendar_event_id = 'partial-sync-event'").run();
       expect(revalidateNormalizedDecisionAction({ scope: { userId: 7, tenantId: 7 }, action })
         .preconditions.every((precondition) => precondition.ok)).toBe(true);
+      expect(getTrainingGenerationObservabilitySnapshot().counters.m4_partial_sync_recovery_total)
+        .toBeGreaterThanOrEqual(1);
 
       authoritativeCapacityVersion = 'calendar-capacity-v2';
       expect(revalidateNormalizedDecisionAction({ scope: { userId: 7, tenantId: 7 }, action }).preconditions)
@@ -193,6 +220,45 @@ describe('training M4 single-Decision conflict and activation gates', () => {
     });
   });
 
+  it('models an exact authoritative session overlap with review alternatives', async () => {
+    await withDatabaseForTestAsync(db, async () => {
+      db.prepare(`
+        INSERT INTO secretary_agenda_items (
+          agenda_item_id, source_intent_id, source_skill, intent_action,
+          owner_user_id, tenant_id, lifecycle_state, provider_sync_state,
+          version, title, start_at, end_at, duration_minutes, decision_action,
+          decision_reason_codes_json, source_shape_hash, scheduled_segments_json,
+          created_at, updated_at
+        ) VALUES (?, ?, 'secretary', 'schedule_this', 7, '7', 'scheduled', 'not_synced',
+          1, 'Private fixture', '2026-08-17T05:15:00.000Z', '2026-08-17T05:45:00.000Z',
+          30, 'schedule', '[]', 'shape-exact', '[]', datetime('now'), datetime('now'))
+      `).run('agenda-m4-exact', 'intent-m4-exact');
+      const created = createTrainingPlanCandidateRevision({
+        scope: { userId: 7, tenantId: 7 }, idempotencyKey: 'm4-exact-overlap', request,
+      });
+      const bound = await bindTrainingPlanRevisionDecision({
+        scope: { userId: 7, tenantId: 7 }, revisionId: created.candidates[0].revisionId,
+      });
+      const row = db.prepare(`
+        SELECT normalized_action_json AS action
+          FROM notification_intents WHERE related_entity_id = ?
+      `).get(bound.revisionId) as { action: string };
+      const action = JSON.parse(row.action) as NormalizedDecisionAction;
+      const revalidated = revalidateNormalizedDecisionAction({
+        scope: { userId: 7, tenantId: 7 }, action, decisionId: bound.decisionId ?? undefined,
+      });
+      expect(revalidated.preconditions.every((precondition) => precondition.ok)).toBe(true);
+      expect(revalidated.conflictEvaluation).toMatchObject({ disposition: 'needs_confirmation' });
+      expect(revalidated.conflictEvaluation.findings).toEqual(expect.arrayContaining([
+        expect.objectContaining({ class: 'time_overlap' }),
+        expect.objectContaining({ class: 'approved_commitment' }),
+      ]));
+      expect(revalidated.conflictEvaluation.alternatives.length).toBeGreaterThanOrEqual(2);
+      expect(getTrainingGenerationObservabilitySnapshot().counters.m4_soft_conflict_total)
+        .toBeGreaterThanOrEqual(2);
+    });
+  });
+
   it('keeps explicit-user capacity provisional and out of cross-domain preconditions', async () => {
     await withDatabaseForTestAsync(db, async () => {
       const explicitRequest: TrainingPlanCandidateRequest = {
@@ -220,6 +286,27 @@ describe('training M4 single-Decision conflict and activation gates', () => {
       const action = JSON.parse(row.action) as NormalizedDecisionAction;
       expect(action.preconditions.some((precondition) => precondition.type === 'training_capacity_context')).toBe(false);
       expect(action.preconditions.some((precondition) => precondition.type === 'training_revision_conflict_set')).toBe(true);
+      expect(action.affectedResources.some((resource) => resource.type === 'calendar_timeline_overlap')).toBe(false);
+      expect(action.exclusivityKeys.some((key) => key.startsWith('calendar_timeline:'))).toBe(false);
+    });
+  });
+
+  it('fails closed when persisted immutable revision JSON no longer matches its content hash', async () => {
+    await withDatabaseForTestAsync(db, async () => {
+      const created = createTrainingPlanCandidateRevision({
+        scope: { userId: 7, tenantId: 7 }, idempotencyKey: 'm4-integrity-decision', request,
+      });
+      const revision = created.candidates[0];
+      db.exec('DROP TRIGGER trg_training_plan_revisions_content_immutable');
+      db.prepare(`
+        UPDATE training_plan_revisions
+           SET revision_document_json = json_set(revision_document_json, '$.title', 'tampered')
+         WHERE revision_id = ?
+      `).run(revision.revisionId);
+      await expect(bindTrainingPlanRevisionDecision({
+        scope: { userId: 7, tenantId: 7 }, revisionId: revision.revisionId,
+      })).rejects.toMatchObject({ code: 'TRAINING_REVISION_DOCUMENT_HASH_MISMATCH' });
+      expect(db.prepare('SELECT COUNT(*) AS count FROM notification_center_items').get()).toEqual({ count: 0 });
     });
   });
 });

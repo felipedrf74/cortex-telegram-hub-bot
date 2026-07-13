@@ -9,6 +9,7 @@ import {
   isDecisionFlowV1EnforceEnabled,
   isTrainingTypedWorkoutV1Enabled,
   isTrainingM4PlanCombinationAllowed,
+  isTrainingM4OwnedCombination,
   type RuntimeFlagScope,
 } from './runtime-flags';
 import {
@@ -900,7 +901,8 @@ function trainingGenerationOptions(
     || request.resourceAccess != null
     || request.capacity != null
     || request.goalPriority != null;
-  if (requestsM4 && !m4StrategyEnabled) {
+  if ((requestsM4 || isTrainingM4OwnedCombination(request.planMode, request.discipline))
+      && !m4StrategyEnabled) {
     throw new TrainingPlanRevisionError(
       'TRAINING_M4_ALLOWLIST_REQUIRED',
       'This training mode and discipline are not enrolled for Milestone 4 generation.',

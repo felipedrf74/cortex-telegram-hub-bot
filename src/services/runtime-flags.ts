@@ -463,6 +463,23 @@ export function isTrainingM4PlanCombinationAllowed(
   return getTrainingM4Allowlist(env, scope).includes(`${planMode}:${discipline}`);
 }
 
+/** Modes introduced after the continuous single-discipline typed slice, plus
+ * every composite discipline, always require explicit M4 enrollment even when
+ * a client omits the additive M4 request fields. */
+export function isTrainingM4OwnedCombination(
+  planMode: TrainingPlanMode,
+  discipline: CoachingDiscipline,
+): boolean {
+  if (!['event_based', 'continuous', 'maintenance', 'return_to_training'].includes(planMode)
+      || !['running', 'marathon', 'cycling', 'swimming', 'strength', 'triathlon', 'hybrid'].includes(discipline)) {
+    return false;
+  }
+  return planMode !== 'continuous'
+    || discipline === 'triathlon'
+    || discipline === 'hybrid'
+    || discipline === 'marathon';
+}
+
 export function isTrainingPlanRevisionV1ExplicitlyEnrolled(
   env: RuntimeEnv = process.env,
   scope?: RuntimeFlagScope,

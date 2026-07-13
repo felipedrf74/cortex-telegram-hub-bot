@@ -105,7 +105,20 @@ describe('training-plan-revisions', () => {
     withDatabaseForTest(db, () => {
       const eventRequest: TrainingPlanCandidateRequest = {
         planMode: 'event_based', goal: 'event_performance', discipline: 'triathlon', horizonWeeks: 10,
-        event: { name: 'A-priority triathlon', date: '2026-10-04', priority: 'A' },
+        planStartDate: '2026-07-27',
+        event: { name: 'A-priority triathlon', date: '2026-10-04', priority: 'A', subtype: 'triathlon' },
+        resourceAccess: {
+          pool: true, bicycle: true, indoorTrainer: true,
+          safeRunEnvironment: true, outdoorRideEnvironment: true,
+        },
+        capacity: {
+          source: 'EXPLICIT_USER',
+          windows: ['monday', 'tuesday', 'thursday', 'saturday', 'sunday'].map((dayOfWeek) => ({
+            dayOfWeek: dayOfWeek as 'monday', startTime: '06:00', endTime: '08:00', timezone: 'Europe/Lisbon',
+            allowedDisciplines: ['running' as const, 'cycling' as const, 'swimming' as const, 'strength' as const],
+          })),
+        },
+        goalPriority: { primaryDiscipline: 'running', secondaryDisciplines: ['cycling', 'swimming'] },
         profile: {
           experienceLevel: 'intermediate', sessionsPerWeek: 5, sessionDurationMinutes: 60,
           availableDays: ['monday', 'tuesday', 'thursday', 'saturday', 'sunday'],
@@ -116,7 +129,11 @@ describe('training-plan-revisions', () => {
         scope: { userId: 7, tenantId: 7 },
         idempotencyKey: 'typed-event-revision',
         request: eventRequest,
-        env: { ...activeEnv, TRAINING_TYPED_WORKOUT_V1_ENABLED_USER_7: 'true' },
+        env: {
+          ...activeEnv,
+          TRAINING_TYPED_WORKOUT_V1_ENABLED_USER_7: 'true',
+          TRAINING_PLAN_M4_ALLOWLIST_USER_7: 'event_based:triathlon',
+        },
       });
       const revision = created.candidates[0];
       expect(revision.documentSchemaVersion).toBe('training-plan-revision.v2');
@@ -144,8 +161,29 @@ describe('training-plan-revisions', () => {
       });
       createTrainingPlanCandidateRevision({
         scope: { userId: 7, tenantId: 7 }, idempotencyKey: 'hybrid-family',
-        request: { ...request, discipline: 'hybrid' },
-        env: { ...activeEnv, TRAINING_TYPED_WORKOUT_V1_ENABLED_USER_7: 'true' },
+        request: {
+          ...request,
+          discipline: 'hybrid',
+          horizonWeeks: 6,
+          planStartDate: '2026-08-17',
+          resourceAccess: {
+            pool: false, bicycle: false, indoorTrainer: true,
+            safeRunEnvironment: true, outdoorRideEnvironment: false,
+          },
+          capacity: {
+            source: 'EXPLICIT_USER',
+            windows: ['monday', 'wednesday', 'friday'].map((dayOfWeek) => ({
+              dayOfWeek: dayOfWeek as 'monday', startTime: '06:00', endTime: '07:00', timezone: 'Europe/Lisbon',
+              allowedDisciplines: ['running' as const, 'strength' as const, 'cycling' as const],
+            })),
+          },
+          goalPriority: { primaryDiscipline: 'running', secondaryDisciplines: ['strength'] },
+        },
+        env: {
+          ...activeEnv,
+          TRAINING_TYPED_WORKOUT_V1_ENABLED_USER_7: 'true',
+          TRAINING_PLAN_M4_ALLOWLIST_USER_7: 'continuous:hybrid',
+        },
       });
       expect(db.prepare('SELECT family_key AS familyKey FROM training_plan_families ORDER BY family_key').all())
         .toEqual([
@@ -255,7 +293,7 @@ describe('training-plan-revisions', () => {
       });
       expect(() => createTrainingPlanCandidateRevision({
         scope: { userId: 7, tenantId: 7 }, idempotencyKey: 'same-key',
-        request: { ...request, planMode: 'event_based' },
+        request: { ...request, horizonWeeks: 5 },
         env: activeEnv,
       })).toThrowError(expect.objectContaining({ code: 'TRAINING_IDEMPOTENCY_KEY_REUSED' }));
     });

@@ -37,13 +37,24 @@ export type TrainingGenerationCounterName =
   | 'adaptation_deferred_total'
   | 'adaptation_rejected_total'
   | 'adaptation_expired_total'
-  | 'adaptation_activated_total';
+  | 'adaptation_activated_total'
+  | 'm4_candidate_valid_total'
+  | 'm4_candidate_invalid_total'
+  | 'm4_decision_routed_total'
+  | 'm4_cross_domain_conflict_total'
+  | 'm4_hard_conflict_total'
+  | 'm4_soft_conflict_total'
+  | 'm4_event_phase_review_total'
+  | 'm4_false_positive_review_feedback_total'
+  | 'm4_partial_sync_blocked_total'
+  | 'm4_partial_sync_recovery_total';
 
 export type TrainingProgressionStateName = 'build' | 'hold' | 'deload' | 'reentry';
 
 export interface TrainingGenerationObservabilitySnapshot {
   counters: Record<TrainingGenerationCounterName, number>;
   progression_state_counts: Record<TrainingProgressionStateName, number>;
+  m4_candidate_outcomes: Record<string, number>;
 }
 
 const COUNTER_NAMES: TrainingGenerationCounterName[] = [
@@ -84,6 +95,16 @@ const COUNTER_NAMES: TrainingGenerationCounterName[] = [
   'adaptation_rejected_total',
   'adaptation_expired_total',
   'adaptation_activated_total',
+  'm4_candidate_valid_total',
+  'm4_candidate_invalid_total',
+  'm4_decision_routed_total',
+  'm4_cross_domain_conflict_total',
+  'm4_hard_conflict_total',
+  'm4_soft_conflict_total',
+  'm4_event_phase_review_total',
+  'm4_false_positive_review_feedback_total',
+  'm4_partial_sync_blocked_total',
+  'm4_partial_sync_recovery_total',
 ];
 
 const PROGRESSION_STATES: TrainingProgressionStateName[] = ['build', 'hold', 'deload', 'reentry'];
@@ -95,6 +116,10 @@ const counters: Record<TrainingGenerationCounterName, number> = Object.fromEntri
 const progressionStateCounts: Record<TrainingProgressionStateName, number> = Object.fromEntries(
   PROGRESSION_STATES.map((name) => [name, 0]),
 ) as Record<TrainingProgressionStateName, number>;
+
+const m4CandidateOutcomes: Record<string, number> = {};
+const M4_PLAN_MODES = new Set(['event_based', 'continuous', 'maintenance', 'return_to_training']);
+const M4_DISCIPLINES = new Set(['running', 'marathon', 'cycling', 'swimming', 'strength', 'triathlon', 'hybrid']);
 
 export function incrementTrainingGenerationCounter(
   name: TrainingGenerationCounterName,
@@ -110,14 +135,41 @@ export function recordTrainingProgressionState(state: TrainingProgressionStateNa
   }
 }
 
+/** Records only closed taxonomy values; never pass IDs, names, dates, or free text. */
+export function recordTrainingM4CandidateOutcome(
+  planMode: string,
+  discipline: string,
+  outcome: 'VALID' | 'INVALID',
+): void {
+  const safePlanMode = M4_PLAN_MODES.has(planMode) ? planMode : 'unknown';
+  const safeDiscipline = M4_DISCIPLINES.has(discipline) ? discipline : 'unknown';
+  const key = `${safePlanMode}:${safeDiscipline}:${outcome}`;
+  m4CandidateOutcomes[key] = (m4CandidateOutcomes[key] ?? 0) + 1;
+  incrementTrainingGenerationCounter(outcome === 'VALID'
+    ? 'm4_candidate_valid_total'
+    : 'm4_candidate_invalid_total');
+  if (safePlanMode === 'event_based' && outcome === 'VALID') {
+    incrementTrainingGenerationCounter('m4_event_phase_review_total');
+  }
+}
+
+/** Called only from an explicit review-feedback contract; no free text is accepted. */
+export function recordTrainingM4ReviewFeedback(outcome: 'CONFIRMED' | 'FALSE_POSITIVE'): void {
+  if (outcome === 'FALSE_POSITIVE') {
+    incrementTrainingGenerationCounter('m4_false_positive_review_feedback_total');
+  }
+}
+
 export function getTrainingGenerationObservabilitySnapshot(): TrainingGenerationObservabilitySnapshot {
   return {
     counters: { ...counters },
     progression_state_counts: { ...progressionStateCounts },
+    m4_candidate_outcomes: { ...m4CandidateOutcomes },
   };
 }
 
 export function _resetTrainingGenerationObservabilityForTests(): void {
   for (const name of COUNTER_NAMES) counters[name] = 0;
   for (const state of PROGRESSION_STATES) progressionStateCounts[state] = 0;
+  for (const key of Object.keys(m4CandidateOutcomes)) delete m4CandidateOutcomes[key];
 }

@@ -55,6 +55,7 @@ import {
   type TrainingM4ResourceAccess,
 } from './training-m4-plan-strategies';
 import type { TrainingM4AuthoritativeCapacityContext } from './training-m4-capacity-context';
+import { recordTrainingM4CandidateOutcome } from './training-generation-observability';
 
 export const TRAINING_PLAN_REVISION_DOCUMENT_SCHEMA = 'training-plan-revision.v1' as const;
 export const TRAINING_TYPED_PLAN_REVISION_DOCUMENT_SCHEMA = 'training-plan-revision.v2' as const;
@@ -112,6 +113,9 @@ export interface TrainingPlanRevisionWorkout {
   isStandalone?: boolean;
   phaseKey?: string | null;
   scheduledDate?: string;
+  scheduledStartAt?: string;
+  scheduledEndAt?: string;
+  scheduleTimeZone?: string;
   eventRole?: 'EVENT';
   blocks: TrainingPlanWorkoutBlock[];
 }
@@ -141,6 +145,7 @@ export interface TrainingPlanRevisionDocument {
     strategyVersion: string;
     conflictSetHash: string;
     validationScope: 'PLAN_CANDIDATE';
+    eventPriorityTreatment?: 'REVIEW_ONLY_NO_AUTOMATIC_LOAD_CHANGE';
   };
   title: string;
   horizonWeeks: number;
@@ -223,6 +228,23 @@ export function buildTrainingPlanRevisionCandidate(
   request: TrainingPlanCandidateRequest,
   options: TrainingPlanRevisionCandidateBuildOptions = {},
 ): BuiltTrainingPlanRevisionCandidate {
+  if (!options.m4StrategyEnabled) {
+    return buildTrainingPlanRevisionCandidateInternal(request, options);
+  }
+  try {
+    const candidate = buildTrainingPlanRevisionCandidateInternal(request, options);
+    recordTrainingM4CandidateOutcome(request.planMode, request.discipline, 'VALID');
+    return candidate;
+  } catch (error) {
+    recordTrainingM4CandidateOutcome(request.planMode, request.discipline, 'INVALID');
+    throw error;
+  }
+}
+
+function buildTrainingPlanRevisionCandidateInternal(
+  request: TrainingPlanCandidateRequest,
+  options: TrainingPlanCandidateBuildOptions,
+): BuiltTrainingPlanRevisionCandidate {
   const knowledge = loadCoachKnowledge();
   const catalog = buildRepoTrainingCatalogSnapshot(knowledge);
   const identityMode = getTrainingExerciseIdentityV1Mode(options.env ?? process.env, options.scope);
@@ -243,11 +265,16 @@ export function buildTrainingPlanRevisionCandidate(
       m4StrategyEnabled: options.m4StrategyEnabled === true,
     });
     normalizeRevisionDocumentExerciseIdentities(typed.document, identityMode);
-    const contentHash = stableTrainingRevisionHash(typed.document);
+    // The immutable hash is over the exact JSON representation that is
+    // persisted. Typed prescriptions can contain optional undefined fields,
+    // which JSON storage omits; canonicalize before hashing so integrity
+    // validation compares identical representations.
+    const document = JSON.parse(JSON.stringify(typed.document)) as TrainingPlanRevisionDocument;
+    const contentHash = stableTrainingRevisionHash(document);
     const catalogVersion = identityCatalog?.catalogVersion ?? catalog.catalogVersion;
     const catalogSourceHash = identityCatalog?.sourceHash ?? catalog.sourceHash;
     return {
-      document: typed.document,
+      document,
       contentHash,
       creationContextVersion: `ctx_${stableTrainingRevisionHash({
         request: normalized,
@@ -564,6 +591,9 @@ function validateAndNormalizeRequest(
     }
     if (request.planMode === 'return_to_training' && request.goal !== 'return_to_training') {
       throw new Error('TRAINING_RETURN_PLAN_GOAL_MISMATCH');
+    }
+    if (request.planMode === 'continuous' && request.goal !== 'general_fitness') {
+      throw new Error('TRAINING_CONTINUOUS_PLAN_GOAL_MISMATCH');
     }
     validateEventInput(request);
   }

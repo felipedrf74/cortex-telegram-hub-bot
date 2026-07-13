@@ -9,6 +9,7 @@ import {
 import type { ConflictComparisonAction } from './decision-conflict-evaluator';
 import { DOMAIN_COMMITMENT_ADAPTERS } from './decision-domain-commitment-adapters';
 import { secretaryAgendaStateRevision } from './secretary-agenda-state-revision';
+import { incrementTrainingGenerationCounter } from './training-generation-observability';
 
 export interface DecisionConflictScope {
   userId: number;
@@ -34,6 +35,7 @@ export interface LoadedDecisionConflictContext {
 const adapters: DecisionConflictContextAdapter[] = [
   { id: 'active_normalized_decisions', loadComparisons: loadActiveNormalizedDecisions },
   { id: 'secretary_agenda_commitments', loadComparisons: loadSecretaryAgendaCommitments },
+  { id: 'training_schedule_commitments', loadComparisons: loadTrainingScheduleCommitments },
   ...DOMAIN_COMMITMENT_ADAPTERS,
 ];
 
@@ -234,4 +236,128 @@ function loadSecretaryAgendaCommitments(input: {
       updatedAt: row.updatedAt,
     }];
   });
+}
+
+/** Exact plan-session overlap projection for authoritative M4 schedules. The
+ * candidate intentionally remains a single Decision; comparisons are emitted
+ * only for agenda rows that overlap a stored immutable session window. */
+function loadTrainingScheduleCommitments(input: {
+  scope: DecisionConflictScope;
+  candidate: NormalizedDecisionAction;
+}): ConflictComparisonAction[] {
+  const target = input.candidate.targetEntities.find((entry) => entry.type === 'training_plan_revision');
+  const calendarKeys = input.candidate.exclusivityKeys.filter((key) => key.startsWith('calendar_timeline:'));
+  if (!target || calendarKeys.length === 0
+      || !input.candidate.affectedResources.some((resource) => resource.type === 'calendar_timeline_overlap')) return [];
+  const row = getDb().prepare(`
+    SELECT revision_document_json AS document
+      FROM training_plan_revisions
+     WHERE revision_id = ? AND user_id = ? AND tenant_id = ?
+     LIMIT 1
+  `).get(target.id, input.scope.userId, input.scope.tenantId) as { document: string } | undefined;
+  if (!row) return [];
+  let document: {
+    capacityContext?: { source?: string };
+    weeks?: Array<{ workouts?: Array<{
+      scheduledStartAt?: string;
+      scheduledEndAt?: string;
+      scheduleTimeZone?: string;
+      sessionType?: string;
+    }> }>;
+  };
+  try { document = JSON.parse(row.document); } catch { return []; }
+  if (document.capacityContext?.source !== 'AUTHORITATIVE') return [];
+  const windows = (document.weeks ?? []).flatMap((week) => week.workouts ?? [])
+    .filter((workout) => workout.sessionType !== 'rest'
+      && validIso(workout.scheduledStartAt)
+      && validIso(workout.scheduledEndAt)
+      && typeof workout.scheduleTimeZone === 'string')
+    .map((workout) => ({
+      start: new Date(workout.scheduledStartAt!).toISOString(),
+      end: new Date(workout.scheduledEndAt!).toISOString(),
+      timezone: workout.scheduleTimeZone!,
+    }));
+  if (windows.length === 0) return [];
+  const start = windows.reduce((value, window) => window.start < value ? window.start : value, windows[0].start);
+  const end = windows.reduce((value, window) => window.end > value ? window.end : value, windows[0].end);
+  const rows = getDb().prepare(`
+    SELECT agenda_item_id AS agendaItemId, version, source_shape_hash AS sourceShapeHash,
+           start_at AS startAt, end_at AS endAt,
+           lifecycle_state AS lifecycleState, provider_sync_state AS providerSyncState,
+           provider_event_id AS providerEventId, provider_source AS providerSource,
+           decision_action AS decisionAction,
+           decision_reason_codes_json AS decisionReasonCodes,
+           decision_explanation AS decisionExplanation,
+           scheduled_segments_json AS scheduledSegments,
+           updated_at AS updatedAt, created_at AS createdAt
+      FROM secretary_agenda_items
+     WHERE owner_user_id = ? AND tenant_id = ?
+       AND lifecycle_state IN ('scheduled', 'synced', 'reflowed', 'compressed')
+       AND start_at IS NOT NULL AND end_at IS NOT NULL
+       AND datetime(start_at) < datetime(?) AND datetime(end_at) > datetime(?)
+     ORDER BY start_at ASC
+     LIMIT 200
+  `).all(input.scope.userId, String(input.scope.tenantId), end, start) as Array<{
+    agendaItemId: string;
+    version: number;
+    sourceShapeHash: string;
+    startAt: string;
+    endAt: string;
+    lifecycleState: string;
+    providerSyncState: string;
+    providerEventId: string | null;
+    providerSource: string | null;
+    decisionAction: string | null;
+    decisionReasonCodes: string | null;
+    decisionExplanation: string | null;
+    scheduledSegments: string | null;
+    updatedAt: string;
+    createdAt: string;
+  }>;
+  const commitments = rows.flatMap((agenda) => {
+    const agendaStart = Date.parse(agenda.startAt);
+    const agendaEnd = Date.parse(agenda.endAt);
+    if (!Number.isFinite(agendaStart) || !Number.isFinite(agendaEnd) || agendaEnd <= agendaStart) return [];
+    const overlap = windows.find((window) => agendaStart < Date.parse(window.end) && agendaEnd > Date.parse(window.start));
+    if (!overlap) return [];
+    const action = buildNormalizedDecisionAction({
+      intent: 'preserve_approved_secretary_commitment',
+      targetEntities: [{ type: 'secretary_agenda_item', id: agenda.agendaItemId, version: String(agenda.version) }],
+      affectedResources: [
+        { type: 'calendar_timeline_overlap', id: 'primary' },
+        { type: 'training_schedule', id: target.id },
+      ],
+      requestedWindow: { start: agenda.startAt, end: agenda.endAt, timezone: overlap.timezone },
+      preconditions: [{
+        type: 'agenda_state',
+        ref: agenda.agendaItemId,
+        expectedVersion: secretaryAgendaStateRevision(agenda),
+        required: true,
+      }],
+      expectedEffects: [{ type: 'preserve_commitment', targetRef: `secretary_agenda_item:${agenda.agendaItemId}` }],
+      prohibitedEffects: [],
+      dependencies: [],
+      exclusivityKeys: calendarKeys,
+      authorizationScope: ['calendar:read'],
+      risk: 'medium',
+      reversibility: 'irreversible',
+      contextVersion: `agenda:${agenda.agendaItemId}:${agenda.version}`,
+    });
+    return [{
+      action,
+      decisionId: `agenda:${agenda.agendaItemId}`,
+      authority: 'approved_commitment' as const,
+      approved: true,
+      createdAt: agenda.createdAt,
+      updatedAt: agenda.updatedAt,
+    }];
+  });
+  if (commitments.length > 0) {
+    incrementTrainingGenerationCounter('m4_cross_domain_conflict_total', commitments.length);
+  }
+  return commitments;
+}
+
+function validIso(value: unknown): value is string {
+  return typeof value === 'string' && Number.isFinite(Date.parse(value));
 }

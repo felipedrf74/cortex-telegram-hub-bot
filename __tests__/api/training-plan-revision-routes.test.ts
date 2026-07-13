@@ -20,6 +20,7 @@ describe('Training plan revision API contracts', () => {
   const priorFlow = process.env.DECISION_FLOW_V1_ENFORCE_ENABLED;
   const priorSnapshotKey = process.env.TRAINING_PROFILE_SNAPSHOT_ENCRYPTION_KEY;
   const priorTypedWorkout = process.env.TRAINING_TYPED_WORKOUT_V1_ENABLED_USER_7;
+  const priorM4Allowlist = process.env.TRAINING_PLAN_M4_ALLOWLIST_USER_7;
 
   beforeEach(async () => {
     db = new Database(':memory:');
@@ -55,6 +56,8 @@ describe('Training plan revision API contracts', () => {
     else process.env.TRAINING_PROFILE_SNAPSHOT_ENCRYPTION_KEY = priorSnapshotKey;
     if (priorTypedWorkout === undefined) delete process.env.TRAINING_TYPED_WORKOUT_V1_ENABLED_USER_7;
     else process.env.TRAINING_TYPED_WORKOUT_V1_ENABLED_USER_7 = priorTypedWorkout;
+    if (priorM4Allowlist === undefined) delete process.env.TRAINING_PLAN_M4_ALLOWLIST_USER_7;
+    else process.env.TRAINING_PLAN_M4_ALLOWLIST_USER_7 = priorM4Allowlist;
   });
 
   it('exposes typed capabilities and a phase-aware revision read model only for an explicitly enabled scope', async () => {
@@ -62,6 +65,7 @@ describe('Training plan revision API contracts', () => {
       process.env.TRAINING_PLAN_REVISION_V1_MODE_USER_7 = 'active';
       process.env.DECISION_FLOW_V1_ENFORCE_ENABLED = 'true';
       process.env.TRAINING_TYPED_WORKOUT_V1_ENABLED_USER_7 = 'true';
+      process.env.TRAINING_PLAN_M4_ALLOWLIST_USER_7 = 'event_based:running';
       process.env.TRAINING_PROFILE_SNAPSHOT_ENCRYPTION_KEY = 'training-revision-test-encryption-key-0001';
 
       const capabilities = await (await fetch(`${baseUrl}/plan/revision-capabilities`)).json() as any;
@@ -77,7 +81,20 @@ describe('Training plan revision API contracts', () => {
         headers: { 'content-type': 'application/json', 'idempotency-key': 'typed-event-api' },
         body: JSON.stringify({
           planMode: 'event_based', goal: 'event_performance', discipline: 'running', horizonWeeks: 8,
-          event: { name: 'Target 10K', date: '2026-10-11', priority: 'A' },
+          planStartDate: '2026-08-17',
+          event: { name: 'Target 10K', date: '2026-10-11', priority: 'A', subtype: 'running_race' },
+          resourceAccess: {
+            pool: false, bicycle: false, indoorTrainer: false,
+            safeRunEnvironment: true, outdoorRideEnvironment: false,
+          },
+          capacity: {
+            source: 'EXPLICIT_USER',
+            windows: ['monday', 'wednesday', 'friday', 'sunday'].map((dayOfWeek) => ({
+              dayOfWeek, startTime: '06:00', endTime: '08:00', timezone: 'Europe/Lisbon',
+              allowedDisciplines: ['running'],
+            })),
+          },
+          goalPriority: { primaryDiscipline: 'running', secondaryDisciplines: [] },
           profile: {
             experienceLevel: 'intermediate', sessionsPerWeek: 4, sessionDurationMinutes: 45,
             availableDays: ['monday', 'wednesday', 'friday', 'sunday'], equipmentIds: [], location: 'home',

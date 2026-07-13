@@ -44,7 +44,9 @@ import {
   dayOfWeekForIsoDate,
   eventSessionTypeForDiscipline,
   isoDateForWeekDay,
+  selectTrainingM4CapacityWindow,
   selectTrainingM4SessionTypes,
+  trainingM4ScheduledWindow,
   trainingM4ConflictSetHash,
   validateTrainingM4WorkoutCapacity,
 } from './training-m4-plan-strategies';
@@ -203,6 +205,9 @@ export function buildTrainingTypedPlanRevision(
         }))),
       }),
       validationScope: 'PLAN_CANDIDATE',
+      ...(request.planMode === 'event_based' && request.event?.priority
+        ? { eventPriorityTreatment: 'REVIEW_ONLY_NO_AUTOMATIC_LOAD_CHANGE' as const }
+        : {}),
     };
   }
   const qualityChecks = [
@@ -333,7 +338,7 @@ function buildWeekWorkouts(
   exerciseLibrary: Exercise[],
   m4Enabled = false,
 ): TrainingPlanRevisionDocument['weeks'][number]['workouts'] {
-  const activeDays = request.profile.availableDays.slice(0, request.profile.sessionsPerWeek);
+  const activeDays = request.profile.availableDays.slice(0, m4Enabled ? activeTypes.length : request.profile.sessionsPerWeek);
   const targetStrengthSessions = activeTypes.filter((sessionType) => sessionType.startsWith('strength_')).length;
   let strengthSessionIndex = 0;
   const active = activeDays.map((day, index) => {
@@ -351,13 +356,24 @@ function buildWeekWorkouts(
       phaseType,
       phaseKey,
     });
+    const scheduledDate = m4Enabled && request.planStartDate
+      ? isEventWorkout && request.event?.date
+        ? request.event.date
+        : isoDateForWeekDay(request.planStartDate, weekNumber, day)
+      : null;
+    const capacityWindow = m4Enabled && request.capacity
+      ? selectTrainingM4CapacityWindow(request.discipline, request.capacity.windows, workout)
+      : null;
+    if (m4Enabled && !capacityWindow) {
+      throw new Error(`TRAINING_M4_SCHEDULE_CAPACITY_CONFLICT:${day}:${sessionType}`);
+    }
+    const scheduledWindow = scheduledDate && capacityWindow
+      ? trainingM4ScheduledWindow(scheduledDate, capacityWindow, workout.plannedDurationMinutes)
+      : null;
     const datedWorkout = {
       ...workout,
-      ...(m4Enabled && request.planStartDate ? {
-        scheduledDate: isEventWorkout && request.event?.date
-          ? request.event.date
-          : isoDateForWeekDay(request.planStartDate, weekNumber, day),
-      } : {}),
+      ...(scheduledDate ? { scheduledDate } : {}),
+      ...(scheduledWindow ?? {}),
       ...(isEventWorkout ? { eventRole: 'EVENT' as const } : {}),
     };
     const eventWorkout = isEventWorkout && request.discipline === 'triathlon'
@@ -759,19 +775,32 @@ export function validateTrainingM4PlanRevisionDocument(
   if (activeWorkouts.some((workout) => !workout.scheduledDate)) {
     failures.push('TRAINING_M4_SCHEDULE_DATES_REQUIRED');
   }
+  if (activeWorkouts.some((workout) => !workout.scheduledStartAt
+      || !workout.scheduledEndAt
+      || !workout.scheduleTimeZone
+      || Date.parse(workout.scheduledEndAt) <= Date.parse(workout.scheduledStartAt))) {
+    failures.push('TRAINING_M4_SCHEDULE_WINDOWS_REQUIRED');
+  }
   if (document.planMode === 'event_based') {
+    const event = document.event;
+    const m4 = document.m4;
     const eventWorkouts = activeWorkouts.filter((workout) => workout.eventRole === 'EVENT');
     const race = document.phases.at(-1);
     const taper = document.phases.at(-2);
-    if (!document.planStartDate || !document.event?.date
+    if (!document.planStartDate || !event?.date
         || eventWorkouts.length !== 1
-        || eventWorkouts[0].scheduledDate !== document.event.date
+        || eventWorkouts[0].scheduledDate !== event.date
         || eventWorkouts[0].sessionType !== eventSessionTypeForDiscipline(document.discipline)
         || race?.phaseType !== 'RACE'
         || race.startWeek !== document.horizonWeeks
         || taper?.phaseType !== 'TAPER'
-        || taper.endWeek !== race.startWeek - 1) {
+        || taper.endWeek !== race.startWeek - 1
+        || activeWorkouts.some((workout) => workout.scheduledDate! > (event?.date ?? ''))) {
       failures.push('TRAINING_M4_EVENT_TAPER_RACE_INVARIANTS');
+    }
+    if (event?.priority
+        && m4?.eventPriorityTreatment !== 'REVIEW_ONLY_NO_AUTOMATIC_LOAD_CHANGE') {
+      failures.push('TRAINING_M4_EVENT_PRIORITY_REVIEW_ONLY');
     }
     if (document.discipline === 'triathlon') {
       const primary = eventWorkouts[0]?.blocks.find((block) => block.blockType === 'PRIMARY_WORK');
@@ -795,6 +824,9 @@ export function validateTrainingM4PlanRevisionDocument(
     if (isHeavyStrength(previous.sessionType) && isHardEndurance(current.sessionType)) {
       failures.push('TRAINING_M4_HYBRID_INTERFERENCE');
     }
+    if (isHardEndurance(previous.sessionType) && isHeavyStrength(current.sessionType)) {
+      failures.push('TRAINING_M4_HYBRID_INTERFERENCE');
+    }
     if (isHardEndurance(previous.sessionType) && isHardEndurance(current.sessionType)) {
       failures.push('TRAINING_M4_HARD_DAY_RECOVERY_SPACING');
     }
@@ -815,6 +847,7 @@ export function validateTrainingM4PlanRevisionDocument(
     { code: 'TRAINING_M4_RECOVERY_AND_INTERFERENCE', status: 'PASS', evidence: 'Hard endurance and heavy-strength adjacency constraints passed' },
     ...(document.planMode === 'event_based' ? [
       { code: 'TRAINING_M4_EVENT_TAPER_RACE_INVARIANTS', status: 'PASS' as const, evidence: 'Event date, final race phase, preceding taper and exact event workout agree' },
+      { code: 'TRAINING_M4_EVENT_PRIORITY_REVIEW_ONLY', status: 'PASS' as const, evidence: 'A/B/C priority is review metadata and cannot silently change training load' },
     ] : []),
   ];
 }

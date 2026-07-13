@@ -3,7 +3,10 @@
 import Database from 'better-sqlite3';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { runMigrationsForTest, withDatabaseForTestAsync } from '../../src/services/database';
-import type { TrainingPlanCandidateRequest } from '../../src/services/training-plan-revision-candidate-builder';
+import {
+  stableTrainingRevisionHash,
+  type TrainingPlanCandidateRequest,
+} from '../../src/services/training-plan-revision-candidate-builder';
 import { activateApprovedTrainingPlanRevision } from '../../src/services/training-plan-revision-activation';
 import { createTrainingPlanCandidateRevision } from '../../src/services/training-plan-revisions';
 import { runLegacyActivePlanBackfill } from '../../src/services/training-plan-revision-legacy-backfill';
@@ -137,11 +140,47 @@ describe('training-plan-revision-activation', () => {
     });
   });
 
+  it('fails before projection writes when persisted revision JSON no longer matches its hash', async () => {
+    await withDb(async () => {
+      const revision = createBoundRevision();
+      seedApprovalEvidence(revision.revisionId, revision.contentHash, revision.creationContextVersion, 'execution-integrity');
+      db.exec('DROP TRIGGER trg_training_plan_revisions_content_immutable');
+      db.prepare(`
+        UPDATE training_plan_revisions
+           SET revision_document_json = json_set(revision_document_json, '$.title', 'tampered')
+         WHERE revision_id = ?
+      `).run(revision.revisionId);
+      await expect(activateApprovedTrainingPlanRevision({
+        scope: { userId: 7, tenantId: 7 }, revisionId: revision.revisionId,
+        approval: {
+          decisionId: 'decision-1', decisionRecordVersion: 3, actionExecutionId: 'execution-integrity',
+          approvedContentHash: revision.contentHash, approvedContextVersion: revision.creationContextVersion,
+        },
+        env: activeEnv,
+      })).rejects.toMatchObject({ code: 'TRAINING_REVISION_DOCUMENT_HASH_MISMATCH' });
+      expect(db.prepare('SELECT COUNT(*) AS count FROM fitness_training_plans').get()).toEqual({ count: 0 });
+      expect(db.prepare('SELECT COUNT(*) AS count FROM event_outbox').get()).toEqual({ count: 0 });
+    });
+  });
+
   it('materializes typed event blocks and modality prescriptions without changing flag-off projection behavior', async () => {
     await withDb(async () => {
       const typedRequest: TrainingPlanCandidateRequest = {
         planMode: 'event_based', goal: 'event_performance', discipline: 'triathlon', horizonWeeks: 8,
-        event: { name: 'Target triathlon', date: '2026-10-18', priority: 'A' },
+        planStartDate: '2026-08-24',
+        event: { name: 'Target triathlon', date: '2026-10-18', priority: 'A', subtype: 'triathlon' },
+        resourceAccess: {
+          pool: true, bicycle: true, indoorTrainer: true,
+          safeRunEnvironment: true, outdoorRideEnvironment: true,
+        },
+        capacity: {
+          source: 'EXPLICIT_USER',
+          windows: ['monday', 'wednesday', 'friday', 'sunday'].map((dayOfWeek) => ({
+            dayOfWeek: dayOfWeek as 'monday', startTime: '06:00', endTime: '08:00', timezone: 'Europe/Lisbon',
+            allowedDisciplines: ['swimming' as const, 'cycling' as const, 'running' as const, 'strength' as const],
+          })),
+        },
+        goalPriority: { primaryDiscipline: 'running', secondaryDisciplines: ['cycling', 'swimming'] },
         profile: {
           experienceLevel: 'intermediate', sessionsPerWeek: 4, sessionDurationMinutes: 45,
           availableDays: ['monday', 'wednesday', 'friday', 'sunday'],
@@ -152,8 +191,10 @@ describe('training-plan-revision-activation', () => {
         ...activeEnv,
         TRAINING_TYPED_WORKOUT_V1_ENABLED_USER_7: 'true',
         TRAINING_EXERCISE_IDENTITY_V1_MODE_USER_7: 'active',
+        TRAINING_PLAN_M4_ALLOWLIST_USER_7: 'event_based:triathlon',
       };
       const revision = createBoundRevision(typedRequest, typedEnv);
+      expect(stableTrainingRevisionHash(revision.document)).toBe(revision.contentHash);
       seedApprovalEvidence(revision.revisionId, revision.contentHash, revision.creationContextVersion, 'execution-typed');
       expect(revision.catalog).toMatchObject({
         version: TRAINING_EXERCISE_IDENTITY_CATALOG_VERSION,
@@ -166,7 +207,11 @@ describe('training-plan-revision-activation', () => {
           approvedContentHash: revision.contentHash, approvedContextVersion: revision.creationContextVersion,
         },
         activationDate: '2026-07-13',
-        env: { ...activeEnv, TRAINING_TYPED_WORKOUT_V1_ENABLED_USER_7: 'true' },
+        env: {
+          ...activeEnv,
+          TRAINING_TYPED_WORKOUT_V1_ENABLED_USER_7: 'true',
+          TRAINING_PLAN_M4_ALLOWLIST_USER_7: 'event_based:triathlon',
+        },
       })).rejects.toMatchObject({ code: 'TRAINING_REVISION_REVALIDATION_STALE' });
       await expect(activateApprovedTrainingPlanRevision({
         scope: { userId: 7, tenantId: 7 }, revisionId: revision.revisionId,
@@ -188,6 +233,8 @@ describe('training-plan-revision-activation', () => {
         activationDate: '2026-07-13', env: typedEnv,
       });
       expect(result.projection).toMatchObject({ weekCount: 8, sessionCount: 56 });
+      expect(db.prepare('SELECT start_date AS startDate FROM fitness_training_plans').get())
+        .toEqual({ startDate: '2026-08-24' });
       expect(db.prepare(`
         SELECT sport, goal, periodization, preferences_json AS preferencesJson,
                source_revision_id AS sourceRevisionId
@@ -206,7 +253,7 @@ describe('training-plan-revision-activation', () => {
         goalMode: 'event_based',
         raceDate: '2026-10-18',
         trainingPriority: 'A',
-        event: { name: 'Target triathlon', date: '2026-10-18', priority: 'A' },
+        event: { name: 'Target triathlon', date: '2026-10-18', priority: 'A', subtype: 'triathlon' },
       }));
       const structured = db.prepare(`
         SELECT description_json AS descriptionJson, intensity_text AS intensityText

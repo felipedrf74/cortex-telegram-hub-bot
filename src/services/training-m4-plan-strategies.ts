@@ -1,6 +1,7 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
 import { createHash } from 'node:crypto';
+import { DateTime } from 'luxon';
 import type { CoachingDiscipline, DayOfWeek, SessionType } from './coach-kernel/types';
 import type { TrainingPlanMode } from './training-workout-capability-registry';
 
@@ -192,8 +193,14 @@ export function validateTrainingM4ResourceAccess(
     throw new Error('TRAINING_M4_RESOURCE_POOL_REQUIRED');
   }
   if ((discipline === 'cycling' || discipline === 'triathlon')
-      && !resources.bicycle && !resources.indoorTrainer) {
+      && !resources.indoorTrainer
+      && !(resources.bicycle && resources.outdoorRideEnvironment)) {
     throw new Error('TRAINING_M4_RESOURCE_BICYCLE_REQUIRED');
+  }
+  if (discipline === 'hybrid'
+      && !resources.indoorTrainer
+      && !(resources.bicycle && resources.outdoorRideEnvironment)) {
+    throw new Error('TRAINING_M4_RESOURCE_HYBRID_BICYCLE_REQUIRED');
   }
   if ((discipline === 'running' || discipline === 'marathon' || discipline === 'triathlon' || discipline === 'hybrid')
       && !resources.safeRunEnvironment) {
@@ -274,19 +281,57 @@ function validTimeZone(value: string): boolean {
 export function validateTrainingM4WorkoutCapacity(
   discipline: CoachingDiscipline,
   windows: readonly TrainingM4CapacityWindow[],
-  workouts: readonly { dayOfWeek: DayOfWeek; sessionType: string }[],
+  workouts: readonly { dayOfWeek: DayOfWeek; sessionType: string; plannedDurationMinutes: number }[],
 ): void {
   for (const workout of workouts) {
     const required = requiredCapacityDisciplines(discipline, workout.sessionType);
     if (required.length === 0) continue;
-    const dayWindows = windows.filter((window) => window.dayOfWeek === workout.dayOfWeek);
-    const supported = dayWindows.some((window) => {
-      if (!window.allowedDisciplines?.length) return true;
-      return required.every((value) => window.allowedDisciplines!.includes(value)
-        || (discipline === 'marathon' && value === 'running' && window.allowedDisciplines!.includes('marathon')));
-    });
+    const supported = windows.some((window) => windowSupportsWorkout(discipline, window, workout));
     if (!supported) throw new Error(`TRAINING_M4_SCHEDULE_CAPACITY_CONFLICT:${workout.dayOfWeek}:${workout.sessionType}`);
   }
+}
+
+export function selectTrainingM4CapacityWindow(
+  discipline: CoachingDiscipline,
+  windows: readonly TrainingM4CapacityWindow[],
+  workout: { dayOfWeek: DayOfWeek; sessionType: string; plannedDurationMinutes: number },
+): TrainingM4CapacityWindow | null {
+  return windows.find((window) => windowSupportsWorkout(discipline, window, workout)) ?? null;
+}
+
+export function trainingM4ScheduledWindow(
+  scheduledDate: string,
+  window: TrainingM4CapacityWindow,
+  durationMinutes: number,
+): { scheduledStartAt: string; scheduledEndAt: string; scheduleTimeZone: string } {
+  const start = DateTime.fromISO(`${scheduledDate}T${window.startTime}`, { zone: window.timezone });
+  const end = start.plus({ minutes: durationMinutes });
+  if (!start.isValid || !end.isValid || end.toFormat('HH:mm') > window.endTime || end.toISODate() !== scheduledDate) {
+    throw new Error('TRAINING_M4_SCHEDULE_WINDOW_INVALID');
+  }
+  const scheduledStartAt = start.toUTC().toISO();
+  const scheduledEndAt = end.toUTC().toISO();
+  if (!scheduledStartAt || !scheduledEndAt) throw new Error('TRAINING_M4_SCHEDULE_WINDOW_INVALID');
+  return { scheduledStartAt, scheduledEndAt, scheduleTimeZone: window.timezone };
+}
+
+function windowSupportsWorkout(
+  discipline: CoachingDiscipline,
+  window: TrainingM4CapacityWindow,
+  workout: { dayOfWeek: DayOfWeek; sessionType: string; plannedDurationMinutes: number },
+): boolean {
+  if (window.dayOfWeek !== workout.dayOfWeek
+      || capacityWindowDurationMinutes(window) < workout.plannedDurationMinutes) return false;
+  const required = requiredCapacityDisciplines(discipline, workout.sessionType);
+  if (!window.allowedDisciplines?.length) return true;
+  return required.every((value) => window.allowedDisciplines!.includes(value)
+    || (discipline === 'marathon' && value === 'running' && window.allowedDisciplines!.includes('marathon')));
+}
+
+function capacityWindowDurationMinutes(window: TrainingM4CapacityWindow): number {
+  const [startHour, startMinute] = window.startTime.split(':').map(Number);
+  const [endHour, endMinute] = window.endTime.split(':').map(Number);
+  return (endHour * 60 + endMinute) - (startHour * 60 + startMinute);
 }
 
 function requiredCapacityDisciplines(
