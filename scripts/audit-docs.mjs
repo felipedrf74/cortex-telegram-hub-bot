@@ -4,6 +4,10 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import {
+  hasGitCheckoutMetadata,
+  isWorkspaceArchitectureDecision,
+} from './lib/docs-audit-paths.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const backendRoot = path.resolve(__dirname, '..');
@@ -201,6 +205,10 @@ function isApprovedCurrentOrArchive(file) {
     return true;
   }
   if (normalized.startsWith(path.join(workspaceRoot, 'docs', 'agent') + path.sep)) return true;
+  // DOCS_INDEX routes architecture decisions to workspace docs/adr/. Keep
+  // proposed and accepted ADRs in the canonical taxonomy instead of flagging
+  // every new sequential record as a scattered Markdown file.
+  if (isWorkspaceArchitectureDecision(normalized, workspaceRoot)) return true;
   // OPERATING_CONTEXT requires end-of-session agent handoffs here. Approve the
   // directory so required handoffs do not appear as scattered-doc warnings.
   if (normalized.startsWith(path.join(workspaceRoot, 'docs', 'agents', 'handoffs') + path.sep)) return true;
@@ -371,7 +379,11 @@ function isLikelyCommitHash(hash) {
 }
 
 function commitExistsInKnownRepo(hash) {
-  const rootsToCheck = [backendRoot, normalize(iosRoot)].filter((root) => existsDir(path.join(root, '.git')));
+  // Linked worktrees use a `.git` file rather than a directory. Treat both as
+  // valid checkout metadata so the audit reports the same commit-reference
+  // result from an isolated worktree and the primary checkout.
+  const rootsToCheck = [backendRoot, normalize(iosRoot)]
+    .filter((root) => hasGitCheckoutMetadata(root));
   return rootsToCheck.some((root) => commitExists(root, hash));
 }
 
