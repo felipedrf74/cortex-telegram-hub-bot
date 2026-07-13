@@ -5,7 +5,7 @@
   "generatedDate": "2026-07-12",
   "source": {
     "candidateManifestId": "training-media-eligibility-identity-v1-50ed5bdd-draft-v5",
-    "candidateManifestSha256": "88cf2eecc52cc9b3e5a20844d931f74bb21433a13fe4cb1f9b82a9eb1a90e391",
+    "candidateManifestSha256": "8361517a657a39450c60ca1d5a3aa82cb71e166940b8975da833c6a894681acd",
     "artifactIndexSchemaVersion": "training-exercise-media-artifact-index.v2",
     "artifactIndexSha256": "83098cba6a58e9f75ab9c69b6e4b50551a953e77718d9e6f0f12b9719d87c88c",
     "catalogVersion": "training-exercise-identity-catalog.v1",
@@ -29988,5 +29988,5 @@
       ]
     }
   ],
-  "bundleHash": "7a58a6ac3191e1fbc80773018dbc7be2020b492986e10b7b8313389b9b29b936"
+  "bundleHash": "7c378344b517a67ee27838b455b41916ffa4c2b595a23689fbe106df574a8de0"
 }
