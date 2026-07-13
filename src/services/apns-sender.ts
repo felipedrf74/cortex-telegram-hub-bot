@@ -151,8 +151,8 @@ function getProviderJwt(): string {
     if (!pem.includes('-----BEGIN')) {
       throw new Error(
         `[apns-sender] APNS_AUTH_KEY_P8 is neither a valid file path nor a ` +
-          `raw .p8 string. Got ${authKey.length} chars. Expected either a path to an ` +
-          `AuthKey_XXXXXXXXXX.p8 file or the full contents of that file.`,
+          `raw .p8 string. Expected either a path to an AuthKey_XXXXXXXXXX.p8 file ` +
+          `or the full contents of that file.`,
       );
     }
   }

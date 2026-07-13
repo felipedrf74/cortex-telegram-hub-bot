@@ -523,9 +523,10 @@ describe('sendPushNotification (error handling)', () => {
 
     await expect(sendPushNotification(1, { title: 'T', body: 'B' })).rejects.toSatisfy((error: unknown) => {
       expect(error).toBeInstanceOf(Error);
-      expect((error as Error).message).toContain(`Got ${secretValue.length} chars`);
+      expect((error as Error).message).toContain('is neither a valid file path nor a raw .p8 string');
       expect((error as Error).message).not.toContain(secretValue);
       expect((error as Error).message).not.toContain(secretValue.slice(0, 20));
+      expect((error as Error).message).not.toContain(String(secretValue.length));
       return true;
     });
   });
