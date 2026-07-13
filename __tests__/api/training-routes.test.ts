@@ -90,6 +90,7 @@ vi.mock('../../src/services/database', () => ({
   stripWrappingTransactionStatements: vi.fn((sql: string) => sql),
   applyMigrationFileForTest: vi.fn(),
   withDatabaseForTest: vi.fn(),
+  withDatabaseForTestAsync: vi.fn(),
 }));
 
 vi.mock('../../src/services/garmin-coach', () => ({
@@ -448,6 +449,9 @@ function resetTrainingOperationalEnvForTests(): void {
   delete process.env.TRAINING_CALENDAR_WRITES_DISABLED;
   delete process.env.TRAINING_CALENDAR_SYNC_ENABLED;
   delete process.env.TRAINING_CALENDAR_SYNC_DISABLED;
+  delete process.env.TRAINING_PLAN_REVISION_V1_MODE;
+  delete process.env.TRAINING_PLAN_REVISION_V1_MODE_USER_12;
+  delete process.env.DECISION_FLOW_V1_ENFORCE_ENABLED;
 }
 
 function trainingGenerationIdempotencyRow(idempotencyKey: string): { status: string } | undefined {
@@ -463,6 +467,7 @@ function trainingGenerationIdempotencyRow(idempotencyKey: string): { status: str
 describe('Training API routes', () => {
   afterEach(() => {
     vi.useRealTimers();
+    resetTrainingOperationalEnvForTests();
     testDb.close();
   });
 
@@ -996,6 +1001,28 @@ describe('Training API routes', () => {
     expect(res.body.data.weekJourney).toBeNull();
     expect(res.body.data.weekProtection).toBeNull();
     expect(res.body.data.emptyState?.action.target).toBe('createPlan');
+    expect(res.body.data.revisionCapabilities).toBeUndefined();
+  });
+
+  it('adds the scoped revision capability contract to Training home only for an active enrolled account', async () => {
+    process.env.TRAINING_PLAN_REVISION_V1_MODE_USER_12 = 'active';
+    process.env.DECISION_FLOW_V1_ENFORCE_ENABLED = 'true';
+    mockGetActivePlan.mockReturnValue(null);
+    mockGetEvents.mockResolvedValue([]);
+
+    const res = await dispatch('GET', '/home');
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body.data.revisionCapabilities).toMatchObject({
+      schemaVersion: 'training_plan_revision_api.v1',
+      mode: 'active',
+      registryVersion: 'training-workout-capabilities.v1',
+      milestone1GenerationSessionTypes: [
+        'strength_hypertrophy', 'strength_maintenance', 'mobility', 'rest',
+      ],
+      unknownFallback: { preservesRawIdentifier: true, newlyPrescribable: false },
+    });
+    expect(res.body.data.revisionCapabilities.canonicalSessionTypes).toHaveLength(21);
   });
 
   it('surfaces wearable integration gaps honestly in the training home contract', async () => {

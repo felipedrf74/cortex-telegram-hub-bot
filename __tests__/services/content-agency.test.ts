@@ -7,6 +7,7 @@ vi.mock('../../src/services/database', () => ({
   getDb: () => testDb,
   initDatabase: vi.fn(),
   closeDatabase: vi.fn(),
+  withDatabaseForTestAsync: vi.fn(),
 }));
 
 import {

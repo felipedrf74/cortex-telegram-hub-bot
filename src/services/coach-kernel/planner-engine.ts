@@ -29,6 +29,7 @@ import {
 } from './feedback-analysis';
 import { isActiveTrainingSession, reconcileWeeklyCapacity } from './capacity-reconciliation';
 import { validateEnduranceCoherence } from './endurance-coherence';
+import type { TrainingExerciseIdentityV1Mode } from '../runtime-flags';
 
 function hasHighImpactInjuryConstraint(athlete: AthleteState): boolean {
   return athlete.constraints.some((constraint) =>
@@ -134,12 +135,24 @@ function reconcilePlanSessions(athlete: AthleteState, weeklyPlan: WeeklyPlan): W
   };
 }
 
-export function buildWeekPlan(athlete: AthleteState, weekStart: string): WeeklyPlan {
+export function buildWeekPlan(
+  athlete: AthleteState,
+  weekStart: string,
+  options: { exerciseIdentityMode?: TrainingExerciseIdentityV1Mode } = {},
+): WeeklyPlan {
   const feedbackAnalysis = analyzeTrainingFeedback(athlete);
   const coachingAthlete = applyFeedbackToAthleteState(athlete, feedbackAnalysis);
   const phase = inferPhase(coachingAthlete, weekStart);
   const knowledge = loadCoachKnowledge();
-  const context = { athlete: coachingAthlete, phase, knowledge, weekStart };
+  const context = {
+    athlete: coachingAthlete,
+    phase,
+    knowledge,
+    weekStart,
+    ...(options.exerciseIdentityMode === 'active'
+      ? { exerciseIdentityMode: options.exerciseIdentityMode }
+      : {}),
+  };
   let sessions: Session[] = [];
   const planningNotes: string[] = [];
 

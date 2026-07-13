@@ -47,6 +47,7 @@ vi.mock('../../src/services/database', () => ({
       }),
     };
   },
+  withDatabaseForTestAsync: vi.fn(),
 }));
 
 vi.mock('../../src/utils/logger', () => ({

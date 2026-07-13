@@ -34,6 +34,8 @@ import {
   type Principles,
 } from './training-principles';
 import { resolveWeekIntent } from './week-intent';
+import { trainingPhaseTypeFromWeekIntent } from '../training-phase-model';
+import type { TrainingTypedPhaseType } from '../training-typed-workout-v1';
 
 export interface ResolveMesocyclePlanInput {
   /** ISO date for the plan start (Monday recommended). */
@@ -57,6 +59,8 @@ export interface ResolvedMesocyclePlan {
   blockTemplate: WeekIntentKindEnum[];
   mesocycleLength: number;
   weeks: WeekIntent[];
+  /** M2 canonical phase projection; legacy WeekIntent remains authoritative while the flag is off. */
+  canonicalPhaseTypes: TrainingTypedPhaseType[];
 }
 
 /**
@@ -102,6 +106,7 @@ export function resolveMesocyclePlan(
     blockTemplate,
     mesocycleLength,
     weeks,
+    canonicalPhaseTypes: weeks.map((week) => trainingPhaseTypeFromWeekIntent(week.kind)),
   };
 }
 

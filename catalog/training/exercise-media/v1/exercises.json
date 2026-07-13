@@ -1,0 +1,2214 @@
+[
+  {
+    "exerciseId": "ab_wheel_rollout",
+    "canonicalName": "Ab Wheel Rollout",
+    "aliases": [],
+    "requiredViews": [
+      "PRIMARY"
+    ],
+    "publicationState": "DRAFT",
+    "exclusionReason": null,
+    "globalExerciseId": null,
+    "equivalenceHash": null,
+    "createdAt": "2026-07-12T00:00:00.000Z",
+    "exerciseContentHash": "2a619c25f9b27269f2912c808977c24b891235115cf924f1e004423141e2d6d6"
+  },
+  {
+    "exerciseId": "archer_pull_up",
+    "canonicalName": "Archer Pull-Up",
+    "aliases": [],
+    "requiredViews": [
+      "PRIMARY"
+    ],
+    "publicationState": "DRAFT",
+    "exclusionReason": null,
+    "globalExerciseId": null,
+    "equivalenceHash": null,
+    "createdAt": "2026-07-12T00:00:00.000Z",
+    "exerciseContentHash": "a6aa1b644869f83b3eddc2ba02262ba057c6b0b31137f99d70057d3443ed93e3"
+  },
+  {
+    "exerciseId": "archer_push_up",
+    "canonicalName": "Archer Push-Up",
+    "aliases": [],
+    "requiredViews": [
+      "PRIMARY"
+    ],
+    "publicationState": "DRAFT",
+    "exclusionReason": null,
+    "globalExerciseId": null,
+    "equivalenceHash": null,
+    "createdAt": "2026-07-12T00:00:00.000Z",
+    "exerciseContentHash": "e9225b5f89a0de47285993fba6a12c488c5590885a4726b7230a78463d3ddf70"
+  },
+  {
+    "exerciseId": "archer_ring_row",
+    "canonicalName": "Archer Ring Row",
+    "aliases": [],
+    "requiredViews": [
+      "PRIMARY"
+    ],
+    "publicationState": "DRAFT",
+    "exclusionReason": null,
+    "globalExerciseId": null,
+    "equivalenceHash": null,
+    "createdAt": "2026-07-12T00:00:00.000Z",
+    "exerciseContentHash": "467141d5df514d5fffb2c9d1587c2296dea27d3bd3f374cfe66d018626ef3e94"
+  },
+  {
+    "exerciseId": "assisted_pistol_squat",
+    "canonicalName": "Assisted Pistol Squat",
+    "aliases": [],
+    "requiredViews": [
+      "PRIMARY"
+    ],
+    "publicationState": "DRAFT",
+    "exclusionReason": null,
+    "globalExerciseId": null,
+    "equivalenceHash": null,
+    "createdAt": "2026-07-12T00:00:00.000Z",
+    "exerciseContentHash": "d084c8c318ea0edb20152e69e140266d41f68199fc908377bb0c600729be96ba"
+  },
+  {
+    "exerciseId": "back_extension",
+    "canonicalName": "Back Extension",
+    "aliases": [],
+    "requiredViews": [
+      "PRIMARY"
+    ],
+    "publicationState": "DRAFT",
+    "exclusionReason": null,
+    "globalExerciseId": null,
+    "equivalenceHash": null,
+    "createdAt": "2026-07-12T00:00:00.000Z",
+    "exerciseContentHash": "a09d9bea932d51c5ac82c89cd8c03567d07276ef61808cbdb71ab650bfb4d91d"
+  },
+  {
+    "exerciseId": "back_squat",
+    "canonicalName": "Back Squat",
+    "aliases": [],
+    "requiredViews": [
+      "PRIMARY"
+    ],
+    "publicationState": "DRAFT",
+    "exclusionReason": null,
+    "globalExerciseId": null,
+    "equivalenceHash": null,
+    "createdAt": "2026-07-12T00:00:00.000Z",
+    "exerciseContentHash": "60991ac991e790e092f37cdca357b05a3c35e0f973200e3f91bc0b71633165af"
+  },
+  {
+    "exerciseId": "band_assisted_pull_up",
+    "canonicalName": "Band-Assisted Pull-Up",
+    "aliases": [],
+    "requiredViews": [
+      "PRIMARY"
+    ],
+    "publicationState": "DRAFT",
+    "exclusionReason": null,
+    "globalExerciseId": null,
+    "equivalenceHash": null,
+    "createdAt": "2026-07-12T00:00:00.000Z",
+    "exerciseContentHash": "1fadf90c809abcb5a019156d1eff09b3e4ceb093dd680b2634fab4dc8a66b575"
+  },
+  {
+    "exerciseId": "band_pulldown",
+    "canonicalName": "Band Pulldown",
+    "aliases": [],
+    "requiredViews": [
+      "PRIMARY"
+    ],
+    "publicationState": "DRAFT",
+    "exclusionReason": null,
+    "globalExerciseId": null,
+    "equivalenceHash": null,
+    "createdAt": "2026-07-12T00:00:00.000Z",
+    "exerciseContentHash": "fe0edfb469830c4cdae77e94c3577a3043493dbd84a74e9a22a5527e645ea47c"
+  },
+  {
+    "exerciseId": "band_row",
+    "canonicalName": "Band Row",
+    "aliases": [],
+    "requiredViews": [
+      "PRIMARY"
+    ],
+    "publicationState": "DRAFT",
+    "exclusionReason": null,
+    "globalExerciseId": null,
+    "equivalenceHash": null,
+    "createdAt": "2026-07-12T00:00:00.000Z",
+    "exerciseContentHash": "98739389b65272ca7da0694c8bbc1004d9af62a9dcde66ab4ea2f5a17f72a977"
+  },
+  {
+    "exerciseId": "barbell_bent_row",
+    "canonicalName": "Barbell Bent-Over Row",
+    "aliases": [],
+    "requiredViews": [
+      "PRIMARY"
+    ],
+    "publicationState": "DRAFT",
+    "exclusionReason": null,
+    "globalExerciseId": null,
+    "equivalenceHash": null,
+    "createdAt": "2026-07-12T00:00:00.000Z",
+    "exerciseContentHash": "943f4cef0dcc36c523b2b482742b39191b28e79a96c2beff98ffe3462e6165fa"
+  },
+  {
+    "exerciseId": "barbell_hip_thrust",
+    "canonicalName": "Barbell Hip Thrust",
+    "aliases": [],
+    "requiredViews": [
+      "PRIMARY"
+    ],
+    "publicationState": "DRAFT",
+    "exclusionReason": null,
+    "globalExerciseId": null,
+    "equivalenceHash": null,
+    "createdAt": "2026-07-12T00:00:00.000Z",
+    "exerciseContentHash": "28f987331739fad3eb37b3f9b0b9c0699879560ac4f947f92b4a15cc60c599f0"
+  },
+  {
+    "exerciseId": "barbell_overhead_press",
+    "canonicalName": "Barbell Overhead Press",
+    "aliases": [],
+    "requiredViews": [
+      "PRIMARY"
+    ],
+    "publicationState": "DRAFT",
+    "exclusionReason": null,
+    "globalExerciseId": null,
+    "equivalenceHash": null,
+    "createdAt": "2026-07-12T00:00:00.000Z",
+    "exerciseContentHash": "89c24556c5228a9690ae8765be39b76d41a3307362ed7d97c9c643de38982b64"
+  },
+  {
+    "exerciseId": "battle_ropes_alternating",
+    "canonicalName": "Battle Ropes — Alternating Waves",
+    "aliases": [],
+    "requiredViews": [
+      "PRIMARY"
+    ],
+    "publicationState": "DRAFT",
+    "exclusionReason": null,
+    "globalExerciseId": null,
+    "equivalenceHash": null,
+    "createdAt": "2026-07-12T00:00:00.000Z",
+    "exerciseContentHash": "14010e87285689b0009792a28136e0cb6816c93029c0522fc567438e1845add9"
+  },
+  {
+    "exerciseId": "battle_ropes_slams",
+    "canonicalName": "Battle Ropes — Slams",
+    "aliases": [],
+    "requiredViews": [
+      "PRIMARY"
+    ],
+    "publicationState": "DRAFT",
+    "exclusionReason": null,
+    "globalExerciseId": null,
+    "equivalenceHash": null,
+    "createdAt": "2026-07-12T00:00:00.000Z",
+    "exerciseContentHash": "48423cb93a54731d9bcabba95ed91f5af4e7f62dc62c1ca35b6e4cf15582e62d"
+  },
+  {
+    "exerciseId": "bear_crawl",
+    "canonicalName": "Bear Crawl",
+    "aliases": [],
+    "requiredViews": [
+      "PRIMARY"
+    ],
+    "publicationState": "DRAFT",
+    "exclusionReason": null,
+    "globalExerciseId": null,
+    "equivalenceHash": null,
+    "createdAt": "2026-07-12T00:00:00.000Z",
+    "exerciseContentHash": "f3a375ba7e0f366309795590ffb119d4cc656703e6414dad63cbf3c41c842621"
+  },
+  {
+    "exerciseId": "bench_press",
+    "canonicalName": "Bench Press",
+    "aliases": [],
+    "requiredViews": [
+      "PRIMARY"
+    ],
+    "publicationState": "DRAFT",
+    "exclusionReason": null,
+    "globalExerciseId": null,
+    "equivalenceHash": null,
+    "createdAt": "2026-07-12T00:00:00.000Z",
+    "exerciseContentHash": "509b0d2dd7e029278cd1462b21f0a75711e8129b756e682b4a2417895826c7dd"
+  },
+  {
+    "exerciseId": "bird_dog",
+    "canonicalName": "Bird Dog",
+    "aliases": [],
+    "requiredViews": [
+      "PRIMARY"
+    ],
+    "publicationState": "DRAFT",
+    "exclusionReason": null,
+    "globalExerciseId": null,
+    "equivalenceHash": null,
+    "createdAt": "2026-07-12T00:00:00.000Z",
+    "exerciseContentHash": "af643884ac79f2aac9b68f29d05dfe81b0cb0c872fa4c7843c3a199f0b4bea10"
+  },
+  {
+    "exerciseId": "bodyweight_squat",
+    "canonicalName": "Bodyweight Squat",
+    "aliases": [],
+    "requiredViews": [
+      "PRIMARY"
+    ],
+    "publicationState": "DRAFT",
+    "exclusionReason": null,
+    "globalExerciseId": null,
+    "equivalenceHash": null,
+    "createdAt": "2026-07-12T00:00:00.000Z",
+    "exerciseContentHash": "4a785ccda7d4e8fc3fb544593abe5aac14ffb3cab5243d6210efe8c85f056cd6"
+  },
+  {
+    "exerciseId": "box_jump",
+    "canonicalName": "Box Jump",
+    "aliases": [],
+    "requiredViews": [
+      "PRIMARY"
+    ],
+    "publicationState": "DRAFT",
+    "exclusionReason": null,
+    "globalExerciseId": null,
+    "equivalenceHash": null,
+    "createdAt": "2026-07-12T00:00:00.000Z",
+    "exerciseContentHash": "3fe8df659868b6ca68d8de6aeae3ccae39ebc8453d3230286ba4c0fd7c9afd78"
+  },
+  {
+    "exerciseId": "box_pistol_squat",
+    "canonicalName": "Box Pistol Squat",
+    "aliases": [],
+    "requiredViews": [
+      "PRIMARY"
+    ],
+    "publicationState": "DRAFT",
+    "exclusionReason": null,
+    "globalExerciseId": null,
+    "equivalenceHash": null,
+    "createdAt": "2026-07-12T00:00:00.000Z",
+    "exerciseContentHash": "9ced0b07ad59e464b3df41f7fdaeca4a361b497564372428cce4af6ac09eeb1e"
+  },
+  {
+    "exerciseId": "broad_jump",
+    "canonicalName": "Broad Jump",
+    "aliases": [],
+    "requiredViews": [
+      "PRIMARY"
+    ],
+    "publicationState": "DRAFT",
+    "exclusionReason": null,
+    "globalExerciseId": null,
+    "equivalenceHash": null,
+    "createdAt": "2026-07-12T00:00:00.000Z",
+    "exerciseContentHash": "53ec3de4ddb1dae182d453c24b0dbbef62ee845c4a615c0299774bb78d1d33f7"
+  },
+  {
+    "exerciseId": "bulgarian_split_squat",
+    "canonicalName": "Bulgarian Split Squat",
+    "aliases": [],
+    "requiredViews": [
+      "PRIMARY"
+    ],
+    "publicationState": "DRAFT",
+    "exclusionReason": null,
+    "globalExerciseId": null,
+    "equivalenceHash": null,
+    "createdAt": "2026-07-12T00:00:00.000Z",
+    "exerciseContentHash": "101f98868b2ab434f6db183408f1c8fe1355becc4a7f0906c04b211310a7b440"
+  },
+  {
+    "exerciseId": "cable_pull_through",
+    "canonicalName": "Cable Pull-Through",
+    "aliases": [],
+    "requiredViews": [
+      "PRIMARY"
+    ],
+    "publicationState": "DRAFT",
+    "exclusionReason": null,
+    "globalExerciseId": null,
+    "equivalenceHash": null,
+    "createdAt": "2026-07-12T00:00:00.000Z",
+    "exerciseContentHash": "9d350dd382c0a99d8a680cfc2d7e001eb34f3ae48b627039f1d2a8798aacebf7"
+  },
+  {
+    "exerciseId": "cable_row",
+    "canonicalName": "Cable Row",
+    "aliases": [],
+    "requiredViews": [
+      "PRIMARY"
+    ],
+    "publicationState": "DRAFT",
+    "exclusionReason": null,
+    "globalExerciseId": null,
+    "equivalenceHash": null,
+    "createdAt": "2026-07-12T00:00:00.000Z",
+    "exerciseContentHash": "98a152191b615631c69dee81b17a951b044ff2cf41581d9fc993ef4f686d997b"
+  },
+  {
+    "exerciseId": "cable_triceps_pressdown",
+    "canonicalName": "Cable Triceps Pressdown",
+    "aliases": [],
+    "requiredViews": [
+      "PRIMARY"
+    ],
+    "publicationState": "DRAFT",
+    "exclusionReason": null,
+    "globalExerciseId": null,
+    "equivalenceHash": null,
+    "createdAt": "2026-07-12T00:00:00.000Z",
+    "exerciseContentHash": "e64c47015e0b35d1f2f1e558d94e91af904cc40dab054dab4e202a643b4ee232"
+  },
+  {
+    "exerciseId": "calf_raise",
+    "canonicalName": "Calf Raise",
+    "aliases": [],
+    "requiredViews": [
+      "PRIMARY"
+    ],
+    "publicationState": "DRAFT",
+    "exclusionReason": null,
+    "globalExerciseId": null,
+    "equivalenceHash": null,
+    "createdAt": "2026-07-12T00:00:00.000Z",
+    "exerciseContentHash": "fea42d78983de80724b8589dcfe802e2980cf314e55cb8c546dd64b096f30396"
+  },
+  {
+    "exerciseId": "cat_cow",
+    "canonicalName": "Cat-Cow",
+    "aliases": [],
+    "requiredViews": [
+      "PRIMARY"
+    ],
+    "publicationState": "DRAFT",
+    "exclusionReason": null,
+    "globalExerciseId": null,
+    "equivalenceHash": null,
+    "createdAt": "2026-07-12T00:00:00.000Z",
+    "exerciseContentHash": "aa51c394264e1e0006cbc16fe5f83bedc70262aca74294eef5e4af95238e8933"
+  },
+  {
+    "exerciseId": "chest_supported_row",
+    "canonicalName": "Chest-Supported Row",
+    "aliases": [],
+    "requiredViews": [
+      "PRIMARY"
+    ],
+    "publicationState": "DRAFT",
+    "exclusionReason": null,
+    "globalExerciseId": null,
+    "equivalenceHash": null,
+    "createdAt": "2026-07-12T00:00:00.000Z",
+    "exerciseContentHash": "59abc87f91cfd334fbc6907c69c66b10e2ec0916d8b79571fb28eb773c3849b7"
+  },
+  {
+    "exerciseId": "childs_pose",
+    "canonicalName": "Child's Pose",
+    "aliases": [],
+    "requiredViews": [
+      "PRIMARY"
+    ],
+    "publicationState": "DRAFT",
+    "exclusionReason": null,
+    "globalExerciseId": null,
+    "equivalenceHash": null,
+    "createdAt": "2026-07-12T00:00:00.000Z",
+    "exerciseContentHash": "723845cbcc25665f6f269756e2ff2b6cff831f494993ef70ffc66d3c8c72ead7"
+  },
+  {
+    "exerciseId": "chin_up",
+    "canonicalName": "Chin-Up",
+    "aliases": [],
+    "requiredViews": [
+      "PRIMARY"
+    ],
+    "publicationState": "DRAFT",
+    "exclusionReason": null,
+    "globalExerciseId": null,
+    "equivalenceHash": null,
+    "createdAt": "2026-07-12T00:00:00.000Z",
+    "exerciseContentHash": "32bbd7980aa4773d7df47746e847a8915ed94dd95a3aa4bcea3d97ed09f64f64"
+  },
+  {
+    "exerciseId": "close_grip_bench_press",
+    "canonicalName": "Close-Grip Bench Press",
+    "aliases": [],
+    "requiredViews": [
+      "PRIMARY"
+    ],
+    "publicationState": "DRAFT",
+    "exclusionReason": null,
+    "globalExerciseId": null,
+    "equivalenceHash": null,
+    "createdAt": "2026-07-12T00:00:00.000Z",
+    "exerciseContentHash": "10191a255f963227eff2b8fcfd971ab2c3e175b0121f73cd06d92ef60affc46e"
+  },
+  {
+    "exerciseId": "close_grip_push_up",
+    "canonicalName": "Close-Grip Push-Up",
+    "aliases": [],
+    "requiredViews": [
+      "PRIMARY"
+    ],
+    "publicationState": "DRAFT",
+    "exclusionReason": null,
+    "globalExerciseId": null,
+    "equivalenceHash": null,
+    "createdAt": "2026-07-12T00:00:00.000Z",
+    "exerciseContentHash": "432e09da5aa1e4b952dc09710b571f7b27bc4ef417eeb98ccd85866bbd171745"
+  },
+  {
+    "exerciseId": "conventional_deadlift",
+    "canonicalName": "Conventional Deadlift",
+    "aliases": [],
+    "requiredViews": [
+      "PRIMARY"
+    ],
+    "publicationState": "DRAFT",
+    "exclusionReason": null,
+    "globalExerciseId": null,
+    "equivalenceHash": null,
+    "createdAt": "2026-07-12T00:00:00.000Z",
+    "exerciseContentHash": "389b834911776134654c9d1e9ae7939bebbfe750e19b9dbaf32641f758c16fcc"
+  },
+  {
+    "exerciseId": "cossack_squat",
+    "canonicalName": "Cossack Squat",
+    "aliases": [],
+    "requiredViews": [
+      "PRIMARY"
+    ],
+    "publicationState": "DRAFT",
+    "exclusionReason": null,
+    "globalExerciseId": null,
+    "equivalenceHash": null,
+    "createdAt": "2026-07-12T00:00:00.000Z",
+    "exerciseContentHash": "2ad8729d6d7802e125a4db04ae353cbc93a9943573e9b49925e63485147090b4"
+  },
+  {
+    "exerciseId": "couch_stretch",
+    "canonicalName": "Couch Stretch",
+    "aliases": [],
+    "requiredViews": [
+      "PRIMARY"
+    ],
+    "publicationState": "DRAFT",
+    "exclusionReason": null,
+    "globalExerciseId": null,
+    "equivalenceHash": null,
+    "createdAt": "2026-07-12T00:00:00.000Z",
+    "exerciseContentHash": "4797e979b06d4f274947b26c0776b20579efaa354d82cc12ecb015b0d4507b04"
+  },
+  {
+    "exerciseId": "dead_bug",
+    "canonicalName": "Dead Bug",
+    "aliases": [],
+    "requiredViews": [
+      "PRIMARY"
+    ],
+    "publicationState": "DRAFT",
+    "exclusionReason": null,
+    "globalExerciseId": null,
+    "equivalenceHash": null,
+    "createdAt": "2026-07-12T00:00:00.000Z",
+    "exerciseContentHash": "bd5b1f4f4411ad98a6a4b7547d59c14db83d5d0b628a3d3e81ef5093b83aabe0"
+  },
+  {
+    "exerciseId": "decline_push_up",
+    "canonicalName": "Decline Push-Up",
+    "aliases": [],
+    "requiredViews": [
+      "PRIMARY"
+    ],
+    "publicationState": "DRAFT",
+    "exclusionReason": null,
+    "globalExerciseId": null,
+    "equivalenceHash": null,
+    "createdAt": "2026-07-12T00:00:00.000Z",
+    "exerciseContentHash": "d6e2eafaa86ac416a88170427f700a03bf6a979162275725257d5a46d5590992"
+  },
+  {
+    "exerciseId": "deficit_deadlift",
+    "canonicalName": "Deficit Deadlift",
+    "aliases": [],
+    "requiredViews": [
+      "PRIMARY"
+    ],
+    "publicationState": "DRAFT",
+    "exclusionReason": null,
+    "globalExerciseId": null,
+    "equivalenceHash": null,
+    "createdAt": "2026-07-12T00:00:00.000Z",
+    "exerciseContentHash": "86c6abef7569d280c6be18fd038b107b7d437e4c8f241caae04d85c57b3e4ee0"
+  },
+  {
+    "exerciseId": "depth_jump",
+    "canonicalName": "Depth Jump",
+    "aliases": [],
+    "requiredViews": [
+      "PRIMARY"
+    ],
+    "publicationState": "DRAFT",
+    "exclusionReason": null,
+    "globalExerciseId": null,
+    "equivalenceHash": null,
+    "createdAt": "2026-07-12T00:00:00.000Z",
+    "exerciseContentHash": "2cd45247383b54dfd4901eb095ec615a407c1e12ec6500c0d4770420cc86d703"
+  },
+  {
+    "exerciseId": "diamond_push_up",
+    "canonicalName": "Diamond Push-Up",
+    "aliases": [],
+    "requiredViews": [
+      "PRIMARY"
+    ],
+    "publicationState": "DRAFT",
+    "exclusionReason": null,
+    "globalExerciseId": null,
+    "equivalenceHash": null,
+    "createdAt": "2026-07-12T00:00:00.000Z",
+    "exerciseContentHash": "8386dde255324cd51517ee01d883faf41446298150b625d15e27d8f4db6a0b50"
+  },
+  {
+    "exerciseId": "dip",
+    "canonicalName": "Dip",
+    "aliases": [],
+    "requiredViews": [
+      "PRIMARY"
+    ],
+    "publicationState": "DRAFT",
+    "exclusionReason": null,
+    "globalExerciseId": null,
+    "equivalenceHash": null,
+    "createdAt": "2026-07-12T00:00:00.000Z",
+    "exerciseContentHash": "80da0c4b6f5a62d82020532cc461d922538d1610a67f35cc96b4ad2381d3e309"
+  },
+  {
+    "exerciseId": "dragon_flag",
+    "canonicalName": "Dragon Flag",
+    "aliases": [],
+    "requiredViews": [
+      "PRIMARY"
+    ],
+    "publicationState": "DRAFT",
+    "exclusionReason": null,
+    "globalExerciseId": null,
+    "equivalenceHash": null,
+    "createdAt": "2026-07-12T00:00:00.000Z",
+    "exerciseContentHash": "0feeefb7e91d7025f2997a17df3c02f050593368f826acb37ed9e0e340c95e69"
+  },
+  {
+    "exerciseId": "dragon_flag_tuck",
+    "canonicalName": "Dragon Flag (Tuck)",
+    "aliases": [],
+    "requiredViews": [
+      "PRIMARY"
+    ],
+    "publicationState": "DRAFT",
+    "exclusionReason": null,
+    "globalExerciseId": null,
+    "equivalenceHash": null,
+    "createdAt": "2026-07-12T00:00:00.000Z",
+    "exerciseContentHash": "5d03fa938aa3ca7c3fac01f931407b0dbbbc1e39de3105163dff4f1c07734579"
+  },
+  {
+    "exerciseId": "dumbbell_bench_press",
+    "canonicalName": "Dumbbell Bench Press",
+    "aliases": [],
+    "requiredViews": [
+      "PRIMARY"
+    ],
+    "publicationState": "DRAFT",
+    "exclusionReason": null,
+    "globalExerciseId": null,
+    "equivalenceHash": null,
+    "createdAt": "2026-07-12T00:00:00.000Z",
+    "exerciseContentHash": "5036645b63e26c0fed0298c9265e70172d06f3b9e89aff1bb52847ea67dacf62"
+  },
+  {
+    "exerciseId": "dumbbell_curl",
+    "canonicalName": "Dumbbell Curl",
+    "aliases": [],
+    "requiredViews": [
+      "PRIMARY"
+    ],
+    "publicationState": "DRAFT",
+    "exclusionReason": null,
+    "globalExerciseId": null,
+    "equivalenceHash": null,
+    "createdAt": "2026-07-12T00:00:00.000Z",
+    "exerciseContentHash": "bfc527fc62c301137dfaea00654f00a92b5333dec6128cddcda64648f94eace5"
+  },
+  {
+    "exerciseId": "dumbbell_floor_press",
+    "canonicalName": "Dumbbell Floor Press",
+    "aliases": [],
+    "requiredViews": [
+      "PRIMARY"
+    ],
+    "publicationState": "DRAFT",
+    "exclusionReason": null,
+    "globalExerciseId": null,
+    "equivalenceHash": null,
+    "createdAt": "2026-07-12T00:00:00.000Z",
+    "exerciseContentHash": "735129bcec21f811f5f432a1983544e95d1f39daaeaf6cb11fe97472b8bf783f"
+  },
+  {
+    "exerciseId": "dumbbell_hip_thrust",
+    "canonicalName": "Dumbbell Hip Thrust",
+    "aliases": [],
+    "requiredViews": [
+      "PRIMARY"
+    ],
+    "publicationState": "DRAFT",
+    "exclusionReason": null,
+    "globalExerciseId": null,
+    "equivalenceHash": null,
+    "createdAt": "2026-07-12T00:00:00.000Z",
+    "exerciseContentHash": "9336327450514c50d7e2a30770ac3af83c5efa72a8ec8c769849ca1dfff1ebd4"
+  },
+  {
+    "exerciseId": "dumbbell_lateral_raise",
+    "canonicalName": "Dumbbell Lateral Raise",
+    "aliases": [],
+    "requiredViews": [
+      "PRIMARY"
+    ],
+    "publicationState": "DRAFT",
+    "exclusionReason": null,
+    "globalExerciseId": null,
+    "equivalenceHash": null,
+    "createdAt": "2026-07-12T00:00:00.000Z",
+    "exerciseContentHash": "27062bb38f034a7331c7a07474ec4c33645992dc6c6973415f0352807bc3ec58"
+  },
+  {
+    "exerciseId": "dumbbell_overhead_press",
+    "canonicalName": "Dumbbell Overhead Press",
+    "aliases": [],
+    "requiredViews": [
+      "PRIMARY"
+    ],
+    "publicationState": "DRAFT",
+    "exclusionReason": null,
+    "globalExerciseId": null,
+    "equivalenceHash": null,
+    "createdAt": "2026-07-12T00:00:00.000Z",
+    "exerciseContentHash": "ecdf6e086044136ffcefd7b2a32ff5f7401714ff40fe4ad5b162435152633802"
+  },
+  {
+    "exerciseId": "dumbbell_reverse_lunge",
+    "canonicalName": "Dumbbell Reverse Lunge",
+    "aliases": [],
+    "requiredViews": [
+      "PRIMARY"
+    ],
+    "publicationState": "DRAFT",
+    "exclusionReason": null,
+    "globalExerciseId": null,
+    "equivalenceHash": null,
+    "createdAt": "2026-07-12T00:00:00.000Z",
+    "exerciseContentHash": "3036ef11709f4a7078a5374e7fec4ea9fbd709b98328ce25891a9f9abcddbb01"
+  },
+  {
+    "exerciseId": "dumbbell_triceps_extension",
+    "canonicalName": "Dumbbell Triceps Extension",
+    "aliases": [],
+    "requiredViews": [
+      "PRIMARY"
+    ],
+    "publicationState": "DRAFT",
+    "exclusionReason": null,
+    "globalExerciseId": null,
+    "equivalenceHash": null,
+    "createdAt": "2026-07-12T00:00:00.000Z",
+    "exerciseContentHash": "156803ca9aea3e70fffb2284c347e1967483634b1903e086bfce141b149c3366"
+  },
+  {
+    "exerciseId": "explosive_pull_up",
+    "canonicalName": "Explosive Pull-Up",
+    "aliases": [],
+    "requiredViews": [
+      "PRIMARY"
+    ],
+    "publicationState": "DRAFT",
+    "exclusionReason": null,
+    "globalExerciseId": null,
+    "equivalenceHash": null,
+    "createdAt": "2026-07-12T00:00:00.000Z",
+    "exerciseContentHash": "8b1889c7a5a4d6ad78bba6b2cd53366718915ca397a3d115e5a4a1b4ae898115"
+  },
+  {
+    "exerciseId": "face_pull",
+    "canonicalName": "Face Pull",
+    "aliases": [],
+    "requiredViews": [
+      "PRIMARY"
+    ],
+    "publicationState": "DRAFT",
+    "exclusionReason": null,
+    "globalExerciseId": null,
+    "equivalenceHash": null,
+    "createdAt": "2026-07-12T00:00:00.000Z",
+    "exerciseContentHash": "a28b50ff9561d90ab63b84f7e1626b37cbd214096408c2549036fa1cd5634b6e"
+  },
+  {
+    "exerciseId": "farmer_carry",
+    "canonicalName": "Farmer Carry",
+    "aliases": [],
+    "requiredViews": [
+      "PRIMARY"
+    ],
+    "publicationState": "DRAFT",
+    "exclusionReason": null,
+    "globalExerciseId": null,
+    "equivalenceHash": null,
+    "createdAt": "2026-07-12T00:00:00.000Z",
+    "exerciseContentHash": "c4b358342f9db76899b0be9e534dbc571199c190eb640171c87ed7bb0b53f465"
+  },
+  {
+    "exerciseId": "front_squat",
+    "canonicalName": "Front Squat",
+    "aliases": [],
+    "requiredViews": [
+      "PRIMARY"
+    ],
+    "publicationState": "DRAFT",
+    "exclusionReason": null,
+    "globalExerciseId": null,
+    "equivalenceHash": null,
+    "createdAt": "2026-07-12T00:00:00.000Z",
+    "exerciseContentHash": "0b2dfb6ae52efa16bf14113eedbf54623d46ca1f8ebed62b8ff0c24b1a9a79f7"
+  },
+  {
+    "exerciseId": "glute_bridge",
+    "canonicalName": "Glute Bridge",
+    "aliases": [],
+    "requiredViews": [
+      "PRIMARY"
+    ],
+    "publicationState": "DRAFT",
+    "exclusionReason": null,
+    "globalExerciseId": null,
+    "equivalenceHash": null,
+    "createdAt": "2026-07-12T00:00:00.000Z",
+    "exerciseContentHash": "cc212ae993803bf6770531debfa8bbd22ecba45ed57a6db6ef1b4e853baeffa8"
+  },
+  {
+    "exerciseId": "goblet_squat",
+    "canonicalName": "Goblet Squat",
+    "aliases": [],
+    "requiredViews": [
+      "PRIMARY"
+    ],
+    "publicationState": "DRAFT",
+    "exclusionReason": null,
+    "globalExerciseId": null,
+    "equivalenceHash": null,
+    "createdAt": "2026-07-12T00:00:00.000Z",
+    "exerciseContentHash": "ae0b5fd945900caa9e46c84d722f46b049cff9257ca37aa0eb66210c7f9b3e1b"
+  },
+  {
+    "exerciseId": "good_morning",
+    "canonicalName": "Good Morning",
+    "aliases": [],
+    "requiredViews": [
+      "PRIMARY"
+    ],
+    "publicationState": "DRAFT",
+    "exclusionReason": null,
+    "globalExerciseId": null,
+    "equivalenceHash": null,
+    "createdAt": "2026-07-12T00:00:00.000Z",
+    "exerciseContentHash": "e253ddf6829bf56dce5f2fac50d83bcad4a131e8b8982fd8b78b97eae8fe0991"
+  },
+  {
+    "exerciseId": "hack_squat_machine",
+    "canonicalName": "Hack Squat Machine",
+    "aliases": [],
+    "requiredViews": [
+      "PRIMARY"
+    ],
+    "publicationState": "DRAFT",
+    "exclusionReason": null,
+    "globalExerciseId": null,
+    "equivalenceHash": null,
+    "createdAt": "2026-07-12T00:00:00.000Z",
+    "exerciseContentHash": "a43fa0eca15039fd695c8dcbb6619c57ecbba778d2200ae1df65dd279946fc77"
+  },
+  {
+    "exerciseId": "hammer_curl",
+    "canonicalName": "Hammer Curl",
+    "aliases": [],
+    "requiredViews": [
+      "PRIMARY"
+    ],
+    "publicationState": "DRAFT",
+    "exclusionReason": null,
+    "globalExerciseId": null,
+    "equivalenceHash": null,
+    "createdAt": "2026-07-12T00:00:00.000Z",
+    "exerciseContentHash": "7929f2a1daf709fc99091c0c62c0ad63df0ea2192155ea07c42ea7c2122dcf0a"
+  },
+  {
+    "exerciseId": "handstand_hold",
+    "canonicalName": "Wall Handstand Hold",
+    "aliases": [],
+    "requiredViews": [
+      "PRIMARY"
+    ],
+    "publicationState": "DRAFT",
+    "exclusionReason": null,
+    "globalExerciseId": null,
+    "equivalenceHash": null,
+    "createdAt": "2026-07-12T00:00:00.000Z",
+    "exerciseContentHash": "b5dc0e398f754b29f44b3981804001ff2cc26bb8c379f4862b787b21be673833"
+  },
+  {
+    "exerciseId": "handstand_push_up",
+    "canonicalName": "Wall Handstand Push-Up",
+    "aliases": [],
+    "requiredViews": [
+      "PRIMARY"
+    ],
+    "publicationState": "DRAFT",
+    "exclusionReason": null,
+    "globalExerciseId": null,
+    "equivalenceHash": null,
+    "createdAt": "2026-07-12T00:00:00.000Z",
+    "exerciseContentHash": "a6fb24fb263f29fd1beb0bf0136ea1ae5bc6d7c0f9843c3002d748ec32542b59"
+  },
+  {
+    "exerciseId": "handstand_push_up_negative",
+    "canonicalName": "Handstand Push-Up Negative",
+    "aliases": [],
+    "requiredViews": [
+      "PRIMARY"
+    ],
+    "publicationState": "DRAFT",
+    "exclusionReason": null,
+    "globalExerciseId": null,
+    "equivalenceHash": null,
+    "createdAt": "2026-07-12T00:00:00.000Z",
+    "exerciseContentHash": "5fd1aa363d7a62e9afe78dc420b8b088a13586a080ebc343120110e96a236122"
+  },
+  {
+    "exerciseId": "hang_clean",
+    "canonicalName": "Hang Clean",
+    "aliases": [],
+    "requiredViews": [
+      "PRIMARY"
+    ],
+    "publicationState": "DRAFT",
+    "exclusionReason": null,
+    "globalExerciseId": null,
+    "equivalenceHash": null,
+    "createdAt": "2026-07-12T00:00:00.000Z",
+    "exerciseContentHash": "035dae3935ce92fcd9027104b21534bc8c490b8ee7afb41906896a30bf16761c"
+  },
+  {
+    "exerciseId": "hip_airplane",
+    "canonicalName": "Hip Airplane",
+    "aliases": [],
+    "requiredViews": [
+      "PRIMARY"
+    ],
+    "publicationState": "DRAFT",
+    "exclusionReason": null,
+    "globalExerciseId": null,
+    "equivalenceHash": null,
+    "createdAt": "2026-07-12T00:00:00.000Z",
+    "exerciseContentHash": "982a1520dfac267734130a3fe63f85c0a0f6b67152d4499491cb6d7b1c0a5561"
+  },
+  {
+    "exerciseId": "hip_flexor_stretch",
+    "canonicalName": "Half-Kneeling Hip Flexor Stretch",
+    "aliases": [],
+    "requiredViews": [
+      "PRIMARY"
+    ],
+    "publicationState": "DRAFT",
+    "exclusionReason": null,
+    "globalExerciseId": null,
+    "equivalenceHash": null,
+    "createdAt": "2026-07-12T00:00:00.000Z",
+    "exerciseContentHash": "d7d417754120e68aa472c7b63167ff63dc983f934a0db761b3b0d0c44dda7380"
+  },
+  {
+    "exerciseId": "hip_hinge_band",
+    "canonicalName": "Banded Hip Hinge",
+    "aliases": [],
+    "requiredViews": [
+      "PRIMARY"
+    ],
+    "publicationState": "DRAFT",
+    "exclusionReason": null,
+    "globalExerciseId": null,
+    "equivalenceHash": null,
+    "createdAt": "2026-07-12T00:00:00.000Z",
+    "exerciseContentHash": "da2ee857a184b5801ed6f456a55cd2a2108310dbf2e92f9fac57932f5314d61a"
+  },
+  {
+    "exerciseId": "hip_thrust",
+    "canonicalName": "Hip Thrust",
+    "aliases": [],
+    "requiredViews": [
+      "PRIMARY"
+    ],
+    "publicationState": "DRAFT",
+    "exclusionReason": null,
+    "globalExerciseId": null,
+    "equivalenceHash": null,
+    "createdAt": "2026-07-12T00:00:00.000Z",
+    "exerciseContentHash": "50bb3fe41802179579a454bc0e1cb8609d3aee5e562d41d96f2bdf8fc11f25d2"
+  },
+  {
+    "exerciseId": "hollow_hold",
+    "canonicalName": "Hollow Hold",
+    "aliases": [],
+    "requiredViews": [
+      "PRIMARY"
+    ],
+    "publicationState": "DRAFT",
+    "exclusionReason": null,
+    "globalExerciseId": null,
+    "equivalenceHash": null,
+    "createdAt": "2026-07-12T00:00:00.000Z",
+    "exerciseContentHash": "32e38f5298816f9f1356301696ec4876dea6122d63e41f33a5ae14e555622dbc"
+  },
+  {
+    "exerciseId": "hollow_rocks",
+    "canonicalName": "Hollow Rocks",
+    "aliases": [],
+    "requiredViews": [
+      "PRIMARY"
+    ],
+    "publicationState": "DRAFT",
+    "exclusionReason": null,
+    "globalExerciseId": null,
+    "equivalenceHash": null,
+    "createdAt": "2026-07-12T00:00:00.000Z",
+    "exerciseContentHash": "2a13edb67e980098f95a9354c3364ec9038660edc968472d22b8dce2810ea7a5"
+  },
+  {
+    "exerciseId": "incline_bench_press",
+    "canonicalName": "Incline Bench Press",
+    "aliases": [],
+    "requiredViews": [
+      "PRIMARY"
+    ],
+    "publicationState": "DRAFT",
+    "exclusionReason": null,
+    "globalExerciseId": null,
+    "equivalenceHash": null,
+    "createdAt": "2026-07-12T00:00:00.000Z",
+    "exerciseContentHash": "da423d8ad1836979c1afa3fb0c2aea785645f690accdfe00692d521e71566b9e"
+  },
+  {
+    "exerciseId": "incline_dumbbell_press",
+    "canonicalName": "Incline Dumbbell Press",
+    "aliases": [],
+    "requiredViews": [
+      "PRIMARY"
+    ],
+    "publicationState": "DRAFT",
+    "exclusionReason": null,
+    "globalExerciseId": null,
+    "equivalenceHash": null,
+    "createdAt": "2026-07-12T00:00:00.000Z",
+    "exerciseContentHash": "a812d2f02f53b1a17fa531245b56d9f4bcf951cc67a0dd4a17c0dbe63f3f51d1"
+  },
+  {
+    "exerciseId": "incline_inverted_row",
+    "canonicalName": "Incline Inverted Row",
+    "aliases": [],
+    "requiredViews": [
+      "PRIMARY"
+    ],
+    "publicationState": "DRAFT",
+    "exclusionReason": null,
+    "globalExerciseId": null,
+    "equivalenceHash": null,
+    "createdAt": "2026-07-12T00:00:00.000Z",
+    "exerciseContentHash": "ea1474b4fd29ae757ca08fbe2f1f18bda91d05b64445a1220f3fad6905b014e4"
+  },
+  {
+    "exerciseId": "incline_push_up",
+    "canonicalName": "Incline Push-Up",
+    "aliases": [],
+    "requiredViews": [
+      "PRIMARY"
+    ],
+    "publicationState": "DRAFT",
+    "exclusionReason": null,
+    "globalExerciseId": null,
+    "equivalenceHash": null,
+    "createdAt": "2026-07-12T00:00:00.000Z",
+    "exerciseContentHash": "7bed5a97e30bdd38c741a4448ee02edda9b525c568162ee5d9d77e4e2e050075"
+  },
+  {
+    "exerciseId": "inverted_row",
+    "canonicalName": "Inverted Row",
+    "aliases": [],
+    "requiredViews": [
+      "PRIMARY"
+    ],
+    "publicationState": "DRAFT",
+    "exclusionReason": null,
+    "globalExerciseId": null,
+    "equivalenceHash": null,
+    "createdAt": "2026-07-12T00:00:00.000Z",
+    "exerciseContentHash": "a96232e5bcd95c504f82344c86a0d166981a9b2f718b8ed03ac54e5d4e6c0e2d"
+  },
+  {
+    "exerciseId": "jefferson_curl",
+    "canonicalName": "Jefferson Curl",
+    "aliases": [],
+    "requiredViews": [
+      "PRIMARY"
+    ],
+    "publicationState": "DRAFT",
+    "exclusionReason": null,
+    "globalExerciseId": null,
+    "equivalenceHash": null,
+    "createdAt": "2026-07-12T00:00:00.000Z",
+    "exerciseContentHash": "e97cfc6293f1ebc101d38252ba5390fc9e84e70442d5c983be46798e0c346114"
+  },
+  {
+    "exerciseId": "jump_squat",
+    "canonicalName": "Jump Squat",
+    "aliases": [],
+    "requiredViews": [
+      "PRIMARY"
+    ],
+    "publicationState": "DRAFT",
+    "exclusionReason": null,
+    "globalExerciseId": null,
+    "equivalenceHash": null,
+    "createdAt": "2026-07-12T00:00:00.000Z",
+    "exerciseContentHash": "9c76a40a6d86cae6d5037fa2884e07e13635820d8c3a90c5daaedc697092b9cd"
+  },
+  {
+    "exerciseId": "jumping_lunge",
+    "canonicalName": "Jumping Lunge",
+    "aliases": [],
+    "requiredViews": [
+      "PRIMARY"
+    ],
+    "publicationState": "DRAFT",
+    "exclusionReason": null,
+    "globalExerciseId": null,
+    "equivalenceHash": null,
+    "createdAt": "2026-07-12T00:00:00.000Z",
+    "exerciseContentHash": "383a6273609c003477f08e60c987527a9f9a37ff9eca5bc6dea81c5fbe6dbd0e"
+  },
+  {
+    "exerciseId": "kettlebell_clean",
+    "canonicalName": "Kettlebell Clean",
+    "aliases": [],
+    "requiredViews": [
+      "PRIMARY"
+    ],
+    "publicationState": "DRAFT",
+    "exclusionReason": null,
+    "globalExerciseId": null,
+    "equivalenceHash": null,
+    "createdAt": "2026-07-12T00:00:00.000Z",
+    "exerciseContentHash": "ec4541b666620778ad08fa3ec7072f38a569d7304363d00988a771c415710d99"
+  },
+  {
+    "exerciseId": "kettlebell_rdl",
+    "canonicalName": "Kettlebell Romanian Deadlift",
+    "aliases": [],
+    "requiredViews": [
+      "PRIMARY"
+    ],
+    "publicationState": "DRAFT",
+    "exclusionReason": null,
+    "globalExerciseId": null,
+    "equivalenceHash": null,
+    "createdAt": "2026-07-12T00:00:00.000Z",
+    "exerciseContentHash": "73d754094f90236d5264bfb1a700e0adbad4b5b068f725392bd2ebe40255e032"
+  },
+  {
+    "exerciseId": "kettlebell_swing",
+    "canonicalName": "Kettlebell Swing",
+    "aliases": [],
+    "requiredViews": [
+      "PRIMARY"
+    ],
+    "publicationState": "DRAFT",
+    "exclusionReason": null,
+    "globalExerciseId": null,
+    "equivalenceHash": null,
+    "createdAt": "2026-07-12T00:00:00.000Z",
+    "exerciseContentHash": "efd034a598813f80809b28a96f04804da953a11b6dd9f5e59e35cb7dc0a2edb8"
+  },
+  {
+    "exerciseId": "kickstand_rdl",
+    "canonicalName": "Kickstand RDL",
+    "aliases": [],
+    "requiredViews": [
+      "PRIMARY"
+    ],
+    "publicationState": "DRAFT",
+    "exclusionReason": null,
+    "globalExerciseId": null,
+    "equivalenceHash": null,
+    "createdAt": "2026-07-12T00:00:00.000Z",
+    "exerciseContentHash": "95f87833e16ca862239ea0a32609ff8c6481e249fe0d8d5e8469fa41f090d1bb"
+  },
+  {
+    "exerciseId": "knee_push_up",
+    "canonicalName": "Knee Push-Up",
+    "aliases": [],
+    "requiredViews": [
+      "PRIMARY"
+    ],
+    "publicationState": "DRAFT",
+    "exclusionReason": null,
+    "globalExerciseId": null,
+    "equivalenceHash": null,
+    "createdAt": "2026-07-12T00:00:00.000Z",
+    "exerciseContentHash": "d4e42f27359ce14b396339424c8514801a37c5808f01f9b14dc6a523173ec415"
+  },
+  {
+    "exerciseId": "l_sit_hold",
+    "canonicalName": "L-Sit Hold",
+    "aliases": [],
+    "requiredViews": [
+      "PRIMARY"
+    ],
+    "publicationState": "DRAFT",
+    "exclusionReason": null,
+    "globalExerciseId": null,
+    "equivalenceHash": null,
+    "createdAt": "2026-07-12T00:00:00.000Z",
+    "exerciseContentHash": "3dca2c3a7acb28d137fb4d424c1ac1c1375d0a3305a1ac4e4a61d0cdf32111bf"
+  },
+  {
+    "exerciseId": "l_sit_pull_up",
+    "canonicalName": "L-Sit Pull-Up",
+    "aliases": [],
+    "requiredViews": [
+      "PRIMARY"
+    ],
+    "publicationState": "DRAFT",
+    "exclusionReason": null,
+    "globalExerciseId": null,
+    "equivalenceHash": null,
+    "createdAt": "2026-07-12T00:00:00.000Z",
+    "exerciseContentHash": "dc385bcefd4b71d4de9061da9cdcde183a87771de1e5d0977fda90e4726640d3"
+  },
+  {
+    "exerciseId": "l_sit_tuck",
+    "canonicalName": "L-Sit Tuck Hold",
+    "aliases": [],
+    "requiredViews": [
+      "PRIMARY"
+    ],
+    "publicationState": "DRAFT",
+    "exclusionReason": null,
+    "globalExerciseId": null,
+    "equivalenceHash": null,
+    "createdAt": "2026-07-12T00:00:00.000Z",
+    "exerciseContentHash": "0c4f0a1a04e065abfc750f2e9fbc4a38eedbd6173cd0ae7ee56b926a29aa930a"
+  },
+  {
+    "exerciseId": "lat_pulldown",
+    "canonicalName": "Lat Pulldown",
+    "aliases": [],
+    "requiredViews": [
+      "PRIMARY"
+    ],
+    "publicationState": "DRAFT",
+    "exclusionReason": null,
+    "globalExerciseId": null,
+    "equivalenceHash": null,
+    "createdAt": "2026-07-12T00:00:00.000Z",
+    "exerciseContentHash": "3f77642a815b618945e8c76c826705d188d5919931af449f58d35cbc2c464644"
+  },
+  {
+    "exerciseId": "lateral_box_jump",
+    "canonicalName": "Lateral Box Jump",
+    "aliases": [],
+    "requiredViews": [
+      "PRIMARY"
+    ],
+    "publicationState": "DRAFT",
+    "exclusionReason": null,
+    "globalExerciseId": null,
+    "equivalenceHash": null,
+    "createdAt": "2026-07-12T00:00:00.000Z",
+    "exerciseContentHash": "2c0e4ffa518e2810edb23367b78018f77a0ebdc574a1aad8c65d106591185a82"
+  },
+  {
+    "exerciseId": "lateral_lunge",
+    "canonicalName": "Lateral Lunge",
+    "aliases": [],
+    "requiredViews": [
+      "PRIMARY"
+    ],
+    "publicationState": "DRAFT",
+    "exclusionReason": null,
+    "globalExerciseId": null,
+    "equivalenceHash": null,
+    "createdAt": "2026-07-12T00:00:00.000Z",
+    "exerciseContentHash": "1ee68bdbbafe395a6700af84425ee240964f1290c99632a7d8f75e5fcc0c6a7c"
+  },
+  {
+    "exerciseId": "leg_press",
+    "canonicalName": "Leg Press",
+    "aliases": [],
+    "requiredViews": [
+      "PRIMARY"
+    ],
+    "publicationState": "DRAFT",
+    "exclusionReason": null,
+    "globalExerciseId": null,
+    "equivalenceHash": null,
+    "createdAt": "2026-07-12T00:00:00.000Z",
+    "exerciseContentHash": "88f384a490c206e802d6e36f1e93e195742560820be2be7121aebf1d4a7f070d"
+  },
+  {
+    "exerciseId": "lunging_iso_hold",
+    "canonicalName": "Lunge Iso Hold",
+    "aliases": [],
+    "requiredViews": [
+      "PRIMARY"
+    ],
+    "publicationState": "DRAFT",
+    "exclusionReason": null,
+    "globalExerciseId": null,
+    "equivalenceHash": null,
+    "createdAt": "2026-07-12T00:00:00.000Z",
+    "exerciseContentHash": "da74facb684860793b6feae53adc2d9fee459432f9cd65afbfb5c0c38abf4ece"
+  },
+  {
+    "exerciseId": "machine_chest_press",
+    "canonicalName": "Machine Chest Press",
+    "aliases": [],
+    "requiredViews": [
+      "PRIMARY"
+    ],
+    "publicationState": "DRAFT",
+    "exclusionReason": null,
+    "globalExerciseId": null,
+    "equivalenceHash": null,
+    "createdAt": "2026-07-12T00:00:00.000Z",
+    "exerciseContentHash": "4e1c9245ebc50356a030087f94cabbe5f22ff535a2b2bab8e5b84e039b898e01"
+  },
+  {
+    "exerciseId": "med_ball_chest_pass",
+    "canonicalName": "Medicine Ball Chest Pass",
+    "aliases": [],
+    "requiredViews": [
+      "PRIMARY"
+    ],
+    "publicationState": "DRAFT",
+    "exclusionReason": null,
+    "globalExerciseId": null,
+    "equivalenceHash": null,
+    "createdAt": "2026-07-12T00:00:00.000Z",
+    "exerciseContentHash": "73188311506546e1e8e31974c9b513879172597d1dce35b778787ed72b0f9c39"
+  },
+  {
+    "exerciseId": "med_ball_rotational_throw",
+    "canonicalName": "Medicine Ball Rotational Throw",
+    "aliases": [],
+    "requiredViews": [
+      "PRIMARY"
+    ],
+    "publicationState": "DRAFT",
+    "exclusionReason": null,
+    "globalExerciseId": null,
+    "equivalenceHash": null,
+    "createdAt": "2026-07-12T00:00:00.000Z",
+    "exerciseContentHash": "87fcee404ef8aaecff2fec64260a6931ed5e4543291f944869459111ef176468"
+  },
+  {
+    "exerciseId": "med_ball_slam",
+    "canonicalName": "Medicine Ball Slam",
+    "aliases": [],
+    "requiredViews": [
+      "PRIMARY"
+    ],
+    "publicationState": "DRAFT",
+    "exclusionReason": null,
+    "globalExerciseId": null,
+    "equivalenceHash": null,
+    "createdAt": "2026-07-12T00:00:00.000Z",
+    "exerciseContentHash": "31a177460f93df5c1b134c61c2114cae30655a0601c5a06f4a3dfcd684183a4e"
+  },
+  {
+    "exerciseId": "muscle_up",
+    "canonicalName": "Muscle-Up",
+    "aliases": [],
+    "requiredViews": [
+      "PRIMARY"
+    ],
+    "publicationState": "DRAFT",
+    "exclusionReason": null,
+    "globalExerciseId": null,
+    "equivalenceHash": null,
+    "createdAt": "2026-07-12T00:00:00.000Z",
+    "exerciseContentHash": "4863997a9b2d7d16fe8f83b6ffe271e7baf54d7f1892d1d06598bdb41965aab3"
+  },
+  {
+    "exerciseId": "negative_pull_up",
+    "canonicalName": "Negative Pull-Up",
+    "aliases": [],
+    "requiredViews": [
+      "PRIMARY"
+    ],
+    "publicationState": "DRAFT",
+    "exclusionReason": null,
+    "globalExerciseId": null,
+    "equivalenceHash": null,
+    "createdAt": "2026-07-12T00:00:00.000Z",
+    "exerciseContentHash": "bf53aa6453193918060936d19606a3f69d5626f044a4e3c964f30e4fff015d61"
+  },
+  {
+    "exerciseId": "ninety_ninety_hip_switch",
+    "canonicalName": "90/90 Hip Switch",
+    "aliases": [],
+    "requiredViews": [
+      "PRIMARY"
+    ],
+    "publicationState": "DRAFT",
+    "exclusionReason": null,
+    "globalExerciseId": null,
+    "equivalenceHash": null,
+    "createdAt": "2026-07-12T00:00:00.000Z",
+    "exerciseContentHash": "ebbf13d21fdf70b8374a8a7818fd747fba7d7f20e08dac0ec92866678900e956"
+  },
+  {
+    "exerciseId": "one_arm_dumbbell_row",
+    "canonicalName": "One-Arm Dumbbell Row",
+    "aliases": [],
+    "requiredViews": [
+      "PRIMARY"
+    ],
+    "publicationState": "DRAFT",
+    "exclusionReason": null,
+    "globalExerciseId": null,
+    "equivalenceHash": null,
+    "createdAt": "2026-07-12T00:00:00.000Z",
+    "exerciseContentHash": "d39b9cea5c0735cb08c833b0945a16a30f680941884b81c304b74a10ec3b5dc3"
+  },
+  {
+    "exerciseId": "one_arm_push_up",
+    "canonicalName": "One-Arm Push-Up",
+    "aliases": [],
+    "requiredViews": [
+      "PRIMARY"
+    ],
+    "publicationState": "DRAFT",
+    "exclusionReason": null,
+    "globalExerciseId": null,
+    "equivalenceHash": null,
+    "createdAt": "2026-07-12T00:00:00.000Z",
+    "exerciseContentHash": "53da74e2191efce6515bf10166cd7798c98655a0bd3cf6a9a2065bab951ab80f"
+  },
+  {
+    "exerciseId": "one_arm_ring_row",
+    "canonicalName": "One-Arm Ring Row",
+    "aliases": [],
+    "requiredViews": [
+      "PRIMARY"
+    ],
+    "publicationState": "DRAFT",
+    "exclusionReason": null,
+    "globalExerciseId": null,
+    "equivalenceHash": null,
+    "createdAt": "2026-07-12T00:00:00.000Z",
+    "exerciseContentHash": "6270245ccb44c70b4c32e6ed3a9b968007ae7046c325a62831fc8d996ef69f58"
+  },
+  {
+    "exerciseId": "overhead_carry",
+    "canonicalName": "Overhead Carry",
+    "aliases": [],
+    "requiredViews": [
+      "PRIMARY"
+    ],
+    "publicationState": "DRAFT",
+    "exclusionReason": null,
+    "globalExerciseId": null,
+    "equivalenceHash": null,
+    "createdAt": "2026-07-12T00:00:00.000Z",
+    "exerciseContentHash": "faa1802298a24337e53b6cfc72f3dadadc1cee9602467c8ca76bde171496eead"
+  },
+  {
+    "exerciseId": "overhead_triceps_extension",
+    "canonicalName": "Overhead Triceps Extension",
+    "aliases": [],
+    "requiredViews": [
+      "PRIMARY"
+    ],
+    "publicationState": "DRAFT",
+    "exclusionReason": null,
+    "globalExerciseId": null,
+    "equivalenceHash": null,
+    "createdAt": "2026-07-12T00:00:00.000Z",
+    "exerciseContentHash": "e1bdcd5705b8458f9450024b2207269ac980c823b5e8f9e1372ffe2409a36b0b"
+  },
+  {
+    "exerciseId": "pallof_press",
+    "canonicalName": "Pallof Press",
+    "aliases": [],
+    "requiredViews": [
+      "PRIMARY"
+    ],
+    "publicationState": "DRAFT",
+    "exclusionReason": null,
+    "globalExerciseId": null,
+    "equivalenceHash": null,
+    "createdAt": "2026-07-12T00:00:00.000Z",
+    "exerciseContentHash": "8888bece97d4957de34a8f7a3e5d96e124a3f975671939ce49090d8a0fbb6128"
+  },
+  {
+    "exerciseId": "paused_back_squat",
+    "canonicalName": "Paused Back Squat",
+    "aliases": [],
+    "requiredViews": [
+      "PRIMARY"
+    ],
+    "publicationState": "DRAFT",
+    "exclusionReason": null,
+    "globalExerciseId": null,
+    "equivalenceHash": null,
+    "createdAt": "2026-07-12T00:00:00.000Z",
+    "exerciseContentHash": "0720163245ae570505028e47e5ba7f91115d7811cf696e878bd271b241c7ccd5"
+  },
+  {
+    "exerciseId": "paused_bench_press",
+    "canonicalName": "Paused Bench Press",
+    "aliases": [],
+    "requiredViews": [
+      "PRIMARY"
+    ],
+    "publicationState": "DRAFT",
+    "exclusionReason": null,
+    "globalExerciseId": null,
+    "equivalenceHash": null,
+    "createdAt": "2026-07-12T00:00:00.000Z",
+    "exerciseContentHash": "75c3808b2fa15c08029f1a28bc16bf12aa03e2f3d9b41982dc40e44c77dd8a43"
+  },
+  {
+    "exerciseId": "pendlay_row",
+    "canonicalName": "Pendlay Row",
+    "aliases": [],
+    "requiredViews": [
+      "PRIMARY"
+    ],
+    "publicationState": "DRAFT",
+    "exclusionReason": null,
+    "globalExerciseId": null,
+    "equivalenceHash": null,
+    "createdAt": "2026-07-12T00:00:00.000Z",
+    "exerciseContentHash": "a60cbef7330c4727d6c665e516fe5f859b107faabf02745058cbe4fefa18e2d5"
+  },
+  {
+    "exerciseId": "pike_push_up",
+    "canonicalName": "Pike Push-Up",
+    "aliases": [],
+    "requiredViews": [
+      "PRIMARY"
+    ],
+    "publicationState": "DRAFT",
+    "exclusionReason": null,
+    "globalExerciseId": null,
+    "equivalenceHash": null,
+    "createdAt": "2026-07-12T00:00:00.000Z",
+    "exerciseContentHash": "8f9433be0a1adc4f2f57231c98d992085165321fd5432719fb369f00e7858519"
+  },
+  {
+    "exerciseId": "pistol_squat",
+    "canonicalName": "Pistol Squat",
+    "aliases": [],
+    "requiredViews": [
+      "PRIMARY"
+    ],
+    "publicationState": "DRAFT",
+    "exclusionReason": null,
+    "globalExerciseId": null,
+    "equivalenceHash": null,
+    "createdAt": "2026-07-12T00:00:00.000Z",
+    "exerciseContentHash": "f5b5242f75802465608d0d092a8fc7a87f240b82c52bd837c0842049cf5966c9"
+  },
+  {
+    "exerciseId": "plank",
+    "canonicalName": "Plank",
+    "aliases": [],
+    "requiredViews": [
+      "PRIMARY"
+    ],
+    "publicationState": "DRAFT",
+    "exclusionReason": null,
+    "globalExerciseId": null,
+    "equivalenceHash": null,
+    "createdAt": "2026-07-12T00:00:00.000Z",
+    "exerciseContentHash": "3c26fe7b6ce84e2c9b44ad03822f5810a398e52e9896978e93d5d69229434520"
+  },
+  {
+    "exerciseId": "plyo_push_up",
+    "canonicalName": "Plyometric Push-Up",
+    "aliases": [],
+    "requiredViews": [
+      "PRIMARY"
+    ],
+    "publicationState": "DRAFT",
+    "exclusionReason": null,
+    "globalExerciseId": null,
+    "equivalenceHash": null,
+    "createdAt": "2026-07-12T00:00:00.000Z",
+    "exerciseContentHash": "67434cf2d00fae56da3cc956d7cdf5fdcc7574d75fbcee92e49ccf31f361a9f0"
+  },
+  {
+    "exerciseId": "power_clean",
+    "canonicalName": "Power Clean",
+    "aliases": [],
+    "requiredViews": [
+      "PRIMARY"
+    ],
+    "publicationState": "DRAFT",
+    "exclusionReason": null,
+    "globalExerciseId": null,
+    "equivalenceHash": null,
+    "createdAt": "2026-07-12T00:00:00.000Z",
+    "exerciseContentHash": "a150ceb162775ed8d1b549c07d41dc97bdea1b1ff21f90d3936edf2264ddba56"
+  },
+  {
+    "exerciseId": "prone_lat_pulldown",
+    "canonicalName": "Prone Lat Pulldown",
+    "aliases": [],
+    "requiredViews": [
+      "PRIMARY"
+    ],
+    "publicationState": "DRAFT",
+    "exclusionReason": null,
+    "globalExerciseId": null,
+    "equivalenceHash": null,
+    "createdAt": "2026-07-12T00:00:00.000Z",
+    "exerciseContentHash": "8d570622c0fd54c3cb3528856f73a3cb290b74ae0cdd10e4e3814b378a22f70e"
+  },
+  {
+    "exerciseId": "prone_y_raise",
+    "canonicalName": "Prone Y Raise",
+    "aliases": [],
+    "requiredViews": [
+      "PRIMARY"
+    ],
+    "publicationState": "DRAFT",
+    "exclusionReason": null,
+    "globalExerciseId": null,
+    "equivalenceHash": null,
+    "createdAt": "2026-07-12T00:00:00.000Z",
+    "exerciseContentHash": "f2c8a26dfe4bc9e075ad94e9a20b3a6585b9977ff2f39f04ec3f3f5fa1f0ed5c"
+  },
+  {
+    "exerciseId": "prowler_push",
+    "canonicalName": "Prowler Push",
+    "aliases": [],
+    "requiredViews": [
+      "PRIMARY"
+    ],
+    "publicationState": "DRAFT",
+    "exclusionReason": null,
+    "globalExerciseId": null,
+    "equivalenceHash": null,
+    "createdAt": "2026-07-12T00:00:00.000Z",
+    "exerciseContentHash": "987c013c7c212c11a30ceb54fc3aed540fae0e64b37b3c4295ecb61a369e2e26"
+  },
+  {
+    "exerciseId": "pull_up",
+    "canonicalName": "Pull-Up",
+    "aliases": [],
+    "requiredViews": [
+      "PRIMARY"
+    ],
+    "publicationState": "DRAFT",
+    "exclusionReason": null,
+    "globalExerciseId": null,
+    "equivalenceHash": null,
+    "createdAt": "2026-07-12T00:00:00.000Z",
+    "exerciseContentHash": "7353215c153fb6fbf38221d7ce21bc5eb45c852ccf3e7f24554664ba19dc1687"
+  },
+  {
+    "exerciseId": "push_jerk",
+    "canonicalName": "Push Jerk",
+    "aliases": [],
+    "requiredViews": [
+      "PRIMARY"
+    ],
+    "publicationState": "DRAFT",
+    "exclusionReason": null,
+    "globalExerciseId": null,
+    "equivalenceHash": null,
+    "createdAt": "2026-07-12T00:00:00.000Z",
+    "exerciseContentHash": "e67e7cc5415fd97757fd2dca726bd2ad933e848328805ba0ea6f93fe92dcb07f"
+  },
+  {
+    "exerciseId": "push_press",
+    "canonicalName": "Push Press",
+    "aliases": [],
+    "requiredViews": [
+      "PRIMARY"
+    ],
+    "publicationState": "DRAFT",
+    "exclusionReason": null,
+    "globalExerciseId": null,
+    "equivalenceHash": null,
+    "createdAt": "2026-07-12T00:00:00.000Z",
+    "exerciseContentHash": "0b8667386d6156398ce906271bf857b64f76d8716035c93c5276085a558f35e4"
+  },
+  {
+    "exerciseId": "push_up",
+    "canonicalName": "Push-Up",
+    "aliases": [],
+    "requiredViews": [
+      "PRIMARY"
+    ],
+    "publicationState": "DRAFT",
+    "exclusionReason": null,
+    "globalExerciseId": null,
+    "equivalenceHash": null,
+    "createdAt": "2026-07-12T00:00:00.000Z",
+    "exerciseContentHash": "491aff0599b434650e94308cba0b59a3616dfc8c221ed525fbf28277e95a5c07"
+  },
+  {
+    "exerciseId": "rear_delt_fly",
+    "canonicalName": "Rear Delt Fly",
+    "aliases": [],
+    "requiredViews": [
+      "PRIMARY"
+    ],
+    "publicationState": "DRAFT",
+    "exclusionReason": null,
+    "globalExerciseId": null,
+    "equivalenceHash": null,
+    "createdAt": "2026-07-12T00:00:00.000Z",
+    "exerciseContentHash": "1060d6b3aa3832f0ccd63118454f4422ccca3ef95e4fc3f1180a6223bb905d10"
+  },
+  {
+    "exerciseId": "ring_push_up",
+    "canonicalName": "Ring Push-Up",
+    "aliases": [],
+    "requiredViews": [
+      "PRIMARY"
+    ],
+    "publicationState": "DRAFT",
+    "exclusionReason": null,
+    "globalExerciseId": null,
+    "equivalenceHash": null,
+    "createdAt": "2026-07-12T00:00:00.000Z",
+    "exerciseContentHash": "cd081e23a3a81609a2f9df9d2e7ef4362cde8affdf921a29ea234c8c687ef744"
+  },
+  {
+    "exerciseId": "ring_row",
+    "canonicalName": "Ring Row",
+    "aliases": [],
+    "requiredViews": [
+      "PRIMARY"
+    ],
+    "publicationState": "DRAFT",
+    "exclusionReason": null,
+    "globalExerciseId": null,
+    "equivalenceHash": null,
+    "createdAt": "2026-07-12T00:00:00.000Z",
+    "exerciseContentHash": "7b4703606f39fb170b394c5145cfaef5b48fb73b9f40f5871dfc1667784af42a"
+  },
+  {
+    "exerciseId": "romanian_deadlift",
+    "canonicalName": "Romanian Deadlift",
+    "aliases": [],
+    "requiredViews": [
+      "PRIMARY"
+    ],
+    "publicationState": "DRAFT",
+    "exclusionReason": null,
+    "globalExerciseId": null,
+    "equivalenceHash": null,
+    "createdAt": "2026-07-12T00:00:00.000Z",
+    "exerciseContentHash": "15725ac835974549dab7e3b6b3557975ec6b974d09e8f2b70815e87b1ab77846"
+  },
+  {
+    "exerciseId": "sandbag_hold",
+    "canonicalName": "Sandbag Hold",
+    "aliases": [],
+    "requiredViews": [
+      "PRIMARY"
+    ],
+    "publicationState": "DRAFT",
+    "exclusionReason": null,
+    "globalExerciseId": null,
+    "equivalenceHash": null,
+    "createdAt": "2026-07-12T00:00:00.000Z",
+    "exerciseContentHash": "23530d5cdab9475a83cf393d287f6d11045a1ba79df8b669a63eb96ee4f8a6a2"
+  },
+  {
+    "exerciseId": "scapular_pull_up",
+    "canonicalName": "Scapular Pull-Up",
+    "aliases": [],
+    "requiredViews": [
+      "PRIMARY"
+    ],
+    "publicationState": "DRAFT",
+    "exclusionReason": null,
+    "globalExerciseId": null,
+    "equivalenceHash": null,
+    "createdAt": "2026-07-12T00:00:00.000Z",
+    "exerciseContentHash": "4ea7a401d4173cb610a5ea468d7c19d30710afd384827affd045ffa773e9231e"
+  },
+  {
+    "exerciseId": "seated_cable_row",
+    "canonicalName": "Seated Cable Row",
+    "aliases": [],
+    "requiredViews": [
+      "PRIMARY"
+    ],
+    "publicationState": "DRAFT",
+    "exclusionReason": null,
+    "globalExerciseId": null,
+    "equivalenceHash": null,
+    "createdAt": "2026-07-12T00:00:00.000Z",
+    "exerciseContentHash": "473440828c53c8aaea9eca156413ad2cd25264e6a1d936f7d38a179127a06efb"
+  },
+  {
+    "exerciseId": "seated_dumbbell_shoulder_press",
+    "canonicalName": "Seated Dumbbell Shoulder Press",
+    "aliases": [],
+    "requiredViews": [
+      "PRIMARY"
+    ],
+    "publicationState": "DRAFT",
+    "exclusionReason": null,
+    "globalExerciseId": null,
+    "equivalenceHash": null,
+    "createdAt": "2026-07-12T00:00:00.000Z",
+    "exerciseContentHash": "04c4685f261fc1028525d2e1d2fd96ba4c7b9d5fe72afd2b2246a741c8800069"
+  },
+  {
+    "exerciseId": "seated_leg_curl",
+    "canonicalName": "Seated Leg Curl",
+    "aliases": [],
+    "requiredViews": [
+      "PRIMARY"
+    ],
+    "publicationState": "DRAFT",
+    "exclusionReason": null,
+    "globalExerciseId": null,
+    "equivalenceHash": null,
+    "createdAt": "2026-07-12T00:00:00.000Z",
+    "exerciseContentHash": "eb4e4c3a1e8c8fca0381dfea56fc4ab08908f27e8685ba8d064ee84994825758"
+  },
+  {
+    "exerciseId": "shrimp_squat",
+    "canonicalName": "Shrimp Squat",
+    "aliases": [],
+    "requiredViews": [
+      "PRIMARY"
+    ],
+    "publicationState": "DRAFT",
+    "exclusionReason": null,
+    "globalExerciseId": null,
+    "equivalenceHash": null,
+    "createdAt": "2026-07-12T00:00:00.000Z",
+    "exerciseContentHash": "5e958f3300b8bc55fe67585dec7d0f69e2f39fe5acfd7d2fe754227b62b40022"
+  },
+  {
+    "exerciseId": "side_lying_y_raise",
+    "canonicalName": "Side-Lying Y Raise",
+    "aliases": [],
+    "requiredViews": [
+      "PRIMARY"
+    ],
+    "publicationState": "DRAFT",
+    "exclusionReason": null,
+    "globalExerciseId": null,
+    "equivalenceHash": null,
+    "createdAt": "2026-07-12T00:00:00.000Z",
+    "exerciseContentHash": "9612587436dd1ab14dc2700a15951b0fcf6c18e2c2985fdfb9222b4affaf22c5"
+  },
+  {
+    "exerciseId": "side_plank",
+    "canonicalName": "Side Plank",
+    "aliases": [],
+    "requiredViews": [
+      "PRIMARY"
+    ],
+    "publicationState": "DRAFT",
+    "exclusionReason": null,
+    "globalExerciseId": null,
+    "equivalenceHash": null,
+    "createdAt": "2026-07-12T00:00:00.000Z",
+    "exerciseContentHash": "d2fcf11b6a1a6042d17bb884efbe61275fa70bd04a06bc5248c2b10e35572cd0"
+  },
+  {
+    "exerciseId": "single_leg_box_jump",
+    "canonicalName": "Single-Leg Box Jump",
+    "aliases": [],
+    "requiredViews": [
+      "PRIMARY"
+    ],
+    "publicationState": "DRAFT",
+    "exclusionReason": null,
+    "globalExerciseId": null,
+    "equivalenceHash": null,
+    "createdAt": "2026-07-12T00:00:00.000Z",
+    "exerciseContentHash": "e5743d8b27b9aa557d31938bfe05d01679462b687e2f7bb8e402b9937dbe5d85"
+  },
+  {
+    "exerciseId": "single_leg_calf_raise",
+    "canonicalName": "Single-Leg Calf Raise",
+    "aliases": [],
+    "requiredViews": [
+      "PRIMARY"
+    ],
+    "publicationState": "DRAFT",
+    "exclusionReason": null,
+    "globalExerciseId": null,
+    "equivalenceHash": null,
+    "createdAt": "2026-07-12T00:00:00.000Z",
+    "exerciseContentHash": "05757297a6afb8c3b4057a75c25f17427cdb3275967cccfe24c7ab37903babbe"
+  },
+  {
+    "exerciseId": "single_leg_glute_bridge",
+    "canonicalName": "Single-Leg Glute Bridge",
+    "aliases": [],
+    "requiredViews": [
+      "PRIMARY"
+    ],
+    "publicationState": "DRAFT",
+    "exclusionReason": null,
+    "globalExerciseId": null,
+    "equivalenceHash": null,
+    "createdAt": "2026-07-12T00:00:00.000Z",
+    "exerciseContentHash": "1be1dcd3381b7fd34965961f9adc66583009f34c273ea859628958ee10bd6900"
+  },
+  {
+    "exerciseId": "single_leg_hip_hinge",
+    "canonicalName": "Single-Leg Hip Hinge",
+    "aliases": [],
+    "requiredViews": [
+      "PRIMARY"
+    ],
+    "publicationState": "DRAFT",
+    "exclusionReason": null,
+    "globalExerciseId": null,
+    "equivalenceHash": null,
+    "createdAt": "2026-07-12T00:00:00.000Z",
+    "exerciseContentHash": "f64bfa01255b8131e15897a7318e20f3d073eb4e2a63bd4dd33bcc79a2970895"
+  },
+  {
+    "exerciseId": "single_leg_rdl",
+    "canonicalName": "Single-Leg Romanian Deadlift",
+    "aliases": [],
+    "requiredViews": [
+      "PRIMARY"
+    ],
+    "publicationState": "DRAFT",
+    "exclusionReason": null,
+    "globalExerciseId": null,
+    "equivalenceHash": null,
+    "createdAt": "2026-07-12T00:00:00.000Z",
+    "exerciseContentHash": "06d9a8b7bc3f880df16af955a0960a1aadb86408b4577f5c882d588498c0c500"
+  },
+  {
+    "exerciseId": "single_leg_rdl_bodyweight",
+    "canonicalName": "Single-Leg RDL (Bodyweight)",
+    "aliases": [],
+    "requiredViews": [
+      "PRIMARY"
+    ],
+    "publicationState": "DRAFT",
+    "exclusionReason": null,
+    "globalExerciseId": null,
+    "equivalenceHash": null,
+    "createdAt": "2026-07-12T00:00:00.000Z",
+    "exerciseContentHash": "3886d09749b655b212d5d2a45ce2886d35b876a89a4135b2cdd186cfdf448091"
+  },
+  {
+    "exerciseId": "skater_jump",
+    "canonicalName": "Skater Jump",
+    "aliases": [],
+    "requiredViews": [
+      "PRIMARY"
+    ],
+    "publicationState": "DRAFT",
+    "exclusionReason": null,
+    "globalExerciseId": null,
+    "equivalenceHash": null,
+    "createdAt": "2026-07-12T00:00:00.000Z",
+    "exerciseContentHash": "a9cc50781060d37fcd8fa1b0545813040a32e8b615bdbf11e2780dbf09999c24"
+  },
+  {
+    "exerciseId": "sled_drag",
+    "canonicalName": "Sled Drag",
+    "aliases": [],
+    "requiredViews": [
+      "PRIMARY"
+    ],
+    "publicationState": "DRAFT",
+    "exclusionReason": null,
+    "globalExerciseId": null,
+    "equivalenceHash": null,
+    "createdAt": "2026-07-12T00:00:00.000Z",
+    "exerciseContentHash": "bf343abaa8f3d4704961a0edad6367a1b34892d5847cf5b632b1bfc5f0103640"
+  },
+  {
+    "exerciseId": "slider_leg_curl",
+    "canonicalName": "Slider Leg Curl",
+    "aliases": [],
+    "requiredViews": [
+      "PRIMARY"
+    ],
+    "publicationState": "DRAFT",
+    "exclusionReason": null,
+    "globalExerciseId": null,
+    "equivalenceHash": null,
+    "createdAt": "2026-07-12T00:00:00.000Z",
+    "exerciseContentHash": "39b8bb11df3df1a96e580d8b11d0f03df1cd812776c6bf7498012cf47d138d7e"
+  },
+  {
+    "exerciseId": "snatch_grip_deadlift",
+    "canonicalName": "Snatch-Grip Deadlift",
+    "aliases": [],
+    "requiredViews": [
+      "PRIMARY"
+    ],
+    "publicationState": "DRAFT",
+    "exclusionReason": null,
+    "globalExerciseId": null,
+    "equivalenceHash": null,
+    "createdAt": "2026-07-12T00:00:00.000Z",
+    "exerciseContentHash": "a037cdbc4f90572a16880248f55b2e28618e1bcdb3e2fb2010c910b99556b2a1"
+  },
+  {
+    "exerciseId": "split_squat",
+    "canonicalName": "Split Squat",
+    "aliases": [],
+    "requiredViews": [
+      "PRIMARY"
+    ],
+    "publicationState": "DRAFT",
+    "exclusionReason": null,
+    "globalExerciseId": null,
+    "equivalenceHash": null,
+    "createdAt": "2026-07-12T00:00:00.000Z",
+    "exerciseContentHash": "001b1ffdea5eb019635f9b968c19ecf1c387f788a93cf251c01dcb06b86da406"
+  },
+  {
+    "exerciseId": "standing_calf_raise",
+    "canonicalName": "Standing Calf Raise",
+    "aliases": [],
+    "requiredViews": [
+      "PRIMARY"
+    ],
+    "publicationState": "DRAFT",
+    "exclusionReason": null,
+    "globalExerciseId": null,
+    "equivalenceHash": null,
+    "createdAt": "2026-07-12T00:00:00.000Z",
+    "exerciseContentHash": "b4475b074b011cbd47e90d84d2ebe60aff72d1b299f26e1a017138dbfd3e84cf"
+  },
+  {
+    "exerciseId": "step_up",
+    "canonicalName": "Step-Up",
+    "aliases": [],
+    "requiredViews": [
+      "PRIMARY"
+    ],
+    "publicationState": "DRAFT",
+    "exclusionReason": null,
+    "globalExerciseId": null,
+    "equivalenceHash": null,
+    "createdAt": "2026-07-12T00:00:00.000Z",
+    "exerciseContentHash": "1442b60ced178e9e53381793744408df2cfd9fdbb3283d2331081275fc312cf3"
+  },
+  {
+    "exerciseId": "suitcase_carry",
+    "canonicalName": "Suitcase Carry",
+    "aliases": [],
+    "requiredViews": [
+      "PRIMARY"
+    ],
+    "publicationState": "DRAFT",
+    "exclusionReason": null,
+    "globalExerciseId": null,
+    "equivalenceHash": null,
+    "createdAt": "2026-07-12T00:00:00.000Z",
+    "exerciseContentHash": "59be7379e95ca6a9a82331a047289db7a16c6c27395c35333ae3b7585f96934e"
+  },
+  {
+    "exerciseId": "tempo_back_squat",
+    "canonicalName": "Tempo Back Squat",
+    "aliases": [],
+    "requiredViews": [
+      "PRIMARY"
+    ],
+    "publicationState": "DRAFT",
+    "exclusionReason": null,
+    "globalExerciseId": null,
+    "equivalenceHash": null,
+    "createdAt": "2026-07-12T00:00:00.000Z",
+    "exerciseContentHash": "e2be6de30aa1134a06d88c1df73718907a6adda3f7e2a70dc7b8fdb510a8bdf7"
+  },
+  {
+    "exerciseId": "tempo_bench_press",
+    "canonicalName": "Tempo Bench Press",
+    "aliases": [],
+    "requiredViews": [
+      "PRIMARY"
+    ],
+    "publicationState": "DRAFT",
+    "exclusionReason": null,
+    "globalExerciseId": null,
+    "equivalenceHash": null,
+    "createdAt": "2026-07-12T00:00:00.000Z",
+    "exerciseContentHash": "6a57011c5ec40b0f402fa8ca40ee2600572cc32cf3a798f36231d2fd9320149e"
+  },
+  {
+    "exerciseId": "thoracic_rotation_open",
+    "canonicalName": "Open-Book Thoracic Rotation",
+    "aliases": [],
+    "requiredViews": [
+      "PRIMARY"
+    ],
+    "publicationState": "DRAFT",
+    "exclusionReason": null,
+    "globalExerciseId": null,
+    "equivalenceHash": null,
+    "createdAt": "2026-07-12T00:00:00.000Z",
+    "exerciseContentHash": "b9847c604e80b9b4719eb7b696b0b4f512987d3beab14d187a53d0f7fed0b9be"
+  },
+  {
+    "exerciseId": "towel_curl",
+    "canonicalName": "Towel Curl",
+    "aliases": [],
+    "requiredViews": [
+      "PRIMARY"
+    ],
+    "publicationState": "DRAFT",
+    "exclusionReason": null,
+    "globalExerciseId": null,
+    "equivalenceHash": null,
+    "createdAt": "2026-07-12T00:00:00.000Z",
+    "exerciseContentHash": "59d203bc7b68c474fe208f32b8b6431d4cb550127718fe88279cc924d28afe2e"
+  },
+  {
+    "exerciseId": "tuck_jump",
+    "canonicalName": "Tuck Jump",
+    "aliases": [],
+    "requiredViews": [
+      "PRIMARY"
+    ],
+    "publicationState": "DRAFT",
+    "exclusionReason": null,
+    "globalExerciseId": null,
+    "equivalenceHash": null,
+    "createdAt": "2026-07-12T00:00:00.000Z",
+    "exerciseContentHash": "c93f941eae8a890d1d9524bc09198b42e5c73aa819fe0af1285dd7c79955bac8"
+  },
+  {
+    "exerciseId": "v_sit",
+    "canonicalName": "V-Sit Hold",
+    "aliases": [],
+    "requiredViews": [
+      "PRIMARY"
+    ],
+    "publicationState": "DRAFT",
+    "exclusionReason": null,
+    "globalExerciseId": null,
+    "equivalenceHash": null,
+    "createdAt": "2026-07-12T00:00:00.000Z",
+    "exerciseContentHash": "a90b99e174cd6906bc1dce9d2f738fa05886022e359567f3fb685b137f5855f6"
+  },
+  {
+    "exerciseId": "walking_lunge",
+    "canonicalName": "Walking Lunge",
+    "aliases": [],
+    "requiredViews": [
+      "PRIMARY"
+    ],
+    "publicationState": "DRAFT",
+    "exclusionReason": null,
+    "globalExerciseId": null,
+    "equivalenceHash": null,
+    "createdAt": "2026-07-12T00:00:00.000Z",
+    "exerciseContentHash": "9489acebb927f28abe1b1eb60928a7205ae73fba0993cada823e64692da909e2"
+  },
+  {
+    "exerciseId": "wall_walk",
+    "canonicalName": "Wall Walk",
+    "aliases": [],
+    "requiredViews": [
+      "PRIMARY"
+    ],
+    "publicationState": "DRAFT",
+    "exclusionReason": null,
+    "globalExerciseId": null,
+    "equivalenceHash": null,
+    "createdAt": "2026-07-12T00:00:00.000Z",
+    "exerciseContentHash": "997b192cd33b31c2c7e89afff8a7c05fc44cd99a4a11277cf67d7299f3b923c7"
+  },
+  {
+    "exerciseId": "weighted_dip",
+    "canonicalName": "Weighted Dip",
+    "aliases": [],
+    "requiredViews": [
+      "PRIMARY"
+    ],
+    "publicationState": "DRAFT",
+    "exclusionReason": null,
+    "globalExerciseId": null,
+    "equivalenceHash": null,
+    "createdAt": "2026-07-12T00:00:00.000Z",
+    "exerciseContentHash": "131d365c895f491a2dc3582604a1ac2f074917364a082e016dff681af009bb1f"
+  },
+  {
+    "exerciseId": "weighted_pull_up",
+    "canonicalName": "Weighted Pull-Up",
+    "aliases": [],
+    "requiredViews": [
+      "PRIMARY"
+    ],
+    "publicationState": "DRAFT",
+    "exclusionReason": null,
+    "globalExerciseId": null,
+    "equivalenceHash": null,
+    "createdAt": "2026-07-12T00:00:00.000Z",
+    "exerciseContentHash": "34bf1fec9d69b2f8ba56f211e1719d4ab2af657a76a971801b15ef8e95e3392e"
+  },
+  {
+    "exerciseId": "worlds_greatest_stretch",
+    "canonicalName": "World's Greatest Stretch",
+    "aliases": [],
+    "requiredViews": [
+      "PRIMARY"
+    ],
+    "publicationState": "DRAFT",
+    "exclusionReason": null,
+    "globalExerciseId": null,
+    "equivalenceHash": null,
+    "createdAt": "2026-07-12T00:00:00.000Z",
+    "exerciseContentHash": "9dec20c11069d18056888ce04575139dd4648619b02a1ad8f7a17db3c81e861c"
+  },
+  {
+    "exerciseId": "yoke_carry",
+    "canonicalName": "Yoke / Front-Rack Carry",
+    "aliases": [],
+    "requiredViews": [
+      "PRIMARY"
+    ],
+    "publicationState": "DRAFT",
+    "exclusionReason": null,
+    "globalExerciseId": null,
+    "equivalenceHash": null,
+    "createdAt": "2026-07-12T00:00:00.000Z",
+    "exerciseContentHash": "44b0f6a1689373053010e23486e04f1e29e014cd51fcab2b30419b2b1a8a3cbe"
+  }
+]

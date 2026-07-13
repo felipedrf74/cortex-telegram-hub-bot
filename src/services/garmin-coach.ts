@@ -23,6 +23,7 @@ import {
   updateEvent as updateCalendarEvent,
 } from './unified-calendar';
 import { syncSessionWithCoachRecommendation } from './training-plans';
+import { assertLegacyCalendarEventMutationAllowed } from './training-plan-revision-legacy-guard';
 import { getDomainSystemPrompt } from './anthropic';
 import { trackedCreate } from '../portal/anthropic-hook';
 import { completeOneShotWithFallback } from './gemini-provider';
@@ -230,6 +231,11 @@ export async function applyCoachRecommendation(
     tenantId,
     timezone: getUserTimezoneById(userId),
   };
+  assertLegacyCalendarEventMutationAllowed(
+    { userId, tenantId },
+    rec.eventId,
+    rec.source,
+  );
 
   if (rec.action === 'REST') {
     await updateCalendarEvent(

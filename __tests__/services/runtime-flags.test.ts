@@ -12,6 +12,12 @@ import {
   getGeminiRoutingEnvOverride,
   getDecisionConflictPolicyV1Mode,
   getSecretaryReasoningV1Mode,
+  getTrainingAdaptationV1Mode,
+  getTrainingExerciseIdentityV1Mode,
+  getTrainingPlanRevisionV1Mode,
+  isTrainingExerciseMediaV1Enabled,
+  isTrainingPlanRevisionV1ExplicitlyEnrolled,
+  isTrainingTypedWorkoutV1Enabled,
   isChatEscalationReviewerEnabled,
   isChatBilingualEvalGateEnabled,
   isChatContextCompilerEnabled,
@@ -52,6 +58,21 @@ import {
 } from '../../src/services/runtime-flags';
 
 describe('runtime-flags', () => {
+  it('keeps Training exercise identity off by default and scopes explicit shadow or active rollout', () => {
+    expect(getTrainingExerciseIdentityV1Mode({})).toBe('off');
+    expect(getTrainingExerciseIdentityV1Mode({ TRAINING_EXERCISE_IDENTITY_V1_MODE: 'true' })).toBe('off');
+    expect(getTrainingExerciseIdentityV1Mode({ TRAINING_EXERCISE_IDENTITY_V1_MODE: 'shadow' })).toBe('shadow');
+    expect(getTrainingExerciseIdentityV1Mode({ TRAINING_EXERCISE_IDENTITY_V1_MODE: 'active' })).toBe('active');
+    expect(getTrainingExerciseIdentityV1Mode({
+      TRAINING_EXERCISE_IDENTITY_V1_MODE: 'off',
+      TRAINING_EXERCISE_IDENTITY_V1_MODE_TENANT_9: 'shadow',
+    }, { userId: 7, tenantId: 9 })).toBe('shadow');
+    expect(getTrainingExerciseIdentityV1Mode({
+      TRAINING_EXERCISE_IDENTITY_V1_MODE: 'active',
+      TRAINING_EXERCISE_IDENTITY_V1_MODE_USER_42: 'off',
+    }, { userId: 42, tenantId: 9 })).toBe('off');
+  });
+
   it('treats only literal true as enabled for anthropic runtime flags', () => {
     expect(isAnthropicRuntimeEnabled({ ANTHROPIC_ENABLED: 'true' })).toBe(true);
     expect(isAnthropicRuntimeEnabled({ ANTHROPIC_ENABLED: 'yes' })).toBe(false);
@@ -271,6 +292,76 @@ describe('runtime-flags', () => {
     expect(isContentDeepResearchDisabled(env, { userId: 7, tenantId: 99 })).toBe(true);
     expect(isContentFullLongformDisabled(env, { userId: 7, tenantId: 1 })).toBe(true);
     expect(isContentModelQualityAuditDisabled(env, { userId: 42, tenantId: 1 })).toBe(true);
+  });
+
+  it('keeps Training plan revisions fail-closed and scope-overridable', () => {
+    expect(getTrainingPlanRevisionV1Mode({})).toBe('off');
+    expect(getTrainingPlanRevisionV1Mode({ TRAINING_PLAN_REVISION_V1_MODE: 'off' })).toBe('off');
+    expect(getTrainingPlanRevisionV1Mode({ TRAINING_PLAN_REVISION_V1_MODE: 'shadow' })).toBe('shadow');
+    expect(getTrainingPlanRevisionV1Mode({ TRAINING_PLAN_REVISION_V1_MODE: 'active' })).toBe('active');
+    expect(isTrainingPlanRevisionV1ExplicitlyEnrolled(
+      { TRAINING_PLAN_REVISION_V1_MODE: 'active' },
+      { userId: 7, tenantId: 7 },
+    )).toBe(false);
+    expect(isTrainingPlanRevisionV1ExplicitlyEnrolled(
+      { TRAINING_PLAN_REVISION_V1_MODE_USER_7: 'active' },
+      { userId: 7, tenantId: 7 },
+    )).toBe(true);
+    expect(getTrainingPlanRevisionV1Mode({ TRAINING_PLAN_REVISION_V1_MODE: 'true' })).toBe('off');
+    expect(getTrainingPlanRevisionV1Mode({ TRAINING_PLAN_REVISION_V1_MODE: 'enabled' })).toBe('off');
+    expect(getTrainingPlanRevisionV1Mode({
+      TRAINING_PLAN_REVISION_V1_MODE: 'off',
+      TRAINING_PLAN_REVISION_V1_MODE_TENANT_9: 'shadow',
+    }, { userId: 7, tenantId: 9 })).toBe('shadow');
+    expect(getTrainingPlanRevisionV1Mode({
+      TRAINING_PLAN_REVISION_V1_MODE: 'active',
+      TRAINING_PLAN_REVISION_V1_MODE_USER_42: 'off',
+    }, { userId: 42, tenantId: 9 })).toBe('off');
+  });
+
+  it('keeps Training adaptation fail-closed with strict scoped overrides', () => {
+    expect(getTrainingAdaptationV1Mode({})).toBe('off');
+    expect(getTrainingAdaptationV1Mode({ TRAINING_ADAPTATION_V1_MODE: 'shadow' })).toBe('shadow');
+    expect(getTrainingAdaptationV1Mode({ TRAINING_ADAPTATION_V1_MODE: 'active' })).toBe('active');
+    expect(getTrainingAdaptationV1Mode({ TRAINING_ADAPTATION_V1_MODE: 'true' })).toBe('off');
+    expect(getTrainingAdaptationV1Mode({
+      TRAINING_ADAPTATION_V1_MODE: 'off',
+      TRAINING_ADAPTATION_V1_MODE_USER_7: 'active',
+    }, { userId: 7, tenantId: 7 })).toBe('active');
+    expect(getTrainingAdaptationV1Mode({
+      TRAINING_ADAPTATION_V1_MODE: 'active',
+      TRAINING_ADAPTATION_V1_MODE_TENANT_9: 'off',
+    }, { userId: 7, tenantId: 9 })).toBe('off');
+  });
+
+  it('keeps typed Training workout validation default-off and scope-overridable', () => {
+    expect(isTrainingTypedWorkoutV1Enabled({})).toBe(false);
+    expect(isTrainingTypedWorkoutV1Enabled({ TRAINING_TYPED_WORKOUT_V1_ENABLED: 'true' })).toBe(true);
+    expect(isTrainingTypedWorkoutV1Enabled({ TRAINING_TYPED_WORKOUT_V1_ENABLED: 'false' })).toBe(false);
+    expect(isTrainingTypedWorkoutV1Enabled({ TRAINING_TYPED_WORKOUT_V1_ENABLED: 'yes' })).toBe(false);
+    expect(isTrainingTypedWorkoutV1Enabled({
+      TRAINING_TYPED_WORKOUT_V1_ENABLED: 'false',
+      TRAINING_TYPED_WORKOUT_V1_ENABLED_TENANT_9: 'true',
+    }, { userId: 7, tenantId: 9 })).toBe(true);
+    expect(isTrainingTypedWorkoutV1Enabled({
+      TRAINING_TYPED_WORKOUT_V1_ENABLED: 'true',
+      TRAINING_TYPED_WORKOUT_V1_ENABLED_USER_42: 'off',
+    }, { userId: 42, tenantId: 9 })).toBe(false);
+  });
+
+  it('keeps Training exercise media default-off and scope-overridable', () => {
+    expect(isTrainingExerciseMediaV1Enabled({})).toBe(false);
+    expect(isTrainingExerciseMediaV1Enabled({ TRAINING_EXERCISE_MEDIA_V1_ENABLED: 'true' })).toBe(true);
+    expect(isTrainingExerciseMediaV1Enabled({ TRAINING_EXERCISE_MEDIA_V1_ENABLED: '1' })).toBe(true);
+    expect(isTrainingExerciseMediaV1Enabled({ TRAINING_EXERCISE_MEDIA_V1_ENABLED: 'yes' })).toBe(false);
+    expect(isTrainingExerciseMediaV1Enabled({
+      TRAINING_EXERCISE_MEDIA_V1_ENABLED: 'false',
+      TRAINING_EXERCISE_MEDIA_V1_ENABLED_TENANT_9: 'true',
+    }, { userId: 7, tenantId: 9 })).toBe(true);
+    expect(isTrainingExerciseMediaV1Enabled({
+      TRAINING_EXERCISE_MEDIA_V1_ENABLED: 'true',
+      TRAINING_EXERCISE_MEDIA_V1_ENABLED_USER_42: 'off',
+    }, { userId: 42, tenantId: 9 })).toBe(false);
   });
 
   it('keeps chat reliability rollout flags on by default with scoped rollback support', () => {

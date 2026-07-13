@@ -1,0 +1,13 @@
+{
+  "ok": false,
+  "error": {
+    "code": "TRAINING_EXERCISE_MEDIA_NOT_FOUND",
+    "message": "Reviewed exercise media is not available for this identifier.",
+    "details": {
+      "exerciseId": "future_modal_xyz",
+      "reason": "UNKNOWN_EXERCISE",
+      "textFallbackRequired": true
+    }
+  },
+  "timestamp": "2026-07-12T12:00:00.000Z"
+}

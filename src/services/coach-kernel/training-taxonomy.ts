@@ -38,7 +38,8 @@ export type MovementPattern =
   | 'rear_delt'
   | 'loaded_carry'
   | 'anti_extension_core'
-  | 'anti_rotation_core';
+  | 'anti_rotation_core'
+  | 'mobility';
 
 export interface ExerciseDefinition {
   id: string;
@@ -136,20 +137,44 @@ const EMERGENCY_EXERCISE_LIBRARY: ExerciseDefinition[] = [
 
 export const EXERCISE_LIBRARY: ExerciseDefinition[] = buildCanonicalExerciseLibrary();
 
-export function findExerciseDefinitionByName(name: unknown): ExerciseDefinition | null {
+let exerciseIdentityLibraryCache: ExerciseDefinition[] | null = null;
+
+/** Identity-v1-only view of the catalog. The legacy module-level library is
+ * intentionally unchanged while the rollout is off or shadow. */
+export function buildTrainingExerciseIdentityLibrary(): ExerciseDefinition[] {
+  exerciseIdentityLibraryCache ??= buildCanonicalExerciseLibrary({ includeCatalogMobility: true });
+  return exerciseIdentityLibraryCache.map((definition) => ({
+    ...definition,
+    equipment: [...definition.equipment],
+    primaryMuscles: [...definition.primaryMuscles],
+    secondaryMuscles: [...definition.secondaryMuscles],
+    jointStress: { ...definition.jointStress },
+    suitableGoals: [...definition.suitableGoals],
+  }));
+}
+
+export function findExerciseDefinitionByName(
+  name: unknown,
+  options: { exerciseIdentityActive?: boolean } = {},
+): ExerciseDefinition | null {
   const normalized = normalizeExerciseAlias(normalizeExerciseName(name));
-  return EXERCISE_LIBRARY.find((exerciseDef) =>
+  const library = options.exerciseIdentityActive
+    ? buildTrainingExerciseIdentityLibrary()
+    : EXERCISE_LIBRARY;
+  return library.find((exerciseDef) =>
     normalizeExerciseAlias(normalizeExerciseName(exerciseDef.name)) === normalized
     || normalizeExerciseName(exerciseDef.id) === normalized
   ) ?? null;
 }
 
-function buildCanonicalExerciseLibrary(): ExerciseDefinition[] {
+function buildCanonicalExerciseLibrary(
+  options: { includeCatalogMobility?: boolean } = {},
+): ExerciseDefinition[] {
   try {
     const snapshot = buildRepoTrainingCatalogSnapshot();
     const catalogDefinitions = snapshot.exercises
       .filter((entry) => entry.active && (entry.modality === 'strength' || entry.modality === 'mobility' || entry.modality === 'prehab'))
-      .map(exerciseDefinitionFromCatalogEntry)
+      .map((entry) => exerciseDefinitionFromCatalogEntry(entry, options))
       .filter((entry): entry is ExerciseDefinition => entry != null);
     return mergeExerciseDefinitions(catalogDefinitions, EMERGENCY_EXERCISE_LIBRARY);
   } catch {
@@ -157,8 +182,11 @@ function buildCanonicalExerciseLibrary(): ExerciseDefinition[] {
   }
 }
 
-function exerciseDefinitionFromCatalogEntry(entry: ExerciseCatalogEntry): ExerciseDefinition | null {
-  const movementPattern = mapCatalogMovementPattern(entry);
+function exerciseDefinitionFromCatalogEntry(
+  entry: ExerciseCatalogEntry,
+  options: { includeCatalogMobility?: boolean },
+): ExerciseDefinition | null {
+  const movementPattern = mapCatalogMovementPattern(entry, options);
   if (!movementPattern) return null;
   const refinedMuscles = refineCatalogMuscles(entry, movementPattern);
   return {
@@ -183,6 +211,7 @@ function refineCatalogMuscles(
   const catalogSecondary = entry.secondaryMuscles.map(normalizeMuscleGroup).filter((muscle): muscle is MuscleGroup => muscle != null);
   const name = normalizeExerciseName(entry.canonicalName);
 
+  if (movementPattern === 'mobility') return { primary: catalogPrimary, secondary: catalogSecondary };
   if (movementPattern === 'elbow_flexion') return { primary: ['biceps'], secondary: ['forearms'] };
   if (movementPattern === 'elbow_extension') return { primary: ['triceps'], secondary: [] };
   if (movementPattern === 'lateral_raise') return { primary: ['side_delts'], secondary: [] };
@@ -224,7 +253,15 @@ function mergeExerciseDefinitions(
   return merged;
 }
 
-function mapCatalogMovementPattern(entry: ExerciseCatalogEntry): MovementPattern | null {
+function mapCatalogMovementPattern(
+  entry: ExerciseCatalogEntry,
+  options: { includeCatalogMobility?: boolean },
+): MovementPattern | null {
+  // This correction belongs to the active identity catalog only. Keeping the
+  // legacy module-level library on its historical mapping is required for
+  // byte/semantic flag-off equivalence.
+  if (options.includeCatalogMobility
+      && (entry.modality === 'mobility' || entry.movementPattern === 'mobility')) return 'mobility';
   const name = normalizeExerciseName(entry.canonicalName);
   if (/\b(calf|calves)\b/.test(name)) return 'calf_raise';
   if (/\b(curl|biceps|hammer)\b/.test(name)) return 'elbow_flexion';

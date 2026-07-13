@@ -28,6 +28,7 @@ vi.mock('../../src/services/operator-alerts', () => ({
 
 vi.mock('../../src/services/database', () => ({
   getDb: (...args: unknown[]) => mockGetDb(...args),
+  withDatabaseForTestAsync: vi.fn(),
 }));
 
 describe('integration health Garmin passive probe', () => {

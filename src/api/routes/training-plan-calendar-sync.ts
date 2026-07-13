@@ -42,6 +42,10 @@ import {
 } from '../../services/training-calendar-source';
 import { requireTenantIdParam } from '../../services/tenant-scope';
 import { withTrainingCalendarOperationLock } from '../../services/training-operation-locks';
+import {
+  assertLegacyPlanMutationAllowed,
+  assertLegacySessionMutationAllowed,
+} from '../../services/training-plan-revision-legacy-guard';
 import { hashOwnerIdForLog } from './_ownership-audit';
 import { isProviderEventNotFoundError } from '../../services/training-calendar-errors';
 import { config } from '../../config';
@@ -388,6 +392,7 @@ export async function previewTrainingSessionReflow(
   if (scope === 'forbidden' || !scope) {
     return { status: 'not_found', data: { message: 'Training session not found.', sessionId } };
   }
+  assertLegacySessionMutationAllowed({ userId, tenantId: validatedTenantId }, sessionId);
 
   const effectiveTenantId = tenantIdForTrainingPlan(scope.plan, validatedTenantId);
   const calendarSource = resolveTrainingCalendarSource({
@@ -772,6 +777,7 @@ async function syncTrainingPlanCalendarLocked(
       },
     };
   }
+  assertLegacyPlanMutationAllowed({ userId, tenantId: validatedTenantId }, plan.id);
 
   const preferences = readPlanPreferences(plan);
   const planStart = new Date(plan.start_date);

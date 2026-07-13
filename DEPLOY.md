@@ -272,6 +272,10 @@ Then merge: `server-sync/* → develop → main → deploy.sh`
 |---------|---------|-------------------------|
 | `OWNER_ID_HASH_SECRET` | HMAC-SHA256 key for the `u#XXXXXXXX` ownership-denial log correlation tag (R5 P3 / R6 P3) | Each Node process generates a random 32-byte salt at boot. Tag correlation works WITHIN a single process boot but NOT across processes / restarts. Set this in production if the operator runbook for "investigate why account X tried to access plan Y" reaches across multiple processes or recent deploys. Treat as a secret — leaking it lets a log reader pre-compute the tag for any user id. |
 
+## Training Exercise Media production gate
+
+`TRAINING_EXERCISE_MEDIA_V1_ENABLED` defaults to `false`. Do not enable a global or scoped cohort until the exact frozen manifest passes the activation verifier with complete authoritative-catalog coverage, approved delivery origins, unexpired rights, current domain/legal/accessibility/owner reviews, all required views, and EN/PT-PT/PT-BR text plus accessibility descriptions. DRAFT content is recomputed against the reviewed package hash before a one-time DRAFT → STAGED validation attestation; the exact approved asset ID/exercise/view/ordinal/integrity bindings must match at both staging and activation. Exercise, asset, provenance, instruction, and media-localization rows freeze at STAGED; later content requires a new manifest revision. Reviews and takedowns are the deliberate exception: they remain immutable, composite-scope-bound append-only governance ledgers, and only events effective at the current time participate in delivery. Binary media remains in approved external artifact storage; Git and SQLite contain only metadata, hashes, and provenance. Incident rollback is flag off and manifest deprecation/revocation. The migration 229 down artifact is staging-only and must never be used for production rollback.
+
 ## Future: Re-enabling Auto-Deploy
 
 When the server gets a stable SSH transport that GitHub Actions can use:

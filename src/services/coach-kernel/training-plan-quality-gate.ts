@@ -32,6 +32,7 @@ import {
   type MuscleGroup,
   type WeeklyVolumeTarget,
 } from './training-taxonomy';
+import type { TrainingExerciseIdentityV1Mode } from '../runtime-flags';
 
 export type TrainingSessionSectionType =
   | 'warmup'
@@ -206,7 +207,23 @@ const CANDIDATE_TIERS: Record<MovementPattern, string[][]> = {
     ['Pallof Press'],
     ['Side Plank'],
   ],
+  mobility: [],
 };
+
+const IDENTITY_ACTIVE_CANDIDATE_TIERS: Partial<Record<MovementPattern, string[][]>> = {
+  loaded_carry: [
+    ['Farmer Carry', 'Suitcase Carry'],
+    ['Sandbag Hold', 'Overhead Carry'],
+    ['Yoke / Front-Rack Carry'],
+  ],
+  mobility: [
+    ['90/90 Hip Switch', 'Cat-Cow', 'Half-Kneeling Hip Flexor Stretch'],
+    ["World's Greatest Stretch", 'Open-Book Thoracic Rotation', 'Couch Stretch'],
+    ['Hip Airplane', 'Cossack Squat', 'Jefferson Curl'],
+  ],
+};
+
+const IDENTITY_ACTIVE_SPECS = new WeakSet<TrainingPlanSpec>();
 
 const CANDIDATE_TIER_LABELS: ExerciseCandidateTier[] = [
   'preferred',
@@ -250,7 +267,34 @@ const CATALOG_VARIANT_TITLE_RE = /^\s*(?:strength\s+(?:technique|support)|limite
 const MIN_STRUCTURED_SPLIT_STRENGTH_MINUTES = 40;
 const MIN_STRUCTURED_SPLIT_FLOOR_ESTIMATE_MINUTES = 22;
 
+export interface TrainingPlanQualityGateOptions {
+  exerciseIdentityMode?: TrainingExerciseIdentityV1Mode;
+}
+
+export function getTrainingExerciseCandidateTiers(
+  pattern: MovementPattern,
+  options: TrainingPlanQualityGateOptions = {},
+): string[][] {
+  const tiers = options.exerciseIdentityMode === 'active'
+    ? IDENTITY_ACTIVE_CANDIDATE_TIERS[pattern] ?? CANDIDATE_TIERS[pattern] ?? []
+    : CANDIDATE_TIERS[pattern] ?? [];
+  return tiers.map((tier) => [...tier]);
+}
+
 export function prepareTrainingPlanForQualityGate(
+  planData: Record<string, unknown>,
+  spec: TrainingPlanSpec,
+  options: TrainingPlanQualityGateOptions = {},
+): TrainingPlanQualityPreparation {
+  if (options.exerciseIdentityMode === 'active') IDENTITY_ACTIVE_SPECS.add(spec);
+  try {
+    return prepareTrainingPlanForQualityGateInternal(planData, spec);
+  } finally {
+    IDENTITY_ACTIVE_SPECS.delete(spec);
+  }
+}
+
+function prepareTrainingPlanForQualityGateInternal(
   planData: Record<string, unknown>,
   spec: TrainingPlanSpec,
 ): TrainingPlanQualityPreparation {
@@ -1111,11 +1155,14 @@ function selectExerciseForPattern(
   spec: TrainingPlanSpec,
   used: Set<string>,
 ): ExerciseCandidateSelection | null {
-  const tiers = CANDIDATE_TIERS[pattern] ?? [];
+  const identityActive = IDENTITY_ACTIVE_SPECS.has(spec);
+  const tiers = getTrainingExerciseCandidateTiers(pattern, {
+    exerciseIdentityMode: identityActive ? 'active' : 'off',
+  });
   for (let tierIndex = 0; tierIndex < tiers.length; tierIndex += 1) {
     const tier = CANDIDATE_TIER_LABELS[tierIndex] ?? 'last_resort';
     for (const name of tiers[tierIndex]) {
-      const definition = findExerciseDefinitionByName(name);
+      const definition = findExerciseDefinitionByName(name, { exerciseIdentityActive: identityActive });
       if (!definition || used.has(definition.id)) continue;
       if (exerciseFitsSpec(definition, spec)) return { definition, tier };
     }
@@ -1123,7 +1170,7 @@ function selectExerciseForPattern(
   for (let tierIndex = 0; tierIndex < tiers.length; tierIndex += 1) {
     const tier = CANDIDATE_TIER_LABELS[tierIndex] ?? 'last_resort';
     for (const name of tiers[tierIndex]) {
-      const definition = findExerciseDefinitionByName(name);
+      const definition = findExerciseDefinitionByName(name, { exerciseIdentityActive: identityActive });
       if (definition && exerciseFitsSpec(definition, spec)) return { definition, tier };
     }
   }

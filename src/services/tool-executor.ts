@@ -30,6 +30,9 @@ import { logger } from '../utils/logger';
 import { resolveChatTenantId } from './chat-tenant-scope';
 import { authorizeChatToolCall, formatToolAuthorizationFailure } from './chat-tool-authorization';
 import { sanitizeForPromptInterpolation } from '../utils/prompt-sanitizer';
+import { assertLegacySessionMutationAllowed } from './training-plan-revision-legacy-guard';
+import { TrainingPlanRevisionError } from './training-plan-revision-errors';
+import { normalizeTrainingExercisesJsonForWrite } from './training-exercise-identity';
 
 // ─── Phase 3 Slice A — profile field whitelist ───────────────────
 //
@@ -808,6 +811,10 @@ export async function executeToolCall(
         if (!weekBelongsToPlan) {
           return { error: 'add_training_session cannot write to a week outside the authenticated user plan' };
         }
+        const exercisesJson = normalizeTrainingExercisesJsonForWrite(input.exercises_json, {
+          scope: { userId: scope.userId, tenantId: scope.tenantId },
+          source: 'tool-executor.add_training_session',
+        });
         const session = trainingPlans.createSession({
           week_id: input.week_id,
           plan_id: input.plan_id,
@@ -815,7 +822,7 @@ export async function executeToolCall(
           session_type: input.session_type,
           title: input.title,
           description: input.description,
-          exercises_json: input.exercises_json,
+          exercises_json: exercisesJson ?? undefined,
           duration_minutes: input.duration_minutes,
           intensity_text: input.intensity_text,
         });
@@ -853,6 +860,13 @@ export async function executeToolCall(
         if (!scope.ok) return { error: scope.error };
         const session = trainingPlans.getSessionById(input.session_id);
         if (!session) return { error: `Session ${input.session_id} not found` };
+
+        // Completion is operational progress, not a rewrite of immutable
+        // revision content. Keep the dedicated completion contract available
+        // for revision-owned projections so it records feedback and emits the
+        // canonical outbox event. The generic update tool remains blocked,
+        // including status-only "completed" writes, because it would bypass
+        // that completion contract.
 
         // R3 P2 fix — forward V2 fields (rir / pain / technical
         // success / missed reason / external-training-declared /
@@ -1169,9 +1183,17 @@ export async function executeToolCall(
       case 'update_training_session': {
         const scope = requireOwnedTrainingSessionForTool(toolName, input.session_id, userId, tenantId);
         if (!scope.ok) return { error: scope.error };
+        assertLegacySessionMutationAllowed(
+          { userId: scope.userId, tenantId: scope.tenantId },
+          scope.session.id,
+        );
+        const exercisesJson = normalizeTrainingExercisesJsonForWrite(input.exercises_json, {
+          scope: { userId: scope.userId, tenantId: scope.tenantId },
+          source: 'tool-executor.update_training_session',
+        });
         const updated = trainingPlans.updateSession(input.session_id, {
           title: input.title,
-          exercises_json: input.exercises_json,
+          exercises_json: exercisesJson ?? undefined,
           duration_minutes: input.duration_minutes,
           intensity_text: input.intensity_text,
           description: input.description,
@@ -1183,6 +1205,10 @@ export async function executeToolCall(
       case 'link_session_calendar': {
         const scope = requireOwnedTrainingSessionForTool(toolName, input.session_id, userId, tenantId);
         if (!scope.ok) return { error: scope.error };
+        assertLegacySessionMutationAllowed(
+          { userId: scope.userId, tenantId: scope.tenantId },
+          scope.session.id,
+        );
         const linked = trainingPlans.linkSessionToCalendar(
           input.session_id, input.calendar_event_id, input.calendar_source,
         );
@@ -1420,6 +1446,9 @@ export async function executeToolCall(
     }
   } catch (err) {
     logger.error({ err, tool: toolName }, 'Tool execution failed');
+    if (err instanceof TrainingPlanRevisionError) {
+      return { success: false, error: err.message, code: err.code };
+    }
     return { error: 'Tool execution failed' };
   }
 }

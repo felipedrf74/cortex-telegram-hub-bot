@@ -24,6 +24,7 @@ vi.mock('../../src/services/database', () => ({
   runMigrationsForTest: vi.fn(),
   stripWrappingTransactionStatements: vi.fn((sql: string) => sql),
   withDatabaseForTest: vi.fn(),
+  withDatabaseForTestAsync: vi.fn(),
 }));
 
 vi.mock('../../src/services/cache-coherence-registry', () => ({

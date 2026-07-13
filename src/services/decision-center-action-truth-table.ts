@@ -166,6 +166,17 @@ const ACTION_TRUTH_TABLE: Record<string, DecisionActionTruthTemplate> = {
     apnsActionAllowed: false,
     highRiskConfirmationRequired: false,
   },
+  activate_training_plan_revision: {
+    executor: 'training',
+    verifier: 'training_active_plan_reference',
+    implemented: true,
+    mutating: true,
+    expectedMutation: 'Activate the exact approved immutable Training revision and materialize a local compatibility projection.',
+    successUi: 'Training plan activated.',
+    retryAvailable: true,
+    apnsActionAllowed: false,
+    highRiskConfirmationRequired: true,
+  },
   option_a: {
     executor: 'chat',
     verifier: 'chat_pending_confirmation_store',

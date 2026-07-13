@@ -22,6 +22,14 @@ import {
   cookingMealSlotStateRevision,
   financeTaxEventStateRevision,
 } from './decision-domain-state-revision';
+import {
+  getTrainingPlanRevisionV1Mode,
+  isTrainingPlanRevisionV1ExplicitlyEnrolled,
+} from './runtime-flags';
+import {
+  computeTrainingRevisionAuthoritativeContext,
+  deriveTrainingRevisionCreationContextVersion,
+} from './training-plan-revisions';
 
 export interface DecisionRevalidationScope {
   userId: number;
@@ -58,6 +66,13 @@ const permissionValidators = new Map<string, (scope: DecisionRevalidationScope) 
   ['decision_center:write', () => true],
   ['calendar:read', (scope) => hasConnectedCalendarForUser(scope.userId)],
   ['calendar:write', (scope) => hasWritableCalendarForUser(scope.userId)],
+  ['training:plan:write', (scope) => Number.isSafeInteger(scope.userId)
+    && scope.userId > 0
+    && Number.isSafeInteger(scope.tenantId)
+    && scope.tenantId > 0
+    && scope.userId === scope.tenantId
+    && getTrainingPlanRevisionV1Mode(process.env, scope) === 'active'
+    && isTrainingPlanRevisionV1ExplicitlyEnrolled(process.env, scope)],
 ]);
 
 const preconditionAdapters = new Map<string, DecisionPreconditionAdapter>([
@@ -131,6 +146,109 @@ const preconditionAdapters = new Map<string, DecisionPreconditionAdapter>([
       cookingMealSlotStateRevision(scope, precondition.ref),
       'meal_plan_slot_state_changed',
     ),
+  }],
+  ['training_revision_content', {
+    type: 'training_revision_content',
+    validate: ({ scope, precondition }) => {
+      const row = getDb().prepare(`
+        SELECT content_hash AS currentVersion
+          FROM training_plan_revisions
+         WHERE revision_id = ? AND user_id = ? AND tenant_id = ?
+         LIMIT 1
+      `).get(precondition.ref, scope.userId, scope.tenantId) as { currentVersion: string } | undefined;
+      return compareDomainRevision(precondition, row?.currentVersion ?? null, 'training_revision_content_changed');
+    },
+  }],
+  ['training_revision_context', {
+    type: 'training_revision_context',
+    validate: ({ scope, precondition }) => {
+      const row = getDb().prepare(`
+        SELECT contexts.current_revision_id AS currentRevisionId,
+               contexts.base_context_version AS baseContextVersion
+          FROM training_plan_revisions revisions
+          JOIN training_plan_current_contexts contexts
+            ON contexts.tenant_id = revisions.tenant_id
+           AND contexts.user_id = revisions.user_id
+           AND contexts.family_id = revisions.family_id
+         WHERE revisions.revision_id = ?
+           AND revisions.user_id = ? AND revisions.tenant_id = ?
+         LIMIT 1
+      `).get(precondition.ref, scope.userId, scope.tenantId) as {
+        currentRevisionId: string;
+        baseContextVersion: string;
+      } | undefined;
+      if (!row || row.currentRevisionId !== precondition.ref) {
+        return compareDomainRevision(precondition, null, 'training_revision_context_changed');
+      }
+      const currentVersion = deriveTrainingRevisionCreationContextVersion(
+        row.baseContextVersion,
+        computeTrainingRevisionAuthoritativeContext(getDb(), scope),
+      );
+      return compareDomainRevision(precondition, currentVersion, 'training_revision_context_changed');
+    },
+  }],
+  ['training_revision_policy', {
+    type: 'training_revision_policy',
+    validate: ({ scope, precondition }) => {
+      const row = getDb().prepare(`
+        SELECT policy_version AS currentVersion
+          FROM training_plan_revisions
+         WHERE revision_id = ? AND user_id = ? AND tenant_id = ?
+         LIMIT 1
+      `).get(precondition.ref, scope.userId, scope.tenantId) as { currentVersion: string } | undefined;
+      return compareDomainRevision(precondition, row?.currentVersion ?? null, 'training_revision_policy_changed');
+    },
+  }],
+  ['training_revision_catalog', {
+    type: 'training_revision_catalog',
+    validate: ({ scope, precondition }) => {
+      const row = getDb().prepare(`
+        SELECT catalog_version AS catalogVersion, catalog_source_hash AS catalogSourceHash
+          FROM training_plan_revisions
+         WHERE revision_id = ? AND user_id = ? AND tenant_id = ?
+         LIMIT 1
+      `).get(precondition.ref, scope.userId, scope.tenantId) as {
+        catalogVersion: string;
+        catalogSourceHash: string;
+      } | undefined;
+      const currentVersion = row ? `${row.catalogVersion}:${row.catalogSourceHash}` : null;
+      return compareDomainRevision(precondition, currentVersion, 'training_revision_catalog_changed');
+    },
+  }],
+  ['training_active_pointer', {
+    type: 'training_active_pointer',
+    validate: ({ scope, precondition }) => {
+      const row = getDb().prepare(`
+        SELECT active_revision_id AS activeRevisionId, pointer_version AS pointerVersion
+          FROM training_active_plan_references
+         WHERE family_id = ? AND user_id = ? AND tenant_id = ?
+         LIMIT 1
+      `).get(precondition.ref, scope.userId, scope.tenantId) as {
+        activeRevisionId: string;
+        pointerVersion: number;
+      } | undefined;
+      const currentVersion = row
+        ? `pointer:${row.pointerVersion}:revision:${row.activeRevisionId}`
+        : 'none';
+      return compareDomainRevision(precondition, currentVersion, 'training_active_pointer_changed');
+    },
+  }],
+  ['training_adaptation_option', {
+    type: 'training_adaptation_option',
+    validate: ({ scope, precondition }) => {
+      const table = getDb().prepare(`
+        SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'training_adaptation_proposals'
+      `).get();
+      if (!table) return compareDomainRevision(precondition, null, 'training_adaptation_option_changed');
+      const row = getDb().prepare(`
+        SELECT option_hash AS currentVersion
+          FROM training_adaptation_proposals
+         WHERE selected_option_id = ? AND user_id = ? AND tenant_id = ?
+           AND status IN ('CANDIDATE', 'PENDING_REVIEW', 'DEFERRED')
+         LIMIT 1
+      `).get(precondition.ref, scope.userId, scope.tenantId) as { currentVersion: string } | undefined;
+      return compareDomainRevision(precondition, row?.currentVersion ?? null, 'training_adaptation_option_changed');
+    },
   }],
 ]);
 

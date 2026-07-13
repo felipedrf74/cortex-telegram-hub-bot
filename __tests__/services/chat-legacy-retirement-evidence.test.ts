@@ -17,6 +17,7 @@ const PEER_REVIEW_SIGNOFF_HASH = 'c'.repeat(64);
 
 vi.mock('../../src/services/database', () => ({
   getDb: () => testDb,
+  withDatabaseForTestAsync: vi.fn(),
 }));
 
 describe('chat-legacy-retirement-evidence', () => {

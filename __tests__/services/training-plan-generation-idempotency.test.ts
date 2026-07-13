@@ -4,6 +4,7 @@ vi.mock('../../src/services/database', () => ({
   getDb: () => {
     throw new Error('No database in memory-mode idempotency test');
   },
+  withDatabaseForTestAsync: vi.fn(),
 }));
 
 import {

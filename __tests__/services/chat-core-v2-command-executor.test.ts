@@ -25,6 +25,7 @@ const mockSnoozeDecision = vi.hoisted(() => vi.fn());
 
 vi.mock('../../src/services/database', () => ({
   getDb: vi.fn(),
+  withDatabaseForTestAsync: vi.fn(),
 }));
 
 vi.mock('../../src/services/chat-core-v2/command-events', () => ({
