@@ -48,6 +48,7 @@ import {
   registerTrainingPlanRevisionRoutes,
   trainingPlanRevisionCapabilitiesForScope,
 } from './training-plan-revision-routes';
+import { registerTrainingAdaptationRoutes } from './training-adaptation-routes';
 import { requireTenantIdParam } from '../../services/tenant-scope';
 import {
   isAiInteractiveAllowedForRuntime,
@@ -1001,6 +1002,7 @@ export function trainingRoutes(): Router {
   registerTrainingAnalyticsRoutes(router, resolveTrainingLanguage);
   registerTrainingPlanRoutes(router, { invalidateTrainingScreenCaches });
   registerTrainingPlanRevisionRoutes(router);
+  registerTrainingAdaptationRoutes(router);
 
   return router;
 }

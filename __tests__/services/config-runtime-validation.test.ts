@@ -269,4 +269,43 @@ describe('runtime config validation', () => {
       'STRIPE_SECRET_KEY appears to be a live key (sk_live_*) but NODE_ENV is not production.',
     );
   });
+
+  it('forbids global Training adaptation activation in production', async () => {
+    applySafeProductionEnv();
+    vi.stubEnv('TRAINING_PLAN_REVISION_V1_MODE', 'off');
+    vi.stubEnv('TRAINING_ADAPTATION_V1_MODE', 'active');
+
+    await expect(loadConfigFresh()).rejects.toThrow(
+      'Global TRAINING_ADAPTATION_V1_MODE=active is forbidden in production',
+    );
+  });
+
+  it('requires scoped revision, typed workout, and Decision dependencies for scoped adaptation activation', async () => {
+    applySafeProductionEnv();
+    vi.stubEnv('TRAINING_PLAN_REVISION_V1_MODE', 'off');
+    vi.stubEnv('TRAINING_ADAPTATION_V1_MODE', 'off');
+    vi.stubEnv('TRAINING_ADAPTATION_V1_MODE_USER_7', 'active');
+    vi.stubEnv('TRAINING_PLAN_REVISION_V1_MODE_USER_7', 'off');
+    vi.stubEnv('TRAINING_TYPED_WORKOUT_V1_ENABLED_USER_7', 'false');
+    vi.stubEnv('DECISION_FLOW_V1_ENFORCE_ENABLED', 'false');
+
+    await expect(loadConfigFresh()).rejects.toThrow(
+      'TRAINING_ADAPTATION_V1_MODE=active requires scoped Training revision enrollment, typed workouts, and Decision Flow v1 in production.',
+    );
+  });
+
+  it('does not satisfy adaptation dependencies with another account scope', async () => {
+    applySafeProductionEnv();
+    vi.stubEnv('TRAINING_PLAN_REVISION_V1_MODE', 'off');
+    vi.stubEnv('TRAINING_ADAPTATION_V1_MODE', 'off');
+    vi.stubEnv('TRAINING_ADAPTATION_V1_MODE_USER_7', 'active');
+    vi.stubEnv('TRAINING_PLAN_REVISION_V1_MODE_USER_8', 'active');
+    vi.stubEnv('TRAINING_TYPED_WORKOUT_V1_ENABLED_USER_8', 'true');
+    vi.stubEnv('DECISION_FLOW_V1_ENFORCE_ENABLED', 'true');
+    vi.stubEnv('TRAINING_PROFILE_SNAPSHOT_ENCRYPTION_KEY', 'training-revision-production-key-00000001');
+
+    await expect(loadConfigFresh()).rejects.toThrow(
+      'Each scoped TRAINING_ADAPTATION_V1_MODE=active enrollment requires Training revision and typed-workout enablement for the same scope.',
+    );
+  });
 });
