@@ -736,6 +736,10 @@ const hasScopedTrainingAdaptationEnrollment = scopedTrainingAdaptationEnrollment
 const hasScopedTypedTrainingEnrollment = Object.entries(process.env).some(([key, value]) =>
   /^TRAINING_TYPED_WORKOUT_V1_ENABLED_(?:USER|TENANT)_[0-9A-Za-z_-]+$/.test(key)
   && value?.trim().toLowerCase() === 'true');
+const globalTrainingM4Allowlist = process.env.TRAINING_PLAN_M4_ALLOWLIST?.trim();
+const scopedTrainingM4Allowlists = Object.entries(process.env).filter(([key, value]) =>
+  /^TRAINING_PLAN_M4_ALLOWLIST_(?:USER|TENANT)_[0-9A-Za-z_-]+$/.test(key) && Boolean(value?.trim()));
+const validTrainingM4Token = /^(?:event_based|continuous|maintenance|return_to_training):(?:running|cycling|swimming|strength|triathlon|hybrid|marathon)$/;
 if (IS_PRODUCTION && globalTrainingRevisionMode === 'active') {
   throw new Error(
     'Global TRAINING_PLAN_REVISION_V1_MODE=active is forbidden in production; enroll explicit personal accounts with scoped USER or TENANT overrides.',
@@ -763,6 +767,19 @@ if (IS_PRODUCTION && scopedTrainingAdaptationEnrollments.some(([adaptationKey]) 
   throw new Error(
     'Each scoped TRAINING_ADAPTATION_V1_MODE=active enrollment requires Training revision and typed-workout enablement for the same scope.',
   );
+}
+if (IS_PRODUCTION && globalTrainingM4Allowlist) {
+  throw new Error(
+    'Global TRAINING_PLAN_M4_ALLOWLIST is forbidden in production; enroll exact mode:discipline combinations with scoped USER or TENANT overrides.',
+  );
+}
+if (IS_PRODUCTION && scopedTrainingM4Allowlists.some(([, value]) =>
+  value!.split(',').map((entry) => entry.trim().toLowerCase()).some((entry) => !validTrainingM4Token.test(entry)))) {
+  throw new Error('TRAINING_PLAN_M4_ALLOWLIST contains an unsupported or wildcard mode:discipline token.');
+}
+if (IS_PRODUCTION && scopedTrainingM4Allowlists.length > 0
+    && process.env.DECISION_FLOW_V1_ENFORCE_ENABLED !== 'true') {
+  throw new Error('TRAINING_PLAN_M4_ALLOWLIST requires DECISION_FLOW_V1_ENFORCE_ENABLED=true in production.');
 }
 if (IS_PRODUCTION && hasScopedTrainingRevisionEnrollment) {
   const snapshotKey = process.env.TRAINING_PROFILE_SNAPSHOT_ENCRYPTION_KEY ?? '';
