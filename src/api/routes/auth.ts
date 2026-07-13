@@ -21,7 +21,7 @@ import {
   consumeDatabaseInviteForUser,
   resolveCurrentTenantIdForUser,
 } from '../../services/user-service';
-import { signIosJwt } from '../../services/ios-jwt';
+import { getIosJwtTokenLifetimeSeconds, signIosJwt } from '../../services/ios-jwt';
 import { createAuthSessionAndRegisterDevice, grantBetaSandboxAccess, hashRefreshToken } from '../../services/ios-auth-session';
 import { createGoogleAuthPendingSession, consumeGoogleAuthCompletion } from '../../services/google-auth-session-store';
 import { consumeAppleSignInNonce, AppleSignInNonceError } from '../../services/apple-sign-in-nonce';
@@ -383,6 +383,7 @@ export function authRoutes(): Router {
       tenantId: resolveCurrentTenantIdForUser(device.user_id),
       deviceId: device.device_id,
     });
+    const expiresIn = getIosJwtTokenLifetimeSeconds(accessToken);
 
     // Rotate refresh token — current hash → previous, new hash issued.
     const newRefreshToken = crypto.randomBytes(64).toString('hex');
@@ -418,7 +419,11 @@ export function authRoutes(): Router {
       },
       'iOS auth refresh succeeded',
     );
-    sendSuccess(res, { accessToken, refreshToken: newRefreshToken, expiresIn: 604800 });
+    sendSuccess(res, {
+      accessToken,
+      refreshToken: newRefreshToken,
+      expiresIn,
+    });
   }));
 
   router.get('/me', verifyJwt, asyncHandler(async (req: Request, res: Response) => {

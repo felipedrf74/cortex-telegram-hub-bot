@@ -467,11 +467,19 @@ ENV_CHECK=$(ssh "$SERVER" "
   fi
   MISSING=''
   WARNINGS=''
-  for KEY in DATABASE_PATH CONTENT_ENGINE_PORT PORTAL_TOKEN OAUTH_ENCRYPTION_KEY INTERNAL_API_SECRET AI_CALL_TIMEOUT_MS; do
+  for KEY in DATABASE_PATH CONTENT_ENGINE_PORT OAUTH_ENCRYPTION_KEY INTERNAL_API_SECRET AI_CALL_TIMEOUT_MS; do
     if ! grep -qE \"^\${KEY}=.+\" $REMOTE_DIR/.env; then
       MISSING=\"\$MISSING \$KEY\"
     fi
   done
+  PORTAL_REQUIRE_SESSION_AUTH_VALUE=\$(grep -oE '^PORTAL_REQUIRE_SESSION_AUTH=.+' $REMOTE_DIR/.env 2>/dev/null | tail -1 | cut -d= -f2- || true)
+  if [ \"\$PORTAL_REQUIRE_SESSION_AUTH_VALUE\" = \"true\" ]; then
+    if ! grep -qE '^PORTAL_SESSION_SECRET=.+' $REMOTE_DIR/.env; then
+      MISSING=\"\$MISSING PORTAL_SESSION_SECRET\"
+    fi
+  elif ! grep -qE '^PORTAL_TOKEN=.+' $REMOTE_DIR/.env; then
+    MISSING=\"\$MISSING PORTAL_TOKEN\"
+  fi
   NODE_ENV_VALUE=\$(grep -oE '^NODE_ENV=.+' $REMOTE_DIR/.env 2>/dev/null | tail -1 | cut -d= -f2- || true)
   if [ \"\$NODE_ENV_VALUE\" = \"production\" ] && ! grep -qE '^SENTRY_DSN=.+' $REMOTE_DIR/.env; then
     WARNINGS=\"\$WARNINGS SENTRY_DSN\"
@@ -705,10 +713,18 @@ ssh "$SERVER" "
 # ── 6. Ensure protected directories exist ────────────
 ssh "$SERVER" "mkdir -p $REMOTE_DIR/data/garmin-tokens $REMOTE_DIR/logs $REMOTE_DIR/content-engine/data"
 
-# ── 7. Start services ────────────────────────────────
+# ── 7. Recreate services without persisting secrets in PM2 ───────────
 echo ""
 echo "🟢 Starting services..."
-ssh "$SERVER" "export PATH=\$PATH:$(dirname $PM2) && $PM2 set nexus-hub env GIT_COMMIT $COMMIT 2>/dev/null; $PM2 start content-engine 2>/dev/null && $PM2 start nexus-hub 2>/dev/null && $PM2 save && echo '   ✅ All services running'"
+ssh "$SERVER" bash -s -- \
+  "$REMOTE_DIR" \
+  "$PM2" \
+  "$COMMIT" \
+  "ecosystem.config.js" \
+  "nexus-hub,content-engine" \
+  "NODE_ENV,ENV,GIT_COMMIT" \
+  < "$LOCAL_DIR/scripts/remote-start-sanitized-pm2.sh"
+echo "   ✅ All services running with sanitized PM2 state"
 
 # ── 8. Health check (with retry) ─────────────────────
 echo ""
@@ -734,10 +750,7 @@ if [ "$PORTAL_REQUIRE_SESSION_AUTH" = "true" ]; then
 set -e
 REMOTE_DIR="$1"
 cd "$REMOTE_DIR"
-set -a
-. ./.env
-set +a
-PROD_SESSION=$(node dist/tools/portal-session-token.js --actor deploy-production@nexushub.me --scope admin --ttl-ms 600000 --json \
+PROD_SESSION=$(DOTENV_CONFIG_PATH="$REMOTE_DIR/.env" node -r dotenv/config dist/tools/portal-session-token.js --actor deploy-production@nexushub.me --scope admin --ttl-ms 600000 --json \
   | node -e "let b=''; process.stdin.on('data', c => b += c); process.stdin.on('end', () => { const j = JSON.parse(b); process.stdout.write(j.token || ''); });")
 [ -n "$PROD_SESSION" ] || exit 1
 HEADER_FILE=$(mktemp)

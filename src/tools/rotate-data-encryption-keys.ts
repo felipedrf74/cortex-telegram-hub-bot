@@ -1,8 +1,8 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
 /**
- * Offline, fail-closed rotation for the encrypted OAuth, Garmin, and Apple
- * Health fields stored in SQLite.
+ * Offline, fail-closed rotation for the encrypted OAuth, Garmin, Apple Health,
+ * and finance fields stored in SQLite.
  *
  * Dry-run is the default. Apply is deliberately guarded by an exact
  * service-stop acknowledgement and a protected SQLite backup whose encrypted
@@ -26,12 +26,13 @@ import { decryptValue, encryptValue } from '../utils/encryption';
 
 export const SERVICE_STOPPED_ACKNOWLEDGEMENT = 'SERVICES_STOPPED_AND_WRITES_DRAINED';
 
-type RotationDomain = 'oauth' | 'garmin' | 'health';
+type RotationDomain = 'oauth' | 'garmin' | 'health' | 'finance';
 
 export interface DataEncryptionDomainKeys {
   oauth: string;
   garmin: string;
   health: string;
+  finance: string;
 }
 
 export interface DataEncryptionRotationKeys {
@@ -132,6 +133,27 @@ const TABLE_SPECS: readonly RotationTableSpec[] = [
     userIdColumn: 'user_id',
     domain: 'health',
     encryptedColumns: ['encrypted_data_json'],
+  },
+  {
+    table: 'finance_transactions',
+    primaryKey: 'id',
+    userIdColumn: 'user_id',
+    domain: 'finance',
+    encryptedColumns: ['encrypted_amount', 'encrypted_description'],
+  },
+  {
+    table: 'finance_tax_events',
+    primaryKey: 'id',
+    userIdColumn: 'user_id',
+    domain: 'finance',
+    encryptedColumns: [
+      'encrypted_gross_income',
+      'encrypted_deductions',
+      'encrypted_taxable_income',
+      'encrypted_tax_due',
+      'encrypted_inss_due',
+      'encrypted_notes',
+    ],
   },
 ] as const;
 
@@ -289,7 +311,7 @@ function validateKey(label: string, key: string): void {
 }
 
 function validateKeys(keys: DataEncryptionRotationKeys): void {
-  const domains: readonly RotationDomain[] = ['oauth', 'garmin', 'health'];
+  const domains: readonly RotationDomain[] = ['oauth', 'garmin', 'health', 'finance'];
   for (const group of ['old', 'next', 'peer'] as const) {
     for (const domain of domains) {
       validateKey(`${group}.${domain}`, keys[group][domain]);
@@ -564,16 +586,19 @@ function keysFromEnvironment(): DataEncryptionRotationKeys {
       oauth: requiredEnvironmentKey('OLD_OAUTH_ENCRYPTION_KEY'),
       garmin: requiredEnvironmentKey('OLD_GARMIN_ENCRYPTION_KEY'),
       health: requiredEnvironmentKey('OLD_HEALTH_DATA_ENCRYPTION_KEY'),
+      finance: requiredEnvironmentKey('OLD_FINANCE_ENCRYPTION_KEY'),
     },
     next: {
       oauth: requiredEnvironmentKey('NEW_OAUTH_ENCRYPTION_KEY'),
       garmin: requiredEnvironmentKey('NEW_GARMIN_ENCRYPTION_KEY'),
       health: requiredEnvironmentKey('NEW_HEALTH_DATA_ENCRYPTION_KEY'),
+      finance: requiredEnvironmentKey('NEW_FINANCE_ENCRYPTION_KEY'),
     },
     peer: {
       oauth: requiredEnvironmentKey('PEER_OAUTH_ENCRYPTION_KEY'),
       garmin: requiredEnvironmentKey('PEER_GARMIN_ENCRYPTION_KEY'),
       health: requiredEnvironmentKey('PEER_HEALTH_DATA_ENCRYPTION_KEY'),
+      finance: requiredEnvironmentKey('PEER_FINANCE_ENCRYPTION_KEY'),
     },
   };
 }

@@ -28,7 +28,7 @@ in progress.
 | Secret | Rotation source | Verification |
 | --- | --- | --- |
 | `JWT_SECRET` | generate with `openssl rand -hex 64` | existing sessions invalidate; login and `/api/v1/auth/me` work |
-| `OAUTH_ENCRYPTION_KEY`, `GARMIN_ENCRYPTION_KEY`, `HEALTH_DATA_ENCRYPTION_KEY` | generate a different value for every domain and environment with `openssl rand -hex 64` | use the offline procedure below; verify all encrypted rows with the new dedicated keys before restart |
+| `OAUTH_ENCRYPTION_KEY`, `GARMIN_ENCRYPTION_KEY`, `HEALTH_DATA_ENCRYPTION_KEY`, `FINANCE_ENCRYPTION_KEY` | generate a different value for every domain and environment with `openssl rand -hex 64` | use the offline procedure below; verify all encrypted rows with the new dedicated keys before restart |
 | `HEALTH_TOKEN` | generate with `openssl rand -hex 32` | `/health/detailed` rejects old token and accepts new token |
 | `PORTAL_SESSION_SECRET` | generate with `openssl rand -hex 64` | portal admin login/session smoke passes |
 | `INTERNAL_API_SECRET` | generate with `openssl rand -hex 64` | content-engine internal calls succeed |
@@ -59,7 +59,10 @@ field that can currently inherit `OAUTH_ENCRYPTION_KEY`:
 - `user_oauth_tokens.access_token` and `refresh_token`;
 - `garmin_sessions.oauth1_token_json` and `oauth2_token_json`;
 - `garmin_user_tokens.garmin_email` and `tokens_json`;
-- `apple_health_data.encrypted_data_json`.
+- `apple_health_data.encrypted_data_json`;
+- `finance_transactions.encrypted_amount` and `encrypted_description`;
+- all six encrypted amount, deduction, tax, INSS, and notes fields in
+  `finance_tax_events`.
 
 It defaults to a read-only dry-run, recognizes values already encrypted with
 the destination keys, and aborts if any nonempty value decrypts with neither
@@ -70,10 +73,10 @@ a hard failure.
 
 ### Key preparation
 
-Generate six distinct destination keys: OAuth, Garmin, and Health for staging,
-then three different values for production. Load old, new, and peer-environment
-values from the encrypted vault into a non-history shell. Never put key values
-on the command line, in a ticket, or in captured output.
+Generate eight distinct destination keys: OAuth, Garmin, Health, and Finance
+for staging, then four different values for production. Load old, new, and
+peer-environment values from the encrypted vault into a non-history shell.
+Never put key values on the command line, in a ticket, or in captured output.
 
 The command requires these environment variables:
 
@@ -81,12 +84,15 @@ The command requires these environment variables:
 OLD_OAUTH_ENCRYPTION_KEY
 OLD_GARMIN_ENCRYPTION_KEY
 OLD_HEALTH_DATA_ENCRYPTION_KEY
+OLD_FINANCE_ENCRYPTION_KEY
 NEW_OAUTH_ENCRYPTION_KEY
 NEW_GARMIN_ENCRYPTION_KEY
 NEW_HEALTH_DATA_ENCRYPTION_KEY
+NEW_FINANCE_ENCRYPTION_KEY
 PEER_OAUTH_ENCRYPTION_KEY
 PEER_GARMIN_ENCRYPTION_KEY
 PEER_HEALTH_DATA_ENCRYPTION_KEY
+PEER_FINANCE_ENCRYPTION_KEY
 ```
 
 When Garmin and Health currently fall back to the old OAuth key, set both
@@ -143,12 +149,13 @@ key, concurrent-row change, update failure, or verification failure aborts the
 operation; transaction failures commit no changes.
 
 After apply, set the environment's active `OAUTH_ENCRYPTION_KEY`,
-`GARMIN_ENCRYPTION_KEY`, and `HEALTH_DATA_ENCRYPTION_KEY` to the three new
-values before restart. Confirm boot, health, OAuth provider refresh, Garmin
-connection/session reads, and Apple Health ingestion/readback for an authorized
-test user. Rotate staging fully before production. Do not remove the protected
-backup or revoke the old keys until the environment has passed focused smoke
-and the owner accepts the result.
+`GARMIN_ENCRYPTION_KEY`, `HEALTH_DATA_ENCRYPTION_KEY`, and
+`FINANCE_ENCRYPTION_KEY` to the four new values before restart. Confirm boot,
+health, OAuth provider refresh, Garmin connection/session reads, Apple Health
+ingestion/readback, and authenticated Finance reads for authorized test users.
+Rotate staging fully before production. Do not remove the protected backup or
+revoke the old keys until the environment has passed focused smoke and the
+owner accepts the result.
 
 ## Emergency Rotation
 

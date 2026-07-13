@@ -2,6 +2,9 @@
 
 import jwt from 'jsonwebtoken';
 import { config } from '../config';
+import { parseIosJwtExpirySeconds } from './ios-jwt-expiry';
+
+export { parseIosJwtExpirySeconds } from './ios-jwt-expiry';
 
 const DEFAULT_IOS_JWT_KID = 'ios-api-current';
 const IOS_JWT_SECRET_MIN_BYTES = 32;
@@ -18,7 +21,7 @@ export interface IosJwtKeyEntry {
   kid: string;
   secret: string;
   active?: boolean;
-  verifyUntil?: string | number | null;
+  verifyUntil?: string | null;
 }
 
 export interface IosJwtKeyring {
@@ -41,6 +44,9 @@ function readJwtExpiry(): string {
 }
 
 function normalizeKeyEntry(kid: string, value: unknown): IosJwtKeyEntry {
+  if (kid.trim().length === 0 || kid !== kid.trim()) {
+    throw new Error('Invalid iOS JWT key entry: missing kid');
+  }
   if (typeof value === 'string') {
     return { kid, secret: assertStrongIosJwtSecret(value, kid) };
   }
@@ -52,12 +58,29 @@ function normalizeKeyEntry(kid: string, value: unknown): IosJwtKeyEntry {
   if (typeof raw.secret !== 'string' || raw.secret.length === 0) {
     throw new Error(`Invalid iOS JWT key entry for kid ${kid}: missing secret`);
   }
+  if (raw.verifyUntil !== undefined
+    && raw.verifyUntil !== null
+    && typeof raw.verifyUntil !== 'string') {
+    throw new Error(`Invalid iOS JWT verification cutoff for kid ${kid}`);
+  }
+  if (raw.verifyUntil === '') {
+    throw new Error(`Invalid iOS JWT verification cutoff for kid ${kid}`);
+  }
   return {
     kid,
     secret: assertStrongIosJwtSecret(raw.secret, kid),
     active: raw.active === true,
     verifyUntil: raw.verifyUntil ?? null,
   };
+}
+
+function verificationCutoff(entry: IosJwtKeyEntry): number | null {
+  if (entry.verifyUntil == null) return null;
+  const cutoff = Date.parse(entry.verifyUntil);
+  if (!Number.isFinite(cutoff) || new Date(cutoff).toISOString() !== entry.verifyUntil) {
+    throw new Error(`Invalid iOS JWT verification cutoff for kid ${entry.kid}`);
+  }
+  return cutoff;
 }
 
 export function assertStrongIosJwtSecret(secret: string, kid = 'IOS_API_JWT_SECRET'): string {
@@ -82,7 +105,7 @@ function parseConfiguredKeys(raw: string | undefined): IosJwtKeyEntry[] {
         throw new Error('Invalid iOS JWT key entry');
       }
       const rawEntry = entry as Partial<IosJwtKeyEntry>;
-      if (typeof rawEntry.kid !== 'string' || rawEntry.kid.length === 0) {
+      if (typeof rawEntry.kid !== 'string' || rawEntry.kid.trim().length === 0) {
         throw new Error('Invalid iOS JWT key entry: missing kid');
       }
       return normalizeKeyEntry(rawEntry.kid, rawEntry);
@@ -98,13 +121,18 @@ function parseConfiguredKeys(raw: string | undefined): IosJwtKeyEntry[] {
   throw new Error('IOS_API_JWT_KEYS must be a JSON object or array');
 }
 
-export function getIosJwtKeyring(): IosJwtKeyring {
+export function getIosJwtKeyring(nowMs: number = Date.now()): IosJwtKeyring {
   const legacySecret = readLegacySecret();
   const configuredKeys = parseConfiguredKeys(process.env.IOS_API_JWT_KEYS);
-  const activeKidFromEnv = process.env.IOS_API_JWT_ACTIVE_KID?.trim();
-  const validatedLegacySecret = legacySecret
-    ? assertStrongIosJwtSecret(legacySecret)
-    : legacySecret;
+  const activeKidRaw = process.env.IOS_API_JWT_ACTIVE_KID;
+  if (activeKidRaw != null && activeKidRaw.length > 0 && activeKidRaw !== activeKidRaw.trim()) {
+    throw new Error('IOS_API_JWT_ACTIVE_KID must be a non-empty trimmed key id');
+  }
+  const activeKidFromEnv = activeKidRaw || undefined;
+  if (!legacySecret) {
+    throw new Error('IOS_API_JWT_SECRET is required for legacy no-kid token verification');
+  }
+  const validatedLegacySecret = assertStrongIosJwtSecret(legacySecret);
 
   const keys = configuredKeys.length > 0
     ? configuredKeys
@@ -114,12 +142,45 @@ export function getIosJwtKeyring(): IosJwtKeyring {
         active: true,
       }];
 
-  const active = (activeKidFromEnv
-    ? keys.find((entry) => entry.kid === activeKidFromEnv)
-    : keys.find((entry) => entry.active === true)) ?? keys[0];
+  const uniqueKids = new Set(keys.map((entry) => entry.kid));
+  if (uniqueKids.size !== keys.length) {
+    throw new Error('IOS_API_JWT_KEYS contains duplicate kid values');
+  }
+  for (const entry of keys) verificationCutoff(entry);
+
+  const markedActive = keys.filter((entry) => entry.active === true);
+  if (markedActive.length > 1) {
+    throw new Error('IOS_API_JWT_KEYS must not mark more than one active signing key');
+  }
+
+  let active: IosJwtKeyEntry | undefined;
+  if (activeKidFromEnv) {
+    active = keys.find((entry) => entry.kid === activeKidFromEnv);
+    if (!active) {
+      throw new Error(`IOS_API_JWT_ACTIVE_KID does not match a configured key: ${activeKidFromEnv}`);
+    }
+    if (markedActive.length === 1 && markedActive[0].kid !== activeKidFromEnv) {
+      throw new Error('IOS_API_JWT_ACTIVE_KID conflicts with the key marked active');
+    }
+  } else if (configuredKeys.length > 0) {
+    if (markedActive.length !== 1) {
+      throw new Error('IOS_API_JWT_KEYS must mark exactly one active signing key');
+    }
+    [active] = markedActive;
+  } else {
+    [active] = keys;
+  }
 
   if (!active) {
     throw new Error('No iOS JWT signing key configured');
+  }
+  if (verificationCutoff(active) != null) {
+    throw new Error(`Active iOS JWT signing key must not have a verification cutoff: ${active.kid}`);
+  }
+  for (const entry of keys) {
+    if (entry.kid !== active.kid && verificationCutoff(entry) == null) {
+      throw new Error(`Inactive iOS JWT verification key must have a finite cutoff: ${entry.kid}`);
+    }
   }
 
   return {
@@ -131,17 +192,44 @@ export function getIosJwtKeyring(): IosJwtKeyring {
 }
 
 function keyStillVerifies(entry: IosJwtKeyEntry, nowMs: number): boolean {
-  if (entry.verifyUntil == null || entry.verifyUntil === '') return true;
-  const cutoff = typeof entry.verifyUntil === 'number'
-    ? entry.verifyUntil
-    : Date.parse(entry.verifyUntil);
-  return Number.isFinite(cutoff) && nowMs <= cutoff;
+  const cutoff = verificationCutoff(entry);
+  return cutoff == null || nowMs <= cutoff;
+}
+
+export function validateIosJwtConfiguration(nowMs: number = Date.now()): void {
+  parseIosJwtExpirySeconds(readJwtExpiry());
+  getIosJwtKeyring(nowMs);
+  if (process.env.IOS_API_JWT_KEYS?.trim()) {
+    const confirmationSecret = process.env.CHAT_CONFIRMATION_HMAC_SECRET;
+    if (!confirmationSecret) {
+      throw new Error('CHAT_CONFIRMATION_HMAC_SECRET must be pinned before enabling the iOS JWT keyring');
+    }
+    assertStrongIosJwtSecret(confirmationSecret, 'CHAT_CONFIRMATION_HMAC_SECRET');
+    const evidenceSecret = process.env.CHAT_V2_EVIDENCE_HMAC_SECRET;
+    if (!evidenceSecret) {
+      throw new Error('CHAT_V2_EVIDENCE_HMAC_SECRET must be pinned before enabling the iOS JWT keyring');
+    }
+    assertStrongIosJwtSecret(evidenceSecret, 'CHAT_V2_EVIDENCE_HMAC_SECRET');
+  }
+}
+
+export function getIosJwtTokenLifetimeSeconds(token: string): number {
+  const decoded = jwt.decode(token) as { iat?: unknown; exp?: unknown } | null;
+  if (!decoded || typeof decoded.iat !== 'number' || typeof decoded.exp !== 'number') {
+    throw new Error('Signed iOS JWT is missing a numeric iat/exp lifetime');
+  }
+  const lifetime = decoded.exp - decoded.iat;
+  if (!Number.isSafeInteger(lifetime) || lifetime <= 0) {
+    throw new Error('Signed iOS JWT has an invalid lifetime');
+  }
+  return lifetime;
 }
 
 export function signIosJwt(payload: IosJwtPayload, options: SignIosJwtOptions = {}): string {
+  const expiresInSeconds = parseIosJwtExpirySeconds(options.expiresIn ?? readJwtExpiry());
   const keyring = getIosJwtKeyring();
   return jwt.sign(payload, keyring.activeSecret, {
-    expiresIn: (options.expiresIn ?? readJwtExpiry()) as any,
+    expiresIn: expiresInSeconds,
     header: { alg: 'HS256', kid: keyring.activeKid },
   });
 }
@@ -149,7 +237,7 @@ export function signIosJwt(payload: IosJwtPayload, options: SignIosJwtOptions = 
 export function verifyIosJwt(token: string, nowMs: number = Date.now()): IosJwtPayload {
   const decoded = jwt.decode(token, { complete: true }) as { header?: { kid?: unknown } } | null;
   const kid = decoded?.header?.kid;
-  const keyring = getIosJwtKeyring();
+  const keyring = getIosJwtKeyring(nowMs);
 
   if (typeof kid === 'string' && kid.length > 0) {
     const entry = keyring.keys.find((candidate) => candidate.kid === kid);
@@ -170,7 +258,7 @@ export function getIosJwtKeyStatus(nowMs: number = Date.now()): {
   configuredKids: Array<{ kid: string; active: boolean; verifies: boolean }>;
   legacyNoKidFallback: boolean;
 } {
-  const keyring = getIosJwtKeyring();
+  const keyring = getIosJwtKeyring(nowMs);
   return {
     activeKid: keyring.activeKid,
     configuredKids: keyring.keys.map((entry) => ({

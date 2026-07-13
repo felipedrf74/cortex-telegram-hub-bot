@@ -8,7 +8,7 @@ import { logAudit } from './audit-trail';
 import { getStoredDailyCostLimitUsdForTier } from './plan-quotas';
 import type { User } from './user-service';
 import { resolveCurrentTenantIdForUser } from './user-service';
-import { signIosJwt } from './ios-jwt';
+import { getIosJwtTokenLifetimeSeconds, signIosJwt } from './ios-jwt';
 
 // AUTH-O4 (closed-beta-auth-hardening, 2026-05-04): refresh-token at-rest
 // hashing. The plaintext token leaves the server exactly once (returned
@@ -68,6 +68,7 @@ interface CreateAuthSessionInput {
 export function createAuthSessionAndRegisterDevice(input: CreateAuthSessionInput): AuthSessionPayload {
   const tenantId = resolveCurrentTenantIdForUser(input.userId);
   const accessToken = signIosJwt({ userId: input.userId, tenantId, deviceId: input.deviceId });
+  const expiresIn = getIosJwtTokenLifetimeSeconds(accessToken);
   const refreshToken = crypto.randomBytes(64).toString('hex');
   const refreshTokenHash = hashRefreshToken(refreshToken);
 
@@ -144,7 +145,7 @@ export function createAuthSessionAndRegisterDevice(input: CreateAuthSessionInput
   return {
     accessToken,
     refreshToken,
-    expiresIn: 604800,
+    expiresIn,
     user: {
       id: input.userId,
       firstName: input.user.first_name || 'User',
