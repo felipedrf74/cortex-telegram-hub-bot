@@ -20,8 +20,10 @@
 //     ↓ NormalizedReadiness / NormalizedDailySummary / NormalizedSleep
 //   TrainingRepository / DashboardViewModel / iOS UI
 
-import { Router, Response } from 'express';
+import { Router, Response, type Request } from 'express';
+import { rateLimit } from 'express-rate-limit';
 import { logger } from '../../utils/logger';
+import { config } from '../../config';
 import { getDb } from '../../services/database';
 import { invalidateTrainingDerivedCaches } from '../../services/cache-coherence-registry';
 import { sendInternalError as sendApiInternalError } from '../response-helpers';
@@ -264,6 +266,26 @@ function runAppleHealthUpsert(
 
 export function healthDataRoutes(): Router {
   const router = Router();
+  const latestReadRateLimitMiddleware = rateLimit({
+    windowMs: 60 * 1000,
+    limit: config.ios?.readRateLimit ?? Math.max(config.ios?.rateLimit ?? 60, 300),
+    keyGenerator: (req: Request) => {
+      const { userId } = req as AuthenticatedRequest;
+      return `user:${userId}`;
+    },
+    // The parent API router remains authoritative for normal rate-limit
+    // headers. This route-local limiter is a CodeQL-legible, self-contained
+    // defense for the exported health router and only adds Retry-After on 429.
+    legacyHeaders: false,
+    standardHeaders: false,
+    handler: (_req, res, _next, options) => {
+      const retryAfter = Math.ceil(options.windowMs / 1000);
+      res.setHeader('Retry-After', retryAfter);
+      res.status(options.statusCode).json({
+        error: { code: 'RATE_LIMITED', message: 'Too many requests. Slow down.', retryAfter },
+      });
+    },
+  });
 
   router.use((req, res, next) => {
     const { userId } = req as AuthenticatedRequest;
@@ -434,7 +456,7 @@ export function healthDataRoutes(): Router {
   /** GET /api/v1/health-data/latest — returns the most recent sync date
    *  and data availability per type. Used by the iOS Settings health
    *  section to show "last synced: ..." without fetching full data. */
-  router.get('/latest', (req, res: Response) => {
+  router.get('/latest', latestReadRateLimitMiddleware, (req, res: Response) => {
     const { userId } = req as AuthenticatedRequest;
     try {
       const db = getDb();

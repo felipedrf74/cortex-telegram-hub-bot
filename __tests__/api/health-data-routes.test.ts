@@ -40,6 +40,7 @@ vi.mock('../../src/utils/logger', () => ({
 }));
 
 import { healthDataRoutes } from '../../src/api/routes/health-data';
+import { config } from '../../src/config';
 import { getReadiness } from '../../src/api/routes/training-read-models';
 import { clearCacheByPrefix } from '../../src/services/cache-store';
 import { parseAppleHealthDataJson } from '../../src/services/apple-health-encryption';
@@ -62,6 +63,8 @@ function applyMigrations(db: Database.Database): void {
 interface MockRes {
   statusCode: number;
   body: any;
+  headers: Record<string, string | number>;
+  setHeader(name: string, value: string | number): MockRes;
   status(code: number): MockRes;
   json(body: any): MockRes;
 }
@@ -70,6 +73,8 @@ function mockRes(): MockRes {
   const r: MockRes = {
     statusCode: 200,
     body: null,
+    headers: {},
+    setHeader(name: string, value: string | number) { r.headers[name] = value; return r; },
     status(code: number) { r.statusCode = code; return r; },
     json(body: any) { r.body = body; return r; },
   };
@@ -91,8 +96,13 @@ function mockReq(method: string, path: string, body: Record<string, unknown> = {
   } as any;
 }
 
-async function dispatch(method: string, path: string, body: Record<string, unknown> = {}, userId = 62): Promise<MockRes> {
-  const router = healthDataRoutes();
+async function dispatchWithRouter(
+  router: ReturnType<typeof healthDataRoutes>,
+  method: string,
+  path: string,
+  body: Record<string, unknown> = {},
+  userId = 62,
+): Promise<MockRes> {
   const req = mockReq(method, path, body);
   (req as any).userId = userId;
   const res = mockRes();
@@ -106,6 +116,10 @@ async function dispatch(method: string, path: string, body: Record<string, unkno
   });
 
   return res;
+}
+
+async function dispatch(method: string, path: string, body: Record<string, unknown> = {}, userId = 62): Promise<MockRes> {
+  return dispatchWithRouter(healthDataRoutes(), method, path, body, userId);
 }
 
 describe('Health data routes', () => {
@@ -320,6 +334,35 @@ describe('Health data routes', () => {
         latest_sync: expect.any(String),
       })],
     });
+  });
+
+  it('rate-limits latest reads per authenticated user without sharing the bucket', async () => {
+    const originalReadRateLimit = config.ios.readRateLimit;
+    config.ios.readRateLimit = 2;
+
+    try {
+      const router = healthDataRoutes();
+      const first = await dispatchWithRouter(router, 'GET', '/latest', {}, 62);
+      const second = await dispatchWithRouter(router, 'GET', '/latest', {}, 62);
+      const blocked = await dispatchWithRouter(router, 'GET', '/latest', {}, 62);
+      const otherUser = await dispatchWithRouter(router, 'GET', '/latest', {}, 63);
+
+      expect(first.statusCode).toBe(200);
+      expect(second.statusCode).toBe(200);
+      expect(blocked.statusCode).toBe(429);
+      expect(blocked.headers['Retry-After']).toBe(60);
+      expect(blocked.body).toEqual({
+        error: {
+          code: 'RATE_LIMITED',
+          message: 'Too many requests. Slow down.',
+          retryAfter: 60,
+        },
+      });
+      expect(otherUser.statusCode).toBe(200);
+      expect(otherUser.body.ok).toBe(true);
+    } finally {
+      config.ios.readRateLimit = originalReadRateLimit;
+    }
   });
 
   it('advances latest_sync when authoritative same-day data is resynced', async () => {
