@@ -4,7 +4,10 @@ import { join } from 'path';
 
 const ROOT = join(__dirname, '..', '..');
 const DEPLOY_SH = join(ROOT, 'scripts', 'deploy.sh');
+const DEPLOY_STAGING_SH = join(ROOT, 'scripts', 'deploy-staging.sh');
 const PROMOTE_SH = join(ROOT, 'scripts', 'promote-to-prod.sh');
+const ROLLBACK_SH = join(ROOT, 'scripts', 'rollback.sh');
+const PM2_SANITIZED_START_SH = join(ROOT, 'scripts', 'remote-start-sanitized-pm2.sh');
 
 describe('deploy/promote rollback mutation marker', () => {
   it('deploy.sh only leaves the mutation marker when production was touched', () => {
@@ -51,6 +54,52 @@ describe('deploy/promote rollback mutation marker', () => {
     expect(deploy).not.toContain("curl -sf -o /dev/null -H 'x-portal-session:");
     expect(deploy).not.toContain("curl -sf -o /dev/null -H 'Authorization: Bearer $PORTAL_TOKEN'");
     expect(deploy).toContain('curl -sf -o /dev/null http://localhost:8200/api/snapshot');
+  });
+
+  it('deploy preflight requires the portal credential selected by its auth mode', () => {
+    const production = readFileSync(DEPLOY_SH, 'utf8');
+    const staging = readFileSync(DEPLOY_STAGING_SH, 'utf8');
+
+    for (const deploy of [production, staging]) {
+      expect(deploy).toContain('PORTAL_REQUIRE_SESSION_AUTH_VALUE=');
+      expect(deploy).toContain("grep -qE '^PORTAL_SESSION_SECRET=.+");
+      expect(deploy).toContain("grep -qE '^PORTAL_TOKEN=.+");
+    }
+    expect(production).not.toContain('CONTENT_ENGINE_PORT PORTAL_TOKEN OAUTH_ENCRYPTION_KEY');
+    expect(staging).not.toContain('CONTENT_ENGINE_PORT PORTAL_TOKEN OAUTH_ENCRYPTION_KEY');
+  });
+
+  it('production and staging recreate PM2 processes through the sanitized bootstrap', () => {
+    const production = readFileSync(DEPLOY_SH, 'utf8');
+    const staging = readFileSync(DEPLOY_STAGING_SH, 'utf8');
+    const bootstrap = readFileSync(PM2_SANITIZED_START_SH, 'utf8');
+
+    expect(production).toContain('< "$LOCAL_DIR/scripts/remote-start-sanitized-pm2.sh"');
+    expect(production).toContain('"nexus-hub,content-engine"');
+    expect(staging).toContain('< "$LOCAL_DIR/scripts/remote-start-sanitized-pm2.sh"');
+    expect(staging).toContain('"nexus-hub-staging,content-engine-staging"');
+    expect(production).toContain('node -r dotenv/config dist/tools/portal-session-token.js');
+    expect(staging).toContain('node -r dotenv/config dist/tools/portal-session-token.js');
+    expect(production).not.toContain('. ./.env');
+    expect(staging).not.toContain('. ./.env');
+    expect(bootstrap).toContain('env -i');
+    expect(bootstrap).toContain('delete "${APP_NAMES[@]}"');
+    expect(bootstrap).toContain('save --force');
+    expect(bootstrap).toContain('PM2 resurrection dump retained prohibited key');
+    expect(bootstrap).not.toContain('. ./.env');
+    expect(bootstrap).not.toContain('source .env');
+  });
+
+  it('rollback recreates both production processes without starting historical PM2 entries by name', () => {
+    const rollback = readFileSync(ROLLBACK_SH, 'utf8');
+
+    expect(rollback).toContain('scp "$LOCAL_DIR/ecosystem.config.js"');
+    expect(rollback).toContain('< "$LOCAL_DIR/scripts/remote-start-sanitized-pm2.sh"');
+    expect(rollback).toContain('"rollback-unknown"');
+    expect(rollback).toContain('"nexus-hub,content-engine"');
+    expect(rollback).not.toContain('$PM2 start content-engine');
+    expect(rollback).not.toContain('$PM2 start nexus-hub');
+    expect(rollback).not.toContain('$PM2 save;');
   });
 
   it('deploy.sh only skips full local verify after signed evidence, clean RC history, and rollback drill gates', () => {

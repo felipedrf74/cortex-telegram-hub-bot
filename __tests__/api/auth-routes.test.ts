@@ -99,6 +99,9 @@ describe('Auth invite registration', () => {
     STAGING: process.env.STAGING,
     IOS_API_ENABLED: process.env.IOS_API_ENABLED,
     IOS_API_JWT_SECRET: process.env.IOS_API_JWT_SECRET,
+    IOS_API_JWT_KEYS: process.env.IOS_API_JWT_KEYS,
+    IOS_API_JWT_ACTIVE_KID: process.env.IOS_API_JWT_ACTIVE_KID,
+    IOS_JWT_EXPIRY: process.env.IOS_JWT_EXPIRY,
     IOS_INVITE_CODE: process.env.IOS_INVITE_CODE,
     IOS_OWNER_CODE: process.env.IOS_OWNER_CODE,
     OWNER_TELEGRAM_ID: process.env.OWNER_TELEGRAM_ID,
@@ -127,6 +130,9 @@ describe('Auth invite registration', () => {
     process.env.STAGING = 'true';
     process.env.IOS_API_ENABLED = 'true';
     process.env.IOS_API_JWT_SECRET = 'test-ios-secret-000000000000000000000000000000';
+    delete process.env.IOS_API_JWT_KEYS;
+    delete process.env.IOS_API_JWT_ACTIVE_KID;
+    process.env.IOS_JWT_EXPIRY = '7d';
     process.env.IOS_INVITE_CODE = 'LOCALBETA_TEST';
     process.env.IOS_OWNER_CODE = 'LOCALOWNER_TEST';
     process.env.OWNER_TELEGRAM_ID = '991122';
@@ -595,6 +601,69 @@ describe('Auth invite registration', () => {
     expect(legacy.refresh_token_hash).toBe(
       crypto.createHash('sha256').update('legacy-refresh-token', 'utf8').digest('hex'),
     );
+  });
+
+  it('advertises the actual configured lifetime for session creation and refresh', async () => {
+    process.env.IOS_JWT_EXPIRY = '2h';
+    const userId = Number(testDb.prepare(`
+      INSERT INTO users (email, first_name, language, auth_provider, daily_cost_limit_usd)
+      VALUES ('jwt-lifetime@example.com', 'Lifetime', 'en', 'email', 0.05)
+    `).run().lastInsertRowid);
+    const { createAuthSessionAndRegisterDevice } = await import('../../src/services/ios-auth-session');
+    const session = createAuthSessionAndRegisterDevice({
+      userId,
+      deviceId: 'jwt-lifetime-device',
+      deviceName: 'iPhone',
+      pushToken: null,
+      user: { first_name: 'Lifetime', language: 'en' },
+    });
+    expect(session.expiresIn).toBe(7200);
+
+    const refreshed = await dispatchAuth('/refresh', { refreshToken: session.refreshToken });
+    expect(refreshed.statusCode).toBe(200);
+    expect(refreshed.body.data.expiresIn).toBe(7200);
+  });
+
+  it('does not create or rotate a session when the configured JWT lifetime is invalid', async () => {
+    const userId = Number(testDb.prepare(`
+      INSERT INTO users (email, first_name, language, auth_provider, daily_cost_limit_usd)
+      VALUES ('jwt-invalid@example.com', 'Invalid', 'en', 'email', 0.05)
+    `).run().lastInsertRowid);
+    const { createAuthSessionAndRegisterDevice } = await import('../../src/services/ios-auth-session');
+
+    process.env.IOS_JWT_EXPIRY = '0s';
+    expect(() => createAuthSessionAndRegisterDevice({
+      userId,
+      deviceId: 'jwt-invalid-new-device',
+      deviceName: 'iPhone',
+      pushToken: null,
+      user: { first_name: 'Invalid', language: 'en' },
+    })).toThrow(/IOS_JWT_EXPIRY/);
+    expect(testDb.prepare(
+      'SELECT COUNT(*) AS count FROM ios_devices WHERE device_id = ?',
+    ).get('jwt-invalid-new-device')).toMatchObject({ count: 0 });
+
+    process.env.IOS_JWT_EXPIRY = '2h';
+    const session = createAuthSessionAndRegisterDevice({
+      userId,
+      deviceId: 'jwt-invalid-refresh-device',
+      deviceName: 'iPhone',
+      pushToken: null,
+      user: { first_name: 'Invalid', language: 'en' },
+    });
+    const before = testDb.prepare(`
+      SELECT refresh_token_hash, previous_refresh_token_hash
+      FROM ios_devices WHERE device_id = 'jwt-invalid-refresh-device'
+    `).get();
+
+    process.env.IOS_JWT_EXPIRY = '0s';
+    const refreshed = await dispatchAuth('/refresh', { refreshToken: session.refreshToken });
+    expect(refreshed.statusCode).toBe(500);
+    const after = testDb.prepare(`
+      SELECT refresh_token_hash, previous_refresh_token_hash
+      FROM ios_devices WHERE device_id = 'jwt-invalid-refresh-device'
+    `).get();
+    expect(after).toEqual(before);
   });
 
   it('returns the authenticated user profile for session rehydration', async () => {

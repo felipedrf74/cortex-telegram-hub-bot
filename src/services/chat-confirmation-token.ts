@@ -2,6 +2,7 @@
 
 import crypto from 'crypto';
 import { config } from '../config';
+import { assertStrongIosJwtSecret } from './ios-jwt';
 
 export interface ChatConfirmationTokenPayload {
   v: 1;
@@ -29,10 +30,23 @@ export interface SignChatConfirmationTokenInput {
 }
 
 function secret(): string {
-  const configured = process.env.IOS_API_JWT_SECRET || config.ios.jwtSecret;
-  if (configured) return configured;
-  if (process.env.NODE_ENV === 'test') return 'test-chat-confirmation-token-secret';
-  throw new Error('IOS_API_JWT_SECRET is required to sign chat confirmation tokens');
+  const configured = process.env.CHAT_CONFIRMATION_HMAC_SECRET
+    || process.env.IOS_API_JWT_SECRET
+    || config.ios.jwtSecret;
+  if (configured) {
+    return assertStrongIosJwtSecret(configured, 'CHAT_CONFIRMATION_HMAC_SECRET');
+  }
+  if (process.env.NODE_ENV === 'test') {
+    return assertStrongIosJwtSecret(
+      'test-chat-confirmation-token-secret-0000000000000000',
+      'CHAT_CONFIRMATION_HMAC_SECRET',
+    );
+  }
+  throw new Error('CHAT_CONFIRMATION_HMAC_SECRET is required to sign chat confirmation tokens');
+}
+
+export function validateChatConfirmationTokenConfiguration(): void {
+  secret();
 }
 
 function base64urlJson(value: unknown): string {

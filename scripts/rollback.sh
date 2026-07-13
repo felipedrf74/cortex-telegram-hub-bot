@@ -29,6 +29,7 @@ set -euo pipefail
 
 SERVER="${DEPLOY_SERVER:-dominguez@serverdominguez}"
 REMOTE_DIR="${DEPLOY_PATH:-/home/dominguez/telegram-hub-bot}"
+LOCAL_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 BACKUP_DIR="/home/dominguez/backups/nexushub"
 PM2="/home/dominguez/.npm-global/bin/pm2"
 
@@ -218,10 +219,28 @@ ssh "$SERVER" "
   fi
 "
 
-# ── 6. Start services ───────────────────────────────
+# ── 6. Recreate services without resurrecting historical PM2 secrets ──
 echo ""
 echo "🟢 Starting services..."
-ssh "$SERVER" "export PATH=\$PATH:$(dirname $PM2) && $PM2 start content-engine 2>/dev/null; $PM2 start nexus-hub; $PM2 save; echo '   ✅ Running'"
+ROLLBACK_RUNTIME_CONFIG="rollback-ecosystem.runtime.config.js"
+scp "$LOCAL_DIR/ecosystem.config.js" "$SERVER:$REMOTE_DIR/$ROLLBACK_RUNTIME_CONFIG"
+ssh "$SERVER" "chmod 600 $REMOTE_DIR/$ROLLBACK_RUNTIME_CONFIG"
+if ssh "$SERVER" bash -s -- \
+  "$REMOTE_DIR" \
+  "$PM2" \
+  "rollback-unknown" \
+  "$ROLLBACK_RUNTIME_CONFIG" \
+  "nexus-hub,content-engine" \
+  "NODE_ENV,ENV,GIT_COMMIT" \
+  < "$LOCAL_DIR/scripts/remote-start-sanitized-pm2.sh"
+then
+  ssh "$SERVER" "rm -f $REMOTE_DIR/$ROLLBACK_RUNTIME_CONFIG"
+  echo "   ✅ Running with sanitized PM2 state"
+else
+  ssh "$SERVER" "rm -f $REMOTE_DIR/$ROLLBACK_RUNTIME_CONFIG" || true
+  echo "   ❌ Sanitized PM2 bootstrap failed after restore"
+  exit 1
+fi
 
 # ── 7. Health check with retries ────────────────────
 echo ""

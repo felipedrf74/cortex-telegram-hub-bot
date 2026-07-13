@@ -47,9 +47,29 @@ function issuePendingTaskCreate() {
 
 afterEach(() => {
   resetPendingChatConfirmationsForTests();
+  vi.unstubAllEnvs();
 });
 
 describe('chat confirmation contract', () => {
+  it('rejects an explicitly configured weak confirmation HMAC', () => {
+    vi.stubEnv('CHAT_CONFIRMATION_HMAC_SECRET', 'x');
+    expect(() => issuePendingTaskCreate()).toThrow(/at least 32 bytes/);
+  });
+
+  it('keeps confirmation signatures stable when the legacy iOS JWT secret rotates', () => {
+    vi.stubEnv('CHAT_CONFIRMATION_HMAC_SECRET', 'confirmation-secret-0000000000000000000000000000');
+    vi.stubEnv('IOS_API_JWT_SECRET', 'legacy-before-000000000000000000000000000000');
+    const { confirmationToken } = issuePendingTaskCreate();
+
+    vi.stubEnv('IOS_API_JWT_SECRET', 'legacy-after-0000000000000000000000000000000');
+    expect(validateChatConfirmationToken(confirmationToken, {
+      userId,
+      tenantId,
+      intentClass: 'task_create',
+      now,
+    })).toMatchObject({ ok: true });
+  });
+
   it('write intent without token returns a pending-confirmation envelope and does not mutate', async () => {
     const executeMutation = vi.fn();
     const { pending, confirmationToken } = issuePendingTaskCreate();

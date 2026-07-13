@@ -105,11 +105,19 @@ ENV_CHECK=$(ssh "$SERVER" "
     exit 0
   fi
   MISSING=''
-  for KEY in DATABASE_PATH PORTAL_PORT CONTENT_ENGINE_PORT PORTAL_TOKEN OAUTH_ENCRYPTION_KEY INTERNAL_API_SECRET AI_CALL_TIMEOUT_MS; do
+  for KEY in DATABASE_PATH PORTAL_PORT CONTENT_ENGINE_PORT OAUTH_ENCRYPTION_KEY INTERNAL_API_SECRET AI_CALL_TIMEOUT_MS; do
     if ! grep -qE \"^\${KEY}=.+\" $STAGING_DIR/.env; then
       MISSING=\"\$MISSING \$KEY\"
     fi
   done
+  PORTAL_REQUIRE_SESSION_AUTH_VALUE=\$(grep -oE '^PORTAL_REQUIRE_SESSION_AUTH=.+' $STAGING_DIR/.env 2>/dev/null | tail -1 | cut -d= -f2- || true)
+  if [ \"\$PORTAL_REQUIRE_SESSION_AUTH_VALUE\" = \"true\" ]; then
+    if ! grep -qE '^PORTAL_SESSION_SECRET=.+' $STAGING_DIR/.env; then
+      MISSING=\"\$MISSING PORTAL_SESSION_SECRET\"
+    fi
+  elif ! grep -qE '^PORTAL_TOKEN=.+' $STAGING_DIR/.env; then
+    MISSING=\"\$MISSING PORTAL_TOKEN\"
+  fi
   if ! grep -qE '^NEXUS_BACKEND_BASE_URL=.+' $STAGING_DIR/.env && ! grep -qE '^NEXUS_BACKEND_PORT=.+' $STAGING_DIR/.env; then
     MISSING=\"\$MISSING NEXUS_BACKEND_BASE_URL_OR_NEXUS_BACKEND_PORT\"
   fi
@@ -231,24 +239,20 @@ ssh "$SERVER" "
 "
 
 # ── 7. Start staging services ────────────────────────
-# If the PM2 entries already exist, restart them. If not (first deploy),
-# the user has to run `pm2 start ecosystem.staging.config.js` manually
-# from the staging dir — see the header comment.
+# Recreate both entries instead of restarting by name. Restarting preserves
+# historical process environments and can repersist secrets in dump.pm2.
 echo ""
 echo "🟢 Starting staging services..."
-ssh "$SERVER" "
-  export PATH=\$PATH:$(dirname $PM2)
-  if $PM2 describe nexus-hub-staging > /dev/null 2>&1; then
-    $PM2 start content-engine-staging 2>/dev/null || true
-    $PM2 start nexus-hub-staging
-    $PM2 save
-    echo '   ✅ Staging running'
-  else
-    echo '   ⚠️  PM2 entries not registered yet.'
-    echo '   First-time setup: ssh in and run:'
-    echo '     cd $STAGING_DIR && pm2 start ecosystem.staging.config.js && pm2 save'
-  fi
-"
+STAGING_COMMIT="$(git rev-parse HEAD)"
+ssh "$SERVER" bash -s -- \
+  "$STAGING_DIR" \
+  "$PM2" \
+  "$STAGING_COMMIT" \
+  "ecosystem.staging.config.js" \
+  "nexus-hub-staging,content-engine-staging" \
+  "NODE_ENV,ENV,STAGING,PORTAL_PORT,CONTENT_ENGINE_PORT,NEXUS_BACKEND_BASE_URL,NEXUS_BACKEND_PORT,AI_CALL_TIMEOUT_MS,DATABASE_PATH,GIT_COMMIT" \
+  < "$LOCAL_DIR/scripts/remote-start-sanitized-pm2.sh"
+echo "   ✅ Staging running with sanitized PM2 state"
 
 # ── 8. Health check ──────────────────────────────────
 # IMPORTANT: do NOT pipe curl into `head` here — `head` always succeeds
@@ -277,10 +281,7 @@ if [ "$PORTAL_REQUIRE_SESSION_AUTH" = "true" ]; then
 set -e
 STAGING_DIR="$1"
 cd "$STAGING_DIR"
-set -a
-. ./.env
-set +a
-STAGING_SESSION=$(node dist/tools/portal-session-token.js --actor deploy-staging@nexushub.me --scope admin --ttl-ms 600000 --json \
+STAGING_SESSION=$(DOTENV_CONFIG_PATH="$STAGING_DIR/.env" node -r dotenv/config dist/tools/portal-session-token.js --actor deploy-staging@nexushub.me --scope admin --ttl-ms 600000 --json \
   | node -e "let b=''; process.stdin.on('data', c => b += c); process.stdin.on('end', () => { const j = JSON.parse(b); process.stdout.write(j.token || ''); });")
 [ -n "$STAGING_SESSION" ] || exit 1
 HEADER_FILE=$(mktemp)

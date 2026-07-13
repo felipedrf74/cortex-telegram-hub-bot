@@ -27,6 +27,7 @@ import {
 import { init as initSentry, flush as flushSentry } from './services/error-tracker';
 import type http from 'http';
 import { registerGarminMfaNotifier } from './services/garmin-mfa-notifier';
+import { validateIosApiSecurityConfiguration } from './services/ios-api-security';
 
 async function main(): Promise<void> {
   logger.info('Starting Nexus Hub...');
@@ -40,6 +41,10 @@ async function main(): Promise<void> {
     release: config.sentry.release || undefined,
     tracesSampleRate: config.sentry.tracesSampleRate,
   });
+
+  // Fail after error tracking is ready, but before opening the database or
+  // accepting traffic, if the iOS JWT keyring or lifetime is unsafe.
+  validateIosApiSecurityConfiguration(config.ios.enabled);
 
   // Initialize database
   initDatabase();
