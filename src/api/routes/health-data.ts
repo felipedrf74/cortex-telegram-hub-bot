@@ -207,6 +207,7 @@ function prepareAppleHealthUpsert(db: Database.Database): AppleHealthUpsert {
       ? 'source_name'
       : null;
   const hasSyncedAt = columnNames.has('synced_at');
+  const hasCreatedAt = columnNames.has('created_at');
   const hasEncryptedDataJson = columnNames.has('encrypted_data_json');
 
   const insertColumns = ['user_id', 'date', 'data_type', 'data_json'];
@@ -226,6 +227,9 @@ function prepareAppleHealthUpsert(db: Database.Database): AppleHealthUpsert {
   }
   if (hasSyncedAt) {
     updates.push(`synced_at = datetime('now')`);
+  }
+  if (hasCreatedAt) {
+    updates.push(`created_at = datetime('now')`);
   }
 
   const conflictTarget = sourceColumn === 'source_name'
@@ -434,12 +438,19 @@ export function healthDataRoutes(): Router {
     const { userId } = req as AuthenticatedRequest;
     try {
       const db = getDb();
+      const tableInfo = db.prepare(`PRAGMA table_info(apple_health_data)`).all() as Array<{ name: string }>;
+      const columnNames = new Set(tableInfo.map((row) => row.name));
+      const latestSyncColumn = columnNames.has('created_at')
+        ? 'created_at'
+        : columnNames.has('synced_at')
+          ? 'synced_at'
+          : 'date';
       const rows = db.prepare(`
-        SELECT data_type, MAX(date) as latest_date, MAX(synced_at) as latest_sync
+        SELECT data_type, MAX(date) as latest_date, MAX(${latestSyncColumn}) as latest_sync
         FROM apple_health_data
         WHERE user_id = ?
         GROUP BY data_type
-      `).all(userId) as Array<{ data_type: string; latest_date: string; latest_sync: string }>;
+      `).all(userId) as Array<{ data_type: string; latest_date: string; latest_sync: string | null }>;
 
       sendSuccess(res, { types: rows });
     } catch (err: any) {

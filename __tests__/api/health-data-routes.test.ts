@@ -302,6 +302,101 @@ describe('Health data routes', () => {
     ]);
   });
 
+  it('returns the latest sync from the authoritative created_at schema', async () => {
+    const sync = await dispatch('POST', '/sync', {
+      date: '2026-04-16',
+      hrvMs: 72,
+    });
+    expect(sync.statusCode).toBe(200);
+
+    const latest = await dispatch('GET', '/latest');
+
+    expect(latest.statusCode, JSON.stringify(latest.body)).toBe(200);
+    expect(latest.body).toEqual({
+      ok: true,
+      types: [expect.objectContaining({
+        data_type: 'hrv',
+        latest_date: '2026-04-16',
+        latest_sync: expect.any(String),
+      })],
+    });
+  });
+
+  it('advances latest_sync when authoritative same-day data is resynced', async () => {
+    const first = await dispatch('POST', '/sync', {
+      date: '2026-04-16',
+      hrvMs: 70,
+    });
+    expect(first.statusCode).toBe(200);
+
+    testDb.prepare(`
+      UPDATE apple_health_data
+         SET created_at = '2000-01-01 00:00:00'
+       WHERE user_id = 62 AND date = '2026-04-16' AND data_type = 'hrv'
+    `).run();
+
+    const second = await dispatch('POST', '/sync', {
+      date: '2026-04-16',
+      hrvMs: 71,
+    });
+    expect(second.statusCode).toBe(200);
+
+    const latest = await dispatch('GET', '/latest');
+    expect(latest.statusCode).toBe(200);
+    const hrv = latest.body.types.find((row: { data_type: string }) => row.data_type === 'hrv');
+    expect(hrv.latest_sync).not.toBe('2000-01-01 00:00:00');
+  });
+
+  it('keeps latest-sync compatibility with the legacy synced_at schema', async () => {
+    testDb.exec(`
+      DROP TABLE apple_health_data;
+      CREATE TABLE apple_health_data (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER NOT NULL,
+        date TEXT NOT NULL,
+        data_type TEXT NOT NULL,
+        data_json TEXT NOT NULL,
+        source TEXT NOT NULL DEFAULT 'ios_app',
+        synced_at TEXT NOT NULL DEFAULT (datetime('now')),
+        UNIQUE(user_id, date, data_type)
+      );
+      INSERT INTO apple_health_data (user_id, date, data_type, data_json, synced_at)
+      VALUES (62, '2026-04-15', 'steps', '{"value": 1000}', '2026-04-15 12:00:00');
+    `);
+
+    const latest = await dispatch('GET', '/latest');
+
+    expect(latest.statusCode, JSON.stringify(latest.body)).toBe(200);
+    expect(latest.body.types).toEqual([{
+      data_type: 'steps',
+      latest_date: '2026-04-15',
+      latest_sync: '2026-04-15 12:00:00',
+    }]);
+  });
+
+  it('prefers authoritative created_at when both timestamp columns exist', async () => {
+    const sync = await dispatch('POST', '/sync', {
+      date: '2026-04-16',
+      hrvMs: 72,
+    });
+    expect(sync.statusCode).toBe(200);
+    testDb.exec(`
+      ALTER TABLE apple_health_data ADD COLUMN synced_at TEXT;
+      UPDATE apple_health_data
+         SET created_at = '2026-04-16 12:00:00',
+             synced_at = '2099-01-01 00:00:00'
+       WHERE user_id = 62 AND data_type = 'hrv';
+    `);
+
+    const latest = await dispatch('GET', '/latest');
+
+    expect(latest.statusCode, JSON.stringify(latest.body)).toBe(200);
+    expect(latest.body.types).toEqual([expect.objectContaining({
+      data_type: 'hrv',
+      latest_sync: '2026-04-16 12:00:00',
+    })]);
+  });
+
   it('sanitizes latest-query failures instead of leaking database internals', async () => {
     testDb.close();
 
