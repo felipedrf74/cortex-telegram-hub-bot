@@ -263,6 +263,27 @@ describe('training-exercise-identity', () => {
     expect(activeExercises.every((exercise) => exercise.exerciseId && exercise.name)).toBe(true);
   });
 
+  it('preserves identity closure when typed M2 generation is enabled', () => {
+    const active = buildTrainingPlanRevisionCandidate(candidateRequest, {
+      env: activeEnv,
+      typedWorkoutValidationEnabled: true,
+    });
+    const activeExercises = active.document.weeks
+      .flatMap((week) => week.workouts)
+      .flatMap((workout) => workout.blocks)
+      .flatMap((block) => block.exercises ?? []);
+
+    expect(active.document.schemaVersion).toBe('training-plan-revision.v2');
+    expect(active.catalogVersion).toBe(TRAINING_EXERCISE_IDENTITY_CATALOG_VERSION);
+    expect(active.catalogSourceHash).toBe(TRAINING_EXERCISE_IDENTITY_EXPECTED_SOURCE_HASH);
+    expect(active.qualityReport.checks).toContainEqual(expect.objectContaining({
+      code: 'EXERCISE_IDENTITY_CLOSURE',
+      status: 'PASS',
+    }));
+    expect(activeExercises.length).toBeGreaterThan(0);
+    expect(activeExercises.every((exercise) => exercise.exerciseId && exercise.name)).toBe(true);
+  });
+
   it('keeps the tool contract legacy-compatible while off and requires stable IDs only while active', () => {
     expect(trainingExerciseToolJsonDescription({})).toBe(
       'JSON array: [{name, sets, reps, weight, rpe, rest_sec, tempo}]',

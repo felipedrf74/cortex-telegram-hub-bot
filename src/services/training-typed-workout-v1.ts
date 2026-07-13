@@ -135,6 +135,8 @@ export interface TrainingTypedStrengthExercisePrescription {
 
 export interface TrainingTypedWorkoutBlock {
   blockId: string;
+  /** Stable semantic objective used by adaptation/substitution matching. */
+  objectiveId?: string;
   position: number;
   blockType: TrainingTypedWorkoutBlockType;
   purpose: string;
@@ -170,6 +172,15 @@ export interface TrainingTypedPhase {
   recoveryOrLighterPeriod: boolean;
   transitionExplanation: string;
   profileFitExplanation: string;
+  /**
+   * M2 review metadata. Optional so dormant M1 snapshots remain byte-for-byte
+   * compatible; new typed revisions always populate both fields.
+   */
+  targetWorkoutTypeDistribution?: Array<{
+    sessionType: SessionType;
+    targetPerWeek: number;
+  }>;
+  profileFitInputs?: string[];
 }
 
 export interface TrainingTypedPlanValidationDocument {
@@ -309,7 +320,9 @@ export function validateTrainingTypedPlanDocument(
       if (!workout.isStandalone && workout.phaseKey !== week.phaseKey) {
         failures.push('TYPED_WORKOUT_PHASE_BINDING');
       }
-      failures.push(...collectWorkoutFailures(workout));
+      failures.push(...collectWorkoutFailures(workout, {
+        requireObjectiveIds: document.sourceDocumentSchemaVersion === 'training-plan-revision.v2',
+      }));
     }
   }
 
@@ -319,17 +332,28 @@ export function validateTrainingTypedPlanDocument(
 
 export function validateTrainingTypedWorkout(
   workout: TrainingTypedWorkout,
+  options: { requireObjectiveIds?: boolean } = {},
 ): TrainingTypedValidationCheck[] {
-  const failures = collectWorkoutFailures(workout);
+  const failures = collectWorkoutFailures(workout, options);
   throwIfFailures(failures);
   return [
     { code: 'TYPED_BLOCK_ORDERING', status: 'PASS', evidence: `${workout.blocks.length} ordered priority-bearing block(s)` },
+    {
+      code: 'TYPED_BLOCK_OBJECTIVE_IDS',
+      status: 'PASS',
+      evidence: workout.blocks.every((block) => block.objectiveId != null)
+        ? 'Every block has a stable semantic objective identifier'
+        : 'Legacy-compatible blocks omit optional objective identifiers',
+    },
     { code: 'TYPED_PRESCRIPTION_COMPATIBILITY', status: 'PASS', evidence: `${workout.sessionType} uses a compatible primary prescription` },
     { code: 'TYPED_STANDALONE_PHASE_OMISSION', status: 'PASS', evidence: workout.isStandalone ? 'Standalone workout is phase-free' : 'Plan workout phase binding is explicit' },
   ];
 }
 
-function collectWorkoutFailures(workout: TrainingTypedWorkout): string[] {
+function collectWorkoutFailures(
+  workout: TrainingTypedWorkout,
+  options: { requireObjectiveIds?: boolean } = {},
+): string[] {
   const failures: string[] = [];
   const capability = resolveTrainingWorkoutCapability(workout.sessionType);
   const canonical = capability.canonical;
@@ -362,9 +386,15 @@ function collectWorkoutFailures(workout: TrainingTypedWorkout): string[] {
   }
 
   const blockIds = new Set<string>();
+  const objectiveIds = new Set<string>();
   let priorBlockTypeOrder = 0;
   for (const [index, block] of workout.blocks.entries()) {
     const currentOrder = BLOCK_TYPE_ORDER[block.blockType];
+    const objectiveIdValid = block.objectiveId == null
+      ? options.requireObjectiveIds !== true
+      : /^[a-z][a-z0-9_.:-]{2,120}$/.test(block.objectiveId)
+        && !objectiveIds.has(block.objectiveId);
+    if (!objectiveIdValid) failures.push('TYPED_BLOCK_OBJECTIVE_ID_INVALID');
     if (!nonEmpty(block.blockId)
         || blockIds.has(block.blockId)
         || block.position !== index + 1
@@ -378,6 +408,7 @@ function collectWorkoutFailures(workout: TrainingTypedWorkout): string[] {
       failures.push('TYPED_BLOCK_ORDERING_OR_BOUNDS');
     }
     blockIds.add(block.blockId);
+    if (block.objectiveId != null) objectiveIds.add(block.objectiveId);
     priorBlockTypeOrder = currentOrder ?? priorBlockTypeOrder;
     failures.push(...collectPrescriptionFailures(block.prescription));
     if (block.exercises != null) {
@@ -527,6 +558,13 @@ function typedValidationChecks(document: TrainingTypedPlanValidationDocument): T
       code: 'TYPED_BLOCK_AND_PRESCRIPTION_VALIDATION',
       status: 'PASS',
       evidence: 'Every workout conserves duration and uses ordered priority-bearing modality-compatible blocks',
+    },
+    {
+      code: 'TYPED_BLOCK_OBJECTIVE_IDS',
+      status: 'PASS',
+      evidence: document.sourceDocumentSchemaVersion === 'training-plan-revision.v2'
+        ? 'Every v2 block has a unique stable semantic objective identifier'
+        : 'Objective identifiers remain optional for legacy snapshots',
     },
     {
       code: 'TYPED_STANDALONE_PHASE_OMISSION',

@@ -7,6 +7,10 @@ import type { TrainingPlanCandidateRequest } from '../../src/services/training-p
 import { activateApprovedTrainingPlanRevision } from '../../src/services/training-plan-revision-activation';
 import { createTrainingPlanCandidateRevision } from '../../src/services/training-plan-revisions';
 import { runLegacyActivePlanBackfill } from '../../src/services/training-plan-revision-legacy-backfill';
+import {
+  TRAINING_EXERCISE_IDENTITY_CATALOG_VERSION,
+  TRAINING_EXERCISE_IDENTITY_EXPECTED_SOURCE_HASH,
+} from '../../src/services/training-exercise-identity';
 
 const activeEnv = {
   TRAINING_PLAN_REVISION_V1_MODE_USER_7: 'active',
@@ -133,6 +137,128 @@ describe('training-plan-revision-activation', () => {
     });
   });
 
+  it('materializes typed event blocks and modality prescriptions without changing flag-off projection behavior', async () => {
+    await withDb(async () => {
+      const typedRequest: TrainingPlanCandidateRequest = {
+        planMode: 'event_based', goal: 'event_performance', discipline: 'triathlon', horizonWeeks: 8,
+        event: { name: 'Target triathlon', date: '2026-10-18', priority: 'A' },
+        profile: {
+          experienceLevel: 'intermediate', sessionsPerWeek: 4, sessionDurationMinutes: 45,
+          availableDays: ['monday', 'wednesday', 'friday', 'sunday'],
+          equipmentIds: [], location: 'home',
+        },
+      };
+      const typedEnv = {
+        ...activeEnv,
+        TRAINING_TYPED_WORKOUT_V1_ENABLED_USER_7: 'true',
+        TRAINING_EXERCISE_IDENTITY_V1_MODE_USER_7: 'active',
+      };
+      const revision = createBoundRevision(typedRequest, typedEnv);
+      seedApprovalEvidence(revision.revisionId, revision.contentHash, revision.creationContextVersion, 'execution-typed');
+      expect(revision.catalog).toMatchObject({
+        version: TRAINING_EXERCISE_IDENTITY_CATALOG_VERSION,
+        sourceHash: TRAINING_EXERCISE_IDENTITY_EXPECTED_SOURCE_HASH,
+      });
+      await expect(activateApprovedTrainingPlanRevision({
+        scope: { userId: 7, tenantId: 7 }, revisionId: revision.revisionId,
+        approval: {
+          decisionId: 'decision-1', decisionRecordVersion: 3, actionExecutionId: 'execution-typed',
+          approvedContentHash: revision.contentHash, approvedContextVersion: revision.creationContextVersion,
+        },
+        activationDate: '2026-07-13',
+        env: { ...activeEnv, TRAINING_TYPED_WORKOUT_V1_ENABLED_USER_7: 'true' },
+      })).rejects.toMatchObject({ code: 'TRAINING_REVISION_REVALIDATION_STALE' });
+      await expect(activateApprovedTrainingPlanRevision({
+        scope: { userId: 7, tenantId: 7 }, revisionId: revision.revisionId,
+        approval: {
+          decisionId: 'decision-1', decisionRecordVersion: 3, actionExecutionId: 'execution-typed',
+          approvedContentHash: revision.contentHash, approvedContextVersion: revision.creationContextVersion,
+        },
+        activationDate: '2026-07-13',
+        env: { ...activeEnv, TRAINING_EXERCISE_IDENTITY_V1_MODE_USER_7: 'active' },
+      })).rejects.toMatchObject({ code: 'TRAINING_REVISION_REVALIDATION_STALE' });
+      expect(db.prepare('SELECT COUNT(*) AS count FROM fitness_training_plans').get()).toEqual({ count: 0 });
+
+      const result = await activateApprovedTrainingPlanRevision({
+        scope: { userId: 7, tenantId: 7 }, revisionId: revision.revisionId,
+        approval: {
+          decisionId: 'decision-1', decisionRecordVersion: 3, actionExecutionId: 'execution-typed',
+          approvedContentHash: revision.contentHash, approvedContextVersion: revision.creationContextVersion,
+        },
+        activationDate: '2026-07-13', env: typedEnv,
+      });
+      expect(result.projection).toMatchObject({ weekCount: 8, sessionCount: 56 });
+      expect(db.prepare(`
+        SELECT sport, goal, periodization, preferences_json AS preferencesJson,
+               source_revision_id AS sourceRevisionId
+          FROM fitness_training_plans
+      `).get()).toMatchObject({
+        sport: 'triathlon', goal: 'event_performance', periodization: 'block', sourceRevisionId: revision.revisionId,
+        preferencesJson: expect.any(String),
+      });
+      const projectedPreferences = JSON.parse((db.prepare(`
+        SELECT preferences_json AS preferencesJson FROM fitness_training_plans
+      `).get() as { preferencesJson: string }).preferencesJson);
+      expect(projectedPreferences).toEqual(expect.objectContaining({
+        source: 'training_plan_revision_v1',
+        revisionId: revision.revisionId,
+        revisionSchemaVersion: 'training-plan-revision.v2',
+        goalMode: 'event_based',
+        raceDate: '2026-10-18',
+        trainingPriority: 'A',
+        event: { name: 'Target triathlon', date: '2026-10-18', priority: 'A' },
+      }));
+      const structured = db.prepare(`
+        SELECT description_json AS descriptionJson, intensity_text AS intensityText
+          FROM training_sessions WHERE session_type = 'brick' LIMIT 1
+      `).get() as { descriptionJson: string; intensityText: string };
+      const parsedDescription = JSON.parse(structured.descriptionJson) as {
+        schemaVersion: string;
+        blocks: Array<{ blockType: string; prescription: { kind: string } }>;
+      };
+      expect(parsedDescription.schemaVersion).toBe('training-workout-blocks.v1');
+      expect(parsedDescription.blocks.find((block) => block.blockType === 'PRIMARY_WORK'))
+        .toMatchObject({ prescription: { kind: 'mixed_session' } });
+      expect(structured.intensityText).toMatch(/ordered modality segments/);
+    });
+  });
+
+  it('activates typed strength revisions with canonical exercise identities intact', async () => {
+    await withDb(async () => {
+      const typedEnv = {
+        ...activeEnv,
+        TRAINING_TYPED_WORKOUT_V1_ENABLED_USER_7: 'true',
+        TRAINING_EXERCISE_IDENTITY_V1_MODE_USER_7: 'active',
+      };
+      const revision = createBoundRevision(request, typedEnv);
+      const canonicalExercises = revision.document.weeks
+        .flatMap((week) => week.workouts)
+        .flatMap((workout) => workout.blocks)
+        .flatMap((block) => block.exercises ?? []);
+      expect(revision.documentSchemaVersion).toBe('training-plan-revision.v2');
+      expect(revision.catalog).toMatchObject({
+        version: TRAINING_EXERCISE_IDENTITY_CATALOG_VERSION,
+        sourceHash: TRAINING_EXERCISE_IDENTITY_EXPECTED_SOURCE_HASH,
+      });
+      expect(canonicalExercises.length).toBeGreaterThan(0);
+      expect(canonicalExercises.every((exercise) => exercise.exerciseId && exercise.name)).toBe(true);
+
+      seedApprovalEvidence(revision.revisionId, revision.contentHash, revision.creationContextVersion, 'execution-typed-strength');
+      const result = await activateApprovedTrainingPlanRevision({
+        scope: { userId: 7, tenantId: 7 }, revisionId: revision.revisionId,
+        approval: {
+          decisionId: 'decision-1', decisionRecordVersion: 3, actionExecutionId: 'execution-typed-strength',
+          approvedContentHash: revision.contentHash, approvedContextVersion: revision.creationContextVersion,
+        },
+        activationDate: '2026-07-13', env: typedEnv,
+      });
+      expect(result).toMatchObject({ revisionId: revision.revisionId, idempotent: false });
+      expect(db.prepare('SELECT lifecycle_state, approval_state FROM training_plan_revisions').get()).toEqual({
+        lifecycle_state: 'ACTIVE', approval_state: 'APPROVED',
+      });
+    });
+  });
+
   it('never replaces an existing legacy active plan in Milestone 1', async () => {
     await withDb(async () => {
       const revision = createBoundRevision();
@@ -185,10 +311,13 @@ describe('training-plan-revision-activation', () => {
     });
   });
 
-  function createBoundRevision() {
+  function createBoundRevision(
+    candidateRequest: TrainingPlanCandidateRequest = request,
+    env: NodeJS.ProcessEnv = activeEnv,
+  ) {
     const created = createTrainingPlanCandidateRevision({
       scope: { userId: 7, tenantId: 7 }, idempotencyKey: `candidate-${Math.random()}`,
-      request, env: activeEnv,
+      request: candidateRequest, env,
     });
     const revision = created.candidates[0];
     db.prepare(`

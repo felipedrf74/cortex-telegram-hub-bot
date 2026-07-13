@@ -51,6 +51,7 @@ describe('training-workout-capability-registry', () => {
       presentationFamily: 'unknown',
       presentationLabel: 'Unknown workout type',
       milestone1GenerationEnabled: false,
+      typedWorkoutGenerationEnabled: false,
     });
   });
 });

@@ -18,6 +18,7 @@ describe('Training plan revision API contracts', () => {
   const priorEnrollment = process.env.TRAINING_PLAN_REVISION_V1_MODE_USER_7;
   const priorFlow = process.env.DECISION_FLOW_V1_ENFORCE_ENABLED;
   const priorSnapshotKey = process.env.TRAINING_PROFILE_SNAPSHOT_ENCRYPTION_KEY;
+  const priorTypedWorkout = process.env.TRAINING_TYPED_WORKOUT_V1_ENABLED_USER_7;
 
   beforeEach(async () => {
     db = new Database(':memory:');
@@ -51,6 +52,55 @@ describe('Training plan revision API contracts', () => {
     else process.env.DECISION_FLOW_V1_ENFORCE_ENABLED = priorFlow;
     if (priorSnapshotKey === undefined) delete process.env.TRAINING_PROFILE_SNAPSHOT_ENCRYPTION_KEY;
     else process.env.TRAINING_PROFILE_SNAPSHOT_ENCRYPTION_KEY = priorSnapshotKey;
+    if (priorTypedWorkout === undefined) delete process.env.TRAINING_TYPED_WORKOUT_V1_ENABLED_USER_7;
+    else process.env.TRAINING_TYPED_WORKOUT_V1_ENABLED_USER_7 = priorTypedWorkout;
+  });
+
+  it('exposes typed capabilities and a phase-aware revision read model only for an explicitly enabled scope', async () => {
+    await withDatabaseForTestAsync(db, async () => {
+      process.env.TRAINING_PLAN_REVISION_V1_MODE_USER_7 = 'active';
+      process.env.DECISION_FLOW_V1_ENFORCE_ENABLED = 'true';
+      process.env.TRAINING_TYPED_WORKOUT_V1_ENABLED_USER_7 = 'true';
+      process.env.TRAINING_PROFILE_SNAPSHOT_ENCRYPTION_KEY = 'training-revision-test-encryption-key-0001';
+
+      const capabilities = await (await fetch(`${baseUrl}/plan/revision-capabilities`)).json() as any;
+      expect(capabilities.data).toMatchObject({
+        typedWorkoutGenerationEnabled: true,
+        typedGenerationSessionTypes: expect.arrayContaining(['easy_run', 'brick', 'rest']),
+        typedGenerationPlanModes: ['event_based', 'continuous', 'maintenance', 'return_to_training'],
+      });
+      expect(capabilities.data.typedGenerationSessionTypes).toHaveLength(21);
+
+      const response = await fetch(`${baseUrl}/plan/candidates`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'idempotency-key': 'typed-event-api' },
+        body: JSON.stringify({
+          planMode: 'event_based', goal: 'event_performance', discipline: 'running', horizonWeeks: 8,
+          event: { name: 'Target 10K', date: '2026-10-11', priority: 'A' },
+          profile: {
+            experienceLevel: 'intermediate', sessionsPerWeek: 4, sessionDurationMinutes: 45,
+            availableDays: ['monday', 'wednesday', 'friday', 'sunday'], equipmentIds: [], location: 'home',
+          },
+        }),
+      });
+      expect(response.status).toBe(201);
+      const body = await response.json() as any;
+      const revision = body.data.candidateSet.candidates[0];
+      expect(revision.documentSchemaVersion).toBe('training-plan-revision.v2');
+
+      const read = await (await fetch(`${baseUrl}/plan/revisions/${revision.revisionId}`)).json() as any;
+      expect(read.data.reviewModel).toMatchObject({
+        schemaVersion: 'training-plan-review-read-model.v1',
+        revisionId: revision.revisionId,
+        presentationMode: 'TYPED',
+        phases: [
+          { phaseType: 'BASE' }, { phaseType: 'BUILD' }, { phaseType: 'PEAK' },
+          { phaseType: 'TAPER' }, { phaseType: 'RACE' },
+        ],
+      });
+      expect(read.data.reviewModel.weeks[0].workouts.every((workout: any) =>
+        workout.sessionTypeClassification === 'CANONICAL' && workout.fallbackUsed === false)).toBe(true);
+    });
   });
 
   it('stays dark by default and in shadow mode', async () => {
