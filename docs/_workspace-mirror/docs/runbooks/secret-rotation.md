@@ -1,6 +1,6 @@
 Status: canonical
 Owner: release lead (Felipe)
-Last verified: 2026-05-05
+Last verified: 2026-07-13
 Update policy: update when `.env.example` changes, a provider adds a new
 credential, or a rotation drill reveals a missing verification step.
 
@@ -28,7 +28,7 @@ in progress.
 | Secret | Rotation source | Verification |
 | --- | --- | --- |
 | `JWT_SECRET` | generate with `openssl rand -hex 64` | existing sessions invalidate; login and `/api/v1/auth/me` work |
-| `OAUTH_ENCRYPTION_KEY` | generate with `openssl rand -hex 64` | run `npx tsx scripts/rotate-oauth-encryption-key.ts --old-key ... --new-key ... --apply` |
+| `OAUTH_ENCRYPTION_KEY`, `GARMIN_ENCRYPTION_KEY`, `HEALTH_DATA_ENCRYPTION_KEY` | generate a different value for every domain and environment with `openssl rand -hex 64` | use the offline procedure below; verify all encrypted rows with the new dedicated keys before restart |
 | `HEALTH_TOKEN` | generate with `openssl rand -hex 32` | `/health/detailed` rejects old token and accepts new token |
 | `PORTAL_SESSION_SECRET` | generate with `openssl rand -hex 64` | portal admin login/session smoke passes |
 | `INTERNAL_API_SECRET` | generate with `openssl rand -hex 64` | content-engine internal calls succeed |
@@ -51,27 +51,104 @@ in progress.
 | APNs | APNs key/team/bundle values | Apple Developer | TestFlight APNs token upload and safe notification |
 | Cloudflare | tunnel credential JSON/API token | Cloudflare dashboard/CLI | public `/health` route reaches origin |
 
-## OAuth Encryption Key Rotation
+## Data Encryption Key Rotation
 
-Default dry-run:
+The compiled `security:rotate-data-encryption` command covers every encrypted
+field that can currently inherit `OAUTH_ENCRYPTION_KEY`:
 
-```bash
-OLD_OAUTH_ENCRYPTION_KEY="$old" NEW_OAUTH_ENCRYPTION_KEY="$new" \
-  npx tsx scripts/rotate-oauth-encryption-key.ts
+- `user_oauth_tokens.access_token` and `refresh_token`;
+- `garmin_sessions.oauth1_token_json` and `oauth2_token_json`;
+- `garmin_user_tokens.garmin_email` and `tokens_json`;
+- `apple_health_data.encrypted_data_json`.
+
+It defaults to a read-only dry-run, recognizes values already encrypted with
+the destination keys, and aborts if any nonempty value decrypts with neither
+the explicit old nor new key. Apply rotates all present tables in one SQLite
+transaction and verifies the result before and after commit. A missing optional
+table is reported and skipped; an existing table with an unexpected schema is
+a hard failure.
+
+### Key preparation
+
+Generate six distinct destination keys: OAuth, Garmin, and Health for staging,
+then three different values for production. Load old, new, and peer-environment
+values from the encrypted vault into a non-history shell. Never put key values
+on the command line, in a ticket, or in captured output.
+
+The command requires these environment variables:
+
+```text
+OLD_OAUTH_ENCRYPTION_KEY
+OLD_GARMIN_ENCRYPTION_KEY
+OLD_HEALTH_DATA_ENCRYPTION_KEY
+NEW_OAUTH_ENCRYPTION_KEY
+NEW_GARMIN_ENCRYPTION_KEY
+NEW_HEALTH_DATA_ENCRYPTION_KEY
+PEER_OAUTH_ENCRYPTION_KEY
+PEER_GARMIN_ENCRYPTION_KEY
+PEER_HEALTH_DATA_ENCRYPTION_KEY
 ```
 
-Apply after dry-run succeeds:
+When Garmin and Health currently fall back to the old OAuth key, set both
+corresponding `OLD_*` variables to that old OAuth value. Their `NEW_*` values
+must still be dedicated and distinct. `PEER_*` means the active keys in the
+other environment; the tool rejects cross-environment destination-key reuse.
+
+### Dry-run
+
+Build the exact source revision that will be used for the maintenance and run:
 
 ```bash
-OLD_OAUTH_ENCRYPTION_KEY="$old" NEW_OAUTH_ENCRYPTION_KEY="$new" \
-  npx tsx scripts/rotate-oauth-encryption-key.ts --apply
+npm run build
+npm run security:rotate-data-encryption -- \
+  --environment=staging \
+  --database=/absolute/path/to/staging.db
 ```
 
-The script re-encrypts `user_oauth_tokens` in one SQLite transaction. If any row
-fails, the table rolls back. After apply, set `OAUTH_ENCRYPTION_KEY` to the new
-value and restart the service. Do not revoke the old key until provider
-connection smoke passes for Google, Outlook, Notion/Todoist if configured, and
-wearable providers if present.
+Review only counts and table-presence status. A dry-run does not mutate the
+database and does not need a backup or service-stop acknowledgement. Resolve
+every undecryptable-value or schema error before scheduling apply.
+
+### Apply
+
+Apply is an offline maintenance operation. For staging first, then production:
+
+1. Stop the service and all workers that can write the database; verify writes
+   are drained.
+2. Create a separate SQLite-consistent backup, protect it, and retain it until
+   post-restart smoke passes. Example:
+
+   ```bash
+   sqlite3 "$DATABASE_PATH" ".backup '$BACKUP_PATH'"
+   chmod 600 "$BACKUP_PATH"
+   sqlite3 "$BACKUP_PATH" 'PRAGMA integrity_check;'
+   ```
+
+3. Re-run dry-run against the stopped database.
+4. Apply with the exact acknowledgement:
+
+   ```bash
+   npm run security:rotate-data-encryption -- \
+     --environment=staging \
+     --database="$DATABASE_PATH" \
+     --apply \
+     --backup="$BACKUP_PATH" \
+     --services-stopped-ack=SERVICES_STOPPED_AND_WRITES_DRAINED
+   ```
+
+The backup must be an absolute, separate, current, owner-owned regular file
+with no group or other permissions. Its SQLite integrity check and encrypted
+rotation surface must match the stopped source database. Any mismatch, wrong
+key, concurrent-row change, update failure, or verification failure aborts the
+operation; transaction failures commit no changes.
+
+After apply, set the environment's active `OAUTH_ENCRYPTION_KEY`,
+`GARMIN_ENCRYPTION_KEY`, and `HEALTH_DATA_ENCRYPTION_KEY` to the three new
+values before restart. Confirm boot, health, OAuth provider refresh, Garmin
+connection/session reads, and Apple Health ingestion/readback for an authorized
+test user. Rotate staging fully before production. Do not remove the protected
+backup or revoke the old keys until the environment has passed focused smoke
+and the owner accepts the result.
 
 ## Emergency Rotation
 

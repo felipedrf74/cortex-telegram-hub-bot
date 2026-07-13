@@ -24,6 +24,7 @@
     "typecheck": "tsc --noEmit",
     "preflight:owner-bootstrap": "node dist/tools/owner-bootstrap-preflight.js --strict",
     "portal:session:mint": "node dist/tools/portal-session-token.js",
+    "security:rotate-data-encryption": "node dist/tools/rotate-data-encryption-keys.js",
     "chat:eval": "node dist/tools/chat-evaluation-harness.js",
     "chat:eval-live": "npx tsx scripts/run-chat-eval-live.ts",
     "chat:test-phase": "npx tsx scripts/chat-test-phase.ts",
