@@ -800,10 +800,10 @@ function isOptionalPortableReference(value: string | null | undefined): boolean 
 
 function gateRequirements(): TrainingExerciseMediaReviewBundle['gateRequirements'] {
   return [
-    { gate: 'DOMAIN', status: 'PENDING', evidenceRequired: ['Independent movement and equipment representation review for every selected asset.', 'Immutable review subject hash bound to the selected asset bytes.'] },
+    { gate: 'DOMAIN', status: 'PENDING', evidenceRequired: ['Independent movement and equipment representation review for every selected asset.', 'Cross-catalog visual consistency review must reconcile the current mixed painterly and photoreal rendering styles before approval.', 'Immutable review subject hash bound to the selected asset bytes.'] },
     { gate: 'LEGAL', status: 'PENDING', evidenceRequired: ['Rights-holder and license evidence for intended distribution.', 'Publication-allowed provenance bound to every selected asset.'] },
     { gate: 'ACCESSIBILITY', status: 'PENDING', evidenceRequired: ['Approved accessibility description in every required locale.', 'Accessibility review bound to the final localization bundle hash.'] },
-    { gate: 'OWNER', status: 'PENDING', evidenceRequired: ['Asset-level owner review.', 'Immutable owner approval bound to the final compiled package hash.'] },
+    { gate: 'OWNER', status: 'PENDING', evidenceRequired: ['Asset-level owner review.', 'Owner sign-off must confirm one coherent visual style across the final asset set after style reconciliation.', 'Immutable owner approval bound to the final compiled package hash.'] },
     { gate: 'LOCALIZATION', status: 'PENDING', evidenceRequired: ['Human-reviewed instructions and accessibility descriptions for en-US, pt-PT, and pt-BR.', 'Review hashes bound to each final localized record.'] },
     { gate: 'APPROVED_HOST', status: 'PENDING', evidenceRequired: ['Approved immutable HTTPS origin.', 'Host approval bound to the exact origin set and final delivery URLs.'] },
   ];
