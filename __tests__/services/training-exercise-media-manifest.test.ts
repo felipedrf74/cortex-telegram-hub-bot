@@ -197,12 +197,13 @@ describe('Training exercise media manifest tooling', () => {
     });
 
     expect(checkedIn).toEqual(generated);
-    expect(checkedIn.packageHash).toBe('464ac052a08368f711d611fd5bec22395bbd5fad9518360b505b9c709fb0a7d9');
+    expect(checkedIn.packageHash).toBe('73bee5adec1718d3c4128741aec17d136c8404f8ff2a2109791b58a5f165edd1');
     expect(findForbiddenMediaBinaries()).toEqual([]);
     expect(validation.structurallyValid).toBe(true);
     expect(validation.activationReady).toBe(false);
     expect(validation.coverage).toMatchObject({
       expectedExercises: 158,
+      listedExercises: 158,
       approvedExercises: 0,
       approvedAssets: 0,
       instructionLocalizations: 0,
@@ -482,22 +483,18 @@ describe('Training exercise media manifest tooling', () => {
     }
   });
 
-  it('refuses to attest a draft when stored frozen rows drift from its package hash', () => {
+  it('prevents a checked-in draft row from drifting below its package attestation', () => {
     const db = new Database(':memory:');
     try {
       runMigrationsForTest(db);
       const compiled = readCompiledTrainingExerciseMediaPackage();
       seedCompiledTrainingExerciseMediaPackage(db, compiled);
-      db.prepare(`
-        INSERT INTO training_exercise_media_exercises (
-          manifest_id, scope_key, exercise_id, canonical_name, aliases_json,
-          required_views_json, exercise_content_hash, publication_state,
-          exclusion_reason, global_exercise_id, equivalence_hash, created_at
-        ) VALUES (?, '__global__', 'push_up', 'Unattested Push Up', '[]',
-          '["PRIMARY"]', ?, 'DRAFT', NULL, NULL, NULL, '2026-07-12T02:00:00.000Z')
-      `).run(compiled.manifest.manifestId, 'a'.repeat(64));
-      expect(() => seedCompiledTrainingExerciseMediaPackage(db, compiled))
-        .toThrow(/do not match the immutable reviewed package hash/i);
+      expect(() => db.prepare(`
+        UPDATE training_exercise_media_exercises
+           SET canonical_name = 'Unattested Push Up', exercise_content_hash = ?
+         WHERE manifest_id = ? AND scope_key = '__global__' AND exercise_id = 'push_up'
+      `).run('a'.repeat(64), compiled.manifest.manifestId)).toThrow(/exercise rows are immutable/i);
+      expect(() => seedCompiledTrainingExerciseMediaPackage(db, compiled)).not.toThrow();
     } finally {
       db.close();
     }
