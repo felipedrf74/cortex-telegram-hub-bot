@@ -71,3 +71,28 @@ export function decisionSnoozeVersionForItem(item: DecisionApiItem): string {
     expiresAt: item.expiresAt,
   });
 }
+
+/**
+ * Version token for Decision Center actions whose authoritative effect is not
+ * simply dismiss/snooze. It deliberately includes the durable proposal
+ * version and opaque related-entity identities, but never user-facing source
+ * text beyond the already-present safe preview.
+ */
+export function decisionActionVersionForItem(item: DecisionApiItem): string {
+  return hashStable({
+    decisionId: item.decisionId,
+    recordVersion: item.recordVersion,
+    decisionState: item.decisionState,
+    status: item.status,
+    sourceSkill: item.sourceSkill,
+    type: item.type,
+    safePreviewTitle: item.safePreviewTitle,
+    safePreviewBody: item.safePreviewBody,
+    actions: item.actions.map((action) => ({ id: action.id, style: action.style ?? null })),
+    relatedEntities: item.relatedEntities
+      .map((entity) => ({ type: entity.type, id: entity.id }))
+      .sort((left, right) => `${left.type}:${left.id}`.localeCompare(`${right.type}:${right.id}`)),
+    contextVersion: item.contextVersion ?? null,
+    expiresAt: item.expiresAt,
+  });
+}

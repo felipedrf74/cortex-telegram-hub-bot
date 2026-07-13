@@ -42,6 +42,11 @@ import {
 import { computeSharedNotificationActionEffectiveStatus } from './notification-action-state';
 import { decisionRelationshipSemantics } from './decision-relationship-types';
 import { getSecretaryAgendaItemById } from './secretary-scheduling-arbitrator';
+import { normalizeDecisionAction } from './decision-action-contract';
+import {
+  normalizeConflictComparisonAction,
+  normalizeConflictEvaluation,
+} from './decision-conflict-evaluator';
 // content-notification-store only imports this module lazily (await import),
 // so this static edge does not create a require cycle.
 import { listUnreadContentNotificationIdsByTypes } from './content-notification-store';
@@ -1623,7 +1628,7 @@ export function dismissNotificationCenterItem(itemId: string, userId: number, te
   getDb().prepare(`
     UPDATE notification_center_items
     SET status = 'dismissed', dismissed_at = datetime('now')
-    WHERE item_id = ? AND user_id = ? AND tenant_id = ? AND status IN ('unread', 'read')
+    WHERE item_id = ? AND user_id = ? AND tenant_id = ? AND status IN ('unread', 'read', 'failed', 'snoozed')
   `).run(itemId, userId, tenantId);
   return getNotificationCenterItem(itemId, userId, tenantId);
 }
@@ -3381,6 +3386,11 @@ function normalizeDecisionContext(input: DecisionLogicContext | null | undefined
   assignContextString(context, 'providerName', input.providerName);
   assignContextString(context, 'providerSyncState', input.providerSyncState);
   assignContextString(context, 'providerSyncUpdatedAt', input.providerSyncUpdatedAt);
+  assignContextString(context, 'contextObservedAt', input.contextObservedAt);
+  assignContextString(context, 'contextExpiresAt', input.contextExpiresAt);
+  if (input.candidateConfidence === 'low' || input.candidateConfidence === 'medium' || input.candidateConfidence === 'high') {
+    context.candidateConfidence = input.candidateConfidence;
+  }
   assignContextString(context, 'deadlineAt', input.deadlineAt);
   assignContextString(context, 'timezone', input.timezone);
   assignContextString(context, 'locale', input.locale);
@@ -3391,7 +3401,74 @@ function normalizeDecisionContext(input: DecisionLogicContext | null | undefined
   assignContextSlots(context, input.candidateSlots);
   assignContextReasonCodes(context, input.reasonCodes);
   assignContextTaskCounts(context, input.taskCounts);
+  assignContextEvidence(context, input.evidenceReferences, input.sourceHealthSnapshot, input.evidenceConfidence);
+  const normalizedAction = normalizeDecisionAction(input.normalizedAction);
+  if (normalizedAction) context.normalizedAction = normalizedAction;
+  if (Array.isArray(input.conflictComparisons)) {
+    const comparisons = input.conflictComparisons
+      .slice(0, 24)
+      .flatMap((value) => {
+        const comparison = normalizeConflictComparisonAction(value);
+        return comparison ? [comparison] : [];
+      });
+    if (comparisons.length > 0) context.conflictComparisons = comparisons;
+  }
+  const conflictEvaluation = normalizeConflictEvaluation(input.conflictEvaluation);
+  if (conflictEvaluation && (!normalizedAction || conflictEvaluation.contextVersion === normalizedAction.contextVersion)) {
+    context.conflictEvaluation = conflictEvaluation;
+  }
   return Object.keys(context).length ? context : null;
+}
+
+function assignContextEvidence(
+  context: DecisionLogicContext,
+  evidence: DecisionLogicContext['evidenceReferences'] | null | undefined,
+  sourceHealth: DecisionLogicContext['sourceHealthSnapshot'] | null | undefined,
+  confidence: number | null | undefined,
+): void {
+  if (typeof confidence === 'number' && Number.isFinite(confidence) && confidence >= 0 && confidence <= 1) {
+    context.evidenceConfidence = confidence;
+  }
+  if (Array.isArray(evidence)) {
+    const normalized = evidence.slice(0, 24).flatMap((item) => {
+      if (!item || typeof item !== 'object') return [];
+      if (!/^hmac:evidence:[a-z][a-z0-9_-]{0,63}:[a-f0-9]{32}$/i.test(item.evidenceId)) return [];
+      if (!/^[a-z][a-z0-9_:-]{0,63}$/i.test(item.source)) return [];
+      if (!Number.isFinite(Date.parse(item.observedAt))) return [];
+      if (!/^hmac:evidence:[a-z][a-z0-9_-]{0,63}:[a-f0-9]{32}$/i.test(item.entityVersion)) return [];
+      const expiresAt = typeof item.expiresAt === 'string' && Number.isFinite(Date.parse(item.expiresAt))
+        ? new Date(item.expiresAt).toISOString()
+        : null;
+      return [{
+        evidenceId: item.evidenceId,
+        source: item.source,
+        observedAt: new Date(item.observedAt).toISOString(),
+        freshness: truncate(String(item.freshness ?? 'unknown'), 32),
+        reliability: truncate(String(item.reliability ?? 'unknown'), 32),
+        entityVersion: item.entityVersion,
+        ...(expiresAt ? { expiresAt } : {}),
+      }];
+    });
+    if (normalized.length > 0) context.evidenceReferences = normalized;
+  }
+  if (Array.isArray(sourceHealth)) {
+    const normalized = sourceHealth.slice(0, 24).flatMap((item) => {
+      if (!item || typeof item !== 'object' || !/^[a-z][a-z0-9_:-]{0,63}$/i.test(item.source)) return [];
+      if (!Number.isFinite(Date.parse(item.observedAt))) return [];
+      return [{
+        source: item.source,
+        status: truncate(String(item.status ?? 'unknown'), 32),
+        observedAt: new Date(item.observedAt).toISOString(),
+        staleAfter: typeof item.staleAfter === 'string' && Number.isFinite(Date.parse(item.staleAfter))
+          ? new Date(item.staleAfter).toISOString()
+          : null,
+        reasonCode: typeof item.reasonCode === 'string'
+          ? truncate(item.reasonCode.replace(/[^a-z0-9_:-]+/gi, '_'), 120)
+          : null,
+      }];
+    });
+    if (normalized.length > 0) context.sourceHealthSnapshot = normalized;
+  }
 }
 
 function assignContextTaskCounts(

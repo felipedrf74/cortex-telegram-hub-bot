@@ -12,6 +12,9 @@ vi.mock('../../src/services/chat-core-v2/command-executor', () => ({
     'notifications.snooze',
     'decision_center.dismiss',
     'decision_center.snooze',
+    'content.approve_script',
+    'content.request_rewrite',
+    'decision_center.accept_chat_action_fix',
   ],
   assertChatCoreV2ReadbackVerificationContract: vi.fn(() => true),
   executeChatCoreV2Command: (...args: unknown[]) => mockExecuteChatCoreV2Command(...args),
@@ -21,6 +24,9 @@ vi.mock('../../src/services/chat-core-v2/command-executor', () => ({
     'notifications.snooze',
     'decision_center.dismiss',
     'decision_center.snooze',
+    'content.approve_script',
+    'content.request_rewrite',
+    'decision_center.accept_chat_action_fix',
   ].includes(commandType)),
 }));
 
@@ -81,6 +87,7 @@ function decisionItem(overrides: Partial<DecisionApiItem> = {}): DecisionApiItem
     whatWillChange: [],
     alternatives: [],
     relatedEntitiesSafe: [],
+    relatedEntities: [],
     sourceTrace: null,
     actionTruthTableEntry: null,
     askNexusContext: null,
@@ -110,6 +117,34 @@ describe('decision-command-adapter', () => {
     expect(isDecisionActionBusEligible({ actionId: 'reject_reflow', item: decisionItem({ status: 'unread' }) })).toBe(false);
     expect(isDecisionActionBusEligible({ actionId: 'dismiss', item: decisionItem({ status: 'snoozed' }) })).toBe(false);
     expect(isDecisionActionBusEligible({ actionId: 'dismiss', item: decisionItem({ status: 'failed' }) })).toBe(false);
+  });
+
+  it('admits only direct content workflow objects and scoped projection-only fixer decisions', () => {
+    const content = decisionItem({
+      sourceSkill: 'content',
+      relatedEntities: [{ type: 'content_workflow_object', id: '41' }],
+      actions: [
+        { id: 'approve_script', label: 'Approve', style: 'primary' },
+        { id: 'request_rewrite', label: 'Request changes', style: 'secondary' },
+      ],
+    });
+    expect(isDecisionActionBusEligible({ actionId: 'approve_script', item: content })).toBe(true);
+    expect(isDecisionActionBusEligible({ actionId: 'request_rewrite', item: content })).toBe(true);
+    expect(isDecisionActionBusEligible({
+      actionId: 'approve_script',
+      item: { ...content, relatedEntities: [{ type: 'content_notification', id: 'legacy-1' }] },
+    })).toBe(false);
+
+    const fixer = decisionItem({
+      sourceSkill: 'chat',
+      relatedEntities: [{ type: 'chat_action_fixer_review', id: 'job-1' }],
+      actions: [{ id: 'accept_chat_action_fix', label: 'Accept correction', style: 'primary' }],
+    });
+    expect(isDecisionActionBusEligible({ actionId: 'accept_chat_action_fix', item: fixer })).toBe(true);
+    expect(isDecisionActionBusEligible({
+      actionId: 'accept_chat_action_fix',
+      item: { ...fixer, sourceSkill: 'secretary' },
+    })).toBe(false);
   });
 
   it('builds a Decision Center origin command envelope with scoped permission and version preconditions', () => {
@@ -143,10 +178,10 @@ describe('decision-command-adapter', () => {
       authorization: {
         actingSurface: 'system_automation',
         delegatedScopes: ['decision_center:read', 'decision_center:write'],
-        permissionSnapshotVersion: 'decision-center-permissions:7:7:decision_center:v1',
+        permissionSnapshotVersion: 'decision-center-permissions:7:7:decision_center.dismiss:v1',
       },
       preconditions: {
-        requiredPermissionsVersion: 'decision-center-permissions:7:7:decision_center:v1',
+        requiredPermissionsVersion: 'decision-center-permissions:7:7:decision_center.dismiss:v1',
         requiredDecisionVersion: decisionVersion,
       },
       idempotencyKey: 'idem-1',
@@ -195,6 +230,7 @@ describe('decision-command-adapter', () => {
       },
       actualEffect: {
         decisionStatus: 'dismissed',
+        decisionOutcomeRecorded: true,
         viaCommandBus: true,
         commandBusOutcomeRecorded: true,
         commandStatus: 'verified',

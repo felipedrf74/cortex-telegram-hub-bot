@@ -24,6 +24,8 @@ vi.mock('../../src/services/database', () => ({
   filterAlreadyAppliedAddColumnStatements: vi.fn((sql: string) => sql),
   runMigrationsForTest: vi.fn(),
   stripWrappingTransactionStatements: vi.fn((sql: string) => sql),
+  applyMigrationFileForTest: vi.fn(),
+  withDatabaseForTest: vi.fn(),
 }));
 
 vi.mock('../../src/utils/logger', () => ({
@@ -52,7 +54,7 @@ import {
   clearConversation, clearAllConversations,
 } from '../../src/state/conversation';
 import { createTodo, listTodos } from '../../src/state/todos';
-import { setReminder, getActiveReminders, getRemindersForToday, markReminderFired } from '../../src/state/reminders';
+import { setReminder, getActiveReminders, getRemindersForToday, getRemindersForWindow, markReminderFired } from '../../src/state/reminders';
 import { setSharedMemory, getSharedMemory, getSharedMemorySummary } from '../../src/state/shared-memory';
 import { saveNote, searchNotes } from '../../src/state/notes';
 
@@ -203,6 +205,27 @@ describe('Per-user data isolation', () => {
         'NY local today',
         'Lisbon today',
       ]);
+    });
+
+    it('getRemindersForWindow is tenant/user scoped and honors a future absolute window', () => {
+      setReminder(SAME_USER, {
+        message: 'Tenant A tomorrow',
+        remind_at: '2026-04-04T10:00:00+01:00',
+      }, { tenantId: TENANT_A, timezone: 'Europe/Lisbon' });
+      setReminder(SAME_USER, {
+        message: 'Tenant B tomorrow',
+        remind_at: '2026-04-04T11:00:00+01:00',
+      }, { tenantId: TENANT_B, timezone: 'Europe/Lisbon' });
+
+      const tenantA = getRemindersForWindow(
+        SAME_USER,
+        TENANT_A,
+        '2026-04-03T23:00:00.000Z',
+        '2026-04-04T22:59:59.999Z',
+        'Europe/Lisbon',
+      );
+
+      expect(tenantA.map((reminder) => reminder.message)).toEqual(['Tenant A tomorrow']);
     });
 
     it('same-user reminders are isolated by tenant', () => {

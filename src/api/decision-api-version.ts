@@ -61,7 +61,14 @@ function requestedVersionHeader(req: AuthenticatedRequest): string {
 /** v2 only when the client asks for it AND the flag is opt-in for this user/tenant. */
 export function resolveDecisionApiVersion(req: AuthenticatedRequest): ResolvedDecisionApiVersion {
   const wantsV2 = requestedVersionHeader(req) === 'v2';
-  const enabled = isDecisionApiV2Enabled(process.env, { userId: req.userId });
+  const tenantId = typeof req.tenantId === 'number'
+    && Number.isSafeInteger(req.tenantId) && req.tenantId > 0
+    ? req.tenantId
+    : undefined;
+  const enabled = isDecisionApiV2Enabled(process.env, {
+    userId: req.userId,
+    ...(tenantId ? { tenantId } : {}),
+  });
   const version: DecisionApiVersion = wantsV2 && enabled ? 'v2' : 'v1';
   return { version, schemaVersion: version === 'v2' ? 'decision-center.v2' : 'decision-center.v1' };
 }
@@ -110,6 +117,21 @@ export function buildDecisionCardSummary(item: DecisionApiItem): DecisionCardSum
     badgeContribution: item.badgeContribution,
     confidence: item.confidence,
     evidenceStrengthLabel: deriveEvidenceStrengthLabel(item.confidenceExplanation),
+    conflictSummary: item.conflictSummary,
+    contextVersion: item.contextVersion,
+    contextObservedAt: item.contextObservedAt,
+    contextFreshness: item.contextFreshness,
+    mutualExclusionGroupId: item.mutualExclusionGroupId,
+    supersededByDecisionId: item.supersededByDecisionId,
+    requiredPermissions: item.requiredPermissions,
+    approvalLevel: item.approvalLevel,
+    reviewSupported: item.reviewSupported,
+    editableProposalFields: item.editableProposalFields,
+    reversibility: item.reversibility ?? undefined,
+    execution: item.execution,
+    refreshSupported: item.refreshSupported,
+    recordVersion: item.recordVersion,
+    decisionState: item.decisionState,
     whyNow: item.analysis?.whyNow,
     costOfDelay: item.analysis?.costOfDelay,
     primaryAction: item.recommendedAction

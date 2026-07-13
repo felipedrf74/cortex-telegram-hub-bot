@@ -174,6 +174,7 @@ beforeEach(() => {
   vi.spyOn(Date, 'now').mockReturnValue(fakeTime);
   process.env.ANTHROPIC_ENABLED = 'true';
   process.env.ANTHROPIC_API_KEY = 'test-key';
+  delete process.env.SECRETARY_REASONING_V1_MODE;
   mockGetActiveProvider.mockReturnValue(null);
   mockEnsureActiveProvider.mockReturnValue(null);
   vi.mocked(isSubmoduleEnabled).mockReturnValue(true);
@@ -222,6 +223,7 @@ afterEach(() => {
   vi.restoreAllMocks();
   delete process.env.ANTHROPIC_ENABLED;
   delete process.env.ANTHROPIC_API_KEY;
+  delete process.env.SECRETARY_REASONING_V1_MODE;
 });
 
 // ═══════════════════════════════════════════════════════════════════
@@ -258,6 +260,116 @@ describe('handleSecretary', () => {
     expect(mockEnsureActiveProvider).toHaveBeenCalledOnce();
     expect(mockProviderCall).toHaveBeenCalledOnce();
     expect(mockCallDomain).not.toHaveBeenCalled();
+  });
+
+  it('uses empty provider history and no tools for active structured reasoning', async () => {
+    process.env.SECRETARY_REASONING_V1_MODE = 'active';
+    mockEnsureActiveProvider.mockReturnValue({
+      name: 'structured-provider',
+      callDomain: (...args: unknown[]) => mockProviderCall(...args),
+      continueWithToolResults: (...args: unknown[]) => mockProviderContinue(...args),
+      classify: vi.fn(),
+    });
+    mockProviderCall.mockImplementation(async (...args: unknown[]) => {
+      const prompt = String(args[3]);
+      const snapshotId = prompt.match(/snapshotId=([^\n]+)/)?.[1];
+      const contextHash = prompt.match(/contextHash=([^\n]+)/)?.[1];
+      return {
+        text: JSON.stringify({
+          schemaVersion: 'secretary_reasoning.v1', promptVersion: 'secretary_reasoning_prompt.v1',
+          snapshotId, contextHash,
+          candidates: [{
+            behavior: 'answer', userFacingText: 'Use the nearest verified deadline.',
+            conciseRationale: 'Bound to the current request.', evidenceIds: ['current-turn'],
+            assumptions: [], unresolvedQuestions: [],
+            factors: {
+              relevance: 'weak', confidence: 'low', urgency: 'none', expectedImpact: 'none',
+              risk: 'critical', reversibility: 'irreversible', requiredPermissions: ['made_up'],
+              requiredApproval: 'admin_review', dependencies: ['made_up'], contextFreshness: 'unknown',
+            },
+          }],
+        }),
+        toolCalls: [], stopReason: 'end_turn',
+      };
+    });
+
+    const result = await handleSecretary('Explain your role in one sentence', 42, 42);
+
+    expect(result.text).toBe('Use the nearest verified deadline.');
+    expect(mockProviderCall).toHaveBeenCalledTimes(1);
+    expect(mockProviderCall.mock.calls[0][1]).toEqual([]);
+    expect(mockProviderCall.mock.calls[0][4]).toEqual(expect.objectContaining({ filteredTools: [] }));
+    expect(mockProviderContinue).not.toHaveBeenCalled();
+  });
+
+  it('makes exactly one tool-free repair call after invalid structured output', async () => {
+    process.env.SECRETARY_REASONING_V1_MODE = 'active';
+    mockEnsureActiveProvider.mockReturnValue({
+      name: 'structured-provider',
+      callDomain: (...args: unknown[]) => mockProviderCall(...args),
+      continueWithToolResults: (...args: unknown[]) => mockProviderContinue(...args),
+      classify: vi.fn(),
+    });
+    mockProviderCall.mockImplementation(async (...args: unknown[]) => {
+      const prompt = String(args[3]);
+      if (!prompt.includes('<secretary_schema_repair>')) return { text: 'not-json', toolCalls: [], stopReason: 'end_turn' };
+      const snapshotId = prompt.match(/snapshotId=([^\n]+)/)?.[1];
+      const contextHash = prompt.match(/contextHash=([^\n]+)/)?.[1];
+      return {
+        text: JSON.stringify({
+          schemaVersion: 'secretary_reasoning.v1', promptVersion: 'secretary_reasoning_prompt.v1',
+          snapshotId, contextHash,
+          candidates: [{
+            behavior: 'answer', userFacingText: 'Repaired safely.', conciseRationale: 'Current request only.',
+            evidenceIds: ['current-turn'], assumptions: [], unresolvedQuestions: [],
+            factors: {
+              relevance: 'direct', confidence: 'high', urgency: 'none', expectedImpact: 'low', risk: 'low',
+              reversibility: 'not_applicable', requiredPermissions: [], requiredApproval: 'none', dependencies: [], contextFreshness: 'fresh',
+            },
+          }],
+        }),
+        toolCalls: [], stopReason: 'end_turn',
+      };
+    });
+
+    const result = await handleSecretary('Explain what you can verify', 42, 42);
+    expect(result.text).toBe('Repaired safely.');
+    expect(mockProviderCall).toHaveBeenCalledTimes(2);
+    expect(mockProviderCall.mock.calls.every((call) => (call[4] as any)?.filteredTools?.length === 0)).toBe(true);
+    expect(mockProviderContinue).not.toHaveBeenCalled();
+  });
+
+  it('runs structured reasoning in shadow without changing the legacy response', async () => {
+    process.env.SECRETARY_REASONING_V1_MODE = 'shadow';
+    mockEnsureActiveProvider.mockReturnValue({
+      name: 'structured-provider',
+      callDomain: (...args: unknown[]) => mockProviderCall(...args),
+      continueWithToolResults: (...args: unknown[]) => mockProviderContinue(...args),
+      classify: vi.fn(),
+    });
+    mockProviderCall.mockImplementation(async (...args: unknown[]) => {
+      const prompt = String(args[3]);
+      if (!prompt.includes('<secretary_reasoning_contract>')) return { text: 'Legacy response.', toolCalls: [], stopReason: 'end_turn' };
+      const snapshotId = prompt.match(/snapshotId=([^\n]+)/)?.[1];
+      const contextHash = prompt.match(/contextHash=([^\n]+)/)?.[1];
+      return {
+        text: JSON.stringify({
+          schemaVersion: 'secretary_reasoning.v1', promptVersion: 'secretary_reasoning_prompt.v1', snapshotId, contextHash,
+          candidates: [{
+            behavior: 'answer', userFacingText: 'Shadow response.', conciseRationale: 'Current request.', evidenceIds: ['current-turn'],
+            assumptions: [], unresolvedQuestions: [], factors: {
+              relevance: 'direct', confidence: 'high', urgency: 'none', expectedImpact: 'low', risk: 'low',
+              reversibility: 'not_applicable', requiredPermissions: [], requiredApproval: 'none', dependencies: [], contextFreshness: 'fresh',
+            },
+          }],
+        }), toolCalls: [], stopReason: 'end_turn',
+      };
+    });
+
+    const result = await handleSecretary('Give me a thoughtful summary', 42, 42);
+    expect(result.text).toBe('Legacy response.');
+    expect(mockProviderCall).toHaveBeenCalledTimes(2);
+    expect(mockProviderContinue).not.toHaveBeenCalled();
   });
 
   it('passes the resolved uid into the direct anthropic fallback when routing stays unavailable', async () => {
@@ -364,7 +476,8 @@ describe('handleSecretary', () => {
     } as any);
 
     const result = await handleSecretary('Do something');
-    expect(result.text).toContain('encountered some issues');
+    expect(result.text).toContain('could not complete or verify');
+    expect(result.text).toContain('not claiming that any change was made');
   });
 
   it('returns fallback message when response is whitespace-only', async () => {
@@ -375,7 +488,8 @@ describe('handleSecretary', () => {
     } as any);
 
     const result = await handleSecretary('Do something');
-    expect(result.text).toContain('encountered some issues');
+    expect(result.text).toContain('could not complete or verify');
+    expect(result.text).toContain('not claiming that any change was made');
   });
 
   it('caps tool iterations at 4', async () => {

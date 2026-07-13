@@ -9,6 +9,8 @@ import type {
 } from './notification-orchestrator';
 import { apnsBodyMoved, apnsBodyNeedsChoice } from './secretary-apns-anchoring';
 import type { Lang } from '../utils/i18n';
+import type { NormalizedDecisionAction } from './decision-action-contract';
+import type { ConflictComparisonAction, ConflictEvaluation } from './decision-conflict-evaluator';
 
 export type DecisionQualityStatus = 'pass' | 'needs_enrichment' | 'internal_only' | 'blocked';
 export type AutomationEligibility = 'never' | 'ask_first' | 'safe_auto_handle' | 'user_opt_in_required';
@@ -32,6 +34,27 @@ export interface DecisionLogicContext {
   providerName?: string | null;
   providerSyncState?: string | null;
   providerSyncUpdatedAt?: string | null;
+  /** Authoritative evidence observation and expiry, distinct from the durable Decision Center TTL. */
+  contextObservedAt?: string | null;
+  contextExpiresAt?: string | null;
+  evidenceConfidence?: number | null;
+  candidateConfidence?: 'low' | 'medium' | 'high' | null;
+  evidenceReferences?: Array<{
+    evidenceId: string;
+    source: string;
+    observedAt: string;
+    freshness: string;
+    reliability: string;
+    entityVersion: string;
+    expiresAt?: string | null;
+  }> | null;
+  sourceHealthSnapshot?: Array<{
+    source: string;
+    status: string;
+    observedAt: string;
+    staleAfter?: string | null;
+    reasonCode?: string | null;
+  }> | null;
   deadlineAt?: string | null;
   timezone?: string | null;
   locale?: string | null;
@@ -45,6 +68,17 @@ export interface DecisionLogicContext {
   } | null;
   internalOnly?: boolean | null;
   smoke?: boolean | null;
+  /** Internal, deterministic action contract. Never render raw identifiers or values directly. */
+  normalizedAction?: NormalizedDecisionAction | null;
+  /** Privacy-bounded policy result. User-facing copy is derived from fixed reason codes. */
+  conflictEvaluation?: ConflictEvaluation | null;
+  /**
+   * Privacy-safe authoritative comparisons used to reproduce producer policy
+   * results during refresh and pre-execution validation. These contain only
+   * normalized opaque identifiers/effects; never user-authored titles or body
+   * text. The normalizer bounds and validates this collection on persistence.
+   */
+  conflictComparisons?: ConflictComparisonAction[] | null;
 }
 
 export interface DecisionLogicInput {
@@ -269,10 +303,18 @@ export function buildDecisionLogicV2(input: DecisionLogicInput): DecisionLogicV2
     return buildLegacyDecisionLogic(input);
   }
   const recipe = recipeForInput(input);
-  const quality = evaluateDecisionQuality(input, recipe);
-  const rank = rankDecision(input, recipe, quality);
+  // Structured proposals carry an evidence-bound confidence computed from the
+  // weakest cited fact and the model candidate's confidence cap. It may lower
+  // a generic recipe confidence, but can never make the proposal look more
+  // certain than the deterministic recipe itself.
+  const evidenceConfidence = normalizedEvidenceConfidence(input.context?.evidenceConfidence);
+  const confidenceBoundRecipe = evidenceConfidence == null
+    ? recipe
+    : { ...recipe, confidence: Math.min(recipe.confidence, evidenceConfidence) };
+  const quality = evaluateDecisionQuality(input, confidenceBoundRecipe);
+  const rank = rankDecision(input, confidenceBoundRecipe, quality);
   return {
-    ...recipe,
+    ...confidenceBoundRecipe,
     qualityScore: quality.qualityScore,
     sourceSkill: input.sourceSkill,
     type: input.type,
@@ -286,6 +328,12 @@ export function buildDecisionLogicV2(input: DecisionLogicInput): DecisionLogicV2
     frontendActionState: quality.safeForFrontendAction ? 'enabled' : 'disabled_missing_details',
     quality,
   };
+}
+
+function normalizedEvidenceConfidence(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 1
+    ? value
+    : null;
 }
 
 function buildLegacyDecisionLogic(input: DecisionLogicInput): DecisionLogicV2 {
@@ -873,7 +921,9 @@ function secretaryRecipe(input: DecisionLogicInput): DecisionLogicRecipe {
   const entityTitle = context.entityTitle?.trim() || null;
   const currentWindow = formatDecisionWindow(context.currentStartAt, context.currentEndAt, context.timezone, context.locale);
   const recommendedWindow = formatDecisionWindow(context.recommendedStartAt, context.recommendedEndAt, context.timezone, context.locale);
-  const hasConcreteAgenda = !!entityTitle && !!recommendedWindow;
+  const hasConflictPreview = hasConcreteConflictPreview(context);
+  const hasConcreteAgenda = !!entityTitle && (!!recommendedWindow || hasConflictPreview);
+  const hasMutatingChoice = input.actions.some(isMutatingAction);
   const confidence = hasConcreteAgenda
     ? secretaryConfidenceWithSyncFreshness(DECISION_CONFIDENCE_RUBRIC.highScheduleRecommendation, context)
     : DECISION_CONFIDENCE_RUBRIC.lowMissingScheduleContext;
@@ -883,13 +933,19 @@ function secretaryRecipe(input: DecisionLogicInput): DecisionLogicRecipe {
   return {
     title: hasConcreteAgenda ? (pt ? 'Conflito de agenda' : title) : title,
     problemStatement: hasConcreteAgenda
-      ? (pt ? `${entityTitle} precisa de uma decisão de agenda${currentWindow ? ` de ${currentWindow}` : ''} para ${recommendedWindow}.` : `${entityTitle} needs a schedule decision${currentWindow ? ` from ${currentWindow}` : ''} to ${recommendedWindow}.`)
+      ? recommendedWindow
+        ? (pt ? `${entityTitle} precisa de uma decisão de agenda${currentWindow ? ` de ${currentWindow}` : ''} para ${recommendedWindow}.` : `${entityTitle} needs a schedule decision${currentWindow ? ` from ${currentWindow}` : ''} to ${recommendedWindow}.`)
+        : (pt ? `${entityTitle}${currentWindow ? ` em ${currentWindow}` : ''} sobrepõe-se a outro compromisso confirmado.` : `${entityTitle}${currentWindow ? ` at ${currentWindow}` : ''} overlaps another confirmed commitment.`)
       : (pt ? 'A Secretary não pode mostrar este conflito até ter o item afetado e o horário candidato.' : 'Secretary cannot show this schedule conflict until it has the affected item and candidate time.'),
     recommendation: hasConcreteAgenda
-      ? (pt ? `Use ${recommendedWindow} ou escolha outro horário viável.` : `Use ${recommendedWindow} or choose another feasible time.`)
+      ? recommendedWindow
+        ? (pt ? `Use ${recommendedWindow} ou escolha outro horário viável.` : `Use ${recommendedWindow} or choose another feasible time.`)
+        : (pt ? 'Revê os dois compromissos e escolhe qual deve ser protegido. O Nexus não vai mover nenhum deles automaticamente.' : 'Review both commitments and choose which one to protect. Nexus will not move either one automatically.')
       : (pt ? 'Mantenha a decisão interna e peça para a Secretary enriquecer os detalhes do conflito.' : 'Keep the decision internal and ask Secretary to enrich the conflict details.'),
     expectedEffect: hasConcreteAgenda
-      ? (pt ? 'A Secretary guarda a mudança escolhida, confirma que o calendário ficou certo e só então fecha a decisão.' : 'Secretary saves the selected schedule change, checks that the calendar item is correct, and only then closes the decision.')
+      ? recommendedWindow
+        ? (pt ? 'A Secretary guarda a mudança escolhida, confirma que o calendário ficou certo e só então fecha a decisão.' : 'Secretary saves the selected schedule change, checks that the calendar item is correct, and only then closes the decision.')
+        : (pt ? 'Esta pré-visualização não altera o calendário; mantém o conflito visível até escolheres uma opção segura.' : 'This preview does not change the calendar; it keeps the conflict visible until you choose a safe option.')
       : (pt ? 'Nenhuma ação para o usuário deve rodar até a Secretary ter um item de agenda persistido.' : 'No user-facing action should run until Secretary has a persisted agenda item.'),
     impactIfIgnored: hasConcreteAgenda
       ? (pt ? 'O conflito pode continuar bloqueando seu plano ou colidir com outro compromisso.' : 'The conflict can keep blocking your plan or collide with another commitment.')
@@ -897,7 +953,9 @@ function secretaryRecipe(input: DecisionLogicInput): DecisionLogicRecipe {
     primaryActionLabel: concreteActionLabel(primary, hasConcreteAgenda ? (recommendedWindow ? (pt ? `Mover para ${recommendedWindow}` : `Move to ${recommendedWindow}`) : (pt ? 'Remarcar' : 'Reschedule')) : (pt ? 'Enriquecer detalhes' : 'Enrich details')),
     secondaryActionLabels: secondaryActionLabels(input.actions, primary),
     whySummary: hasConcreteAgenda
-      ? (pt ? `A Secretary encontrou um problema de agenda/capacidade e tem uma recomendação concreta para ${recommendedWindow}.` : `Secretary found a schedule/capacity issue and has a concrete ${recommendedWindow} recommendation.`)
+      ? recommendedWindow
+        ? (pt ? `A Secretary encontrou um problema de agenda/capacidade e tem uma recomendação concreta para ${recommendedWindow}.` : `Secretary found a schedule/capacity issue and has a concrete ${recommendedWindow} recommendation.`)
+        : (pt ? 'A Secretary confirmou uma sobreposição entre este item e outro compromisso e manteve ambos inalterados para revisão.' : 'Secretary confirmed an overlap between this item and another commitment and left both unchanged for review.')
       : (pt ? 'A Secretary está sem o item de agenda de origem necessário para uma recomendação real.' : 'Secretary is missing the source agenda item required for a real recommendation.'),
     urgencyReason: input.priority === 'time_sensitive'
       ? (pt ? 'A decisão afeta um item de agenda de hoje ou sensível a prazo.' : 'The decision affects a same-day or deadline-sensitive schedule item.')
@@ -905,19 +963,23 @@ function secretaryRecipe(input: DecisionLogicInput): DecisionLogicRecipe {
     confidence,
     relatedEntityReason: hasConcreteAgenda ? null : input.context?.explicitNoRelatedEntityReason ?? null,
     why: {
-      facts: hasConcreteAgenda ? (pt ? [`Item afetado: ${entityTitle}.`, `Janela candidata: ${recommendedWindow}.`] : [`Affected item: ${entityTitle}.`, `Candidate window: ${recommendedWindow}.`]) : [pt ? 'Nenhum item de agenda persistido da Secretary estava disponível.' : 'No persisted Secretary agenda item was available.'],
+      facts: hasConcreteAgenda
+        ? recommendedWindow
+          ? (pt ? [`Item afetado: ${entityTitle}.`, `Janela candidata: ${recommendedWindow}.`] : [`Affected item: ${entityTitle}.`, `Candidate window: ${recommendedWindow}.`])
+          : (pt ? [`Item afetado: ${entityTitle}.`, 'Existe uma sobreposição confirmada com outro compromisso.'] : [`Affected item: ${entityTitle}.`, 'There is a confirmed overlap with another commitment.'])
+        : [pt ? 'Nenhum item de agenda persistido da Secretary estava disponível.' : 'No persisted Secretary agenda item was available.'],
       preferences: [],
       rules: [pt ? 'Conflitos de agenda, tempo e capacidade devem ser arbitrados pela Secretary.' : 'Schedule, time, and capacity conflicts must be arbitrated by Secretary.'],
       tradeoffs: hasConcreteAgenda ? [pt ? 'A mudança proposta fica limitada ao item afetado.' : 'The proposed change is bounded to the affected item.'] : [pt ? 'Ocultar o cartão é mais seguro do que mostrar uma decisão vaga.' : 'Hiding the card is safer than showing a vague decision.'],
       uncertainty: hasConcreteAgenda ? syncUncertainty : [pt ? 'O conflito exato e o horário alternativo são desconhecidos.' : 'The exact conflict and alternative slot are unknown.'],
     },
-    whatWillChange: hasConcreteAgenda ? [{
+    whatWillChange: hasConcreteAgenda && recommendedWindow ? [{
       item: entityTitle,
       effect: pt ? `Mover ou confirmar o item de agenda em ${recommendedWindow}.` : `Move or confirm the agenda item at ${recommendedWindow}.`,
       targetSkill: 'secretary',
       verificationMethod: pt ? 'Confirmar que o item ficou certo no calendário após a ação.' : 'Check the calendar item after the action.',
     }] : [],
-    readBackVerifier: hasConcreteAgenda ? 'secretary_agenda_item_state' : null,
+    readBackVerifier: hasConcreteAgenda && hasMutatingChoice ? 'secretary_agenda_item_state' : null,
     automationEligibility: 'ask_first',
     autopilotPolicy: pt ? 'Mudanças de agenda perguntam primeiro, salvo opt-in explícito para automação.' : 'Schedule changes ask first unless the user explicitly opts into automation.',
     safePreviewTitle: hasConcreteAgenda ? (pt ? 'Decisão de agenda' : 'Schedule decision') : (pt ? 'Detalhes da decisão indisponíveis' : 'Decision details unavailable'),
@@ -1308,6 +1370,7 @@ function isOwnerAdminDecision(input: DecisionLogicInput): boolean {
 }
 
 function hasDistinctSecretaryRecommendation(context: DecisionLogicContext | null | undefined): boolean {
+  if (hasConcreteConflictPreview(context)) return true;
   if (!context?.recommendedStartAt || !context.recommendedEndAt) return false;
   if (!isValidWindow(context.recommendedStartAt, context.recommendedEndAt)) return false;
   return !sameWindow(
@@ -1316,6 +1379,14 @@ function hasDistinctSecretaryRecommendation(context: DecisionLogicContext | null
     context.currentStartAt,
     context.currentEndAt,
   );
+}
+
+function hasConcreteConflictPreview(context: DecisionLogicContext | null | undefined): boolean {
+  const evaluation = context?.conflictEvaluation;
+  if (!evaluation || evaluation.contextVersion !== context?.normalizedAction?.contextVersion) return false;
+  if (evaluation.disposition !== 'needs_confirmation' && evaluation.disposition !== 'block') return false;
+  if (!context?.currentStartAt || !context.currentEndAt || !isValidWindow(context.currentStartAt, context.currentEndAt)) return false;
+  return evaluation.findings.some((finding) => finding.class === 'time_overlap');
 }
 
 function sanitizeTitle(value: string): string {

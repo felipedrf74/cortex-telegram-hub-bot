@@ -219,7 +219,7 @@ function decisionDismissCommand(item = decisionItem()): AICommandEnvelope<Record
       requiredEntityVersions: {
         [`decision:${item.decisionId}`]: decisionVersion,
       },
-      requiredPermissionsVersion: 'decision-center-permissions:5:5:decision_center:v1',
+      requiredPermissionsVersion: 'decision-center-permissions:5:5:decision_center.dismiss:v1',
       requiredDecisionVersion: decisionVersion,
       invariants: [{
         type: 'decision_status',
@@ -232,7 +232,7 @@ function decisionDismissCommand(item = decisionItem()): AICommandEnvelope<Record
       tenantId: '5',
       actingSurface: 'system_automation',
       delegatedScopes: ['decision_center:read', 'decision_center:write'],
-      permissionSnapshotVersion: 'decision-center-permissions:5:5:decision_center:v1',
+      permissionSnapshotVersion: 'decision-center-permissions:5:5:decision_center.dismiss:v1',
       authTime: NOW.toISOString(),
     },
     expiresAt: new Date(NOW.getTime() + 10 * 60 * 1000).toISOString(),
@@ -277,7 +277,7 @@ function decisionSnoozeCommand(item = decisionItem()): AICommandEnvelope<Record<
       requiredEntityVersions: {
         [`decision:${item.decisionId}`]: decisionVersion,
       },
-      requiredPermissionsVersion: 'decision-center-permissions:5:5:decision_center:v1',
+      requiredPermissionsVersion: 'decision-center-permissions:5:5:decision_center.snooze:v1',
       requiredDecisionVersion: decisionVersion,
       invariants: [{
         type: 'decision_status',
@@ -290,7 +290,7 @@ function decisionSnoozeCommand(item = decisionItem()): AICommandEnvelope<Record<
       tenantId: '5',
       actingSurface: 'system_automation',
       delegatedScopes: ['decision_center:read', 'decision_center:write'],
-      permissionSnapshotVersion: 'decision-center-permissions:5:5:decision_center:v1',
+      permissionSnapshotVersion: 'decision-center-permissions:5:5:decision_center.snooze:v1',
       authTime: NOW.toISOString(),
     },
     expiresAt: new Date(NOW.getTime() + 10 * 60 * 1000).toISOString(),
@@ -310,6 +310,30 @@ describe('Chat Core v2 command executor', () => {
     mockGetDecisionItem.mockReset();
     mockDismissDecision.mockReset();
     mockSnoozeDecision.mockReset();
+  });
+
+  it('rejects a stale permission contract using the server-recomputed execution snapshot', async () => {
+    const command = nativeCreateCommand();
+    command.preconditions.requiredPermissionsVersion = 'chat-v2-permissions:5:5:tasks:v0';
+    command.authorization.permissionSnapshotVersion = 'chat-v2-permissions:5:5:tasks:v0';
+
+    const result = await executeChatCoreV2Command({
+      command,
+      capabilityId: 'tasks.create',
+      userId: 5,
+      tenantId: 5,
+      now: NOW,
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      status: 'rejected_by_policy',
+      reason: 'command_gate_rejected',
+      gateVerdict: {
+        reason: 'permission_version_changed',
+      },
+    });
+    expect(mockTaskProvider.createTask).not.toHaveBeenCalled();
   });
 
   it('creates chat tasks through the iOS-visible task provider path', async () => {
@@ -602,7 +626,10 @@ describe('Chat Core v2 command executor', () => {
       status: 'verified',
       dismissedDecisionId: 'dc_schedule',
     });
-    expect(mockDismissDecision).toHaveBeenCalledWith('dc_schedule', 5, 5);
+    expect(mockDismissDecision).toHaveBeenCalledWith(
+      'dc_schedule', 5, 5, undefined, undefined,
+      expect.objectContaining({ actionId: 'dismiss', idempotencyKey: command.idempotencyKey }),
+    );
     expect(result.response?.text).toBe('Done — I dismissed "Pick a client-review slot" from Decision Center.');
     expect(recordChatV2CommandEvent).toHaveBeenCalledWith(expect.objectContaining({
       commandId: command.commandId,
@@ -647,7 +674,10 @@ describe('Chat Core v2 command executor', () => {
     });
     expect(result.response?.text).toBe('I sent the request, but I could not verify that "Pick a client-review slot" was dismissed from Decision Center yet.');
     expect(result.response?.text).not.toContain('Done — I dismissed');
-    expect(mockDismissDecision).toHaveBeenCalledWith('dc_schedule', 5, 5);
+    expect(mockDismissDecision).toHaveBeenCalledWith(
+      'dc_schedule', 5, 5, undefined, undefined,
+      expect.objectContaining({ actionId: 'dismiss', idempotencyKey: command.idempotencyKey }),
+    );
     expect(mockGetDecisionItem).toHaveBeenNthCalledWith(1, 'dc_schedule', 5, 5);
     expect(mockGetDecisionItem).toHaveBeenNthCalledWith(2, 'dc_schedule', 5, 5);
     expect(recordChatV2CommandEvent).toHaveBeenCalledWith(expect.objectContaining({
@@ -694,7 +724,10 @@ describe('Chat Core v2 command executor', () => {
       status: 'verified',
       snoozedDecisionId: 'dc_schedule',
     });
-    expect(mockSnoozeDecision).toHaveBeenCalledWith('dc_schedule', 5, 5, 60);
+    expect(mockSnoozeDecision).toHaveBeenCalledWith(
+      'dc_schedule', 5, 5, 60, undefined,
+      expect.objectContaining({ actionId: 'snooze', idempotencyKey: command.idempotencyKey }),
+    );
     expect(result.response?.text).toBe('Done — I snoozed "Pick a client-review slot" in Decision Center for 1 hour.');
     expect(recordChatV2CommandEvent).toHaveBeenCalledWith(expect.objectContaining({
       commandId: command.commandId,
@@ -735,7 +768,10 @@ describe('Chat Core v2 command executor', () => {
     });
     expect(result.response?.text).toBe('I sent the request, but I could not verify that "Pick a client-review slot" was snoozed in Decision Center yet.');
     expect(result.response?.text).not.toContain('Done — I snoozed');
-    expect(mockSnoozeDecision).toHaveBeenCalledWith('dc_schedule', 5, 5, 60);
+    expect(mockSnoozeDecision).toHaveBeenCalledWith(
+      'dc_schedule', 5, 5, 60, undefined,
+      expect.objectContaining({ actionId: 'snooze', idempotencyKey: command.idempotencyKey }),
+    );
     expect(mockGetDecisionItem).toHaveBeenNthCalledWith(1, 'dc_schedule', 5, 5);
     expect(mockGetDecisionItem).toHaveBeenNthCalledWith(2, 'dc_schedule', 5, 5);
     expect(recordChatV2CommandEvent).toHaveBeenCalledWith(expect.objectContaining({

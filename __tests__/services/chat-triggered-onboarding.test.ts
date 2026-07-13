@@ -28,6 +28,12 @@ vi.mock('../../src/services/database', () => ({
   initDatabase: vi.fn(),
   closeDatabase: vi.fn(),
   findUnexpectedMigrationPrefixCollisions: vi.fn(() => []),
+  applyMigrationFileForTest: vi.fn(),
+  assertNoUnexpectedMigrationPrefixCollisions: vi.fn(),
+  filterAlreadyAppliedAddColumnStatements: vi.fn((sql: string) => sql),
+  runMigrationsForTest: vi.fn(),
+  stripWrappingTransactionStatements: vi.fn((sql: string) => sql),
+  withDatabaseForTest: vi.fn(),
 }));
 
 vi.mock('../../src/services/cache-coherence-registry', () => ({
@@ -78,6 +84,7 @@ vi.mock('../../src/config', () => ({
 // onboarding path.
 vi.mock('../../src/services/context-engine', () => ({
   getDailyContext: vi.fn(() => ''),
+  getDailyContextWithStatus: vi.fn(() => ({ status: 'empty', context: '', reasonCode: 'not_materialized' })),
   getOrBuildDailyContext: vi.fn(async () => ''),
 }));
 

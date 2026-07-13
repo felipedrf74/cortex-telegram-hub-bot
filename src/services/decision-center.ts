@@ -10,14 +10,14 @@
  * only when a deterministic backend verifier can prove the expected effect.
  */
 
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { DateTime } from 'luxon';
 import { getDb } from './database';
 import {
   buildSkillNotificationFixtureIntent,
   createNotificationIntent,
-  dismissNotificationCenterItem,
   ensureNotificationTables,
+  getNotificationProfileIfExists,
   getOrCreateNotificationProfile,
   getNotificationReliabilityDashboard,
   listNotificationCenterItems,
@@ -29,6 +29,7 @@ import {
   type NotificationIntentType,
   type NotificationPriority,
   type NotificationPrivacyPolicy,
+  type NotificationProfile,
   type NotificationSourceSkill,
 } from './notification-orchestrator';
 import { listNotificationApnsActionExposures } from './notification-contracts';
@@ -41,6 +42,7 @@ import {
   type ReasoningTrailNode,
   type SecretaryAgendaItem,
 } from './secretary-scheduling-arbitrator';
+import { secretaryAgendaStateRevision } from './secretary-agenda-state-revision';
 import {
   getMealPlan,
   setMealPlan,
@@ -57,7 +59,21 @@ import {
 } from './chat-pending-confirmations';
 import { isValidTenantUserId, recordTenantScopeAnomaly } from './tenant-scope-observability';
 import { logger } from '../utils/logger';
-import { isDecisionCenterCommandBusEnabled, isDecisionCenterFatigueCapsEnabled, isDecisionCenterGuidanceSkillEnabled, isDecisionCenterGuidanceV1Enabled, isDecisionChoiceOptionsEnabled, isDecisionEvidenceFreshnessGateEnabled, isDecisionFeedbackSuppressionEnabled, isDecisionHumanReviewGateEnabled, isDecisionReconnectAffordanceEnabled, isDecisionRollbackSnapshotProtectionEnabled, isDecisionSemanticDedupEnabled, isDecisionSemanticSupersedeEnabled, isDecisionSkillCardsEnabled, isDecisionStreakV1Enabled, isDecisionTypeSuppressionEnabled } from './runtime-flags';
+import { getDecisionConflictPolicyV1Mode, isDecisionCenterCommandBusEnabled, isDecisionCenterFatigueCapsEnabled, isDecisionCenterGuidanceSkillEnabled, isDecisionCenterGuidanceV1Enabled, isDecisionChoiceOptionsEnabled, isDecisionConflictPolicyV1Enabled, isDecisionEvidenceFreshnessGateEnabled, isDecisionFeedbackSuppressionEnabled, isDecisionFlowV1EnforceEnabled, isDecisionHumanReviewGateEnabled, isDecisionLowRiskAutoResolutionEnabled, isDecisionReconnectAffordanceEnabled, isDecisionRefreshEnabled, isDecisionRollbackSnapshotProtectionEnabled, isDecisionSemanticDedupEnabled, isDecisionSemanticSupersedeEnabled, isDecisionSkillCardsEnabled, isDecisionStreakV1Enabled, isDecisionTypeSuppressionEnabled } from './runtime-flags';
+import { buildDecisionConflictSummary, type ConflictEvaluation, type DecisionConflictSummary } from './decision-conflict-evaluator';
+import {
+  buildNormalizedDecisionAction,
+  logicalActionAttemptHash,
+  normalizeDecisionAction,
+  type NormalizedDecisionAction,
+} from './decision-action-contract';
+import { isLowRiskAutoReflowEligible, revalidateNormalizedDecisionAction } from './decision-preexecution-revalidator';
+import { directOwnedContentObjectForDecision } from './decision-command-effects';
+import {
+  contentWorkflowStateRevision,
+  cookingMealSlotStateRevision,
+  financeTaxEventStateRevision,
+} from './decision-domain-state-revision';
 import { decisionRelationshipSemantics, type DecisionRelationshipKind, type DecisionRelationshipType } from './decision-relationship-types';
 import { buildDecisionDedupKey, classifyDecisionDedup } from './decision-center-semantic-dedup';
 import type { SecretaryTodaySummaryModel } from './secretary-orchestrator';
@@ -98,9 +114,26 @@ export type DecisionActionStatus = 'succeeded' | 'failed' | 'blocked' | 'idempot
 /** Where the decision is in its lifecycle (distinct from the action outcome). */
 export type DecisionLifecycleStatus =
   | 'created' | 'surfaced' | 'viewed' | 'snoozed' | 'dismissed' | 'expired' | 'superseded' | 'completed';
+/** Durable review state. NULL on legacy rows means derive from the legacy notification status. */
+export type DurableDecisionState =
+  | 'proposed' | 'needs_input' | 'blocked' | 'ready_for_review' | 'approved'
+  | 'rejected' | 'deferred' | 'superseded' | 'expired' | 'cancelled';
 /** Item-level outcome of the decision's action. Distinct from the per-execution DecisionActionStatus above. */
 export type DecisionActionOutcomeStatus =
   | 'none' | 'started' | 'succeeded' | 'failed' | 'partially_failed' | 'rolled_back';
+export type DecisionApprovalLevel = 'none' | 'user_confirmation' | 'strong_confirmation' | 'admin_review' | 'unavailable';
+export interface DecisionEffectResult {
+  effectId: string;
+  status: 'pending' | 'succeeded' | 'failed' | 'compensated' | 'unknown';
+  reasonCode?: string;
+}
+export interface DecisionExecutionSummary {
+  status: DecisionActionOutcomeStatus;
+  lastAttemptId?: string;
+  effectResults: DecisionEffectResult[];
+  recoveryActions: NotificationActionButton[];
+  message?: string;
+}
 /** Computed: how the client should render the item. Never persisted as source of truth. */
 export type DecisionEffectiveStatus =
   | 'needs_action' | 'waiting_on_dependency' | 'waiting_on_system' | 'snoozed'
@@ -186,6 +219,28 @@ export interface DecisionCardSummary {
   confidence: number;
   /** Optional compact evidence-strength label (omitted when the item has no confidenceExplanation). */
   evidenceStrengthLabel?: EvidenceStrengthLabel;
+  /** Additive conflict-policy summary. Omitted unless the v1 policy flag is enabled for this scope. */
+  conflictSummary?: DecisionConflictSummary;
+  /** Version of the authoritative context used to evaluate the proposal. */
+  contextVersion?: string;
+  contextObservedAt?: string;
+  contextFreshness?: DecisionAnalysisBundle['sourceFreshness'];
+  mutualExclusionGroupId?: string;
+  supersededByDecisionId?: string;
+  requiredPermissions?: string[];
+  approvalLevel?: DecisionApprovalLevel;
+  /** True only when the versioned review endpoint is enabled for this scope and this proposal can be reviewed. */
+  reviewSupported?: boolean;
+  /** Structured proposal fields the backend permits this client to edit. */
+  editableProposalFields?: string[];
+  reversibility?: NormalizedDecisionAction['reversibility'];
+  execution?: DecisionExecutionSummary;
+  /** Whether the token-zero refresh/revalidation route is available for this scope. */
+  refreshSupported?: boolean;
+  /** Optimistic concurrency version for proposal/lifecycle mutations. */
+  recordVersion?: number;
+  /** Durable review state; legacy rows are projected without rewriting them. */
+  decisionState?: DurableDecisionState;
 }
 
 /** Paginated list envelope (API v2 cursor mode — always compact cards). nextCursor omitted when no further page. */
@@ -338,6 +393,24 @@ export interface DecisionApiItem {
   confidence: number;
   analysis: DecisionAnalysisBundle;
   confidenceExplanation?: ConfidenceExplanation;
+  conflictSummary?: DecisionConflictSummary;
+  contextVersion?: string;
+  contextObservedAt?: string;
+  contextFreshness?: DecisionAnalysisBundle['sourceFreshness'];
+  /** Stable privacy-safe grouping identity for decisions competing for the same exclusivity resource. */
+  mutualExclusionGroupId?: string;
+  /** Canonical replacement when this decision has been superseded. */
+  supersededByDecisionId?: string;
+  requiredPermissions: string[];
+  approvalLevel: DecisionApprovalLevel;
+  reviewSupported: boolean;
+  editableProposalFields: string[];
+  reversibility: NormalizedDecisionAction['reversibility'] | null;
+  execution: DecisionExecutionSummary;
+  /** Whether the token-zero refresh/revalidation route is available for this scope. */
+  refreshSupported: boolean;
+  recordVersion: number;
+  decisionState: DurableDecisionState;
   riskLevel: 'low' | 'medium' | 'high';
   groupKey: string;
   sectionKey: DecisionTimelineSectionKey;
@@ -602,6 +675,8 @@ export interface DecisionActionResult {
 
 export interface HandledByNexusItem {
   itemId: string;
+  /** Originating Decision Center ID used for scoped lifecycle/conflict history. */
+  decisionId: string;
   userId: number;
   tenantId: number;
   sourceSkill: NotificationSourceSkill;
@@ -612,6 +687,14 @@ export interface HandledByNexusItem {
   whyBrief: string;
   relatedEntities: Array<{ type: string; id: string }>;
   rollbackAvailable: boolean;
+  /** Fresh versioned command contract; absent for legacy/unsupported handled rows. */
+  rollbackAction?: {
+    actionId: string;
+    recordVersion: number;
+    contextVersion: string | null;
+  };
+  execution?: DecisionExecutionSummary;
+  reconciliationAvailable?: boolean;
   changedRuleOption: string | null;
   createdAt: string;
   privacyClassification: NotificationPrivacyPolicy;
@@ -630,6 +713,11 @@ interface DecisionRecord extends NotificationCenterItem {
   actionedAt: string | null;
   decisionLogActionTaken: string | null;
   actionResult: Record<string, unknown> | null;
+  recordVersion: number;
+  decisionState: DurableDecisionState | null;
+  updatedAt: string;
+  supersededByItemId: string | null;
+  contextObservedAt: string | null;
 }
 
 const DECISION_TYPES = new Set<NotificationIntentType>([
@@ -662,6 +750,14 @@ const MUTATING_ACTIONS = new Set([
   'undo_reflow',
   'accept_chat_action_fix',
 ]);
+const VERSIONED_DECISION_ACTIONS = new Set([
+  ...MUTATING_ACTIONS,
+  'dismiss',
+  'reject_reflow',
+  'not_now',
+  'snooze',
+]);
+const DECISION_EXECUTION_LEASE_SECONDS = 300;
 const CONTENT_APPROVAL_ACTION_IDS = new Set(['approve_script', 'request_rewrite']);
 const SECRETARY_REFLOW_ACTION_IDS = new Set(['accept_reflow', 'choose_another_time']);
 const FINANCE_PAYMENT_ACTION_IDS = new Set(['mark_paid']);
@@ -780,13 +876,22 @@ export function getDecisionGuidanceStats(): DecisionGuidanceStats {
   };
 }
 
-export function ensureDecisionCenterTables(): void {
-  ensureNotificationTables();
+const ensuredDecisionCenterDatabases = new WeakSet<object>();
 
+export function ensureDecisionCenterTables(): void {
   const db = getDb();
+  if (ensuredDecisionCenterDatabases.has(db) && decisionFlowSchemaReady(db)) return;
+  ensureNotificationTables();
   ensureColumn('notification_center_items', 'snoozed_until', 'TEXT');
   ensureColumn('notification_center_items', 'action_result_json', 'TEXT');
   ensureColumn('notification_center_items', 'priority_score', 'INTEGER');
+  ensureColumn('notification_center_items', 'decision_state', 'TEXT');
+  ensureColumn('notification_center_items', 'record_version', 'INTEGER NOT NULL DEFAULT 1');
+  ensureColumn('notification_center_items', 'updated_at', 'TEXT');
+  ensureColumn('notification_intents', 'context_version', 'TEXT');
+  ensureColumn('notification_intents', 'context_observed_at', 'TEXT');
+  ensureColumn('notification_intents', 'candidate_fingerprint', 'TEXT');
+  ensureColumn('notification_intents', 'normalized_action_json', 'TEXT');
   db.exec(`
     CREATE TABLE IF NOT EXISTS decision_action_executions (
       action_execution_id TEXT PRIMARY KEY,
@@ -962,7 +1067,86 @@ export function ensureDecisionCenterTables(): void {
     CREATE INDEX IF NOT EXISTS idx_decision_recipe_suppressions_scope
       ON decision_recipe_suppressions(user_id, tenant_id, source_skill, type);
   `);
+  ensureColumn('decision_action_executions', 'logical_action_hash', 'TEXT');
+  ensureColumn('decision_action_executions', 'expected_record_version', 'INTEGER');
+  ensureColumn('decision_action_executions', 'context_version', 'TEXT');
+  ensureColumn('decision_action_executions', 'lease_expires_at', 'TEXT');
+  ensureColumn('decision_action_executions', 'effect_results_json', "TEXT NOT NULL DEFAULT '[]'");
+  ensureColumn('decision_action_executions', 'recovery_json', "TEXT NOT NULL DEFAULT '{}'");
+  db.exec(`
+    UPDATE notification_center_items
+       SET updated_at = COALESCE(updated_at, created_at),
+           record_version = COALESCE(record_version, 1)
+     WHERE updated_at IS NULL OR record_version IS NULL;
+    CREATE TABLE IF NOT EXISTS decision_conflict_evaluations (
+      conflict_evaluation_id TEXT PRIMARY KEY,
+      decision_id TEXT NOT NULL,
+      user_id INTEGER NOT NULL,
+      tenant_id INTEGER NOT NULL,
+      policy_version TEXT NOT NULL,
+      context_version TEXT NOT NULL,
+      disposition TEXT NOT NULL,
+      hard_conflict_count INTEGER NOT NULL DEFAULT 0,
+      soft_conflict_count INTEGER NOT NULL DEFAULT 0,
+      reason_codes_json TEXT NOT NULL DEFAULT '[]',
+      related_decision_ids_json TEXT NOT NULL DEFAULT '[]',
+      precedence_trace_json TEXT NOT NULL DEFAULT '[]',
+      winner_decision_id TEXT,
+      resolution TEXT,
+      automatically_resolved INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      resolved_at TEXT
+    );
+    CREATE TABLE IF NOT EXISTS decision_exclusivity_claims (
+      user_id INTEGER NOT NULL,
+      tenant_id INTEGER NOT NULL,
+      exclusivity_key TEXT NOT NULL,
+      action_execution_id TEXT NOT NULL,
+      decision_id TEXT NOT NULL,
+      context_version TEXT,
+      status TEXT NOT NULL DEFAULT 'started',
+      lease_expires_at TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      PRIMARY KEY (user_id, tenant_id, exclusivity_key)
+    );
+    CREATE TABLE IF NOT EXISTS decision_flow_preferences (
+      user_id INTEGER NOT NULL,
+      tenant_id INTEGER NOT NULL,
+      allow_low_risk_auto_reflow INTEGER NOT NULL DEFAULT 0,
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      PRIMARY KEY (user_id, tenant_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_notification_intents_candidate_fingerprint
+      ON notification_intents(user_id, tenant_id, candidate_fingerprint, created_at DESC)
+      WHERE candidate_fingerprint IS NOT NULL;
+    CREATE INDEX IF NOT EXISTS idx_decision_conflict_scope_created
+      ON decision_conflict_evaluations(user_id, tenant_id, decision_id, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_decision_exclusivity_lease
+      ON decision_exclusivity_claims(user_id, tenant_id, lease_expires_at);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_decision_execution_active_logical_action
+      ON decision_action_executions(user_id, tenant_id, logical_action_hash)
+      WHERE logical_action_hash IS NOT NULL AND status IN ('started', 'succeeded', 'partially_failed');
+  `);
+  ensureColumn('decision_conflict_evaluations', 'precedence_trace_json', "TEXT NOT NULL DEFAULT '[]'");
+  ensureColumn('decision_conflict_evaluations', 'winner_decision_id', 'TEXT');
   ensureColumn('handled_by_nexus_items', 'explanation_json', 'TEXT');
+  ensuredDecisionCenterDatabases.add(db);
+}
+
+function decisionFlowSchemaReady(db: ReturnType<typeof getDb>): boolean {
+  try {
+    const preferenceTable = db.prepare(`
+      SELECT 1 AS present FROM sqlite_master
+       WHERE type = 'table' AND name = 'decision_flow_preferences'
+       LIMIT 1
+    `).get();
+    if (!preferenceTable) return false;
+    const itemColumns = new Set((db.prepare('PRAGMA table_info(notification_center_items)').all() as Array<{ name: string }>).map((row) => row.name));
+    return itemColumns.has('decision_state') && itemColumns.has('record_version') && itemColumns.has('updated_at');
+  } catch {
+    return false;
+  }
 }
 
 export function evaluateDecisionEligibility(input: DecisionEligibilityPolicyInput): DecisionEligibilityResult {
@@ -1108,6 +1292,8 @@ function linkConflictingDecisionsOnCreate(newId: string, input: NotificationInte
 
 export async function createDecisionIntent(input: NotificationIntentInput): Promise<{ item: DecisionApiItem | null; eligibility: DecisionEligibilityResult }> {
   assertScope(input.userId, input.tenantId ?? input.userId, 'create_decision_intent', { sourceSkill: input.sourceSkill, type: input.type });
+  ensureDecisionCenterTables();
+  input = applyConflictPolicyToIntentInput(input);
   const eligibility = evaluateDecisionEligibility({
     sourceSkill: input.sourceSkill,
     type: input.type,
@@ -1118,6 +1304,46 @@ export async function createDecisionIntent(input: NotificationIntentInput): Prom
   });
   if (eligibility.classification !== 'decision') {
     return { item: null, eligibility };
+  }
+
+  const conflictEvaluation = decisionContextForIntentInput(input).conflictEvaluation;
+  const flowEnforced = isDecisionFlowV1EnforceEnabled(process.env, {
+    userId: input.userId,
+    tenantId: input.tenantId ?? input.userId,
+  });
+  const conflictPolicyEnforced = getDecisionConflictPolicyV1Mode(process.env, {
+    userId: input.userId,
+    tenantId: input.tenantId ?? input.userId,
+  }) === 'active' || flowEnforced;
+  if (conflictEvaluation?.disposition === 'suppress_duplicate'
+    && conflictPolicyEnforced) {
+    logger.info({
+      event: 'decision.candidate_suppressed',
+      userId: input.userId,
+      tenantId: input.tenantId ?? input.userId,
+      sourceSkill: input.sourceSkill,
+      reason: 'exact_duplicate',
+      canonicalDecisionId: conflictEvaluation.winnerDecisionId ?? null,
+    }, 'Suppressed duplicate Decision Center candidate');
+    return {
+      item: null,
+      eligibility: {
+        ...eligibility,
+        apnsEligible: false,
+        reasons: [...eligibility.reasons, 'conflict_policy:duplicate'],
+      },
+    };
+  }
+
+  if (shouldSuppressRepeatedRejectedCandidate(input)) {
+    return {
+      item: null,
+      eligibility: {
+        ...eligibility,
+        apnsEligible: false,
+        reasons: [...eligibility.reasons, 'candidate_rejection_cooldown'],
+      },
+    };
   }
 
   const quality = decisionLogicForIntentInput(input).quality;
@@ -1145,6 +1371,49 @@ export async function createDecisionIntent(input: NotificationIntentInput): Prom
     recordDecisionQualityGateEvent(input, quality);
   }
   if (result.item && result.intent.status !== 'deduped') {
+    try {
+      persistDecisionFlowMetadata(result.item.itemId, result.item.intentId, input);
+    } catch (err) {
+      logger.error({
+        event: 'decision.flow_metadata_persistence_failed',
+        err,
+        decisionId: result.item.itemId,
+        intentId: result.item.intentId,
+        userId: input.userId,
+        tenantId: input.tenantId ?? input.userId,
+      }, 'Decision proposal was retired because its durable policy metadata could not be persisted');
+      failClosedDecisionFlowMetadata(result.item.itemId, result.item.intentId, input);
+      return {
+        item: null,
+        eligibility: {
+          ...eligibility,
+          apnsEligible: false,
+          reasons: [...eligibility.reasons, 'decision_flow_metadata_persistence_failed'],
+        },
+      };
+    }
+    // Supersession is independent from the new proposal's own disposition.
+    // A refreshed candidate can legitimately supersede an older unapproved
+    // proposal while still needing review for a separate commitment conflict.
+    if (conflictEvaluation && conflictPolicyEnforced) {
+      for (const priorDecisionId of [...new Set(conflictEvaluation.findings
+        .filter((finding) => finding.class === 'supersedes')
+        .map((finding) => finding.conflictingDecisionId)
+        .filter((value): value is string => !!value))]) {
+        const prior = getDecisionRecord(priorDecisionId, input.userId, input.tenantId ?? input.userId);
+        if (prior && !isDecisionItemPolicyFloored(formatDecisionItemForApi(prior))) {
+          supersedeDecision(prior, 'normalized_action_superseded_by_newer_context');
+          addDecisionDependency({
+            decisionId: result.item.itemId,
+            dependsOnDecisionId: priorDecisionId,
+            userId: input.userId,
+            tenantId: input.tenantId ?? input.userId,
+            relationship: 'supersedes',
+          });
+          resolveDecisionConflictAudit(priorDecisionId, input.userId, input.tenantId ?? input.userId, 'superseded');
+        }
+      }
+    }
     emitDecisionLifecycleEvent({ decisionId: result.item.itemId, userId: input.userId, tenantId: input.tenantId ?? input.userId, event: 'created', toStatus: result.item.status });
   }
   let item = result.item ? getDecisionItem(result.item.itemId, input.userId, input.tenantId ?? input.userId, { recordExposure: false }) : null;
@@ -1158,7 +1427,516 @@ export async function createDecisionIntent(input: NotificationIntentInput): Prom
       }
     }
   }
+  if (item && result.intent.status !== 'deduped') {
+    item = await maybeAutoResolveLowRiskSecretaryDecision(item) ?? item;
+  }
   return { item, eligibility };
+}
+
+async function maybeAutoResolveLowRiskSecretaryDecision(item: DecisionApiItem): Promise<DecisionApiItem | null> {
+  if (item.sourceSkill !== 'secretary') return null;
+  const record = getDecisionRecord(item.decisionId, item.userId, item.tenantId);
+  if (!record || record.relatedEntityType !== 'secretary_agenda_item' || !record.relatedEntityId) return null;
+  const context = decisionContextForRecord(record);
+  if (getDecisionConflictPolicyV1Mode(process.env, {
+    userId: record.userId,
+    tenantId: record.tenantId,
+  }) !== 'active') return null;
+  const action = normalizeDecisionAction(context.normalizedAction);
+  const conflict = context.conflictEvaluation;
+  const actionButton = actionsForRecord(record).find((candidate) => candidate.id === 'accept_reflow');
+  const agenda = getSecretaryAgendaItemById({
+    agendaItemId: record.relatedEntityId,
+    ownerUserId: record.userId,
+    tenantId: record.tenantId,
+  });
+  if (!action || !conflict || !actionButton || !agenda) return null;
+  if (!isLowRiskAutoReflowEligible({
+    action,
+    conflictEvaluation: conflict,
+    persistedUserOptIn: lowRiskAutoResolutionPreference(record.userId, record.tenantId),
+    runtimeEnabled: isDecisionLowRiskAutoResolutionEnabled(process.env, {
+      userId: record.userId,
+      tenantId: record.tenantId,
+    }),
+    undoAvailable: agenda.agendaItemId === record.relatedEntityId
+      && typeof secretaryAgendaStateRevision(agenda) === 'string',
+  })) return null;
+
+  try {
+    const result = await performDecisionAction(record.itemId, 'accept_reflow', record.userId, record.tenantId, {
+      idempotencyKey: `auto_reflow:${action.candidateFingerprint}:${action.contextVersion}`,
+      expectedVersion: record.recordVersion,
+      contextVersion: action.contextVersion,
+      automaticResolution: true,
+    });
+    return result.item;
+  } catch (err) {
+    logger.error({
+      event: 'decision.auto_resolution_failed',
+      err,
+      decisionId: record.itemId,
+      userId: record.userId,
+      tenantId: record.tenantId,
+      policyVersion: conflict.policyVersion,
+    }, 'Opted-in low-risk Secretary auto-resolution failed safely');
+    const current = getDecisionRecord(record.itemId, record.userId, record.tenantId);
+    return current ? formatDecisionItemForApi(current) : null;
+  }
+}
+
+function lowRiskAutoResolutionAuthorized(userId: number, tenantId: number): boolean {
+  return isDecisionLowRiskAutoResolutionEnabled(process.env, { userId, tenantId })
+    && lowRiskAutoResolutionPreference(userId, tenantId);
+}
+
+function lowRiskAutoResolutionPreference(userId: number, tenantId: number): boolean {
+  try {
+    const row = getDb().prepare(`
+      SELECT allow_low_risk_auto_reflow AS enabled
+        FROM decision_flow_preferences
+       WHERE user_id = ? AND tenant_id = ?
+       LIMIT 1
+    `).get(userId, tenantId) as { enabled: number } | undefined;
+    return row?.enabled === 1;
+  } catch {
+    return false;
+  }
+}
+
+function applyConflictPolicyToIntentInput(input: NotificationIntentInput): NotificationIntentInput {
+  const tenantId = input.tenantId ?? input.userId;
+  const mode = getDecisionConflictPolicyV1Mode(process.env, { userId: input.userId, tenantId });
+  const flowEnforced = isDecisionFlowV1EnforceEnabled(process.env, { userId: input.userId, tenantId });
+  if (mode === 'off' && !flowEnforced) return input;
+  const initialContext = decisionContextForIntentInput(input);
+  const derivedAction = normalizeDecisionAction(initialContext.normalizedAction)
+    ?? deriveNormalizedActionForKnownProducer(input, initialContext);
+  const context: DecisionLogicContext = derivedAction
+    ? {
+        ...initialContext,
+        normalizedAction: derivedAction,
+        contextObservedAt: initialContext.contextObservedAt ?? appNowIso(),
+      }
+    : initialContext;
+  const action = normalizeDecisionAction(context.normalizedAction);
+  if (!action) {
+    if (knownProducerMutationRequiresSourceContract(input)) {
+      return {
+        ...input,
+        actionButtons: (input.actionButtons ?? []).filter((button) => button.id === 'open_detail'),
+        decisionContext: {
+          ...initialContext,
+          reasonCodes: [...new Set([...(initialContext.reasonCodes ?? []), 'authoritative_source_contract_unavailable'])],
+        },
+      };
+    }
+    return input;
+  }
+  const revalidation = revalidateNormalizedDecisionAction({
+    scope: { userId: input.userId, tenantId },
+    action,
+    additionalExisting: context.conflictComparisons ?? undefined,
+    contextExpiresAt: context.contextExpiresAt ?? input.expiresAt ?? undefined,
+    candidateCreatedAt: context.contextObservedAt ?? context.providerSyncUpdatedAt ?? undefined,
+    confidence: context.candidateConfidence ?? undefined,
+    allowLowRiskAutoResolution: mode === 'active'
+      && lowRiskAutoResolutionAuthorized(input.userId, tenantId),
+  });
+  const producerEvaluation = context.conflictEvaluation;
+  // Current deterministic authorization, preconditions, source health, and
+  // persisted comparison actions are authoritative. A producer evaluation is
+  // retained only as drift telemetry; choosing by finding count could let two
+  // advisory soft findings erase one hard permission/precondition failure.
+  const evaluation = revalidation.conflictEvaluation;
+  const producerDrift = producerEvaluation?.contextVersion === action.contextVersion
+    && conflictMaterialKey(producerEvaluation) !== conflictMaterialKey(evaluation);
+  logger.info({
+    event: 'decision.conflict_evaluated',
+    mode,
+    userScope: `${input.userId}:${tenantId}`,
+    sourceSkill: input.sourceSkill,
+    disposition: evaluation.disposition,
+    conflictClasses: evaluation.findings.map((finding) => finding.class),
+    producerDrift,
+    policyVersion: evaluation.policyVersion,
+  }, 'Decision conflict policy evaluated candidate');
+  if (mode === 'shadow' && !flowEnforced) return input;
+  return {
+    ...input,
+    decisionContext: {
+      ...context,
+      normalizedAction: action,
+      conflictEvaluation: evaluation,
+    },
+  };
+}
+
+function knownProducerMutationRequiresSourceContract(input: NotificationIntentInput): boolean {
+  const relatedEntityType = typeof input.relatedEntityType === 'string' ? input.relatedEntityType : null;
+  const relatedEntityId = input.relatedEntityId == null ? null : String(input.relatedEntityId);
+  const actionIds = new Set((input.actionButtons ?? []).map((action) => action.id));
+  return (input.sourceSkill === 'finance'
+      && relatedEntityType === 'finance_tax_event'
+      && !!relatedEntityId
+      && /^\d{4}-(0[1-9]|1[0-2])$/.test(relatedEntityId)
+      && actionIds.has('mark_paid'))
+    || (input.sourceSkill === 'content'
+      && relatedEntityType === 'content_workflow_object'
+      && !!relatedEntityId
+      && /^\d+$/.test(relatedEntityId)
+      && (actionIds.has('approve_script') || actionIds.has('request_rewrite')))
+    || (input.sourceSkill === 'cooking'
+      && relatedEntityType === 'meal_plan'
+      && !!relatedEntityId
+      && /^\d{4}-\d{2}-\d{2}:[a-z][a-z0-9_-]{0,39}$/i.test(relatedEntityId)
+      && actionIds.has('add_meal'));
+}
+
+/**
+ * Deterministically normalize only serving actions that already have a scoped
+ * executor and read-back verifier. This adapter cannot authorize a mutation:
+ * execution still passes lifecycle, permission, source-state, conflict, and
+ * domain ownership checks. Unknown producer/action combinations remain
+ * unnormalized and therefore cannot accidentally become executable.
+ */
+function deriveNormalizedActionForKnownProducer(
+  input: NotificationIntentInput,
+  context: DecisionLogicContext,
+): NormalizedDecisionAction | null {
+  const tenantId = input.tenantId ?? input.userId;
+  const relatedEntityType = typeof input.relatedEntityType === 'string' ? input.relatedEntityType : null;
+  const relatedEntityId = input.relatedEntityId == null ? null : String(input.relatedEntityId);
+  const actionIds = new Set((input.actionButtons ?? []).map((action) => action.id));
+
+  if (input.sourceSkill === 'finance'
+      && relatedEntityType === 'finance_tax_event'
+      && relatedEntityId && /^\d{4}-(0[1-9]|1[0-2])$/.test(relatedEntityId)
+      && actionIds.has('mark_paid')) {
+    const sourceVersion = financeTaxEventStateRevision({ userId: input.userId, tenantId }, relatedEntityId);
+    if (!sourceVersion) return null;
+    return buildNormalizedDecisionAction({
+      intent: 'finance.mark_tax_paid',
+      targetEntities: [{ type: 'finance_tax_event', id: relatedEntityId, version: sourceVersion }],
+      affectedResources: [{ type: 'finance_tax_event', id: relatedEntityId }],
+      preconditions: [{
+        type: 'finance_tax_state',
+        ref: relatedEntityId,
+        expectedVersion: sourceVersion,
+        required: true,
+      }],
+      expectedEffects: [{ type: 'mark_tax_paid', targetRef: `finance_tax_event:${relatedEntityId}` }],
+      prohibitedEffects: [{ type: 'modify_different_tax_event', targetRef: `finance_tax_event:${relatedEntityId}` }],
+      dependencies: [],
+      exclusivityKeys: [`finance_tax_event:${tenantId}:${relatedEntityId}`],
+      authorizationScope: ['decision_center:write'],
+      risk: 'high',
+      reversibility: 'irreversible',
+      contextVersion: producerContextVersion('finance', relatedEntityType, relatedEntityId, sourceVersion, context),
+    });
+  }
+
+  const contentAction = actionIds.has('approve_script')
+    ? 'approve_script'
+    : actionIds.has('request_rewrite') ? 'request_rewrite' : null;
+  if (input.sourceSkill === 'content'
+      && relatedEntityType === 'content_workflow_object'
+      && relatedEntityId && /^\d+$/.test(relatedEntityId)
+      && contentAction) {
+    const sourceVersion = contentWorkflowStateRevision({ userId: input.userId, tenantId }, relatedEntityId);
+    if (!sourceVersion) return null;
+    const targetApproval = contentAction === 'approve_script' ? 'approved' : 'rejected';
+    return buildNormalizedDecisionAction({
+      intent: `content.${contentAction}`,
+      targetEntities: [{ type: 'content_workflow_object', id: relatedEntityId, version: sourceVersion }],
+      affectedResources: [{ type: 'content_workflow_object', id: relatedEntityId }],
+      preconditions: [{
+        type: 'content_workflow_state',
+        ref: relatedEntityId,
+        expectedVersion: sourceVersion,
+        required: true,
+      }],
+      expectedEffects: [{
+        type: 'set_content_approval_state',
+        targetRef: `content_workflow_object:${relatedEntityId}`,
+        value: targetApproval,
+      }],
+      prohibitedEffects: [{
+        type: 'set_content_approval_state',
+        targetRef: `content_workflow_object:${relatedEntityId}`,
+        value: targetApproval === 'approved' ? 'rejected' : 'approved',
+      }],
+      dependencies: [],
+      exclusivityKeys: [`content_workflow_object:${tenantId}:${relatedEntityId}`],
+      authorizationScope: ['decision_center:write'],
+      risk: 'medium',
+      reversibility: 'compensatable',
+      contextVersion: producerContextVersion('content', relatedEntityType, relatedEntityId, sourceVersion, context),
+    });
+  }
+
+  if (input.sourceSkill === 'cooking'
+      && relatedEntityType === 'meal_plan'
+      && relatedEntityId && /^\d{4}-\d{2}-\d{2}:[a-z][a-z0-9_-]{0,39}$/i.test(relatedEntityId)
+      && actionIds.has('add_meal')) {
+    const sourceVersion = cookingMealSlotStateRevision({ userId: input.userId, tenantId }, relatedEntityId);
+    if (!sourceVersion) return null;
+    return buildNormalizedDecisionAction({
+      intent: 'cooking.add_meal',
+      targetEntities: [{ type: 'meal_plan', id: relatedEntityId, version: sourceVersion }],
+      affectedResources: [{ type: 'meal_plan', id: relatedEntityId }],
+      preconditions: [{
+        type: 'meal_plan_slot_state',
+        ref: relatedEntityId,
+        expectedVersion: sourceVersion,
+        required: true,
+      }],
+      expectedEffects: [{ type: 'upsert_meal_plan_slot', targetRef: `meal_plan:${relatedEntityId}` }],
+      prohibitedEffects: [{ type: 'modify_different_meal_slot', targetRef: `meal_plan:${relatedEntityId}` }],
+      dependencies: [],
+      exclusivityKeys: [`meal_plan:${tenantId}:${relatedEntityId}`],
+      authorizationScope: ['decision_center:write'],
+      risk: 'low',
+      reversibility: 'reversible',
+      contextVersion: producerContextVersion('cooking', relatedEntityType, relatedEntityId, sourceVersion, context),
+    });
+  }
+
+  return null;
+}
+
+function producerContextVersion(
+  sourceSkill: string,
+  relatedEntityType: string,
+  relatedEntityId: string,
+  sourceVersion: string,
+  context: DecisionLogicContext,
+): string {
+  const digest = createHash('sha256').update(JSON.stringify({
+    sourceSkill,
+    relatedEntityType,
+    relatedEntityId,
+    sourceVersion,
+    sourceState: context.sourceState ?? null,
+    providerSyncState: context.providerSyncState ?? null,
+    providerSyncUpdatedAt: context.providerSyncUpdatedAt ?? null,
+  })).digest('hex').slice(0, 32);
+  return `ctx_${sourceSkill}_${digest}`;
+}
+
+function shouldSuppressRepeatedRejectedCandidate(input: NotificationIntentInput): boolean {
+  const tenantId = input.tenantId ?? input.userId;
+  if (!isDecisionFeedbackSuppressionEnabled(process.env, { userId: input.userId, tenantId })) return false;
+  if (input.priority === 'critical' || input.priority === 'time_sensitive') return false;
+  const action = normalizeDecisionAction(decisionContextForIntentInput(input).normalizedAction);
+  if (!action || action.risk === 'high' || action.risk === 'critical') return false;
+  const rawDays = Number(process.env.DECISION_CANDIDATE_REJECTION_COOLDOWN_DAYS ?? 0);
+  if (!Number.isSafeInteger(rawDays) || rawDays < 1 || rawDays > 90) return false;
+  const cooldownDays = rawDays;
+  try {
+    const currentMaterialKey = rejectionMaterialKey(input, action);
+    const priors = getDb().prepare(`
+      SELECT items.item_id AS itemId, items.priority,
+             intents.normalized_action_json AS normalizedActionJson,
+             intents.decision_context_json AS decisionContextJson
+        FROM notification_intents intents
+        JOIN notification_center_items items
+          ON items.intent_id = intents.intent_id
+         AND items.user_id = intents.user_id
+         AND items.tenant_id = intents.tenant_id
+         WHERE intents.user_id = ? AND intents.tenant_id = ?
+         AND intents.candidate_fingerprint = ?
+         AND (items.decision_state = 'rejected' OR items.status = 'dismissed')
+         AND datetime(items.updated_at) >= datetime(?, ?)
+       ORDER BY items.updated_at DESC
+       LIMIT 25
+    `).all(
+      input.userId,
+      tenantId,
+      action.candidateFingerprint,
+      appNowIso(),
+      `-${cooldownDays} days`,
+    ) as Array<{
+      itemId: string;
+      priority: NotificationPriority;
+      normalizedActionJson: string | null;
+      decisionContextJson: string | null;
+    }>;
+    const repeated = priors.some((prior) => {
+      const priorAction = normalizeDecisionAction(safeParseJson(prior.normalizedActionJson, null));
+      if (!priorAction) return false;
+      const priorContext = safeParseJson<DecisionLogicContext>(prior.decisionContextJson, {});
+      return rejectionMaterialKey({
+        ...input,
+        priority: prior.priority,
+        decisionContext: priorContext,
+      }, priorAction) === currentMaterialKey;
+    });
+    if (!repeated) return false;
+    logger.info({
+      userId: input.userId,
+      tenantId,
+      sourceSkill: input.sourceSkill,
+      type: input.type,
+      cooldownDays,
+    }, 'Suppressed repeated rejected Decision Center candidate');
+    return true;
+  } catch (err) {
+    logger.warn({ err, userId: input.userId, tenantId }, 'Candidate rejection cooldown check failed open');
+    return false;
+  }
+}
+
+function rejectionMaterialKey(input: NotificationIntentInput, action: NormalizedDecisionAction): string {
+  const conflict = decisionContextForIntentInput(input).conflictEvaluation;
+  const material = {
+    candidateFingerprint: action.candidateFingerprint,
+    targetEntities: action.targetEntities,
+    requestedWindow: action.requestedWindow ?? null,
+    preconditions: action.preconditions,
+    expectedEffects: action.expectedEffects,
+    prohibitedEffects: action.prohibitedEffects,
+    authorizationScope: action.authorizationScope,
+    risk: action.risk,
+    reversibility: action.reversibility,
+    priority: input.priority,
+    conflict: conflict ? conflictMaterialShape(conflict) : null,
+  };
+  return createHash('sha256').update(JSON.stringify(material)).digest('hex');
+}
+
+function persistDecisionFlowMetadata(itemId: string, intentId: string, input: NotificationIntentInput): void {
+  const tenantId = input.tenantId ?? input.userId;
+  const context = decisionContextForIntentInput(input);
+  const normalizedAction = normalizeDecisionAction(context.normalizedAction);
+  const conflict = context.conflictEvaluation;
+  if (!normalizedAction && !conflict) return;
+  ensureDecisionCenterTables();
+  getDb().transaction(() => {
+      const intentUpdate = getDb().prepare(`
+        UPDATE notification_intents
+           SET context_version = ?,
+               context_observed_at = ?,
+               candidate_fingerprint = ?,
+               normalized_action_json = ?
+         WHERE intent_id = ? AND user_id = ? AND tenant_id = ?
+      `).run(
+        normalizedAction?.contextVersion ?? conflict?.contextVersion ?? null,
+        context.contextObservedAt ?? conflict?.evaluatedAt ?? appNowIso(),
+        normalizedAction?.candidateFingerprint ?? null,
+        normalizedAction ? JSON.stringify(normalizedAction) : null,
+        intentId,
+        input.userId,
+        tenantId,
+      );
+      assertDecisionScopedUpdateApplied(intentUpdate, 'persist_decision_flow_intent_metadata', {
+        itemId,
+        intentId,
+        userId: input.userId,
+        tenantId,
+      });
+      const itemUpdate = getDb().prepare(`
+        UPDATE notification_center_items
+           SET decision_state = COALESCE(decision_state, ?),
+               updated_at = COALESCE(updated_at, created_at)
+         WHERE item_id = ? AND user_id = ? AND tenant_id = ?
+      `).run(decisionStateForConflictEvaluation(conflict), itemId, input.userId, tenantId);
+      assertDecisionScopedUpdateApplied(itemUpdate, 'persist_decision_flow_item_metadata', {
+        itemId,
+        intentId,
+        userId: input.userId,
+        tenantId,
+      });
+      if (conflict && normalizedAction && conflict.contextVersion === normalizedAction.contextVersion) {
+        const relatedDecisionIds = [...new Set(conflict.findings
+          .map((finding) => finding.conflictingDecisionId)
+          .filter((value): value is string => typeof value === 'string' && value.length > 0))].sort();
+        const conflictInsert = getDb().prepare(`
+          INSERT INTO decision_conflict_evaluations (
+            conflict_evaluation_id, decision_id, user_id, tenant_id, policy_version,
+            context_version, disposition, hard_conflict_count, soft_conflict_count,
+            reason_codes_json, related_decision_ids_json, precedence_trace_json,
+            winner_decision_id, automatically_resolved
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `).run(
+          `dce_${randomUUID()}`,
+          itemId,
+          input.userId,
+          tenantId,
+          conflict.policyVersion,
+          conflict.contextVersion,
+          conflict.disposition,
+          conflict.findings.filter((finding) => finding.severity === 'hard').length,
+          conflict.findings.filter((finding) => finding.severity === 'soft').length,
+          JSON.stringify([...new Set(conflict.reasonCodes)].sort()),
+          JSON.stringify(relatedDecisionIds),
+          JSON.stringify(conflict.precedenceTrace ?? []),
+          conflict.winnerDecisionId ?? null,
+          conflict.autoResolved ? 1 : 0,
+        );
+        assertDecisionScopedUpdateApplied(conflictInsert, 'persist_decision_conflict_evaluation', {
+          itemId,
+          intentId,
+          userId: input.userId,
+          tenantId,
+        });
+      }
+  })();
+}
+
+function failClosedDecisionFlowMetadata(itemId: string, intentId: string, input: NotificationIntentInput): void {
+  const tenantId = input.tenantId ?? input.userId;
+  ensureDecisionCenterTables();
+  getDb().transaction(() => {
+    const intentUpdate = getDb().prepare(`
+      UPDATE notification_intents
+         SET status = 'failed', requires_user_action = 0,
+             action_buttons_json = '[]', delivery_policy = 'in_app_only'
+       WHERE intent_id = ? AND user_id = ? AND tenant_id = ?
+    `).run(intentId, input.userId, tenantId);
+    assertDecisionScopedUpdateApplied(intentUpdate, 'fail_closed_decision_flow_intent', {
+      itemId,
+      intentId,
+      userId: input.userId,
+      tenantId,
+    });
+    const itemUpdate = getDb().prepare(`
+      UPDATE notification_center_items
+         SET status = 'failed', decision_state = 'blocked', requires_user_action = 0,
+             actions_json = '[]', action_result_json = ?,
+             record_version = record_version + 1, updated_at = datetime('now')
+       WHERE item_id = ? AND user_id = ? AND tenant_id = ?
+         AND status NOT IN ('actioned', 'dismissed', 'expired', 'superseded')
+    `).run(
+      JSON.stringify({ errorCode: 'DECISION_FLOW_METADATA_PERSISTENCE_FAILED', retryRequiresNewProposal: true }),
+      itemId,
+      input.userId,
+      tenantId,
+    );
+    assertDecisionScopedUpdateApplied(itemUpdate, 'fail_closed_decision_flow_item', {
+      itemId,
+      intentId,
+      userId: input.userId,
+      tenantId,
+    });
+  })();
+  emitDecisionLifecycleEvent({
+    decisionId: itemId,
+    userId: input.userId,
+    tenantId,
+    event: 'blocked',
+    toStatus: 'blocked',
+    reason: 'decision_flow_metadata_persistence_failed',
+  });
+}
+
+function decisionStateForConflictEvaluation(conflict?: ConflictEvaluation | null): DurableDecisionState {
+  if (!conflict) return 'ready_for_review';
+  if (conflict.disposition === 'block' || conflict.disposition === 'stale') return 'blocked';
+  if (conflict.disposition === 'suppress_duplicate') return 'superseded';
+  if (conflict.disposition === 'needs_confirmation') return 'ready_for_review';
+  if (conflict.disposition === 'supersede') return 'ready_for_review';
+  return 'ready_for_review';
 }
 
 export function buildSkillDecisionFixtureIntent(
@@ -1239,7 +2017,7 @@ export function listDecisionItems(
   }
   const maxLimit = Math.min(Math.max(opts.maxLimit ?? 200, 1), 500);
   const requestedLimit = Math.min(Math.max(opts.limit ?? 80, 1), maxLimit);
-  const shouldMaterializePriorityScore = opts.materializePriorityScore ?? opts.recordExposure !== false;
+  const shouldMaterializePriorityScore = opts.materializePriorityScore === true;
   params.push(maxLimit);
 
   const rows = getDb().prepare(`
@@ -1258,7 +2036,8 @@ export function listDecisionItems(
   const records = rows
     .map(mapDecisionRecord)
     .filter((item) => isDecisionRecord(item))
-    .filter((item) => !supersedeIfSourceStateStale(item))
+    .map((item) => supersedeIfSourceStateStale(item) ? null : item)
+    .filter((item): item is DecisionRecord => item !== null)
     .filter((item) => isUserFacingDecision(item, decisionLogicForRecord(item)).visible)
     .filter((item) => !isSnoozedUntilFuture(item))
     .filter((item) => opts.status === 'expired' || !isDecisionExpired(item))
@@ -1272,7 +2051,7 @@ export function listDecisionItems(
     .slice(0, requestedLimit)
     .map(({ record, item }) => {
       if (shouldMaterializePriorityScore) materializeDecisionPriorityScore(record, item.priorityScore);
-      if (opts.recordExposure !== false) recordDecisionExposure(record, item);
+      if (opts.recordExposure === true) recordDecisionExposure(record, item);
       return item;
     });
 }
@@ -1300,10 +2079,9 @@ function evaluateUserFacingDecision(record: DecisionRecord, logic: DecisionLogic
   if (!guidanceEnabledForRecord(record)) return { visible: true, reason: 'guidance_disabled' };
 
   const actionQueue = ['unread', 'read', 'failed', 'open'].includes(record.status);
-  if (process.env.DECISION_CENTER_DEBUG_EVIDENCE !== '1'
-      && actionQueue
-      && record.requiresUserAction
-      && analysisForRecord(record, logic).sourceFreshness === 'stale') {
+  if (actionQueue
+      && sourceFreshnessForRecord(record, context) === 'stale'
+      && record.contextObservedAt == null) {
     return { visible: false, reason: 'stale_action_source' };
   }
   if (actionQueue && record.requiresUserAction && !logic.quality.safeForFrontendAction) {
@@ -1331,29 +2109,278 @@ export function getDecisionItem(
   tenantId = userId,
   opts: { recordExposure?: boolean } = {},
 ): DecisionApiItem | null {
-  const record = getDecisionRecord(decisionId, userId, tenantId);
+  let record = getDecisionRecord(decisionId, userId, tenantId);
   if (!record || !isDecisionRecord(record)) return null;
+  record = refreshSourceStateForRead(record);
   const logic = decisionLogicForRecord(record);
   if (!isUserFacingDecision(record, logic).visible) return null;
   if (isDecisionExpired(record)) return null;
-  if (supersedeIfSourceStateStale(record)) {
-    const refreshed = getDecisionRecord(decisionId, userId, tenantId);
-    if (!refreshed || isDecisionExpired(refreshed)) return null;
-    return formatDecisionItemForApiWithExposure(refreshed, opts);
-  }
   return formatDecisionItemForApiWithExposure(record, opts);
 }
 
-/**
- * Refresh-evidence: the explicit, audited trigger to re-derive a decision's computed fields (effectiveStatus
- * / sourceFreshness / ranking / actionability) from CURRENT stored source state. getDecisionItem already
- * recomputes everything on every call and re-evaluates supersession, so this is a token-zero re-read (no
- * provider network fetch) — honest about NOT fetching fresh upstream data. Read-only; returns null if the
- * decision is gone/expired/superseded-away.
- */
+/** Explicit token-zero revalidation against current local authoritative state. */
 export function refreshDecisionItem(decisionId: string, userId: number, tenantId = userId): { item: DecisionApiItem; refreshedAt: string } | null {
-  const item = getDecisionItem(decisionId, userId, tenantId);
-  return item ? { item, refreshedAt: DateTime.utc().toISO()! } : null;
+  assertScope(userId, tenantId, 'refresh_decision_item', { decisionId });
+  ensureDecisionCenterTables();
+  reclaimExpiredExecutionLeases(userId, tenantId);
+  let record = getDecisionRecord(decisionId, userId, tenantId);
+  if (!record || !isDecisionRecord(record) || isDecisionExpired(record)) return null;
+  guardDecisionLifecycleMutation(record, 'refresh', { allowPartialRecovery: true });
+  const executionReconciliation = reconcilePartialDecisionExecution(record);
+  if (executionReconciliation !== 'none') {
+    record = getDecisionRecord(decisionId, userId, tenantId);
+    if (!record) return null;
+    if (executionReconciliation === 'applied' || executionReconciliation === 'unknown') {
+      return { item: formatDecisionItemForApi(record), refreshedAt: DateTime.utc().toISO()! };
+    }
+  }
+  const action = normalizeDecisionAction(decisionContextForRecord(record).normalizedAction);
+  if (!decisionRefreshSupportedForRecord(record) || !action) {
+    throw new DecisionActionError(
+      'DECISION_REFRESH_NOT_SUPPORTED',
+      'This decision does not have a registered source-state refresh contract.',
+      409,
+    );
+  }
+  const materialContextExpiry = decisionContextExpiresAt(record);
+  if (materialContextExpiry && Date.parse(materialContextExpiry) <= Date.now()) {
+    const expired = getDb().prepare(`
+      UPDATE notification_center_items
+         SET status = 'expired', decision_state = 'expired',
+             record_version = record_version + 1, updated_at = datetime('now')
+       WHERE item_id = ? AND user_id = ? AND tenant_id = ? AND record_version = ?
+         AND status NOT IN ('actioned', 'dismissed', 'expired', 'superseded')
+    `).run(decisionId, userId, tenantId, record.recordVersion);
+    if (expired.changes !== 1) {
+      throw new DecisionActionError(
+        'DECISION_VERSION_CONFLICT',
+        'Decision changed while its expired context was being retired.',
+        409,
+        decisionVersionConflictDetails(getDecisionRecord(decisionId, userId, tenantId)),
+      );
+    }
+    emitDecisionLifecycleEvent({
+      decisionId,
+      userId,
+      tenantId,
+      event: 'expired',
+      toStatus: 'expired',
+      reason: 'material_context_expired_refresh_requires_new_proposal',
+    });
+    record = getDecisionRecord(decisionId, userId, tenantId);
+    if (!record) return null;
+    return { item: formatDecisionItemForApi(record), refreshedAt: DateTime.utc().toISO()! };
+  }
+  const mode = getDecisionConflictPolicyV1Mode(process.env, { userId, tenantId });
+  if (action) {
+    const priorContext = decisionContextForRecord(record);
+    const priorConflict = priorContext.conflictEvaluation;
+    const initialRevalidation = revalidateNormalizedDecisionAction({
+      scope: { userId, tenantId },
+      action,
+      additionalExisting: priorContext.conflictComparisons ?? undefined,
+      decisionId,
+      decisionApproved: durableDecisionStateForRecord(record) === 'approved',
+      replacementApproved: hasApprovedReplacementForContext(record, action.contextVersion),
+      // Approval only covers the conflict set the user actually reviewed.
+      // A refresh must surface newly discovered soft conflicts instead of
+      // treating the prior approval as blanket confirmation.
+      confirmationApproved: false,
+      confidence: priorContext.candidateConfidence ?? undefined,
+      contextExpiresAt: decisionContextExpiresAt(record),
+      candidateCreatedAt: record.contextObservedAt ?? record.createdAt,
+    });
+    const observedPreconditionVersions = observePreconditionVersions(initialRevalidation.preconditions);
+    const sourceVersionMismatch = action.preconditions.some((precondition) => {
+      const currentVersion = observedPreconditionVersions.get(precondition.ref);
+      return !!currentVersion && currentVersion !== precondition.expectedVersion;
+    });
+    const initialConflictChanged = conflictMaterialKey(priorConflict) !== conflictMaterialKey(initialRevalidation.conflictEvaluation);
+    let refreshedAction = action;
+    if (sourceVersionMismatch || initialConflictChanged) {
+      refreshedAction = rebuildNormalizedActionForContext(
+        refreshedAction,
+        nextDecisionContextVersion(refreshedAction, initialRevalidation.conflictEvaluation, observedPreconditionVersions),
+      );
+    }
+    let finalRevalidation = refreshedAction.contextVersion === action.contextVersion
+      ? initialRevalidation
+      : revalidateNormalizedDecisionAction({
+        scope: { userId, tenantId },
+        action: refreshedAction,
+        additionalExisting: priorContext.conflictComparisons ?? undefined,
+        decisionId,
+        decisionApproved: durableDecisionStateForRecord(record) === 'approved',
+        replacementApproved: hasApprovedReplacementForContext(record, refreshedAction.contextVersion),
+        confirmationApproved: false,
+        confidence: priorContext.candidateConfidence ?? undefined,
+        contextExpiresAt: decisionContextExpiresAt(record),
+        candidateCreatedAt: record.contextObservedAt ?? record.createdAt,
+      });
+    let conflict = finalRevalidation.conflictEvaluation;
+    let materialChanged = refreshedAction.contextVersion !== action.contextVersion
+      || conflictMaterialKey(priorConflict) !== conflictMaterialKey(conflict);
+    if (materialChanged) {
+      const stableContextVersion = nextDecisionContextVersion(refreshedAction, conflict, observedPreconditionVersions);
+      if (refreshedAction.contextVersion !== stableContextVersion) {
+        refreshedAction = rebuildNormalizedActionForContext(refreshedAction, stableContextVersion);
+        finalRevalidation = revalidateNormalizedDecisionAction({
+          scope: { userId, tenantId },
+          action: refreshedAction,
+          additionalExisting: priorContext.conflictComparisons ?? undefined,
+          decisionId,
+          decisionApproved: durableDecisionStateForRecord(record) === 'approved',
+          replacementApproved: hasApprovedReplacementForContext(record, refreshedAction.contextVersion),
+          confirmationApproved: false,
+          confidence: priorContext.candidateConfidence ?? undefined,
+          contextExpiresAt: decisionContextExpiresAt(record),
+          candidateCreatedAt: record.contextObservedAt ?? record.createdAt,
+        });
+        conflict = finalRevalidation.conflictEvaluation;
+        materialChanged = refreshedAction.contextVersion !== action.contextVersion
+          || conflictMaterialKey(priorConflict) !== conflictMaterialKey(conflict);
+      }
+    }
+    if (decisionRefreshSupportedForScope(userId, tenantId)) {
+      const context: DecisionLogicContext = {
+        ...priorContext,
+        normalizedAction: refreshedAction,
+        conflictEvaluation: conflict,
+      };
+      const priorState = durableDecisionStateForRecord(record);
+      const nextState = !materialChanged && priorState === 'approved'
+        ? 'approved'
+        : decisionStateForConflictEvaluation(conflict);
+      getDb().transaction(() => {
+        const intentUpdate = getDb().prepare(`
+          UPDATE notification_intents
+             SET decision_context_json = ?, context_version = ?, context_observed_at = ?,
+                 candidate_fingerprint = ?, normalized_action_json = ?
+           WHERE intent_id = ? AND user_id = ? AND tenant_id = ?
+        `).run(
+          JSON.stringify(context),
+          refreshedAction.contextVersion,
+          appNowIso(),
+          refreshedAction.candidateFingerprint,
+          JSON.stringify(refreshedAction),
+          record!.intentId,
+          userId,
+          tenantId,
+        );
+        if (intentUpdate.changes !== 1) {
+          throw new DecisionActionError('DECISION_READBACK_MISMATCH', 'Decision context could not be refreshed.', 409);
+        }
+        const itemUpdate = materialChanged
+          ? getDb().prepare(`
+              UPDATE notification_center_items
+                 SET decision_state = ?,
+                     status = CASE WHEN ? = 'superseded' THEN 'superseded' ELSE status END,
+                     record_version = record_version + 1, updated_at = datetime('now')
+               WHERE item_id = ? AND user_id = ? AND tenant_id = ? AND record_version = ?
+                 AND status NOT IN ('actioned', 'dismissed', 'expired', 'superseded')
+            `).run(nextState, nextState, decisionId, userId, tenantId, record!.recordVersion)
+          : getDb().prepare(`
+              UPDATE notification_center_items
+                 SET decision_state = ?,
+                     status = CASE WHEN ? = 'superseded' THEN 'superseded' ELSE status END
+               WHERE item_id = ? AND user_id = ? AND tenant_id = ? AND record_version = ?
+                 AND status NOT IN ('actioned', 'dismissed', 'expired', 'superseded')
+            `).run(nextState, nextState, decisionId, userId, tenantId, record!.recordVersion);
+        if (itemUpdate.changes !== 1) {
+          const current = getDecisionRecord(decisionId, userId, tenantId);
+          throw new DecisionActionError(
+            'DECISION_VERSION_CONFLICT',
+            'Decision changed while it was being refreshed.',
+            409,
+            decisionVersionConflictDetails(current),
+          );
+        }
+      })();
+      resolveDecisionConflictAudit(decisionId, userId, tenantId, materialChanged ? 'refreshed_context_changed' : 'refreshed_unchanged');
+      recordDecisionConflictEvaluation(record, conflict);
+      record = getDecisionRecord(decisionId, userId, tenantId);
+      if (!record) return null;
+    } else {
+      logger.info({
+        event: 'decision.revalidation_shadowed',
+        decisionId,
+        userId,
+        tenantId,
+        materialChanged,
+        priorContextVersion: action.contextVersion,
+        refreshedContextVersion: refreshedAction.contextVersion,
+        disposition: conflict.disposition,
+      }, 'Decision refresh conflict revalidation completed in shadow mode');
+    }
+  }
+  return { item: formatDecisionItemForApi(record), refreshedAt: DateTime.utc().toISO()! };
+}
+
+function observePreconditionVersions(
+  preconditions: Array<{ ref: string; currentVersion?: string }>,
+): Map<string, string> {
+  return new Map(preconditions
+    .filter((precondition): precondition is { ref: string; currentVersion: string } => !!precondition.currentVersion)
+    .map((precondition) => [precondition.ref, precondition.currentVersion]));
+}
+
+function rebuildNormalizedActionForContext(
+  action: NormalizedDecisionAction,
+  contextVersion: string,
+): NormalizedDecisionAction {
+  return buildNormalizedDecisionAction({
+    intent: action.intent,
+    targetEntities: action.targetEntities,
+    affectedResources: action.affectedResources,
+    ...(action.requestedWindow ? { requestedWindow: action.requestedWindow } : {}),
+    preconditions: action.preconditions,
+    expectedEffects: action.expectedEffects,
+    prohibitedEffects: action.prohibitedEffects,
+    dependencies: action.dependencies,
+    exclusivityKeys: action.exclusivityKeys,
+    authorizationScope: action.authorizationScope,
+    risk: action.risk,
+    reversibility: action.reversibility,
+    contextVersion,
+  });
+}
+
+function nextDecisionContextVersion(
+  action: NormalizedDecisionAction,
+  conflict: ConflictEvaluation,
+  observedPreconditionVersions: Map<string, string>,
+): string {
+  const shape = {
+    candidateFingerprint: action.candidateFingerprint,
+    targetEntities: action.targetEntities,
+    preconditions: action.preconditions,
+    affectedResources: action.affectedResources,
+    requestedWindow: action.requestedWindow ?? null,
+    observedPreconditionVersions: [...observedPreconditionVersions.entries()]
+      .sort(([left], [right]) => compareCodeUnits(left, right)),
+    conflict: conflictMaterialShape(conflict),
+  };
+  return `ctx_${createHash('sha256').update(JSON.stringify(shape)).digest('hex').slice(0, 32)}`;
+}
+
+function conflictMaterialKey(conflict: ConflictEvaluation | null | undefined): string {
+  return JSON.stringify(conflict ? conflictMaterialShape(conflict) : null);
+}
+
+function conflictMaterialShape(conflict: ConflictEvaluation): Record<string, unknown> {
+  return {
+    policyVersion: conflict.policyVersion,
+    disposition: conflict.disposition,
+    findings: conflict.findings.map((finding) => ({
+      class: finding.class,
+      severity: finding.severity,
+      reasonCode: finding.reasonCode,
+      conflictingDecisionId: finding.conflictingDecisionId ?? null,
+      resourceKey: finding.resourceKey ?? null,
+    })).sort((left, right) => compareCodeUnits(JSON.stringify(left), JSON.stringify(right))),
+    winnerDecisionId: conflict.winnerDecisionId ?? null,
+    autoResolved: conflict.autoResolved,
+  };
 }
 
 export function findDecisionByRelatedEntity(
@@ -1392,7 +2419,6 @@ export function getDecisionSummary(userId: number, tenantId = userId, limit = 3)
   const items = listDecisionItems(userId, tenantId, { status: 'all', limit: 80, recordExposure: false });
   const handled = listHandledByNexusItems(userId, tenantId, 25);
   const summary = buildDecisionSummaryFromSections(userId, tenantId, items, handled, limit);
-  recordDecisionItemExposures(summary.previewItems);
   return summary;
 }
 
@@ -1421,7 +2447,7 @@ function buildDecisionSummaryFromSections(
     .filter((item) => isTimestampInLocalDay(item.createdAt, timezone, DateTime.utc()))
     .length;
   const gamification = isDecisionStreakV1Enabled(process.env, { userId, tenantId })
-    ? updateAndReadDecisionGamification(userId, tenantId, openItems.length)
+    ? readDecisionGamification(userId, tenantId, openItems.length)
     : null;
   return {
     openCount: openItems.length,
@@ -1562,8 +2588,6 @@ export function getDecisionOverview(
       logDecisionOverviewSectionFailure('summary', err, userId, tenantId);
     }
   }
-  recordDecisionItemExposures(items);
-  recordDecisionItemExposures(summary.previewItems);
   const staleCount = openItemsRaw.filter((item) => item.analysis.sourceFreshness === 'stale' || item.sourceTrace?.dataFreshness === 'cached').length;
   const supersededCount = allItems.filter((item) => ['superseded', 'dismissed', 'actioned'].includes(item.status)).length;
   const topSuggestion = summary.topSuggestion ?? (allOpenItems[0] ? topSuggestionForItem(allOpenItems[0]) : null);
@@ -1704,25 +2728,12 @@ export function countOpenUrgentDecisionsForUser(userId: number, tenantId = userI
   return getDecisionSummary(userId, tenantId).badgeCount;
 }
 
-function updateAndReadDecisionGamification(userId: number, tenantId: number, openCount: number): DecisionGamificationSummary {
+function readDecisionGamification(userId: number, tenantId: number, openCount: number): DecisionGamificationSummary {
   ensureDecisionCenterTables();
   const defaults = userDecisionContextDefaults(userId);
   const timezone = defaults.timezone || 'UTC';
   const now = DateTime.now().setZone(timezone);
   const today = now.toISODate()!;
-  const reachedZeroAt = openCount === 0 ? now.toUTC().toISO()! : null;
-  getDb().prepare(`
-    INSERT INTO decision_queue_daily_rollups (
-      user_id, tenant_id, local_date, timezone, reached_zero_at,
-      final_open_count, best_observed_open_count, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
-    ON CONFLICT(user_id, tenant_id, local_date) DO UPDATE SET
-      timezone = excluded.timezone,
-      reached_zero_at = COALESCE(decision_queue_daily_rollups.reached_zero_at, excluded.reached_zero_at),
-      final_open_count = excluded.final_open_count,
-      best_observed_open_count = MIN(decision_queue_daily_rollups.best_observed_open_count, excluded.best_observed_open_count),
-      updated_at = datetime('now')
-  `).run(userId, tenantId, today, timezone, reachedZeroAt, openCount, openCount);
 
   const since = now.minus({ days: 13 }).toISODate()!;
   const rows = getDb().prepare(`
@@ -1735,10 +2746,11 @@ function updateAndReadDecisionGamification(userId: number, tenantId: number, ope
   const last14Days = Array.from({ length: 14 }, (_, idx) => {
     const date = now.minus({ days: 13 - idx }).toISODate()!;
     const row = rowByDate.get(date);
+    const cleared = !!row?.reached_zero_at || (date === today && openCount === 0);
     return {
       date,
-      cleared: !!row?.reached_zero_at,
-      reachedZeroAt: row?.reached_zero_at ?? null,
+      cleared,
+      reachedZeroAt: row?.reached_zero_at ?? (cleared ? now.toUTC().toISO() : null),
     };
   });
   const allRows = getDb().prepare(`
@@ -1751,6 +2763,10 @@ function updateAndReadDecisionGamification(userId: number, tenantId: number, ope
   for (const row of allRows) {
     clearedByDate.set(row.local_date, !!row.reached_zero_at);
   }
+  // The live queue is authoritative for today even before the asynchronous
+  // daily rollup writer persists its row. A zero open count therefore extends
+  // today's streak immediately; historical days still require durable rows.
+  if (openCount === 0) clearedByDate.set(today, true);
   // Phase 17 hostile-QA fix (2026-05-18): walk back over the full clearedByDate
   // index, not a fixed 14-day window. The previous code silently capped
   // currentStreakDays at 14 because last14Days has exactly 14 entries —
@@ -1818,7 +2834,11 @@ export function listHandledByNexusItems(userId: number, tenantId = userId, limit
       .filter((value): value is string => !!value),
   );
   const explicitItems = explicitRows
-    .map(mapHandledByNexusItem)
+    .map((row) => {
+      const item = mapHandledByNexusItem(row);
+      const record = getDecisionRecord(item.decisionId, userId, tenantId);
+      return record ? withHandledRollbackAction(item, record) : item;
+    })
     .filter(isHandledByNexusItemUserFacing);
 
   const actionedRows = getDb().prepare(`
@@ -2035,9 +3055,10 @@ function runDecisionCenterSmokeCleanup(input: {
   if (input.dryRun || rows.length === 0) {
     return { inspected: rows.length, expired: 0, dryRun: input.dryRun, countsByStatus, countsByVisibilityScope };
   }
-  const update = getDb().prepare(`
-    UPDATE notification_center_items
-       SET status = 'expired'
+    const update = getDb().prepare(`
+      UPDATE notification_center_items
+       SET status = 'expired', decision_state = 'expired',
+           record_version = record_version + 1, updated_at = datetime('now')
      WHERE item_id = ?
   `);
   const txn = getDb().transaction((ids: string[]) => {
@@ -2102,7 +3123,7 @@ export function runDecisionExpiryJob(input: { batchSize?: number; maxBatches?: n
        AND expires_at IS NOT NULL
        AND datetime(expires_at) <= datetime(?)
   `);
-  const update = db.prepare("UPDATE notification_center_items SET status = 'expired' WHERE item_id = ?");
+  const update = db.prepare("UPDATE notification_center_items SET status = 'expired', decision_state = 'expired', record_version = record_version + 1, updated_at = datetime('now') WHERE item_id = ?");
   const expireBatch = db.transaction((ids: string[]) => {
     for (const id of ids) update.run(id);
   });
@@ -2112,9 +3133,29 @@ export function runDecisionExpiryJob(input: { batchSize?: number; maxBatches?: n
   while (batches < maxBatches) {
     const rows = selectExpired.all(...statuses, appNowIso(), batchSize) as Array<{ item_id: string; user_id: number; tenant_id: number }>;
     if (rows.length === 0) break;
+    const ignoredRecords = rows.flatMap((row) => {
+      const record = getDecisionRecord(row.item_id, row.user_id, row.tenant_id);
+      if (!record) return [];
+      const interacted = db.prepare(`
+        SELECT 1 FROM decision_lifecycle_events
+         WHERE decision_id = ? AND user_id = ? AND tenant_id = ?
+           AND event IN ('viewed', 'detail_opened', 'approved', 'rejected', 'deferred',
+                         'snoozed', 'dismissed', 'action_started', 'action_succeeded')
+         LIMIT 1
+      `).get(row.item_id, row.user_id, row.tenant_id);
+      return interacted ? [] : [record];
+    });
     expireBatch(rows.map((row) => row.item_id));
     for (const row of rows) {
+      resolveDecisionConflictAudit(row.item_id, row.user_id, row.tenant_id, 'expired');
       emitDecisionLifecycleEvent({ decisionId: row.item_id, userId: row.user_id, tenantId: row.tenant_id, event: 'expired', toStatus: 'expired' });
+    }
+    for (const record of ignoredRecords) {
+      recordDecisionOutcome(record, {
+        actionShown: recommendedAction(actionsForRecord(record))?.id ?? null,
+        ignored: true,
+        timeToActionMs: timeToActionMs(record),
+      });
     }
     emitUnblockedDependentsForBlockers(
       rows.map((row) => ({ decisionId: row.item_id, userId: row.user_id, tenantId: row.tenant_id })),
@@ -2132,9 +3173,13 @@ export function runDecisionExpiryJob(input: { batchSize?: number; maxBatches?: n
 export interface DecisionLedgerRetentionPruneResult {
   outcomeLedgerPruned: number;
   qualityGateEventsPruned: number;
+  conflictEvaluationsPruned: number;
+  terminalExclusivityClaimsPruned: number;
   outcomeLedgerRemaining: number;
   qualityGateEventsRemaining: number;
-  /** Combined batch-pass count across BOTH tables (outcome ledger + quality-gate events), not per-table. */
+  conflictEvaluationsRemaining: number;
+  terminalExclusivityClaimsRemaining: number;
+  /** Combined bounded batch-pass count across every raw table. */
   batches: number;
   durationMs: number;
 }
@@ -2142,7 +3187,8 @@ export interface DecisionLedgerRetentionPruneResult {
 /**
  * Enforce the declared retention horizon for the Decision Center's write-heavy raw telemetry tables by
  * age-pruning rows older than DECISION_OUTCOME_LEDGER_RETENTION_POLICY.rawOutcomeRetentionDays. Without
- * this the policy is only declarative: decision_outcome_ledger + decision_quality_gate_events grow
+ * this the policy is only declarative: outcome, quality-gate, conflict-evaluation, and terminal
+ * exclusivity rows grow
  * unbounded and getDecisionOutcomeMetrics materializes an ever-larger per-user partition on the request
  * path (the very scan that gates the T14 dashboard at scale).
  *
@@ -2153,7 +3199,7 @@ export interface DecisionLedgerRetentionPruneResult {
  * datetime() comparison is robust to ISO-with-Z vs space-separated storage formats. Table + PK names
  * are compile-time literals (not input), so the dynamic SQL carries no injection surface.
  *
- * Both raw tables intentionally share rawOutcomeRetentionDays (same class of raw event; the 730-day
+ * These raw tables intentionally share rawOutcomeRetentionDays (same class of raw event; the 730-day
  * aggregateRetentionDays tier is for derived rollups, not these). No VACUUM/ANALYZE is run — a frequent
  * cron must not take SQLite's whole-DB write lock, and freed pages are reused by the steady stream of
  * new inserts, so disk stays flat in steady state without reclaiming on each pass.
@@ -2169,10 +3215,14 @@ export function runDecisionLedgerRetentionPruneJob(
   const db = getDb();
   const cutoff = `-${Math.floor(retentionDays)} days`;
 
-  const pruneTable = (table: string, pkColumn: string): { pruned: number; remaining: number; batches: number } => {
+  const pruneTable = (
+    table: string,
+    pkColumn: string,
+    extraPredicate = '1 = 1',
+  ): { pruned: number; remaining: number; batches: number } => {
     const selectOld = db.prepare(`
       SELECT ${pkColumn} AS id FROM ${table}
-       WHERE datetime(created_at) < datetime('now', ?)
+       WHERE datetime(created_at) < datetime('now', ?) AND ${extraPredicate}
        ORDER BY created_at ASC
        LIMIT ?
     `);
@@ -2190,18 +3240,33 @@ export function runDecisionLedgerRetentionPruneJob(
       batches += 1;
       if (rows.length < batchSize) break;
     }
-    const remaining = (db.prepare(`SELECT COUNT(*) AS n FROM ${table} WHERE datetime(created_at) < datetime('now', ?)`).get(cutoff) as { n: number }).n;
+    const remaining = (db.prepare(`
+      SELECT COUNT(*) AS n FROM ${table}
+       WHERE datetime(created_at) < datetime('now', ?) AND ${extraPredicate}
+    `).get(cutoff) as { n: number }).n;
     return { pruned, remaining, batches };
   };
 
   const outcome = pruneTable('decision_outcome_ledger', 'outcome_id');
   const gate = pruneTable('decision_quality_gate_events', 'event_id');
+  const conflicts = pruneTable('decision_conflict_evaluations', 'conflict_evaluation_id');
+  // Recovery-held claims (`started` and `partially_failed`) remain durable so
+  // retry/reconciliation can never reopen a duplicate side effect.
+  const exclusivity = pruneTable(
+    'decision_exclusivity_claims',
+    'rowid',
+    "status IN ('failed', 'expired', 'succeeded')",
+  );
   return {
     outcomeLedgerPruned: outcome.pruned,
     qualityGateEventsPruned: gate.pruned,
+    conflictEvaluationsPruned: conflicts.pruned,
+    terminalExclusivityClaimsPruned: exclusivity.pruned,
     outcomeLedgerRemaining: outcome.remaining,
     qualityGateEventsRemaining: gate.remaining,
-    batches: outcome.batches + gate.batches,
+    conflictEvaluationsRemaining: conflicts.remaining,
+    terminalExclusivityClaimsRemaining: exclusivity.remaining,
+    batches: outcome.batches + gate.batches + conflicts.batches + exclusivity.batches,
     durationMs: Date.now() - start,
   };
 }
@@ -2550,21 +3615,21 @@ export async function performDecisionAction(
   actionId: string,
   userId: number,
   tenantId = userId,
-  opts: { idempotencyKey?: string; payload?: Record<string, unknown>; channel?: string } = {},
+  opts: {
+    idempotencyKey?: string;
+    payload?: Record<string, unknown>;
+    channel?: string;
+    expectedVersion?: number;
+    contextVersion?: string;
+    /** Internal-only signal set by the two-key, opted-in low-risk resolver. */
+    automaticResolution?: boolean;
+  } = {},
 ): Promise<DecisionActionResult> {
   assertScope(userId, tenantId, 'perform_decision_action', { decisionId, actionId });
   ensureDecisionCenterTables();
+  reclaimExpiredExecutionLeases(userId, tenantId);
   const record = getDecisionRecord(decisionId, userId, tenantId);
   if (!record || !isDecisionRecord(record)) throw new DecisionActionError('DECISION_NOT_FOUND', 'Decision not found for authenticated user', 404);
-  const supersededReason = supersedeIfSourceStateStale(record);
-  if (supersededReason) {
-    throw new DecisionActionError(
-      'DECISION_SUPERSEDED',
-      'Decision was superseded because the source item is no longer actionable.',
-      409,
-      { reason: supersededReason },
-    );
-  }
   const idempotencyKey = opts.idempotencyKey?.trim();
   if (!idempotencyKey) {
     throw new DecisionActionError('IDEMPOTENCY_KEY_REQUIRED', 'Decision actions require an idempotency key', 400);
@@ -2589,33 +3654,166 @@ export async function performDecisionAction(
   if (existing && existing.status === 'started') {
     return waitForExistingExecution(decisionId, actionId, userId, tenantId, idempotencyKey);
   }
-  if (existing && existing.status === 'failed') {
-    throw new DecisionActionError(existing.error_code || 'DECISION_ACTION_FAILED', 'Prior decision action attempt failed', 409, safeParseJson(existing.result_json, {}));
+  if (existing && (existing.status === 'failed' || existing.status === 'partially_failed')) {
+    throw executionReplayError(existing, 'Prior decision action attempt failed');
+  }
+  if (opts.contextVersion && opts.contextVersion !== decisionContextVersion(record)) {
+    throw new DecisionActionError('DECISION_CONTEXT_CHANGED', 'Decision context changed and must be reviewed again.', 409, {
+      currentContextVersion: decisionContextVersion(record),
+    });
+  }
+  const actionPayload = validatedDecisionActionPayload(record, actionId, opts.payload ?? {});
+  const logicalActionHash = logicalActionHashForAttempt(record, actionId, actionPayload);
+  const existingLogical = getExistingLogicalExecution(userId, tenantId, logicalActionHash);
+  if (existingLogical?.status === 'started') {
+    logger.info({
+      event: 'decision.logical_duplicate_blocked',
+      decisionId,
+      canonicalDecisionId: existingLogical.decision_id,
+      userId,
+      tenantId,
+    }, 'Decision logical duplicate joined an active execution');
+    return waitForExecutionById(decisionId, actionId, userId, tenantId, existingLogical.action_execution_id);
+  }
+  if (existingLogical?.status === 'succeeded' && actionId !== 'undo_reflow') {
+    guardActionable(record, actionId);
+    return idempotentActionResult(decisionId, actionId, userId, tenantId, existingLogical);
+  }
+  if (existingLogical?.status === 'partially_failed') {
+    throw executionReplayError(existingLogical, 'An equivalent decision action requires recovery review');
+  }
+  guardDecisionLifecycleMutation(record, 'perform_action', {
+    allowExecution: { actionId, idempotencyKey },
+  });
+  // A verified replay is returned above even if the source has since changed.
+  // Only genuinely new attempts are evaluated against current state.
+  const supersededReason = supersedeIfSourceStateStale(record);
+  if (supersededReason) {
+    throw new DecisionActionError(
+      'DECISION_CONTEXT_CHANGED',
+      'Decision context changed because the source item is no longer actionable.',
+      409,
+      { reason: supersededReason },
+    );
   }
   // New attempt (unseen key): now validate that the action is actually available + actionable.
   const availableActions = actionsForRecord(record);
-  if (!availableActions.some((action) => action.id === actionId)) {
+  const systemLifecycleAction: NotificationActionButton | null = actionId === 'snooze'
+    ? { id: 'snooze', label: 'Snooze', style: 'secondary' }
+    : actionId === 'dismiss'
+      ? { id: 'dismiss', label: 'Dismiss', style: 'secondary' }
+      : null;
+  const selectedAction = availableActions.find((candidate) => candidate.id === actionId) ?? systemLifecycleAction;
+  if (!selectedAction) {
     throw new DecisionActionError('DECISION_ACTION_NOT_ALLOWED', 'That action is not available for this decision', 400);
   }
   guardActionable(record, actionId);
   guardDecisionDependencies(record, actionId);
+  // Direct API callers may act before the client has posted its card exposure.
+  // Keep audit ordering deterministic by recording the selected preview once
+  // before the execution claim.
+  emitDecisionActionPreviewedIfFirst(record, actionId);
 
-  const action = availableActions.find((candidate) => candidate.id === actionId)!;
-  const claimed = claimExecution(record, actionId, idempotencyKey, executorSkillForAction(actionId, record));
+  const action = selectedAction;
+  const requiresVersionClaim = MUTATING_ACTIONS.has(actionId);
+  const requiresExpectedVersion = VERSIONED_DECISION_ACTIONS.has(actionId);
+  if (requiresVersionClaim) {
+    const approvalLevel = approvalLevelForRecord(record);
+    if (approvalLevel === 'unavailable') {
+      throw new DecisionActionError('DECISION_PERMISSION_REQUIRED', 'Current permissions do not allow this action.', 403);
+    }
+    if (approvalLevel === 'admin_review') {
+      throw new DecisionActionError('DECISION_ADMIN_REVIEW_REQUIRED', 'This action requires an authorized administrator review.', 403);
+    }
+    if (approvalLevel === 'strong_confirmation'
+        && isDecisionFlowV1EnforceEnabled(process.env, { userId, tenantId })
+        && !hasStrongApprovalForCurrentVersion(record)) {
+      throw new DecisionActionError(
+        'DECISION_STRONG_CONFIRMATION_REQUIRED',
+        'This high-impact action requires a current strong approval before execution.',
+        409,
+        { currentItem: formatDecisionItemForApi(record) },
+      );
+    }
+    if (approvalLevel === 'strong_confirmation'
+        && !isDecisionFlowV1EnforceEnabled(process.env, { userId, tenantId })) {
+      emitDecisionLifecycleEvent({
+        decisionId,
+        userId,
+        tenantId,
+        event: 'strong_confirmation_legacy_bypass',
+        actionId,
+        reason: 'decision_flow_v1_enforcement_disabled',
+        metadata: { approvalLevel, recordVersion: record.recordVersion },
+      });
+    }
+    revalidateDecisionActionForExecution(record, actionId, opts.contextVersion, actionPayload);
+  }
+  validateExpectedDecisionVersion(record, opts.expectedVersion, requiresExpectedVersion);
+  const claimed = claimExecution(
+    record,
+    actionId,
+    idempotencyKey,
+    executorSkillForAction(actionId, record),
+    {
+      logicalActionHash: requiresVersionClaim ? logicalActionHash : null,
+      expectedVersion: opts.expectedVersion ?? record.recordVersion,
+      contextVersion: decisionContextVersion(record),
+      mutateRecordVersion: requiresVersionClaim,
+      expectedEffect: expectedExecutionStateForAttempt(record, actionId, actionPayload),
+    },
+  );
   if (!claimed.isNew) {
     if (claimed.execution.status === 'succeeded') {
       return idempotentActionResult(decisionId, actionId, userId, tenantId, claimed.execution);
     }
     if (claimed.execution.status === 'started') {
-      return waitForExistingExecution(decisionId, actionId, userId, tenantId, idempotencyKey);
+      return waitForExecutionById(decisionId, actionId, userId, tenantId, claimed.execution.action_execution_id);
     }
-    throw new DecisionActionError(claimed.execution.error_code || 'DECISION_ACTION_FAILED', 'Prior decision action attempt failed', 409, safeParseJson(claimed.execution.result_json, {}));
+    throw executionReplayError(claimed.execution, 'Prior decision action attempt failed');
   }
 
   emitDecisionLifecycleEvent({ decisionId, userId, tenantId, event: 'action_started', actionId });
+  let sourceEffectCompleted = false;
+  let completedExecution: {
+    readBackOk: boolean;
+    expectedEffect: Record<string, unknown>;
+    actualEffect: Record<string, unknown>;
+    message: string;
+  } | null = null;
   try {
-    const execution = await executeDecisionAction(record, action, userId, tenantId, idempotencyKey, opts.payload ?? {});
-    markExecutionSucceeded(claimed.execution.action_execution_id, execution.expectedEffect, execution.actualEffect);
+    const claimedRecord = getDecisionRecord(decisionId, userId, tenantId);
+    if (!claimedRecord) throw new DecisionActionError('DECISION_NOT_FOUND', 'Decision missing before execution', 404);
+    if (requiresVersionClaim) {
+      revalidateDecisionActionForExecution(claimedRecord, actionId, opts.contextVersion, actionPayload);
+    }
+    const changedReason = actionId === 'undo_reflow' ? null : sourceStateSupersessionReason(claimedRecord);
+    if (changedReason) {
+      throw new DecisionActionError('DECISION_CONTEXT_CHANGED', 'Decision context changed before execution and needs review.', 409, {
+        reason: changedReason,
+        recordVersion: claimedRecord.recordVersion,
+      });
+    }
+    const execution = await executeDecisionAction(
+      record,
+      action,
+      userId,
+      tenantId,
+      idempotencyKey,
+      actionPayload,
+      opts.expectedVersion,
+    );
+    completedExecution = execution;
+    // From this point onward the authoritative domain executor returned after its read-back.
+    // Post-success projection/audit errors must never rewrite that completed effect as failed.
+    sourceEffectCompleted = true;
+    markExecutionSucceeded(
+      claimed.execution.action_execution_id,
+      userId,
+      tenantId,
+      execution.expectedEffect,
+      execution.actualEffect,
+    );
     // Post-action: format the just-actioned decision directly from its record. The active-inbox visibility
     // filter (getDecisionItem → isUserFacingDecision) must NOT apply here — a successfully actioned decision
     // belongs to handled history and must be returned as the action result even when a live re-read would
@@ -2625,18 +3823,49 @@ export async function performDecisionAction(
     const updatedRecord = getDecisionRecord(decisionId, userId, tenantId);
     const updated = updatedRecord && isDecisionRecord(updatedRecord) ? formatDecisionItemForApi(updatedRecord) : null;
     if (!updated) throw new DecisionActionError('DECISION_NOT_FOUND', 'Decision missing after action execution', 500);
-    recordVerifiedDecisionAction(record, action, actionId, execution);
-    emitDecisionLifecycleEvent({ decisionId, userId, tenantId, event: 'action_succeeded', actionId, toStatus: updated.status });
-    if (execution.readBackOk) emitDecisionLifecycleEvent({ decisionId, userId, tenantId, event: 'verified', actionId });
-    if (actionId === 'undo_reflow') emitDecisionLifecycleEvent({ decisionId, userId, tenantId, event: 'rolled_back', actionId, toStatus: updated.status });
-    if (actionId !== 'snooze' && execution.actualEffect.commandBusOutcomeRecorded !== true) {
-      recordDecisionOutcome(record, {
-        actionShown: action.id,
-        actionTaken: actionId,
-        ...decisionOutcomeFlagsForAction(actionId, action),
-        actionSucceeded: true,
-        timeToActionMs: timeToActionMs(record),
-      });
+    try {
+      recordVerifiedDecisionAction(record, action, actionId, execution);
+      resolveDecisionConflictAudit(
+        decisionId,
+        userId,
+        tenantId,
+        opts.automaticResolution === true ? 'automatic_low_risk_reflow' : 'execution_succeeded',
+        opts.automaticResolution === true,
+      );
+      emitDecisionLifecycleEvent({ decisionId, userId, tenantId, event: 'action_succeeded', actionId, toStatus: updated.status });
+      if (execution.readBackOk) emitDecisionLifecycleEvent({ decisionId, userId, tenantId, event: 'verified', actionId });
+      if (actionId === 'undo_reflow') emitDecisionLifecycleEvent({ decisionId, userId, tenantId, event: 'rolled_back', actionId, toStatus: updated.status });
+      if (opts.automaticResolution === true) {
+        emitDecisionLifecycleEvent({
+          decisionId,
+          userId,
+          tenantId,
+          event: 'auto_resolved',
+          actionId,
+          toStatus: updated.status,
+          reason: 'persisted_user_opt_in_low_risk_reversible',
+        });
+      }
+      if (actionId !== 'snooze'
+          && execution.actualEffect.decisionOutcomeRecorded !== true) {
+        recordDecisionOutcome(record, {
+          actionShown: action.id,
+          actionTaken: actionId,
+          ...decisionOutcomeFlagsForAction(actionId, action),
+          actionSucceeded: true,
+          timeToActionMs: timeToActionMs(record),
+        });
+      }
+    } catch (postSuccessError) {
+      logger.error({
+        event: 'decision.post_success_audit_failed',
+        err: postSuccessError,
+        decisionId,
+        actionId,
+        userId,
+        tenantId,
+        actionExecutionId: claimed.execution.action_execution_id,
+      }, 'Decision action succeeded but post-success audit projection failed');
     }
     return {
       actionId,
@@ -2651,44 +3880,477 @@ export async function performDecisionAction(
       },
     };
   } catch (err) {
+    if (sourceEffectCompleted && completedExecution) {
+      const reconciliationStatus = reconcileCompletedExecutionAfterResponseFailure(
+        claimed.execution.action_execution_id,
+        userId,
+        tenantId,
+        completedExecution,
+      );
+      logger.error({
+        event: 'decision.post_success_response_failed',
+        err,
+        decisionId,
+        actionId,
+        userId,
+        tenantId,
+        actionExecutionId: claimed.execution.action_execution_id,
+        reconciliationStatus,
+      }, 'Decision action completed but the success response could not be finalized');
+      if (reconciliationStatus === 'succeeded') {
+        try {
+          return idempotentActionResult(decisionId, actionId, userId, tenantId, {
+            ...claimed.execution,
+            status: 'succeeded',
+            expected_effect_json: JSON.stringify(completedExecution.expectedEffect),
+            result_json: JSON.stringify(completedExecution.actualEffect),
+          });
+        } catch (replayProjectionError) {
+          logger.error({
+            event: 'decision.post_success_replay_projection_failed',
+            err: replayProjectionError,
+            decisionId,
+            actionId,
+            actionExecutionId: claimed.execution.action_execution_id,
+          }, 'Completed decision action could not be projected for the immediate replay response');
+        }
+      }
+      throw new DecisionActionError(
+        'DECISION_POST_SUCCESS_RESPONSE_FAILED',
+        'The action completed, but Nexus could not finish the response. Retry with the same idempotency key.',
+        500,
+        {
+          actionCompleted: true,
+          actionExecutionId: claimed.execution.action_execution_id,
+          retryWithSameIdempotencyKey: reconciliationStatus === 'succeeded',
+          reconciliationStatus,
+        },
+      );
+    }
     const error = err instanceof DecisionActionError
       ? err
       : new DecisionActionError('DECISION_ACTION_FAILED', 'Decision action failed verification', 500, {
-          originalCode: err && typeof err === 'object' && 'code' in err ? String((err as any).code) : 'UNKNOWN',
+          ...privacySafeTransportErrorDetails(err),
           originalErrorLogged: true,
         });
     logger.error(
       { err, decisionId, actionId, userId, tenantId },
       'Decision action failed',
     );
-    markExecutionFailed(claimed.execution.action_execution_id, error.code, error.details);
-    markDecisionFailed(record, actionId, error.code);
-    emitDecisionLifecycleEvent({ decisionId, userId, tenantId, event: 'action_failed', actionId, reason: error.code });
+    const failureOutcome = markExecutionFailed(
+      claimed.execution.action_execution_id,
+      userId,
+      tenantId,
+      error.code,
+      error.details,
+    );
+    resolveDecisionConflictAudit(
+      decisionId,
+      userId,
+      tenantId,
+      failureOutcome === 'partially_failed' ? 'execution_partially_failed' : 'execution_failed',
+    );
+    const failureRecord = getDecisionRecord(record.itemId, record.userId, record.tenantId);
+    if (failureRecord && ['unread', 'read', 'failed'].includes(failureRecord.status)) {
+      markDecisionFailed(failureRecord, actionId, error.code);
+    }
+    emitDecisionLifecycleEvent({
+      decisionId,
+      userId,
+      tenantId,
+      event: failureOutcome === 'partially_failed' ? 'action_partially_failed' : 'action_failed',
+      actionId,
+      reason: error.code,
+    });
     recordDecisionOutcome(record, {
       actionShown: actionId,
       actionTaken: actionId,
       actionSucceeded: false,
       failedReason: error.code,
-      partialFailure: error.code === 'DECISION_READBACK_MISMATCH',
+      partialFailure: failureOutcome === 'partially_failed',
       timeToActionMs: timeToActionMs(record),
     });
     throw error;
   }
 }
 
-export function snoozeDecision(decisionId: string, userId: number, tenantId = userId, minutes = 60): DecisionApiItem {
+export type DecisionReviewOutcome = 'approve' | 'reject' | 'defer';
+export type DecisionReplacementChoice = 'keep_existing_commitment' | 'replace_with_candidate' | 'choose_another_time' | 'review_tradeoff';
+
+export function reviewDecision(
+  decisionId: string,
+  userId: number,
+  tenantId: number,
+  input: {
+    outcome: DecisionReviewOutcome;
+    expectedVersion?: number;
+    idempotencyKey?: string;
+    deferUntil?: string;
+    reasonCode?: string;
+    replacementChoiceId?: DecisionReplacementChoice;
+    strongConfirmationText?: string;
+  },
+): DecisionApiItem {
+  assertScope(userId, tenantId, 'review_decision', { decisionId });
+  ensureDecisionCenterTables();
+  const idempotencyKey = input.idempotencyKey?.trim();
+  if (!idempotencyKey) {
+    throw new DecisionActionError('IDEMPOTENCY_KEY_REQUIRED', 'Decision reviews require an idempotency key', 400);
+  }
+  if (input.expectedVersion == null) {
+    throw new DecisionActionError('DECISION_VERSION_REQUIRED', 'Decision reviews require the current record version', 428);
+  }
+  const expectedVersion = input.expectedVersion;
+  const reviewAttemptHash = logicalActionAttemptHash(`review:${decisionId}`, input.outcome, {
+    expectedVersion,
+    idempotencyKey,
+  });
+  const prior = getDb().prepare(`
+    SELECT 1 FROM decision_lifecycle_events
+     WHERE decision_id = ? AND user_id = ? AND tenant_id = ? AND action_id = ?
+     LIMIT 1
+  `).get(decisionId, userId, tenantId, `review:${reviewAttemptHash}`);
+  if (prior) {
+    const replay = getDecisionRecord(decisionId, userId, tenantId);
+    if (!replay) throw new DecisionActionError('DECISION_NOT_FOUND', 'Decision not found', 404);
+    return formatDecisionItemForApi(replay);
+  }
+  if (!isDecisionFlowV1EnforceEnabled(process.env, { userId, tenantId })) {
+    throw new DecisionActionError('DECISION_REVIEW_UNAVAILABLE', 'Versioned decision review is not enabled for this account.', 409);
+  }
+
+  const record = getDecisionRecord(decisionId, userId, tenantId);
+  if (!record) throw new DecisionActionError('DECISION_NOT_FOUND', 'Decision not found', 404);
+  guardDecisionLifecycleMutation(record, `review_${input.outcome}`);
+  const approvalLevel = approvalLevelForRecord(record);
+  if (input.outcome === 'approve') {
+    if (approvalLevel === 'none') {
+      throw new DecisionActionError(
+        'DECISION_REVIEW_NOT_APPLICABLE',
+        'This item is review-only and cannot be approved for execution',
+        409,
+      );
+    }
+    if (approvalLevel === 'unavailable') {
+      throw new DecisionActionError('DECISION_PERMISSION_REQUIRED', 'Current permissions do not allow this proposal to be approved.', 403);
+    }
+    if (approvalLevel === 'admin_review') {
+      throw new DecisionActionError('DECISION_ADMIN_REVIEW_REQUIRED', 'This proposal requires an authorized administrator review.', 403);
+    }
+    if (approvalLevel === 'strong_confirmation' && input.strongConfirmationText !== 'CONFIRM') {
+      throw new DecisionActionError('DECISION_STRONG_CONFIRMATION_REQUIRED', 'Type CONFIRM to approve this high-impact proposal.', 409);
+    }
+    const currentState = durableDecisionStateForRecord(record);
+    if (currentState !== 'ready_for_review' && currentState !== 'proposed') {
+      throw new DecisionActionError('DECISION_TRANSITION_NOT_ALLOWED', 'This decision is not ready for approval.', 409, {
+        decisionState: currentState,
+        currentItem: formatDecisionItemForApi(record),
+      });
+    }
+    const dependencyState = dependencyStateForRecord(record);
+    if (dependencyState.blockedByDecisionIds.length > 0) {
+      throw new DecisionActionError('DECISION_DEPENDENCY_BLOCKED', 'Resolve blocking decisions before approval.', 409, {
+        blockedByDecisionIds: dependencyState.blockedByDecisionIds,
+      });
+    }
+  }
+  if (!reviewSupportedForRecord(record)) {
+    throw new DecisionActionError(
+      'DECISION_REVIEW_NOT_SUPPORTED',
+      'This decision does not support the versioned review workflow.',
+      409,
+      { currentItem: formatDecisionItemForApi(record) },
+    );
+  }
+  validateExpectedDecisionVersion(record, expectedVersion, true);
+  guardActionable(record, 'review');
+  if (input.outcome === 'approve') {
+    const storedConflict = decisionContextForRecord(record).conflictEvaluation;
+    const requiresReplacementChoice = storedConflict?.findings.some((finding) => finding.class === 'approved_commitment') === true;
+    if (requiresReplacementChoice && input.replacementChoiceId !== 'replace_with_candidate') {
+      throw new DecisionActionError(
+        'DECISION_REPLACEMENT_CONFIRMATION_REQUIRED',
+        'Choose the proposed replacement explicitly before approving it.',
+        409,
+        {
+          contextVersion: decisionContextVersion(record),
+          alternatives: storedConflict?.alternatives ?? [],
+        },
+      );
+    }
+    revalidateDecisionContext(record, decisionContextVersion(record) ?? undefined, {
+      confirmationGranted: true,
+      replacementApproved: input.replacementChoiceId === 'replace_with_candidate',
+    });
+  }
+  const reasonCode = normalizeClosedReasonCode(input.reasonCode);
+  const nextState: DurableDecisionState = input.outcome === 'approve'
+    ? 'approved'
+    : input.outcome === 'reject'
+      ? 'rejected'
+      : 'deferred';
+  const deferUntil = input.outcome === 'defer'
+    ? normalizeFutureTimestamp(input.deferUntil) ?? DateTime.utc().plus({ days: 1 }).toISO()
+    : null;
+  const nextLegacyStatus = input.outcome === 'reject' ? 'dismissed'
+    : input.outcome === 'defer' ? 'snoozed'
+      : record.status === 'unread' ? 'read' : record.status;
+
+  getDb().transaction(() => {
+    const update = getDb().prepare(`
+      UPDATE notification_center_items
+         SET decision_state = ?,
+             status = ?,
+             snoozed_until = CASE WHEN ? = 'deferred' THEN ? ELSE snoozed_until END,
+             dismissed_at = CASE WHEN ? = 'rejected' THEN datetime('now') ELSE dismissed_at END,
+             record_version = record_version + 1,
+             updated_at = datetime('now')
+       WHERE item_id = ? AND user_id = ? AND tenant_id = ? AND record_version = ?
+         AND status NOT IN ('actioned', 'dismissed', 'expired', 'superseded')
+    `).run(
+      nextState,
+      nextLegacyStatus,
+      nextState,
+      deferUntil,
+      nextState,
+      decisionId,
+      userId,
+      tenantId,
+      expectedVersion,
+    );
+    if (update.changes !== 1) {
+      const current = getDecisionRecord(decisionId, userId, tenantId);
+      throw new DecisionActionError(
+        'DECISION_VERSION_CONFLICT',
+        'Decision changed before the review was recorded.',
+        409,
+        decisionVersionConflictDetails(current),
+      );
+    }
+    getDb().prepare(`
+      INSERT INTO decision_lifecycle_events
+        (event_id, decision_id, user_id, tenant_id, event, to_status, action_id, reason, metadata_json)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      `dle_${randomUUID()}`,
+      decisionId,
+      userId,
+      tenantId,
+      input.outcome === 'approve' ? 'approved' : input.outcome === 'reject' ? 'rejected' : 'deferred',
+      nextState,
+      `review:${reviewAttemptHash}`,
+      reasonCode,
+      JSON.stringify({
+        previousVersion: expectedVersion,
+        nextVersion: expectedVersion + 1,
+        contextVersion: decisionContextVersion(record),
+        replacementChoiceId: input.replacementChoiceId ?? null,
+        confirmationStrength: approvalLevel === 'strong_confirmation' ? 'strong' : 'standard',
+      }),
+    );
+  })();
+
+  const updated = getDecisionRecord(decisionId, userId, tenantId);
+  if (!updated) throw new DecisionActionError('DECISION_NOT_FOUND', 'Decision missing after review', 500);
+  resolveDecisionConflictAudit(decisionId, userId, tenantId, `review_${input.outcome}`);
+  return formatDecisionItemForApi(updated);
+}
+
+export function reviseDecisionProposal(
+  decisionId: string,
+  userId: number,
+  tenantId: number,
+  input: { expectedVersion?: number; recommendedStartAt?: string; recommendedEndAt?: string },
+): DecisionApiItem {
+  assertScope(userId, tenantId, 'revise_decision_proposal', { decisionId });
+  ensureDecisionCenterTables();
+  if (!isDecisionFlowV1EnforceEnabled(process.env, { userId, tenantId })) {
+    throw new DecisionActionError('DECISION_EDIT_UNAVAILABLE', 'Versioned proposal editing is not enabled for this account.', 409);
+  }
+  const record = getDecisionRecord(decisionId, userId, tenantId);
+  if (!record) throw new DecisionActionError('DECISION_NOT_FOUND', 'Decision not found', 404);
+  guardDecisionLifecycleMutation(record, 'edit_proposal');
+  if (input.expectedVersion == null) {
+    throw new DecisionActionError('DECISION_VERSION_REQUIRED', 'Proposal edits require the current record version', 428);
+  }
+  validateExpectedDecisionVersion(record, input.expectedVersion, true);
+  guardActionable(record, 'edit_proposal');
+
+  const context = decisionContextForRecord(record);
+  const action = normalizeDecisionAction(context.normalizedAction);
+  if (!action) throw new DecisionActionError('DECISION_EDIT_UNSUPPORTED', 'This proposal does not support structured edits.', 409);
+  if (editableProposalFieldsForRecord(record).length === 0) {
+    throw new DecisionActionError(
+      'DECISION_EDIT_UNSUPPORTED',
+      'This proposal type is not allowlisted for structured edits.',
+      409,
+    );
+  }
+  const start = normalizeTimestamp(input.recommendedStartAt ?? context.recommendedStartAt);
+  const end = normalizeTimestamp(input.recommendedEndAt ?? context.recommendedEndAt);
+  if (!start || !end || Date.parse(start) >= Date.parse(end)) {
+    throw new DecisionActionError('DECISION_EDIT_INVALID', 'Proposal edit requires a valid start and end window.', 400);
+  }
+  const contextVersion = `ctx_revision_${input.expectedVersion + 1}_${Date.now()}`;
+  const revisedAction = buildNormalizedDecisionAction({
+    intent: action.intent,
+    targetEntities: action.targetEntities,
+    affectedResources: action.affectedResources,
+    requestedWindow: { start, end, timezone: action.requestedWindow?.timezone ?? context.timezone ?? 'UTC' },
+    preconditions: action.preconditions,
+    expectedEffects: action.expectedEffects,
+    prohibitedEffects: action.prohibitedEffects,
+    dependencies: action.dependencies,
+    exclusivityKeys: action.exclusivityKeys,
+    authorizationScope: action.authorizationScope,
+    risk: action.risk,
+    reversibility: action.reversibility,
+    contextVersion,
+  });
+  const conflictMode = getDecisionConflictPolicyV1Mode(process.env, { userId, tenantId });
+  const flowEnforced = isDecisionFlowV1EnforceEnabled(process.env, { userId, tenantId });
+  const revisedRevalidation = conflictMode === 'off' && !flowEnforced ? null : revalidateNormalizedDecisionAction({
+    scope: { userId, tenantId },
+    action: revisedAction,
+    decisionId,
+    additionalExisting: context.conflictComparisons ?? undefined,
+    contextExpiresAt: decisionContextExpiresAt(record),
+    candidateCreatedAt: appNowIso(),
+    confidence: context.candidateConfidence ?? undefined,
+  });
+  const revisedConflict = revisedRevalidation?.conflictEvaluation ?? null;
+  const nextDecisionState = conflictMode === 'active' || flowEnforced
+    ? decisionStateForConflictEvaluation(revisedConflict)
+    : 'ready_for_review';
+  const revisedContext: DecisionLogicContext = {
+    ...context,
+    recommendedStartAt: start,
+    recommendedEndAt: end,
+    normalizedAction: revisedAction,
+    conflictEvaluation: conflictMode === 'active' || flowEnforced ? revisedConflict : null,
+    reasonCodes: [...new Set([...(context.reasonCodes ?? []), 'user_revised_proposal'])],
+  };
+
+  getDb().transaction(() => {
+    const update = getDb().prepare(`
+      UPDATE notification_center_items
+         SET decision_state = ?,
+             status = CASE WHEN status = 'unread' THEN 'read' ELSE status END,
+             record_version = record_version + 1,
+             updated_at = datetime('now')
+       WHERE item_id = ? AND user_id = ? AND tenant_id = ? AND record_version = ?
+         AND status NOT IN ('actioned', 'dismissed', 'expired', 'superseded')
+    `).run(nextDecisionState, decisionId, userId, tenantId, input.expectedVersion);
+    if (update.changes !== 1) {
+      const current = getDecisionRecord(decisionId, userId, tenantId);
+      throw new DecisionActionError(
+        'DECISION_VERSION_CONFLICT',
+        'Decision changed before the proposal edit was saved.',
+        409,
+        decisionVersionConflictDetails(current),
+      );
+    }
+    const intentUpdate = getDb().prepare(`
+      UPDATE notification_intents
+         SET decision_context_json = ?, context_version = ?, context_observed_at = ?,
+             candidate_fingerprint = ?, normalized_action_json = ?
+       WHERE intent_id = ? AND user_id = ? AND tenant_id = ?
+    `).run(
+      JSON.stringify(revisedContext),
+      contextVersion,
+      appNowIso(),
+      revisedAction.candidateFingerprint,
+      JSON.stringify(revisedAction),
+      record.intentId,
+      userId,
+      tenantId,
+    );
+    if (intentUpdate.changes !== 1) {
+      throw new DecisionActionError('DECISION_READBACK_MISMATCH', 'Proposal source row was not updated.', 409);
+    }
+  })();
+  emitDecisionLifecycleEvent({
+    decisionId,
+    userId,
+    tenantId,
+    event: 'revised',
+    toStatus: nextDecisionState,
+    metadata: { previousVersion: input.expectedVersion, nextVersion: input.expectedVersion + 1, fields: ['recommended_window'] },
+  });
+  resolveDecisionConflictAudit(decisionId, userId, tenantId, 'proposal_revised');
+  if (revisedConflict) recordDecisionConflictEvaluation(record, revisedConflict);
+  const updated = getDecisionRecord(decisionId, userId, tenantId);
+  if (!updated) throw new DecisionActionError('DECISION_NOT_FOUND', 'Decision missing after proposal edit', 500);
+  return formatDecisionItemForApi(updated);
+}
+
+function editableProposalFieldsForRecord(record: DecisionRecord): string[] {
+  const context = decisionContextForRecord(record);
+  const action = normalizeDecisionAction(context.normalizedAction);
+  if (!action || approvalLevelForRecord(record) === 'none') return [];
+  const editableSecretaryReflow = record.sourceSkill === 'secretary'
+    && record.relatedEntityType === 'secretary_agenda_item'
+    && context.recipe === 'secretary_reflow_window_v1'
+    && action.requestedWindow != null
+    && action.affectedResources.some((resource) => resource.type === 'calendar_timeline')
+    && /reflow|reschedule/.test(action.intent);
+  return editableSecretaryReflow ? ['recommendedStartAt', 'recommendedEndAt'] : [];
+}
+
+function normalizeTimestamp(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? new Date(parsed).toISOString() : null;
+}
+
+function normalizeFutureTimestamp(value: unknown): string | null {
+  const normalized = normalizeTimestamp(value);
+  return normalized && Date.parse(normalized) > Date.now() ? normalized : null;
+}
+
+function normalizeClosedReasonCode(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const normalized = value.trim().toLowerCase();
+  return /^[a-z][a-z0-9_]{0,63}$/.test(normalized) ? normalized : 'other';
+}
+
+export function snoozeDecision(
+  decisionId: string,
+  userId: number,
+  tenantId = userId,
+  minutes = 60,
+  expectedVersion?: number,
+  activeExecution?: { actionId: string; idempotencyKey: string },
+): DecisionApiItem {
   assertScope(userId, tenantId, 'snooze_decision', { decisionId });
   ensureDecisionCenterTables();
+  const before = getDecisionRecord(decisionId, userId, tenantId);
+  if (!before) throw new DecisionActionError('DECISION_NOT_FOUND', 'Decision not found', 404);
+  guardDecisionLifecycleMutation(before, 'snooze', { allowExecution: activeExecution });
+  validateExpectedDecisionVersion(before, expectedVersion, true);
   const until = DateTime.utc().plus({ minutes: Math.min(Math.max(minutes, 5), 10_080) }).toISO();
   const update = getDb().prepare(`
     UPDATE notification_center_items
-       SET status = 'snoozed', snoozed_until = ?, read_at = COALESCE(read_at, datetime('now'))
-     WHERE item_id = ? AND user_id = ? AND tenant_id = ? AND status IN ('unread', 'read', 'failed', 'snoozed')
-  `).run(until, decisionId, userId, tenantId);
-  assertDecisionScopedUpdateApplied(update, 'snooze_decision', { decisionId, userId, tenantId });
+       SET status = 'snoozed', decision_state = 'deferred', snoozed_until = ?,
+           read_at = COALESCE(read_at, datetime('now')),
+           record_version = record_version + 1, updated_at = datetime('now')
+     WHERE item_id = ? AND user_id = ? AND tenant_id = ?
+       AND record_version = ?
+       AND status IN ('unread', 'read', 'failed', 'snoozed')
+  `).run(until, decisionId, userId, tenantId, expectedVersion ?? before.recordVersion);
+  if (update.changes !== 1) {
+    const current = getDecisionRecord(decisionId, userId, tenantId);
+    throw new DecisionActionError(
+      'DECISION_VERSION_CONFLICT',
+      'Decision changed before it could be snoozed.',
+      409,
+      decisionVersionConflictDetails(current),
+    );
+  }
   const item = getDecisionItem(decisionId, userId, tenantId);
   if (!item) throw new DecisionActionError('DECISION_NOT_FOUND', 'Decision not found after snooze', 404);
   emitDecisionLifecycleEvent({ decisionId, userId, tenantId, event: 'snoozed', toStatus: item.status });
+  resolveDecisionConflictAudit(decisionId, userId, tenantId, 'deferred');
   const record = getDecisionRecord(decisionId, userId, tenantId);
   if (record) {
     recordDecisionOutcome(record, {
@@ -2712,12 +4374,49 @@ function normalizeDismissReason(reason?: string | null): DecisionDismissReason |
   return (DECISION_DISMISS_REASONS as readonly string[]).includes(value) ? (value as DecisionDismissReason) : 'other';
 }
 
-export function dismissDecision(decisionId: string, userId: number, tenantId = userId, reason?: string): DecisionApiItem {
-  const item = dismissNotificationCenterItem(decisionId, userId, tenantId);
-  if (!item) throw new DecisionActionError('DECISION_NOT_FOUND', 'Decision not found', 404);
-  const decision = getDecisionItem(decisionId, userId, tenantId);
+export function dismissDecision(
+  decisionId: string,
+  userId: number,
+  tenantId = userId,
+  reason?: string,
+  expectedVersion?: number,
+  activeExecution?: { actionId: string; idempotencyKey: string },
+): DecisionApiItem {
+  const before = getDecisionRecord(decisionId, userId, tenantId);
+  if (!before) throw new DecisionActionError('DECISION_NOT_FOUND', 'Decision not found', 404);
+  guardDecisionLifecycleMutation(before, 'dismiss', { allowExecution: activeExecution });
+  validateExpectedDecisionVersion(before, expectedVersion, true);
+  if (!['unread', 'read', 'failed', 'snoozed'].includes(before.status)) {
+    throw new DecisionActionError(
+      'DECISION_VERSION_CONFLICT',
+      'Decision is no longer in a dismissible state.',
+      409,
+      decisionVersionConflictDetails(before, { currentStatus: before.status }),
+    );
+  }
+  const stateUpdate = getDb().prepare(`
+    UPDATE notification_center_items
+       SET status = 'dismissed', dismissed_at = datetime('now'),
+           decision_state = 'rejected', record_version = record_version + 1,
+           updated_at = datetime('now')
+     WHERE item_id = ? AND user_id = ? AND tenant_id = ?
+       AND status IN ('unread', 'read', 'failed', 'snoozed')
+       AND record_version = ?
+  `).run(decisionId, userId, tenantId, expectedVersion ?? before.recordVersion);
+  if (stateUpdate.changes !== 1) {
+    const current = getDecisionRecord(decisionId, userId, tenantId);
+    throw new DecisionActionError(
+      'DECISION_VERSION_CONFLICT',
+      'Decision changed before it could be dismissed.',
+      409,
+      decisionVersionConflictDetails(current),
+    );
+  }
+  const dismissedRecord = getDecisionRecord(decisionId, userId, tenantId);
+  const decision = dismissedRecord ? formatDecisionItemForApi(dismissedRecord) : null;
   if (!decision) throw new DecisionActionError('DECISION_NOT_FOUND', 'Decision not found after dismiss', 404);
   emitDecisionLifecycleEvent({ decisionId, userId, tenantId, event: 'dismissed', toStatus: decision.status, reason: normalizeDismissReason(reason) });
+  resolveDecisionConflictAudit(decisionId, userId, tenantId, 'rejected');
   const record = getDecisionRecord(decisionId, userId, tenantId);
   if (record) {
     recordDecisionOutcome(record, {
@@ -2742,25 +4441,95 @@ export function markDecisionViewed(decisionId: string, userId: number, tenantId 
 }
 
 export function getDecisionPreferences(userId: number, tenantId = userId): Record<string, unknown> {
+  assertScope(userId, tenantId, 'get_decision_preferences');
+  ensureDecisionCenterTables();
+  const profile = getNotificationProfileIfExists(userId, tenantId) ?? defaultDecisionNotificationProfile(userId, tenantId);
+  const flow = getDb().prepare(`
+    SELECT allow_low_risk_auto_reflow AS allowLowRiskAutoReflow
+      FROM decision_flow_preferences
+     WHERE user_id = ? AND tenant_id = ?
+     LIMIT 1
+  `).get(userId, tenantId) as { allowLowRiskAutoReflow: number } | undefined;
   return {
-    profile: getOrCreateNotificationProfile(userId, tenantId),
+    profile,
     decisionPreferences: {
       homePreviewMode: 'urgent_and_today',
       autoHideResolved: true,
       askBeforeScheduleChanges: true,
       askBeforeContentPublishing: true,
       askBeforeTrainingReflow: true,
-      pushEnabled: getOrCreateNotificationProfile(userId, tenantId).pushEnabled,
-      urgentDecisionPushEnabled: getOrCreateNotificationProfile(userId, tenantId).allowTimeSensitive,
-      timeSensitiveAllowed: getOrCreateNotificationProfile(userId, tenantId).allowTimeSensitive,
-      backgroundRefreshPushEnabled: getOrCreateNotificationProfile(userId, tenantId).pushEnabled,
+      pushEnabled: profile.pushEnabled,
+      urgentDecisionPushEnabled: profile.allowTimeSensitive,
+      timeSensitiveAllowed: profile.allowTimeSensitive,
+      backgroundRefreshPushEnabled: profile.pushEnabled,
+      allowLowRiskAutoReflow: flow?.allowLowRiskAutoReflow === 1,
     },
   };
 }
 
+function defaultDecisionNotificationProfile(userId: number, tenantId: number): NotificationProfile {
+  const now = appNowIso();
+  return {
+    userId,
+    tenantId,
+    quietHours: { start: '22:00', end: '07:00' },
+    timezone: userDecisionContextDefaults(userId).timezone || 'UTC',
+    pushEnabled: true,
+    localEnabled: true,
+    emailEnabled: false,
+    portalEnabled: true,
+    inAppEnabled: true,
+    skillPreferences: {
+      secretary: true,
+      training: true,
+      content: true,
+      cooking: true,
+      finance: true,
+      chat: true,
+      system: true,
+      security: true,
+    },
+    defaultReminderMinutes: 30,
+    workoutReminderMinutes: 60,
+    contentReminderMinutes: 120,
+    financeReminderDays: 1,
+    allowTimeSensitive: true,
+    allowCritical: false,
+    digestPassiveItems: true,
+    dailyDigestTime: '08:30',
+    weeklyReviewDay: 1,
+    weeklyReviewTime: '09:00',
+    morningBriefingTime: null,
+    coachBriefingTime: null,
+    endOfDayTime: null,
+    weeklyReviewReportDay: null,
+    weeklyReviewReportTime: null,
+    doNotNotifyRules: [],
+    updatedAt: now,
+    createdAt: now,
+  };
+}
+
 export function updateDecisionPreferences(userId: number, tenantId: number, patch: Record<string, unknown>): Record<string, unknown> {
-  const profile = updateNotificationProfile(userId, tenantId, patch);
-  return { profile };
+  assertScope(userId, tenantId, 'update_decision_preferences');
+  ensureDecisionCenterTables();
+  const { allowLowRiskAutoReflow, ...profilePatch } = patch;
+  if (allowLowRiskAutoReflow !== undefined && typeof allowLowRiskAutoReflow !== 'boolean') {
+    throw new DecisionActionError('VALIDATION', 'allowLowRiskAutoReflow must be a boolean', 400);
+  }
+  if (typeof allowLowRiskAutoReflow === 'boolean') {
+    getDb().prepare(`
+      INSERT INTO decision_flow_preferences
+        (user_id, tenant_id, allow_low_risk_auto_reflow, updated_at)
+      VALUES (?, ?, ?, datetime('now'))
+      ON CONFLICT(user_id, tenant_id) DO UPDATE SET
+        allow_low_risk_auto_reflow = excluded.allow_low_risk_auto_reflow,
+        updated_at = excluded.updated_at
+    `).run(userId, tenantId, allowLowRiskAutoReflow ? 1 : 0);
+  }
+  if (Object.keys(profilePatch).length > 0) updateNotificationProfile(userId, tenantId, profilePatch);
+  else getOrCreateNotificationProfile(userId, tenantId);
+  return getDecisionPreferences(userId, tenantId);
 }
 
 function decisionOutcomeFlagsForAction(
@@ -2903,6 +4672,7 @@ function formatDecisionItemForApi(
   opts: { materializePriorityScore?: boolean } = {},
 ): DecisionApiItem {
   const logic = decisionLogicForRecord(item);
+  const structuredContext = decisionContextForRecord(item);
   const safeTitle = logic.safePreviewTitle || safeTitleForItem(item);
   const actions = actionsForRecord(item);
   const dependencies = dependencyStateForRecord(item);
@@ -2914,9 +4684,18 @@ function formatDecisionItemForApi(
   const rollback = rollbackContractForRecord(item);
   const exposeDebugEvidence = shouldExposeDecisionDebugEvidence(item);
   const visibleWhatWillChange = userVisibleWhatWillChangeForApi(item, logic);
-  const effectiveStatus = computeEffectiveStatus(item, { dependencies, logic, retryAvailable: outcome.retryActions.length > 0 });
+  const execution = executionSummaryForRecord(item);
+  const effectiveStatus = computeEffectiveStatus(item, {
+    dependencies,
+    logic,
+    retryAvailable: outcome.retryActions.length > 0 || execution.recoveryActions.length > 0,
+    executionStatus: execution.status,
+  });
   const decisionKind = computeDecisionKind(item, logic, dependencies, action);
   let actionability = computeActionability(item, logic, effectiveStatus, action);
+  if (durableDecisionStateForRecord(item) === 'blocked') actionability = 'blocked';
+  if (isSecretaryReviewOnlyPreview(item, structuredContext.normalizedAction ?? null)) actionability = 'read_only';
+  if (execution.status === 'started' || execution.status === 'partially_failed') actionability = 'blocked';
   const rankDeadline = item.decisionDeadline ?? item.expiresAt;
   const prioritySnapshot = rankDecisionPriority({
     priority: item.priority,
@@ -2929,7 +4708,7 @@ function formatDecisionItemForApi(
     dependencyBlocked: dependencies.blockedByDecisionIds.length > 0,
   });
   const priorityScore = priorityScoreFor(item);
-  if (opts.materializePriorityScore !== false) {
+  if (opts.materializePriorityScore === true) {
     materializeDecisionPriorityScore(item, priorityScore);
   }
   const analysisBundle = analysisForRecord(item, logic);
@@ -2945,6 +4724,19 @@ function formatDecisionItemForApi(
     actionability = gateActionabilityForHumanReview(actionability, isHumanReviewQueueAvailable(process.env));
   }
   const confidenceExplanation = computeConfidenceExplanation(logic.confidence, logic.why, analysisBundle, exposeDebugEvidence);
+  const conflictPolicyActive = isDecisionConflictPolicyV1Enabled(process.env, { userId: item.userId, tenantId: item.tenantId })
+    || isDecisionFlowV1EnforceEnabled(process.env, { userId: item.userId, tenantId: item.tenantId });
+  const conflictSummary = conflictPolicyActive
+    ? buildDecisionConflictSummary(structuredContext.conflictEvaluation, structuredContext.locale)
+    : null;
+  const requiredPermissions = requiredPermissionsForRecord(item);
+  const approvalLevel = approvalLevelForRecord(item);
+  const normalizedAction = normalizeDecisionAction(structuredContext.normalizedAction);
+  const reviewSupported = reviewSupportedForRecord(item, normalizedAction, approvalLevel);
+  const editableProposalFields = reviewSupported ? editableProposalFieldsForRecord(item) : [];
+  const mutualExclusionGroupId = conflictPolicyActive
+    ? mutualExclusionGroupIdForRecord(item, structuredContext.conflictEvaluation)
+    : null;
   return {
     decisionId: item.itemId,
     itemId: item.itemId,
@@ -2957,9 +4749,14 @@ function formatDecisionItemForApi(
     type: item.type,
     status: item.status,
     lifecycleStatus: legacyStatusToLifecycle(item.status),
-    actionOutcomeStatus: actionOutcomeFromRecord(item),
+    actionOutcomeStatus: execution.status === 'none' ? actionOutcomeFromRecord(item) : execution.status,
     effectiveStatus,
-    actionEffectiveStatuses: actions.map((candidate) => computeActionEffectiveStatus(item, candidate, { dependencies, logic, reconnectAffordance: isDecisionReconnectAffordanceEnabled(process.env, { userId: item.userId, tenantId: item.tenantId }) })),
+    actionEffectiveStatuses: actions.map((candidate) => computeActionEffectiveStatus(item, candidate, {
+      dependencies,
+      logic,
+      reconnectAffordance: isDecisionReconnectAffordanceEnabled(process.env, { userId: item.userId, tenantId: item.tenantId }),
+      executionStatus: execution.status,
+    })),
     decisionKind,
     actionability,
     prioritySnapshot,
@@ -3028,6 +4825,23 @@ function formatDecisionItemForApi(
     confidence: logic.confidence,
     analysis: analysisBundle,
     confidenceExplanation,
+    ...(conflictSummary ? { conflictSummary } : {}),
+    ...(structuredContext.normalizedAction?.contextVersion
+      ? { contextVersion: structuredContext.normalizedAction.contextVersion }
+      : {}),
+    ...(item.contextObservedAt ? { contextObservedAt: item.contextObservedAt } : {}),
+    contextFreshness: analysisBundle.sourceFreshness,
+    ...(mutualExclusionGroupId ? { mutualExclusionGroupId } : {}),
+    ...(item.supersededByItemId ? { supersededByDecisionId: item.supersededByItemId } : {}),
+    requiredPermissions,
+    approvalLevel,
+    reviewSupported,
+    editableProposalFields,
+    reversibility: normalizedAction?.reversibility ?? null,
+    execution,
+    refreshSupported: decisionRefreshSupportedForRecord(item),
+    recordVersion: item.recordVersion,
+    decisionState: durableDecisionStateForRecord(item),
     riskLevel,
     groupKey: groupKeyForRecord(item),
     sectionKey,
@@ -3036,7 +4850,7 @@ function formatDecisionItemForApi(
     privacyClassification: item.privacyPolicy,
     visibilityScope: visibilityScopeForItem(item),
     createdAt: item.createdAt,
-    updatedAt: item.createdAt,
+    updatedAt: item.updatedAt,
     snoozedUntil: item.snoozedUntil,
     actions,
     dependsOnDecisionIds: dependencies.dependsOnDecisionIds,
@@ -3047,12 +4861,35 @@ function formatDecisionItemForApi(
   };
 }
 
+function mutualExclusionGroupIdForRecord(
+  record: DecisionRecord,
+  evaluation: ConflictEvaluation | null | undefined,
+): string | null {
+  const action = normalizeDecisionAction(decisionContextForRecord(record).normalizedAction);
+  if (!action || action.exclusivityKeys.length === 0 || !evaluation) return null;
+  const groupingConflict = evaluation.findings.some((finding) =>
+    finding.class === 'mutually_exclusive_effects'
+      || finding.class === 'time_overlap'
+      || finding.class === 'resource_competition'
+      || finding.class === 'concurrent_mutation');
+  if (!groupingConflict) return null;
+  const digest = createHash('sha256')
+    .update(JSON.stringify({
+      tenantId: record.tenantId,
+      userId: record.userId,
+      exclusivityKeys: [...action.exclusivityKeys].sort(),
+    }))
+    .digest('hex')
+    .slice(0, 24);
+  return `mxg_${digest}`;
+}
+
 function formatDecisionItemForApiWithExposure(
   item: DecisionRecord,
   opts: { recordExposure?: boolean; materializePriorityScore?: boolean } = {},
 ): DecisionApiItem {
   const apiItem = formatDecisionItemForApi(item, { materializePriorityScore: opts.materializePriorityScore });
-  if (opts.recordExposure !== false) recordDecisionExposure(item, apiItem);
+  if (opts.recordExposure === true) recordDecisionExposure(item, apiItem);
   return apiItem;
 }
 
@@ -3075,6 +4912,7 @@ function frontendActionStateForRecord(
   if (!action || !isDecisionActionExecutable(action.id)) return 'disabled_missing_details';
   if (item.status === 'expired') return 'disabled_expired';
   if (item.status === 'superseded' || item.status === 'dismissed' || item.status === 'actioned') return 'disabled_superseded';
+  if (durableDecisionStateForRecord(item) === 'blocked') return 'disabled_missing_details';
   if (dependencies.blockedByDecisionIds.length > 0) return 'disabled_missing_details';
   return 'enabled';
 }
@@ -3462,6 +5300,11 @@ function analysisForRecord(item: DecisionRecord, logic: DecisionLogicV2): Decisi
 
 function sourceFreshnessForRecord(item: DecisionRecord, context: DecisionLogicContext): DecisionAnalysisBundle['sourceFreshness'] {
   if (item.status === 'snoozed') return 'stale';
+  if (context.contextExpiresAt) {
+    const contextExpiry = Date.parse(context.contextExpiresAt);
+    if (!Number.isFinite(contextExpiry)) return 'unknown';
+    if (contextExpiry <= Date.now()) return 'stale';
+  }
   const state = String(context.providerSyncState ?? '').toLowerCase();
   if (state && state !== 'synced' && state !== 'deleted') {
     const updatedAt = Date.parse(String(context.providerSyncUpdatedAt ?? ''));
@@ -3633,11 +5476,21 @@ function decisionContextForIntentInput(input: NotificationIntentInput): Decision
   const relatedEntityType = input.relatedEntityType ?? null;
   if (input.sourceSkill === 'secretary' && relatedEntityType === 'secretary_agenda_item' && input.relatedEntityId != null) {
     const tenantId = input.tenantId ?? input.userId;
-    const agenda = getSecretaryAgendaItemById({
-      agendaItemId: String(input.relatedEntityId),
-      ownerUserId: input.userId,
-      tenantId,
-    });
+    let agenda: SecretaryAgendaItem | null = null;
+    try {
+      agenda = getSecretaryAgendaItemById({
+        agendaItemId: String(input.relatedEntityId),
+        ownerUserId: input.userId,
+        tenantId,
+      });
+    } catch (error) {
+      if (!hasDecisionContextPayload(suppliedRaw)) throw error;
+      logger.warn({
+        event: 'decision.secretary_agenda_context_unavailable',
+        userId: input.userId,
+        tenantId,
+      }, 'Using supplied structured decision context while Secretary agenda read model is unavailable');
+    }
     if (agenda) return secretaryAgendaDecisionContext(agenda, supplied);
   }
   if (hasDecisionContextPayload(suppliedRaw)) return supplied;
@@ -3662,11 +5515,21 @@ function decisionContextForRecord(record: DecisionRecord): DecisionLogicContext 
   const hasStoredContext = hasDecisionContextPayload(record.decisionContext);
   const storedContext = withUserDecisionContextDefaults(record.userId, record.decisionContext);
   if (record.sourceSkill === 'secretary' && record.relatedEntityType === 'secretary_agenda_item' && record.relatedEntityId) {
-    const agenda = getSecretaryAgendaItemById({
-      agendaItemId: record.relatedEntityId,
-      ownerUserId: record.userId,
-      tenantId: record.tenantId,
-    });
+    let agenda: SecretaryAgendaItem | null = null;
+    try {
+      agenda = getSecretaryAgendaItemById({
+        agendaItemId: record.relatedEntityId,
+        ownerUserId: record.userId,
+        tenantId: record.tenantId,
+      });
+    } catch (error) {
+      if (!hasStoredContext) throw error;
+      logger.warn({
+        event: 'decision.secretary_agenda_context_unavailable',
+        userId: record.userId,
+        tenantId: record.tenantId,
+      }, 'Using stored structured decision context while Secretary agenda read model is unavailable');
+    }
     if (agenda) return secretaryAgendaDecisionContext(agenda, storedContext);
     if (hasStoredContext) return storedContext;
     return withUserDecisionContextDefaults(record.userId, { explicitNoRelatedEntityReason: 'secretary agenda item is missing' });
@@ -3701,9 +5564,14 @@ function secretaryAgendaDecisionContext(agenda: SecretaryAgendaItem, supplied?: 
     timezone: supplied?.timezone,
     locale: supplied?.locale,
   });
+  const normalizedAction = normalizeDecisionAction(supplied?.normalizedAction)
+    ?? buildSecretaryAgendaReflowAction(agenda, supplied, advice.recommendedStartAt, advice.recommendedEndAt);
+  const suppliedTitle = supplied?.entityTitle?.trim() ?? '';
   return {
     ...(supplied ?? {}),
-    entityTitle: agenda.title,
+    // Producers may deliberately supply a privacy-safe fixed label. Preserve
+    // it rather than re-inserting user-authored agenda copy into policy JSON.
+    entityTitle: suppliedTitle && !isGenericDecisionCopy(suppliedTitle) ? suppliedTitle : agenda.title,
     currentStartAt,
     currentEndAt,
     recommendedStartAt: advice.recommendedStartAt,
@@ -3713,7 +5581,54 @@ function secretaryAgendaDecisionContext(agenda: SecretaryAgendaItem, supplied?: 
     sourceState: supplied?.sourceState ?? agenda.lifecycleState,
     providerSyncState: agenda.providerSyncState,
     providerSyncUpdatedAt: agenda.updatedAt,
+    recipe: supplied?.recipe ?? 'secretary_reflow_window_v1',
+    normalizedAction,
   };
+}
+
+function buildSecretaryAgendaReflowAction(
+  agenda: SecretaryAgendaItem,
+  context: DecisionLogicContext | null | undefined,
+  recommendedStartAt: string | null,
+  recommendedEndAt: string | null,
+): NormalizedDecisionAction {
+  const revision = secretaryAgendaStateRevision(agenda);
+  const timezone = context?.timezone ?? 'UTC';
+  const requestedWindow = recommendedStartAt && recommendedEndAt
+    && Number.isFinite(Date.parse(recommendedStartAt))
+    && Number.isFinite(Date.parse(recommendedEndAt))
+    && Date.parse(recommendedStartAt) < Date.parse(recommendedEndAt)
+    ? { start: recommendedStartAt, end: recommendedEndAt, timezone }
+    : undefined;
+  const localDay = requestedWindow
+    ? DateTime.fromISO(requestedWindow.start, { setZone: true }).setZone(timezone).toISODate()
+    : null;
+  return buildNormalizedDecisionAction({
+    intent: 'reflow_secretary_agenda',
+    targetEntities: [{ type: 'secretary_agenda_item', id: agenda.agendaItemId, version: revision }],
+    affectedResources: [
+      { type: 'secretary_agenda_item', id: agenda.agendaItemId },
+      { type: 'calendar_timeline', id: `${agenda.tenantId}:${localDay ?? 'unscheduled'}` },
+    ],
+    ...(requestedWindow ? { requestedWindow } : {}),
+    preconditions: [{
+      type: 'agenda_state',
+      ref: agenda.agendaItemId,
+      expectedVersion: revision,
+      required: true,
+    }],
+    expectedEffects: [{ type: 'move_agenda_window', targetRef: `secretary_agenda_item:${agenda.agendaItemId}` }],
+    prohibitedEffects: [{ type: 'overwrite_changed_agenda_state', targetRef: `secretary_agenda_item:${agenda.agendaItemId}` }],
+    dependencies: [],
+    exclusivityKeys: [
+      `secretary_agenda_item:${agenda.tenantId}:${agenda.agendaItemId}`,
+      `calendar_timeline:${agenda.tenantId}:${localDay ?? 'unscheduled'}`,
+    ],
+    authorizationScope: ['decision_center:write'],
+    risk: 'medium',
+    reversibility: 'reversible',
+    contextVersion: `ctx_secretary_agenda_${revision}`,
+  });
 }
 
 function withUserDecisionContextDefaults(userId: number, context?: DecisionLogicContext | null): DecisionLogicContext {
@@ -4355,6 +6270,7 @@ function isGenericDecisionCopy(value: string): boolean {
     || normalized.startsWith('nexus completed the requested action')
     || normalized.startsWith('nexus completed:')
     || normalized.startsWith('nexus found a schedule or capacity conflict')
+    || normalized.startsWith('demo schedule conflict')
     || normalized.startsWith('open nexus to view details');
 }
 
@@ -4473,6 +6389,10 @@ function confidenceForItem(item: DecisionRecord): number {
 }
 
 function riskLevelForItem(item: DecisionRecord): 'low' | 'medium' | 'high' {
+  const normalizedRisk = normalizeDecisionAction(decisionContextForRecord(item).normalizedAction)?.risk;
+  if (normalizedRisk === 'critical' || normalizedRisk === 'high') return 'high';
+  if (normalizedRisk === 'medium') return 'medium';
+  if (normalizedRisk === 'low') return 'low';
   if (item.priority === 'critical' || item.priority === 'time_sensitive') return 'high';
   if (item.type === 'approval_required' || item.type === 'sync_failure') return 'medium';
   return 'low';
@@ -4518,7 +6438,8 @@ function getDecisionRecord(decisionId: string, userId: number, tenantId = userId
   ensureDecisionCenterTables();
   const row = getDb().prepare(`
     SELECT items.*, intents.related_entity_id, intents.related_entity_type, intents.requires_user_action,
-           intents.decision_deadline, intents.privacy_policy, intents.delivery_policy, intents.decision_context_json
+           intents.decision_deadline, intents.privacy_policy, intents.delivery_policy, intents.decision_context_json,
+           intents.context_observed_at
       FROM notification_center_items items
       JOIN notification_intents intents ON intents.intent_id = items.intent_id
      WHERE items.item_id = ? AND items.user_id = ? AND items.tenant_id = ?
@@ -4559,7 +6480,39 @@ function mapDecisionRecord(row: any): DecisionRecord {
     actionedAt: row.actioned_at ?? null,
     decisionLogActionTaken: row.decision_log_action_taken ?? null,
     actionResult: row.action_result_json ? safeParseJson(row.action_result_json, null) : null,
+    recordVersion: Number.isSafeInteger(Number(row.record_version)) && Number(row.record_version) > 0
+      ? Number(row.record_version)
+      : 1,
+    decisionState: isDurableDecisionState(row.decision_state) ? row.decision_state : null,
+    updatedAt: row.updated_at ?? row.created_at,
+    supersededByItemId: row.superseded_by_item_id ?? null,
+    contextObservedAt: row.context_observed_at ?? null,
   };
+}
+
+function isDurableDecisionState(value: unknown): value is DurableDecisionState {
+  return value === 'proposed' || value === 'needs_input' || value === 'blocked'
+    || value === 'ready_for_review' || value === 'approved' || value === 'rejected'
+    || value === 'deferred' || value === 'superseded' || value === 'expired'
+    || value === 'cancelled';
+}
+
+function durableDecisionStateForRecord(record: DecisionRecord): DurableDecisionState {
+  if (record.decisionState === 'deferred' && !isSnoozedUntilFuture(record)) return 'ready_for_review';
+  if (record.decisionState) return record.decisionState;
+  switch (record.status) {
+    case 'snoozed': return 'deferred';
+    case 'actioned': return 'approved';
+    case 'dismissed': return 'rejected';
+    case 'superseded': return 'superseded';
+    case 'expired': return 'expired';
+    case 'unread':
+    case 'read':
+    case 'viewed':
+    case 'failed':
+    default:
+      return 'ready_for_review';
+  }
 }
 
 function isSnoozedUntilFuture(item: DecisionRecord): boolean {
@@ -4599,11 +6552,129 @@ export function legacyStatusToLifecycle(status: string): DecisionLifecycleStatus
 
 /** Item-level action outcome. Failed rows stay lifecycle 'surfaced' but carry a 'failed' outcome. */
 export function actionOutcomeFromRecord(record: DecisionRecord): DecisionActionOutcomeStatus {
+  if (record.status === 'actioned' && record.actionResult?.actionId === 'undo_reflow') return 'rolled_back';
   switch (record.status) {
     case 'actioned': return 'succeeded';
     case 'failed': return 'failed';
     default: return 'none';
   }
+}
+
+function requiredPermissionsForRecord(record: DecisionRecord): string[] {
+  return normalizeDecisionAction(decisionContextForRecord(record).normalizedAction)?.authorizationScope ?? [];
+}
+
+function approvalLevelForRecord(record: DecisionRecord): DecisionApprovalLevel {
+  const action = normalizeDecisionAction(decisionContextForRecord(record).normalizedAction);
+  const conflict = decisionContextForRecord(record).conflictEvaluation;
+  if (conflict?.findings.some((finding) => finding.class === 'permission_policy')) return 'unavailable';
+  if (isSecretaryReviewOnlyPreview(record, action)) return 'none';
+  const visibilityScope = visibilityScopeForItem(record);
+  if (record.sourceSkill === 'security' || visibilityScope === 'tenant_admin' || visibilityScope === 'system_admin') {
+    return 'admin_review';
+  }
+  // Finance remains a strong-confirmation class even before its normalized
+  // domain adapter exists. Under flow enforcement that intentionally fails
+  // closed: no structured review means no current strong approval token.
+  if (record.sourceSkill === 'finance') return 'strong_confirmation';
+  if (!action) return record.requiresUserAction ? 'user_confirmation' : 'none';
+  if (action.risk === 'critical' || action.risk === 'high' || action.reversibility === 'irreversible'
+  ) return 'strong_confirmation';
+  return record.requiresUserAction ? 'user_confirmation' : 'none';
+}
+
+function reviewSupportedForRecord(
+  record: DecisionRecord,
+  action = normalizeDecisionAction(decisionContextForRecord(record).normalizedAction),
+  approvalLevel = approvalLevelForRecord(record),
+): boolean {
+  if (!isDecisionFlowV1EnforceEnabled(process.env, { userId: record.userId, tenantId: record.tenantId })) return false;
+  if (!action || approvalLevel === 'none' || approvalLevel === 'unavailable' || approvalLevel === 'admin_review') return false;
+  const state = durableDecisionStateForRecord(record);
+  return (state === 'proposed' || state === 'ready_for_review' || state === 'blocked' || state === 'needs_input')
+    && !['actioned', 'dismissed', 'expired', 'superseded'].includes(record.status);
+}
+
+function isSecretaryReviewOnlyPreview(
+  record: DecisionRecord,
+  action: NormalizedDecisionAction | null,
+): boolean {
+  if (record.sourceSkill !== 'secretary') return false;
+  const context = decisionContextForRecord(record);
+  const reasons = new Set(context.reasonCodes ?? []);
+  return reasons.has('preview_only')
+    && record.actions.length > 0
+    && record.actions.every((candidate) => candidate.id === 'open_detail')
+    && !!action?.prohibitedEffects.some((effect) =>
+      effect.type === 'automatic_execution'
+      || effect.type === 'automatic_external_mutation'
+      || effect.type === 'automatic_calendar_mutation');
+}
+
+/**
+ * Refresh is a first-class recovery operation whenever either its dedicated
+ * rollout is enabled or flow-v1 enforcement depends on fresh revalidation.
+ * Keeping this decision in one helper prevents the API contract from
+ * advertising a recovery action whose route would return 404.
+ */
+export function decisionRefreshSupportedForScope(userId: number, tenantId = userId): boolean {
+  return isDecisionRefreshEnabled(process.env, { userId, tenantId })
+    || isDecisionFlowV1EnforceEnabled(process.env, { userId, tenantId })
+    || getDecisionConflictPolicyV1Mode(process.env, { userId, tenantId }) === 'active';
+}
+
+function decisionRefreshSupportedForRecord(record: DecisionRecord): boolean {
+  return decisionRefreshSupportedForScope(record.userId, record.tenantId)
+    && ['unread', 'read', 'failed', 'snoozed'].includes(record.status)
+    && normalizeDecisionAction(decisionContextForRecord(record).normalizedAction) !== null;
+}
+
+function executionSummaryForRecord(record: DecisionRecord): DecisionExecutionSummary {
+  let row: {
+    action_execution_id: string;
+    action_id: string;
+    status: string;
+    effect_results_json: string | null;
+    recovery_json: string | null;
+    error_code: string | null;
+  } | undefined;
+  try {
+    row = getDb().prepare(`
+      SELECT action_execution_id, action_id, status, effect_results_json, recovery_json, error_code
+        FROM decision_action_executions
+       WHERE decision_id = ? AND user_id = ? AND tenant_id = ?
+       ORDER BY created_at DESC, rowid DESC LIMIT 1
+    `).get(record.itemId, record.userId, record.tenantId) as typeof row;
+  } catch {
+    row = undefined;
+  }
+  if (!row) return { status: actionOutcomeFromRecord(record), effectResults: [], recoveryActions: [] };
+  const rawStatus = row.status === 'partially_failed' ? 'partially_failed'
+    : row.status === 'succeeded' && row.action_id === 'undo_reflow' ? 'rolled_back'
+      : row.status === 'succeeded' ? 'succeeded'
+      : row.status === 'failed' ? 'failed'
+        : row.status === 'started' ? 'started' : 'none';
+  const effectResults = safeParseJson<DecisionEffectResult[]>(row.effect_results_json, [])
+    .filter((effect) => effect && typeof effect.effectId === 'string'
+      && ['pending', 'succeeded', 'failed', 'compensated', 'unknown'].includes(effect.status));
+  const recovery = safeParseJson<{ message?: string; actions?: NotificationActionButton[] }>(row.recovery_json, {});
+  const recoveryActions = (Array.isArray(recovery.actions) ? recovery.actions : [])
+    .filter((action) => action?.id !== 'refresh'
+      || decisionRefreshSupportedForRecord(record)
+      || (row?.status === 'partially_failed'
+        && decisionRefreshSupportedForScope(record.userId, record.tenantId)))
+    .slice(0, 4);
+  const recoveryMessage = recovery.message && recoveryActions.length === 0
+    && /refresh/i.test(recovery.message)
+    ? 'Review the current source state before choosing a recovery action.'
+    : recovery.message;
+  return {
+    status: rawStatus,
+    lastAttemptId: row.action_execution_id,
+    effectResults,
+    recoveryActions,
+    ...(recoveryMessage ? { message: recoveryMessage } : row.error_code ? { message: row.error_code } : {}),
+  };
 }
 
 /**
@@ -4614,11 +6685,18 @@ export function actionOutcomeFromRecord(record: DecisionRecord): DecisionActionO
  */
 export function computeEffectiveStatus(
   record: DecisionRecord,
-  ctx: { dependencies: { blockedByDecisionIds: string[] }; logic: DecisionLogicV2; retryAvailable?: boolean },
+  ctx: {
+    dependencies: { blockedByDecisionIds: string[] };
+    logic: DecisionLogicV2;
+    retryAvailable?: boolean;
+    executionStatus?: DecisionActionOutcomeStatus;
+  },
 ): DecisionEffectiveStatus {
   if (isDecisionExpired(record) || record.status === 'expired') return 'expired';
   if (record.status === 'superseded') return 'superseded';
   if (record.status === 'dismissed') return 'dismissed';
+  if (ctx.executionStatus === 'started') return 'in_progress';
+  if (ctx.executionStatus === 'partially_failed') return ctx.retryAvailable ? 'failed_retryable' : 'failed_terminal';
   if (record.status === 'actioned') return 'completed';
   if (record.status === 'failed') return ctx.retryAvailable ? 'failed_retryable' : 'failed_terminal';
   if (!ctx.logic.quality.safeToShowUser) return 'unavailable';
@@ -4643,16 +6721,32 @@ function isReconnectClassAction(record: DecisionRecord, action: NotificationActi
 export function computeActionEffectiveStatus(
   record: DecisionRecord,
   action: NotificationActionButton,
-  ctx: { dependencies: { blockedByDecisionIds: string[] }; logic: DecisionLogicV2; reconnectAffordance?: boolean },
+  ctx: {
+    dependencies: { blockedByDecisionIds: string[] };
+    logic: DecisionLogicV2;
+    reconnectAffordance?: boolean;
+    executionStatus?: DecisionActionOutcomeStatus;
+  },
 ): DecisionActionEffectiveStatus {
-  return computeSharedNotificationActionEffectiveStatus({
+  const base = computeSharedNotificationActionEffectiveStatus({
     actionId: action.id,
     status: record.status,
     expiresAt: record.expiresAt,
     safeForFrontendAction: ctx.logic.quality.safeForFrontendAction,
-    blockedByDependency: ctx.dependencies.blockedByDecisionIds.length > 0,
+    blockedByDependency: ctx.dependencies.blockedByDecisionIds.length > 0
+      || durableDecisionStateForRecord(record) === 'blocked',
     reconnectRequired: Boolean(ctx.reconnectAffordance && isReconnectClassAction(record, action)),
   }) as DecisionActionEffectiveStatus;
+  if (ctx.executionStatus === 'started' || ctx.executionStatus === 'partially_failed') {
+    return {
+      ...base,
+      effective: 'disabled_missing_details',
+      capabilityReason: ctx.executionStatus === 'started'
+        ? 'execution_in_progress'
+        : 'partial_execution_requires_recovery',
+    };
+  }
+  return base;
 }
 
 /** Classify the decision for differentiated client rendering. Pure; precedence is deliberate. */
@@ -4726,10 +6820,21 @@ export function gateActionabilityForHumanReview(actionability: Actionability, qu
 
 export const DECISION_RANKING_VERSION = 1;
 
-/** Per-domain base weight: safety/finance-leaning skills rank higher at equal urgency. */
-const DOMAIN_PRIORITY_WEIGHTS: Record<string, number> = {
-  security: 1, finance: 0.9, secretary: 0.7, training: 0.7, chat: 0.6, content: 0.5, cooking: 0.4,
-};
+/**
+ * Versioned baseline extracted from the existing ranker. Values are intentionally unchanged;
+ * changing them requires corpus/shadow evidence and a ranking-version bump.
+ */
+export const DECISION_RANKING_POLICY = Object.freeze({
+  policyVersion: 'decision_ranking.v1',
+  weights: Object.freeze({ urgency: 0.35, impact: 0.25, costOfDelay: 0.2, domainPriority: 0.2 }),
+  effortPenaltyMax: 0.15,
+  snoozePenalty: 0.25,
+  blockedPenalty: 0.2,
+  tierThresholds: Object.freeze({ critical: 80, high: 60, normal: 35 }),
+  domainPriorityWeights: Object.freeze({
+    security: 1, finance: 0.9, secretary: 0.7, training: 0.7, chat: 0.6, content: 0.5, cooking: 0.4,
+  } as Record<string, number>),
+});
 
 const PRIORITY_TIER_ORDER: DecisionPriorityTier[] = ['low', 'normal', 'high', 'critical'];
 
@@ -4754,12 +6859,15 @@ export function rankDecisionPriority(input: DecisionRankingInputs): DecisionPrio
   const urgency = input.priority === 'critical' ? 1 : input.priority === 'time_sensitive' ? 0.85 : input.priority === 'active' ? 0.55 : 0.25;
   const impact = input.riskLevel === 'high' ? 1 : input.riskLevel === 'medium' ? 0.6 : 0.3;
   const costOfDelay = input.deadlineSoon ? 0.9 : 0.3;
-  const domainPriority = DOMAIN_PRIORITY_WEIGHTS[input.sourceSkill] ?? 0.5;
-  const effortPenalty = (Math.min(Math.max(input.actionCount, 0), 4) / 4) * 0.15;
-  const snoozePenalty = input.status === 'snoozed' ? 0.25 : 0;
-  const blockedPenalty = input.dependencyBlocked ? 0.2 : 0;
+  const domainPriority = DECISION_RANKING_POLICY.domainPriorityWeights[input.sourceSkill] ?? 0.5;
+  const effortPenalty = (Math.min(Math.max(input.actionCount, 0), 4) / 4) * DECISION_RANKING_POLICY.effortPenaltyMax;
+  const snoozePenalty = input.status === 'snoozed' ? DECISION_RANKING_POLICY.snoozePenalty : 0;
+  const blockedPenalty = input.dependencyBlocked ? DECISION_RANKING_POLICY.blockedPenalty : 0;
 
-  const raw = (0.35 * urgency) + (0.25 * impact) + (0.2 * costOfDelay) + (0.2 * domainPriority)
+  const raw = (DECISION_RANKING_POLICY.weights.urgency * urgency)
+    + (DECISION_RANKING_POLICY.weights.impact * impact)
+    + (DECISION_RANKING_POLICY.weights.costOfDelay * costOfDelay)
+    + (DECISION_RANKING_POLICY.weights.domainPriority * domainPriority)
     - effortPenalty - snoozePenalty - blockedPenalty;
   const score = Math.round(Math.max(0, Math.min(1, raw)) * 100);
 
@@ -4769,7 +6877,11 @@ export function rankDecisionPriority(input: DecisionRankingInputs): DecisionPrio
   if (input.dependencyBlocked) reasonCodes.push('blocked_by_dependency');
   if (input.status === 'snoozed') reasonCodes.push('snoozed');
 
-  let tier: DecisionPriorityTier = score >= 80 ? 'critical' : score >= 60 ? 'high' : score >= 35 ? 'normal' : 'low';
+  let tier: DecisionPriorityTier = score >= DECISION_RANKING_POLICY.tierThresholds.critical
+    ? 'critical'
+    : score >= DECISION_RANKING_POLICY.tierThresholds.high
+      ? 'high'
+      : score >= DECISION_RANKING_POLICY.tierThresholds.normal ? 'normal' : 'low';
   const floorTo = (floor: DecisionPriorityTier, code: string): void => {
     if (PRIORITY_TIER_ORDER.indexOf(floor) > PRIORITY_TIER_ORDER.indexOf(tier)) tier = floor;
     reasonCodes.push(code); // suppression-exempt marker, even if it did not raise the tier
@@ -4882,8 +6994,10 @@ export function computeConfidenceExplanation(
 /** Ordered decision lifecycle events. 'surfaced' records the first list/get exposure for an active decision. */
 export type DecisionLifecycleEvent =
   | 'created' | 'surfaced' | 'detail_opened' | 'viewed' | 'snoozed' | 'dismissed'
-  | 'action_previewed' | 'action_started' | 'action_succeeded' | 'action_failed' | 'verified'
-  | 'expired' | 'superseded' | 'rolled_back' | 'unblocked';
+  | 'approved' | 'rejected' | 'deferred' | 'revised' | 'blocked'
+  | 'revalidation_failed' | 'strong_confirmation_legacy_bypass'
+  | 'action_previewed' | 'action_started' | 'action_succeeded' | 'action_failed' | 'action_partially_failed' | 'verified'
+  | 'expired' | 'superseded' | 'rolled_back' | 'unblocked' | 'execution_reconciled' | 'auto_resolved';
 
 let decisionLifecycleEventWriteFailures = 0;
 
@@ -5036,6 +7150,26 @@ export function recordDecisionItemExposures(items: DecisionApiItem[]): void {
   }
 }
 
+/**
+ * Explicit write-side exposure recorder used by clients when a card actually
+ * becomes visible. Decision Center GET routes intentionally remain pure.
+ * Unknown, expired, filtered, or cross-scope IDs are ignored and never reveal
+ * whether another tenant owns a row.
+ */
+export function recordDecisionItemExposuresByIds(
+  decisionIds: string[],
+  userId: number,
+  tenantId = userId,
+): { recordedCount: number } {
+  assertScope(userId, tenantId, 'record_decision_item_exposures');
+  const uniqueIds = [...new Set(decisionIds.map((id) => id.trim()).filter(Boolean))].slice(0, 100);
+  const items = uniqueIds
+    .map((decisionId) => getDecisionItem(decisionId, userId, tenantId, { recordExposure: false }))
+    .filter((item): item is DecisionApiItem => item !== null);
+  recordDecisionItemExposures(items);
+  return { recordedCount: items.length };
+}
+
 function emitDecisionSurfacedIfFirst(record: DecisionRecord): void {
   if (!shouldEmitSurfaced(record)) return;
   if (process.env.DECISION_LIFECYCLE_EVENTS_ENABLED === '0') return;
@@ -5110,17 +7244,151 @@ export interface DecisionLifecycleEventRow {
   actionId: string | null;
   reason: string | null;
   createdAt: string;
+  metadata?: Record<string, unknown>;
 }
 
 /** Read the ordered lifecycle event stream for a decision (tests + observability). */
 export function getDecisionLifecycleEvents(decisionId: string, userId: number, tenantId = userId): DecisionLifecycleEventRow[] {
   ensureDecisionCenterTables();
   return getDb().prepare(`
-    SELECT event, to_status AS toStatus, action_id AS actionId, reason, created_at AS createdAt
+    SELECT event, to_status AS toStatus, action_id AS actionId, reason,
+           metadata_json AS metadataJson, created_at AS createdAt
       FROM decision_lifecycle_events
      WHERE decision_id = ? AND user_id = ? AND tenant_id = ?
      ORDER BY rowid ASC
-  `).all(decisionId, userId, tenantId) as DecisionLifecycleEventRow[];
+  `).all(decisionId, userId, tenantId).map((row: any) => ({
+    event: row.event,
+    toStatus: row.toStatus ?? null,
+    actionId: row.actionId ?? null,
+    reason: row.reason ?? null,
+    createdAt: row.createdAt,
+    metadata: safeParseJson(row.metadataJson, {}),
+  })) as DecisionLifecycleEventRow[];
+}
+
+export function getDecisionAuditHistory(decisionId: string, userId: number, tenantId = userId): {
+  events: DecisionLifecycleEventRow[];
+  conflicts: Array<Record<string, unknown>>;
+  executions: Array<Record<string, unknown>>;
+} {
+  assertScope(userId, tenantId, 'decision_audit_history', { decisionId });
+  ensureDecisionCenterTables();
+  const exists = getDb().prepare(`
+    SELECT 1 FROM notification_center_items
+     WHERE item_id = ? AND user_id = ? AND tenant_id = ? LIMIT 1
+  `).get(decisionId, userId, tenantId);
+  if (!exists) throw new DecisionActionError('DECISION_NOT_FOUND', 'Decision not found', 404);
+  const conflicts = getDb().prepare(`
+    SELECT policy_version AS policyVersion, context_version AS contextVersion,
+           disposition, hard_conflict_count AS hardConflictCount,
+           soft_conflict_count AS softConflictCount, reason_codes_json AS reasonCodesJson,
+           related_decision_ids_json AS relatedDecisionIdsJson,
+           precedence_trace_json AS precedenceTraceJson, winner_decision_id AS winnerDecisionId,
+           resolution, automatically_resolved AS automaticallyResolved,
+           created_at AS createdAt, resolved_at AS resolvedAt
+      FROM decision_conflict_evaluations
+     WHERE decision_id = ? AND user_id = ? AND tenant_id = ?
+     ORDER BY created_at ASC
+  `).all(decisionId, userId, tenantId).map((row: any) => ({
+    policyVersion: row.policyVersion,
+    contextVersion: row.contextVersion,
+    disposition: row.disposition,
+    hardConflictCount: row.hardConflictCount,
+    softConflictCount: row.softConflictCount,
+    reasonCodes: safeParseJson(row.reasonCodesJson, []),
+    relatedDecisionIds: safeParseJson(row.relatedDecisionIdsJson, []),
+    precedenceTrace: safeParseJson(row.precedenceTraceJson, []),
+    winnerDecisionId: row.winnerDecisionId ?? null,
+    resolution: row.resolution ?? null,
+    automaticallyResolved: !!row.automaticallyResolved,
+    createdAt: row.createdAt,
+    resolvedAt: row.resolvedAt ?? null,
+  }));
+  const executions = getDb().prepare(`
+    SELECT action_execution_id AS attemptId, action_id AS actionId, status,
+           effect_results_json AS effectResultsJson, recovery_json AS recoveryJson,
+           error_code AS errorCode, created_at AS createdAt,
+           completed_at AS completedAt, failed_at AS failedAt
+      FROM decision_action_executions
+     WHERE decision_id = ? AND user_id = ? AND tenant_id = ?
+     ORDER BY created_at ASC
+  `).all(decisionId, userId, tenantId).map((row: any) => ({
+    attemptId: row.attemptId,
+    actionId: row.actionId,
+    status: row.status,
+    effectResults: safeParseJson(row.effectResultsJson, []),
+    recovery: safeParseJson(row.recoveryJson, {}),
+    errorCode: row.errorCode ?? null,
+    createdAt: row.createdAt,
+    completedAt: row.completedAt ?? null,
+    failedAt: row.failedAt ?? null,
+  }));
+  return { events: getDecisionLifecycleEvents(decisionId, userId, tenantId), conflicts, executions };
+}
+
+function resolveDecisionConflictAudit(
+  decisionId: string,
+  userId: number,
+  tenantId: number,
+  resolution: string,
+  automaticallyResolved = false,
+): void {
+  try {
+    getDb().prepare(`
+      UPDATE decision_conflict_evaluations
+         SET resolution = ?, automatically_resolved = CASE WHEN ? THEN 1 ELSE automatically_resolved END,
+             resolved_at = COALESCE(resolved_at, datetime('now'))
+       WHERE decision_id = ? AND user_id = ? AND tenant_id = ? AND resolved_at IS NULL
+    `).run(resolution, automaticallyResolved ? 1 : 0, decisionId, userId, tenantId);
+    logger.info({ event: 'decision.conflict_resolved', decisionId, resolution, automaticallyResolved }, 'Decision conflict resolved');
+  } catch (err) {
+    logger.warn({ err, decisionId, resolution }, 'Decision conflict resolution audit failed');
+  }
+}
+
+function recordDecisionConflictEvaluation(
+  record: Pick<DecisionRecord, 'itemId' | 'userId' | 'tenantId'>,
+  conflict: ConflictEvaluation,
+): void {
+  try {
+    const relatedDecisionIds = [...new Set(conflict.findings
+      .map((finding) => finding.conflictingDecisionId)
+      .filter((value): value is string => typeof value === 'string' && value.length > 0))].sort();
+    getDb().prepare(`
+      INSERT INTO decision_conflict_evaluations (
+        conflict_evaluation_id, decision_id, user_id, tenant_id, policy_version,
+        context_version, disposition, hard_conflict_count, soft_conflict_count,
+        reason_codes_json, related_decision_ids_json, precedence_trace_json,
+        winner_decision_id, automatically_resolved
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      `dce_${randomUUID()}`,
+      record.itemId,
+      record.userId,
+      record.tenantId,
+      conflict.policyVersion,
+      conflict.contextVersion,
+      conflict.disposition,
+      conflict.findings.filter((finding) => finding.severity === 'hard').length,
+      conflict.findings.filter((finding) => finding.severity === 'soft').length,
+      JSON.stringify([...new Set(conflict.reasonCodes)].sort()),
+      JSON.stringify(relatedDecisionIds),
+      JSON.stringify(conflict.precedenceTrace ?? []),
+      conflict.winnerDecisionId ?? null,
+      conflict.autoResolved ? 1 : 0,
+    );
+    logger.info({
+      event: 'decision.conflict_evaluated',
+      decisionId: record.itemId,
+      userId: record.userId,
+      tenantId: record.tenantId,
+      disposition: conflict.disposition,
+      hardConflictCount: conflict.findings.filter((finding) => finding.severity === 'hard').length,
+      softConflictCount: conflict.findings.filter((finding) => finding.severity === 'soft').length,
+    }, 'Decision conflict evaluation recorded');
+  } catch (err) {
+    logger.warn({ err, decisionId: record.itemId }, 'Decision conflict evaluation audit failed');
+  }
 }
 
 export interface DecisionMetricsDailyRow {
@@ -5665,8 +7933,14 @@ function rollbackContractForRecord(record: DecisionRecord): { available: boolean
   const actionId = typeof record.actionResult?.rollbackActionId === 'string'
     ? record.actionResult.rollbackActionId
     : null;
+  const expectedRevision = typeof record.actionResult?.rollbackExpectedRevision === 'string'
+    ? record.actionResult.rollbackExpectedRevision
+    : null;
   return {
-    available: record.status === 'actioned' && record.actionResult?.rollbackAvailable === true && !!actionId,
+    available: record.status === 'actioned'
+      && record.actionResult?.rollbackAvailable === true
+      && !!actionId
+      && !!expectedRevision,
     actionId,
   };
 }
@@ -5692,10 +7966,15 @@ function dependencyStateForRecord(record: DecisionRecord): { dependsOnDecisionId
 }
 
 function guardActionable(record: DecisionRecord, actionId: string): void {
+  if (durableDecisionStateForRecord(record) === 'blocked' && MUTATING_ACTIONS.has(actionId)) {
+    throw new DecisionActionError('DECISION_CONFLICT_BLOCKED', 'Decision is blocked until its conflict or precondition is resolved.', 409);
+  }
   if (record.status === 'expired') throw new DecisionActionError('DECISION_EXPIRED', 'Decision expired and can no longer be actioned', 409);
   if (record.expiresAt && Date.parse(record.expiresAt) <= Date.now()) {
     const expire = getDb().prepare(`
-      UPDATE notification_center_items SET status = 'expired'
+      UPDATE notification_center_items
+         SET status = 'expired', decision_state = 'expired',
+             record_version = record_version + 1, updated_at = datetime('now')
       WHERE item_id = ? AND user_id = ? AND tenant_id = ?
         AND status != 'expired'
     `).run(record.itemId, record.userId, record.tenantId);
@@ -5715,6 +7994,52 @@ function guardActionable(record: DecisionRecord, actionId: string): void {
   }
 }
 
+function guardDecisionLifecycleMutation(
+  record: DecisionRecord,
+  operation: string,
+  options: {
+    allowPartialRecovery?: boolean;
+    allowExecution?: { actionId: string; idempotencyKey: string };
+  } = {},
+): void {
+  const blockingStatuses = options.allowPartialRecovery ? ['started'] : ['started', 'partially_failed'];
+  const placeholders = blockingStatuses.map(() => '?').join(', ');
+  const execution = getDb().prepare(`
+    SELECT action_execution_id AS executionId, action_id AS actionId, idempotency_key AS idempotencyKey,
+           status, lease_expires_at AS leaseExpiresAt
+      FROM decision_action_executions
+     WHERE decision_id = ? AND user_id = ? AND tenant_id = ?
+       AND status IN (${placeholders})
+       AND NOT (action_id = ? AND idempotency_key = ?)
+     ORDER BY created_at DESC, rowid DESC
+     LIMIT 1
+  `).get(
+    record.itemId,
+    record.userId,
+    record.tenantId,
+    ...blockingStatuses,
+    options.allowExecution?.actionId ?? '',
+    options.allowExecution?.idempotencyKey ?? '',
+  ) as { executionId: string; actionId: string; idempotencyKey: string; status: string; leaseExpiresAt: string | null } | undefined;
+  if (!execution) return;
+  throw new DecisionActionError(
+    execution.status === 'partially_failed'
+      ? 'DECISION_EXECUTION_RECOVERY_REQUIRED'
+      : 'DECISION_ACTION_IN_PROGRESS',
+    execution.status === 'partially_failed'
+      ? 'This decision has an uncertain partial execution. Reconcile it before changing the proposal lifecycle.'
+      : 'This decision is currently executing. Wait for the verified outcome before changing it.',
+    409,
+    {
+      operation,
+      actionExecutionId: execution.executionId,
+      actionId: execution.actionId,
+      executionStatus: execution.status,
+      leaseExpiresAt: execution.leaseExpiresAt,
+    },
+  );
+}
+
 function guardDecisionDependencies(record: DecisionRecord, actionId: string): void {
   if (actionId === 'open_detail' || actionId === 'dismiss' || actionId === 'snooze' || actionId === 'not_now' || actionId === 'undo_reflow') {
     return;
@@ -5726,6 +8051,549 @@ function guardDecisionDependencies(record: DecisionRecord, actionId: string): vo
   });
 }
 
+function decisionContextVersion(record: DecisionRecord): string | null {
+  return normalizeDecisionAction(decisionContextForRecord(record).normalizedAction)?.contextVersion ?? null;
+}
+
+function decisionContextExpiresAt(record: DecisionRecord): string | undefined {
+  const contextExpiry = decisionContextForRecord(record).contextExpiresAt;
+  if (typeof contextExpiry === 'string' && Number.isFinite(Date.parse(contextExpiry))) return contextExpiry;
+  return record.expiresAt ?? record.decisionDeadline ?? undefined;
+}
+
+function logicalActionHashForAttempt(
+  record: DecisionRecord,
+  actionId: string,
+  payload: Record<string, unknown>,
+): string {
+  const normalized = normalizeDecisionAction(decisionContextForRecord(record).normalizedAction);
+  return logicalActionAttemptHash(normalized?.logicalActionHash ?? `legacy:${record.itemId}`, actionId, payload);
+}
+
+/**
+ * Bind client-supplied action parameters to the proposal the user actually
+ * reviewed. Transport payloads can select an advertised option or provide an
+ * explicitly editable value, but they cannot silently retarget a decision.
+ */
+function validatedDecisionActionPayload(
+  record: DecisionRecord,
+  actionId: string,
+  payload: Record<string, unknown>,
+): Record<string, unknown> {
+  if (actionId === 'choose_another_time') {
+    const startAt = normalizeTimestamp(typeof payload.startAt === 'string' ? payload.startAt : null);
+    const endAt = normalizeTimestamp(typeof payload.endAt === 'string' ? payload.endAt : null);
+    if (!startAt || !endAt || Date.parse(startAt) >= Date.parse(endAt)) {
+      throw new DecisionActionError(
+        'DECISION_ACTION_PAYLOAD_REQUIRED',
+        'Choosing another time requires a valid advertised start and end window.',
+        400,
+      );
+    }
+    const advice = secretaryReflowChoiceAdvice(record);
+    const advertised = advice ? [
+      { startAt: advice.recommendedStartAt, endAt: advice.recommendedEndAt },
+      ...advice.alternatives,
+    ] : [];
+    const selectedWasAdvertised = advertised.some((candidate) =>
+      candidate.startAt && candidate.endAt
+      && Date.parse(candidate.startAt) === Date.parse(startAt)
+      && Date.parse(candidate.endAt) === Date.parse(endAt));
+    if (!selectedWasAdvertised) {
+      throw new DecisionActionError(
+        'DECISION_ACTION_PAYLOAD_MISMATCH',
+        'The selected window is not part of the current reviewed proposal. Refresh or edit the proposal first.',
+        409,
+      );
+    }
+    return { startAt, endAt };
+  }
+
+  if (actionId === 'mark_paid') {
+    const relatedMonth = record.relatedEntityType === 'finance_tax_event'
+      && typeof record.relatedEntityId === 'string'
+      && /^\d{4}-\d{2}$/.test(record.relatedEntityId)
+      ? record.relatedEntityId
+      : null;
+    const suppliedMonth = typeof payload.month === 'string' ? payload.month : null;
+    if (!relatedMonth || (suppliedMonth != null && suppliedMonth !== relatedMonth)) {
+      throw new DecisionActionError(
+        'DECISION_ACTION_PAYLOAD_MISMATCH',
+        'The payment action must target the tax event attached to this decision.',
+        409,
+      );
+    }
+    // Canonicalize absent and explicitly supplied values to one logical action.
+    return { month: relatedMonth };
+  }
+
+  if (actionId === 'add_meal') {
+    const target = record.relatedEntityType === 'meal_plan' && typeof record.relatedEntityId === 'string'
+      ? record.relatedEntityId.match(/^(\d{4}-\d{2}-\d{2}):([^:]+)$/)
+      : null;
+    const date = typeof payload.date === 'string' ? payload.date : null;
+    const mealType = typeof payload.mealType === 'string'
+      ? payload.mealType
+      : typeof payload.meal_type === 'string' ? payload.meal_type : null;
+    if (!target || date !== target[1] || mealType !== target[2]) {
+      throw new DecisionActionError(
+        'DECISION_ACTION_PAYLOAD_MISMATCH',
+        'The meal action must target the date and meal slot attached to this decision.',
+        409,
+      );
+    }
+    return {
+      date,
+      mealType,
+      title: payload.title,
+      ...(typeof payload.notes === 'string' ? { notes: payload.notes } : {}),
+    };
+  }
+
+  return payload;
+}
+
+function validateExpectedDecisionVersion(
+  record: DecisionRecord,
+  expectedVersion: number | undefined,
+  requiredForAction: boolean,
+): void {
+  if (expectedVersion != null && (!Number.isSafeInteger(expectedVersion) || expectedVersion <= 0)) {
+    throw new DecisionActionError('DECISION_VERSION_INVALID', 'expectedVersion must be a positive integer', 400);
+  }
+  const enforced = requiredForAction && isDecisionFlowV1EnforceEnabled(process.env, {
+    userId: record.userId,
+    tenantId: record.tenantId,
+  });
+  if (expectedVersion == null && enforced) {
+    throw new DecisionActionError('DECISION_VERSION_REQUIRED', 'This decision action requires the current record version.', 428, {
+      ...decisionVersionConflictDetails(record),
+    });
+  }
+  if (expectedVersion != null && expectedVersion !== record.recordVersion) {
+    logger.info({
+      event: 'decision.version_conflict',
+      decisionId: record.itemId,
+      userId: record.userId,
+      tenantId: record.tenantId,
+      expectedVersion,
+      currentVersion: record.recordVersion,
+    }, 'Decision optimistic-concurrency conflict');
+    throw new DecisionActionError(
+      'DECISION_VERSION_CONFLICT',
+      'Decision changed in another session. Refresh before acting.',
+      409,
+      decisionVersionConflictDetails(record),
+    );
+  }
+}
+
+function decisionVersionConflictDetails(
+  record: DecisionRecord | null,
+  extra: Record<string, unknown> = {},
+): Record<string, unknown> {
+  let currentItem: DecisionApiItem | null = null;
+  if (record) {
+    try {
+      currentItem = formatDecisionItemForApi(record);
+    } catch (err) {
+      logger.warn({
+        event: 'decision.version_conflict_projection_failed',
+        err,
+        decisionId: record.itemId,
+        userId: record.userId,
+        tenantId: record.tenantId,
+      }, 'Could not include the current safe Decision Center item in a version-conflict response');
+    }
+  }
+  return {
+    currentVersion: record?.recordVersion ?? null,
+    decisionState: record ? durableDecisionStateForRecord(record) : null,
+    updatedAt: record?.updatedAt ?? null,
+    currentItem,
+    ...extra,
+  };
+}
+
+function revalidateDecisionActionForExecution(
+  record: DecisionRecord,
+  actionId: string,
+  expectedContextVersion?: string,
+  payload: Record<string, unknown> = {},
+): ConflictEvaluation | null {
+  const actionOverride = actionId === 'undo_reflow'
+    ? secretaryRollbackActionForRecord(record)
+    : actionId === 'choose_another_time'
+      ? secretarySelectedWindowActionForRecord(record, payload)
+      : undefined;
+  return revalidateDecisionContext(record, expectedContextVersion, {
+    confirmationGranted: true,
+    ...(actionOverride ? { actionOverride } : {}),
+  });
+}
+
+function secretarySelectedWindowActionForRecord(
+  record: DecisionRecord,
+  payload: Record<string, unknown>,
+): NormalizedDecisionAction {
+  const stored = normalizeDecisionAction(decisionContextForRecord(record).normalizedAction);
+  const start = typeof payload.startAt === 'string' ? normalizeTimestamp(payload.startAt) : null;
+  const end = typeof payload.endAt === 'string' ? normalizeTimestamp(payload.endAt) : null;
+  if (!stored || !start || !end || Date.parse(start) >= Date.parse(end)) {
+    throw new DecisionActionError(
+      'DECISION_ACTION_PAYLOAD_MISMATCH',
+      'The selected Secretary window is not bound to a current normalized proposal.',
+      409,
+    );
+  }
+  return buildNormalizedDecisionAction({
+    intent: stored.intent,
+    targetEntities: stored.targetEntities,
+    affectedResources: stored.affectedResources,
+    requestedWindow: {
+      start,
+      end,
+      timezone: stored.requestedWindow?.timezone ?? decisionContextForRecord(record).timezone ?? 'UTC',
+    },
+    preconditions: stored.preconditions,
+    expectedEffects: stored.expectedEffects,
+    prohibitedEffects: stored.prohibitedEffects,
+    dependencies: stored.dependencies,
+    exclusivityKeys: stored.exclusivityKeys,
+    authorizationScope: stored.authorizationScope,
+    risk: stored.risk,
+    reversibility: stored.reversibility,
+    contextVersion: stored.contextVersion,
+  });
+}
+
+function secretaryRollbackActionForRecord(record: DecisionRecord): NormalizedDecisionAction {
+  const storedAction = normalizeDecisionAction(decisionContextForRecord(record).normalizedAction);
+  const rollback = record.actionResult?.rollback;
+  const expectedRevision = typeof record.actionResult?.rollbackExpectedRevision === 'string'
+    ? record.actionResult.rollbackExpectedRevision
+    : null;
+  const previous = rollback && typeof rollback === 'object' && !Array.isArray(rollback)
+    ? (rollback as Record<string, unknown>).previous
+    : null;
+  if (record.sourceSkill !== 'secretary'
+      || record.relatedEntityType !== 'secretary_agenda_item' || !record.relatedEntityId
+      || !expectedRevision || !previous || typeof previous !== 'object' || Array.isArray(previous)) {
+    throw new DecisionActionError(
+      'DECISION_ROLLBACK_UNAVAILABLE',
+      'This rollback does not have a complete, current Secretary state contract.',
+      409,
+    );
+  }
+  const prior = previous as Record<string, unknown>;
+  const priorStart = stringOrNull(prior.startAt);
+  const priorEnd = stringOrNull(prior.endAt);
+  const timezone = storedAction?.requestedWindow?.timezone
+    ?? decisionContextForRecord(record).timezone
+    ?? 'UTC';
+  const requestedWindow = priorStart && priorEnd
+    && Number.isFinite(Date.parse(priorStart)) && Number.isFinite(Date.parse(priorEnd))
+    && Date.parse(priorStart) < Date.parse(priorEnd)
+    ? { start: priorStart, end: priorEnd, timezone }
+    : undefined;
+  const localDay = requestedWindow
+    ? DateTime.fromISO(requestedWindow.start, { setZone: true }).setZone(timezone).toISODate()
+    : null;
+  return buildNormalizedDecisionAction({
+    intent: 'undo_secretary_reflow',
+    targetEntities: [{ type: 'secretary_agenda_item', id: record.relatedEntityId, version: expectedRevision }],
+    affectedResources: storedAction?.affectedResources.length
+      ? storedAction.affectedResources
+      : [{ type: 'secretary_agenda_item', id: record.relatedEntityId }],
+    ...(requestedWindow ? { requestedWindow } : {}),
+    preconditions: [{
+      type: 'agenda_state',
+      ref: record.relatedEntityId,
+      expectedVersion: expectedRevision,
+      required: true,
+    }],
+    expectedEffects: [{ type: 'restore_prior_agenda_state', targetRef: `secretary_agenda_item:${record.relatedEntityId}` }],
+    prohibitedEffects: [{ type: 'overwrite_changed_agenda_state', targetRef: `secretary_agenda_item:${record.relatedEntityId}` }],
+    dependencies: storedAction?.dependencies ?? [],
+    exclusivityKeys: storedAction?.exclusivityKeys.length
+      ? storedAction.exclusivityKeys
+      : [localDay
+          ? `calendar_timeline:${record.tenantId}:${localDay}`
+          : `secretary_agenda_item:${record.tenantId}:${record.relatedEntityId}`],
+    authorizationScope: storedAction?.authorizationScope.length
+      ? storedAction.authorizationScope
+      : ['calendar:write'],
+    risk: storedAction?.risk ?? 'medium',
+    reversibility: 'reversible',
+    contextVersion: storedAction?.contextVersion ?? `rollback:${record.itemId}:${expectedRevision}`,
+  });
+}
+
+function revalidateDecisionContext(
+  record: DecisionRecord,
+  expectedContextVersion?: string,
+  options: {
+    confirmationGranted?: boolean;
+    replacementApproved?: boolean;
+    actionOverride?: NormalizedDecisionAction;
+  } = {},
+): ConflictEvaluation | null {
+  const storedAction = normalizeDecisionAction(decisionContextForRecord(record).normalizedAction);
+  if (expectedContextVersion && storedAction?.contextVersion !== expectedContextVersion) {
+    throw new DecisionActionError('DECISION_CONTEXT_CHANGED', 'Decision context changed and must be reviewed again.', 409, {
+      currentContextVersion: storedAction?.contextVersion ?? null,
+    });
+  }
+  const action = options.actionOverride ?? storedAction;
+  if (!action) return null;
+  const mode = getDecisionConflictPolicyV1Mode(process.env, { userId: record.userId, tenantId: record.tenantId });
+  const approved = durableDecisionStateForRecord(record) === 'approved' || options.confirmationGranted === true;
+  const replacementApproved = options.replacementApproved === true
+    || hasApprovedReplacementForContext(record, action.contextVersion);
+  const revalidation = revalidateNormalizedDecisionAction({
+    scope: { userId: record.userId, tenantId: record.tenantId },
+    action,
+    decisionId: record.itemId,
+    additionalExisting: decisionContextForRecord(record).conflictComparisons ?? undefined,
+    decisionApproved: approved,
+    replacementApproved,
+    confirmationApproved: approved,
+    confidence: decisionContextForRecord(record).candidateConfidence ?? undefined,
+    contextExpiresAt: decisionContextExpiresAt(record),
+    candidateCreatedAt: record.contextObservedAt ?? record.createdAt,
+  });
+  logger.info({
+    event: 'decision.revalidation_changed',
+    decisionId: record.itemId,
+    userId: record.userId,
+    tenantId: record.tenantId,
+    mode,
+    disposition: revalidation.conflictEvaluation.disposition,
+    reasonCodes: revalidation.conflictEvaluation.reasonCodes,
+    missingPermissionCount: revalidation.missingPermissions.length,
+    failedPreconditionCount: revalidation.preconditions.filter((precondition) => !precondition.ok).length,
+    contextSourcesHealthy: revalidation.contextSourcesHealthy,
+  }, 'Decision context revalidated');
+  const enforce = mode === 'active' || isDecisionFlowV1EnforceEnabled(process.env, {
+    userId: record.userId,
+    tenantId: record.tenantId,
+  });
+  if (!enforce) return revalidation.conflictEvaluation;
+
+  const conflict = revalidation.conflictEvaluation;
+  const storedConflict = decisionContextForRecord(record).conflictEvaluation;
+  const storedFindingKeys = conflictFindingKeys(storedConflict);
+  const currentFindingKeys = conflictFindingKeys(conflict);
+  if (options.confirmationGranted === true
+    && currentFindingKeys.length > 0
+    && (storedFindingKeys.length === 0 || storedFindingKeys.join('|') !== currentFindingKeys.join('|'))) {
+    persistRevalidationFailure(record, conflict, 'conflicts_changed_after_review', 'ready_for_review');
+    throw new DecisionActionError('DECISION_CONTEXT_CHANGED', 'The conflicts changed after this proposal was shown and require fresh review.', 409, {
+      previousReasonCodes: storedConflict?.reasonCodes ?? [],
+      currentReasonCodes: conflict.reasonCodes,
+      contextVersion: conflict.contextVersion,
+    });
+  }
+  if (conflict.disposition === 'allow' || conflict.disposition === 'auto_resolve') return conflict;
+  if (conflict.disposition === 'needs_confirmation' && options.confirmationGranted !== true) {
+    persistRevalidationFailure(record, conflict, 'current_tradeoff_requires_confirmation');
+    throw new DecisionActionError('DECISION_CONFIRMATION_REQUIRED', 'The proposal has current tradeoffs that require confirmation.', 409, {
+      reasonCodes: conflict.reasonCodes,
+      contextVersion: conflict.contextVersion,
+    });
+  }
+  if (conflict.disposition === 'stale') {
+    persistRevalidationFailure(record, conflict, 'material_context_stale');
+    throw new DecisionActionError('DECISION_CONTEXT_CHANGED', 'Decision context changed and must be reviewed again.', 409, {
+      reasonCodes: conflict.reasonCodes,
+      contextVersion: conflict.contextVersion,
+    });
+  }
+  if (conflict.disposition === 'supersede') {
+    persistRevalidationFailure(record, conflict, 'newer_decision_supersedes_proposal');
+    throw new DecisionActionError('DECISION_SUPERSEDED', 'A newer decision supersedes this proposal.', 409, {
+      winnerDecisionId: conflict.winnerDecisionId ?? null,
+      reasonCodes: conflict.reasonCodes,
+    });
+  }
+  const changedPreconditions = revalidation.preconditions.filter((precondition) =>
+    !precondition.ok
+    && precondition.reasonCode !== 'unsupported_required_precondition'
+    && precondition.reasonCode !== 'precondition_source_unavailable');
+  if (changedPreconditions.length > 0) {
+    persistRevalidationFailure(record, conflict, 'authoritative_source_state_changed', 'ready_for_review');
+    throw new DecisionActionError(
+      'DECISION_CONTEXT_CHANGED',
+      'The authoritative source state changed and this proposal requires fresh review.',
+      409,
+      {
+        reasonCodes: conflict.reasonCodes,
+        contextVersion: conflict.contextVersion,
+        preconditions: changedPreconditions,
+      },
+    );
+  }
+  persistRevalidationFailure(
+    record,
+    conflict,
+    conflict.disposition === 'suppress_duplicate' ? 'equivalent_decision_exists' : 'current_policy_blocks_action',
+  );
+  throw new DecisionActionError(
+    conflict.disposition === 'suppress_duplicate' ? 'DECISION_DUPLICATE' : 'DECISION_CONFLICT_BLOCKED',
+    conflict.disposition === 'suppress_duplicate'
+      ? 'An equivalent decision already exists.'
+      : 'The action is blocked by current policy, permissions, commitments, or preconditions.',
+    409,
+    {
+      winnerDecisionId: conflict.winnerDecisionId ?? null,
+      reasonCodes: conflict.reasonCodes,
+      missingPermissions: revalidation.missingPermissions,
+      preconditions: revalidation.preconditions.filter((precondition) => !precondition.ok),
+    },
+  );
+}
+
+/**
+ * A failed current-state check must revoke any durable approval, not merely
+ * reject one request while leaving the UI on an apparently approved version.
+ * The state/context/version change and privacy-safe audit event are committed
+ * together; a concurrent winner returns the normal version-conflict response.
+ */
+function persistRevalidationFailure(
+  record: DecisionRecord,
+  conflict: ConflictEvaluation,
+  reason: string,
+  nextStateOverride?: DurableDecisionState,
+): void {
+  const currentContext = decisionContextForRecord(record);
+  const nextContext: DecisionLogicContext = {
+    ...currentContext,
+    conflictEvaluation: conflict,
+  };
+  const nextState: DurableDecisionState = nextStateOverride ?? (conflict.disposition === 'supersede'
+    || conflict.disposition === 'suppress_duplicate'
+    ? 'superseded'
+    : conflict.disposition === 'needs_confirmation'
+      ? 'ready_for_review'
+      : 'blocked');
+  const contextChanged = conflictMaterialKey(currentContext.conflictEvaluation) !== conflictMaterialKey(conflict);
+  const stateChanged = durableDecisionStateForRecord(record) !== nextState;
+  if (!contextChanged && !stateChanged) return;
+
+  const now = appNowIso();
+  getDb().transaction(() => {
+    const intentUpdate = getDb().prepare(`
+      UPDATE notification_intents
+         SET decision_context_json = ?, context_version = ?
+       WHERE intent_id = ? AND user_id = ? AND tenant_id = ?
+    `).run(
+      JSON.stringify(nextContext),
+      conflict.contextVersion,
+      record.intentId,
+      record.userId,
+      record.tenantId,
+    );
+    if (intentUpdate.changes !== 1) {
+      throw new DecisionActionError('DECISION_READBACK_MISMATCH', 'Decision context could not be invalidated safely.', 409);
+    }
+    const itemUpdate = getDb().prepare(`
+      UPDATE notification_center_items
+         SET decision_state = ?,
+             status = CASE WHEN ? = 'superseded' THEN 'superseded'
+                           WHEN status = 'actioned' THEN 'read'
+                           ELSE status END,
+             record_version = record_version + 1,
+             updated_at = ?
+       WHERE item_id = ? AND user_id = ? AND tenant_id = ? AND record_version = ?
+         AND status NOT IN ('dismissed', 'expired', 'superseded')
+    `).run(
+      nextState,
+      nextState,
+      now,
+      record.itemId,
+      record.userId,
+      record.tenantId,
+      record.recordVersion,
+    );
+    if (itemUpdate.changes !== 1) {
+      throw new DecisionActionError('DECISION_VERSION_CONFLICT', 'Decision changed during revalidation.', 409, {
+        ...decisionVersionConflictDetails(getDecisionRecord(record.itemId, record.userId, record.tenantId)),
+      });
+    }
+    getDb().prepare(`
+      INSERT INTO decision_lifecycle_events
+        (event_id, decision_id, user_id, tenant_id, event, to_status, reason, metadata_json, created_at)
+      VALUES (?, ?, ?, ?, 'revalidation_failed', ?, ?, ?, ?)
+    `).run(
+      `dle_${randomUUID()}`,
+      record.itemId,
+      record.userId,
+      record.tenantId,
+      nextState,
+      reason,
+      JSON.stringify({
+        policyVersion: conflict.policyVersion,
+        contextVersion: conflict.contextVersion,
+        disposition: conflict.disposition,
+        reasonCodes: conflict.reasonCodes,
+        previousVersion: record.recordVersion,
+        nextVersion: record.recordVersion + 1,
+      }),
+      now,
+    );
+  })();
+}
+
+function hasApprovedReplacementForContext(record: DecisionRecord, contextVersion: string): boolean {
+  try {
+    const rows = getDb().prepare(`
+      SELECT metadata_json AS metadataJson
+        FROM decision_lifecycle_events
+       WHERE decision_id = ? AND user_id = ? AND tenant_id = ? AND event = 'approved'
+       ORDER BY created_at DESC, rowid DESC
+       LIMIT 10
+    `).all(record.itemId, record.userId, record.tenantId) as Array<{ metadataJson: string | null }>;
+    return rows.some((row) => {
+      const metadata = safeParseJson<Record<string, unknown>>(row.metadataJson, {});
+      return metadata.contextVersion === contextVersion
+        && metadata.replacementChoiceId === 'replace_with_candidate';
+    });
+  } catch {
+    return false;
+  }
+}
+
+function hasStrongApprovalForCurrentVersion(record: DecisionRecord): boolean {
+  try {
+    const rows = getDb().prepare(`
+      SELECT metadata_json AS metadataJson
+        FROM decision_lifecycle_events
+       WHERE decision_id = ? AND user_id = ? AND tenant_id = ? AND event = 'approved'
+       ORDER BY created_at DESC, rowid DESC
+       LIMIT 10
+    `).all(record.itemId, record.userId, record.tenantId) as Array<{ metadataJson: string | null }>;
+    return rows.some((row) => {
+      const metadata = safeParseJson<Record<string, unknown>>(row.metadataJson, {});
+      return metadata.confirmationStrength === 'strong'
+        && metadata.nextVersion === record.recordVersion
+        && metadata.contextVersion === decisionContextVersion(record);
+    });
+  } catch {
+    return false;
+  }
+}
+
+function conflictFindingKeys(conflict: ConflictEvaluation | null | undefined): string[] {
+  if (!conflict) return [];
+  return conflict.findings.map((finding) => [
+    finding.class,
+    finding.severity,
+    finding.reasonCode,
+    finding.conflictingDecisionId ?? '',
+    finding.resourceKey ?? '',
+  ].join(':')).sort();
+}
+
 function getExistingExecution(decisionId: string, actionId: string, userId: number, tenantId: number, idempotencyKey: string): any | null {
   return getDb().prepare(`
     SELECT * FROM decision_action_executions
@@ -5734,23 +8602,486 @@ function getExistingExecution(decisionId: string, actionId: string, userId: numb
   `).get(decisionId, actionId, userId, tenantId, idempotencyKey) as any ?? null;
 }
 
-function claimExecution(record: DecisionRecord, actionId: string, idempotencyKey: string, executorSkill: string): { isNew: boolean; execution: any } {
+function getExistingLogicalExecution(userId: number, tenantId: number, logicalActionHash: string): any | null {
+  return getDb().prepare(`
+    SELECT * FROM decision_action_executions
+     WHERE user_id = ? AND tenant_id = ? AND logical_action_hash = ?
+       AND (status IN ('succeeded', 'partially_failed')
+         OR (status = 'started' AND (lease_expires_at IS NULL OR datetime(lease_expires_at) > datetime('now'))))
+     ORDER BY created_at ASC
+     LIMIT 1
+  `).get(userId, tenantId, logicalActionHash) as any ?? null;
+}
+
+type DecisionExecutionReconciliationOutcome = 'applied' | 'not_applied' | 'unknown' | 'none';
+
+function expectedExecutionStateForAttempt(
+  record: DecisionRecord,
+  actionId: string,
+  payload: Record<string, unknown>,
+): Record<string, unknown> {
+  if (actionId === 'choose_another_time') {
+    return {
+      verifier: 'secretary_agenda_state',
+      expectedLifecycleState: 'reflowed',
+      targetStateHash: privacySafeStateHash({ startAt: payload.startAt, endAt: payload.endAt }),
+    };
+  }
+  if (actionId === 'accept_reflow') {
+    const context = decisionContextForRecord(record);
+    return {
+      verifier: 'secretary_agenda_state',
+      expectedLifecycleState: 'reflowed',
+      targetStateHash: privacySafeStateHash({
+        startAt: context.recommendedStartAt ?? null,
+        endAt: context.recommendedEndAt ?? null,
+      }),
+    };
+  }
+  if (actionId === 'undo_reflow') {
+    return {
+      verifier: 'secretary_rollback_state',
+      expectedStateHash: privacySafeStateHash(record.actionResult?.rollback ?? null),
+    };
+  }
+  if (actionId === 'mark_paid') {
+    return { verifier: 'finance_tax_event', targetRef: record.relatedEntityId, expectedStatus: 'paid' };
+  }
+  if (actionId === 'add_meal') {
+    return {
+      verifier: 'cooking_meal_plan',
+      targetRef: record.relatedEntityId,
+      titleHash: privacySafeStateHash(typeof payload.title === 'string' ? payload.title.trim() : null),
+    };
+  }
+  if (actionId === 'approve_script' || actionId === 'request_rewrite') {
+    return {
+      verifier: 'content_workflow_object',
+      targetRef: contentWorkflowObjectIdForDecision(record),
+      expectedApprovalState: actionId === 'approve_script' ? 'approved' : 'rejected',
+    };
+  }
+  if (actionId === 'option_a' || actionId === 'option_b') {
+    return { verifier: 'chat_pending_confirmation', targetRef: record.relatedEntityId, expectedStatus: 'cleared' };
+  }
+  if (actionId === 'accept_chat_action_fix') {
+    return { verifier: 'decision_projection_only', expectedStatus: 'actioned' };
+  }
+  return { verifier: 'registered_executor_readback', actionId };
+}
+
+function privacySafeStateHash(value: unknown): string {
+  return createHash('sha256').update(JSON.stringify(value ?? null)).digest('hex');
+}
+
+function reconcilePartialDecisionExecution(record: DecisionRecord): DecisionExecutionReconciliationOutcome {
+  const execution = getDb().prepare(`
+    SELECT action_execution_id AS executionId, action_id AS actionId,
+           expected_effect_json AS expectedEffectJson
+      FROM decision_action_executions
+     WHERE decision_id = ? AND user_id = ? AND tenant_id = ? AND status = 'partially_failed'
+     ORDER BY created_at DESC, rowid DESC
+     LIMIT 1
+  `).get(record.itemId, record.userId, record.tenantId) as {
+    executionId: string;
+    actionId: string;
+    expectedEffectJson: string | null;
+  } | undefined;
+  if (!execution) return 'none';
+
+  const expected = safeParseJson<Record<string, unknown>>(execution.expectedEffectJson, {});
+  const verification = verifyUncertainDecisionExecution(record, execution.actionId, expected);
+  if (verification.outcome === 'unknown') {
+    getDb().prepare(`
+      UPDATE decision_action_executions
+         SET error_code = 'DECISION_MANUAL_RECONCILIATION_REQUIRED',
+             recovery_json = ?
+       WHERE action_execution_id = ? AND user_id = ? AND tenant_id = ? AND status = 'partially_failed'
+    `).run(JSON.stringify({
+      message: 'Nexus could not prove whether the external effect completed. The action remains blocked to prevent a duplicate; review the source system before contacting support.',
+      actions: [{ id: 'open_detail', label: 'Review details', style: 'secondary' }],
+    }), execution.executionId, record.userId, record.tenantId);
+    logger.warn({
+      event: 'decision.execution_reconciliation_required',
+      decisionId: record.itemId,
+      actionExecutionId: execution.executionId,
+      actionId: execution.actionId,
+      userId: record.userId,
+      tenantId: record.tenantId,
+    }, 'Decision execution remains blocked because authoritative state is indeterminate');
+    return 'unknown';
+  }
+
+  const reconciledAt = appNowIso();
+  getDb().transaction(() => {
+    if (verification.outcome === 'applied') {
+      const effects = expectedEffectResultsForExecution(execution.executionId, 'succeeded');
+      const executionUpdate = getDb().prepare(`
+        UPDATE decision_action_executions
+           SET status = 'succeeded', result_json = ?, effect_results_json = ?,
+               recovery_json = '{}', error_code = NULL, completed_at = ?, failed_at = NULL
+         WHERE action_execution_id = ? AND user_id = ? AND tenant_id = ? AND status = 'partially_failed'
+      `).run(
+        JSON.stringify(verification.actualEffect),
+        JSON.stringify(effects),
+        reconciledAt,
+        execution.executionId,
+        record.userId,
+        record.tenantId,
+      );
+      assertDecisionScopedUpdateApplied(executionUpdate, 'reconcile_partial_execution_succeeded', {
+        decisionId: record.itemId,
+        executionId: execution.executionId,
+      });
+      getDb().prepare(`
+        UPDATE decision_exclusivity_claims
+           SET status = 'succeeded', updated_at = ?
+         WHERE action_execution_id = ? AND user_id = ? AND tenant_id = ? AND status = 'partially_failed'
+      `).run(reconciledAt, execution.executionId, record.userId, record.tenantId);
+      const itemUpdate = getDb().prepare(`
+        UPDATE notification_center_items
+           SET status = 'actioned', actioned_at = COALESCE(actioned_at, ?),
+               action_result_json = CASE WHEN status = 'actioned' THEN action_result_json ELSE ? END,
+               record_version = record_version + 1, updated_at = ?
+         WHERE item_id = ? AND user_id = ? AND tenant_id = ? AND record_version = ?
+           AND status NOT IN ('dismissed', 'expired', 'superseded')
+      `).run(
+        reconciledAt,
+        JSON.stringify({ actionId: execution.actionId, reconciled: true, ...verification.actualEffect }),
+        reconciledAt,
+        record.itemId,
+        record.userId,
+        record.tenantId,
+        record.recordVersion,
+      );
+      assertDecisionScopedUpdateApplied(itemUpdate, 'reconcile_partial_execution_item_succeeded', {
+        decisionId: record.itemId,
+        executionId: execution.executionId,
+      });
+    } else {
+      const effects = expectedEffectResultsForExecution(execution.executionId, 'failed', 'authoritative_state_not_applied');
+      const executionUpdate = getDb().prepare(`
+        UPDATE decision_action_executions
+           SET status = 'failed', result_json = ?, effect_results_json = ?, recovery_json = '{}',
+               error_code = 'DECISION_EXECUTION_RECONCILED_NOT_APPLIED', failed_at = ?
+         WHERE action_execution_id = ? AND user_id = ? AND tenant_id = ? AND status = 'partially_failed'
+      `).run(
+        JSON.stringify(verification.actualEffect),
+        JSON.stringify(effects),
+        reconciledAt,
+        execution.executionId,
+        record.userId,
+        record.tenantId,
+      );
+      assertDecisionScopedUpdateApplied(executionUpdate, 'reconcile_partial_execution_not_applied', {
+        decisionId: record.itemId,
+        executionId: execution.executionId,
+      });
+      getDb().prepare(`
+        UPDATE decision_exclusivity_claims
+           SET status = 'failed', updated_at = ?
+         WHERE action_execution_id = ? AND user_id = ? AND tenant_id = ? AND status = 'partially_failed'
+      `).run(reconciledAt, execution.executionId, record.userId, record.tenantId);
+      const itemUpdate = getDb().prepare(`
+        UPDATE notification_center_items
+           SET status = 'failed', decision_state = 'ready_for_review', action_result_json = ?,
+               record_version = record_version + 1, updated_at = ?
+         WHERE item_id = ? AND user_id = ? AND tenant_id = ? AND record_version = ?
+           AND status NOT IN ('actioned', 'dismissed', 'expired', 'superseded')
+      `).run(
+        JSON.stringify({ actionId: execution.actionId, errorCode: 'DECISION_EXECUTION_RECONCILED_NOT_APPLIED' }),
+        reconciledAt,
+        record.itemId,
+        record.userId,
+        record.tenantId,
+        record.recordVersion,
+      );
+      assertDecisionScopedUpdateApplied(itemUpdate, 'reconcile_partial_execution_item_not_applied', {
+        decisionId: record.itemId,
+        executionId: execution.executionId,
+      });
+    }
+  })();
+  emitDecisionLifecycleEvent({
+    decisionId: record.itemId,
+    userId: record.userId,
+    tenantId: record.tenantId,
+    event: 'execution_reconciled',
+    actionId: execution.actionId,
+    toStatus: verification.outcome === 'applied' ? 'actioned' : 'ready_for_review',
+    reason: verification.outcome === 'applied' ? 'authoritative_state_applied' : 'authoritative_state_not_applied',
+  });
+  logger.info({
+    event: 'decision.execution_recovered',
+    decisionId: record.itemId,
+    actionExecutionId: execution.executionId,
+    actionId: execution.actionId,
+    outcome: verification.outcome,
+    userId: record.userId,
+    tenantId: record.tenantId,
+  }, 'Decision partial execution was reconciled against authoritative source state');
+  return verification.outcome;
+}
+
+function verifyUncertainDecisionExecution(
+  record: DecisionRecord,
+  actionId: string,
+  expected: Record<string, unknown>,
+): { outcome: Exclude<DecisionExecutionReconciliationOutcome, 'none'>; actualEffect: Record<string, unknown> } {
+  if (record.status === 'actioned' && record.actionResult?.actionId === actionId) {
+    return { outcome: 'applied', actualEffect: { decisionProjectionAlreadyActioned: true } };
+  }
+  if (actionId === 'mark_paid' && record.relatedEntityType === 'finance_tax_event' && record.relatedEntityId) {
+    const year = Number(record.relatedEntityId.slice(0, 4));
+    const event = getTaxEvents(record.userId, { year, tenantId: record.tenantId })
+      .find((candidate) => candidate.month === record.relatedEntityId);
+    if (!event) return { outcome: 'unknown', actualEffect: { sourceState: 'missing' } };
+    return event.status === 'paid'
+      ? { outcome: 'applied', actualEffect: { paymentStatus: 'paid', targetRef: record.relatedEntityId } }
+      : { outcome: 'not_applied', actualEffect: { paymentStatus: event.status, targetRef: record.relatedEntityId } };
+  }
+  if ((actionId === 'approve_script' || actionId === 'request_rewrite')) {
+    const objectId = contentWorkflowObjectIdForDecision(record);
+    const object = objectId ? getContentWorkflowObject(record.userId, objectId, record.tenantId) : null;
+    if (!object) return { outcome: 'unknown', actualEffect: { sourceState: 'missing' } };
+    const expectedState = actionId === 'approve_script' ? 'approved' : 'rejected';
+    if (object.approvalState === expectedState) {
+      return { outcome: 'applied', actualEffect: { contentObjectId: object.id, contentApprovalState: expectedState } };
+    }
+    if (!['approved', 'rejected'].includes(object.approvalState)) {
+      return { outcome: 'not_applied', actualEffect: { contentObjectId: object.id, contentApprovalState: object.approvalState } };
+    }
+    return { outcome: 'unknown', actualEffect: { contentObjectId: object.id, contentApprovalState: object.approvalState } };
+  }
+  if ((actionId === 'accept_reflow' || actionId === 'choose_another_time')
+      && record.relatedEntityType === 'secretary_agenda_item' && record.relatedEntityId) {
+    const agenda = getSecretaryAgendaItemById({
+      agendaItemId: record.relatedEntityId,
+      ownerUserId: record.userId,
+      tenantId: record.tenantId,
+    });
+    if (!agenda) return { outcome: 'unknown', actualEffect: { sourceState: 'missing' } };
+    if (agenda.lifecycleState === 'reflowed' && agenda.decisionAction === 'reflowed') {
+      const selectedHash = privacySafeStateHash({ startAt: agenda.startAt, endAt: agenda.endAt });
+      if (typeof expected.targetStateHash !== 'string' || expected.targetStateHash === selectedHash) {
+        return { outcome: 'applied', actualEffect: { lifecycleState: 'reflowed', targetStateHash: selectedHash } };
+      }
+      return { outcome: 'unknown', actualEffect: { lifecycleState: agenda.lifecycleState, targetStateHash: selectedHash } };
+    }
+    const expectedRevision = normalizeDecisionAction(decisionContextForRecord(record).normalizedAction)
+      ?.preconditions.find((precondition) => precondition.type === 'agenda_state' && precondition.ref === record.relatedEntityId)
+      ?.expectedVersion;
+    return expectedRevision && secretaryAgendaStateRevision(agenda) === expectedRevision
+      ? { outcome: 'not_applied', actualEffect: { lifecycleState: agenda.lifecycleState } }
+      : { outcome: 'unknown', actualEffect: { lifecycleState: agenda.lifecycleState } };
+  }
+  if (actionId === 'undo_reflow'
+      && record.relatedEntityType === 'secretary_agenda_item'
+      && record.relatedEntityId) {
+    const agenda = getSecretaryAgendaItemById({
+      agendaItemId: record.relatedEntityId,
+      ownerUserId: record.userId,
+      tenantId: record.tenantId,
+    });
+    if (!agenda) return { outcome: 'unknown', actualEffect: { sourceState: 'missing' } };
+    const rollback = record.actionResult?.rollback;
+    const previous = rollback && typeof rollback === 'object' && !Array.isArray(rollback)
+      ? (rollback as Record<string, unknown>).previous
+      : null;
+    const redactExplanation = !!previous && typeof previous === 'object' && !Array.isArray(previous)
+      && !Object.prototype.hasOwnProperty.call(previous, 'explanation');
+    const actualStateHash = privacySafeStateHash(secretaryAgendaRollbackSnapshot(agenda, { redactExplanation }));
+    if (typeof expected.expectedStateHash === 'string' && expected.expectedStateHash === actualStateHash) {
+      return { outcome: 'applied', actualEffect: { rollbackStateHash: actualStateHash } };
+    }
+    return { outcome: 'unknown', actualEffect: { rollbackStateHash: actualStateHash } };
+  }
+  if (actionId === 'add_meal' && record.relatedEntityType === 'meal_plan' && record.relatedEntityId) {
+    const target = record.relatedEntityId.match(/^(\d{4}-\d{2}-\d{2}):([^:]+)$/);
+    if (!target) return { outcome: 'unknown', actualEffect: { sourceState: 'invalid_target' } };
+    const meal = getMealPlan(record.userId, target[1], target[1], record.tenantId)
+      .find((candidate) => candidate.meal_type === target[2]);
+    if (!meal) return { outcome: 'not_applied', actualEffect: { mealPlanState: 'missing' } };
+    const titleHash = privacySafeStateHash(meal.title);
+    return typeof expected.titleHash !== 'string' || expected.titleHash === titleHash
+      ? { outcome: 'applied', actualEffect: { mealPlanId: meal.id, mealPlanState: 'present', titleHash } }
+      : { outcome: 'unknown', actualEffect: { mealPlanId: meal.id, mealPlanState: 'different_value', titleHash } };
+  }
+  if (actionId === 'accept_chat_action_fix') {
+    return { outcome: 'applied', actualEffect: { providerActionExecuted: false, freshConfirmationRequired: true } };
+  }
+  if (actionId === 'option_a' || actionId === 'option_b') {
+    const pending = getPendingChatConfirmation(record.userId, record.tenantId);
+    if (pending && (!record.relatedEntityId || pending.id === record.relatedEntityId)) {
+      return { outcome: 'not_applied', actualEffect: { pendingConfirmationState: 'present' } };
+    }
+    return { outcome: 'applied', actualEffect: { pendingConfirmationState: 'cleared' } };
+  }
+  return { outcome: 'unknown', actualEffect: { verifier: expected.verifier ?? 'unavailable' } };
+}
+
+function reclaimExpiredExecutionLeases(userId: number, tenantId: number): void {
+  const reclaimed = getDb().transaction(() => {
+    const executions = getDb().prepare(`
+      UPDATE decision_action_executions
+         SET status = 'partially_failed', error_code = 'DECISION_EXECUTION_LEASE_EXPIRED',
+             failed_at = COALESCE(failed_at, datetime('now')),
+             effect_results_json = ?,
+             recovery_json = ?
+       WHERE user_id = ? AND tenant_id = ? AND status = 'started'
+         AND ((lease_expires_at IS NOT NULL AND datetime(lease_expires_at) <= datetime('now'))
+           OR (lease_expires_at IS NULL AND datetime(created_at, ?) <= datetime('now')))
+    `).run(
+      JSON.stringify([{
+        effectId: 'decision_action',
+        status: 'unknown',
+        reasonCode: 'execution_lease_expired',
+      }]),
+      JSON.stringify({
+        message: 'The previous execution lease expired with an uncertain external outcome. Refresh source state before any recovery.',
+        actions: [{ id: 'refresh', label: 'Refresh', style: 'secondary' }],
+      }),
+      userId,
+      tenantId,
+      `+${DECISION_EXECUTION_LEASE_SECONDS} seconds`,
+    ).changes;
+    getDb().prepare(`
+      UPDATE decision_exclusivity_claims
+         SET status = 'partially_failed', updated_at = datetime('now')
+       WHERE user_id = ? AND tenant_id = ? AND status = 'started'
+         AND datetime(lease_expires_at) <= datetime('now')
+    `).run(userId, tenantId);
+    return executions;
+  })();
+  if (reclaimed > 0) {
+    logger.warn({ event: 'decision.execution_lease_uncertain', userId, tenantId, count: reclaimed }, 'Expired execution leases require source reconciliation');
+  }
+}
+
+function claimExecution(
+  record: DecisionRecord,
+  actionId: string,
+  idempotencyKey: string,
+  executorSkill: string,
+  options: {
+    logicalActionHash: string | null;
+    expectedVersion: number;
+    contextVersion: string | null;
+    mutateRecordVersion: boolean;
+    expectedEffect: Record<string, unknown>;
+  },
+): { isNew: boolean; execution: any } {
   const db = getDb();
   return db.transaction(() => {
     const existing = getExistingExecution(record.itemId, actionId, record.userId, record.tenantId, idempotencyKey);
     if (existing) return { isNew: false, execution: existing };
 
+    if (options.logicalActionHash) {
+      const logical = getExistingLogicalExecution(record.userId, record.tenantId, options.logicalActionHash);
+      if (logical) return { isNew: false, execution: logical };
+    }
+
     const executionId = `dae_${randomUUID()}`;
+    const leaseExpiresAt = DateTime.utc().plus({ seconds: DECISION_EXECUTION_LEASE_SECONDS }).toISO()!;
+    const normalizedAction = options.logicalActionHash
+      ? normalizeDecisionAction(decisionContextForRecord(record).normalizedAction)
+      : null;
+
+    if (options.mutateRecordVersion) {
+      const versionClaim = db.prepare(`
+        UPDATE notification_center_items
+           SET record_version = record_version + 1,
+               decision_state = 'approved',
+               updated_at = datetime('now')
+         WHERE item_id = ? AND user_id = ? AND tenant_id = ?
+           AND record_version = ?
+           AND (status NOT IN ('actioned', 'dismissed', 'expired', 'superseded')
+                OR (? = 1 AND status = 'actioned'))
+      `).run(record.itemId, record.userId, record.tenantId, options.expectedVersion, actionId === 'undo_reflow' ? 1 : 0);
+      if (versionClaim.changes !== 1) {
+        const current = getDecisionRecord(record.itemId, record.userId, record.tenantId);
+        throw new DecisionActionError(
+          'DECISION_VERSION_CONFLICT',
+          'Decision changed before execution could be claimed.',
+          409,
+          decisionVersionConflictDetails(current),
+        );
+      }
+    }
+
+    for (const exclusivityKey of normalizedAction?.exclusivityKeys ?? []) {
+      const exclusivityClaim = db.prepare(`
+        INSERT INTO decision_exclusivity_claims (
+          user_id, tenant_id, exclusivity_key, action_execution_id, decision_id,
+          context_version, status, lease_expires_at, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, 'started', ?, datetime('now'), datetime('now'))
+        ON CONFLICT(user_id, tenant_id, exclusivity_key) DO UPDATE SET
+          action_execution_id = excluded.action_execution_id,
+          decision_id = excluded.decision_id,
+          context_version = excluded.context_version,
+          status = 'started',
+          lease_expires_at = excluded.lease_expires_at,
+          updated_at = datetime('now')
+        WHERE decision_exclusivity_claims.status IN ('succeeded', 'failed', 'expired')
+      `).run(
+        record.userId,
+        record.tenantId,
+        exclusivityKey,
+        executionId,
+        record.itemId,
+        options.contextVersion,
+        leaseExpiresAt,
+      );
+      if (exclusivityClaim.changes !== 1) {
+        const owner = db.prepare(`
+          SELECT decision_id AS decisionId, lease_expires_at AS leaseExpiresAt
+            FROM decision_exclusivity_claims
+           WHERE user_id = ? AND tenant_id = ? AND exclusivity_key = ?
+           LIMIT 1
+        `).get(record.userId, record.tenantId, exclusivityKey) as { decisionId: string; leaseExpiresAt: string } | undefined;
+        throw new DecisionActionError('DECISION_RESOURCE_BUSY', 'Another decision is already modifying the same resource.', 409, {
+          exclusivityKey,
+          conflictingDecisionId: owner?.decisionId ?? null,
+          leaseExpiresAt: owner?.leaseExpiresAt ?? null,
+        });
+      }
+    }
+
     const insert = db.prepare(`
       INSERT OR IGNORE INTO decision_action_executions (
         action_execution_id, decision_id, action_id, user_id, tenant_id, idempotency_key,
-        executor_skill, status, expected_effect_json, result_json
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, 'started', '{}', '{}')
-    `).run(executionId, record.itemId, actionId, record.userId, record.tenantId, idempotencyKey, executorSkill);
+        executor_skill, status, expected_effect_json, result_json, logical_action_hash,
+        expected_record_version, context_version, lease_expires_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, 'started', ?, '{}', ?, ?, ?, ?)
+    `).run(
+      executionId,
+      record.itemId,
+      actionId,
+      record.userId,
+      record.tenantId,
+      idempotencyKey,
+      executorSkill,
+      JSON.stringify(options.expectedEffect),
+      options.logicalActionHash,
+      options.expectedVersion,
+      options.contextVersion,
+      leaseExpiresAt,
+    );
 
-    const execution = getExistingExecution(record.itemId, actionId, record.userId, record.tenantId, idempotencyKey);
+    const execution = getExistingExecution(record.itemId, actionId, record.userId, record.tenantId, idempotencyKey)
+      ?? (options.logicalActionHash ? getExistingLogicalExecution(record.userId, record.tenantId, options.logicalActionHash) : null);
     if (!execution) {
       throw new DecisionActionError('DECISION_ACTION_FAILED', 'Decision action execution could not be claimed', 500);
+    }
+    if (insert.changes === 1) {
+      logger.info({
+        event: 'decision.execution_claimed',
+        decisionId: record.itemId,
+        actionId,
+        userId: record.userId,
+        tenantId: record.tenantId,
+        exclusivityKeyCount: normalizedAction?.exclusivityKeys.length ?? 0,
+      }, 'Decision execution claimed');
     }
     return { isNew: insert.changes === 1, execution };
   })();
@@ -5763,6 +9094,9 @@ function idempotentActionResult(
   tenantId: number,
   execution: any,
 ): DecisionActionResult {
+  if (typeof execution.decision_id === 'string' && execution.decision_id !== decisionId) {
+    retireLogicalDuplicateDecision(decisionId, execution.decision_id, userId, tenantId);
+  }
   // Same direct-record path as performDecisionAction's success branch: a duplicate (idempotent) replay of
   // an action that mutated its own source state — e.g. choose_another_time moving the agenda — must return
   // the actioned decision, not be hidden by getDecisionItem's active-inbox visibility filter (which would
@@ -5784,6 +9118,42 @@ function idempotentActionResult(
   };
 }
 
+function retireLogicalDuplicateDecision(
+  decisionId: string,
+  canonicalDecisionId: string,
+  userId: number,
+  tenantId: number,
+): void {
+  const update = getDb().prepare(`
+    UPDATE notification_center_items
+       SET status = 'superseded', decision_state = 'superseded',
+           superseded_by_item_id = ?,
+           action_result_json = ?,
+           record_version = record_version + 1,
+           updated_at = datetime('now')
+     WHERE item_id = ? AND user_id = ? AND tenant_id = ?
+       AND status IN ('unread', 'read', 'failed', 'snoozed')
+  `).run(
+    canonicalDecisionId,
+    JSON.stringify({ supersededReason: 'logical_action_completed_by_related_decision' }),
+    decisionId,
+    userId,
+    tenantId,
+  );
+  if (update.changes === 1) {
+    resolveDecisionConflictAudit(decisionId, userId, tenantId, 'superseded_by_verified_execution');
+    emitDecisionLifecycleEvent({
+      decisionId,
+      userId,
+      tenantId,
+      event: 'superseded',
+      toStatus: 'superseded',
+      reason: 'logical_action_completed_by_related_decision',
+      metadata: { canonicalDecisionId },
+    });
+  }
+}
+
 async function waitForExistingExecution(
   decisionId: string,
   actionId: string,
@@ -5798,10 +9168,48 @@ async function waitForExistingExecution(
     if (execution.status === 'succeeded') {
       return idempotentActionResult(decisionId, actionId, userId, tenantId, execution);
     }
-    throw new DecisionActionError(execution.error_code || 'DECISION_ACTION_FAILED', 'Prior decision action attempt failed', 409, safeParseJson(execution.result_json, {}));
+    throw executionReplayError(execution, 'Prior decision action attempt failed');
   }
 
   throw new DecisionActionError('DECISION_ACTION_IN_PROGRESS', 'Decision action is already in progress', 409);
+}
+
+async function waitForExecutionById(
+  decisionId: string,
+  actionId: string,
+  userId: number,
+  tenantId: number,
+  executionId: string,
+): Promise<DecisionActionResult> {
+  for (let attempt = 0; attempt < 30; attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    const execution = getDb().prepare(`
+      SELECT * FROM decision_action_executions
+       WHERE action_execution_id = ? AND user_id = ? AND tenant_id = ?
+       LIMIT 1
+    `).get(executionId, userId, tenantId) as any;
+    if (!execution || execution.status === 'started') continue;
+    if (execution.status === 'succeeded') {
+      return idempotentActionResult(decisionId, actionId, userId, tenantId, execution);
+    }
+    throw executionReplayError(execution, 'Prior logical decision action attempt failed');
+  }
+  throw new DecisionActionError('DECISION_ACTION_IN_PROGRESS', 'Decision action is already in progress', 409);
+}
+
+function executionReplayError(execution: any, message: string): DecisionActionError {
+  const partial = execution?.status === 'partially_failed';
+  return new DecisionActionError(
+    partial ? 'DECISION_PARTIALLY_FAILED' : execution?.error_code || 'DECISION_ACTION_FAILED',
+    partial ? 'The prior attempt partially completed and requires recovery review.' : message,
+    409,
+    {
+      ...safeParseJson(execution?.result_json, {}),
+      effectResults: safeParseJson(execution?.effect_results_json, []),
+      recovery: safeParseJson(execution?.recovery_json, {}),
+      originalErrorCode: execution?.error_code ?? null,
+    },
+  );
 }
 
 async function executeDecisionAction(
@@ -5811,6 +9219,7 @@ async function executeDecisionAction(
   tenantId: number,
   idempotencyKey: string,
   payload: Record<string, unknown>,
+  expectedVersion?: number,
 ): Promise<{
   readBackOk: boolean;
   expectedEffect: Record<string, unknown>;
@@ -5826,13 +9235,24 @@ async function executeDecisionAction(
   if (commandBusExecution) return commandBusExecution;
 
   if (action.id === 'dismiss' || action.id === 'reject_reflow' || action.id === 'not_now') {
-    dismissNotificationCenterItem(record.itemId, userId, tenantId);
+    const item = dismissDecision(record.itemId, userId, tenantId, undefined, expectedVersion, {
+      actionId: action.id,
+      idempotencyKey,
+    });
     markDecisionAction(record.decisionLogId, action.id);
-    return verifiedStatusEffect(record, 'dismissed', 'Decision was declined/dismissed.');
+    return {
+      readBackOk: item.status === 'dismissed',
+      expectedEffect: { decisionStatus: 'dismissed' },
+      actualEffect: { decisionStatus: item.status, decisionOutcomeRecorded: true },
+      message: 'Decision was declined/dismissed.',
+    };
   }
 
   if (action.id === 'snooze') {
-    const item = snoozeDecision(record.itemId, userId, tenantId, Number(payload.minutes ?? 60));
+    const item = snoozeDecision(record.itemId, userId, tenantId, Number(payload.minutes ?? 60), expectedVersion, {
+      actionId: action.id,
+      idempotencyKey,
+    });
     markDecisionAction(record.decisionLogId, action.id);
     return {
       readBackOk: item.status === 'snoozed',
@@ -5896,10 +9316,12 @@ async function maybeExecuteDecisionActionViaCommandBus(
 } | null> {
   if (!isDecisionCenterCommandBusEnabled(process.env, { userId, tenantId })) return null;
   const item = getDecisionItem(record.itemId, userId, tenantId);
-  if (!item) throw new DecisionActionError('DECISION_NOT_FOUND', 'Decision not found before Command Bus execution', 404);
+  if (!item) return null;
 
   const adapter = await import('./decision-command-adapter');
   if (!adapter.isDecisionActionBusEligible({ actionId: action.id, item })) return null;
+  if ((action.id === 'approve_script' || action.id === 'request_rewrite')
+      && !directOwnedContentObjectForDecision(item, userId, tenantId)) return null;
 
   try {
     const result = await adapter.runDecisionActionViaCommandBus({
@@ -5963,71 +9385,92 @@ function executeSecretaryAgendaDecision(
     );
   }
 
-  const agenda = getSecretaryAgendaItemById({ agendaItemId: record.relatedEntityId, ownerUserId: userId, tenantId });
-  if (!agenda) {
+  const initialAgenda = getSecretaryAgendaItemById({ agendaItemId: record.relatedEntityId, ownerUserId: userId, tenantId });
+  if (!initialAgenda) {
     throw new DecisionActionError('DECISION_RELATED_ENTITY_NOT_FOUND', 'Secretary agenda item was not found for this user.', 404);
   }
-
-  const rollback = secretaryAgendaRollbackSnapshot(agenda, {
-    redactExplanation: isDecisionRollbackSnapshotProtectionEnabled(process.env, { userId, tenantId })
-      && (record.privacyPolicy === 'financial' || record.privacyPolicy === 'sensitive'),
-  });
-  const updates = buildSecretaryAgendaUpdates(actionId, agenda, payload);
-  const agendaUpdate = getDb().prepare(`
-    UPDATE secretary_agenda_items
-       SET lifecycle_state = ?,
-           decision_action = ?,
-           decision_reason_codes_json = ?,
-           decision_explanation = ?,
-           start_at = COALESCE(?, start_at),
-           end_at = COALESCE(?, end_at),
-           scheduled_segments_json = ?,
-           updated_at = datetime('now')
-     WHERE agenda_item_id = ?
-       AND owner_user_id = ?
-       AND tenant_id = ?
-  `).run(
-    updates.lifecycleState,
-    updates.decisionAction,
-    JSON.stringify(updates.reasonCodes),
-    updates.explanation,
-    updates.startAt,
-    updates.endAt,
-    JSON.stringify(updates.startAt && updates.endAt ? [{ start: updates.startAt, end: updates.endAt, label: 'Decision Center choice' }] : agenda.scheduledSegments),
-    agenda.agendaItemId,
-    userId,
-    String(tenantId),
-  );
-  assertDecisionScopedUpdateApplied(agendaUpdate, 'secretary_agenda_decision_update', {
-    agendaItemId: agenda.agendaItemId,
-    userId,
-    tenantId,
-  });
-
-  const verified = getSecretaryAgendaItemById({ agendaItemId: agenda.agendaItemId, ownerUserId: userId, tenantId });
-  const readBackOk = verified?.lifecycleState === updates.lifecycleState
-    && verified.decisionAction === updates.decisionAction
-    && (!updates.startAt || verified.startAt === updates.startAt)
-    && (!updates.endAt || verified.endAt === updates.endAt);
-  if (!readBackOk) {
-    throw new DecisionActionError('DECISION_READBACK_MISMATCH', 'Secretary reflow read-back verification failed', 409, {
-      expectedLifecycleState: updates.lifecycleState,
-      actualLifecycleState: verified?.lifecycleState ?? null,
-      expectedDecisionAction: updates.decisionAction,
-      actualDecisionAction: verified?.decisionAction ?? null,
+  const expectedAgendaRevision = normalizeDecisionAction(decisionContextForRecord(record).normalizedAction)
+    ?.preconditions.find((precondition) =>
+      precondition.type === 'agenda_state' && precondition.ref === record.relatedEntityId)?.expectedVersion;
+  const applied = getDb().transaction(() => {
+    const agenda = getSecretaryAgendaItemById({ agendaItemId: record.relatedEntityId!, ownerUserId: userId, tenantId });
+    if (!agenda) {
+      throw new DecisionActionError('DECISION_RELATED_ENTITY_NOT_FOUND', 'Secretary agenda item was not found for this user.', 404);
+    }
+    if (expectedAgendaRevision && secretaryAgendaStateRevision(agenda) !== expectedAgendaRevision) {
+      throw new DecisionActionError(
+        'DECISION_CONTEXT_CHANGED',
+        'The Secretary agenda item changed before the reflow could be applied.',
+        409,
+        { reason: 'agenda_state_changed' },
+      );
+    }
+    const rollback = secretaryAgendaRollbackSnapshot(agenda, {
+      redactExplanation: isDecisionRollbackSnapshotProtectionEnabled(process.env, { userId, tenantId })
+        && (record.privacyPolicy === 'financial' || record.privacyPolicy === 'sensitive'),
     });
-  }
+    const updates = buildSecretaryAgendaUpdates(actionId, agenda, payload);
+    const agendaUpdate = getDb().prepare(`
+      UPDATE secretary_agenda_items
+         SET lifecycle_state = ?,
+             decision_action = ?,
+             decision_reason_codes_json = ?,
+             decision_explanation = ?,
+             start_at = COALESCE(?, start_at),
+             end_at = COALESCE(?, end_at),
+             scheduled_segments_json = ?,
+             updated_at = datetime('now')
+       WHERE agenda_item_id = ?
+         AND owner_user_id = ?
+         AND tenant_id = ?
+    `).run(
+      updates.lifecycleState,
+      updates.decisionAction,
+      JSON.stringify(updates.reasonCodes),
+      updates.explanation,
+      updates.startAt,
+      updates.endAt,
+      JSON.stringify(updates.startAt && updates.endAt ? [{ start: updates.startAt, end: updates.endAt, label: 'Decision Center choice' }] : agenda.scheduledSegments),
+      agenda.agendaItemId,
+      userId,
+      String(tenantId),
+    );
+    assertDecisionScopedUpdateApplied(agendaUpdate, 'secretary_agenda_decision_update', {
+      agendaItemId: agenda.agendaItemId,
+      userId,
+      tenantId,
+    });
 
-  return markDecisionActioned(record, actionId, {
-    secretaryAgendaItemId: agenda.agendaItemId,
-    lifecycleState: verified!.lifecycleState,
-    decisionAction: verified!.decisionAction,
-    startAt: verified!.startAt,
-    endAt: verified!.endAt,
-    rollbackAvailable: true,
-    rollbackActionId: 'undo_reflow',
-    rollback,
-  }, 'Secretary agenda decision was applied.');
+    const verified = getSecretaryAgendaItemById({ agendaItemId: agenda.agendaItemId, ownerUserId: userId, tenantId });
+    const readBackOk = verified?.lifecycleState === updates.lifecycleState
+      && verified.decisionAction === updates.decisionAction
+      && (!updates.startAt || verified.startAt === updates.startAt)
+      && (!updates.endAt || verified.endAt === updates.endAt);
+    if (!readBackOk) {
+      throw new DecisionActionError('DECISION_READBACK_MISMATCH', 'Secretary reflow read-back verification failed', 409, {
+        expectedLifecycleState: updates.lifecycleState,
+        actualLifecycleState: verified?.lifecycleState ?? null,
+        expectedDecisionAction: updates.decisionAction,
+        actualDecisionAction: verified?.decisionAction ?? null,
+      });
+    }
+    return { agenda, rollback, updates, verified: verified! };
+  }).immediate();
+  const { agenda, rollback, verified } = applied;
+
+  return persistProjectionAfterVerifiedSourceEffect('secretary_agenda_effect', () => (
+    markDecisionActioned(record, actionId, {
+      secretaryAgendaItemId: agenda.agendaItemId,
+      lifecycleState: verified.lifecycleState,
+      decisionAction: verified.decisionAction,
+      startAt: verified.startAt,
+      endAt: verified.endAt,
+      rollbackAvailable: true,
+      rollbackActionId: 'undo_reflow',
+      rollbackExpectedRevision: secretaryAgendaStateRevision(verified),
+      rollback,
+    }, 'Secretary agenda decision was applied.')
+  ));
 }
 
 function executeSecretaryReflowRollback(
@@ -6056,75 +9499,109 @@ function executeSecretaryReflowRollback(
     throw new DecisionActionError('DECISION_ROLLBACK_UNAVAILABLE', 'Rollback is missing the prior Secretary state.', 409);
   }
   const prior = previous as Record<string, unknown>;
-  const agendaUpdate = getDb().prepare(`
-    UPDATE secretary_agenda_items
-       SET lifecycle_state = ?,
-           decision_action = ?,
-           decision_reason_codes_json = ?,
-           decision_explanation = ?,
-           start_at = ?,
-           end_at = ?,
-           scheduled_segments_json = ?,
-           updated_at = datetime('now')
-     WHERE agenda_item_id = ?
-       AND owner_user_id = ?
-       AND tenant_id = ?
-  `).run(
-    stringOrDefault(prior.lifecycleState, 'proposed'),
-    stringOrNull(prior.decisionAction),
-    JSON.stringify(Array.isArray(prior.reasonCodes) ? prior.reasonCodes : []),
-    stringOrNull(prior.explanation),
-    stringOrNull(prior.startAt),
-    stringOrNull(prior.endAt),
-    JSON.stringify(Array.isArray(prior.scheduledSegments) ? prior.scheduledSegments : []),
-    snapshot.agendaItemId,
-    userId,
-    String(tenantId),
-  );
-  assertDecisionScopedUpdateApplied(agendaUpdate, 'secretary_reflow_rollback_agenda_update', {
-    agendaItemId: snapshot.agendaItemId,
-    userId,
-    tenantId,
-  });
-
-  const verified = getSecretaryAgendaItemById({ agendaItemId: snapshot.agendaItemId, ownerUserId: userId, tenantId });
+  const expectedRevision = typeof record.actionResult?.rollbackExpectedRevision === 'string'
+    ? record.actionResult.rollbackExpectedRevision
+    : null;
   const expectedLifecycleState = stringOrDefault(prior.lifecycleState, 'proposed');
-  if (!verified || verified.lifecycleState !== expectedLifecycleState) {
-    throw new DecisionActionError('DECISION_READBACK_MISMATCH', 'Secretary rollback read-back verification failed', 409, {
-      expectedLifecycleState,
-      actualLifecycleState: verified?.lifecycleState ?? null,
+  const verified = getDb().transaction(() => {
+    const currentAgenda = getSecretaryAgendaItemById({
+      agendaItemId: snapshot.agendaItemId as string,
+      ownerUserId: userId,
+      tenantId,
     });
-  }
+    if (!expectedRevision || !currentAgenda
+        || secretaryAgendaStateRevision(currentAgenda) !== expectedRevision) {
+      throw new DecisionActionError(
+        'DECISION_CONTEXT_CHANGED',
+        'The Secretary agenda item changed after reflow and cannot be safely restored without fresh review.',
+        409,
+        { reason: currentAgenda ? 'rollback_target_changed' : 'rollback_target_missing' },
+      );
+    }
+    const agendaUpdate = getDb().prepare(`
+      UPDATE secretary_agenda_items
+         SET lifecycle_state = ?,
+             decision_action = ?,
+             decision_reason_codes_json = ?,
+             decision_explanation = ?,
+             start_at = ?,
+             end_at = ?,
+             scheduled_segments_json = ?,
+             updated_at = datetime('now')
+       WHERE agenda_item_id = ?
+         AND owner_user_id = ?
+         AND tenant_id = ?
+    `).run(
+      expectedLifecycleState,
+      stringOrNull(prior.decisionAction),
+      JSON.stringify(Array.isArray(prior.reasonCodes) ? prior.reasonCodes : []),
+      stringOrNull(prior.explanation),
+      stringOrNull(prior.startAt),
+      stringOrNull(prior.endAt),
+      JSON.stringify(Array.isArray(prior.scheduledSegments) ? prior.scheduledSegments : []),
+      snapshot.agendaItemId,
+      userId,
+      String(tenantId),
+    );
+    assertDecisionScopedUpdateApplied(agendaUpdate, 'secretary_reflow_rollback_agenda_update', {
+      agendaItemId: snapshot.agendaItemId,
+      userId,
+      tenantId,
+    });
 
-  const decisionUpdate = getDb().prepare(`
-    UPDATE notification_center_items
-       SET status = 'read', action_result_json = ?
-     WHERE item_id = ? AND user_id = ? AND tenant_id = ?
-  `).run(JSON.stringify({
-    actionId: 'undo_reflow',
-    rollbackApplied: true,
-    secretaryAgendaItemId: snapshot.agendaItemId,
-    lifecycleState: verified.lifecycleState,
-    decisionAction: verified.decisionAction,
-  }), record.itemId, userId, tenantId);
-  assertDecisionScopedUpdateApplied(decisionUpdate, 'secretary_reflow_rollback_decision_update', {
-    decisionId: record.itemId,
-    userId,
-    tenantId,
-  });
-  markDecisionAction(record.decisionLogId, 'undo_reflow');
+    const readBack = getSecretaryAgendaItemById({ agendaItemId: snapshot.agendaItemId as string, ownerUserId: userId, tenantId });
+    if (!readBack || readBack.lifecycleState !== expectedLifecycleState) {
+      throw new DecisionActionError('DECISION_READBACK_MISMATCH', 'Secretary rollback read-back verification failed', 409, {
+        expectedLifecycleState,
+        actualLifecycleState: readBack?.lifecycleState ?? null,
+      });
+    }
+    return readBack;
+  }).immediate();
 
-  return {
-    readBackOk: true,
-    expectedEffect: { secretaryAgendaLifecycleState: expectedLifecycleState, decisionStatus: 'read' },
-    actualEffect: {
+  return persistProjectionAfterVerifiedSourceEffect('secretary_rollback_effect', () => {
+    const decisionUpdate = getDb().prepare(`
+      UPDATE notification_center_items
+         SET status = 'actioned', decision_state = 'cancelled', action_result_json = ?,
+             record_version = record_version + 1, updated_at = datetime('now')
+       WHERE item_id = ? AND user_id = ? AND tenant_id = ? AND record_version = ?
+         AND EXISTS (
+           SELECT 1 FROM decision_action_executions executions
+            WHERE executions.decision_id = notification_center_items.item_id
+              AND executions.user_id = notification_center_items.user_id
+              AND executions.tenant_id = notification_center_items.tenant_id
+              AND executions.action_id = 'undo_reflow'
+              AND executions.status = 'started'
+         )
+    `).run(JSON.stringify({
+      actionId: 'undo_reflow',
+      rollbackApplied: true,
+      rollbackAvailable: false,
       secretaryAgendaItemId: snapshot.agendaItemId,
       lifecycleState: verified.lifecycleState,
       decisionAction: verified.decisionAction,
-      decisionStatus: 'read',
-    },
-    message: 'Secretary reflow was undone and the decision was reopened.',
-  };
+    }), record.itemId, userId, tenantId, record.recordVersion + 1);
+    assertDecisionScopedUpdateApplied(decisionUpdate, 'secretary_reflow_rollback_decision_update', {
+      decisionId: record.itemId,
+      userId,
+      tenantId,
+    });
+    markDecisionAction(record.decisionLogId, 'undo_reflow');
+
+    return {
+      readBackOk: true,
+      expectedEffect: { secretaryAgendaLifecycleState: expectedLifecycleState, decisionStatus: 'actioned', executionStatus: 'rolled_back' },
+      actualEffect: {
+        secretaryAgendaItemId: snapshot.agendaItemId,
+        lifecycleState: verified.lifecycleState,
+        decisionAction: verified.decisionAction,
+        decisionStatus: 'actioned',
+        executionStatus: 'rolled_back',
+        rollbackAvailable: false,
+      },
+      message: 'Secretary reflow was undone. This decision is complete; any new change requires a fresh proposal.',
+    };
+  });
 }
 
 function secretaryAgendaRollbackSnapshot(agenda: SecretaryAgendaItem, opts: { redactExplanation?: boolean } = {}): Record<string, unknown> {
@@ -6209,6 +9686,13 @@ function executeFinancePaymentDecision(
   if (!month || !/^\d{4}-\d{2}$/.test(month)) {
     throw new DecisionActionError('DECISION_ACTION_PAYLOAD_REQUIRED', 'Finance payment decisions require a YYYY-MM tax event month.', 400);
   }
+  if (record.relatedEntityType !== 'finance_tax_event' || month !== record.relatedEntityId) {
+    throw new DecisionActionError(
+      'DECISION_ACTION_PAYLOAD_MISMATCH',
+      'Finance payment target no longer matches the reviewed tax event.',
+      409,
+    );
+  }
 
   if (!markTaxPaid(userId, month, { tenantId })) {
     throw new DecisionActionError('DECISION_RELATED_ENTITY_NOT_FOUND', 'Finance tax event was not found for this user.', 404);
@@ -6222,11 +9706,13 @@ function executeFinancePaymentDecision(
     });
   }
 
-  return markDecisionActioned(record, 'mark_paid', {
-    financeTaxMonth: month,
-    paymentStatus: verified.status,
-    paidAt: verified.paid_at,
-  }, 'Finance payment was confirmed.');
+  return persistProjectionAfterVerifiedSourceEffect('finance_payment_effect', () => (
+    markDecisionActioned(record, 'mark_paid', {
+      financeTaxMonth: month,
+      paymentStatus: verified.status,
+      paidAt: verified.paid_at,
+    }, 'Finance payment was confirmed.')
+  ));
 }
 
 function executeCookingMealDecision(
@@ -6257,17 +9743,20 @@ function executeCookingMealDecision(
   const verified = getMealPlan(userId, date, date, tenantId).find((candidate) => candidate.id === meal.id);
   if (!verified || verified.title !== title || verified.meal_type !== mealType) {
     throw new DecisionActionError('DECISION_READBACK_MISMATCH', 'Cooking meal read-back verification failed', 409, {
-      expectedTitle: title,
-      actualTitle: verified?.title ?? null,
+      mealFound: !!verified,
+      titleMatched: verified?.title === title,
+      mealTypeMatched: verified?.meal_type === mealType,
     });
   }
 
-  return markDecisionActioned(record, 'add_meal', {
-    mealPlanId: verified.id,
-    date: verified.date,
-    mealType: verified.meal_type,
-    title: verified.title,
-  }, 'Cooking meal plan was updated.');
+  return persistProjectionAfterVerifiedSourceEffect('cooking_meal_effect', () => (
+    markDecisionActioned(record, 'add_meal', {
+      mealPlanId: verified.id,
+      date: verified.date,
+      mealType: verified.meal_type,
+      title: verified.title,
+    }, 'Cooking meal plan was updated.')
+  ));
 }
 
 function executeChatClarificationDecision(
@@ -6293,11 +9782,13 @@ function executeChatClarificationDecision(
     throw new DecisionActionError('DECISION_READBACK_MISMATCH', 'Chat clarification read-back verification failed', 409);
   }
 
-  return markDecisionActioned(record, actionId, {
-    chatConfirmationId: pending.id,
-    selectedOption: actionId,
-    involvedSkills: pending.involvedSkills,
-  }, 'Chat clarification was recorded.');
+  return persistProjectionAfterVerifiedSourceEffect('chat_confirmation_effect', () => (
+    markDecisionActioned(record, actionId, {
+      chatConfirmationId: pending.id,
+      selectedOption: actionId,
+      involvedSkills: pending.involvedSkills,
+    }, 'Chat clarification was recorded.')
+  ));
 }
 
 function executeChatFixerDecision(
@@ -6334,16 +9825,34 @@ function markDecisionActioned(
   actualEffect: Record<string, unknown>;
   message: string;
 } {
+  const claimedVersion = record.recordVersion + 1;
   const decisionUpdate = getDb().prepare(`
     UPDATE notification_center_items
-       SET status = 'actioned', actioned_at = datetime('now'), action_result_json = ?
-     WHERE item_id = ? AND user_id = ? AND tenant_id = ?
-  `).run(JSON.stringify({ actionId, ...actualEffect }), record.itemId, record.userId, record.tenantId);
+       SET status = 'actioned', decision_state = 'completed', actioned_at = datetime('now'), action_result_json = ?,
+           updated_at = datetime('now')
+     WHERE item_id = ? AND user_id = ? AND tenant_id = ? AND record_version = ?
+       AND EXISTS (
+         SELECT 1 FROM decision_action_executions executions
+          WHERE executions.decision_id = notification_center_items.item_id
+            AND executions.user_id = notification_center_items.user_id
+            AND executions.tenant_id = notification_center_items.tenant_id
+            AND executions.action_id = ?
+            AND executions.status = 'started'
+       )
+  `).run(
+    JSON.stringify({ actionId, ...actualEffect }),
+    record.itemId,
+    record.userId,
+    record.tenantId,
+    claimedVersion,
+    actionId,
+  );
   assertDecisionScopedUpdateApplied(decisionUpdate, 'mark_decision_actioned', {
     decisionId: record.itemId,
     userId: record.userId,
     tenantId: record.tenantId,
     actionId,
+    claimedVersion,
   });
   markDecisionAction(record.decisionLogId, actionId);
   const actualStatus = getDecisionRecord(record.itemId, record.userId, record.tenantId)?.status ?? null;
@@ -6359,6 +9868,27 @@ function markDecisionActioned(
     actualEffect: { decisionStatus: actualStatus, ...actualEffect },
     message,
   };
+}
+
+function persistProjectionAfterVerifiedSourceEffect<T>(effectId: string, projection: () => T): T {
+  try {
+    return projection();
+  } catch (error) {
+    const transport = privacySafeTransportErrorDetails(error);
+    throw new DecisionActionError(
+      'DECISION_SOURCE_EFFECT_VERIFIED_PROJECTION_FAILED',
+      'The source effect completed, but Decision Center recovery is required before any retry.',
+      500,
+      {
+        ...transport,
+        outcomeState: 'source_effect_verified_projection_failed',
+        effectResults: [
+          { effectId, status: 'succeeded' },
+          { effectId: 'decision_center_projection', status: 'unknown', reasonCode: 'projection_write_failed' },
+        ],
+      },
+    );
+  }
 }
 
 function executeContentApprovalDecision(
@@ -6406,61 +9936,312 @@ function executeContentApprovalDecision(
     });
   }
 
-  const decisionUpdate = getDb().prepare(`
-    UPDATE notification_center_items
-       SET status = 'actioned', actioned_at = datetime('now'), action_result_json = ?
-     WHERE item_id = ? AND user_id = ? AND tenant_id = ?
-  `).run(JSON.stringify({ contentObjectId: object.id, approvalState: verified?.approvalState }), record.itemId, userId, tenantId);
-  assertDecisionScopedUpdateApplied(decisionUpdate, 'content_approval_decision_update', {
-    decisionId: record.itemId,
-    userId,
-    tenantId,
-    actionId,
-  });
-  markDecisionAction(record.decisionLogId, actionId);
+  return persistProjectionAfterVerifiedSourceEffect('content_approval_effect', () => (
+    markDecisionActioned(record, actionId, {
+      contentObjectId: object.id,
+      contentApprovalState: verified?.approvalState,
+    }, decision === 'approved' ? 'Content was approved.' : 'Changes were requested.')
+  ));
+}
+
+function markExecutionSucceeded(
+  executionId: string,
+  userId: number,
+  tenantId: number,
+  expectedEffect: Record<string, unknown>,
+  actualEffect: Record<string, unknown>,
+): void {
+  const effects = expectedEffectResultsForExecution(executionId, 'succeeded');
+  getDb().transaction(() => {
+    const executionUpdate = getDb().prepare(`
+      UPDATE decision_action_executions
+         SET status = 'succeeded',
+             expected_effect_json = ?,
+             result_json = ?,
+             effect_results_json = ?,
+             recovery_json = '{}',
+             completed_at = datetime('now')
+       WHERE action_execution_id = ? AND user_id = ? AND tenant_id = ?
+         AND status = 'started'
+    `).run(JSON.stringify(expectedEffect), JSON.stringify(actualEffect), JSON.stringify(effects), executionId, userId, tenantId);
+    if (executionUpdate.changes !== 1) {
+      throw new DecisionActionError(
+        'DECISION_EXECUTION_STATE_CONFLICT',
+        'Decision execution was no longer claimable when success was recorded.',
+        409,
+        { actionExecutionId: executionId },
+      );
+    }
+    getDb().prepare(`
+      UPDATE decision_exclusivity_claims
+         SET status = 'succeeded', updated_at = datetime('now')
+       WHERE action_execution_id = ? AND user_id = ? AND tenant_id = ? AND status = 'started'
+    `).run(executionId, userId, tenantId);
+  })();
+}
+
+function reconcileCompletedExecutionAfterResponseFailure(
+  executionId: string,
+  userId: number,
+  tenantId: number,
+  execution: {
+    readBackOk: boolean;
+    expectedEffect: Record<string, unknown>;
+    actualEffect: Record<string, unknown>;
+  },
+): 'succeeded' | 'partially_failed' | 'unknown' {
+  try {
+    markExecutionSucceeded(executionId, userId, tenantId, execution.expectedEffect, execution.actualEffect);
+    return 'succeeded';
+  } catch (retryError) {
+    logger.warn({
+      event: 'decision.execution_success_reconciliation_retry_failed',
+      err: retryError,
+      executionId,
+    }, 'Retrying the completed execution success write did not complete');
+  }
+  try {
+    const current = getDb().prepare(`
+      SELECT status FROM decision_action_executions
+       WHERE action_execution_id = ? AND user_id = ? AND tenant_id = ? LIMIT 1
+    `).get(executionId, userId, tenantId) as { status: string } | undefined;
+    if (current?.status === 'succeeded') return 'succeeded';
+    if (current?.status === 'partially_failed') return 'partially_failed';
+
+    const successfulEffects = expectedEffectResultsForExecution(executionId, execution.readBackOk ? 'succeeded' : 'unknown');
+    const effectResults: DecisionEffectResult[] = [
+      ...successfulEffects,
+      {
+        effectId: 'nexus_execution_reconciliation',
+        status: 'unknown',
+        reasonCode: 'success_ledger_write_unconfirmed',
+      },
+    ];
+    const recovery = {
+      message: 'The external effect completed, but Nexus could not fully persist the success response. Refresh before any retry.',
+      actions: [{ id: 'refresh', label: 'Refresh', style: 'secondary' }],
+    };
+    getDb().transaction(() => {
+      const update = getDb().prepare(`
+        UPDATE decision_action_executions
+           SET status = 'partially_failed',
+               error_code = 'DECISION_SUCCESS_RECONCILIATION_REQUIRED',
+               expected_effect_json = ?, result_json = ?, effect_results_json = ?,
+               recovery_json = ?, failed_at = datetime('now')
+         WHERE action_execution_id = ? AND user_id = ? AND tenant_id = ? AND status = 'started'
+      `).run(
+        JSON.stringify(execution.expectedEffect),
+        JSON.stringify(execution.actualEffect),
+        JSON.stringify(effectResults),
+        JSON.stringify(recovery),
+        executionId,
+        userId,
+        tenantId,
+      );
+      if (update.changes !== 1) {
+        throw new Error('DECISION_EXECUTION_RECONCILIATION_STATE_CHANGED');
+      }
+      getDb().prepare(`
+        UPDATE decision_exclusivity_claims
+           SET status = 'partially_failed', updated_at = datetime('now')
+         WHERE action_execution_id = ? AND user_id = ? AND tenant_id = ? AND status = 'started'
+      `).run(executionId, userId, tenantId);
+    })();
+    logger.warn({
+      event: 'decision.execution_reconciliation_required',
+      executionId,
+    }, 'Completed effect retained as partially failed pending source reconciliation');
+    return 'partially_failed';
+  } catch (reconciliationError) {
+    logger.error({
+      event: 'decision.execution_reconciliation_persistence_failed',
+      err: reconciliationError,
+      executionId,
+    }, 'Completed effect could not be moved out of the active execution state');
+    return 'unknown';
+  }
+}
+
+function markExecutionFailed(
+  executionId: string,
+  userId: number,
+  tenantId: number,
+  errorCode: string,
+  details?: Record<string, unknown>,
+): 'failed' | 'partially_failed' {
+  const uncertainOutcome = isUncertainDecisionExecutionOutcome(errorCode, details);
+  const suppliedEffects = normalizeEffectResults(details?.effectResults);
+  const inferredEffects = suppliedEffects.length > 0
+    ? suppliedEffects
+    : expectedEffectResultsForExecution(
+      executionId,
+      errorCode === 'DECISION_READBACK_MISMATCH' || uncertainOutcome ? 'unknown' : 'failed',
+      errorCode,
+    );
+  const partiallyFailed = errorCode === 'DECISION_READBACK_MISMATCH'
+    || uncertainOutcome
+    || (
+      inferredEffects.some((effect) => effect.status === 'succeeded' || effect.status === 'compensated')
+      && inferredEffects.some((effect) => effect.status === 'failed' || effect.status === 'unknown')
+    );
+  const status = partiallyFailed ? 'partially_failed' : 'failed';
+  const recovery = {
+    message: partiallyFailed
+      ? 'Some effects may have completed. Refresh source state before choosing a recovery action.'
+      : 'The action did not complete. Refresh the decision before retrying.',
+    actions: [{ id: 'refresh', label: 'Refresh', style: 'secondary' }],
+  };
+  getDb().transaction(() => {
+    getDb().prepare(`
+      UPDATE decision_action_executions
+         SET status = ?,
+             error_code = ?,
+             result_json = ?,
+             effect_results_json = ?,
+             recovery_json = ?,
+             failed_at = datetime('now')
+       WHERE action_execution_id = ? AND user_id = ? AND tenant_id = ?
+         AND status = 'started'
+    `).run(
+      status,
+      errorCode,
+      JSON.stringify(details ?? {}),
+      JSON.stringify(inferredEffects),
+      JSON.stringify(recovery),
+      executionId,
+      userId,
+      tenantId,
+    );
+    getDb().prepare(`
+      UPDATE decision_exclusivity_claims
+         SET status = ?, updated_at = datetime('now')
+       WHERE action_execution_id = ? AND user_id = ? AND tenant_id = ? AND status = 'started'
+    `).run(status, executionId, userId, tenantId);
+  })();
+  if (partiallyFailed) {
+    logger.warn({ event: 'decision.execution_partially_failed', executionId, errorCode }, 'Decision execution partially failed');
+  }
+  return status;
+}
+
+export function isUncertainDecisionExecutionOutcome(
+  errorCode: string,
+  details?: Record<string, unknown>,
+): boolean {
+  const values = [
+    errorCode,
+    typeof details?.originalCode === 'string' ? details.originalCode : '',
+    typeof details?.providerCode === 'string' ? details.providerCode : '',
+    typeof details?.causeCode === 'string' ? details.causeCode : '',
+    typeof details?.dispatchState === 'string' ? details.dispatchState : '',
+    typeof details?.outcomeState === 'string' ? details.outcomeState : '',
+  ].join(':').toUpperCase();
+  return /TIMEOUT|TIMED_OUT|ETIMEDOUT|NETWORK|PROVIDER_NETWORK_ERROR|FETCH_FAILED|CONNECTION_(RESET|ABORTED|CLOSED)|ECONNRESET|ECONNABORTED|EPIPE|SOCKET_HANG_UP|UNKNOWN_PROVIDER_OUTCOME|DISPATCHED_OUTCOME_UNKNOWN|SOURCE_EFFECT_VERIFIED_PROJECTION_FAILED/.test(values);
+}
+
+/**
+ * Collapse a provider/network error chain into closed, non-sensitive codes.
+ * Node fetch commonly exposes only `TypeError: fetch failed` at the top and a
+ * transport code in `cause`; persisting neither raw message nor provider body
+ * still lets the execution ledger fail safely as an uncertain outcome.
+ */
+function privacySafeTransportErrorDetails(error: unknown): {
+  originalCode: string;
+  causeCode?: string;
+} {
+  const codes: string[] = [];
+  let current: unknown = error;
+  for (let depth = 0; depth < 4 && current && typeof current === 'object'; depth += 1) {
+    const record = current as Record<string, unknown>;
+    if (typeof record.code === 'string') codes.push(normalizeTransportCode(record.code));
+    if (typeof record.message === 'string' && /fetch\s+failed/i.test(record.message)) codes.push('FETCH_FAILED');
+    if (typeof record.name === 'string' && /timeout/i.test(record.name)) codes.push('TIMEOUT');
+    current = record.cause;
+  }
+  const normalized = codes.filter((code) => code !== 'UNKNOWN');
   return {
-    readBackOk,
-    expectedEffect: { contentApprovalState: expectedApprovalState },
-    actualEffect: { contentObjectId: object.id, contentApprovalState: verified?.approvalState },
-    message: decision === 'approved' ? 'Content was approved.' : 'Changes were requested.',
+    originalCode: normalized[0] ?? 'UNKNOWN',
+    ...(normalized[1] ? { causeCode: normalized[1] } : {}),
   };
 }
 
-function markExecutionSucceeded(executionId: string, expectedEffect: Record<string, unknown>, actualEffect: Record<string, unknown>): void {
-  getDb().prepare(`
-    UPDATE decision_action_executions
-       SET status = 'succeeded',
-           expected_effect_json = ?,
-           result_json = ?,
-           completed_at = datetime('now')
-     WHERE action_execution_id = ?
-  `).run(JSON.stringify(expectedEffect), JSON.stringify(actualEffect), executionId);
+function normalizeTransportCode(value: string): string {
+  const code = value.trim().toUpperCase().replace(/[^A-Z0-9_:-]+/g, '_').slice(0, 80);
+  return code || 'UNKNOWN';
 }
 
-function markExecutionFailed(executionId: string, errorCode: string, details?: Record<string, unknown>): void {
-  getDb().prepare(`
-    UPDATE decision_action_executions
-       SET status = 'failed',
-           error_code = ?,
-           result_json = ?,
-           failed_at = datetime('now')
-     WHERE action_execution_id = ?
-  `).run(errorCode, JSON.stringify(details ?? {}), executionId);
+function expectedEffectResultsForExecution(
+  executionId: string,
+  status: DecisionEffectResult['status'],
+  reasonCode?: string,
+): DecisionEffectResult[] {
+  const row = getDb().prepare(`
+    SELECT intents.normalized_action_json AS normalizedActionJson
+      FROM decision_action_executions executions
+      JOIN notification_center_items items
+        ON items.item_id = executions.decision_id
+       AND items.user_id = executions.user_id AND items.tenant_id = executions.tenant_id
+      JOIN notification_intents intents
+        ON intents.intent_id = items.intent_id
+       AND intents.user_id = items.user_id AND intents.tenant_id = items.tenant_id
+     WHERE executions.action_execution_id = ?
+     LIMIT 1
+  `).get(executionId) as { normalizedActionJson: string | null } | undefined;
+  const action = row?.normalizedActionJson
+    ? normalizeDecisionAction(safeParseJson(row.normalizedActionJson, null))
+    : null;
+  const effects = action?.expectedEffects ?? [];
+  if (effects.length === 0) {
+    return [{ effectId: 'decision_action', status, ...(reasonCode ? { reasonCode } : {}) }];
+  }
+  return effects.map((effect) => ({
+    effectId: `${effect.type}:${effect.targetRef}`,
+    status,
+    ...(reasonCode ? { reasonCode } : {}),
+  }));
+}
+
+function normalizeEffectResults(value: unknown): DecisionEffectResult[] {
+  if (!Array.isArray(value)) return [];
+  return value.slice(0, 24).flatMap((item) => {
+    if (!item || typeof item !== 'object') return [];
+    const candidate = item as Record<string, unknown>;
+    if (typeof candidate.effectId !== 'string'
+      || !['pending', 'succeeded', 'failed', 'compensated', 'unknown'].includes(String(candidate.status))) return [];
+    return [{
+      effectId: candidate.effectId,
+      status: candidate.status as DecisionEffectResult['status'],
+      ...(typeof candidate.reasonCode === 'string' ? { reasonCode: candidate.reasonCode } : {}),
+    }];
+  });
 }
 
 function markDecisionFailed(record: DecisionRecord, actionId: string, errorCode: string): void {
   const decisionUpdate = getDb().prepare(`
     UPDATE notification_center_items
-       SET status = 'failed', action_result_json = ?
-     WHERE item_id = ? AND user_id = ? AND tenant_id = ? AND status IN ('unread', 'read', 'failed')
-  `).run(JSON.stringify({ actionId, errorCode }), record.itemId, record.userId, record.tenantId);
-  assertDecisionScopedUpdateApplied(decisionUpdate, 'mark_decision_failed', {
-    decisionId: record.itemId,
-    userId: record.userId,
-    tenantId: record.tenantId,
-    actionId,
-    errorCode,
-  });
+       SET status = 'failed', decision_state = 'ready_for_review', action_result_json = ?,
+           record_version = record_version + 1, updated_at = datetime('now')
+     WHERE item_id = ? AND user_id = ? AND tenant_id = ?
+       AND status IN ('unread', 'read', 'failed') AND record_version = ?
+  `).run(
+    JSON.stringify({ actionId, errorCode }),
+    record.itemId,
+    record.userId,
+    record.tenantId,
+    record.recordVersion,
+  );
+  if (decisionUpdate.changes !== 1) {
+    logger.warn({
+      event: 'decision.failure_projection_version_conflict',
+      decisionId: record.itemId,
+      userId: record.userId,
+      tenantId: record.tenantId,
+      actionId,
+      errorCode,
+      expectedVersion: record.recordVersion,
+    }, 'Decision failure projection did not overwrite a concurrent lifecycle change');
+    return;
+  }
   logger.warn({ decisionId: record.itemId, userId: record.userId, tenantId: record.tenantId, actionId, errorCode }, 'Decision action failed without closing decision as actioned');
 }
 
@@ -6505,9 +10286,9 @@ function sourceStateSupersessionReason(record: DecisionRecord): string | null {
     if (record.relatedEntityType === 'training_plan' && tableExists('fitness_training_plans')) {
       const plan = getDb().prepare(`
         SELECT status, updated_at FROM fitness_training_plans
-         WHERE id = ? AND user_id = ?
+         WHERE id = ? AND user_id = ? AND tenant_id = ?
          LIMIT 1
-      `).get(record.relatedEntityId, record.userId) as { status?: string; updated_at?: string } | undefined;
+      `).get(record.relatedEntityId, record.userId, record.tenantId) as { status?: string; updated_at?: string } | undefined;
       if (!plan) return 'training_plan_missing';
       if (plan.status && ['superseded', 'cancelled', 'canceled', 'completed'].includes(plan.status)) {
         return 'training_plan_changed_elsewhere';
@@ -6516,10 +10297,10 @@ function sourceStateSupersessionReason(record: DecisionRecord): string | null {
         return 'training_plan_changed_elsewhere';
       }
     }
-    if (record.relatedEntityType === 'training_profile' && trainingRaceDatePresent(record.userId)) {
+    if (record.relatedEntityType === 'training_profile' && trainingRaceDatePresent(record.userId, record.tenantId)) {
       return 'training_race_date_added_elsewhere';
     }
-    if (isMissingRaceDateRecipe(record.dedupeKey) && trainingRaceDatePresent(record.userId)) {
+    if (isMissingRaceDateRecipe(record.dedupeKey) && trainingRaceDatePresent(record.userId, record.tenantId)) {
       return 'training_race_date_added_elsewhere';
     }
   }
@@ -6572,11 +10353,24 @@ function supersedeIfSourceStateStale(record: DecisionRecord): string | null {
   return reason;
 }
 
+function refreshSourceStateForRead(record: DecisionRecord): DecisionRecord {
+  if (!supersedeIfSourceStateStale(record)) return record;
+  return getDecisionRecord(record.itemId, record.userId, record.tenantId) ?? record;
+}
+
+function compareCodeUnits(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
 function supersedeDecision(record: DecisionRecord, reason: string): void {
+  guardDecisionLifecycleMutation(record, 'supersede');
   const decisionUpdate = getDb().prepare(`
     UPDATE notification_center_items
        SET status = 'superseded',
-           action_result_json = ?
+           decision_state = 'superseded',
+           action_result_json = ?,
+           record_version = record_version + 1,
+           updated_at = datetime('now')
      WHERE item_id = ?
        AND user_id = ?
        AND tenant_id = ?
@@ -6702,8 +10496,9 @@ function mapActionedDecisionToHandledItem(record: DecisionRecord): HandledByNexu
     actualEffect: record.actionResult ?? {},
     message: outcome.outcomeSummary,
   }));
-  return {
+  return withHandledRollbackAction({
     itemId: `actioned_${record.itemId}`,
+    decisionId: record.itemId,
     userId: record.userId,
     tenantId: record.tenantId,
     sourceSkill: record.sourceSkill,
@@ -6719,6 +10514,32 @@ function mapActionedDecisionToHandledItem(record: DecisionRecord): HandledByNexu
     changedRuleOption: null,
     createdAt: record.actionedAt ?? record.createdAt,
     privacyClassification: record.privacyPolicy,
+  }, record);
+}
+
+function withHandledRollbackAction(item: HandledByNexusItem, record: DecisionRecord): HandledByNexusItem {
+  const rollback = rollbackContractForRecord(record);
+  const execution = executionSummaryForRecord(record);
+  const reconciliationAvailable = execution.status === 'partially_failed'
+    && decisionRefreshSupportedForScope(record.userId, record.tenantId);
+  if (!rollback.available || !rollback.actionId) {
+    return {
+      ...item,
+      rollbackAvailable: false,
+      execution,
+      ...(reconciliationAvailable ? { reconciliationAvailable: true } : {}),
+    };
+  }
+  return {
+    ...item,
+    rollbackAvailable: true,
+    execution,
+    ...(reconciliationAvailable ? { reconciliationAvailable: true } : {}),
+    rollbackAction: {
+      actionId: rollback.actionId,
+      recordVersion: record.recordVersion,
+      contextVersion: decisionContextVersion(record),
+    },
   };
 }
 
@@ -6821,6 +10642,7 @@ function recordDecisionQualityGateEvent(input: NotificationIntentInput, quality:
 function mapHandledByNexusItem(row: any): HandledByNexusItem {
   return {
     itemId: row.handled_item_id,
+    decisionId: row.decision_id,
     userId: row.user_id,
     tenantId: row.tenant_id,
     sourceSkill: row.source_skill,
@@ -6876,8 +10698,11 @@ function deadlineDistanceBucket(deadline: string | null): string {
   return 'later';
 }
 
-function trainingRaceDatePresent(userId: number): boolean {
+function trainingRaceDatePresent(userId: number, tenantId: number): boolean {
   if (!tableExists('user_profiles')) return false;
+  // Legacy user_profiles has no tenant_id column. It is safe only for the
+  // repository's personal-tenant convention; shared tenants fail closed.
+  if (tenantId !== userId) return false;
   const rows = getDb().prepare(`
     SELECT data
       FROM user_profiles

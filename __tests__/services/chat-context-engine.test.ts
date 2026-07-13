@@ -184,6 +184,12 @@ describe('chat-context-engine', () => {
     expect(context.block).not.toContain('Tenant B board');
     expect(context.block).not.toContain('Other user secret');
     expect(context.block).not.toContain('Authenticated user display name: Felipe');
+    expect(context.items).toEqual(expect.arrayContaining([
+      expect.objectContaining({ source: 'daily_context', content: 'CALENDAR: clear after 18:00' }),
+    ]));
+    expect(context.sourceDiagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({ source: 'daily_context', status: 'available' }),
+    ]));
     expect(mockBuildSharedDecisionContext).toHaveBeenCalledWith('secretary', 7, 10);
   });
 
@@ -380,7 +386,11 @@ describe('chat-context-engine', () => {
       budgetChars: 500,
     });
 
-    expect(context.block).toContain('Current message length=');
+    expect(context.block).toContain('Current user request:');
+    expect(context.block).toContain('Cancel that one');
+    expect(context.sourceDiagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({ source: 'current_turn', status: 'available' }),
+    ]));
     expect(context.block).toContain('We created plan A');
     expect(context.items.some((item) => item.source === 'conversation_history' && item.critical)).toBe(true);
   });

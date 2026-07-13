@@ -72,6 +72,12 @@ vi.mock('../../src/services/database', () => ({ getDb: () => ({ prepare: () => (
   initDatabase: vi.fn(),
   closeDatabase: vi.fn(),
   findUnexpectedMigrationPrefixCollisions: vi.fn(() => []),
+  applyMigrationFileForTest: vi.fn(),
+  assertNoUnexpectedMigrationPrefixCollisions: vi.fn(),
+  filterAlreadyAppliedAddColumnStatements: vi.fn((sql: string) => sql),
+  runMigrationsForTest: vi.fn(),
+  stripWrappingTransactionStatements: vi.fn((sql: string) => sql),
+  withDatabaseForTest: vi.fn(),
 }));
 vi.mock('../../src/services/task-store/sync-engine', () => ({
   syncProvider: (...args: unknown[]) => serviceMocks.syncProvider(...args),

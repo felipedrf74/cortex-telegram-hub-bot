@@ -47,19 +47,34 @@ describe('Chat Core v2 foundation contracts', () => {
     }
   });
 
-  it('limits executable write MVP to low-risk Tasks, Notifications, and Decision Center capabilities', () => {
+  it('keeps executable writes confirmed, read-back verified, and limits content writes to non-model-visible review actions', () => {
     const executable = listChatCoreV2ExecutableCapabilities();
     const executableDomains = new Set(executable.map((capability) => capability.domain));
 
-    expect(executableDomains).toEqual(new Set(['tasks', 'notifications', 'decision_center']));
+    expect(executableDomains).toEqual(new Set(['tasks', 'notifications', 'decision_center', 'content']));
     for (const capability of executable) {
       expect(capability.rolloutStage, capability.capabilityId).toBe('mvp_confirmed_write');
-      expect(capability.risk, capability.capabilityId).toBe('low');
       expect(capability.confirmationPolicy, capability.capabilityId).toBe('always_confirm_v1');
       expect(capability.verificationMode, capability.capabilityId).toBe('immediate_read_back');
-      expect(capability.undoPolicy.supported, capability.capabilityId).toBe(true);
       expect(capability.previewCardType, capability.capabilityId).toMatch(/@1\.0\.0$/);
     }
+    const contentReview = executable.filter((capability) => capability.domain === 'content');
+    expect(contentReview.map((capability) => capability.capabilityId)).toEqual([
+      'content.approve_script',
+      'content.request_rewrite',
+    ]);
+    expect(contentReview.every((capability) => capability.risk === 'medium')).toBe(true);
+    expect(contentReview.every((capability) => capability.modelVisible === false)).toBe(true);
+    expect(contentReview.every((capability) => capability.undoPolicy.supported === false)).toBe(true);
+
+    const projectionOnlyFixer = executable.find((capability) => capability.capabilityId === 'decision_center.accept_chat_action_fix');
+    expect(projectionOnlyFixer).toMatchObject({ risk: 'low', modelVisible: false });
+    expect(projectionOnlyFixer?.undoPolicy.supported).toBe(false);
+
+    const originalMvpWrites = executable.filter((capability) =>
+      !contentReview.includes(capability) && capability.capabilityId !== 'decision_center.accept_chat_action_fix');
+    expect(originalMvpWrites.every((capability) => capability.risk === 'low')).toBe(true);
+    expect(originalMvpWrites.every((capability) => capability.undoPolicy.supported === true)).toBe(true);
   });
 
   it('keeps medium-risk and sensitive domains preview-only or blocked until later rollout gates', () => {

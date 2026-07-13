@@ -20,6 +20,7 @@ import {
   recordChatV2CommandEvent,
 } from './command-events';
 import {
+  decisionActionVersionForItem,
   decisionDismissVersionForItem,
   decisionSnoozeVersionForItem,
   isDecisionDismissEligibleStatus,
@@ -46,6 +47,12 @@ import {
   getDecisionItem,
   snoozeDecision,
 } from '../decision-center';
+import {
+  contentApprovalVersionForObject,
+  directOwnedContentObjectForDecision,
+  executeDecisionChatFixerProjection,
+  executeDecisionContentCommand,
+} from '../decision-command-effects';
 import type {
   AICommandEnvelope,
   CapabilityDefinition,
@@ -58,6 +65,7 @@ export type ChatCoreV2CommandExecutionRejection =
   | 'unsupported_command'
   | 'command_gate_rejected'
   | 'execution_failed'
+  | 'execution_uncertain'
   | 'verification_failed';
 
 export interface ChatCoreV2CommandExecutionResult {
@@ -75,6 +83,10 @@ export interface ChatCoreV2CommandExecutionResult {
   snoozedNotificationId?: string;
   dismissedDecisionId?: string;
   snoozedDecisionId?: string;
+  actionedDecisionId?: string;
+  contentObjectId?: number;
+  contentApprovalState?: 'approved' | 'rejected';
+  freshConfirmationRequired?: boolean;
 }
 
 export async function executeChatCoreV2Command(input: {
@@ -91,7 +103,17 @@ export async function executeChatCoreV2Command(input: {
     actorUserId: String(input.userId),
     tenantId: String(input.tenantId),
     delegatedScopes: input.command.authorization.delegatedScopes,
-    permissionSnapshotVersion: input.command.authorization.permissionSnapshotVersion,
+    // Recompute the permission contract from authenticated execution scope and
+    // the current server capability. Comparing the envelope to its own stored
+    // authorization value would be tautological and could never detect a stale
+    // permission contract. Resource ownership remains enforced by the scoped
+    // domain reads in buildExecuteGateSnapshot and the domain executor itself.
+    permissionSnapshotVersion: currentPermissionSnapshotVersion(
+      input.command,
+      input.capabilityId,
+      input.userId,
+      input.tenantId,
+    ),
     currentEntityVersions: executeSnapshot.currentEntityVersions,
     decisionVersion: executeSnapshot.decisionVersion ?? input.command.preconditions.requiredDecisionVersion,
     invariantResults: executeSnapshot.invariantResults,
@@ -160,6 +182,23 @@ export async function executeChatCoreV2Command(input: {
       now,
     });
   }
+  if (input.command.commandType === 'content.approve_script'
+      || input.command.commandType === 'content.request_rewrite') {
+    return executeDecisionContentApproval({
+      ...input,
+      capability,
+      gateVerdict,
+      now,
+    });
+  }
+  if (input.command.commandType === 'decision_center.accept_chat_action_fix') {
+    return executeDecisionChatFixerAcceptance({
+      ...input,
+      capability,
+      gateVerdict,
+      now,
+    });
+  }
 
   return executeTaskCreate({
     ...input,
@@ -169,16 +208,30 @@ export async function executeChatCoreV2Command(input: {
   });
 }
 
+function currentPermissionSnapshotVersion(
+  command: AICommandEnvelope<Record<string, unknown>>,
+  capabilityId: string,
+  userId: number,
+  tenantId: number,
+): string {
+  return command.origin === 'decision_center'
+    ? `decision-center-permissions:${tenantId}:${userId}:${capabilityId}:v1`
+    : `chat-v2-permissions:${tenantId}:${userId}:${command.domain}:v1`;
+}
+
 export function isExecutableCommandType(commandType: string): boolean {
   return commandType === 'tasks.create'
     || commandType === 'tasks.complete'
     || commandType === 'notifications.snooze'
     || commandType === 'decision_center.dismiss'
-    || commandType === 'decision_center.snooze';
+    || commandType === 'decision_center.snooze'
+    || commandType === 'content.approve_script'
+    || commandType === 'content.request_rewrite'
+    || commandType === 'decision_center.accept_chat_action_fix';
 }
 
 /**
- * The four sync command types the executor can actually run. Each one performs an
+ * The sync command types the executor can actually run. Each one performs an
  * immediate read-back of the mutated entity inside its `execute*` path
  * (`getTaskForUser` / native_tasks SELECT / `snoozeNotificationCenterItem`
  * read-back / `dismissDecision` read-back) and only reports `verified` when the
@@ -190,6 +243,9 @@ export const CHAT_CORE_V2_SYNC_EXECUTABLE_COMMAND_TYPES = [
   'notifications.snooze',
   'decision_center.dismiss',
   'decision_center.snooze',
+  'content.approve_script',
+  'content.request_rewrite',
+  'decision_center.accept_chat_action_fix',
 ] as const;
 
 /**
@@ -243,6 +299,13 @@ function buildExecuteGateSnapshot(
   }
   if (command.commandType === 'decision_center.snooze') {
     return buildDecisionSnoozeExecuteGateSnapshot(command, userId, tenantId);
+  }
+  if (command.commandType === 'content.approve_script'
+      || command.commandType === 'content.request_rewrite') {
+    return buildDecisionContentExecuteGateSnapshot(command, userId, tenantId);
+  }
+  if (command.commandType === 'decision_center.accept_chat_action_fix') {
+    return buildDecisionChatFixerExecuteGateSnapshot(command, userId, tenantId);
   }
   return {
     currentEntityVersions: command.preconditions.requiredEntityVersions,
@@ -452,6 +515,72 @@ function buildDecisionSnoozeExecuteGateSnapshot(
     decisionVersion,
     invariantResults: {
       decision_is_snooze_eligible: Boolean(item && isDecisionSnoozeEligibleStatus(item.status)),
+    },
+  };
+}
+
+function buildDecisionContentExecuteGateSnapshot(
+  command: AICommandEnvelope<Record<string, unknown>>,
+  userId: number,
+  tenantId: number,
+): {
+  currentEntityVersions: Record<string, string>;
+  invariantResults: Record<string, boolean>;
+  decisionVersion?: string;
+} {
+  const decisionId = decisionIdFromPayload(command.payload);
+  const item = decisionId ? getDecisionItem(decisionId, userId, tenantId) : null;
+  const object = item ? directOwnedContentObjectForDecision(item, userId, tenantId) : null;
+  const expectedObjectId = contentObjectIdFromPayload(command.payload);
+  const decisionEntityId = decisionId ? `decision:${decisionId}` : undefined;
+  const contentEntityId = object ? `content_workflow_object:${object.id}` : undefined;
+  const decisionVersion = item ? decisionActionVersionForItem(item) : undefined;
+  const currentEntityVersions: Record<string, string> = {};
+  if (decisionEntityId && decisionVersion) currentEntityVersions[decisionEntityId] = decisionVersion;
+  if (contentEntityId && object) currentEntityVersions[contentEntityId] = contentApprovalVersionForObject(object);
+  const actionId = command.commandType === 'content.approve_script' ? 'approve_script' : 'request_rewrite';
+  return {
+    currentEntityVersions,
+    decisionVersion,
+    invariantResults: {
+      decision_is_active: Boolean(item
+        && isDecisionDismissEligibleStatus(item.status)
+        && item.actions.some((action) => action.id === actionId)),
+      content_object_is_direct_private_owner_target: Boolean(
+        object && expectedObjectId === object.id,
+      ),
+    },
+  };
+}
+
+function buildDecisionChatFixerExecuteGateSnapshot(
+  command: AICommandEnvelope<Record<string, unknown>>,
+  userId: number,
+  tenantId: number,
+): {
+  currentEntityVersions: Record<string, string>;
+  invariantResults: Record<string, boolean>;
+  decisionVersion?: string;
+} {
+  const decisionId = decisionIdFromPayload(command.payload);
+  const item = decisionId ? getDecisionItem(decisionId, userId, tenantId) : null;
+  const decisionEntityId = decisionId ? `decision:${decisionId}` : undefined;
+  const decisionVersion = item ? decisionActionVersionForItem(item) : undefined;
+  const currentEntityVersions = decisionEntityId && decisionVersion
+    ? { [decisionEntityId]: decisionVersion }
+    : {};
+  const anchoredFixer = Boolean(item
+    && item.sourceSkill === 'chat'
+    && item.relatedEntities.some((entity) => entity.type === 'chat_action_fixer_review' && !!entity.id)
+    && item.actions.some((action) => action.id === 'accept_chat_action_fix'));
+  return {
+    currentEntityVersions,
+    decisionVersion,
+    invariantResults: {
+      decision_is_active: Boolean(item && isDecisionDismissEligibleStatus(item.status)),
+      chat_fixer_is_projection_only: anchoredFixer
+        && command.payload.providerActionExecuted === false
+        && command.payload.freshConfirmationRequired === true,
     },
   };
 }
@@ -935,11 +1064,24 @@ async function executeDecisionDismiss(input: {
   }
 
   try {
-    const updated = dismissDecision(decisionId, input.userId, input.tenantId);
+    const current = getDecisionItem(decisionId, input.userId, input.tenantId);
+    if (!current) throw new Error('DECISION_NOT_AVAILABLE');
+    const updated = dismissDecision(
+      decisionId,
+      input.userId,
+      input.tenantId,
+      undefined,
+      current.recordVersion,
+      { actionId: 'dismiss', idempotencyKey: input.command.idempotencyKey },
+    );
+    // Dismissed rows may disappear from the active read model. Null is
+    // therefore a valid terminal read-back after the scoped CAS, while an
+    // explicitly active row proves the projection did not settle.
     const readBack = getDecisionItem(decisionId, input.userId, input.tenantId);
-    const verified = Boolean(readBack && readBack.status === 'dismissed');
+    const verified = updated.status === 'dismissed'
+      && (readBack == null || readBack.status === 'dismissed');
     const status: CommandStatus = verified ? 'verified' : 'verification_failed';
-    const title = readBack?.title ?? updated?.title ?? String(input.command.payload.title ?? 'Decision');
+    const title = updated.title ?? String(input.command.payload.title ?? 'Decision');
     const response = buildDecisionDismissResultResponse({
       capability: input.capability,
       command: input.command,
@@ -997,7 +1139,16 @@ async function executeDecisionSnooze(input: {
 
   try {
     const minutes = snoozeMinutesFromPayload(input.command.payload);
-    const updated = snoozeDecision(decisionId, input.userId, input.tenantId, minutes);
+    const current = getDecisionItem(decisionId, input.userId, input.tenantId);
+    if (!current) throw new Error('DECISION_NOT_AVAILABLE');
+    const updated = snoozeDecision(
+      decisionId,
+      input.userId,
+      input.tenantId,
+      minutes,
+      current.recordVersion,
+      { actionId: 'snooze', idempotencyKey: input.command.idempotencyKey },
+    );
     const readBack = getDecisionItem(decisionId, input.userId, input.tenantId);
     const verified = Boolean(readBack && readBack.status === 'snoozed');
     const status: CommandStatus = verified ? 'verified' : 'verification_failed';
@@ -1038,6 +1189,173 @@ async function executeDecisionSnooze(input: {
     };
   } catch {
     recordCommandEvent(input.command, input.capabilityId, 'command_failed', 'failed', 'execution_failed', input.now);
+    return emptyExecutionFailure(input);
+  }
+}
+
+async function executeDecisionContentApproval(input: {
+  command: AICommandEnvelope<Record<string, unknown>>;
+  capabilityId: string;
+  capability: CapabilityDefinition;
+  userId: number;
+  tenantId: number;
+  locale?: string | null;
+  now: Date;
+  gateVerdict: ChatCoreV2CommandGateVerdict;
+}): Promise<ChatCoreV2CommandExecutionResult> {
+  const decisionId = decisionIdFromPayload(input.command.payload);
+  const contentObjectId = contentObjectIdFromPayload(input.command.payload);
+  const actionId = input.command.commandType === 'content.approve_script' ? 'approve_script' : 'request_rewrite';
+  const contentEntityId = contentObjectId ? `content_workflow_object:${contentObjectId}` : null;
+  const expectedContentVersion = contentEntityId
+    ? input.command.preconditions.requiredEntityVersions[contentEntityId]
+    : undefined;
+  if (!decisionId || !contentObjectId || !expectedContentVersion) {
+    recordCommandEvent(input.command, input.capabilityId, 'command_failed', 'failed', 'execution_failed', input.now);
+    return emptyExecutionFailure(input);
+  }
+
+  let committed: ReturnType<typeof executeDecisionContentCommand> | null = null;
+  try {
+    const item = getDecisionItem(decisionId, input.userId, input.tenantId);
+    if (!item) throw new Error('DECISION_NOT_AVAILABLE');
+    const execution = executeDecisionContentCommand({
+      item,
+      actionId,
+      userId: input.userId,
+      tenantId: input.tenantId,
+      expectedContentVersion,
+    });
+    committed = execution;
+    const status: CommandStatus = 'verified';
+    const response = buildDecisionDomainActionResultResponse({
+      capability: input.capability,
+      command: input.command,
+      title: item.safePreviewTitle || item.title,
+      decisionId,
+      contentObjectId,
+      actionId,
+      status,
+      locale: input.locale,
+    });
+    recordCommandEvent(input.command, input.capabilityId, 'execution_completed', 'executed', undefined, input.now, {
+      decisionId,
+      contentObjectId,
+      actionId,
+    });
+    recordCommandEvent(input.command, input.capabilityId, 'verification_completed', status, undefined, input.now, {
+      decisionId,
+      contentObjectId,
+      actionId,
+    });
+    return {
+      ok: true,
+      executorVersion: CHAT_CORE_V2_COMMAND_EXECUTOR_VERSION,
+      commandId: input.command.commandId,
+      capabilityId: input.capabilityId,
+      gateVerdict: input.gateVerdict,
+      response,
+      status,
+      actionedDecisionId: execution.decisionId,
+      contentObjectId: execution.contentObjectId,
+      contentApprovalState: execution.contentApprovalState,
+    };
+  } catch {
+    if (committed) {
+      try {
+        recordCommandEvent(input.command, input.capabilityId, 'command_failed', 'partially_failed', 'execution_uncertain', input.now, {
+          decisionId,
+          contentObjectId,
+          actionId,
+        });
+      } catch {
+        // The source transaction committed. A second audit failure must not
+        // downgrade the outcome to a definite failure.
+      }
+      return {
+        ok: false,
+        executorVersion: CHAT_CORE_V2_COMMAND_EXECUTOR_VERSION,
+        commandId: input.command.commandId,
+        capabilityId: input.capabilityId,
+        gateVerdict: input.gateVerdict,
+        status: 'partially_failed',
+        reason: 'execution_uncertain',
+        actionedDecisionId: committed.decisionId,
+        contentObjectId: committed.contentObjectId,
+        contentApprovalState: committed.contentApprovalState,
+      };
+    }
+    try {
+      recordCommandEvent(input.command, input.capabilityId, 'command_failed', 'failed', 'execution_failed', input.now, {
+        decisionId,
+        contentObjectId,
+        actionId,
+      });
+    } catch {
+      // Preserve the original definite pre-commit failure classification.
+    }
+    return emptyExecutionFailure(input);
+  }
+}
+
+async function executeDecisionChatFixerAcceptance(input: {
+  command: AICommandEnvelope<Record<string, unknown>>;
+  capabilityId: string;
+  capability: CapabilityDefinition;
+  userId: number;
+  tenantId: number;
+  locale?: string | null;
+  now: Date;
+  gateVerdict: ChatCoreV2CommandGateVerdict;
+}): Promise<ChatCoreV2CommandExecutionResult> {
+  const decisionId = decisionIdFromPayload(input.command.payload);
+  if (!decisionId) {
+    recordCommandEvent(input.command, input.capabilityId, 'command_failed', 'failed', 'execution_failed', input.now);
+    return emptyExecutionFailure(input);
+  }
+
+  try {
+    const item = getDecisionItem(decisionId, input.userId, input.tenantId);
+    if (!item) throw new Error('DECISION_NOT_AVAILABLE');
+    const execution = executeDecisionChatFixerProjection({
+      item,
+      userId: input.userId,
+      tenantId: input.tenantId,
+    });
+    const status: CommandStatus = 'verified';
+    const response = buildDecisionDomainActionResultResponse({
+      capability: input.capability,
+      command: input.command,
+      title: item.safePreviewTitle || item.title,
+      decisionId,
+      actionId: 'accept_chat_action_fix',
+      status,
+      locale: input.locale,
+    });
+    recordCommandEvent(input.command, input.capabilityId, 'execution_completed', 'executed', undefined, input.now, {
+      decisionId,
+      providerActionExecuted: false,
+    });
+    recordCommandEvent(input.command, input.capabilityId, 'verification_completed', status, undefined, input.now, {
+      decisionId,
+      providerActionExecuted: false,
+    });
+    return {
+      ok: true,
+      executorVersion: CHAT_CORE_V2_COMMAND_EXECUTOR_VERSION,
+      commandId: input.command.commandId,
+      capabilityId: input.capabilityId,
+      gateVerdict: input.gateVerdict,
+      response,
+      status,
+      actionedDecisionId: execution.decisionId,
+      freshConfirmationRequired: execution.actionResult.freshConfirmationRequired === true,
+    };
+  } catch {
+    recordCommandEvent(input.command, input.capabilityId, 'command_failed', 'failed', 'execution_failed', input.now, {
+      decisionId,
+      providerActionExecuted: false,
+    });
     return emptyExecutionFailure(input);
   }
 }
@@ -1119,6 +1437,13 @@ function notificationIdFromPayload(payload: Record<string, unknown>): string | n
 function decisionIdFromPayload(payload: Record<string, unknown>): string | null {
   const decisionId = typeof payload.decisionId === 'string' ? payload.decisionId.trim() : '';
   return decisionId ? decisionId : null;
+}
+
+function contentObjectIdFromPayload(payload: Record<string, unknown>): number | null {
+  const contentObjectId = typeof payload.contentObjectId === 'number'
+    ? payload.contentObjectId
+    : Number(payload.contentObjectId);
+  return Number.isInteger(contentObjectId) && contentObjectId > 0 ? contentObjectId : null;
 }
 
 function snoozedUntilFromPayload(payload: Record<string, unknown>): string | null {
@@ -1319,6 +1644,123 @@ function buildDecisionSnoozeResultResponse(input: {
       { label: labels.until, after: input.snoozedUntil || labels.verificationPendingEffect },
     ],
   });
+}
+
+function buildDecisionDomainActionResultResponse(input: {
+  capability: CapabilityDefinition;
+  command: AICommandEnvelope<Record<string, unknown>>;
+  title: string;
+  decisionId: string;
+  contentObjectId?: number;
+  actionId: 'approve_script' | 'request_rewrite' | 'accept_chat_action_fix';
+  status: CommandStatus;
+  locale?: string | null;
+}): ChatCoreV2Response {
+  const locale = normalizeChatCoreV2Locale(input.locale);
+  const verified = input.status === 'verified';
+  const copy = decisionDomainActionCopy(locale, input.actionId, input.title, verified);
+  const labels = decisionStatusCopy(locale);
+  const sourceEntityIds = [
+    `decision:${input.decisionId}`,
+    ...(input.contentObjectId ? [`content_workflow_object:${input.contentObjectId}`] : []),
+  ];
+  return buildChatCoreV2CommandResultResponse({
+    capability: input.capability,
+    commandId: input.command.commandId,
+    title: copy.title,
+    summary: copy.summary,
+    status: input.status,
+    locale,
+    sourceEntityIds,
+    diff: [
+      { label: labels.decision, after: input.title },
+      {
+        label: labels.status,
+        before: labels.active,
+        after: verified ? copy.afterStatus : labels.verificationPending,
+      },
+      { label: labels.effect, after: verified ? copy.effect : labels.verificationPendingEffect },
+    ],
+  });
+}
+
+function decisionDomainActionCopy(
+  locale: ChatCoreV2Locale,
+  actionId: 'approve_script' | 'request_rewrite' | 'accept_chat_action_fix',
+  title: string,
+  verified: boolean,
+): { title: string; summary: string; afterStatus: string; effect: string } {
+  const isPT = locale === 'pt-BR' || locale === 'pt-PT';
+  if (actionId === 'approve_script') {
+    return isPT
+      ? {
+        title: verified ? 'Conteúdo aprovado' : 'Verificação pendente',
+        summary: verified ? `Feito — aprovei "${title}".` : `Ainda não consegui confirmar a aprovação de "${title}".`,
+        afterStatus: 'Aprovado',
+        effect: 'Aprovação confirmada na origem',
+      }
+      : locale === 'es'
+        ? {
+          title: verified ? 'Contenido aprobado' : 'Verificación pendiente',
+          summary: verified ? `Listo — aprobé "${title}".` : `Todavía no pude confirmar la aprobación de "${title}".`,
+          afterStatus: 'Aprobado',
+          effect: 'Aprobación confirmada en el origen',
+        }
+        : {
+          title: verified ? 'Content approved' : 'Verification pending',
+          summary: verified ? `Done — I approved "${title}".` : `I could not confirm approval of "${title}" yet.`,
+          afterStatus: 'Approved',
+          effect: 'Approval confirmed in source state',
+        };
+  }
+  if (actionId === 'request_rewrite') {
+    return isPT
+      ? {
+        title: verified ? 'Alterações pedidas' : 'Verificação pendente',
+        summary: verified ? `Feito — pedi alterações para "${title}".` : `Ainda não consegui confirmar o pedido de alterações para "${title}".`,
+        afterStatus: 'Alterações pedidas',
+        effect: 'Pedido confirmado na origem',
+      }
+      : locale === 'es'
+        ? {
+          title: verified ? 'Cambios solicitados' : 'Verificación pendiente',
+          summary: verified ? `Listo — pedí cambios para "${title}".` : `Todavía no pude confirmar los cambios para "${title}".`,
+          afterStatus: 'Cambios solicitados',
+          effect: 'Solicitud confirmada en el origen',
+        }
+        : {
+          title: verified ? 'Changes requested' : 'Verification pending',
+          summary: verified ? `Done — I requested changes for "${title}".` : `I could not confirm the change request for "${title}" yet.`,
+          afterStatus: 'Changes requested',
+          effect: 'Request confirmed in source state',
+        };
+  }
+  return isPT
+    ? {
+      title: verified ? 'Correção aceite' : 'Verificação pendente',
+      summary: verified
+        ? `Aceitei a correção para "${title}". Nenhuma ação externa foi executada; a próxima tentativa exige nova confirmação.`
+        : `Ainda não consegui confirmar a correção para "${title}".`,
+      afterStatus: 'Correção aceite',
+      effect: 'Registo atualizado sem ação externa',
+    }
+    : locale === 'es'
+      ? {
+        title: verified ? 'Corrección aceptada' : 'Verificación pendiente',
+        summary: verified
+          ? `Acepté la corrección para "${title}". No se ejecutó ninguna acción externa; el siguiente intento requiere una nueva confirmación.`
+          : `Todavía no pude confirmar la corrección para "${title}".`,
+        afterStatus: 'Corrección aceptada',
+        effect: 'Registro actualizado sin acción externa',
+      }
+      : {
+        title: verified ? 'Correction accepted' : 'Verification pending',
+        summary: verified
+          ? `I accepted the correction for "${title}". No provider action ran; a fresh confirmation is required before any retry.`
+          : `I could not confirm the correction for "${title}" yet.`,
+        afterStatus: 'Correction accepted',
+        effect: 'Review state recorded without a provider action',
+      };
 }
 
 function decisionDismissResultCopy(
