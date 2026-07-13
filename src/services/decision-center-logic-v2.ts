@@ -250,6 +250,7 @@ const MUTATING_ACTION_IDS = new Set([
   'add_meal',
   'undo_reflow',
   'choose_priority',
+  'activate_training_plan_revision',
 ]);
 
 const GENERIC_COPY_PATTERNS = [

@@ -9,7 +9,13 @@ export type TrainingGenerationCounterName =
   | 'tenant_scope_missing_blocked_total'
   | 'calendar_capacity_reflow_total'
   | 'safety_guardrail_triggered_total'
-  | 'fallback_template_blocked_total';
+  | 'fallback_template_blocked_total'
+  | 'revision_candidate_succeeded_total'
+  | 'revision_candidate_failed_total'
+  | 'revision_shadow_candidate_succeeded_total'
+  | 'revision_shadow_candidate_skipped_total'
+  | 'revision_activation_conflict_total'
+  | 'revision_legacy_backfill_applied_total';
 
 export type TrainingProgressionStateName = 'build' | 'hold' | 'deload' | 'reentry';
 
@@ -28,6 +34,12 @@ const COUNTER_NAMES: TrainingGenerationCounterName[] = [
   'calendar_capacity_reflow_total',
   'safety_guardrail_triggered_total',
   'fallback_template_blocked_total',
+  'revision_candidate_succeeded_total',
+  'revision_candidate_failed_total',
+  'revision_shadow_candidate_succeeded_total',
+  'revision_shadow_candidate_skipped_total',
+  'revision_activation_conflict_total',
+  'revision_legacy_backfill_applied_total',
 ];
 
 const PROGRESSION_STATES: TrainingProgressionStateName[] = ['build', 'hold', 'deload', 'reentry'];

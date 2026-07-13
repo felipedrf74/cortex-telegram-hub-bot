@@ -6,6 +6,7 @@ let testDb: Database.Database;
 
 vi.mock('../../src/services/database', () => ({
   getDb: () => testDb,
+  withDatabaseForTestAsync: vi.fn(),
 }));
 
 vi.mock('../../src/utils/logger', () => ({

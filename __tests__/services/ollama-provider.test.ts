@@ -83,6 +83,7 @@ vi.mock('../../src/services/database', () => ({
   closeDatabase: vi.fn(),
   findUnexpectedMigrationPrefixCollisions: vi.fn(() => []),
   assertNoUnexpectedMigrationPrefixCollisions: vi.fn(),
+  withDatabaseForTestAsync: vi.fn(),
 }));
 vi.mock('../../src/portal/telemetry', () => ({
   pushEvent: vi.fn(),

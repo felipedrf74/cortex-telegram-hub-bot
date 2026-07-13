@@ -78,6 +78,7 @@ vi.mock('../../src/services/database', () => ({ getDb: () => ({ prepare: () => (
   runMigrationsForTest: vi.fn(),
   stripWrappingTransactionStatements: vi.fn((sql: string) => sql),
   withDatabaseForTest: vi.fn(),
+  withDatabaseForTestAsync: vi.fn(),
 }));
 vi.mock('../../src/services/task-store/sync-engine', () => ({
   syncProvider: (...args: unknown[]) => serviceMocks.syncProvider(...args),

@@ -36,6 +36,7 @@ vi.mock('../../src/services/database', () => ({
   stripWrappingTransactionStatements: vi.fn((sql: string) => sql),
   applyMigrationFileForTest: vi.fn(),
   withDatabaseForTest: vi.fn(),
+  withDatabaseForTestAsync: vi.fn(),
 }));
 
 // `vi.mock` factories are hoisted above any top-level `const`/`let`. Using a

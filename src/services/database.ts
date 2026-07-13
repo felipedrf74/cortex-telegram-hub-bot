@@ -326,6 +326,20 @@ export function withDatabaseForTest<T>(testDb: Database.Database, callback: () =
   }
 }
 
+/** Async counterpart used by services that hold a scoped test database across locks/awaits. */
+export async function withDatabaseForTestAsync<T>(
+  testDb: Database.Database,
+  callback: () => Promise<T>,
+): Promise<T> {
+  const previousDb = db as Database.Database | undefined;
+  (db as any) = testDb;
+  try {
+    return await callback();
+  } finally {
+    (db as any) = previousDb;
+  }
+}
+
 export function filterAlreadyAppliedAddColumnStatements(
   sql: string,
   columnExists: (table: string, column: string) => boolean = (table, column) => {

@@ -86,6 +86,7 @@ const MUTATING_NOTIFICATION_ACTIONS = new Set([
   'add_meal',
   'undo_reflow',
   'accept_chat_action_fix',
+  'activate_training_plan_revision',
 ]);
 
 const BASE_ACTIONS_BY_TYPE: Record<NotificationIntentType, string[]> = {
@@ -152,6 +153,9 @@ function supportedActionsFor(sourceSkill: NotificationSourceSkill, type: Notific
   }
   if (sourceSkill === 'content' && type === 'approval_required') {
     return ['approve_script', 'request_rewrite', 'open_detail'];
+  }
+  if (sourceSkill === 'training' && type === 'approval_required') {
+    return ['activate_training_plan_revision', 'open_detail'];
   }
   if (sourceSkill === 'chat' && type === 'decision_required') {
     return ['option_a', 'option_b', 'accept_chat_action_fix', 'open_detail', 'dismiss'];

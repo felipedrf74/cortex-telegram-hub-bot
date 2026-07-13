@@ -12,6 +12,7 @@ export interface RuntimeFlagScope {
 
 export type SecretaryReasoningV1Mode = 'off' | 'shadow' | 'active';
 export type DecisionConflictPolicyV1Mode = 'off' | 'shadow' | 'active';
+export type TrainingPlanRevisionV1Mode = 'off' | 'shadow' | 'active';
 
 function parseOptionalBoolean(raw: string | undefined): boolean | null {
   if (raw === undefined || raw.trim() === '') return null;
@@ -352,6 +353,32 @@ export function getSecretaryReasoningV1Mode(env: RuntimeEnv = process.env, scope
   if (raw === 'active') return 'active';
   if (raw === 'shadow') return 'shadow';
   return 'off';
+}
+
+/**
+ * Additive Training plan-revision rollout. The default and every unrecognised
+ * value fail closed to `off`. `shadow` may compute bounded diagnostics only;
+ * durable revision writes and activation require the explicit `active` value.
+ */
+export function getTrainingPlanRevisionV1Mode(
+  env: RuntimeEnv = process.env,
+  scope?: RuntimeFlagScope,
+): TrainingPlanRevisionV1Mode {
+  const raw = scopedEnvValue(env, 'TRAINING_PLAN_REVISION_V1_MODE', scope)?.trim().toLowerCase();
+  if (raw === 'active') return 'active';
+  if (raw === 'shadow') return 'shadow';
+  return 'off';
+}
+
+export function isTrainingPlanRevisionV1ExplicitlyEnrolled(
+  env: RuntimeEnv = process.env,
+  scope?: RuntimeFlagScope,
+): boolean {
+  const userId = scope?.userId != null ? String(scope.userId).replace(/[^0-9A-Za-z_-]/g, '') : '';
+  const tenantId = scope?.tenantId != null ? String(scope.tenantId).replace(/[^0-9A-Za-z_-]/g, '') : '';
+  const scopedRaw = (userId ? env[`TRAINING_PLAN_REVISION_V1_MODE_USER_${userId}`] : undefined)
+    ?? (tenantId ? env[`TRAINING_PLAN_REVISION_V1_MODE_TENANT_${tenantId}`] : undefined);
+  return scopedRaw?.trim().toLowerCase() === 'active';
 }
 
 /**
