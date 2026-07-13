@@ -22,6 +22,8 @@ export interface TrainingPhaseModelInput {
     sessionType: SessionType;
     targetPerWeek: number;
   }>;
+  eventSessionType?: SessionType;
+  eventDayIndex?: number;
 }
 
 export interface TrainingPhaseModelValidationCheck {
@@ -92,7 +94,9 @@ export function blockPhaseFromTrainingPhaseType(phaseType: TrainingTypedPhaseTyp
 export function buildTrainingPhaseModel(input: TrainingPhaseModelInput): TrainingTypedPhase[] {
   validatePhaseInput(input);
   const sequence = SEQUENCES[input.planMode];
-  const durations = allocatePhaseDurations(input.horizonWeeks, WEIGHTS[input.planMode]);
+  const durations = input.planMode === 'event_based' && input.eventSessionType
+    ? allocateEventPhaseDurations(input.horizonWeeks)
+    : allocatePhaseDurations(input.horizonWeeks, WEIGHTS[input.planMode]);
   let startWeek = 1;
   const phases = sequence.map((phaseType, index): TrainingTypedPhase => {
     const durationWeeks = durations[index];
@@ -246,7 +250,22 @@ export function targetWorkoutDistributionForPhase(
     }
     if (replacements >= replacementLimit) break;
   }
-  return distribution.filter((target) => target.targetPerWeek > 0 || target.sessionType === 'rest');
+  const lighter = distribution.filter((target) => target.targetPerWeek > 0 || target.sessionType === 'rest');
+  if (phaseType !== 'RACE' || !input.eventSessionType || input.eventDayIndex == null) return lighter;
+  const active = lighter.flatMap((target) => target.sessionType === 'rest'
+    ? []
+    : Array.from({ length: target.targetPerWeek }, () => target.sessionType));
+  if (input.eventDayIndex < 0 || input.eventDayIndex >= active.length) {
+    throw new Error('TRAINING_PHASE_MODEL_INVALID:EVENT_DAY_INDEX');
+  }
+  active[input.eventDayIndex] = input.eventSessionType;
+  const preEventAndEvent = active.slice(0, input.eventDayIndex + 1);
+  const counts = new Map<SessionType, number>();
+  for (const type of preEventAndEvent) counts.set(type, (counts.get(type) ?? 0) + 1);
+  counts.set('rest', 7 - preEventAndEvent.length);
+  return [...counts.entries()]
+    .map(([sessionType, targetPerWeek]) => ({ sessionType, targetPerWeek }))
+    .sort((left, right) => CANONICAL_ORDER.indexOf(left.sessionType) - CANONICAL_ORDER.indexOf(right.sessionType));
 }
 
 export function phaseForWeek(
@@ -270,7 +289,17 @@ function validatePhaseInput(input: TrainingPhaseModelInput): void {
   if (input.targetWorkoutTypeDistribution.reduce((sum, target) => sum + target.targetPerWeek, 0) !== 7) {
     throw new Error('TRAINING_PHASE_MODEL_INVALID:DISTRIBUTION');
   }
+  if ((input.eventSessionType == null) !== (input.eventDayIndex == null)) {
+    throw new Error('TRAINING_PHASE_MODEL_INVALID:EVENT_BINDING_INCOMPLETE');
+  }
 }
+
+const CANONICAL_ORDER: readonly SessionType[] = [
+  'easy_run', 'long_run', 'threshold_run', 'interval_run', 'recovery_run',
+  'endurance_ride', 'tempo_ride', 'threshold_ride', 'vo2_ride', 'recovery_ride',
+  'technique_swim', 'aerobic_swim', 'threshold_swim', 'speed_swim', 'recovery_swim',
+  'strength_hypertrophy', 'strength_max', 'strength_maintenance', 'brick', 'mobility', 'rest',
+];
 
 function allocatePhaseDurations(horizonWeeks: number, weights: readonly number[]): number[] {
   const remaining = horizonWeeks - weights.length;
@@ -286,6 +315,14 @@ function allocatePhaseDurations(horizonWeeks: number, weights: readonly number[]
     undistributed -= 1;
   }
   return extra.map((value) => value + 1);
+}
+
+function allocateEventPhaseDurations(horizonWeeks: number): number[] {
+  const taperWeeks = horizonWeeks >= 10 ? 2 : 1;
+  const raceWeeks = 1;
+  const preparatoryWeeks = horizonWeeks - taperWeeks - raceWeeks;
+  const [base, build, peak] = allocatePhaseDurations(preparatoryWeeks, [0.4, 0.4, 0.2]);
+  return [base, build, peak, taperWeeks, raceWeeks];
 }
 
 function purposeFor(phaseType: TrainingTypedPhaseType, discipline: CoachingDiscipline): string {

@@ -15,8 +15,11 @@ import {
   getTrainingPlanRevisionV1Mode,
   isDecisionFlowV1EnforceEnabled,
   isTrainingPlanRevisionV1ExplicitlyEnrolled,
+  isTrainingM4PlanCombinationAllowed,
+  isTrainingM4OwnedCombination,
 } from './runtime-flags';
 import { getDb } from './database';
+import { incrementTrainingGenerationCounter } from './training-generation-observability';
 
 export const ACTIVATE_TRAINING_PLAN_REVISION_ACTION = 'activate_training_plan_revision' as const;
 
@@ -28,6 +31,39 @@ export async function bindTrainingPlanRevisionDecision(input: {
   requireDecisionBindingFlags(input.scope, input.env);
   const revision = getScopedTrainingPlanRevision(input.scope, input.revisionId);
   if (!revision) throw new TrainingPlanRevisionError('TRAINING_REVISION_NOT_FOUND', 'Training plan revision not found.', 404);
+  if (stableTrainingRevisionHash(revision.document) !== revision.contentHash) {
+    throw new TrainingPlanRevisionError(
+      'TRAINING_REVISION_DOCUMENT_HASH_MISMATCH',
+      'The immutable Training revision failed integrity validation.',
+      409,
+    );
+  }
+  const document = revision.document as TrainingPlanRevisionResource['document'] & {
+    m4?: { conflictSetHash?: string };
+    planMode?: string;
+    discipline?: string;
+    capacityContextVersion?: string;
+    capacityContext?: { source?: string };
+    resourceAccess?: Record<string, boolean>;
+  };
+  const authoritativeSchedule = Boolean(document.m4
+    && document.capacityContext?.source === 'AUTHORITATIVE');
+  if (document.m4 && !isTrainingM4PlanCombinationAllowed(
+    document.planMode as never,
+    document.discipline as never,
+    input.env ?? process.env,
+    input.scope,
+  )) {
+    throw new TrainingPlanRevisionError('TRAINING_M4_ALLOWLIST_REQUIRED', 'This training mode and discipline are not enrolled.', 404);
+  }
+  if (isTrainingM4OwnedCombination(document.planMode as never, document.discipline as never)
+      && !document.m4) {
+    throw new TrainingPlanRevisionError(
+      'TRAINING_M4_REVISION_CONTRACT_REQUIRED',
+      'This plan mode or discipline requires an M4-reviewed revision.',
+      409,
+    );
+  }
   if (revision.origin !== 'GENERATED' || revision.lifecycleState === 'LEGACY_ACTIVE') {
     throw new TrainingPlanRevisionError('TRAINING_LEGACY_REVISION_REVIEW_NOT_IN_M1', 'Legacy revisions cannot enter the Milestone 1 approval flow.', 409);
   }
@@ -51,7 +87,14 @@ export async function bindTrainingPlanRevisionDecision(input: {
       id: revision.revisionId,
       version: revision.contentHash,
     }],
-    affectedResources: [{ type: 'training_plan_family', id: revision.familyId }],
+    affectedResources: [
+      { type: 'training_plan_family', id: revision.familyId },
+      ...(document.m4 ? [{ type: 'training_schedule', id: revision.revisionId }] : []),
+      ...(authoritativeSchedule ? [{ type: 'calendar_timeline_overlap', id: 'primary' }] : []),
+      ...Object.entries(document.resourceAccess ?? {})
+        .filter(([, available]) => available)
+        .map(([resource]) => ({ type: 'training_resource', id: resource })),
+    ],
     preconditions: [
       {
         type: 'training_revision_content',
@@ -83,6 +126,18 @@ export async function bindTrainingPlanRevisionDecision(input: {
         expectedVersion: 'none',
         required: true,
       },
+      ...(document.m4?.conflictSetHash ? [{
+        type: 'training_revision_conflict_set',
+        ref: revision.revisionId,
+        expectedVersion: document.m4.conflictSetHash,
+        required: true,
+      }] : []),
+      ...(document.capacityContextVersion && document.capacityContext?.source === 'AUTHORITATIVE' ? [{
+        type: 'training_capacity_context',
+        ref: revision.revisionId,
+        expectedVersion: document.capacityContextVersion,
+        required: true,
+      }] : []),
     ],
     expectedEffects: [{
       type: 'activate_training_plan_revision',
@@ -94,8 +149,15 @@ export async function bindTrainingPlanRevisionDecision(input: {
       { type: 'provider_calendar_write', targetRef: `training_plan_family:${revision.familyId}` },
     ],
     dependencies: [],
-    exclusivityKeys: [`training_plan_family:${input.scope.tenantId}:${revision.familyId}`],
-    authorizationScope: ['decision_center:write', 'training:plan:write'],
+    exclusivityKeys: [
+      `training_plan_family:${input.scope.tenantId}:${revision.familyId}`,
+      ...(document.m4 ? [`training_schedule:${input.scope.tenantId}:${revision.familyId}`] : []),
+      ...(authoritativeSchedule ? ['calendar_timeline:primary'] : []),
+    ],
+    authorizationScope: [
+      'decision_center:write',
+      'training:plan:write',
+    ],
     risk: 'high',
     reversibility: 'compensatable',
     contextVersion: revision.creationContextVersion,
@@ -200,6 +262,7 @@ export async function bindTrainingPlanRevisionDecision(input: {
     );
   }
   const bound = getScopedTrainingPlanRevision(input.scope, revision.revisionId)!;
+  if (document.m4) incrementTrainingGenerationCounter('m4_decision_routed_total');
   completeDecisionBindingOperation(operationId, bound);
   return bound;
 }

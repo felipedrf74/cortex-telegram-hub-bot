@@ -124,6 +124,10 @@ export function workoutSummary(workout: TrainingPlanRevisionWorkout): Record<str
     title: workout.title,
     objective: workout.objective,
     plannedDurationMinutes: workout.plannedDurationMinutes,
+    scheduledDate: workout.scheduledDate ?? null,
+    scheduledStartAt: workout.scheduledStartAt ?? null,
+    scheduledEndAt: workout.scheduledEndAt ?? null,
+    scheduleTimeZone: workout.scheduleTimeZone ?? null,
     blocks: workout.blocks,
   };
 }

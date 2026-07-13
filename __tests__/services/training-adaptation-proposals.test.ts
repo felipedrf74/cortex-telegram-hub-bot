@@ -3,8 +3,11 @@
 import Database from 'better-sqlite3';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { runMigrationsForTest, withDatabaseForTestAsync } from '../../src/services/database';
-import { activateApprovedTrainingPlanRevision } from '../../src/services/training-plan-revision-activation';
-import { createTrainingPlanCandidateRevision, getScopedTrainingPlanRevision } from '../../src/services/training-plan-revisions';
+import { activateApprovedTrainingPlanRevision as activateApprovedTrainingPlanRevisionAtRuntime } from '../../src/services/training-plan-revision-activation';
+import {
+  createTrainingPlanCandidateRevision as createTrainingPlanCandidateRevisionAtRuntime,
+  getScopedTrainingPlanRevision,
+} from '../../src/services/training-plan-revisions';
 import {
   getTrainingAdaptationOptionEnvelope,
   getTrainingAdaptationProposal,
@@ -28,6 +31,25 @@ const activeEnv = {
   DECISION_FEEDBACK_SUPPRESSION_ENABLED: 'true',
   DECISION_CANDIDATE_REJECTION_COOLDOWN_DAYS: '7',
 };
+const FIXED_NOW = new Date('2026-07-13T12:00:00.000Z');
+
+function createTrainingPlanCandidateRevision(
+  input: Parameters<typeof createTrainingPlanCandidateRevisionAtRuntime>[0],
+) {
+  return createTrainingPlanCandidateRevisionAtRuntime({
+    ...input,
+    referenceTime: input.referenceTime ?? FIXED_NOW,
+  });
+}
+
+function activateApprovedTrainingPlanRevision(
+  input: Parameters<typeof activateApprovedTrainingPlanRevisionAtRuntime>[0],
+) {
+  return activateApprovedTrainingPlanRevisionAtRuntime({
+    ...input,
+    referenceTime: input.referenceTime ?? FIXED_NOW,
+  });
+}
 
 describe('Training adaptation proposal service', () => {
   let db: Database.Database;
@@ -133,6 +155,24 @@ describe('Training adaptation proposal service', () => {
         idempotencyKey: `training-adaptation-review:event-keep-1:${shorten.optionId}`,
         env: activeEnv, db,
       })).rejects.toMatchObject({ code: 'TRAINING_ADAPTATION_ALREADY_SELECTED' });
+    });
+  });
+
+  it('rejects a tampered active source before creating any adaptation state', async () => {
+    await withDb(async () => {
+      const source = await createActiveRevision();
+      const target = targetWorkout(source.document as TrainingPlanRevisionDocument);
+      db.exec('DROP TRIGGER trg_training_plan_revisions_content_immutable');
+      db.prepare(`
+        UPDATE training_plan_revisions
+           SET revision_document_json = json_set(revision_document_json, '$.title', 'tampered source')
+         WHERE revision_id = ?
+      `).run(source.revisionId);
+      expect(() => previewTrainingAdaptation(
+        busyPreviewInput(source, target.workoutKey, 'event-tampered-source-preview'),
+      )).toThrow(expect.objectContaining({ code: 'TRAINING_ADAPTATION_SOURCE_INTEGRITY_FAILED' }));
+      expect(db.prepare('SELECT COUNT(*) AS count FROM training_adaptation_previews').get()).toEqual({ count: 0 });
+      expect(db.prepare('SELECT COUNT(*) AS count FROM training_adaptation_proposals').get()).toEqual({ count: 0 });
     });
   });
 
@@ -320,6 +360,132 @@ describe('Training adaptation proposal service', () => {
     });
   });
 
+  it('reconciles M4 schedule identity and blocks preview or child activation after allowlist rollback', async () => {
+    await withDb(async () => {
+      const m4Env = {
+        ...activeEnv,
+        TRAINING_PLAN_M4_ALLOWLIST_USER_7: 'event_based:triathlon',
+      };
+      const source = await createActiveRevision(m4Env, 'candidate-active-m4', {
+        planMode: 'event_based', goal: 'event_performance', discipline: 'triathlon', horizonWeeks: 12,
+        planStartDate: '2026-08-17',
+        event: { name: 'Reviewed triathlon', date: '2026-11-08', priority: 'A', subtype: 'triathlon' },
+        resourceAccess: {
+          pool: true, bicycle: true, indoorTrainer: true,
+          safeRunEnvironment: true, outdoorRideEnvironment: true,
+        },
+        capacity: {
+          source: 'EXPLICIT_USER',
+          windows: ['monday', 'tuesday', 'thursday', 'saturday', 'sunday'].map((dayOfWeek) => ({
+            dayOfWeek: dayOfWeek as 'monday', startTime: '06:00', endTime: '08:00', timezone: 'Europe/Lisbon',
+            allowedDisciplines: ['running' as const, 'cycling' as const, 'swimming' as const, 'strength' as const],
+          })),
+        },
+        goalPriority: { primaryDiscipline: 'running', secondaryDisciplines: ['cycling', 'swimming'] },
+        profile: {
+          experienceLevel: 'intermediate', sessionsPerWeek: 5, sessionDurationMinutes: 60,
+          availableDays: ['monday', 'tuesday', 'thursday', 'saturday', 'sunday'],
+          equipmentIds: [], location: 'home',
+        },
+      });
+      const sourceDocument = source.document as TrainingPlanRevisionDocument;
+      const target = targetWorkout(sourceDocument);
+      const revokedEnv = { ...m4Env, TRAINING_PLAN_M4_ALLOWLIST_USER_7: '' };
+      expect(() => previewTrainingAdaptation(
+        busyPreviewInput(source, target.workoutKey, 'event-m4-revoked-before-preview', revokedEnv),
+      )).toThrow(expect.objectContaining({ code: 'TRAINING_M4_ALLOWLIST_REQUIRED' }));
+      expect(db.prepare('SELECT COUNT(*) AS count FROM training_adaptation_previews').get()).toEqual({ count: 0 });
+
+      const preview = previewTrainingAdaptation(
+        busyPreviewInput(source, target.workoutKey, 'event-m4-shorten', m4Env),
+      );
+      const option = preview.preview.options.find((entry) => entry.action === 'SHORTEN')!;
+      const proposedDocument = option.proposedRevision!.document as TrainingPlanRevisionDocument;
+      const proposedWorkout = targetWorkout(proposedDocument, target.workoutKey);
+      const ongoingReferenceTime = new Date(Date.parse(target.scheduledStartAt!) - 1);
+      expect(sourceDocument.weeks.flatMap((week) => week.workouts)
+        .some((workout) => workout.sessionType !== 'rest'
+          && Date.parse(workout.scheduledStartAt!) < ongoingReferenceTime.getTime())).toBe(true);
+      expect(proposedWorkout.scheduledStartAt).toBe(target.scheduledStartAt);
+      expect(proposedWorkout.scheduledEndAt).not.toBe(target.scheduledEndAt);
+      expect(Date.parse(proposedWorkout.scheduledEndAt!) - Date.parse(proposedWorkout.scheduledStartAt!))
+        .toBe(proposedWorkout.plannedDurationMinutes * 60_000);
+      expect(proposedDocument.m4?.conflictSetHash).not.toBe(sourceDocument.m4?.conflictSetHash);
+      expect(option.differences).toEqual(expect.arrayContaining([
+        expect.objectContaining({ path: `workouts.${target.workoutKey}.scheduledEndAt` }),
+      ]));
+      expect(option.currentScheduledStart).toBe(target.scheduledStartAt);
+      expect(option.proposedScheduledStart).toBe(target.scheduledStartAt);
+
+      const review = await requestTrainingAdaptationReview({
+        scope: { userId: 7, tenantId: 7 }, adaptationId: option.adaptationId,
+        optionId: option.optionId, expectedCurrentRevisionId: source.revisionId,
+        expectedContextVersion: source.creationContextVersion,
+        idempotencyKey: `training-adaptation-review:event-m4-shorten:${option.optionId}`,
+        env: m4Env, db,
+      });
+      const child = getScopedTrainingPlanRevision(
+        { userId: 7, tenantId: 7 }, option.proposedRevision!.revisionId, db,
+      )!;
+      const normalizedAction = JSON.parse((db.prepare(`
+        SELECT normalized_action_json AS action FROM notification_intents
+         WHERE related_entity_id = ?
+      `).get(child.revisionId) as { action: string }).action) as any;
+      expect(normalizedAction.affectedResources).toEqual(expect.arrayContaining([
+        expect.objectContaining({ type: 'training_schedule', id: child.revisionId }),
+      ]));
+      expect(normalizedAction.preconditions).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          type: 'training_revision_conflict_set',
+          expectedVersion: (child.document as TrainingPlanRevisionDocument).m4?.conflictSetHash,
+        }),
+      ]));
+      expect(normalizedAction.exclusivityKeys).toContain(`training_schedule:7:${child.familyId}`);
+
+      const decisionVersion = (db.prepare(`
+        SELECT record_version AS version FROM notification_center_items WHERE item_id = ?
+      `).get(review.decisionId) as { version: number }).version;
+      db.prepare(`
+        UPDATE notification_center_items
+           SET decision_state = 'approved', record_version = record_version + 1
+         WHERE item_id = ?
+      `).run(review.decisionId);
+      db.prepare(`
+        INSERT INTO decision_action_executions (
+          action_execution_id, decision_id, action_id, user_id, tenant_id,
+          idempotency_key, executor_skill, status, expected_record_version, context_version
+        ) VALUES ('m4-adaptation-execution', ?, 'activate_training_plan_revision', 7, 7,
+          'm4-adaptation-key', 'training', 'started', ?, ?)
+      `).run(review.decisionId, decisionVersion, child.creationContextVersion);
+      const outboxBefore = db.prepare('SELECT COUNT(*) AS count FROM event_outbox').get();
+      await expect(activateApprovedTrainingPlanRevision({
+        scope: { userId: 7, tenantId: 7 }, revisionId: child.revisionId,
+        approval: {
+          decisionId: review.decisionId, decisionRecordVersion: decisionVersion,
+          actionExecutionId: 'm4-adaptation-execution', approvedContentHash: child.contentHash,
+          approvedContextVersion: child.creationContextVersion,
+        },
+        env: revokedEnv,
+        referenceTime: ongoingReferenceTime,
+      })).rejects.toMatchObject({ code: 'TRAINING_M4_ALLOWLIST_REQUIRED' });
+      expect(db.prepare('SELECT active_revision_id AS revisionId FROM training_active_plan_references').get())
+        .toEqual({ revisionId: source.revisionId });
+      expect(db.prepare('SELECT COUNT(*) AS count FROM event_outbox').get()).toEqual(outboxBefore);
+
+      const activated = await activateApprovedTrainingPlanRevision({
+        scope: { userId: 7, tenantId: 7 }, revisionId: child.revisionId,
+        approval: {
+          decisionId: review.decisionId, decisionRecordVersion: decisionVersion,
+          actionExecutionId: 'm4-adaptation-execution', approvedContentHash: child.contentHash,
+          approvedContextVersion: child.creationContextVersion,
+        },
+        env: m4Env,
+        referenceTime: ongoingReferenceTime,
+      });
+      expect(activated.activeReference).toMatchObject({ activeRevisionId: child.revisionId, pointerVersion: 2 });
+    });
+  });
+
   it('revalidates every changed workout in a broader scope immediately before adaptation activation', async () => {
     await withDb(async () => {
       const source = await createActiveRevision();
@@ -379,6 +545,70 @@ describe('Training adaptation proposal service', () => {
     });
   });
 
+  it('rejects source tampering after review without changing pointer, projection or outbox', async () => {
+    await withDb(async () => {
+      const source = await createActiveRevision();
+      const target = targetWorkout(source.document as TrainingPlanRevisionDocument);
+      const preview = previewTrainingAdaptation(
+        busyPreviewInput(source, target.workoutKey, 'event-source-tamper-after-review'),
+      );
+      const option = preview.preview.options.find((entry) => entry.action === 'SHORTEN')!;
+      const review = await requestTrainingAdaptationReview({
+        scope: { userId: 7, tenantId: 7 }, adaptationId: option.adaptationId,
+        optionId: option.optionId, expectedCurrentRevisionId: source.revisionId,
+        expectedContextVersion: source.creationContextVersion,
+        idempotencyKey: `training-adaptation-review:event-source-tamper-after-review:${option.optionId}`,
+        env: activeEnv, db,
+      });
+      const child = getScopedTrainingPlanRevision(
+        { userId: 7, tenantId: 7 }, option.proposedRevision!.revisionId, db,
+      )!;
+      const decisionVersion = (db.prepare(`
+        SELECT record_version AS version FROM notification_center_items WHERE item_id = ?
+      `).get(review.decisionId) as { version: number }).version;
+      db.prepare(`
+        UPDATE notification_center_items
+           SET decision_state = 'approved', record_version = record_version + 1
+         WHERE item_id = ?
+      `).run(review.decisionId);
+      db.prepare(`
+        INSERT INTO decision_action_executions (
+          action_execution_id, decision_id, action_id, user_id, tenant_id,
+          idempotency_key, executor_skill, status, expected_record_version, context_version
+        ) VALUES ('source-tamper-execution', ?, 'activate_training_plan_revision', 7, 7,
+          'source-tamper-key', 'training', 'started', ?, ?)
+      `).run(review.decisionId, decisionVersion, child.creationContextVersion);
+      db.exec('DROP TRIGGER trg_training_plan_revisions_content_immutable');
+      db.prepare(`
+        UPDATE training_plan_revisions
+           SET revision_document_json = json_set(revision_document_json, '$.title', 'tampered after review')
+         WHERE revision_id = ?
+      `).run(source.revisionId);
+      const pointerBefore = db.prepare(`
+        SELECT active_revision_id AS revisionId, pointer_version AS pointerVersion
+          FROM training_active_plan_references
+      `).get();
+      const projectionBefore = db.prepare('SELECT COUNT(*) AS count FROM training_sessions').get();
+      const outboxBefore = db.prepare('SELECT COUNT(*) AS count FROM event_outbox').get();
+      await expect(activateApprovedTrainingPlanRevision({
+        scope: { userId: 7, tenantId: 7 }, revisionId: child.revisionId,
+        approval: {
+          decisionId: review.decisionId, decisionRecordVersion: decisionVersion,
+          actionExecutionId: 'source-tamper-execution', approvedContentHash: child.contentHash,
+          approvedContextVersion: child.creationContextVersion,
+        },
+        env: activeEnv,
+        referenceTime: new Date('2026-07-13T12:00:00.000Z'),
+      })).rejects.toMatchObject({ code: 'TRAINING_ADAPTATION_SOURCE_INTEGRITY_FAILED' });
+      expect(db.prepare(`
+        SELECT active_revision_id AS revisionId, pointer_version AS pointerVersion
+          FROM training_active_plan_references
+      `).get()).toEqual(pointerBefore);
+      expect(db.prepare('SELECT COUNT(*) AS count FROM training_sessions').get()).toEqual(projectionBefore);
+      expect(db.prepare('SELECT COUNT(*) AS count FROM event_outbox').get()).toEqual(outboxBefore);
+    });
+  });
+
   it('accepts the exact base catalog for purposeful substitutions', async () => {
     await withDb(async () => {
       const source = await createActiveRevision();
@@ -421,17 +651,18 @@ describe('Training adaptation proposal service', () => {
   async function createActiveRevision(
     env: NodeJS.ProcessEnv = activeEnv,
     idempotencyKey = 'candidate-active',
+    candidateRequest: Parameters<typeof createTrainingPlanCandidateRevision>[0]['request'] = {
+      planMode: 'continuous', goal: 'general_fitness', discipline: 'strength', horizonWeeks: 4,
+      profile: {
+        experienceLevel: 'intermediate', sessionsPerWeek: 3, sessionDurationMinutes: 60,
+        availableDays: ['monday', 'wednesday', 'friday'],
+        equipmentIds: ['dumbbell', 'resistance_band', 'bench'], location: 'gym',
+      },
+    },
   ) {
     const created = createTrainingPlanCandidateRevision({
       scope: { userId: 7, tenantId: 7 }, idempotencyKey, env,
-      request: {
-        planMode: 'continuous', goal: 'general_fitness', discipline: 'strength', horizonWeeks: 4,
-        profile: {
-          experienceLevel: 'intermediate', sessionsPerWeek: 3, sessionDurationMinutes: 60,
-          availableDays: ['monday', 'wednesday', 'friday'],
-          equipmentIds: ['dumbbell', 'resistance_band', 'bench'], location: 'gym',
-        },
-      },
+      request: candidateRequest,
     });
     const revision = created.candidates[0];
     db.prepare(`
@@ -480,7 +711,12 @@ describe('Training adaptation proposal service', () => {
     `).run(contextVersion);
   }
 
-  function busyPreviewInput(source: ReturnType<typeof getScopedTrainingPlanRevision> & {}, workoutKey: string, eventId: string) {
+  function busyPreviewInput(
+    source: ReturnType<typeof getScopedTrainingPlanRevision> & {},
+    workoutKey: string,
+    eventId: string,
+    env: NodeJS.ProcessEnv = activeEnv,
+  ) {
     const workout = targetWorkout(source.document as TrainingPlanRevisionDocument, workoutKey);
     const essentialMinimum = workout.blocks.filter((block) => block.priority === 'ESSENTIAL')
       .reduce((sum, block) => sum + block.minimumDurationMinutes, 0);
@@ -489,7 +725,7 @@ describe('Training adaptation proposal service', () => {
       currentRevisionId: source.revisionId, expectedContentHash: source.contentHash,
       contextVersion: source.creationContextVersion, adaptationScope: 'SESSION' as const,
       target: { workoutKey }, explicitInput: { kind: 'BUSY_DAY' as const, availableMinutes: essentialMinimum + 5 },
-      env: activeEnv, db,
+      env, db,
     };
   }
 

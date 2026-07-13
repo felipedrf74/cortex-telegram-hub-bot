@@ -403,6 +403,26 @@ function compareActions(candidate: NormalizedDecisionAction, existing: ConflictC
   }
 
   if (sharedExclusivity.length > 0 && !overlaps) {
+    const exactTrainingTimelineOverlap = sharedResources.includes('calendar_timeline_overlap:primary');
+    if (exactTrainingTimelineOverlap) {
+      result.push({
+        class: 'time_overlap',
+        severity: 'soft',
+        reasonCode: existing.approved ? 'overlaps_approved_commitment' : 'requested_time_windows_overlap',
+        ...decisionFields,
+        resourceKey: sharedExclusivity[0],
+      });
+      if (existing.approved) {
+        result.push({
+          class: 'approved_commitment',
+          severity: 'soft',
+          reasonCode: 'approved_commitment_requires_review',
+          ...decisionFields,
+          resourceKey: sharedExclusivity[0],
+        });
+      }
+      return result;
+    }
     result.push({
       class: 'resource_competition',
       severity: HARD_AUTHORITIES.has(existing.authority) ? 'hard' : 'soft',

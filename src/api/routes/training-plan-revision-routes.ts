@@ -9,6 +9,7 @@ import {
   isDecisionFlowV1EnforceEnabled,
   isTrainingPlanRevisionV1ExplicitlyEnrolled,
   isTrainingTypedWorkoutV1Enabled,
+  getTrainingM4Allowlist,
 } from '../../services/runtime-flags';
 import {
   CANONICAL_TRAINING_SESSION_TYPES,
@@ -31,6 +32,10 @@ import { logger } from '../../utils/logger';
 import { bindTrainingPlanRevisionDecision } from '../../services/training-plan-revision-decision';
 import { supersedeDecisionSourceStateForEntity } from '../../services/decision-center';
 import { incrementTrainingGenerationCounter } from '../../services/training-generation-observability';
+import {
+  getTrainingM4AuthoritativeCapacityContext,
+  type TrainingM4AuthoritativeCapacityContext,
+} from '../../services/training-m4-capacity-context';
 
 interface RevisionApiMeta {
   schemaVersion: typeof TRAINING_PLAN_REVISION_API_SCHEMA;
@@ -46,6 +51,18 @@ export interface RevisionCapabilitiesResource extends RevisionApiMeta {
   typedWorkoutGenerationEnabled: boolean;
   typedGenerationSessionTypes: string[];
   typedGenerationPlanModes: string[];
+  m4AllowedPlanCombinations: Array<{
+    planMode: 'event_based' | 'continuous' | 'maintenance' | 'return_to_training';
+    discipline: 'running' | 'cycling' | 'swimming' | 'strength' | 'triathlon' | 'hybrid' | 'marathon';
+  }>;
+  m4CapacityContext?: TrainingM4AuthoritativeCapacityContext;
+  m4CapacityPolicy: {
+    authoritativeContextAvailable: boolean;
+    authoritativeClientModification: 'NARROW_ONLY';
+    explicitUserEntrySupported: true;
+    explicitUserEntryProvisional: true;
+    explicitUserCalendarConflictCoverage: 'UNAVAILABLE';
+  };
   unknownFallback: {
     presentationFamily: 'unknown';
     presentationLabel: 'Unknown workout type';
@@ -162,6 +179,18 @@ export function trainingPlanRevisionCapabilitiesForScope(
       || !isDecisionFlowV1EnforceEnabled(env, scope)
       || scope.userId !== scope.tenantId) return null;
   const typedWorkoutGenerationEnabled = isTrainingTypedWorkoutV1Enabled(env, scope);
+  const m4AllowedPlanCombinations = typedWorkoutGenerationEnabled
+    ? getTrainingM4Allowlist(env, scope).map((entry) => {
+      const [planMode, discipline] = entry.split(':');
+      return {
+        planMode: planMode as RevisionCapabilitiesResource['m4AllowedPlanCombinations'][number]['planMode'],
+        discipline: discipline as RevisionCapabilitiesResource['m4AllowedPlanCombinations'][number]['discipline'],
+      };
+    })
+    : [];
+  const m4CapacityContext = typedWorkoutGenerationEnabled
+    ? getTrainingM4AuthoritativeCapacityContext(scope)
+    : null;
   return {
     ...meta(),
     registryVersion: 'training-workout-capabilities.v1',
@@ -178,6 +207,15 @@ export function trainingPlanRevisionCapabilitiesForScope(
     typedGenerationPlanModes: typedWorkoutGenerationEnabled
       ? TRAINING_PLAN_MODE_CAPABILITIES.map((entry) => entry.planMode)
       : [],
+    m4AllowedPlanCombinations,
+    ...(m4CapacityContext ? { m4CapacityContext } : {}),
+    m4CapacityPolicy: {
+      authoritativeContextAvailable: Boolean(m4CapacityContext),
+      authoritativeClientModification: 'NARROW_ONLY',
+      explicitUserEntrySupported: true,
+      explicitUserEntryProvisional: true,
+      explicitUserCalendarConflictCoverage: 'UNAVAILABLE',
+    },
     unknownFallback: {
       presentationFamily: 'unknown',
       presentationLabel: 'Unknown workout type',

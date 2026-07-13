@@ -30,6 +30,8 @@ import {
   computeTrainingRevisionAuthoritativeContext,
   deriveTrainingRevisionCreationContextVersion,
 } from './training-plan-revisions';
+import { getTrainingM4AuthoritativeCapacityContext } from './training-m4-capacity-context';
+import { incrementTrainingGenerationCounter } from './training-generation-observability';
 
 export interface DecisionRevalidationScope {
   userId: number;
@@ -164,7 +166,8 @@ const preconditionAdapters = new Map<string, DecisionPreconditionAdapter>([
     validate: ({ scope, precondition }) => {
       const row = getDb().prepare(`
         SELECT contexts.current_revision_id AS currentRevisionId,
-               contexts.base_context_version AS baseContextVersion
+               contexts.base_context_version AS baseContextVersion,
+               revisions.revision_document_json AS revisionDocument
           FROM training_plan_revisions revisions
           JOIN training_plan_current_contexts contexts
             ON contexts.tenant_id = revisions.tenant_id
@@ -176,6 +179,7 @@ const preconditionAdapters = new Map<string, DecisionPreconditionAdapter>([
       `).get(precondition.ref, scope.userId, scope.tenantId) as {
         currentRevisionId: string;
         baseContextVersion: string;
+        revisionDocument: string;
       } | undefined;
       if (!row || row.currentRevisionId !== precondition.ref) {
         return compareDomainRevision(precondition, null, 'training_revision_context_changed');
@@ -184,7 +188,17 @@ const preconditionAdapters = new Map<string, DecisionPreconditionAdapter>([
         row.baseContextVersion,
         computeTrainingRevisionAuthoritativeContext(getDb(), scope),
       );
-      return compareDomainRevision(precondition, currentVersion, 'training_revision_context_changed');
+      const result = compareDomainRevision(precondition, currentVersion, 'training_revision_context_changed');
+      if (revisionDocumentHasM4(row.revisionDocument)) {
+        const recoveryKey = `${scope.tenantId}:${scope.userId}:${precondition.ref}`;
+        if (!result.ok && hasActiveTrainingAgendaOwnership(scope)) {
+          rememberPartialSyncBlock(recoveryKey);
+          incrementTrainingGenerationCounter('m4_partial_sync_blocked_total');
+        } else if (result.ok && pendingPartialSyncRecovery.delete(recoveryKey)) {
+          incrementTrainingGenerationCounter('m4_partial_sync_recovery_total');
+        }
+      }
+      return result;
     },
   }],
   ['training_revision_policy', {
@@ -213,6 +227,39 @@ const preconditionAdapters = new Map<string, DecisionPreconditionAdapter>([
       } | undefined;
       const currentVersion = row ? `${row.catalogVersion}:${row.catalogSourceHash}` : null;
       return compareDomainRevision(precondition, currentVersion, 'training_revision_catalog_changed');
+    },
+  }],
+  ['training_revision_conflict_set', {
+    type: 'training_revision_conflict_set',
+    validate: ({ scope, precondition }) => {
+      const row = getDb().prepare(`
+        SELECT json_extract(revision_document_json, '$.m4.conflictSetHash') AS currentVersion
+          FROM training_plan_revisions
+         WHERE revision_id = ? AND user_id = ? AND tenant_id = ?
+         LIMIT 1
+      `).get(precondition.ref, scope.userId, scope.tenantId) as { currentVersion: string | null } | undefined;
+      return compareDomainRevision(precondition, row?.currentVersion ?? null, 'training_revision_conflict_set_changed');
+    },
+  }],
+  ['training_capacity_context', {
+    type: 'training_capacity_context',
+    validate: ({ scope, precondition }) => {
+      const row = getDb().prepare(`
+        SELECT json_extract(revision_document_json, '$.capacityContextVersion') AS storedVersion,
+               json_extract(revision_document_json, '$.capacityContext.source') AS source
+          FROM training_plan_revisions
+         WHERE revision_id = ? AND user_id = ? AND tenant_id = ?
+         LIMIT 1
+      `).get(precondition.ref, scope.userId, scope.tenantId) as {
+        storedVersion: string | null;
+        source: string | null;
+      } | undefined;
+      const live = getTrainingM4AuthoritativeCapacityContext(scope);
+      const currentVersion = row?.source === 'AUTHORITATIVE'
+        && row.storedVersion === live?.contextVersion
+        ? live.contextVersion
+        : null;
+      return compareDomainRevision(precondition, currentVersion, 'training_capacity_context_changed');
     },
   }],
   ['training_active_pointer', {
@@ -265,6 +312,34 @@ function compareDomainRevision(
     ...(currentVersion !== null ? { currentVersion } : {}),
     ...(!ok ? { reasonCode } : {}),
   };
+}
+
+function revisionDocumentHasM4(serialized: string): boolean {
+  try {
+    const parsed = JSON.parse(serialized) as { m4?: unknown };
+    return parsed.m4 !== undefined && parsed.m4 !== null;
+  } catch {
+    return false;
+  }
+}
+
+function hasActiveTrainingAgendaOwnership(scope: DecisionRevalidationScope): boolean {
+  const row = getDb().prepare(`
+    SELECT 1 AS present
+      FROM training_agenda_event_ownership
+     WHERE user_id = ? AND tenant_id = ? AND status = 'active'
+     LIMIT 1
+  `).get(scope.userId, scope.tenantId) as { present: number } | undefined;
+  return row?.present === 1;
+}
+
+const pendingPartialSyncRecovery = new Set<string>();
+
+function rememberPartialSyncBlock(key: string): void {
+  if (pendingPartialSyncRecovery.size >= 1_000) {
+    pendingPartialSyncRecovery.delete(pendingPartialSyncRecovery.values().next().value as string);
+  }
+  pendingPartialSyncRecovery.add(key);
 }
 
 
@@ -362,6 +437,12 @@ export function revalidateNormalizedDecisionAction(input: {
     confidence: input.confidence,
     allowLowRiskAutoResolution: input.allowLowRiskAutoResolution === true,
   });
+  if (isM4TrainingDecision(input.scope, input.action)) {
+    const hard = conflictEvaluation.findings.filter((finding) => finding.severity === 'hard').length;
+    const soft = conflictEvaluation.findings.filter((finding) => finding.severity === 'soft').length;
+    if (hard > 0) incrementTrainingGenerationCounter('m4_hard_conflict_total', hard);
+    if (soft > 0) incrementTrainingGenerationCounter('m4_soft_conflict_total', soft);
+  }
   return {
     authorizationAllowed: missingPermissions.length === 0,
     missingPermissions,
@@ -370,6 +451,18 @@ export function revalidateNormalizedDecisionAction(input: {
     contextSourcesHealthy,
     canExecute: conflictEvaluation.disposition === 'allow' || conflictEvaluation.disposition === 'auto_resolve',
   };
+}
+
+function isM4TrainingDecision(scope: DecisionRevalidationScope, action: NormalizedDecisionAction): boolean {
+  const target = action.targetEntities.find((entry) => entry.type === 'training_plan_revision');
+  if (!target) return false;
+  const row = getDb().prepare(`
+    SELECT revision_document_json AS document
+      FROM training_plan_revisions
+     WHERE revision_id = ? AND user_id = ? AND tenant_id = ?
+     LIMIT 1
+  `).get(target.id, scope.userId, scope.tenantId) as { document: string } | undefined;
+  return Boolean(row && revisionDocumentHasM4(row.document));
 }
 
 export function isLowRiskAutoReflowEligible(input: {
