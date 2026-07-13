@@ -13,6 +13,7 @@ export interface RuntimeFlagScope {
 export type SecretaryReasoningV1Mode = 'off' | 'shadow' | 'active';
 export type DecisionConflictPolicyV1Mode = 'off' | 'shadow' | 'active';
 export type TrainingPlanRevisionV1Mode = 'off' | 'shadow' | 'active';
+export type TrainingAdaptationV1Mode = 'off' | 'shadow' | 'active';
 
 function parseOptionalBoolean(raw: string | undefined): boolean | null {
   if (raw === undefined || raw.trim() === '') return null;
@@ -380,6 +381,21 @@ export function isTrainingTypedWorkoutV1Enabled(
   scope?: RuntimeFlagScope,
 ): boolean {
   return scopedFlagEnabledByExplicitOptIn(env, 'TRAINING_TYPED_WORKOUT_V1_ENABLED', scope);
+}
+
+/**
+ * Immutable Training adaptation proposals. `shadow` may evaluate policy and
+ * telemetry only; proposal persistence, Decision binding, and activation all
+ * require the explicit scoped `active` value. Unknown values fail closed.
+ */
+export function getTrainingAdaptationV1Mode(
+  env: RuntimeEnv = process.env,
+  scope?: RuntimeFlagScope,
+): TrainingAdaptationV1Mode {
+  const raw = scopedEnvValue(env, 'TRAINING_ADAPTATION_V1_MODE', scope)?.trim().toLowerCase();
+  if (raw === 'active') return 'active';
+  if (raw === 'shadow') return 'shadow';
+  return 'off';
 }
 
 export function isTrainingPlanRevisionV1ExplicitlyEnrolled(

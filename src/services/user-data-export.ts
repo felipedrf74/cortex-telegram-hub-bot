@@ -256,6 +256,9 @@ export interface FullUserExport {
     currentContexts: Array<Record<string, unknown>>;
     activeReferences: Array<Record<string, unknown>>;
     operations: Array<Record<string, unknown>>;
+    adaptationPreviews: Array<Record<string, unknown>>;
+    adaptationProposals: Array<Record<string, unknown>>;
+    adaptationLifecycle: Array<Record<string, unknown>>;
   };
 }
 
@@ -468,6 +471,56 @@ export function exportAllUserData(userId: number): FullUserExport {
     const { responseJson, ...metadata } = row;
     return { ...metadata, response: responseJson == null ? null : parseExportJson(responseJson) };
   });
+  const trainingAdaptationPreviews = safeAll(db, `
+    SELECT adaptation_id AS adaptationId, tenant_id AS tenantId, family_id AS familyId,
+           source_revision_id AS sourceRevisionId, event_id AS eventId,
+           trigger_kind AS triggerKind, scope, target_json AS target,
+           explicit_input_json AS explicitInput, options_json AS options,
+           preview_hash AS previewHash, request_hash AS requestHash,
+           expected_source_content_hash AS expectedSourceContentHash,
+           expected_context_version AS expectedContextVersion,
+           expected_active_pointer_version AS expectedActivePointerVersion,
+           policy_version AS policyVersion, expires_at AS expiresAt, created_at AS createdAt
+      FROM training_adaptation_previews WHERE user_id = ?
+     ORDER BY tenant_id, created_at, adaptation_id
+  `, userId).map((row: Record<string, unknown>) => ({
+    ...row,
+    target: parseExportJson(row.target),
+    explicitInput: parseExportJson(row.explicitInput),
+    options: parseExportJson(row.options),
+  }));
+  const trainingAdaptationProposals = safeAll(db, `
+    SELECT proposal_id AS proposalId, adaptation_id AS adaptationId, tenant_id AS tenantId,
+           family_id AS familyId, source_revision_id AS sourceRevisionId,
+           proposed_revision_id AS proposedRevisionId, decision_id AS decisionId,
+           scope, trigger_kind AS triggerKind, option_kind AS optionKind,
+           selected_option_id AS selectedOptionId, option_hash AS optionHash,
+           current_state_json AS currentState, proposed_state_json AS proposedState,
+           differences_json AS differences, evidence_json AS evidence, rationale,
+           expected_benefit AS expectedBenefit, possible_downside AS possibleDownside,
+           reversibility, future_session_effect AS futureSessionEffect, status,
+           expires_at AS expiresAt, created_at AS createdAt, review_requested_at AS reviewRequestedAt,
+           deferred_at AS deferredAt, activated_at AS activatedAt, rejected_at AS rejectedAt,
+           expired_at AS expiredAt, superseded_at AS supersededAt
+      FROM training_adaptation_proposals WHERE user_id = ?
+     ORDER BY tenant_id, created_at, proposal_id
+  `, userId).map((row: Record<string, unknown>) => ({
+    ...row,
+    currentState: parseExportJson(row.currentState),
+    proposedState: parseExportJson(row.proposedState),
+    differences: parseExportJson(row.differences),
+    evidence: parseExportJson(row.evidence),
+  }));
+  const trainingAdaptationLifecycle = safeAll(db, `
+    SELECT event_id AS eventId, proposal_id AS proposalId, tenant_id AS tenantId,
+           event_type AS eventType, reason_code AS reasonCode,
+           metadata_json AS metadata, created_at AS createdAt
+      FROM training_adaptation_lifecycle_events WHERE user_id = ?
+     ORDER BY tenant_id, created_at, event_id
+  `, userId).map((row: Record<string, unknown>) => ({
+    ...row,
+    metadata: parseExportJson(row.metadata),
+  }));
 
   return {
     exportedAt: new Date().toISOString(),
@@ -506,6 +559,9 @@ export function exportAllUserData(userId: number): FullUserExport {
       currentContexts: trainingCurrentContexts,
       activeReferences: trainingActiveReferences,
       operations: trainingOperations,
+      adaptationPreviews: trainingAdaptationPreviews,
+      adaptationProposals: trainingAdaptationProposals,
+      adaptationLifecycle: trainingAdaptationLifecycle,
     },
   };
 }
@@ -691,7 +747,10 @@ export function deleteAllUserData(userId: number): Record<string, number> {
         'training_plan_current_contexts',
         'training_active_plan_references',
         'training_plan_revision_operations',
-      ].reduce((total, table) => {
+        'training_adaptation_previews',
+        'training_adaptation_proposals',
+        'training_adaptation_lifecycle_events',
+      ].filter((table) => tableExistsForDeletion(db, table)).reduce((total, table) => {
         const row = db.prepare(`SELECT COUNT(*) AS count FROM ${table} WHERE user_id = ?`).get(userId) as { count: number };
         return total + row.count;
       }, 0);

@@ -13,6 +13,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { DateTime } from 'luxon';
 import { getDb } from './database';
+import { incrementTrainingGenerationCounter } from './training-generation-observability';
 import {
   buildSkillNotificationFixtureIntent,
   createNotificationIntent,
@@ -4178,6 +4179,13 @@ export function reviewDecision(
            AND approval_state = 'PENDING'
       `).run(record.relatedEntityId, userId, tenantId, decisionId);
     }
+    syncTrainingAdaptationProposalForDecisionState(
+      getDb(),
+      decisionId,
+      userId,
+      tenantId,
+      input.outcome === 'reject' ? 'REJECTED' : input.outcome === 'defer' ? 'DEFERRED' : 'PENDING_REVIEW',
+    );
   })();
 
   const updated = getDecisionRecord(decisionId, userId, tenantId);
@@ -4377,6 +4385,9 @@ export function snoozeDecision(
       decisionVersionConflictDetails(current),
     );
   }
+  syncTrainingAdaptationProposalForDecisionState(
+    getDb(), decisionId, userId, tenantId, 'DEFERRED',
+  );
   const item = getDecisionItem(decisionId, userId, tenantId);
   if (!item) throw new DecisionActionError('DECISION_NOT_FOUND', 'Decision not found after snooze', 404);
   emitDecisionLifecycleEvent({ decisionId, userId, tenantId, event: 'snoozed', toStatus: item.status });
@@ -4442,6 +4453,7 @@ export function dismissDecision(
       decisionVersionConflictDetails(current),
     );
   }
+  expireTrainingPlanRevisionForDecision(getDb(), decisionId, userId, tenantId, 'REJECTED');
   const dismissedRecord = getDecisionRecord(decisionId, userId, tenantId);
   const decision = dismissedRecord ? formatDecisionItemForApi(dismissedRecord) : null;
   if (!decision) throw new DecisionActionError('DECISION_NOT_FOUND', 'Decision not found after dismiss', 404);
@@ -8030,6 +8042,7 @@ function expireTrainingPlanRevisionForDecision(
   decisionId: string,
   userId: number,
   tenantId: number,
+  approvalState: 'EXPIRED' | 'REJECTED' = 'EXPIRED',
 ): void {
   const table = db.prepare(`
     SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'training_plan_revisions'
@@ -8037,11 +8050,83 @@ function expireTrainingPlanRevisionForDecision(
   if (!table) return;
   db.prepare(`
     UPDATE training_plan_revisions
-       SET lifecycle_state = 'EXPIRED', approval_state = 'EXPIRED',
+       SET lifecycle_state = 'EXPIRED', approval_state = ?,
            expired_at = datetime('now')
      WHERE decision_id = ? AND user_id = ? AND tenant_id = ?
        AND lifecycle_state = 'PENDING_REVIEW' AND approval_state = 'PENDING'
-  `).run(decisionId, userId, tenantId);
+  `).run(approvalState, decisionId, userId, tenantId);
+  syncTrainingAdaptationProposalForDecisionState(
+    db,
+    decisionId,
+    userId,
+    tenantId,
+    approvalState === 'REJECTED' ? 'REJECTED' : 'EXPIRED',
+  );
+}
+
+function syncTrainingAdaptationProposalForDecisionState(
+  db: ReturnType<typeof getDb>,
+  decisionId: string,
+  userId: number,
+  tenantId: number,
+  state: 'PENDING_REVIEW' | 'DEFERRED' | 'REJECTED' | 'EXPIRED',
+): void {
+  if (!db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'training_adaptation_proposals'").get()) {
+    return;
+  }
+  const proposal = db.prepare(`
+    SELECT proposal_id AS proposalId, status
+      FROM training_adaptation_proposals
+     WHERE decision_id = ? AND user_id = ? AND tenant_id = ?
+     LIMIT 1
+  `).get(decisionId, userId, tenantId) as { proposalId: string; status: string } | undefined;
+  if (!proposal) return;
+  let update;
+  if (state === 'PENDING_REVIEW') {
+    update = db.prepare(`
+      UPDATE training_adaptation_proposals
+         SET status = 'PENDING_REVIEW'
+       WHERE proposal_id = ? AND user_id = ? AND tenant_id = ? AND status = 'DEFERRED'
+    `).run(proposal.proposalId, userId, tenantId);
+  } else if (state === 'DEFERRED') {
+    update = db.prepare(`
+      UPDATE training_adaptation_proposals
+         SET status = 'DEFERRED', deferred_at = datetime('now')
+       WHERE proposal_id = ? AND user_id = ? AND tenant_id = ? AND status = 'PENDING_REVIEW'
+    `).run(proposal.proposalId, userId, tenantId);
+  } else if (state === 'REJECTED') {
+    update = db.prepare(`
+      UPDATE training_adaptation_proposals
+         SET status = 'REJECTED', rejected_at = datetime('now')
+       WHERE proposal_id = ? AND user_id = ? AND tenant_id = ?
+         AND status IN ('PENDING_REVIEW', 'DEFERRED')
+    `).run(proposal.proposalId, userId, tenantId);
+  } else {
+    update = db.prepare(`
+      UPDATE training_adaptation_proposals
+         SET status = 'EXPIRED', expired_at = datetime('now')
+       WHERE proposal_id = ? AND user_id = ? AND tenant_id = ?
+         AND status IN ('CANDIDATE', 'PENDING_REVIEW', 'DEFERRED')
+    `).run(proposal.proposalId, userId, tenantId);
+  }
+  if ((update.changes ?? 0) !== 1) return;
+  if (state === 'DEFERRED') incrementTrainingGenerationCounter('adaptation_deferred_total');
+  else if (state === 'REJECTED') incrementTrainingGenerationCounter('adaptation_rejected_total');
+  else if (state === 'EXPIRED') incrementTrainingGenerationCounter('adaptation_expired_total');
+  if (db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'training_adaptation_lifecycle_events'").get()) {
+    db.prepare(`
+      INSERT INTO training_adaptation_lifecycle_events (
+        event_id, proposal_id, tenant_id, user_id, event_type, reason_code, metadata_json
+      ) VALUES (?, ?, ?, ?, ?, ?, '{}')
+    `).run(
+      `tale_${randomUUID()}`,
+      proposal.proposalId,
+      tenantId,
+      userId,
+      state === 'PENDING_REVIEW' ? 'REVIEW_REQUESTED' : state,
+      `DECISION_${state}`,
+    );
+  }
 }
 
 function guardDecisionLifecycleMutation(

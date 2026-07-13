@@ -12,6 +12,7 @@ import {
   getGeminiRoutingEnvOverride,
   getDecisionConflictPolicyV1Mode,
   getSecretaryReasoningV1Mode,
+  getTrainingAdaptationV1Mode,
   getTrainingPlanRevisionV1Mode,
   isTrainingPlanRevisionV1ExplicitlyEnrolled,
   isTrainingTypedWorkoutV1Enabled,
@@ -299,6 +300,21 @@ describe('runtime-flags', () => {
       TRAINING_PLAN_REVISION_V1_MODE: 'active',
       TRAINING_PLAN_REVISION_V1_MODE_USER_42: 'off',
     }, { userId: 42, tenantId: 9 })).toBe('off');
+  });
+
+  it('keeps Training adaptation fail-closed with strict scoped overrides', () => {
+    expect(getTrainingAdaptationV1Mode({})).toBe('off');
+    expect(getTrainingAdaptationV1Mode({ TRAINING_ADAPTATION_V1_MODE: 'shadow' })).toBe('shadow');
+    expect(getTrainingAdaptationV1Mode({ TRAINING_ADAPTATION_V1_MODE: 'active' })).toBe('active');
+    expect(getTrainingAdaptationV1Mode({ TRAINING_ADAPTATION_V1_MODE: 'true' })).toBe('off');
+    expect(getTrainingAdaptationV1Mode({
+      TRAINING_ADAPTATION_V1_MODE: 'off',
+      TRAINING_ADAPTATION_V1_MODE_USER_7: 'active',
+    }, { userId: 7, tenantId: 7 })).toBe('active');
+    expect(getTrainingAdaptationV1Mode({
+      TRAINING_ADAPTATION_V1_MODE: 'active',
+      TRAINING_ADAPTATION_V1_MODE_TENANT_9: 'off',
+    }, { userId: 7, tenantId: 9 })).toBe('off');
   });
 
   it('keeps typed Training workout validation default-off and scope-overridable', () => {
