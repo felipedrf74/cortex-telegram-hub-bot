@@ -728,9 +728,40 @@ const globalTrainingRevisionMode = process.env.TRAINING_PLAN_REVISION_V1_MODE?.t
 const hasScopedTrainingRevisionEnrollment = Object.entries(process.env).some(([key, value]) =>
   /^TRAINING_PLAN_REVISION_V1_MODE_(?:USER|TENANT)_[0-9A-Za-z_-]+$/.test(key)
   && value?.trim().toLowerCase() === 'active');
+const globalTrainingAdaptationMode = process.env.TRAINING_ADAPTATION_V1_MODE?.trim().toLowerCase();
+const scopedTrainingAdaptationEnrollments = Object.entries(process.env).filter(([key, value]) =>
+  /^TRAINING_ADAPTATION_V1_MODE_(?:USER|TENANT)_[0-9A-Za-z_-]+$/.test(key)
+  && value?.trim().toLowerCase() === 'active');
+const hasScopedTrainingAdaptationEnrollment = scopedTrainingAdaptationEnrollments.length > 0;
+const hasScopedTypedTrainingEnrollment = Object.entries(process.env).some(([key, value]) =>
+  /^TRAINING_TYPED_WORKOUT_V1_ENABLED_(?:USER|TENANT)_[0-9A-Za-z_-]+$/.test(key)
+  && value?.trim().toLowerCase() === 'true');
 if (IS_PRODUCTION && globalTrainingRevisionMode === 'active') {
   throw new Error(
     'Global TRAINING_PLAN_REVISION_V1_MODE=active is forbidden in production; enroll explicit personal accounts with scoped USER or TENANT overrides.',
+  );
+}
+if (IS_PRODUCTION && globalTrainingAdaptationMode === 'active') {
+  throw new Error(
+    'Global TRAINING_ADAPTATION_V1_MODE=active is forbidden in production; enroll explicit personal accounts with scoped USER or TENANT overrides.',
+  );
+}
+if (IS_PRODUCTION && hasScopedTrainingAdaptationEnrollment
+    && (!hasScopedTrainingRevisionEnrollment
+      || (process.env.TRAINING_TYPED_WORKOUT_V1_ENABLED !== 'true' && !hasScopedTypedTrainingEnrollment)
+      || process.env.DECISION_FLOW_V1_ENFORCE_ENABLED !== 'true')) {
+  throw new Error(
+    'TRAINING_ADAPTATION_V1_MODE=active requires scoped Training revision enrollment, typed workouts, and Decision Flow v1 in production.',
+  );
+}
+if (IS_PRODUCTION && scopedTrainingAdaptationEnrollments.some(([adaptationKey]) => {
+  const suffix = adaptationKey.replace('TRAINING_ADAPTATION_V1_MODE_', '');
+  return process.env[`TRAINING_PLAN_REVISION_V1_MODE_${suffix}`]?.trim().toLowerCase() !== 'active'
+    || (process.env.TRAINING_TYPED_WORKOUT_V1_ENABLED !== 'true'
+      && process.env[`TRAINING_TYPED_WORKOUT_V1_ENABLED_${suffix}`]?.trim().toLowerCase() !== 'true');
+})) {
+  throw new Error(
+    'Each scoped TRAINING_ADAPTATION_V1_MODE=active enrollment requires Training revision and typed-workout enablement for the same scope.',
   );
 }
 if (IS_PRODUCTION && hasScopedTrainingRevisionEnrollment) {

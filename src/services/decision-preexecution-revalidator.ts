@@ -233,6 +233,23 @@ const preconditionAdapters = new Map<string, DecisionPreconditionAdapter>([
       return compareDomainRevision(precondition, currentVersion, 'training_active_pointer_changed');
     },
   }],
+  ['training_adaptation_option', {
+    type: 'training_adaptation_option',
+    validate: ({ scope, precondition }) => {
+      const table = getDb().prepare(`
+        SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'training_adaptation_proposals'
+      `).get();
+      if (!table) return compareDomainRevision(precondition, null, 'training_adaptation_option_changed');
+      const row = getDb().prepare(`
+        SELECT option_hash AS currentVersion
+          FROM training_adaptation_proposals
+         WHERE selected_option_id = ? AND user_id = ? AND tenant_id = ?
+           AND status IN ('CANDIDATE', 'PENDING_REVIEW', 'DEFERRED')
+         LIMIT 1
+      `).get(precondition.ref, scope.userId, scope.tenantId) as { currentVersion: string } | undefined;
+      return compareDomainRevision(precondition, row?.currentVersion ?? null, 'training_adaptation_option_changed');
+    },
+  }],
 ]);
 
 function compareDomainRevision(
