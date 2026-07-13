@@ -41,6 +41,20 @@ import {
   buildTrainingTypedPlanRevision,
   validateTrainingTypedPlanRevisionDocument,
 } from './training-typed-plan-generator';
+import {
+  deriveEventHorizonWeeks,
+  validateTrainingM4CapacityWindows,
+  validateTrainingM4EventSubtype,
+  validateTrainingM4GoalPriority,
+  validateTrainingM4PlanStartDate,
+  validateTrainingM4ResourceAccess,
+  trainingM4ConflictSetHash,
+  type TrainingEventSubtype,
+  type TrainingM4CapacityWindow,
+  type TrainingM4GoalPriority,
+  type TrainingM4ResourceAccess,
+} from './training-m4-plan-strategies';
+import type { TrainingM4AuthoritativeCapacityContext } from './training-m4-capacity-context';
 
 export const TRAINING_PLAN_REVISION_DOCUMENT_SCHEMA = 'training-plan-revision.v1' as const;
 export const TRAINING_TYPED_PLAN_REVISION_DOCUMENT_SCHEMA = 'training-plan-revision.v2' as const;
@@ -61,11 +75,20 @@ export interface TrainingPlanCandidateRequest {
   goal: 'general_fitness' | 'event_performance' | 'maintenance' | 'return_to_training';
   discipline: CoachingDiscipline;
   horizonWeeks?: number;
+  planStartDate?: string;
   event?: {
     name: string;
     date?: string;
     priority?: 'A' | 'B' | 'C';
+    subtype?: TrainingEventSubtype;
   };
+  resourceAccess?: TrainingM4ResourceAccess;
+  capacity?: {
+    source: 'AUTHORITATIVE' | 'EXPLICIT_USER';
+    contextVersion?: string;
+    windows: TrainingM4CapacityWindow[];
+  };
+  goalPriority?: TrainingM4GoalPriority;
   profile: {
     experienceLevel: TrainingExperienceLevel;
     sessionsPerWeek: number;
@@ -88,6 +111,8 @@ export interface TrainingPlanRevisionWorkout {
   plannedDurationMinutes: number;
   isStandalone?: boolean;
   phaseKey?: string | null;
+  scheduledDate?: string;
+  eventRole?: 'EVENT';
   blocks: TrainingPlanWorkoutBlock[];
 }
 
@@ -96,12 +121,27 @@ export interface TrainingPlanRevisionDocument {
   planMode: TrainingPlanMode;
   goal: TrainingPlanCandidateRequest['goal'];
   discipline: CoachingDiscipline;
+  planStartDate?: string;
   periodization?: 'PERIODIZED' | 'NON_PERIODIZED';
   profileSummary?: {
     experienceLevel: TrainingExperienceLevel;
     sessionsPerWeek: number;
   };
   event?: TrainingPlanCandidateRequest['event'];
+  resourceAccess?: TrainingM4ResourceAccess;
+  capacityContextVersion?: string;
+  capacityContext?: {
+    source: 'AUTHORITATIVE' | 'EXPLICIT_USER';
+    contextVersion: string;
+    provisional: boolean;
+    calendarConflictCoverage: 'AUTHORITATIVE' | 'UNAVAILABLE';
+  };
+  goalPriority?: TrainingM4GoalPriority;
+  m4?: {
+    strategyVersion: string;
+    conflictSetHash: string;
+    validationScope: 'PLAN_CANDIDATE';
+  };
   title: string;
   horizonWeeks: number;
   weeklyStructure: {
@@ -170,6 +210,8 @@ export interface TrainingPlanRevisionCandidateBuildOptions {
   env?: NodeJS.ProcessEnv;
   scope?: RuntimeFlagScope;
   typedWorkoutValidationEnabled?: boolean;
+  m4StrategyEnabled?: boolean;
+  authoritativeCapacityContext?: TrainingM4AuthoritativeCapacityContext | null;
 }
 
 export type TrainingPlanCandidateBuildOptions = TrainingPlanRevisionCandidateBuildOptions;
@@ -193,9 +235,13 @@ export function buildTrainingPlanRevisionCandidate(
     catalog,
     options.typedWorkoutValidationEnabled === true,
     identityCatalog ? new Set(identityCatalog.entries.map((entry) => entry.exerciseId)) : undefined,
+    options.m4StrategyEnabled === true,
+    options.authoritativeCapacityContext ?? null,
   );
   if (options.typedWorkoutValidationEnabled) {
-    const typed = buildTrainingTypedPlanRevision(normalized);
+    const typed = buildTrainingTypedPlanRevision(normalized, {
+      m4StrategyEnabled: options.m4StrategyEnabled === true,
+    });
     normalizeRevisionDocumentExerciseIdentities(typed.document, identityMode);
     const contentHash = stableTrainingRevisionHash(typed.document);
     const catalogVersion = identityCatalog?.catalogVersion ?? catalog.catalogVersion;
@@ -213,6 +259,7 @@ export function buildTrainingPlanRevisionCandidate(
         ...(identityMode === 'active'
           ? { exerciseIdentityPolicyVersion: TRAINING_EXERCISE_IDENTITY_POLICY_VERSION }
           : {}),
+        m4StrategyEnabled: options.m4StrategyEnabled === true,
       }).slice(0, 32)}`,
       catalogVersion,
       catalogSourceHash,
@@ -485,7 +532,9 @@ function validateAndNormalizeRequest(
   request: TrainingPlanCandidateRequest,
   catalog: ReturnType<typeof buildRepoTrainingCatalogSnapshot>,
   typedWorkoutValidationEnabled: boolean,
-  authoritativeExerciseIds?: Set<string>,
+  authoritativeExerciseIds: Set<string> | undefined,
+  m4StrategyEnabled: boolean,
+  authoritativeCapacityContext: TrainingM4AuthoritativeCapacityContext | null,
 ): TrainingPlanCandidateRequest & { horizonWeeks: number } {
   if (!request || typeof request !== 'object' || !request.profile || typeof request.profile !== 'object') {
     throw new Error('TRAINING_REVISION_PROFILE_REQUIRED');
@@ -560,11 +609,34 @@ function validateAndNormalizeRequest(
     typedWorkoutValidationEnabled ? 240 : 90,
     'sessionDurationMinutes',
   );
+  if (m4StrategyEnabled) {
+    if (!request.planStartDate) throw new Error('TRAINING_M4_PLAN_START_DATE_REQUIRED');
+    validateTrainingM4PlanStartDate(request.planStartDate);
+    if (!request.resourceAccess) throw new Error('TRAINING_M4_RESOURCE_ACCESS_REQUIRED');
+    if (!request.goalPriority) throw new Error('TRAINING_M4_GOAL_PRIORITY_REQUIRED');
+    if (!request.capacity || !['AUTHORITATIVE', 'EXPLICIT_USER'].includes(request.capacity.source)) {
+      throw new Error('TRAINING_M4_CAPACITY_SOURCE_REQUIRED');
+    }
+    if (!Array.isArray(request.capacity.windows)) throw new Error('TRAINING_M4_CAPACITY_WINDOWS_REQUIRED');
+    validateTrainingM4ResourceAccess(request.discipline, request.resourceAccess);
+    validateTrainingM4GoalPriority(request.discipline, request.goalPriority);
+    validateTrainingM4CapacityWindows(request.profile.availableDays, request.discipline, request.capacity.windows);
+    if (request.planMode === 'event_based') {
+      if (!request.event?.subtype) throw new Error('TRAINING_M4_EVENT_SUBTYPE_REQUIRED');
+      validateTrainingM4EventSubtype(request.discipline, request.event.subtype);
+    }
+  }
   const minimumHorizon = typedWorkoutValidationEnabled
     ? request.planMode === 'event_based' ? 5 : request.planMode === 'maintenance' ? 2 : 3
     : 4;
+  const derivedEventHorizon = m4StrategyEnabled && request.planMode === 'event_based'
+    ? deriveEventHorizonWeeks(request.planStartDate!, request.event!.date!)
+    : null;
+  if (derivedEventHorizon != null && request.horizonWeeks != null && request.horizonWeeks !== derivedEventHorizon) {
+    throw new Error('TRAINING_M4_EVENT_HORIZON_MISMATCH');
+  }
   const horizonWeeks = integerInRange(
-    request.horizonWeeks ?? Math.max(4, minimumHorizon),
+    derivedEventHorizon ?? request.horizonWeeks ?? Math.max(4, minimumHorizon),
     minimumHorizon,
     typedWorkoutValidationEnabled ? 52 : 12,
     'horizonWeeks',
@@ -588,9 +660,13 @@ function validateAndNormalizeRequest(
   if (exclusions.some((exerciseId) => !activeExerciseIds.has(exerciseId))) {
     throw new Error('TRAINING_REVISION_EXCLUSION_UNKNOWN');
   }
+  const normalizedCapacity = m4StrategyEnabled
+    ? normalizeTrainingM4Capacity(request.capacity!, authoritativeCapacityContext)
+    : request.capacity;
   return {
     ...request,
     horizonWeeks,
+    ...(normalizedCapacity ? { capacity: normalizedCapacity } : {}),
     profile: {
       ...request.profile,
       sessionsPerWeek: sessions,
@@ -619,6 +695,51 @@ function normalizeRevisionDocumentExerciseIdentities(
           }) as unknown as TrainingPlanExercisePrescription);
       }
     }
+  }
+}
+
+function normalizeTrainingM4Capacity(
+  capacity: NonNullable<TrainingPlanCandidateRequest['capacity']>,
+  authoritative: TrainingM4AuthoritativeCapacityContext | null,
+): NonNullable<TrainingPlanCandidateRequest['capacity']> & { contextVersion: string } {
+  const windows = capacity.windows.map((window) => ({
+    ...window,
+    timezone: window.timezone.trim(),
+    ...(window.allowedDisciplines
+      ? { allowedDisciplines: [...new Set(window.allowedDisciplines)].sort() }
+      : {}),
+  })).sort((left, right) => left.dayOfWeek.localeCompare(right.dayOfWeek)
+    || left.startTime.localeCompare(right.startTime)
+    || left.endTime.localeCompare(right.endTime));
+  if (capacity.source === 'EXPLICIT_USER') {
+    if (capacity.contextVersion != null) throw new Error('TRAINING_M4_CLIENT_AUTHORITY_VERSION_FORBIDDEN');
+    return {
+      source: 'EXPLICIT_USER',
+      contextVersion: `explicit_user_${trainingM4ConflictSetHash(windows)}`,
+      windows,
+    };
+  }
+  if (!authoritative) throw new Error('TRAINING_M4_AUTHORITATIVE_CAPACITY_UNAVAILABLE');
+  if (!capacity.contextVersion || capacity.contextVersion !== authoritative.contextVersion) {
+    throw new Error('TRAINING_M4_AUTHORITATIVE_CAPACITY_STALE');
+  }
+  validateAuthoritativeCapacityNarrowing(authoritative.windows, windows);
+  return { source: 'AUTHORITATIVE', contextVersion: authoritative.contextVersion, windows };
+}
+
+function validateAuthoritativeCapacityNarrowing(
+  authoritative: readonly TrainingM4CapacityWindow[],
+  requested: readonly TrainingM4CapacityWindow[],
+): void {
+  for (const window of requested) {
+    const parent = authoritative.find((candidate) => candidate.dayOfWeek === window.dayOfWeek
+      && candidate.timezone === window.timezone
+      && candidate.startTime <= window.startTime
+      && candidate.endTime >= window.endTime
+      && (!candidate.allowedDisciplines?.length
+        || (window.allowedDisciplines?.length
+          && window.allowedDisciplines.every((value) => candidate.allowedDisciplines!.includes(value)))));
+    if (!parent) throw new Error('TRAINING_M4_CAPACITY_CLIENT_EXPANSION_FORBIDDEN');
   }
 }
 

@@ -10,6 +10,7 @@ import {
   getTrainingPlanRevisionV1Mode,
   isTrainingPlanRevisionV1ExplicitlyEnrolled,
   isTrainingTypedWorkoutV1Enabled,
+  isTrainingM4PlanCombinationAllowed,
 } from './runtime-flags';
 import { withTrainingCalendarOperationLock } from './training-operation-locks';
 import {
@@ -35,6 +36,7 @@ import {
 } from './training-plan-revision-candidate-builder';
 import { incrementTrainingGenerationCounter } from './training-generation-observability';
 import { findTargetWorkout, targetWorkoutKeysForScope, type TrainingAdaptationScope } from './training-adaptation-types';
+import { getTrainingM4AuthoritativeCapacityContext } from './training-m4-capacity-context';
 
 export interface TrainingPlanRevisionApprovalEvidence {
   decisionId: string;
@@ -670,10 +672,27 @@ function validateActivationInput(db: Database.Database, input: {
       409,
     );
   }
+  const m4StrategyEnabled = isTrainingM4PlanCombinationAllowed(
+    snapshot.body.request.planMode,
+    snapshot.body.request.discipline,
+    input.env ?? process.env,
+    input.scope,
+  );
+  if ((revision.document as TrainingPlanRevisionDocument).m4 && !m4StrategyEnabled) {
+    throw new TrainingPlanRevisionError(
+      'TRAINING_M4_ALLOWLIST_REQUIRED',
+      'The approved mode and discipline are no longer enrolled for activation.',
+      404,
+    );
+  }
   const rebuilt = buildTrainingPlanRevisionCandidate(snapshot.body.request, {
     env: input.env,
     scope: input.scope,
     typedWorkoutValidationEnabled: typedWorkoutEnabled,
+    m4StrategyEnabled,
+    ...(snapshot.body.request.capacity?.source === 'AUTHORITATIVE'
+      ? { authoritativeCapacityContext: getTrainingM4AuthoritativeCapacityContext(input.scope) }
+      : {}),
   });
   const rebuiltContextVersion = deriveTrainingRevisionCreationContextVersion(
     rebuilt.creationContextVersion,

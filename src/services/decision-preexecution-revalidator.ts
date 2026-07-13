@@ -30,6 +30,7 @@ import {
   computeTrainingRevisionAuthoritativeContext,
   deriveTrainingRevisionCreationContextVersion,
 } from './training-plan-revisions';
+import { getTrainingM4AuthoritativeCapacityContext } from './training-m4-capacity-context';
 
 export interface DecisionRevalidationScope {
   userId: number;
@@ -213,6 +214,39 @@ const preconditionAdapters = new Map<string, DecisionPreconditionAdapter>([
       } | undefined;
       const currentVersion = row ? `${row.catalogVersion}:${row.catalogSourceHash}` : null;
       return compareDomainRevision(precondition, currentVersion, 'training_revision_catalog_changed');
+    },
+  }],
+  ['training_revision_conflict_set', {
+    type: 'training_revision_conflict_set',
+    validate: ({ scope, precondition }) => {
+      const row = getDb().prepare(`
+        SELECT json_extract(revision_document_json, '$.m4.conflictSetHash') AS currentVersion
+          FROM training_plan_revisions
+         WHERE revision_id = ? AND user_id = ? AND tenant_id = ?
+         LIMIT 1
+      `).get(precondition.ref, scope.userId, scope.tenantId) as { currentVersion: string | null } | undefined;
+      return compareDomainRevision(precondition, row?.currentVersion ?? null, 'training_revision_conflict_set_changed');
+    },
+  }],
+  ['training_capacity_context', {
+    type: 'training_capacity_context',
+    validate: ({ scope, precondition }) => {
+      const row = getDb().prepare(`
+        SELECT json_extract(revision_document_json, '$.capacityContextVersion') AS storedVersion,
+               json_extract(revision_document_json, '$.capacityContext.source') AS source
+          FROM training_plan_revisions
+         WHERE revision_id = ? AND user_id = ? AND tenant_id = ?
+         LIMIT 1
+      `).get(precondition.ref, scope.userId, scope.tenantId) as {
+        storedVersion: string | null;
+        source: string | null;
+      } | undefined;
+      const live = getTrainingM4AuthoritativeCapacityContext(scope);
+      const currentVersion = row?.source === 'AUTHORITATIVE'
+        && row.storedVersion === live?.contextVersion
+        ? live.contextVersion
+        : null;
+      return compareDomainRevision(precondition, currentVersion, 'training_capacity_context_changed');
     },
   }],
   ['training_active_pointer', {

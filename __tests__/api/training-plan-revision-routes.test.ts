@@ -9,6 +9,7 @@ import {
   registerTrainingPlanRevisionRoutes,
   trainingPlanRevisionCapabilitiesForScope,
 } from '../../src/api/routes/training-plan-revision-routes';
+import { registerTrainingM4CapacityContextProvider } from '../../src/services/training-m4-capacity-context';
 
 describe('Training plan revision API contracts', () => {
   let db: Database.Database;
@@ -116,6 +117,104 @@ describe('Training plan revision API contracts', () => {
       expect(db.prepare('SELECT COUNT(*) AS count FROM training_plan_revisions').get()).toEqual({ count: 0 });
       expect(trainingPlanRevisionCapabilitiesForScope({ userId: 7, tenantId: 7 }, {})).toBeNull();
     });
+  });
+
+  it('exposes only the effective strict scoped M4 mode/discipline combinations', () => {
+    const base = {
+      TRAINING_PLAN_REVISION_V1_MODE_USER_7: 'active',
+      TRAINING_TYPED_WORKOUT_V1_ENABLED_USER_7: 'true',
+      DECISION_FLOW_V1_ENFORCE_ENABLED: 'true',
+    };
+    expect(trainingPlanRevisionCapabilitiesForScope({ userId: 7, tenantId: 7 }, base))
+      .toMatchObject({ m4AllowedPlanCombinations: [] });
+    expect(trainingPlanRevisionCapabilitiesForScope({ userId: 7, tenantId: 7 }, {
+      ...base,
+      TRAINING_PLAN_M4_ALLOWLIST_TENANT_7: 'maintenance:running,event_based:marathon',
+    })?.m4AllowedPlanCombinations).toEqual([
+      { planMode: 'event_based', discipline: 'marathon' },
+      { planMode: 'maintenance', discipline: 'running' },
+    ]);
+    expect(trainingPlanRevisionCapabilitiesForScope({ userId: 7, tenantId: 7 }, {
+      ...base,
+      TRAINING_PLAN_M4_ALLOWLIST_TENANT_7: 'maintenance:running',
+      TRAINING_PLAN_M4_ALLOWLIST_USER_7: 'event_based:triathlon',
+    })?.m4AllowedPlanCombinations).toEqual([
+      { planMode: 'event_based', discipline: 'triathlon' },
+    ]);
+    expect(trainingPlanRevisionCapabilitiesForScope({ userId: 7, tenantId: 7 }, {
+      ...base,
+      TRAINING_PLAN_M4_ALLOWLIST_USER_7: 'event_based:triathlon,unknown:*',
+    })?.m4AllowedPlanCombinations).toEqual([]);
+    expect(trainingPlanRevisionCapabilitiesForScope({ userId: 7, tenantId: 9 }, {
+      ...base,
+      TRAINING_PLAN_REVISION_V1_MODE_TENANT_9: 'active',
+      TRAINING_TYPED_WORKOUT_V1_ENABLED_TENANT_9: 'true',
+      TRAINING_PLAN_M4_ALLOWLIST_TENANT_9: 'maintenance:running',
+    })).toBeNull();
+  });
+
+  it('exposes fresh authoritative capacity only to its exact personal scope', () => {
+    const env = {
+      TRAINING_PLAN_REVISION_V1_MODE_USER_7: 'active',
+      TRAINING_TYPED_WORKOUT_V1_ENABLED_USER_7: 'true',
+      TRAINING_PLAN_M4_ALLOWLIST_USER_7: 'event_based:marathon',
+      DECISION_FLOW_V1_ENFORCE_ENABLED: 'true',
+    };
+    expect(trainingPlanRevisionCapabilitiesForScope({ userId: 7, tenantId: 7 }, env)?.m4CapacityContext)
+      .toBeUndefined();
+    expect(trainingPlanRevisionCapabilitiesForScope({ userId: 7, tenantId: 7 }, env)?.m4CapacityPolicy)
+      .toEqual({
+        authoritativeContextAvailable: false,
+        authoritativeClientModification: 'NARROW_ONLY',
+        explicitUserEntrySupported: true,
+        explicitUserEntryProvisional: true,
+        explicitUserCalendarConflictCoverage: 'UNAVAILABLE',
+      });
+    const unregister = registerTrainingM4CapacityContextProvider((scope) => scope.userId === 7 && scope.tenantId === 7
+      ? {
+        source: 'AUTHORITATIVE',
+        contextVersion: 'server-capacity-v1',
+        windows: [{
+          dayOfWeek: 'monday', startTime: '06:00', endTime: '08:00', timezone: 'Europe/Lisbon',
+          allowedDisciplines: ['running'],
+        }],
+        observedAt: '2026-07-13T00:00:00.000Z',
+        expiresAt: '2099-01-01T00:00:00.000Z',
+      }
+      : null);
+    try {
+      expect(trainingPlanRevisionCapabilitiesForScope({ userId: 7, tenantId: 7 }, env)?.m4CapacityContext)
+        .toEqual({
+          source: 'AUTHORITATIVE',
+          contextVersion: 'server-capacity-v1',
+          windows: [{
+            dayOfWeek: 'monday', startTime: '06:00', endTime: '08:00', timezone: 'Europe/Lisbon',
+            allowedDisciplines: ['running'],
+          }],
+          observedAt: '2026-07-13T00:00:00.000Z',
+          expiresAt: '2099-01-01T00:00:00.000Z',
+        });
+      expect(trainingPlanRevisionCapabilitiesForScope({ userId: 7, tenantId: 7 }, env)?.m4CapacityPolicy)
+        .toMatchObject({ authoritativeContextAvailable: true });
+      expect(trainingPlanRevisionCapabilitiesForScope({ userId: 8, tenantId: 8 }, {
+        TRAINING_PLAN_REVISION_V1_MODE_USER_8: 'active',
+        TRAINING_TYPED_WORKOUT_V1_ENABLED_USER_8: 'true',
+        DECISION_FLOW_V1_ENFORCE_ENABLED: 'true',
+      })?.m4CapacityContext).toBeUndefined();
+    } finally {
+      unregister();
+    }
+    const unregisterExpired = registerTrainingM4CapacityContextProvider(() => ({
+      source: 'AUTHORITATIVE', contextVersion: 'expired-capacity-v1',
+      windows: [{ dayOfWeek: 'monday', startTime: '06:00', endTime: '08:00', timezone: 'Europe/Lisbon' }],
+      observedAt: '2020-01-01T00:00:00.000Z', expiresAt: '2020-01-02T00:00:00.000Z',
+    }));
+    try {
+      expect(trainingPlanRevisionCapabilitiesForScope({ userId: 7, tenantId: 7 }, env)?.m4CapacityContext)
+        .toBeUndefined();
+    } finally {
+      unregisterExpired();
+    }
   });
 
   it('distinguishes active enrollment with a disabled Decision dependency from an absent rollout', async () => {

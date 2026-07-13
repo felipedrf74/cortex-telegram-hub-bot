@@ -8,6 +8,7 @@ import {
   isTrainingPlanRevisionV1ExplicitlyEnrolled,
   isDecisionFlowV1EnforceEnabled,
   isTrainingTypedWorkoutV1Enabled,
+  isTrainingM4PlanCombinationAllowed,
   type RuntimeFlagScope,
 } from './runtime-flags';
 import {
@@ -23,6 +24,10 @@ import {
   encryptTrainingProfileSnapshot,
 } from './training-profile-snapshot-encryption';
 import { TrainingPlanRevisionError } from './training-plan-revision-errors';
+import {
+  getTrainingM4AuthoritativeCapacityContext,
+  type TrainingM4AuthoritativeCapacityContext,
+} from './training-m4-capacity-context';
 export { TrainingPlanRevisionError } from './training-plan-revision-errors';
 
 export const TRAINING_PLAN_REVISION_API_SCHEMA = 'training_plan_revision_api.v1' as const;
@@ -160,6 +165,7 @@ export function createTrainingPlanCandidateRevision(input: {
   env?: NodeJS.ProcessEnv;
 }): TrainingPlanCandidateSetResource {
   requireActiveMode(input.scope, input.env);
+  const generationOptions = trainingGenerationOptions(input.request, input.env, input.scope);
   requireIdempotencyKey(input.idempotencyKey);
   const requestHash = stableTrainingRevisionHash({ operation: 'CREATE_CANDIDATE', request: input.request });
   const db = getDb();
@@ -173,7 +179,7 @@ export function createTrainingPlanCandidateRevision(input: {
     buildTrainingPlanRevisionCandidate(input.request, {
       env: input.env,
       scope: input.scope,
-      typedWorkoutValidationEnabled: isTrainingTypedWorkoutV1Enabled(input.env, input.scope),
+      ...generationOptions,
     }),
   );
 
@@ -210,9 +216,10 @@ export function computeTrainingPlanRevisionShadow(
   request: TrainingPlanCandidateRequest,
   options: { env?: NodeJS.ProcessEnv; scope?: RuntimeFlagScope } = {},
 ): BuiltTrainingPlanRevisionCandidate {
+  const generationOptions = trainingGenerationOptions(request, options.env, options.scope);
   return buildTrainingPlanRevisionCandidate(request, {
     ...options,
-    typedWorkoutValidationEnabled: isTrainingTypedWorkoutV1Enabled(options.env, options.scope),
+    ...generationOptions,
   });
 }
 
@@ -469,13 +476,14 @@ export function editTrainingPlanRevisionPreview(input: {
     },
   };
   delete (nextRequest.profile as Record<string, unknown>).horizonWeeks;
+  const generationOptions = trainingGenerationOptions(nextRequest, input.env, input.scope);
   const built = bindCandidateToAuthoritativeContext(
     db,
     input.scope,
     buildTrainingPlanRevisionCandidate(nextRequest, {
       env: input.env,
       scope: input.scope,
-      typedWorkoutValidationEnabled: isTrainingTypedWorkoutV1Enabled(input.env, input.scope),
+      ...generationOptions,
     }),
   );
 
@@ -869,6 +877,45 @@ function requireActiveMode(scope: RuntimeFlagScope, env: NodeJS.ProcessEnv | und
     );
   }
   requirePersonalTrainingRevisionScope(scope);
+}
+
+function trainingGenerationOptions(
+  request: TrainingPlanCandidateRequest,
+  env: NodeJS.ProcessEnv | undefined,
+  scope?: RuntimeFlagScope,
+): {
+  typedWorkoutValidationEnabled: boolean;
+  m4StrategyEnabled: boolean;
+  authoritativeCapacityContext?: TrainingM4AuthoritativeCapacityContext | null;
+} {
+  const typedWorkoutValidationEnabled = isTrainingTypedWorkoutV1Enabled(env, scope);
+  const m4StrategyEnabled = typedWorkoutValidationEnabled && isTrainingM4PlanCombinationAllowed(
+    request.planMode,
+    request.discipline,
+    env ?? process.env,
+    scope,
+  );
+  const requestsM4 = request.planStartDate != null
+    || request.event?.subtype != null
+    || request.resourceAccess != null
+    || request.capacity != null
+    || request.goalPriority != null;
+  if (requestsM4 && !m4StrategyEnabled) {
+    throw new TrainingPlanRevisionError(
+      'TRAINING_M4_ALLOWLIST_REQUIRED',
+      'This training mode and discipline are not enrolled for Milestone 4 generation.',
+      404,
+    );
+  }
+  return {
+    typedWorkoutValidationEnabled,
+    m4StrategyEnabled,
+    ...(m4StrategyEnabled && request.capacity?.source === 'AUTHORITATIVE'
+      ? { authoritativeCapacityContext: scope
+        ? getTrainingM4AuthoritativeCapacityContext(scope as { userId: number; tenantId: number })
+        : null }
+      : {}),
+  };
 }
 
 export function requirePersonalTrainingRevisionScope(scope: RuntimeFlagScope): void {

@@ -1,0 +1,225 @@
+// Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
+
+import Database from 'better-sqlite3';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { runMigrationsForTest, withDatabaseForTestAsync } from '../../src/services/database';
+import { bindTrainingPlanRevisionDecision } from '../../src/services/training-plan-revision-decision';
+import { createTrainingPlanCandidateRevision } from '../../src/services/training-plan-revisions';
+import type { TrainingPlanCandidateRequest } from '../../src/services/training-plan-revision-candidate-builder';
+import { revalidateNormalizedDecisionAction } from '../../src/services/decision-preexecution-revalidator';
+import type { NormalizedDecisionAction } from '../../src/services/decision-action-contract';
+import { performDecisionAction, reviewDecision } from '../../src/services/decision-center';
+import { registerTrainingM4CapacityContextProvider } from '../../src/services/training-m4-capacity-context';
+
+const request: TrainingPlanCandidateRequest = {
+  planMode: 'event_based', goal: 'event_performance', discipline: 'marathon',
+  planStartDate: '2026-08-17', horizonWeeks: 12,
+  event: { name: 'Reviewed marathon', date: '2026-11-08', priority: 'A', subtype: 'marathon' },
+  resourceAccess: {
+    pool: false, bicycle: false, indoorTrainer: false,
+    safeRunEnvironment: true, outdoorRideEnvironment: false,
+  },
+  capacity: {
+    source: 'AUTHORITATIVE',
+    contextVersion: 'calendar-capacity-v1',
+    windows: ['monday', 'tuesday', 'thursday', 'saturday', 'sunday'].map((dayOfWeek) => ({
+      dayOfWeek: dayOfWeek as 'monday', startTime: '06:00', endTime: '08:00', timezone: 'Europe/Lisbon',
+      allowedDisciplines: ['marathon' as const, 'strength' as const],
+    })),
+  },
+  goalPriority: { primaryDiscipline: 'marathon', secondaryDisciplines: [] },
+  profile: {
+    experienceLevel: 'intermediate', sessionsPerWeek: 5, sessionDurationMinutes: 60,
+    availableDays: ['monday', 'tuesday', 'thursday', 'saturday', 'sunday'],
+    equipmentIds: [], location: 'home', preferences: [], exclusions: [],
+  },
+};
+
+describe('training M4 single-Decision conflict and activation gates', () => {
+  let db: Database.Database;
+  let unregisterCapacity: (() => void) | null = null;
+  let authoritativeCapacityVersion = 'calendar-capacity-v1';
+  const original: Record<string, string | undefined> = {};
+  const keys = [
+    'TRAINING_PLAN_REVISION_V1_MODE_USER_7',
+    'TRAINING_TYPED_WORKOUT_V1_ENABLED_USER_7',
+    'TRAINING_PLAN_M4_ALLOWLIST_USER_7',
+    'DECISION_FLOW_V1_ENFORCE_ENABLED',
+    'TRAINING_PROFILE_SNAPSHOT_ENCRYPTION_KEY',
+  ];
+
+  beforeEach(() => {
+    authoritativeCapacityVersion = 'calendar-capacity-v1';
+    db = new Database(':memory:');
+    runMigrationsForTest(db);
+    for (const key of keys) original[key] = process.env[key];
+    process.env.TRAINING_PLAN_REVISION_V1_MODE_USER_7 = 'active';
+    process.env.TRAINING_TYPED_WORKOUT_V1_ENABLED_USER_7 = 'true';
+    process.env.TRAINING_PLAN_M4_ALLOWLIST_USER_7 = 'event_based:marathon';
+    process.env.DECISION_FLOW_V1_ENFORCE_ENABLED = 'true';
+    process.env.TRAINING_PROFILE_SNAPSHOT_ENCRYPTION_KEY = 'training-revision-test-encryption-key-0001';
+    unregisterCapacity = registerTrainingM4CapacityContextProvider((scope) => scope.userId === 7 && scope.tenantId === 7
+      ? {
+        source: 'AUTHORITATIVE',
+        contextVersion: authoritativeCapacityVersion,
+        windows: request.capacity!.windows.map((window) => ({ ...window })),
+        observedAt: '2026-07-13T00:00:00.000Z',
+        expiresAt: '2099-01-01T00:00:00.000Z',
+      }
+      : null);
+  });
+
+  afterEach(() => {
+    unregisterCapacity?.();
+    unregisterCapacity = null;
+    for (const key of keys) {
+      if (original[key] === undefined) delete process.env[key];
+      else process.env[key] = original[key];
+    }
+    db.close();
+  });
+
+  it('uses one Decision and recovers after calendar and persisted-precondition drift are removed', async () => {
+    await withDatabaseForTestAsync(db, async () => {
+      const created = createTrainingPlanCandidateRevision({
+        scope: { userId: 7, tenantId: 7 }, idempotencyKey: 'm4-decision', request,
+      });
+      const revision = await bindTrainingPlanRevisionDecision({
+        scope: { userId: 7, tenantId: 7 }, revisionId: created.candidates[0].revisionId,
+      });
+      expect(db.prepare('SELECT COUNT(*) AS count FROM notification_center_items').get()).toEqual({ count: 1 });
+      const row = db.prepare(`
+        SELECT normalized_action_json AS action
+          FROM notification_intents WHERE related_entity_id = ?
+      `).get(revision.revisionId) as { action: string };
+      const action = JSON.parse(row.action) as NormalizedDecisionAction;
+      expect(action.preconditions).toEqual(expect.arrayContaining([
+        expect.objectContaining({ type: 'training_revision_conflict_set', required: true }),
+        expect.objectContaining({ type: 'training_capacity_context', expectedVersion: 'calendar-capacity-v1' }),
+      ]));
+      expect(action.affectedResources).toEqual(expect.arrayContaining([
+        expect.objectContaining({ type: 'training_schedule', id: revision.revisionId }),
+        expect.objectContaining({ type: 'training_resource', id: 'safeRunEnvironment' }),
+      ]));
+
+      const initial = revalidateNormalizedDecisionAction({ scope: { userId: 7, tenantId: 7 }, action });
+      expect(initial.preconditions.every((precondition) => precondition.ok)).toBe(true);
+
+      db.prepare(`
+        INSERT INTO secretary_agenda_items (
+          agenda_item_id, source_intent_id, source_skill, intent_action,
+          owner_user_id, tenant_id, lifecycle_state, provider_sync_state,
+          version, title, start_at, end_at, duration_minutes, decision_action,
+          decision_reason_codes_json, source_shape_hash, scheduled_segments_json,
+          created_at, updated_at
+        ) VALUES (?, ?, 'secretary', 'schedule_this', 7, '7', 'scheduled', 'not_synced',
+          1, 'Private fixture', '2026-09-01T06:00:00.000Z', '2026-09-01T07:00:00.000Z',
+          60, 'schedule', '[]', 'shape-v1', '[]', datetime('now'), datetime('now'))
+      `).run('agenda-m4-drift', 'intent-m4-drift');
+      const calendarDrift = revalidateNormalizedDecisionAction({ scope: { userId: 7, tenantId: 7 }, action });
+      expect(calendarDrift.preconditions).toEqual(expect.arrayContaining([
+        expect.objectContaining({ type: 'training_revision_context', ok: false }),
+      ]));
+      db.prepare('DELETE FROM secretary_agenda_items WHERE agenda_item_id = ?').run('agenda-m4-drift');
+      expect(revalidateNormalizedDecisionAction({ scope: { userId: 7, tenantId: 7 }, action })
+        .preconditions.every((precondition) => precondition.ok)).toBe(true);
+
+      db.prepare(`
+        INSERT INTO training_agenda_event_ownership (
+          plan_id, plan_version, session_id, user_id, tenant_id,
+          calendar_event_id, calendar_source, calendar_id, status,
+          last_verified_at, sync_version
+        ) VALUES (999, 1, NULL, 7, 7, 'partial-sync-event', 'google', 'primary',
+          'active', NULL, 'training_calendar_sync_v1')
+      `).run();
+      expect(revalidateNormalizedDecisionAction({ scope: { userId: 7, tenantId: 7 }, action }).preconditions)
+        .toEqual(expect.arrayContaining([
+          expect.objectContaining({ type: 'training_revision_context', ok: false }),
+        ]));
+      db.prepare("DELETE FROM training_agenda_event_ownership WHERE calendar_event_id = 'partial-sync-event'").run();
+      expect(revalidateNormalizedDecisionAction({ scope: { userId: 7, tenantId: 7 }, action })
+        .preconditions.every((precondition) => precondition.ok)).toBe(true);
+
+      authoritativeCapacityVersion = 'calendar-capacity-v2';
+      expect(revalidateNormalizedDecisionAction({ scope: { userId: 7, tenantId: 7 }, action }).preconditions)
+        .toEqual(expect.arrayContaining([
+          expect.objectContaining({ type: 'training_capacity_context', ok: false }),
+        ]));
+      authoritativeCapacityVersion = 'calendar-capacity-v1';
+      expect(revalidateNormalizedDecisionAction({ scope: { userId: 7, tenantId: 7 }, action })
+        .preconditions.every((precondition) => precondition.ok)).toBe(true);
+
+      const staleDecisionAction = structuredClone(action);
+      staleDecisionAction.preconditions = staleDecisionAction.preconditions.map((precondition) =>
+        precondition.type === 'training_revision_conflict_set'
+          ? { ...precondition, expectedVersion: '0'.repeat(64) }
+          : precondition);
+      expect(revalidateNormalizedDecisionAction({
+        scope: { userId: 7, tenantId: 7 }, action: staleDecisionAction,
+      }).preconditions)
+        .toEqual(expect.arrayContaining([
+          expect.objectContaining({ type: 'training_revision_conflict_set', ok: false }),
+        ]));
+      expect(revalidateNormalizedDecisionAction({ scope: { userId: 7, tenantId: 7 }, action })
+        .preconditions.every((precondition) => precondition.ok)).toBe(true);
+    });
+  });
+
+  it('denies activation if the exact M4 allowlist is removed after approval', async () => {
+    await withDatabaseForTestAsync(db, async () => {
+      const created = createTrainingPlanCandidateRevision({
+        scope: { userId: 7, tenantId: 7 }, idempotencyKey: 'm4-activation-denial', request,
+      });
+      const bound = await bindTrainingPlanRevisionDecision({
+        scope: { userId: 7, tenantId: 7 }, revisionId: created.candidates[0].revisionId,
+      });
+      const stored = db.prepare(`
+        SELECT record_version AS recordVersion FROM notification_center_items WHERE item_id = ?
+      `).get(bound.decisionId) as { recordVersion: number };
+      const approved = reviewDecision(bound.decisionId!, 7, 7, {
+        outcome: 'approve', expectedVersion: stored.recordVersion,
+        idempotencyKey: 'approve-m4-denial', strongConfirmationText: 'CONFIRM',
+      });
+      delete process.env.TRAINING_PLAN_M4_ALLOWLIST_USER_7;
+      await expect(performDecisionAction(
+        bound.decisionId!, 'activate_training_plan_revision', 7, 7,
+        {
+          idempotencyKey: 'activate-m4-denied',
+          expectedVersion: approved.recordVersion,
+          contextVersion: approved.contextVersion,
+        },
+      )).rejects.toMatchObject({ code: 'TRAINING_M4_ALLOWLIST_REQUIRED' });
+      expect(db.prepare('SELECT COUNT(*) AS count FROM fitness_training_plans').get()).toEqual({ count: 0 });
+    });
+  });
+
+  it('keeps explicit-user capacity provisional and out of cross-domain preconditions', async () => {
+    await withDatabaseForTestAsync(db, async () => {
+      const explicitRequest: TrainingPlanCandidateRequest = {
+        ...request,
+        capacity: {
+          source: 'EXPLICIT_USER',
+          windows: request.capacity!.windows.map((window) => ({ ...window })),
+        },
+      };
+      const created = createTrainingPlanCandidateRevision({
+        scope: { userId: 7, tenantId: 7 }, idempotencyKey: 'm4-explicit-capacity', request: explicitRequest,
+      });
+      expect(created.candidates[0].document).toMatchObject({
+        capacityContext: {
+          source: 'EXPLICIT_USER', provisional: true, calendarConflictCoverage: 'UNAVAILABLE',
+        },
+      });
+      const bound = await bindTrainingPlanRevisionDecision({
+        scope: { userId: 7, tenantId: 7 }, revisionId: created.candidates[0].revisionId,
+      });
+      const row = db.prepare(`
+        SELECT normalized_action_json AS action
+          FROM notification_intents WHERE related_entity_id = ?
+      `).get(bound.revisionId) as { action: string };
+      const action = JSON.parse(row.action) as NormalizedDecisionAction;
+      expect(action.preconditions.some((precondition) => precondition.type === 'training_capacity_context')).toBe(false);
+      expect(action.preconditions.some((precondition) => precondition.type === 'training_revision_conflict_set')).toBe(true);
+    });
+  });
+});

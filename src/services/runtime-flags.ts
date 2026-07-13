@@ -1,6 +1,8 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
 import { config } from '../config';
+import type { CoachingDiscipline } from './coach-kernel/types';
+import type { TrainingPlanMode } from './training-workout-capability-registry';
 
 type RuntimeEnv = NodeJS.ProcessEnv;
 const DEFAULT_AI_CALL_TIMEOUT_MS = 30_000;
@@ -428,6 +430,37 @@ export function isTrainingExerciseMediaV1Enabled(
   scope?: RuntimeFlagScope,
 ): boolean {
   return scopedFlagEnabledByExplicitOptIn(env, 'TRAINING_EXERCISE_MEDIA_V1_ENABLED', scope);
+}
+
+/**
+ * Milestone 4 mode/discipline enrollment. The value is an exact comma-separated
+ * allowlist such as `maintenance:running,event_based:marathon`. Empty, wildcard
+ * and malformed entries grant no authority. Scope resolution uses the same
+ * user -> tenant -> global precedence as the parent Training flags.
+ */
+export function getTrainingM4Allowlist(
+  env: RuntimeEnv = process.env,
+  scope?: RuntimeFlagScope,
+): string[] {
+  const raw = scopedEnvValue(env, 'TRAINING_PLAN_M4_ALLOWLIST', scope);
+  if (!raw?.trim()) return [];
+  const modes = new Set(['event_based', 'continuous', 'maintenance', 'return_to_training']);
+  const disciplines = new Set(['running', 'cycling', 'swimming', 'strength', 'triathlon', 'hybrid', 'marathon']);
+  const entries = raw.split(',').map((entry) => entry.trim().toLowerCase());
+  if (entries.some((entry) => {
+    const parts = entry.split(':');
+    return parts.length !== 2 || !modes.has(parts[0]) || !disciplines.has(parts[1]);
+  })) return [];
+  return [...new Set(entries)].sort();
+}
+
+export function isTrainingM4PlanCombinationAllowed(
+  planMode: TrainingPlanMode,
+  discipline: CoachingDiscipline,
+  env: RuntimeEnv = process.env,
+  scope?: RuntimeFlagScope,
+): boolean {
+  return getTrainingM4Allowlist(env, scope).includes(`${planMode}:${discipline}`);
 }
 
 export function isTrainingPlanRevisionV1ExplicitlyEnrolled(
