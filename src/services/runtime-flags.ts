@@ -400,6 +400,20 @@ export function isTrainingTypedWorkoutV1Enabled(
   return scopedFlagEnabledByExplicitOptIn(env, 'TRAINING_TYPED_WORKOUT_V1_ENABLED', scope);
 }
 
+/**
+ * Governs delivery of reviewed Training exercise-media metadata. The flag is
+ * deliberately narrower than exercise identity and typed workouts: enabling
+ * it cannot activate a draft manifest or bypass review/provenance/takedown
+ * validation. Unset and unrecognised values remain off, with the standard
+ * user/tenant override precedence.
+ */
+export function isTrainingExerciseMediaV1Enabled(
+  env: RuntimeEnv = process.env,
+  scope?: RuntimeFlagScope,
+): boolean {
+  return scopedFlagEnabledByExplicitOptIn(env, 'TRAINING_EXERCISE_MEDIA_V1_ENABLED', scope);
+}
+
 export function isTrainingPlanRevisionV1ExplicitlyEnrolled(
   env: RuntimeEnv = process.env,
   scope?: RuntimeFlagScope,

@@ -11,6 +11,7 @@ import { attachmentRoutes } from './routes/attachments';
 import { dashboardRoutes } from './routes/dashboard';
 import { taskRoutes } from './routes/tasks';
 import { trainingRoutes } from './routes/training';
+import { registerTrainingExerciseMediaRoutes } from './routes/training-exercise-media-routes';
 import { contentRoutes } from './routes/content';
 import { onboardingRoutes } from './routes/onboarding';
 import { settingsRoutes } from './routes/settings';
@@ -282,6 +283,13 @@ export function createApiRouter(): Router {
 
   // Token-zero data routes — direct service calls, no AI involvement.
   router.use('/tasks', taskRoutes());
+  // Exercise media owns a hidden dark-route contract: disabled and ineligible
+  // callers receive the same 404. Mount its self-contained authenticated,
+  // entitlement-aware router before the broader Training paywall middleware;
+  // all other Training routes preserve the existing entitlement behavior.
+  const trainingExerciseMediaRouter = Router();
+  registerTrainingExerciseMediaRoutes(trainingExerciseMediaRouter);
+  router.use('/training', trainingExerciseMediaRouter);
   router.use('/training', requireEntitlement({ skill: 'training' }), trainingRoutes());
   router.use('/calendar', calendarRoutes());
   router.use('/reminders', reminderRoutes());

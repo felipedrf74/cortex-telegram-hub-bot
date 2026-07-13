@@ -14,6 +14,7 @@ import {
   getSecretaryReasoningV1Mode,
   getTrainingExerciseIdentityV1Mode,
   getTrainingPlanRevisionV1Mode,
+  isTrainingExerciseMediaV1Enabled,
   isTrainingPlanRevisionV1ExplicitlyEnrolled,
   isTrainingTypedWorkoutV1Enabled,
   isChatEscalationReviewerEnabled,
@@ -329,6 +330,21 @@ describe('runtime-flags', () => {
     expect(isTrainingTypedWorkoutV1Enabled({
       TRAINING_TYPED_WORKOUT_V1_ENABLED: 'true',
       TRAINING_TYPED_WORKOUT_V1_ENABLED_USER_42: 'off',
+    }, { userId: 42, tenantId: 9 })).toBe(false);
+  });
+
+  it('keeps Training exercise media default-off and scope-overridable', () => {
+    expect(isTrainingExerciseMediaV1Enabled({})).toBe(false);
+    expect(isTrainingExerciseMediaV1Enabled({ TRAINING_EXERCISE_MEDIA_V1_ENABLED: 'true' })).toBe(true);
+    expect(isTrainingExerciseMediaV1Enabled({ TRAINING_EXERCISE_MEDIA_V1_ENABLED: '1' })).toBe(true);
+    expect(isTrainingExerciseMediaV1Enabled({ TRAINING_EXERCISE_MEDIA_V1_ENABLED: 'yes' })).toBe(false);
+    expect(isTrainingExerciseMediaV1Enabled({
+      TRAINING_EXERCISE_MEDIA_V1_ENABLED: 'false',
+      TRAINING_EXERCISE_MEDIA_V1_ENABLED_TENANT_9: 'true',
+    }, { userId: 7, tenantId: 9 })).toBe(true);
+    expect(isTrainingExerciseMediaV1Enabled({
+      TRAINING_EXERCISE_MEDIA_V1_ENABLED: 'true',
+      TRAINING_EXERCISE_MEDIA_V1_ENABLED_USER_42: 'off',
     }, { userId: 42, tenantId: 9 })).toBe(false);
   });
 
