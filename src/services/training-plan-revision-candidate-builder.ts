@@ -7,24 +7,54 @@ import {
   STRENGTH_SELECTOR_POLICY_VERSION,
   type StrengthSelectorProfile,
 } from './coach-kernel/strength-selector';
-import type { AthleteState, DayOfWeek, Exercise, SessionType } from './coach-kernel/types';
+import type {
+  AthleteState,
+  CoachingDiscipline,
+  DayOfWeek,
+  Exercise,
+  SessionType,
+} from './coach-kernel/types';
 import { buildRepoTrainingCatalogSnapshot } from './coach-kernel/training-catalog';
 import type { TrainingPlanMode } from './training-workout-capability-registry';
+import {
+  TRAINING_TYPED_WORKOUT_VALIDATOR_VERSION,
+  validateTrainingTypedPlanDocument,
+  type TrainingTypedPhaseType,
+  type TrainingTypedPlanValidationDocument,
+  type TrainingTypedStrengthExercisePrescription,
+  type TrainingTypedWorkoutBlock,
+  type TrainingTypedWorkoutBlockPriority,
+  type TrainingTypedWorkoutPrescription,
+} from './training-typed-workout-v1';
+import {
+  buildTrainingTypedPlanRevision,
+  validateTrainingTypedPlanRevisionDocument,
+} from './training-typed-plan-generator';
 
 export const TRAINING_PLAN_REVISION_DOCUMENT_SCHEMA = 'training-plan-revision.v1' as const;
+export const TRAINING_TYPED_PLAN_REVISION_DOCUMENT_SCHEMA = 'training-plan-revision.v2' as const;
 export const TRAINING_PLAN_REVISION_POLICY_VERSION = 'training-plan-revision-m1-policy.v1' as const;
+export const TRAINING_TYPED_PLAN_REVISION_POLICY_VERSION = 'training-plan-revision-m2-policy.v1' as const;
 export const TRAINING_WORKOUT_CAPABILITY_REGISTRY_VERSION = 'training-workout-capabilities.v1' as const;
 
 export type TrainingExperienceLevel = 'novice' | 'intermediate' | 'advanced';
 export type TrainingLocation = 'home' | 'gym';
-export type TrainingWorkoutBlockPriority = 'ESSENTIAL' | 'RECOMMENDED' | 'OPTIONAL';
-export type TrainingPhaseType = 'FOUNDATION' | 'BUILD' | 'DELOAD';
+export type TrainingWorkoutBlockPriority = TrainingTypedWorkoutBlockPriority;
+export type TrainingPhaseType = TrainingTypedPhaseType;
+export type TrainingWorkoutPrescription = TrainingTypedWorkoutPrescription;
+export type TrainingPlanExercisePrescription = TrainingTypedStrengthExercisePrescription;
+export type TrainingPlanWorkoutBlock = TrainingTypedWorkoutBlock;
 
 export interface TrainingPlanCandidateRequest {
   planMode: TrainingPlanMode;
-  goal: 'general_fitness';
-  discipline: 'strength';
+  goal: 'general_fitness' | 'event_performance' | 'maintenance' | 'return_to_training';
+  discipline: CoachingDiscipline;
   horizonWeeks?: number;
+  event?: {
+    name: string;
+    date?: string;
+    priority?: 'A' | 'B' | 'C';
+  };
   profile: {
     experienceLevel: TrainingExperienceLevel;
     sessionsPerWeek: number;
@@ -37,63 +67,30 @@ export interface TrainingPlanCandidateRequest {
   };
 }
 
-export type TrainingWorkoutPrescription =
-  | {
-    kind: 'strength';
-    sets: number;
-    repetitions: string;
-    loadGuidance: string;
-    targetRpe: number;
-    targetRir: number;
-    tempo: string;
-    restSeconds: number;
-  }
-  | {
-    kind: 'mobility';
-    sequenceRounds: number;
-    durationSecondsPerSide: number;
-    rangeGuidance: string;
-  }
-  | {
-    kind: 'recovery';
-    durationMinutes: number;
-    effortGuidance: string;
-  };
-
-export interface TrainingPlanExercisePrescription {
-  exerciseId: string;
-  name: string;
-  prescription: Extract<TrainingWorkoutPrescription, { kind: 'strength' }>;
-  selectionReasons: string[];
-}
-
-export interface TrainingPlanWorkoutBlock {
-  blockId: string;
-  position: number;
-  blockType: 'PREPARATION' | 'PRIMARY_WORK' | 'SECONDARY_WORK' | 'COOLDOWN_RECOVERY';
-  purpose: string;
-  priority: TrainingWorkoutBlockPriority;
-  minimumDurationMinutes: number;
-  plannedDurationMinutes: number;
-  prescription: TrainingWorkoutPrescription;
-  exercises?: TrainingPlanExercisePrescription[];
-}
-
 export interface TrainingPlanRevisionWorkout {
   workoutKey: string;
   dayOfWeek: DayOfWeek;
   title: string;
-  sessionType: Extract<SessionType, 'strength_hypertrophy' | 'strength_maintenance' | 'mobility' | 'rest'>;
+  sessionType: SessionType | string;
+  sessionTypeClassification?: 'CANONICAL' | 'UNKNOWN';
   objective: string;
   plannedDurationMinutes: number;
+  isStandalone?: boolean;
+  phaseKey?: string | null;
   blocks: TrainingPlanWorkoutBlock[];
 }
 
 export interface TrainingPlanRevisionDocument {
-  schemaVersion: typeof TRAINING_PLAN_REVISION_DOCUMENT_SCHEMA;
-  planMode: 'continuous';
-  goal: 'general_fitness';
-  discipline: 'strength';
+  schemaVersion: typeof TRAINING_PLAN_REVISION_DOCUMENT_SCHEMA | typeof TRAINING_TYPED_PLAN_REVISION_DOCUMENT_SCHEMA;
+  planMode: TrainingPlanMode;
+  goal: TrainingPlanCandidateRequest['goal'];
+  discipline: CoachingDiscipline;
+  periodization?: 'PERIODIZED' | 'NON_PERIODIZED';
+  profileSummary?: {
+    experienceLevel: TrainingExperienceLevel;
+    sessionsPerWeek: number;
+  };
+  event?: TrainingPlanCandidateRequest['event'];
   title: string;
   horizonWeeks: number;
   weeklyStructure: {
@@ -114,6 +111,8 @@ export interface TrainingPlanRevisionDocument {
     recoveryOrLighterPeriod: boolean;
     transitionExplanation: string;
     profileFitExplanation: string;
+    targetWorkoutTypeDistribution?: Array<{ sessionType: SessionType; targetPerWeek: number }>;
+    profileFitInputs?: string[];
   }>;
   progression: { direction: string; rule: string };
   recovery: { strategy: string; placement: string };
@@ -141,7 +140,7 @@ export interface BuiltTrainingPlanRevisionCandidate {
   catalogVersion: string;
   catalogSourceHash: string;
   selectorPolicyVersion: string;
-  policyVersion: typeof TRAINING_PLAN_REVISION_POLICY_VERSION;
+  policyVersion: typeof TRAINING_PLAN_REVISION_POLICY_VERSION | typeof TRAINING_TYPED_PLAN_REVISION_POLICY_VERSION;
   capabilityRegistryVersion: typeof TRAINING_WORKOUT_CAPABILITY_REGISTRY_VERSION;
   causalFactors: TrainingPlanCausalFactor[];
   qualityReport: {
@@ -156,16 +155,54 @@ export interface TrainingPlanRevisionQualityCheck {
   evidence: string;
 }
 
+export interface TrainingPlanCandidateBuildOptions {
+  typedWorkoutValidationEnabled?: boolean;
+}
+
 const DAY_ORDER: DayOfWeek[] = [
   'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday',
 ];
 
 export function buildTrainingPlanRevisionCandidate(
   request: TrainingPlanCandidateRequest,
+  options: TrainingPlanCandidateBuildOptions = {},
 ): BuiltTrainingPlanRevisionCandidate {
   const knowledge = loadCoachKnowledge();
   const catalog = buildRepoTrainingCatalogSnapshot(knowledge);
-  const normalized = validateAndNormalizeRequest(request, catalog);
+  const normalized = validateAndNormalizeRequest(
+    request,
+    catalog,
+    options.typedWorkoutValidationEnabled === true,
+  );
+  if (options.typedWorkoutValidationEnabled) {
+    const typed = buildTrainingTypedPlanRevision(normalized);
+    const contentHash = stableTrainingRevisionHash(typed.document);
+    return {
+      document: typed.document,
+      contentHash,
+      creationContextVersion: `ctx_${stableTrainingRevisionHash({
+        request: normalized,
+        catalogVersion: catalog.catalogVersion,
+        catalogSourceHash: catalog.sourceHash,
+        policyVersion: TRAINING_TYPED_PLAN_REVISION_POLICY_VERSION,
+        typedWorkoutValidatorVersion: TRAINING_TYPED_WORKOUT_VALIDATOR_VERSION,
+        typedPlanGeneratorVersion: 'training-typed-plan-generator.v1',
+      }).slice(0, 32)}`,
+      catalogVersion: catalog.catalogVersion,
+      catalogSourceHash: catalog.sourceHash,
+      selectorPolicyVersion: typed.selectorPolicyVersion,
+      policyVersion: TRAINING_TYPED_PLAN_REVISION_POLICY_VERSION,
+      capabilityRegistryVersion: TRAINING_WORKOUT_CAPABILITY_REGISTRY_VERSION,
+      causalFactors: typed.causalFactors,
+      qualityReport: {
+        status: 'PASS',
+        checks: [
+          ...typed.qualityChecks,
+          { code: 'CAUSAL_PERSONALIZATION', status: 'PASS', evidence: `${typed.causalFactors.length} explicit input-to-output mappings` },
+        ],
+      },
+    };
+  }
   const horizonWeeks = normalized.horizonWeeks;
   const phaseSpecs = buildPhases(horizonWeeks, normalized.profile.experienceLevel);
   const causalFactors = buildCausalFactors(normalized);
@@ -235,7 +272,7 @@ export function buildTrainingPlanRevisionCandidate(
     ],
     missingInputs: [],
   };
-  const qualityChecks = validateTrainingPlanRevisionDocument(document);
+  const qualityChecks = validateTrainingPlanRevisionDocument(document, options);
   const contentHash = stableTrainingRevisionHash(document);
   return {
     document,
@@ -245,6 +282,9 @@ export function buildTrainingPlanRevisionCandidate(
       catalogVersion: catalog.catalogVersion,
       catalogSourceHash: catalog.sourceHash,
       policyVersion: TRAINING_PLAN_REVISION_POLICY_VERSION,
+      ...(options.typedWorkoutValidationEnabled
+        ? { typedWorkoutValidatorVersion: TRAINING_TYPED_WORKOUT_VALIDATOR_VERSION }
+        : {}),
     }).slice(0, 32)}`,
     catalogVersion: catalog.catalogVersion,
     catalogSourceHash: catalog.sourceHash,
@@ -264,7 +304,11 @@ export function buildTrainingPlanRevisionCandidate(
 
 export function validateTrainingPlanRevisionDocument(
   document: TrainingPlanRevisionDocument,
+  options: TrainingPlanCandidateBuildOptions = {},
 ): TrainingPlanRevisionQualityCheck[] {
+  if (document.schemaVersion === TRAINING_TYPED_PLAN_REVISION_DOCUMENT_SCHEMA) {
+    return validateTrainingTypedPlanRevisionDocument(document);
+  }
   const failures: string[] = [];
   const allowedSessionTypes = new Set<SessionType>([
     'strength_hypertrophy', 'strength_maintenance', 'mobility', 'rest',
@@ -318,7 +362,8 @@ export function validateTrainingPlanRevisionDocument(
       failures.push('WEEKLY_FREQUENCY_MATCH');
     }
     const actualDistribution = week.workouts.reduce<Map<SessionType, number>>((counts, workout) => {
-      counts.set(workout.sessionType, (counts.get(workout.sessionType) ?? 0) + 1);
+      const sessionType = workout.sessionType as SessionType;
+      counts.set(sessionType, (counts.get(sessionType) ?? 0) + 1);
       return counts;
     }, new Map());
     if ([...allowedSessionTypes].some((sessionType) =>
@@ -328,7 +373,7 @@ export function validateTrainingPlanRevisionDocument(
     for (const workout of week.workouts) {
       if (workoutKeys.has(workout.workoutKey)) failures.push('UNIQUE_WORKOUT_KEYS');
       workoutKeys.add(workout.workoutKey);
-      if (!allowedSessionTypes.has(workout.sessionType)) failures.push('SUPPORTED_SESSION_TYPES');
+      if (!allowedSessionTypes.has(workout.sessionType as SessionType)) failures.push('SUPPORTED_SESSION_TYPES');
       if (!workout.blocks.some((block) => block.priority === 'ESSENTIAL')) {
         failures.push('ESSENTIAL_BLOCK_REQUIRED');
       }
@@ -359,7 +404,7 @@ export function validateTrainingPlanRevisionDocument(
   if (failures.length > 0) {
     throw new Error(`TRAINING_REVISION_QUALITY_FAILED:${[...new Set(failures)].sort().join(',')}`);
   }
-  return [
+  const checks: TrainingPlanRevisionQualityCheck[] = [
     { code: 'SUPPORTED_M1_DOCUMENT', status: 'PASS', evidence: 'Continuous general-fitness strength slice only' },
     { code: 'PHASE_AND_WEEK_CONTIGUITY', status: 'PASS', evidence: `${document.phases.length} phases cover ${document.horizonWeeks} ordered weeks` },
     { code: 'SUPPORTED_SESSION_TYPES', status: 'PASS', evidence: 'M1 four-type generation allowlist only' },
@@ -367,18 +412,68 @@ export function validateTrainingPlanRevisionDocument(
     { code: 'ORDERED_PRIORITY_BLOCKS', status: 'PASS', evidence: 'Every workout has ordered blocks, priorities and protected minimums' },
     { code: 'DURATION_AND_PRESCRIPTION_BOUNDS', status: 'PASS', evidence: 'Block durations conserve workout duration and typed prescriptions are bounded' },
   ];
+  if (options.typedWorkoutValidationEnabled) {
+    checks.push(...validateTrainingTypedPlanDocument(asTypedValidationDocument(document)));
+  }
+  return checks;
+}
+
+function asTypedValidationDocument(
+  document: TrainingPlanRevisionDocument,
+): TrainingTypedPlanValidationDocument {
+  return {
+    sourceDocumentSchemaVersion: document.schemaVersion,
+    periodization: 'PERIODIZED',
+    horizonWeeks: document.horizonWeeks,
+    phases: document.phases,
+    weeks: document.weeks.map((week) => ({
+      weekNumber: week.weekNumber,
+      phaseKey: week.phaseKey,
+      workouts: week.workouts.map((workout) => ({
+        ...workout,
+        sessionTypeClassification: 'CANONICAL' as const,
+        isStandalone: false,
+        phaseKey: week.phaseKey,
+      })),
+    })),
+  };
 }
 
 function validateAndNormalizeRequest(
   request: TrainingPlanCandidateRequest,
   catalog: ReturnType<typeof buildRepoTrainingCatalogSnapshot>,
+  typedWorkoutValidationEnabled: boolean,
 ): TrainingPlanCandidateRequest & { horizonWeeks: number } {
   if (!request || typeof request !== 'object' || !request.profile || typeof request.profile !== 'object') {
     throw new Error('TRAINING_REVISION_PROFILE_REQUIRED');
   }
-  if (request.planMode !== 'continuous') throw new Error('MILESTONE_1_PLAN_MODE_UNSUPPORTED');
-  if (request.goal !== 'general_fitness' || request.discipline !== 'strength') {
+  if (!typedWorkoutValidationEnabled && request.planMode !== 'continuous') {
+    throw new Error('MILESTONE_1_PLAN_MODE_UNSUPPORTED');
+  }
+  if (!typedWorkoutValidationEnabled
+      && (request.goal !== 'general_fitness' || request.discipline !== 'strength')) {
     throw new Error('MILESTONE_1_GOAL_OR_DISCIPLINE_UNSUPPORTED');
+  }
+  if (typedWorkoutValidationEnabled) {
+    if (!['event_based', 'continuous', 'maintenance', 'return_to_training'].includes(request.planMode)) {
+      throw new Error('TRAINING_TYPED_PLAN_MODE_UNSUPPORTED');
+    }
+    if (!['general_fitness', 'event_performance', 'maintenance', 'return_to_training'].includes(request.goal)) {
+      throw new Error('TRAINING_TYPED_GOAL_UNSUPPORTED');
+    }
+    if (!['running', 'cycling', 'swimming', 'strength', 'triathlon', 'hybrid', 'marathon'].includes(request.discipline)) {
+      throw new Error('TRAINING_TYPED_DISCIPLINE_UNSUPPORTED');
+    }
+    if (request.planMode === 'event_based' && request.goal !== 'event_performance') {
+      throw new Error('TRAINING_EVENT_PLAN_GOAL_MISMATCH');
+    }
+    if (request.planMode === 'maintenance' && request.goal !== 'maintenance') {
+      throw new Error('TRAINING_MAINTENANCE_PLAN_GOAL_MISMATCH');
+    }
+    if (request.planMode === 'return_to_training' && request.goal !== 'return_to_training') {
+      throw new Error('TRAINING_RETURN_PLAN_GOAL_MISMATCH');
+    }
+    validateEventInput(request);
   }
   if (!['novice', 'intermediate', 'advanced'].includes(request.profile.experienceLevel)) {
     throw new Error('TRAINING_REVISION_EXPERIENCE_LEVEL_INVALID');
@@ -410,9 +505,27 @@ function validateAndNormalizeRequest(
           typeof exclusion === 'string' && exclusion.length > 0 && exclusion.length <= 100))) {
     throw new Error('TRAINING_REVISION_EXCLUSIONS_INVALID');
   }
-  const sessions = integerInRange(request.profile.sessionsPerWeek, 3, 5, 'sessionsPerWeek');
-  const duration = integerInRange(request.profile.sessionDurationMinutes, 30, 90, 'sessionDurationMinutes');
-  const horizonWeeks = integerInRange(request.horizonWeeks ?? 4, 4, 12, 'horizonWeeks');
+  const sessions = integerInRange(
+    request.profile.sessionsPerWeek,
+    typedWorkoutValidationEnabled ? 1 : 3,
+    typedWorkoutValidationEnabled ? 7 : 5,
+    'sessionsPerWeek',
+  );
+  const duration = integerInRange(
+    request.profile.sessionDurationMinutes,
+    typedWorkoutValidationEnabled ? 15 : 30,
+    typedWorkoutValidationEnabled ? 240 : 90,
+    'sessionDurationMinutes',
+  );
+  const minimumHorizon = typedWorkoutValidationEnabled
+    ? request.planMode === 'event_based' ? 5 : request.planMode === 'maintenance' ? 2 : 3
+    : 4;
+  const horizonWeeks = integerInRange(
+    request.horizonWeeks ?? Math.max(4, minimumHorizon),
+    minimumHorizon,
+    typedWorkoutValidationEnabled ? 52 : 12,
+    'horizonWeeks',
+  );
   const availableDays = [...new Set(request.profile.availableDays)]
     .filter((day): day is DayOfWeek => DAY_ORDER.includes(day))
     .sort((left, right) => DAY_ORDER.indexOf(left) - DAY_ORDER.indexOf(right));
@@ -736,6 +849,28 @@ function normalizeCatalogToken(value: string): string {
 
 function normalizeStringList(values: string[] | undefined): string[] {
   return [...new Set((values ?? []).map((value) => value.trim()).filter(Boolean))].sort();
+}
+
+function validateEventInput(request: TrainingPlanCandidateRequest): void {
+  if (request.event == null) {
+    if (request.planMode === 'event_based') throw new Error('TRAINING_EVENT_CONTEXT_REQUIRED');
+    return;
+  }
+  if (request.planMode !== 'event_based'
+      || typeof request.event.name !== 'string'
+      || request.event.name.trim().length < 1
+      || request.event.name.trim().length > 120
+      || (request.event.priority != null && !['A', 'B', 'C'].includes(request.event.priority))) {
+    throw new Error('TRAINING_EVENT_CONTEXT_INVALID');
+  }
+  if (request.planMode === 'event_based' && request.event.date == null) {
+    throw new Error('TRAINING_EVENT_DATE_REQUIRED');
+  }
+  if (request.event.date != null
+      && (!/^\d{4}-\d{2}-\d{2}$/.test(request.event.date)
+        || Number.isNaN(Date.parse(`${request.event.date}T00:00:00.000Z`)))) {
+    throw new Error('TRAINING_EVENT_DATE_INVALID');
+  }
 }
 
 function integerInRange(value: number, min: number, max: number, field: string): number {

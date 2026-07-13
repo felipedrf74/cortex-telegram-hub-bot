@@ -37,6 +37,10 @@ import {
   isInPostRaceRecovery,
   isInTaperWindow,
 } from '../race-calendar';
+import {
+  blockPhaseFromTrainingPhaseType,
+  trainingPhaseTypeFromWeekIntent,
+} from '../training-phase-model';
 
 /**
  * Map a WeekIntentKind to the legacy BlockPhase string for backwards
@@ -45,17 +49,7 @@ import {
  * closest BlockPhase.
  */
 export function blockPhaseFromWeekIntent(kind: WeekIntentKindEnum): BlockPhase {
-  switch (kind) {
-    case 'accumulation': return 'base';
-    case 'intensification': return 'build';
-    case 'realization': return 'peak';
-    case 'deload': return 'deload';
-    case 'recovery': return 'deload';
-    case 'taper': return 'taper';
-    case 'race': return 'race';
-    case 'post_race_recovery': return 'deload';
-    default: return 'maintenance';
-  }
+  return blockPhaseFromTrainingPhaseType(trainingPhaseTypeFromWeekIntent(kind));
 }
 
 /**

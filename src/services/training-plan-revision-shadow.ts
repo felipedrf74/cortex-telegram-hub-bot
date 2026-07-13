@@ -28,7 +28,7 @@ export function runTrainingPlanRevisionShadowForLegacyRequest(input: {
     return { computed: false, reason: 'unsupported_or_missing_inputs' };
   }
   try {
-    const built = computeTrainingPlanRevisionShadow(request);
+    const built = computeTrainingPlanRevisionShadow(request, { env, scope: input.scope });
     incrementTrainingGenerationCounter('revision_shadow_candidate_succeeded_total');
     return { computed: true, contentHash: built.contentHash };
   } catch {
