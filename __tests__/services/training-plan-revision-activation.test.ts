@@ -310,6 +310,7 @@ describe('training-plan-revision-activation', () => {
         ...activeEnv,
         TRAINING_TYPED_WORKOUT_V1_ENABLED_USER_7: 'true',
         TRAINING_EXERCISE_IDENTITY_V1_MODE_USER_7: 'active',
+        TRAINING_PLAN_M4_ALLOWLIST_USER_7: 'continuous:strength',
       };
       const revision = createBoundRevision(request, typedEnv);
       const canonicalExercises = revision.document.weeks
@@ -317,6 +318,7 @@ describe('training-plan-revision-activation', () => {
         .flatMap((workout) => workout.blocks)
         .flatMap((block) => block.exercises ?? []);
       expect(revision.documentSchemaVersion).toBe('training-plan-revision.v2');
+      expect(revision.document.m4).toBeUndefined();
       expect(revision.catalog).toMatchObject({
         version: TRAINING_EXERCISE_IDENTITY_CATALOG_VERSION,
         sourceHash: TRAINING_EXERCISE_IDENTITY_EXPECTED_SOURCE_HASH,

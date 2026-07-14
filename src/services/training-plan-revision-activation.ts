@@ -700,31 +700,32 @@ function validateActivationInput(db: Database.Database, input: {
       409,
     );
   }
-  const m4StrategyEnabled = isTrainingM4PlanCombinationAllowed(
+  const revisionDocument = revision.document as TrainingPlanRevisionDocument;
+  const m4StrategyAllowed = isTrainingM4PlanCombinationAllowed(
     snapshot.body.request.planMode,
     snapshot.body.request.discipline,
     input.env ?? process.env,
     input.scope,
   );
   if (isTrainingM4OwnedCombination(snapshot.body.request.planMode, snapshot.body.request.discipline)
-      && !(revision.document as TrainingPlanRevisionDocument).m4) {
+      && !revisionDocument.m4) {
     throw new TrainingPlanRevisionError(
       'TRAINING_M4_REVISION_CONTRACT_REQUIRED',
       'This plan mode or discipline requires an M4-reviewed revision.',
       409,
     );
   }
-  if ((revision.document as TrainingPlanRevisionDocument).m4 && !m4StrategyEnabled) {
+  if (revisionDocument.m4 && !m4StrategyAllowed) {
     throw new TrainingPlanRevisionError(
       'TRAINING_M4_ALLOWLIST_REQUIRED',
       'The approved mode and discipline are no longer enrolled for activation.',
       404,
     );
   }
-  if ((revision.document as TrainingPlanRevisionDocument).m4) {
+  if (revisionDocument.m4) {
     try {
       validateTrainingM4InitialScheduleFreshness(
-        revision.document as TrainingPlanRevisionDocument,
+        revisionDocument,
         input.referenceTime,
       );
     } catch (freshnessError) {
@@ -735,6 +736,7 @@ function validateActivationInput(db: Database.Database, input: {
       );
     }
   }
+  const m4StrategyEnabled = revisionDocument.m4 != null;
   const rebuilt = buildTrainingPlanRevisionCandidate(snapshot.body.request, {
     env: input.env,
     scope: input.scope,

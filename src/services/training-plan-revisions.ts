@@ -907,19 +907,21 @@ function trainingGenerationOptions(
   authoritativeCapacityContext?: TrainingM4AuthoritativeCapacityContext | null;
 } {
   const typedWorkoutValidationEnabled = isTrainingTypedWorkoutV1Enabled(env, scope);
-  const m4StrategyEnabled = typedWorkoutValidationEnabled && isTrainingM4PlanCombinationAllowed(
-    request.planMode,
-    request.discipline,
-    env ?? process.env,
-    scope,
-  );
   const requestsM4 = request.planStartDate != null
     || request.event?.subtype != null
     || request.resourceAccess != null
     || request.capacity != null
     || request.goalPriority != null;
-  if ((requestsM4 || isTrainingM4OwnedCombination(request.planMode, request.discipline))
-      && !m4StrategyEnabled) {
+  const m4Owned = isTrainingM4OwnedCombination(request.planMode, request.discipline);
+  const m4StrategyEnabled = typedWorkoutValidationEnabled
+    && (requestsM4 || m4Owned)
+    && isTrainingM4PlanCombinationAllowed(
+      request.planMode,
+      request.discipline,
+      env ?? process.env,
+      scope,
+    );
+  if ((requestsM4 || m4Owned) && !m4StrategyEnabled) {
     throw new TrainingPlanRevisionError(
       'TRAINING_M4_ALLOWLIST_REQUIRED',
       'This training mode and discipline are not enrolled for Milestone 4 generation.',

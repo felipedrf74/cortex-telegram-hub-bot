@@ -122,6 +122,40 @@ describe('training-plan-revisions', () => {
     });
   });
 
+  it('enters strict M4 validation when an allowlisted continuous strength request adds M4 fields', () => {
+    withDatabaseForTest(db, () => {
+      expect(() => createTrainingPlanCandidateRevision({
+        scope: { userId: 7, tenantId: 7 },
+        idempotencyKey: 'partial-m4-continuous-strength',
+        request: { ...request, planStartDate: '2026-07-20' },
+        env: {
+          ...activeEnv,
+          TRAINING_TYPED_WORKOUT_V1_ENABLED_USER_7: 'true',
+          TRAINING_PLAN_M4_ALLOWLIST_USER_7: 'continuous:strength',
+        },
+      })).toThrow(/TRAINING_M4_RESOURCE_ACCESS_REQUIRED/);
+      expect(db.prepare('SELECT COUNT(*) AS count FROM training_plan_revisions').get())
+        .toEqual({ count: 0 });
+    });
+  });
+
+  it('keeps an allowlisted M4-owned combination on the strict M4 contract', () => {
+    withDatabaseForTest(db, () => {
+      expect(() => createTrainingPlanCandidateRevision({
+        scope: { userId: 7, tenantId: 7 },
+        idempotencyKey: 'owned-m4-continuous-hybrid',
+        request: { ...request, discipline: 'hybrid' },
+        env: {
+          ...activeEnv,
+          TRAINING_TYPED_WORKOUT_V1_ENABLED_USER_7: 'true',
+          TRAINING_PLAN_M4_ALLOWLIST_USER_7: 'continuous:hybrid',
+        },
+      })).toThrow(/TRAINING_M4_PLAN_START_DATE_REQUIRED/);
+      expect(db.prepare('SELECT COUNT(*) AS count FROM training_plan_revisions').get())
+        .toEqual({ count: 0 });
+    });
+  });
+
   it('persists and reads a phase-aware event revision through the immutable M1 snapshot tables', () => {
     withDatabaseForTest(db, () => {
       const eventRequest: TrainingPlanCandidateRequest = {
