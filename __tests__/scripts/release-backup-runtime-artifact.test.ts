@@ -65,7 +65,10 @@ function createRuntime(version: string, includeCatalog: boolean) {
   );
   fs.chmodSync(pm2, 0o755);
   const fuser = path.join(bin, 'fuser');
-  fs.writeFileSync(fuser, '#!/usr/bin/env bash\nexit 1\n');
+  fs.writeFileSync(
+    fuser,
+    '#!/usr/bin/env bash\n[ "$#" -eq 2 ] || exit 9\n[ "$1" = "-s" ] || exit 9\n[ "$2" != "--" ] || exit 9\nexit 1\n',
+  );
   fs.chmodSync(fuser, 0o755);
   return { root, runtime, backups };
 }

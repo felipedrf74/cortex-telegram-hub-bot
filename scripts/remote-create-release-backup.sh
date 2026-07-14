@@ -110,7 +110,10 @@ fi
 assert_no_database_handles() {
   local path
   for path in "$REMOTE_DIR/data/bot.db" "$REMOTE_DIR/data/bot.db-wal" "$REMOTE_DIR/data/bot.db-shm"; do
-    if [ -e "$path" ] && fuser -s -- "$path"; then
+    # procps fuser (used on production) does not accept the generic `--`
+    # separator; the path is already an absolute value controlled by this
+    # script, so pass it directly.
+    if [ -e "$path" ] && fuser -s "$path"; then
       echo "database file still has an open handle: ${path#$REMOTE_DIR/}" >&2
       exit 1
     fi
