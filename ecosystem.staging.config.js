@@ -43,10 +43,12 @@ module.exports = {
       instances: 1,
       autorestart: true,
       watch: false,
-      // Staging gets a smaller memory cap because we're not paging in the
-      // full message history that prod accumulates.
-      max_memory_restart: '512M',
-      node_args: '--max-old-space-size=512',
+      // Keep the backend ceiling aligned with production. The public-beta
+      // route/catalog set now crosses the former 512M staging ceiling during
+      // the canonical smoke suite, which caused graceful PM2 restarts and
+      // intermittent false-negative portal reads.
+      max_memory_restart: '750M',
+      node_args: '--max-old-space-size=768',
       env: {
         NODE_ENV: 'staging',
         // Tell the bot it's the staging instance — code can branch on this
