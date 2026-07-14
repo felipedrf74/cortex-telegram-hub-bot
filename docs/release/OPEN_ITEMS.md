@@ -2,7 +2,7 @@
 
 Status: canonical
 Owner: release lead (Felipe)
-Last verified: 2026-06-06
+Last verified: 2026-07-14
 Update policy: keep only current carryovers here. Move closed items to the
 monthly archive after the production release is complete.
 
@@ -24,7 +24,7 @@ production account, production secrets, legal review, or physical/device proof.
 | PROD-SENTRY | P1 | observability | OPEN / OWNER ACTION | `SENTRY_DSN` was still missing in production on 2026-06-06. Set it for production error tracking. |
 | LEGAL-REVIEW | P0 | legal | OPEN / LAWYER REVIEW | Lawyer review remains required before treating the Terms, Privacy, Cookie, Refund/Cancellation, and Acceptable Use policy drafts as launch-approved. |
 | LEGAL-ENTITY | P0 | legal | OPEN / OWNER ACTION | Confirm final legal entity, governing law, jurisdiction, age/children clause, and refund/cancellation wording. |
-| DEVICE-PROOF | P1 | iOS launch | OPEN / OWNER ACTION | Complete signed TestFlight archive/upload, two-account physical walkthrough, and real provider-state proof for Gmail/Outlook/Health/Garmin/APNs. |
+| DEVICE-PROOF | P1 | iOS launch | OPEN / OWNER ACTION | Signed build 55 is uploaded and `Testing` in internal `Nexus Hub Betinha` and external `Betinhas`; App Store Connect showed zero build-55 installs at the final check. Install/open build 55 and complete the Training walkthrough plus remaining two-account/provider/APNs device proof. Keep build 54 active until the build-55 smoke passes. |
 | MARKETING-CF-AUTH | P1 | marketing site | OPEN / OWNER ACTION | Refresh Cloudflare Wrangler authentication or provide a Pages-capable `CLOUDFLARE_API_TOKEN` plus account/project access. No Cloudflare token env was present locally on 2026-06-06, and `npx wrangler whoami` could not retrieve account IDs, so production Pages deploy remains blocked. |
 
 ## Current Pricing Decision

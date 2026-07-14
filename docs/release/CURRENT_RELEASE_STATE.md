@@ -13,46 +13,44 @@ older production versions.
 
 ## Active Production Release
 
-- Source branch: `main` at `6c67c181` (`chore: prepare release 4.14.216`).
-  Pushed to `origin/main` after the protected pre-push gate passed.
-- Production HEAD: `6c67c181`.
-- Production version: `4.14.216`.
-- Previous production HEAD: `9c68db5a`.
-- Scope: the paid-only AI cost-control implementation and adversarial-QA fix
-  round are deployed. Production remains in observe mode because
-  `PAID_AI_COST_CONTROLS_ENFORCEMENT_ENABLED` is unset: legacy daily user caps
-  and the system-actor stop remain active, while the new paid-plan, monthly,
-  and automation blocking policy is not yet activated. Additive quota fields,
-  attribution, migration 226, workload optimizations, and stable error paths
-  are present in the runtime.
-- Release lineage: backend `3ce20473`, `fa4de82e`, `82835940`, `3cf19dce`, and
-  release commit `6c67c181`. Backend and iOS `origin/main` contain the release;
-  the companion SHA is recorded in the generated workspace release identity.
-- Release verification on the exact 4.14.216 tree: release prep passed
-  typecheck/build and full Vitest (**873 files / 12,910 tests**); staging
-  deploy/readiness passed; promotion-time staging smoke passed **25/25**;
-  production promotion repeated migration safety (**217 migration files**),
-  typecheck, science-policy, build, and full Vitest (**873 / 12,910**). The
-  protected GitHub push gate repeated typecheck/Vitest and passed Content
-  Engine pytest under the project test environment.
-- Verified post-deploy by read-only probes: public
-  `https://api.nexushub.me/health` returned `status: healthy`; production
-  package and PM2 `nexus-hub`/`content-engine` reported `4.14.216`; both PM2
-  apps were online with no restart during the readiness sample; migration 226
-  was applied exactly once among 236 recorded migrations; and the remote
-  artifact digest matched local at
-  `13ff241c43533519cef7458ed3358ad56abb7ce6f33b5fabaafe28d36ca78d95`.
-- iOS source is on `main` at the SHA recorded in the generated workspace
-  release identity. TestFlight/App Store upload,
-  physical-device proof, and signed-device smoke were not run.
+- Source branch and `origin/main`: `6a2811bcb65184ee2939f6db9de97cfb166c3433`
+  (`fix(training): preserve non-m4 continuous plans`).
+- Production HEAD: `6a2811bcb65184ee2939f6db9de97cfb166c3433`.
+- Production version: `4.14.218`.
+- Previous production HEAD: `6c67c181`.
+- Scope: the Training public-beta production bundle is active. It includes
+  immutable plan revisions, authoritative capacity snapshots, M4 phases and
+  typed workouts, busy/tired adaptations, substitutions, Decision
+  revalidation, legacy-writer guards, and governed exercise media. Legacy-
+  shaped allowlisted continuous-strength plans remain on the compatibility
+  path unless a complete M4-owned contract is supplied.
+- Exercise media is active at `https://media.nexushub.me` for the approved
+  158-exercise catalog and 200 selected mappings. The runtime is bound to
+  package `51c1089cceb8a916abf200b5cb3688b19f5f7553990467ee0f8ef01c7c4f74bb`
+  and release subject
+  `27b97ebc96e1b3bb1ee3612e63c5609b5572c9d4b58e59b8ea3e77642fb1cea3`.
+- Exact release artifact digest:
+  `503b2e5072b6e7e78eb7a9a614aa77726db4fff4e2ac08e4b3d85f19f62ec2ed`.
+  Staging readiness and smoke passed before promotion; production health,
+  SQLite integrity, PM2 identity, artifact parity, flag resolution, and
+  loopback/edge Training smoke passed after activation.
+- Final-source verification after the compatibility fix passed 45 focused,
+  2,306 Training, and 2,988 changed-area tests plus TypeScript checks. The
+  immediately preceding release tree passed the complete 13,512-test gate;
+  the owner approved avoiding an unchanged duplicate full-suite run.
+- Companion iOS `origin/main` is
+  `58069db585ff5e69253ba33051dc779ce19703bf`, version `1.5.0` build `55`.
+  Build 55 is `Testing` in the internal `Nexus Hub Betinha` and external
+  `Betinhas` groups. Physical-device smoke is still open, so build 54 has not
+  been expired.
 - Backend workspace root: `/Users/felipedominguez/Desktop/Custom Connectors/Cortex/cortex-telegram-hub-bot`
 
-## 2026-07-14 Training Public Beta Release Candidate — LOCAL ONLY
+## 2026-07-14 Training Public Beta Release — DEPLOYED
 
-- Backend `4.14.218` is committed only on the local release-candidate branch at
-  `fff8cd8e`; companion iOS `1.5.0` build 55 is committed only on its local
-  release-candidate branch at `58069db`. Neither commit has been pushed to or
-  merged into `main`.
+- Backend `4.14.218` is on `origin/main`, staging, and production at
+  `6a2811bcb65184ee2939f6db9de97cfb166c3433`. Companion iOS `1.5.0` build 55
+  is on `origin/main` at `58069db585ff5e69253ba33051dc779ce19703bf` and is
+  available to both TestFlight groups.
 - All six Training exercise-media reviews are complete for the exact immutable
   release subjects. The approved package is
   `51c1089cceb8a916abf200b5cb3688b19f5f7553990467ee0f8ef01c7c4f74bb`,
@@ -60,14 +58,14 @@ older production versions.
   `27b97ebc96e1b3bb1ee3612e63c5609b5572c9d4b58e59b8ea3e77642fb1cea3`,
   and the approved origin is `https://media.nexushub.me`. The reviewed catalog
   covers 158 canonical exercises and 200 selected mappings.
-- This is approval and local-source evidence, not runtime evidence. The
-  `4.14.218` artifact, migration 231, media package, and public-beta bundle have
-  not been staged, deployed, published, or activated. No matching TestFlight
-  build has been uploaded, and no device smoke is claimed.
-- Production therefore remains `4.14.216` at `6c67c181`; the older isolated
-  Training staging deployment remains dormant as described below. Staging
-  deploy, migration/readiness checks, the required Training/calendar/media
-  smoke, production promotion, and iOS release gates are still pending.
+- Migration 231, the public-beta flags, and the governed-media package are
+  active. Read-only and owner-write production smoke passed through loopback
+  and the public edge. The single owner-only immutable smoke revision remains
+  because the canonical cleanup operator correctly refuses destructive
+  deletion of revision-owned state.
+- Build 55 still requires a physical-device smoke. App Store Connect showed no
+  build-55 installs at the final check; build 54 remains active until that gate
+  passes.
 
 ## 2026-07-13 Training M1–M5 Staging Gate — DEPLOYED/DORMANT
 

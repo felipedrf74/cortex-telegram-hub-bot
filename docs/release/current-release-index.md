@@ -12,60 +12,63 @@ Date: 2026-07-14
 Active production package:
 
 - source branch: `main` (pushed to origin)
-- production HEAD: `6c67c181`
-- production version: `4.14.216`
-- runtime source commits: `3ce20473` (paid-only AI cost controls), `fa4de82e`
-  (adversarial-QA hardening), `82835940` and `3cf19dce` (verification and
-  release-state records), and `6c67c181` (release preparation)
-- latest runtime deploy commit: `6c67c181`; post-deploy source-only work may
+- production HEAD: `6a2811bcb65184ee2939f6db9de97cfb166c3433`
+- production version: `4.14.218`
+- release source commit: `6a2811bc` (Training compatibility fix and complete
+  public-beta integration)
+- latest runtime deploy commit: `6a2811bc`; post-deploy source-only work may
   sit ahead of production runtime
 - full deploy evidence: see the Active Production Release section in
   `docs/release/CURRENT_RELEASE_STATE.md`
 - release state: `docs/release/CURRENT_RELEASE_STATE.md` (backend)
 - backend workspace root: `/Users/felipedominguez/Desktop/Custom Connectors/Cortex/cortex-telegram-hub-bot`
 
-Commits in this release (2026-07-10 paid-only AI cost controls promote):
+Commits in this release (2026-07-14 Training public-beta promote):
 
-- `3ce20473 feat(ai): add paid-only cost controls`
-- `fa4de82e fix(ai): harden paid cost controls`
-- `82835940 docs(ai): record cost control fix verification`
-- `3cf19dce docs(release): sync paid AI open items`
-- `6c67c181 chore: prepare release 4.14.216`
+- `6a2811bc fix(training): preserve non-m4 continuous plans`
+- companion iOS `58069db` (`1.5.0` build 55)
 
 Scope:
 
-- Paid-only AI cost-control implementation and adversarial-QA hardening are
-  deployed in observe mode. `PAID_AI_COST_CONTROLS_ENFORCEMENT_ENABLED` remains
-  unset, so the new paid-plan, monthly, and automation blocking policy is not
-  active.
+- The all-or-nothing Training public-beta bundle is globally active: immutable
+  revisions, M4 phases, typed workouts, busy/tired adaptations, substitutions,
+  Training Decision Flow, exact capacity snapshots, and governed exercise
+  media. Legacy-shaped allowlisted continuous-strength plans remain compatible
+  unless a complete M4-owned request is supplied.
+- Governed media is active for 158 canonical exercises and 200 selected
+  mappings at `https://media.nexushub.me`, bound to package
+  `51c1089cceb8a916abf200b5cb3688b19f5f7553990467ee0f8ef01c7c4f74bb`.
 
 Validated through promotion:
 
-- The recorded release evidence in `docs/release/CURRENT_RELEASE_STATE.md`
-  reports typecheck/build and full Vitest (873 files / 12,910 tests), staging
-  readiness, promotion-time staging smoke (25/25), migration 226 applied once,
-  and healthy post-deploy runtime probes. Those historical release checks were
-  not rerun by this documentation-only update.
-- TestFlight/App Store upload, physical-device proof, and signed-device smoke
-  were not run for that release.
+- Staging readiness and smoke passed on artifact
+  `503b2e5072b6e7e78eb7a9a614aa77726db4fff4e2ac08e4b3d85f19f62ec2ed`.
+  Production health, database integrity, PM2 identity, artifact parity, global
+  flag resolution, and Training/media smoke passed through loopback and edge.
+- Final-source gates passed 45 focused, 2,306 Training, and 2,988 changed-area
+  tests plus TypeScript checks. The immediately preceding tree passed the
+  complete 13,512-test gate; owner authorization covered avoiding an unchanged
+  duplicate full run.
+- TestFlight build 55 is `Testing` in internal `Nexus Hub Betinha` and external
+  `Betinhas`. It had zero installs at the final check, so physical-device proof
+  remains open and build 54 remains active.
 
-### Training public-beta release candidate — LOCAL ONLY
+### Training public-beta release — LIVE / DEVICE PROOF OPEN
 
-- Backend `4.14.218` is committed locally at `fff8cd8e`; companion iOS `1.5.0`
-  build 55 is committed locally at `58069db`. Neither release-candidate commit
-  has been pushed to or merged into `main`.
+- Backend `4.14.218` is on `origin/main`, staging, and production at
+  `6a2811bc`; companion iOS `1.5.0` build 55 is on `origin/main` at `58069db`
+  and is available to both TestFlight groups.
 - All six exercise-media reviews are complete for package
   `51c1089cceb8a916abf200b5cb3688b19f5f7553990467ee0f8ef01c7c4f74bb`
   and release subject
   `27b97ebc96e1b3bb1ee3612e63c5609b5572c9d4b58e59b8ea3e77642fb1cea3`.
   The approved origin is `https://media.nexushub.me`; the reviewed catalog
   covers 158 canonical exercises and 200 selected mappings.
-- This candidate has not been deployed to staging or production. Migration 231
-  is unapplied outside local verification, no media manifest is `STAGED` or
-  `ACTIVE` for this candidate, no public-beta flag bundle is active, and no
-  build 55 TestFlight upload or device smoke is claimed.
+- Migration 231, the exact public-beta flag bundle, and the approved media
+  manifest are active in production. Build 55 still needs an install/open/
+  Training smoke before build 54 can be expired.
 
-### Training M1–M5 gate — STAGING DEPLOYED/DORMANT
+### Training M1–M5 gate — HISTORICAL / SUPERSEDED
 
 - Staging was built from default-off M1–M5 source commit `032d8ffe`, now
   contained in `origin/main`; release evidence was merged by PR #169 as
@@ -76,18 +79,9 @@ Validated through promotion:
   unset, and no media manifest reached `STAGED` or `ACTIVE`. Readiness and the
   final **24/24** smoke, including Cloudflare edge checks, passed; see
   `docs/release/smoke-evidence/staging-smoke-032d8ffe-20260713T135646Z.json`.
-- Training exercise media is **not production-active**. The
-  `TRAINING_EXERCISE_MEDIA_V1_ENABLED` default remains `false`; no publication,
-  flag activation, media hosting, production migration, or production runtime
-  deployment is authorized by the staging result.
-- The media-review blockers recorded at this dated staging checkpoint are now
-  superseded by the exact package and release-subject approvals in the local-RC
-  section above. Approval does not change the deployed staging state: it still
-  runs the older dormant artifact, with no active media manifest or rollout
-  flag.
-- The `4.14.218` candidate and migration 231 must still pass staging deploy,
-  readiness, Training/calendar/media smoke, production promotion, and the iOS
-  TestFlight/device gates before any live-release claim is valid.
+- This isolated default-off checkpoint is retained as historical evidence. It
+  is superseded by the `4.14.218` production promote above; only the physical
+  build-55 device gate remains open.
 
 ## Previous Production Versions On This Branch
 
