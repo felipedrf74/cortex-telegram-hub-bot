@@ -2,10 +2,10 @@
 
 Status: canonical
 Owner: release lead (Felipe)
-Last verified: 2026-07-10
+Last verified: 2026-07-14
 Update policy: update after merge / staging / production / deploy-gate changes. Live identity (branch/commit/version/migrations) auto-generated via engine/scripts/release-identity.sh --persist; do not type those by hand.
 
-Last updated: 2026-07-10
+Last updated: 2026-07-14
 
 > **Live identity** — branch / commit / version / migration count for the
 > current working tree are auto-generated. Do NOT type those values by
@@ -38,6 +38,38 @@ Last updated: 2026-07-10
   remains active with 131 exercises and 24 equipment items. Workspace audit
   evidence lives at `docs/release/worktree-recovery-audit-2026-05-18.md` and
   `docs/release/worktree-recovery-audit-2026-05-21/`.
+
+### 2026-07-14 Training Public Beta Release Candidate — COMMITTED / NOT DEPLOYED
+
+- Staging was built from default-off Training M1–M5 source commit `032d8ffe`,
+  now contained in backend `origin/main`; the canonical evidence and source
+  clarification were merged by PRs #169–#170 through `1ce8b377`. The exact
+  artifact digest
+  `5e4daeac8d4896895caf7a93fb904774b64b899a246aac6a2df9666cc48ce8b6`
+  is deployed to the isolated staging install only; production remains
+  `4.14.216` at `6c67c181`.
+- Staging applied migrations 228–230 through the normal startup runner. All
+  Training rollout variables remained unset, and no media manifest reached
+  publication state `STAGED` or `ACTIVE`.
+- Staging readiness and the final smoke passed **24/24**, including Training
+  preview, iOS contract envelopes, SQLite integrity, PM2 state, and Cloudflare
+  edge allow/block checks. Evidence is in engine
+  `docs/release/smoke-evidence/staging-smoke-032d8ffe-20260713T135646Z.json`.
+- The completed local release candidate is backend `fff8cd8e` at `4.14.218`
+  and iOS `58069db` at `1.5.0` build 55. Both commits remain on their release
+  branches: they have not yet been promoted to either `origin/main`, staging,
+  production, App Store Connect, or TestFlight.
+- Publication preparation now covers **158 canonical exercises** and **200
+  selected mappings**. Domain, legal/license, accessibility, owner
+  publication, localization (`en-US`, `pt-PT`, `pt-BR`), and approved-host
+  reviews are complete for compiled package
+  `51c1089cceb8a916abf200b5cb3688b19f5f7553990467ee0f8ef01c7c4f74bb`
+  and release subject
+  `27b97ebc96e1b3bb1ee3612e63c5609b5572c9d4b58e59b8ea3e77642fb1cea3`.
+  The approved origin is `https://media.nexushub.me`.
+- These approvals do not assert deployment. Migration 231, production DB
+  state, media publication/runtime activation, signed TestFlight processing,
+  and physical-device proof remain pending the staged promotion sequence.
 
 ### 2026-07-10 Paid-Only AI Cost Controls Production Promote
 

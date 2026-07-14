@@ -3,6 +3,20 @@
 All notable changes to Nexus Hub (formerly Cortex Telegram Hub Bot) are documented in this file.
 
 ---
+## [4.14.218] — 2026-07-14
+
+### Features
+
+- **training plans**: Add immutable, phase-aware plan revisions with profile-causal explanations, structured workout blocks, modality-specific prescriptions, and explicit approval boundaries.
+- **training adaptations**: Add busy-day, tired-day, reschedule, split, and purposeful exercise-substitution proposals with session, week, phase, or full-plan scope and before/after review.
+- **training scheduling**: Add authoritative all-calendar capacity snapshots, exact-context revalidation, Decision Center escalation, and conflict-aware M4 plan generation.
+- **exercise media**: Add governed full-catalog instructional media delivery for 158 canonical exercises through the approved `https://media.nexushub.me` origin, with checksum, takedown, localization, accessibility, and text-fallback controls.
+
+### Safety and compatibility
+
+- Keep public-beta activation fail-closed behind the exact server bundle and preserve legacy active plans until the authorized backup-and-purge release step.
+- Protect revision-managed plans from legacy writers and scheduler mutation while preserving tenant/user isolation and additive migration rollback.
+
 ## [4.9.14] — 2026-04-06
 
 ### Bug Fixes

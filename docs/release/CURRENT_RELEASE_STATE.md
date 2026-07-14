@@ -2,10 +2,10 @@
 
 Status: canonical
 Owner: backend release lead (Felipe)
-Last verified: 2026-07-13
+Last verified: 2026-07-14
 Update policy: update after backend deploy or staging change. Workspace-level entry point is docs/release/CURRENT_RELEASE_STATE.md.
 
-Last updated: 2026-07-13
+Last updated: 2026-07-14
 
 Only the **Active Production Release** section states the current production
 truth. Dated sections below it are historical deploy evidence and may mention
@@ -47,6 +47,28 @@ older production versions.
   physical-device proof, and signed-device smoke were not run.
 - Backend workspace root: `/Users/felipedominguez/Desktop/Custom Connectors/Cortex/cortex-telegram-hub-bot`
 
+## 2026-07-14 Training Public Beta Release Candidate — LOCAL ONLY
+
+- Backend `4.14.218` is committed only on the local release-candidate branch at
+  `fff8cd8e`; companion iOS `1.5.0` build 55 is committed only on its local
+  release-candidate branch at `58069db`. Neither commit has been pushed to or
+  merged into `main`.
+- All six Training exercise-media reviews are complete for the exact immutable
+  release subjects. The approved package is
+  `51c1089cceb8a916abf200b5cb3688b19f5f7553990467ee0f8ef01c7c4f74bb`,
+  the approved release subject is
+  `27b97ebc96e1b3bb1ee3612e63c5609b5572c9d4b58e59b8ea3e77642fb1cea3`,
+  and the approved origin is `https://media.nexushub.me`. The reviewed catalog
+  covers 158 canonical exercises and 200 selected mappings.
+- This is approval and local-source evidence, not runtime evidence. The
+  `4.14.218` artifact, migration 231, media package, and public-beta bundle have
+  not been staged, deployed, published, or activated. No matching TestFlight
+  build has been uploaded, and no device smoke is claimed.
+- Production therefore remains `4.14.216` at `6c67c181`; the older isolated
+  Training staging deployment remains dormant as described below. Staging
+  deploy, migration/readiness checks, the required Training/calendar/media
+  smoke, production promotion, and iOS release gates are still pending.
+
 ## 2026-07-13 Training M1–M5 Staging Gate — DEPLOYED/DORMANT
 
 - Staging was built from Training M1–M5 source commit `032d8ffe`, now contained
@@ -67,16 +89,18 @@ older production versions.
 - Training exercise media is **not production-active**. The
   `TRAINING_EXERCISE_MEDIA_V1_ENABLED` default remains `false`, and no
   publication, activation, approved-host delivery, production migration, or
-  production deploy is authorized or claimed. The Active Production Release
-  above remains `4.14.216` at `6c67c181`.
-- Production-approved catalog coverage is **0/158**. Publication and activation
-  remain blocked on exactly these six gates: `DOMAIN_APPROVAL`,
-  `LEGAL_LICENSE`, `ACCESSIBILITY`, `OWNER_PUBLICATION`, `LOCALIZATION`, and
-  `APPROVED_HOST`.
-- Release posture: **DO NOT RELEASE Training exercise media** until all six
-  gates pass against immutable reviewed assets and the owner separately
-  authorizes rollout. The successful non-production smoke does not waive that
-  production gate.
+  production deploy has occurred or is claimed. The later immutable owner
+  approvals are recorded in the local-RC section above; the Active Production
+  Release remains `4.14.216` at `6c67c181`.
+- The publication-review posture from this dated staging checkpoint has since
+  been superseded by the exact package and release-subject approvals recorded
+  in the 2026-07-14 local-RC section above. Those approvals cover all six
+  required reviews, 158 canonical exercises, 200 selected mappings, and the
+  approved origin `https://media.nexushub.me`.
+- Approval did not mutate this staging deployment: it still has no active media
+  manifest and still runs the older dormant artifact. The `4.14.218` candidate,
+  migration 231, publication step, activation step, production deploy, and iOS
+  release remain pending their normal release gates.
 
 ## 2026-07-10 Paid-Only AI Cost Controls Production Promote
 

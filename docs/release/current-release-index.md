@@ -2,10 +2,10 @@
 
 Status: canonical
 Owner: release lead (Felipe)
-Last verified: 2026-07-13
+Last verified: 2026-07-14
 Update policy: update when the current RC identity, deploy-gate evidence, or canonical-doc cross-references change. Run `scripts/release-identity.sh --persist` to refresh auto-generated identity fields.
 
-Date: 2026-07-13
+Date: 2026-07-14
 
 ## Current Status
 
@@ -49,6 +49,22 @@ Validated through promotion:
 - TestFlight/App Store upload, physical-device proof, and signed-device smoke
   were not run for that release.
 
+### Training public-beta release candidate — LOCAL ONLY
+
+- Backend `4.14.218` is committed locally at `fff8cd8e`; companion iOS `1.5.0`
+  build 55 is committed locally at `58069db`. Neither release-candidate commit
+  has been pushed to or merged into `main`.
+- All six exercise-media reviews are complete for package
+  `51c1089cceb8a916abf200b5cb3688b19f5f7553990467ee0f8ef01c7c4f74bb`
+  and release subject
+  `27b97ebc96e1b3bb1ee3612e63c5609b5572c9d4b58e59b8ea3e77642fb1cea3`.
+  The approved origin is `https://media.nexushub.me`; the reviewed catalog
+  covers 158 canonical exercises and 200 selected mappings.
+- This candidate has not been deployed to staging or production. Migration 231
+  is unapplied outside local verification, no media manifest is `STAGED` or
+  `ACTIVE` for this candidate, no public-beta flag bundle is active, and no
+  build 55 TestFlight upload or device smoke is claimed.
+
 ### Training M1–M5 gate — STAGING DEPLOYED/DORMANT
 
 - Staging was built from default-off M1–M5 source commit `032d8ffe`, now
@@ -64,13 +80,14 @@ Validated through promotion:
   `TRAINING_EXERCISE_MEDIA_V1_ENABLED` default remains `false`; no publication,
   flag activation, media hosting, production migration, or production runtime
   deployment is authorized by the staging result.
-- Production-approved catalog coverage is **0/158**. Activation/publication is
-  blocked on exactly six independent gates: `DOMAIN_APPROVAL`,
-  `LEGAL_LICENSE`, `ACCESSIBILITY`, `OWNER_PUBLICATION`, `LOCALIZATION`, and
-  `APPROVED_HOST`.
-- Until all six gates pass against the immutable reviewed assets and the owner
-  authorizes rollout, the release decision is **DO NOT RELEASE Training
-  exercise media**.
+- The media-review blockers recorded at this dated staging checkpoint are now
+  superseded by the exact package and release-subject approvals in the local-RC
+  section above. Approval does not change the deployed staging state: it still
+  runs the older dormant artifact, with no active media manifest or rollout
+  flag.
+- The `4.14.218` candidate and migration 231 must still pass staging deploy,
+  readiness, Training/calendar/media smoke, production promotion, and the iOS
+  TestFlight/device gates before any live-release claim is valid.
 
 ## Previous Production Versions On This Branch
 
