@@ -119,9 +119,8 @@ export function assertTrainingExerciseMediaSeedFilesystemBoundary(input: {
   workingDirectory: string;
   databasePath: string | undefined;
 }): void {
-  if (!path.isAbsolute(input.workingDirectory) || !input.databasePath
-    || !path.isAbsolute(input.databasePath)) {
-    throw new Error('Media seed requires absolute checkout and DATABASE_PATH values.');
+  if (!path.isAbsolute(input.workingDirectory) || !input.databasePath) {
+    throw new Error('Media seed requires an absolute checkout and a configured DATABASE_PATH value.');
   }
 
   const expectedCheckoutName = input.target === 'staging'
@@ -133,7 +132,10 @@ export function assertTrainingExerciseMediaSeedFilesystemBoundary(input: {
   }
 
   const dataRoot = requireNonSymlinkDirectory(path.join(checkout, 'data'), 'media seed data root');
-  const database = requireNonSymlinkFile(input.databasePath, 'media seed database');
+  const configuredDatabase = path.isAbsolute(input.databasePath)
+    ? input.databasePath
+    : path.resolve(checkout, input.databasePath);
+  const database = requireNonSymlinkFile(configuredDatabase, 'media seed database');
   if (!isStrictChild(dataRoot, database)) {
     throw new Error(`Media seed ${input.target} DATABASE_PATH escapes its deployed data root.`);
   }

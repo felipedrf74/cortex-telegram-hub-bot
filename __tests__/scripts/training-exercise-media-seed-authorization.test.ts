@@ -166,6 +166,11 @@ describe('training exercise media seed filesystem boundary', () => {
       databasePath: production.databasePath,
     })).not.toThrow();
     expect(() => assertTrainingExerciseMediaSeedFilesystemBoundary({
+      target: 'production',
+      workingDirectory: production.root,
+      databasePath: './data/bot.db',
+    })).not.toThrow();
+    expect(() => assertTrainingExerciseMediaSeedFilesystemBoundary({
       target: 'staging',
       workingDirectory: production.root,
       databasePath: production.databasePath,
@@ -174,6 +179,11 @@ describe('training exercise media seed filesystem boundary', () => {
       target: 'staging',
       workingDirectory: staging.root,
       databasePath: production.databasePath,
+    })).toThrow(/escapes/);
+    expect(() => assertTrainingExerciseMediaSeedFilesystemBoundary({
+      target: 'staging',
+      workingDirectory: staging.root,
+      databasePath: path.relative(staging.root, production.databasePath),
     })).toThrow(/escapes/);
   });
 
