@@ -13,8 +13,10 @@ older production versions.
 
 ## Active Production Release
 
-- Source branch and `origin/main`: `6a2811bcb65184ee2939f6db9de97cfb166c3433`
-  (`fix(training): preserve non-m4 continuous plans`).
+- `origin/main` contains production source commit
+  `6a2811bcb65184ee2939f6db9de97cfb166c3433`
+  (`fix(training): preserve non-m4 continuous plans`); docs-only release
+  records may sit ahead of the runtime commit.
 - Production HEAD: `6a2811bcb65184ee2939f6db9de97cfb166c3433`.
 - Production version: `4.14.218`.
 - Previous production HEAD: `6c67c181`.
@@ -47,8 +49,9 @@ older production versions.
 
 ## 2026-07-14 Training Public Beta Release — DEPLOYED
 
-- Backend `4.14.218` is on `origin/main`, staging, and production at
-  `6a2811bcb65184ee2939f6db9de97cfb166c3433`. Companion iOS `1.5.0` build 55
+- Backend `4.14.218` source `6a2811bcb65184ee2939f6db9de97cfb166c3433`
+  is contained in `origin/main`; staging and production run that exact commit.
+  Companion iOS `1.5.0` build 55
   is on `origin/main` at `58069db585ff5e69253ba33051dc779ce19703bf` and is
   available to both TestFlight groups.
 - All six Training exercise-media reviews are complete for the exact immutable

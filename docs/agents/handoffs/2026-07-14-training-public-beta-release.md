@@ -4,8 +4,8 @@
 
 Date: 2026-07-14 · Agent: Codex · status: backend and governed media are live in production; iOS build 55 is available to internal and external TestFlight groups; physical-device smoke remains open.
 
-- Backend `main`, staging, and production: `6a2811bcb65184ee2939f6db9de97cfb166c3433` (`4.14.218`).
-- Backend release branch: `codex/training-full-beta-release-20260714` at the same commit.
+- Backend production source commit `6a2811bcb65184ee2939f6db9de97cfb166c3433` (`4.14.218`) is contained in `origin/main`; staging and production run that exact commit.
+- Backend release branch: `codex/training-full-beta-release-20260714`, with post-deploy documentation ahead of the runtime commit.
 - iOS `origin/main`: `58069db585ff5e69253ba33051dc779ce19703bf`, version `1.5.0` build `55`.
 - TestFlight build 55 status: `Testing`, assigned to internal `Nexus Hub Betinha` and external `Betinhas`. App Store Connect showed zero build-55 installs at the final check, so build 54 remains active.
 
