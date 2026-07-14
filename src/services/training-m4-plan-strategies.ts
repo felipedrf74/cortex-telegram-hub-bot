@@ -179,6 +179,16 @@ export function validateTrainingM4PlanStartDate(value: string): void {
   parseIsoDate(value, 'TRAINING_M4_PLAN_START_DATE_INVALID');
 }
 
+export function trainingM4PlanEndDate(planStartDate: string, horizonWeeks: number): string {
+  const start = parseIsoDate(planStartDate, 'TRAINING_M4_PLAN_START_DATE_INVALID');
+  if (!Number.isSafeInteger(horizonWeeks) || horizonWeeks < 1 || horizonWeeks > 52) {
+    throw new Error('TRAINING_M4_HORIZON_INVALID');
+  }
+  return new Date(start.getTime() + (horizonWeeks * 7 - 1) * 86_400_000)
+    .toISOString()
+    .slice(0, 10);
+}
+
 export function dayOfWeekForIsoDate(value: string): DayOfWeek {
   const date = parseIsoDate(value, 'TRAINING_M4_DATE_INVALID');
   const days: DayOfWeek[] = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
@@ -347,8 +357,18 @@ export function selectTrainingM4CapacityWindow(
   discipline: CoachingDiscipline,
   windows: readonly TrainingM4CapacityWindow[],
   workout: { dayOfWeek: DayOfWeek; sessionType: string; plannedDurationMinutes: number },
+  scheduledDate?: string,
 ): TrainingM4CapacityWindow | null {
-  return windows.find((window) => windowSupportsWorkout(discipline, window, workout)) ?? null;
+  const candidates = windows.filter((window) => windowSupportsWorkout(discipline, window, workout));
+  if (!scheduledDate) return candidates[0] ?? null;
+  return candidates.find((window) => {
+    try {
+      trainingM4ScheduledWindow(scheduledDate, window, workout.plannedDurationMinutes);
+      return true;
+    } catch {
+      return false;
+    }
+  }) ?? null;
 }
 
 export function trainingM4ScheduledWindow(

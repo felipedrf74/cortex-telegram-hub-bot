@@ -24,6 +24,7 @@ import {
 } from './training-exercise-identity';
 import {
   getTrainingExerciseIdentityV1Mode,
+  isTrainingM4ExplicitUserCapacityEnabled,
   type RuntimeFlagScope,
   type TrainingExerciseIdentityV1Mode,
 } from './runtime-flags';
@@ -50,6 +51,7 @@ import {
   validateTrainingM4PlanStartDate,
   validateTrainingM4ResourceAccess,
   trainingM4ConflictSetHash,
+  trainingM4PlanEndDate,
   type TrainingEventSubtype,
   type TrainingM4CapacityWindow,
   type TrainingM4GoalPriority,
@@ -262,6 +264,7 @@ function buildTrainingPlanRevisionCandidateInternal(
     identityCatalog ? new Set(identityCatalog.entries.map((entry) => entry.exerciseId)) : undefined,
     options.m4StrategyEnabled === true,
     options.authoritativeCapacityContext ?? null,
+    isTrainingM4ExplicitUserCapacityEnabled(options.env ?? process.env, options.scope),
   );
   if (options.typedWorkoutValidationEnabled) {
     const typed = buildTrainingTypedPlanRevision(normalized, {
@@ -569,6 +572,7 @@ function validateAndNormalizeRequest(
   authoritativeExerciseIds: Set<string> | undefined,
   m4StrategyEnabled: boolean,
   authoritativeCapacityContext: TrainingM4AuthoritativeCapacityContext | null,
+  explicitUserCapacityEnabled: boolean,
 ): TrainingPlanCandidateRequest & { horizonWeeks: number } {
   if (!request || typeof request !== 'object' || !request.profile || typeof request.profile !== 'object') {
     throw new Error('TRAINING_REVISION_PROFILE_REQUIRED');
@@ -657,6 +661,9 @@ function validateAndNormalizeRequest(
     if (!request.capacity || !['AUTHORITATIVE', 'EXPLICIT_USER'].includes(request.capacity.source)) {
       throw new Error('TRAINING_M4_CAPACITY_SOURCE_REQUIRED');
     }
+    if (request.capacity.source === 'EXPLICIT_USER' && !explicitUserCapacityEnabled) {
+      throw new Error('TRAINING_M4_EXPLICIT_USER_CAPACITY_DISABLED');
+    }
     const capacityKeys = Object.keys(request.capacity as unknown as Record<string, unknown>).sort();
     if (!capacityKeys.includes('source')
         || !capacityKeys.includes('windows')
@@ -707,7 +714,12 @@ function validateAndNormalizeRequest(
     throw new Error('TRAINING_REVISION_EXCLUSION_UNKNOWN');
   }
   const normalizedCapacity = m4StrategyEnabled
-    ? normalizeTrainingM4Capacity(request.capacity!, authoritativeCapacityContext)
+    ? normalizeTrainingM4Capacity(
+      request.capacity!,
+      authoritativeCapacityContext,
+      request.planStartDate!,
+      horizonWeeks,
+    )
     : request.capacity;
   return {
     ...request,
@@ -747,6 +759,8 @@ function normalizeRevisionDocumentExerciseIdentities(
 function normalizeTrainingM4Capacity(
   capacity: NonNullable<TrainingPlanCandidateRequest['capacity']>,
   authoritative: TrainingM4AuthoritativeCapacityContext | null,
+  planStartDate: string,
+  horizonWeeks: number,
 ): NonNullable<TrainingPlanCandidateRequest['capacity']> & { contextVersion: string } {
   const windows = capacity.windows.map((window) => ({
     dayOfWeek: window.dayOfWeek,
@@ -770,6 +784,11 @@ function normalizeTrainingM4Capacity(
   if (!authoritative) throw new Error('TRAINING_M4_AUTHORITATIVE_CAPACITY_UNAVAILABLE');
   if (!capacity.contextVersion || capacity.contextVersion !== authoritative.contextVersion) {
     throw new Error('TRAINING_M4_AUTHORITATIVE_CAPACITY_STALE');
+  }
+  if (authoritative.planStartDate !== planStartDate
+      || authoritative.horizonWeeks !== horizonWeeks
+      || authoritative.planEndDate !== trainingM4PlanEndDate(planStartDate, horizonWeeks)) {
+    throw new Error('TRAINING_M4_AUTHORITATIVE_CAPACITY_RANGE_MISMATCH');
   }
   validateAuthoritativeCapacityNarrowing(authoritative.windows, windows);
   return { source: 'AUTHORITATIVE', contextVersion: authoritative.contextVersion, windows };

@@ -9,7 +9,7 @@ import {
   buildSkillDecisionFixtureIntent,
   applyDecisionTypeSuppression,
   createDecisionIntent,
-  decisionRefreshSupportedForScope,
+  decisionRefreshSupportedForDecision,
   DecisionActionError,
   dismissDecision,
   getDecisionOverview,
@@ -442,7 +442,7 @@ export function decisionRoutes(): Router {
     if (!ensureValidTenantRouteScope(res, userId, 'decisions_route_refresh', { decisionId: req.params.id })) return;
     const tenantId = routeTenantId(authReq, res, userId, 'decisions_route_refresh', 'notification_center_items');
     if (tenantId == null) return;
-    if (!decisionRefreshSupportedForScope(userId, tenantId)) {
+    if (!decisionRefreshSupportedForDecision(String(req.params.id || ''), userId, tenantId)) {
       sendError(res, 'NOT_FOUND', 'Decision refresh is not enabled', 404);
       return;
     }

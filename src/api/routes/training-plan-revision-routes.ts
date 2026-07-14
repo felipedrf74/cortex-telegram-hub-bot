@@ -1,16 +1,20 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
+import { createHash } from 'node:crypto';
 import type { Request, Router, Response } from 'express';
 import type { AuthenticatedRequest } from '../auth-middleware';
 import { sendError, sendInternalError, sendSuccess } from '../response-helpers';
 import { requireTenantIdParam } from '../../services/tenant-scope';
 import {
+  getTrainingAdaptationV1Mode,
   getTrainingPlanRevisionV1Mode,
-  isDecisionFlowV1EnforceEnabled,
+  isTrainingDecisionFlowV1EnforceEnabled,
   isTrainingPlanRevisionV1ExplicitlyEnrolled,
   isTrainingTypedWorkoutV1Enabled,
+  isTrainingM4ExplicitUserCapacityEnabled,
   getTrainingM4Allowlist,
 } from '../../services/runtime-flags';
+import type { TrainingAdaptationScope } from '../../services/training-adaptation-types';
 import {
   CANONICAL_TRAINING_SESSION_TYPES,
   TRAINING_PLAN_MODE_CAPABILITIES,
@@ -36,10 +40,42 @@ import {
   getTrainingM4AuthoritativeCapacityContext,
   type TrainingM4AuthoritativeCapacityContext,
 } from '../../services/training-m4-capacity-context';
+import {
+  refreshTrainingM4AuthoritativeCapacityContext,
+  TRAINING_M4_CAPACITY_REFRESH_MAX_WINDOWS,
+  TRAINING_M4_CAPACITY_TTL_MINUTES,
+  type TrainingM4CapacityRefreshRequest,
+} from '../../services/training-m4-capacity-snapshots';
 
 interface RevisionApiMeta {
   schemaVersion: typeof TRAINING_PLAN_REVISION_API_SCHEMA;
   mode: 'active';
+}
+
+export const TRAINING_M4_CAPACITY_REFRESH_API_SCHEMA = 'training_m4_capacity_refresh.v1' as const;
+export const TRAINING_M4_CAPACITY_REFRESH_BURST_LIMIT = 2;
+export const TRAINING_M4_CAPACITY_REFRESH_FIVE_MINUTE_LIMIT = 6;
+const TRAINING_M4_CAPACITY_REFRESH_BURST_WINDOW_MS = 60_000;
+const TRAINING_M4_CAPACITY_REFRESH_TOTAL_WINDOW_MS = 5 * 60_000;
+const trainingM4CapacityRefreshRequestLog = new Map<string, number[]>();
+const trainingM4CapacityRefreshInFlight = new Map<string, {
+  idempotencyKey: string;
+  requestHash: string;
+  promise: Promise<TrainingM4AuthoritativeCapacityContext>;
+}>();
+
+/** Test-only reset for the process-local, per-person capacity refresh limiter. */
+export function resetTrainingM4CapacityRefreshRateLimitForTests(): void {
+  trainingM4CapacityRefreshRequestLog.clear();
+  trainingM4CapacityRefreshInFlight.clear();
+}
+
+/** Deterministic test seam for the dual-window refresh budget. */
+export function consumeTrainingM4CapacityRefreshRateLimitForTests(
+  scope: { userId: number; tenantId: number },
+  now: number,
+): { allowed: true } | { allowed: false; retryAfterSeconds: number } {
+  return consumeTrainingM4CapacityRefreshRateLimit(scope, now);
 }
 
 export interface RevisionCapabilitiesResource extends RevisionApiMeta {
@@ -48,6 +84,8 @@ export interface RevisionCapabilitiesResource extends RevisionApiMeta {
   workoutCapabilities: typeof TRAINING_WORKOUT_CAPABILITY_REGISTRY;
   planModes: typeof TRAINING_PLAN_MODE_CAPABILITIES;
   milestone1GenerationSessionTypes: string[];
+  adaptationMode: 'off' | 'shadow' | 'active';
+  adaptationScopes: TrainingAdaptationScope[];
   typedWorkoutGenerationEnabled: boolean;
   typedGenerationSessionTypes: string[];
   typedGenerationPlanModes: string[];
@@ -59,7 +97,28 @@ export interface RevisionCapabilitiesResource extends RevisionApiMeta {
   m4CapacityPolicy: {
     authoritativeContextAvailable: boolean;
     authoritativeClientModification: 'NARROW_ONLY';
-    explicitUserEntrySupported: true;
+    authoritativeRefresh: {
+      supported: boolean;
+      method: 'POST';
+      path: '/plan/capacity-context/refresh';
+      requiresIdempotencyKey: true;
+      requiresAllConnectedProviders: true;
+      providerWriteEffects: false;
+      freshnessMinutes: number;
+      requestConstraints: {
+        maxWindows: number;
+        uniqueWeekdays: true;
+        singleTimezone: true;
+      };
+      rateLimit: {
+        burstMaxRequests: number;
+        burstWindowSeconds: 60;
+        totalMaxRequests: number;
+        totalWindowSeconds: 300;
+      };
+    };
+    activeM4CapacityRequirement: 'AUTHORITATIVE_ONLY' | 'AUTHORITATIVE_OR_EXPLICIT_USER';
+    explicitUserEntrySupported: boolean;
     explicitUserEntryProvisional: true;
     explicitUserCalendarConflictCoverage: 'UNAVAILABLE';
   };
@@ -71,7 +130,14 @@ export interface RevisionCapabilitiesResource extends RevisionApiMeta {
   };
 }
 
-export function registerTrainingPlanRevisionRoutes(router: Router): void {
+export interface TrainingPlanRevisionRouteDependencies {
+  refreshCapacityContext?: typeof refreshTrainingM4AuthoritativeCapacityContext;
+}
+
+export function registerTrainingPlanRevisionRoutes(
+  router: Router,
+  dependencies: TrainingPlanRevisionRouteDependencies = {},
+): void {
   const capabilities = (req: Request, res: Response) => {
     const scope = resolveScope(req as unknown as AuthenticatedRequest, res);
     if (!scope || !requireCapabilityRoute(scope, res)) return;
@@ -80,6 +146,67 @@ export function registerTrainingPlanRevisionRoutes(router: Router): void {
   };
   router.get('/plan/revision-capabilities', capabilities);
   router.get('/capabilities', capabilities);
+
+  router.post('/plan/capacity-context/refresh', async (req, res: Response) => {
+    const scope = resolveScope(req as unknown as AuthenticatedRequest, res);
+    if (!scope || !requireCapacityRefreshRoute(scope, res)) return;
+    const scopeKey = `${scope.tenantId}:${scope.userId}`;
+    const idempotencyKey = req.header('idempotency-key') ?? '';
+    const request = req.body as TrainingM4CapacityRefreshRequest;
+    const requestHash = createHash('sha256').update(JSON.stringify(request ?? null)).digest('hex');
+    const inFlight = trainingM4CapacityRefreshInFlight.get(scopeKey);
+    if (inFlight) {
+      if (inFlight.idempotencyKey === idempotencyKey && inFlight.requestHash === requestHash) {
+        try {
+          const capacityContext = await inFlight.promise;
+          sendCapacityRefreshSuccess(res, capacityContext);
+        } catch (error) {
+          sendRevisionError(res, error, 'refresh authoritative capacity');
+        }
+      } else {
+        res.setHeader('Retry-After', '1');
+        sendError(
+          res,
+          'TRAINING_M4_CAPACITY_REFRESH_IN_PROGRESS',
+          'Another authoritative capacity refresh is already in progress for this profile.',
+          409,
+        );
+      }
+      return;
+    }
+    const refreshLimit = consumeTrainingM4CapacityRefreshRateLimit(scope);
+    if (!refreshLimit.allowed) {
+      res.setHeader('Retry-After', String(refreshLimit.retryAfterSeconds));
+      sendError(
+        res,
+        'TRAINING_M4_CAPACITY_REFRESH_RATE_LIMITED',
+        'Too many authoritative capacity refreshes. Retry after the current one-minute window.',
+        429,
+      );
+      return;
+    }
+    const refreshPromise = (dependencies.refreshCapacityContext
+      ?? refreshTrainingM4AuthoritativeCapacityContext)({
+      scope,
+      idempotencyKey,
+      request,
+    });
+    trainingM4CapacityRefreshInFlight.set(scopeKey, {
+      idempotencyKey,
+      requestHash,
+      promise: refreshPromise,
+    });
+    try {
+      const capacityContext = await refreshPromise;
+      sendCapacityRefreshSuccess(res, capacityContext);
+    } catch (error) {
+      sendRevisionError(res, error, 'refresh authoritative capacity');
+    } finally {
+      if (trainingM4CapacityRefreshInFlight.get(scopeKey)?.promise === refreshPromise) {
+        trainingM4CapacityRefreshInFlight.delete(scopeKey);
+      }
+    }
+  });
 
   router.post('/plan/candidates', async (req, res: Response) => {
     const scope = resolveScope(req as unknown as AuthenticatedRequest, res);
@@ -176,9 +303,13 @@ export function trainingPlanRevisionCapabilitiesForScope(
 ): RevisionCapabilitiesResource | null {
   if (getTrainingPlanRevisionV1Mode(env, scope) !== 'active'
       || !isTrainingPlanRevisionV1ExplicitlyEnrolled(env, scope)
-      || !isDecisionFlowV1EnforceEnabled(env, scope)
+      || !isTrainingDecisionFlowV1EnforceEnabled(env, scope)
       || scope.userId !== scope.tenantId) return null;
   const typedWorkoutGenerationEnabled = isTrainingTypedWorkoutV1Enabled(env, scope);
+  const configuredAdaptationMode = getTrainingAdaptationV1Mode(env, scope);
+  const adaptationMode = configuredAdaptationMode === 'active' && !typedWorkoutGenerationEnabled
+    ? 'off'
+    : configuredAdaptationMode;
   const m4AllowedPlanCombinations = typedWorkoutGenerationEnabled
     ? getTrainingM4Allowlist(env, scope).map((entry) => {
       const [planMode, discipline] = entry.split(':');
@@ -188,9 +319,11 @@ export function trainingPlanRevisionCapabilitiesForScope(
       };
     })
     : [];
-  const m4CapacityContext = typedWorkoutGenerationEnabled
+  const m4CapacityContext = typedWorkoutGenerationEnabled && m4AllowedPlanCombinations.length > 0
     ? getTrainingM4AuthoritativeCapacityContext(scope)
     : null;
+  const explicitUserEntrySupported = m4AllowedPlanCombinations.length > 0
+    && isTrainingM4ExplicitUserCapacityEnabled(env, scope);
   return {
     ...meta(),
     registryVersion: 'training-workout-capabilities.v1',
@@ -200,6 +333,10 @@ export function trainingPlanRevisionCapabilitiesForScope(
     milestone1GenerationSessionTypes: TRAINING_WORKOUT_CAPABILITY_REGISTRY
       .filter((entry) => entry.milestone1GenerationEnabled)
       .map((entry) => entry.sessionType),
+    adaptationMode,
+    adaptationScopes: adaptationMode === 'active'
+      ? ['SESSION', 'WEEK', 'PHASE', 'FULL_PLAN']
+      : [],
     typedWorkoutGenerationEnabled,
     typedGenerationSessionTypes: typedWorkoutGenerationEnabled
       ? [...CANONICAL_TRAINING_SESSION_TYPES]
@@ -212,7 +349,30 @@ export function trainingPlanRevisionCapabilitiesForScope(
     m4CapacityPolicy: {
       authoritativeContextAvailable: Boolean(m4CapacityContext),
       authoritativeClientModification: 'NARROW_ONLY',
-      explicitUserEntrySupported: true,
+      authoritativeRefresh: {
+        supported: m4AllowedPlanCombinations.length > 0,
+        method: 'POST',
+        path: '/plan/capacity-context/refresh',
+        requiresIdempotencyKey: true,
+        requiresAllConnectedProviders: true,
+        providerWriteEffects: false,
+        freshnessMinutes: TRAINING_M4_CAPACITY_TTL_MINUTES,
+        requestConstraints: {
+          maxWindows: TRAINING_M4_CAPACITY_REFRESH_MAX_WINDOWS,
+          uniqueWeekdays: true,
+          singleTimezone: true,
+        },
+        rateLimit: {
+          burstMaxRequests: TRAINING_M4_CAPACITY_REFRESH_BURST_LIMIT,
+          burstWindowSeconds: 60,
+          totalMaxRequests: TRAINING_M4_CAPACITY_REFRESH_FIVE_MINUTE_LIMIT,
+          totalWindowSeconds: 300,
+        },
+      },
+      activeM4CapacityRequirement: explicitUserEntrySupported
+        ? 'AUTHORITATIVE_OR_EXPLICIT_USER'
+        : 'AUTHORITATIVE_ONLY',
+      explicitUserEntrySupported,
       explicitUserEntryProvisional: true,
       explicitUserCalendarConflictCoverage: 'UNAVAILABLE',
     },
@@ -244,7 +404,7 @@ function resolveScope(req: AuthenticatedRequest, res: Response): { userId: numbe
 function requireActiveRoute(scope: { userId: number; tenantId: number }, res: Response): boolean {
   if (getTrainingPlanRevisionV1Mode(process.env, scope) === 'active'
       && isTrainingPlanRevisionV1ExplicitlyEnrolled(process.env, scope)
-      && isDecisionFlowV1EnforceEnabled(process.env, scope)) {
+      && isTrainingDecisionFlowV1EnforceEnabled(process.env, scope)) {
     try {
       requirePersonalTrainingRevisionScope(scope);
       return true;
@@ -254,6 +414,19 @@ function requireActiveRoute(scope: { userId: number; tenantId: number }, res: Re
   }
   sendError(res, 'NOT_FOUND', 'Route not found.', 404);
   return false;
+}
+
+function requireCapacityRefreshRoute(
+  scope: { userId: number; tenantId: number },
+  res: Response,
+): boolean {
+  if (!requireActiveRoute(scope, res)) return false;
+  if (!isTrainingTypedWorkoutV1Enabled(process.env, scope)
+      || getTrainingM4Allowlist(process.env, scope).length === 0) {
+    sendError(res, 'NOT_FOUND', 'Route not found.', 404);
+    return false;
+  }
+  return true;
 }
 
 /**
@@ -269,7 +442,7 @@ function requireCapabilityRoute(scope: { userId: number; tenantId: number }, res
     sendError(res, 'NOT_FOUND', 'Route not found.', 404);
     return false;
   }
-  if (!isDecisionFlowV1EnforceEnabled(process.env, scope)) {
+  if (!isTrainingDecisionFlowV1EnforceEnabled(process.env, scope)) {
     sendError(
       res,
       'TRAINING_REVISION_EXECUTION_DEPENDENCY_DISABLED',
@@ -293,6 +466,47 @@ function sendRevisionError(res: Response, error: unknown, operation: string): vo
   }
   logger.error({ error, operation }, `Training plan revision ${operation} failed`);
   sendInternalError(res, `Training plan revision ${operation} failed`);
+}
+
+function sendCapacityRefreshSuccess(
+  res: Response,
+  capacityContext: TrainingM4AuthoritativeCapacityContext,
+): void {
+  sendSuccess(res, {
+    schemaVersion: TRAINING_M4_CAPACITY_REFRESH_API_SCHEMA,
+    mode: 'active' as const,
+    capacityContext,
+  }, { status: 201 });
+}
+
+function consumeTrainingM4CapacityRefreshRateLimit(
+  scope: { userId: number; tenantId: number },
+  now = Date.now(),
+): { allowed: true } | { allowed: false; retryAfterSeconds: number } {
+  const key = `${scope.tenantId}:${scope.userId}`;
+  const cutoff = now - TRAINING_M4_CAPACITY_REFRESH_TOTAL_WINDOW_MS;
+  const recent = (trainingM4CapacityRefreshRequestLog.get(key) ?? [])
+    .filter((timestamp) => timestamp > cutoff);
+  const burst = recent.filter((timestamp) => timestamp > now - TRAINING_M4_CAPACITY_REFRESH_BURST_WINDOW_MS);
+  if (burst.length >= TRAINING_M4_CAPACITY_REFRESH_BURST_LIMIT
+      || recent.length >= TRAINING_M4_CAPACITY_REFRESH_FIVE_MINUTE_LIMIT) {
+    trainingM4CapacityRefreshRequestLog.set(key, recent);
+    const burstRetryAt = burst.length >= TRAINING_M4_CAPACITY_REFRESH_BURST_LIMIT
+      ? burst[0] + TRAINING_M4_CAPACITY_REFRESH_BURST_WINDOW_MS
+      : now;
+    const totalRetryAt = recent.length >= TRAINING_M4_CAPACITY_REFRESH_FIVE_MINUTE_LIMIT
+      ? recent[0] + TRAINING_M4_CAPACITY_REFRESH_TOTAL_WINDOW_MS
+      : now;
+    return {
+      allowed: false,
+      retryAfterSeconds: Math.max(1, Math.ceil(
+        (Math.max(burstRetryAt, totalRetryAt) - now) / 1000,
+      )),
+    };
+  }
+  recent.push(now);
+  trainingM4CapacityRefreshRequestLog.set(key, recent);
+  return { allowed: true };
 }
 
 function isRecord(value: unknown): value is Record<string, any> {

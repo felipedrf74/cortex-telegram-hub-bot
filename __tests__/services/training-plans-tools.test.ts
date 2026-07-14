@@ -140,6 +140,103 @@ describe('Training Plan Tool Handlers', () => {
     expect(result.title).toBe('Upper Body Push');
   });
 
+  it('blocks legacy plan creation and projection growth for an active enrolled user without mutating rows', async () => {
+    await executeToolCall('create_training_plan', {
+      name: 'Projection', sport: 'strength', duration_weeks: 4,
+      start_date: '2026-04-01', end_date: '2026-04-29',
+    }, testUserId);
+    await executeToolCall('add_training_week', { plan_id: 1, week_number: 1 }, testUserId);
+    const modeKey = `TRAINING_PLAN_REVISION_V1_MODE_USER_${testUserId}`;
+    const priorMode = process.env[modeKey];
+    process.env[modeKey] = 'active';
+    try {
+      const blockedCreate = await executeToolCall('create_training_plan', {
+        name: 'Forbidden legacy plan', sport: 'running', duration_weeks: 4,
+        start_date: '2026-05-01', end_date: '2026-05-29',
+      }, testUserId);
+      expect(blockedCreate).toMatchObject({
+        success: false,
+        code: 'TRAINING_REVISION_MANAGED_LEGACY_MUTATION_BLOCKED',
+      });
+
+      testDb.prepare("UPDATE fitness_training_plans SET source_revision_id = 'revision-1' WHERE id = 1").run();
+      const blockedWeek = await executeToolCall('add_training_week', {
+        plan_id: 1, week_number: 2, focus: 'forbidden growth',
+      }, testUserId);
+      const blockedSessionViaPlan = await executeToolCall('add_training_session', {
+        week_id: 1, plan_id: 1, day_of_week: 'Tuesday',
+        session_type: 'strength', title: 'Forbidden projection session',
+      }, testUserId);
+      for (const result of [blockedWeek, blockedSessionViaPlan]) {
+        expect(result).toMatchObject({
+          success: false,
+          code: 'TRAINING_REVISION_MANAGED_LEGACY_MUTATION_BLOCKED',
+        });
+      }
+
+      testDb.prepare('UPDATE fitness_training_plans SET source_revision_id = NULL WHERE id = 1').run();
+      testDb.prepare("UPDATE training_weeks SET source_revision_id = 'revision-1' WHERE id = 1").run();
+      const blockedSessionViaWeek = await executeToolCall('add_training_session', {
+        week_id: 1, plan_id: 1, day_of_week: 'Wednesday',
+        session_type: 'strength', title: 'Forbidden revision week session',
+      }, testUserId);
+      expect(blockedSessionViaWeek).toMatchObject({
+        success: false,
+        code: 'TRAINING_REVISION_MANAGED_LEGACY_MUTATION_BLOCKED',
+      });
+
+      expect(testDb.prepare('SELECT COUNT(*) AS count FROM fitness_training_plans').get())
+        .toEqual({ count: 1 });
+      expect(testDb.prepare('SELECT COUNT(*) AS count FROM training_weeks').get())
+        .toEqual({ count: 1 });
+      expect(testDb.prepare('SELECT COUNT(*) AS count FROM training_sessions').get())
+        .toEqual({ count: 0 });
+    } finally {
+      if (priorMode === undefined) delete process.env[modeKey];
+      else process.env[modeKey] = priorMode;
+    }
+  });
+
+  it('preserves legacy projection growth when this exact scope is off or only another scope is enrolled', async () => {
+    await executeToolCall('create_training_plan', {
+      name: 'Legacy projection', sport: 'strength', duration_weeks: 4,
+      start_date: '2026-04-01', end_date: '2026-04-29',
+    }, testUserId);
+    testDb.prepare("UPDATE fitness_training_plans SET source_revision_id = 'revision-legacy' WHERE id = 1").run();
+    const modeKey = `TRAINING_PLAN_REVISION_V1_MODE_USER_${testUserId}`;
+    const otherModeKey = 'TRAINING_PLAN_REVISION_V1_MODE_USER_999999';
+    const priorMode = process.env[modeKey];
+    const priorOtherMode = process.env[otherModeKey];
+    try {
+      process.env[modeKey] = 'off';
+      const offWeek = await executeToolCall('add_training_week', {
+        plan_id: 1, week_number: 1,
+      }, testUserId);
+      const offSession = await executeToolCall('add_training_session', {
+        week_id: offWeek.week_id, plan_id: 1, day_of_week: 'Monday',
+        session_type: 'strength', title: 'Legacy off session',
+      }, testUserId);
+      expect(offWeek.success).toBe(true);
+      expect(offSession.success).toBe(true);
+
+      delete process.env[modeKey];
+      process.env[otherModeKey] = 'active';
+      const otherScopeWeek = await executeToolCall('add_training_week', {
+        plan_id: 1, week_number: 2,
+      }, testUserId);
+      expect(otherScopeWeek.success).toBe(true);
+      expect(testDb.prepare('SELECT COUNT(*) AS count FROM training_weeks').get())
+        .toEqual({ count: 2 });
+      expect(testDb.prepare('SELECT COUNT(*) AS count FROM training_sessions').get())
+        .toEqual({ count: 1 });
+    } finally {
+      if (priorMode === undefined) delete process.env[modeKey];
+      else process.env[modeKey] = priorMode;
+      if (priorOtherMode === undefined) delete process.env[otherModeKey];
+      else process.env[otherModeKey] = priorOtherMode;
+    }
+  });
+
   it('normalizes new exercise prescriptions at both tool and persistence boundaries only when active', async () => {
     const priorMode = process.env.TRAINING_EXERCISE_IDENTITY_V1_MODE;
     process.env.TRAINING_EXERCISE_IDENTITY_V1_MODE = 'active';

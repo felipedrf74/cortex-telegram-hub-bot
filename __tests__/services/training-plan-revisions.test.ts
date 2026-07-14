@@ -51,6 +51,7 @@ const request: TrainingPlanCandidateRequest = {
 
 const activeEnv = {
   TRAINING_PLAN_REVISION_V1_MODE_USER_7: 'active',
+  TRAINING_M4_EXPLICIT_USER_CAPACITY_ENABLED_USER_7: 'true',
   DECISION_FLOW_V1_ENFORCE_ENABLED: 'true',
   TRAINING_PROFILE_SNAPSHOT_ENCRYPTION_KEY: 'training-revision-test-encryption-key-0001',
 };

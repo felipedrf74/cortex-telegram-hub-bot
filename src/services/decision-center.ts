@@ -60,7 +60,7 @@ import {
 } from './chat-pending-confirmations';
 import { isValidTenantUserId, recordTenantScopeAnomaly } from './tenant-scope-observability';
 import { logger } from '../utils/logger';
-import { getDecisionConflictPolicyV1Mode, isDecisionCenterCommandBusEnabled, isDecisionCenterFatigueCapsEnabled, isDecisionCenterGuidanceSkillEnabled, isDecisionCenterGuidanceV1Enabled, isDecisionChoiceOptionsEnabled, isDecisionConflictPolicyV1Enabled, isDecisionEvidenceFreshnessGateEnabled, isDecisionFeedbackSuppressionEnabled, isDecisionFlowV1EnforceEnabled, isDecisionHumanReviewGateEnabled, isDecisionLowRiskAutoResolutionEnabled, isDecisionReconnectAffordanceEnabled, isDecisionRefreshEnabled, isDecisionRollbackSnapshotProtectionEnabled, isDecisionSemanticDedupEnabled, isDecisionSemanticSupersedeEnabled, isDecisionSkillCardsEnabled, isDecisionStreakV1Enabled, isDecisionTypeSuppressionEnabled } from './runtime-flags';
+import { getDecisionConflictPolicyV1Mode, isDecisionCenterCommandBusEnabled, isDecisionCenterFatigueCapsEnabled, isDecisionCenterGuidanceSkillEnabled, isDecisionCenterGuidanceV1Enabled, isDecisionChoiceOptionsEnabled, isDecisionConflictPolicyV1Enabled, isDecisionEvidenceFreshnessGateEnabled, isDecisionFeedbackSuppressionEnabled, isDecisionFlowV1EnforceEnabled, isDecisionHumanReviewGateEnabled, isDecisionLowRiskAutoResolutionEnabled, isDecisionReconnectAffordanceEnabled, isDecisionRefreshEnabled, isDecisionRollbackSnapshotProtectionEnabled, isDecisionSemanticDedupEnabled, isDecisionSemanticSupersedeEnabled, isDecisionSkillCardsEnabled, isDecisionStreakV1Enabled, isDecisionTypeSuppressionEnabled, isTrainingDecisionFlowV1EnforceEnabled } from './runtime-flags';
 import { buildDecisionConflictSummary, type ConflictEvaluation, type DecisionConflictSummary } from './decision-conflict-evaluator';
 import {
   buildNormalizedDecisionAction,
@@ -721,6 +721,20 @@ interface DecisionRecord extends NotificationCenterItem {
   contextObservedAt: string | null;
 }
 
+function decisionFlowV1EnforcedForIntent(input: NotificationIntentInput): boolean {
+  const scope = { userId: input.userId, tenantId: input.tenantId ?? input.userId };
+  return input.sourceSkill === 'training'
+    ? isTrainingDecisionFlowV1EnforceEnabled(process.env, scope)
+    : isDecisionFlowV1EnforceEnabled(process.env, scope);
+}
+
+function decisionFlowV1EnforcedForRecord(record: DecisionRecord): boolean {
+  const scope = { userId: record.userId, tenantId: record.tenantId };
+  return record.sourceSkill === 'training'
+    ? isTrainingDecisionFlowV1EnforceEnabled(process.env, scope)
+    : isDecisionFlowV1EnforceEnabled(process.env, scope);
+}
+
 const DECISION_TYPES = new Set<NotificationIntentType>([
   'decision_required',
   'conflict_detected',
@@ -1309,10 +1323,7 @@ export async function createDecisionIntent(input: NotificationIntentInput): Prom
   }
 
   const conflictEvaluation = decisionContextForIntentInput(input).conflictEvaluation;
-  const flowEnforced = isDecisionFlowV1EnforceEnabled(process.env, {
-    userId: input.userId,
-    tenantId: input.tenantId ?? input.userId,
-  });
+  const flowEnforced = decisionFlowV1EnforcedForIntent(input);
   const conflictPolicyEnforced = getDecisionConflictPolicyV1Mode(process.env, {
     userId: input.userId,
     tenantId: input.tenantId ?? input.userId,
@@ -1509,7 +1520,7 @@ function lowRiskAutoResolutionPreference(userId: number, tenantId: number): bool
 function applyConflictPolicyToIntentInput(input: NotificationIntentInput): NotificationIntentInput {
   const tenantId = input.tenantId ?? input.userId;
   const mode = getDecisionConflictPolicyV1Mode(process.env, { userId: input.userId, tenantId });
-  const flowEnforced = isDecisionFlowV1EnforceEnabled(process.env, { userId: input.userId, tenantId });
+  const flowEnforced = decisionFlowV1EnforcedForIntent(input);
   if (mode === 'off' && !flowEnforced) return input;
   const initialContext = decisionContextForIntentInput(input);
   const derivedAction = normalizeDecisionAction(initialContext.normalizedAction)
@@ -2244,7 +2255,7 @@ export function refreshDecisionItem(decisionId: string, userId: number, tenantId
           || conflictMaterialKey(priorConflict) !== conflictMaterialKey(conflict);
       }
     }
-    if (decisionRefreshSupportedForScope(userId, tenantId)) {
+    if (decisionRefreshSupportedForRecord(record)) {
       const context: DecisionLogicContext = {
         ...priorContext,
         normalizedAction: refreshedAction,
@@ -3742,7 +3753,7 @@ export async function performDecisionAction(
       throw new DecisionActionError('DECISION_ADMIN_REVIEW_REQUIRED', 'This action requires an authorized administrator review.', 403);
     }
     if (approvalLevel === 'strong_confirmation'
-        && isDecisionFlowV1EnforceEnabled(process.env, { userId, tenantId })
+        && decisionFlowV1EnforcedForRecord(record)
         && !hasStrongApprovalForCurrentVersion(record)) {
       throw new DecisionActionError(
         'DECISION_STRONG_CONFIRMATION_REQUIRED',
@@ -3752,7 +3763,7 @@ export async function performDecisionAction(
       );
     }
     if (approvalLevel === 'strong_confirmation'
-        && !isDecisionFlowV1EnforceEnabled(process.env, { userId, tenantId })) {
+        && !decisionFlowV1EnforcedForRecord(record)) {
       emitDecisionLifecycleEvent({
         decisionId,
         userId,
@@ -3801,6 +3812,11 @@ export async function performDecisionAction(
     const claimedRecord = getDecisionRecord(decisionId, userId, tenantId);
     if (!claimedRecord) throw new DecisionActionError('DECISION_NOT_FOUND', 'Decision missing before execution', 404);
     if (requiresVersionClaim) {
+      await refreshTrainingCapacityForDecisionExecution(
+        claimedRecord,
+        actionId,
+        claimed.execution.action_execution_id,
+      );
       revalidateDecisionActionForExecution(claimedRecord, actionId, opts.contextVersion, actionPayload);
     }
     const changedReason = actionId === 'undo_reflow' ? null : sourceStateSupersessionReason(claimedRecord);
@@ -4032,12 +4048,10 @@ export function reviewDecision(
     if (!replay) throw new DecisionActionError('DECISION_NOT_FOUND', 'Decision not found', 404);
     return formatDecisionItemForApi(replay);
   }
-  if (!isDecisionFlowV1EnforceEnabled(process.env, { userId, tenantId })) {
+  const record = getDecisionRecord(decisionId, userId, tenantId);
+  if (!(record && decisionFlowV1EnforcedForRecord(record))) {
     throw new DecisionActionError('DECISION_REVIEW_UNAVAILABLE', 'Versioned decision review is not enabled for this account.', 409);
   }
-
-  const record = getDecisionRecord(decisionId, userId, tenantId);
-  if (!record) throw new DecisionActionError('DECISION_NOT_FOUND', 'Decision not found', 404);
   guardDecisionLifecycleMutation(record, `review_${input.outcome}`);
   const approvalLevel = approvalLevelForRecord(record);
   if (input.outcome === 'approve') {
@@ -4202,11 +4216,10 @@ export function reviseDecisionProposal(
 ): DecisionApiItem {
   assertScope(userId, tenantId, 'revise_decision_proposal', { decisionId });
   ensureDecisionCenterTables();
-  if (!isDecisionFlowV1EnforceEnabled(process.env, { userId, tenantId })) {
+  const record = getDecisionRecord(decisionId, userId, tenantId);
+  if (!(record && decisionFlowV1EnforcedForRecord(record))) {
     throw new DecisionActionError('DECISION_EDIT_UNAVAILABLE', 'Versioned proposal editing is not enabled for this account.', 409);
   }
-  const record = getDecisionRecord(decisionId, userId, tenantId);
-  if (!record) throw new DecisionActionError('DECISION_NOT_FOUND', 'Decision not found', 404);
   guardDecisionLifecycleMutation(record, 'edit_proposal');
   if (input.expectedVersion == null) {
     throw new DecisionActionError('DECISION_VERSION_REQUIRED', 'Proposal edits require the current record version', 428);
@@ -4246,7 +4259,7 @@ export function reviseDecisionProposal(
     contextVersion,
   });
   const conflictMode = getDecisionConflictPolicyV1Mode(process.env, { userId, tenantId });
-  const flowEnforced = isDecisionFlowV1EnforceEnabled(process.env, { userId, tenantId });
+  const flowEnforced = decisionFlowV1EnforcedForRecord(record);
   const revisedRevalidation = conflictMode === 'off' && !flowEnforced ? null : revalidateNormalizedDecisionAction({
     scope: { userId, tenantId },
     action: revisedAction,
@@ -4767,7 +4780,7 @@ function formatDecisionItemForApi(
   }
   const confidenceExplanation = computeConfidenceExplanation(logic.confidence, logic.why, analysisBundle, exposeDebugEvidence);
   const conflictPolicyActive = isDecisionConflictPolicyV1Enabled(process.env, { userId: item.userId, tenantId: item.tenantId })
-    || isDecisionFlowV1EnforceEnabled(process.env, { userId: item.userId, tenantId: item.tenantId });
+    || decisionFlowV1EnforcedForRecord(item);
   const conflictSummary = conflictPolicyActive
     ? buildDecisionConflictSummary(structuredContext.conflictEvaluation, structuredContext.locale)
     : null;
@@ -6630,7 +6643,7 @@ function reviewSupportedForRecord(
   action = normalizeDecisionAction(decisionContextForRecord(record).normalizedAction),
   approvalLevel = approvalLevelForRecord(record),
 ): boolean {
-  if (!isDecisionFlowV1EnforceEnabled(process.env, { userId: record.userId, tenantId: record.tenantId })) return false;
+  if (!decisionFlowV1EnforcedForRecord(record)) return false;
   if (!action || approvalLevel === 'none' || approvalLevel === 'unavailable' || approvalLevel === 'admin_review') return false;
   const state = durableDecisionStateForRecord(record);
   return (state === 'proposed' || state === 'ready_for_review' || state === 'blocked' || state === 'needs_input')
@@ -6665,8 +6678,20 @@ export function decisionRefreshSupportedForScope(userId: number, tenantId = user
     || getDecisionConflictPolicyV1Mode(process.env, { userId, tenantId }) === 'active';
 }
 
+/** Route-level gate that adds only Training-personal v1 enforcement. */
+export function decisionRefreshSupportedForDecision(
+  decisionId: string,
+  userId: number,
+  tenantId = userId,
+): boolean {
+  if (decisionRefreshSupportedForScope(userId, tenantId)) return true;
+  const record = getDecisionRecord(decisionId, userId, tenantId);
+  return Boolean(record && record.sourceSkill === 'training' && decisionFlowV1EnforcedForRecord(record));
+}
+
 function decisionRefreshSupportedForRecord(record: DecisionRecord): boolean {
-  return decisionRefreshSupportedForScope(record.userId, record.tenantId)
+  return (decisionRefreshSupportedForScope(record.userId, record.tenantId)
+    || decisionFlowV1EnforcedForRecord(record))
     && ['unread', 'read', 'failed', 'snoozed'].includes(record.status)
     && normalizeDecisionAction(decisionContextForRecord(record).normalizedAction) !== null;
 }
@@ -8296,10 +8321,7 @@ function validateExpectedDecisionVersion(
   if (expectedVersion != null && (!Number.isSafeInteger(expectedVersion) || expectedVersion <= 0)) {
     throw new DecisionActionError('DECISION_VERSION_INVALID', 'expectedVersion must be a positive integer', 400);
   }
-  const enforced = requiredForAction && isDecisionFlowV1EnforceEnabled(process.env, {
-    userId: record.userId,
-    tenantId: record.tenantId,
-  });
+  const enforced = requiredForAction && decisionFlowV1EnforcedForRecord(record);
   if (expectedVersion == null && enforced) {
     throw new DecisionActionError('DECISION_VERSION_REQUIRED', 'This decision action requires the current record version.', 428, {
       ...decisionVersionConflictDetails(record),
@@ -8365,6 +8387,48 @@ function revalidateDecisionActionForExecution(
     confirmationGranted: true,
     ...(actionOverride ? { actionOverride } : {}),
   });
+}
+
+async function refreshTrainingCapacityForDecisionExecution(
+  record: DecisionRecord,
+  actionId: string,
+  executionId: string,
+): Promise<void> {
+  if (actionId !== 'activate_training_plan_revision') return;
+  const action = normalizeDecisionAction(decisionContextForRecord(record).normalizedAction);
+  const capacity = action?.preconditions.find((precondition) =>
+    precondition.type === 'training_capacity_context' && precondition.required);
+  if (!capacity) return;
+  const expectedContextVersion = capacity.expectedVersion;
+  if (!expectedContextVersion) {
+    throw new DecisionActionError(
+      'DECISION_CONTEXT_CHANGED',
+      'Calendar capacity approval context is incomplete. Refresh the plan before activation.',
+      409,
+      { reasonCode: 'TRAINING_M4_CAPACITY_EXPECTED_VERSION_MISSING' },
+    );
+  }
+  try {
+    const snapshots = await import('./training-m4-capacity-snapshots');
+    const refreshed = await snapshots.refreshTrainingM4CapacityContextForDecision({
+      scope: { userId: record.userId, tenantId: record.tenantId },
+      expectedContextVersion,
+      executionId,
+    });
+    if (refreshed.contextVersion !== expectedContextVersion) {
+      throw new Error('TRAINING_M4_CAPACITY_CHANGED_AFTER_REVIEW');
+    }
+  } catch (error) {
+    const reasonCode = error && typeof error === 'object' && 'code' in error
+      ? String((error as { code?: unknown }).code ?? 'TRAINING_M4_CAPACITY_REFRESH_FAILED')
+      : error instanceof Error ? error.message : 'TRAINING_M4_CAPACITY_REFRESH_FAILED';
+    throw new DecisionActionError(
+      'DECISION_CONTEXT_CHANGED',
+      'Calendar capacity changed or could not be freshly verified after review. Refresh the plan before activation.',
+      409,
+      { reasonCode },
+    );
+  }
 }
 
 function secretarySelectedWindowActionForRecord(
@@ -8509,10 +8573,7 @@ function revalidateDecisionContext(
     failedPreconditionCount: revalidation.preconditions.filter((precondition) => !precondition.ok).length,
     contextSourcesHealthy: revalidation.contextSourcesHealthy,
   }, 'Decision context revalidated');
-  const enforce = mode === 'active' || isDecisionFlowV1EnforceEnabled(process.env, {
-    userId: record.userId,
-    tenantId: record.tenantId,
-  });
+  const enforce = mode === 'active' || decisionFlowV1EnforcedForRecord(record);
   if (!enforce) return revalidation.conflictEvaluation;
 
   const conflict = revalidation.conflictEvaluation;
@@ -10877,7 +10938,8 @@ function withHandledRollbackAction(item: HandledByNexusItem, record: DecisionRec
   const rollback = rollbackContractForRecord(record);
   const execution = executionSummaryForRecord(record);
   const reconciliationAvailable = execution.status === 'partially_failed'
-    && decisionRefreshSupportedForScope(record.userId, record.tenantId);
+    && (decisionRefreshSupportedForScope(record.userId, record.tenantId)
+      || decisionFlowV1EnforcedForRecord(record));
   if (!rollback.available || !rollback.actionId) {
     return {
       ...item,

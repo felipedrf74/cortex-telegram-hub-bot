@@ -17,6 +17,11 @@ export type DecisionConflictPolicyV1Mode = 'off' | 'shadow' | 'active';
 export type TrainingPlanRevisionV1Mode = 'off' | 'shadow' | 'active';
 export type TrainingAdaptationV1Mode = 'off' | 'shadow' | 'active';
 export type TrainingExerciseIdentityV1Mode = 'off' | 'shadow' | 'active';
+export const TRAINING_M4_PUBLIC_BETA_COMBINATIONS = [
+  'event_based', 'continuous', 'maintenance', 'return_to_training',
+].flatMap((mode) => [
+  'running', 'cycling', 'swimming', 'strength', 'triathlon', 'hybrid', 'marathon',
+].map((discipline) => `${mode}:${discipline}`)).sort();
 
 function parseOptionalBoolean(raw: string | undefined): boolean | null {
   if (raw === undefined || raw.trim() === '') return null;
@@ -342,6 +347,29 @@ export function isDecisionFlowV1EnforceEnabled(env: RuntimeEnv = process.env, sc
   return scopedFlagEnabledByExplicitOptIn(env, 'DECISION_FLOW_V1_ENFORCE_ENABLED', scope);
 }
 
+function isExactPersonalRuntimeScope(scope?: RuntimeFlagScope): boolean {
+  const userId = scope?.userId == null ? '' : String(scope.userId).trim();
+  const tenantId = scope?.tenantId == null ? '' : String(scope.tenantId).trim();
+  return Boolean(userId)
+    && userId === tenantId
+    && /^[0-9A-Za-z_-]+$/.test(userId);
+}
+
+/**
+ * Training-only Decision Flow enforcement. Existing global/scoped Decision
+ * enrollment remains authoritative for backward compatibility. The additive
+ * Training flag can grant enforcement only to an exact personal scope, so it
+ * cannot change non-Training or shared-tenant Decision Center behavior.
+ */
+export function isTrainingDecisionFlowV1EnforceEnabled(
+  env: RuntimeEnv = process.env,
+  scope?: RuntimeFlagScope,
+): boolean {
+  if (isDecisionFlowV1EnforceEnabled(env, scope)) return true;
+  return isExactPersonalRuntimeScope(scope)
+    && scopedFlagEnabledByExplicitOptIn(env, 'TRAINING_DECISION_FLOW_V1_ENFORCE_ENABLED', scope);
+}
+
 /** Global/scoped half of the two-key low-risk resolver gate. A persisted user preference is also required. */
 export function isDecisionLowRiskAutoResolutionEnabled(env: RuntimeEnv = process.env, scope?: RuntimeFlagScope): boolean {
   return scopedFlagEnabledByExplicitOptIn(env, 'DECISION_LOW_RISK_AUTO_RESOLUTION_ENABLED', scope);
@@ -454,6 +482,18 @@ export function getTrainingM4Allowlist(
   return [...new Set(entries)].sort();
 }
 
+/**
+ * Optional provisional M4 availability path. It is deliberately independent
+ * from M4 enrollment and default-off, so production can require complete
+ * server-refreshed calendar conflict coverage for every candidate.
+ */
+export function isTrainingM4ExplicitUserCapacityEnabled(
+  env: RuntimeEnv = process.env,
+  scope?: RuntimeFlagScope,
+): boolean {
+  return scopedFlagEnabledByExplicitOptIn(env, 'TRAINING_M4_EXPLICIT_USER_CAPACITY_ENABLED', scope);
+}
+
 export function isTrainingM4PlanCombinationAllowed(
   planMode: TrainingPlanMode,
   discipline: CoachingDiscipline,
@@ -480,6 +520,26 @@ export function isTrainingM4OwnedCombination(
     || discipline === 'marathon';
 }
 
+/**
+ * All-or-nothing public-beta bundle. This helper intentionally reads global
+ * values only; scoped overrides remain the separate explicit-enrollment path.
+ * A malformed or partial bundle grants no authority.
+ */
+export function isTrainingPublicBetaV1Enabled(env: RuntimeEnv = process.env): boolean {
+  const m4Allowlist = getTrainingM4Allowlist(env);
+  return env.TRAINING_PUBLIC_BETA_V1_ENABLED?.trim().toLowerCase() === 'true'
+    && getTrainingPlanRevisionV1Mode(env) === 'active'
+    && env.TRAINING_TYPED_WORKOUT_V1_ENABLED?.trim().toLowerCase() === 'true'
+    && getTrainingAdaptationV1Mode(env) === 'active'
+    && getTrainingExerciseIdentityV1Mode(env) === 'active'
+    && env.TRAINING_EXERCISE_MEDIA_V1_ENABLED?.trim().toLowerCase() === 'true'
+    && env.TRAINING_DECISION_FLOW_V1_ENFORCE_ENABLED?.trim().toLowerCase() === 'true'
+    && m4Allowlist.length === TRAINING_M4_PUBLIC_BETA_COMBINATIONS.length
+    && m4Allowlist.every((entry, index) => entry === TRAINING_M4_PUBLIC_BETA_COMBINATIONS[index])
+    && (env.TRAINING_PROFILE_SNAPSHOT_ENCRYPTION_KEY ?? '').length >= 32
+    && !isTrainingM4ExplicitUserCapacityEnabled(env);
+}
+
 export function isTrainingPlanRevisionV1ExplicitlyEnrolled(
   env: RuntimeEnv = process.env,
   scope?: RuntimeFlagScope,
@@ -488,7 +548,8 @@ export function isTrainingPlanRevisionV1ExplicitlyEnrolled(
   const tenantId = scope?.tenantId != null ? String(scope.tenantId).replace(/[^0-9A-Za-z_-]/g, '') : '';
   const scopedRaw = (userId ? env[`TRAINING_PLAN_REVISION_V1_MODE_USER_${userId}`] : undefined)
     ?? (tenantId ? env[`TRAINING_PLAN_REVISION_V1_MODE_TENANT_${tenantId}`] : undefined);
-  return scopedRaw?.trim().toLowerCase() === 'active';
+  if (scopedRaw !== undefined) return scopedRaw.trim().toLowerCase() === 'active';
+  return isExactPersonalRuntimeScope(scope) && isTrainingPublicBetaV1Enabled(env);
 }
 
 /**

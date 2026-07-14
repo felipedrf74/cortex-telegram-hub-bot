@@ -13,7 +13,7 @@ import {
 import { stableTrainingRevisionHash } from './training-plan-revision-candidate-builder';
 import {
   getTrainingPlanRevisionV1Mode,
-  isDecisionFlowV1EnforceEnabled,
+  isTrainingDecisionFlowV1EnforceEnabled,
   isTrainingPlanRevisionV1ExplicitlyEnrolled,
   isTrainingM4PlanCombinationAllowed,
   isTrainingM4OwnedCombination,
@@ -351,7 +351,7 @@ function requireDecisionBindingFlags(scope: TrainingPlanRevisionScope, env: Node
   const runtime = env ?? process.env;
   if (getTrainingPlanRevisionV1Mode(runtime, scope) !== 'active'
       || !isTrainingPlanRevisionV1ExplicitlyEnrolled(runtime, scope)
-      || !isDecisionFlowV1EnforceEnabled(runtime, scope)) {
+      || !isTrainingDecisionFlowV1EnforceEnabled(runtime, scope)) {
     throw new TrainingPlanRevisionError('TRAINING_REVISION_DECISION_BINDING_DISABLED', 'Training plan review binding is disabled.', 404);
   }
   requirePersonalTrainingRevisionScope(scope);

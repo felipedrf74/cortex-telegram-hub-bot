@@ -15,7 +15,7 @@ import {
 import {
   getTrainingAdaptationV1Mode,
   getTrainingPlanRevisionV1Mode,
-  isDecisionFlowV1EnforceEnabled,
+  isTrainingDecisionFlowV1EnforceEnabled,
   isTrainingM4OwnedCombination,
   isTrainingM4PlanCombinationAllowed,
   isTrainingPlanRevisionV1ExplicitlyEnrolled,
@@ -924,7 +924,7 @@ function requirePreviewMode(scope: TrainingPlanRevisionScope, env?: NodeJS.Proce
       || !isTrainingTypedWorkoutV1Enabled(effective, scope)) {
     throw error('TRAINING_ADAPTATION_DEPENDENCY_DISABLED', 'Typed Training revision dependencies are unavailable.', 409);
   }
-  if (mode === 'active' && !isDecisionFlowV1EnforceEnabled(effective, scope)) {
+  if (mode === 'active' && !isTrainingDecisionFlowV1EnforceEnabled(effective, scope)) {
     throw error('TRAINING_ADAPTATION_DECISION_FLOW_REQUIRED', 'Active adaptations require Decision Flow enforcement.', 409);
   }
   return mode;

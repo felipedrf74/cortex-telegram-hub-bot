@@ -102,6 +102,7 @@ import {
   resolveAiAutomationEligibility,
 } from './ai-automation-policy';
 import { AiBudgetError } from './cost-guardrail';
+import { TrainingPlanRevisionError } from './training-plan-revision-errors';
 
 interface ActiveUserTarget {
   tenantId: number;
@@ -2388,7 +2389,19 @@ export function startScheduler(): void {
       const nextWeek = allWeeks.find((w: any) => w.week_number === currentWeek.week_number + 1);
 
       if (nextWeek && recommendation.adjustIntensity !== 100) {
-        updateWeekAdjustment(nextWeek.id, recommendation.adjustIntensity, recommendation.reason);
+        try {
+          updateWeekAdjustment(nextWeek.id, recommendation.adjustIntensity, recommendation.reason);
+        } catch (err) {
+          if (err instanceof TrainingPlanRevisionError
+              && err.code === 'TRAINING_REVISION_MANAGED_LEGACY_MUTATION_BLOCKED') {
+            logger.info(
+              { userId, planId: plan.id, weekId: nextWeek.id },
+              'Skipped legacy weekly auto-adjust for a revision-owned Training week',
+            );
+            return;
+          }
+          throw err;
+        }
 
         const emoji = recommendation.adjustIntensity < 100 ? '📉' : '📈';
         let msg = `${emoji} <b>Training Plan Auto-Adjust</b>\n\n`;

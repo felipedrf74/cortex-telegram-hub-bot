@@ -14,6 +14,7 @@ import { normalizeTrainingExercisesJsonForWrite } from './training-exercise-iden
 import { getTrainingExerciseIdentityV1Mode } from './runtime-flags';
 import { config } from '../config';
 import { requireTenantIdParam } from './tenant-scope';
+import { assertLegacyWeekMutationAllowed } from './training-plan-revision-legacy-guard';
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -482,6 +483,19 @@ export function getCurrentWeek(planId: number, options: { now?: Date; timezone?:
 
 export function updateWeekAdjustment(weekId: number, intensityPct: number, reason: string): boolean {
   const db = getDb();
+  const scope = db.prepare(`
+    SELECT plans.user_id AS userId,
+           COALESCE(plans.tenant_id, plans.user_id) AS tenantId
+      FROM training_weeks weeks
+      JOIN fitness_training_plans plans ON plans.id = weeks.plan_id
+     WHERE weeks.id = ?
+     LIMIT 1
+  `).get(weekId) as { userId: number; tenantId: number } | undefined;
+  if (!scope) return false;
+  assertLegacyWeekMutationAllowed(
+    { userId: scope.userId, tenantId: scope.tenantId },
+    weekId,
+  );
   const result = db.prepare(`
     UPDATE training_weeks
     SET intensity_pct = ?, auto_adjusted = 1, adjustment_reason = ?

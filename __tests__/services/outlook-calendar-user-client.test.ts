@@ -170,6 +170,30 @@ describe('OutlookCalendar — per-user Graph client for writes', () => {
     expect(events[1].description).toBe('[NEXUS_TRAINING_IDENTITY session=2]');
   });
 
+  it('fails closed instead of returning incomplete calendar coverage at the page limit', async () => {
+    mocks.userRequest.get.mockResolvedValue({
+      value: [],
+      '@odata.nextLink': 'https://graph.microsoft.com/v1.0/me/calendarView?$skiptoken=more',
+    });
+
+    await expect(getEvents('2026-04-16', '2027-04-17', 77))
+      .rejects.toThrow('Outlook calendar pagination page limit exceeded (10)');
+    expect(mocks.userRequest.get).toHaveBeenCalledTimes(10);
+  });
+
+  it('fails closed when an Outlook calendar read stalls beyond the provider timeout', async () => {
+    vi.useFakeTimers();
+    mocks.userRequest.get.mockImplementation(() => new Promise(() => {}));
+    try {
+      const pending = getEvents('2026-04-16', '2026-04-17', 77);
+      const rejection = expect(pending).rejects.toThrow('AI call timed out after 15000ms');
+      await vi.advanceTimersByTimeAsync(15_001);
+      await rejection;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('drops Outlook write categories that are not present in the user master category list', async () => {
     mocks.userRequest.get.mockResolvedValue({
       value: [{ displayName: 'Client', color: 'preset7' }],

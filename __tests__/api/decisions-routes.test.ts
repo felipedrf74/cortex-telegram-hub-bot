@@ -6,7 +6,7 @@ const mockGetDecisionOverview = vi.fn();
 const mockListDecisionItems = vi.fn();
 const mockRecordDecisionItemExposures = vi.fn();
 const mockRecordDecisionItemExposuresByIds = vi.fn();
-const mockDecisionRefreshSupportedForScope = vi.fn();
+const mockDecisionRefreshSupportedForDecision = vi.fn();
 const mockListHandledByNexusItems = vi.fn();
 const mockGetDecisionItem = vi.fn();
 const mockPerformDecisionAction = vi.fn();
@@ -53,7 +53,7 @@ vi.mock('../../src/services/decision-center', () => ({
   listDecisionItems: (...args: unknown[]) => mockListDecisionItems(...args),
   recordDecisionItemExposures: (...args: unknown[]) => mockRecordDecisionItemExposures(...args),
   recordDecisionItemExposuresByIds: (...args: unknown[]) => mockRecordDecisionItemExposuresByIds(...args),
-  decisionRefreshSupportedForScope: (...args: unknown[]) => mockDecisionRefreshSupportedForScope(...args),
+  decisionRefreshSupportedForDecision: (...args: unknown[]) => mockDecisionRefreshSupportedForDecision(...args),
   listHandledByNexusItems: (...args: unknown[]) => mockListHandledByNexusItems(...args),
   listDecisionDependencies: vi.fn(),
   runDecisionSourceStateSupersessionJob: vi.fn(),
@@ -211,7 +211,7 @@ describe('Decision routes', () => {
     mockListDecisionItems.mockReset();
     mockRecordDecisionItemExposures.mockReset();
     mockRecordDecisionItemExposuresByIds.mockReset();
-    mockDecisionRefreshSupportedForScope.mockReset();
+    mockDecisionRefreshSupportedForDecision.mockReset();
     mockListHandledByNexusItems.mockReset();
     mockGetDecisionItem.mockReset();
     mockPerformDecisionAction.mockReset();
@@ -234,7 +234,7 @@ describe('Decision routes', () => {
     mockMaterializeDecisionCenterDailyAttention.mockReset();
     mockCaptureError.mockReset();
     mockNotificationCacheInvalidation.invalidateNotificationInboxCaches.mockReset();
-    mockDecisionRefreshSupportedForScope.mockReturnValue(true);
+    mockDecisionRefreshSupportedForDecision.mockReturnValue(true);
     mockRecordDecisionItemExposuresByIds.mockReturnValue({ recordedCount: 0 });
 
     // Type-suppression is a presentation post-filter; by default it passes the list through unchanged
@@ -529,6 +529,7 @@ describe('Decision routes', () => {
     try {
       const response = await dispatch(router, 'POST', '/nc_1/refresh', {}, {}, {}, { tenantId: 17 });
       expect(response.statusCode).toBe(409);
+      expect(mockDecisionRefreshSupportedForDecision).toHaveBeenCalledWith('nc_1', 7, 17);
       expect(response.body.error).toMatchObject({
         code: 'DECISION_VERSION_CONFLICT',
         details: {

@@ -30,7 +30,12 @@ import { logger } from '../utils/logger';
 import { resolveChatTenantId } from './chat-tenant-scope';
 import { authorizeChatToolCall, formatToolAuthorizationFailure } from './chat-tool-authorization';
 import { sanitizeForPromptInterpolation } from '../utils/prompt-sanitizer';
-import { assertLegacySessionMutationAllowed } from './training-plan-revision-legacy-guard';
+import {
+  assertLegacyPlanGenerationAllowed,
+  assertLegacyPlanMutationAllowed,
+  assertLegacySessionMutationAllowed,
+  assertLegacyWeekMutationAllowed,
+} from './training-plan-revision-legacy-guard';
 import { TrainingPlanRevisionError } from './training-plan-revision-errors';
 import { normalizeTrainingExercisesJsonForWrite } from './training-exercise-identity';
 
@@ -774,6 +779,7 @@ export async function executeToolCall(
       case 'create_training_plan': {
         const scope = requireTenantToolUserId(toolName, userId, input.user_id, tenantId);
         if (!scope.ok) return { error: scope.error };
+        assertLegacyPlanGenerationAllowed({ userId: scope.userId, tenantId: scope.tenantId });
         const plan = trainingPlans.createPlan({
           user_id: scope.userId,
           tenant_id: scope.tenantId,
@@ -792,6 +798,10 @@ export async function executeToolCall(
       case 'add_training_week': {
         const scope = requireOwnedTrainingPlanForTool(toolName, input.plan_id, userId, tenantId);
         if (!scope.ok) return { error: scope.error };
+        assertLegacyPlanMutationAllowed(
+          { userId: scope.userId, tenantId: scope.tenantId },
+          scope.plan.id,
+        );
         const week = trainingPlans.createWeek({
           plan_id: input.plan_id,
           week_number: input.week_number,
@@ -811,6 +821,10 @@ export async function executeToolCall(
         if (!weekBelongsToPlan) {
           return { error: 'add_training_session cannot write to a week outside the authenticated user plan' };
         }
+        assertLegacyWeekMutationAllowed(
+          { userId: scope.userId, tenantId: scope.tenantId },
+          weekId,
+        );
         const exercisesJson = normalizeTrainingExercisesJsonForWrite(input.exercises_json, {
           scope: { userId: scope.userId, tenantId: scope.tenantId },
           source: 'tool-executor.add_training_session',

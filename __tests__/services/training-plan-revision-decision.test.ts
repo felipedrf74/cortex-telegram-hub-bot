@@ -8,6 +8,7 @@ import { bindTrainingPlanRevisionDecision } from '../../src/services/training-pl
 import { createTrainingPlanCandidateRevision } from '../../src/services/training-plan-revisions';
 import {
   performDecisionAction,
+  decisionRefreshSupportedForDecision,
   getDecisionItem,
   reviewDecision,
   runDecisionExpiryJob,
@@ -26,13 +27,15 @@ describe('training-plan-revision Decision Center binding', () => {
   const priorMode = process.env.TRAINING_PLAN_REVISION_V1_MODE;
   const priorEnrollment = process.env.TRAINING_PLAN_REVISION_V1_MODE_USER_7;
   const priorFlow = process.env.DECISION_FLOW_V1_ENFORCE_ENABLED;
+  const priorTrainingFlow = process.env.TRAINING_DECISION_FLOW_V1_ENFORCE_ENABLED_USER_7;
   const priorSnapshotKey = process.env.TRAINING_PROFILE_SNAPSHOT_ENCRYPTION_KEY;
 
   beforeEach(() => {
     db = new Database(':memory:');
     runMigrationsForTest(db);
     process.env.TRAINING_PLAN_REVISION_V1_MODE_USER_7 = 'active';
-    process.env.DECISION_FLOW_V1_ENFORCE_ENABLED = 'true';
+    process.env.DECISION_FLOW_V1_ENFORCE_ENABLED = 'false';
+    process.env.TRAINING_DECISION_FLOW_V1_ENFORCE_ENABLED_USER_7 = 'true';
     process.env.TRAINING_PROFILE_SNAPSHOT_ENCRYPTION_KEY = 'training-revision-test-encryption-key-0001';
   });
 
@@ -43,6 +46,8 @@ describe('training-plan-revision Decision Center binding', () => {
     else process.env.TRAINING_PLAN_REVISION_V1_MODE_USER_7 = priorEnrollment;
     if (priorFlow === undefined) delete process.env.DECISION_FLOW_V1_ENFORCE_ENABLED;
     else process.env.DECISION_FLOW_V1_ENFORCE_ENABLED = priorFlow;
+    if (priorTrainingFlow === undefined) delete process.env.TRAINING_DECISION_FLOW_V1_ENFORCE_ENABLED_USER_7;
+    else process.env.TRAINING_DECISION_FLOW_V1_ENFORCE_ENABLED_USER_7 = priorTrainingFlow;
     if (priorSnapshotKey === undefined) delete process.env.TRAINING_PROFILE_SNAPSHOT_ENCRYPTION_KEY;
     else process.env.TRAINING_PROFILE_SNAPSHOT_ENCRYPTION_KEY = priorSnapshotKey;
     db.close();
@@ -59,6 +64,7 @@ describe('training-plan-revision Decision Center binding', () => {
       expect(bound).toMatchObject({
         lifecycleState: 'PENDING_REVIEW', approvalState: 'PENDING', decisionId: expect.any(String),
       });
+      expect(decisionRefreshSupportedForDecision(bound.decisionId!, 7, 7)).toBe(true);
       const stored = db.prepare(`
         SELECT items.record_version AS recordVersion, items.decision_state AS decisionState,
                items.actions_json AS actionsJson, items.deeplink AS deeplink,
@@ -90,10 +96,22 @@ describe('training-plan-revision Decision Center binding', () => {
         { operationType: 'CREATE_CANDIDATE', status: 'SUCCEEDED' },
       ]);
 
+      expect(() => reviewDecision(bound.decisionId!, 7, 7, {
+        outcome: 'approve', expectedVersion: stored.recordVersion,
+        idempotencyKey: 'review-training-revision-without-strong-confirmation',
+      })).toThrow(expect.objectContaining({ code: 'DECISION_STRONG_CONFIRMATION_REQUIRED' }));
+
       const approved = reviewDecision(bound.decisionId!, 7, 7, {
         outcome: 'approve', expectedVersion: stored.recordVersion,
         idempotencyKey: 'review-training-revision', strongConfirmationText: 'CONFIRM',
       });
+      await expect(performDecisionAction(
+        bound.decisionId!, 'activate_training_plan_revision', 7, 7,
+        {
+          idempotencyKey: 'activate-training-revision-without-version',
+          contextVersion: approved.contextVersion,
+        },
+      )).rejects.toMatchObject({ code: 'DECISION_VERSION_REQUIRED', status: 428 });
       const action = await performDecisionAction(
         bound.decisionId!, 'activate_training_plan_revision', 7, 7,
         {
@@ -110,6 +128,25 @@ describe('training-plan-revision Decision Center binding', () => {
         SELECT COUNT(*) AS count FROM event_outbox
          WHERE event_type = 'training.plan_revision.activated.v1'
       `).get()).toEqual({ count: 1 });
+    });
+  });
+
+  it('preserves an existing exact scoped legacy Decision enrollment', async () => {
+    await withDatabaseForTestAsync(db, async () => {
+      process.env.TRAINING_DECISION_FLOW_V1_ENFORCE_ENABLED_USER_7 = 'false';
+      process.env.DECISION_FLOW_V1_ENFORCE_ENABLED_USER_7 = 'true';
+      try {
+        const created = createTrainingPlanCandidateRevision({
+          scope: { userId: 7, tenantId: 7 }, idempotencyKey: 'legacy-scoped-decision-candidate', request,
+        });
+        const bound = await bindTrainingPlanRevisionDecision({
+          scope: { userId: 7, tenantId: 7 }, revisionId: created.candidates[0].revisionId,
+        });
+        expect(bound.decisionId).toEqual(expect.any(String));
+        expect(getDecisionItem(bound.decisionId!, 7, 7)).toMatchObject({ reviewSupported: true });
+      } finally {
+        delete process.env.DECISION_FLOW_V1_ENFORCE_ENABLED_USER_7;
+      }
     });
   });
 

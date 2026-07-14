@@ -6,7 +6,7 @@ import { getDb } from './database';
 import {
   getTrainingPlanRevisionV1Mode,
   isTrainingPlanRevisionV1ExplicitlyEnrolled,
-  isDecisionFlowV1EnforceEnabled,
+  isTrainingDecisionFlowV1EnforceEnabled,
   isTrainingTypedWorkoutV1Enabled,
   isTrainingM4PlanCombinationAllowed,
   isTrainingM4OwnedCombination,
@@ -260,6 +260,17 @@ export function computeTrainingRevisionAuthoritativeContext(
          ORDER BY plan_id, plan_version, id
       `).all(scope.userId, scope.tenantId)
     : [];
+  const capacityRows = tableExists(db, 'training_m4_capacity_snapshots')
+    ? db.prepare(`
+        SELECT context_version, profile_source_version, calendar_event_set_hash,
+               provider_sources_json, provider_status, plan_start_date, plan_end_date,
+               horizon_weeks, capacity_windows_json
+          FROM training_m4_capacity_snapshots
+         WHERE user_id = ? AND tenant_id = ?
+         ORDER BY observed_at DESC, rowid DESC
+         LIMIT 1
+      `).all(scope.userId, scope.tenantId)
+    : [];
   const conflictRows = tableExists(db, 'notification_center_items')
       && tableExists(db, 'notification_intents')
     ? db.prepare(`
@@ -281,7 +292,7 @@ export function computeTrainingRevisionAuthoritativeContext(
   return {
     schemaVersion: 'training-revision-authoritative-context.v1',
     profileSourceVersion: `profile_${stableTrainingRevisionHash(profileRows)}`,
-    calendarSourceVersion: `calendar_${stableTrainingRevisionHash({ agendaRows, ownershipRows })}`,
+    calendarSourceVersion: `calendar_${stableTrainingRevisionHash({ agendaRows, ownershipRows, capacityRows })}`,
     conflictSourceVersion: `conflict_${stableTrainingRevisionHash(conflictRows)}`,
   };
 }
@@ -876,7 +887,7 @@ function requireActiveMode(scope: RuntimeFlagScope, env: NodeJS.ProcessEnv | und
       404,
     );
   }
-  if (!isDecisionFlowV1EnforceEnabled(env ?? process.env, scope)) {
+  if (!isTrainingDecisionFlowV1EnforceEnabled(env ?? process.env, scope)) {
     throw new TrainingPlanRevisionError(
       'TRAINING_PLAN_REVISION_DECISION_FLOW_REQUIRED',
       'Training plan revisions require Decision Flow v1 enforcement.',

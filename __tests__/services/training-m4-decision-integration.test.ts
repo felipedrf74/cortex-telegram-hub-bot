@@ -9,7 +9,14 @@ import type { TrainingPlanCandidateRequest } from '../../src/services/training-p
 import { revalidateNormalizedDecisionAction } from '../../src/services/decision-preexecution-revalidator';
 import type { NormalizedDecisionAction } from '../../src/services/decision-action-contract';
 import { performDecisionAction, reviewDecision } from '../../src/services/decision-center';
-import { registerTrainingM4CapacityContextProvider } from '../../src/services/training-m4-capacity-context';
+import {
+  refreshTrainingM4AuthoritativeCapacityContext,
+  registerTrainingM4CapacityCalendarReader,
+} from '../../src/services/training-m4-capacity-snapshots';
+import type {
+  UnifiedCalendarEvent,
+  UnifiedCalendarFetchStatus,
+} from '../../src/services/unified-calendar';
 import {
   _resetTrainingGenerationObservabilityForTests,
   getTrainingGenerationObservabilitySnapshot,
@@ -36,7 +43,7 @@ const request: TrainingPlanCandidateRequest = {
   },
   capacity: {
     source: 'AUTHORITATIVE',
-    contextVersion: 'calendar-capacity-v1',
+    contextVersion: 'pending-authoritative-refresh',
     windows: ['monday', 'tuesday', 'thursday', 'saturday', 'sunday'].map((dayOfWeek) => ({
       dayOfWeek: dayOfWeek as 'monday', startTime: '06:00', endTime: '08:00', timezone: 'Europe/Lisbon',
       allowedDisciplines: ['marathon' as const, 'strength' as const],
@@ -52,44 +59,100 @@ const request: TrainingPlanCandidateRequest = {
 
 describe('training M4 single-Decision conflict and activation gates', () => {
   let db: Database.Database;
-  let unregisterCapacity: (() => void) | null = null;
-  let authoritativeCapacityVersion = 'calendar-capacity-v1';
+  let unregisterCalendarReader: (() => void) | null = null;
+  let authoritativeCapacityVersion = '';
+  let calendarEvents: UnifiedCalendarEvent[] = [];
+  let calendarStatus: UnifiedCalendarFetchStatus = 'ready';
   const original: Record<string, string | undefined> = {};
   const keys = [
     'TRAINING_PLAN_REVISION_V1_MODE_USER_7',
     'TRAINING_TYPED_WORKOUT_V1_ENABLED_USER_7',
     'TRAINING_PLAN_M4_ALLOWLIST_USER_7',
     'DECISION_FLOW_V1_ENFORCE_ENABLED',
+    'TRAINING_DECISION_FLOW_V1_ENFORCE_ENABLED_USER_7',
     'TRAINING_PROFILE_SNAPSHOT_ENCRYPTION_KEY',
+    'TRAINING_M4_EXPLICIT_USER_CAPACITY_ENABLED_USER_7',
   ];
 
-  beforeEach(() => {
+  async function refreshCapacity(idempotencyKey: string) {
+    return refreshTrainingM4AuthoritativeCapacityContext({
+      scope: { userId: 7, tenantId: 7 },
+      idempotencyKey,
+      request: {
+        planStartDate: request.planStartDate!,
+        horizonWeeks: request.horizonWeeks!,
+        profileWindows: request.capacity!.windows,
+      },
+      dependencies: { db, now: FIXED_NOW },
+    });
+  }
+
+  async function createApprovedDecision(idempotencyPrefix: string) {
+    const created = createTrainingPlanCandidateRevision({
+      scope: { userId: 7, tenantId: 7 },
+      idempotencyKey: `${idempotencyPrefix}-candidate`,
+      request,
+    });
+    const bound = await bindTrainingPlanRevisionDecision({
+      scope: { userId: 7, tenantId: 7 },
+      revisionId: created.candidates[0].revisionId,
+    });
+    const stored = db.prepare(`
+      SELECT record_version AS recordVersion
+        FROM notification_center_items WHERE item_id = ?
+    `).get(bound.decisionId) as { recordVersion: number };
+    const approved = reviewDecision(bound.decisionId!, 7, 7, {
+      outcome: 'approve',
+      expectedVersion: stored.recordVersion,
+      idempotencyKey: `${idempotencyPrefix}-approve`,
+      strongConfirmationText: 'CONFIRM',
+    });
+    return { bound, approved };
+  }
+
+  beforeEach(async () => {
     vi.useFakeTimers({ toFake: ['Date'] });
     vi.setSystemTime(FIXED_NOW);
     _resetTrainingGenerationObservabilityForTests();
-    authoritativeCapacityVersion = 'calendar-capacity-v1';
+    authoritativeCapacityVersion = '';
+    calendarEvents = [];
+    calendarStatus = 'ready';
     db = new Database(':memory:');
     runMigrationsForTest(db);
+    db.prepare(`
+      INSERT INTO user_profiles (user_id, profile_type, data)
+      VALUES (7, 'fitness', '{"weekly_frequency":5}')
+    `).run();
     for (const key of keys) original[key] = process.env[key];
     process.env.TRAINING_PLAN_REVISION_V1_MODE_USER_7 = 'active';
     process.env.TRAINING_TYPED_WORKOUT_V1_ENABLED_USER_7 = 'true';
     process.env.TRAINING_PLAN_M4_ALLOWLIST_USER_7 = 'event_based:marathon';
-    process.env.DECISION_FLOW_V1_ENFORCE_ENABLED = 'true';
+    process.env.DECISION_FLOW_V1_ENFORCE_ENABLED = 'false';
+    process.env.TRAINING_DECISION_FLOW_V1_ENFORCE_ENABLED_USER_7 = 'true';
     process.env.TRAINING_PROFILE_SNAPSHOT_ENCRYPTION_KEY = 'training-revision-test-encryption-key-0001';
-    unregisterCapacity = registerTrainingM4CapacityContextProvider((scope) => scope.userId === 7 && scope.tenantId === 7
-      ? {
-        source: 'AUTHORITATIVE',
-        contextVersion: authoritativeCapacityVersion,
-        windows: request.capacity!.windows.map((window) => ({ ...window })),
-        observedAt: '2026-07-13T00:00:00.000Z',
-        expiresAt: '2099-01-01T00:00:00.000Z',
-      }
-      : null);
+    process.env.TRAINING_M4_EXPLICIT_USER_CAPACITY_ENABLED_USER_7 = 'true';
+    unregisterCalendarReader = registerTrainingM4CapacityCalendarReader({
+      configuredSources: (userId) => userId === 7 ? ['google'] : [],
+      loadCalendar: async (_startDate, _endDate, userId) => ({
+        events: userId === 7 ? structuredClone(calendarEvents) : [],
+        status: userId === 7 ? calendarStatus : 'unavailable',
+        warningCodes: calendarStatus === 'ready' ? [] : ['GOOGLE_CALENDAR_UNAVAILABLE'],
+        warnings: calendarStatus === 'ready' ? [] : ['Calendar unavailable'],
+        sources: {
+          configured: userId === 7 ? ['google'] : [],
+          fulfilled: userId === 7 && calendarStatus === 'ready' ? ['google'] : [],
+          failed: userId === 7 && calendarStatus !== 'ready' ? ['google'] : [],
+        },
+      }),
+    });
+    const refreshed = await refreshCapacity('m4-initial-authoritative-refresh');
+    authoritativeCapacityVersion = refreshed.contextVersion;
+    request.capacity!.contextVersion = refreshed.contextVersion;
   });
 
   afterEach(() => {
-    unregisterCapacity?.();
-    unregisterCapacity = null;
+    unregisterCalendarReader?.();
+    unregisterCalendarReader = null;
     for (const key of keys) {
       if (original[key] === undefined) delete process.env[key];
       else process.env[key] = original[key];
@@ -118,7 +181,7 @@ describe('training M4 single-Decision conflict and activation gates', () => {
       const action = JSON.parse(row.action) as NormalizedDecisionAction;
       expect(action.preconditions).toEqual(expect.arrayContaining([
         expect.objectContaining({ type: 'training_revision_conflict_set', required: true }),
-        expect.objectContaining({ type: 'training_capacity_context', expectedVersion: 'calendar-capacity-v1' }),
+        expect.objectContaining({ type: 'training_capacity_context', expectedVersion: authoritativeCapacityVersion }),
       ]));
       expect(action.affectedResources).toEqual(expect.arrayContaining([
         expect.objectContaining({ type: 'training_schedule', id: revision.revisionId }),
@@ -181,12 +244,19 @@ describe('training M4 single-Decision conflict and activation gates', () => {
       expect(getTrainingGenerationObservabilitySnapshot().counters.m4_partial_sync_recovery_total)
         .toBeGreaterThanOrEqual(1);
 
-      authoritativeCapacityVersion = 'calendar-capacity-v2';
+      calendarEvents = [{
+        id: 'provider-drift', source: 'google', summary: 'Private',
+        start: '2026-08-17T05:30:00.000Z', end: '2026-08-17T05:45:00.000Z',
+      }];
+      const changedCapacity = await refreshCapacity('m4-calendar-provider-drift');
+      expect(changedCapacity.contextVersion).not.toBe(authoritativeCapacityVersion);
       expect(revalidateNormalizedDecisionAction({ scope: { userId: 7, tenantId: 7 }, action }).preconditions)
         .toEqual(expect.arrayContaining([
           expect.objectContaining({ type: 'training_capacity_context', ok: false }),
         ]));
-      authoritativeCapacityVersion = 'calendar-capacity-v1';
+      calendarEvents = [];
+      const restoredCapacity = await refreshCapacity('m4-calendar-provider-restored');
+      expect(restoredCapacity.contextVersion).toBe(authoritativeCapacityVersion);
       expect(revalidateNormalizedDecisionAction({ scope: { userId: 7, tenantId: 7 }, action })
         .preconditions.every((precondition) => precondition.ok)).toBe(true);
 
@@ -230,6 +300,70 @@ describe('training M4 single-Decision conflict and activation gates', () => {
           contextVersion: approved.contextVersion,
         },
       )).rejects.toMatchObject({ code: 'TRAINING_M4_ALLOWLIST_REQUIRED' });
+      expect(db.prepare('SELECT COUNT(*) AS count FROM fitness_training_plans').get()).toEqual({ count: 0 });
+    });
+  });
+
+  it('freshly re-reads unchanged provider state and activates without a duplicate-context failure', async () => {
+    await withDatabaseForTestAsync(db, async () => {
+      const { bound, approved } = await createApprovedDecision('m4-unchanged-live-state');
+      const before = db.prepare('SELECT COUNT(*) AS count FROM training_m4_capacity_snapshots').get() as { count: number };
+      const result = await performDecisionAction(
+        bound.decisionId!, 'activate_training_plan_revision', 7, 7,
+        {
+          idempotencyKey: 'm4-unchanged-live-state-activate',
+          expectedVersion: approved.recordVersion,
+          contextVersion: approved.contextVersion,
+        },
+      );
+      expect(result.status).toBe('succeeded');
+      expect(db.prepare('SELECT COUNT(*) AS count FROM fitness_training_plans').get()).toEqual({ count: 1 });
+      const snapshots = db.prepare(`
+        SELECT context_version AS contextVersion
+          FROM training_m4_capacity_snapshots ORDER BY rowid
+      `).all() as Array<{ contextVersion: string }>;
+      expect(snapshots).toHaveLength(before.count + 1);
+      expect(new Set(snapshots.map((row) => row.contextVersion))).toEqual(new Set([authoritativeCapacityVersion]));
+    });
+  });
+
+  it('blocks activation when a provider event changes after review', async () => {
+    await withDatabaseForTestAsync(db, async () => {
+      const { bound, approved } = await createApprovedDecision('m4-provider-event-drift');
+      calendarEvents = [{
+        id: 'new-work-event', source: 'google', summary: 'Private',
+        start: '2026-08-17T05:30:00.000Z', end: '2026-08-17T05:45:00.000Z',
+      }];
+      await expect(performDecisionAction(
+        bound.decisionId!, 'activate_training_plan_revision', 7, 7,
+        {
+          idempotencyKey: 'm4-provider-event-drift-activate',
+          expectedVersion: approved.recordVersion,
+          contextVersion: approved.contextVersion,
+        },
+      )).rejects.toMatchObject({
+        code: 'DECISION_CONTEXT_CHANGED',
+        details: { reasonCode: 'TRAINING_M4_CAPACITY_CHANGED_AFTER_REVIEW' },
+      });
+      expect(db.prepare('SELECT COUNT(*) AS count FROM fitness_training_plans').get()).toEqual({ count: 0 });
+    });
+  });
+
+  it('blocks activation when the connected provider degrades after review', async () => {
+    await withDatabaseForTestAsync(db, async () => {
+      const { bound, approved } = await createApprovedDecision('m4-provider-degraded');
+      calendarStatus = 'degraded';
+      await expect(performDecisionAction(
+        bound.decisionId!, 'activate_training_plan_revision', 7, 7,
+        {
+          idempotencyKey: 'm4-provider-degraded-activate',
+          expectedVersion: approved.recordVersion,
+          contextVersion: approved.contextVersion,
+        },
+      )).rejects.toMatchObject({
+        code: 'DECISION_CONTEXT_CHANGED',
+        details: { reasonCode: 'TRAINING_M4_CAPACITY_PROVIDER_DEGRADED' },
+      });
       expect(db.prepare('SELECT COUNT(*) AS count FROM fitness_training_plans').get()).toEqual({ count: 0 });
     });
   });

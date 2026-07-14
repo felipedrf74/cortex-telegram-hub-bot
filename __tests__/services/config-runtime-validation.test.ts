@@ -1,6 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const ORIGINAL_ENV = { ...process.env };
+const FULL_TRAINING_M4_ALLOWLIST = ['event_based', 'continuous', 'maintenance', 'return_to_training']
+  .flatMap((mode) => ['running', 'cycling', 'swimming', 'strength', 'triathlon', 'hybrid', 'marathon']
+    .map((discipline) => `${mode}:${discipline}`))
+  .join(',');
 
 async function loadConfigFresh() {
   vi.resetModules();
@@ -24,6 +28,20 @@ function applySafeProductionEnv() {
   vi.stubEnv('APNS_ENABLED', 'false');
   vi.stubEnv('OPERATOR_ALERT_WEBHOOK_URL', 'https://example.test/operator-alerts');
   vi.stubEnv('SENTRY_DSN', 'https://public@example.test/1');
+}
+
+function applyCompleteTrainingPublicBetaEnv() {
+  vi.stubEnv('TRAINING_PUBLIC_BETA_V1_ENABLED', 'true');
+  vi.stubEnv('TRAINING_PLAN_REVISION_V1_MODE', 'active');
+  vi.stubEnv('TRAINING_TYPED_WORKOUT_V1_ENABLED', 'true');
+  vi.stubEnv('TRAINING_ADAPTATION_V1_MODE', 'active');
+  vi.stubEnv('TRAINING_EXERCISE_IDENTITY_V1_MODE', 'active');
+  vi.stubEnv('TRAINING_EXERCISE_MEDIA_V1_ENABLED', 'true');
+  vi.stubEnv('TRAINING_DECISION_FLOW_V1_ENFORCE_ENABLED', 'true');
+  vi.stubEnv('DECISION_FLOW_V1_ENFORCE_ENABLED', 'false');
+  vi.stubEnv('TRAINING_PLAN_M4_ALLOWLIST', FULL_TRAINING_M4_ALLOWLIST);
+  vi.stubEnv('TRAINING_PROFILE_SNAPSHOT_ENCRYPTION_KEY', 'training-public-beta-key-00000001');
+  vi.stubEnv('TRAINING_M4_EXPLICIT_USER_CAPACITY_ENABLED', 'false');
 }
 
 describe('runtime config validation', () => {
@@ -280,6 +298,64 @@ describe('runtime config validation', () => {
     );
   });
 
+  it('accepts only the complete global Training public-beta bundle without changing global Decision enforcement', async () => {
+    applySafeProductionEnv();
+    applyCompleteTrainingPublicBetaEnv();
+
+    await expect(loadConfigFresh()).resolves.toHaveProperty('config');
+    expect(process.env.DECISION_FLOW_V1_ENFORCE_ENABLED).toBe('false');
+  });
+
+  it('fails closed on a partial, wildcard, or malformed Training public-beta bundle', async () => {
+    applySafeProductionEnv();
+    applyCompleteTrainingPublicBetaEnv();
+    vi.stubEnv('TRAINING_EXERCISE_MEDIA_V1_ENABLED', 'false');
+    await expect(loadConfigFresh()).rejects.toThrow(
+      'TRAINING_PUBLIC_BETA_V1_ENABLED=true requires the complete global Training v1 bundle',
+    );
+
+    applyCompleteTrainingPublicBetaEnv();
+    vi.stubEnv('TRAINING_PLAN_M4_ALLOWLIST', FULL_TRAINING_M4_ALLOWLIST.split(',').slice(0, -1).join(','));
+    await expect(loadConfigFresh()).rejects.toThrow(
+      'TRAINING_PUBLIC_BETA_V1_ENABLED=true requires the complete global Training v1 bundle',
+    );
+
+    applyCompleteTrainingPublicBetaEnv();
+    vi.stubEnv('TRAINING_PLAN_M4_ALLOWLIST', '*');
+    await expect(loadConfigFresh()).rejects.toThrow(
+      'TRAINING_PUBLIC_BETA_V1_ENABLED=true requires the complete global Training v1 bundle',
+    );
+
+    vi.stubEnv('TRAINING_PUBLIC_BETA_V1_ENABLED', 'yes');
+    vi.stubEnv('TRAINING_PLAN_REVISION_V1_MODE', 'off');
+    vi.stubEnv('TRAINING_ADAPTATION_V1_MODE', 'off');
+    vi.stubEnv('TRAINING_PLAN_M4_ALLOWLIST', '');
+    vi.stubEnv('TRAINING_DECISION_FLOW_V1_ENFORCE_ENABLED', 'false');
+    await expect(loadConfigFresh()).rejects.toThrow(
+      'TRAINING_PUBLIC_BETA_V1_ENABLED must be exactly true or false in production.',
+    );
+  });
+
+  it('preserves the legacy global-rollout prohibition when the public-beta master is off', async () => {
+    applySafeProductionEnv();
+    vi.stubEnv('TRAINING_PUBLIC_BETA_V1_ENABLED', 'false');
+    vi.stubEnv('TRAINING_PLAN_REVISION_V1_MODE', 'active');
+
+    await expect(loadConfigFresh()).rejects.toThrow(
+      'Global TRAINING_PLAN_REVISION_V1_MODE=active is forbidden in production; enroll explicit personal accounts with scoped USER or TENANT overrides.',
+    );
+  });
+
+  it('forbids the global Training-only Decision gate without the complete public-beta master', async () => {
+    applySafeProductionEnv();
+    vi.stubEnv('TRAINING_PUBLIC_BETA_V1_ENABLED', 'false');
+    vi.stubEnv('TRAINING_DECISION_FLOW_V1_ENFORCE_ENABLED', 'true');
+
+    await expect(loadConfigFresh()).rejects.toThrow(
+      'Global TRAINING_DECISION_FLOW_V1_ENFORCE_ENABLED=true is forbidden in production unless the complete Training public-beta bundle is enabled.',
+    );
+  });
+
   it('requires scoped revision, typed workout, and Decision dependencies for scoped adaptation activation', async () => {
     applySafeProductionEnv();
     vi.stubEnv('TRAINING_PLAN_REVISION_V1_MODE', 'off');
@@ -290,7 +366,7 @@ describe('runtime config validation', () => {
     vi.stubEnv('DECISION_FLOW_V1_ENFORCE_ENABLED', 'false');
 
     await expect(loadConfigFresh()).rejects.toThrow(
-      'TRAINING_ADAPTATION_V1_MODE=active requires scoped Training revision enrollment, typed workouts, and Decision Flow v1 in production.',
+      'Each scoped TRAINING_ADAPTATION_V1_MODE=active enrollment requires Training revision, typed-workout, and Decision Flow enablement for the same scope.',
     );
   });
 
@@ -305,7 +381,95 @@ describe('runtime config validation', () => {
     vi.stubEnv('TRAINING_PROFILE_SNAPSHOT_ENCRYPTION_KEY', 'training-revision-production-key-00000001');
 
     await expect(loadConfigFresh()).rejects.toThrow(
-      'Each scoped TRAINING_ADAPTATION_V1_MODE=active enrollment requires Training revision and typed-workout enablement for the same scope.',
+      'Each scoped TRAINING_ADAPTATION_V1_MODE=active enrollment requires Training revision, typed-workout, and Decision Flow enablement for the same scope.',
     );
+  });
+
+  it('accepts exact user-scoped Decision Flow dependencies without global rollout blast', async () => {
+    applySafeProductionEnv();
+    vi.stubEnv('TRAINING_PLAN_REVISION_V1_MODE', 'off');
+    vi.stubEnv('TRAINING_PLAN_REVISION_V1_MODE_USER_7', 'active');
+    vi.stubEnv('TRAINING_TYPED_WORKOUT_V1_ENABLED_USER_7', 'true');
+    vi.stubEnv('TRAINING_ADAPTATION_V1_MODE_USER_7', 'active');
+    vi.stubEnv('DECISION_FLOW_V1_ENFORCE_ENABLED', 'false');
+    vi.stubEnv('DECISION_FLOW_V1_ENFORCE_ENABLED_USER_7', 'true');
+    vi.stubEnv('TRAINING_PROFILE_SNAPSHOT_ENCRYPTION_KEY', 'training-revision-production-key-00000001');
+
+    await expect(loadConfigFresh()).resolves.toHaveProperty('config');
+  });
+
+  it('accepts the Training-specific Decision dependency for an exact scoped enrollment', async () => {
+    applySafeProductionEnv();
+    vi.stubEnv('TRAINING_PLAN_REVISION_V1_MODE', 'off');
+    vi.stubEnv('TRAINING_PLAN_REVISION_V1_MODE_USER_7', 'active');
+    vi.stubEnv('TRAINING_TYPED_WORKOUT_V1_ENABLED_USER_7', 'true');
+    vi.stubEnv('TRAINING_ADAPTATION_V1_MODE_USER_7', 'active');
+    vi.stubEnv('DECISION_FLOW_V1_ENFORCE_ENABLED', 'false');
+    vi.stubEnv('TRAINING_DECISION_FLOW_V1_ENFORCE_ENABLED_USER_7', 'true');
+    vi.stubEnv('TRAINING_PROFILE_SNAPSHOT_ENCRYPTION_KEY', 'training-revision-production-key-00000001');
+
+    await expect(loadConfigFresh()).resolves.toHaveProperty('config');
+  });
+
+  it('does not satisfy a scoped revision dependency with another account Decision Flow enrollment', async () => {
+    applySafeProductionEnv();
+    vi.stubEnv('TRAINING_PLAN_REVISION_V1_MODE', 'off');
+    vi.stubEnv('TRAINING_PLAN_REVISION_V1_MODE_USER_7', 'active');
+    vi.stubEnv('DECISION_FLOW_V1_ENFORCE_ENABLED', 'false');
+    vi.stubEnv('DECISION_FLOW_V1_ENFORCE_ENABLED_USER_8', 'true');
+    vi.stubEnv('TRAINING_PROFILE_SNAPSHOT_ENCRYPTION_KEY', 'training-revision-production-key-00000001');
+
+    await expect(loadConfigFresh()).rejects.toThrow(
+      'Each scoped TRAINING_PLAN_REVISION_V1_MODE=active enrollment requires Decision Flow enablement for the same scope in production.',
+    );
+  });
+
+  it('requires every scoped M4 allowlist to carry exact rollout dependencies', async () => {
+    applySafeProductionEnv();
+    vi.stubEnv('TRAINING_PLAN_REVISION_V1_MODE', 'off');
+    vi.stubEnv('TRAINING_PLAN_REVISION_V1_MODE_USER_7', 'active');
+    vi.stubEnv('TRAINING_TYPED_WORKOUT_V1_ENABLED_USER_7', 'true');
+    vi.stubEnv('TRAINING_PLAN_M4_ALLOWLIST_USER_8', 'event_based:marathon');
+    vi.stubEnv('DECISION_FLOW_V1_ENFORCE_ENABLED_USER_7', 'true');
+    vi.stubEnv('TRAINING_PROFILE_SNAPSHOT_ENCRYPTION_KEY', 'training-revision-production-key-00000001');
+
+    await expect(loadConfigFresh()).rejects.toThrow(
+      'Each scoped TRAINING_PLAN_M4_ALLOWLIST requires Training revision, typed-workout, and Decision Flow enablement for the same scope.',
+    );
+  });
+
+  it('forbids global provisional explicit-user M4 capacity in production', async () => {
+    applySafeProductionEnv();
+    vi.stubEnv('TRAINING_M4_EXPLICIT_USER_CAPACITY_ENABLED', 'true');
+
+    await expect(loadConfigFresh()).rejects.toThrow(
+      'Global TRAINING_M4_EXPLICIT_USER_CAPACITY_ENABLED=true is forbidden in production',
+    );
+  });
+
+  it('requires every scoped provisional M4 capacity enrollment to carry the same-scope dependencies', async () => {
+    applySafeProductionEnv();
+    vi.stubEnv('TRAINING_M4_EXPLICIT_USER_CAPACITY_ENABLED_USER_7', 'true');
+    vi.stubEnv('TRAINING_PLAN_REVISION_V1_MODE_USER_8', 'active');
+    vi.stubEnv('TRAINING_TYPED_WORKOUT_V1_ENABLED_USER_8', 'true');
+    vi.stubEnv('TRAINING_PLAN_M4_ALLOWLIST_USER_8', 'event_based:marathon');
+    vi.stubEnv('DECISION_FLOW_V1_ENFORCE_ENABLED_USER_8', 'true');
+    vi.stubEnv('TRAINING_PROFILE_SNAPSHOT_ENCRYPTION_KEY', 'training-revision-production-key-00000001');
+
+    await expect(loadConfigFresh()).rejects.toThrow(
+      'Each scoped TRAINING_M4_EXPLICIT_USER_CAPACITY_ENABLED enrollment requires an exact M4 allowlist, Training revision, typed-workout, and Decision Flow enablement for the same scope.',
+    );
+  });
+
+  it('accepts provisional M4 capacity only with exact same-scope production dependencies', async () => {
+    applySafeProductionEnv();
+    vi.stubEnv('TRAINING_M4_EXPLICIT_USER_CAPACITY_ENABLED_USER_7', 'true');
+    vi.stubEnv('TRAINING_PLAN_REVISION_V1_MODE_USER_7', 'active');
+    vi.stubEnv('TRAINING_TYPED_WORKOUT_V1_ENABLED_USER_7', 'true');
+    vi.stubEnv('TRAINING_PLAN_M4_ALLOWLIST_USER_7', 'event_based:marathon');
+    vi.stubEnv('DECISION_FLOW_V1_ENFORCE_ENABLED_USER_7', 'true');
+    vi.stubEnv('TRAINING_PROFILE_SNAPSHOT_ENCRYPTION_KEY', 'training-revision-production-key-00000001');
+
+    await expect(loadConfigFresh()).resolves.toHaveProperty('config');
   });
 });

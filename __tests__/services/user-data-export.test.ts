@@ -94,6 +94,40 @@ function seedUser(db: Database.Database, telegramId: number, opts?: { username?:
   } catch { /* table may not exist */ }
 }
 
+function seedTrainingM4CapacitySnapshot(
+  db: Database.Database,
+  input: { userId: number; snapshotId: string; conflictCount?: number },
+): void {
+  db.prepare(`
+    INSERT INTO training_m4_capacity_snapshots (
+      snapshot_id, tenant_id, user_id, schema_version, context_version,
+      idempotency_key, request_hash, profile_source_version,
+      calendar_event_set_hash, provider_sources_json, provider_status,
+      plan_start_date, plan_end_date, horizon_weeks,
+      range_start_at, range_end_at, profile_windows_json,
+      capacity_windows_json, conflict_count, observed_at, expires_at
+    ) VALUES (
+      ?, ?, ?, 'training-m4-capacity-snapshot.v1', ?,
+      ?, ?, ?, ?, '["google"]', 'ready',
+      '2026-08-03', '2026-08-30', 4,
+      '2026-08-03T00:00:00.000Z', '2026-08-31T00:00:00.000Z',
+      '[{"day":"monday","start":"06:00","end":"08:00"}]',
+      '[{"day":"monday","start":"06:00","end":"07:30"}]',
+      ?, '2026-07-14T09:00:00.000Z', '2026-07-14T09:05:00.000Z'
+    )
+  `).run(
+    input.snapshotId,
+    input.userId,
+    input.userId,
+    `m4_capacity_context_${input.snapshotId}`,
+    `refresh-${input.snapshotId}`,
+    '1'.repeat(64),
+    `m4_profile_source_${input.userId}_${input.snapshotId}`,
+    '2'.repeat(64),
+    input.conflictCount ?? 1,
+  );
+}
+
 // ── Helper: seed data across multiple tables ──
 function seedUserData(db: Database.Database, userId: number) {
   try {
@@ -452,8 +486,21 @@ describe('exportAllUserData', () => {
           'family-export', 'revision-export', '{"result":"ok"}'
         )
       `).run('d'.repeat(64));
+      seedTrainingM4CapacitySnapshot(testDb, {
+        userId: 1,
+        snapshotId: 'capacity-export',
+      });
 
       const graph = exportAllUserData(1).trainingPlanRevisionV1;
+      expect(graph.capacitySnapshots).toEqual([
+        expect.objectContaining({
+          snapshotId: 'capacity-export',
+          providerSources: ['google'],
+          profileWindows: [{ day: 'monday', start: '06:00', end: '08:00' }],
+          capacityWindows: [{ day: 'monday', start: '06:00', end: '07:30' }],
+          conflictCount: 1,
+        }),
+      ]);
       expect(graph.profileSnapshots).toEqual([
         expect.objectContaining({ snapshotId: 'snapshot-export', snapshotBody: expect.objectContaining({ profileKind: 'legacy' }) }),
       ]);
@@ -474,10 +521,15 @@ describe('exportAllUserData', () => {
     seedUser(testDb, 2, { username: 'other' });
     seedUserData(testDb, 1);
     seedUserData(testDb, 2);
+    seedTrainingM4CapacitySnapshot(testDb, { userId: 1, snapshotId: 'capacity-user-1' });
+    seedTrainingM4CapacitySnapshot(testDb, { userId: 2, snapshotId: 'capacity-user-2' });
 
     const exported = exportAllUserData(1);
     expect(exported.conversations).toHaveLength(2); // only user 1's
     expect(exported.todos).toHaveLength(1);
+    expect(exported.trainingPlanRevisionV1.capacitySnapshots).toEqual([
+      expect.objectContaining({ snapshotId: 'capacity-user-1', tenantId: 1 }),
+    ]);
   });
 
   it('handles missing tables gracefully', () => {
@@ -615,10 +667,23 @@ describe('deleteAllUserData', () => {
         tenant_id, user_id, family_id, active_revision_id, pointer_version
       ) VALUES (1, 1, 'family-gdpr', 'revision-gdpr', 1)
     `).run();
+    seedTrainingM4CapacitySnapshot(testDb, {
+      userId: 1,
+      snapshotId: 'capacity-gdpr',
+    });
     expect(() => testDb.prepare("DELETE FROM training_plan_revisions WHERE revision_id = 'revision-gdpr'").run())
       .toThrow(/immutable records/i);
+    expect(() => testDb.prepare("DELETE FROM training_m4_capacity_snapshots WHERE snapshot_id = 'capacity-gdpr'").run())
+      .toThrow(/immutable/i);
+    testDb.prepare(`
+      INSERT INTO training_m4_capacity_prune_authorizations (
+        authorization_id, tenant_id, user_id, prune_before_at, expires_at
+      ) VALUES ('capacity-prune-gdpr', 1, 1, datetime('now'), datetime('now', '+1 minute'))
+    `).run();
 
-    deleteAllUserData(1);
+    const counts = deleteAllUserData(1);
+    expect(counts.training_m4_capacity_snapshots).toBe(1);
+    expect(counts.training_m4_capacity_prune_authorizations).toBe(1);
 
     for (const table of [
       'training_profile_snapshots',
@@ -627,6 +692,8 @@ describe('deleteAllUserData', () => {
       'training_plan_revision_approvals',
       'training_plan_current_contexts',
       'training_active_plan_references',
+      'training_m4_capacity_prune_authorizations',
+      'training_m4_capacity_snapshots',
     ]) {
       expect(testDb.prepare(`SELECT COUNT(*) AS count FROM ${table} WHERE user_id = 1`).get())
         .toEqual({ count: 0 });

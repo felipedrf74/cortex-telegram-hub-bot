@@ -352,7 +352,9 @@ function buildWeekWorkouts(
         : isoDateForWeekDay(request.planStartDate, weekNumber, day)
       : null;
     const capacityWindow = m4Enabled && request.capacity
-      ? selectTrainingM4CapacityWindow(request.discipline, request.capacity.windows, workout)
+      ? selectTrainingM4CapacityWindow(
+        request.discipline, request.capacity.windows, workout, scheduledDate ?? undefined,
+      )
       : null;
     if (m4Enabled && !capacityWindow) {
       throw new Error(`TRAINING_M4_SCHEDULE_CAPACITY_CONFLICT:${day}:${sessionType}`);

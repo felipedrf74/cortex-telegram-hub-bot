@@ -46,6 +46,7 @@ import {
   buildSkillDecisionFixtureIntent,
   cleanupDecisionCenterSmokeItems,
   createDecisionIntent,
+  decisionRefreshSupportedForDecision,
   DecisionActionError,
   DECISION_OUTCOME_LEDGER_RETENTION_POLICY,
   dismissDecision,
@@ -214,7 +215,7 @@ function ensureTrainingCommitmentFixtureTables(): void {
 
 function clearScopedDecisionFlowFlags(): void {
   for (const key of Object.keys(process.env)) {
-    if (/^(DECISION_CONFLICT_POLICY_V1_ENABLED|DECISION_FLOW_V1_ENFORCE_ENABLED|DECISION_LOW_RISK_AUTO_RESOLUTION_ENABLED)_/.test(key)) {
+    if (/^(DECISION_CONFLICT_POLICY_V1_ENABLED|DECISION_FLOW_V1_ENFORCE_ENABLED|TRAINING_DECISION_FLOW_V1_ENFORCE_ENABLED|DECISION_LOW_RISK_AUTO_RESOLUTION_ENABLED)_/.test(key)) {
       delete process.env[key];
     }
   }
@@ -258,6 +259,7 @@ describe('Decision Center facade', () => {
     delete process.env.DECISION_CANDIDATE_REJECTION_COOLDOWN_DAYS;
     delete process.env.DECISION_CONFLICT_POLICY_V1_ENABLED;
     delete process.env.DECISION_FLOW_V1_ENFORCE_ENABLED;
+    delete process.env.TRAINING_DECISION_FLOW_V1_ENFORCE_ENABLED;
     ensureNotificationTables();
     ensureDecisionCenterTables();
     ensureTrainingCommitmentFixtureTables();
@@ -270,6 +272,7 @@ describe('Decision Center facade', () => {
     delete process.env.DECISION_CANDIDATE_REJECTION_COOLDOWN_DAYS;
     delete process.env.DECISION_CONFLICT_POLICY_V1_ENABLED;
     delete process.env.DECISION_FLOW_V1_ENFORCE_ENABLED;
+    delete process.env.TRAINING_DECISION_FLOW_V1_ENFORCE_ENABLED;
     clearScopedDecisionFlowFlags();
     vi.useRealTimers();
     testDb?.close();
@@ -2407,6 +2410,18 @@ describe('Decision Center facade', () => {
     } finally {
       delete process.env.DECISION_FLOW_V1_ENFORCE_ENABLED_USER_22;
     }
+  });
+
+  it('does not apply the Training-only Decision gate to non-Training personal decisions', async () => {
+    process.env.TRAINING_DECISION_FLOW_V1_ENFORCE_ENABLED = 'true';
+    const { created } = await createContentApprovalDecision(222, 222, 'content:training-gate-isolation');
+
+    expect(created.item).toMatchObject({ sourceSkill: 'content', reviewSupported: false });
+    expect(decisionRefreshSupportedForDecision(created.item!.decisionId, 222, 222)).toBe(false);
+    const result = await performDecisionAction(created.item!.decisionId, 'approve_script', 222, 222, {
+      idempotencyKey: 'content-without-version-under-training-gate',
+    });
+    expect(result.status).toBe('succeeded');
   });
 
   it('requires and preserves the current version for snooze through the action path', async () => {

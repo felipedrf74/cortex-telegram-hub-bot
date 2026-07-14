@@ -248,6 +248,64 @@ describe('Week CRUD', () => {
     expect(weeks[0].auto_adjusted).toBe(1);
     expect(weeks[0].adjustment_reason).toBe('high fatigue + low adherence');
   });
+
+  it('keeps revision-owned weeks immutable when the exact personal scope is active', () => {
+    const plan = createPlan({
+      user_id: 42, tenant_id: 42, name: 'Revision plan', sport: 'strength',
+      duration_weeks: 4, start_date: '2026-04-01', end_date: '2026-04-29',
+    });
+    const week = createWeek({ plan_id: plan.id, week_number: 1, intensity_pct: 100 });
+    testDb.prepare("UPDATE fitness_training_plans SET source_revision_id = 'revision-active' WHERE id = ?")
+      .run(plan.id);
+
+    const flagKey = 'TRAINING_PLAN_REVISION_V1_MODE_USER_42';
+    const priorFlag = process.env[flagKey];
+    process.env[flagKey] = 'active';
+    try {
+      expect(() => updateWeekAdjustment(week.id, 70, 'must not mutate approved projection'))
+        .toThrowError(expect.objectContaining({
+          code: 'TRAINING_REVISION_MANAGED_LEGACY_MUTATION_BLOCKED',
+        }));
+      expect(getWeeksForPlan(plan.id)[0]).toMatchObject({
+        intensity_pct: 100,
+        auto_adjusted: 0,
+        adjustment_reason: null,
+      });
+    } finally {
+      if (priorFlag === undefined) delete process.env[flagKey];
+      else process.env[flagKey] = priorFlag;
+    }
+  });
+
+  it('preserves legacy weekly adjustment when the exact scope is explicitly off', () => {
+    const plan = createPlan({
+      user_id: 42, tenant_id: 42, name: 'Legacy plan', sport: 'strength',
+      duration_weeks: 4, start_date: '2026-04-01', end_date: '2026-04-29',
+    });
+    const week = createWeek({ plan_id: plan.id, week_number: 1, intensity_pct: 100 });
+    testDb.prepare("UPDATE fitness_training_plans SET source_revision_id = 'legacy-projection' WHERE id = ?")
+      .run(plan.id);
+
+    const globalKey = 'TRAINING_PLAN_REVISION_V1_MODE';
+    const scopedKey = 'TRAINING_PLAN_REVISION_V1_MODE_USER_42';
+    const priorGlobal = process.env[globalKey];
+    const priorScoped = process.env[scopedKey];
+    process.env[globalKey] = 'active';
+    process.env[scopedKey] = 'off';
+    try {
+      expect(updateWeekAdjustment(week.id, 80, 'legacy scope remains mutable')).toBe(true);
+      expect(getWeeksForPlan(plan.id)[0]).toMatchObject({
+        intensity_pct: 80,
+        auto_adjusted: 1,
+        adjustment_reason: 'legacy scope remains mutable',
+      });
+    } finally {
+      if (priorGlobal === undefined) delete process.env[globalKey];
+      else process.env[globalKey] = priorGlobal;
+      if (priorScoped === undefined) delete process.env[scopedKey];
+      else process.env[scopedKey] = priorScoped;
+    }
+  });
 });
 
 // ── Session CRUD ───────────────────────────────────────────────────

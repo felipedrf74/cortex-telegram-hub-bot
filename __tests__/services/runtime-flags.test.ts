@@ -16,7 +16,10 @@ import {
   getTrainingExerciseIdentityV1Mode,
   getTrainingPlanRevisionV1Mode,
   isTrainingExerciseMediaV1Enabled,
+  isTrainingDecisionFlowV1EnforceEnabled,
+  isTrainingM4ExplicitUserCapacityEnabled,
   isTrainingPlanRevisionV1ExplicitlyEnrolled,
+  isTrainingPublicBetaV1Enabled,
   isTrainingTypedWorkoutV1Enabled,
   isChatEscalationReviewerEnabled,
   isChatBilingualEvalGateEnabled,
@@ -56,6 +59,11 @@ import {
   isChatCoreV2ShadowRouteHookEnabled,
   isSecretaryHaikuRoutingEnabled,
 } from '../../src/services/runtime-flags';
+
+const FULL_TRAINING_M4_ALLOWLIST = ['event_based', 'continuous', 'maintenance', 'return_to_training']
+  .flatMap((mode) => ['running', 'cycling', 'swimming', 'strength', 'triathlon', 'hybrid', 'marathon']
+    .map((discipline) => `${mode}:${discipline}`))
+  .join(',');
 
 describe('runtime-flags', () => {
   it('keeps Training exercise identity off by default and scopes explicit shadow or active rollout', () => {
@@ -217,6 +225,62 @@ describe('runtime-flags', () => {
     }, { userId: 42, tenantId: 9 })).toBe(false);
   });
 
+  it('isolates Training Decision enforcement to exact personal scopes while preserving legacy enrollment', () => {
+    expect(isTrainingDecisionFlowV1EnforceEnabled({})).toBe(false);
+    expect(isTrainingDecisionFlowV1EnforceEnabled({
+      TRAINING_DECISION_FLOW_V1_ENFORCE_ENABLED: 'true',
+    }, { userId: 7, tenantId: 7 })).toBe(true);
+    expect(isTrainingDecisionFlowV1EnforceEnabled({
+      TRAINING_DECISION_FLOW_V1_ENFORCE_ENABLED: 'true',
+    }, { userId: 7, tenantId: 9 })).toBe(false);
+    expect(isTrainingDecisionFlowV1EnforceEnabled({
+      TRAINING_DECISION_FLOW_V1_ENFORCE_ENABLED: 'true',
+    }, { userId: '7/unsafe', tenantId: '7/unsafe' })).toBe(false);
+    expect(isTrainingDecisionFlowV1EnforceEnabled({
+      DECISION_FLOW_V1_ENFORCE_ENABLED_USER_7: 'true',
+    }, { userId: 7, tenantId: 9 })).toBe(true);
+  });
+
+  it('grants the Training public beta only for a complete bundle and exact personal scope', () => {
+    const complete = {
+      TRAINING_PUBLIC_BETA_V1_ENABLED: 'true',
+      TRAINING_PLAN_REVISION_V1_MODE: 'active',
+      TRAINING_TYPED_WORKOUT_V1_ENABLED: 'true',
+      TRAINING_ADAPTATION_V1_MODE: 'active',
+      TRAINING_EXERCISE_IDENTITY_V1_MODE: 'active',
+      TRAINING_EXERCISE_MEDIA_V1_ENABLED: 'true',
+      TRAINING_DECISION_FLOW_V1_ENFORCE_ENABLED: 'true',
+      TRAINING_PLAN_M4_ALLOWLIST: FULL_TRAINING_M4_ALLOWLIST,
+      TRAINING_PROFILE_SNAPSHOT_ENCRYPTION_KEY: 'training-public-beta-key-00000001',
+      TRAINING_M4_EXPLICIT_USER_CAPACITY_ENABLED: 'false',
+      DECISION_FLOW_V1_ENFORCE_ENABLED: 'false',
+    };
+
+    expect(isTrainingPublicBetaV1Enabled(complete)).toBe(true);
+    expect(isTrainingPlanRevisionV1ExplicitlyEnrolled(complete, { userId: 7, tenantId: 7 })).toBe(true);
+    expect(isTrainingPlanRevisionV1ExplicitlyEnrolled(complete, { userId: 7, tenantId: 9 })).toBe(false);
+    expect(isTrainingPlanRevisionV1ExplicitlyEnrolled(complete)).toBe(false);
+    expect(isTrainingPlanRevisionV1ExplicitlyEnrolled({
+      ...complete,
+      TRAINING_PLAN_REVISION_V1_MODE_USER_7: 'off',
+    }, { userId: 7, tenantId: 7 })).toBe(false);
+    expect(isTrainingPlanRevisionV1ExplicitlyEnrolled({
+      ...complete,
+      TRAINING_PLAN_REVISION_V1_MODE_TENANT_7: 'off',
+    }, { userId: 7, tenantId: 7 })).toBe(false);
+    expect(isTrainingDecisionFlowV1EnforceEnabled(complete, { userId: 7, tenantId: 7 })).toBe(true);
+    expect(isDecisionFlowV1EnforceEnabled(complete, { userId: 7, tenantId: 7 })).toBe(false);
+    expect(isTrainingPublicBetaV1Enabled({ ...complete, TRAINING_PUBLIC_BETA_V1_ENABLED: 'false' })).toBe(false);
+    expect(isTrainingPublicBetaV1Enabled({ ...complete, TRAINING_PUBLIC_BETA_V1_ENABLED: 'on' })).toBe(false);
+    expect(isTrainingPublicBetaV1Enabled({ ...complete, TRAINING_PLAN_M4_ALLOWLIST: '*' })).toBe(false);
+    expect(isTrainingPublicBetaV1Enabled({
+      ...complete,
+      TRAINING_PLAN_M4_ALLOWLIST: FULL_TRAINING_M4_ALLOWLIST.split(',').slice(0, -1).join(','),
+    })).toBe(false);
+    expect(isTrainingPublicBetaV1Enabled({ ...complete, TRAINING_M4_EXPLICIT_USER_CAPACITY_ENABLED: 'true' })).toBe(false);
+    expect(isTrainingPublicBetaV1Enabled({ ...complete, TRAINING_EXERCISE_MEDIA_V1_ENABLED: 'false' })).toBe(false);
+  });
+
   it('rolls structured Secretary reasoning from off to shadow to scoped active', () => {
     expect(getSecretaryReasoningV1Mode({})).toBe('off');
     expect(getSecretaryReasoningV1Mode({ SECRETARY_REASONING_V1_MODE: 'shadow' })).toBe('shadow');
@@ -332,6 +396,21 @@ describe('runtime-flags', () => {
       TRAINING_ADAPTATION_V1_MODE: 'active',
       TRAINING_ADAPTATION_V1_MODE_TENANT_9: 'off',
     }, { userId: 7, tenantId: 9 })).toBe('off');
+  });
+
+  it('keeps provisional explicit-user M4 capacity separately default-off and scoped', () => {
+    expect(isTrainingM4ExplicitUserCapacityEnabled({})).toBe(false);
+    expect(isTrainingM4ExplicitUserCapacityEnabled({
+      TRAINING_M4_EXPLICIT_USER_CAPACITY_ENABLED: 'false',
+      TRAINING_M4_EXPLICIT_USER_CAPACITY_ENABLED_USER_7: 'true',
+    }, { userId: 7, tenantId: 7 })).toBe(true);
+    expect(isTrainingM4ExplicitUserCapacityEnabled({
+      TRAINING_M4_EXPLICIT_USER_CAPACITY_ENABLED: 'true',
+      TRAINING_M4_EXPLICIT_USER_CAPACITY_ENABLED_USER_7: 'off',
+    }, { userId: 7, tenantId: 7 })).toBe(false);
+    expect(isTrainingM4ExplicitUserCapacityEnabled({
+      TRAINING_M4_EXPLICIT_USER_CAPACITY_ENABLED_USER_8: 'true',
+    }, { userId: 7, tenantId: 7 })).toBe(false);
   });
 
   it('keeps typed Training workout validation default-off and scope-overridable', () => {

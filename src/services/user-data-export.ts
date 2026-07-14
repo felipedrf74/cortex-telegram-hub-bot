@@ -249,6 +249,7 @@ export interface FullUserExport {
     updatedAt: string;
   }>;
   trainingPlanRevisionV1: {
+    capacitySnapshots: Array<Record<string, unknown>>;
     profileSnapshots: Array<Record<string, unknown>>;
     planFamilies: Array<Record<string, unknown>>;
     planRevisions: Array<Record<string, unknown>>;
@@ -371,6 +372,31 @@ export function exportAllUserData(userId: number): FullUserExport {
     WHERE user_id = ?
     ORDER BY created_at
   `, userId);
+  const trainingCapacitySnapshots = safeAll(db, `
+    SELECT snapshot_id AS snapshotId, tenant_id AS tenantId,
+           schema_version AS schemaVersion, context_version AS contextVersion,
+           idempotency_key AS idempotencyKey, request_hash AS requestHash,
+           profile_source_version AS profileSourceVersion,
+           calendar_event_set_hash AS calendarEventSetHash,
+           provider_sources_json AS providerSources,
+           provider_status AS providerStatus,
+           plan_start_date AS planStartDate, plan_end_date AS planEndDate,
+           horizon_weeks AS horizonWeeks,
+           range_start_at AS rangeStartAt, range_end_at AS rangeEndAt,
+           profile_windows_json AS profileWindows,
+           capacity_windows_json AS capacityWindows,
+           conflict_count AS conflictCount,
+           observed_at AS observedAt, expires_at AS expiresAt,
+           created_at AS createdAt
+      FROM training_m4_capacity_snapshots
+     WHERE user_id = ?
+     ORDER BY tenant_id, observed_at, snapshot_id
+  `, userId).map((row: Record<string, unknown>) => ({
+    ...row,
+    providerSources: parseExportJson(row.providerSources),
+    profileWindows: parseExportJson(row.profileWindows),
+    capacityWindows: parseExportJson(row.capacityWindows),
+  }));
   const rawTrainingSnapshots = safeAll(db, `
     SELECT snapshot_id AS snapshotId, tenant_id AS tenantId,
            snapshot_sequence AS snapshotSequence, schema_version AS schemaVersion,
@@ -552,6 +578,7 @@ export function exportAllUserData(userId: number): FullUserExport {
     trainingFeedbackDecisions,
     secretarySourceSkillFeedback,
     trainingPlanRevisionV1: {
+      capacitySnapshots: trainingCapacitySnapshots,
       profileSnapshots: trainingProfileSnapshots,
       planFamilies: trainingPlanFamilies,
       planRevisions: trainingPlanRevisions,
@@ -590,6 +617,8 @@ export const ACCOUNT_DELETION_TABLES: Array<{ table: string; column: string }> =
   { table: 'apple_health_data', column: 'user_id' },
   { table: 'readiness_scores', column: 'user_id' },
   { table: 'training_completions', column: 'user_id' },
+  { table: 'training_m4_capacity_prune_authorizations', column: 'user_id' },
+  { table: 'training_m4_capacity_snapshots', column: 'user_id' },
   {
     table: 'fitness_training_plans',
     column: 'user_id',
@@ -750,6 +779,8 @@ export function deleteAllUserData(userId: number): Record<string, number> {
         'training_adaptation_previews',
         'training_adaptation_proposals',
         'training_adaptation_lifecycle_events',
+        'training_m4_capacity_prune_authorizations',
+        'training_m4_capacity_snapshots',
       ].filter((table) => tableExistsForDeletion(db, table)).reduce((total, table) => {
         const row = db.prepare(`SELECT COUNT(*) AS count FROM ${table} WHERE user_id = ?`).get(userId) as { count: number };
         return total + row.count;

@@ -5,7 +5,7 @@ import { createHash } from 'node:crypto';
 import { getDb } from './database';
 import { emitDomainEvent } from './event-outbox';
 import {
-  isDecisionFlowV1EnforceEnabled,
+  isTrainingDecisionFlowV1EnforceEnabled,
   getTrainingAdaptationV1Mode,
   getTrainingPlanRevisionV1Mode,
   isTrainingPlanRevisionV1ExplicitlyEnrolled,
@@ -1368,7 +1368,7 @@ function requireActivationFlags(scope: TrainingPlanRevisionScope, env: NodeJS.Pr
   const runtime = env ?? process.env;
   if (getTrainingPlanRevisionV1Mode(runtime, scope) !== 'active'
       || !isTrainingPlanRevisionV1ExplicitlyEnrolled(runtime, scope)
-      || !isDecisionFlowV1EnforceEnabled(runtime, scope)) {
+      || !isTrainingDecisionFlowV1EnforceEnabled(runtime, scope)) {
     throw new TrainingPlanRevisionError('TRAINING_PLAN_REVISION_ACTIVATION_DISABLED', 'Training plan revision activation is disabled.', 404);
   }
   requirePersonalTrainingRevisionScope(scope);

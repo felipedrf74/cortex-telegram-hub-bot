@@ -99,12 +99,15 @@ export interface CalendarEvent {
   categories?: string[];
   color?: string;
   isAllDay?: boolean;
+  /** IANA zone supplied by the provider or the configured calendar default. */
+  timeZone?: string;
 }
 
 export async function getEvents(startDate: string, endDate: string, userId?: number): Promise<CalendarEvent[]> {
   try {
     const calendar = getCalendar(userId);
     const items: calendar_v3.Schema$Event[] = [];
+    let calendarTimeZone: string | undefined;
     let pageToken: string | undefined;
     let pageCount = 0;
     do {
@@ -125,6 +128,7 @@ export async function getEvents(startDate: string, endDate: string, userId?: num
       );
       pageCount += 1;
       items.push(...(response.data.items || []));
+      calendarTimeZone ??= response.data.timeZone || undefined;
       pageToken = response.data.nextPageToken || undefined;
     } while (pageToken);
 
@@ -139,6 +143,7 @@ export async function getEvents(startDate: string, endDate: string, userId?: num
         location: event.location || undefined,
         htmlLink: event.htmlLink || undefined,
         isAllDay: !event.start?.dateTime && !!event.start?.date,
+        timeZone: event.start?.timeZone || event.end?.timeZone || calendarTimeZone,
       }));
   } catch (err) {
     throw logAndWrapGoogleCalendarError(err, 'Failed to fetch calendar events');

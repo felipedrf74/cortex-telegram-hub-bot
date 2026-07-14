@@ -12,13 +12,29 @@ import { createTrainingPlanCandidateRevision as createTrainingPlanCandidateRevis
 import {
   getTrainingM4Allowlist,
   isTrainingM4PlanCombinationAllowed,
+  TRAINING_M4_PUBLIC_BETA_COMBINATIONS,
 } from '../../src/services/runtime-flags';
 import {
   trainingM4ConflictSetHashForDocument,
+  selectTrainingM4CapacityWindow,
   selectTrainingM4SessionTypes,
   validateTrainingM4CapacityWindowShapes,
   validateTrainingM4InitialScheduleFreshness,
 } from '../../src/services/training-m4-plan-strategies';
+
+it('skips a nominally large pre-gap window that cannot schedule on the DST date', () => {
+  const workout = {
+    dayOfWeek: 'sunday' as const,
+    sessionType: 'easy_run',
+    plannedDurationMinutes: 60,
+  };
+  const selected = selectTrainingM4CapacityWindow('running', [
+    { dayOfWeek: 'sunday', startTime: '00:00', endTime: '01:00', timezone: 'Europe/Lisbon' },
+    { dayOfWeek: 'sunday', startTime: '02:00', endTime: '03:00', timezone: 'Europe/Lisbon' },
+  ], workout, '2026-03-29');
+
+  expect(selected).toMatchObject({ startTime: '02:00', endTime: '03:00' });
+});
 
 const FIXED_NOW = new Date('2026-07-13T12:00:00.000Z');
 
@@ -28,6 +44,10 @@ function buildTrainingPlanRevisionCandidate(
 ) {
   return buildTrainingPlanRevisionCandidateAtRuntime(request, {
     ...options,
+    env: {
+      TRAINING_M4_EXPLICIT_USER_CAPACITY_ENABLED: 'true',
+      ...options.env,
+    },
     referenceTime: options.referenceTime ?? FIXED_NOW,
   });
 }
@@ -37,6 +57,10 @@ function createTrainingPlanCandidateRevision(
 ) {
   return createTrainingPlanCandidateRevisionAtRuntime({
     ...input,
+    env: {
+      TRAINING_M4_EXPLICIT_USER_CAPACITY_ENABLED: 'true',
+      ...input.env,
+    },
     referenceTime: input.referenceTime ?? FIXED_NOW,
   });
 }
@@ -114,6 +138,108 @@ describe('training M4 deterministic strategies and conflict foundation', () => {
       TRAINING_PLAN_M4_ALLOWLIST: 'maintenance:running',
       TRAINING_PLAN_M4_ALLOWLIST_USER_7: 'event_based:triathlon',
     }, { userId: 7, tenantId: 7 })).toBe(false);
+  });
+
+  it('successfully generates every one of the 28 combinations advertised by the public-beta bundle', () => {
+    const modes = ['event_based', 'continuous', 'maintenance', 'return_to_training'] as const;
+    const disciplines = ['running', 'cycling', 'swimming', 'strength', 'triathlon', 'hybrid', 'marathon'] as const;
+    const goals = {
+      event_based: 'event_performance',
+      continuous: 'general_fitness',
+      maintenance: 'maintenance',
+      return_to_training: 'return_to_training',
+    } as const;
+    const eventSubtypes = {
+      running: 'running_race',
+      cycling: 'cycling_event',
+      swimming: 'open_water_swim',
+      strength: 'hybrid_event',
+      triathlon: 'triathlon',
+      hybrid: 'hybrid_event',
+      marathon: 'marathon',
+    } as const;
+    const generated: string[] = [];
+
+    for (const planMode of modes) {
+      for (const discipline of disciplines) {
+        const sessionsPerWeek = planMode === 'return_to_training' ? 3 : 4;
+        const availableDays = (sessionsPerWeek === 3
+          ? ['monday', 'wednesday', 'sunday']
+          : ['monday', 'wednesday', 'friday', 'sunday']) as Array<'monday' | 'wednesday' | 'friday' | 'sunday'>;
+        const goalPriority = discipline === 'triathlon'
+          ? { primaryDiscipline: 'running' as const, secondaryDisciplines: ['cycling' as const, 'swimming' as const] }
+          : discipline === 'hybrid'
+            ? { primaryDiscipline: 'running' as const, secondaryDisciplines: ['strength' as const] }
+            : { primaryDiscipline: discipline, secondaryDisciplines: [] };
+        const request: TrainingPlanCandidateRequest = {
+          planMode,
+          goal: goals[planMode],
+          discipline,
+          planStartDate: '2026-08-03',
+          horizonWeeks: planMode === 'event_based' ? 5 : 6,
+          ...(planMode === 'event_based' ? {
+            event: {
+              name: `Reviewed ${discipline} event`,
+              date: '2026-09-06',
+              priority: 'A' as const,
+              subtype: eventSubtypes[discipline],
+            },
+          } : {}),
+          resourceAccess: {
+            pool: true,
+            bicycle: true,
+            indoorTrainer: true,
+            safeRunEnvironment: true,
+            outdoorRideEnvironment: true,
+          },
+          capacity: {
+            source: 'EXPLICIT_USER',
+            windows: availableDays.map((dayOfWeek) => ({
+              dayOfWeek,
+              startTime: '06:00',
+              endTime: '10:00',
+              timezone: 'Europe/Lisbon',
+              allowedDisciplines: [...disciplines],
+            })),
+          },
+          goalPriority,
+          profile: {
+            experienceLevel: 'intermediate',
+            sessionsPerWeek,
+            sessionDurationMinutes: 60,
+            availableDays,
+            equipmentIds: [],
+            location: 'home',
+            preferences: [],
+            exclusions: [],
+          },
+        };
+        const candidate = buildTrainingPlanRevisionCandidate(request, {
+          typedWorkoutValidationEnabled: true,
+          m4StrategyEnabled: true,
+          scope: { userId: 7, tenantId: 7 },
+          referenceTime: new Date('2026-07-14T10:00:00.000Z'),
+        });
+        expect(candidate.document).toMatchObject({
+          planMode,
+          discipline,
+          m4: { strategyVersion: 'training-m4-plan-strategy.v1' },
+        });
+        generated.push(`${planMode}:${discipline}`);
+      }
+    }
+
+    expect(generated.sort()).toEqual([...TRAINING_M4_PUBLIC_BETA_COMBINATIONS].sort());
+  });
+
+  it('rejects provisional explicit-user capacity unless its independent scope flag is enabled', () => {
+    expect(() => buildTrainingPlanRevisionCandidateAtRuntime(eventRequest, {
+      typedWorkoutValidationEnabled: true,
+      m4StrategyEnabled: true,
+      scope: { userId: 7, tenantId: 7 },
+      env: {},
+      referenceTime: FIXED_NOW,
+    })).toThrow(/TRAINING_M4_EXPLICIT_USER_CAPACITY_DISABLED/);
   });
 
   it('derives event horizon and creates exactly one date-bound triathlon race workout', () => {
@@ -196,6 +322,13 @@ describe('training M4 deterministic strategies and conflict foundation', () => {
       })),
       observedAt: '2026-07-13T00:00:00.000Z',
       expiresAt: '2099-01-01T00:00:00.000Z',
+      profileSourceVersion: `m4profile_${'a'.repeat(64)}`,
+      calendarEventSetHash: 'b'.repeat(64),
+      calendarSources: ['google' as const],
+      planStartDate: '2026-08-17',
+      planEndDate: '2026-11-08',
+      horizonWeeks: 12,
+      conflictCount: 0,
     };
     const request = {
       ...eventRequest,

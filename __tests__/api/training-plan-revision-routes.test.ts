@@ -6,25 +6,65 @@ import Database from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { runMigrationsForTest, withDatabaseForTestAsync } from '../../src/services/database';
 import {
+  consumeTrainingM4CapacityRefreshRateLimitForTests,
   registerTrainingPlanRevisionRoutes,
+  resetTrainingM4CapacityRefreshRateLimitForTests,
   trainingPlanRevisionCapabilitiesForScope,
+  type TrainingPlanRevisionRouteDependencies,
 } from '../../src/api/routes/training-plan-revision-routes';
-import { registerTrainingM4CapacityContextProvider } from '../../src/services/training-m4-capacity-context';
+import {
+  registerTrainingM4CapacityContextProvider,
+  type TrainingM4AuthoritativeCapacityContext,
+} from '../../src/services/training-m4-capacity-context';
+import { refreshTrainingM4AuthoritativeCapacityContext } from '../../src/services/training-m4-capacity-snapshots';
+
+const FULL_TRAINING_M4_ALLOWLIST = ['event_based', 'continuous', 'maintenance', 'return_to_training']
+  .flatMap((mode) => ['running', 'cycling', 'swimming', 'strength', 'triathlon', 'hybrid', 'marathon']
+    .map((discipline) => `${mode}:${discipline}`))
+  .join(',');
+
+function authoritativeCapacityContext(
+  overrides: Partial<TrainingM4AuthoritativeCapacityContext> = {},
+): TrainingM4AuthoritativeCapacityContext {
+  return {
+    source: 'AUTHORITATIVE',
+    contextVersion: `m4cap_${'1'.repeat(48)}`,
+    windows: [{
+      dayOfWeek: 'monday', startTime: '06:00', endTime: '08:00', timezone: 'Europe/Lisbon',
+      allowedDisciplines: ['running'],
+    }],
+    observedAt: '2026-07-13T00:00:00.000Z',
+    expiresAt: '2099-01-01T00:00:00.000Z',
+    profileSourceVersion: `m4profile_${'a'.repeat(64)}`,
+    calendarEventSetHash: 'b'.repeat(64),
+    calendarSources: ['google'],
+    planStartDate: '2026-08-03',
+    planEndDate: '2026-08-30',
+    horizonWeeks: 4,
+    conflictCount: 0,
+    ...overrides,
+  };
+}
 
 describe('Training plan revision API contracts', () => {
   let db: Database.Database;
   let server: http.Server;
   let baseUrl: string;
+  let refreshCapacityContext: NonNullable<TrainingPlanRevisionRouteDependencies['refreshCapacityContext']>;
   const priorMode = process.env.TRAINING_PLAN_REVISION_V1_MODE;
   const priorEnrollment = process.env.TRAINING_PLAN_REVISION_V1_MODE_USER_7;
   const priorFlow = process.env.DECISION_FLOW_V1_ENFORCE_ENABLED;
   const priorSnapshotKey = process.env.TRAINING_PROFILE_SNAPSHOT_ENCRYPTION_KEY;
   const priorTypedWorkout = process.env.TRAINING_TYPED_WORKOUT_V1_ENABLED_USER_7;
   const priorM4Allowlist = process.env.TRAINING_PLAN_M4_ALLOWLIST_USER_7;
+  const priorAdaptationMode = process.env.TRAINING_ADAPTATION_V1_MODE_USER_7;
+  const priorExplicitCapacity = process.env.TRAINING_M4_EXPLICIT_USER_CAPACITY_ENABLED_USER_7;
 
   beforeEach(async () => {
+    resetTrainingM4CapacityRefreshRateLimitForTests();
     db = new Database(':memory:');
     runMigrationsForTest(db);
+    refreshCapacityContext = refreshTrainingM4AuthoritativeCapacityContext;
     const app = express();
     app.use(express.json());
     app.use((req, _res, next) => {
@@ -33,7 +73,9 @@ describe('Training plan revision API contracts', () => {
       next();
     });
     const router = Router();
-    registerTrainingPlanRevisionRoutes(router);
+    registerTrainingPlanRevisionRoutes(router, {
+      refreshCapacityContext: (input) => refreshCapacityContext(input),
+    });
     app.use(router);
     server = await new Promise((resolve) => {
       const listening = app.listen(0, '127.0.0.1', () => resolve(listening));
@@ -44,6 +86,7 @@ describe('Training plan revision API contracts', () => {
   });
 
   afterEach(async () => {
+    resetTrainingM4CapacityRefreshRateLimitForTests();
     await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
     db.close();
     if (priorMode === undefined) delete process.env.TRAINING_PLAN_REVISION_V1_MODE;
@@ -58,6 +101,10 @@ describe('Training plan revision API contracts', () => {
     else process.env.TRAINING_TYPED_WORKOUT_V1_ENABLED_USER_7 = priorTypedWorkout;
     if (priorM4Allowlist === undefined) delete process.env.TRAINING_PLAN_M4_ALLOWLIST_USER_7;
     else process.env.TRAINING_PLAN_M4_ALLOWLIST_USER_7 = priorM4Allowlist;
+    if (priorAdaptationMode === undefined) delete process.env.TRAINING_ADAPTATION_V1_MODE_USER_7;
+    else process.env.TRAINING_ADAPTATION_V1_MODE_USER_7 = priorAdaptationMode;
+    if (priorExplicitCapacity === undefined) delete process.env.TRAINING_M4_EXPLICIT_USER_CAPACITY_ENABLED_USER_7;
+    else process.env.TRAINING_M4_EXPLICIT_USER_CAPACITY_ENABLED_USER_7 = priorExplicitCapacity;
   });
 
   it('exposes typed capabilities and a phase-aware revision read model only for an explicitly enabled scope', async () => {
@@ -65,7 +112,9 @@ describe('Training plan revision API contracts', () => {
       process.env.TRAINING_PLAN_REVISION_V1_MODE_USER_7 = 'active';
       process.env.DECISION_FLOW_V1_ENFORCE_ENABLED = 'true';
       process.env.TRAINING_TYPED_WORKOUT_V1_ENABLED_USER_7 = 'true';
+      process.env.TRAINING_ADAPTATION_V1_MODE_USER_7 = 'active';
       process.env.TRAINING_PLAN_M4_ALLOWLIST_USER_7 = 'event_based:running';
+      process.env.TRAINING_M4_EXPLICIT_USER_CAPACITY_ENABLED_USER_7 = 'true';
       process.env.TRAINING_PROFILE_SNAPSHOT_ENCRYPTION_KEY = 'training-revision-test-encryption-key-0001';
 
       const capabilities = await (await fetch(`${baseUrl}/plan/revision-capabilities`)).json() as any;
@@ -73,6 +122,8 @@ describe('Training plan revision API contracts', () => {
         typedWorkoutGenerationEnabled: true,
         typedGenerationSessionTypes: expect.arrayContaining(['easy_run', 'brick', 'rest']),
         typedGenerationPlanModes: ['event_based', 'continuous', 'maintenance', 'return_to_training'],
+        adaptationMode: 'active',
+        adaptationScopes: ['SESSION', 'WEEK', 'PHASE', 'FULL_PLAN'],
       });
       expect(capabilities.data.typedGenerationSessionTypes).toHaveLength(21);
 
@@ -143,6 +194,40 @@ describe('Training plan revision API contracts', () => {
     });
   });
 
+  it('exposes the complete public-beta bundle only to exact personal scopes and rolls back with the master', () => {
+    const publicBeta = {
+      TRAINING_PUBLIC_BETA_V1_ENABLED: 'true',
+      TRAINING_PLAN_REVISION_V1_MODE: 'active',
+      TRAINING_TYPED_WORKOUT_V1_ENABLED: 'true',
+      TRAINING_ADAPTATION_V1_MODE: 'active',
+      TRAINING_EXERCISE_IDENTITY_V1_MODE: 'active',
+      TRAINING_EXERCISE_MEDIA_V1_ENABLED: 'true',
+      TRAINING_DECISION_FLOW_V1_ENFORCE_ENABLED: 'true',
+      DECISION_FLOW_V1_ENFORCE_ENABLED: 'false',
+      TRAINING_PLAN_M4_ALLOWLIST: FULL_TRAINING_M4_ALLOWLIST,
+      TRAINING_PROFILE_SNAPSHOT_ENCRYPTION_KEY: 'training-public-beta-key-00000001',
+      TRAINING_M4_EXPLICIT_USER_CAPACITY_ENABLED: 'false',
+    };
+
+    const capabilities = trainingPlanRevisionCapabilitiesForScope({ userId: 7, tenantId: 7 }, publicBeta);
+    expect(capabilities).toMatchObject({
+        mode: 'active',
+        typedWorkoutGenerationEnabled: true,
+        adaptationMode: 'active',
+        m4CapacityPolicy: {
+          authoritativeRefresh: { supported: true },
+          activeM4CapacityRequirement: 'AUTHORITATIVE_ONLY',
+          explicitUserEntrySupported: false,
+        },
+      });
+    expect(capabilities?.m4AllowedPlanCombinations).toHaveLength(28);
+    expect(trainingPlanRevisionCapabilitiesForScope({ userId: 7, tenantId: 9 }, publicBeta)).toBeNull();
+    expect(trainingPlanRevisionCapabilitiesForScope({ userId: 7, tenantId: 7 }, {
+      ...publicBeta,
+      TRAINING_PUBLIC_BETA_V1_ENABLED: 'false',
+    })).toBeNull();
+  });
+
   it('exposes only the effective strict scoped M4 mode/discipline combinations', () => {
     const base = {
       TRAINING_PLAN_REVISION_V1_MODE_USER_7: 'active',
@@ -150,7 +235,18 @@ describe('Training plan revision API contracts', () => {
       DECISION_FLOW_V1_ENFORCE_ENABLED: 'true',
     };
     expect(trainingPlanRevisionCapabilitiesForScope({ userId: 7, tenantId: 7 }, base))
-      .toMatchObject({ m4AllowedPlanCombinations: [] });
+      .toMatchObject({
+        m4AllowedPlanCombinations: [],
+        m4CapacityPolicy: {
+          authoritativeRefresh: { supported: false },
+          activeM4CapacityRequirement: 'AUTHORITATIVE_ONLY',
+          explicitUserEntrySupported: false,
+        },
+      });
+    expect(trainingPlanRevisionCapabilitiesForScope({ userId: 7, tenantId: 7 }, {
+      ...base,
+      TRAINING_M4_EXPLICIT_USER_CAPACITY_ENABLED_USER_7: 'true',
+    })?.m4CapacityPolicy.explicitUserEntrySupported).toBe(false);
     expect(trainingPlanRevisionCapabilitiesForScope({ userId: 7, tenantId: 7 }, {
       ...base,
       TRAINING_PLAN_M4_ALLOWLIST_TENANT_7: 'maintenance:running,event_based:marathon',
@@ -177,6 +273,31 @@ describe('Training plan revision API contracts', () => {
     })).toBeNull();
   });
 
+  it('advertises the effective adaptation mode and exposes scopes only when active', () => {
+    const base = {
+      TRAINING_PLAN_REVISION_V1_MODE_USER_7: 'active',
+      DECISION_FLOW_V1_ENFORCE_ENABLED_USER_7: 'true',
+    };
+    expect(trainingPlanRevisionCapabilitiesForScope({ userId: 7, tenantId: 7 }, base))
+      .toMatchObject({ adaptationMode: 'off', adaptationScopes: [] });
+    expect(trainingPlanRevisionCapabilitiesForScope({ userId: 7, tenantId: 7 }, {
+      ...base,
+      TRAINING_ADAPTATION_V1_MODE_USER_7: 'shadow',
+    })).toMatchObject({ adaptationMode: 'shadow', adaptationScopes: [] });
+    expect(trainingPlanRevisionCapabilitiesForScope({ userId: 7, tenantId: 7 }, {
+      ...base,
+      TRAINING_ADAPTATION_V1_MODE_USER_7: 'active',
+    })).toMatchObject({ adaptationMode: 'off', adaptationScopes: [] });
+    expect(trainingPlanRevisionCapabilitiesForScope({ userId: 7, tenantId: 7 }, {
+      ...base,
+      TRAINING_ADAPTATION_V1_MODE_USER_7: 'active',
+      TRAINING_TYPED_WORKOUT_V1_ENABLED_USER_7: 'true',
+    })).toMatchObject({
+      adaptationMode: 'active',
+      adaptationScopes: ['SESSION', 'WEEK', 'PHASE', 'FULL_PLAN'],
+    });
+  });
+
   it('exposes fresh authoritative capacity only to its exact personal scope', () => {
     const env = {
       TRAINING_PLAN_REVISION_V1_MODE_USER_7: 'active',
@@ -190,34 +311,37 @@ describe('Training plan revision API contracts', () => {
       .toEqual({
         authoritativeContextAvailable: false,
         authoritativeClientModification: 'NARROW_ONLY',
-        explicitUserEntrySupported: true,
+        authoritativeRefresh: {
+          supported: true,
+          method: 'POST',
+          path: '/plan/capacity-context/refresh',
+          requiresIdempotencyKey: true,
+          requiresAllConnectedProviders: true,
+          providerWriteEffects: false,
+          freshnessMinutes: 5,
+          requestConstraints: {
+            maxWindows: 7,
+            uniqueWeekdays: true,
+            singleTimezone: true,
+          },
+          rateLimit: {
+            burstMaxRequests: 2,
+            burstWindowSeconds: 60,
+            totalMaxRequests: 6,
+            totalWindowSeconds: 300,
+          },
+        },
+        activeM4CapacityRequirement: 'AUTHORITATIVE_ONLY',
+        explicitUserEntrySupported: false,
         explicitUserEntryProvisional: true,
         explicitUserCalendarConflictCoverage: 'UNAVAILABLE',
       });
     const unregister = registerTrainingM4CapacityContextProvider((scope) => scope.userId === 7 && scope.tenantId === 7
-      ? {
-        source: 'AUTHORITATIVE',
-        contextVersion: 'server-capacity-v1',
-        windows: [{
-          dayOfWeek: 'monday', startTime: '06:00', endTime: '08:00', timezone: 'Europe/Lisbon',
-          allowedDisciplines: ['running'],
-        }],
-        observedAt: '2026-07-13T00:00:00.000Z',
-        expiresAt: '2099-01-01T00:00:00.000Z',
-      }
+      ? authoritativeCapacityContext()
       : null);
     try {
       expect(trainingPlanRevisionCapabilitiesForScope({ userId: 7, tenantId: 7 }, env)?.m4CapacityContext)
-        .toEqual({
-          source: 'AUTHORITATIVE',
-          contextVersion: 'server-capacity-v1',
-          windows: [{
-            dayOfWeek: 'monday', startTime: '06:00', endTime: '08:00', timezone: 'Europe/Lisbon',
-            allowedDisciplines: ['running'],
-          }],
-          observedAt: '2026-07-13T00:00:00.000Z',
-          expiresAt: '2099-01-01T00:00:00.000Z',
-        });
+        .toEqual(authoritativeCapacityContext());
       expect(trainingPlanRevisionCapabilitiesForScope({ userId: 7, tenantId: 7 }, env)?.m4CapacityPolicy)
         .toMatchObject({ authoritativeContextAvailable: true });
       expect(trainingPlanRevisionCapabilitiesForScope({ userId: 8, tenantId: 8 }, {
@@ -228,10 +352,10 @@ describe('Training plan revision API contracts', () => {
     } finally {
       unregister();
     }
-    const unregisterExpired = registerTrainingM4CapacityContextProvider(() => ({
-      source: 'AUTHORITATIVE', contextVersion: 'expired-capacity-v1',
-      windows: [{ dayOfWeek: 'monday', startTime: '06:00', endTime: '08:00', timezone: 'Europe/Lisbon' }],
-      observedAt: '2020-01-01T00:00:00.000Z', expiresAt: '2020-01-02T00:00:00.000Z',
+    const unregisterExpired = registerTrainingM4CapacityContextProvider(() => authoritativeCapacityContext({
+      contextVersion: `m4cap_${'2'.repeat(48)}`,
+      observedAt: '2020-01-01T00:00:00.000Z',
+      expiresAt: '2020-01-02T00:00:00.000Z',
     }));
     try {
       expect(trainingPlanRevisionCapabilitiesForScope({ userId: 7, tenantId: 7 }, env)?.m4CapacityContext)
@@ -239,6 +363,241 @@ describe('Training plan revision API contracts', () => {
     } finally {
       unregisterExpired();
     }
+
+    expect(trainingPlanRevisionCapabilitiesForScope({ userId: 7, tenantId: 7 }, {
+      ...env,
+      TRAINING_M4_EXPLICIT_USER_CAPACITY_ENABLED_USER_7: 'true',
+    })?.m4CapacityPolicy).toMatchObject({
+      activeM4CapacityRequirement: 'AUTHORITATIVE_OR_EXPLICIT_USER',
+      explicitUserEntrySupported: true,
+    });
+  });
+
+  it('refreshes authoritative capacity only for an enabled exact personal M4 scope', async () => {
+    await withDatabaseForTestAsync(db, async () => {
+      process.env.TRAINING_PLAN_REVISION_V1_MODE_USER_7 = 'active';
+      process.env.TRAINING_TYPED_WORKOUT_V1_ENABLED_USER_7 = 'true';
+      process.env.DECISION_FLOW_V1_ENFORCE_ENABLED = 'true';
+      process.env.TRAINING_PLAN_M4_ALLOWLIST_USER_7 = 'event_based:running';
+      const expected = authoritativeCapacityContext();
+      let calls = 0;
+      refreshCapacityContext = async (input) => {
+        calls += 1;
+        expect(input).toEqual({
+          scope: { userId: 7, tenantId: 7 },
+          idempotencyKey: 'capacity-refresh-api-1',
+          request: {
+            planStartDate: '2026-08-03',
+            horizonWeeks: 4,
+            profileWindows: expected.windows,
+          },
+        });
+        return expected;
+      };
+
+      const response = await fetch(`${baseUrl}/plan/capacity-context/refresh`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'idempotency-key': 'capacity-refresh-api-1' },
+        body: JSON.stringify({
+          planStartDate: '2026-08-03',
+          horizonWeeks: 4,
+          profileWindows: expected.windows,
+        }),
+      });
+      expect(response.status).toBe(201);
+      expect(await response.json()).toMatchObject({
+        ok: true,
+        data: {
+          schemaVersion: 'training_m4_capacity_refresh.v1',
+          mode: 'active',
+          capacityContext: expected,
+        },
+      });
+      expect(calls).toBe(1);
+
+      const wrongScope = await fetch(`${baseUrl}/plan/capacity-context/refresh`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'idempotency-key': 'capacity-refresh-api-2',
+          'x-test-user': '8',
+          'x-test-tenant': '8',
+        },
+        body: JSON.stringify({
+          planStartDate: '2026-08-03',
+          horizonWeeks: 4,
+          profileWindows: expected.windows,
+        }),
+      });
+      expect(wrongScope.status).toBe(404);
+      expect(calls).toBe(1);
+    });
+  });
+
+  it('rate-limits expensive capacity refreshes per exact personal scope', async () => {
+    await withDatabaseForTestAsync(db, async () => {
+      process.env.TRAINING_PLAN_REVISION_V1_MODE_USER_7 = 'active';
+      process.env.TRAINING_TYPED_WORKOUT_V1_ENABLED_USER_7 = 'true';
+      process.env.DECISION_FLOW_V1_ENFORCE_ENABLED = 'true';
+      process.env.TRAINING_PLAN_M4_ALLOWLIST_USER_7 = 'event_based:running';
+      const expected = authoritativeCapacityContext();
+      let calls = 0;
+      refreshCapacityContext = async () => {
+        calls += 1;
+        return expected;
+      };
+      const body = JSON.stringify({
+        planStartDate: '2026-08-03',
+        horizonWeeks: 4,
+        profileWindows: expected.windows,
+      });
+
+      for (let index = 0; index < 2; index += 1) {
+        const response = await fetch(`${baseUrl}/plan/capacity-context/refresh`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', 'idempotency-key': `capacity-limit-${index}` },
+          body,
+        });
+        expect(response.status).toBe(201);
+      }
+      const limited = await fetch(`${baseUrl}/plan/capacity-context/refresh`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'idempotency-key': 'capacity-limit-2' },
+        body,
+      });
+      expect(limited.status).toBe(429);
+      expect(limited.headers.get('retry-after')).toBe('60');
+      expect(await limited.json()).toMatchObject({
+        ok: false,
+        error: { code: 'TRAINING_M4_CAPACITY_REFRESH_RATE_LIMITED' },
+      });
+      expect(calls).toBe(2);
+
+      process.env.TRAINING_PLAN_REVISION_V1_MODE_USER_8 = 'active';
+      process.env.TRAINING_TYPED_WORKOUT_V1_ENABLED_USER_8 = 'true';
+      process.env.TRAINING_PLAN_M4_ALLOWLIST_USER_8 = 'event_based:running';
+      try {
+        const isolated = await fetch(`${baseUrl}/plan/capacity-context/refresh`, {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            'idempotency-key': 'capacity-limit-user-8',
+            'x-test-user': '8',
+            'x-test-tenant': '8',
+          },
+          body,
+        });
+        expect(isolated.status).toBe(201);
+        expect(calls).toBe(3);
+      } finally {
+        delete process.env.TRAINING_PLAN_REVISION_V1_MODE_USER_8;
+        delete process.env.TRAINING_TYPED_WORKOUT_V1_ENABLED_USER_8;
+        delete process.env.TRAINING_PLAN_M4_ALLOWLIST_USER_8;
+      }
+
+      resetTrainingM4CapacityRefreshRateLimitForTests();
+      const afterReset = await fetch(`${baseUrl}/plan/capacity-context/refresh`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'idempotency-key': 'capacity-limit-after-reset' },
+        body,
+      });
+      expect(afterReset.status).toBe(201);
+      expect(calls).toBe(4);
+    });
+  });
+
+  it('enforces the six-per-five-minute refresh budget after allowing two-request JIT bursts', () => {
+    const scope = { userId: 7, tenantId: 7 };
+    const start = Date.parse('2026-07-14T10:00:00.000Z');
+    for (const offsetMinutes of [0, 1, 2]) {
+      expect(consumeTrainingM4CapacityRefreshRateLimitForTests(
+        scope,
+        start + offsetMinutes * 60_000,
+      )).toEqual({ allowed: true });
+      expect(consumeTrainingM4CapacityRefreshRateLimitForTests(
+        scope,
+        start + offsetMinutes * 60_000,
+      )).toEqual({ allowed: true });
+    }
+    expect(consumeTrainingM4CapacityRefreshRateLimitForTests(scope, start + 3 * 60_000))
+      .toEqual({ allowed: false, retryAfterSeconds: 120 });
+    expect(consumeTrainingM4CapacityRefreshRateLimitForTests(scope, start + 5 * 60_000))
+      .toEqual({ allowed: true });
+  });
+
+  it('coalesces an exact concurrent replay and rejects a different in-flight refresh without cross-tenant blocking', async () => {
+    await withDatabaseForTestAsync(db, async () => {
+      process.env.TRAINING_PLAN_REVISION_V1_MODE_USER_7 = 'active';
+      process.env.TRAINING_TYPED_WORKOUT_V1_ENABLED_USER_7 = 'true';
+      process.env.DECISION_FLOW_V1_ENFORCE_ENABLED = 'true';
+      process.env.TRAINING_PLAN_M4_ALLOWLIST_USER_7 = 'event_based:running';
+      process.env.TRAINING_PLAN_REVISION_V1_MODE_USER_8 = 'active';
+      process.env.TRAINING_TYPED_WORKOUT_V1_ENABLED_USER_8 = 'true';
+      process.env.TRAINING_PLAN_M4_ALLOWLIST_USER_8 = 'event_based:running';
+      const expected = authoritativeCapacityContext();
+      let calls = 0;
+      let releaseUserSeven!: () => void;
+      const userSevenRelease = new Promise<void>((resolve) => { releaseUserSeven = resolve; });
+      let userSevenStarted!: () => void;
+      const userSevenStart = new Promise<void>((resolve) => { userSevenStarted = resolve; });
+      refreshCapacityContext = async (input) => {
+        calls += 1;
+        if (input.scope.userId === 7) {
+          userSevenStarted();
+          await userSevenRelease;
+        }
+        return expected;
+      };
+      const body = JSON.stringify({
+        planStartDate: '2026-08-03', horizonWeeks: 4, profileWindows: expected.windows,
+      });
+      const request = (key: string, userId = 7, requestBody = body) => fetch(
+        `${baseUrl}/plan/capacity-context/refresh`,
+        {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            'idempotency-key': key,
+            'x-test-user': String(userId),
+            'x-test-tenant': String(userId),
+          },
+          body: requestBody,
+        },
+      );
+
+      try {
+        const first = request('capacity-concurrent-same');
+        await userSevenStart;
+        const same = request('capacity-concurrent-same');
+        const differentKey = await request('capacity-concurrent-different');
+        expect(differentKey.status).toBe(409);
+        expect(await differentKey.json()).toMatchObject({
+          ok: false,
+          error: { code: 'TRAINING_M4_CAPACITY_REFRESH_IN_PROGRESS' },
+        });
+        const differentRequest = await request(
+          'capacity-concurrent-same',
+          7,
+          JSON.stringify({
+            planStartDate: '2026-08-03', horizonWeeks: 5, profileWindows: expected.windows,
+          }),
+        );
+        expect(differentRequest.status).toBe(409);
+        const isolated = await request('capacity-concurrent-user-8', 8);
+        expect(isolated.status).toBe(201);
+        expect(calls).toBe(2);
+        releaseUserSeven();
+        const [firstResponse, sameResponse] = await Promise.all([first, same]);
+        expect(firstResponse.status).toBe(201);
+        expect(sameResponse.status).toBe(201);
+        expect(calls).toBe(2);
+      } finally {
+        releaseUserSeven();
+        delete process.env.TRAINING_PLAN_REVISION_V1_MODE_USER_8;
+        delete process.env.TRAINING_TYPED_WORKOUT_V1_ENABLED_USER_8;
+        delete process.env.TRAINING_PLAN_M4_ALLOWLIST_USER_8;
+      }
+    });
   });
 
   it('distinguishes active enrollment with a disabled Decision dependency from an absent rollout', async () => {
@@ -283,6 +642,8 @@ describe('Training plan revision API contracts', () => {
           schemaVersion: 'training_plan_revision_api.v1',
           mode: 'active',
           registryVersion: 'training-workout-capabilities.v1',
+          adaptationMode: 'off',
+          adaptationScopes: [],
           unknownFallback: { presentationFamily: 'unknown', preservesRawIdentifier: true },
         },
       });

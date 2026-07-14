@@ -170,6 +170,30 @@ describe('deduplicateEvents', () => {
     expect(result[0].description).toContain('Detailed agenda');
   });
 
+  it('unions duplicate provider intervals even when the richer event ends earlier', () => {
+    const events: UnifiedCalendarEvent[] = [
+      {
+        id: 'g', source: 'google', summary: 'Private appointment',
+        start: '2026-08-03T05:00:00.000Z', end: '2026-08-03T05:30:00.000Z',
+        description: 'A much richer private description that wins metadata selection.',
+      },
+      {
+        id: 'o', source: 'outlook', summary: 'Private appointment',
+        start: '2026-08-03T05:00:00.000Z', end: '2026-08-03T07:00:00.000Z',
+      },
+    ];
+
+    const result = deduplicateEvents(events);
+
+    expect(result).toHaveLength(1);
+    expect(result[0]).toMatchObject({
+      id: 'g',
+      start: '2026-08-03T05:00:00.000Z',
+      end: '2026-08-03T07:00:00.000Z',
+      syncedSources: expect.arrayContaining(['google', 'outlook']),
+    });
+  });
+
   it('handles mixed duplicate and unique events', () => {
     const events = [
       makeEvent('Team Standup', '2024-06-15T09:00:00Z', 'google'),

@@ -724,62 +724,150 @@ if (IS_PRODUCTION && (!config.financeEncryption.enabled || !config.financeEncryp
   );
 }
 
+interface ScopedTrainingFlagEntry {
+  key: string;
+  suffix: string;
+  value: string;
+}
+
+function scopedTrainingFlagEntries(
+  baseKey: string,
+  matchesValue: (normalizedValue: string) => boolean,
+): ScopedTrainingFlagEntry[] {
+  const pattern = new RegExp(`^${baseKey}_((?:USER|TENANT)_[0-9A-Za-z_-]+)$`);
+  return Object.entries(process.env).flatMap(([key, rawValue]) => {
+    const match = key.match(pattern);
+    const value = rawValue?.trim().toLowerCase() ?? '';
+    return match && matchesValue(value)
+      ? [{ key, suffix: match[1], value }]
+      : [];
+  });
+}
+
+function scopedTrainingValue(baseKey: string, suffix: string): string {
+  const exactValue = process.env[`${baseKey}_${suffix}`];
+  return (exactValue ?? process.env[baseKey] ?? '').trim().toLowerCase();
+}
+
+function scopedTrainingBooleanEnabled(baseKey: string, suffix: string): boolean {
+  return scopedTrainingValue(baseKey, suffix) === 'true';
+}
+
+function scopedTrainingDecisionFlowEnabled(suffix: string): boolean {
+  return scopedTrainingBooleanEnabled('DECISION_FLOW_V1_ENFORCE_ENABLED', suffix)
+    || scopedTrainingBooleanEnabled('TRAINING_DECISION_FLOW_V1_ENFORCE_ENABLED', suffix);
+}
+
+const trainingPublicBetaRaw = process.env.TRAINING_PUBLIC_BETA_V1_ENABLED?.trim().toLowerCase();
+const trainingPublicBetaEnabled = trainingPublicBetaRaw === 'true';
 const globalTrainingRevisionMode = process.env.TRAINING_PLAN_REVISION_V1_MODE?.trim().toLowerCase();
-const hasScopedTrainingRevisionEnrollment = Object.entries(process.env).some(([key, value]) =>
-  /^TRAINING_PLAN_REVISION_V1_MODE_(?:USER|TENANT)_[0-9A-Za-z_-]+$/.test(key)
-  && value?.trim().toLowerCase() === 'active');
+const scopedTrainingRevisionEnrollments = scopedTrainingFlagEntries(
+  'TRAINING_PLAN_REVISION_V1_MODE',
+  (value) => value === 'active',
+);
+const hasScopedTrainingRevisionEnrollment = scopedTrainingRevisionEnrollments.length > 0;
 const globalTrainingAdaptationMode = process.env.TRAINING_ADAPTATION_V1_MODE?.trim().toLowerCase();
-const scopedTrainingAdaptationEnrollments = Object.entries(process.env).filter(([key, value]) =>
-  /^TRAINING_ADAPTATION_V1_MODE_(?:USER|TENANT)_[0-9A-Za-z_-]+$/.test(key)
-  && value?.trim().toLowerCase() === 'active');
-const hasScopedTrainingAdaptationEnrollment = scopedTrainingAdaptationEnrollments.length > 0;
-const hasScopedTypedTrainingEnrollment = Object.entries(process.env).some(([key, value]) =>
-  /^TRAINING_TYPED_WORKOUT_V1_ENABLED_(?:USER|TENANT)_[0-9A-Za-z_-]+$/.test(key)
-  && value?.trim().toLowerCase() === 'true');
+const scopedTrainingAdaptationEnrollments = scopedTrainingFlagEntries(
+  'TRAINING_ADAPTATION_V1_MODE',
+  (value) => value === 'active',
+);
 const globalTrainingM4Allowlist = process.env.TRAINING_PLAN_M4_ALLOWLIST?.trim();
-const scopedTrainingM4Allowlists = Object.entries(process.env).filter(([key, value]) =>
-  /^TRAINING_PLAN_M4_ALLOWLIST_(?:USER|TENANT)_[0-9A-Za-z_-]+$/.test(key) && Boolean(value?.trim()));
+const scopedTrainingM4Allowlists = scopedTrainingFlagEntries(
+  'TRAINING_PLAN_M4_ALLOWLIST',
+  (value) => Boolean(value),
+);
+const globalTrainingM4ExplicitUserCapacity = process.env.TRAINING_M4_EXPLICIT_USER_CAPACITY_ENABLED?.trim().toLowerCase();
+const scopedTrainingM4ExplicitUserCapacity = scopedTrainingFlagEntries(
+  'TRAINING_M4_EXPLICIT_USER_CAPACITY_ENABLED',
+  (value) => value === 'true',
+);
 const validTrainingM4Token = /^(?:event_based|continuous|maintenance|return_to_training):(?:running|cycling|swimming|strength|triathlon|hybrid|marathon)$/;
-if (IS_PRODUCTION && globalTrainingRevisionMode === 'active') {
+const globalTrainingM4Tokens = (globalTrainingM4Allowlist ?? '')
+  .split(',')
+  .map((entry) => entry.trim().toLowerCase())
+  .filter(Boolean);
+const requiredTrainingPublicBetaM4Tokens = [
+  'event_based', 'continuous', 'maintenance', 'return_to_training',
+].flatMap((mode) => [
+  'running', 'cycling', 'swimming', 'strength', 'triathlon', 'hybrid', 'marathon',
+].map((discipline) => `${mode}:${discipline}`));
+const globalTrainingM4TokenSet = new Set(globalTrainingM4Tokens);
+const trainingPublicBetaBundleComplete = trainingPublicBetaEnabled
+  && globalTrainingRevisionMode === 'active'
+  && process.env.TRAINING_TYPED_WORKOUT_V1_ENABLED?.trim().toLowerCase() === 'true'
+  && globalTrainingAdaptationMode === 'active'
+  && process.env.TRAINING_EXERCISE_IDENTITY_V1_MODE?.trim().toLowerCase() === 'active'
+  && process.env.TRAINING_EXERCISE_MEDIA_V1_ENABLED?.trim().toLowerCase() === 'true'
+  && process.env.TRAINING_DECISION_FLOW_V1_ENFORCE_ENABLED?.trim().toLowerCase() === 'true'
+  && globalTrainingM4Tokens.length === requiredTrainingPublicBetaM4Tokens.length
+  && globalTrainingM4TokenSet.size === requiredTrainingPublicBetaM4Tokens.length
+  && globalTrainingM4Tokens.every((entry) => validTrainingM4Token.test(entry))
+  && requiredTrainingPublicBetaM4Tokens.every((entry) => globalTrainingM4TokenSet.has(entry))
+  && (process.env.TRAINING_PROFILE_SNAPSHOT_ENCRYPTION_KEY ?? '').length >= 32
+  && globalTrainingM4ExplicitUserCapacity !== 'true';
+if (IS_PRODUCTION && trainingPublicBetaRaw && trainingPublicBetaRaw !== 'true' && trainingPublicBetaRaw !== 'false') {
+  throw new Error('TRAINING_PUBLIC_BETA_V1_ENABLED must be exactly true or false in production.');
+}
+if (IS_PRODUCTION && trainingPublicBetaEnabled && !trainingPublicBetaBundleComplete) {
+  throw new Error(
+    'TRAINING_PUBLIC_BETA_V1_ENABLED=true requires the complete global Training v1 bundle, the exact complete 28-entry M4 allowlist, a 32+ character snapshot key, and provisional explicit-user capacity disabled.',
+  );
+}
+if (IS_PRODUCTION && !trainingPublicBetaEnabled && globalTrainingRevisionMode === 'active') {
   throw new Error(
     'Global TRAINING_PLAN_REVISION_V1_MODE=active is forbidden in production; enroll explicit personal accounts with scoped USER or TENANT overrides.',
   );
 }
-if (IS_PRODUCTION && globalTrainingAdaptationMode === 'active') {
+if (IS_PRODUCTION && !trainingPublicBetaEnabled && globalTrainingAdaptationMode === 'active') {
   throw new Error(
     'Global TRAINING_ADAPTATION_V1_MODE=active is forbidden in production; enroll explicit personal accounts with scoped USER or TENANT overrides.',
   );
 }
-if (IS_PRODUCTION && hasScopedTrainingAdaptationEnrollment
-    && (!hasScopedTrainingRevisionEnrollment
-      || (process.env.TRAINING_TYPED_WORKOUT_V1_ENABLED !== 'true' && !hasScopedTypedTrainingEnrollment)
-      || process.env.DECISION_FLOW_V1_ENFORCE_ENABLED !== 'true')) {
+if (IS_PRODUCTION
+    && !trainingPublicBetaEnabled
+    && process.env.TRAINING_DECISION_FLOW_V1_ENFORCE_ENABLED?.trim().toLowerCase() === 'true') {
   throw new Error(
-    'TRAINING_ADAPTATION_V1_MODE=active requires scoped Training revision enrollment, typed workouts, and Decision Flow v1 in production.',
+    'Global TRAINING_DECISION_FLOW_V1_ENFORCE_ENABLED=true is forbidden in production unless the complete Training public-beta bundle is enabled.',
   );
 }
-if (IS_PRODUCTION && scopedTrainingAdaptationEnrollments.some(([adaptationKey]) => {
-  const suffix = adaptationKey.replace('TRAINING_ADAPTATION_V1_MODE_', '');
-  return process.env[`TRAINING_PLAN_REVISION_V1_MODE_${suffix}`]?.trim().toLowerCase() !== 'active'
-    || (process.env.TRAINING_TYPED_WORKOUT_V1_ENABLED !== 'true'
-      && process.env[`TRAINING_TYPED_WORKOUT_V1_ENABLED_${suffix}`]?.trim().toLowerCase() !== 'true');
-})) {
+if (IS_PRODUCTION && scopedTrainingAdaptationEnrollments.some(({ suffix }) =>
+  scopedTrainingValue('TRAINING_PLAN_REVISION_V1_MODE', suffix) !== 'active'
+  || !scopedTrainingBooleanEnabled('TRAINING_TYPED_WORKOUT_V1_ENABLED', suffix)
+  || !scopedTrainingDecisionFlowEnabled(suffix))) {
   throw new Error(
-    'Each scoped TRAINING_ADAPTATION_V1_MODE=active enrollment requires Training revision and typed-workout enablement for the same scope.',
+    'Each scoped TRAINING_ADAPTATION_V1_MODE=active enrollment requires Training revision, typed-workout, and Decision Flow enablement for the same scope.',
   );
 }
-if (IS_PRODUCTION && globalTrainingM4Allowlist) {
+if (IS_PRODUCTION && !trainingPublicBetaEnabled && globalTrainingM4Allowlist) {
   throw new Error(
     'Global TRAINING_PLAN_M4_ALLOWLIST is forbidden in production; enroll exact mode:discipline combinations with scoped USER or TENANT overrides.',
   );
 }
-if (IS_PRODUCTION && scopedTrainingM4Allowlists.some(([, value]) =>
-  value!.split(',').map((entry) => entry.trim().toLowerCase()).some((entry) => !validTrainingM4Token.test(entry)))) {
+if (IS_PRODUCTION && globalTrainingM4ExplicitUserCapacity === 'true') {
+  throw new Error(
+    'Global TRAINING_M4_EXPLICIT_USER_CAPACITY_ENABLED=true is forbidden in production; provisional capacity requires an exact scoped enrollment.',
+  );
+}
+if (IS_PRODUCTION && scopedTrainingM4Allowlists.some(({ value }) =>
+  value.split(',').map((entry) => entry.trim().toLowerCase()).some((entry) => !validTrainingM4Token.test(entry)))) {
   throw new Error('TRAINING_PLAN_M4_ALLOWLIST contains an unsupported or wildcard mode:discipline token.');
 }
-if (IS_PRODUCTION && scopedTrainingM4Allowlists.length > 0
-    && process.env.DECISION_FLOW_V1_ENFORCE_ENABLED !== 'true') {
-  throw new Error('TRAINING_PLAN_M4_ALLOWLIST requires DECISION_FLOW_V1_ENFORCE_ENABLED=true in production.');
+if (IS_PRODUCTION && scopedTrainingM4Allowlists.some(({ suffix }) =>
+  scopedTrainingValue('TRAINING_PLAN_REVISION_V1_MODE', suffix) !== 'active'
+  || !scopedTrainingBooleanEnabled('TRAINING_TYPED_WORKOUT_V1_ENABLED', suffix)
+  || !scopedTrainingDecisionFlowEnabled(suffix))) {
+  throw new Error(
+    'Each scoped TRAINING_PLAN_M4_ALLOWLIST requires Training revision, typed-workout, and Decision Flow enablement for the same scope.',
+  );
+}
+if (IS_PRODUCTION && scopedTrainingM4ExplicitUserCapacity.some(({ suffix }) =>
+  !scopedTrainingValue('TRAINING_PLAN_M4_ALLOWLIST', suffix)
+  || scopedTrainingValue('TRAINING_PLAN_REVISION_V1_MODE', suffix) !== 'active'
+  || !scopedTrainingBooleanEnabled('TRAINING_TYPED_WORKOUT_V1_ENABLED', suffix)
+  || !scopedTrainingDecisionFlowEnabled(suffix))) {
+  throw new Error(
+    'Each scoped TRAINING_M4_EXPLICIT_USER_CAPACITY_ENABLED enrollment requires an exact M4 allowlist, Training revision, typed-workout, and Decision Flow enablement for the same scope.',
+  );
 }
 if (IS_PRODUCTION && hasScopedTrainingRevisionEnrollment) {
   const snapshotKey = process.env.TRAINING_PROFILE_SNAPSHOT_ENCRYPTION_KEY ?? '';
@@ -788,9 +876,10 @@ if (IS_PRODUCTION && hasScopedTrainingRevisionEnrollment) {
       'TRAINING_PLAN_REVISION_V1_MODE=active requires a dedicated TRAINING_PROFILE_SNAPSHOT_ENCRYPTION_KEY of at least 32 characters in production.',
     );
   }
-  if (process.env.DECISION_FLOW_V1_ENFORCE_ENABLED !== 'true') {
+  if (scopedTrainingRevisionEnrollments.some(({ suffix }) =>
+    !scopedTrainingDecisionFlowEnabled(suffix))) {
     throw new Error(
-      'TRAINING_PLAN_REVISION_V1_MODE=active requires DECISION_FLOW_V1_ENFORCE_ENABLED=true in production.',
+      'Each scoped TRAINING_PLAN_REVISION_V1_MODE=active enrollment requires Decision Flow enablement for the same scope in production.',
     );
   }
 }

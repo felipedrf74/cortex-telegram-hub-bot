@@ -7,8 +7,11 @@ import { getTokens } from './oauth-store';
 import { CalendarEvent } from './google-calendar';
 import type { NormalizedRecurrence } from './recurrence-utils';
 import { isProviderEventNotFoundError } from './training-calendar-errors';
+import { withTimeout } from '../utils/timeout';
 
 const OUTLOOK_IMMUTABLE_ID_PREFER = 'IdType="ImmutableId"';
+const OUTLOOK_EVENTS_MAX_PAGES = 10;
+const OUTLOOK_API_TIMEOUT_MS = 15_000;
 
 function outlookCalendarViewPreferHeader(): string {
   return `outlook.timezone="${config.app.timezone}", ${OUTLOOK_IMMUTABLE_ID_PREFER}`;
@@ -136,7 +139,10 @@ export async function getMasterCategories(userId?: number): Promise<MasterCatego
     const client = userId
       ? getGraphClientForUser(userId)
       : getGraphClient();
-    const response = await client.api('/me/outlook/masterCategories').get();
+    const response = await withTimeout(
+      client.api('/me/outlook/masterCategories').get(),
+      OUTLOOK_API_TIMEOUT_MS,
+    );
     const cats: MasterCategory[] = (response.value || []).map((c: any) => ({
       displayName: c.displayName,
       color: c.color,
@@ -214,7 +220,7 @@ export async function getEvents(startDate: string, endDate: string, userId?: num
     const client = userId
       ? getGraphClientForUser(userId)
       : getGraphClient();
-    const firstResponse = await client
+    const firstResponse = await withTimeout(client
       .api('/me/calendarView')
       .query({
         startDateTime: new Date(startDate).toISOString(),
@@ -224,18 +230,21 @@ export async function getEvents(startDate: string, endDate: string, userId?: num
         $select: 'id,subject,start,end,isAllDay,isCancelled,responseStatus,bodyPreview,body,location,webLink,categories',
       })
       .header('Prefer', outlookCalendarViewPreferHeader())
-      .get();
+      .get(), OUTLOOK_API_TIMEOUT_MS);
 
     const values: any[] = [...(firstResponse.value || [])];
     let nextLink = firstResponse['@odata.nextLink'];
     let pageCount = 1;
-    while (typeof nextLink === 'string' && nextLink && pageCount < 10) {
+    while (typeof nextLink === 'string' && nextLink && pageCount < OUTLOOK_EVENTS_MAX_PAGES) {
       const request = client.api(graphApiPathFromNextLink(nextLink));
       request.header('Prefer', outlookCalendarViewPreferHeader());
-      const page = await request.get();
+      const page = await withTimeout(request.get(), OUTLOOK_API_TIMEOUT_MS);
       values.push(...(page.value || []));
       nextLink = page['@odata.nextLink'];
       pageCount += 1;
+    }
+    if (typeof nextLink === 'string' && nextLink) {
+      throw new Error(`Outlook calendar pagination page limit exceeded (${OUTLOOK_EVENTS_MAX_PAGES})`);
     }
 
     const masterCategories = await getMasterCategories(userId);
@@ -256,6 +265,7 @@ export async function getEvents(startDate: string, endDate: string, userId?: num
           masterCategories
         ),
         isAllDay: !!event.isAllDay,
+        timeZone: event.start?.timeZone || event.end?.timeZone,
       }));
   } catch (err) {
     logger.error({ err }, 'Failed to fetch Outlook calendar events');

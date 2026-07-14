@@ -68,6 +68,20 @@ export function hasConnectedCalendarForUser(userId?: number): boolean {
     || hasStagingFixtureCalendarEventsForUser(scopedUserId);
 }
 
+/**
+ * Exact, side-effect-free provider enrollment for one authenticated user.
+ * Unlike `getConfiguredSources()`, this never falls back to owner-global
+ * credentials when a user id is supplied.
+ */
+export function getConfiguredCalendarSourcesForUser(userId: number): CalendarSource[] {
+  if (!Number.isSafeInteger(userId) || userId <= 0) return [];
+  const sources = new Set<CalendarSource>();
+  if (googleCal.isGoogleCalendarConfigured(userId)) sources.add('google');
+  if (outlookCal.isOutlookCalendarConfigured(userId)
+      || hasStagingFixtureCalendarEventsForUser(userId)) sources.add('outlook');
+  return [...sources].sort();
+}
+
 export function hasWritableCalendarForUser(userId?: number): boolean {
   const scopedUserId = resolveScopedUserId(userId);
   if (scopedUserId != null) {
@@ -382,14 +396,18 @@ export function deduplicateEvents(events: UnifiedCalendarEvent[]): UnifiedCalend
     const existingScore = dataRichness(existing);
     const newScore = dataRichness(event);
 
-    if (newScore > existingScore) {
-      bucket[existingIndex] = {
-        ...event,
-        syncedSources: [...sources],
-      };
-    } else {
-      existing.syncedSources = [...sources];
-    }
+    const richer = newScore > existingScore ? event : existing;
+    bucket[existingIndex] = {
+      ...richer,
+      // A duplicate provider copy may lag or truncate one boundary. Preserve
+      // the union of both busy intervals so deduplication can never create
+      // false-free calendar capacity merely because the richer row was shorter.
+      start: conservativeBoundary(existing.start, event.start, 'earliest'),
+      end: conservativeBoundary(existing.end, event.end, 'latest'),
+      isAllDay: Boolean(existing.isAllDay || event.isAllDay),
+      timeZone: richer.timeZone ?? existing.timeZone ?? event.timeZone,
+      syncedSources: [...sources],
+    };
   }
 
   const deduped = [...fingerMap.values()].flat();
@@ -398,6 +416,19 @@ export function deduplicateEvents(events: UnifiedCalendarEvent[]): UnifiedCalend
   }
 
   return deduped;
+}
+
+function conservativeBoundary(
+  left: string,
+  right: string,
+  direction: 'earliest' | 'latest',
+): string {
+  const leftMs = Date.parse(left);
+  const rightMs = Date.parse(right);
+  if (!Number.isFinite(leftMs)) return right;
+  if (!Number.isFinite(rightMs)) return left;
+  if (direction === 'earliest') return leftMs <= rightMs ? left : right;
+  return leftMs >= rightMs ? left : right;
 }
 
 /** Score an event's data richness (more fields = higher score). */

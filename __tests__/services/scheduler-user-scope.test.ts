@@ -318,6 +318,7 @@ import { addToConversation } from '../../src/state/conversation';
 import { getDueReminders, markReminderFired } from '../../src/state/reminders';
 import { logger } from '../../src/utils/logger';
 import { AiBudgetError } from '../../src/services/cost-guardrail';
+import { TrainingPlanRevisionError } from '../../src/services/training-plan-revision-errors';
 
 describe('scheduler tenant scoping', () => {
   beforeEach(() => {
@@ -1016,6 +1017,48 @@ describe('scheduler tenant scoping', () => {
       sensitiveBody: expect.stringContaining('Base plan'),
       privacyPolicy: 'health',
       requiresUserAction: false,
+    }));
+  });
+
+  it('skips revision-owned weekly projections without aborting later personal scopes', async () => {
+    mockGetActivePlan.mockReturnValue({ id: 501, name: 'Base plan', duration_weeks: 4 });
+    mockGetCurrentWeek.mockReturnValue({ id: 601, week_number: 2 });
+    mockGetWeeklyAdherence.mockReturnValue({
+      completedSessions: 3,
+      skippedSessions: 1,
+      totalSessions: 4,
+      adherenceRate: 75,
+      avgRpe: 6,
+      avgSoreness: 3,
+      avgEnergy: 7,
+    });
+    mockComputeAdjustmentRecommendation.mockReturnValue({
+      adjustIntensity: 80,
+      reason: 'Adherence dipped this week',
+    });
+    mockGetWeeksForPlan.mockReturnValue([{ id: 602, week_number: 3 }]);
+    mockUpdateWeekAdjustment
+      .mockImplementationOnce(() => {
+        throw new TrainingPlanRevisionError(
+          'TRAINING_REVISION_MANAGED_LEGACY_MUTATION_BLOCKED',
+          'This week is owned by an immutable Training revision.',
+          409,
+        );
+      })
+      .mockReturnValueOnce(true);
+
+    startScheduler();
+    const trainingJob = mockCronSchedule.mock.calls.find((call) => call[0] === '0 19 * * 0')?.[1] as (() => Promise<void>) | undefined;
+    expect(trainingJob).toBeTypeOf('function');
+
+    await trainingJob!();
+
+    expect(mockUpdateWeekAdjustment).toHaveBeenCalledTimes(2);
+    expect(mockCreateNotificationIntent).toHaveBeenCalledTimes(1);
+    expect(mockCreateNotificationIntent).toHaveBeenCalledWith(expect.objectContaining({
+      userId: 22,
+      tenantId: 22,
+      relatedEntityType: 'training_week_adjustment',
     }));
   });
 
